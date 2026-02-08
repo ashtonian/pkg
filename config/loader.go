@@ -2,6 +2,7 @@ package config
 
 import (
 	"context"
+	"encoding"
 	"fmt"
 	"reflect"
 	"strconv"
@@ -242,6 +243,15 @@ func (l *Loader[T]) Fields() []fieldMeta {
 func setFieldValue(fv reflect.Value, val string) error {
 	ft := fv.Type()
 
+	// Handle encoding.TextUnmarshaler interface first (works for both pointer
+	// and value receivers).
+	if tu, ok := asTextUnmarshaler(fv); ok {
+		if err := tu.UnmarshalText([]byte(val)); err != nil {
+			return fmt.Errorf("unmarshaling text for %s: %w", ft, err)
+		}
+		return nil
+	}
+
 	// Handle time.Duration specially.
 	if ft == reflect.TypeOf(time.Duration(0)) {
 		d, err := time.ParseDuration(val)
@@ -253,6 +263,12 @@ func setFieldValue(fv reflect.Value, val string) error {
 	}
 
 	switch ft.Kind() {
+	case reflect.Ptr:
+		return setPointerField(fv, val)
+	case reflect.Slice:
+		return setSliceField(fv, val)
+	case reflect.Map:
+		return setMapField(fv, val)
 	case reflect.String:
 		fv.SetString(val)
 	case reflect.Bool:
@@ -283,4 +299,81 @@ func setFieldValue(fv reflect.Value, val string) error {
 		return fmt.Errorf("unsupported type: %s", ft.Kind())
 	}
 	return nil
+}
+
+// setPointerField allocates the target pointer and recursively sets its value.
+func setPointerField(fv reflect.Value, val string) error {
+	elemType := fv.Type().Elem()
+	ptr := reflect.New(elemType)
+	if err := setFieldValue(ptr.Elem(), val); err != nil {
+		return err
+	}
+	fv.Set(ptr)
+	return nil
+}
+
+// setSliceField splits a comma-separated string and sets each element.
+func setSliceField(fv reflect.Value, val string) error {
+	elemType := fv.Type().Elem()
+	parts := strings.Split(val, ",")
+	slice := reflect.MakeSlice(fv.Type(), len(parts), len(parts))
+
+	for i, part := range parts {
+		part = strings.TrimSpace(part)
+		elem := reflect.New(elemType).Elem()
+		if err := setFieldValue(elem, part); err != nil {
+			return fmt.Errorf("slice element %d %q: %w", i, part, ErrSliceParse)
+		}
+		slice.Index(i).Set(elem)
+	}
+	fv.Set(slice)
+	return nil
+}
+
+// setMapField parses "key=val,key2=val2" format and sets the map field.
+func setMapField(fv reflect.Value, val string) error {
+	keyType := fv.Type().Key()
+	valType := fv.Type().Elem()
+	m := reflect.MakeMap(fv.Type())
+
+	pairs := strings.Split(val, ",")
+	for _, pair := range pairs {
+		pair = strings.TrimSpace(pair)
+		if pair == "" {
+			continue
+		}
+		k, v, ok := strings.Cut(pair, "=")
+		if !ok {
+			return fmt.Errorf("map entry %q missing '=' separator: %w", pair, ErrMapParse)
+		}
+
+		keyVal := reflect.New(keyType).Elem()
+		if err := setFieldValue(keyVal, strings.TrimSpace(k)); err != nil {
+			return fmt.Errorf("map key %q: %w", k, ErrMapParse)
+		}
+
+		valVal := reflect.New(valType).Elem()
+		if err := setFieldValue(valVal, strings.TrimSpace(v)); err != nil {
+			return fmt.Errorf("map value %q for key %q: %w", v, k, ErrMapParse)
+		}
+
+		m.SetMapIndex(keyVal, valVal)
+	}
+	fv.Set(m)
+	return nil
+}
+
+// asTextUnmarshaler checks if fv (or a pointer to it) implements encoding.TextUnmarshaler.
+func asTextUnmarshaler(fv reflect.Value) (encoding.TextUnmarshaler, bool) {
+	if fv.CanInterface() {
+		if tu, ok := fv.Interface().(encoding.TextUnmarshaler); ok {
+			return tu, true
+		}
+	}
+	if fv.CanAddr() {
+		if tu, ok := fv.Addr().Interface().(encoding.TextUnmarshaler); ok {
+			return tu, true
+		}
+	}
+	return nil, false
 }

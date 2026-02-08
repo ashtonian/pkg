@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -1030,6 +1031,265 @@ func TestGetConfig_Precedence_ProgrammaticOverStructDefault(t *testing.T) {
 	// Programmatic default should override struct tag default.
 	if cfg.Host != "prog-host" {
 		t.Errorf("Host = %q, want %q", cfg.Host, "prog-host")
+	}
+}
+
+// --- Pointer Type Tests ---
+
+type PointerConfig struct {
+	Name    *string `config:"NAME"`
+	Port    *int    `config:"PORT"`
+	Verbose *bool   `config:"VERBOSE"`
+}
+
+func TestGetConfig_PointerString_Set(t *testing.T) {
+	t.Setenv("NAME", "hello")
+
+	cfg, err := GetConfig[PointerConfig](WithSkipValidation())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.Name == nil {
+		t.Fatal("Name should not be nil")
+	}
+	if *cfg.Name != "hello" {
+		t.Errorf("*Name = %q, want %q", *cfg.Name, "hello")
+	}
+}
+
+func TestGetConfig_PointerString_Unset(t *testing.T) {
+	cfg, err := GetConfig[PointerConfig](WithSkipValidation())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.Name != nil {
+		t.Errorf("Name should be nil when unset, got %q", *cfg.Name)
+	}
+}
+
+func TestGetConfig_PointerInt_Set(t *testing.T) {
+	t.Setenv("PORT", "9090")
+
+	cfg, err := GetConfig[PointerConfig](WithSkipValidation())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.Port == nil {
+		t.Fatal("Port should not be nil")
+	}
+	if *cfg.Port != 9090 {
+		t.Errorf("*Port = %d, want %d", *cfg.Port, 9090)
+	}
+}
+
+func TestGetConfig_PointerBool_Set(t *testing.T) {
+	t.Setenv("VERBOSE", "true")
+
+	cfg, err := GetConfig[PointerConfig](WithSkipValidation())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.Verbose == nil {
+		t.Fatal("Verbose should not be nil")
+	}
+	if *cfg.Verbose != true {
+		t.Errorf("*Verbose = %v, want true", *cfg.Verbose)
+	}
+}
+
+// --- Slice Type Tests ---
+
+type SliceConfig struct {
+	Tags  []string `config:"TAGS"`
+	Ports []int    `config:"PORTS"`
+}
+
+func TestGetConfig_SliceString(t *testing.T) {
+	t.Setenv("TAGS", "a,b,c")
+
+	cfg, err := GetConfig[SliceConfig](WithSkipValidation())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(cfg.Tags) != 3 {
+		t.Fatalf("Tags length = %d, want 3", len(cfg.Tags))
+	}
+	want := []string{"a", "b", "c"}
+	for i, w := range want {
+		if cfg.Tags[i] != w {
+			t.Errorf("Tags[%d] = %q, want %q", i, cfg.Tags[i], w)
+		}
+	}
+}
+
+func TestGetConfig_SliceInt(t *testing.T) {
+	t.Setenv("PORTS", "80,443,8080")
+
+	cfg, err := GetConfig[SliceConfig](WithSkipValidation())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(cfg.Ports) != 3 {
+		t.Fatalf("Ports length = %d, want 3", len(cfg.Ports))
+	}
+	wantPorts := []int{80, 443, 8080}
+	for i, w := range wantPorts {
+		if cfg.Ports[i] != w {
+			t.Errorf("Ports[%d] = %d, want %d", i, cfg.Ports[i], w)
+		}
+	}
+}
+
+func TestGetConfig_SliceInt_BadElement(t *testing.T) {
+	t.Setenv("PORTS", "80,abc")
+
+	_, err := GetConfig[SliceConfig](WithSkipValidation())
+	if err == nil {
+		t.Fatal("expected error for invalid slice element")
+	}
+	if !errors.Is(err, ErrUnsupportedType) {
+		t.Errorf("expected ErrUnsupportedType, got: %v", err)
+	}
+}
+
+func TestGetConfig_SliceUnset(t *testing.T) {
+	cfg, err := GetConfig[SliceConfig](WithSkipValidation())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.Tags != nil {
+		t.Errorf("Tags should be nil when unset, got %v", cfg.Tags)
+	}
+}
+
+// --- Map Type Tests ---
+
+type MapConfig struct {
+	Labels  map[string]string `config:"LABELS"`
+	Limits  map[string]int    `config:"LIMITS"`
+}
+
+func TestGetConfig_MapStringString(t *testing.T) {
+	t.Setenv("LABELS", "env=prod,region=us")
+
+	cfg, err := GetConfig[MapConfig](WithSkipValidation())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(cfg.Labels) != 2 {
+		t.Fatalf("Labels length = %d, want 2", len(cfg.Labels))
+	}
+	if cfg.Labels["env"] != "prod" {
+		t.Errorf("Labels[env] = %q, want %q", cfg.Labels["env"], "prod")
+	}
+	if cfg.Labels["region"] != "us" {
+		t.Errorf("Labels[region] = %q, want %q", cfg.Labels["region"], "us")
+	}
+}
+
+func TestGetConfig_MapStringInt(t *testing.T) {
+	t.Setenv("LIMITS", "cpu=4,mem=8")
+
+	cfg, err := GetConfig[MapConfig](WithSkipValidation())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(cfg.Limits) != 2 {
+		t.Fatalf("Limits length = %d, want 2", len(cfg.Limits))
+	}
+	if cfg.Limits["cpu"] != 4 {
+		t.Errorf("Limits[cpu] = %d, want %d", cfg.Limits["cpu"], 4)
+	}
+	if cfg.Limits["mem"] != 8 {
+		t.Errorf("Limits[mem] = %d, want %d", cfg.Limits["mem"], 8)
+	}
+}
+
+func TestGetConfig_Map_BadFormat(t *testing.T) {
+	t.Setenv("LABELS", "noequals")
+
+	_, err := GetConfig[MapConfig](WithSkipValidation())
+	if err == nil {
+		t.Fatal("expected error for bad map format")
+	}
+	if !errors.Is(err, ErrUnsupportedType) {
+		t.Errorf("expected ErrUnsupportedType, got: %v", err)
+	}
+}
+
+func TestGetConfig_MapUnset(t *testing.T) {
+	cfg, err := GetConfig[MapConfig](WithSkipValidation())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.Labels != nil {
+		t.Errorf("Labels should be nil when unset, got %v", cfg.Labels)
+	}
+}
+
+// --- TextUnmarshaler Test ---
+
+type netAddr struct {
+	Host string
+	Port int
+}
+
+func (a *netAddr) UnmarshalText(text []byte) error {
+	s := string(text)
+	parts := strings.SplitN(s, ":", 2)
+	a.Host = parts[0]
+	if len(parts) == 2 {
+		p, err := strconv.Atoi(parts[1])
+		if err != nil {
+			return err
+		}
+		a.Port = p
+	}
+	return nil
+}
+
+type TextUnmarshalerConfig struct {
+	Addr netAddr `config:"ADDR"`
+}
+
+func TestGetConfig_TextUnmarshaler(t *testing.T) {
+	t.Setenv("ADDR", "127.0.0.1:8080")
+
+	cfg, err := GetConfig[TextUnmarshalerConfig](WithSkipValidation())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.Addr.Host != "127.0.0.1" {
+		t.Errorf("Addr.Host = %q, want %q", cfg.Addr.Host, "127.0.0.1")
+	}
+	if cfg.Addr.Port != 8080 {
+		t.Errorf("Addr.Port = %d, want %d", cfg.Addr.Port, 8080)
+	}
+}
+
+// --- YAML File with Slice/Map Tests ---
+
+func TestGetConfig_YAMLArray(t *testing.T) {
+	yamlContent := `tags: [a, b, c]
+`
+	path := writeYAML(t, yamlContent)
+
+	type cfg struct {
+		Tags []string `config:"TAGS"`
+	}
+
+	c, err := GetConfig[cfg](WithConfigFile(path), WithSkipValidation())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(c.Tags) != 3 {
+		t.Fatalf("Tags length = %d, want 3", len(c.Tags))
+	}
+	want := []string{"a", "b", "c"}
+	for i, w := range want {
+		if c.Tags[i] != w {
+			t.Errorf("Tags[%d] = %q, want %q", i, c.Tags[i], w)
+		}
 	}
 }
 

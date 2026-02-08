@@ -1,10 +1,14 @@
 package config
 
 import (
+	"encoding"
 	"reflect"
 	"strings"
 	"unicode"
 )
+
+// textUnmarshalerType is cached for the encoding.TextUnmarshaler interface check.
+var textUnmarshalerType = reflect.TypeOf((*encoding.TextUnmarshaler)(nil)).Elem()
 
 // fieldMeta holds parsed struct tag metadata for a single config field.
 type fieldMeta struct {
@@ -65,12 +69,23 @@ func parseStructFields(t reflect.Type, prefix string, indexPath []int) []fieldMe
 		}
 
 		ft := field.Type
+
+		// Slice, map, and non-struct pointer fields are leaf fields — don't recurse.
+		if ft.Kind() == reflect.Slice || ft.Kind() == reflect.Map {
+			meta := parseFieldMeta(field, prefix, currentIndex)
+			fields = append(fields, meta)
+			continue
+		}
+
 		if ft.Kind() == reflect.Ptr {
 			ft = ft.Elem()
 		}
 
 		// Recurse into nested structs (but not time.Duration, which is int64).
-		if ft.Kind() == reflect.Struct && ft.PkgPath() != "time" {
+		// Pointer-to-struct also recurses.
+		// Don't recurse into types that implement TextUnmarshaler — treat them as leaf.
+		if ft.Kind() == reflect.Struct && ft.PkgPath() != "time" &&
+			!reflect.PointerTo(ft).Implements(textUnmarshalerType) {
 			nestedPrefix := prefix + toUpperSnake(field.Name) + "_"
 			nested := parseStructFields(ft, nestedPrefix, currentIndex)
 			fields = append(fields, nested...)

@@ -63,10 +63,21 @@ func flattenMap(prefix string, m map[string]any, out map[string]string) {
 		switch v := val.(type) {
 		case map[string]any:
 			flattenMap(fullKey, v, out)
+		case []any:
+			out[fullKey] = joinSlice(v)
 		default:
 			out[fullKey] = fmt.Sprintf("%v", v)
 		}
 	}
+}
+
+// joinSlice formats a []any as a comma-separated string suitable for slice parsing.
+func joinSlice(items []any) string {
+	parts := make([]string, len(items))
+	for i, item := range items {
+		parts[i] = fmt.Sprintf("%v", item)
+	}
+	return strings.Join(parts, ",")
 }
 
 // EnvSource loads configuration from environment variables.
