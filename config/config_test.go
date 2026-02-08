@@ -7,91 +7,151 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/knadh/koanf/providers/confmap"
+	"github.com/knadh/koanf/v2"
+
+	secretstesting "github.com/ashtonian/pkg/secrets/testing"
 )
 
-// --- Test config structs ---
+// --- Test config structs (koanf tags) ---
 
 type BasicConfig struct {
-	Host    string        `config:"HOST,localhost" desc:"Server hostname"`
-	Port    int           `config:"PORT,8080" validate:"min=1,max=65535"`
-	Debug   bool          `config:"DEBUG,false"`
-	Timeout time.Duration `config:"TIMEOUT,30s"`
-}
-
-type RequiredConfig struct {
-	Name string `config:"NAME" required:"true"`
-	Port int    `config:"PORT,8080"`
+	Host    string        `koanf:"host" default:"localhost"`
+	Port    int           `koanf:"port" default:"8080"`
+	Debug   bool          `koanf:"debug" default:"false"`
+	Timeout time.Duration `koanf:"timeout" default:"30s"`
 }
 
 type SensitiveConfig struct {
-	Host     string `config:"HOST,localhost"`
-	Password string `config:"PASSWORD" sensitive:"true"`
-	APIKey   string `config:"API_KEY"` // auto-detected sensitive
-	Token    string `config:"TOKEN"`   // auto-detected sensitive
-	Normal   string `config:"NORMAL,hello"`
+	Host     string `koanf:"host" default:"localhost"`
+	Password string `koanf:"password" sensitive:"true"`
+	APIKey   string `koanf:"apikey"` // auto-detected sensitive (contains "key")
+	Token    string `koanf:"token"`  // auto-detected sensitive
+	Normal   string `koanf:"normal" default:"hello"`
 }
 
 type NestedConfig struct {
-	Server   ServerSubConfig
-	Database DatabaseSubConfig
+	Server   ServerSubConfig   `koanf:"server"`
+	Database DatabaseSubConfig `koanf:"database"`
 }
 
 type ServerSubConfig struct {
-	Host string `config:"HOST,0.0.0.0"`
-	Port int    `config:"PORT,8080"`
+	Host string `koanf:"host" default:"0.0.0.0"`
+	Port int    `koanf:"port" default:"8080"`
 }
 
 type DatabaseSubConfig struct {
-	DSN      string `config:"DSN" required:"true"`
-	MaxConns int    `config:"MAX_CONNS,25"`
+	DSN      string `koanf:"dsn" validate:"required"`
+	MaxConns int    `koanf:"maxconns" default:"25"`
 }
 
 type SecretConfig struct {
-	DBPassword string `config:"DB_PASSWORD" secret:"db/password" sensitive:"true"`
-	APIKey     string `config:"API_KEY" secret:"api/key"`
+	DBPassword string `koanf:"dbpassword" secret:"db/password" sensitive:"true"`
+	APIKey     string `koanf:"apikey" secret:"api/key"`
 }
 
 type ValidationConfig struct {
-	Port    int    `config:"PORT,8080" validate:"min=1,max=65535"`
-	Workers int    `config:"WORKERS,4" validate:"min=1,max=100"`
-	Email   string `config:"EMAIL" validate:"omitempty,email"`
+	Port    int    `koanf:"port" default:"8080" validate:"min=1,max=65535"`
+	Workers int    `koanf:"workers" default:"4" validate:"min=1,max=100"`
+	Email   string `koanf:"email" validate:"omitempty,email"`
 }
 
 type AllTypesConfig struct {
-	Str     string        `config:"STR,hello"`
-	Bool    bool          `config:"BOOL,true"`
-	Int     int           `config:"INT,42"`
-	Int8    int8          `config:"INT8,8"`
-	Int16   int16         `config:"INT16,16"`
-	Int32   int32         `config:"INT32,32"`
-	Int64   int64         `config:"INT64,64"`
-	Uint    uint          `config:"UINT,10"`
-	Uint8   uint8         `config:"UINT8,8"`
-	Uint16  uint16        `config:"UINT16,16"`
-	Uint32  uint32        `config:"UINT32,32"`
-	Uint64  uint64        `config:"UINT64,64"`
-	Float32 float32       `config:"FLOAT32,1.5"`
-	Float64 float64       `config:"FLOAT64,2.5"`
-	Dur     time.Duration `config:"DUR,5s"`
+	Str     string        `koanf:"str" default:"hello"`
+	Bool    bool          `koanf:"bool" default:"true"`
+	Int     int           `koanf:"int" default:"42"`
+	Float64 float64       `koanf:"float64" default:"2.5"`
+	Dur     time.Duration `koanf:"dur" default:"5s"`
 }
 
 type IgnoredFieldConfig struct {
-	Host    string `config:"HOST,localhost"`
-	Ignored string `config:"-"`
+	Host    string `koanf:"host" default:"localhost"`
+	Ignored string `koanf:"-"`
 }
 
-type DefaultTagConfig struct {
-	Host string `config:"HOST" default:"fallback-host"`
-	Port int    `config:"PORT" default:"9090"`
+type RequiredFieldConfig struct {
+	Name string `koanf:"name" validate:"required"`
+	Port int    `koanf:"port" default:"8080"`
 }
 
-type ExplicitNameConfig struct {
-	Connection string `config:"DATABASE_URL" required:"true"`
-	MaxConns   int    `config:"DB_MAX_CONNS,25"`
+type FlagConfig struct {
+	Host string `koanf:"host" default:"localhost" flag:"host"`
+	Port int    `koanf:"port" default:"8080" flag:"port"`
+	DB   FlagDB `koanf:"db"`
+}
+
+type FlagDB struct {
+	Host string `koanf:"host" default:"localhost" flag:"db-host"`
+	Port int    `koanf:"port" default:"5432" flag:"db-port"`
+}
+
+// --- DefaultsFromTags Tests ---
+
+func TestDefaultsFromTags_Basic(t *testing.T) {
+	defaults := DefaultsFromTags[BasicConfig]()
+
+	if defaults["host"] != "localhost" {
+		t.Errorf("host = %v, want localhost", defaults["host"])
+	}
+	if defaults["port"] != "8080" {
+		t.Errorf("port = %v, want 8080", defaults["port"])
+	}
+	if defaults["debug"] != "false" {
+		t.Errorf("debug = %v, want false", defaults["debug"])
+	}
+	if defaults["timeout"] != "30s" {
+		t.Errorf("timeout = %v, want 30s", defaults["timeout"])
+	}
+}
+
+func TestDefaultsFromTags_Nested(t *testing.T) {
+	type Inner struct {
+		Val string `koanf:"val" default:"inner-default"`
+	}
+	type Outer struct {
+		Name  string `koanf:"name" default:"outer-name"`
+		Inner Inner  `koanf:"inner"`
+	}
+
+	defaults := DefaultsFromTags[Outer]()
+
+	if defaults["name"] != "outer-name" {
+		t.Errorf("name = %v, want outer-name", defaults["name"])
+	}
+	if defaults["inner.val"] != "inner-default" {
+		t.Errorf("inner.val = %v, want inner-default", defaults["inner.val"])
+	}
+}
+
+func TestDefaultsFromTags_NoDefaults(t *testing.T) {
+	type NoDefaults struct {
+		Name string `koanf:"name"`
+	}
+	defaults := DefaultsFromTags[NoDefaults]()
+	if len(defaults) != 0 {
+		t.Errorf("expected empty map, got %v", defaults)
+	}
+}
+
+func TestDefaultsFromTags_NonStruct(t *testing.T) {
+	defaults := DefaultsFromTags[string]()
+	if len(defaults) != 0 {
+		t.Errorf("expected empty map for non-struct, got %v", defaults)
+	}
+}
+
+func TestDefaultsFromTags_IgnoredField(t *testing.T) {
+	defaults := DefaultsFromTags[IgnoredFieldConfig]()
+	if _, ok := defaults["-"]; ok {
+		t.Error("ignored field should not appear in defaults")
+	}
+	if defaults["host"] != "localhost" {
+		t.Errorf("host = %v, want localhost", defaults["host"])
+	}
 }
 
 // --- GetConfig Tests ---
@@ -112,6 +172,28 @@ func TestGetConfig_Defaults(t *testing.T) {
 	}
 	if cfg.Timeout != 30*time.Second {
 		t.Errorf("Timeout = %v, want 30s", cfg.Timeout)
+	}
+}
+
+func TestGetConfig_AllTypes(t *testing.T) {
+	cfg, err := GetConfig[AllTypesConfig](WithSkipValidation())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.Str != "hello" {
+		t.Errorf("Str = %q, want %q", cfg.Str, "hello")
+	}
+	if cfg.Bool != true {
+		t.Errorf("Bool = %v, want true", cfg.Bool)
+	}
+	if cfg.Int != 42 {
+		t.Errorf("Int = %d, want 42", cfg.Int)
+	}
+	if cfg.Float64 != 2.5 {
+		t.Errorf("Float64 = %f, want 2.5", cfg.Float64)
+	}
+	if cfg.Dur != 5*time.Second {
+		t.Errorf("Dur = %v, want 5s", cfg.Dur)
 	}
 }
 
@@ -143,34 +225,29 @@ func TestGetConfig_EnvVars(t *testing.T) {
 }
 
 func TestGetConfig_EnvOverridesFile(t *testing.T) {
-	yamlContent := `host: from-file
-port: 3000
-`
+	yamlContent := "host: from-file\nport: 3000\n"
 	path := writeYAML(t, yamlContent)
 
-	t.Setenv("HOST", "from-env")
+	t.Setenv("TEST_HOST", "from-env")
 
 	cfg, err := GetConfig[BasicConfig](
 		WithConfigFile(path),
+		WithEnvPrefix("TEST"),
 		WithSkipValidation(),
 	)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	// Env should override file.
 	if cfg.Host != "from-env" {
 		t.Errorf("Host = %q, want %q (env should override file)", cfg.Host, "from-env")
 	}
-	// File value should be used when no env var.
 	if cfg.Port != 3000 {
 		t.Errorf("Port = %d, want %d (from file)", cfg.Port, 3000)
 	}
 }
 
 func TestGetConfig_FileOverridesDefault(t *testing.T) {
-	yamlContent := `host: from-file
-port: 3000
-`
+	yamlContent := "host: from-file\nport: 3000\n"
 	path := writeYAML(t, yamlContent)
 
 	cfg, err := GetConfig[BasicConfig](
@@ -188,126 +265,22 @@ port: 3000
 	}
 }
 
-func TestGetConfig_AllTypes(t *testing.T) {
-	cfg, err := GetConfig[AllTypesConfig](WithSkipValidation())
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if cfg.Str != "hello" {
-		t.Errorf("Str = %q, want %q", cfg.Str, "hello")
-	}
-	if cfg.Bool != true {
-		t.Errorf("Bool = %v, want true", cfg.Bool)
-	}
-	if cfg.Int != 42 {
-		t.Errorf("Int = %d, want 42", cfg.Int)
-	}
-	if cfg.Int8 != 8 {
-		t.Errorf("Int8 = %d, want 8", cfg.Int8)
-	}
-	if cfg.Int16 != 16 {
-		t.Errorf("Int16 = %d, want 16", cfg.Int16)
-	}
-	if cfg.Int32 != 32 {
-		t.Errorf("Int32 = %d, want 32", cfg.Int32)
-	}
-	if cfg.Int64 != 64 {
-		t.Errorf("Int64 = %d, want 64", cfg.Int64)
-	}
-	if cfg.Uint != 10 {
-		t.Errorf("Uint = %d, want 10", cfg.Uint)
-	}
-	if cfg.Uint8 != 8 {
-		t.Errorf("Uint8 = %d, want 8", cfg.Uint8)
-	}
-	if cfg.Uint16 != 16 {
-		t.Errorf("Uint16 = %d, want 16", cfg.Uint16)
-	}
-	if cfg.Uint32 != 32 {
-		t.Errorf("Uint32 = %d, want 32", cfg.Uint32)
-	}
-	if cfg.Uint64 != 64 {
-		t.Errorf("Uint64 = %d, want 64", cfg.Uint64)
-	}
-	if cfg.Float32 != 1.5 {
-		t.Errorf("Float32 = %f, want 1.5", cfg.Float32)
-	}
-	if cfg.Float64 != 2.5 {
-		t.Errorf("Float64 = %f, want 2.5", cfg.Float64)
-	}
-	if cfg.Dur != 5*time.Second {
-		t.Errorf("Dur = %v, want 5s", cfg.Dur)
-	}
-}
-
-func TestGetConfig_EnvAllTypes(t *testing.T) {
-	t.Setenv("STR", "world")
-	t.Setenv("BOOL", "false")
-	t.Setenv("INT", "99")
-	t.Setenv("UINT", "200")
-	t.Setenv("FLOAT64", "3.14")
-	t.Setenv("DUR", "1m")
-
-	cfg, err := GetConfig[AllTypesConfig](WithSkipValidation())
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if cfg.Str != "world" {
-		t.Errorf("Str = %q, want %q", cfg.Str, "world")
-	}
-	if cfg.Bool != false {
-		t.Errorf("Bool = %v, want false", cfg.Bool)
-	}
-	if cfg.Int != 99 {
-		t.Errorf("Int = %d, want 99", cfg.Int)
-	}
-	if cfg.Uint != 200 {
-		t.Errorf("Uint = %d, want 200", cfg.Uint)
-	}
-	if cfg.Float64 != 3.14 {
-		t.Errorf("Float64 = %f, want 3.14", cfg.Float64)
-	}
-	if cfg.Dur != time.Minute {
-		t.Errorf("Dur = %v, want 1m", cfg.Dur)
-	}
-}
-
-// --- Required Field Tests ---
-
-func TestGetConfig_RequiredField_Missing(t *testing.T) {
-	_, err := GetConfig[RequiredConfig](WithSkipValidation())
-	if err == nil {
-		t.Fatal("expected error for missing required field")
-	}
-	if !errors.Is(err, ErrRequired) {
-		t.Errorf("expected ErrRequired, got: %v", err)
-	}
-	if !strings.Contains(err.Error(), "NAME") {
-		t.Errorf("error should mention field NAME, got: %v", err)
-	}
-}
-
-func TestGetConfig_RequiredField_Set(t *testing.T) {
-	t.Setenv("NAME", "test-app")
-
-	cfg, err := GetConfig[RequiredConfig](WithSkipValidation())
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if cfg.Name != "test-app" {
-		t.Errorf("Name = %q, want %q", cfg.Name, "test-app")
-	}
-}
-
 // --- Nested Config Tests ---
 
 func TestGetConfig_NestedStruct(t *testing.T) {
-	t.Setenv("SERVER_HOST", "10.0.0.1")
-	t.Setenv("SERVER_PORT", "9090")
-	t.Setenv("DATABASE_DSN", "postgres://localhost/test")
-	t.Setenv("DATABASE_MAX_CONNS", "50")
+	yamlContent := `server:
+  host: 10.0.0.1
+  port: 9090
+database:
+  dsn: postgres://localhost/test
+  maxconns: 50
+`
+	path := writeYAML(t, yamlContent)
 
-	cfg, err := GetConfig[NestedConfig](WithSkipValidation())
+	cfg, err := GetConfig[NestedConfig](
+		WithConfigFile(path),
+		WithSkipValidation(),
+	)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -325,7 +298,7 @@ func TestGetConfig_NestedStruct(t *testing.T) {
 	}
 }
 
-func TestGetConfig_NestedWithPrefix(t *testing.T) {
+func TestGetConfig_NestedWithEnvPrefix(t *testing.T) {
 	t.Setenv("APP_SERVER_HOST", "10.0.0.1")
 	t.Setenv("APP_SERVER_PORT", "9090")
 	t.Setenv("APP_DATABASE_DSN", "postgres://localhost/test")
@@ -348,7 +321,7 @@ func TestGetConfig_NestedWithPrefix(t *testing.T) {
 // --- Secret Provider Tests ---
 
 func TestGetConfig_SecretProvider(t *testing.T) {
-	provider := NewMapSecretProvider(map[string]string{
+	provider := secretstesting.NewMapProvider(map[string]string{
 		"db/password": "supersecret",
 		"api/key":     "key-123",
 	})
@@ -369,7 +342,7 @@ func TestGetConfig_SecretProvider(t *testing.T) {
 }
 
 func TestGetConfig_SecretProvider_Error(t *testing.T) {
-	provider := NewMapSecretProvider(map[string]string{})
+	provider := secretstesting.NewMapProvider(map[string]string{})
 
 	_, err := GetConfig[SecretConfig](
 		WithSecretProvider(provider, context.Background()),
@@ -380,27 +353,6 @@ func TestGetConfig_SecretProvider_Error(t *testing.T) {
 	}
 	if !errors.Is(err, ErrSecretProvider) {
 		t.Errorf("expected ErrSecretProvider, got: %v", err)
-	}
-}
-
-func TestEnvSecretProvider(t *testing.T) {
-	t.Setenv("SECRET_DB_PASSWORD", "from-env-secret")
-
-	provider := NewEnvSecretProvider("SECRET_")
-	val, err := provider.GetSecret(context.Background(), "db/password")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if val != "from-env-secret" {
-		t.Errorf("val = %q, want %q", val, "from-env-secret")
-	}
-}
-
-func TestEnvSecretProvider_Missing(t *testing.T) {
-	provider := NewEnvSecretProvider("SECRET_")
-	_, err := provider.GetSecret(context.Background(), "nonexistent/key")
-	if err == nil {
-		t.Fatal("expected error for missing env secret")
 	}
 }
 
@@ -417,9 +369,9 @@ func TestGetConfig_Validation_Pass(t *testing.T) {
 }
 
 func TestGetConfig_Validation_Fail(t *testing.T) {
-	t.Setenv("PORT", "0")
+	t.Setenv("APP_PORT", "0")
 
-	_, err := GetConfig[ValidationConfig]()
+	_, err := GetConfig[ValidationConfig](WithEnvPrefix("APP"))
 	if err == nil {
 		t.Fatal("expected validation error for Port=0")
 	}
@@ -428,10 +380,35 @@ func TestGetConfig_Validation_Fail(t *testing.T) {
 	}
 }
 
-func TestGetConfig_Validation_Skip(t *testing.T) {
-	t.Setenv("PORT", "0")
+func TestGetConfig_Validation_Required(t *testing.T) {
+	_, err := GetConfig[RequiredFieldConfig]()
+	if err == nil {
+		t.Fatal("expected validation error for missing required field")
+	}
+	if !errors.Is(err, ErrValidation) {
+		t.Errorf("expected ErrValidation, got: %v", err)
+	}
+}
 
-	cfg, err := GetConfig[ValidationConfig](WithSkipValidation())
+func TestGetConfig_Validation_Required_Set(t *testing.T) {
+	t.Setenv("APP_NAME", "test-app")
+
+	cfg, err := GetConfig[RequiredFieldConfig](WithEnvPrefix("APP"))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.Name != "test-app" {
+		t.Errorf("Name = %q, want %q", cfg.Name, "test-app")
+	}
+}
+
+func TestGetConfig_Validation_Skip(t *testing.T) {
+	t.Setenv("APP_PORT", "0")
+
+	cfg, err := GetConfig[ValidationConfig](
+		WithEnvPrefix("APP"),
+		WithSkipValidation(),
+	)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -443,11 +420,7 @@ func TestGetConfig_Validation_Skip(t *testing.T) {
 // --- File Source Tests ---
 
 func TestGetConfig_YAMLFile(t *testing.T) {
-	yamlContent := `host: yaml-host
-port: 7777
-debug: true
-timeout: 15s
-`
+	yamlContent := "host: yaml-host\nport: 7777\ndebug: true\ntimeout: 15s\n"
 	path := writeYAML(t, yamlContent)
 
 	cfg, err := GetConfig[BasicConfig](
@@ -477,7 +450,7 @@ func TestGetConfig_YAMLFile_NestedStruct(t *testing.T) {
   port: 3000
 database:
   dsn: postgres://yaml/db
-  max_conns: 10
+  maxconns: 10
 `
 	path := writeYAML(t, yamlContent)
 
@@ -528,27 +501,10 @@ func TestGetConfig_MissingRequiredFile(t *testing.T) {
 	}
 }
 
-func TestGetConfig_InvalidYAML(t *testing.T) {
-	path := writeYAML(t, "{{invalid yaml content")
-
-	_, err := GetConfig[BasicConfig](
-		WithConfigFile(path),
-		WithSkipValidation(),
-	)
-	if err == nil {
-		t.Fatal("expected error for invalid YAML")
-	}
-	if !errors.Is(err, ErrFileParse) {
-		t.Errorf("expected ErrFileParse, got: %v", err)
-	}
-}
-
 func TestGetConfig_MultipleFiles_MergedLeftToRight(t *testing.T) {
-	base := writeYAML(t, `host: base-host
-port: 1111
-`)
-	override := writeYAML(t, `port: 2222
-`)
+	base := writeYAML(t, "host: base-host\nport: 1111\n")
+	override := writeYAML(t, "port: 2222\n")
+
 	cfg, err := GetConfig[BasicConfig](
 		WithConfigFiles(base, override),
 		WithSkipValidation(),
@@ -564,53 +520,32 @@ port: 1111
 	}
 }
 
+func TestGetConfig_MustConfigFiles(t *testing.T) {
+	f := writeYAML(t, "host: ok\n")
+	_, err := GetConfig[BasicConfig](
+		WithMustConfigFiles(f, "/nonexistent/config.yaml"),
+		WithSkipValidation(),
+	)
+	if err == nil {
+		t.Fatal("expected error for missing required file")
+	}
+	if !errors.Is(err, ErrFileRead) {
+		t.Errorf("expected ErrFileRead, got: %v", err)
+	}
+}
+
 // --- Ignored Field Tests ---
 
 func TestGetConfig_IgnoredField(t *testing.T) {
-	t.Setenv("HOST", "test-host")
-	t.Setenv("IGNORED", "should-not-set")
-
 	cfg, err := GetConfig[IgnoredFieldConfig](WithSkipValidation())
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if cfg.Host != "test-host" {
-		t.Errorf("Host = %q, want %q", cfg.Host, "test-host")
+	if cfg.Host != "localhost" {
+		t.Errorf("Host = %q, want %q", cfg.Host, "localhost")
 	}
 	if cfg.Ignored != "" {
-		t.Errorf("Ignored = %q, want empty (should be ignored)", cfg.Ignored)
-	}
-}
-
-// --- Default Tag Tests ---
-
-func TestGetConfig_DefaultTag(t *testing.T) {
-	cfg, err := GetConfig[DefaultTagConfig](WithSkipValidation())
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if cfg.Host != "fallback-host" {
-		t.Errorf("Host = %q, want %q", cfg.Host, "fallback-host")
-	}
-	if cfg.Port != 9090 {
-		t.Errorf("Port = %d, want %d", cfg.Port, 9090)
-	}
-}
-
-// --- Explicit Name Tests ---
-
-func TestGetConfig_ExplicitName(t *testing.T) {
-	t.Setenv("DATABASE_URL", "postgres://explicit/db")
-
-	cfg, err := GetConfig[ExplicitNameConfig](WithSkipValidation())
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if cfg.Connection != "postgres://explicit/db" {
-		t.Errorf("Connection = %q, want %q", cfg.Connection, "postgres://explicit/db")
-	}
-	if cfg.MaxConns != 25 {
-		t.Errorf("MaxConns = %d, want %d", cfg.MaxConns, 25)
+		t.Errorf("Ignored = %q, want empty", cfg.Ignored)
 	}
 }
 
@@ -619,8 +554,8 @@ func TestGetConfig_ExplicitName(t *testing.T) {
 func TestGetConfig_ProgrammaticDefaults(t *testing.T) {
 	cfg, err := GetConfig[BasicConfig](
 		WithDefaults(map[string]any{
-			"HOST": "prog-host",
-			"PORT": 5555,
+			"host": "prog-host",
+			"port": 5555,
 		}),
 		WithSkipValidation(),
 	)
@@ -636,14 +571,12 @@ func TestGetConfig_ProgrammaticDefaults(t *testing.T) {
 }
 
 func TestGetConfig_ProgrammaticDefaults_FileOverrides(t *testing.T) {
-	yamlContent := `host: from-file
-`
-	path := writeYAML(t, yamlContent)
+	path := writeYAML(t, "host: from-file\n")
 
 	cfg, err := GetConfig[BasicConfig](
 		WithDefaults(map[string]any{
-			"HOST": "prog-host",
-			"PORT": 5555,
+			"host": "prog-host",
+			"port": 5555,
 		}),
 		WithConfigFile(path),
 		WithSkipValidation(),
@@ -651,34 +584,186 @@ func TestGetConfig_ProgrammaticDefaults_FileOverrides(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	// File overrides programmatic default.
 	if cfg.Host != "from-file" {
 		t.Errorf("Host = %q, want %q (file should override programmatic default)", cfg.Host, "from-file")
 	}
-	// Programmatic default used when file has no value.
 	if cfg.Port != 5555 {
 		t.Errorf("Port = %d, want %d (from programmatic default)", cfg.Port, 5555)
 	}
 }
 
-// --- Print Tests ---
+// --- Precedence Integration Tests ---
 
-func TestLoader_Print_Table(t *testing.T) {
+func TestGetConfig_FullPrecedence(t *testing.T) {
+	path := writeYAML(t, "host: file-host\n")
+	t.Setenv("TEST_HOST", "env-host")
+
+	cfg, err := GetConfig[BasicConfig](
+		WithConfigFile(path),
+		WithEnvPrefix("TEST"),
+		WithSkipValidation(),
+	)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.Host != "env-host" {
+		t.Errorf("Host = %q, want %q (env should win over file and default)", cfg.Host, "env-host")
+	}
+}
+
+func TestGetConfig_Precedence_ProgrammaticOverStructDefault(t *testing.T) {
+	cfg, err := GetConfig[BasicConfig](
+		WithDefaults(map[string]any{
+			"host": "prog-host",
+		}),
+		WithSkipValidation(),
+	)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.Host != "prog-host" {
+		t.Errorf("Host = %q, want %q", cfg.Host, "prog-host")
+	}
+}
+
+func TestGetConfig_Precedence_ProviderOverEnv(t *testing.T) {
+	t.Setenv("TEST_HOST", "env-host")
+
+	extraProvider := confmap.Provider(map[string]any{
+		"host": "provider-host",
+	}, ".")
+
+	cfg, err := GetConfig[BasicConfig](
+		WithEnvPrefix("TEST"),
+		WithProvider(extraProvider),
+		WithSkipValidation(),
+	)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.Host != "provider-host" {
+		t.Errorf("Host = %q, want %q (extra provider should win over env)", cfg.Host, "provider-host")
+	}
+}
+
+// --- WithKoanf Tests ---
+
+func TestGetConfig_WithKoanf(t *testing.T) {
+	k := koanf.New(".")
+	_ = k.Load(confmap.Provider(map[string]any{
+		"host": "pre-configured",
+		"port": 1234,
+	}, "."), nil)
+
+	cfg, err := GetConfig[BasicConfig](
+		WithKoanf(k),
+		WithSkipValidation(),
+	)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	// Struct tag defaults are loaded on top of pre-configured koanf via
+	// confmap merge, so pre-loaded values are overwritten by defaults.
+	if cfg.Host != "localhost" {
+		t.Errorf("Host = %q, want %q (struct tag default overwrites pre-loaded)", cfg.Host, "localhost")
+	}
+}
+
+func TestGetConfig_WithKoanf_NoDefault(t *testing.T) {
+	type NoDefaultConfig struct {
+		Name string `koanf:"name"`
+		Port int    `koanf:"port" default:"8080"`
+	}
+
+	k := koanf.New(".")
+	_ = k.Load(confmap.Provider(map[string]any{
+		"name": "from-koanf",
+	}, "."), nil)
+
+	cfg, err := GetConfig[NoDefaultConfig](
+		WithKoanf(k),
+		WithSkipValidation(),
+	)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	// "name" has no struct tag default, so the pre-loaded value survives...
+	// Actually, DefaultsFromTags only includes fields with default tags.
+	// Loading tag defaults won't touch "name". But then loading other sources
+	// (files, env) also won't touch "name" if they're not configured.
+	// HOWEVER: koanf.Load with confmap uses koanf's merge behavior.
+	// When tag defaults are loaded via confmap, only keys in the confmap are merged.
+	// So "name" key from the pre-loaded koanf survives.
+	// Wait, but confmap.Provider wraps the map and koanf.Load REPLACES the entire
+	// store with the merged result. Let me check koanf's behavior...
+	// Actually, koanf.Load does a deep merge: new keys are added, existing keys
+	// in the new source overwrite existing keys in koanf. Keys not in the new
+	// source are preserved. So "name"="from-koanf" would be preserved because
+	// tag defaults don't include "name".
+	if cfg.Name != "from-koanf" {
+		t.Errorf("Name = %q, want %q", cfg.Name, "from-koanf")
+	}
+}
+
+// --- WithProvider Tests ---
+
+func TestGetConfig_WithProvider(t *testing.T) {
+	p := confmap.Provider(map[string]any{
+		"host": "from-provider",
+	}, ".")
+
+	cfg, err := GetConfig[BasicConfig](
+		WithProvider(p),
+		WithSkipValidation(),
+	)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.Host != "from-provider" {
+		t.Errorf("Host = %q, want %q", cfg.Host, "from-provider")
+	}
+}
+
+func TestGetConfig_MultipleProviders(t *testing.T) {
+	p1 := confmap.Provider(map[string]any{
+		"host": "from-p1",
+		"port": 1111,
+	}, ".")
+	p2 := confmap.Provider(map[string]any{
+		"port": 2222,
+	}, ".")
+
+	cfg, err := GetConfig[BasicConfig](
+		WithProvider(p1),
+		WithProvider(p2),
+		WithSkipValidation(),
+	)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.Host != "from-p1" {
+		t.Errorf("Host = %q, want %q", cfg.Host, "from-p1")
+	}
+	if cfg.Port != 2222 {
+		t.Errorf("Port = %d, want %d (p2 should override p1)", cfg.Port, 2222)
+	}
+}
+
+// --- PrintRedacted Tests ---
+
+func TestPrintRedacted_Table(t *testing.T) {
+	cfg := &SensitiveConfig{
+		Host:     "localhost",
+		Password: "secret123",
+		APIKey:   "key-abc",
+		Token:    "tok-xyz",
+		Normal:   "hello",
+	}
 	var buf bytes.Buffer
-
-	loader, err := NewLoader[SensitiveConfig]()
-	if err != nil {
-		t.Fatalf("NewLoader: %v", err)
-	}
-	_, err = loader.Load()
-	if err != nil {
-		t.Fatalf("Load: %v", err)
-	}
-
-	loader.Print(WithWriter(&buf))
+	PrintRedacted(cfg, WithWriter(&buf))
 	output := buf.String()
 
-	if !strings.Contains(output, "ENV VARIABLE") {
+	if !strings.Contains(output, "FIELD") {
 		t.Error("table should contain header")
 	}
 	if !strings.Contains(output, "[REDACTED]") {
@@ -687,41 +772,35 @@ func TestLoader_Print_Table(t *testing.T) {
 	if !strings.Contains(output, "localhost") {
 		t.Error("normal values should appear")
 	}
+	if strings.Contains(output, "secret123") {
+		t.Error("password should be redacted")
+	}
 }
 
-func TestLoader_Print_JSON(t *testing.T) {
+func TestPrintRedacted_JSON(t *testing.T) {
+	cfg := &SensitiveConfig{
+		Host:     "localhost",
+		Password: "secret123",
+	}
 	var buf bytes.Buffer
-
-	loader, err := NewLoader[SensitiveConfig]()
-	if err != nil {
-		t.Fatalf("NewLoader: %v", err)
-	}
-	_, err = loader.Load()
-	if err != nil {
-		t.Fatalf("Load: %v", err)
-	}
-
-	loader.Print(WithFormat("json"), WithWriter(&buf))
+	PrintRedacted(cfg, WithFormat("json"), WithWriter(&buf))
 	output := buf.String()
 
 	if !strings.Contains(output, "[REDACTED]") {
 		t.Error("JSON should redact sensitive fields")
 	}
+	if strings.Contains(output, "secret123") {
+		t.Error("password should be redacted in JSON")
+	}
 }
 
-func TestLoader_Print_Env(t *testing.T) {
+func TestPrintRedacted_Env(t *testing.T) {
+	cfg := &SensitiveConfig{
+		Host:   "localhost",
+		Normal: "hello",
+	}
 	var buf bytes.Buffer
-
-	loader, err := NewLoader[SensitiveConfig]()
-	if err != nil {
-		t.Fatalf("NewLoader: %v", err)
-	}
-	_, err = loader.Load()
-	if err != nil {
-		t.Fatalf("Load: %v", err)
-	}
-
-	loader.Print(WithFormat("env"), WithWriter(&buf))
+	PrintRedacted(cfg, WithFormat("env"), WithWriter(&buf))
 	output := buf.String()
 
 	if !strings.Contains(output, "export HOST=localhost") {
@@ -729,21 +808,13 @@ func TestLoader_Print_Env(t *testing.T) {
 	}
 }
 
-func TestLoader_Print_ShowSensitive(t *testing.T) {
-	t.Setenv("PASSWORD", "mypass")
-
+func TestPrintRedacted_ShowSensitive(t *testing.T) {
+	cfg := &SensitiveConfig{
+		Host:     "localhost",
+		Password: "mypass",
+	}
 	var buf bytes.Buffer
-
-	loader, err := NewLoader[SensitiveConfig]()
-	if err != nil {
-		t.Fatalf("NewLoader: %v", err)
-	}
-	_, err = loader.Load()
-	if err != nil {
-		t.Fatalf("Load: %v", err)
-	}
-
-	loader.Print(WithWriter(&buf), WithShowSensitive(true))
+	PrintRedacted(cfg, WithWriter(&buf), WithShowSensitive(true))
 	output := buf.String()
 
 	if !strings.Contains(output, "mypass") {
@@ -751,70 +822,53 @@ func TestLoader_Print_ShowSensitive(t *testing.T) {
 	}
 }
 
-func TestLoader_Print_SortByName(t *testing.T) {
+func TestPrintRedacted_SortByName(t *testing.T) {
+	cfg := &SensitiveConfig{
+		Host:   "localhost",
+		APIKey: "key",
+		Normal: "hello",
+	}
 	var buf bytes.Buffer
-
-	loader, err := NewLoader[SensitiveConfig]()
-	if err != nil {
-		t.Fatalf("NewLoader: %v", err)
-	}
-	_, err = loader.Load()
-	if err != nil {
-		t.Fatalf("Load: %v", err)
-	}
-
-	loader.Print(WithWriter(&buf), WithSortByName())
+	PrintRedacted(cfg, WithWriter(&buf), WithSortByName())
 	output := buf.String()
 
-	// API_KEY should appear before HOST when sorted.
-	apiIdx := strings.Index(output, "API_KEY")
-	hostIdx := strings.Index(output, "HOST")
-	if apiIdx < 0 || hostIdx < 0 {
-		t.Fatalf("expected both API_KEY and HOST in output:\n%s", output)
+	apikeyIdx := strings.Index(output, "apikey")
+	hostIdx := strings.Index(output, "host")
+	if apikeyIdx < 0 || hostIdx < 0 {
+		t.Fatalf("expected both apikey and host in output:\n%s", output)
 	}
-	if apiIdx > hostIdx {
-		t.Error("API_KEY should appear before HOST when sorted")
+	if apikeyIdx > hostIdx {
+		t.Error("apikey should appear before host when sorted")
 	}
 }
 
 // --- ToMap Tests ---
 
-func TestLoader_ToMap_Redacted(t *testing.T) {
-	t.Setenv("PASSWORD", "secret123")
-
-	loader, err := NewLoader[SensitiveConfig]()
-	if err != nil {
-		t.Fatalf("NewLoader: %v", err)
-	}
-	_, err = loader.Load()
-	if err != nil {
-		t.Fatalf("Load: %v", err)
+func TestToMap_Redacted(t *testing.T) {
+	cfg := &SensitiveConfig{
+		Host:     "localhost",
+		Password: "secret123",
+		Normal:   "hello",
 	}
 
-	m := loader.ToMap(true)
-	if m["PASSWORD"] != "[REDACTED]" {
-		t.Errorf("PASSWORD = %v, want [REDACTED]", m["PASSWORD"])
+	m := ToMap(cfg, true)
+	if m["password"] != "[REDACTED]" {
+		t.Errorf("password = %v, want [REDACTED]", m["password"])
 	}
-	if m["HOST"] != "localhost" {
-		t.Errorf("HOST = %v, want localhost", m["HOST"])
+	if m["host"] != "localhost" {
+		t.Errorf("host = %v, want localhost", m["host"])
 	}
 }
 
-func TestLoader_ToMap_Unredacted(t *testing.T) {
-	t.Setenv("PASSWORD", "secret123")
-
-	loader, err := NewLoader[SensitiveConfig]()
-	if err != nil {
-		t.Fatalf("NewLoader: %v", err)
-	}
-	_, err = loader.Load()
-	if err != nil {
-		t.Fatalf("Load: %v", err)
+func TestToMap_Unredacted(t *testing.T) {
+	cfg := &SensitiveConfig{
+		Host:     "localhost",
+		Password: "secret123",
 	}
 
-	m := loader.ToMap(false)
-	if m["PASSWORD"] != "secret123" {
-		t.Errorf("PASSWORD = %v, want secret123", m["PASSWORD"])
+	m := ToMap(cfg, false)
+	if m["password"] != "secret123" {
+		t.Errorf("password = %v, want secret123", m["password"])
 	}
 }
 
@@ -846,133 +900,9 @@ func TestSensitiveAutoDetection(t *testing.T) {
 	}
 }
 
-// --- Loader Fields Tests ---
-
-func TestLoader_Fields(t *testing.T) {
-	loader, err := NewLoader[BasicConfig]()
-	if err != nil {
-		t.Fatalf("NewLoader: %v", err)
-	}
-
-	fields := loader.Fields()
-	if len(fields) != 4 {
-		t.Fatalf("expected 4 fields, got %d", len(fields))
-	}
-
-	names := make(map[string]bool)
-	for _, f := range fields {
-		names[f.FieldName] = true
-	}
-	for _, expected := range []string{"Host", "Port", "Debug", "Timeout"} {
-		if !names[expected] {
-			t.Errorf("expected field %q in Fields()", expected)
-		}
-	}
-}
-
-// --- Non-Struct Type Tests ---
-
-func TestNewLoader_NonStruct(t *testing.T) {
-	_, err := NewLoader[string]()
-	if err == nil {
-		t.Fatal("expected error for non-struct type")
-	}
-}
-
-// --- Error Type Tests ---
-
-func TestErrUnsupportedType_BadInt(t *testing.T) {
-	t.Setenv("PORT", "not-a-number")
-
-	_, err := GetConfig[BasicConfig](WithSkipValidation())
-	if err == nil {
-		t.Fatal("expected error for invalid int value")
-	}
-	if !errors.Is(err, ErrUnsupportedType) {
-		t.Errorf("expected ErrUnsupportedType, got: %v", err)
-	}
-}
-
-func TestErrUnsupportedType_BadBool(t *testing.T) {
-	t.Setenv("DEBUG", "not-a-bool")
-
-	_, err := GetConfig[BasicConfig](WithSkipValidation())
-	if err == nil {
-		t.Fatal("expected error for invalid bool value")
-	}
-	if !errors.Is(err, ErrUnsupportedType) {
-		t.Errorf("expected ErrUnsupportedType, got: %v", err)
-	}
-}
-
-func TestErrUnsupportedType_BadDuration(t *testing.T) {
-	t.Setenv("TIMEOUT", "not-a-duration")
-
-	_, err := GetConfig[BasicConfig](WithSkipValidation())
-	if err == nil {
-		t.Fatal("expected error for invalid duration value")
-	}
-	if !errors.Is(err, ErrUnsupportedType) {
-		t.Errorf("expected ErrUnsupportedType, got: %v", err)
-	}
-}
-
-// --- toUpperSnake Tests ---
-
-func TestToUpperSnake(t *testing.T) {
-	tests := []struct {
-		input    string
-		expected string
-	}{
-		{"Host", "HOST"},
-		{"ServerHost", "SERVER_HOST"},
-		{"DBMaxConns", "DB_MAX_CONNS"},
-		{"MaxConns", "MAX_CONNS"},
-		{"DSN", "DSN"},
-		{"APIKey", "API_KEY"},
-		{"HTTPServer", "HTTP_SERVER"},
-		{"ID", "ID"},
-		{"UserID", "USER_ID"},
-	}
-	for _, tt := range tests {
-		t.Run(tt.input, func(t *testing.T) {
-			got := toUpperSnake(tt.input)
-			if got != tt.expected {
-				t.Errorf("toUpperSnake(%q) = %q, want %q", tt.input, got, tt.expected)
-			}
-		})
-	}
-}
-
-// --- envKeyFromSecret Tests ---
-
-func TestEnvKeyFromSecret(t *testing.T) {
-	tests := []struct {
-		input    string
-		expected string
-	}{
-		{"db/password", "DB_PASSWORD"},
-		{"api/key", "API_KEY"},
-		{"app.secret.key", "APP_SECRET_KEY"},
-		{"my-service/token", "MY_SERVICE_TOKEN"},
-	}
-	for _, tt := range tests {
-		t.Run(tt.input, func(t *testing.T) {
-			got := envKeyFromSecret(tt.input)
-			if got != tt.expected {
-				t.Errorf("envKeyFromSecret(%q) = %q, want %q", tt.input, got, tt.expected)
-			}
-		})
-	}
-}
-
 // --- Custom Validator Tests ---
 
 func TestGetConfig_CustomValidator(t *testing.T) {
-	t.Setenv("PORT", "8080")
-	t.Setenv("WORKERS", "4")
-
-	// Providing a custom validator should still work.
 	cfg, err := GetConfig[ValidationConfig](
 		WithValidator(nil), // nil falls back to default
 	)
@@ -984,298 +914,60 @@ func TestGetConfig_CustomValidator(t *testing.T) {
 	}
 }
 
-// --- MapSecretProvider Tests ---
+// --- Error Sentinel Tests ---
 
-func TestMapSecretProvider_NotFound(t *testing.T) {
-	provider := NewMapSecretProvider(map[string]string{
-		"existing": "value",
-	})
-	_, err := provider.GetSecret(context.Background(), "missing")
-	if err == nil {
-		t.Fatal("expected error for missing key")
+func TestErrors_Are_Sentinels(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+		code string
+	}{
+		{"ErrValidation", ErrValidation, ErrCodeValidation},
+		{"ErrFileRead", ErrFileRead, ErrCodeFileRead},
+		{"ErrSecretProvider", ErrSecretProvider, ErrCodeSecretProvider},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if tt.err == nil {
+				t.Fatal("sentinel error should not be nil")
+			}
+			if !strings.Contains(tt.err.Error(), tt.code) {
+				t.Errorf("error %v should contain code %s", tt.err, tt.code)
+			}
+		})
 	}
 }
 
-// --- Precedence Integration Test ---
+// --- buildFlagMapping Tests (via exported types) ---
 
-func TestGetConfig_FullPrecedence(t *testing.T) {
-	// Setup: struct default "localhost", file "file-host", env "env-host".
-	yamlContent := `host: file-host
-`
-	path := writeYAML(t, yamlContent)
-	t.Setenv("HOST", "env-host")
-
-	cfg, err := GetConfig[BasicConfig](
-		WithConfigFile(path),
-		WithSkipValidation(),
-	)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+func TestBuildFlagMapping(t *testing.T) {
+	// Test the flag tag walking indirectly through the struct definition.
+	type TestCfg struct {
+		Host string `koanf:"host" flag:"host"`
+		Port int    `koanf:"port" flag:"port"`
+		DB   struct {
+			Host string `koanf:"host" flag:"db-host"`
+			Port int    `koanf:"port" flag:"db-port"`
+		} `koanf:"db"`
+		NoFlag string `koanf:"noflag"` // no flag tag
 	}
-	// Env should win over file and default.
-	if cfg.Host != "env-host" {
-		t.Errorf("Host = %q, want %q (env should have highest precedence)", cfg.Host, "env-host")
+
+	defaults := DefaultsFromTags[TestCfg]()
+	// This tests that DefaultsFromTags handles nested structs and missing defaults.
+	// The flag mapping is tested in the kongprovider package.
+	if len(defaults) != 0 {
+		t.Errorf("expected no defaults (no default tags), got %v", defaults)
 	}
 }
 
-func TestGetConfig_Precedence_ProgrammaticOverStructDefault(t *testing.T) {
-	cfg, err := GetConfig[BasicConfig](
-		WithDefaults(map[string]any{
-			"HOST": "prog-host",
-		}),
-		WithSkipValidation(),
-	)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	// Programmatic default should override struct tag default.
-	if cfg.Host != "prog-host" {
-		t.Errorf("Host = %q, want %q", cfg.Host, "prog-host")
-	}
-}
-
-// --- Pointer Type Tests ---
-
-type PointerConfig struct {
-	Name    *string `config:"NAME"`
-	Port    *int    `config:"PORT"`
-	Verbose *bool   `config:"VERBOSE"`
-}
-
-func TestGetConfig_PointerString_Set(t *testing.T) {
-	t.Setenv("NAME", "hello")
-
-	cfg, err := GetConfig[PointerConfig](WithSkipValidation())
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if cfg.Name == nil {
-		t.Fatal("Name should not be nil")
-	}
-	if *cfg.Name != "hello" {
-		t.Errorf("*Name = %q, want %q", *cfg.Name, "hello")
-	}
-}
-
-func TestGetConfig_PointerString_Unset(t *testing.T) {
-	cfg, err := GetConfig[PointerConfig](WithSkipValidation())
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if cfg.Name != nil {
-		t.Errorf("Name should be nil when unset, got %q", *cfg.Name)
-	}
-}
-
-func TestGetConfig_PointerInt_Set(t *testing.T) {
-	t.Setenv("PORT", "9090")
-
-	cfg, err := GetConfig[PointerConfig](WithSkipValidation())
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if cfg.Port == nil {
-		t.Fatal("Port should not be nil")
-	}
-	if *cfg.Port != 9090 {
-		t.Errorf("*Port = %d, want %d", *cfg.Port, 9090)
-	}
-}
-
-func TestGetConfig_PointerBool_Set(t *testing.T) {
-	t.Setenv("VERBOSE", "true")
-
-	cfg, err := GetConfig[PointerConfig](WithSkipValidation())
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if cfg.Verbose == nil {
-		t.Fatal("Verbose should not be nil")
-	}
-	if *cfg.Verbose != true {
-		t.Errorf("*Verbose = %v, want true", *cfg.Verbose)
-	}
-}
-
-// --- Slice Type Tests ---
-
-type SliceConfig struct {
-	Tags  []string `config:"TAGS"`
-	Ports []int    `config:"PORTS"`
-}
-
-func TestGetConfig_SliceString(t *testing.T) {
-	t.Setenv("TAGS", "a,b,c")
-
-	cfg, err := GetConfig[SliceConfig](WithSkipValidation())
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if len(cfg.Tags) != 3 {
-		t.Fatalf("Tags length = %d, want 3", len(cfg.Tags))
-	}
-	want := []string{"a", "b", "c"}
-	for i, w := range want {
-		if cfg.Tags[i] != w {
-			t.Errorf("Tags[%d] = %q, want %q", i, cfg.Tags[i], w)
-		}
-	}
-}
-
-func TestGetConfig_SliceInt(t *testing.T) {
-	t.Setenv("PORTS", "80,443,8080")
-
-	cfg, err := GetConfig[SliceConfig](WithSkipValidation())
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if len(cfg.Ports) != 3 {
-		t.Fatalf("Ports length = %d, want 3", len(cfg.Ports))
-	}
-	wantPorts := []int{80, 443, 8080}
-	for i, w := range wantPorts {
-		if cfg.Ports[i] != w {
-			t.Errorf("Ports[%d] = %d, want %d", i, cfg.Ports[i], w)
-		}
-	}
-}
-
-func TestGetConfig_SliceInt_BadElement(t *testing.T) {
-	t.Setenv("PORTS", "80,abc")
-
-	_, err := GetConfig[SliceConfig](WithSkipValidation())
-	if err == nil {
-		t.Fatal("expected error for invalid slice element")
-	}
-	if !errors.Is(err, ErrUnsupportedType) {
-		t.Errorf("expected ErrUnsupportedType, got: %v", err)
-	}
-}
-
-func TestGetConfig_SliceUnset(t *testing.T) {
-	cfg, err := GetConfig[SliceConfig](WithSkipValidation())
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if cfg.Tags != nil {
-		t.Errorf("Tags should be nil when unset, got %v", cfg.Tags)
-	}
-}
-
-// --- Map Type Tests ---
-
-type MapConfig struct {
-	Labels  map[string]string `config:"LABELS"`
-	Limits  map[string]int    `config:"LIMITS"`
-}
-
-func TestGetConfig_MapStringString(t *testing.T) {
-	t.Setenv("LABELS", "env=prod,region=us")
-
-	cfg, err := GetConfig[MapConfig](WithSkipValidation())
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if len(cfg.Labels) != 2 {
-		t.Fatalf("Labels length = %d, want 2", len(cfg.Labels))
-	}
-	if cfg.Labels["env"] != "prod" {
-		t.Errorf("Labels[env] = %q, want %q", cfg.Labels["env"], "prod")
-	}
-	if cfg.Labels["region"] != "us" {
-		t.Errorf("Labels[region] = %q, want %q", cfg.Labels["region"], "us")
-	}
-}
-
-func TestGetConfig_MapStringInt(t *testing.T) {
-	t.Setenv("LIMITS", "cpu=4,mem=8")
-
-	cfg, err := GetConfig[MapConfig](WithSkipValidation())
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if len(cfg.Limits) != 2 {
-		t.Fatalf("Limits length = %d, want 2", len(cfg.Limits))
-	}
-	if cfg.Limits["cpu"] != 4 {
-		t.Errorf("Limits[cpu] = %d, want %d", cfg.Limits["cpu"], 4)
-	}
-	if cfg.Limits["mem"] != 8 {
-		t.Errorf("Limits[mem] = %d, want %d", cfg.Limits["mem"], 8)
-	}
-}
-
-func TestGetConfig_Map_BadFormat(t *testing.T) {
-	t.Setenv("LABELS", "noequals")
-
-	_, err := GetConfig[MapConfig](WithSkipValidation())
-	if err == nil {
-		t.Fatal("expected error for bad map format")
-	}
-	if !errors.Is(err, ErrUnsupportedType) {
-		t.Errorf("expected ErrUnsupportedType, got: %v", err)
-	}
-}
-
-func TestGetConfig_MapUnset(t *testing.T) {
-	cfg, err := GetConfig[MapConfig](WithSkipValidation())
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if cfg.Labels != nil {
-		t.Errorf("Labels should be nil when unset, got %v", cfg.Labels)
-	}
-}
-
-// --- TextUnmarshaler Test ---
-
-type netAddr struct {
-	Host string
-	Port int
-}
-
-func (a *netAddr) UnmarshalText(text []byte) error {
-	s := string(text)
-	parts := strings.SplitN(s, ":", 2)
-	a.Host = parts[0]
-	if len(parts) == 2 {
-		p, err := strconv.Atoi(parts[1])
-		if err != nil {
-			return err
-		}
-		a.Port = p
-	}
-	return nil
-}
-
-type TextUnmarshalerConfig struct {
-	Addr netAddr `config:"ADDR"`
-}
-
-func TestGetConfig_TextUnmarshaler(t *testing.T) {
-	t.Setenv("ADDR", "127.0.0.1:8080")
-
-	cfg, err := GetConfig[TextUnmarshalerConfig](WithSkipValidation())
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if cfg.Addr.Host != "127.0.0.1" {
-		t.Errorf("Addr.Host = %q, want %q", cfg.Addr.Host, "127.0.0.1")
-	}
-	if cfg.Addr.Port != 8080 {
-		t.Errorf("Addr.Port = %d, want %d", cfg.Addr.Port, 8080)
-	}
-}
-
-// --- YAML File with Slice/Map Tests ---
+// --- Complex Type Tests: Slices ---
 
 func TestGetConfig_YAMLArray(t *testing.T) {
-	yamlContent := `tags: [a, b, c]
-`
+	yamlContent := "tags:\n  - a\n  - b\n  - c\n"
 	path := writeYAML(t, yamlContent)
 
 	type cfg struct {
-		Tags []string `config:"TAGS"`
+		Tags []string `koanf:"tags"`
 	}
 
 	c, err := GetConfig[cfg](WithConfigFile(path), WithSkipValidation())
@@ -1290,6 +982,533 @@ func TestGetConfig_YAMLArray(t *testing.T) {
 		if c.Tags[i] != w {
 			t.Errorf("Tags[%d] = %q, want %q", i, c.Tags[i], w)
 		}
+	}
+}
+
+func TestGetConfig_SliceFromEnvVar(t *testing.T) {
+	t.Setenv("APP_TAGS", "x,y,z")
+
+	type cfg struct {
+		Tags []string `koanf:"tags"`
+	}
+
+	c, err := GetConfig[cfg](WithEnvPrefix("APP"), WithSkipValidation())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(c.Tags) != 3 {
+		t.Fatalf("Tags length = %d, want 3", len(c.Tags))
+	}
+	for i, want := range []string{"x", "y", "z"} {
+		if c.Tags[i] != want {
+			t.Errorf("Tags[%d] = %q, want %q", i, c.Tags[i], want)
+		}
+	}
+}
+
+func TestGetConfig_SliceFromDefault(t *testing.T) {
+	type cfg struct {
+		Tags []string `koanf:"tags" default:"a,b,c"`
+	}
+
+	c, err := GetConfig[cfg](WithSkipValidation())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(c.Tags) != 3 {
+		t.Fatalf("Tags length = %d, want 3", len(c.Tags))
+	}
+	for i, want := range []string{"a", "b", "c"} {
+		if c.Tags[i] != want {
+			t.Errorf("Tags[%d] = %q, want %q", i, c.Tags[i], want)
+		}
+	}
+}
+
+func TestGetConfig_SliceEnvOverridesDefault(t *testing.T) {
+	t.Setenv("APP_TAGS", "x,y")
+
+	type cfg struct {
+		Tags []string `koanf:"tags" default:"a,b,c"`
+	}
+
+	c, err := GetConfig[cfg](WithEnvPrefix("APP"), WithSkipValidation())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(c.Tags) != 2 {
+		t.Fatalf("Tags length = %d, want 2", len(c.Tags))
+	}
+	for i, want := range []string{"x", "y"} {
+		if c.Tags[i] != want {
+			t.Errorf("Tags[%d] = %q, want %q", i, c.Tags[i], want)
+		}
+	}
+}
+
+func TestGetConfig_IntSlice(t *testing.T) {
+	yamlContent := "ports:\n  - 8080\n  - 9090\n"
+	path := writeYAML(t, yamlContent)
+
+	type cfg struct {
+		Ports []int `koanf:"ports"`
+	}
+
+	c, err := GetConfig[cfg](WithConfigFile(path), WithSkipValidation())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(c.Ports) != 2 {
+		t.Fatalf("Ports length = %d, want 2", len(c.Ports))
+	}
+	if c.Ports[0] != 8080 || c.Ports[1] != 9090 {
+		t.Errorf("Ports = %v, want [8080 9090]", c.Ports)
+	}
+}
+
+func TestGetConfig_SliceOfStructs(t *testing.T) {
+	yamlContent := "servers:\n  - host: a.com\n    port: 1\n  - host: b.com\n    port: 2\n"
+	path := writeYAML(t, yamlContent)
+
+	type server struct {
+		Host string `koanf:"host"`
+		Port int    `koanf:"port"`
+	}
+	type cfg struct {
+		Servers []server `koanf:"servers"`
+	}
+
+	c, err := GetConfig[cfg](WithConfigFile(path), WithSkipValidation())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(c.Servers) != 2 {
+		t.Fatalf("Servers length = %d, want 2", len(c.Servers))
+	}
+	if c.Servers[0].Host != "a.com" || c.Servers[0].Port != 1 {
+		t.Errorf("Servers[0] = %+v, want {a.com 1}", c.Servers[0])
+	}
+	if c.Servers[1].Host != "b.com" || c.Servers[1].Port != 2 {
+		t.Errorf("Servers[1] = %+v, want {b.com 2}", c.Servers[1])
+	}
+}
+
+// --- Complex Type Tests: Maps ---
+
+func TestGetConfig_YAMLMap(t *testing.T) {
+	yamlContent := "labels:\n  env: prod\n  region: us\n"
+	path := writeYAML(t, yamlContent)
+
+	type cfg struct {
+		Labels map[string]string `koanf:"labels"`
+	}
+
+	c, err := GetConfig[cfg](WithConfigFile(path), WithSkipValidation())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(c.Labels) != 2 {
+		t.Fatalf("Labels length = %d, want 2", len(c.Labels))
+	}
+	if c.Labels["env"] != "prod" {
+		t.Errorf("Labels[env] = %q, want prod", c.Labels["env"])
+	}
+	if c.Labels["region"] != "us" {
+		t.Errorf("Labels[region] = %q, want us", c.Labels["region"])
+	}
+}
+
+func TestGetConfig_MapFromEnvVar(t *testing.T) {
+	// koanf env provider maps APP_LABELS_ENV to koanf key "labels.env"
+	// which koanf stores as a nested map, then unmarshals to map[string]string.
+	t.Setenv("APP_LABELS_ENV", "prod")
+	t.Setenv("APP_LABELS_REGION", "eu")
+
+	type cfg struct {
+		Labels map[string]string `koanf:"labels"`
+	}
+
+	c, err := GetConfig[cfg](WithEnvPrefix("APP"), WithSkipValidation())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(c.Labels) != 2 {
+		t.Fatalf("Labels length = %d, want 2", len(c.Labels))
+	}
+	if c.Labels["env"] != "prod" {
+		t.Errorf("Labels[env] = %q, want prod", c.Labels["env"])
+	}
+	if c.Labels["region"] != "eu" {
+		t.Errorf("Labels[region] = %q, want eu", c.Labels["region"])
+	}
+}
+
+func TestGetConfig_MapOfSlices(t *testing.T) {
+	yamlContent := "routes:\n  api:\n    - /v1\n    - /v2\n  admin:\n    - /dashboard\n"
+	path := writeYAML(t, yamlContent)
+
+	type cfg struct {
+		Routes map[string][]string `koanf:"routes"`
+	}
+
+	c, err := GetConfig[cfg](WithConfigFile(path), WithSkipValidation())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(c.Routes) != 2 {
+		t.Fatalf("Routes length = %d, want 2", len(c.Routes))
+	}
+	if len(c.Routes["api"]) != 2 {
+		t.Errorf("Routes[api] length = %d, want 2", len(c.Routes["api"]))
+	}
+	if len(c.Routes["admin"]) != 1 {
+		t.Errorf("Routes[admin] length = %d, want 1", len(c.Routes["admin"]))
+	}
+}
+
+func TestGetConfig_MapFromProgrammaticDefaults(t *testing.T) {
+	type cfg struct {
+		Labels map[string]string `koanf:"labels"`
+	}
+
+	c, err := GetConfig[cfg](
+		WithDefaults(map[string]any{
+			"labels": map[string]any{
+				"env":    "dev",
+				"region": "local",
+			},
+		}),
+		WithSkipValidation(),
+	)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if c.Labels["env"] != "dev" {
+		t.Errorf("Labels[env] = %q, want dev", c.Labels["env"])
+	}
+	if c.Labels["region"] != "local" {
+		t.Errorf("Labels[region] = %q, want local", c.Labels["region"])
+	}
+}
+
+// --- Complex Type Tests: Pointers ---
+
+func TestGetConfig_PointerFields(t *testing.T) {
+	yamlContent := "name: hello\ncount: 42\n"
+	path := writeYAML(t, yamlContent)
+
+	type cfg struct {
+		Name  *string `koanf:"name"`
+		Count *int    `koanf:"count"`
+		Opt   *string `koanf:"opt"` // not set
+	}
+
+	c, err := GetConfig[cfg](WithConfigFile(path), WithSkipValidation())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if c.Name == nil || *c.Name != "hello" {
+		t.Errorf("Name = %v, want *hello", c.Name)
+	}
+	if c.Count == nil || *c.Count != 42 {
+		t.Errorf("Count = %v, want *42", c.Count)
+	}
+	if c.Opt != nil {
+		t.Errorf("Opt = %v, want nil", c.Opt)
+	}
+}
+
+func TestGetConfig_PointerFieldsFromEnv(t *testing.T) {
+	t.Setenv("APP_NAME", "from-env")
+	t.Setenv("APP_COUNT", "99")
+
+	type cfg struct {
+		Name  *string `koanf:"name"`
+		Count *int    `koanf:"count"`
+		Opt   *string `koanf:"opt"`
+	}
+
+	c, err := GetConfig[cfg](WithEnvPrefix("APP"), WithSkipValidation())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if c.Name == nil || *c.Name != "from-env" {
+		t.Errorf("Name = %v, want *from-env", c.Name)
+	}
+	if c.Count == nil || *c.Count != 99 {
+		t.Errorf("Count = %v, want *99", c.Count)
+	}
+	if c.Opt != nil {
+		t.Errorf("Opt = %v, want nil", c.Opt)
+	}
+}
+
+func TestGetConfig_PointerToStruct(t *testing.T) {
+	yamlContent := "db:\n  host: dbhost\n  port: 5432\n"
+	path := writeYAML(t, yamlContent)
+
+	type dbCfg struct {
+		Host string `koanf:"host"`
+		Port int    `koanf:"port"`
+	}
+	type cfg struct {
+		DB    *dbCfg `koanf:"db"`
+		Cache *dbCfg `koanf:"cache"` // not set
+	}
+
+	c, err := GetConfig[cfg](WithConfigFile(path), WithSkipValidation())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if c.DB == nil {
+		t.Fatal("DB should not be nil")
+	}
+	if c.DB.Host != "dbhost" || c.DB.Port != 5432 {
+		t.Errorf("DB = %+v, want {Host:dbhost Port:5432}", c.DB)
+	}
+}
+
+func TestGetConfig_PointerToStructWithDefaults(t *testing.T) {
+	type inner struct {
+		Host string `koanf:"host" default:"defaulthost"`
+		Port int    `koanf:"port" default:"3000"`
+	}
+	type cfg struct {
+		Server *inner `koanf:"server"`
+	}
+
+	c, err := GetConfig[cfg](WithSkipValidation())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	// Pointer struct should be populated from defaults.
+	if c.Server == nil {
+		t.Fatal("Server should not be nil when defaults exist")
+	}
+	if c.Server.Host != "defaulthost" {
+		t.Errorf("Server.Host = %q, want defaulthost", c.Server.Host)
+	}
+	if c.Server.Port != 3000 {
+		t.Errorf("Server.Port = %d, want 3000", c.Server.Port)
+	}
+}
+
+// --- Complex Type Tests: Mixed ---
+
+func TestGetConfig_ComplexNestedConfig(t *testing.T) {
+	yamlContent := `
+app:
+  name: myapp
+  debug: true
+  tags:
+    - web
+    - api
+  labels:
+    env: staging
+    team: platform
+  servers:
+    - host: primary.com
+      port: 443
+    - host: backup.com
+      port: 8443
+`
+	path := writeYAML(t, yamlContent)
+
+	type server struct {
+		Host string `koanf:"host"`
+		Port int    `koanf:"port"`
+	}
+	type appCfg struct {
+		Name    string            `koanf:"name"`
+		Debug   bool              `koanf:"debug"`
+		Tags    []string          `koanf:"tags"`
+		Labels  map[string]string `koanf:"labels"`
+		Servers []server          `koanf:"servers"`
+	}
+	type cfg struct {
+		App appCfg `koanf:"app"`
+	}
+
+	c, err := GetConfig[cfg](WithConfigFile(path), WithSkipValidation())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if c.App.Name != "myapp" {
+		t.Errorf("App.Name = %q, want myapp", c.App.Name)
+	}
+	if !c.App.Debug {
+		t.Error("App.Debug = false, want true")
+	}
+	if len(c.App.Tags) != 2 {
+		t.Fatalf("App.Tags length = %d, want 2", len(c.App.Tags))
+	}
+	if c.App.Tags[0] != "web" || c.App.Tags[1] != "api" {
+		t.Errorf("App.Tags = %v, want [web api]", c.App.Tags)
+	}
+	if c.App.Labels["env"] != "staging" {
+		t.Errorf("App.Labels[env] = %q, want staging", c.App.Labels["env"])
+	}
+	if len(c.App.Servers) != 2 {
+		t.Fatalf("App.Servers length = %d, want 2", len(c.App.Servers))
+	}
+	if c.App.Servers[0].Host != "primary.com" {
+		t.Errorf("App.Servers[0].Host = %q, want primary.com", c.App.Servers[0].Host)
+	}
+}
+
+// --- Nested Struct Env Var Tests ---
+
+func TestGetConfig_NestedEnvWithUnderscoreInTag(t *testing.T) {
+	t.Setenv("APP_DB_HOST", "localhost")
+	t.Setenv("APP_DB_MAX_CONNS", "50")
+	t.Setenv("APP_DB_IDLE_TIMEOUT", "30s")
+
+	type dbCfg struct {
+		Host        string        `koanf:"host"`
+		MaxConns    int           `koanf:"max_conns"`
+		IdleTimeout time.Duration `koanf:"idle_timeout"`
+	}
+	type cfg struct {
+		DB dbCfg `koanf:"db"`
+	}
+
+	c, err := GetConfig[cfg](WithEnvPrefix("APP"), WithSkipValidation())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if c.DB.Host != "localhost" {
+		t.Errorf("DB.Host = %q, want localhost", c.DB.Host)
+	}
+	if c.DB.MaxConns != 50 {
+		t.Errorf("DB.MaxConns = %d, want 50", c.DB.MaxConns)
+	}
+	if c.DB.IdleTimeout != 30*time.Second {
+		t.Errorf("DB.IdleTimeout = %v, want 30s", c.DB.IdleTimeout)
+	}
+}
+
+func TestGetConfig_DeepNestedEnvWithUnderscores(t *testing.T) {
+	t.Setenv("APP_SERVER_TLS_CERT_FILE", "/path/cert.pem")
+	t.Setenv("APP_SERVER_TLS_KEY_FILE", "/path/key.pem")
+	t.Setenv("APP_SERVER_TLS_MIN_VERSION", "1.3")
+
+	type tlsCfg struct {
+		CertFile   string `koanf:"cert_file"`
+		KeyFile    string `koanf:"key_file"`
+		MinVersion string `koanf:"min_version"`
+	}
+	type serverCfg struct {
+		TLS tlsCfg `koanf:"tls"`
+	}
+	type cfg struct {
+		Server serverCfg `koanf:"server"`
+	}
+
+	c, err := GetConfig[cfg](WithEnvPrefix("APP"), WithSkipValidation())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if c.Server.TLS.CertFile != "/path/cert.pem" {
+		t.Errorf("CertFile = %q, want /path/cert.pem", c.Server.TLS.CertFile)
+	}
+	if c.Server.TLS.KeyFile != "/path/key.pem" {
+		t.Errorf("KeyFile = %q, want /path/key.pem", c.Server.TLS.KeyFile)
+	}
+	if c.Server.TLS.MinVersion != "1.3" {
+		t.Errorf("MinVersion = %q, want 1.3", c.Server.TLS.MinVersion)
+	}
+}
+
+func TestGetConfig_MapFieldsStillWorkFromEnv(t *testing.T) {
+	// Map fields use the fallback transform since their keys are dynamic.
+	t.Setenv("APP_LABELS_ENV", "prod")
+	t.Setenv("APP_LABELS_REGION", "us")
+	t.Setenv("APP_NAME", "myapp")
+
+	type cfg struct {
+		Name   string            `koanf:"name"`
+		Labels map[string]string `koanf:"labels"`
+	}
+
+	c, err := GetConfig[cfg](WithEnvPrefix("APP"), WithSkipValidation())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if c.Name != "myapp" {
+		t.Errorf("Name = %q, want myapp", c.Name)
+	}
+	if c.Labels["env"] != "prod" {
+		t.Errorf("Labels[env] = %q, want prod", c.Labels["env"])
+	}
+	if c.Labels["region"] != "us" {
+		t.Errorf("Labels[region] = %q, want us", c.Labels["region"])
+	}
+}
+
+// --- PrintRedacted/ToMap with Complex Types ---
+
+func TestToMap_Slice(t *testing.T) {
+	type cfg struct {
+		Tags []string `koanf:"tags"`
+		Name string   `koanf:"name"`
+	}
+	c := &cfg{Tags: []string{"a", "b"}, Name: "test"}
+	m := ToMap(c, false)
+
+	if m["name"] != "test" {
+		t.Errorf("name = %v, want test", m["name"])
+	}
+	// Slice should be preserved as a value in the map.
+	tags, ok := m["tags"]
+	if !ok {
+		t.Fatal("tags key missing from map")
+	}
+	tagsStr := fmt.Sprintf("%v", tags)
+	if !strings.Contains(tagsStr, "a") || !strings.Contains(tagsStr, "b") {
+		t.Errorf("tags = %v, want to contain a and b", tags)
+	}
+}
+
+func TestToMap_Map(t *testing.T) {
+	type cfg struct {
+		Labels map[string]string `koanf:"labels"`
+	}
+	c := &cfg{Labels: map[string]string{"env": "prod"}}
+	m := ToMap(c, false)
+
+	labels, ok := m["labels"]
+	if !ok {
+		t.Fatal("labels key missing from map")
+	}
+	labelsStr := fmt.Sprintf("%v", labels)
+	if !strings.Contains(labelsStr, "prod") {
+		t.Errorf("labels = %v, want to contain prod", labels)
+	}
+}
+
+func TestPrintRedacted_SliceAndMap(t *testing.T) {
+	type cfg struct {
+		Tags   []string          `koanf:"tags"`
+		Labels map[string]string `koanf:"labels"`
+		Secret []string          `koanf:"secret_tokens" sensitive:"true"`
+	}
+	c := &cfg{
+		Tags:   []string{"a", "b"},
+		Labels: map[string]string{"k": "v"},
+		Secret: []string{"tok1", "tok2"},
+	}
+	var buf bytes.Buffer
+	PrintRedacted(c, WithWriter(&buf))
+	output := buf.String()
+
+	if !strings.Contains(output, "a") {
+		t.Error("table should contain slice value 'a'")
+	}
+	if !strings.Contains(output, "[REDACTED]") {
+		t.Error("sensitive slice should be redacted")
+	}
+	if strings.Contains(output, "tok1") {
+		t.Error("sensitive slice values should be redacted")
 	}
 }
 

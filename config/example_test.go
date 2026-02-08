@@ -10,8 +10,8 @@ import (
 
 func ExampleGetConfig() {
 	type AppConfig struct {
-		Host string `config:"HOST,localhost"`
-		Port int    `config:"PORT,8080"`
+		Host string `koanf:"host" default:"localhost"`
+		Port int    `koanf:"port" default:"8080"`
 	}
 
 	cfg, err := config.GetConfig[AppConfig](
@@ -27,18 +27,12 @@ func ExampleGetConfig() {
 
 func ExampleGetConfig_withDefaults() {
 	type DBConfig struct {
-		Host    string `config:"HOST"`
-		Port    int    `config:"PORT"`
-		MaxConn int    `config:"MAX_CONN"`
+		Host    string `koanf:"host" default:"127.0.0.1"`
+		Port    int    `koanf:"port" default:"5432"`
+		MaxConn int    `koanf:"maxconn" default:"10"`
 	}
 
 	cfg, err := config.GetConfig[DBConfig](
-		config.WithEnvPrefix("DB"),
-		config.WithDefaults(map[string]any{
-			"DB_HOST":     "127.0.0.1",
-			"DB_PORT":     "5432",
-			"DB_MAX_CONN": "10",
-		}),
 		config.WithSkipValidation(),
 	)
 	if err != nil {
@@ -49,30 +43,22 @@ func ExampleGetConfig_withDefaults() {
 	// Output: 127.0.0.1:5432 (max 10)
 }
 
-func ExampleLoader_Print() {
+func ExamplePrintRedacted() {
 	type AppConfig struct {
-		Host     string `config:"HOST,localhost"`
-		Port     int    `config:"PORT,8080"`
-		Password string `config:"PASSWORD,secret123" sensitive:"true"`
+		Host     string `koanf:"host" default:"localhost"`
+		Port     int    `koanf:"port" default:"8080"`
+		Password string `koanf:"password" sensitive:"true"`
 	}
 
-	loader, err := config.NewLoader[AppConfig](
-		config.WithSkipValidation(),
-	)
-	if err != nil {
-		fmt.Println("error:", err)
-		return
-	}
-	_, err = loader.Load()
-	if err != nil {
-		fmt.Println("error:", err)
-		return
+	cfg := &AppConfig{
+		Host:     "localhost",
+		Port:     8080,
+		Password: "secret123",
 	}
 
 	var buf bytes.Buffer
-	loader.Print(config.WithWriter(&buf), config.WithFormat("env"))
-	output := buf.String()
-	fmt.Println(output)
+	config.PrintRedacted(cfg, config.WithWriter(&buf), config.WithFormat("env"))
+	fmt.Print(buf.String())
 	// Output:
 	// export HOST=localhost
 	// export PORT=8080
@@ -81,12 +67,10 @@ func ExampleLoader_Print() {
 
 func ExampleGetConfig_requiredFieldMissing() {
 	type AppConfig struct {
-		APIKey string `config:"API_KEY" required:"true"`
+		APIKey string `koanf:"apikey" validate:"required"`
 	}
 
-	_, err := config.GetConfig[AppConfig](
-		config.WithSkipValidation(),
-	)
-	fmt.Println(errors.Is(err, config.ErrRequired))
+	_, err := config.GetConfig[AppConfig]()
+	fmt.Println(errors.Is(err, config.ErrValidation))
 	// Output: true
 }

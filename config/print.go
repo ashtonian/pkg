@@ -5,20 +5,27 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"reflect"
 	"sort"
 	"strings"
 )
 
 const redactedValue = "[REDACTED]"
 
-// PrintOption configures output of Print.
+// sensitivePatterns are substrings that trigger auto-detection of sensitive fields.
+var sensitivePatterns = []string{
+	"password", "secret", "token", "key", "credential",
+	"auth", "private", "apikey", "api_key",
+}
+
+// PrintOption configures output of PrintRedacted.
 type PrintOption func(*printOptions)
 
 type printOptions struct {
-	format       string
+	format        string
 	showSensitive bool
-	writer       io.Writer
-	sortByName   bool
+	writer        io.Writer
+	sortByName    bool
 }
 
 func defaultPrintOptions() printOptions {
@@ -49,25 +56,33 @@ func WithWriter(w io.Writer) PrintOption {
 	}
 }
 
-// WithSortByName sorts output fields alphabetically by env name.
+// WithSortByName sorts output fields alphabetically by name.
 func WithSortByName() PrintOption {
 	return func(o *printOptions) {
 		o.sortByName = true
 	}
 }
 
-// printConfig writes the loaded config fields to the writer in the requested format.
-func printConfig(fields []fieldMeta, values map[string]string, opts ...PrintOption) {
+type printEntry struct {
+	name     string
+	value    string
+	typeName string
+}
+
+// PrintRedacted prints a struct's fields as a table, redacting any field
+// tagged sensitive:"true" or whose name matches sensitive patterns
+// (password, secret, token, key, etc.). Operates on any struct value.
+func PrintRedacted(cfg any, opts ...PrintOption) {
 	po := defaultPrintOptions()
 	for _, opt := range opts {
 		opt(&po)
 	}
 
-	entries := buildEntries(fields, values, po.showSensitive)
+	entries := walkStruct(cfg, "", po.showSensitive)
 
 	if po.sortByName {
 		sort.Slice(entries, func(i, j int) bool {
-			return entries[i].envName < entries[j].envName
+			return entries[i].name < entries[j].name
 		})
 	}
 
@@ -81,34 +96,97 @@ func printConfig(fields []fieldMeta, values map[string]string, opts ...PrintOpti
 	}
 }
 
-type printEntry struct {
-	envName string
-	value   string
-	typeName string
+// ToMap returns a struct's fields as a map with optional redaction of
+// sensitive fields.
+func ToMap(cfg any, redact bool) map[string]any {
+	entries := walkStruct(cfg, "", !redact)
+	result := make(map[string]any, len(entries))
+	for _, e := range entries {
+		result[e.name] = e.value
+	}
+	return result
 }
 
-func buildEntries(fields []fieldMeta, values map[string]string, showSensitive bool) []printEntry {
-	entries := make([]printEntry, 0, len(fields))
-	for _, f := range fields {
-		val := values[f.EnvName]
-		if f.Sensitive && !showSensitive {
-			val = redactedValue
+// walkStruct recursively walks a struct and builds print entries.
+func walkStruct(v any, prefix string, showSensitive bool) []printEntry {
+	val := reflect.ValueOf(v)
+	if val.Kind() == reflect.Ptr {
+		if val.IsNil() {
+			return nil
 		}
+		val = val.Elem()
+	}
+	if val.Kind() != reflect.Struct {
+		return nil
+	}
+
+	t := val.Type()
+	var entries []printEntry
+
+	for i := range t.NumField() {
+		field := t.Field(i)
+		if !field.IsExported() {
+			continue
+		}
+
+		koanfTag := field.Tag.Get("koanf")
+		if koanfTag == "-" {
+			continue
+		}
+
+		name := koanfTag
+		if name == "" {
+			name = strings.ToLower(field.Name)
+		}
+		if prefix != "" {
+			name = prefix + "." + name
+		}
+
+		fv := val.Field(i)
+		ft := field.Type
+		if ft.Kind() == reflect.Ptr {
+			ft = ft.Elem()
+		}
+
+		// Recurse into nested structs (but not time.Duration which is int64).
+		if ft.Kind() == reflect.Struct && ft.PkgPath() != "time" {
+			nested := walkStruct(fv.Interface(), name, showSensitive)
+			entries = append(entries, nested...)
+			continue
+		}
+
+		// Determine if sensitive.
+		sensitive := field.Tag.Get("sensitive") == "true" || isSensitiveName(field.Name)
+		displayVal := fmt.Sprintf("%v", fv.Interface())
+		if sensitive && !showSensitive {
+			displayVal = redactedValue
+		}
+
 		entries = append(entries, printEntry{
-			envName:  f.EnvName,
-			value:    val,
-			typeName: f.FieldType.String(),
+			name:     name,
+			value:    displayVal,
+			typeName: field.Type.String(),
 		})
 	}
 	return entries
 }
 
+// isSensitiveName checks if a field name contains sensitive-looking substrings.
+func isSensitiveName(name string) bool {
+	lower := strings.ToLower(name)
+	for _, pattern := range sensitivePatterns {
+		if strings.Contains(lower, pattern) {
+			return true
+		}
+	}
+	return false
+}
+
 func printTable(w io.Writer, entries []printEntry) {
-	// Find max widths for alignment.
-	nameW, valW := len("ENV VARIABLE"), len("VALUE")
+	nameW, valW := len("FIELD"), len("VALUE")
 	for _, e := range entries {
-		if len(e.envName) > nameW {
-			nameW = len(e.envName)
+		if len(e.name) > nameW {
+			nameW = len(e.name)
 		}
 		if len(e.value) > valW {
 			valW = len(e.value)
@@ -116,17 +194,17 @@ func printTable(w io.Writer, entries []printEntry) {
 	}
 
 	fmtStr := fmt.Sprintf("%%-%ds  %%-%ds  %%s\n", nameW, valW)
-	fmt.Fprintf(w, fmtStr, "ENV VARIABLE", "VALUE", "TYPE")
+	fmt.Fprintf(w, fmtStr, "FIELD", "VALUE", "TYPE")
 	fmt.Fprintln(w, strings.Repeat("-", nameW+valW+20))
 	for _, e := range entries {
-		fmt.Fprintf(w, fmtStr, e.envName, e.value, e.typeName)
+		fmt.Fprintf(w, fmtStr, e.name, e.value, e.typeName)
 	}
 }
 
 func printJSON(w io.Writer, entries []printEntry) {
 	m := make(map[string]string, len(entries))
 	for _, e := range entries {
-		m[e.envName] = e.value
+		m[e.name] = e.value
 	}
 	enc := json.NewEncoder(w)
 	enc.SetIndent("", "  ")
@@ -135,19 +213,7 @@ func printJSON(w io.Writer, entries []printEntry) {
 
 func printEnv(w io.Writer, entries []printEntry) {
 	for _, e := range entries {
-		fmt.Fprintf(w, "export %s=%s\n", e.envName, e.value)
+		envName := strings.ToUpper(strings.ReplaceAll(e.name, ".", "_"))
+		fmt.Fprintf(w, "export %s=%s\n", envName, e.value)
 	}
-}
-
-// toMap converts loaded fields into a map, optionally redacting sensitive values.
-func toMap(fields []fieldMeta, values map[string]string, redact bool) map[string]any {
-	result := make(map[string]any, len(fields))
-	for _, f := range fields {
-		val := values[f.EnvName]
-		if f.Sensitive && redact {
-			val = redactedValue
-		}
-		result[f.EnvName] = val
-	}
-	return result
 }
