@@ -4,6 +4,7 @@ package config_test
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"os"
 
@@ -131,4 +132,68 @@ func ExampleGetConfig_comprehensive() {
 
 func contains(s, substr string) bool {
 	return len(s) >= len(substr) && bytes.Contains([]byte(s), []byte(substr))
+}
+
+// ExampleNewReloader demonstrates creating a reloader with initial config
+// from struct tag defaults, then performing a manual reload.
+func ExampleNewReloader() {
+	type AppConfig struct {
+		Host string `koanf:"host" default:"localhost"`
+		Port int    `koanf:"port" default:"8080"`
+	}
+
+	reloader, err := config.NewReloader[AppConfig](
+		nil, // no reload options
+		config.WithSkipValidation(),
+	)
+	if err != nil {
+		fmt.Println("error:", err)
+		return
+	}
+
+	cfg := reloader.Config()
+	fmt.Printf("host=%s port=%d\n", cfg.Host, cfg.Port)
+
+	newCfg, err := reloader.Reload(context.Background())
+	if err != nil {
+		fmt.Println("reload error:", err)
+		return
+	}
+	fmt.Printf("reloaded: host=%s port=%d\n", newCfg.Host, newCfg.Port)
+
+	// Output:
+	// host=localhost port=8080
+	// reloaded: host=localhost port=8080
+}
+
+// ExampleNewReloader_withCallback demonstrates using an onChange callback
+// that fires after each successful reload.
+func ExampleNewReloader_withCallback() {
+	type Cfg struct {
+		Level string `koanf:"level" default:"info"`
+	}
+
+	var lastLevel string
+	reloader, err := config.NewReloader[Cfg](
+		[]config.ReloadOption[Cfg]{
+			config.WithOnChange(func(old, new *Cfg) {
+				lastLevel = new.Level
+			}),
+		},
+		config.WithSkipValidation(),
+	)
+	if err != nil {
+		fmt.Println("error:", err)
+		return
+	}
+
+	cfg := reloader.Config()
+	fmt.Printf("level=%s\n", cfg.Level)
+
+	reloader.Reload(context.Background())
+	fmt.Printf("callback_level=%s\n", lastLevel)
+
+	// Output:
+	// level=info
+	// callback_level=info
 }

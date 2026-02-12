@@ -66,16 +66,46 @@ Env var names are built by uppercasing each koanf tag and joining with `_`. Unde
 | `desc` | Human-readable description | `desc:"Server hostname"` |
 | `secret` | Key for secret provider lookup via `pkg/secrets` | `secret:"db/password"` |
 
+## Hot-Reload
+
+`Reloader[T]` watches config sources and atomically swaps the config when changes are detected. Reads via `Config()` are lock-free (atomic pointer). Failed reloads preserve the previous config.
+
+```go
+reloader, err := config.NewReloader[AppConfig](
+    []config.ReloadOption[AppConfig]{
+        config.WithFileWatch[AppConfig](500 * time.Millisecond), // fsnotify with debounce
+        config.WithPollInterval[AppConfig](30 * time.Second),    // fallback polling
+        config.WithSignalReload[AppConfig](syscall.SIGHUP),      // SIGHUP reload
+        config.WithOnChange(func(old, new *AppConfig) {
+            slog.Info("config changed", "old_port", old.Port, "new_port", new.Port)
+            rateLimiter.UpdateLimit(new.RateLimit)
+        }),
+    },
+    config.WithEnvPrefix("APP"),
+    config.WithConfigFile("./config.yaml"),
+)
+
+// Read config on hot path (zero contention).
+cfg := reloader.Config()
+
+// Start watching in background.
+go reloader.Start(ctx)
+
+// Expose reload endpoint for operators (POST /admin/config/reload).
+mux.Handle("POST /admin/config/reload", reloader.ReloadHandler())
+```
+
 ## API Reference
 
 | Function | Description |
 |----------|-------------|
 | `GetConfig[T](opts...)` | Load config from all sources, unmarshal into T, inject secrets, validate |
+| `NewReloader[T](reloadOpts, configOpts...)` | Create a reloader with initial load and optional watch |
 | `DefaultsFromTags[T]()` | Extract `default:"value"` struct tags into a koanf-compatible map |
 | `PrintRedacted(cfg, opts...)` | Print config with sensitive fields redacted |
 | `ToMap(cfg, redact)` | Export config as `map[string]any` with optional redaction |
 
-| Option | Description |
+| Config Option | Description |
 |--------|-------------|
 | `WithEnvPrefix(prefix)` | Set prefix for env var lookups |
 | `WithConfigFile(path)` | Add an optional YAML config file |
@@ -87,6 +117,22 @@ Env var names are built by uppercasing each koanf tag and joining with `_`. Unde
 | `WithSkipValidation()` | Disable go-playground/validator validation |
 | `WithValidator(v)` | Use a custom validator instance |
 
+| Reload Option | Description |
+|--------|-------------|
+| `WithFileWatch[T](debounce)` | Watch config files via fsnotify (0 = 500ms default) |
+| `WithPollInterval[T](interval)` | Periodic reload at interval (fallback for unreliable fsnotify) |
+| `WithSignalReload[T](signals...)` | Reload on OS signals (e.g., `syscall.SIGHUP`) |
+| `WithOnChange[T](func(old, new *T))` | Callback after successful reload |
+| `WithReloadLogger[T](logger)` | Custom logger for reload events |
+
+| Reloader Method | Description |
+|--------|-------------|
+| `Config() *T` | Current config (atomic load, zero contention) |
+| `Reload(ctx) (*T, error)` | Trigger immediate reload (validate-before-swap) |
+| `Start(ctx) error` | Block and watch for changes until Stop/cancel |
+| `Stop()` | Signal the watcher to stop |
+| `ReloadHandler() http.Handler` | HTTP handler: POST returns redacted config JSON |
+
 ## Error Codes
 
 | Code | Sentinel | Description |
@@ -94,4 +140,5 @@ Env var names are built by uppercasing each koanf tag and joining with `_`. Unde
 | E7002 | `ErrValidation` | Validation rule failed |
 | E7003 | `ErrFileRead` | Required config file could not be read |
 | E7005 | `ErrSecretProvider` | Secret provider returned an error |
+| E7006 | `ErrReload` | Config reload failed (wraps underlying error) |
 

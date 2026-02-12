@@ -57,4 +57,31 @@
 //	cfg, err := config.GetConfig[MyConfig](
 //	    config.WithSecretProvider(provider, ctx),
 //	)
+//
+// # Hot-Reload
+//
+// Reloader[T] watches config sources and atomically swaps the config
+// struct when changes are detected. Readers access the current config via
+// Config() with zero contention (atomic pointer load). If a reload fails
+// (parse error, validation failure), the previous config is preserved.
+//
+//	reloader, err := config.NewReloader[AppConfig](
+//	    []config.ReloadOption[AppConfig]{
+//	        config.WithFileWatch[AppConfig](500 * time.Millisecond),
+//	        config.WithOnChange(func(old, new *AppConfig) {
+//	            slog.Info("config reloaded", "old_port", old.Port, "new_port", new.Port)
+//	        }),
+//	    },
+//	    config.WithEnvPrefix("APP"),
+//	    config.WithConfigFile("./config.yaml"),
+//	)
+//
+//	// Read config on the hot path (atomic, zero contention).
+//	cfg := reloader.Config()
+//
+//	// Start watching in a goroutine.
+//	go reloader.Start(ctx)
+//
+//	// Expose reload endpoint for operators.
+//	mux.Handle("POST /admin/config/reload", reloader.ReloadHandler())
 package config

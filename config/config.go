@@ -2,7 +2,9 @@ package config
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"log/slog"
 	"reflect"
 	"strings"
 
@@ -156,12 +158,16 @@ func GetConfig[T any](opts ...Option) (*T, error) {
 		k = koanf.New(".")
 	}
 
+	// Track loaded sources for structured logging.
+	var loadedSources []string
+
 	// 1. Struct tag defaults (lowest precedence).
 	tagDefaults := DefaultsFromTags[T]()
 	if len(tagDefaults) > 0 {
 		if err := k.Load(confmap.Provider(tagDefaults, "."), nil); err != nil {
 			return nil, fmt.Errorf("loading struct tag defaults: %w", err)
 		}
+		loadedSources = append(loadedSources, "struct-tag-defaults")
 	}
 
 	// 1b. Programmatic defaults (override struct tag defaults).
@@ -169,6 +175,7 @@ func GetConfig[T any](opts ...Option) (*T, error) {
 		if err := k.Load(confmap.Provider(o.defaults, "."), nil); err != nil {
 			return nil, fmt.Errorf("loading defaults: %w", err)
 		}
+		loadedSources = append(loadedSources, "programmatic-defaults")
 	}
 
 	// 2. Config files (merged left-to-right).
@@ -178,6 +185,8 @@ func GetConfig[T any](opts ...Option) (*T, error) {
 				return nil, fmt.Errorf("loading config file %s: %w", cf.path, ErrFileRead)
 			}
 			// Optional file missing or unreadable: continue silently.
+		} else {
+			loadedSources = append(loadedSources, "file:"+cf.path)
 		}
 	}
 
@@ -202,13 +211,20 @@ func GetConfig[T any](opts ...Option) (*T, error) {
 		}), nil); err != nil {
 			return nil, fmt.Errorf("loading env vars: %w", err)
 		}
+		loadedSources = append(loadedSources, "env:"+fullPrefix+"*")
 	}
 
 	// 4. Extra providers (including kongprovider), loaded in order added.
-	for _, p := range o.extraProviders {
+	for i, p := range o.extraProviders {
 		if err := k.Load(p, nil); err != nil {
 			return nil, fmt.Errorf("loading extra provider: %w", err)
 		}
+		loadedSources = append(loadedSources, fmt.Sprintf("provider-%d", i))
+	}
+
+	// Log which sources were loaded for debugging configuration issues.
+	if len(loadedSources) > 0 {
+		slog.Debug("config sources loaded", "sources", loadedSources)
 	}
 
 	// 5. Unmarshal with explicit decode hooks. koanf v2 defaults do NOT
@@ -237,6 +253,11 @@ func GetConfig[T any](opts ...Option) (*T, error) {
 			ctx = context.Background()
 		}
 		if err := secrets.Populate(ctx, o.secretProvider, cfg); err != nil {
+			// Log which secret key failed (not the value) for debuggability.
+			slog.Error("secret injection failed",
+				"error", err.Error(),
+				"hint", "check that all secret keys referenced in 'secret' struct tags exist in the secret provider",
+			)
 			return nil, fmt.Errorf("populating secrets: %w", ErrSecretProvider)
 		}
 	}
@@ -248,9 +269,39 @@ func GetConfig[T any](opts ...Option) (*T, error) {
 			v = validator.New()
 		}
 		if err := v.Struct(cfg); err != nil {
+			var ve validator.ValidationErrors
+			if errors.As(err, &ve) {
+				// Build field-level details preserving which field failed and what the constraint was.
+				fieldErrors := make([]map[string]string, 0, len(ve))
+				for _, fe := range ve {
+					fieldErrors = append(fieldErrors, map[string]string{
+						"field":      fe.Namespace(),
+						"tag":        fe.Tag(),
+						"constraint": fe.Param(),
+						"value":      fmt.Sprintf("%v", fe.Value()),
+					})
+				}
+				slog.Debug("config validation failed", "field_errors", fieldErrors)
+				return nil, fmt.Errorf("config validation failed: fields=%v: %w",
+					fieldErrorSummary(ve), ErrValidation)
+			}
 			return nil, fmt.Errorf("config validation: %w", ErrValidation)
 		}
 	}
 
 	return cfg, nil
+}
+
+// fieldErrorSummary builds a compact summary of validation field errors
+// for inclusion in the error message (e.g., "Name(required), Port(min=1)").
+func fieldErrorSummary(ve validator.ValidationErrors) string {
+	parts := make([]string, 0, len(ve))
+	for _, fe := range ve {
+		tag := fe.Tag()
+		if fe.Param() != "" {
+			tag += "=" + fe.Param()
+		}
+		parts = append(parts, fe.Field()+"("+tag+")")
+	}
+	return strings.Join(parts, ", ")
 }
