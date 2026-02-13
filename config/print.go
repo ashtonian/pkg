@@ -13,7 +13,9 @@ import (
 const redactedValue = "[REDACTED]"
 
 // sensitivePatterns are substrings that trigger auto-detection of sensitive fields.
-var sensitivePatterns = []string{
+// This is a fixed-size array (not a slice) so it cannot be appended to or
+// reassigned — safe for concurrent reads without synchronisation.
+var sensitivePatterns = [...]string{
 	"password", "secret", "token", "key", "credential",
 	"auth", "private", "apikey", "api_key",
 }
