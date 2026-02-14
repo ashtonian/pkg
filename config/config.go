@@ -282,8 +282,11 @@ func GetConfig[T any](opts ...Option) (*T, error) {
 					})
 				}
 				slog.Debug("config validation failed", "field_errors", fieldErrors)
-				return nil, fmt.Errorf("config validation failed: fields=%v: %w",
-					fieldErrorSummary(ve), ErrValidation)
+				return nil, &validationError{
+					msg:      fmt.Sprintf("config validation failed: fields=%v: %s", fieldErrorSummary(ve), ErrValidation),
+					sentinel: ErrValidation,
+					fieldErr: ve,
+				}
 			}
 			return nil, fmt.Errorf("config validation: %w", ErrValidation)
 		}

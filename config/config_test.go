@@ -16,6 +16,7 @@ import (
 	"github.com/knadh/koanf/providers/confmap"
 	"github.com/knadh/koanf/v2"
 
+	"github.com/ashtonian/pkg/errutil"
 	secretstesting "github.com/ashtonian/pkg/secrets/testing"
 )
 
@@ -1511,6 +1512,273 @@ func TestPrintRedacted_SliceAndMap(t *testing.T) {
 	}
 	if strings.Contains(output, "tok1") {
 		t.Error("sensitive slice values should be redacted")
+	}
+}
+
+// --- ConfigError / i18n Integration Tests ---
+
+type DescConfig struct {
+	Host    string `koanf:"host" default:"localhost" desc:"Server hostname"`
+	Port    int    `koanf:"port" default:"8080" desc:"Server port" validate:"min=1,max=65535"`
+	Debug   bool   `koanf:"debug" default:"false" desc:"Enable debug mode"`
+	Secret  string `koanf:"secret" sensitive:"true" desc:"API secret key"`
+	NoDesc  string `koanf:"nodesc" default:"val"`
+}
+
+func TestConfigError_LocalizedMessage_WithTranslator(t *testing.T) {
+	apiErr := errutil.New(ErrCodeValidation, "field Port failed validation: min=1")
+	ce := NewConfigError(apiErr, "AppConfig.Port", "min", "1")
+
+	translator := func(code, field, tag, param string) string {
+		return fmt.Sprintf("El campo %s debe tener un valor minimo de %s", field, param)
+	}
+
+	got := ce.LocalizedMessage(translator)
+	want := "El campo AppConfig.Port debe tener un valor minimo de 1"
+	if got != want {
+		t.Errorf("LocalizedMessage = %q, want %q", got, want)
+	}
+}
+
+func TestConfigError_LocalizedMessage_NilTranslator(t *testing.T) {
+	apiErr := errutil.New(ErrCodeValidation, "field Port failed validation: min=1")
+	ce := NewConfigError(apiErr, "AppConfig.Port", "min", "1")
+
+	got := ce.LocalizedMessage(nil)
+	if !strings.Contains(got, "E7002") || !strings.Contains(got, "field Port failed validation: min=1") {
+		t.Errorf("LocalizedMessage with nil translator should fallback, got: %q", got)
+	}
+}
+
+func TestConfigError_LocalizedMessage_EmptyTranslatorResult(t *testing.T) {
+	apiErr := errutil.New(ErrCodeValidation, "field Port failed validation: min=1")
+	ce := NewConfigError(apiErr, "AppConfig.Port", "min", "1")
+
+	translator := func(code, field, tag, param string) string {
+		return "" // empty means no translation available
+	}
+
+	got := ce.LocalizedMessage(translator)
+	if !strings.Contains(got, "E7002") {
+		t.Errorf("LocalizedMessage with empty translator result should fallback, got: %q", got)
+	}
+}
+
+func TestConfigError_FieldTagParam(t *testing.T) {
+	apiErr := errutil.New(ErrCodeValidation, "test error")
+	ce := NewConfigError(apiErr, "Config.Workers", "max", "100")
+
+	if ce.Field() != "Config.Workers" {
+		t.Errorf("Field() = %q, want Config.Workers", ce.Field())
+	}
+	if ce.Tag() != "max" {
+		t.Errorf("Tag() = %q, want max", ce.Tag())
+	}
+	if ce.Param() != "100" {
+		t.Errorf("Param() = %q, want 100", ce.Param())
+	}
+}
+
+func TestToConfigErrors_ValidationError(t *testing.T) {
+	t.Setenv("APP_PORT", "0")
+
+	_, err := GetConfig[ValidationConfig](WithEnvPrefix("APP"))
+	if err == nil {
+		t.Fatal("expected validation error")
+	}
+
+	configErrs := ToConfigErrors(err)
+	if configErrs == nil {
+		t.Fatal("ToConfigErrors should return non-nil for validation errors")
+	}
+	if len(configErrs) == 0 {
+		t.Fatal("ToConfigErrors should return at least one ConfigError")
+	}
+
+	// Check that each ConfigError has sensible values.
+	for _, ce := range configErrs {
+		if ce.Field() == "" {
+			t.Error("ConfigError.Field() should not be empty")
+		}
+		if ce.Tag() == "" {
+			t.Error("ConfigError.Tag() should not be empty")
+		}
+		if ce.Code != ErrCodeValidation {
+			t.Errorf("ConfigError.Code = %q, want %q", ce.Code, ErrCodeValidation)
+		}
+	}
+}
+
+func TestToConfigErrors_NonValidationError(t *testing.T) {
+	err := fmt.Errorf("some random error")
+	configErrs := ToConfigErrors(err)
+	if configErrs != nil {
+		t.Errorf("ToConfigErrors should return nil for non-validation errors, got %v", configErrs)
+	}
+}
+
+func TestToConfigErrors_NilError(t *testing.T) {
+	configErrs := ToConfigErrors(nil)
+	if configErrs != nil {
+		t.Errorf("ToConfigErrors should return nil for nil error, got %v", configErrs)
+	}
+}
+
+func TestToConfigErrors_RequiredField(t *testing.T) {
+	_, err := GetConfig[RequiredFieldConfig]()
+	if err == nil {
+		t.Fatal("expected validation error for missing required field")
+	}
+
+	configErrs := ToConfigErrors(err)
+	if len(configErrs) != 1 {
+		t.Fatalf("expected 1 ConfigError, got %d", len(configErrs))
+	}
+
+	ce := configErrs[0]
+	if ce.Tag() != "required" {
+		t.Errorf("Tag() = %q, want required", ce.Tag())
+	}
+	if ce.Param() != "" {
+		t.Errorf("Param() = %q, want empty for required tag", ce.Param())
+	}
+}
+
+func TestWithTranslator_StoresTranslator(t *testing.T) {
+	called := false
+	translator := func(code, field, tag, param string) string {
+		called = true
+		return "translated"
+	}
+
+	po := defaultPrintOptions()
+	WithTranslator(translator)(&po)
+
+	if po.translator == nil {
+		t.Fatal("WithTranslator should store the translator")
+	}
+	// Verify the stored translator is callable.
+	result := po.translator("E7002", "field", "tag", "param")
+	if !called {
+		t.Error("stored translator was not called")
+	}
+	if result != "translated" {
+		t.Errorf("translator result = %q, want translated", result)
+	}
+}
+
+func TestWithIncludeDescriptions_Table(t *testing.T) {
+	cfg := &DescConfig{
+		Host:  "localhost",
+		Port:  8080,
+		Debug: false,
+	}
+	var buf bytes.Buffer
+	PrintRedacted(cfg, WithWriter(&buf), WithIncludeDescriptions())
+	output := buf.String()
+
+	if !strings.Contains(output, "DESCRIPTION") {
+		t.Error("table with descriptions should contain DESCRIPTION header")
+	}
+	if !strings.Contains(output, "Server hostname") {
+		t.Errorf("table should contain desc value 'Server hostname', got:\n%s", output)
+	}
+	if !strings.Contains(output, "Server port") {
+		t.Errorf("table should contain desc value 'Server port', got:\n%s", output)
+	}
+	if !strings.Contains(output, "Enable debug mode") {
+		t.Errorf("table should contain desc value 'Enable debug mode', got:\n%s", output)
+	}
+}
+
+func TestWithIncludeDescriptions_JSON(t *testing.T) {
+	cfg := &DescConfig{
+		Host: "localhost",
+		Port: 8080,
+	}
+	var buf bytes.Buffer
+	PrintRedacted(cfg, WithFormat("json"), WithWriter(&buf), WithIncludeDescriptions())
+	output := buf.String()
+
+	if !strings.Contains(output, "Server hostname") {
+		t.Errorf("JSON with descriptions should contain desc value, got:\n%s", output)
+	}
+	if !strings.Contains(output, "description") {
+		t.Errorf("JSON with descriptions should contain 'description' key, got:\n%s", output)
+	}
+}
+
+func TestWithIncludeDescriptions_Env(t *testing.T) {
+	cfg := &DescConfig{
+		Host: "localhost",
+		Port: 8080,
+	}
+	var buf bytes.Buffer
+	PrintRedacted(cfg, WithFormat("env"), WithWriter(&buf), WithIncludeDescriptions())
+	output := buf.String()
+
+	if !strings.Contains(output, "# Server hostname") {
+		t.Errorf("env with descriptions should contain desc comment, got:\n%s", output)
+	}
+	if !strings.Contains(output, "# Server port") {
+		t.Errorf("env with descriptions should contain desc comment, got:\n%s", output)
+	}
+}
+
+func TestWithIncludeDescriptions_NoDescFields(t *testing.T) {
+	// Fields without desc:"" tag should show empty description.
+	type NoDCfg struct {
+		Name string `koanf:"name" default:"test"`
+	}
+	cfg := &NoDCfg{Name: "test"}
+	var buf bytes.Buffer
+	PrintRedacted(cfg, WithWriter(&buf), WithIncludeDescriptions())
+	output := buf.String()
+
+	if !strings.Contains(output, "DESCRIPTION") {
+		t.Error("table with descriptions should still contain DESCRIPTION header")
+	}
+}
+
+func TestWithoutIncludeDescriptions_Table(t *testing.T) {
+	cfg := &DescConfig{
+		Host: "localhost",
+		Port: 8080,
+	}
+	var buf bytes.Buffer
+	PrintRedacted(cfg, WithWriter(&buf))
+	output := buf.String()
+
+	if strings.Contains(output, "DESCRIPTION") {
+		t.Error("table without WithIncludeDescriptions should not contain DESCRIPTION header")
+	}
+}
+
+func TestToConfigErrors_WithLocalizedMessage(t *testing.T) {
+	// End-to-end: trigger validation error, convert to ConfigErrors, translate.
+	t.Setenv("APP_PORT", "0")
+
+	_, err := GetConfig[ValidationConfig](WithEnvPrefix("APP"))
+	if err == nil {
+		t.Fatal("expected validation error")
+	}
+
+	configErrs := ToConfigErrors(err)
+	if len(configErrs) == 0 {
+		t.Fatal("expected at least one ConfigError")
+	}
+
+	translator := func(code, field, tag, param string) string {
+		if tag == "min" {
+			return fmt.Sprintf("Field '%s' must be at least %s", field, param)
+		}
+		return ""
+	}
+
+	ce := configErrs[0]
+	msg := ce.LocalizedMessage(translator)
+	if !strings.Contains(msg, "must be at least") {
+		t.Errorf("expected localized message, got: %q", msg)
 	}
 }
 
