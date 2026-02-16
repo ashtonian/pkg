@@ -161,7 +161,7 @@ func GetConfig[T any](opts ...Option) (*T, error) {
 	// Track loaded sources for structured logging.
 	var loadedSources []string
 
-	// 1. Struct tag defaults (lowest precedence).
+	// Step 1: struct tag defaults (lowest precedence).
 	tagDefaults := DefaultsFromTags[T]()
 	if len(tagDefaults) > 0 {
 		if err := k.Load(confmap.Provider(tagDefaults, "."), nil); err != nil {
@@ -170,7 +170,7 @@ func GetConfig[T any](opts ...Option) (*T, error) {
 		loadedSources = append(loadedSources, "struct-tag-defaults")
 	}
 
-	// 1b. Programmatic defaults (override struct tag defaults).
+	// Step 2: programmatic defaults (override struct tag defaults).
 	if len(o.defaults) > 0 {
 		if err := k.Load(confmap.Provider(o.defaults, "."), nil); err != nil {
 			return nil, fmt.Errorf("loading defaults: %w", err)
@@ -178,7 +178,7 @@ func GetConfig[T any](opts ...Option) (*T, error) {
 		loadedSources = append(loadedSources, "programmatic-defaults")
 	}
 
-	// 2. Config files (merged left-to-right).
+	// Step 3: config files (merged left-to-right).
 	for _, cf := range o.configFiles {
 		if err := k.Load(file.Provider(cf.path), yaml.Parser()); err != nil {
 			if cf.required {
@@ -190,7 +190,7 @@ func GetConfig[T any](opts ...Option) (*T, error) {
 		}
 	}
 
-	// 3. Env vars with struct-aware mapping. The naive "_" → "." transform
+	// Step 4: env vars with struct-aware mapping. The naive "_" → "." transform
 	// breaks koanf tags containing underscores (e.g., koanf:"max_conns"
 	// nested under koanf:"db" — APP_DB_MAX_CONNS would become "db.max.conns"
 	// instead of "db.max_conns"). Walking T builds an exact mapping.
@@ -214,7 +214,7 @@ func GetConfig[T any](opts ...Option) (*T, error) {
 		loadedSources = append(loadedSources, "env:"+fullPrefix+"*")
 	}
 
-	// 4. Extra providers (including kongprovider), loaded in order added.
+	// Step 5: extra providers (including kongprovider), loaded in order added (highest precedence).
 	for i, p := range o.extraProviders {
 		if err := k.Load(p, nil); err != nil {
 			return nil, fmt.Errorf("loading extra provider: %w", err)
@@ -227,7 +227,7 @@ func GetConfig[T any](opts ...Option) (*T, error) {
 		slog.Debug("config sources loaded", "sources", loadedSources)
 	}
 
-	// 5. Unmarshal with explicit decode hooks. koanf v2 defaults do NOT
+	// Step 6: unmarshal with explicit decode hooks. koanf v2 defaults do NOT
 	// include StringToSliceHookFunc, so comma-separated env vars / defaults
 	// would not be split into []string without this.
 	cfg := new(T)
@@ -246,7 +246,7 @@ func GetConfig[T any](opts ...Option) (*T, error) {
 		return nil, fmt.Errorf("unmarshaling config: %w", err)
 	}
 
-	// 6. Secret injection -- delegates to pkg/secrets.
+	// Step 7: secret injection -- delegates to pkg/secrets.
 	if o.secretProvider != nil {
 		ctx := o.secretCtx
 		if ctx == nil {
@@ -262,7 +262,7 @@ func GetConfig[T any](opts ...Option) (*T, error) {
 		}
 	}
 
-	// 7. Validation (includes required field checks via validate:"required").
+	// Step 8: validation (includes required field checks via validate:"required").
 	if !o.skipValidation {
 		v := o.customValidator
 		if v == nil {

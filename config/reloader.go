@@ -33,10 +33,11 @@ type Reloader[T any] struct {
 	signals      []os.Signal
 
 	// Runtime state.
-	reloadMu sync.Mutex // single-flight reload
-	stopOnce sync.Once
-	stopCh   chan struct{}
-	watcher  *fsnotify.Watcher // nil if no file watch
+	reloading atomic.Bool     // prevents concurrent reloads
+	reloadMu  sync.Mutex     // single-flight reload
+	stopOnce  sync.Once
+	stopCh    chan struct{}
+	watcher   *fsnotify.Watcher // nil if no file watch
 }
 
 // ReloadOption configures a Reloader.
@@ -120,8 +121,14 @@ func (r *Reloader[T]) Config() *T {
 
 // Reload triggers an immediate config reload. Returns the new config on
 // success. On failure the previous config is preserved and an error
-// wrapping ErrReload is returned. Concurrent calls are serialized.
+// wrapping ErrReload is returned. Concurrent calls are serialized; if a
+// reload is already in progress the call is skipped and ErrReload is returned.
 func (r *Reloader[T]) Reload(ctx context.Context) (*T, error) {
+	if !r.reloading.CompareAndSwap(false, true) {
+		return nil, fmt.Errorf("%w: reload already in progress", ErrReload)
+	}
+	defer r.reloading.Store(false)
+
 	r.reloadMu.Lock()
 	defer r.reloadMu.Unlock()
 

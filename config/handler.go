@@ -30,6 +30,9 @@ func (r *Reloader[T]) ReloadHandler() http.Handler {
 
 		w.Header().Set("Content-Type", "application/json")
 		m := ToMap(cfg, true) // redacted
-		_ = json.NewEncoder(w).Encode(m)
+		if err := json.NewEncoder(w).Encode(m); err != nil {
+			http.Error(w, "internal error", http.StatusInternalServerError)
+			return
+		}
 	})
 }
