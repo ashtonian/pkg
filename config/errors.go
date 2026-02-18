@@ -18,6 +18,15 @@ const (
 	ErrCodeReload         = "E7006" // Config reload failed
 )
 
+func init() {
+	errutil.RegisterBatch(
+		errutil.ErrorDescriptor{Code: ErrCodeValidation, HTTPStatus: 422, Class: errutil.ErrorClassPermanent, UserFacing: true, Message: "configuration validation failed", Package: "config"},
+		errutil.ErrorDescriptor{Code: ErrCodeFileRead, HTTPStatus: 500, Class: errutil.ErrorClassUnknown, UserFacing: false, Message: "failed to read configuration file", Package: "config"},
+		errutil.ErrorDescriptor{Code: ErrCodeSecretProvider, HTTPStatus: 500, Class: errutil.ErrorClassTransient, UserFacing: false, Message: "secret provider error", Package: "config"},
+		errutil.ErrorDescriptor{Code: ErrCodeReload, HTTPStatus: 500, Class: errutil.ErrorClassTransient, UserFacing: false, Message: "configuration reload failed", Package: "config"},
+	)
+}
+
 // Sentinel errors for common checks using errors.Is.
 var (
 	ErrValidation     = errutil.New(ErrCodeValidation, "configuration validation failed")
