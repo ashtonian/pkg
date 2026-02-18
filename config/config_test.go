@@ -925,9 +925,9 @@ func TestErrors_Are_Sentinels(t *testing.T) {
 		err  error
 		code string
 	}{
-		{"ErrValidation", ErrValidation, ErrCodeValidation},
-		{"ErrFileRead", ErrFileRead, ErrCodeFileRead},
-		{"ErrSecretProvider", ErrSecretProvider, ErrCodeSecretProvider},
+		{"ErrValidation", ErrValidation, ErrCodeValidation.String()},
+		{"ErrFileRead", ErrFileRead, ErrCodeFileRead.String()},
+		{"ErrSecretProvider", ErrSecretProvider, ErrCodeSecretProvider.String()},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -1526,7 +1526,7 @@ type DescConfig struct {
 }
 
 func TestConfigError_LocalizedMessage_WithTranslator(t *testing.T) {
-	apiErr := errutil.New(ErrCodeValidation, "field Port failed validation: min=1")
+	apiErr := errutil.NewFromCode(ErrCodeValidation, "field Port failed validation: min=1")
 	ce := NewConfigError(apiErr, "AppConfig.Port", "min", "1")
 
 	translator := func(code, field, tag, param string) string {
@@ -1541,7 +1541,7 @@ func TestConfigError_LocalizedMessage_WithTranslator(t *testing.T) {
 }
 
 func TestConfigError_LocalizedMessage_NilTranslator(t *testing.T) {
-	apiErr := errutil.New(ErrCodeValidation, "field Port failed validation: min=1")
+	apiErr := errutil.NewFromCode(ErrCodeValidation, "field Port failed validation: min=1")
 	ce := NewConfigError(apiErr, "AppConfig.Port", "min", "1")
 
 	got := ce.LocalizedMessage(nil)
@@ -1551,7 +1551,7 @@ func TestConfigError_LocalizedMessage_NilTranslator(t *testing.T) {
 }
 
 func TestConfigError_LocalizedMessage_EmptyTranslatorResult(t *testing.T) {
-	apiErr := errutil.New(ErrCodeValidation, "field Port failed validation: min=1")
+	apiErr := errutil.NewFromCode(ErrCodeValidation, "field Port failed validation: min=1")
 	ce := NewConfigError(apiErr, "AppConfig.Port", "min", "1")
 
 	translator := func(code, field, tag, param string) string {
@@ -1565,7 +1565,7 @@ func TestConfigError_LocalizedMessage_EmptyTranslatorResult(t *testing.T) {
 }
 
 func TestConfigError_FieldTagParam(t *testing.T) {
-	apiErr := errutil.New(ErrCodeValidation, "test error")
+	apiErr := errutil.NewFromCode(ErrCodeValidation, "test error")
 	ce := NewConfigError(apiErr, "Config.Workers", "max", "100")
 
 	if ce.Field() != "Config.Workers" {
@@ -1603,8 +1603,8 @@ func TestToConfigErrors_ValidationError(t *testing.T) {
 		if ce.Tag() == "" {
 			t.Error("ConfigError.Tag() should not be empty")
 		}
-		if ce.Code != ErrCodeValidation {
-			t.Errorf("ConfigError.Code = %q, want %q", ce.Code, ErrCodeValidation)
+		if ce.Code != ErrCodeValidation.String() {
+			t.Errorf("ConfigError.Code = %q, want %q", ce.Code, ErrCodeValidation.String())
 		}
 	}
 }

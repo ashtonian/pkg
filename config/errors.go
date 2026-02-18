@@ -11,28 +11,27 @@ import (
 
 // Error codes for the config package (E7002-E7006 range).
 // E7001 was removed — use validate:"required" instead.
-const (
-	ErrCodeValidation     = "E7002" // Validation rule failed (includes required checks)
-	ErrCodeFileRead       = "E7003" // Config file could not be read
-	ErrCodeSecretProvider = "E7005" // Secret provider returned an error
-	ErrCodeReload         = "E7006" // Config reload failed
+var (
+	CodeValidation     = errutil.DefineCode(errutil.CodeDef{Code: "E7002", HTTPStatus: 422, Class: errutil.ErrorClassPermanent, UserFacing: true, Message: "configuration validation failed", Package: "config"})
+	CodeFileRead       = errutil.DefineCode(errutil.CodeDef{Code: "E7003", HTTPStatus: 500, Class: errutil.ErrorClassUnknown, UserFacing: false, Message: "failed to read configuration file", Package: "config"})
+	CodeSecretProvider = errutil.DefineCode(errutil.CodeDef{Code: "E7005", HTTPStatus: 500, Class: errutil.ErrorClassTransient, UserFacing: false, Message: "secret provider error", Package: "config"})
+	CodeReload         = errutil.DefineCode(errutil.CodeDef{Code: "E7006", HTTPStatus: 500, Class: errutil.ErrorClassTransient, UserFacing: false, Message: "configuration reload failed", Package: "config"})
 )
 
-func init() {
-	errutil.RegisterBatch(
-		errutil.ErrorDescriptor{Code: ErrCodeValidation, HTTPStatus: 422, Class: errutil.ErrorClassPermanent, UserFacing: true, Message: "configuration validation failed", Package: "config"},
-		errutil.ErrorDescriptor{Code: ErrCodeFileRead, HTTPStatus: 500, Class: errutil.ErrorClassUnknown, UserFacing: false, Message: "failed to read configuration file", Package: "config"},
-		errutil.ErrorDescriptor{Code: ErrCodeSecretProvider, HTTPStatus: 500, Class: errutil.ErrorClassTransient, UserFacing: false, Message: "secret provider error", Package: "config"},
-		errutil.ErrorDescriptor{Code: ErrCodeReload, HTTPStatus: 500, Class: errutil.ErrorClassTransient, UserFacing: false, Message: "configuration reload failed", Package: "config"},
-	)
-}
+// Backward-compatible aliases for the old ErrCodeXxx names.
+var (
+	ErrCodeValidation     = CodeValidation
+	ErrCodeFileRead       = CodeFileRead
+	ErrCodeSecretProvider = CodeSecretProvider
+	ErrCodeReload         = CodeReload
+)
 
 // Sentinel errors for common checks using errors.Is.
 var (
-	ErrValidation     = errutil.New(ErrCodeValidation, "configuration validation failed")
-	ErrFileRead       = errutil.New(ErrCodeFileRead, "failed to read configuration file")
-	ErrSecretProvider = errutil.New(ErrCodeSecretProvider, "secret provider error")
-	ErrReload         = errutil.New(ErrCodeReload, "configuration reload failed")
+	ErrValidation     = errutil.NewFromCode(CodeValidation, "configuration validation failed")
+	ErrFileRead       = errutil.NewFromCode(CodeFileRead, "failed to read configuration file")
+	ErrSecretProvider = errutil.NewFromCode(CodeSecretProvider, "secret provider error")
+	ErrReload         = errutil.NewFromCode(CodeReload, "configuration reload failed")
 )
 
 // ConfigError wraps an errutil.APIError with localized message support.
@@ -120,7 +119,7 @@ func ToConfigErrors(err error) []*ConfigError {
 			tag += "=" + fe.Param()
 		}
 		msg := fmt.Sprintf("field %s failed validation: %s", fe.Field(), tag)
-		apiErr := errutil.New(ErrCodeValidation, msg)
+		apiErr := errutil.NewFromCode(CodeValidation, msg)
 		result = append(result, NewConfigError(apiErr, fe.Namespace(), fe.Tag(), fe.Param()))
 	}
 	return result
