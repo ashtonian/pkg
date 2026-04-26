@@ -264,6 +264,11 @@ func (r *Reloader[T]) setupFileWatch(ctx context.Context, paths []string) error 
 	var timer *time.Timer
 
 	go func() {
+		defer func() {
+			if p := recover(); p != nil {
+				r.logger.Error("file watcher goroutine panicked", "panic", p)
+			}
+		}()
 		for {
 			select {
 			case event, ok := <-watcher.Events:

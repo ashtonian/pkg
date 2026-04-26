@@ -64,7 +64,7 @@ Env var names are built by uppercasing each koanf tag and joining with `_`. Unde
 | `flag` | Kong CLI flag name (used by `kongprovider`) | `flag:"port"` |
 | `sensitive` | Redacted in PrintRedacted/ToMap output | `sensitive:"true"` |
 | `desc` | Human-readable description | `desc:"Server hostname"` |
-| `secret` | Key for secret provider lookup via `pkg/secrets` | `secret:"db/password"` |
+| `secret` | Key for secret provider lookup | `secret:"db/password"` |
 
 ## Hot-Reload
 

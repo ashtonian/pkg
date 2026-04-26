@@ -1,6 +1,6 @@
 # config/kongprovider
 
-Bridges [Kong CLI](https://github.com/alecthomas/kong) flags to the `pkg/config` koanf-based configuration system. Only flags explicitly provided on the command line are forwarded -- Kong default values are NOT included, avoiding accidental overrides of config file or environment variable values.
+Bridges [Kong CLI](https://github.com/alecthomas/kong) flags to the `config` koanf-based configuration system. Only flags explicitly provided on the command line are forwarded -- Kong default values are NOT included, avoiding accidental overrides of config file or environment variable values.
 
 ## Usage
 

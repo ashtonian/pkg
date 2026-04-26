@@ -105,7 +105,7 @@ func WithProvider(p koanf.Provider) Option {
 	}
 }
 
-// WithSecretProvider configures secret injection via pkg/secrets.
+// WithSecretProvider configures secret injection.
 // After unmarshaling, fields tagged with secret:"key" are populated
 // by calling secrets.Populate().
 func WithSecretProvider(sp secrets.SecretProvider, ctx context.Context) Option {
