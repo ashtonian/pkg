@@ -29,7 +29,7 @@ type validatedCfg struct {
 // --- NewReloader Tests ---
 
 func TestNewReloader_InitialLoad(t *testing.T) {
-	r, err := NewReloader[reloaderCfg](nil, WithSkipValidation())
+	r, err := NewReloader[reloaderCfg](t.Context(), nil, WithSkipValidation())
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -47,7 +47,7 @@ func TestNewReloader_InitialLoad(t *testing.T) {
 }
 
 func TestNewReloader_InitialLoadError(t *testing.T) {
-	_, err := NewReloader[validatedCfg](nil)
+	_, err := NewReloader[validatedCfg](t.Context(), nil)
 	if err == nil {
 		t.Fatal("expected error for missing required field")
 	}
@@ -56,7 +56,7 @@ func TestNewReloader_InitialLoadError(t *testing.T) {
 func TestNewReloader_WithEnvVars(t *testing.T) {
 	t.Setenv("RELOAD_HOST", "envhost")
 
-	r, err := NewReloader[reloaderCfg](nil,
+	r, err := NewReloader[reloaderCfg](t.Context(), nil,
 		WithEnvPrefix("RELOAD"),
 		WithSkipValidation(),
 	)
@@ -71,7 +71,7 @@ func TestNewReloader_WithEnvVars(t *testing.T) {
 // --- Config() Tests ---
 
 func TestReloader_Config_ReturnsCurrentConfig(t *testing.T) {
-	r, err := NewReloader[reloaderCfg](nil, WithSkipValidation())
+	r, err := NewReloader[reloaderCfg](t.Context(), nil, WithSkipValidation())
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -88,7 +88,7 @@ func TestReloader_Config_ReturnsCurrentConfig(t *testing.T) {
 // --- Reload Tests ---
 
 func TestReloader_ManualReload(t *testing.T) {
-	r, err := NewReloader[reloaderCfg](nil, WithSkipValidation())
+	r, err := NewReloader[reloaderCfg](t.Context(), nil, WithSkipValidation())
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -109,7 +109,7 @@ func TestReloader_ManualReload(t *testing.T) {
 }
 
 func TestReloader_ManualReload_PicksUpEnvChanges(t *testing.T) {
-	r, err := NewReloader[reloaderCfg](nil,
+	r, err := NewReloader[reloaderCfg](t.Context(), nil,
 		WithEnvPrefix("RELENV"),
 		WithSkipValidation(),
 	)
@@ -138,7 +138,7 @@ func TestReloader_ValidateBeforeSwap(t *testing.T) {
 	// Start with a valid file.
 	path := writeYAML(t, "name: valid\nport: 9090\n")
 
-	r, err := NewReloader[validatedCfg](nil,
+	r, err := NewReloader[validatedCfg](t.Context(), nil,
 		WithMustConfigFile(path),
 	)
 	if err != nil {
@@ -177,6 +177,7 @@ func TestReloader_OnChange(t *testing.T) {
 	var lastOld, lastNew *reloaderCfg
 
 	r, err := NewReloader[reloaderCfg](
+		t.Context(),
 		[]ReloadOption[reloaderCfg]{
 			WithOnChange(func(old, new *reloaderCfg) {
 				called++
@@ -209,6 +210,7 @@ func TestReloader_MultipleOnChange(t *testing.T) {
 	var calls []string
 
 	r, err := NewReloader[reloaderCfg](
+		t.Context(),
 		[]ReloadOption[reloaderCfg]{
 			WithOnChange(func(old, new *reloaderCfg) {
 				calls = append(calls, "first")
@@ -237,6 +239,7 @@ func TestReloader_OnChange_PanicRecovery(t *testing.T) {
 	var secondCalled bool
 
 	r, err := NewReloader[reloaderCfg](
+		t.Context(),
 		[]ReloadOption[reloaderCfg]{
 			WithOnChange(func(old, new *reloaderCfg) {
 				panic("intentional panic")
@@ -267,6 +270,7 @@ func TestReloader_OnChange_NotCalledOnFailure(t *testing.T) {
 	var called int
 
 	r, err := NewReloader[validatedCfg](
+		t.Context(),
 		[]ReloadOption[validatedCfg]{
 			WithOnChange(func(old, new *validatedCfg) {
 				called++
@@ -299,6 +303,7 @@ func TestReloader_FileWatch(t *testing.T) {
 
 	changed := make(chan *reloaderCfg, 1)
 	r, err := NewReloader[reloaderCfg](
+		t.Context(),
 		[]ReloadOption[reloaderCfg]{
 			WithFileWatch[reloaderCfg](50 * time.Millisecond),
 			WithOnChange(func(old, new *reloaderCfg) {
@@ -348,6 +353,7 @@ func TestReloader_PollInterval(t *testing.T) {
 	var reloadCount atomic.Int32
 
 	r, err := NewReloader[reloaderCfg](
+		t.Context(),
 		[]ReloadOption[reloaderCfg]{
 			WithPollInterval[reloaderCfg](50 * time.Millisecond),
 			WithOnChange(func(old, new *reloaderCfg) {
@@ -377,6 +383,7 @@ func TestReloader_PollInterval(t *testing.T) {
 
 func TestReloader_Stop(t *testing.T) {
 	r, err := NewReloader[reloaderCfg](
+		t.Context(),
 		[]ReloadOption[reloaderCfg]{
 			WithPollInterval[reloaderCfg](50 * time.Millisecond),
 		},
@@ -404,6 +411,7 @@ func TestReloader_Stop(t *testing.T) {
 
 func TestReloader_Stop_Idempotent(t *testing.T) {
 	r, err := NewReloader[reloaderCfg](
+		t.Context(),
 		[]ReloadOption[reloaderCfg]{
 			WithPollInterval[reloaderCfg](50 * time.Millisecond),
 		},
@@ -423,7 +431,7 @@ func TestReloader_Stop_Idempotent(t *testing.T) {
 }
 
 func TestReloader_Start_NoWatchReturnsImmediately(t *testing.T) {
-	r, err := NewReloader[reloaderCfg](nil, WithSkipValidation())
+	r, err := NewReloader[reloaderCfg](t.Context(), nil, WithSkipValidation())
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -443,6 +451,7 @@ func TestReloader_Start_NoWatchReturnsImmediately(t *testing.T) {
 
 func TestReloader_Start_ContextCancel(t *testing.T) {
 	r, err := NewReloader[reloaderCfg](
+		t.Context(),
 		[]ReloadOption[reloaderCfg]{
 			WithPollInterval[reloaderCfg](50 * time.Millisecond),
 		},
@@ -472,7 +481,7 @@ func TestReloader_Start_ContextCancel(t *testing.T) {
 // --- Concurrent Reload Tests ---
 
 func TestReloader_ConcurrentReloads(t *testing.T) {
-	r, err := NewReloader[reloaderCfg](nil, WithSkipValidation())
+	r, err := NewReloader[reloaderCfg](t.Context(), nil, WithSkipValidation())
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

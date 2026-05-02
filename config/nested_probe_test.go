@@ -21,7 +21,7 @@ func TestProbe_NestedEnvUnderscore(t *testing.T) {
 		DB dbCfg `koanf:"db"`
 	}
 
-	c, err := GetConfig[cfg](WithEnvPrefix("APP"), WithSkipValidation())
+	c, err := GetConfig[cfg](t.Context(), WithEnvPrefix("APP"), WithSkipValidation())
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -50,7 +50,7 @@ func TestProbe_NestedEnvDeep(t *testing.T) {
 		Server serverCfg `koanf:"server"`
 	}
 
-	c, err := GetConfig[cfg](WithEnvPrefix("APP"), WithSkipValidation())
+	c, err := GetConfig[cfg](t.Context(), WithEnvPrefix("APP"), WithSkipValidation())
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

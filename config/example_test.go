@@ -78,6 +78,7 @@ func ExampleGetConfig_comprehensive() {
 	// Source precedence: env > programmatic defaults > struct-tag defaults.
 
 	cfg, err := config.GetConfig[AppConfig](
+		context.Background(),
 		config.WithEnvPrefix("APP"),
 		config.WithDefaults(map[string]any{
 			"debug":      true,                        // overrides default:"false"
@@ -143,6 +144,7 @@ func ExampleNewReloader() {
 	}
 
 	reloader, err := config.NewReloader[AppConfig](
+		context.Background(),
 		nil, // no reload options
 		config.WithSkipValidation(),
 	)
@@ -175,6 +177,7 @@ func ExampleNewReloader_withCallback() {
 
 	var lastLevel string
 	reloader, err := config.NewReloader[Cfg](
+		context.Background(),
 		[]config.ReloadOption[Cfg]{
 			config.WithOnChange(func(old, new *Cfg) {
 				lastLevel = new.Level

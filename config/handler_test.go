@@ -12,7 +12,7 @@ import (
 )
 
 func TestReloadHandler_Post(t *testing.T) {
-	r, err := NewReloader[reloaderCfg](nil, WithSkipValidation())
+	r, err := NewReloader[reloaderCfg](t.Context(), nil, WithSkipValidation())
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -41,7 +41,7 @@ func TestReloadHandler_Post(t *testing.T) {
 }
 
 func TestReloadHandler_MethodNotAllowed(t *testing.T) {
-	r, err := NewReloader[reloaderCfg](nil, WithSkipValidation())
+	r, err := NewReloader[reloaderCfg](t.Context(), nil, WithSkipValidation())
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -65,7 +65,7 @@ func TestReloadHandler_ReloadError(t *testing.T) {
 	cfgFile := filepath.Join(dir, "config.yaml")
 	os.WriteFile(cfgFile, []byte("name: valid\n"), 0o644)
 
-	r, err := NewReloader[validatedCfg](nil,
+	r, err := NewReloader[validatedCfg](t.Context(), nil,
 		WithMustConfigFile(cfgFile),
 	)
 	if err != nil {
@@ -92,7 +92,7 @@ func TestReloadHandler_RedactsSensitiveFields(t *testing.T) {
 		Password string `koanf:"password" sensitive:"true" default:"secret123"`
 	}
 
-	r, err := NewReloader[sensitiveCfg](nil, WithSkipValidation())
+	r, err := NewReloader[sensitiveCfg](t.Context(), nil, WithSkipValidation())
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

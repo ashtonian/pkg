@@ -27,7 +27,6 @@ type options struct {
 	configFiles     []configFileEntry
 	defaults        map[string]any
 	secretProvider  secrets.SecretProvider
-	secretCtx       context.Context
 	skipValidation  bool
 	customValidator *validator.Validate
 	koanfInstance   *koanf.Koanf
@@ -106,12 +105,11 @@ func WithProvider(p koanf.Provider) Option {
 }
 
 // WithSecretProvider configures secret injection.
-// After unmarshaling, fields tagged with secret:"key" are populated
-// by calling secrets.Populate().
-func WithSecretProvider(sp secrets.SecretProvider, ctx context.Context) Option {
+// After unmarshaling, fields tagged with secret:"key" are populated by
+// calling secrets.Populate() with the ctx supplied to GetConfig.
+func WithSecretProvider(sp secrets.SecretProvider) Option {
 	return func(o *options) {
 		o.secretProvider = sp
-		o.secretCtx = ctx
 	}
 }
 
@@ -143,13 +141,17 @@ func WithKoanf(k *koanf.Koanf) Option {
 // GetConfig creates a koanf instance, loads sources in precedence order,
 // unmarshals into T, injects secrets, and validates.
 //
+// ctx is propagated into secret resolution; pass
+// the caller's request/boot context so secret-fetch latency and
+// cancellation flow through cleanly.
+//
 // Source precedence (highest wins):
 //  1. Extra providers (CLI flags via kongprovider, custom providers)
 //  2. Environment variables
 //  3. Config files (merged left-to-right)
 //  4. Programmatic defaults (WithDefaults)
 //  5. Struct tag defaults (default:"value" via DefaultsFromTags)
-func GetConfig[T any](opts ...Option) (*T, error) {
+func GetConfig[T any](ctx context.Context, opts ...Option) (*T, error) {
 	o := buildOptions(opts)
 
 	// Use caller-provided koanf or create a new one.
@@ -246,12 +248,10 @@ func GetConfig[T any](opts ...Option) (*T, error) {
 		return nil, fmt.Errorf("unmarshaling config: %w", err)
 	}
 
-	// Step 7: secret injection -- delegates to pkg/secrets.
+	// Step 7: secret injection -- delegates to pkg/secrets. Uses the ctx
+	// supplied to GetConfig, so secret-fetch latency and cancellation
+	// flow through cleanly to the caller.
 	if o.secretProvider != nil {
-		ctx := o.secretCtx
-		if ctx == nil {
-			ctx = context.Background()
-		}
 		if err := secrets.Populate(ctx, o.secretProvider, cfg); err != nil {
 			// Log which secret key failed (not the value) for debuggability.
 			slog.Error("secret injection failed",

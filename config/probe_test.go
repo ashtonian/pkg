@@ -14,7 +14,7 @@ func TestProbe_SliceFromEnv(t *testing.T) {
 		Tags []string `koanf:"tags"`
 	}
 
-	c, err := GetConfig[cfg](WithEnvPrefix("APP"), WithSkipValidation())
+	c, err := GetConfig[cfg](t.Context(), WithEnvPrefix("APP"), WithSkipValidation())
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -34,7 +34,7 @@ func TestProbe_MapFromYAML(t *testing.T) {
 		Labels map[string]string `koanf:"labels"`
 	}
 
-	c, err := GetConfig[cfg](WithConfigFile(path), WithSkipValidation())
+	c, err := GetConfig[cfg](t.Context(), WithConfigFile(path), WithSkipValidation())
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -56,7 +56,7 @@ func TestProbe_PointerFields(t *testing.T) {
 		Opt   *string `koanf:"opt"`  // not set
 	}
 
-	c, err := GetConfig[cfg](WithConfigFile(path), WithSkipValidation())
+	c, err := GetConfig[cfg](t.Context(), WithConfigFile(path), WithSkipValidation())
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -87,7 +87,7 @@ func TestProbe_PointerStruct(t *testing.T) {
 		Cache *DB     `koanf:"cache"` // not set
 	}
 
-	c, err := GetConfig[cfg](WithConfigFile(path), WithSkipValidation())
+	c, err := GetConfig[cfg](t.Context(), WithConfigFile(path), WithSkipValidation())
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -102,7 +102,7 @@ func TestProbe_SliceDefault(t *testing.T) {
 		Tags []string `koanf:"tags" default:"x,y,z"`
 	}
 
-	c, err := GetConfig[cfg](WithSkipValidation())
+	c, err := GetConfig[cfg](t.Context(), WithSkipValidation())
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -122,7 +122,7 @@ func TestProbe_MapOfSlices(t *testing.T) {
 		Routes map[string][]string `koanf:"routes"`
 	}
 
-	c, err := GetConfig[cfg](WithConfigFile(path), WithSkipValidation())
+	c, err := GetConfig[cfg](t.Context(), WithConfigFile(path), WithSkipValidation())
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -149,7 +149,7 @@ func TestProbe_SliceOfStructs(t *testing.T) {
 		Servers []Server `koanf:"servers"`
 	}
 
-	c, err := GetConfig[cfg](WithConfigFile(path), WithSkipValidation())
+	c, err := GetConfig[cfg](t.Context(), WithConfigFile(path), WithSkipValidation())
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

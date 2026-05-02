@@ -4,7 +4,6 @@ package config
 
 import (
 	"bytes"
-	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -160,7 +159,7 @@ func TestDefaultsFromTags_IgnoredField(t *testing.T) {
 // --- GetConfig Tests ---
 
 func TestGetConfig_Defaults(t *testing.T) {
-	cfg, err := GetConfig[BasicConfig](WithSkipValidation())
+	cfg, err := GetConfig[BasicConfig](t.Context(), WithSkipValidation())
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -179,7 +178,7 @@ func TestGetConfig_Defaults(t *testing.T) {
 }
 
 func TestGetConfig_AllTypes(t *testing.T) {
-	cfg, err := GetConfig[AllTypesConfig](WithSkipValidation())
+	cfg, err := GetConfig[AllTypesConfig](t.Context(), WithSkipValidation())
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -206,7 +205,7 @@ func TestGetConfig_EnvVars(t *testing.T) {
 	t.Setenv("APP_DEBUG", "true")
 	t.Setenv("APP_TIMEOUT", "10s")
 
-	cfg, err := GetConfig[BasicConfig](
+	cfg, err := GetConfig[BasicConfig](t.Context(), 
 		WithEnvPrefix("APP"),
 		WithSkipValidation(),
 	)
@@ -233,7 +232,7 @@ func TestGetConfig_EnvOverridesFile(t *testing.T) {
 
 	t.Setenv("TEST_HOST", "from-env")
 
-	cfg, err := GetConfig[BasicConfig](
+	cfg, err := GetConfig[BasicConfig](t.Context(), 
 		WithConfigFile(path),
 		WithEnvPrefix("TEST"),
 		WithSkipValidation(),
@@ -253,7 +252,7 @@ func TestGetConfig_FileOverridesDefault(t *testing.T) {
 	yamlContent := "host: from-file\nport: 3000\n"
 	path := writeYAML(t, yamlContent)
 
-	cfg, err := GetConfig[BasicConfig](
+	cfg, err := GetConfig[BasicConfig](t.Context(), 
 		WithConfigFile(path),
 		WithSkipValidation(),
 	)
@@ -280,7 +279,7 @@ database:
 `
 	path := writeYAML(t, yamlContent)
 
-	cfg, err := GetConfig[NestedConfig](
+	cfg, err := GetConfig[NestedConfig](t.Context(), 
 		WithConfigFile(path),
 		WithSkipValidation(),
 	)
@@ -306,7 +305,7 @@ func TestGetConfig_NestedWithEnvPrefix(t *testing.T) {
 	t.Setenv("APP_SERVER_PORT", "9090")
 	t.Setenv("APP_DATABASE_DSN", "postgres://localhost/test")
 
-	cfg, err := GetConfig[NestedConfig](
+	cfg, err := GetConfig[NestedConfig](t.Context(), 
 		WithEnvPrefix("APP"),
 		WithSkipValidation(),
 	)
@@ -329,8 +328,8 @@ func TestGetConfig_SecretProvider(t *testing.T) {
 		"api/key":     "key-123",
 	})
 
-	cfg, err := GetConfig[SecretConfig](
-		WithSecretProvider(provider, context.Background()),
+	cfg, err := GetConfig[SecretConfig](t.Context(), 
+		WithSecretProvider(provider),
 		WithSkipValidation(),
 	)
 	if err != nil {
@@ -347,8 +346,8 @@ func TestGetConfig_SecretProvider(t *testing.T) {
 func TestGetConfig_SecretProvider_Error(t *testing.T) {
 	provider := secretstesting.NewMapProvider(map[string]string{})
 
-	_, err := GetConfig[SecretConfig](
-		WithSecretProvider(provider, context.Background()),
+	_, err := GetConfig[SecretConfig](t.Context(), 
+		WithSecretProvider(provider),
 		WithSkipValidation(),
 	)
 	if err == nil {
@@ -362,7 +361,7 @@ func TestGetConfig_SecretProvider_Error(t *testing.T) {
 // --- Validation Tests ---
 
 func TestGetConfig_Validation_Pass(t *testing.T) {
-	cfg, err := GetConfig[ValidationConfig]()
+	cfg, err := GetConfig[ValidationConfig](t.Context())
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -374,7 +373,7 @@ func TestGetConfig_Validation_Pass(t *testing.T) {
 func TestGetConfig_Validation_Fail(t *testing.T) {
 	t.Setenv("APP_PORT", "0")
 
-	_, err := GetConfig[ValidationConfig](WithEnvPrefix("APP"))
+	_, err := GetConfig[ValidationConfig](t.Context(), WithEnvPrefix("APP"))
 	if err == nil {
 		t.Fatal("expected validation error for Port=0")
 	}
@@ -384,7 +383,7 @@ func TestGetConfig_Validation_Fail(t *testing.T) {
 }
 
 func TestGetConfig_Validation_Required(t *testing.T) {
-	_, err := GetConfig[RequiredFieldConfig]()
+	_, err := GetConfig[RequiredFieldConfig](t.Context())
 	if err == nil {
 		t.Fatal("expected validation error for missing required field")
 	}
@@ -396,7 +395,7 @@ func TestGetConfig_Validation_Required(t *testing.T) {
 func TestGetConfig_Validation_Required_Set(t *testing.T) {
 	t.Setenv("APP_NAME", "test-app")
 
-	cfg, err := GetConfig[RequiredFieldConfig](WithEnvPrefix("APP"))
+	cfg, err := GetConfig[RequiredFieldConfig](t.Context(), WithEnvPrefix("APP"))
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -408,7 +407,7 @@ func TestGetConfig_Validation_Required_Set(t *testing.T) {
 func TestGetConfig_Validation_Skip(t *testing.T) {
 	t.Setenv("APP_PORT", "0")
 
-	cfg, err := GetConfig[ValidationConfig](
+	cfg, err := GetConfig[ValidationConfig](t.Context(), 
 		WithEnvPrefix("APP"),
 		WithSkipValidation(),
 	)
@@ -426,7 +425,7 @@ func TestGetConfig_YAMLFile(t *testing.T) {
 	yamlContent := "host: yaml-host\nport: 7777\ndebug: true\ntimeout: 15s\n"
 	path := writeYAML(t, yamlContent)
 
-	cfg, err := GetConfig[BasicConfig](
+	cfg, err := GetConfig[BasicConfig](t.Context(), 
 		WithConfigFile(path),
 		WithSkipValidation(),
 	)
@@ -457,7 +456,7 @@ database:
 `
 	path := writeYAML(t, yamlContent)
 
-	cfg, err := GetConfig[NestedConfig](
+	cfg, err := GetConfig[NestedConfig](t.Context(), 
 		WithConfigFile(path),
 		WithSkipValidation(),
 	)
@@ -479,7 +478,7 @@ database:
 }
 
 func TestGetConfig_MissingOptionalFile(t *testing.T) {
-	cfg, err := GetConfig[BasicConfig](
+	cfg, err := GetConfig[BasicConfig](t.Context(), 
 		WithConfigFile("/nonexistent/config.yaml"),
 		WithSkipValidation(),
 	)
@@ -492,7 +491,7 @@ func TestGetConfig_MissingOptionalFile(t *testing.T) {
 }
 
 func TestGetConfig_MissingRequiredFile(t *testing.T) {
-	_, err := GetConfig[BasicConfig](
+	_, err := GetConfig[BasicConfig](t.Context(), 
 		WithMustConfigFile("/nonexistent/config.yaml"),
 		WithSkipValidation(),
 	)
@@ -508,7 +507,7 @@ func TestGetConfig_MultipleFiles_MergedLeftToRight(t *testing.T) {
 	base := writeYAML(t, "host: base-host\nport: 1111\n")
 	override := writeYAML(t, "port: 2222\n")
 
-	cfg, err := GetConfig[BasicConfig](
+	cfg, err := GetConfig[BasicConfig](t.Context(), 
 		WithConfigFiles(base, override),
 		WithSkipValidation(),
 	)
@@ -525,7 +524,7 @@ func TestGetConfig_MultipleFiles_MergedLeftToRight(t *testing.T) {
 
 func TestGetConfig_MustConfigFiles(t *testing.T) {
 	f := writeYAML(t, "host: ok\n")
-	_, err := GetConfig[BasicConfig](
+	_, err := GetConfig[BasicConfig](t.Context(), 
 		WithMustConfigFiles(f, "/nonexistent/config.yaml"),
 		WithSkipValidation(),
 	)
@@ -540,7 +539,7 @@ func TestGetConfig_MustConfigFiles(t *testing.T) {
 // --- Ignored Field Tests ---
 
 func TestGetConfig_IgnoredField(t *testing.T) {
-	cfg, err := GetConfig[IgnoredFieldConfig](WithSkipValidation())
+	cfg, err := GetConfig[IgnoredFieldConfig](t.Context(), WithSkipValidation())
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -555,7 +554,7 @@ func TestGetConfig_IgnoredField(t *testing.T) {
 // --- Programmatic Defaults Tests ---
 
 func TestGetConfig_ProgrammaticDefaults(t *testing.T) {
-	cfg, err := GetConfig[BasicConfig](
+	cfg, err := GetConfig[BasicConfig](t.Context(), 
 		WithDefaults(map[string]any{
 			"host": "prog-host",
 			"port": 5555,
@@ -576,7 +575,7 @@ func TestGetConfig_ProgrammaticDefaults(t *testing.T) {
 func TestGetConfig_ProgrammaticDefaults_FileOverrides(t *testing.T) {
 	path := writeYAML(t, "host: from-file\n")
 
-	cfg, err := GetConfig[BasicConfig](
+	cfg, err := GetConfig[BasicConfig](t.Context(), 
 		WithDefaults(map[string]any{
 			"host": "prog-host",
 			"port": 5555,
@@ -601,7 +600,7 @@ func TestGetConfig_FullPrecedence(t *testing.T) {
 	path := writeYAML(t, "host: file-host\n")
 	t.Setenv("TEST_HOST", "env-host")
 
-	cfg, err := GetConfig[BasicConfig](
+	cfg, err := GetConfig[BasicConfig](t.Context(), 
 		WithConfigFile(path),
 		WithEnvPrefix("TEST"),
 		WithSkipValidation(),
@@ -615,7 +614,7 @@ func TestGetConfig_FullPrecedence(t *testing.T) {
 }
 
 func TestGetConfig_Precedence_ProgrammaticOverStructDefault(t *testing.T) {
-	cfg, err := GetConfig[BasicConfig](
+	cfg, err := GetConfig[BasicConfig](t.Context(), 
 		WithDefaults(map[string]any{
 			"host": "prog-host",
 		}),
@@ -636,7 +635,7 @@ func TestGetConfig_Precedence_ProviderOverEnv(t *testing.T) {
 		"host": "provider-host",
 	}, ".")
 
-	cfg, err := GetConfig[BasicConfig](
+	cfg, err := GetConfig[BasicConfig](t.Context(), 
 		WithEnvPrefix("TEST"),
 		WithProvider(extraProvider),
 		WithSkipValidation(),
@@ -658,7 +657,7 @@ func TestGetConfig_WithKoanf(t *testing.T) {
 		"port": 1234,
 	}, "."), nil)
 
-	cfg, err := GetConfig[BasicConfig](
+	cfg, err := GetConfig[BasicConfig](t.Context(), 
 		WithKoanf(k),
 		WithSkipValidation(),
 	)
@@ -683,7 +682,7 @@ func TestGetConfig_WithKoanf_NoDefault(t *testing.T) {
 		"name": "from-koanf",
 	}, "."), nil)
 
-	cfg, err := GetConfig[NoDefaultConfig](
+	cfg, err := GetConfig[NoDefaultConfig](t.Context(), 
 		WithKoanf(k),
 		WithSkipValidation(),
 	)
@@ -715,7 +714,7 @@ func TestGetConfig_WithProvider(t *testing.T) {
 		"host": "from-provider",
 	}, ".")
 
-	cfg, err := GetConfig[BasicConfig](
+	cfg, err := GetConfig[BasicConfig](t.Context(), 
 		WithProvider(p),
 		WithSkipValidation(),
 	)
@@ -736,7 +735,7 @@ func TestGetConfig_MultipleProviders(t *testing.T) {
 		"port": 2222,
 	}, ".")
 
-	cfg, err := GetConfig[BasicConfig](
+	cfg, err := GetConfig[BasicConfig](t.Context(), 
 		WithProvider(p1),
 		WithProvider(p2),
 		WithSkipValidation(),
@@ -906,7 +905,7 @@ func TestSensitiveAutoDetection(t *testing.T) {
 // --- Custom Validator Tests ---
 
 func TestGetConfig_CustomValidator(t *testing.T) {
-	cfg, err := GetConfig[ValidationConfig](
+	cfg, err := GetConfig[ValidationConfig](t.Context(), 
 		WithValidator(nil), // nil falls back to default
 	)
 	if err != nil {
@@ -973,7 +972,7 @@ func TestGetConfig_YAMLArray(t *testing.T) {
 		Tags []string `koanf:"tags"`
 	}
 
-	c, err := GetConfig[cfg](WithConfigFile(path), WithSkipValidation())
+	c, err := GetConfig[cfg](t.Context(), WithConfigFile(path), WithSkipValidation())
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -995,7 +994,7 @@ func TestGetConfig_SliceFromEnvVar(t *testing.T) {
 		Tags []string `koanf:"tags"`
 	}
 
-	c, err := GetConfig[cfg](WithEnvPrefix("APP"), WithSkipValidation())
+	c, err := GetConfig[cfg](t.Context(), WithEnvPrefix("APP"), WithSkipValidation())
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1014,7 +1013,7 @@ func TestGetConfig_SliceFromDefault(t *testing.T) {
 		Tags []string `koanf:"tags" default:"a,b,c"`
 	}
 
-	c, err := GetConfig[cfg](WithSkipValidation())
+	c, err := GetConfig[cfg](t.Context(), WithSkipValidation())
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1035,7 +1034,7 @@ func TestGetConfig_SliceEnvOverridesDefault(t *testing.T) {
 		Tags []string `koanf:"tags" default:"a,b,c"`
 	}
 
-	c, err := GetConfig[cfg](WithEnvPrefix("APP"), WithSkipValidation())
+	c, err := GetConfig[cfg](t.Context(), WithEnvPrefix("APP"), WithSkipValidation())
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1057,7 +1056,7 @@ func TestGetConfig_IntSlice(t *testing.T) {
 		Ports []int `koanf:"ports"`
 	}
 
-	c, err := GetConfig[cfg](WithConfigFile(path), WithSkipValidation())
+	c, err := GetConfig[cfg](t.Context(), WithConfigFile(path), WithSkipValidation())
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1081,7 +1080,7 @@ func TestGetConfig_SliceOfStructs(t *testing.T) {
 		Servers []server `koanf:"servers"`
 	}
 
-	c, err := GetConfig[cfg](WithConfigFile(path), WithSkipValidation())
+	c, err := GetConfig[cfg](t.Context(), WithConfigFile(path), WithSkipValidation())
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1106,7 +1105,7 @@ func TestGetConfig_YAMLMap(t *testing.T) {
 		Labels map[string]string `koanf:"labels"`
 	}
 
-	c, err := GetConfig[cfg](WithConfigFile(path), WithSkipValidation())
+	c, err := GetConfig[cfg](t.Context(), WithConfigFile(path), WithSkipValidation())
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1131,7 +1130,7 @@ func TestGetConfig_MapFromEnvVar(t *testing.T) {
 		Labels map[string]string `koanf:"labels"`
 	}
 
-	c, err := GetConfig[cfg](WithEnvPrefix("APP"), WithSkipValidation())
+	c, err := GetConfig[cfg](t.Context(), WithEnvPrefix("APP"), WithSkipValidation())
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1154,7 +1153,7 @@ func TestGetConfig_MapOfSlices(t *testing.T) {
 		Routes map[string][]string `koanf:"routes"`
 	}
 
-	c, err := GetConfig[cfg](WithConfigFile(path), WithSkipValidation())
+	c, err := GetConfig[cfg](t.Context(), WithConfigFile(path), WithSkipValidation())
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1174,7 +1173,7 @@ func TestGetConfig_MapFromProgrammaticDefaults(t *testing.T) {
 		Labels map[string]string `koanf:"labels"`
 	}
 
-	c, err := GetConfig[cfg](
+	c, err := GetConfig[cfg](t.Context(), 
 		WithDefaults(map[string]any{
 			"labels": map[string]any{
 				"env":    "dev",
@@ -1206,7 +1205,7 @@ func TestGetConfig_PointerFields(t *testing.T) {
 		Opt   *string `koanf:"opt"` // not set
 	}
 
-	c, err := GetConfig[cfg](WithConfigFile(path), WithSkipValidation())
+	c, err := GetConfig[cfg](t.Context(), WithConfigFile(path), WithSkipValidation())
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1231,7 +1230,7 @@ func TestGetConfig_PointerFieldsFromEnv(t *testing.T) {
 		Opt   *string `koanf:"opt"`
 	}
 
-	c, err := GetConfig[cfg](WithEnvPrefix("APP"), WithSkipValidation())
+	c, err := GetConfig[cfg](t.Context(), WithEnvPrefix("APP"), WithSkipValidation())
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1259,7 +1258,7 @@ func TestGetConfig_PointerToStruct(t *testing.T) {
 		Cache *dbCfg `koanf:"cache"` // not set
 	}
 
-	c, err := GetConfig[cfg](WithConfigFile(path), WithSkipValidation())
+	c, err := GetConfig[cfg](t.Context(), WithConfigFile(path), WithSkipValidation())
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1280,7 +1279,7 @@ func TestGetConfig_PointerToStructWithDefaults(t *testing.T) {
 		Server *inner `koanf:"server"`
 	}
 
-	c, err := GetConfig[cfg](WithSkipValidation())
+	c, err := GetConfig[cfg](t.Context(), WithSkipValidation())
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1332,7 +1331,7 @@ app:
 		App appCfg `koanf:"app"`
 	}
 
-	c, err := GetConfig[cfg](WithConfigFile(path), WithSkipValidation())
+	c, err := GetConfig[cfg](t.Context(), WithConfigFile(path), WithSkipValidation())
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1375,7 +1374,7 @@ func TestGetConfig_NestedEnvWithUnderscoreInTag(t *testing.T) {
 		DB dbCfg `koanf:"db"`
 	}
 
-	c, err := GetConfig[cfg](WithEnvPrefix("APP"), WithSkipValidation())
+	c, err := GetConfig[cfg](t.Context(), WithEnvPrefix("APP"), WithSkipValidation())
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1407,7 +1406,7 @@ func TestGetConfig_DeepNestedEnvWithUnderscores(t *testing.T) {
 		Server serverCfg `koanf:"server"`
 	}
 
-	c, err := GetConfig[cfg](WithEnvPrefix("APP"), WithSkipValidation())
+	c, err := GetConfig[cfg](t.Context(), WithEnvPrefix("APP"), WithSkipValidation())
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1433,7 +1432,7 @@ func TestGetConfig_MapFieldsStillWorkFromEnv(t *testing.T) {
 		Labels map[string]string `koanf:"labels"`
 	}
 
-	c, err := GetConfig[cfg](WithEnvPrefix("APP"), WithSkipValidation())
+	c, err := GetConfig[cfg](t.Context(), WithEnvPrefix("APP"), WithSkipValidation())
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1582,7 +1581,7 @@ func TestConfigError_FieldTagParam(t *testing.T) {
 func TestToConfigErrors_ValidationError(t *testing.T) {
 	t.Setenv("APP_PORT", "0")
 
-	_, err := GetConfig[ValidationConfig](WithEnvPrefix("APP"))
+	_, err := GetConfig[ValidationConfig](t.Context(), WithEnvPrefix("APP"))
 	if err == nil {
 		t.Fatal("expected validation error")
 	}
@@ -1625,7 +1624,7 @@ func TestToConfigErrors_NilError(t *testing.T) {
 }
 
 func TestToConfigErrors_RequiredField(t *testing.T) {
-	_, err := GetConfig[RequiredFieldConfig]()
+	_, err := GetConfig[RequiredFieldConfig](t.Context())
 	if err == nil {
 		t.Fatal("expected validation error for missing required field")
 	}
@@ -1758,7 +1757,7 @@ func TestToConfigErrors_WithLocalizedMessage(t *testing.T) {
 	// End-to-end: trigger validation error, convert to ConfigErrors, translate.
 	t.Setenv("APP_PORT", "0")
 
-	_, err := GetConfig[ValidationConfig](WithEnvPrefix("APP"))
+	_, err := GetConfig[ValidationConfig](t.Context(), WithEnvPrefix("APP"))
 	if err == nil {
 		t.Fatal("expected validation error")
 	}

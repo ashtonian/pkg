@@ -91,10 +91,11 @@ func WithReloadLogger[T any](logger *slog.Logger) ReloadOption[T] {
 }
 
 // NewReloader creates a Reloader that loads initial config via
-// GetConfig[T](configOpts...) and optionally watches for changes.
-// The configOpts are stored and re-used on every reload.
-func NewReloader[T any](reloadOpts []ReloadOption[T], configOpts ...Option) (*Reloader[T], error) {
-	cfg, err := GetConfig[T](configOpts...)
+// GetConfig[T](ctx, configOpts...) and optionally watches for changes.
+// The configOpts are stored and re-used on every reload (each reload uses
+// the ctx passed to Reload).
+func NewReloader[T any](ctx context.Context, reloadOpts []ReloadOption[T], configOpts ...Option) (*Reloader[T], error) {
+	cfg, err := GetConfig[T](ctx, configOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -132,7 +133,7 @@ func (r *Reloader[T]) Reload(ctx context.Context) (*T, error) {
 	r.reloadMu.Lock()
 	defer r.reloadMu.Unlock()
 
-	cfg, err := GetConfig[T](r.configOpts...)
+	cfg, err := GetConfig[T](ctx, r.configOpts...)
 	if err != nil {
 		return nil, fmt.Errorf("%w: %v", ErrReload, err)
 	}
