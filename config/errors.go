@@ -6,16 +6,31 @@ import (
 
 	"github.com/go-playground/validator/v10"
 
+	"github.com/ashtonian/pkg/errcontract"
 	"github.com/ashtonian/pkg/errutil"
 )
 
 // Error codes for the config package (E7002-E7006 range).
 // E7001 was removed — use validate:"required" instead.
 var (
-	CodeValidation     = errutil.DefineCode(errutil.CodeDef{Code: "E7002", HTTPStatus: 422, Class: errutil.ErrorClassPermanent, UserFacing: true, Message: "configuration validation failed", Package: "config"})
-	CodeFileRead       = errutil.DefineCode(errutil.CodeDef{Code: "E7003", HTTPStatus: 500, Class: errutil.ErrorClassUnknown, UserFacing: false, Message: "failed to read configuration file", Package: "config"})
-	CodeSecretProvider = errutil.DefineCode(errutil.CodeDef{Code: "E7005", HTTPStatus: 500, Class: errutil.ErrorClassTransient, UserFacing: false, Message: "secret provider error", Package: "config"})
-	CodeReload         = errutil.DefineCode(errutil.CodeDef{Code: "E7006", HTTPStatus: 500, Class: errutil.ErrorClassTransient, UserFacing: false, Message: "configuration reload failed", Package: "config"})
+	CodeValidation = errcontract.CodeDef{
+		Code: "E7002", HTTPStatus: 422, Class: errcontract.ClassPermanent,
+		UserFacing: true, Message: "configuration validation failed",
+		Sentinel: errcontract.ErrValidationSentinel, Package: "config",
+	}
+	CodeFileRead = errcontract.CodeDef{
+		Code: "E7003", HTTPStatus: 500, Class: errcontract.ClassUnknown,
+		UserFacing: false, Message: "failed to read configuration file", Package: "config",
+	}
+	CodeSecretProvider = errcontract.CodeDef{
+		Code: "E7005", HTTPStatus: 500, Class: errcontract.ClassTransient,
+		UserFacing: false, Message: "secret provider error",
+		Sentinel: errcontract.ErrDependencySentinel, Package: "config",
+	}
+	CodeReload = errcontract.CodeDef{
+		Code: "E7006", HTTPStatus: 500, Class: errcontract.ClassTransient,
+		UserFacing: false, Message: "configuration reload failed", Package: "config",
+	}
 )
 
 // Backward-compatible aliases for the old ErrCodeXxx names.
@@ -28,10 +43,10 @@ var (
 
 // Sentinel errors for common checks using errors.Is.
 var (
-	ErrValidation     = errutil.NewFromCode(CodeValidation, "configuration validation failed")
-	ErrFileRead       = errutil.NewFromCode(CodeFileRead, "failed to read configuration file")
-	ErrSecretProvider = errutil.NewFromCode(CodeSecretProvider, "secret provider error")
-	ErrReload         = errutil.NewFromCode(CodeReload, "configuration reload failed")
+	ErrValidation     = errcontract.ErrorOf(CodeValidation)
+	ErrFileRead       = errcontract.ErrorOf(CodeFileRead)
+	ErrSecretProvider = errcontract.ErrorOf(CodeSecretProvider)
+	ErrReload         = errcontract.ErrorOf(CodeReload)
 )
 
 // ConfigError wraps an errutil.APIError with localized message support.
@@ -119,8 +134,25 @@ func ToConfigErrors(err error) []*ConfigError {
 			tag += "=" + fe.Param()
 		}
 		msg := fmt.Sprintf("field %s failed validation: %s", fe.Field(), tag)
-		apiErr := errutil.NewFromCode(CodeValidation, msg)
+		apiErr := errutil.NewFromCodeDef(CodeValidation, msg)
 		result = append(result, NewConfigError(apiErr, fe.Namespace(), fe.Tag(), fe.Param()))
 	}
 	return result
+}
+
+// Codes returns the package's full error catalog.
+func Codes() []errcontract.CodeDef {
+	return []errcontract.CodeDef{
+		CodeValidation,
+		CodeFileRead,
+		CodeSecretProvider,
+		CodeReload,
+	}
+}
+
+// RegisterTo loads the package's CodeDefs into the given store.
+func RegisterTo(s errcontract.Store) {
+	for _, c := range Codes() {
+		s.Register(c)
+	}
 }
