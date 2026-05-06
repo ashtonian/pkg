@@ -37,12 +37,14 @@ type DBConfig struct {
 }
 
 // Load from files, env vars, secrets, and CLI flags.
-cfg, err := config.GetConfig[AppConfig](
+cfg, err := config.GetConfig[AppConfig](ctx,
     config.WithEnvPrefix("APP"),                           // APP_HOST, APP_DB_MAX_CONNS, etc.
     config.WithConfigFile("/etc/myapp/config.yaml"),       // YAML files merged left-to-right
     config.WithConfigFile("./config.local.yaml"),
     config.WithDefaults(map[string]any{"db.name": "dev"}), // Programmatic defaults
-    config.WithSecretProvider(vaultProvider, ctx),          // secret:"key" injection
+    config.WithSecretPopulator(func(ctx context.Context, target any) error {
+        return secrets.Populate(ctx, vaultProvider, target) // your secret backend
+    }),
     kongprovider.WithOverridesFromTags[AppConfig](kongCtx), // CLI flag overrides (highest)
 )
 
@@ -64,7 +66,7 @@ Env var names are built by uppercasing each koanf tag and joining with `_`. Unde
 | `flag` | Kong CLI flag name (used by `kongprovider`) | `flag:"port"` |
 | `sensitive` | Redacted in PrintRedacted/ToMap output | `sensitive:"true"` |
 | `desc` | Human-readable description | `desc:"Server hostname"` |
-| `secret` | Key for secret provider lookup | `secret:"db/password"` |
+| `secret` | Key resolved by the [SecretPopulator] passed to `WithSecretPopulator` | `secret:"db/password"` |
 
 ## Hot-Reload
 
@@ -113,7 +115,7 @@ mux.Handle("POST /admin/config/reload", reloader.ReloadHandler())
 | `WithConfigFiles(paths...)` | Add multiple optional config files, merged left-to-right |
 | `WithDefaults(map)` | Set programmatic default values (koanf dot-path keys) |
 | `WithProvider(p)` | Add a generic koanf provider at high precedence |
-| `WithSecretProvider(sp, ctx)` | Configure secret injection via `pkg/secrets` |
+| `WithSecretPopulator(fn)` | Configure secret injection via a consumer-supplied `SecretPopulator` closure (typically wraps a secret store client) |
 | `WithSkipValidation()` | Disable go-playground/validator validation |
 | `WithValidator(v)` | Use a custom validator instance |
 

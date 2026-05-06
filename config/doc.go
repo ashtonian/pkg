@@ -4,7 +4,9 @@
 //
 // The package is a thin wrapper around knadh/koanf/v2, adding DefaultsFromTags,
 // PrintRedacted/ToMap, and GetConfig[T]() as a convenience orchestrator over
-// koanf, pkg/secrets, and go-playground/validator.
+// koanf, a consumer-supplied [SecretPopulator], and go-playground/validator.
+// Secret backends are the caller's, wired in via WithSecretPopulator; the
+// package depends on none.
 //
 // # Quick Start
 //
@@ -30,7 +32,7 @@
 //   - validate:"required"  - Field must be set (go-playground/validator)
 //   - sensitive:"true"     - Redacted in PrintRedacted/ToMap output
 //   - desc:"description"   - Human-readable description
-//   - secret:"key"         - Key for secret provider lookup via pkg/secrets
+//   - secret:"key"         - Key resolved by the SecretPopulator passed to WithSecretPopulator
 //   - flag:"flagname"      - Maps to Kong CLI flag (used by kongprovider sub-package)
 //
 // # Source Precedence
@@ -52,10 +54,18 @@
 //	    kongprovider.WithOverridesFromTags[AppConfig](kongCtx),
 //	)
 //
-// # Secret Providers
+// # Secret Injection
 //
-//	cfg, err := config.GetConfig[MyConfig](
-//	    config.WithSecretProvider(provider, ctx),
+// The package does not import any secret backend. The consumer wires
+// in a [SecretPopulator] closure that captures the chosen backend (e.g.
+// Vault, AWS Secrets Manager):
+//
+//	import "github.com/ashtonian/pkg/secrets"
+//
+//	cfg, err := config.GetConfig[MyConfig](ctx,
+//	    config.WithSecretPopulator(func(ctx context.Context, target any) error {
+//	        return secrets.Populate(ctx, provider, target)
+//	    }),
 //	)
 //
 // # Hot-Reload

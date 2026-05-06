@@ -4,10 +4,12 @@ package config
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -16,8 +18,41 @@ import (
 	"github.com/knadh/koanf/v2"
 
 	"github.com/ashtonian/pkg/errutil"
-	secretstesting "github.com/ashtonian/pkg/secrets/testing"
 )
+
+// mapPopulator returns a SecretPopulator that walks `secret:"key"` tags on
+// target's exported fields and assigns string values from the supplied map.
+// Mirrors a secret store's populate call for the subset of types the test
+// suite exercises (string fields only).
+func mapPopulator(secrets map[string]string) SecretPopulator {
+	return func(_ context.Context, target any) error {
+		v := reflect.ValueOf(target)
+		if v.Kind() != reflect.Ptr || v.IsNil() {
+			return fmt.Errorf("mapPopulator: target must be non-nil pointer to struct")
+		}
+		v = v.Elem()
+		if v.Kind() != reflect.Struct {
+			return fmt.Errorf("mapPopulator: target must point to struct")
+		}
+		t := v.Type()
+		for i := range t.NumField() {
+			tag := t.Field(i).Tag.Get("secret")
+			if tag == "" || tag == "-" {
+				continue
+			}
+			val, ok := secrets[tag]
+			if !ok {
+				return fmt.Errorf("secret %q not found", tag)
+			}
+			f := v.Field(i)
+			if f.Kind() != reflect.String || !f.CanSet() {
+				return fmt.Errorf("mapPopulator: unsupported or unsettable field %s", t.Field(i).Name)
+			}
+			f.SetString(val)
+		}
+		return nil
+	}
+}
 
 // --- Test config structs (koanf tags) ---
 
@@ -322,14 +357,14 @@ func TestGetConfig_NestedWithEnvPrefix(t *testing.T) {
 
 // --- Secret Provider Tests ---
 
-func TestGetConfig_SecretProvider(t *testing.T) {
-	provider := secretstesting.NewMapProvider(map[string]string{
+func TestGetConfig_SecretPopulator(t *testing.T) {
+	populator := mapPopulator(map[string]string{
 		"db/password": "supersecret",
 		"api/key":     "key-123",
 	})
 
-	cfg, err := GetConfig[SecretConfig](t.Context(), 
-		WithSecretProvider(provider),
+	cfg, err := GetConfig[SecretConfig](t.Context(),
+		WithSecretPopulator(populator),
 		WithSkipValidation(),
 	)
 	if err != nil {
@@ -343,11 +378,11 @@ func TestGetConfig_SecretProvider(t *testing.T) {
 	}
 }
 
-func TestGetConfig_SecretProvider_Error(t *testing.T) {
-	provider := secretstesting.NewMapProvider(map[string]string{})
+func TestGetConfig_SecretPopulator_Error(t *testing.T) {
+	populator := mapPopulator(map[string]string{})
 
-	_, err := GetConfig[SecretConfig](t.Context(), 
-		WithSecretProvider(provider),
+	_, err := GetConfig[SecretConfig](t.Context(),
+		WithSecretPopulator(populator),
 		WithSkipValidation(),
 	)
 	if err == nil {

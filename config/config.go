@@ -15,9 +15,15 @@ import (
 	kenv "github.com/knadh/koanf/providers/env"
 	"github.com/knadh/koanf/providers/file"
 	"github.com/knadh/koanf/v2"
-
-	"github.com/ashtonian/pkg/secrets"
 )
+
+// SecretPopulator fills `secret`-tagged fields on the target struct.
+//
+// Implementations typically wrap a secret store's client. Keeping this as
+// a function-typed option rather than an interface keeps the package free
+// of any secret backend while letting consumers wire any secret backend
+// they want.
+type SecretPopulator func(ctx context.Context, target any) error
 
 // Option configures GetConfig behavior.
 type Option func(*options)
@@ -26,7 +32,7 @@ type options struct {
 	envPrefix       string
 	configFiles     []configFileEntry
 	defaults        map[string]any
-	secretProvider  secrets.SecretProvider
+	populateSecrets SecretPopulator
 	skipValidation  bool
 	customValidator *validator.Validate
 	koanfInstance   *koanf.Koanf
@@ -104,12 +110,16 @@ func WithProvider(p koanf.Provider) Option {
 	}
 }
 
-// WithSecretProvider configures secret injection.
-// After unmarshaling, fields tagged with secret:"key" are populated by
-// calling secrets.Populate() with the ctx supplied to GetConfig.
-func WithSecretProvider(sp secrets.SecretProvider) Option {
+// WithSecretPopulator configures secret injection.
+//
+// After unmarshaling, GetConfig invokes the populator with the same ctx
+// supplied to GetConfig and a pointer to the freshly-loaded config struct.
+// The populator is responsible for walking `secret:"..."` tags and
+// resolving values from the consumer's chosen secret backend
+// (typically a secret store client's populate call).
+func WithSecretPopulator(p SecretPopulator) Option {
 	return func(o *options) {
-		o.secretProvider = sp
+		o.populateSecrets = p
 	}
 }
 
@@ -141,9 +151,9 @@ func WithKoanf(k *koanf.Koanf) Option {
 // GetConfig creates a koanf instance, loads sources in precedence order,
 // unmarshals into T, injects secrets, and validates.
 //
-// ctx is propagated into secret resolution; pass
-// the caller's request/boot context so secret-fetch latency and
-// cancellation flow through cleanly.
+// ctx is propagated into secret resolution via the [SecretPopulator] passed
+// to [WithSecretPopulator]; pass the caller's request/boot context so
+// secret-fetch latency and cancellation flow through cleanly.
 //
 // Source precedence (highest wins):
 //  1. Extra providers (CLI flags via kongprovider, custom providers)
@@ -248,11 +258,11 @@ func GetConfig[T any](ctx context.Context, opts ...Option) (*T, error) {
 		return nil, fmt.Errorf("unmarshaling config: %w", err)
 	}
 
-	// Step 7: secret injection -- delegates to pkg/secrets. Uses the ctx
-	// supplied to GetConfig, so secret-fetch latency and cancellation
-	// flow through cleanly to the caller.
-	if o.secretProvider != nil {
-		if err := secrets.Populate(ctx, o.secretProvider, cfg); err != nil {
+	// Step 7: secret injection -- delegates to the consumer-supplied
+	// populator. Uses the ctx supplied to GetConfig, so secret-fetch
+	// latency and cancellation flow through cleanly to the caller.
+	if o.populateSecrets != nil {
+		if err := o.populateSecrets(ctx, cfg); err != nil {
 			// Log which secret key failed (not the value) for debuggability.
 			slog.Error("secret injection failed",
 				"error", err.Error(),
