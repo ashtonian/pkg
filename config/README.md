@@ -1,16 +1,8 @@
 # config
 
-Type-safe configuration loading using [koanf](https://github.com/knadh/koanf) with support for multiple sources (YAML files, environment variables, CLI flags), struct tag defaults, validation, sensitive field redaction, and secret injection.
+Type-safe configuration loading using [koanf](https://github.com/knadh/koanf) with support for multiple sources (YAML files, environment variables, CLI flags), struct-tag defaults, validation, sensitive field redaction, and secret injection.
 
-## Source Precedence (highest wins)
-
-1. Extra providers (CLI flags via `kongprovider`, custom providers)
-2. Environment variables (`WithEnvPrefix`)
-3. Config files (merged left-to-right)
-4. Programmatic defaults (`WithDefaults`)
-5. Struct tag defaults (`default:"value"`)
-
-## Example
+## Quick Start
 
 ```go
 // Struct with tags for defaults, validation, secrets, and redaction.
@@ -56,7 +48,17 @@ config.PrintRedacted(cfg)
 
 Env var names are built by uppercasing each koanf tag and joining with `_`. Underscores inside koanf tags are preserved: `APP_DB_MAX_CONNS` maps to `db.max_conns`, not `db.max.conns`.
 
-## Struct Tags
+## Configuration
+
+### Source precedence (highest wins)
+
+1. Extra providers (CLI flags via `kongprovider`, custom providers)
+2. Environment variables (`WithEnvPrefix`)
+3. Config files (merged left-to-right)
+4. Programmatic defaults (`WithDefaults`)
+5. Struct tag defaults (`default:"value"`)
+
+### Struct Tags
 
 | Tag | Description | Example |
 |-----|-------------|---------|
@@ -68,7 +70,7 @@ Env var names are built by uppercasing each koanf tag and joining with `_`. Unde
 | `desc` | Human-readable description | `desc:"Server hostname"` |
 | `secret` | Key resolved by the [SecretPopulator] passed to `WithSecretPopulator` | `secret:"db/password"` |
 
-## Hot-Reload
+### Hot-Reload
 
 `Reloader[T]` watches config sources and atomically swaps the config when changes are detected. Reads via `Config()` are lock-free (atomic pointer). Failed reloads preserve the previous config.
 
@@ -144,3 +146,6 @@ mux.Handle("POST /admin/config/reload", reloader.ReloadHandler())
 | E7005 | `ErrSecretProvider` | Secret provider returned an error |
 | E7006 | `ErrReload` | Config reload failed (wraps underlying error) |
 
+## References
+
+- [knadh/koanf](https://github.com/knadh/koanf) — wrapped library
