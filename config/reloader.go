@@ -43,6 +43,12 @@ type Reloader[T any] struct {
 // ReloadOption configures a Reloader.
 type ReloadOption[T any] func(*Reloader[T])
 
+// DefaultFileWatchDebounce is the [WithFileWatch] debounce window applied
+// when the option's argument is zero or negative. 500ms is large enough to
+// coalesce editor rename+write sequences yet small enough that operators
+// see fresh config within one human reaction time.
+const DefaultFileWatchDebounce = 500 * time.Millisecond
+
 // WithOnChange registers a callback invoked after a successful reload.
 // Multiple callbacks are invoked in registration order. The callback
 // receives the old and new config pointers. Long-running callbacks
@@ -56,7 +62,11 @@ func WithOnChange[T any](fn func(old, new *T)) ReloadOption[T] {
 // WithFileWatch enables fsnotify-based watching of config files specified
 // via WithConfigFile / WithMustConfigFile. When a watched file changes,
 // the full GetConfig[T] pipeline is re-run after debounce elapses.
-// A debounce of 0 defaults to 500ms.
+//
+// debounce coalesces bursts of rapid filesystem events (editors that issue
+// rename+write, atomic-write toolchains) into a single reload. Pass 0 to
+// select [DefaultFileWatchDebounce] (500ms), or a positive value to override.
+// Negative values are treated as the default.
 func WithFileWatch[T any](debounce time.Duration) ReloadOption[T] {
 	return func(r *Reloader[T]) {
 		r.fileWatch = true
@@ -257,8 +267,8 @@ func (r *Reloader[T]) setupFileWatch(ctx context.Context, paths []string) error 
 	}
 
 	debounce := r.debounce
-	if debounce == 0 {
-		debounce = 500 * time.Millisecond
+	if debounce <= 0 {
+		debounce = DefaultFileWatchDebounce
 	}
 
 	var timerMu sync.Mutex
