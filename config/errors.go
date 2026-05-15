@@ -98,11 +98,16 @@ func (e *ConfigError) LocalizedMessage(translator func(code, field, tag, param s
 }
 
 // validationError wraps both the sentinel APIError and the original
-// validator.ValidationErrors so that ToConfigErrors can extract field details.
+// validator.ValidationErrors so that ToConfigErrors can extract field
+// details. When a non-govalidator implementation (e.g.
+// a ModelValidator returning its own typed error)
+// is wired via WithValidator, fieldErr stays nil and cause carries the
+// typed error verbatim so callers can `errors.As` it themselves.
 type validationError struct {
 	msg      string
 	sentinel error
 	fieldErr validator.ValidationErrors
+	cause    error
 }
 
 func (e *validationError) Error() string {
@@ -110,7 +115,14 @@ func (e *validationError) Error() string {
 }
 
 func (e *validationError) Unwrap() []error {
-	return []error{e.sentinel, e.fieldErr}
+	errs := []error{e.sentinel}
+	if e.fieldErr != nil {
+		errs = append(errs, e.fieldErr)
+	}
+	if e.cause != nil {
+		errs = append(errs, e.cause)
+	}
+	return errs
 }
 
 // ToConfigErrors converts a GetConfig validation error into a slice of

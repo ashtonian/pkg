@@ -28,13 +28,23 @@ type SecretPopulator func(ctx context.Context, target any) error
 // Option configures GetConfig behavior.
 type Option func(*options)
 
+// Validator is the narrow interface pkgconfig consumes for struct
+// validation. Both `*validator.Validate` (go-playground) and any
+// custom wrapper (e.g. a ModelValidator)
+// satisfy it. The package was originally typed against the concrete
+// govalidator; the seam was widened so a service can share one
+// ModelValidator across boot-time + request-body paths.
+type Validator interface {
+	Struct(v any) error
+}
+
 type options struct {
 	envPrefix       string
 	configFiles     []configFileEntry
 	defaults        map[string]any
 	populateSecrets SecretPopulator
 	skipValidation  bool
-	customValidator *validator.Validate
+	customValidator Validator
 	koanfInstance   *koanf.Koanf
 	extraProviders  []koanf.Provider
 }
@@ -131,8 +141,12 @@ func WithSkipValidation() Option {
 	}
 }
 
-// WithValidator sets a custom *validator.Validate instance.
-func WithValidator(v *validator.Validate) Option {
+// WithValidator sets a custom struct validator. Accepts any value that
+// implements `Struct(any) error` — typically either a
+// `*go-playground/validator.Validate` or a higher-level wrapper like
+// a ModelValidator. nil clears any previously
+// wired validator so the default `validator.New()` is used.
+func WithValidator(v Validator) Option {
 	return func(o *options) {
 		o.customValidator = v
 	}
@@ -274,14 +288,19 @@ func GetConfig[T any](ctx context.Context, opts ...Option) (*T, error) {
 
 	// Step 8: validation (includes required field checks via validate:"required").
 	if !o.skipValidation {
-		v := o.customValidator
+		var v Validator = o.customValidator
 		if v == nil {
 			v = validator.New()
 		}
 		if err := v.Struct(cfg); err != nil {
+			// The two shapes pkgconfig knows how to unpack:
+			//   1. validator.ValidationErrors (raw go-playground)
+			//   2. anything else (typed wrappers like
+			//      a ModelValidator →
+			//      `*errutil.APIError`) — surfaced verbatim through
+			//      validationError so callers can errors.As-extract it.
 			var ve validator.ValidationErrors
 			if errors.As(err, &ve) {
-				// Build field-level details preserving which field failed and what the constraint was.
 				fieldErrors := make([]map[string]string, 0, len(ve))
 				for _, fe := range ve {
 					fieldErrors = append(fieldErrors, map[string]string{
@@ -298,7 +317,12 @@ func GetConfig[T any](ctx context.Context, opts ...Option) (*T, error) {
 					fieldErr: ve,
 				}
 			}
-			return nil, fmt.Errorf("config validation: %w", ErrValidation)
+			slog.Debug("config validation failed", "error", err)
+			return nil, &validationError{
+				msg:      fmt.Sprintf("config validation failed: %v: %s", err, ErrValidation),
+				sentinel: ErrValidation,
+				cause:    err,
+			}
 		}
 	}
 
