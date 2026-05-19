@@ -2,6 +2,48 @@
 
 Type-safe configuration loading using [koanf](https://github.com/knadh/koanf) with support for multiple sources (YAML files, environment variables, CLI flags), struct-tag defaults, validation, sensitive field redaction, and secret injection.
 
+## Architecture
+
+```mermaid
+C4Component
+    title config — component view
+
+    Container_Ext(caller, "Caller (cmd/server main)", "Load(&cfg)")
+
+    Container_Boundary(c, "config") {
+        Component(load, "Load[T]", "facade", "Multi-source load + validate + redact")
+        Component(sources, "Source chain", "ordered", "defaults → file → env → CLI")
+        Component(tags, "Struct-tag parser", "reflect", "default / validate / sensitive / secret")
+        Component(redact, "Sensitive redaction", "fixed-array patterns", "*_password, *_secret, *_token (immutable)")
+        Component(inject, "Secret injection", "hook", "secret:\"path\" → SecretPopulator")
+    }
+
+    Container_Ext(koanf, "knadh/koanf", "Multi-source merger")
+    System_Ext(file, "YAML / TOML files")
+    System_Ext(env, "Process env (APP_*)")
+    System_Ext(cli, "Kong CLI flags")
+    System_Ext(secrets, "Secret store (optional)")
+
+    Rel(caller, load, "Load[T](sources...)")
+    Rel(load, sources, "")
+    Rel(sources, koanf, "Merge order")
+    Rel(koanf, file, "")
+    Rel(koanf, env, "")
+    Rel(koanf, cli, "")
+    Rel(load, tags, "Decode + defaults / validate")
+    Rel(load, redact, "Mask for Dump")
+    Rel(load, inject, "Resolve secret refs")
+    Rel(inject, secrets, "")
+```
+
+**Entry points** — `config.Load[T](opts ...Option) (*T, error)`; source helpers `WithFile(path)`, `WithEnvPrefix("APP")`, `WithCLI(parsedFlags)`. `(*Config).Dump(w)` for safe (redacted) output. `(*Config).Reload(ctx)` for hot reload where backed by a watcher.
+
+**Exit points** — Populated typed `*T` value with defaults applied + validation enforced. `Dump` writes a redacted YAML representation (sensitive fields shown as `***`). Optional secret injection resolves `secret:"path/to/key"` tags via the consumer-supplied resolver.
+
+**Failure modes** — Missing required field (no default + no source) → `ErrMissingRequired`. Validation rule failure (`validate:"min=1,max=100"`) → `ErrValidation` with field path. Unknown env / CLI override → silently ignored (koanf default; deliberate). Secret resolution failure → `ErrSecretInjection` (only when `WithSecrets` set).
+
+**Dependencies** — *Imports*: `github.com/knadh/koanf`, `github.com/go-playground/validator/v10`. Optional secret injection via `WithSecrets`.
+
 ## Quick Start
 
 ```go
