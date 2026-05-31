@@ -172,32 +172,81 @@ func walkStruct(v any, prefix string, showSensitive bool) []printEntry {
 
 		fv := val.Field(i)
 		ft := field.Type
-		if ft.Kind() == reflect.Ptr {
-			ft = ft.Elem()
+
+		// Deref a pointer for kind inspection; a nil pointer is a leaf.
+		fvElem, ftElem := fv, ft
+		if ftElem.Kind() == reflect.Ptr {
+			if fv.IsNil() {
+				entries = append(entries, leafEntry(name, fv, field, showSensitive))
+				continue
+			}
+			fvElem, ftElem = fv.Elem(), ftElem.Elem()
 		}
 
-		// Recurse into nested structs (but not time.Duration which is int64).
-		if ft.Kind() == reflect.Struct && ft.PkgPath() != "time" {
-			nested := walkStruct(fv.Interface(), name, showSensitive)
-			entries = append(entries, nested...)
+		// Recurse into nested structs (but not time.Time, whose PkgPath is
+		// "time"). Recursion redacts INNER sensitive fields individually — a
+		// struct whose NAME merely matches a sensitive pattern (e.g. an "auth"
+		// or "credential" sub-config) is NOT redacted whole, only its sensitive
+		// leaf fields are.
+		if ftElem.Kind() == reflect.Struct && ftElem.PkgPath() != "time" {
+			entries = append(entries, walkStruct(fvElem.Interface(), name, showSensitive)...)
 			continue
 		}
 
-		// Determine if sensitive.
-		sensitive := field.Tag.Get("sensitive") == "true" || isSensitiveName(field.Name)
-		displayVal := fmt.Sprintf("%v", fv.Interface())
-		if sensitive && !showSensitive {
-			displayVal = redactedValue
+		// Recurse into slices/arrays/maps whose ELEMENT is a struct, so inner
+		// sensitive fields are redacted rather than stringified whole — the
+		// secret leak the leaf branch caused for e.g. []Upstream.
+		switch ftElem.Kind() {
+		case reflect.Slice, reflect.Array:
+			if isWalkableStruct(ftElem.Elem()) {
+				for j := range fvElem.Len() {
+					idx := fmt.Sprintf("%s[%d]", name, j)
+					entries = append(entries, walkStruct(fvElem.Index(j).Interface(), idx, showSensitive)...)
+				}
+				continue
+			}
+		case reflect.Map:
+			if isWalkableStruct(ftElem.Elem()) {
+				it := fvElem.MapRange()
+				for it.Next() {
+					keyed := fmt.Sprintf("%s[%v]", name, it.Key().Interface())
+					entries = append(entries, walkStruct(it.Value().Interface(), keyed, showSensitive)...)
+				}
+				continue
+			}
 		}
 
-		entries = append(entries, printEntry{
-			name:     name,
-			value:    displayVal,
-			typeName: field.Type.String(),
-			desc:     field.Tag.Get("desc"),
-		})
+		// Leaf: scalars, time values, and slices/maps of scalars. A sensitive
+		// leaf (tag OR name) is redacted whole — including a scalar slice/map of
+		// secrets like `APIKeys []string`.
+		entries = append(entries, leafEntry(name, fv, field, showSensitive))
 	}
 	return entries
+}
+
+// leafEntry builds a non-recursive print entry, redacting the value when the
+// field is sensitive (explicit `sensitive:"true"` tag OR a sensitive-looking
+// name) and secrets are not being shown.
+func leafEntry(name string, fv reflect.Value, field reflect.StructField, showSensitive bool) printEntry {
+	value := fmt.Sprintf("%v", fv.Interface())
+	if !showSensitive && (field.Tag.Get("sensitive") == "true" || isSensitiveName(field.Name)) {
+		value = redactedValue
+	}
+	return printEntry{
+		name:     name,
+		value:    value,
+		typeName: field.Type.String(),
+		desc:     field.Tag.Get("desc"),
+	}
+}
+
+// isWalkableStruct reports whether t (or the type *t points at) is a struct
+// walkStruct recurses into for redaction — any struct except time.Time.
+func isWalkableStruct(t reflect.Type) bool {
+	if t.Kind() == reflect.Ptr {
+		t = t.Elem()
+	}
+	return t.Kind() == reflect.Struct && t.PkgPath() != "time"
 }
 
 // isSensitiveName checks if a field name contains sensitive-looking substrings.
