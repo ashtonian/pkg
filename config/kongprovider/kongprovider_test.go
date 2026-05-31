@@ -3,10 +3,13 @@
 package kongprovider
 
 import (
+	"context"
 	"reflect"
 	"testing"
 
 	"github.com/alecthomas/kong"
+
+	"github.com/ashtonian/pkg/config"
 )
 
 // --- buildFlagMapping Tests ---
@@ -90,13 +93,16 @@ func TestBuildFlagMapping_MissingKoanfTag(t *testing.T) {
 	}
 }
 
-// --- Provider Read Tests ---
+// --- Read / unflatten regression tests ---
 
-func TestProvider_Read(t *testing.T) {
-	p := &provider{values: map[string]any{"host": "localhost", "port": 8080}}
+// TestNew_FlatKeyRead confirms a flat top-level mapping round-trips
+// unchanged — the unflatten is a no-op when keys carry no delimiter.
+func TestNew_FlatKeyRead(t *testing.T) {
+	ctx := parseTestCLI(t, []string{"--host", "localhost", "--port", "8080"})
+	p := New(ctx, map[string]string{"host": "host", "port": "port"})
 	m, err := p.Read()
 	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+		t.Fatalf("Read: %v", err)
 	}
 	if m["host"] != "localhost" {
 		t.Errorf("host = %v, want localhost", m["host"])
@@ -106,11 +112,26 @@ func TestProvider_Read(t *testing.T) {
 	}
 }
 
-func TestProvider_ReadBytes(t *testing.T) {
-	p := &provider{values: map[string]any{}}
-	_, err := p.ReadBytes()
-	if err == nil {
-		t.Fatal("ReadBytes should return error")
+// TestNew_NestedKeyUnflattens is the regression for a
+// bug: a flag mapped to a NESTED koanf path must produce a nested map,
+// not a flat dotted key — otherwise koanf never merges it into the
+// config tree and the override is silently lost.
+func TestNew_NestedKeyUnflattens(t *testing.T) {
+	ctx := parseTestCLI(t, []string{"--port", "2000"})
+	p := New(ctx, map[string]string{"port": "listeners.tcp"})
+	m, err := p.Read()
+	if err != nil {
+		t.Fatalf("Read: %v", err)
+	}
+	listeners, ok := m["listeners"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected nested listeners map, got %#v", m)
+	}
+	if listeners["tcp"] != 2000 {
+		t.Errorf("listeners.tcp = %v, want 2000", listeners["tcp"])
+	}
+	if _, flat := m["listeners.tcp"]; flat {
+		t.Error("flat dotted key listeners.tcp present — would not merge into the nested koanf tree")
 	}
 }
 
@@ -207,5 +228,30 @@ func TestWithOverridesFromTags(t *testing.T) {
 	opt := WithOverridesFromTags[testCLI](ctx)
 	if opt == nil {
 		t.Fatal("WithOverridesFromTags returned nil option")
+	}
+}
+
+// TestGetConfig_NestedCLIOverrideBeatsTagDefault is the end-to-end
+// regression: a CLI flag mapped to a nested koanf path must override the
+// struct-tag default through config.GetConfig. Before the unflatten fix
+// the flat dotted key never merged into the nested tree, so the :1883
+// struct-tag default silently won over the --host :2000 override.
+func TestGetConfig_NestedCLIOverrideBeatsTagDefault(t *testing.T) {
+	type listenersCfg struct {
+		TCP string `koanf:"tcp" default:":1883"`
+	}
+	type appCfg struct {
+		Listeners listenersCfg `koanf:"listeners"`
+	}
+	ctx := parseTestCLI(t, []string{"--host", ":2000"})
+	cfg, err := config.GetConfig[appCfg](
+		context.Background(),
+		config.WithProvider(New(ctx, map[string]string{"host": "listeners.tcp"})),
+	)
+	if err != nil {
+		t.Fatalf("GetConfig: %v", err)
+	}
+	if cfg.Listeners.TCP != ":2000" {
+		t.Errorf("listeners.tcp = %q, want %q (CLI override must beat the :1883 tag default)", cfg.Listeners.TCP, ":2000")
 	}
 }

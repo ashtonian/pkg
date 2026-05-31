@@ -27,29 +27,15 @@
 package kongprovider
 
 import (
-	"errors"
 	"reflect"
 	"strings"
 
 	"github.com/alecthomas/kong"
+	"github.com/knadh/koanf/providers/confmap"
 	"github.com/knadh/koanf/v2"
 
 	"github.com/ashtonian/pkg/config"
 )
-
-// provider implements koanf.Provider by returning a flat map of
-// explicitly-set Kong flag values keyed by koanf dot-paths.
-type provider struct {
-	values map[string]any
-}
-
-func (p *provider) ReadBytes() ([]byte, error) {
-	return nil, errors.New("kongprovider: ReadBytes not supported")
-}
-
-func (p *provider) Read() (map[string]any, error) {
-	return p.values, nil
-}
 
 // New creates a koanf.Provider from explicitly-set Kong flags.
 // The mapping parameter maps Kong flag names to koanf dot-path keys.
@@ -59,6 +45,14 @@ func (p *provider) Read() (map[string]any, error) {
 //
 // Explicit detection scans ctx.Args for --name/--name=value patterns
 // because kong sets Flag.Set=true even for applied defaults.
+//
+// The mapping values are koanf dot-paths (e.g. "listeners.tcp"). The
+// returned provider unflattens them into the nested config tree via
+// confmap.Provider so they merge under koanf's "." delimiter — exactly
+// as config.GetConfig already does for its tag/programmatic defaults. A
+// flat dotted-key map would insert a literal "listeners.tcp" top-level
+// key that never overrides the nested node, so a nested CLI override
+// like `--tcp :2000` would silently lose to the struct-tag default.
 func New(ctx *kong.Context, mapping map[string]string) koanf.Provider {
 	explicit := explicitFlags(ctx)
 	values := make(map[string]any)
@@ -72,7 +66,7 @@ func New(ctx *kong.Context, mapping map[string]string) koanf.Provider {
 		}
 		values[koanfKey] = flag.Target.Interface()
 	}
-	return &provider{values: values}
+	return confmap.Provider(values, ".")
 }
 
 // explicitFlags extracts flag names that were explicitly provided on the
