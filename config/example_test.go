@@ -81,9 +81,9 @@ func ExampleGetConfig_comprehensive() {
 		context.Background(),
 		config.WithEnvPrefix("APP"),
 		config.WithDefaults(map[string]any{
-			"debug":      true,                        // overrides default:"false"
-			"labels":     map[string]any{"env": "dev"}, // map via programmatic default
-			"db.name":    "proddb",                     // dot-path overrides default:"mydb"
+			"debug":   true,                         // overrides default:"false"
+			"labels":  map[string]any{"env": "dev"}, // map via programmatic default
+			"db.name": "proddb",                     // dot-path overrides default:"mydb"
 		}),
 		config.WithSkipValidation(),
 	)

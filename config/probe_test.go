@@ -53,7 +53,7 @@ func TestProbe_PointerFields(t *testing.T) {
 	type cfg struct {
 		Name  *string `koanf:"name"`
 		Count *int    `koanf:"count"`
-		Opt   *string `koanf:"opt"`  // not set
+		Opt   *string `koanf:"opt"` // not set
 	}
 
 	c, err := GetConfig[cfg](t.Context(), WithConfigFile(path), WithSkipValidation())
@@ -83,8 +83,8 @@ func TestProbe_PointerStruct(t *testing.T) {
 		Port int    `koanf:"port"`
 	}
 	type cfg struct {
-		DB    *DB     `koanf:"db"`
-		Cache *DB     `koanf:"cache"` // not set
+		DB    *DB `koanf:"db"`
+		Cache *DB `koanf:"cache"` // not set
 	}
 
 	c, err := GetConfig[cfg](t.Context(), WithConfigFile(path), WithSkipValidation())
@@ -161,7 +161,7 @@ func TestProbe_SliceOfStructs(t *testing.T) {
 
 func TestProbe_PrintRedacted_Slice(t *testing.T) {
 	type cfg struct {
-		Tags []string          `koanf:"tags"`
+		Tags   []string          `koanf:"tags"`
 		Labels map[string]string `koanf:"labels"`
 	}
 	c := &cfg{

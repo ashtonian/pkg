@@ -21,7 +21,7 @@ func TestDebug_KoanfSliceFromEnv(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	
+
 	raw := k.Get("tags")
 	t.Logf("raw type=%T value=%v", raw, raw)
 
@@ -67,7 +67,7 @@ func TestDebug_KoanfSliceFromConfmap(t *testing.T) {
 	var c2 cfg
 	err = k2.UnmarshalWithConf("", &c2, koanf.UnmarshalConf{Tag: "koanf"})
 	t.Logf("slice: Tags = %v len=%d err=%v", c2.Tags, len(c2.Tags), err)
-	
+
 	// Check what koanf stores internally
 	fmt.Printf("All keys: %v\n", k.Keys())
 	fmt.Printf("All: %v\n", k.All())

@@ -549,4 +549,3 @@ func TestErrReload_IsSentinel(t *testing.T) {
 		t.Error("wrapped error should match ErrReload via errors.Is")
 	}
 }
-

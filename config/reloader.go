@@ -33,8 +33,8 @@ type Reloader[T any] struct {
 	signals      []os.Signal
 
 	// Runtime state.
-	reloading atomic.Bool     // prevents concurrent reloads
-	reloadMu  sync.Mutex     // single-flight reload
+	reloading atomic.Bool // prevents concurrent reloads
+	reloadMu  sync.Mutex  // single-flight reload
 	stopOnce  sync.Once
 	stopCh    chan struct{}
 	watcher   *fsnotify.Watcher // nil if no file watch
