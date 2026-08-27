@@ -10,7 +10,7 @@ import (
 	"github.com/ashtonian/pkg/errutil"
 )
 
-// Error codes for the config package (E7002-E7006 range).
+// Error codes for the config package (E7002-E7008 range).
 // E7001 was removed — use validate:"required" instead.
 var (
 	CodeValidation = errcontract.CodeDef{
@@ -31,14 +31,29 @@ var (
 		Code: "E7006", HTTPStatus: 500, Class: errcontract.ClassTransient,
 		UserFacing: false, Message: "configuration reload failed", Package: "config",
 	}
+	CodePostLoad = errcontract.CodeDef{
+		Code: "E7007", HTTPStatus: 500, Class: errcontract.ClassPermanent,
+		UserFacing: false, Message: "configuration post-load hook failed", Package: "config",
+	}
+	// CodeReloadInProgress is deliberately NOT a flavour of CodeReload: a lost
+	// single-flight race means another goroutine is already loading the same
+	// source state, so nothing failed and nothing is stale. Conflating the two
+	// turns a burst of legitimate reload triggers into a stream of failure
+	// alerts. 409 mirrors the HTTP semantics ReloadHandler serves.
+	CodeReloadInProgress = errcontract.CodeDef{
+		Code: "E7008", HTTPStatus: 409, Class: errcontract.ClassTransient,
+		UserFacing: false, Message: "configuration reload already in progress", Package: "config",
+	}
 )
 
 // Backward-compatible aliases for the old ErrCodeXxx names.
 var (
-	ErrCodeValidation     = CodeValidation
-	ErrCodeFileRead       = CodeFileRead
-	ErrCodeSecretProvider = CodeSecretProvider
-	ErrCodeReload         = CodeReload
+	ErrCodeValidation       = CodeValidation
+	ErrCodeFileRead         = CodeFileRead
+	ErrCodeSecretProvider   = CodeSecretProvider
+	ErrCodeReload           = CodeReload
+	ErrCodePostLoad         = CodePostLoad
+	ErrCodeReloadInProgress = CodeReloadInProgress
 )
 
 // Sentinel errors for common checks using errors.Is.
@@ -47,6 +62,12 @@ var (
 	ErrFileRead       = errcontract.ErrorOf(CodeFileRead)
 	ErrSecretProvider = errcontract.ErrorOf(CodeSecretProvider)
 	ErrReload         = errcontract.ErrorOf(CodeReload)
+	ErrPostLoad       = errcontract.ErrorOf(CodePostLoad)
+	// ErrReloadInProgress reports that Reload was called while another
+	// reload held the single-flight slot. It does NOT wrap ErrReload —
+	// see CodeReloadInProgress. A caller that wants "any non-success"
+	// checks both sentinels.
+	ErrReloadInProgress = errcontract.ErrorOf(CodeReloadInProgress)
 )
 
 // ConfigError wraps an errutil.APIError with localized message support.
@@ -159,6 +180,8 @@ func Codes() []errcontract.CodeDef {
 		CodeFileRead,
 		CodeSecretProvider,
 		CodeReload,
+		CodePostLoad,
+		CodeReloadInProgress,
 	}
 }
 

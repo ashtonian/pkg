@@ -2,6 +2,7 @@ package config
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 )
@@ -9,7 +10,9 @@ import (
 // ReloadHandler returns an http.Handler that triggers a config reload
 // on POST requests. On success it returns 200 with the new (redacted)
 // config as JSON. On failure it returns 500 with the error message;
-// the previous config is preserved.
+// the previous config is preserved. A request that races another in-flight
+// reload returns 409 — the other reload reads the same source state, so the
+// caller should retry the read rather than treat this as breakage.
 //
 // Authentication and authorization are the caller's responsibility.
 // Mount at your preferred path, e.g.:
@@ -24,7 +27,11 @@ func (r *Reloader[T]) ReloadHandler() http.Handler {
 
 		cfg, err := r.Reload(req.Context())
 		if err != nil {
-			http.Error(w, fmt.Sprintf("reload failed: %v", err), http.StatusInternalServerError)
+			status := http.StatusInternalServerError
+			if errors.Is(err, ErrReloadInProgress) {
+				status = http.StatusConflict
+			}
+			http.Error(w, fmt.Sprintf("reload failed: %v", err), status)
 			return
 		}
 

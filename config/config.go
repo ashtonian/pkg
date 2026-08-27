@@ -43,11 +43,17 @@ type options struct {
 	configFiles     []configFileEntry
 	defaults        map[string]any
 	populateSecrets SecretPopulator
+	postLoad        []postLoadHook
 	skipValidation  bool
 	customValidator Validator
 	koanfInstance   *koanf.Koanf
 	extraProviders  []koanf.Provider
 }
+
+// postLoadHook is the type-erased form of a [WithPostLoad] callback. The
+// generic constructor closes over the *T assertion so call sites stay typed
+// while the Option list stays non-generic.
+type postLoadHook func(ctx context.Context, target any) error
 
 type configFileEntry struct {
 	path     string
@@ -133,6 +139,43 @@ func WithSecretPopulator(p SecretPopulator) Option {
 	}
 }
 
+// WithPostLoad registers a hook that runs after the config is unmarshaled
+// and secrets are injected, but BEFORE validation. Use it for derivation and
+// normalization the mapstructure decode hooks cannot express: collapsing a
+// shorthand block into its canonical form, expanding a profile macro into the
+// knobs it stands for, parsing a delimited field into a typed slice, deriving
+// a default from the host environment.
+//
+// Ordering is the point of the hook. Because it runs inside GetConfig, a
+// [Reloader] applies it on every reload before deciding whether to swap — so
+// normalization is covered by validate-before-swap like everything else.
+// Equivalent work done after GetConfig returns is not: under a Reloader the
+// new config is already live by the time such a step fails.
+//
+// The hook mutates *cfg in place. A returned error aborts the load — and under
+// a Reloader preserves the previous config — wrapped in [ErrPostLoad].
+// Multiple hooks run in registration order; the first error stops the chain.
+//
+//	cfg, err := config.GetConfig[AppConfig](ctx,
+//	    config.WithConfigFile("./config.yaml"),
+//	    config.WithPostLoad(func(_ context.Context, c *AppConfig) error {
+//	        c.Normalize()
+//	        return c.ValidateCrossField()
+//	    }),
+//	)
+func WithPostLoad[T any](fn func(ctx context.Context, cfg *T) error) Option {
+	return func(o *options) {
+		o.postLoad = append(o.postLoad, func(ctx context.Context, target any) error {
+			typed, ok := target.(*T)
+			if !ok {
+				return fmt.Errorf("%w: hook is typed for %T but the load produced %T",
+					ErrPostLoad, (*T)(nil), target)
+			}
+			return fn(ctx, typed)
+		})
+	}
+}
+
 // WithSkipValidation disables go-playground/validator validation
 // (including validate:"required" checks).
 func WithSkipValidation() Option {
@@ -163,11 +206,13 @@ func WithKoanf(k *koanf.Koanf) Option {
 }
 
 // GetConfig creates a koanf instance, loads sources in precedence order,
-// unmarshals into T, injects secrets, and validates.
+// unmarshals into T, injects secrets, runs any [WithPostLoad] hooks, and
+// validates.
 //
 // ctx is propagated into secret resolution via the [SecretPopulator] passed
-// to [WithSecretPopulator]; pass the caller's request/boot context so
-// secret-fetch latency and cancellation flow through cleanly.
+// to [WithSecretPopulator] and into every [WithPostLoad] hook; pass the
+// caller's request/boot context so secret-fetch latency and cancellation flow
+// through cleanly.
 //
 // Source precedence (highest wins):
 //  1. Extra providers (CLI flags via kongprovider, custom providers)
@@ -286,7 +331,19 @@ func GetConfig[T any](ctx context.Context, opts ...Option) (*T, error) {
 		}
 	}
 
-	// Step 8: validation (includes required field checks via validate:"required").
+	// Step 8: post-load derivation / normalization. Runs after secrets so a
+	// hook can derive from resolved credentials, and before validation so the
+	// validator judges the normalized struct rather than the raw one.
+	for i, hook := range o.postLoad {
+		if err := hook(ctx, cfg); err != nil {
+			if errors.Is(err, ErrPostLoad) {
+				return nil, err
+			}
+			return nil, fmt.Errorf("%w: hook %d: %v", ErrPostLoad, i, err)
+		}
+	}
+
+	// Step 9: validation (includes required field checks via validate:"required").
 	if !o.skipValidation {
 		var v Validator = o.customValidator
 		if v == nil {

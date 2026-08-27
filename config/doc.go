@@ -45,6 +45,26 @@
 //  4. Programmatic defaults (WithDefaults)
 //  5. Struct tag defaults (default:"value")
 //
+// # Load Pipeline
+//
+// After the sources are merged, GetConfig runs a fixed sequence:
+//
+//	unmarshal → secrets (WithSecretPopulator) → post-load (WithPostLoad) → validate
+//
+// Put derivation and normalization in a WithPostLoad hook, not after GetConfig
+// returns. The hook runs inside the load, so a Reloader applies it before
+// deciding whether to swap — normalization is then covered by
+// validate-before-swap. The same work done afterwards is not: the new config
+// is already live by the time it fails.
+//
+//	cfg, err := config.GetConfig[AppConfig](ctx,
+//	    config.WithConfigFile("./config.yaml"),
+//	    config.WithPostLoad(func(_ context.Context, c *AppConfig) error {
+//	        c.Normalize()               // collapse shorthand, expand profiles
+//	        return c.ValidateCrossField()
+//	    }),
+//	)
+//
 // # CLI Flag Overrides
 //
 //	import "github.com/ashtonian/pkg/config/kongprovider"
@@ -94,4 +114,26 @@
 //
 //	// Expose reload endpoint for operators.
 //	mux.Handle("POST /admin/config/reload", reloader.ReloadHandler())
+//
+// # Reload Observability
+//
+// Reloads driven by Start's watchers do not surface an error to any caller, so
+// register WithOnReloadError to catch them — a process whose reloads keep
+// failing is serving stale config and should be able to say so. Stats()
+// returns a snapshot (attempts, successes, failures, last trigger, last
+// success/failure times, last error) suitable for export as metrics; the
+// Trigger* constants are a closed vocabulary safe to use as a label.
+//
+// Reload returns ErrReloadInProgress, not ErrReload, when it loses the
+// single-flight race. That case is benign — the in-flight reload reads the
+// same source state — so alert on ErrReload alone.
+//
+// # File Watch Limits
+//
+// WithFileWatch detects direct writes, rename-based saves, and symlink swaps
+// including Kubernetes ConfigMap and Secret volume updates. It cannot detect
+// subPath-mounted ConfigMaps (which never update in the container), sources
+// with no filesystem event (env vars, WithProvider), or — on macOS and BSD
+// only — a relink whose sole trace is a temporary name renamed away. Use
+// WithPollInterval for those. See WithFileWatch for detail.
 package config

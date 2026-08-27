@@ -160,6 +160,7 @@ mux.Handle("POST /admin/config/reload", reloader.ReloadHandler())
 | `WithDefaults(map)` | Set programmatic default values (koanf dot-path keys) |
 | `WithProvider(p)` | Add a generic koanf provider at high precedence |
 | `WithSecretPopulator(fn)` | Configure secret injection via a consumer-supplied `SecretPopulator` closure (typically wraps a secret store client) |
+| `WithPostLoad[T](fn)` | Run a derive/normalize hook after secrets and **before** validation. The one supported place for cross-field fixups that must be covered by validate-before-swap. |
 | `WithSkipValidation()` | Disable go-playground/validator validation |
 | `WithValidator(v)` | Use a custom validator instance |
 
@@ -169,12 +170,14 @@ mux.Handle("POST /admin/config/reload", reloader.ReloadHandler())
 | `WithPollInterval[T](interval)` | Periodic reload at interval (fallback for unreliable fsnotify) |
 | `WithSignalReload[T](signals...)` | Reload on OS signals (e.g., `syscall.SIGHUP`) |
 | `WithOnChange[T](func(old, new *T))` | Callback after successful reload |
+| `WithOnReloadError[T](func(trigger string, err error))` | Callback after every failed reload, including watcher-driven ones that otherwise only reach the log |
 | `WithReloadLogger[T](logger)` | Custom logger for reload events |
 
 | Reloader Method | Description |
 |--------|-------------|
 | `Config() *T` | Current config (atomic load, zero contention) |
-| `Reload(ctx) (*T, error)` | Trigger immediate reload (validate-before-swap) |
+| `Reload(ctx) (*T, error)` | Trigger immediate reload (validate-before-swap); returns `ErrReloadInProgress` if one is already in flight |
+| `Stats() ReloadStats` | Snapshot of attempts / successes / failures, last trigger, last success + failure times, last error |
 | `Start(ctx) error` | Block and watch for changes until Stop/cancel |
 | `Stop()` | Signal the watcher to stop |
 | `ReloadHandler() http.Handler` | HTTP handler: POST returns redacted config JSON |
@@ -187,6 +190,8 @@ mux.Handle("POST /admin/config/reload", reloader.ReloadHandler())
 | E7003 | `ErrFileRead` | Required config file could not be read |
 | E7005 | `ErrSecretProvider` | Secret provider returned an error |
 | E7006 | `ErrReload` | Config reload failed (wraps underlying error) |
+| E7007 | `ErrPostLoad` | A `WithPostLoad` hook returned an error |
+| E7008 | `ErrReloadInProgress` | Reload skipped — another reload holds the single-flight slot. **Does not wrap `ErrReload`**: nothing failed and nothing is stale. `ReloadHandler` serves it as 409. |
 
 ## References
 
