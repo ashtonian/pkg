@@ -4,6 +4,8 @@ package kongprovider
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"reflect"
 	"testing"
 
@@ -12,14 +14,14 @@ import (
 	"github.com/ashtonian/pkg/config"
 )
 
-// --- buildFlagMapping Tests ---
+// --- flagMapping Tests ---
 
-func TestBuildFlagMapping_Basic(t *testing.T) {
+func TestFlagMapping_Basic(t *testing.T) {
 	type Cfg struct {
 		Host string `koanf:"host" flag:"host"`
 		Port int    `koanf:"port" flag:"port"`
 	}
-	mapping := buildFlagMapping[Cfg]()
+	mapping := flagMapping[Cfg]()
 
 	want := map[string]string{
 		"host": "host",
@@ -30,7 +32,7 @@ func TestBuildFlagMapping_Basic(t *testing.T) {
 	}
 }
 
-func TestBuildFlagMapping_Nested(t *testing.T) {
+func TestFlagMapping_Nested(t *testing.T) {
 	type DB struct {
 		Host string `koanf:"host" flag:"db-host"`
 		Port int    `koanf:"port" flag:"db-port"`
@@ -39,7 +41,7 @@ func TestBuildFlagMapping_Nested(t *testing.T) {
 		Host string `koanf:"host" flag:"host"`
 		DB   DB     `koanf:"db"`
 	}
-	mapping := buildFlagMapping[Cfg]()
+	mapping := flagMapping[Cfg]()
 
 	want := map[string]string{
 		"host":    "host",
@@ -51,23 +53,23 @@ func TestBuildFlagMapping_Nested(t *testing.T) {
 	}
 }
 
-func TestBuildFlagMapping_NoFlagTags(t *testing.T) {
+func TestFlagMapping_NoFlagTags(t *testing.T) {
 	type Cfg struct {
 		Host string `koanf:"host"`
 		Port int    `koanf:"port"`
 	}
-	mapping := buildFlagMapping[Cfg]()
+	mapping := flagMapping[Cfg]()
 	if len(mapping) != 0 {
 		t.Errorf("expected empty mapping for struct with no flag tags, got %v", mapping)
 	}
 }
 
-func TestBuildFlagMapping_IgnoredField(t *testing.T) {
+func TestFlagMapping_IgnoredField(t *testing.T) {
 	type Cfg struct {
 		Host    string `koanf:"host" flag:"host"`
 		Ignored string `koanf:"-" flag:"ignored"`
 	}
-	mapping := buildFlagMapping[Cfg]()
+	mapping := flagMapping[Cfg]()
 	if _, ok := mapping["ignored"]; ok {
 		t.Error("ignored field should not appear in mapping")
 	}
@@ -76,18 +78,18 @@ func TestBuildFlagMapping_IgnoredField(t *testing.T) {
 	}
 }
 
-func TestBuildFlagMapping_NonStruct(t *testing.T) {
-	mapping := buildFlagMapping[string]()
+func TestFlagMapping_NonStruct(t *testing.T) {
+	mapping := flagMapping[string]()
 	if len(mapping) != 0 {
 		t.Errorf("expected empty mapping for non-struct, got %v", mapping)
 	}
 }
 
-func TestBuildFlagMapping_MissingKoanfTag(t *testing.T) {
+func TestFlagMapping_MissingKoanfTag(t *testing.T) {
 	type Cfg struct {
 		Name string `flag:"name"` // no koanf tag, should use lowercase field name
 	}
-	mapping := buildFlagMapping[Cfg]()
+	mapping := flagMapping[Cfg]()
 	if mapping["name"] != "name" {
 		t.Errorf("name mapping = %q, want %q (should use lowercase field name)", mapping["name"], "name")
 	}
@@ -253,5 +255,96 @@ func TestGetConfig_NestedCLIOverrideBeatsTagDefault(t *testing.T) {
 	}
 	if cfg.Listeners.TCP != ":2000" {
 		t.Errorf("listeners.tcp = %q, want %q (CLI override must beat the :1883 tag default)", cfg.Listeners.TCP, ":2000")
+	}
+}
+
+// --- Spellings Kong accepts ---
+
+type spellingCLI struct {
+	Feature bool     `kong:"name='feature',default='true',negatable"`
+	Port    int      `kong:"name='port',default='8080',short='p',aliases='listen-port'"`
+	Host    string   `kong:"name='host',default='default-host',env='KONGPROVIDER_TEST_HOST'"`
+	Rest    []string `kong:"arg,optional"`
+}
+
+func parseSpellingCLI(t *testing.T, args ...string) *kong.Context {
+	t.Helper()
+	var cli spellingCLI
+	parser, err := kong.New(&cli)
+	if err != nil {
+		t.Fatalf("kong.New: %v", err)
+	}
+	ctx, err := parser.Parse(args)
+	if err != nil {
+		t.Fatalf("parser.Parse(%v): %v", args, err)
+	}
+	return ctx
+}
+
+var spellingMapping = map[string]string{"feature": "feature", "port": "port", "host": "host"}
+
+func readSpelling(t *testing.T, args ...string) map[string]any {
+	t.Helper()
+	values, err := New(parseSpellingCLI(t, args...), spellingMapping).Read()
+	if err != nil {
+		t.Fatalf("Read: %v", err)
+	}
+	return values
+}
+
+func TestNew_ForwardsEverySpellingOfAFlag(t *testing.T) {
+	tests := []struct {
+		name string
+		args []string
+		key  string
+		want any
+	}{
+		{"negated boolean", []string{"--no-feature"}, "feature", false},
+		{"positive boolean", []string{"--feature"}, "feature", true},
+		{"long with separate value", []string{"--port", "9001"}, "port", 9001},
+		{"long with equals", []string{"--port=9002"}, "port", 9002},
+		{"short", []string{"-p", "9003"}, "port", 9003},
+		{"alias", []string{"--listen-port", "9004"}, "port", 9004},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			values := readSpelling(t, tt.args...)
+			if got, ok := values[tt.key]; !ok || got != tt.want {
+				t.Errorf("values[%q] = %v (present %v), want %v", tt.key, got, ok, tt.want)
+			}
+		})
+	}
+}
+
+func TestNew_DoesNotForwardUntypedValues(t *testing.T) {
+	t.Setenv("KONGPROVIDER_TEST_HOST", "from-env")
+
+	// Everything after "--" is a positional argument, even when it looks like
+	// a flag; Kong's defaults and its env resolution are not user input.
+	values := readSpelling(t, "--", "--port", "1")
+	if len(values) != 0 {
+		t.Errorf("values = %v, want none", values)
+	}
+}
+
+// End to end: a negated flag must beat a true value from a lower source.
+func TestGetConfig_NegatedFlagBeatsFile(t *testing.T) {
+	type appCfg struct {
+		Feature bool `koanf:"feature" flag:"feature"`
+	}
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	if err := os.WriteFile(path, []byte("feature: true\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := config.GetConfig[appCfg](context.Background(),
+		config.WithMustConfigFile(path),
+		WithOverridesFromTags[appCfg](parseSpellingCLI(t, "--no-feature")),
+	)
+	if err != nil {
+		t.Fatalf("GetConfig: %v", err)
+	}
+	if cfg.Feature {
+		t.Error("feature = true, want false: --no-feature must override the file")
 	}
 }

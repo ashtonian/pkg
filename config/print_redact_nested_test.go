@@ -31,7 +31,9 @@ func TestRedaction_NestedCompositeSecrets(t *testing.T) {
 
 	// PrintRedacted (operator-facing dump).
 	var buf bytes.Buffer
-	PrintRedacted(cfg, WithWriter(&buf))
+	if err := PrintRedacted(cfg, WithWriter(&buf)); err != nil {
+		t.Fatalf("PrintRedacted: %v", err)
+	}
 	out := buf.String()
 	for _, s := range secrets {
 		if strings.Contains(out, s) {

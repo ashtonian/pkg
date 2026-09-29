@@ -7,6 +7,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"time"
 
 	"github.com/ashtonian/pkg/config"
 )
@@ -104,7 +105,10 @@ func ExampleGetConfig_comprehensive() {
 	// --- PrintRedacted: sensitive fields are masked ---
 
 	var buf bytes.Buffer
-	config.PrintRedacted(cfg, config.WithWriter(&buf), config.WithFormat("env"))
+	if err := config.PrintRedacted(cfg, config.WithWriter(&buf), config.WithFormat(config.FormatEnv)); err != nil {
+		fmt.Println("print:", err)
+		return
+	}
 	// Scan output for the redacted fields.
 	for _, line := range bytes.Split(buf.Bytes(), []byte("\n")) {
 		s := string(line)
@@ -199,4 +203,42 @@ func ExampleNewReloader_withCallback() {
 	// Output:
 	// level=info
 	// callback_level=info
+}
+
+// Example mirrors the README Quick Start: load from struct-tag defaults, an
+// optional file and APP_* environment variables, then print the result with
+// the password redacted.
+func Example() {
+	type DBConfig struct {
+		Host     string `koanf:"host" default:"localhost"`
+		MaxConns int    `koanf:"max_conns" default:"25" validate:"min=1"`
+		Password string `koanf:"password" default:"hunter2"`
+	}
+	type AppConfig struct {
+		Port    int           `koanf:"port" default:"8080" validate:"min=1,max=65535"`
+		Timeout time.Duration `koanf:"timeout" default:"30s"`
+		DB      DBConfig      `koanf:"db"`
+	}
+
+	ctx := context.Background()
+	cfg, err := config.GetConfig[AppConfig](ctx,
+		config.WithConfigFile("config.yaml"), // optional: skipped when absent
+		config.WithEnvPrefix("APP"),          // APP_PORT, APP_DB_MAX_CONNS, ...
+	)
+	if err != nil {
+		fmt.Println("load:", err)
+		return
+	}
+	if err := config.PrintRedacted(cfg, config.WithWriter(os.Stdout)); err != nil {
+		fmt.Println("print:", err)
+	}
+
+	// Output:
+	// FIELD         VALUE       TYPE
+	// ------------------------------------------
+	// port          8080        int
+	// timeout       30s         time.Duration
+	// db.host       localhost   string
+	// db.max_conns  25          int
+	// db.password   [REDACTED]  string
 }

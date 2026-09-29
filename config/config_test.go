@@ -797,7 +797,9 @@ func TestPrintRedacted_Table(t *testing.T) {
 		Normal:   "hello",
 	}
 	var buf bytes.Buffer
-	PrintRedacted(cfg, WithWriter(&buf))
+	if err := PrintRedacted(cfg, WithWriter(&buf)); err != nil {
+		t.Fatalf("PrintRedacted: %v", err)
+	}
 	output := buf.String()
 
 	if !strings.Contains(output, "FIELD") {
@@ -820,7 +822,9 @@ func TestPrintRedacted_JSON(t *testing.T) {
 		Password: "secret123",
 	}
 	var buf bytes.Buffer
-	PrintRedacted(cfg, WithFormat("json"), WithWriter(&buf))
+	if err := PrintRedacted(cfg, WithFormat("json"), WithWriter(&buf)); err != nil {
+		t.Fatalf("PrintRedacted: %v", err)
+	}
 	output := buf.String()
 
 	if !strings.Contains(output, "[REDACTED]") {
@@ -837,7 +841,9 @@ func TestPrintRedacted_Env(t *testing.T) {
 		Normal: "hello",
 	}
 	var buf bytes.Buffer
-	PrintRedacted(cfg, WithFormat("env"), WithWriter(&buf))
+	if err := PrintRedacted(cfg, WithFormat("env"), WithWriter(&buf)); err != nil {
+		t.Fatalf("PrintRedacted: %v", err)
+	}
 	output := buf.String()
 
 	if !strings.Contains(output, "export HOST=localhost") {
@@ -851,7 +857,9 @@ func TestPrintRedacted_ShowSensitive(t *testing.T) {
 		Password: "mypass",
 	}
 	var buf bytes.Buffer
-	PrintRedacted(cfg, WithWriter(&buf), WithShowSensitive(true))
+	if err := PrintRedacted(cfg, WithWriter(&buf), WithShowSensitive(true)); err != nil {
+		t.Fatalf("PrintRedacted: %v", err)
+	}
 	output := buf.String()
 
 	if !strings.Contains(output, "mypass") {
@@ -866,7 +874,9 @@ func TestPrintRedacted_SortByName(t *testing.T) {
 		Normal: "hello",
 	}
 	var buf bytes.Buffer
-	PrintRedacted(cfg, WithWriter(&buf), WithSortByName())
+	if err := PrintRedacted(cfg, WithWriter(&buf), WithSortByName()); err != nil {
+		t.Fatalf("PrintRedacted: %v", err)
+	}
 	output := buf.String()
 
 	apikeyIdx := strings.Index(output, "apikey")
@@ -959,9 +969,9 @@ func TestErrors_Are_Sentinels(t *testing.T) {
 		err  error
 		code string
 	}{
-		{"ErrValidation", ErrValidation, ErrCodeValidation.Code},
-		{"ErrFileRead", ErrFileRead, ErrCodeFileRead.Code},
-		{"ErrSecretProvider", ErrSecretProvider, ErrCodeSecretProvider.Code},
+		{"ErrValidation", ErrValidation, CodeValidation.Code},
+		{"ErrFileRead", ErrFileRead, CodeFileRead.Code},
+		{"ErrSecretProvider", ErrSecretProvider, CodeSecretProvider.Code},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -972,28 +982,6 @@ func TestErrors_Are_Sentinels(t *testing.T) {
 				t.Errorf("error %v should contain code %s", tt.err, tt.code)
 			}
 		})
-	}
-}
-
-// --- buildFlagMapping Tests (via exported types) ---
-
-func TestBuildFlagMapping(t *testing.T) {
-	// Test the flag tag walking indirectly through the struct definition.
-	type TestCfg struct {
-		Host string `koanf:"host" flag:"host"`
-		Port int    `koanf:"port" flag:"port"`
-		DB   struct {
-			Host string `koanf:"host" flag:"db-host"`
-			Port int    `koanf:"port" flag:"db-port"`
-		} `koanf:"db"`
-		NoFlag string `koanf:"noflag"` // no flag tag
-	}
-
-	defaults := DefaultsFromTags[TestCfg]()
-	// This tests that DefaultsFromTags handles nested structs and missing defaults.
-	// The flag mapping is tested in the kongprovider package.
-	if len(defaults) != 0 {
-		t.Errorf("expected no defaults (no default tags), got %v", defaults)
 	}
 }
 
@@ -1535,7 +1523,9 @@ func TestPrintRedacted_SliceAndMap(t *testing.T) {
 		Secret: []string{"tok1", "tok2"},
 	}
 	var buf bytes.Buffer
-	PrintRedacted(c, WithWriter(&buf))
+	if err := PrintRedacted(c, WithWriter(&buf)); err != nil {
+		t.Fatalf("PrintRedacted: %v", err)
+	}
 	output := buf.String()
 
 	if !strings.Contains(output, "a") {
@@ -1560,7 +1550,7 @@ type DescConfig struct {
 }
 
 func TestConfigError_LocalizedMessage_WithTranslator(t *testing.T) {
-	apiErr := errutil.NewFromCodeDef(ErrCodeValidation, "field Port failed validation: min=1")
+	apiErr := errutil.NewFromCodeDef(CodeValidation, "field Port failed validation: min=1")
 	ce := NewConfigError(apiErr, "AppConfig.Port", "min", "1")
 
 	translator := func(code, field, tag, param string) string {
@@ -1575,7 +1565,7 @@ func TestConfigError_LocalizedMessage_WithTranslator(t *testing.T) {
 }
 
 func TestConfigError_LocalizedMessage_NilTranslator(t *testing.T) {
-	apiErr := errutil.NewFromCodeDef(ErrCodeValidation, "field Port failed validation: min=1")
+	apiErr := errutil.NewFromCodeDef(CodeValidation, "field Port failed validation: min=1")
 	ce := NewConfigError(apiErr, "AppConfig.Port", "min", "1")
 
 	got := ce.LocalizedMessage(nil)
@@ -1585,7 +1575,7 @@ func TestConfigError_LocalizedMessage_NilTranslator(t *testing.T) {
 }
 
 func TestConfigError_LocalizedMessage_EmptyTranslatorResult(t *testing.T) {
-	apiErr := errutil.NewFromCodeDef(ErrCodeValidation, "field Port failed validation: min=1")
+	apiErr := errutil.NewFromCodeDef(CodeValidation, "field Port failed validation: min=1")
 	ce := NewConfigError(apiErr, "AppConfig.Port", "min", "1")
 
 	translator := func(code, field, tag, param string) string {
@@ -1599,7 +1589,7 @@ func TestConfigError_LocalizedMessage_EmptyTranslatorResult(t *testing.T) {
 }
 
 func TestConfigError_FieldTagParam(t *testing.T) {
-	apiErr := errutil.NewFromCodeDef(ErrCodeValidation, "test error")
+	apiErr := errutil.NewFromCodeDef(CodeValidation, "test error")
 	ce := NewConfigError(apiErr, "Config.Workers", "max", "100")
 
 	if ce.Field() != "Config.Workers" {
@@ -1637,8 +1627,8 @@ func TestToConfigErrors_ValidationError(t *testing.T) {
 		if ce.Tag() == "" {
 			t.Error("ConfigError.Tag() should not be empty")
 		}
-		if ce.Code != ErrCodeValidation.Code {
-			t.Errorf("ConfigError.Code = %q, want %q", ce.Code, ErrCodeValidation.Code)
+		if ce.Code != CodeValidation.Code {
+			t.Errorf("ConfigError.Code = %q, want %q", ce.Code, CodeValidation.Code)
 		}
 	}
 }
@@ -1678,29 +1668,6 @@ func TestToConfigErrors_RequiredField(t *testing.T) {
 	}
 }
 
-func TestWithTranslator_StoresTranslator(t *testing.T) {
-	called := false
-	translator := func(code, field, tag, param string) string {
-		called = true
-		return "translated"
-	}
-
-	po := defaultPrintOptions()
-	WithTranslator(translator)(&po)
-
-	if po.translator == nil {
-		t.Fatal("WithTranslator should store the translator")
-	}
-	// Verify the stored translator is callable.
-	result := po.translator("E7002", "field", "tag", "param")
-	if !called {
-		t.Error("stored translator was not called")
-	}
-	if result != "translated" {
-		t.Errorf("translator result = %q, want translated", result)
-	}
-}
-
 func TestWithIncludeDescriptions_Table(t *testing.T) {
 	cfg := &DescConfig{
 		Host:  "localhost",
@@ -1708,7 +1675,9 @@ func TestWithIncludeDescriptions_Table(t *testing.T) {
 		Debug: false,
 	}
 	var buf bytes.Buffer
-	PrintRedacted(cfg, WithWriter(&buf), WithIncludeDescriptions())
+	if err := PrintRedacted(cfg, WithWriter(&buf), WithIncludeDescriptions()); err != nil {
+		t.Fatalf("PrintRedacted: %v", err)
+	}
 	output := buf.String()
 
 	if !strings.Contains(output, "DESCRIPTION") {
@@ -1731,7 +1700,9 @@ func TestWithIncludeDescriptions_JSON(t *testing.T) {
 		Port: 8080,
 	}
 	var buf bytes.Buffer
-	PrintRedacted(cfg, WithFormat("json"), WithWriter(&buf), WithIncludeDescriptions())
+	if err := PrintRedacted(cfg, WithFormat("json"), WithWriter(&buf), WithIncludeDescriptions()); err != nil {
+		t.Fatalf("PrintRedacted: %v", err)
+	}
 	output := buf.String()
 
 	if !strings.Contains(output, "Server hostname") {
@@ -1748,7 +1719,9 @@ func TestWithIncludeDescriptions_Env(t *testing.T) {
 		Port: 8080,
 	}
 	var buf bytes.Buffer
-	PrintRedacted(cfg, WithFormat("env"), WithWriter(&buf), WithIncludeDescriptions())
+	if err := PrintRedacted(cfg, WithFormat("env"), WithWriter(&buf), WithIncludeDescriptions()); err != nil {
+		t.Fatalf("PrintRedacted: %v", err)
+	}
 	output := buf.String()
 
 	if !strings.Contains(output, "# Server hostname") {
@@ -1766,7 +1739,9 @@ func TestWithIncludeDescriptions_NoDescFields(t *testing.T) {
 	}
 	cfg := &NoDCfg{Name: "test"}
 	var buf bytes.Buffer
-	PrintRedacted(cfg, WithWriter(&buf), WithIncludeDescriptions())
+	if err := PrintRedacted(cfg, WithWriter(&buf), WithIncludeDescriptions()); err != nil {
+		t.Fatalf("PrintRedacted: %v", err)
+	}
 	output := buf.String()
 
 	if !strings.Contains(output, "DESCRIPTION") {
@@ -1780,7 +1755,9 @@ func TestWithoutIncludeDescriptions_Table(t *testing.T) {
 		Port: 8080,
 	}
 	var buf bytes.Buffer
-	PrintRedacted(cfg, WithWriter(&buf))
+	if err := PrintRedacted(cfg, WithWriter(&buf)); err != nil {
+		t.Fatalf("PrintRedacted: %v", err)
+	}
 	output := buf.String()
 
 	if strings.Contains(output, "DESCRIPTION") {

@@ -344,7 +344,9 @@ func TestReloader_FileWatch(t *testing.T) {
 		t.Fatal("timeout waiting for config reload")
 	}
 
-	r.Stop()
+	if err := r.Stop(context.Background()); err != nil {
+		t.Errorf("Stop: %v", err)
+	}
 }
 
 // --- Poll Interval Tests ---
@@ -397,7 +399,9 @@ func TestReloader_Stop(t *testing.T) {
 	go func() { done <- r.Start(context.Background()) }()
 
 	time.Sleep(100 * time.Millisecond)
-	r.Stop()
+	if err := r.Stop(context.Background()); err != nil {
+		t.Errorf("Stop: %v", err)
+	}
 
 	select {
 	case err := <-done:
@@ -425,9 +429,15 @@ func TestReloader_Stop_Idempotent(t *testing.T) {
 	time.Sleep(50 * time.Millisecond)
 
 	// Multiple stops should not panic.
-	r.Stop()
-	r.Stop()
-	r.Stop()
+	if err := r.Stop(context.Background()); err != nil {
+		t.Errorf("Stop: %v", err)
+	}
+	if err := r.Stop(context.Background()); err != nil {
+		t.Errorf("Stop: %v", err)
+	}
+	if err := r.Stop(context.Background()); err != nil {
+		t.Errorf("Stop: %v", err)
+	}
 }
 
 func TestReloader_Start_NoWatchReturnsImmediately(t *testing.T) {

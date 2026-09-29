@@ -4,8 +4,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io/fs"
 	"log/slog"
-	"reflect"
+	"slices"
 	"strings"
 
 	"github.com/go-playground/validator/v10"
@@ -48,6 +49,7 @@ type options struct {
 	customValidator Validator
 	koanfInstance   *koanf.Koanf
 	extraProviders  []koanf.Provider
+	logger          *slog.Logger
 }
 
 // postLoadHook is the type-erased form of a [WithPostLoad] callback. The
@@ -65,7 +67,20 @@ func buildOptions(opts []Option) *options {
 	for _, opt := range opts {
 		opt(o)
 	}
+	if o.logger == nil {
+		o.logger = slog.Default()
+	}
 	return o
+}
+
+// requireFiles marks every configured file in paths as required. A Reloader
+// uses it so a file that loaded once cannot silently drop out of a reload.
+func (o *options) requireFiles(paths []string) {
+	for i := range o.configFiles {
+		if slices.Contains(paths, o.configFiles[i].path) {
+			o.configFiles[i].required = true
+		}
+	}
 }
 
 // WithEnvPrefix sets the prefix for environment variable lookups.
@@ -76,21 +91,31 @@ func WithEnvPrefix(prefix string) Option {
 	}
 }
 
-// WithConfigFile adds an optional YAML config file path. No error if missing.
+// WithConfigFile adds an optional YAML config file path. Optional means the
+// file may be absent: a missing file is skipped. A file that exists but cannot
+// be read fails the load with [ErrFileRead], and one that is not valid YAML
+// fails it with [ErrFileParse].
+//
+// Under a [Reloader], a file that loaded once is required from then on: a
+// reload that finds it gone fails and keeps the previous config rather than
+// quietly reverting its keys to lower-precedence values.
 func WithConfigFile(path string) Option {
 	return func(o *options) {
 		o.configFiles = append(o.configFiles, configFileEntry{path: path, required: false})
 	}
 }
 
-// WithMustConfigFile adds a required config file path. Returns ErrFileRead if missing.
+// WithMustConfigFile adds a required config file path. A missing or
+// unreadable file fails the load with [ErrFileRead]; invalid YAML fails it
+// with [ErrFileParse].
 func WithMustConfigFile(path string) Option {
 	return func(o *options) {
 		o.configFiles = append(o.configFiles, configFileEntry{path: path, required: true})
 	}
 }
 
-// WithConfigFiles adds multiple optional config file paths, merged left-to-right.
+// WithConfigFiles adds multiple optional config file paths, merged
+// left-to-right. Each follows the [WithConfigFile] rules.
 func WithConfigFiles(paths ...string) Option {
 	return func(o *options) {
 		for _, p := range paths {
@@ -195,6 +220,14 @@ func WithValidator(v Validator) Option {
 	}
 }
 
+// WithLogger sets the logger for loader diagnostics and, when the options are
+// passed to [NewReloader], for every reload event. Defaults to slog.Default().
+func WithLogger(logger *slog.Logger) Option {
+	return func(o *options) {
+		o.logger = logger
+	}
+}
+
 // WithKoanf provides a pre-configured *koanf.Koanf instance.
 // Advanced escape hatch for adding custom providers (Consul, Vault, etc.)
 // before GetConfig runs. When provided, defaults and file loading steps
@@ -220,59 +253,66 @@ func WithKoanf(k *koanf.Koanf) Option {
 //  3. Config files (merged left-to-right)
 //  4. Programmatic defaults (WithDefaults)
 //  5. Struct tag defaults (default:"value" via DefaultsFromTags)
+//
+// Every returned error carries both its category sentinel ([ErrFileRead],
+// [ErrFileParse], [ErrSecretProvider], [ErrPostLoad], [ErrValidation]) and
+// the underlying cause, so errors.Is and errors.As reach either.
 func GetConfig[T any](ctx context.Context, opts ...Option) (*T, error) {
-	o := buildOptions(opts)
+	cfg, _, err := load[T](ctx, buildOptions(opts))
+	return cfg, err
+}
 
+// load is GetConfig's pipeline. It also reports which config files it read,
+// which a Reloader needs to keep an optional file from vanishing unnoticed.
+func load[T any](ctx context.Context, o *options) (*T, []string, error) {
 	// Use caller-provided koanf or create a new one.
 	k := o.koanfInstance
 	if k == nil {
 		k = koanf.New(".")
 	}
 
-	// Track loaded sources for structured logging.
-	var loadedSources []string
+	fields := Fields[T]()
+	var sources, files []string
 
 	// Step 1: struct tag defaults (lowest precedence).
-	tagDefaults := DefaultsFromTags[T]()
-	if len(tagDefaults) > 0 {
+	if tagDefaults := defaultsFrom(fields); len(tagDefaults) > 0 {
 		if err := k.Load(confmap.Provider(tagDefaults, "."), nil); err != nil {
-			return nil, fmt.Errorf("loading struct tag defaults: %w", err)
+			return nil, nil, fmt.Errorf("loading struct tag defaults: %w", err)
 		}
-		loadedSources = append(loadedSources, "struct-tag-defaults")
+		sources = append(sources, "struct-tag-defaults")
 	}
 
 	// Step 2: programmatic defaults (override struct tag defaults).
 	if len(o.defaults) > 0 {
 		if err := k.Load(confmap.Provider(o.defaults, "."), nil); err != nil {
-			return nil, fmt.Errorf("loading defaults: %w", err)
+			return nil, nil, fmt.Errorf("loading defaults: %w", err)
 		}
-		loadedSources = append(loadedSources, "programmatic-defaults")
+		sources = append(sources, "programmatic-defaults")
 	}
 
 	// Step 3: config files (merged left-to-right).
 	for _, cf := range o.configFiles {
-		if err := k.Load(file.Provider(cf.path), yaml.Parser()); err != nil {
-			if cf.required {
-				return nil, fmt.Errorf("loading config file %s: %w", cf.path, ErrFileRead)
-			}
-			// Optional file missing or unreadable: continue silently.
-		} else {
-			loadedSources = append(loadedSources, "file:"+cf.path)
+		err := k.Load(file.Provider(cf.path), yaml.Parser())
+		switch {
+		case err == nil:
+			files = append(files, cf.path)
+			sources = append(sources, "file:"+cf.path)
+		case !cf.required && errors.Is(err, fs.ErrNotExist):
+			// Absence is the one failure an optional file is allowed.
+		default:
+			return nil, nil, fileLoadError(cf.path, err)
 		}
 	}
 
-	// Step 4: env vars with struct-aware mapping. The naive "_" → "." transform
-	// breaks koanf tags containing underscores (e.g., koanf:"max_conns"
-	// nested under koanf:"db" — APP_DB_MAX_CONNS would become "db.max.conns"
-	// instead of "db.max_conns"). Walking T builds an exact mapping.
+	// Step 4: env vars. The mapping is built from T's fields so a key with an
+	// underscore in it (koanf:"max_conns") keeps it; see envMapping.
 	if o.envPrefix != "" {
 		prefix := strings.TrimSuffix(o.envPrefix, "_")
 		fullPrefix := prefix + "_"
-		var zero T
-		envMapping := envMappingFromType(reflect.TypeOf(zero), prefix)
+		mapping := envMapping(fields, prefix)
 
 		if err := k.Load(kenv.Provider(fullPrefix, ".", func(s string) string {
-			if koanfPath, ok := envMapping[s]; ok {
+			if koanfPath, ok := mapping[s]; ok {
 				return koanfPath
 			}
 			// Fallback for dynamic keys (map fields, etc.).
@@ -280,23 +320,20 @@ func GetConfig[T any](ctx context.Context, opts ...Option) (*T, error) {
 				strings.ToLower(strings.TrimPrefix(s, fullPrefix)), "_", ".",
 			)
 		}), nil); err != nil {
-			return nil, fmt.Errorf("loading env vars: %w", err)
+			return nil, nil, fmt.Errorf("loading env vars: %w", err)
 		}
-		loadedSources = append(loadedSources, "env:"+fullPrefix+"*")
+		sources = append(sources, "env:"+fullPrefix+"*")
 	}
 
 	// Step 5: extra providers (including kongprovider), loaded in order added (highest precedence).
 	for i, p := range o.extraProviders {
 		if err := k.Load(p, nil); err != nil {
-			return nil, fmt.Errorf("loading extra provider: %w", err)
+			return nil, nil, fmt.Errorf("loading extra provider %d: %w", i, err)
 		}
-		loadedSources = append(loadedSources, fmt.Sprintf("provider-%d", i))
+		sources = append(sources, fmt.Sprintf("provider-%d", i))
 	}
 
-	// Log which sources were loaded for debugging configuration issues.
-	if len(loadedSources) > 0 {
-		slog.Debug("config sources loaded", "sources", loadedSources)
-	}
+	o.logger.DebugContext(ctx, "config sources loaded", "sources", sources)
 
 	// Step 6: unmarshal with explicit decode hooks. koanf v2 defaults do NOT
 	// include StringToSliceHookFunc, so comma-separated env vars / defaults
@@ -314,20 +351,15 @@ func GetConfig[T any](ctx context.Context, opts ...Option) (*T, error) {
 			TagName:          "koanf",
 		},
 	}); err != nil {
-		return nil, fmt.Errorf("unmarshaling config: %w", err)
+		return nil, nil, fmt.Errorf("unmarshaling config: %w", err)
 	}
 
 	// Step 7: secret injection -- delegates to the consumer-supplied
-	// populator. Uses the ctx supplied to GetConfig, so secret-fetch
-	// latency and cancellation flow through cleanly to the caller.
+	// populator with the caller's ctx, so secret-fetch latency and
+	// cancellation reach the backend.
 	if o.populateSecrets != nil {
 		if err := o.populateSecrets(ctx, cfg); err != nil {
-			// Log which secret key failed (not the value) for debuggability.
-			slog.Error("secret injection failed",
-				"error", err.Error(),
-				"hint", "check that all secret keys referenced in 'secret' struct tags exist in the secret provider",
-			)
-			return nil, fmt.Errorf("populating secrets: %w", ErrSecretProvider)
+			return nil, nil, fmt.Errorf("populating secrets: %w: %w", ErrSecretProvider, err)
 		}
 	}
 
@@ -337,13 +369,15 @@ func GetConfig[T any](ctx context.Context, opts ...Option) (*T, error) {
 	for i, hook := range o.postLoad {
 		if err := hook(ctx, cfg); err != nil {
 			if errors.Is(err, ErrPostLoad) {
-				return nil, err
+				return nil, nil, err
 			}
-			return nil, fmt.Errorf("%w: hook %d: %v", ErrPostLoad, i, err)
+			return nil, nil, fmt.Errorf("%w: hook %d: %w", ErrPostLoad, i, err)
 		}
 	}
 
 	// Step 9: validation (includes required field checks via validate:"required").
+	// Field values are never logged or put in the message: a failing field
+	// may be a credential.
 	if !o.skipValidation {
 		var v Validator = o.customValidator
 		if v == nil {
@@ -358,24 +392,13 @@ func GetConfig[T any](ctx context.Context, opts ...Option) (*T, error) {
 			//      validationError so callers can errors.As-extract it.
 			var ve validator.ValidationErrors
 			if errors.As(err, &ve) {
-				fieldErrors := make([]map[string]string, 0, len(ve))
-				for _, fe := range ve {
-					fieldErrors = append(fieldErrors, map[string]string{
-						"field":      fe.Namespace(),
-						"tag":        fe.Tag(),
-						"constraint": fe.Param(),
-						"value":      fmt.Sprintf("%v", fe.Value()),
-					})
-				}
-				slog.Debug("config validation failed", "field_errors", fieldErrors)
-				return nil, &validationError{
+				return nil, nil, &validationError{
 					msg:      fmt.Sprintf("config validation failed: fields=%v: %s", fieldErrorSummary(ve), ErrValidation),
 					sentinel: ErrValidation,
 					fieldErr: ve,
 				}
 			}
-			slog.Debug("config validation failed", "error", err)
-			return nil, &validationError{
+			return nil, nil, &validationError{
 				msg:      fmt.Sprintf("config validation failed: %v: %s", err, ErrValidation),
 				sentinel: ErrValidation,
 				cause:    err,
@@ -383,7 +406,18 @@ func GetConfig[T any](ctx context.Context, opts ...Option) (*T, error) {
 		}
 	}
 
-	return cfg, nil
+	return cfg, files, nil
+}
+
+// fileLoadError classifies a failed config file load. koanf.Load returns the
+// file provider's *fs.PathError unwrapped when the read itself fails;
+// anything else came from the YAML parser or the merge that follows it.
+func fileLoadError(path string, err error) error {
+	var pathErr *fs.PathError
+	if errors.As(err, &pathErr) {
+		return fmt.Errorf("loading config file %s: %w: %w", path, ErrFileRead, err)
+	}
+	return fmt.Errorf("loading config file %s: %w: %w", path, ErrFileParse, err)
 }
 
 // fieldErrorSummary builds a compact summary of validation field errors

@@ -21,28 +21,39 @@ import (
 // which uses atomic.Pointer for zero read contention.
 //
 // On reload failure (parse error, validation failure), the previous config
-// is preserved and the error is logged.
+// is preserved and the error is reported through [WithOnReloadError], the
+// log, and — for [Reloader.Reload] — the return value.
+//
+// Reloads are serialized. A manual Reload that finds another reload in flight
+// returns [ErrReloadInProgress]; an automatic trigger (file change, poll,
+// signal) instead waits for it and then reloads, so a change that lands while
+// another reload is reading the sources is never lost.
 type Reloader[T any] struct {
 	current    atomic.Pointer[T]
 	configOpts []Option
+	logger     *slog.Logger
 
 	// Reload options.
 	onChange      []func(old, new *T)
 	onReloadError []func(trigger string, err error)
-	logger        *slog.Logger
 	fileWatch     bool
 	debounce      time.Duration
 	pollInterval  time.Duration
 	signals       []os.Signal
 
-	// Runtime state.
-	reloading  atomic.Bool                 // prevents concurrent reloads
-	reloadMu   sync.Mutex                  // single-flight reload
-	stats      atomic.Pointer[ReloadStats] // written under reloadMu, read lock-free
-	watchArmed atomic.Bool                 // set once setupFileWatch has registered its dirs
+	// slot is the single-flight token: holding it is the right to run the
+	// load pipeline, publish, and fire callbacks. Stop takes it and never
+	// gives it back.
+	slot chan struct{}
+	// loadedFiles are the config files the last successful load read.
+	// Guarded by slot.
+	loadedFiles []string
+	stats       atomic.Pointer[ReloadStats] // written while holding slot, read lock-free
+
+	watchArmed atomic.Bool // set once Start has registered the watcher's dirs
 	stopOnce   sync.Once
 	stopCh     chan struct{}
-	watcher    *fsnotify.Watcher // nil if no file watch; owned by Start's goroutine
+	quiesced   chan struct{} // closed once Stop holds the slot
 }
 
 // watcherReady reports whether Start has finished arming the fsnotify watcher.
@@ -64,8 +75,10 @@ const (
 // ReloadStats is an immutable point-in-time snapshot of a Reloader's reload
 // history, returned by [Reloader.Stats].
 //
-// Single-flight skips are not counted: no pipeline ran, so nothing was
-// attempted and nothing went stale.
+// Only reloads that ran to a verdict are counted. A manual Reload turned away
+// by [ErrReloadInProgress] or [ErrReloaderStopped] ran no pipeline, and a
+// reload abandoned because its context ended (including one cancelled by
+// Stop) reached no verdict about the sources.
 type ReloadStats struct {
 	// Attempts is Successes+Failures — every reload that ran the pipeline.
 	Attempts uint64
@@ -100,8 +113,9 @@ const DefaultFileWatchDebounce = 500 * time.Millisecond
 
 // WithOnChange registers a callback invoked after a successful reload.
 // Multiple callbacks are invoked in registration order. The callback
-// receives the old and new config pointers. Long-running callbacks
-// should spawn goroutines to avoid blocking the reload loop.
+// receives the old and new config pointers. Callbacks run while the reload
+// holds the single-flight slot: long-running work should be handed off, and a
+// callback must not call [Reloader.Stop], which waits for that slot.
 func WithOnChange[T any](fn func(old, new *T)) ReloadOption[T] {
 	return func(r *Reloader[T]) {
 		r.onChange = append(r.onChange, fn)
@@ -169,38 +183,37 @@ func WithSignalReload[T any](signals ...os.Signal) ReloadOption[T] {
 // single registration covers every trigger.
 //
 // trigger is one of the Trigger* constants. Callbacks run in registration
-// order and panics are recovered, matching [WithOnChange]. Keep them cheap:
-// they run on the reload path.
+// order and panics are recovered, matching [WithOnChange], including the rule
+// that a callback must not call [Reloader.Stop]. Keep them cheap: they run on
+// the reload path.
 //
-// Single-flight skips ([ErrReloadInProgress]) do NOT invoke it — no reload was
-// attempted and no config went stale as a result.
+// Reloads that reach no verdict — [ErrReloadInProgress], [ErrReloaderStopped],
+// or a reload abandoned because its context ended — do NOT invoke it.
 func WithOnReloadError[T any](fn func(trigger string, err error)) ReloadOption[T] {
 	return func(r *Reloader[T]) {
 		r.onReloadError = append(r.onReloadError, fn)
 	}
 }
 
-// WithReloadLogger sets the logger for reload events.
-func WithReloadLogger[T any](logger *slog.Logger) ReloadOption[T] {
-	return func(r *Reloader[T]) {
-		r.logger = logger
-	}
-}
-
 // NewReloader creates a Reloader that loads initial config via
 // GetConfig[T](ctx, configOpts...) and optionally watches for changes.
 // The configOpts are stored and re-used on every reload (each reload uses
-// the ctx passed to Reload).
+// the ctx passed to Reload, or to Start for automatic triggers). The logger
+// set by [WithLogger] in configOpts also receives every reload event.
 func NewReloader[T any](ctx context.Context, reloadOpts []ReloadOption[T], configOpts ...Option) (*Reloader[T], error) {
-	cfg, err := GetConfig[T](ctx, configOpts...)
+	o := buildOptions(configOpts)
+	cfg, files, err := load[T](ctx, o)
 	if err != nil {
 		return nil, err
 	}
 
 	r := &Reloader[T]{
-		configOpts: configOpts,
-		logger:     slog.Default(),
-		stopCh:     make(chan struct{}),
+		configOpts:  configOpts,
+		logger:      o.logger,
+		slot:        make(chan struct{}, 1),
+		loadedFiles: files,
+		stopCh:      make(chan struct{}),
+		quiesced:    make(chan struct{}),
 	}
 	r.current.Store(cfg)
 
@@ -219,16 +232,20 @@ func (r *Reloader[T]) Config() *T {
 
 // Reload triggers an immediate config reload. Returns the new config on
 // success. On failure the previous config is preserved and an error wrapping
-// [ErrReload] is returned.
+// both [ErrReload] and the underlying cause is returned.
 //
-// Concurrent calls are serialized. If a reload is already in flight this call
-// is skipped and returns [ErrReloadInProgress], which deliberately does NOT
-// wrap ErrReload: the in-flight reload reads the same source state this call
-// would have, so nothing failed and nothing is stale. Callers that want "any
-// non-success" check both sentinels; callers that alert on breakage check
-// ErrReload alone.
+// If another reload is in flight this call does not wait: it returns
+// [ErrReloadInProgress], which deliberately does NOT wrap ErrReload — no
+// pipeline ran and the config is unchanged. After Stop it returns
+// [ErrReloaderStopped]. If ctx ends while the reload runs, the reload is
+// abandoned: the error carries ctx.Err(), not ErrReload, and nothing is
+// recorded. Callers that alert on breakage check ErrReload alone.
 func (r *Reloader[T]) Reload(ctx context.Context) (*T, error) {
-	return r.reload(ctx, TriggerManual)
+	if err := r.acquire(ctx, TriggerManual, false); err != nil {
+		return nil, err
+	}
+	defer r.release()
+	return r.reloadHeld(ctx, TriggerManual)
 }
 
 // Stats returns a snapshot of this reloader's reload history. Safe to call
@@ -241,26 +258,69 @@ func (r *Reloader[T]) Stats() ReloadStats {
 	return ReloadStats{}
 }
 
-// reload runs one attempt attributed to trigger. Every reload path funnels
-// through here so stats, callbacks, and logging stay uniform across manual,
-// file-watch, poll, and signal triggers.
-func (r *Reloader[T]) reload(ctx context.Context, trigger string) (*T, error) {
-	if !r.reloading.CompareAndSwap(false, true) {
-		return nil, ErrReloadInProgress
+// acquire takes the single-flight slot for trigger. With wait false it fails
+// fast with ErrReloadInProgress; with wait true it blocks until the slot
+// frees, Stop is called, or ctx ends.
+func (r *Reloader[T]) acquire(ctx context.Context, trigger string, wait bool) error {
+	select {
+	case <-r.stopCh:
+		return ErrReloaderStopped
+	default:
 	}
-	defer r.reloading.Store(false)
 
-	r.reloadMu.Lock()
-	defer r.reloadMu.Unlock()
+	select {
+	case r.slot <- struct{}{}:
+	default:
+		if !wait {
+			return ErrReloadInProgress
+		}
+		r.logger.DebugContext(ctx, "config reload waiting for the reload in flight", "trigger", trigger)
+		select {
+		case r.slot <- struct{}{}:
+		case <-r.stopCh:
+			return ErrReloaderStopped
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
 
-	cfg, err := GetConfig[T](ctx, r.configOpts...)
+	// Stop may have been called while this caller waited; its own wait for the
+	// slot proceeds as soon as the slot is handed back.
+	select {
+	case <-r.stopCh:
+		r.release()
+		return ErrReloaderStopped
+	default:
+		return nil
+	}
+}
+
+func (r *Reloader[T]) release() { <-r.slot }
+
+// reloadHeld runs one attempt attributed to trigger. The caller holds the
+// slot. Every reload path funnels through here so stats, callbacks, and
+// logging stay uniform across manual, file-watch, poll, and signal triggers.
+func (r *Reloader[T]) reloadHeld(ctx context.Context, trigger string) (*T, error) {
+	o := buildOptions(r.configOpts)
+	o.requireFiles(r.loadedFiles)
+
+	cfg, files, err := load[T](ctx, o)
 	if err != nil {
-		reloadErr := fmt.Errorf("%w: %v", ErrReload, err)
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			// The reload was abandoned, not refuted: say nothing about the
+			// sources, which may be fine.
+			if !errors.Is(err, ctxErr) {
+				err = errors.Join(ctxErr, err)
+			}
+			return nil, fmt.Errorf("config reload abandoned: %w", err)
+		}
+		reloadErr := fmt.Errorf("%w: %w", ErrReload, err)
 		r.recordAttempt(trigger, reloadErr)
 		r.notifyReloadError(trigger, reloadErr)
 		return nil, reloadErr
 	}
 
+	r.loadedFiles = files
 	old := r.current.Swap(cfg)
 	r.recordAttempt(trigger, nil)
 	r.notifyCallbacks(old, cfg)
@@ -268,7 +328,7 @@ func (r *Reloader[T]) reload(ctx context.Context, trigger string) (*T, error) {
 }
 
 // recordAttempt folds one completed attempt into the stats snapshot. Called
-// only with reloadMu held, so the read-modify-write needs no further
+// only with the slot held, so the read-modify-write needs no further
 // synchronisation; readers see the new snapshot atomically.
 func (r *Reloader[T]) recordAttempt(trigger string, err error) {
 	next := r.Stats()
@@ -285,10 +345,14 @@ func (r *Reloader[T]) recordAttempt(trigger string, err error) {
 	r.stats.Store(&next)
 }
 
-// Start begins watching for config changes. It blocks until Stop is
-// called or the context is cancelled. If no watch sources are configured
-// (no file watch, no poll interval, no signals), Start returns nil
-// immediately. Typically called in a goroutine: go reloader.Start(ctx).
+// Start runs the configured watchers — file watch, poll interval, signals —
+// until Stop is called or ctx ends. It returns nil immediately when none is
+// configured or the reloader is already stopped, nil after Stop, and ctx.Err()
+// when ctx ends. Typically called in a goroutine: go reloader.Start(ctx).
+//
+// Every automatic reload runs on Start's goroutine with a context that Stop
+// also cancels, and the file-watch debounce timer is owned by the same loop,
+// so no automatic reload can begin once Start has returned.
 func (r *Reloader[T]) Start(ctx context.Context) error {
 	paths := filePaths(r.configOpts)
 	hasFileWatch := r.fileWatch && len(paths) > 0
@@ -298,16 +362,45 @@ func (r *Reloader[T]) Start(ctx context.Context) error {
 	if !hasFileWatch && !hasPoll && !hasSignal {
 		return nil
 	}
-
-	// File watch setup.
-	if hasFileWatch {
-		if err := r.setupFileWatch(ctx, paths); err != nil {
-			return fmt.Errorf("setting up file watch: %w", err)
-		}
-		defer r.watcher.Close()
+	select {
+	case <-r.stopCh:
+		return nil
+	default:
 	}
 
-	// Signal handler.
+	runCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	// Stop cancels runCtx so an automatic reload in flight abandons its
+	// secret lookups instead of holding Stop up. Exits when Start returns.
+	go func() {
+		select {
+		case <-r.stopCh:
+			cancel()
+		case <-runCtx.Done():
+		}
+	}()
+
+	var (
+		fw        *fileWatch
+		events    <-chan fsnotify.Event
+		watchErrs <-chan error
+		settled   <-chan time.Time
+	)
+	if hasFileWatch {
+		var err error
+		fw, err = newFileWatch(paths, cmp.Or(max(r.debounce, 0), DefaultFileWatchDebounce), r.logger)
+		if err != nil {
+			return fmt.Errorf("setting up file watch: %w", err)
+		}
+		defer func() {
+			if err := fw.close(); err != nil {
+				r.logger.WarnContext(ctx, "closing config file watcher", "error", err)
+			}
+		}()
+		events, watchErrs, settled = fw.watcher.Events, fw.watcher.Errors, fw.timer.C
+		r.watchArmed.Store(true)
+	}
+
 	var sigCh <-chan os.Signal
 	if hasSignal {
 		ch := make(chan os.Signal, 1)
@@ -316,7 +409,6 @@ func (r *Reloader[T]) Start(ctx context.Context) error {
 		defer signal.Stop(ch)
 	}
 
-	// Poll ticker.
 	var tickCh <-chan time.Time
 	if hasPoll {
 		ticker := time.NewTicker(r.pollInterval)
@@ -324,7 +416,7 @@ func (r *Reloader[T]) Start(ctx context.Context) error {
 		defer ticker.Stop()
 	}
 
-	r.logger.Info("config reloader started",
+	r.logger.InfoContext(ctx, "config reloader started",
 		"file_watch", hasFileWatch,
 		"poll_interval", r.pollInterval,
 		"signal_count", len(r.signals),
@@ -332,238 +424,97 @@ func (r *Reloader[T]) Start(ctx context.Context) error {
 
 	for {
 		select {
-		case <-tickCh:
-			if _, err := r.reload(ctx, TriggerPoll); err != nil {
-				r.logReloadFailure(TriggerPoll, err)
-			} else {
-				r.logger.Debug("config reloaded", "trigger", TriggerPoll)
+		case <-runCtx.Done():
+			select {
+			case <-r.stopCh:
+				r.logger.InfoContext(ctx, "config reloader stopped")
+				return nil
+			default:
+				r.logger.InfoContext(ctx, "config reloader context cancelled")
+				return ctx.Err()
 			}
+
+		case <-tickCh:
+			r.autoReload(runCtx, TriggerPoll)
 
 		case sig := <-sigCh:
-			r.logger.Info("config reload triggered by signal", "signal", sig)
-			if _, err := r.reload(ctx, TriggerSignal); err != nil {
-				r.logReloadFailure(TriggerSignal, err)
-			}
+			r.logger.InfoContext(ctx, "config reload triggered by signal", "signal", sig)
+			r.autoReload(runCtx, TriggerSignal)
 
-		case <-r.stopCh:
-			r.logger.Info("config reloader stopped")
-			return nil
-
-		case <-ctx.Done():
-			r.logger.Info("config reloader context cancelled")
-			return ctx.Err()
-		}
-	}
-}
-
-// Stop signals the reloader to stop. Safe to call multiple times.
-func (r *Reloader[T]) Stop() {
-	r.stopOnce.Do(func() {
-		close(r.stopCh)
-	})
-}
-
-// setupFileWatch creates an fsnotify watcher for the configured config file
-// paths and starts a goroutine that triggers debounced reloads on change.
-//
-// Two detection paths, because config reaches a process two different ways:
-//
-//   - Direct write to the file, including the write-temp-then-rename pattern
-//     editors and atomic-write toolchains use. Caught by watching the file's
-//     PARENT DIRECTORY and matching events by name.
-//   - Symlink swap, where the watched path is a link whose target moves and
-//     the leaf path itself is never written. This is how Kubernetes publishes
-//     ConfigMap and Secret volumes (kubelet writes a new timestamped dir, then
-//     renames `..data` over the old one; every key is a symlink into `..data`)
-//     and how release-directory deploys work (`ln -sfn`). fsnotify does not
-//     follow symlinks, so a name match never fires. Caught by resolving each
-//     path up front, additionally watching the resolved target's directory,
-//     and re-resolving on any unmatched event in a watched directory.
-func (r *Reloader[T]) setupFileWatch(ctx context.Context, paths []string) error {
-	watcher, err := fsnotify.NewWatcher()
-	if err != nil {
-		return fmt.Errorf("creating fsnotify watcher: %w", err)
-	}
-	r.watcher = watcher
-
-	w := &fileWatch[T]{
-		r:            r,
-		watcher:      watcher,
-		watchedFiles: make(map[string]bool, len(paths)),
-		resolved:     make(map[string]string, len(paths)),
-		dirs:         make(map[string]bool),
-		debounce:     cmp.Or(max(r.debounce, 0), DefaultFileWatchDebounce),
-	}
-
-	for _, p := range paths {
-		absPath, err := filepath.Abs(p)
-		if err != nil {
-			r.logger.Warn("failed to resolve config file path", "path", p, "error", err)
-			continue
-		}
-		w.watchedFiles[absPath] = true
-		w.addDir(filepath.Dir(absPath))
-
-		// Record the path's current symlink target and watch that directory
-		// too, so an in-place edit of the target file is seen as well.
-		target := resolveTarget(absPath)
-		w.resolved[absPath] = target
-		if target != absPath {
-			w.addDir(filepath.Dir(target))
-		}
-	}
-
-	go w.run(ctx)
-
-	r.watchArmed.Store(true)
-	return nil
-}
-
-// fileWatch is the state behind one Reloader's file-watch goroutine. It exists
-// as a type rather than a pile of closures because the debounce timer fires on
-// its own goroutine and shares the resolution map with the event loop.
-type fileWatch[T any] struct {
-	r       *Reloader[T]
-	watcher *fsnotify.Watcher
-
-	// watchedFiles is the set of absolute paths the operator declared.
-	watchedFiles map[string]bool
-
-	mu sync.Mutex
-	// resolved maps each watched path to its symlink target as last observed.
-	// A path that is not a symlink maps to itself and never changes, so it
-	// costs one comparison per settle and never triggers the symlink branch.
-	resolved map[string]string
-	dirs     map[string]bool
-	timer    *time.Timer
-	// pendingDirect names the watched file a Write/Create landed on since the
-	// last settle, or "" if the pending events were all indirect.
-	pendingDirect string
-	debounce      time.Duration
-}
-
-func (w *fileWatch[T]) addDir(dir string) {
-	if w.dirs[dir] {
-		return
-	}
-	if err := w.watcher.Add(dir); err != nil {
-		w.r.logger.Warn("failed to watch directory", "dir", dir, "error", err)
-		return
-	}
-	w.dirs[dir] = true
-}
-
-func (w *fileWatch[T]) run(ctx context.Context) {
-	defer func() {
-		if p := recover(); p != nil {
-			w.r.logger.Error("file watcher goroutine panicked", "panic", p)
-		}
-	}()
-	for {
-		select {
-		case event, ok := <-w.watcher.Events:
+		case ev, ok := <-events:
 			if !ok {
-				return
-			}
-			absName, err := filepath.Abs(event.Name)
-			if err != nil {
+				r.logger.ErrorContext(ctx, "config file watcher closed unexpectedly; file-change reloads are off")
+				events, watchErrs, settled = nil, nil, nil
 				continue
 			}
-			// A Write/Create on a watched file is a definite change. Anything
-			// else in a watched directory is only a hint — it may be the first
-			// step of a symlink swap, or an unrelated sibling file. Both cases
-			// are decided after the debounce, in settle().
-			direct := w.watchedFiles[absName] && event.Op&(fsnotify.Write|fsnotify.Create) != 0
-			w.schedule(ctx, absName, direct)
+			fw.observe(ev)
 
-		case err, ok := <-w.watcher.Errors:
+		case err, ok := <-watchErrs:
 			if !ok {
-				return
+				watchErrs = nil
+				continue
 			}
-			w.r.logger.Error("file watcher error", "error", err)
+			r.logger.ErrorContext(ctx, "config file watcher error", "error", err)
+
+		case <-settled:
+			if path, changed := fw.settle(); changed {
+				r.autoReload(runCtx, TriggerFileChange, "path", path)
+			}
 		}
 	}
 }
 
-// schedule (re)arms the debounce timer. Every event resets it, so a burst
-// collapses into one settle().
-func (w *fileWatch[T]) schedule(ctx context.Context, path string, direct bool) {
-	w.mu.Lock()
-	defer w.mu.Unlock()
-	if direct {
-		w.pendingDirect = path
+// autoReload runs one watcher-driven reload, waiting for any reload already in
+// flight so the change that triggered this one is read after it lands.
+func (r *Reloader[T]) autoReload(ctx context.Context, trigger string, attrs ...any) {
+	if err := r.acquire(ctx, trigger, true); err != nil {
+		return // stopping: Stop or ctx ended, and Start's loop exits next
 	}
-	if w.timer != nil {
-		w.timer.Stop()
-	}
-	w.timer = time.AfterFunc(w.debounce, func() { w.settle(ctx) })
-}
+	defer r.release()
 
-// settle decides, once the filesystem has stopped moving, whether anything the
-// reloader reads actually changed.
-//
-// Deferring the symlink check to here rather than doing it per event is
-// load-bearing. A Kubernetes ConfigMap update emits its events BEFORE the swap
-// lands: the new `..2026_…` directory and `..data_tmp` are both created, and
-// only then is `..data` renamed — an operation that on some platforms produces
-// no further event at all. Re-resolving at event time therefore always reads
-// the pre-swap target and concludes nothing changed. Re-resolving after the
-// debounce reads the settled state.
-func (w *fileWatch[T]) settle(ctx context.Context) {
-	w.mu.Lock()
-	path := w.pendingDirect
-	w.pendingDirect = ""
-	movedFrom, movedTo, moved := w.refreshResolvedLocked()
-	w.mu.Unlock()
-
-	if path == "" {
-		if !moved {
-			// Events fired but nothing we read moved — a sibling file in a
-			// shared directory, or the first half of a swap we already handled.
+	args := append([]any{"trigger", trigger}, attrs...)
+	if _, err := r.reloadHeld(ctx, trigger); err != nil {
+		if ctx.Err() != nil {
 			return
 		}
-		path = movedTo
-	}
-	if moved {
-		w.r.logger.Debug("config file symlink target changed",
-			"old_target", movedFrom, "new_target", movedTo)
-	}
-
-	if _, err := w.r.reload(ctx, TriggerFileChange); err != nil {
-		w.r.logReloadFailure(TriggerFileChange, err, "path", path)
+		r.logger.ErrorContext(ctx, "config reload failed", append(args, "error", err)...)
 		return
 	}
-	w.r.logger.Info("config reloaded", "trigger", TriggerFileChange, "path", path)
+	level := slog.LevelInfo
+	if trigger == TriggerPoll {
+		level = slog.LevelDebug // a poll reloads on every tick; Info would flood
+	}
+	r.logger.Log(ctx, level, "config reloaded", args...)
 }
 
-// refreshResolvedLocked re-resolves every watched path, records any new
-// targets, and subscribes to a new target's directory so a later in-place edit
-// there is still seen. Reports the last move observed, if any.
-func (w *fileWatch[T]) refreshResolvedLocked() (from, to string, moved bool) {
-	for path, was := range w.resolved {
-		now := resolveTarget(path)
-		if now == was {
-			continue
-		}
-		w.resolved[path] = now
-		if now != path {
-			w.addDir(filepath.Dir(now))
-		}
-		from, to, moved = was, now, true
+// Stop stops the reloader and waits until no reload is running. After Stop
+// returns nil, no reload — automatic or manual — will run again, and no
+// WithOnChange or WithOnReloadError callback will fire: it is safe to tear
+// down whatever the callbacks touch. Reload returns [ErrReloaderStopped] from
+// then on, and Start returns.
+//
+// An automatic reload in flight is cancelled. A manual Reload in flight runs
+// to completion under its caller's context; if ctx ends first, Stop returns
+// ctx's error and the reloader finishes stopping in the background once that
+// reload returns. Stop is idempotent and safe for concurrent use, but must
+// not be called from a WithOnChange or WithOnReloadError callback: those run
+// holding the slot Stop waits for.
+func (r *Reloader[T]) Stop(ctx context.Context) error {
+	r.stopOnce.Do(func() {
+		close(r.stopCh)
+		go func() {
+			// Taking the slot waits out whichever reload holds it; never
+			// giving it back is what keeps later reloads from starting.
+			r.slot <- struct{}{}
+			close(r.quiesced)
+		}()
+	})
+	select {
+	case <-r.quiesced:
+		return nil
+	case <-ctx.Done():
+		return fmt.Errorf("stopping config reloader: waiting for the reload in flight: %w", ctx.Err())
 	}
-	return from, to, moved
-}
-
-// resolveTarget returns path with symlinks resolved, or path itself when it
-// cannot be resolved. Returning the input on failure is deliberate: a path
-// that is briefly dangling mid-swap must not read as "the target changed" on
-// the way out and again on the way back, which would reload twice for one swap.
-func resolveTarget(path string) string {
-	target, err := filepath.EvalSymlinks(path)
-	if err != nil {
-		return path
-	}
-	return target
 }
 
 // notifyCallbacks invokes all registered onChange callbacks, recovering
@@ -597,18 +548,6 @@ func (r *Reloader[T]) notifyReloadError(trigger string, err error) {
 	}
 }
 
-// logReloadFailure reports a watcher-driven reload failure. A single-flight
-// skip is logged at Debug, not Error: another goroutine is loading the same
-// source state, so the outcome the operator cares about is still on its way.
-func (r *Reloader[T]) logReloadFailure(trigger string, err error, attrs ...any) {
-	args := append([]any{"trigger", trigger, "error", err}, attrs...)
-	if errors.Is(err, ErrReloadInProgress) {
-		r.logger.Debug("config reload skipped, another reload in flight", args...)
-		return
-	}
-	r.logger.Error("config reload failed", args...)
-}
-
 // filePaths extracts config file paths from the config options.
 func filePaths(opts []Option) []string {
 	o := buildOptions(opts)
@@ -617,4 +556,172 @@ func filePaths(opts []Option) []string {
 		paths = append(paths, cf.path)
 	}
 	return paths
+}
+
+// fileWatch is the file-watch state behind Start. It is driven entirely by
+// Start's loop — events in through observe, the debounce timer out through
+// settle — so it needs no locking, and closing it stops the timer for good.
+//
+// Two detection paths, because config reaches a process two different ways:
+//
+//   - Direct write to the file, including the write-temp-then-rename pattern
+//     editors and atomic-write toolchains use. Caught by watching the file's
+//     PARENT DIRECTORY and matching events by name.
+//   - Symlink swap, where the watched path is a link whose target moves and
+//     the leaf path itself is never written. This is how Kubernetes publishes
+//     ConfigMap and Secret volumes (kubelet writes a new timestamped dir, then
+//     renames `..data` over the old one; every key is a symlink into `..data`)
+//     and how release-directory deploys work (`ln -sfn`). fsnotify does not
+//     follow symlinks, so a name match never fires. Caught by resolving each
+//     path up front, additionally watching the resolved target's directory,
+//     and re-resolving on any unmatched event in a watched directory.
+type fileWatch struct {
+	watcher *fsnotify.Watcher
+	logger  *slog.Logger
+
+	// watchedFiles is the set of absolute paths the operator declared.
+	watchedFiles map[string]bool
+	// resolved maps each watched path to its symlink target as last observed.
+	// A path that is not a symlink maps to itself and never changes, so it
+	// costs one comparison per settle and never triggers the symlink branch.
+	resolved map[string]string
+	dirs     map[string]bool
+
+	// timer is the debounce: every event resets it, so a burst collapses into
+	// one settle. Created stopped; fires only once armed by observe.
+	timer    *time.Timer
+	debounce time.Duration
+	// pendingDirect names the watched file a Write/Create landed on since the
+	// last settle, or "" if the pending events were all indirect.
+	pendingDirect string
+}
+
+func newFileWatch(paths []string, debounce time.Duration, logger *slog.Logger) (*fileWatch, error) {
+	watcher, err := fsnotify.NewWatcher()
+	if err != nil {
+		return nil, fmt.Errorf("creating fsnotify watcher: %w", err)
+	}
+
+	timer := time.NewTimer(debounce)
+	timer.Stop()
+	w := &fileWatch{
+		watcher:      watcher,
+		logger:       logger,
+		watchedFiles: make(map[string]bool, len(paths)),
+		resolved:     make(map[string]string, len(paths)),
+		dirs:         make(map[string]bool),
+		timer:        timer,
+		debounce:     debounce,
+	}
+
+	for _, p := range paths {
+		absPath, err := filepath.Abs(p)
+		if err != nil {
+			logger.Warn("failed to resolve config file path", "path", p, "error", err)
+			continue
+		}
+		w.watchedFiles[absPath] = true
+		w.addDir(filepath.Dir(absPath))
+
+		// Record the path's current symlink target and watch that directory
+		// too, so an in-place edit of the target file is seen as well.
+		target := resolveTarget(absPath)
+		w.resolved[absPath] = target
+		if target != absPath {
+			w.addDir(filepath.Dir(target))
+		}
+	}
+	return w, nil
+}
+
+func (w *fileWatch) addDir(dir string) {
+	if w.dirs[dir] {
+		return
+	}
+	if err := w.watcher.Add(dir); err != nil {
+		w.logger.Warn("failed to watch directory", "dir", dir, "error", err)
+		return
+	}
+	w.dirs[dir] = true
+}
+
+// observe records one filesystem event and (re)arms the debounce. A
+// Write/Create on a watched file is a definite change. Anything else in a
+// watched directory is only a hint — it may be the first step of a symlink
+// swap, or an unrelated sibling file — decided after the debounce, in settle.
+func (w *fileWatch) observe(ev fsnotify.Event) {
+	absName, err := filepath.Abs(ev.Name)
+	if err != nil {
+		return
+	}
+	if w.watchedFiles[absName] && ev.Op&(fsnotify.Write|fsnotify.Create) != 0 {
+		w.pendingDirect = absName
+	}
+	w.timer.Reset(w.debounce)
+}
+
+// settle decides, once the filesystem has stopped moving, whether anything the
+// reloader reads actually changed, and names the path that did.
+//
+// Deferring the symlink check to here rather than doing it per event is
+// load-bearing. A Kubernetes ConfigMap update emits its events BEFORE the swap
+// lands: the new `..2026_…` directory and `..data_tmp` are both created, and
+// only then is `..data` renamed — an operation that on some platforms produces
+// no further event at all. Re-resolving at event time therefore always reads
+// the pre-swap target and concludes nothing changed. Re-resolving after the
+// debounce reads the settled state.
+func (w *fileWatch) settle() (string, bool) {
+	path := w.pendingDirect
+	w.pendingDirect = ""
+	movedFrom, movedTo, moved := w.refreshResolved()
+
+	if moved {
+		w.logger.Debug("config file symlink target changed",
+			"old_target", movedFrom, "new_target", movedTo)
+	}
+	switch {
+	case path != "":
+		return path, true
+	case moved:
+		return movedTo, true
+	default:
+		// Events fired but nothing we read moved — a sibling file in a
+		// shared directory, or the first half of a swap we already handled.
+		return "", false
+	}
+}
+
+// refreshResolved re-resolves every watched path, records any new targets,
+// and subscribes to a new target's directory so a later in-place edit there
+// is still seen. Reports the last move observed, if any.
+func (w *fileWatch) refreshResolved() (from, to string, moved bool) {
+	for path, was := range w.resolved {
+		now := resolveTarget(path)
+		if now == was {
+			continue
+		}
+		w.resolved[path] = now
+		if now != path {
+			w.addDir(filepath.Dir(now))
+		}
+		from, to, moved = was, now, true
+	}
+	return from, to, moved
+}
+
+func (w *fileWatch) close() error {
+	w.timer.Stop()
+	return w.watcher.Close()
+}
+
+// resolveTarget returns path with symlinks resolved, or path itself when it
+// cannot be resolved. Returning the input on failure is deliberate: a path
+// that is briefly dangling mid-swap must not read as "the target changed" on
+// the way out and again on the way back, which would reload twice for one swap.
+func resolveTarget(path string) string {
+	target, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		return path
+	}
+	return target
 }

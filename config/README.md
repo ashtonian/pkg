@@ -1,6 +1,6 @@
 # config
 
-Type-safe configuration loading using [koanf](https://github.com/knadh/koanf) with support for multiple sources (YAML files, environment variables, CLI flags), struct-tag defaults, validation, sensitive field redaction, and secret injection.
+Typed configuration loading for Go services on top of [koanf](https://github.com/knadh/koanf): struct-tag defaults, YAML files, environment variables and CLI flags merged in a fixed precedence, then secrets, post-load hooks and validation in one pipeline. `Reloader[T]` re-runs that pipeline on file change, poll or signal and swaps only a config that passed it; `PrintRedacted` and `ToMap` print a config with its secrets masked.
 
 ## Architecture
 
@@ -8,191 +8,261 @@ Type-safe configuration loading using [koanf](https://github.com/knadh/koanf) wi
 C4Component
     title config — component view
 
-    Container_Ext(caller, "Caller (cmd/server main)", "Load(&cfg)")
+    Container_Ext(caller, "Service main / boot wiring", "Go", "Loads config, optionally starts a reloader")
 
     Container_Boundary(c, "config") {
-        Component(load, "Load[T]", "facade", "Multi-source load + validate + redact")
-        Component(sources, "Source chain", "ordered", "defaults → file → env → CLI")
-        Component(tags, "Struct-tag parser", "reflect", "default / validate / sensitive / secret")
-        Component(redact, "Sensitive redaction", "fixed-array patterns", "*_password, *_secret, *_token (immutable)")
-        Component(inject, "Secret injection", "hook", "secret:\"path\" → SecretPopulator")
+        Component(get, "GetConfig[T]", "func", "Merge sources, unmarshal, secrets, post-load, validate")
+        Component(fields, "Fields[T]", "func", "One key tree for defaults, env, print and flags")
+        Component(reloader, "Reloader[T]", "struct", "Serialized reloads, validate-before-swap, Stop(ctx)")
+        Component(print, "PrintRedacted / ToMap", "func", "Flatten + redact sensitive values")
+        Component(kong, "kongprovider", "sub-package", "Flags the user typed → koanf provider")
     }
 
-    Container_Ext(koanf, "knadh/koanf", "Multi-source merger")
-    System_Ext(file, "YAML / TOML files")
-    System_Ext(env, "Process env (APP_*)")
-    System_Ext(cli, "Kong CLI flags")
-    System_Ext(secrets, "Secret store (optional)")
+    System_Ext(koanf, "knadh/koanf/v2", "Providers, merge, mapstructure decode")
+    System_Ext(fs, "Filesystem", "YAML files, fsnotify events")
+    System_Ext(secrets, "SecretPopulator", "Consumer-supplied, e.g. Vault")
 
-    Rel(caller, load, "Load[T](sources...)")
-    Rel(load, sources, "")
-    Rel(sources, koanf, "Merge order")
-    Rel(koanf, file, "")
-    Rel(koanf, env, "")
-    Rel(koanf, cli, "")
-    Rel(load, tags, "Decode + defaults / validate")
-    Rel(load, redact, "Mask for Dump")
-    Rel(load, inject, "Resolve secret refs")
-    Rel(inject, secrets, "")
+    Rel(caller, get, "GetConfig[T](ctx, opts...)")
+    Rel(caller, reloader, "NewReloader / Start / Stop")
+    Rel(get, fields, "derives defaults + env names")
+    Rel(get, koanf, "loads + unmarshals via")
+    Rel(get, secrets, "resolves secret tags via")
+    Rel(reloader, get, "re-runs on every reload")
+    Rel(reloader, fs, "watches")
+    Rel(print, fields, "shares key rules")
+    Rel(kong, fields, "maps flag tags via")
 ```
 
-**Entry points** — `config.Load[T](opts ...Option) (*T, error)`; source helpers `WithFile(path)`, `WithEnvPrefix("APP")`, `WithCLI(parsedFlags)`. `(*Config).Dump(w)` for safe (redacted) output. `(*Config).Reload(ctx)` for hot reload where backed by a watcher.
+```txt
+caller ──GetConfig[T]──▶ GetConfig ──▶ koanf (files, env, providers) ──▶ unmarshal
+                              │                                          │
+                              └─ Fields[T]: defaults + env names         ▼
+                                                     secrets ─▶ post-load ─▶ validate
+caller ──NewReloader/Start/Stop──▶ Reloader ──re-runs──▶ GetConfig pipeline ──swap on success
+```
 
-**Exit points** — Populated typed `*T` value with defaults applied + validation enforced. `Dump` writes a redacted YAML representation (sensitive fields shown as `***`). Optional secret injection resolves `secret:"path/to/key"` tags via the consumer-supplied resolver.
+**Entry points**
+- `GetConfig[T](ctx, opts...)` — one-shot load for boot.
+- `NewReloader[T](ctx, reloadOpts, configOpts...)`, then `Start(ctx)` / `Stop(ctx)` / `Reload(ctx)` / `Config()` — hot reload.
+- `PrintRedacted(cfg, opts...)`, `ToMap(cfg, redact)` — diagnostics; `Reloader.ReloadHandler()` — operator endpoint.
+- `kongprovider.WithOverridesFromTags[T](kongCtx)` — CLI flags as the highest-precedence source.
 
-**Failure modes** — Missing required field (no default + no source) → `ErrMissingRequired`. Validation rule failure (`validate:"min=1,max=100"`) → `ErrValidation` with field path. Unknown env / CLI override → silently ignored (koanf default; deliberate). Secret resolution failure → `ErrSecretInjection` (only when `WithSecrets` set).
+**Exit points**
+- A populated `*T`, or for a `Reloader` an atomically swapped pointer plus `WithOnChange` callbacks.
+- Reads of YAML files and `PREFIX_*` environment variables; calls into the consumer's `SecretPopulator`, post-load hooks and validator.
+- Reload events on the `WithLogger` logger; failures on `WithOnReloadError`; counters on `Stats()`.
 
-**Dependencies** — *Imports*: `github.com/knadh/koanf`, `github.com/go-playground/validator/v10`. Optional secret injection via `WithSecrets`.
+**Failure modes**
+- Required or previously loaded file missing / unreadable → `ErrFileRead` (E7003), cause `*fs.PathError`.
+- File not valid YAML → `ErrFileParse` (E7004), cause the parser error with its line.
+- Secret backend error → `ErrSecretProvider` (E7005); hook error → `ErrPostLoad` (E7007); validation → `ErrValidation` (E7002).
+- Any of those during a reload → `ErrReload` (E7006) wrapping it; the previous config stays live.
+- Manual reload while one runs → `ErrReloadInProgress` (E7008, 409); after `Stop` → `ErrReloaderStopped` (E7009, 503). Neither is a failure.
+- Reload whose context ended → error carrying `ctx.Err()`; not counted, not reported as a failure.
+
+**Dependencies**
+- *Imports*: `knadh/koanf/v2` (+ yaml, env, file, confmap), `go-viper/mapstructure/v2`, `go-playground/validator/v10`, `fsnotify/fsnotify`; `kongprovider` adds `alecthomas/kong`.
 
 ## Quick Start
 
 ```go
-// Struct with tags for defaults, validation, secrets, and redaction.
-type AppConfig struct {
-    Host   string        `koanf:"host" default:"0.0.0.0"`
-    Port   int           `koanf:"port" default:"8080" validate:"min=1,max=65535" flag:"port"`
-    Debug  bool          `koanf:"debug" default:"false"`
-    Tags   []string      `koanf:"tags" default:"web,api"`
-    Server ServerConfig  `koanf:"server"`
-    DB     DBConfig      `koanf:"db"`
-}
+package main
 
-type ServerConfig struct {
-    ReadTimeout  time.Duration `koanf:"read_timeout" default:"30s"`
-    WriteTimeout time.Duration `koanf:"write_timeout" default:"60s"`
-}
+import (
+	"context"
+	"log"
+	"os"
+	"time"
 
-type DBConfig struct {
-    Host     string `koanf:"host" default:"localhost"`
-    Port     int    `koanf:"port" default:"5432"`
-    Name     string `koanf:"name" validate:"required"`
-    MaxConns int    `koanf:"max_conns" default:"25"`
-    Password string `koanf:"password" sensitive:"true" secret:"db/password"`
-}
-
-// Load from files, env vars, secrets, and CLI flags.
-cfg, err := config.GetConfig[AppConfig](ctx,
-    config.WithEnvPrefix("APP"),                           // APP_HOST, APP_DB_MAX_CONNS, etc.
-    config.WithConfigFile("/etc/myapp/config.yaml"),       // YAML files merged left-to-right
-    config.WithConfigFile("./config.local.yaml"),
-    config.WithDefaults(map[string]any{"db.name": "dev"}), // Programmatic defaults
-    config.WithSecretPopulator(func(ctx context.Context, target any) error {
-        return secrets.Populate(ctx, vaultProvider, target) // your secret backend
-    }),
-    kongprovider.WithOverridesFromTags[AppConfig](kongCtx), // CLI flag overrides (highest)
+	"github.com/ashtonian/pkg/config"
 )
 
-// Print config with sensitive fields auto-redacted.
-config.PrintRedacted(cfg)
-// db.password  [REDACTED]  string
-// Other formats: "json", "env"; options: WithShowSensitive, WithWriter
+type DBConfig struct {
+	Host     string `koanf:"host" default:"localhost"`
+	MaxConns int    `koanf:"max_conns" default:"25" validate:"min=1"`
+	Password string `koanf:"password" default:"hunter2"`
+}
+
+type AppConfig struct {
+	Port    int           `koanf:"port" default:"8080" validate:"min=1,max=65535"`
+	Timeout time.Duration `koanf:"timeout" default:"30s"`
+	DB      DBConfig      `koanf:"db"`
+}
+
+func main() {
+	ctx := context.Background()
+	cfg, err := config.GetConfig[AppConfig](ctx,
+		config.WithConfigFile("config.yaml"), // optional: skipped when absent
+		config.WithEnvPrefix("APP"),          // APP_PORT, APP_DB_MAX_CONNS, ...
+	)
+	if err != nil {
+		log.Fatal(err)
+	}
+	if err := config.PrintRedacted(cfg, config.WithWriter(os.Stdout)); err != nil {
+		log.Fatal(err)
+	}
+}
 ```
 
-Env var names are built by uppercasing each koanf tag and joining with `_`. Underscores inside koanf tags are preserved: `APP_DB_MAX_CONNS` maps to `db.max_conns`, not `db.max.conns`.
+Mirrored by `Example` in `example_test.go`, which prints:
+
+```txt
+FIELD         VALUE       TYPE
+------------------------------------------
+port          8080        int
+timeout       30s         time.Duration
+db.host       localhost   string
+db.max_conns  25          int
+db.password   [REDACTED]  string
+```
+
+Environment names come from the key tree, so an underscore inside a key survives: `APP_DB_MAX_CONNS` sets `db.max_conns`.
+
+### Hot reload
+
+```go
+reloader, err := config.NewReloader[AppConfig](ctx,
+	[]config.ReloadOption[AppConfig]{
+		config.WithFileWatch[AppConfig](0), // 0 = DefaultFileWatchDebounce (500ms)
+		config.WithSignalReload[AppConfig](syscall.SIGHUP),
+		config.WithOnChange(func(old, new *AppConfig) { limiter.SetRate(new.Rate) }),
+		config.WithOnReloadError[AppConfig](func(trigger string, err error) { reloadFailures.Inc() }),
+	},
+	config.WithLogger(logger),
+	config.WithConfigFile("config.yaml"),
+	config.WithEnvPrefix("APP"),
+)
+if err != nil {
+	return err
+}
+go func() { _ = reloader.Start(ctx) }()
+defer func() { _ = reloader.Stop(shutdownCtx) }() // returns once no reload can run
+
+cfg := reloader.Config() // lock-free on the hot path
+```
+
+Reloads are serialized. A watcher-driven reload waits for one already running and then re-reads the sources, so no change is lost; a manual `Reload` that finds one running returns `ErrReloadInProgress` instead. `Stop(ctx)` cancels an automatic reload in flight, waits for a manual one, and after it returns no reload runs and no callback fires. Callbacks must not call `Stop`.
 
 ## Configuration
 
-### Source precedence (highest wins)
+### Load options (`Option`)
 
-1. Extra providers (CLI flags via `kongprovider`, custom providers)
-2. Environment variables (`WithEnvPrefix`)
-3. Config files (merged left-to-right)
-4. Programmatic defaults (`WithDefaults`)
-5. Struct tag defaults (`default:"value"`)
+Source precedence, highest first: `WithProvider` (incl. `kongprovider`) > environment > files (left-to-right) > `WithDefaults` > `default` tags.
 
-### Struct Tags
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `WithEnvPrefix(prefix)` | `string` | none (env not read) | Read `PREFIX_*` variables, named from the key tree. |
+| `WithConfigFile(path)` | `string` | none | Optional YAML file: skipped when missing; unreadable → `ErrFileRead`; invalid YAML → `ErrFileParse`. Under a `Reloader`, required once loaded. |
+| `WithConfigFiles(paths...)` | `...string` | none | Several optional files, merged left-to-right. |
+| `WithMustConfigFile(path)` | `string` | none | Required YAML file: missing or unreadable → `ErrFileRead`; invalid YAML → `ErrFileParse`. |
+| `WithMustConfigFiles(paths...)` | `...string` | none | Several required files, merged left-to-right. |
+| `WithDefaults(m)` | `map[string]any` | none | Programmatic defaults keyed by dot-path; override `default` tags. |
+| `WithProvider(p)` | `koanf.Provider` | none | Extra source at the highest precedence, loaded in the order added. |
+| `WithSecretPopulator(fn)` | `SecretPopulator` | nil (no secrets) | Fills `secret`-tagged fields after unmarshal; errors wrap `ErrSecretProvider`. |
+| `WithPostLoad[T](fn)` | `func(context.Context, *T) error` | none | Normalize/derive after secrets, before validation; errors wrap `ErrPostLoad`. |
+| `WithValidator(v)` | `Validator` | `validator.New()` | Any `Struct(any) error`, e.g. a ModelValidator. |
+| `WithSkipValidation()` | — | validation on | Skip validation, including `validate:"required"`. |
+| `WithKoanf(k)` | `*koanf.Koanf` | new instance per load | Pre-configured koanf instance the pipeline loads on top of. |
+| `WithLogger(l)` | `*slog.Logger` | `slog.Default()` | Loader diagnostics and, via `NewReloader`, every reload event. |
+
+### Reload options (`ReloadOption[T]`)
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `WithFileWatch[T](debounce)` | `time.Duration` | off; `0` → 500ms | fsnotify watch of every configured file, including symlink / ConfigMap swaps. |
+| `WithPollInterval[T](d)` | `time.Duration` | off | Reload every `d`; for env vars, providers and unreliable filesystems. |
+| `WithSignalReload[T](sigs...)` | `...os.Signal` | off | Reload on each signal, typically `SIGHUP`. |
+| `WithOnChange[T](fn)` | `func(old, new *T)` | none | After each successful reload. Panics recovered. |
+| `WithOnReloadError[T](fn)` | `func(trigger string, err error)` | none | After each failed reload from any trigger. Panics recovered. |
+
+`DefaultFileWatchDebounce` is 500ms. `WithFileWatch` cannot see `subPath` ConfigMap mounts, env or provider changes, or (on macOS/BSD) a relink through a renamed-away temp name — use `WithPollInterval` for those.
+
+### Print options (`PrintOption`)
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `WithFormat(f)` | `string` | `FormatTable` | `FormatTable`, `FormatJSON` or `FormatEnv`; anything else is an error. |
+| `WithWriter(w)` | `io.Writer` | `os.Stdout` | Output destination; write errors are returned. |
+| `WithShowSensitive(b)` | `bool` | `false` | Print sensitive values instead of `[REDACTED]`. |
+| `WithSortByName()` | — | declaration order | Sort entries by key. |
+| `WithIncludeDescriptions()` | — | off | Add `desc` tag text to each entry. |
+
+### Struct tags
 
 | Tag | Description | Example |
 |-----|-------------|---------|
-| `koanf` | Key name for koanf (nesting via `.` delimiter) | `koanf:"host"` |
-| `default` | Default value (lowest precedence, comma-split for slices) | `default:"localhost"` |
-| `validate` | Validation rules ([go-playground/validator](https://pkg.go.dev/github.com/go-playground/validator/v10)) | `validate:"required,min=1"` |
-| `flag` | Kong CLI flag name (used by `kongprovider`) | `flag:"port"` |
-| `sensitive` | Redacted in PrintRedacted/ToMap output | `sensitive:"true"` |
-| `desc` | Human-readable description | `desc:"Server hostname"` |
-| `secret` | Key resolved by the [SecretPopulator] passed to `WithSecretPopulator` | `secret:"db/password"` |
+| `koanf` | Key segment; `-` skips, `,squash` merges into the parent, `,remain` is a catch-all map. | `koanf:"max_conns"` |
+| `default` | Lowest-precedence default; comma-separated for slices. | `default:"localhost"` |
+| `validate` | [go-playground/validator](https://pkg.go.dev/github.com/go-playground/validator/v10) rules. | `validate:"required,min=1"` |
+| `sensitive` | Redact in printed output — on a struct, slice or map, everything inside it. | `sensitive:"true"` |
+| `secret` | Key for the `SecretPopulator` to resolve. | `secret:"db/password"` |
+| `desc` | Description for `WithIncludeDescriptions`. | `desc:"Server hostname"` |
+| `flag` | Kong flag name for `kongprovider.WithOverridesFromTags`. | `flag:"port"` |
 
-### Hot-Reload
-
-`Reloader[T]` watches config sources and atomically swaps the config when changes are detected. Reads via `Config()` are lock-free (atomic pointer). Failed reloads preserve the previous config.
-
-```go
-reloader, err := config.NewReloader[AppConfig](
-    []config.ReloadOption[AppConfig]{
-        config.WithFileWatch[AppConfig](500 * time.Millisecond), // fsnotify with debounce
-        config.WithPollInterval[AppConfig](30 * time.Second),    // fallback polling
-        config.WithSignalReload[AppConfig](syscall.SIGHUP),      // SIGHUP reload
-        config.WithOnChange(func(old, new *AppConfig) {
-            slog.Info("config changed", "old_port", old.Port, "new_port", new.Port)
-            rateLimiter.UpdateLimit(new.RateLimit)
-        }),
-    },
-    config.WithEnvPrefix("APP"),
-    config.WithConfigFile("./config.yaml"),
-)
-
-// Read config on hot path (zero contention).
-cfg := reloader.Config()
-
-// Start watching in background.
-go reloader.Start(ctx)
-
-// Expose reload endpoint for operators (POST /admin/config/reload).
-mux.Handle("POST /admin/config/reload", reloader.ReloadHandler())
-```
+Field names containing `password`, `secret`, `token`, `key`, `credential`, `auth`, `private`, `apikey` or `api_key` are redacted without a tag. A struct implementing `encoding.TextUnmarshaler` (`time.Time`, `netip.Addr`) is one key, not a subtree. A recursive type stops at the recursion: its nested part decodes from files but gets no default, env or flag key.
 
 ## API Reference
 
-| Function | Description |
-|----------|-------------|
-| `GetConfig[T](opts...)` | Load config from all sources, unmarshal into T, inject secrets, validate |
-| `NewReloader[T](reloadOpts, configOpts...)` | Create a reloader with initial load and optional watch |
-| `DefaultsFromTags[T]()` | Extract `default:"value"` struct tags into a koanf-compatible map |
-| `PrintRedacted(cfg, opts...)` | Print config with sensitive fields redacted |
-| `ToMap(cfg, redact)` | Export config as `map[string]any` with optional redaction |
+### Loading
 
-| Config Option | Description |
-|--------|-------------|
-| `WithEnvPrefix(prefix)` | Set prefix for env var lookups |
-| `WithConfigFile(path)` | Add an optional YAML config file |
-| `WithMustConfigFile(path)` | Add a required YAML config file (error if missing) |
-| `WithConfigFiles(paths...)` | Add multiple optional config files, merged left-to-right |
-| `WithDefaults(map)` | Set programmatic default values (koanf dot-path keys) |
-| `WithProvider(p)` | Add a generic koanf provider at high precedence |
-| `WithSecretPopulator(fn)` | Configure secret injection via a consumer-supplied `SecretPopulator` closure (typically wraps a secret store client) |
-| `WithPostLoad[T](fn)` | Run a derive/normalize hook after secrets and **before** validation. The one supported place for cross-field fixups that must be covered by validate-before-swap. |
-| `WithSkipValidation()` | Disable go-playground/validator validation |
-| `WithValidator(v)` | Use a custom validator instance |
+- `GetConfig[T](ctx, opts...) (*T, error)` — load, secrets, post-load, validate.
+- `Fields[T]() []Field` — every leaf key of `T`: `Path`, `Tag`, `Type`.
+- `DefaultsFromTags[T]() map[string]any` — `default` tags keyed by path.
 
-| Reload Option | Description |
-|--------|-------------|
-| `WithFileWatch[T](debounce)` | Watch config files via fsnotify (0 = 500ms default) |
-| `WithPollInterval[T](interval)` | Periodic reload at interval (fallback for unreliable fsnotify) |
-| `WithSignalReload[T](signals...)` | Reload on OS signals (e.g., `syscall.SIGHUP`) |
-| `WithOnChange[T](func(old, new *T))` | Callback after successful reload |
-| `WithOnReloadError[T](func(trigger string, err error))` | Callback after every failed reload, including watcher-driven ones that otherwise only reach the log |
-| `WithReloadLogger[T](logger)` | Custom logger for reload events |
+### Reloading
 
-| Reloader Method | Description |
-|--------|-------------|
-| `Config() *T` | Current config (atomic load, zero contention) |
-| `Reload(ctx) (*T, error)` | Trigger immediate reload (validate-before-swap); returns `ErrReloadInProgress` if one is already in flight |
-| `Stats() ReloadStats` | Snapshot of attempts / successes / failures, last trigger, last success + failure times, last error |
-| `Start(ctx) error` | Block and watch for changes until Stop/cancel |
-| `Stop()` | Signal the watcher to stop |
-| `ReloadHandler() http.Handler` | HTTP handler: POST returns redacted config JSON |
+- `NewReloader[T](ctx, reloadOpts, configOpts...) (*Reloader[T], error)` — initial load + reloader.
+- `(*Reloader[T]).Config() *T` — current config, atomic load.
+- `(*Reloader[T]).Reload(ctx) (*T, error)` — manual reload; `ErrReloadInProgress` if one is running.
+- `(*Reloader[T]).Start(ctx) error` — run the configured watchers until `Stop` or ctx.
+- `(*Reloader[T]).Stop(ctx) error` — stop and wait until no reload can run.
+- `(*Reloader[T]).Stats() ReloadStats` — attempts, successes, failures, last trigger/success/failure/error.
+- `(*Reloader[T]).ReloadHandler() http.Handler` — POST → reload; 200 / 409 / 503 / 500.
+- `TriggerManual`, `TriggerFileChange`, `TriggerPoll`, `TriggerSignal` — bounded trigger labels.
+
+### Printing
+
+- `PrintRedacted(cfg, opts...) error` — table / JSON / env output with redaction.
+- `ToMap(cfg, redact) map[string]any` — flattened key → value map.
+
+### Errors
+
+- `Codes() []errcontract.CodeDef`, `RegisterTo(errcontract.Store)` — the E-code catalog.
+- `ToConfigErrors(err) []*ConfigError` — per-field validation errors; `ConfigError.LocalizedMessage(TranslateFunc)`.
 
 ## Error Codes
 
-| Code | Sentinel | Description |
-|------|----------|-------------|
-| E7002 | `ErrValidation` | Validation rule failed |
-| E7003 | `ErrFileRead` | Required config file could not be read |
-| E7005 | `ErrSecretProvider` | Secret provider returned an error |
-| E7006 | `ErrReload` | Config reload failed (wraps underlying error) |
-| E7007 | `ErrPostLoad` | A `WithPostLoad` hook returned an error |
-| E7008 | `ErrReloadInProgress` | Reload skipped — another reload holds the single-flight slot. **Does not wrap `ErrReload`**: nothing failed and nothing is stale. `ReloadHandler` serves it as 409. |
+| Code | HTTP | Sentinel | Retryable | Description |
+|------|------|----------|-----------|-------------|
+| E7002 | 422 | `ErrValidation` | No | Validation failed; `errors.As` yields `validator.ValidationErrors`. |
+| E7003 | 500 | `ErrFileRead` | Unknown | Config file missing (required or previously loaded) or unreadable; `*fs.PathError` in the chain. |
+| E7004 | 500 | `ErrFileParse` | No | Config file is not valid YAML; parser error with line in the chain. |
+| E7005 | 500 | `ErrSecretProvider` | Yes | `SecretPopulator` failed; its error in the chain. |
+| E7006 | 500 | `ErrReload` | Yes | Reload failed and the previous config is live; wraps the load error. |
+| E7007 | 500 | `ErrPostLoad` | No | A `WithPostLoad` hook failed; its error in the chain. |
+| E7008 | 409 | `ErrReloadInProgress` | Yes | Manual reload found one running. Does not match `ErrReload`. |
+| E7009 | 503 | `ErrReloaderStopped` | No | Reload requested after `Stop`. Does not match `ErrReload`. |
 
-## References
+Every error carries its category and its cause: `errors.Is(err, config.ErrReload) && errors.Is(err, config.ErrFileParse)` both hold for a reload that hit a YAML syntax error.
+
+## Key Files
+
+| File | Responsibility |
+|------|----------------|
+| `config.go` | `GetConfig[T]`, `Option` and every load option, the load pipeline, file-error classification |
+| `fields.go` | `Fields[T]` key-tree walker, `DefaultsFromTags[T]`, environment-variable mapping |
+| `reloader.go` | `Reloader[T]`, reload options, single-flight slot, `Start` loop, `Stop`, file watch + debounce |
+| `handler.go` | `Reloader.ReloadHandler` HTTP endpoint |
+| `print.go` | `PrintRedacted`, `ToMap`, print options, redaction walk |
+| `errors.go` | E7002–E7009 CodeDefs and sentinels, `ConfigError`, `ToConfigErrors`, `TranslateFunc` |
+| `doc.go` | Package documentation |
+| `kongprovider/` | Kong CLI flags → highest-precedence koanf provider |
+
+## Dependencies
+
+- *Imports*: `github.com/knadh/koanf/v2` and its yaml / env / file / confmap modules, `github.com/go-viper/mapstructure/v2`, `github.com/go-playground/validator/v10`, `github.com/fsnotify/fsnotify`.
+- *Standard backends used*: none — sources are koanf providers and the local filesystem.
+
+## Spec Reference
 
 - [knadh/koanf](https://github.com/knadh/koanf) — wrapped library

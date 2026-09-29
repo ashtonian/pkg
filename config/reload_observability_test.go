@@ -386,7 +386,7 @@ func TestReloader_FileWatch_DetectsConfigMapSymlinkSwap(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	go func() { _ = r.Start(ctx) }()
-	defer r.Stop()
+	defer func() { _ = r.Stop(context.Background()) }()
 
 	waitForWatcher(t, r)
 
@@ -463,7 +463,7 @@ func TestReloader_FileWatch_DetectsReleaseDirRelink(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	go func() { _ = r.Start(ctx) }()
-	defer r.Stop()
+	defer func() { _ = r.Stop(context.Background()) }()
 
 	waitForWatcher(t, r)
 

@@ -1,11 +1,11 @@
-// Package config provides type-safe configuration loading using koanf with
-// support for multiple sources (YAML files, environment variables, CLI flags),
-// struct tag defaults, validation, sensitive field redaction, and secret injection.
+// Package config provides typed configuration loading on top of koanf:
+// struct-tag defaults, YAML files, environment variables and CLI flags merged
+// in a fixed precedence, then secrets, post-load hooks and validation in one
+// pipeline. [Reloader] re-runs that pipeline on change and swaps only a config
+// that passed it; [PrintRedacted] and [ToMap] print a config with its secrets
+// masked.
 //
-// The package is a thin wrapper around knadh/koanf/v2, adding DefaultsFromTags,
-// PrintRedacted/ToMap, and GetConfig[T]() as a convenience orchestrator over
-// koanf, a consumer-supplied [SecretPopulator], and go-playground/validator.
-// Secret backends are the caller's, wired in via WithSecretPopulator; the
+// Secret backends are the caller's, wired in via [WithSecretPopulator]; the
 // package depends on none.
 //
 // # Quick Start
@@ -13,37 +13,43 @@
 //	type AppConfig struct {
 //	    Host    string        `koanf:"host" default:"localhost" desc:"Server hostname"`
 //	    Port    int           `koanf:"port" default:"8080" validate:"min=1,max=65535"`
-//	    Debug   bool          `koanf:"debug" default:"false"`
 //	    Timeout time.Duration `koanf:"timeout" default:"30s"`
 //	}
 //
-//	cfg, err := config.GetConfig[AppConfig](
+//	cfg, err := config.GetConfig[AppConfig](ctx,
 //	    config.WithEnvPrefix("APP"),
 //	    config.WithConfigFile("./config.yaml"),
 //	)
 //
-// # Struct Tags
+// # Struct Tags and Keys
 //
-// The following struct tags control configuration behavior:
+//   - koanf:"name"         - key segment; ",squash" merges into the parent
+//   - koanf:"-"            - not a config key
+//   - default:"value"      - lowest-precedence default
+//   - validate:"required"  - go-playground/validator rules
+//   - sensitive:"true"     - redacted by PrintRedacted/ToMap; on a struct,
+//     slice or map, everything inside it is redacted
+//   - desc:"description"   - shown by WithIncludeDescriptions
+//   - secret:"key"         - resolved by the WithSecretPopulator closure
+//   - flag:"flagname"      - Kong flag name (kongprovider sub-package)
 //
-//   - koanf:"name"         - koanf key name. Nesting uses "." delimiter.
-//   - koanf:"-"            - Ignore this field
-//   - default:"value"      - Default value (read by DefaultsFromTags, lowest precedence)
-//   - validate:"required"  - Field must be set (go-playground/validator)
-//   - sensitive:"true"     - Redacted in PrintRedacted/ToMap output
-//   - desc:"description"   - Human-readable description
-//   - secret:"key"         - Key resolved by the SecretPopulator passed to WithSecretPopulator
-//   - flag:"flagname"      - Maps to Kong CLI flag (used by kongprovider sub-package)
+// [Fields] is the one definition of how these tags become koanf paths;
+// defaults, environment-variable names, printing and the Kong bridge all use
+// it. With WithEnvPrefix("APP"), APP_DB_MAX_CONNS sets db.max_conns.
 //
 // # Source Precedence
 //
-// Values are resolved in this order (highest wins):
+// Highest wins:
 //
 //  1. Extra providers (CLI flags via kongprovider, custom providers)
 //  2. Environment variables
 //  3. Config files (merged left-to-right)
 //  4. Programmatic defaults (WithDefaults)
 //  5. Struct tag defaults (default:"value")
+//
+// An optional file ([WithConfigFile]) may be absent; one that exists but
+// cannot be read or parsed fails the load with [ErrFileRead] or
+// [ErrFileParse], exactly as a required file does.
 //
 // # Load Pipeline
 //
@@ -57,19 +63,15 @@
 // validate-before-swap. The same work done afterwards is not: the new config
 // is already live by the time it fails.
 //
-//	cfg, err := config.GetConfig[AppConfig](ctx,
-//	    config.WithConfigFile("./config.yaml"),
-//	    config.WithPostLoad(func(_ context.Context, c *AppConfig) error {
-//	        c.Normalize()               // collapse shorthand, expand profiles
-//	        return c.ValidateCrossField()
-//	    }),
-//	)
+// Every error keeps both its category sentinel and the underlying cause, so
+// errors.Is(err, ErrFileParse) and errors.As into the parser's or the
+// filesystem's error both work, through GetConfig and through a reload.
 //
 // # CLI Flag Overrides
 //
 //	import "github.com/ashtonian/pkg/config/kongprovider"
 //
-//	cfg, err := config.GetConfig[AppConfig](
+//	cfg, err := config.GetConfig[AppConfig](ctx,
 //	    config.WithEnvPrefix("APP"),
 //	    kongprovider.WithOverridesFromTags[AppConfig](kongCtx),
 //	)
@@ -80,40 +82,44 @@
 // in a [SecretPopulator] closure that captures the chosen backend (e.g.
 // Vault, AWS Secrets Manager):
 //
-//	import "github.com/ashtonian/pkg/secrets"
-//
 //	cfg, err := config.GetConfig[MyConfig](ctx,
 //	    config.WithSecretPopulator(func(ctx context.Context, target any) error {
 //	        return secrets.Populate(ctx, provider, target)
 //	    }),
 //	)
 //
-// # Hot-Reload
+// # Hot Reload
 //
-// Reloader[T] watches config sources and atomically swaps the config
-// struct when changes are detected. Readers access the current config via
-// Config() with zero contention (atomic pointer load). If a reload fails
-// (parse error, validation failure), the previous config is preserved.
+// Reloader[T] watches config sources and atomically swaps the config struct
+// when changes are detected. Readers access the current config via Config()
+// with zero contention (atomic pointer load). If a reload fails, the previous
+// config is preserved.
 //
-//	reloader, err := config.NewReloader[AppConfig](
+//	reloader, err := config.NewReloader[AppConfig](ctx,
 //	    []config.ReloadOption[AppConfig]{
-//	        config.WithFileWatch[AppConfig](500 * time.Millisecond),
+//	        config.WithFileWatch[AppConfig](0), // 0 = DefaultFileWatchDebounce
 //	        config.WithOnChange(func(old, new *AppConfig) {
-//	            slog.Info("config reloaded", "old_port", old.Port, "new_port", new.Port)
+//	            limiter.SetRate(new.Rate)
 //	        }),
 //	    },
+//	    config.WithLogger(logger),
 //	    config.WithEnvPrefix("APP"),
 //	    config.WithConfigFile("./config.yaml"),
 //	)
 //
-//	// Read config on the hot path (atomic, zero contention).
-//	cfg := reloader.Config()
-//
-//	// Start watching in a goroutine.
 //	go reloader.Start(ctx)
+//	defer reloader.Stop(shutdownCtx)
 //
-//	// Expose reload endpoint for operators.
+//	cfg := reloader.Config() // hot path
+//
 //	mux.Handle("POST /admin/config/reload", reloader.ReloadHandler())
+//
+// Reloads are serialized. A watcher-driven reload (file change, poll, signal)
+// that arrives while another reload runs waits for it and then reads the
+// sources again, so a change is never lost. A manual Reload does not wait: it
+// returns ErrReloadInProgress. Stop cancels an automatic reload in flight,
+// waits for a manual one, and after it returns no reload runs and no callback
+// fires — safe to tear down whatever the callbacks touch.
 //
 // # Reload Observability
 //
@@ -124,9 +130,9 @@
 // success/failure times, last error) suitable for export as metrics; the
 // Trigger* constants are a closed vocabulary safe to use as a label.
 //
-// Reload returns ErrReloadInProgress, not ErrReload, when it loses the
-// single-flight race. That case is benign — the in-flight reload reads the
-// same source state — so alert on ErrReload alone.
+// Alert on ErrReload. ErrReloadInProgress and ErrReloaderStopped are not
+// failures — no pipeline ran and the live config is unchanged — and a reload
+// whose context ended carries ctx.Err() instead of ErrReload.
 //
 // # File Watch Limits
 //

@@ -10,8 +10,8 @@ import (
 	"github.com/ashtonian/pkg/errutil"
 )
 
-// Error codes for the config package (E7002-E7008 range).
-// E7001 was removed — use validate:"required" instead.
+// Error codes for the config package (E7002-E7009). E7001 was removed —
+// use validate:"required" instead.
 var (
 	CodeValidation = errcontract.CodeDef{
 		Code: "E7002", HTTPStatus: 422, Class: errcontract.ClassPermanent,
@@ -21,6 +21,13 @@ var (
 	CodeFileRead = errcontract.CodeDef{
 		Code: "E7003", HTTPStatus: 500, Class: errcontract.ClassUnknown,
 		UserFacing: false, Message: "failed to read configuration file", Package: "config",
+	}
+	// CodeFileParse separates "the bytes are not valid YAML" from "the bytes
+	// could not be read", so an operator can tell a syntax error in an overlay
+	// from a missing mount without parsing the message.
+	CodeFileParse = errcontract.CodeDef{
+		Code: "E7004", HTTPStatus: 500, Class: errcontract.ClassPermanent,
+		UserFacing: false, Message: "configuration file is not valid YAML", Package: "config",
 	}
 	CodeSecretProvider = errcontract.CodeDef{
 		Code: "E7005", HTTPStatus: 500, Class: errcontract.ClassTransient,
@@ -35,31 +42,29 @@ var (
 		Code: "E7007", HTTPStatus: 500, Class: errcontract.ClassPermanent,
 		UserFacing: false, Message: "configuration post-load hook failed", Package: "config",
 	}
-	// CodeReloadInProgress is deliberately NOT a flavour of CodeReload: a lost
-	// single-flight race means another goroutine is already loading the same
-	// source state, so nothing failed and nothing is stale. Conflating the two
-	// turns a burst of legitimate reload triggers into a stream of failure
-	// alerts. 409 mirrors the HTTP semantics ReloadHandler serves.
+	// CodeReloadInProgress is deliberately NOT a flavour of CodeReload: a
+	// manual reload that finds another reload in flight ran no pipeline, so
+	// nothing failed. Conflating the two turns a burst of operator requests
+	// into a stream of failure alerts. 409 mirrors the HTTP semantics
+	// ReloadHandler serves.
 	CodeReloadInProgress = errcontract.CodeDef{
 		Code: "E7008", HTTPStatus: 409, Class: errcontract.ClassTransient,
 		UserFacing: false, Message: "configuration reload already in progress", Package: "config",
 	}
-)
-
-// Backward-compatible aliases for the old ErrCodeXxx names.
-var (
-	ErrCodeValidation       = CodeValidation
-	ErrCodeFileRead         = CodeFileRead
-	ErrCodeSecretProvider   = CodeSecretProvider
-	ErrCodeReload           = CodeReload
-	ErrCodePostLoad         = CodePostLoad
-	ErrCodeReloadInProgress = CodeReloadInProgress
+	// CodeReloaderStopped reports a reload requested after Stop. Like
+	// CodeReloadInProgress it is not a reload failure — the reloader is shut
+	// down, the config it last published is unchanged.
+	CodeReloaderStopped = errcontract.CodeDef{
+		Code: "E7009", HTTPStatus: 503, Class: errcontract.ClassPermanent,
+		UserFacing: false, Message: "configuration reloader is stopped", Package: "config",
+	}
 )
 
 // Sentinel errors for common checks using errors.Is.
 var (
 	ErrValidation     = errcontract.ErrorOf(CodeValidation)
 	ErrFileRead       = errcontract.ErrorOf(CodeFileRead)
+	ErrFileParse      = errcontract.ErrorOf(CodeFileParse)
 	ErrSecretProvider = errcontract.ErrorOf(CodeSecretProvider)
 	ErrReload         = errcontract.ErrorOf(CodeReload)
 	ErrPostLoad       = errcontract.ErrorOf(CodePostLoad)
@@ -68,7 +73,15 @@ var (
 	// see CodeReloadInProgress. A caller that wants "any non-success"
 	// checks both sentinels.
 	ErrReloadInProgress = errcontract.ErrorOf(CodeReloadInProgress)
+	// ErrReloaderStopped reports that Reload was called after Stop. It does
+	// NOT wrap ErrReload.
+	ErrReloaderStopped = errcontract.ErrorOf(CodeReloaderStopped)
 )
+
+// TranslateFunc translates an error code, field, tag, and param into a
+// localized string. It is the seam for adapting an i18n catalog without this
+// package importing one.
+type TranslateFunc func(code, field, tag, param string) string
 
 // ConfigError wraps an errutil.APIError with localized message support.
 // It satisfies the error interface and can produce localized messages
@@ -108,7 +121,7 @@ func (e *ConfigError) Param() string {
 // LocalizedMessage returns a human-readable localized message using the
 // provided translator function. If translator is nil or returns empty,
 // falls back to the standard error message.
-func (e *ConfigError) LocalizedMessage(translator func(code, field, tag, param string) string) string {
+func (e *ConfigError) LocalizedMessage(translator TranslateFunc) string {
 	if translator != nil {
 		msg := translator(e.Code, e.field, e.tag, e.param)
 		if msg != "" {
@@ -178,10 +191,12 @@ func Codes() []errcontract.CodeDef {
 	return []errcontract.CodeDef{
 		CodeValidation,
 		CodeFileRead,
+		CodeFileParse,
 		CodeSecretProvider,
 		CodeReload,
 		CodePostLoad,
 		CodeReloadInProgress,
+		CodeReloaderStopped,
 	}
 }
 
