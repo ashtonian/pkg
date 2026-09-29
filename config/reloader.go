@@ -54,6 +54,9 @@ type Reloader[T any] struct {
 	stopOnce   sync.Once
 	stopCh     chan struct{}
 	quiesced   chan struct{} // closed once Stop holds the slot
+	// changed holds at most one pending SourceChanged request; further
+	// requests coalesce into it.
+	changed chan struct{}
 }
 
 // watcherReady reports whether Start has finished arming the fsnotify watcher.
@@ -66,10 +69,11 @@ func (r *Reloader[T]) watcherReady() bool { return r.watchArmed.Load() }
 // Reload trigger names. These form a closed vocabulary so consumers can use
 // them directly as a bounded metric label.
 const (
-	TriggerManual     = "manual"      // an explicit Reload call (including ReloadHandler)
-	TriggerFileChange = "file_change" // WithFileWatch saw the file or its symlink target change
-	TriggerPoll       = "poll"        // WithPollInterval ticked
-	TriggerSignal     = "signal"      // WithSignalReload received one of its signals
+	TriggerManual        = "manual"         // an explicit Reload call (including ReloadHandler)
+	TriggerFileChange    = "file_change"    // WithFileWatch saw the file or its symlink target change
+	TriggerPoll          = "poll"           // WithPollInterval ticked
+	TriggerSignal        = "signal"         // WithSignalReload received one of its signals
+	TriggerSourceChanged = "source_changed" // the caller reported a change via SourceChanged
 )
 
 // ReloadStats is an immutable point-in-time snapshot of a Reloader's reload
@@ -213,6 +217,7 @@ func NewReloader[T any](ctx context.Context, reloadOpts []ReloadOption[T], confi
 		slot:        make(chan struct{}, 1),
 		loadedFiles: files,
 		stopCh:      make(chan struct{}),
+		changed:     make(chan struct{}, 1),
 		quiesced:    make(chan struct{}),
 	}
 	r.current.Store(cfg)
@@ -246,6 +251,23 @@ func (r *Reloader[T]) Reload(ctx context.Context) (*T, error) {
 	}
 	defer r.release()
 	return r.reloadHeld(ctx, TriggerManual)
+}
+
+// SourceChanged requests a reload because a source changed that the reloader
+// does not watch itself — a [WithProvider] source, or anything else the caller
+// learns about through its own events. It never blocks: requests made while
+// one is pending coalesce into it, and the reload they trigger starts after
+// the latest of them, so it reads every change made before the call. Like the
+// watchers, it waits for a reload already in flight instead of being dropped.
+//
+// Start serves the requests; one made before Start runs once Start does, and
+// requests after Stop are ignored. Use Reload instead when the caller needs
+// the outcome.
+func (r *Reloader[T]) SourceChanged() {
+	select {
+	case r.changed <- struct{}{}:
+	default: // a request is already pending; it will read this change too
+	}
 }
 
 // Stats returns a snapshot of this reloader's reload history. Safe to call
@@ -345,10 +367,11 @@ func (r *Reloader[T]) recordAttempt(trigger string, err error) {
 	r.stats.Store(&next)
 }
 
-// Start runs the configured watchers — file watch, poll interval, signals —
-// until Stop is called or ctx ends. It returns nil immediately when none is
-// configured or the reloader is already stopped, nil after Stop, and ctx.Err()
-// when ctx ends. Typically called in a goroutine: go reloader.Start(ctx).
+// Start runs the reload loop until Stop is called or ctx ends: the configured
+// watchers — file watch, poll interval, signals — and [Reloader.SourceChanged]
+// requests. It returns nil after Stop (immediately if already stopped) and
+// ctx.Err() when ctx ends. Typically called in a goroutine:
+// go reloader.Start(ctx).
 //
 // Every automatic reload runs on Start's goroutine with a context that Stop
 // also cancels, and the file-watch debounce timer is owned by the same loop,
@@ -359,9 +382,6 @@ func (r *Reloader[T]) Start(ctx context.Context) error {
 	hasPoll := r.pollInterval > 0
 	hasSignal := len(r.signals) > 0
 
-	if !hasFileWatch && !hasPoll && !hasSignal {
-		return nil
-	}
 	select {
 	case <-r.stopCh:
 		return nil
@@ -436,6 +456,9 @@ func (r *Reloader[T]) Start(ctx context.Context) error {
 
 		case <-tickCh:
 			r.autoReload(runCtx, TriggerPoll)
+
+		case <-r.changed:
+			r.autoReload(runCtx, TriggerSourceChanged)
 
 		case sig := <-sigCh:
 			r.logger.InfoContext(ctx, "config reload triggered by signal", "signal", sig)
@@ -591,6 +614,11 @@ type fileWatch struct {
 	// one settle. Created stopped; fires only once armed by observe.
 	timer    *time.Timer
 	debounce time.Duration
+	// burstStart is when the pending burst's first event arrived, zero when
+	// idle. A burst may postpone settle by at most maxDebounceWindows
+	// debounce windows, so a steadily written sibling file in a watched
+	// directory cannot hold a real change off forever.
+	burstStart time.Time
 	// pendingDirect names the watched file a Write/Create landed on since the
 	// last settle, or "" if the pending events were all indirect.
 	pendingDirect string
@@ -657,8 +685,17 @@ func (w *fileWatch) observe(ev fsnotify.Event) {
 	if w.watchedFiles[absName] && ev.Op&(fsnotify.Write|fsnotify.Create) != 0 {
 		w.pendingDirect = absName
 	}
-	w.timer.Reset(w.debounce)
+	now := time.Now()
+	if w.burstStart.IsZero() {
+		w.burstStart = now
+	}
+	deadline := w.burstStart.Add(maxDebounceWindows * w.debounce)
+	w.timer.Reset(max(min(w.debounce, deadline.Sub(now)), 0))
 }
+
+// maxDebounceWindows bounds how long a continuous stream of events can delay
+// a file-change reload, in debounce windows.
+const maxDebounceWindows = 10
 
 // settle decides, once the filesystem has stopped moving, whether anything the
 // reloader reads actually changed, and names the path that did.
@@ -673,6 +710,7 @@ func (w *fileWatch) observe(ev fsnotify.Event) {
 func (w *fileWatch) settle() (string, bool) {
 	path := w.pendingDirect
 	w.pendingDirect = ""
+	w.burstStart = time.Time{}
 	movedFrom, movedTo, moved := w.refreshResolved()
 
 	if moved {

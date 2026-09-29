@@ -143,6 +143,8 @@ cfg := reloader.Config() // lock-free on the hot path
 
 Reloads are serialized. A watcher-driven reload waits for one already running and then re-reads the sources, so no change is lost; a manual `Reload` that finds one running returns `ErrReloadInProgress` instead. `Stop(ctx)` cancels an automatic reload in flight, waits for a manual one, and after it returns no reload runs and no callback fires. Callbacks must not call `Stop`.
 
+For a source the reloader cannot watch — a `WithProvider` store, a replicated log, an admin API — call `reloader.SourceChanged()` from the code that learns of the change. It never blocks, coalesces a burst into one reload, and that reload starts after the call, so it reads the change. Do not call `Reload` from an event handler and treat `ErrReloadInProgress` as "coalesced": the reload in flight may have read the source before the change landed. `Start` serves `SourceChanged` requests, so run it even with no watchers configured.
+
 ## Configuration
 
 ### Load options (`Option`)
@@ -156,20 +158,19 @@ Source precedence, highest first: `WithProvider` (incl. `kongprovider`) > enviro
 | `WithConfigFiles(paths...)` | `...string` | none | Several optional files, merged left-to-right. |
 | `WithMustConfigFile(path)` | `string` | none | Required YAML file: missing or unreadable → `ErrFileRead`; invalid YAML → `ErrFileParse`. |
 | `WithMustConfigFiles(paths...)` | `...string` | none | Several required files, merged left-to-right. |
-| `WithDefaults(m)` | `map[string]any` | none | Programmatic defaults keyed by dot-path; override `default` tags. |
+| `WithDefaults(m)` | `map[string]any` | none | Programmatic defaults keyed by dot-path; override `default` tags. Repeated calls merge (later wins per key); the map is copied. |
 | `WithProvider(p)` | `koanf.Provider` | none | Extra source at the highest precedence, loaded in the order added. |
 | `WithSecretPopulator(fn)` | `SecretPopulator` | nil (no secrets) | Fills `secret`-tagged fields after unmarshal; errors wrap `ErrSecretProvider`. |
 | `WithPostLoad[T](fn)` | `func(context.Context, *T) error` | none | Normalize/derive after secrets, before validation; errors wrap `ErrPostLoad`. |
-| `WithValidator(v)` | `Validator` | `validator.New()` | Any `Struct(any) error`, e.g. a ModelValidator. |
+| `WithValidator(v)` | `Validator` | `validator.New()` | Any `Struct(any) error`, e.g. a ModelValidator; one that also has `StructCtx(ctx, v)` gets the load's ctx. |
 | `WithSkipValidation()` | — | validation on | Skip validation, including `validate:"required"`. |
-| `WithKoanf(k)` | `*koanf.Koanf` | new instance per load | Pre-configured koanf instance the pipeline loads on top of. |
 | `WithLogger(l)` | `*slog.Logger` | `slog.Default()` | Loader diagnostics and, via `NewReloader`, every reload event. |
 
 ### Reload options (`ReloadOption[T]`)
 
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
-| `WithFileWatch[T](debounce)` | `time.Duration` | off; `0` → 500ms | fsnotify watch of every configured file, including symlink / ConfigMap swaps. |
+| `WithFileWatch[T](debounce)` | `time.Duration` | off; `0` → 500ms | fsnotify watch of every configured file, including symlink / ConfigMap swaps. A continuous stream of events delays a reload by at most ten debounce windows. |
 | `WithPollInterval[T](d)` | `time.Duration` | off | Reload every `d`; for env vars, providers and unreliable filesystems. |
 | `WithSignalReload[T](sigs...)` | `...os.Signal` | off | Reload on each signal, typically `SIGHUP`. |
 | `WithOnChange[T](fn)` | `func(old, new *T)` | none | After each successful reload. Panics recovered. |
@@ -199,7 +200,7 @@ Source precedence, highest first: `WithProvider` (incl. `kongprovider`) > enviro
 | `desc` | Description for `WithIncludeDescriptions`. | `desc:"Server hostname"` |
 | `flag` | Kong flag name for `kongprovider.WithOverridesFromTags`. | `flag:"port"` |
 
-Field names containing `password`, `secret`, `token`, `key`, `credential`, `auth`, `private`, `apikey` or `api_key` are redacted without a tag. A struct implementing `encoding.TextUnmarshaler` (`time.Time`, `netip.Addr`) is one key, not a subtree. A recursive type stops at the recursion: its nested part decodes from files but gets no default, env or flag key.
+Field names — and map keys, since printing expands maps and dynamic `any` values entry by entry (`settings[password]`) — containing `password`, `secret`, `token`, `key`, `credential`, `auth`, `private`, `apikey` or `api_key` are redacted without a tag. A struct implementing `encoding.TextUnmarshaler` (`time.Time`, `netip.Addr`) is one key, not a subtree. A recursive type stops at the recursion: its nested part decodes from files but gets no default, env or flag key.
 
 ## API Reference
 
@@ -214,11 +215,12 @@ Field names containing `password`, `secret`, `token`, `key`, `credential`, `auth
 - `NewReloader[T](ctx, reloadOpts, configOpts...) (*Reloader[T], error)` — initial load + reloader.
 - `(*Reloader[T]).Config() *T` — current config, atomic load.
 - `(*Reloader[T]).Reload(ctx) (*T, error)` — manual reload; `ErrReloadInProgress` if one is running.
-- `(*Reloader[T]).Start(ctx) error` — run the configured watchers until `Stop` or ctx.
+- `(*Reloader[T]).Start(ctx) error` — run the reload loop (watchers + `SourceChanged` requests) until `Stop` or ctx.
+- `(*Reloader[T]).SourceChanged()` — non-blocking, coalescing request to reload after a change the reloader does not watch.
 - `(*Reloader[T]).Stop(ctx) error` — stop and wait until no reload can run.
 - `(*Reloader[T]).Stats() ReloadStats` — attempts, successes, failures, last trigger/success/failure/error.
 - `(*Reloader[T]).ReloadHandler() http.Handler` — POST → reload; 200 / 409 / 503 / 500.
-- `TriggerManual`, `TriggerFileChange`, `TriggerPoll`, `TriggerSignal` — bounded trigger labels.
+- `TriggerManual`, `TriggerFileChange`, `TriggerPoll`, `TriggerSignal`, `TriggerSourceChanged` — bounded trigger labels.
 
 ### Printing
 
@@ -228,7 +230,6 @@ Field names containing `password`, `secret`, `token`, `key`, `credential`, `auth
 ### Errors
 
 - `Codes() []errcontract.CodeDef`, `RegisterTo(errcontract.Store)` — the E-code catalog.
-- `ToConfigErrors(err) []*ConfigError` — per-field validation errors; `ConfigError.LocalizedMessage(TranslateFunc)`.
 
 ## Error Codes
 
@@ -254,7 +255,7 @@ Every error carries its category and its cause: `errors.Is(err, config.ErrReload
 | `reloader.go` | `Reloader[T]`, reload options, single-flight slot, `Start` loop, `Stop`, file watch + debounce |
 | `handler.go` | `Reloader.ReloadHandler` HTTP endpoint |
 | `print.go` | `PrintRedacted`, `ToMap`, print options, redaction walk |
-| `errors.go` | E7002–E7009 CodeDefs and sentinels, `ConfigError`, `ToConfigErrors`, `TranslateFunc` |
+| `errors.go` | E7002–E7009 CodeDefs and sentinels, the validation error wrapper |
 | `doc.go` | Package documentation |
 | `kongprovider/` | Kong CLI flags → highest-precedence koanf provider |
 

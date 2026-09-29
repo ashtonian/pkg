@@ -15,9 +15,6 @@ import (
 	"time"
 
 	"github.com/knadh/koanf/providers/confmap"
-	"github.com/knadh/koanf/v2"
-
-	"github.com/ashtonian/pkg/errutil"
 )
 
 // mapPopulator returns a SecretPopulator that walks `secret:"key"` tags on
@@ -684,63 +681,6 @@ func TestGetConfig_Precedence_ProviderOverEnv(t *testing.T) {
 }
 
 // --- WithKoanf Tests ---
-
-func TestGetConfig_WithKoanf(t *testing.T) {
-	k := koanf.New(".")
-	_ = k.Load(confmap.Provider(map[string]any{
-		"host": "pre-configured",
-		"port": 1234,
-	}, "."), nil)
-
-	cfg, err := GetConfig[BasicConfig](t.Context(),
-		WithKoanf(k),
-		WithSkipValidation(),
-	)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	// Struct tag defaults are loaded on top of pre-configured koanf via
-	// confmap merge, so pre-loaded values are overwritten by defaults.
-	if cfg.Host != "localhost" {
-		t.Errorf("Host = %q, want %q (struct tag default overwrites pre-loaded)", cfg.Host, "localhost")
-	}
-}
-
-func TestGetConfig_WithKoanf_NoDefault(t *testing.T) {
-	type NoDefaultConfig struct {
-		Name string `koanf:"name"`
-		Port int    `koanf:"port" default:"8080"`
-	}
-
-	k := koanf.New(".")
-	_ = k.Load(confmap.Provider(map[string]any{
-		"name": "from-koanf",
-	}, "."), nil)
-
-	cfg, err := GetConfig[NoDefaultConfig](t.Context(),
-		WithKoanf(k),
-		WithSkipValidation(),
-	)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	// "name" has no struct tag default, so the pre-loaded value survives...
-	// Actually, DefaultsFromTags only includes fields with default tags.
-	// Loading tag defaults won't touch "name". But then loading other sources
-	// (files, env) also won't touch "name" if they're not configured.
-	// HOWEVER: koanf.Load with confmap uses koanf's merge behavior.
-	// When tag defaults are loaded via confmap, only keys in the confmap are merged.
-	// So "name" key from the pre-loaded koanf survives.
-	// Wait, but confmap.Provider wraps the map and koanf.Load REPLACES the entire
-	// store with the merged result. Let me check koanf's behavior...
-	// Actually, koanf.Load does a deep merge: new keys are added, existing keys
-	// in the new source overwrite existing keys in koanf. Keys not in the new
-	// source are preserved. So "name"="from-koanf" would be preserved because
-	// tag defaults don't include "name".
-	if cfg.Name != "from-koanf" {
-		t.Errorf("Name = %q, want %q", cfg.Name, "from-koanf")
-	}
-}
 
 // --- WithProvider Tests ---
 
@@ -1501,13 +1441,9 @@ func TestToMap_Map(t *testing.T) {
 	c := &cfg{Labels: map[string]string{"env": "prod"}}
 	m := ToMap(c, false)
 
-	labels, ok := m["labels"]
-	if !ok {
-		t.Fatal("labels key missing from map")
-	}
-	labelsStr := fmt.Sprintf("%v", labels)
-	if !strings.Contains(labelsStr, "prod") {
-		t.Errorf("labels = %v, want to contain prod", labels)
+	// Maps expand one entry per key, so a key can be judged sensitive.
+	if m["labels[env]"] != "prod" {
+		t.Errorf("labels[env] = %v, want prod (map = %v)", m["labels[env]"], m)
 	}
 }
 
@@ -1547,125 +1483,6 @@ type DescConfig struct {
 	Debug  bool   `koanf:"debug" default:"false" desc:"Enable debug mode"`
 	Secret string `koanf:"secret" sensitive:"true" desc:"API secret key"`
 	NoDesc string `koanf:"nodesc" default:"val"`
-}
-
-func TestConfigError_LocalizedMessage_WithTranslator(t *testing.T) {
-	apiErr := errutil.NewFromCodeDef(CodeValidation, "field Port failed validation: min=1")
-	ce := NewConfigError(apiErr, "AppConfig.Port", "min", "1")
-
-	translator := func(code, field, tag, param string) string {
-		return fmt.Sprintf("El campo %s debe tener un valor minimo de %s", field, param)
-	}
-
-	got := ce.LocalizedMessage(translator)
-	want := "El campo AppConfig.Port debe tener un valor minimo de 1"
-	if got != want {
-		t.Errorf("LocalizedMessage = %q, want %q", got, want)
-	}
-}
-
-func TestConfigError_LocalizedMessage_NilTranslator(t *testing.T) {
-	apiErr := errutil.NewFromCodeDef(CodeValidation, "field Port failed validation: min=1")
-	ce := NewConfigError(apiErr, "AppConfig.Port", "min", "1")
-
-	got := ce.LocalizedMessage(nil)
-	if !strings.Contains(got, "E7002") || !strings.Contains(got, "field Port failed validation: min=1") {
-		t.Errorf("LocalizedMessage with nil translator should fallback, got: %q", got)
-	}
-}
-
-func TestConfigError_LocalizedMessage_EmptyTranslatorResult(t *testing.T) {
-	apiErr := errutil.NewFromCodeDef(CodeValidation, "field Port failed validation: min=1")
-	ce := NewConfigError(apiErr, "AppConfig.Port", "min", "1")
-
-	translator := func(code, field, tag, param string) string {
-		return "" // empty means no translation available
-	}
-
-	got := ce.LocalizedMessage(translator)
-	if !strings.Contains(got, "E7002") {
-		t.Errorf("LocalizedMessage with empty translator result should fallback, got: %q", got)
-	}
-}
-
-func TestConfigError_FieldTagParam(t *testing.T) {
-	apiErr := errutil.NewFromCodeDef(CodeValidation, "test error")
-	ce := NewConfigError(apiErr, "Config.Workers", "max", "100")
-
-	if ce.Field() != "Config.Workers" {
-		t.Errorf("Field() = %q, want Config.Workers", ce.Field())
-	}
-	if ce.Tag() != "max" {
-		t.Errorf("Tag() = %q, want max", ce.Tag())
-	}
-	if ce.Param() != "100" {
-		t.Errorf("Param() = %q, want 100", ce.Param())
-	}
-}
-
-func TestToConfigErrors_ValidationError(t *testing.T) {
-	t.Setenv("APP_PORT", "0")
-
-	_, err := GetConfig[ValidationConfig](t.Context(), WithEnvPrefix("APP"))
-	if err == nil {
-		t.Fatal("expected validation error")
-	}
-
-	configErrs := ToConfigErrors(err)
-	if configErrs == nil {
-		t.Fatal("ToConfigErrors should return non-nil for validation errors")
-	}
-	if len(configErrs) == 0 {
-		t.Fatal("ToConfigErrors should return at least one ConfigError")
-	}
-
-	// Check that each ConfigError has sensible values.
-	for _, ce := range configErrs {
-		if ce.Field() == "" {
-			t.Error("ConfigError.Field() should not be empty")
-		}
-		if ce.Tag() == "" {
-			t.Error("ConfigError.Tag() should not be empty")
-		}
-		if ce.Code != CodeValidation.Code {
-			t.Errorf("ConfigError.Code = %q, want %q", ce.Code, CodeValidation.Code)
-		}
-	}
-}
-
-func TestToConfigErrors_NonValidationError(t *testing.T) {
-	err := fmt.Errorf("some random error")
-	configErrs := ToConfigErrors(err)
-	if configErrs != nil {
-		t.Errorf("ToConfigErrors should return nil for non-validation errors, got %v", configErrs)
-	}
-}
-
-func TestToConfigErrors_NilError(t *testing.T) {
-	configErrs := ToConfigErrors(nil)
-	if configErrs != nil {
-		t.Errorf("ToConfigErrors should return nil for nil error, got %v", configErrs)
-	}
-}
-
-func TestToConfigErrors_RequiredField(t *testing.T) {
-	_, err := GetConfig[RequiredFieldConfig](t.Context())
-	if err == nil {
-		t.Fatal("expected validation error for missing required field")
-	}
-
-	configErrs := ToConfigErrors(err)
-	if len(configErrs) != 1 {
-		t.Fatalf("expected 1 ConfigError, got %d", len(configErrs))
-	}
-
-	ce := configErrs[0]
-	if ce.Tag() != "required" {
-		t.Errorf("Tag() = %q, want required", ce.Tag())
-	}
-	if ce.Param() != "" {
-		t.Errorf("Param() = %q, want empty for required tag", ce.Param())
-	}
 }
 
 func TestWithIncludeDescriptions_Table(t *testing.T) {
@@ -1762,34 +1579,6 @@ func TestWithoutIncludeDescriptions_Table(t *testing.T) {
 
 	if strings.Contains(output, "DESCRIPTION") {
 		t.Error("table without WithIncludeDescriptions should not contain DESCRIPTION header")
-	}
-}
-
-func TestToConfigErrors_WithLocalizedMessage(t *testing.T) {
-	// End-to-end: trigger validation error, convert to ConfigErrors, translate.
-	t.Setenv("APP_PORT", "0")
-
-	_, err := GetConfig[ValidationConfig](t.Context(), WithEnvPrefix("APP"))
-	if err == nil {
-		t.Fatal("expected validation error")
-	}
-
-	configErrs := ToConfigErrors(err)
-	if len(configErrs) == 0 {
-		t.Fatal("expected at least one ConfigError")
-	}
-
-	translator := func(code, field, tag, param string) string {
-		if tag == "min" {
-			return fmt.Sprintf("Field '%s' must be at least %s", field, param)
-		}
-		return ""
-	}
-
-	ce := configErrs[0]
-	msg := ce.LocalizedMessage(translator)
-	if !strings.Contains(msg, "must be at least") {
-		t.Errorf("expected localized message, got: %q", msg)
 	}
 }
 

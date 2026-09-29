@@ -121,6 +121,11 @@
 // waits for a manual one, and after it returns no reload runs and no callback
 // fires — safe to tear down whatever the callbacks touch.
 //
+// For a source the reloader cannot watch (a WithProvider store, a replicated
+// log), call SourceChanged from whatever learns of the change: it never
+// blocks, coalesces bursts, and the reload it triggers reads the change.
+// Start serves those requests, so run it even with no watchers configured.
+//
 // # Reload Observability
 //
 // Reloads driven by Start's watchers do not surface an error to any caller, so

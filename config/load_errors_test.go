@@ -311,3 +311,46 @@ func TestGetConfig_UsesInjectedLogger(t *testing.T) {
 		t.Errorf("loader diagnostics did not reach the injected logger:\n%s", logs.String())
 	}
 }
+
+func TestWithDefaults_Merges(t *testing.T) {
+	type cfg struct {
+		Host string `koanf:"host"`
+		Port int    `koanf:"port"`
+	}
+	first := map[string]any{"host": "a", "port": 1}
+	got, err := GetConfig[cfg](t.Context(),
+		WithDefaults(first),
+		WithDefaults(map[string]any{"port": 2}),
+		WithSkipValidation(),
+	)
+	if err != nil {
+		t.Fatalf("GetConfig: %v", err)
+	}
+	if got.Host != "a" || got.Port != 2 {
+		t.Errorf("got %+v, want host from the first call and port from the second", *got)
+	}
+	if first["port"] != 1 {
+		t.Error("WithDefaults modified the caller's map")
+	}
+}
+
+type ctxRecordingValidator struct{ got context.Context }
+
+func (v *ctxRecordingValidator) Struct(any) error { return errors.New("Struct called instead of StructCtx") }
+func (v *ctxRecordingValidator) StructCtx(ctx context.Context, _ any) error {
+	v.got = ctx
+	return nil
+}
+
+type ctxKey struct{}
+
+func TestGetConfig_PassesCtxToContextAwareValidator(t *testing.T) {
+	v := &ctxRecordingValidator{}
+	ctx := context.WithValue(t.Context(), ctxKey{}, "load")
+	if _, err := GetConfig[portCfg](ctx, WithValidator(v)); err != nil {
+		t.Fatalf("GetConfig: %v", err)
+	}
+	if v.got == nil || v.got.Value(ctxKey{}) != "load" {
+		t.Error("StructCtx did not receive the load's ctx")
+	}
+}

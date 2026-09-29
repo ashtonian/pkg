@@ -5,6 +5,7 @@ package config
 import (
 	"bytes"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 )
@@ -130,5 +131,36 @@ func TestPrintRedacted_UnknownFormat(t *testing.T) {
 	}
 	if buf.Len() != 0 {
 		t.Errorf("wrote %q for an unknown format", buf.String())
+	}
+}
+
+// A credential under a sensitive key
+// of a dynamic map was printed, because only field names were judged and a
+// map was printed whole.
+func TestRedaction_DynamicMapKeys(t *testing.T) {
+	cfg := struct {
+		Settings map[string]any `koanf:"settings"`
+	}{Settings: map[string]any{
+		"password": "SECRET_TOP",
+		"region":   "us",
+		"nested":   map[string]any{"api_key": "SECRET_NESTED", "zone": "a"},
+		"list":     []any{map[string]any{"token": "SECRET_LIST"}},
+	}}
+
+	m := ToMap(cfg, true)
+	want := map[string]string{
+		"settings[password]":        redactedValue,
+		"settings[region]":          "us",
+		"settings[nested][api_key]": redactedValue,
+		"settings[nested][zone]":    "a",
+		"settings[list][0][token]":  redactedValue,
+	}
+	for key, value := range want {
+		if m[key] != value {
+			t.Errorf("ToMap[%s] = %v, want %v", key, m[key], value)
+		}
+	}
+	if strings.Contains(fmt.Sprint(m), "SECRET_") {
+		t.Errorf("a secret survived redaction: %v", m)
 	}
 }

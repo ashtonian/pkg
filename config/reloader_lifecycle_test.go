@@ -9,6 +9,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -369,5 +371,170 @@ func TestReloader_StartAfterStopReturnsImmediately(t *testing.T) {
 	}
 	if s := r.Stats(); s.Attempts != 0 {
 		t.Errorf("stats = %+v, want no attempts", s)
+	}
+}
+
+// portProvider is a koanf provider whose value the test changes, standing in
+// for a source the reloader cannot watch (a replicated store, an API).
+type portProvider struct{ port atomic.Int64 }
+
+func (p *portProvider) Read() (map[string]any, error) {
+	return map[string]any{"port": int(p.port.Load())}, nil
+}
+
+func (p *portProvider) ReadBytes() ([]byte, error) {
+	return nil, errors.New("portProvider: Read only")
+}
+
+func TestReloader_SourceChangedWithoutWatchers(t *testing.T) {
+	src := &portProvider{}
+	src.port.Store(9000)
+	r, err := NewReloader[portCfg](t.Context(), nil, WithProvider(src), WithSkipValidation())
+	if err != nil {
+		t.Fatalf("NewReloader: %v", err)
+	}
+
+	// A request made before Start is served once Start runs.
+	src.port.Store(9001)
+	r.SourceChanged()
+	done := make(chan error, 1)
+	go func() { done <- r.Start(context.Background()) }()
+
+	eventually(t, func() bool { return r.Config().Port == 9001 }, "the pre-Start request to be served")
+	if got := r.Stats().LastTrigger; got != TriggerSourceChanged {
+		t.Errorf("LastTrigger = %q, want %q", got, TriggerSourceChanged)
+	}
+
+	if err := r.Stop(context.Background()); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+	if err := <-done; err != nil {
+		t.Errorf("Start = %v, want nil after Stop", err)
+	}
+	r.SourceChanged() // after Stop: ignored, must not block
+}
+
+// The race a cluster-config listener has with Reload: a change
+// committed while a reload is in flight — after it read the source — is lost
+// when the second trigger is turned away. SourceChanged must apply it.
+func TestReloader_SourceChangedDuringReloadIsApplied(t *testing.T) {
+	src := &portProvider{}
+	src.port.Store(9000)
+	var hold atomic.Bool
+	entered, release := make(chan struct{}), make(chan struct{})
+
+	r, err := NewReloader[portCfg](t.Context(), nil,
+		WithProvider(src),
+		WithSkipValidation(),
+		WithPostLoad(func(context.Context, *portCfg) error {
+			if hold.CompareAndSwap(true, false) {
+				close(entered)
+				<-release
+			}
+			return nil
+		}),
+	)
+	if err != nil {
+		t.Fatalf("NewReloader: %v", err)
+	}
+	startReloader(t, r)
+
+	hold.Store(true)
+	manual := make(chan error, 1)
+	go func() {
+		_, err := r.Reload(context.Background())
+		manual <- err
+	}()
+	<-entered // the manual reload has read 9000
+
+	src.port.Store(9001)
+	r.SourceChanged()
+	close(release)
+	if err := <-manual; err != nil {
+		t.Fatalf("manual reload: %v", err)
+	}
+	eventually(t, func() bool { return r.Config().Port == 9001 }, "the change committed mid-reload")
+}
+
+// A burst of requests while a reload runs collapses into one more reload.
+func TestReloader_SourceChangedCoalesces(t *testing.T) {
+	src := &portProvider{}
+	var hold atomic.Bool
+	entered, release := make(chan struct{}), make(chan struct{})
+	r, err := NewReloader[portCfg](t.Context(), nil,
+		WithProvider(src),
+		WithSkipValidation(),
+		WithPostLoad(func(context.Context, *portCfg) error {
+			if hold.CompareAndSwap(true, false) {
+				close(entered)
+				<-release
+			}
+			return nil
+		}),
+	)
+	if err != nil {
+		t.Fatalf("NewReloader: %v", err)
+	}
+	startReloader(t, r)
+
+	hold.Store(true)
+	r.SourceChanged()
+	<-entered // the first request's reload is running
+	for range 50 {
+		r.SourceChanged()
+	}
+	close(release)
+
+	eventually(t, func() bool { return r.Stats().Attempts == 2 }, "the coalesced follow-up reload")
+	time.Sleep(100 * time.Millisecond)
+	if got := r.Stats().Attempts; got != 2 {
+		t.Errorf("Attempts = %d, want 2: fifty requests during one reload are one follow-up", got)
+	}
+}
+
+// A file written steadily next to the config file used to reset the debounce
+// on every event, so a real config change never settled while it ran.
+func TestReloader_BusyDirectoryCannotStarveAFileChange(t *testing.T) {
+	path := writeYAML(t, "port: 9000\n")
+	r, err := NewReloader[portCfg](t.Context(),
+		[]ReloadOption[portCfg]{WithFileWatch[portCfg](50 * time.Millisecond)},
+		WithConfigFile(path),
+		WithSkipValidation(),
+	)
+	if err != nil {
+		t.Fatalf("NewReloader: %v", err)
+	}
+	startReloader(t, r)
+	waitForWatcher(t, r)
+
+	stopNoise := make(chan struct{})
+	noiseDone := make(chan struct{})
+	go func() {
+		defer close(noiseDone)
+		sibling := filepath.Join(filepath.Dir(path), "busy.log")
+		tick := time.NewTicker(10 * time.Millisecond)
+		defer tick.Stop()
+		for i := 0; ; i++ {
+			select {
+			case <-stopNoise:
+				return
+			case <-tick.C:
+				_ = os.WriteFile(sibling, []byte(strconv.Itoa(i)), 0o644)
+			}
+		}
+	}()
+	defer func() { close(stopNoise); <-noiseDone }()
+
+	if err := os.WriteFile(path, []byte("port: 9001\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// Ten 50ms windows bound the delay at 500ms; allow slack for a loaded host
+	// but stay well inside the noise, which runs until the test ends.
+	deadline := time.Now().Add(3 * time.Second)
+	for r.Config().Port != 9001 {
+		if time.Now().After(deadline) {
+			t.Fatal("the file change never settled while a sibling file was being written")
+		}
+		time.Sleep(20 * time.Millisecond)
 	}
 }

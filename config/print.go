@@ -98,9 +98,11 @@ type printEntry struct {
 
 // PrintRedacted writes a struct's fields, keyed by koanf path, redacting
 // sensitive values. A value is sensitive when its field, or any struct, slice
-// or map field containing it, is tagged sensitive:"true", or when the leaf
-// field's name matches a sensitive pattern (password, secret, token, key,
-// ...). It returns the first write error, or an error for an unknown format.
+// or map field containing it, is tagged sensitive:"true", or when the name it
+// sits under — the leaf field's name, or its map key — matches a sensitive
+// pattern (password, secret, token, key, ...). Maps and slices, including
+// dynamic ones held in interfaces, are expanded element by element. It returns
+// the first write error, or an error for an unknown format.
 func PrintRedacted(cfg any, opts ...PrintOption) error {
 	po := defaultPrintOptions()
 	for _, opt := range opts {
@@ -137,7 +139,9 @@ func ToMap(cfg any, redact bool) map[string]any {
 }
 
 // collectEntries flattens cfg into print entries using the same key rules as
-// [Fields], expanding slices and maps of structs element by element.
+// [Fields]. Slices and maps are expanded element by element, including
+// dynamic values held in interfaces, so a sensitive-looking map key is judged
+// like a sensitive-looking field name.
 func collectEntries(cfg any, showSensitive bool) []printEntry {
 	w := &entryWalk{showSensitive: showSensitive, visiting: map[uintptr]bool{}}
 	val := reflect.ValueOf(cfg)
@@ -163,29 +167,40 @@ type entryWalk struct {
 	visiting map[uintptr]bool
 }
 
+// site is where a value sits: the field name or map key a sensitive-name
+// check reads, the description to print, and whether an enclosing
+// sensitive:"true" tag already covers it.
+type site struct {
+	name      string
+	desc      string
+	sensitive bool
+}
+
 // walkStruct emits entries for val's fields. inherited is true beneath a
 // field tagged sensitive:"true", so tagging a container hides everything in it.
 func (w *entryWalk) walkStruct(val reflect.Value, prefix string, inherited bool) {
 	for kf := range keyedFields(val.Type()) {
-		sensitive := inherited || kf.field.Tag.Get("sensitive") == "true"
-		w.walkValue(joinPath(prefix, kf.key), val.FieldByIndex(kf.field.Index), kf.field, sensitive)
+		w.walkValue(joinPath(prefix, kf.key), val.FieldByIndex(kf.field.Index), site{
+			name:      kf.field.Name,
+			desc:      kf.field.Tag.Get("desc"),
+			sensitive: inherited || kf.field.Tag.Get("sensitive") == "true",
+		})
 	}
 }
 
-// walkValue emits the entries for one value: field is the struct field it
-// belongs to (for a slice or map element, the container's field).
-func (w *entryWalk) walkValue(name string, v reflect.Value, field reflect.StructField, sensitive bool) {
+// walkValue emits the entries for the value at path.
+func (w *entryWalk) walkValue(path string, v reflect.Value, s site) {
 	elem := v
-	for elem.Kind() == reflect.Pointer {
+	for elem.Kind() == reflect.Pointer || elem.Kind() == reflect.Interface {
 		if elem.IsNil() {
-			w.leaf(name, v, v, field, sensitive)
+			w.leaf(path, v, reflect.Value{}, s)
 			return
 		}
-		if isBranch(elem.Elem().Type()) {
+		if elem.Kind() == reflect.Pointer && isBranch(elem.Elem().Type()) {
 			ptr := elem.Pointer()
 			if w.visiting[ptr] {
 				w.entries = append(w.entries, printEntry{
-					name: name, value: cycleValue, typeName: v.Type().String(), desc: field.Tag.Get("desc"),
+					name: path, value: cycleValue, typeName: v.Type().String(), desc: s.desc,
 				})
 				return
 			}
@@ -197,42 +212,51 @@ func (w *entryWalk) walkValue(name string, v reflect.Value, field reflect.Struct
 
 	switch {
 	case isBranch(elem.Type()):
-		w.walkStruct(elem, name, sensitive)
-	case (elem.Kind() == reflect.Slice || elem.Kind() == reflect.Array) && isBranch(derefType(elem.Type().Elem())):
-		for i := range elem.Len() {
-			w.walkValue(fmt.Sprintf("%s[%d]", name, i), elem.Index(i), field, sensitive)
-		}
-	case elem.Kind() == reflect.Map && isBranch(derefType(elem.Type().Elem())):
+		w.walkStruct(elem, path, s.sensitive)
+	case elem.Kind() == reflect.Map && elem.Len() > 0:
 		keys := elem.MapKeys()
 		slices.SortFunc(keys, func(a, b reflect.Value) int {
 			return cmp.Compare(fmt.Sprint(a.Interface()), fmt.Sprint(b.Interface()))
 		})
 		for _, k := range keys {
-			w.walkValue(fmt.Sprintf("%s[%v]", name, k.Interface()), elem.MapIndex(k), field, sensitive)
+			key := fmt.Sprint(k.Interface())
+			w.walkValue(path+"["+key+"]", elem.MapIndex(k), site{name: key, desc: s.desc, sensitive: s.sensitive})
+		}
+	case (elem.Kind() == reflect.Slice || elem.Kind() == reflect.Array) && elem.Len() > 0 && holdsContainers(elem.Type().Elem()):
+		for i := range elem.Len() {
+			w.walkValue(fmt.Sprintf("%s[%d]", path, i), elem.Index(i), s)
 		}
 	default:
-		// Scalars, TextUnmarshaler structs, and slices/maps of scalars. A
-		// sensitive leaf is redacted whole — including `APIKeys []string`.
-		w.leaf(name, v, elem, field, sensitive)
+		// Scalars, TextUnmarshaler structs, empty containers and slices of
+		// scalars. A sensitive leaf is redacted whole — including
+		// `APIKeys []string`.
+		w.leaf(path, v, elem, s)
 	}
 }
 
-// leaf emits one entry. declared carries the type to report; value is the
-// dereferenced value to print.
-func (w *entryWalk) leaf(name string, declared, value reflect.Value, field reflect.StructField, sensitive bool) {
+// holdsContainers reports whether slice elements of type t may be structs or
+// maps worth expanding: struct branches, maps, and interfaces whose dynamic
+// value is only known per element.
+func holdsContainers(t reflect.Type) bool {
+	t = derefType(t)
+	return isBranch(t) || t.Kind() == reflect.Map || t.Kind() == reflect.Interface
+}
+
+// leaf emits one entry. declared is the value as found, for its type; value
+// is it dereferenced, or invalid when nil.
+func (w *entryWalk) leaf(path string, declared, value reflect.Value, s site) {
 	text := "<nil>"
-	if value.Kind() != reflect.Pointer || !value.IsNil() {
+	typ := declared.Type()
+	if value.IsValid() {
 		text = fmt.Sprintf("%v", value.Interface())
+		if declared.Kind() == reflect.Interface {
+			typ = value.Type()
+		}
 	}
-	if !w.showSensitive && (sensitive || isSensitiveName(field.Name)) {
+	if !w.showSensitive && (s.sensitive || isSensitiveName(s.name)) {
 		text = redactedValue
 	}
-	w.entries = append(w.entries, printEntry{
-		name:     name,
-		value:    text,
-		typeName: declared.Type().String(),
-		desc:     field.Tag.Get("desc"),
-	})
+	w.entries = append(w.entries, printEntry{name: path, value: text, typeName: typ.String(), desc: s.desc})
 }
 
 // isSensitiveName checks if a field name contains sensitive-looking substrings.

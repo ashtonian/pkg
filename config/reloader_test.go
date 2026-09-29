@@ -440,24 +440,6 @@ func TestReloader_Stop_Idempotent(t *testing.T) {
 	}
 }
 
-func TestReloader_Start_NoWatchReturnsImmediately(t *testing.T) {
-	r, err := NewReloader[reloaderCfg](t.Context(), nil, WithSkipValidation())
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-
-	done := make(chan error, 1)
-	go func() { done <- r.Start(context.Background()) }()
-
-	select {
-	case err := <-done:
-		if err != nil {
-			t.Errorf("Start with no watch should return nil, got: %v", err)
-		}
-	case <-time.After(time.Second):
-		t.Fatal("Start should return immediately when no watch is configured")
-	}
-}
 
 func TestReloader_Start_ContextCancel(t *testing.T) {
 	r, err := NewReloader[reloaderCfg](

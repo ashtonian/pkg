@@ -8,8 +8,6 @@ import (
 	"slices"
 	"testing"
 	"time"
-
-	"github.com/knadh/koanf/v2"
 )
 
 type fieldsInner struct {
@@ -80,13 +78,6 @@ func TestDefaultsFromTags_SkipsIgnoredField(t *testing.T) {
 		t.Errorf("DefaultsFromTags = %v\nwant             %v", defaults, want)
 	}
 
-	k := koanf.New(".")
-	if _, err := GetConfig[fieldsCfg](t.Context(), WithKoanf(k), WithSkipValidation()); err != nil {
-		t.Fatalf("GetConfig: %v", err)
-	}
-	if k.Exists("ignored") {
-		t.Error("the koanf:\"-\" field's default was loaded")
-	}
 }
 
 // A TextUnmarshaler struct is a leaf for env mapping as well: it used to be

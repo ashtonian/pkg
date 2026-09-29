@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io/fs"
 	"log/slog"
+	"maps"
 	"slices"
 	"strings"
 
@@ -32,9 +33,9 @@ type Option func(*options)
 // Validator is the narrow interface pkgconfig consumes for struct
 // validation. Both `*validator.Validate` (go-playground) and any
 // custom wrapper (e.g. a ModelValidator)
-// satisfy it. The package was originally typed against the concrete
-// govalidator; the seam was widened so a service can share one
-// ModelValidator across boot-time + request-body paths.
+// satisfy it. A validator that also has
+// `StructCtx(ctx, v) error` is called through that instead, with the
+// load's ctx.
 type Validator interface {
 	Struct(v any) error
 }
@@ -47,7 +48,6 @@ type options struct {
 	postLoad        []postLoadHook
 	skipValidation  bool
 	customValidator Validator
-	koanfInstance   *koanf.Koanf
 	extraProviders  []koanf.Provider
 	logger          *slog.Logger
 }
@@ -133,11 +133,15 @@ func WithMustConfigFiles(paths ...string) Option {
 	}
 }
 
-// WithDefaults sets programmatic default values as a map[string]any.
-// Keys use koanf dot-path notation (e.g., "server.port").
+// WithDefaults adds programmatic default values keyed by koanf dot-path
+// (e.g. "server.port"). Repeated calls merge, a later call winning on a
+// shared key; the caller's map is copied, not retained.
 func WithDefaults(defaults map[string]any) Option {
 	return func(o *options) {
-		o.defaults = defaults
+		if o.defaults == nil {
+			o.defaults = make(map[string]any, len(defaults))
+		}
+		maps.Copy(o.defaults, defaults)
 	}
 }
 
@@ -228,16 +232,6 @@ func WithLogger(logger *slog.Logger) Option {
 	}
 }
 
-// WithKoanf provides a pre-configured *koanf.Koanf instance.
-// Advanced escape hatch for adding custom providers (Consul, Vault, etc.)
-// before GetConfig runs. When provided, defaults and file loading steps
-// are applied on top of this koanf instance.
-func WithKoanf(k *koanf.Koanf) Option {
-	return func(o *options) {
-		o.koanfInstance = k
-	}
-}
-
 // GetConfig creates a koanf instance, loads sources in precedence order,
 // unmarshals into T, injects secrets, runs any [WithPostLoad] hooks, and
 // validates.
@@ -265,11 +259,9 @@ func GetConfig[T any](ctx context.Context, opts ...Option) (*T, error) {
 // load is GetConfig's pipeline. It also reports which config files it read,
 // which a Reloader needs to keep an optional file from vanishing unnoticed.
 func load[T any](ctx context.Context, o *options) (*T, []string, error) {
-	// Use caller-provided koanf or create a new one.
-	k := o.koanfInstance
-	if k == nil {
-		k = koanf.New(".")
-	}
+	// A fresh instance per load: nothing from an earlier load (a key since
+	// deleted from a file, say) can survive into this one.
+	k := koanf.New(".")
 
 	fields := Fields[T]()
 	var sources, files []string
@@ -383,7 +375,7 @@ func load[T any](ctx context.Context, o *options) (*T, []string, error) {
 		if v == nil {
 			v = validator.New()
 		}
-		if err := v.Struct(cfg); err != nil {
+		if err := validate(ctx, v, cfg); err != nil {
 			// The two shapes pkgconfig knows how to unpack:
 			//   1. validator.ValidationErrors (raw go-playground)
 			//   2. anything else (typed wrappers like
@@ -407,6 +399,20 @@ func load[T any](ctx context.Context, o *options) (*T, []string, error) {
 	}
 
 	return cfg, files, nil
+}
+
+// ctxValidator is the optional context-aware form of [Validator]
+// (a ModelValidator implements it): its rules and message
+// translation see the load's ctx.
+type ctxValidator interface {
+	StructCtx(ctx context.Context, v any) error
+}
+
+func validate(ctx context.Context, v Validator, cfg any) error {
+	if cv, ok := v.(ctxValidator); ok {
+		return cv.StructCtx(ctx, cfg)
+	}
+	return v.Struct(cfg)
 }
 
 // fileLoadError classifies a failed config file load. koanf.Load returns the

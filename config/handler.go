@@ -1,6 +1,7 @@
 package config
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -38,11 +39,14 @@ func (r *Reloader[T]) ReloadHandler() http.Handler {
 			return
 		}
 
-		w.Header().Set("Content-Type", "application/json")
-		m := ToMap(cfg, true) // redacted
-		if err := json.NewEncoder(w).Encode(m); err != nil {
-			http.Error(w, "internal error", http.StatusInternalServerError)
+		// Encode before writing so a failure can still become a 500 rather
+		// than a 200 with a truncated body.
+		var body bytes.Buffer
+		if err := json.NewEncoder(&body).Encode(ToMap(cfg, true)); err != nil {
+			http.Error(w, "encoding reloaded config failed", http.StatusInternalServerError)
 			return
 		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write(body.Bytes()) // the client is gone if this fails; nothing left to report to
 	})
 }
