@@ -6,8 +6,7 @@ import (
 	"github.com/ashtonian/pkg/errcontract"
 )
 
-// Error codes for the config package (E7002-E7009). E7001 was removed —
-// use validate:"required" instead.
+// Error codes for the config package (E7002-E7009).
 var (
 	CodeValidation = errcontract.CodeDef{
 		Code: "E7002", HTTPStatus: 422, Class: errcontract.ClassPermanent,

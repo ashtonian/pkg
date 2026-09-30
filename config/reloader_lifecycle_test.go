@@ -98,10 +98,9 @@ func startReloader[T any](t *testing.T, r *Reloader[T]) <-chan error {
 	return done
 }
 
-// A manual reload reads port 9000 and is
-// held; the file then changes to 9001. The watcher's reload used to lose the
-// single-flight race, log "skipped", and never run — leaving 9000 live for
-// good. It must now wait for the manual reload and then apply 9001.
+// A manual reload reads port 9000 and is held; the file then
+// changes to 9001. The watcher's reload must wait for the manual one and then
+// apply 9001, not skip and leave 9000 live.
 func TestReloader_FileChangeDuringManualReloadIsApplied(t *testing.T) {
 	path := writeYAML(t, "port: 9000\n")
 
@@ -152,8 +151,7 @@ func TestReloader_FileChangeDuringManualReloadIsApplied(t *testing.T) {
 	}
 }
 
-// A debounce timer used to outlive Stop
-// and Start, reloading afterwards on its own goroutine.
+// A pending debounce timer dies with Stop; nothing reloads after.
 func TestReloader_StopDuringDebounceDoesNotReload(t *testing.T) {
 	path := writeYAML(t, "port: 9000\n")
 	var changes atomic.Int32
@@ -492,8 +490,8 @@ func TestReloader_SourceChangedCoalesces(t *testing.T) {
 	}
 }
 
-// A file written steadily next to the config file used to reset the debounce
-// on every event, so a real config change never settled while it ran.
+// A file written steadily next to the config file cannot hold the debounce
+// open forever: a real config change still applies.
 func TestReloader_BusyDirectoryCannotStarveAFileChange(t *testing.T) {
 	path := writeYAML(t, "port: 9000\n")
 	r, err := NewReloader[portCfg](t.Context(),

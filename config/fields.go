@@ -40,9 +40,7 @@ type Field struct {
 //
 // A T that is not a struct (or pointer to one) has no fields.
 func Fields[T any]() []Field {
-	var out []Field
-	walkFields(reflect.TypeFor[T](), "", map[reflect.Type]bool{}, &out)
-	return out
+	return fieldsOf(reflect.TypeFor[T]())
 }
 
 func walkFields(t reflect.Type, prefix string, walking map[reflect.Type]bool, out *[]Field) {
@@ -69,6 +67,23 @@ func walkFields(t reflect.Type, prefix string, walking map[reflect.Type]bool, ou
 
 // keyedField is a struct field paired with the key segment it contributes.
 // key is empty when the field is squashed into its parent.
+// FieldName returns the config key segment struct field f is known by: its
+// koanf tag name, or its lower-cased Go name when the tag names none — the
+// rule [Fields] applies. Register it on a go-playground validator
+// (RegisterTagNameFunc) so validation errors read db.max_conns, the key the
+// operator wrote, rather than DB.MaxConns. A field tagged koanf:"-" keeps its
+// Go name, because "-" tells the validator to skip the field.
+func FieldName(f reflect.StructField) string {
+	name, _, _ := strings.Cut(f.Tag.Get("koanf"), ",")
+	switch name {
+	case "-":
+		return f.Name
+	case "":
+		return strings.ToLower(f.Name)
+	}
+	return name
+}
+
 type keyedField struct {
 	field reflect.StructField
 	key   string
@@ -157,15 +172,95 @@ func defaultsFrom(fields []Field) map[string]any {
 	return out
 }
 
-// envMapping maps each leaf's environment variable name to its koanf path.
-// The name is the prefix plus the upper-cased path with "." replaced by "_",
-// so an underscore inside a key survives: APP_DB_MAX_CONNS resolves to
+// envResolver turns an environment variable name into a koanf path. Every
+// leaf's name is the prefix plus its path upper-cased with "." → "_", so an
+// underscore inside a key survives: APP_DB_MAX_CONNS resolves to
 // db.max_conns, where the naive "_" → "." transform would produce
 // db.max.conns.
-func envMapping(fields []Field, prefix string) map[string]string {
-	out := make(map[string]string, len(fields))
+//
+// A map of structs (map[string]Struct) has keys no schema names, so its
+// variables are matched by shape instead: PREFIX_<MAP>_<KEY>_<FIELD>, where
+// FIELD is one of the element struct's leaves (the longest that fits) and KEY
+// is the rest, lower-cased — so the key may contain underscores too.
+// APP_FEATURES_AUDIT_LOGS_MAX_PAGE_SIZE resolves to
+// features.audit_logs.max_page_size.
+type envResolver struct {
+	fullPrefix string
+	exact      map[string]string
+	maps       []envMap
+}
+
+// envMap is one map-of-structs field: the variable prefix that addresses it
+// and the element struct's leaves.
+type envMap struct {
+	prefix string // e.g. "APP_FEATURES_"
+	path   string // e.g. "features"
+	leaves []envLeaf
+}
+
+type envLeaf struct {
+	suffix string // e.g. "_MAX_PAGE_SIZE"
+	path   string // e.g. "max_page_size"
+}
+
+func newEnvResolver(fields []Field, prefix string) envResolver {
+	r := envResolver{fullPrefix: prefix + "_", exact: make(map[string]string, len(fields))}
 	for _, f := range fields {
-		out[prefix+"_"+strings.ToUpper(strings.ReplaceAll(f.Path, ".", "_"))] = f.Path
+		name := envName(prefix, f.Path)
+		r.exact[name] = f.Path
+		if elem, ok := structMapElem(f.Type); ok {
+			m := envMap{prefix: name + "_", path: f.Path}
+			for _, leaf := range fieldsOf(elem) {
+				m.leaves = append(m.leaves, envLeaf{suffix: envName("", leaf.Path), path: leaf.Path})
+			}
+			// Longest suffix first: _MAX_PAGE_SIZE must win over _SIZE.
+			slices.SortFunc(m.leaves, func(a, b envLeaf) int { return len(b.suffix) - len(a.suffix) })
+			r.maps = append(r.maps, m)
+		}
 	}
+	slices.SortFunc(r.maps, func(a, b envMap) int { return len(b.prefix) - len(a.prefix) })
+	return r
+}
+
+func (r envResolver) path(name string) string {
+	if p, ok := r.exact[name]; ok {
+		return p
+	}
+	for _, m := range r.maps {
+		rest, ok := strings.CutPrefix(name, m.prefix)
+		if !ok {
+			continue
+		}
+		for _, leaf := range m.leaves {
+			if key, ok := strings.CutSuffix(rest, leaf.suffix); ok && key != "" {
+				return m.path + "." + strings.ToLower(key) + "." + leaf.path
+			}
+		}
+	}
+	// Anything else (a map of scalars, say) falls back to "_" → ".".
+	return strings.ReplaceAll(strings.ToLower(strings.TrimPrefix(name, r.fullPrefix)), "_", ".")
+}
+
+// envName is the variable name for path under prefix; an empty prefix yields
+// the "_"-led suffix form used to match a map element's leaves.
+func envName(prefix, path string) string {
+	return prefix + "_" + strings.ToUpper(strings.ReplaceAll(path, ".", "_"))
+}
+
+// structMapElem reports the element struct type of a map[string]Struct (or
+// pointer-to-struct) field.
+func structMapElem(t reflect.Type) (reflect.Type, bool) {
+	t = derefType(t)
+	if t.Kind() != reflect.Map || t.Key().Kind() != reflect.String {
+		return nil, false
+	}
+	elem := derefType(t.Elem())
+	return elem, isBranch(elem)
+}
+
+// fieldsOf is Fields for a type known only at run time.
+func fieldsOf(t reflect.Type) []Field {
+	var out []Field
+	walkFields(t, "", map[reflect.Type]bool{}, &out)
 	return out
 }

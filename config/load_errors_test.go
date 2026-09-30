@@ -10,6 +10,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -51,8 +52,8 @@ func TestGetConfig_UnreadableOptionalFileFails(t *testing.T) {
 	}
 }
 
-// A reload of a malformed optional file
-// used to succeed and swap port 9000 for the 8080 default.
+// A reload of a malformed optional file fails and keeps port
+// 9000 live rather than swapping in the 8080 default.
 func TestReload_MalformedOptionalFileKeepsLastConfig(t *testing.T) {
 	path := writeYAML(t, "port: 9000\n")
 	r, err := NewReloader[portCfg](t.Context(), nil, WithConfigFile(path), WithSkipValidation())
@@ -134,10 +135,9 @@ type causeCfg struct {
 	Password string `koanf:"password"`
 }
 
-// Every stage used to wrap only its category sentinel, so the file error,
-// the secret backend's error and the hook's error were unreachable — and a
-// reload flattened even the category with %v. Each case must expose both the
-// category and the cause, through GetConfig and through a Reloader.
+// Every stage exposes both its category sentinel and the underlying cause
+// (the file error, the secret backend's error, the hook's error), through
+// GetConfig and through a Reloader.
 func TestErrorCauses_SurviveLoadAndReload(t *testing.T) {
 	type breakage struct {
 		opts    []Option
@@ -279,8 +279,7 @@ type secretValidatedCfg struct {
 	Password string `koanf:"password" sensitive:"true" validate:"min=20"`
 }
 
-// Validation used to Debug-log every failing field's value to the global
-// logger, credentials included.
+// A validation failure logs no field values: they can be credentials.
 func TestGetConfig_ValidationFailureDoesNotLogValues(t *testing.T) {
 	var logs bytes.Buffer
 	logger := slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelDebug}))
@@ -336,7 +335,9 @@ func TestWithDefaults_Merges(t *testing.T) {
 
 type ctxRecordingValidator struct{ got context.Context }
 
-func (v *ctxRecordingValidator) Struct(any) error { return errors.New("Struct called instead of StructCtx") }
+func (v *ctxRecordingValidator) Struct(any) error {
+	return errors.New("Struct called instead of StructCtx")
+}
 func (v *ctxRecordingValidator) StructCtx(ctx context.Context, _ any) error {
 	v.got = ctx
 	return nil
@@ -352,5 +353,59 @@ func TestGetConfig_PassesCtxToContextAwareValidator(t *testing.T) {
 	}
 	if v.got == nil || v.got.Value(ctxKey{}) != "load" {
 		t.Error("StructCtx did not receive the load's ctx")
+	}
+}
+
+// A value of the wrong type is a validation error, not an uncategorized one.
+func TestGetConfig_UndecodableValueIsAValidationError(t *testing.T) {
+	path := writeYAML(t, "port: not-a-number\n")
+	_, err := GetConfig[portCfg](t.Context(), WithMustConfigFile(path), WithSkipValidation())
+	if !errors.Is(err, ErrValidation) {
+		t.Fatalf("err = %v, want ErrValidation", err)
+	}
+	if !strings.Contains(err.Error(), "port") {
+		t.Errorf("err = %q, want the key named", err)
+	}
+}
+
+type namedCfg struct {
+	DB struct {
+		MaxConns int `koanf:"max_conns" validate:"min=1"`
+	} `koanf:"db"`
+	Region string `validate:"required"`
+}
+
+// The default validator names a failing field by the key the operator wrote.
+func TestGetConfig_ValidationNamesFieldsByKey(t *testing.T) {
+	path := writeYAML(t, "db:\n  max_conns: 0\n")
+	_, err := GetConfig[namedCfg](t.Context(), WithMustConfigFile(path))
+	if !errors.Is(err, ErrValidation) {
+		t.Fatalf("err = %v, want ErrValidation", err)
+	}
+	for _, want := range []string{"db.max_conns(min=1)", "region(required)"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("err = %q, want it to contain %q", err, want)
+		}
+	}
+}
+
+func TestFieldName(t *testing.T) {
+	type s struct {
+		Tagged   int `koanf:"max_conns"`
+		Options  int `koanf:"opts,omitempty"`
+		Untagged int
+		Skipped  int `koanf:"-"`
+	}
+	typ := reflect.TypeFor[s]()
+	for field, want := range map[string]string{
+		"Tagged":   "max_conns",
+		"Options":  "opts",
+		"Untagged": "untagged",
+		"Skipped":  "Skipped",
+	} {
+		f, _ := typ.FieldByName(field)
+		if got := FieldName(f); got != want {
+			t.Errorf("FieldName(%s) = %q, want %q", field, got, want)
+		}
 	}
 }

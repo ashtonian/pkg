@@ -35,7 +35,9 @@
 //
 // [Fields] is the one definition of how these tags become koanf paths;
 // defaults, environment-variable names, printing and the Kong bridge all use
-// it. With WithEnvPrefix("APP"), APP_DB_MAX_CONNS sets db.max_conns.
+// it. With WithEnvPrefix("APP"), APP_DB_MAX_CONNS sets db.max_conns, and for
+// a map of structs APP_FEATURES_AUDIT_LOGS_MAX_PAGE_SIZE sets
+// features.audit_logs.max_page_size.
 //
 // # Source Precedence
 //

@@ -9,6 +9,7 @@ import (
 	"maps"
 	"slices"
 	"strings"
+	"sync"
 
 	"github.com/go-playground/validator/v10"
 	"github.com/go-viper/mapstructure/v2"
@@ -216,8 +217,9 @@ func WithSkipValidation() Option {
 // WithValidator sets a custom struct validator. Accepts any value that
 // implements `Struct(any) error` — typically either a
 // `*go-playground/validator.Validate` or a higher-level wrapper like
-// a ModelValidator. nil clears any previously
-// wired validator so the default `validator.New()` is used.
+// a ModelValidator. nil restores the default: a
+// go-playground validator that names fields by config key. Register
+// [FieldName] on a custom validator to get the same naming.
 func WithValidator(v Validator) Option {
 	return func(o *options) {
 		o.customValidator = v
@@ -249,8 +251,9 @@ func WithLogger(logger *slog.Logger) Option {
 //  5. Struct tag defaults (default:"value" via DefaultsFromTags)
 //
 // Every returned error carries both its category sentinel ([ErrFileRead],
-// [ErrFileParse], [ErrSecretProvider], [ErrPostLoad], [ErrValidation]) and
-// the underlying cause, so errors.Is and errors.As reach either.
+// [ErrFileParse], [ErrSecretProvider], [ErrPostLoad], [ErrValidation] — the
+// last also for a value that cannot decode into its field's type) and the
+// underlying cause, so errors.Is and errors.As reach either.
 func GetConfig[T any](ctx context.Context, opts ...Option) (*T, error) {
 	cfg, _, err := load[T](ctx, buildOptions(opts))
 	return cfg, err
@@ -296,22 +299,14 @@ func load[T any](ctx context.Context, o *options) (*T, []string, error) {
 		}
 	}
 
-	// Step 4: env vars. The mapping is built from T's fields so a key with an
-	// underscore in it (koanf:"max_conns") keeps it; see envMapping.
+	// Step 4: env vars, named from T's fields so a key with an underscore in
+	// it (koanf:"max_conns") keeps it; see envResolver.
 	if o.envPrefix != "" {
 		prefix := strings.TrimSuffix(o.envPrefix, "_")
 		fullPrefix := prefix + "_"
-		mapping := envMapping(fields, prefix)
+		resolve := newEnvResolver(fields, prefix)
 
-		if err := k.Load(kenv.Provider(fullPrefix, ".", func(s string) string {
-			if koanfPath, ok := mapping[s]; ok {
-				return koanfPath
-			}
-			// Fallback for dynamic keys (map fields, etc.).
-			return strings.ReplaceAll(
-				strings.ToLower(strings.TrimPrefix(s, fullPrefix)), "_", ".",
-			)
-		}), nil); err != nil {
+		if err := k.Load(kenv.Provider(fullPrefix, ".", resolve.path), nil); err != nil {
 			return nil, nil, fmt.Errorf("loading env vars: %w", err)
 		}
 		sources = append(sources, "env:"+fullPrefix+"*")
@@ -343,7 +338,9 @@ func load[T any](ctx context.Context, o *options) (*T, []string, error) {
 			TagName:          "koanf",
 		},
 	}); err != nil {
-		return nil, nil, fmt.Errorf("unmarshaling config: %w", err)
+		// A value that cannot decode into its field's type (port: abc) is
+		// invalid configuration; the decoder's error names the key.
+		return nil, nil, fmt.Errorf("unmarshaling config: %w: %w", ErrValidation, err)
 	}
 
 	// Step 7: secret injection -- delegates to the consumer-supplied
@@ -373,7 +370,7 @@ func load[T any](ctx context.Context, o *options) (*T, []string, error) {
 	if !o.skipValidation {
 		var v Validator = o.customValidator
 		if v == nil {
-			v = validator.New()
+			v = defaultValidator()
 		}
 		if err := validate(ctx, v, cfg); err != nil {
 			// The two shapes pkgconfig knows how to unpack:
@@ -385,13 +382,13 @@ func load[T any](ctx context.Context, o *options) (*T, []string, error) {
 			var ve validator.ValidationErrors
 			if errors.As(err, &ve) {
 				return nil, nil, &validationError{
-					msg:      fmt.Sprintf("config validation failed: fields=%v: %s", fieldErrorSummary(ve), ErrValidation),
+					msg:      fmt.Sprintf("validating config: %s: %s", ErrValidation, fieldErrorSummary(ve)),
 					sentinel: ErrValidation,
 					fieldErr: ve,
 				}
 			}
 			return nil, nil, &validationError{
-				msg:      fmt.Sprintf("config validation failed: %v: %s", err, ErrValidation),
+				msg:      fmt.Sprintf("validating config: %s: %v", ErrValidation, err),
 				sentinel: ErrValidation,
 				cause:    err,
 			}
@@ -426,8 +423,17 @@ func fileLoadError(path string, err error) error {
 	return fmt.Errorf("loading config file %s: %w: %w", path, ErrFileParse, err)
 }
 
+// defaultValidator is the validator GetConfig uses when WithValidator sets
+// none. It names fields by config key (see [FieldName]). A Validate is safe
+// for concurrent use and caches struct metadata, so one is shared.
+var defaultValidator = sync.OnceValue(func() *validator.Validate {
+	v := validator.New()
+	v.RegisterTagNameFunc(FieldName)
+	return v
+})
+
 // fieldErrorSummary builds a compact summary of validation field errors
-// for inclusion in the error message (e.g., "Name(required), Port(min=1)").
+// for inclusion in the error message (e.g., "name(required), db.port(min=1)").
 func fieldErrorSummary(ve validator.ValidationErrors) string {
 	parts := make([]string, 0, len(ve))
 	for _, fe := range ve {
@@ -435,7 +441,12 @@ func fieldErrorSummary(ve validator.ValidationErrors) string {
 		if fe.Param() != "" {
 			tag += "=" + fe.Param()
 		}
-		parts = append(parts, fe.Field()+"("+tag+")")
+		// Namespace is "<Root>.a.b"; the root type name is noise.
+		ns := fe.Namespace()
+		if _, rest, ok := strings.Cut(ns, "."); ok {
+			ns = rest
+		}
+		parts = append(parts, ns+"("+tag+")")
 	}
 	return strings.Join(parts, ", ")
 }

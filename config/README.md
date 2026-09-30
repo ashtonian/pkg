@@ -55,7 +55,7 @@ caller ──NewReloader/Start/Stop──▶ Reloader ──re-runs──▶ Get
 **Failure modes**
 - Required or previously loaded file missing / unreadable → `ErrFileRead` (E7003), cause `*fs.PathError`.
 - File not valid YAML → `ErrFileParse` (E7004), cause the parser error with its line.
-- Secret backend error → `ErrSecretProvider` (E7005); hook error → `ErrPostLoad` (E7007); validation → `ErrValidation` (E7002).
+- Secret backend error → `ErrSecretProvider` (E7005); hook error → `ErrPostLoad` (E7007); validation, or a value of the wrong type → `ErrValidation` (E7002).
 - Any of those during a reload → `ErrReload` (E7006) wrapping it; the previous config stays live.
 - Manual reload while one runs → `ErrReloadInProgress` (E7008, 409); after `Stop` → `ErrReloaderStopped` (E7009, 503). Neither is a failure.
 - Reload whose context ended → error carrying `ctx.Err()`; not counted, not reported as a failure.
@@ -116,7 +116,7 @@ db.max_conns  25          int
 db.password   [REDACTED]  string
 ```
 
-Environment names come from the key tree, so an underscore inside a key survives: `APP_DB_MAX_CONNS` sets `db.max_conns`.
+Environment names come from the key tree, so an underscore inside a key survives: `APP_DB_MAX_CONNS` sets `db.max_conns`. For a map of structs the variable is matched against the element's fields, so the map key may contain underscores too: `APP_FEATURES_AUDIT_LOGS_MAX_PAGE_SIZE` sets `features.audit_logs.max_page_size`.
 
 ### Hot reload
 
@@ -162,7 +162,7 @@ Source precedence, highest first: `WithProvider` (incl. `kongprovider`) > enviro
 | `WithProvider(p)` | `koanf.Provider` | none | Extra source at the highest precedence, loaded in the order added. |
 | `WithSecretPopulator(fn)` | `SecretPopulator` | nil (no secrets) | Fills `secret`-tagged fields after unmarshal; errors wrap `ErrSecretProvider`. |
 | `WithPostLoad[T](fn)` | `func(context.Context, *T) error` | none | Normalize/derive after secrets, before validation; errors wrap `ErrPostLoad`. |
-| `WithValidator(v)` | `Validator` | `validator.New()` | Any `Struct(any) error`, e.g. a ModelValidator; one that also has `StructCtx(ctx, v)` gets the load's ctx. |
+| `WithValidator(v)` | `Validator` | go-playground validator naming fields by config key (`FieldName`) | Any `Struct(any) error`, e.g. a ModelValidator; one that also has `StructCtx(ctx, v)` gets the load's ctx. |
 | `WithSkipValidation()` | — | validation on | Skip validation, including `validate:"required"`. |
 | `WithLogger(l)` | `*slog.Logger` | `slog.Default()` | Loader diagnostics and, via `NewReloader`, every reload event. |
 
@@ -208,6 +208,7 @@ Field names — and map keys, since printing expands maps and dynamic `any` valu
 
 - `GetConfig[T](ctx, opts...) (*T, error)` — load, secrets, post-load, validate.
 - `Fields[T]() []Field` — every leaf key of `T`: `Path`, `Tag`, `Type`.
+- `FieldName(reflect.StructField) string` — a field's config key segment; register on a go-playground validator so errors name `db.max_conns`.
 - `DefaultsFromTags[T]() map[string]any` — `default` tags keyed by path.
 
 ### Reloading
@@ -235,7 +236,7 @@ Field names — and map keys, since printing expands maps and dynamic `any` valu
 
 | Code | HTTP | Sentinel | Retryable | Description |
 |------|------|----------|-----------|-------------|
-| E7002 | 422 | `ErrValidation` | No | Validation failed; `errors.As` yields `validator.ValidationErrors`. |
+| E7002 | 422 | `ErrValidation` | No | Validation failed, or a value could not decode into its field's type; `errors.As` yields `validator.ValidationErrors` for tag failures. |
 | E7003 | 500 | `ErrFileRead` | Unknown | Config file missing (required or previously loaded) or unreadable; `*fs.PathError` in the chain. |
 | E7004 | 500 | `ErrFileParse` | No | Config file is not valid YAML; parser error with line in the chain. |
 | E7005 | 500 | `ErrSecretProvider` | Yes | `SecretPopulator` failed; its error in the chain. |

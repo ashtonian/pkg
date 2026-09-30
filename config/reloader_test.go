@@ -440,7 +440,6 @@ func TestReloader_Stop_Idempotent(t *testing.T) {
 	}
 }
 
-
 func TestReloader_Start_ContextCancel(t *testing.T) {
 	r, err := NewReloader[reloaderCfg](
 		t.Context(),

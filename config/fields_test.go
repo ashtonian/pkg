@@ -80,9 +80,8 @@ func TestDefaultsFromTags_SkipsIgnoredField(t *testing.T) {
 
 }
 
-// A TextUnmarshaler struct is a leaf for env mapping as well: it used to be
-// descended into, which left a key with an underscore to the naive
-// "_" → "." fallback (listen_addr → listen.addr).
+// A TextUnmarshaler struct is a leaf for env mapping as well, so a key with
+// an underscore resolves exactly (listen_addr, not listen.addr).
 func TestGetConfig_TextUnmarshalerLeafFromEnv(t *testing.T) {
 	t.Setenv("FLD_LISTEN_ADDR", "10.0.0.7")
 	cfg, err := GetConfig[fieldsCfg](t.Context(), WithEnvPrefix("FLD"), WithSkipValidation())
@@ -131,5 +130,44 @@ func TestFields_NonStructHasNoFields(t *testing.T) {
 	}
 	if got := fieldPaths(Fields[*fieldsInner]()); !slices.Equal(got, []string{"host"}) {
 		t.Errorf("Fields[*fieldsInner] = %v, want [host]", got)
+	}
+}
+
+type envLimits struct {
+	MaxPageSize *int `koanf:"max_page_size"`
+	Size        int  `koanf:"size"`
+	Enabled     bool `koanf:"enabled"`
+}
+
+type envMapCfg struct {
+	Features map[string]envLimits `koanf:"features"`
+	Labels   map[string]string    `koanf:"labels"`
+}
+
+// A map of structs has keys no schema names; its variables resolve by
+// matching the element's field names, so a key with underscores (audit_logs)
+// and a field with underscores (max_page_size) both survive.
+func TestGetConfig_EnvIntoMapOfStructs(t *testing.T) {
+	t.Setenv("MAPENV_FEATURES_AUDIT_LOGS_MAX_PAGE_SIZE", "500")
+	t.Setenv("MAPENV_FEATURES_DEVICES_SIZE", "3")
+	t.Setenv("MAPENV_FEATURES_DEVICES_ENABLED", "true")
+	t.Setenv("MAPENV_LABELS_ENV", "prod")
+
+	cfg, err := GetConfig[envMapCfg](t.Context(), WithEnvPrefix("MAPENV"), WithSkipValidation())
+	if err != nil {
+		t.Fatalf("GetConfig: %v", err)
+	}
+	audit := cfg.Features["audit_logs"]
+	if audit.MaxPageSize == nil || *audit.MaxPageSize != 500 {
+		t.Errorf("features[audit_logs].max_page_size = %v, want 500 (features = %+v)", audit.MaxPageSize, cfg.Features)
+	}
+	if audit.Size != 0 {
+		t.Errorf("features[audit_logs].size = %d: the longer suffix max_page_size must win", audit.Size)
+	}
+	if d := cfg.Features["devices"]; d.Size != 3 || !d.Enabled {
+		t.Errorf("features[devices] = %+v, want size 3, enabled", d)
+	}
+	if cfg.Labels["env"] != "prod" {
+		t.Errorf("labels = %v: a map of scalars keeps the plain fallback", cfg.Labels)
 	}
 }

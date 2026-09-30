@@ -680,8 +680,6 @@ func TestGetConfig_Precedence_ProviderOverEnv(t *testing.T) {
 	}
 }
 
-// --- WithKoanf Tests ---
-
 // --- WithProvider Tests ---
 
 func TestGetConfig_WithProvider(t *testing.T) {
