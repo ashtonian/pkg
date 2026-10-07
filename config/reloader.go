@@ -3,6 +3,7 @@ package config
 import (
 	"cmp"
 	"context"
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -45,10 +46,10 @@ type Reloader[T any] struct {
 	// load pipeline, publish, and fire callbacks. Stop takes it and never
 	// gives it back.
 	slot chan struct{}
-	// loadedFiles are the config files the last successful load read.
+	// loaded is what the last successful load read from each config file.
 	// Guarded by slot.
-	loadedFiles []string
-	stats       atomic.Pointer[ReloadStats] // written while holding slot, read lock-free
+	loaded fileDigests
+	stats  atomic.Pointer[ReloadStats] // written while holding slot, read lock-free
 
 	watchArmed atomic.Bool // set once Start has registered the watcher's dirs
 	stopOnce   sync.Once
@@ -212,13 +213,13 @@ func NewReloader[T any](ctx context.Context, reloadOpts []ReloadOption[T], confi
 	}
 
 	r := &Reloader[T]{
-		configOpts:  configOpts,
-		logger:      o.logger,
-		slot:        make(chan struct{}, 1),
-		loadedFiles: files,
-		stopCh:      make(chan struct{}),
-		changed:     make(chan struct{}, 1),
-		quiesced:    make(chan struct{}),
+		configOpts: configOpts,
+		logger:     o.logger,
+		slot:       make(chan struct{}, 1),
+		loaded:     files,
+		stopCh:     make(chan struct{}),
+		changed:    make(chan struct{}, 1),
+		quiesced:   make(chan struct{}),
 	}
 	r.current.Store(cfg)
 
@@ -322,27 +323,34 @@ func (r *Reloader[T]) release() { <-r.slot }
 // reloadHeld runs one attempt attributed to trigger. The caller holds the
 // slot. Every reload path funnels through here so stats, callbacks, and
 // logging stay uniform across manual, file-watch, poll, and signal triggers.
+//
+// A reload whose context has ended is abandoned, not refuted: it publishes
+// nothing, counts as neither success nor failure and fires no callback — even
+// when the context ends after the sources were read, say inside a post-load
+// hook that went on to return nil.
 func (r *Reloader[T]) reloadHeld(ctx context.Context, trigger string) (*T, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, fmt.Errorf("config reload abandoned: %w", err)
+	}
 	o := buildOptions(r.configOpts)
-	o.requireFiles(r.loadedFiles)
+	o.requireFiles(r.loaded)
 
 	cfg, files, err := load[T](ctx, o)
-	if err != nil {
-		if ctxErr := ctx.Err(); ctxErr != nil {
-			// The reload was abandoned, not refuted: say nothing about the
-			// sources, which may be fine.
-			if !errors.Is(err, ctxErr) {
-				err = errors.Join(ctxErr, err)
-			}
-			return nil, fmt.Errorf("config reload abandoned: %w", err)
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		// Say nothing about the sources, which may be fine.
+		if err != nil && !errors.Is(err, ctxErr) {
+			ctxErr = errors.Join(ctxErr, err)
 		}
+		return nil, fmt.Errorf("config reload abandoned: %w", ctxErr)
+	}
+	if err != nil {
 		reloadErr := fmt.Errorf("%w: %w", ErrReload, err)
 		r.recordAttempt(trigger, reloadErr)
 		r.notifyReloadError(trigger, reloadErr)
 		return nil, reloadErr
 	}
 
-	r.loadedFiles = files
+	r.loaded = files
 	old := r.current.Swap(cfg)
 	r.recordAttempt(trigger, nil)
 	r.notifyCallbacks(old, cfg)
@@ -419,6 +427,10 @@ func (r *Reloader[T]) Start(ctx context.Context) error {
 		}()
 		events, watchErrs, settled = fw.watcher.Events, fw.watcher.Errors, fw.timer.C
 		r.watchArmed.Store(true)
+		// No event reports a change made before the watch existed — between
+		// NewReloader's load and now — so compare the files with what was
+		// loaded once, now that later changes cannot be missed.
+		r.catchUp(runCtx)
 	}
 
 	var sigCh <-chan os.Signal
@@ -480,7 +492,11 @@ func (r *Reloader[T]) Start(ctx context.Context) error {
 			r.logger.ErrorContext(ctx, "config file watcher error", "error", err)
 
 		case <-settled:
-			if path, changed := fw.settle(); changed {
+			path, changed, err := fw.settle()
+			if err != nil {
+				r.logger.ErrorContext(ctx, "config file watch is missing directories; changes there will not reload", "error", err)
+			}
+			if changed {
 				r.autoReload(runCtx, TriggerFileChange, "path", path)
 			}
 		}
@@ -494,7 +510,39 @@ func (r *Reloader[T]) autoReload(ctx context.Context, trigger string, attrs ...a
 		return // stopping: Stop or ctx ended, and Start's loop exits next
 	}
 	defer r.release()
+	r.reloadAndLog(ctx, trigger, attrs...)
+}
 
+// catchUp reloads if a config file no longer holds what the last load read.
+func (r *Reloader[T]) catchUp(ctx context.Context) {
+	if err := r.acquire(ctx, TriggerFileChange, true); err != nil {
+		return
+	}
+	defer r.release()
+	if path, changed := r.changedSinceLoad(); changed {
+		r.reloadAndLog(ctx, TriggerFileChange, "path", path, "changed", "before the watch started")
+	}
+}
+
+// changedSinceLoad compares every configured file with what the last load
+// read from it: changed, newly present or gone. The caller holds the slot.
+func (r *Reloader[T]) changedSinceLoad() (string, bool) {
+	for _, path := range filePaths(r.configOpts) {
+		was, loaded := r.loaded[path]
+		data, err := os.ReadFile(path)
+		switch {
+		case err != nil && loaded, err == nil && !loaded:
+			return path, true
+		case err == nil && sha256.Sum256(data) != was:
+			return path, true
+		}
+	}
+	return "", false
+}
+
+// reloadAndLog runs one automatic reload and logs its outcome. The caller
+// holds the slot.
+func (r *Reloader[T]) reloadAndLog(ctx context.Context, trigger string, attrs ...any) {
 	args := append([]any{"trigger", trigger}, attrs...)
 	if _, err := r.reloadHeld(ctx, trigger); err != nil {
 		if ctx.Err() != nil {
@@ -585,30 +633,39 @@ func filePaths(opts []Option) []string {
 // Start's loop — events in through observe, the debounce timer out through
 // settle — so it needs no locking, and closing it stops the timer for good.
 //
-// Two detection paths, because config reaches a process two different ways:
+// Config reaches a process three ways, and each is detected:
 //
 //   - Direct write to the file, including the write-temp-then-rename pattern
-//     editors and atomic-write toolchains use. Caught by watching the file's
-//     PARENT DIRECTORY and matching events by name.
+//     editors and atomic-write toolchains use, and removal. Caught by
+//     watching the file's PARENT DIRECTORY and matching events by name.
 //   - Symlink swap, where the watched path is a link whose target moves and
 //     the leaf path itself is never written. This is how Kubernetes publishes
 //     ConfigMap and Secret volumes (kubelet writes a new timestamped dir, then
 //     renames `..data` over the old one; every key is a symlink into `..data`)
 //     and how release-directory deploys work (`ln -sfn`). fsnotify does not
 //     follow symlinks, so a name match never fires. Caught by resolving each
-//     path up front, additionally watching the resolved target's directory,
-//     and re-resolving on any unmatched event in a watched directory.
+//     path, watching the resolved target's directory too, and re-resolving
+//     after every burst of events in a watched directory.
+//   - An edit of a symlink's current target, matched by the target's name.
+//
+// The subscriptions are reconciled after every burst: the parent of each
+// declared path and of each current target — or, while one does not exist
+// yet, its nearest existing ancestor, so a directory created later is still
+// noticed — and nothing else, so retired release directories are dropped.
 type fileWatch struct {
 	watcher *fsnotify.Watcher
 	logger  *slog.Logger
 
-	// watchedFiles is the set of absolute paths the operator declared.
-	watchedFiles map[string]bool
-	// resolved maps each watched path to its symlink target as last observed.
-	// A path that is not a symlink maps to itself and never changes, so it
-	// costs one comparison per settle and never triggers the symlink branch.
+	// declared is every path the operator declared, absolute.
+	declared []string
+	// resolved maps each declared path to its symlink target as last
+	// observed; a path that is not a symlink maps to itself.
 	resolved map[string]string
-	dirs     map[string]bool
+	// reach maps each directory a declared path needs to the directory
+	// watched for it: itself, or its nearest existing ancestor.
+	reach map[string]string
+	// watching is the set of directories subscribed.
+	watching map[string]bool
 
 	// timer is the debounce: every event resets it, so a burst collapses into
 	// one settle. Created stopped; fires only once armed by observe.
@@ -619,11 +676,15 @@ type fileWatch struct {
 	// debounce windows, so a steadily written sibling file in a watched
 	// directory cannot hold a real change off forever.
 	burstStart time.Time
-	// pendingDirect names the watched file a Write/Create landed on since the
-	// last settle, or "" if the pending events were all indirect.
+	// pendingDirect names the declared path a write, create, removal or
+	// rename of it or its target landed on since the last settle, or "" if
+	// the pending events were all indirect.
 	pendingDirect string
 }
 
+// newFileWatch subscribes to every directory paths need. A subscription that
+// cannot be made fails construction: a watch that silently covers less than
+// it was asked to would never report the changes it misses.
 func newFileWatch(paths []string, debounce time.Duration, logger *slog.Logger) (*fileWatch, error) {
 	watcher, err := fsnotify.NewWatcher()
 	if err != nil {
@@ -633,57 +694,110 @@ func newFileWatch(paths []string, debounce time.Duration, logger *slog.Logger) (
 	timer := time.NewTimer(debounce)
 	timer.Stop()
 	w := &fileWatch{
-		watcher:      watcher,
-		logger:       logger,
-		watchedFiles: make(map[string]bool, len(paths)),
-		resolved:     make(map[string]string, len(paths)),
-		dirs:         make(map[string]bool),
-		timer:        timer,
-		debounce:     debounce,
+		watcher:  watcher,
+		logger:   logger,
+		resolved: make(map[string]string, len(paths)),
+		reach:    make(map[string]string),
+		watching: make(map[string]bool),
+		timer:    timer,
+		debounce: debounce,
 	}
-
 	for _, p := range paths {
 		absPath, err := filepath.Abs(p)
 		if err != nil {
-			logger.Warn("failed to resolve config file path", "path", p, "error", err)
-			continue
+			return nil, errors.Join(fmt.Errorf("resolving config file path %q: %w", p, err), w.close())
 		}
-		w.watchedFiles[absPath] = true
-		w.addDir(filepath.Dir(absPath))
-
-		// Record the path's current symlink target and watch that directory
-		// too, so an in-place edit of the target file is seen as well.
-		target := resolveTarget(absPath)
-		w.resolved[absPath] = target
-		if target != absPath {
-			w.addDir(filepath.Dir(target))
-		}
+		w.declared = append(w.declared, absPath)
+		w.resolved[absPath] = resolveTarget(absPath)
+	}
+	if _, err := w.reconcile(); err != nil {
+		return nil, errors.Join(err, w.close())
 	}
 	return w, nil
 }
 
-func (w *fileWatch) addDir(dir string) {
-	if w.dirs[dir] {
-		return
+// reconcile subscribes to the directories the declared paths need now and
+// drops every other subscription. appeared reports a needed directory that
+// came into existence since the last reconcile: a file inside it may have
+// appeared with it, before any watch could see it.
+func (w *fileWatch) reconcile() (appeared bool, err error) {
+	want := make(map[string]bool, 2*len(w.declared))
+	for _, p := range w.declared {
+		want[filepath.Dir(p)] = true
+		want[filepath.Dir(w.resolved[p])] = true
 	}
-	if err := w.watcher.Add(dir); err != nil {
-		w.logger.Warn("failed to watch directory", "dir", dir, "error", err)
-		return
+	desired := make(map[string]bool, len(want))
+	reach := make(map[string]string, len(want))
+	for dir := range want {
+		watched := nearestExistingDir(dir)
+		reach[dir] = watched
+		desired[watched] = true
+		if was, ok := w.reach[dir]; ok && was != dir && watched == dir {
+			appeared = true
+		}
 	}
-	w.dirs[dir] = true
+	w.reach = reach
+
+	var errs []error
+	for dir := range desired {
+		if w.watching[dir] {
+			continue
+		}
+		if err := w.watcher.Add(dir); err != nil {
+			errs = append(errs, fmt.Errorf("watching config directory %q: %w", dir, err))
+			continue
+		}
+		w.watching[dir] = true
+	}
+	for dir := range w.watching {
+		if desired[dir] {
+			continue
+		}
+		// A directory that was deleted has already lost its watch;
+		// removing it again fails harmlessly.
+		_ = w.watcher.Remove(dir)
+		delete(w.watching, dir)
+	}
+	return appeared, errors.Join(errs...)
 }
 
-// observe records one filesystem event and (re)arms the debounce. A
-// Write/Create on a watched file is a definite change. Anything else in a
-// watched directory is only a hint — it may be the first step of a symlink
-// swap, or an unrelated sibling file — decided after the debounce, in settle.
+// nearestExistingDir returns dir, or its closest ancestor that exists.
+func nearestExistingDir(dir string) string {
+	for {
+		if info, err := os.Stat(dir); err == nil && info.IsDir() {
+			return dir
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			return dir
+		}
+		dir = parent
+	}
+}
+
+// owner returns the declared path an event on name affects directly: name is
+// that path or its current symlink target.
+func (w *fileWatch) owner(name string) (string, bool) {
+	for _, p := range w.declared {
+		if name == p || name == w.resolved[p] {
+			return p, true
+		}
+	}
+	return "", false
+}
+
+// observe records one filesystem event and (re)arms the debounce. A write,
+// create, removal or rename of a declared file or its target is a definite
+// change. Anything else in a watched directory is only a hint — it may be
+// the first step of a symlink swap, a directory on the way to a declared
+// path, or an unrelated sibling file — decided after the debounce, in settle.
 func (w *fileWatch) observe(ev fsnotify.Event) {
 	absName, err := filepath.Abs(ev.Name)
 	if err != nil {
 		return
 	}
-	if w.watchedFiles[absName] && ev.Op&(fsnotify.Write|fsnotify.Create) != 0 {
-		w.pendingDirect = absName
+	if p, ok := w.owner(absName); ok && ev.Op&(fsnotify.Write|fsnotify.Create|fsnotify.Remove|fsnotify.Rename) != 0 {
+		w.pendingDirect = p
 	}
 	now := time.Now()
 	if w.burstStart.IsZero() {
@@ -698,7 +812,9 @@ func (w *fileWatch) observe(ev fsnotify.Event) {
 const maxDebounceWindows = 10
 
 // settle decides, once the filesystem has stopped moving, whether anything the
-// reloader reads actually changed, and names the path that did.
+// reloader reads actually changed, and names the path that did. A
+// subscription that can no longer be made is returned as err; the change is
+// still reported.
 //
 // Deferring the symlink check to here rather than doing it per event is
 // load-bearing. A Kubernetes ConfigMap update emits its events BEFORE the swap
@@ -707,11 +823,12 @@ const maxDebounceWindows = 10
 // no further event at all. Re-resolving at event time therefore always reads
 // the pre-swap target and concludes nothing changed. Re-resolving after the
 // debounce reads the settled state.
-func (w *fileWatch) settle() (string, bool) {
-	path := w.pendingDirect
+func (w *fileWatch) settle() (path string, changed bool, err error) {
+	path = w.pendingDirect
 	w.pendingDirect = ""
 	w.burstStart = time.Time{}
 	movedFrom, movedTo, moved := w.refreshResolved()
+	appeared, err := w.reconcile()
 
 	if moved {
 		w.logger.Debug("config file symlink target changed",
@@ -719,29 +836,27 @@ func (w *fileWatch) settle() (string, bool) {
 	}
 	switch {
 	case path != "":
-		return path, true
+		return path, true, err
 	case moved:
-		return movedTo, true
+		return movedTo, true, err
+	case appeared:
+		return "", true, err
 	default:
 		// Events fired but nothing we read moved — a sibling file in a
 		// shared directory, or the first half of a swap we already handled.
-		return "", false
+		return "", false, err
 	}
 }
 
-// refreshResolved re-resolves every watched path, records any new targets,
-// and subscribes to a new target's directory so a later in-place edit there
-// is still seen. Reports the last move observed, if any.
+// refreshResolved re-resolves every declared path and records new targets.
+// Reports the last move observed, if any.
 func (w *fileWatch) refreshResolved() (from, to string, moved bool) {
-	for path, was := range w.resolved {
-		now := resolveTarget(path)
+	for _, path := range w.declared {
+		was, now := w.resolved[path], resolveTarget(path)
 		if now == was {
 			continue
 		}
 		w.resolved[path] = now
-		if now != path {
-			w.addDir(filepath.Dir(now))
-		}
 		from, to, moved = was, now, true
 	}
 	return from, to, moved

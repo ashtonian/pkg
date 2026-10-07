@@ -3,9 +3,11 @@
 package config
 
 import (
+	"errors"
 	"net/netip"
 	"reflect"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 )
@@ -134,9 +136,9 @@ func TestFields_NonStructHasNoFields(t *testing.T) {
 }
 
 type envLimits struct {
-	MaxPageSize *int `koanf:"max_page_size"`
-	Size        int  `koanf:"size"`
-	Enabled     bool `koanf:"enabled"`
+	MaxPageSize     *int `koanf:"max_page_size"`
+	DefaultPageSize int  `koanf:"default_page_size"`
+	Enabled         bool `koanf:"enabled"`
 }
 
 type envMapCfg struct {
@@ -149,7 +151,7 @@ type envMapCfg struct {
 // and a field with underscores (max_page_size) both survive.
 func TestGetConfig_EnvIntoMapOfStructs(t *testing.T) {
 	t.Setenv("MAPENV_FEATURES_AUDIT_LOGS_MAX_PAGE_SIZE", "500")
-	t.Setenv("MAPENV_FEATURES_DEVICES_SIZE", "3")
+	t.Setenv("MAPENV_FEATURES_DEVICES_DEFAULT_PAGE_SIZE", "3")
 	t.Setenv("MAPENV_FEATURES_DEVICES_ENABLED", "true")
 	t.Setenv("MAPENV_LABELS_ENV", "prod")
 
@@ -157,17 +159,40 @@ func TestGetConfig_EnvIntoMapOfStructs(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetConfig: %v", err)
 	}
-	audit := cfg.Features["audit_logs"]
-	if audit.MaxPageSize == nil || *audit.MaxPageSize != 500 {
+	if audit := cfg.Features["audit_logs"]; audit.MaxPageSize == nil || *audit.MaxPageSize != 500 {
 		t.Errorf("features[audit_logs].max_page_size = %v, want 500 (features = %+v)", audit.MaxPageSize, cfg.Features)
 	}
-	if audit.Size != 0 {
-		t.Errorf("features[audit_logs].size = %d: the longer suffix max_page_size must win", audit.Size)
-	}
-	if d := cfg.Features["devices"]; d.Size != 3 || !d.Enabled {
-		t.Errorf("features[devices] = %+v, want size 3, enabled", d)
+	if d := cfg.Features["devices"]; d.DefaultPageSize != 3 || !d.Enabled {
+		t.Errorf("features[devices] = %+v, want default_page_size 3, enabled", d)
 	}
 	if cfg.Labels["env"] != "prod" {
 		t.Errorf("labels = %v: a map of scalars keeps the plain fallback", cfg.Labels)
+	}
+}
+
+// When one element field's name ends another's (size, max_page_size), a
+// variable can name two different entries; it is refused, naming both,
+// instead of setting the one a suffix rule happens to prefer.
+func TestGetConfig_AmbiguousMapEnvIsRefused(t *testing.T) {
+	type entry struct {
+		Size        int `koanf:"size"`
+		MaxPageSize int `koanf:"max_page_size"`
+	}
+	type cfg struct {
+		Features map[string]entry `koanf:"features"`
+	}
+	t.Setenv("AMBIG_FEATURES_AUDIT_MAX_PAGE_SIZE", "7")
+	t.Setenv("AMBIG_FEATURES_DEVICES_SIZE", "3") // one reading only
+	_, err := GetConfig[cfg](t.Context(), WithEnvPrefix("AMBIG"), WithSkipValidation())
+	if !errors.Is(err, ErrValidation) {
+		t.Fatalf("GetConfig = %v, want ErrValidation for the ambiguous variable", err)
+	}
+	for _, want := range []string{"AMBIG_FEATURES_AUDIT_MAX_PAGE_SIZE", "features.audit.max_page_size", "features.audit_max_page.size"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error %q does not name %s", err, want)
+		}
+	}
+	if strings.Contains(err.Error(), "DEVICES_SIZE") {
+		t.Errorf("an unambiguous variable was reported: %v", err)
 	}
 }

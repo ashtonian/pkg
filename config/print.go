@@ -13,8 +13,9 @@ import (
 
 const (
 	redactedValue = "[REDACTED]"
-	// cycleValue stands in for a pointer back to a struct already being
-	// printed. Printing it with %v instead would bypass redaction.
+	// cycleValue stands in for a struct pointer, map or slice that leads
+	// back to one already being printed. Printing it with %v instead would
+	// bypass redaction, or recurse forever.
 	cycleValue = "[CYCLE]"
 )
 
@@ -98,11 +99,15 @@ type printEntry struct {
 
 // PrintRedacted writes a struct's fields, keyed by koanf path, redacting
 // sensitive values. A value is sensitive when its field, or any struct, slice
-// or map field containing it, is tagged sensitive:"true", or when the name it
-// sits under — the leaf field's name, or its map key — matches a sensitive
-// pattern (password, secret, token, key, ...). Maps and slices, including
-// dynamic ones held in interfaces, are expanded element by element. It returns
-// the first write error, or an error for an unknown format.
+// or map field containing it, is tagged sensitive:"true", or when a name it
+// sits under matches a sensitive pattern (password, secret, token, key, ...):
+// the leaf field's name, the name of any map or slice containing it, or any
+// map key above it. A struct field's name does not cover the struct it holds
+// — an Auth block's fields are judged by their own names — but a map key's
+// covers everything beneath it. Maps and slices, including dynamic ones held
+// in interfaces and nested to any depth, are expanded element by element, so
+// no container is printed whole while something inside it is unchecked. It
+// returns the first write error, or an error for an unknown format.
 func PrintRedacted(cfg any, opts ...PrintOption) error {
 	po := defaultPrintOptions()
 	for _, opt := range opts {
@@ -143,13 +148,13 @@ func ToMap(cfg any, redact bool) map[string]any {
 // dynamic values held in interfaces, so a sensitive-looking map key is judged
 // like a sensitive-looking field name.
 func collectEntries(cfg any, showSensitive bool) []printEntry {
-	w := &entryWalk{showSensitive: showSensitive, visiting: map[uintptr]bool{}}
+	w := &entryWalk{showSensitive: showSensitive, visiting: map[visit]bool{}}
 	val := reflect.ValueOf(cfg)
 	for val.Kind() == reflect.Pointer {
 		if val.IsNil() {
 			return nil
 		}
-		w.visiting[val.Pointer()] = true
+		w.visiting[visitOf(val)] = true
 		val = val.Elem()
 	}
 	if !val.IsValid() || !isBranch(val.Type()) {
@@ -162,18 +167,30 @@ func collectEntries(cfg any, showSensitive bool) []printEntry {
 type entryWalk struct {
 	showSensitive bool
 	entries       []printEntry
-	// visiting holds the struct pointers on the current path, so a pointer
-	// cycle in the value graph ends instead of recursing forever.
-	visiting map[uintptr]bool
+	// visiting holds the struct pointers, maps and slices on the current
+	// path, so a cycle in the value graph ends instead of recursing forever.
+	visiting map[visit]bool
 }
 
+// visit identifies a struct pointer, map or slice by its address and type; a
+// struct and its first field share an address, so the type is part of it.
+type visit struct {
+	ptr uintptr
+	typ reflect.Type
+}
+
+func visitOf(v reflect.Value) visit { return visit{ptr: v.Pointer(), typ: v.Type()} }
+
 // site is where a value sits: the field name or map key a sensitive-name
-// check reads, the description to print, and whether an enclosing
-// sensitive:"true" tag already covers it.
+// check reads, the description to print, and whether an enclosing tag or
+// sensitive name already covers it.
 type site struct {
 	name      string
 	desc      string
 	sensitive bool
+	// keyed marks a map key: a dynamic name whose sensitivity covers
+	// everything beneath it, structs included.
+	keyed bool
 }
 
 // walkStruct emits entries for val's fields. inherited is true beneath a
@@ -197,34 +214,44 @@ func (w *entryWalk) walkValue(path string, v reflect.Value, s site) {
 			return
 		}
 		if elem.Kind() == reflect.Pointer && isBranch(elem.Elem().Type()) {
-			ptr := elem.Pointer()
-			if w.visiting[ptr] {
-				w.entries = append(w.entries, printEntry{
-					name: path, value: cycleValue, typeName: v.Type().String(), desc: s.desc,
-				})
+			if !w.enter(elem) {
+				w.cycle(path, v, s)
 				return
 			}
-			w.visiting[ptr] = true
-			defer delete(w.visiting, ptr)
+			defer delete(w.visiting, visitOf(elem))
 		}
 		elem = elem.Elem()
 	}
 
+	named := isSensitiveName(s.name)
 	switch {
 	case isBranch(elem.Type()):
-		w.walkStruct(elem, path, s.sensitive)
+		w.walkStruct(elem, path, s.sensitive || s.keyed && named)
 	case elem.Kind() == reflect.Map && elem.Len() > 0:
+		if !w.enter(elem) {
+			w.cycle(path, v, s)
+			return
+		}
+		defer delete(w.visiting, visitOf(elem))
 		keys := elem.MapKeys()
 		slices.SortFunc(keys, func(a, b reflect.Value) int {
 			return cmp.Compare(fmt.Sprint(a.Interface()), fmt.Sprint(b.Interface()))
 		})
 		for _, k := range keys {
 			key := fmt.Sprint(k.Interface())
-			w.walkValue(path+"["+key+"]", elem.MapIndex(k), site{name: key, desc: s.desc, sensitive: s.sensitive})
+			w.walkValue(path+"["+key+"]", elem.MapIndex(k), site{name: key, desc: s.desc, sensitive: s.sensitive || named, keyed: true})
 		}
 	case (elem.Kind() == reflect.Slice || elem.Kind() == reflect.Array) && elem.Len() > 0 && holdsContainers(elem.Type().Elem()):
+		if elem.Kind() == reflect.Slice {
+			if !w.enter(elem) {
+				w.cycle(path, v, s)
+				return
+			}
+			defer delete(w.visiting, visitOf(elem))
+		}
+		inner := site{name: s.name, desc: s.desc, sensitive: s.sensitive || named, keyed: s.keyed}
 		for i := range elem.Len() {
-			w.walkValue(fmt.Sprintf("%s[%d]", path, i), elem.Index(i), s)
+			w.walkValue(fmt.Sprintf("%s[%d]", path, i), elem.Index(i), inner)
 		}
 	default:
 		// Scalars, TextUnmarshaler structs, empty containers and slices of
@@ -234,12 +261,34 @@ func (w *entryWalk) walkValue(path string, v reflect.Value, s site) {
 	}
 }
 
-// holdsContainers reports whether slice elements of type t may be structs or
-// maps worth expanding: struct branches, maps, and interfaces whose dynamic
-// value is only known per element.
+// enter records a struct pointer, map or slice on the current path; false
+// means it is already there.
+func (w *entryWalk) enter(v reflect.Value) bool {
+	k := visitOf(v)
+	if w.visiting[k] {
+		return false
+	}
+	w.visiting[k] = true
+	return true
+}
+
+func (w *entryWalk) cycle(path string, v reflect.Value, s site) {
+	w.entries = append(w.entries, printEntry{name: path, value: cycleValue, typeName: v.Type().String(), desc: s.desc})
+}
+
+// holdsContainers reports whether slice or array elements of type t may hold
+// structs or maps at any depth, and so must be expanded rather than printed
+// whole: struct branches, maps, interfaces (whose dynamic value is only known
+// per element) and slices or arrays of those.
 func holdsContainers(t reflect.Type) bool {
 	t = derefType(t)
-	return isBranch(t) || t.Kind() == reflect.Map || t.Kind() == reflect.Interface
+	switch {
+	case isBranch(t), t.Kind() == reflect.Map, t.Kind() == reflect.Interface:
+		return true
+	case t.Kind() == reflect.Slice, t.Kind() == reflect.Array:
+		return holdsContainers(t.Elem())
+	}
+	return false
 }
 
 // leaf emits one entry. declared is the value as found, for its type; value
@@ -332,13 +381,36 @@ func printJSON(w io.Writer, entries []printEntry, includeDesc bool) error {
 	return enc.Encode(m)
 }
 
+// printEnv writes one POSIX-shell `export NAME='value'` line per entry. NAME
+// is the key path upper-cased with every character outside [A-Z0-9_]
+// replaced by "_" — map keys and indexes included — and carries no
+// environment prefix, so it reads as diagnostics: it is shell-safe to source,
+// but a map entry's name need not match the variable the loader would read.
 func printEnv(w io.Writer, entries []printEntry, includeDesc bool) error {
 	ew := &errWriter{w: w}
 	for _, e := range entries {
 		if includeDesc && e.desc != "" {
-			ew.printf("# %s\n", e.desc)
+			ew.printf("# %s\n", strings.ReplaceAll(e.desc, "\n", " "))
 		}
-		ew.printf("export %s=%s\n", strings.ToUpper(strings.ReplaceAll(e.name, ".", "_")), e.value)
+		ew.printf("export %s=%s\n", shellName(e.name), shellQuote(e.value))
 	}
 	return ew.err
+}
+
+func shellName(path string) string {
+	b := []byte(strings.ToUpper(path))
+	for i, c := range b {
+		if !(c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' || c == '_') {
+			b[i] = '_'
+		}
+	}
+	if len(b) == 0 || b[0] >= '0' && b[0] <= '9' {
+		b = append([]byte{'_'}, b...)
+	}
+	return string(b)
+}
+
+// shellQuote single-quotes s, closing the quote around each quote it holds.
+func shellQuote(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }

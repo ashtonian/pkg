@@ -131,8 +131,8 @@ func ExampleGetConfig_comprehensive() {
 	// max_body set=false
 	// db=localhost:5432/proddb max_conns=50
 	// jwt_issuers=[auth.prod auth.staging]
-	// export DB_PASSWORD=[REDACTED]
-	// export AUTH_JWT_SIGN_KEY=[REDACTED]
+	// export DB_PASSWORD='[REDACTED]'
+	// export AUTH_JWT_SIGN_KEY='[REDACTED]'
 }
 
 func contains(s, substr string) bool {

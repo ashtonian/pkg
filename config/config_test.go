@@ -784,8 +784,26 @@ func TestPrintRedacted_Env(t *testing.T) {
 	}
 	output := buf.String()
 
-	if !strings.Contains(output, "export HOST=localhost") {
-		t.Errorf("env format should contain export, got:\n%s", output)
+	if !strings.Contains(output, "export HOST='localhost'") {
+		t.Errorf("env format should contain a quoted export, got:\n%s", output)
+	}
+}
+
+// Env output is shell-safe: values are single-quoted (quotes inside escaped)
+// and names hold only [A-Z0-9_], map keys and indexes included.
+func TestPrintRedacted_EnvIsShellSafe(t *testing.T) {
+	var buf bytes.Buffer
+	cfg := struct {
+		Name   string
+		Quote  string
+		Labels map[string]string
+	}{"two words", "it's", map[string]string{"team-a.b": "x"}}
+	if err := PrintRedacted(cfg, WithFormat(FormatEnv), WithWriter(&buf), WithSortByName()); err != nil {
+		t.Fatal(err)
+	}
+	want := "export LABELS_TEAM_A_B_='x'\nexport NAME='two words'\nexport QUOTE='it'\\''s'\n"
+	if buf.String() != want {
+		t.Fatalf("env output:\n%s\nwant:\n%s", buf.String(), want)
 	}
 }
 

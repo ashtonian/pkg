@@ -2,6 +2,7 @@ package config
 
 import (
 	"encoding"
+	"fmt"
 	"iter"
 	"reflect"
 	"slices"
@@ -95,26 +96,34 @@ func keyedFields(t reflect.Type) iter.Seq[keyedField] {
 	return func(yield func(keyedField) bool) {
 		for i := range t.NumField() {
 			f := t.Field(i)
-			if !f.IsExported() {
+			key, skip := fieldKey(f)
+			if skip {
 				continue
-			}
-			name, opts, _ := strings.Cut(f.Tag.Get("koanf"), ",")
-			tagOpts := strings.Split(opts, ",")
-			if name == "-" || slices.Contains(tagOpts, "remain") {
-				continue
-			}
-			key := name
-			switch {
-			case slices.Contains(tagOpts, "squash"):
-				key = ""
-			case key == "":
-				key = strings.ToLower(f.Name)
 			}
 			if !yield(keyedField{field: f, key: key}) {
 				return
 			}
 		}
 	}
+}
+
+// fieldKey is the key segment struct field f contributes under the rules on
+// [Fields]: "" for a squashed field, and skip for one that maps to no key.
+func fieldKey(f reflect.StructField) (key string, skip bool) {
+	if !f.IsExported() {
+		return "", true
+	}
+	name, opts, _ := strings.Cut(f.Tag.Get("koanf"), ",")
+	tagOpts := strings.Split(opts, ",")
+	switch {
+	case name == "-", slices.Contains(tagOpts, "remain"):
+		return "", true
+	case slices.Contains(tagOpts, "squash"):
+		return "", false
+	case name == "":
+		return strings.ToLower(f.Name), false
+	}
+	return name, false
 }
 
 var textUnmarshalerType = reflect.TypeFor[encoding.TextUnmarshaler]()
@@ -180,14 +189,20 @@ func defaultsFrom(fields []Field) map[string]any {
 //
 // A map of structs (map[string]Struct) has keys no schema names, so its
 // variables are matched by shape instead: PREFIX_<MAP>_<KEY>_<FIELD>, where
-// FIELD is one of the element struct's leaves (the longest that fits) and KEY
-// is the rest, lower-cased — so the key may contain underscores too.
+// FIELD is one of the element struct's leaves and KEY is the rest,
+// lower-cased — so the key may contain underscores too.
 // APP_FEATURES_AUDIT_LOGS_MAX_PAGE_SIZE resolves to
-// features.audit_logs.max_page_size.
+// features.audit_logs.max_page_size. When two leaves both fit — `size` and
+// `max_page_size` make APP_FEATURES_AUDIT_MAX_PAGE_SIZE either
+// audit.max_page_size or audit_max_page.size — the variable is ambiguous:
+// it sets nothing, and the load fails naming it, rather than configuring an
+// entry the operator did not mean.
 type envResolver struct {
 	fullPrefix string
 	exact      map[string]string
 	maps       []envMap
+	// ambiguous collects the variables path refused, with their readings.
+	ambiguous *[]string
 }
 
 // envMap is one map-of-structs field: the variable prefix that addresses it
@@ -204,7 +219,7 @@ type envLeaf struct {
 }
 
 func newEnvResolver(fields []Field, prefix string) envResolver {
-	r := envResolver{fullPrefix: prefix + "_", exact: make(map[string]string, len(fields))}
+	r := envResolver{fullPrefix: prefix + "_", exact: make(map[string]string, len(fields)), ambiguous: new([]string)}
 	for _, f := range fields {
 		name := envName(prefix, f.Path)
 		r.exact[name] = f.Path
@@ -213,8 +228,6 @@ func newEnvResolver(fields []Field, prefix string) envResolver {
 			for _, leaf := range fieldsOf(elem) {
 				m.leaves = append(m.leaves, envLeaf{suffix: envName("", leaf.Path), path: leaf.Path})
 			}
-			// Longest suffix first: _MAX_PAGE_SIZE must win over _SIZE.
-			slices.SortFunc(m.leaves, func(a, b envLeaf) int { return len(b.suffix) - len(a.suffix) })
 			r.maps = append(r.maps, m)
 		}
 	}
@@ -231,14 +244,32 @@ func (r envResolver) path(name string) string {
 		if !ok {
 			continue
 		}
+		var readings []string
 		for _, leaf := range m.leaves {
 			if key, ok := strings.CutSuffix(rest, leaf.suffix); ok && key != "" {
-				return m.path + "." + strings.ToLower(key) + "." + leaf.path
+				readings = append(readings, m.path+"."+strings.ToLower(key)+"."+leaf.path)
 			}
 		}
+		switch len(readings) {
+		case 0:
+			continue
+		case 1:
+			return readings[0]
+		}
+		*r.ambiguous = append(*r.ambiguous, name+" (could set "+strings.Join(readings, " or ")+")")
+		return "" // koanf skips a variable mapped to no key
 	}
 	// Anything else (a map of scalars, say) falls back to "_" → ".".
 	return strings.ReplaceAll(strings.ToLower(strings.TrimPrefix(name, r.fullPrefix)), "_", ".")
+}
+
+// ambiguity reports every variable path refused because it fits more than
+// one entry and field.
+func (r envResolver) ambiguity() error {
+	if len(*r.ambiguous) == 0 {
+		return nil
+	}
+	return fmt.Errorf("ambiguous environment variables: %s; rename a map key or field so only one reading fits", strings.Join(*r.ambiguous, "; "))
 }
 
 // envName is the variable name for path under prefix; an empty prefix yields

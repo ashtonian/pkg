@@ -2,12 +2,14 @@ package config
 
 import (
 	"context"
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"io/fs"
 	"log/slog"
 	"maps"
-	"slices"
+	"os"
+	"reflect"
 	"strings"
 	"sync"
 
@@ -16,7 +18,6 @@ import (
 	"github.com/knadh/koanf/parsers/yaml"
 	"github.com/knadh/koanf/providers/confmap"
 	kenv "github.com/knadh/koanf/providers/env"
-	"github.com/knadh/koanf/providers/file"
 	"github.com/knadh/koanf/v2"
 )
 
@@ -74,11 +75,12 @@ func buildOptions(opts []Option) *options {
 	return o
 }
 
-// requireFiles marks every configured file in paths as required. A Reloader
-// uses it so a file that loaded once cannot silently drop out of a reload.
-func (o *options) requireFiles(paths []string) {
+// requireFiles marks every configured file that loaded as required. A
+// Reloader uses it so a file that loaded once cannot silently drop out of a
+// reload.
+func (o *options) requireFiles(loaded fileDigests) {
 	for i := range o.configFiles {
-		if slices.Contains(paths, o.configFiles[i].path) {
+		if _, ok := loaded[o.configFiles[i].path]; ok {
 			o.configFiles[i].required = true
 		}
 	}
@@ -136,14 +138,50 @@ func WithMustConfigFiles(paths ...string) Option {
 
 // WithDefaults adds programmatic default values keyed by koanf dot-path
 // (e.g. "server.port"). Repeated calls merge, a later call winning on a
-// shared key; the caller's map is copied, not retained.
+// shared key. The map, and every map and slice inside it, is copied when
+// WithDefaults is called: changing the caller's map afterwards changes
+// nothing, including what a Reloader built from the option reads later.
 func WithDefaults(defaults map[string]any) Option {
+	snapshot := deepCopy(reflect.ValueOf(defaults)).Interface().(map[string]any)
 	return func(o *options) {
 		if o.defaults == nil {
-			o.defaults = make(map[string]any, len(defaults))
+			o.defaults = make(map[string]any, len(snapshot))
 		}
-		maps.Copy(o.defaults, defaults)
+		maps.Copy(o.defaults, snapshot)
 	}
+}
+
+// deepCopy copies v and every map and slice reachable from it through maps,
+// slices and interfaces.
+func deepCopy(v reflect.Value) reflect.Value {
+	switch v.Kind() {
+	case reflect.Map:
+		if v.IsNil() {
+			return v
+		}
+		c := reflect.MakeMapWithSize(v.Type(), v.Len())
+		for iter := v.MapRange(); iter.Next(); {
+			c.SetMapIndex(iter.Key(), deepCopy(iter.Value()))
+		}
+		return c
+	case reflect.Slice:
+		if v.IsNil() {
+			return v
+		}
+		c := reflect.MakeSlice(v.Type(), v.Len(), v.Len())
+		for i := range v.Len() {
+			c.Index(i).Set(deepCopy(v.Index(i)))
+		}
+		return c
+	case reflect.Interface:
+		if v.IsNil() {
+			return v
+		}
+		c := reflect.New(v.Type()).Elem()
+		c.Set(deepCopy(v.Elem()))
+		return c
+	}
+	return v
 }
 
 // WithProvider adds a generic koanf provider loaded at high precedence
@@ -259,20 +297,26 @@ func GetConfig[T any](ctx context.Context, opts ...Option) (*T, error) {
 	return cfg, err
 }
 
-// load is GetConfig's pipeline. It also reports which config files it read,
-// which a Reloader needs to keep an optional file from vanishing unnoticed.
-func load[T any](ctx context.Context, o *options) (*T, []string, error) {
+// fileDigests maps each config file a load read to the SHA-256 of the exact
+// bytes it parsed.
+type fileDigests map[string][sha256.Size]byte
+
+// load is GetConfig's pipeline. It also reports which config files it read
+// and what they held, which a Reloader needs to keep an optional file from
+// vanishing unnoticed and to tell whether a file changed since.
+func load[T any](ctx context.Context, o *options) (*T, fileDigests, error) {
 	// A fresh instance per load: nothing from an earlier load (a key since
 	// deleted from a file, say) can survive into this one.
 	k := koanf.New(".")
 
 	fields := Fields[T]()
-	var sources, files []string
+	var sources []string
+	files := fileDigests{}
 
 	// Step 1: struct tag defaults (lowest precedence).
 	if tagDefaults := defaultsFrom(fields); len(tagDefaults) > 0 {
 		if err := k.Load(confmap.Provider(tagDefaults, "."), nil); err != nil {
-			return nil, nil, fmt.Errorf("loading struct tag defaults: %w", err)
+			return nil, nil, fmt.Errorf("loading struct tag defaults: %w: %w", ErrSource, err)
 		}
 		sources = append(sources, "struct-tag-defaults")
 	}
@@ -280,23 +324,26 @@ func load[T any](ctx context.Context, o *options) (*T, []string, error) {
 	// Step 2: programmatic defaults (override struct tag defaults).
 	if len(o.defaults) > 0 {
 		if err := k.Load(confmap.Provider(o.defaults, "."), nil); err != nil {
-			return nil, nil, fmt.Errorf("loading defaults: %w", err)
+			return nil, nil, fmt.Errorf("loading defaults: %w: %w", ErrSource, err)
 		}
 		sources = append(sources, "programmatic-defaults")
 	}
 
 	// Step 3: config files (merged left-to-right).
 	for _, cf := range o.configFiles {
-		err := k.Load(file.Provider(cf.path), yaml.Parser())
+		data, err := os.ReadFile(cf.path)
 		switch {
 		case err == nil:
-			files = append(files, cf.path)
-			sources = append(sources, "file:"+cf.path)
 		case !cf.required && errors.Is(err, fs.ErrNotExist):
-			// Absence is the one failure an optional file is allowed.
+			continue // absence is the one failure an optional file is allowed
 		default:
 			return nil, nil, fileLoadError(cf.path, err)
 		}
+		if err := k.Load(bytesProvider(data), yaml.Parser()); err != nil {
+			return nil, nil, fileLoadError(cf.path, err)
+		}
+		files[cf.path] = sha256.Sum256(data)
+		sources = append(sources, "file:"+cf.path)
 	}
 
 	// Step 4: env vars, named from T's fields so a key with an underscore in
@@ -307,7 +354,10 @@ func load[T any](ctx context.Context, o *options) (*T, []string, error) {
 		resolve := newEnvResolver(fields, prefix)
 
 		if err := k.Load(kenv.Provider(fullPrefix, ".", resolve.path), nil); err != nil {
-			return nil, nil, fmt.Errorf("loading env vars: %w", err)
+			return nil, nil, fmt.Errorf("loading env vars: %w: %w", ErrSource, err)
+		}
+		if err := resolve.ambiguity(); err != nil {
+			return nil, nil, fmt.Errorf("loading env vars: %w: %w", ErrValidation, err)
 		}
 		sources = append(sources, "env:"+fullPrefix+"*")
 	}
@@ -315,7 +365,7 @@ func load[T any](ctx context.Context, o *options) (*T, []string, error) {
 	// Step 5: extra providers (including kongprovider), loaded in order added (highest precedence).
 	for i, p := range o.extraProviders {
 		if err := k.Load(p, nil); err != nil {
-			return nil, nil, fmt.Errorf("loading extra provider %d: %w", i, err)
+			return nil, nil, fmt.Errorf("loading extra provider %d: %w: %w", i, ErrSource, err)
 		}
 		sources = append(sources, fmt.Sprintf("provider-%d", i))
 	}
@@ -373,24 +423,17 @@ func load[T any](ctx context.Context, o *options) (*T, []string, error) {
 			v = defaultValidator()
 		}
 		if err := validate(ctx, v, cfg); err != nil {
-			// The two shapes pkgconfig knows how to unpack:
-			//   1. validator.ValidationErrors (raw go-playground)
-			//   2. anything else (typed wrappers like
-			//      a ModelValidator →
-			//      `*errutil.APIError`) — surfaced verbatim through
-			//      validationError so callers can errors.As-extract it.
+			// The validator's error is kept whole as the cause, so a
+			// wrapper's own sentinels and types stay reachable; go-playground
+			// field errors found inside it only shape the message.
+			summary := err.Error()
 			var ve validator.ValidationErrors
 			if errors.As(err, &ve) {
-				return nil, nil, &validationError{
-					msg:      fmt.Sprintf("validating config: %s: %s", ErrValidation, fieldErrorSummary(ve)),
-					sentinel: ErrValidation,
-					fieldErr: ve,
-				}
+				summary = fieldErrorSummary(reflect.TypeFor[T](), ve)
 			}
 			return nil, nil, &validationError{
-				msg:      fmt.Sprintf("validating config: %s: %v", ErrValidation, err),
-				sentinel: ErrValidation,
-				cause:    err,
+				msg:   fmt.Sprintf("validating config: %s: %s", ErrValidation, summary),
+				cause: err,
 			}
 		}
 	}
@@ -412,9 +455,18 @@ func validate(ctx context.Context, v Validator, cfg any) error {
 	return v.Struct(cfg)
 }
 
-// fileLoadError classifies a failed config file load. koanf.Load returns the
-// file provider's *fs.PathError unwrapped when the read itself fails;
-// anything else came from the YAML parser or the merge that follows it.
+// bytesProvider hands koanf the bytes a load read, so the digest it records
+// is of exactly what was parsed.
+type bytesProvider []byte
+
+func (b bytesProvider) ReadBytes() ([]byte, error) { return b, nil }
+func (b bytesProvider) Read() (map[string]any, error) {
+	return nil, errors.New("config: bytesProvider needs a parser")
+}
+
+// fileLoadError classifies a failed config file load: a *fs.PathError is the
+// read itself failing; anything else came from the YAML parser or the merge
+// that follows it.
 func fileLoadError(path string, err error) error {
 	var pathErr *fs.PathError
 	if errors.As(err, &pathErr) {
@@ -433,20 +485,65 @@ var defaultValidator = sync.OnceValue(func() *validator.Validate {
 })
 
 // fieldErrorSummary builds a compact summary of validation field errors
-// for inclusion in the error message (e.g., "name(required), db.port(min=1)").
-func fieldErrorSummary(ve validator.ValidationErrors) string {
+// for inclusion in the error message (e.g., "name(required), db.port(min=1)"),
+// naming each field by its config key in root.
+func fieldErrorSummary(root reflect.Type, ve validator.ValidationErrors) string {
 	parts := make([]string, 0, len(ve))
 	for _, fe := range ve {
 		tag := fe.Tag()
 		if fe.Param() != "" {
 			tag += "=" + fe.Param()
 		}
-		// Namespace is "<Root>.a.b"; the root type name is noise.
-		ns := fe.Namespace()
-		if _, rest, ok := strings.Cut(ns, "."); ok {
-			ns = rest
+		ns, ok := configPath(root, fe.StructNamespace())
+		if !ok {
+			// Namespace is "<Root>.a.b"; the root type name is noise.
+			ns = fe.Namespace()
+			if _, rest, cut := strings.Cut(ns, "."); cut {
+				ns = rest
+			}
 		}
 		parts = append(parts, ns+"("+tag+")")
 	}
 	return strings.Join(parts, ", ")
+}
+
+// configPath translates a validator struct namespace — "Root.DB.Pools[0].Max",
+// Go field names — into the config key path a [Fields] leaf carries,
+// "db.pools[0].max", so a squashed struct contributes no segment. ok is false
+// when the namespace does not resolve against root.
+func configPath(root reflect.Type, structNS string) (path string, ok bool) {
+	_, rest, cut := strings.Cut(structNS, ".")
+	if !cut {
+		return "", false
+	}
+	t := root
+	for seg := range strings.SplitSeq(rest, ".") {
+		name, index, _ := strings.Cut(seg, "[")
+		t = derefType(t)
+		if t.Kind() != reflect.Struct {
+			return "", false
+		}
+		f, found := t.FieldByName(name)
+		if !found {
+			return "", false
+		}
+		key, skip := fieldKey(f)
+		if skip {
+			return "", false
+		}
+		path = joinPath(path, key)
+		t = f.Type
+		if index != "" {
+			path += "[" + index
+			for range strings.Count(seg, "[") {
+				switch t = derefType(t); t.Kind() {
+				case reflect.Slice, reflect.Array, reflect.Map:
+					t = t.Elem()
+				default:
+					return "", false
+				}
+			}
+		}
+	}
+	return path, true
 }

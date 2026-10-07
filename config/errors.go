@@ -1,12 +1,10 @@
 package config
 
 import (
-	"github.com/go-playground/validator/v10"
-
 	"github.com/ashtonian/pkg/errcontract"
 )
 
-// Error codes for the config package (E7002-E7009).
+// Error codes for the config package (E7002-E7009, E7011).
 var (
 	CodeValidation = errcontract.CodeDef{
 		Code: "E7002", HTTPStatus: 422, Class: errcontract.ClassPermanent,
@@ -46,6 +44,13 @@ var (
 		Code: "E7008", HTTPStatus: 409, Class: errcontract.ClassTransient,
 		UserFacing: false, Message: "configuration reload already in progress", Package: "config",
 	}
+	// CodeSource reports a source that failed to load — the defaults, the
+	// environment, or a WithProvider source — as opposed to a file (E7003,
+	// E7004) or a secret provider (E7005).
+	CodeSource = errcontract.CodeDef{
+		Code: "E7011", HTTPStatus: 500, Class: errcontract.ClassUnknown,
+		UserFacing: false, Message: "configuration source failed to load", Package: "config",
+	}
 	// CodeReloaderStopped reports a reload requested after Stop. Like
 	// CodeReloadInProgress it is not a reload failure — the reloader is shut
 	// down, the config it last published is unchanged.
@@ -63,6 +68,7 @@ var (
 	ErrSecretProvider = errcontract.ErrorOf(CodeSecretProvider)
 	ErrReload         = errcontract.ErrorOf(CodeReload)
 	ErrPostLoad       = errcontract.ErrorOf(CodePostLoad)
+	ErrSource         = errcontract.ErrorOf(CodeSource)
 	// ErrReloadInProgress reports that Reload was called while another
 	// reload held the single-flight slot. It does NOT wrap ErrReload —
 	// see CodeReloadInProgress. A caller that wants "any non-success"
@@ -74,15 +80,11 @@ var (
 )
 
 // validationError carries ErrValidation together with the validator's own
-// error, so callers errors.As straight to validator.ValidationErrors for field
-// details. When a non-go-playground validator is wired via WithValidator (e.g.
-// a ModelValidator), fieldErr stays nil and cause
-// carries that validator's typed error instead.
+// error, whole: callers errors.As to validator.ValidationErrors for field
+// details, or to whatever a WithValidator validator wraps them in.
 type validationError struct {
-	msg      string
-	sentinel error
-	fieldErr validator.ValidationErrors
-	cause    error
+	msg   string
+	cause error
 }
 
 func (e *validationError) Error() string {
@@ -90,14 +92,7 @@ func (e *validationError) Error() string {
 }
 
 func (e *validationError) Unwrap() []error {
-	errs := []error{e.sentinel}
-	if e.fieldErr != nil {
-		errs = append(errs, e.fieldErr)
-	}
-	if e.cause != nil {
-		errs = append(errs, e.cause)
-	}
-	return errs
+	return []error{ErrValidation, e.cause}
 }
 
 // Codes returns the package's full error catalog.
@@ -109,6 +104,7 @@ func Codes() []errcontract.CodeDef {
 		CodeSecretProvider,
 		CodeReload,
 		CodePostLoad,
+		CodeSource,
 		CodeReloadInProgress,
 		CodeReloaderStopped,
 	}

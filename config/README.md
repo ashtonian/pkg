@@ -55,7 +55,8 @@ caller ──NewReloader/Start/Stop──▶ Reloader ──re-runs──▶ Get
 **Failure modes**
 - Required or previously loaded file missing / unreadable → `ErrFileRead` (E7003), cause `*fs.PathError`.
 - File not valid YAML → `ErrFileParse` (E7004), cause the parser error with its line.
-- Secret backend error → `ErrSecretProvider` (E7005); hook error → `ErrPostLoad` (E7007); validation, or a value of the wrong type → `ErrValidation` (E7002).
+- Secret backend error → `ErrSecretProvider` (E7005); hook error → `ErrPostLoad` (E7007); validation, a value of the wrong type, or an ambiguous map-entry environment variable → `ErrValidation` (E7002).
+- Defaults, environment or a `WithProvider` source failing to load → `ErrSource` (E7011), cause in the chain.
 - Any of those during a reload → `ErrReload` (E7006) wrapping it; the previous config stays live.
 - Manual reload while one runs → `ErrReloadInProgress` (E7008, 409); after `Stop` → `ErrReloaderStopped` (E7009, 503). Neither is a failure.
 - Reload whose context ended → error carrying `ctx.Err()`; not counted, not reported as a failure.
@@ -116,7 +117,7 @@ db.max_conns  25          int
 db.password   [REDACTED]  string
 ```
 
-Environment names come from the key tree, so an underscore inside a key survives: `APP_DB_MAX_CONNS` sets `db.max_conns`. For a map of structs the variable is matched against the element's fields, so the map key may contain underscores too: `APP_FEATURES_AUDIT_LOGS_MAX_PAGE_SIZE` sets `features.audit_logs.max_page_size`.
+Environment names come from the key tree, so an underscore inside a key survives: `APP_DB_MAX_CONNS` sets `db.max_conns`. For a map of structs the variable is matched against the element's fields, so the map key may contain underscores too: `APP_FEATURES_AUDIT_LOGS_MAX_PAGE_SIZE` sets `features.audit_logs.max_page_size`. When one element field's name ends another's (`size` and `max_page_size`), a variable can name two entries — `APP_FEATURES_AUDIT_MAX_PAGE_SIZE` is `audit.max_page_size` or `audit_max_page.size` — and the load fails with `ErrValidation` naming both readings instead of picking one; rename the field or key. A map of scalars uses the plain `_` → `.` rule, and map keys are matched lower-cased.
 
 ### Hot reload
 
@@ -141,7 +142,9 @@ defer func() { _ = reloader.Stop(shutdownCtx) }() // returns once no reload can 
 cfg := reloader.Config() // lock-free on the hot path
 ```
 
-Reloads are serialized. A watcher-driven reload waits for one already running and then re-reads the sources, so no change is lost; a manual `Reload` that finds one running returns `ErrReloadInProgress` instead. `Stop(ctx)` cancels an automatic reload in flight, waits for a manual one, and after it returns no reload runs and no callback fires. Callbacks must not call `Stop`.
+Reloads are serialized. A watcher-driven reload waits for one already running and then re-reads the sources, so no change is lost; a manual `Reload` that finds one running returns `ErrReloadInProgress` instead. `Stop(ctx)` cancels an automatic reload in flight, waits for a manual one, and after it returns no reload runs and no callback fires. Callbacks must not call `Stop`. A reload whose context ends — before it starts, or inside a hook that then returns nil — publishes nothing, counts as no attempt and fires no callback.
+
+The file watch follows each configured path, its symlink target and, while one does not exist yet, the nearest existing ancestor directory, and drops directories a relink retired. A write, create, removal or rename of the file or its target reloads; a removed file that was loaded fails the reload with `ErrFileRead`, reported through `WithOnReloadError`. `Start` compares the files with the bytes the last load parsed once the watch is armed, so a change made between `NewReloader` and `Start` is reloaded too. `Start` fails if a directory cannot be watched.
 
 For a source the reloader cannot watch — a `WithProvider` store, a replicated log, an admin API — call `reloader.SourceChanged()` from the code that learns of the change. It never blocks, coalesces a burst into one reload, and that reload starts after the call, so it reads the change. Do not call `Reload` from an event handler and treat `ErrReloadInProgress` as "coalesced": the reload in flight may have read the source before the change landed. `Start` serves `SourceChanged` requests, so run it even with no watchers configured.
 
@@ -158,7 +161,7 @@ Source precedence, highest first: `WithProvider` (incl. `kongprovider`) > enviro
 | `WithConfigFiles(paths...)` | `...string` | none | Several optional files, merged left-to-right. |
 | `WithMustConfigFile(path)` | `string` | none | Required YAML file: missing or unreadable → `ErrFileRead`; invalid YAML → `ErrFileParse`. |
 | `WithMustConfigFiles(paths...)` | `...string` | none | Several required files, merged left-to-right. |
-| `WithDefaults(m)` | `map[string]any` | none | Programmatic defaults keyed by dot-path; override `default` tags. Repeated calls merge (later wins per key); the map is copied. |
+| `WithDefaults(m)` | `map[string]any` | none | Programmatic defaults keyed by dot-path; override `default` tags. Repeated calls merge (later wins per key). The map and every map and slice in it are copied when `WithDefaults` is called, so later changes to the caller's map never reach a load or reload. |
 | `WithProvider(p)` | `koanf.Provider` | none | Extra source at the highest precedence, loaded in the order added. |
 | `WithSecretPopulator(fn)` | `SecretPopulator` | nil (no secrets) | Fills `secret`-tagged fields after unmarshal; errors wrap `ErrSecretProvider`. |
 | `WithPostLoad[T](fn)` | `func(context.Context, *T) error` | none | Normalize/derive after secrets, before validation; errors wrap `ErrPostLoad`. |
@@ -182,7 +185,7 @@ Source precedence, highest first: `WithProvider` (incl. `kongprovider`) > enviro
 
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
-| `WithFormat(f)` | `string` | `FormatTable` | `FormatTable`, `FormatJSON` or `FormatEnv`; anything else is an error. |
+| `WithFormat(f)` | `string` | `FormatTable` | `FormatTable`, `FormatJSON` or `FormatEnv`; anything else is an error. `FormatEnv` writes shell-safe diagnostics: `export NAME='value'`, `NAME` the key path upper-cased with every character outside `[A-Z0-9_]` as `_` and no environment prefix — not guaranteed to be the variable the loader reads for a map entry. |
 | `WithWriter(w)` | `io.Writer` | `os.Stdout` | Output destination; write errors are returned. |
 | `WithShowSensitive(b)` | `bool` | `false` | Print sensitive values instead of `[REDACTED]`. |
 | `WithSortByName()` | — | declaration order | Sort entries by key. |
@@ -200,7 +203,7 @@ Source precedence, highest first: `WithProvider` (incl. `kongprovider`) > enviro
 | `desc` | Description for `WithIncludeDescriptions`. | `desc:"Server hostname"` |
 | `flag` | Kong flag name for `kongprovider.WithOverridesFromTags`. | `flag:"port"` |
 
-Field names — and map keys, since printing expands maps and dynamic `any` values entry by entry (`settings[password]`) — containing `password`, `secret`, `token`, `key`, `credential`, `auth`, `private`, `apikey` or `api_key` are redacted without a tag. A struct implementing `encoding.TextUnmarshaler` (`time.Time`, `netip.Addr`) is one key, not a subtree. A recursive type stops at the recursion: its nested part decodes from files but gets no default, env or flag key.
+Field names — and map keys, since printing expands maps, slices and dynamic `any` values entry by entry to any depth (`settings[password]`) — containing `password`, `secret`, `token`, `key`, `credential`, `auth`, `private`, `apikey` or `api_key` are redacted without a tag. Such a name covers every map and slice beneath it, and a map key's covers structs beneath it too; a struct field's name does not cover the struct it holds, so an `Auth` block's `issuer` still prints. A map or slice that contains itself prints `[CYCLE]`. A struct implementing `encoding.TextUnmarshaler` (`time.Time`, `netip.Addr`) is one key, not a subtree. A recursive type stops at the recursion: its nested part decodes from files but gets no default, env or flag key.
 
 ## API Reference
 
@@ -244,6 +247,7 @@ Field names — and map keys, since printing expands maps and dynamic `any` valu
 | E7007 | 500 | `ErrPostLoad` | No | A `WithPostLoad` hook failed; its error in the chain. |
 | E7008 | 409 | `ErrReloadInProgress` | Yes | Manual reload found one running. Does not match `ErrReload`. |
 | E7009 | 503 | `ErrReloaderStopped` | No | Reload requested after `Stop`. Does not match `ErrReload`. |
+| E7011 | 500 | `ErrSource` | Unknown | Struct-tag defaults, `WithDefaults`, the environment or a `WithProvider` source failed to load; its error in the chain. |
 
 Every error carries its category and its cause: `errors.Is(err, config.ErrReload) && errors.Is(err, config.ErrFileParse)` both hold for a reload that hit a YAML syntax error.
 
@@ -256,7 +260,7 @@ Every error carries its category and its cause: `errors.Is(err, config.ErrReload
 | `reloader.go` | `Reloader[T]`, reload options, single-flight slot, `Start` loop, `Stop`, file watch + debounce |
 | `handler.go` | `Reloader.ReloadHandler` HTTP endpoint |
 | `print.go` | `PrintRedacted`, `ToMap`, print options, redaction walk |
-| `errors.go` | E7002–E7009 CodeDefs and sentinels, the validation error wrapper |
+| `errors.go` | E7002–E7009 and E7011 CodeDefs and sentinels, the validation error wrapper |
 | `doc.go` | Package documentation |
 | `kongprovider/` | Kong CLI flags → highest-precedence koanf provider |
 
