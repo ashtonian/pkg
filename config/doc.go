@@ -109,6 +109,9 @@
 //	    config.WithConfigFile("./config.yaml"),
 //	)
 //
+//	if err := reloader.Arm(ctx); err != nil {
+//	    return err // a trigger cannot be delivered, e.g. an unwatchable directory
+//	}
 //	go reloader.Start(ctx)
 //	defer reloader.Stop(shutdownCtx)
 //
@@ -122,6 +125,12 @@
 // returns ErrReloadInProgress. Stop cancels an automatic reload in flight,
 // waits for a manual one, and after it returns no reload runs and no callback
 // fires — safe to tear down whatever the callbacks touch.
+//
+// Arm sets up the file watch and the signal registration and returns their
+// error, so a caller can refuse to report ready on a reloader that cannot
+// deliver what it was configured for; Start then serves what Arm set up,
+// missing nothing in between. Start arms the triggers itself when Arm was not
+// called, and returns the error.
 //
 // For a source the reloader cannot watch (a WithProvider store, a replicated
 // log), call SourceChanged from whatever learns of the change: it never

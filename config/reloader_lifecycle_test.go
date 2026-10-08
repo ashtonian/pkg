@@ -125,8 +125,8 @@ func TestReloader_FileChangeDuringManualReloadIsApplied(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewReloader: %v", err)
 	}
+	armReloader(t, r)
 	startReloader(t, r)
-	waitForWatcher(t, r)
 
 	holdNext.Store(true)
 	manual := make(chan error, 1)
@@ -167,8 +167,8 @@ func TestReloader_StopDuringDebounceDoesNotReload(t *testing.T) {
 		t.Fatalf("NewReloader: %v", err)
 	}
 	done := make(chan error, 1)
+	armReloader(t, r)
 	go func() { done <- r.Start(context.Background()) }()
-	waitForWatcher(t, r)
 
 	if err := os.WriteFile(path, []byte("port: 9001\n"), 0o644); err != nil {
 		t.Fatal(err)
@@ -502,8 +502,8 @@ func TestReloader_BusyDirectoryCannotStarveAFileChange(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewReloader: %v", err)
 	}
+	armReloader(t, r)
 	startReloader(t, r)
-	waitForWatcher(t, r)
 
 	stopNoise := make(chan struct{})
 	noiseDone := make(chan struct{})

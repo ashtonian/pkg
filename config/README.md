@@ -23,7 +23,7 @@ C4Component
     System_Ext(secrets, "SecretPopulator", "Consumer-supplied, e.g. Vault")
 
     Rel(caller, get, "GetConfig[T](ctx, opts...)")
-    Rel(caller, reloader, "NewReloader / Start / Stop")
+    Rel(caller, reloader, "NewReloader / Arm / Start / Stop")
     Rel(get, fields, "derives defaults + env names")
     Rel(get, koanf, "loads + unmarshals via")
     Rel(get, secrets, "resolves secret tags via")
@@ -38,12 +38,12 @@ caller ──GetConfig[T]──▶ GetConfig ──▶ koanf (files, env, provid
                               │                                          │
                               └─ Fields[T]: defaults + env names         ▼
                                                      secrets ─▶ post-load ─▶ validate
-caller ──NewReloader/Start/Stop──▶ Reloader ──re-runs──▶ GetConfig pipeline ──swap on success
+caller ──NewReloader/Arm/Start/Stop──▶ Reloader ──re-runs──▶ GetConfig pipeline ──swap on success
 ```
 
 **Entry points**
 - `GetConfig[T](ctx, opts...)` — one-shot load for boot.
-- `NewReloader[T](ctx, reloadOpts, configOpts...)`, then `Start(ctx)` / `Stop(ctx)` / `Reload(ctx)` / `Config()` — hot reload.
+- `NewReloader[T](ctx, reloadOpts, configOpts...)`, then `Arm(ctx)` / `Start(ctx)` / `Stop(ctx)` / `Reload(ctx)` / `Config()` — hot reload.
 - `PrintRedacted(cfg, opts...)`, `ToMap(cfg, redact)` — diagnostics; `Reloader.ReloadHandler()` — operator endpoint.
 - `kongprovider.WithOverridesFromTags[T](kongCtx)` — CLI flags as the highest-precedence source.
 
@@ -136,15 +136,20 @@ reloader, err := config.NewReloader[AppConfig](ctx,
 if err != nil {
 	return err
 }
+if err := reloader.Arm(ctx); err != nil {
+	return err // e.g. a config directory that cannot be watched
+}
 go func() { _ = reloader.Start(ctx) }()
 defer func() { _ = reloader.Stop(shutdownCtx) }() // returns once no reload can run
 
 cfg := reloader.Config() // lock-free on the hot path
 ```
 
-Reloads are serialized. A watcher-driven reload waits for one already running and then re-reads the sources, so no change is lost; a manual `Reload` that finds one running returns `ErrReloadInProgress` instead. `Stop(ctx)` cancels an automatic reload in flight, waits for a manual one, and after it returns no reload runs and no callback fires. Callbacks must not call `Stop`. A reload whose context ends — before it starts, or inside a hook that then returns nil — publishes nothing, counts as no attempt and fires no callback.
+Reloads are serialized. A watcher-driven reload waits for one already running and then re-reads the sources, so no change is lost; a manual `Reload` that finds one running returns `ErrReloadInProgress` instead. `Stop(ctx)` cancels an automatic reload in flight, waits for a manual one, and after it returns no reload runs and no callback fires. Callbacks must not call `Stop` or `Arm`. A reload whose context ends — before it starts, or inside a hook that then returns nil — publishes nothing, counts as no attempt and fires no callback.
 
-The file watch follows each configured path, its symlink target and, while one does not exist yet, the nearest existing ancestor directory, and drops directories a relink retired. A write, create, removal or rename of the file or its target reloads; a removed file that was loaded fails the reload with `ErrFileRead`, reported through `WithOnReloadError`. `Start` compares the files with the bytes the last load parsed once the watch is armed, so a change made between `NewReloader` and `Start` is reloaded too. `Start` fails if a directory cannot be watched.
+The file watch follows each configured path, its symlink target and, while one does not exist yet, the nearest existing ancestor directory, and drops directories a relink retired. A write, create, removal or rename of the file or its target reloads; a removed file that was loaded fails the reload with `ErrFileRead`, reported through `WithOnReloadError`. Once the watch is armed the files are compared with the bytes the last load parsed, so a change made after `NewReloader` and before the watch existed is reloaded too.
+
+`Arm(ctx)` sets up the file watch and the signal registration and returns nil once every configured trigger is armed, or the setup error — a directory that cannot be watched, say — with nothing left armed. Call it before reporting the process ready; `Start` then serves what `Arm` set up, so a file change or a signal between the two is served once `Start` runs, and a signal never takes its default action in that window. Poll ticks begin with `Start`. Without `Arm`, `Start` arms the triggers itself and returns the same error. `Arm` returns nil if the triggers are already armed or being served, and `ErrReloaderStopped` after `Stop`; `Stop` releases triggers no `Start` took.
 
 For a source the reloader cannot watch — a `WithProvider` store, a replicated log, an admin API — call `reloader.SourceChanged()` from the code that learns of the change. It never blocks, coalesces a burst into one reload, and that reload starts after the call, so it reads the change. Do not call `Reload` from an event handler and treat `ErrReloadInProgress` as "coalesced": the reload in flight may have read the source before the change landed. `Start` serves `SourceChanged` requests, so run it even with no watchers configured.
 
@@ -219,7 +224,8 @@ Field names — and map keys, since printing expands maps, slices and dynamic `a
 - `NewReloader[T](ctx, reloadOpts, configOpts...) (*Reloader[T], error)` — initial load + reloader.
 - `(*Reloader[T]).Config() *T` — current config, atomic load.
 - `(*Reloader[T]).Reload(ctx) (*T, error)` — manual reload; `ErrReloadInProgress` if one is running.
-- `(*Reloader[T]).Start(ctx) error` — run the reload loop (watchers + `SourceChanged` requests) until `Stop` or ctx.
+- `(*Reloader[T]).Arm(ctx) error` — set up the file watch and signal registration; nil once every trigger is armed, else the setup error.
+- `(*Reloader[T]).Start(ctx) error` — run the reload loop (watchers + `SourceChanged` requests) until `Stop` or ctx; arms first if `Arm` was not called.
 - `(*Reloader[T]).SourceChanged()` — non-blocking, coalescing request to reload after a change the reloader does not watch.
 - `(*Reloader[T]).Stop(ctx) error` — stop and wait until no reload can run.
 - `(*Reloader[T]).Stats() ReloadStats` — attempts, successes, failures, last trigger/success/failure/error.
@@ -257,7 +263,7 @@ Every error carries its category and its cause: `errors.Is(err, config.ErrReload
 |------|----------------|
 | `config.go` | `GetConfig[T]`, `Option` and every load option, the load pipeline, file-error classification |
 | `fields.go` | `Fields[T]` key-tree walker, `DefaultsFromTags[T]`, environment-variable mapping |
-| `reloader.go` | `Reloader[T]`, reload options, single-flight slot, `Start` loop, `Stop`, file watch + debounce |
+| `reloader.go` | `Reloader[T]`, reload options, single-flight slot, `Arm` and the triggers it hands `Start`, `Start` loop, `Stop`, file watch + debounce |
 | `handler.go` | `Reloader.ReloadHandler` HTTP endpoint |
 | `print.go` | `PrintRedacted`, `ToMap`, print options, redaction walk |
 | `errors.go` | E7002–E7009 and E7011 CodeDefs and sentinels, the validation error wrapper |

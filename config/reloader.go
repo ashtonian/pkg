@@ -51,21 +51,19 @@ type Reloader[T any] struct {
 	loaded fileDigests
 	stats  atomic.Pointer[ReloadStats] // written while holding slot, read lock-free
 
-	watchArmed atomic.Bool // set once Start has registered the watcher's dirs
-	stopOnce   sync.Once
-	stopCh     chan struct{}
-	quiesced   chan struct{} // closed once Stop holds the slot
+	// armMu guards armed and serving. It is taken before the slot, never
+	// while holding it.
+	armMu   sync.Mutex
+	armed   *triggers // set up by Arm for the next Start to serve
+	serving int       // Start calls serving their triggers
+
+	stopOnce sync.Once
+	stopCh   chan struct{}
+	quiesced chan struct{} // closed once Stop holds the slot
 	// changed holds at most one pending SourceChanged request; further
 	// requests coalesce into it.
 	changed chan struct{}
 }
-
-// watcherReady reports whether Start has finished arming the fsnotify watcher.
-// Start is asynchronous by design (callers run it in a goroutine), so tests
-// that mutate the filesystem need a way to know the watch is live before they
-// do. Deliberately unexported: production code that polls this is a smell —
-// Start already returns an error when arming fails.
-func (r *Reloader[T]) watcherReady() bool { return r.watchArmed.Load() }
 
 // Reload trigger names. These form a closed vocabulary so consumers can use
 // them directly as a bounded metric label.
@@ -375,25 +373,142 @@ func (r *Reloader[T]) recordAttempt(trigger string, err error) {
 	r.stats.Store(&next)
 }
 
+// Arm sets up the reloader's triggers — the file watch and the signal
+// registration — and reports whether they could be: nil once every configured
+// trigger is armed, the setup error otherwise, with nothing left armed. A
+// caller that must not report itself ready on a reloader that cannot deliver
+// what it was configured for calls Arm before Start:
+//
+//	if err := reloader.Arm(ctx); err != nil {
+//		return err // e.g. a config directory that cannot be watched
+//	}
+//	go reloader.Start(ctx)
+//
+// Start serves the triggers Arm set up, so nothing is missed in between: a
+// change to a config file after Arm returns, or one made after NewReloader
+// loaded and before the watch existed, is reloaded once Start runs, and a
+// signal received in between is served then instead of taking the signal's
+// default action. Poll ticks begin with Start. Start arms the triggers itself
+// when Arm was not called.
+//
+// Arm returns nil without arming again when the triggers are already armed —
+// by an earlier Arm, or by a Start serving them — and [ErrReloaderStopped]
+// after Stop. Comparing the files with the last load waits for a reload in
+// flight; ctx bounds that wait. Triggers Arm sets up are released when the
+// Start serving them returns, or by Stop. Like Stop, Arm must not be called
+// from a WithOnChange or WithOnReloadError callback.
+func (r *Reloader[T]) Arm(ctx context.Context) error {
+	r.armMu.Lock()
+	defer r.armMu.Unlock()
+	if r.stopped() {
+		return ErrReloaderStopped
+	}
+	if r.armed != nil || r.serving > 0 {
+		return nil
+	}
+	t, err := r.arm(ctx)
+	if err != nil {
+		return err
+	}
+	r.armed = t
+	return nil
+}
+
+// triggers are what arm sets up and Start serves.
+type triggers struct {
+	watch   *fileWatch     // nil without a file watch
+	signals chan os.Signal // nil without signal reload
+	// stale reports that a config file differed from the last load once the
+	// watch was live: a change no watch event will report.
+	stale bool
+}
+
+func (t *triggers) close() error {
+	if t.signals != nil {
+		signal.Stop(t.signals)
+	}
+	if t.watch != nil {
+		return t.watch.close()
+	}
+	return nil
+}
+
+// arm sets up the triggers. The caller holds armMu. The files are compared
+// with the last load only once the watch is live, so every change is either
+// found by the comparison or reported by the watch.
+func (r *Reloader[T]) arm(ctx context.Context) (*triggers, error) {
+	t := &triggers{}
+	if paths := filePaths(r.configOpts); r.fileWatch && len(paths) > 0 {
+		watch, err := newFileWatch(paths, cmp.Or(max(r.debounce, 0), DefaultFileWatchDebounce), r.logger)
+		if err != nil {
+			return nil, fmt.Errorf("setting up file watch: %w", err)
+		}
+		if err := r.acquire(ctx, TriggerFileChange, true); err != nil {
+			return nil, errors.Join(err, watch.close())
+		}
+		_, t.stale = r.changedSinceLoad()
+		r.release()
+		t.watch = watch
+	}
+	if len(r.signals) > 0 {
+		t.signals = make(chan os.Signal, 1)
+		signal.Notify(t.signals, r.signals...)
+	}
+	return t, nil
+}
+
+// serve hands Start the triggers Arm set up, or arms them.
+func (r *Reloader[T]) serve(ctx context.Context) (*triggers, error) {
+	r.armMu.Lock()
+	defer r.armMu.Unlock()
+	if r.stopped() {
+		return nil, ErrReloaderStopped
+	}
+	t := r.armed
+	r.armed = nil
+	if t == nil {
+		var err error
+		if t, err = r.arm(ctx); err != nil {
+			return nil, err
+		}
+	}
+	r.serving++
+	return t, nil
+}
+
+// unserve releases the triggers a returning Start served.
+func (r *Reloader[T]) unserve(ctx context.Context, t *triggers) {
+	r.armMu.Lock()
+	r.serving--
+	r.armMu.Unlock()
+	if err := t.close(); err != nil {
+		r.logger.WarnContext(ctx, "closing config file watcher", "error", err)
+	}
+}
+
+func (r *Reloader[T]) stopped() bool {
+	select {
+	case <-r.stopCh:
+		return true
+	default:
+		return false
+	}
+}
+
 // Start runs the reload loop until Stop is called or ctx ends: the configured
 // watchers — file watch, poll interval, signals — and [Reloader.SourceChanged]
 // requests. It returns nil after Stop (immediately if already stopped) and
 // ctx.Err() when ctx ends. Typically called in a goroutine:
-// go reloader.Start(ctx).
+// go reloader.Start(ctx), after [Reloader.Arm] when the caller needs to know
+// the triggers armed. Without Arm, Start arms them and returns the error when
+// it cannot.
 //
 // Every automatic reload runs on Start's goroutine with a context that Stop
 // also cancels, and the file-watch debounce timer is owned by the same loop,
 // so no automatic reload can begin once Start has returned.
 func (r *Reloader[T]) Start(ctx context.Context) error {
-	paths := filePaths(r.configOpts)
-	hasFileWatch := r.fileWatch && len(paths) > 0
-	hasPoll := r.pollInterval > 0
-	hasSignal := len(r.signals) > 0
-
-	select {
-	case <-r.stopCh:
+	if r.stopped() {
 		return nil
-	default:
 	}
 
 	runCtx, cancel := context.WithCancel(ctx)
@@ -408,48 +523,36 @@ func (r *Reloader[T]) Start(ctx context.Context) error {
 		}
 	}()
 
+	t, err := r.serve(runCtx)
+	if err != nil {
+		if runCtx.Err() != nil || errors.Is(err, ErrReloaderStopped) {
+			return r.exit(ctx)
+		}
+		return err
+	}
+	defer r.unserve(ctx, t)
+
 	var (
-		fw        *fileWatch
 		events    <-chan fsnotify.Event
 		watchErrs <-chan error
 		settled   <-chan time.Time
 	)
-	if hasFileWatch {
-		var err error
-		fw, err = newFileWatch(paths, cmp.Or(max(r.debounce, 0), DefaultFileWatchDebounce), r.logger)
-		if err != nil {
-			return fmt.Errorf("setting up file watch: %w", err)
+	if t.watch != nil {
+		events, watchErrs, settled = t.watch.watcher.Events, t.watch.watcher.Errors, t.watch.timer.C
+		if t.stale {
+			r.catchUp(runCtx)
 		}
-		defer func() {
-			if err := fw.close(); err != nil {
-				r.logger.WarnContext(ctx, "closing config file watcher", "error", err)
-			}
-		}()
-		events, watchErrs, settled = fw.watcher.Events, fw.watcher.Errors, fw.timer.C
-		r.watchArmed.Store(true)
-		// No event reports a change made before the watch existed — between
-		// NewReloader's load and now — so compare the files with what was
-		// loaded once, now that later changes cannot be missed.
-		r.catchUp(runCtx)
-	}
-
-	var sigCh <-chan os.Signal
-	if hasSignal {
-		ch := make(chan os.Signal, 1)
-		signal.Notify(ch, r.signals...)
-		sigCh = ch
-		defer signal.Stop(ch)
 	}
 
 	var tickCh <-chan time.Time
-	if hasPoll {
+	if r.pollInterval > 0 {
 		ticker := time.NewTicker(r.pollInterval)
 		tickCh = ticker.C
 		defer ticker.Stop()
 	}
 
 	r.logger.InfoContext(ctx, "config reloader started",
-		"file_watch", hasFileWatch,
+		"file_watch", t.watch != nil,
 		"poll_interval", r.pollInterval,
 		"signal_count", len(r.signals),
 	)
@@ -457,14 +560,7 @@ func (r *Reloader[T]) Start(ctx context.Context) error {
 	for {
 		select {
 		case <-runCtx.Done():
-			select {
-			case <-r.stopCh:
-				r.logger.InfoContext(ctx, "config reloader stopped")
-				return nil
-			default:
-				r.logger.InfoContext(ctx, "config reloader context cancelled")
-				return ctx.Err()
-			}
+			return r.exit(ctx)
 
 		case <-tickCh:
 			r.autoReload(runCtx, TriggerPoll)
@@ -472,7 +568,7 @@ func (r *Reloader[T]) Start(ctx context.Context) error {
 		case <-r.changed:
 			r.autoReload(runCtx, TriggerSourceChanged)
 
-		case sig := <-sigCh:
+		case sig := <-t.signals:
 			r.logger.InfoContext(ctx, "config reload triggered by signal", "signal", sig)
 			r.autoReload(runCtx, TriggerSignal)
 
@@ -482,7 +578,7 @@ func (r *Reloader[T]) Start(ctx context.Context) error {
 				events, watchErrs, settled = nil, nil, nil
 				continue
 			}
-			fw.observe(ev)
+			t.watch.observe(ev)
 
 		case err, ok := <-watchErrs:
 			if !ok {
@@ -492,7 +588,7 @@ func (r *Reloader[T]) Start(ctx context.Context) error {
 			r.logger.ErrorContext(ctx, "config file watcher error", "error", err)
 
 		case <-settled:
-			path, changed, err := fw.settle()
+			path, changed, err := t.watch.settle()
 			if err != nil {
 				r.logger.ErrorContext(ctx, "config file watch is missing directories; changes there will not reload", "error", err)
 			}
@@ -501,6 +597,17 @@ func (r *Reloader[T]) Start(ctx context.Context) error {
 			}
 		}
 	}
+}
+
+// exit is Start's return once its run context has ended: nil after Stop,
+// ctx.Err() when the caller's ctx ended.
+func (r *Reloader[T]) exit(ctx context.Context) error {
+	if r.stopped() {
+		r.logger.InfoContext(ctx, "config reloader stopped")
+		return nil
+	}
+	r.logger.InfoContext(ctx, "config reloader context cancelled")
+	return ctx.Err()
 }
 
 // autoReload runs one watcher-driven reload, waiting for any reload already in
@@ -513,7 +620,8 @@ func (r *Reloader[T]) autoReload(ctx context.Context, trigger string, attrs ...a
 	r.reloadAndLog(ctx, trigger, attrs...)
 }
 
-// catchUp reloads if a config file no longer holds what the last load read.
+// catchUp reloads if a config file still differs from what the last load
+// read; a reload since arming may already have read it.
 func (r *Reloader[T]) catchUp(ctx context.Context) {
 	if err := r.acquire(ctx, TriggerFileChange, true); err != nil {
 		return
@@ -579,6 +687,16 @@ func (r *Reloader[T]) Stop(ctx context.Context) error {
 			r.slot <- struct{}{}
 			close(r.quiesced)
 		}()
+		// Triggers Arm set up that no Start took. Arm and serve see the
+		// closed stopCh under armMu, so none are set up after this.
+		r.armMu.Lock()
+		if r.armed != nil {
+			if err := r.armed.close(); err != nil {
+				r.logger.WarnContext(ctx, "closing config file watcher", "error", err)
+			}
+			r.armed = nil
+		}
+		r.armMu.Unlock()
 	})
 	select {
 	case <-r.quiesced:

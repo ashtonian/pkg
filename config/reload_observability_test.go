@@ -385,10 +385,9 @@ func TestReloader_FileWatch_DetectsConfigMapSymlinkSwap(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
+	armReloader(t, r)
 	go func() { _ = r.Start(ctx) }()
 	defer func() { _ = r.Stop(context.Background()) }()
-
-	waitForWatcher(t, r)
 
 	// Publish a new version the way kubelet does.
 	writeConfigMapMount(t, mount, "..2026_01_01_00_00_01", "host: rotated\nport: 9090\n")
@@ -462,10 +461,9 @@ func TestReloader_FileWatch_DetectsReleaseDirRelink(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
+	armReloader(t, r)
 	go func() { _ = r.Start(ctx) }()
 	defer func() { _ = r.Stop(context.Background()) }()
-
-	waitForWatcher(t, r)
 
 	tmp := filepath.Join(root, "current.yaml.tmp")
 	if err := os.Symlink(v2, tmp); err != nil {
@@ -485,18 +483,11 @@ func TestReloader_FileWatch_DetectsReleaseDirRelink(t *testing.T) {
 	}
 }
 
-// waitForWatcher blocks until Start has armed the fsnotify watcher, so a test
-// cannot race ahead and mutate the filesystem before anything is listening.
-func waitForWatcher[T any](t *testing.T, r *Reloader[T]) {
+// armReloader arms r's triggers, so a test that changes the files after it
+// returns cannot race ahead of the watch.
+func armReloader[T any](t *testing.T, r *Reloader[T]) {
 	t.Helper()
-	deadline := time.Now().Add(5 * time.Second)
-	for time.Now().Before(deadline) {
-		if r.watcherReady() {
-			// The watcher is registered; give the kernel a beat to deliver on it.
-			time.Sleep(100 * time.Millisecond)
-			return
-		}
-		time.Sleep(10 * time.Millisecond)
+	if err := r.Arm(t.Context()); err != nil {
+		t.Fatalf("Arm: %v", err)
 	}
-	t.Fatal("timeout waiting for the file watcher to arm")
 }
