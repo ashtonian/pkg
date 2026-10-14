@@ -235,9 +235,8 @@ func WithDecodeHook(hook mapstructure.DecodeHookFunc) Option {
 // koanf:",remain" field collects are accepted. The merged tree does not record
 // which source set a key, so the error names keys only; an
 // [*UnknownKeysError] in its chain lists them, each with the key it most
-// likely misspells. An environment
-// variable that fits no key is never loaded, so it cannot fail a load; it is
-// logged at debug level.
+// likely misspells. An environment variable that fits no key is never
+// loaded, so it cannot fail a load; it is logged at debug level.
 func WithAllowUnknownKeys() Option {
 	return func(o *options) {
 		o.allowUnknown = true

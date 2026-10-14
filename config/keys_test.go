@@ -304,6 +304,7 @@ func TestStrictKeys_SuggestsTheClosestField(t *testing.T) {
 	type entry struct {
 		TimeoutPerRepo int    `koanf:"timeout_per_repo"`
 		SSHKey         string `koanf:"ssh_key"`
+		DB             string `koanf:"db"`
 	}
 	type cfg struct {
 		Sync  entry            `koanf:"sync"`
@@ -312,7 +313,7 @@ func TestStrictKeys_SuggestsTheClosestField(t *testing.T) {
 		Port  int              `koanf:"port"`
 	}
 	src := mapSource{
-		"sync":  map[string]any{"timout_per_repo": 1, "remote_name": "x"},
+		"sync":  map[string]any{"timout_per_repo": 1, "remote_name": "x", "x": 1, "dv": 1},
 		"items": []any{map[string]any{"ssh-key": "k"}},
 		"named": map[string]any{"a": map[string]any{"SSH-Key": "k"}},
 		"prot":  1,
@@ -326,8 +327,10 @@ func TestStrictKeys_SuggestsTheClosestField(t *testing.T) {
 		{Key: "items[0].ssh-key", Suggestion: "items[0].ssh_key"},
 		{Key: `named["a"].SSH-Key`, Suggestion: `named["a"].ssh_key`},
 		{Key: "prot", Suggestion: "port"},
+		{Key: "sync.dv", Suggestion: "sync.db"},
 		{Key: "sync.remote_name"},
 		{Key: "sync.timout_per_repo", Suggestion: "sync.timeout_per_repo"},
+		{Key: "sync.x"},
 	}, unknown.Keys)
 }
 

@@ -90,12 +90,19 @@ func unusedKey(root *schemaNode, tree any, name string) UnknownKey {
 // closestField is the key of branch n's field that key most likely
 // misspells: the fewest edits from it, ignoring case, within a third of
 // key's length (and at least 2), so prot finds port but remote_name finds
-// nothing among unrelated keys. A tie goes to the key that sorts first.
+// nothing among unrelated keys. A field as many edits away as the longer of
+// the two is long shares no character in place, so x finds nothing beside
+// db. A tie goes to the key that sorts first.
 func closestField(n *schemaNode, key string) string {
 	key = strings.ToLower(key)
-	best, bestDist := "", max(2, utf8.RuneCountInString(key)/3)+1
+	keyLen := utf8.RuneCountInString(key)
+	best, bestDist := "", max(2, keyLen/3)+1
 	for _, f := range n.fields {
-		d := editDistance(key, strings.ToLower(f.key))
+		field := strings.ToLower(f.key)
+		d := editDistance(key, field)
+		if d >= max(keyLen, utf8.RuneCountInString(field)) {
+			continue
+		}
 		if d < bestDist || d == bestDist && f.key < best {
 			best, bestDist = f.key, d
 		}

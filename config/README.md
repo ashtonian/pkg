@@ -157,7 +157,7 @@ A key that no field decodes fails the load with `ErrValidation`, naming the key 
 unmarshaling config: configuration validation failed: keys no field of main.AppConfig decodes: server.prot (did you mean server.port?)
 ```
 
-`errors.As` reaches an `*UnknownKeysError`, whose `Keys` give each key and its `Suggestion`, for a program to report them in its own words. A suggestion is the field fewest edits away, ignoring case, within a third of the key's length (at least 2); a key no field is that close to has none.
+`errors.As` reaches an `*UnknownKeysError`, whose `Keys` give each key and its `Suggestion`, for a program to report them in its own words. A suggestion is the field fewest edits away, ignoring case, within a third of the key's length (at least 2) and sharing at least one character in place; a key no field is that close to has none.
 
 The check follows decoding exactly: it looks inside list elements and map entries of structs, through squashed structs, and lets through a map's own keys, anything beneath an interface, and keys a `,remain` field collects. `WithAllowUnknownKeys()` turns it off, for a file shared with another program.
 
