@@ -22,8 +22,8 @@ var (
 	// ErrFileRead reports a config file that could not be read: a required
 	// file that is missing, or any file that exists but cannot be opened.
 	ErrFileRead = errors.New("failed to read configuration file")
-	// ErrFileParse reports a config file the file parser (YAML unless
-	// WithFileParser sets another) rejects, as distinct from one that could
+	// ErrFileParse reports a config file its parser (chosen by the file's
+	// suffix; see WithFileParser) rejects, as distinct from one that could
 	// not be read.
 	ErrFileParse = errors.New("configuration file could not be parsed")
 	// ErrSecretProvider reports a failure of the WithSecretPopulator function.

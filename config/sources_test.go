@@ -128,24 +128,89 @@ func TestLoad_DecodeHookRunsFirst(t *testing.T) {
 	assert.Equal(t, []string{"a", "b,c"}, got.Hosts)
 }
 
-// WithFileParser reads every file in another format; a file it rejects fails
-// with ErrFileParse.
-func TestLoad_FileParser(t *testing.T) {
+// Each file takes the parser of the longest suffix its name ends in, so
+// files of different formats load together, later files winning.
+func TestLoad_FileParserBySuffix(t *testing.T) {
+	type cfg struct {
+		Host  string `koanf:"host"`
+		Port  int    `koanf:"port"`
+		Debug string `koanf:"debug"`
+		Name  string `koanf:"name"`
+	}
+	dir := t.TempDir()
+	yamlFile := filepath.Join(dir, "config.yaml")
+	jsonFile := filepath.Join(dir, "overrides.JSON")
+	envFile := filepath.Join(dir, "local.env")
+	writeFile(t, yamlFile, "host: yaml\nport: 1\nname: yaml\n")
+	writeFile(t, jsonFile, `{"port": 2, "debug": "json", "name": "json"}`)
+	writeFile(t, envFile, "name=env\n")
+
+	got, err := Load[cfg](t.Context(),
+		WithFiles(yamlFile, jsonFile, envFile),
+		WithFileParser("env", kvParser{}),
+		WithSkipValidation())
+	require.NoError(t, err)
+	assert.Equal(t, cfg{Host: "yaml", Port: 2, Debug: "json", Name: "env"}, *got)
+}
+
+// A longer suffix wins over a shorter one; "" sets the parser for every file
+// no other suffix matches; a nil parser hands a suffix's files to a shorter
+// one.
+func TestLoad_FileParserSuffixes(t *testing.T) {
 	type cfg struct {
 		Host string `koanf:"host"`
 	}
 	dir := t.TempDir()
-	good, bad := filepath.Join(dir, "app.env"), filepath.Join(dir, "bad.env")
-	writeFile(t, good, "host=db.internal\n")
-	writeFile(t, bad, "no separator\n")
+	kvJSON := filepath.Join(dir, "app.kv.json")
+	conf := filepath.Join(dir, "app.conf")
+	yamlInJSON := filepath.Join(dir, "legacy.json")
+	writeFile(t, kvJSON, "host=kv\n")
+	writeFile(t, conf, "host=conf\n")
+	writeFile(t, yamlInJSON, "host: yaml\n")
 
-	got, err := Load[cfg](t.Context(), WithFile(good), WithFileParser(kvParser{}), WithSkipValidation())
+	load := func(path string, opts ...Option) (*cfg, error) {
+		return Load[cfg](t.Context(), append(opts, WithRequiredFile(path), WithSkipValidation())...)
+	}
+
+	got, err := load(kvJSON, WithFileParser(".kv.json", kvParser{}))
 	require.NoError(t, err)
-	assert.Equal(t, "db.internal", got.Host)
+	assert.Equal(t, "kv", got.Host)
 
-	_, err = Load[cfg](t.Context(), WithFile(bad), WithFileParser(kvParser{}), WithSkipValidation())
+	got, err = load(conf, WithFileParser("", kvParser{}))
+	require.NoError(t, err)
+	assert.Equal(t, "conf", got.Host)
+	_, err = load(conf)
+	require.ErrorIs(t, err, ErrFileParse, "an unregistered suffix is YAML")
+
+	_, err = load(yamlInJSON)
+	require.ErrorIs(t, err, ErrFileParse, ".json is JSON")
+	got, err = load(yamlInJSON, WithFileParser(".json", nil))
+	require.NoError(t, err)
+	assert.Equal(t, "yaml", got.Host)
+}
+
+// A file its parser rejects fails with ErrFileParse, naming the file and,
+// for JSON, the line.
+func TestLoad_FileParserRejects(t *testing.T) {
+	type cfg struct {
+		Host     string `koanf:"host"`
+		Password string `koanf:"password"`
+	}
+	dir := t.TempDir()
+	bad := filepath.Join(dir, "bad.env")
+	writeFile(t, bad, "no separator\n")
+	_, err := Load[cfg](t.Context(), WithFile(bad), WithFileParser(".env", kvParser{}), WithSkipValidation())
 	require.ErrorIs(t, err, ErrFileParse)
 	assert.Contains(t, err.Error(), bad)
+
+	broken := filepath.Join(dir, "broken.json")
+	writeFile(t, broken, "{\n  \"host\": \"db\",\n  \"password\": \"hunter2\" oops\n}\n")
+	_, err = Load[cfg](t.Context(), WithFile(broken), WithSkipValidation())
+	require.ErrorIs(t, err, ErrFileParse)
+	var pe *ParseError
+	require.ErrorAs(t, err, &pe)
+	assert.Equal(t, 3, pe.Line)
+	assert.NotContains(t, err.Error(), "hunter2")
 }
 
 type strictCfg struct {

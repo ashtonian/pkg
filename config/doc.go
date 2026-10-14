@@ -39,10 +39,11 @@
 //
 // Highest wins: override providers ([WithOverrideProvider], e.g. CLI flags),
 // environment variables ([WithEnvPrefix]), files ([WithFile],
-// [WithRequiredFile]; YAML unless [WithFileParser]), base providers
-// ([WithBaseProvider]), programmatic defaults ([WithDefaults]), and default
-// tags. Any koanf.Provider loads at either provider layer, with any parser; a
-// [ContextProvider] is read with the load's context.
+// [WithRequiredFile]; YAML or JSON by suffix, any parser through
+// [WithFileParser]), base providers ([WithBaseProvider]), programmatic
+// defaults ([WithDefaults]), and default tags. Any koanf.Provider loads at
+// either provider layer, with any parser; a [ContextProvider] is read with
+// the load's context.
 //
 // With WithEnvPrefix("APP"), APP_DB_MAX_CONNS sets db.max_conns: the name is
 // looked up in the key tree, so an underscore inside a key survives. A map of
