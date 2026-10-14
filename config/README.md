@@ -129,7 +129,7 @@ caller ──NewReloader / Arm / Run / Stop──▶ Reloader ──re-runs the 
 - `Load[T](ctx, opts...)` — one load, for boot.
 - `NewReloader[T](ctx, loadOpts, opts...)` or `NewReloaderFunc(ctx, load, opts...)`, then `Arm` / `Run` / `Stop` / `Reload` / `SourceChanged` / `Config` / `Stats` — hot reload.
 - `PrintRedacted`, `RedactedMap`, `PrintUsage[T]` — diagnostics.
-- `kongprovider.WithOverridesFromStruct[T]`, `kongprovider.HelpFromConfig[T]` — the Kong bridge.
+- `kongprovider.WithOverridesFromStruct`, `kongprovider.HelpFromConfig` — the Kong bridge.
 
 **Exit points**
 - A populated `*T`; for a `Reloader`, an atomically swapped pointer plus `WithOnReloadSuccess` callbacks.
@@ -161,7 +161,6 @@ A config is a plain struct. Tags say how each field is keyed, defaulted, validat
 | `sensitive` | Redact in every output; on a struct, slice or map, everything inside it. | `sensitive:"true"` |
 | `desc` | Description for `PrintUsage`, `WithIncludeDescriptions` and Kong help. | `desc:"Server hostname"` |
 | `secret` | Key for your `SecretPopulator`; not read by this package. | `secret:"db/password"` |
-| `flag` | Kong flag name, for `kongprovider`. | `flag:"port"` |
 
 Key rules (`Fields[T]` is their single implementation, shared by defaults, environment names, printing and the Kong bridge):
 
@@ -518,11 +517,11 @@ type CLI struct {
 }
 
 var cli CLI
-kctx := kong.Parse(&cli, kongprovider.HelpFromConfig[AppConfig]("APP"))
+kctx := kong.Parse(&cli, kongprovider.HelpFromConfig(&cli.AppConfig, "APP"))
 cfg, err := config.Load[AppConfig](ctx,
 	config.WithFile(cli.Config),
 	config.WithEnvPrefix("APP"),
-	kongprovider.WithOverridesFromStruct[AppConfig](kctx),
+	kongprovider.WithOverridesFromStruct(kctx, &cli.AppConfig),
 )
 ```
 
@@ -551,11 +550,11 @@ serving on :9000 (log level info, db db.internal, metrics false)
 How the pieces fit:
 
 - **Only typed flags override.** Kong records each flag it parses from argv under its canonical name, whatever spelling was used — long, short, alias, `--flag=value`, `--no-flag`. Kong's applied defaults and values from Kong's own resolvers are not forwarded, so a flag left out never masks a file or an environment variable, although Kong shows the field's default in the help.
-- **Flags map by field, not by name.** `WithOverridesFromStruct[T]` maps each flag whose target is a field of the `T` the CLI holds to that field's key, by the field's address, so flag names, prefixes and aliases never have to agree with a tag. Flags outside `T` (`--config`) are the CLI's own.
+- **Flags map by field, not by name.** `WithOverridesFromStruct(kctx, &cli.AppConfig)` maps each typed flag whose target is a field of the config struct to that field's key, by the field's address (`config.KeyOf`), so flag names, prefixes and aliases never have to agree with a tag, and a sibling command's same-named flag cannot reach a config key. Flags outside it (`--config`) are the CLI's own. Typed values are copied when the option is built.
 - **One schema for defaults and validation.** Use `validate:"required"`, not Kong's `required`: Kong validates before the config pipeline runs, so a Kong `required` could not be satisfied by a file, the environment or a secret. Leave Kong's `env` tag off; the config package reads the environment.
 - **Some fields have no flag.** Tag maps, slices of structs, interfaces and secrets `kong:"-"`; they come from files, the environment or a secret resolver, and a secret typed on a command line lands in shell history.
 - **Help from the config struct.** `HelpFromConfig` gives each flag that sets a key the field's `desc` when it has no help of its own, and appends the key and the environment variable. Kong prints the default itself; a default that is, or could hold, a sensitive value is kept out of Kong's placeholder too.
-- **A separate CLI struct.** To expose a few settings under names of the CLI's own, keep the structs apart, tie each field to its flag with a `flag:"name"` tag and use `WithOverridesFromTags[T]`. Kong refuses to build the CLI when a `flag` tag names no flag.
+- **A separate CLI struct.** To expose a few settings under names of the CLI's own, keep the structs apart and pass `WithOverrides` a flag name → key mapping.
 - **Subcommands.** A flag name is one key for the whole CLI. When two commands give one flag different meanings (`serve --port`, `admin --port`), build the mapping for the selected command and pass it to `WithOverrides`:
 
 ```go
@@ -565,8 +564,6 @@ if kctx.Command() == "admin" {
 }
 cfg, err := config.Load[AppConfig](ctx, config.WithFile(cli.Config), kongprovider.WithOverrides(kctx, mapping))
 ```
-
-For a CLI tool whose config file only supplies flag defaults, Kong's own `kong.Configuration` with a YAML resolver is the simpler fit: one schema and one parsing pass. `kongprovider` is for a service whose configuration tree is larger than its CLI.
 
 ## Configuration
 
@@ -655,11 +652,10 @@ For a CLI tool whose config file only supplies flag defaults, Kong's own `kong.C
 
 ### kongprovider
 
-- `kongprovider.WithOverridesFromStruct[T](kctx) config.Option` — typed flags as overrides, mapped by the field of `T` each writes.
-- `kongprovider.WithOverridesFromTags[T](kctx) config.Option` — typed flags as overrides, mapped by `flag` tags, for a separate CLI struct.
+- `kongprovider.WithOverridesFromStruct(kctx, cfg *T) config.Option` — typed flags as overrides, mapped by the field of `cfg` each writes.
 - `kongprovider.WithOverrides(kctx, mapping) config.Option` — the same with an explicit flag → key mapping.
 - `kongprovider.New(kctx, mapping) koanf.Provider` — the provider itself.
-- `kongprovider.HelpFromConfig[T](envPrefix) kong.Option` — flag help from the config struct.
+- `kongprovider.HelpFromConfig(cfg *T, envPrefix) kong.Option` — flag help from the config struct.
 
 ## Errors
 

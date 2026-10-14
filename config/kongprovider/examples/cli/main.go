@@ -46,7 +46,7 @@ type CLI struct {
 
 func main() {
 	var cli CLI
-	kctx := kong.Parse(&cli, kongprovider.HelpFromConfig[AppConfig]("APP"))
+	kctx := kong.Parse(&cli, kongprovider.HelpFromConfig(&cli.AppConfig, "APP"))
 	switch kctx.Command() {
 	case "usage":
 		if err := config.PrintUsage[AppConfig]("APP"); err != nil {
@@ -63,7 +63,7 @@ func main() {
 	cfg, err := config.Load[AppConfig](context.Background(),
 		config.WithFile(cli.Config),
 		config.WithEnvPrefix("APP"),
-		kongprovider.WithOverridesFromStruct[AppConfig](kctx),
+		kongprovider.WithOverridesFromStruct(kctx, &cli.AppConfig),
 	)
 	if err != nil {
 		log.Fatal(err)

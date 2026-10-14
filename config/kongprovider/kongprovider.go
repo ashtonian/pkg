@@ -24,12 +24,15 @@
 //	}
 //
 //	var cli CLI
-//	kctx := kong.Parse(&cli, kongprovider.HelpFromConfig[AppConfig]("APP"))
+//	kctx := kong.Parse(&cli, kongprovider.HelpFromConfig(&cli.AppConfig, "APP"))
 //	cfg, err := config.Load[AppConfig](ctx,
 //	    config.WithFile(cli.Config),
 //	    config.WithEnvPrefix("APP"),
-//	    kongprovider.WithOverridesFromStruct[AppConfig](kctx),
+//	    kongprovider.WithOverridesFromStruct(kctx, &cli.AppConfig),
 //	)
+//
+// For a CLI struct that does not hold the config struct, [WithOverrides]
+// takes an explicit flag name → key mapping.
 package kongprovider
 
 import (
@@ -68,15 +71,21 @@ func New(ctx *kong.Context, mapping map[string]string) koanf.Provider {
 	return provider{ctx: ctx, mapping: mapping}
 }
 
+// provider reads typed flags: through a name mapping (New), or as values
+// copied when an option was built (WithOverridesFromStruct).
 type provider struct {
 	ctx     *kong.Context
 	mapping map[string]string
+	values  map[string]any
 	err     error
 }
 
 func (p provider) Read() (map[string]any, error) {
 	if p.err != nil {
 		return nil, p.err
+	}
+	if p.ctx == nil {
+		return confmap.Provider(p.values, ".").Read()
 	}
 	if unknown := unknownFlags(p.ctx.Model.Node, p.mapping); len(unknown) > 0 {
 		return nil, fmt.Errorf("kongprovider: the CLI has no flag named %s", strings.Join(unknown, ", "))
@@ -113,67 +122,48 @@ func WithOverrides(ctx *kong.Context, mapping map[string]string) config.Option {
 	return config.WithOverrideProvider(New(ctx, mapping), nil)
 }
 
-// WithOverridesFromTags is [WithOverrides] with the mapping read from
-// `flag:"name"` tags on T, keyed by the paths [config.Fields] reports — the
-// same keys defaults and environment variables set. Use it when the CLI
-// struct is separate from the config struct. Two fields tagged with one flag
-// name fail the load.
-func WithOverridesFromTags[T any](ctx *kong.Context) config.Option {
-	mapping, err := flagMapping[T]()
-	return config.WithOverrideProvider(provider{ctx: ctx, mapping: mapping, err: err}, nil)
-}
-
-// WithOverridesFromStruct is [WithOverrides] for a CLI struct that embeds the
-// config struct T (`embed:""`), or is T: every Kong flag that writes a field
-// of T overrides that field's key, with no mapping or `flag` tags to keep in
-// step. Flags outside T — the config file's path, say — are the CLI's own and
-// are not forwarded. A CLI struct holding no T fails the load.
-func WithOverridesFromStruct[T any](ctx *kong.Context) config.Option {
-	mapping, err := structMapping[T](ctx.Model.Node)
-	return config.WithOverrideProvider(provider{ctx: ctx, mapping: mapping, err: err}, nil)
-}
-
-// HelpFromConfig returns a Kong option that describes each flag that sets a
-// key of T — a flag a `flag` tag names, or one that writes a field of a T the
-// CLI struct embeds. A flag with no help of its own takes the field's `desc`
-// tag, and its help gains the config key it sets and the environment variable
-// that sets the same key under envPrefix. The field's default is added when
-// diagnostics may print it (see config.Field.PrintableDefault) and Kong does
-// not show it already; one that must be withheld is kept out of Kong's own
-// placeholder too. Kong fails to build the CLI when a `flag` tag names no
-// flag, or when two fields name one.
+// WithOverridesFromStruct loads, as overrides, every flag typed on the
+// command line that writes a field of cfg — the config struct the CLI struct
+// embeds (`embed:""`), holds, or is:
 //
-// Declare no `required` on the CLI's own flags: Kong validates before the
+//	var cli CLI // embeds AppConfig
+//	kctx := kong.Parse(&cli, kongprovider.HelpFromConfig(&cli.AppConfig, "APP"))
+//	cfg, err := config.Load[AppConfig](ctx, kongprovider.WithOverridesFromStruct(kctx, &cli.AppConfig))
+//
+// Each flag is mapped to the key of the field it writes, by the field's
+// address (see config.KeyOf), so no tag has to name a flag and no flag name,
+// prefix or alias has to agree with a key; flags outside cfg — the config
+// file's path, say — are the CLI's own and are not forwarded. The typed
+// values are copied when the option is built, so a reloader built from it
+// keeps the command line it started with. A CLI none of whose flags writes
+// into cfg fails the load with config.ErrSource.
+func WithOverridesFromStruct[T any](ctx *kong.Context, cfg *T) config.Option {
+	values, err := typedValues(ctx, cfg)
+	return config.WithOverrideProvider(provider{values: values, err: err}, nil)
+}
+
+// HelpFromConfig returns a Kong option that describes each flag that writes
+// a field of cfg. A flag with no help of its own takes the field's `desc`
+// tag, and its help gains the config key it sets and the environment
+// variable that sets the same key under envPrefix. The field's default is
+// added when diagnostics may print it (see config.Field.PrintableDefault) and
+// Kong does not show it already; one that must be withheld is kept out of
+// Kong's own placeholder too.
+//
+// Declare no Kong `required` on the config struct: Kong validates before the
 // config pipeline runs, so a required flag could not be satisfied by a file,
-// the environment or a secret. The config struct's validation, which runs
-// after every source, is the one that applies.
-func HelpFromConfig[T any](envPrefix string) kong.Option {
+// the environment or a secret. The config struct's `validate` rules, which
+// run after every source, are the ones that apply.
+func HelpFromConfig[T any](cfg *T, envPrefix string) kong.Option {
 	return kong.PostBuild(func(k *kong.Kong) error {
-		byPath := make(map[string]config.Field)
-		for _, f := range config.Fields[T]() {
-			byPath[f.Path] = f
-		}
-		mapping, err := flagMapping[T]()
-		if err != nil {
-			return err
-		}
-		flags := allFlags(k.Model.Node)
-		for name, path := range mapping {
-			if !slices.ContainsFunc(flags, func(fl *kong.Flag) bool { return fl.Name == name }) {
-				return fmt.Errorf("kongprovider: %s is tagged flag %q, but the CLI has no such flag", path, name)
+		for _, fl := range allFlags(k.Model.Node) {
+			f, ok, err := fieldOfFlag(cfg, fl)
+			if err != nil {
+				return err
 			}
-		}
-		if embedded, err := structMapping[T](k.Model.Node); err == nil {
-			for name, path := range embedded {
-				mapping[name] = path
+			if ok {
+				describe(fl, f, envPrefix)
 			}
-		}
-		for _, fl := range flags {
-			path, ok := mapping[fl.Name]
-			if !ok {
-				continue
-			}
-			describe(fl, byPath[path], envPrefix)
 		}
 		return nil
 	})
@@ -198,77 +188,78 @@ func describe(fl *kong.Flag, f config.Field, envPrefix string) {
 	fl.Help = strings.TrimSpace(fl.Help + " (" + strings.Join(hints, "; ") + ")")
 }
 
-// structMapping maps each Kong flag that writes a field of the T held by the
-// CLI rooted at root to that field's config key.
-func structMapping[T any](root *kong.Node) (map[string]string, error) {
-	held, ok := findValue(root.Target, reflect.TypeFor[T]())
-	if !ok {
-		return nil, fmt.Errorf("kongprovider: the CLI struct %s holds no %s; embed it (embed:\"\") or use WithOverridesFromTags", root.Target.Type(), reflect.TypeFor[T]())
+// fieldOfFlag returns the field of cfg that flag fl writes; ok is false for a
+// flag of the CLI's own.
+func fieldOfFlag[T any](cfg *T, fl *kong.Flag) (f config.Field, ok bool, err error) {
+	if !fl.Target.IsValid() || !fl.Target.CanAddr() {
+		return config.Field{}, false, nil
 	}
-	keys := make(map[fieldAddr]string)
-	for _, f := range config.Fields[T]() {
-		if fv, err := held.FieldByIndexErr(f.Index); err == nil && fv.CanAddr() {
-			keys[fieldAddr{fv.Addr().Pointer(), fv.Type()}] = f.Path
-		}
+	key, err := config.KeyOfValue(cfg, fl.Target)
+	switch {
+	case errors.Is(err, config.ErrSchema):
+		return config.Field{}, false, err
+	case err != nil:
+		return config.Field{}, false, nil
 	}
-	mapping := make(map[string]string)
-	for _, fl := range allFlags(root) {
-		if fl.Target.CanAddr() {
-			if path, ok := keys[fieldAddr{fl.Target.Addr().Pointer(), fl.Target.Type()}]; ok {
-				mapping[fl.Name] = path
-			}
-		}
-	}
-	return mapping, nil
+	f, err = config.FieldFor[T](key)
+	return f, err == nil, err
 }
 
-// fieldAddr identifies a field by address and type: a struct and its first
-// field share an address.
-type fieldAddr struct {
-	ptr uintptr
-	typ reflect.Type
-}
-
-// findValue finds the value of type t in v — v itself, or a struct field
-// within it, embedded or named, at any depth.
-func findValue(v reflect.Value, t reflect.Type) (reflect.Value, bool) {
-	for v.IsValid() && v.Kind() == reflect.Pointer {
-		if v.IsNil() {
-			return reflect.Value{}, false
+// typedValues copies the value of every flag typed on the command line that
+// writes a field of cfg, keyed by that field's key.
+func typedValues[T any](ctx *kong.Context, cfg *T) (map[string]any, error) {
+	if cfg == nil {
+		return nil, errors.New("kongprovider: nil config")
+	}
+	writes := false
+	for _, fl := range allFlags(ctx.Model.Node) {
+		_, ok, err := fieldOfFlag(cfg, fl)
+		if err != nil {
+			return nil, err
 		}
-		v = v.Elem()
+		writes = writes || ok
 	}
-	if !v.IsValid() {
-		return reflect.Value{}, false
+	if !writes {
+		return nil, fmt.Errorf("kongprovider: no flag of the CLI %s writes a field of %s; pass a pointer into the parsed CLI struct", ctx.Model.Name, reflect.TypeFor[T]())
 	}
-	if v.Type() == t {
-		return v, true
-	}
-	if v.Kind() != reflect.Struct {
-		return reflect.Value{}, false
-	}
-	for i := range v.NumField() {
-		if found, ok := findValue(v.Field(i), t); ok {
-			return found, true
-		}
-	}
-	return reflect.Value{}, false
-}
-
-// flagMapping maps each `flag` tag on T to its koanf dot-path.
-func flagMapping[T any]() (map[string]string, error) {
-	mapping := make(map[string]string)
-	for _, f := range config.Fields[T]() {
-		flag := f.Tag.Get("flag")
-		if flag == "" {
+	values := make(map[string]any)
+	for _, el := range ctx.Path {
+		if el.Flag == nil || el.Resolved {
 			continue
 		}
-		if prev, dup := mapping[flag]; dup {
-			return nil, fmt.Errorf("kongprovider: flag %q is tagged on both %s and %s", flag, prev, f.Path)
+		f, ok, err := fieldOfFlag(cfg, el.Flag)
+		if err != nil {
+			return nil, err
 		}
-		mapping[flag] = f.Path
+		if ok {
+			values[f.Path] = copyValue(el.Flag.Target)
+		}
 	}
-	return mapping, nil
+	return values, nil
+}
+
+// copyValue copies v so later changes to the flag's target cannot reach the
+// copy: a slice or map gets storage of its own.
+func copyValue(v reflect.Value) any {
+	switch v.Kind() {
+	case reflect.Slice:
+		if v.IsNil() {
+			return v.Interface()
+		}
+		c := reflect.MakeSlice(v.Type(), v.Len(), v.Len())
+		reflect.Copy(c, v)
+		return c.Interface()
+	case reflect.Map:
+		if v.IsNil() {
+			return v.Interface()
+		}
+		c := reflect.MakeMapWithSize(v.Type(), v.Len())
+		for iter := v.MapRange(); iter.Next(); {
+			c.SetMapIndex(iter.Key(), iter.Value())
+		}
+		return c.Interface()
+	}
+	return v.Interface()
 }
 
 // allFlags returns every flag of the CLI rooted at n, subcommands included.

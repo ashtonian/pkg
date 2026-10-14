@@ -27,7 +27,7 @@ type CLI struct {
 // the value from APP_PORT.
 func ExampleWithOverridesFromStruct() {
 	var cli CLI
-	parser, err := kong.New(&cli, kongprovider.HelpFromConfig[AppConfig]("APP"))
+	parser, err := kong.New(&cli, kongprovider.HelpFromConfig(&cli.AppConfig, "APP"))
 	if err != nil {
 		fmt.Println(err)
 		return
@@ -41,7 +41,7 @@ func ExampleWithOverridesFromStruct() {
 	cfg, err := config.Load[AppConfig](context.Background(),
 		config.WithEnvPrefix("APP"),
 		config.WithEnviron(func() []string { return []string{"APP_PORT=9000"} }),
-		kongprovider.WithOverridesFromStruct[AppConfig](kctx),
+		kongprovider.WithOverridesFromStruct(kctx, &cli.AppConfig),
 	)
 	if err != nil {
 		fmt.Println(err)

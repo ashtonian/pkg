@@ -53,7 +53,7 @@ type CLI struct {
 
 func main() {
 	var cli CLI
-	kctx := kong.Parse(&cli, kongprovider.HelpFromConfig[AppConfig]("APP"))
+	kctx := kong.Parse(&cli, kongprovider.HelpFromConfig(&cli.AppConfig, "APP"))
 	switch kctx.Command() {
 	case "usage":
 		if err := config.PrintUsage[AppConfig]("APP"); err != nil {
@@ -70,7 +70,7 @@ func main() {
 	cfg, err := config.Load[AppConfig](context.Background(),
 		config.WithFile(cli.Config),
 		config.WithEnvPrefix("APP"),
-		kongprovider.WithOverridesFromStruct[AppConfig](kctx),
+		kongprovider.WithOverridesFromStruct(kctx, &cli.AppConfig),
 	)
 	if err != nil {
 		log.Fatal(err)
@@ -113,11 +113,11 @@ $ app --help
 
 Kong records every flag it parses from argv as an element of `kong.Context.Path`, under the flag's canonical name whatever spelling was typed — long, short, alias, `--flag=value`, or negated `--no-flag` — with the value already applied. Values supplied by Kong resolvers are marked `Resolved`, defaults never appear, and tokens after `--` are positional. `New` forwards exactly the unresolved flag elements it has a mapping for. `Flag.Set` is not used: Kong sets it for applied defaults too.
 
-`WithOverridesFromStruct[T]` builds the mapping from the parsed CLI itself: it finds the `T` the CLI struct holds (embedded, named, or the CLI struct itself), and maps each Kong flag whose target is a field of that `T` to the field's key from `config.Fields[T]` — by the field's address, so a flag's name, prefix or alias never has to agree with anything. Flags outside `T`, such as `--config`, are the CLI's own and are not forwarded. A CLI struct holding no `T` fails the load with `config.ErrSource`.
+`WithOverridesFromStruct(kctx, &cli.AppConfig)` takes the config struct inside the parsed CLI struct — embedded, named, or the CLI struct itself — and maps each typed flag whose target is a field of it to that field's key, through `config.KeyOfValue`: by the field's address, so a flag's name, prefix or alias never has to agree with anything, and a sibling command's flag with the same name cannot reach a config key. Flags outside it, such as `--config`, are the CLI's own and are not forwarded. The typed values are copied when the option is built, so a reloader built from it keeps the command line it started with. A pointer that no flag of the CLI writes into fails the load with `config.ErrSource`.
 
 Mapped values unflatten into the key tree, so a flag for `db.host` overrides that nested key. The provider loads through `config.WithOverrideProvider`, above the environment.
 
-`HelpFromConfig[T]` is a `kong.PostBuild` option. Every flag that sets a key of `T` takes the field's `desc` when it has no help of its own, and its help gains the key and the environment variable that set the same value. Kong prints a field's `default` itself; `HelpFromConfig` adds it to the help only for a flag Kong shows no default for, and only when diagnostics may print it (`config.Field.PrintableDefault`) — a sensitive default, or one that could hold a sensitive value, is also kept out of Kong's placeholder, which shows `VALUE` instead.
+`HelpFromConfig(&cli.AppConfig, envPrefix)` is a `kong.PostBuild` option. Every flag that sets a key of the config struct takes the field's `desc` when it has no help of its own, and its help gains the key and the environment variable that set the same value. Kong prints a field's `default` itself; `HelpFromConfig` adds it to the help only for a flag Kong shows no default for, and only when diagnostics may print it (`config.Field.PrintableDefault`) — a sensitive default, or one that could hold a sensitive value, is also kept out of Kong's placeholder, which shows `VALUE` instead.
 
 ## Rules for the config struct
 
@@ -136,24 +136,21 @@ cfg, err := config.Load[AppConfig](ctx, kongprovider.WithOverrides(kctx, mapping
 
 ### A CLI struct separate from the config struct
 
-When the CLI should expose only a few settings under names of its own, keep the CLI struct separate and tie each config field to its flag with a `flag:"name"` tag, then use `WithOverridesFromTags[T]`. `HelpFromConfig` describes those flags the same way, and Kong refuses to build the CLI when a `flag` tag names no flag or two fields share one.
-
-For a CLI tool whose config file only supplies flag defaults, Kong's own `kong.Configuration` with a YAML resolver is the simpler fit. This package is for a service whose configuration tree is larger than its CLI.
+When the CLI exposes only a few settings under names of its own, keep the structs apart and pass `WithOverrides` the flag name → key mapping; the load fails when a mapping names a flag the CLI does not have.
 
 ## API Reference
 
-- `WithOverridesFromStruct[T](kctx) config.Option` — every typed flag that writes a field of the `T` the CLI struct holds, as an override at that field's key.
-- `WithOverridesFromTags[T](kctx) config.Option` — typed flags as overrides, mapped by `flag` tags over `config.Fields[T]`, for a CLI struct separate from the config struct.
+- `WithOverridesFromStruct(kctx, cfg *T) config.Option` — every typed flag that writes a field of `cfg`, a config struct inside the parsed CLI struct, as an override at that field's key.
 - `WithOverrides(kctx, mapping) config.Option` — the same with an explicit Kong flag name → koanf dot-path mapping.
 - `New(kctx, mapping) koanf.Provider` — the provider itself, for `config.WithOverrideProvider(p, nil)`.
-- `HelpFromConfig[T](envPrefix) kong.Option` — flag help from the config struct's `desc`, key, environment variable and printable default.
+- `HelpFromConfig(cfg *T, envPrefix) kong.Option` — help for every flag that writes a field of `cfg`: its `desc`, key, environment variable and printable default.
 
 ## Key Files
 
 | File | Responsibility |
 |------|----------------|
-| `kongprovider.go` | `New`, `WithOverrides`, `WithOverridesFromStruct`, `WithOverridesFromTags`, `HelpFromConfig`; flag mapping by field address and by tag, and its validation |
-| `examples/cli/main.go` | The Quick Start program: an embedded config struct, a flag group, subcommands, `print` and `usage` commands |
+| `kongprovider.go` | `New`, `WithOverrides`, `WithOverridesFromStruct`, `HelpFromConfig`; flags mapped to keys by the field they write (`config.KeyOfValue`), typed values copied |
+| `examples/cli/main.go` | The Quick Start program: an embedded config struct, a flag group, subcommands, `print`, `usage` and `template` commands |
 | `go.mod`, `LICENSE` | The module (requires the parent at its release version) and its Apache-2.0 license |
 
 ## Dependencies

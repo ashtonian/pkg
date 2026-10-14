@@ -31,8 +31,8 @@
 // declared field. Defaults
 // (default:"..."), environment names, redacted printing, [PrintUsage] and the
 // kongprovider flag bridge all use it. Other tags: validate (go-playground
-// rules), sensitive:"true" (redacted everywhere), desc, secret (read by your
-// populator) and flag (kongprovider).
+// rules), sensitive:"true" (redacted everywhere), desc and secret (read by
+// your populator). [KeyOf] names a field from its address.
 //
 // # Sources
 //
