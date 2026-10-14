@@ -1,8 +1,8 @@
 // Package config loads typed configuration for Go services from one tagged
 // struct, on top of koanf. The struct is the schema: its koanf, alias, env,
-// default, sep, example, validate, desc, sensitive and secret tags give each
-// field its key, former names, variables, default, list separator, example,
-// rules, description and secrecy. Loading, validation, redaction, usage
+// default, sep, format, example, validate, desc, sensitive and secret tags
+// give each field its key, former names, variables, default, list separator,
+// text format, example, rules, description and secrecy. Loading, validation, redaction, usage
 // tables, starter files and the JSON Schema all read them. [Load] merges
 // struct-tag defaults, files, environment variables and explicit overrides
 // into a *T, then resolves secrets, normalizes and validates it in one
@@ -38,6 +38,7 @@
 //
 //   - default:"..." — the lowest-precedence value; key=value entries for a map
 //   - sep:";" — the separator that splits a list's strings, or "none"
+//   - format:"json" — a string set for a section, map or list is its JSON
 //   - alias:"old" — former keys, still read, with a warning
 //   - env:"PORT" — more variables, read as written, below the prefixed one
 //   - example:"..." — a sample value for starter files, usage and the schema
@@ -47,9 +48,9 @@
 //     name would redact
 //   - secret:"<ref>" — resolved by [SecretsFrom], and redacted
 //
-// Invalid sensitive, alias, env, sep and example tags, and malformed map
-// defaults, fail with [ErrSchema] before sources are read. [KeyOf] names a
-// field from its address.
+// Invalid sensitive, alias, env, sep, format and example tags, a default on
+// a section, and malformed defaults fail with [ErrSchema] before sources are
+// read. [KeyOf] names a field from its address.
 //
 // # Sources
 //

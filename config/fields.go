@@ -181,6 +181,43 @@ func derefType(t reflect.Type) reflect.Type {
 
 const maxPointerDepth = 32
 
+// variableFields is fieldsOf(t) with the format:"json" sections one variable
+// can set whole — which Fields descends rather than lists — in declaration
+// order: every key the environment reads.
+func variableFields(t reflect.Type) []Field {
+	all := append(fieldsOf(t), jsonSections(t)...)
+	slices.SortStableFunc(all, func(a, b Field) int { return slices.Compare(a.Index, b.Index) })
+	return all
+}
+
+// jsonSections reports t's format:"json" sections outside lists and maps.
+func jsonSections(t reflect.Type) []Field {
+	var out []Field
+	var walk func(t reflect.Type, prefix string, index []int, sensitive bool, walking map[reflect.Type]bool)
+	walk = func(t reflect.Type, prefix string, index []int, sensitive bool, walking map[reflect.Type]bool) {
+		t = derefType(t)
+		if !isBranch(t) || walking[t] {
+			return
+		}
+		walking[t] = true
+		defer delete(walking, t)
+		for kf := range keyedFields(t) {
+			if !isBranch(derefType(kf.field.Type)) {
+				continue
+			}
+			path := joinPath(prefix, kf.key)
+			at := append(slices.Clone(index), kf.field.Index...)
+			tagged := sensitive || taggedSensitive(kf.field.Tag)
+			if kf.key != "" && jsonFormat(kf.field.Tag) {
+				out = append(out, Field{Path: path, Tag: kf.field.Tag, Type: kf.field.Type, Sensitive: tagged || nameSensitive(kf.field), Index: at})
+			}
+			walk(kf.field.Type, path, at, tagged, walking)
+		}
+	}
+	walk(t, "", nil, false, map[reflect.Type]bool{})
+	return out
+}
+
 func joinPath(prefix, key string) string {
 	switch {
 	case key == "":
@@ -222,8 +259,10 @@ func defaultsFrom(fields []Field) map[string]any {
 			continue
 		}
 		out[f.Path] = v
-		if _, ok := f.Tag.Lookup("sep"); ok {
-			out[f.Path] = tagText(f.Tag, v)
+		if _, sep := f.Tag.Lookup("sep"); sep || jsonFormat(f.Tag) {
+			if in, err := tagText(f.Tag, v); err == nil { // a schema refuses one that is not
+				out[f.Path] = in
+			}
 			continue
 		}
 		// A map's default is its entries, so a source that sets one entry

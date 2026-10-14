@@ -125,6 +125,9 @@ func (b *templateBuilder) branch(n *outNode, node *schemaNode, c cursor, val ref
 			e.comments = strings.Split(desc, "\n")
 		}
 		if f.node.kind == nodeBranch {
+			if jsonFormat(f.sf.Tag) {
+				e.comments = append(e.comments, meta(f, fc, fenv))
+			}
 			child := &outNode{kind: outMap}
 			if err := b.branch(child, f.node, fc, derefValue(fv), fenv, crossed); err != nil {
 				return err
@@ -213,7 +216,7 @@ func meta(f *schemaField, c cursor, env string) string {
 	}
 	text := strings.Join(parts, ", ")
 	var names []string
-	if env != "" && variableSets(f.sf.Type) {
+	if env != "" && variableSetsField(f.sf.Tag, f.sf.Type) {
 		names = append(names, env)
 	}
 	if env != "" {
@@ -221,6 +224,9 @@ func meta(f *schemaField, c cursor, env string) string {
 	}
 	if len(names) > 0 {
 		text += "; env " + strings.Join(names, ", ")
+		if jsonFormat(f.sf.Tag) {
+			text += " (JSON)"
+		}
 	}
 	return text
 }

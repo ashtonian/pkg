@@ -61,6 +61,7 @@ type usageRow struct {
 	Key         string   `json:"key"`
 	Env         string   `json:"env,omitempty"`
 	AlsoEnv     []string `json:"also_env,omitempty"` // the variables an env tag adds
+	JSON        bool     `json:"json,omitempty"`     // a variable sets it as JSON
 	Type        string   `json:"type"`
 	Default     string   `json:"default,omitempty"`
 	Example     string   `json:"example,omitempty"`
@@ -120,7 +121,7 @@ func PrintUsage[T any](envPrefix string, opts ...PrintOption) error {
 // element: a sensitive map covers all of them.
 func usageRows(root reflect.Type, prefix string) []usageRow {
 	var rows []usageRow
-	for _, f := range fieldsOf(root) {
+	for _, f := range variableFields(root) {
 		t := derefType(f.Type)
 		isMap := t.Kind() == reflect.Map && t.Key().Kind() == reflect.String
 		isList := (t.Kind() == reflect.Slice || t.Kind() == reflect.Array) && isBranch(derefType(t.Elem()))
@@ -128,7 +129,7 @@ func usageRows(root reflect.Type, prefix string) []usageRow {
 			rows = append(rows, usageRowOf(f, f.Path, f.EnvVars(prefix)...))
 			continue
 		}
-		if _, ok := f.Tag.Lookup("default"); ok || variableSets(t) { // the collection as a whole
+		if _, ok := f.Tag.Lookup("default"); ok || variableSetsField(f.Tag, t) { // the collection as a whole
 			rows = append(rows, usageRowOf(f, f.Path, f.EnvVars(prefix)...))
 		}
 		elem := derefType(t.Elem())
@@ -178,6 +179,7 @@ func usageRowOf(f Field, key string, env ...string) usageRow {
 	if len(env) > 0 {
 		row.Env, row.AlsoEnv = env[0], env[1:]
 	}
+	row.JSON = jsonFormat(f.Tag)
 	if ex, ok := f.PrintableExample(); ok {
 		row.Example = ex
 	}
@@ -205,7 +207,11 @@ func printUsageTable(w io.Writer, rows []usageRow, withEnv bool) error {
 		return text
 	}
 	envText := func(r usageRow) string {
-		return strings.Join(append([]string{r.Env}, r.AlsoEnv...), ", ")
+		text := strings.Join(append([]string{r.Env}, r.AlsoEnv...), ", ")
+		if r.JSON && r.Env != "" {
+			text += " (JSON)"
+		}
+		return text
 	}
 	keyW, envW, typeW, defW := len("KEY"), len("ENV"), len("TYPE"), len("DEFAULT")
 	for _, r := range rows {
@@ -243,6 +249,9 @@ func printUsageEnv(w io.Writer, rows []usageRow) error {
 		note := r.Key + " (" + r.Type + ")"
 		if r.Required {
 			note += ", required"
+		}
+		if r.JSON {
+			note += ", JSON"
 		}
 		ew.printf("# %s\n", note)
 		if r.Env == "" {

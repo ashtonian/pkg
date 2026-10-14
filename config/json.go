@@ -25,14 +25,27 @@ const jsonMaxDepth = 1000
 var errJSONEnd = errors.New("unexpected end of JSON input")
 
 func (jsonParser) Unmarshal(b []byte) (map[string]any, error) {
+	v, err := readJSON(b, jsonReader.document)
+	if err != nil {
+		return nil, err
+	}
+	return v.(map[string]any), nil
+}
+
+// parseJSON reads b as one JSON value of any kind — a format:"json" field's
+// string — as jsonParser reads a file.
+func parseJSON(b []byte) (any, error) {
+	return readJSON(b, jsonReader.only)
+}
+
+func readJSON[T any](b []byte, read func(jsonReader) (T, error)) (any, error) {
 	dec := json.NewDecoder(bytes.NewReader(b))
 	dec.UseNumber()
-	r := jsonReader{dec: dec}
-	m, err := r.document()
+	v, err := read(jsonReader{dec: dec})
 	if err != nil {
 		return nil, fmt.Errorf("line %d: %w", jsonLine(b, dec.InputOffset()), err)
 	}
-	return m, nil
+	return v, nil
 }
 
 func (jsonParser) Marshal(m map[string]any) ([]byte, error) {
@@ -43,9 +56,9 @@ type jsonReader struct {
 	dec *json.Decoder
 }
 
-// document reads the one object the file holds, and nothing after it.
+// document reads the one object a file holds, and nothing after it.
 func (r jsonReader) document() (map[string]any, error) {
-	v, err := r.value(0)
+	v, err := r.only()
 	if err != nil {
 		return nil, err
 	}
@@ -53,13 +66,22 @@ func (r jsonReader) document() (map[string]any, error) {
 	if !ok {
 		return nil, errors.New("a config file holds a JSON object")
 	}
+	return m, nil
+}
+
+// only reads one value, and nothing after it.
+func (r jsonReader) only() (any, error) {
+	v, err := r.value(0)
+	if err != nil {
+		return nil, err
+	}
 	if _, err := r.dec.Token(); err != io.EOF {
 		if err != nil {
 			return nil, err
 		}
-		return nil, errors.New("data after the JSON object")
+		return nil, errors.New("data after the JSON value")
 	}
-	return m, nil
+	return v, nil
 }
 
 // token is the next token, where the input may not end.
