@@ -251,7 +251,7 @@ func typedValues[T any](ctx *kong.Context, cfg *T) (map[string]any, map[string]s
 		writes = writes || ok
 	}
 	if !writes {
-		return nil, nil, fmt.Errorf("kongprovider: no flag of the CLI %s writes a field of %s; pass a pointer into the parsed CLI struct", ctx.Model.Name, reflect.TypeFor[T]())
+		return nil, nil, fmt.Errorf("kongprovider: no flag of the CLI %s writes a field of the supplied config; pass a pointer into the parsed CLI struct", ctx.Model.Name)
 	}
 	values, flags := make(map[string]any), make(map[string]string)
 	for _, el := range ctx.Path {
