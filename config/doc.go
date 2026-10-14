@@ -1,8 +1,8 @@
 // Package config loads typed configuration for Go services from one tagged
 // struct, on top of koanf. The struct is the schema: its koanf, alias, env,
-// default, example, validate, desc, sensitive and secret tags give each field
-// its key, former names, variables, default, example, rules, description and
-// secrecy, and loading, validation, redaction, usage tables, starter files
+// default, sep, example, validate, desc, sensitive and secret tags give each
+// field its key, former names, variables, default, list separator, example,
+// rules, description and secrecy, and loading, validation, redaction, usage tables, starter files
 // and the JSON Schema all read them. [Load] merges
 // struct-tag defaults, files, environment variables and explicit overrides
 // into a *T, then resolves secrets, normalizes and validates it in one
@@ -33,12 +33,22 @@
 // followed, and a struct that decodes itself is one key. Every output names a
 // value in one grammar — db.host, items[0].port, named["primary"].port, and
 // items[*].port for any element — and [FieldFor] maps a key back to its
-// declared field. Defaults
-// (default:"..."), environment names, redacted printing, [PrintUsage] and the
-// kongprovider flag bridge all use it. Other tags: validate (go-playground
-// rules), sensitive:"true" (redacted everywhere), desc, and secret:"<ref>"
-// (resolved by [SecretsFrom], and redacted). [KeyOf] names a field from its
-// address.
+// declared field. Defaults, environment names, redacted printing,
+// [PrintUsage] and the kongprovider flag bridge all use it. The other tags:
+//
+//   - default:"..." — the lowest-precedence value; key=value entries for a map
+//   - sep:";" — the separator that splits a list's strings, or "none"
+//   - alias:"old" — former keys, still read, with a warning
+//   - env:"PORT" — more variables, read as written, below the prefixed one
+//   - example:"..." — a sample value for starter files, usage and the schema
+//   - validate:"..." — go-playground rules
+//   - desc:"..." — the description every output shows
+//   - sensitive:"true" — redacted everywhere; "false" exempts a field its
+//     name would redact
+//   - secret:"<ref>" — resolved by [SecretsFrom], and redacted
+//
+// A tag that cannot mean what it says fails the load with [ErrSchema] before
+// anything is read. [KeyOf] names a field from its address.
 //
 // # Sources
 //
@@ -72,9 +82,10 @@
 //	post-load (WithPostLoad) → validate (the validator, then a Validatable's
 //	Validate method)
 //
-// Decoding adds string → time.Duration, comma-separated string → slice,
-// key=value entries → map and encoding.TextUnmarshaler to mapstructure's weak
-// typing; [WithDecodeHook] hooks run first. A key no field decodes fails the
+// Decoding adds string → time.Duration, comma-separated string → slice (a
+// field's sep tag names another separator, or none), key=value entries → map
+// and encoding.TextUnmarshaler to mapstructure's weak typing; [WithDecodeHook]
+// hooks run first. A key no field decodes fails the
 // load — a misspelled key cannot leave a service on the default it meant to
 // override — unless a [WithUnknownKeys] handler accepts it, say after logging
 // a warning; [WithAllowUnknownKeys] accepts every one.

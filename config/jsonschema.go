@@ -197,7 +197,7 @@ func (g *schemaGen) field(f *schemaField, c cursor, fv reflect.Value) map[string
 		s["default"] = w.value(fv, site{}).plain()
 	}
 	if ex, has := f.sf.Tag.Lookup("example"); has && !sensitive {
-		if v, err := decodeText(f.sf.Type, ex); err == nil {
+		if v, err := decodeTag(f.sf.Type, f.sf.Tag, ex); err == nil {
 			w := &valueTree{visiting: map[visit]bool{}}
 			s["examples"] = []any{w.value(v, site{}).plain()}
 		}

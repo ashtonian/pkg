@@ -14,7 +14,9 @@ import (
 
 // stringToSlice splits a string bound for a slice on commas: "1,2" fills a
 // []int and "1s,2s" a []time.Duration. A []byte, or a slice type that
-// decodes itself, takes the string whole.
+// decodes itself, takes the string whole. A field with a sep tag is split
+// before decoding instead (see splitList), so this sees only the others —
+// after any WithDecodeHook hook, which can split them its own way.
 func stringToSlice(from, to reflect.Type, data any) (any, error) {
 	if from.Kind() != reflect.String || to.Kind() != reflect.Slice || to.Elem().Kind() == reflect.Uint8 || decodesItself(to) {
 		return data, nil
@@ -36,15 +38,42 @@ func stringToMap(from, to reflect.Type, data any) (any, error) {
 	return parseMapEntries(reflect.ValueOf(data).String())
 }
 
+// splitList is s as the elements of a list a sep tag splits it into: on sep,
+// or with sep "none" as one element. An empty s is no elements.
+func splitList(s, sep string) []any {
+	if s == "" {
+		return []any{}
+	}
+	if sep == "none" {
+		return []any{s}
+	}
+	parts := strings.Split(s, sep)
+	out := make([]any, len(parts))
+	for i, p := range parts {
+		out[i] = p
+	}
+	return out
+}
+
+// tagText is the input the text s of a tag beside tag is: s, or the
+// elements a sep tag there splits it into.
+func tagText(tag reflect.StructTag, s string) any {
+	if sep, ok := tag.Lookup("sep"); ok {
+		return splitList(s, sep)
+	}
+	return s
+}
+
 // textMap reports a map one string can fill: string keys, values that are
 // not structs, and no decoding of its own.
 func textMap(t reflect.Type) bool {
 	return t.Kind() == reflect.Map && t.Key().Kind() == reflect.String && !isBranch(derefType(t.Elem())) && !decodesItself(t)
 }
 
-// decodeText decodes s into a new value of type t as a tag default decodes:
-// weakly typed, through the built-in hooks.
-func decodeText(t reflect.Type, s string) (reflect.Value, error) {
+// decodeTag decodes s, the text of a tag of a field of type t whose tags are
+// tag, into a new value of type t as a tag default decodes: split by a sep
+// tag, weakly typed, through the built-in hooks.
+func decodeTag(t reflect.Type, tag reflect.StructTag, s string) (reflect.Value, error) {
 	out := reflect.New(t)
 	dec, err := mapstructure.NewDecoder(&mapstructure.DecoderConfig{
 		DecodeHook:       (&options{}).decodeHook(nil),
@@ -54,7 +83,7 @@ func decodeText(t reflect.Type, s string) (reflect.Value, error) {
 	if err != nil {
 		return reflect.Value{}, err
 	}
-	if err := dec.Decode(s); err != nil {
+	if err := dec.Decode(tagText(tag, s)); err != nil {
 		return reflect.Value{}, err
 	}
 	return out.Elem(), nil

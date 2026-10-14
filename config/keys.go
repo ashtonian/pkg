@@ -19,8 +19,9 @@ import (
 // kept, decode hooks are not run, and a value a custom decoder takes whole —
 // an UnmarshalMapstructure or TextUnmarshaler type, or an interface — is left
 // as written, as is every map key. A key an alias tag names is rewritten to
-// its field's key. It records a source that spells one field two ways, and
-// every alias it rewrote.
+// its field's key, and a string set for a field with a sep tag is split into
+// the list its separator makes. It records a source that spells one field
+// two ways, and every alias it rewrote.
 type keyWalk struct {
 	twice   []string
 	aliased []string // "old.key (now new.key)"
@@ -81,8 +82,12 @@ func isList(v reflect.Value) bool {
 // structMap rewrites the keys of map v, decoded into struct type t. A map
 // keyed by anything but strings is keyed by their text, as koanf keys it.
 func (w *keyWalk) structMap(t reflect.Type, v reflect.Value, path keyPath) any {
-	out := reflect.MakeMapWithSize(stringKeyed(v.Type()), v.Len())
-	fields, aliases := structKeys(t), structAliases(t)
+	fields, aliases, seps := structKeys(t), structAliases(t), structSeps(t)
+	outType := stringKeyed(v.Type())
+	if len(seps) > 0 {
+		outType = reflect.TypeFor[map[string]any]() // a split string is a list
+	}
+	out := reflect.MakeMapWithSize(outType, v.Len())
 	written := make(map[string]reflect.Value, v.Len())
 	for _, k := range v.MapKeys() {
 		written[fmt.Sprint(k.Interface())] = v.MapIndex(k)
@@ -102,7 +107,11 @@ func (w *keyWalk) structMap(t reflect.Type, v reflect.Value, path keyPath) any {
 		if alias {
 			w.aliased = append(w.aliased, fmt.Sprintf("%s (now %s)", path.field(k), path.field(key)))
 		}
-		out.SetMapIndex(reflect.ValueOf(key).Convert(out.Type().Key()), w.elem(out.Type().Elem(), ft, written[k], path.field(key)))
+		val := w.elem(out.Type().Elem(), ft, written[k], path.field(key))
+		if sep, ok := seps[key]; ok && val.Kind() == reflect.String {
+			val = reflect.ValueOf(splitList(val.String(), sep))
+		}
+		out.SetMapIndex(reflect.ValueOf(key).Convert(out.Type().Key()), val)
 	}
 	return out.Interface()
 }
@@ -192,6 +201,27 @@ func structAliases(t reflect.Type) map[string]string {
 	}
 	collect(t)
 	return aliases
+}
+
+// structSeps returns the sep tags of struct type t by field key, looking
+// through squashed structs.
+func structSeps(t reflect.Type) map[string]string {
+	seps := map[string]string{}
+	var collect func(t reflect.Type)
+	collect = func(t reflect.Type) {
+		for kf := range keyedFields(t) {
+			switch {
+			case kf.key == "" && derefType(kf.field.Type).Kind() == reflect.Struct:
+				collect(derefType(kf.field.Type))
+			case kf.key != "":
+				if sep, ok := kf.field.Tag.Lookup("sep"); ok {
+					seps[kf.key] = sep
+				}
+			}
+		}
+	}
+	collect(t)
+	return seps
 }
 
 // aliasNames returns the former keys a field's alias tag lists.

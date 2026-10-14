@@ -18,8 +18,9 @@ type Field struct {
 	Type reflect.Type
 	// Sensitive reports that PrintRedacted redacts the leaf's value: it, or
 	// a struct above it, is tagged sensitive:"true", or its Go field name
-	// looks like a credential (password, secret, token, key, ...). A struct
-	// field's name does not cover the struct it holds.
+	// looks like a credential (password, secret, token, key, ...) and it is
+	// not tagged sensitive:"false". A struct field's name does not cover the
+	// struct it holds.
 	Sensitive bool
 	// Index is the leaf's index sequence in the config struct, for
 	// reflect.Value.FieldByIndex (or FieldByIndexErr, when a pointer on the
@@ -205,6 +206,10 @@ func defaultsFrom(fields []Field) map[string]any {
 			continue
 		}
 		out[f.Path] = v
+		if _, ok := f.Tag.Lookup("sep"); ok {
+			out[f.Path] = tagText(f.Tag, v)
+			continue
+		}
 		// A map's default is its entries, so a source that sets one entry
 		// merges with the rest rather than replacing them.
 		if textMap(derefType(f.Type)) {
