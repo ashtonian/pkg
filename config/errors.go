@@ -16,8 +16,8 @@ var (
 	// ErrValidation reports invalid configuration: a validator rejected the
 	// loaded struct, a value could not decode into its field's type, an
 	// environment variable named more than one key, a Validate method
-	// failed, or a source set a key no field decodes (unless
-	// WithAllowUnknownKeys).
+	// failed, or a source set a key no field decodes (unless a
+	// WithUnknownKeys handler accepts it).
 	ErrValidation = errors.New("configuration validation failed")
 	// ErrFileRead reports a config file that could not be read: a required
 	// file that is missing, or any file that exists but cannot be opened.
@@ -87,37 +87,56 @@ func (e *validationError) Unwrap() []error {
 	return []error{ErrValidation, e.cause}
 }
 
-// UnknownKeysError reports the keys a load's sources set that no field
-// decodes (see [WithAllowUnknownKeys]). Load wraps it together with
-// [ErrValidation]; errors.As reaches it, so a caller can report the keys in
-// its own words.
+// UnknownKeysError reports the input a load's sources gave that no field
+// reads (see [WithUnknownKeys]). A load fails with it, wrapped together with
+// [ErrValidation], when sources set unknown keys and no handler accepts them;
+// errors.As reaches it, so a caller can report the keys in its own words.
 type UnknownKeysError struct {
 	// Type is the config type that was loaded.
 	Type reflect.Type
 	// Keys are the keys no field decodes, sorted by Key.
 	Keys []UnknownKey
+	// Variables are the environment variables under the WithEnvPrefix prefix
+	// that name no key, sorted by Key, which holds the variable's name.
+	// Filled only for a WithUnknownKeys handler: by default they are ignored.
+	Variables []UnknownKey
 }
 
-// UnknownKey is one key no field decodes.
+// UnknownKey is one key no field decodes, or one variable that names no key.
 type UnknownKey struct {
-	// Key names it in the package's key grammar: server.prot, items[0].prot.
+	// Key names it: in the package's key grammar for a key (server.prot,
+	// items[0].prot), by its name for a variable (APP_SERVER_PROT).
 	Key string
-	// Suggestion is the key Key most likely misspells: the field of the same
-	// struct fewest edits away (server.port), or "" when none is close.
+	// Suggestion is what Key most likely misspells, or "" when nothing is
+	// close: the field of the same struct fewest edits away (server.port), or
+	// the variable of a field (APP_SERVER_PORT).
 	Suggestion string
 }
 
 func (e *UnknownKeysError) Error() string {
 	var b strings.Builder
-	fmt.Fprintf(&b, "keys no field of %s decodes: ", e.Type)
-	for i, k := range e.Keys {
+	if len(e.Keys) > 0 {
+		fmt.Fprintf(&b, "keys no field of %s decodes: ", e.Type)
+		writeUnknown(&b, e.Keys)
+	}
+	if len(e.Variables) > 0 {
+		if b.Len() > 0 {
+			b.WriteString("; ")
+		}
+		fmt.Fprintf(&b, "environment variables no field of %s reads: ", e.Type)
+		writeUnknown(&b, e.Variables)
+	}
+	return b.String()
+}
+
+func writeUnknown(b *strings.Builder, keys []UnknownKey) {
+	for i, k := range keys {
 		if i > 0 {
 			b.WriteString(", ")
 		}
 		b.WriteString(k.Key)
 		if k.Suggestion != "" {
-			fmt.Fprintf(&b, " (did you mean %s?)", k.Suggestion)
+			fmt.Fprintf(b, " (did you mean %s?)", k.Suggestion)
 		}
 	}
-	return b.String()
 }

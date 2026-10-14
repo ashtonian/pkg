@@ -2,6 +2,7 @@ package config
 
 import (
 	"fmt"
+	"maps"
 	"reflect"
 	"slices"
 	"strings"
@@ -109,6 +110,11 @@ func dotPath(path string) keyPath {
 		p = p.field(name)
 	}
 	return p
+}
+
+// closest is the variable of a field that name most likely misspells, or "".
+func (s envSchema) closest(name string) string {
+	return closest(name, maps.Keys(s.static))
 }
 
 // read maps the "NAME=value" entries of environ under the prefix to their

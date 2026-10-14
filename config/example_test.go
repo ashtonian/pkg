@@ -169,6 +169,39 @@ func ExampleWithAllowUnknownKeys() {
 	// 8080 <nil>
 }
 
+// ExampleWithUnknownKeys accepts input no field reads and reports it: a
+// misspelled key in the file and a misspelled environment variable, each
+// with what it most likely meant.
+func ExampleWithUnknownKeys() {
+	type AppConfig struct {
+		Server struct {
+			Port int `koanf:"port" default:"8080"`
+		} `koanf:"server"`
+	}
+	file, cleanup := tempFile("config.yaml", "server:\n  prot: 9000\n")
+	defer cleanup()
+
+	cfg, err := config.Load[AppConfig](context.Background(),
+		config.WithFile(file),
+		config.WithEnvPrefix("APP"),
+		config.WithEnviron(func() []string { return []string{"APP_SERVER_PROT=9000"} }),
+		config.WithUnknownKeys(func(_ context.Context, unknown *config.UnknownKeysError) error {
+			for _, k := range unknown.Keys {
+				fmt.Printf("warning: unknown key %s, did you mean %s?\n", k.Key, k.Suggestion)
+			}
+			for _, v := range unknown.Variables {
+				fmt.Printf("warning: unknown variable %s, did you mean %s?\n", v.Key, v.Suggestion)
+			}
+			return nil
+		}))
+	fmt.Println(cfg.Server.Port, err)
+
+	// Output:
+	// warning: unknown key server.prot, did you mean server.port?
+	// warning: unknown variable APP_SERVER_PROT, did you mean APP_SERVER_PORT?
+	// 8080 <nil>
+}
+
 // ExamplePrintUsage prints what an operator can set, with the environment
 // variable for each key; a sensitive default stays hidden.
 func ExamplePrintUsage() {

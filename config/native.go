@@ -2,6 +2,7 @@ package config
 
 import (
 	"fmt"
+	"iter"
 	"reflect"
 	"strconv"
 	"strings"
@@ -94,17 +95,29 @@ func unusedKey(root *schemaNode, tree any, name string) UnknownKey {
 // the two is long shares no character in place, so x finds nothing beside
 // db. A tie goes to the key that sorts first.
 func closestField(n *schemaNode, key string) string {
+	return closest(key, func(yield func(string) bool) {
+		for _, f := range n.fields {
+			if !yield(f.key) {
+				return
+			}
+		}
+	})
+}
+
+// closest is the candidate key most likely misspells, by closestField's
+// rules, or "".
+func closest(key string, candidates iter.Seq[string]) string {
 	key = strings.ToLower(key)
 	keyLen := utf8.RuneCountInString(key)
 	best, bestDist := "", max(2, keyLen/3)+1
-	for _, f := range n.fields {
-		field := strings.ToLower(f.key)
-		d := editDistance(key, field)
-		if d >= max(keyLen, utf8.RuneCountInString(field)) {
+	for c := range candidates {
+		lower := strings.ToLower(c)
+		d := editDistance(key, lower)
+		if d >= max(keyLen, utf8.RuneCountInString(lower)) {
 			continue
 		}
-		if d < bestDist || d == bestDist && f.key < best {
-			best, bestDist = f.key, d
+		if d < bestDist || d == bestDist && c < best {
+			best, bestDist = c, d
 		}
 	}
 	return best

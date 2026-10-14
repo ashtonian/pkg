@@ -1,9 +1,14 @@
 package config
 
 import (
+	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"reflect"
+	"slices"
+	"strings"
+	"sync"
 	"testing"
 
 	"github.com/go-viper/mapstructure/v2"
@@ -363,4 +368,124 @@ func TestValidation_NamesMapEntriesByKey(t *testing.T) {
 	_, err := Load[cfg](t.Context(), WithBaseProvider(src, nil))
 	require.ErrorIs(t, err, ErrValidation)
 	assert.Contains(t, err.Error(), `limits["a.b"].limit(min=1)`)
+}
+
+// A WithUnknownKeys handler sees the unknown keys and the variables under
+// the prefix that name no key, each with what it most likely misspells, and
+// a nil return lets the load go on without them.
+func TestUnknownKeys_HandlerSeesKeysAndVariables(t *testing.T) {
+	type cfg struct {
+		Server struct {
+			Port int `koanf:"port"`
+		} `koanf:"server"`
+		Debug bool `koanf:"debug"`
+	}
+	var seen []*UnknownKeysError
+	got, err := Load[cfg](t.Context(),
+		WithBaseProvider(mapSource{"server": map[string]any{"port": 8080, "prot": 1}, "sidecar": 1}, nil),
+		WithEnvPrefix("APP"),
+		WithEnviron(func() []string { return []string{"APP_DEBUG=true", "APP_SERVER_PROT=1", "APP_UNRELATED_SETTING=1"} }),
+		WithUnknownKeys(func(_ context.Context, unknown *UnknownKeysError) error {
+			seen = append(seen, unknown)
+			return nil
+		}),
+		WithSkipValidation())
+	require.NoError(t, err)
+	assert.Equal(t, 8080, got.Server.Port)
+	assert.True(t, got.Debug)
+	require.Len(t, seen, 1)
+	assert.Equal(t, []UnknownKey{{Key: "server.prot", Suggestion: "server.port"}, {Key: "sidecar"}}, seen[0].Keys)
+	assert.Equal(t, []UnknownKey{
+		{Key: "APP_SERVER_PROT", Suggestion: "APP_SERVER_PORT"},
+		{Key: "APP_UNRELATED_SETTING"},
+	}, seen[0].Variables)
+	assert.Equal(t, "keys no field of config.cfg decodes: server.prot (did you mean server.port?), sidecar; "+
+		"environment variables no field of config.cfg reads: APP_SERVER_PROT (did you mean APP_SERVER_PORT?), APP_UNRELATED_SETTING",
+		seen[0].Error())
+}
+
+// The handler decides: here it ignores the legacy section and fails on the
+// rest, with ErrValidation and the error it returned. A section no field
+// holds is one key, not one per key beneath it.
+func TestUnknownKeys_HandlerDecides(t *testing.T) {
+	type cfg struct {
+		Port int `koanf:"port"`
+	}
+	ignoreLegacy := WithUnknownKeys(func(_ context.Context, unknown *UnknownKeysError) error {
+		rest := *unknown
+		rest.Keys = slices.DeleteFunc(slices.Clone(unknown.Keys), func(k UnknownKey) bool {
+			return k.Key == "legacy" || strings.HasPrefix(k.Key, "legacy.")
+		})
+		if len(rest.Keys) == 0 {
+			return nil
+		}
+		return &rest
+	})
+
+	_, err := Load[cfg](t.Context(), WithBaseProvider(mapSource{"legacy": map[string]any{"old": 1}}, nil), ignoreLegacy)
+	require.NoError(t, err)
+
+	_, err = Load[cfg](t.Context(), WithBaseProvider(mapSource{"legacy": map[string]any{"old": 1}, "prot": 1}, nil), ignoreLegacy)
+	require.ErrorIs(t, err, ErrValidation)
+	var unknown *UnknownKeysError
+	require.ErrorAs(t, err, &unknown)
+	assert.Equal(t, []UnknownKey{{Key: "prot", Suggestion: "port"}}, unknown.Keys)
+}
+
+// Without a handler, unknown keys fail and variables that name no key are
+// ignored: they never fail a load and are not reported with its keys.
+func TestUnknownKeys_DefaultIgnoresVariables(t *testing.T) {
+	type cfg struct {
+		Port int `koanf:"port"`
+	}
+	environ := WithEnviron(func() []string { return []string{"APP_PROT=1"} })
+	_, err := Load[cfg](t.Context(), WithEnvPrefix("APP"), environ)
+	require.NoError(t, err)
+
+	_, err = Load[cfg](t.Context(), WithBaseProvider(mapSource{"prot": 1}, nil), WithEnvPrefix("APP"), environ)
+	var unknown *UnknownKeysError
+	require.ErrorAs(t, err, &unknown)
+	assert.Equal(t, []UnknownKey{{Key: "prot", Suggestion: "port"}}, unknown.Keys)
+	assert.Empty(t, unknown.Variables)
+
+	called := false
+	_, err = Load[cfg](t.Context(), WithBaseProvider(mapSource{"port": 1}, nil),
+		WithUnknownKeys(func(context.Context, *UnknownKeysError) error { called = true; return nil }))
+	require.NoError(t, err)
+	assert.False(t, called, "a load with nothing unknown does not call the handler")
+}
+
+// Under a Reloader the handler runs on every reload, so a key added to a
+// live source is reported and the reload still publishes.
+func TestUnknownKeys_HandlerRunsOnReload(t *testing.T) {
+	type cfg struct {
+		Port int `koanf:"port"`
+	}
+	var mu sync.Mutex
+	settings := map[string]any{"port": 1}
+	src, err := NewMapProvider(func(context.Context) (map[string]any, error) {
+		mu.Lock()
+		defer mu.Unlock()
+		return maps.Clone(settings), nil
+	}, "")
+	require.NoError(t, err)
+
+	var reported [][]UnknownKey
+	r, err := NewReloader[cfg](t.Context(), []Option{
+		WithBaseProvider(src, nil),
+		WithUnknownKeys(func(_ context.Context, unknown *UnknownKeysError) error {
+			reported = append(reported, unknown.Keys)
+			return nil
+		}),
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, r.Stop(context.Background())) })
+
+	mu.Lock()
+	settings = map[string]any{"port": 2, "prot": 3}
+	mu.Unlock()
+	_, err = r.Reload(t.Context())
+	require.NoError(t, err)
+	assert.Equal(t, 2, r.Config().Port)
+	assert.Equal(t, [][]UnknownKey{{{Key: "prot", Suggestion: "port"}}}, reported)
 }

@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 
 	"github.com/go-viper/mapstructure/v2"
@@ -32,21 +33,21 @@ type Validator interface {
 }
 
 type options struct {
-	envPrefix    string
-	environ      func() []string
-	files        []fileSource
-	fileParsers  map[string]koanf.Parser // by lower-case name suffix; nil removes one
-	defaults     map[string]any
-	base         []providerSource
-	overrides    []providerSource
-	decodeHooks  []mapstructure.DecodeHookFunc
-	allowUnknown bool
-	secrets      SecretPopulator
-	postLoad     []postLoadHook
-	skipValid    bool
-	validator    Validator
-	logger       *slog.Logger
-	provenance   bool // record origins: LoadSnapshot, or a reloader WithProvenance
+	envPrefix   string
+	environ     func() []string
+	files       []fileSource
+	fileParsers map[string]koanf.Parser // by lower-case name suffix; nil removes one
+	defaults    map[string]any
+	base        []providerSource
+	overrides   []providerSource
+	decodeHooks []mapstructure.DecodeHookFunc
+	unknownKeys func(context.Context, *UnknownKeysError) error // nil: keys fail the load
+	secrets     SecretPopulator
+	postLoad    []postLoadHook
+	skipValid   bool
+	validator   Validator
+	logger      *slog.Logger
+	provenance  bool // record origins: LoadSnapshot, or a reloader WithProvenance
 }
 
 type fileSource struct {
@@ -270,25 +271,74 @@ func WithDecodeHook(hook mapstructure.DecodeHookFunc) Option {
 	}
 }
 
-// WithAllowUnknownKeys lets a load succeed when a config file, provider or
-// WithDefaults sets a key no field decodes. Without it — the default — such
-// a key, a typo or a setting that was removed, fails the load with
-// [ErrValidation] naming each one (server.prot, items[0].prot,
-// named["primary"].prot), so a misspelled key cannot leave a service running
-// on the default it was meant to override. The decoder reports the keys it
-// did not use while it decodes the merged sources, so the check follows
-// decoding exactly: into slice elements and map entries of structs, through
-// squashed structs, and past input a decode hook or a self-decoding type
-// consumes. A map's own keys, anything beneath an interface, and keys a
-// koanf:",remain" field collects are accepted. The merged tree does not record
-// which source set a key, so the error names keys only; an
-// [*UnknownKeysError] in its chain lists them, each with the key it most
-// likely misspells. An environment variable that fits no key is never
-// loaded, so it cannot fail a load; it is logged at debug level.
-func WithAllowUnknownKeys() Option {
+// WithUnknownKeys decides what a load does with input no field reads: keys a
+// config file, provider or WithDefaults sets that no field decodes, and
+// environment variables under the [WithEnvPrefix] prefix that name no key.
+// handle is called with them whenever there are any, at every [Load] and
+// every reload, each with the key or variable it most likely misspells. A
+// nil return lets the load go on without them; an error fails it with
+// [ErrValidation], the error kept as its cause. Return unknown to fail as the
+// default does, or a copy holding only the keys that matter:
+//
+//	config.WithUnknownKeys(func(ctx context.Context, unknown *config.UnknownKeysError) error {
+//	    logger.WarnContext(ctx, "config input no field reads", "error", unknown)
+//	    return nil
+//	})
+//
+// Without it, a load fails on unknown keys, naming each one (server.prot,
+// items[0].prot, named["primary"].prot), so a misspelled key cannot leave a
+// service running on the default it was meant to override; unknown
+// variables are logged at debug level and never fail it, since other
+// programs may share the prefix. A nil handle restores that default.
+//
+// The decoder reports the keys it did not use while it decodes the merged
+// sources, so the check follows decoding exactly: into slice elements and map
+// entries of structs, through squashed structs, and past input a decode hook
+// or a self-decoding type consumes. A map's own keys, anything beneath an
+// interface, and keys a koanf:",remain" field collects are accepted. A
+// section no field holds is one key (legacy, not legacy.old). The merged tree
+// does not record which source set a key, so keys are named, not their
+// sources; values are never reported.
+func WithUnknownKeys(handle func(ctx context.Context, unknown *UnknownKeysError) error) Option {
 	return func(o *options) {
-		o.allowUnknown = true
+		o.unknownKeys = handle
 	}
+}
+
+// WithAllowUnknownKeys lets a load succeed when a source sets a key no field
+// decodes — for a file shared with another program — by accepting every one
+// silently. Use [WithUnknownKeys] to accept them and still report them.
+func WithAllowUnknownKeys() Option {
+	return WithUnknownKeys(acceptUnknown)
+}
+
+func acceptUnknown(context.Context, *UnknownKeysError) error { return nil }
+
+// unknownInput is the load's verdict on input no field reads: the keys the
+// decoder left unused in merged, and the variables under env's prefix that
+// named no key. Without a handler, unknown keys fail and variables are
+// ignored.
+func (o *options) unknownInput(ctx context.Context, root reflect.Type, schema *schemaNode, merged map[string]any, unused []string, env envSchema, variables []string) error {
+	if o.unknownKeys == nil {
+		variables = nil
+	}
+	if len(unused) == 0 && len(variables) == 0 {
+		return nil
+	}
+	unknown := &UnknownKeysError{Type: root}
+	for _, name := range unused {
+		unknown.Keys = append(unknown.Keys, unusedKey(schema, merged, name))
+	}
+	for _, name := range variables {
+		unknown.Variables = append(unknown.Variables, UnknownKey{Key: name, Suggestion: env.closest(name)})
+	}
+	byKey := func(a, b UnknownKey) int { return strings.Compare(a.Key, b.Key) }
+	slices.SortFunc(unknown.Keys, byKey)
+	slices.SortFunc(unknown.Variables, byKey)
+	if o.unknownKeys == nil {
+		return unknown
+	}
+	return o.unknownKeys(ctx, unknown)
 }
 
 // WithSecretPopulator sets the secret resolver. It runs after decoding with
@@ -336,7 +386,7 @@ func WithValidator(v Validator) Option {
 
 // WithSkipValidation disables validation — the validator, validate:"required"
 // included, and a root Validate method (see [Validatable]). Unknown keys still
-// fail the load; [WithAllowUnknownKeys] is the separate escape hatch for those.
+// fail the load; [WithUnknownKeys] decides those separately.
 func WithSkipValidation() Option {
 	return func(o *options) {
 		o.skipValid = true
