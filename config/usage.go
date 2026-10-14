@@ -21,6 +21,18 @@ func (f Field) EnvVar(prefix string) string {
 	return envName(strings.TrimSuffix(prefix, "_"), f.Path)
 }
 
+// EnvVars returns every variable that sets f under prefix, the first winning
+// when several are set: [Field.EnvVar], then the names its env tag lists,
+// read as written. With no prefix the environment is not read, and there are
+// none.
+func (f Field) EnvVars(prefix string) []string {
+	own := f.EnvVar(prefix)
+	if own == "" {
+		return nil
+	}
+	return append([]string{own}, envTagNames(f.Tag)...)
+}
+
 // PrintableDefault returns f's `default` tag and true when diagnostics may
 // print it, and false when f has no default or it must be withheld: f is
 // Sensitive, or its type could hold a sensitive value beneath it — a map or
@@ -101,11 +113,11 @@ func usageRows(root reflect.Type, prefix string) []usageRow {
 		isMap := t.Kind() == reflect.Map && t.Key().Kind() == reflect.String
 		isList := (t.Kind() == reflect.Slice || t.Kind() == reflect.Array) && isBranch(derefType(t.Elem()))
 		if !isMap && !isList {
-			rows = append(rows, usageRowOf(f, f.Path, f.EnvVar(prefix)))
+			rows = append(rows, usageRowOf(f, f.Path, strings.Join(f.EnvVars(prefix), ", ")))
 			continue
 		}
 		if _, ok := f.Tag.Lookup("default"); ok { // the collection's own default, as a whole
-			rows = append(rows, usageRowOf(f, f.Path, f.EnvVar(prefix)))
+			rows = append(rows, usageRowOf(f, f.Path, strings.Join(f.EnvVars(prefix), ", ")))
 		}
 		elem := derefType(t.Elem())
 		if isList { // elements are set in files; no variable addresses one

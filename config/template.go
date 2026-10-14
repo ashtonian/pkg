@@ -203,8 +203,15 @@ func meta(f *schemaField, c cursor, env string) string {
 		parts = append(parts, "sensitive")
 	}
 	text := strings.Join(parts, ", ")
+	var names []string
 	if env != "" && (f.node.kind == nodeLeaf || f.node.kind == nodeDynamic || f.node.kind == nodeList && f.node.elem.kind != nodeBranch) {
-		text += "; env " + env
+		names = append(names, env)
+	}
+	if env != "" {
+		names = append(names, envTagNames(f.sf.Tag)...)
+	}
+	if len(names) > 0 {
+		text += "; env " + strings.Join(names, ", ")
 	}
 	return text
 }

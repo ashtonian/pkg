@@ -1,9 +1,11 @@
 package config
 
 import (
+	"cmp"
 	"fmt"
 	"maps"
 	"reflect"
+	"regexp"
 	"slices"
 	"strings"
 )
@@ -31,6 +33,15 @@ type envSchema struct {
 	prefix string // e.g. "APP_"
 	static map[string][]string
 	maps   []envMap
+	tagged map[string][]envTagged // names an env tag lists, read without the prefix
+}
+
+// envTagged is a field an env tag names a variable for, and the variable's
+// place in the tag: a prefixed variable outranks every tagged one, and an
+// earlier tagged one a later.
+type envTagged struct {
+	path string
+	rank int
 }
 
 // envMap is one map field: the variable prefix that addresses its entries and,
@@ -47,10 +58,13 @@ type envLeaf struct {
 }
 
 func newEnvSchema(fields []Field, prefix string) envSchema {
-	s := envSchema{prefix: prefix + "_", static: make(map[string][]string, len(fields))}
+	s := envSchema{prefix: prefix + "_", static: make(map[string][]string, len(fields)), tagged: map[string][]envTagged{}}
 	for _, f := range fields {
 		name := envName(prefix, f.Path)
 		s.static[name] = append(s.static[name], f.Path)
+		for i, tagName := range envTagNames(f.Tag) {
+			s.tagged[tagName] = append(s.tagged[tagName], envTagged{path: f.Path, rank: i + 1})
+		}
 		t := derefType(f.Type)
 		if t.Kind() != reflect.Map || t.Key().Kind() != reflect.String {
 			continue
@@ -71,6 +85,7 @@ func newEnvSchema(fields []Field, prefix string) envSchema {
 type envReading struct {
 	flat string
 	key  string
+	rank int // 0 for a prefixed variable; see envTagged
 }
 
 // readings returns every key the variable name could set, sorted.
@@ -78,6 +93,9 @@ func (s envSchema) readings(name string) []envReading {
 	var out []envReading
 	for _, path := range s.static[name] {
 		out = append(out, envReading{flat: path, key: path})
+	}
+	for _, t := range s.tagged[name] {
+		out = append(out, envReading{flat: t.path, key: t.path, rank: t.rank})
 	}
 	for _, m := range s.maps {
 		rest, ok := strings.CutPrefix(name, m.prefix)
@@ -99,7 +117,9 @@ func (s envSchema) readings(name string) []envReading {
 			}
 		}
 	}
-	slices.SortFunc(out, func(a, b envReading) int { return strings.Compare(a.key, b.key) })
+	slices.SortFunc(out, func(a, b envReading) int {
+		return cmp.Or(strings.Compare(a.key, b.key), cmp.Compare(a.rank, b.rank))
+	})
 	return slices.CompactFunc(out, func(a, b envReading) bool { return a.key == b.key })
 }
 
@@ -114,27 +134,34 @@ func dotPath(path string) keyPath {
 
 // closest is the variable of a field that name most likely misspells, or "".
 func (s envSchema) closest(name string) string {
-	return closest(name, maps.Keys(s.static))
+	names := slices.Concat(slices.Collect(maps.Keys(s.static)), slices.Collect(maps.Keys(s.tagged)))
+	return closest(name, slices.Values(names))
 }
 
-// read maps the "NAME=value" entries of environ under the prefix to their
-// keys, and names the variable behind each flat key. unmatched names the
-// variables under the prefix that fit no key.
+// read maps the "NAME=value" entries of environ under the prefix, and those
+// an env tag names, to their keys, and names the variable behind each flat
+// key: where several set one key, the prefixed variable, else the one its tag
+// lists first. unmatched names the variables under the prefix that fit no
+// key.
 func (s envSchema) read(environ []string) (values map[string]any, names map[string]string, unmatched []string, err error) {
 	values = make(map[string]any)
 	names = make(map[string]string)
+	ranks := make(map[string]int)
 	var ambiguous []string
 	for _, kv := range environ {
 		name, value, ok := strings.Cut(kv, "=")
-		if !ok || !strings.HasPrefix(name, s.prefix) {
+		if !ok || !strings.HasPrefix(name, s.prefix) && len(s.tagged[name]) == 0 {
 			continue
 		}
 		switch readings := s.readings(name); len(readings) {
 		case 0:
 			unmatched = append(unmatched, name)
 		case 1:
-			values[readings[0].flat] = value
-			names[readings[0].flat] = name
+			r := readings[0]
+			if rank, set := ranks[r.flat]; set && rank <= r.rank {
+				continue
+			}
+			values[r.flat], names[r.flat], ranks[r.flat] = value, name, r.rank
 		default:
 			keys := make([]string, len(readings))
 			for i, r := range readings {
@@ -149,6 +176,18 @@ func (s envSchema) read(environ []string) (values map[string]any, names map[stri
 	}
 	return values, names, unmatched, nil
 }
+
+// envTagNames returns the variables a field's env tag lists, in order.
+func envTagNames(tag reflect.StructTag) []string {
+	v, ok := tag.Lookup("env")
+	if !ok {
+		return nil
+	}
+	return strings.Split(v, ",")
+}
+
+// envVarName matches what a POSIX shell accepts as a variable's name.
+var envVarName = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 
 // envName is the variable name for path under prefix; an empty prefix yields
 // the "_"-led suffix form used to match a map element's leaves.

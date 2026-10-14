@@ -52,8 +52,10 @@
 // With WithEnvPrefix("APP"), APP_DB_MAX_CONNS sets db.max_conns: the name is
 // looked up in the key tree, so an underscore inside a key survives. A map of
 // structs reads APP_FEATURES_<KEY>_<FIELD>, any other map APP_LABELS_<KEY>. A
-// variable that fits two keys fails the load with [ErrValidation] naming both;
-// one that fits none is not loaded. [WithEnviron] replaces os.Environ.
+// field's env tag adds variables read as written, without the prefix
+// (env:"PORT"); the prefixed variable wins over them. A variable that fits two
+// keys fails the load with [ErrValidation] naming both; one that fits none is
+// not loaded. [WithEnviron] replaces os.Environ.
 //
 // Keys match fields regardless of letter case, as decoding does; each
 // source's keys are rewritten into the fields' spelling before the sources
@@ -69,11 +71,10 @@
 //
 // Decoding adds string → time.Duration, comma-separated string → slice,
 // key=value entries → map and encoding.TextUnmarshaler to mapstructure's weak
-// typing; [WithDecodeHook]
-// hooks run first. A key no field decodes fails the load — a misspelled key
-// cannot leave a service on the default it meant to override — unless a
-// [WithUnknownKeys] handler accepts it, say after logging a warning;
-// [WithAllowUnknownKeys] accepts every one.
+// typing; [WithDecodeHook] hooks run first. A key no field decodes fails the
+// load — a misspelled key cannot leave a service on the default it meant to
+// override — unless a [WithUnknownKeys] handler accepts it, say after logging
+// a warning; [WithAllowUnknownKeys] accepts every one.
 // Put derivation and normalization in a post-load hook, not after Load
 // returns: the hook runs inside the load, so a Reloader applies it before
 // deciding whether to swap.

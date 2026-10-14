@@ -59,6 +59,9 @@ func schemaOf(t reflect.Type) (*schemaNode, error) {
 	}
 	b := &schemaBuilder{nodes: map[reflect.Type]*schemaNode{}}
 	n := b.node(t)
+	if b.err == nil && n.kind == nodeBranch {
+		b.err = checkEnvTags(n)
+	}
 	e, _ := schemaCache.LoadOrStore(t, schemaEntry{node: n, err: b.err})
 	return e.(schemaEntry).node, e.(schemaEntry).err
 }
@@ -156,12 +159,59 @@ func checkTags(t reflect.Type, f reflect.StructField) error {
 			return fmt.Errorf("%w: field %s of %s names a secret and is tagged sensitive:\"false\"", ErrSchema, f.Name, t)
 		}
 	}
+	if v, ok := f.Tag.Lookup("env"); ok {
+		if isBranch(derefType(f.Type)) {
+			return fmt.Errorf("%w: field %s of %s has an env tag, but a variable sets a value and %s is a section", ErrSchema, f.Name, t, f.Name)
+		}
+		for _, name := range envTagNames(f.Tag) {
+			if !envVarName.MatchString(name) {
+				return fmt.Errorf("%w: field %s of %s has env:%q; %q is not a variable name", ErrSchema, f.Name, t, v, name)
+			}
+		}
+	}
 	if def, ok := f.Tag.Lookup("default"); ok && textMap(derefType(f.Type)) {
 		if _, err := parseMapEntries(def); err != nil {
 			return fmt.Errorf("%w: field %s of %s has a default that is not key=value entries: %w", ErrSchema, f.Name, t, err)
 		}
 	}
 	return nil
+}
+
+// checkEnvTags refuses env tags a variable cannot address: one on a field of
+// a list element or map entry, which no single key is, and a variable two
+// fields name.
+func checkEnvTags(root *schemaNode) error {
+	owners := map[string]string{}
+	walking := map[*schemaNode]bool{}
+	var walk func(n *schemaNode, path keyPath, crossed bool) error
+	walk = func(n *schemaNode, path keyPath, crossed bool) error {
+		switch {
+		case (n.kind == nodeList || n.kind == nodeMap) && n.elem != nil:
+			return walk(n.elem, path.any(), true)
+		case n.kind != nodeBranch || walking[n]:
+			return nil
+		}
+		walking[n] = true
+		defer delete(walking, n)
+		for _, f := range n.fields {
+			at := path.field(f.key)
+			names := envTagNames(f.sf.Tag)
+			if len(names) > 0 && crossed {
+				return fmt.Errorf("%w: field %s of %s has an env tag, but %s is a key of every list element or map entry, which no one variable sets", ErrSchema, f.sf.Name, n.typ, at)
+			}
+			for _, name := range names {
+				if other, dup := owners[name]; dup {
+					return fmt.Errorf("%w: %s and %s both name the environment variable %s", ErrSchema, other, at, name)
+				}
+				owners[name] = at.String()
+			}
+			if err := walk(f.node, at, crossed); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+	return walk(root, nil, false)
 }
 
 func (b *schemaBuilder) fail(err error) {
