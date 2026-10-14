@@ -1,0 +1,10 @@
+go 1.26.0
+
+// Every published module, so a change to one is tested against the others'
+// working trees. The cookbook (config/examples/cookbook) is left out: it
+// pulls cloud SDKs and drivers, and builds against its own replace
+// directives; see `make cookbook-check`.
+use (
+	./config
+	./config/kongprovider
+)
