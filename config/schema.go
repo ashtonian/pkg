@@ -117,7 +117,7 @@ func (b *schemaBuilder) fields(n *schemaNode, t reflect.Type, index []int, tagge
 	squashing[t] = true
 	defer delete(squashing, t)
 	for kf := range keyedFields(t) {
-		if err := checkSensitiveTag(t, kf.field); err != nil {
+		if err := checkTags(t, kf.field); err != nil {
 			b.fail(err)
 			continue
 		}
@@ -143,18 +143,23 @@ func (b *schemaBuilder) fields(n *schemaNode, t reflect.Type, index []int, tagge
 	}
 }
 
-// checkSensitiveTag refuses a sensitive tag that is neither "true" nor
-// "false" — sensitive:"yes" would otherwise leave the field unprotected — and
-// a field that names a secret yet opts out of redaction.
-func checkSensitiveTag(t reflect.Type, f reflect.StructField) error {
-	v, ok := f.Tag.Lookup("sensitive")
-	switch {
-	case !ok:
-		return nil
-	case v != "true" && v != "false":
-		return fmt.Errorf("%w: field %s of %s has sensitive:%q; want \"true\" or \"false\"", ErrSchema, f.Name, t, v)
-	case v == "false" && taggedSensitive(f.Tag):
-		return fmt.Errorf("%w: field %s of %s names a secret and is tagged sensitive:\"false\"", ErrSchema, f.Name, t)
+// checkTags refuses a tag that cannot mean what it says: a sensitive value
+// other than "true" or "false" — sensitive:"yes" would otherwise leave the
+// field unprotected — a secret field opting out of redaction, and a map
+// default that is not key=value entries.
+func checkTags(t reflect.Type, f reflect.StructField) error {
+	if v, ok := f.Tag.Lookup("sensitive"); ok {
+		switch {
+		case v != "true" && v != "false":
+			return fmt.Errorf("%w: field %s of %s has sensitive:%q; want \"true\" or \"false\"", ErrSchema, f.Name, t, v)
+		case v == "false" && taggedSensitive(f.Tag):
+			return fmt.Errorf("%w: field %s of %s names a secret and is tagged sensitive:\"false\"", ErrSchema, f.Name, t)
+		}
+	}
+	if def, ok := f.Tag.Lookup("default"); ok && textMap(derefType(f.Type)) {
+		if _, err := parseMapEntries(def); err != nil {
+			return fmt.Errorf("%w: field %s of %s has a default that is not key=value entries: %w", ErrSchema, f.Name, t, err)
+		}
 	}
 	return nil
 }

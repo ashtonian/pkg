@@ -177,10 +177,11 @@ func joinPath(prefix, key string) string {
 }
 
 // DefaultsFromTags returns T's `default:"value"` struct tags keyed by koanf
-// dot-path, ready for [WithDefaults] or a confmap provider. Load reads them
-// as its lowest-precedence source, and applies a map's or slice's element
-// defaults to each entry the sources create; koanf and mapstructure do not
-// read the tag themselves.
+// dot-path, ready for [WithDefaults] or a confmap provider: each the tag's
+// text, but a map field's key=value entries as a map, so a source that sets
+// one entry merges with the others. Load reads them as its lowest-precedence
+// source, and applies a map's or slice's element defaults to each entry the
+// sources create; koanf and mapstructure do not read the tag themselves.
 //
 //	type ServerConfig struct {
 //	    Host string `koanf:"host" default:"localhost"`
@@ -199,8 +200,17 @@ func DefaultsFromTags[T any]() map[string]any {
 func defaultsFrom(fields []Field) map[string]any {
 	out := make(map[string]any)
 	for _, f := range fields {
-		if v, ok := f.Tag.Lookup("default"); ok {
-			out[f.Path] = v
+		v, ok := f.Tag.Lookup("default")
+		if !ok {
+			continue
+		}
+		out[f.Path] = v
+		// A map's default is its entries, so a source that sets one entry
+		// merges with the rest rather than replacing them.
+		if textMap(derefType(f.Type)) {
+			if m, err := parseMapEntries(v); err == nil {
+				out[f.Path] = m
+			}
 		}
 	}
 	return out

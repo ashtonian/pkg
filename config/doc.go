@@ -67,8 +67,9 @@
 //	post-load (WithPostLoad) → validate (the validator, then a Validatable's
 //	Validate method)
 //
-// Decoding adds string → time.Duration, comma-separated string → slice and
-// encoding.TextUnmarshaler to mapstructure's weak typing; [WithDecodeHook]
+// Decoding adds string → time.Duration, comma-separated string → slice,
+// key=value entries → map and encoding.TextUnmarshaler to mapstructure's weak
+// typing; [WithDecodeHook]
 // hooks run first. A key no field decodes fails the load — a misspelled key
 // cannot leave a service on the default it meant to override — unless a
 // [WithUnknownKeys] handler accepts it, say after logging a warning;
