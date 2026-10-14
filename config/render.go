@@ -85,7 +85,7 @@ func (w *valueTree) fields(n *outNode, val reflect.Value, inherited bool) {
 			}
 			continue
 		}
-		n.entries = append(n.entries, outEntry{key: kf.key, node: w.value(fv, site{name: kf.field.Name, sensitive: tagged})})
+		n.entries = append(n.entries, outEntry{key: kf.key, node: w.value(fv, site{named: nameSensitive(kf.field), sensitive: tagged})})
 	}
 }
 
@@ -103,7 +103,7 @@ func (w *valueTree) value(v reflect.Value, s site) *outNode {
 		}
 		elem = elem.Elem()
 	}
-	named := isSensitiveName(s.name)
+	named := s.named
 	t := elem.Type()
 	switch {
 	case isBranch(t):
@@ -128,13 +128,13 @@ func (w *valueTree) value(v reflect.Value, s site) *outNode {
 			keys := elem.MapKeys()
 			slices.SortFunc(keys, func(a, b reflect.Value) int { return cmp.Compare(a.String(), b.String()) })
 			for _, k := range keys {
-				n.entries = append(n.entries, outEntry{key: k.String(), node: w.value(elem.MapIndex(k), site{name: k.String(), keyed: true})})
+				n.entries = append(n.entries, outEntry{key: k.String(), node: w.value(elem.MapIndex(k), site{named: isSensitiveName(k.String()), keyed: true})})
 			}
 			return n
 		}
 		n := &outNode{kind: outList}
 		for i := range elem.Len() {
-			n.items = append(n.items, w.value(elem.Index(i), site{name: s.name, keyed: s.keyed}))
+			n.items = append(n.items, w.value(elem.Index(i), site{named: s.named, keyed: s.keyed}))
 		}
 		return n
 	}

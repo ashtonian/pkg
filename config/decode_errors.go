@@ -56,7 +56,8 @@ func withhold(root *schemaNode, tree any, e error) (error, bool) {
 		}
 		// A struct field's name covers a value given to the struct itself: a
 		// scalar where an Auth block belongs may be the credential.
-		named := n.kind == nodeBranch && len(p) > 0 && p[len(p)-1].kind == segField && isSensitiveName(p[len(p)-1].name)
+		named := n.kind == nodeBranch && len(p) > 0 && p[len(p)-1].kind == segField && isSensitiveName(p[len(p)-1].name) &&
+			c.owner.Tag.Get("sensitive") != "false"
 		switch {
 		case c.sensitive() || named:
 			return fmt.Errorf("'%s' cannot be decoded into %s (the value is sensitive and not shown)", key, n.typ), true
@@ -115,7 +116,7 @@ func mayHoldSensitive(t reflect.Type, seen map[reflect.Type]bool) bool {
 			if !f.IsExported() && !f.Anonymous {
 				continue
 			}
-			if taggedSensitive(f.Tag) || isSensitiveName(f.Name) || mayHoldSensitive(f.Type, seen) {
+			if taggedSensitive(f.Tag) || nameSensitive(f) || mayHoldSensitive(f.Type, seen) {
 				return true
 			}
 		}

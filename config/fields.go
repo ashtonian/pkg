@@ -78,7 +78,7 @@ func walkFields(t reflect.Type, prefix string, index []int, sensitive bool, walk
 			Path:      path,
 			Tag:       kf.field.Tag,
 			Type:      kf.field.Type,
-			Sensitive: tagged || isSensitiveName(kf.field.Name),
+			Sensitive: tagged || nameSensitive(kf.field),
 			Index:     at,
 		})
 	}
