@@ -4,6 +4,7 @@ import (
 	"encoding"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"reflect"
 	"regexp"
 	"slices"
@@ -144,7 +145,14 @@ func (g *schemaGen) object(n *schemaNode, c cursor, val reflect.Value) map[strin
 		if val.IsValid() {
 			fv, _ = val.FieldByIndexErr(f.index)
 		}
-		props[f.key] = g.field(f, fc, fv)
+		s := g.field(f, fc, fv)
+		props[f.key] = s
+		for _, a := range aliasNames(f.sf.Tag) {
+			alias := maps.Clone(s)
+			alias["deprecated"] = true
+			alias["description"] = "Renamed to " + f.key + "."
+			props[a] = alias
+		}
 	}
 	return map[string]any{
 		"type":                 "object",

@@ -59,7 +59,9 @@
 //
 // Keys match fields regardless of letter case, as decoding does; each
 // source's keys are rewritten into the fields' spelling before the sources
-// merge, so precedence holds whatever case a source used. An element
+// merge, so precedence holds whatever case a source used. A field's alias tag
+// names former keys rewritten the same way, so a renamed setting keeps
+// reading deployed files; the load logs a warning naming each. An element
 // struct's default tags apply to every map entry and slice element; an entry
 // set to null stays null — write {} for an entry that takes its defaults.
 //

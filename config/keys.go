@@ -18,10 +18,12 @@ import (
 // a default "port". It changes spelling only: values and their types are
 // kept, decode hooks are not run, and a value a custom decoder takes whole —
 // an UnmarshalMapstructure or TextUnmarshaler type, or an interface — is left
-// as written, as is every map key. It records a source that spells one field
-// two ways.
+// as written, as is every map key. A key an alias tag names is rewritten to
+// its field's key. It records a source that spells one field two ways, and
+// every alias it rewrote.
 type keyWalk struct {
-	twice []string
+	twice   []string
+	aliased []string // "old.key (now new.key)"
 }
 
 // tree rewrites the top level of a source.
@@ -80,14 +82,14 @@ func isList(v reflect.Value) bool {
 // keyed by anything but strings is keyed by their text, as koanf keys it.
 func (w *keyWalk) structMap(t reflect.Type, v reflect.Value, path keyPath) any {
 	out := reflect.MakeMapWithSize(stringKeyed(v.Type()), v.Len())
-	fields := structKeys(t)
+	fields, aliases := structKeys(t), structAliases(t)
 	written := make(map[string]reflect.Value, v.Len())
 	for _, k := range v.MapKeys() {
 		written[fmt.Sprint(k.Interface())] = v.MapIndex(k)
 	}
 	claimed := make(map[string]string, len(written)) // field key → the key written
 	for _, k := range slices.Sorted(maps.Keys(written)) {
-		key, ft, ok := matchKey(fields, k)
+		key, ft, alias, ok := matchKey(fields, aliases, k)
 		if !ok {
 			out.SetMapIndex(reflect.ValueOf(k).Convert(out.Type().Key()), written[k])
 			continue
@@ -97,6 +99,9 @@ func (w *keyWalk) structMap(t reflect.Type, v reflect.Value, path keyPath) any {
 			continue
 		}
 		claimed[key] = k
+		if alias {
+			w.aliased = append(w.aliased, fmt.Sprintf("%s (now %s)", path.field(k), path.field(key)))
+		}
 		out.SetMapIndex(reflect.ValueOf(key).Convert(out.Type().Key()), w.elem(out.Type().Elem(), ft, written[k], path.field(key)))
 	}
 	return out.Interface()
@@ -168,18 +173,57 @@ func structKeys(t reflect.Type) map[string]reflect.Type {
 	return fields
 }
 
-// matchKey finds the field a data key decodes into: spelled exactly, else
-// matching in letter case, as mapstructure matches it.
-func matchKey(fields map[string]reflect.Type, k string) (string, reflect.Type, bool) {
+// structAliases returns the alias tags of struct type t, each name mapped to
+// its field's key, looking through squashed structs.
+func structAliases(t reflect.Type) map[string]string {
+	aliases := map[string]string{}
+	var collect func(t reflect.Type)
+	collect = func(t reflect.Type) {
+		for kf := range keyedFields(t) {
+			switch {
+			case kf.key == "" && derefType(kf.field.Type).Kind() == reflect.Struct:
+				collect(derefType(kf.field.Type))
+			case kf.key != "":
+				for _, a := range aliasNames(kf.field.Tag) {
+					aliases[a] = kf.key
+				}
+			}
+		}
+	}
+	collect(t)
+	return aliases
+}
+
+// aliasNames returns the former keys a field's alias tag lists.
+func aliasNames(tag reflect.StructTag) []string {
+	v, ok := tag.Lookup("alias")
+	if !ok {
+		return nil
+	}
+	return strings.Split(v, ",")
+}
+
+// matchKey finds the field a data key decodes into — spelled exactly, else
+// matching in letter case, as mapstructure matches it — and whether the key
+// is one of the field's aliases rather than its key.
+func matchKey(fields map[string]reflect.Type, aliases map[string]string, k string) (key string, ft reflect.Type, alias, ok bool) {
 	if ft, ok := fields[k]; ok {
-		return k, ft, true
+		return k, ft, false, true
+	}
+	if key, ok := aliases[k]; ok {
+		return key, fields[key], true, true
 	}
 	for key, ft := range fields {
 		if strings.EqualFold(key, k) {
-			return key, ft, true
+			return key, ft, false, true
 		}
 	}
-	return "", nil, false
+	for a, key := range aliases {
+		if strings.EqualFold(a, k) {
+			return key, fields[key], true, true
+		}
+	}
+	return "", nil, false, false
 }
 
 // textKeyed is data with each map keyed by anything but strings, held in
