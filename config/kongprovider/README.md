@@ -127,7 +127,7 @@ Mapped values unflatten into the key tree, so a flag for `db.host` overrides tha
 
 ## Rules for the config struct
 
-- **Kong reads some of its tags.** `default` gives Kong the value it shows; `short`, `negatable`, `name`, `placeholder`, `embed` and `prefix` shape the flag. `koanf`, `desc`, `validate`, `sensitive` and `secret` are this package's and the config package's.
+- **Kong reads some of its tags.** `default` gives Kong the value it shows, and `sep` splits a list flag as the config package splits a list's strings; `short`, `negatable`, `name`, `placeholder`, `embed` and `prefix` shape the flag. `koanf`, `desc`, `validate`, `sensitive` and `secret` are this package's and the config package's.
 - **No Kong `required`.** Kong validates before the config pipeline runs, so a Kong `required` could not be satisfied by a file, the environment or a secret; use `validate:"required"`, which runs after every source.
 - **`env` is read by both.** The config package reads a field's `env` variables in its environment layer, below the prefixed variable. Kong reads the same tag as the flag's default and lists the variables in its help; kongprovider forwards only flags typed on the command line, so the config package's precedence decides the value. A variable Kong cannot parse into the flag's type fails the command line before the config loads.
 - **Fields with no flag.** Tag maps, slices of structs, interfaces and secrets `kong:"-"`: Kong cannot parse them from one flag, and a secret on the command line ends up in shell history and the process list. Nested structs become flag groups with `embed:"" prefix:"<section>-"`.
