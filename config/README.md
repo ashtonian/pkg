@@ -160,7 +160,7 @@ A config is a plain struct. Tags say how each field is keyed, defaulted, validat
 | `validate` | [go-playground/validator](https://pkg.go.dev/github.com/go-playground/validator/v10) rules. | `validate:"required,min=1"` |
 | `sensitive` | Redact in every output; on a struct, slice or map, everything inside it. | `sensitive:"true"` |
 | `desc` | Description for `PrintUsage`, `WithIncludeDescriptions` and Kong help. | `desc:"Server hostname"` |
-| `secret` | Key for your `SecretPopulator`; not read by this package. | `secret:"db/password"` |
+| `secret` | Where the value lives in your secret store, for `SecretsFrom`; the field is sensitive in every output. | `secret:"prod/db/password"` |
 
 Key rules (`Fields[T]` is their single implementation, shared by defaults, environment names, printing and the Kong bridge):
 
@@ -261,24 +261,44 @@ unmarshaling config: configuration validation failed: keys no field of main.AppC
 
 ## Secrets
 
-The package resolves no secrets itself. `WithSecretPopulator` hands your resolver the load's context and a pointer to the decoded config, after decoding and before post-load hooks and validation; its error fails the load with `ErrSecretProvider`:
+Tag a field with where its value lives, and give the load a fetch function for your secret store: `SecretsFrom` sets every `secret:"<ref>"` field to what the fetch returns for its ref, decoded into the field's type as a source value is (a string, an int, a duration), after decoding and before post-load hooks and validation.
 
 ```go
+type DBConfig struct {
+	Host     string `koanf:"host" default:"localhost"`
+	User     string `koanf:"user" secret:"prod/db#username"`
+	Password string `koanf:"password" secret:"prod/db#password"`
+	APIKey   string `koanf:"api_key" secret:"prod/api-key,optional"`
+}
+
 cfg, err := config.Load[AppConfig](ctx,
 	config.WithFile("config.yaml"),
-	config.WithSecretPopulator(func(ctx context.Context, target any) error {
-		c := target.(*AppConfig)
-		pw, err := vault.Read(ctx, "db/password") // your backend, your timeout
-		if err != nil {
-			return fmt.Errorf("db password: %w", err)
+	config.WithSecretPopulator(config.SecretsFrom(func(ctx context.Context, ref string) (string, error) {
+		out, err := sm.GetSecretValue(ctx, &secretsmanager.GetSecretValueInput{SecretId: &ref})
+		var missing *types.ResourceNotFoundException
+		if errors.As(err, &missing) {
+			return "", fmt.Errorf("%w: %s", config.ErrSecretNotFound, ref)
 		}
-		c.DB.Password = pw
-		return nil
-	}),
+		if err != nil {
+			return "", err
+		}
+		return aws.ToString(out.SecretString), nil
+	})),
 )
 ```
 
-Under a `Reloader` the populator runs on every reload, so a rotated secret is picked up by the next reload, and a backend outage fails that reload while the previous config stays live. Mark resolved fields `sensitive:"true"` (or give them a credential-like name) so no output shows them.
+A tag is `ref[#field][,optional]`:
+
+- `#field` reads one member of a JSON-object secret — a store that keeps a database's username and password in one secret is fetched once for both.
+- `,optional` leaves the field as the sources set it when the fetch returns an error wrapping `config.ErrSecretNotFound`, or the member is missing — so a development file supplies what production keeps in the store. `-` names no secret.
+- The fetched value replaces whatever a file or variable set; each ref is fetched once per load, with the load's context.
+- A failure fails the load with `ErrSecretProvider`, naming the key and the ref and wrapping your error; a value that does not decode into its field is reported by type, never quoted.
+- A `secret`-tagged field is sensitive in every output, as `sensitive:"true"` is.
+- A field behind a nil pointer — a section nothing configured — is left alone; a `secret` tag inside a map or list fails the load, since one ref cannot name every entry.
+
+Under a `Reloader` the populator runs on every reload, so a rotated secret is picked up by the next reload — `WithPollInterval` sets how soon — and a backend outage fails that reload while the previous config stays live.
+
+`WithSecretPopulator` takes any function of the load's context and a pointer to the decoded config, for a resolver `SecretsFrom` does not fit; its error fails the load with `ErrSecretProvider`.
 
 ## Post-load hooks
 
@@ -429,7 +449,7 @@ Once the watch is armed, every watched file is compared with what the last load 
 
 `PrintRedacted(cfg)` writes a config's keys and values as a table, JSON (`WithFormat(config.FormatJSON)`) or the nested YAML a config file holds (`FormatYAML`); `RedactedMap(cfg)` returns them as a `map[string]string` for a status endpoint or a log line. A sensitive map, list or interface is one redacted value, since the keys it holds may themselves be secrets. Both expand maps and slices entry by entry (`pools[0].dsn`, `settings["password"]`) so nothing is printed whole while something inside it is unchecked; a value graph that loops back prints `[CYCLE]`.
 
-A value is redacted when its field, or any struct, slice or map holding it, is tagged `sensitive:"true"`; when a name it sits under contains `password`, `secret`, `token`, `key`, `credential`, `auth`, `private`, `apikey`, `api_key` or `dsn` — its own field name, the name of a map or slice holding it, or any map key above it; a struct field's name does not cover the struct it holds, so an `Auth` block's `issuer` still prints. A value the walk prints whole without looking inside — a struct decoded from text or by its own decoder, or a slice of them — is redacted when its type could hold a credential, since its `%v` text would show every field. A pointer, map or slice that leads back to one being printed prints `[CYCLE]`. The same rule withholds values from decode errors and marks `Field.Sensitive`.
+A value is redacted when its field, or any struct, slice or map holding it, is tagged `sensitive:"true"` or `secret:"..."`; when a name it sits under contains `password`, `secret`, `token`, `key`, `credential`, `auth`, `private`, `apikey`, `api_key` or `dsn` — its own field name, the name of a map or slice holding it, or any map key above it; a struct field's name does not cover the struct it holds, so an `Auth` block's `issuer` still prints. A value the walk prints whole without looking inside — a struct decoded from text or by its own decoder, or a slice of them — is redacted when its type could hold a credential, since its `%v` text would show every field. A pointer, map or slice that leads back to one being printed prints `[CYCLE]`. The same rule withholds values from decode errors and marks `Field.Sensitive`.
 
 `PrintUsage[T](envPrefix)` lists what an operator can set — key, environment variable, type, default, whether it is required, description — as a table, JSON, or (`FormatEnv`) a commented `export` template. A map's entries are rows keyed by a pattern (`features[*].max_page_size`, with `APP_FEATURES_<KEY>_MAX_PAGE_SIZE`) and a slice of structs' elements rows like `items[*].port`, their element defaults included, since those apply to every entry. A default that is, or could hold, a sensitive value is withheld — a sensitive field's, or a map's or interface's, whose keys only a decoded value reveals; `Field.PrintableDefault` is the rule, and `kongprovider.HelpFromConfig` applies it too:
 
@@ -645,6 +665,7 @@ cfg, err := config.Load[AppConfig](ctx, config.WithFile(cli.Config), kongprovide
 - `ContextProvider` — a `koanf.Provider` read with the load's context; `NewMapProvider(read, delimiter)` builds one from a function.
 - `Validatable` — a config with a `Validate() error` method, called after the validator.
 - `ParseError` — bytes a parser rejected: `Source`, `Line`, and the parser's `Err`, left out of the message.
+- `SecretsFrom(fetch) SecretPopulator` — every `secret:"<ref>[#field][,optional]"` field set from your secret store; `ErrSecretNotFound` marks an absent secret.
 - `SecretPopulator`, `Validator` — the function and interface the pipeline calls.
 
 ### Reloading
@@ -839,6 +860,7 @@ The package's own file-watch tests use the operating system's notifications (ino
 | `options.go` | `Option` and every load option, `SecretPopulator`, `Validator` |
 | `deepcopy.go` | The `WithDefaults` deep copy |
 | `provider_func.go` | `NewMapProvider`: a provider from a function, dotted keys unflattened |
+| `secrets.go` | `SecretsFrom`: `secret` tags resolved through a fetch function |
 | `keyof.go` | `KeyOf`, `KeyOfValue`: a field's key from its address |
 | `fields.go` | `Fields[T]` key-tree walker and sensitivity, `FieldName`, `DefaultsFromTags[T]` |
 | `schema.go` | The schema graph every walk shares, the walk cursor (key, pattern, owner, sensitivity), `FieldFor[T]` |

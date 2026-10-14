@@ -215,7 +215,7 @@ func (w *entryWalk) walkStruct(val reflect.Value, prefix keyPath, inherited bool
 		w.walkValue(path, val.FieldByIndex(kf.field.Index), site{
 			name:      kf.field.Name,
 			desc:      kf.field.Tag.Get("desc"),
-			sensitive: inherited || kf.field.Tag.Get("sensitive") == "true",
+			sensitive: inherited || taggedSensitive(kf.field.Tag),
 		})
 	}
 }
@@ -344,6 +344,13 @@ func uncheckedHolder(v reflect.Value) bool {
 		}
 	}
 	return mayHoldSensitive(v.Type(), map[reflect.Type]bool{})
+}
+
+// taggedSensitive reports a field its tag makes sensitive: sensitive:"true",
+// or a secret:"<ref>" tag naming where its value comes from.
+func taggedSensitive(tag reflect.StructTag) bool {
+	secret := tag.Get("secret")
+	return tag.Get("sensitive") == "true" || secret != "" && secret != "-"
 }
 
 // isSensitiveName checks if a field name contains sensitive-looking substrings.

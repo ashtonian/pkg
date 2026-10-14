@@ -78,7 +78,7 @@ func (w *valueTree) root(cfg any) *outNode {
 func (w *valueTree) fields(n *outNode, val reflect.Value, inherited bool) {
 	for kf := range keyedFields(val.Type()) {
 		fv := val.FieldByIndex(kf.field.Index)
-		tagged := inherited || kf.field.Tag.Get("sensitive") == "true"
+		tagged := inherited || taggedSensitive(kf.field.Tag)
 		if kf.key == "" {
 			if inner := derefValue(fv); inner.IsValid() && inner.Kind() == reflect.Struct && isBranch(inner.Type()) {
 				w.fields(n, inner, tagged)

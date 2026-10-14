@@ -115,7 +115,7 @@ func mayHoldSensitive(t reflect.Type, seen map[reflect.Type]bool) bool {
 			if !f.IsExported() && !f.Anonymous {
 				continue
 			}
-			if f.Tag.Get("sensitive") == "true" || isSensitiveName(f.Name) || mayHoldSensitive(f.Type, seen) {
+			if taggedSensitive(f.Tag) || isSensitiveName(f.Name) || mayHoldSensitive(f.Type, seen) {
 				return true
 			}
 		}

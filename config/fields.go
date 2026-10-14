@@ -64,7 +64,7 @@ func walkFields(t reflect.Type, prefix string, index []int, sensitive bool, walk
 
 	for kf := range keyedFields(t) {
 		path := joinPath(prefix, kf.key)
-		tagged := sensitive || kf.field.Tag.Get("sensitive") == "true"
+		tagged := sensitive || taggedSensitive(kf.field.Tag)
 		at := append(slices.Clone(index), kf.field.Index...)
 		if isBranch(derefType(kf.field.Type)) {
 			walkFields(kf.field.Type, path, at, tagged, walking, out)

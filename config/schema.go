@@ -118,7 +118,7 @@ func (b *schemaBuilder) fields(n *schemaNode, t reflect.Type, index []int, tagge
 	defer delete(squashing, t)
 	for kf := range keyedFields(t) {
 		at := append(slices.Clone(index), kf.field.Index...)
-		fieldTagged := tagged || kf.field.Tag.Get("sensitive") == "true"
+		fieldTagged := tagged || taggedSensitive(kf.field.Tag)
 		if kf.key == "" {
 			if ft := derefType(kf.field.Type); isBranch(ft) {
 				b.fields(n, ft, at, fieldTagged, squashing)
