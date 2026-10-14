@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.3.1](https://github.com/ashtonian/pkg/compare/config/v0.3.0...config/v0.3.1) (2026-10-14)
+
+
+### Bug Fixes
+
+* **config:** promote an unexported embedded struct's fields when it is squashed ([2041f49](https://github.com/ashtonian/pkg/commit/2041f4965eeb00dd1c1608d7e1596cef2d5e54a6))
+
 ## [0.3.0](https://github.com/ashtonian/pkg/compare/config/v0.2.0...config/v0.3.0) (2026-10-14)
 
 
