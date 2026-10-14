@@ -2,28 +2,30 @@ package config
 
 import "errors"
 
-// Category sentinels. Every error GetConfig, a Reloader or ReloadHandler
-// returns wraps exactly one of them together with its cause, so errors.Is
-// tells the categories apart and errors.As reaches the cause. Codes, HTTP
-// statuses and retry classes are the caller's to assign: match a sentinel and
-// map it to your own error vocabulary.
+// Category sentinels. Every error Load or a Reloader returns wraps exactly
+// one of them together with its cause, so errors.Is tells the categories
+// apart and errors.As reaches the cause. Codes, HTTP statuses and retry
+// classes are the caller's to assign: match a sentinel and map it to your own
+// error vocabulary.
 var (
 	// ErrValidation reports invalid configuration: a validator rejected the
-	// loaded struct, a value could not decode into its field's type, or an
-	// environment variable named more than one key.
+	// loaded struct, a value could not decode into its field's type, an
+	// environment variable named more than one key, or, under
+	// WithStrictKeys, a source set a key no field decodes.
 	ErrValidation = errors.New("configuration validation failed")
 	// ErrFileRead reports a config file that could not be read: a required
 	// file that is missing, or any file that exists but cannot be opened.
 	ErrFileRead = errors.New("failed to read configuration file")
-	// ErrFileParse reports a config file whose bytes are not valid YAML, as
-	// distinct from one that could not be read.
-	ErrFileParse = errors.New("configuration file is not valid YAML")
+	// ErrFileParse reports a config file the file parser (YAML unless
+	// WithFileParser sets another) rejects, as distinct from one that could
+	// not be read.
+	ErrFileParse = errors.New("configuration file could not be parsed")
 	// ErrSecretProvider reports a failure of the WithSecretPopulator function.
 	ErrSecretProvider = errors.New("secret provider error")
 	// ErrPostLoad reports a WithPostLoad hook that returned an error.
 	ErrPostLoad = errors.New("configuration post-load hook failed")
 	// ErrSource reports a source that failed to load — the defaults, the
-	// environment, or a WithProvider source — as opposed to a file
+	// environment, or a base or override provider — as opposed to a file
 	// (ErrFileRead, ErrFileParse) or the secret populator (ErrSecretProvider).
 	ErrSource = errors.New("configuration source failed to load")
 	// ErrReload wraps every reload that ran the pipeline and failed; the

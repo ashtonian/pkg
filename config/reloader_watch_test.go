@@ -22,12 +22,11 @@ import (
 func watchedReloader(t *testing.T, opts ...Option) (*Reloader[reloaderCfg], <-chan *reloaderCfg) {
 	t.Helper()
 	changed := make(chan *reloaderCfg, 4)
-	r, err := NewReloader[reloaderCfg](t.Context(),
-		[]ReloadOption[reloaderCfg]{
-			WithFileWatch[reloaderCfg](50 * time.Millisecond),
-			WithOnChange(func(_, neu *reloaderCfg) { changed <- neu }),
-		},
-		append(opts, WithSkipValidation())...,
+	r, err := NewReloader[reloaderCfg](
+		t.Context(),
+		append(opts, WithSkipValidation()),
+		WithFileWatch(50*time.Millisecond),
+		WithOnReloadSuccess(func(_, neu *reloaderCfg) { changed <- neu }),
 	)
 	if err != nil {
 		t.Fatalf("NewReloader: %v", err)
@@ -35,7 +34,7 @@ func watchedReloader(t *testing.T, opts ...Option) (*Reloader[reloaderCfg], <-ch
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 	armReloader(t, r)
-	go func() { _ = r.Start(ctx) }()
+	go func() { _ = r.Run(ctx) }()
 	t.Cleanup(func() { _ = r.Stop(context.Background()) })
 	return r, changed
 }
@@ -70,7 +69,7 @@ func TestFileWatch_EditOfTheSymlinkTarget(t *testing.T) {
 	if err := os.Symlink(target, link); err != nil {
 		t.Fatal(err)
 	}
-	_, changed := watchedReloader(t, WithMustConfigFile(link))
+	_, changed := watchedReloader(t, WithRequiredFile(link))
 	if err := os.WriteFile(target, []byte("host: after\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -86,17 +85,16 @@ func TestFileWatch_RemovalIsReported(t *testing.T) {
 		t.Fatal(err)
 	}
 	failed := make(chan error, 1)
-	r, err := NewReloader[reloaderCfg](t.Context(),
-		[]ReloadOption[reloaderCfg]{
-			WithFileWatch[reloaderCfg](50 * time.Millisecond),
-			WithOnReloadError[reloaderCfg](func(_ string, err error) {
-				select {
-				case failed <- err:
-				default:
-				}
-			}),
-		},
-		WithConfigFile(file), WithSkipValidation(),
+	r, err := NewReloader[reloaderCfg](
+		t.Context(),
+		[]Option{WithFile(file), WithSkipValidation()},
+		WithFileWatch(50*time.Millisecond),
+		WithOnReloadError(func(_ string, err error) {
+			select {
+			case failed <- err:
+			default:
+			}
+		}),
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -104,7 +102,7 @@ func TestFileWatch_RemovalIsReported(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	armReloader(t, r)
-	go func() { _ = r.Start(ctx) }()
+	go func() { _ = r.Run(ctx) }()
 	defer func() { _ = r.Stop(context.Background()) }()
 
 	if err := os.Remove(file); err != nil {
@@ -128,7 +126,7 @@ func TestFileWatch_RemovalIsReported(t *testing.T) {
 func TestFileWatch_DirectoryCreatedLater(t *testing.T) {
 	root := t.TempDir()
 	file := filepath.Join(root, "later", "deeper", "config.yaml")
-	_, changed := watchedReloader(t, WithConfigFile(file))
+	_, changed := watchedReloader(t, WithFile(file))
 	if err := os.MkdirAll(filepath.Dir(file), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -234,12 +232,11 @@ func TestFileWatch_ChangeBeforeStartIsNotMissed(t *testing.T) {
 		}
 		changed := make(chan *reloaderCfg, 1)
 		logs := newLogRecorder()
-		r, err := NewReloader[reloaderCfg](t.Context(),
-			[]ReloadOption[reloaderCfg]{
-				WithFileWatch[reloaderCfg](50 * time.Millisecond),
-				WithOnChange(func(_, neu *reloaderCfg) { changed <- neu }),
-			},
-			WithConfigFile(file), WithSkipValidation(), WithLogger(slog.New(logs)),
+		r, err := NewReloader[reloaderCfg](
+			t.Context(),
+			[]Option{WithFile(file), WithSkipValidation(), WithLogger(slog.New(logs))},
+			WithFileWatch(50*time.Millisecond),
+			WithOnReloadSuccess(func(_, neu *reloaderCfg) { changed <- neu }),
 		)
 		if err != nil {
 			t.Fatal(err)
@@ -255,7 +252,7 @@ func TestFileWatch_ChangeBeforeStartIsNotMissed(t *testing.T) {
 	t.Run("unchanged", func(t *testing.T) {
 		r, _, _, logs := newReloader(t)
 		armReloader(t, r)
-		startReloader(t, r)
+		runReloader(t, r)
 		logs.waitFor(t, "config reloader started")
 		if s := r.Stats(); s.Attempts != 0 {
 			t.Fatalf("Start reloaded unchanged files (%d attempts)", s.Attempts)
@@ -265,14 +262,14 @@ func TestFileWatch_ChangeBeforeStartIsNotMissed(t *testing.T) {
 		r, file, changed, _ := newReloader(t)
 		write(t, file, "host: before-arm\n")
 		armReloader(t, r)
-		startReloader(t, r)
+		runReloader(t, r)
 		awaitHost(t, changed, "before-arm")
 	})
 	t.Run("between Arm and Start", func(t *testing.T) {
 		r, file, changed, _ := newReloader(t)
 		armReloader(t, r)
 		write(t, file, "host: after-arm\n")
-		startReloader(t, r)
+		runReloader(t, r)
 		awaitHost(t, changed, "after-arm")
 	})
 }

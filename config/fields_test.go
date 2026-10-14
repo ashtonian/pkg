@@ -86,7 +86,7 @@ func TestDefaultsFromTags_SkipsIgnoredField(t *testing.T) {
 // an underscore resolves exactly (listen_addr, not listen.addr).
 func TestGetConfig_TextUnmarshalerLeafFromEnv(t *testing.T) {
 	t.Setenv("FLD_LISTEN_ADDR", "10.0.0.7")
-	cfg, err := GetConfig[fieldsCfg](t.Context(), WithEnvPrefix("FLD"), WithSkipValidation())
+	cfg, err := Load[fieldsCfg](t.Context(), WithEnvPrefix("FLD"), WithSkipValidation())
 	if err != nil {
 		t.Fatalf("GetConfig: %v", err)
 	}
@@ -109,7 +109,7 @@ func TestFields_RecursiveTypeTerminates(t *testing.T) {
 	}
 
 	path := writeYAML(t, "name: a\nnext:\n  name: b\n")
-	cfg, err := GetConfig[fieldsNode](t.Context(), WithMustConfigFile(path), WithSkipValidation())
+	cfg, err := Load[fieldsNode](t.Context(), WithRequiredFile(path), WithSkipValidation())
 	if err != nil {
 		t.Fatalf("GetConfig: %v", err)
 	}
@@ -155,7 +155,7 @@ func TestGetConfig_EnvIntoMapOfStructs(t *testing.T) {
 	t.Setenv("MAPENV_FEATURES_DEVICES_ENABLED", "true")
 	t.Setenv("MAPENV_LABELS_ENV", "prod")
 
-	cfg, err := GetConfig[envMapCfg](t.Context(), WithEnvPrefix("MAPENV"), WithSkipValidation())
+	cfg, err := Load[envMapCfg](t.Context(), WithEnvPrefix("MAPENV"), WithSkipValidation())
 	if err != nil {
 		t.Fatalf("GetConfig: %v", err)
 	}
@@ -183,7 +183,7 @@ func TestGetConfig_AmbiguousMapEnvIsRefused(t *testing.T) {
 	}
 	t.Setenv("AMBIG_FEATURES_AUDIT_MAX_PAGE_SIZE", "7")
 	t.Setenv("AMBIG_FEATURES_DEVICES_SIZE", "3") // one reading only
-	_, err := GetConfig[cfg](t.Context(), WithEnvPrefix("AMBIG"), WithSkipValidation())
+	_, err := Load[cfg](t.Context(), WithEnvPrefix("AMBIG"), WithSkipValidation())
 	if !errors.Is(err, ErrValidation) {
 		t.Fatalf("GetConfig = %v, want ErrValidation for the ambiguous variable", err)
 	}

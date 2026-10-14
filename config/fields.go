@@ -17,6 +17,11 @@ type Field struct {
 	Tag reflect.StructTag
 	// Type is the leaf's declared Go type.
 	Type reflect.Type
+	// Sensitive reports that PrintRedacted redacts the leaf's value: it, or
+	// a struct above it, is tagged sensitive:"true", or its Go field name
+	// looks like a credential (password, secret, token, key, ...). A struct
+	// field's name does not cover the struct it holds.
+	Sensitive bool
 }
 
 // Fields reports every leaf key of T in declaration order. It is the single
@@ -43,7 +48,9 @@ func Fields[T any]() []Field {
 	return fieldsOf(reflect.TypeFor[T]())
 }
 
-func walkFields(t reflect.Type, prefix string, walking map[reflect.Type]bool, out *[]Field) {
+// walkFields appends t's leaves under prefix; sensitive is true beneath a
+// struct tagged sensitive:"true".
+func walkFields(t reflect.Type, prefix string, sensitive bool, walking map[reflect.Type]bool, out *[]Field) {
 	t = derefType(t)
 	if !isBranch(t) || walking[t] {
 		return
@@ -53,15 +60,21 @@ func walkFields(t reflect.Type, prefix string, walking map[reflect.Type]bool, ou
 
 	for kf := range keyedFields(t) {
 		path := joinPath(prefix, kf.key)
+		tagged := sensitive || kf.field.Tag.Get("sensitive") == "true"
 		if isBranch(derefType(kf.field.Type)) {
-			walkFields(kf.field.Type, path, walking, out)
+			walkFields(kf.field.Type, path, tagged, walking, out)
 			continue
 		}
 		if kf.key == "" {
 			// squash on a leaf has no key to contribute; mapstructure rejects it too.
 			continue
 		}
-		*out = append(*out, Field{Path: path, Tag: kf.field.Tag, Type: kf.field.Type})
+		*out = append(*out, Field{
+			Path:      path,
+			Tag:       kf.field.Tag,
+			Type:      kf.field.Type,
+			Sensitive: tagged || isSensitiveName(kf.field.Name),
+		})
 	}
 }
 
@@ -159,9 +172,9 @@ func joinPath(prefix, key string) string {
 }
 
 // DefaultsFromTags returns T's `default:"value"` struct tags keyed by koanf
-// dot-path, ready for [WithDefaults] or a confmap provider. GetConfig loads
-// them as its lowest-precedence source; koanf and mapstructure do not read
-// the tag themselves.
+// dot-path, ready for [WithDefaults] or a confmap provider. Load reads them
+// as its lowest-precedence source; koanf and mapstructure do not read the tag
+// themselves.
 //
 //	type ServerConfig struct {
 //	    Host string `koanf:"host" default:"localhost"`
@@ -190,6 +203,6 @@ func defaultsFrom(fields []Field) map[string]any {
 // fieldsOf is Fields for a type known only at run time.
 func fieldsOf(t reflect.Type) []Field {
 	var out []Field
-	walkFields(t, "", map[reflect.Type]bool{}, &out)
+	walkFields(t, "", false, map[reflect.Type]bool{}, &out)
 	return out
 }

@@ -32,12 +32,11 @@ func TestArm_UnwatchableDirectoryFails(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = os.Chmod(dir, 0o755) }) // runs before TempDir's removal
 
-	r, err := NewReloader[reloaderCfg](t.Context(),
-		[]ReloadOption[reloaderCfg]{
-			WithFileWatch[reloaderCfg](0),
-			WithSignalReload[reloaderCfg](syscall.SIGWINCH),
-		},
-		WithConfigFile(file), WithSkipValidation(),
+	r, err := NewReloader[reloaderCfg](
+		t.Context(),
+		[]Option{WithFile(file), WithSkipValidation()},
+		WithFileWatch(0),
+		WithSignalReload(syscall.SIGWINCH),
 	)
 	if err != nil {
 		t.Fatalf("NewReloader: %v", err)
@@ -50,7 +49,7 @@ func TestArm_UnwatchableDirectoryFails(t *testing.T) {
 	if !errors.Is(err, os.ErrPermission) || !strings.Contains(err.Error(), dir) {
 		t.Fatalf("Arm = %v, want a permission error naming %s", err, dir)
 	}
-	if err := r.Start(t.Context()); !errors.Is(err, os.ErrPermission) {
+	if err := r.Run(t.Context()); !errors.Is(err, os.ErrPermission) {
 		t.Fatalf("Start = %v, want the same permission error", err)
 	}
 	if got := r.Config().Host; got != "loaded" {
@@ -58,27 +57,22 @@ func TestArm_UnwatchableDirectoryFails(t *testing.T) {
 	}
 }
 
-// Triggers that cannot fail to arm report armed without a file watch: signals
-// with a poll interval, or a file watch with no config file to watch. A signal
+// Triggers that cannot fail to arm report armed without a file watch. A signal
 // received after Arm and before Start is served once Start runs, instead of
 // taking its default action. SIGWINCH's default is to ignore, so a reloader
 // that registered late fails here by timeout rather than by killing the test.
 func TestArm_SignalAndPollTriggersArmWithoutAFileWatch(t *testing.T) {
 	for _, tc := range []struct {
 		name string
-		opts []ReloadOption[reloaderCfg]
+		opts []ReloadOption
 	}{
-		{"signal and poll", []ReloadOption[reloaderCfg]{
-			WithSignalReload[reloaderCfg](syscall.SIGWINCH),
-			WithPollInterval[reloaderCfg](time.Hour),
-		}},
-		{"file watch with no config file", []ReloadOption[reloaderCfg]{
-			WithFileWatch[reloaderCfg](0),
-			WithSignalReload[reloaderCfg](syscall.SIGWINCH),
+		{"signal and poll", []ReloadOption{
+			WithSignalReload(syscall.SIGWINCH),
+			WithPollInterval(time.Hour),
 		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			r, err := NewReloader[reloaderCfg](t.Context(), tc.opts, WithSkipValidation())
+			r, err := NewReloader[reloaderCfg](t.Context(), []Option{WithSkipValidation()}, tc.opts...)
 			if err != nil {
 				t.Fatalf("NewReloader: %v", err)
 			}
@@ -86,7 +80,7 @@ func TestArm_SignalAndPollTriggersArmWithoutAFileWatch(t *testing.T) {
 			if err := syscall.Kill(os.Getpid(), syscall.SIGWINCH); err != nil {
 				t.Fatal(err)
 			}
-			startReloader(t, r)
+			runReloader(t, r)
 			eventually(t, func() bool { return r.Stats().LastTrigger == TriggerSignal },
 				"the signal received before Start to reload")
 		})

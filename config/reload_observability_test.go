@@ -5,8 +5,6 @@ package config
 import (
 	"context"
 	"errors"
-	"net/http"
-	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -18,7 +16,7 @@ import (
 // --- ReloadStats ---
 
 func TestReloadStats_ZeroBeforeAnyReload(t *testing.T) {
-	r, err := NewReloader[reloaderCfg](t.Context(), nil, WithSkipValidation())
+	r, err := NewReloader[reloaderCfg](t.Context(), []Option{WithSkipValidation()})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -40,7 +38,7 @@ func TestReloadStats_ZeroBeforeAnyReload(t *testing.T) {
 }
 
 func TestReloadStats_CountsSuccess(t *testing.T) {
-	r, err := NewReloader[reloaderCfg](t.Context(), nil, WithSkipValidation())
+	r, err := NewReloader[reloaderCfg](t.Context(), []Option{WithSkipValidation()})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -71,7 +69,7 @@ func TestReloadStats_CountsSuccess(t *testing.T) {
 func TestReloadStats_CountsFailureAndKeepsLastSuccess(t *testing.T) {
 	path := writeYAML(t, "name: valid\nport: 9090\n")
 
-	r, err := NewReloader[validatedCfg](t.Context(), nil, WithMustConfigFile(path))
+	r, err := NewReloader[validatedCfg](t.Context(), []Option{WithRequiredFile(path)})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -106,7 +104,7 @@ func TestReloadStats_CountsFailureAndKeepsLastSuccess(t *testing.T) {
 func TestReloadStats_SuccessClearsLastError(t *testing.T) {
 	path := writeYAML(t, "name: ok\n")
 
-	r, err := NewReloader[validatedCfg](t.Context(), nil, WithMustConfigFile(path))
+	r, err := NewReloader[validatedCfg](t.Context(), []Option{WithRequiredFile(path)})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -154,15 +152,14 @@ func TestWithOnReloadError_FiresOnFailure(t *testing.T) {
 	var mu sync.Mutex
 	var calls []call
 
-	r, err := NewReloader[validatedCfg](t.Context(),
-		[]ReloadOption[validatedCfg]{
-			WithOnReloadError[validatedCfg](func(trigger string, err error) {
-				mu.Lock()
-				defer mu.Unlock()
-				calls = append(calls, call{trigger, err})
-			}),
-		},
-		WithMustConfigFile(path),
+	r, err := NewReloader[validatedCfg](
+		t.Context(),
+		[]Option{WithRequiredFile(path)},
+		WithOnReloadError(func(trigger string, err error) {
+			mu.Lock()
+			defer mu.Unlock()
+			calls = append(calls, call{trigger, err})
+		}),
 	)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -203,12 +200,11 @@ func TestWithOnReloadError_PanicRecovery(t *testing.T) {
 	path := writeYAML(t, "name: valid\n")
 
 	fired := make(chan struct{}, 2)
-	r, err := NewReloader[validatedCfg](t.Context(),
-		[]ReloadOption[validatedCfg]{
-			WithOnReloadError[validatedCfg](func(string, error) { panic("boom") }),
-			WithOnReloadError[validatedCfg](func(string, error) { fired <- struct{}{} }),
-		},
-		WithMustConfigFile(path),
+	r, err := NewReloader[validatedCfg](
+		t.Context(),
+		[]Option{WithRequiredFile(path)},
+		WithOnReloadError(func(string, error) { panic("boom") }),
+		WithOnReloadError(func(string, error) { fired <- struct{}{} }),
 	)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -245,16 +241,16 @@ func TestReload_SingleFlightSkipReturnsInProgress(t *testing.T) {
 	release := make(chan struct{})
 	entered := make(chan struct{})
 
-	r, err := NewReloader[reloaderCfg](t.Context(), nil,
-		WithSkipValidation(),
-		WithPostLoad(func(_ context.Context, _ *reloaderCfg) error {
+	r, err := NewReloader[reloaderCfg](
+		t.Context(),
+		[]Option{WithSkipValidation(), WithPostLoad(func(_ context.Context, _ *reloaderCfg) error {
 			select {
 			case entered <- struct{}{}:
 				<-release // hold the single-flight slot until the test says go
 			default:
 			}
 			return nil
-		}),
+		})},
 	)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -283,42 +279,6 @@ func TestReload_SingleFlightSkipReturnsInProgress(t *testing.T) {
 	if s := r.Stats(); s.Attempts != 1 || s.Failures != 0 {
 		t.Errorf("stats = %+v, want 1 attempt / 0 failures — a skip runs no pipeline", s)
 	}
-}
-
-func TestReloadHandler_InProgressReturns409(t *testing.T) {
-	release := make(chan struct{})
-	entered := make(chan struct{})
-
-	r, err := NewReloader[reloaderCfg](t.Context(), nil,
-		WithSkipValidation(),
-		WithPostLoad(func(_ context.Context, _ *reloaderCfg) error {
-			select {
-			case entered <- struct{}{}:
-				<-release
-			default:
-			}
-			return nil
-		}),
-	)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		_, _ = r.Reload(context.Background())
-	}()
-	<-entered
-
-	rec := httptest.NewRecorder()
-	r.ReloadHandler().ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/reload", nil))
-	if rec.Code != http.StatusConflict {
-		t.Errorf("status = %d, want %d", rec.Code, http.StatusConflict)
-	}
-
-	close(release)
-	<-done
 }
 
 // --- Symlink-aware file watch (Kubernetes ConfigMap shape) ---
@@ -368,13 +328,11 @@ func TestReloader_FileWatch_DetectsConfigMapSymlinkSwap(t *testing.T) {
 	cfgFile := filepath.Join(mount, "config.yaml")
 
 	changed := make(chan *reloaderCfg, 1)
-	r, err := NewReloader[reloaderCfg](t.Context(),
-		[]ReloadOption[reloaderCfg]{
-			WithFileWatch[reloaderCfg](50 * time.Millisecond),
-			WithOnChange(func(_, neu *reloaderCfg) { changed <- neu }),
-		},
-		WithMustConfigFile(cfgFile),
-		WithSkipValidation(),
+	r, err := NewReloader[reloaderCfg](
+		t.Context(),
+		[]Option{WithRequiredFile(cfgFile), WithSkipValidation()},
+		WithFileWatch(50*time.Millisecond),
+		WithOnReloadSuccess(func(_, neu *reloaderCfg) { changed <- neu }),
 	)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -386,7 +344,7 @@ func TestReloader_FileWatch_DetectsConfigMapSymlinkSwap(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	armReloader(t, r)
-	go func() { _ = r.Start(ctx) }()
+	go func() { _ = r.Run(ctx) }()
 	defer func() { _ = r.Stop(context.Background()) }()
 
 	// Publish a new version the way kubelet does.
@@ -447,13 +405,11 @@ func TestReloader_FileWatch_DetectsReleaseDirRelink(t *testing.T) {
 	}
 
 	changed := make(chan *reloaderCfg, 1)
-	r, err := NewReloader[reloaderCfg](t.Context(),
-		[]ReloadOption[reloaderCfg]{
-			WithFileWatch[reloaderCfg](50 * time.Millisecond),
-			WithOnChange(func(_, neu *reloaderCfg) { changed <- neu }),
-		},
-		WithMustConfigFile(link),
-		WithSkipValidation(),
+	r, err := NewReloader[reloaderCfg](
+		t.Context(),
+		[]Option{WithRequiredFile(link), WithSkipValidation()},
+		WithFileWatch(50*time.Millisecond),
+		WithOnReloadSuccess(func(_, neu *reloaderCfg) { changed <- neu }),
 	)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -462,7 +418,7 @@ func TestReloader_FileWatch_DetectsReleaseDirRelink(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	armReloader(t, r)
-	go func() { _ = r.Start(ctx) }()
+	go func() { _ = r.Run(ctx) }()
 	defer func() { _ = r.Stop(context.Background()) }()
 
 	tmp := filepath.Join(root, "current.yaml.tmp")

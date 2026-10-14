@@ -34,7 +34,7 @@ func TestValidation_KeepsTheValidatorsWholeError(t *testing.T) {
 	}
 	v := validator.New()
 	v.RegisterTagNameFunc(FieldName)
-	_, err := GetConfig[cfg](t.Context(), WithValidator(wrappingValidator{v}))
+	_, err := Load[cfg](t.Context(), WithValidator(wrappingValidator{v}))
 	var fields validator.ValidationErrors
 	if !errors.Is(err, ErrValidation) || !errors.Is(err, errPolicy) || !errors.As(err, &fields) {
 		t.Fatalf("err = %v: want ErrValidation, the validator's sentinel and its field errors", err)
@@ -55,7 +55,7 @@ func TestValidation_NamesSquashedFieldsByKey(t *testing.T) {
 			} `koanf:"pools" validate:"dive"`
 		} `koanf:"db"`
 	}
-	_, err := GetConfig[cfg](t.Context(), WithDefaults(map[string]any{"db.pools": []map[string]any{{"max": 0}}}))
+	_, err := Load[cfg](t.Context(), WithDefaults(map[string]any{"db.pools": []map[string]any{{"max": 0}}}))
 	if err == nil {
 		t.Fatal("want a validation error")
 	}
@@ -78,7 +78,7 @@ func TestWithDefaults_SnapshotsTheCallersMap(t *testing.T) {
 	}
 	tags := []any{"a"}
 	defaults := map[string]any{"port": 1, "tags": tags}
-	r, err := NewReloader[cfg](t.Context(), nil, WithDefaults(defaults), WithSkipValidation())
+	r, err := NewReloader[cfg](t.Context(), []Option{WithDefaults(defaults), WithSkipValidation()})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -104,7 +104,7 @@ var _ koanf.Provider = failingProvider{}
 // A failing source carries its category and its cause like every other stage.
 func TestSourceFailureIsCategorized(t *testing.T) {
 	cause := errors.New("store unavailable")
-	_, err := GetConfig[struct{}](t.Context(), WithProvider(failingProvider{cause}))
+	_, err := Load[struct{}](t.Context(), WithOverrideProvider(failingProvider{cause}, nil))
 	if !errors.Is(err, ErrSource) || !errors.Is(err, cause) {
 		t.Fatalf("err = %v: want ErrSource with its cause", err)
 	}

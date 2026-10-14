@@ -23,15 +23,15 @@ func TestReload_CancelledContextPublishesNothing(t *testing.T) {
 	write("9000")
 	var cancelInHook context.CancelFunc
 	callbacks := 0
-	r, err := NewReloader[reloaderCfg](t.Context(),
-		[]ReloadOption[reloaderCfg]{WithOnChange(func(_, _ *reloaderCfg) { callbacks++ })},
-		WithConfigFile(file), WithSkipValidation(),
-		WithPostLoad(func(context.Context, *reloaderCfg) error {
+	r, err := NewReloader[reloaderCfg](
+		t.Context(),
+		[]Option{WithFile(file), WithSkipValidation(), WithPostLoad(func(context.Context, *reloaderCfg) error {
 			if cancelInHook != nil {
 				cancelInHook()
 			}
 			return nil
-		}),
+		})},
+		WithOnReloadSuccess(func(_, _ *reloaderCfg) { callbacks++ }),
 	)
 	if err != nil {
 		t.Fatal(err)

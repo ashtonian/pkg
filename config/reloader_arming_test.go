@@ -13,9 +13,10 @@ import (
 // Stop releases triggers Arm set up for a Start that never ran; after Stop,
 // Arm refuses and Start returns at once.
 func TestArm_StopReleasesUnservedTriggers(t *testing.T) {
-	r, err := NewReloader[portCfg](t.Context(),
-		[]ReloadOption[portCfg]{WithFileWatch[portCfg](0)},
-		WithConfigFile(writeYAML(t, "port: 9000\n")), WithSkipValidation(),
+	r, err := NewReloader[portCfg](
+		t.Context(),
+		[]Option{WithFile(writeYAML(t, "port: 9000\n")), WithSkipValidation()},
+		WithFileWatch(0),
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -39,7 +40,7 @@ func TestArm_StopReleasesUnservedTriggers(t *testing.T) {
 	if err := r.Arm(t.Context()); !errors.Is(err, ErrReloaderStopped) {
 		t.Fatalf("Arm after Stop = %v, want ErrReloaderStopped", err)
 	}
-	if err := r.Start(t.Context()); err != nil {
+	if err := r.Run(t.Context()); err != nil {
 		t.Fatalf("Start after Stop = %v, want nil", err)
 	}
 }
@@ -47,9 +48,10 @@ func TestArm_StopReleasesUnservedTriggers(t *testing.T) {
 // Start serves the triggers Arm set up, and Arm while they are served, or a
 // second Arm before Start, sets up nothing more.
 func TestArm_StartServesWhatArmSetUp(t *testing.T) {
-	r, err := NewReloader[portCfg](t.Context(),
-		[]ReloadOption[portCfg]{WithFileWatch[portCfg](0)},
-		WithConfigFile(writeYAML(t, "port: 9000\n")), WithSkipValidation(),
+	r, err := NewReloader[portCfg](
+		t.Context(),
+		[]Option{WithFile(writeYAML(t, "port: 9000\n")), WithSkipValidation()},
+		WithFileWatch(0),
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -67,7 +69,7 @@ func TestArm_StartServesWhatArmSetUp(t *testing.T) {
 		t.Fatal("a second Arm set up a second set of triggers")
 	}
 
-	startReloader(t, r)
+	runReloader(t, r)
 	eventually(t, func() bool { tr, serving := armed(); return tr == nil && serving == 1 }, "Start to take the armed triggers")
 	armReloader(t, r)
 	if tr, serving := armed(); tr != nil || serving != 1 {
@@ -81,17 +83,16 @@ func TestArm_StartServesWhatArmSetUp(t *testing.T) {
 func TestArm_QueuedArmHonoursItsContext(t *testing.T) {
 	var hold atomic.Bool
 	entered, release := make(chan struct{}), make(chan struct{})
-	r, err := NewReloader[portCfg](t.Context(),
-		[]ReloadOption[portCfg]{WithFileWatch[portCfg](time.Hour)},
-		WithConfigFile(writeYAML(t, "port: 9000\n")), WithSkipValidation(),
-		WithLogger(discardLogger()),
-		WithPostLoad(func(context.Context, *portCfg) error {
+	r, err := NewReloader[portCfg](
+		t.Context(),
+		[]Option{WithFile(writeYAML(t, "port: 9000\n")), WithSkipValidation(), WithLogger(discardLogger()), WithPostLoad(func(context.Context, *portCfg) error {
 			if hold.Load() {
 				close(entered)
 				<-release
 			}
 			return nil
-		}),
+		})},
+		WithFileWatch(time.Hour),
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -128,17 +129,16 @@ func TestArm_QueuedArmHonoursItsContext(t *testing.T) {
 func TestStop_BoundedWhileArmWaits(t *testing.T) {
 	var hold atomic.Bool
 	entered, release := make(chan struct{}), make(chan struct{})
-	r, err := NewReloader[portCfg](t.Context(),
-		[]ReloadOption[portCfg]{WithFileWatch[portCfg](time.Hour)},
-		WithConfigFile(writeYAML(t, "port: 9000\n")), WithSkipValidation(),
-		WithLogger(discardLogger()),
-		WithPostLoad(func(context.Context, *portCfg) error {
+	r, err := NewReloader[portCfg](
+		t.Context(),
+		[]Option{WithFile(writeYAML(t, "port: 9000\n")), WithSkipValidation(), WithLogger(discardLogger()), WithPostLoad(func(context.Context, *portCfg) error {
 			if hold.Load() {
 				close(entered)
 				<-release
 			}
 			return nil
-		}),
+		})},
+		WithFileWatch(time.Hour),
 	)
 	if err != nil {
 		t.Fatal(err)

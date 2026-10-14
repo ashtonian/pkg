@@ -6,8 +6,6 @@ import (
 	"context"
 	"errors"
 	"log/slog"
-	"net/http"
-	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -84,10 +82,10 @@ func eventually(t *testing.T, cond func() bool, what string) {
 }
 
 // startReloader runs r.Start in the background and stops it at cleanup.
-func startReloader[T any](t *testing.T, r *Reloader[T]) <-chan error {
+func runReloader[T any](t *testing.T, r *Reloader[T]) <-chan error {
 	t.Helper()
 	done := make(chan error, 1)
-	go func() { done <- r.Start(context.Background()) }()
+	go func() { done <- r.Run(context.Background()) }()
 	t.Cleanup(func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
@@ -109,24 +107,22 @@ func TestReloader_FileChangeDuringManualReloadIsApplied(t *testing.T) {
 	release := make(chan struct{})
 	logs := newLogRecorder()
 
-	r, err := NewReloader[portCfg](t.Context(),
-		[]ReloadOption[portCfg]{WithFileWatch[portCfg](50 * time.Millisecond)},
-		WithConfigFile(path),
-		WithSkipValidation(),
-		WithLogger(slog.New(logs)),
-		WithPostLoad(func(context.Context, *portCfg) error {
+	r, err := NewReloader[portCfg](
+		t.Context(),
+		[]Option{WithFile(path), WithSkipValidation(), WithLogger(slog.New(logs)), WithPostLoad(func(context.Context, *portCfg) error {
 			if holdNext.CompareAndSwap(true, false) {
 				close(entered)
 				<-release
 			}
 			return nil
-		}),
+		})},
+		WithFileWatch(50*time.Millisecond),
 	)
 	if err != nil {
 		t.Fatalf("NewReloader: %v", err)
 	}
 	armReloader(t, r)
-	startReloader(t, r)
+	runReloader(t, r)
 
 	holdNext.Store(true)
 	manual := make(chan error, 1)
@@ -155,20 +151,18 @@ func TestReloader_FileChangeDuringManualReloadIsApplied(t *testing.T) {
 func TestReloader_StopDuringDebounceDoesNotReload(t *testing.T) {
 	path := writeYAML(t, "port: 9000\n")
 	var changes atomic.Int32
-	r, err := NewReloader[portCfg](t.Context(),
-		[]ReloadOption[portCfg]{
-			WithFileWatch[portCfg](300 * time.Millisecond),
-			WithOnChange(func(_, _ *portCfg) { changes.Add(1) }),
-		},
-		WithConfigFile(path),
-		WithSkipValidation(),
+	r, err := NewReloader[portCfg](
+		t.Context(),
+		[]Option{WithFile(path), WithSkipValidation()},
+		WithFileWatch(300*time.Millisecond),
+		WithOnReloadSuccess(func(_, _ *portCfg) { changes.Add(1) }),
 	)
 	if err != nil {
 		t.Fatalf("NewReloader: %v", err)
 	}
 	done := make(chan error, 1)
 	armReloader(t, r)
-	go func() { done <- r.Start(context.Background()) }()
+	go func() { done <- r.Run(context.Background()) }()
 
 	if err := os.WriteFile(path, []byte("port: 9001\n"), 0o644); err != nil {
 		t.Fatal(err)
@@ -202,16 +196,16 @@ func TestReloader_StopWaitsForManualReload(t *testing.T) {
 	var hold atomic.Bool
 	var changes atomic.Int32
 
-	r, err := NewReloader[portCfg](t.Context(),
-		[]ReloadOption[portCfg]{WithOnChange(func(_, _ *portCfg) { changes.Add(1) })},
-		WithSkipValidation(),
-		WithPostLoad(func(context.Context, *portCfg) error {
+	r, err := NewReloader[portCfg](
+		t.Context(),
+		[]Option{WithSkipValidation(), WithPostLoad(func(context.Context, *portCfg) error {
 			if hold.CompareAndSwap(true, false) {
 				close(entered)
 				<-release
 			}
 			return nil
-		}),
+		})},
+		WithOnReloadSuccess(func(_, _ *portCfg) { changes.Add(1) }),
 	)
 	if err != nil {
 		t.Fatalf("NewReloader: %v", err)
@@ -251,11 +245,6 @@ func TestReloader_StopWaitsForManualReload(t *testing.T) {
 	if errors.Is(ErrReloaderStopped, ErrReload) {
 		t.Error("ErrReloaderStopped must not read as a reload failure")
 	}
-	rec := httptest.NewRecorder()
-	r.ReloadHandler().ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/reload", nil))
-	if rec.Code != http.StatusServiceUnavailable {
-		t.Errorf("handler status after Stop = %d, want 503", rec.Code)
-	}
 	if n := changes.Load(); n != 1 {
 		t.Errorf("OnChange fired after Stop returned")
 	}
@@ -268,27 +257,25 @@ func TestReloader_StopCancelsAutomaticReload(t *testing.T) {
 	entered := make(chan struct{})
 	var failures atomic.Int32
 
-	r, err := NewReloader[portCfg](t.Context(),
-		[]ReloadOption[portCfg]{
-			WithPollInterval[portCfg](20 * time.Millisecond),
-			WithOnReloadError[portCfg](func(string, error) { failures.Add(1) }),
-		},
-		WithSkipValidation(),
-		WithSecretPopulator(func(ctx context.Context, _ any) error {
+	r, err := NewReloader[portCfg](
+		t.Context(),
+		[]Option{WithSkipValidation(), WithSecretPopulator(func(ctx context.Context, _ any) error {
 			if arm.CompareAndSwap(true, false) {
 				close(entered)
 				<-ctx.Done() // a secret backend that only returns on cancellation
 				return ctx.Err()
 			}
 			return nil
-		}),
+		})},
+		WithPollInterval(20*time.Millisecond),
+		WithOnReloadError(func(string, error) { failures.Add(1) }),
 	)
 	if err != nil {
 		t.Fatalf("NewReloader: %v", err)
 	}
 	arm.Store(true)
 	done := make(chan error, 1)
-	go func() { done <- r.Start(context.Background()) }()
+	go func() { done <- r.Run(context.Background()) }()
 	<-entered
 	before := r.Stats()
 
@@ -311,18 +298,16 @@ func TestReloader_StopCancelsAutomaticReload(t *testing.T) {
 func TestReload_AbandonedByContextIsNotAFailure(t *testing.T) {
 	var arm atomic.Bool
 	var failures atomic.Int32
-	r, err := NewReloader[portCfg](t.Context(),
-		[]ReloadOption[portCfg]{
-			WithOnReloadError[portCfg](func(string, error) { failures.Add(1) }),
-		},
-		WithSkipValidation(),
-		WithSecretPopulator(func(ctx context.Context, _ any) error {
+	r, err := NewReloader[portCfg](
+		t.Context(),
+		[]Option{WithSkipValidation(), WithSecretPopulator(func(ctx context.Context, _ any) error {
 			if arm.Load() {
 				<-ctx.Done()
 				return ctx.Err()
 			}
 			return nil
-		}),
+		})},
+		WithOnReloadError(func(string, error) { failures.Add(1) }),
 	)
 	if err != nil {
 		t.Fatalf("NewReloader: %v", err)
@@ -347,9 +332,10 @@ func TestReload_AbandonedByContextIsNotAFailure(t *testing.T) {
 }
 
 func TestReloader_StartAfterStopReturnsImmediately(t *testing.T) {
-	r, err := NewReloader[portCfg](t.Context(),
-		[]ReloadOption[portCfg]{WithPollInterval[portCfg](time.Millisecond)},
-		WithSkipValidation(),
+	r, err := NewReloader[portCfg](
+		t.Context(),
+		[]Option{WithSkipValidation()},
+		WithPollInterval(time.Millisecond),
 	)
 	if err != nil {
 		t.Fatalf("NewReloader: %v", err)
@@ -358,7 +344,7 @@ func TestReloader_StartAfterStopReturnsImmediately(t *testing.T) {
 		t.Fatalf("Stop: %v", err)
 	}
 	done := make(chan error, 1)
-	go func() { done <- r.Start(context.Background()) }()
+	go func() { done <- r.Run(context.Background()) }()
 	select {
 	case err := <-done:
 		if err != nil {
@@ -387,7 +373,7 @@ func (p *portProvider) ReadBytes() ([]byte, error) {
 func TestReloader_SourceChangedWithoutWatchers(t *testing.T) {
 	src := &portProvider{}
 	src.port.Store(9000)
-	r, err := NewReloader[portCfg](t.Context(), nil, WithProvider(src), WithSkipValidation())
+	r, err := NewReloader[portCfg](t.Context(), []Option{WithOverrideProvider(src, nil), WithSkipValidation()})
 	if err != nil {
 		t.Fatalf("NewReloader: %v", err)
 	}
@@ -396,7 +382,7 @@ func TestReloader_SourceChangedWithoutWatchers(t *testing.T) {
 	src.port.Store(9001)
 	r.SourceChanged()
 	done := make(chan error, 1)
-	go func() { done <- r.Start(context.Background()) }()
+	go func() { done <- r.Run(context.Background()) }()
 
 	eventually(t, func() bool { return r.Config().Port == 9001 }, "the pre-Start request to be served")
 	if got := r.Stats().LastTrigger; got != TriggerSourceChanged {
@@ -421,21 +407,20 @@ func TestReloader_SourceChangedDuringReloadIsApplied(t *testing.T) {
 	var hold atomic.Bool
 	entered, release := make(chan struct{}), make(chan struct{})
 
-	r, err := NewReloader[portCfg](t.Context(), nil,
-		WithProvider(src),
-		WithSkipValidation(),
-		WithPostLoad(func(context.Context, *portCfg) error {
+	r, err := NewReloader[portCfg](
+		t.Context(),
+		[]Option{WithOverrideProvider(src, nil), WithSkipValidation(), WithPostLoad(func(context.Context, *portCfg) error {
 			if hold.CompareAndSwap(true, false) {
 				close(entered)
 				<-release
 			}
 			return nil
-		}),
+		})},
 	)
 	if err != nil {
 		t.Fatalf("NewReloader: %v", err)
 	}
-	startReloader(t, r)
+	runReloader(t, r)
 
 	hold.Store(true)
 	manual := make(chan error, 1)
@@ -459,21 +444,20 @@ func TestReloader_SourceChangedCoalesces(t *testing.T) {
 	src := &portProvider{}
 	var hold atomic.Bool
 	entered, release := make(chan struct{}), make(chan struct{})
-	r, err := NewReloader[portCfg](t.Context(), nil,
-		WithProvider(src),
-		WithSkipValidation(),
-		WithPostLoad(func(context.Context, *portCfg) error {
+	r, err := NewReloader[portCfg](
+		t.Context(),
+		[]Option{WithOverrideProvider(src, nil), WithSkipValidation(), WithPostLoad(func(context.Context, *portCfg) error {
 			if hold.CompareAndSwap(true, false) {
 				close(entered)
 				<-release
 			}
 			return nil
-		}),
+		})},
 	)
 	if err != nil {
 		t.Fatalf("NewReloader: %v", err)
 	}
-	startReloader(t, r)
+	runReloader(t, r)
 
 	hold.Store(true)
 	r.SourceChanged()
@@ -494,16 +478,16 @@ func TestReloader_SourceChangedCoalesces(t *testing.T) {
 // open forever: a real config change still applies.
 func TestReloader_BusyDirectoryCannotStarveAFileChange(t *testing.T) {
 	path := writeYAML(t, "port: 9000\n")
-	r, err := NewReloader[portCfg](t.Context(),
-		[]ReloadOption[portCfg]{WithFileWatch[portCfg](50 * time.Millisecond)},
-		WithConfigFile(path),
-		WithSkipValidation(),
+	r, err := NewReloader[portCfg](
+		t.Context(),
+		[]Option{WithFile(path), WithSkipValidation()},
+		WithFileWatch(50*time.Millisecond),
 	)
 	if err != nil {
 		t.Fatalf("NewReloader: %v", err)
 	}
 	armReloader(t, r)
-	startReloader(t, r)
+	runReloader(t, r)
 
 	stopNoise := make(chan struct{})
 	noiseDone := make(chan struct{})

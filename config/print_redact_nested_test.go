@@ -13,7 +13,7 @@ import (
 // TestRedaction_NestedCompositeSecrets pins the fix for secrets nested inside a
 // slice-of-structs or map-of-structs must be redacted, not leaked by
 // stringifying the whole composite. Both the explicit `sensitive:"true"` tag
-// and the sensitive-name heuristic are exercised, through PrintRedacted and ToMap.
+// and the sensitive-name heuristic are exercised, through PrintRedacted and RedactedMap.
 func TestRedaction_NestedCompositeSecrets(t *testing.T) {
 	type Upstream struct {
 		URL      string `koanf:"url"`
@@ -45,14 +45,14 @@ func TestRedaction_NestedCompositeSecrets(t *testing.T) {
 		t.Errorf("PrintRedacted dropped a non-sensitive url (recursion should show it):\n%s", out)
 	}
 
-	// ToMap (diagnostics map).
+	// RedactedMap (diagnostics map).
 	var flat strings.Builder
-	for k, v := range ToMap(cfg, true) {
+	for k, v := range RedactedMap(cfg) {
 		fmt.Fprintf(&flat, "%s=%v ", k, v)
 	}
 	for _, s := range secrets {
 		if strings.Contains(flat.String(), s) {
-			t.Errorf("ToMap leaked secret %q in nested composite: %s", s, flat.String())
+			t.Errorf("RedactedMap leaked secret %q in nested composite: %s", s, flat.String())
 		}
 	}
 }
@@ -79,13 +79,13 @@ func TestRedaction_SensitivityCrossesContainers(t *testing.T) {
 	}
 	for name, v := range cases {
 		t.Run(name, func(t *testing.T) {
-			if out := fmt.Sprint(ToMap(v, true)); strings.Contains(out, "FAKE_SECRET") {
+			if out := fmt.Sprint(RedactedMap(v)); strings.Contains(out, "FAKE_SECRET") {
 				t.Fatalf("redacted output leaked the secret: %s", out)
 			}
 		})
 	}
 
-	m := ToMap(struct{ Auth Auth }{Auth{Issuer: "https://issuer", Secret: "FAKE_SECRET"}}, true)
+	m := RedactedMap(struct{ Auth Auth }{Auth{Issuer: "https://issuer", Secret: "FAKE_SECRET"}})
 	if m["auth.issuer"] != "https://issuer" || m["auth.secret"] != redactedValue {
 		t.Fatalf("an Auth struct's fields must be judged by their own names: %v", m)
 	}
@@ -99,10 +99,10 @@ func TestRedaction_DynamicCycles(t *testing.T) {
 	s := make([]any, 2)
 	s[0] = map[string]any{"k": "v"}
 	s[1] = s
-	out := ToMap(struct {
+	out := RedactedMap(struct {
 		Settings map[string]any
 		List     []any
-	}{m, s}, true)
+	}{m, s})
 	if out["settings[self]"] != cycleValue || out["list[1]"] != cycleValue {
 		t.Fatalf("cycles = %v, want %q at settings[self] and list[1]", out, cycleValue)
 	}
@@ -113,11 +113,11 @@ func TestRedaction_DynamicCycles(t *testing.T) {
 
 // A finite value of a recursive container type prints; inspecting its type
 // does not recurse forever.
-func TestToMap_RecursiveSliceType(t *testing.T) {
+func TestRedactedMap_RecursiveSliceType(t *testing.T) {
 	type Tree []Tree
-	got := ToMap(struct{ Rows Tree }{Tree{nil, Tree{nil}}}, true)
-	want := map[string]any{"rows[0]": "[]", "rows[1][0]": "[]"}
+	got := RedactedMap(struct{ Rows Tree }{Tree{nil, Tree{nil}}})
+	want := map[string]string{"rows[0]": "[]", "rows[1][0]": "[]"}
 	if !reflect.DeepEqual(got, want) {
-		t.Fatalf("ToMap = %v, want %v", got, want)
+		t.Fatalf("RedactedMap = %v, want %v", got, want)
 	}
 }

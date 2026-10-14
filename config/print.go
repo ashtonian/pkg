@@ -132,11 +132,14 @@ func PrintRedacted(cfg any, opts ...PrintOption) error {
 	}
 }
 
-// ToMap returns a struct's fields as a map keyed by koanf path, redacting
-// sensitive values (as [PrintRedacted] defines them) when redact is true.
-func ToMap(cfg any, redact bool) map[string]any {
-	entries := collectEntries(cfg, !redact)
-	result := make(map[string]any, len(entries))
+// RedactedMap returns a config's leaf values as text keyed by path, every
+// sensitive value (as [PrintRedacted] defines it) replaced by "[REDACTED]".
+// It is for diagnostics — a status endpoint, a reload response, a log line —
+// not serialization: every value is its fmt %v text, and maps and slices are
+// expanded entry by entry.
+func RedactedMap(cfg any) map[string]string {
+	entries := collectEntries(cfg, false)
+	result := make(map[string]string, len(entries))
 	for _, e := range entries {
 		result[e.name] = e.value
 	}

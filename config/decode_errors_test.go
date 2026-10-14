@@ -46,7 +46,7 @@ func TestLoad_DecodeErrorWithholdsSensitiveValues(t *testing.T) {
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Setenv(tt.env, leaked)
-			_, err := GetConfig[cfg](t.Context(), WithEnvPrefix("DECODE"), WithSkipValidation())
+			_, err := Load[cfg](t.Context(), WithEnvPrefix("DECODE"), WithSkipValidation())
 			require.Error(t, err)
 			assert.ErrorIs(t, err, ErrValidation)
 			assert.NotContains(t, err.Error(), leaked)
@@ -64,7 +64,7 @@ func TestLoad_DecodeErrorKeepsOrdinaryDetail(t *testing.T) {
 		Secret echoText `koanf:"secret"`
 	}
 	t.Setenv("DECODE_PLAIN", "visible-input")
-	_, err := GetConfig[cfg](t.Context(), WithEnvPrefix("DECODE"), WithSkipValidation())
+	_, err := Load[cfg](t.Context(), WithEnvPrefix("DECODE"), WithSkipValidation())
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "visible-input")
 	var de *mapstructure.DecodeError
@@ -72,7 +72,7 @@ func TestLoad_DecodeErrorKeepsOrdinaryDetail(t *testing.T) {
 	assert.Equal(t, "plain", de.Name())
 
 	t.Setenv("DECODE_SECRET", leaked)
-	_, err = GetConfig[cfg](t.Context(), WithEnvPrefix("DECODE"), WithSkipValidation())
+	_, err = Load[cfg](t.Context(), WithEnvPrefix("DECODE"), WithSkipValidation())
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "visible-input")
 	assert.NotContains(t, err.Error(), leaked)
@@ -88,9 +88,10 @@ func TestReload_DecodeErrorWithholdsSensitiveValues(t *testing.T) {
 	}
 	t.Setenv("DECODE_TOKEN", "2026-10-13T00:00:00Z")
 	var reported []error
-	r, err := NewReloader[cfg](t.Context(),
-		[]ReloadOption[cfg]{WithOnReloadError[cfg](func(_ string, err error) { reported = append(reported, err) })},
-		WithEnvPrefix("DECODE"), WithSkipValidation(),
+	r, err := NewReloader[cfg](
+		t.Context(),
+		[]Option{WithEnvPrefix("DECODE"), WithSkipValidation()},
+		WithOnReloadError(func(_ string, err error) { reported = append(reported, err) }),
 	)
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = r.Stop(t.Context()) })

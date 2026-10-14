@@ -37,7 +37,7 @@ func TestLoad_EnvAmbiguityAcrossDestinations(t *testing.T) {
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Setenv(tt.env, "7")
-			_, err := GetConfig[cfg](t.Context(), WithEnvPrefix("AMB"), WithSkipValidation())
+			_, err := Load[cfg](t.Context(), WithEnvPrefix("AMB"), WithSkipValidation())
 			require.ErrorIs(t, err, ErrValidation)
 			assert.Contains(t, err.Error(), tt.env)
 			for _, r := range tt.readings {
@@ -64,7 +64,7 @@ func TestLoad_EnvDestinations(t *testing.T) {
 	t.Setenv("DEST_LABELS_TEAM_NAME", "core")
 	t.Setenv("DEST_EXTRA_A_B", "c")
 	t.Setenv("DEST_UNKNOWN_SETTING", "ignored")
-	got, err := GetConfig[cfg](t.Context(), WithEnvPrefix("DEST"), WithSkipValidation())
+	got, err := Load[cfg](t.Context(), WithEnvPrefix("DEST"), WithSkipValidation())
 	require.NoError(t, err)
 	assert.Equal(t, 5, got.MaxConns)
 	assert.Equal(t, map[string]entry{"read_replica": {MaxConns: 8}}, got.Pools)

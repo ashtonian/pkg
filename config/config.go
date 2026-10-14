@@ -6,411 +6,142 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
-	"log/slog"
-	"maps"
 	"os"
 	"reflect"
+	"slices"
 	"strings"
 	"sync"
 
 	"github.com/go-playground/validator/v10"
 	"github.com/go-viper/mapstructure/v2"
-	"github.com/knadh/koanf/parsers/yaml"
 	"github.com/knadh/koanf/providers/confmap"
 	"github.com/knadh/koanf/v2"
 )
 
-// SecretPopulator fills `secret`-tagged fields on the target struct.
+// Load builds a configuration of type T: it merges the sources in
+// precedence order, decodes them into a new T, then resolves secrets, runs
+// the post-load hooks and validates.
 //
-// Implementations typically wrap a secret store's client. Keeping this as
-// a function-typed option rather than an interface keeps the package free
-// of any secret backend while letting consumers wire any secret backend
-// they want.
-type SecretPopulator func(ctx context.Context, target any) error
-
-// Option configures GetConfig behavior.
-type Option func(*options)
-
-// Validator is the narrow interface pkgconfig consumes for struct
-// validation. Both `*validator.Validate` (go-playground) and any
-// custom wrapper (e.g. a ModelValidator)
-// satisfy it. A validator that also has
-// `StructCtx(ctx, v) error` is called through that instead, with the
-// load's ctx.
-type Validator interface {
-	Struct(v any) error
-}
-
-type options struct {
-	envPrefix       string
-	environ         func() []string
-	configFiles     []configFileEntry
-	defaults        map[string]any
-	populateSecrets SecretPopulator
-	postLoad        []postLoadHook
-	skipValidation  bool
-	customValidator Validator
-	extraProviders  []koanf.Provider
-	logger          *slog.Logger
-}
-
-// postLoadHook is the type-erased form of a [WithPostLoad] callback. The
-// generic constructor closes over the *T assertion so call sites stay typed
-// while the Option list stays non-generic.
-type postLoadHook func(ctx context.Context, target any) error
-
-type configFileEntry struct {
-	path     string
-	required bool
-}
-
-func buildOptions(opts []Option) *options {
-	o := &options{}
-	for _, opt := range opts {
-		opt(o)
-	}
-	if o.logger == nil {
-		o.logger = slog.Default()
-	}
-	if o.environ == nil {
-		o.environ = os.Environ
-	}
-	return o
-}
-
-// requireFiles marks every configured file that loaded as required. A
-// Reloader uses it so a file that loaded once cannot silently drop out of a
-// reload.
-func (o *options) requireFiles(loaded fileDigests) {
-	for i := range o.configFiles {
-		if _, ok := loaded[o.configFiles[i].path]; ok {
-			o.configFiles[i].required = true
-		}
-	}
-}
-
-// WithEnvPrefix sets the prefix for environment variable lookups.
-// For example, WithEnvPrefix("APP") causes env var APP_HOST to map to koanf key "host".
-func WithEnvPrefix(prefix string) Option {
-	return func(o *options) {
-		o.envPrefix = prefix
-	}
-}
-
-// WithEnviron sets where environment variables are read from: a function
-// returning "NAME=value" entries, as [os.Environ] does, called on every load
-// and reload. The default is os.Environ. Tests and examples pass a fixed list;
-// a deployment adapter can pass variables gathered elsewhere.
-func WithEnviron(environ func() []string) Option {
-	return func(o *options) {
-		o.environ = environ
-	}
-}
-
-// WithConfigFile adds an optional YAML config file path. Optional means the
-// file may be absent: a missing file is skipped. A file that exists but cannot
-// be read fails the load with [ErrFileRead], and one that is not valid YAML
-// fails it with [ErrFileParse].
+// Source precedence, highest first:
 //
-// Under a [Reloader], a file that loaded once is required from then on: a
-// reload that finds it gone fails and keeps the previous config rather than
-// quietly reverting its keys to lower-precedence values.
-func WithConfigFile(path string) Option {
-	return func(o *options) {
-		o.configFiles = append(o.configFiles, configFileEntry{path: path, required: false})
-	}
-}
-
-// WithMustConfigFile adds a required config file path. A missing or
-// unreadable file fails the load with [ErrFileRead]; invalid YAML fails it
-// with [ErrFileParse].
-func WithMustConfigFile(path string) Option {
-	return func(o *options) {
-		o.configFiles = append(o.configFiles, configFileEntry{path: path, required: true})
-	}
-}
-
-// WithConfigFiles adds multiple optional config file paths, merged
-// left-to-right. Each follows the [WithConfigFile] rules.
-func WithConfigFiles(paths ...string) Option {
-	return func(o *options) {
-		for _, p := range paths {
-			o.configFiles = append(o.configFiles, configFileEntry{path: p, required: false})
-		}
-	}
-}
-
-// WithMustConfigFiles adds multiple required config file paths, merged left-to-right.
-func WithMustConfigFiles(paths ...string) Option {
-	return func(o *options) {
-		for _, p := range paths {
-			o.configFiles = append(o.configFiles, configFileEntry{path: p, required: true})
-		}
-	}
-}
-
-// WithDefaults adds programmatic default values keyed by koanf dot-path
-// (e.g. "server.port"). Repeated calls merge, a later call winning on a
-// shared key. The values are deep-copied when WithDefaults is called — every
-// map, slice, array and pointer target reachable through exported fields —
-// so changing the caller's data afterwards changes nothing, including what a
-// Reloader built from the option reads later. Unexported struct fields,
-// channels and functions are copied by value.
-func WithDefaults(defaults map[string]any) Option {
-	snapshot := deepCopy(reflect.ValueOf(defaults)).Interface().(map[string]any)
-	return func(o *options) {
-		if o.defaults == nil {
-			o.defaults = make(map[string]any, len(snapshot))
-		}
-		maps.Copy(o.defaults, snapshot)
-	}
-}
-
-// deepCopy returns a copy of v sharing no map, slice, array element or
-// pointer target with it. Data v shares internally, cycles included, is
-// shared the same way in the copy.
-func deepCopy(v reflect.Value) reflect.Value {
-	c := copier{made: map[copyKey]reflect.Value{}}
-	return c.copy(v)
-}
-
-type copier struct {
-	made map[copyKey]reflect.Value
-}
-
-// copyKey identifies a map, slice or pointer already copied. A slice's
-// length is part of it: two slices over one array are different values.
-type copyKey struct {
-	ptr uintptr
-	len int
-	typ reflect.Type
-}
-
-func (c copier) copy(v reflect.Value) reflect.Value {
-	switch v.Kind() {
-	case reflect.Pointer, reflect.Map, reflect.Slice:
-		if v.IsNil() {
-			return v
-		}
-		key := copyKey{ptr: v.Pointer(), typ: v.Type()}
-		if v.Kind() == reflect.Slice {
-			key.len = v.Len()
-		}
-		if done, ok := c.made[key]; ok {
-			return done
-		}
-		switch v.Kind() {
-		case reflect.Pointer:
-			p := reflect.New(v.Type().Elem())
-			c.made[key] = p
-			p.Elem().Set(c.copy(v.Elem()))
-			return p
-		case reflect.Map:
-			m := reflect.MakeMapWithSize(v.Type(), v.Len())
-			c.made[key] = m
-			for iter := v.MapRange(); iter.Next(); {
-				m.SetMapIndex(iter.Key(), c.copy(iter.Value()))
-			}
-			return m
-		default:
-			s := reflect.MakeSlice(v.Type(), v.Len(), v.Len())
-			c.made[key] = s
-			for i := range v.Len() {
-				s.Index(i).Set(c.copy(v.Index(i)))
-			}
-			return s
-		}
-	case reflect.Array:
-		a := reflect.New(v.Type()).Elem()
-		for i := range v.Len() {
-			a.Index(i).Set(c.copy(v.Index(i)))
-		}
-		return a
-	case reflect.Struct:
-		s := reflect.New(v.Type()).Elem()
-		s.Set(v) // unexported fields cannot be reached, so they keep their values
-		for i := range v.NumField() {
-			if v.Type().Field(i).IsExported() {
-				s.Field(i).Set(c.copy(v.Field(i)))
-			}
-		}
-		return s
-	case reflect.Interface:
-		if v.IsNil() {
-			return v
-		}
-		i := reflect.New(v.Type()).Elem()
-		i.Set(c.copy(v.Elem()))
-		return i
-	}
-	return v
-}
-
-// WithProvider adds a generic koanf provider loaded at high precedence
-// (after env vars). Multiple providers are loaded in the order added.
-// This is the extension point for CLI flag overrides (via kongprovider),
-// remote config sources, or any custom koanf.Provider.
-func WithProvider(p koanf.Provider) Option {
-	return func(o *options) {
-		o.extraProviders = append(o.extraProviders, p)
-	}
-}
-
-// WithSecretPopulator configures secret injection.
+//  1. Override providers ([WithOverrideProvider], including kongprovider's CLI flags)
+//  2. Environment variables ([WithEnvPrefix])
+//  3. Config files ([WithFile], [WithRequiredFile]), a later file winning
+//  4. Base providers ([WithBaseProvider])
+//  5. Programmatic defaults ([WithDefaults])
+//  6. Struct-tag defaults (default:"value")
 //
-// After unmarshaling, GetConfig invokes the populator with the same ctx
-// supplied to GetConfig and a pointer to the freshly-loaded config struct.
-// The populator is responsible for walking `secret:"..."` tags and
-// resolving values from the consumer's chosen secret backend
-// (typically a secret store client's populate call).
-func WithSecretPopulator(p SecretPopulator) Option {
-	return func(o *options) {
-		o.populateSecrets = p
-	}
-}
-
-// WithPostLoad registers a hook that runs after the config is unmarshaled
-// and secrets are injected, but BEFORE validation. Use it for derivation and
-// normalization the mapstructure decode hooks cannot express: collapsing a
-// shorthand block into its canonical form, expanding a profile macro into the
-// knobs it stands for, parsing a delimited field into a typed slice, deriving
-// a default from the host environment.
+// ctx reaches the secret populator, every post-load hook, a context-aware
+// validator and every [ContextProvider].
 //
-// Ordering is the point of the hook. Because it runs inside GetConfig, a
-// [Reloader] applies it on every reload before deciding whether to swap — so
-// normalization is covered by validate-before-swap like everything else.
-// Equivalent work done after GetConfig returns is not: under a Reloader the
-// new config is already live by the time such a step fails.
-//
-// The hook mutates *cfg in place. A returned error aborts the load — and under
-// a Reloader preserves the previous config — wrapped in [ErrPostLoad].
-// Multiple hooks run in registration order; the first error stops the chain.
-//
-//	cfg, err := config.GetConfig[AppConfig](ctx,
-//	    config.WithConfigFile("./config.yaml"),
-//	    config.WithPostLoad(func(_ context.Context, c *AppConfig) error {
-//	        c.Normalize()
-//	        return c.ValidateCrossField()
-//	    }),
-//	)
-func WithPostLoad[T any](fn func(ctx context.Context, cfg *T) error) Option {
-	return func(o *options) {
-		o.postLoad = append(o.postLoad, func(ctx context.Context, target any) error {
-			typed, ok := target.(*T)
-			if !ok {
-				return fmt.Errorf("%w: hook is typed for %T but the load produced %T",
-					ErrPostLoad, (*T)(nil), target)
-			}
-			return fn(ctx, typed)
-		})
-	}
-}
-
-// WithSkipValidation disables go-playground/validator validation
-// (including validate:"required" checks).
-func WithSkipValidation() Option {
-	return func(o *options) {
-		o.skipValidation = true
-	}
-}
-
-// WithValidator sets a custom struct validator. Accepts any value that
-// implements `Struct(any) error` — typically either a
-// `*go-playground/validator.Validate` or a higher-level wrapper like
-// a ModelValidator. nil restores the default: a
-// go-playground validator that names fields by config key. Register
-// [FieldName] on a custom validator to get the same naming.
-func WithValidator(v Validator) Option {
-	return func(o *options) {
-		o.customValidator = v
-	}
-}
-
-// WithLogger sets the logger for loader diagnostics and, when the options are
-// passed to [NewReloader], for every reload event. Defaults to slog.Default().
-func WithLogger(logger *slog.Logger) Option {
-	return func(o *options) {
-		o.logger = logger
-	}
-}
-
-// GetConfig creates a koanf instance, loads sources in precedence order,
-// unmarshals into T, injects secrets, runs any [WithPostLoad] hooks, and
-// validates.
-//
-// ctx is propagated into secret resolution via the [SecretPopulator] passed
-// to [WithSecretPopulator] and into every [WithPostLoad] hook; pass the
-// caller's request/boot context so secret-fetch latency and cancellation flow
-// through cleanly.
-//
-// Source precedence (highest wins):
-//  1. Extra providers (CLI flags via kongprovider, custom providers)
-//  2. Environment variables
-//  3. Config files (merged left-to-right)
-//  4. Programmatic defaults (WithDefaults)
-//  5. Struct tag defaults (default:"value" via DefaultsFromTags)
-//
-// Every returned error carries both its category sentinel ([ErrFileRead],
-// [ErrFileParse], [ErrSecretProvider], [ErrPostLoad], [ErrValidation] — the
-// last also for a value that cannot decode into its field's type) and the
-// underlying cause, so errors.Is and errors.As reach either.
-func GetConfig[T any](ctx context.Context, opts ...Option) (*T, error) {
+// Every error wraps one category sentinel ([ErrFileRead], [ErrFileParse],
+// [ErrSource], [ErrSecretProvider], [ErrPostLoad], [ErrValidation]) and its
+// cause, so errors.Is and errors.As reach either. No error quotes a value
+// meant for a sensitive field.
+func Load[T any](ctx context.Context, opts ...Option) (*T, error) {
 	cfg, _, err := load[T](ctx, buildOptions(opts))
 	return cfg, err
 }
+
+// ContextProvider is a koanf.Provider whose reads take a context. A provider
+// given to [WithBaseProvider] or [WithOverrideProvider] that implements it is
+// read through ReadContext or ReadBytesContext with the load's context, so a
+// remote read stops when the load is cancelled — by its caller, or by a
+// Reloader's Stop.
+type ContextProvider interface {
+	koanf.Provider
+	ReadContext(ctx context.Context) (map[string]any, error)
+	ReadBytesContext(ctx context.Context) ([]byte, error)
+}
+
+// boundProvider reads a ContextProvider with one load's context.
+type boundProvider struct {
+	ContextProvider
+	ctx context.Context
+}
+
+func (b boundProvider) Read() (map[string]any, error) { return b.ReadContext(b.ctx) }
+func (b boundProvider) ReadBytes() ([]byte, error)    { return b.ReadBytesContext(b.ctx) }
 
 // fileDigests maps each config file a load read to the SHA-256 of the exact
 // bytes it parsed.
 type fileDigests map[string][sha256.Size]byte
 
-// load is GetConfig's pipeline. It also reports which config files it read
-// and what they held, which a Reloader needs to keep an optional file from
+// loader merges one load's sources into k, each through its own koanf
+// instance so its keys can be checked before they merge.
+type loader struct {
+	k       *koanf.Koanf
+	root    reflect.Type
+	strict  bool
+	sources []string
+}
+
+// add loads p into a fresh instance and merges it into the load. A strict
+// load first refuses any key the config type has no field for.
+func (l *loader) add(name string, p koanf.Provider, parser koanf.Parser) (loadErr, keyErr error) {
+	src := koanf.New(".")
+	if err := src.Load(p, parser); err != nil {
+		return err, nil
+	}
+	if l.strict {
+		if unknown := unknownKeys(l.root, src.Keys()); len(unknown) > 0 {
+			return nil, fmt.Errorf("keys no field of %s decodes: %s", l.root, strings.Join(unknown, ", "))
+		}
+	}
+	if err := l.k.Merge(src); err != nil {
+		return err, nil
+	}
+	l.sources = append(l.sources, name)
+	return nil, nil
+}
+
+// load is Load's pipeline. It also reports which config files it read and
+// what they held, which a Reloader needs to keep an optional file from
 // vanishing unnoticed and to tell whether a file changed since.
 func load[T any](ctx context.Context, o *options) (*T, fileDigests, error) {
+	root := reflect.TypeFor[T]()
+	if err := o.checkHookTypes(reflect.TypeFor[*T]()); err != nil {
+		return nil, nil, err
+	}
 	// A fresh instance per load: nothing from an earlier load (a key since
 	// deleted from a file, say) can survive into this one.
-	k := koanf.New(".")
-
+	l := &loader{k: koanf.New("."), root: root, strict: o.strictKeys}
 	fields := Fields[T]()
-	var sources []string
 	files := fileDigests{}
 
-	// Step 1: struct tag defaults (lowest precedence).
 	if tagDefaults := defaultsFrom(fields); len(tagDefaults) > 0 {
-		if err := k.Load(confmap.Provider(tagDefaults, "."), nil); err != nil {
-			return nil, nil, fmt.Errorf("loading struct tag defaults: %w: %w", ErrSource, err)
+		if err, _ := l.add("struct-tag defaults", confmap.Provider(tagDefaults, "."), nil); err != nil {
+			return nil, nil, fmt.Errorf("loading struct-tag defaults: %w: %w", ErrSource, err)
 		}
-		sources = append(sources, "struct-tag-defaults")
 	}
-
-	// Step 2: programmatic defaults (override struct tag defaults).
 	if len(o.defaults) > 0 {
-		if err := k.Load(confmap.Provider(o.defaults, "."), nil); err != nil {
-			return nil, nil, fmt.Errorf("loading defaults: %w: %w", ErrSource, err)
+		if err := sourceError("WithDefaults", ErrSource)(l.add("WithDefaults", confmap.Provider(o.defaults, "."), nil)); err != nil {
+			return nil, nil, err
 		}
-		sources = append(sources, "programmatic-defaults")
 	}
-
-	// Step 3: config files (merged left-to-right).
-	for _, cf := range o.configFiles {
-		data, err := os.ReadFile(cf.path)
+	for i, src := range o.base {
+		name := fmt.Sprintf("base provider %d", i)
+		if err := sourceError(name, ErrSource)(l.add(name, bind(ctx, src.provider), src.parser)); err != nil {
+			return nil, nil, err
+		}
+	}
+	for _, f := range o.files {
+		data, err := os.ReadFile(f.path)
 		switch {
 		case err == nil:
-		case !cf.required && errors.Is(err, fs.ErrNotExist):
+		case !f.required && errors.Is(err, fs.ErrNotExist):
 			continue // absence is the one failure an optional file is allowed
 		default:
-			return nil, nil, fileLoadError(cf.path, err)
+			return nil, nil, fmt.Errorf("loading config file %s: %w: %w", f.path, ErrFileRead, err)
 		}
-		if err := k.Load(bytesProvider(data), yaml.Parser()); err != nil {
-			return nil, nil, fileLoadError(cf.path, err)
+		if err := sourceError("config file "+f.path, ErrFileParse)(l.add(f.path, bytesProvider(data), o.fileParser)); err != nil {
+			return nil, nil, err
 		}
-		files[cf.path] = sha256.Sum256(data)
-		sources = append(sources, "file:"+cf.path)
+		files[f.path] = sha256.Sum256(data)
 	}
-
-	// Step 4: env vars, named from T's fields so a key with an underscore in
-	// it (koanf:"max_conns") keeps it; see envSchema.
 	if o.envPrefix != "" {
+		// Named from T's fields so a key with an underscore in it
+		// (koanf:"max_conns") keeps it; see envSchema.
 		schema := newEnvSchema(fields, strings.TrimSuffix(o.envPrefix, "_"))
 		values, unmatched, err := schema.read(o.environ())
 		if err != nil {
@@ -419,71 +150,58 @@ func load[T any](ctx context.Context, o *options) (*T, fileDigests, error) {
 		if len(unmatched) > 0 {
 			o.logger.DebugContext(ctx, "environment variables under the prefix name no config key", "names", unmatched)
 		}
-		if err := k.Load(confmap.Provider(values, "."), nil); err != nil {
+		if err, _ := l.add("env "+schema.prefix+"*", confmap.Provider(values, "."), nil); err != nil {
 			return nil, nil, fmt.Errorf("loading env vars: %w: %w", ErrSource, err)
 		}
-		sources = append(sources, "env:"+schema.prefix+"*")
 	}
-
-	// Step 5: extra providers (including kongprovider), loaded in order added (highest precedence).
-	for i, p := range o.extraProviders {
-		if err := k.Load(p, nil); err != nil {
-			return nil, nil, fmt.Errorf("loading extra provider %d: %w: %w", i, ErrSource, err)
+	for i, src := range o.overrides {
+		name := fmt.Sprintf("override provider %d", i)
+		if err := sourceError(name, ErrSource)(l.add(name, bind(ctx, src.provider), src.parser)); err != nil {
+			return nil, nil, err
 		}
-		sources = append(sources, fmt.Sprintf("provider-%d", i))
 	}
+	o.logger.DebugContext(ctx, "config sources loaded", "sources", l.sources)
 
-	o.logger.DebugContext(ctx, "config sources loaded", "sources", sources)
-
-	// Step 6: unmarshal with explicit decode hooks. koanf v2 defaults do NOT
-	// include StringToSliceHookFunc, so comma-separated env vars / defaults
-	// would not be split into []string without this.
+	// Decode. koanf's defaults do not split comma-separated strings into
+	// slices, so env values and tag defaults need the slice hook.
 	cfg := new(T)
-	if err := k.UnmarshalWithConf("", cfg, koanf.UnmarshalConf{
+	hooks := append(slices.Clone(o.decodeHooks),
+		mapstructure.StringToTimeDurationHookFunc(),
+		mapstructure.StringToSliceHookFunc(","),
+		mapstructure.TextUnmarshallerHookFunc(),
+	)
+	if err := l.k.UnmarshalWithConf("", cfg, koanf.UnmarshalConf{
 		DecoderConfig: &mapstructure.DecoderConfig{
-			DecodeHook: mapstructure.ComposeDecodeHookFunc(
-				mapstructure.StringToTimeDurationHookFunc(),
-				mapstructure.StringToSliceHookFunc(","),
-				mapstructure.TextUnmarshallerHookFunc(),
-			),
+			DecodeHook:       mapstructure.ComposeDecodeHookFunc(hooks...),
 			WeaklyTypedInput: true,
 			Result:           cfg,
 			TagName:          "koanf",
 		},
 	}); err != nil {
 		// A value that cannot decode into its field's type (port: abc) is
-		// invalid configuration; the decoder's error names the key, and
-		// never the value of a sensitive one.
-		return nil, nil, fmt.Errorf("unmarshaling config: %w: %w", ErrValidation,
-			withholdSensitiveDecodeErrors(reflect.TypeFor[T](), err))
+		// invalid configuration; the error names the key, and never the
+		// value of a sensitive one.
+		return nil, nil, fmt.Errorf("unmarshaling config: %w: %w", ErrValidation, withholdSensitiveDecodeErrors(root, err))
 	}
 
-	// Step 7: secret injection -- delegates to the consumer-supplied
-	// populator with the caller's ctx, so secret-fetch latency and
-	// cancellation reach the backend.
-	if o.populateSecrets != nil {
-		if err := o.populateSecrets(ctx, cfg); err != nil {
+	if o.secrets != nil {
+		if err := o.secrets(ctx, cfg); err != nil {
 			return nil, nil, fmt.Errorf("populating secrets: %w: %w", ErrSecretProvider, err)
 		}
 	}
 
-	// Step 8: post-load derivation / normalization. Runs after secrets so a
-	// hook can derive from resolved credentials, and before validation so the
-	// validator judges the normalized struct rather than the raw one.
+	// After secrets, so a hook can derive from resolved credentials; before
+	// validation, so the validator judges the normalized struct.
 	for i, hook := range o.postLoad {
-		if err := hook(ctx, cfg); err != nil {
-			if errors.Is(err, ErrPostLoad) {
-				return nil, nil, err
-			}
+		if err := hook.run(ctx, cfg); err != nil {
 			return nil, nil, fmt.Errorf("%w: hook %d: %w", ErrPostLoad, i, err)
 		}
 	}
 
-	// Step 9: validation (includes required field checks via validate:"required").
 	// Field values are never logged or put in the message: a failing field
 	// may be a credential.
-	if !o.skipValidation {
-		var v Validator = o.customValidator
+	if !o.skipValid {
+		v := o.validator
 		if v == nil {
 			v = defaultValidator()
 		}
@@ -494,7 +212,7 @@ func load[T any](ctx context.Context, o *options) (*T, fileDigests, error) {
 			summary := err.Error()
 			var ve validator.ValidationErrors
 			if errors.As(err, &ve) {
-				summary = fieldErrorSummary(reflect.TypeFor[T](), ve)
+				summary = fieldErrorSummary(root, ve)
 			}
 			return nil, nil, &validationError{
 				msg:   fmt.Sprintf("validating config: %s: %s", ErrValidation, summary),
@@ -505,6 +223,117 @@ func load[T any](ctx context.Context, o *options) (*T, fileDigests, error) {
 
 	return cfg, files, nil
 }
+
+// sourceError classifies what loader.add returned for the source called
+// name: a load failure in category, an unknown key in ErrValidation.
+func sourceError(name string, category error) func(loadErr, keyErr error) error {
+	return func(loadErr, keyErr error) error {
+		switch {
+		case loadErr != nil:
+			return fmt.Errorf("loading %s: %w: %w", name, category, loadErr)
+		case keyErr != nil:
+			return fmt.Errorf("loading %s: %w: %w", name, ErrValidation, keyErr)
+		}
+		return nil
+	}
+}
+
+// bind gives a ContextProvider the load's context.
+func bind(ctx context.Context, p koanf.Provider) koanf.Provider {
+	if cp, ok := p.(ContextProvider); ok {
+		return boundProvider{ContextProvider: cp, ctx: ctx}
+	}
+	return p
+}
+
+// unknownKeys returns the keys, of those a source set, that no field of root
+// decodes. Matching is case-insensitive, as decoding is.
+func unknownKeys(root reflect.Type, keys []string) []string {
+	var unknown []string
+	for _, key := range keys {
+		if !keyDecodes(root, strings.Split(key, ".")) {
+			unknown = append(unknown, key)
+		}
+	}
+	return unknown
+}
+
+// keyDecodes reports whether the key path segs reaches a field of t, or
+// lands beneath a map, an interface or a struct that keeps unknown keys in a
+// koanf:",remain" field.
+func keyDecodes(t reflect.Type, segs []string) bool {
+	for _, seg := range segs {
+		t = derefType(t)
+		switch {
+		case t.Kind() == reflect.Interface:
+			return true
+		case t.Kind() == reflect.Map:
+			t = t.Elem()
+		case isBranch(t):
+			f, ok := fieldByKeyFold(t, seg)
+			if !ok {
+				return hasRemain(t)
+			}
+			t = f.Type
+		default:
+			return false // a leaf has no keys beneath it
+		}
+	}
+	return true
+}
+
+// fieldByKeyFold is fieldByKey falling back to a case-insensitive match.
+func fieldByKeyFold(t reflect.Type, key string) (reflect.StructField, bool) {
+	if f, ok := fieldByKey(t, key); ok {
+		return f, true
+	}
+	for kf := range keyedFields(t) {
+		switch {
+		case kf.key != "" && strings.EqualFold(kf.key, key):
+			return kf.field, true
+		case kf.key == "" && isBranch(derefType(kf.field.Type)):
+			if f, ok := fieldByKeyFold(derefType(kf.field.Type), key); ok {
+				return f, true
+			}
+		}
+	}
+	return reflect.StructField{}, false
+}
+
+// hasRemain reports whether struct t, or one squashed into it, collects
+// unknown keys in a koanf:",remain" field.
+func hasRemain(t reflect.Type) bool {
+	for i := range t.NumField() {
+		f := t.Field(i)
+		_, opts, _ := strings.Cut(f.Tag.Get("koanf"), ",")
+		tagOpts := strings.Split(opts, ",")
+		switch {
+		case slices.Contains(tagOpts, "remain"):
+			return true
+		case slices.Contains(tagOpts, "squash") && isBranch(derefType(f.Type)) && hasRemain(derefType(f.Type)):
+			return true
+		}
+	}
+	return false
+}
+
+// bytesProvider hands koanf the bytes a load read, so the digest it records
+// is of exactly what was parsed.
+type bytesProvider []byte
+
+func (b bytesProvider) ReadBytes() ([]byte, error) { return b, nil }
+func (b bytesProvider) Read() (map[string]any, error) {
+	return nil, errors.New("config: bytesProvider needs a parser")
+}
+
+// defaultValidator is the validator Load uses when WithValidator sets none.
+// It names fields by config key (see [FieldName]). A Validate is safe for
+// concurrent use and caches struct metadata, so one is shared.
+var defaultValidator = sync.OnceValue(func() *validator.Validate {
+	v := validator.New()
+	v.RegisterTagNameFunc(FieldName)
+	return v
+})
 
 // ctxValidator is the optional context-aware form of [Validator]
 // (a ModelValidator implements it): its rules and message
@@ -519,35 +348,6 @@ func validate(ctx context.Context, v Validator, cfg any) error {
 	}
 	return v.Struct(cfg)
 }
-
-// bytesProvider hands koanf the bytes a load read, so the digest it records
-// is of exactly what was parsed.
-type bytesProvider []byte
-
-func (b bytesProvider) ReadBytes() ([]byte, error) { return b, nil }
-func (b bytesProvider) Read() (map[string]any, error) {
-	return nil, errors.New("config: bytesProvider needs a parser")
-}
-
-// fileLoadError classifies a failed config file load: a *fs.PathError is the
-// read itself failing; anything else came from the YAML parser or the merge
-// that follows it.
-func fileLoadError(path string, err error) error {
-	var pathErr *fs.PathError
-	if errors.As(err, &pathErr) {
-		return fmt.Errorf("loading config file %s: %w: %w", path, ErrFileRead, err)
-	}
-	return fmt.Errorf("loading config file %s: %w: %w", path, ErrFileParse, err)
-}
-
-// defaultValidator is the validator GetConfig uses when WithValidator sets
-// none. It names fields by config key (see [FieldName]). A Validate is safe
-// for concurrent use and caches struct metadata, so one is shared.
-var defaultValidator = sync.OnceValue(func() *validator.Validate {
-	v := validator.New()
-	v.RegisterTagNameFunc(FieldName)
-	return v
-})
 
 // fieldErrorSummary builds a compact summary of validation field errors
 // for inclusion in the error message (e.g., "name(required), db.port(min=1)"),

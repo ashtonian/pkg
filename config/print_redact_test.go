@@ -38,10 +38,10 @@ func newRedactContainers() redactContainers {
 func TestRedaction_SensitiveContainerTag(t *testing.T) {
 	cfg := newRedactContainers()
 
-	m := ToMap(cfg, true)
+	m := RedactedMap(cfg)
 	for _, key := range []string{"block.value", "ptr.value", "blocks[0].value", "by_name[a].value"} {
 		if m[key] != redactedValue {
-			t.Errorf("ToMap[%s] = %v, want %s", key, m[key], redactedValue)
+			t.Errorf("RedactedMap[%s] = %v, want %s", key, m[key], redactedValue)
 		}
 	}
 	if m["plain.value"] != "visible" {
@@ -56,7 +56,7 @@ func TestRedaction_SensitiveContainerTag(t *testing.T) {
 		t.Errorf("a secret reached PrintRedacted output:\n%s", buf.String())
 	}
 
-	shown := ToMap(cfg, false)
+	shown := shownMap(cfg)
 	if shown["blocks[0].value"] != "SECRET_SLICE" {
 		t.Errorf("unredacted blocks[0].value = %v, want SECRET_SLICE", shown["blocks[0].value"])
 	}
@@ -72,7 +72,7 @@ func TestRedaction_PointerCycleTerminates(t *testing.T) {
 	a := &redactLoop{Name: "a", Password: "SECRET_CYCLE"}
 	a.Next = a
 
-	m := ToMap(a, true)
+	m := RedactedMap(a)
 	if m["next"] != cycleValue {
 		t.Errorf("next = %v, want %s", m["next"], cycleValue)
 	}
@@ -88,7 +88,7 @@ func TestPrintRedacted_PointerLeafPrintsValue(t *testing.T) {
 		Unset *int `koanf:"unset"`
 	}{Port: &port}
 
-	m := ToMap(cfg, true)
+	m := RedactedMap(cfg)
 	if m["port"] != "8443" {
 		t.Errorf("port = %v, want 8443 (the value, not the pointer)", m["port"])
 	}
@@ -147,7 +147,7 @@ func TestRedaction_DynamicMapKeys(t *testing.T) {
 		"list":     []any{map[string]any{"token": "SECRET_LIST"}},
 	}}
 
-	m := ToMap(cfg, true)
+	m := RedactedMap(cfg)
 	want := map[string]string{
 		"settings[password]":        redactedValue,
 		"settings[region]":          "us",
@@ -157,10 +157,20 @@ func TestRedaction_DynamicMapKeys(t *testing.T) {
 	}
 	for key, value := range want {
 		if m[key] != value {
-			t.Errorf("ToMap[%s] = %v, want %v", key, m[key], value)
+			t.Errorf("RedactedMap[%s] = %v, want %v", key, m[key], value)
 		}
 	}
 	if strings.Contains(fmt.Sprint(m), "SECRET_") {
 		t.Errorf("a secret survived redaction: %v", m)
 	}
+}
+
+// shownMap is RedactedMap with sensitive values shown, as
+// PrintRedacted(WithShowSensitive(true)) prints them.
+func shownMap(cfg any) map[string]string {
+	m := map[string]string{}
+	for _, e := range collectEntries(cfg, true) {
+		m[e.name] = e.value
+	}
+	return m
 }

@@ -27,7 +27,7 @@ type portCfg struct {
 func TestGetConfig_MalformedOptionalFileFails(t *testing.T) {
 	path := writeYAML(t, "port: [unterminated\n")
 
-	_, err := GetConfig[portCfg](t.Context(), WithConfigFile(path), WithSkipValidation())
+	_, err := Load[portCfg](t.Context(), WithFile(path), WithSkipValidation())
 	if !errors.Is(err, ErrFileParse) {
 		t.Fatalf("err = %v, want ErrFileParse", err)
 	}
@@ -42,7 +42,7 @@ func TestGetConfig_MalformedOptionalFileFails(t *testing.T) {
 func TestGetConfig_UnreadableOptionalFileFails(t *testing.T) {
 	dir := t.TempDir() // a directory exists but cannot be read as a file
 
-	_, err := GetConfig[portCfg](t.Context(), WithConfigFile(dir), WithSkipValidation())
+	_, err := Load[portCfg](t.Context(), WithFile(dir), WithSkipValidation())
 	if !errors.Is(err, ErrFileRead) {
 		t.Fatalf("err = %v, want ErrFileRead", err)
 	}
@@ -56,7 +56,7 @@ func TestGetConfig_UnreadableOptionalFileFails(t *testing.T) {
 // 9000 live rather than swapping in the 8080 default.
 func TestReload_MalformedOptionalFileKeepsLastConfig(t *testing.T) {
 	path := writeYAML(t, "port: 9000\n")
-	r, err := NewReloader[portCfg](t.Context(), nil, WithConfigFile(path), WithSkipValidation())
+	r, err := NewReloader[portCfg](t.Context(), []Option{WithFile(path), WithSkipValidation()})
 	if err != nil {
 		t.Fatalf("NewReloader: %v", err)
 	}
@@ -80,7 +80,7 @@ func TestReload_MalformedOptionalFileKeepsLastConfig(t *testing.T) {
 // failure, not a silent revert to lower-precedence values.
 func TestReload_OptionalFileRemovedAfterLoadFails(t *testing.T) {
 	path := writeYAML(t, "port: 9000\n")
-	r, err := NewReloader[portCfg](t.Context(), nil, WithConfigFile(path), WithSkipValidation())
+	r, err := NewReloader[portCfg](t.Context(), []Option{WithFile(path), WithSkipValidation()})
 	if err != nil {
 		t.Fatalf("NewReloader: %v", err)
 	}
@@ -99,7 +99,7 @@ func TestReload_OptionalFileRemovedAfterLoadFails(t *testing.T) {
 
 func TestReload_OptionalFileCreatedLaterIsLoadedThenRequired(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "overlay.yaml")
-	r, err := NewReloader[portCfg](t.Context(), nil, WithConfigFile(path), WithSkipValidation())
+	r, err := NewReloader[portCfg](t.Context(), []Option{WithFile(path), WithSkipValidation()})
 	if err != nil {
 		t.Fatalf("NewReloader with the optional file absent: %v", err)
 	}
@@ -155,7 +155,7 @@ func TestErrorCauses_SurviveLoadAndReload(t *testing.T) {
 			setup: func(t *testing.T) breakage {
 				path := writeYAML(t, "port: 1\n")
 				return breakage{
-					opts:    []Option{WithMustConfigFile(path)},
+					opts:    []Option{WithRequiredFile(path)},
 					breakIt: func() { _ = os.Remove(path) },
 				}
 			},
@@ -168,7 +168,7 @@ func TestErrorCauses_SurviveLoadAndReload(t *testing.T) {
 			setup: func(t *testing.T) breakage {
 				path := writeYAML(t, "port: 1\n")
 				return breakage{
-					opts:    []Option{WithMustConfigFile(path)},
+					opts:    []Option{WithRequiredFile(path)},
 					breakIt: func() { _ = os.WriteFile(path, []byte("port: [\n"), 0o644) },
 				}
 			},
@@ -257,13 +257,13 @@ func TestErrorCauses_SurviveLoadAndReload(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			b := tt.setup(t)
-			r, err := NewReloader[causeCfg](t.Context(), nil, b.opts...)
+			r, err := NewReloader[causeCfg](t.Context(), b.opts)
 			if err != nil {
 				t.Fatalf("initial load: %v", err)
 			}
 			b.breakIt()
 
-			_, err = GetConfig[causeCfg](t.Context(), b.opts...)
+			_, err = Load[causeCfg](t.Context(), b.opts...)
 			check(t, err, tt.category, tt.causes, tt.as)
 
 			_, err = r.Reload(t.Context())
@@ -284,7 +284,7 @@ func TestGetConfig_ValidationFailureDoesNotLogValues(t *testing.T) {
 	var logs bytes.Buffer
 	logger := slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelDebug}))
 
-	_, err := GetConfig[secretValidatedCfg](t.Context(),
+	_, err := Load[secretValidatedCfg](t.Context(),
 		WithLogger(logger),
 		WithDefaults(map[string]any{"password": "SECRET_LOG"}),
 	)
@@ -303,7 +303,7 @@ func TestGetConfig_UsesInjectedLogger(t *testing.T) {
 	var logs bytes.Buffer
 	logger := slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelDebug}))
 
-	if _, err := GetConfig[portCfg](t.Context(), WithLogger(logger)); err != nil {
+	if _, err := Load[portCfg](t.Context(), WithLogger(logger)); err != nil {
 		t.Fatalf("GetConfig: %v", err)
 	}
 	if !strings.Contains(logs.String(), "config sources loaded") {
@@ -317,7 +317,7 @@ func TestWithDefaults_Merges(t *testing.T) {
 		Port int    `koanf:"port"`
 	}
 	first := map[string]any{"host": "a", "port": 1}
-	got, err := GetConfig[cfg](t.Context(),
+	got, err := Load[cfg](t.Context(),
 		WithDefaults(first),
 		WithDefaults(map[string]any{"port": 2}),
 		WithSkipValidation(),
@@ -348,7 +348,7 @@ type ctxKey struct{}
 func TestGetConfig_PassesCtxToContextAwareValidator(t *testing.T) {
 	v := &ctxRecordingValidator{}
 	ctx := context.WithValue(t.Context(), ctxKey{}, "load")
-	if _, err := GetConfig[portCfg](ctx, WithValidator(v)); err != nil {
+	if _, err := Load[portCfg](ctx, WithValidator(v)); err != nil {
 		t.Fatalf("GetConfig: %v", err)
 	}
 	if v.got == nil || v.got.Value(ctxKey{}) != "load" {
@@ -359,7 +359,7 @@ func TestGetConfig_PassesCtxToContextAwareValidator(t *testing.T) {
 // A value of the wrong type is a validation error, not an uncategorized one.
 func TestGetConfig_UndecodableValueIsAValidationError(t *testing.T) {
 	path := writeYAML(t, "port: not-a-number\n")
-	_, err := GetConfig[portCfg](t.Context(), WithMustConfigFile(path), WithSkipValidation())
+	_, err := Load[portCfg](t.Context(), WithRequiredFile(path), WithSkipValidation())
 	if !errors.Is(err, ErrValidation) {
 		t.Fatalf("err = %v, want ErrValidation", err)
 	}
@@ -378,7 +378,7 @@ type namedCfg struct {
 // The default validator names a failing field by the key the operator wrote.
 func TestGetConfig_ValidationNamesFieldsByKey(t *testing.T) {
 	path := writeYAML(t, "db:\n  max_conns: 0\n")
-	_, err := GetConfig[namedCfg](t.Context(), WithMustConfigFile(path))
+	_, err := Load[namedCfg](t.Context(), WithRequiredFile(path))
 	if !errors.Is(err, ErrValidation) {
 		t.Fatalf("err = %v, want ErrValidation", err)
 	}

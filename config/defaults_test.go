@@ -31,7 +31,7 @@ func TestWithDefaults_SnapshotsNestedData(t *testing.T) {
 	})
 	names[0], ptrNames[0], arr[0][0] = "changed", "changed", 2
 
-	got, err := GetConfig[cfg](t.Context(), opt, WithSkipValidation())
+	got, err := Load[cfg](t.Context(), opt, WithSkipValidation())
 	require.NoError(t, err)
 	assert.Equal(t, []string{"original"}, got.Block.Names)
 	require.NotNil(t, got.Ptr)

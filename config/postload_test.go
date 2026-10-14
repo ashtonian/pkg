@@ -22,8 +22,8 @@ type postLoadCfg struct {
 func TestWithPostLoad_RunsAndMutates(t *testing.T) {
 	path := writeYAML(t, "raw: hello\n")
 
-	cfg, err := GetConfig[postLoadCfg](t.Context(),
-		WithMustConfigFile(path),
+	cfg, err := Load[postLoadCfg](t.Context(),
+		WithRequiredFile(path),
 		WithPostLoad(func(_ context.Context, c *postLoadCfg) error {
 			c.Derived = strings.ToUpper(c.Raw)
 			return nil
@@ -44,15 +44,15 @@ func TestWithPostLoad_RunsBeforeValidation(t *testing.T) {
 	path := writeYAML(t, "raw: hello\n")
 
 	// Without the hook, Derived is empty and validation must fail.
-	if _, err := GetConfig[postLoadCfg](t.Context(), WithMustConfigFile(path)); err == nil {
+	if _, err := Load[postLoadCfg](t.Context(), WithRequiredFile(path)); err == nil {
 		t.Fatal("expected validation to fail with Derived unset")
 	} else if !errors.Is(err, ErrValidation) {
 		t.Fatalf("expected ErrValidation, got: %v", err)
 	}
 
 	// With the hook, Derived is populated by the time the validator sees it.
-	if _, err := GetConfig[postLoadCfg](t.Context(),
-		WithMustConfigFile(path),
+	if _, err := Load[postLoadCfg](t.Context(),
+		WithRequiredFile(path),
 		WithPostLoad(func(_ context.Context, c *postLoadCfg) error {
 			c.Derived = c.Raw
 			return nil
@@ -67,8 +67,8 @@ func TestWithPostLoad_RunsBeforeValidation(t *testing.T) {
 func TestWithPostLoad_RunsAfterSecrets(t *testing.T) {
 	path := writeYAML(t, "raw: hello\n")
 
-	cfg, err := GetConfig[postLoadCfg](t.Context(),
-		WithMustConfigFile(path),
+	cfg, err := Load[postLoadCfg](t.Context(),
+		WithRequiredFile(path),
 		WithSecretPopulator(func(_ context.Context, target any) error {
 			target.(*postLoadCfg).Secret = "resolved"
 			return nil
@@ -93,8 +93,8 @@ func TestWithPostLoad_ErrorAbortsLoad(t *testing.T) {
 	path := writeYAML(t, "raw: hello\n")
 	sentinel := errors.New("derivation blew up")
 
-	_, err := GetConfig[postLoadCfg](t.Context(),
-		WithMustConfigFile(path),
+	_, err := Load[postLoadCfg](t.Context(),
+		WithRequiredFile(path),
 		WithPostLoad(func(_ context.Context, _ *postLoadCfg) error { return sentinel }),
 	)
 	if err == nil {
@@ -111,8 +111,8 @@ func TestWithPostLoad_ErrorAbortsLoad(t *testing.T) {
 func TestWithPostLoad_MultipleHooksRunInOrder(t *testing.T) {
 	path := writeYAML(t, "raw: a\n")
 
-	cfg, err := GetConfig[postLoadCfg](t.Context(),
-		WithMustConfigFile(path),
+	cfg, err := Load[postLoadCfg](t.Context(),
+		WithRequiredFile(path),
 		WithPostLoad(func(_ context.Context, c *postLoadCfg) error { c.Derived = c.Raw + "1"; return nil }),
 		WithPostLoad(func(_ context.Context, c *postLoadCfg) error { c.Derived += "2"; return nil }),
 		WithPostLoad(func(_ context.Context, c *postLoadCfg) error { c.Derived += "3"; return nil }),
@@ -129,8 +129,8 @@ func TestWithPostLoad_FirstErrorStopsTheChain(t *testing.T) {
 	path := writeYAML(t, "raw: a\n")
 	var ran []string
 
-	_, err := GetConfig[postLoadCfg](t.Context(),
-		WithMustConfigFile(path),
+	_, err := Load[postLoadCfg](t.Context(),
+		WithRequiredFile(path),
 		WithPostLoad(func(_ context.Context, _ *postLoadCfg) error { ran = append(ran, "first"); return nil }),
 		WithPostLoad(func(_ context.Context, _ *postLoadCfg) error {
 			ran = append(ran, "second")
@@ -151,8 +151,8 @@ func TestWithPostLoad_FirstErrorStopsTheChain(t *testing.T) {
 func TestWithPostLoad_TypeMismatchIsAnError(t *testing.T) {
 	path := writeYAML(t, "raw: a\n")
 
-	_, err := GetConfig[postLoadCfg](t.Context(),
-		WithMustConfigFile(path),
+	_, err := Load[postLoadCfg](t.Context(),
+		WithRequiredFile(path),
 		WithPostLoad(func(_ context.Context, _ *reloaderCfg) error { return nil }),
 	)
 	if err == nil {
@@ -168,8 +168,8 @@ func TestWithPostLoad_ReceivesCallerContext(t *testing.T) {
 	type ctxKey struct{}
 	ctx := context.WithValue(t.Context(), ctxKey{}, "carried")
 
-	_, err := GetConfig[postLoadCfg](ctx,
-		WithMustConfigFile(path),
+	_, err := Load[postLoadCfg](ctx,
+		WithRequiredFile(path),
 		WithPostLoad(func(hookCtx context.Context, c *postLoadCfg) error {
 			if got := hookCtx.Value(ctxKey{}); got != "carried" {
 				return fmt.Errorf("hook ctx value = %v, want %q", got, "carried")
@@ -189,15 +189,15 @@ func TestWithPostLoad_ReloaderPreservesConfigOnHookFailure(t *testing.T) {
 	path := writeYAML(t, "raw: first\n")
 	failing := false
 
-	r, err := NewReloader[postLoadCfg](t.Context(), nil,
-		WithMustConfigFile(path),
-		WithPostLoad(func(_ context.Context, c *postLoadCfg) error {
+	r, err := NewReloader[postLoadCfg](
+		t.Context(),
+		[]Option{WithRequiredFile(path), WithPostLoad(func(_ context.Context, c *postLoadCfg) error {
 			if failing {
 				return errors.New("derivation rejected the new file")
 			}
 			c.Derived = c.Raw
 			return nil
-		}),
+		})},
 	)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)

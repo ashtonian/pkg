@@ -10,6 +10,8 @@ import (
 	"testing"
 
 	"github.com/alecthomas/kong"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
 	"github.com/ashtonian/pkg/config"
 )
@@ -21,7 +23,7 @@ func TestFlagMapping_Basic(t *testing.T) {
 		Host string `koanf:"host" flag:"host"`
 		Port int    `koanf:"port" flag:"port"`
 	}
-	mapping := flagMapping[Cfg]()
+	mapping := mustFlagMapping[Cfg](t)
 
 	want := map[string]string{
 		"host": "host",
@@ -41,7 +43,7 @@ func TestFlagMapping_Nested(t *testing.T) {
 		Host string `koanf:"host" flag:"host"`
 		DB   DB     `koanf:"db"`
 	}
-	mapping := flagMapping[Cfg]()
+	mapping := mustFlagMapping[Cfg](t)
 
 	want := map[string]string{
 		"host":    "host",
@@ -58,7 +60,7 @@ func TestFlagMapping_NoFlagTags(t *testing.T) {
 		Host string `koanf:"host"`
 		Port int    `koanf:"port"`
 	}
-	mapping := flagMapping[Cfg]()
+	mapping := mustFlagMapping[Cfg](t)
 	if len(mapping) != 0 {
 		t.Errorf("expected empty mapping for struct with no flag tags, got %v", mapping)
 	}
@@ -69,7 +71,7 @@ func TestFlagMapping_IgnoredField(t *testing.T) {
 		Host    string `koanf:"host" flag:"host"`
 		Ignored string `koanf:"-" flag:"ignored"`
 	}
-	mapping := flagMapping[Cfg]()
+	mapping := mustFlagMapping[Cfg](t)
 	if _, ok := mapping["ignored"]; ok {
 		t.Error("ignored field should not appear in mapping")
 	}
@@ -79,7 +81,7 @@ func TestFlagMapping_IgnoredField(t *testing.T) {
 }
 
 func TestFlagMapping_NonStruct(t *testing.T) {
-	mapping := flagMapping[string]()
+	mapping := mustFlagMapping[string](t)
 	if len(mapping) != 0 {
 		t.Errorf("expected empty mapping for non-struct, got %v", mapping)
 	}
@@ -89,7 +91,7 @@ func TestFlagMapping_MissingKoanfTag(t *testing.T) {
 	type Cfg struct {
 		Name string `flag:"name"` // no koanf tag, should use lowercase field name
 	}
-	mapping := flagMapping[Cfg]()
+	mapping := mustFlagMapping[Cfg](t)
 	if mapping["name"] != "name" {
 		t.Errorf("name mapping = %q, want %q (should use lowercase field name)", mapping["name"], "name")
 	}
@@ -227,18 +229,138 @@ func TestNew_UnmappedFlags(t *testing.T) {
 func TestWithOverridesFromTags(t *testing.T) {
 	ctx := parseTestCLI(t, []string{"--host", "tagged-host"})
 
-	opt := WithOverridesFromTags[testCLI](ctx)
-	if opt == nil {
-		t.Fatal("WithOverridesFromTags returned nil option")
+	cfg, err := config.Load[testCLI](context.Background(), WithOverridesFromTags[testCLI](ctx), config.WithSkipValidation())
+	require.NoError(t, err)
+	assert.Equal(t, "tagged-host", cfg.Host)
+	assert.Zero(t, cfg.Port, "an untyped flag's Kong default is not forwarded")
+}
+
+func mustFlagMapping[T any](t *testing.T) map[string]string {
+	t.Helper()
+	mapping, err := flagMapping[T]()
+	require.NoError(t, err)
+	return mapping
+}
+
+// A mapping that names a flag the CLI does not have fails the load instead of
+// silently never applying.
+func TestNew_UnknownFlagFailsTheLoad(t *testing.T) {
+	ctx := parseTestCLI(t, []string{"--host", "h"})
+	_, err := config.Load[testCLI](context.Background(),
+		WithOverrides(ctx, map[string]string{"hots": "host"}), config.WithSkipValidation())
+	require.ErrorIs(t, err, config.ErrSource)
+	assert.Contains(t, err.Error(), "--hots")
+}
+
+func TestWithOverridesFromTags_DuplicateFlagFailsTheLoad(t *testing.T) {
+	type cfg struct {
+		A string `koanf:"a" flag:"host"`
+		B string `koanf:"b" flag:"host"`
+	}
+	_, err := config.Load[cfg](context.Background(),
+		WithOverridesFromTags[cfg](parseTestCLI(t, nil)), config.WithSkipValidation())
+	require.ErrorIs(t, err, config.ErrSource)
+	assert.Contains(t, err.Error(), `flag "host"`)
+}
+
+// A flag name means one key per mapping; a CLI whose subcommands give one
+// flag different keys chooses the mapping by the selected command.
+func TestWithOverrides_PerCommandMapping(t *testing.T) {
+	type cli struct {
+		Serve struct {
+			Port int `help:"Listen port."`
+		} `cmd:""`
+		Admin struct {
+			Port int `help:"Admin port."`
+		} `cmd:""`
+	}
+	type appCfg struct {
+		Server struct {
+			Port int `koanf:"port" default:"8080"`
+		} `koanf:"server"`
+		Admin struct {
+			Port int `koanf:"port" default:"9090"`
+		} `koanf:"admin"`
+	}
+	for _, tt := range []struct {
+		args              []string
+		server, adminPort int
+	}{
+		{[]string{"serve", "--port", "1"}, 1, 9090},
+		{[]string{"admin", "--port", "2"}, 8080, 2},
+	} {
+		var c cli
+		parser, err := kong.New(&c)
+		require.NoError(t, err)
+		kctx, err := parser.Parse(tt.args)
+		require.NoError(t, err)
+
+		mapping := map[string]string{"port": "server.port"}
+		if kctx.Command() == "admin" {
+			mapping = map[string]string{"port": "admin.port"}
+		}
+		got, err := config.Load[appCfg](context.Background(), WithOverrides(kctx, mapping))
+		require.NoError(t, err)
+		assert.Equal(t, tt.server, got.Server.Port, tt.args)
+		assert.Equal(t, tt.adminPort, got.Admin.Port, tt.args)
 	}
 }
 
-// TestGetConfig_NestedCLIOverrideBeatsTagDefault is the end-to-end
+// HelpFromTags describes each tagged flag from the config struct: its
+// description, key, environment variable and default, a sensitive default
+// withheld; a flag the user wrote help for keeps it.
+func TestHelpFromTags_DescribesTaggedFlags(t *testing.T) {
+	type cli struct {
+		Port     int
+		Token    string
+		LogLevel string `help:"How much to log."`
+		Other    bool
+	}
+	type appCfg struct {
+		Port     int    `koanf:"port" default:"8080" flag:"port" desc:"HTTP listen port"`
+		Token    string `koanf:"token" default:"dev-token" flag:"token"`
+		LogLevel string `koanf:"log_level" default:"info" flag:"log-level"`
+	}
+	var c cli
+	parser, err := kong.New(&c, HelpFromTags[appCfg]("APP"))
+	require.NoError(t, err)
+
+	help := map[string]string{}
+	for _, fl := range parser.Model.Flags {
+		help[fl.Name] = fl.Help
+	}
+	assert.Equal(t, "HTTP listen port (config: port; env: APP_PORT; default: 8080)", help["port"])
+	assert.Equal(t, "(config: token; env: APP_TOKEN)", help["token"])
+	assert.Equal(t, "How much to log. (config: log_level; env: APP_LOG_LEVEL; default: info)", help["log-level"])
+	assert.Empty(t, help["other"])
+}
+
+func TestHelpFromTags_RefusesTagsTheCLILacks(t *testing.T) {
+	type cli struct {
+		Port int
+	}
+	type typo struct {
+		Port int `koanf:"port" flag:"prot"`
+	}
+	type dup struct {
+		A int `koanf:"a" flag:"port"`
+		B int `koanf:"b" flag:"port"`
+	}
+	var c cli
+	_, err := kong.New(&c, HelpFromTags[typo](""))
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), `flag "prot"`)
+	_, err = kong.New(&c, HelpFromTags[dup](""))
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), `flag "port"`)
+}
+
+// TestLoad_NestedCLIOverrideBeatsTagDefault is the end-to-end
 // regression: a CLI flag mapped to a nested koanf path must override the
-// struct-tag default through config.GetConfig. Before the unflatten fix
+// struct-tag default through config.Load. Before the unflatten fix
 // the flat dotted key never merged into the nested tree, so the :1883
 // struct-tag default silently won over the --host :2000 override.
-func TestGetConfig_NestedCLIOverrideBeatsTagDefault(t *testing.T) {
+func TestLoad_NestedCLIOverrideBeatsTagDefault(t *testing.T) {
 	type listenersCfg struct {
 		TCP string `koanf:"tcp" default:":1883"`
 	}
@@ -246,12 +368,12 @@ func TestGetConfig_NestedCLIOverrideBeatsTagDefault(t *testing.T) {
 		Listeners listenersCfg `koanf:"listeners"`
 	}
 	ctx := parseTestCLI(t, []string{"--host", ":2000"})
-	cfg, err := config.GetConfig[appCfg](
+	cfg, err := config.Load[appCfg](
 		context.Background(),
-		config.WithProvider(New(ctx, map[string]string{"host": "listeners.tcp"})),
+		config.WithOverrideProvider(New(ctx, map[string]string{"host": "listeners.tcp"}), nil),
 	)
 	if err != nil {
-		t.Fatalf("GetConfig: %v", err)
+		t.Fatalf("Load: %v", err)
 	}
 	if cfg.Listeners.TCP != ":2000" {
 		t.Errorf("listeners.tcp = %q, want %q (CLI override must beat the :1883 tag default)", cfg.Listeners.TCP, ":2000")
@@ -328,7 +450,7 @@ func TestNew_DoesNotForwardUntypedValues(t *testing.T) {
 }
 
 // End to end: a negated flag must beat a true value from a lower source.
-func TestGetConfig_NegatedFlagBeatsFile(t *testing.T) {
+func TestLoad_NegatedFlagBeatsFile(t *testing.T) {
 	type appCfg struct {
 		Feature bool `koanf:"feature" flag:"feature"`
 	}
@@ -337,12 +459,12 @@ func TestGetConfig_NegatedFlagBeatsFile(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	cfg, err := config.GetConfig[appCfg](context.Background(),
-		config.WithMustConfigFile(path),
+	cfg, err := config.Load[appCfg](context.Background(),
+		config.WithRequiredFile(path),
 		WithOverridesFromTags[appCfg](parseSpellingCLI(t, "--no-feature")),
 	)
 	if err != nil {
-		t.Fatalf("GetConfig: %v", err)
+		t.Fatalf("Load: %v", err)
 	}
 	if cfg.Feature {
 		t.Error("feature = true, want false: --no-feature must override the file")
