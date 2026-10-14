@@ -27,6 +27,9 @@ type schemaNode struct {
 	fields []*schemaField // nodeBranch, squashed fields in place, in declaration order
 	byKey  map[string]*schemaField
 	elem   *schemaNode // nodeMap, nodeList
+	// opaqueUnsafe reports a value decoded whole that could hold a func,
+	// channel or unsafe pointer: a comparison looks inside it.
+	opaqueUnsafe bool
 }
 
 type schemaField struct {
@@ -34,6 +37,7 @@ type schemaField struct {
 	sf     reflect.StructField // the field declaring the key
 	index  []int               // from the branch's type, through squashed structs
 	tagged bool                // the field, or a squashed struct holding it, is tagged sensitive:"true"
+	named  bool                // its Go name looks like a credential's
 	node   *schemaNode
 }
 
@@ -106,6 +110,7 @@ func (b *schemaBuilder) node(t reflect.Type) *schemaNode {
 	default:
 		n.kind = nodeLeaf
 	}
+	n.opaqueUnsafe = n.kind == nodeLeaf && mayHoldUncomparable(t)
 	return n
 }
 
@@ -133,7 +138,7 @@ func (b *schemaBuilder) fields(n *schemaNode, t reflect.Type, index []int, tagge
 			b.fail(fmt.Errorf("%w: fields %s and %s of %s both have key %q", ErrSchema, n.byKey[kf.key].sf.Name, kf.field.Name, n.typ, kf.key))
 			continue
 		}
-		f := &schemaField{key: kf.key, sf: kf.field, index: at, tagged: fieldTagged, node: b.node(kf.field.Type)}
+		f := &schemaField{key: kf.key, sf: kf.field, index: at, tagged: fieldTagged, named: isSensitiveName(kf.field.Name), node: b.node(kf.field.Type)}
 		n.fields = append(n.fields, f)
 		n.byKey[kf.key] = f
 	}
@@ -167,7 +172,7 @@ func (c cursor) intoField(f *schemaField) cursor {
 	next := c
 	next.path = c.path.field(f.key)
 	next.tagged = c.tagged || f.tagged
-	named := isSensitiveName(f.sf.Name)
+	named := f.named
 	if c.dynamic {
 		// A struct inside an interface value: its field names still judge it.
 		next.covered = c.covered || named && f.node.kind != nodeBranch

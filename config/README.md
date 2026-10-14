@@ -463,13 +463,14 @@ The contract:
 - **Ownership by prefix.** A prefix is a section (`db`), a value (`log.level`), an entry (`features["audit"]`) or a pattern (`features[*].gate`). The most specific prefix owns a key — the longest, then the one naming more literal entries — so `features[*].gate` can sit beside `features`. Two appliers whose prefixes are equally specific and could name one key fail construction, as does a prefix that names no key, reaches beneath an interface, or beneath a value compared whole.
 - **Once per config, after publication.** Each applier that owes something is called once, in registration order, holding the reload's slot, with every change it owns; `Config()` already returns `ev.Desired`. The success callbacks run after every applier.
 - **Acknowledgement, not assumption.** Changes are measured from what the applier last acknowledged, not from the previous config. Returning nil acknowledges every change except the `RestartKeys` it returns; those are offered again on every later config until they apply or the config returns to the acknowledged value.
-- **A failure is uncertain.** An error or a panic acknowledges nothing and marks the applier `Uncertain`: what it did may have half happened. It is called again on every later config — an unchanged poll and a revert included — with `Retry` set, until it returns nil with no restart keys. Reconcile all of `ev.Desired` you own on a retry, not only `ev.Changes`.
+- **A failure is uncertain.** An error or a panic acknowledges nothing and marks the applier `Uncertain`: what it did with the keys it was given may have half happened. Later calls give it those keys again with `Retry` set — on an unchanged poll and after a revert too, where a key's `Old` and `New` are alike — until a call applies each of them. A key that waits on a structure the applier does not own whole is not offered, and the applier stays uncertain until it can be.
 - **Structures need one owner.** A key that appears, disappears or turns nil — a map entry, a pointer section — changes live only when one applier owns it and everything beneath it that changed. Otherwise the whole transition waits for a restart and no applier is called with its part: an applier for `features[*].gate` cannot add a feature; one for `features` can.
 - **Everything else waits for a restart.** With appliers registered, a key no applier owns that differs from the first load is listed in `Snapshot().PendingRestart` until reverted, beside restart keys and blocked transitions. Register an applier for keys your code reads from `Config()` on every use — one that returns nil — so they do not read as waiting.
 - **The first load.** Without `ApplyInitial` the first load counts as applied: build what the applier would set from `Config()` before serving. With it, the applier is called once before the constructor returns with every key it owns as a change from nothing; an error or restart key fails construction with `ErrApply`.
-- **Publication is not application.** A config some applier failed on is still published: `Reload` returns its `ReloadResult` together with an `*ApplyError` wrapping `ErrApply`, not `ErrReload`. Once published, a cancelled context cannot unpublish it: appliers not yet called are reported as not called and are called on the next config.
+- **Publication is not application.** A config some applier failed on is still published: `Reload` returns its `ReloadResult` together with an `*ApplyError` wrapping `ErrApply`, not `ErrReload`. A context that ends before publication abandons the reload; once published, a cancelled context cannot unpublish it: appliers not yet called are reported as not called and are called on the next config. While appliers run, `Snapshot().Applying` is true.
+- **What it costs.** The reloader keeps, per applier, only the keys where what it acknowledged differs from the published config — a held value copied out, never a pointer into an old config — and moves them forward with each reload's changes. An applier that has applied everything costs nothing between reloads, and a reload that changes nothing costs nothing to account.
 
-`Snapshot().Appliers` reports each applier's invocations, failures, last error, uncertainty and the keys it still owes; `ReloadResult.Applied` what each did for one reload.
+`Snapshot().Appliers` reports each applier's invocations, failures, last error, uncertainty and the keys it still owes; `Snapshot().Applying` whether its calls are still running; `ReloadResult.Applied` what each did for one reload.
 
 ### Reload over HTTP
 
@@ -626,8 +627,9 @@ features["export"].rate: + 1
 This is `ExampleDiff`. The rules:
 
 - Lists compare by index: removing the first of three elements changes the first two and removes the third. A diff cannot know a list element's identity; reconcile by your own ID where one exists.
-- A struct, map, list or interface that appears, disappears or turns nil — a nil collection becoming empty included — is a `Structural` change at its key, followed by the keys beneath it. An interface whose value changes type is one structural change.
-- Values decoded whole compare with `reflect.DeepEqual`: two `time.Time` values for one instant in different locations differ, and NaN never equals itself. A non-nil func, channel or unsafe pointer is an `ErrSchema` error.
+- A struct, map, list or interface that appears, disappears or turns nil — a nil collection becoming empty included — is a `Structural` change at its key, followed by the keys beneath it. An interface whose value changes type, or turns nil, is one change at its key, structural when either value is a struct, map or list; an interface holding one type on both sides compares key by key.
+- Values decoded whole compare with `reflect.DeepEqual`: two `time.Time` values for one instant in different locations differ, and NaN never equals itself. A non-nil func, channel or unsafe pointer anywhere in either config — inside a value compared whole included — is an `ErrSchema` error, and a reloader refuses such a config before publishing it.
+- A pointer, map or slice that leads back to one it lies within, on either side and through an interface too, is compared whole there (`[CYCLE]`), so a cycle ends.
 - A sensitive map, list or interface is compared whole, so the keys it holds — which may themselves be secrets — are never listed.
 
 ## Where a value came from
@@ -1085,7 +1087,7 @@ func newReloader(ctx context.Context, cli *CLI, kctx *kong.Context, logger *slog
 - `(*Reloader[T]).SourceChanged()` — non-blocking, coalescing reload request.
 - `(*Reloader[T]).Stop(ctx) error` — stop and wait until no reload can run.
 - `(*Reloader[T]).Stats() ReloadStats` — attempts, successes, failures, last trigger, times and error.
-- `Snapshot[T]{Config, Generation, Stats, Provenance, Appliers, PendingRestart}`, `ReloadResult[T]{Snapshot, Changes, Applied}`, `ReloadEvent[T]{Trigger, Old, New, Result}` — reload state and outcomes; JSON-ready, the config never encoded.
+- `Snapshot[T]{Config, Generation, Stats, Provenance, Applying, Appliers, PendingRestart}`, `ReloadResult[T]{Snapshot, Changes, Applied}`, `ReloadEvent[T]{Trigger, Old, New, Result}` — reload state and outcomes; JSON-ready, the config never encoded.
 - `Applier[T]{Name, Prefixes, ApplyInitial, Apply}`, `ApplyEvent[T]{Trigger, Generation, Retry, Previous, Desired, Changes}`, `ApplyResult{RestartKeys}` — what an applier declares, receives and answers; `TriggerInitial` names the initial apply.
 - `ApplierStatus`, `ApplyOutcome` — an applier's account and one reload's outcome; `ApplyError{Failures []ApplierFailure}` the appliers that did not apply a published config.
 - `ReloadStats`, `Problem{Kind, Message}` — the history and an error as data; `Diagnose(err) *Problem` categorizes any load or reload error, `KindValidation` … `KindUnknown` naming the category.
@@ -1191,7 +1193,7 @@ Alert on `ErrReload` (or a rising failure count): a process whose reloads keep f
 | An environment variable has no effect | Debug log `environment variables under the prefix name no config key`; `PrintUsage` for the real names | Rename the variable to the listed name. |
 | `ambiguous environment variables` at boot | The readings the error lists | Rename a field or map key so only one reading fits. |
 | A file edit is not picked up | `Snapshot().Generation` did not move; `Stats().LastTrigger` / `LastError`; is `Run` running; was `Arm`'s error checked | On `subPath` mounts nothing updates — mount without `subPath`; for env and providers use `WithPollInterval` or `SourceChanged`. |
-| A change did not take effect | `Snapshot().PendingRestart`; `Snapshot().Appliers[i].Pending` and `.Uncertain` | A key in `PendingRestart` waits for a restart (or a revert); register an applier if it can apply live. An uncertain applier is retried on every reload; its `LastError` says why. |
+| A change did not take effect | `Snapshot().PendingRestart`; `Snapshot().Appliers[i].Pending` and `.Uncertain` | A key in `PendingRestart` waits for a restart (or a revert); register an applier if it can apply live. An uncertain applier is given the keys its failure left on every reload that can apply them; its `LastError` says why. Uncertain with nothing offered means its keys wait on a structure another applier must apply. |
 | Reloads fail after a deploy | `Stats().LastError.Kind` and `.Message`, the `config reload failed` log | Fix the source; the previous config stays live until then. A deleted file that loaded before fails every reload with `ErrFileRead`. |
 | `Stop` returns a context error | A manual `Reload` still in flight (a slow secret backend) | Give `Stop` a longer timeout, or bound the reload's own context. |
 | A parse error names only a line | `errors.As(err, &pe)` with `pe *config.ParseError`; `pe.Err` is the parser's message | Print `pe.Err` only where the file's contents may be shown — it can quote them. |
@@ -1285,7 +1287,7 @@ The package's own file-watch tests use the operating system's notifications (ino
 | `provenance.go` | `LoadSnapshot`, `Origin`, `Source`, `OriginProvider`: origins recorded as the sources merge, stage changes found by comparison |
 | `explain.go` | `PrintExplain` |
 | `jsonschema.go` | `JSONSchema[T]`: the schema graph as an advisory Draft 2020-12 schema, defaults and rules translated |
-| `applier.go` | `Applier`, `WithApplier`, `ApplyError`: prefix ownership, acknowledged projections, structure transitions, retries |
+| `applier.go` | `Applier`, `WithApplier`, `ApplyError`: prefix ownership, acknowledgements held as differences from the published config and rebased per reload, structure transitions, retries |
 | `fields.go` | `Fields[T]` key-tree walker and sensitivity, `FieldName`, `DefaultsFromTags[T]` |
 | `schema.go` | The schema graph every walk shares, the walk cursor (key, pattern, owner, sensitivity), `FieldFor[T]` |
 | `path.go` | The key grammar: typed key paths, rendering and parsing |

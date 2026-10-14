@@ -122,8 +122,8 @@
 // and encodes to JSON for a status endpoint. [WithApplier] registers code
 // that pushes a published config into the running process — a log level, a
 // pool's limits — by key prefix: each is called with the changes it owns,
-// measured from what it last acknowledged, retried after a failure, and
-// what no applier applies is listed as waiting for a restart. Reloads are
+// measured from what it last acknowledged, offered again after a failure,
+// and what no applier applies is listed as waiting for a restart. Reloads are
 // serialized: an automatic trigger waits for
 // one in flight and then reads the sources again, while a manual
 // [Reloader.Reload] returns [ErrReloadInProgress]. For a source the reloader

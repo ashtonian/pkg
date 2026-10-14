@@ -6,6 +6,7 @@ import (
 	"reflect"
 	"slices"
 	"strings"
+	"sync"
 )
 
 // Value is one side of a [Change]: whether a value is there, and its text
@@ -32,9 +33,9 @@ type Change struct {
 	Key string `json:"key"`
 	// Structural reports a change to a struct, map, list or interface itself
 	// rather than to a value inside it: it appeared, disappeared, became nil
-	// or non-nil, or an interface's value changed type. Old and New then
-	// describe presence and type only; the keys beneath it that changed are
-	// changes of their own.
+	// or non-nil, or an interface's value changed to or from a struct, map or
+	// list of another type. Old and New then describe presence and type
+	// only; the keys beneath it that changed are changes of their own.
 	Structural bool `json:"structural,omitempty"`
 	// Field is the declared field Key belongs to, as [FieldFor] reports it.
 	// Its Tag is metadata for code, not for output.
@@ -52,9 +53,10 @@ type Change struct {
 //     the first two and removes the third. Map entries compare by key; an
 //     added or removed entry is a change of every key beneath it.
 //   - A struct, map, list or interface that appears, disappears or turns
-//     nil, a nil collection becoming empty, or an interface's value changing
-//     type is a Structural change at its key. An interface whose value
-//     changes type is compared whole.
+//     nil, or a nil collection becoming empty, is a Structural change at its
+//     key, followed by the keys beneath it that changed. An interface whose
+//     value changes type, or turns nil, is compared whole: one change at its
+//     key, Structural when either value is a struct, map or list.
 //   - Values decoded whole — scalars, self-decoding structs, maps keyed by
 //     non-strings — compare with reflect.DeepEqual: no Equal or String
 //     method decides, so two time.Time values for one instant in different
@@ -62,28 +64,24 @@ type Change struct {
 //   - A value PrintRedacted would redact is redacted on both sides; a
 //     sensitive map, list or interface is compared whole, so the keys it
 //     holds, which may themselves be secrets, are never listed.
-//   - A pointer, map or slice that leads back to one being compared is
-//     compared whole there, so a cycle ends.
+//   - A pointer, map or slice that leads back to one it lies within, on
+//     either side, is compared whole there, so a cycle ends.
 //
-// A T that is not a struct, a struct whose keys cannot be told apart, and a
-// non-nil func, channel or unsafe pointer anywhere in either config are
-// ErrSchema errors.
+// A T that is not a struct, a struct whose keys cannot be told apart, an
+// interface holding such a struct, and a non-nil func, channel or unsafe
+// pointer anywhere in either config — inside a value compared whole
+// included — are ErrSchema errors.
 func Diff[T any](old, next *T) ([]Change, error) {
 	root, err := rootSchema(reflect.TypeFor[T]())
 	if err != nil {
 		return nil, err
 	}
-	a, err := flatten(root, rootValue(old))
-	if err != nil {
-		return nil, err
-	}
-	b, err := flatten(root, rootValue(next))
-	if err != nil {
-		return nil, err
-	}
 	var changes []Change
-	for _, c := range compareEntries(a, b) {
-		changes = append(changes, c.Change)
+	err = compare(root, rootValue(old), rootValue(next), func(d *delta) {
+		changes = append(changes, d.change(root))
+	})
+	if err != nil {
+		return nil, err
 	}
 	return changes, nil
 }
@@ -95,34 +93,6 @@ func rootValue[T any](cfg *T) reflect.Value {
 		return reflect.Value{}
 	}
 	return reflect.ValueOf(cfg).Elem()
-}
-
-// A comparison lists each config's keys in walk order — flatten — and then
-// walks the two lists together — compareEntries — so a key's value on one
-// side can come from a config the other side never saw: Diff compares two
-// configs, and the reloader's appliers compare what each acknowledged with
-// what was published.
-
-// entryKind is how one key compares.
-type entryKind uint8
-
-const (
-	entryLeaf      entryKind = iota // a value decoded whole: compared by value
-	entryContainer                  // a struct, map or list: compared by presence; its keys follow it
-	entryWhole                      // a sensitive map, list or interface: compared whole, its keys never listed
-	entryDynamic                    // an interface: the keys of a struct, map or list it holds follow it
-	entryCycle                      // a struct, map or list met again inside itself: compared whole
-)
-
-// flatEntry is one key of one config.
-type flatEntry struct {
-	path      keyPath
-	ord       []ordSeg // the walk position, which orders the keys of two configs as one walk
-	kind      entryKind
-	side      side
-	owner     Field
-	sensitive bool
-	node      *schemaNode // entryDynamic: the schema of the value it holds; nil when it holds none
 }
 
 // ordSeg is one step of a walk position: a field's declaration position, an
@@ -149,264 +119,341 @@ func within(ord, prefix []ordSeg) bool {
 	return len(ord) >= len(prefix) && slices.Equal(ord[:len(prefix)], prefix)
 }
 
-type flattener struct {
-	entries  []flatEntry
-	visiting map[visitKey]bool
-	err      error
+// compare walks a and b, two values of root's type, side by side and calls
+// emit for every key whose value differs, in walk order. Nothing is
+// allocated for a key that compares equal beyond what reflection needs to
+// read a map. The delta emit receives is the walk's own: valid only during
+// the call.
+func compare(root *schemaNode, a, b reflect.Value, emit func(*delta)) error {
+	w := &comparer{emit: emit}
+	w.node(root, frame{}, a, b)
+	return w.err
 }
 
-// visitKey identifies a struct, map or slice on the walk's way down, so one
-// that leads back to itself is listed once.
-type visitKey struct {
+// compareFrom compares a and b, the values at key at of two configs: n is
+// the node of the key's declared type and f the frame there. A key whose
+// node is unknown — its path cannot be followed on the new side — is
+// compared whole and redacted.
+func compareFrom(at keyRef, n *schemaNode, f frame, a, b side, emit func(*delta)) error {
+	w := &comparer{emit: emit, path: slices.Clone(at.path), ord: slices.Clone(at.ord)}
+	if n == nil {
+		if !w.checked(a) || !w.checked(b) || sameValue(a, b) {
+			return w.err
+		}
+		w.report(deltaValue, a.present != b.present || a.isNil != b.isNil, true, true, a, b)
+		return w.err
+	}
+	w.resolved(n, f, a, b)
+	return w.err
+}
+
+// comparer is one side-by-side walk. Its path and walk position are stacks
+// the walk pushes and pops; a delta copies nothing until its receiver does.
+type comparer struct {
+	emit func(*delta)
+	path keyPath
+	ord  []ordSeg
+	// above holds, per side, the maps, slices and struct pointers the walk
+	// is inside, so one met again is compared whole rather than walked
+	// forever.
+	above [2][]ancestor
+	d     delta
+	err   error
+}
+
+// ancestor identifies a container by address, type and, for a slice,
+// length: a struct and its first field share an address, and two slices
+// over one array are different values.
+type ancestor struct {
 	addr uintptr
+	len  int
 	typ  reflect.Type
 }
 
-func visitKeyOf(s side) (visitKey, bool) {
+func ancestorOf(s side) (ancestor, bool) {
 	if !s.v.IsValid() || s.isNil {
-		return visitKey{}, false
+		return ancestor{}, false
 	}
 	switch {
-	case s.v.Kind() == reflect.Map, s.v.Kind() == reflect.Slice:
-		return visitKey{s.v.Pointer(), s.v.Type()}, true
+	case s.v.Kind() == reflect.Map:
+		return ancestor{addr: s.v.Pointer(), typ: s.v.Type()}, true
+	case s.v.Kind() == reflect.Slice:
+		return ancestor{addr: s.v.Pointer(), len: s.v.Len(), typ: s.v.Type()}, true
 	case s.v.CanAddr():
-		return visitKey{s.v.Addr().Pointer(), s.v.Type()}, true
+		return ancestor{addr: s.v.Addr().Pointer(), typ: s.v.Type()}, true
 	}
-	return visitKey{}, false
+	return ancestor{}, false
 }
 
-// flatten lists every key of v — a config's struct, or the invalid value for
-// a missing config — in walk order: fields as declared, map entries by
-// sorted key, list elements by index, each key before the keys beneath it.
-// A value that cannot be compared — a non-nil func, channel or unsafe
-// pointer, or an interface holding a type whose keys cannot be told apart —
-// is an ErrSchema error, so two lists always compare.
-func flatten(root *schemaNode, v reflect.Value) ([]flatEntry, error) {
-	f := &flattener{visiting: map[visitKey]bool{}}
-	f.children(cursor{}, nil, root, resolve(v))
-	return f.entries, f.err
+// frame is what makes the keys at a walk position sensitive, the rule
+// cursor.sensitive applies: a field or squashed struct tagged sensitive, or
+// a credential-like field name or map key above a value.
+type frame struct {
+	tagged  bool
+	covered bool
 }
 
-// node lists the key at c, of n's type and holding v, then the keys beneath
-// it. A key with no value on this side is not listed.
-func (f *flattener) node(c cursor, ord []ordSeg, n *schemaNode, v reflect.Value) {
-	s := resolve(v)
-	if !s.present || f.err != nil {
-		return
+func (f frame) sensitive() bool { return f.tagged || f.covered }
+
+func (f frame) field(fld *schemaField) frame {
+	return frame{
+		tagged:  f.tagged || fld.tagged,
+		covered: f.covered || fld.named && fld.node.kind != nodeBranch,
 	}
-	e := flatEntry{path: c.path, ord: ord, side: s, owner: c.owner, sensitive: c.sensitive()}
-	if s.v.IsValid() && !deepComparable(s.v) {
-		f.err = fmt.Errorf("%w: %s holds a %s, which cannot be compared", ErrSchema, c.path.orRoot(), s.v.Type())
+}
+
+func (f frame) entry(name string) frame {
+	if !f.covered {
+		f.covered = isSensitiveName(name)
+	}
+	return f
+}
+
+// deltaMode is how a delta's two sides are described.
+type deltaMode uint8
+
+const (
+	deltaValue deltaMode = iota // a value compared by content: its text
+	deltaShape                  // a struct, map, list or interface: presence and type
+	deltaCycle                  // a container met again within itself on a side
+)
+
+// delta is one key whose value differs, as a walk found it. path and ord
+// are the walk's buffers; a receiver that keeps them copies them.
+type delta struct {
+	path       keyPath
+	ord        []ordSeg
+	mode       deltaMode
+	structural bool
+	// whole reports a key compared whole: nothing beneath it, on either
+	// side, is reported.
+	whole     bool
+	sensitive bool
+	cycle     [2]bool // deltaCycle: which side leads back to itself
+	sides     [2]side
+}
+
+// value describes side i (0 old, 1 new) of d.
+func (d *delta) value(i int) Value {
+	s := d.sides[i]
+	switch d.mode {
+	case deltaShape:
+		return shape(s)
+	case deltaCycle:
+		if d.cycle[i] {
+			return cycleSide(s)
+		}
+		return shape(s)
+	}
+	return describe(s, d.sensitive || uncheckedValue(d.sides[0]) || uncheckedValue(d.sides[1]))
+}
+
+// change is d as a [Change] of a config whose schema is root.
+func (d *delta) change(root *schemaNode) Change {
+	return Change{
+		Key:        d.path.String(),
+		Structural: d.structural,
+		Field:      ownerOf(root, d.path),
+		Old:        d.value(0),
+		New:        d.value(1),
+	}
+}
+
+// ownerOf is the declared field that owns key p of a config whose schema is
+// root, as [FieldFor] reports it. p is a key a walk found, so it resolves.
+func ownerOf(root *schemaNode, p keyPath) Field {
+	c, _, err := root.walkTo(cursor{}, p)
+	if err != nil {
+		return Field{}
+	}
+	return c.owner
+}
+
+func (w *comparer) push(s segment, o ordSeg) {
+	w.path = append(w.path, s)
+	w.ord = append(w.ord, o)
+}
+
+func (w *comparer) pop() {
+	w.path = w.path[:len(w.path)-1]
+	w.ord = w.ord[:len(w.ord)-1]
+}
+
+func (w *comparer) report(mode deltaMode, structural, whole, sensitive bool, sa, sb side) {
+	w.d = delta{
+		path:       w.path,
+		ord:        w.ord,
+		mode:       mode,
+		structural: structural,
+		whole:      whole,
+		sensitive:  sensitive,
+		sides:      [2]side{sa, sb},
+	}
+	w.emit(&w.d)
+}
+
+func (w *comparer) reportCycle(cycle [2]bool, sa, sb side) {
+	w.d = delta{
+		path:       w.path,
+		ord:        w.ord,
+		mode:       deltaCycle,
+		structural: sa.present != sb.present || sa.isNil != sb.isNil,
+		whole:      true,
+		cycle:      cycle,
+		sides:      [2]side{sa, sb},
+	}
+	w.emit(&w.d)
+}
+
+func (w *comparer) fail(err error) {
+	if w.err == nil {
+		w.err = err
+	}
+}
+
+// node compares a and b, two values of n's declared type, at the walk's
+// position, which f makes sensitive or not.
+func (w *comparer) node(n *schemaNode, f frame, a, b reflect.Value) {
+	w.resolved(n, f, resolve(a), resolve(b))
+}
+
+func (w *comparer) resolved(n *schemaNode, f frame, sa, sb side) {
+	if w.err != nil || !sa.present && !sb.present {
 		return
 	}
 	switch {
 	case n.kind == nodeLeaf:
-		e.kind = entryLeaf
-	case c.sensitive() && n.kind != nodeBranch:
-		e.kind = entryWhole
+		w.leaf(n, f, sa, sb)
+	case f.sensitive() && n.kind != nodeBranch:
+		// A map, list or interface whose keys may be secrets: compared
+		// whole, never listed.
+		w.whole(sa, sb)
 	case n.kind == nodeDynamic:
-		e.kind = entryDynamic
-		if !s.isNil {
-			var err error
-			if e.node, err = schemaOf(s.v.Type()); err != nil {
-				f.err = err
-				return
-			}
-		}
-		f.entries = append(f.entries, e)
-		if e.node != nil && e.node.composite() {
-			// The value's keys sit beneath the interface's own key.
-			f.children(c.intoDynamic(), ord, e.node, s)
-		}
-		return
+		w.dynamic(f, sa, sb)
 	default:
-		e.kind = entryContainer
-		if key, ok := visitKeyOf(s); ok && f.visiting[key] {
-			e.kind = entryCycle
-			f.entries = append(f.entries, e)
-			return
-		}
-		f.entries = append(f.entries, e)
-		f.children(c, ord, n, s)
-		return
+		w.container(n, f, sa, sb)
 	}
-	f.entries = append(f.entries, e)
 }
 
-// children lists the keys beneath s, a struct, map or list of n's type.
-func (f *flattener) children(c cursor, ord []ordSeg, n *schemaNode, s side) {
-	if !s.present || s.isNil || !s.v.IsValid() {
+// leaf compares two values of n's type, decoded whole.
+func (w *comparer) leaf(n *schemaNode, f frame, sa, sb side) {
+	if n.opaqueUnsafe && (!w.checked(sa) || !w.checked(sb)) || sameValue(sa, sb) {
 		return
 	}
-	if key, ok := visitKeyOf(s); ok {
-		f.visiting[key] = true
-		defer delete(f.visiting, key)
+	w.report(deltaValue, false, false, f.sensitive(), sa, sb)
+}
+
+// whole compares two sensitive maps, lists or interfaces without listing
+// what they hold.
+func (w *comparer) whole(sa, sb side) {
+	if !w.checked(sa) || !w.checked(sb) || sameValue(sa, sb) {
+		return
+	}
+	w.report(deltaValue, sa.present != sb.present || sa.isNil != sb.isNil, true, true, sa, sb)
+}
+
+// dynamic compares the values two interfaces hold: values of one type key
+// by key, anything else whole.
+func (w *comparer) dynamic(f frame, sa, sb side) {
+	var nodes [2]*schemaNode
+	for i, s := range [2]side{sa, sb} {
+		if s.v.IsValid() {
+			n, err := schemaOf(s.v.Type())
+			if err != nil {
+				w.fail(err)
+				return
+			}
+			nodes[i] = n
+		}
+	}
+	if nodes[0] != nil && nodes[0] == nodes[1] {
+		w.resolved(nodes[0], f, sa, sb)
+		return
+	}
+	// One side missing or nil, or the two of different types.
+	if !w.checked(sa) || !w.checked(sb) || sameValue(sa, sb) {
+		return
+	}
+	if !composite(sa) && !composite(sb) {
+		w.report(deltaValue, false, true, f.sensitive(), sa, sb)
+		return
+	}
+	w.report(deltaShape, true, true, false, sa, sb)
+}
+
+// container compares two structs, maps or lists of n's type: their shape
+// at their key, then the keys beneath them.
+func (w *comparer) container(n *schemaNode, f frame, sa, sb side) {
+	ka, okA := ancestorOf(sa)
+	kb, okB := ancestorOf(sb)
+	cycle := [2]bool{okA && slices.Contains(w.above[0], ka), okB && slices.Contains(w.above[1], kb)}
+	if cycle[0] || cycle[1] {
+		if !w.checked(sa) || !w.checked(sb) || sameValue(sa, sb) {
+			return
+		}
+		w.reportCycle(cycle, sa, sb)
+		return
+	}
+	if len(w.path) > 0 && (sa.present != sb.present || sa.isNil != sb.isNil) {
+		w.report(deltaShape, true, false, false, sa, sb)
+	}
+	if okA {
+		w.above[0] = append(w.above[0], ka)
+		defer func() { w.above[0] = w.above[0][:len(w.above[0])-1] }()
+	}
+	if okB {
+		w.above[1] = append(w.above[1], kb)
+		defer func() { w.above[1] = w.above[1][:len(w.above[1])-1] }()
 	}
 	switch n.kind {
 	case nodeBranch:
 		for i, fld := range n.fields {
-			v, err := s.v.FieldByIndexErr(fld.index)
-			if err != nil {
-				continue // behind a nil embedded pointer: no value on this side
-			}
-			f.node(c.intoField(fld), extendOrd(ord, ordSeg{n: i}), fld.node, v)
+			w.push(segment{kind: segField, name: fld.key}, ordSeg{n: i})
+			w.node(fld.node, f.field(fld), fieldOf(sa, fld), fieldOf(sb, fld))
+			w.pop()
 		}
 	case nodeMap:
-		keys := s.v.MapKeys()
-		slices.SortFunc(keys, func(a, b reflect.Value) int { return strings.Compare(a.String(), b.String()) })
-		for _, k := range keys {
-			name := k.String()
-			f.node(c.intoEntry(segment{kind: segKey, name: name}, n.typ.Elem()), extendOrd(ord, ordSeg{s: name}), n.elem, s.v.MapIndex(k))
+		ma, mb := readMap(sa), readMap(sb)
+		i, j := 0, 0
+		for i < len(ma.keys) || j < len(mb.keys) {
+			var a, b reflect.Value
+			var name string
+			switch {
+			case j >= len(mb.keys) || i < len(ma.keys) && ma.keys[i].name < mb.keys[j].name:
+				name, a = ma.keys[i].name, ma.at(i)
+				i++
+			case i >= len(ma.keys) || ma.keys[i].name > mb.keys[j].name:
+				name, b = mb.keys[j].name, mb.at(j)
+				j++
+			default:
+				name, a, b = ma.keys[i].name, ma.at(i), mb.at(j)
+				i++
+				j++
+			}
+			w.push(segment{kind: segKey, name: name}, ordSeg{s: name})
+			w.node(n.elem, f.entry(name), a, b)
+			w.pop()
 		}
 	case nodeList:
-		for i := range s.v.Len() {
-			f.node(c.intoEntry(segment{kind: segIndex, index: i}, n.typ.Elem()), extendOrd(ord, ordSeg{n: i}), n.elem, s.v.Index(i))
+		for i := range max(listLen(sa), listLen(sb)) {
+			w.push(segment{kind: segIndex, index: i}, ordSeg{n: i})
+			w.node(n.elem, f, elementOf(sa, i), elementOf(sb, i))
+			w.pop()
 		}
 	}
 }
 
-func extendOrd(ord []ordSeg, s ordSeg) []ordSeg {
-	return append(slices.Clip(ord), s)
-}
-
-// entryChange is a change as a comparison found it, with its key's path and
-// walk position.
-type entryChange struct {
-	Change
-	path keyPath
-	ord  []ordSeg
-	// subtree reports a key compared whole: the keys beneath it, on either
-	// side, are part of this change and have none of their own.
-	subtree bool
-}
-
-// compareEntries returns every key whose value differs between a and b, two
-// entry lists in walk order, in walk order.
-func compareEntries(a, b []flatEntry) []entryChange {
-	var out []entryChange
-	var skip []ordSeg // a key compared whole: the entries beneath it are part of it
-	i, j := 0, 0
-	for i < len(a) || j < len(b) {
-		if skip != nil {
-			switch {
-			case i < len(a) && within(a[i].ord, skip):
-				i++
-				continue
-			case j < len(b) && within(b[j].ord, skip):
-				j++
-				continue
-			}
-			skip = nil
-		}
-		var ea, eb *flatEntry
-		switch {
-		case j >= len(b) || i < len(a) && compareOrd(a[i].ord, b[j].ord) < 0:
-			ea = &a[i]
-			i++
-		case i >= len(a) || compareOrd(a[i].ord, b[j].ord) > 0:
-			eb = &b[j]
-			j++
-		default:
-			ea, eb = &a[i], &b[j]
-			i++
-			j++
-		}
-		c, whole := compareEntry(ea, eb)
-		if c != nil {
-			out = append(out, *c)
-		}
-		if whole {
-			skip = cmp.Or(ea, eb).ord
-		}
-	}
-	return out
-}
-
-// compareEntry compares one key's entries, either of which may be missing.
-// whole reports that the keys beneath it are part of the comparison.
-func compareEntry(ea, eb *flatEntry) (c *entryChange, whole bool) {
-	e := cmp.Or(ea, eb)
-	var sa, sb side
-	ka, kb := e.kind, e.kind
-	if ea != nil {
-		sa, ka = ea.side, ea.kind
-	}
-	if eb != nil {
-		sb, kb = eb.side, eb.kind
-	}
-	switch {
-	case ka != kb || ka == entryCycle:
-		// A container met again inside itself on either side: compared whole.
-		if sameValue(sa, sb) {
-			return nil, true
-		}
-		return e.change(sa.present != sb.present, cycleSide(sa), cycleSide(sb), true), true
-	case ka == entryLeaf:
-		return e.leafChange(sa, sb), false
-	case ka == entryWhole:
-		if sameValue(sa, sb) {
-			return nil, false
-		}
-		structural := sa.present != sb.present || sa.isNil != sb.isNil
-		return e.change(structural, describe(sa, true), describe(sb, true), true), false
-	case ka == entryDynamic:
-		return e.dynamicChange(ea, sa, sb)
-	}
-	if sa.present != sb.present || sa.isNil != sb.isNil {
-		return e.change(true, shape(sa), shape(sb), false), false
-	}
-	return nil, false
-}
-
-// dynamicChange compares the values two interfaces hold: one type's keys
-// compare one by one, and anything else whole.
-func (e *flatEntry) dynamicChange(ea *flatEntry, sa, sb side) (*entryChange, bool) {
-	if sa.present && sb.present && !sa.isNil && !sb.isNil && sa.v.Type() == sb.v.Type() {
-		if ea.node.kind == nodeLeaf {
-			return e.leafChange(sa, sb), false
-		}
-		return nil, false // its keys follow
-	}
-	if !composite(sa) && !composite(sb) {
-		return e.leafChange(sa, sb), true
-	}
-	return e.change(true, shape(sa), shape(sb), true), true
-}
-
-// composite reports a side holding a struct, map or list.
-func composite(s side) bool {
-	if !s.v.IsValid() {
-		return false
-	}
-	switch s.v.Kind() {
-	case reflect.Struct, reflect.Map, reflect.Slice, reflect.Array:
+// checked reports whether s can be compared by content, recording the
+// error when it cannot.
+func (w *comparer) checked(s side) bool {
+	if !s.v.IsValid() || s.isNil {
 		return true
 	}
-	return false
-}
-
-// leafChange compares two values decoded whole.
-func (e *flatEntry) leafChange(sa, sb side) *entryChange {
-	if sameValue(sa, sb) {
-		return nil
+	if t := uncomparableIn(s.v); t != nil {
+		w.fail(fmt.Errorf("%w: %s holds a %s, which cannot be compared", ErrSchema, w.path.orRoot(), t))
+		return false
 	}
-	redact := e.sensitive || uncheckedValue(sa) || uncheckedValue(sb)
-	return e.change(false, describe(sa, redact), describe(sb, redact), false)
-}
-
-func (e *flatEntry) change(structural bool, old, next Value, subtree bool) *entryChange {
-	return &entryChange{
-		Change: Change{
-			Key:        e.path.String(),
-			Structural: structural,
-			Field:      cloneField(e.owner),
-			Old:        old,
-			New:        next,
-		},
-		path:    e.path,
-		ord:     e.ord,
-		subtree: subtree,
-	}
+	return true
 }
 
 // side is a value as found: present or absent, and when present, nil or not.
@@ -417,12 +464,15 @@ type side struct {
 }
 
 // resolve dereferences v, a value of some declared type, through pointers and
-// interfaces.
+// interfaces. The bound stops a pointer that points at itself.
 func resolve(v reflect.Value) side {
 	if !v.IsValid() {
 		return side{}
 	}
-	for v.Kind() == reflect.Pointer || v.Kind() == reflect.Interface {
+	for range maxPointerDepth {
+		if v.Kind() != reflect.Pointer && v.Kind() != reflect.Interface {
+			break
+		}
 		if v.IsNil() {
 			return side{present: true, isNil: true}
 		}
@@ -441,6 +491,137 @@ func (s side) typeName() string {
 	return ""
 }
 
+// fieldOf is f's value in a struct side, or invalid when the side has no
+// struct or an embedded pointer on the way is nil.
+func fieldOf(s side, f *schemaField) reflect.Value {
+	if !s.v.IsValid() || s.isNil {
+		return reflect.Value{}
+	}
+	v, err := s.v.FieldByIndexErr(f.index)
+	if err != nil {
+		return reflect.Value{}
+	}
+	return v
+}
+
+// mapRead is a map side's entries sorted by key, each value copied out once
+// into one slice, so reading an entry allocates nothing.
+type mapRead struct {
+	keys []mapKey
+	vals reflect.Value // a slice of the map's element type
+}
+
+type mapKey struct {
+	name string
+	i    int // the entry's value in vals
+}
+
+func readMap(s side) mapRead {
+	if !s.v.IsValid() || s.isNil || s.v.Len() == 0 {
+		return mapRead{}
+	}
+	n := s.v.Len()
+	t := s.v.Type()
+	r := mapRead{keys: make([]mapKey, 0, n), vals: reflect.MakeSlice(reflect.SliceOf(t.Elem()), n, n)}
+	k := reflect.New(t.Key()).Elem()
+	var it reflect.MapIter
+	it.Reset(s.v)
+	for i := 0; it.Next(); i++ {
+		k.SetIterKey(&it)
+		r.vals.Index(i).SetIterValue(&it)
+		r.keys = append(r.keys, mapKey{name: k.String(), i: i})
+	}
+	slices.SortFunc(r.keys, func(a, b mapKey) int { return strings.Compare(a.name, b.name) })
+	return r
+}
+
+// at is the value of the i-th entry in key order.
+func (r mapRead) at(i int) reflect.Value { return r.vals.Index(r.keys[i].i) }
+
+// locate finds key p in v, a config of root's schema: the value there, the
+// node of its declared type, and the frame that makes it sensitive. A key
+// beneath a missing or nil container is absent, its node nil when the path
+// cannot be followed.
+func locate(root *schemaNode, v reflect.Value, p keyPath) (side, *schemaNode, frame) {
+	n, f, s := root, frame{}, resolve(v)
+	for _, seg := range p {
+		if n.kind == nodeDynamic {
+			if !s.v.IsValid() {
+				return side{}, nil, f
+			}
+			dn, err := schemaOf(s.v.Type())
+			if err != nil {
+				return side{}, nil, f
+			}
+			n = dn
+		}
+		switch n.kind {
+		case nodeBranch:
+			fld := n.byKey[seg.name]
+			if fld == nil {
+				return side{}, nil, f
+			}
+			s, n, f = resolve(fieldOf(s, fld)), fld.node, f.field(fld)
+		case nodeMap:
+			s, n, f = resolve(newEntries(s).of(seg.name)), n.elem, f.entry(seg.name)
+		case nodeList:
+			s, n = resolve(elementOf(s, seg.index)), n.elem
+		default:
+			return side{}, nil, f
+		}
+	}
+	return s, n, f
+}
+
+// entries looks up a map side's entries by key text.
+type entries struct {
+	m   reflect.Value // invalid when the side has no map
+	key reflect.Value // scratch, of the map's key type
+}
+
+func newEntries(s side) entries {
+	if !s.v.IsValid() || s.isNil || s.v.Kind() != reflect.Map {
+		return entries{}
+	}
+	return entries{m: s.v, key: reflect.New(s.v.Type().Key()).Elem()}
+}
+
+func (e entries) of(name string) reflect.Value {
+	if !e.m.IsValid() {
+		return reflect.Value{}
+	}
+	e.key.SetString(name)
+	return e.m.MapIndex(e.key)
+}
+
+func listLen(s side) int {
+	if !s.v.IsValid() || s.isNil {
+		return 0
+	}
+	return s.v.Len()
+}
+
+func elementOf(s side, i int) reflect.Value {
+	if i >= listLen(s) {
+		return reflect.Value{}
+	}
+	return s.v.Index(i)
+}
+
+// composite reports a side holding a struct, map or list.
+func composite(s side) bool {
+	if !s.v.IsValid() {
+		return false
+	}
+	switch s.v.Kind() {
+	case reflect.Struct, reflect.Map, reflect.Slice, reflect.Array:
+		return true
+	}
+	return false
+}
+
+// sameValue reports whether two sides hold equal values: by kind for a
+// scalar, by reflect.DeepEqual for anything else.
 func sameValue(a, b side) bool {
 	if a.present != b.present || a.isNil != b.isNil {
 		return false
@@ -448,18 +629,137 @@ func sameValue(a, b side) bool {
 	if !a.v.IsValid() || !b.v.IsValid() {
 		return a.v.IsValid() == b.v.IsValid()
 	}
-	return a.v.Type() == b.v.Type() && reflect.DeepEqual(a.v.Interface(), b.v.Interface())
+	if a.v.Type() != b.v.Type() {
+		return false
+	}
+	switch a.v.Kind() {
+	case reflect.Bool:
+		return a.v.Bool() == b.v.Bool()
+	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+		return a.v.Int() == b.v.Int()
+	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64, reflect.Uintptr:
+		return a.v.Uint() == b.v.Uint()
+	case reflect.Float32, reflect.Float64:
+		return a.v.Float() == b.v.Float()
+	case reflect.Complex64, reflect.Complex128:
+		return a.v.Complex() == b.v.Complex()
+	case reflect.String:
+		return a.v.String() == b.v.String()
+	}
+	return reflect.DeepEqual(a.v.Interface(), b.v.Interface())
 }
 
-// deepComparable reports a value DeepEqual can compare by content: a func,
-// channel or unsafe pointer is compared by identity, which a config cannot
-// mean.
-func deepComparable(v reflect.Value) bool {
+// uncomparableIn returns the type of a non-nil func, channel or unsafe
+// pointer anywhere in v — reflect.DeepEqual compares those by identity,
+// which a config cannot mean — or nil when there is none.
+func uncomparableIn(v reflect.Value) reflect.Type {
+	if !mayHoldUncomparable(v.Type()) {
+		return nil
+	}
+	return (&uncomparableSearch{}).value(v)
+}
+
+// uncomparableSearch looks through one value, each map, slice and pointer
+// once, so a cycle ends.
+type uncomparableSearch struct {
+	seen map[ancestor]bool
+}
+
+func (s *uncomparableSearch) value(v reflect.Value) reflect.Type {
+	if !mayHoldUncomparable(v.Type()) {
+		return nil
+	}
 	switch v.Kind() {
 	case reflect.Func, reflect.Chan, reflect.UnsafePointer:
-		return v.IsNil()
+		if v.IsNil() {
+			return nil
+		}
+		return v.Type()
+	case reflect.Interface:
+		if v.IsNil() {
+			return nil
+		}
+		return s.value(v.Elem())
+	case reflect.Pointer, reflect.Map, reflect.Slice:
+		if v.IsNil() || s.visited(v) {
+			return nil
+		}
+		switch v.Kind() {
+		case reflect.Pointer:
+			return s.value(v.Elem())
+		case reflect.Map:
+			for it := v.MapRange(); it.Next(); {
+				if t := cmp.Or(s.value(it.Key()), s.value(it.Value())); t != nil {
+					return t
+				}
+			}
+			return nil
+		}
+		fallthrough
+	case reflect.Array:
+		for i := range v.Len() {
+			if t := s.value(v.Index(i)); t != nil {
+				return t
+			}
+		}
+	case reflect.Struct:
+		for i := range v.NumField() {
+			if t := s.value(v.Field(i)); t != nil {
+				return t
+			}
+		}
 	}
-	return true
+	return nil
+}
+
+func (s *uncomparableSearch) visited(v reflect.Value) bool {
+	key := ancestor{addr: v.Pointer(), typ: v.Type()}
+	if v.Kind() == reflect.Slice {
+		key.len = v.Len()
+	}
+	if s.seen == nil {
+		s.seen = map[ancestor]bool{}
+	}
+	if s.seen[key] {
+		return true
+	}
+	s.seen[key] = true
+	return false
+}
+
+var uncomparableTypes sync.Map // reflect.Type → bool
+
+// mayHoldUncomparable reports whether a value of type t can hold a func,
+// channel or unsafe pointer: one that is, or holds an interface that could.
+func mayHoldUncomparable(t reflect.Type) bool {
+	if v, ok := uncomparableTypes.Load(t); ok {
+		return v.(bool)
+	}
+	may := typeMayHoldUncomparable(t, map[reflect.Type]bool{})
+	uncomparableTypes.Store(t, may)
+	return may
+}
+
+func typeMayHoldUncomparable(t reflect.Type, visiting map[reflect.Type]bool) bool {
+	if visiting[t] {
+		return false // whatever the type holds is judged where it was first met
+	}
+	visiting[t] = true
+	switch t.Kind() {
+	case reflect.Func, reflect.Chan, reflect.UnsafePointer, reflect.Interface:
+		return true
+	case reflect.Pointer, reflect.Slice, reflect.Array:
+		return typeMayHoldUncomparable(t.Elem(), visiting)
+	case reflect.Map:
+		return typeMayHoldUncomparable(t.Key(), visiting) || typeMayHoldUncomparable(t.Elem(), visiting)
+	case reflect.Struct:
+		for i := range t.NumField() {
+			if typeMayHoldUncomparable(t.Field(i).Type, visiting) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // uncheckedValue reports a side whose text would show what the walk did not
@@ -487,7 +787,7 @@ func shape(s side) Value {
 }
 
 // cycleSide describes a container compared whole because it leads back to
-// itself.
+// one it lies within.
 func cycleSide(s side) Value {
 	if !s.present {
 		return Value{}

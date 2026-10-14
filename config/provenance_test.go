@@ -253,27 +253,6 @@ func TestPrintExplain(t *testing.T) {
 	require.Error(t, PrintExplain(snap, WithWriter(failingWriter{})))
 }
 
-func BenchmarkLoad(b *testing.B) {
-	file := filepath.Join(b.TempDir(), "config.yaml")
-	writeBenchFile(b, file, "region: eu\nlabels:\n  a: '1'\n  b: '2'\ntags: [x, y, z]\nitems:\n  one: {port: 1}\n  two: {port: 2}\ndb:\n  password: p\n")
-	opts := []Option{WithFile(file), WithEnvPrefix("APP"), WithEnviron(func() []string { return nil }), WithSkipValidation(),
-		WithPostLoad(func(context.Context, *provCfg) error { return nil })}
-	b.Run("Load", func(b *testing.B) {
-		for b.Loop() {
-			if _, err := Load[provCfg](context.Background(), opts...); err != nil {
-				b.Fatal(err)
-			}
-		}
-	})
-	b.Run("LoadSnapshot", func(b *testing.B) {
-		for b.Loop() {
-			if _, err := LoadSnapshot[provCfg](context.Background(), opts...); err != nil {
-				b.Fatal(err)
-			}
-		}
-	})
-}
-
 func writeBenchFile(b *testing.B, path, data string) {
 	b.Helper()
 	if err := os.WriteFile(path, []byte(data), 0o644); err != nil {

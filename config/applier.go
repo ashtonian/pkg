@@ -24,10 +24,9 @@ const TriggerInitial = "initial"
 // last acknowledged. Returning nil acknowledges every change it was given
 // except the RestartKeys it returns, which wait for a restart and are
 // offered again on every later config. Returning an error, or panicking,
-// acknowledges nothing and leaves the applier uncertain — what it did may
-// have half happened — so it is called again on every later published
-// config, Retry set, until it applies everything it owes with no restart
-// keys.
+// acknowledges nothing and leaves the applier uncertain — what it did with
+// the keys it was given may have half happened — so later calls give it
+// those keys again, Retry set, until a call applies each of them.
 type Applier[T any] struct {
 	// Name identifies the applier in stats, errors and logs; unique within a
 	// reloader.
@@ -56,8 +55,12 @@ type ApplyEvent[T any] struct {
 	Trigger string
 	// Generation is the published config's generation.
 	Generation uint64
-	// Retry reports an applier that failed and has not applied everything
-	// it owes since: reconcile all of Desired it owns, not only Changes.
+	// Retry reports a call after a failure: a failed call may have half
+	// applied the keys it was given. Changes then also lists each of those
+	// keys whose published value is again what the applier acknowledged —
+	// Old and New alike — so that it is applied again. A key that waits on
+	// a structure the applier does not own whole is left out of every call
+	// until it can be applied, and the applier stays uncertain until then.
 	Retry bool
 	// Previous is the config published before Desired, nil for the initial
 	// apply. It is not what this applier applied — Changes are measured
@@ -66,8 +69,8 @@ type ApplyEvent[T any] struct {
 	// Desired is the config just published; shared and immutable.
 	Desired *T
 	// Changes are the keys the applier owns whose published value differs
-	// from what it last acknowledged, as [Diff] reports them. It can be
-	// empty on a retry.
+	// from what it last acknowledged, as [Diff] reports them, and on a
+	// retry the keys a failed call left uncertain. It is never empty.
 	Changes []Change
 }
 
@@ -147,27 +150,41 @@ type applierHook struct {
 	run      func(ctx context.Context, ev any) (ApplyResult, error)
 }
 
-// application is a reloader's account of its appliers: what each has
-// acknowledged, and the first load as the baseline for keys none owns.
-// Guarded by the reloader's slot.
+// application is a reloader's account of what its appliers have
+// acknowledged. Each acknowledger — an applier, or the first load standing
+// for the keys no applier owns — is held as the keys where what it
+// acknowledged differs from the published config: an applier that has
+// applied everything holds nothing, and a reload is accounted from its
+// publication's changes alone. Guarded by the reloader's slot.
 type application struct {
+	root     *schemaNode
 	appliers []*applierState
 	owners   ownership
-	boot     []flatEntry // the first load's keys no applier owns
+	// boot is the first load, for the keys no applier owns: it never
+	// acknowledges, so it holds every such key that has changed since.
+	boot ackDiff
 }
 
 type applierState struct {
 	hook applierHook
-	// ack is what the applier has acknowledged, by key: entries of the
-	// configs it applied them from.
-	ack       map[string]flatEntry
-	deferred  map[string]bool // the restart keys of its last successful apply
-	uncertain bool
-	status    ApplierStatus // counters and the last outcome; Pending is set per publication
+	ack  ackDiff
+	// deferred are the restart keys of its last successful call.
+	deferred map[string]bool
+	// unsure are the keys failed calls were given that no later call has
+	// applied: what was done with them is unknown. The applier is uncertain
+	// while any remains.
+	unsure map[string]keyRef
+	status ApplierStatus // counters and the last outcome
+}
+
+// keyRef is a key with its walk position.
+type keyRef struct {
+	path keyPath
+	ord  []ordSeg
 }
 
 func newApplication(root *schemaNode, hooks []applierHook) (*application, error) {
-	a := &application{}
+	a := &application{root: root}
 	names := map[string]bool{}
 	for i, h := range hooks {
 		switch {
@@ -193,7 +210,12 @@ func newApplication(root *schemaNode, hooks []applierHook) (*application, error)
 			seen[p.String()] = true
 			a.owners = append(a.owners, newOwnedPrefix(p, i))
 		}
-		a.appliers = append(a.appliers, &applierState{hook: h, status: ApplierStatus{Name: h.name}})
+		a.appliers = append(a.appliers, &applierState{
+			hook:     h,
+			deferred: map[string]bool{},
+			unsure:   map[string]keyRef{},
+			status:   ApplierStatus{Name: h.name},
+		})
 	}
 	if err := a.owners.check(hooks); err != nil {
 		return nil, err
@@ -307,37 +329,448 @@ func (o ownership) of(p keyPath) int {
 	return best
 }
 
-// applyPlan is what one published config asks of the appliers.
-type applyPlan struct {
-	owned     [][]flatEntry          // per applier: the published keys it owns
-	byKey     []map[string]flatEntry // the same, by key
-	owes      [][]entryChange        // per applier: what it owes, measured from its acknowledgement
-	events    [][]entryChange        // per applier: what it is called with
-	blocked   []map[string]bool      // per applier: keys it owes but cannot apply live
-	unclaimed []entryChange          // keys no applier owns that differ from the first load
+// published is one key a publication changed, kept past the walk that found
+// it: what was published there before, detached from that config, and what
+// is published there now.
+type published struct {
+	keyRef
+	key    string
+	whole  bool
+	held   heldValue // the previous value
+	now    side      // the new value: a view into the new config
+	change Change
 }
 
-// plan measures what the appliers owe for published, a config's entries. A
+func newPublished(root *schemaNode, d *delta) published {
+	return published{
+		keyRef: keyRef{path: slices.Clone(d.path), ord: slices.Clone(d.ord)},
+		key:    d.path.String(),
+		whole:  d.whole,
+		held:   holdSide(d, 0),
+		now:    d.sides[1],
+		change: d.change(root),
+	}
+}
+
+// heldValue is what an acknowledgement holds at a key, detached from every
+// config: no pointer into one remains, so holding it keeps no old config
+// alive.
+type heldValue struct {
+	present bool
+	isNil   bool
+	// shape reports a struct, map or list compared by presence and nil-ness
+	// alone; typ is its type, so it can be rebuilt.
+	shape bool
+	typ   reflect.Type
+	v     reflect.Value // a value compared by content: an unaddressable copy
+}
+
+// holdSide detaches side i of d.
+func holdSide(d *delta, i int) heldValue {
+	s := d.sides[i]
+	h := heldValue{present: s.present, isNil: s.isNil}
+	if s.v.IsValid() {
+		h.typ = s.v.Type()
+	}
+	if d.mode == deltaShape && !d.whole {
+		h.shape = true
+		return h
+	}
+	if s.v.IsValid() {
+		h.v = reflect.ValueOf(s.v.Interface())
+	}
+	return h
+}
+
+// side is h as a comparison side.
+func (h heldValue) side() side { return side{v: h.v, present: h.present, isNil: h.isNil} }
+
+// same reports whether h holds what s does.
+func (h heldValue) same(s side) bool {
+	if h.shape {
+		return h.present == s.present && h.isNil == s.isNil
+	}
+	return sameValue(h.side(), s)
+}
+
+// ackEntry is one key where an acknowledgement differs from the published
+// config.
+type ackEntry struct {
+	keyRef
+	key string
+	// whole reports a key compared whole: held is the whole value
+	// acknowledged there, and nothing beneath it has an entry.
+	whole bool
+	held  heldValue
+	// change is the difference as a Change: Old what was acknowledged, New
+	// what is published.
+	change Change
+}
+
+// ackDiff is where one acknowledgement differs from the published config,
+// by key.
+type ackDiff map[string]*ackEntry
+
+func (d ackDiff) sorted() []*ackEntry {
+	entries := slices.Collect(maps.Values(d))
+	slices.SortFunc(entries, func(a, b *ackEntry) int { return compareOrd(a.ord, b.ord) })
+	return entries
+}
+
+// covering returns the entry compared whole that p lies strictly beneath.
+func (d ackDiff) covering(p keyPath) *ackEntry {
+	for i := len(p) - 1; i > 0; i-- {
+		if e := d[p[:i].String()]; e != nil && e.whole {
+			return e
+		}
+	}
+	return nil
+}
+
+// atOrBeneath returns the entries at or beneath p, in walk order.
+func (d ackDiff) atOrBeneath(p keyPath) []*ackEntry {
+	var out []*ackEntry
+	for _, e := range d {
+		if len(e.path) >= len(p) && slices.Equal(e.path[:len(p)], p) {
+			out = append(out, e)
+		}
+	}
+	slices.SortFunc(out, func(a, b *ackEntry) int { return compareOrd(a.ord, b.ord) })
+	return out
+}
+
+// rebaser moves acknowledgements from one published config to the next.
+type rebaser struct {
+	root *schemaNode
+	prev reflect.Value // the config published before
+	next reflect.Value // the config being published
+}
+
+// rebase returns cur, an acknowledgement's difference from the previous
+// published config, as its difference from the next, given changes, the
+// publication's changes among the keys it covers, in walk order. cur is
+// not changed.
+func (r rebaser) rebase(cur ackDiff, changes []published) (ackDiff, error) {
+	if len(changes) == 0 {
+		return cur, nil
+	}
+	out := maps.Clone(cur)
+	if out == nil {
+		out = ackDiff{}
+	}
+	var stale []string // entries compared whole whose published value changed
+	wholes := 0
+	for _, e := range out {
+		if e.whole {
+			wholes++
+		}
+	}
+	for _, c := range changes {
+		if wholes > 0 {
+			if w := out.covering(c.path); w != nil {
+				stale = append(stale, w.key)
+				continue
+			}
+		}
+		if c.whole {
+			held := c.held
+			if within := out.atOrBeneath(c.path); len(within) > 0 {
+				if len(within) == 1 && within[0].key == c.key && within[0].whole {
+					stale = append(stale, c.key)
+					continue
+				}
+				var err error
+				if held, err = r.merge(c, within); err != nil {
+					return nil, err
+				}
+				for _, e := range within {
+					delete(out, e.key)
+				}
+			}
+			out[c.key] = &ackEntry{keyRef: c.keyRef, key: c.key, whole: true, held: held, change: c.change}
+			wholes++
+			stale = append(stale, c.key)
+			continue
+		}
+		if e := out[c.key]; e != nil && e.whole {
+			stale = append(stale, c.key)
+			continue
+		} else if e != nil {
+			if e.held.same(c.now) {
+				delete(out, c.key)
+			} else {
+				out[c.key] = e.publishedAs(c.change.New)
+			}
+			continue
+		}
+		out[c.key] = &ackEntry{keyRef: c.keyRef, key: c.key, held: c.held, change: c.change}
+	}
+	for _, key := range stale {
+		if e := out[key]; e != nil {
+			if err := r.restate(out, e); err != nil {
+				return nil, err
+			}
+		}
+	}
+	return out, nil
+}
+
+// publishedAs is e with the published side of its change replaced.
+func (e *ackEntry) publishedAs(v Value) *ackEntry {
+	next := *e
+	next.change.New = v
+	return &next
+}
+
+// restate compares e, an entry compared whole, with what the next config
+// publishes at its key: it goes when they are equal, stays whole while they
+// still differ whole, and otherwise becomes the keys beneath that differ.
+func (r rebaser) restate(out ackDiff, e *ackEntry) error {
+	now, n, f := locate(r.root, r.next, e.path)
+	var found []published
+	err := compareFrom(e.keyRef, n, f, e.held.side(), now, func(d *delta) {
+		found = append(found, newPublished(r.root, d))
+	})
+	if err != nil {
+		return err
+	}
+	delete(out, e.key)
+	if len(found) == 0 {
+		return nil
+	}
+	if found[0].key == e.key && found[0].whole {
+		out[e.key] = &ackEntry{keyRef: e.keyRef, key: e.key, whole: true, held: e.held, change: found[0].change}
+		return nil
+	}
+	for _, c := range found {
+		out[c.key] = &ackEntry{keyRef: c.keyRef, key: c.key, whole: c.whole, held: c.held, change: c.change}
+	}
+	return nil
+}
+
+// merge is what was acknowledged at c's key, which the publication changed
+// whole while the acknowledgement differed at or beneath it: the previous
+// published value with the acknowledged sides of within written in.
+func (r rebaser) merge(c published, within []*ackEntry) (heldValue, error) {
+	if own := within[0]; own.key == c.key && !own.held.present {
+		return own.held, nil // nothing was acknowledged there
+	}
+	base, n, _ := locate(r.root, r.prev, c.path)
+	if n == nil {
+		return heldValue{}, fmt.Errorf("config: acknowledged key %s is not in the previous config", c.key)
+	}
+	slot := reflect.New(anyType).Elem()
+	if base.v.IsValid() {
+		slot.Set(deepCopy(base.v))
+	}
+	present := base.present
+	for _, e := range within {
+		rel := e.path[len(c.path):]
+		if len(rel) == 0 {
+			present = e.held.present
+		}
+		if err := writeHeld(slot, rel, e.held); err != nil {
+			return heldValue{}, fmt.Errorf("config: acknowledged key %s: %w", e.key, err)
+		}
+	}
+	s := resolve(slot)
+	h := heldValue{present: present, isNil: present && s.isNil}
+	if s.v.IsValid() {
+		h.typ, h.v = s.v.Type(), reflect.ValueOf(s.v.Interface())
+	}
+	return h, nil
+}
+
+var anyType = reflect.TypeFor[any]()
+
+// writeHeld writes h at rel beneath slot, a settable value, through
+// pointers, interfaces, structs, maps and lists, rebuilding a container the
+// path needs. A key beneath a nil or absent container is not written:
+// nothing can hold it.
+func writeHeld(slot reflect.Value, rel keyPath, h heldValue) error {
+	if len(rel) == 0 {
+		return setHeld(slot, h)
+	}
+	v := slot
+	for v.Kind() == reflect.Pointer {
+		if v.IsNil() {
+			return nil
+		}
+		v = v.Elem()
+	}
+	if v.Kind() == reflect.Interface {
+		if v.IsNil() {
+			return nil
+		}
+		inner := reflect.New(v.Elem().Type()).Elem()
+		inner.Set(v.Elem())
+		if err := writeHeld(inner, rel, h); err != nil {
+			return err
+		}
+		v.Set(inner)
+		return nil
+	}
+	n, err := schemaOf(v.Type())
+	if err != nil {
+		return err
+	}
+	seg, rest := rel[0], rel[1:]
+	switch n.kind {
+	case nodeBranch:
+		f := n.byKey[seg.name]
+		if f == nil {
+			return fmt.Errorf("%s has no field %q", v.Type(), seg.name)
+		}
+		fv, err := v.FieldByIndexErr(f.index)
+		if err != nil {
+			return nil // beneath a nil embedded pointer
+		}
+		return writeHeld(fv, rest, h)
+	case nodeMap:
+		key := reflect.New(v.Type().Key()).Elem()
+		key.SetString(seg.name)
+		if len(rest) == 0 && !h.present {
+			if !v.IsNil() {
+				v.SetMapIndex(key, reflect.Value{})
+			}
+			return nil
+		}
+		cur := reflect.Value{}
+		if !v.IsNil() {
+			cur = v.MapIndex(key)
+		}
+		if !cur.IsValid() && len(rest) > 0 {
+			return nil
+		}
+		elem := reflect.New(v.Type().Elem()).Elem()
+		if cur.IsValid() {
+			elem.Set(cur)
+		}
+		if err := writeHeld(elem, rest, h); err != nil {
+			return err
+		}
+		if v.IsNil() {
+			v.Set(reflect.MakeMap(v.Type()))
+		}
+		v.SetMapIndex(key, elem)
+		return nil
+	case nodeList:
+		i := seg.index
+		if len(rest) == 0 && !h.present {
+			if v.Kind() == reflect.Slice && i < v.Len() {
+				v.Set(v.Slice(0, i))
+			}
+			return nil
+		}
+		if i >= v.Len() {
+			if v.Kind() != reflect.Slice || i > v.Len() || len(rest) > 0 {
+				return nil
+			}
+			v.Set(reflect.Append(v, reflect.Zero(v.Type().Elem())))
+		}
+		return writeHeld(v.Index(i), rest, h)
+	}
+	return nil
+}
+
+// setHeld sets slot, a value of some declared type, to h.
+func setHeld(slot reflect.Value, h heldValue) error {
+	switch {
+	case !h.present:
+		slot.Set(reflect.Zero(slot.Type()))
+		return nil
+	case h.isNil:
+		if h.typ != nil && (h.typ.Kind() == reflect.Map || h.typ.Kind() == reflect.Slice) {
+			return setResolved(slot, reflect.Zero(h.typ)) // a typed nil keeps its type
+		}
+		slot.Set(reflect.Zero(slot.Type()))
+		return nil
+	case h.shape:
+		if cur := resolve(slot); cur.v.IsValid() && !cur.isNil && cur.v.Type() == h.typ {
+			return nil // the container is there; what it holds is written key by key
+		}
+		var empty reflect.Value
+		switch h.typ.Kind() {
+		case reflect.Map:
+			empty = reflect.MakeMap(h.typ)
+		case reflect.Slice:
+			empty = reflect.MakeSlice(h.typ, 0, 0)
+		default:
+			empty = reflect.Zero(h.typ)
+		}
+		return setResolved(slot, empty)
+	}
+	return setResolved(slot, h.v)
+}
+
+// setResolved stores v, a dereferenced value, in slot, through the pointers
+// slot's type declares.
+func setResolved(slot, v reflect.Value) error {
+	switch slot.Kind() {
+	case reflect.Pointer:
+		p := reflect.New(slot.Type().Elem())
+		if err := setResolved(p.Elem(), v); err != nil {
+			return err
+		}
+		slot.Set(p)
+		return nil
+	case reflect.Interface:
+		if !v.Type().Implements(slot.Type()) {
+			return fmt.Errorf("a %s cannot be held by a %s", v.Type(), slot.Type())
+		}
+	default:
+		if v.Type() != slot.Type() {
+			return fmt.Errorf("a %s cannot be held by a %s", v.Type(), slot.Type())
+		}
+	}
+	slot.Set(v)
+	return nil
+}
+
+// describeAt describes s, the value at a key of node n that f makes
+// sensitive or not, as Diff would.
+func describeAt(n *schemaNode, f frame, s side) Value {
+	switch {
+	case n == nil:
+		return describe(s, true)
+	case n.kind == nodeLeaf:
+		return describe(s, f.sensitive() || uncheckedValue(s))
+	case f.sensitive() && n.kind != nodeBranch:
+		return describe(s, true)
+	case composite(s), n.kind != nodeDynamic:
+		return shape(s)
+	}
+	return describe(s, uncheckedValue(s))
+}
+
+// owed is one change an applier is called with or owes: an entry of its
+// acknowledgement, or a key a failed call left uncertain offered again.
+type owed struct {
+	keyRef
+	change Change
+	entry  *ackEntry // nil for a key offered again
+}
+
+// applyPlan is what one published config asks of the appliers.
+type applyPlan struct {
+	owes      [][]*ackEntry     // per applier: what it owes, in walk order
+	events    [][]owed          // per applier: what it is called with
+	blocked   []map[string]bool // per applier: keys it owes but cannot apply live
+	unclaimed []*ackEntry       // keys no applier owns that differ from the first load
+}
+
+// plan measures what the appliers owe against cfg, the published config. A
 // key that appears, disappears or turns nil — a structure — changes live
 // only when one applier owns it and every change beneath it: otherwise the
 // whole transition waits for a restart, and no applier is called with its
 // part. initial skips that rule: a first apply builds from nothing.
-func (a *application) plan(published []flatEntry, initial bool) *applyPlan {
+func (a *application) plan(cfg reflect.Value, initial bool) *applyPlan {
 	n := len(a.appliers)
 	p := &applyPlan{
-		owned:   make([][]flatEntry, n),
-		byKey:   make([]map[string]flatEntry, n),
-		owes:    make([][]entryChange, n),
-		events:  make([][]entryChange, n),
-		blocked: make([]map[string]bool, n),
-	}
-	var unowned []flatEntry
-	for _, e := range published {
-		if i := a.owners.of(e.path); i >= 0 {
-			p.owned[i] = append(p.owned[i], e)
-		} else {
-			unowned = append(unowned, e)
-		}
+		owes:      make([][]*ackEntry, n),
+		events:    make([][]owed, n),
+		blocked:   make([]map[string]bool, n),
+		unclaimed: a.boot.sorted(),
 	}
 	type transition struct {
 		path  keyPath
@@ -345,20 +778,16 @@ func (a *application) plan(published []flatEntry, initial bool) *applyPlan {
 	}
 	var transitions []transition
 	for i, st := range a.appliers {
-		p.byKey[i] = entriesByKey(p.owned[i])
-		owes := compareEntries(st.acknowledged(), p.owned[i])
-		p.owes[i] = owes
-		for _, c := range owes {
-			if c.Structural {
-				transitions = append(transitions, transition{c.path, i})
+		p.owes[i] = st.ack.sorted()
+		for _, e := range p.owes[i] {
+			if e.change.Structural {
+				transitions = append(transitions, transition{e.path, i})
 			}
 		}
 	}
-	unclaimed := compareEntries(a.boot, unowned)
-	p.unclaimed = unclaimed
-	for _, c := range unclaimed {
-		if c.Structural {
-			transitions = append(transitions, transition{c.path, -1})
+	for _, e := range p.unclaimed {
+		if e.change.Structural {
+			transitions = append(transitions, transition{e.path, -1})
 		}
 	}
 	// othersBeneath reports a change another applier owes strictly beneath
@@ -368,29 +797,42 @@ func (a *application) plan(published []flatEntry, initial bool) *applyPlan {
 			if j == i {
 				continue
 			}
-			for _, c := range owes {
-				if beneath(c.path, path) {
+			for _, e := range owes {
+				if beneath(e.path, path) {
 					return true
 				}
 			}
 		}
 		return false
 	}
-	for i := range a.appliers {
+	live := func(i int, path keyPath) bool {
+		return initial || !slices.ContainsFunc(transitions, func(t transition) bool {
+			if t.owner != i {
+				return beneath(path, t.path)
+			}
+			return (beneath(path, t.path) || slices.Equal(path, t.path)) && othersBeneath(i, t.path)
+		})
+	}
+	for i, st := range a.appliers {
 		p.blocked[i] = map[string]bool{}
-		for _, c := range p.owes[i] {
-			live := initial || !slices.ContainsFunc(transitions, func(t transition) bool {
-				if t.owner != i {
-					return beneath(c.path, t.path)
-				}
-				return (beneath(c.path, t.path) || slices.Equal(c.path, t.path)) && othersBeneath(i, t.path)
-			})
-			if live {
-				p.events[i] = append(p.events[i], c)
+		var events []owed
+		for _, e := range p.owes[i] {
+			if live(i, e.path) {
+				events = append(events, owed{keyRef: e.keyRef, change: e.change, entry: e})
 			} else {
-				p.blocked[i][c.Key] = true
+				p.blocked[i][e.key] = true
 			}
 		}
+		for key, ref := range st.unsure {
+			if st.ack[key] != nil || !live(i, ref.path) {
+				continue
+			}
+			now, n, f := locate(a.root, cfg, ref.path)
+			v := describeAt(n, f, now)
+			events = append(events, owed{keyRef: ref, change: Change{Key: key, Field: ownerOf(a.root, ref.path), Old: v, New: v}})
+		}
+		slices.SortFunc(events, func(a, b owed) int { return compareOrd(a.ord, b.ord) })
+		p.events[i] = events
 	}
 	return p
 }
@@ -400,120 +842,124 @@ func beneath(p, prefix keyPath) bool {
 	return len(p) > len(prefix) && slices.Equal(p[:len(prefix)], prefix)
 }
 
-func entriesByKey(entries []flatEntry) map[string]flatEntry {
-	m := make(map[string]flatEntry, len(entries))
-	for _, e := range entries {
-		m[e.path.String()] = e
-	}
-	return m
+// pending is what rebasing a publication would make the acknowledgements:
+// committed only if the config is published.
+type pending struct {
+	appliers []ackDiff
+	boot     ackDiff
 }
 
-// acknowledged is what st has acknowledged, in walk order.
-func (st *applierState) acknowledged() []flatEntry {
-	entries := slices.Collect(maps.Values(st.ack))
-	slices.SortFunc(entries, func(a, b flatEntry) int { return compareOrd(a.ord, b.ord) })
-	return entries
-}
-
-// acknowledge records changes, applied from the published entries
-// published, except the keys in restart.
-func (st *applierState) acknowledge(changes []entryChange, restart map[string]bool, published map[string]flatEntry) {
+// rebase measures every acknowledgement against next, published after prev
+// with changes, without changing the application.
+func (a *application) rebase(prev, next reflect.Value, changes []published) (*pending, error) {
+	r := rebaser{root: a.root, prev: prev, next: next}
+	byOwner := make([][]published, len(a.appliers))
+	var unowned []published
 	for _, c := range changes {
-		if restart[c.Key] {
-			continue
-		}
-		if c.subtree {
-			// Compared whole: what lies beneath it on either side goes with it.
-			for k, e := range st.ack {
-				if within(e.ord, c.ord) {
-					delete(st.ack, k)
-				}
-			}
-			for k, e := range published {
-				if within(e.ord, c.ord) {
-					st.ack[k] = e
-				}
-			}
-			continue
-		}
-		if e, ok := published[c.Key]; ok {
-			st.ack[c.Key] = e
+		if i := a.owners.of(c.path); i >= 0 {
+			byOwner[i] = append(byOwner[i], c)
 		} else {
-			delete(st.ack, c.Key)
+			unowned = append(unowned, c)
 		}
 	}
+	p := &pending{appliers: make([]ackDiff, len(a.appliers))}
+	for i, st := range a.appliers {
+		d, err := r.rebase(st.ack, byOwner[i])
+		if err != nil {
+			return nil, err
+		}
+		p.appliers[i] = d
+	}
+	d, err := r.rebase(a.boot, unowned)
+	if err != nil {
+		return nil, err
+	}
+	p.boot = d
+	return p, nil
 }
 
-// start records the first load: the keys no applier owns become the
-// baseline of what waits for a restart, and each applier without
-// ApplyInitial acknowledges what it owns.
-func (a *application) start(published []flatEntry) {
-	for _, e := range published {
-		i := a.owners.of(e.path)
-		switch {
-		case i < 0:
-			a.boot = append(a.boot, e)
-		case !a.appliers[i].hook.initial:
-			if a.appliers[i].ack == nil {
-				a.appliers[i].ack = map[string]flatEntry{}
-			}
-			a.appliers[i].ack[e.path.String()] = e
-		}
+func (a *application) commit(p *pending) {
+	for i, st := range a.appliers {
+		st.ack = p.appliers[i]
 	}
-	for _, st := range a.appliers {
+	a.boot = p.boot
+}
+
+// start records the first load, cfg: every applier without ApplyInitial has
+// applied what it owns, and the keys no applier owns are the baseline of
+// what waits for a restart. An applier with ApplyInitial owes each of its
+// keys as a change from nothing; owned lists them, the first load compared
+// with no config.
+func (a *application) start(owned []published) {
+	for _, c := range owned {
+		st := a.appliers[a.owners.of(c.path)]
 		if st.ack == nil {
-			st.ack = map[string]flatEntry{}
+			st.ack = ackDiff{}
 		}
-		st.deferred = map[string]bool{}
+		st.ack[c.key] = &ackEntry{keyRef: c.keyRef, key: c.key, whole: c.whole, held: c.held, change: c.change}
 	}
 }
 
-// account reports each applier's state after p, and what waits for a
-// restart: changes no applier owns, transitions no one applier owns whole,
-// and restart keys.
+// initialOwner reports whether key p belongs to an applier with
+// ApplyInitial.
+func (a *application) initialOwner(p keyPath) bool {
+	i := a.owners.of(p)
+	return i >= 0 && a.appliers[i].hook.initial
+}
+
+// account reports each applier's state and what waits for a restart:
+// changes no applier owns, transitions no one applier owns whole, and
+// restart keys.
 func (a *application) account(p *applyPlan) ([]ApplierStatus, []Change) {
 	statuses := make([]ApplierStatus, len(a.appliers))
 	waiting := slices.Clone(p.unclaimed)
 	for i, st := range a.appliers {
-		owes := compareEntries(st.acknowledged(), p.owned[i])
-		owed := map[string]bool{}
-		for _, c := range owes {
-			owed[c.Key] = true
-			if p.blocked[i][c.Key] || st.deferred[c.Key] {
-				waiting = append(waiting, c)
+		owes := st.ack.sorted()
+		for _, e := range owes {
+			if p.blocked[i][e.key] || st.deferred[e.key] {
+				waiting = append(waiting, e)
 			}
 		}
-		maps.DeleteFunc(st.deferred, func(k string, _ bool) bool { return !owed[k] })
+		maps.DeleteFunc(st.deferred, func(k string, _ bool) bool { return st.ack[k] == nil })
 		statuses[i] = st.status.clone()
-		statuses[i].Uncertain = st.uncertain
-		statuses[i].Pending = changesOf(owes)
+		statuses[i].Uncertain = len(st.unsure) > 0
+		statuses[i].Pending = entryChanges(owes)
 	}
-	slices.SortFunc(waiting, func(a, b entryChange) int { return compareOrd(a.ord, b.ord) })
-	return statuses, changesOf(waiting)
+	slices.SortFunc(waiting, func(a, b *ackEntry) int { return compareOrd(a.ord, b.ord) })
+	return statuses, entryChanges(waiting)
 }
 
-// changesOf returns the public changes of found, nil for none.
-func changesOf(found []entryChange) []Change {
-	if len(found) == 0 {
+// entryChanges returns the changes of entries, nil for none.
+func entryChanges(entries []*ackEntry) []Change {
+	if len(entries) == 0 {
 		return nil
 	}
-	out := make([]Change, len(found))
-	for i, c := range found {
-		out[i] = c.Change
-		out[i].Field = cloneField(c.Field)
+	out := make([]Change, len(entries))
+	for i, e := range entries {
+		out[i] = e.change
+		out[i].Field = cloneField(e.change.Field)
 	}
 	return out
 }
 
-// applyAll calls every applier that owes something in p, for the config
+func owedChanges(events []owed) []Change {
+	out := make([]Change, len(events))
+	for i, e := range events {
+		out[i] = e.change
+		out[i].Field = cloneField(e.change.Field)
+	}
+	return out
+}
+
+// applyAll calls every applier with something to apply in p, for the config
 // published as generation gen, and records what each did. It returns the
 // outcomes in registration order and the failures.
 func (r *Reloader[T]) applyAll(ctx context.Context, trigger string, gen uint64, prev, cfg *T, p *applyPlan) ([]ApplyOutcome, []ApplierFailure) {
 	var outcomes []ApplyOutcome
 	var failures []ApplierFailure
 	for i, st := range r.app.appliers {
-		changes := p.events[i]
-		if len(changes) == 0 && !st.uncertain {
+		events := p.events[i]
+		if len(events) == 0 {
 			continue
 		}
 		out := ApplyOutcome{Applier: st.hook.name}
@@ -533,43 +979,57 @@ func (r *Reloader[T]) applyAll(ctx context.Context, trigger string, gen uint64, 
 		res, err := st.call(ctx, ApplyEvent[T]{
 			Trigger:    trigger,
 			Generation: gen,
-			Retry:      st.uncertain,
+			Retry:      len(st.unsure) > 0,
 			Previous:   prev,
 			Desired:    cfg,
-			Changes:    changesOf(changes),
+			Changes:    owedChanges(events),
 		})
 		var restart map[string]bool
 		if err == nil {
-			restart, err = restartKeys(res.RestartKeys, changes)
+			restart, err = restartKeys(res.RestartKeys, events)
 		}
 		now := time.Now().UTC()
 		if err != nil {
-			st.uncertain = true
+			for _, e := range events {
+				st.unsure[e.change.Key] = e.keyRef
+			}
 			st.status.Failures++
 			st.status.LastFailure = now
 			fail(err)
 			outcomes = append(outcomes, out)
 			continue
 		}
-		st.acknowledge(changes, restart, p.byKey[i])
-		st.deferred = restart
+		st.acknowledge(events, restart)
 		st.status.LastApplied = now
-		if len(restart) == 0 {
-			// Everything it owed applied: whatever an earlier failure left
-			// half done is reconciled.
-			st.uncertain = false
+		if len(st.unsure) == 0 {
 			st.status.LastError = nil
 		}
-		for _, c := range changes {
-			if restart[c.Key] {
-				out.Deferred = append(out.Deferred, c.Key)
+		for _, e := range events {
+			if restart[e.change.Key] {
+				out.Deferred = append(out.Deferred, e.change.Key)
 			} else {
-				out.Applied = append(out.Applied, c.Key)
+				out.Applied = append(out.Applied, e.change.Key)
 			}
 		}
 		outcomes = append(outcomes, out)
 	}
 	return outcomes, failures
+}
+
+// acknowledge records events applied, except the keys in restart: what was
+// published there is now what the applier holds, and a key a failed call
+// left uncertain is certain again. A restart key stays as it was.
+func (st *applierState) acknowledge(events []owed, restart map[string]bool) {
+	for _, e := range events {
+		if restart[e.change.Key] {
+			continue
+		}
+		delete(st.unsure, e.change.Key)
+		if e.entry != nil {
+			delete(st.ack, e.entry.key)
+		}
+	}
+	st.deferred = restart
 }
 
 // call runs the applier once, a panic turned into its error.
@@ -585,10 +1045,10 @@ func (st *applierState) call(ctx context.Context, ev any) (res ApplyResult, err 
 
 // restartKeys checks an applier's restart keys against the changes it was
 // given.
-func restartKeys(keys []string, changes []entryChange) (map[string]bool, error) {
+func restartKeys(keys []string, events []owed) (map[string]bool, error) {
 	given := map[string]bool{}
-	for _, c := range changes {
-		given[c.Key] = true
+	for _, e := range events {
+		given[e.change.Key] = true
 	}
 	out := make(map[string]bool, len(keys))
 	for _, k := range keys {
@@ -615,7 +1075,7 @@ func (r *Reloader[T]) applyInitial(ctx context.Context, cfg *T, p *applyPlan) er
 			Trigger:    TriggerInitial,
 			Generation: 1,
 			Desired:    cfg,
-			Changes:    changesOf(p.events[i]),
+			Changes:    owedChanges(p.events[i]),
 		})
 		var restart map[string]bool
 		if err == nil {
@@ -628,7 +1088,7 @@ func (r *Reloader[T]) applyInitial(ctx context.Context, cfg *T, p *applyPlan) er
 			failures = append(failures, ApplierFailure{Applier: st.hook.name, Err: err})
 			continue
 		}
-		st.acknowledge(p.events[i], nil, p.byKey[i])
+		st.acknowledge(p.events[i], nil)
 		st.status.LastApplied = time.Now().UTC()
 	}
 	if len(failures) > 0 {

@@ -18,6 +18,11 @@ type Snapshot[T any] struct {
 	Generation uint64 `json:"generation"`
 	// Stats is the reload history.
 	Stats ReloadStats `json:"stats"`
+	// Applying reports a published config whose appliers are still being
+	// called: Generation is live, while Appliers and PendingRestart describe
+	// what they owed before the calls. The snapshot published once they
+	// return has it false.
+	Applying bool `json:"applying,omitempty"`
 	// Appliers is each [WithApplier] applier's account, in registration
 	// order; empty without appliers.
 	Appliers []ApplierStatus `json:"appliers,omitempty"`
@@ -48,11 +53,12 @@ type ApplierStatus struct {
 	// LastFailure is when a call last failed, in UTC.
 	LastFailure time.Time `json:"last_failure,omitzero"`
 	// LastError is the failure that left the applier uncertain or a config
-	// it was never called for; nil once it applies everything it owes.
+	// it was never called for; nil once a later call applies every key a
+	// failed call was given.
 	LastError *Problem `json:"last_error,omitempty"`
-	// Uncertain reports an applier that failed and has not applied
-	// everything it owes since: what its failure did is unknown, so it is
-	// called on every published config until it does.
+	// Uncertain reports an applier a failed call left keys of that no later
+	// call has applied: what the failure did with them is unknown, so each
+	// is offered again, Retry set, until a call applies it.
 	Uncertain bool `json:"uncertain,omitempty"`
 	// Pending lists the keys it owns whose published value differs from
 	// what it acknowledged: failed, deferred to a restart, or blocked by a

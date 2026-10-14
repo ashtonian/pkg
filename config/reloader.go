@@ -42,8 +42,6 @@ type Reloader[T any] struct {
 	// config with another moment's stats.
 	state atomic.Pointer[Snapshot[T]]
 	root  *schemaNode
-	// flat is the published config's keys. Guarded by slot.
-	flat []flatEntry
 	// app accounts for the appliers; nil without any. Guarded by slot.
 	app *application
 	// load runs one load and reports the digests of the config files it
@@ -210,20 +208,28 @@ func (r *Reloader[T]) loadInitial(ctx context.Context) error {
 		return err
 	}
 	cfg, files := l.cfg, l.files
-	flat, err := flatten(r.root, rootValue(cfg))
+	// Every later reload compares against this config, so one that cannot be
+	// compared fails here. The walk also lists what an ApplyInitial applier
+	// owes: every key it owns, as a change from nothing.
+	var owed []published
+	err = compare(r.root, reflect.Value{}, rootValue(cfg), func(d *delta) {
+		if r.app != nil && r.app.initialOwner(d.path) {
+			owed = append(owed, newPublished(r.root, d))
+		}
+	})
 	if err != nil {
 		return err
 	}
 	snap := &Snapshot[T]{Config: cfg, Generation: 1, Provenance: l.origins}
 	if r.app != nil {
-		r.app.start(flat)
-		p := r.app.plan(flat, true)
+		r.app.start(owed)
+		p := r.app.plan(rootValue(cfg), true)
 		if err := r.applyInitial(ctx, cfg, p); err != nil {
 			return err
 		}
 		snap.Appliers, snap.PendingRestart = r.app.account(p)
 	}
-	r.loaded, r.flat = files, flat
+	r.loaded = files
 	r.state.Store(snap)
 	return nil
 }
@@ -373,20 +379,36 @@ func (r *Reloader[T]) reloadHeld(ctx context.Context, trigger string) (*ReloadRe
 		}
 		return nil, fmt.Errorf("config reload abandoned: %w", ctxErr)
 	}
-	var flat []flatEntry
-	if err == nil {
-		flat, err = flatten(r.root, rootValue(cfg))
-	}
 	prev := r.state.Load()
+	var changes []Change
+	var pubs []published
+	if err == nil {
+		err = compare(r.root, rootValue(prev.Config), rootValue(cfg), func(d *delta) {
+			if r.app == nil {
+				changes = append(changes, d.change(r.root))
+				return
+			}
+			p := newPublished(r.root, d)
+			pubs = append(pubs, p)
+			changes = append(changes, p.change)
+		})
+	}
+	var acks *pending
+	if err == nil && r.app != nil {
+		acks, err = r.app.rebase(rootValue(prev.Config), rootValue(cfg), pubs)
+	}
 	if err != nil {
 		reloadErr := fmt.Errorf("%w: %w", ErrReload, err)
 		r.publishFailure(prev, trigger, reloadErr)
 		r.notifyReloadError(ctx, trigger, reloadErr)
 		return nil, reloadErr
 	}
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		// Ended while the configs were compared: still nothing published.
+		return nil, fmt.Errorf("config reload abandoned: %w", ctxErr)
+	}
 
-	changes := compareEntries(r.flat, flat)
-	r.loaded, r.flat = files, flat
+	r.loaded = files
 	next := &Snapshot[T]{Config: cfg, Generation: prev.Generation + 1, Stats: prev.Stats, Provenance: l.origins}
 	next.Stats.Attempts++
 	next.Stats.Successes++
@@ -397,11 +419,13 @@ func (r *Reloader[T]) reloadHeld(ctx context.Context, trigger string) (*ReloadRe
 	if r.app != nil {
 		// Published with what the appliers owe, so it shows while they run,
 		// then again with what they did.
-		plan = r.app.plan(flat, false)
+		r.app.commit(acks)
+		plan = r.app.plan(rootValue(cfg), false)
 		next.Appliers, next.PendingRestart = r.app.account(plan)
+		next.Applying = slices.ContainsFunc(plan.events, func(e []owed) bool { return len(e) > 0 })
 	}
 	r.state.Store(next)
-	result := ReloadResult[T]{Changes: changesOf(changes)}
+	result := ReloadResult[T]{Changes: changes}
 	if result.Changes == nil {
 		result.Changes = []Change{}
 	}
@@ -409,6 +433,7 @@ func (r *Reloader[T]) reloadHeld(ctx context.Context, trigger string) (*ReloadRe
 	if r.app != nil {
 		result.Applied, failures = r.applyAll(ctx, trigger, next.Generation, prev.Config, cfg, plan)
 		done := *next
+		done.Applying = false
 		done.Appliers, done.PendingRestart = r.app.account(plan)
 		r.state.Store(&done)
 	}

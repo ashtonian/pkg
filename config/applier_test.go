@@ -8,9 +8,12 @@ import (
 	"errors"
 	"maps"
 	"reflect"
+	"runtime"
+	"strconv"
 	"sync"
 	"testing"
 	"time"
+	"weak"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -360,15 +363,18 @@ func TestApplier_FailureIsRetriedUntilReconciled(t *testing.T) {
 	assert.Equal(t, []string{"log.level"}, keysOf(status.Pending))
 	assert.Equal(t, KindApply, Diagnose(err).Kind)
 
-	// Reverted to what it acknowledged: nothing differs, but it is still
-	// uncertain, so it is called to reconcile — and fails again.
+	// Reverted to what it acknowledged: nothing is owed, but the failed call
+	// may have half applied log.level, so it is offered again — Old and New
+	// alike — and fails again.
 	src.edit(func(c *appCfg) { c.Log.Level = "info" })
 	_, err = r.Reload(t.Context())
 	require.ErrorIs(t, err, ErrApply)
 	calls := rec.calls()
 	require.Len(t, calls, 2)
 	assert.True(t, calls[1].Retry)
-	assert.Empty(t, calls[1].Changes)
+	require.Equal(t, []string{"log.level"}, keysOf(calls[1].Changes))
+	assert.Equal(t, "info", calls[1].Changes[0].Old.Text)
+	assert.Equal(t, calls[1].Changes[0].Old, calls[1].Changes[0].New)
 
 	rec.answer(nil)
 	res, err = r.Reload(t.Context())
@@ -583,6 +589,11 @@ func TestApplier_IncomparableConfigIsRefused(t *testing.T) {
 
 	_, err = NewReloaderFunc(t.Context(), src.load)
 	require.ErrorIs(t, err, ErrSchema)
+
+	// Inside a value compared whole, here a credential-named entry, too.
+	src.edit(func(c *appCfg) { c.Extra = map[string]any{"password": map[string]any{"rotate": func() {}}} })
+	_, err = NewReloaderFunc(t.Context(), src.load)
+	require.ErrorIs(t, err, ErrSchema)
 }
 
 // Without appliers nothing is accounted: a key read from Config on every
@@ -636,4 +647,195 @@ func TestApplier_ConcurrentReaders(t *testing.T) {
 	}
 	close(done)
 	wg.Wait()
+}
+
+// A deferral holds only the value it defers, never the config it came from:
+// a reloader whose applier defers a different key on every config keeps no
+// old config alive.
+func TestApplier_DeferralsKeepNoOldConfigAlive(t *testing.T) {
+	type keyed struct {
+		Values [12]int `koanf:"values"`
+		Blob   []byte  `koanf:"blob"`
+	}
+	var loaded []weak.Pointer[keyed]
+	step := 0
+	load := func(context.Context) (*keyed, error) {
+		c := &keyed{Blob: make([]byte, 1<<20)}
+		for i := range step {
+			c.Values[i] = 1
+		}
+		loaded = append(loaded, weak.Make(c))
+		return c, nil
+	}
+	deferAll := func(_ context.Context, ev ApplyEvent[keyed]) (ApplyResult, error) {
+		return ApplyResult{RestartKeys: keysOf(ev.Changes)}, nil
+	}
+	r, err := NewReloaderFunc(t.Context(), load, WithReloadLogger(discardLogger()),
+		WithApplier(Applier[keyed]{Name: "values", Prefixes: []string{"values"}, Apply: deferAll}))
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = r.Stop(context.Background()) })
+	for step = 1; step <= 12; step++ {
+		_, err := r.Reload(t.Context())
+		require.NoError(t, err)
+	}
+	require.Len(t, r.Snapshot().Appliers[0].Pending, 12, "every value waits, measured from the first load")
+	runtime.GC()
+	runtime.GC()
+	alive := 0
+	for _, p := range loaded {
+		if p.Value() != nil {
+			alive++
+		}
+	}
+	assert.Equal(t, 1, alive, "only the published config is reachable")
+}
+
+// A failed applier whose keys then wait on a transition it does not own
+// whole is not called, and stays uncertain until it can apply them.
+func TestApplier_UncertainWhileBlocked(t *testing.T) {
+	src := newAppSource()
+	whole := &recorder{result: func(ApplyEvent[appCfg]) (ApplyResult, error) { return ApplyResult{}, errors.New("half applied") }}
+	gates := &recorder{}
+	r := newAppReloader(t, src, whole.applier("features", "features"), gates.applier("gates", "features[*].gate"))
+
+	src.edit(func(c *appCfg) { c.Features["audit"] = appFeature{Enabled: false, Gate: "open"} })
+	_, err := r.Reload(t.Context())
+	require.ErrorIs(t, err, ErrApply)
+
+	whole.answer(nil)
+	src.edit(func(c *appCfg) { delete(c.Features, "audit") })
+	res, err := r.Reload(t.Context())
+	require.NoError(t, err)
+	assert.Len(t, whole.calls(), 1, "everything it could apply is blocked")
+	assert.True(t, res.Snapshot.Appliers[0].Uncertain)
+	assert.Equal(t, []string{`features["audit"]`, `features["audit"].enabled`, `features["audit"].gate`}, keysOf(res.Snapshot.PendingRestart))
+
+	src.edit(func(c *appCfg) { c.Features["audit"] = appFeature{Enabled: false, Gate: "open"} })
+	res, err = r.Reload(t.Context())
+	require.NoError(t, err)
+	calls := whole.calls()
+	require.Len(t, calls, 2)
+	assert.True(t, calls[1].Retry)
+	assert.Equal(t, []string{`features["audit"].enabled`}, keysOf(calls[1].Changes))
+	assert.False(t, res.Snapshot.Appliers[0].Uncertain)
+	assert.Empty(t, res.Snapshot.PendingRestart)
+	assert.Empty(t, gates.calls())
+}
+
+// A reload whose context ends while the configs are compared publishes
+// nothing.
+func TestApplier_CancellationBeforePublication(t *testing.T) {
+	type cfg struct {
+		Value cancelOnText `koanf:"value"`
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	cancelOnTextHook = cancel
+	t.Cleanup(func() { cancelOnTextHook = nil })
+	next := &cfg{Value: cancelOnText{N: 1}}
+	r, err := NewReloaderFunc(t.Context(), func(context.Context) (*cfg, error) { return next, nil },
+		WithReloadLogger(discardLogger()))
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = r.Stop(context.Background()) })
+
+	next = &cfg{Value: cancelOnText{N: 2}}
+	res, err := r.Reload(ctx)
+	require.ErrorIs(t, err, context.Canceled)
+	require.NotErrorIs(t, err, ErrReload)
+	assert.Nil(t, res)
+	assert.Equal(t, uint64(1), r.Snapshot().Generation)
+	assert.Equal(t, uint64(0), r.Stats().Attempts)
+}
+
+// cancelOnText calls cancelOnTextHook when its text is taken, as a
+// comparison describing a change does.
+type cancelOnText struct{ N int }
+
+var cancelOnTextHook func()
+
+func (*cancelOnText) UnmarshalText([]byte) error { return nil }
+
+func (v cancelOnText) String() string {
+	if cancelOnTextHook != nil {
+		cancelOnTextHook()
+	}
+	return strconv.Itoa(v.N)
+}
+
+// While its appliers run, a published config says so.
+func TestApplier_SnapshotShowsApplication(t *testing.T) {
+	src := newAppSource()
+	var r *Reloader[appCfg]
+	var during Snapshot[appCfg]
+	rec := &recorder{result: func(ApplyEvent[appCfg]) (ApplyResult, error) {
+		during = r.Snapshot()
+		return ApplyResult{}, nil
+	}}
+	r = newAppReloader(t, src, rec.applier("log", "log"))
+	src.edit(func(c *appCfg) { c.Log.Level = "debug" })
+	res, err := r.Reload(t.Context())
+	require.NoError(t, err)
+	assert.True(t, during.Applying)
+	assert.Equal(t, uint64(2), during.Generation)
+	assert.Equal(t, []string{"log.level"}, keysOf(during.Appliers[0].Pending))
+	assert.False(t, res.Snapshot.Applying)
+	assert.Empty(t, res.Snapshot.Appliers[0].Pending)
+
+	src.edit(func(c *appCfg) { c.Name = "unowned" })
+	res, err = r.Reload(t.Context())
+	require.NoError(t, err)
+	assert.False(t, res.Snapshot.Applying, "nothing to call")
+}
+
+// An interface whose value changes type while keys beneath it wait is
+// owed whole, then key by key once it holds the old type again.
+func TestApplier_InterfaceTypeChangesOverDeferredKeys(t *testing.T) {
+	deferA := func(ev ApplyEvent[appCfg]) (ApplyResult, error) {
+		var restart []string
+		for _, c := range ev.Changes {
+			if c.Key == `extra["a"]` || c.Key == "extra" {
+				restart = append(restart, c.Key)
+			}
+		}
+		return ApplyResult{RestartKeys: restart}, nil
+	}
+	setup := func(t *testing.T) (*appSource, *recorder, *Reloader[appCfg]) {
+		src := newAppSource()
+		src.edit(func(c *appCfg) { c.Extra = map[string]any{"a": 1, "b": 2} })
+		rec := &recorder{result: deferA}
+		r := newAppReloader(t, src, rec.applier("extra", "extra"))
+		src.edit(func(c *appCfg) { c.Extra = map[string]any{"a": 10, "b": 2} })
+		res, err := r.Reload(t.Context())
+		require.NoError(t, err)
+		require.Equal(t, []string{`extra["a"]`}, keysOf(res.Snapshot.PendingRestart))
+
+		src.edit(func(c *appCfg) { c.Extra = "text" })
+		res, err = r.Reload(t.Context())
+		require.NoError(t, err)
+		require.Equal(t, []string{"extra"}, keysOf(res.Snapshot.PendingRestart))
+		owed := res.Snapshot.PendingRestart[0]
+		assert.True(t, owed.Structural)
+		assert.Equal(t, "map[string]interface {}", owed.Old.Type)
+		assert.Equal(t, "string", owed.New.Type)
+		return src, rec, r
+	}
+	t.Run("back to what was acknowledged", func(t *testing.T) {
+		src, rec, r := setup(t)
+		src.edit(func(c *appCfg) { c.Extra = map[string]any{"a": 1, "b": 2} })
+		res, err := r.Reload(t.Context())
+		require.NoError(t, err)
+		assert.Empty(t, res.Snapshot.PendingRestart)
+		assert.Len(t, rec.calls(), 2, "nothing owed")
+	})
+	t.Run("back to the old type, one key different", func(t *testing.T) {
+		src, rec, r := setup(t)
+		src.edit(func(c *appCfg) { c.Extra = map[string]any{"a": 1, "b": 3} })
+		res, err := r.Reload(t.Context())
+		require.NoError(t, err)
+		calls := rec.calls()
+		require.Len(t, calls, 3)
+		assert.Equal(t, []string{`extra["b"]`}, keysOf(calls[2].Changes), "measured from what was acknowledged: a=1, b=2")
+		assert.Equal(t, "2", calls[2].Changes[0].Old.Text)
+		assert.Empty(t, res.Snapshot.PendingRestart)
+	})
 }

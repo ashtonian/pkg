@@ -316,3 +316,81 @@ func TestDiff_DoesNotChangeItsInputs(t *testing.T) {
 	assert.Equal(t, &cfg{Named: map[string][]int{"x": {1}}}, a)
 	assert.Equal(t, &cfg{Named: map[string][]int{"x": {2}, "y": nil}}, b)
 }
+
+// A cycle reached through an interface ends where it leads back, on either
+// side, as one through a pointer does.
+func TestDiff_CyclesThroughInterfaces(t *testing.T) {
+	type cfg struct {
+		Data any `koanf:"data"`
+	}
+	m := map[string]any{}
+	m["next"] = m
+	changes, err := Diff(&cfg{Data: m}, &cfg{Data: m})
+	require.NoError(t, err)
+	assert.Empty(t, changes)
+
+	other := map[string]any{"x": 1}
+	other["next"] = other
+	changes, err = Diff(&cfg{Data: m}, &cfg{Data: other})
+	require.NoError(t, err)
+	assert.Equal(t, []string{`data["next"]`, `data["x"]`}, changeKeys(changes))
+	assert.Equal(t, cycleValue, changes[0].Old.Text)
+	assert.Equal(t, cycleValue, changes[0].New.Text)
+
+	// The cycle on one side meets a finite chain on the other.
+	chain := map[string]any{"next": map[string]any{"next": map[string]any{}}}
+	changes, err = Diff(&cfg{Data: m}, &cfg{Data: chain})
+	require.NoError(t, err)
+	assert.Equal(t, []string{`data["next"]`}, changeKeys(changes))
+}
+
+func TestDiff_NilInterfacesAndCycleShapes(t *testing.T) {
+	type cfg struct {
+		Data any `koanf:"data"`
+	}
+	c := &cfg{Data: map[string]string(nil)}
+	changes, err := Diff(c, c)
+	require.NoError(t, err)
+	assert.Empty(t, changes, "equal typed nils are equal")
+
+	changes, err = Diff(&cfg{Data: map[string]string(nil)}, &cfg{Data: map[string]string{"a": "1"}})
+	require.NoError(t, err)
+	assert.Equal(t, []string{"data", `data["a"]`}, changeKeys(changes), "one type both sides compares key by key")
+	assert.True(t, changes[0].Structural)
+
+	a := &diffNode{Name: "a"}
+	a.Next = a
+	changes, err = Diff(&struct {
+		Root *diffNode `koanf:"root"`
+	}{Root: a}, &struct {
+		Root *diffNode `koanf:"root"`
+	}{Root: &diffNode{Name: "a"}})
+	require.NoError(t, err)
+	require.Equal(t, []string{"root.next"}, changeKeys(changes))
+	assert.True(t, changes[0].Structural, "a cycle turning nil is structural")
+	assert.Equal(t, cycleValue, changes[0].Old.Text)
+	assert.True(t, changes[0].New.Nil)
+}
+
+// A func, channel or unsafe pointer inside a value compared whole is refused
+// as anywhere else.
+func TestDiff_RefusesUncomparableValuesComparedWhole(t *testing.T) {
+	type cfg struct {
+		Sensitive map[string]any `koanf:"sensitive" sensitive:"true"`
+		Opaque    map[int]any    `koanf:"opaque"`
+	}
+	handler := func() {}
+	_, err := Diff(&cfg{Sensitive: map[string]any{"handler": handler}}, &cfg{Sensitive: map[string]any{"handler": handler}})
+	require.ErrorIs(t, err, ErrSchema)
+	assert.Contains(t, err.Error(), "sensitive")
+	assert.Contains(t, err.Error(), "func()")
+
+	_, err = Diff(&cfg{}, &cfg{Opaque: map[int]any{1: make(chan int)}})
+	require.ErrorIs(t, err, ErrSchema)
+
+	// A cycle in a value compared whole ends the search too.
+	m := map[string]any{"ok": 1}
+	m["self"] = m
+	_, err = Diff(&cfg{Sensitive: m}, &cfg{Sensitive: m})
+	require.NoError(t, err)
+}
