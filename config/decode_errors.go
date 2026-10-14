@@ -12,13 +12,15 @@ import (
 // withholdSensitiveDecodeErrors rewrites a decode failure so no value of a
 // sensitive field reaches its text. mapstructure's own errors never quote a
 // value, but a text decoder's do (time.Parse quotes its input, so does a
-// netip parse, and a custom TextUnmarshaler may print anything), and a value
+// netip parse), and a custom TextUnmarshaler or UnmarshalMapstructure may
+// print anything — a whole nested decode's errors included — and a value
 // meant for a sensitive field is often a credential pasted into the wrong
-// place. Each failure on a sensitive field — as PrintRedacted judges
-// sensitivity — is replaced by one naming the field and its type only, its
-// original error dropped from the chain; every other failure is kept whole,
-// so errors.As still reaches its *mapstructure.DecodeError. When no failure
-// is on a sensitive field, err is returned unchanged.
+// place. A failure is withheld when its field is sensitive, as PrintRedacted
+// judges it, or when the field's type could hold a sensitive value anywhere
+// beneath it: such a failure is replaced by one naming the field and its type
+// only, its original error dropped from the chain. Every other failure is
+// kept whole, so errors.As still reaches its *mapstructure.DecodeError. When
+// nothing is withheld, err is returned unchanged.
 func withholdSensitiveDecodeErrors(root reflect.Type, err error) error {
 	redacted, _ := withhold(root, err)
 	return redacted
@@ -30,8 +32,14 @@ func withholdSensitiveDecodeErrors(root reflect.Type, err error) error {
 func withhold(root reflect.Type, e error) (error, bool) {
 	switch u := e.(type) {
 	case *mapstructure.DecodeError:
-		if typ, sensitive := decodeTarget(root, u.Name()); sensitive || nestsSensitive(root, u) {
-			return fmt.Errorf("'%s' cannot be decoded into %s (the value is sensitive and not shown)", u.Name(), typ), true
+		t, sensitive, ok := resolveDecodeName(root, u.Name())
+		switch {
+		case !ok:
+			return fmt.Errorf("'%s' cannot be decoded (the value may be sensitive and is not shown)", u.Name()), true
+		case sensitive:
+			return fmt.Errorf("'%s' cannot be decoded into %s (the value is sensitive and not shown)", u.Name(), t), true
+		case mayHoldSensitive(t, map[reflect.Type]bool{}):
+			return fmt.Errorf("'%s' cannot be decoded into %s (it may hold a sensitive value, so the value is not shown)", u.Name(), t), true
 		}
 		return e, false
 	case interface{ Unwrap() []error }:
@@ -62,22 +70,29 @@ func withhold(root reflect.Type, e error) (error, bool) {
 	return e, false
 }
 
-// nestsSensitive reports a failure that carries a whole decode of its own —
-// a field type's UnmarshalMapstructure that decodes in turn — when anything
-// beneath the field could be sensitive: the inner failures' names are not
-// paths from root, so they cannot be judged one by one.
-func nestsSensitive(root reflect.Type, de *mapstructure.DecodeError) bool {
-	var inner *mapstructure.DecodeError
-	if !errors.As(de.Unwrap(), &inner) {
+// mayHoldSensitive reports whether a value of type t could hold a sensitive
+// value beneath it: a struct field tagged sensitive:"true" or named like a
+// credential, or a map or interface, whose keys are only known per value. A
+// type already being inspected adds nothing.
+func mayHoldSensitive(t reflect.Type, seen map[reflect.Type]bool) bool {
+	t = derefType(t)
+	if seen[t] {
 		return false
 	}
-	t, ok := decodeType(root, de.Name())
-	if !ok {
+	seen[t] = true
+	switch t.Kind() {
+	case reflect.Map, reflect.Interface:
 		return true
-	}
-	for _, f := range fieldsOf(t) {
-		if f.Tag.Get("sensitive") == "true" || isSensitiveName(f.Path) || derefType(f.Type).Kind() == reflect.Map {
-			return true
+	case reflect.Slice, reflect.Array:
+		return mayHoldSensitive(t.Elem(), seen)
+	case reflect.Struct:
+		if !isBranch(t) {
+			return false // one value, decoded from one string
+		}
+		for kf := range keyedFields(t) {
+			if kf.field.Tag.Get("sensitive") == "true" || isSensitiveName(kf.field.Name) || mayHoldSensitive(kf.field.Type, seen) {
+				return true
+			}
 		}
 	}
 	return false
@@ -96,12 +111,6 @@ func decodeTarget(root reflect.Type, name string) (typ string, sensitive bool) {
 		return "its field type", true
 	}
 	return t.String(), sensitive
-}
-
-// decodeType is the type of the field mapstructure names.
-func decodeType(root reflect.Type, name string) (reflect.Type, bool) {
-	t, _, ok := resolveDecodeName(root, name)
-	return t, ok
 }
 
 func resolveDecodeName(root reflect.Type, name string) (t reflect.Type, sensitive, ok bool) {
@@ -123,12 +132,12 @@ func resolveDecodeName(root reflect.Type, name string) (t reflect.Type, sensitiv
 			t = derefType(t.Elem())
 			continue
 		}
-		f, found := fieldByKey(t, seg.name)
+		f, viaSensitive, found := fieldByKey(t, seg.name)
 		if !found {
 			return nil, false, false
 		}
 		ft := derefType(f.Type)
-		if f.Tag.Get("sensitive") == "true" || isSensitiveName(f.Name) && (last || !isBranch(ft)) {
+		if viaSensitive || f.Tag.Get("sensitive") == "true" || isSensitiveName(f.Name) && (last || !isBranch(ft)) {
 			sensitive = true
 		}
 		t = ft
@@ -137,22 +146,24 @@ func resolveDecodeName(root reflect.Type, name string) (t reflect.Type, sensitiv
 }
 
 // fieldByKey finds the struct field of t that config key segment key names,
-// looking through squashed structs as mapstructure does.
-func fieldByKey(t reflect.Type, key string) (reflect.StructField, bool) {
+// looking through squashed structs as mapstructure does. viaSensitive
+// reports a squashed struct on the way there tagged sensitive:"true", which
+// covers the field as it covers everything beneath it.
+func fieldByKey(t reflect.Type, key string) (f reflect.StructField, viaSensitive, ok bool) {
 	if t.Kind() != reflect.Struct {
-		return reflect.StructField{}, false
+		return reflect.StructField{}, false, false
 	}
 	for kf := range keyedFields(t) {
 		switch {
 		case kf.key == key:
-			return kf.field, true
+			return kf.field, false, true
 		case kf.key == "" && isBranch(derefType(kf.field.Type)):
-			if f, ok := fieldByKey(derefType(kf.field.Type), key); ok {
-				return f, true
+			if f, via, ok := fieldByKey(derefType(kf.field.Type), key); ok {
+				return f, via || kf.field.Tag.Get("sensitive") == "true", true
 			}
 		}
 	}
-	return reflect.StructField{}, false
+	return reflect.StructField{}, false, false
 }
 
 // decodeSegment is one step of a mapstructure field name: a struct key, or a

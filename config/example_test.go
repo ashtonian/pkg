@@ -130,12 +130,19 @@ func ExampleLoad_errors() {
 		config.WithEnviron(func() []string { return []string{"APP_ROTATION=s3cr3t-not-a-time"} }))
 	fmt.Println(errors.Is(err, config.ErrValidation), err)
 
+	file, cleanup := tempFile("config.yaml", "port: 8080\nrotation: [s3cr3t\n")
+	defer cleanup()
+	_, err = config.Load[AppConfig](ctx, config.WithFile(file))
+	var pe *config.ParseError
+	fmt.Println(errors.Is(err, config.ErrFileParse), errors.As(err, &pe), pe.Line > 0)
+
 	// Output:
 	// true validating config: configuration validation failed: port(min=1)
 	// true true
 	// true unmarshaling config: configuration validation failed: decoding failed due to the following error(s):
 	//
 	// 'rotation' cannot be decoded into time.Time (the value is sensitive and not shown)
+	// true true true
 }
 
 // ExampleWithStrictKeys shows a typo in a config file failing the load

@@ -173,8 +173,9 @@ func joinPath(prefix, key string) string {
 
 // DefaultsFromTags returns T's `default:"value"` struct tags keyed by koanf
 // dot-path, ready for [WithDefaults] or a confmap provider. Load reads them
-// as its lowest-precedence source; koanf and mapstructure do not read the tag
-// themselves.
+// as its lowest-precedence source, and applies a map's or slice's element
+// defaults to each entry the sources create; koanf and mapstructure do not
+// read the tag themselves.
 //
 //	type ServerConfig struct {
 //	    Host string `koanf:"host" default:"localhost"`

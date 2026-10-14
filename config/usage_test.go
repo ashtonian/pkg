@@ -118,3 +118,26 @@ func normalizeSpaces(s string) string {
 	}
 	return strings.Join(lines, "\n")
 }
+
+// A default whose type can hold sensitive entries — a map, here — is
+// withheld: only a decoded value reveals its keys. A collection's own default
+// shows on the collection's row; its entries' rows carry none.
+func TestPrintUsage_WithholdsCompositeDefaults(t *testing.T) {
+	type cfg struct {
+		Settings map[string]string `koanf:"settings" default:"{\"password\":\"FAKE_SECRET_VALUE\"}"`
+		Tags     []string          `koanf:"tags" default:"web,api"`
+	}
+	var buf bytes.Buffer
+	require.NoError(t, PrintUsage[cfg]("APP", WithWriter(&buf), WithFormat(FormatJSON)))
+	assert.NotContains(t, buf.String(), "FAKE_SECRET_VALUE")
+	var rows []usageRow
+	require.NoError(t, json.Unmarshal(buf.Bytes(), &rows))
+	require.Len(t, rows, 3)
+	assert.Equal(t, usageRow{Key: "settings", Env: "APP_SETTINGS", Type: "map[string]string", Default: "[REDACTED]"}, rows[0])
+	assert.Equal(t, usageRow{Key: "settings.<key>", Env: "APP_SETTINGS_<KEY>", Type: "string"}, rows[1])
+	assert.Equal(t, "web,api", rows[2].Default, "a slice of scalars has no keys to hide")
+
+	f := Fields[cfg]()[0]
+	_, printable := f.PrintableDefault()
+	assert.False(t, printable)
+}

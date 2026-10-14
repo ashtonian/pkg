@@ -8,7 +8,8 @@ import (
 	"io/fs"
 	"os"
 	"reflect"
-	"slices"
+	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 
@@ -34,10 +35,21 @@ import (
 // ctx reaches the secret populator, every post-load hook, a context-aware
 // validator and every [ContextProvider].
 //
+// Keys match fields regardless of letter case, as decoding does. Each
+// source's keys are rewritten into the fields' own spelling before the
+// sources merge, so a higher source wins whatever case it used; a source that
+// spells one field two ways fails with [ErrValidation]. An element struct's
+// `default` tags apply to every map entry and slice element the sources
+// create, below what they set.
+//
 // Every error wraps one category sentinel ([ErrFileRead], [ErrFileParse],
 // [ErrSource], [ErrSecretProvider], [ErrPostLoad], [ErrValidation]) and its
-// cause, so errors.Is and errors.As reach either. No error quotes a value
-// meant for a sensitive field.
+// cause, so errors.Is and errors.As reach either. The errors this package
+// writes never quote a value: a decode failure on a field that is, or could
+// hold, a sensitive value is reported by field and type only, and a parse
+// failure by source and line only (see [ParseError]). Errors returned by the
+// caller's own providers, secret populator, post-load hooks and validator are
+// passed through as they were written.
 func Load[T any](ctx context.Context, opts ...Option) (*T, error) {
 	cfg, _, err := load[T](ctx, buildOptions(opts))
 	return cfg, err
@@ -67,32 +79,67 @@ func (b boundProvider) ReadBytes() ([]byte, error)    { return b.ReadBytesContex
 // bytes it parsed.
 type fileDigests map[string][sha256.Size]byte
 
-// loader merges one load's sources into k, each through its own koanf
-// instance so its keys can be checked before they merge.
+// loader merges one load's sources into k. Each source's tree is read
+// whole, its struct keys rewritten into the fields' own spelling (keyWalk),
+// and then merged, so precedence holds whatever letter case a source used.
 type loader struct {
 	k       *koanf.Koanf
 	root    reflect.Type
+	hook    mapstructure.DecodeHookFunc
 	strict  bool
 	sources []string
 }
 
-// add loads p into a fresh instance and merges it into the load. A strict
-// load first refuses any key the config type has no field for.
-func (l *loader) add(name string, p koanf.Provider, parser koanf.Parser) (loadErr, keyErr error) {
-	src := koanf.New(".")
-	if err := src.Load(p, parser); err != nil {
-		return err, nil
+// add merges data, the tree of the source called name. A source that sets
+// one field under two spellings fails; so, under WithStrictKeys, does one
+// that sets a key no field decodes.
+func (l *loader) add(name string, data map[string]any) error {
+	w := keyWalk{hook: l.hook}
+	tree := w.tree(l.root, data)
+	switch {
+	case len(w.twice) > 0:
+		return fmt.Errorf("loading %s: %w: keys spelled two ways set one field: %s", name, ErrValidation, strings.Join(w.twice, ", "))
+	case l.strict && len(w.unknown) > 0:
+		return fmt.Errorf("loading %s: %w: keys no field of %s decodes: %s", name, ErrValidation, l.root, strings.Join(w.unknown, ", "))
 	}
-	if l.strict {
-		if unknown := unknownKeys(l.root, src.Keys()); len(unknown) > 0 {
-			return nil, fmt.Errorf("keys no field of %s decodes: %s", l.root, strings.Join(unknown, ", "))
-		}
-	}
-	if err := l.k.Merge(src); err != nil {
-		return err, nil
+	if err := l.k.Load(confmap.Provider(tree, ""), nil); err != nil {
+		return fmt.Errorf("loading %s: %w: %w", name, ErrSource, err)
 	}
 	l.sources = append(l.sources, name)
-	return nil, nil
+	return nil
+}
+
+// addProvider reads a provider — a map, or bytes through parser — and adds
+// it. A read failure is ErrSource with the provider's error; bytes the parser
+// rejects are ErrSource with a *ParseError.
+func (l *loader) addProvider(ctx context.Context, name string, src providerSource) error {
+	p := bind(ctx, src.provider)
+	var data map[string]any
+	if src.parser == nil {
+		m, err := p.Read()
+		if err != nil {
+			return fmt.Errorf("loading %s: %w: %w", name, ErrSource, err)
+		}
+		data = m
+	} else {
+		b, err := p.ReadBytes()
+		if err != nil {
+			return fmt.Errorf("loading %s: %w: %w", name, ErrSource, err)
+		}
+		if data, err = parse(name, src.parser, b); err != nil {
+			return fmt.Errorf("loading %s: %w: %w", name, ErrSource, err)
+		}
+	}
+	return l.add(name, data)
+}
+
+// addFlat adds a map keyed by dot-path.
+func (l *loader) addFlat(name string, flat map[string]any) error {
+	data, err := confmap.Provider(flat, ".").Read()
+	if err != nil {
+		return fmt.Errorf("loading %s: %w: %w", name, ErrSource, err)
+	}
+	return l.add(name, data)
 }
 
 // load is Load's pipeline. It also reports which config files it read and
@@ -103,30 +150,30 @@ func load[T any](ctx context.Context, o *options) (*T, fileDigests, error) {
 	if err := o.checkHookTypes(reflect.TypeFor[*T]()); err != nil {
 		return nil, nil, err
 	}
+	hook := o.decodeHook()
 	// A fresh instance per load: nothing from an earlier load (a key since
 	// deleted from a file, say) can survive into this one.
-	l := &loader{k: koanf.New("."), root: root, strict: o.strictKeys}
+	l := &loader{k: koanf.New("."), root: root, hook: hook, strict: o.strictKeys}
 	fields := Fields[T]()
 	files := fileDigests{}
 
 	if tagDefaults := defaultsFrom(fields); len(tagDefaults) > 0 {
-		if err, _ := l.add("struct-tag defaults", confmap.Provider(tagDefaults, "."), nil); err != nil {
-			return nil, nil, fmt.Errorf("loading struct-tag defaults: %w: %w", ErrSource, err)
+		if err := l.addFlat("struct-tag defaults", tagDefaults); err != nil {
+			return nil, nil, err
 		}
 	}
 	if len(o.defaults) > 0 {
-		if err := sourceError("WithDefaults", ErrSource)(l.add("WithDefaults", confmap.Provider(o.defaults, "."), nil)); err != nil {
+		if err := l.addFlat("WithDefaults", o.defaults); err != nil {
 			return nil, nil, err
 		}
 	}
 	for i, src := range o.base {
-		name := fmt.Sprintf("base provider %d", i)
-		if err := sourceError(name, ErrSource)(l.add(name, bind(ctx, src.provider), src.parser)); err != nil {
+		if err := l.addProvider(ctx, fmt.Sprintf("base provider %d", i), src); err != nil {
 			return nil, nil, err
 		}
 	}
 	for _, f := range o.files {
-		data, err := os.ReadFile(f.path)
+		raw, err := os.ReadFile(f.path)
 		switch {
 		case err == nil:
 		case !f.required && errors.Is(err, fs.ErrNotExist):
@@ -134,10 +181,14 @@ func load[T any](ctx context.Context, o *options) (*T, fileDigests, error) {
 		default:
 			return nil, nil, fmt.Errorf("loading config file %s: %w: %w", f.path, ErrFileRead, err)
 		}
-		if err := sourceError("config file "+f.path, ErrFileParse)(l.add(f.path, bytesProvider(data), o.fileParser)); err != nil {
+		data, err := parse(f.path, o.fileParser, raw)
+		if err != nil {
+			return nil, nil, fmt.Errorf("loading config file %s: %w: %w", f.path, ErrFileParse, err)
+		}
+		if err := l.add("config file "+f.path, data); err != nil {
 			return nil, nil, err
 		}
-		files[f.path] = sha256.Sum256(data)
+		files[f.path] = sha256.Sum256(raw)
 	}
 	if o.envPrefix != "" {
 		// Named from T's fields so a key with an underscore in it
@@ -150,34 +201,30 @@ func load[T any](ctx context.Context, o *options) (*T, fileDigests, error) {
 		if len(unmatched) > 0 {
 			o.logger.DebugContext(ctx, "environment variables under the prefix name no config key", "names", unmatched)
 		}
-		if err, _ := l.add("env "+schema.prefix+"*", confmap.Provider(values, "."), nil); err != nil {
-			return nil, nil, fmt.Errorf("loading env vars: %w: %w", ErrSource, err)
+		if err := l.addFlat("env "+schema.prefix+"*", values); err != nil {
+			return nil, nil, err
 		}
 	}
 	for i, src := range o.overrides {
-		name := fmt.Sprintf("override provider %d", i)
-		if err := sourceError(name, ErrSource)(l.add(name, bind(ctx, src.provider), src.parser)); err != nil {
+		if err := l.addProvider(ctx, fmt.Sprintf("override provider %d", i), src); err != nil {
 			return nil, nil, err
 		}
 	}
 	o.logger.DebugContext(ctx, "config sources loaded", "sources", l.sources)
 
-	// Decode. koanf's defaults do not split comma-separated strings into
-	// slices, so env values and tag defaults need the slice hook.
+	merged := l.k.Raw()
+	fillElementDefaults(root, merged)
 	cfg := new(T)
-	hooks := append(slices.Clone(o.decodeHooks),
-		mapstructure.StringToTimeDurationHookFunc(),
-		mapstructure.StringToSliceHookFunc(","),
-		mapstructure.TextUnmarshallerHookFunc(),
-	)
-	if err := l.k.UnmarshalWithConf("", cfg, koanf.UnmarshalConf{
-		DecoderConfig: &mapstructure.DecoderConfig{
-			DecodeHook:       mapstructure.ComposeDecodeHookFunc(hooks...),
-			WeaklyTypedInput: true,
-			Result:           cfg,
-			TagName:          "koanf",
-		},
-	}); err != nil {
+	dec, err := mapstructure.NewDecoder(&mapstructure.DecoderConfig{
+		DecodeHook:       hook,
+		WeaklyTypedInput: true,
+		Result:           cfg,
+		TagName:          "koanf",
+	})
+	if err != nil {
+		return nil, nil, fmt.Errorf("unmarshaling config: %w", err)
+	}
+	if err := dec.Decode(merged); err != nil {
 		// A value that cannot decode into its field's type (port: abc) is
 		// invalid configuration; the error names the key, and never the
 		// value of a sensitive one.
@@ -224,20 +271,6 @@ func load[T any](ctx context.Context, o *options) (*T, fileDigests, error) {
 	return cfg, files, nil
 }
 
-// sourceError classifies what loader.add returned for the source called
-// name: a load failure in category, an unknown key in ErrValidation.
-func sourceError(name string, category error) func(loadErr, keyErr error) error {
-	return func(loadErr, keyErr error) error {
-		switch {
-		case loadErr != nil:
-			return fmt.Errorf("loading %s: %w: %w", name, category, loadErr)
-		case keyErr != nil:
-			return fmt.Errorf("loading %s: %w: %w", name, ErrValidation, keyErr)
-		}
-		return nil
-	}
-}
-
 // bind gives a ContextProvider the load's context.
 func bind(ctx context.Context, p koanf.Provider) koanf.Provider {
 	if cp, ok := p.(ContextProvider); ok {
@@ -246,85 +279,51 @@ func bind(ctx context.Context, p koanf.Provider) koanf.Provider {
 	return p
 }
 
-// unknownKeys returns the keys, of those a source set, that no field of root
-// decodes. Matching is case-insensitive, as decoding is.
-func unknownKeys(root reflect.Type, keys []string) []string {
-	var unknown []string
-	for _, key := range keys {
-		if !keyDecodes(root, strings.Split(key, ".")) {
-			unknown = append(unknown, key)
-		}
-	}
-	return unknown
+// ParseError reports bytes a parser rejected: a config file, or a provider
+// loaded with a parser. Its message names the line when the parser gave one,
+// and leaves out the parser's own message, which may quote the source — a
+// credential in a file whose syntax broke around it. Err is that message's
+// error, for a diagnostic shown only where the source may be; errors.Unwrap
+// and errors.As reach it.
+type ParseError struct {
+	// Source names what was parsed: a file path, or "base provider 0".
+	Source string
+	// Line is the line the parser reported, or 0.
+	Line int
+	// Err is the parser's error.
+	Err error
 }
 
-// keyDecodes reports whether the key path segs reaches a field of t, or
-// lands beneath a map, an interface or a struct that keeps unknown keys in a
-// koanf:",remain" field.
-func keyDecodes(t reflect.Type, segs []string) bool {
-	for _, seg := range segs {
-		t = derefType(t)
-		switch {
-		case t.Kind() == reflect.Interface:
-			return true
-		case t.Kind() == reflect.Map:
-			t = t.Elem()
-		case isBranch(t):
-			f, ok := fieldByKeyFold(t, seg)
-			if !ok {
-				return hasRemain(t)
-			}
-			t = f.Type
-		default:
-			return false // a leaf has no keys beneath it
-		}
+func (e *ParseError) Error() string {
+	if e.Line > 0 {
+		return fmt.Sprintf("%s does not parse at line %d (the parser's message may quote the source and is not shown)", e.Source, e.Line)
 	}
-	return true
+	return e.Source + " does not parse (the parser's message may quote the source and is not shown)"
 }
 
-// fieldByKeyFold is fieldByKey falling back to a case-insensitive match.
-func fieldByKeyFold(t reflect.Type, key string) (reflect.StructField, bool) {
-	if f, ok := fieldByKey(t, key); ok {
-		return f, true
+func (e *ParseError) Unwrap() error { return e.Err }
+
+// parse unmarshals the bytes of the source called name.
+func parse(name string, parser koanf.Parser, b []byte) (map[string]any, error) {
+	data, err := parser.Unmarshal(b)
+	if err != nil {
+		return nil, &ParseError{Source: name, Line: parserLine(err), Err: err}
 	}
-	for kf := range keyedFields(t) {
-		switch {
-		case kf.key != "" && strings.EqualFold(kf.key, key):
-			return kf.field, true
-		case kf.key == "" && isBranch(derefType(kf.field.Type)):
-			if f, ok := fieldByKeyFold(derefType(kf.field.Type), key); ok {
-				return f, true
-			}
-		}
-	}
-	return reflect.StructField{}, false
+	return data, nil
 }
 
-// hasRemain reports whether struct t, or one squashed into it, collects
-// unknown keys in a koanf:",remain" field.
-func hasRemain(t reflect.Type) bool {
-	for i := range t.NumField() {
-		f := t.Field(i)
-		_, opts, _ := strings.Cut(f.Tag.Get("koanf"), ",")
-		tagOpts := strings.Split(opts, ",")
-		switch {
-		case slices.Contains(tagOpts, "remain"):
-			return true
-		case slices.Contains(tagOpts, "squash") && isBranch(derefType(f.Type)) && hasRemain(derefType(f.Type)):
-			return true
-		}
+// parserLine is the line number a parser's message names ("yaml: line 3:
+// ...", "toml: line 3"), or 0. Only the number leaves the message.
+func parserLine(err error) int {
+	m := lineInMessage.FindStringSubmatch(err.Error())
+	if m == nil {
+		return 0
 	}
-	return false
+	n, _ := strconv.Atoi(m[1])
+	return n
 }
 
-// bytesProvider hands koanf the bytes a load read, so the digest it records
-// is of exactly what was parsed.
-type bytesProvider []byte
-
-func (b bytesProvider) ReadBytes() ([]byte, error) { return b, nil }
-func (b bytesProvider) Read() (map[string]any, error) {
-	return nil, errors.New("config: bytesProvider needs a parser")
-}
+var lineInMessage = regexp.MustCompile(`\bline (\d+)\b`)
 
 // defaultValidator is the validator Load uses when WithValidator sets none.
 // It names fields by config key (see [FieldName]). A Validate is safe for

@@ -21,6 +21,19 @@ func (f Field) EnvVar(prefix string) string {
 	return envName(strings.TrimSuffix(prefix, "_"), f.Path)
 }
 
+// PrintableDefault returns f's `default` tag and true when diagnostics may
+// print it, and false when f has no default or it must be withheld: f is
+// Sensitive, or its type could hold a sensitive value beneath it — a map or
+// interface, whose entries only a decoded value reveals, or a struct, slice
+// or array holding a sensitive field or one of those.
+func (f Field) PrintableDefault() (string, bool) {
+	def, ok := f.Tag.Lookup("default")
+	if !ok || f.Sensitive || mayHoldSensitive(f.Type, map[reflect.Type]bool{}) {
+		return "", false
+	}
+	return def, true
+}
+
 // usageRow is one key an operator can set.
 type usageRow struct {
 	Key         string `json:"key"`
@@ -39,8 +52,10 @@ type usageRow struct {
 // environment variable that sets it under envPrefix (none when envPrefix is
 // empty), its type, its `default` tag, whether `validate:"required"` makes it
 // mandatory, and its `desc` tag. A map's entries are one row per element
-// field, written with a <key> placeholder. A sensitive key's default prints
-// as [REDACTED] unless [WithShowSensitive] is set.
+// field, written with a <key> placeholder, and a slice of structs' elements
+// one row per element field with an <i> placeholder and no variable. A
+// default diagnostics must withhold (see [Field.PrintableDefault]) prints as
+// [REDACTED] unless [WithShowSensitive] is set.
 //
 // [WithFormat] selects a table (the default), JSON (an array of objects) or
 // FormatEnv: a template of `export NAME='default'` lines, with a key that has
@@ -80,17 +95,29 @@ func usageRows(root reflect.Type, prefix string, showSensitive bool) []usageRow 
 	var rows []usageRow
 	for _, f := range fieldsOf(root) {
 		t := derefType(f.Type)
-		if t.Kind() != reflect.Map || t.Key().Kind() != reflect.String {
+		isMap := t.Kind() == reflect.Map && t.Key().Kind() == reflect.String
+		isList := (t.Kind() == reflect.Slice || t.Kind() == reflect.Array) && isBranch(derefType(t.Elem()))
+		if !isMap && !isList {
 			rows = append(rows, usageRowOf(f, f.Path, f.EnvVar(prefix), showSensitive))
+			continue
+		}
+		if _, ok := f.Tag.Lookup("default"); ok { // the collection's own default, as a whole
+			rows = append(rows, usageRowOf(f, f.Path, f.EnvVar(prefix), showSensitive))
+		}
+		elem := derefType(t.Elem())
+		if isList { // elements are set in files; no variable addresses one
+			for _, leaf := range fieldsOf(elem) {
+				leaf.Sensitive = leaf.Sensitive || f.Sensitive
+				rows = append(rows, usagePattern(usageRowOf(leaf, f.Path+"[<i>]."+leaf.Path, "", showSensitive)))
+			}
 			continue
 		}
 		key, env := f.Path+".<key>", ""
 		if prefix != "" {
 			env = f.EnvVar(prefix) + "_<KEY>"
 		}
-		elem := derefType(t.Elem())
 		if !isBranch(elem) {
-			entry := Field{Path: f.Path, Tag: f.Tag, Type: t.Elem(), Sensitive: f.Sensitive}
+			entry := Field{Path: f.Path, Tag: reflect.StructTag(fmt.Sprintf("desc:%q", f.Tag.Get("desc"))), Type: t.Elem(), Sensitive: f.Sensitive}
 			rows = append(rows, usagePattern(usageRowOf(entry, key, env, showSensitive)))
 			continue
 		}
@@ -121,9 +148,13 @@ func usageRowOf(f Field, key, env string, showSensitive bool) usageRow {
 		Sensitive:   f.Sensitive,
 		Description: f.Tag.Get("desc"),
 	}
-	row.Default, row.hasDefault = f.Tag.Lookup("default")
-	if row.hasDefault && f.Sensitive && !showSensitive {
-		row.Default = redactedValue
+	def, has := f.Tag.Lookup("default")
+	row.hasDefault = has
+	if has {
+		row.Default = def
+		if _, printable := f.PrintableDefault(); !printable && !showSensitive {
+			row.Default = redactedValue
+		}
 	}
 	return row
 }
@@ -173,6 +204,10 @@ func printUsageEnv(w io.Writer, rows []usageRow) error {
 			note += ", required"
 		}
 		ew.printf("# %s\n", note)
+		if r.Env == "" {
+			ew.printf("# set in a config file\n")
+			continue
+		}
 		if r.pattern || r.Sensitive || !r.hasDefault {
 			ew.printf("# export %s=\n", r.Env)
 			continue

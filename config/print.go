@@ -216,7 +216,7 @@ func (w *entryWalk) walkValue(path string, v reflect.Value, s site) {
 			w.leaf(path, v, reflect.Value{}, s)
 			return
 		}
-		if elem.Kind() == reflect.Pointer && isBranch(elem.Elem().Type()) {
+		if elem.Kind() == reflect.Pointer { // any pointer: one into an interface can lead back to itself
 			if !w.enter(elem) {
 				w.cycle(path, v, s)
 				return

@@ -45,7 +45,7 @@ func (c copier) copy(v reflect.Value) reflect.Value {
 			m := reflect.MakeMapWithSize(v.Type(), v.Len())
 			c.made[key] = m
 			for iter := v.MapRange(); iter.Next(); {
-				m.SetMapIndex(iter.Key(), c.copy(iter.Value()))
+				m.SetMapIndex(c.copy(iter.Key()), c.copy(iter.Value()))
 			}
 			return m
 		default:

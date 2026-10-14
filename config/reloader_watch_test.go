@@ -15,6 +15,8 @@ import (
 	"time"
 
 	"github.com/fsnotify/fsnotify"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // watchedReloader starts a file-watching reloader over opts and returns the
@@ -390,22 +392,26 @@ func TestFileWatch_DirectoryComponentSymlink(t *testing.T) {
 		t.Fatalf("settle after relinking a directory component: changed=%v err=%v", changed, err)
 	}
 	want := filepath.Join(root, "v2", "config.yaml")
-	if path != want || w.resolved[file] != want {
-		t.Fatalf("settle reported %q, resolved %q; want %q", path, w.resolved[file], want)
+	if path != want || w.paths[file].target != want {
+		t.Fatalf("settle reported %q, resolved %q; want %q", path, w.paths[file].target, want)
 	}
 	if !slices.Contains(w.watcher.WatchList(), filepath.Join(root, "v2")) {
 		t.Fatalf("watches %v; want the new target directory", w.watcher.WatchList())
 	}
 }
 
-func TestLinkDirs(t *testing.T) {
+// resolvePath resolves as the kernel does: links in place, ".." from the
+// resolved directory, and every directory the resolution looks a name up in
+// that it depends on.
+func TestResolvePath(t *testing.T) {
 	root := realTempDir(t)
-	for _, dir := range []string{"real", "b"} {
+	for _, dir := range []string{"real", "b", "actual/child"} {
 		if err := os.MkdirAll(filepath.Join(root, dir), 0o700); err != nil {
 			t.Fatal(err)
 		}
 	}
 	writeFile(t, filepath.Join(root, "real", "c.yaml"), "x: 1\n")
+	writeFile(t, filepath.Join(root, "actual", "c.yaml"), "x: 2\n")
 	// a -> b (relative directory link); b/c.yaml -> ../real/c.yaml (file link).
 	if err := os.Symlink("b", filepath.Join(root, "a")); err != nil {
 		t.Fatal(err)
@@ -413,18 +419,28 @@ func TestLinkDirs(t *testing.T) {
 	if err := os.Symlink(filepath.Join("..", "real", "c.yaml"), filepath.Join(root, "b", "c.yaml")); err != nil {
 		t.Fatal(err)
 	}
-	got := linkDirs(filepath.Join(root, "a", "c.yaml"))
-	want := []string{root, filepath.Join(root, "b")}
-	if !slices.Equal(got, want) {
-		t.Fatalf("linkDirs = %v, want %v", got, want)
-	}
+	r := resolvePath(filepath.Join(root, "a", "c.yaml"))
+	assert.Equal(t, filepath.Join(root, "real", "c.yaml"), r.target)
+	assert.Equal(t, filepath.Join(root, "b", "c.yaml"), r.entry, "the path's last name sits in b, through a")
+	assert.Equal(t, []string{root, filepath.Join(root, "b"), filepath.Join(root, "real")}, r.dirs)
 
-	if got := linkDirs(filepath.Join(root, "real", "c.yaml")); len(got) != 0 {
-		t.Fatalf("linkDirs of a path with no links = %v", got)
+	// ".." after a link climbs from the link's target, as the kernel does.
+	if err := os.Symlink(filepath.Join(root, "actual", "child"), filepath.Join(root, "jump")); err != nil {
+		t.Fatal(err)
 	}
-	if got := linkDirs(filepath.Join(root, "missing", "c.yaml")); len(got) != 0 {
-		t.Fatalf("linkDirs of a missing path = %v", got)
-	}
+	dotdot := root + "/jump/../c.yaml"
+	want, err := filepath.EvalSymlinks(dotdot)
+	require.NoError(t, err)
+	r = resolvePath(dotdot)
+	assert.Equal(t, want, r.target)
+	assert.Equal(t, filepath.Join(root, "actual", "c.yaml"), r.target)
+
+	r = resolvePath(filepath.Join(root, "real", "c.yaml"))
+	assert.Equal(t, []string{filepath.Join(root, "real")}, r.dirs, "no links: only the target's directory")
+
+	r = resolvePath(filepath.Join(root, "missing", "deeper", "c.yaml"))
+	assert.Empty(t, r.target)
+	assert.Equal(t, []string{root}, r.dirs, "a missing component: the deepest directory that exists")
 
 	// A loop ends.
 	if err := os.Symlink("y", filepath.Join(root, "x")); err != nil {
@@ -433,7 +449,115 @@ func TestLinkDirs(t *testing.T) {
 	if err := os.Symlink("x", filepath.Join(root, "y")); err != nil {
 		t.Fatal(err)
 	}
-	if got := linkDirs(filepath.Join(root, "x", "c.yaml")); len(got) == 0 || len(got) > maxLinkHops+1 {
-		t.Fatalf("linkDirs through a loop returned %d entries", len(got))
+	r = resolvePath(filepath.Join(root, "x", "c.yaml"))
+	assert.Empty(t, r.target)
+	assert.LessOrEqual(t, len(r.dirs), maxLinkHops+1)
+}
+
+// A ".." after a symlinked directory climbs from the link's target, so the
+// watch follows the file the loader opens, not the one lexical cleaning names.
+func TestFileWatch_DotDotAfterSymlink(t *testing.T) {
+	root := realTempDir(t)
+	for _, dir := range []string{"actual/child", "declared"} {
+		if err := os.MkdirAll(filepath.Join(root, dir), 0o700); err != nil {
+			t.Fatal(err)
+		}
 	}
+	if err := os.Symlink(filepath.Join(root, "actual", "child"), filepath.Join(root, "declared", "jump")); err != nil {
+		t.Fatal(err)
+	}
+	file := filepath.Join(root, "declared", "jump") + "/../config.yaml"
+	writeFile(t, file, "value: first\n")
+	w, err := newFileWatch([]string{file}, time.Hour, discardLogger())
+	require.NoError(t, err)
+	defer w.close()
+
+	opened, err := filepath.EvalSymlinks(file)
+	require.NoError(t, err)
+	assert.Equal(t, filepath.Join(root, "actual", "config.yaml"), opened)
+	assert.Equal(t, opened, w.paths[file].target)
+	assert.Contains(t, w.watcher.WatchList(), filepath.Join(root, "actual"))
+	assert.Contains(t, w.watcher.WatchList(), filepath.Join(root, "declared"), "the directory holding the link")
+}
+
+// A link whose target climbs out of another link (config.yaml ->
+// branch/jump/../config.yaml) depends on branch too: relinking jump moves the
+// target, and the watch sees it.
+func TestFileWatch_RelinkInsideALinkTarget(t *testing.T) {
+	root := realTempDir(t)
+	for _, dir := range []string{"branch", "v1/child", "v2/child"} {
+		if err := os.MkdirAll(filepath.Join(root, dir), 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	writeFile(t, filepath.Join(root, "v1", "config.yaml"), "value: first\n")
+	writeFile(t, filepath.Join(root, "v2", "config.yaml"), "value: second\n")
+	jump := filepath.Join(root, "branch", "jump")
+	if err := os.Symlink(filepath.Join(root, "v1", "child"), jump); err != nil {
+		t.Fatal(err)
+	}
+	file := filepath.Join(root, "config.yaml")
+	if err := os.Symlink("branch/jump/../config.yaml", file); err != nil {
+		t.Fatal(err)
+	}
+	w, err := newFileWatch([]string{file}, time.Hour, discardLogger())
+	require.NoError(t, err)
+	defer w.close()
+	require.Contains(t, w.watcher.WatchList(), filepath.Join(root, "branch"))
+
+	require.NoError(t, os.Remove(jump))
+	require.NoError(t, os.Symlink(filepath.Join(root, "v2", "child"), jump))
+	marker := filepath.Join(root, "branch", "deployed") // a durable name kqueue reports
+	writeFile(t, marker, "v2")
+	waitForEvent(t, w, marker)
+
+	path, changed, err := w.settle()
+	require.NoError(t, err)
+	assert.True(t, changed)
+	assert.Equal(t, filepath.Join(root, "v2", "config.yaml"), path)
+}
+
+// A watched directory moved away is a change: the reload that follows finds
+// the file gone and fails, instead of the reloader serving it as if present.
+func TestFileWatch_DirectoryMovedAwayIsAChange(t *testing.T) {
+	root := realTempDir(t)
+	dir := filepath.Join(root, "config")
+	file := filepath.Join(dir, "config.yaml")
+	require.NoError(t, os.MkdirAll(dir, 0o700))
+	writeFile(t, file, "value: first\n")
+	w, err := newFileWatch([]string{file}, time.Hour, discardLogger())
+	require.NoError(t, err)
+	defer w.close()
+
+	require.NoError(t, os.Rename(dir, filepath.Join(root, "old")))
+	w.observe(fsnotify.Event{Name: dir, Op: fsnotify.Rename})
+	_, changed, err := w.settle()
+	require.NoError(t, err)
+	assert.True(t, changed)
+	assert.Contains(t, w.watcher.WatchList(), root, "the deepest directory that still exists")
+}
+
+// An ancestor renamed away and recreated sends no event to the directory the
+// watch holds, which follows the old tree; Run's recheck notices the
+// replacement and reloads the new file.
+func TestReloader_AncestorReplacedIsReloaded(t *testing.T) {
+	root := realTempDir(t)
+	parent := filepath.Join(root, "config")
+	dir := filepath.Join(parent, "nested")
+	file := filepath.Join(dir, "config.yaml")
+	require.NoError(t, os.MkdirAll(dir, 0o700))
+	writeFile(t, file, "port: 1\n")
+	r, err := NewReloader[portCfg](t.Context(),
+		[]Option{WithFile(file), WithSkipValidation(), WithLogger(discardLogger())},
+		WithFileWatch(10*time.Millisecond),
+	)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = r.Stop(context.Background()) })
+	armReloader(t, r)
+	runReloader(t, r)
+
+	require.NoError(t, os.Rename(parent, filepath.Join(root, "old")))
+	require.NoError(t, os.MkdirAll(dir, 0o700))
+	writeFile(t, file, "port: 2\n")
+	eventually(t, func() bool { return r.Config().Port == 2 }, "the recheck to reload the replaced tree")
 }

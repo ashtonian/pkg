@@ -536,7 +536,7 @@ func (r *Reloader[T]) stopped() bool {
 // the triggers armed. Without Arm, Run arms them and returns the error when
 // it cannot.
 //
-// Every automatic reload runs on Start's goroutine with a context that Stop
+// Every automatic reload runs on Run's goroutine with a context that Stop
 // also cancels, and the file-watch debounce timer is owned by the same loop,
 // so no automatic reload can begin once Run has returned.
 func (r *Reloader[T]) Run(ctx context.Context) error {
@@ -569,9 +569,13 @@ func (r *Reloader[T]) Run(ctx context.Context) error {
 		events    <-chan fsnotify.Event
 		watchErrs <-chan error
 		settled   <-chan time.Time
+		recheck   <-chan time.Time
 	)
 	if t.watch != nil {
 		events, watchErrs, settled = t.watch.watcher.Events, t.watch.watcher.Errors, t.watch.timer.C
+		ticker := time.NewTicker(t.watch.recheckEvery)
+		defer ticker.Stop()
+		recheck = ticker.C
 		if t.stale {
 			r.catchUp(runCtx)
 		}
@@ -608,7 +612,7 @@ func (r *Reloader[T]) Run(ctx context.Context) error {
 		case ev, ok := <-events:
 			if !ok {
 				r.logger.ErrorContext(ctx, "config file watcher closed unexpectedly; file-change reloads are off")
-				events, watchErrs, settled = nil, nil, nil
+				events, watchErrs, settled, recheck = nil, nil, nil, nil
 				continue
 			}
 			t.watch.observe(ev)
@@ -621,18 +625,28 @@ func (r *Reloader[T]) Run(ctx context.Context) error {
 			r.logger.ErrorContext(ctx, "config file watcher error", "error", err)
 
 		case <-settled:
-			path, changed, err := t.watch.settle()
-			if err != nil {
-				r.logger.ErrorContext(ctx, "config file watch is missing directories; changes there will not reload", "error", err)
-			}
-			if changed {
-				r.autoReload(runCtx, TriggerFileChange, "path", path)
-			}
+			r.fileChanged(ctx, runCtx)(t.watch.settle())
+
+		case <-recheck:
+			r.fileChanged(ctx, runCtx)(t.watch.recheck())
 		}
 	}
 }
 
-// exit is Start's return once its run context has ended: nil after Stop,
+// fileChanged acts on a file watch's verdict: reloads when something the
+// reloader reads changed, and logs a directory it can no longer watch.
+func (r *Reloader[T]) fileChanged(ctx, runCtx context.Context) func(path string, changed bool, err error) {
+	return func(path string, changed bool, err error) {
+		if err != nil {
+			r.logger.ErrorContext(ctx, "config file watch is missing directories; changes there will not reload", "error", err)
+		}
+		if changed {
+			r.autoReload(runCtx, TriggerFileChange, "path", path)
+		}
+	}
+}
+
+// exit is Run's return once its run context has ended: nil after Stop,
 // ctx.Err() when the caller's ctx ended.
 func (r *Reloader[T]) exit(ctx context.Context) error {
 	if r.stopped() {
@@ -647,7 +661,7 @@ func (r *Reloader[T]) exit(ctx context.Context) error {
 // flight so the change that triggered this one is read after it lands.
 func (r *Reloader[T]) autoReload(ctx context.Context, trigger string, attrs ...any) {
 	if err := r.acquire(ctx, trigger, true); err != nil {
-		return // stopping: Stop or ctx ended, and Start's loop exits next
+		return // stopping: Stop or ctx ended, and Run's loop exits next
 	}
 	defer r.release()
 	r.reloadAndLog(ctx, trigger, attrs...)

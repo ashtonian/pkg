@@ -67,3 +67,22 @@ func TestDeepCopy_SharingCyclesAndUnexported(t *testing.T) {
 	assert.Equal(t, []string{"a"}, cn.Tags)
 	assert.Equal(t, []string{"a"}, out["again"])
 }
+
+// Map keys are copied too: a pointer key's target changed by the caller
+// afterwards does not reach a load.
+func TestWithDefaults_CopiesMapKeys(t *testing.T) {
+	type key struct{ Label string }
+	type cfg struct {
+		Values map[*key]string `koanf:"values"`
+	}
+	k := &key{Label: "original"}
+	opt := WithDefaults(map[string]any{"values": map[*key]string{k: "value"}})
+	k.Label = "changed"
+	got, err := Load[cfg](t.Context(), opt, WithSkipValidation())
+	require.NoError(t, err)
+	require.Len(t, got.Values, 1)
+	for copied := range got.Values {
+		assert.Equal(t, "original", copied.Label)
+		assert.NotSame(t, k, copied)
+	}
+}

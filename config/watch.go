@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io/fs"
 	"log/slog"
+	"maps"
 	"os"
 	"path/filepath"
 	"strings"
@@ -14,46 +15,47 @@ import (
 )
 
 // fileWatch is the file-watch state behind Run. It is driven entirely by
-// Start's loop — events in through observe, the debounce timer out through
-// settle — so it needs no locking, and closing it stops the timer for good.
+// Run's loop — events in through observe, the debounce timer and the recheck
+// ticker out through settle — so it needs no locking, and closing it stops
+// the timer for good.
 //
 // Config reaches a process three ways, and each is detected:
 //
 //   - Direct write to the file, including the write-temp-then-rename pattern
 //     editors and atomic-write toolchains use, and removal. Caught by
-//     watching the file's PARENT DIRECTORY and matching events by name.
+//     watching the file's directory and matching events by name.
 //   - Symlink swap, where the watched path is a link whose target moves and
 //     the leaf path itself is never written. This is how Kubernetes publishes
 //     ConfigMap and Secret volumes (kubelet writes a new timestamped dir, then
 //     renames `..data` over the old one; every key is a symlink into `..data`)
 //     and how release-directory deploys work (`ln -sfn`). fsnotify does not
-//     follow symlinks, so a name match never fires. Caught by resolving each
-//     path, watching the resolved target's directory too, and re-resolving
-//     after every burst of events in a watched directory.
+//     follow symlinks, so a name match never fires. Caught by watching every
+//     directory holding a symlink the path resolves through, and re-resolving
+//     after every burst of events.
 //   - An edit of a symlink's current target, matched by the target's name.
 //
-// The subscriptions are reconciled after every burst: the parent of each
-// declared path and of each current target, and every directory holding a
-// symlink along a declared path, so relinking a directory component
-// (`current -> releases/v2`) is noticed like relinking the file. While one of
-// them does not exist, its nearest existing ancestor is watched instead, so a
-// directory created later is still noticed. Nothing else is watched, so
-// retired release directories are dropped. A watched directory that was
-// removed, replaced or renamed away has lost its watch, or kept one on the
-// old directory; reconciling notices by the directory's identity and watches
-// what is at the path now.
+// Paths resolve as the kernel resolves them (resolvePath): a ".." after a
+// symlink climbs from the link's target, not from the link, so the watch
+// follows the file the loader opens. The subscriptions are reconciled after
+// every burst to exactly the directories resolution needs — and, while a
+// component is missing, the deepest one that exists, so a directory created
+// later is noticed. A watched directory removed, replaced or renamed away has
+// lost its watch, or kept one on the old directory; reconciling notices by
+// the directory's identity. A replacement further up — an ancestor renamed
+// away and recreated — sends no event to any watched directory, so Run also
+// reconciles every recheck interval with no event to prompt it.
 type fileWatch struct {
 	watcher *fsnotify.Watcher
 	logger  *slog.Logger
 
-	// declared is every path the operator declared, absolute.
+	// declared is every path the operator declared, absolute but not
+	// lexically cleaned: cleaning "link/../x" before resolving link would
+	// name a different file.
 	declared []string
-	// resolved maps each declared path to its symlink target as last
-	// observed; a path that is not a symlink maps to itself.
-	resolved map[string]string
-	// reach maps each directory a declared path needs to the directory
-	// watched for it: itself, or its nearest existing ancestor.
-	reach map[string]string
+	// paths holds each declared path's resolution as last observed.
+	paths map[string]resolution
+	// needed is the set of directories the last reconcile subscribed.
+	needed map[string]bool
 	// watching maps each directory subscribed to the directory it was when
 	// subscribed, so a replacement at the same path is told apart.
 	watching map[string]os.FileInfo
@@ -71,7 +73,16 @@ type fileWatch struct {
 	// rename of it or its target landed on since the last settle, or "" if
 	// the pending events were all indirect.
 	pendingDirect string
+	// recheckEvery is how often Run reconciles with no event to prompt it.
+	recheckEvery time.Duration
 }
+
+// recheckWindows sets the recheck interval in debounce windows; it is never
+// shorter than minRecheck.
+const (
+	recheckWindows = 4
+	minRecheck     = time.Second
+)
 
 // newFileWatch subscribes to every directory paths need. A subscription that
 // cannot be made fails construction: a watch that silently covers less than
@@ -85,21 +96,21 @@ func newFileWatch(paths []string, debounce time.Duration, logger *slog.Logger) (
 	timer := time.NewTimer(debounce)
 	timer.Stop()
 	w := &fileWatch{
-		watcher:  watcher,
-		logger:   logger,
-		resolved: make(map[string]string, len(paths)),
-		reach:    make(map[string]string),
-		watching: make(map[string]os.FileInfo),
-		timer:    timer,
-		debounce: debounce,
+		watcher:      watcher,
+		logger:       logger,
+		paths:        make(map[string]resolution, len(paths)),
+		watching:     make(map[string]os.FileInfo),
+		timer:        timer,
+		debounce:     debounce,
+		recheckEvery: max(recheckWindows*debounce, minRecheck),
 	}
 	for _, p := range paths {
-		absPath, err := filepath.Abs(p)
+		abs, err := absolute(p)
 		if err != nil {
 			return nil, errors.Join(fmt.Errorf("resolving config file path %q: %w", p, err), w.close())
 		}
-		w.declared = append(w.declared, absPath)
-		w.resolved[absPath] = resolveTarget(absPath)
+		w.declared = append(w.declared, abs)
+		w.paths[abs] = resolvePath(abs)
 	}
 	if _, err := w.reconcile(); err != nil {
 		return nil, errors.Join(err, w.close())
@@ -107,42 +118,144 @@ func newFileWatch(paths []string, debounce time.Duration, logger *slog.Logger) (
 	return w, nil
 }
 
-// reconcile subscribes to the directories the declared paths need now and
-// drops every other subscription. appeared reports a needed directory that
-// came into existence, or was replaced, since the last reconcile: a file
-// inside it may have changed with it, before any watch could see it.
-func (w *fileWatch) reconcile() (appeared bool, err error) {
-	want := make(map[string]bool, 2*len(w.declared))
-	for _, p := range w.declared {
-		want[filepath.Dir(p)] = true
-		want[filepath.Dir(w.resolved[p])] = true
-		for _, dir := range linkDirs(p) {
-			want[dir] = true
+// absolute makes p absolute without cleaning it.
+func absolute(p string) (string, error) {
+	if filepath.IsAbs(p) {
+		return p, nil
+	}
+	wd, err := os.Getwd()
+	if err != nil {
+		return "", err
+	}
+	return wd + string(filepath.Separator) + p, nil
+}
+
+// resolution is how the kernel resolves one path.
+type resolution struct {
+	// target is the file the path names, every symlink resolved; "" while a
+	// component is missing.
+	target string
+	// entry is where the path's last name sits: that name in its resolved
+	// directory. It is the target unless the path ends in a symlink.
+	entry string
+	// dirs are the directories the resolution depends on: each holding a
+	// symlink it passes through, the target's, or — while a component is
+	// missing — the deepest one that exists.
+	dirs []string
+}
+
+// resolvePath resolves path component by component as the kernel does: a
+// symlink is replaced in place by its target, and ".." climbs from the
+// directory resolved so far.
+func resolvePath(path string) resolution {
+	type part struct {
+		name string
+		last bool // the path's own last name, not one from a link target
+	}
+	var r resolution
+	vol := filepath.VolumeName(path)
+	dir := vol + string(filepath.Separator)
+	names := splitPath(path[len(vol):])
+	rest := make([]part, len(names))
+	for i, n := range names {
+		rest[i] = part{name: n, last: i == len(names)-1}
+	}
+	for hops := 0; len(rest) > 0; {
+		p := rest[0]
+		rest = rest[1:]
+		switch p.name {
+		case ".":
+			continue
+		case "..":
+			dir = filepath.Dir(dir)
+			continue
+		}
+		next := filepath.Join(dir, p.name)
+		if p.last {
+			r.entry = next
+		}
+		info, err := os.Lstat(next)
+		if err != nil {
+			r.dirs = append(r.dirs, dir)
+			return r
+		}
+		if info.Mode()&fs.ModeSymlink == 0 {
+			dir = next
+			continue
+		}
+		r.dirs = append(r.dirs, dir)
+		hops++
+		target, err := os.Readlink(next)
+		if err != nil || hops > maxLinkHops {
+			return r
+		}
+		if filepath.IsAbs(target) {
+			tvol := filepath.VolumeName(target)
+			dir = tvol + string(filepath.Separator)
+			target = target[len(tvol):]
+		}
+		expanded := splitPath(target)
+		parts := make([]part, 0, len(expanded)+len(rest))
+		for _, n := range expanded {
+			parts = append(parts, part{name: n})
+		}
+		rest = append(parts, rest...)
+	}
+	r.target = dir
+	r.dirs = append(r.dirs, filepath.Dir(dir))
+	return r
+}
+
+// maxLinkHops bounds resolution like the kernel's own symlink limit, so a
+// link loop ends.
+const maxLinkHops = 40
+
+func splitPath(p string) []string {
+	var parts []string
+	for part := range strings.SplitSeq(p, string(filepath.Separator)) {
+		if part != "" {
+			parts = append(parts, part)
 		}
 	}
+	return parts
+}
+
+// resolveTarget is the file path names, or path itself while it does not
+// resolve.
+func resolveTarget(path string) string {
+	if r := resolvePath(path); r.target != "" {
+		return r.target
+	}
+	return path
+}
+
+// reconcile subscribes to the directories the declared paths need now and
+// drops every other subscription. shifted reports that the set of
+// directories changed — one appeared, vanished, or was replaced at its path —
+// since the last reconcile: a file the reloader reads may have changed with
+// it, before any watch could see it.
+func (w *fileWatch) reconcile() (shifted bool, err error) {
 	live := make(map[string]bool)
 	for _, dir := range w.watcher.WatchList() {
 		live[dir] = true
 	}
-
-	desired := make(map[string]bool, len(want))
-	reach := make(map[string]string, len(want))
+	needed := make(map[string]bool)
 	var errs []error
-	for dir := range want {
-		watched, replaced, err := w.subscribe(dir, live)
-		if err != nil {
-			errs = append(errs, err)
+	for _, p := range w.declared {
+		for _, dir := range w.paths[p].dirs {
+			watched, replaced, err := w.subscribe(dir, live)
+			if err != nil {
+				errs = append(errs, err)
+			}
+			needed[watched] = true
+			shifted = shifted || replaced
 		}
-		if was, ok := w.reach[dir]; replaced || ok && was != dir && watched == dir {
-			appeared = true
-		}
-		reach[dir] = watched
-		desired[watched] = true
 	}
-	w.reach = reach
+	shifted = shifted || w.needed != nil && !maps.Equal(w.needed, needed)
+	w.needed = needed
 
 	for dir := range w.watching {
-		if desired[dir] {
+		if needed[dir] {
 			continue
 		}
 		// A directory that was deleted has already lost its watch;
@@ -150,10 +263,10 @@ func (w *fileWatch) reconcile() (appeared bool, err error) {
 		_ = w.watcher.Remove(dir)
 		delete(w.watching, dir)
 	}
-	return appeared, errors.Join(errs...)
+	return shifted, errors.Join(errs...)
 }
 
-// subscribe makes sure dir — or, while it does not exist, its nearest
+// subscribe makes sure dir — or, should it vanish meanwhile, its nearest
 // existing ancestor — is watched, and returns the directory watched. replaced
 // reports that the watch on it had been lost or was pinned to a directory no
 // longer at that path, and was made afresh. live is the watcher's own list of
@@ -188,54 +301,6 @@ func (w *fileWatch) subscribe(dir string, live map[string]bool) (watched string,
 	}
 }
 
-// linkDirs returns every directory holding a symlink that resolving path
-// passes through — the directory components and the file itself — following
-// each link's target as the kernel does. A component that does not exist
-// ends the walk; nearestExistingDir covers what lies beyond it.
-func linkDirs(path string) []string {
-	var dirs []string
-	root := filepath.VolumeName(path) + string(filepath.Separator)
-	dir, rest := root, splitPath(strings.TrimPrefix(path, root))
-	for hops := 0; len(rest) > 0 && hops <= maxLinkHops; {
-		next := filepath.Join(dir, rest[0])
-		info, err := os.Lstat(next)
-		if err != nil {
-			break
-		}
-		rest = rest[1:]
-		if info.Mode()&fs.ModeSymlink == 0 {
-			dir = next
-			continue
-		}
-		hops++
-		dirs = append(dirs, dir)
-		target, err := os.Readlink(next)
-		if err != nil {
-			break
-		}
-		if !filepath.IsAbs(target) {
-			target = filepath.Join(dir, target)
-		}
-		root = filepath.VolumeName(target) + string(filepath.Separator)
-		dir, rest = root, append(splitPath(strings.TrimPrefix(filepath.Clean(target), root)), rest...)
-	}
-	return dirs
-}
-
-// maxLinkHops bounds linkDirs like the kernel's own symlink limit, so a link
-// loop ends.
-const maxLinkHops = 40
-
-func splitPath(p string) []string {
-	var parts []string
-	for part := range strings.SplitSeq(p, string(filepath.Separator)) {
-		if part != "" {
-			parts = append(parts, part)
-		}
-	}
-	return parts
-}
-
 // nearestExistingDir returns dir, or its closest ancestor that exists.
 func nearestExistingDir(dir string) string {
 	for {
@@ -251,10 +316,11 @@ func nearestExistingDir(dir string) string {
 }
 
 // owner returns the declared path an event on name affects directly: name is
-// that path or its current symlink target.
+// where that path's last name sits, its current target, or the path as
+// declared.
 func (w *fileWatch) owner(name string) (string, bool) {
 	for _, p := range w.declared {
-		if name == p || name == w.resolved[p] {
+		if r := w.paths[p]; name == r.entry || name == r.target || name == filepath.Clean(p) {
 			return p, true
 		}
 	}
@@ -267,11 +333,7 @@ func (w *fileWatch) owner(name string) (string, bool) {
 // the first step of a symlink swap, a directory on the way to a declared
 // path, or an unrelated sibling file — decided after the debounce, in settle.
 func (w *fileWatch) observe(ev fsnotify.Event) {
-	absName, err := filepath.Abs(ev.Name)
-	if err != nil {
-		return
-	}
-	if p, ok := w.owner(absName); ok && ev.Op&(fsnotify.Write|fsnotify.Create|fsnotify.Remove|fsnotify.Rename) != 0 {
+	if p, ok := w.owner(filepath.Clean(ev.Name)); ok && ev.Op&(fsnotify.Write|fsnotify.Create|fsnotify.Remove|fsnotify.Rename) != 0 {
 		w.pendingDirect = p
 	}
 	now := time.Now()
@@ -302,8 +364,8 @@ func (w *fileWatch) settle() (path string, changed bool, err error) {
 	path = w.pendingDirect
 	w.pendingDirect = ""
 	w.burstStart = time.Time{}
-	movedFrom, movedTo, moved := w.refreshResolved()
-	appeared, err := w.reconcile()
+	movedFrom, movedTo, moved := w.refresh()
+	shifted, err := w.reconcile()
 
 	if moved {
 		w.logger.Debug("config file symlink target changed",
@@ -314,7 +376,7 @@ func (w *fileWatch) settle() (path string, changed bool, err error) {
 		return path, true, err
 	case moved:
 		return movedTo, true, err
-	case appeared:
+	case shifted:
 		return "", true, err
 	default:
 		// Events fired but nothing we read moved — a sibling file in a
@@ -323,16 +385,30 @@ func (w *fileWatch) settle() (path string, changed bool, err error) {
 	}
 }
 
-// refreshResolved re-resolves every declared path and records new targets.
-// Reports the last move observed, if any.
-func (w *fileWatch) refreshResolved() (from, to string, moved bool) {
-	for _, path := range w.declared {
-		was, now := w.resolved[path], resolveTarget(path)
-		if now == was {
-			continue
+// recheck is settle with no event to prompt it, for a change no watched
+// directory reports. It does nothing while a burst is pending: that burst's
+// settle is due anyway.
+func (w *fileWatch) recheck() (path string, changed bool, err error) {
+	if !w.burstStart.IsZero() {
+		return "", false, nil
+	}
+	return w.settle()
+}
+
+// refresh re-resolves every declared path and reports the last target move
+// observed. A path that does not resolve keeps its last target: one dangling
+// for a moment mid-swap must not read as moving away and back, reloading
+// twice for one swap.
+func (w *fileWatch) refresh() (from, to string, moved bool) {
+	for _, p := range w.declared {
+		was, now := w.paths[p], resolvePath(p)
+		if now.target == "" {
+			now.target = was.target
 		}
-		w.resolved[path] = now
-		from, to, moved = was, now, true
+		w.paths[p] = now
+		if now.target != was.target {
+			from, to, moved = was.target, now.target, true
+		}
 	}
 	return from, to, moved
 }
@@ -340,16 +416,4 @@ func (w *fileWatch) refreshResolved() (from, to string, moved bool) {
 func (w *fileWatch) close() error {
 	w.timer.Stop()
 	return w.watcher.Close()
-}
-
-// resolveTarget returns path with symlinks resolved, or path itself when it
-// cannot be resolved. Returning the input on failure is deliberate: a path
-// that is briefly dangling mid-swap must not read as "the target changed" on
-// the way out and again on the way back, which would reload twice for one swap.
-func resolveTarget(path string) string {
-	target, err := filepath.EvalSymlinks(path)
-	if err != nil {
-		return path
-	}
-	return target
 }

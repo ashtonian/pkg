@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/go-viper/mapstructure/v2"
+	"github.com/knadh/koanf/parsers/yaml"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -155,4 +156,52 @@ func TestSplitDecodeName(t *testing.T) {
 		_, ok := splitDecodeName(bad)
 		assert.False(t, ok, bad)
 	}
+}
+
+// A struct squashed into its parent keeps its sensitive tag over the fields
+// it contributes.
+func TestLoad_DecodeErrorWithholdsThroughSquash(t *testing.T) {
+	type inner struct {
+		Rotated time.Time `koanf:"rotated"`
+	}
+	type cfg struct {
+		Inner inner `koanf:",squash" sensitive:"true"`
+	}
+	_, err := Load[cfg](t.Context(), WithDefaults(map[string]any{"rotated": leaked}), WithSkipValidation())
+	require.ErrorIs(t, err, ErrValidation)
+	assert.NotContains(t, err.Error(), leaked)
+	assert.Contains(t, err.Error(), "'rotated'")
+}
+
+// nestedDecode decodes itself with a decode of its own, whose errors carry
+// names relative to it.
+type nestedDecode struct {
+	Rows []struct {
+		Token time.Time `koanf:"token"`
+	} `koanf:"rows"`
+}
+
+func (v *nestedDecode) UnmarshalMapstructure(input any) error {
+	type raw nestedDecode
+	d, err := mapstructure.NewDecoder(&mapstructure.DecoderConfig{
+		TagName: "koanf", Result: (*raw)(v), DecodeHook: mapstructure.TextUnmarshallerHookFunc(),
+	})
+	if err != nil {
+		return err
+	}
+	return fmt.Errorf("nested conversion: %w", d.Decode(input))
+}
+
+// A failure on a field whose type could hold a sensitive value anywhere
+// beneath it — here a slice of structs with a token — is withheld whole.
+func TestLoad_DecodeErrorWithholdsANestedDecode(t *testing.T) {
+	type cfg struct {
+		Block nestedDecode `koanf:"block"`
+	}
+	_, err := Load[cfg](t.Context(),
+		WithBaseProvider(rawBytes("block:\n  rows:\n    - token: "+leaked+"\n"), yaml.Parser()), WithSkipValidation())
+	require.ErrorIs(t, err, ErrValidation)
+	assert.NotContains(t, err.Error(), leaked)
+	assert.Contains(t, err.Error(), "'block'")
+	assert.Contains(t, err.Error(), "may hold a sensitive value")
 }

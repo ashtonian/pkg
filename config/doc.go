@@ -46,6 +46,11 @@
 // variable that fits two keys fails the load with [ErrValidation] naming both;
 // one that fits none is not loaded. [WithEnviron] replaces os.Environ.
 //
+// Keys match fields regardless of letter case, as decoding does; each
+// source's keys are rewritten into the fields' spelling before the sources
+// merge, so precedence holds whatever case a source used. An element
+// struct's default tags apply to every map entry and slice element.
+//
 // # Pipeline
 //
 //	merge → decode → secrets (WithSecretPopulator) → post-load (WithPostLoad) → validate
@@ -63,8 +68,11 @@
 // [ErrFileParse], [ErrSource], [ErrSecretProvider], [ErrPostLoad], and for a
 // reload [ErrReload], [ErrReloadInProgress], [ErrReloaderStopped] — together
 // with its cause, so errors.Is and errors.As reach either. The package defines
-// no error codes; map the categories to your own. No error quotes a value
-// meant for a sensitive field.
+// no error codes; map the categories to your own. The errors it writes never
+// quote a value: a decode failure on a field that is, or could hold, a
+// sensitive value names the field and type only, and a [ParseError] names the
+// source and line only. Errors your providers, secret populator, hooks and
+// validator return pass through as written.
 //
 // # Hot Reload
 //
@@ -80,8 +88,16 @@
 //	if err := reloader.Arm(ctx); err != nil {
 //	    return err // a trigger cannot be delivered, e.g. an unwatchable directory
 //	}
-//	go reloader.Run(ctx)
-//	defer reloader.Stop(shutdownCtx)
+//	go func() {
+//	    if err := reloader.Run(ctx); err != nil {
+//	        logger.Error("config reloader ended", "error", err)
+//	    }
+//	}()
+//	defer func() {
+//	    if err := reloader.Stop(shutdownCtx); err != nil {
+//	        logger.Warn("config reloader did not stop in time", "error", err)
+//	    }
+//	}()
 //
 //	cfg := reloader.Config() // one atomic load
 //
@@ -97,8 +113,9 @@
 // # File Watch Limits
 //
 // [WithFileWatch] detects direct writes, rename-based saves, symlink swaps of
-// the file or of any directory on its path, and directories removed and
-// recreated — including Kubernetes ConfigMap and Secret volume updates. It
+// the file or of any directory on its path, and directories removed,
+// recreated or replaced further up — including Kubernetes ConfigMap and
+// Secret volume updates. Paths resolve as the kernel resolves them. It
 // cannot detect sources with no filesystem event (env vars, providers) — use
 // [WithPollInterval] or SourceChanged — or, on macOS and BSD only, a relink
 // whose sole trace is a temporary name renamed away, which polling catches. A
@@ -111,5 +128,6 @@
 // redacted: tagged sensitive:"true", beneath such a field, named like a
 // credential, or under such a map key. [PrintUsage] lists every key an
 // operator can set with its environment variable, type, default and
-// description.
+// description; a default that is, or could hold, a sensitive value is
+// withheld ([Field.PrintableDefault]).
 package config

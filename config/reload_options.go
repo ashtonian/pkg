@@ -97,6 +97,12 @@ func WithOnReloadError(fn func(trigger string, err error)) ReloadOption {
 // file or of any directory on its path, and a directory removed and recreated
 // — including Kubernetes ConfigMap and Secret volume updates, where the
 // watched path is a symlink into `..data` and the leaf file is never written.
+// Paths resolve as the kernel resolves them, ".." after a symlink included,
+// so the watch follows the file the loader opens. Every four debounce
+// windows (at least every second) the watch also re-verifies, with no event
+// to prompt it, that it covers the directories at their paths: an ancestor
+// directory renamed away and recreated sends no event to the old tree's
+// watch, and is caught this way.
 //
 // NOT detected:
 //

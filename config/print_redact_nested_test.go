@@ -8,6 +8,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 )
 
 // TestRedaction_NestedCompositeSecrets pins the fix for secrets nested inside a
@@ -119,5 +120,22 @@ func TestRedactedMap_RecursiveSliceType(t *testing.T) {
 	want := map[string]string{"rows[0]": "[]", "rows[1][0]": "[]"}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("RedactedMap = %v, want %v", got, want)
+	}
+}
+
+// A pointer that leads back to itself through an interface prints [CYCLE]
+// instead of looping.
+func TestRedactedMap_PointerInterfaceCycle(t *testing.T) {
+	var value any
+	value = &value
+	done := make(chan map[string]string, 1)
+	go func() { done <- RedactedMap(struct{ Value any }{Value: value}) }()
+	select {
+	case got := <-done:
+		if got["value"] != cycleValue {
+			t.Fatalf("RedactedMap = %v, want value %s", got, cycleValue)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("RedactedMap did not return on a pointer cycle")
 	}
 }

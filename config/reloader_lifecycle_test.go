@@ -81,7 +81,7 @@ func eventually(t *testing.T, cond func() bool, what string) {
 	}
 }
 
-// startReloader runs r.Start in the background and stops it at cleanup.
+// runReloader runs r.Run in the background and stops it at cleanup.
 func runReloader[T any](t *testing.T, r *Reloader[T]) <-chan error {
 	t.Helper()
 	done := make(chan error, 1)

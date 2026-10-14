@@ -119,8 +119,8 @@ func WithOverridesFromTags[T any](ctx *kong.Context) config.Option {
 // HelpFromTags returns a Kong option that describes each flag a `flag` tag
 // on T names: a flag with no help of its own takes the field's `desc` tag,
 // and every such flag's help gains the config key it sets, the environment
-// variable that sets the same key under envPrefix, and the field's default —
-// withheld for a sensitive field. Kong fails to build the CLI when a `flag`
+// variable that sets the same key under envPrefix, and the field's default
+// when diagnostics may print it (see config.Field.PrintableDefault). Kong fails to build the CLI when a `flag`
 // tag names no flag, or when two fields name one flag.
 //
 // Declare no defaults and no `required` on the CLI's own flags: a flag the
@@ -156,7 +156,7 @@ func HelpFromTags[T any](envPrefix string) kong.Option {
 			if env := f.EnvVar(envPrefix); env != "" {
 				hints = append(hints, "env: "+env)
 			}
-			if def, ok := f.Tag.Lookup("default"); ok && !f.Sensitive {
+			if def, ok := f.PrintableDefault(); ok {
 				hints = append(hints, "default: "+def)
 			}
 			fl.Help = strings.TrimSpace(fl.Help + " (" + strings.Join(hints, "; ") + ")")

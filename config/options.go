@@ -7,6 +7,7 @@ import (
 	"maps"
 	"os"
 	"reflect"
+	"slices"
 
 	"github.com/go-viper/mapstructure/v2"
 	"github.com/knadh/koanf/parsers/yaml"
@@ -173,8 +174,8 @@ func WithEnviron(environ func() []string) Option {
 // WithDefaults adds programmatic default values keyed by koanf dot-path
 // (e.g. "server.port"); they override `default` tags. Repeated calls merge,
 // a later call winning on a shared key. The values are deep-copied when
-// WithDefaults is called — every map, slice, array and pointer target
-// reachable through exported fields — so changing the caller's data
+// WithDefaults is called — every map key and value, slice, array and pointer
+// target reachable through exported fields — so changing the caller's data
 // afterwards changes nothing, including what a Reloader built from the
 // option reads later. Unexported struct fields, channels and functions are
 // copied by value.
@@ -225,11 +226,14 @@ func WithDecodeHook(hook mapstructure.DecodeHookFunc) Option {
 }
 
 // WithStrictKeys fails the load with [ErrValidation] when a config file,
-// provider or WithDefaults sets a key no field of the config type decodes —
-// a typo, or a setting that was removed — naming each such key and its
-// source. Keys beneath a map, an interface or a struct with a
-// koanf:",remain" field are always accepted. An environment variable that
-// fits no key is never loaded, so it cannot fail a strict load.
+// provider or WithDefaults sets a key decoding would ignore — a typo, or a
+// setting that was removed — naming each such key (server.prot,
+// items[0].prot, named[primary].prot) and its source. Keys are followed the
+// way decoding follows them: into slice elements and map entries of structs,
+// through squashed structs, and past a value a decode hook turns into
+// something without keys. A map's own keys, anything beneath an interface,
+// and keys a koanf:",remain" field collects are accepted. An environment
+// variable that fits no key is never loaded, so it cannot fail a strict load.
 func WithStrictKeys() Option {
 	return func(o *options) {
 		o.strictKeys = true
@@ -294,6 +298,18 @@ func WithLogger(logger *slog.Logger) Option {
 	return func(o *options) {
 		o.logger = logger
 	}
+}
+
+// decodeHook composes the caller's decode hooks, first, with the built-in
+// ones: string → time.Duration, comma-separated string → slice (koanf's
+// defaults do not split env values and tag defaults), TextUnmarshaler.
+func (o *options) decodeHook() mapstructure.DecodeHookFunc {
+	hooks := append(slices.Clone(o.decodeHooks),
+		mapstructure.StringToTimeDurationHookFunc(),
+		mapstructure.StringToSliceHookFunc(","),
+		mapstructure.TextUnmarshallerHookFunc(),
+	)
+	return mapstructure.ComposeDecodeHookFunc(hooks...)
 }
 
 // checkHookTypes reports a post-load hook written for a type other than cfg.

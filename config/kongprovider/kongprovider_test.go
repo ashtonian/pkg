@@ -470,3 +470,18 @@ func TestLoad_NegatedFlagBeatsFile(t *testing.T) {
 		t.Error("feature = true, want false: --no-feature must override the file")
 	}
 }
+
+// A default whose type can hold sensitive entries stays out of the help.
+func TestHelpFromTags_WithholdsCompositeDefault(t *testing.T) {
+	type cfg struct {
+		Settings map[string]string `koanf:"settings" flag:"settings" default:"{\"password\":\"FAKE_SECRET_VALUE\"}"`
+	}
+	var cli struct{ Settings map[string]string }
+	parser, err := kong.New(&cli, HelpFromTags[cfg]("APP"))
+	require.NoError(t, err)
+	for _, fl := range parser.Model.Flags {
+		if fl.Name == "settings" {
+			assert.Equal(t, "(config: settings; env: APP_SETTINGS)", fl.Help)
+		}
+	}
+}

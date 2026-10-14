@@ -1,6 +1,6 @@
 # config/kongprovider
 
-Brings [Kong](https://github.com/alecthomas/kong) CLI flags into [`config`](../README.md) as its highest-precedence source, and describes the config struct in Kong's help. Only flags the user typed are forwarded — in any spelling Kong accepts — so Kong defaults never mask a config file or an environment variable; the config struct's `default` tags, `desc` tags and validation stay the single schema. A separate module, so the core package does not depend on Kong.
+Brings [Kong](https://github.com/alecthomas/kong) CLI flags into [`config`](https://github.com/ashtonian/pkg/blob/main/config/README.md) as its highest-precedence source, and describes the config struct in Kong's help. Only flags the user typed are forwarded — in any spelling Kong accepts — so Kong defaults never mask a config file or an environment variable; the config struct's `default` tags, `desc` tags and validation stay the single schema. A separate module, so the core package does not depend on Kong.
 
 ## Quick Start
 
@@ -93,7 +93,7 @@ Mapped values unflatten into the key tree, so a flag mapped to `listeners.tcp` o
 
 A mapping that names a flag the CLI does not have — a typo, or a flag since renamed — fails the load with `config.ErrSource` naming it, instead of silently never applying; two fields tagged with one flag name fail it too.
 
-`HelpFromTags` is a `kong.PostBuild` option. For every flag a `flag` tag names, a flag with no help of its own takes the field's `desc`, and the help gains `(config: <key>; env: <PREFIX_KEY>; default: <default>)`, the default withheld for a sensitive field. Kong refuses to build the CLI when a `flag` tag names no flag or two fields share one.
+`HelpFromTags` is a `kong.PostBuild` option. For every flag a `flag` tag names, a flag with no help of its own takes the field's `desc`, and the help gains `(config: <key>; env: <PREFIX_KEY>; default: <default>)`, the default left out when it is, or could hold, a sensitive value (`config.Field.PrintableDefault`). Kong refuses to build the CLI when a `flag` tag names no flag or two fields share one.
 
 ## Rules for the CLI struct
 
@@ -133,5 +133,5 @@ For a CLI tool whose config file only supplies flag defaults, Kong's own `kong.C
 
 ## References
 
-- Parent: [`config`](../README.md) § Kong integration
+- Parent: [`config`](https://github.com/ashtonian/pkg/blob/main/config/README.md) § Kong integration
 - [Kong](https://github.com/alecthomas/kong) — the CLI library
