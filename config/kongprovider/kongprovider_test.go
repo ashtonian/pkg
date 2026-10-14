@@ -301,6 +301,28 @@ func TestWithOverridesFromStruct_CopiesTypedValues(t *testing.T) {
 	assert.Equal(t, []string{"a", "b"}, cfg.Tags)
 }
 
+// A flag whose target is a pointer is copied through the pointer: a change
+// to what it points at after the option is built does not reach the load.
+func TestWithOverridesFromStruct_CopiesThroughPointers(t *testing.T) {
+	type cfg struct {
+		Port *int `koanf:"port" name:"port"`
+	}
+	var cli struct {
+		Config cfg `embed:""`
+	}
+	parser, err := kong.New(&cli)
+	require.NoError(t, err)
+	kctx, err := parser.Parse([]string{"--port", "8080"})
+	require.NoError(t, err)
+	opt := WithOverridesFromStruct(kctx, &cli.Config)
+	*cli.Config.Port = 9090
+	snap, err := config.LoadSnapshot[cfg](context.Background(), opt, config.WithSkipValidation())
+	require.NoError(t, err)
+	require.NotNil(t, snap.Config.Port)
+	assert.Equal(t, 8080, *snap.Config.Port)
+	assert.Equal(t, config.Source{Kind: config.SourceFlag, Name: "--port"}, snap.Provenance["port"].Input)
+}
+
 func TestWithOverridesFromStruct_RootOutsideTheCLIFailsTheLoad(t *testing.T) {
 	_, _, kctx := parseEmbedding(t)
 	var detached embeddedCfg

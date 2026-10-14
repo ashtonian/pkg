@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"reflect"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -28,8 +29,9 @@ const JSONSchemaDraft = "https://json-schema.org/draft/2020-12/schema"
 //     any letter case, and a value of another scalar type it can decode
 //     weakly ("8080" for a number), neither of which the schema allows.
 //   - Translated rules: min, max, len, gt, gte, lt, lte and eq on numbers,
-//     string lengths and collection sizes; oneof as an enum, and eq on a
-//     string as a const. Every rule's name, translated or not, is listed in
+//     string lengths and collection sizes; oneof as an enum on strings and
+//     integers, read as the validator reads it, and eq on a string as a
+//     const. Every rule's name, translated or not, is listed in
 //     x-config-validation; an operand appears only where a rule is
 //     translated.
 //   - A sensitive key is writeOnly. It, and any key that could hold a
@@ -38,7 +40,8 @@ const JSONSchemaDraft = "https://json-schema.org/draft/2020-12/schema"
 //   - A duration is a string such as "30s"; a type that decodes itself is
 //     described by its Go type in x-config-type, unconstrained, or as a
 //     string when it decodes from text.
-//   - A struct a type holds within itself is a $defs entry, referenced.
+//   - A struct a type holds within itself is a $defs entry, referenced by
+//     a name made of its Go type's: letters, digits, '.', '_' and '-'.
 //
 // The output is deterministic: properties sort by key. T that is not a
 // struct, or whose keys cannot be told apart, is an ErrSchema error.
@@ -48,7 +51,7 @@ func JSONSchema[T any]() (json.RawMessage, error) {
 	if err != nil {
 		return nil, err
 	}
-	g := &schemaGen{defs: map[string]any{}, recursive: recursiveNodes(root)}
+	g := &schemaGen{defs: map[string]any{}, recursive: recursiveNodes(root), names: map[*schemaNode]string{}, taken: map[string]bool{}}
 	defaults, err := decodedDefaults(derefType(t))
 	if err != nil {
 		return nil, err
@@ -70,6 +73,31 @@ type schemaGen struct {
 	defs      map[string]any
 	recursive map[*schemaNode]bool
 	defining  map[*schemaNode]bool
+	names     map[*schemaNode]string // each $defs entry's name
+	taken     map[string]bool
+}
+
+// defName is the $defs name of n: its Go type's name with every character
+// but letters, digits, '.', '_' and '-' made '_', so it is one JSON Pointer
+// token and a URI fragment as written, and numbered when another type
+// already took it.
+func (g *schemaGen) defName(n *schemaNode) string {
+	if name, ok := g.names[n]; ok {
+		return name
+	}
+	base := strings.Map(func(r rune) rune {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9', r == '.', r == '_', r == '-':
+			return r
+		}
+		return '_'
+	}, n.typ.String())
+	name := base
+	for i := 2; g.taken[name]; i++ {
+		name = base + "_" + strconv.Itoa(i)
+	}
+	g.names[n], g.taken[name] = name, true
+	return name
 }
 
 // recursiveNodes finds the struct nodes a type reaches again from within
@@ -126,12 +154,20 @@ func (g *schemaGen) object(n *schemaNode, c cursor, val reflect.Value) map[strin
 }
 
 // acceptsUnknownKeys reports a struct with a koanf:",remain" field, which
-// collects the keys no other field takes.
+// collects the keys no other field takes — its own, or one of a struct it
+// squashes, as decoding finds it.
 func acceptsUnknownKeys(t reflect.Type) bool {
 	for i := range t.NumField() {
-		_, opts, _ := strings.Cut(t.Field(i).Tag.Get("koanf"), ",")
-		if slices.Contains(strings.Split(opts, ","), "remain") {
+		f := t.Field(i)
+		_, opts, _ := strings.Cut(f.Tag.Get("koanf"), ",")
+		tagOpts := strings.Split(opts, ",")
+		switch {
+		case slices.Contains(tagOpts, "remain"):
 			return true
+		case slices.Contains(tagOpts, "squash") && f.IsExported():
+			if st := derefType(f.Type); st.Kind() == reflect.Struct && acceptsUnknownKeys(st) {
+				return true
+			}
 		}
 	}
 	return false
@@ -185,7 +221,7 @@ func (g *schemaGen) node(n *schemaNode, c cursor, val reflect.Value) map[string]
 	switch n.kind {
 	case nodeBranch:
 		if g.recursive[n] {
-			name := n.typ.String()
+			name := g.defName(n)
 			if _, ok := g.defs[name]; !ok && !g.defining[n] {
 				if g.defining == nil {
 					g.defining = map[*schemaNode]bool{}
@@ -320,7 +356,7 @@ func translateRule(s map[string]any, n *schemaNode, name, param string) {
 	}
 	switch {
 	case name == "oneof" && (kind == "string" || kind == "number"):
-		if enum, ok := enumOf(param, s["type"].(string)); ok {
+		if enum, ok := enumOf(param, s["type"].(string)); ok && len(enum) > 0 {
 			s["enum"] = enum
 		}
 		return
@@ -368,26 +404,31 @@ func translateRule(s map[string]any, n *schemaNode, name, param string) {
 	}
 }
 
-// enumOf is a oneof rule's space-separated values as JSON values of typ.
+// enumOf is a oneof rule's values as JSON values of typ, read as the
+// validator reads them: words, or quoted runs that may hold spaces, every
+// quote removed. An integer matches only its decimal text, so a value
+// spelled otherwise ("05", "+5") is one nothing matches and is left out. The
+// validator compares only strings and integers: on any other type the rule
+// is not translated.
 func enumOf(param, typ string) ([]any, bool) {
 	var out []any
-	for word := range strings.FieldsSeq(param) {
+	for _, word := range oneofValues.FindAllString(param, -1) {
+		word = strings.ReplaceAll(word, "'", "")
 		switch typ {
 		case "string":
-			out = append(out, strings.Trim(word, "'"))
+			out = append(out, word)
 		case "integer":
-			i, err := strconv.ParseInt(word, 10, 64)
-			if err != nil {
-				return nil, false
+			if i, err := strconv.ParseInt(word, 10, 64); err == nil && strconv.FormatInt(i, 10) == word {
+				out = append(out, i)
+			} else if u, err := strconv.ParseUint(word, 10, 64); err == nil && strconv.FormatUint(u, 10) == word {
+				out = append(out, u)
 			}
-			out = append(out, i)
 		default:
-			f, err := strconv.ParseFloat(word, 64)
-			if err != nil {
-				return nil, false
-			}
-			out = append(out, f)
+			return nil, false
 		}
 	}
-	return out, len(out) > 0
+	return out, true
 }
+
+// oneofValues splits a oneof rule's parameter as the validator does.
+var oneofValues = regexp.MustCompile(`'[^']*'|\S+`)

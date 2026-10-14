@@ -113,7 +113,7 @@ $ app --help
 
 Kong records every flag it parses from argv as an element of `kong.Context.Path`, under the flag's canonical name whatever spelling was typed — long, short, alias, `--flag=value`, or negated `--no-flag` — with the value already applied. Values supplied by Kong resolvers are marked `Resolved`, defaults never appear, and tokens after `--` are positional. `New` forwards exactly the unresolved flag elements it has a mapping for. `Flag.Set` is not used: Kong sets it for applied defaults too.
 
-`WithOverridesFromStruct(kctx, &cli.AppConfig)` takes the config struct inside the parsed CLI struct — embedded, named, or the CLI struct itself — and maps each typed flag whose target is a field of it to that field's key, through `config.KeyOfValue`: by the field's address, so a flag's name, prefix or alias never has to agree with anything, and a sibling command's flag with the same name cannot reach a config key. Flags outside it, such as `--config`, are the CLI's own and are not forwarded. The typed values are copied when the option is built, so a reloader built from it keeps the command line it started with. A pointer that no flag of the CLI writes into fails the load with `config.ErrSource`.
+`WithOverridesFromStruct(kctx, &cli.AppConfig)` takes the config struct inside the parsed CLI struct — embedded, named, or the CLI struct itself — and maps each typed flag whose target is a field of it to that field's key, through `config.KeyOfValue`: by the field's address, so a flag's name, prefix or alias never has to agree with anything, and a sibling command's flag with the same name cannot reach a config key. Flags outside it, such as `--config`, are the CLI's own and are not forwarded. The typed values are copied deeply when the option is built — through pointers, slices and maps — so a reloader built from it keeps the command line it started with, whatever later writes to the flags' targets. A pointer that no flag of the CLI writes into fails the load with `config.ErrSource`.
 
 Mapped values unflatten into the key tree, so a flag for `db.host` overrides that nested key. The provider loads through `config.WithOverrideProvider`, above the environment. It is a `config.OriginProvider`: in a snapshot with provenance (`config.LoadSnapshot`, a reloader `WithProvenance`), each value it set is attributed to its flag by canonical name — `flag --db-host`, however it was typed — rather than to "override provider 0".
 
@@ -149,7 +149,7 @@ When the CLI exposes only a few settings under names of its own, keep the struct
 
 | File | Responsibility |
 |------|----------------|
-| `kongprovider.go` | `New`, `WithOverrides`, `WithOverridesFromStruct`, `HelpFromConfig`; flags mapped to keys by the field they write (`config.KeyOfValue`), typed values copied, each value's flag named for provenance |
+| `kongprovider.go` | `New`, `WithOverrides`, `WithOverridesFromStruct`, `HelpFromConfig`; flags mapped to keys by the field they write (`config.KeyOfValue`), typed values copied deeply, each value's flag named for provenance |
 | `examples/cli/main.go` | The Quick Start program: an embedded config struct, a flag group, subcommands, `print`, `usage` and `template` commands |
 | `go.mod`, `LICENSE` | The module (requires the parent at its release version) and its Apache-2.0 license |
 

@@ -91,8 +91,13 @@
 //	    []config.Option{config.WithFile("config.yaml"), config.WithEnvPrefix("APP")},
 //	    config.WithFileWatch(0), // 0 = DefaultFileWatchDebounce
 //	    config.WithSignalReload(syscall.SIGHUP),
-//	    config.WithOnReloadSuccess(func(ctx context.Context, ev config.ReloadEvent[AppConfig]) {
-//	        server.SetTimeout(ev.New.Timeout) // ev.Result.Changes names every key that changed
+//	    config.WithApplier(config.Applier[AppConfig]{
+//	        Name:     "server",
+//	        Prefixes: []string{"timeout"},
+//	        Apply: func(ctx context.Context, ev config.ApplyEvent[AppConfig]) (config.ApplyResult, error) {
+//	            server.SetTimeout(ev.Desired.Timeout) // ev.Changes names what it owes
+//	            return config.ApplyResult{}, nil
+//	        },
 //	    }),
 //	)
 //	if err != nil {

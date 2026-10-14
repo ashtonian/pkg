@@ -4,6 +4,8 @@ package config
 
 import (
 	"encoding/json"
+	"net/url"
+	"strings"
 	"testing"
 	"time"
 
@@ -184,4 +186,55 @@ func TestJSONSchema_DeterministicAndRefusesNonStructs(t *testing.T) {
 
 	_, err = JSONSchema[int]()
 	require.ErrorIs(t, err, ErrSchema)
+}
+
+type schemaGenericTree[T any] struct {
+	Next  *schemaGenericTree[T] `koanf:"next"`
+	Value T                     `koanf:"value"`
+}
+
+type schemaGenericCfg struct {
+	Tree schemaGenericTree[url.URL] `koanf:"tree"`
+}
+
+// A definition's name is one JSON Pointer token and a URI fragment as
+// written, whatever its Go type's name holds.
+func TestJSONSchema_DefinitionNamesResolve(t *testing.T) {
+	doc := jsonSchemaOf[schemaGenericCfg](t)
+	defs, ok := doc["$defs"].(map[string]any)
+	require.True(t, ok)
+	require.Len(t, defs, 1)
+	for name := range defs {
+		assert.Regexp(t, `^[A-Za-z0-9._-]+$`, name)
+	}
+	ref, ok := prop(t, doc, "tree")["$ref"].(string)
+	require.True(t, ok)
+	assert.Contains(t, defs, strings.TrimPrefix(ref, "#/$defs/"))
+}
+
+type SchemaRemain struct {
+	Other map[string]any `koanf:",remain"`
+}
+
+type schemaSquashedRemain struct {
+	SchemaRemain `koanf:",squash"`
+}
+
+type schemaQuotedOneOf struct {
+	Mode  string  `koanf:"mode" validate:"oneof='hello world' goodbye"`
+	Count int     `koanf:"count" validate:"oneof=1 05 +7 8"`
+	Ratio float64 `koanf:"ratio" validate:"oneof=0.5 1"`
+}
+
+// Rules are read as the validator reads them: quoted values keep their
+// spaces, an integer matches only its decimal text, and a remain field a
+// squashed struct holds opens the object.
+func TestJSONSchema_RulesAsTheValidatorReadsThem(t *testing.T) {
+	doc := jsonSchemaOf[schemaQuotedOneOf](t)
+	assert.Equal(t, []any{"hello world", "goodbye"}, prop(t, doc, "mode")["enum"])
+	assert.Equal(t, []any{1.0, 8.0}, prop(t, doc, "count")["enum"])
+	assert.NotContains(t, prop(t, doc, "ratio"), "enum", "the validator does not compare floats")
+
+	doc = jsonSchemaOf[schemaSquashedRemain](t)
+	assert.Equal(t, true, doc["additionalProperties"])
 }
