@@ -2,7 +2,7 @@
 
 [![Go Reference](https://pkg.go.dev/badge/github.com/ashtonian/pkg/config.svg)](https://pkg.go.dev/github.com/ashtonian/pkg/config)
 
-Typed configuration for long-running Go services, declared as one tagged Go struct and built on [koanf](https://github.com/knadh/koanf). The struct is the schema: six tags give each field its key, default, rules, description and secrecy, and every feature reads them. Every config, at boot and on every reload, goes through the same pipeline: merge the sources, decode, resolve secrets, normalize, validate.
+Typed configuration for long-running Go services, declared as one tagged Go struct and built on [koanf](https://github.com/knadh/koanf). The struct is the schema: its tags give each field its key, former names, variables, default, example, rules, description and secrecy, and every feature reads them. Every config, at boot and on every reload, goes through the same pipeline: merge the sources, decode, resolve secrets, normalize, validate.
 
 ```go
 type DBConfig struct {
