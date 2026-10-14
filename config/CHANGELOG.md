@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.4.0](https://github.com/ashtonian/pkg/compare/config/v0.3.1...config/v0.4.0) (2026-10-14)
+
+
+### Features
+
+* **config:** Decode runs a map through the load pipeline ([2b8f49e](https://github.com/ashtonian/pkg/commit/2b8f49e3a6c106c1d4f658963c3bd643305eee69))
+* **config:** format:"json" lets one variable set a section, map or list as JSON ([54d2aff](https://github.com/ashtonian/pkg/commit/54d2aff4a657d69378052886be1626c159815a29))
+
+
+### Bug Fixes
+
+* **config:** attribute keys beneath a variable set whole to that variable ([9d40559](https://github.com/ashtonian/pkg/commit/9d40559d8687ceeade2351c1311a24ea50d62123))
+
 ## [0.3.1](https://github.com/ashtonian/pkg/compare/config/v0.3.0...config/v0.3.1) (2026-10-14)
 
 
