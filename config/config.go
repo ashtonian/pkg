@@ -61,6 +61,26 @@ func Load[T any](ctx context.Context, opts ...Option) (*T, error) {
 	return l.cfg, err
 }
 
+// Decode builds a T from data — nested maps keyed by field key, as a parsed
+// document or a plugin's settings block holds them — through the pipeline
+// Load runs: tag defaults beneath it, aliases and separators, strict keys,
+// decode hooks, secrets, post-load hooks and validation. data loads as a base
+// provider and is copied; opts add to the load as they add to Load's, and a
+// source they add loads above data.
+//
+//	type Plugin struct {
+//	    Name    string        `koanf:"name" validate:"required"`
+//	    Timeout time.Duration `koanf:"timeout" default:"5s"`
+//	}
+//	p, err := config.Decode[Plugin](ctx, map[string]any{"name": "audit"})
+func Decode[T any](ctx context.Context, data map[string]any, opts ...Option) (*T, error) {
+	src, err := NewMapProvider(func(context.Context) (map[string]any, error) { return data, nil }, "")
+	if err != nil {
+		return nil, err
+	}
+	return Load[T](ctx, append([]Option{WithBaseProvider(src, nil)}, opts...)...)
+}
+
 // ContextProvider is a koanf.Provider whose reads take a context. A provider
 // given to [WithBaseProvider] or [WithOverrideProvider] that implements it is
 // read through ReadContext or ReadBytesContext with the load's context, so a

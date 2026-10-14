@@ -559,6 +559,14 @@ cfg, err := config.Load[AppConfig](ctx,
 )
 ```
 
+## Decoding a map
+
+`Decode[T](ctx, data, opts...)` runs a map you already hold — a plugin's settings block, a parsed document, a test fixture — through the same pipeline as `Load`: tag defaults beneath it, aliases and separators, strict keys, decode hooks, secrets, post-load hooks and validation. `data` loads as a base provider, so a file, variable or flag that `opts` add loads above it.
+
+```go
+plugin, err := config.Decode[PluginConfig](ctx, settings["audit"].(map[string]any))
+```
+
 ## Keeping an existing koanf loader
 
 A service that already loads with koanf can take the reload lifecycle alone: hand its loader to `NewReloaderFunc` and name the files it reads.
