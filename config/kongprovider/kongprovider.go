@@ -176,10 +176,17 @@ func WithOverridesFromStruct[T any](ctx *kong.Context, cfg *T) config.Option {
 // HelpFromConfig returns a Kong option that describes each flag that writes
 // a field of cfg. A flag with no help of its own takes the field's `desc`
 // tag, and its help gains the config key it sets and the environment
-// variable that sets the same key under envPrefix. The field's default is
-// added when diagnostics may print it (see config.Field.PrintableDefault) and
-// Kong does not show it already; one that must be withheld is kept out of
-// Kong's own placeholder too.
+// variables that set the same key under envPrefix — its own and those its
+// `env` tag lists. The field's default is added when diagnostics may print it
+// (see config.Field.PrintableDefault) and Kong does not show it already; one
+// that must be withheld is kept out of Kong's own placeholder too.
+//
+// Kong does not read those flags' `env` tags: the config package reads the
+// variables in its environment layer, where they have their precedence and
+// a value that does not decode is reported without being quoted. Kong would
+// parse them as flag defaults before the config loads, failing — and quoting
+// the value — on a variable meant for something else, such as a Kubernetes
+// service link (REDIS_PORT=tcp://10.0.0.1:6379).
 //
 // Declare no Kong `required` on the config struct: Kong validates before the
 // config pipeline runs, so a required flag could not be satisfied by a file,
@@ -205,9 +212,10 @@ func describe(fl *kong.Flag, f config.Field, envPrefix string) {
 	if fl.Help == "" {
 		fl.Help = f.Tag.Get("desc")
 	}
+	fl.Tag.Envs, fl.Envs = nil, nil
 	hints := []string{"config: " + f.Path}
-	if env := f.EnvVar(envPrefix); env != "" {
-		hints = append(hints, "env: "+env)
+	if envs := f.EnvVars(envPrefix); len(envs) > 0 {
+		hints = append(hints, "env: "+strings.Join(envs, ", "))
 	}
 	def, printable := f.PrintableDefault()
 	switch {
