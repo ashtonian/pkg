@@ -1,8 +1,10 @@
 package config
 
 import (
+	"encoding/json"
 	"errors"
 	"reflect"
+	"slices"
 	"strings"
 )
 
@@ -34,7 +36,7 @@ func PrintEnv(cfg any, envPrefix string, opts ...PrintOption) error {
 		return err
 	}
 	prefix := strings.TrimSuffix(envPrefix, "_")
-	e := &envWriter{ew: &errWriter{w: po.writer}, root: root, schema: newEnvSchema(fieldsOf(t), prefix), prefix: prefix}
+	e := &envWriter{ew: &errWriter{w: po.writer}, root: root, schema: newEnvSchema(variableFields(t), prefix), prefix: prefix}
 	e.mapping(nil, root, (&valueTree{visiting: map[visit]bool{}}).root(cfg))
 	return e.ew.err
 }
@@ -72,6 +74,17 @@ func (e *envWriter) value(p keyPath, s *schemaNode, n *outNode) {
 			return
 		}
 		e.ew.printf("# %s is sensitive and not shown\n", p)
+	case (n.kind == outList || n.kind == outMap && s.kind != nodeBranch) && e.jsonField(p):
+		if holdsRedacted(n) {
+			e.ew.printf("# %s holds sensitive values and is not shown\n", p)
+			return
+		}
+		b, err := json.Marshal(n.plain())
+		if err != nil {
+			e.ew.printf("# %s: no JSON represents it; set it in a config file\n", p)
+			return
+		}
+		e.export(p, string(b))
 	case n.kind == outMap && (s.kind == nodeBranch || s.kind == nodeMap):
 		e.mapping(p, s, n)
 	case n.kind == outList && s.kind == nodeList && s.elem.kind != nodeBranch && scalarItems(n):
@@ -98,6 +111,24 @@ func (e *envWriter) value(p keyPath, s *schemaNode, n *outNode) {
 	default:
 		e.ew.printf("# %s: no variable sets it; set it in a config file\n", p)
 	}
+}
+
+// jsonField reports a format:"json" field at p, whose variable holds JSON.
+func (e *envWriter) jsonField(p keyPath) bool {
+	c, _, err := e.root.walkTo(cursor{}, p)
+	return err == nil && len(p) > 0 && p[len(p)-1].kind == segField && jsonFormat(c.owner.Tag)
+}
+
+func holdsRedacted(n *outNode) bool {
+	if n.redacted {
+		return true
+	}
+	for _, e := range n.entries {
+		if holdsRedacted(e.node) {
+			return true
+		}
+	}
+	return slices.ContainsFunc(n.items, holdsRedacted)
 }
 
 func scalarItems(n *outNode) bool {

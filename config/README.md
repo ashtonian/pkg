@@ -2,7 +2,7 @@
 
 [![Go Reference](https://pkg.go.dev/badge/github.com/ashtonian/pkg/config.svg)](https://pkg.go.dev/github.com/ashtonian/pkg/config)
 
-Typed configuration for long-running Go services, declared as one tagged Go struct and built on [koanf](https://github.com/knadh/koanf). The struct is the schema: its tags give each field its key, former names, variables, default, example, rules, description and secrecy, and every feature reads them. Every config, at boot and on every reload, goes through the same pipeline: merge the sources, decode, resolve secrets, normalize, validate.
+Typed configuration for long-running Go services, declared as one tagged Go struct and built on [koanf](https://github.com/knadh/koanf). The struct is the schema: its tags give each field its key, former names, variables, default, list separator, text format, example, rules, description and secrecy, and every feature reads them. Every config, at boot and on every reload, goes through the same pipeline: merge the sources, decode, resolve secrets, normalize, validate.
 
 ```go
 type DBConfig struct {
@@ -95,6 +95,7 @@ A config is a plain struct, and its tags are the whole schema: they say how each
 | `default` | The lowest-precedence value; comma-separated for a slice, `key=value` entries for a map with string keys and non-struct values, which a source's entries merge with. Malformed entries in such a map default fail with `ErrSchema`. | The load; usage tables, starter files, the JSON Schema and flag help show it unless the field is sensitive. | `default:"localhost"` |
 | `alias` | Former keys of the field, which sources may still set: a renamed setting keeps reading deployed files, and each load warns to rename them. | Every source; the JSON Schema lists them as deprecated. | `alias:"maxconns"` |
 | `sep` | The separator that splits a string set for a list — a default, a variable, a file's string — into elements, so an element may hold a comma: `sep:";"`. `none` keeps the string as one element. Without it, commas split, after any `WithDecodeHook` hook. | Every source and tag default, element defaults, starter files, the JSON Schema, examples. | `sep:";"` |
+| `format` | `format:"json"`: a string set for the field — a variable, a default, a file's string — is the JSON of its value, for a section, map, list or interface that one variable should set whole. The JSON's keys are checked, aliased and defaulted like any source's. | Every source and tag default; usage tables, starter files and `PrintEnv` mark and write it as JSON; the JSON Schema accepts the value or its JSON text. | `format:"json"` |
 | `env` | More variables for the field, read as written, without the prefix — a platform's `PORT`, a `DATABASE_URL`, a variable a renamed key used to have. The prefixed variable wins, then the first set in the list. | Environment loading; usage tables, starter files and `Field.EnvVars` list them. | `env:"PORT,HTTP_PORT"` |
 | `validate` | [go-playground/validator](https://pkg.go.dev/github.com/go-playground/validator/v10) rules. | Validation on every load and reload; `required` marks usage tables and starter files; the JSON Schema states the bounds, lengths and `oneof` enums. | `validate:"required,min=1"` |
 | `desc` | What the setting is for. | Usage tables, `PrintRedacted(..., WithIncludeDescriptions())`, starter-file comments, the JSON Schema `description`, kongprovider flag help. | `desc:"Database host"` |
@@ -173,6 +174,18 @@ With `WithEnvPrefix("APP")`, a key's variable is the prefix and its path, upper-
 An `env` tag adds variables a key reads as written, without the prefix, for names a platform or another tool sets: `Port int koanf:"port" env:"PORT"` reads `APP_PORT`, then `PORT`. The prefixed variable wins, then the first set in the tag's list. Tagged variables are read only when `WithEnvPrefix` turns the environment on; a tag on a section, on a field of a list element or map entry, or naming a variable another field names fails with `ErrSchema`.
 
 Setting a whole map and an entry beneath it in the same environment layer fails with `ErrValidation`, naming both variables; choose one form.
+
+A field tagged `format:"json"` takes its whole value from one variable, as JSON — a list of structs, a map of structs, a section:
+
+```go
+Routes []Route `koanf:"routes" format:"json"`
+```
+
+```bash
+APP_ROUTES='[{"path":"/api","timeout":"10s"},{"path":"/health"}]'
+```
+
+The JSON is parsed before decoding, so each element's keys are checked as strict keys, take aliases, and get the element struct's defaults; `Diff` and provenance see every element. Text that is not JSON fails with `ErrValidation`, naming the key and line but not the text. A section's variable and one for a key inside it cannot both be set. The same tag lets a file give the value as a JSON string, and a `default` hold it as JSON.
 
 A variable that two keys could read — `db.port` and `db_port`, a field and a map entry, or a tagged name that is another key's own variable — fails the load naming every reading, instead of guessing. A variable under the prefix that names no key is ignored and logged at debug level — other programs may share the prefix — unless a `WithUnknownKeys` handler is set, which sees it with the variable it most likely misspells. `WithEnviron(fn)` replaces `os.Environ`, which keeps tests independent of the machine. `PrintUsage` lists every variable a config reads.
 

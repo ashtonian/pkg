@@ -19,13 +19,15 @@ import (
 // wider container. Decode hooks are not run, and a custom decoder's value —
 // an UnmarshalMapstructure or TextUnmarshaler type, or an interface — is left
 // as written, as is every map key. A key an alias tag names is rewritten to
-// its field's key, and a string set for a field with a sep tag is split into
-// the list its separator makes. It records a source that spells one field
-// two ways, and every alias it rewrote.
+// its field's key, a string set for a field with a sep tag is split into the
+// list its separator makes, and one set for a format:"json" field is parsed
+// and walked as the value it holds. It records a source that spells one
+// field two ways, every alias it rewrote, and every string that is not JSON.
 type keyWalk struct {
 	schema  *schemaNode
 	twice   []string
 	aliased []string // "old.key (now new.key)"
+	notJSON []string // "key (line n)"; never the text
 }
 
 // tree rewrites the top level of a source.
@@ -83,7 +85,7 @@ func isList(v reflect.Value) bool {
 // structMap rewrites the keys of map v, decoded into struct type t. A map
 // keyed by anything but strings is keyed by their text, as koanf keys it.
 func (w *keyWalk) structMap(t reflect.Type, v reflect.Value, path keyPath) any {
-	fields, aliases, seps := structKeys(t), structAliases(t), structSeps(t)
+	fields, aliases, tags := structKeys(t), structAliases(t), structTags(t)
 	out := reflect.MakeMapWithSize(stringKeyed(v.Type()), v.Len())
 	written := make(map[string]reflect.Value, v.Len())
 	for _, k := range v.MapKeys() {
@@ -114,8 +116,17 @@ func (w *keyWalk) structMap(t reflect.Type, v reflect.Value, path keyPath) any {
 				w.aliased = append(w.aliased, fmt.Sprintf("%s (now %s)", path.field(k), at))
 			}
 		}
-		val := w.elem(out.Type().Elem(), ft, written[k], path.field(key))
-		if sep, ok := seps[key]; ok && val.Kind() == reflect.String {
+		raw := written[k]
+		if s, ok := stringValue(raw); ok && jsonFormat(tags[key]) {
+			parsed, err := parseJSON([]byte(s))
+			if err != nil {
+				w.notJSON = append(w.notJSON, w.jsonProblem(path.field(key), s, err))
+				continue
+			}
+			raw = reflect.ValueOf(&parsed).Elem() // JSON null stays an explicit null
+		}
+		val := w.elem(out.Type().Elem(), ft, raw, path.field(key))
+		if sep, ok := tags[key].Lookup("sep"); ok && val.Kind() == reflect.String {
 			val = reflect.ValueOf(splitList(val.String(), sep))
 		}
 		out = setMapValue(out, reflect.ValueOf(key).Convert(out.Type().Key()), val)
@@ -231,10 +242,10 @@ func structAliases(t reflect.Type) map[string]string {
 	return aliases
 }
 
-// structSeps returns the sep tags of struct type t by field key, looking
+// structTags returns the tags of struct type t's fields by key, looking
 // through squashed structs.
-func structSeps(t reflect.Type) map[string]string {
-	seps := map[string]string{}
+func structTags(t reflect.Type) map[string]reflect.StructTag {
+	tags := map[string]reflect.StructTag{}
 	var collect func(t reflect.Type)
 	collect = func(t reflect.Type) {
 		for kf := range keyedFields(t) {
@@ -242,14 +253,33 @@ func structSeps(t reflect.Type) map[string]string {
 			case kf.key == "" && derefType(kf.field.Type).Kind() == reflect.Struct:
 				collect(derefType(kf.field.Type))
 			case kf.key != "":
-				if sep, ok := kf.field.Tag.Lookup("sep"); ok {
-					seps[kf.key] = sep
-				}
+				tags[kf.key] = kf.field.Tag
 			}
 		}
 	}
 	collect(t)
-	return seps
+	return tags
+}
+
+// stringValue is the text v holds, when it holds a string.
+func stringValue(v reflect.Value) (string, bool) {
+	if v.Kind() == reflect.Interface {
+		v = v.Elem()
+	}
+	if !v.IsValid() || v.Kind() != reflect.String {
+		return "", false
+	}
+	return v.String(), true
+}
+
+// jsonProblem names a key whose string is not JSON, by the line the parser
+// stopped on; the parser's message, which can quote the text, is left out.
+func (w *keyWalk) jsonProblem(at keyPath, s string, err error) string {
+	shown := diagnosticPath(w.schema, at).orRoot()
+	if line := parserLine(err, []byte(s)); line > 0 {
+		return fmt.Sprintf("%s (line %d)", shown, line)
+	}
+	return shown
 }
 
 // aliasNames returns the former keys a field's alias tag lists.

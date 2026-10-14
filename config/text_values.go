@@ -55,13 +55,22 @@ func splitList(s, sep string) []any {
 	return out
 }
 
-// tagText is the input the text s of a tag beside tag is: s, or the
-// elements a sep tag there splits it into.
-func tagText(tag reflect.StructTag, s string) any {
-	if sep, ok := tag.Lookup("sep"); ok {
-		return splitList(s, sep)
+// tagText is the input the text s of a tag beside tag is: s, the elements a
+// sep tag there splits it into, or the value it holds as JSON under
+// format:"json".
+func tagText(tag reflect.StructTag, s string) (any, error) {
+	if jsonFormat(tag) {
+		return parseJSON([]byte(s))
 	}
-	return s
+	if sep, ok := tag.Lookup("sep"); ok {
+		return splitList(s, sep), nil
+	}
+	return s, nil
+}
+
+// jsonFormat reports a field whose strings hold JSON: format:"json".
+func jsonFormat(tag reflect.StructTag) bool {
+	return tag.Get("format") == "json"
 }
 
 // textMap reports a map one string can fill: string keys, values that are
@@ -72,21 +81,34 @@ func textMap(t reflect.Type) bool {
 
 // decodeTag decodes s, the text of a tag of a field of type t whose tags are
 // tag, into a new value of type t as a tag default decodes: split by a sep
-// tag, weakly typed, through the built-in hooks.
+// tag or parsed as JSON, weakly typed, through the built-in hooks, with every
+// key a field's.
 func decodeTag(t reflect.Type, tag reflect.StructTag, s string) (reflect.Value, error) {
+	in, err := tagText(tag, s)
+	if err != nil {
+		return reflect.Value{}, err
+	}
 	out := reflect.New(t)
 	dec, err := mapstructure.NewDecoder(&mapstructure.DecoderConfig{
 		DecodeHook:       (&options{}).decodeHook(nil),
 		WeaklyTypedInput: true,
+		ErrorUnused:      true,
+		TagName:          "koanf",
 		Result:           out.Interface(),
 	})
 	if err != nil {
 		return reflect.Value{}, err
 	}
-	if err := dec.Decode(tagText(tag, s)); err != nil {
+	if err := dec.Decode(in); err != nil {
 		return reflect.Value{}, err
 	}
 	return out.Elem(), nil
+}
+
+// variableSetsField reports a field one environment variable can set whole:
+// any field whose strings are JSON, else as variableSets says.
+func variableSetsField(tag reflect.StructTag, t reflect.Type) bool {
+	return jsonFormat(tag) || variableSets(t)
 }
 
 // variableSets reports a value one environment variable can set whole: not

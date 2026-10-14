@@ -188,9 +188,9 @@ func foldedField(fields map[string]*schemaField, key string) *schemaField {
 // checkTags refuses a tag that cannot mean what it says: a sensitive value
 // other than "true" or "false" — sensitive:"yes" would otherwise leave the
 // field unprotected — a secret field opting out of redaction, a sep tag on
-// anything but a list of values, an env tag on a section or naming no
-// variable, an example its field cannot hold, and a map default that is not
-// key=value entries.
+// anything but a list of values, a format other than json or on a value
+// JSON cannot shape, an env tag no variable can serve, a default on a
+// section, and a default or example its field cannot hold.
 func checkTags(t reflect.Type, f reflect.StructField) error {
 	if v, ok := f.Tag.Lookup("sensitive"); ok {
 		switch {
@@ -209,8 +209,22 @@ func checkTags(t reflect.Type, f reflect.StructField) error {
 			return fmt.Errorf("%w: field %s of %s has an empty sep tag; name a separator, or none", ErrSchema, f.Name, typeText(t))
 		}
 	}
+	if v, ok := f.Tag.Lookup("format"); ok {
+		ft := derefType(f.Type)
+		_, sep := f.Tag.Lookup("sep")
+		shaped := isBranch(ft) || ft.Kind() == reflect.Map || ft.Kind() == reflect.Interface ||
+			(ft.Kind() == reflect.Slice || ft.Kind() == reflect.Array) && ft.Elem().Kind() != reflect.Uint8
+		switch {
+		case v != "json":
+			return fmt.Errorf("%w: field %s of %s has format:%q; the one format is \"json\"", ErrSchema, f.Name, typeText(t), v)
+		case !shaped || decodesItself(ft):
+			return fmt.Errorf("%w: field %s of %s has format:\"json\", which is for a section, map, list or interface", ErrSchema, f.Name, typeText(t))
+		case sep:
+			return fmt.Errorf("%w: field %s of %s has format:\"json\" and a sep tag; JSON is not split", ErrSchema, f.Name, typeText(t))
+		}
+	}
 	if v, ok := f.Tag.Lookup("env"); ok {
-		if !variableSets(f.Type) {
+		if !variableSetsField(f.Tag, f.Type) {
 			return fmt.Errorf("%w: field %s of %s has an env tag, but no variable can set a %s", ErrSchema, f.Name, typeText(t), typeText(f.Type))
 		}
 		for _, name := range envTagNames(f.Tag) {
@@ -228,7 +242,17 @@ func checkTags(t reflect.Type, f reflect.StructField) error {
 			return fmt.Errorf("%w: field %s of %s has an example that does not decode into %s", ErrSchema, f.Name, typeText(t), typeText(f.Type))
 		}
 	}
-	if def, ok := f.Tag.Lookup("default"); ok && textMap(derefType(f.Type)) {
+	def, ok := f.Tag.Lookup("default")
+	switch {
+	case !ok:
+	case isBranch(derefType(f.Type)):
+		return fmt.Errorf("%w: field %s of %s has a default tag, but %s is a section; give its fields defaults", ErrSchema, f.Name, typeText(t), f.Name)
+	case jsonFormat(f.Tag):
+		// The value is not quoted: a default on a sensitive field may be one.
+		if _, err := decodeTag(f.Type, f.Tag, def); err != nil {
+			return fmt.Errorf("%w: field %s of %s has a default that does not decode into %s", ErrSchema, f.Name, typeText(t), typeText(f.Type))
+		}
+	case textMap(derefType(f.Type)):
 		if _, err := parseMapEntries(def); err != nil {
 			return fmt.Errorf("%w: field %s of %s has a default that is not key=value entries: %w", ErrSchema, f.Name, typeText(t), err)
 		}

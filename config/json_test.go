@@ -56,7 +56,7 @@ func TestJSONParser_Rejects(t *testing.T) {
 		{"key set twice nested", `{"a": {"b": 1, "b": 2}}`, "line 1:", `key "b" is set twice`},
 		{"not an object", `[1, 2]`, "line 1:", "holds a JSON object"},
 		{"scalar", `"text"`, "line 1:", "holds a JSON object"},
-		{"trailing data", "{}\n{}", "line 2:", "data after the JSON object"},
+		{"trailing data", "{}\n{}", "line 2:", "data after the JSON value"},
 		{"trailing garbage", "{}\n]", "line 2:", "invalid character"},
 		{"empty", "", "line 1:", "unexpected end of JSON input"},
 		{"truncated", "{\n  \"a\": [1,", "line 2:", "unexpected end of JSON input"},

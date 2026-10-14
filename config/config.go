@@ -117,6 +117,9 @@ func (l *loader) rewrite(name string, data map[string]any) (map[string]any, erro
 	if len(w.twice) > 0 {
 		return nil, fmt.Errorf("loading %s: %w: keys spelled two ways set one field: %s", name, ErrValidation, strings.Join(w.twice, ", "))
 	}
+	if len(w.notJSON) > 0 {
+		return nil, fmt.Errorf("loading %s: %w: format:\"json\" values that are not JSON: %s", name, ErrValidation, strings.Join(w.notJSON, ", "))
+	}
 	for _, a := range w.aliased {
 		l.aliased = append(l.aliased, a+" in "+name)
 	}
@@ -256,7 +259,7 @@ func load[T any](ctx context.Context, o *options) (loaded[T], error) {
 	if o.envPrefix != "" {
 		// Named from T's fields so a key with an underscore in it
 		// (koanf:"max_conns") keeps it; see envSchema.
-		env = newEnvSchema(fields, strings.TrimSuffix(o.envPrefix, "_"))
+		env = newEnvSchema(variableFields(root), strings.TrimSuffix(o.envPrefix, "_"))
 		values, names, unmatched, err := env.read(o.environ())
 		if err != nil {
 			return none, fmt.Errorf("loading env vars: %w: %w", ErrValidation, err)

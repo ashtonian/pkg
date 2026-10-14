@@ -185,6 +185,10 @@ func acceptsUnknownKeys(t reflect.Type) bool {
 // add.
 func (g *schemaGen) field(f *schemaField, c cursor, fv reflect.Value) map[string]any {
 	s := orNull(g.node(f.node, c, derefValue(fv)), f.sf.Type)
+	if jsonFormat(f.sf.Tag) {
+		// A file may hold the value or, as a variable must, its JSON text.
+		s = map[string]any{"anyOf": []any{s, map[string]any{"type": "string", "contentMediaType": "application/json"}}}
+	}
 	if desc := f.sf.Tag.Get("desc"); desc != "" {
 		s["description"] = desc
 	}
