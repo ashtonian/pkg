@@ -196,7 +196,7 @@ func visitOf(v reflect.Value) visit { return visit{ptr: v.Pointer(), typ: v.Type
 // check reads, the description to print, and whether an enclosing tag or
 // sensitive name already covers it.
 type site struct {
-	name      string
+	named     bool // its field name or map key looks like a credential's
 	desc      string
 	sensitive bool
 	// keyed marks a map key: a dynamic name whose sensitivity covers
@@ -213,7 +213,7 @@ func (w *entryWalk) walkStruct(val reflect.Value, prefix keyPath, inherited bool
 			path = prefix.field(kf.key)
 		}
 		w.walkValue(path, val.FieldByIndex(kf.field.Index), site{
-			name:      kf.field.Name,
+			named:     nameSensitive(kf.field),
 			desc:      kf.field.Tag.Get("desc"),
 			sensitive: inherited || taggedSensitive(kf.field.Tag),
 		})
@@ -238,7 +238,7 @@ func (w *entryWalk) walkValue(path keyPath, v reflect.Value, s site) {
 		elem = elem.Elem()
 	}
 
-	named := isSensitiveName(s.name)
+	named := s.named
 	switch {
 	case isBranch(elem.Type()):
 		w.walkStruct(elem, path, s.sensitive || s.keyed && named)
@@ -254,7 +254,7 @@ func (w *entryWalk) walkValue(path keyPath, v reflect.Value, s site) {
 		keys := elem.MapKeys()
 		slices.SortFunc(keys, func(a, b reflect.Value) int { return cmp.Compare(a.String(), b.String()) })
 		for _, k := range keys {
-			w.walkValue(path.key(k.String()), elem.MapIndex(k), site{name: k.String(), desc: s.desc, sensitive: s.sensitive || named, keyed: true})
+			w.walkValue(path.key(k.String()), elem.MapIndex(k), site{named: isSensitiveName(k.String()), desc: s.desc, sensitive: s.sensitive || named, keyed: true})
 		}
 	case (elem.Kind() == reflect.Slice || elem.Kind() == reflect.Array) && !opaque(elem.Type()) && elem.Len() > 0 && holdsContainers(elem.Type().Elem()):
 		if elem.Kind() == reflect.Slice {
@@ -264,7 +264,7 @@ func (w *entryWalk) walkValue(path keyPath, v reflect.Value, s site) {
 			}
 			defer delete(w.visiting, visitOf(elem))
 		}
-		inner := site{name: s.name, desc: s.desc, sensitive: s.sensitive || named, keyed: s.keyed}
+		inner := site{named: s.named, desc: s.desc, sensitive: s.sensitive || named, keyed: s.keyed}
 		for i := range elem.Len() {
 			w.walkValue(path.index(i), elem.Index(i), inner)
 		}
@@ -326,7 +326,7 @@ func (w *entryWalk) leaf(path keyPath, declared, value reflect.Value, s site) {
 			typ = value.Type()
 		}
 	}
-	if s.sensitive || isSensitiveName(s.name) || value.IsValid() && uncheckedHolder(value) {
+	if s.sensitive || s.named || value.IsValid() && uncheckedHolder(value) {
 		text = redactedValue
 	}
 	w.entries = append(w.entries, printEntry{name: path.String(), value: text, typeName: typ.String(), desc: s.desc})
@@ -347,10 +347,19 @@ func uncheckedHolder(v reflect.Value) bool {
 }
 
 // taggedSensitive reports a field its tag makes sensitive: sensitive:"true",
-// or a secret:"<ref>" tag naming where its value comes from.
+// or a secret:"<ref>" tag naming where its value comes from. Any sensitive
+// value but "false" counts, so a misspelled one still redacts; loading
+// refuses it (see checkSensitiveTag).
 func taggedSensitive(tag reflect.StructTag) bool {
 	secret := tag.Get("secret")
-	return tag.Get("sensitive") == "true" || secret != "" && secret != "-"
+	v, ok := tag.Lookup("sensitive")
+	return ok && v != "false" || secret != "" && secret != "-"
+}
+
+// nameSensitive reports a field its name makes sensitive: one named like a
+// credential that does not opt out with sensitive:"false".
+func nameSensitive(f reflect.StructField) bool {
+	return f.Tag.Get("sensitive") != "false" && isSensitiveName(f.Name)
 }
 
 // isSensitiveName checks if a field name contains sensitive-looking substrings.

@@ -162,7 +162,8 @@
 //
 // [PrintRedacted], [RedactedMap], [RedactedTree] and [PrintEnv] show a config
 // with every sensitive value redacted: tagged sensitive:"true", beneath such a
-// field, named like a credential, or under such a map key. [PrintUsage] lists
+// field, named like a credential (unless tagged sensitive:"false"), or under
+// such a map key. [PrintUsage] lists
 // every key an operator can set with its environment variable, type, default
 // and description; a default that is, or could hold, a sensitive value is
 // withheld ([Field.PrintableDefault]). [PrintTemplate] writes the config file

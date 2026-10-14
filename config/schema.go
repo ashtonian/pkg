@@ -117,6 +117,10 @@ func (b *schemaBuilder) fields(n *schemaNode, t reflect.Type, index []int, tagge
 	squashing[t] = true
 	defer delete(squashing, t)
 	for kf := range keyedFields(t) {
+		if err := checkSensitiveTag(t, kf.field); err != nil {
+			b.fail(err)
+			continue
+		}
 		at := append(slices.Clone(index), kf.field.Index...)
 		fieldTagged := tagged || taggedSensitive(kf.field.Tag)
 		if kf.key == "" {
@@ -133,10 +137,26 @@ func (b *schemaBuilder) fields(n *schemaNode, t reflect.Type, index []int, tagge
 			b.fail(fmt.Errorf("%w: fields %s and %s of %s both have key %q", ErrSchema, n.byKey[kf.key].sf.Name, kf.field.Name, n.typ, kf.key))
 			continue
 		}
-		f := &schemaField{key: kf.key, sf: kf.field, index: at, tagged: fieldTagged, named: isSensitiveName(kf.field.Name), node: b.node(kf.field.Type)}
+		f := &schemaField{key: kf.key, sf: kf.field, index: at, tagged: fieldTagged, named: nameSensitive(kf.field), node: b.node(kf.field.Type)}
 		n.fields = append(n.fields, f)
 		n.byKey[kf.key] = f
 	}
+}
+
+// checkSensitiveTag refuses a sensitive tag that is neither "true" nor
+// "false" — sensitive:"yes" would otherwise leave the field unprotected — and
+// a field that names a secret yet opts out of redaction.
+func checkSensitiveTag(t reflect.Type, f reflect.StructField) error {
+	v, ok := f.Tag.Lookup("sensitive")
+	switch {
+	case !ok:
+		return nil
+	case v != "true" && v != "false":
+		return fmt.Errorf("%w: field %s of %s has sensitive:%q; want \"true\" or \"false\"", ErrSchema, f.Name, t, v)
+	case v == "false" && taggedSensitive(f.Tag):
+		return fmt.Errorf("%w: field %s of %s names a secret and is tagged sensitive:\"false\"", ErrSchema, f.Name, t)
+	}
+	return nil
 }
 
 func (b *schemaBuilder) fail(err error) {

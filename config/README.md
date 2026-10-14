@@ -95,7 +95,7 @@ A config is a plain struct, and its tags are the whole schema: they say how each
 | `default` | The lowest-precedence value; comma-separated for a slice. | The load; usage tables, starter files, the JSON Schema and flag help show it unless the field is sensitive. | `default:"localhost"` |
 | `validate` | [go-playground/validator](https://pkg.go.dev/github.com/go-playground/validator/v10) rules. | Validation on every load and reload; `required` marks usage tables and starter files; the JSON Schema states the bounds, lengths and `oneof` enums. | `validate:"required,min=1"` |
 | `desc` | What the setting is for. | Usage tables, `PrintRedacted(..., WithIncludeDescriptions())`, starter-file comments, the JSON Schema `description`, kongprovider flag help. | `desc:"Database host"` |
-| `sensitive` | Redact everywhere; on a struct, slice or map, everything inside it. | Printing, diffs, reload results and usage tables show `[REDACTED]`; starter files and the JSON Schema leave out its default and any rule that names a value. | `sensitive:"true"` |
+| `sensitive` | `"true"` redacts everywhere — on a struct, slice or map, everything inside it; `"false"` exempts a field whose name only looks like a credential's (`max_tokens`). | Printing, diffs, reload results and usage tables show `[REDACTED]`; starter files and the JSON Schema leave out its default and any rule that names a value. | `sensitive:"true"` |
 | `secret` | Where the value lives in your secret store (see [Secrets](#secrets)); implies `sensitive`. | `SecretsFrom` and `WithSecretPopulator`, after decoding and before validation. | `secret:"prod/db#password"` |
 
 - Pointers are followed. A struct that decodes itself — an `encoding.TextUnmarshaler` such as `time.Time` or `netip.Addr`, or a mapstructure `Unmarshaler` — is one value, not a section.
@@ -392,7 +392,7 @@ mux.HandleFunc("GET /admin/config/status", func(w http.ResponseWriter, r *http.R
 
 ### Printing and usage
 
-`PrintRedacted(cfg)` writes a config as a table, JSON or YAML; `RedactedMap(cfg)` returns key → value text for a status page or a log line. A value is redacted when it is tagged `sensitive` or `secret`, sits inside something that is, or sits under a name containing `password`, `secret`, `token`, `key`, `credential`, `auth`, `private`, `apikey`, `api_key` or `dsn`. Mark anything the names cannot catch — a credential in a field called `URL` — `sensitive:"true"`. No option prints a secret.
+`PrintRedacted(cfg)` writes a config as a table, JSON or YAML; `RedactedMap(cfg)` returns key → value text for a status page or a log line. A value is redacted when it is tagged `sensitive` or `secret`, sits inside something that is, or sits under a name containing `password`, `secret`, `token`, `key`, `credential`, `auth`, `private`, `apikey`, `api_key` or `dsn`. Mark anything the names cannot catch — a credential in a field called `URL` — `sensitive:"true"`, and take a field the names catch wrongly — `max_tokens`, `auth_enabled`, `key_prefix` — out with `sensitive:"false"`, which overrides its name only: a key named like a credential beneath it, an enclosing `sensitive:"true"`, and a `secret` tag still redact, and a `sensitive` value other than `true` or `false` fails the load with `ErrSchema`. No option prints a secret.
 
 `PrintUsage[T]("APP")` lists every setting an operator can set: key, variable, type, default, whether it is required, description. Defaults that could hold a secret are withheld.
 
