@@ -167,14 +167,15 @@
 // [PrintRedacted], [RedactedMap], [RedactedTree] and [PrintEnv] show a config
 // with every sensitive value redacted: tagged sensitive:"true", beneath such a
 // field, named like a credential (unless tagged sensitive:"false"), or under
-// such a map key. [PrintUsage] lists
-// every key an operator can set with its environment variable, type, default
-// and description; a default that is, or could hold, a sensitive value is
-// withheld ([Field.PrintableDefault]). [PrintTemplate] writes the config file
-// a struct describes: every key with its default, which loads back as the
-// defaults. [LoadSnapshot], or a reloader [WithProvenance], records where each
-// value came from — the default, file, environment variable, provider or flag
-// the merge kept, and the stages that changed it after decoding — and
+// such a map key. [PrintUsage] lists every key an operator can set with its
+// environment variable, type, default and description; a default that is, or
+// could hold, a sensitive value is withheld ([Field.PrintableDefault]), as is
+// such an example tag's ([Field.PrintableExample]). [PrintTemplate] writes the
+// config file a struct describes: every key with its default, which loads back
+// as the defaults, and a key with none commented out, showing its example.
+// [LoadSnapshot], or a reloader [WithProvenance], records where each value
+// came from — the default, file, environment variable, provider or flag the
+// merge kept, and the stages that changed it after decoding — and
 // [PrintExplain] prints it, values redacted. [JSONSchema] describes the config
 // file for editors and linters — advisory, Load being the authority.
 package config

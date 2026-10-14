@@ -196,6 +196,12 @@ func (g *schemaGen) field(f *schemaField, c cursor, fv reflect.Value) map[string
 		w := &valueTree{visiting: map[visit]bool{}}
 		s["default"] = w.value(fv, site{}).plain()
 	}
+	if ex, has := f.sf.Tag.Lookup("example"); has && !sensitive {
+		if v, err := decodeText(f.sf.Type, ex); err == nil {
+			w := &valueTree{visiting: map[visit]bool{}}
+			s["examples"] = []any{w.value(v, site{}).plain()}
+		}
+	}
 	rules(s, f.node, f.sf.Tag.Get("validate"), !sensitive)
 	return s
 }
