@@ -53,3 +53,15 @@ func TestMapDefault_MalformedIsASchemaError(t *testing.T) {
 	require.ErrorIs(t, err, ErrSchema)
 	assert.Contains(t, err.Error(), `repeats a key`)
 }
+
+// A map set whole by one variable has its entries attributed to that
+// variable, not to the prefix at large.
+func TestMapDefault_WholeVariableProvenance(t *testing.T) {
+	type cfg struct {
+		Labels map[string]string `koanf:"labels"`
+	}
+	snap, err := LoadSnapshot[cfg](t.Context(), WithEnvPrefix("APP"), WithSkipValidation(),
+		WithEnviron(func() []string { return []string{"APP_LABELS=team=core,tier=1"} }))
+	require.NoError(t, err)
+	assert.Equal(t, Source{Kind: SourceEnv, Name: "APP_LABELS"}, snap.Provenance[`labels["team"]`].Input)
+}
