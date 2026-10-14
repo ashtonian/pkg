@@ -162,7 +162,7 @@ type strictCfg struct {
 	} `koanf:"plugins"`
 }
 
-// WithStrictKeys refuses a key no field decodes, naming it and its source;
+// A load refuses a key no field decodes, naming it;
 // keys under a map, an interface or a ,remain struct pass, and matching is
 // case-insensitive like decoding.
 func TestLoad_StrictKeys(t *testing.T) {
@@ -170,7 +170,7 @@ func TestLoad_StrictKeys(t *testing.T) {
 	file := filepath.Join(dir, "config.yaml")
 	writeFile(t, file, "server:\n  prot: 80\n  Port: 81\nlabels:\n  any_key: v\nany:\n  deep:\n    x: 1\nplugins:\n  name: p\n  other: 1\n")
 
-	_, err := Load[strictCfg](t.Context(), WithFile(file), WithStrictKeys(), WithSkipValidation())
+	_, err := Load[strictCfg](t.Context(), WithFile(file), WithSkipValidation())
 	require.ErrorIs(t, err, ErrValidation)
 	assert.Contains(t, err.Error(), "server.prot")
 	for _, accepted := range []string{"server.Port", "labels.any_key", "any.deep", "plugins.other"} {
@@ -178,22 +178,22 @@ func TestLoad_StrictKeys(t *testing.T) {
 	}
 
 	writeFile(t, file, "server:\n  Port: 81\n")
-	got, err := Load[strictCfg](t.Context(), WithFile(file), WithStrictKeys(), WithSkipValidation())
+	got, err := Load[strictCfg](t.Context(), WithFile(file), WithSkipValidation())
 	require.NoError(t, err)
 	assert.Equal(t, 81, got.Server.Port)
 
-	_, err = Load[strictCfg](t.Context(), WithDefaults(map[string]any{"servr.port": 1}), WithStrictKeys(), WithSkipValidation())
+	_, err = Load[strictCfg](t.Context(), WithDefaults(map[string]any{"servr.port": 1}), WithSkipValidation())
 	require.ErrorIs(t, err, ErrValidation)
 	assert.Contains(t, err.Error(), "servr")
 
 	// An environment variable that fits no key is never loaded.
-	_, err = Load[strictCfg](t.Context(), WithEnvPrefix("STRICT"), WithStrictKeys(), WithSkipValidation(),
+	_, err = Load[strictCfg](t.Context(), WithEnvPrefix("STRICT"), WithSkipValidation(),
 		WithEnviron(func() []string { return []string{"STRICT_SERVR_PORT=1"} }))
 	require.NoError(t, err)
 
-	// Without the option, unknown keys are ignored.
+	// WithAllowUnknownKeys lets them through.
 	writeFile(t, file, "server:\n  prot: 80\n")
-	_, err = Load[strictCfg](t.Context(), WithFile(file), WithSkipValidation())
+	_, err = Load[strictCfg](t.Context(), WithFile(file), WithSkipValidation(), WithAllowUnknownKeys())
 	require.NoError(t, err)
 }
 
@@ -239,7 +239,7 @@ func TestLoad_StrictKeysFollowDecoding(t *testing.T) {
 	strict := func(t *testing.T, source string, opts ...Option) (*cfg, error) {
 		t.Helper()
 		return Load[cfg](t.Context(), append([]Option{
-			WithBaseProvider(rawBytes(source), yaml.Parser()), WithStrictKeys(), WithSkipValidation(),
+			WithBaseProvider(rawBytes(source), yaml.Parser()), WithSkipValidation(),
 		}, opts...)...)
 	}
 
@@ -278,7 +278,7 @@ func TestLoad_KeySpellingFollowsTheField(t *testing.T) {
 	type cfg struct {
 		Port int `koanf:"port" default:"8080"`
 	}
-	got, err := Load[cfg](t.Context(), WithBaseProvider(rawBytes("Port: 9000\n"), yaml.Parser()), WithStrictKeys())
+	got, err := Load[cfg](t.Context(), WithBaseProvider(rawBytes("Port: 9000\n"), yaml.Parser()))
 	require.NoError(t, err)
 	assert.Equal(t, 9000, got.Port, "a higher source wins over the default whatever its letter case")
 

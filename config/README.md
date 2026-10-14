@@ -141,7 +141,7 @@ caller ──NewReloader / Arm / Run / Stop──▶ Reloader ──re-runs the 
 - File the parser rejects → `ErrFileParse`, cause a `*ParseError` naming the file and line.
 - Defaults or a provider failing to load → `ErrSource`.
 - Secret populator error → `ErrSecretProvider`; hook error → `ErrPostLoad`.
-- Validation, a value of the wrong type, an environment variable that fits two keys, or (with `WithStrictKeys`) an unknown key → `ErrValidation`.
+- Validation, a value of the wrong type, an environment variable that fits two keys, or an unknown key (unless `WithAllowUnknownKeys`) → `ErrValidation`.
 - Any of those during a reload → `ErrReload` wrapping it; the previous config stays live.
 - Manual reload while one runs → `ErrReloadInProgress`; after `Stop` → `ErrReloaderStopped`. Neither is a failure.
 - Reload whose context ended → error carrying `ctx.Err()`; not counted, not reported.
@@ -208,6 +208,15 @@ cfg, err := config.Load[AppConfig](ctx,
 
 A provider that also implements `ContextProvider` (`ReadContext` / `ReadBytesContext`) is read with the load's context, so a remote read stops when the load is cancelled — by its caller, or by a `Reloader`'s `Stop`.
 
+`NewMapProvider(read, delimiter)` turns a function into such a provider, read afresh on every load: a settings table, a key-value store, replicated cluster settings. With `"."` its keys are dotted paths unflattened into the tree (a key that is both a value and a section, `db` beside `db.host`, is an error); with `""` the map is already nested. What `read` returns is copied.
+
+```go
+settings, err := config.NewMapProvider(func(ctx context.Context) (map[string]any, error) {
+	return loadSettings(ctx, db) // SELECT key, value FROM settings → {"db.max_conns": "50", ...}
+}, ".")
+cfg, err := config.Load[AppConfig](ctx, config.WithBaseProvider(settings, nil), config.WithFile("config.yaml"))
+```
+
 Keys match fields regardless of letter case, as decoding does. Before sources merge, each one's keys are rewritten into the fields' own spelling, so a higher-precedence `Port: 9000` beats a default `port` whatever the case; a source that spells one field two ways (`port` and `Port`) fails with `ErrValidation`.
 
 `ExampleLoad_layers` loads one key from each layer.
@@ -244,7 +253,7 @@ semicolons := func(from, to reflect.Type, data any) (any, error) {
 cfg, err := config.Load[AppConfig](ctx, config.WithDecodeHook(mapstructure.DecodeHookFuncType(semicolons)))
 ```
 
-`WithStrictKeys()` fails the load with `ErrValidation` when a file, provider or `WithDefaults` sets a key no field decodes — a typo, or a setting that was removed — naming each key (`server.prot`, `items[0].prot`, `named["primary"].prot`). The decoder reports the keys it did not use as it decodes the merged sources, so the check follows decoding exactly: into slice elements and the entries of a map of structs, through squashed structs, and past input a decode hook or a self-decoding type consumes. A map's own keys (`labels["example.com"]`), anything beneath an interface, and keys a `,remain` field collects are accepted. The merged tree does not record which source set a key, so the error names keys only. Environment variables cannot trip it: one that fits no key is not loaded.
+A key no field decodes fails the load with `ErrValidation` — a typo, or a setting that was removed, cannot leave a service running on the default it was meant to override — naming each key (`server.prot`, `items[0].prot`, `named["primary"].prot`). The decoder reports the keys it did not use as it decodes the merged sources, so the check follows decoding exactly: into slice elements and the entries of a map of structs, through squashed structs, and past input a decode hook or a self-decoding type consumes. A map's own keys (`labels["example.com"]`), anything beneath an interface, and keys a `,remain` field collects are accepted. The merged tree does not record which source set a key, so the error names keys only. Environment variables cannot trip it: one that fits no key is not loaded. `WithAllowUnknownKeys()` lets such keys through, for a file shared with another program.
 
 ```txt
 unmarshaling config: configuration validation failed: keys no field of main.AppConfig decodes: server.prot
@@ -302,7 +311,18 @@ v.RegisterStructValidation(func(sl validator.StructLevel) {
 cfg, err := config.Load[AppConfig](ctx, config.WithValidator(v))
 ```
 
-`WithSkipValidation()` turns validation off, `validate:"required"` included.
+Rules no tag can state — keys that go together, settings that exclude each other — go in a `Validate() error` method on the config. When `*T` has one (`config.Validatable`), it runs after the validator, on the config the post-load hooks produced, and its error fails the load with `ErrValidation`, kept as the cause:
+
+```go
+func (c *AppConfig) Validate() error {
+	if c.TLS.Enabled && c.TLS.CertFile == "" {
+		return errors.New("tls.cert_file is required when tls.enabled is set")
+	}
+	return nil
+}
+```
+
+It must not change the config — normalize in a post-load hook — and its message is yours, so keep values out of it. A `WithValidator` validator replaces the tag rules, not `Validate`. `WithSkipValidation()` turns both off, `validate:"required"` included; unknown keys still fail.
 
 ## Hot reload
 
@@ -582,12 +602,12 @@ cfg, err := config.Load[AppConfig](ctx, config.WithFile(cli.Config), kongprovide
 | `WithBaseProvider(p, parser)` | `koanf.Provider`, `koanf.Parser` | none | Source between the defaults and the files; nil parser for a map-returning provider. Failure → `ErrSource`. |
 | `WithOverrideProvider(p, parser)` | `koanf.Provider`, `koanf.Parser` | none | Source above the environment, e.g. CLI flags. Failure → `ErrSource`. |
 | `WithDecodeHook(h)` | `mapstructure.DecodeHookFunc` | none | Decode hook run before the built-in duration, slice and `TextUnmarshaler` hooks. |
-| `WithStrictKeys()` | — | unknown keys ignored | A key no field decodes — in slice elements and map entries of structs too — fails the load with `ErrValidation`, naming the key. |
+| `WithAllowUnknownKeys()` | — | unknown keys fail the load | Let a key no field decodes through; without it such a key — in slice elements and map entries of structs too — fails the load with `ErrValidation`, naming the key. |
 | `WithSecretPopulator(fn)` | `SecretPopulator` | nil (no secrets) | Resolves secrets into the decoded config; error → `ErrSecretProvider`. |
 | `WithPostLoad[T](fn)` | `func(context.Context, *T) error` | none | Normalize/derive after secrets, before validation; error → `ErrPostLoad`. |
 | `WithValidator(v)` | `Validator` | go-playground validator naming fields by key | Any `Struct(any) error`; `StructCtx(ctx, v)` is used when present. |
 | `WithSkipValidation()` | — | validation on | Skip validation, `validate:"required"` included. |
-| `WithLogger(l)` | `*slog.Logger` | `slog.Default()` | Load diagnostics at debug level and, for `NewReloader`, reload events. |
+| `WithLogger(l)` | `*slog.Logger` | `slog.Default()` at each line | Load diagnostics at debug level and, for `NewReloader`, reload events. Without it, every line goes to `slog.Default()` as it is when written, so a logger configured after the reloader is built takes effect. |
 
 ### Reload options (`ReloadOption`)
 
@@ -599,7 +619,7 @@ cfg, err := config.Load[AppConfig](ctx, config.WithFile(cli.Config), kongprovide
 | `WithSignalReload(sigs...)` | `...os.Signal` | off | Reload on each signal, typically `SIGHUP`. |
 | `WithOnReloadSuccess[T](fn)` | `func(old, new *T)` | none | After each successful reload, after the swap. Panics recovered. A callback for another type fails construction. |
 | `WithOnReloadError(fn)` | `func(trigger string, err error)` | none | After each failed reload, from any trigger. Panics recovered. |
-| `WithReloadLogger(l)` | `*slog.Logger` | `NewReloader`: its `WithLogger`; `NewReloaderFunc`: `slog.Default()` | Logger for reload events. |
+| `WithReloadLogger(l)` | `*slog.Logger` | `NewReloader`: its `WithLogger`; otherwise `slog.Default()` at each line | Logger for reload events; nil selects `slog.Default()` at each line even when the load options set a logger. |
 
 `DefaultFileWatchDebounce` is 500ms.
 
@@ -622,7 +642,8 @@ cfg, err := config.Load[AppConfig](ctx, config.WithFile(cli.Config), kongprovide
 - `Fields[T]() []Field` — every key of `T`: `Path`, `Tag`, `Type`, `Sensitive`; `Field.EnvVar(prefix)` names its variable, `Field.PrintableDefault()` returns its default when diagnostics may print it.
 - `FieldName(reflect.StructField) string` — a field's key segment; register on a go-playground validator so errors name `db.max_conns`.
 - `DefaultsFromTags[T]() map[string]any` — `default` tags keyed by path.
-- `ContextProvider` — a `koanf.Provider` read with the load's context.
+- `ContextProvider` — a `koanf.Provider` read with the load's context; `NewMapProvider(read, delimiter)` builds one from a function.
+- `Validatable` — a config with a `Validate() error` method, called after the validator.
 - `ParseError` — bytes a parser rejected: `Source`, `Line`, and the parser's `Err`, left out of the message.
 - `SecretPopulator`, `Validator` — the function and interface the pipeline calls.
 
@@ -663,7 +684,7 @@ The package defines no error codes: every error wraps one category sentinel toge
 
 | Sentinel | Retryable | Description |
 |----------|-----------|-------------|
-| `ErrValidation` | No | Validation failed, a value could not decode into its field's type, an environment variable fit two keys, a source spelled one field two ways, or a strict load met an unknown key. `errors.As` yields `validator.ValidationErrors` for tag failures and `*mapstructure.DecodeError` for a decode failure on an ordinary field. |
+| `ErrValidation` | No | Validation failed, a value could not decode into its field's type, an environment variable fit two keys, a source spelled one field two ways, a `Validate` method failed, or a source set an unknown key (unless `WithAllowUnknownKeys`). `errors.As` yields `validator.ValidationErrors` for tag failures and `*mapstructure.DecodeError` for a decode failure on an ordinary field. |
 | `ErrFileRead` | Depends on the cause | Config file missing (required, or loaded before under a `Reloader`) or unreadable; `*fs.PathError` in the chain. |
 | `ErrFileParse` | No | The file parser rejected a config file; a `*ParseError` with the file and line in the chain. |
 | `ErrSource` | Depends on the cause | Struct-tag defaults, `WithDefaults` or a provider failed to load; its error, or a `*ParseError` for bytes its parser rejected, in the chain. |
@@ -734,7 +755,6 @@ Alert on `ErrReload` (or a rising failure count): a process whose reloads keep f
 | A file edit is not picked up | `Stats().LastTrigger` / `LastError`; is `Run` running; was `Arm`'s error checked | On `subPath` mounts nothing updates — mount without `subPath`; for env and providers use `WithPollInterval` or `SourceChanged`. |
 | Reloads fail after a deploy | `Stats().LastError`, the `config reload failed` log | Fix the source; the previous config stays live until then. A deleted file that loaded before fails every reload with `ErrFileRead`. |
 | `Stop` returns a context error | A manual `Reload` still in flight (a slow secret backend) | Give `Stop` a longer timeout, or bound the reload's own context. |
-| A typo in YAML is silently ignored | — | Enable `WithStrictKeys()`. |
 | A parse error names only a line | `errors.As(err, &pe)` with `pe *config.ParseError`; `pe.Err` is the parser's message | Print `pe.Err` only where the file's contents may be shown — it can quote them. |
 
 ## Security
@@ -818,6 +838,8 @@ The package's own file-watch tests use the operating system's notifications (ino
 | `element_defaults.go` | Element `default` tags applied to map entries and slice elements |
 | `options.go` | `Option` and every load option, `SecretPopulator`, `Validator` |
 | `deepcopy.go` | The `WithDefaults` deep copy |
+| `provider_func.go` | `NewMapProvider`: a provider from a function, dotted keys unflattened |
+| `keyof.go` | `KeyOf`, `KeyOfValue`: a field's key from its address |
 | `fields.go` | `Fields[T]` key-tree walker and sensitivity, `FieldName`, `DefaultsFromTags[T]` |
 | `schema.go` | The schema graph every walk shares, the walk cursor (key, pattern, owner, sensitivity), `FieldFor[T]` |
 | `path.go` | The key grammar: typed key paths, rendering and parsing |

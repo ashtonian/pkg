@@ -20,6 +20,7 @@ type reloadOptions struct {
 	pollInterval time.Duration
 	signals      []os.Signal
 	logger       *slog.Logger
+	loggerSet    bool // WithReloadLogger was given, nil included
 }
 
 // successHook is a [WithOnReloadSuccess] callback with its config type
@@ -152,11 +153,14 @@ func WithSignalReload(signals ...os.Signal) ReloadOption {
 	}
 }
 
-// WithReloadLogger sets the logger for reload events. The default is the
-// [WithLogger] logger of a NewReloader's load options, and slog.Default()
-// for NewReloaderFunc.
+// WithReloadLogger sets the logger for reload events. Without it, a
+// NewReloader logs through its load options' [WithLogger] logger. A nil
+// logger here, or no logger anywhere, means slog.Default() as it is when each
+// line is written, so a reloader built before the process logger is
+// configured logs through the configured one.
 func WithReloadLogger(logger *slog.Logger) ReloadOption {
 	return func(o *reloadOptions) {
 		o.logger = logger
+		o.loggerSet = true
 	}
 }

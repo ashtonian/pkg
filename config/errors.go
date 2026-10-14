@@ -10,8 +10,9 @@ import "errors"
 var (
 	// ErrValidation reports invalid configuration: a validator rejected the
 	// loaded struct, a value could not decode into its field's type, an
-	// environment variable named more than one key, or, under
-	// WithStrictKeys, a source set a key no field decodes.
+	// environment variable named more than one key, a Validate method
+	// failed, or a source set a key no field decodes (unless
+	// WithAllowUnknownKeys).
 	ErrValidation = errors.New("configuration validation failed")
 	// ErrFileRead reports a config file that could not be read: a required
 	// file that is missing, or any file that exists but cannot be opened.
@@ -47,6 +48,18 @@ var (
 	// no field of the config type.
 	ErrKey = errors.New("invalid configuration key")
 )
+
+// Validatable is a config with rules no tag can state: which keys go
+// together, which settings exclude each other. When *T implements it, Load
+// calls Validate after the validator passes, on the config the post-load
+// hooks produced; its error fails the load with [ErrValidation] and is kept
+// as the cause, its text in the message — keep values out of it. Validate
+// must not change the config (normalize in a [WithPostLoad] hook) and does no
+// I/O. [WithSkipValidation] skips it; a [WithValidator] validator does not
+// replace it.
+type Validatable interface {
+	Validate() error
+}
 
 // validationError carries ErrValidation together with the validator's own
 // error, whole: callers errors.As to validator.ValidationErrors for field

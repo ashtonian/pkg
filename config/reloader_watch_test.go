@@ -157,7 +157,7 @@ func TestFileWatch_RelinksDropRetiredDirectories(t *testing.T) {
 	if err := os.Symlink(release("v1"), link); err != nil {
 		t.Fatal(err)
 	}
-	w, err := newFileWatch([]string{link}, time.Millisecond, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	w, err := newFileWatch([]string{link}, time.Millisecond, discardLogger)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -201,7 +201,7 @@ func TestFileWatch_EventsOnTargetsAndRemovals(t *testing.T) {
 	if err := os.Symlink(target, link); err != nil {
 		t.Fatal(err)
 	}
-	w, err := newFileWatch([]string{link, plain}, time.Millisecond, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	w, err := newFileWatch([]string{link, plain}, time.Millisecond, discardLogger)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -329,7 +329,7 @@ func TestFileWatch_RecreatedDirectoryIsWatchedAgain(t *testing.T) {
 		t.Fatal(err)
 	}
 	writeFile(t, file, "port: 9000\n")
-	w, err := newFileWatch([]string{file}, time.Hour, discardLogger())
+	w, err := newFileWatch([]string{file}, time.Hour, discardLogger)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -368,7 +368,7 @@ func TestFileWatch_DirectoryComponentSymlink(t *testing.T) {
 		t.Fatal(err)
 	}
 	file := filepath.Join(link, "config.yaml")
-	w, err := newFileWatch([]string{file}, time.Hour, discardLogger())
+	w, err := newFileWatch([]string{file}, time.Hour, discardLogger)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -470,7 +470,7 @@ func TestFileWatch_DotDotAfterSymlink(t *testing.T) {
 	}
 	file := filepath.Join(root, "declared", "jump") + "/../config.yaml"
 	writeFile(t, file, "value: first\n")
-	w, err := newFileWatch([]string{file}, time.Hour, discardLogger())
+	w, err := newFileWatch([]string{file}, time.Hour, discardLogger)
 	require.NoError(t, err)
 	defer w.close()
 
@@ -502,7 +502,7 @@ func TestFileWatch_RelinkInsideALinkTarget(t *testing.T) {
 	if err := os.Symlink("branch/jump/../config.yaml", file); err != nil {
 		t.Fatal(err)
 	}
-	w, err := newFileWatch([]string{file}, time.Hour, discardLogger())
+	w, err := newFileWatch([]string{file}, time.Hour, discardLogger)
 	require.NoError(t, err)
 	defer w.close()
 	require.Contains(t, w.watcher.WatchList(), filepath.Join(root, "branch"))
@@ -527,7 +527,7 @@ func TestFileWatch_DirectoryMovedAwayIsAChange(t *testing.T) {
 	file := filepath.Join(dir, "config.yaml")
 	require.NoError(t, os.MkdirAll(dir, 0o700))
 	writeFile(t, file, "value: first\n")
-	w, err := newFileWatch([]string{file}, time.Hour, discardLogger())
+	w, err := newFileWatch([]string{file}, time.Hour, discardLogger)
 	require.NoError(t, err)
 	defer w.close()
 
@@ -567,7 +567,7 @@ func TestReloader_AncestorReplacedIsReloaded(t *testing.T) {
 // testWatch watches paths with a millisecond debounce, closed at cleanup.
 func testWatch(t *testing.T, paths ...string) *fileWatch {
 	t.Helper()
-	w, err := newFileWatch(paths, time.Millisecond, discardLogger())
+	w, err := newFileWatch(paths, time.Millisecond, discardLogger)
 	require.NoError(t, err)
 	t.Cleanup(func() { assert.NoError(t, w.close()) })
 	return w

@@ -41,7 +41,7 @@ type Reloader[T any] struct {
 	// load runs one load and reports the digests of the config files it
 	// parsed, nil when the loader is the caller's.
 	load   func(ctx context.Context) (*T, fileDigests, error)
-	logger *slog.Logger
+	logger *slog.Logger // nil: slog.Default() at each line
 
 	onSuccess    []successHook
 	onError      []func(trigger string, err error)
@@ -150,7 +150,7 @@ func NewReloader[T any](ctx context.Context, loadOpts []Option, opts ...ReloadOp
 // file watch covers the files given to [WithWatchedFiles]; each reload
 // compares them with what they held just before the previous load.
 func NewReloaderFunc[T any](ctx context.Context, load func(ctx context.Context) (*T, error), opts ...ReloadOption) (*Reloader[T], error) {
-	r, err := newReloader[T](buildReloadOptions(opts), slog.Default(), nil)
+	r, err := newReloader[T](buildReloadOptions(opts), nil, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -167,7 +167,13 @@ func NewReloaderFunc[T any](ctx context.Context, load func(ctx context.Context) 
 	return r, nil
 }
 
-func newReloader[T any](ro *reloadOptions, logger *slog.Logger, configFiles []string) (*Reloader[T], error) {
+// newReloader builds a Reloader whose events go to inherited — the load
+// options' logger, nil for none — unless WithReloadLogger set one.
+func newReloader[T any](ro *reloadOptions, inherited *slog.Logger, configFiles []string) (*Reloader[T], error) {
+	logger := inherited
+	if ro.loggerSet {
+		logger = ro.logger
+	}
 	if err := ro.checkHookTypes(reflect.TypeFor[*T]()); err != nil {
 		return nil, err
 	}
@@ -183,7 +189,7 @@ func newReloader[T any](ro *reloadOptions, logger *slog.Logger, configFiles []st
 		return nil, errors.New("config: WithFileWatch has no files to watch; name them with WithFile or WithWatchedFiles")
 	}
 	return &Reloader[T]{
-		logger:       cmp.Or(ro.logger, logger),
+		logger:       logger,
 		onSuccess:    ro.onSuccess,
 		onError:      ro.onError,
 		fileWatch:    ro.fileWatch,
@@ -307,7 +313,7 @@ func (r *Reloader[T]) acquire(ctx context.Context, trigger string, wait bool) er
 		if !wait {
 			return ErrReloadInProgress
 		}
-		r.logger.DebugContext(ctx, "config reload waiting for the reload in flight", "trigger", trigger)
+		r.log().DebugContext(ctx, "config reload waiting for the reload in flight", "trigger", trigger)
 		select {
 		case r.slot <- struct{}{}:
 		case <-r.stopCh:
@@ -472,7 +478,7 @@ func (t *triggers) close() error {
 func (r *Reloader[T]) arm(ctx context.Context) (*triggers, error) {
 	t := &triggers{}
 	if r.fileWatch {
-		watch, err := newFileWatch(r.paths, cmp.Or(max(r.debounce, 0), DefaultFileWatchDebounce), r.logger)
+		watch, err := newFileWatch(r.paths, cmp.Or(max(r.debounce, 0), DefaultFileWatchDebounce), r.log)
 		if err != nil {
 			return nil, fmt.Errorf("setting up file watch: %w", err)
 		}
@@ -515,7 +521,7 @@ func (r *Reloader[T]) serve(ctx context.Context) (*triggers, error) {
 func (r *Reloader[T]) unserve(ctx context.Context, t *triggers) {
 	r.serving.Add(-1)
 	if err := t.close(); err != nil {
-		r.logger.WarnContext(ctx, "closing config file watcher", "error", err)
+		r.log().WarnContext(ctx, "closing config file watcher", "error", err)
 	}
 }
 
@@ -588,7 +594,7 @@ func (r *Reloader[T]) Run(ctx context.Context) error {
 		defer ticker.Stop()
 	}
 
-	r.logger.InfoContext(ctx, "config reloader started",
+	r.log().InfoContext(ctx, "config reloader started",
 		"file_watch", t.watch != nil,
 		"poll_interval", r.pollInterval,
 		"signal_count", len(r.signals),
@@ -606,12 +612,12 @@ func (r *Reloader[T]) Run(ctx context.Context) error {
 			r.autoReload(runCtx, TriggerSourceChanged)
 
 		case sig := <-t.signals:
-			r.logger.InfoContext(ctx, "config reload triggered by signal", "signal", sig)
+			r.log().InfoContext(ctx, "config reload triggered by signal", "signal", sig)
 			r.autoReload(runCtx, TriggerSignal)
 
 		case ev, ok := <-events:
 			if !ok {
-				r.logger.ErrorContext(ctx, "config file watcher closed unexpectedly; file-change reloads are off")
+				r.log().ErrorContext(ctx, "config file watcher closed unexpectedly; file-change reloads are off")
 				events, watchErrs, settled, recheck = nil, nil, nil, nil
 				continue
 			}
@@ -622,7 +628,7 @@ func (r *Reloader[T]) Run(ctx context.Context) error {
 				watchErrs = nil
 				continue
 			}
-			r.logger.ErrorContext(ctx, "config file watcher error", "error", err)
+			r.log().ErrorContext(ctx, "config file watcher error", "error", err)
 
 		case <-settled:
 			r.fileChanged(ctx, runCtx)(t.watch.settle())
@@ -638,7 +644,7 @@ func (r *Reloader[T]) Run(ctx context.Context) error {
 func (r *Reloader[T]) fileChanged(ctx, runCtx context.Context) func(path string, changed bool, err error) {
 	return func(path string, changed bool, err error) {
 		if err != nil {
-			r.logger.ErrorContext(ctx, "config file watch is missing directories; changes there will not reload", "error", err)
+			r.log().ErrorContext(ctx, "config file watch is missing directories; changes there will not reload", "error", err)
 		}
 		if changed {
 			r.autoReload(runCtx, TriggerFileChange, "path", path)
@@ -650,10 +656,10 @@ func (r *Reloader[T]) fileChanged(ctx, runCtx context.Context) func(path string,
 // ctx.Err() when the caller's ctx ended.
 func (r *Reloader[T]) exit(ctx context.Context) error {
 	if r.stopped() {
-		r.logger.InfoContext(ctx, "config reloader stopped")
+		r.log().InfoContext(ctx, "config reloader stopped")
 		return nil
 	}
-	r.logger.InfoContext(ctx, "config reloader context cancelled")
+	r.log().InfoContext(ctx, "config reloader context cancelled")
 	return ctx.Err()
 }
 
@@ -703,14 +709,14 @@ func (r *Reloader[T]) reloadAndLog(ctx context.Context, trigger string, attrs ..
 		if ctx.Err() != nil {
 			return
 		}
-		r.logger.ErrorContext(ctx, "config reload failed", append(args, "error", err)...)
+		r.log().ErrorContext(ctx, "config reload failed", append(args, "error", err)...)
 		return
 	}
 	level := slog.LevelInfo
 	if trigger == TriggerPoll {
 		level = slog.LevelDebug // a poll reloads on every tick; Info would flood
 	}
-	r.logger.Log(ctx, level, "config reloaded", args...)
+	r.log().Log(ctx, level, "config reloaded", args...)
 }
 
 // Stop stops the reloader. From the moment it is called, Reload returns
@@ -745,7 +751,7 @@ func (r *Reloader[T]) Stop(ctx context.Context) error {
 			r.armSem <- struct{}{}
 			if r.armed != nil {
 				if err := r.armed.close(); err != nil {
-					r.logger.WarnContext(logCtx, "closing config file watcher", "error", err)
+					r.log().WarnContext(logCtx, "closing config file watcher", "error", err)
 				}
 				r.armed = nil
 			}
@@ -770,7 +776,7 @@ func (r *Reloader[T]) notifySuccess(ctx context.Context, old, new *T) {
 		func() {
 			defer func() {
 				if p := recover(); p != nil {
-					r.logger.ErrorContext(ctx, "config reload success callback panicked", "panic", p)
+					r.log().ErrorContext(ctx, "config reload success callback panicked", "panic", p)
 				}
 			}()
 			h.run(old, new)
@@ -785,10 +791,18 @@ func (r *Reloader[T]) notifyReloadError(ctx context.Context, trigger string, err
 		func() {
 			defer func() {
 				if p := recover(); p != nil {
-					r.logger.ErrorContext(ctx, "config reload error callback panicked", "panic", p)
+					r.log().ErrorContext(ctx, "config reload error callback panicked", "panic", p)
 				}
 			}()
 			fn(trigger, err)
 		}()
 	}
+}
+
+// log is the logger for one line: the configured one, or slog.Default() now.
+func (r *Reloader[T]) log() *slog.Logger {
+	if r.logger != nil {
+		return r.logger
+	}
+	return slog.Default()
 }

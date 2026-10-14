@@ -46,7 +46,7 @@ import (
 // reconciles every recheck interval with no event to prompt it.
 type fileWatch struct {
 	watcher *fsnotify.Watcher
-	logger  *slog.Logger
+	log     func() *slog.Logger
 
 	// declared is every path the operator declared, absolute but not
 	// lexically cleaned: cleaning "link/../x" before resolving link would
@@ -87,7 +87,7 @@ const (
 // newFileWatch subscribes to every directory paths need. A subscription that
 // cannot be made fails construction: a watch that silently covers less than
 // it was asked to would never report the changes it misses.
-func newFileWatch(paths []string, debounce time.Duration, logger *slog.Logger) (*fileWatch, error) {
+func newFileWatch(paths []string, debounce time.Duration, log func() *slog.Logger) (*fileWatch, error) {
 	watcher, err := fsnotify.NewWatcher()
 	if err != nil {
 		return nil, fmt.Errorf("creating fsnotify watcher: %w", err)
@@ -97,7 +97,7 @@ func newFileWatch(paths []string, debounce time.Duration, logger *slog.Logger) (
 	timer.Stop()
 	w := &fileWatch{
 		watcher:      watcher,
-		logger:       logger,
+		log:          log,
 		paths:        make(map[string]resolution, len(paths)),
 		watching:     make(map[string]os.FileInfo),
 		timer:        timer,
@@ -375,7 +375,7 @@ func (w *fileWatch) settle() (path string, changed bool, err error) {
 	shifted, err := w.reconcile()
 
 	if moved {
-		w.logger.Debug("config file symlink target changed",
+		w.log().Debug("config file symlink target changed",
 			"old_target", movedFrom, "new_target", movedTo)
 	}
 	switch {

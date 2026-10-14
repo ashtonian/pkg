@@ -145,9 +145,10 @@ func ExampleLoad_errors() {
 	// true true true
 }
 
-// ExampleWithStrictKeys shows a typo in a config file failing the load
-// instead of being ignored.
-func ExampleWithStrictKeys() {
+// ExampleWithAllowUnknownKeys shows a typo in a config file failing the load
+// instead of leaving the service on the default it meant to override, and
+// the option that lets such a key through.
+func ExampleWithAllowUnknownKeys() {
 	type AppConfig struct {
 		Server struct {
 			Port int `koanf:"port" default:"8080"`
@@ -156,11 +157,15 @@ func ExampleWithStrictKeys() {
 	file, cleanup := tempFile("config.yaml", "server:\n  prot: 9000\n")
 	defer cleanup()
 
-	_, err := config.Load[AppConfig](context.Background(), config.WithFile(file), config.WithStrictKeys())
-	fmt.Println(errors.Is(err, config.ErrValidation))
+	_, err := config.Load[AppConfig](context.Background(), config.WithFile(file))
+	fmt.Println(errors.Is(err, config.ErrValidation), err)
+
+	cfg, err := config.Load[AppConfig](context.Background(), config.WithFile(file), config.WithAllowUnknownKeys())
+	fmt.Println(cfg.Server.Port, err)
 
 	// Output:
-	// true
+	// true unmarshaling config: configuration validation failed: keys no field of config_test.AppConfig decodes: server.prot
+	// 8080 <nil>
 }
 
 // ExamplePrintUsage prints what an operator can set, with the environment

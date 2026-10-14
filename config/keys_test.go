@@ -44,8 +44,7 @@ func TestStrictKeys_InputACustomDecoderConsumes(t *testing.T) {
 	type cfg struct {
 		Item customDecoded `koanf:"item"`
 	}
-	got, err := Load[cfg](t.Context(), WithBaseProvider(mapSource{"item": map[string]any{"raw": 42}}, nil),
-		WithStrictKeys(), WithSkipValidation())
+	got, err := Load[cfg](t.Context(), WithBaseProvider(mapSource{"item": map[string]any{"raw": 42}}, nil), WithSkipValidation())
 	require.NoError(t, err)
 	assert.Equal(t, 42, got.Item.Value)
 }
@@ -62,7 +61,7 @@ func TestStrictKeys_InputAHookConsumes(t *testing.T) {
 		return v, nil
 	})
 	got, err := Load[cfg](t.Context(), WithBaseProvider(mapSource{"item": map[string]any{"external": 42}}, nil),
-		WithDecodeHook(hook), WithStrictKeys(), WithSkipValidation())
+		WithDecodeHook(hook), WithSkipValidation())
 	require.NoError(t, err)
 	assert.Equal(t, 42, got.Item.Value)
 }
@@ -83,7 +82,7 @@ func TestStrictKeys_InputAHookReshapes(t *testing.T) {
 		return v, nil
 	})
 	got, err := Load[cfg](t.Context(), WithBaseProvider(mapSource{"item": map[string]any{"external": 42}}, nil),
-		WithDecodeHook(hook), WithStrictKeys(), WithSkipValidation())
+		WithDecodeHook(hook), WithSkipValidation())
 	require.NoError(t, err)
 	assert.Equal(t, 42, got.Item.Port)
 }
@@ -96,7 +95,7 @@ func TestStrictKeys_SquashedEmbeddedStruct(t *testing.T) {
 	type cfg struct {
 		squashedPort `koanf:",squash"`
 	}
-	got, err := Load[cfg](t.Context(), WithBaseProvider(mapSource{"port": 80}, nil), WithStrictKeys(), WithSkipValidation())
+	got, err := Load[cfg](t.Context(), WithBaseProvider(mapSource{"port": 80}, nil), WithSkipValidation())
 	require.NoError(t, err)
 	assert.Equal(t, 80, got.Port)
 }
@@ -116,7 +115,7 @@ func TestStrictKeys_TypoInsideSliceElements(t *testing.T) {
 		[]any{map[string]int{"prot": 80}},
 	} {
 		t.Run(fmt.Sprintf("%T", items), func(t *testing.T) {
-			_, err := Load[cfg](t.Context(), WithBaseProvider(mapSource{"items": items}, nil), WithStrictKeys(), WithSkipValidation())
+			_, err := Load[cfg](t.Context(), WithBaseProvider(mapSource{"items": items}, nil), WithSkipValidation())
 			require.ErrorIs(t, err, ErrValidation)
 		})
 	}
@@ -142,7 +141,7 @@ func TestStrictKeys_AcceptsEveryDecodableShape(t *testing.T) {
 		"any":     map[string]any{"arbitrary": 1},
 		"PORT":    82,
 	}
-	got, err := Load[cfg](t.Context(), WithBaseProvider(src, nil), WithStrictKeys(), WithSkipValidation())
+	got, err := Load[cfg](t.Context(), WithBaseProvider(src, nil), WithSkipValidation())
 	require.NoError(t, err)
 	assert.Equal(t, 80, got.Named["x"][0].Port)
 	assert.Equal(t, 81, got.Rows[0]["a"].Port)
@@ -165,8 +164,7 @@ func TestLoad_KeyCaseMergesAcrossSources(t *testing.T) {
 			"x": map[any]any{"Port": 80, "Name": "base"},
 			"X": map[string]any{"name": "case-key"},
 		}}, nil),
-		WithOverrideProvider(mapSource{"named": map[string]any{"x": map[string]any{"PORT": 81}}}, nil),
-		WithStrictKeys(), WithSkipValidation())
+		WithOverrideProvider(mapSource{"named": map[string]any{"x": map[string]any{"PORT": 81}}}, nil), WithSkipValidation())
 	require.NoError(t, err)
 	assert.Equal(t, 81, got.Named["x"].Port)
 	assert.Equal(t, "base", got.Named["x"].Name)
@@ -262,7 +260,7 @@ func TestElementDefaults_WeaklyDecodedShapes(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.source, func(t *testing.T) {
-			got, err := Load[cfg](t.Context(), WithBaseProvider(rawBytes(tt.source), yaml.Parser()), WithStrictKeys(), WithSkipValidation())
+			got, err := Load[cfg](t.Context(), WithBaseProvider(rawBytes(tt.source), yaml.Parser()), WithSkipValidation())
 			require.NoError(t, err)
 			e := tt.entry(got)
 			assert.Equal(t, 50, e.Port)
@@ -297,7 +295,7 @@ func TestStrictKeys_NamesUnknownKeys(t *testing.T) {
 		"server": map[string]any{"a.b": 1, "prot": 2},
 		"named":  map[string]any{"x.y": map[string]any{"prot": 3}},
 	}
-	_, err := Load[cfg](t.Context(), WithBaseProvider(src, nil), WithStrictKeys(), WithSkipValidation())
+	_, err := Load[cfg](t.Context(), WithBaseProvider(src, nil), WithSkipValidation())
 	require.ErrorIs(t, err, ErrValidation)
 	assert.Contains(t, err.Error(), `decodes: named["x.y"].prot, server."a.b", server.prot`)
 }

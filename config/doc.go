@@ -57,11 +57,15 @@
 //
 // # Pipeline
 //
-//	merge → decode → secrets (WithSecretPopulator) → post-load (WithPostLoad) → validate
+//	merge → decode, unknown keys refused → secrets (WithSecretPopulator) →
+//	post-load (WithPostLoad) → validate (the validator, then a Validatable's
+//	Validate method)
 //
 // Decoding adds string → time.Duration, comma-separated string → slice and
 // encoding.TextUnmarshaler to mapstructure's weak typing; [WithDecodeHook]
-// hooks run first. [WithStrictKeys] fails the load on a key no field decodes.
+// hooks run first. A key no field decodes fails the load — a misspelled key
+// cannot leave a service on the default it meant to override — unless
+// [WithAllowUnknownKeys].
 // Put derivation and normalization in a post-load hook, not after Load
 // returns: the hook runs inside the load, so a Reloader applies it before
 // deciding whether to swap.

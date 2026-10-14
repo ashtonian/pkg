@@ -22,8 +22,10 @@ import (
 )
 
 // Load builds a configuration of type T: it merges the sources in
-// precedence order, decodes them into a new T, then resolves secrets, runs
-// the post-load hooks and validates.
+// precedence order, decodes them into a new T — failing on a key no field
+// decodes, unless [WithAllowUnknownKeys] — then resolves secrets, runs the
+// post-load hooks, validates with the validator and, when *T is
+// [Validatable], with its Validate method.
 //
 // Source precedence, highest first:
 //
@@ -53,7 +55,8 @@ import (
 // source and line only (see [ParseError]). A failure on an ordinary field
 // keeps its decoder's message, which may quote the value (time.Parse does).
 // Errors returned by the caller's own providers, secret populator, post-load
-// hooks and validator are passed through as they were written.
+// hooks, validator and Validate method are passed through as they were
+// written.
 func Load[T any](ctx context.Context, opts ...Option) (*T, error) {
 	cfg, _, err := load[T](ctx, buildOptions(opts))
 	return cfg, err
@@ -200,7 +203,7 @@ func load[T any](ctx context.Context, o *options) (*T, fileDigests, error) {
 			return nil, nil, fmt.Errorf("loading env vars: %w: %w", ErrValidation, err)
 		}
 		if len(unmatched) > 0 {
-			o.logger.DebugContext(ctx, "environment variables under the prefix name no config key", "names", unmatched)
+			o.log().DebugContext(ctx, "environment variables under the prefix name no config key", "names", unmatched)
 		}
 		if err := l.addFlat("env "+schema.prefix+"*", values); err != nil {
 			return nil, nil, err
@@ -211,7 +214,7 @@ func load[T any](ctx context.Context, o *options) (*T, fileDigests, error) {
 			return nil, nil, err
 		}
 	}
-	o.logger.DebugContext(ctx, "config sources loaded", "sources", l.sources)
+	o.log().DebugContext(ctx, "config sources loaded", "sources", l.sources)
 
 	merged := l.k.Raw()
 	fillElementDefaults(root, merged)
@@ -236,7 +239,7 @@ func load[T any](ctx context.Context, o *options) (*T, fileDigests, error) {
 		// value of a field that is, or could hold, a sensitive one.
 		return nil, nil, fmt.Errorf("unmarshaling config: %w: %w", ErrValidation, decodeErrors(schema, merged, err))
 	}
-	if o.strictKeys && len(md.Unused) > 0 {
+	if !o.allowUnknown && len(md.Unused) > 0 {
 		unused := make([]string, len(md.Unused))
 		for i, name := range md.Unused {
 			unused[i] = unusedKey(schema, merged, name)
@@ -279,6 +282,14 @@ func load[T any](ctx context.Context, o *options) (*T, fileDigests, error) {
 			return nil, nil, &validationError{
 				msg:   fmt.Sprintf("validating config: %s: %s", ErrValidation, summary),
 				cause: err,
+			}
+		}
+		if v, ok := any(cfg).(Validatable); ok {
+			if err := v.Validate(); err != nil {
+				return nil, nil, &validationError{
+					msg:   fmt.Sprintf("validating config: %s: %s", ErrValidation, err),
+					cause: err,
+				}
 			}
 		}
 	}

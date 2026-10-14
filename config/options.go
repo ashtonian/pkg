@@ -31,20 +31,20 @@ type Validator interface {
 }
 
 type options struct {
-	envPrefix   string
-	environ     func() []string
-	files       []fileSource
-	fileParser  koanf.Parser
-	defaults    map[string]any
-	base        []providerSource
-	overrides   []providerSource
-	decodeHooks []mapstructure.DecodeHookFunc
-	strictKeys  bool
-	secrets     SecretPopulator
-	postLoad    []postLoadHook
-	skipValid   bool
-	validator   Validator
-	logger      *slog.Logger
+	envPrefix    string
+	environ      func() []string
+	files        []fileSource
+	fileParser   koanf.Parser
+	defaults     map[string]any
+	base         []providerSource
+	overrides    []providerSource
+	decodeHooks  []mapstructure.DecodeHookFunc
+	allowUnknown bool
+	secrets      SecretPopulator
+	postLoad     []postLoadHook
+	skipValid    bool
+	validator    Validator
+	logger       *slog.Logger
 }
 
 type fileSource struct {
@@ -69,9 +69,6 @@ func buildOptions(opts []Option) *options {
 	o := &options{}
 	for _, opt := range opts {
 		opt(o)
-	}
-	if o.logger == nil {
-		o.logger = slog.Default()
 	}
 	if o.environ == nil {
 		o.environ = os.Environ
@@ -225,20 +222,23 @@ func WithDecodeHook(hook mapstructure.DecodeHookFunc) Option {
 	}
 }
 
-// WithStrictKeys fails the load with [ErrValidation] when a config file,
-// provider or WithDefaults sets a key no field decodes — a typo, or a setting
-// that was removed — naming each such key (server.prot, items[0].prot,
-// named["primary"].prot). The decoder reports the keys it did not use while it
-// decodes the merged sources, so the check follows decoding exactly: into
-// slice elements and map entries of structs, through squashed structs, and
-// past input a decode hook or a self-decoding type consumes. A map's own
-// keys, anything beneath an interface, and keys a koanf:",remain" field
-// collects are accepted. The merged tree does not record which source set a
-// key, so the error names keys only. An environment variable that fits no key
-// is never loaded, so it cannot fail a strict load.
-func WithStrictKeys() Option {
+// WithAllowUnknownKeys lets a load succeed when a config file, provider or
+// WithDefaults sets a key no field decodes. Without it — the default — such
+// a key, a typo or a setting that was removed, fails the load with
+// [ErrValidation] naming each one (server.prot, items[0].prot,
+// named["primary"].prot), so a misspelled key cannot leave a service running
+// on the default it was meant to override. The decoder reports the keys it
+// did not use while it decodes the merged sources, so the check follows
+// decoding exactly: into slice elements and map entries of structs, through
+// squashed structs, and past input a decode hook or a self-decoding type
+// consumes. A map's own keys, anything beneath an interface, and keys a
+// koanf:",remain" field collects are accepted. The merged tree does not record
+// which source set a key, so the error names keys only. An environment
+// variable that fits no key is never loaded, so it cannot fail a load; it is
+// logged at debug level.
+func WithAllowUnknownKeys() Option {
 	return func(o *options) {
-		o.strictKeys = true
+		o.allowUnknown = true
 	}
 }
 
@@ -285,7 +285,9 @@ func WithValidator(v Validator) Option {
 	}
 }
 
-// WithSkipValidation disables validation, including validate:"required".
+// WithSkipValidation disables validation — the validator, validate:"required"
+// included, and a root Validate method (see [Validatable]). Unknown keys still
+// fail the load; [WithAllowUnknownKeys] is the separate escape hatch for those.
 func WithSkipValidation() Option {
 	return func(o *options) {
 		o.skipValid = true
@@ -294,12 +296,22 @@ func WithSkipValidation() Option {
 
 // WithLogger sets the logger for load diagnostics (the sources loaded, and
 // environment variables that fit no key, at debug level) and, for a
-// [Reloader] built by [NewReloader], its reload events. The default is
-// slog.Default().
+// [Reloader] built by [NewReloader], its reload events. Without it, or with a
+// nil logger, every line goes to slog.Default() as it is when the line is
+// written, so a logger configured after construction — from the config just
+// loaded, say — takes effect.
 func WithLogger(logger *slog.Logger) Option {
 	return func(o *options) {
 		o.logger = logger
 	}
+}
+
+// log is the logger for one line: WithLogger's, or slog.Default() now.
+func (o *options) log() *slog.Logger {
+	if o.logger != nil {
+		return o.logger
+	}
+	return slog.Default()
 }
 
 // decodeHook composes the caller's decode hooks, first, with the built-in
