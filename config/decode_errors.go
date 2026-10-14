@@ -32,6 +32,10 @@ func withholdSensitiveDecodeErrors(root reflect.Type, err error) error {
 func withhold(root reflect.Type, e error) (error, bool) {
 	switch u := e.(type) {
 	case *mapstructure.DecodeError:
+		var unconvertible *mapstructure.UnconvertibleTypeError
+		if errors.As(u.Unwrap(), &unconvertible) && u.Unwrap() == error(unconvertible) {
+			return e, false // names the expected and the given type, never the value
+		}
 		t, sensitive, ok := resolveDecodeName(root, u.Name())
 		switch {
 		case !ok:
@@ -72,8 +76,10 @@ func withhold(root reflect.Type, e error) (error, bool) {
 
 // mayHoldSensitive reports whether a value of type t could hold a sensitive
 // value beneath it: a struct field tagged sensitive:"true" or named like a
-// credential, or a map or interface, whose keys are only known per value. A
-// type already being inspected adds nothing.
+// credential, or a map or interface, whose keys are only known per value.
+// Every exported field counts — of a struct decoded from text as much as of
+// any other, and a koanf:",remain" field's map — because a custom decoder
+// may fill any of them. A type already being inspected adds nothing.
 func mayHoldSensitive(t reflect.Type, seen map[reflect.Type]bool) bool {
 	t = derefType(t)
 	if seen[t] {
@@ -86,11 +92,12 @@ func mayHoldSensitive(t reflect.Type, seen map[reflect.Type]bool) bool {
 	case reflect.Slice, reflect.Array:
 		return mayHoldSensitive(t.Elem(), seen)
 	case reflect.Struct:
-		if !isBranch(t) {
-			return false // one value, decoded from one string
-		}
-		for kf := range keyedFields(t) {
-			if kf.field.Tag.Get("sensitive") == "true" || isSensitiveName(kf.field.Name) || mayHoldSensitive(kf.field.Type, seen) {
+		for i := range t.NumField() {
+			f := t.Field(i)
+			if !f.IsExported() && !f.Anonymous {
+				continue
+			}
+			if f.Tag.Get("sensitive") == "true" || isSensitiveName(f.Name) || mayHoldSensitive(f.Type, seen) {
 				return true
 			}
 		}

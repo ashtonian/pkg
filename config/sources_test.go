@@ -172,7 +172,6 @@ func TestLoad_StrictKeys(t *testing.T) {
 
 	_, err := Load[strictCfg](t.Context(), WithFile(file), WithStrictKeys(), WithSkipValidation())
 	require.ErrorIs(t, err, ErrValidation)
-	assert.Contains(t, err.Error(), file)
 	assert.Contains(t, err.Error(), "server.prot")
 	for _, accepted := range []string{"server.Port", "labels.any_key", "any.deep", "plugins.other"} {
 		assert.NotContains(t, err.Error(), accepted)
@@ -185,7 +184,7 @@ func TestLoad_StrictKeys(t *testing.T) {
 
 	_, err = Load[strictCfg](t.Context(), WithDefaults(map[string]any{"servr.port": 1}), WithStrictKeys(), WithSkipValidation())
 	require.ErrorIs(t, err, ErrValidation)
-	assert.Contains(t, err.Error(), "WithDefaults")
+	assert.Contains(t, err.Error(), "servr")
 
 	// An environment variable that fits no key is never loaded.
 	_, err = Load[strictCfg](t.Context(), WithEnvPrefix("STRICT"), WithStrictKeys(), WithSkipValidation(),
@@ -315,6 +314,12 @@ func TestLoad_ParseErrorQuotesNothing(t *testing.T) {
 	assert.NotContains(t, err.Error(), leaked)
 	require.ErrorAs(t, err, &pe)
 	assert.Equal(t, "override provider 0", pe.Source)
+
+	// A value that reads like a location is not taken for one.
+	_, err = Load[cfg](t.Context(), WithBaseProvider(rawBytes("token: !!int line 8421\n"), yaml.Parser()))
+	require.ErrorAs(t, err, &pe)
+	assert.Zero(t, pe.Line)
+	assert.NotContains(t, err.Error(), "8421")
 }
 
 // An element struct's default tags apply to every map entry and slice
@@ -328,11 +333,12 @@ func TestLoad_ElementDefaults(t *testing.T) {
 		} `koanf:"tls"`
 	}
 	type cfg struct {
-		Features map[string]limits `koanf:"features"`
-		Pools    []limits          `koanf:"pools"`
+		Features map[string]limits  `koanf:"features"`
+		Pools    []limits           `koanf:"pools"`
+		Optional map[string]*limits `koanf:"optional"`
 	}
 	got, err := Load[cfg](t.Context(),
-		WithBaseProvider(rawBytes("features:\n  audit:\n    limit: 7\n  empty:\npools:\n  - name: a\n"), yaml.Parser()),
+		WithBaseProvider(rawBytes("features:\n  audit:\n    limit: 7\n  empty: {}\npools:\n  - name: a\noptional:\n  off:\n"), yaml.Parser()),
 		WithEnvPrefix("APP"),
 		WithEnviron(func() []string { return []string{"APP_FEATURES_DEVICES_NAME=d"} }),
 		WithSkipValidation(),
@@ -341,7 +347,9 @@ func TestLoad_ElementDefaults(t *testing.T) {
 	assert.Equal(t, 7, got.Features["audit"].Limit, "a value a source set wins")
 	assert.True(t, got.Features["audit"].TLS.Enabled, "nested element defaults apply too")
 	assert.Equal(t, 50, got.Features["devices"].Limit, "an entry the environment created")
-	assert.Equal(t, 50, got.Features["empty"].Limit, "an entry written with no value")
+	assert.Equal(t, 50, got.Features["empty"].Limit, "an entry written as {}")
 	require.Len(t, got.Pools, 1)
 	assert.Equal(t, 50, got.Pools[0].Limit)
+	assert.Contains(t, got.Optional, "off")
+	assert.Nil(t, got.Optional["off"], "an explicit null stays null")
 }

@@ -98,7 +98,7 @@ C4Component
         Component(print, "PrintRedacted / RedactedMap / PrintUsage", "func", "Diagnostics with redaction")
     }
     Container_Boundary(k, "config/kongprovider") {
-        Component(kong, "WithOverridesFromTags / HelpFromTags", "func", "Typed flags → override provider; help from tags")
+        Component(kong, "WithOverridesFromStruct / HelpFromConfig", "func", "Typed flags → override provider; help from the config struct")
     }
 
     System_Ext(koanf, "knadh/koanf/v2", "Providers, parsers, merge, mapstructure decode")
@@ -129,7 +129,7 @@ caller ──NewReloader / Arm / Run / Stop──▶ Reloader ──re-runs the 
 - `Load[T](ctx, opts...)` — one load, for boot.
 - `NewReloader[T](ctx, loadOpts, opts...)` or `NewReloaderFunc(ctx, load, opts...)`, then `Arm` / `Run` / `Stop` / `Reload` / `SourceChanged` / `Config` / `Stats` — hot reload.
 - `PrintRedacted`, `RedactedMap`, `PrintUsage[T]` — diagnostics.
-- `kongprovider.WithOverridesFromTags[T]`, `kongprovider.HelpFromTags[T]` — the Kong bridge.
+- `kongprovider.WithOverridesFromStruct[T]`, `kongprovider.HelpFromConfig[T]` — the Kong bridge.
 
 **Exit points**
 - A populated `*T`; for a `Reloader`, an atomically swapped pointer plus `WithOnReloadSuccess` callbacks.
@@ -168,7 +168,7 @@ Key rules (`Fields[T]` is their single implementation, shared by defaults, envir
 - A key segment is the `koanf` tag's name, or the lowercased field name when the tag has none.
 - Unexported fields, `koanf:"-"` and `,remain` are not keys; `,squash` merges a struct's keys into its parent.
 - Pointers are followed. A struct implementing `encoding.TextUnmarshaler` (`time.Time`, `netip.Addr`) is one key decoded from one string, not a subtree.
-- Maps, slices, arrays and interfaces are keys of their own; a map's entries are addressed beneath it (`labels.team`). The `default` tags of a map's or slice's element struct apply to every entry the sources create, below what they set: an entry `features.audit` gets `limit: 50` from `Limit int default:"50"` unless a source set it.
+- Maps, slices, arrays and interfaces are keys of their own; a map's entries are addressed beneath it (`labels.team`). The `default` tags of a map's or slice's element struct apply to every entry the sources create, below what they set: an entry `features.audit` gets `limit: 50` from `Limit int default:"50"` unless a source set it. An entry or field set to `null` is explicit and stays null, so a null that turns an optional part off is not turned back on; write `{}` for an entry that should take its defaults.
 - A recursive type stops at the recursion: its nested part decodes from files but has no default, environment or flag key.
 
 ## Sources and precedence
@@ -235,10 +235,10 @@ semicolons := func(from, to reflect.Type, data any) (any, error) {
 cfg, err := config.Load[AppConfig](ctx, config.WithDecodeHook(mapstructure.DecodeHookFuncType(semicolons)))
 ```
 
-`WithStrictKeys()` fails the load with `ErrValidation` when a file, provider or `WithDefaults` sets a key decoding would ignore — a typo, or a setting that was removed — naming each key (`server.prot`, `items[0].prot`, `named[primary].prot`) and its source. Keys are followed the way decoding follows them: into slice elements and the entries of a map of structs, through squashed structs, and past a value a decode hook turns into something without keys. A map's own keys (`labels.example.com`), anything beneath an interface, and keys a `,remain` field collects are accepted. Environment variables cannot trip it: one that fits no key is not loaded.
+`WithStrictKeys()` fails the load with `ErrValidation` when a file, provider or `WithDefaults` sets a key no field decodes — a typo, or a setting that was removed — naming each key (`server.prot`, `items[0].prot`, `named[primary].prot`). The decoder reports the keys it did not use as it decodes the merged sources, so the check follows decoding exactly: into slice elements and the entries of a map of structs, through squashed structs, and past input a decode hook or a self-decoding type consumes. A map's own keys (`labels.example.com`), anything beneath an interface, and keys a `,remain` field collects are accepted. The merged tree does not record which source set a key, so the error names keys only. Environment variables cannot trip it: one that fits no key is not loaded.
 
 ```txt
-loading config file config.yaml: configuration validation failed: keys no field of main.AppConfig decodes: server.prot
+unmarshaling config: configuration validation failed: keys no field of main.AppConfig decodes: server.prot
 ```
 
 ## Secrets
@@ -385,13 +385,14 @@ This is `Example_reloadEndpoint`.
 
 ### File watching and Kubernetes
 
-`WithFileWatch` resolves each watched path as the kernel does — a `..` after a symlink climbs from the link's target — and subscribes to the target's directory and every directory holding a symlink the resolution passes through, re-resolving after the debounce settles. Every four debounce windows (at least every second) it also re-verifies, without an event to prompt it, that the directories it watches are still the ones at their paths. It detects:
+`WithFileWatch` resolves each watched path as the kernel does — a `..` after a symlink climbs from the link's target — and subscribes to the target's directory and every directory holding a symlink the resolution passes through, re-resolving after the debounce settles. Every four debounce windows, and no more often than once a second (every 2s at the default debounce), it also resolves its paths again with no event to prompt it, which catches what sends the watch no event. It detects:
 
 - Direct writes, write-temp-then-rename saves, removals and renames of the file or its target.
 - Symlink swaps of the file or of any directory on its path (`current -> releases/v2`), including Kubernetes ConfigMap and Secret volume updates, where kubelet renames `..data` over a new `..<timestamp>` directory and the key path is never written.
 - A file appearing in a directory that did not exist when the watch was armed; a watched directory removed, recreated or moved away (the reload that follows fails if the file went with it); and an ancestor directory renamed away and recreated, caught by the recheck.
+- On macOS and BSD, a relink whose only trace is a temporary name renamed over the link (`ln -s new link.tmp && mv -Tf link.tmp link`): kqueue sends no event because the directory's set of names is unchanged, and the recheck finds the new target.
 
-It cannot detect sources without a filesystem event — environment variables and providers; use `WithPollInterval` or `SourceChanged`. On macOS and BSD, a relink whose only trace is a temporary name renamed away (`ln -s new link.tmp && mv -Tf link.tmp link`) produces no event; polling catches it. A ConfigMap mounted with `subPath` never updates inside the container, so neither watching nor polling sees a change: mount the volume without `subPath`.
+It cannot detect sources that are not files — environment variables and providers; use `WithPollInterval` or `SourceChanged`. A ConfigMap mounted with `subPath` never updates inside the container, so neither watching nor polling sees a change: mount the volume without `subPath`.
 
 Once the watch is armed, every watched file is compared with what the last load read, so a change made after the initial load and before the watch existed is reloaded when `Run` starts.
 
@@ -401,7 +402,7 @@ Once the watch is armed, every watched file is compared with what the last load 
 
 A value is redacted when its field, or any struct, slice or map holding it, is tagged `sensitive:"true"`; when a name it sits under contains `password`, `secret`, `token`, `key`, `credential`, `auth`, `private`, `apikey` or `api_key` — its own field name, the name of a map or slice holding it, or any map key above it; a struct field's name does not cover the struct it holds, so an `Auth` block's `issuer` still prints. A pointer, map or slice that leads back to one being printed prints `[CYCLE]`. The same rule withholds values from decode errors and marks `Field.Sensitive`.
 
-`PrintUsage[T](envPrefix)` lists what an operator can set — key, environment variable, type, default, whether it is required, description — as a table, JSON, or (`FormatEnv`) a commented `export` template. A map's entries are rows with a `<key>` placeholder and a slice of structs' elements rows with `<i>`, their element defaults included, since those apply to every entry. A default that is, or could hold, a sensitive value is withheld — a sensitive field's, or a map's or interface's, whose keys only a decoded value reveals; `Field.PrintableDefault` is the rule, and `kongprovider.HelpFromTags` applies it too:
+`PrintUsage[T](envPrefix)` lists what an operator can set — key, environment variable, type, default, whether it is required, description — as a table, JSON, or (`FormatEnv`) a commented `export` template. A map's entries are rows with a `<key>` placeholder and a slice of structs' elements rows with `<i>`, their element defaults included, since those apply to every entry. A default that is, or could hold, a sensitive value is withheld — a sensitive field's, or a map's or interface's, whose keys only a decoded value reveals; `Field.PrintableDefault` is the rule, and `kongprovider.HelpFromConfig` applies it too:
 
 ```txt
 KEY       ENV           TYPE           DEFAULT     DESCRIPTION
@@ -415,32 +416,35 @@ This is `ExamplePrintUsage`; wire it to a `--help-config` flag or a `usage` subc
 
 ## Kong integration
 
-`kongprovider` (its own module, so the core does not depend on Kong) loads the flags the user typed as an override provider and describes the config struct in Kong's help. Declare the flags on the CLI struct without defaults; the config struct owns defaults, descriptions and validation, and a `flag` tag ties each field to a flag:
+`kongprovider` (its own module, so the core does not depend on Kong) loads the flags the user typed as an override provider and describes the config struct in Kong's help. Embed the config struct in the CLI struct: Kong makes a flag of every field, nested structs become flag groups with a prefix, and the config struct's keys, defaults, descriptions and validation stay the one schema.
 
 ```go
-// AppConfig owns every default, description and validation rule; a flag tag
-// ties a field to the CLI flag that overrides it.
-type AppConfig struct {
-	Port     int    `koanf:"port" default:"8080" validate:"min=1,max=65535" flag:"port" desc:"HTTP listen port"`
-	LogLevel string `koanf:"log_level" default:"info" validate:"oneof=debug info warn error" flag:"log-level" desc:"Log level"`
-	Metrics  bool   `koanf:"metrics" default:"true" flag:"metrics" desc:"Serve /metrics"`
+type DBConfig struct {
+	Host     string `koanf:"host" default:"localhost" desc:"Database host"`
+	MaxConns int    `koanf:"max_conns" default:"25" validate:"min=1" desc:"Connection pool size"`
+	Password string `koanf:"password" validate:"required" kong:"-"` // file or APP_DB_PASSWORD only
 }
 
-// CLI declares the flags' names and shapes only.
+type AppConfig struct {
+	Port     int               `koanf:"port" default:"8080" validate:"min=1,max=65535" short:"p" desc:"HTTP listen port"`
+	LogLevel string            `koanf:"log_level" default:"info" validate:"oneof=debug info warn error" desc:"Log level"`
+	Metrics  bool              `koanf:"metrics" default:"true" negatable:"" desc:"Serve /metrics"`
+	DB       DBConfig          `koanf:"db" embed:"" prefix:"db-"`
+	Limits   map[string]int    `koanf:"limits" kong:"-"` // from the file
+}
+
 type CLI struct {
-	Config   string `type:"path" default:"config.yaml" help:"Config file."`
-	Port     int    `short:"p"`
-	LogLevel string
-	Metrics  bool `negatable:""`
+	Config    string `type:"path" default:"config.yaml" help:"Config file."`
+	AppConfig `embed:""`
 	// ... subcommands
 }
 
 var cli CLI
-kctx := kong.Parse(&cli, kongprovider.HelpFromTags[AppConfig]("APP"))
+kctx := kong.Parse(&cli, kongprovider.HelpFromConfig[AppConfig]("APP"))
 cfg, err := config.Load[AppConfig](ctx,
 	config.WithFile(cli.Config),
 	config.WithEnvPrefix("APP"),
-	kongprovider.WithOverridesFromTags[AppConfig](kctx),
+	kongprovider.WithOverridesFromStruct[AppConfig](kctx),
 )
 ```
 
@@ -453,30 +457,27 @@ Usage: app <command> [flags]
 Flags:
   -h, --help                    Show context-sensitive help.
       --config="config.yaml"    Config file.
-  -p, --port=INT                HTTP listen port (config: port; env: APP_PORT;
-                                default: 8080)
-      --log-level=STRING        Log level (config: log_level; env:
-                                APP_LOG_LEVEL; default: info)
+  -p, --port=8080               HTTP listen port (config: port; env: APP_PORT)
+      --log-level="info"        Log level (config: log_level; env:
+                                APP_LOG_LEVEL)
       --[no-]metrics            Serve /metrics (config: metrics; env:
-                                APP_METRICS; default: true)
+                                APP_METRICS)
+      --db-host="localhost"     Database host (config: db.host; env:
+                                APP_DB_HOST)
 ...
 
-$ APP_PORT=9000 app --no-metrics
-serving on :9000 (log level info, metrics false)
-
-$ app print -p 7000
-FIELD      VALUE  TYPE
-----------------------------------
-port       7000   int
-log_level  info   string
-metrics    true   bool
+$ APP_PORT=9000 app --no-metrics --db-host db.internal
+serving on :9000 (log level info, db db.internal, metrics false)
 ```
 
 How the pieces fit:
 
-- **Only typed flags override.** Kong records each flag it parses from argv under its canonical name, whatever spelling was used — long, short, alias, `--flag=value`, `--no-flag`. Kong defaults and values from Kong's own resolvers are not forwarded, so an untyped flag never masks a file or an environment variable.
-- **One schema for defaults and validation.** Do not put `default` or `required` on the CLI's own flags: Kong validates before the config pipeline runs, so a CLI `required` could not be satisfied by a file, the environment or a secret. The config struct's validation runs after every source.
-- **Help from the config struct.** `HelpFromTags` gives each tagged flag the field's `desc` when the flag has no help of its own, and appends the key, the environment variable and the default (withheld for a sensitive field). Kong refuses to build the CLI when a `flag` tag names no flag, and the load fails when a mapping does.
+- **Only typed flags override.** Kong records each flag it parses from argv under its canonical name, whatever spelling was used — long, short, alias, `--flag=value`, `--no-flag`. Kong's applied defaults and values from Kong's own resolvers are not forwarded, so a flag left out never masks a file or an environment variable, although Kong shows the field's default in the help.
+- **Flags map by field, not by name.** `WithOverridesFromStruct[T]` maps each flag whose target is a field of the `T` the CLI holds to that field's key, by the field's address, so flag names, prefixes and aliases never have to agree with a tag. Flags outside `T` (`--config`) are the CLI's own.
+- **One schema for defaults and validation.** Use `validate:"required"`, not Kong's `required`: Kong validates before the config pipeline runs, so a Kong `required` could not be satisfied by a file, the environment or a secret. Leave Kong's `env` tag off; the config package reads the environment.
+- **Some fields have no flag.** Tag maps, slices of structs, interfaces and secrets `kong:"-"`; they come from files, the environment or a secret resolver, and a secret typed on a command line lands in shell history.
+- **Help from the config struct.** `HelpFromConfig` gives each flag that sets a key the field's `desc` when it has no help of its own, and appends the key and the environment variable. Kong prints the default itself; a default that is, or could hold, a sensitive value is kept out of Kong's placeholder too.
+- **A separate CLI struct.** To expose a few settings under names of the CLI's own, keep the structs apart, tie each field to its flag with a `flag:"name"` tag and use `WithOverridesFromTags[T]`. Kong refuses to build the CLI when a `flag` tag names no flag.
 - **Subcommands.** A flag name is one key for the whole CLI. When two commands give one flag different meanings (`serve --port`, `admin --port`), build the mapping for the selected command and pass it to `WithOverrides`:
 
 ```go
@@ -487,7 +488,7 @@ if kctx.Command() == "admin" {
 cfg, err := config.Load[AppConfig](ctx, config.WithFile(cli.Config), kongprovider.WithOverrides(kctx, mapping))
 ```
 
-For a CLI tool whose config file only supplies flag defaults, Kong's own `kong.Configuration` with a YAML resolver is the simpler fit: one schema and one parsing pass. `kongprovider` is for a service whose configuration tree is larger than its CLI and exposes selected overrides.
+For a CLI tool whose config file only supplies flag defaults, Kong's own `kong.Configuration` with a YAML resolver is the simpler fit: one schema and one parsing pass. `kongprovider` is for a service whose configuration tree is larger than its CLI.
 
 ## Configuration
 
@@ -506,7 +507,7 @@ For a CLI tool whose config file only supplies flag defaults, Kong's own `kong.C
 | `WithBaseProvider(p, parser)` | `koanf.Provider`, `koanf.Parser` | none | Source between the defaults and the files; nil parser for a map-returning provider. Failure → `ErrSource`. |
 | `WithOverrideProvider(p, parser)` | `koanf.Provider`, `koanf.Parser` | none | Source above the environment, e.g. CLI flags. Failure → `ErrSource`. |
 | `WithDecodeHook(h)` | `mapstructure.DecodeHookFunc` | none | Decode hook run before the built-in duration, slice and `TextUnmarshaler` hooks. |
-| `WithStrictKeys()` | — | unknown keys ignored | A key decoding would ignore — in slice elements and map entries of structs too — fails the load with `ErrValidation`, naming the key and its source. |
+| `WithStrictKeys()` | — | unknown keys ignored | A key no field decodes — in slice elements and map entries of structs too — fails the load with `ErrValidation`, naming the key. |
 | `WithSecretPopulator(fn)` | `SecretPopulator` | nil (no secrets) | Resolves secrets into the decoded config; error → `ErrSecretProvider`. |
 | `WithPostLoad[T](fn)` | `func(context.Context, *T) error` | none | Normalize/derive after secrets, before validation; error → `ErrPostLoad`. |
 | `WithValidator(v)` | `Validator` | go-playground validator naming fields by key | Any `Struct(any) error`; `StructCtx(ctx, v)` is used when present. |
@@ -572,10 +573,11 @@ For a CLI tool whose config file only supplies flag defaults, Kong's own `kong.C
 
 ### kongprovider
 
-- `kongprovider.WithOverridesFromTags[T](kctx) config.Option` — typed flags as overrides, mapped by `flag` tags.
+- `kongprovider.WithOverridesFromStruct[T](kctx) config.Option` — typed flags as overrides, mapped by the field of `T` each writes.
+- `kongprovider.WithOverridesFromTags[T](kctx) config.Option` — typed flags as overrides, mapped by `flag` tags, for a separate CLI struct.
 - `kongprovider.WithOverrides(kctx, mapping) config.Option` — the same with an explicit flag → key mapping.
 - `kongprovider.New(kctx, mapping) koanf.Provider` — the provider itself.
-- `kongprovider.HelpFromTags[T](envPrefix) kong.Option` — flag help from the config struct.
+- `kongprovider.HelpFromConfig[T](envPrefix) kong.Option` — flag help from the config struct.
 
 ## Errors
 
@@ -595,7 +597,7 @@ The package defines no error codes: every error wraps one category sentinel toge
 
 `errors.Is(err, config.ErrReload) && errors.Is(err, config.ErrFileParse)` both hold for a reload that hit a syntax error.
 
-The errors this package writes never quote a value. A value that cannot decode into a field that is, or could hold, a sensitive value is reported by field and type only — `'rotation' cannot be decoded into time.Time (the value is sensitive and not shown)` — its cause dropped. A file or provider whose bytes do not parse is reported as a `*ParseError` naming the source and the line, without the parser's message, which can quote the source (YAML's does for `token: !!int s3cret`); `errors.As` reaches the `ParseError` and its `Err` for a diagnostic shown only where the file may be. Errors your providers, secret populator, post-load hooks and validator return are passed through as you wrote them. `ExampleLoad_errors` shows each case. Mapping the categories to your own vocabulary:
+The errors this package writes quote no value meant for a sensitive field. A value that cannot decode into a field that is, or could hold, a sensitive value — a decode hook's failure included — is reported by field and type only — `'rotation' cannot be decoded into time.Time (the value is sensitive and not shown)` — its cause dropped. A failure on an ordinary field keeps its decoder's message, which may quote the value (`time.Parse` does), so mark a field `sensitive` when its value must not appear. A file or provider whose bytes do not parse is reported as a `*ParseError` naming the source and the line, without the parser's message, which can quote the source (YAML's does for `token: !!int s3cret`); `errors.As` reaches the `ParseError` and its `Err` for a diagnostic shown only where the file may be. Errors your providers, secret populator, post-load hooks and validator return are passed through as you wrote them. `ExampleLoad_errors` shows each case. Mapping the categories to your own vocabulary:
 
 ```go
 func httpStatus(err error) int {
@@ -657,7 +659,7 @@ Alert on `ErrReload` (or a rising failure count): a process whose reloads keep f
 
 ## Security
 
-- **The package's own output quotes no secret.** Validation reports keys and rule names, never values. A decode failure on a field that is, or could hold, a sensitive value is reported by field and type, its cause — which a text decoder may have quoted — dropped; a parse failure by source and line, the parser's message kept only in `ParseError.Err`. `PrintRedacted`, `RedactedMap` and `PrintUsage` redact by tag, name and enclosing container, and withhold defaults that could hold a sensitive value.
+- **The package's own output quotes no secret.** Validation reports keys and rule names, never values. A decode failure on a field that is, or could hold, a sensitive value — a decode hook's included — is reported by field and type, its cause — which a text decoder may have quoted — dropped; an ordinary field's keeps its decoder's message, which may quote the value; a parse failure by source and line, the parser's message kept only in `ParseError.Err`. `PrintRedacted`, `RedactedMap` and `PrintUsage` redact by tag, name and enclosing container, and withhold defaults that could hold a sensitive value.
 - **Your hooks' errors are yours.** Errors from your providers, secret populator, post-load hooks and validator pass through unchanged; keep values out of them before returning one from a reload endpoint.
 - **Mark what the heuristics cannot see.** A credential in a field named `Dsn` or `URL` is not caught by name; tag it `sensitive:"true"`.
 - **Secrets come from your resolver.** Keep them out of files and defaults; resolve them in `WithSecretPopulator` with your backend's own authentication and timeouts.

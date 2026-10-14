@@ -145,8 +145,9 @@ type resolution struct {
 }
 
 // resolvePath resolves path component by component as the kernel does: a
-// symlink is replaced in place by its target, and ".." climbs from the
-// directory resolved so far.
+// symlink is replaced in place by its target, ".." climbs from the directory
+// resolved so far, and every component a name is looked up in must be a
+// directory — "file/../x", "file/." and "file/" do not resolve.
 func resolvePath(path string) resolution {
 	type part struct {
 		name string
@@ -156,6 +157,9 @@ func resolvePath(path string) resolution {
 	vol := filepath.VolumeName(path)
 	dir := vol + string(filepath.Separator)
 	names := splitPath(path[len(vol):])
+	if strings.HasSuffix(path, string(filepath.Separator)) {
+		names = append(names, ".") // a trailing separator requires a directory
+	}
 	rest := make([]part, len(names))
 	for i, n := range names {
 		rest[i] = part{name: n, last: i == len(names)-1}
@@ -180,6 +184,10 @@ func resolvePath(path string) resolution {
 			return r
 		}
 		if info.Mode()&fs.ModeSymlink == 0 {
+			if len(rest) > 0 && !info.IsDir() {
+				r.dirs = append(r.dirs, dir) // a name looked up in a file: ENOTDIR
+				return r
+			}
 			dir = next
 			continue
 		}
@@ -316,11 +324,10 @@ func nearestExistingDir(dir string) string {
 }
 
 // owner returns the declared path an event on name affects directly: name is
-// where that path's last name sits, its current target, or the path as
-// declared.
+// where that path's last name sits, or its current target.
 func (w *fileWatch) owner(name string) (string, bool) {
 	for _, p := range w.declared {
-		if r := w.paths[p]; name == r.entry || name == r.target || name == filepath.Clean(p) {
+		if r := w.paths[p]; name == r.entry || name == r.target {
 			return p, true
 		}
 	}
@@ -374,8 +381,10 @@ func (w *fileWatch) settle() (path string, changed bool, err error) {
 	switch {
 	case path != "":
 		return path, true, err
-	case moved:
+	case moved && movedTo != "":
 		return movedTo, true, err
+	case moved:
+		return movedFrom, true, err
 	case shifted:
 		return "", true, err
 	default:
@@ -395,16 +404,14 @@ func (w *fileWatch) recheck() (path string, changed bool, err error) {
 	return w.settle()
 }
 
-// refresh re-resolves every declared path and reports the last target move
-// observed. A path that does not resolve keeps its last target: one dangling
-// for a moment mid-swap must not read as moving away and back, reloading
-// twice for one swap.
+// refresh re-resolves every declared path and reports the last move
+// observed: a new target, or a path that stopped or started resolving — a
+// directory on its way removed, a link it passes through deleted. A path
+// caught dangling in the middle of a swap reloads then, failing and keeping
+// the live config, and again once the swap lands.
 func (w *fileWatch) refresh() (from, to string, moved bool) {
 	for _, p := range w.declared {
 		was, now := w.paths[p], resolvePath(p)
-		if now.target == "" {
-			now.target = was.target
-		}
 		w.paths[p] = now
 		if now.target != was.target {
 			from, to, moved = was.target, now.target, true

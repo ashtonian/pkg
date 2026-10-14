@@ -141,3 +141,35 @@ func TestPrintUsage_WithholdsCompositeDefaults(t *testing.T) {
 	_, printable := f.PrintableDefault()
 	assert.False(t, printable)
 }
+
+// The env template never exports a withheld default: the line is commented
+// out, so sourcing the template cannot set a variable to a placeholder.
+func TestPrintUsage_EnvTemplateCommentsOutWithheldDefaults(t *testing.T) {
+	type cfg struct {
+		Settings map[string]string `koanf:"settings" default:"{\"password\":\"FAKE_SECRET_VALUE\"}"`
+		Any      any               `koanf:"any" default:"FAKE_SECRET_VALUE"`
+	}
+	var buf bytes.Buffer
+	require.NoError(t, PrintUsage[cfg]("APP", WithFormat(FormatEnv), WithWriter(&buf)))
+	out := buf.String()
+	assert.NotContains(t, out, "FAKE_SECRET_VALUE")
+	assert.NotContains(t, out, "\nexport APP_SETTINGS=")
+	assert.NotContains(t, out, "\nexport APP_ANY=")
+	assert.Contains(t, out, "# export APP_SETTINGS=")
+}
+
+// remainRow is a slice element whose remain map holds any key a source
+// writes, so a default for the slice is withheld.
+type remainRow struct {
+	Extra map[string]string `koanf:",remain"`
+}
+
+func TestPrintUsage_WithholdsRemainDefaults(t *testing.T) {
+	type cfg struct {
+		Rows []remainRow `koanf:"rows" default:"[{\"password\":\"FAKE_SECRET_VALUE\"}]"`
+	}
+	var buf bytes.Buffer
+	require.NoError(t, PrintUsage[cfg]("APP", WithFormat(FormatJSON), WithWriter(&buf)))
+	assert.NotContains(t, buf.String(), "FAKE_SECRET_VALUE")
+	assert.Contains(t, buf.String(), `"default": "[REDACTED]"`)
+}

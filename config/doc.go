@@ -49,7 +49,8 @@
 // Keys match fields regardless of letter case, as decoding does; each
 // source's keys are rewritten into the fields' spelling before the sources
 // merge, so precedence holds whatever case a source used. An element
-// struct's default tags apply to every map entry and slice element.
+// struct's default tags apply to every map entry and slice element; an entry
+// set to null stays null — write {} for an entry that takes its defaults.
 //
 // # Pipeline
 //
@@ -68,10 +69,12 @@
 // [ErrFileParse], [ErrSource], [ErrSecretProvider], [ErrPostLoad], and for a
 // reload [ErrReload], [ErrReloadInProgress], [ErrReloaderStopped] — together
 // with its cause, so errors.Is and errors.As reach either. The package defines
-// no error codes; map the categories to your own. The errors it writes never
-// quote a value: a decode failure on a field that is, or could hold, a
-// sensitive value names the field and type only, and a [ParseError] names the
-// source and line only. Errors your providers, secret populator, hooks and
+// no error codes; map the categories to your own. The errors it writes quote
+// no value meant for a sensitive field: a decode failure on a field that is,
+// or could hold, a sensitive value — a decode hook's failure included — names
+// the field and type only, and a [ParseError] names the source and line only.
+// A failure on an ordinary field keeps its decoder's message, which may quote
+// the value. Errors your providers, secret populator, post-load hooks and
 // validator return pass through as written.
 //
 // # Hot Reload
@@ -115,12 +118,13 @@
 // [WithFileWatch] detects direct writes, rename-based saves, symlink swaps of
 // the file or of any directory on its path, and directories removed,
 // recreated or replaced further up — including Kubernetes ConfigMap and
-// Secret volume updates. Paths resolve as the kernel resolves them. It
-// cannot detect sources with no filesystem event (env vars, providers) — use
-// [WithPollInterval] or SourceChanged — or, on macOS and BSD only, a relink
-// whose sole trace is a temporary name renamed away, which polling catches. A
-// subPath-mounted ConfigMap never updates inside the container at all; mount
-// the volume without subPath.
+// Secret volume updates. Paths resolve as the kernel resolves them, and a
+// periodic recheck finds what sends no event: an ancestor directory renamed
+// away and recreated, or — on macOS and BSD — a relink whose only trace is a
+// temporary name renamed over the link. It cannot detect sources that are
+// not files (environment variables, providers): use [WithPollInterval] or
+// SourceChanged. A subPath-mounted ConfigMap never updates inside the
+// container at all; mount the volume without subPath.
 //
 // # Diagnostics
 //

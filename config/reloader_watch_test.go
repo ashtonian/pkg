@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -185,9 +186,10 @@ func TestFileWatch_RelinksDropRetiredDirectories(t *testing.T) {
 
 // The decision itself, independent of what a platform's backend reports: an
 // event on a symlink's target, or a removal or rename of a declared file, is
-// a change; a chmod is not.
+// a change; a chmod is not. Events carry the resolved names of the watched
+// directories, so the test's directory is named without symlinks.
 func TestFileWatch_EventsOnTargetsAndRemovals(t *testing.T) {
-	dir := t.TempDir()
+	dir := realTempDir(t)
 	target := filepath.Join(dir, "target.yaml")
 	plain := filepath.Join(dir, "plain.yaml")
 	link := filepath.Join(dir, "link.yaml")
@@ -560,4 +562,210 @@ func TestReloader_AncestorReplacedIsReloaded(t *testing.T) {
 	require.NoError(t, os.MkdirAll(dir, 0o700))
 	writeFile(t, file, "port: 2\n")
 	eventually(t, func() bool { return r.Config().Port == 2 }, "the recheck to reload the replaced tree")
+}
+
+// testWatch watches paths with a millisecond debounce, closed at cleanup.
+func testWatch(t *testing.T, paths ...string) *fileWatch {
+	t.Helper()
+	w, err := newFileWatch(paths, time.Millisecond, discardLogger())
+	require.NoError(t, err)
+	t.Cleanup(func() { assert.NoError(t, w.close()) })
+	return w
+}
+
+// A path that stops resolving is a change even when the directories watched
+// keep their names: a removed directory the path climbs out of with "..", or
+// a removed directory link it passes through.
+func TestFileWatch_PathThatStopsResolvingIsAChange(t *testing.T) {
+	t.Run("directory before ..", func(t *testing.T) {
+		root := realTempDir(t)
+		branch := filepath.Join(root, "branch")
+		require.NoError(t, os.Mkdir(branch, 0o700))
+		writeFile(t, filepath.Join(root, "config.yaml"), "value: one\n")
+		file := branch + "/../config.yaml"
+		w := testWatch(t, file)
+
+		require.NoError(t, os.Remove(branch))
+		w.observe(fsnotify.Event{Name: branch, Op: fsnotify.Remove})
+		_, changed, err := w.settle()
+		require.NoError(t, err)
+		assert.True(t, changed)
+	})
+	t.Run("directory link", func(t *testing.T) {
+		root := realTempDir(t)
+		writeFile(t, filepath.Join(root, "config.yaml"), "value: one\n")
+		link := filepath.Join(root, "current")
+		require.NoError(t, os.Symlink(".", link))
+		file := filepath.Join(link, "config.yaml")
+		w := testWatch(t, file)
+
+		require.NoError(t, os.Remove(link))
+		w.observe(fsnotify.Event{Name: link, Op: fsnotify.Remove})
+		_, changed, err := w.settle()
+		require.NoError(t, err)
+		assert.True(t, changed)
+	})
+}
+
+// Every component before the last must be a directory, as the kernel
+// requires; a trailing separator requires one too.
+func TestResolvePath_NonDirectoryComponentResolvesNothing(t *testing.T) {
+	root := realTempDir(t)
+	regular := filepath.Join(root, "regular")
+	writeFile(t, regular, "ordinary file")
+	writeFile(t, filepath.Join(root, "config.yaml"), "value: one\n")
+	for _, p := range []string{regular + "/../config.yaml", regular + "/.", regular + "/"} {
+		_, statErr := os.Stat(p)
+		require.Error(t, statErr, "the kernel refuses %q", p)
+		assert.Empty(t, resolvePath(p).target, p)
+	}
+}
+
+// resolvePath agrees with the kernel on the shapes a path can take.
+func TestResolvePath_AgreesWithTheKernel(t *testing.T) {
+	root := realTempDir(t)
+	require.NoError(t, os.Mkdir(filepath.Join(root, "child"), 0o700))
+	file := filepath.Join(root, "config.yaml")
+	writeFile(t, file, "value: one\n")
+	require.NoError(t, os.Symlink("config.yaml", filepath.Join(root, "relative")))
+	require.NoError(t, os.Symlink(file, filepath.Join(root, "absolute")))
+	t.Chdir(filepath.Join(root, "child"))
+	fromWD, err := absolute("../config.yaml")
+	require.NoError(t, err)
+
+	for _, p := range []string{
+		root + "/./child/../config.yaml",
+		filepath.Join(root, "relative"),
+		filepath.Join(root, "absolute"),
+		"/../../" + strings.TrimPrefix(file, "/"),
+		fromWD,
+	} {
+		want, err := filepath.EvalSymlinks(p)
+		require.NoError(t, err)
+		assert.Equal(t, want, resolvePath(p).target, p)
+	}
+}
+
+// A write to the file a path names lexically, which is not the file it
+// resolves to, is not a change.
+func TestFileWatch_LexicalTwinIsNotAChange(t *testing.T) {
+	root := realTempDir(t)
+	require.NoError(t, os.MkdirAll(filepath.Join(root, "actual", "child"), 0o700))
+	require.NoError(t, os.Mkdir(filepath.Join(root, "declared"), 0o700))
+	link := filepath.Join(root, "declared", "jump")
+	require.NoError(t, os.Symlink(filepath.Join(root, "actual", "child"), link))
+	file := link + "/../config.yaml"
+	writeFile(t, file, "value: current\n")
+	twin := filepath.Clean(file)
+	writeFile(t, twin, "value: unrelated\n")
+	w := testWatch(t, file)
+
+	w.observe(fsnotify.Event{Name: twin, Op: fsnotify.Write})
+	_, changed, err := w.settle()
+	require.NoError(t, err)
+	assert.False(t, changed)
+}
+
+// The periodic recheck reports nothing while idle, leaves a pending burst to
+// settle, and does not report a change settle already reported.
+func TestFileWatch_RecheckLeavesPendingBurstsToSettle(t *testing.T) {
+	root := realTempDir(t)
+	parent := filepath.Join(root, "parent")
+	dir := filepath.Join(parent, "nested")
+	file := filepath.Join(dir, "config.yaml")
+	require.NoError(t, os.MkdirAll(dir, 0o700))
+	writeFile(t, file, "value: first\n")
+	w := testWatch(t, file)
+
+	recheckIsQuiet := func(when string) {
+		t.Helper()
+		_, changed, err := w.recheck()
+		require.NoError(t, err)
+		assert.False(t, changed, when)
+	}
+	recheckIsQuiet("idle")
+	recheckIsQuiet("idle, again")
+
+	w.observe(fsnotify.Event{Name: filepath.Join(dir, "sibling"), Op: fsnotify.Write})
+	require.NoError(t, os.Rename(parent, filepath.Join(root, "old")))
+	require.NoError(t, os.MkdirAll(dir, 0o700))
+	writeFile(t, file, "value: second\n")
+	recheckIsQuiet("a burst is pending")
+
+	_, changed, err := w.settle()
+	require.NoError(t, err)
+	assert.True(t, changed, "settle reports the replaced ancestor")
+	recheckIsQuiet("after settle")
+	recheckIsQuiet("after settle, again")
+}
+
+// Events that keep arriving for other files delay a pending reload by a
+// bounded number of debounce windows; they never starve it.
+func TestFileWatch_ContinuousEventsDoNotStarveAReload(t *testing.T) {
+	root := realTempDir(t)
+	file := filepath.Join(root, "config.yaml")
+	writeFile(t, file, "value: first\n")
+	w := testWatch(t, file)
+	w.debounce = 2 * time.Millisecond
+	w.observe(fsnotify.Event{Name: file, Op: fsnotify.Write})
+
+	tick := time.NewTicker(time.Millisecond)
+	defer tick.Stop()
+	deadline := time.After(time.Second)
+	for {
+		select {
+		case <-tick.C:
+			w.observe(fsnotify.Event{Name: filepath.Join(root, "sibling"), Op: fsnotify.Write})
+		case <-w.timer.C:
+			_, changed, err := w.settle()
+			require.NoError(t, err)
+			assert.True(t, changed)
+			return
+		case <-deadline:
+			t.Fatal("continuous events starved the pending reload")
+		}
+	}
+}
+
+// A directory link removed from the path makes the file unreadable; Run
+// reports the failed reload instead of keeping quiet.
+func TestReloader_LostDirectoryLinkIsReported(t *testing.T) {
+	root := realTempDir(t)
+	writeFile(t, filepath.Join(root, "config.yaml"), "port: 1\n")
+	link := filepath.Join(root, "current")
+	require.NoError(t, os.Symlink(".", link))
+	r, err := NewReloader[portCfg](t.Context(),
+		[]Option{WithRequiredFile(filepath.Join(link, "config.yaml")), WithSkipValidation(), WithLogger(discardLogger())},
+		WithFileWatch(5*time.Millisecond),
+	)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = r.Stop(context.Background()) })
+	armReloader(t, r)
+	runReloader(t, r)
+
+	require.NoError(t, os.Remove(link))
+	eventually(t, func() bool { return r.Stats().Failures > 0 }, "the failed reload to be reported")
+	assert.Equal(t, 1, r.Config().Port, "the previous config stays live")
+}
+
+// A relink whose only trace is a temporary name renamed over the link
+// (`ln -s new link.tmp && mv -Tf link.tmp link`) leaves kqueue's directory
+// listing unchanged, so it may send no event; the recheck finds the new
+// target anyway.
+func TestFileWatch_RecheckCatchesASilentRelink(t *testing.T) {
+	root := realTempDir(t)
+	for _, v := range []string{"v1", "v2"} {
+		require.NoError(t, os.Mkdir(filepath.Join(root, v), 0o700))
+		writeFile(t, filepath.Join(root, v, "config.yaml"), "value: "+v+"\n")
+	}
+	link := filepath.Join(root, "current")
+	require.NoError(t, os.Symlink("v1", link))
+	w := testWatch(t, filepath.Join(link, "config.yaml"))
+
+	tmp := filepath.Join(root, "current.tmp")
+	require.NoError(t, os.Symlink("v2", tmp))
+	require.NoError(t, os.Rename(tmp, link))
+	_, changed, err := w.recheck()
+	require.NoError(t, err)
+	assert.True(t, changed)
 }

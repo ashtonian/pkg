@@ -46,6 +46,7 @@ type usageRow struct {
 	// pattern marks a map entry: Key and Env hold a <key> placeholder.
 	pattern    bool
 	hasDefault bool
+	withheld   bool // the default exists but is not shown
 }
 
 // PrintUsage writes every key of T an operator can set: its path, the
@@ -154,6 +155,7 @@ func usageRowOf(f Field, key, env string, showSensitive bool) usageRow {
 		row.Default = def
 		if _, printable := f.PrintableDefault(); !printable && !showSensitive {
 			row.Default = redactedValue
+			row.withheld = true
 		}
 	}
 	return row
@@ -208,7 +210,7 @@ func printUsageEnv(w io.Writer, rows []usageRow) error {
 			ew.printf("# set in a config file\n")
 			continue
 		}
-		if r.pattern || r.Sensitive || !r.hasDefault {
+		if r.pattern || r.Sensitive || r.withheld || !r.hasDefault {
 			ew.printf("# export %s=\n", r.Env)
 			continue
 		}

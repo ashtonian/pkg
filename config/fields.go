@@ -22,6 +22,10 @@ type Field struct {
 	// looks like a credential (password, secret, token, key, ...). A struct
 	// field's name does not cover the struct it holds.
 	Sensitive bool
+	// Index is the leaf's index sequence in the config struct, for
+	// reflect.Value.FieldByIndex (or FieldByIndexErr, when a pointer on the
+	// way may be nil).
+	Index []int
 }
 
 // Fields reports every leaf key of T in declaration order. It is the single
@@ -48,9 +52,9 @@ func Fields[T any]() []Field {
 	return fieldsOf(reflect.TypeFor[T]())
 }
 
-// walkFields appends t's leaves under prefix; sensitive is true beneath a
-// struct tagged sensitive:"true".
-func walkFields(t reflect.Type, prefix string, sensitive bool, walking map[reflect.Type]bool, out *[]Field) {
+// walkFields appends t's leaves under prefix, at index sequence index;
+// sensitive is true beneath a struct tagged sensitive:"true".
+func walkFields(t reflect.Type, prefix string, index []int, sensitive bool, walking map[reflect.Type]bool, out *[]Field) {
 	t = derefType(t)
 	if !isBranch(t) || walking[t] {
 		return
@@ -61,8 +65,9 @@ func walkFields(t reflect.Type, prefix string, sensitive bool, walking map[refle
 	for kf := range keyedFields(t) {
 		path := joinPath(prefix, kf.key)
 		tagged := sensitive || kf.field.Tag.Get("sensitive") == "true"
+		at := append(slices.Clone(index), kf.field.Index...)
 		if isBranch(derefType(kf.field.Type)) {
-			walkFields(kf.field.Type, path, tagged, walking, out)
+			walkFields(kf.field.Type, path, at, tagged, walking, out)
 			continue
 		}
 		if kf.key == "" {
@@ -74,6 +79,7 @@ func walkFields(t reflect.Type, prefix string, sensitive bool, walking map[refle
 			Tag:       kf.field.Tag,
 			Type:      kf.field.Type,
 			Sensitive: tagged || isSensitiveName(kf.field.Name),
+			Index:     at,
 		})
 	}
 }
@@ -204,6 +210,6 @@ func defaultsFrom(fields []Field) map[string]any {
 // fieldsOf is Fields for a type known only at run time.
 func fieldsOf(t reflect.Type) []Field {
 	var out []Field
-	walkFields(t, "", false, map[reflect.Type]bool{}, &out)
+	walkFields(t, "", nil, false, map[reflect.Type]bool{}, &out)
 	return out
 }

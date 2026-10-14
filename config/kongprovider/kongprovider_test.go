@@ -306,10 +306,10 @@ func TestWithOverrides_PerCommandMapping(t *testing.T) {
 	}
 }
 
-// HelpFromTags describes each tagged flag from the config struct: its
+// HelpFromConfig describes each tagged flag from the config struct: its
 // description, key, environment variable and default, a sensitive default
 // withheld; a flag the user wrote help for keeps it.
-func TestHelpFromTags_DescribesTaggedFlags(t *testing.T) {
+func TestHelpFromConfig_DescribesTaggedFlags(t *testing.T) {
 	type cli struct {
 		Port     int
 		Token    string
@@ -322,7 +322,7 @@ func TestHelpFromTags_DescribesTaggedFlags(t *testing.T) {
 		LogLevel string `koanf:"log_level" default:"info" flag:"log-level"`
 	}
 	var c cli
-	parser, err := kong.New(&c, HelpFromTags[appCfg]("APP"))
+	parser, err := kong.New(&c, HelpFromConfig[appCfg]("APP"))
 	require.NoError(t, err)
 
 	help := map[string]string{}
@@ -335,7 +335,7 @@ func TestHelpFromTags_DescribesTaggedFlags(t *testing.T) {
 	assert.Empty(t, help["other"])
 }
 
-func TestHelpFromTags_RefusesTagsTheCLILacks(t *testing.T) {
+func TestHelpFromConfig_RefusesTagsTheCLILacks(t *testing.T) {
 	type cli struct {
 		Port int
 	}
@@ -347,10 +347,10 @@ func TestHelpFromTags_RefusesTagsTheCLILacks(t *testing.T) {
 		B int `koanf:"b" flag:"port"`
 	}
 	var c cli
-	_, err := kong.New(&c, HelpFromTags[typo](""))
+	_, err := kong.New(&c, HelpFromConfig[typo](""))
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), `flag "prot"`)
-	_, err = kong.New(&c, HelpFromTags[dup](""))
+	_, err = kong.New(&c, HelpFromConfig[dup](""))
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), `flag "port"`)
 }
@@ -472,16 +472,131 @@ func TestLoad_NegatedFlagBeatsFile(t *testing.T) {
 }
 
 // A default whose type can hold sensitive entries stays out of the help.
-func TestHelpFromTags_WithholdsCompositeDefault(t *testing.T) {
+func TestHelpFromConfig_WithholdsCompositeDefault(t *testing.T) {
 	type cfg struct {
 		Settings map[string]string `koanf:"settings" flag:"settings" default:"{\"password\":\"FAKE_SECRET_VALUE\"}"`
 	}
 	var cli struct{ Settings map[string]string }
-	parser, err := kong.New(&cli, HelpFromTags[cfg]("APP"))
+	parser, err := kong.New(&cli, HelpFromConfig[cfg]("APP"))
 	require.NoError(t, err)
 	for _, fl := range parser.Model.Flags {
 		if fl.Name == "settings" {
 			assert.Equal(t, "(config: settings; env: APP_SETTINGS)", fl.Help)
 		}
 	}
+}
+
+// A `,remain` element type can hold any key, so a slice default built from
+// it stays out of the help.
+func TestHelpFromConfig_WithholdsRemainDefault(t *testing.T) {
+	type remaining struct {
+		Extra map[string]string `koanf:",remain"`
+	}
+	type cfg struct {
+		Rows []remaining `koanf:"rows" flag:"rows" default:"[{\"password\":\"FAKE_SECRET_VALUE\"}]"`
+	}
+	var cli struct{ Rows string }
+	parser, err := kong.New(&cli, HelpFromConfig[cfg]("APP"))
+	require.NoError(t, err)
+	for _, fl := range parser.Model.Flags {
+		if fl.Name == "rows" {
+			assert.NotContains(t, fl.Help, "FAKE_SECRET_VALUE")
+		}
+	}
+}
+
+// embeddedCfg is a config struct a CLI embeds: Kong makes a flag of each
+// field, and WithOverridesFromStruct maps each by the field it writes.
+type embeddedDB struct {
+	Host     string `koanf:"host" default:"localhost" desc:"Database host"`
+	Password string `koanf:"password" default:"dev-pass" kong:"-"`
+}
+
+type embeddedCfg struct {
+	Port     int               `koanf:"port" default:"8080" short:"p" desc:"HTTP listen port"`
+	APIKey   string            `koanf:"api_key" default:"k-123"`
+	Metrics  bool              `koanf:"metrics" default:"true" negatable:""`
+	DB       embeddedDB        `koanf:"db" embed:"" prefix:"db-"`
+	Features map[string]string `koanf:"features" kong:"-"`
+}
+
+type embeddingCLI struct {
+	Config      string `default:"config.yaml" help:"Config file."`
+	embeddedCfg `embed:""`
+}
+
+func parseEmbedding(t *testing.T, args ...string) (*kong.Kong, *kong.Context) {
+	t.Helper()
+	var cli embeddingCLI
+	parser, err := kong.New(&cli, HelpFromConfig[embeddedCfg]("APP"), kong.Exit(func(int) { t.Fatal("kong exited") }))
+	require.NoError(t, err)
+	kctx, err := parser.Parse(args)
+	require.NoError(t, err)
+	return parser, kctx
+}
+
+// Flags typed on the command line override the environment, nested ones
+// included; Kong's applied defaults and the CLI's own flags are not
+// forwarded.
+func TestWithOverridesFromStruct_ForwardsTypedFieldFlags(t *testing.T) {
+	_, kctx := parseEmbedding(t, "-p", "9000", "--db-host", "db.internal", "--config", "other.yaml")
+	cfg, err := config.Load[embeddedCfg](context.Background(),
+		config.WithEnvPrefix("APP"),
+		config.WithEnviron(func() []string { return []string{"APP_PORT=7000", "APP_METRICS=false", "APP_DB_HOST=env-host"} }),
+		WithOverridesFromStruct[embeddedCfg](kctx),
+	)
+	require.NoError(t, err)
+	assert.Equal(t, 9000, cfg.Port)
+	assert.Equal(t, "db.internal", cfg.DB.Host)
+	assert.False(t, cfg.Metrics, "Kong's default for --metrics must not override APP_METRICS")
+	assert.Equal(t, "dev-pass", cfg.DB.Password)
+}
+
+func TestWithOverridesFromStruct_NegatedFlag(t *testing.T) {
+	_, kctx := parseEmbedding(t, "--no-metrics")
+	cfg, err := config.Load[embeddedCfg](context.Background(), WithOverridesFromStruct[embeddedCfg](kctx))
+	require.NoError(t, err)
+	assert.False(t, cfg.Metrics)
+}
+
+// The config struct may be the CLI struct itself.
+func TestWithOverridesFromStruct_ConfigIsTheCLI(t *testing.T) {
+	var cli embeddedCfg
+	parser, err := kong.New(&cli)
+	require.NoError(t, err)
+	kctx, err := parser.Parse([]string{"--port", "9100", "--db-host", "h"})
+	require.NoError(t, err)
+	cfg, err := config.Load[embeddedCfg](context.Background(), WithOverridesFromStruct[embeddedCfg](kctx))
+	require.NoError(t, err)
+	assert.Equal(t, 9100, cfg.Port)
+	assert.Equal(t, "h", cfg.DB.Host)
+}
+
+func TestWithOverridesFromStruct_CLIWithoutTheConfigFailsTheLoad(t *testing.T) {
+	var cli struct{ Port int }
+	parser, err := kong.New(&cli)
+	require.NoError(t, err)
+	kctx, err := parser.Parse(nil)
+	require.NoError(t, err)
+	_, err = config.Load[embeddedCfg](context.Background(), WithOverridesFromStruct[embeddedCfg](kctx))
+	require.ErrorIs(t, err, config.ErrSource)
+}
+
+// Embedded fields are described like tagged ones; a sensitive default is
+// shown neither in the help nor as Kong's placeholder.
+func TestHelpFromConfig_DescribesEmbeddedFields(t *testing.T) {
+	parser, _ := parseEmbedding(t)
+	flags := map[string]*kong.Flag{}
+	for _, fl := range parser.Model.Flags {
+		flags[fl.Name] = fl
+	}
+	assert.Equal(t, "HTTP listen port (config: port; env: APP_PORT)", flags["port"].Help)
+	assert.Equal(t, "Database host (config: db.host; env: APP_DB_HOST)", flags["db-host"].Help)
+	assert.Equal(t, "Config file.", flags["config"].Help)
+
+	apiKey := flags["api-key"]
+	assert.Equal(t, "(config: api_key; env: APP_API_KEY)", apiKey.Help)
+	assert.Equal(t, "VALUE", apiKey.FormatPlaceHolder())
+	assert.NotContains(t, apiKey.FormatPlaceHolder(), "k-123")
+	assert.Equal(t, "8080", flags["port"].FormatPlaceHolder())
 }

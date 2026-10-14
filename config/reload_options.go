@@ -99,10 +99,14 @@ func WithOnReloadError(fn func(trigger string, err error)) ReloadOption {
 // watched path is a symlink into `..data` and the leaf file is never written.
 // Paths resolve as the kernel resolves them, ".." after a symlink included,
 // so the watch follows the file the loader opens. Every four debounce
-// windows (at least every second) the watch also re-verifies, with no event
-// to prompt it, that it covers the directories at their paths: an ancestor
-// directory renamed away and recreated sends no event to the old tree's
-// watch, and is caught this way.
+// windows, and no more often than once a second (every 2s at the default
+// debounce), the watch also resolves its paths again with no event to prompt
+// it. That catches what sends the watch no event: an ancestor directory
+// renamed away and recreated, whose event goes to the old tree; and, on
+// kqueue platforms (macOS, *BSD), a relink whose only trace is a temporary
+// name renamed over the link (`ln -s new link.tmp && mv -Tf link.tmp link`),
+// which fsnotify there does not report because the directory's set of names
+// is unchanged.
 //
 // NOT detected:
 //
@@ -110,17 +114,9 @@ func WithOnReloadError(fn func(trigger string, err error)) ReloadOption {
 //     symlink through a bind mount, so these never update in the container at
 //     all — neither a watch nor polling can see a change. Mount the volume
 //     without subPath.
-//   - Sources that change without a filesystem event: environment variables
-//     and providers. Use [WithPollInterval], or [Reloader.SourceChanged] from
-//     whatever learns of the change.
-//   - On kqueue platforms (macOS, *BSD) only: a symlink relink whose sole
-//     trace is a temporary name that is renamed away, e.g.
-//     `ln -s new link.tmp && mv -Tf link.tmp link`. fsnotify detects directory
-//     changes there by diffing directory listings, so a change that leaves the
-//     set of names unchanged produces no event at all. [WithPollInterval]
-//     catches it. Kubernetes volumes are unaffected — kubelet leaves a durable
-//     new `..<timestamp>` directory — and Linux inotify reports the rename
-//     directly, so this is macOS/BSD hand-rolled-deploy only.
+//   - Sources that are not files: environment variables and providers. Use
+//     [WithPollInterval], or [Reloader.SourceChanged] from whatever learns of
+//     the change.
 func WithFileWatch(debounce time.Duration) ReloadOption {
 	return func(o *reloadOptions) {
 		o.fileWatch = true

@@ -226,14 +226,16 @@ func WithDecodeHook(hook mapstructure.DecodeHookFunc) Option {
 }
 
 // WithStrictKeys fails the load with [ErrValidation] when a config file,
-// provider or WithDefaults sets a key decoding would ignore — a typo, or a
-// setting that was removed — naming each such key (server.prot,
-// items[0].prot, named[primary].prot) and its source. Keys are followed the
-// way decoding follows them: into slice elements and map entries of structs,
-// through squashed structs, and past a value a decode hook turns into
-// something without keys. A map's own keys, anything beneath an interface,
-// and keys a koanf:",remain" field collects are accepted. An environment
-// variable that fits no key is never loaded, so it cannot fail a strict load.
+// provider or WithDefaults sets a key no field decodes — a typo, or a setting
+// that was removed — naming each such key (server.prot, items[0].prot,
+// named[primary].prot). The decoder reports the keys it did not use while it
+// decodes the merged sources, so the check follows decoding exactly: into
+// slice elements and map entries of structs, through squashed structs, and
+// past input a decode hook or a self-decoding type consumes. A map's own
+// keys, anything beneath an interface, and keys a koanf:",remain" field
+// collects are accepted. The merged tree does not record which source set a
+// key, so the error names keys only. An environment variable that fits no key
+// is never loaded, so it cannot fail a strict load.
 func WithStrictKeys() Option {
 	return func(o *options) {
 		o.strictKeys = true

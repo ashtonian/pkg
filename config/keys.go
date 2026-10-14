@@ -1,6 +1,7 @@
 package config
 
 import (
+	"encoding"
 	"fmt"
 	"maps"
 	"reflect"
@@ -11,97 +12,85 @@ import (
 	"github.com/go-viper/mapstructure/v2"
 )
 
-// keyWalk follows one source's tree through the config type the way
-// mapstructure decodes it, and rewrites every struct key into the field's
-// own spelling. Sources merge key by key, and mapstructure prefers a key
-// spelled exactly like the field over one that matches only in letter case;
-// without the rewrite, a higher-precedence "Port" would lose to a default
-// "port". Keys beneath a map or slice element are followed into the
-// element's type; map keys themselves are kept as written.
-//
-// The walk also records what decoding would ignore — a key no field
-// decodes — and a source that sets one field under two spellings.
+// keyWalk rewrites one source's tree so every key naming a struct field is
+// spelled as the field is. Sources merge key by key, and mapstructure
+// prefers a key spelled exactly like the field over one that matches only in
+// letter case; without the rewrite, a higher-precedence "Port" would lose to
+// a default "port". It changes spelling only: values and their types are
+// kept, decode hooks are not run, and a value a custom decoder takes whole —
+// an UnmarshalMapstructure or TextUnmarshaler type, or an interface — is left
+// as written, as is every map key. It records a source that spells one field
+// two ways.
 type keyWalk struct {
-	hook    mapstructure.DecodeHookFunc
-	unknown []string
-	twice   []string
+	twice []string
 }
 
 // tree rewrites the top level of a source.
 func (w *keyWalk) tree(root reflect.Type, data map[string]any) map[string]any {
-	out, _ := w.value(root, data, "").(map[string]any)
+	out, ok := w.value(root, data, "").(map[string]any)
+	if !ok {
+		return data
+	}
 	return out
 }
 
+var (
+	mapstructureUnmarshaler = reflect.TypeFor[mapstructure.Unmarshaler]()
+	textUnmarshaler         = reflect.TypeFor[encoding.TextUnmarshaler]()
+)
+
+// opaque reports a type decoding hands its input whole: it decodes itself,
+// or it is an interface.
+func opaque(t reflect.Type) bool {
+	if t.Kind() == reflect.Interface {
+		return true
+	}
+	p := reflect.PointerTo(t)
+	return p.Implements(mapstructureUnmarshaler) || t.Kind() == reflect.Struct && p.Implements(textUnmarshaler)
+}
+
 func (w *keyWalk) value(t reflect.Type, data any, path string) any {
+	if data == nil {
+		return nil
+	}
 	t = derefType(t)
-	if data == nil || t.Kind() == reflect.Interface {
+	if opaque(t) {
 		return data
 	}
-	if !w.descends(t, data) {
-		return data // a decode hook turns it into something without keys
-	}
-	switch t.Kind() {
-	case reflect.Struct:
-		if m, ok := stringMap(data); ok {
-			return w.structMap(t, m, path)
-		}
-	case reflect.Map:
-		if m, ok := stringMap(data); ok {
-			out := make(map[string]any, len(m))
-			for k, v := range m {
-				out[k] = w.value(t.Elem(), v, path+"["+k+"]")
-			}
-			return out
-		}
-		if d, ok := data.([]any); ok { // mapstructure merges a list of maps into one map
-			return w.elements(t, d, path)
-		}
-	case reflect.Slice, reflect.Array:
-		switch d := data.(type) {
-		case []any:
-			return w.elements(t.Elem(), d, path)
-		case map[string]any, map[any]any: // weakly typed: a map decodes as a one-element slice
-			return w.value(t.Elem(), d, path+"[0]")
-		}
+	v := reflect.ValueOf(data)
+	switch {
+	case t.Kind() == reflect.Struct && v.Kind() == reflect.Map:
+		return w.structMap(t, v, path)
+	case t.Kind() == reflect.Map && v.Kind() == reflect.Map:
+		return w.mapValues(t.Elem(), v, path)
+	case t.Kind() == reflect.Map && isList(v):
+		return w.elements(t, v, path) // mapstructure merges a list of maps into one map
+	case (t.Kind() == reflect.Slice || t.Kind() == reflect.Array) && isList(v):
+		return w.elements(t.Elem(), v, path)
+	case (t.Kind() == reflect.Slice || t.Kind() == reflect.Array) && v.Kind() == reflect.Map:
+		return w.value(t.Elem(), data, path+"[0]") // weakly typed: a map is a one-element slice
 	}
 	return data
 }
 
-func (w *keyWalk) elements(elem reflect.Type, items []any, path string) []any {
-	out := make([]any, len(items))
-	for i, item := range items {
-		out[i] = w.value(elem, item, path+"["+strconv.Itoa(i)+"]")
-	}
-	return out
+func isList(v reflect.Value) bool {
+	return v.Kind() == reflect.Slice || v.Kind() == reflect.Array
 }
 
-// descends reports whether decoding data into t reads keys from it: the
-// decode hooks leave it a map or a slice.
-func (w *keyWalk) descends(t reflect.Type, data any) bool {
-	converted, err := mapstructure.DecodeHookExec(w.hook, reflect.ValueOf(data), reflect.New(t).Elem())
-	if err != nil {
-		return false // decoding fails here and says so
+// structMap rewrites the keys of map v, decoded into struct type t. A map
+// keyed by anything but strings is keyed by their text, as koanf keys it.
+func (w *keyWalk) structMap(t reflect.Type, v reflect.Value, path string) any {
+	out := reflect.MakeMapWithSize(stringKeyed(v.Type()), v.Len())
+	fields := structKeys(t)
+	written := make(map[string]reflect.Value, v.Len())
+	for _, k := range v.MapKeys() {
+		written[fmt.Sprint(k.Interface())] = v.MapIndex(k)
 	}
-	switch reflect.ValueOf(converted).Kind() {
-	case reflect.Map, reflect.Slice, reflect.Array:
-		return true
-	}
-	return false
-}
-
-// structMap rewrites the keys of a map decoded into struct type t.
-func (w *keyWalk) structMap(t reflect.Type, m map[string]any, path string) map[string]any {
-	fields, remain := structKeys(t)
-	out := make(map[string]any, len(m))
-	claimed := make(map[string]string, len(m)) // canonical key → the key written
-	for _, k := range slices.Sorted(maps.Keys(m)) {
+	claimed := make(map[string]string, len(written)) // field key → the key written
+	for _, k := range slices.Sorted(maps.Keys(written)) {
 		key, ft, ok := matchKey(fields, k)
 		if !ok {
-			out[k] = m[k]
-			if !remain {
-				w.unknown = append(w.unknown, joinKey(path, k))
-			}
+			out.SetMapIndex(reflect.ValueOf(k).Convert(out.Type().Key()), written[k])
 			continue
 		}
 		if prev, dup := claimed[key]; dup {
@@ -109,41 +98,75 @@ func (w *keyWalk) structMap(t reflect.Type, m map[string]any, path string) map[s
 			continue
 		}
 		claimed[key] = k
-		out[key] = w.value(ft, m[k], joinKey(path, key))
+		out.SetMapIndex(reflect.ValueOf(key).Convert(out.Type().Key()), w.elem(out.Type().Elem(), ft, written[k], joinKey(path, key)))
 	}
-	return out
+	return out.Interface()
+}
+
+// mapValues follows the values of map v into element type elem; its keys are
+// the caller's and stay as written.
+func (w *keyWalk) mapValues(elem reflect.Type, v reflect.Value, path string) any {
+	out := reflect.MakeMapWithSize(v.Type(), v.Len())
+	for _, k := range v.MapKeys() {
+		out.SetMapIndex(k, w.elem(v.Type().Elem(), elem, v.MapIndex(k), fmt.Sprintf("%s[%v]", path, k.Interface())))
+	}
+	return out.Interface()
+}
+
+// elements follows each element of list v into type elem.
+func (w *keyWalk) elements(elem reflect.Type, v reflect.Value, path string) any {
+	out := reflect.New(v.Type()).Elem()
+	if v.Kind() == reflect.Slice {
+		out = reflect.MakeSlice(v.Type(), v.Len(), v.Len())
+	}
+	for i := range v.Len() {
+		out.Index(i).Set(w.elem(v.Type().Elem(), elem, v.Index(i), path+"["+strconv.Itoa(i)+"]"))
+	}
+	return out.Interface()
+}
+
+// elem rewrites one held value, decoded into t, and returns it as a value
+// of the holding container's element type held.
+func (w *keyWalk) elem(held, t reflect.Type, v reflect.Value, path string) reflect.Value {
+	if v.Kind() == reflect.Interface {
+		v = v.Elem()
+	}
+	if !v.IsValid() {
+		return reflect.Zero(held)
+	}
+	r := reflect.ValueOf(w.value(t, v.Interface(), path))
+	if !r.IsValid() || !r.Type().AssignableTo(held) {
+		return v // the rewrite changed its type; keep it as written
+	}
+	return r
+}
+
+// stringKeyed is map type m keyed by strings: m itself when its keys are,
+// else map[string]any.
+func stringKeyed(m reflect.Type) reflect.Type {
+	if m.Key().Kind() == reflect.String {
+		return m
+	}
+	return reflect.TypeFor[map[string]any]()
 }
 
 // structKeys returns the keys struct type t decodes, with their types,
-// looking through squashed structs, and whether a koanf:",remain" field
-// collects the rest.
-func structKeys(t reflect.Type) (map[string]reflect.Type, bool) {
+// looking through squashed structs.
+func structKeys(t reflect.Type) map[string]reflect.Type {
 	fields := map[string]reflect.Type{}
-	remain := false
 	var collect func(t reflect.Type)
 	collect = func(t reflect.Type) {
-		for i := range t.NumField() {
-			f := t.Field(i)
-			if !f.IsExported() {
-				continue
-			}
-			_, opts, _ := strings.Cut(f.Tag.Get("koanf"), ",")
-			if slices.Contains(strings.Split(opts, ","), "remain") {
-				remain = true
-				continue
-			}
-			key, skip := fieldKey(f)
+		for kf := range keyedFields(t) {
 			switch {
-			case skip:
-			case key == "" && derefType(f.Type).Kind() == reflect.Struct:
-				collect(derefType(f.Type))
-			case key != "":
-				fields[key] = f.Type
+			case kf.key == "" && derefType(kf.field.Type).Kind() == reflect.Struct:
+				collect(derefType(kf.field.Type))
+			case kf.key != "":
+				fields[kf.key] = kf.field.Type
 			}
 		}
 	}
 	collect(t)
-	return fields, remain
+	return fields
 }
 
 // matchKey finds the field a data key decodes into: spelled exactly, else
@@ -158,22 +181,6 @@ func matchKey(fields map[string]reflect.Type, k string) (string, reflect.Type, b
 		}
 	}
 	return "", nil, false
-}
-
-// stringMap is data as a map with string keys. Parsers may produce
-// map[any]any; its keys are turned into strings as koanf does.
-func stringMap(data any) (map[string]any, bool) {
-	switch d := data.(type) {
-	case map[string]any:
-		return d, true
-	case map[any]any:
-		out := make(map[string]any, len(d))
-		for k, v := range d {
-			out[fmt.Sprint(k)] = v
-		}
-		return out, true
-	}
-	return nil, false
 }
 
 func joinKey(path, key string) string {

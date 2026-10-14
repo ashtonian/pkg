@@ -205,3 +205,102 @@ func TestLoad_DecodeErrorWithholdsANestedDecode(t *testing.T) {
 	assert.Contains(t, err.Error(), "'block'")
 	assert.Contains(t, err.Error(), "may hold a sensitive value")
 }
+
+// remainDecode decodes itself into a remain map of times, so whatever key a
+// source writes under it — a token — reaches a value-quoting decoder.
+type remainDecode struct {
+	Extra map[string]time.Time `koanf:",remain"`
+}
+
+func (v *remainDecode) UnmarshalMapstructure(input any) error {
+	type raw remainDecode
+	d, err := mapstructure.NewDecoder(&mapstructure.DecoderConfig{
+		TagName: "koanf", Result: (*raw)(v), DecodeHook: mapstructure.TextUnmarshallerHookFunc(),
+	})
+	if err != nil {
+		return err
+	}
+	return d.Decode(input)
+}
+
+// textComposite decodes a whole struct from one string, reporting the nested
+// decode's error, which quotes it.
+type textComposite struct {
+	Token time.Time `koanf:"token"`
+}
+
+func (v *textComposite) UnmarshalText(input []byte) error {
+	type raw textComposite
+	d, err := mapstructure.NewDecoder(&mapstructure.DecoderConfig{
+		TagName: "koanf", Result: (*raw)(v), DecodeHook: mapstructure.TextUnmarshallerHookFunc(),
+	})
+	if err != nil {
+		return err
+	}
+	return d.Decode(map[string]any{"token": string(input)})
+}
+
+// A self-decoding struct's error is withheld when the struct could hold a
+// sensitive value, whichever way it decodes.
+func TestLoad_DecodeErrorWithholdsSelfDecodingStructs(t *testing.T) {
+	t.Run("remain map", func(t *testing.T) {
+		type cfg struct {
+			Block remainDecode `koanf:"block"`
+		}
+		_, err := Load[cfg](t.Context(), WithBaseProvider(rawBytes("block:\n  token: "+leaked+"\n"), yaml.Parser()), WithSkipValidation())
+		require.ErrorIs(t, err, ErrValidation)
+		assert.NotContains(t, err.Error(), leaked)
+		assert.Contains(t, err.Error(), "may hold a sensitive value")
+	})
+	t.Run("text unmarshaler", func(t *testing.T) {
+		type cfg struct {
+			Block textComposite `koanf:"block"`
+		}
+		_, err := Load[cfg](t.Context(), WithDefaults(map[string]any{"block": leaked}), WithSkipValidation())
+		require.ErrorIs(t, err, ErrValidation)
+		assert.NotContains(t, err.Error(), leaked)
+		assert.Contains(t, err.Error(), "may hold a sensitive value")
+	})
+}
+
+// A decode hook's error is a decode failure like any other: withheld on a
+// field that could hold a sensitive value, so a hook that quotes its input
+// cannot leak through it.
+func TestLoad_DecodeHookErrorIsWithheldLikeADecodeError(t *testing.T) {
+	type block struct {
+		Token string `koanf:"token"`
+		Port  int    `koanf:"port"`
+	}
+	type cfg struct {
+		Block block `koanf:"block"`
+	}
+	hook := func(_, to reflect.Type, data any) (any, error) {
+		if to == reflect.TypeFor[block]() {
+			return nil, fmt.Errorf("bad block %v", data)
+		}
+		return data, nil
+	}
+	_, err := Load[cfg](t.Context(), WithDefaults(map[string]any{"block.token": leaked}), WithDecodeHook(hook), WithSkipValidation())
+	require.ErrorIs(t, err, ErrValidation)
+	assert.NotContains(t, err.Error(), leaked)
+	assert.Contains(t, err.Error(), "'block'")
+}
+
+// Only sensitive fields, and fields that could hold one, are withheld: an
+// ordinary field's decoder may quote what it was given, and a type mismatch
+// that quotes nothing is kept whole even on a map.
+func TestLoad_DecodeErrorOrdinaryFieldsKeepTheirMessage(t *testing.T) {
+	type cfg struct {
+		Start time.Time      `koanf:"start"`
+		Ports map[string]int `koanf:"ports"`
+	}
+	_, err := Load[cfg](t.Context(), WithDefaults(map[string]any{"start": "not-a-time"}), WithSkipValidation())
+	require.ErrorIs(t, err, ErrValidation)
+	assert.Contains(t, err.Error(), `"not-a-time"`)
+
+	_, err = Load[cfg](t.Context(), WithDefaults(map[string]any{"ports": 17}), WithSkipValidation())
+	require.ErrorIs(t, err, ErrValidation)
+	assert.Contains(t, err.Error(), "'ports' expected type 'map[string]int', got unconvertible type 'int'")
+	var de *mapstructure.DecodeError
+	require.ErrorAs(t, err, &de)
+}

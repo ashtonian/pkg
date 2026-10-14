@@ -1,6 +1,7 @@
 package config
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"errors"
@@ -9,6 +10,7 @@ import (
 	"os"
 	"reflect"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -45,11 +47,13 @@ import (
 // Every error wraps one category sentinel ([ErrFileRead], [ErrFileParse],
 // [ErrSource], [ErrSecretProvider], [ErrPostLoad], [ErrValidation]) and its
 // cause, so errors.Is and errors.As reach either. The errors this package
-// writes never quote a value: a decode failure on a field that is, or could
-// hold, a sensitive value is reported by field and type only, and a parse
-// failure by source and line only (see [ParseError]). Errors returned by the
-// caller's own providers, secret populator, post-load hooks and validator are
-// passed through as they were written.
+// writes quote no value meant for a sensitive field: a decode failure on a
+// field that is, or could hold, a sensitive value — a decode hook's failure
+// included — names the field and type only, and a parse failure names the
+// source and line only (see [ParseError]). A failure on an ordinary field
+// keeps its decoder's message, which may quote the value (time.Parse does).
+// Errors returned by the caller's own providers, secret populator, post-load
+// hooks and validator are passed through as they were written.
 func Load[T any](ctx context.Context, opts ...Option) (*T, error) {
 	cfg, _, err := load[T](ctx, buildOptions(opts))
 	return cfg, err
@@ -85,22 +89,16 @@ type fileDigests map[string][sha256.Size]byte
 type loader struct {
 	k       *koanf.Koanf
 	root    reflect.Type
-	hook    mapstructure.DecodeHookFunc
-	strict  bool
 	sources []string
 }
 
 // add merges data, the tree of the source called name. A source that sets
-// one field under two spellings fails; so, under WithStrictKeys, does one
-// that sets a key no field decodes.
+// one field under two spellings fails.
 func (l *loader) add(name string, data map[string]any) error {
-	w := keyWalk{hook: l.hook}
+	var w keyWalk
 	tree := w.tree(l.root, data)
-	switch {
-	case len(w.twice) > 0:
+	if len(w.twice) > 0 {
 		return fmt.Errorf("loading %s: %w: keys spelled two ways set one field: %s", name, ErrValidation, strings.Join(w.twice, ", "))
-	case l.strict && len(w.unknown) > 0:
-		return fmt.Errorf("loading %s: %w: keys no field of %s decodes: %s", name, ErrValidation, l.root, strings.Join(w.unknown, ", "))
 	}
 	if err := l.k.Load(confmap.Provider(tree, ""), nil); err != nil {
 		return fmt.Errorf("loading %s: %w: %w", name, ErrSource, err)
@@ -150,10 +148,9 @@ func load[T any](ctx context.Context, o *options) (*T, fileDigests, error) {
 	if err := o.checkHookTypes(reflect.TypeFor[*T]()); err != nil {
 		return nil, nil, err
 	}
-	hook := o.decodeHook()
 	// A fresh instance per load: nothing from an earlier load (a key since
 	// deleted from a file, say) can survive into this one.
-	l := &loader{k: koanf.New("."), root: root, hook: hook, strict: o.strictKeys}
+	l := &loader{k: koanf.New("."), root: root}
 	fields := Fields[T]()
 	files := fileDigests{}
 
@@ -215,11 +212,16 @@ func load[T any](ctx context.Context, o *options) (*T, fileDigests, error) {
 	merged := l.k.Raw()
 	fillElementDefaults(root, merged)
 	cfg := new(T)
+	// The decoder's own record of the keys it left unused is what strict
+	// keys checks, so strictness follows decoding exactly: squash, remain,
+	// custom decoders, decode hooks and weak typing included.
+	var md mapstructure.Metadata
 	dec, err := mapstructure.NewDecoder(&mapstructure.DecoderConfig{
-		DecodeHook:       hook,
+		DecodeHook:       o.decodeHook(),
 		WeaklyTypedInput: true,
 		Result:           cfg,
 		TagName:          "koanf",
+		Metadata:         &md,
 	})
 	if err != nil {
 		return nil, nil, fmt.Errorf("unmarshaling config: %w", err)
@@ -227,8 +229,12 @@ func load[T any](ctx context.Context, o *options) (*T, fileDigests, error) {
 	if err := dec.Decode(merged); err != nil {
 		// A value that cannot decode into its field's type (port: abc) is
 		// invalid configuration; the error names the key, and never the
-		// value of a sensitive one.
+		// value of a field that is, or could hold, a sensitive one.
 		return nil, nil, fmt.Errorf("unmarshaling config: %w: %w", ErrValidation, withholdSensitiveDecodeErrors(root, err))
+	}
+	if o.strictKeys && len(md.Unused) > 0 {
+		return nil, nil, fmt.Errorf("unmarshaling config: %w: keys no field of %s decodes: %s",
+			ErrValidation, root, strings.Join(slices.Sorted(slices.Values(md.Unused)), ", "))
 	}
 
 	if o.secrets != nil {
@@ -307,23 +313,29 @@ func (e *ParseError) Unwrap() error { return e.Err }
 func parse(name string, parser koanf.Parser, b []byte) (map[string]any, error) {
 	data, err := parser.Unmarshal(b)
 	if err != nil {
-		return nil, &ParseError{Source: name, Line: parserLine(err), Err: err}
+		return nil, &ParseError{Source: name, Line: parserLine(err, b), Err: err}
 	}
 	return data, nil
 }
 
-// parserLine is the line number a parser's message names ("yaml: line 3:
-// ...", "toml: line 3"), or 0. Only the number leaves the message.
-func parserLine(err error) int {
+// parserLine is the line a parser's message names where the message itself
+// says where it is — "yaml: line 3: ...", or "line 3: ..." opening one of its
+// lines — and the source has that many lines; otherwise 0. A number the
+// parser quoted from the source sits elsewhere in the message and is not
+// taken for a location.
+func parserLine(err error, source []byte) int {
 	m := lineInMessage.FindStringSubmatch(err.Error())
 	if m == nil {
 		return 0
 	}
-	n, _ := strconv.Atoi(m[1])
+	n, convErr := strconv.Atoi(m[1])
+	if convErr != nil || n < 1 || n > bytes.Count(source, []byte("\n"))+1 {
+		return 0
+	}
 	return n
 }
 
-var lineInMessage = regexp.MustCompile(`\bline (\d+)\b`)
+var lineInMessage = regexp.MustCompile(`(?m)^\s*(?:[a-z]+: )?line (\d+):`)
 
 // defaultValidator is the validator Load uses when WithValidator sets none.
 // It names fields by config key (see [FieldName]). A Validate is safe for
