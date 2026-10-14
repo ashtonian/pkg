@@ -807,22 +807,6 @@ func TestPrintRedacted_EnvIsShellSafe(t *testing.T) {
 	}
 }
 
-func TestPrintRedacted_ShowSensitive(t *testing.T) {
-	cfg := &SensitiveConfig{
-		Host:     "localhost",
-		Password: "mypass",
-	}
-	var buf bytes.Buffer
-	if err := PrintRedacted(cfg, WithWriter(&buf), WithShowSensitive(true)); err != nil {
-		t.Fatalf("PrintRedacted: %v", err)
-	}
-	output := buf.String()
-
-	if !strings.Contains(output, "mypass") {
-		t.Error("ShowSensitive should reveal password")
-	}
-}
-
 func TestPrintRedacted_SortByName(t *testing.T) {
 	cfg := &SensitiveConfig{
 		Host:   "localhost",

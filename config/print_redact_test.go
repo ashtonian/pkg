@@ -8,6 +8,10 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 type redactInner struct {
@@ -54,11 +58,6 @@ func TestRedaction_SensitiveContainerTag(t *testing.T) {
 	}
 	if strings.Contains(buf.String(), "SECRET_") {
 		t.Errorf("a secret reached PrintRedacted output:\n%s", buf.String())
-	}
-
-	shown := shownMap(cfg)
-	if shown["blocks[0].value"] != "SECRET_SLICE" {
-		t.Errorf("unredacted blocks[0].value = %v, want SECRET_SLICE", shown["blocks[0].value"])
 	}
 }
 
@@ -165,12 +164,39 @@ func TestRedaction_DynamicMapKeys(t *testing.T) {
 	}
 }
 
-// shownMap is RedactedMap with sensitive values shown, as
-// PrintRedacted(WithShowSensitive(true)) prints them.
-func shownMap(cfg any) map[string]string {
-	m := map[string]string{}
-	for _, e := range collectEntries(cfg, true) {
-		m[e.name] = e.value
+// keyPair decodes from text, so the printers show it whole; a field of it
+// named like a credential keeps it out of every output.
+type keyPair struct {
+	Public  string
+	Private string
+}
+
+func (k *keyPair) UnmarshalText(b []byte) error {
+	k.Public, k.Private, _ = strings.Cut(string(b), ":")
+	return nil
+}
+
+func TestRedaction_SelfDecodedStructHoldingACredential(t *testing.T) {
+	type cfg struct {
+		Signing keyPair   `koanf:"signing"`
+		Rotated []keyPair `koanf:"rotated"`
+		Empty   []keyPair `koanf:"empty"`
+		Started time.Time `koanf:"started"`
+		DSN     string    `koanf:"dsn"`
 	}
-	return m
+	c := &cfg{
+		Signing: keyPair{Public: "pub", Private: "SECRET_PRIVATE"},
+		Rotated: []keyPair{{Public: "old", Private: "SECRET_ROTATED"}},
+		DSN:     "postgres://u:SECRET_DSN@db/x",
+	}
+	m := RedactedMap(c)
+	assert.Equal(t, redactedValue, m["signing"])
+	assert.Equal(t, redactedValue, m["rotated"])
+	assert.Equal(t, "[]", m["empty"])
+	assert.Equal(t, redactedValue, m["dsn"])
+	assert.NotEqual(t, redactedValue, m["started"], "a struct with no exported field that could hold a credential prints")
+
+	var buf bytes.Buffer
+	require.NoError(t, PrintRedacted(c, WithWriter(&buf), WithFormat(FormatJSON)))
+	assert.NotContains(t, buf.String(), "SECRET_")
 }

@@ -31,7 +31,7 @@ const (
 // reassigned — safe for concurrent reads without synchronisation.
 var sensitivePatterns = [...]string{
 	"password", "secret", "token", "key", "credential",
-	"auth", "private", "apikey", "api_key",
+	"auth", "private", "apikey", "api_key", "dsn",
 }
 
 // PrintOption configures output of PrintRedacted.
@@ -39,7 +39,6 @@ type PrintOption func(*printOptions)
 
 type printOptions struct {
 	format              string
-	showSensitive       bool
 	writer              io.Writer
 	sortByName          bool
 	includeDescriptions bool
@@ -57,13 +56,6 @@ func defaultPrintOptions() printOptions {
 func WithFormat(format string) PrintOption {
 	return func(o *printOptions) {
 		o.format = format
-	}
-}
-
-// WithShowSensitive includes sensitive values in the output instead of redacting.
-func WithShowSensitive(show bool) PrintOption {
-	return func(o *printOptions) {
-		o.showSensitive = show
 	}
 }
 
@@ -106,15 +98,18 @@ type printEntry struct {
 // — an Auth block's fields are judged by their own names — but a map key's
 // covers everything beneath it. Maps and slices, including dynamic ones held
 // in interfaces and nested to any depth, are expanded element by element, so
-// no container is printed whole while something inside it is unchecked. It
-// returns the first write error, or an error for an unknown format.
+// no container is printed whole while something inside it is unchecked; a
+// value printed whole — a struct decoded from text or by its own decoder, or
+// a slice of them — is redacted when its type could hold a sensitive value.
+// No option prints a sensitive value. It returns the first write error, or an
+// error for an unknown format.
 func PrintRedacted(cfg any, opts ...PrintOption) error {
 	po := defaultPrintOptions()
 	for _, opt := range opts {
 		opt(&po)
 	}
 
-	entries := collectEntries(cfg, po.showSensitive)
+	entries := collectEntries(cfg)
 	if po.sortByName {
 		slices.SortFunc(entries, func(a, b printEntry) int { return cmp.Compare(a.name, b.name) })
 	}
@@ -138,7 +133,7 @@ func PrintRedacted(cfg any, opts ...PrintOption) error {
 // not serialization: every value is its fmt %v text, and maps and slices are
 // expanded entry by entry.
 func RedactedMap(cfg any) map[string]string {
-	entries := collectEntries(cfg, false)
+	entries := collectEntries(cfg)
 	result := make(map[string]string, len(entries))
 	for _, e := range entries {
 		result[e.name] = e.value
@@ -150,8 +145,8 @@ func RedactedMap(cfg any) map[string]string {
 // [Fields]. Slices and maps are expanded element by element, including
 // dynamic values held in interfaces, so a sensitive-looking map key is judged
 // like a sensitive-looking field name.
-func collectEntries(cfg any, showSensitive bool) []printEntry {
-	w := &entryWalk{showSensitive: showSensitive, visiting: map[visit]bool{}}
+func collectEntries(cfg any) []printEntry {
+	w := &entryWalk{visiting: map[visit]bool{}}
 	val := reflect.ValueOf(cfg)
 	for val.Kind() == reflect.Pointer {
 		if val.IsNil() {
@@ -168,8 +163,7 @@ func collectEntries(cfg any, showSensitive bool) []printEntry {
 }
 
 type entryWalk struct {
-	showSensitive bool
-	entries       []printEntry
+	entries []printEntry
 	// visiting holds the struct pointers, maps and slices on the current
 	// path, so a cycle in the value graph ends instead of recursing forever.
 	visiting map[visit]bool
@@ -314,10 +308,24 @@ func (w *entryWalk) leaf(path string, declared, value reflect.Value, s site) {
 			typ = value.Type()
 		}
 	}
-	if !w.showSensitive && (s.sensitive || isSensitiveName(s.name)) {
+	if s.sensitive || isSensitiveName(s.name) || value.IsValid() && uncheckedHolder(value) {
 		text = redactedValue
 	}
 	w.entries = append(w.entries, printEntry{name: path, value: text, typeName: typ.String(), desc: s.desc})
+}
+
+// uncheckedHolder reports a value printed whole that could hold a sensitive
+// value the walk did not inspect: a struct decoded from text or by its own
+// decoder, or a slice of them, whose %v text would show every field. An
+// empty container shows nothing.
+func uncheckedHolder(v reflect.Value) bool {
+	switch v.Kind() {
+	case reflect.Map, reflect.Slice, reflect.Array:
+		if v.Len() == 0 {
+			return false
+		}
+	}
+	return mayHoldSensitive(v.Type(), map[reflect.Type]bool{})
 }
 
 // isSensitiveName checks if a field name contains sensitive-looking substrings.

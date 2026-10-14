@@ -42,10 +42,10 @@ labels.<key>                       APP_LABELS_<KEY>                      string
 
 func TestPrintUsage_WithoutPrefixHasNoEnvColumn(t *testing.T) {
 	var buf bytes.Buffer
-	require.NoError(t, PrintUsage[usageCfg]("", WithWriter(&buf), WithShowSensitive(true)))
+	require.NoError(t, PrintUsage[usageCfg]("", WithWriter(&buf)))
 	assert.NotContains(t, buf.String(), "APP_")
 	assert.NotContains(t, buf.String(), "ENV")
-	assert.Contains(t, buf.String(), "hunter2")
+	assert.NotContains(t, buf.String(), "hunter2")
 }
 
 func TestPrintUsage_JSON(t *testing.T) {
