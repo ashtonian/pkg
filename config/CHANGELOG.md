@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.3.0](https://github.com/ashtonian/pkg/compare/config/v0.2.0...config/v0.3.0) (2026-10-14)
+
+
+### Features
+
+* **config:** sep tags split a list's strings on a separator of the field's ([c490f1e](https://github.com/ashtonian/pkg/commit/c490f1edcecb283ee51ecc58f3c7ed6be23dd57f))
+
+
+### Bug Fixes
+
+* **config:** keep secrets out of diagnostics, and make the tags work together ([b6bffa7](https://github.com/ashtonian/pkg/commit/b6bffa7f93e194a5b18e59935f49d76025eb3257))
+
 ## [0.2.0](https://github.com/ashtonian/pkg/compare/config/v0.1.0...config/v0.2.0) (2026-10-14)
 
 
