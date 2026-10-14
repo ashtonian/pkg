@@ -36,6 +36,10 @@ func TestJSONParser_Values(t *testing.T) {
 		"list":   []any{1, "two", map[string]any{"three": 3}},
 		"nested": map[string]any{"empty": map[string]any{}, "list": []any{}},
 	}, got)
+
+	deep := `{"a": ` + strings.Repeat("[", jsonMaxDepth-1) + strings.Repeat("]", jsonMaxDepth-1) + `}`
+	_, err = jsonParser{}.Unmarshal([]byte(deep))
+	require.NoError(t, err, "nesting up to the limit parses")
 }
 
 // Every rejection opens with the line it is on.
@@ -46,6 +50,8 @@ func TestJSONParser_Rejects(t *testing.T) {
 		msg       string
 	}{
 		{"syntax", "{\n  \"a\": 1,\n  \"b\": oops\n}", "line 3:", "invalid character"},
+		{"syntax on the next line", "{\"a\": 1,\n\n  oops}", "line 3:", "invalid character"},
+		{"unterminated string", "{\n  \"a\": \"text\n}", "line 2:", "invalid character"},
 		{"key set twice", "{\n  \"a\": 1,\n  \"a\": 2\n}", "line 3:", `key "a" is set twice`},
 		{"key set twice nested", `{"a": {"b": 1, "b": 2}}`, "line 1:", `key "b" is set twice`},
 		{"not an object", `[1, 2]`, "line 1:", "holds a JSON object"},
@@ -54,8 +60,9 @@ func TestJSONParser_Rejects(t *testing.T) {
 		{"trailing garbage", "{}\n]", "line 2:", "invalid character"},
 		{"empty", "", "line 1:", "unexpected end of JSON input"},
 		{"truncated", "{\n  \"a\": [1,", "line 2:", "unexpected end of JSON input"},
+		{"unclosed", "{\n  \"a\": [1]\n", "line 3:", "unexpected end of JSON input"},
 		{"out of range", `{"a": 1e400}`, "line 1:", "out of range"},
-		{"too deep", strings.Repeat("[", 10001), "line 1:", "exceeded max depth"},
+		{"too deep", `{"a": ` + strings.Repeat("[", jsonMaxDepth) + strings.Repeat("]", jsonMaxDepth) + `}`, "line 1:", "nested more than 1000 deep"},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			_, err := jsonParser{}.Unmarshal([]byte(tt.doc))
