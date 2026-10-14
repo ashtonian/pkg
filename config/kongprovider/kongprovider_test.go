@@ -353,7 +353,7 @@ func TestHelpFromConfig_DescribesConfigFlags(t *testing.T) {
 func TestHelpFromConfig_WithholdsACompositeDefault(t *testing.T) {
 	type cfg struct {
 		Level    string            `koanf:"level" desc:"Log level"`
-		Settings map[string]string `koanf:"settings" default:"{\"password\":\"FAKE_SECRET_VALUE\"}"`
+		Settings map[string]string `koanf:"settings" default:"password=FAKE_SECRET_VALUE"`
 	}
 	var cli cfg
 	parser, err := kong.New(&cli, HelpFromConfig(&cli, "APP"))
