@@ -295,7 +295,56 @@ func TestStrictKeys_NamesUnknownKeys(t *testing.T) {
 	}
 	_, err := Load[cfg](t.Context(), WithBaseProvider(src, nil), WithSkipValidation())
 	require.ErrorIs(t, err, ErrValidation)
-	assert.Contains(t, err.Error(), `decodes: named["x.y"].prot, server."a.b", server.prot`)
+	assert.Contains(t, err.Error(), `decodes: named["x.y"].prot (did you mean named["x.y"].port?), server."a.b", server.prot (did you mean server.port?)`)
+}
+
+// An unknown key comes with the field of its struct it most likely
+// misspells, in an *UnknownKeysError; a key no field is close to has none.
+func TestStrictKeys_SuggestsTheClosestField(t *testing.T) {
+	type entry struct {
+		TimeoutPerRepo int    `koanf:"timeout_per_repo"`
+		SSHKey         string `koanf:"ssh_key"`
+	}
+	type cfg struct {
+		Sync  entry            `koanf:"sync"`
+		Items []entry          `koanf:"items"`
+		Named map[string]entry `koanf:"named"`
+		Port  int              `koanf:"port"`
+	}
+	src := mapSource{
+		"sync":  map[string]any{"timout_per_repo": 1, "remote_name": "x"},
+		"items": []any{map[string]any{"ssh-key": "k"}},
+		"named": map[string]any{"a": map[string]any{"SSH-Key": "k"}},
+		"prot":  1,
+	}
+	_, err := Load[cfg](t.Context(), WithBaseProvider(src, nil), WithSkipValidation())
+	require.ErrorIs(t, err, ErrValidation)
+	var unknown *UnknownKeysError
+	require.ErrorAs(t, err, &unknown)
+	assert.Equal(t, reflect.TypeFor[cfg](), unknown.Type)
+	assert.Equal(t, []UnknownKey{
+		{Key: "items[0].ssh-key", Suggestion: "items[0].ssh_key"},
+		{Key: `named["a"].SSH-Key`, Suggestion: `named["a"].ssh_key`},
+		{Key: "prot", Suggestion: "port"},
+		{Key: "sync.remote_name"},
+		{Key: "sync.timout_per_repo", Suggestion: "sync.timeout_per_repo"},
+	}, unknown.Keys)
+}
+
+func TestEditDistance(t *testing.T) {
+	for _, tt := range []struct {
+		a, b string
+		want int
+	}{
+		{"", "", 0},
+		{"port", "port", 0},
+		{"prot", "port", 2},
+		{"ssh-key", "ssh_key", 1},
+		{"timout", "timeout", 1},
+		{"größe", "grösse", 2},
+	} {
+		assert.Equal(t, tt.want, editDistance(tt.a, tt.b), "%q → %q", tt.a, tt.b)
+	}
 }
 
 // Validation errors name map entries by their quoted key, whatever the key

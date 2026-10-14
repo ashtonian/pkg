@@ -151,11 +151,13 @@ A variable that two keys could read — `db.port` and `db_port`, or a field and 
 
 Values decode with mapstructure's weak typing (`"8080"` fills an `int`) plus string → `time.Duration`, comma-separated string → slice, and `encoding.TextUnmarshaler`. `WithDecodeHook` adds hooks of your own, which run first.
 
-A key that no field decodes fails the load with `ErrValidation`, naming the key — a typo cannot leave a service running on the default it was meant to override:
+A key that no field decodes fails the load with `ErrValidation`, naming the key and the field of the same struct it most likely misspells — a typo cannot leave a service running on the default it was meant to override:
 
 ```txt
-unmarshaling config: configuration validation failed: keys no field of main.AppConfig decodes: server.prot
+unmarshaling config: configuration validation failed: keys no field of main.AppConfig decodes: server.prot (did you mean server.port?)
 ```
+
+`errors.As` reaches an `*UnknownKeysError`, whose `Keys` give each key and its `Suggestion`, for a program to report them in its own words. A suggestion is the field fewest edits away, ignoring case, within a third of the key's length (at least 2); a key no field is that close to has none.
 
 The check follows decoding exactly: it looks inside list elements and map entries of structs, through squashed structs, and lets through a map's own keys, anything beneath an interface, and keys a `,remain` field collects. `WithAllowUnknownKeys()` turns it off, for a file shared with another program.
 
@@ -425,7 +427,7 @@ Every error wraps one category sentinel together with its cause, so `errors.Is` 
 
 | Sentinel | Meaning |
 |---|---|
-| `ErrValidation` | Validation failed, a value has the wrong type, an unknown key, an ambiguous environment variable, or a field spelled two ways. |
+| `ErrValidation` | Validation failed, a value has the wrong type, an unknown key (an `*UnknownKeysError` lists them), an ambiguous environment variable, or a field spelled two ways. |
 | `ErrFileRead` | A required (or previously loaded) file is missing or unreadable. |
 | `ErrFileParse` | The parser rejected a file; a `*ParseError` names the file and line. |
 | `ErrSource` | Defaults or a provider failed to load. |
