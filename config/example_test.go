@@ -201,7 +201,8 @@ func ExampleNewReloader() {
 
 	reloader, err := config.NewReloader[AppConfig](ctx,
 		[]config.Option{config.WithFile(file)},
-		config.WithOnReloadSuccess(func(old, new *AppConfig) {
+		config.WithOnReloadSuccess(func(_ context.Context, ev config.ReloadEvent[AppConfig]) {
+			old, new := ev.Old, ev.New
 			fmt.Printf("rate %d -> %d\n", old.Rate, new.Rate)
 		}),
 	)
@@ -254,16 +255,25 @@ func ExampleNewReloaderFunc() {
 	// 2 1
 }
 
-// Example_reloadEndpoint mounts a manual reload on an HTTP mux: a refused
-// reload answers with its error, which never quotes a sensitive value, and a
-// reload already running answers 409. Put authentication in front of it.
+// Example_reloadEndpoint mounts a manual reload on an HTTP mux. A refused
+// reload answers with its error, a reload already running answers 409, and a
+// published one answers with its generation and what changed, a credential's
+// values redacted. Put authentication in front of it.
 func Example_reloadEndpoint() {
 	type AppConfig struct {
 		Port   int    `koanf:"port" default:"8080"`
-		APIKey string `koanf:"api_key" default:"k-123"`
+		APIKey string `koanf:"api_key"`
 	}
 	ctx := context.Background()
-	reloader, err := config.NewReloader[AppConfig](ctx, nil)
+	settings := map[string]any{"api_key": "k-1"} // stands in for a settings table
+	source, err := config.NewMapProvider(func(context.Context) (map[string]any, error) {
+		return settings, nil
+	}, ".")
+	if err != nil {
+		fmt.Println(err)
+		return
+	}
+	reloader, err := config.NewReloader[AppConfig](ctx, []config.Option{config.WithBaseProvider(source, nil)})
 	if err != nil {
 		fmt.Println("load:", err)
 		return
@@ -272,7 +282,7 @@ func Example_reloadEndpoint() {
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /admin/config/reload", func(w http.ResponseWriter, r *http.Request) {
-		cfg, err := reloader.Reload(r.Context())
+		result, err := reloader.Reload(r.Context())
 		switch {
 		case errors.Is(err, config.ErrReloadInProgress):
 			http.Error(w, err.Error(), http.StatusConflict)
@@ -285,15 +295,19 @@ func Example_reloadEndpoint() {
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(config.RedactedMap(cfg))
+		_ = json.NewEncoder(w).Encode(struct {
+			Generation uint64          `json:"generation"`
+			Changes    []config.Change `json:"changes"`
+		}{result.Snapshot.Generation, result.Changes})
 	})
 
+	settings = map[string]any{"port": 9090, "api_key": "k-2"}
 	rec := httptest.NewRecorder()
 	mux.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/admin/config/reload", nil))
 	fmt.Print(rec.Code, " ", rec.Body.String())
 
 	// Output:
-	// 200 {"api_key":"[REDACTED]","port":"8080"}
+	// 200 {"generation":2,"changes":[{"key":"port","old":{"present":true,"type":"int","text":"8080"},"new":{"present":true,"type":"int","text":"9090"}},{"key":"api_key","old":{"present":true,"type":"string","text":"[REDACTED]","redacted":true},"new":{"present":true,"type":"string","text":"[REDACTED]","redacted":true}}]}
 }
 
 // ExampleDiff lists what changed between two configs, keyed in the package's

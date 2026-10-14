@@ -31,16 +31,19 @@ func TestNewReloaderFunc_SwapsOnlyOnSuccess(t *testing.T) {
 			}
 			return &portCfg{Port: int(next.Add(1))}, nil
 		},
-		WithOnReloadSuccess(func(old, new *portCfg) { swaps.Add(1) }),
+		WithOnReloadSuccess(func(context.Context, ReloadEvent[portCfg]) { swaps.Add(1) }),
 		WithReloadLogger(discardLogger()),
 	)
 	require.NoError(t, err)
 	assert.Equal(t, 2, r.Config().Port)
 
-	got, err := r.Reload(t.Context())
+	res, err := r.Reload(t.Context())
 	require.NoError(t, err)
-	assert.Equal(t, 3, got.Port)
-	assert.Same(t, got, r.Config())
+	assert.Equal(t, 3, res.Snapshot.Config.Port)
+	assert.Same(t, res.Snapshot.Config, r.Config())
+	assert.Equal(t, uint64(2), res.Snapshot.Generation)
+	require.Len(t, res.Changes, 1)
+	assert.Equal(t, "port", res.Changes[0].Key)
 
 	fail.Store(true)
 	_, err = r.Reload(t.Context())
@@ -121,7 +124,7 @@ func TestNewReloader_WatchedFilesBeyondConfigFiles(t *testing.T) {
 func TestNewReloader_RefusesMisconfiguration(t *testing.T) {
 	type other struct{}
 	_, err := NewReloader[portCfg](t.Context(), []Option{WithSkipValidation()},
-		WithOnReloadSuccess(func(old, new *other) {}))
+		WithOnReloadSuccess(func(context.Context, ReloadEvent[other]) {}))
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "WithOnReloadSuccess")
 

@@ -127,14 +127,14 @@ caller ──NewReloader / Arm / Run / Stop──▶ Reloader ──re-runs the 
 
 **Entry points**
 - `Load[T](ctx, opts...)` — one load, for boot.
-- `NewReloader[T](ctx, loadOpts, opts...)` or `NewReloaderFunc(ctx, load, opts...)`, then `Arm` / `Run` / `Stop` / `Reload` / `SourceChanged` / `Config` / `Stats` — hot reload.
+- `NewReloader[T](ctx, loadOpts, opts...)` or `NewReloaderFunc(ctx, load, opts...)`, then `Arm` / `Run` / `Stop` / `Reload` / `SourceChanged` / `Config` / `Snapshot` / `Stats` — hot reload.
 - `PrintRedacted`, `RedactedMap`, `PrintUsage[T]` — diagnostics.
 - `kongprovider.WithOverridesFromStruct`, `kongprovider.HelpFromConfig` — the Kong bridge.
 
 **Exit points**
-- A populated `*T`; for a `Reloader`, an atomically swapped pointer plus `WithOnReloadSuccess` callbacks.
+- A populated `*T`; for a `Reloader`, an atomically published `Snapshot` — config, generation and reload stats from one moment — plus a `ReloadEvent` to each `WithOnReloadSuccess` callback naming the keys that changed.
 - Reads of config files, `PREFIX_*` environment variables (or `WithEnviron`) and koanf providers; calls into the caller's secret populator, post-load hooks and validator.
-- Reload events on the logger; failed reloads on `WithOnReloadError`; counters on `Stats()`.
+- Reload events on the logger, each with its generation and changed keys; failed reloads on `WithOnReloadError`; counters and the last failure's category on `Stats()`, JSON-ready.
 
 **Failure modes**
 - Required or previously loaded file missing or unreadable → `ErrFileRead`, cause `*fs.PathError`.
@@ -355,8 +355,11 @@ reloader, err := config.NewReloader[AppConfig](ctx,
 	},
 	config.WithFileWatch(0), // 0 = DefaultFileWatchDebounce (500ms)
 	config.WithSignalReload(syscall.SIGHUP),
-	config.WithOnReloadSuccess(func(old, new *AppConfig) {
-		server.SetTimeout(new.Timeout) // apply what can change live
+	config.WithOnReloadSuccess(func(ctx context.Context, ev config.ReloadEvent[AppConfig]) {
+		server.SetTimeout(ev.New.Timeout) // apply what can change live
+		for _, ch := range ev.Result.Changes {
+			logger.InfoContext(ctx, "config changed", "key", ch.Key, "from", ch.Old.Text, "to", ch.New.Text) // credentials read [REDACTED]
+		}
 	}),
 	config.WithOnReloadError(func(trigger string, err error) {
 		reloadFailures.WithLabelValues(trigger).Inc()
@@ -391,15 +394,17 @@ The lifecycle:
 | `NewReloader` / `NewReloaderFunc` | Runs the initial load; its error fails construction. |
 | `Arm(ctx)` | Sets up the file watch and the signal registration and returns their error, so a process can refuse to report ready on a reloader that cannot deliver what it was configured for. Optional: `Run` arms itself. |
 | `Run(ctx)` | Serves every trigger — file watch, poll ticks, signals, `SourceChanged` — until `Stop` (returns nil) or `ctx` ends (returns `ctx.Err()`). Run it even with no watchers if you call `SourceChanged`. |
-| `Reload(ctx)` | A manual reload; returns the new config or the error. Does not wait for one in flight: returns `ErrReloadInProgress`. |
+| `Reload(ctx)` | A manual reload; returns a `ReloadResult` — the snapshot it published and the keys that changed — or the error. Does not wait for one in flight: returns `ErrReloadInProgress`. |
+| `Config()` / `Snapshot()` / `Stats()` | The live config; the live config with its generation and reload stats, all from one moment; the stats alone. Lock-free, safe from any goroutine. |
 | `SourceChanged()` | Non-blocking request to reload after a change the reloader does not watch; bursts coalesce, and the reload starts after the latest request, so it reads the change. |
 | `Stop(ctx)` | Stops triggers, cancels an automatic reload in flight and waits for a manual one; once it returns nil no reload runs and no callback fires. |
 
 Guarantees:
 
-- **Bad config never goes live.** A reload runs the whole pipeline — every source, secrets, post-load hooks, validation — before the swap. A failed reload keeps the previous config and is reported to `WithOnReloadError`, the log and `Stats()`.
+- **Bad config never goes live.** A reload runs the whole pipeline — every source, secrets, post-load hooks, validation — before the swap. A failed reload keeps the previous config and generation and is reported to `WithOnReloadError`, the log and `Stats()`, where `LastError` carries its category (`KindValidation`, `KindFileParse`, …) and message.
+- **One moment, one snapshot.** The config, its generation and the stats are published as one value: a status endpoint never shows a generation beside another moment's config or counters. The generation is 1 after the initial load and rises by one per successful reload.
 - **Reloads are serialized.** An automatic trigger that arrives during a reload waits for it and then reads the sources again, so no change is lost. Do not call `Reload` from an event handler and treat `ErrReloadInProgress` as "coalesced" — the reload in flight may have read the source before the change landed; call `SourceChanged` instead.
-- **Callbacks run after the swap.** `WithOnReloadSuccess` reacts to a config already live; it cannot veto it, and every successful reload calls it, a poll that changed nothing included. Callbacks run while the reload holds its slot: hand long work off, and never call `Stop` or `Arm` from one.
+- **Callbacks run after the swap.** `WithOnReloadSuccess` reacts to a config already live; it cannot veto it, and every successful reload calls it, a poll that changed nothing included — its `ev.Result.Changes` is then empty. The changes are `Diff`'s: keyed in the package's grammar, credential values redacted. Callbacks run while the reload holds its slot: hand long work off, and never call `Stop` or `Arm` from one.
 - **Published configs are shared.** Every reader gets the same `*T`; treat it, nested maps and slices included, as immutable.
 - **A cancelled reload is no verdict.** A reload whose context ended publishes nothing, counts as no attempt and fires no callback.
 
@@ -409,11 +414,11 @@ Guarantees:
 
 ### Reload over HTTP
 
-The package mounts no endpoint; a reload route is a few lines, and authentication is yours:
+The package mounts no endpoint; a reload route and a status route are a few lines each, and authentication is yours:
 
 ```go
 mux.HandleFunc("POST /admin/config/reload", func(w http.ResponseWriter, r *http.Request) {
-	cfg, err := reloader.Reload(r.Context())
+	result, err := reloader.Reload(r.Context())
 	switch {
 	case errors.Is(err, config.ErrReloadInProgress):
 		http.Error(w, err.Error(), http.StatusConflict)
@@ -426,11 +431,15 @@ mux.HandleFunc("POST /admin/config/reload", func(w http.ResponseWriter, r *http.
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(config.RedactedMap(cfg))
+	_ = json.NewEncoder(w).Encode(result) // {"snapshot":{"generation":…,"stats":{…}},"changes":[…]}
+})
+mux.HandleFunc("GET /admin/config/status", func(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(reloader.Snapshot()) // {"generation":…,"stats":{…}}; the config itself is not encoded
 })
 ```
 
-This is `Example_reloadEndpoint`.
+`Snapshot`, `ReloadStats`, `ReloadResult` and `Change` encode as they are: snake_case keys, unset times and errors omitted, the config left out. `Example_reloadEndpoint` shows the reload route answering with a changed port and a redacted key.
 
 ### File watching and Kubernetes
 
@@ -637,7 +646,7 @@ cfg, err := config.Load[AppConfig](ctx, config.WithFile(cli.Config), kongprovide
 | `WithWatchedFiles(paths...)` | `...string` | none | Extra files to watch; for `NewReloaderFunc`, the only ones. |
 | `WithPollInterval(d)` | `time.Duration` | off | Reload every `d`: for sources without filesystem events. Every tick runs the whole pipeline, secrets included. |
 | `WithSignalReload(sigs...)` | `...os.Signal` | off | Reload on each signal, typically `SIGHUP`. |
-| `WithOnReloadSuccess[T](fn)` | `func(old, new *T)` | none | After each successful reload, after the swap. Panics recovered. A callback for another type fails construction. |
+| `WithOnReloadSuccess[T](fn)` | `func(ctx context.Context, ev ReloadEvent[T])` | none | After each successful reload, after the swap, with the reload's context: the trigger, the replaced and published configs, and the `ReloadResult`. Panics recovered. A callback for another type fails construction. |
 | `WithOnReloadError(fn)` | `func(trigger string, err error)` | none | After each failed reload, from any trigger. Panics recovered. |
 | `WithReloadLogger(l)` | `*slog.Logger` | `NewReloader`: its `WithLogger`; otherwise `slog.Default()` at each line | Logger for reload events; nil selects `slog.Default()` at each line even when the load options set a logger. |
 
@@ -673,12 +682,15 @@ cfg, err := config.Load[AppConfig](ctx, config.WithFile(cli.Config), kongprovide
 - `NewReloader[T](ctx, loadOpts, opts...) (*Reloader[T], error)` — the built-in pipeline, re-run on every reload.
 - `NewReloaderFunc[T](ctx, load, opts...) (*Reloader[T], error)` — the caller's loader.
 - `(*Reloader[T]).Config() *T` — the current config, one atomic load.
-- `(*Reloader[T]).Reload(ctx) (*T, error)` — manual reload.
+- `(*Reloader[T]).Reload(ctx) (*ReloadResult[T], error)` — manual reload; what it published and the keys that changed.
+- `(*Reloader[T]).Snapshot() Snapshot[T]` — the live config, its generation and the reload stats, from one moment.
 - `(*Reloader[T]).Arm(ctx) error` — set up the watch and signals; their error.
 - `(*Reloader[T]).Run(ctx) error` — serve every trigger until `Stop` or `ctx`.
 - `(*Reloader[T]).SourceChanged()` — non-blocking, coalescing reload request.
 - `(*Reloader[T]).Stop(ctx) error` — stop and wait until no reload can run.
 - `(*Reloader[T]).Stats() ReloadStats` — attempts, successes, failures, last trigger, times and error.
+- `Snapshot[T]{Config, Generation, Stats}`, `ReloadResult[T]{Snapshot, Changes}`, `ReloadEvent[T]{Trigger, Old, New, Result}` — reload state and outcomes; JSON-ready, the config never encoded.
+- `ReloadStats`, `Problem{Kind, Message}` — the history and an error as data; `Diagnose(err) *Problem` categorizes any load or reload error, `KindValidation` … `KindUnknown` naming the category.
 - `TriggerManual`, `TriggerFileChange`, `TriggerPoll`, `TriggerSignal`, `TriggerSourceChanged` — bounded trigger labels.
 
 ### Diagnostics
@@ -745,14 +757,14 @@ func httpStatus(err error) int {
 | Debug | `config sources loaded` | The sources one load read, in order. |
 | Debug | `environment variables under the prefix name no config key` | `PREFIX_*` variables that set nothing — usually a typo. |
 | Info | `config reloader started` | `Run` is serving; attributes say which triggers. |
-| Info / Debug | `config reloaded` | A reload swapped a new config (Debug for poll ticks). |
+| Info / Debug | `config reloaded` | An automatic reload published a new config: `generation` and `changed_keys` (key names only). Debug for a poll tick that changed nothing. |
 | Error | `config reload failed` | An automatic reload was refused; the previous config is live. |
 | Error | `config file watcher error`, `config file watch is missing directories` | fsnotify reported an error, or a directory could not be re-watched. |
 | Info | `config reloader stopped` | `Run` returned after `Stop`. |
 
 ### Metrics
 
-The package imports no metrics library. `Stats()` is a consistent snapshot; export it with function metrics, and count failures per trigger from `WithOnReloadError`:
+The package imports no metrics library. `Snapshot()` is consistent; export it with function metrics, and count failures per trigger and kind from `WithOnReloadError` with `Diagnose(err).Kind` — both are bounded label sets:
 
 ```go
 reg.MustRegister(
@@ -760,8 +772,8 @@ reg.MustRegister(
 		Name: "config_reload_failures_total", Help: "Reloads that left the previous config live.",
 	}, func() float64 { return float64(reloader.Stats().Failures) }),
 	prometheus.NewGaugeFunc(prometheus.GaugeOpts{
-		Name: "config_reload_last_success_timestamp_seconds", Help: "When a reload last swapped.",
-	}, func() float64 { return float64(reloader.Stats().LastSuccess.Unix()) }),
+		Name: "config_generation", Help: "Configs published: 1 at boot, plus one per successful reload.",
+	}, func() float64 { return float64(reloader.Snapshot().Generation) }),
 )
 ```
 
@@ -773,15 +785,16 @@ Alert on `ErrReload` (or a rising failure count): a process whose reloads keep f
 |---------|-------|-----|
 | An environment variable has no effect | Debug log `environment variables under the prefix name no config key`; `PrintUsage` for the real names | Rename the variable to the listed name. |
 | `ambiguous environment variables` at boot | The readings the error lists | Rename a field or map key so only one reading fits. |
-| A file edit is not picked up | `Stats().LastTrigger` / `LastError`; is `Run` running; was `Arm`'s error checked | On `subPath` mounts nothing updates — mount without `subPath`; for env and providers use `WithPollInterval` or `SourceChanged`. |
-| Reloads fail after a deploy | `Stats().LastError`, the `config reload failed` log | Fix the source; the previous config stays live until then. A deleted file that loaded before fails every reload with `ErrFileRead`. |
+| A file edit is not picked up | `Snapshot().Generation` did not move; `Stats().LastTrigger` / `LastError`; is `Run` running; was `Arm`'s error checked | On `subPath` mounts nothing updates — mount without `subPath`; for env and providers use `WithPollInterval` or `SourceChanged`. |
+| Reloads fail after a deploy | `Stats().LastError.Kind` and `.Message`, the `config reload failed` log | Fix the source; the previous config stays live until then. A deleted file that loaded before fails every reload with `ErrFileRead`. |
 | `Stop` returns a context error | A manual `Reload` still in flight (a slow secret backend) | Give `Stop` a longer timeout, or bound the reload's own context. |
 | A parse error names only a line | `errors.As(err, &pe)` with `pe *config.ParseError`; `pe.Err` is the parser's message | Print `pe.Err` only where the file's contents may be shown — it can quote them. |
 
 ## Security
 
 - **The package's own output quotes no secret.** Validation reports keys and rule names, never values. A decode failure on a field that is, or could hold, a sensitive value — a decode hook's included — is reported by field and type, its cause — which a text decoder may have quoted — dropped; an ordinary field's keeps its decoder's message, which may quote the value; a parse failure by source and line, the parser's message kept only in `ParseError.Err`. `PrintRedacted`, `RedactedMap` and `PrintUsage` redact by tag, name and enclosing container, and withhold defaults that could hold a sensitive value.
-- **Your hooks' errors are yours.** Errors from your providers, secret populator, post-load hooks and validator pass through unchanged; keep values out of them before returning one from a reload endpoint.
+- **Your hooks' errors are yours.** Errors from your providers, secret populator, post-load hooks and validator pass through unchanged — into a reload's error and `Stats().LastError.Message` too; keep values out of them before returning one from a reload endpoint.
+- **Changes are redacted like everything else.** A `Change` for a sensitive key carries `[REDACTED]` on both sides; a change to an ordinary key carries its values' text.
 - **Mark what the heuristics cannot see.** A credential in a field named `URL`, `Endpoint` or `Conn` is not caught by name; tag it `sensitive:"true"`. No option prints a sensitive value: to read one, read the config.
 - **Secrets come from your resolver.** Keep them out of files and defaults; resolve them in `WithSecretPopulator` with your backend's own authentication and timeouts.
 - **A reload endpoint is an operator action.** The package mounts none; put authentication and authorization in front of the one you write.
@@ -862,6 +875,7 @@ The package's own file-watch tests use the operating system's notifications (ino
 | `provider_func.go` | `NewMapProvider`: a provider from a function, dotted keys unflattened |
 | `secrets.go` | `SecretsFrom`: `secret` tags resolved through a fetch function |
 | `keyof.go` | `KeyOf`, `KeyOfValue`: a field's key from its address |
+| `snapshot.go` | `Snapshot`, `ReloadStats`, `Problem`, `Diagnose`, `ReloadResult`, `ReloadEvent`: reload state and outcomes as data |
 | `fields.go` | `Fields[T]` key-tree walker and sensitivity, `FieldName`, `DefaultsFromTags[T]` |
 | `schema.go` | The schema graph every walk shares, the walk cursor (key, pattern, owner, sensitivity), `FieldFor[T]` |
 | `path.go` | The key grammar: typed key paths, rendering and parsing |
@@ -872,7 +886,7 @@ The package's own file-watch tests use the operating system's notifications (ino
 | `envout.go` | `PrintEnv`: the loader's variable names, checked against the environment layer's own reading |
 | `env.go` | Environment-variable naming from the key tree: static keys, map entries, ambiguity |
 | `decode_errors.go` | Decode errors with sensitive values withheld |
-| `reloader.go` | `Reloader[T]`, `NewReloader`, `NewReloaderFunc`, the single-flight slot, `Arm`, `Run`, `Stop`, stats |
+| `reloader.go` | `Reloader[T]`, `NewReloader`, `NewReloaderFunc`, the single-flight slot, the published snapshot, `Arm`, `Run`, `Stop` |
 | `reload_options.go` | `ReloadOption` and every reload option |
 | `watch.go` | The file watch: directory and symlink subscriptions, debounce, settle |
 | `print.go` | `PrintRedacted`, `RedactedMap`, print options, the redaction walk |

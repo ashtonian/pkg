@@ -155,7 +155,7 @@ func TestReloader_StopDuringDebounceDoesNotReload(t *testing.T) {
 		t.Context(),
 		[]Option{WithFile(path), WithSkipValidation()},
 		WithFileWatch(300*time.Millisecond),
-		WithOnReloadSuccess(func(_, _ *portCfg) { changes.Add(1) }),
+		WithOnReloadSuccess(func(_ context.Context, ev ReloadEvent[portCfg]) { changes.Add(1) }),
 	)
 	if err != nil {
 		t.Fatalf("NewReloader: %v", err)
@@ -205,7 +205,7 @@ func TestReloader_StopWaitsForManualReload(t *testing.T) {
 			}
 			return nil
 		})},
-		WithOnReloadSuccess(func(_, _ *portCfg) { changes.Add(1) }),
+		WithOnReloadSuccess(func(_ context.Context, ev ReloadEvent[portCfg]) { changes.Add(1) }),
 	)
 	if err != nil {
 		t.Fatalf("NewReloader: %v", err)

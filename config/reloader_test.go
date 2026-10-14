@@ -94,10 +94,11 @@ func TestReloader_ManualReload(t *testing.T) {
 	}
 
 	before := r.Config()
-	after, err := r.Reload(context.Background())
+	res, err := r.Reload(context.Background())
 	if err != nil {
 		t.Fatalf("Reload failed: %v", err)
 	}
+	after := res.Snapshot.Config
 
 	// New pointer after reload (different allocation).
 	if before == after {
@@ -122,10 +123,11 @@ func TestReloader_ManualReload_PicksUpEnvChanges(t *testing.T) {
 
 	// Change env var and reload.
 	t.Setenv("RELENV_HOST", "changed")
-	newCfg, err := r.Reload(context.Background())
+	res, err := r.Reload(context.Background())
 	if err != nil {
 		t.Fatalf("Reload failed: %v", err)
 	}
+	newCfg := res.Snapshot.Config
 	if newCfg.Host != "changed" {
 		t.Errorf("reloaded Host = %q, want %q", newCfg.Host, "changed")
 	}
@@ -180,7 +182,8 @@ func TestReloader_OnChange(t *testing.T) {
 	r, err := NewReloader[reloaderCfg](
 		t.Context(),
 		[]Option{WithSkipValidation()},
-		WithOnReloadSuccess(func(old, new *reloaderCfg) {
+		WithOnReloadSuccess(func(_ context.Context, ev ReloadEvent[reloaderCfg]) {
+			old, new := ev.Old, ev.New
 			called++
 			lastOld = old
 			lastNew = new
@@ -211,10 +214,10 @@ func TestReloader_MultipleOnChange(t *testing.T) {
 	r, err := NewReloader[reloaderCfg](
 		t.Context(),
 		[]Option{WithSkipValidation()},
-		WithOnReloadSuccess(func(old, new *reloaderCfg) {
+		WithOnReloadSuccess(func(_ context.Context, ev ReloadEvent[reloaderCfg]) {
 			calls = append(calls, "first")
 		}),
-		WithOnReloadSuccess(func(old, new *reloaderCfg) {
+		WithOnReloadSuccess(func(_ context.Context, ev ReloadEvent[reloaderCfg]) {
 			calls = append(calls, "second")
 		}),
 	)
@@ -238,10 +241,10 @@ func TestReloader_OnChange_PanicRecovery(t *testing.T) {
 	r, err := NewReloader[reloaderCfg](
 		t.Context(),
 		[]Option{WithSkipValidation()},
-		WithOnReloadSuccess(func(old, new *reloaderCfg) {
+		WithOnReloadSuccess(func(_ context.Context, ev ReloadEvent[reloaderCfg]) {
 			panic("intentional panic")
 		}),
-		WithOnReloadSuccess(func(old, new *reloaderCfg) {
+		WithOnReloadSuccess(func(_ context.Context, ev ReloadEvent[reloaderCfg]) {
 			secondCalled = true
 		}),
 	)
@@ -267,7 +270,7 @@ func TestReloader_OnChange_NotCalledOnFailure(t *testing.T) {
 	r, err := NewReloader[validatedCfg](
 		t.Context(),
 		[]Option{WithRequiredFile(path)},
-		WithOnReloadSuccess(func(old, new *validatedCfg) {
+		WithOnReloadSuccess(func(_ context.Context, ev ReloadEvent[validatedCfg]) {
 			called++
 		}),
 	)
@@ -299,7 +302,8 @@ func TestReloader_FileWatch(t *testing.T) {
 		t.Context(),
 		[]Option{WithFile(cfgFile), WithSkipValidation()},
 		WithFileWatch(50*time.Millisecond),
-		WithOnReloadSuccess(func(old, new *reloaderCfg) {
+		WithOnReloadSuccess(func(_ context.Context, ev ReloadEvent[reloaderCfg]) {
+			new := ev.New
 			changed <- new
 		}),
 	)
@@ -348,7 +352,7 @@ func TestReloader_PollInterval(t *testing.T) {
 		t.Context(),
 		[]Option{WithSkipValidation()},
 		WithPollInterval(50*time.Millisecond),
-		WithOnReloadSuccess(func(old, new *reloaderCfg) {
+		WithOnReloadSuccess(func(_ context.Context, ev ReloadEvent[reloaderCfg]) {
 			reloadCount.Add(1)
 		}),
 	)

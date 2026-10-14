@@ -91,7 +91,9 @@
 //	    []config.Option{config.WithFile("config.yaml"), config.WithEnvPrefix("APP")},
 //	    config.WithFileWatch(0), // 0 = DefaultFileWatchDebounce
 //	    config.WithSignalReload(syscall.SIGHUP),
-//	    config.WithOnReloadSuccess(func(old, new *AppConfig) { server.SetTimeout(new.Timeout) }),
+//	    config.WithOnReloadSuccess(func(ctx context.Context, ev config.ReloadEvent[AppConfig]) {
+//	        server.SetTimeout(ev.New.Timeout) // ev.Result.Changes names every key that changed
+//	    }),
 //	)
 //	if err != nil {
 //	    return err
@@ -112,9 +114,12 @@
 //
 //	cfg := reloader.Config() // one atomic load
 //
-// A reload runs the whole pipeline and swaps only on success; a failed one
-// keeps the previous config and is reported to [WithOnReloadError], the log
-// and [Reloader.Stats]. Reloads are serialized: an automatic trigger waits for
+// A reload runs the whole pipeline and swaps only on success, returning a
+// [ReloadResult]: the [Snapshot] it published and the keys that changed. A
+// failed one keeps the previous config and is reported to
+// [WithOnReloadError], the log and [Reloader.Stats]. [Reloader.Snapshot]
+// returns the config, its generation and the reload stats from one moment,
+// and encodes to JSON for a status endpoint. Reloads are serialized: an automatic trigger waits for
 // one in flight and then reads the sources again, while a manual
 // [Reloader.Reload] returns [ErrReloadInProgress]. For a source the reloader
 // cannot watch, call [Reloader.SourceChanged]. [NewReloaderFunc] gives a

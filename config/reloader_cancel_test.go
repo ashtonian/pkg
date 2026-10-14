@@ -31,7 +31,7 @@ func TestReload_CancelledContextPublishesNothing(t *testing.T) {
 			}
 			return nil
 		})},
-		WithOnReloadSuccess(func(_, _ *reloaderCfg) { callbacks++ }),
+		WithOnReloadSuccess(func(_ context.Context, ev ReloadEvent[reloaderCfg]) { callbacks++ }),
 	)
 	if err != nil {
 		t.Fatal(err)

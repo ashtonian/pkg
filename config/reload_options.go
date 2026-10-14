@@ -1,6 +1,7 @@
 package config
 
 import (
+	"context"
 	"fmt"
 	"log/slog"
 	"os"
@@ -28,7 +29,7 @@ type reloadOptions struct {
 // for, checked when the Reloader is built.
 type successHook struct {
 	target reflect.Type
-	run    func(old, new any)
+	run    func(ctx context.Context, ev any)
 }
 
 func buildReloadOptions(opts []ReloadOption) *reloadOptions {
@@ -55,17 +56,19 @@ func (o *reloadOptions) checkHookTypes(cfg reflect.Type) error {
 const DefaultFileWatchDebounce = 500 * time.Millisecond
 
 // WithOnReloadSuccess registers a callback invoked after every successful
-// reload with the previous and the new config — after the swap, so it reacts
-// to a config already live and cannot veto it. Every successful reload swaps
-// and calls it, a poll that changed nothing included. Callbacks run in
-// registration order, panics are recovered, and they run while the reload
-// holds the single-flight slot: hand long work off, and never call
-// [Reloader.Stop] or [Reloader.Arm] from one. A callback written for a type
-// other than the reloader's fails construction.
-func WithOnReloadSuccess[T any](fn func(old, new *T)) ReloadOption {
+// reload with the reload's context and a [ReloadEvent]: the trigger, the
+// config replaced and the one published, and the keys that changed. It runs
+// after the swap, so it reacts to a config already live and cannot veto it.
+// Every successful reload publishes and calls it, a poll that changed nothing
+// included — its event's Changes is then empty. Callbacks run in registration
+// order, panics are recovered, and they run while the reload holds the
+// single-flight slot: hand long work off, and never call [Reloader.Stop] or
+// [Reloader.Arm] from one. A callback written for a type other than the
+// reloader's fails construction.
+func WithOnReloadSuccess[T any](fn func(ctx context.Context, ev ReloadEvent[T])) ReloadOption {
 	hook := successHook{
 		target: reflect.TypeFor[*T](),
-		run:    func(old, new any) { fn(old.(*T), new.(*T)) },
+		run:    func(ctx context.Context, ev any) { fn(ctx, ev.(ReloadEvent[T])) },
 	}
 	return func(o *reloadOptions) {
 		o.onSuccess = append(o.onSuccess, hook)

@@ -37,7 +37,10 @@ import (
 // treated as immutable, nested maps and slices included: atomic publication
 // makes the swap safe, not mutation.
 type Reloader[T any] struct {
-	current atomic.Pointer[T]
+	// state is the published config with its generation and stats, written
+	// whole while holding slot and read lock-free, so a reader never sees a
+	// config with another moment's stats.
+	state atomic.Pointer[Snapshot[T]]
 	// load runs one load and reports the digests of the config files it
 	// parsed, nil when the loader is the caller's.
 	load   func(ctx context.Context) (*T, fileDigests, error)
@@ -61,7 +64,6 @@ type Reloader[T any] struct {
 	// loaded is what each watched file held at the last successful load.
 	// Guarded by slot.
 	loaded fileDigests
-	stats  atomic.Pointer[ReloadStats] // written while holding slot, read lock-free
 
 	// armSem guards armed. It is taken before the slot, never while holding
 	// it, and waited for under a context, so an Arm queued behind another
@@ -88,37 +90,6 @@ const (
 	TriggerSignal        = "signal"         // WithSignalReload received one of its signals
 	TriggerSourceChanged = "source_changed" // the caller reported a change via SourceChanged
 )
-
-// ReloadStats is an immutable point-in-time snapshot of a Reloader's reload
-// history, returned by [Reloader.Stats].
-//
-// Only reloads that ran to a verdict are counted. A manual Reload turned away
-// by [ErrReloadInProgress] or [ErrReloaderStopped] ran no pipeline, and a
-// reload abandoned because its context ended (including one cancelled by
-// Stop) reached no verdict about the sources.
-type ReloadStats struct {
-	// Attempts is Successes+Failures — every reload that ran the pipeline.
-	Attempts uint64
-	// Successes counts reloads that produced a new config and swapped it in.
-	Successes uint64
-	// Failures counts reloads that left the previous config in place.
-	Failures uint64
-	// LastTrigger names what drove the most recent attempt: one of the
-	// Trigger* constants. Empty before the first attempt.
-	LastTrigger string
-	// LastSuccess is when the most recent successful reload swapped. Zero if
-	// no reload has succeeded since construction; the initial load is not a
-	// reload and does not set it.
-	LastSuccess time.Time
-	// LastFailure is when the most recent failed reload was rejected. Zero if
-	// none has failed.
-	LastFailure time.Time
-	// LastError is the error from the most recent attempt, or nil when that
-	// attempt succeeded. A success clears it; a failure sets it without
-	// touching LastSuccess, so a non-nil LastError beside an earlier
-	// LastSuccess means the config from that success is still live.
-	LastError error
-}
 
 // NewReloader loads the initial config with [Load]'s pipeline and loadOpts,
 // and returns a Reloader that re-runs that pipeline, with the same options,
@@ -170,6 +141,9 @@ func NewReloaderFunc[T any](ctx context.Context, load func(ctx context.Context) 
 // newReloader builds a Reloader whose events go to inherited — the load
 // options' logger, nil for none — unless WithReloadLogger set one.
 func newReloader[T any](ro *reloadOptions, inherited *slog.Logger, configFiles []string) (*Reloader[T], error) {
+	if _, err := rootSchema(reflect.TypeFor[T]()); err != nil {
+		return nil, fmt.Errorf("config: a reloader compares the configs it publishes: %w", err)
+	}
 	logger := inherited
 	if ro.loggerSet {
 		logger = ro.logger
@@ -213,7 +187,7 @@ func (r *Reloader[T]) loadInitial(ctx context.Context) error {
 		return err
 	}
 	r.loaded = files
-	r.current.Store(cfg)
+	r.state.Store(&Snapshot[T]{Config: cfg, Generation: 1})
 	return nil
 }
 
@@ -249,12 +223,21 @@ func digestFiles(paths []string) fileDigests {
 // Config returns the current configuration. This is an atomic load
 // and safe to call from any goroutine without locking.
 func (r *Reloader[T]) Config() *T {
-	return r.current.Load()
+	return r.state.Load().Config
 }
 
-// Reload triggers an immediate config reload. Returns the new config on
-// success. On failure the previous config is preserved and an error wrapping
-// both [ErrReload] and the underlying cause is returned.
+// Snapshot returns the published config with its generation and the reload
+// stats, all from one moment. Safe to call from any goroutine.
+func (r *Reloader[T]) Snapshot() Snapshot[T] {
+	snap := *r.state.Load()
+	snap.Stats = snap.Stats.clone()
+	return snap
+}
+
+// Reload triggers an immediate config reload and returns what it published:
+// the new snapshot and the keys that changed. On failure the previous config
+// is preserved and an error wrapping both [ErrReload] and the underlying
+// cause is returned.
 //
 // If another reload is in flight this call does not wait: it returns
 // [ErrReloadInProgress], which deliberately does NOT wrap ErrReload — no
@@ -262,7 +245,7 @@ func (r *Reloader[T]) Config() *T {
 // [ErrReloaderStopped]. If ctx ends while the reload runs, the reload is
 // abandoned: the error carries ctx.Err(), not ErrReload, and nothing is
 // recorded. Callers that alert on breakage check ErrReload alone.
-func (r *Reloader[T]) Reload(ctx context.Context) (*T, error) {
+func (r *Reloader[T]) Reload(ctx context.Context) (*ReloadResult[T], error) {
 	if err := r.acquire(ctx, TriggerManual, false); err != nil {
 		return nil, err
 	}
@@ -287,14 +270,10 @@ func (r *Reloader[T]) SourceChanged() {
 	}
 }
 
-// Stats returns a snapshot of this reloader's reload history. Safe to call
-// from any goroutine; the snapshot is internally consistent (every field
-// describes the same moment).
+// Stats returns this reloader's reload history. Safe to call from any
+// goroutine; every field describes the same moment.
 func (r *Reloader[T]) Stats() ReloadStats {
-	if s := r.stats.Load(); s != nil {
-		return *s
-	}
-	return ReloadStats{}
+	return r.state.Load().Stats.clone()
 }
 
 // acquire takes the single-flight slot for trigger. With wait false it fails
@@ -344,7 +323,7 @@ func (r *Reloader[T]) release() { <-r.slot }
 // nothing, counts as neither success nor failure and fires no callback — even
 // when the context ends after the sources were read, say inside a post-load
 // hook that went on to return nil.
-func (r *Reloader[T]) reloadHeld(ctx context.Context, trigger string) (*T, error) {
+func (r *Reloader[T]) reloadHeld(ctx context.Context, trigger string) (*ReloadResult[T], error) {
 	if err := ctx.Err(); err != nil {
 		return nil, fmt.Errorf("config reload abandoned: %w", err)
 	}
@@ -356,36 +335,51 @@ func (r *Reloader[T]) reloadHeld(ctx context.Context, trigger string) (*T, error
 		}
 		return nil, fmt.Errorf("config reload abandoned: %w", ctxErr)
 	}
+	prev := r.state.Load()
+	var changes []Change
+	if err == nil {
+		changes, err = Diff(prev.Config, cfg)
+		if changes == nil {
+			changes = []Change{}
+		}
+	}
 	if err != nil {
 		reloadErr := fmt.Errorf("%w: %w", ErrReload, err)
-		r.recordAttempt(trigger, reloadErr)
+		r.publishFailure(prev, trigger, reloadErr)
 		r.notifyReloadError(ctx, trigger, reloadErr)
 		return nil, reloadErr
 	}
 
 	r.loaded = files
-	old := r.current.Swap(cfg)
-	r.recordAttempt(trigger, nil)
-	r.notifySuccess(ctx, old, cfg)
-	return cfg, nil
+	next := r.publishSuccess(prev, trigger, cfg)
+	result := &ReloadResult[T]{Snapshot: *next, Changes: changes}
+	r.notifySuccess(ctx, ReloadEvent[T]{Trigger: trigger, Old: prev.Config, New: cfg, Result: *result})
+	return result, nil
 }
 
-// recordAttempt folds one completed attempt into the stats snapshot. Called
-// only with the slot held, so the read-modify-write needs no further
-// synchronisation; readers see the new snapshot atomically.
-func (r *Reloader[T]) recordAttempt(trigger string, err error) {
-	next := r.Stats()
-	next.Attempts++
-	next.LastTrigger = trigger
-	next.LastError = err
-	if err != nil {
-		next.Failures++
-		next.LastFailure = time.Now()
-	} else {
-		next.Successes++
-		next.LastSuccess = time.Now()
-	}
-	r.stats.Store(&next)
+// publishSuccess publishes cfg as the next generation and returns its
+// snapshot. Called only with the slot held, so the read-modify-write needs no
+// further synchronisation; readers see the new snapshot atomically.
+func (r *Reloader[T]) publishSuccess(prev *Snapshot[T], trigger string, cfg *T) *Snapshot[T] {
+	next := &Snapshot[T]{Config: cfg, Generation: prev.Generation + 1, Stats: prev.Stats}
+	next.Stats.Attempts++
+	next.Stats.Successes++
+	next.Stats.LastTrigger = trigger
+	next.Stats.LastSuccess = time.Now().UTC()
+	next.Stats.LastError = nil
+	r.state.Store(next)
+	return next
+}
+
+// publishFailure records a rejected reload; the config and generation stay.
+func (r *Reloader[T]) publishFailure(prev *Snapshot[T], trigger string, err error) {
+	next := &Snapshot[T]{Config: prev.Config, Generation: prev.Generation, Stats: prev.Stats}
+	next.Stats.Attempts++
+	next.Stats.Failures++
+	next.Stats.LastTrigger = trigger
+	next.Stats.LastFailure = time.Now().UTC()
+	next.Stats.LastError = Diagnose(err)
+	r.state.Store(next)
 }
 
 // Arm sets up the reloader's triggers — the file watch and the signal
@@ -705,18 +699,24 @@ func (r *Reloader[T]) changedSinceLoad() (string, bool) {
 // holds the slot.
 func (r *Reloader[T]) reloadAndLog(ctx context.Context, trigger string, attrs ...any) {
 	args := append([]any{"trigger", trigger}, attrs...)
-	if _, err := r.reloadHeld(ctx, trigger); err != nil {
+	res, err := r.reloadHeld(ctx, trigger)
+	if err != nil {
 		if ctx.Err() != nil {
 			return
 		}
 		r.log().ErrorContext(ctx, "config reload failed", append(args, "error", err)...)
 		return
 	}
+	keys := make([]string, len(res.Changes))
+	for i, ch := range res.Changes {
+		keys[i] = ch.Key
+	}
 	level := slog.LevelInfo
-	if trigger == TriggerPoll {
+	if trigger == TriggerPoll && len(keys) == 0 {
 		level = slog.LevelDebug // a poll reloads on every tick; Info would flood
 	}
-	r.log().Log(ctx, level, "config reloaded", args...)
+	r.log().Log(ctx, level, "config reloaded",
+		append(args, "generation", res.Snapshot.Generation, "changed_keys", keys)...)
 }
 
 // Stop stops the reloader. From the moment it is called, Reload returns
@@ -770,16 +770,20 @@ func (r *Reloader[T]) Stop(ctx context.Context) error {
 }
 
 // notifySuccess invokes the WithOnReloadSuccess callbacks, recovering a
-// panic so a misbehaving callback cannot crash the process.
-func (r *Reloader[T]) notifySuccess(ctx context.Context, old, new *T) {
+// panic so a misbehaving callback cannot crash the process. Each gets its own
+// copy of the changes, so none can alter what the next one or Reload's caller
+// sees.
+func (r *Reloader[T]) notifySuccess(ctx context.Context, ev ReloadEvent[T]) {
+	changes := ev.Result.Changes
 	for _, h := range r.onSuccess {
+		ev.Result.Changes = slices.Clone(changes)
 		func() {
 			defer func() {
 				if p := recover(); p != nil {
 					r.log().ErrorContext(ctx, "config reload success callback panicked", "panic", p)
 				}
 			}()
-			h.run(old, new)
+			h.run(ctx, ev)
 		}()
 	}
 }

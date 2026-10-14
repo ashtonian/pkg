@@ -29,7 +29,7 @@ func watchedReloader(t *testing.T, opts ...Option) (*Reloader[reloaderCfg], <-ch
 		t.Context(),
 		append(opts, WithSkipValidation()),
 		WithFileWatch(50*time.Millisecond),
-		WithOnReloadSuccess(func(_, neu *reloaderCfg) { changed <- neu }),
+		WithOnReloadSuccess(func(_ context.Context, ev ReloadEvent[reloaderCfg]) { neu := ev.New; changed <- neu }),
 	)
 	if err != nil {
 		t.Fatalf("NewReloader: %v", err)
@@ -240,7 +240,7 @@ func TestFileWatch_ChangeBeforeStartIsNotMissed(t *testing.T) {
 			t.Context(),
 			[]Option{WithFile(file), WithSkipValidation(), WithLogger(slog.New(logs))},
 			WithFileWatch(50*time.Millisecond),
-			WithOnReloadSuccess(func(_, neu *reloaderCfg) { changed <- neu }),
+			WithOnReloadSuccess(func(_ context.Context, ev ReloadEvent[reloaderCfg]) { neu := ev.New; changed <- neu }),
 		)
 		if err != nil {
 			t.Fatal(err)

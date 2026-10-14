@@ -90,8 +90,8 @@ func TestReloadStats_CountsFailureAndKeepsLastSuccess(t *testing.T) {
 	if s.Attempts != 2 || s.Successes != 1 || s.Failures != 1 {
 		t.Errorf("stats = %+v, want 2 attempts / 1 success / 1 failure", s)
 	}
-	if s.LastError == nil || !errors.Is(s.LastError, ErrReload) {
-		t.Errorf("LastError = %v, want an ErrReload", s.LastError)
+	if s.LastError == nil || s.LastError.Kind != KindValidation {
+		t.Errorf("LastError = %v, want a validation problem", s.LastError)
 	}
 	if !s.LastSuccess.Equal(goodAt) {
 		t.Errorf("LastSuccess = %v, want it preserved at %v", s.LastSuccess, goodAt)
@@ -332,7 +332,7 @@ func TestReloader_FileWatch_DetectsConfigMapSymlinkSwap(t *testing.T) {
 		t.Context(),
 		[]Option{WithRequiredFile(cfgFile), WithSkipValidation()},
 		WithFileWatch(50*time.Millisecond),
-		WithOnReloadSuccess(func(_, neu *reloaderCfg) { changed <- neu }),
+		WithOnReloadSuccess(func(_ context.Context, ev ReloadEvent[reloaderCfg]) { neu := ev.New; changed <- neu }),
 	)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -409,7 +409,7 @@ func TestReloader_FileWatch_DetectsReleaseDirRelink(t *testing.T) {
 		t.Context(),
 		[]Option{WithRequiredFile(link), WithSkipValidation()},
 		WithFileWatch(50*time.Millisecond),
-		WithOnReloadSuccess(func(_, neu *reloaderCfg) { changed <- neu }),
+		WithOnReloadSuccess(func(_ context.Context, ev ReloadEvent[reloaderCfg]) { neu := ev.New; changed <- neu }),
 	)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)

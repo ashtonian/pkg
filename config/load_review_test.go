@@ -85,10 +85,11 @@ func TestWithDefaults_SnapshotsTheCallersMap(t *testing.T) {
 	defer r.Stop(context.Background())
 	defaults["port"] = 2
 	tags[0] = "b"
-	got, err := r.Reload(t.Context())
+	res, err := r.Reload(t.Context())
 	if err != nil {
 		t.Fatal(err)
 	}
+	got := res.Snapshot.Config
 	if got.Port != 1 || len(got.Tags) != 1 || got.Tags[0] != "a" {
 		t.Fatalf("reload read %+v: the caller's later changes reached the defaults", got)
 	}
