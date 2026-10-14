@@ -428,27 +428,10 @@ func (o *options) decodeHook(observe func(mapstructure.DecodeHookFunc) mapstruct
 	hooks = append(hooks,
 		mapstructure.StringToTimeDurationHookFunc(),
 		mapstructure.DecodeHookFuncType(stringToSlice),
+		mapstructure.DecodeHookFuncType(stringToMap),
 		mapstructure.TextUnmarshallerHookFunc(),
 	)
 	return mapstructure.ComposeDecodeHookFunc(hooks...)
-}
-
-// stringToSlice splits a string bound for a slice on commas, as a default tag
-// or an environment variable lists several values, and leaves each element to
-// decode on its own: "1,2" fills a []int and "1s,2s" a []time.Duration. A
-// []byte, or a slice type that decodes itself, takes the string whole.
-func stringToSlice(from, to reflect.Type, data any) (any, error) {
-	if from.Kind() != reflect.String || to.Kind() != reflect.Slice || to.Elem().Kind() == reflect.Uint8 {
-		return data, nil
-	}
-	if p := reflect.PointerTo(to); p.Implements(textUnmarshaler) || p.Implements(mapstructureUnmarshaler) {
-		return data, nil
-	}
-	s := reflect.ValueOf(data).String()
-	if s == "" {
-		return []string{}, nil
-	}
-	return strings.Split(s, ","), nil
 }
 
 // checkHookTypes reports a post-load hook written for a type other than cfg.

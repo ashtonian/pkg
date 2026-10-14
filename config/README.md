@@ -92,7 +92,7 @@ A config is a plain struct, and its tags are the whole schema: they say how each
 | Tag | Meaning | Read by | Example |
 |---|---|---|---|
 | `koanf` | The key. `-` skips the field, `,squash` merges a struct into its parent, `,remain` collects unknown keys in a map. Without a tag the key is the lowercased field name. | Every source and output; environment variable names derive from it. | `koanf:"max_conns"` |
-| `default` | The lowest-precedence value; comma-separated for a slice. | The load; usage tables, starter files, the JSON Schema and flag help show it unless the field is sensitive. | `default:"localhost"` |
+| `default` | The lowest-precedence value; comma-separated for a slice, `key=value` entries for a map, which a source's entries merge with. A malformed map default fails with `ErrSchema`. | The load; usage tables, starter files, the JSON Schema and flag help show it unless the field is sensitive. | `default:"localhost"` |
 | `validate` | [go-playground/validator](https://pkg.go.dev/github.com/go-playground/validator/v10) rules. | Validation on every load and reload; `required` marks usage tables and starter files; the JSON Schema states the bounds, lengths and `oneof` enums. | `validate:"required,min=1"` |
 | `desc` | What the setting is for. | Usage tables, `PrintRedacted(..., WithIncludeDescriptions())`, starter-file comments, the JSON Schema `description`, kongprovider flag help. | `desc:"Database host"` |
 | `sensitive` | `"true"` redacts everywhere — on a struct, slice or map, everything inside it; `"false"` exempts a field whose name only looks like a credential's (`max_tokens`). | Printing, diffs, reload results and usage tables show `[REDACTED]`; starter files and the JSON Schema leave out its default and any rule that names a value. | `sensitive:"true"` |
@@ -161,12 +161,13 @@ With `WithEnvPrefix("APP")`, a key's variable is the prefix and its path, upper-
 | `APP_LABELS_TEAM_NAME` (`map[string]string`) | `labels["team_name"]` |
 | `APP_FEATURES_AUDIT_LOGS_MAX_PAGE_SIZE` (`map[string]Limits`) | `features["audit_logs"].max_page_size` |
 | `APP_TAGS=web,api` (`[]string`) | `tags` = `[web api]` |
+| `APP_LABELS=team=core,tier=1` (`map[string]string`) | `labels`, the whole map |
 
 A variable that two keys could read — `db.port` and `db_port`, or a field and a map entry — fails the load naming every reading, instead of guessing. A variable under the prefix that names no key is ignored and logged at debug level — other programs may share the prefix — unless a `WithUnknownKeys` handler is set, which sees it with the variable it most likely misspells. `WithEnviron(fn)` replaces `os.Environ`, which keeps tests independent of the machine. `PrintUsage` lists every variable a config reads.
 
 ## Decoding and unknown keys
 
-Values decode with mapstructure's weak typing (`"8080"` fills an `int`) plus string → `time.Duration`, comma-separated string → a slice of any element type (`"80,443"` fills a `[]int`, `"1s,2m"` a `[]time.Duration`; a `[]byte` or a slice type that decodes itself takes the string whole), and `encoding.TextUnmarshaler`. `WithDecodeHook` adds hooks of your own, which run first.
+Values decode with mapstructure's weak typing (`"8080"` fills an `int`) plus string → `time.Duration`, comma-separated string → a slice of any element type (`"80,443"` fills a `[]int`, `"1s,2m"` a `[]time.Duration`; a `[]byte` or a slice type that decodes itself takes the string whole), `key=value` entries → a map (`"team=core,tier=1"`; a map of structs takes no string), and `encoding.TextUnmarshaler`. `WithDecodeHook` adds hooks of your own, which run first.
 
 A key that no field decodes fails the load with `ErrValidation`, naming the key and the field of the same struct it most likely misspells — a typo cannot leave a service running on the default it was meant to override:
 
