@@ -3,15 +3,18 @@
 package main
 
 import (
+	"bytes"
 	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/alecthomas/kong"
+	"github.com/santhosh-tekuri/jsonschema/v6"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -77,4 +80,28 @@ func TestService(t *testing.T) {
 	require.ErrorIs(t, err, config.ErrValidation, "Validate refuses a blank greeting")
 	_, body = get("/", "")
 	assert.Equal(t, "hello again\n", body)
+}
+
+// The config file's JSON Schema is a valid Draft 2020-12 schema, as an
+// independent validator reads it, that accepts a good file and refuses an
+// unknown key and a value outside a oneof.
+func TestServiceSchema(t *testing.T) {
+	raw, err := config.JSONSchema[AppConfig]()
+	require.NoError(t, err)
+	doc, err := jsonschema.UnmarshalJSON(bytes.NewReader(raw))
+	require.NoError(t, err)
+	c := jsonschema.NewCompiler()
+	require.NoError(t, c.AddResource("service.schema.json", doc))
+	schema, err := c.Compile("service.schema.json")
+	require.NoError(t, err, "the schema must be valid against the Draft 2020-12 metaschema")
+
+	check := func(file string) error {
+		v, err := jsonschema.UnmarshalJSON(strings.NewReader(file))
+		require.NoError(t, err)
+		return schema.Validate(v)
+	}
+	assert.NoError(t, check(`{"greeting": "hi", "admin_token": "t", "log": {"level": "warn"}, "http": {"addr": ":9090", "read_header_timeout": "2s"}}`))
+	assert.Error(t, check(`{"log": {"level": "loud"}}`), "outside the oneof")
+	assert.Error(t, check(`{"greting": "hi"}`), "a key no field takes")
+	assert.Error(t, check(`{"http": {"read_header_timeout": 5}}`), "a duration is written as text")
 }

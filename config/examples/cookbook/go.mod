@@ -17,6 +17,7 @@ require (
 	github.com/knadh/koanf/providers/k8smount v0.1.1
 	github.com/knadh/koanf/providers/vault/v2 v2.2.2
 	github.com/knadh/koanf/v2 v2.3.8
+	github.com/santhosh-tekuri/jsonschema/v6 v6.0.3
 	github.com/stretchr/testify v1.12.1
 	modernc.org/sqlite v1.60.1
 )

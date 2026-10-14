@@ -7,6 +7,7 @@
 //	service --config service.yaml --log-level debug
 //	service print       # the effective config, secrets redacted
 //	service template    # a starter config file
+//	service schema      # the config file's JSON Schema, for an editor
 //	kill -HUP $(pidof service)
 package main
 
@@ -63,6 +64,7 @@ type CLI struct {
 	Serve    struct{} `cmd:"" default:"1" help:"Run the service."`
 	Print    struct{} `cmd:"" help:"Print the effective configuration, secrets redacted."`
 	Template struct{} `cmd:"" help:"Write a starter config file."`
+	Schema   struct{} `cmd:"" help:"Write the config file's JSON Schema."`
 }
 
 // newReloader loads the config from the file, APP_* and the flags kctx
@@ -163,8 +165,16 @@ func main() {
 }
 
 func run(kctx *kong.Context, cli *CLI) error {
-	if kctx.Command() == "template" {
+	switch kctx.Command() {
+	case "template":
 		return config.PrintTemplate[AppConfig]("APP")
+	case "schema":
+		schema, err := config.JSONSchema[AppConfig]()
+		if err != nil {
+			return err
+		}
+		_, err = os.Stdout.Write(append(schema, '\n'))
+		return err
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()

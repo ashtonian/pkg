@@ -159,5 +159,6 @@
 // defaults. [LoadSnapshot], or a reloader [WithProvenance], records where each
 // value came from — the default, file, environment variable, provider or flag
 // the merge kept, and the stages that changed it after decoding — and
-// [PrintExplain] prints it, values redacted.
+// [PrintExplain] prints it, values redacted. [JSONSchema] describes the config
+// file for editors and linters — advisory, Load being the authority.
 package config

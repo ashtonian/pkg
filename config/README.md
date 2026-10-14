@@ -163,7 +163,7 @@ caller ──NewReloader / Arm / Run / Stop──▶ Reloader ──re-runs the 
 
 **Dependencies**
 - *Imports*: `knadh/koanf/v2` (+ the yaml parser and confmap provider), `go-viper/mapstructure/v2`, `go-playground/validator/v10`, `fsnotify/fsnotify`; `kongprovider` adds `alecthomas/kong`.
-- *Cookbook*: `examples/cookbook` is a module of its own that imports the AWS SDK for Go v2, koanf's `k8smount` and `vault/v2` providers, `pgx` and `modernc.org/sqlite`; this module imports none of them.
+- *Cookbook*: `examples/cookbook` is a module of its own that imports the AWS SDK for Go v2, koanf's `k8smount` and `vault/v2` providers, `pgx`, `modernc.org/sqlite` and, to check `JSONSchema`'s output, `santhosh-tekuri/jsonschema`; this module imports none of them.
 
 ## Defining the config struct
 
@@ -567,6 +567,35 @@ A loaded config goes out the same way, secrets redacted:
 - `RedactedTree(cfg)` — the config as nested maps, lists and typed scalars. Marshal it with any koanf parser — `yaml.Parser()`, `json.Parser()`, `toml.Parser()`, `dotenv.Parser()` — for any format without this module depending on them; it loads back as the config, apart from what was redacted.
 - `PrintEnv(cfg, "APP")` — the config as `export APP_DB_HOST='db.internal'` lines named as the loader reads them: a list of scalars comma-separated, a map entry by its key. A key no variable sets alone (a list of structs, a map key the naming cannot spell, a name another key would also read) is a comment saying so; a secret is never exported.
 
+### A JSON Schema for editors
+
+`JSONSchema[T]()` returns a Draft 2020-12 schema of the config file: keys and types, `desc` as descriptions, the defaults diagnostics may print, typed (`"30s"` for a duration), and the `validate` rules JSON Schema can state — bounds on numbers, string lengths and collection sizes, `oneof` as an enum. Point an editor or a linter at it (`app schema > app.schema.json`; the service recipe has the command):
+
+```json
+"port": {
+  "default": 8080,
+  "description": "HTTP listen port",
+  "maximum": 65535,
+  "minimum": 1,
+  "type": "integer",
+  "x-config-validation": [
+    "min",
+    "max"
+  ]
+}
+```
+
+That is the Quick Start's `port`.
+
+It is advisory; `Load` is the authority:
+
+- It describes one file. A `validate:"required"` key is not required in it — a default, another file or the environment may supply it — and every rule's name, translated or not, is listed in `x-config-validation`.
+- Keys are written as the fields' koanf keys, and values in their declared types; `Load` also accepts other letter case and weakly typed values (`"8080"` for a number). A key no field takes is refused (`additionalProperties: false`), except under a `koanf:",remain"` field.
+- A sensitive key is `writeOnly`. It, and any key that could hold a sensitive value, has no default, enum or const — an operand can itself be a credential.
+- A type that decodes itself is named in `x-config-type`: a string when it decodes from text, unconstrained otherwise. A struct a type holds within itself is a `$defs` entry.
+
+The cookbook compiles the service recipe's schema with an independent Draft 2020-12 validator and validates files against it.
+
 ## Comparing configs
 
 `Diff(old, next)` lists every key whose value differs between two configs of one struct type, in declaration order, map entries by key, list elements by index. It compares decoded values, never their text, so `[]string{"a,b"}` and `[]string{"a", "b"}` differ, and an interface holding `1` differs from one holding `"1"`. Each `Change` carries the runtime key, the declared `Field` it belongs to (`FieldFor` gives the same for any key), and the old and new `Value`: present or not, nil or not, its type, and its text — redacted on both sides when the value is sensitive.
@@ -924,6 +953,7 @@ type CLI struct {
 	Serve    struct{} `cmd:"" default:"1" help:"Run the service."`
 	Print    struct{} `cmd:"" help:"Print the effective configuration, secrets redacted."`
 	Template struct{} `cmd:"" help:"Write a starter config file."`
+	Schema   struct{} `cmd:"" help:"Write the config file's JSON Schema."`
 }
 ```
 
@@ -1071,6 +1101,7 @@ func newReloader(ctx context.Context, cli *CLI, kctx *kong.Context, logger *slog
 - `Diff[T](old, next) ([]Change, error)` — every key whose value differs; `Change{Key, Structural, Field, Old, New}`, each side a `Value{Present, Nil, Type, Text, Redacted}`.
 - `FieldFor[T](key) (Field, error)` — the declared field a key belongs to: `items[0].port` → the `items[*].port` pattern.
 - `PrintUsage[T](envPrefix, opts...) error` — every settable key with its variable, type, default and description.
+- `JSONSchema[T]() (json.RawMessage, error)` — an advisory Draft 2020-12 schema of the config file (`JSONSchemaDraft`).
 - `LoadSnapshot[T](ctx, opts...) (Snapshot[T], error)` — a load that records each key's `Origin{Input, Transforms, Exact}` in `Snapshot.Provenance`; `Source{Kind, Name}` names a source, `SourceKind` its kind (`SourceTag` … `SourceUnknown`).
 - `PrintExplain[T](snapshot, opts...) error` — where each value came from, table or JSON, values redacted.
 - `OriginProvider` — a map provider that names a source per key in the read that returns its data.
@@ -1253,6 +1284,7 @@ The package's own file-watch tests use the operating system's notifications (ino
 | `snapshot.go` | `Snapshot`, `ReloadStats`, `ApplierStatus`, `ApplyOutcome`, `Problem`, `Diagnose`, `ReloadResult`, `ReloadEvent`: reload state and outcomes as data |
 | `provenance.go` | `LoadSnapshot`, `Origin`, `Source`, `OriginProvider`: origins recorded as the sources merge, stage changes found by comparison |
 | `explain.go` | `PrintExplain` |
+| `jsonschema.go` | `JSONSchema[T]`: the schema graph as an advisory Draft 2020-12 schema, defaults and rules translated |
 | `applier.go` | `Applier`, `WithApplier`, `ApplyError`: prefix ownership, acknowledged projections, structure transitions, retries |
 | `fields.go` | `Fields[T]` key-tree walker and sensitivity, `FieldName`, `DefaultsFromTags[T]` |
 | `schema.go` | The schema graph every walk shares, the walk cursor (key, pattern, owner, sensitivity), `FieldFor[T]` |
