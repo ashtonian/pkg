@@ -1,8 +1,14 @@
-# config/kongprovider
+# kongprovider
 
-Brings [Kong](https://github.com/alecthomas/kong) CLI flags into [`config`](https://github.com/ashtonian/pkg/blob/main/config/README.md) as its highest-precedence source, and describes the config struct in Kong's help. Embed the config struct in the CLI struct and Kong makes a flag of every field, while the config struct's keys, `default`, `desc` and `validate` tags stay the one schema; only flags the user typed are forwarded, in any spelling Kong accepts, so a flag left out never masks a config file or an environment variable. A separate module, so the core package does not depend on Kong.
+[![Go Reference](https://pkg.go.dev/badge/github.com/ashtonian/pkg/config/kongprovider.svg)](https://pkg.go.dev/github.com/ashtonian/pkg/config/kongprovider)
 
-## Quick Start
+Brings [Kong](https://github.com/alecthomas/kong) CLI flags into [`config`](../README.md) as its highest-precedence source, and describes the config struct in Kong's help. Embed the config struct in the CLI struct and Kong makes a flag of every field, while the config struct's `koanf`, `default`, `desc` and `validate` tags stay the one schema. Only the flags a user typed are forwarded — in any spelling Kong accepts — so a flag left out never masks a config file or an environment variable. It is a module of its own, so `config` does not depend on Kong.
+
+```bash
+go get github.com/ashtonian/pkg/config/kongprovider
+```
+
+## Quick start
 
 ```go
 package main
@@ -109,7 +115,7 @@ $ app --help
 
 `--port 9000`, `-p 9000`, `--port=9000`, `--db-host x` and `--no-metrics` override `config.yaml` and `APP_*`; a flag left out does not, although Kong shows the field's default in the help. `db.password` and the maps have no flag (`kong:"-"`): they come from the file or the environment. `app template > config.yaml` writes a starter file with every key and its default (`config.PrintTemplate`), and `app print` the loaded config as YAML, secrets redacted. The program is `examples/cli/main.go`; `ExampleWithOverridesFromStruct` in `example_test.go` runs the same wiring with its output checked.
 
-## How It Works
+## How it works
 
 Kong records every flag it parses from argv as an element of `kong.Context.Path`, under the flag's canonical name whatever spelling was typed — long, short, alias, `--flag=value`, or negated `--no-flag` — with the value already applied. Values supplied by Kong resolvers are marked `Resolved`, defaults never appear, and tokens after `--` are positional. `New` forwards exactly the unresolved flag elements it has a mapping for. `Flag.Set` is not used: Kong sets it for applied defaults too.
 
@@ -138,26 +144,13 @@ cfg, err := config.Load[AppConfig](ctx, kongprovider.WithOverrides(kctx, mapping
 
 When the CLI exposes only a few settings under names of its own, keep the structs apart and pass `WithOverrides` the flag name → key mapping; the load fails when a mapping names a flag the CLI does not have.
 
-## API Reference
+## API
 
 - `WithOverridesFromStruct(kctx, cfg *T) config.Option` — every typed flag that writes a field of `cfg`, a config struct inside the parsed CLI struct, as an override at that field's key.
-- `WithOverrides(kctx, mapping) config.Option` — the same with an explicit Kong flag name → koanf dot-path mapping.
+- `WithOverrides(kctx, mapping) config.Option` — the same with an explicit flag name → key mapping.
 - `New(kctx, mapping) koanf.Provider` — the provider itself, for `config.WithOverrideProvider(p, nil)`; it also implements `config.OriginProvider`, naming each value's flag.
 - `HelpFromConfig(cfg *T, envPrefix) kong.Option` — help for every flag that writes a field of `cfg`: its `desc`, key, environment variable and printable default.
 
-## Key Files
+## License
 
-| File | Responsibility |
-|------|----------------|
-| `kongprovider.go` | `New`, `WithOverrides`, `WithOverridesFromStruct`, `HelpFromConfig`; flags mapped to keys by the field they write (`config.KeyOfValue`), typed values copied deeply, each value's flag named for provenance |
-| `examples/cli/main.go` | The Quick Start program: an embedded config struct, a flag group, subcommands, `print`, `usage` and `template` commands |
-| `go.mod`, `LICENSE` | The module (requires the parent at its release version) and its Apache-2.0 license |
-
-## Dependencies
-
-- *Imports*: `github.com/alecthomas/kong`, `github.com/knadh/koanf/v2`, `github.com/knadh/koanf/providers/confmap`, `config`.
-
-## References
-
-- Parent: [`config`](https://github.com/ashtonian/pkg/blob/main/config/README.md) § Kong integration
-- [Kong](https://github.com/alecthomas/kong) — the CLI library
+[MIT](../../LICENSE)

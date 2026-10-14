@@ -10,10 +10,10 @@ import (
 // recipe marks a README block with the cookbook file it is taken from.
 var recipe = regexp.MustCompile("<!-- recipe: ([a-z/]+\\.go) -->\n\n```go\n((?s:.*?))\n```\n")
 
-// Every recipe block in the config README is a verbatim excerpt of the
+// Every recipe block in this README is a verbatim excerpt of the
 // compiled, tested file it names, so the README shows only code that builds.
 func TestREADMERecipesAreCompiledCode(t *testing.T) {
-	readme, err := os.ReadFile("../../README.md")
+	readme, err := os.ReadFile("README.md")
 	if err != nil {
 		t.Fatal(err)
 	}

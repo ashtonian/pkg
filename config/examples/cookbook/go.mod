@@ -1,7 +1,7 @@
-// The README's recipes, compiled and tested. A module of its own so the
-// published config module takes none of the cloud SDKs and drivers a recipe
-// needs; outside the workspace, run with GOWORK=off (make release-check
-// does).
+// Runnable recipes for the config package, each with a test. A module of its
+// own so the config module takes none of the SDKs and drivers a recipe needs;
+// it is outside the repository's workspace, so run it with GOWORK=off (make
+// cookbook-check does).
 module github.com/ashtonian/pkg/config/examples/cookbook
 
 go 1.26.0

@@ -17,7 +17,7 @@ func TestREADMEQuickStartIsTheCompiledExample(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, rest, ok := strings.Cut(string(readme), "## Quick Start\n\n```go\n")
+	_, rest, ok := strings.Cut(string(readme), "## Quick start\n\n```go\n")
 	if !ok {
 		t.Fatal("README has no Quick Start go block")
 	}
