@@ -1,6 +1,11 @@
 package config
 
-import "errors"
+import (
+	"errors"
+	"fmt"
+	"reflect"
+	"strings"
+)
 
 // Category sentinels. Every error Load or a Reloader returns wraps exactly
 // one of them together with its cause, so errors.Is tells the categories
@@ -80,4 +85,39 @@ func (e *validationError) Error() string {
 
 func (e *validationError) Unwrap() []error {
 	return []error{ErrValidation, e.cause}
+}
+
+// UnknownKeysError reports the keys a load's sources set that no field
+// decodes (see [WithAllowUnknownKeys]). Load wraps it together with
+// [ErrValidation]; errors.As reaches it, so a caller can report the keys in
+// its own words.
+type UnknownKeysError struct {
+	// Type is the config type that was loaded.
+	Type reflect.Type
+	// Keys are the keys no field decodes, sorted by Key.
+	Keys []UnknownKey
+}
+
+// UnknownKey is one key no field decodes.
+type UnknownKey struct {
+	// Key names it in the package's key grammar: server.prot, items[0].prot.
+	Key string
+	// Suggestion is the key Key most likely misspells: the field of the same
+	// struct fewest edits away (server.port), or "" when none is close.
+	Suggestion string
+}
+
+func (e *UnknownKeysError) Error() string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "keys no field of %s decodes: ", e.Type)
+	for i, k := range e.Keys {
+		if i > 0 {
+			b.WriteString(", ")
+		}
+		b.WriteString(k.Key)
+		if k.Suggestion != "" {
+			fmt.Fprintf(&b, " (did you mean %s?)", k.Suggestion)
+		}
+	}
+	return b.String()
 }

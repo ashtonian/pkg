@@ -301,13 +301,12 @@ func load[T any](ctx context.Context, o *options) (loaded[T], error) {
 		return none, fmt.Errorf("unmarshaling config: %w: %w", ErrValidation, decodeErrors(schema, merged, err))
 	}
 	if !o.allowUnknown && len(md.Unused) > 0 {
-		unused := make([]string, len(md.Unused))
+		unknown := &UnknownKeysError{Type: root, Keys: make([]UnknownKey, len(md.Unused))}
 		for i, name := range md.Unused {
-			unused[i] = unusedKey(schema, merged, name)
+			unknown.Keys[i] = unusedKey(schema, merged, name)
 		}
-		slices.Sort(unused)
-		return none, fmt.Errorf("unmarshaling config: %w: keys no field of %s decodes: %s",
-			ErrValidation, root, strings.Join(unused, ", "))
+		slices.SortFunc(unknown.Keys, func(a, b UnknownKey) int { return strings.Compare(a.Key, b.Key) })
+		return none, fmt.Errorf("unmarshaling config: %w: %w", ErrValidation, unknown)
 	}
 
 	// stage runs one stage that may change the decoded config, recording

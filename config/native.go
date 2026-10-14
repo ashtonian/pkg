@@ -5,6 +5,7 @@ import (
 	"reflect"
 	"strconv"
 	"strings"
+	"unicode/utf8"
 )
 
 // mapstructure and the validator name the field a failure is about in their
@@ -58,25 +59,77 @@ func treeKey(root *schemaNode, tree any, name string) (p keyPath, used int, exac
 	return p, used, true
 }
 
-// unusedKey renders a key mapstructure reports as unused: a proven prefix
-// and the source key no field took, written as a field when it can be read
-// as one and quoted otherwise.
-func unusedKey(root *schemaNode, tree any, name string) string {
+// unusedKey names a key mapstructure reports as unused: a proven prefix and
+// the source key no field took, written as a field when it can be read as
+// one and quoted otherwise. A key read as a field of a struct is given the
+// struct's closest field as its suggestion.
+func unusedKey(root *schemaNode, tree any, name string) UnknownKey {
 	p, used, exact := treeKey(root, tree, name)
 	if exact {
-		return p.orRoot()
+		return UnknownKey{Key: p.orRoot()}
 	}
 	raw := strings.TrimPrefix(name[used:], ".")
 	if p != nil && used < len(name) && name[used] != '.' {
-		return p.String() + name[used:] // not a key under a struct; show what was written
+		return UnknownKey{Key: p.String() + name[used:]} // not a key under a struct; show what was written
 	}
 	if validFieldKey(raw) {
-		return p.field(raw).String()
+		k := UnknownKey{Key: p.field(raw).String()}
+		if _, n, err := root.walkTo(cursor{}, p); err == nil && n.kind == nodeBranch {
+			if field := closestField(n, raw); field != "" {
+				k.Suggestion = p.field(field).String()
+			}
+		}
+		return k
 	}
 	if p == nil {
-		return strconv.Quote(raw)
+		return UnknownKey{Key: strconv.Quote(raw)}
 	}
-	return p.String() + "." + strconv.Quote(raw)
+	return UnknownKey{Key: p.String() + "." + strconv.Quote(raw)}
+}
+
+// closestField is the key of branch n's field that key most likely
+// misspells: the fewest edits from it, ignoring case, within a third of
+// key's length (and at least 2), so prot finds port but remote_name finds
+// nothing among unrelated keys. A field as many edits away as the longer of
+// the two is long shares no character in place, so x finds nothing beside
+// db. A tie goes to the key that sorts first.
+func closestField(n *schemaNode, key string) string {
+	key = strings.ToLower(key)
+	keyLen := utf8.RuneCountInString(key)
+	best, bestDist := "", max(2, keyLen/3)+1
+	for _, f := range n.fields {
+		field := strings.ToLower(f.key)
+		d := editDistance(key, field)
+		if d >= max(keyLen, utf8.RuneCountInString(field)) {
+			continue
+		}
+		if d < bestDist || d == bestDist && f.key < best {
+			best, bestDist = f.key, d
+		}
+	}
+	return best
+}
+
+// editDistance is the Levenshtein distance between a and b, in runes.
+func editDistance(a, b string) int {
+	ra, rb := []rune(a), []rune(b)
+	prev := make([]int, len(rb)+1)
+	for j := range prev {
+		prev[j] = j
+	}
+	for i := 1; i <= len(ra); i++ {
+		cur := make([]int, len(rb)+1)
+		cur[0] = i
+		for j := 1; j <= len(rb); j++ {
+			cost := 1
+			if ra[i-1] == rb[j-1] {
+				cost = 0
+			}
+			cur[j] = min(prev[j]+1, cur[j-1]+1, prev[j-1]+cost)
+		}
+		prev = cur
+	}
+	return prev[len(rb)]
 }
 
 // fieldEnd is where the struct key s starts with ends.

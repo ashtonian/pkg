@@ -165,7 +165,7 @@ func ExampleWithAllowUnknownKeys() {
 	fmt.Println(cfg.Server.Port, err)
 
 	// Output:
-	// true unmarshaling config: configuration validation failed: keys no field of config_test.AppConfig decodes: server.prot
+	// true unmarshaling config: configuration validation failed: keys no field of config_test.AppConfig decodes: server.prot (did you mean server.port?)
 	// 8080 <nil>
 }
 
