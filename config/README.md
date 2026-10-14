@@ -132,7 +132,7 @@ caller ──NewReloader / Arm / Run / Stop──▶ Reloader ──re-runs the 
 - `kongprovider.WithOverridesFromStruct`, `kongprovider.HelpFromConfig` — the Kong bridge.
 
 **Exit points**
-- A populated `*T`; for a `Reloader`, an atomically published `Snapshot` — config, generation and reload stats from one moment — plus a `ReloadEvent` to each `WithOnReloadSuccess` callback naming the keys that changed.
+- A populated `*T`; for a `Reloader`, an atomically published `Snapshot` — config, generation, reload stats and the appliers' accounts from one moment — each applier's owned changes to its `Apply`, then a `ReloadEvent` to each `WithOnReloadSuccess` callback naming the keys that changed.
 - Reads of config files, `PREFIX_*` environment variables (or `WithEnviron`) and koanf providers; calls into the caller's secret populator, post-load hooks and validator.
 - Reload events on the logger, each with its generation and changed keys; failed reloads on `WithOnReloadError`; counters and the last failure's category on `Stats()`, JSON-ready.
 
@@ -145,6 +145,7 @@ caller ──NewReloader / Arm / Run / Stop──▶ Reloader ──re-runs the 
 - Any of those during a reload → `ErrReload` wrapping it; the previous config stays live.
 - Manual reload while one runs → `ErrReloadInProgress`; after `Stop` → `ErrReloaderStopped`. Neither is a failure.
 - Reload whose context ended → error carrying `ctx.Err()`; not counted, not reported.
+- Published config an applier did not apply → the result with an `*ApplyError` wrapping `ErrApply`; the config stays live and the applier is retried on the next one.
 
 **Dependencies**
 - *Imports*: `knadh/koanf/v2` (+ the yaml parser and confmap provider), `go-viper/mapstructure/v2`, `go-playground/validator/v10`, `fsnotify/fsnotify`; `kongprovider` adds `alecthomas/kong`.
@@ -412,6 +413,52 @@ Guarantees:
 
 `ExampleNewReloader` shows a valid edit swapped in and an invalid one refused; `ExampleNewReloaderFunc` a caller's loader.
 
+### Applying changes
+
+A published config is live for code that reads `Config()` on every use. Code that captured a value at boot — a log level in a handler, limits in a pool, routes in a router — needs the change pushed to it. An `Applier` owns keys by prefix and is called with the changes it owns after each published config:
+
+```go
+logLevel := new(slog.LevelVar)
+reloader, err := config.NewReloader[AppConfig](ctx, loadOpts,
+	config.WithFileWatch(0),
+	config.WithApplier(config.Applier[AppConfig]{
+		Name:     "logging",
+		Prefixes: []string{"log.level"},
+		Apply: func(ctx context.Context, ev config.ApplyEvent[AppConfig]) (config.ApplyResult, error) {
+			logLevel.Set(parseLevel(ev.Desired.Log.Level))
+			return config.ApplyResult{}, nil
+		},
+	}),
+	config.WithApplier(config.Applier[AppConfig]{
+		Name:     "database",
+		Prefixes: []string{"db"},
+		Apply: func(ctx context.Context, ev config.ApplyEvent[AppConfig]) (config.ApplyResult, error) {
+			var restart []string
+			for _, ch := range ev.Changes {
+				if ch.Key == "db.host" {
+					restart = append(restart, ch.Key) // a new host needs a new pool
+				}
+			}
+			pool.SetMaxConns(ev.Desired.DB.MaxConns) // idempotent: a retry may repeat it
+			return config.ApplyResult{RestartKeys: restart}, nil
+		},
+	}),
+)
+```
+
+The contract:
+
+- **Ownership by prefix.** A prefix is a section (`db`), a value (`log.level`), an entry (`features["audit"]`) or a pattern (`features[*].gate`). The most specific prefix owns a key — the longest, then the one naming more literal entries — so `features[*].gate` can sit beside `features`. Two appliers whose prefixes are equally specific and could name one key fail construction, as does a prefix that names no key, reaches beneath an interface, or beneath a value compared whole.
+- **Once per config, after publication.** Each applier that owes something is called once, in registration order, holding the reload's slot, with every change it owns; `Config()` already returns `ev.Desired`. The success callbacks run after every applier.
+- **Acknowledgement, not assumption.** Changes are measured from what the applier last acknowledged, not from the previous config. Returning nil acknowledges every change except the `RestartKeys` it returns; those are offered again on every later config until they apply or the config returns to the acknowledged value.
+- **A failure is uncertain.** An error or a panic acknowledges nothing and marks the applier `Uncertain`: what it did may have half happened. It is called again on every later config — an unchanged poll and a revert included — with `Retry` set, until it returns nil with no restart keys. Reconcile all of `ev.Desired` you own on a retry, not only `ev.Changes`.
+- **Structures need one owner.** A key that appears, disappears or turns nil — a map entry, a pointer section — changes live only when one applier owns it and everything beneath it that changed. Otherwise the whole transition waits for a restart and no applier is called with its part: an applier for `features[*].gate` cannot add a feature; one for `features` can.
+- **Everything else waits for a restart.** With appliers registered, a key no applier owns that differs from the first load is listed in `Snapshot().PendingRestart` until reverted, beside restart keys and blocked transitions. Register an applier for keys your code reads from `Config()` on every use — one that returns nil — so they do not read as waiting.
+- **The first load.** Without `ApplyInitial` the first load counts as applied: build what the applier would set from `Config()` before serving. With it, the applier is called once before the constructor returns with every key it owns as a change from nothing; an error or restart key fails construction with `ErrApply`.
+- **Publication is not application.** A config some applier failed on is still published: `Reload` returns its `ReloadResult` together with an `*ApplyError` wrapping `ErrApply`, not `ErrReload`. Once published, a cancelled context cannot unpublish it: appliers not yet called are reported as not called and are called on the next config.
+
+`Snapshot().Appliers` reports each applier's invocations, failures, last error, uncertainty and the keys it still owes; `ReloadResult.Applied` what each did for one reload.
+
 ### Reload over HTTP
 
 The package mounts no endpoint; a reload route and a status route are a few lines each, and authentication is yours:
@@ -646,6 +693,7 @@ cfg, err := config.Load[AppConfig](ctx, config.WithFile(cli.Config), kongprovide
 | `WithWatchedFiles(paths...)` | `...string` | none | Extra files to watch; for `NewReloaderFunc`, the only ones. |
 | `WithPollInterval(d)` | `time.Duration` | off | Reload every `d`: for sources without filesystem events. Every tick runs the whole pipeline, secrets included. |
 | `WithSignalReload(sigs...)` | `...os.Signal` | off | Reload on each signal, typically `SIGHUP`. |
+| `WithApplier[T](a)` | `Applier[T]` | none | Push the changes a published config makes under `a.Prefixes` into the running process; see Applying changes. With any applier registered, every changed key is accounted for: applied, owed, or waiting for a restart. |
 | `WithOnReloadSuccess[T](fn)` | `func(ctx context.Context, ev ReloadEvent[T])` | none | After each successful reload, after the swap, with the reload's context: the trigger, the replaced and published configs, and the `ReloadResult`. Panics recovered. A callback for another type fails construction. |
 | `WithOnReloadError(fn)` | `func(trigger string, err error)` | none | After each failed reload, from any trigger. Panics recovered. |
 | `WithReloadLogger(l)` | `*slog.Logger` | `NewReloader`: its `WithLogger`; otherwise `slog.Default()` at each line | Logger for reload events; nil selects `slog.Default()` at each line even when the load options set a logger. |
@@ -689,7 +737,9 @@ cfg, err := config.Load[AppConfig](ctx, config.WithFile(cli.Config), kongprovide
 - `(*Reloader[T]).SourceChanged()` — non-blocking, coalescing reload request.
 - `(*Reloader[T]).Stop(ctx) error` — stop and wait until no reload can run.
 - `(*Reloader[T]).Stats() ReloadStats` — attempts, successes, failures, last trigger, times and error.
-- `Snapshot[T]{Config, Generation, Stats}`, `ReloadResult[T]{Snapshot, Changes}`, `ReloadEvent[T]{Trigger, Old, New, Result}` — reload state and outcomes; JSON-ready, the config never encoded.
+- `Snapshot[T]{Config, Generation, Stats, Appliers, PendingRestart}`, `ReloadResult[T]{Snapshot, Changes, Applied}`, `ReloadEvent[T]{Trigger, Old, New, Result}` — reload state and outcomes; JSON-ready, the config never encoded.
+- `Applier[T]{Name, Prefixes, ApplyInitial, Apply}`, `ApplyEvent[T]{Trigger, Generation, Retry, Previous, Desired, Changes}`, `ApplyResult{RestartKeys}` — what an applier declares, receives and answers; `TriggerInitial` names the initial apply.
+- `ApplierStatus`, `ApplyOutcome` — an applier's account and one reload's outcome; `ApplyError{Failures []ApplierFailure}` the appliers that did not apply a published config.
 - `ReloadStats`, `Problem{Kind, Message}` — the history and an error as data; `Diagnose(err) *Problem` categorizes any load or reload error, `KindValidation` … `KindUnknown` naming the category.
 - `TriggerManual`, `TriggerFileChange`, `TriggerPoll`, `TriggerSignal`, `TriggerSourceChanged` — bounded trigger labels.
 
@@ -724,6 +774,7 @@ The package defines no error codes: every error wraps one category sentinel toge
 | `ErrSecretProvider` | Usually | The `SecretPopulator` failed; its error in the chain. |
 | `ErrPostLoad` | No | A `WithPostLoad` hook failed, or was written for another type. |
 | `ErrReload` | Usually | A reload failed and the previous config is live; wraps the load error. |
+| `ErrApply` | Retried for you | A config was published but some applier did not apply it; an `*ApplyError` names them. Does not match `ErrReload`. The failed appliers are called again on the next config. |
 | `ErrReloadInProgress` | Yes | A manual reload found one running. Does not match `ErrReload`. |
 | `ErrReloaderStopped` | No | A reload was requested after `Stop`. Does not match `ErrReload`. |
 | `ErrSchema` | No | The config type cannot be addressed: a key holding a character keys use for structure, two fields with one key, or a non-struct where one is required; or `Diff` met a value it cannot compare. A programming error, not configuration. |
@@ -757,8 +808,10 @@ func httpStatus(err error) int {
 | Debug | `config sources loaded` | The sources one load read, in order. |
 | Debug | `environment variables under the prefix name no config key` | `PREFIX_*` variables that set nothing — usually a typo. |
 | Info | `config reloader started` | `Run` is serving; attributes say which triggers. |
-| Info / Debug | `config reloaded` | An automatic reload published a new config: `generation` and `changed_keys` (key names only). Debug for a poll tick that changed nothing. |
+| Info / Debug | `config reloaded` | An automatic reload published a new config: `generation`, `changed_keys` and, with appliers, `pending_restart` (key names only). Debug for a poll tick that changed nothing. |
 | Error | `config reload failed` | An automatic reload was refused; the previous config is live. |
+| Error | `config applier failed` | An applier returned an error, panicked, returned a restart key it was not given, or was not called because the reload's context ended; `applier`, `generation`. |
+| Error | `config published but not fully applied` | An automatic reload published a config some applier did not apply. |
 | Error | `config file watcher error`, `config file watch is missing directories` | fsnotify reported an error, or a directory could not be re-watched. |
 | Info | `config reloader stopped` | `Run` returned after `Stop`. |
 
@@ -786,6 +839,7 @@ Alert on `ErrReload` (or a rising failure count): a process whose reloads keep f
 | An environment variable has no effect | Debug log `environment variables under the prefix name no config key`; `PrintUsage` for the real names | Rename the variable to the listed name. |
 | `ambiguous environment variables` at boot | The readings the error lists | Rename a field or map key so only one reading fits. |
 | A file edit is not picked up | `Snapshot().Generation` did not move; `Stats().LastTrigger` / `LastError`; is `Run` running; was `Arm`'s error checked | On `subPath` mounts nothing updates — mount without `subPath`; for env and providers use `WithPollInterval` or `SourceChanged`. |
+| A change did not take effect | `Snapshot().PendingRestart`; `Snapshot().Appliers[i].Pending` and `.Uncertain` | A key in `PendingRestart` waits for a restart (or a revert); register an applier if it can apply live. An uncertain applier is retried on every reload; its `LastError` says why. |
 | Reloads fail after a deploy | `Stats().LastError.Kind` and `.Message`, the `config reload failed` log | Fix the source; the previous config stays live until then. A deleted file that loaded before fails every reload with `ErrFileRead`. |
 | `Stop` returns a context error | A manual `Reload` still in flight (a slow secret backend) | Give `Stop` a longer timeout, or bound the reload's own context. |
 | A parse error names only a line | `errors.As(err, &pe)` with `pe *config.ParseError`; `pe.Err` is the parser's message | Print `pe.Err` only where the file's contents may be shown — it can quote them. |
@@ -875,12 +929,13 @@ The package's own file-watch tests use the operating system's notifications (ino
 | `provider_func.go` | `NewMapProvider`: a provider from a function, dotted keys unflattened |
 | `secrets.go` | `SecretsFrom`: `secret` tags resolved through a fetch function |
 | `keyof.go` | `KeyOf`, `KeyOfValue`: a field's key from its address |
-| `snapshot.go` | `Snapshot`, `ReloadStats`, `Problem`, `Diagnose`, `ReloadResult`, `ReloadEvent`: reload state and outcomes as data |
+| `snapshot.go` | `Snapshot`, `ReloadStats`, `ApplierStatus`, `ApplyOutcome`, `Problem`, `Diagnose`, `ReloadResult`, `ReloadEvent`: reload state and outcomes as data |
+| `applier.go` | `Applier`, `WithApplier`, `ApplyError`: prefix ownership, acknowledged projections, structure transitions, retries |
 | `fields.go` | `Fields[T]` key-tree walker and sensitivity, `FieldName`, `DefaultsFromTags[T]` |
 | `schema.go` | The schema graph every walk shares, the walk cursor (key, pattern, owner, sensitivity), `FieldFor[T]` |
 | `path.go` | The key grammar: typed key paths, rendering and parsing |
 | `native.go` | Decoder and validator names translated into the key grammar against the keys present |
-| `diff.go` | `Diff[T]`, `Change`, `Value` |
+| `diff.go` | `Diff[T]`, `Change`, `Value`; the comparison engine: each config's keys flattened in walk order, two lists compared |
 | `render.go` | The ordered value tree, typed scalars, the YAML and JSON writers, `RedactedTree` |
 | `template.go` | `PrintTemplate[T]`: a config file from the struct, defaults decoded as a load decodes them |
 | `envout.go` | `PrintEnv`: the loader's variable names, checked against the environment layer's own reading |

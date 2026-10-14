@@ -1,6 +1,7 @@
 package config
 
 import (
+	"cmp"
 	"fmt"
 	"reflect"
 	"slices"
@@ -72,12 +73,19 @@ func Diff[T any](old, next *T) ([]Change, error) {
 	if err != nil {
 		return nil, err
 	}
-	d := &differ{visiting: map[visitPair]bool{}}
-	d.node(cursor{}, root, rootValue(old), rootValue(next))
-	if d.err != nil {
-		return nil, d.err
+	a, err := flatten(root, rootValue(old))
+	if err != nil {
+		return nil, err
 	}
-	return d.changes, nil
+	b, err := flatten(root, rootValue(next))
+	if err != nil {
+		return nil, err
+	}
+	var changes []Change
+	for _, c := range compareEntries(a, b) {
+		changes = append(changes, c.Change)
+	}
+	return changes, nil
 }
 
 // rootValue is the struct a config points at, or the invalid value for nil:
@@ -89,16 +97,316 @@ func rootValue[T any](cfg *T) reflect.Value {
 	return reflect.ValueOf(cfg).Elem()
 }
 
-type differ struct {
-	changes  []Change
-	visiting map[visitPair]bool
+// A comparison lists each config's keys in walk order — flatten — and then
+// walks the two lists together — compareEntries — so a key's value on one
+// side can come from a config the other side never saw: Diff compares two
+// configs, and the reloader's appliers compare what each acknowledged with
+// what was published.
+
+// entryKind is how one key compares.
+type entryKind uint8
+
+const (
+	entryLeaf      entryKind = iota // a value decoded whole: compared by value
+	entryContainer                  // a struct, map or list: compared by presence; its keys follow it
+	entryWhole                      // a sensitive map, list or interface: compared whole, its keys never listed
+	entryDynamic                    // an interface: the keys of a struct, map or list it holds follow it
+	entryCycle                      // a struct, map or list met again inside itself: compared whole
+)
+
+// flatEntry is one key of one config.
+type flatEntry struct {
+	path      keyPath
+	ord       []ordSeg // the walk position, which orders the keys of two configs as one walk
+	kind      entryKind
+	side      side
+	owner     Field
+	sensitive bool
+	node      *schemaNode // entryDynamic: the schema of the value it holds; nil when it holds none
+}
+
+// ordSeg is one step of a walk position: a field's declaration position, an
+// element's index, or an entry's key.
+type ordSeg struct {
+	n int
+	s string
+}
+
+func compareOrd(a, b []ordSeg) int {
+	for i := range min(len(a), len(b)) {
+		if c := cmp.Compare(a[i].n, b[i].n); c != 0 {
+			return c
+		}
+		if c := strings.Compare(a[i].s, b[i].s); c != 0 {
+			return c
+		}
+	}
+	return cmp.Compare(len(a), len(b))
+}
+
+// within reports whether position ord is at or beneath prefix.
+func within(ord, prefix []ordSeg) bool {
+	return len(ord) >= len(prefix) && slices.Equal(ord[:len(prefix)], prefix)
+}
+
+type flattener struct {
+	entries  []flatEntry
+	visiting map[visitKey]bool
 	err      error
 }
 
-// visitPair identifies a pair of containers being compared, for cycles.
-type visitPair struct {
-	a, b uintptr
+// visitKey identifies a struct, map or slice on the walk's way down, so one
+// that leads back to itself is listed once.
+type visitKey struct {
+	addr uintptr
 	typ  reflect.Type
+}
+
+func visitKeyOf(s side) (visitKey, bool) {
+	if !s.v.IsValid() || s.isNil {
+		return visitKey{}, false
+	}
+	switch {
+	case s.v.Kind() == reflect.Map, s.v.Kind() == reflect.Slice:
+		return visitKey{s.v.Pointer(), s.v.Type()}, true
+	case s.v.CanAddr():
+		return visitKey{s.v.Addr().Pointer(), s.v.Type()}, true
+	}
+	return visitKey{}, false
+}
+
+// flatten lists every key of v — a config's struct, or the invalid value for
+// a missing config — in walk order: fields as declared, map entries by
+// sorted key, list elements by index, each key before the keys beneath it.
+// A value that cannot be compared — a non-nil func, channel or unsafe
+// pointer, or an interface holding a type whose keys cannot be told apart —
+// is an ErrSchema error, so two lists always compare.
+func flatten(root *schemaNode, v reflect.Value) ([]flatEntry, error) {
+	f := &flattener{visiting: map[visitKey]bool{}}
+	f.children(cursor{}, nil, root, resolve(v))
+	return f.entries, f.err
+}
+
+// node lists the key at c, of n's type and holding v, then the keys beneath
+// it. A key with no value on this side is not listed.
+func (f *flattener) node(c cursor, ord []ordSeg, n *schemaNode, v reflect.Value) {
+	s := resolve(v)
+	if !s.present || f.err != nil {
+		return
+	}
+	e := flatEntry{path: c.path, ord: ord, side: s, owner: c.owner, sensitive: c.sensitive()}
+	if s.v.IsValid() && !deepComparable(s.v) {
+		f.err = fmt.Errorf("%w: %s holds a %s, which cannot be compared", ErrSchema, c.path.orRoot(), s.v.Type())
+		return
+	}
+	switch {
+	case n.kind == nodeLeaf:
+		e.kind = entryLeaf
+	case c.sensitive() && n.kind != nodeBranch:
+		e.kind = entryWhole
+	case n.kind == nodeDynamic:
+		e.kind = entryDynamic
+		if !s.isNil {
+			var err error
+			if e.node, err = schemaOf(s.v.Type()); err != nil {
+				f.err = err
+				return
+			}
+		}
+		f.entries = append(f.entries, e)
+		if e.node != nil && e.node.composite() {
+			// The value's keys sit beneath the interface's own key.
+			f.children(c.intoDynamic(), ord, e.node, s)
+		}
+		return
+	default:
+		e.kind = entryContainer
+		if key, ok := visitKeyOf(s); ok && f.visiting[key] {
+			e.kind = entryCycle
+			f.entries = append(f.entries, e)
+			return
+		}
+		f.entries = append(f.entries, e)
+		f.children(c, ord, n, s)
+		return
+	}
+	f.entries = append(f.entries, e)
+}
+
+// children lists the keys beneath s, a struct, map or list of n's type.
+func (f *flattener) children(c cursor, ord []ordSeg, n *schemaNode, s side) {
+	if !s.present || s.isNil || !s.v.IsValid() {
+		return
+	}
+	if key, ok := visitKeyOf(s); ok {
+		f.visiting[key] = true
+		defer delete(f.visiting, key)
+	}
+	switch n.kind {
+	case nodeBranch:
+		for i, fld := range n.fields {
+			v, err := s.v.FieldByIndexErr(fld.index)
+			if err != nil {
+				continue // behind a nil embedded pointer: no value on this side
+			}
+			f.node(c.intoField(fld), extendOrd(ord, ordSeg{n: i}), fld.node, v)
+		}
+	case nodeMap:
+		keys := s.v.MapKeys()
+		slices.SortFunc(keys, func(a, b reflect.Value) int { return strings.Compare(a.String(), b.String()) })
+		for _, k := range keys {
+			name := k.String()
+			f.node(c.intoEntry(segment{kind: segKey, name: name}, n.typ.Elem()), extendOrd(ord, ordSeg{s: name}), n.elem, s.v.MapIndex(k))
+		}
+	case nodeList:
+		for i := range s.v.Len() {
+			f.node(c.intoEntry(segment{kind: segIndex, index: i}, n.typ.Elem()), extendOrd(ord, ordSeg{n: i}), n.elem, s.v.Index(i))
+		}
+	}
+}
+
+func extendOrd(ord []ordSeg, s ordSeg) []ordSeg {
+	return append(slices.Clip(ord), s)
+}
+
+// entryChange is a change as a comparison found it, with its key's path and
+// walk position.
+type entryChange struct {
+	Change
+	path keyPath
+	ord  []ordSeg
+	// subtree reports a key compared whole: the keys beneath it, on either
+	// side, are part of this change and have none of their own.
+	subtree bool
+}
+
+// compareEntries returns every key whose value differs between a and b, two
+// entry lists in walk order, in walk order.
+func compareEntries(a, b []flatEntry) []entryChange {
+	var out []entryChange
+	var skip []ordSeg // a key compared whole: the entries beneath it are part of it
+	i, j := 0, 0
+	for i < len(a) || j < len(b) {
+		if skip != nil {
+			switch {
+			case i < len(a) && within(a[i].ord, skip):
+				i++
+				continue
+			case j < len(b) && within(b[j].ord, skip):
+				j++
+				continue
+			}
+			skip = nil
+		}
+		var ea, eb *flatEntry
+		switch {
+		case j >= len(b) || i < len(a) && compareOrd(a[i].ord, b[j].ord) < 0:
+			ea = &a[i]
+			i++
+		case i >= len(a) || compareOrd(a[i].ord, b[j].ord) > 0:
+			eb = &b[j]
+			j++
+		default:
+			ea, eb = &a[i], &b[j]
+			i++
+			j++
+		}
+		c, whole := compareEntry(ea, eb)
+		if c != nil {
+			out = append(out, *c)
+		}
+		if whole {
+			skip = cmp.Or(ea, eb).ord
+		}
+	}
+	return out
+}
+
+// compareEntry compares one key's entries, either of which may be missing.
+// whole reports that the keys beneath it are part of the comparison.
+func compareEntry(ea, eb *flatEntry) (c *entryChange, whole bool) {
+	e := cmp.Or(ea, eb)
+	var sa, sb side
+	ka, kb := e.kind, e.kind
+	if ea != nil {
+		sa, ka = ea.side, ea.kind
+	}
+	if eb != nil {
+		sb, kb = eb.side, eb.kind
+	}
+	switch {
+	case ka != kb || ka == entryCycle:
+		// A container met again inside itself on either side: compared whole.
+		if sameValue(sa, sb) {
+			return nil, true
+		}
+		return e.change(sa.present != sb.present, cycleSide(sa), cycleSide(sb), true), true
+	case ka == entryLeaf:
+		return e.leafChange(sa, sb), false
+	case ka == entryWhole:
+		if sameValue(sa, sb) {
+			return nil, false
+		}
+		structural := sa.present != sb.present || sa.isNil != sb.isNil
+		return e.change(structural, describe(sa, true), describe(sb, true), true), false
+	case ka == entryDynamic:
+		return e.dynamicChange(ea, sa, sb)
+	}
+	if sa.present != sb.present || sa.isNil != sb.isNil {
+		return e.change(true, shape(sa), shape(sb), false), false
+	}
+	return nil, false
+}
+
+// dynamicChange compares the values two interfaces hold: one type's keys
+// compare one by one, and anything else whole.
+func (e *flatEntry) dynamicChange(ea *flatEntry, sa, sb side) (*entryChange, bool) {
+	if sa.present && sb.present && !sa.isNil && !sb.isNil && sa.v.Type() == sb.v.Type() {
+		if ea.node.kind == nodeLeaf {
+			return e.leafChange(sa, sb), false
+		}
+		return nil, false // its keys follow
+	}
+	if !composite(sa) && !composite(sb) {
+		return e.leafChange(sa, sb), true
+	}
+	return e.change(true, shape(sa), shape(sb), true), true
+}
+
+// composite reports a side holding a struct, map or list.
+func composite(s side) bool {
+	if !s.v.IsValid() {
+		return false
+	}
+	switch s.v.Kind() {
+	case reflect.Struct, reflect.Map, reflect.Slice, reflect.Array:
+		return true
+	}
+	return false
+}
+
+// leafChange compares two values decoded whole.
+func (e *flatEntry) leafChange(sa, sb side) *entryChange {
+	if sameValue(sa, sb) {
+		return nil
+	}
+	redact := e.sensitive || uncheckedValue(sa) || uncheckedValue(sb)
+	return e.change(false, describe(sa, redact), describe(sb, redact), false)
+}
+
+func (e *flatEntry) change(structural bool, old, next Value, subtree bool) *entryChange {
+	return &entryChange{
+		Change: Change{
+			Key:        e.path.String(),
+			Structural: structural,
+			Field:      cloneField(e.owner),
+			Old:        old,
+			New:        next,
+		},
+		path:    e.path,
+		ord:     e.ord,
+		subtree: subtree,
+	}
 }
 
 // side is a value as found: present or absent, and when present, nil or not.
@@ -133,121 +441,6 @@ func (s side) typeName() string {
 	return ""
 }
 
-// node compares a and b, two values of n's type, at c.
-func (d *differ) node(c cursor, n *schemaNode, a, b reflect.Value) {
-	if d.err != nil {
-		return
-	}
-	sa, sb := resolve(a), resolve(b)
-	if !sa.present && !sb.present {
-		return
-	}
-	switch {
-	case n.kind == nodeLeaf:
-		d.leaf(c, sa, sb)
-	case c.sensitive() && n.kind != nodeBranch:
-		// A map, list or interface whose keys may be secrets: compared
-		// whole, never listed.
-		d.whole(c, sa, sb)
-	case n.kind == nodeDynamic:
-		d.dynamic(c, sa, sb)
-	default:
-		d.composite(c, n, sa, sb)
-	}
-}
-
-// composite compares two structs, maps or lists.
-func (d *differ) composite(c cursor, n *schemaNode, sa, sb side) {
-	if len(c.path) > 0 && (sa.present != sb.present || sa.isNil != sb.isNil) {
-		d.emit(c, true, d.shape(sa), d.shape(sb))
-	}
-	if pair, ok := pairOf(sa, sb); ok {
-		if d.visiting[pair] {
-			d.compareWhole(c, sa, sb)
-			return
-		}
-		d.visiting[pair] = true
-		defer delete(d.visiting, pair)
-	}
-	switch n.kind {
-	case nodeBranch:
-		for _, f := range n.fields {
-			d.node(c.intoField(f), f.node, fieldOf(sa, f), fieldOf(sb, f))
-		}
-	case nodeMap:
-		for _, k := range mapKeys(sa, sb) {
-			d.node(c.intoEntry(segment{kind: segKey, name: k}, n.typ.Elem()), n.elem, entryOf(sa, k), entryOf(sb, k))
-		}
-	case nodeList:
-		for i := range max(listLen(sa), listLen(sb)) {
-			d.node(c.intoEntry(segment{kind: segIndex, index: i}, n.typ.Elem()), n.elem, elementOf(sa, i), elementOf(sb, i))
-		}
-	}
-}
-
-// dynamic compares the values two interfaces hold.
-func (d *differ) dynamic(c cursor, sa, sb side) {
-	if sa.present && sb.present && !sa.isNil && !sb.isNil && sa.v.Type() == sb.v.Type() {
-		n, err := schemaOf(sa.v.Type())
-		if err != nil {
-			d.err = err
-			return
-		}
-		d.node(c.intoDynamic(), n, sa.v, sb.v)
-		return
-	}
-	// One side missing, nil, or holding another type: compared whole.
-	if !composite(sa) && !composite(sb) {
-		d.leaf(c, sa, sb)
-		return
-	}
-	d.emit(c, true, d.shape(sa), d.shape(sb))
-}
-
-// composite reports a side holding a struct, map or list.
-func composite(s side) bool {
-	if !s.v.IsValid() {
-		return false
-	}
-	switch s.v.Kind() {
-	case reflect.Struct, reflect.Map, reflect.Slice, reflect.Array:
-		return true
-	}
-	return false
-}
-
-// leaf compares two values decoded whole.
-func (d *differ) leaf(c cursor, sa, sb side) {
-	for _, s := range []side{sa, sb} {
-		if s.v.IsValid() && !deepComparable(s.v) {
-			d.err = fmt.Errorf("%w: %s holds a %s, which cannot be compared", ErrSchema, c.path.orRoot(), s.v.Type())
-			return
-		}
-	}
-	if sameValue(sa, sb) {
-		return
-	}
-	redact := c.sensitive() || uncheckedValue(sa) || uncheckedValue(sb)
-	d.emit(c, false, d.value(sa, redact), d.value(sb, redact))
-}
-
-// whole compares two sensitive containers without listing their keys.
-func (d *differ) whole(c cursor, sa, sb side) {
-	if sameValue(sa, sb) {
-		return
-	}
-	structural := sa.present != sb.present || sa.isNil != sb.isNil
-	d.emit(c, structural, d.value(sa, true), d.value(sb, true))
-}
-
-// compareWhole compares two containers met again on a cycle.
-func (d *differ) compareWhole(c cursor, sa, sb side) {
-	if sameValue(sa, sb) {
-		return
-	}
-	d.emit(c, false, Value{Present: true, Type: sa.typeName(), Text: cycleValue}, Value{Present: true, Type: sb.typeName(), Text: cycleValue})
-}
-
 func sameValue(a, b side) bool {
 	if a.present != b.present || a.isNil != b.isNil {
 		return false
@@ -276,7 +469,7 @@ func uncheckedValue(s side) bool {
 }
 
 // shape describes a struct, map, list or interface by presence and type.
-func (d *differ) shape(s side) Value {
+func shape(s side) Value {
 	v := Value{Present: s.present, Nil: s.isNil, Type: s.typeName()}
 	if s.present && !s.isNil && s.v.IsValid() {
 		switch s.v.Kind() {
@@ -293,8 +486,17 @@ func (d *differ) shape(s side) Value {
 	return v
 }
 
-// value describes a value, its text redacted when redact.
-func (d *differ) value(s side, redact bool) Value {
+// cycleSide describes a container compared whole because it leads back to
+// itself.
+func cycleSide(s side) Value {
+	if !s.present {
+		return Value{}
+	}
+	return Value{Present: true, Nil: s.isNil, Type: s.typeName(), Text: cycleValue}
+}
+
+// describe describes a value, its text redacted when redact.
+func describe(s side, redact bool) Value {
 	v := Value{Present: s.present, Nil: s.isNil, Type: s.typeName()}
 	switch {
 	case !s.present, s.isNil && !s.v.IsValid():
@@ -307,94 +509,9 @@ func (d *differ) value(s side, redact bool) Value {
 	return v
 }
 
-func (d *differ) emit(c cursor, structural bool, old, next Value) {
-	d.changes = append(d.changes, Change{
-		Key:        c.path.String(),
-		Structural: structural,
-		Field:      cloneField(c.owner),
-		Old:        old,
-		New:        next,
-	})
-}
-
 // cloneField copies f so a caller changing its Index cannot reach another
 // change's.
 func cloneField(f Field) Field {
 	f.Index = slices.Clone(f.Index)
 	return f
-}
-
-// pairOf identifies two map or slice values, or the structs they are, by
-// address, for the cycle guard; a pair that cannot lead back to itself has
-// none.
-func pairOf(a, b side) (visitPair, bool) {
-	if !a.v.IsValid() || !b.v.IsValid() || a.isNil || b.isNil {
-		return visitPair{}, false
-	}
-	addr := func(v reflect.Value) (uintptr, bool) {
-		switch {
-		case v.Kind() == reflect.Map, v.Kind() == reflect.Slice:
-			return v.Pointer(), true
-		case v.CanAddr():
-			return v.Addr().Pointer(), true
-		}
-		return 0, false
-	}
-	pa, okA := addr(a.v)
-	pb, okB := addr(b.v)
-	if !okA || !okB {
-		return visitPair{}, false
-	}
-	return visitPair{a: pa, b: pb, typ: a.v.Type()}, true
-}
-
-// fieldOf is f's value in a struct side, or invalid when the side has no
-// struct or a pointer on the way is nil.
-func fieldOf(s side, f *schemaField) reflect.Value {
-	if !s.v.IsValid() || s.isNil {
-		return reflect.Value{}
-	}
-	v, err := s.v.FieldByIndexErr(f.index)
-	if err != nil {
-		return reflect.Value{}
-	}
-	return v
-}
-
-func mapKeys(a, b side) []string {
-	seen := map[string]bool{}
-	for _, s := range []side{a, b} {
-		if s.v.IsValid() && !s.isNil {
-			for _, k := range s.v.MapKeys() {
-				seen[k.String()] = true
-			}
-		}
-	}
-	keys := make([]string, 0, len(seen))
-	for k := range seen {
-		keys = append(keys, k)
-	}
-	slices.SortFunc(keys, strings.Compare)
-	return keys
-}
-
-func entryOf(s side, key string) reflect.Value {
-	if !s.v.IsValid() || s.isNil {
-		return reflect.Value{}
-	}
-	return s.v.MapIndex(reflect.ValueOf(key).Convert(s.v.Type().Key()))
-}
-
-func listLen(s side) int {
-	if !s.v.IsValid() || s.isNil {
-		return 0
-	}
-	return s.v.Len()
-}
-
-func elementOf(s side, i int) reflect.Value {
-	if i >= listLen(s) {
-		return reflect.Value{}
-	}
-	return s.v.Index(i)
 }

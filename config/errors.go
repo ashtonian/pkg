@@ -32,6 +32,11 @@ var (
 	// ErrReload wraps every reload that ran the pipeline and failed; the
 	// previous config stays live. The failure's own category is wrapped too.
 	ErrReload = errors.New("configuration reload failed")
+	// ErrApply reports a published config some [Applier] did not apply: the
+	// config is live, and the appliers that failed are called again on the
+	// next one. It does NOT wrap ErrReload, which means nothing was
+	// published. An [ApplyError] carries it.
+	ErrApply = errors.New("configuration published but not fully applied")
 	// ErrReloadInProgress reports a manual Reload that found another reload
 	// in flight. No pipeline ran and nothing failed, so it does NOT wrap
 	// ErrReload: a burst of operator requests must not read as failures.

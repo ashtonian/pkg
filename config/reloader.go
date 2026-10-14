@@ -41,6 +41,11 @@ type Reloader[T any] struct {
 	// whole while holding slot and read lock-free, so a reader never sees a
 	// config with another moment's stats.
 	state atomic.Pointer[Snapshot[T]]
+	root  *schemaNode
+	// flat is the published config's keys. Guarded by slot.
+	flat []flatEntry
+	// app accounts for the appliers; nil without any. Guarded by slot.
+	app *application
 	// load runs one load and reports the digests of the config files it
 	// parsed, nil when the loader is the caller's.
 	load   func(ctx context.Context) (*T, fileDigests, error)
@@ -141,7 +146,8 @@ func NewReloaderFunc[T any](ctx context.Context, load func(ctx context.Context) 
 // newReloader builds a Reloader whose events go to inherited — the load
 // options' logger, nil for none — unless WithReloadLogger set one.
 func newReloader[T any](ro *reloadOptions, inherited *slog.Logger, configFiles []string) (*Reloader[T], error) {
-	if _, err := rootSchema(reflect.TypeFor[T]()); err != nil {
+	root, err := rootSchema(reflect.TypeFor[T]())
+	if err != nil {
 		return nil, fmt.Errorf("config: a reloader compares the configs it publishes: %w", err)
 	}
 	logger := inherited
@@ -150,6 +156,12 @@ func newReloader[T any](ro *reloadOptions, inherited *slog.Logger, configFiles [
 	}
 	if err := ro.checkHookTypes(reflect.TypeFor[*T]()); err != nil {
 		return nil, err
+	}
+	var app *application
+	if len(ro.appliers) > 0 {
+		if app, err = newApplication(root, ro.appliers); err != nil {
+			return nil, err
+		}
 	}
 	paths := slices.Clone(configFiles)
 	var extra []string
@@ -163,6 +175,8 @@ func newReloader[T any](ro *reloadOptions, inherited *slog.Logger, configFiles [
 		return nil, errors.New("config: WithFileWatch has no files to watch; name them with WithFile or WithWatchedFiles")
 	}
 	return &Reloader[T]{
+		root:         root,
+		app:          app,
 		logger:       logger,
 		onSuccess:    ro.onSuccess,
 		onError:      ro.onError,
@@ -181,13 +195,28 @@ func newReloader[T any](ro *reloadOptions, inherited *slog.Logger, configFiles [
 	}, nil
 }
 
+// loadInitial runs the first load, applies it with the ApplyInitial
+// appliers, and publishes it as generation 1.
 func (r *Reloader[T]) loadInitial(ctx context.Context) error {
 	cfg, files, err := r.runLoad(ctx)
 	if err != nil {
 		return err
 	}
-	r.loaded = files
-	r.state.Store(&Snapshot[T]{Config: cfg, Generation: 1})
+	flat, err := flatten(r.root, rootValue(cfg))
+	if err != nil {
+		return err
+	}
+	snap := &Snapshot[T]{Config: cfg, Generation: 1}
+	if r.app != nil {
+		r.app.start(flat)
+		p := r.app.plan(flat, true)
+		if err := r.applyInitial(ctx, cfg, p); err != nil {
+			return err
+		}
+		snap.Appliers, snap.PendingRestart = r.app.account(p)
+	}
+	r.loaded, r.flat = files, flat
+	r.state.Store(snap)
 	return nil
 }
 
@@ -229,15 +258,15 @@ func (r *Reloader[T]) Config() *T {
 // Snapshot returns the published config with its generation and the reload
 // stats, all from one moment. Safe to call from any goroutine.
 func (r *Reloader[T]) Snapshot() Snapshot[T] {
-	snap := *r.state.Load()
-	snap.Stats = snap.Stats.clone()
-	return snap
+	return r.state.Load().clone()
 }
 
 // Reload triggers an immediate config reload and returns what it published:
-// the new snapshot and the keys that changed. On failure the previous config
-// is preserved and an error wrapping both [ErrReload] and the underlying
-// cause is returned.
+// the new snapshot, the keys that changed and what each applier did. On
+// failure the previous config is preserved and an error wrapping both
+// [ErrReload] and the underlying cause is returned. A config published but
+// not applied by every applier returns its result together with an
+// [ApplyError], which wraps [ErrApply], not ErrReload.
 //
 // If another reload is in flight this call does not wait: it returns
 // [ErrReloadInProgress], which deliberately does NOT wrap ErrReload — no
@@ -335,14 +364,11 @@ func (r *Reloader[T]) reloadHeld(ctx context.Context, trigger string) (*ReloadRe
 		}
 		return nil, fmt.Errorf("config reload abandoned: %w", ctxErr)
 	}
-	prev := r.state.Load()
-	var changes []Change
+	var flat []flatEntry
 	if err == nil {
-		changes, err = Diff(prev.Config, cfg)
-		if changes == nil {
-			changes = []Change{}
-		}
+		flat, err = flatten(r.root, rootValue(cfg))
 	}
+	prev := r.state.Load()
 	if err != nil {
 		reloadErr := fmt.Errorf("%w: %w", ErrReload, err)
 		r.publishFailure(prev, trigger, reloadErr)
@@ -350,30 +376,45 @@ func (r *Reloader[T]) reloadHeld(ctx context.Context, trigger string) (*ReloadRe
 		return nil, reloadErr
 	}
 
-	r.loaded = files
-	next := r.publishSuccess(prev, trigger, cfg)
-	result := &ReloadResult[T]{Snapshot: *next, Changes: changes}
-	r.notifySuccess(ctx, ReloadEvent[T]{Trigger: trigger, Old: prev.Config, New: cfg, Result: *result})
-	return result, nil
-}
-
-// publishSuccess publishes cfg as the next generation and returns its
-// snapshot. Called only with the slot held, so the read-modify-write needs no
-// further synchronisation; readers see the new snapshot atomically.
-func (r *Reloader[T]) publishSuccess(prev *Snapshot[T], trigger string, cfg *T) *Snapshot[T] {
+	changes := compareEntries(r.flat, flat)
+	r.loaded, r.flat = files, flat
 	next := &Snapshot[T]{Config: cfg, Generation: prev.Generation + 1, Stats: prev.Stats}
 	next.Stats.Attempts++
 	next.Stats.Successes++
 	next.Stats.LastTrigger = trigger
 	next.Stats.LastSuccess = time.Now().UTC()
 	next.Stats.LastError = nil
+	var plan *applyPlan
+	if r.app != nil {
+		// Published with what the appliers owe, so it shows while they run,
+		// then again with what they did.
+		plan = r.app.plan(flat, false)
+		next.Appliers, next.PendingRestart = r.app.account(plan)
+	}
 	r.state.Store(next)
-	return next
+	result := ReloadResult[T]{Changes: changesOf(changes)}
+	if result.Changes == nil {
+		result.Changes = []Change{}
+	}
+	var failures []ApplierFailure
+	if r.app != nil {
+		result.Applied, failures = r.applyAll(ctx, trigger, next.Generation, prev.Config, cfg, plan)
+		done := *next
+		done.Appliers, done.PendingRestart = r.app.account(plan)
+		r.state.Store(&done)
+	}
+	result.Snapshot = *r.state.Load()
+	r.notifySuccess(ctx, ReloadEvent[T]{Trigger: trigger, Old: prev.Config, New: cfg, Result: result})
+	out := result.clone()
+	if len(failures) > 0 {
+		return &out, &ApplyError{Failures: failures}
+	}
+	return &out, nil
 }
 
 // publishFailure records a rejected reload; the config and generation stay.
 func (r *Reloader[T]) publishFailure(prev *Snapshot[T], trigger string, err error) {
-	next := &Snapshot[T]{Config: prev.Config, Generation: prev.Generation, Stats: prev.Stats}
+	next := &Snapshot[T]{Config: prev.Config, Generation: prev.Generation, Stats: prev.Stats, Appliers: prev.Appliers, PendingRestart: prev.PendingRestart}
 	next.Stats.Attempts++
 	next.Stats.Failures++
 	next.Stats.LastTrigger = trigger
@@ -700,7 +741,7 @@ func (r *Reloader[T]) changedSinceLoad() (string, bool) {
 func (r *Reloader[T]) reloadAndLog(ctx context.Context, trigger string, attrs ...any) {
 	args := append([]any{"trigger", trigger}, attrs...)
 	res, err := r.reloadHeld(ctx, trigger)
-	if err != nil {
+	if res == nil {
 		if ctx.Err() != nil {
 			return
 		}
@@ -715,8 +756,18 @@ func (r *Reloader[T]) reloadAndLog(ctx context.Context, trigger string, attrs ..
 	if trigger == TriggerPoll && len(keys) == 0 {
 		level = slog.LevelDebug // a poll reloads on every tick; Info would flood
 	}
-	r.log().Log(ctx, level, "config reloaded",
-		append(args, "generation", res.Snapshot.Generation, "changed_keys", keys)...)
+	args = append(args, "generation", res.Snapshot.Generation, "changed_keys", keys)
+	if pending := res.Snapshot.PendingRestart; len(pending) > 0 {
+		waiting := make([]string, len(pending))
+		for i, ch := range pending {
+			waiting[i] = ch.Key
+		}
+		args = append(args, "pending_restart", waiting)
+	}
+	r.log().Log(ctx, level, "config reloaded", args...)
+	if err != nil {
+		r.log().ErrorContext(ctx, "config published but not fully applied", append(args, "error", err)...)
+	}
 }
 
 // Stop stops the reloader. From the moment it is called, Reload returns
@@ -771,12 +822,12 @@ func (r *Reloader[T]) Stop(ctx context.Context) error {
 
 // notifySuccess invokes the WithOnReloadSuccess callbacks, recovering a
 // panic so a misbehaving callback cannot crash the process. Each gets its own
-// copy of the changes, so none can alter what the next one or Reload's caller
+// copy of the result, so none can alter what the next one or Reload's caller
 // sees.
 func (r *Reloader[T]) notifySuccess(ctx context.Context, ev ReloadEvent[T]) {
-	changes := ev.Result.Changes
+	result := ev.Result
 	for _, h := range r.onSuccess {
-		ev.Result.Changes = slices.Clone(changes)
+		ev.Result = result.clone()
 		func() {
 			defer func() {
 				if p := recover(); p != nil {

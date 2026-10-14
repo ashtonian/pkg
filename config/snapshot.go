@@ -2,6 +2,7 @@ package config
 
 import (
 	"errors"
+	"slices"
 	"time"
 )
 
@@ -17,6 +18,89 @@ type Snapshot[T any] struct {
 	Generation uint64 `json:"generation"`
 	// Stats is the reload history.
 	Stats ReloadStats `json:"stats"`
+	// Appliers is each [WithApplier] applier's account, in registration
+	// order; empty without appliers.
+	Appliers []ApplierStatus `json:"appliers,omitempty"`
+	// PendingRestart lists, in walk order, what the published config
+	// changes that the running process has not taken and will not before a
+	// restart: a key no applier owns that differs from the first load, a
+	// key an applier returned as a restart key that differs from what it
+	// acknowledged, and every key of a structure that appeared, disappeared
+	// or turned nil without one applier owning all of it. A key returns to
+	// its old value, and it leaves the list. Empty without appliers.
+	PendingRestart []Change `json:"pending_restart,omitempty"`
+}
+
+// ApplierStatus is one applier's account.
+type ApplierStatus struct {
+	Name string `json:"name"`
+	// Invocations counts calls, the initial apply's included.
+	Invocations uint64 `json:"invocations"`
+	// Failures counts calls that returned an error, panicked, or returned a
+	// restart key that was not one of their changes.
+	Failures uint64 `json:"failures"`
+	// LastApplied is when a call last returned nil, in UTC.
+	LastApplied time.Time `json:"last_applied,omitzero"`
+	// LastFailure is when a call last failed, in UTC.
+	LastFailure time.Time `json:"last_failure,omitzero"`
+	// LastError is the failure that left the applier uncertain or a config
+	// it was never called for; nil once it applies everything it owes.
+	LastError *Problem `json:"last_error,omitempty"`
+	// Uncertain reports an applier that failed and has not applied
+	// everything it owes since: what its failure did is unknown, so it is
+	// called on every published config until it does.
+	Uncertain bool `json:"uncertain,omitempty"`
+	// Pending lists the keys it owns whose published value differs from
+	// what it acknowledged: failed, deferred to a restart, or blocked by a
+	// structure it does not own whole.
+	Pending []Change `json:"pending,omitempty"`
+}
+
+func (s ApplierStatus) clone() ApplierStatus {
+	if s.LastError != nil {
+		p := *s.LastError
+		s.LastError = &p
+	}
+	s.Pending = cloneChanges(s.Pending)
+	return s
+}
+
+// ApplyOutcome is what one applier did for one published config.
+type ApplyOutcome struct {
+	Applier string `json:"applier"`
+	// Applied are the keys it acknowledged.
+	Applied []string `json:"applied,omitempty"`
+	// Deferred are the keys it returned as restart keys.
+	Deferred []string `json:"deferred,omitempty"`
+	// Error is its failure; nil when it applied.
+	Error *Problem `json:"error,omitempty"`
+}
+
+func (s Snapshot[T]) clone() Snapshot[T] {
+	s.Stats = s.Stats.clone()
+	s.PendingRestart = cloneChanges(s.PendingRestart)
+	if s.Appliers != nil {
+		appliers := make([]ApplierStatus, len(s.Appliers))
+		for i, a := range s.Appliers {
+			appliers[i] = a.clone()
+		}
+		s.Appliers = appliers
+	}
+	return s
+}
+
+// cloneChanges copies changes so a caller changing one cannot reach
+// another reader's.
+func cloneChanges(changes []Change) []Change {
+	if changes == nil {
+		return nil
+	}
+	out := make([]Change, len(changes))
+	for i, c := range changes {
+		out[i] = c
+		out[i].Field = cloneField(c.Field)
+	}
+	return out
 }
 
 // ReloadStats is a Reloader's reload history at one moment, as returned by
@@ -73,6 +157,7 @@ type Problem struct {
 
 // Problem kinds: the category sentinel an error wraps.
 const (
+	KindApply          = "apply"           // ErrApply
 	KindValidation     = "validation"      // ErrValidation
 	KindFileRead       = "file_read"       // ErrFileRead
 	KindFileParse      = "file_parse"      // ErrFileParse
@@ -85,7 +170,8 @@ const (
 
 // Diagnose returns err as a [Problem]: the category of the sentinel it wraps
 // and its message. A reload's error is categorized by what failed beneath
-// [ErrReload]. A nil error has no problem.
+// [ErrReload]; an [ApplyError] is KindApply whatever its causes wrap. A nil
+// error has no problem.
 func Diagnose(err error) *Problem {
 	if err == nil {
 		return nil
@@ -95,6 +181,7 @@ func Diagnose(err error) *Problem {
 		sentinel error
 		kind     string
 	}{
+		{ErrApply, KindApply},
 		{ErrValidation, KindValidation},
 		{ErrFileParse, KindFileParse},
 		{ErrFileRead, KindFileRead},
@@ -111,14 +198,36 @@ func Diagnose(err error) *Problem {
 	return &Problem{Kind: kind, Message: err.Error()}
 }
 
-// ReloadResult is what one successful reload published: the snapshot it
-// produced and the keys that changed from the config before it.
+// ReloadResult is what one reload published: the snapshot it produced, the
+// keys that changed from the config before it, and what each applier did.
 type ReloadResult[T any] struct {
 	Snapshot Snapshot[T] `json:"snapshot"`
 	// Changes lists every key whose value differs from the config the
 	// reload replaced, as [Diff] reports them; empty when the sources did
 	// not change.
 	Changes []Change `json:"changes"`
+	// Applied lists, in registration order, every applier the reload
+	// called or owed a call it could not make; an applier that owed nothing
+	// is absent.
+	Applied []ApplyOutcome `json:"applied,omitempty"`
+}
+
+func (r ReloadResult[T]) clone() ReloadResult[T] {
+	r.Snapshot = r.Snapshot.clone()
+	r.Changes = cloneChanges(r.Changes)
+	if r.Applied != nil {
+		applied := make([]ApplyOutcome, len(r.Applied))
+		for i, a := range r.Applied {
+			a.Applied, a.Deferred = slices.Clone(a.Applied), slices.Clone(a.Deferred)
+			if a.Error != nil {
+				p := *a.Error
+				a.Error = &p
+			}
+			applied[i] = a
+		}
+		r.Applied = applied
+	}
+	return r
 }
 
 // ReloadEvent is what a [WithOnReloadSuccess] callback receives: the trigger,

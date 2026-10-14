@@ -270,6 +270,39 @@ func TestDiff_CyclesAndUncomparableValues(t *testing.T) {
 
 	_, err = Diff(&cfg{Hook: func() {}}, &cfg{Hook: func() {}})
 	require.ErrorIs(t, err, ErrSchema)
+
+	// A cycle on one side only ends where it leads back.
+	changes, err = Diff(nil, &cfg{Root: a})
+	require.NoError(t, err)
+	assert.Equal(t, []string{"root", "root.name", "root.next", "hook"}, changeKeys(changes))
+	assert.Equal(t, cycleValue, changes[2].New.Text)
+}
+
+// An interface whose value changes type is one change at its key, the keys
+// either value holds left unlisted; one that keeps its type lists them.
+func TestDiff_InterfaceValues(t *testing.T) {
+	type inner struct {
+		Port int `koanf:"port"`
+	}
+	type cfg struct {
+		Plugin any `koanf:"plugin"`
+	}
+	changes, err := Diff(&cfg{Plugin: inner{Port: 1}}, &cfg{Plugin: map[string]any{"port": 1}})
+	require.NoError(t, err)
+	require.Len(t, changes, 1)
+	assert.Equal(t, "plugin", changes[0].Key)
+	assert.True(t, changes[0].Structural)
+	assert.Equal(t, "config.inner", changes[0].Old.Type)
+
+	changes, err = Diff(&cfg{Plugin: inner{Port: 1}}, &cfg{Plugin: inner{Port: 2}})
+	require.NoError(t, err)
+	assert.Equal(t, []string{"plugin.port"}, changeKeys(changes))
+
+	changes, err = Diff(&cfg{Plugin: 1}, &cfg{Plugin: "1"})
+	require.NoError(t, err)
+	require.Len(t, changes, 1)
+	assert.False(t, changes[0].Structural)
+	assert.Equal(t, "1", changes[0].New.Text)
 }
 
 func TestDiff_DoesNotChangeItsInputs(t *testing.T) {
