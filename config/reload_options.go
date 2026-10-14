@@ -23,6 +23,7 @@ type reloadOptions struct {
 	signals      []os.Signal
 	logger       *slog.Logger
 	loggerSet    bool // WithReloadLogger was given, nil included
+	provenance   bool
 }
 
 // successHook is a [WithOnReloadSuccess] callback with its config type
@@ -53,6 +54,16 @@ func (o *reloadOptions) checkHookTypes(cfg reflect.Type) error {
 		}
 	}
 	return nil
+}
+
+// WithProvenance records where every key's value came from on each load, as
+// [LoadSnapshot] does: [Reloader.Snapshot] carries the origins of the config
+// it publishes, and a refused reload keeps the previous ones. It costs a copy
+// and a comparison of the decoded config around the secret populator and
+// each post-load hook, per load. It needs [NewReloader]'s pipeline:
+// NewReloaderFunc refuses it.
+func WithProvenance() ReloadOption {
+	return func(o *reloadOptions) { o.provenance = true }
 }
 
 // DefaultFileWatchDebounce is the [WithFileWatch] debounce window applied

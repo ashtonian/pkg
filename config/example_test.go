@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/ashtonian/pkg/config"
@@ -386,4 +387,42 @@ func ExamplePrintTemplate() {
 	//   host: localhost
 	//   # string, required, sensitive; env APP_DB_PASSWORD
 	//   # password:
+}
+
+// ExamplePrintExplain shows where each value came from: a tag default, an
+// environment variable by name, and a post-load hook that changed a value
+// after decoding. The password's value stays redacted; its source does not.
+func ExamplePrintExplain() {
+	type DB struct {
+		Host     string `koanf:"host" default:"localhost"`
+		Password string `koanf:"password"`
+	}
+	type AppConfig struct {
+		Port     int    `koanf:"port" default:"8080"`
+		LogLevel string `koanf:"log_level" default:"info"`
+		DB       DB     `koanf:"db"`
+	}
+	snap, err := config.LoadSnapshot[AppConfig](context.Background(),
+		config.WithEnvPrefix("APP"),
+		config.WithEnviron(func() []string { return []string{"APP_PORT=9000", "APP_DB_PASSWORD=s3cret"} }),
+		config.WithPostLoad(func(_ context.Context, c *AppConfig) error {
+			c.LogLevel = strings.ToUpper(c.LogLevel)
+			return nil
+		}),
+	)
+	if err != nil {
+		fmt.Println(err)
+		return
+	}
+	if err := config.PrintExplain(snap, config.WithWriter(os.Stdout)); err != nil {
+		fmt.Println(err)
+	}
+
+	// Output:
+	// KEY          VALUE       SOURCE
+	// ---------------------------------------------------
+	// port         9000        environment APP_PORT
+	// log_level    INFO        tag_default → post_load 0
+	// db.host      localhost   tag_default
+	// db.password  [REDACTED]  environment APP_DB_PASSWORD
 }

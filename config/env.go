@@ -112,9 +112,11 @@ func dotPath(path string) keyPath {
 }
 
 // read maps the "NAME=value" entries of environ under the prefix to their
-// keys. unmatched names the variables under the prefix that fit no key.
-func (s envSchema) read(environ []string) (values map[string]any, unmatched []string, err error) {
+// keys, and names the variable behind each flat key. unmatched names the
+// variables under the prefix that fit no key.
+func (s envSchema) read(environ []string) (values map[string]any, names map[string]string, unmatched []string, err error) {
 	values = make(map[string]any)
+	names = make(map[string]string)
 	var ambiguous []string
 	for _, kv := range environ {
 		name, value, ok := strings.Cut(kv, "=")
@@ -126,6 +128,7 @@ func (s envSchema) read(environ []string) (values map[string]any, unmatched []st
 			unmatched = append(unmatched, name)
 		case 1:
 			values[readings[0].flat] = value
+			names[readings[0].flat] = name
 		default:
 			keys := make([]string, len(readings))
 			for i, r := range readings {
@@ -135,10 +138,10 @@ func (s envSchema) read(environ []string) (values map[string]any, unmatched []st
 		}
 	}
 	if len(ambiguous) > 0 {
-		return nil, nil, fmt.Errorf("ambiguous environment variables: %s; rename a map key or field so only one reading fits",
+		return nil, nil, nil, fmt.Errorf("ambiguous environment variables: %s; rename a map key or field so only one reading fits",
 			strings.Join(ambiguous, "; "))
 	}
-	return values, unmatched, nil
+	return values, names, unmatched, nil
 }
 
 // envName is the variable name for path under prefix; an empty prefix yields

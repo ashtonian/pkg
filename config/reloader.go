@@ -47,8 +47,9 @@ type Reloader[T any] struct {
 	// app accounts for the appliers; nil without any. Guarded by slot.
 	app *application
 	// load runs one load and reports the digests of the config files it
-	// parsed, nil when the loader is the caller's.
-	load   func(ctx context.Context) (*T, fileDigests, error)
+	// parsed — nil when the loader is the caller's — and, with provenance,
+	// the origins.
+	load   func(ctx context.Context) (loaded[T], error)
 	logger *slog.Logger // nil: slog.Default() at each line
 
 	onSuccess    []successHook
@@ -105,13 +106,15 @@ const (
 func NewReloader[T any](ctx context.Context, loadOpts []Option, opts ...ReloadOption) (*Reloader[T], error) {
 	loadOpts = slices.Clone(loadOpts)
 	o := buildOptions(loadOpts)
-	r, err := newReloader[T](buildReloadOptions(opts), o.logger, o.filePaths())
+	ro := buildReloadOptions(opts)
+	r, err := newReloader[T](ro, o.logger, o.filePaths())
 	if err != nil {
 		return nil, err
 	}
-	r.load = func(ctx context.Context) (*T, fileDigests, error) {
+	r.load = func(ctx context.Context) (loaded[T], error) {
 		o := buildOptions(loadOpts)
 		o.requireFiles(r.loaded)
+		o.provenance = ro.provenance
 		return load[T](ctx, o)
 	}
 	if err := r.loadInitial(ctx); err != nil {
@@ -126,16 +129,20 @@ func NewReloader[T any](ctx context.Context, loadOpts []Option, opts ...ReloadOp
 // file watch covers the files given to [WithWatchedFiles]; each reload
 // compares them with what they held just before the previous load.
 func NewReloaderFunc[T any](ctx context.Context, load func(ctx context.Context) (*T, error), opts ...ReloadOption) (*Reloader[T], error) {
-	r, err := newReloader[T](buildReloadOptions(opts), nil, nil)
+	ro := buildReloadOptions(opts)
+	if ro.provenance {
+		return nil, errProvenanceFunc
+	}
+	r, err := newReloader[T](ro, nil, nil)
 	if err != nil {
 		return nil, err
 	}
-	r.load = func(ctx context.Context) (*T, fileDigests, error) {
+	r.load = func(ctx context.Context) (loaded[T], error) {
 		cfg, err := load(ctx)
 		if err == nil && cfg == nil {
 			err = errors.New("config: the loader returned a nil config")
 		}
-		return cfg, nil, err
+		return loaded[T]{cfg: cfg}, err
 	}
 	if err := r.loadInitial(ctx); err != nil {
 		return nil, err
@@ -198,15 +205,16 @@ func newReloader[T any](ro *reloadOptions, inherited *slog.Logger, configFiles [
 // loadInitial runs the first load, applies it with the ApplyInitial
 // appliers, and publishes it as generation 1.
 func (r *Reloader[T]) loadInitial(ctx context.Context) error {
-	cfg, files, err := r.runLoad(ctx)
+	l, err := r.runLoad(ctx)
 	if err != nil {
 		return err
 	}
+	cfg, files := l.cfg, l.files
 	flat, err := flatten(r.root, rootValue(cfg))
 	if err != nil {
 		return err
 	}
-	snap := &Snapshot[T]{Config: cfg, Generation: 1}
+	snap := &Snapshot[T]{Config: cfg, Generation: 1, Provenance: l.origins}
 	if r.app != nil {
 		r.app.start(flat)
 		p := r.app.plan(flat, true)
@@ -224,17 +232,17 @@ func (r *Reloader[T]) loadInitial(ctx context.Context) error {
 // load: the loader's own record of the config files it parsed, and for the
 // rest what they held just before the load, so a change after that still
 // reads as a change.
-func (r *Reloader[T]) runLoad(ctx context.Context) (*T, fileDigests, error) {
+func (r *Reloader[T]) runLoad(ctx context.Context) (loaded[T], error) {
 	before := digestFiles(r.extra)
-	cfg, files, err := r.load(ctx)
+	l, err := r.load(ctx)
 	if err != nil {
-		return nil, nil, err
+		return loaded[T]{}, err
 	}
-	if files == nil {
-		files = fileDigests{}
+	if l.files == nil {
+		l.files = fileDigests{}
 	}
-	maps.Copy(files, before)
-	return cfg, files, nil
+	maps.Copy(l.files, before)
+	return l, nil
 }
 
 // digestFiles hashes each of paths that can be read; one that cannot is left
@@ -356,7 +364,8 @@ func (r *Reloader[T]) reloadHeld(ctx context.Context, trigger string) (*ReloadRe
 	if err := ctx.Err(); err != nil {
 		return nil, fmt.Errorf("config reload abandoned: %w", err)
 	}
-	cfg, files, err := r.runLoad(ctx)
+	l, err := r.runLoad(ctx)
+	cfg, files := l.cfg, l.files
 	if ctxErr := ctx.Err(); ctxErr != nil {
 		// Say nothing about the sources, which may be fine.
 		if err != nil && !errors.Is(err, ctxErr) {
@@ -378,7 +387,7 @@ func (r *Reloader[T]) reloadHeld(ctx context.Context, trigger string) (*ReloadRe
 
 	changes := compareEntries(r.flat, flat)
 	r.loaded, r.flat = files, flat
-	next := &Snapshot[T]{Config: cfg, Generation: prev.Generation + 1, Stats: prev.Stats}
+	next := &Snapshot[T]{Config: cfg, Generation: prev.Generation + 1, Stats: prev.Stats, Provenance: l.origins}
 	next.Stats.Attempts++
 	next.Stats.Successes++
 	next.Stats.LastTrigger = trigger
@@ -414,7 +423,10 @@ func (r *Reloader[T]) reloadHeld(ctx context.Context, trigger string) (*ReloadRe
 
 // publishFailure records a rejected reload; the config and generation stay.
 func (r *Reloader[T]) publishFailure(prev *Snapshot[T], trigger string, err error) {
-	next := &Snapshot[T]{Config: prev.Config, Generation: prev.Generation, Stats: prev.Stats, Appliers: prev.Appliers, PendingRestart: prev.PendingRestart}
+	next := &Snapshot[T]{
+		Config: prev.Config, Generation: prev.Generation, Stats: prev.Stats,
+		Appliers: prev.Appliers, PendingRestart: prev.PendingRestart, Provenance: prev.Provenance,
+	}
 	next.Stats.Attempts++
 	next.Stats.Failures++
 	next.Stats.LastTrigger = trigger

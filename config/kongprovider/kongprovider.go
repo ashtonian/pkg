@@ -36,6 +36,7 @@
 package kongprovider
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"reflect"
@@ -72,34 +73,64 @@ func New(ctx *kong.Context, mapping map[string]string) koanf.Provider {
 }
 
 // provider reads typed flags: through a name mapping (New), or as values
-// copied when an option was built (WithOverridesFromStruct).
+// copied when an option was built (WithOverridesFromStruct). It is a
+// config.OriginProvider: a snapshot with provenance names the flag behind
+// each value.
 type provider struct {
 	ctx     *kong.Context
 	mapping map[string]string
 	values  map[string]any
+	flags   map[string]string // key → the flag that set it
 	err     error
 }
 
 func (p provider) Read() (map[string]any, error) {
+	values, _, err := p.read()
+	if err != nil {
+		return nil, err
+	}
+	return confmap.Provider(values, ".").Read()
+}
+
+// ReadWithOrigins returns what Read does, and the flag behind each key.
+func (p provider) ReadWithOrigins(context.Context) (map[string]any, map[string]config.Source, error) {
+	values, flags, err := p.read()
+	if err != nil {
+		return nil, nil, err
+	}
+	data, err := confmap.Provider(values, ".").Read()
+	if err != nil {
+		return nil, nil, err
+	}
+	origins := make(map[string]config.Source, len(flags))
+	for key, flag := range flags {
+		origins[key] = config.Source{Kind: config.SourceFlag, Name: "--" + flag}
+	}
+	return data, origins, nil
+}
+
+// read returns the typed values by key, and the flag that set each.
+func (p provider) read() (values map[string]any, flags map[string]string, err error) {
 	if p.err != nil {
-		return nil, p.err
+		return nil, nil, p.err
 	}
 	if p.ctx == nil {
-		return confmap.Provider(p.values, ".").Read()
+		return p.values, p.flags, nil
 	}
 	if unknown := unknownFlags(p.ctx.Model.Node, p.mapping); len(unknown) > 0 {
-		return nil, fmt.Errorf("kongprovider: the CLI has no flag named %s", strings.Join(unknown, ", "))
+		return nil, nil, fmt.Errorf("kongprovider: the CLI has no flag named %s", strings.Join(unknown, ", "))
 	}
-	values := make(map[string]any)
+	values, flags = make(map[string]any), make(map[string]string)
 	for _, el := range p.ctx.Path {
 		if el.Flag == nil || el.Resolved {
 			continue
 		}
 		if key, ok := p.mapping[el.Flag.Name]; ok {
 			values[key] = el.Flag.Target.Interface()
+			flags[key] = el.Flag.Name
 		}
 	}
-	return confmap.Provider(values, ".").Read()
+	return values, flags, nil
 }
 
 func (provider) ReadBytes() ([]byte, error) {
@@ -138,8 +169,8 @@ func WithOverrides(ctx *kong.Context, mapping map[string]string) config.Option {
 // keeps the command line it started with. A CLI none of whose flags writes
 // into cfg fails the load with config.ErrSource.
 func WithOverridesFromStruct[T any](ctx *kong.Context, cfg *T) config.Option {
-	values, err := typedValues(ctx, cfg)
-	return config.WithOverrideProvider(provider{values: values, err: err}, nil)
+	values, flags, err := typedValues(ctx, cfg)
+	return config.WithOverrideProvider(provider{values: values, flags: flags, err: err}, nil)
 }
 
 // HelpFromConfig returns a Kong option that describes each flag that writes
@@ -206,36 +237,37 @@ func fieldOfFlag[T any](cfg *T, fl *kong.Flag) (f config.Field, ok bool, err err
 }
 
 // typedValues copies the value of every flag typed on the command line that
-// writes a field of cfg, keyed by that field's key.
-func typedValues[T any](ctx *kong.Context, cfg *T) (map[string]any, error) {
+// writes a field of cfg, keyed by that field's key, and names the flag.
+func typedValues[T any](ctx *kong.Context, cfg *T) (map[string]any, map[string]string, error) {
 	if cfg == nil {
-		return nil, errors.New("kongprovider: nil config")
+		return nil, nil, errors.New("kongprovider: nil config")
 	}
 	writes := false
 	for _, fl := range allFlags(ctx.Model.Node) {
 		_, ok, err := fieldOfFlag(cfg, fl)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		writes = writes || ok
 	}
 	if !writes {
-		return nil, fmt.Errorf("kongprovider: no flag of the CLI %s writes a field of %s; pass a pointer into the parsed CLI struct", ctx.Model.Name, reflect.TypeFor[T]())
+		return nil, nil, fmt.Errorf("kongprovider: no flag of the CLI %s writes a field of %s; pass a pointer into the parsed CLI struct", ctx.Model.Name, reflect.TypeFor[T]())
 	}
-	values := make(map[string]any)
+	values, flags := make(map[string]any), make(map[string]string)
 	for _, el := range ctx.Path {
 		if el.Flag == nil || el.Resolved {
 			continue
 		}
 		f, ok, err := fieldOfFlag(cfg, el.Flag)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		if ok {
 			values[f.Path] = copyValue(el.Flag.Target)
+			flags[f.Path] = el.Flag.Name
 		}
 	}
-	return values, nil
+	return values, flags, nil
 }
 
 // copyValue copies v so later changes to the flag's target cannot reach the

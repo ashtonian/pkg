@@ -156,5 +156,8 @@
 // and description; a default that is, or could hold, a sensitive value is
 // withheld ([Field.PrintableDefault]). [PrintTemplate] writes the config file
 // a struct describes: every key with its default, which loads back as the
-// defaults.
+// defaults. [LoadSnapshot], or a reloader [WithProvenance], records where each
+// value came from — the default, file, environment variable, provider or flag
+// the merge kept, and the stages that changed it after decoding — and
+// [PrintExplain] prints it, values redacted.
 package config

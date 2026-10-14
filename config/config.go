@@ -58,8 +58,8 @@ import (
 // hooks, validator and Validate method are passed through as they were
 // written.
 func Load[T any](ctx context.Context, opts ...Option) (*T, error) {
-	cfg, _, err := load[T](ctx, buildOptions(opts))
-	return cfg, err
+	l, err := load[T](ctx, buildOptions(opts))
+	return l.cfg, err
 }
 
 // ContextProvider is a koanf.Provider whose reads take a context. A provider
@@ -89,22 +89,31 @@ type fileDigests map[string][sha256.Size]byte
 // loader merges one load's sources into k. Each source's tree is read
 // whole, its struct keys rewritten into the fields' own spelling (keyWalk),
 // and then merged, so precedence holds whatever letter case a source used.
+// With provenance, origins records what set each value as the trees merge.
 type loader struct {
 	k       *koanf.Koanf
 	root    reflect.Type
 	sources []string
+	origins *originNode // nil without provenance
 }
 
-// add merges data, the tree of the source called name. A source that sets
-// one field under two spellings fails.
-func (l *loader) add(name string, data map[string]any) error {
+// add merges data, the tree of the source called name, whose values label
+// attributes. A source that sets one field under two spellings fails.
+func (l *loader) add(name string, data map[string]any, label labeler) error {
 	var w keyWalk
 	tree := w.tree(l.root, data)
 	if len(w.twice) > 0 {
 		return fmt.Errorf("loading %s: %w: keys spelled two ways set one field: %s", name, ErrValidation, strings.Join(w.twice, ", "))
 	}
+	return l.merge(name, tree, label)
+}
+
+func (l *loader) merge(name string, tree map[string]any, label labeler) error {
 	if err := l.k.Load(confmap.Provider(tree, ""), nil); err != nil {
 		return fmt.Errorf("loading %s: %w: %w", name, ErrSource, err)
+	}
+	if l.origins != nil {
+		l.origins.merge(tree, label, nil)
 	}
 	l.sources = append(l.sources, name)
 	return nil
@@ -112,68 +121,100 @@ func (l *loader) add(name string, data map[string]any) error {
 
 // addProvider reads a provider — a map, or bytes through parser — and adds
 // it. A read failure is ErrSource with the provider's error; bytes the parser
-// rejects are ErrSource with a *ParseError.
-func (l *loader) addProvider(ctx context.Context, name string, src providerSource) error {
-	p := bind(ctx, src.provider)
+// rejects are ErrSource with a *ParseError. With provenance, an
+// OriginProvider's annotations name the source of each value; any other
+// provider is src's own.
+func (l *loader) addProvider(ctx context.Context, name string, p providerSource, src Source) error {
+	if op, ok := p.provider.(OriginProvider); ok && p.parser == nil && l.origins != nil {
+		data, annotations, err := op.ReadWithOrigins(ctx)
+		if err != nil {
+			return fmt.Errorf("loading %s: %w: %w", name, ErrSource, err)
+		}
+		var w keyWalk
+		tree := w.tree(l.root, data)
+		if len(w.twice) > 0 {
+			return fmt.Errorf("loading %s: %w: keys spelled two ways set one field: %s", name, ErrValidation, strings.Join(w.twice, ", "))
+		}
+		label, err := annotationLabeler(l.root, tree, annotations, src)
+		if err != nil {
+			return fmt.Errorf("loading %s: %w: %w", name, ErrSource, err)
+		}
+		return l.merge(name, tree, label)
+	}
+	pr := bind(ctx, p.provider)
 	var data map[string]any
-	if src.parser == nil {
-		m, err := p.Read()
+	if p.parser == nil {
+		m, err := pr.Read()
 		if err != nil {
 			return fmt.Errorf("loading %s: %w: %w", name, ErrSource, err)
 		}
 		data = m
 	} else {
-		b, err := p.ReadBytes()
+		b, err := pr.ReadBytes()
 		if err != nil {
 			return fmt.Errorf("loading %s: %w: %w", name, ErrSource, err)
 		}
-		if data, err = parse(name, src.parser, b); err != nil {
+		if data, err = parse(name, p.parser, b); err != nil {
 			return fmt.Errorf("loading %s: %w: %w", name, ErrSource, err)
 		}
 	}
-	return l.add(name, data)
+	return l.add(name, data, constant(src))
 }
 
 // addFlat adds a map keyed by dot-path.
-func (l *loader) addFlat(name string, flat map[string]any) error {
+func (l *loader) addFlat(name string, flat map[string]any, label labeler) error {
 	data, err := confmap.Provider(flat, ".").Read()
 	if err != nil {
 		return fmt.Errorf("loading %s: %w: %w", name, ErrSource, err)
 	}
-	return l.add(name, data)
+	return l.add(name, data, label)
 }
 
-// load is Load's pipeline. It also reports which config files it read and
-// what they held, which a Reloader needs to keep an optional file from
-// vanishing unnoticed and to tell whether a file changed since.
-func load[T any](ctx context.Context, o *options) (*T, fileDigests, error) {
+// loaded is one load's outcome: the config, the config files it read and
+// what they held — which a Reloader needs to keep an optional file from
+// vanishing unnoticed and to tell whether a file changed since — and, with
+// provenance, where each key's value came from.
+type loaded[T any] struct {
+	cfg     *T
+	files   fileDigests
+	origins map[string]Origin
+}
+
+// load is Load's pipeline.
+func load[T any](ctx context.Context, o *options) (loaded[T], error) {
+	none := loaded[T]{}
 	root := reflect.TypeFor[T]()
 	if err := o.checkHookTypes(reflect.TypeFor[*T]()); err != nil {
-		return nil, nil, err
+		return none, err
 	}
 	schema, err := rootSchema(root)
 	if err != nil {
-		return nil, nil, fmt.Errorf("loading config: %w", err)
+		return none, fmt.Errorf("loading config: %w", err)
 	}
 	// A fresh instance per load: nothing from an earlier load (a key since
 	// deleted from a file, say) can survive into this one.
 	l := &loader{k: koanf.New("."), root: root}
+	var rec *originRecorder
+	if o.provenance {
+		rec = &originRecorder{schema: schema, tree: newOriginRoot()}
+		l.origins = rec.tree
+	}
 	fields := Fields[T]()
 	files := fileDigests{}
 
 	if tagDefaults := defaultsFrom(fields); len(tagDefaults) > 0 {
-		if err := l.addFlat("struct-tag defaults", tagDefaults); err != nil {
-			return nil, nil, err
+		if err := l.addFlat("struct-tag defaults", tagDefaults, constant(Source{Kind: SourceTag})); err != nil {
+			return none, err
 		}
 	}
 	if len(o.defaults) > 0 {
-		if err := l.addFlat("WithDefaults", o.defaults); err != nil {
-			return nil, nil, err
+		if err := l.addFlat("WithDefaults", o.defaults, constant(Source{Kind: SourceDefaults})); err != nil {
+			return none, err
 		}
 	}
 	for i, src := range o.base {
-		if err := l.addProvider(ctx, fmt.Sprintf("base provider %d", i), src); err != nil {
-			return nil, nil, err
+		if err := l.addProvider(ctx, fmt.Sprintf("base provider %d", i), src, positionSource(SourceBase, i)); err != nil {
+			return none, err
 		}
 	}
 	for _, f := range o.files {
@@ -183,14 +224,14 @@ func load[T any](ctx context.Context, o *options) (*T, fileDigests, error) {
 		case !f.required && errors.Is(err, fs.ErrNotExist):
 			continue // absence is the one failure an optional file is allowed
 		default:
-			return nil, nil, fmt.Errorf("loading config file %s: %w: %w", f.path, ErrFileRead, err)
+			return none, fmt.Errorf("loading config file %s: %w: %w", f.path, ErrFileRead, err)
 		}
 		data, err := parse(f.path, o.fileParser, raw)
 		if err != nil {
-			return nil, nil, fmt.Errorf("loading config file %s: %w: %w", f.path, ErrFileParse, err)
+			return none, fmt.Errorf("loading config file %s: %w: %w", f.path, ErrFileParse, err)
 		}
-		if err := l.add("config file "+f.path, data); err != nil {
-			return nil, nil, err
+		if err := l.add("config file "+f.path, data, constant(Source{Kind: SourceFile, Name: f.path})); err != nil {
+			return none, err
 		}
 		files[f.path] = sha256.Sum256(raw)
 	}
@@ -198,26 +239,29 @@ func load[T any](ctx context.Context, o *options) (*T, fileDigests, error) {
 		// Named from T's fields so a key with an underscore in it
 		// (koanf:"max_conns") keeps it; see envSchema.
 		schema := newEnvSchema(fields, strings.TrimSuffix(o.envPrefix, "_"))
-		values, unmatched, err := schema.read(o.environ())
+		values, names, unmatched, err := schema.read(o.environ())
 		if err != nil {
-			return nil, nil, fmt.Errorf("loading env vars: %w: %w", ErrValidation, err)
+			return none, fmt.Errorf("loading env vars: %w: %w", ErrValidation, err)
 		}
 		if len(unmatched) > 0 {
 			o.log().DebugContext(ctx, "environment variables under the prefix name no config key", "names", unmatched)
 		}
-		if err := l.addFlat("env "+schema.prefix+"*", values); err != nil {
-			return nil, nil, err
+		if err := l.addFlat("env "+schema.prefix+"*", values, envLabeler(schema.prefix, names)); err != nil {
+			return none, err
 		}
 	}
 	for i, src := range o.overrides {
-		if err := l.addProvider(ctx, fmt.Sprintf("override provider %d", i), src); err != nil {
-			return nil, nil, err
+		if err := l.addProvider(ctx, fmt.Sprintf("override provider %d", i), src, positionSource(SourceOverride, i)); err != nil {
+			return none, err
 		}
 	}
 	o.log().DebugContext(ctx, "config sources loaded", "sources", l.sources)
 
 	merged := l.k.Raw()
 	fillElementDefaults(root, merged)
+	if l.origins != nil {
+		l.origins.fill(merged, nil)
+	}
 	cfg := new(T)
 	// The decoder's own record of the keys it left unused is what strict
 	// keys checks, so strictness follows decoding exactly: squash, remain,
@@ -231,13 +275,13 @@ func load[T any](ctx context.Context, o *options) (*T, fileDigests, error) {
 		Metadata:         &md,
 	})
 	if err != nil {
-		return nil, nil, fmt.Errorf("unmarshaling config: %w", err)
+		return none, fmt.Errorf("unmarshaling config: %w", err)
 	}
 	if err := dec.Decode(merged); err != nil {
 		// A value that cannot decode into its field's type (port: abc) is
 		// invalid configuration; the error names the key, and never the
 		// value of a field that is, or could hold, a sensitive one.
-		return nil, nil, fmt.Errorf("unmarshaling config: %w: %w", ErrValidation, decodeErrors(schema, merged, err))
+		return none, fmt.Errorf("unmarshaling config: %w: %w", ErrValidation, decodeErrors(schema, merged, err))
 	}
 	if !o.allowUnknown && len(md.Unused) > 0 {
 		unused := make([]string, len(md.Unused))
@@ -245,21 +289,49 @@ func load[T any](ctx context.Context, o *options) (*T, fileDigests, error) {
 			unused[i] = unusedKey(schema, merged, name)
 		}
 		slices.Sort(unused)
-		return nil, nil, fmt.Errorf("unmarshaling config: %w: keys no field of %s decodes: %s",
+		return none, fmt.Errorf("unmarshaling config: %w: keys no field of %s decodes: %s",
 			ErrValidation, root, strings.Join(unused, ", "))
 	}
 
+	// stage runs one stage that may change the decoded config, recording
+	// what it changed when provenance is on.
+	cv := reflect.ValueOf(cfg).Elem()
+	stage := func(src Source, run func() error) error {
+		if rec == nil {
+			return run()
+		}
+		if err := rec.snapshot(cv); err != nil {
+			return fmt.Errorf("recording provenance: %w", err)
+		}
+		if err := run(); err != nil {
+			return err
+		}
+		if err := rec.changed(cv, src); err != nil {
+			return fmt.Errorf("recording provenance: %w", err)
+		}
+		return nil
+	}
 	if o.secrets != nil {
-		if err := o.secrets(ctx, cfg); err != nil {
-			return nil, nil, fmt.Errorf("populating secrets: %w: %w", ErrSecretProvider, err)
+		if err := stage(Source{Kind: SourceSecrets}, func() error {
+			if err := o.secrets(ctx, cfg); err != nil {
+				return fmt.Errorf("populating secrets: %w: %w", ErrSecretProvider, err)
+			}
+			return nil
+		}); err != nil {
+			return none, err
 		}
 	}
 
 	// After secrets, so a hook can derive from resolved credentials; before
 	// validation, so the validator judges the normalized struct.
 	for i, hook := range o.postLoad {
-		if err := hook.run(ctx, cfg); err != nil {
-			return nil, nil, fmt.Errorf("%w: hook %d: %w", ErrPostLoad, i, err)
+		if err := stage(positionSource(SourcePostLoad, i), func() error {
+			if err := hook.run(ctx, cfg); err != nil {
+				return fmt.Errorf("%w: hook %d: %w", ErrPostLoad, i, err)
+			}
+			return nil
+		}); err != nil {
+			return none, err
 		}
 	}
 
@@ -279,14 +351,14 @@ func load[T any](ctx context.Context, o *options) (*T, fileDigests, error) {
 			if errors.As(err, &ve) {
 				summary = fieldErrorSummary(reflect.ValueOf(cfg), ve)
 			}
-			return nil, nil, &validationError{
+			return none, &validationError{
 				msg:   fmt.Sprintf("validating config: %s: %s", ErrValidation, summary),
 				cause: err,
 			}
 		}
 		if v, ok := any(cfg).(Validatable); ok {
 			if err := v.Validate(); err != nil {
-				return nil, nil, &validationError{
+				return none, &validationError{
 					msg:   fmt.Sprintf("validating config: %s: %s", ErrValidation, err),
 					cause: err,
 				}
@@ -294,7 +366,13 @@ func load[T any](ctx context.Context, o *options) (*T, fileDigests, error) {
 		}
 	}
 
-	return cfg, files, nil
+	out := loaded[T]{cfg: cfg, files: files}
+	if rec != nil {
+		if out.origins, err = rec.origins(cv); err != nil {
+			return none, fmt.Errorf("recording provenance: %w", err)
+		}
+	}
+	return out, nil
 }
 
 // bind gives a ContextProvider the load's context.

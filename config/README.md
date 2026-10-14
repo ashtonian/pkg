@@ -601,6 +601,29 @@ This is `ExampleDiff`. The rules:
 - Values decoded whole compare with `reflect.DeepEqual`: two `time.Time` values for one instant in different locations differ, and NaN never equals itself. A non-nil func, channel or unsafe pointer is an `ErrSchema` error.
 - A sensitive map, list or interface is compared whole, so the keys it holds — which may themselves be secrets — are never listed.
 
+## Where a value came from
+
+`LoadSnapshot` loads as `Load` does and records, for every key that holds a value, where it came from; a reloader built `WithProvenance()` records the same on every load and publishes it in `Snapshot().Provenance`, a refused reload keeping the previous one. `PrintExplain` prints it:
+
+```txt
+KEY          VALUE       SOURCE
+---------------------------------------------------
+port         9000        environment APP_PORT
+log_level    INFO        tag_default → post_load 0
+db.host      localhost   tag_default
+db.password  [REDACTED]  environment APP_DB_PASSWORD
+```
+
+This is `ExamplePrintExplain`. Each key's `Origin` is recorded as the sources merge, never by loading again or comparing values:
+
+- **Input** is the source the merge kept: `tag_default`, `defaults`, `base_provider N`, `file <path>`, `environment <VARIABLE>`, `override_provider N`, a `flag --name` an `OriginProvider` named, or `zero` when nothing set the key. It follows koanf's merge exactly — maps merge entry by entry, an empty map changes nothing, a list is replaced whole — so a later source that sets the value a lower one had still owns it, and an element default filled after the merge is the tag's.
+- **Transforms** are the stages that changed the decoded value afterwards, in order: `secrets`, then `post_load N`. A stage that wrote the value the key already held is not listed.
+- **Exact** is false where decoding reshaped the input so that no one source can be named; `mixed` names a value compared whole (a sensitive map) that several sources set part of.
+
+A source is only ever named — a path, a variable, a flag, a provider's position — never quoted. A provider that knows more than its position implements `OriginProvider`: one read returns its data and a source per key, a section's covering the keys beneath it. `kongprovider` names the flag behind each value, its canonical name however it was typed.
+
+Recording copies the decoded config and compares it around the secret populator and each post-load hook; on a small nested config with one hook, a load took about a third longer and allocated 1.7 times as much (`BenchmarkLoad`). `Load` records nothing, and a reloader records only `WithProvenance`.
+
 ## Kong integration
 
 `kongprovider` (its own module, so the core does not depend on Kong) loads the flags the user typed as an override provider and describes the config struct in Kong's help. Embed the config struct in the CLI struct: Kong makes a flag of every field, nested structs become flag groups with a prefix, and the config struct's keys, defaults, descriptions and validation stay the one schema.
@@ -990,6 +1013,7 @@ func newReloader(ctx context.Context, cli *CLI, kctx *kong.Context, logger *slog
 | `WithApplier[T](a)` | `Applier[T]` | none | Push the changes a published config makes under `a.Prefixes` into the running process; see Applying changes. With any applier registered, every changed key is accounted for: applied, owed, or waiting for a restart. |
 | `WithOnReloadSuccess[T](fn)` | `func(ctx context.Context, ev ReloadEvent[T])` | none | After each successful reload, after the swap, with the reload's context: the trigger, the replaced and published configs, and the `ReloadResult`. Panics recovered. A callback for another type fails construction. |
 | `WithOnReloadError(fn)` | `func(trigger string, err error)` | none | After each failed reload, from any trigger. Panics recovered. |
+| `WithProvenance()` | — | off | Record where every key's value came from on each load, as `LoadSnapshot` does; `Snapshot().Provenance` carries it. `NewReloaderFunc` refuses it. |
 | `WithReloadLogger(l)` | `*slog.Logger` | `NewReloader`: its `WithLogger`; otherwise `slog.Default()` at each line | Logger for reload events; nil selects `slog.Default()` at each line even when the load options set a logger. |
 
 `DefaultFileWatchDebounce` is 500ms.
@@ -1031,7 +1055,7 @@ func newReloader(ctx context.Context, cli *CLI, kctx *kong.Context, logger *slog
 - `(*Reloader[T]).SourceChanged()` — non-blocking, coalescing reload request.
 - `(*Reloader[T]).Stop(ctx) error` — stop and wait until no reload can run.
 - `(*Reloader[T]).Stats() ReloadStats` — attempts, successes, failures, last trigger, times and error.
-- `Snapshot[T]{Config, Generation, Stats, Appliers, PendingRestart}`, `ReloadResult[T]{Snapshot, Changes, Applied}`, `ReloadEvent[T]{Trigger, Old, New, Result}` — reload state and outcomes; JSON-ready, the config never encoded.
+- `Snapshot[T]{Config, Generation, Stats, Provenance, Appliers, PendingRestart}`, `ReloadResult[T]{Snapshot, Changes, Applied}`, `ReloadEvent[T]{Trigger, Old, New, Result}` — reload state and outcomes; JSON-ready, the config never encoded.
 - `Applier[T]{Name, Prefixes, ApplyInitial, Apply}`, `ApplyEvent[T]{Trigger, Generation, Retry, Previous, Desired, Changes}`, `ApplyResult{RestartKeys}` — what an applier declares, receives and answers; `TriggerInitial` names the initial apply.
 - `ApplierStatus`, `ApplyOutcome` — an applier's account and one reload's outcome; `ApplyError{Failures []ApplierFailure}` the appliers that did not apply a published config.
 - `ReloadStats`, `Problem{Kind, Message}` — the history and an error as data; `Diagnose(err) *Problem` categorizes any load or reload error, `KindValidation` … `KindUnknown` naming the category.
@@ -1047,6 +1071,9 @@ func newReloader(ctx context.Context, cli *CLI, kctx *kong.Context, logger *slog
 - `Diff[T](old, next) ([]Change, error)` — every key whose value differs; `Change{Key, Structural, Field, Old, New}`, each side a `Value{Present, Nil, Type, Text, Redacted}`.
 - `FieldFor[T](key) (Field, error)` — the declared field a key belongs to: `items[0].port` → the `items[*].port` pattern.
 - `PrintUsage[T](envPrefix, opts...) error` — every settable key with its variable, type, default and description.
+- `LoadSnapshot[T](ctx, opts...) (Snapshot[T], error)` — a load that records each key's `Origin{Input, Transforms, Exact}` in `Snapshot.Provenance`; `Source{Kind, Name}` names a source, `SourceKind` its kind (`SourceTag` … `SourceUnknown`).
+- `PrintExplain[T](snapshot, opts...) error` — where each value came from, table or JSON, values redacted.
+- `OriginProvider` — a map provider that names a source per key in the read that returns its data.
 
 ### kongprovider
 
@@ -1224,6 +1251,8 @@ The package's own file-watch tests use the operating system's notifications (ino
 | `secrets.go` | `SecretsFrom`: `secret` tags resolved through a fetch function |
 | `keyof.go` | `KeyOf`, `KeyOfValue`: a field's key from its address |
 | `snapshot.go` | `Snapshot`, `ReloadStats`, `ApplierStatus`, `ApplyOutcome`, `Problem`, `Diagnose`, `ReloadResult`, `ReloadEvent`: reload state and outcomes as data |
+| `provenance.go` | `LoadSnapshot`, `Origin`, `Source`, `OriginProvider`: origins recorded as the sources merge, stage changes found by comparison |
+| `explain.go` | `PrintExplain` |
 | `applier.go` | `Applier`, `WithApplier`, `ApplyError`: prefix ownership, acknowledged projections, structure transitions, retries |
 | `fields.go` | `Fields[T]` key-tree walker and sensitivity, `FieldName`, `DefaultsFromTags[T]` |
 | `schema.go` | The schema graph every walk shares, the walk cursor (key, pattern, owner, sensitivity), `FieldFor[T]` |

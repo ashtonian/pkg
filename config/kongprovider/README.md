@@ -115,7 +115,7 @@ Kong records every flag it parses from argv as an element of `kong.Context.Path`
 
 `WithOverridesFromStruct(kctx, &cli.AppConfig)` takes the config struct inside the parsed CLI struct — embedded, named, or the CLI struct itself — and maps each typed flag whose target is a field of it to that field's key, through `config.KeyOfValue`: by the field's address, so a flag's name, prefix or alias never has to agree with anything, and a sibling command's flag with the same name cannot reach a config key. Flags outside it, such as `--config`, are the CLI's own and are not forwarded. The typed values are copied when the option is built, so a reloader built from it keeps the command line it started with. A pointer that no flag of the CLI writes into fails the load with `config.ErrSource`.
 
-Mapped values unflatten into the key tree, so a flag for `db.host` overrides that nested key. The provider loads through `config.WithOverrideProvider`, above the environment.
+Mapped values unflatten into the key tree, so a flag for `db.host` overrides that nested key. The provider loads through `config.WithOverrideProvider`, above the environment. It is a `config.OriginProvider`: in a snapshot with provenance (`config.LoadSnapshot`, a reloader `WithProvenance`), each value it set is attributed to its flag by canonical name — `flag --db-host`, however it was typed — rather than to "override provider 0".
 
 `HelpFromConfig(&cli.AppConfig, envPrefix)` is a `kong.PostBuild` option. Every flag that sets a key of the config struct takes the field's `desc` when it has no help of its own, and its help gains the key and the environment variable that set the same value. Kong prints a field's `default` itself; `HelpFromConfig` adds it to the help only for a flag Kong shows no default for, and only when diagnostics may print it (`config.Field.PrintableDefault`) — a sensitive default, or one that could hold a sensitive value, is also kept out of Kong's placeholder, which shows `VALUE` instead.
 
@@ -142,14 +142,14 @@ When the CLI exposes only a few settings under names of its own, keep the struct
 
 - `WithOverridesFromStruct(kctx, cfg *T) config.Option` — every typed flag that writes a field of `cfg`, a config struct inside the parsed CLI struct, as an override at that field's key.
 - `WithOverrides(kctx, mapping) config.Option` — the same with an explicit Kong flag name → koanf dot-path mapping.
-- `New(kctx, mapping) koanf.Provider` — the provider itself, for `config.WithOverrideProvider(p, nil)`.
+- `New(kctx, mapping) koanf.Provider` — the provider itself, for `config.WithOverrideProvider(p, nil)`; it also implements `config.OriginProvider`, naming each value's flag.
 - `HelpFromConfig(cfg *T, envPrefix) kong.Option` — help for every flag that writes a field of `cfg`: its `desc`, key, environment variable and printable default.
 
 ## Key Files
 
 | File | Responsibility |
 |------|----------------|
-| `kongprovider.go` | `New`, `WithOverrides`, `WithOverridesFromStruct`, `HelpFromConfig`; flags mapped to keys by the field they write (`config.KeyOfValue`), typed values copied |
+| `kongprovider.go` | `New`, `WithOverrides`, `WithOverridesFromStruct`, `HelpFromConfig`; flags mapped to keys by the field they write (`config.KeyOfValue`), typed values copied, each value's flag named for provenance |
 | `examples/cli/main.go` | The Quick Start program: an embedded config struct, a flag group, subcommands, `print`, `usage` and `template` commands |
 | `go.mod`, `LICENSE` | The module (requires the parent at its release version) and its Apache-2.0 license |
 

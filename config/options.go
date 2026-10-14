@@ -45,6 +45,7 @@ type options struct {
 	skipValid    bool
 	validator    Validator
 	logger       *slog.Logger
+	provenance   bool // record origins: LoadSnapshot, or a reloader WithProvenance
 }
 
 type fileSource struct {

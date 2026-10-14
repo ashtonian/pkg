@@ -21,6 +21,10 @@ type Snapshot[T any] struct {
 	// Appliers is each [WithApplier] applier's account, in registration
 	// order; empty without appliers.
 	Appliers []ApplierStatus `json:"appliers,omitempty"`
+	// Provenance maps each key that holds a value to where it came from:
+	// the input source the merge kept and the stages that changed it. Only
+	// [LoadSnapshot] and a reloader [WithProvenance] record it.
+	Provenance map[string]Origin `json:"provenance,omitempty"`
 	// PendingRestart lists, in walk order, what the published config
 	// changes that the running process has not taken and will not before a
 	// restart: a key no applier owns that differs from the first load, a
@@ -78,6 +82,14 @@ type ApplyOutcome struct {
 
 func (s Snapshot[T]) clone() Snapshot[T] {
 	s.Stats = s.Stats.clone()
+	if s.Provenance != nil {
+		origins := make(map[string]Origin, len(s.Provenance))
+		for k, o := range s.Provenance {
+			o.Transforms = slices.Clone(o.Transforms)
+			origins[k] = o
+		}
+		s.Provenance = origins
+	}
 	s.PendingRestart = cloneChanges(s.PendingRestart)
 	if s.Appliers != nil {
 		appliers := make([]ApplierStatus, len(s.Appliers))

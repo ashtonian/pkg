@@ -214,6 +214,36 @@ func TestWithOverridesFromStruct_ForwardsTypedFieldFlags(t *testing.T) {
 	assert.Equal(t, "dev-pass", cfg.DB.Password)
 }
 
+// A snapshot with provenance names the flag behind each value it set —
+// its canonical name, however it was typed — and the environment variable
+// behind the rest.
+func TestWithOverridesFromStruct_ProvenanceNamesTheFlag(t *testing.T) {
+	cli, _, kctx := parseEmbedding(t, "-p", "9000", "--db-host", "db.internal", "--no-metrics")
+	snap, err := config.LoadSnapshot[embeddedCfg](context.Background(),
+		config.WithEnvPrefix("APP"),
+		config.WithEnviron(func() []string { return []string{"APP_API_KEY=k"} }),
+		WithOverridesFromStruct(kctx, &cli.embeddedCfg),
+	)
+	require.NoError(t, err)
+	flag := func(name string) config.Origin {
+		return config.Origin{Input: config.Source{Kind: config.SourceFlag, Name: name}, Exact: true}
+	}
+	assert.Equal(t, flag("--port"), snap.Provenance["port"])
+	assert.Equal(t, flag("--db-host"), snap.Provenance["db.host"])
+	assert.Equal(t, flag("--metrics"), snap.Provenance["metrics"])
+	assert.Equal(t, config.Origin{Input: config.Source{Kind: config.SourceEnv, Name: "APP_API_KEY"}, Exact: true}, snap.Provenance["api_key"])
+	assert.Equal(t, config.Origin{Input: config.Source{Kind: config.SourceTag}, Exact: true}, snap.Provenance["db.password"])
+
+	mapped := parseTestCLI(t, []string{"--host", "h"})
+	snap2, err := config.LoadSnapshot[struct {
+		Server struct {
+			Host string `koanf:"host"`
+		} `koanf:"server"`
+	}](context.Background(), WithOverrides(mapped, map[string]string{"host": "server.host"}), config.WithSkipValidation())
+	require.NoError(t, err)
+	assert.Equal(t, flag("--host"), snap2.Provenance["server.host"])
+}
+
 // A negated flag beats a true value from a lower source.
 func TestWithOverridesFromStruct_NegatedFlagBeatsFile(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.yaml")
