@@ -91,7 +91,7 @@ A config is a plain struct, and its tags are the whole schema: they say how each
 
 | Tag | Meaning | Read by | Example |
 |---|---|---|---|
-| `koanf` | The key. `-` skips the field, `,squash` merges a struct into its parent, `,remain` collects unknown keys in a map. Without a tag the key is the lowercased field name. | Every source and output; environment variable names derive from it. | `koanf:"max_conns"` |
+| `koanf` | The key. `-` skips the field, `,squash` merges a struct into its parent — an unexported embedded struct too, its exported fields promoted as `encoding/json` promotes them — `,remain` collects unknown keys in a map. Without a tag the key is the lowercased field name. | Every source and output; environment variable names derive from it. | `koanf:"max_conns"` |
 | `default` | The lowest-precedence value; comma-separated for a slice, `key=value` entries for a map with string keys and non-struct values, which a source's entries merge with. Malformed entries in such a map default fail with `ErrSchema`. | The load; usage tables, starter files, the JSON Schema and flag help show it unless the field is sensitive. | `default:"localhost"` |
 | `alias` | Former keys of the field, which sources may still set: a renamed setting keeps reading deployed files, and each load warns to rename them. | Every source; the JSON Schema lists them as deprecated. | `alias:"maxconns"` |
 | `sep` | The separator that splits a string set for a list — a default, a variable, a file's string — into elements, so an element may hold a comma: `sep:";"`. `none` keeps the string as one element. Without it, commas split, after any `WithDecodeHook` hook. | Every source and tag default, element defaults, starter files, the JSON Schema, examples. | `sep:";"` |
@@ -104,6 +104,7 @@ A config is a plain struct, and its tags are the whole schema: they say how each
 
 - Pointers are followed. A struct that decodes itself — an `encoding.TextUnmarshaler` such as `time.Time` or `netip.Addr`, or a mapstructure `Unmarshaler` — is one value, not a section.
 - Maps, slices and interfaces are values whose entries are keys of their own. An element struct's `default` tags apply to every map entry and list element a source creates, below what the source set; map defaults merge missing entries there too. An explicit `null` stays null; write `{}` for an entry that should take its defaults.
+- An embedded pointer to an unexported struct cannot be squashed: decoding cannot allocate it, so the type is refused with `ErrSchema`; embed the struct itself, or export its type.
 - Two fields of one struct may not share a key, and a key may not contain `.`, `[`, `]`, `*`, a quote, a backslash or a control character: such a type is refused with `ErrSchema` before anything loads.
 
 Every output names a value the same way:
