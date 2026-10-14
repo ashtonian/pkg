@@ -22,11 +22,12 @@ const (
 )
 
 type schemaNode struct {
-	typ    reflect.Type // dereferenced
-	kind   nodeKind
-	fields []*schemaField // nodeBranch, squashed fields in place, in declaration order
-	byKey  map[string]*schemaField
-	elem   *schemaNode // nodeMap, nodeList
+	typ     reflect.Type // dereferenced
+	kind    nodeKind
+	fields  []*schemaField // nodeBranch, squashed fields in place, in declaration order
+	byKey   map[string]*schemaField
+	byAlias map[string]*schemaField // nodeBranch: the fields alias tags name
+	elem    *schemaNode             // nodeMap, nodeList
 	// opaqueUnsafe reports a value decoded whole that could hold a func,
 	// channel or unsafe pointer: a comparison looks inside it.
 	opaqueUnsafe bool
@@ -96,6 +97,7 @@ func (b *schemaBuilder) node(t reflect.Type) *schemaNode {
 	case isBranch(t):
 		n.kind = nodeBranch
 		n.byKey = map[string]*schemaField{}
+		n.byAlias = map[string]*schemaField{}
 		b.fields(n, t, nil, false, map[reflect.Type]bool{})
 	case opaque(t):
 		n.kind = nodeLeaf
@@ -127,6 +129,10 @@ func (b *schemaBuilder) fields(n *schemaNode, t reflect.Type, index []int, tagge
 		at := append(slices.Clone(index), kf.field.Index...)
 		fieldTagged := tagged || taggedSensitive(kf.field.Tag)
 		if kf.key == "" {
+			if _, ok := kf.field.Tag.Lookup("alias"); ok {
+				b.fail(fmt.Errorf("%w: field %s of %s is squashed, so it has no key an alias could stand for", ErrSchema, kf.field.Name, t))
+				continue
+			}
 			if ft := derefType(kf.field.Type); isBranch(ft) {
 				b.fields(n, ft, at, fieldTagged, squashing)
 			}
@@ -139,10 +145,25 @@ func (b *schemaBuilder) fields(n *schemaNode, t reflect.Type, index []int, tagge
 		case n.byKey[kf.key] != nil:
 			b.fail(fmt.Errorf("%w: fields %s and %s of %s both have key %q", ErrSchema, n.byKey[kf.key].sf.Name, kf.field.Name, n.typ, kf.key))
 			continue
+		case n.byAlias[kf.key] != nil:
+			b.fail(fmt.Errorf("%w: field %s of %s has key %q, which field %s names as an alias", ErrSchema, kf.field.Name, n.typ, kf.key, n.byAlias[kf.key].sf.Name))
+			continue
 		}
 		f := &schemaField{key: kf.key, sf: kf.field, index: at, tagged: fieldTagged, named: nameSensitive(kf.field), node: b.node(kf.field.Type)}
 		n.fields = append(n.fields, f)
 		n.byKey[kf.key] = f
+		for _, a := range aliasNames(kf.field.Tag) {
+			switch {
+			case !validFieldKey(a) || a == kf.key:
+				b.fail(fmt.Errorf("%w: field %s of %s has alias %q; an alias is another key, of the key grammar", ErrSchema, kf.field.Name, n.typ, a))
+			case n.byKey[a] != nil:
+				b.fail(fmt.Errorf("%w: field %s of %s has alias %q, which is the key of field %s", ErrSchema, kf.field.Name, n.typ, a, n.byKey[a].sf.Name))
+			case n.byAlias[a] != nil:
+				b.fail(fmt.Errorf("%w: fields %s and %s of %s both have alias %q", ErrSchema, n.byAlias[a].sf.Name, kf.field.Name, n.typ, a))
+			default:
+				n.byAlias[a] = f
+			}
+		}
 	}
 }
 

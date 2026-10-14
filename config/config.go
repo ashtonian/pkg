@@ -94,6 +94,7 @@ type loader struct {
 	root    reflect.Type
 	schema  *schemaNode
 	sources []string
+	aliased []string    // keys sources set under an alias tag's name, by source
 	origins *originNode // nil without provenance
 }
 
@@ -115,6 +116,9 @@ func (l *loader) rewrite(name string, data map[string]any) (map[string]any, erro
 	tree := w.tree(l.root, textKeyed(data))
 	if len(w.twice) > 0 {
 		return nil, fmt.Errorf("loading %s: %w: keys spelled two ways set one field: %s", name, ErrValidation, strings.Join(w.twice, ", "))
+	}
+	for _, a := range w.aliased {
+		l.aliased = append(l.aliased, a+" in "+name)
 	}
 	return tree, nil
 }
@@ -271,6 +275,9 @@ func load[T any](ctx context.Context, o *options) (loaded[T], error) {
 		}
 	}
 	o.log().DebugContext(ctx, "config sources loaded", "sources", l.sources)
+	if len(l.aliased) > 0 {
+		o.log().WarnContext(ctx, "config keys set under a former name; rename them", "keys", l.aliased)
+	}
 
 	merged := l.k.Raw()
 	fillElementDefaults(root, merged)

@@ -93,6 +93,7 @@ A config is a plain struct, and its tags are the whole schema: they say how each
 |---|---|---|---|
 | `koanf` | The key. `-` skips the field, `,squash` merges a struct into its parent, `,remain` collects unknown keys in a map. Without a tag the key is the lowercased field name. | Every source and output; environment variable names derive from it. | `koanf:"max_conns"` |
 | `default` | The lowest-precedence value; comma-separated for a slice, `key=value` entries for a map, which a source's entries merge with. A malformed map default fails with `ErrSchema`. | The load; usage tables, starter files, the JSON Schema and flag help show it unless the field is sensitive. | `default:"localhost"` |
+| `alias` | Former keys of the field, which sources may still set: a renamed setting keeps reading deployed files, and each load warns to rename them. | Every source; the JSON Schema lists them as deprecated. | `alias:"maxconns"` |
 | `env` | More variables for the field, read as written, without the prefix — a platform's `PORT`, a `DATABASE_URL`, a variable a renamed key used to have. The prefixed variable wins, then the first set in the list. | Environment loading; usage tables, starter files and `Field.EnvVars` list them. | `env:"PORT,HTTP_PORT"` |
 | `validate` | [go-playground/validator](https://pkg.go.dev/github.com/go-playground/validator/v10) rules. | Validation on every load and reload; `required` marks usage tables and starter files; the JSON Schema states the bounds, lengths and `oneof` enums. | `validate:"required,min=1"` |
 | `desc` | What the setting is for. | Usage tables, `PrintRedacted(..., WithIncludeDescriptions())`, starter-file comments, the JSON Schema `description`, kongprovider flag help. | `desc:"Database host"` |
@@ -196,6 +197,16 @@ keys no field of main.AppConfig decodes: server.prot (did you mean server.port?)
 ```
 
 Or accept some and fail on the rest, by returning a copy of `unknown` without the keys you expect — a section another program reads, a setting you removed but deployed files still carry. Keys and variables are named, never their values. `WithAllowUnknownKeys()` accepts everything silently, for a file shared with another program. A field typed `any` or `map[string]any` accepts everything beneath its key while the rest of the config stays strict.
+
+### Renaming a key
+
+Because an unknown key fails the load, renaming a setting would break every file still using the old name. Keep the old name as an `alias`:
+
+```go
+MaxConns int `koanf:"max_conns" alias:"maxconns,max_connections"`
+```
+
+Each source's keys are rewritten to the field's key before the sources merge, so precedence holds across old and new names, and a source that sets both fails as a field spelled two ways. Each load logs at warn level which keys used a former name, in which source, so operators know to rename them; the JSON Schema accepts the old names, marked `deprecated`. An alias renames keys, not variables: give a renamed key's old variable an `env` tag.
 
 ## Secrets
 
