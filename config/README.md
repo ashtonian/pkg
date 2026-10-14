@@ -151,7 +151,7 @@ A variable that two keys could read — `db.port` and `db_port`, or a field and 
 
 ## Decoding and unknown keys
 
-Values decode with mapstructure's weak typing (`"8080"` fills an `int`) plus string → `time.Duration`, comma-separated string → slice, and `encoding.TextUnmarshaler`. `WithDecodeHook` adds hooks of your own, which run first.
+Values decode with mapstructure's weak typing (`"8080"` fills an `int`) plus string → `time.Duration`, comma-separated string → a slice of any element type (`"80,443"` fills a `[]int`, `"1s,2m"` a `[]time.Duration`; a `[]byte` or a slice type that decodes itself takes the string whole), and `encoding.TextUnmarshaler`. `WithDecodeHook` adds hooks of your own, which run first.
 
 A key that no field decodes fails the load with `ErrValidation`, naming the key and the field of the same struct it most likely misspells — a typo cannot leave a service running on the default it was meant to override:
 
