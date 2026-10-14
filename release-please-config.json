@@ -5,7 +5,7 @@
   "include-v-in-tag": true,
   "tag-separator": "/",
   "bump-minor-pre-major": true,
-  "separate-pull-requests": true,
+  "separate-pull-requests": false,
   "packages": {
     "config": {
       "component": "config",
