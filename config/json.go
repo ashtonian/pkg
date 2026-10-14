@@ -136,7 +136,7 @@ func (r jsonReader) array(depth int) ([]any, error) {
 
 // jsonNumber is n as the YAML parser would type it: int when it is an
 // integer that fits, int64 or uint64 when it is one that does not, float64
-// otherwise.
+// for decimal or exponent notation. Larger integer literals are refused.
 func jsonNumber(n json.Number) (any, error) {
 	s := string(n)
 	if i, err := strconv.ParseInt(s, 10, 64); err == nil {
@@ -148,9 +148,12 @@ func jsonNumber(n json.Number) (any, error) {
 	if u, err := strconv.ParseUint(s, 10, 64); err == nil {
 		return u, nil
 	}
+	if !strings.ContainsAny(s, ".eE") {
+		return nil, errors.New("integer out of range")
+	}
 	f, err := strconv.ParseFloat(s, 64)
 	if err != nil {
-		return nil, fmt.Errorf("number out of range: %w", err)
+		return nil, errors.New("number out of range")
 	}
 	return f, nil
 }

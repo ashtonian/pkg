@@ -15,14 +15,15 @@ import (
 // spelled as the field is. Sources merge key by key, and mapstructure
 // prefers a key spelled exactly like the field over one that matches only in
 // letter case; without the rewrite, a higher-precedence "Port" would lose to
-// a default "port". It changes spelling only: values and their types are
-// kept, decode hooks are not run, and a value a custom decoder takes whole —
+// a default "port". Types are kept unless splitting a sep field requires a
+// wider container. Decode hooks are not run, and a custom decoder's value —
 // an UnmarshalMapstructure or TextUnmarshaler type, or an interface — is left
 // as written, as is every map key. A key an alias tag names is rewritten to
 // its field's key, and a string set for a field with a sep tag is split into
 // the list its separator makes. It records a source that spells one field
 // two ways, and every alias it rewrote.
 type keyWalk struct {
+	schema  *schemaNode
 	twice   []string
 	aliased []string // "old.key (now new.key)"
 }
@@ -83,11 +84,7 @@ func isList(v reflect.Value) bool {
 // keyed by anything but strings is keyed by their text, as koanf keys it.
 func (w *keyWalk) structMap(t reflect.Type, v reflect.Value, path keyPath) any {
 	fields, aliases, seps := structKeys(t), structAliases(t), structSeps(t)
-	outType := stringKeyed(v.Type())
-	if len(seps) > 0 {
-		outType = reflect.TypeFor[map[string]any]() // a split string is a list
-	}
-	out := reflect.MakeMapWithSize(outType, v.Len())
+	out := reflect.MakeMapWithSize(stringKeyed(v.Type()), v.Len())
 	written := make(map[string]reflect.Value, v.Len())
 	for _, k := range v.MapKeys() {
 		written[fmt.Sprint(k.Interface())] = v.MapIndex(k)
@@ -100,18 +97,28 @@ func (w *keyWalk) structMap(t reflect.Type, v reflect.Value, path keyPath) any {
 			continue
 		}
 		if prev, dup := claimed[key]; dup {
-			w.twice = append(w.twice, fmt.Sprintf("%s (as %q and %q)", path.field(key), prev, k))
+			at := path.field(key)
+			if safe := diagnosticPath(w.schema, at); len(safe) < len(at) {
+				w.twice = append(w.twice, safe.String()+" (sensitive contents)")
+			} else {
+				w.twice = append(w.twice, fmt.Sprintf("%s (as %q and %q)", at, prev, k))
+			}
 			continue
 		}
 		claimed[key] = k
 		if alias {
-			w.aliased = append(w.aliased, fmt.Sprintf("%s (now %s)", path.field(k), path.field(key)))
+			at := path.field(key)
+			if safe := diagnosticPath(w.schema, at); len(safe) < len(at) {
+				w.aliased = append(w.aliased, safe.String()+" (sensitive contents)")
+			} else {
+				w.aliased = append(w.aliased, fmt.Sprintf("%s (now %s)", path.field(k), at))
+			}
 		}
 		val := w.elem(out.Type().Elem(), ft, written[k], path.field(key))
 		if sep, ok := seps[key]; ok && val.Kind() == reflect.String {
 			val = reflect.ValueOf(splitList(val.String(), sep))
 		}
-		out.SetMapIndex(reflect.ValueOf(key).Convert(out.Type().Key()), val)
+		out = setMapValue(out, reflect.ValueOf(key).Convert(out.Type().Key()), val)
 	}
 	return out.Interface()
 }
@@ -121,7 +128,7 @@ func (w *keyWalk) structMap(t reflect.Type, v reflect.Value, path keyPath) any {
 func (w *keyWalk) mapValues(elem reflect.Type, v reflect.Value, path keyPath) any {
 	out := reflect.MakeMapWithSize(v.Type(), v.Len())
 	for _, k := range v.MapKeys() {
-		out.SetMapIndex(k, w.elem(v.Type().Elem(), elem, v.MapIndex(k), path.key(fmt.Sprint(k.Interface()))))
+		out = setMapValue(out, k, w.elem(v.Type().Elem(), elem, v.MapIndex(k), path.key(fmt.Sprint(k.Interface()))))
 	}
 	return out.Interface()
 }
@@ -133,13 +140,21 @@ func (w *keyWalk) elements(elem reflect.Type, v reflect.Value, path keyPath) any
 		out = reflect.MakeSlice(v.Type(), v.Len(), v.Len())
 	}
 	for i := range v.Len() {
-		out.Index(i).Set(w.elem(v.Type().Elem(), elem, v.Index(i), path.index(i)))
+		val := w.elem(v.Type().Elem(), elem, v.Index(i), path.index(i))
+		if !val.Type().AssignableTo(out.Type().Elem()) {
+			wide := reflect.MakeSlice(reflect.TypeFor[[]any](), v.Len(), v.Len())
+			for j := range i {
+				wide.Index(j).Set(out.Index(j))
+			}
+			out = wide
+		}
+		out.Index(i).Set(val)
 	}
 	return out.Interface()
 }
 
 // elem rewrites one held value, decoded into t, and returns it as a value
-// of the holding container's element type held.
+// ready for its container, widened if the rewrite changed its type.
 func (w *keyWalk) elem(held, t reflect.Type, v reflect.Value, path keyPath) reflect.Value {
 	if v.Kind() == reflect.Interface {
 		v = v.Elem()
@@ -148,10 +163,23 @@ func (w *keyWalk) elem(held, t reflect.Type, v reflect.Value, path keyPath) refl
 		return reflect.Zero(held)
 	}
 	r := reflect.ValueOf(w.value(t, v.Interface(), path))
-	if !r.IsValid() || !r.Type().AssignableTo(held) {
-		return v // the rewrite changed its type; keep it as written
+	if !r.IsValid() {
+		return reflect.Zero(held)
 	}
 	return r
+}
+
+// A sep rewrite can turn a typed map's string into a list.
+func setMapValue(out, key, val reflect.Value) reflect.Value {
+	if !val.Type().AssignableTo(out.Type().Elem()) {
+		wide := reflect.MakeMapWithSize(reflect.MapOf(out.Type().Key(), reflect.TypeFor[any]()), out.Len()+1)
+		for it := out.MapRange(); it.Next(); {
+			wide.SetMapIndex(it.Key(), it.Value())
+		}
+		out = wide
+	}
+	out.SetMapIndex(key, val)
+	return out
 }
 
 // stringKeyed is map type m keyed by strings: m itself when its keys are,

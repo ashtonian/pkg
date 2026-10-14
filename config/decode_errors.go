@@ -45,6 +45,9 @@ func withhold(root *schemaNode, tree any, e error) (error, bool) {
 	switch u := e.(type) {
 	case *mapstructure.DecodeError:
 		p, _, exact := treeKey(root, tree, u.Name())
+		if safe := diagnosticPath(root, p); len(safe) < len(p) {
+			return fmt.Errorf("'%s' cannot be decoded (sensitive contents are not shown)", safe.orRoot()), true
+		}
 		c, n, err := root.walkTo(cursor{}, p)
 		if !exact || err != nil {
 			return fmt.Errorf("'%s' (exact location unavailable) cannot be decoded (the value may be sensitive and is not shown)", p.orRoot()), true
@@ -52,6 +55,10 @@ func withhold(root *schemaNode, tree any, e error) (error, bool) {
 		key := p.orRoot()
 		var unconvertible *mapstructure.UnconvertibleTypeError
 		if errors.As(u.Unwrap(), &unconvertible) && u.Unwrap() == error(unconvertible) {
+			if typeTags.MatchString(unconvertible.Error()) {
+				return fmt.Errorf("'%s' expected type '%s', got unconvertible type '%s'", key,
+					typeText(unconvertible.Expected.Type()), typeText(reflect.TypeOf(unconvertible.Value))), true
+			}
 			return &decodeFailure{key: key, err: u}, true // names the expected and the given type, never the value
 		}
 		// A struct field's name covers a value given to the struct itself: a
@@ -60,9 +67,9 @@ func withhold(root *schemaNode, tree any, e error) (error, bool) {
 			c.owner.Tag.Get("sensitive") != "false"
 		switch {
 		case c.sensitive() || named:
-			return fmt.Errorf("'%s' cannot be decoded into %s (the value is sensitive and not shown)", key, n.typ), true
+			return fmt.Errorf("'%s' cannot be decoded into %s (the value is sensitive and not shown)", key, typeText(n.typ)), true
 		case mayHoldSensitive(n.typ, map[reflect.Type]bool{}):
-			return fmt.Errorf("'%s' cannot be decoded into %s (it may hold a sensitive value, so the value is not shown)", key, n.typ), true
+			return fmt.Errorf("'%s' cannot be decoded into %s (it may hold a sensitive value, so the value is not shown)", key, typeText(n.typ)), true
 		}
 		return &decodeFailure{key: key, err: u}, true
 	case interface{ Unwrap() []error }:

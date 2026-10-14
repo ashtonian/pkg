@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"maps"
+	"reflect"
 	"slices"
 	"strings"
 )
@@ -43,17 +44,32 @@ func PrintExplain[T any](s Snapshot[T], opts ...PrintOption) error {
 	}
 
 	var rows []explainRow
-	seen := make(map[string]bool, len(s.Provenance))
-	for _, e := range collectEntries(s.Config) {
-		o, ok := s.Provenance[e.name]
-		if !ok {
-			continue // structure: its values have rows of their own
-		}
-		seen[e.name] = true
-		rows = append(rows, explainRow{Key: e.name, Value: e.value, Input: o.Input, Transforms: o.Transforms, Exact: o.Exact})
+	root, err := rootSchema(reflect.TypeFor[T]())
+	if err != nil {
+		return err
 	}
-	// A value no printer row names — beneath a container printed whole —
-	// keeps its provenance row, with no value shown.
+	values := map[string]string{}
+	for _, e := range collectEntries(s.Config) {
+		values[e.name] = e.value
+	}
+	seen := make(map[string]bool, len(s.Provenance))
+	if err := compareEvery(root, rootValue(s.Config), func(d *delta) {
+		key := d.path.String()
+		o, ok := s.Provenance[key]
+		if !ok {
+			return
+		}
+		value, ok := values[key]
+		if !ok {
+			value = d.value(0).Text // scalar lists have one printer row, but one origin per element
+		}
+		seen[key] = true
+		rows = append(rows, explainRow{Key: key, Value: value, Input: o.Input, Transforms: o.Transforms, Exact: o.Exact})
+	}); err != nil {
+		return err
+	}
+	// A value no walk reaches — beneath a container compared whole — keeps
+	// its provenance row, with no value shown.
 	for _, key := range slices.Sorted(maps.Keys(s.Provenance)) {
 		if !seen[key] {
 			o := s.Provenance[key]

@@ -288,7 +288,7 @@ func (w *entryWalk) enter(v reflect.Value) bool {
 }
 
 func (w *entryWalk) cycle(path keyPath, v reflect.Value, s site) {
-	w.entries = append(w.entries, printEntry{name: path.String(), value: cycleValue, typeName: v.Type().String(), desc: s.desc})
+	w.entries = append(w.entries, printEntry{name: path.String(), value: cycleValue, typeName: typeText(v.Type()), desc: s.desc})
 }
 
 // holdsContainers reports whether slice or array elements of type t may hold
@@ -329,7 +329,7 @@ func (w *entryWalk) leaf(path keyPath, declared, value reflect.Value, s site) {
 	if s.sensitive || s.named || value.IsValid() && uncheckedHolder(value) {
 		text = redactedValue
 	}
-	w.entries = append(w.entries, printEntry{name: path.String(), value: text, typeName: typ.String(), desc: s.desc})
+	w.entries = append(w.entries, printEntry{name: path.String(), value: text, typeName: typeText(typ), desc: s.desc})
 }
 
 // uncheckedHolder reports a value printed whole that could hold a sensitive
@@ -349,7 +349,7 @@ func uncheckedHolder(v reflect.Value) bool {
 // taggedSensitive reports a field its tag makes sensitive: sensitive:"true",
 // or a secret:"<ref>" tag naming where its value comes from. Any sensitive
 // value but "false" counts, so a misspelled one still redacts; loading
-// refuses it (see checkSensitiveTag).
+// refuses it (see checkTags).
 func taggedSensitive(tag reflect.StructTag) bool {
 	secret := tag.Get("secret")
 	v, ok := tag.Lookup("sensitive")

@@ -77,12 +77,12 @@ type usageRow struct {
 // PrintUsage writes every key of T an operator can set: its path, the
 // environment variable that sets it under envPrefix (none when envPrefix is
 // empty), its type, its `default` tag, whether `validate:"required"` makes it
-// mandatory, and its `desc` tag. A map's entries are one row per element
-// field, keyed by the pattern features[*].limit with a <KEY> placeholder in
-// the variable, and a slice of structs' elements one row per element field,
-// items[*].port, with no variable. A
-// default diagnostics must withhold (see [Field.PrintableDefault]) prints as
-// [REDACTED].
+// mandatory, and its `desc` tag. A map or list one variable can set whole,
+// or one with a default, has a row of its own. A map's entries are one row
+// per element field, keyed by the pattern features[*].limit with a <KEY>
+// placeholder in the variable, and a slice of structs' elements one row per
+// element field, items[*].port, with no variable. A default diagnostics must withhold (see [Field.PrintableDefault])
+// prints as [REDACTED].
 //
 // [WithFormat] selects a table (the default), JSON (an array of objects) or
 // FormatEnv: a template of `export NAME='default'` lines, with a key that has
@@ -128,7 +128,7 @@ func usageRows(root reflect.Type, prefix string) []usageRow {
 			rows = append(rows, usageRowOf(f, f.Path, f.EnvVars(prefix)...))
 			continue
 		}
-		if _, ok := f.Tag.Lookup("default"); ok { // the collection's own default, as a whole
+		if _, ok := f.Tag.Lookup("default"); ok || variableSets(t) { // the collection as a whole
 			rows = append(rows, usageRowOf(f, f.Path, f.EnvVars(prefix)...))
 		}
 		elem := derefType(t.Elem())
@@ -170,7 +170,7 @@ func usagePattern(r usageRow) usageRow {
 func usageRowOf(f Field, key string, env ...string) usageRow {
 	row := usageRow{
 		Key:         key,
-		Type:        f.Type.String(),
+		Type:        typeText(f.Type),
 		Required:    slices.Contains(strings.Split(f.Tag.Get("validate"), ","), "required"),
 		Sensitive:   f.Sensitive,
 		Description: f.Tag.Get("desc"),
@@ -254,7 +254,7 @@ func printUsageEnv(w io.Writer, rows []usageRow) error {
 			if r.Example != "" {
 				example = shellQuote(r.Example)
 			}
-			ew.printf("# export %s=%s\n", r.Env, example)
+			ew.printf("# %s\n", strings.ReplaceAll("export "+r.Env+"="+example, "\n", "\n# "))
 			continue
 		}
 		ew.printf("export %s=%s\n", r.Env, shellQuote(r.Default))

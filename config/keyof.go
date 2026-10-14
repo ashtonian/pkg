@@ -45,11 +45,11 @@ func KeyOfValue[T any](cfg *T, field reflect.Value) (string, error) {
 	f.branch(nil, root, reflect.ValueOf(cfg).Elem())
 	switch f.found {
 	case 0:
-		return "", fmt.Errorf("%w: %s at %#x is not a key of %s", ErrKey, want.typ, want.ptr, reflect.TypeFor[T]())
+		return "", fmt.Errorf("%w: %s at %#x is not a key of %s", ErrKey, typeText(want.typ), want.ptr, typeText(reflect.TypeFor[T]()))
 	case 1:
 		return f.key.String(), nil
 	}
-	return "", fmt.Errorf("%w: %d keys of %s share the address of this %s", ErrKey, f.found, reflect.TypeFor[T](), want.typ)
+	return "", fmt.Errorf("%w: %d keys of %s share the address of this %s", ErrKey, f.found, typeText(reflect.TypeFor[T]()), typeText(want.typ))
 }
 
 // addressFinder walks the fields of a config value for the one at want.

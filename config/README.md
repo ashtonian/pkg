@@ -92,7 +92,7 @@ A config is a plain struct, and its tags are the whole schema: they say how each
 | Tag | Meaning | Read by | Example |
 |---|---|---|---|
 | `koanf` | The key. `-` skips the field, `,squash` merges a struct into its parent, `,remain` collects unknown keys in a map. Without a tag the key is the lowercased field name. | Every source and output; environment variable names derive from it. | `koanf:"max_conns"` |
-| `default` | The lowest-precedence value; comma-separated for a slice, `key=value` entries for a map, which a source's entries merge with. A malformed map default fails with `ErrSchema`. | The load; usage tables, starter files, the JSON Schema and flag help show it unless the field is sensitive. | `default:"localhost"` |
+| `default` | The lowest-precedence value; comma-separated for a slice, `key=value` entries for a map with string keys and non-struct values, which a source's entries merge with. Malformed entries in such a map default fail with `ErrSchema`. | The load; usage tables, starter files, the JSON Schema and flag help show it unless the field is sensitive. | `default:"localhost"` |
 | `alias` | Former keys of the field, which sources may still set: a renamed setting keeps reading deployed files, and each load warns to rename them. | Every source; the JSON Schema lists them as deprecated. | `alias:"maxconns"` |
 | `sep` | The separator that splits a string set for a list — a default, a variable, a file's string — into elements, so an element may hold a comma: `sep:";"`. `none` keeps the string as one element. Without it, commas split, after any `WithDecodeHook` hook. | Every source and tag default, element defaults, starter files, the JSON Schema, examples. | `sep:";"` |
 | `env` | More variables for the field, read as written, without the prefix — a platform's `PORT`, a `DATABASE_URL`, a variable a renamed key used to have. The prefixed variable wins, then the first set in the list. | Environment loading; usage tables, starter files and `Field.EnvVars` list them. | `env:"PORT,HTTP_PORT"` |
@@ -103,7 +103,7 @@ A config is a plain struct, and its tags are the whole schema: they say how each
 | `secret` | Where the value lives in your secret store (see [Secrets](#secrets)); implies `sensitive`. | `SecretsFrom` and `WithSecretPopulator`, after decoding and before validation. | `secret:"prod/db#password"` |
 
 - Pointers are followed. A struct that decodes itself — an `encoding.TextUnmarshaler` such as `time.Time` or `netip.Addr`, or a mapstructure `Unmarshaler` — is one value, not a section.
-- Maps, slices and interfaces are values whose entries are keys of their own. An element struct's `default` tags apply to every map entry and list element a source creates, below what the source set. An explicit `null` stays null; write `{}` for an entry that should take its defaults.
+- Maps, slices and interfaces are values whose entries are keys of their own. An element struct's `default` tags apply to every map entry and list element a source creates, below what the source set; map defaults merge missing entries there too. An explicit `null` stays null; write `{}` for an entry that should take its defaults.
 - Two fields of one struct may not share a key, and a key may not contain `.`, `[`, `]`, `*`, a quote, a backslash or a control character: such a type is refused with `ErrSchema` before anything loads.
 
 Every output names a value the same way:
@@ -130,7 +130,9 @@ Highest wins:
 | 5 | `WithDefaults(map)` | Programmatic defaults keyed by dotted path. |
 | 6 | `default` tags | Always. |
 
-Each file takes the parser registered for the longest suffix of its name, ignoring case: `.yaml` and `.yml` are YAML, `.json` is JSON, and any other file is YAML. `WithFileParser(".toml", toml.Parser())` adds a format, so `config.yaml`, `overrides.json` and `local.toml` load together; `WithFileParser("", p)` changes the parser for every file no other suffix matches. JSON is strict: one object per file, integers kept exact, a key set twice in one object an error.
+Each file takes the parser registered for the longest suffix of its name, ignoring case: `.yaml` and `.yml` are YAML, `.json` is JSON, and any other file is YAML. `WithFileParser(".toml", toml.Parser())` adds a format, so `config.yaml`, `overrides.json` and `local.toml` load together; `WithFileParser("", p)` changes the parser for every file no other suffix matches. JSON is strict: one object per file, integers within int64/uint64 kept exact (larger integer literals fail), a key set twice in one object an error.
+
+To migrate the old single-parser API, register the parser for `""` and remove the built-in suffix registrations with `WithFileParser(".yaml", nil)`, `WithFileParser(".yml", nil)` and `WithFileParser(".json", nil)`. Setting only `""` leaves those registrations in force.
 
 An optional file may be absent, but one that exists and cannot be read or parsed fails the load. Under a reloader, a file that loaded once stays required, so deleting it fails the reload rather than silently reverting its keys.
 
@@ -169,6 +171,8 @@ With `WithEnvPrefix("APP")`, a key's variable is the prefix and its path, upper-
 
 An `env` tag adds variables a key reads as written, without the prefix, for names a platform or another tool sets: `Port int koanf:"port" env:"PORT"` reads `APP_PORT`, then `PORT`. The prefixed variable wins, then the first set in the tag's list. Tagged variables are read only when `WithEnvPrefix` turns the environment on; a tag on a section, on a field of a list element or map entry, or naming a variable another field names fails with `ErrSchema`.
 
+Setting a whole map and an entry beneath it in the same environment layer fails with `ErrValidation`, naming both variables; choose one form.
+
 A variable that two keys could read — `db.port` and `db_port`, a field and a map entry, or a tagged name that is another key's own variable — fails the load naming every reading, instead of guessing. A variable under the prefix that names no key is ignored and logged at debug level — other programs may share the prefix — unless a `WithUnknownKeys` handler is set, which sees it with the variable it most likely misspells. `WithEnviron(fn)` replaces `os.Environ`, which keeps tests independent of the machine. `PrintUsage` lists every variable a config reads.
 
 ## Decoding and unknown keys
@@ -185,7 +189,7 @@ unmarshaling config: configuration validation failed: keys no field of main.AppC
 
 The check follows decoding exactly: it looks inside list elements and map entries of structs, through squashed structs, and lets through a map's own keys, anything beneath an interface, and keys a `,remain` field collects. A section no field holds is one key (`legacy`, not `legacy.old`).
 
-`WithUnknownKeys(handle)` decides instead. The handler gets the unknown keys, and the variables under the `WithEnvPrefix` prefix that name no key, at every load and reload; a nil return accepts the load, an error fails it with `ErrValidation`. Accept and warn:
+`WithUnknownKeys(handle)` decides instead. The handler gets the unknown keys, and the variables under the `WithEnvPrefix` prefix that name no key, whenever either exists, at every load and reload; a nil return accepts the load, an error fails it with `ErrValidation`. Accept and warn:
 
 ```go
 config.WithUnknownKeys(func(ctx context.Context, unknown *config.UnknownKeysError) error {
@@ -198,7 +202,7 @@ config.WithUnknownKeys(func(ctx context.Context, unknown *config.UnknownKeysErro
 keys no field of main.AppConfig decodes: server.prot (did you mean server.port?); environment variables no field of main.AppConfig reads: APP_SERVER_PROT (did you mean APP_SERVER_PORT?)
 ```
 
-Or accept some and fail on the rest, by returning a copy of `unknown` without the keys you expect — a section another program reads, a setting you removed but deployed files still carry. Keys and variables are named, never their values. `WithAllowUnknownKeys()` accepts everything silently, for a file shared with another program. A field typed `any` or `map[string]any` accepts everything beneath its key while the rest of the config stays strict.
+Or accept some and fail on the rest, by returning a copy of `unknown` without the keys you expect — a section another program reads, a setting you removed but deployed files still carry. Keys and variables are named, never their values. Diagnostics for keys inside a sensitive map or list name only the enclosing field; this also applies to alias warnings. `WithAllowUnknownKeys()` accepts everything silently, for a file shared with another program. A field typed `any` or `map[string]any` accepts everything beneath its key while the rest of the config stays strict.
 
 ### Renaming a key
 
@@ -208,7 +212,7 @@ Because an unknown key fails the load, renaming a setting would break every file
 MaxConns int `koanf:"max_conns" alias:"maxconns,max_connections"`
 ```
 
-Each source's keys are rewritten to the field's key before the sources merge, so precedence holds across old and new names, and a source that sets both fails as a field spelled two ways. Each load logs at warn level which keys used a former name, in which source, so operators know to rename them; the JSON Schema accepts the old names, marked `deprecated`. An alias renames keys, not variables: give a renamed key's old variable an `env` tag.
+Each source's keys are rewritten to the field's key before the sources merge, so precedence holds across old and new names, and a source that sets both fails as a field spelled two ways. Each load logs at warn level which keys used a former name, in which source, so operators know to rename them; the JSON Schema accepts the old names, marked `deprecated`. Aliases must differ from every key and alias in the same struct, ignoring case, including through squashed fields. Provider origin annotations accept the same aliases and spelling as their data. An alias renames keys, not variables: give a renamed key's old variable an `env` tag.
 
 ## Secrets
 
@@ -411,7 +415,7 @@ mux.HandleFunc("GET /admin/config/status", func(w http.ResponseWriter, r *http.R
 
 `PrintRedacted(cfg)` writes a config as a table, JSON or YAML; `RedactedMap(cfg)` returns key → value text for a status page or a log line. A value is redacted when it is tagged `sensitive` or `secret`, sits inside something that is, or sits under a name containing `password`, `secret`, `token`, `key`, `credential`, `auth`, `private`, `apikey`, `api_key` or `dsn`. Mark anything the names cannot catch — a credential in a field called `URL` — `sensitive:"true"`, and take a field the names catch wrongly — `max_tokens`, `auth_enabled`, `key_prefix` — out with `sensitive:"false"`, which overrides its name only: a key named like a credential beneath it, an enclosing `sensitive:"true"`, and a `secret` tag still redact, and a `sensitive` value other than `true` or `false` fails the load with `ErrSchema`. No option prints a secret.
 
-`PrintUsage[T]("APP")` lists every setting an operator can set: key, variable, type, default, whether it is required, description. Defaults that could hold a secret are withheld.
+`PrintUsage[T]("APP")` lists every setting an operator can set — a collection one variable can set as a whole, and its entry patterns — with key, variable, type, default, whether it is required, description. JSON rows keep the primary variable in `env`, extra names in `also_env`, and a printable sample in `example`. Export templates comment every line of a sample. Defaults that could hold a secret are withheld.
 
 ```txt
 KEY       ENV           TYPE           DEFAULT     DESCRIPTION
@@ -449,7 +453,7 @@ db.host      localhost   tag_default
 db.password  [REDACTED]  environment APP_DB_PASSWORD
 ```
 
-The input is the source the merge kept — a default, a file by path, the exact environment variable, a provider, or a CLI flag by name — followed by the stages that changed the value afterwards. Sources are named, never quoted. Recording costs about a third more time than `Load`, and nothing unless asked for.
+The input is the source the merge kept — a default, a file by path, the exact environment variable, a provider, or a CLI flag by name — followed by the stages that changed the value afterwards. Scalar list and array elements have individual rows with their values; sensitive containers remain redacted. Sources are named, never quoted. Recording costs about a third more time than `Load`, and nothing unless asked for.
 
 ### Config files from code
 
@@ -464,7 +468,7 @@ db:
   # password:
 ```
 
-`RedactedTree(cfg)` gives a loaded config as nested maps for any koanf parser to marshal — YAML, JSON, TOML, dotenv — and `PrintEnv(cfg, "APP")` as the `export` lines that would load it, secrets never exported.
+`RedactedTree(cfg)` gives a loaded config as nested maps for any koanf parser to marshal — YAML, JSON, TOML, dotenv — and `PrintEnv(cfg, "APP")` as the `export` lines that would load it, using each list field's `sep` (commas by default). Lists that cannot round-trip, including one empty string or multiple elements with `sep:"none"`, are commented out; secrets are never exported.
 
 ### JSON Schema
 
@@ -490,7 +494,7 @@ Every error wraps one category sentinel together with its cause, so `errors.Is` 
 
 `Diagnose(err)` turns any of them into a `Problem{Kind, Message}` — a bounded category for a metric label or a status endpoint.
 
-The package's own errors never quote a value meant for a sensitive field: a decode failure on one is reported by field and type, and a parse failure by file and line, the parser's message — which can quote the file — kept only in `ParseError.Err`. Errors your own providers, hooks and validators return pass through unchanged, so keep values out of them.
+The package's own errors never quote a value meant for a sensitive field. A decode failure on one is reported by field and type; a validation failure on one omits the rule's operand (`eq=...`); a parse failure is reported by file and line, the parser's message — which can quote the file — kept only in `ParseError.Err`; and type names leave out struct tags, which can hold a default or an example. Errors your own providers, hooks and validators return pass through unchanged, so keep values out of them.
 
 ## Observability
 
@@ -501,6 +505,7 @@ The package logs through `WithLogger` (`slog.Default()` otherwise) and imports n
 | Info | `config reloaded` | A reload published a new config, with its generation and changed keys. |
 | Error | `config reload failed` | A reload was refused; the previous config is live. |
 | Error | `config applier failed` | An applier errored or panicked; it is retried on the next config. |
+| Warn | `config keys set under a former name; rename them` | A source used a field alias. |
 | Debug | `environment variables under the prefix name no config key` | Probably a typo in a variable name. |
 
 `Snapshot()` is cheap and consistent, so export it with function metrics:

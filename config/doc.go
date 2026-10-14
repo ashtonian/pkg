@@ -2,8 +2,8 @@
 // struct, on top of koanf. The struct is the schema: its koanf, alias, env,
 // default, sep, example, validate, desc, sensitive and secret tags give each
 // field its key, former names, variables, default, list separator, example,
-// rules, description and secrecy, and loading, validation, redaction, usage tables, starter files
-// and the JSON Schema all read them. [Load] merges
+// rules, description and secrecy. Loading, validation, redaction, usage
+// tables, starter files and the JSON Schema all read them. [Load] merges
 // struct-tag defaults, files, environment variables and explicit overrides
 // into a *T, then resolves secrets, normalizes and validates it in one
 // pipeline; [Reloader] re-runs that pipeline on a file change, signal, poll
@@ -47,8 +47,9 @@
 //     name would redact
 //   - secret:"<ref>" — resolved by [SecretsFrom], and redacted
 //
-// A tag that cannot mean what it says fails the load with [ErrSchema] before
-// anything is read. [KeyOf] names a field from its address.
+// Invalid sensitive, alias, env, sep and example tags, and malformed map
+// defaults, fail with [ErrSchema] before sources are read. [KeyOf] names a
+// field from its address.
 //
 // # Sources
 //
@@ -85,10 +86,11 @@
 // Decoding adds string → time.Duration, comma-separated string → slice (a
 // field's sep tag names another separator, or none), key=value entries → map
 // and encoding.TextUnmarshaler to mapstructure's weak typing; [WithDecodeHook]
-// hooks run first. A key no field decodes fails the
-// load — a misspelled key cannot leave a service on the default it meant to
-// override — unless a [WithUnknownKeys] handler accepts it, say after logging
-// a warning; [WithAllowUnknownKeys] accepts every one.
+// hooks precede the built-in hooks, and a sep field is split before any hook.
+// A key no field decodes fails the load — a misspelled key cannot leave a
+// service on the default it meant to override — unless a [WithUnknownKeys]
+// handler accepts it, say after logging a warning; [WithAllowUnknownKeys]
+// accepts every one.
 // Put derivation and normalization in a post-load hook, not after Load
 // returns: the hook runs inside the load, so a Reloader applies it before
 // deciding whether to swap.

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"reflect"
 	"slices"
+	"strings"
 	"sync"
 )
 
@@ -74,7 +75,7 @@ func rootSchema(t reflect.Type) (*schemaNode, error) {
 		return nil, err
 	}
 	if n.kind != nodeBranch {
-		return nil, fmt.Errorf("%w: %s is not a struct", ErrSchema, t)
+		return nil, fmt.Errorf("%w: %s is not a struct", ErrSchema, typeText(t))
 	}
 	return n, nil
 }
@@ -104,6 +105,9 @@ func (b *schemaBuilder) node(t reflect.Type) *schemaNode {
 	case k == reflect.Map && t.Key().Kind() == reflect.String:
 		n.kind = nodeMap
 		n.elem = b.node(t.Elem())
+	case k == reflect.Map:
+		n.kind = nodeLeaf
+		n.elem = b.node(t.Elem()) // decoded whole for diagnostics, but element tags still apply
 	case (k == reflect.Slice || k == reflect.Array) && t.Elem().Kind() != reflect.Uint8:
 		n.kind = nodeList
 		n.elem = b.node(t.Elem())
@@ -130,7 +134,7 @@ func (b *schemaBuilder) fields(n *schemaNode, t reflect.Type, index []int, tagge
 		fieldTagged := tagged || taggedSensitive(kf.field.Tag)
 		if kf.key == "" {
 			if _, ok := kf.field.Tag.Lookup("alias"); ok {
-				b.fail(fmt.Errorf("%w: field %s of %s is squashed, so it has no key an alias could stand for", ErrSchema, kf.field.Name, t))
+				b.fail(fmt.Errorf("%w: field %s of %s is squashed, so it has no key an alias could stand for", ErrSchema, kf.field.Name, typeText(t)))
 				continue
 			}
 			if ft := derefType(kf.field.Type); isBranch(ft) {
@@ -140,13 +144,13 @@ func (b *schemaBuilder) fields(n *schemaNode, t reflect.Type, index []int, tagge
 		}
 		switch {
 		case !validFieldKey(kf.key):
-			b.fail(fmt.Errorf("%w: field %s of %s has key %q, which holds a character keys use for structure", ErrSchema, kf.field.Name, t, kf.key))
+			b.fail(fmt.Errorf("%w: field %s of %s has key %q, which holds a character keys use for structure", ErrSchema, kf.field.Name, typeText(t), kf.key))
 			continue
 		case n.byKey[kf.key] != nil:
-			b.fail(fmt.Errorf("%w: fields %s and %s of %s both have key %q", ErrSchema, n.byKey[kf.key].sf.Name, kf.field.Name, n.typ, kf.key))
+			b.fail(fmt.Errorf("%w: fields %s and %s of %s both have key %q", ErrSchema, n.byKey[kf.key].sf.Name, kf.field.Name, typeText(n.typ), kf.key))
 			continue
-		case n.byAlias[kf.key] != nil:
-			b.fail(fmt.Errorf("%w: field %s of %s has key %q, which field %s names as an alias", ErrSchema, kf.field.Name, n.typ, kf.key, n.byAlias[kf.key].sf.Name))
+		case foldedField(n.byAlias, kf.key) != nil:
+			b.fail(fmt.Errorf("%w: field %s of %s has key %q, which field %s names as an alias", ErrSchema, kf.field.Name, typeText(n.typ), kf.key, foldedField(n.byAlias, kf.key).sf.Name))
 			continue
 		}
 		f := &schemaField{key: kf.key, sf: kf.field, index: at, tagged: fieldTagged, named: nameSensitive(kf.field), node: b.node(kf.field.Type)}
@@ -154,17 +158,26 @@ func (b *schemaBuilder) fields(n *schemaNode, t reflect.Type, index []int, tagge
 		n.byKey[kf.key] = f
 		for _, a := range aliasNames(kf.field.Tag) {
 			switch {
-			case !validFieldKey(a) || a == kf.key:
-				b.fail(fmt.Errorf("%w: field %s of %s has alias %q; an alias is another key, of the key grammar", ErrSchema, kf.field.Name, n.typ, a))
-			case n.byKey[a] != nil:
-				b.fail(fmt.Errorf("%w: field %s of %s has alias %q, which is the key of field %s", ErrSchema, kf.field.Name, n.typ, a, n.byKey[a].sf.Name))
-			case n.byAlias[a] != nil:
-				b.fail(fmt.Errorf("%w: fields %s and %s of %s both have alias %q", ErrSchema, n.byAlias[a].sf.Name, kf.field.Name, n.typ, a))
+			case !validFieldKey(a) || strings.EqualFold(a, kf.key):
+				b.fail(fmt.Errorf("%w: field %s of %s has alias %q; an alias is another key, of the key grammar", ErrSchema, kf.field.Name, typeText(n.typ), a))
+			case foldedField(n.byKey, a) != nil:
+				b.fail(fmt.Errorf("%w: field %s of %s has alias %q, which is the key of field %s", ErrSchema, kf.field.Name, typeText(n.typ), a, foldedField(n.byKey, a).sf.Name))
+			case foldedField(n.byAlias, a) != nil:
+				b.fail(fmt.Errorf("%w: fields %s and %s of %s both have alias %q (ignoring case)", ErrSchema, foldedField(n.byAlias, a).sf.Name, kf.field.Name, typeText(n.typ), a))
 			default:
 				n.byAlias[a] = f
 			}
 		}
 	}
+}
+
+func foldedField(fields map[string]*schemaField, key string) *schemaField {
+	for name, f := range fields {
+		if strings.EqualFold(name, key) {
+			return f
+		}
+	}
+	return nil
 }
 
 // checkTags refuses a tag that cannot mean what it says: a sensitive value
@@ -177,42 +190,42 @@ func checkTags(t reflect.Type, f reflect.StructField) error {
 	if v, ok := f.Tag.Lookup("sensitive"); ok {
 		switch {
 		case v != "true" && v != "false":
-			return fmt.Errorf("%w: field %s of %s has sensitive:%q; want \"true\" or \"false\"", ErrSchema, f.Name, t, v)
+			return fmt.Errorf("%w: field %s of %s has sensitive:%q; want \"true\" or \"false\"", ErrSchema, f.Name, typeText(t), v)
 		case v == "false" && taggedSensitive(f.Tag):
-			return fmt.Errorf("%w: field %s of %s names a secret and is tagged sensitive:\"false\"", ErrSchema, f.Name, t)
+			return fmt.Errorf("%w: field %s of %s names a secret and is tagged sensitive:\"false\"", ErrSchema, f.Name, typeText(t))
 		}
 	}
 	if sep, ok := f.Tag.Lookup("sep"); ok {
 		lt := derefType(f.Type)
 		switch {
 		case lt.Kind() != reflect.Slice || lt.Elem().Kind() == reflect.Uint8 || decodesItself(lt) || isBranch(derefType(lt.Elem())):
-			return fmt.Errorf("%w: field %s of %s has a sep tag, but only a list of values is split", ErrSchema, f.Name, t)
+			return fmt.Errorf("%w: field %s of %s has a sep tag, but only a list of values is split", ErrSchema, f.Name, typeText(t))
 		case sep == "":
-			return fmt.Errorf("%w: field %s of %s has an empty sep tag; name a separator, or none", ErrSchema, f.Name, t)
+			return fmt.Errorf("%w: field %s of %s has an empty sep tag; name a separator, or none", ErrSchema, f.Name, typeText(t))
 		}
 	}
 	if v, ok := f.Tag.Lookup("env"); ok {
-		if isBranch(derefType(f.Type)) {
-			return fmt.Errorf("%w: field %s of %s has an env tag, but a variable sets a value and %s is a section", ErrSchema, f.Name, t, f.Name)
+		if !variableSets(f.Type) {
+			return fmt.Errorf("%w: field %s of %s has an env tag, but no variable can set a %s", ErrSchema, f.Name, typeText(t), typeText(f.Type))
 		}
 		for _, name := range envTagNames(f.Tag) {
 			if !envVarName.MatchString(name) {
-				return fmt.Errorf("%w: field %s of %s has env:%q; %q is not a variable name", ErrSchema, f.Name, t, v, name)
+				return fmt.Errorf("%w: field %s of %s has env:%q; %q is not a variable name", ErrSchema, f.Name, typeText(t), v, name)
 			}
 		}
 	}
 	if ex, ok := f.Tag.Lookup("example"); ok {
 		if isBranch(derefType(f.Type)) {
-			return fmt.Errorf("%w: field %s of %s has an example tag, but %s is a section; give its fields examples", ErrSchema, f.Name, t, f.Name)
+			return fmt.Errorf("%w: field %s of %s has an example tag, but %s is a section; give its fields examples", ErrSchema, f.Name, typeText(t), f.Name)
 		}
 		// The value is not quoted: an example on a sensitive field may be one.
 		if _, err := decodeTag(f.Type, f.Tag, ex); err != nil {
-			return fmt.Errorf("%w: field %s of %s has an example that does not decode into %s", ErrSchema, f.Name, t, f.Type)
+			return fmt.Errorf("%w: field %s of %s has an example that does not decode into %s", ErrSchema, f.Name, typeText(t), typeText(f.Type))
 		}
 	}
 	if def, ok := f.Tag.Lookup("default"); ok && textMap(derefType(f.Type)) {
 		if _, err := parseMapEntries(def); err != nil {
-			return fmt.Errorf("%w: field %s of %s has a default that is not key=value entries: %w", ErrSchema, f.Name, t, err)
+			return fmt.Errorf("%w: field %s of %s has a default that is not key=value entries: %w", ErrSchema, f.Name, typeText(t), err)
 		}
 	}
 	return nil
@@ -223,22 +236,30 @@ func checkTags(t reflect.Type, f reflect.StructField) error {
 // fields name.
 func checkEnvTags(root *schemaNode) error {
 	owners := map[string]string{}
-	walking := map[*schemaNode]bool{}
+	type visit struct {
+		node    *schemaNode
+		crossed bool
+	}
+	walking := map[visit]bool{}
 	var walk func(n *schemaNode, path keyPath, crossed bool) error
 	walk = func(n *schemaNode, path keyPath, crossed bool) error {
-		switch {
-		case (n.kind == nodeList || n.kind == nodeMap) && n.elem != nil:
-			return walk(n.elem, path.any(), true)
-		case n.kind != nodeBranch || walking[n]:
+		at := visit{n, crossed}
+		if walking[at] {
 			return nil
 		}
-		walking[n] = true
-		defer delete(walking, n)
+		walking[at] = true
+		defer delete(walking, at)
+		switch {
+		case (n.kind == nodeList || n.typ.Kind() == reflect.Map) && n.elem != nil:
+			return walk(n.elem, path.any(), true)
+		case n.kind != nodeBranch:
+			return nil
+		}
 		for _, f := range n.fields {
 			at := path.field(f.key)
 			names := envTagNames(f.sf.Tag)
 			if len(names) > 0 && crossed {
-				return fmt.Errorf("%w: field %s of %s has an env tag, but %s is a key of every list element or map entry, which no one variable sets", ErrSchema, f.sf.Name, n.typ, at)
+				return fmt.Errorf("%w: field %s of %s has an env tag, but %s is a key of every list element or map entry, which no one variable sets", ErrSchema, f.sf.Name, typeText(n.typ), at)
 			}
 			for _, name := range names {
 				if other, dup := owners[name]; dup {
@@ -379,7 +400,7 @@ func (n *schemaNode) walkTo(c cursor, p keyPath) (cursor, *schemaNode, error) {
 			if canHoldKeys(n.typ) {
 				return c, n, nil // decoded whole; its field owns what is inside
 			}
-			return cursor{}, nil, fmt.Errorf("%w %s: %s is a %s, which has no keys beneath it", ErrKey, p, p[:i].orRoot(), n.typ)
+			return cursor{}, nil, fmt.Errorf("%w %s: %s is a %s, which has no keys beneath it", ErrKey, p, p[:i].orRoot(), typeText(n.typ))
 		}
 	}
 	return c, n, nil

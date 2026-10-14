@@ -71,6 +71,7 @@ type Origin struct {
 // OriginProvider is a map provider that names a source for each key it
 // returns, read once with the load's context: kongprovider names the flag
 // behind each value. Annotations are keyed in the package's key grammar; an
+// annotation follows field aliases and case folding as the data does. An
 // annotation on a section covers the keys beneath it, and a key with none is
 // attributed to the provider. An annotation naming a key the data does not
 // hold, using a selector of the wrong kind, naming a list element, or naming
@@ -367,24 +368,29 @@ func annotationLabeler(root *schemaNode, tree map[string]any, annotations map[st
 		if err != nil {
 			return labeler{}, err
 		}
+		p = annotationPath(root, p)
+		shown := diagnosticPath(root, p)
 		if _, _, err := root.walkTo(cursor{}, p); err != nil {
+			if len(shown) < len(p) {
+				return labeler{}, fmt.Errorf("annotation %s: invalid key within sensitive contents", shown)
+			}
 			return labeler{}, fmt.Errorf("annotation %s: %w", key, err)
 		}
 		raw := make([]string, len(p))
 		for i, s := range p {
 			if s.kind != segField && s.kind != segKey {
-				return labeler{}, fmt.Errorf("annotation %s: annotate a list as a whole, not an element", key)
+				return labeler{}, fmt.Errorf("annotation %s: annotate a list as a whole, not an element", shown)
 			}
 			raw[i] = s.name
 		}
 		if !rawPresent(tree, raw) {
-			return labeler{}, fmt.Errorf("annotation %s names a key the provider did not return", key)
+			return labeler{}, fmt.Errorf("annotation %s names a key the provider did not return", shown)
 		}
 		at := strings.Join(raw, "\x00")
 		if prev, ok := named[at]; ok && byPath[at] != src {
-			return labeler{}, fmt.Errorf("annotations %s and %s name one key with different sources", prev, key)
+			return labeler{}, fmt.Errorf("annotations %s and %s name one key with different sources", prev, shown)
 		}
-		byPath[at], named[at] = src, key
+		byPath[at], named[at] = src, shown.String()
 	}
 	return labeler{byPath: func(path []string) Source {
 		for i := len(path); i > 0; i-- {
@@ -394,6 +400,35 @@ func annotationLabeler(root *schemaNode, tree map[string]any, annotations map[st
 		}
 		return fallback
 	}}, nil
+}
+
+// Annotations follow the same field spelling and aliases as provider data.
+func annotationPath(root *schemaNode, p keyPath) keyPath {
+	n := root
+	for i := range p {
+		switch n.kind {
+		case nodeBranch:
+			if p[i].kind != segField {
+				return p
+			}
+			f := n.byKey[p[i].name]
+			if f == nil {
+				f = foldedField(n.byKey, p[i].name)
+			}
+			if f == nil {
+				f = foldedField(n.byAlias, p[i].name)
+			}
+			if f == nil {
+				return p
+			}
+			p[i].name, n = f.key, f.node
+		case nodeMap, nodeList:
+			n = n.elem
+		default:
+			return p
+		}
+	}
+	return p
 }
 
 func rawPresent(tree map[string]any, path []string) bool {

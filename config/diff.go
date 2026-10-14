@@ -18,7 +18,8 @@ type Value struct {
 	Present bool `json:"present"`
 	// Nil reports a nil pointer, map, slice or interface.
 	Nil bool `json:"nil,omitempty"`
-	// Type is the value's Go type: the dynamic type for an interface.
+	// Type is the value's Go type, with struct tags omitted: the dynamic
+	// type for an interface.
 	Type string `json:"type,omitempty"`
 	// Text is the value's %v text. It is empty for a structural change, and
 	// "[REDACTED]" when Redacted.
@@ -462,7 +463,7 @@ func (w *comparer) checked(s side) bool {
 		return true
 	}
 	if t := uncomparableIn(s.v); t != nil {
-		w.fail(fmt.Errorf("%w: %s holds a %s, which cannot be compared", ErrSchema, w.path.orRoot(), t))
+		w.fail(fmt.Errorf("%w: %s holds a %s, which cannot be compared", ErrSchema, w.path.orRoot(), typeText(t)))
 		return false
 	}
 	return true
@@ -498,7 +499,7 @@ func resolve(v reflect.Value) side {
 
 func (s side) typeName() string {
 	if s.v.IsValid() {
-		return s.v.Type().String()
+		return typeText(s.v.Type())
 	}
 	return ""
 }

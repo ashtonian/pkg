@@ -33,6 +33,7 @@ timeout                            APP_TIMEOUT                           time.Du
 name                               APP_NAME                              string             (required)
 password                           APP_PASSWORD                          string             [REDACTED]
 features[*].max_page_size          APP_FEATURES_<KEY>_MAX_PAGE_SIZE      int                50          Largest page
+labels                             APP_LABELS                            map[string]string
 labels[*]                          APP_LABELS_<KEY>                      string
 `
 	assert.Equal(t, normalizeSpaces(want), normalizeSpaces(buf.String()))
@@ -51,10 +52,10 @@ func TestPrintUsage_JSON(t *testing.T) {
 	require.NoError(t, PrintUsage[usageCfg]("APP_", WithWriter(&buf), WithFormat(FormatJSON), WithSortByName()))
 	var rows []usageRow
 	require.NoError(t, json.Unmarshal(buf.Bytes(), &rows))
-	require.Len(t, rows, 6)
+	require.Len(t, rows, 7)
 	assert.Equal(t, "features[*].max_page_size", rows[0].Key)
-	assert.Equal(t, usageRow{Key: "name", Env: "APP_NAME", Type: "string", Required: true}, rows[2])
-	assert.Equal(t, usageRow{Key: "password", Env: "APP_PASSWORD", Type: "string", Default: "[REDACTED]", Sensitive: true}, rows[3])
+	assert.Equal(t, usageRow{Key: "name", Env: "APP_NAME", Type: "string", Required: true}, rows[3])
+	assert.Equal(t, usageRow{Key: "password", Env: "APP_PASSWORD", Type: "string", Default: "[REDACTED]", Sensitive: true}, rows[4])
 }
 
 // The env template exports keys with a default, and comments out the rest:

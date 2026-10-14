@@ -10,17 +10,17 @@ import (
 	"github.com/knadh/koanf/providers/confmap"
 )
 
-// PrintTemplate writes a config file for T, built from its struct: the file
-// an application ships, or an operator starts from. Every key appears in
+// PrintTemplate writes a config file for T, built from its struct: the file an
+// application ships, or an operator starts from. Every key appears in
 // declaration order with its default as the value decoding produces — a
-// duration as 30s, a list as a list — preceded by its `desc` and a line
-// naming its type, whether it is required or sensitive, and the environment
-// variable that sets it under envPrefix (none when envPrefix is empty). A key
-// with no default, a sensitive key and a default [Field.PrintableDefault]
-// withholds are commented out with no value. A map or list with no default
-// is commented out with one example entry built from its element's defaults.
-// A struct with no key to set is commented out whole, since an empty one
-// would load as null over its defaults.
+// duration as 30s, a list as a list — preceded by its `desc` and a line naming
+// its type, whether it is required or sensitive, and the environment variable
+// that sets it under envPrefix (none when envPrefix is empty). A key with no
+// default is commented out with its printable example, if any; a sensitive key
+// and a default [Field.PrintableDefault] withholds have no value. A map or
+// list with no default is commented out with one example entry built from its
+// element's defaults. A struct with no key to set is commented out whole,
+// since an empty one would load as null over its defaults.
 //
 // Loading the file gives the same config as loading no source at all, and
 // strict keys accept it. [WithFormat] selects FormatYAML (the default) or
@@ -41,7 +41,7 @@ func PrintTemplate[T any](envPrefix string, opts ...PrintOption) error {
 	switch po.formatOr(FormatYAML) {
 	case FormatYAML:
 		y := &yamlWriter{ew: &errWriter{w: po.writer}}
-		y.ew.printf("# Configuration for %s: every key with its default. A commented key has\n# no default, or one that is not shown; uncomment it to set it.\n", t)
+		y.ew.printf("# Configuration for %s: every key with its default. A commented key has\n# no default, or one that is not shown; uncomment it to set it.\n", typeText(t))
 		y.mapping(n, 0, false, 0, "")
 		return y.ew.err
 	case FormatJSON:
@@ -74,7 +74,7 @@ func templateOf(t reflect.Type, prefix string) (*outNode, error) {
 func decodedDefaults(t reflect.Type) (reflect.Value, error) {
 	tree, err := confmap.Provider(defaultsFrom(fieldsOf(t)), ".").Read()
 	if err != nil {
-		return reflect.Value{}, fmt.Errorf("reading the default tags of %s: %w: %w", t, ErrSource, err)
+		return reflect.Value{}, fmt.Errorf("reading the default tags of %s: %w: %w", typeText(t), ErrSource, err)
 	}
 	out := reflect.New(t)
 	dec, err := mapstructure.NewDecoder(&mapstructure.DecoderConfig{
@@ -88,7 +88,7 @@ func decodedDefaults(t reflect.Type) (reflect.Value, error) {
 	}
 	if err := dec.Decode(tree); err != nil {
 		root, _ := schemaOf(t)
-		return reflect.Value{}, fmt.Errorf("decoding the default tags of %s: %w: %w", t, ErrValidation, decodeErrors(root, tree, err))
+		return reflect.Value{}, fmt.Errorf("decoding the default tags of %s: %w: %w", typeText(t), ErrValidation, decodeErrors(root, tree, err))
 	}
 	return out.Elem(), nil
 }
@@ -189,7 +189,7 @@ func (b *templateBuilder) example(node *schemaNode, c cursor, env string, crosse
 			return nil, err
 		}
 	default:
-		elem = scalarNode("<" + node.typ.Elem().String() + ">")
+		elem = scalarNode("<" + typeText(node.typ.Elem()) + ">")
 	}
 	if node.kind == nodeList {
 		return &outNode{kind: outList, items: []*outNode{elem}}, nil
@@ -204,7 +204,7 @@ func (b *templateBuilder) example(node *schemaNode, c cursor, env string, crosse
 // meta is a key's type line: its Go type, whether it is required or
 // sensitive, and the variable that sets it.
 func meta(f *schemaField, c cursor, env string) string {
-	parts := []string{f.sf.Type.String()}
+	parts := []string{typeText(f.sf.Type)}
 	if slices.Contains(strings.Split(f.sf.Tag.Get("validate"), ","), "required") {
 		parts = append(parts, "required")
 	}
@@ -213,7 +213,7 @@ func meta(f *schemaField, c cursor, env string) string {
 	}
 	text := strings.Join(parts, ", ")
 	var names []string
-	if env != "" && (f.node.kind == nodeLeaf || f.node.kind == nodeDynamic || f.node.kind == nodeList && f.node.elem.kind != nodeBranch) {
+	if env != "" && variableSets(f.sf.Type) {
 		names = append(names, env)
 	}
 	if env != "" {

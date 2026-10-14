@@ -619,7 +619,7 @@ func writeHeld(slot reflect.Value, rel keyPath, h heldValue) error {
 	case nodeBranch:
 		f := n.byKey[seg.name]
 		if f == nil {
-			return fmt.Errorf("%s has no field %q", v.Type(), seg.name)
+			return fmt.Errorf("%s has no field %q", typeText(v.Type()), seg.name)
 		}
 		fv, err := v.FieldByIndexErr(f.index)
 		if err != nil {
@@ -716,11 +716,11 @@ func setResolved(slot, v reflect.Value) error {
 		return nil
 	case reflect.Interface:
 		if !v.Type().Implements(slot.Type()) {
-			return fmt.Errorf("a %s cannot be held by a %s", v.Type(), slot.Type())
+			return fmt.Errorf("a %s cannot be held by a %s", typeText(v.Type()), typeText(slot.Type()))
 		}
 	default:
 		if v.Type() != slot.Type() {
-			return fmt.Errorf("a %s cannot be held by a %s", v.Type(), slot.Type())
+			return fmt.Errorf("a %s cannot be held by a %s", typeText(v.Type()), typeText(slot.Type()))
 		}
 	}
 	slot.Set(v)
