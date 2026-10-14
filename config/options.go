@@ -334,6 +334,7 @@ func (o *options) unknownInput(ctx context.Context, root reflect.Type, schema *s
 	}
 	byKey := func(a, b UnknownKey) int { return strings.Compare(a.Key, b.Key) }
 	slices.SortFunc(unknown.Keys, byKey)
+	unknown.Keys = slices.Compact(unknown.Keys)
 	slices.SortFunc(unknown.Variables, byKey)
 	if o.unknownKeys == nil {
 		return unknown
@@ -438,7 +439,7 @@ func (o *options) decodeHook(observe func(mapstructure.DecodeHookFunc) mapstruct
 func (o *options) checkHookTypes(cfg reflect.Type) error {
 	for i, h := range o.postLoad {
 		if h.target != cfg {
-			return fmt.Errorf("%w: hook %d is for %s, the load produces %s", ErrPostLoad, i, h.target, cfg)
+			return fmt.Errorf("%w: hook %d is for %s, the load produces %s", ErrPostLoad, i, typeText(h.target), typeText(cfg))
 		}
 	}
 	return nil

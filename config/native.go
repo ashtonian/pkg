@@ -66,6 +66,13 @@ func treeKey(root *schemaNode, tree any, name string) (p keyPath, used int, exac
 // struct's closest field as its suggestion.
 func unusedKey(root *schemaNode, tree any, name string) UnknownKey {
 	p, used, exact := treeKey(root, tree, name)
+	probe := p
+	if !exact {
+		probe = p.field("")
+	}
+	if safe := diagnosticPath(root, probe); len(safe) < len(probe) {
+		return UnknownKey{Key: safe.orRoot()}
+	}
 	if exact {
 		return UnknownKey{Key: p.orRoot()}
 	}
@@ -88,12 +95,31 @@ func unusedKey(root *schemaNode, tree any, name string) UnknownKey {
 	return UnknownKey{Key: p.String() + "." + strconv.Quote(raw)}
 }
 
+// Sensitive containers can hold credentials in their keys as well as values.
+func diagnosticPath(root *schemaNode, p keyPath) keyPath {
+	if root == nil {
+		return p
+	}
+	c, n := cursor{}, root
+	for i, s := range p {
+		if c.sensitive() && n.kind != nodeBranch && canHoldKeys(n.typ) {
+			return p[:i]
+		}
+		var err error
+		c, n, err = n.walkTo(c, keyPath{s})
+		if err != nil {
+			break
+		}
+	}
+	return p
+}
+
 // closestField is the key of branch n's field that key most likely
 // misspells: the fewest edits from it, ignoring case, within a third of
 // key's length (and at least 2), so prot finds port but remote_name finds
 // nothing among unrelated keys. A field as many edits away as the longer of
-// the two is long shares no character in place, so x finds nothing beside
-// db. A tie goes to the key that sorts first.
+// the two is long is unrelated; at least one character must also match in
+// place, so x finds nothing beside db. A tie goes to the key that sorts first.
 func closestField(n *schemaNode, key string) string {
 	return closest(key, func(yield func(string) bool) {
 		for _, f := range n.fields {
@@ -112,6 +138,20 @@ func closest(key string, candidates iter.Seq[string]) string {
 	best, bestDist := "", max(2, keyLen/3)+1
 	for c := range candidates {
 		lower := strings.ToLower(c)
+		runes := []rune(lower)
+		if keyLen-len(runes) > bestDist || len(runes)-keyLen > bestDist {
+			continue
+		}
+		shared := false
+		for i, r := range []rune(key) {
+			if i < len(runes) && r == runes[i] {
+				shared = true
+				break
+			}
+		}
+		if !shared {
+			continue
+		}
 		d := editDistance(key, lower)
 		if d >= max(keyLen, utf8.RuneCountInString(lower)) {
 			continue

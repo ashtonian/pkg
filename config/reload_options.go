@@ -45,12 +45,12 @@ func buildReloadOptions(opts []ReloadOption) *reloadOptions {
 func (o *reloadOptions) checkHookTypes(cfg reflect.Type) error {
 	for i, h := range o.onSuccess {
 		if h.target != cfg {
-			return fmt.Errorf("config: WithOnReloadSuccess callback %d is for %s, the reloader loads %s", i, h.target, cfg)
+			return fmt.Errorf("config: WithOnReloadSuccess callback %d is for %s, the reloader loads %s", i, typeText(h.target), typeText(cfg))
 		}
 	}
 	for _, a := range o.appliers {
 		if a.target != cfg {
-			return fmt.Errorf("config: WithApplier %q is for %s, the reloader loads %s", a.name, a.target, cfg)
+			return fmt.Errorf("config: WithApplier %q is for %s, the reloader loads %s", a.name, typeText(a.target), typeText(cfg))
 		}
 	}
 	return nil

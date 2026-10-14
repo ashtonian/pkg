@@ -59,7 +59,7 @@ func SecretsFrom(fetch func(ctx context.Context, ref string) (string, error)) Se
 	return func(ctx context.Context, target any) error {
 		v := reflect.ValueOf(target)
 		if v.Kind() != reflect.Pointer || v.IsNil() || v.Elem().Kind() != reflect.Struct {
-			return fmt.Errorf("config: SecretsFrom needs a pointer to a config struct, got %T", target)
+			return fmt.Errorf("config: SecretsFrom needs a pointer to a config struct, got %s", typeText(reflect.TypeOf(target)))
 		}
 		root, err := rootSchema(v.Elem().Type())
 		if err != nil {
@@ -204,7 +204,7 @@ func (s *secretSetter) set(ctx context.Context, key keyPath, tag secretTag, fiel
 	}
 	if err != nil {
 		// The decoder's message may quote the secret: name the type only.
-		fail(errors.New("the secret does not decode into " + field.Type().String()))
+		fail(errors.New("the secret does not decode into " + typeText(field.Type())))
 	}
 }
 

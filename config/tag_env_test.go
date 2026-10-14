@@ -66,7 +66,7 @@ func TestEnvTag_Refused(t *testing.T) {
 	}
 	_, err := Load[section](t.Context())
 	require.ErrorIs(t, err, ErrSchema)
-	assert.Contains(t, err.Error(), "is a section")
+	assert.Contains(t, err.Error(), "no variable can set a struct")
 
 	type item struct {
 		Port int `koanf:"port" env:"ITEM_PORT"`
@@ -77,6 +77,13 @@ func TestEnvTag_Refused(t *testing.T) {
 	_, err = Load[inList](t.Context())
 	require.ErrorIs(t, err, ErrSchema)
 	assert.Contains(t, err.Error(), "items[*].port is a key of every list element or map entry")
+
+	type listOfSections struct {
+		Items []item `koanf:"items" env:"ITEMS"`
+	}
+	_, err = Load[listOfSections](t.Context())
+	require.ErrorIs(t, err, ErrSchema)
+	assert.Contains(t, err.Error(), "no variable can set a []config.item")
 
 	type twice struct {
 		A string `koanf:"a" env:"SHARED"`

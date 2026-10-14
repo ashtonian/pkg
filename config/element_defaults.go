@@ -88,7 +88,13 @@ func setIfAbsent(m map[string]any, segs []string, value any) {
 		m = child
 	}
 	last := segs[len(segs)-1]
-	if _, ok := m[last]; !ok {
+	if existing, ok := m[last]; !ok {
 		m[last] = value
+	} else if defaults, ok := value.(map[string]any); ok {
+		if entries, ok := existing.(map[string]any); ok {
+			for key, def := range defaults {
+				setIfAbsent(entries, []string{key}, def)
+			}
+		}
 	}
 }

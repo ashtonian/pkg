@@ -104,7 +104,8 @@ type UnknownKeysError struct {
 
 // UnknownKey is one key no field decodes, or one variable that names no key.
 type UnknownKey struct {
-	// Key names it: in the package's key grammar for a key (server.prot,
+	// Key names it, or the enclosing sensitive container when its contents
+	// must be withheld: in the package's key grammar for a key (server.prot,
 	// items[0].prot), by its name for a variable (APP_SERVER_PROT).
 	Key string
 	// Suggestion is what Key most likely misspells, or "" when nothing is
@@ -116,14 +117,14 @@ type UnknownKey struct {
 func (e *UnknownKeysError) Error() string {
 	var b strings.Builder
 	if len(e.Keys) > 0 {
-		fmt.Fprintf(&b, "keys no field of %s decodes: ", e.Type)
+		fmt.Fprintf(&b, "keys no field of %s decodes: ", typeText(e.Type))
 		writeUnknown(&b, e.Keys)
 	}
 	if len(e.Variables) > 0 {
 		if b.Len() > 0 {
 			b.WriteString("; ")
 		}
-		fmt.Fprintf(&b, "environment variables no field of %s reads: ", e.Type)
+		fmt.Fprintf(&b, "environment variables no field of %s reads: ", typeText(e.Type))
 		writeUnknown(&b, e.Variables)
 	}
 	return b.String()

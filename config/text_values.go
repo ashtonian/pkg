@@ -89,6 +89,23 @@ func decodeTag(t reflect.Type, tag reflect.StructTag, s string) (reflect.Value, 
 	return out.Elem(), nil
 }
 
+// variableSets reports a value one environment variable can set whole: not
+// a section, a list of sections, or a map a string cannot fill.
+func variableSets(t reflect.Type) bool {
+	t = derefType(t)
+	switch {
+	case decodesItself(t):
+		return true
+	case isBranch(t):
+		return false
+	case t.Kind() == reflect.Map:
+		return textMap(t)
+	case t.Kind() == reflect.Slice || t.Kind() == reflect.Array:
+		return !isBranch(derefType(t.Elem()))
+	}
+	return true
+}
+
 func decodesItself(t reflect.Type) bool {
 	p := reflect.PointerTo(t)
 	return p.Implements(textUnmarshaler) || p.Implements(mapstructureUnmarshaler)
@@ -109,7 +126,7 @@ func parseMapEntries(s string) (map[string]any, error) {
 			return nil, fmt.Errorf("map entry %d is not key=value", i+1)
 		}
 		if _, dup := out[k]; dup {
-			return nil, fmt.Errorf("map entry %d repeats key %q", i+1, k)
+			return nil, fmt.Errorf("map entry %d repeats a key", i+1)
 		}
 		out[k] = v
 	}

@@ -51,5 +51,5 @@ func TestMapDefault_MalformedIsASchemaError(t *testing.T) {
 	}
 	_, err = Load[twice](t.Context(), WithSkipValidation())
 	require.ErrorIs(t, err, ErrSchema)
-	assert.Contains(t, err.Error(), `repeats key "a"`)
+	assert.Contains(t, err.Error(), `repeats a key`)
 }

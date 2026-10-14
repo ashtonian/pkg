@@ -112,7 +112,7 @@ func (l *loader) add(name string, data map[string]any, label labeler) error {
 // by their text, as koanf keys them, and every key naming a field spelled
 // as the field is.
 func (l *loader) rewrite(name string, data map[string]any) (map[string]any, error) {
-	var w keyWalk
+	w := keyWalk{schema: l.schema}
 	tree := w.tree(l.root, textKeyed(data))
 	if len(w.twice) > 0 {
 		return nil, fmt.Errorf("loading %s: %w: keys spelled two ways set one field: %s", name, ErrValidation, strings.Join(w.twice, ", "))
@@ -474,12 +474,24 @@ func validate(ctx context.Context, v Validator, cfg any) error {
 // naming each field by its key in cfg, the validated config.
 func fieldErrorSummary(cfg reflect.Value, ve validator.ValidationErrors) string {
 	parts := make([]string, 0, len(ve))
+	root, _ := rootSchema(cfg.Type())
 	for _, fe := range ve {
 		tag := fe.Tag()
-		if fe.Param() != "" {
+		key := validationKey(cfg, fe)
+		p, exact := validatorKey(cfg, fe.StructNamespace())
+		showParam := false
+		if root != nil {
+			if safe := diagnosticPath(root, p); len(safe) < len(p) {
+				key = safe.orRoot()
+			}
+			if c, n, err := root.walkTo(cursor{}, p); err == nil && exact {
+				showParam = !c.sensitive() && !mayHoldSensitive(n.typ, map[reflect.Type]bool{})
+			}
+		}
+		if fe.Param() != "" && showParam {
 			tag += "=" + fe.Param()
 		}
-		parts = append(parts, validationKey(cfg, fe)+"("+tag+")")
+		parts = append(parts, key+"("+tag+")")
 	}
 	return strings.Join(parts, ", ")
 }

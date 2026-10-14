@@ -174,6 +174,15 @@ func (s envSchema) read(environ []string) (values map[string]any, names map[stri
 		return nil, nil, nil, fmt.Errorf("ambiguous environment variables: %s; rename a map key or field so only one reading fits",
 			strings.Join(ambiguous, "; "))
 	}
+	for _, key := range slices.Sorted(maps.Keys(values)) {
+		segs := strings.Split(key, ".")
+		for i := 1; i < len(segs); i++ {
+			parent := strings.Join(segs[:i], ".")
+			if _, ok := values[parent]; ok {
+				return nil, nil, nil, fmt.Errorf("environment variables %s and %s set both a value and keys beneath it", names[parent], names[key])
+			}
+		}
+	}
 	return values, names, unmatched, nil
 }
 

@@ -8,12 +8,12 @@ import (
 
 // PrintEnv writes cfg as the environment variables that would load it under
 // envPrefix — `export APP_DB_HOST='db.internal'` — one per key, named as the
-// loader reads them: a list of scalars as one comma-separated value, a map
-// entry by its key. A key no variable sets alone is written as a comment
-// saying so: a list element of a struct, a map key the variable naming
-// cannot spell, a list item holding a comma, a name another key would also
-// read. A sensitive value is never exported; its line is commented out with
-// no value. [WithWriter] applies; WithFormat does not.
+// loader reads them: a list of scalars joined with its sep (commas by
+// default), a map entry by its key. A key no variable sets alone is written as
+// a comment saying so: a list element of a struct, a map key the variable
+// naming cannot spell, a list its separator cannot represent, a name another
+// key would also read. A sensitive value is never exported; its line is
+// commented out with no value. [WithWriter] applies; WithFormat does not.
 func PrintEnv(cfg any, envPrefix string, opts ...PrintOption) error {
 	if envPrefix == "" {
 		return errors.New("config: PrintEnv needs an environment prefix")
@@ -34,13 +34,14 @@ func PrintEnv(cfg any, envPrefix string, opts ...PrintOption) error {
 		return err
 	}
 	prefix := strings.TrimSuffix(envPrefix, "_")
-	e := &envWriter{ew: &errWriter{w: po.writer}, schema: newEnvSchema(fieldsOf(t), prefix), prefix: prefix}
+	e := &envWriter{ew: &errWriter{w: po.writer}, root: root, schema: newEnvSchema(fieldsOf(t), prefix), prefix: prefix}
 	e.mapping(nil, root, (&valueTree{visiting: map[visit]bool{}}).root(cfg))
 	return e.ew.err
 }
 
 type envWriter struct {
 	ew     *errWriter
+	root   *schemaNode
 	schema envSchema
 	prefix string
 }
@@ -74,15 +75,24 @@ func (e *envWriter) value(p keyPath, s *schemaNode, n *outNode) {
 	case n.kind == outMap && (s.kind == nodeBranch || s.kind == nodeMap):
 		e.mapping(p, s, n)
 	case n.kind == outList && s.kind == nodeList && s.elem.kind != nodeBranch && scalarItems(n):
+		sep := ","
+		if c, _, err := e.root.walkTo(cursor{}, p); err == nil {
+			if tagged, ok := c.owner.Tag.Lookup("sep"); ok {
+				sep = tagged
+			}
+		}
 		items := make([]string, len(n.items))
 		for i, item := range n.items {
 			items[i] = scalarText(item.scalar)
-			if strings.Contains(items[i], ",") {
-				e.ew.printf("# %s: an item holds a comma, which a variable's list cannot; set it in a config file\n", p)
+			if sep != "none" && strings.Contains(items[i], sep) || len(n.items) == 1 && items[i] == "" || sep == "none" && len(n.items) > 1 {
+				e.ew.printf("# %s: its list cannot be represented by a variable; set it in a config file\n", p)
 				return
 			}
 		}
-		e.export(p, strings.Join(items, ","))
+		if sep == "none" {
+			sep = ""
+		}
+		e.export(p, strings.Join(items, sep))
 	case n.kind == outScalar:
 		e.export(p, scalarText(n.scalar))
 	default:
