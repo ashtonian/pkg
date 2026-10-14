@@ -114,11 +114,6 @@ func compareOrd(a, b []ordSeg) int {
 	return cmp.Compare(len(a), len(b))
 }
 
-// within reports whether position ord is at or beneath prefix.
-func within(ord, prefix []ordSeg) bool {
-	return len(ord) >= len(prefix) && slices.Equal(ord[:len(prefix)], prefix)
-}
-
 // compare walks a and b, two values of root's type, side by side and calls
 // emit for every key whose value differs, in walk order. Nothing is
 // allocated for a key that compares equal beyond what reflection needs to
@@ -147,12 +142,23 @@ func compareFrom(at keyRef, n *schemaNode, f frame, a, b side, emit func(*delta)
 	return w.err
 }
 
+// compareEvery walks v, a config of root's schema, and calls emit for every
+// key it holds, equal to itself: a delta whose two sides are one value, by
+// the rules a comparison follows.
+func compareEvery(root *schemaNode, v reflect.Value, emit func(*delta)) error {
+	w := &comparer{emit: emit, every: true}
+	w.node(root, frame{}, v, v)
+	return w.err
+}
+
 // comparer is one side-by-side walk. Its path and walk position are stacks
 // the walk pushes and pops; a delta copies nothing until its receiver does.
 type comparer struct {
 	emit func(*delta)
-	path keyPath
-	ord  []ordSeg
+	// every reports every key, equal or not.
+	every bool
+	path  keyPath
+	ord   []ordSeg
 	// above holds, per side, the maps, slices and struct pointers the walk
 	// is inside, so one met again is compared whole rather than walked
 	// forever.
@@ -337,7 +343,7 @@ func (w *comparer) resolved(n *schemaNode, f frame, sa, sb side) {
 
 // leaf compares two values of n's type, decoded whole.
 func (w *comparer) leaf(n *schemaNode, f frame, sa, sb side) {
-	if n.opaqueUnsafe && (!w.checked(sa) || !w.checked(sb)) || sameValue(sa, sb) {
+	if n.opaqueUnsafe && (!w.checked(sa) || !w.checked(sb)) || w.same(sa, sb) {
 		return
 	}
 	w.report(deltaValue, false, false, f.sensitive(), sa, sb)
@@ -346,7 +352,7 @@ func (w *comparer) leaf(n *schemaNode, f frame, sa, sb side) {
 // whole compares two sensitive maps, lists or interfaces without listing
 // what they hold.
 func (w *comparer) whole(sa, sb side) {
-	if !w.checked(sa) || !w.checked(sb) || sameValue(sa, sb) {
+	if !w.checked(sa) || !w.checked(sb) || w.same(sa, sb) {
 		return
 	}
 	w.report(deltaValue, sa.present != sb.present || sa.isNil != sb.isNil, true, true, sa, sb)
@@ -371,7 +377,7 @@ func (w *comparer) dynamic(f frame, sa, sb side) {
 		return
 	}
 	// One side missing or nil, or the two of different types.
-	if !w.checked(sa) || !w.checked(sb) || sameValue(sa, sb) {
+	if !w.checked(sa) || !w.checked(sb) || w.same(sa, sb) {
 		return
 	}
 	if !composite(sa) && !composite(sb) {
@@ -388,14 +394,14 @@ func (w *comparer) container(n *schemaNode, f frame, sa, sb side) {
 	kb, okB := ancestorOf(sb)
 	cycle := [2]bool{okA && slices.Contains(w.above[0], ka), okB && slices.Contains(w.above[1], kb)}
 	if cycle[0] || cycle[1] {
-		if !w.checked(sa) || !w.checked(sb) || sameValue(sa, sb) {
+		if !w.checked(sa) || !w.checked(sb) || w.same(sa, sb) {
 			return
 		}
 		w.reportCycle(cycle, sa, sb)
 		return
 	}
-	if len(w.path) > 0 && (sa.present != sb.present || sa.isNil != sb.isNil) {
-		w.report(deltaShape, true, false, false, sa, sb)
+	if len(w.path) > 0 && (w.every || sa.present != sb.present || sa.isNil != sb.isNil) {
+		w.report(deltaShape, sa.present != sb.present || sa.isNil != sb.isNil, false, false, sa, sb)
 	}
 	if okA {
 		w.above[0] = append(w.above[0], ka)
@@ -441,6 +447,12 @@ func (w *comparer) container(n *schemaNode, f frame, sa, sb side) {
 			w.pop()
 		}
 	}
+}
+
+// same reports two sides the walk need not report: equal ones, unless it
+// reports every key.
+func (w *comparer) same(a, b side) bool {
+	return !w.every && sameValue(a, b)
 }
 
 // checked reports whether s can be compared by content, recording the

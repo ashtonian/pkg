@@ -78,7 +78,7 @@ func decodedDefaults(t reflect.Type) (reflect.Value, error) {
 	}
 	out := reflect.New(t)
 	dec, err := mapstructure.NewDecoder(&mapstructure.DecoderConfig{
-		DecodeHook:       (&options{}).decodeHook(),
+		DecodeHook:       (&options{}).decodeHook(nil),
 		WeaklyTypedInput: true,
 		Result:           out.Interface(),
 		TagName:          "koanf",

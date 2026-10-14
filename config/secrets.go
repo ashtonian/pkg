@@ -195,7 +195,7 @@ func (s *secretSetter) set(ctx context.Context, key keyPath, tag secretTag, fiel
 		value = memberText(member)
 	}
 	dec, err := mapstructure.NewDecoder(&mapstructure.DecoderConfig{
-		DecodeHook:       (&options{}).decodeHook(),
+		DecodeHook:       (&options{}).decodeHook(nil),
 		WeaklyTypedInput: true,
 		Result:           field.Addr().Interface(),
 	})

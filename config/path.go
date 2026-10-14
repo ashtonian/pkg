@@ -39,7 +39,12 @@ type segment struct {
 type keyPath []segment
 
 func (p keyPath) String() string {
+	size := 0
+	for _, s := range p {
+		size += len(s.name) + 4 // a dot or brackets and quotes, an index's digits mostly
+	}
 	var b strings.Builder
+	b.Grow(size)
 	for i, s := range p {
 		switch s.kind {
 		case segField:

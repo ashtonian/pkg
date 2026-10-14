@@ -217,9 +217,6 @@ func TestNewMapProvider(t *testing.T) {
 
 // What read returns is copied: a load cannot change the caller's map.
 func TestNewMapProvider_CopiesWhatReadReturns(t *testing.T) {
-	type cfg struct {
-		Tags []string `koanf:"tags"`
-	}
 	tags := []any{"a"}
 	src, err := NewMapProvider(func(context.Context) (map[string]any, error) {
 		return map[string]any{"tags": tags}, nil

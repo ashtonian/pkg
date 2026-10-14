@@ -7,7 +7,6 @@ import (
 	"maps"
 	"os"
 	"reflect"
-	"slices"
 
 	"github.com/go-viper/mapstructure/v2"
 	"github.com/knadh/koanf/parsers/yaml"
@@ -318,8 +317,16 @@ func (o *options) log() *slog.Logger {
 // decodeHook composes the caller's decode hooks, first, with the built-in
 // ones: string → time.Duration, comma-separated string → slice (koanf's
 // defaults do not split env values and tag defaults), TextUnmarshaler.
-func (o *options) decodeHook() mapstructure.DecodeHookFunc {
-	hooks := append(slices.Clone(o.decodeHooks),
+func (o *options) decodeHook(observe func(mapstructure.DecodeHookFunc) mapstructure.DecodeHookFunc) mapstructure.DecodeHookFunc {
+	var hooks []mapstructure.DecodeHookFunc
+	if len(o.decodeHooks) > 0 {
+		custom := mapstructure.ComposeDecodeHookFunc(o.decodeHooks...)
+		if observe != nil {
+			custom = observe(custom)
+		}
+		hooks = append(hooks, custom)
+	}
+	hooks = append(hooks,
 		mapstructure.StringToTimeDurationHookFunc(),
 		mapstructure.StringToSliceHookFunc(","),
 		mapstructure.TextUnmarshallerHookFunc(),

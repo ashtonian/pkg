@@ -647,13 +647,13 @@ db.password  [REDACTED]  environment APP_DB_PASSWORD
 
 This is `ExamplePrintExplain`. Each key's `Origin` is recorded as the sources merge, never by loading again or comparing values:
 
-- **Input** is the source the merge kept: `tag_default`, `defaults`, `base_provider N`, `file <path>`, `environment <VARIABLE>`, `override_provider N`, a `flag --name` an `OriginProvider` named, or `zero` when nothing set the key. It follows koanf's merge exactly — maps merge entry by entry, an empty map changes nothing, a list is replaced whole — so a later source that sets the value a lower one had still owns it, and an element default filled after the merge is the tag's.
-- **Transforms** are the stages that changed the decoded value afterwards, in order: `secrets`, then `post_load N`. A stage that wrote the value the key already held is not listed.
-- **Exact** is false where decoding reshaped the input so that no one source can be named; `mixed` names a value compared whole (a sensitive map) that several sources set part of.
+- **Input** is the source the merge kept — what the key held when it was decoded: `tag_default`, `defaults`, `base_provider N`, `file <path>`, `environment <VARIABLE>`, `override_provider N`, a `flag --name` an `OriginProvider` named, or `zero` when nothing set the key. It follows koanf's merge exactly, on the tree koanf merges — a map keyed by anything but strings keyed by its keys' text, maps merged entry by entry, an empty map changing nothing, a list replaced whole — so a later source that sets the value a lower one had still owns it, and an element default filled after the merge, into a map entry or a list element, is the tag's.
+- **Transforms** are the stages that changed the decoded value afterwards, in order: `secrets`, then `post_load N`. A stage that wrote the value the key already held is not listed. With any listed, the value is the last stage's — computed from whatever it read — and Input names only what it replaced; a key a hook added has Input `zero`.
+- **Exact** is false where Input cannot be named with certainty: decoding reshaped the input — a weakly decoded shape, or a decode hook that rebuilt a map or list — so Input is the one source of what the value was decoded from, or `unknown`. `mixed` names a value compared whole (a sensitive map) that several sources set part of.
 
-A source is only ever named — a path, a variable, a flag, a provider's position — never quoted. A provider that knows more than its position implements `OriginProvider`: one read returns its data and a source per key, a section's covering the keys beneath it. `kongprovider` names the flag behind each value, its canonical name however it was typed.
+A source is only ever named — a path, a variable, a flag, a provider's position — never quoted. A provider that knows more than its position implements `OriginProvider`: one read returns its data and a source per key, a section's covering the keys beneath it. An annotation must name a key the provider returned, with the selectors its shape takes (`labels["team"]`, not `labels.team`); two that name one key with different sources fail the load. `kongprovider` names the flag behind each value, its canonical name however it was typed.
 
-Recording copies the decoded config and compares it around the secret populator and each post-load hook; on a small nested config with one hook, a load took about a third longer and allocated 1.7 times as much (`BenchmarkLoad`). `Load` records nothing, and a reloader records only `WithProvenance`.
+Recording builds a tree of what each source set as the sources merge, copies the decoded config before the secret populator and each post-load hook and compares it after, and walks the final config once for the rows. On a 256-route config (3,329 values) with one hook, `LoadSnapshot` takes about 1.3 times `Load`'s time and 1.25 times its bytes, and a hook that rewrites every route adds little more (`BenchmarkLoad`). `Load` records nothing, and a reloader records only `WithProvenance`.
 
 ## Kong integration
 
@@ -1284,7 +1284,7 @@ The package's own file-watch tests use the operating system's notifications (ino
 | `secrets.go` | `SecretsFrom`: `secret` tags resolved through a fetch function |
 | `keyof.go` | `KeyOf`, `KeyOfValue`: a field's key from its address |
 | `snapshot.go` | `Snapshot`, `ReloadStats`, `ApplierStatus`, `ApplyOutcome`, `Problem`, `Diagnose`, `ReloadResult`, `ReloadEvent`: reload state and outcomes as data |
-| `provenance.go` | `LoadSnapshot`, `Origin`, `Source`, `OriginProvider`: origins recorded as the sources merge, stage changes found by comparison |
+| `provenance.go` | `LoadSnapshot`, `Origin`, `Source`, `OriginProvider`: origins recorded on the tree koanf merges, stage changes found by comparison, rows from one walk |
 | `explain.go` | `PrintExplain` |
 | `jsonschema.go` | `JSONSchema[T]`: the schema graph as an advisory Draft 2020-12 schema, defaults and rules translated |
 | `applier.go` | `Applier`, `WithApplier`, `ApplyError`: prefix ownership, acknowledgements held as differences from the published config and rebased per reload, structure transitions, retries |
@@ -1292,7 +1292,7 @@ The package's own file-watch tests use the operating system's notifications (ino
 | `schema.go` | The schema graph every walk shares, the walk cursor (key, pattern, owner, sensitivity), `FieldFor[T]` |
 | `path.go` | The key grammar: typed key paths, rendering and parsing |
 | `native.go` | Decoder and validator names translated into the key grammar against the keys present |
-| `diff.go` | `Diff[T]`, `Change`, `Value`; the comparison engine: each config's keys flattened in walk order, two lists compared |
+| `diff.go` | `Diff[T]`, `Change`, `Value`; the comparison walk: two configs side by side, cycle-checked per side, allocating only for keys that differ |
 | `render.go` | The ordered value tree, typed scalars, the YAML and JSON writers, `RedactedTree` |
 | `template.go` | `PrintTemplate[T]`: a config file from the struct, defaults decoded as a load decodes them |
 | `envout.go` | `PrintEnv`: the loader's variable names, checked against the environment layer's own reading |

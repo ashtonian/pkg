@@ -93,6 +93,7 @@ type fileDigests map[string][sha256.Size]byte
 type loader struct {
 	k       *koanf.Koanf
 	root    reflect.Type
+	schema  *schemaNode
 	sources []string
 	origins *originNode // nil without provenance
 }
@@ -100,20 +101,33 @@ type loader struct {
 // add merges data, the tree of the source called name, whose values label
 // attributes. A source that sets one field under two spellings fails.
 func (l *loader) add(name string, data map[string]any, label labeler) error {
-	var w keyWalk
-	tree := w.tree(l.root, data)
-	if len(w.twice) > 0 {
-		return fmt.Errorf("loading %s: %w: keys spelled two ways set one field: %s", name, ErrValidation, strings.Join(w.twice, ", "))
+	tree, err := l.rewrite(name, data)
+	if err != nil {
+		return err
 	}
 	return l.merge(name, tree, label)
 }
 
+// rewrite is data as it merges: maps keyed by anything but strings keyed
+// by their text, as koanf keys them, and every key naming a field spelled
+// as the field is.
+func (l *loader) rewrite(name string, data map[string]any) (map[string]any, error) {
+	var w keyWalk
+	tree := w.tree(l.root, textKeyed(data))
+	if len(w.twice) > 0 {
+		return nil, fmt.Errorf("loading %s: %w: keys spelled two ways set one field: %s", name, ErrValidation, strings.Join(w.twice, ", "))
+	}
+	return tree, nil
+}
+
+// merge merges tree into the load and, with provenance, the same tree into
+// the origins: what koanf merges and what is attributed are one tree.
 func (l *loader) merge(name string, tree map[string]any, label labeler) error {
 	if err := l.k.Load(confmap.Provider(tree, ""), nil); err != nil {
 		return fmt.Errorf("loading %s: %w: %w", name, ErrSource, err)
 	}
 	if l.origins != nil {
-		l.origins.merge(tree, label, nil)
+		l.origins.merge(tree, &originMerge{label: label})
 	}
 	l.sources = append(l.sources, name)
 	return nil
@@ -130,12 +144,11 @@ func (l *loader) addProvider(ctx context.Context, name string, p providerSource,
 		if err != nil {
 			return fmt.Errorf("loading %s: %w: %w", name, ErrSource, err)
 		}
-		var w keyWalk
-		tree := w.tree(l.root, data)
-		if len(w.twice) > 0 {
-			return fmt.Errorf("loading %s: %w: keys spelled two ways set one field: %s", name, ErrValidation, strings.Join(w.twice, ", "))
+		tree, err := l.rewrite(name, data)
+		if err != nil {
+			return err
 		}
-		label, err := annotationLabeler(l.root, tree, annotations, src)
+		label, err := annotationLabeler(l.schema, tree, annotations, src)
 		if err != nil {
 			return fmt.Errorf("loading %s: %w: %w", name, ErrSource, err)
 		}
@@ -193,10 +206,10 @@ func load[T any](ctx context.Context, o *options) (loaded[T], error) {
 	}
 	// A fresh instance per load: nothing from an earlier load (a key since
 	// deleted from a file, say) can survive into this one.
-	l := &loader{k: koanf.New("."), root: root}
+	l := &loader{k: koanf.New("."), root: root, schema: schema}
 	var rec *originRecorder
 	if o.provenance {
-		rec = &originRecorder{schema: schema, tree: newOriginRoot()}
+		rec = newOriginRecorder(schema)
 		l.origins = rec.tree
 	}
 	fields := Fields[T]()
@@ -259,16 +272,20 @@ func load[T any](ctx context.Context, o *options) (loaded[T], error) {
 
 	merged := l.k.Raw()
 	fillElementDefaults(root, merged)
-	if l.origins != nil {
-		l.origins.fill(merged, nil)
+	if rec != nil {
+		rec.values = rec.tree.fill(merged)
 	}
 	cfg := new(T)
 	// The decoder's own record of the keys it left unused is what strict
 	// keys checks, so strictness follows decoding exactly: squash, remain,
 	// custom decoders, decode hooks and weak typing included.
 	var md mapstructure.Metadata
+	var observe func(mapstructure.DecodeHookFunc) mapstructure.DecodeHookFunc
+	if rec != nil {
+		observe = rec.observeHook
+	}
 	dec, err := mapstructure.NewDecoder(&mapstructure.DecoderConfig{
-		DecodeHook:       o.decodeHook(),
+		DecodeHook:       o.decodeHook(observe),
 		WeaklyTypedInput: true,
 		Result:           cfg,
 		TagName:          "koanf",
@@ -300,16 +317,7 @@ func load[T any](ctx context.Context, o *options) (loaded[T], error) {
 		if rec == nil {
 			return run()
 		}
-		if err := rec.snapshot(cv); err != nil {
-			return fmt.Errorf("recording provenance: %w", err)
-		}
-		if err := run(); err != nil {
-			return err
-		}
-		if err := rec.changed(cv, src); err != nil {
-			return fmt.Errorf("recording provenance: %w", err)
-		}
-		return nil
+		return rec.stage(cv, src, run)
 	}
 	if o.secrets != nil {
 		if err := stage(Source{Kind: SourceSecrets}, func() error {

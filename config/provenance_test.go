@@ -9,6 +9,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"reflect"
 	"testing"
 
 	"github.com/knadh/koanf/providers/confmap"
@@ -217,6 +218,118 @@ func TestProvenance_Reloader(t *testing.T) {
 	plain, err := NewReloader[provCfg](t.Context(), []Option{WithFile(file + ".absent"), WithSkipValidation()})
 	require.NoError(t, err)
 	assert.Nil(t, plain.Snapshot().Provenance, "recorded only on request")
+}
+
+// A map keyed by anything but strings merges as koanf merges it — by its
+// keys' text, entry by entry — and is attributed the same way.
+func TestProvenance_NormalizedMaps(t *testing.T) {
+	type cfg struct {
+		Labels map[string]string `koanf:"labels"`
+	}
+	base := &originProvider{data: map[string]any{"labels": map[any]any{"old": "base"}}}
+	over := &originProvider{data: map[string]any{"labels": map[any]any{"new": "override"}}}
+	snap, err := LoadSnapshot[cfg](t.Context(), WithBaseProvider(base, nil), WithOverrideProvider(over, nil), WithSkipValidation())
+	require.NoError(t, err)
+	assert.Equal(t, map[string]string{"old": "base", "new": "override"}, snap.Config.Labels)
+	assert.Equal(t, origin(SourceBase, "0"), snap.Provenance[`labels["old"]`])
+	assert.Equal(t, origin(SourceOverride, "0"), snap.Provenance[`labels["new"]`])
+	assert.IsType(t, map[any]any{}, base.data["labels"], "the provider's map is not changed")
+}
+
+// An element default is the tag's in a list as in a map, and in a list of
+// maps decoded into a map.
+func TestProvenance_ListElementDefaults(t *testing.T) {
+	type cfg struct {
+		List []provItem          `koanf:"list"`
+		Rows map[string]provItem `koanf:"rows"`
+	}
+	p := confmap.Provider(map[string]any{
+		"list": []any{map[string]any{"port": 3}},
+		"rows": []any{map[string]any{"a": map[string]any{"port": 4}}, map[string]any{"a": map[string]any{"port": 5}}},
+	}, "")
+	snap, err := LoadSnapshot[cfg](t.Context(), WithBaseProvider(p, nil), WithSkipValidation())
+	require.NoError(t, err)
+	assert.Equal(t, 50, snap.Config.List[0].Limit)
+	assert.Equal(t, origin(SourceBase, "0"), snap.Provenance["list[0].port"])
+	assert.Equal(t, origin(SourceTag, ""), snap.Provenance["list[0].limit"])
+	assert.Equal(t, 5, snap.Config.Rows["a"].Port, "the later element wins")
+	assert.Equal(t, origin(SourceBase, "0"), snap.Provenance[`rows["a"].port`])
+	assert.Equal(t, origin(SourceTag, ""), snap.Provenance[`rows["a"].limit`])
+}
+
+// A decode hook that rebuilds a map leaves what is in it untraceable.
+func TestProvenance_DecodeHookRebuildingIsInexact(t *testing.T) {
+	type cfg struct {
+		Left  string `koanf:"left"`
+		Right string `koanf:"right"`
+	}
+	swap := func(from, to reflect.Type, v any) (any, error) {
+		if to == reflect.TypeFor[cfg]() {
+			m := v.(map[string]any)
+			return map[string]any{"left": m["right"], "right": m["left"]}, nil
+		}
+		return v, nil
+	}
+	snap, err := LoadSnapshot[cfg](t.Context(),
+		WithDefaults(map[string]any{"left": "default-left"}),
+		WithBaseProvider(confmap.Provider(map[string]any{"right": "provider-right"}, ""), nil),
+		WithDecodeHook(swap), WithSkipValidation())
+	require.NoError(t, err)
+	assert.Equal(t, "provider-right", snap.Config.Left)
+	assert.False(t, snap.Provenance["left"].Exact)
+	assert.False(t, snap.Provenance["right"].Exact)
+
+	// A hook that converts values, and passes maps on as they came, keeps
+	// every origin exact.
+	passOn := func(from, to reflect.Type, v any) (any, error) { return v, nil }
+	snap, err = LoadSnapshot[cfg](t.Context(), WithDefaults(map[string]any{"left": "l"}), WithDecodeHook(passOn), WithSkipValidation())
+	require.NoError(t, err)
+	assert.Equal(t, origin(SourceDefaults, ""), snap.Provenance["left"])
+}
+
+// What a key held when decoded is its input: a hook that sets a key no
+// source set leaves it the zero value's, transformed.
+func TestProvenance_HookSetKeysKeepTheirInput(t *testing.T) {
+	type cfg struct {
+		Region string            `koanf:"region"`
+		Labels map[string]string `koanf:"labels"`
+	}
+	snap, err := LoadSnapshot[cfg](t.Context(),
+		WithDefaults(map[string]any{"labels.left": "from-default"}),
+		WithBaseProvider(confmap.Provider(map[string]any{"labels": map[string]any{"right": "from-provider"}}, ""), nil),
+		WithPostLoad(func(_ context.Context, c *cfg) error {
+			c.Region = "hook"
+			c.Labels["left"], c.Labels["right"] = c.Labels["right"], c.Labels["left"]
+			c.Labels["added"] = "hook"
+			return nil
+		}), WithSkipValidation())
+	require.NoError(t, err)
+	hook := []Source{{Kind: SourcePostLoad, Name: "0"}}
+	assert.Equal(t, Origin{Input: Source{Kind: SourceZero}, Transforms: hook, Exact: true}, snap.Provenance["region"])
+	assert.Equal(t, Origin{Input: Source{Kind: SourceDefaults}, Transforms: hook, Exact: true}, snap.Provenance[`labels["left"]`])
+	assert.Equal(t, Origin{Input: Source{Kind: SourceZero}, Transforms: hook, Exact: true}, snap.Provenance[`labels["added"]`])
+}
+
+// Annotations name keys by the selectors the config's shape takes, and two
+// spellings of one key cannot name two sources.
+func TestProvenance_AnnotationsAreChecked(t *testing.T) {
+	type cfg struct {
+		Labels map[string]string `koanf:"labels"`
+		Extra  any               `koanf:"extra"`
+	}
+	load := func(data map[string]any, annotations map[string]Source) error {
+		_, err := LoadSnapshot[cfg](t.Context(), WithBaseProvider(&originProvider{data: data, annotations: annotations}, nil), WithSkipValidation())
+		return err
+	}
+	labels := map[string]any{"labels": map[string]any{"team": "core"}}
+	require.ErrorIs(t, load(labels, map[string]Source{"labels.team": {Kind: SourceFlag, Name: "--a"}}), ErrSource, "a map entry takes a quoted key")
+	require.NoError(t, load(labels, map[string]Source{`labels["team"]`: {Kind: SourceFlag, Name: "--a"}}))
+
+	extra := map[string]any{"extra": map[string]any{"a": 1}}
+	err := load(extra, map[string]Source{"extra.a": {Kind: SourceFlag, Name: "--a"}, `extra["a"]`: {Kind: SourceFlag, Name: "--b"}})
+	require.ErrorIs(t, err, ErrSource)
+	assert.Contains(t, err.Error(), "different sources")
+	require.NoError(t, load(extra, map[string]Source{"extra.a": {Kind: SourceFlag, Name: "--a"}, `extra["a"]`: {Kind: SourceFlag, Name: "--a"}}))
 }
 
 func TestPrintExplain(t *testing.T) {

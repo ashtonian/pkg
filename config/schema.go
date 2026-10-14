@@ -41,11 +41,6 @@ type schemaField struct {
 	node   *schemaNode
 }
 
-// composite reports a node whose value has keys of its own beneath it.
-func (n *schemaNode) composite() bool {
-	return n.kind == nodeBranch || n.kind == nodeMap || n.kind == nodeList
-}
-
 type schemaEntry struct {
 	node *schemaNode
 	err  error
@@ -160,7 +155,6 @@ type cursor struct {
 	owner   Field // the nearest declared field: the key's own, an element's synthesized one, or the field holding an interface
 	tagged  bool  // beneath a field or squashed struct tagged sensitive:"true"
 	covered bool  // beneath a map, list or interface named like a credential, or a map key that is
-	dynamic bool  // beneath an interface: keys here are the value's, not the schema's
 }
 
 // sensitive reports whether the value at c is redacted: the rule
@@ -173,11 +167,6 @@ func (c cursor) intoField(f *schemaField) cursor {
 	next.path = c.path.field(f.key)
 	next.tagged = c.tagged || f.tagged
 	named := f.named
-	if c.dynamic {
-		// A struct inside an interface value: its field names still judge it.
-		next.covered = c.covered || named && f.node.kind != nodeBranch
-		return next
-	}
 	next.pattern = c.pattern.field(f.key)
 	if c.index != nil || len(c.path) == 0 {
 		next.index = append(slices.Clone(c.index), f.index...)
@@ -205,9 +194,6 @@ func (c cursor) intoEntry(s segment, elem reflect.Type) cursor {
 	if s.kind == segKey {
 		next.covered = c.covered || isSensitiveName(s.name)
 	}
-	if c.dynamic {
-		return next
-	}
 	next.pattern = c.pattern.any()
 	next.index = nil
 	next.owner = Field{
@@ -215,15 +201,6 @@ func (c cursor) intoEntry(s segment, elem reflect.Type) cursor {
 		Type:      elem,
 		Sensitive: next.tagged || next.covered,
 	}
-	return next
-}
-
-// intoDynamic steps into the value an interface holds: its keys belong to
-// the value, so the interface's field stays their owner.
-func (c cursor) intoDynamic() cursor {
-	next := c
-	next.dynamic = true
-	next.index = nil
 	return next
 }
 

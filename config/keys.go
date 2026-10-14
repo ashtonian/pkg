@@ -181,3 +181,57 @@ func matchKey(fields map[string]reflect.Type, k string) (string, reflect.Type, b
 	}
 	return "", nil, false
 }
+
+// textKeyed is data with each map keyed by anything but strings, held in
+// a map or list of it, keyed by its keys' text — koanf's normalization of a
+// source before it merges, applied to a copy so both the merge and the
+// origins see one tree. What needs no change is shared.
+func textKeyed(data map[string]any) map[string]any {
+	out, _ := stringKeysIn(data)
+	return out.(map[string]any)
+}
+
+func stringKeysIn(v any) (any, bool) {
+	switch x := v.(type) {
+	case map[string]any:
+		var out map[string]any
+		for k, e := range x {
+			if n, changed := stringKeysIn(e); changed {
+				if out == nil {
+					out = maps.Clone(x)
+				}
+				out[k] = n
+			}
+		}
+		if out == nil {
+			return x, false
+		}
+		return out, true
+	case map[any]any:
+		out := make(map[string]any, len(x))
+		for k, e := range x {
+			n, _ := stringKeysIn(e)
+			out[fmt.Sprintf("%v", k)] = n
+		}
+		return out, true
+	case []any:
+		// koanf looks at a list's maps only, not at lists inside it.
+		var out []any
+		for i, e := range x {
+			switch e.(type) {
+			case map[string]any, map[any]any:
+				if n, changed := stringKeysIn(e); changed {
+					if out == nil {
+						out = slices.Clone(x)
+					}
+					out[i] = n
+				}
+			}
+		}
+		if out == nil {
+			return x, false
+		}
+		return out, true
+	}
+	return v, false
+}
