@@ -37,6 +37,15 @@ var (
 	ErrReloadInProgress = errors.New("configuration reload already in progress")
 	// ErrReloaderStopped reports a call after Stop. It does NOT wrap ErrReload.
 	ErrReloaderStopped = errors.New("configuration reloader is stopped")
+	// ErrSchema reports a config type the package cannot address: a struct
+	// key holding a character keys use for structure (".", "[", "]", "*", a
+	// backslash, a quote or a control character), two fields with one key, a
+	// type that is not a struct where one is required, or a value Diff cannot
+	// compare (a non-nil func, channel or unsafe pointer).
+	ErrSchema = errors.New("invalid configuration schema")
+	// ErrKey reports a configuration key that does not parse, or that names
+	// no field of the config type.
+	ErrKey = errors.New("invalid configuration key")
 )
 
 // validationError carries ErrValidation together with the validator's own

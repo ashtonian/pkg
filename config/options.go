@@ -228,7 +228,7 @@ func WithDecodeHook(hook mapstructure.DecodeHookFunc) Option {
 // WithStrictKeys fails the load with [ErrValidation] when a config file,
 // provider or WithDefaults sets a key no field decodes — a typo, or a setting
 // that was removed — naming each such key (server.prot, items[0].prot,
-// named[primary].prot). The decoder reports the keys it did not use while it
+// named["primary"].prot). The decoder reports the keys it did not use while it
 // decodes the merged sources, so the check follows decoding exactly: into
 // slice elements and map entries of structs, through squashed structs, and
 // past input a decode hook or a self-decoding type consumes. A map's own

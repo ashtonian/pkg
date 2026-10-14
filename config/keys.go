@@ -6,7 +6,6 @@ import (
 	"maps"
 	"reflect"
 	"slices"
-	"strconv"
 	"strings"
 
 	"github.com/go-viper/mapstructure/v2"
@@ -27,7 +26,7 @@ type keyWalk struct {
 
 // tree rewrites the top level of a source.
 func (w *keyWalk) tree(root reflect.Type, data map[string]any) map[string]any {
-	out, ok := w.value(root, data, "").(map[string]any)
+	out, ok := w.value(root, data, nil).(map[string]any)
 	if !ok {
 		return data
 	}
@@ -49,7 +48,7 @@ func opaque(t reflect.Type) bool {
 	return p.Implements(mapstructureUnmarshaler) || t.Kind() == reflect.Struct && p.Implements(textUnmarshaler)
 }
 
-func (w *keyWalk) value(t reflect.Type, data any, path string) any {
+func (w *keyWalk) value(t reflect.Type, data any, path keyPath) any {
 	if data == nil {
 		return nil
 	}
@@ -68,7 +67,7 @@ func (w *keyWalk) value(t reflect.Type, data any, path string) any {
 	case (t.Kind() == reflect.Slice || t.Kind() == reflect.Array) && isList(v):
 		return w.elements(t.Elem(), v, path)
 	case (t.Kind() == reflect.Slice || t.Kind() == reflect.Array) && v.Kind() == reflect.Map:
-		return w.value(t.Elem(), data, path+"[0]") // weakly typed: a map is a one-element slice
+		return w.value(t.Elem(), data, path.index(0)) // weakly typed: a map is a one-element slice
 	}
 	return data
 }
@@ -79,7 +78,7 @@ func isList(v reflect.Value) bool {
 
 // structMap rewrites the keys of map v, decoded into struct type t. A map
 // keyed by anything but strings is keyed by their text, as koanf keys it.
-func (w *keyWalk) structMap(t reflect.Type, v reflect.Value, path string) any {
+func (w *keyWalk) structMap(t reflect.Type, v reflect.Value, path keyPath) any {
 	out := reflect.MakeMapWithSize(stringKeyed(v.Type()), v.Len())
 	fields := structKeys(t)
 	written := make(map[string]reflect.Value, v.Len())
@@ -94,40 +93,40 @@ func (w *keyWalk) structMap(t reflect.Type, v reflect.Value, path string) any {
 			continue
 		}
 		if prev, dup := claimed[key]; dup {
-			w.twice = append(w.twice, fmt.Sprintf("%s (as %s and %s)", joinKey(path, key), prev, k))
+			w.twice = append(w.twice, fmt.Sprintf("%s (as %q and %q)", path.field(key), prev, k))
 			continue
 		}
 		claimed[key] = k
-		out.SetMapIndex(reflect.ValueOf(key).Convert(out.Type().Key()), w.elem(out.Type().Elem(), ft, written[k], joinKey(path, key)))
+		out.SetMapIndex(reflect.ValueOf(key).Convert(out.Type().Key()), w.elem(out.Type().Elem(), ft, written[k], path.field(key)))
 	}
 	return out.Interface()
 }
 
 // mapValues follows the values of map v into element type elem; its keys are
 // the caller's and stay as written.
-func (w *keyWalk) mapValues(elem reflect.Type, v reflect.Value, path string) any {
+func (w *keyWalk) mapValues(elem reflect.Type, v reflect.Value, path keyPath) any {
 	out := reflect.MakeMapWithSize(v.Type(), v.Len())
 	for _, k := range v.MapKeys() {
-		out.SetMapIndex(k, w.elem(v.Type().Elem(), elem, v.MapIndex(k), fmt.Sprintf("%s[%v]", path, k.Interface())))
+		out.SetMapIndex(k, w.elem(v.Type().Elem(), elem, v.MapIndex(k), path.key(fmt.Sprint(k.Interface()))))
 	}
 	return out.Interface()
 }
 
 // elements follows each element of list v into type elem.
-func (w *keyWalk) elements(elem reflect.Type, v reflect.Value, path string) any {
+func (w *keyWalk) elements(elem reflect.Type, v reflect.Value, path keyPath) any {
 	out := reflect.New(v.Type()).Elem()
 	if v.Kind() == reflect.Slice {
 		out = reflect.MakeSlice(v.Type(), v.Len(), v.Len())
 	}
 	for i := range v.Len() {
-		out.Index(i).Set(w.elem(v.Type().Elem(), elem, v.Index(i), path+"["+strconv.Itoa(i)+"]"))
+		out.Index(i).Set(w.elem(v.Type().Elem(), elem, v.Index(i), path.index(i)))
 	}
 	return out.Interface()
 }
 
 // elem rewrites one held value, decoded into t, and returns it as a value
 // of the holding container's element type held.
-func (w *keyWalk) elem(held, t reflect.Type, v reflect.Value, path string) reflect.Value {
+func (w *keyWalk) elem(held, t reflect.Type, v reflect.Value, path keyPath) reflect.Value {
 	if v.Kind() == reflect.Interface {
 		v = v.Elem()
 	}
@@ -181,11 +180,4 @@ func matchKey(fields map[string]reflect.Type, k string) (string, reflect.Type, b
 		}
 	}
 	return "", nil, false
-}
-
-func joinKey(path, key string) string {
-	if path == "" {
-		return key
-	}
-	return path + "." + key
 }

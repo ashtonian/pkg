@@ -187,7 +187,7 @@ func TestGetConfig_AmbiguousMapEnvIsRefused(t *testing.T) {
 	if !errors.Is(err, ErrValidation) {
 		t.Fatalf("GetConfig = %v, want ErrValidation for the ambiguous variable", err)
 	}
-	for _, want := range []string{"AMBIG_FEATURES_AUDIT_MAX_PAGE_SIZE", "features.audit.max_page_size", "features.audit_max_page.size"} {
+	for _, want := range []string{"AMBIG_FEATURES_AUDIT_MAX_PAGE_SIZE", `features["audit"].max_page_size`, `features["audit_max_page"].size`} {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("error %q does not name %s", err, want)
 		}

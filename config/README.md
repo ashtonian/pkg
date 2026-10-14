@@ -167,9 +167,19 @@ Key rules (`Fields[T]` is their single implementation, shared by defaults, envir
 
 - A key segment is the `koanf` tag's name, or the lowercased field name when the tag has none.
 - Unexported fields, `koanf:"-"` and `,remain` are not keys; `,squash` merges a struct's keys into its parent.
-- Pointers are followed. A struct implementing `encoding.TextUnmarshaler` (`time.Time`, `netip.Addr`) is one key decoded from one string, not a subtree.
-- Maps, slices, arrays and interfaces are keys of their own; a map's entries are addressed beneath it (`labels.team`). The `default` tags of a map's or slice's element struct apply to every entry the sources create, below what they set: an entry `features.audit` gets `limit: 50` from `Limit int default:"50"` unless a source set it. An entry or field set to `null` is explicit and stays null, so a null that turns an optional part off is not turned back on; write `{}` for an entry that should take its defaults.
+- Pointers are followed. A struct that decodes itself — implementing `encoding.TextUnmarshaler` (`time.Time`, `netip.Addr`) or mapstructure's `Unmarshaler` — is one key decoded whole, not a subtree.
+- A key segment may not hold `.`, `[`, `]`, `*`, a backslash, a quote or a control character, and two fields of one struct may not share a key: `Load`, `Diff` and `FieldFor` refuse such a type with `ErrSchema`.
+- Maps, slices, arrays and interfaces are keys of their own; a map's entries are addressed beneath it (`labels["team"]`). The `default` tags of a map's or slice's element struct apply to every entry the sources create, below what they set: an entry `features.audit` gets `limit: 50` from `Limit int default:"50"` unless a source set it. An entry or field set to `null` is explicit and stays null, so a null that turns an optional part off is not turned back on; write `{}` for an entry that should take its defaults.
 - A recursive type stops at the recursion: its nested part decodes from files but has no default, environment or flag key.
+
+Every output names a value by one grammar — printed configs, usage, decode, validation and strict-key errors, `Diff` and `FieldFor`:
+
+| Key | Names |
+|---|---|
+| `db.host` | a struct field |
+| `items[0].port` | a field of a list element |
+| `named["primary"].port` | a field of a map entry; the map key is always quoted, so one holding `.` or `]` cannot read as structure |
+| `items[*].port`, `limits[*]` | any element or entry: a schema pattern, as `PrintUsage` and `FieldFor` report it |
 
 ## Sources and precedence
 
@@ -211,8 +221,8 @@ With `WithEnvPrefix("APP")`, each key's variable is the prefix plus its path upp
 |----------|-----|
 | `APP_DB_MAX_CONNS` | `db.max_conns` |
 | `APP_LISTEN_ADDR` (a `netip.Addr`) | `listen_addr` |
-| `APP_FEATURES_AUDIT_LOGS_MAX_PAGE_SIZE` (`Features map[string]Limits`) | `features.audit_logs.max_page_size` |
-| `APP_LABELS_TEAM_NAME` (`Labels map[string]string`) | `labels.team_name` |
+| `APP_FEATURES_AUDIT_LOGS_MAX_PAGE_SIZE` (`Features map[string]Limits`) | `features["audit_logs"].max_page_size` |
+| `APP_LABELS_TEAM_NAME` (`Labels map[string]string`) | `labels["team_name"]` |
 | `APP_TAGS=web,api` (`Tags []string`) | `tags` = `[web api]` |
 
 A map of structs reads `PREFIX_<MAP>_<KEY>_<FIELD>`, where `FIELD` is one of the element's keys and `KEY` is the rest; any other map reads `PREFIX_<MAP>_<KEY>`. Map keys are lower-cased.
@@ -235,7 +245,7 @@ semicolons := func(from, to reflect.Type, data any) (any, error) {
 cfg, err := config.Load[AppConfig](ctx, config.WithDecodeHook(mapstructure.DecodeHookFuncType(semicolons)))
 ```
 
-`WithStrictKeys()` fails the load with `ErrValidation` when a file, provider or `WithDefaults` sets a key no field decodes — a typo, or a setting that was removed — naming each key (`server.prot`, `items[0].prot`, `named[primary].prot`). The decoder reports the keys it did not use as it decodes the merged sources, so the check follows decoding exactly: into slice elements and the entries of a map of structs, through squashed structs, and past input a decode hook or a self-decoding type consumes. A map's own keys (`labels.example.com`), anything beneath an interface, and keys a `,remain` field collects are accepted. The merged tree does not record which source set a key, so the error names keys only. Environment variables cannot trip it: one that fits no key is not loaded.
+`WithStrictKeys()` fails the load with `ErrValidation` when a file, provider or `WithDefaults` sets a key no field decodes — a typo, or a setting that was removed — naming each key (`server.prot`, `items[0].prot`, `named["primary"].prot`). The decoder reports the keys it did not use as it decodes the merged sources, so the check follows decoding exactly: into slice elements and the entries of a map of structs, through squashed structs, and past input a decode hook or a self-decoding type consumes. A map's own keys (`labels["example.com"]`), anything beneath an interface, and keys a `,remain` field collects are accepted. The merged tree does not record which source set a key, so the error names keys only. Environment variables cannot trip it: one that fits no key is not loaded.
 
 ```txt
 unmarshaling config: configuration validation failed: keys no field of main.AppConfig decodes: server.prot
@@ -398,11 +408,11 @@ Once the watch is armed, every watched file is compared with what the last load 
 
 ## Printing and usage
 
-`PrintRedacted(cfg)` writes a config's keys and values as a table, JSON (`WithFormat(config.FormatJSON)`) or shell lines (`FormatEnv`); `RedactedMap(cfg)` returns them as a `map[string]string` for a status endpoint or a log line. Both expand maps and slices entry by entry (`pools[0].dsn`, `settings[password]`) so nothing is printed whole while something inside it is unchecked; a value graph that loops back prints `[CYCLE]`.
+`PrintRedacted(cfg)` writes a config's keys and values as a table, JSON (`WithFormat(config.FormatJSON)`) or shell lines (`FormatEnv`); `RedactedMap(cfg)` returns them as a `map[string]string` for a status endpoint or a log line. Both expand maps and slices entry by entry (`pools[0].dsn`, `settings["password"]`) so nothing is printed whole while something inside it is unchecked; a value graph that loops back prints `[CYCLE]`.
 
 A value is redacted when its field, or any struct, slice or map holding it, is tagged `sensitive:"true"`; when a name it sits under contains `password`, `secret`, `token`, `key`, `credential`, `auth`, `private`, `apikey`, `api_key` or `dsn` — its own field name, the name of a map or slice holding it, or any map key above it; a struct field's name does not cover the struct it holds, so an `Auth` block's `issuer` still prints. A value the walk prints whole without looking inside — a struct decoded from text or by its own decoder, or a slice of them — is redacted when its type could hold a credential, since its `%v` text would show every field. A pointer, map or slice that leads back to one being printed prints `[CYCLE]`. The same rule withholds values from decode errors and marks `Field.Sensitive`.
 
-`PrintUsage[T](envPrefix)` lists what an operator can set — key, environment variable, type, default, whether it is required, description — as a table, JSON, or (`FormatEnv`) a commented `export` template. A map's entries are rows with a `<key>` placeholder and a slice of structs' elements rows with `<i>`, their element defaults included, since those apply to every entry. A default that is, or could hold, a sensitive value is withheld — a sensitive field's, or a map's or interface's, whose keys only a decoded value reveals; `Field.PrintableDefault` is the rule, and `kongprovider.HelpFromConfig` applies it too:
+`PrintUsage[T](envPrefix)` lists what an operator can set — key, environment variable, type, default, whether it is required, description — as a table, JSON, or (`FormatEnv`) a commented `export` template. A map's entries are rows keyed by a pattern (`features[*].max_page_size`, with `APP_FEATURES_<KEY>_MAX_PAGE_SIZE`) and a slice of structs' elements rows like `items[*].port`, their element defaults included, since those apply to every entry. A default that is, or could hold, a sensitive value is withheld — a sensitive field's, or a map's or interface's, whose keys only a decoded value reveals; `Field.PrintableDefault` is the rule, and `kongprovider.HelpFromConfig` applies it too:
 
 ```txt
 KEY       ENV           TYPE           DEFAULT     DESCRIPTION
@@ -413,6 +423,40 @@ password  APP_PASSWORD  string         [REDACTED]
 ```
 
 This is `ExamplePrintUsage`; wire it to a `--help-config` flag or a `usage` subcommand.
+
+## Comparing configs
+
+`Diff(old, next)` lists every key whose value differs between two configs of one struct type, in declaration order, map entries by key, list elements by index. It compares decoded values, never their text, so `[]string{"a,b"}` and `[]string{"a", "b"}` differ, and an interface holding `1` differs from one holding `"1"`. Each `Change` carries the runtime key, the declared `Field` it belongs to (`FieldFor` gives the same for any key), and the old and new `Value`: present or not, nil or not, its type, and its text — redacted on both sides when the value is sensitive.
+
+```go
+changes, err := config.Diff(old, next)
+for _, c := range changes {
+	switch {
+	case c.Structural:
+		fmt.Printf("%s: added (%s)\n", c.Key, c.Field.Path)
+	case !c.Old.Present:
+		fmt.Printf("%s: + %s\n", c.Key, c.New.Text)
+	default:
+		fmt.Printf("%s: %s -> %s\n", c.Key, c.Old.Text, c.New.Text)
+	}
+}
+```
+
+```txt
+port: 8080 -> 9090
+password: [REDACTED] -> [REDACTED]
+tags[1]: + api
+features["audit"].rate: 10 -> 20
+features["export"]: added (features[*])
+features["export"].rate: + 1
+```
+
+This is `ExampleDiff`. The rules:
+
+- Lists compare by index: removing the first of three elements changes the first two and removes the third. A diff cannot know a list element's identity; reconcile by your own ID where one exists.
+- A struct, map, list or interface that appears, disappears or turns nil — a nil collection becoming empty included — is a `Structural` change at its key, followed by the keys beneath it. An interface whose value changes type is one structural change.
+- Values decoded whole compare with `reflect.DeepEqual`: two `time.Time` values for one instant in different locations differ, and NaN never equals itself. A non-nil func, channel or unsafe pointer is an `ErrSchema` error.
+- A sensitive map, list or interface is compared whole, so the keys it holds — which may themselves be secrets — are never listed.
 
 ## Kong integration
 
@@ -568,6 +612,8 @@ For a CLI tool whose config file only supplies flag defaults, Kong's own `kong.C
 
 - `PrintRedacted(cfg, opts...) error` — table, JSON or shell output, sensitive values redacted.
 - `RedactedMap(cfg) map[string]string` — key → value text, sensitive values redacted.
+- `Diff[T](old, next) ([]Change, error)` — every key whose value differs; `Change{Key, Structural, Field, Old, New}`, each side a `Value{Present, Nil, Type, Text, Redacted}`.
+- `FieldFor[T](key) (Field, error)` — the declared field a key belongs to: `items[0].port` → the `items[*].port` pattern.
 - `PrintUsage[T](envPrefix, opts...) error` — every settable key with its variable, type, default and description.
 
 ### kongprovider
@@ -593,6 +639,8 @@ The package defines no error codes: every error wraps one category sentinel toge
 | `ErrReload` | Usually | A reload failed and the previous config is live; wraps the load error. |
 | `ErrReloadInProgress` | Yes | A manual reload found one running. Does not match `ErrReload`. |
 | `ErrReloaderStopped` | No | A reload was requested after `Stop`. Does not match `ErrReload`. |
+| `ErrSchema` | No | The config type cannot be addressed: a key holding a character keys use for structure, two fields with one key, or a non-struct where one is required; or `Diff` met a value it cannot compare. A programming error, not configuration. |
+| `ErrKey` | No | A key given to `FieldFor` does not parse or names no field. |
 
 `errors.Is(err, config.ErrReload) && errors.Is(err, config.ErrFileParse)` both hold for a reload that hit a syntax error.
 
@@ -738,6 +786,10 @@ The package's own file-watch tests use the operating system's notifications (ino
 | `options.go` | `Option` and every load option, `SecretPopulator`, `Validator` |
 | `deepcopy.go` | The `WithDefaults` deep copy |
 | `fields.go` | `Fields[T]` key-tree walker and sensitivity, `FieldName`, `DefaultsFromTags[T]` |
+| `schema.go` | The schema graph every walk shares, the walk cursor (key, pattern, owner, sensitivity), `FieldFor[T]` |
+| `path.go` | The key grammar: typed key paths, rendering and parsing |
+| `native.go` | Decoder and validator names translated into the key grammar against the keys present |
+| `diff.go` | `Diff[T]`, `Change`, `Value` |
 | `env.go` | Environment-variable naming from the key tree: static keys, map entries, ambiguity |
 | `decode_errors.go` | Decode errors with sensitive values withheld |
 | `reloader.go` | `Reloader[T]`, `NewReloader`, `NewReloaderFunc`, the single-flight slot, `Arm`, `Run`, `Stop`, stats |

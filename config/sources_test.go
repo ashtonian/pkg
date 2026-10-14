@@ -245,7 +245,7 @@ func TestLoad_StrictKeysFollowDecoding(t *testing.T) {
 
 	for source, key := range map[string]string{
 		"items:\n  - prot: 80\n":             "items[0].prot",
-		"named:\n  primary:\n    prot: 80\n": "named[primary].prot",
+		"named:\n  primary:\n    prot: 80\n": `named["primary"].prot`,
 	} {
 		_, err := strict(t, source)
 		require.ErrorIs(t, err, ErrValidation, source)
@@ -284,7 +284,7 @@ func TestLoad_KeySpellingFollowsTheField(t *testing.T) {
 
 	_, err = Load[cfg](t.Context(), WithBaseProvider(rawBytes("port: 1\nPort: 2\n"), yaml.Parser()))
 	require.ErrorIs(t, err, ErrValidation)
-	assert.Contains(t, err.Error(), "port (as Port and port)")
+	assert.Contains(t, err.Error(), `port (as "Port" and "port")`)
 }
 
 // A parser's own message may quote the source, so a parse failure's message

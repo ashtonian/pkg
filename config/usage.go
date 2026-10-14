@@ -43,7 +43,8 @@ type usageRow struct {
 	Required    bool   `json:"required,omitempty"`
 	Sensitive   bool   `json:"sensitive,omitempty"`
 	Description string `json:"description,omitempty"`
-	// pattern marks a map entry: Key and Env hold a <key> placeholder.
+	// pattern marks a map entry or list element: Key holds [*], and Env a
+	// <KEY> placeholder or nothing.
 	pattern    bool
 	hasDefault bool
 	withheld   bool // the default exists but is not shown
@@ -53,8 +54,9 @@ type usageRow struct {
 // environment variable that sets it under envPrefix (none when envPrefix is
 // empty), its type, its `default` tag, whether `validate:"required"` makes it
 // mandatory, and its `desc` tag. A map's entries are one row per element
-// field, written with a <key> placeholder, and a slice of structs' elements
-// one row per element field with an <i> placeholder and no variable. A
+// field, keyed by the pattern features[*].limit with a <KEY> placeholder in
+// the variable, and a slice of structs' elements one row per element field,
+// items[*].port, with no variable. A
 // default diagnostics must withhold (see [Field.PrintableDefault]) prints as
 // [REDACTED].
 //
@@ -109,11 +111,11 @@ func usageRows(root reflect.Type, prefix string) []usageRow {
 		if isList { // elements are set in files; no variable addresses one
 			for _, leaf := range fieldsOf(elem) {
 				leaf.Sensitive = leaf.Sensitive || f.Sensitive
-				rows = append(rows, usagePattern(usageRowOf(leaf, f.Path+"[<i>]."+leaf.Path, "")))
+				rows = append(rows, usagePattern(usageRowOf(leaf, f.Path+"[*]."+leaf.Path, "")))
 			}
 			continue
 		}
-		key, env := f.Path+".<key>", ""
+		key, env := f.Path+"[*]", ""
 		if prefix != "" {
 			env = f.EnvVar(prefix) + "_<KEY>"
 		}

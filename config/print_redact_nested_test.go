@@ -104,10 +104,10 @@ func TestRedaction_DynamicCycles(t *testing.T) {
 		Settings map[string]any
 		List     []any
 	}{m, s})
-	if out["settings[self]"] != cycleValue || out["list[1]"] != cycleValue {
-		t.Fatalf("cycles = %v, want %q at settings[self] and list[1]", out, cycleValue)
+	if out[`settings["self"]`] != cycleValue || out["list[1]"] != cycleValue {
+		t.Fatalf(`cycles = %v, want %q at settings["self"] and list[1]`, out, cycleValue)
 	}
-	if out["settings[name]"] != "n" || out["list[0][k]"] != "v" {
+	if out[`settings["name"]`] != "n" || out[`list[0]["k"]`] != "v" {
 		t.Fatalf("the acyclic parts must still print: %v", out)
 	}
 }

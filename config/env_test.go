@@ -32,8 +32,8 @@ func TestLoad_EnvAmbiguityAcrossDestinations(t *testing.T) {
 		readings  []string
 	}{
 		{"static fields", "AMB_DB_PORT", []string{"db.port", "db_port"}},
-		{"two maps", "AMB_LIMITS_PER_TENANT_LIMIT", []string{"limits.per_tenant.limit", "limits_per.tenant.limit"}},
-		{"map of structs and map of scalars", "AMB_FEATURES_FLAGS_X_LIMIT", []string{"features.flags_x.limit", "features_flags.x_limit"}},
+		{"two maps", "AMB_LIMITS_PER_TENANT_LIMIT", []string{`limits["per_tenant"].limit`, `limits_per["tenant"].limit`}},
+		{"map of structs and map of scalars", "AMB_FEATURES_FLAGS_X_LIMIT", []string{`features["flags_x"].limit`, `features_flags["x_limit"]`}},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Setenv(tt.env, "7")

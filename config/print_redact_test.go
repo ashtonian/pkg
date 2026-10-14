@@ -43,7 +43,7 @@ func TestRedaction_SensitiveContainerTag(t *testing.T) {
 	cfg := newRedactContainers()
 
 	m := RedactedMap(cfg)
-	for _, key := range []string{"block.value", "ptr.value", "blocks[0].value", "by_name[a].value"} {
+	for _, key := range []string{"block.value", "ptr.value", "blocks[0].value", `by_name["a"].value`} {
 		if m[key] != redactedValue {
 			t.Errorf("RedactedMap[%s] = %v, want %s", key, m[key], redactedValue)
 		}
@@ -148,11 +148,11 @@ func TestRedaction_DynamicMapKeys(t *testing.T) {
 
 	m := RedactedMap(cfg)
 	want := map[string]string{
-		"settings[password]":        redactedValue,
-		"settings[region]":          "us",
-		"settings[nested][api_key]": redactedValue,
-		"settings[nested][zone]":    "a",
-		"settings[list][0][token]":  redactedValue,
+		`settings["password"]`:          redactedValue,
+		`settings["region"]`:            "us",
+		`settings["nested"]["api_key"]`: redactedValue,
+		`settings["nested"]["zone"]`:    "a",
+		`settings["list"][0]["token"]`:  redactedValue,
 	}
 	for key, value := range want {
 		if m[key] != value {

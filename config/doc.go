@@ -25,7 +25,10 @@
 //
 // [Fields] is the one definition of how a struct becomes keys: the koanf tag
 // names a segment (",squash" merges into the parent, "-" skips), pointers are
-// followed, and an encoding.TextUnmarshaler struct is one key. Defaults
+// followed, and a struct that decodes itself is one key. Every output names a
+// value in one grammar — db.host, items[0].port, named["primary"].port, and
+// items[*].port for any element — and [FieldFor] maps a key back to its
+// declared field. Defaults
 // (default:"..."), environment names, redacted printing, [PrintUsage] and the
 // kongprovider flag bridge all use it. Other tags: validate (go-playground
 // rules), sensitive:"true" (redacted everywhere), desc, secret (read by your
@@ -127,6 +130,9 @@
 // container at all; mount the volume without subPath.
 //
 // # Diagnostics
+//
+// [Diff] lists every key whose value differs between two configs, comparing
+// decoded values, with sensitive values redacted.
 //
 // [PrintRedacted] and [RedactedMap] show a config with every sensitive value
 // redacted: tagged sensitive:"true", beneath such a field, named like a

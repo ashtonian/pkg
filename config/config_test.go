@@ -801,7 +801,7 @@ func TestPrintRedacted_EnvIsShellSafe(t *testing.T) {
 	if err := PrintRedacted(cfg, WithFormat(FormatEnv), WithWriter(&buf), WithSortByName()); err != nil {
 		t.Fatal(err)
 	}
-	want := "export LABELS_TEAM_A_B_='x'\nexport NAME='two words'\nexport QUOTE='it'\\''s'\n"
+	want := "export LABELS_TEAM_A_B='x'\nexport NAME='two words'\nexport QUOTE='it'\\''s'\n"
 	if buf.String() != want {
 		t.Fatalf("env output:\n%s\nwant:\n%s", buf.String(), want)
 	}
@@ -1422,8 +1422,8 @@ func TestRedactedMap_Map(t *testing.T) {
 	m := RedactedMap(c)
 
 	// Maps expand one entry per key, so a key can be judged sensitive.
-	if m["labels[env]"] != "prod" {
-		t.Errorf("labels[env] = %v, want prod (map = %v)", m["labels[env]"], m)
+	if m[`labels["env"]`] != "prod" {
+		t.Errorf(`labels["env"] = %v, want prod (map = %v)`, m[`labels["env"]`], m)
 	}
 }
 

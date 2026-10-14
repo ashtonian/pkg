@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
-	"strings"
 	"testing"
 	"time"
 
@@ -43,7 +42,7 @@ func TestLoad_DecodeErrorWithholdsSensitiveValues(t *testing.T) {
 		{"tag", "DECODE_TAGGED", "tagged"},
 		{"field name", "DECODE_PASSWORD", "password"},
 		{"beneath a tagged struct", "DECODE_VAULT_PIN", "vault.pin"},
-		{"map key name", "DECODE_LABELS_TOKEN", "labels[token]"},
+		{"map key name", "DECODE_LABELS_TOKEN", `labels["token"]`},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Setenv(tt.env, leaked)
@@ -106,56 +105,84 @@ func TestReload_DecodeErrorWithholdsSensitiveValues(t *testing.T) {
 	assert.False(t, errors.Is(err, ErrReloadInProgress))
 }
 
-// The decoder's names resolve through squashed structs, map keys and slice
-// indexes; a name that does not resolve is treated as sensitive.
-func TestDecodeTarget(t *testing.T) {
+// treeKey reads a decoder name against the keys present, so a map key
+// holding "." or "]" is placed exactly, and one that cannot be told apart is
+// reported by its proven prefix.
+func TestTreeKey(t *testing.T) {
 	type inner struct {
-		APIKey string `koanf:"api_key"`
-		Host   string `koanf:"host"`
-	}
-	type auth struct {
-		Mode string `koanf:"mode"`
+		Port int `koanf:"port"`
 	}
 	type cfg struct {
-		Embedded inner            `koanf:",squash"`
-		Auth     auth             `koanf:"auth"`
-		Pools    []inner          `koanf:"pools"`
-		Byname   map[string]inner `koanf:"byname"`
+		Pools  []inner          `koanf:"pools"`
+		Byname map[string]inner `koanf:"byname"`
+		Value  any              `koanf:"value"`
 	}
-	root := reflect.TypeFor[cfg]()
+	root, err := rootSchema(reflect.TypeFor[cfg]())
+	require.NoError(t, err)
+	tree := map[string]any{
+		"pools":  []any{map[string]any{"port": 1}},
+		"byname": map[string]any{"a.b": map[string]any{"port": 1}, "x]": map[string]any{}, "x": map[string]any{}, "x].y[x": map[string]any{}},
+		"value":  map[string]any{"k": 1},
+	}
 	for _, tt := range []struct {
-		name      string
-		sensitive bool
+		name  string
+		key   string
+		exact bool
 	}{
-		{"host", false},
-		{"api_key", true},
-		{"auth.mode", false}, // a struct branch's name does not cover its fields
-		{"auth", true},       // but does cover the branch itself
-		{"pools[0].host", false},
-		{"pools[0].api_key", true},
-		{"byname[primary].host", false},
-		{"byname[credential].host", true},
-		{"byname[a.b].host", false},
-		{"missing", true},
-		{"host[", true},
+		{"pools[0].port", "pools[0].port", true},
+		{"byname[a.b].port", `byname["a.b"].port`, true},
+		{"byname[x]]", `byname["x]"]`, true},
+		{"byname[x].y[x].port", "byname", false}, // two present keys fit: x, and x].y[x
+		{"byname[missing].port", "byname", false},
+		{"value[k]", "value", false}, // beneath an interface, the value's own keys
 	} {
-		_, sensitive := decodeTarget(root, tt.name)
-		assert.Equal(t, tt.sensitive, sensitive, tt.name)
+		p, _, exact := treeKey(root, tree, tt.name)
+		assert.Equal(t, tt.key, p.String(), tt.name)
+		assert.Equal(t, tt.exact, exact, tt.name)
 	}
 }
 
-func TestSplitDecodeName(t *testing.T) {
-	segs, ok := splitDecodeName("features[a.b].limits[0].max")
-	require.True(t, ok)
-	var got []string
-	for _, s := range segs {
-		got = append(got, fmt.Sprintf("%s/%v", s.name, s.indexed))
+// Decode failures name keys in the package's grammar; a map key named like a
+// credential covers the value beneath it, and a struct field named like one
+// covers a value given to the struct itself.
+func TestLoad_DecodeErrorKeysAndWithholding(t *testing.T) {
+	type inner struct {
+		Port  int       `koanf:"port"`
+		Start time.Time `koanf:"start"`
 	}
-	assert.Equal(t, "features/false a.b/true limits/false 0/true max/false", strings.Join(got, " "))
-	for _, bad := range []string{"", "a.[x", "[open", ".x"} {
-		_, ok := splitDecodeName(bad)
-		assert.False(t, ok, bad)
+	type authBlock struct {
+		Mode string `koanf:"mode"`
 	}
+	type cfg struct {
+		Byname map[string]inner `koanf:"byname"`
+		Auth   authBlock        `koanf:"auth"`
+	}
+	quoting := func(_, to reflect.Type, data any) (any, error) {
+		if to == reflect.TypeFor[authBlock]() {
+			if _, ok := data.(map[string]any); !ok {
+				return nil, fmt.Errorf("bad auth block %v", data)
+			}
+		}
+		return data, nil
+	}
+	load := func(yamlText string) error {
+		_, err := Load[cfg](t.Context(), WithBaseProvider(rawBytes(yamlText), yaml.Parser()), WithDecodeHook(quoting), WithSkipValidation())
+		return err
+	}
+	err := load("byname:\n  a.b:\n    port: abc\n")
+	require.ErrorIs(t, err, ErrValidation)
+	assert.Contains(t, err.Error(), `'byname["a.b"].port'`)
+	var de *mapstructure.DecodeError
+	require.ErrorAs(t, err, &de)
+
+	err = load("byname:\n  credential:\n    start: " + leaked + "\n")
+	require.ErrorIs(t, err, ErrValidation)
+	assert.NotContains(t, err.Error(), leaked)
+	assert.Contains(t, err.Error(), `'byname["credential"].start' cannot be decoded into time.Time (the value is sensitive and not shown)`)
+
+	err = load("auth: " + leaked + "\n")
+	require.ErrorIs(t, err, ErrValidation)
+	assert.NotContains(t, err.Error(), leaked)
 }
 
 // A struct squashed into its parent keeps its sensitive tag over the fields

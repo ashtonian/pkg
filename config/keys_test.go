@@ -272,3 +272,47 @@ func TestElementDefaults_WeaklyDecodedShapes(t *testing.T) {
 		})
 	}
 }
+
+// A struct whose keys cannot be told apart fails the load before any source
+// is read.
+func TestLoad_RejectsAnUnaddressableSchema(t *testing.T) {
+	type cfg struct {
+		A int `koanf:"a[0]"`
+	}
+	_, err := Load[cfg](t.Context())
+	require.ErrorIs(t, err, ErrSchema)
+}
+
+// Unknown keys are named in the key grammar: a source key under a struct
+// that cannot read as a field is quoted.
+func TestStrictKeys_NamesUnknownKeys(t *testing.T) {
+	type entry struct {
+		Port int `koanf:"port"`
+	}
+	type cfg struct {
+		Server entry            `koanf:"server"`
+		Named  map[string]entry `koanf:"named"`
+	}
+	src := mapSource{
+		"server": map[string]any{"a.b": 1, "prot": 2},
+		"named":  map[string]any{"x.y": map[string]any{"prot": 3}},
+	}
+	_, err := Load[cfg](t.Context(), WithBaseProvider(src, nil), WithStrictKeys(), WithSkipValidation())
+	require.ErrorIs(t, err, ErrValidation)
+	assert.Contains(t, err.Error(), `decodes: named["x.y"].prot, server."a.b", server.prot`)
+}
+
+// Validation errors name map entries by their quoted key, whatever the key
+// holds.
+func TestValidation_NamesMapEntriesByKey(t *testing.T) {
+	type entry struct {
+		Limit int `koanf:"limit" validate:"min=1"`
+	}
+	type cfg struct {
+		Limits map[string]entry `koanf:"limits" validate:"dive"`
+	}
+	src := mapSource{"limits": map[string]any{"a.b": map[string]any{"limit": 0}, "ok": map[string]any{"limit": 5}}}
+	_, err := Load[cfg](t.Context(), WithBaseProvider(src, nil))
+	require.ErrorIs(t, err, ErrValidation)
+	assert.Contains(t, err.Error(), `limits["a.b"].limit(min=1)`)
+}

@@ -17,9 +17,9 @@ import (
 //   - A map of structs reads PREFIX_<MAP>_<KEY>_<FIELD>, where FIELD is one of
 //     the element struct's leaves and KEY is the rest, lower-cased, so the key
 //     may contain underscores too. APP_FEATURES_AUDIT_LOGS_MAX_PAGE_SIZE sets
-//     features.audit_logs.max_page_size.
+//     features["audit_logs"].max_page_size.
 //   - Any other map reads PREFIX_<MAP>_<KEY>, the whole rest lower-cased:
-//     APP_LABELS_TEAM_NAME sets labels.team_name.
+//     APP_LABELS_TEAM_NAME sets labels["team_name"].
 //
 // A variable that fits more than one key — a static field and a map entry,
 // two maps whose names prefix one another, two element fields where one name
@@ -65,26 +65,50 @@ func newEnvSchema(fields []Field, prefix string) envSchema {
 	return s
 }
 
+// envReading is one key a variable could set: its dot-path for the flat
+// source, and the key in the package's grammar for messages.
+type envReading struct {
+	flat string
+	key  string
+}
+
 // readings returns every key the variable name could set, sorted.
-func (s envSchema) readings(name string) []string {
-	out := slices.Clone(s.static[name])
+func (s envSchema) readings(name string) []envReading {
+	var out []envReading
+	for _, path := range s.static[name] {
+		out = append(out, envReading{flat: path, key: path})
+	}
 	for _, m := range s.maps {
 		rest, ok := strings.CutPrefix(name, m.prefix)
 		if !ok || rest == "" {
 			continue
 		}
 		if m.leaves == nil {
-			out = append(out, m.path+"."+strings.ToLower(rest))
+			key := strings.ToLower(rest)
+			out = append(out, envReading{flat: m.path + "." + key, key: dotPath(m.path).key(key).String()})
 			continue
 		}
 		for _, leaf := range m.leaves {
 			if key, ok := strings.CutSuffix(rest, leaf.suffix); ok && key != "" {
-				out = append(out, m.path+"."+strings.ToLower(key)+"."+leaf.path)
+				key = strings.ToLower(key)
+				out = append(out, envReading{
+					flat: m.path + "." + key + "." + leaf.path,
+					key:  dotPath(m.path).key(key).String() + "." + leaf.path,
+				})
 			}
 		}
 	}
-	slices.Sort(out)
-	return slices.Compact(out)
+	slices.SortFunc(out, func(a, b envReading) int { return strings.Compare(a.key, b.key) })
+	return slices.CompactFunc(out, func(a, b envReading) bool { return a.key == b.key })
+}
+
+// dotPath is a struct-key path, every segment a field.
+func dotPath(path string) keyPath {
+	var p keyPath
+	for name := range strings.SplitSeq(path, ".") {
+		p = p.field(name)
+	}
+	return p
 }
 
 // read maps the "NAME=value" entries of environ under the prefix to their
@@ -97,12 +121,16 @@ func (s envSchema) read(environ []string) (values map[string]any, unmatched []st
 		if !ok || !strings.HasPrefix(name, s.prefix) {
 			continue
 		}
-		switch keys := s.readings(name); len(keys) {
+		switch readings := s.readings(name); len(readings) {
 		case 0:
 			unmatched = append(unmatched, name)
 		case 1:
-			values[keys[0]] = value
+			values[readings[0].flat] = value
 		default:
+			keys := make([]string, len(readings))
+			for i, r := range readings {
+				keys[i] = r.key
+			}
 			ambiguous = append(ambiguous, name+" (could set "+strings.Join(keys, " or ")+")")
 		}
 	}

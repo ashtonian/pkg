@@ -34,8 +34,8 @@ port                               APP_PORT                              int    
 timeout                            APP_TIMEOUT                           time.Duration      30s
 name                               APP_NAME                              string             (required)
 password                           APP_PASSWORD                          string             [REDACTED]
-features.<key>.max_page_size       APP_FEATURES_<KEY>_MAX_PAGE_SIZE      int                50          Largest page
-labels.<key>                       APP_LABELS_<KEY>                      string
+features[*].max_page_size          APP_FEATURES_<KEY>_MAX_PAGE_SIZE      int                50          Largest page
+labels[*]                          APP_LABELS_<KEY>                      string
 `
 	assert.Equal(t, normalizeSpaces(want), normalizeSpaces(buf.String()))
 }
@@ -54,7 +54,7 @@ func TestPrintUsage_JSON(t *testing.T) {
 	var rows []usageRow
 	require.NoError(t, json.Unmarshal(buf.Bytes(), &rows))
 	require.Len(t, rows, 6)
-	assert.Equal(t, "features.<key>.max_page_size", rows[0].Key)
+	assert.Equal(t, "features[*].max_page_size", rows[0].Key)
 	assert.Equal(t, usageRow{Key: "name", Env: "APP_NAME", Type: "string", Required: true}, rows[2])
 	assert.Equal(t, usageRow{Key: "password", Env: "APP_PASSWORD", Type: "string", Default: "[REDACTED]", Sensitive: true}, rows[3])
 }
@@ -134,7 +134,7 @@ func TestPrintUsage_WithholdsCompositeDefaults(t *testing.T) {
 	require.NoError(t, json.Unmarshal(buf.Bytes(), &rows))
 	require.Len(t, rows, 3)
 	assert.Equal(t, usageRow{Key: "settings", Env: "APP_SETTINGS", Type: "map[string]string", Default: "[REDACTED]"}, rows[0])
-	assert.Equal(t, usageRow{Key: "settings.<key>", Env: "APP_SETTINGS_<KEY>", Type: "string"}, rows[1])
+	assert.Equal(t, usageRow{Key: "settings[*]", Env: "APP_SETTINGS_<KEY>", Type: "string"}, rows[1])
 	assert.Equal(t, "web,api", rows[2].Default, "a slice of scalars has no keys to hide")
 
 	f := Fields[cfg]()[0]

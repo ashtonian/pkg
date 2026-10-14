@@ -148,6 +148,10 @@ func load[T any](ctx context.Context, o *options) (*T, fileDigests, error) {
 	if err := o.checkHookTypes(reflect.TypeFor[*T]()); err != nil {
 		return nil, nil, err
 	}
+	schema, err := rootSchema(root)
+	if err != nil {
+		return nil, nil, fmt.Errorf("loading config: %w", err)
+	}
 	// A fresh instance per load: nothing from an earlier load (a key since
 	// deleted from a file, say) can survive into this one.
 	l := &loader{k: koanf.New("."), root: root}
@@ -230,11 +234,16 @@ func load[T any](ctx context.Context, o *options) (*T, fileDigests, error) {
 		// A value that cannot decode into its field's type (port: abc) is
 		// invalid configuration; the error names the key, and never the
 		// value of a field that is, or could hold, a sensitive one.
-		return nil, nil, fmt.Errorf("unmarshaling config: %w: %w", ErrValidation, withholdSensitiveDecodeErrors(root, err))
+		return nil, nil, fmt.Errorf("unmarshaling config: %w: %w", ErrValidation, decodeErrors(schema, merged, err))
 	}
 	if o.strictKeys && len(md.Unused) > 0 {
+		unused := make([]string, len(md.Unused))
+		for i, name := range md.Unused {
+			unused[i] = unusedKey(schema, merged, name)
+		}
+		slices.Sort(unused)
 		return nil, nil, fmt.Errorf("unmarshaling config: %w: keys no field of %s decodes: %s",
-			ErrValidation, root, strings.Join(slices.Sorted(slices.Values(md.Unused)), ", "))
+			ErrValidation, root, strings.Join(unused, ", "))
 	}
 
 	if o.secrets != nil {
@@ -265,7 +274,7 @@ func load[T any](ctx context.Context, o *options) (*T, fileDigests, error) {
 			summary := err.Error()
 			var ve validator.ValidationErrors
 			if errors.As(err, &ve) {
-				summary = fieldErrorSummary(root, ve)
+				summary = fieldErrorSummary(reflect.ValueOf(cfg), ve)
 			}
 			return nil, nil, &validationError{
 				msg:   fmt.Sprintf("validating config: %s: %s", ErrValidation, summary),
@@ -362,64 +371,32 @@ func validate(ctx context.Context, v Validator, cfg any) error {
 
 // fieldErrorSummary builds a compact summary of validation field errors
 // for inclusion in the error message (e.g., "name(required), db.port(min=1)"),
-// naming each field by its config key in root.
-func fieldErrorSummary(root reflect.Type, ve validator.ValidationErrors) string {
+// naming each field by its key in cfg, the validated config.
+func fieldErrorSummary(cfg reflect.Value, ve validator.ValidationErrors) string {
 	parts := make([]string, 0, len(ve))
 	for _, fe := range ve {
 		tag := fe.Tag()
 		if fe.Param() != "" {
 			tag += "=" + fe.Param()
 		}
-		ns, ok := configPath(root, fe.StructNamespace())
-		if !ok {
-			// Namespace is "<Root>.a.b"; the root type name is noise.
-			ns = fe.Namespace()
-			if _, rest, cut := strings.Cut(ns, "."); cut {
-				ns = rest
-			}
-		}
-		parts = append(parts, ns+"("+tag+")")
+		parts = append(parts, validationKey(cfg, fe)+"("+tag+")")
 	}
 	return strings.Join(parts, ", ")
 }
 
-// configPath translates a validator struct namespace — "Root.DB.Pools[0].Max",
-// Go field names — into the config key path a [Fields] leaf carries,
-// "db.pools[0].max", so a squashed struct contributes no segment. ok is false
-// when the namespace does not resolve against root.
-func configPath(root reflect.Type, structNS string) (path string, ok bool) {
-	_, rest, cut := strings.Cut(structNS, ".")
-	if !cut {
-		return "", false
+// validationKey names the field a validation error is about by its key.
+func validationKey(cfg reflect.Value, fe validator.FieldError) string {
+	p, exact := validatorKey(cfg, fe.StructNamespace())
+	switch {
+	case exact:
+		return p.orRoot()
+	case len(p) > 0:
+		return p.String() + " (exact location unavailable)"
 	}
-	t := root
-	for seg := range strings.SplitSeq(rest, ".") {
-		name, index, _ := strings.Cut(seg, "[")
-		t = derefType(t)
-		if t.Kind() != reflect.Struct {
-			return "", false
-		}
-		f, found := t.FieldByName(name)
-		if !found {
-			return "", false
-		}
-		key, skip := fieldKey(f)
-		if skip {
-			return "", false
-		}
-		path = joinPath(path, key)
-		t = f.Type
-		if index != "" {
-			path += "[" + index
-			for range strings.Count(seg, "[") {
-				switch t = derefType(t); t.Kind() {
-				case reflect.Slice, reflect.Array, reflect.Map:
-					t = t.Elem()
-				default:
-					return "", false
-				}
-			}
-		}
+	// Not a namespace of cfg: the validator's own, minus the root type name.
+	ns := fe.Namespace()
+	if _, rest, cut := strings.Cut(ns, "."); cut {
+		ns = rest
 	}
-	return path, true
+	return ns
 }

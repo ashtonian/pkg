@@ -290,3 +290,43 @@ func Example_reloadEndpoint() {
 	// Output:
 	// 200 {"api_key":"[REDACTED]","port":"8080"}
 }
+
+// ExampleDiff lists what changed between two configs, keyed in the package's
+// grammar; a credential's change is reported with its values redacted.
+func ExampleDiff() {
+	type Limits struct {
+		Rate int `koanf:"rate"`
+	}
+	type AppConfig struct {
+		Port     int               `koanf:"port"`
+		Password string            `koanf:"password"`
+		Tags     []string          `koanf:"tags"`
+		Features map[string]Limits `koanf:"features"`
+	}
+	old := &AppConfig{Port: 8080, Password: "a", Tags: []string{"web"}, Features: map[string]Limits{"audit": {Rate: 10}}}
+	next := &AppConfig{Port: 9090, Password: "b", Tags: []string{"web", "api"}, Features: map[string]Limits{"audit": {Rate: 20}, "export": {Rate: 1}}}
+
+	changes, err := config.Diff(old, next)
+	if err != nil {
+		fmt.Println(err)
+		return
+	}
+	for _, c := range changes {
+		switch {
+		case c.Structural:
+			fmt.Printf("%s: added (%s)\n", c.Key, c.Field.Path)
+		case !c.Old.Present:
+			fmt.Printf("%s: + %s\n", c.Key, c.New.Text)
+		default:
+			fmt.Printf("%s: %s -> %s\n", c.Key, c.Old.Text, c.New.Text)
+		}
+	}
+
+	// Output:
+	// port: 8080 -> 9090
+	// password: [REDACTED] -> [REDACTED]
+	// tags[1]: + api
+	// features["audit"].rate: 10 -> 20
+	// features["export"]: added (features[*])
+	// features["export"].rate: + 1
+}

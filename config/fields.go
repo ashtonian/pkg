@@ -1,7 +1,6 @@
 package config
 
 import (
-	"encoding"
 	"iter"
 	"reflect"
 	"slices"
@@ -38,9 +37,10 @@ type Field struct {
 //   - Unexported fields, koanf:"-" and koanf:",remain" are skipped.
 //     koanf:",squash" merges a struct's keys into its parent, as mapstructure
 //     decodes it.
-//   - Pointers are followed. A struct is descended into unless it implements
-//     encoding.TextUnmarshaler (time.Time, netip.Addr, ...): such a struct is
-//     one leaf decoded from one string, exactly as the decode hook treats it.
+//   - Pointers are followed. A struct is descended into unless it decodes
+//     itself — encoding.TextUnmarshaler (time.Time, netip.Addr, ...) or
+//     mapstructure's Unmarshaler: such a struct is one leaf decoded whole,
+//     exactly as decoding treats it.
 //   - Maps, slices, arrays and interfaces are leaves.
 //   - A struct type is never re-entered while it is being walked, so a
 //     recursive type yields the keys above the recursion rather than
@@ -144,12 +144,11 @@ func fieldKey(f reflect.StructField) (key string, skip bool) {
 	return name, false
 }
 
-var textUnmarshalerType = reflect.TypeFor[encoding.TextUnmarshaler]()
-
 // isBranch reports whether t is a struct whose fields are keys of their own,
-// as opposed to a leaf value decoded whole.
+// as opposed to a leaf value decoded whole: a struct that decodes itself, from
+// text or from a map, is one value.
 func isBranch(t reflect.Type) bool {
-	return t.Kind() == reflect.Struct && !reflect.PointerTo(t).Implements(textUnmarshalerType)
+	return t.Kind() == reflect.Struct && !opaque(t)
 }
 
 // derefType follows pointer types to the type they point at. The bound stops

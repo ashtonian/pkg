@@ -8,6 +8,7 @@ import (
 	"os"
 	"reflect"
 	"slices"
+	"strconv"
 	"strings"
 )
 
@@ -83,6 +84,7 @@ func WithIncludeDescriptions() PrintOption {
 }
 
 type printEntry struct {
+	key      keyPath
 	name     string
 	value    string
 	typeName string
@@ -158,7 +160,7 @@ func collectEntries(cfg any) []printEntry {
 	if !val.IsValid() || !isBranch(val.Type()) {
 		return nil
 	}
-	w.walkStruct(val, "", false)
+	w.walkStruct(val, nil, false)
 	return w.entries
 }
 
@@ -192,9 +194,13 @@ type site struct {
 
 // walkStruct emits entries for val's fields. inherited is true beneath a
 // field tagged sensitive:"true", so tagging a container hides everything in it.
-func (w *entryWalk) walkStruct(val reflect.Value, prefix string, inherited bool) {
+func (w *entryWalk) walkStruct(val reflect.Value, prefix keyPath, inherited bool) {
 	for kf := range keyedFields(val.Type()) {
-		w.walkValue(joinPath(prefix, kf.key), val.FieldByIndex(kf.field.Index), site{
+		path := prefix
+		if kf.key != "" {
+			path = prefix.field(kf.key)
+		}
+		w.walkValue(path, val.FieldByIndex(kf.field.Index), site{
 			name:      kf.field.Name,
 			desc:      kf.field.Tag.Get("desc"),
 			sensitive: inherited || kf.field.Tag.Get("sensitive") == "true",
@@ -203,7 +209,7 @@ func (w *entryWalk) walkStruct(val reflect.Value, prefix string, inherited bool)
 }
 
 // walkValue emits the entries for the value at path.
-func (w *entryWalk) walkValue(path string, v reflect.Value, s site) {
+func (w *entryWalk) walkValue(path keyPath, v reflect.Value, s site) {
 	elem := v
 	for elem.Kind() == reflect.Pointer || elem.Kind() == reflect.Interface {
 		if elem.IsNil() {
@@ -224,21 +230,18 @@ func (w *entryWalk) walkValue(path string, v reflect.Value, s site) {
 	switch {
 	case isBranch(elem.Type()):
 		w.walkStruct(elem, path, s.sensitive || s.keyed && named)
-	case elem.Kind() == reflect.Map && elem.Len() > 0:
+	case elem.Kind() == reflect.Map && elem.Type().Key().Kind() == reflect.String && !opaque(elem.Type()) && elem.Len() > 0:
 		if !w.enter(elem) {
 			w.cycle(path, v, s)
 			return
 		}
 		defer delete(w.visiting, visitOf(elem))
 		keys := elem.MapKeys()
-		slices.SortFunc(keys, func(a, b reflect.Value) int {
-			return cmp.Compare(fmt.Sprint(a.Interface()), fmt.Sprint(b.Interface()))
-		})
+		slices.SortFunc(keys, func(a, b reflect.Value) int { return cmp.Compare(a.String(), b.String()) })
 		for _, k := range keys {
-			key := fmt.Sprint(k.Interface())
-			w.walkValue(path+"["+key+"]", elem.MapIndex(k), site{name: key, desc: s.desc, sensitive: s.sensitive || named, keyed: true})
+			w.walkValue(path.key(k.String()), elem.MapIndex(k), site{name: k.String(), desc: s.desc, sensitive: s.sensitive || named, keyed: true})
 		}
-	case (elem.Kind() == reflect.Slice || elem.Kind() == reflect.Array) && elem.Len() > 0 && holdsContainers(elem.Type().Elem()):
+	case (elem.Kind() == reflect.Slice || elem.Kind() == reflect.Array) && !opaque(elem.Type()) && elem.Len() > 0 && holdsContainers(elem.Type().Elem()):
 		if elem.Kind() == reflect.Slice {
 			if !w.enter(elem) {
 				w.cycle(path, v, s)
@@ -248,12 +251,12 @@ func (w *entryWalk) walkValue(path string, v reflect.Value, s site) {
 		}
 		inner := site{name: s.name, desc: s.desc, sensitive: s.sensitive || named, keyed: s.keyed}
 		for i := range elem.Len() {
-			w.walkValue(fmt.Sprintf("%s[%d]", path, i), elem.Index(i), inner)
+			w.walkValue(path.index(i), elem.Index(i), inner)
 		}
 	default:
-		// Scalars, TextUnmarshaler structs, empty containers and slices of
-		// scalars. A sensitive leaf is redacted whole — including
-		// `APIKeys []string`.
+		// Scalars, self-decoding structs, maps keyed by non-strings, empty
+		// containers and slices of scalars. A sensitive leaf is redacted
+		// whole — including `APIKeys []string`.
 		w.leaf(path, v, elem, s)
 	}
 }
@@ -269,8 +272,8 @@ func (w *entryWalk) enter(v reflect.Value) bool {
 	return true
 }
 
-func (w *entryWalk) cycle(path string, v reflect.Value, s site) {
-	w.entries = append(w.entries, printEntry{name: path, value: cycleValue, typeName: v.Type().String(), desc: s.desc})
+func (w *entryWalk) cycle(path keyPath, v reflect.Value, s site) {
+	w.entries = append(w.entries, printEntry{key: path, name: path.String(), value: cycleValue, typeName: v.Type().String(), desc: s.desc})
 }
 
 // holdsContainers reports whether slice or array elements of type t may hold
@@ -299,7 +302,7 @@ func holdsContainersOf(t reflect.Type, seen map[reflect.Type]bool) bool {
 
 // leaf emits one entry. declared is the value as found, for its type; value
 // is it dereferenced, or invalid when nil.
-func (w *entryWalk) leaf(path string, declared, value reflect.Value, s site) {
+func (w *entryWalk) leaf(path keyPath, declared, value reflect.Value, s site) {
 	text := "<nil>"
 	typ := declared.Type()
 	if value.IsValid() {
@@ -311,7 +314,7 @@ func (w *entryWalk) leaf(path string, declared, value reflect.Value, s site) {
 	if s.sensitive || isSensitiveName(s.name) || value.IsValid() && uncheckedHolder(value) {
 		text = redactedValue
 	}
-	w.entries = append(w.entries, printEntry{name: path, value: text, typeName: typ.String(), desc: s.desc})
+	w.entries = append(w.entries, printEntry{key: path, name: path.String(), value: text, typeName: typ.String(), desc: s.desc})
 }
 
 // uncheckedHolder reports a value printed whole that could hold a sensitive
@@ -412,13 +415,24 @@ func printEnv(w io.Writer, entries []printEntry, includeDesc bool) error {
 		if includeDesc && e.desc != "" {
 			ew.printf("# %s\n", strings.ReplaceAll(e.desc, "\n", " "))
 		}
-		ew.printf("export %s=%s\n", shellName(e.name), shellQuote(e.value))
+		ew.printf("export %s=%s\n", shellName(e.key), shellQuote(e.value))
 	}
 	return ew.err
 }
 
-func shellName(path string) string {
-	b := []byte(strings.ToUpper(path))
+// shellName is a shell variable name for key: its segments upper-cased and
+// joined by "_", every other character "_".
+func shellName(key keyPath) string {
+	parts := make([]string, len(key))
+	for i, s := range key {
+		switch s.kind {
+		case segIndex:
+			parts[i] = strconv.Itoa(s.index)
+		default:
+			parts[i] = s.name
+		}
+	}
+	b := []byte(strings.ToUpper(strings.Join(parts, "_")))
 	for i, c := range b {
 		if !(c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' || c == '_') {
 			b[i] = '_'

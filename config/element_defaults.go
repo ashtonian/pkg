@@ -7,7 +7,7 @@ import (
 
 // fillElementDefaults applies the `default` tags of a map's or slice's
 // element struct to every entry the merged tree holds, below whatever the
-// sources set: an entry features.audit gets features.audit.limit = "50" from
+// sources set: an entry features["audit"] gets features["audit"].limit = "50" from
 // `Limit int default:"50"` unless a source set it. Tag defaults for keys
 // outside maps and slices are loaded as the lowest source instead; entries
 // exist only once a source names them, so their defaults are filled here,
