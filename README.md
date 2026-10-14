@@ -4,7 +4,7 @@ Batteries and glue code for Go services. Each package here is an independent Go 
 
 | Package | Import path | What it does |
 |---|---|---|
-| [config](config) | `github.com/ashtonian/pkg/config` | Typed configuration on top of [koanf](https://github.com/knadh/koanf): defaults, files, environment and any koanf provider loaded through one validated pipeline, hot reload that publishes only a config that passed, changes pushed into the running process, and output that never prints a secret. |
+| [config](config) | `github.com/ashtonian/pkg/config` | Typed configuration declared as one tagged Go struct, on [koanf](https://github.com/knadh/koanf): the tags give every field its key, default, validation, description and secrecy; defaults, files, environment and any koanf provider load through one validated pipeline; hot reload publishes only a config that passed, pushes changes into the running process, and no output prints a secret. |
 | [config/kongprovider](config/kongprovider) | `github.com/ashtonian/pkg/config/kongprovider` | [Kong](https://github.com/alecthomas/kong) CLI flags as `config`'s highest-precedence source, with flag help taken from the config struct. |
 
 ## Install

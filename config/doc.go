@@ -1,9 +1,13 @@
-// Package config builds typed configuration snapshots for Go services on top
-// of koanf. [Load] merges struct-tag defaults, files, environment variables
-// and explicit overrides into a *T, then resolves secrets, normalizes and
-// validates it in one pipeline; [Reloader] re-runs that pipeline on a file
-// change, signal, poll tick or application notification and publishes a new
-// config only when it passed.
+// Package config loads typed configuration for Go services from one tagged
+// struct, on top of koanf. The struct is the schema: its koanf, default,
+// validate, desc, sensitive and secret tags give each field its key, default,
+// rules, description and secrecy, and loading, validation, redaction, usage
+// tables, starter files and the JSON Schema all read them. [Load] merges
+// struct-tag defaults, files, environment variables and explicit overrides
+// into a *T, then resolves secrets, normalizes and validates it in one
+// pipeline; [Reloader] re-runs that pipeline on a file change, signal, poll
+// tick or application notification and publishes a new config only when it
+// passed.
 //
 // # Quick Start
 //

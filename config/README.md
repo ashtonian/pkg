@@ -2,10 +2,25 @@
 
 [![Go Reference](https://pkg.go.dev/badge/github.com/ashtonian/pkg/config.svg)](https://pkg.go.dev/github.com/ashtonian/pkg/config)
 
-Typed configuration for long-running Go services, built on [koanf](https://github.com/knadh/koanf). One struct is the schema — keys, defaults, validation, secrets and descriptions — and every config, at boot and on every reload, goes through the same pipeline: merge the sources, decode, resolve secrets, normalize, validate.
+Typed configuration for long-running Go services, declared as one tagged Go struct and built on [koanf](https://github.com/knadh/koanf). The struct is the schema: six tags give each field its key, default, rules, description and secrecy, and every feature reads them. Every config, at boot and on every reload, goes through the same pipeline: merge the sources, decode, resolve secrets, normalize, validate.
 
+```go
+type DBConfig struct {
+	Host     string `koanf:"host" default:"localhost" desc:"Database host"`
+	MaxConns int    `koanf:"max_conns" default:"25" validate:"min=1,max=500" desc:"Connection pool size"`
+	Password string `koanf:"password" validate:"required" secret:"prod/db#password" desc:"Database password"`
+}
+
+type AppConfig struct {
+	DB DBConfig `koanf:"db"`
+}
+```
+
+With `WithEnvPrefix("APP")`, `APP_DB_MAX_CONNS` sets the pool size; a file setting `max_conns: 0` fails validation naming `db.max_conns`; a `SecretsFrom` fetch for your store fills the password from `prod/db#password`, and no output ever shows it; and usage tables, a starter config file, a JSON Schema for editors and kongprovider's flag help all describe the three fields, with no other declaration to write.
+
+- **The struct is the schema.** No second definition to keep in step: environment variable names, flag help, usage tables, starter files and the JSON Schema are derived from the tags, so none of them drifts from the code.
 - **Any source.** Struct-tag defaults, files, environment variables, CLI flags, and any koanf provider: Kubernetes volumes, Vault, AWS, Consul, etcd, a database table.
-- **Strict and validated.** A key no field takes fails the load; `validate` tags and a `Validate` method run on every load, and errors name the config key, never a secret's value.
+- **Strict and validated.** A key no field takes fails the load, with the key it most likely misspells, or goes to a handler that warns; `validate` tags and a `Validate` method run on every load, and errors name the config key, never a secret's value.
 - **Hot reload that cannot break production.** A reload publishes a new config only if it passed the whole pipeline; triggers are a file watch that understands Kubernetes volumes, a poll, a signal, or a provider's own watch.
 - **Changes pushed, not just published.** Appliers push the changes they own into the running process — a log level, pool limits, feature gates — are retried after a failure, and the reloader reports what still waits for a restart.
 - **Output that never leaks a credential.** Redacted printing, config diffs, where each value came from, usage tables, starter config files and a JSON Schema for editors.
@@ -72,16 +87,16 @@ The program is [`examples/quickstart`](examples/quickstart/main.go). The package
 
 ## Defining a config
 
-A config is a plain struct; tags say how each field is keyed, defaulted, validated and shown.
+A config is a plain struct, and its tags are the whole schema: they say how each field is keyed, defaulted, validated, described and protected, and every part of the package reads them.
 
-| Tag | Meaning | Example |
-|---|---|---|
-| `koanf` | The key. `-` skips the field, `,squash` merges a struct into its parent, `,remain` collects unknown keys in a map. Without a tag the key is the lowercased field name. | `koanf:"max_conns"` |
-| `default` | The lowest-precedence value; comma-separated for a slice. | `default:"localhost"` |
-| `validate` | [go-playground/validator](https://pkg.go.dev/github.com/go-playground/validator/v10) rules. | `validate:"required,min=1"` |
-| `sensitive` | Redact everywhere; on a struct, slice or map, everything inside it. | `sensitive:"true"` |
-| `secret` | Where the value lives in your secret store (see [Secrets](#secrets)); implies `sensitive`. | `secret:"prod/db#password"` |
-| `desc` | A description for usage tables, templates, the JSON Schema and CLI help. | `desc:"Database host"` |
+| Tag | Meaning | Read by | Example |
+|---|---|---|---|
+| `koanf` | The key. `-` skips the field, `,squash` merges a struct into its parent, `,remain` collects unknown keys in a map. Without a tag the key is the lowercased field name. | Every source and output; environment variable names derive from it. | `koanf:"max_conns"` |
+| `default` | The lowest-precedence value; comma-separated for a slice. | The load; usage tables, starter files, the JSON Schema and flag help show it unless the field is sensitive. | `default:"localhost"` |
+| `validate` | [go-playground/validator](https://pkg.go.dev/github.com/go-playground/validator/v10) rules. | Validation on every load and reload; `required` marks usage tables and starter files; the JSON Schema states the bounds, lengths and `oneof` enums. | `validate:"required,min=1"` |
+| `desc` | What the setting is for. | Usage tables, `PrintRedacted(..., WithIncludeDescriptions())`, starter-file comments, the JSON Schema `description`, kongprovider flag help. | `desc:"Database host"` |
+| `sensitive` | Redact everywhere; on a struct, slice or map, everything inside it. | Printing, diffs, reload results and usage tables show `[REDACTED]`; starter files and the JSON Schema leave out its default and any rule that names a value. | `sensitive:"true"` |
+| `secret` | Where the value lives in your secret store (see [Secrets](#secrets)); implies `sensitive`. | `SecretsFrom` and `WithSecretPopulator`, after decoding and before validation. | `secret:"prod/db#password"` |
 
 - Pointers are followed. A struct that decodes itself — an `encoding.TextUnmarshaler` such as `time.Time` or `netip.Addr`, or a mapstructure `Unmarshaler` — is one value, not a section.
 - Maps, slices and interfaces are values whose entries are keys of their own. An element struct's `default` tags apply to every map entry and list element a source creates, below what the source set. An explicit `null` stays null; write `{}` for an entry that should take its defaults.
