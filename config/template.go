@@ -156,7 +156,7 @@ func (b *templateBuilder) leaf(f *schemaField, c cursor, fv reflect.Value, env s
 		return w.value(fv, site{}), false, nil
 	}
 	if ex, has := f.sf.Tag.Lookup("example"); has && printable {
-		v, err := decodeText(f.sf.Type, ex)
+		v, err := decodeTag(f.sf.Type, f.sf.Tag, ex)
 		if err != nil {
 			return nil, true, fmt.Errorf("decoding the example of %s: %w: %w", c.path.orRoot(), ErrSchema, err)
 		}

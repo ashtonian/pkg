@@ -169,9 +169,10 @@ func (b *schemaBuilder) fields(n *schemaNode, t reflect.Type, index []int, tagge
 
 // checkTags refuses a tag that cannot mean what it says: a sensitive value
 // other than "true" or "false" — sensitive:"yes" would otherwise leave the
-// field unprotected — a secret field opting out of redaction, an env tag on
-// a section or naming no variable, an example its field cannot hold, and a
-// map default that is not key=value entries.
+// field unprotected — a secret field opting out of redaction, a sep tag on
+// anything but a list of values, an env tag on a section or naming no
+// variable, an example its field cannot hold, and a map default that is not
+// key=value entries.
 func checkTags(t reflect.Type, f reflect.StructField) error {
 	if v, ok := f.Tag.Lookup("sensitive"); ok {
 		switch {
@@ -179,6 +180,15 @@ func checkTags(t reflect.Type, f reflect.StructField) error {
 			return fmt.Errorf("%w: field %s of %s has sensitive:%q; want \"true\" or \"false\"", ErrSchema, f.Name, t, v)
 		case v == "false" && taggedSensitive(f.Tag):
 			return fmt.Errorf("%w: field %s of %s names a secret and is tagged sensitive:\"false\"", ErrSchema, f.Name, t)
+		}
+	}
+	if sep, ok := f.Tag.Lookup("sep"); ok {
+		lt := derefType(f.Type)
+		switch {
+		case lt.Kind() != reflect.Slice || lt.Elem().Kind() == reflect.Uint8 || decodesItself(lt) || isBranch(derefType(lt.Elem())):
+			return fmt.Errorf("%w: field %s of %s has a sep tag, but only a list of values is split", ErrSchema, f.Name, t)
+		case sep == "":
+			return fmt.Errorf("%w: field %s of %s has an empty sep tag; name a separator, or none", ErrSchema, f.Name, t)
 		}
 	}
 	if v, ok := f.Tag.Lookup("env"); ok {
@@ -196,7 +206,7 @@ func checkTags(t reflect.Type, f reflect.StructField) error {
 			return fmt.Errorf("%w: field %s of %s has an example tag, but %s is a section; give its fields examples", ErrSchema, f.Name, t, f.Name)
 		}
 		// The value is not quoted: an example on a sensitive field may be one.
-		if _, err := decodeText(f.Type, ex); err != nil {
+		if _, err := decodeTag(f.Type, f.Tag, ex); err != nil {
 			return fmt.Errorf("%w: field %s of %s has an example that does not decode into %s", ErrSchema, f.Name, t, f.Type)
 		}
 	}
