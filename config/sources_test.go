@@ -9,6 +9,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/go-viper/mapstructure/v2"
 	"github.com/knadh/koanf/parsers/yaml"
@@ -415,4 +416,41 @@ func TestLoad_ElementDefaults(t *testing.T) {
 	assert.Equal(t, 50, got.Pools[0].Limit)
 	assert.Contains(t, got.Optional, "off")
 	assert.Nil(t, got.Optional["off"], "an explicit null stays null")
+}
+
+// csv decodes itself, so a string bound for it is not split.
+type csv []string
+
+func (c *csv) UnmarshalText(b []byte) error {
+	*c = csv{"whole:" + string(b)}
+	return nil
+}
+
+// A comma-separated string fills a slice of any element type, from a
+// default tag or the environment alike; []byte and a slice that decodes
+// itself take it whole.
+func TestLoad_CommaSeparatedSlices(t *testing.T) {
+	type cfg struct {
+		Hosts   []string        `koanf:"hosts" default:"a,b"`
+		Ports   []int           `koanf:"ports" default:"80,443"`
+		Waits   []time.Duration `koanf:"waits" default:"1s,2m"`
+		Ratios  []float64       `koanf:"ratios"`
+		Empty   []int           `koanf:"empty" default:""`
+		Raw     []byte          `koanf:"raw" default:"a,b"`
+		Decoded csv             `koanf:"decoded" default:"a,b"`
+	}
+	got, err := Load[cfg](t.Context(),
+		WithEnvPrefix("APP"),
+		WithEnviron(func() []string { return []string{"APP_RATIOS=0.5,1.5", "APP_PORTS=8080,8443"} }),
+		WithSkipValidation())
+	require.NoError(t, err)
+	assert.Equal(t, cfg{
+		Hosts:   []string{"a", "b"},
+		Ports:   []int{8080, 8443},
+		Waits:   []time.Duration{time.Second, 2 * time.Minute},
+		Ratios:  []float64{0.5, 1.5},
+		Empty:   []int{},
+		Raw:     []byte("a,b"),
+		Decoded: csv{"whole:a,b"},
+	}, *got)
 }
