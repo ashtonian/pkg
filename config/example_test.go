@@ -7,6 +7,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"path/filepath"
 	"time"
 
 	"github.com/ashtonian/pkg/config"
@@ -55,25 +56,20 @@ func ExampleGetConfig_comprehensive() {
 		Pools   []PoolEntry       `koanf:"pools"`
 	}
 
-	// --- Set env vars to override selected fields ---
+	// --- Environment variables override selected fields ---
 	// Env vars take precedence over defaults and config files.
 	// Underscored koanf tags (max_conns, sign_key, allowed_issuers)
 	// resolve correctly thanks to struct-aware env mapping.
-
-	os.Setenv("APP_PORT", "9090")
-	os.Setenv("APP_TAGS", "web,api,grpc")
-	os.Setenv("APP_DB_MAX_CONNS", "50")
-	os.Setenv("APP_DB_PASSWORD", "s3cret")
-	os.Setenv("APP_AUTH_JWT_SIGN_KEY", "hmac-key-256")
-	os.Setenv("APP_AUTH_JWT_ALLOWED_ISSUERS", "auth.prod,auth.staging")
-	defer func() {
-		os.Unsetenv("APP_PORT")
-		os.Unsetenv("APP_TAGS")
-		os.Unsetenv("APP_DB_MAX_CONNS")
-		os.Unsetenv("APP_DB_PASSWORD")
-		os.Unsetenv("APP_AUTH_JWT_SIGN_KEY")
-		os.Unsetenv("APP_AUTH_JWT_ALLOWED_ISSUERS")
-	}()
+	environ := func() []string {
+		return []string{
+			"APP_PORT=9090",
+			"APP_TAGS=web,api,grpc",
+			"APP_DB_MAX_CONNS=50",
+			"APP_DB_PASSWORD=s3cret",
+			"APP_AUTH_JWT_SIGN_KEY=hmac-key-256",
+			"APP_AUTH_JWT_ALLOWED_ISSUERS=auth.prod,auth.staging",
+		}
+	}
 
 	// --- Load config ---
 	// Source precedence: env > programmatic defaults > struct-tag defaults.
@@ -81,6 +77,7 @@ func ExampleGetConfig_comprehensive() {
 	cfg, err := config.GetConfig[AppConfig](
 		context.Background(),
 		config.WithEnvPrefix("APP"),
+		config.WithEnviron(environ),
 		config.WithDefaults(map[string]any{
 			"debug":   true,                         // overrides default:"false"
 			"labels":  map[string]any{"env": "dev"}, // map via programmatic default
@@ -205,9 +202,10 @@ func ExampleNewReloader_withCallback() {
 	// callback_level=info
 }
 
-// Example mirrors the README Quick Start: load from struct-tag defaults, an
-// optional file and APP_* environment variables, then print the result with
-// the password redacted.
+// Example mirrors the README Quick Start: load from struct-tag defaults, a
+// file and APP_* environment variables, then print the result with the
+// password redacted. The example writes its own file and passes its own
+// environment, so its output does not depend on where it runs.
 func Example() {
 	type DBConfig struct {
 		Host     string `koanf:"host" default:"localhost"`
@@ -220,10 +218,23 @@ func Example() {
 		DB      DBConfig      `koanf:"db"`
 	}
 
+	dir, err := os.MkdirTemp("", "config-example")
+	if err != nil {
+		fmt.Println("temp dir:", err)
+		return
+	}
+	defer os.RemoveAll(dir)
+	file := filepath.Join(dir, "config.yaml")
+	if err := os.WriteFile(file, []byte("db:\n  host: db.internal\n"), 0o600); err != nil {
+		fmt.Println("write:", err)
+		return
+	}
+
 	ctx := context.Background()
 	cfg, err := config.GetConfig[AppConfig](ctx,
-		config.WithConfigFile("config.yaml"), // optional: skipped when absent
-		config.WithEnvPrefix("APP"),          // APP_PORT, APP_DB_MAX_CONNS, ...
+		config.WithConfigFile(file), // optional: skipped when absent
+		config.WithEnvPrefix("APP"), // APP_PORT, APP_DB_MAX_CONNS, ...
+		config.WithEnviron(func() []string { return []string{"APP_DB_MAX_CONNS=50"} }),
 	)
 	if err != nil {
 		fmt.Println("load:", err)
@@ -234,11 +245,11 @@ func Example() {
 	}
 
 	// Output:
-	// FIELD         VALUE       TYPE
-	// ------------------------------------------
-	// port          8080        int
-	// timeout       30s         time.Duration
-	// db.host       localhost   string
-	// db.max_conns  25          int
-	// db.password   [REDACTED]  string
+	// FIELD         VALUE        TYPE
+	// -------------------------------------------
+	// port          8080         int
+	// timeout       30s          time.Duration
+	// db.host       db.internal  string
+	// db.max_conns  50           int
+	// db.password   [REDACTED]   string
 }

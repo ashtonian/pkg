@@ -6,10 +6,12 @@ import (
 	"crypto/sha256"
 	"errors"
 	"fmt"
+	"io/fs"
 	"log/slog"
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -51,15 +53,17 @@ type Reloader[T any] struct {
 	loaded fileDigests
 	stats  atomic.Pointer[ReloadStats] // written while holding slot, read lock-free
 
-	// armMu guards armed and serving. It is taken before the slot, never
-	// while holding it.
-	armMu   sync.Mutex
-	armed   *triggers // set up by Arm for the next Start to serve
-	serving int       // Start calls serving their triggers
+	// armSem guards armed. It is taken before the slot, never while holding
+	// it, and waited for under a context, so an Arm queued behind another
+	// gives up when its own context ends.
+	armSem  chan struct{}
+	armed   *triggers    // set up by Arm for the next Start to serve
+	serving atomic.Int32 // Start calls serving their triggers
 
 	stopOnce sync.Once
 	stopCh   chan struct{}
 	quiesced chan struct{} // closed once Stop holds the slot
+	disarmed chan struct{} // closed once Stop has released triggers no Start took
 	// changed holds at most one pending SourceChanged request; further
 	// requests coalesce into it.
 	changed chan struct{}
@@ -100,8 +104,9 @@ type ReloadStats struct {
 	// none has failed.
 	LastFailure time.Time
 	// LastError is the error from the most recent attempt, or nil when that
-	// attempt succeeded. A non-nil LastError alongside a recent LastSuccess
-	// cannot happen: this field is cleared on every success.
+	// attempt succeeded. A success clears it; a failure sets it without
+	// touching LastSuccess, so a non-nil LastError beside an earlier
+	// LastSuccess means the config from that success is still live.
 	LastError error
 }
 
@@ -134,25 +139,28 @@ func WithOnChange[T any](fn func(old, new *T)) ReloadOption[T] {
 // select [DefaultFileWatchDebounce] (500ms), or a positive value to override.
 // Negative values are treated as the default.
 //
-// Detected: direct writes, write-temp-then-rename saves, and symlink swaps —
-// including Kubernetes ConfigMap and Secret volume updates, where the watched
-// path is a symlink into `..data` and the leaf file is never written.
+// Detected: direct writes, write-temp-then-rename saves, symlink swaps of the
+// file or of any directory on its path, and a directory removed and recreated
+// — including Kubernetes ConfigMap and Secret volume updates, where the
+// watched path is a symlink into `..data` and the leaf file is never written.
 //
-// NOT detected, all three requiring [WithPollInterval] instead:
+// NOT detected:
 //
 //   - ConfigMap/Secret volumes mounted with subPath. kubelet cannot swap a
 //     symlink through a bind mount, so these never update in the container at
-//     all — no watcher can help.
+//     all — neither a watch nor polling can see a change. Mount the volume
+//     without subPath.
 //   - Sources that change without a filesystem event: environment variables,
-//     and any provider wired via [WithProvider].
+//     and any provider wired via [WithProvider]. Use [WithPollInterval], or
+//     [Reloader.SourceChanged] from whatever learns of the change.
 //   - On kqueue platforms (macOS, *BSD) only: a symlink relink whose sole
 //     trace is a temporary name that is renamed away, e.g.
 //     `ln -s new link.tmp && mv -Tf link.tmp link`. fsnotify detects directory
 //     changes there by diffing directory listings, so a change that leaves the
-//     set of names unchanged produces no event at all. Kubernetes volumes are
-//     unaffected — kubelet leaves a durable new `..<timestamp>` directory —
-//     and Linux inotify reports the rename directly, so this is macOS/BSD
-//     hand-rolled-deploy only.
+//     set of names unchanged produces no event at all. [WithPollInterval]
+//     catches it. Kubernetes volumes are unaffected — kubelet leaves a durable
+//     new `..<timestamp>` directory — and Linux inotify reports the rename
+//     directly, so this is macOS/BSD hand-rolled-deploy only.
 func WithFileWatch[T any](debounce time.Duration) ReloadOption[T] {
 	return func(r *Reloader[T]) {
 		r.fileWatch = true
@@ -215,9 +223,11 @@ func NewReloader[T any](ctx context.Context, reloadOpts []ReloadOption[T], confi
 		logger:     o.logger,
 		slot:       make(chan struct{}, 1),
 		loaded:     files,
+		armSem:     make(chan struct{}, 1),
 		stopCh:     make(chan struct{}),
 		changed:    make(chan struct{}, 1),
 		quiesced:   make(chan struct{}),
+		disarmed:   make(chan struct{}),
 	}
 	r.current.Store(cfg)
 
@@ -394,16 +404,20 @@ func (r *Reloader[T]) recordAttempt(trigger string, err error) {
 // Arm returns nil without arming again when the triggers are already armed —
 // by an earlier Arm, or by a Start serving them — and [ErrReloaderStopped]
 // after Stop. Comparing the files with the last load waits for a reload in
-// flight; ctx bounds that wait. Triggers Arm sets up are released when the
-// Start serving them returns, or by Stop. Like Stop, Arm must not be called
-// from a WithOnChange or WithOnReloadError callback.
+// flight, and a concurrent Arm waits for this one; ctx bounds both waits, and
+// an Arm whose ctx ends while it waits returns ctx's error. Triggers Arm sets
+// up are released when the Start serving them returns, or by Stop. Like
+// Stop, Arm must not be called from a WithOnChange or WithOnReloadError
+// callback.
 func (r *Reloader[T]) Arm(ctx context.Context) error {
-	r.armMu.Lock()
-	defer r.armMu.Unlock()
+	if err := r.lockArm(ctx); err != nil {
+		return err
+	}
+	defer r.unlockArm()
 	if r.stopped() {
 		return ErrReloaderStopped
 	}
-	if r.armed != nil || r.serving > 0 {
+	if r.armed != nil || r.serving.Load() > 0 {
 		return nil
 	}
 	t, err := r.arm(ctx)
@@ -413,6 +427,26 @@ func (r *Reloader[T]) Arm(ctx context.Context) error {
 	r.armed = t
 	return nil
 }
+
+// lockArm takes armSem, or returns ctx's error if ctx ends first — including
+// when it has already ended, so an expired caller never proceeds.
+func (r *Reloader[T]) lockArm(ctx context.Context) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	select {
+	case r.armSem <- struct{}{}:
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+	if err := ctx.Err(); err != nil {
+		r.unlockArm()
+		return err
+	}
+	return nil
+}
+
+func (r *Reloader[T]) unlockArm() { <-r.armSem }
 
 // triggers are what arm sets up and Start serves.
 type triggers struct {
@@ -433,7 +467,7 @@ func (t *triggers) close() error {
 	return nil
 }
 
-// arm sets up the triggers. The caller holds armMu. The files are compared
+// arm sets up the triggers. The caller holds armSem. The files are compared
 // with the last load only once the watch is live, so every change is either
 // found by the comparison or reported by the watch.
 func (r *Reloader[T]) arm(ctx context.Context) (*triggers, error) {
@@ -459,8 +493,10 @@ func (r *Reloader[T]) arm(ctx context.Context) (*triggers, error) {
 
 // serve hands Start the triggers Arm set up, or arms them.
 func (r *Reloader[T]) serve(ctx context.Context) (*triggers, error) {
-	r.armMu.Lock()
-	defer r.armMu.Unlock()
+	if err := r.lockArm(ctx); err != nil {
+		return nil, err
+	}
+	defer r.unlockArm()
 	if r.stopped() {
 		return nil, ErrReloaderStopped
 	}
@@ -472,15 +508,13 @@ func (r *Reloader[T]) serve(ctx context.Context) (*triggers, error) {
 			return nil, err
 		}
 	}
-	r.serving++
+	r.serving.Add(1)
 	return t, nil
 }
 
 // unserve releases the triggers a returning Start served.
 func (r *Reloader[T]) unserve(ctx context.Context, t *triggers) {
-	r.armMu.Lock()
-	r.serving--
-	r.armMu.Unlock()
+	r.serving.Add(-1)
 	if err := t.close(); err != nil {
 		r.logger.WarnContext(ctx, "closing config file watcher", "error", err)
 	}
@@ -666,18 +700,22 @@ func (r *Reloader[T]) reloadAndLog(ctx context.Context, trigger string, attrs ..
 	r.logger.Log(ctx, level, "config reloaded", args...)
 }
 
-// Stop stops the reloader and waits until no reload is running. After Stop
-// returns nil, no reload — automatic or manual — will run again, and no
-// WithOnChange or WithOnReloadError callback will fire: it is safe to tear
-// down whatever the callbacks touch. Reload returns [ErrReloaderStopped] from
-// then on, and Start returns.
+// Stop stops the reloader. From the moment it is called, Reload returns
+// [ErrReloaderStopped], no new reload starts, an automatic reload in flight
+// is cancelled, and Start returns.
 //
-// An automatic reload in flight is cancelled. A manual Reload in flight runs
-// to completion under its caller's context; if ctx ends first, Stop returns
-// ctx's error and the reloader finishes stopping in the background once that
-// reload returns. Stop is idempotent and safe for concurrent use, but must
-// not be called from a WithOnChange or WithOnReloadError callback: those run
-// holding the slot Stop waits for.
+// Stop then waits for the reload in flight, if any, and for the release of
+// triggers Arm set up that no Start took. When it returns nil both are done:
+// no reload is running or will run, and no WithOnChange or WithOnReloadError
+// callback will fire, so it is safe to tear down whatever the callbacks
+// touch. A manual Reload in flight runs to completion under its caller's
+// context; if ctx ends first, Stop returns ctx's error and that guarantee is
+// not yet given: the reloader finishes stopping in the background once the
+// reload returns, and a later Stop call waits for it again.
+//
+// Stop is idempotent and safe for concurrent use, but must not be called from
+// a WithOnChange or WithOnReloadError callback: those run holding the slot
+// Stop waits for.
 func (r *Reloader[T]) Stop(ctx context.Context) error {
 	r.stopOnce.Do(func() {
 		close(r.stopCh)
@@ -687,23 +725,29 @@ func (r *Reloader[T]) Stop(ctx context.Context) error {
 			r.slot <- struct{}{}
 			close(r.quiesced)
 		}()
-		// Triggers Arm set up that no Start took. Arm and serve see the
-		// closed stopCh under armMu, so none are set up after this.
-		r.armMu.Lock()
-		if r.armed != nil {
-			if err := r.armed.close(); err != nil {
-				r.logger.WarnContext(ctx, "closing config file watcher", "error", err)
+		logCtx := context.WithoutCancel(ctx)
+		go func() {
+			// An Arm or serve holding armSem sees the closed stopCh and
+			// returns; none sets triggers up after this.
+			r.armSem <- struct{}{}
+			if r.armed != nil {
+				if err := r.armed.close(); err != nil {
+					r.logger.WarnContext(logCtx, "closing config file watcher", "error", err)
+				}
+				r.armed = nil
 			}
-			r.armed = nil
-		}
-		r.armMu.Unlock()
+			<-r.armSem
+			close(r.disarmed)
+		}()
 	})
-	select {
-	case <-r.quiesced:
-		return nil
-	case <-ctx.Done():
-		return fmt.Errorf("stopping config reloader: waiting for the reload in flight: %w", ctx.Err())
+	for _, done := range []chan struct{}{r.quiesced, r.disarmed} {
+		select {
+		case <-done:
+		case <-ctx.Done():
+			return fmt.Errorf("stopping config reloader: waiting for the reload in flight: %w", ctx.Err())
+		}
 	}
+	return nil
 }
 
 // notifyCallbacks invokes all registered onChange callbacks, recovering
@@ -767,9 +811,15 @@ func filePaths(opts []Option) []string {
 //   - An edit of a symlink's current target, matched by the target's name.
 //
 // The subscriptions are reconciled after every burst: the parent of each
-// declared path and of each current target — or, while one does not exist
-// yet, its nearest existing ancestor, so a directory created later is still
-// noticed — and nothing else, so retired release directories are dropped.
+// declared path and of each current target, and every directory holding a
+// symlink along a declared path, so relinking a directory component
+// (`current -> releases/v2`) is noticed like relinking the file. While one of
+// them does not exist, its nearest existing ancestor is watched instead, so a
+// directory created later is still noticed. Nothing else is watched, so
+// retired release directories are dropped. A watched directory that was
+// removed, replaced or renamed away has lost its watch, or kept one on the
+// old directory; reconciling notices by the directory's identity and watches
+// what is at the path now.
 type fileWatch struct {
 	watcher *fsnotify.Watcher
 	logger  *slog.Logger
@@ -782,8 +832,9 @@ type fileWatch struct {
 	// reach maps each directory a declared path needs to the directory
 	// watched for it: itself, or its nearest existing ancestor.
 	reach map[string]string
-	// watching is the set of directories subscribed.
-	watching map[string]bool
+	// watching maps each directory subscribed to the directory it was when
+	// subscribed, so a replacement at the same path is told apart.
+	watching map[string]os.FileInfo
 
 	// timer is the debounce: every event resets it, so a burst collapses into
 	// one settle. Created stopped; fires only once armed by observe.
@@ -816,7 +867,7 @@ func newFileWatch(paths []string, debounce time.Duration, logger *slog.Logger) (
 		logger:   logger,
 		resolved: make(map[string]string, len(paths)),
 		reach:    make(map[string]string),
-		watching: make(map[string]bool),
+		watching: make(map[string]os.FileInfo),
 		timer:    timer,
 		debounce: debounce,
 	}
@@ -836,37 +887,38 @@ func newFileWatch(paths []string, debounce time.Duration, logger *slog.Logger) (
 
 // reconcile subscribes to the directories the declared paths need now and
 // drops every other subscription. appeared reports a needed directory that
-// came into existence since the last reconcile: a file inside it may have
-// appeared with it, before any watch could see it.
+// came into existence, or was replaced, since the last reconcile: a file
+// inside it may have changed with it, before any watch could see it.
 func (w *fileWatch) reconcile() (appeared bool, err error) {
 	want := make(map[string]bool, 2*len(w.declared))
 	for _, p := range w.declared {
 		want[filepath.Dir(p)] = true
 		want[filepath.Dir(w.resolved[p])] = true
+		for _, dir := range linkDirs(p) {
+			want[dir] = true
+		}
 	}
+	live := make(map[string]bool)
+	for _, dir := range w.watcher.WatchList() {
+		live[dir] = true
+	}
+
 	desired := make(map[string]bool, len(want))
 	reach := make(map[string]string, len(want))
+	var errs []error
 	for dir := range want {
-		watched := nearestExistingDir(dir)
-		reach[dir] = watched
-		desired[watched] = true
-		if was, ok := w.reach[dir]; ok && was != dir && watched == dir {
+		watched, replaced, err := w.subscribe(dir, live)
+		if err != nil {
+			errs = append(errs, err)
+		}
+		if was, ok := w.reach[dir]; replaced || ok && was != dir && watched == dir {
 			appeared = true
 		}
+		reach[dir] = watched
+		desired[watched] = true
 	}
 	w.reach = reach
 
-	var errs []error
-	for dir := range desired {
-		if w.watching[dir] {
-			continue
-		}
-		if err := w.watcher.Add(dir); err != nil {
-			errs = append(errs, fmt.Errorf("watching config directory %q: %w", dir, err))
-			continue
-		}
-		w.watching[dir] = true
-	}
 	for dir := range w.watching {
 		if desired[dir] {
 			continue
@@ -877,6 +929,89 @@ func (w *fileWatch) reconcile() (appeared bool, err error) {
 		delete(w.watching, dir)
 	}
 	return appeared, errors.Join(errs...)
+}
+
+// subscribe makes sure dir — or, while it does not exist, its nearest
+// existing ancestor — is watched, and returns the directory watched. replaced
+// reports that the watch on it had been lost or was pinned to a directory no
+// longer at that path, and was made afresh. live is the watcher's own list of
+// watches; subscribe adds to it what it subscribes.
+func (w *fileWatch) subscribe(dir string, live map[string]bool) (watched string, replaced bool, err error) {
+	for {
+		watched = nearestExistingDir(dir)
+		info, statErr := os.Stat(watched)
+		prev, tracked := w.watching[watched]
+		if tracked && live[watched] && statErr == nil && os.SameFile(prev, info) {
+			return watched, replaced, nil
+		}
+		if tracked {
+			_ = w.watcher.Remove(watched) // drop a watch still pinned to the old directory
+			delete(w.watching, watched)
+			delete(live, watched)
+			replaced = true
+		}
+		if statErr == nil {
+			statErr = w.watcher.Add(watched)
+		}
+		switch {
+		case statErr == nil:
+			w.watching[watched] = info
+			live[watched] = true
+			return watched, replaced, nil
+		case errors.Is(statErr, fs.ErrNotExist) && watched != filepath.Dir(watched):
+			continue // removed since it was found; watch what is there now
+		default:
+			return watched, replaced, fmt.Errorf("watching config directory %q: %w", watched, statErr)
+		}
+	}
+}
+
+// linkDirs returns every directory holding a symlink that resolving path
+// passes through — the directory components and the file itself — following
+// each link's target as the kernel does. A component that does not exist
+// ends the walk; nearestExistingDir covers what lies beyond it.
+func linkDirs(path string) []string {
+	var dirs []string
+	root := filepath.VolumeName(path) + string(filepath.Separator)
+	dir, rest := root, splitPath(strings.TrimPrefix(path, root))
+	for hops := 0; len(rest) > 0 && hops <= maxLinkHops; {
+		next := filepath.Join(dir, rest[0])
+		info, err := os.Lstat(next)
+		if err != nil {
+			break
+		}
+		rest = rest[1:]
+		if info.Mode()&fs.ModeSymlink == 0 {
+			dir = next
+			continue
+		}
+		hops++
+		dirs = append(dirs, dir)
+		target, err := os.Readlink(next)
+		if err != nil {
+			break
+		}
+		if !filepath.IsAbs(target) {
+			target = filepath.Join(dir, target)
+		}
+		root = filepath.VolumeName(target) + string(filepath.Separator)
+		dir, rest = root, append(splitPath(strings.TrimPrefix(filepath.Clean(target), root)), rest...)
+	}
+	return dirs
+}
+
+// maxLinkHops bounds linkDirs like the kernel's own symlink limit, so a link
+// loop ends.
+const maxLinkHops = 40
+
+func splitPath(p string) []string {
+	var parts []string
+	for part := range strings.SplitSeq(p, string(filepath.Separator)) {
+		if part != "" {
+			parts = append(parts, part)
+		}
+	}
+	return parts
 }
 
 // nearestExistingDir returns dir, or its closest ancestor that exists.

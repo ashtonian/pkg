@@ -11,8 +11,6 @@ import (
 
 	"github.com/go-playground/validator/v10"
 	"github.com/knadh/koanf/v2"
-
-	"github.com/ashtonian/pkg/errcontract"
 )
 
 var errPolicy = errors.New("policy violation")
@@ -103,13 +101,11 @@ func (p failingProvider) Read() (map[string]any, error) { return nil, p.err }
 
 var _ koanf.Provider = failingProvider{}
 
-// A failing source carries a category and an E-code like every other stage,
-// and its cause.
+// A failing source carries its category and its cause like every other stage.
 func TestSourceFailureIsCategorized(t *testing.T) {
 	cause := errors.New("store unavailable")
 	_, err := GetConfig[struct{}](t.Context(), WithProvider(failingProvider{cause}))
-	var coded errcontract.Coder
-	if !errors.Is(err, ErrSource) || !errors.Is(err, cause) || !errors.As(err, &coded) || coded.ErrorCode() != CodeSource.Code {
-		t.Fatalf("err = %v: want ErrSource (%s) with its cause", err, CodeSource.Code)
+	if !errors.Is(err, ErrSource) || !errors.Is(err, cause) {
+		t.Fatalf("err = %v: want ErrSource with its cause", err)
 	}
 }

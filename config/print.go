@@ -279,14 +279,23 @@ func (w *entryWalk) cycle(path string, v reflect.Value, s site) {
 // holdsContainers reports whether slice or array elements of type t may hold
 // structs or maps at any depth, and so must be expanded rather than printed
 // whole: struct branches, maps, interfaces (whose dynamic value is only known
-// per element) and slices or arrays of those.
+// per element) and slices or arrays of those. A recursive container type
+// (type Tree []Tree) is expanded too; its values end, and the walk's cycle
+// guard stops one that does not.
 func holdsContainers(t reflect.Type) bool {
+	return holdsContainersOf(t, map[reflect.Type]bool{})
+}
+
+func holdsContainersOf(t reflect.Type, seen map[reflect.Type]bool) bool {
 	t = derefType(t)
 	switch {
+	case seen[t]:
+		return true
 	case isBranch(t), t.Kind() == reflect.Map, t.Kind() == reflect.Interface:
 		return true
 	case t.Kind() == reflect.Slice, t.Kind() == reflect.Array:
-		return holdsContainers(t.Elem())
+		seen[t] = true
+		return holdsContainersOf(t.Elem(), seen)
 	}
 	return false
 }

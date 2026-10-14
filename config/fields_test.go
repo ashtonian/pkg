@@ -166,7 +166,7 @@ func TestGetConfig_EnvIntoMapOfStructs(t *testing.T) {
 		t.Errorf("features[devices] = %+v, want default_page_size 3, enabled", d)
 	}
 	if cfg.Labels["env"] != "prod" {
-		t.Errorf("labels = %v: a map of scalars keeps the plain fallback", cfg.Labels)
+		t.Errorf("labels = %v: a map of scalars takes the rest of the name as its key", cfg.Labels)
 	}
 }
 

@@ -919,25 +919,17 @@ func TestGetConfig_CustomValidator(t *testing.T) {
 
 // --- Error Sentinel Tests ---
 
-func TestErrors_Are_Sentinels(t *testing.T) {
-	tests := []struct {
-		name string
-		err  error
-		code string
-	}{
-		{"ErrValidation", ErrValidation, CodeValidation.Code},
-		{"ErrFileRead", ErrFileRead, CodeFileRead.Code},
-		{"ErrSecretProvider", ErrSecretProvider, CodeSecretProvider.Code},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			if tt.err == nil {
-				t.Fatal("sentinel error should not be nil")
+// The categories are distinct sentinels, and the two reload refusals are not
+// reload failures.
+func TestErrors_AreDistinctSentinels(t *testing.T) {
+	all := []error{ErrValidation, ErrFileRead, ErrFileParse, ErrSecretProvider, ErrPostLoad,
+		ErrSource, ErrReload, ErrReloadInProgress, ErrReloaderStopped}
+	for i, a := range all {
+		for j, b := range all {
+			if i != j && errors.Is(a, b) {
+				t.Errorf("%v matches %v", a, b)
 			}
-			if !strings.Contains(tt.err.Error(), tt.code) {
-				t.Errorf("error %v should contain code %s", tt.err, tt.code)
-			}
-		})
+		}
 	}
 }
 

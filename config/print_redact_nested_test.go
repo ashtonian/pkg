@@ -5,6 +5,7 @@ package config
 import (
 	"bytes"
 	"fmt"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -107,5 +108,16 @@ func TestRedaction_DynamicCycles(t *testing.T) {
 	}
 	if out["settings[name]"] != "n" || out["list[0][k]"] != "v" {
 		t.Fatalf("the acyclic parts must still print: %v", out)
+	}
+}
+
+// A finite value of a recursive container type prints; inspecting its type
+// does not recurse forever.
+func TestToMap_RecursiveSliceType(t *testing.T) {
+	type Tree []Tree
+	got := ToMap(struct{ Rows Tree }{Tree{nil, Tree{nil}}}, true)
+	want := map[string]any{"rows[0]": "[]", "rows[1][0]": "[]"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("ToMap = %v, want %v", got, want)
 	}
 }

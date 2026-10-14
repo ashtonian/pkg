@@ -7,8 +7,10 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"maps"
 	"os"
 	"path/filepath"
+	"slices"
 	"testing"
 	"time"
 
@@ -139,7 +141,7 @@ func TestFileWatch_DirectoryCreatedLater(t *testing.T) {
 // Relinking a path to new release directories keeps exactly the
 // subscriptions the current layout needs.
 func TestFileWatch_RelinksDropRetiredDirectories(t *testing.T) {
-	root := t.TempDir()
+	root := realTempDir(t)
 	link := filepath.Join(root, "current.yaml")
 	release := func(name string) string {
 		p := filepath.Join(root, name, "config.yaml")
@@ -171,10 +173,10 @@ func TestFileWatch_RelinksDropRetiredDirectories(t *testing.T) {
 			t.Fatalf("relink to %s: changed=%v err=%v", name, changed, err)
 		}
 	}
-	rootDir, _ := filepath.EvalSymlinks(root)
-	v4Dir, _ := filepath.EvalSymlinks(filepath.Join(root, "v4"))
-	if len(w.watching) != 2 || !w.watching[root] && !w.watching[rootDir] || !w.watching[v4Dir] {
-		t.Fatalf("watching %v; want only the link's directory and the current release", w.watching)
+	_, watchesRoot := w.watching[root]
+	_, watchesV4 := w.watching[filepath.Join(root, "v4")]
+	if len(w.watching) != 2 || !watchesRoot || !watchesV4 {
+		t.Fatalf("watching %v; want only the link's directory and the current release", slices.Collect(maps.Keys(w.watching)))
 	}
 	if got := len(w.watcher.WatchList()); got != 2 {
 		t.Fatalf("%d kernel watches after three relinks, want 2", got)
@@ -273,4 +275,168 @@ func TestFileWatch_ChangeBeforeStartIsNotMissed(t *testing.T) {
 		startReloader(t, r)
 		awaitHost(t, changed, "after-arm")
 	})
+}
+
+// realTempDir is a temporary directory named without symlinks, so a test of
+// symlink handling is not also watching the links above the temp root
+// (macOS's /var -> /private/var).
+func realTempDir(t *testing.T) string {
+	t.Helper()
+	dir, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	return dir
+}
+
+func writeFile(t *testing.T, path, data string) {
+	t.Helper()
+	if err := os.WriteFile(path, []byte(data), 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func discardLogger() *slog.Logger { return slog.New(slog.NewTextHandler(io.Discard, nil)) }
+
+// waitForEvent waits for the watcher to report an event on name, feeding
+// every event it sees to the watch as Start's loop would.
+func waitForEvent(t *testing.T, w *fileWatch, name string) {
+	t.Helper()
+	deadline := time.After(3 * time.Second)
+	for {
+		select {
+		case ev := <-w.watcher.Events:
+			w.observe(ev)
+			if ev.Name == name {
+				return
+			}
+		case err := <-w.watcher.Errors:
+			t.Fatalf("watcher error: %v", err)
+		case <-deadline:
+			t.Fatalf("no event on %s", name)
+		}
+	}
+}
+
+// A watched directory removed and recreated at the same path has lost its
+// watch, or kept one on the directory that is gone. Reconciling watches the
+// new directory, reports the change, and later edits are seen.
+func TestFileWatch_RecreatedDirectoryIsWatchedAgain(t *testing.T) {
+	dir := filepath.Join(realTempDir(t), "config")
+	file := filepath.Join(dir, "config.yaml")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, file, "port: 9000\n")
+	w, err := newFileWatch([]string{file}, time.Hour, discardLogger())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer w.close()
+
+	if err := os.RemoveAll(dir); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, file, "port: 9001\n")
+	if _, changed, err := w.settle(); err != nil || !changed {
+		t.Fatalf("settle after the directory was replaced: changed=%v err=%v", changed, err)
+	}
+	if !slices.Contains(w.watcher.WatchList(), dir) {
+		t.Fatalf("watches %v after the directory was replaced; want %s", w.watcher.WatchList(), dir)
+	}
+
+	writeFile(t, file, "port: 9002\n")
+	waitForEvent(t, w, file)
+}
+
+// A symlink among the directory components is watched where it lives, so
+// relinking it is seen and the watch follows the new target.
+func TestFileWatch_DirectoryComponentSymlink(t *testing.T) {
+	root := realTempDir(t)
+	for _, name := range []string{"v1", "v2"} {
+		if err := os.MkdirAll(filepath.Join(root, name), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		writeFile(t, filepath.Join(root, name, "config.yaml"), "release: "+name+"\n")
+	}
+	link := filepath.Join(root, "current")
+	if err := os.Symlink(filepath.Join(root, "v1"), link); err != nil {
+		t.Fatal(err)
+	}
+	file := filepath.Join(link, "config.yaml")
+	w, err := newFileWatch([]string{file}, time.Hour, discardLogger())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer w.close()
+	if !slices.Contains(w.watcher.WatchList(), root) {
+		t.Fatalf("watches %v; want the directory holding the link, %s", w.watcher.WatchList(), root)
+	}
+
+	if err := os.Remove(link); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(root, "v2"), link); err != nil {
+		t.Fatal(err)
+	}
+	// A durable new name: kqueue reports a directory change by the names it
+	// gained, and relinking under the same name gains none.
+	marker := filepath.Join(root, "deployed")
+	writeFile(t, marker, "v2")
+	waitForEvent(t, w, marker)
+
+	path, changed, err := w.settle()
+	if err != nil || !changed {
+		t.Fatalf("settle after relinking a directory component: changed=%v err=%v", changed, err)
+	}
+	want := filepath.Join(root, "v2", "config.yaml")
+	if path != want || w.resolved[file] != want {
+		t.Fatalf("settle reported %q, resolved %q; want %q", path, w.resolved[file], want)
+	}
+	if !slices.Contains(w.watcher.WatchList(), filepath.Join(root, "v2")) {
+		t.Fatalf("watches %v; want the new target directory", w.watcher.WatchList())
+	}
+}
+
+func TestLinkDirs(t *testing.T) {
+	root := realTempDir(t)
+	for _, dir := range []string{"real", "b"} {
+		if err := os.MkdirAll(filepath.Join(root, dir), 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	writeFile(t, filepath.Join(root, "real", "c.yaml"), "x: 1\n")
+	// a -> b (relative directory link); b/c.yaml -> ../real/c.yaml (file link).
+	if err := os.Symlink("b", filepath.Join(root, "a")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join("..", "real", "c.yaml"), filepath.Join(root, "b", "c.yaml")); err != nil {
+		t.Fatal(err)
+	}
+	got := linkDirs(filepath.Join(root, "a", "c.yaml"))
+	want := []string{root, filepath.Join(root, "b")}
+	if !slices.Equal(got, want) {
+		t.Fatalf("linkDirs = %v, want %v", got, want)
+	}
+
+	if got := linkDirs(filepath.Join(root, "real", "c.yaml")); len(got) != 0 {
+		t.Fatalf("linkDirs of a path with no links = %v", got)
+	}
+	if got := linkDirs(filepath.Join(root, "missing", "c.yaml")); len(got) != 0 {
+		t.Fatalf("linkDirs of a missing path = %v", got)
+	}
+
+	// A loop ends.
+	if err := os.Symlink("y", filepath.Join(root, "x")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("x", filepath.Join(root, "y")); err != nil {
+		t.Fatal(err)
+	}
+	if got := linkDirs(filepath.Join(root, "x", "c.yaml")); len(got) == 0 || len(got) > maxLinkHops+1 {
+		t.Fatalf("linkDirs through a loop returned %d entries", len(got))
+	}
 }

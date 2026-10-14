@@ -35,9 +35,11 @@
 //
 // [Fields] is the one definition of how these tags become koanf paths;
 // defaults, environment-variable names, printing and the Kong bridge all use
-// it. With WithEnvPrefix("APP"), APP_DB_MAX_CONNS sets db.max_conns, and for
-// a map of structs APP_FEATURES_AUDIT_LOGS_MAX_PAGE_SIZE sets
-// features.audit_logs.max_page_size.
+// it. With WithEnvPrefix("APP"), APP_DB_MAX_CONNS sets db.max_conns, for a
+// map of structs APP_FEATURES_AUDIT_LOGS_MAX_PAGE_SIZE sets
+// features.audit_logs.max_page_size, and for any other map APP_LABELS_TEAM_NAME
+// sets labels.team_name. A variable that fits two keys fails the load with
+// ErrValidation naming both; one that fits none is not loaded.
 //
 // # Source Precedence
 //
@@ -101,7 +103,7 @@
 //	    []config.ReloadOption[AppConfig]{
 //	        config.WithFileWatch[AppConfig](0), // 0 = DefaultFileWatchDebounce
 //	        config.WithOnChange(func(old, new *AppConfig) {
-//	            limiter.SetRate(new.Rate)
+//	            server.SetTimeout(new.Timeout)
 //	        }),
 //	    },
 //	    config.WithLogger(logger),
@@ -122,9 +124,10 @@
 // Reloads are serialized. A watcher-driven reload (file change, poll, signal)
 // that arrives while another reload runs waits for it and then reads the
 // sources again, so a change is never lost. A manual Reload does not wait: it
-// returns ErrReloadInProgress. Stop cancels an automatic reload in flight,
-// waits for a manual one, and after it returns no reload runs and no callback
-// fires — safe to tear down whatever the callbacks touch.
+// returns ErrReloadInProgress. Stop cancels an automatic reload in flight and
+// waits for a manual one; once it returns nil no reload runs and no callback
+// fires — safe to tear down whatever the callbacks touch. A Stop whose ctx
+// ends first returns that error without the guarantee.
 //
 // Arm sets up the file watch and the signal registration and returns their
 // error, so a caller can refuse to report ready on a reloader that cannot
@@ -152,10 +155,13 @@
 //
 // # File Watch Limits
 //
-// WithFileWatch detects direct writes, rename-based saves, and symlink swaps
-// including Kubernetes ConfigMap and Secret volume updates. It cannot detect
-// subPath-mounted ConfigMaps (which never update in the container), sources
-// with no filesystem event (env vars, WithProvider), or — on macOS and BSD
-// only — a relink whose sole trace is a temporary name renamed away. Use
-// WithPollInterval for those. See WithFileWatch for detail.
+// WithFileWatch detects direct writes, rename-based saves, symlink swaps of
+// the file or of any directory on its path, and directories removed and
+// recreated — including Kubernetes ConfigMap and Secret volume updates. It
+// cannot detect sources with no filesystem event (env vars, WithProvider) —
+// use WithPollInterval or SourceChanged for those — or, on macOS and BSD
+// only, a relink whose sole trace is a temporary name renamed away, which
+// polling catches. A subPath-mounted ConfigMap never updates inside the
+// container at all, so neither watching nor polling sees a change; mount the
+// volume without subPath. See WithFileWatch for detail.
 package config

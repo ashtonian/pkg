@@ -17,7 +17,6 @@ import (
 	"github.com/go-viper/mapstructure/v2"
 	"github.com/knadh/koanf/parsers/yaml"
 	"github.com/knadh/koanf/providers/confmap"
-	kenv "github.com/knadh/koanf/providers/env"
 	"github.com/knadh/koanf/v2"
 )
 
@@ -44,6 +43,7 @@ type Validator interface {
 
 type options struct {
 	envPrefix       string
+	environ         func() []string
 	configFiles     []configFileEntry
 	defaults        map[string]any
 	populateSecrets SecretPopulator
@@ -72,6 +72,9 @@ func buildOptions(opts []Option) *options {
 	if o.logger == nil {
 		o.logger = slog.Default()
 	}
+	if o.environ == nil {
+		o.environ = os.Environ
+	}
 	return o
 }
 
@@ -91,6 +94,16 @@ func (o *options) requireFiles(loaded fileDigests) {
 func WithEnvPrefix(prefix string) Option {
 	return func(o *options) {
 		o.envPrefix = prefix
+	}
+}
+
+// WithEnviron sets where environment variables are read from: a function
+// returning "NAME=value" entries, as [os.Environ] does, called on every load
+// and reload. The default is os.Environ. Tests and examples pass a fixed list;
+// a deployment adapter can pass variables gathered elsewhere.
+func WithEnviron(environ func() []string) Option {
+	return func(o *options) {
+		o.environ = environ
 	}
 }
 
@@ -138,9 +151,11 @@ func WithMustConfigFiles(paths ...string) Option {
 
 // WithDefaults adds programmatic default values keyed by koanf dot-path
 // (e.g. "server.port"). Repeated calls merge, a later call winning on a
-// shared key. The map, and every map and slice inside it, is copied when
-// WithDefaults is called: changing the caller's map afterwards changes
-// nothing, including what a Reloader built from the option reads later.
+// shared key. The values are deep-copied when WithDefaults is called — every
+// map, slice, array and pointer target reachable through exported fields —
+// so changing the caller's data afterwards changes nothing, including what a
+// Reloader built from the option reads later. Unexported struct fields,
+// channels and functions are copied by value.
 func WithDefaults(defaults map[string]any) Option {
 	snapshot := deepCopy(reflect.ValueOf(defaults)).Interface().(map[string]any)
 	return func(o *options) {
@@ -151,35 +166,82 @@ func WithDefaults(defaults map[string]any) Option {
 	}
 }
 
-// deepCopy copies v and every map and slice reachable from it through maps,
-// slices and interfaces.
+// deepCopy returns a copy of v sharing no map, slice, array element or
+// pointer target with it. Data v shares internally, cycles included, is
+// shared the same way in the copy.
 func deepCopy(v reflect.Value) reflect.Value {
+	c := copier{made: map[copyKey]reflect.Value{}}
+	return c.copy(v)
+}
+
+type copier struct {
+	made map[copyKey]reflect.Value
+}
+
+// copyKey identifies a map, slice or pointer already copied. A slice's
+// length is part of it: two slices over one array are different values.
+type copyKey struct {
+	ptr uintptr
+	len int
+	typ reflect.Type
+}
+
+func (c copier) copy(v reflect.Value) reflect.Value {
 	switch v.Kind() {
-	case reflect.Map:
+	case reflect.Pointer, reflect.Map, reflect.Slice:
 		if v.IsNil() {
 			return v
 		}
-		c := reflect.MakeMapWithSize(v.Type(), v.Len())
-		for iter := v.MapRange(); iter.Next(); {
-			c.SetMapIndex(iter.Key(), deepCopy(iter.Value()))
+		key := copyKey{ptr: v.Pointer(), typ: v.Type()}
+		if v.Kind() == reflect.Slice {
+			key.len = v.Len()
 		}
-		return c
-	case reflect.Slice:
-		if v.IsNil() {
-			return v
+		if done, ok := c.made[key]; ok {
+			return done
 		}
-		c := reflect.MakeSlice(v.Type(), v.Len(), v.Len())
+		switch v.Kind() {
+		case reflect.Pointer:
+			p := reflect.New(v.Type().Elem())
+			c.made[key] = p
+			p.Elem().Set(c.copy(v.Elem()))
+			return p
+		case reflect.Map:
+			m := reflect.MakeMapWithSize(v.Type(), v.Len())
+			c.made[key] = m
+			for iter := v.MapRange(); iter.Next(); {
+				m.SetMapIndex(iter.Key(), c.copy(iter.Value()))
+			}
+			return m
+		default:
+			s := reflect.MakeSlice(v.Type(), v.Len(), v.Len())
+			c.made[key] = s
+			for i := range v.Len() {
+				s.Index(i).Set(c.copy(v.Index(i)))
+			}
+			return s
+		}
+	case reflect.Array:
+		a := reflect.New(v.Type()).Elem()
 		for i := range v.Len() {
-			c.Index(i).Set(deepCopy(v.Index(i)))
+			a.Index(i).Set(c.copy(v.Index(i)))
 		}
-		return c
+		return a
+	case reflect.Struct:
+		s := reflect.New(v.Type()).Elem()
+		s.Set(v) // unexported fields cannot be reached, so they keep their values
+		for i := range v.NumField() {
+			if v.Type().Field(i).IsExported() {
+				s.Field(i).Set(c.copy(v.Field(i)))
+			}
+		}
+		return s
 	case reflect.Interface:
 		if v.IsNil() {
 			return v
 		}
-		c := reflect.New(v.Type()).Elem()
-		c.Set(deepCopy(v.Elem()))
-		return c
+		i := reflect.New(v.Type()).Elem()
+		i.Set(c.copy(v.Elem()))
+		return i
 	}
 	return v
 }
@@ -347,19 +409,20 @@ func load[T any](ctx context.Context, o *options) (*T, fileDigests, error) {
 	}
 
 	// Step 4: env vars, named from T's fields so a key with an underscore in
-	// it (koanf:"max_conns") keeps it; see envResolver.
+	// it (koanf:"max_conns") keeps it; see envSchema.
 	if o.envPrefix != "" {
-		prefix := strings.TrimSuffix(o.envPrefix, "_")
-		fullPrefix := prefix + "_"
-		resolve := newEnvResolver(fields, prefix)
-
-		if err := k.Load(kenv.Provider(fullPrefix, ".", resolve.path), nil); err != nil {
-			return nil, nil, fmt.Errorf("loading env vars: %w: %w", ErrSource, err)
-		}
-		if err := resolve.ambiguity(); err != nil {
+		schema := newEnvSchema(fields, strings.TrimSuffix(o.envPrefix, "_"))
+		values, unmatched, err := schema.read(o.environ())
+		if err != nil {
 			return nil, nil, fmt.Errorf("loading env vars: %w: %w", ErrValidation, err)
 		}
-		sources = append(sources, "env:"+fullPrefix+"*")
+		if len(unmatched) > 0 {
+			o.logger.DebugContext(ctx, "environment variables under the prefix name no config key", "names", unmatched)
+		}
+		if err := k.Load(confmap.Provider(values, "."), nil); err != nil {
+			return nil, nil, fmt.Errorf("loading env vars: %w: %w", ErrSource, err)
+		}
+		sources = append(sources, "env:"+schema.prefix+"*")
 	}
 
 	// Step 5: extra providers (including kongprovider), loaded in order added (highest precedence).
@@ -389,8 +452,10 @@ func load[T any](ctx context.Context, o *options) (*T, fileDigests, error) {
 		},
 	}); err != nil {
 		// A value that cannot decode into its field's type (port: abc) is
-		// invalid configuration; the decoder's error names the key.
-		return nil, nil, fmt.Errorf("unmarshaling config: %w: %w", ErrValidation, err)
+		// invalid configuration; the decoder's error names the key, and
+		// never the value of a sensitive one.
+		return nil, nil, fmt.Errorf("unmarshaling config: %w: %w", ErrValidation,
+			withholdSensitiveDecodeErrors(reflect.TypeFor[T](), err))
 	}
 
 	// Step 7: secret injection -- delegates to the consumer-supplied
