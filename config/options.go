@@ -6,7 +6,9 @@ import (
 	"log/slog"
 	"maps"
 	"os"
+	"path/filepath"
 	"reflect"
+	"strings"
 
 	"github.com/go-viper/mapstructure/v2"
 	"github.com/knadh/koanf/parsers/yaml"
@@ -33,7 +35,7 @@ type options struct {
 	envPrefix    string
 	environ      func() []string
 	files        []fileSource
-	fileParser   koanf.Parser
+	fileParsers  map[string]koanf.Parser // by lower-case name suffix; nil removes one
 	defaults     map[string]any
 	base         []providerSource
 	overrides    []providerSource
@@ -73,10 +75,41 @@ func buildOptions(opts []Option) *options {
 	if o.environ == nil {
 		o.environ = os.Environ
 	}
-	if o.fileParser == nil {
-		o.fileParser = yaml.Parser()
+	if o.fileParsers == nil {
+		o.fileParsers = make(map[string]koanf.Parser, len(builtinFileParsers))
+	}
+	for suffix, p := range builtinFileParsers {
+		if _, set := o.fileParsers[suffix]; !set {
+			o.fileParsers[suffix] = p
+		}
 	}
 	return o
+}
+
+// builtinFileParsers are the parsers files take unless [WithFileParser]
+// replaces them; "" is every file no longer suffix matches.
+var builtinFileParsers = map[string]koanf.Parser{
+	"":      yaml.Parser(),
+	".yaml": yaml.Parser(),
+	".yml":  yaml.Parser(),
+	".json": jsonParser{},
+}
+
+// fileParser is the parser for the file at path: the one registered for
+// the longest suffix of its name, YAML when none is.
+func (o *options) fileParser(path string) koanf.Parser {
+	name := strings.ToLower(filepath.Base(path))
+	var best koanf.Parser
+	bestLen := -1
+	for suffix, p := range o.fileParsers {
+		if p != nil && len(suffix) > bestLen && strings.HasSuffix(name, suffix) {
+			best, bestLen = p, len(suffix)
+		}
+	}
+	if best == nil {
+		return builtinFileParsers[""]
+	}
+	return best
 }
 
 // requireFiles marks every configured file that loaded as required. A
@@ -140,12 +173,27 @@ func WithRequiredFiles(paths ...string) Option {
 	}
 }
 
-// WithFileParser sets the parser for every config file: any koanf parser,
-// e.g. toml.Parser() or dotenv.Parser(). The default is YAML, which also
-// reads JSON.
-func WithFileParser(p koanf.Parser) Option {
+// WithFileParser parses the config files whose names end in suffix with p,
+// any koanf parser: WithFileParser(".toml", toml.Parser()). Each file takes
+// the parser of the longest suffix its name ends in, ignoring case, so files
+// of different formats load together. Built in, .yaml and .yml parse as YAML,
+// .json as JSON, and any other file as YAML; the suffix "" names every file
+// no longer suffix matches, so WithFileParser("", p) changes that default. A
+// suffix without its leading dot gets one. A nil p removes suffix's parser,
+// leaving its files to a shorter suffix.
+//
+// The JSON parser reads one object. Integers decode as integers, a key set
+// twice in one object fails the load, and a parse error names its line.
+func WithFileParser(suffix string, p koanf.Parser) Option {
+	suffix = strings.ToLower(suffix)
+	if suffix != "" && !strings.HasPrefix(suffix, ".") {
+		suffix = "." + suffix
+	}
 	return func(o *options) {
-		o.fileParser = p
+		if o.fileParsers == nil {
+			o.fileParsers = map[string]koanf.Parser{}
+		}
+		o.fileParsers[suffix] = p
 	}
 }
 

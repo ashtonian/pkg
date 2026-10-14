@@ -239,7 +239,7 @@ func load[T any](ctx context.Context, o *options) (loaded[T], error) {
 		default:
 			return none, fmt.Errorf("loading config file %s: %w: %w", f.path, ErrFileRead, err)
 		}
-		data, err := parse(f.path, o.fileParser, raw)
+		data, err := parse(f.path, o.fileParser(f.path), raw)
 		if err != nil {
 			return none, fmt.Errorf("loading config file %s: %w: %w", f.path, ErrFileParse, err)
 		}

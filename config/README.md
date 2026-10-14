@@ -106,10 +106,12 @@ Highest wins:
 |---|---|---|
 | 1 | `WithOverrideProvider(p, parser)` | Operator overrides, such as CLI flags through [kongprovider](kongprovider). |
 | 2 | `WithEnvPrefix(prefix)` | `PREFIX_*` environment variables. |
-| 3 | `WithFile`, `WithRequiredFile` | Config files, merged in order. YAML (and so JSON) by default; `WithFileParser` takes any koanf parser. |
+| 3 | `WithFile`, `WithRequiredFile` | Config files, merged in order, each parsed by its name's suffix: YAML or JSON built in, any koanf parser through `WithFileParser`. |
 | 4 | `WithBaseProvider(p, parser)` | A shared or remote base the files refine. |
 | 5 | `WithDefaults(map)` | Programmatic defaults keyed by dotted path. |
 | 6 | `default` tags | Always. |
+
+Each file takes the parser registered for the longest suffix of its name, ignoring case: `.yaml` and `.yml` are YAML, `.json` is JSON, and any other file is YAML. `WithFileParser(".toml", toml.Parser())` adds a format, so `config.yaml`, `overrides.json` and `local.toml` load together; `WithFileParser("", p)` changes the parser for every file no other suffix matches. JSON is strict: one object per file, integers kept exact, a key set twice in one object an error.
 
 An optional file may be absent, but one that exists and cannot be read or parsed fails the load. Under a reloader, a file that loaded once stays required, so deleting it fails the reload rather than silently reverting its keys.
 
@@ -527,7 +529,7 @@ Load options:
 |---|---|---|
 | `WithFile(path)`, `WithFiles(paths...)` | none | Optional config files, merged in order. |
 | `WithRequiredFile(path)`, `WithRequiredFiles(paths...)` | none | Required config files. |
-| `WithFileParser(p)` | YAML | The koanf parser for every file. |
+| `WithFileParser(suffix, p)` | `.yaml`, `.yml`: YAML; `.json`: JSON; others: YAML | The koanf parser for files whose names end in `suffix`; the longest matching suffix wins, `""` matches every file, and a nil parser removes one. |
 | `WithEnvPrefix(prefix)` | environment not read | Read `PREFIX_*` variables. |
 | `WithEnviron(fn)` | `os.Environ` | Where variables come from. |
 | `WithDefaults(map)` | none | Defaults by dotted path, above `default` tags; repeated calls merge. |
