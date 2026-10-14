@@ -347,8 +347,12 @@ func reshaped(n *originNode) Origin {
 // that set it; flat maps each flat key to its variable.
 func envLabeler(prefix string, flat map[string]string) labeler {
 	return labeler{byPath: func(path []string) Source {
-		if name, ok := flat[strings.Join(path, ".")]; ok {
-			return Source{Kind: SourceEnv, Name: name}
+		// A key beneath one a variable set whole — a map's entries, a JSON
+		// value's keys — is that variable's.
+		for i := len(path); i > 0; i-- {
+			if name, ok := flat[strings.Join(path[:i], ".")]; ok {
+				return Source{Kind: SourceEnv, Name: name}
+			}
 		}
 		return Source{Kind: SourceEnv, Name: prefix + "*"}
 	}}
