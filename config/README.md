@@ -147,7 +147,7 @@ With `WithEnvPrefix("APP")`, a key's variable is the prefix and its path, upper-
 | `APP_FEATURES_AUDIT_LOGS_MAX_PAGE_SIZE` (`map[string]Limits`) | `features["audit_logs"].max_page_size` |
 | `APP_TAGS=web,api` (`[]string`) | `tags` = `[web api]` |
 
-A variable that two keys could read — `db.port` and `db_port`, or a field and a map entry — fails the load naming every reading, instead of guessing. A variable under the prefix that names no key is ignored and logged at debug level. `WithEnviron(fn)` replaces `os.Environ`, which keeps tests independent of the machine. `PrintUsage` lists every variable a config reads.
+A variable that two keys could read — `db.port` and `db_port`, or a field and a map entry — fails the load naming every reading, instead of guessing. A variable under the prefix that names no key is ignored and logged at debug level — other programs may share the prefix — unless a `WithUnknownKeys` handler is set, which sees it with the variable it most likely misspells. `WithEnviron(fn)` replaces `os.Environ`, which keeps tests independent of the machine. `PrintUsage` lists every variable a config reads.
 
 ## Decoding and unknown keys
 
@@ -161,7 +161,22 @@ unmarshaling config: configuration validation failed: keys no field of main.AppC
 
 `errors.As` reaches an `*UnknownKeysError`, whose `Keys` give each key and its `Suggestion`, for a program to report them in its own words. A suggestion is the field fewest edits away, ignoring case, within a third of the key's length (at least 2) and sharing at least one character in place; a key no field is that close to has none.
 
-The check follows decoding exactly: it looks inside list elements and map entries of structs, through squashed structs, and lets through a map's own keys, anything beneath an interface, and keys a `,remain` field collects. `WithAllowUnknownKeys()` turns it off, for a file shared with another program.
+The check follows decoding exactly: it looks inside list elements and map entries of structs, through squashed structs, and lets through a map's own keys, anything beneath an interface, and keys a `,remain` field collects. A section no field holds is one key (`legacy`, not `legacy.old`).
+
+`WithUnknownKeys(handle)` decides instead. The handler gets the unknown keys, and the variables under the `WithEnvPrefix` prefix that name no key, at every load and reload; a nil return accepts the load, an error fails it with `ErrValidation`. Accept and warn:
+
+```go
+config.WithUnknownKeys(func(ctx context.Context, unknown *config.UnknownKeysError) error {
+	logger.WarnContext(ctx, "config input no field reads", "error", unknown)
+	return nil
+})
+```
+
+```txt
+keys no field of main.AppConfig decodes: server.prot (did you mean server.port?); environment variables no field of main.AppConfig reads: APP_SERVER_PROT (did you mean APP_SERVER_PORT?)
+```
+
+Or accept some and fail on the rest, by returning a copy of `unknown` without the keys you expect — a section another program reads, a setting you removed but deployed files still carry. Keys and variables are named, never their values. `WithAllowUnknownKeys()` accepts everything silently, for a file shared with another program. A field typed `any` or `map[string]any` accepts everything beneath its key while the rest of the config stays strict.
 
 ## Secrets
 
@@ -538,7 +553,8 @@ Load options:
 | `WithBaseProvider(p, parser)` | none | A provider below the files. |
 | `WithOverrideProvider(p, parser)` | none | A provider above the environment. |
 | `WithDecodeHook(h)` | none | A mapstructure decode hook, run before the built-in ones. |
-| `WithAllowUnknownKeys()` | unknown keys fail | Accept keys no field decodes. |
+| `WithUnknownKeys(fn)` | unknown keys fail, unknown variables ignored | Decide what unknown keys and variables do: report, accept, or fail. |
+| `WithAllowUnknownKeys()` | unknown keys fail | Accept keys no field decodes, silently. |
 | `WithSecretPopulator(fn)` | none | Resolve secrets; see `SecretsFrom`. |
 | `WithPostLoad(fn)` | none | Normalize after secrets, before validation. |
 | `WithValidator(v)` | go-playground, keys as field names | Replace the tag validator. |

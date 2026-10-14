@@ -10,7 +10,6 @@ import (
 	"os"
 	"reflect"
 	"regexp"
-	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -23,9 +22,9 @@ import (
 
 // Load builds a configuration of type T: it merges the sources in
 // precedence order, decodes them into a new T — failing on a key no field
-// decodes, unless [WithAllowUnknownKeys] — then resolves secrets, runs the
-// post-load hooks, validates with the validator and, when *T is
-// [Validatable], with its Validate method.
+// decodes, unless [WithUnknownKeys] decides otherwise — then resolves
+// secrets, runs the post-load hooks, validates with the validator and, when
+// *T is [Validatable], with its Validate method.
 //
 // Source precedence, highest first:
 //
@@ -214,6 +213,8 @@ func load[T any](ctx context.Context, o *options) (loaded[T], error) {
 	}
 	fields := Fields[T]()
 	files := fileDigests{}
+	var env envSchema
+	var unmatchedEnv []string
 
 	if tagDefaults := defaultsFrom(fields); len(tagDefaults) > 0 {
 		if err := l.addFlat("struct-tag defaults", tagDefaults, constant(Source{Kind: SourceTag})); err != nil {
@@ -251,15 +252,16 @@ func load[T any](ctx context.Context, o *options) (loaded[T], error) {
 	if o.envPrefix != "" {
 		// Named from T's fields so a key with an underscore in it
 		// (koanf:"max_conns") keeps it; see envSchema.
-		schema := newEnvSchema(fields, strings.TrimSuffix(o.envPrefix, "_"))
-		values, names, unmatched, err := schema.read(o.environ())
+		env = newEnvSchema(fields, strings.TrimSuffix(o.envPrefix, "_"))
+		values, names, unmatched, err := env.read(o.environ())
 		if err != nil {
 			return none, fmt.Errorf("loading env vars: %w: %w", ErrValidation, err)
 		}
 		if len(unmatched) > 0 {
 			o.log().DebugContext(ctx, "environment variables under the prefix name no config key", "names", unmatched)
 		}
-		if err := l.addFlat("env "+schema.prefix+"*", values, envLabeler(schema.prefix, names)); err != nil {
+		unmatchedEnv = unmatched
+		if err := l.addFlat("env "+env.prefix+"*", values, envLabeler(env.prefix, names)); err != nil {
 			return none, err
 		}
 	}
@@ -300,13 +302,8 @@ func load[T any](ctx context.Context, o *options) (loaded[T], error) {
 		// value of a field that is, or could hold, a sensitive one.
 		return none, fmt.Errorf("unmarshaling config: %w: %w", ErrValidation, decodeErrors(schema, merged, err))
 	}
-	if !o.allowUnknown && len(md.Unused) > 0 {
-		unknown := &UnknownKeysError{Type: root, Keys: make([]UnknownKey, len(md.Unused))}
-		for i, name := range md.Unused {
-			unknown.Keys[i] = unusedKey(schema, merged, name)
-		}
-		slices.SortFunc(unknown.Keys, func(a, b UnknownKey) int { return strings.Compare(a.Key, b.Key) })
-		return none, fmt.Errorf("unmarshaling config: %w: %w", ErrValidation, unknown)
+	if err := o.unknownInput(ctx, root, schema, merged, md.Unused, env, unmatchedEnv); err != nil {
+		return none, fmt.Errorf("unmarshaling config: %w: %w", ErrValidation, err)
 	}
 
 	// stage runs one stage that may change the decoded config, recording
