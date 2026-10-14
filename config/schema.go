@@ -125,6 +125,11 @@ func (b *schemaBuilder) fields(n *schemaNode, t reflect.Type, index []int, tagge
 	}
 	squashing[t] = true
 	defer delete(squashing, t)
+	for i := range t.NumField() {
+		if f := t.Field(i); unexportedSquashedPointer(f) {
+			b.fail(fmt.Errorf("%w: field %s of %s squashes a pointer to an unexported struct, which decoding cannot allocate; embed the struct itself, or export its type", ErrSchema, f.Name, typeText(t)))
+		}
+	}
 	for kf := range keyedFields(t) {
 		if err := checkTags(t, kf.field); err != nil {
 			b.fail(err)

@@ -37,7 +37,10 @@ type Field struct {
 //     the tag has none. Options after a comma are not part of the name.
 //   - Unexported fields, koanf:"-" and koanf:",remain" are skipped.
 //     koanf:",squash" merges a struct's keys into its parent, as mapstructure
-//     decodes it.
+//     decodes it — an unexported embedded struct's exported fields too, as
+//     encoding/json promotes them. An embedded pointer to an unexported
+//     struct cannot be allocated, and a schema squashing one is refused with
+//     ErrSchema.
 //   - Pointers are followed. A struct is descended into unless it decodes
 //     itself — encoding.TextUnmarshaler (time.Time, netip.Addr, ...) or
 //     mapstructure's Unmarshaler: such a struct is one leaf decoded whole,
@@ -128,12 +131,16 @@ func keyedFields(t reflect.Type) iter.Seq[keyedField] {
 
 // fieldKey is the key segment struct field f contributes under the rules on
 // [Fields]: "" for a squashed field, and skip for one that maps to no key.
+// An unexported embedded struct that is squashed contributes its exported
+// fields, as encoding/json promotes them and as decoding fills them; through
+// a pointer it cannot be allocated, and schemas refuse it (see
+// unexportedSquashedPointer).
 func fieldKey(f reflect.StructField) (key string, skip bool) {
-	if !f.IsExported() {
-		return "", true
-	}
 	name, opts, _ := strings.Cut(f.Tag.Get("koanf"), ",")
 	tagOpts := strings.Split(opts, ",")
+	if !f.IsExported() && !(f.Anonymous && f.Type.Kind() == reflect.Struct && slices.Contains(tagOpts, "squash")) {
+		return "", true
+	}
 	switch {
 	case name == "-", slices.Contains(tagOpts, "remain"):
 		return "", true
@@ -143,6 +150,14 @@ func fieldKey(f reflect.StructField) (key string, skip bool) {
 		return strings.ToLower(f.Name), false
 	}
 	return name, false
+}
+
+// unexportedSquashedPointer reports an embedded pointer to an unexported
+// struct tagged to squash, which nothing can allocate: reflection cannot set
+// an unexported field.
+func unexportedSquashedPointer(f reflect.StructField) bool {
+	_, opts, _ := strings.Cut(f.Tag.Get("koanf"), ",")
+	return !f.IsExported() && f.Anonymous && f.Type.Kind() == reflect.Pointer && slices.Contains(strings.Split(opts, ","), "squash")
 }
 
 // isBranch reports whether t is a struct whose fields are keys of their own,
