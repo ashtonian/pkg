@@ -45,16 +45,23 @@ type CLI struct {
 	Config    string `type:"path" default:"config.yaml" help:"Config file."`
 	AppConfig `embed:""`
 
-	Serve struct{} `cmd:"" default:"1" help:"Run the server."`
-	Print struct{} `cmd:"" help:"Print the effective configuration, secrets redacted."`
-	Usage struct{} `cmd:"" help:"List every setting with its environment variable."`
+	Serve    struct{} `cmd:"" default:"1" help:"Run the server."`
+	Print    struct{} `cmd:"" help:"Print the effective configuration as YAML, secrets redacted."`
+	Usage    struct{} `cmd:"" help:"List every setting with its environment variable."`
+	Template struct{} `cmd:"" help:"Write a starter config file: every key with its default."`
 }
 
 func main() {
 	var cli CLI
 	kctx := kong.Parse(&cli, kongprovider.HelpFromConfig[AppConfig]("APP"))
-	if kctx.Command() == "usage" {
+	switch kctx.Command() {
+	case "usage":
 		if err := config.PrintUsage[AppConfig]("APP"); err != nil {
+			log.Fatal(err)
+		}
+		return
+	case "template":
+		if err := config.PrintTemplate[AppConfig]("APP"); err != nil {
 			log.Fatal(err)
 		}
 		return
@@ -71,7 +78,7 @@ func main() {
 
 	switch kctx.Command() {
 	case "print":
-		if err := config.PrintRedacted(cfg, config.WithWriter(os.Stdout)); err != nil {
+		if err := config.PrintRedacted(cfg, config.WithFormat(config.FormatYAML), config.WithWriter(os.Stdout)); err != nil {
 			log.Fatal(err)
 		}
 	default:
@@ -100,7 +107,7 @@ $ app --help
                                 APP_DB_MAX_CONNS)
 ```
 
-`--port 9000`, `-p 9000`, `--port=9000`, `--db-host x` and `--no-metrics` override `config.yaml` and `APP_*`; a flag left out does not, although Kong shows the field's default in the help. `db.password` and the maps have no flag (`kong:"-"`): they come from the file or the environment. The program is `examples/cli/main.go`; `ExampleWithOverridesFromStruct` in `example_test.go` runs the same wiring with its output checked.
+`--port 9000`, `-p 9000`, `--port=9000`, `--db-host x` and `--no-metrics` override `config.yaml` and `APP_*`; a flag left out does not, although Kong shows the field's default in the help. `db.password` and the maps have no flag (`kong:"-"`): they come from the file or the environment. `app template > config.yaml` writes a starter file with every key and its default (`config.PrintTemplate`), and `app print` the loaded config as YAML, secrets redacted. The program is `examples/cli/main.go`; `ExampleWithOverridesFromStruct` in `example_test.go` runs the same wiring with its output checked.
 
 ## How It Works
 

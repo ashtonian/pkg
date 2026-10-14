@@ -134,10 +134,12 @@
 // [Diff] lists every key whose value differs between two configs, comparing
 // decoded values, with sensitive values redacted.
 //
-// [PrintRedacted] and [RedactedMap] show a config with every sensitive value
-// redacted: tagged sensitive:"true", beneath such a field, named like a
-// credential, or under such a map key. [PrintUsage] lists every key an
-// operator can set with its environment variable, type, default and
-// description; a default that is, or could hold, a sensitive value is
-// withheld ([Field.PrintableDefault]).
+// [PrintRedacted], [RedactedMap], [RedactedTree] and [PrintEnv] show a config
+// with every sensitive value redacted: tagged sensitive:"true", beneath such a
+// field, named like a credential, or under such a map key. [PrintUsage] lists
+// every key an operator can set with its environment variable, type, default
+// and description; a default that is, or could hold, a sensitive value is
+// withheld ([Field.PrintableDefault]). [PrintTemplate] writes the config file
+// a struct describes: every key with its default, which loads back as the
+// defaults.
 package config

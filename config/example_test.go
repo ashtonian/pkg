@@ -330,3 +330,41 @@ func ExampleDiff() {
 	// features["export"]: added (features[*])
 	// features["export"].rate: + 1
 }
+
+// ExamplePrintTemplate writes the config file a struct describes: every key
+// with its default, its description and the variable that sets it; a key with
+// no default, and a secret, are commented out with no value.
+func ExamplePrintTemplate() {
+	type DBConfig struct {
+		Host     string `koanf:"host" default:"localhost" desc:"Database host"`
+		Password string `koanf:"password" validate:"required"`
+	}
+	type AppConfig struct {
+		Port    int           `koanf:"port" default:"8080" desc:"HTTP listen port"`
+		Timeout time.Duration `koanf:"timeout" default:"30s"`
+		Tags    []string      `koanf:"tags" default:"web,api"`
+		DB      DBConfig      `koanf:"db"`
+	}
+	if err := config.PrintTemplate[AppConfig]("APP", config.WithWriter(os.Stdout)); err != nil {
+		fmt.Println(err)
+	}
+
+	// Output:
+	// # Configuration for config_test.AppConfig: every key with its default. A commented key has
+	// # no default, or one that is not shown; uncomment it to set it.
+	// # HTTP listen port
+	// # int; env APP_PORT
+	// port: 8080
+	// # time.Duration; env APP_TIMEOUT
+	// timeout: 30s
+	// # []string; env APP_TAGS
+	// tags:
+	//   - web
+	//   - api
+	// db:
+	//   # Database host
+	//   # string; env APP_DB_HOST
+	//   host: localhost
+	//   # string, required, sensitive; env APP_DB_PASSWORD
+	//   # password:
+}

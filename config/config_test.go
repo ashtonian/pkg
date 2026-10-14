@@ -773,40 +773,6 @@ func TestPrintRedacted_JSON(t *testing.T) {
 	}
 }
 
-func TestPrintRedacted_Env(t *testing.T) {
-	cfg := &SensitiveConfig{
-		Host:   "localhost",
-		Normal: "hello",
-	}
-	var buf bytes.Buffer
-	if err := PrintRedacted(cfg, WithFormat("env"), WithWriter(&buf)); err != nil {
-		t.Fatalf("PrintRedacted: %v", err)
-	}
-	output := buf.String()
-
-	if !strings.Contains(output, "export HOST='localhost'") {
-		t.Errorf("env format should contain a quoted export, got:\n%s", output)
-	}
-}
-
-// Env output is shell-safe: values are single-quoted (quotes inside escaped)
-// and names hold only [A-Z0-9_], map keys and indexes included.
-func TestPrintRedacted_EnvIsShellSafe(t *testing.T) {
-	var buf bytes.Buffer
-	cfg := struct {
-		Name   string
-		Quote  string
-		Labels map[string]string
-	}{"two words", "it's", map[string]string{"team-a.b": "x"}}
-	if err := PrintRedacted(cfg, WithFormat(FormatEnv), WithWriter(&buf), WithSortByName()); err != nil {
-		t.Fatal(err)
-	}
-	want := "export LABELS_TEAM_A_B='x'\nexport NAME='two words'\nexport QUOTE='it'\\''s'\n"
-	if buf.String() != want {
-		t.Fatalf("env output:\n%s\nwant:\n%s", buf.String(), want)
-	}
-}
-
 func TestPrintRedacted_SortByName(t *testing.T) {
 	cfg := &SensitiveConfig{
 		Host:   "localhost",
@@ -1507,25 +1473,6 @@ func TestWithIncludeDescriptions_JSON(t *testing.T) {
 	}
 	if !strings.Contains(output, "description") {
 		t.Errorf("JSON with descriptions should contain 'description' key, got:\n%s", output)
-	}
-}
-
-func TestWithIncludeDescriptions_Env(t *testing.T) {
-	cfg := &DescConfig{
-		Host: "localhost",
-		Port: 8080,
-	}
-	var buf bytes.Buffer
-	if err := PrintRedacted(cfg, WithFormat("env"), WithWriter(&buf), WithIncludeDescriptions()); err != nil {
-		t.Fatalf("PrintRedacted: %v", err)
-	}
-	output := buf.String()
-
-	if !strings.Contains(output, "# Server hostname") {
-		t.Errorf("env with descriptions should contain desc comment, got:\n%s", output)
-	}
-	if !strings.Contains(output, "# Server port") {
-		t.Errorf("env with descriptions should contain desc comment, got:\n%s", output)
 	}
 }
 

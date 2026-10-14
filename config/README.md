@@ -408,7 +408,7 @@ Once the watch is armed, every watched file is compared with what the last load 
 
 ## Printing and usage
 
-`PrintRedacted(cfg)` writes a config's keys and values as a table, JSON (`WithFormat(config.FormatJSON)`) or shell lines (`FormatEnv`); `RedactedMap(cfg)` returns them as a `map[string]string` for a status endpoint or a log line. Both expand maps and slices entry by entry (`pools[0].dsn`, `settings["password"]`) so nothing is printed whole while something inside it is unchecked; a value graph that loops back prints `[CYCLE]`.
+`PrintRedacted(cfg)` writes a config's keys and values as a table, JSON (`WithFormat(config.FormatJSON)`) or the nested YAML a config file holds (`FormatYAML`); `RedactedMap(cfg)` returns them as a `map[string]string` for a status endpoint or a log line. A sensitive map, list or interface is one redacted value, since the keys it holds may themselves be secrets. Both expand maps and slices entry by entry (`pools[0].dsn`, `settings["password"]`) so nothing is printed whole while something inside it is unchecked; a value graph that loops back prints `[CYCLE]`.
 
 A value is redacted when its field, or any struct, slice or map holding it, is tagged `sensitive:"true"`; when a name it sits under contains `password`, `secret`, `token`, `key`, `credential`, `auth`, `private`, `apikey`, `api_key` or `dsn` — its own field name, the name of a map or slice holding it, or any map key above it; a struct field's name does not cover the struct it holds, so an `Auth` block's `issuer` still prints. A value the walk prints whole without looking inside — a struct decoded from text or by its own decoder, or a slice of them — is redacted when its type could hold a credential, since its `%v` text would show every field. A pointer, map or slice that leads back to one being printed prints `[CYCLE]`. The same rule withholds values from decode errors and marks `Field.Sensitive`.
 
@@ -423,6 +423,40 @@ password  APP_PASSWORD  string         [REDACTED]
 ```
 
 This is `ExamplePrintUsage`; wire it to a `--help-config` flag or a `usage` subcommand.
+
+## Config files from code
+
+The struct is the schema, so it can write its own config file. `PrintTemplate[T](envPrefix)` writes the file an application ships or an operator starts from: every key in declaration order with its default as decoding produces it, its `desc`, a line naming its type, whether it is required or sensitive and the variable that sets it. A key with no default, a secret and a withheld default are commented out with no value; a map or list with no default is commented out with an example entry built from its element's defaults; a struct with nothing to set is commented out whole, since an empty block would load as `null` over its defaults.
+
+```go
+config.PrintTemplate[AppConfig]("APP") // FormatYAML; WithFormat(FormatJSON) for JSON
+```
+
+```yaml
+# HTTP listen port
+# int; env APP_PORT
+port: 8080
+# time.Duration; env APP_TIMEOUT
+timeout: 30s
+# []string; env APP_TAGS
+tags:
+  - web
+  - api
+db:
+  # Database host
+  # string; env APP_DB_HOST
+  host: localhost
+  # string, required, sensitive; env APP_DB_PASSWORD
+  # password:
+```
+
+This is `ExamplePrintTemplate`. Loading the file, strict keys on, gives the config no source at all gives — the tests hold that for YAML and JSON — so the file cannot drift from the code that wrote it. The Kong example ships it as `app template > config.yaml`.
+
+A loaded config goes out the same way, secrets redacted:
+
+- `PrintRedacted(cfg, WithFormat(FormatYAML))` — the config as a YAML file, keys in declaration order.
+- `RedactedTree(cfg)` — the config as nested maps, lists and typed scalars. Marshal it with any koanf parser — `yaml.Parser()`, `json.Parser()`, `toml.Parser()`, `dotenv.Parser()` — for any format without this module depending on them; it loads back as the config, apart from what was redacted.
+- `PrintEnv(cfg, "APP")` — the config as `export APP_DB_HOST='db.internal'` lines named as the loader reads them: a list of scalars comma-separated, a map entry by its key. A key no variable sets alone (a list of structs, a map key the naming cannot spell, a name another key would also read) is a comment saying so; a secret is never exported.
 
 ## Comparing configs
 
@@ -576,12 +610,12 @@ For a CLI tool whose config file only supplies flag defaults, Kong's own `kong.C
 
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
-| `WithFormat(f)` | `string` | `FormatTable` | `FormatTable`, `FormatJSON` or `FormatEnv`; anything else is an error. |
+| `WithFormat(f)` | `string` | per printer | `PrintRedacted`: `FormatTable` (default), `FormatJSON`, `FormatYAML`. `PrintUsage`: `FormatTable` (default), `FormatJSON`, `FormatEnv`. `PrintTemplate`: `FormatYAML` (default), `FormatJSON`. Anything else is an error. |
 | `WithWriter(w)` | `io.Writer` | `os.Stdout` | Output destination; write errors are returned. |
 | `WithSortByName()` | — | declaration order | Sort entries by key. |
 | `WithIncludeDescriptions()` | — | off | `PrintRedacted`: add `desc` text. `PrintUsage` always includes it. |
 
-`PrintRedacted`'s `FormatEnv` writes `export NAME='value'` lines, `NAME` the key path upper-cased with every character outside `[A-Z0-9_]` as `_` and no prefix — shell-safe diagnostics, not the loader's variable names. `PrintUsage`'s `FormatEnv` writes the loader's real variable names and needs a prefix.
+`PrintUsage`'s `FormatEnv` and `PrintEnv` write the loader's real variable names and need a prefix.
 
 ## API Reference
 
@@ -610,8 +644,11 @@ For a CLI tool whose config file only supplies flag defaults, Kong's own `kong.C
 
 ### Diagnostics
 
-- `PrintRedacted(cfg, opts...) error` — table, JSON or shell output, sensitive values redacted.
+- `PrintRedacted(cfg, opts...) error` — table, JSON or YAML, sensitive values redacted.
 - `RedactedMap(cfg) map[string]string` — key → value text, sensitive values redacted.
+- `PrintTemplate[T](envPrefix, opts...) error` — a config file for `T`: every key with its default, commented; loads back as the defaults.
+- `RedactedTree(cfg) map[string]any` — the config nested, typed and redacted, for any koanf parser to marshal.
+- `PrintEnv(cfg, envPrefix, opts...) error` — the config as the environment variables that load it.
 - `Diff[T](old, next) ([]Change, error)` — every key whose value differs; `Change{Key, Structural, Field, Old, New}`, each side a `Value{Present, Nil, Type, Text, Redacted}`.
 - `FieldFor[T](key) (Field, error)` — the declared field a key belongs to: `items[0].port` → the `items[*].port` pattern.
 - `PrintUsage[T](envPrefix, opts...) error` — every settable key with its variable, type, default and description.
@@ -790,6 +827,9 @@ The package's own file-watch tests use the operating system's notifications (ino
 | `path.go` | The key grammar: typed key paths, rendering and parsing |
 | `native.go` | Decoder and validator names translated into the key grammar against the keys present |
 | `diff.go` | `Diff[T]`, `Change`, `Value` |
+| `render.go` | The ordered value tree, typed scalars, the YAML and JSON writers, `RedactedTree` |
+| `template.go` | `PrintTemplate[T]`: a config file from the struct, defaults decoded as a load decodes them |
+| `envout.go` | `PrintEnv`: the loader's variable names, checked against the environment layer's own reading |
 | `env.go` | Environment-variable naming from the key tree: static keys, map entries, ambiguity |
 | `decode_errors.go` | Decode errors with sensitive values withheld |
 | `reloader.go` | `Reloader[T]`, `NewReloader`, `NewReloaderFunc`, the single-flight slot, `Arm`, `Run`, `Stop`, stats |

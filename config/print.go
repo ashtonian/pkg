@@ -8,7 +8,6 @@ import (
 	"os"
 	"reflect"
 	"slices"
-	"strconv"
 	"strings"
 )
 
@@ -24,6 +23,7 @@ const (
 const (
 	FormatTable = "table"
 	FormatJSON  = "json"
+	FormatYAML  = "yaml"
 	FormatEnv   = "env"
 )
 
@@ -46,14 +46,19 @@ type printOptions struct {
 }
 
 func defaultPrintOptions() printOptions {
-	return printOptions{
-		format: FormatTable,
-		writer: os.Stdout,
-	}
+	return printOptions{writer: os.Stdout}
 }
 
-// WithFormat sets the output format: [FormatTable] (default), [FormatJSON] or
-// [FormatEnv]. Any other value makes PrintRedacted return an error.
+// formatOr is the format WithFormat chose, or def.
+func (o printOptions) formatOr(def string) string {
+	if o.format == "" {
+		return def
+	}
+	return o.format
+}
+
+// WithFormat sets the output format. Each printer documents the formats it
+// writes and its default; any other value makes it return an error.
 func WithFormat(format string) PrintOption {
 	return func(o *printOptions) {
 		o.format = format
@@ -84,7 +89,6 @@ func WithIncludeDescriptions() PrintOption {
 }
 
 type printEntry struct {
-	key      keyPath
 	name     string
 	value    string
 	typeName string
@@ -101,10 +105,16 @@ type printEntry struct {
 // covers everything beneath it. Maps and slices, including dynamic ones held
 // in interfaces and nested to any depth, are expanded element by element, so
 // no container is printed whole while something inside it is unchecked; a
-// value printed whole — a struct decoded from text or by its own decoder, or
-// a slice of them — is redacted when its type could hold a sensitive value.
-// No option prints a sensitive value. It returns the first write error, or an
-// error for an unknown format.
+// sensitive map, list or interface is one redacted value, since the keys it
+// holds may themselves be secrets; a value printed whole — a struct decoded
+// from text or by its own decoder, or a slice of them — is redacted when its
+// type could hold a sensitive value. No option prints a sensitive value.
+//
+// [WithFormat] selects FormatTable (the default: one row per key), FormatJSON
+// (an object of key → value text) or FormatYAML (the config nested as it is
+// written in a file, values typed as they decode, keys in declaration
+// order); [PrintEnv] writes it as environment variables. It returns the first
+// write error, or an error for an unknown format.
 func PrintRedacted(cfg any, opts ...PrintOption) error {
 	po := defaultPrintOptions()
 	for _, opt := range opts {
@@ -116,16 +126,18 @@ func PrintRedacted(cfg any, opts ...PrintOption) error {
 		slices.SortFunc(entries, func(a, b printEntry) int { return cmp.Compare(a.name, b.name) })
 	}
 
-	switch po.format {
+	switch po.formatOr(FormatTable) {
 	case FormatTable:
 		return printTable(po.writer, entries, po.includeDescriptions)
 	case FormatJSON:
 		return printJSON(po.writer, entries, po.includeDescriptions)
-	case FormatEnv:
-		return printEnv(po.writer, entries, po.includeDescriptions)
+	case FormatYAML:
+		y := &yamlWriter{ew: &errWriter{w: po.writer}}
+		y.mapping((&valueTree{visiting: map[visit]bool{}}).root(cfg), 0, false, 0, "")
+		return y.ew.err
 	default:
 		return fmt.Errorf("config: unknown print format %q (want %q, %q or %q)",
-			po.format, FormatTable, FormatJSON, FormatEnv)
+			po.format, FormatTable, FormatJSON, FormatYAML)
 	}
 }
 
@@ -230,6 +242,9 @@ func (w *entryWalk) walkValue(path keyPath, v reflect.Value, s site) {
 	switch {
 	case isBranch(elem.Type()):
 		w.walkStruct(elem, path, s.sensitive || s.keyed && named)
+	case (s.sensitive || named) && expandable(elem.Type()):
+		// Its keys and elements may be secrets: one redacted value.
+		w.leaf(path, v, elem, s)
 	case elem.Kind() == reflect.Map && elem.Type().Key().Kind() == reflect.String && !opaque(elem.Type()) && elem.Len() > 0:
 		if !w.enter(elem) {
 			w.cycle(path, v, s)
@@ -273,7 +288,7 @@ func (w *entryWalk) enter(v reflect.Value) bool {
 }
 
 func (w *entryWalk) cycle(path keyPath, v reflect.Value, s site) {
-	w.entries = append(w.entries, printEntry{key: path, name: path.String(), value: cycleValue, typeName: v.Type().String(), desc: s.desc})
+	w.entries = append(w.entries, printEntry{name: path.String(), value: cycleValue, typeName: v.Type().String(), desc: s.desc})
 }
 
 // holdsContainers reports whether slice or array elements of type t may hold
@@ -314,7 +329,7 @@ func (w *entryWalk) leaf(path keyPath, declared, value reflect.Value, s site) {
 	if s.sensitive || isSensitiveName(s.name) || value.IsValid() && uncheckedHolder(value) {
 		text = redactedValue
 	}
-	w.entries = append(w.entries, printEntry{key: path, name: path.String(), value: text, typeName: typ.String(), desc: s.desc})
+	w.entries = append(w.entries, printEntry{name: path.String(), value: text, typeName: typ.String(), desc: s.desc})
 }
 
 // uncheckedHolder reports a value printed whole that could hold a sensitive
@@ -402,46 +417,6 @@ func printJSON(w io.Writer, entries []printEntry, includeDesc bool) error {
 		m[e.name] = e.value
 	}
 	return enc.Encode(m)
-}
-
-// printEnv writes one POSIX-shell `export NAME='value'` line per entry. NAME
-// is the key path upper-cased with every character outside [A-Z0-9_]
-// replaced by "_" — map keys and indexes included — and carries no
-// environment prefix, so it reads as diagnostics: it is shell-safe to source,
-// but a map entry's name need not match the variable the loader would read.
-func printEnv(w io.Writer, entries []printEntry, includeDesc bool) error {
-	ew := &errWriter{w: w}
-	for _, e := range entries {
-		if includeDesc && e.desc != "" {
-			ew.printf("# %s\n", strings.ReplaceAll(e.desc, "\n", " "))
-		}
-		ew.printf("export %s=%s\n", shellName(e.key), shellQuote(e.value))
-	}
-	return ew.err
-}
-
-// shellName is a shell variable name for key: its segments upper-cased and
-// joined by "_", every other character "_".
-func shellName(key keyPath) string {
-	parts := make([]string, len(key))
-	for i, s := range key {
-		switch s.kind {
-		case segIndex:
-			parts[i] = strconv.Itoa(s.index)
-		default:
-			parts[i] = s.name
-		}
-	}
-	b := []byte(strings.ToUpper(strings.Join(parts, "_")))
-	for i, c := range b {
-		if !(c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' || c == '_') {
-			b[i] = '_'
-		}
-	}
-	if len(b) == 0 || b[0] >= '0' && b[0] <= '9' {
-		b = append([]byte{'_'}, b...)
-	}
-	return string(b)
 }
 
 // shellQuote single-quotes s, closing the quote around each quote it holds.

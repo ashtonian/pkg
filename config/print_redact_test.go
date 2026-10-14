@@ -43,7 +43,8 @@ func TestRedaction_SensitiveContainerTag(t *testing.T) {
 	cfg := newRedactContainers()
 
 	m := RedactedMap(cfg)
-	for _, key := range []string{"block.value", "ptr.value", "blocks[0].value", `by_name["a"].value`} {
+	// A sensitive map or list is one value: its keys may be secrets.
+	for _, key := range []string{"block.value", "ptr.value", "blocks", "by_name"} {
 		if m[key] != redactedValue {
 			t.Errorf("RedactedMap[%s] = %v, want %s", key, m[key], redactedValue)
 		}
@@ -109,7 +110,7 @@ func TestPrintRedacted_ReturnsWriterError(t *testing.T) {
 		Host string `koanf:"host" desc:"server host"`
 	}{Host: "h"}
 
-	for _, format := range []string{FormatTable, FormatJSON, FormatEnv} {
+	for _, format := range []string{FormatTable, FormatJSON, FormatYAML} {
 		for _, desc := range []bool{false, true} {
 			opts := []PrintOption{WithWriter(failingWriter{}), WithFormat(format)}
 			if desc {
@@ -124,9 +125,9 @@ func TestPrintRedacted_ReturnsWriterError(t *testing.T) {
 
 func TestPrintRedacted_UnknownFormat(t *testing.T) {
 	var buf bytes.Buffer
-	err := PrintRedacted(struct{}{}, WithWriter(&buf), WithFormat("yaml"))
-	if err == nil || !strings.Contains(err.Error(), `"yaml"`) {
-		t.Errorf("err = %v, want an unknown-format error naming yaml", err)
+	err := PrintRedacted(struct{}{}, WithWriter(&buf), WithFormat(FormatEnv))
+	if err == nil || !strings.Contains(err.Error(), `"env"`) {
+		t.Errorf("err = %v, want an unknown-format error naming env", err)
 	}
 	if buf.Len() != 0 {
 		t.Errorf("wrote %q for an unknown format", buf.String())

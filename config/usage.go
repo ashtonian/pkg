@@ -74,7 +74,7 @@ func PrintUsage[T any](envPrefix string, opts ...PrintOption) error {
 	if po.sortByName {
 		slices.SortStableFunc(rows, func(a, b usageRow) int { return cmp.Compare(a.Key, b.Key) })
 	}
-	switch po.format {
+	switch po.formatOr(FormatTable) {
 	case FormatTable:
 		return printUsageTable(po.writer, rows, envPrefix != "")
 	case FormatJSON:
