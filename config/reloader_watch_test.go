@@ -336,6 +336,11 @@ func TestFileWatch_RecreatedDirectoryIsWatchedAgain(t *testing.T) {
 	if err := os.RemoveAll(dir); err != nil {
 		t.Fatal(err)
 	}
+	// Run settles after the watcher reports the removal, as here. On Linux the
+	// recreated directory can reuse the removed one's inode, so it is the
+	// watcher dropping the dead watch, not the directory's identity, that
+	// tells the two apart.
+	waitForEvent(t, w, dir)
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		t.Fatal(err)
 	}
