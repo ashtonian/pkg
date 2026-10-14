@@ -1,4 +1,4 @@
-//go:build unit && unix
+//go:build unix
 
 package config
 
