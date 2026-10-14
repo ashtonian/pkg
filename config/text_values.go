@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"reflect"
 	"strings"
+
+	"github.com/go-viper/mapstructure/v2"
 )
 
 // A default tag or an environment variable holds one string; these read it
@@ -38,6 +40,24 @@ func stringToMap(from, to reflect.Type, data any) (any, error) {
 // not structs, and no decoding of its own.
 func textMap(t reflect.Type) bool {
 	return t.Kind() == reflect.Map && t.Key().Kind() == reflect.String && !isBranch(derefType(t.Elem())) && !decodesItself(t)
+}
+
+// decodeText decodes s into a new value of type t as a tag default decodes:
+// weakly typed, through the built-in hooks.
+func decodeText(t reflect.Type, s string) (reflect.Value, error) {
+	out := reflect.New(t)
+	dec, err := mapstructure.NewDecoder(&mapstructure.DecoderConfig{
+		DecodeHook:       (&options{}).decodeHook(nil),
+		WeaklyTypedInput: true,
+		Result:           out.Interface(),
+	})
+	if err != nil {
+		return reflect.Value{}, err
+	}
+	if err := dec.Decode(s); err != nil {
+		return reflect.Value{}, err
+	}
+	return out.Elem(), nil
 }
 
 func decodesItself(t reflect.Type) bool {

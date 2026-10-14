@@ -150,9 +150,18 @@ func (n *outNode) live() bool {
 // leaf lays out a key that is not a struct: its default, or a commented-out
 // placeholder or example.
 func (b *templateBuilder) leaf(f *schemaField, c cursor, fv reflect.Value, env string, crossed bool) (*outNode, bool, error) {
-	if _, has := f.sf.Tag.Lookup("default"); has && !c.sensitive() && !mayHoldSensitive(f.sf.Type, map[reflect.Type]bool{}) {
+	printable := !c.sensitive() && !mayHoldSensitive(f.sf.Type, map[reflect.Type]bool{})
+	if _, has := f.sf.Tag.Lookup("default"); has && printable {
 		w := &valueTree{visiting: map[visit]bool{}}
 		return w.value(fv, site{}), false, nil
+	}
+	if ex, has := f.sf.Tag.Lookup("example"); has && printable {
+		v, err := decodeText(f.sf.Type, ex)
+		if err != nil {
+			return nil, true, fmt.Errorf("decoding the example of %s: %w: %w", c.path.orRoot(), ErrSchema, err)
+		}
+		w := &valueTree{visiting: map[visit]bool{}}
+		return w.value(v, site{}), true, nil
 	}
 	n, err := b.example(f.node, c, env, crossed)
 	return n, true, err

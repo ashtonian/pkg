@@ -33,6 +33,16 @@ func (f Field) EnvVars(prefix string) []string {
 	return append([]string{own}, envTagNames(f.Tag)...)
 }
 
+// PrintableExample returns f's `example` tag and true when diagnostics may
+// print it: under the rule [Field.PrintableDefault] applies to a default.
+func (f Field) PrintableExample() (string, bool) {
+	ex, ok := f.Tag.Lookup("example")
+	if !ok || f.Sensitive || mayHoldSensitive(f.Type, map[reflect.Type]bool{}) {
+		return "", false
+	}
+	return ex, true
+}
+
 // PrintableDefault returns f's `default` tag and true when diagnostics may
 // print it, and false when f has no default or it must be withheld: f is
 // Sensitive, or its type could hold a sensitive value beneath it — a map or
@@ -48,13 +58,15 @@ func (f Field) PrintableDefault() (string, bool) {
 
 // usageRow is one key an operator can set.
 type usageRow struct {
-	Key         string `json:"key"`
-	Env         string `json:"env,omitempty"`
-	Type        string `json:"type"`
-	Default     string `json:"default,omitempty"`
-	Required    bool   `json:"required,omitempty"`
-	Sensitive   bool   `json:"sensitive,omitempty"`
-	Description string `json:"description,omitempty"`
+	Key         string   `json:"key"`
+	Env         string   `json:"env,omitempty"`
+	AlsoEnv     []string `json:"also_env,omitempty"` // the variables an env tag adds
+	Type        string   `json:"type"`
+	Default     string   `json:"default,omitempty"`
+	Example     string   `json:"example,omitempty"`
+	Required    bool     `json:"required,omitempty"`
+	Sensitive   bool     `json:"sensitive,omitempty"`
+	Description string   `json:"description,omitempty"`
 	// pattern marks a map entry or list element: Key holds [*], and Env a
 	// <KEY> placeholder or nothing.
 	pattern    bool
@@ -113,11 +125,11 @@ func usageRows(root reflect.Type, prefix string) []usageRow {
 		isMap := t.Kind() == reflect.Map && t.Key().Kind() == reflect.String
 		isList := (t.Kind() == reflect.Slice || t.Kind() == reflect.Array) && isBranch(derefType(t.Elem()))
 		if !isMap && !isList {
-			rows = append(rows, usageRowOf(f, f.Path, strings.Join(f.EnvVars(prefix), ", ")))
+			rows = append(rows, usageRowOf(f, f.Path, f.EnvVars(prefix)...))
 			continue
 		}
 		if _, ok := f.Tag.Lookup("default"); ok { // the collection's own default, as a whole
-			rows = append(rows, usageRowOf(f, f.Path, strings.Join(f.EnvVars(prefix), ", ")))
+			rows = append(rows, usageRowOf(f, f.Path, f.EnvVars(prefix)...))
 		}
 		elem := derefType(t.Elem())
 		if isList { // elements are set in files; no variable addresses one
@@ -153,15 +165,21 @@ func usagePattern(r usageRow) usageRow {
 	return r
 }
 
-// usageRowOf describes f, shown as key and env.
-func usageRowOf(f Field, key, env string) usageRow {
+// usageRowOf describes f, shown as key and set by env, the first of them
+// its own variable.
+func usageRowOf(f Field, key string, env ...string) usageRow {
 	row := usageRow{
 		Key:         key,
-		Env:         env,
 		Type:        f.Type.String(),
 		Required:    slices.Contains(strings.Split(f.Tag.Get("validate"), ","), "required"),
 		Sensitive:   f.Sensitive,
 		Description: f.Tag.Get("desc"),
+	}
+	if len(env) > 0 {
+		row.Env, row.AlsoEnv = env[0], env[1:]
+	}
+	if ex, ok := f.PrintableExample(); ok {
+		row.Example = ex
 	}
 	def, has := f.Tag.Lookup("default")
 	row.hasDefault = has
@@ -177,15 +195,22 @@ func usageRowOf(f Field, key, env string) usageRow {
 
 func printUsageTable(w io.Writer, rows []usageRow, withEnv bool) error {
 	defaultText := func(r usageRow) string {
+		text := r.Default
 		if !r.hasDefault && r.Required {
-			return "(required)"
+			text = "(required)"
 		}
-		return r.Default
+		if !r.hasDefault && r.Example != "" {
+			text = strings.TrimSpace(text + " e.g. " + r.Example)
+		}
+		return text
+	}
+	envText := func(r usageRow) string {
+		return strings.Join(append([]string{r.Env}, r.AlsoEnv...), ", ")
 	}
 	keyW, envW, typeW, defW := len("KEY"), len("ENV"), len("TYPE"), len("DEFAULT")
 	for _, r := range rows {
 		keyW = max(keyW, len(r.Key))
-		envW = max(envW, len(r.Env))
+		envW = max(envW, len(envText(r)))
 		typeW = max(typeW, len(r.Type))
 		defW = max(defW, len(defaultText(r)))
 	}
@@ -194,7 +219,7 @@ func printUsageTable(w io.Writer, rows []usageRow, withEnv bool) error {
 		row := fmt.Sprintf("%%-%ds  %%-%ds  %%-%ds  %%-%ds  %%s\n", keyW, envW, typeW, defW)
 		ew.printf(row, "KEY", "ENV", "TYPE", "DEFAULT", "DESCRIPTION")
 		for _, r := range rows {
-			ew.printf(row, r.Key, r.Env, r.Type, defaultText(r), r.Description)
+			ew.printf(row, r.Key, envText(r), r.Type, defaultText(r), r.Description)
 		}
 		return ew.err
 	}
@@ -225,7 +250,11 @@ func printUsageEnv(w io.Writer, rows []usageRow) error {
 			continue
 		}
 		if r.pattern || r.Sensitive || r.withheld || !r.hasDefault {
-			ew.printf("# export %s=\n", r.Env)
+			example := ""
+			if r.Example != "" {
+				example = shellQuote(r.Example)
+			}
+			ew.printf("# export %s=%s\n", r.Env, example)
 			continue
 		}
 		ew.printf("export %s=%s\n", r.Env, shellQuote(r.Default))

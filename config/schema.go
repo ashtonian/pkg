@@ -169,8 +169,9 @@ func (b *schemaBuilder) fields(n *schemaNode, t reflect.Type, index []int, tagge
 
 // checkTags refuses a tag that cannot mean what it says: a sensitive value
 // other than "true" or "false" — sensitive:"yes" would otherwise leave the
-// field unprotected — a secret field opting out of redaction, and a map
-// default that is not key=value entries.
+// field unprotected — a secret field opting out of redaction, an env tag on
+// a section or naming no variable, an example its field cannot hold, and a
+// map default that is not key=value entries.
 func checkTags(t reflect.Type, f reflect.StructField) error {
 	if v, ok := f.Tag.Lookup("sensitive"); ok {
 		switch {
@@ -188,6 +189,15 @@ func checkTags(t reflect.Type, f reflect.StructField) error {
 			if !envVarName.MatchString(name) {
 				return fmt.Errorf("%w: field %s of %s has env:%q; %q is not a variable name", ErrSchema, f.Name, t, v, name)
 			}
+		}
+	}
+	if ex, ok := f.Tag.Lookup("example"); ok {
+		if isBranch(derefType(f.Type)) {
+			return fmt.Errorf("%w: field %s of %s has an example tag, but %s is a section; give its fields examples", ErrSchema, f.Name, t, f.Name)
+		}
+		// The value is not quoted: an example on a sensitive field may be one.
+		if _, err := decodeText(f.Type, ex); err != nil {
+			return fmt.Errorf("%w: field %s of %s has an example that does not decode into %s", ErrSchema, f.Name, t, f.Type)
 		}
 	}
 	if def, ok := f.Tag.Lookup("default"); ok && textMap(derefType(f.Type)) {

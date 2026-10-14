@@ -104,6 +104,18 @@ func TestEnvTag_Listed(t *testing.T) {
 	require.NoError(t, PrintUsage[envTagCfg]("APP", WithWriter(&usage)))
 	assert.Contains(t, usage.String(), "APP_PORT, PORT, HTTP_PORT")
 
+	var export bytes.Buffer
+	require.NoError(t, PrintUsage[envTagCfg]("APP", WithWriter(&export), WithFormat(FormatEnv)))
+	assert.Contains(t, export.String(), "# export APP_PORT=\n", "an export line names one variable")
+
+	var rows bytes.Buffer
+	require.NoError(t, PrintUsage[envTagCfg]("APP", WithWriter(&rows), WithFormat(FormatJSON)))
+	assert.Contains(t, rows.String(), `"env": "APP_PORT",
+    "also_env": [
+      "PORT",
+      "HTTP_PORT"
+    ]`)
+
 	var tmpl bytes.Buffer
 	require.NoError(t, PrintTemplate[envTagCfg]("APP", WithWriter(&tmpl)))
 	assert.Contains(t, tmpl.String(), "env APP_PORT, PORT, HTTP_PORT")
