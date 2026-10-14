@@ -1,31 +1,45 @@
 # config
 
-Typed configuration snapshots for Go services, built on [koanf](https://github.com/knadh/koanf). `Load[T]` merges struct-tag defaults, files, environment variables and explicit CLI overrides into a `*T`, then resolves secrets, normalizes and validates it in one pipeline; `Reloader[T]` re-runs that pipeline on a file change, signal, poll tick or application notification and publishes a new config only when it passed, keeping the last valid one live otherwise. The errors it writes name the failing key and quote no value meant for a sensitive field, and the same key rules drive environment names, redacted printing, operator usage and the Kong CLI bridge.
+Typed configuration snapshots for Go services, built on [koanf](https://github.com/knadh/koanf). `Load[T]` merges struct-tag defaults, files, environment variables and explicit CLI overrides into a `*T`, then resolves secrets, normalizes and validates it in one pipeline; `Reloader[T]` re-runs that pipeline on a file change, signal, poll tick or any provider's watch, publishes a new config only when it passed — keeping the last valid one live otherwise — and hands each `Applier` the changes it owns. The errors it writes name the failing key and quote no value meant for a sensitive field, and the same key rules drive environment names, redacted printing, operator usage and the Kong CLI bridge.
 
-## When to use it
+## What it adds to koanf
 
-Reach for it when a long-running service has a hierarchical configuration, takes it from more than one source, and needs to change it without a restart. Its value is the lifecycle around koanf: one pipeline at boot and on every reload, validate-before-swap publication, coordinated triggers, and diagnostics that cannot leak a credential.
-
-| Situation | Better choice |
-|---|---|
-| Environment variables are the only source and config is read once | [`caarlos0/env`](https://github.com/caarlos0/env) or [`sethvargo/go-envconfig`](https://github.com/sethvargo/go-envconfig) |
-| A CLI tool whose config file mostly supplies flag defaults | Kong alone with [`kong.Configuration`](https://github.com/alecthomas/kong#configuration-files) and a YAML/JSON resolver |
-| A small program that loads once and already has a koanf loader | Plain koanf — the startup convenience alone is not worth switching |
-| A service with files + env + CLI overrides, validation, and live reload | This package |
-
-What it adds over koanf alone:
+[koanf](https://github.com/knadh/koanf) reads configuration from anywhere — files, the environment, Kubernetes volumes, S3, Vault, Consul, a database — and merges it. This package is the lifecycle around it for a long-running service: one struct as the schema, one validated pipeline at boot and on every reload, a config published only when it passed, the changes pushed into the running process, and output that cannot leak a credential.
 
 | Concern | koanf | This package |
 |---|---|---|
+| Schema | Keys read by name: `k.Int("db.max_conns")` | One tagged struct: keys, defaults, validation, sensitivity, descriptions, flags and environment names |
 | Defaults | Load a map or a populated struct | `default:"..."` tags as the lowest layer, then `WithDefaults` (deep-copied) |
 | Environment names | A callback per variable | Names derived from the key tree: `APP_DB_MAX_CONNS` → `db.max_conns`, map entries matched by shape, ambiguous names refused |
-| Pipeline | `Load` calls, then `Unmarshal` | Fixed merge → decode → secrets → post-load → validate, identical at boot and on reload |
-| Validation | None | go-playground validator by default, errors named by config key (`db.max_conns(min=1)`) |
-| Reload | A provider's `Watch` callback | `Reloader[T]`: validate-before-swap, serialized reloads, debounce, symlink- and ConfigMap-aware watch, poll, signals, `SourceChanged`, readiness arming, stats |
-| Diagnostics | `Sprint`, `All` | `PrintRedacted`, `RedactedMap`, `PrintUsage`; decode errors withhold sensitive values |
-| CLI | `posflag` / `basicflag` providers | `kongprovider`: only typed flags override; help from the config struct |
+| Pipeline | `Load` calls, then `Unmarshal` | Fixed merge → decode → secrets → post-load → validate, identical at boot and on reload; a key no field takes fails the load |
+| Validation | None | go-playground validator by default, errors named by config key (`db.max_conns(min=1)`), plus a `Validate` method |
+| Secrets | A provider like any other | `secret:"<ref>"` tags resolved through `SecretsFrom` and any store; secret fields redacted everywhere |
+| Reload | A provider's `Watch` callback | `Reloader[T]`: validate-before-swap, serialized reloads, symlink- and ConfigMap-aware file watch, poll, signals, `SourceChanged` for any provider's watch, one coherent `Snapshot` |
+| Applying a change | Yours | `WithApplier`: changes pushed by key prefix, retried after a failure, and what nothing applies reported as waiting for a restart |
+| Diagnostics | `Sprint`, `All` | `Diff`, `PrintRedacted`, `PrintUsage`, `PrintTemplate`, `PrintEnv`; errors withhold sensitive values |
+| CLI | `posflag` / `basicflag` providers | `kongprovider`: typed flags override, help from the config struct |
 
-Everything koanf can read stays reachable: any `koanf.Provider` loads below the files (`WithBaseProvider`) or above the environment (`WithOverrideProvider`), with any `koanf.Parser`, and `WithDecodeHook` adds mapstructure hooks.
+### Any koanf provider is a source
+
+A provider loads below the files (`WithBaseProvider`) or above the environment (`WithOverrideProvider`) — with a nil parser when it returns keys, and a parser when it returns a document — and every reload reads it again through the same decode, strict keys and validation. How a change reaches the reloader depends on the source:
+
+| Source | Module | Returns | Reloads on |
+|---|---|---|---|
+| Files: YAML; JSON, TOML, HCL, dotenv, HJSON, KDL, NestedText through `WithFileParser` | built in (`WithFile`) | a document | `WithFileWatch` |
+| Environment variables | built in (`WithEnvPrefix`) | keys | every reload; a running process's environment does not change |
+| Kubernetes ConfigMap or Secret, one key per file | `github.com/knadh/koanf/providers/k8smount` | keys | its `Watch` → `SourceChanged`, or `WithFileWatch` on the files |
+| AWS S3 object | `github.com/knadh/koanf/providers/s3` | a document | `WithPollInterval` |
+| AWS AppConfig | `github.com/knadh/koanf/providers/appconfig/v2` | a document | its `Watch` → `SourceChanged`, or a poll |
+| AWS Systems Manager Parameter Store | `github.com/knadh/koanf/providers/parameterstore/v2` | keys | a poll |
+| HashiCorp Vault KV | `github.com/knadh/koanf/providers/vault/v2` | keys | a poll |
+| Azure Key Vault | `github.com/knadh/koanf/providers/azkeyvault` | keys | a poll |
+| Consul KV | `github.com/knadh/koanf/providers/consul/v2` | keys | its `Watch` → `SourceChanged` |
+| etcd | `github.com/knadh/koanf/providers/etcd/v2` | keys | its `Watch` → `SourceChanged` |
+| NATS key-value | `github.com/knadh/koanf/providers/nats` | keys | its `Watch` → `SourceChanged` |
+| A database, an API, any function | `NewMapProvider` (this package) | keys | a poll, or `SourceChanged` from your code |
+| Command-line flags | `kongprovider` (this repository); koanf's `posflag`, `basicflag` | keys | — (fixed for the process) |
+
+Bridging a provider's `Watch` is one call: `p.Watch(func(_ any, err error) { if err == nil { reloader.SourceChanged() } })` — the Kubernetes recipe below does it, with the error logged. `SourceChanged` never blocks, and a burst of notifications coalesces into one reload that reads every change made before it.
 
 ## Quick Start
 
@@ -149,6 +163,7 @@ caller ──NewReloader / Arm / Run / Stop──▶ Reloader ──re-runs the 
 
 **Dependencies**
 - *Imports*: `knadh/koanf/v2` (+ the yaml parser and confmap provider), `go-viper/mapstructure/v2`, `go-playground/validator/v10`, `fsnotify/fsnotify`; `kongprovider` adds `alecthomas/kong`.
+- *Cookbook*: `examples/cookbook` is a module of its own that imports the AWS SDK for Go v2, koanf's `k8smount` and `vault/v2` providers, `pgx` and `modernc.org/sqlite`; this module imports none of them.
 
 ## Defining the config struct
 
@@ -211,12 +226,7 @@ A provider that also implements `ContextProvider` (`ReadContext` / `ReadBytesCon
 
 `NewMapProvider(read, delimiter)` turns a function into such a provider, read afresh on every load: a settings table, a key-value store, replicated cluster settings. With `"."` its keys are dotted paths unflattened into the tree (a key that is both a value and a section, `db` beside `db.host`, is an error); with `""` the map is already nested. What `read` returns is copied.
 
-```go
-settings, err := config.NewMapProvider(func(ctx context.Context) (map[string]any, error) {
-	return loadSettings(ctx, db) // SELECT key, value FROM settings → {"db.max_conns": "50", ...}
-}, ".")
-cfg, err := config.Load[AppConfig](ctx, config.WithBaseProvider(settings, nil), config.WithFile("config.yaml"))
-```
+The [settings-table recipe](#settings-in-a-database) is a complete one.
 
 Keys match fields regardless of letter case, as decoding does. Before sources merge, each one's keys are rewritten into the fields' own spelling, so a higher-precedence `Port: 9000` beats a default `port` whatever the case; a source that spells one field two ways (`port` and `Port`) fails with `ErrValidation`.
 
@@ -298,6 +308,8 @@ A tag is `ref[#field][,optional]`:
 - A field behind a nil pointer — a section nothing configured — is left alone; a `secret` tag inside a map or list fails the load, since one ref cannot name every entry.
 
 Under a `Reloader` the populator runs on every reload, so a rotated secret is picked up by the next reload — `WithPollInterval` sets how soon — and a backend outage fails that reload while the previous config stays live.
+
+The [AWS Secrets Manager recipe](#aws-secrets-manager) is the whole program, with a per-environment prefix and a test.
 
 `WithSecretPopulator` takes any function of the load's context and a pointer to the decoded config, for a resolver `SecretsFrom` does not fit; its error fails the load with `ErrSecretProvider`.
 
@@ -501,6 +513,8 @@ It cannot detect sources that are not files — environment variables and provid
 
 Once the watch is armed, every watched file is compared with what the last load read, so a change made after the initial load and before the watch existed is reloaded when `Run` starts.
 
+The [Kubernetes recipe](#kubernetes-configmap-and-secret-volumes) puts it together: `config.yaml` from a ConfigMap volume under the file watch, and each key of a Secret volume through koanf's `k8smount` provider and its watch.
+
 ## Printing and usage
 
 `PrintRedacted(cfg)` writes a config's keys and values as a table, JSON (`WithFormat(config.FormatJSON)`) or the nested YAML a config file holds (`FormatYAML`); `RedactedMap(cfg)` returns them as a `map[string]string` for a status endpoint or a log line. A sensitive map, list or interface is one redacted value, since the keys it holds may themselves be secrets. Both expand maps and slices entry by entry (`pools[0].dsn`, `settings["password"]`) so nothing is printed whole while something inside it is unchecked; a value graph that loops back prints `[CYCLE]`.
@@ -660,6 +674,286 @@ if kctx.Command() == "admin" {
 }
 cfg, err := config.Load[AppConfig](ctx, config.WithFile(cli.Config), kongprovider.WithOverrides(kctx, mapping))
 ```
+
+## Recipes
+
+Each recipe is a program in [`examples/cookbook`](examples/cookbook), a module of its own so this one takes none of the SDKs and drivers they use. Every recipe has a test, and each block below is an excerpt of the file it names; `make release-check` builds and tests them.
+
+### Kubernetes ConfigMap and Secret volumes
+
+Mount the ConfigMap that holds `config.yaml` and the Secret that holds the credentials as volumes — without `subPath`, which the kubelet never updates. The file watch follows the ConfigMap's `..data` swap; koanf's `k8smount` provider reads each Secret key as a config key, and its own watch bridges to `SourceChanged`, so a rotated value or a key added later reloads. An invalid update keeps the last valid config. `kubernetes/main.go` has the manifest and the `main` that arms the reloader before serving.
+
+<!-- recipe: kubernetes/main.go -->
+
+```go
+// secretVolume reads every key of a mounted Secret as a key of the config:
+// the Secret key db.password sets db.password.
+func secretVolume(dir string) *k8smount.K8SMount {
+	return k8smount.Provider(dir, ".", k8smount.Opt{
+		TransformFunc: func(key, value string) (string, any) { return key, strings.TrimSpace(value) },
+	})
+}
+
+// newReloader layers the Secret over config.yaml from the ConfigMap volume
+// and the environment, and watches config.yaml.
+func newReloader(ctx context.Context, configDir string, secrets *k8smount.K8SMount) (*config.Reloader[AppConfig], error) {
+	return config.NewReloader[AppConfig](ctx,
+		[]config.Option{
+			config.WithRequiredFile(filepath.Join(configDir, "config.yaml")),
+			config.WithEnvPrefix("APP"),
+			config.WithOverrideProvider(secrets, nil),
+		},
+		config.WithFileWatch(0),
+	)
+}
+
+// watchSecrets reloads on any change to the Secret volume — a rotated value,
+// or a key added later — through the provider's own watch. Any koanf
+// provider with a Watch method (Consul, etcd, NATS, AppConfig) bridges the
+// same way; SourceChanged coalesces a burst into one reload.
+func watchSecrets(secrets *k8smount.K8SMount, reloader *config.Reloader[AppConfig], logger *slog.Logger) error {
+	return secrets.Watch(func(_ any, err error) {
+		if err != nil {
+			logger.Error("secret volume watch stopped; rotations need a restart", "error", err)
+			return
+		}
+		reloader.SourceChanged()
+	})
+}
+```
+
+### Settings in a database
+
+`NewMapProvider` turns a query into a source read on every load. Strict keys and validation apply to the table as to a file: a row naming no field, or a value out of range, fails that reload and the previous settings stay live. A poll picks up edits; code that writes the table calls `SourceChanged` to apply its change at once, and so can a `LISTEN` loop. The connection string comes from a small `BootConfig` loaded first.
+
+<!-- recipe: database/main.go -->
+
+```go
+// settings reads the settings table on every load: one row per key in the
+// package's dotted grammar, each value text that decodes as an environment
+// variable's would.
+func settings(db *sql.DB, timeout time.Duration) (config.ContextProvider, error) {
+	return config.NewMapProvider(func(ctx context.Context) (map[string]any, error) {
+		ctx, cancel := context.WithTimeout(ctx, timeout)
+		defer cancel()
+		rows, err := db.QueryContext(ctx, "SELECT key, value FROM settings")
+		if err != nil {
+			return nil, err
+		}
+		defer rows.Close()
+		out := map[string]any{}
+		for rows.Next() {
+			var key, value string
+			if err := rows.Scan(&key, &value); err != nil {
+				return nil, err
+			}
+			out[key] = value
+		}
+		return out, rows.Err()
+	}, ".")
+}
+
+// newReloader layers the table over config.yaml and the environment and
+// reads it again every poll interval. Code that writes the table calls
+// SourceChanged to apply its change without waiting for the poll.
+func newReloader(ctx context.Context, db *sql.DB, boot *BootConfig) (*config.Reloader[AppConfig], error) {
+	table, err := settings(db, boot.QueryTimeout)
+	if err != nil {
+		return nil, err
+	}
+	return config.NewReloader[AppConfig](ctx,
+		[]config.Option{
+			config.WithFile("config.yaml"),
+			config.WithEnvPrefix("APP"),
+			config.WithOverrideProvider(table, nil),
+		},
+		config.WithPollInterval(boot.PollInterval),
+	)
+}
+```
+
+### AWS Secrets Manager
+
+Tag the fields with their secrets and resolve them with `SecretsFrom`. The refs are relative to a per-environment prefix, so one config type serves every environment; `#member` reads one key of a JSON secret, each secret is fetched once per load, and `,optional` leaves a field to the file when the store has no such secret. A poll picks up rotations; a fetch that fails keeps the previous config.
+
+<!-- recipe: awssecrets/main.go -->
+
+```go
+type DBConfig struct {
+	Host     string `koanf:"host" default:"localhost"`
+	User     string `koanf:"user" secret:"db#username"`
+	Password string `koanf:"password" secret:"db#password" validate:"required"`
+}
+
+type AppConfig struct {
+	DB         DBConfig `koanf:"db"`
+	WebhookKey string   `koanf:"webhook_key" secret:"webhook-key,optional"` // a dev file may set it instead
+}
+```
+
+<!-- recipe: awssecrets/main.go -->
+
+```go
+// fetchSecret reads the secret prefix+ref. One that does not exist is
+// config.ErrSecretNotFound, so an ,optional tag leaves its field as the
+// sources set it.
+func fetchSecret(sm secretValues, prefix string) func(ctx context.Context, ref string) (string, error) {
+	return func(ctx context.Context, ref string) (string, error) {
+		out, err := sm.GetSecretValue(ctx, &secretsmanager.GetSecretValueInput{SecretId: aws.String(prefix + ref)})
+		var missing *types.ResourceNotFoundException
+		switch {
+		case errors.As(err, &missing):
+			return "", fmt.Errorf("%w: %s%s", config.ErrSecretNotFound, prefix, ref)
+		case err != nil:
+			return "", err
+		case out.SecretString == nil:
+			return "", fmt.Errorf("secret %s%s is binary; store it as a string", prefix, ref)
+		}
+		return *out.SecretString, nil
+	}
+}
+
+func newReloader(ctx context.Context, sm secretValues, boot *BootConfig) (*config.Reloader[AppConfig], error) {
+	return config.NewReloader[AppConfig](ctx,
+		[]config.Option{
+			config.WithFile("config.yaml"),
+			config.WithEnvPrefix("APP"),
+			config.WithSecretPopulator(config.SecretsFrom(fetchSecret(sm, boot.SecretPrefix))),
+		},
+		config.WithPollInterval(boot.RotationCheck),
+	)
+}
+```
+
+`awssecrets/main.go` builds the client with an HTTP timeout from `BootConfig`.
+
+### HashiCorp Vault
+
+koanf's Vault provider reads a KV v2 secret as config keys — `db.password` sets `db.password` — layered over the file and the environment. A key naming no field fails the load, so a typo in Vault does not pass silently; a poll picks up rotations. The token is one a Vault Agent sidecar keeps renewed.
+
+<!-- recipe: vault/main.go -->
+
+```go
+// vaultSource reads the KV v2 secret at boot.Vault.Path on every load: its
+// data, not its metadata, each key split on "." into the config's tree.
+func vaultSource(boot *BootConfig) (*vault.Vault, error) {
+	return vault.Provider(vault.Config{
+		Address:     boot.Vault.Address,
+		Token:       boot.Vault.Token,
+		Path:        boot.Vault.Path,
+		Delim:       ".",
+		Timeout:     boot.Vault.Timeout,
+		ExcludeMeta: true,
+	})
+}
+
+// newReloader layers the secret over config.yaml and the environment, and
+// reads it again every poll.
+func newReloader(ctx context.Context, secrets koanf.Provider, poll time.Duration) (*config.Reloader[AppConfig], error) {
+	return config.NewReloader[AppConfig](ctx,
+		[]config.Option{
+			config.WithFile("config.yaml"),
+			config.WithEnvPrefix("APP"),
+			config.WithOverrideProvider(secrets, nil),
+		},
+		config.WithPollInterval(poll),
+	)
+}
+```
+
+### A whole service: Kong, validation, reload and appliers
+
+One struct is the schema for the file, `APP_*` variables, the flags and their help, and validation — tags plus a `Validate` method for the cross-field rule. The reloader watches the file and `SIGHUP`; flags keep winning on every reload. Appliers push the live parts — the log level, and the keys handlers read from `Config` on each request — and the listener's settings are reported as waiting for a restart. `service/main.go` adds the routes, an admin status and reload endpoint behind a constant-time token check, and graceful shutdown.
+
+<!-- recipe: service/main.go -->
+
+```go
+type HTTPConfig struct {
+	Addr              string        `koanf:"addr" default:":8080" desc:"Listen address"`
+	ReadHeaderTimeout time.Duration `koanf:"read_header_timeout" default:"5s" validate:"min=1ms" desc:"Time to read request headers"`
+	ShutdownTimeout   time.Duration `koanf:"shutdown_timeout" default:"15s" validate:"min=1ms" desc:"Drain deadline on SIGTERM"`
+}
+
+type LogConfig struct {
+	Level string `koanf:"level" default:"info" validate:"oneof=debug info warn error" desc:"Log level"`
+}
+
+// AppConfig is the whole schema: keys, defaults, validation, help and flags.
+type AppConfig struct {
+	HTTP       HTTPConfig `koanf:"http" embed:"" prefix:"http-"`
+	Log        LogConfig  `koanf:"log" embed:"" prefix:"log-"`
+	Greeting   string     `koanf:"greeting" default:"hello" desc:"What GET / answers"`
+	AdminToken string     `koanf:"admin_token" validate:"required" kong:"-"` // file or APP_ADMIN_TOKEN only
+}
+
+// Validate holds the rule no tag states.
+func (c *AppConfig) Validate() error {
+	if strings.TrimSpace(c.Greeting) == "" {
+		return errors.New("greeting must not be blank")
+	}
+	return nil
+}
+
+type CLI struct {
+	Config    string `type:"path" default:"service.yaml" help:"Config file."`
+	AppConfig `embed:""`
+
+	Serve    struct{} `cmd:"" default:"1" help:"Run the service."`
+	Print    struct{} `cmd:"" help:"Print the effective configuration, secrets redacted."`
+	Template struct{} `cmd:"" help:"Write a starter config file."`
+}
+```
+
+<!-- recipe: service/main.go -->
+
+```go
+// newReloader loads the config from the file, APP_* and the flags kctx
+// parsed, and registers an applier for each part that changes live: the log
+// level, set into level, and the greeting and admin token, which handlers
+// read from Config on every request. The http section is the listener's,
+// fixed at start: a change to it waits for a restart.
+func newReloader(ctx context.Context, cli *CLI, kctx *kong.Context, logger *slog.Logger, level *slog.LevelVar) (*config.Reloader[AppConfig], error) {
+	var zero AppConfig
+	levelKey, err := config.KeyOf(&zero, &zero.Log.Level)
+	if err != nil {
+		return nil, err
+	}
+	greetingKey, err := config.KeyOf(&zero, &zero.Greeting)
+	if err != nil {
+		return nil, err
+	}
+	tokenKey, err := config.KeyOf(&zero, &zero.AdminToken)
+	if err != nil {
+		return nil, err
+	}
+	return config.NewReloader[AppConfig](ctx,
+		[]config.Option{
+			config.WithFile(cli.Config),
+			config.WithEnvPrefix("APP"),
+			kongprovider.WithOverridesFromStruct(kctx, &cli.AppConfig),
+			config.WithLogger(logger),
+		},
+		config.WithFileWatch(0),
+		config.WithSignalReload(syscall.SIGHUP),
+		config.WithApplier(config.Applier[AppConfig]{
+			Name:         "log",
+			Prefixes:     []string{levelKey},
+			ApplyInitial: true,
+			Apply: func(_ context.Context, ev config.ApplyEvent[AppConfig]) (config.ApplyResult, error) {
+				return config.ApplyResult{}, level.UnmarshalText([]byte(ev.Desired.Log.Level))
+			},
+		}),
+		config.WithApplier(config.Applier[AppConfig]{
+			Name:     "handlers",
+			Prefixes: []string{greetingKey, tokenKey},
+			Apply: func(context.Context, config.ApplyEvent[AppConfig]) (config.ApplyResult, error) {
+				return config.ApplyResult{}, nil // read from Config on every request
+			},
+		}),
+	)
+}
+```
+
 
 ## Configuration
 
@@ -869,7 +1163,7 @@ go get github.com/ashtonian/pkg/config@v0.1.0
 go get github.com/ashtonian/pkg/config/kongprovider@v0.1.0
 ```
 
-Go 1.26 or newer. `kongprovider` requires the parent at the release version; inside the repository the `go.work` workspace resolves both from the working tree instead. `make release-check` builds each module's release zip from the working tree, serves the zips from a local proxy, and builds, vets and unit-tests them in a fresh consumer outside the repository, as a downstream build gets them; CI runs it on every change to Go code or the `Makefile`. To cut a release: set `CONFIG_VERSION` in the root `Makefile` and `kongprovider`'s requirement on the parent to the new version, run `make release-check`, merge, and tag the merged commit with both tags. The versions are `v0.x`: the API may still change between minor versions.
+Go 1.26 or newer. `kongprovider` requires the parent at the release version; inside the repository the `go.work` workspace resolves both from the working tree instead. `make release-check` builds each module's release zip from the working tree, serves the zips from a local proxy, and builds, vets and unit-tests them in a fresh consumer outside the repository, as a downstream build gets them; it first runs `make cookbook-check`, which builds and tests the [Recipes](#recipes) module against the working tree. CI runs it on every change to Go code or the `Makefile`. To cut a release: set `CONFIG_VERSION` in the root `Makefile` and `kongprovider`'s requirement on the parent to the new version, run `make release-check`, merge, and tag the merged commit with both tags. The versions are `v0.x`: the API may still change between minor versions.
 
 ## Migrating from a koanf loader
 
@@ -949,6 +1243,7 @@ The package's own file-watch tests use the operating system's notifications (ino
 | `errors.go` | Category sentinels, the validation error wrapper |
 | `doc.go` | Package documentation |
 | `examples/quickstart/main.go` | The Quick Start program |
+| `examples/cookbook/` | The Recipes as programs with tests: a module of its own (Kubernetes volumes, a settings table, AWS Secrets Manager, Vault, a whole service) |
 | `go.mod`, `LICENSE` | The module and its Apache-2.0 license |
 | `kongprovider/` | Kong flags → override provider; help from the config struct (its own module) |
 
