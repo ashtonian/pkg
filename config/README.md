@@ -1,6 +1,6 @@
 # config
 
-Typed configuration snapshots for Go services, built on [koanf](https://github.com/knadh/koanf). `Load[T]` merges struct-tag defaults, files, environment variables and explicit CLI overrides into a `*T`, then resolves secrets, normalizes and validates it in one pipeline; `Reloader[T]` re-runs that pipeline on a file change, signal, poll tick or application notification and publishes a new config only when it passed, keeping the last valid one live otherwise. The errors it writes name the failing key and never quote a value, and the same key rules drive environment names, redacted printing, operator usage and the Kong CLI bridge.
+Typed configuration snapshots for Go services, built on [koanf](https://github.com/knadh/koanf). `Load[T]` merges struct-tag defaults, files, environment variables and explicit CLI overrides into a `*T`, then resolves secrets, normalizes and validates it in one pipeline; `Reloader[T]` re-runs that pipeline on a file change, signal, poll tick or application notification and publishes a new config only when it passed, keeping the last valid one live otherwise. The errors it writes name the failing key and quote no value meant for a sensitive field, and the same key rules drive environment names, redacted printing, operator usage and the Kong CLI bridge.
 
 ## When to use it
 
