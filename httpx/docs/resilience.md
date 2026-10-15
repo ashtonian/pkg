@@ -41,6 +41,38 @@ httpx returns the last response without another attempt. Numeric bounds
 saturate instead of wrapping. Tune the attempt count and backoff together
 with the overall timeout, not independently.
 
+## Failure handling and failover
+
+The layers preserve `net/http`'s separation between an HTTP response and a
+Go error. Retry and breaker classification are policies for handling an
+attempt; they do not turn every unsuccessful HTTP status into an error.
+
+| Situation | Layer behavior and caller responsibility |
+|---|---|
+| Transient connection failure | Retry when the method/key and body permit replay. After the attempt budget, the last transport error remains available through `errors.Is` / `errors.As`. |
+| HTTP 429, 502, 503 or 504 | Retry within the attempt, backoff and deadline budgets. If the budget is exhausted or `Retry-After` is too long, return the last response; inspect its status and close its body. |
+| HTTP 400, 401, 403, 404, 500 or another status outside the retry set | Return the response without retry by default. Configure `WithRetryOn` / `WithRetryIf` when the API's contract calls for different behavior; authorization repair and business errors stay with the application. |
+| Open circuit | Reject before calling the origin with `ErrCircuitOpen`; admit recovery probes after the configured interval. A cache outside the breaker can still serve usable entries. |
+| Local rate or concurrency refusal | Return `ErrRateLimited` or `ErrLimiterTimeout`. These are not retried by default; local admission refusal does not count as an origin failure in the recommended layer order. |
+| Cancellation or expired request budget | Stop retry waits and admission waits. Context errors retain `context.Canceled` / `context.DeadlineExceeded` for `errors.Is`. |
+| Upstream error with a previously cached response | `stale-if-error` may serve that representation when its freshness/identity policy permits. `Cache-Status` identifies the fallback; `no-cache` and `must-revalidate` still prohibit stale use. |
+| Failure while reading/decompressing/decoding the body | Surface it to the body reader or typed helper. Retry operates on the round trip and does not restart a response after body consumption begins. |
+
+### Choosing a backup upstream
+
+httpx has no built-in endpoint list, host rotation, service discovery or
+cross-region failover. Retry resubmits the same target; hedging overlaps
+attempts to that target; a circuit breaker records origin health but does
+not choose another origin. Stale-cache fallback reuses a representation and
+does not contact a backup server.
+
+For multiple origins, select the destination in application code before
+the request enters auth/cache layers, or use a load balancer behind a stable
+logical origin. Carry one overall deadline across the operation, preserve
+safe body replay and server idempotency, and bind credentials/cache identity
+to the selected origin. The [composition guide](composition.md) explains
+where your own transport fits and how layer order affects those policies.
+
 ## Circuit breakers
 
 Add `NewCircuitTransport` for a persistently failing upstream. Each
