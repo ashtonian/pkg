@@ -5,6 +5,13 @@ updates:
       - /config
       - /config/kongprovider
       - /config/examples/cookbook
+      - /httpx
+      - /httpx/codec/msgpack
+      - /httpx/codec/proto
+      - /httpx/compress/brotli
+      - /httpx/examples/gin
+      - /httpx/internal/bench
+      - /tools/modarchive
     schedule:
       interval: weekly
     groups:

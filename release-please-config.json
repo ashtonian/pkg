@@ -13,6 +13,29 @@
     },
     "config/kongprovider": {
       "component": "config/kongprovider"
+    },
+    "httpx": {
+      "component": "httpx",
+      "initial-version": "0.1.0",
+      "exclude-paths": [
+        "httpx/codec/msgpack",
+        "httpx/codec/proto",
+        "httpx/compress/brotli",
+        "httpx/examples/gin",
+        "httpx/internal/bench"
+      ]
+    },
+    "httpx/codec/msgpack": {
+      "component": "httpx/codec/msgpack",
+      "initial-version": "0.1.0"
+    },
+    "httpx/codec/proto": {
+      "component": "httpx/codec/proto",
+      "initial-version": "0.1.0"
+    },
+    "httpx/compress/brotli": {
+      "component": "httpx/compress/brotli",
+      "initial-version": "0.1.0"
     }
   }
 }

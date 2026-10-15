@@ -27,10 +27,15 @@ jobs:
         with:
           go-version: ${{ matrix.go }}
           cache-dependency-path: "**/go.sum"
-      - run: make test
+      - name: Config tests
+        run: make test-config
+      - name: HTTPx unit tests with race detection
+        run: make test-httpx-unit
+      - name: HTTPx integration tests with race detection
+        run: make test-httpx-integration
 
   modules:
-    name: modules as released, and the cookbook
+    name: module archives, examples and release tooling
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -40,6 +45,7 @@ jobs:
           cache-dependency-path: "**/go.sum"
       - run: make release-check
       - run: make cookbook-check
+      - run: make tool-check
 
   lint:
     runs-on: ubuntu-latest
