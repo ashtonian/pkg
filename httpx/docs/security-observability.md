@@ -14,7 +14,9 @@ does not authorize credentials for every virtual host it can route to.
 
 Providers support bearer tokens, refreshable bearer tokens, basic auth,
 API-key headers and your own `AuthProvider`. The refreshable provider exposes
-`SetToken`; the application still owns obtaining and refreshing the token.
+`Refresh()` and `SetToken()`. `Refresh()` calls the supplied callback; the
+application decides when to invoke it. Requests and 401 responses do not
+trigger token refresh or reauthentication automatically.
 Prefer these providers for credentials instead of a custom decorator that
 re-adds secrets on every redirect.
 
@@ -24,13 +26,20 @@ identity remain separate concerns. Use TLS for credentials. For untrusted
 destination URLs, apply an egress/SSRF policy in the dialer/transport and
 control redirects; httpx does not provide a destination allowlist.
 
-## Safe operational logging
+When combining auth with caching, follow the [cache partitioning
+rules](caching.md#identity-and-authority). Only `Authorization` and `Cookie`
+are included automatically; API-key and other identity headers need explicit
+configuration. These transports do not establish application authorization
+or tenant boundaries.
+
+## Logging and redaction
 
 `NewLoggingTransport` hands a `LoggingHook` detached, bodiless snapshots.
 The client-builder equivalent is `WithLogging`. Default
 redaction covers authorization, cookies, common API-key/token headers,
-credential query parameters, URL userinfo and fragments. URL-valued headers
-and URLs embedded in error text are sanitized too. Request redirect objects,
+credential query parameters, URL userinfo and fragments. `Referer`, `Location`
+and `Content-Location` receive URL redaction too, as do request URLs,
+`url.Error` URLs and HTTP(S) URLs found in error text. Request redirect objects,
 response bodies and TLS state are excluded. The caller receives the original
 transport error for programmatic inspection. Hooks receive a detached sanitized
 error with no original cause available through `errors.Unwrap` or `errors.As`.
@@ -56,9 +65,11 @@ running aggregates and a bounded recent-sample window; `MultiHook` fans out.
 Implement `RetryCauseHook` for `status`, `network`, `timeout` and `unknown`
 retry categories. Export these to your preferred metrics system.
 
-Round-trip latency ends when headers arrive, not when the body is fully
-consumed. Streaming duration and application decode time require their own
-measurements. `CountingHook.Errors` counts Go errors, so HTTP failure status
+Latency measures the wrapped `RoundTrip` call. With the builder's outer
+metrics layer, it includes retry/admission waits and any body buffering by
+the cache. A plain network transport usually returns after headers arrive;
+subsequent caller body reads and application decoding are outside the
+measurement. `CountingHook.Errors` counts Go errors, so HTTP failure status
 counts need explicit classification. Keep labels bounded; avoid raw URLs,
 credential values, user IDs and arbitrary origin names.
 

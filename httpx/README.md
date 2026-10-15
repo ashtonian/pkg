@@ -21,15 +21,16 @@ Choose the behaviors your client needs and enable their layers individually.
 | Pattern | What httpx handles |
 |---|---|
 | [Retries and backoff](docs/resilience.md#retries) | Transient transport errors and HTTP 429/502/503/504; bounded exponential backoff, jitter and `Retry-After`. |
-| [Safe request replay](docs/resilience.md#retries) | Idempotent methods or an idempotency key, plus replayable/bounded bodies. POST/PATCH need a server-supported replay contract or explicit opt-in. |
+| [Request replay rules](docs/resilience.md#retries) | Idempotent methods, an idempotency key or explicit opt-in, plus a replayable body. Write safety depends on the server's contract; an opt-in does not deduplicate requests. |
 | [Circuit breaking](docs/resilience.md#circuit-breakers) | Fail fast for a repeatedly failing origin, then probe for recovery; independent state per scheme/host/port. |
 | [Slow-request hedging](docs/resilience.md#hedging) | Start an overlapping attempt after a delay and cancel losers. GET by default; the first HTTP response wins, including an error status. |
 | [Rate and concurrency limits](docs/resilience.md#rate-versus-concurrency) | Per-origin rate/burst budgets and optional waiting; cap in-flight requests through the response body's lifetime. |
 | [Timeouts and cancellation](docs/requests.md#timeouts-and-cancellation) | Preserve client/context deadlines through retry and admission waits; optional base transport with dial/TLS/header timeouts. |
-| [Conditional and fresh reads](docs/caching.md) | ETag / Last-Modified revalidation, 304 reuse, `Cache-Control`, `Vary`, corrected age and bounded, identity-partitioned storage. |
+| [Conditional and fresh reads](docs/caching.md) | ETag / Last-Modified revalidation, 304 reuse, `Cache-Control`, `Vary`, corrected age and bounded storage. |
+| [Cache partitioning](docs/caching.md#identity-and-authority) | Keys include the effective URL, `Authorization` and `Cookie`; configure additional headers explicitly, including API-key headers. |
 | [Stale fallback and background refresh](docs/caching.md#when-to-enable-it) | `stale-if-error` and `stale-while-revalidate` when permitted; keep useful cached reads available during upstream failures or refreshes. |
-| [Compression negotiation](docs/codecs-compression.md) | Lazy gzip/deflate decoding, optional Brotli and encoding preferences; preserve encoded partial/range responses. Go already handles basic gzip. |
-| [Credentials and tenant isolation](docs/security-observability.md#origin-bound-credentials) | Origin-bound bearer/basic/API-key providers; cache partitions for credentials, cookies and configured tenant headers. |
+| [Compression negotiation](docs/codecs-compression.md) | Lazy gzip/deflate decoding, optional Brotli and configurable accepted encodings; preserve encoded partial responses. Go already handles basic gzip. |
+| [Origin-bound credentials](docs/security-observability.md#origin-bound-credentials) | Add bearer, basic or API-key credentials only when the request URL and effective host match the provider's bound origin. |
 | [Streaming and response bounds](docs/requests.md) | Ordinary `client.Do` bodies for streams/downloads; opt-in bounded reads and JSON/XML decoding, with optional MessagePack/protobuf. |
 | [Operational visibility](docs/security-observability.md) | Redacted request/response logging, retry/cache events and metrics hooks. |
 
@@ -128,7 +129,7 @@ exercise retries, gzip, ETags and 304 reuse against a local HTTP server.
 |---|---|
 | Choose which behaviors to add and when | [Use cases](docs/use-cases.md) |
 | Wrap an existing client, order layers, or use a custom transport | [Composition](docs/composition.md) |
-| Use ETags, freshness, stale responses and identity-safe caching | [Caching](docs/caching.md) |
+| Use ETags, freshness, stale responses and cache partition keys | [Caching](docs/caching.md) |
 | Negotiate compression, preserve ranges, or add a codec | [Compression and codecs](docs/codecs-compression.md) |
 | Tune retry/backoff, circuit breakers and request budgets | [Resilience](docs/resilience.md) |
 | Handle statuses, stream bodies, or use optional typed helpers | [Requests and responses](docs/requests.md) |

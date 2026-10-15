@@ -42,16 +42,18 @@ var storableStatuses = map[int]bool{
 //
 // Stored responses are keyed by the effective request target — the URL with
 // the request's Host as its authority — and partitioned by caller identity —
-// the Authorization and Cookie headers plus any WithCacheIdentityHeaders — so
-// neither a virtual host nor a client shared across tenants is ever served
-// another's response. Within a
-// partition the cache honours Vary, corrected Age, the request directives
+// the Authorization and Cookie headers plus any WithCacheIdentityHeaders.
+// Callers must configure every additional identity header (including API-key
+// headers) and use separate stores for identities hidden in a transport.
+// These keys do not establish application authorization or tenant boundaries.
+// Within a partition the cache honours Vary, corrected Age, the request directives
 // no-store, no-cache, max-age, min-fresh, max-stale and only-if-cached, and
 // the response directives no-store, no-cache, must-revalidate, max-age and
 // Expires. A response without explicit freshness is stored only when it has
 // a validator, and is revalidated on every use. Range, HEAD,
 // caller-conditional and body-bearing requests bypass the cache; unsafe
-// methods invalidate the target URI, and a fetch or revalidation still in
+// methods with a response below 400 invalidate the target URI within that
+// request's partition, and a fetch or revalidation still in
 // flight when they do never stores what it read.
 type CacheTransport struct {
 	base                 http.RoundTripper
@@ -153,9 +155,10 @@ func (t *CacheTransport) validate() error {
 }
 
 // WithStaleIfError lets the cache serve a stale response for up to d when
-// revalidation fails with a network error or 5xx, unless the response says
-// must-revalidate or no-cache. A response's own stale-if-error directive
-// also grants permission.
+// revalidation returns an inner transport error (including local admission
+// refusal) or 5xx, unless the response says must-revalidate or no-cache.
+// Caller cancellation and expired caller deadlines remain errors. A response's
+// own stale-if-error directive also grants permission.
 func WithStaleIfError(d time.Duration) CacheOption {
 	return func(t *CacheTransport) { t.staleIfError = d }
 }
@@ -174,8 +177,8 @@ func WithCacheHook(hook MetricsHook) CacheOption {
 }
 
 // WithCacheIdentityHeaders adds request headers that identify the caller
-// (for example a tenant header) to the partition key, alongside
-// Authorization and Cookie.
+// (for example X-API-Key) to the partition key, alongside Authorization and
+// Cookie. Other identity headers are not detected automatically.
 func WithCacheIdentityHeaders(names ...string) CacheOption {
 	return func(t *CacheTransport) {
 		for _, n := range names {
@@ -217,6 +220,10 @@ func (t *CacheTransport) Close() error {
 
 // RoundTrip implements http.RoundTripper.
 func (t *CacheTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	if err := req.Context().Err(); err != nil {
+		closeRequestBody(req)
+		return nil, err
+	}
 	reqCC := parseCacheControl(req.Header)
 	if !cacheableRequest(req, reqCC) {
 		resp, err := t.base.RoundTrip(req)
@@ -228,6 +235,10 @@ func (t *CacheTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 
 	key := t.key(req)
 	entry, ok, gen := t.lookup(key)
+	if err := req.Context().Err(); err != nil {
+		closeRequestBody(req)
+		return nil, err
+	}
 	if ok && !varyMatches(entry, req) {
 		ok = false
 	}
@@ -268,11 +279,17 @@ func (t *CacheTransport) staleAllowed(f freshness, respCC, reqCC cacheDirectives
 
 // validateSync refreshes a stored response the cache may not serve as-is:
 // a conditional request when it has validators, otherwise a plain one. A
-// network error or 5xx falls back to the stored response when stale-if-error
-// permits.
+// transport error or 5xx falls back to the stored response when stale-if-error
+// permits, unless the caller's context has ended.
 func (t *CacheTransport) validateSync(req *http.Request, key string, gen uint64, entry *CachedResponse, f freshness, respCC, reqCC cacheDirectives) (*http.Response, error) {
 	requestTime := time.Now()
 	resp, err := t.base.RoundTrip(conditionalRequest(req.Clone(req.Context()), entry))
+	if ctxErr := req.Context().Err(); ctxErr != nil {
+		if resp != nil && resp.Body != nil {
+			_ = resp.Body.Close()
+		}
+		return nil, ctxErr
+	}
 	if err != nil || resp.StatusCode >= 500 {
 		if t.staleAllowed(f, respCC, reqCC, respCC.staleIfError, t.staleIfError) {
 			if resp != nil {

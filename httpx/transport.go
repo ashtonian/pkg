@@ -82,10 +82,9 @@ type MetricsHook interface {
 	OnCacheMiss(req *http.Request)
 }
 
-// RetryCause classifies why a retry was attempted. Used as a label on
-// labelled retry counters so an on-call engineer can distinguish
-// network failures from server-side 5xx pressure from rate-limit
-// throttling.
+// RetryCause groups retries into status, network, timeout or unknown causes.
+// The status category combines HTTP 429, 502, 503 and 504; it does not
+// distinguish rate-limit responses from server failures.
 type RetryCause string
 
 // RetryCause values.

@@ -41,7 +41,7 @@ Constructors validate durations, counts, levels, thresholds and required provide
 | `WithBaseTransport(opts...)` | `...BaseOption` | `NewBaseTransport()` defaults | Tunes the base `*http.Transport`; the last call wins |
 | `WithTransport(rt)` | `http.RoundTripper` | none | Replaces the base transport; `WithBaseTransport` then does not apply |
 | `WithJar(jar)` | `http.CookieJar` | nil | Cookie jar of the client |
-| `WithCompression(opts...)` | `...CompressionOption` | off | Adds `CompressionTransport` |
+| `WithCompression(opts...)` | `...CompressionOption` | off (`NewStandard`: on) | Adds response compression negotiation and decoding |
 | `WithCache(store, opts...)` | `CacheStore`, `...CacheOption` | off | Adds `CacheTransport`; a nil store uses `NewMemoryCache()` |
 | `WithCircuitBreaker(opts...)` | `...CircuitOption` | off | Adds `CircuitTransport` |
 | `WithRetry(opts...)` | `...RetryOption` | off (`NewStandard`: 3 attempts) | Adds `RetryTransport` |
@@ -75,21 +75,21 @@ The base transport honours `HTTP_PROXY` / `HTTPS_PROXY` / `NO_PROXY` and leaves 
 
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
-| `WithEncodings(names...)` | `...string` | registered, in order `br`, `gzip`, `deflate` | Accepted encodings in priority order; an unregistered name is rejected |
+| `WithEncodings(names...)` | `...string` | registered members of `br`, `gzip`, `deflate`, in that order | Advertised encoding list, without quality weights; an unavailable name is rejected |
 | `WithGzipLevel(level)` | `int` | `gzip.DefaultCompression` | Level for `Compress`, within [-2, 9] |
 | `WithDeflateLevel(level)` | `int` | `flate.DefaultCompression` | Level for `deflate` (zlib), within [-2, 9] |
 | `WithBrotliLevel(level)` | `int` | brotli default | Within [0, 11]; requires the `compress/brotli` module |
 | `WithCompressor(name, c)` | `string`, `Compressor` | none | Adds or overrides an encoding for this transport; nil is rejected |
 | `WithCompressionPool(pool)` | `*BufferPool` | `DefaultBufferPool()` (32 KiB) | Buffers for `CompressionTransport.Compress` |
 
-`deflate` is the zlib format (RFC 9110 §8.4.1.2); a body without a zlib header decodes as raw DEFLATE. Decoding starts on the first body read; HEAD, 1xx, 204, 205 and 304 responses pass through untouched. Range requests and partial responses preserve their encoded bytes and headers.
+`deflate` is the zlib format (RFC 9110 §8.4.1.2); a body without a zlib header decodes as raw DEFLATE. Decoding starts on the first body read; HEAD, 1xx, 204, 205 and 304 responses pass through untouched. Range requests receive no automatic `Accept-Encoding`; 206 or `Content-Range` responses preserve encoded bytes and headers. A complete 200 response to a range request is decoded normally. Request bodies are compressed only when the caller explicitly uses `Compress` and sets the corresponding request headers.
 
 ### Cache
 
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
-| `WithCacheIdentityHeaders(names...)` | `...string` | none (`Authorization` and `Cookie` always partition) | Extra request headers that identify the caller, such as `X-Tenant-ID` |
-| `WithStaleIfError(d)` | `time.Duration` | 0 (off) | Serve stale for up to `d` when revalidation fails with a network error or 5xx |
+| `WithCacheIdentityHeaders(names...)` | `...string` | none (`Authorization` and `Cookie` always partition) | Extra headers included in the cache key, such as `X-API-Key`; the application must configure all identity headers |
+| `WithStaleIfError(d)` | `time.Duration` | 0 (off) | Serve stale after an inner transport error (including local refusal) or 5xx; caller cancellation/deadlines remain errors |
 | `WithStaleWhileRevalidate(d)` | `time.Duration` | 0 (off) | Serve stale for up to `d` while revalidating in the background |
 | `WithMaxCacheBodyBytes(n)` | `int64` | `DefaultMaxCacheBodyBytes` (1 MiB) | Largest stored body; larger responses stream through unstored |
 | `WithMaxRetention(d)` | `time.Duration` | `DefaultMaxRetention` (24 h) | Longest an entry is kept, including entries kept only to revalidate |
@@ -98,7 +98,18 @@ The base transport honours `HTTP_PROXY` / `HTTPS_PROXY` / `NO_PROXY` and leaves 
 | `WithMaxEntries(n)` (`NewMemoryCache`) | `int` | `DefaultMemoryCacheMaxEntries` (1024) | Entry cap; least recently used evicted first |
 | `WithMaxBytes(n)` (`NewMemoryCache`) | `int64` | `DefaultMemoryCacheMaxBytes` (64 MiB) | Byte cap over bodies, headers and keys |
 
-The private cache implements the following RFC 9111 policy within each identity partition. It keys on the effective target — the URL with the request's `Host` as its authority, so virtual hosts behind one URL never share an entry (`Vary: Host` reads it too): `Vary` (any `*` in it forbids storing), corrected `Age` (saturating), request `no-store` / `no-cache` / `max-age` / `min-fresh` / `max-stale` / `only-if-cached`, response `no-store` / `no-cache` / `must-revalidate`, conditional revalidation with 304 header merge — and the merged header's storage policy reapplied, so a 304 carrying `no-store` or `Vary: *` answers its request and removes the entry — and RFC 5861 stale permissions from the origin or the options (never under `must-revalidate` / `no-cache`). Responses without explicit freshness are stored only with a validator and revalidated on every use. Range, HEAD, caller-conditional and body-bearing GET requests bypass it; a successful unsafe request invalidates its target and same-origin `Location` / `Content-Location`, and a fetch or revalidation in flight when it does never publishes what it read. A successful full validation that forbids storage or exceeds the body cap retires the previous representation. Identity, directive and request variation values include noncanonical header-map spellings.
+Cache keys use the effective URL (including `Request.Host`), plus hashed
+`Authorization`, `Cookie` and configured identity headers. Other credentials
+are not detected automatically. Invalidation applies within the request's
+partition; coalescing and invalidation coordination are local to one
+`CacheTransport` instance.
+
+The cache supports explicit freshness, validators, `Vary`, corrected `Age`,
+request cache directives and permitted stale reuse. Storage is limited to
+eligible GETs and the documented status codes, with one `Vary` variant per
+primary key. Caller-conditional, range, HEAD and body-bearing GET requests
+bypass caching. See [supported HTTP policy](caching.md#supported-http-policy)
+for storage, revalidation, stale fallback and invalidation boundaries.
 
 ### Retry
 
@@ -106,14 +117,16 @@ The private cache implements the following RFC 9111 policy within each identity 
 |--------|------|---------|-------------|
 | `WithMaxAttempts(n)` | `int` | 3 | Attempts including the first |
 | `WithBackoff(initial, max, mult)` | `time.Duration`, `time.Duration`, `float64` | 100 ms, 10 s, 2.0 | Exponential backoff; `max` also bounds `Retry-After` |
-| `WithJitter(j)` | `float64` | 0.1 | Random fraction added to each wait, within [0, 1] |
+| `WithJitter(j)` | `float64` | 0.1 | Fractional variation above/below exponential backoff, within [0, 1], capped by max wait; not applied to `Retry-After` |
 | `WithRetryOn(codes...)` | `...int` | 429, 502, 503, 504 | Statuses that retry; replaces the default set |
 | `WithRetryIf(fn)` | `func(*http.Response, error) bool` | the status set, plus connection reset / refused / aborted, broken pipe, EOF and network timeouts | Full retry predicate |
 | `WithRetryNonIdempotent()` | — | off | Also replay POST / PATCH without `Idempotency-Key` |
 | `WithMaxReplayBytes(n)` | `int64` | `DefaultMaxReplayBytes` (1 MiB) | Most of a body without `GetBody` recorded, as the first attempt sends it, for replay; a larger body is sent once |
 | `WithRetryHook(h)` | `MetricsHook` | the `WithMetrics` hook, else none | Receives `OnRetry` (and `OnRetryCause`) |
 
-A request is replayed only when that is safe: an idempotent method (GET, HEAD, OPTIONS, TRACE, PUT, DELETE), an `Idempotency-Key` header, or `WithRetryNonIdempotent`. Each attempt is a clone; the caller's request is never modified. A body with `GetBody` (`http.NewRequest` sets it for in-memory readers; `EncodeRequest` always does) is re-read from it; any other body is recorded as the first attempt streams it, never read ahead of the transport, and replayed only if that attempt read it to its end within `WithMaxReplayBytes` — a stalled stream is cancelled by the request's own deadline. Under `WithRateLimit` / `WithLimiter`, a retry beyond the budget fails with `ErrRateLimited` / `ErrLimiterTimeout` (or waits, under `WithWait`). A `Retry-After` longer than the max wait, or a wait past the request deadline, returns the response unretried. Caller cancellation and deadlines are not retried.
+Replay requires an idempotent method (GET, HEAD, OPTIONS, TRACE, PUT, DELETE), an `Idempotency-Key` header, or `WithRetryNonIdempotent`. The server must make the replay safe; a key or opt-in does not deduplicate requests. Retried attempts clone the request metadata; bodies are still consumed and closed. `GetBody` supplies fresh bodies (`http.NewRequest` sets it for `*bytes.Buffer`, `*bytes.Reader` and `*strings.Reader`; `EncodeRequest` installs it too). Other bodies are recorded during the first attempt and replayed only if fully consumed within `WithMaxReplayBytes`. That bound limits recording, not upload size or `GetBody` bodies. Cancellation of a blocked upload depends on the wrapped transport honoring its context.
+
+With rate/concurrency layers inside retry, an attempt can fail admission with `ErrRateLimited` / `ErrLimiterTimeout`; neither is retried by the default predicate. `WithWait` permits rate-token waiting; the concurrency limiter already waits, bounded by context and optional `WithAcquireTimeout`. A `Retry-After` longer than the max wait, or a wait past the request deadline, returns the last result unretried. Caller cancellation and deadlines are not retried.
 
 ### Circuit breaker
 
@@ -122,7 +135,7 @@ A request is replayed only when that is safe: an idempotent method (GET, HEAD, O
 | `WithFailureThreshold(n)` | `int` | `DefaultFailureThreshold` (5) | Consecutive failures that open an origin's circuit; 1 through `math.MaxUint32` |
 | `WithSuccessThreshold(n)` | `int` | `DefaultSuccessThreshold` (2) | Probes a half-open circuit admits, and consecutive successes that close it; 1 through `math.MaxUint32` |
 | `WithOpenTimeout(d)` | `time.Duration` | `DefaultOpenTimeout` (30 s) | Time open before admitting probes |
-| `WithIsFailure(fn)` | `func(*http.Response, error) bool` | network error or 5xx | Classifies an outcome; caller cancellation is excluded first |
+| `WithIsFailure(fn)` | `func(*http.Response, error) bool` | any inner Go error, nil response or 5xx | Classifies an outcome; caller cancellation is excluded first; deadline errors count |
 | `WithMaxBreakers(n)` | `int` | `DefaultMaxOrigins` (1024) | Origins that keep a breaker; the least recently used is dropped and restarts closed. A request the dropped breaker admitted still completes but reports no transitions, so the cap bounds origins retained, not requests in flight |
 | `WithOnStateChange(fn)` | `func(Origin, from, to State)` | nil | Synchronous transition callback, also for `Reset` and dropping a non-closed breaker; must be quick and must not call back into the transport |
 
@@ -133,9 +146,9 @@ One `gobreaker` two-step breaker per origin (scheme, host, port): an outcome adm
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
 | `delay` (argument) | `time.Duration` | — (required, > 0) | Wait before each further attempt |
-| `WithMaxHedgedRequests(n)` | `int` | 2 | Concurrent attempts including the first, >= 2 |
-| `WithHedgeIf(fn)` | `func(*http.Request) bool` | GET only | Which requests are hedged |
-| `percentile` (adaptive argument) | `float64` | — (required, in (0, 1]) | Adaptive delay tracks this latency percentile over the last 1000 responses, starting at 100 ms |
+| `WithMaxHedgedRequests(n)` | `int` | 2 | Total attempts this hedge call may launch, including the first, >= 2 |
+| `WithHedgeIf(fn)` | `func(*http.Request) bool` | GET only | Which requests are hedged; a custom predicate owns replay safety |
+| `percentile` (adaptive argument) | `float64` | — (required, in (0, 1]) | Percentile of the last 1000 completed calls, including errors; starts at 100 ms and adapts after 10 samples |
 
 The first response wins and keeps its context until its body is done; the other attempts are cancelled and their bodies drained and closed. A hedge runs beside the first attempt, so it needs its own copy of the body: a request body without `GetBody` is sent once, unhedged.
 
@@ -147,7 +160,7 @@ The first response wins and keeps its context until its body is done; the other 
 | `WithAcquireTimeout(d)` | `time.Duration` | 0 (wait for the request context) | Fail with `ErrLimiterTimeout` after `d` without a slot |
 | `WithOnBlocked(fn)` | `func()` | nil | Called when a request has to wait |
 
-A slot is held until the response body reaches EOF or is closed, so the cap bounds concurrent downloads — close bodies to free slots.
+A slot is held until the response body reaches EOF, returns a read error or is closed. The cap applies to this transport instance; close bodies to free slots.
 
 ### Rate limit
 
@@ -162,14 +175,14 @@ A slot is held until the response body reaches EOF or is closed, so the cap boun
 | Provider | Sends |
 |----------|-------|
 | `NewBearerTokenProvider(token)` | `Authorization: Bearer <token>` |
-| `NewRefreshableBearerTokenProvider(token, refresh)` | Bearer token; `Refresh()` / `SetToken()` rotate it |
+| `NewRefreshableBearerTokenProvider(token, refresh)` | Bearer token; the application invokes `Refresh()` or `SetToken()` to rotate it |
 | `NewBasicAuthProvider(user, password)` | `Authorization: Basic …` |
 | `NewAPIKeyProvider(key)` / `NewAPIKeyProviderWithHeader(key, header)` | `X-API-Key: <key>` or a custom header |
 | `NewQueryParamAuthProvider(name, value)` | A query parameter |
 | `NewChainAuthProvider(providers...)` | Every provider in order |
 | `FuncAuthProvider(fn)` | Whatever `fn` sets |
 
-A provider runs only for requests to the origin it is bound to (scheme, host and port — RFC 6454), so redirects to another host, https→http downgrades and caller-supplied URLs never receive it. `ParseOrigin` rejects URLs with userinfo, non-HTTP schemes and relative URLs.
+A provider runs only when both the request URL's origin and its effective `Host` match the binding (scheme, host and port). Caller-supplied URLs at that origin receive credentials; other origins, including redirect destinations, do not receive that provider's additions. Existing caller headers are passed through, not scrubbed. Bindings do not authorize destinations or implement token refresh on 401. `ParseOrigin` rejects URLs with userinfo, non-HTTP schemes and relative URLs. See [credential boundaries](security-observability.md#origin-bound-credentials).
 
 ### Metrics and logging
 
@@ -178,7 +191,7 @@ A provider runs only for requests to the origin it is bound to (scheme, host and
 | `WithMetrics(hook)` | `MetricsHook` | off | Request and response events; also the retry and cache events unless `WithRetryHook` / `WithCacheHook` set theirs |
 | `NewLatencyHook(window)` | `int` | `DefaultLatencyWindow` (1024) suggested | Running count / sum / avg / min / max plus the last `window` samples (`Recent()`) |
 | `NewMultiHook(hooks...)` | `...MetricsHook` | — | Fans every event out, including `OnRetryCause`; nil hooks are skipped |
-| `WithLogging(hook, opts...)` | `LoggingHook` | off | Detached, allowlisted request / response snapshots — no body, redirect response or TLS state — with sensitive headers, credential query parameters, URL userinfo and fragments redacted, in the request URL and in `Referer` / `Location` / `Content-Location`; `LogResponse` receives the transport error with every URL in its text redacted (the caller receives the original). Other layers' hooks (`MetricsHook`, `RetryHook`, the cache hook) get the live request: do not log from them |
+| `WithLogging(hook, opts...)` | `LoggingHook` | off | Detached, allowlisted request / response snapshots — no body, redirect response or TLS state — with sensitive headers, credential query parameters, URL userinfo and fragments redacted, in the request URL and in `Referer` / `Location` / `Content-Location`; `LogResponse` receives detached error text with request URLs, `url.Error` URLs and HTTP(S) URLs redacted (the caller receives the original). Other layers' hooks (`MetricsHook`, `RetryHook`, the cache hook) get the live request: do not log from them |
 | `WithSensitiveHeaders(names...)` | `...string` | `Authorization`, `Proxy-Authorization`, `Cookie`, `Set-Cookie`, `X-Api-Key`, `X-Auth-Token`, `X-Access-Token`, `X-Refresh-Token`, `X-Csrf-Token`, `X-Amz-Security-Token` | Headers redacted to `Redacted`, in addition to the defaults |
 | `WithSensitiveQueryParams(names...)` | `...string` | OAuth tokens and codes, API keys, passwords and secrets, `sig` / `signature`, AWS and GCS presigned-URL credentials | Query parameters redacted, in addition to the defaults; an unparseable query is redacted whole |
 
@@ -190,20 +203,24 @@ With the `Chain` API, pass `WithRetryHook` / `WithCacheHook` explicitly: only `N
 |--------|------|---------|-------------|
 | `WithMaxResponseBytes(n)` | `int64` | `DefaultMaxResponseBytes` (10 MiB) | Largest body `Get` / `Post` / `Put` / `Patch` / `Do` / `DecodeResponse` read; must be >= 1 |
 
-Only 2xx representations are decoded; non-2xx responses, HEAD, 204 and 205 return zero `T`, the live response and a nil error. A larger body returns `ErrResponseTooLarge` and the response still reads the whole body (close it). After decoding, `resp.Body` holds the bytes read. When `T` is a pointer (`Do[*pb.Msg]`), the codec decodes into a newly allocated pointee. `Post` / `Put` / `Patch` encode a non-`io.Reader` body as JSON.
+The typed request helpers decode only 2xx representations; non-2xx responses, HEAD, 204 and 205 return zero `T`, the live response and a nil error. `DecodeResponse` instead decodes the supplied body with the supplied codec regardless of status or content type; the caller chooses when to call it. A larger body returns `ErrResponseTooLarge` and the response still reads the whole body (close it). After decoding, `resp.Body` holds the bytes read. When `T` is a pointer (`Do[*pb.Msg]`), the codec decodes into a newly allocated pointee. `Post` / `Put` / `Patch` encode a non-`io.Reader` body as JSON.
 
 ## Errors
 
 httpx defines sentinels, not E-codes; match them with `errors.Is`.
 
-| Sentinel | Returned by | Retryable |
-|----------|-------------|-----------|
-| `ErrInvalidConfig` | every constructor, the decoding helpers | no — fix the option |
-| `ErrCircuitOpen` | `CircuitTransport` | after the open timeout |
-| `ErrRateLimited` | `RateLimitTransport` | yes, after the bucket refills |
-| `ErrLimiterTimeout` | `LimiterTransport` | yes |
-| `ErrResponseTooLarge` | `Get`, `Post`, `Put`, `Patch`, `Do`, `DecodeResponse`, `ReadAtMost` | no — raise the limit or stream the body |
-| `ErrNoCodec` | the decoding helpers | no — register a codec |
+| Sentinel | Returned by | Caller action |
+|----------|-------------|---------------|
+| `ErrInvalidConfig` | constructors and helpers that validate options | Fix the configuration |
+| `ErrCircuitOpen` | `CircuitTransport` | Allow recovery time; later requests may be admitted as probes |
+| `ErrRateLimited` | `RateLimitTransport` | Respect the rate budget; consider `WithWait` |
+| `ErrLimiterTimeout` | `LimiterTransport` | Release open bodies, reduce concurrency or revise the acquisition budget |
+| `ErrResponseTooLarge` | `Get`, `Post`, `Put`, `Patch`, `Do`, `DecodeResponse`, `ReadAtMost` | Use a deliberate larger bound or stream the body |
+| `ErrNoCodec` | typed request helpers | Register the response content type's codec or decode explicitly |
+
+None of these sentinels is retried by the default retry predicate. A later
+application request may succeed after a circuit or local budget recovers;
+that is separate from retrying the current call.
 
 ## API Reference
 

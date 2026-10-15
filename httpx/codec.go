@@ -63,6 +63,8 @@ func EncodeRequest(req *http.Request, codec Codec, v any) error {
 // DefaultMaxResponseBytes) and decodes it into v. Afterwards resp.Body holds
 // the bytes read. A larger body fails with ErrResponseTooLarge and resp.Body
 // still reads the whole body; the caller must close it.
+// Unlike the typed request helpers, DecodeResponse does not check the status,
+// request method or Content-Type; the caller selects the body and codec.
 func DecodeResponse(resp *http.Response, codec Codec, v any, opts ...DecodeOption) error {
 	cfg, err := newDecodeConfig(opts)
 	if err != nil {

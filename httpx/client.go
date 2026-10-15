@@ -164,7 +164,8 @@ func WithBaseTransport(opts ...BaseOption) Option {
 	}
 }
 
-// WithCompression enables automatic compression/decompression.
+// WithCompression enables response compression negotiation and lazy decoding.
+// It does not compress request bodies.
 func WithCompression(opts ...CompressionOption) Option {
 	return func(cfg *clientConfig) {
 		cfg.useCompression = true
@@ -253,10 +254,9 @@ func WithAuth(originURL string, provider AuthProvider) Option {
 	}
 }
 
-// DefaultTimeout is the overall request deadline applied by NewClient when
-// the caller passes no WithTimeout option. Style guide requires explicit
-// timeouts on outbound HTTP calls; this default keeps zero-config callers
-// safe. Set WithTimeout(0) to opt out (e.g., long-poll endpoints).
+// DefaultTimeout is the overall request timeout applied by NewClient when
+// the caller passes no WithTimeout option. Set WithTimeout(0) to disable it
+// (e.g., for long-poll endpoints); base transport timeouts still apply.
 const DefaultTimeout = 30 * time.Second
 
 // WithTimeout sets the overall client timeout (applied to the whole

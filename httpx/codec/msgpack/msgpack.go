@@ -4,7 +4,8 @@
 //
 //	import _ "github.com/ashtonian/pkg/httpx/codec/msgpack"
 //
-// Once imported, httpx will automatically decode msgpack responses.
+// Once imported, httpx's typed request helpers can decode MessagePack
+// responses by Content-Type. Ordinary http.Client.Do still returns bytes.
 // To encode request bodies as msgpack, use [httpx.EncodeRequest]:
 //
 //	httpx.EncodeRequest(req, msgpack.Codec, myValue)

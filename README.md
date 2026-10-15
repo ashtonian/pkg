@@ -25,7 +25,7 @@ Compose `http.RoundTripper` layers and keep using an ordinary `http.Client`:
 
 - **Recover from failures:** safe retries, exponential backoff/jitter, `Retry-After`, per-origin circuit breakers and slow-request hedging.
 - **Control request budgets:** per-origin rate/burst limits, in-flight concurrency limits, timeouts and cancellation.
-- **Reuse responses:** ETag / Last-Modified revalidation, cache freshness and `Vary`, identity partitions, stale-if-error fallback and background refresh.
+- **Reuse responses:** ETag / Last-Modified revalidation, cache freshness and `Vary`, cache keys that include authorization/cookies and configured headers, stale-if-error fallback and background refresh.
 - **Handle representations:** gzip/deflate and optional Brotli, streaming/ranged responses, bounded reads and optional typed decoding.
 - **Operate clients:** origin-bound credentials, redacted logging and retry/cache/latency metrics hooks.
 

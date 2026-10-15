@@ -44,7 +44,7 @@ func NewLimiterTransport(base http.RoundTripper, maxConcurrent int, opts ...Limi
 }
 
 // WithAcquireTimeout sets the timeout for acquiring a slot.
-// Default is 0 (block forever).
+// Default is 0 (wait until a slot is available or the request context ends).
 func WithAcquireTimeout(d time.Duration) LimiterOption {
 	return func(t *LimiterTransport) {
 		t.timeout = d

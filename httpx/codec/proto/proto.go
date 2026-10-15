@@ -4,7 +4,8 @@
 //
 //	import _ "github.com/ashtonian/pkg/httpx/codec/proto"
 //
-// Once imported, httpx will automatically decode protobuf responses.
+// Once imported, httpx's typed request helpers can decode protobuf
+// responses by Content-Type. Ordinary http.Client.Do still returns bytes.
 // To encode request bodies as protobuf, use [httpx.EncodeRequest]:
 //
 //	httpx.EncodeRequest(req, proto.Codec, myProtoMessage)

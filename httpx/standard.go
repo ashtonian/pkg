@@ -24,15 +24,11 @@ import (
 //
 // No HTTP cache is wired by default. Callers that want one opt in with
 // WithCache, which partitions stored responses by Authorization, Cookie and
-// any WithCacheIdentityHeaders so a client shared across tenants never
-// serves one identity's response to another.
+// any WithCacheIdentityHeaders. Configure all additional identity headers;
+// identities hidden in a transport, such as mTLS, need separate stores.
 //
 // Callers that need cancellation pass a [context.Context] with a
 // deadline; the 30s ceiling is the upper bound, not the floor.
-//
-// The injection seam: every type that holds an `*http.Client` should
-// take it via a `WithHTTPClient(*http.Client)` option and default to
-// `NewStandard()` so zero-config wiring still works.
 //
 // Codec note: httpx ships JSON + XML codecs natively. MsgPack is opt-in
 // via the separate codec/msgpack module; protobuf uses codec/proto.
