@@ -35,7 +35,9 @@ type Compressor interface {
 	Decompress(r io.Reader) (io.Reader, error)
 }
 
-// CompressionTransport handles automatic compression/decompression.
+// CompressionTransport negotiates response content encodings and lazily
+// decompresses supported complete responses. It does not compress outgoing
+// request bodies; callers can use Compress explicitly for that purpose.
 type CompressionTransport struct {
 	base        http.RoundTripper
 	Pool        *BufferPool
@@ -49,8 +51,10 @@ type CompressionOption func(*CompressionTransport)
 
 // NewCompressionTransport creates a new compression transport.
 //
-// By default, it accepts all registered encodings in priority order:
-// brotli (if registered), gzip, deflate.
+// By default, it advertises registered brotli, gzip and deflate encodings,
+// in that order without quality weights. The server chooses the encoding.
+// Select other registered encodings with WithEncodings or add an
+// implementation with WithCompressor.
 // The transport automatically decompresses complete response bodies. Partial
 // representations retain their encoding and byte offsets; Range and HEAD
 // requests do not receive an automatic Accept-Encoding header.
@@ -103,8 +107,9 @@ func NewCompressionTransport(base http.RoundTripper, opts ...CompressionOption) 
 	return t, nil
 }
 
-// WithEncodings sets the accepted encodings in priority order.
-// Only encodings that have registered compressors will be used.
+// WithEncodings sets the advertised encoding list without quality weights.
+// Each encoding needs a registered compressor or an earlier WithCompressor
+// option; an unavailable encoding makes construction fail.
 func WithEncodings(encodings ...string) CompressionOption {
 	return func(t *CompressionTransport) {
 		var validEncodings []string

@@ -7,8 +7,8 @@
 Go's default transport already negotiates and decodes gzip when it adds the
 `Accept-Encoding` header itself. Use `CompressionTransport` when you want an
 explicit, composable policy: gzip and deflate support, optional Brotli,
-encoding preferences, or a custom compressor. Your requests and responses
-still use `net/http`:
+configurable accepted encodings, or a custom compressor. Your requests and
+responses still use `net/http`:
 
 ```go
 transport, err := httpx.NewCompressionTransport(http.DefaultTransport,
@@ -23,10 +23,12 @@ defer client.CloseIdleConnections()
 ```
 
 Importing [compress/brotli](../compress/brotli/README.md) registers Brotli.
-Without an explicit `WithEncodings`, preference is `br`, `gzip`, `deflate`
-among registered encodings. `WithCompressor` supplies an implementation for
-one transport. `NewChain` uses the same options through `WithCompressionT`;
-the client builders use `WithCompression`.
+Without an explicit `WithEncodings`, the layer advertises registered `br`,
+`gzip`, `deflate` in that order. It sends no quality weights; the server
+chooses an accepted encoding. For another registered encoding, select it
+with `WithEncodings`; `WithCompressor` supplies an implementation for one
+transport and adds it to the advertised list. `NewChain` uses the same options
+through `WithCompressionT`; the client builders use `WithCompression`.
 
 The layer supplies `Accept-Encoding` when it is absent and decodes supported
 response `Content-Encoding` values. An explicit request header is preserved.
@@ -41,7 +43,8 @@ returns a read error. A decoded response has `Uncompressed` set, its wire
 HEAD, 1xx, 204, 205 and 304 responses are not decompressed. Range requests do
 not get an automatic `Accept-Encoding`; partial representations (206 or
 `Content-Range`) preserve encoded bytes and coding headers. A fragment of a
-gzip stream is not independently decompressible.
+gzip stream is not independently decompressible. If a server ignores `Range`
+and returns a complete 200 response, supported compression is decoded normally.
 
 Raw `client.Do` reads need application-owned bounds. Use `ReadAtMost` for a
 bounded complete body, or process a stream with your own limits. Optional

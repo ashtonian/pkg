@@ -9,9 +9,9 @@ import (
 
 // AuthTransport adds credentials to requests whose origin has a bound
 // provider. The connection destination and effective Host authority must
-// both match the binding. A request to any other origin — including a redirect
-// hop the http.Client follows to another host, port or scheme — is sent without
-// credentials, so a credential never leaves the origin it was issued for.
+// both match the binding before that provider runs, including on redirect
+// hops followed by http.Client. Caller-supplied headers are passed through;
+// this transport does not remove credentials already present on a request.
 type AuthTransport struct {
 	base      http.RoundTripper
 	providers map[Origin]AuthProvider
@@ -93,7 +93,10 @@ func NewBearerTokenProvider(token string) *BearerTokenProvider {
 	return &BearerTokenProvider{token: token}
 }
 
-// NewRefreshableBearerTokenProvider creates a bearer token provider with auto-refresh.
+// NewRefreshableBearerTokenProvider creates a bearer token provider with a
+// refresh callback. The application must call Refresh to invoke it, or
+// SetToken to replace the token directly. Requests and HTTP 401 responses
+// do not trigger either operation automatically.
 func NewRefreshableBearerTokenProvider(token string, refresh func() (string, error)) *BearerTokenProvider {
 	return &BearerTokenProvider{
 		token:       token,

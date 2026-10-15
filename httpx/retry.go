@@ -20,17 +20,19 @@ import (
 // one the first attempt did not read to its end, is not retried.
 const DefaultMaxReplayBytes int64 = 1 << 20
 
-// IdempotencyKeyHeader is the request header a client sets to declare that a
-// non-idempotent request is safe to replay (draft-ietf-httpapi-idempotency-key-header).
+// IdempotencyKeyHeader is the request header that permits RetryTransport to
+// replay a non-idempotent request. The server must implement deduplication
+// for that key; setting it alone does not make a write safe.
 const IdempotencyKeyHeader = "Idempotency-Key"
 
 // RetryTransport implements exponential backoff with jitter.
 //
-// A request is only ever sent more than once when replaying it is safe: its
+// A request is eligible for replay when its
 // method is idempotent (RFC 9110 §9.2.2: GET, HEAD, OPTIONS, TRACE, PUT,
 // DELETE), it carries an Idempotency-Key header, or the transport was built
-// with WithRetryNonIdempotent. Every attempt is a clone; the caller's request
-// is never modified.
+// with WithRetryNonIdempotent. The application must ensure the server makes
+// replay safe; this transport cannot deduplicate writes. Retried attempts
+// clone the request metadata, but still consume and close request bodies.
 type RetryTransport struct {
 	base           http.RoundTripper
 	maxAttempts    int
@@ -51,7 +53,9 @@ type RetryOption func(*RetryTransport)
 // NewRetryTransport creates a new retry transport.
 //
 // Defaults: 3 attempts, 100ms initial wait, 10s max wait, 2x multiplier, 10% jitter,
-// 1 MiB replay buffer. Retries on 502, 503, 504, 429 and network errors.
+// 1 MiB recording bound for bodies without GetBody. Retries on 502, 503, 504,
+// 429, connection reset/refused/aborted, broken pipe, EOF and network timeouts;
+// caller cancellation and deadline errors are excluded.
 func NewRetryTransport(base http.RoundTripper, opts ...RetryOption) (*RetryTransport, error) {
 	if base == nil {
 		return nil, invalidConfig("retry: base transport is nil")

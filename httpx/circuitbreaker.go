@@ -97,8 +97,10 @@ type CircuitOption func(*CircuitTransport)
 
 // NewCircuitTransport creates a per-origin circuit breaker transport.
 // Defaults: DefaultFailureThreshold, DefaultSuccessThreshold,
-// DefaultOpenTimeout, DefaultMaxOrigins breakers; a network error or 5xx
-// response is a failure.
+// DefaultOpenTimeout, DefaultMaxOrigins breakers; any error, nil response or
+// 5xx from the wrapped transport is a failure, except caller cancellation.
+// Deadline errors count as failures. Put local admission layers outside the
+// breaker to keep their refusals out of these outcomes.
 func NewCircuitTransport(base http.RoundTripper, opts ...CircuitOption) (*CircuitTransport, error) {
 	if base == nil {
 		return nil, invalidConfig("circuit breaker: base transport is nil")

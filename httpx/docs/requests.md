@@ -105,8 +105,9 @@ Use `errors.Is(err, httpx.ErrResponseTooLarge)` and the other
 [sentinels](reference.md#errors), or `errors.As` for an underlying network
 error. Logging snapshots redact error details; the caller's original error
 chain is preserved. Use the returned error for control flow and the logging
-hook for safe operational records. A successful HTTP status can still
-contain an application-level error that your code must interpret.
+hook for records with the [documented redaction](security-observability.md#logging-and-redaction).
+A successful HTTP status can still contain an application-level error that
+your code must interpret.
 
 An error while reading, decompressing or decoding a body can occur after
 `client.Do` succeeds. Handle that error and close the body; the retry layer

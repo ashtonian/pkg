@@ -26,8 +26,9 @@
 // custom store. Stale reuse is opt-in through origin directives or options.
 //
 // Identity includes Authorization, Cookie, effective authority and configured
-// identity headers. Configure every header that changes the caller's identity;
-// use separate stores for identities hidden in a transport, such as mTLS.
+// identity headers. Configure all additional identity headers, including
+// API-key headers; use separate stores for identities hidden in a transport,
+// such as mTLS.
 // Caller-conditional, ranged, HEAD and body-bearing GET requests bypass cache.
 //
 // # Compression and retry
@@ -35,8 +36,8 @@
 // [CompressionTransport] negotiates gzip and deflate, with optional Brotli,
 // and decodes supported complete response bodies lazily. Read errors remain
 // body-read errors; partial representations keep their encoded bytes. Go's
-// default transport already handles basic gzip; this layer supplies explicit
-// encoding preferences and additional encodings as a reusable decorator.
+// default transport already handles basic gzip; this layer supplies
+// configurable accepted encodings and lazy decoding as a reusable decorator.
 //
 // [RetryTransport] defaults to three total attempts with exponential backoff,
 // jitter and Retry-After handling, subject to the request's deadline. Retry

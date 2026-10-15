@@ -37,7 +37,7 @@ cookie jar, redirect policy, timeout and custom transport.
 |---|---|---|
 | Repeated GETs with ETag or Last-Modified | `NewCacheTransport` | Revalidate stale entries; a 304 reuses the stored body with updated metadata |
 | Reads with explicit freshness | `NewCacheTransport` | Fresh hits avoid the network; choose stale permissions only when old data is acceptable |
-| Compressed responses | `NewCompressionTransport` | Add deflate, optional Brotli, encoding preferences and consistent lazy decoding; standard Go already handles basic gzip |
+| Compressed responses | `NewCompressionTransport` | Add deflate, optional Brotli, configurable accepted encodings and lazy decoding; standard Go already handles basic gzip |
 | Transient network errors, 429 or temporary gateway failures | `NewRetryTransport` | Bound attempts and backoff by the request deadline; respect `Retry-After` and replay safety |
 | Webhook, payment or resource creation | Retry transport only with a safe replay contract | POST/PATCH run once by default; an idempotency key is useful only when the server deduplicates it |
 | Persistently failing upstream | Retry plus `NewCircuitTransport` | The breaker stops repeated attempts during sustained failure |
@@ -45,7 +45,8 @@ cookie jar, redirect policy, timeout and custom transport.
 | Upstream quota | `NewRateLimitTransport` | Rate limits count attempts when inside retry/hedging; waiting consumes the deadline |
 | Memory/socket pressure | `NewLimiterTransport` plus transport pool settings | A slot lasts until body EOF/error/Close; HTTP/2 connection count differs from in-flight requests |
 | Read-heavy, latency-sensitive service | `NewHedgingTransport` with measured delay and strict budgets | Hedging adds load and accepts the first response, including an error status |
-| Tenant-specific API | `NewAuthTransport` and, if caching, `WithCacheIdentityHeaders("X-Tenant-ID")` | Auth must run before cache lookup; separate stores for identities hidden in a transport, such as mTLS |
+| Credentials for a particular API origin | `NewAuthTransport` | Bind the provider to the scheme/host/port; the application owns authorization and token refresh |
+| Cached responses that depend on an API-key or other custom header | `WithCacheIdentityHeaders("X-API-Key")` | Auth must run before cache lookup. Configure every identity header; use separate stores for identities hidden in a transport, such as mTLS |
 | SSE or long polling | Raw `client.Do`; per-request context; possibly `WithTimeout(0)` | Also tune the response-header timeout; leave cache/hedging off for streams and manage reconnection explicitly |
 | Large upload | Reader body with a deadline | A non-replayable stream is sent once unless retry records the entire first attempt within its bound |
 | Ranged download | Raw `client.Do` with `Range` | Partial encoded representations stay encoded; the caller interprets `Content-Range` and coding |
@@ -59,10 +60,11 @@ attempt is still slow. A circuit breaker declines new attempts when an
 origin has failed enough times. Combining them is useful only when the
 extra attempts fit your latency budget and the upstream's capacity.
 
-With both retry and hedging, the maximum origin attempts can reach
-`MaxHedgedRequests × MaxAttempts`. Rate and concurrency admission apply
-to each of those attempts. See [resilience](resilience.md) before changing
-the defaults.
+With retry inside hedging, their configured attempt budget can reach
+`MaxHedgedRequests × MaxAttempts` per transport call. Rate and concurrency
+admission apply to each attempt when placed inside both layers. Redirects
+and any retries performed by the base transport can add network requests.
+See [resilience](resilience.md) before changing the defaults.
 
 ## Limits of the boundary
 
