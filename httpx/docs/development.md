@@ -4,7 +4,7 @@
 
 ## Test lanes
 
-The HTTPx tests are tagged. Plain `go test ./...` does not run them. In the
+The httpx tests are tagged. Plain `go test ./...` does not run them. In the
 core module, use:
 
 ```sh
@@ -32,16 +32,16 @@ consumers resolve them through a local module proxy, outside the workspace,
 with their own module cache. The check also validates the Gin example and
 comparison benchmarks against the candidate modules.
 
-This catches private imports, missing module files, invalid parent-version
-requirements and nested-module packaging problems that a workspace build
+This catches private imports or internal planning artifacts, missing module
+files, invalid parent-version requirements and nested-module packaging problems that a workspace build
 can hide. Every published module needs its own license and its own
 path-prefixed release tag. The optional modules require a real released
 parent version and contain no local `replace` directives.
 
-The initial public module version is `v0.1.0`. Later modules can version
-independently. Release the parent first when an optional module needs a new
-parent API, then raise that module's requirement. The public repository's
-release workflow owns tags and changelogs.
+Modules version independently. Release the parent first when an optional
+module needs a new parent API, then raise that module's requirement. The
+repository's release workflow owns tags and changelogs; see
+[contributing](../../CONTRIBUTING.md#releases).
 
 ## Benchmarks
 

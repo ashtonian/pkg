@@ -2,6 +2,40 @@
 
 [Quick start](../README.md) · [Guides](README.md) · [Options and API](reference.md)
 
+## Add ETag revalidation to a standard client
+
+Wrap the client's transport and keep using `client.Do`. The cache manages
+validators and stored responses; callers do not need a cache-specific request
+or response type:
+
+```go
+cache, err := httpx.NewCacheTransport(http.DefaultTransport, nil)
+if err != nil {
+    return err
+}
+client := &http.Client{Transport: cache, Timeout: 10 * time.Second}
+defer client.CloseIdleConnections()
+defer cache.Close()
+```
+
+For a server returning `ETag: "v1"` with `Cache-Control: no-cache`:
+
+1. The first GET fetches and stores the response.
+2. The next GET sends `If-None-Match: "v1"` to the server.
+3. A `304 Not Modified` updates stored metadata and returns the original
+   successful response with its body to the caller. A new `200` replaces it.
+
+`Last-Modified` works similarly through `If-Modified-Since`. If the server
+allows freshness with `max-age`, an entry can be reused without revalidation
+until it becomes stale. `ETag` alone allows storage for validation, not a
+fresh hit. The [quick start](../examples/quickstart/main.go) combines this
+with compression and retries; its tests exercise real HTTP responses.
+
+Requests with caller-supplied conditions bypass the cache. Set
+`If-None-Match` yourself when you want to handle a raw 304; set `If-Match`
+yourself for a conditional write. The cache does not implement application
+conflict handling or generate validators for the server.
+
 ## When to enable it
 
 Caching is opt-in. Use it for repeated GETs whose origin supplies an explicit
@@ -11,7 +45,7 @@ that can tolerate old data during failure; choose stale-while-revalidate
 when low latency matters more than seeing a newly changed value immediately.
 Neither is a good default for authorization decisions or fresh account balances.
 
-`WithCache(nil)` installs a bounded memory store: at most 1024 entries,
+`NewCacheTransport(base, nil)` installs a bounded memory store: at most 1024 entries,
 64 MiB of accounted storage, 1 MiB per body, and 24-hour retention. Configure
 these independently for your payloads and traffic. Responses larger than the
 body bound pass through without being stored.
@@ -58,7 +92,8 @@ invalidation cannot publish its older representation back into the store.
 Background revalidations coalesce per key and are bounded by concurrency
 and timeout (defaults: 8, 30 seconds). `CacheTransport.Close()` cancels them
 and waits. Call it during shutdown, then close idle transport connections.
-For a client built with `WithCache`, find its cache using `TransportStack`:
+The direct constructor returns that handle. If you instead use `WithCache`
+or `WithCacheT`, find the cache using `TransportStack`:
 
 ```go
 for _, transport := range httpx.TransportStack(client) {

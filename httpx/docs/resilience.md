@@ -4,7 +4,21 @@
 
 ## Retries
 
-Start with `NewStandard` for three total attempts. The default statuses are
+Wrap your transport to add retries to an ordinary `http.Client`:
+
+```go
+transport, err := httpx.NewRetryTransport(http.DefaultTransport,
+    httpx.WithMaxAttempts(3),
+    httpx.WithBackoff(100*time.Millisecond, 2*time.Second, 2),
+)
+if err != nil {
+    return err
+}
+client := &http.Client{Transport: transport, Timeout: 10 * time.Second}
+defer client.CloseIdleConnections()
+```
+
+`NewRetryTransport` defaults to three total attempts. The default statuses are
 429, 502, 503 and 504; transient network errors can also retry. Cancellation
 and caller deadlines stop retries. `WithRetryIf` replaces the failure
 predicate, but safe replay and body availability still apply.
@@ -29,7 +43,7 @@ with the overall timeout, not independently.
 
 ## Circuit breakers
 
-Enable `WithCircuitBreaker` for a persistently failing upstream. Each
+Add `NewCircuitTransport` for a persistently failing upstream. Each
 scheme/host/port has its own breaker. Five consecutive failures open it by
 default; after 30 seconds it admits two half-open probes, and two successes
 close it. Network errors and 5xx responses are failures by default; caller
@@ -49,19 +63,20 @@ not call back into the transport from it. Thresholds must fit an unsigned
 
 | Limit | Controls | Release/refill |
 |---|---|---|
-| `WithRateLimit(rps, burst)` | Attempts per second, per origin | Tokens refill over time; default is immediate `ErrRateLimited` |
-| `WithRateLimit(..., WithWait())` | The same rate, with bounded waiting | Wait uses the request context; a wait past the deadline is rejected |
-| `WithLimiter(n)` | In-flight attempts across the client | Slot releases on response EOF, read error or Close |
+| `NewRateLimitTransport(base, rps, burst)` | Attempts per second, per origin | Tokens refill over time; default is immediate `ErrRateLimited` |
+| `NewRateLimitTransport(..., WithWait())` | The same rate, with bounded waiting | Wait uses the request context; a wait past the deadline is rejected |
+| `NewLimiterTransport(base, n)` | In-flight attempts across the transport | Slot releases on response EOF, read error or Close |
 | `WithMaxConnsPerHost(n)` | Transport connections per host | Connections may carry several HTTP/2 requests |
 
-Limits sit inside retry and hedging, so each new attempt spends a token and
-a slot. They sit outside the breaker so local refusal is not an upstream
+Put limits inside retry and hedging so each new attempt spends a token and
+a slot. Put them outside the breaker so local refusal is not an upstream
 failure. A hit in the cache spends neither; a background refresh goes
-through the same protected network path. See [composition](composition.md).
+through the same protected network path. The optional client builders use
+this order; explicit chains choose their own. See [composition](composition.md).
 
 ## Hedging
 
-Hedging can improve tail latency when reads sometimes stall while spare
+`NewHedgingTransport` can improve tail latency when reads sometimes stall while spare
 upstream capacity exists. Measure the tail before choosing a delay. It
 starts an extra request after the delay, up to two concurrent attempts by
 default. It is off by default and only GET is eligible unless you change

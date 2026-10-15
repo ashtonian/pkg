@@ -76,3 +76,51 @@ func TestArchiveRejectsMissingLicenseAndLocalReplacements(t *testing.T) {
 		t.Fatalf("local replacement: %v", err)
 	}
 }
+
+func TestArchiveRejectsInternalPlanningArtifacts(t *testing.T) {
+	for _, tc := range []struct{ name, content string }{
+		{"docs/spec/.llm/reports/review.md", "Internal review notes.\n"},
+		{".llm/review.md", "Internal review notes.\n"},
+		{"_review/probe.go", "package review\n"},
+		{"docs/plans/client.md", "Internal implementation plan.\n"},
+		{"docs/reports/readiness.md", "Internal release assessment.\n"},
+		{"docs/audits/client.md", "Internal audit findings.\n"},
+		{"docs/promotion/checklist.md", "Internal promotion checklist.\n"},
+		{"AUDIT.md", "Internal audit findings.\n"},
+		{"docs/rfcs/rfc-0001-client.md", "Internal design decision.\n"},
+		{"client.go", "package httpx\n// Follows RFC-0001.\n"},
+		{"README.md", "See internal RFC-0002.\n"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			root := t.TempDir()
+			writeFixture(t, root, "go.mod", "module example.com/pkg/httpx\n\ngo 1.26.0\n")
+			writeFixture(t, root, "LICENSE", "license\n")
+			writeFixture(t, root, tc.name, tc.content)
+			out := t.TempDir()
+			if _, err := archive(out, "v0.1.0", root); err == nil || !strings.Contains(err.Error(), "internal") {
+				t.Fatalf("internal artifact was not rejected: %v", err)
+			}
+			if _, err := os.Stat(filepath.Join(out, "example.com/pkg/httpx/@v/v0.1.0.zip")); !os.IsNotExist(err) {
+				t.Fatalf("rejected archive remains publishable: %v", err)
+			}
+		})
+	}
+}
+
+func TestArchiveAllowsHTTPStandardsAndRespectsNestedModules(t *testing.T) {
+	root := t.TempDir()
+	writeFixture(t, root, "go.mod", "module example.com/pkg/httpx\n\ngo 1.26.0\n")
+	writeFixture(t, root, "LICENSE", "license\n")
+	writeFixture(t, root, "client.go", "package httpx\n// Implements HTTP semantics from RFC 9110 and RFC 9111.\n")
+	writeFixture(t, root, "docs/rfcs/rfc-9110.md", "HTTP Semantics: RFC-9110; HTTP Caching: RFC 9111.\n")
+	writeFixture(t, root, "docs/status-reports.md", "Report HTTP response status and duration.\n")
+	writeFixture(t, root, "nested/go.mod", "module example.com/pkg/httpx/nested\n\ngo 1.26.0\n")
+	writeFixture(t, root, "nested/LICENSE", "license\n")
+	writeFixture(t, root, "nested/docs/reports/review.md", "Internal review.\n")
+	if _, err := archive(t.TempDir(), "v0.1.0", root); err != nil {
+		t.Fatalf("public standards or an excluded nested module blocked the parent archive: %v", err)
+	}
+	if _, err := archive(t.TempDir(), "v0.1.0", filepath.Join(root, "nested")); err == nil || !strings.Contains(err.Error(), "internal") {
+		t.Fatalf("nested module's own archive did not reject its internal report: %v", err)
+	}
+}

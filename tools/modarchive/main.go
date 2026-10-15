@@ -124,7 +124,8 @@ func archive(out, version, dir string) (string, error) {
 	if err := os.MkdirAll(vdir, 0o755); err != nil {
 		return "", err
 	}
-	zf, err := os.Create(filepath.Join(vdir, version+".zip"))
+	zipPath := filepath.Join(vdir, version+".zip")
+	zf, err := os.Create(zipPath)
 	if err != nil {
 		return "", err
 	}
@@ -133,6 +134,9 @@ func archive(out, version, dir string) (string, error) {
 	}
 	if err := zf.Close(); err != nil {
 		return "", err
+	}
+	if err := checkPublicArchive(zipPath, path+"@"+version+"/"); err != nil {
+		return "", errors.Join(err, os.Remove(zipPath))
 	}
 	if err := os.WriteFile(filepath.Join(vdir, version+".mod"), gomod, 0o644); err != nil {
 		return "", err

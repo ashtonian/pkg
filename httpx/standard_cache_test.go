@@ -13,10 +13,8 @@ import (
 	"github.com/ashtonian/pkg/httpx"
 )
 
-// TestNewStandard_NoDefaultResponseCache guards RFC-0502 A1: NewStandard
-// must NOT wire a response-body cache by default. The prior default keyed
-// on method+URL only and was shared across 33 authenticated/multi-tenant
-// call sites, so a cacheable upstream body could bleed between tenants.
+// NewStandard leaves response caching opt-in so callers choose the cache's
+// identity partitioning, storage limits, and lifecycle explicitly.
 // Two GETs to the same cacheable URL must both reach the server.
 func TestNewStandard_NoDefaultResponseCache(t *testing.T) {
 	var hits atomic.Int32
@@ -44,7 +42,7 @@ func TestNewStandard_NoDefaultResponseCache(t *testing.T) {
 
 	b1, b2 := get(), get()
 	if b1 == b2 {
-		t.Fatalf("NewStandard served a cached body by default (both %q) — A1 default response cache must be removed", b1)
+		t.Fatalf("NewStandard served a cached body without opting into caching (both %q)", b1)
 	}
 	if got := hits.Load(); got != 2 {
 		t.Fatalf("expected 2 server hits (no default caching), got %d", got)

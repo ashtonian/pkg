@@ -4,14 +4,14 @@
 
 | Guide | Covers |
 |---|---|
-| [Use cases](use-cases.md) | Which constructor and features fit each workload |
-| [Requests and responses](requests.md) | Typed helpers, status handling, bodies, cancellation and streaming |
-| [Resilience](resilience.md) | Retry, breaker, rate limit, concurrency and hedging tradeoffs |
-| [Caching](caching.md) | Identity, HTTP policy, revalidation, invalidation and store lifetime |
-| [Composition](composition.md) | Fixed stack, explicit chains and custom transports |
+| [Use cases](use-cases.md) | Which HTTP behaviors to add and when standard Go is sufficient |
+| [Composition](composition.md) | Wrap an existing client, combine transports, choose order and manage lifetime |
+| [Caching](caching.md) | ETags, Last-Modified, freshness, identity, invalidation and stores |
+| [Compression and codecs](codecs-compression.md) | Wire encoding, range semantics and optional representation codecs |
+| [Resilience](resilience.md) | Safe retry/backoff, Retry-After, breakers, request budgets and hedging |
+| [Requests and responses](requests.md) | Standard requests, statuses, streaming, cancellation and optional typed helpers |
 | [Security and observability](security-observability.md) | Origin binding, redaction boundaries, metrics and troubleshooting |
-| [Codecs and compression](codecs-compression.md) | Negotiation, optional modules, body size and range semantics |
-| [Reference](reference.md) | Complete option/default tables, API and sentinel errors |
+| [Reference](reference.md) | Transport constructors, complete option/default tables and sentinel errors |
 | [Development](development.md) | Test lanes, executable examples, benchmarks and releases |
 
 Executable examples: [quick start](../examples/quickstart/main.go),

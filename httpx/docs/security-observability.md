@@ -4,8 +4,10 @@
 
 ## Origin-bound credentials
 
-`WithAuth(originURL, provider)` binds a provider to scheme, host and port;
-the path is ignored. Repeat it to bind more origins. Redirects to another
+`NewAuthTransport(base, httpx.AuthBinding{URL: originURL, Provider: provider})`
+binds a provider to scheme, host and port; the path is ignored. Pass more
+bindings for additional origins. The client-builder equivalent is
+`WithAuth(originURL, provider)`. Redirects to another
 origin or from HTTPS to HTTP do not receive that provider's credentials.
 An overridden HTTP `Host` must also match the binding; a gateway socket URL
 does not authorize credentials for every virtual host it can route to.
@@ -24,7 +26,8 @@ control redirects; httpx does not provide a destination allowlist.
 
 ## Safe operational logging
 
-`WithLogging` hands a `LoggingHook` detached, bodiless snapshots. Default
+`NewLoggingTransport` hands a `LoggingHook` detached, bodiless snapshots.
+The client-builder equivalent is `WithLogging`. Default
 redaction covers authorization, cookies, common API-key/token headers,
 credential query parameters, URL userinfo and fragments. URL-valued headers
 and URLs embedded in error text are sanitized too. Request redirect objects,
@@ -45,8 +48,10 @@ the dedicated logging hook for redacted request/response records.
 
 ## Metrics
 
-`WithMetrics` forwards request/response events plus retries and cache
-hits/misses. `CountingHook` tracks counts atomically; `LatencyHook` keeps
+`NewMetricsTransport` reports round-trip events. In an explicit chain, pass
+the hook to `WithRetryHook` and `WithCacheHook` to receive those layers'
+events too. The client builder's `WithMetrics` wires all three automatically.
+`CountingHook` tracks counts atomically; `LatencyHook` keeps
 running aggregates and a bounded recent-sample window; `MultiHook` fans out.
 Implement `RetryCauseHook` for `status`, `network`, `timeout` and `unknown`
 retry categories. Export these to your preferred metrics system.

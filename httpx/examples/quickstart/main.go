@@ -8,52 +8,58 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
-	"strings"
 	"time"
 
 	"github.com/ashtonian/pkg/httpx"
 )
 
-type User struct {
-	ID   int    `json:"id"`
-	Name string `json:"name"`
-}
-
 func main() {
-	if err := run(context.Background(), os.Getenv("API_URL"), os.Getenv("API_TOKEN"), os.Stdout); err != nil {
-		slog.Error("fetch user", "error", err)
+	if err := run(context.Background(), os.Getenv("API_URL"), os.Stdout); err != nil {
+		slog.Error("request", "error", err)
 		os.Exit(1)
 	}
 }
 
-func run(ctx context.Context, baseURL, token string, out io.Writer) (err error) {
-	if baseURL == "" {
-		baseURL = "https://api.example.com"
+func run(ctx context.Context, url string, out io.Writer) (err error) {
+	if url == "" {
+		url = "https://httpbin.org/etag/httpx-demo"
 	}
-	client, err := httpx.NewStandard(
-		httpx.WithAuth(baseURL, httpx.NewBearerTokenProvider(token)),
-		httpx.WithCircuitBreaker(),
-		httpx.WithLimiter(16),
-		httpx.WithTimeout(10*time.Second),
-	)
+	// Layers are listed from innermost to outermost.
+	transport, err := httpx.NewChain(
+		httpx.WithCompressionT(),
+		httpx.WithRetryT(httpx.WithMaxAttempts(3),
+			httpx.WithBackoff(100*time.Millisecond, time.Second, 2)),
+	).Build(http.DefaultTransport.(*http.Transport).Clone())
 	if err != nil {
 		return err
 	}
-	defer client.CloseIdleConnections()
-
-	user, resp, err := httpx.Get[User](ctx, client,
-		strings.TrimRight(baseURL, "/")+"/users/1",
-		httpx.WithMaxResponseBytes(1<<20),
-	)
-	if resp != nil {
-		defer func() { err = errors.Join(err, resp.Body.Close()) }()
-	}
+	cache, err := httpx.NewCacheTransport(transport, nil) // Bounded private cache.
 	if err != nil {
-		return fmt.Errorf("get user: %w", err)
+		return err
 	}
-	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("get user: HTTP %d", resp.StatusCode)
+	client := &http.Client{Transport: cache, Timeout: 10 * time.Second}
+	defer client.CloseIdleConnections()
+	defer func() { err = errors.Join(err, cache.Close()) }()
+
+	for range 2 { // The server's cache headers decide: fresh hit or revalidation.
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+		if err != nil {
+			return err
+		}
+		resp, err := client.Do(req)
+		if err != nil {
+			return err
+		}
+		body, readErr := httpx.ReadAtMost(resp.Body, 1<<20)
+		if err := errors.Join(readErr, resp.Body.Close()); err != nil {
+			return err
+		}
+		if resp.StatusCode != http.StatusOK {
+			return fmt.Errorf("HTTP %d", resp.StatusCode)
+		}
+		if _, err := fmt.Fprintf(out, "HTTP %d; %s\n%s\n", resp.StatusCode, resp.Header.Get("Cache-Status"), body); err != nil {
+			return err
+		}
 	}
-	_, err = fmt.Fprintf(out, "%s (HTTP %d)\n", user.Name, resp.StatusCode)
-	return err
+	return nil
 }
