@@ -2,6 +2,33 @@
 
 [Quick start](../README.md) · [Guides](README.md) · [Options and API](reference.md)
 
+## Transport constructors
+
+All decorators accept a base `http.RoundTripper`, return a transport plus an
+error, and work as `http.Client.Transport`. They do not require a new request
+or response type. Use them individually or combine their `With*T`
+functions (or a custom `TransportFunc`) with `NewChain(...).Build(base)`; the first layer is innermost.
+
+| Constructor | Behavior | Options |
+|---|---|---|
+| `NewCacheTransport(base, store, opts...)` | HTTP freshness and conditional revalidation; nil store uses bounded memory | `CacheOption` |
+| `NewCompressionTransport(base, opts...)` | Content-encoding negotiation and lazy decoding | `CompressionOption` |
+| `NewRetryTransport(base, opts...)` | Safe replay with backoff and `Retry-After` | `RetryOption` |
+| `NewCircuitTransport(base, opts...)` | Per-origin circuit breaker | `CircuitOption` |
+| `NewRateLimitTransport(base, rps, burst, opts...)` | Per-origin attempt rate | `RateLimitOption` |
+| `NewLimiterTransport(base, n, opts...)` | In-flight requests through response-body lifetime | `LimiterOption` |
+| `NewHedgingTransport(base, delay, opts...)` | Overlapping attempts for slow requests | `HedgingOption` |
+| `NewAdaptiveHedgingTransport(base, percentile, opts...)` | Hedge delay from observed latency | `HedgingOption` |
+| `NewAuthTransport(base, bindings...)` | Origin-bound credentials | `AuthBinding` values |
+| `NewLoggingTransport(base, hook, opts...)` | Redacted request/response snapshots | `LoggingOption` |
+| `NewMetricsTransport(base, hook)` | Round-trip metrics | `MetricsHook` |
+
+`NewBaseTransport(opts...)` creates a tuned `*http.Transport`; pass your own
+base to retain its connection settings. `NewClient(opts...)` and
+`NewStandard(opts...)` optionally build a new `*http.Client` with fixed layer
+order. Their `WithCache`, `WithRetry` and other options delegate to the same
+transports. See [composition](composition.md) for ordering and shutdown.
+
 ## Configuration
 
 Constructors validate durations, counts, levels, thresholds and required providers, returning errors that wrap `ErrInvalidConfig`. Individual transport constructors reject nil bases. `Chain.Build(nil)` and `Chain.Client(nil, timeout)` instead construct the default base transport. Logging and metrics hooks may be nil to disable their output. `MustNewStandard` panics instead and is meant only for literal options.

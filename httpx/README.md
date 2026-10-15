@@ -1,23 +1,18 @@
 # httpx
 
-Composable outbound HTTP for Go, with typed responses and ordinary
-`*http.Client` / `http.RoundTripper` interfaces.
+HTTP caching, compression and retry/backoff as composable `http.RoundTripper`
+layers for Go's standard `http.Client`.
 
-- Retry safe requests with bounded backoff and `Retry-After` handling.
-- Protect upstreams with per-origin circuit breakers, rate limits and an in-flight limit.
-- Opt into an identity-partitioned HTTP cache or hedging for slow reads.
-- Bind credentials to an origin; inspect requests through redacted logging hooks.
-- Decode bounded JSON/XML responses; add MessagePack, protobuf or Brotli separately.
+Keep your client, requests and responses. Wrap its transport to add ETag /
+Last-Modified revalidation, cache freshness, compression negotiation or safe
+retries with `Retry-After`. Use each layer independently or combine them;
+your base transport keeps control of connections, proxies and TLS.
 
 Requires **Go 1.26 or later**. APIs may change between minor releases while at `v0`.
 
 ```sh
 go get github.com/ashtonian/pkg/httpx
 ```
-
-Start with `NewStandard`: compression, safe retries and a 30-second timeout.
-Use `NewClient` to choose each layer or `NewChain` to control their order.
-See [when to use each feature](docs/use-cases.md).
 
 ## Quick Start
 
@@ -32,82 +27,92 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
-	"strings"
 	"time"
 
 	"github.com/ashtonian/pkg/httpx"
 )
 
-type User struct {
-	ID   int    `json:"id"`
-	Name string `json:"name"`
-}
-
 func main() {
-	if err := run(context.Background(), os.Getenv("API_URL"), os.Getenv("API_TOKEN"), os.Stdout); err != nil {
-		slog.Error("fetch user", "error", err)
+	if err := run(context.Background(), os.Getenv("API_URL"), os.Stdout); err != nil {
+		slog.Error("request", "error", err)
 		os.Exit(1)
 	}
 }
 
-func run(ctx context.Context, baseURL, token string, out io.Writer) (err error) {
-	if baseURL == "" {
-		baseURL = "https://api.example.com"
+func run(ctx context.Context, url string, out io.Writer) (err error) {
+	if url == "" {
+		url = "https://httpbin.org/etag/httpx-demo"
 	}
-	client, err := httpx.NewStandard(
-		httpx.WithAuth(baseURL, httpx.NewBearerTokenProvider(token)),
-		httpx.WithCircuitBreaker(),
-		httpx.WithLimiter(16),
-		httpx.WithTimeout(10*time.Second),
-	)
+	// Layers are listed from innermost to outermost.
+	transport, err := httpx.NewChain(
+		httpx.WithCompressionT(),
+		httpx.WithRetryT(httpx.WithMaxAttempts(3),
+			httpx.WithBackoff(100*time.Millisecond, time.Second, 2)),
+	).Build(http.DefaultTransport.(*http.Transport).Clone())
 	if err != nil {
 		return err
 	}
-	defer client.CloseIdleConnections()
-
-	user, resp, err := httpx.Get[User](ctx, client,
-		strings.TrimRight(baseURL, "/")+"/users/1",
-		httpx.WithMaxResponseBytes(1<<20),
-	)
-	if resp != nil {
-		defer func() { err = errors.Join(err, resp.Body.Close()) }()
-	}
+	cache, err := httpx.NewCacheTransport(transport, nil) // Bounded private cache.
 	if err != nil {
-		return fmt.Errorf("get user: %w", err)
+		return err
 	}
-	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("get user: HTTP %d", resp.StatusCode)
+	client := &http.Client{Transport: cache, Timeout: 10 * time.Second}
+	defer client.CloseIdleConnections()
+	defer func() { err = errors.Join(err, cache.Close()) }()
+
+	for range 2 { // The server's cache headers decide: fresh hit or revalidation.
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+		if err != nil {
+			return err
+		}
+		resp, err := client.Do(req)
+		if err != nil {
+			return err
+		}
+		body, readErr := httpx.ReadAtMost(resp.Body, 1<<20)
+		if err := errors.Join(readErr, resp.Body.Close()); err != nil {
+			return err
+		}
+		if resp.StatusCode != http.StatusOK {
+			return fmt.Errorf("HTTP %d", resp.StatusCode)
+		}
+		if _, err := fmt.Fprintf(out, "HTTP %d; %s\n%s\n", resp.StatusCode, resp.Header.Get("Cache-Status"), body); err != nil {
+			return err
+		}
 	}
-	_, err = fmt.Fprintf(out, "%s (HTTP %d)\n", user.Name, resp.StatusCode)
-	return err
+	return nil
 }
 ```
 
-Set `API_URL` to an API serving `GET /users/1` as JSON and `API_TOKEN` to its
-bearer token, then run `go run ./examples/quickstart` from this module.
-The [program](examples/quickstart/main.go) is compiled verbatim, with
-[integration tests](examples/quickstart/main_integration_test.go) for retries,
-HTTP failures, invalid JSON, size limits and cancellation.
+Run `go run ./examples/quickstart` from this module. It fetches httpbin's ETag
+endpoint twice; set `API_URL` to use another complete URL. Cache headers decide
+whether the second GET is a fresh hit, a conditional revalidation or a new
+fetch. The [integration tests](examples/quickstart/main_integration_test.go)
+exercise retries, gzip, ETags and 304 reuse against a local HTTP server.
 
-A nil error does **not** mean HTTP success: check the status. Close every
-non-nil response body, including one returned with a decoding error.
+Already have a client? [Wrap its transport](docs/composition.md) while keeping
+its cookie jar, redirect policy and timeout. Each layer also has a direct
+constructor, such as `NewRetryTransport` or `NewCacheTransport`. Go's default
+transport already handles basic gzip; httpx adds explicit compression policy,
+deflate and optional Brotli.
 
 ## Documentation
 
 | Need | Read |
 |---|---|
-| Choose a client, retry, cache, hedge or limit | [Use cases](docs/use-cases.md) |
-| Make typed calls, stream a body, or handle errors | [Requests and responses](docs/requests.md) |
-| Tune retries, breakers, concurrency and rate budgets | [Resilience](docs/resilience.md) |
-| Cache safely across credentials and tenants | [Caching](docs/caching.md) |
-| Understand layer ordering and custom transports | [Composition](docs/composition.md) |
+| Choose which behaviors to add and when | [Use cases](docs/use-cases.md) |
+| Wrap an existing client, order layers, or use a custom transport | [Composition](docs/composition.md) |
+| Use ETags, freshness, stale responses and identity-safe caching | [Caching](docs/caching.md) |
+| Negotiate compression, preserve ranges, or add a codec | [Compression and codecs](docs/codecs-compression.md) |
+| Tune retry/backoff, circuit breakers and request budgets | [Resilience](docs/resilience.md) |
+| Handle statuses, stream bodies, or use optional typed helpers | [Requests and responses](docs/requests.md) |
 | Bind credentials, redact logs and export metrics | [Security and observability](docs/security-observability.md) |
-| Use codecs, compression or ranged downloads | [Codecs and compression](docs/codecs-compression.md) |
-| Look up every option, default, interface and error | [Reference](docs/reference.md) |
+| Look up every constructor, option, default and error | [Reference](docs/reference.md) |
 | Run tests, benchmarks or release checks | [Development](docs/development.md) |
 
-Optional modules: [MessagePack](codec/msgpack/README.md),
-[protobuf](codec/proto/README.md), [Brotli](compress/brotli/README.md).
+`NewClient` / `NewStandard` and typed `Get[T]` / `Do[T]` helpers are optional.
+Optional modules: [Brotli](compress/brotli/README.md),
+[MessagePack](codec/msgpack/README.md), [protobuf](codec/proto/README.md).
 The [Gin example](examples/gin/README.md) demonstrates a complete API and client.
 
 ## License

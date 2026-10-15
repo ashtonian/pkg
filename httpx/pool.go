@@ -62,7 +62,7 @@ func (p *BufferPool) Size() int {
 // transports when none is configured. 32KB buffers — a sensible default
 // for HTTP response bodies.
 //
-// Unexported per RFC-0145 — consumers either configure their own pool or
+// Consumers either configure their own pool or
 // call DefaultBufferPool() to get the package singleton.
 var defaultPool = newBufferPool(32 * 1024)
 

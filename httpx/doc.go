@@ -1,77 +1,79 @@
-// Package httpx composes outbound HTTP policies around [http.RoundTripper]
-// and supplies typed request/response helpers that work with ordinary
-// [http.Client] values.
+// Package httpx implements composable HTTP behavior as [http.RoundTripper]
+// decorators: conditional caching, compression negotiation, and safe retry
+// with backoff. Use them with an ordinary [http.Client], standard requests
+// and responses, and an existing transport's TLS, proxy and pool settings.
 //
-// # Choosing a client
+// # Transports first
 //
-// [NewStandard] starts with a tuned HTTP/2-capable transport, gzip/deflate
-// decoding, three safe retry attempts and a 30-second overall timeout.
-// [NewClient] starts with the transport and timeout; every policy is opt-in.
-// Neither constructor enables caching, credentials, hedging, circuit breaking,
-// rate limiting or concurrency limiting unless requested.
+// [NewRetryTransport], [NewCompressionTransport] and [NewCacheTransport]
+// each wrap one http.RoundTripper. [NewChain] combines layers into another
+// RoundTripper; the first layer listed is innermost. Assign the result to
+// http.Client.Transport and use http.NewRequestWithContext and client.Do.
+// Request contexts, cookies, redirects, status codes and streaming bodies
+// keep their standard net/http interfaces. Reuse clients and transports.
 //
-// Reuse a client to retain its pools and per-origin state. Use [NewChain] or
-// the individual transport constructors when an explicit layer order is
-// necessary. The first Chain layer is the innermost.
+// Put compression inside retry and cache outside retry. This lets fresh
+// cache hits skip the network, while revalidation uses the retry policy and
+// the cache stores decoded responses. If used, auth runs before cache lookup;
+// rate limits, concurrency limits and breakers normally run per attempt.
 //
-// # Requests and responses
+// # HTTP caching
 //
-// [Get], [Post], [Put], [Patch] and [Do] decode bounded 2xx representations
-// according to Content-Type. JSON and XML are built in; optional modules add
-// MessagePack and protobuf. Non-2xx, HEAD, 204 and 205 return zero T with a
-// response and nil error. Always check the HTTP status and close every non-nil
-// response body, including one returned with a decode error.
+// [CacheTransport] is an opt-in private HTTP cache. It follows freshness,
+// Cache-Control, Vary and identity boundaries, revalidates with ETag or
+// Last-Modified, and merges a 304 response with the stored representation.
+// [MemoryCache] bounds retained entries and bytes; [CacheStore] permits a
+// custom store. Stale reuse is opt-in through origin directives or options.
 //
-// [WithMaxResponseBytes] defaults to 10 MiB after decompression. Larger bodies
-// return [ErrResponseTooLarge], leaving the full response body available.
-// [ReadAtMost] applies the same whole-value-or-error rule to an io.Reader.
-// Use the client's Do method for streaming instead of a typed helper.
+// Identity includes Authorization, Cookie, effective authority and configured
+// identity headers. Configure every header that changes the caller's identity;
+// use separate stores for identities hidden in a transport, such as mTLS.
+// Caller-conditional, ranged, HEAD and body-bearing GET requests bypass cache.
 //
-// [EncodeRequest] sets Body, GetBody and ContentLength from the same encoded
-// bytes so retries and redirects replay the current payload.
+// # Compression and retry
 //
-// # Retry and admission
+// [CompressionTransport] negotiates gzip and deflate, with optional Brotli,
+// and decodes supported complete response bodies lazily. Read errors remain
+// body-read errors; partial representations keep their encoded bytes. Go's
+// default transport already handles basic gzip; this layer supplies explicit
+// encoding preferences and additional encodings as a reusable decorator.
 //
-// Retry requires an idempotent method, an Idempotency-Key, or explicit
-// [WithRetryNonIdempotent] permission, plus a replayable body. The application
-// owns server-side idempotency. Unknown streams are recorded as sent, within
-// a bound, rather than buffered before the transport can honor cancellation.
-// Hedging is opt-in, defaults to GET, and requires GetBody for a non-empty body.
+// [RetryTransport] defaults to three total attempts with exponential backoff,
+// jitter and Retry-After handling, subject to the request's deadline. Retry
+// requires an idempotent method, an Idempotency-Key, or explicit
+// [WithRetryNonIdempotent] permission, plus a replayable body. The server must
+// implement deduplication for an idempotency key to make writes safe.
+// Unknown streams are recorded as sent, within a bound, rather than buffered
+// before the transport can honor cancellation.
 //
-// NewClient request order, outermost to innermost, is logging, metrics, auth,
-// cache, hedging, retry, rate limit, concurrency limiter, circuit breaker,
-// compression, base transport. Each retry or hedge spends its own admission
-// budget. Cache hits bypass origin admission; refreshes use the protected
-// path. Auth runs before the cache captures identity. Local admission errors
-// do not count as upstream circuit failures.
+// # Optional policies and helpers
 //
-// # Caching and credentials
+// Circuit breakers, rate and concurrency limits, hedging, origin-bound auth,
+// redacted logging and metrics are independent transports too. Their order
+// determines whether they observe logical calls or individual attempts.
+// [TransportStack] inspects layers; built-in layers expose Unwrap.
 //
-// [CacheTransport] is an opt-in private HTTP cache over a [CacheStore].
-// [MemoryCache] bounds retained entries and bytes. Identity includes
-// Authorization, Cookie, effective authority and configured identity headers.
-// Configure every header that changes the caller's identity; separate stores
-// for identity hidden in a transport, such as mTLS certificates.
+// [NewClient] and [NewStandard] are optional builders returning *http.Client.
+// Both default to a tuned base transport and 30-second timeout; NewStandard
+// also enables compression and retry. Other policies must be enabled.
+// [Get], [Post], [Put], [Patch] and [Do] optionally decode bounded 2xx values
+// by Content-Type. JSON and XML are built in; MessagePack and protobuf use
+// separate modules. [WithMaxResponseBytes] defaults to 10 MiB after
+// decompression. [ReadAtMost] bounds complete reads without typed decoding.
 //
-// [WithAuth] binds a provider to a scheme, host and port. Providers do not
-// add credentials on cross-origin redirects or to an unbound Host override.
-// Destination allowlists and SSRF protection remain application policy.
+// # Status, bodies and shutdown
 //
-// # Observability and lifetime
-//
-// [LoggingHook] receives detached, redacted snapshots; metrics/retry/cache
-// hooks receive live objects and must not dump secrets. [CountingHook],
-// [LatencyHook] and [MultiHook] provide bounded, concurrency-safe helpers.
-// Round-trip metrics measure through response headers, not body consumption.
-//
-// Response-body EOF, read error or Close releases limiter slots and hedge
-// winner contexts. Call [CacheTransport.Close] to stop background refreshes,
-// then http.Client.CloseIdleConnections for pooled connections.
+// A nil error is not an HTTP success check. Inspect the response status and
+// close each response body, including one returned with a typed decode error.
+// Raw client.Do bodies remain streaming and need application-owned bounds.
+// EOF, read error or Close releases limiter slots and hedge winner contexts.
+// Call [CacheTransport.Close] to stop background refreshes before closing
+// idle transport connections with http.Client.CloseIdleConnections.
 //
 // # Optional modules
 //
 // Blank-import codec/msgpack, codec/proto or compress/brotli to register
-// MessagePack, protobuf or Brotli. Named imports expose their codec/compressor
-// implementations. Each optional dependency is a separate Go module; the
-// core depends only on golang.org/x/time and github.com/sony/gobreaker/v2.
+// MessagePack, protobuf or Brotli. Named imports expose implementations.
+// Each optional dependency is a separate Go module; the core depends only on
+// golang.org/x/time and github.com/sony/gobreaker/v2.
 package httpx

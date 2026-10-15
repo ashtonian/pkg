@@ -10,16 +10,15 @@ import (
 // is invalid. This is the building block for the Chain API.
 type TransportFunc func(http.RoundTripper) (http.RoundTripper, error)
 
-// Chain provides a fluent API for composing transports.
-// It's an alternative to the decorator pattern that makes
-// the transport stack more explicit and readable.
+// Chain composes RoundTripper decorators around a base transport.
+// Build returns an http.RoundTripper for use with an ordinary http.Client.
 //
 // Example:
 //
 //	transport, err := httpx.NewChain(
 //	    httpx.WithCompressionT(),
-//	    httpx.WithRetryT(httpx.WithMaxAttempts(3)),
 //	    httpx.WithCircuitBreakerT(),
+//	    httpx.WithRetryT(httpx.WithMaxAttempts(3)),
 //	).Build(nil)
 type Chain []TransportFunc
 
