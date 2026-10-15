@@ -41,6 +41,7 @@ cookie jar, redirect policy, timeout and custom transport.
 | Transient network errors, 429 or temporary gateway failures | `NewRetryTransport` | Bound attempts and backoff by the request deadline; respect `Retry-After` and replay safety |
 | Webhook, payment or resource creation | Retry transport only with a safe replay contract | POST/PATCH run once by default; an idempotency key is useful only when the server deduplicates it |
 | Persistently failing upstream | Retry plus `NewCircuitTransport` | The breaker stops repeated attempts during sustained failure |
+| Fail over to a backup host or region | Application routing or a load balancer, composed with httpx | httpx retries the same target; it does not select a backup endpoint. See [failure handling](resilience.md#failure-handling-and-failover) |
 | Upstream quota | `NewRateLimitTransport` | Rate limits count attempts when inside retry/hedging; waiting consumes the deadline |
 | Memory/socket pressure | `NewLimiterTransport` plus transport pool settings | A slot lasts until body EOF/error/Close; HTTP/2 connection count differs from in-flight requests |
 | Read-heavy, latency-sensitive service | `NewHedgingTransport` with measured delay and strict budgets | Hedging adds load and accepts the first response, including an error status |

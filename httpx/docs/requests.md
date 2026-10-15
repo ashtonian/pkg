@@ -63,7 +63,7 @@ base transport, its connection settings remain in effect.
 
 ## Optional typed calls
 
-`Get[T]`, `Post[T]`, `Put[T]` and `Patch[T] create requests with your context.
+`Get[T]`, `Post[T]`, `Put[T]` and `Patch[T]` create requests with your context.
 `Do[T](client, req)` accepts a request you constructed when you need custom
 headers, a method, an idempotency key or a different request codec.
 `Delete` returns an undecoded `*http.Response`. These helpers accept an
@@ -107,3 +107,9 @@ error. Logging snapshots redact error details; the caller's original error
 chain is preserved. Use the returned error for control flow and the logging
 hook for safe operational records. A successful HTTP status can still
 contain an application-level error that your code must interpret.
+
+An error while reading, decompressing or decoding a body can occur after
+`client.Do` succeeds. Handle that error and close the body; the retry layer
+does not restart a response once body consumption has begun. See
+[failure handling and failover](resilience.md#failure-handling-and-failover)
+for retry exhaustion, local admission errors and fallback behavior.

@@ -6,7 +6,7 @@ its own dependencies, version, changelog and releases.
 | Module | Import path | Purpose |
 |---|---|---|
 | [config](config/README.md) | `github.com/ashtonian/pkg/config` | Typed, layered configuration with validation, hot reload and redaction. |
-| [httpx](httpx/README.md) | `github.com/ashtonian/pkg/httpx` | HTTP caching, compression and retry/backoff as composable `http.RoundTripper` layers. |
+| [httpx](httpx/README.md) | `github.com/ashtonian/pkg/httpx` | HTTP standards and resilience: retries, circuit breaking, caching, compression and request budgets for `net/http`. |
 | [Kong provider](config/kongprovider/README.md) | `github.com/ashtonian/pkg/config/kongprovider` | CLI flags as config overrides, with help derived from the config struct. |
 
 ## Install
@@ -18,6 +18,22 @@ go get github.com/ashtonian/pkg/httpx@latest
 
 Requires **Go 1.26 or later**. Install only the modules you need. Add the Kong provider for Kong CLI integration;
 add httpx's MessagePack, protobuf or Brotli module only for that wire format.
+
+## httpx
+
+Compose `http.RoundTripper` layers and keep using an ordinary `http.Client`:
+
+- **Recover from failures:** safe retries, exponential backoff/jitter, `Retry-After`, per-origin circuit breakers and slow-request hedging.
+- **Control request budgets:** per-origin rate/burst limits, in-flight concurrency limits, timeouts and cancellation.
+- **Reuse responses:** ETag / Last-Modified revalidation, cache freshness and `Vary`, identity partitions, stale-if-error fallback and background refresh.
+- **Handle representations:** gzip/deflate and optional Brotli, streaming/ranged responses, bounded reads and optional typed decoding.
+- **Operate clients:** origin-bound credentials, redacted logging and retry/cache/latency metrics hooks.
+
+HTTP error statuses remain responses; transport and admission failures remain
+Go errors. **Selecting a backup host/region is application-owned**—httpx
+retries the current target and can serve permitted stale cached responses.
+See the [supported patterns and failure behavior](httpx/README.md#common-http-patterns)
+or the [standard-client example](httpx/README.md#quick-start).
 
 ## Documentation
 

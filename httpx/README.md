@@ -1,18 +1,50 @@
 # httpx
 
-HTTP caching, compression and retry/backoff as composable `http.RoundTripper`
+HTTP standards and resilience patterns as composable `http.RoundTripper`
 layers for Go's standard `http.Client`.
 
-Keep your client, requests and responses. Wrap its transport to add ETag /
-Last-Modified revalidation, cache freshness, compression negotiation or safe
-retries with `Retry-After`. Use each layer independently or combine them;
-your base transport keeps control of connections, proxies and TLS.
+Keep your client, requests and responses. Add one transport or combine layers
+around your existing transport; it keeps control of connections, proxies and
+TLS. [Wrapping an existing client](docs/composition.md) also preserves its
+cookie jar, redirect policy and timeout.
 
 Requires **Go 1.26 or later**. APIs may change between minor releases while at `v0`.
 
 ```sh
 go get github.com/ashtonian/pkg/httpx
 ```
+
+## Common HTTP patterns
+
+Choose the behaviors your client needs and enable their layers individually.
+
+| Pattern | What httpx handles |
+|---|---|
+| [Retries and backoff](docs/resilience.md#retries) | Transient transport errors and HTTP 429/502/503/504; bounded exponential backoff, jitter and `Retry-After`. |
+| [Safe request replay](docs/resilience.md#retries) | Idempotent methods or an idempotency key, plus replayable/bounded bodies. POST/PATCH need a server-supported replay contract or explicit opt-in. |
+| [Circuit breaking](docs/resilience.md#circuit-breakers) | Fail fast for a repeatedly failing origin, then probe for recovery; independent state per scheme/host/port. |
+| [Slow-request hedging](docs/resilience.md#hedging) | Start an overlapping attempt after a delay and cancel losers. GET by default; the first HTTP response wins, including an error status. |
+| [Rate and concurrency limits](docs/resilience.md#rate-versus-concurrency) | Per-origin rate/burst budgets and optional waiting; cap in-flight requests through the response body's lifetime. |
+| [Timeouts and cancellation](docs/requests.md#timeouts-and-cancellation) | Preserve client/context deadlines through retry and admission waits; optional base transport with dial/TLS/header timeouts. |
+| [Conditional and fresh reads](docs/caching.md) | ETag / Last-Modified revalidation, 304 reuse, `Cache-Control`, `Vary`, corrected age and bounded, identity-partitioned storage. |
+| [Stale fallback and background refresh](docs/caching.md#when-to-enable-it) | `stale-if-error` and `stale-while-revalidate` when permitted; keep useful cached reads available during upstream failures or refreshes. |
+| [Compression negotiation](docs/codecs-compression.md) | Lazy gzip/deflate decoding, optional Brotli and encoding preferences; preserve encoded partial/range responses. Go already handles basic gzip. |
+| [Credentials and tenant isolation](docs/security-observability.md#origin-bound-credentials) | Origin-bound bearer/basic/API-key providers; cache partitions for credentials, cookies and configured tenant headers. |
+| [Streaming and response bounds](docs/requests.md) | Ordinary `client.Do` bodies for streams/downloads; opt-in bounded reads and JSON/XML decoding, with optional MessagePack/protobuf. |
+| [Operational visibility](docs/security-observability.md) | Redacted request/response logging, retry/cache events and metrics hooks. |
+
+## Failure handling and failover
+
+After retries are exhausted, callers receive the final HTTP response or Go
+error. Check `StatusCode`: a 4xx/5xx response is not automatically a Go error.
+Use `errors.Is` / `errors.As` for underlying errors and local refusals such as
+`ErrCircuitOpen`, `ErrRateLimited` and `ErrLimiterTimeout`. Close response bodies.
+
+**Failover to another host or region is application-owned.** Retries and
+hedges repeat the same target through your transport; httpx does not select a
+backup endpoint. Circuit breaking limits calls to a failing origin; stale-cache
+fallback can keep permitted reads available. See [failure behavior and failover
+boundaries](docs/resilience.md#failure-handling-and-failover).
 
 ## Quick Start
 
@@ -89,12 +121,6 @@ endpoint twice; set `API_URL` to use another complete URL. Cache headers decide
 whether the second GET is a fresh hit, a conditional revalidation or a new
 fetch. The [integration tests](examples/quickstart/main_integration_test.go)
 exercise retries, gzip, ETags and 304 reuse against a local HTTP server.
-
-Already have a client? [Wrap its transport](docs/composition.md) while keeping
-its cookie jar, redirect policy and timeout. Each layer also has a direct
-constructor, such as `NewRetryTransport` or `NewCacheTransport`. Go's default
-transport already handles basic gzip; httpx adds explicit compression policy,
-deflate and optional Brotli.
 
 ## Documentation
 
