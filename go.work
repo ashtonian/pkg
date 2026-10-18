@@ -1,9 +1,10 @@
-go 1.26.0
+go 1.27.0
 
 // Every published module, so a change to one is tested against the others'
 // working trees. The config cookbook, httpx Gin example and benchmarks,
 // and release tooling have separate dependency graphs and checks.
 use (
+	./gowalker
 	./config
 	./config/kongprovider
 	./httpx

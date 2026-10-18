@@ -1,6 +1,6 @@
 # Contributing
 
-[Module index](README.md) · [httpx guides](httpx/docs/README.md) · [Config documentation](config/docs/README.md) · [Cookbook](config/examples/cookbook/README.md)
+[Module index](README.md) · [Gowalker guides](gowalker/docs/README.md) · [httpx guides](httpx/docs/README.md) · [Config documentation](config/docs/README.md) · [Cookbook](config/examples/cookbook/README.md)
 
 ## Development
 
@@ -11,13 +11,20 @@ The repository's `go.work` ties the published modules together, so a change to o
 | `make test` | Every published module's tests, race detector on; both httpx build tags |
 | `make test-httpx-unit` / `make test-httpx-integration` | httpx unit or real HTTP integration lane |
 | `make lint` | `go vet` and staticcheck |
-| `make release-check` | Config standalone builds plus the httpx archive check below |
+| `make release-check` | Gowalker and config standalone builds plus the module archive checks below |
+| `make gowalker-release-check` | Gowalker archive downloaded into a fresh consumer, race tests, the README quick start and complete usage examples |
 | `make httpx-release-check` | Four module ZIPs downloaded by fresh consumers, both tagged race lanes, Gin integration and benchmark smoke tests |
 | `make tool-check` | Module archive tooling tests and static analysis |
 | `make cookbook-check` | The [config cookbook](config/examples/cookbook), a module of runnable recipes |
 | `make ci` | All of the above |
 
 A module that requires another module of this repository requires a released version of it. When it needs an unreleased change, release the dependency first, then raise the requirement.
+
+Workspace development requires Go 1.27. Gowalker is its own module at
+`github.com/ashtonian/pkg/gowalker`, released with `gowalker/v…` tags. Its
+initial release is configured as `v0.1.0`. Public modules contain source, tests,
+licenses and user documentation; project plans, reviews and audits stay outside
+the public repository. Its archive check runs the README quick start and usage programs verbatim.
 
 ## Versioning
 
@@ -26,7 +33,7 @@ skips them. The Gin example, comparison benchmarks and release tooling keep
 separate development modules outside the default workspace. The archive
 check tests them against candidate releases without local replacements.
 
-Every module is tagged with its directory as the prefix, as Go expects for a module below a repository's root: `config/v0.1.0`, `config/kongprovider/v0.1.0`, `httpx/v0.1.0`, `httpx/codec/msgpack/v0.1.0`, `httpx/codec/proto/v0.1.0`, `httpx/compress/brotli/v0.1.0`. Versions follow [semantic versioning](https://semver.org); while a module is at `v0`, a minor version may change its API. Each module's `CHANGELOG.md` lists what changed.
+Every module is tagged with its directory as the prefix, as Go expects for a module below a repository's root: `gowalker/v0.1.0`, `config/v0.1.0`, `config/kongprovider/v0.1.0`, `httpx/v0.1.0`, `httpx/codec/msgpack/v0.1.0`, `httpx/codec/proto/v0.1.0`, `httpx/compress/brotli/v0.1.0`. Versions follow [semantic versioning](https://semver.org); while a module is at `v0`, a minor version may change its API. Each module's `CHANGELOG.md` lists what changed.
 
 ## Releases
 

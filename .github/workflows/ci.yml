@@ -15,11 +15,11 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest]
-        go: [oldstable, stable]
+        go: ['1.27.0', '1.27.x']
         include:
           # The file watch rests on kqueue there, inotify on Linux.
           - os: macos-latest
-            go: stable
+            go: '1.27.x'
     if: github.actor_id == '4212452' && (github.event_name != 'pull_request' || (github.event.pull_request.user.id == 4212452 && github.event.pull_request.head.repo.full_name == github.repository))
     runs-on: ${{ matrix.os == 'ubuntu-latest' && 'arc-pkg' || matrix.os }}
     steps:
@@ -29,12 +29,37 @@ jobs:
           workload: ${{ toJSON(matrix) }}
           go-version: ${{ matrix.go }}
           cache-dependency-path: "**/go.sum"
+      - name: Gowalker tests
+        run: make test-gowalker
       - name: Config tests
         run: make test-config
       - name: HTTPx unit tests with race detection
         run: make test-httpx-unit
       - name: HTTPx integration tests with race detection
         run: make test-httpx-integration
+      - name: Trim Go build cache
+        uses: ./.github/actions/trim-go-cache
+
+  httpx-minimum:
+    name: httpx (go 1.26)
+    if: github.actor_id == '4212452' && (github.event_name != 'pull_request' || (github.event.pull_request.user.id == 4212452 && github.event.pull_request.head.repo.full_name == github.repository))
+    runs-on: arc-pkg
+    steps:
+      - uses: actions/checkout@v7
+      - uses: ./.github/actions/setup-go-cache
+        with:
+          go-version: '1.26.x'
+          cache-dependency-path: "**/go.sum"
+      - name: Test HTTPx at its minimum Go version
+        env:
+          GOTOOLCHAIN: local
+        run: |
+          workspace=$(mktemp -d)
+          trap 'rm -rf "$workspace"' EXIT
+          (cd "$workspace" && GOWORK=off go work init \
+            "$GITHUB_WORKSPACE/httpx" "$GITHUB_WORKSPACE/httpx/codec/msgpack" \
+            "$GITHUB_WORKSPACE/httpx/codec/proto" "$GITHUB_WORKSPACE/httpx/compress/brotli")
+          GOWORK="$workspace/go.work" make test-httpx-unit test-httpx-integration
       - name: Trim Go build cache
         uses: ./.github/actions/trim-go-cache
 

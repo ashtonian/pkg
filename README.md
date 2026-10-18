@@ -5,6 +5,7 @@ its own dependencies, version, changelog and releases.
 
 | Module | Import path | Purpose |
 |---|---|---|
+| [gowalker](gowalker/README.md) | `github.com/ashtonian/pkg/gowalker` | Reusable reflection schemas, typed paths, safe reads/writes and bounded traversal. |
 | [config](config/README.md) | `github.com/ashtonian/pkg/config` | Typed, layered configuration with validation, hot reload and redaction. |
 | [httpx](httpx/README.md) | `github.com/ashtonian/pkg/httpx` | HTTP standards and resilience: retries, circuit breaking, caching, compression and request budgets for `net/http`. |
 | [Kong provider](config/kongprovider/README.md) | `github.com/ashtonian/pkg/config/kongprovider` | CLI flags as config overrides, with help derived from the config struct. |
@@ -14,9 +15,11 @@ its own dependencies, version, changelog and releases.
 ```bash
 go get github.com/ashtonian/pkg/config@latest
 go get github.com/ashtonian/pkg/httpx@latest
+go get github.com/ashtonian/pkg/gowalker@latest
 ```
 
-Requires **Go 1.26 or later**. Install only the modules you need. Add the Kong provider for Kong CLI integration;
+Gowalker requires **Go 1.27 or later**; config and httpx currently require
+**Go 1.26 or later**. Install only the modules you need. Add the Kong provider for Kong CLI integration;
 add httpx's MessagePack, protobuf or Brotli module only for that wire format.
 
 ## httpx
@@ -37,6 +40,8 @@ or the [standard-client example](httpx/README.md#quick-start).
 
 ## Documentation
 
+- [Gowalker quick start](gowalker/README.md): inspect types and read or write nested values, with returned states and errors explained.
+- [Gowalker guides](gowalker/docs/README.md): field rules, reusable accessors, traversal, contracts and allocation costs.
 - [httpx quick start](httpx/README.md): add compression, retry/backoff and ETag caching to a standard `http.Client`.
 - [httpx guides](httpx/docs/README.md): transport composition, use cases, HTTP behavior, streaming and complete reference.
 - [httpx Gin example](httpx/examples/gin/README.md): a runnable server and client with integration tests.
@@ -49,7 +54,7 @@ or the [standard-client example](httpx/README.md#quick-start).
 ## Versioning
 
 Modules release independently with path-prefixed tags such as
-`config/v0.3.0`, `config/kongprovider/v0.1.0` and `httpx/v0.1.0`. During `v0`, minor releases
+`gowalker/v0.1.0`, `config/v0.3.0`, `config/kongprovider/v0.1.0` and `httpx/v0.1.0`. During `v0`, minor releases
 may change APIs; see [versioning](CONTRIBUTING.md#versioning) and each
 module's changelog.
 

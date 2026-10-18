@@ -1,15 +1,19 @@
 # Published modules. Each has its own go.mod, tags and releases.
+CORE_MODULES := gowalker
 CONFIG_MODULES := config config/kongprovider
 HTTPX_MODULES := httpx httpx/codec/msgpack httpx/codec/proto httpx/compress/brotli
-MODULES := $(CONFIG_MODULES) $(HTTPX_MODULES)
+MODULES := $(CORE_MODULES) $(CONFIG_MODULES) $(HTTPX_MODULES)
 # Programs that use the published modules; tested, never published.
 COOKBOOK := config/examples/cookbook
 STATICCHECK := honnef.co/go/tools/cmd/staticcheck@v0.8.2
 
-.PHONY: test test-config test-httpx-unit test-httpx-integration lint release-check httpx-release-check cookbook-check tool-check ci
+.PHONY: test test-gowalker gowalker-release-check test-config test-httpx-unit test-httpx-integration lint release-check httpx-release-check cookbook-check tool-check ci
 
 ## test: every published module from the working tree (go.work), race detector on
-test: test-config test-httpx-unit test-httpx-integration
+test: test-gowalker test-config test-httpx-unit test-httpx-integration
+
+test-gowalker:
+	go test -race -count=1 ./gowalker/...
 
 test-config:
 	go test -race -count=1 $(foreach m,$(CONFIG_MODULES),./$(m)/...)
@@ -23,7 +27,7 @@ test-httpx-integration:
 
 ## lint: go vet and staticcheck over every module and the cookbook
 lint:
-	@set -e; for m in $(CONFIG_MODULES); do \
+	@set -e; for m in $(CORE_MODULES) $(CONFIG_MODULES); do \
 		echo "lint $$m"; (cd $$m && go vet ./... && go run $(STATICCHECK) ./...); \
 	done
 	@set -e; for m in $(HTTPX_MODULES); do \
@@ -37,11 +41,15 @@ lint:
 ## release-check: each published module as a consumer gets it — outside the
 ## workspace, its dependencies at the versions its go.mod requires
 release-check:
-	@set -e; for m in $(CONFIG_MODULES); do \
+	@set -e; for m in $(CORE_MODULES) $(CONFIG_MODULES); do \
 		echo "release-check $$m"; \
 		(cd $$m && GOWORK=off go mod tidy -diff && GOWORK=off go vet ./... && GOWORK=off go test -race -count=1 ./...); \
 	done
-	$(MAKE) httpx-release-check
+	$(MAKE) gowalker-release-check httpx-release-check
+
+## gowalker-release-check: download, test and run the quick start from a module ZIP
+gowalker-release-check:
+	bash tools/check-gowalker-release.sh
 
 ## httpx-release-check: module ZIPs in fresh consumers, plus Gin and benchmarks
 ## This also works before the HTTPx modules' first public tags exist.

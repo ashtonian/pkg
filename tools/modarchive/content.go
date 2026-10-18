@@ -52,17 +52,17 @@ func internalArtifactPath(name string) bool {
 	name = strings.ToLower(name)
 	for component := range strings.SplitSeq(name, "/") {
 		switch component {
-		case ".llm", ".claude", ".codex", "_review":
+		case ".llm", ".claude", ".codex", "_review", "_reviews":
 			return true
 		}
 	}
-	for _, dir := range []string{"docs/spec/", "docs/plans/", "docs/reports/", "docs/audits/", "docs/promotion/"} {
+	for _, dir := range []string{"docs/spec/", "docs/plans/", "docs/reports/", "docs/reviews/", "docs/audits/", "docs/adoption/", "docs/promotion/"} {
 		if strings.HasPrefix(name, dir) {
 			return true
 		}
 	}
 	switch path.Base(name) {
-	case "audit.md", "audit-report.md", "report.md", "promotion.md", "promotion-checklist.md":
+	case "audit.md", "audit-report.md", "report.md", "review.md", "final-review.md", "implementation-plan.md", "reflection-consolidation.md", "promotion.md", "promotion-checklist.md":
 		return true
 	}
 	return internalRFC.MatchString(name)

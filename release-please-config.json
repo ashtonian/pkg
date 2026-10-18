@@ -9,7 +9,10 @@
   "packages": {
     "config": {
       "component": "config",
-      "exclude-paths": ["config/kongprovider", "config/examples/cookbook"]
+      "exclude-paths": [
+        "config/kongprovider",
+        "config/examples/cookbook"
+      ]
     },
     "config/kongprovider": {
       "component": "config/kongprovider"
@@ -35,6 +38,10 @@
     },
     "httpx/compress/brotli": {
       "component": "httpx/compress/brotli",
+      "initial-version": "0.1.0"
+    },
+    "gowalker": {
+      "component": "gowalker",
       "initial-version": "0.1.0"
     }
   }

@@ -2,6 +2,7 @@ version: 2
 updates:
   - package-ecosystem: gomod
     directories:
+      - /gowalker
       - /config
       - /config/kongprovider
       - /config/examples/cookbook
