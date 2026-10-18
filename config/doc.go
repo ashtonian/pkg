@@ -30,6 +30,10 @@
 //
 // [FieldsChecked] describes how a struct becomes keys and reports invalid or
 // ambiguous schemas. [Fields] returns the same catalog, or nil on failure.
+// [MatchFields] associates reflected targets with config fields in one traversal,
+// for integrations such as CLI flag bridges. Unmatched targets have an empty
+// Field.Path; ambiguous addresses return ErrKey.
+//
 // The koanf tag
 // names a segment (",squash" merges into the parent, "-" skips), pointers are
 // followed, and a struct that decodes itself is one key. Every output names a
