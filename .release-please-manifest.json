@@ -1,6 +1,6 @@
 {
   "config": "0.6.0",
-  "config/kongprovider": "0.2.0",
+  "config/kongprovider": "0.2.1",
   "httpx": "0.1.0",
   "httpx/codec/msgpack": "0.1.0",
   "httpx/codec/proto": "0.1.0",
