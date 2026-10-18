@@ -4,6 +4,8 @@
 
 Brings [Kong](https://github.com/alecthomas/kong) CLI flags into [`config`](../README.md) as its highest-precedence source, and describes the config struct in Kong's help. Embed the config struct in the CLI struct and Kong makes a flag of every field, while the config struct's `koanf`, `default`, `desc` and `validate` tags stay the one schema. Only the flags a user typed are forwarded — in any spelling Kong accepts — so a flag left out never masks a config file or an environment variable. It is a module of its own, so `config` does not depend on Kong.
 
+Requires Go 1.27+.
+
 ```bash
 go get github.com/ashtonian/pkg/config/kongprovider
 ```
@@ -129,7 +131,7 @@ Mapped values unflatten into the key tree, so a flag for `db.host` overrides tha
 
 - **Kong reads some of its tags.** `default` gives Kong the value it shows, and `sep` splits a list flag; `short`, `negatable`, `name`, `placeholder`, `embed` and `prefix` shape the flag. `koanf`, `desc`, `validate`, `sensitive` and `secret` are this package's and the config package's.
 - **Separators differ.** Kong uses one rune and recognizes backslash-escaped separators; config splits literally on the whole separator string. Use one rune (or `none`) and no escaped separators when sharing textual defaults or environment values. Typed flags are already decoded by Kong and are forwarded as lists.
-- **The shared tags need config v0.3.0.** This module requires it, so `env` and `sep` work with no requirement of your own on the config package.
+- **The shared schema comes from config.** This module requires a compatible config release, including support for `env`, `sep` and checked field discovery.
 - **No Kong `required`.** Kong validates before the config pipeline runs, so a Kong `required` could not be satisfied by a file, the environment or a secret; use `validate:"required"`, which runs after every source.
 - **`env` belongs to the config package.** It reads a field's `env` variables in its environment layer, below the prefixed variable, and reports a value that does not decode without quoting it. `HelpFromConfig` clears the tag from Kong's view of each config flag and names the variables in the help instead, so Kong does not parse them as flag defaults — where a variable meant for something else, such as a Kubernetes service link (`REDIS_PORT=tcp://…`), would fail the command line before the config loads, quoting its value. Without `HelpFromConfig`, Kong reads them.
 - **Fields with no flag.** Tag maps, slices of structs, interfaces and secrets `kong:"-"` in the shared-struct wiring: maps use Kong's separate `mapsep` syntax, and other composite values may need custom mappers. A secret on the command line ends up in shell history and the process list. Nested structs become flag groups with `embed:"" prefix:"<section>-"`.
@@ -153,6 +155,13 @@ When the CLI exposes only a few settings under names of its own, keep the struct
 - `WithOverrides(kctx, mapping) config.Option` — the same with an explicit flag name → key mapping.
 - `New(kctx, mapping) koanf.Provider` — the provider itself, for `config.WithOverrideProvider(p, nil)`; it also implements `config.OriginProvider`, naming each value's flag.
 - `HelpFromConfig(cfg *T, envPrefix) kong.Option` — help for every flag that writes a field of `cfg`: its `desc`, key, environment variable and printable default.
+
+`HelpFromConfig` and `WithOverridesFromStruct` validate the complete config field
+catalog, including fields with no matching CLI flag. Conflicting keys, such as
+`koanf:"port"` and `koanf:"PORT"` on different fields, return an error matching
+`config.ErrSchema`. `HelpFromConfig` reports it when Kong builds the parser;
+`WithOverridesFromStruct` retains it in the returned option and reports it during
+config loading. This structural check does not decode defaults or example tags.
 
 ## License
 

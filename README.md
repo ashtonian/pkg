@@ -18,7 +18,7 @@ go get github.com/ashtonian/pkg/httpx@latest
 go get github.com/ashtonian/pkg/gowalker@latest
 ```
 
-Gowalker and config require **Go 1.27 or later**; httpx requires
+Gowalker, config and its Kong provider require **Go 1.27 or later**; httpx requires
 **Go 1.26 or later**. Install only the modules you need. Add the Kong provider for Kong CLI integration;
 add httpx's MessagePack, protobuf or Brotli module only for that wire format.
 

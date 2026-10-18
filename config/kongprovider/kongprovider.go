@@ -168,6 +168,8 @@ func WithOverrides(ctx *kong.Context, mapping map[string]string) config.Option {
 // values are copied when the option is built, so a reloader built from it
 // keeps the command line it started with. A CLI none of whose flags writes
 // into cfg fails the load with config.ErrSource.
+// Invalid config field catalogs fail the load with config.ErrSchema, including
+// when no CLI flag maps to the conflicting fields.
 func WithOverridesFromStruct[T any](ctx *kong.Context, cfg *T) config.Option {
 	values, flags, err := typedValues(ctx, cfg)
 	return config.WithOverrideProvider(provider{values: values, flags: flags, err: err}, nil)
@@ -192,8 +194,13 @@ func WithOverridesFromStruct[T any](ctx *kong.Context, cfg *T) config.Option {
 // config pipeline runs, so a required flag could not be satisfied by a file,
 // the environment or a secret. The config struct's `validate` rules, which
 // run after every source, are the ones that apply.
+// An invalid config field catalog returns config.ErrSchema during parser
+// construction, even when the conflicting fields have no CLI flags.
 func HelpFromConfig[T any](cfg *T, envPrefix string) kong.Option {
 	return kong.PostBuild(func(k *kong.Kong) error {
+		if _, err := config.FieldsChecked[T](); err != nil {
+			return err
+		}
 		for _, fl := range allFlags(k.Model.Node) {
 			f, ok, err := fieldOfFlag(cfg, fl)
 			if err != nil {
@@ -249,6 +256,9 @@ func fieldOfFlag[T any](cfg *T, fl *kong.Flag) (f config.Field, ok bool, err err
 func typedValues[T any](ctx *kong.Context, cfg *T) (map[string]any, map[string]string, error) {
 	if cfg == nil {
 		return nil, nil, errors.New("kongprovider: nil config")
+	}
+	if _, err := config.FieldsChecked[T](); err != nil {
+		return nil, nil, err
 	}
 	writes := false
 	for _, fl := range allFlags(ctx.Model.Node) {

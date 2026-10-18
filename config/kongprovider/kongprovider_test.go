@@ -363,3 +363,21 @@ func TestHelpFromConfig_WithholdsACompositeDefault(t *testing.T) {
 		assert.NotContains(t, fl.FormatPlaceHolder(), "FAKE_SECRET_VALUE")
 	}
 }
+
+func TestConfigAdaptersRejectInvalidSchemaWithoutMatchingFlags(t *testing.T) {
+	type cfg struct {
+		Port  int `koanf:"port"`
+		Other int `koanf:"PORT"`
+	}
+	var c cfg
+	var cli struct{ File string }
+	_, err := kong.New(&cli, HelpFromConfig(&c, "APP"))
+	require.ErrorIs(t, err, config.ErrSchema)
+	parser, err := kong.New(&cli)
+	require.NoError(t, err)
+	ctx, err := parser.Parse(nil)
+	require.NoError(t, err)
+	_, err = config.Load[struct{ File string }](context.Background(), WithOverridesFromStruct(ctx, &c))
+	require.ErrorIs(t, err, config.ErrSchema)
+	require.ErrorIs(t, err, config.ErrSource)
+}

@@ -1,18 +1,19 @@
 module github.com/ashtonian/pkg/config/kongprovider
 
-go 1.26.0
+go 1.27.0
 
 require (
 	github.com/alecthomas/kong v1.16.1
-	github.com/ashtonian/pkg/config v0.3.0
+	github.com/ashtonian/pkg/config v0.5.0
 	github.com/knadh/koanf/providers/confmap v1.0.1
 	github.com/knadh/koanf/v2 v2.3.8
 	github.com/stretchr/testify v1.12.1
 )
 
 require (
+	github.com/ashtonian/pkg/gowalker v0.1.0 // indirect
 	github.com/fsnotify/fsnotify v1.10.1 // indirect
-	github.com/gabriel-vasile/mimetype v1.4.15 // indirect
+	github.com/gabriel-vasile/mimetype v1.4.16 // indirect
 	github.com/go-playground/locales v0.14.1 // indirect
 	github.com/go-playground/universal-translator v0.18.1 // indirect
 	github.com/go-playground/validator/v10 v10.30.5 // indirect
