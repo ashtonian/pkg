@@ -82,6 +82,19 @@ db.password   [REDACTED]  string
 
 The program is [`examples/quickstart`](examples/quickstart/main.go). The package's `Example` functions also run as tests with their output checked.
 
+## Build integrations from the config fields
+
+`FieldsChecked[T]()` returns each setting's key, declared type, struct tags,
+redaction status and field index. For `Port int` tagged `koanf:"port"
+default:"8080"`, the catalog contains key `port`, type `int` and the unchanged
+default tag. Reading metadata does not apply or decode that default.
+
+Use `FieldFor[T](key)` for one key, `KeyOf(&cfg, &cfg.Port)` for one actual field,
+or `MatchFields(&cfg, reflectedTargets)` for a group of CLI destinations. The
+last returns fields in target order; an empty Path means no match. The
+[inspection guide](docs/inspection.md#fields-and-struct-tags) explains returned
+values, ownership and errors.
+
 ## Documentation
 
 | Task | Guide |

@@ -3,6 +3,7 @@ package config
 import (
 	"fmt"
 	"reflect"
+	"slices"
 )
 
 // KeyOf returns the key of the field that field points at inside cfg:
@@ -10,7 +11,7 @@ import (
 //	key, err := config.KeyOf(&cfg, &cfg.DB.MaxConns) // "db.max_conns"
 //
 // It reads addresses, never values, so the field's contents do not matter,
-// and nothing is allocated: a field behind a nil pointer has no address in
+// and never creates pointer targets: a field behind a nil pointer has no address in
 // cfg and is an error. A struct, map or list field has a key of its own; an
 // element of a map or list does not. A pointer to cfg itself, to memory
 // outside it, to a field that is not a key (unexported, koanf:"-",
@@ -27,40 +28,87 @@ func KeyOf[T, F any](cfg *T, field *F) (string, error) {
 // KeyOfValue is [KeyOf] for a field known by reflection: field is the field
 // itself, addressable, as reflect.Value.Field or a flag target gives it.
 func KeyOfValue[T any](cfg *T, field reflect.Value) (string, error) {
-	if cfg == nil {
-		return "", fmt.Errorf("%w: nil config", ErrKey)
-	}
-	if !field.IsValid() || !field.CanAddr() {
-		return "", fmt.Errorf("%w: the field is not addressable", ErrKey)
-	}
-	root, err := rootSchema(reflect.TypeFor[T]())
+	matches, err := MatchFields(cfg, []reflect.Value{field})
 	if err != nil {
 		return "", err
 	}
-	want := visit{ptr: field.Addr().Pointer(), typ: field.Type()}
-	if want == (visit{ptr: reflect.ValueOf(cfg).Pointer(), typ: reflect.TypeFor[T]()}) {
-		return "", fmt.Errorf("%w: the config itself has no key", ErrKey)
+	if matches[0].Path == "" {
+		return "", fmt.Errorf("%w: target is not an addressable config field", ErrKey)
 	}
-	f := &addressFinder{want: want, visiting: map[visit]bool{}}
-	f.branch(nil, root, reflect.ValueOf(cfg).Elem())
-	switch f.found {
-	case 0:
-		return "", fmt.Errorf("%w: %s at %#x is not a key of %s", ErrKey, typeText(want.typ), want.ptr, typeText(reflect.TypeFor[T]()))
-	case 1:
-		return f.key.String(), nil
-	}
-	return "", fmt.Errorf("%w: %d keys of %s share the address of this %s", ErrKey, f.found, typeText(reflect.TypeFor[T]()), typeText(want.typ))
+	return matches[0].Path, nil
 }
 
-// addressFinder walks the fields of a config value for the one at want.
-type addressFinder struct {
-	want     visit
-	key      keyPath
-	found    int
-	visiting map[visit]bool // the structs on the current path: a pointer cycle ends
+// MatchFields associates reflected targets, such as CLI flag destinations, with
+// fields in cfg in one traversal. Results correspond to targets in the same
+// order. A result with an empty Path means the target is not a config field:
+// invalid/unaddressable values, cfg itself, skipped fields, collection elements
+// and values outside cfg do not match. A field behind a nil pointer has no address.
+//
+// Matching reads addresses, not contents, and does not decode tags. It returns
+// ErrSchema for invalid config metadata and ErrKey for nil cfg or ambiguous
+// addresses (including shared zero-sized fields). Results and their indexes are
+// caller-owned. They describe this call's cfg; call again after replacing pointers
+// or targets. No instance addresses are retained in the metadata cache.
+func MatchFields[T any](cfg *T, targets []reflect.Value) ([]Field, error) {
+	if cfg == nil {
+		return nil, fmt.Errorf("%w: nil config", ErrKey)
+	}
+	root, err := rootMetadata(reflect.TypeFor[T]())
+	if err != nil {
+		return nil, err
+	}
+	self := visit{ptr: reflect.ValueOf(cfg).Pointer(), typ: reflect.TypeFor[T]()}
+	matcher := fieldMatcher{wanted: map[visit]*fieldMatch{}, visiting: map[visit]bool{}}
+	slots := make([]*fieldMatch, len(targets))
+	for i, target := range targets {
+		if !target.IsValid() || !target.CanAddr() {
+			continue
+		}
+		at := visit{ptr: target.Addr().Pointer(), typ: target.Type()}
+		if at == self {
+			continue
+		}
+		match := matcher.wanted[at]
+		if match == nil {
+			match = &fieldMatch{}
+			matcher.wanted[at] = match
+		}
+		slots[i] = match
+	}
+	if len(matcher.wanted) > 0 {
+		matcher.branch(cursor{}, root, reflect.ValueOf(cfg).Elem())
+	}
+	results := make([]Field, len(targets))
+	for i, match := range slots {
+		if match == nil || match.count == 0 {
+			continue
+		}
+		if match.count > 1 {
+			return nil, fmt.Errorf("%w: target %d matches %d config fields sharing an address", ErrKey, i, match.count)
+		}
+		results[i] = match.field
+		results[i].Index = slices.Clone(match.field.Index)
+	}
+	return results, nil
 }
 
-func (f *addressFinder) branch(p keyPath, n *schemaNode, v reflect.Value) {
+type fieldMatch struct {
+	field Field
+	count int
+}
+
+type fieldMatcher struct {
+	wanted   map[visit]*fieldMatch
+	visiting map[visit]bool
+}
+
+func (f *fieldMatcher) branch(c cursor, n *schemaNode, v reflect.Value) {
+	for v.Kind() == reflect.Pointer {
+		if v.IsNil() {
+			return
+		}
+		v = v.Elem()
+	}
 	at := visit{ptr: v.Addr().Pointer(), typ: v.Type()}
 	if f.visiting[at] {
 		return
@@ -70,24 +118,19 @@ func (f *addressFinder) branch(p keyPath, n *schemaNode, v reflect.Value) {
 	for _, sf := range n.fields {
 		fv, err := sf.value(v)
 		if err != nil {
-			continue // behind a nil pointer: not in cfg
-		}
-		key := p.field(sf.key)
-		if (visit{ptr: fv.Addr().Pointer(), typ: fv.Type()}) == f.want {
-			f.key = key
-			f.found++
-		}
-		if sf.node.kind != nodeBranch {
 			continue
 		}
-		for fv.Kind() == reflect.Pointer {
-			if fv.IsNil() {
-				break
-			}
-			fv = fv.Elem()
+		match := f.wanted[visit{ptr: fv.Addr().Pointer(), typ: fv.Type()}]
+		if match == nil && sf.node.kind != nodeBranch {
+			continue
 		}
-		if fv.Kind() == reflect.Struct {
-			f.branch(key, sf.node, fv)
+		next := c.intoField(sf)
+		if match != nil {
+			match.field = next.owner
+			match.count++
+		}
+		if sf.node.kind == nodeBranch {
+			f.branch(next, sf.node, fv)
 		}
 	}
 }

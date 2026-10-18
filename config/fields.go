@@ -5,8 +5,6 @@ import (
 	"reflect"
 	"slices"
 	"strings"
-
-	"github.com/ashtonian/pkg/gowalker"
 )
 
 // Field is one leaf key of a configuration struct: the unit a default tag, an
@@ -63,6 +61,7 @@ func Fields[T any]() []Field {
 // FieldsChecked returns the same catalog as [Fields], or ErrSchema for a
 // non-struct root, invalid key or ambiguous name. It reads tags as metadata;
 // it does not decode defaults or examples. Load validates those separately.
+// The returned slice and field indexes are caller-owned copies of cached metadata.
 func FieldsChecked[T any]() ([]Field, error) {
 	t := derefType(reflect.TypeFor[T]())
 	if !isBranch(t) {
@@ -147,7 +146,7 @@ func variableFields(t reflect.Type) []Field {
 	return catalogFields(t, true)
 }
 
-// catalogFields walks the compiled view once. Collections remain leaves;
+// catalogFields returns a copy of the cached catalog. Collections remain leaves;
 // ordinary recursive sections contribute keys only above the recursion.
 func catalogFields(t reflect.Type, includeSections bool) []Field {
 	fields, _ := catalogFieldsChecked(t, includeSections)
@@ -155,37 +154,56 @@ func catalogFields(t reflect.Type, includeSections bool) []Field {
 }
 
 func catalogFieldsChecked(t reflect.Type, includeSections bool) ([]Field, error) {
-	view, err := compileView(t)
-	if err != nil {
-		return nil, err
+	e := schemaMetadata(t)
+	if e.err != nil {
+		return nil, e.err
 	}
-	var out []Field
-	walking := map[reflect.Type]bool{}
-	var walk func(*gowalker.Shape, string, []int, bool)
-	walk = func(shape *gowalker.Shape, prefix string, index []int, sensitive bool) {
-		shape = shapeBase(shape)
-		if shape.Kind() != reflect.Struct || shape.Atomic() || walking[shape.Type()] {
-			return
-		}
-		walking[shape.Type()] = true
-		defer delete(walking, shape.Type())
-		for _, field := range shape.Fields() {
-			sf := field.GoField()
-			path := joinPath(prefix, field.Name())
-			at := append(slices.Clone(index), field.Index()...)
-			tagged := sensitive || fieldSensitive(field)
-			f := Field{Path: path, Tag: sf.Tag, Type: sf.Type, Sensitive: tagged || nameSensitive(sf), Index: at}
-			if child := shapeBase(field.Shape()); child.Kind() == reflect.Struct && !child.Atomic() {
-				if includeSections && jsonFormat(sf.Tag) {
-					out = append(out, f)
+	e.catalog.Do(func() {
+		walking := map[*schemaNode]bool{}
+		var walk func(*schemaNode, string, []int, bool)
+		walk = func(n *schemaNode, prefix string, index []int, sensitive bool) {
+			if n.kind != nodeBranch || walking[n] {
+				return
+			}
+			walking[n] = true
+			defer delete(walking, n)
+			for _, field := range n.fields {
+				path := joinPath(prefix, field.key)
+				at := append(slices.Clone(index), field.index...)
+				tagged := sensitive || field.tagged
+				f := Field{Path: path, Tag: field.sf.Tag, Type: field.sf.Type, Sensitive: tagged || field.named, Index: at}
+				if field.node.kind == nodeBranch {
+					if jsonFormat(f.Tag) {
+						e.variables = append(e.variables, f)
+					}
+					walk(field.node, path, at, tagged)
+				} else {
+					e.fields = append(e.fields, f)
+					e.variables = append(e.variables, f)
 				}
-				walk(child, path, at, tagged)
-			} else {
-				out = append(out, f)
 			}
 		}
+		walk(e.node, "", nil, false)
+	})
+	fields := e.fields
+	if includeSections {
+		fields = e.variables
 	}
-	walk(view.Root(), "", nil, false)
+	out := slices.Clone(fields)
+	// One detached backing array protects every returned index without one
+	// allocation per field. Clip each slice so appends cannot alter its neighbor.
+	count := 0
+	for _, f := range fields {
+		count += len(f.Index)
+	}
+	indexes := make([]int, count)
+	for i, f := range fields {
+		n := copy(indexes, f.Index)
+		if f.Index != nil {
+			out[i].Index = indexes[:n:n]
+		}
+		indexes = indexes[n:]
+	}
 	return out, nil
 }
 

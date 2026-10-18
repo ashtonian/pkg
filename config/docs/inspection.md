@@ -2,11 +2,43 @@
 
 [Documentation](README.md) · [Quick start](../README.md#quick-start) · [Go API](https://pkg.go.dev/github.com/ashtonian/pkg/config)
 
+- [Fields and struct tags](#fields-and-struct-tags)
 - [Printing and usage](#printing-and-usage)
 - [Diffs](#diffs)
 - [Where a value came from](#where-a-value-came-from)
 - [Config files from code](#config-files-from-code)
 - [JSON Schema](#json-schema)
+
+## Fields and struct tags
+
+Use `FieldsChecked[T]()` when building an integration that needs to describe
+settings. It returns `([]Field, error)` in declaration order. For example:
+
+```go
+type Settings struct {
+    Port int `koanf:"port" default:"8080" desc:"HTTP port"`
+}
+fields, err := config.FieldsChecked[Settings]()
+```
+
+On success, the first result has `Path: "port"`, `Type: int`, `Index: []int{0}`,
+and the original struct tags. `fields[0].Tag.Lookup("default")` returns
+`"8080", true`. Inspecting those tags does not apply the default or call a
+custom decoder. Fields and index slices are caller-owned copies of cached
+metadata, so changing the result does not change future calls.
+
+Use `FieldFor[T]("server.port")` to describe one key. `KeyOf(&cfg, &cfg.Port)`
+finds the key for an actual field by its address. Both inspect metadata without
+decoding default/example tags.
+
+For several reflected targets, such as CLI flag destinations, use
+`MatchFields(&cfg, targets)`. It walks the config instance once and returns a
+`[]Field` in target order. An empty `Path` means that target is not a config
+field. Targets outside cfg, skipped fields and collection elements do not
+match. Ambiguous addresses return `ErrKey`, and an invalid schema returns
+`ErrSchema`. Nil ancestors are never allocated. Matching describes the current
+instance: call again after replacing pointers or targets. No addresses are
+stored in the global metadata cache.
 
 ## Printing and usage
 
@@ -77,8 +109,8 @@ db:
 keys with `ErrSchema`. For example, fields tagged `koanf:"Port"` and
 `koanf:"PORT"` conflict because matching ignores case. `Fields[T]()` keeps its
 slice-only signature and returns nil for an invalid schema; use the checked
-form when building integrations. Loading and the Kong bridge use the checked
-catalog.
+form when building integrations. Loading uses the checked catalog; the Kong bridge validates metadata while
+matching its flag targets in one traversal.
 
 `RedactedMapChecked(cfg)` returns `(map[string]string, error)`;
 `RedactedTreeChecked(cfg)` returns `(map[string]any, error)`. Both return nil

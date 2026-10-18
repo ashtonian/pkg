@@ -50,6 +50,9 @@ type schemaEntry struct {
 	err        error
 	check      sync.Once
 	validation error
+	catalog    sync.Once
+	fields     []Field
+	variables  []Field
 }
 
 const schemaCacheCapacity = 256
@@ -86,6 +89,18 @@ func schemaMetadata(t reflect.Type) *schemaEntry {
 		schemaCache.entries[t] = e
 	}
 	return e
+}
+
+// rootMetadata is structural inspection without load-time tag decoding.
+func rootMetadata(t reflect.Type) (*schemaNode, error) {
+	n, err := metadataOf(t)
+	if err != nil {
+		return nil, err
+	}
+	if n.kind != nodeBranch {
+		return nil, fmt.Errorf("%w: %s is not a struct", ErrSchema, typeText(t))
+	}
+	return n, nil
 }
 
 // schemaOf additionally validates load-time tags once per cached root.
@@ -394,10 +409,11 @@ func (c cursor) intoEntry(s segment, elem reflect.Type) cursor {
 // element's, Sensitive inherited from what holds it, and Index nil. A key
 // beneath an interface returns the interface's field, which owns whatever
 // the value holds. The map keys and indexes in key need not exist in any
-// config; a field T does not have, a selector of the wrong kind, an index
+// config. Inspection does not decode default/example tags. A field T does not
+// have, a selector of the wrong kind, an index
 // past a fixed array's end, or a key that does not parse is an ErrKey error.
 func FieldFor[T any](key string) (Field, error) {
-	root, err := rootSchema(reflect.TypeFor[T]())
+	root, err := rootMetadata(reflect.TypeFor[T]())
 	if err != nil {
 		return Field{}, err
 	}
