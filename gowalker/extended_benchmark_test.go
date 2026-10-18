@@ -189,3 +189,30 @@ func BenchmarkAccessField(b *testing.B) {
 		}
 	}
 }
+
+func BenchmarkAccessName(b *testing.B) {
+	s := schemaFor[accessRoot](b, engine(b))
+	if _, err := s.AccessName("Child"); err != nil {
+		b.Fatal(err)
+	}
+	b.ReportAllocs()
+	for b.Loop() {
+		if _, err := s.AccessName("Child"); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+func BenchmarkFieldTags(b *testing.B) {
+	type row struct {
+		ID int `db:"id"`
+	}
+	s := schemaFor[row](b, engine(b))
+	f, _ := s.Root().Lookup("ID")
+	b.ReportAllocs()
+	for b.Loop() {
+		if value, ok := f.Tags().Lookup("db"); !ok || value != "id" {
+			b.Fatal(value, ok)
+		}
+	}
+}

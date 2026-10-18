@@ -13,7 +13,7 @@ for occasional access, and include compilation/resolution costs on every call.
   disables retention. Existing entries stay cached when capacity is reached;
   new types compile uncached. Capacity bounds roots, not total bytes or Go's own
   runtime type metadata.
-- `Schema.AccessField` caches accessors for visible root fields. General path
+- `Schema.AccessName` and `Schema.AccessField` share cached accessors for visible root fields. General path
   resolution is uncached; retain its result.
 - Resolved reads avoid repeated field discovery. Reading a struct from a map can
   allocate because reflection materializes the map entry. Boxing a scalar through
@@ -26,6 +26,8 @@ for occasional access, and include compilation/resolution costs on every call.
   keys. These operations allocate. Prune a container when its contents are not
   needed; sorted maps larger than the remaining node budget fail before key
   materialization.
+- `Field.Tags()` reads the original tag string without copying an index.
+  Use it when you only need annotations; `GoField()` copies its index slice.
 - Metadata slice getters return defensive copies. Keep the returned catalog for
   your operation instead of calling the same getter in an inner loop.
 
@@ -43,6 +45,8 @@ fixtures, not every root shape.
 |---|---:|---:|
 | Cached compilation | 0 | 0 |
 | Cached direct-field accessor, `AccessField` | 0 | 0 |
+| Cached literal-name accessor, `AccessName` | 0 | 0 |
+| Read a tag, `Tags().Lookup("db")` | 0 | 0 |
 | Read through a pointer, `Child.N` | 0 | 0 |
 | Read from a map of structs, `Rows["one"].N` | 8 | 1 |
 | Read through an interface holding a pointer, `Dynamic.N` | 0 | 0 |

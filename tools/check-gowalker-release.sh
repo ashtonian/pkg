@@ -26,7 +26,8 @@ go test -race -count=1 "$module/..."
 downloaded=$(go list -m -f '{{.Dir}}' "$module")
 awk '/^```go$/{code=1;next} /^```$/{if(code)exit} code{print}' "$downloaded/README.md" > main.go
 go run . > output.txt
-test "$(cat output.txt)" = 8080
+awk '/^```text$/{output=1;next} /^```$/{if(output)exit} output{print}' "$downloaded/README.md" > expected.txt
+diff -u expected.txt output.txt
 # Every usage example is a complete program paired with its expected output.
 awk -v dir="$tmp" '
   /^```go$/ { n++; mode="go"; next }

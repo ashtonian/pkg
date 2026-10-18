@@ -1,8 +1,13 @@
 # How gowalker works
 
-Gowalker separates information about a Go type from the values stored in a
-particular instance. It discovers fields once, then reuses that information
-when reading, writing or walking many values.
+A library that uses struct tags often needs the same information in several
+places: which fields exist, what names they use, and how to reach their values.
+Gowalker compiles that information from a Go type and reuses it across values.
+
+For example, a configuration library can use the same field descriptions to
+read default tags, build help text and access settings. A database library can
+select `db` names and keep a reader for each column. Tag interpretation and
+application behavior stay in those libraries.
 
 ## The objects you work with
 
@@ -14,8 +19,8 @@ when reading, writing or walking many values.
 | `Accessor` | A resolved path, such as `Database.Port` | Reuse for the same path and schema |
 | `Value` | One read result: presence, types, reached path, and the borrowed Go value | Refers to the caller's value |
 
-For example, compile `Config` once, resolve `Database.Port` once, and use that
-accessor with each `*Config`. An engine does not hold the configurations you
+For example, compile `Row` once, call `AccessName("id")` once, and use that
+accessor with each `*Row`. An engine does not hold the configurations you
 pass to it. [Root binding](api.md#root-binding) explains the exact accepted types.
 
 ```mermaid
@@ -62,11 +67,17 @@ or a database transaction. Raw type relationships remain available, and still
 count toward compilation limits.
 
 Compilation checks all reachable visible fields, even if a caller later reads
-only one. A database column reader should therefore mark each selected column
-as a leaf when the column's internal fields are irrelevant. This prevents tags
+only one. The `WithTaggedFields` preset marks each selected column
+as a leaf because its internal fields are irrelevant to column naming. This prevents tags
 inside a payload from participating in the row's column names.
 
 ## Resolution and execution
+
+For one named field, `AccessName` combines root pointer handling, name lookup
+and the cached accessor returned by `AccessField`. It treats punctuation as
+part of the name. `Tags` reads the original annotation text directly; it does
+not require an accessor or a value instance.
+
 
 Resolving a path validates every step whose type is known. It records field
 routes and checks map-key types and fixed-array bounds. Map entries need not

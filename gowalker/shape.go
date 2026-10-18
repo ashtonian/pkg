@@ -113,6 +113,9 @@ type Field struct {
 // Name returns the canonical visible name.
 func (f *Field) Name() string { return f.name }
 
+// Type returns the field's exact declared Go type, including pointer layers.
+func (f *Field) Type() reflect.Type { return f.shape.typ }
+
 // Aliases returns a copy of the alternative names.
 func (f *Field) Aliases() []string { return append([]string(nil), f.aliases...) }
 
@@ -123,6 +126,11 @@ func (f *Field) Index() []int { return append([]int(nil), f.index...) }
 // GoField returns the original declaration with a copied index relative to
 // DeclaringType. Use Index for the complete route through inline ancestors.
 func (f *Field) GoField() reflect.StructField { return copyStructField(f.goField) }
+
+// Tags returns the original struct tags without copying field indexes. Use
+// Lookup to distinguish an absent tag from a tag with an explicitly empty value.
+// Gowalker does not decode or apply tag values.
+func (f *Field) Tags() reflect.StructTag { return f.goField.Tag }
 
 // Shape returns the declared field type with its field-specific leaf rule.
 func (f *Field) Shape() *Shape { return f.shape }

@@ -9,17 +9,26 @@ lists every exported declaration. Go 1.27+ is required.
 
 | Need | Use | Returns |
 |---|---|---|
-| Read once using Go field names | `gowalker.Get(root, text)` | `(Value, error)` with a presence state |
-| Read once with a known result type | `gowalker.GetAs[T](root, text)` | `(T, error)`; missing values are errors |
+| Read tags without a value instance | `New` → `Compile[T]` → `Root().Fields()` → `field.Tags()` | Field descriptions and raw `reflect.StructTag`; constructors return errors |
+| Select explicit tag names | `New(WithTaggedFields("db"))` → `Compile[T]` | Schema selecting exported, explicitly named fields as whole values |
+| Read or write one named root field repeatedly | `schema.AccessName(name)` | A cached `(*Accessor, error)`; the name is literal |
+| Access a field already discovered | `schema.AccessField(field)` | The same cached accessor, using a visible root field handle |
+| Define custom naming or nesting | `WithFieldResolver(callback)` | An engine option; callback returns `(FieldRule, error)` |
+| Repeated nested access | `schema.ResolveText(text)` / `Resolve(path)` | An uncached `(*Accessor, error)` to retain and reuse |
+| Read once using Go field names | `gowalker.Get(root, text)` / `GetAs[T](root, text)` | `(Value, error)` with presence, or `(T, error)` |
 | Write once using Go field names | `gowalker.Set(&root, text, input)` | `error`; nil means success |
-| Repeated access or custom field names | `New` → `Compile[T]` → `ResolveText` / `Resolve` | An engine, schema and reusable accessor; each constructor also returns an error |
-| Access a field already discovered | `schema.AccessField(field)` | A cached `(*Accessor, error)` |
-| Work with reflection directly | `accessor.GetValue`, `accessor.SetValue`, `schema.WalkValueReflect` | The same operation using an exact `reflect.Value` root |
-| Inspect types without an instance | `schema.Root()` or `schema.WalkType` | Type/field metadata, or visitor callbacks |
+| Work with reflection directly | `accessor.GetValue`, `accessor.SetValue`, `schema.WalkValueReflect` | The same operations using an exact `reflect.Value` root |
+| Walk types without an instance | `schema.WalkType` | Visitor callbacks and an error |
 
 One-call helpers create a short-lived default engine each time. For a loop or
 library, retain an engine and schema, then keep an accessor for each repeated
 path. `Resolve` and `ResolveText` do not cache arbitrary paths.
+
+`AccessName` follows root pointers and looks up one name or alias. It returns
+`ErrType` for a non-struct root and `ErrPath` for an unknown name, an atomic root
+or a recursive pointer root. Punctuation is literal: `"a.b"` is one field name.
+Use ResolveText when the dot should select a nested field. AccessName and
+AccessField share the same bounded cache of visible root-field accessors.
 
 `AccessField` is useful when a library already has a field from `Fields()` or
 `Lookup()`. It accepts visible fields of this schema's root struct; for pointer
@@ -45,6 +54,35 @@ The return type is checked for assignability at runtime because paths, field rul
 and interface contents can be dynamic. Generics do not validate a string path at
 compile time or eliminate the need for reflection. Named types and typed nils
 retain the same contracts as ordinary reads; generic reads never decode or coerce.
+
+## Tags and named fields
+
+`field.Tags()` returns `reflect.StructTag` without copying field indexes.
+`Tags().Lookup("default")` returns `(text, present)` and preserves the difference
+between an absent tag and an explicit empty value. It does not decode defaults,
+validation expressions, secret paths or any other annotations.
+
+`WithTaggedFields(tag)` replaces the field resolver with a direct-field preset:
+
+| Declaration | Result |
+|---|---|
+| `ID int` tagged `db:"id"` | Visible field named `id` |
+| `ID int` tagged `db:"id,option"` | Visible field named `id`; suffix ignored |
+| Missing tag, `db:""`, `db:",option"`, `db:"-"`, `db:"-,option"` | Excluded |
+| Private field, with or without a tag | Excluded |
+| `db:" id "` or `db:"id.part"` | Exact name preserved, including spaces or dots |
+| Tagged struct or pointer payload | One leaf field, read or replaced whole |
+| Embedded field without an explicit name | Excluded; no implicit promotion |
+| Two selected fields with the same name | Compilation error matching ErrSchema |
+
+An empty tag key or one containing spaces, control characters, a colon or a
+quote is an invalid option and returns ErrSchema from New. Tag names are case
+sensitive; WithCaseFoldNames affects selected field names only. The last
+WithTaggedFields or WithFieldResolver option supplies the resolver.
+
+This preset does not implement JSON/YAML embedding, omission or decoding rules.
+Use custom field rules for those conventions. Compile still retains raw payload
+types and counts them against its limits, even though the fields are leaves.
 
 ## Field views
 
@@ -73,7 +111,7 @@ it and walks visit it as a terminal. `Atomic` and `Inline` together are invalid;
 of a type. Both retain raw type structure and its compilation-budget cost.
 
 `Shape.Fields()` returns visible handles in declaration/inline order. Each field
-provides its Go `StructField`, exact declared `Shape`, copied physical `Index`,
+provides its declared `Type`, raw `Tags`, Go `StructField`, declared `Shape`, copied physical `Index`,
 original `DeclaringType`, and copied `InlineParents` for inherited consumer metadata.
 `Shape.DeclaredView()` returns selected declarations before inline expansion;
 `Field.Inline()` identifies inline owners, including empty ones whose tags a

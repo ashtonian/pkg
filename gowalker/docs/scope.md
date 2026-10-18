@@ -1,6 +1,6 @@
 # Scope and limits
 
-Gowalker supplies reusable type metadata and access to Go values. Use it when
+Gowalker helps libraries share struct-tag discovery and access to Go fields. Use it when
 several operations need to agree on field names, nested locations and traversal.
 A consumer defines what those fields mean in its own domain.
 
@@ -8,6 +8,7 @@ A consumer defines what those fields mean in its own domain.
 
 | Operation | What it provides |
 |---|---|
+| Read annotations | Raw struct tags with absent/empty values preserved; no value instance required |
 | Inspect types | Exact declared types, raw struct fields, pointer/element/key relationships, and recursive type graphs |
 | Define visible fields | Names, aliases, skip/inline rules, field-specific or type-wide leaves, exact/case-fold matching, and collision errors |
 | Resolve locations | Concrete field, map-key, index and dereference steps; a text subset; an empty path for the root |
@@ -22,9 +23,10 @@ pointers. Private fields remain unavailable through normal accessors.
 
 ## What consumers implement
 
-Gowalker does not decode values or interpret domain tags. A resolver that reads
-`db` or `json` tags supplies field-selection rules; choosing a tag name alone
-does not implement an ORM or the complete field-selection rules of a serializer.
+Gowalker reads annotations without interpreting their values. WithTaggedFields
+supplies a narrow convention for explicitly named whole fields, such as direct
+`db` columns. Custom resolvers supply other field-selection rules. Choosing a
+tag name does not implement an ORM or a serializer's complete conventions.
 
 | Consumer | Keeps responsibility for |
 |---|---|

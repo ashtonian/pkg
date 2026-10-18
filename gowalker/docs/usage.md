@@ -1,28 +1,73 @@
 # Using gowalker
 
-Start with [installation and a single read/write](../README.md). The examples
+Start with [installation and reading struct tags](../README.md). The examples
 below are complete Go programs. Their bodies also appear in the
 [executable examples](../example_test.go), and the release check runs the programs
 as printed here. Detailed rules live in the [API contracts](api.md).
 
-## Read one field from many rows
+## Generate help from annotations
 
-Keep one engine for a set of field rules and one schema for each root type.
-This example uses `db` tags for column names and skips untagged fields.
-`Atomic: true` treats each column as one value, so tags inside a column's
-payload do not affect the row's column names.
+A configuration library can describe its supported environment variables and
+defaults by inspecting the type. It needs no Settings value and runs no loader
+or decoder. Multiple fields may carry the same annotation value.
 
-`Lookup` returns a field handle and a boolean. `AccessField` returns a cached
-accessor and an error. `Get` returns a `Value` and an error;
-`Value.Interface()` below is an `int` from the selected row.
+```go
+package main
+
+import (
+    "fmt"
+
+    "github.com/ashtonian/pkg/gowalker"
+)
+
+func main() {
+    type Settings struct {
+        Port  int    `env:"PORT" default:"8080"`
+        Label string `env:"LABEL" default:""`
+        Debug bool   `env:"DEBUG"`
+    }
+    engine, err := gowalker.New()
+    if err != nil { panic(err) }
+    schema, err := engine.Compile[Settings]()
+    if err != nil { panic(err) }
+
+    for _, field := range schema.Root().Fields() {
+        text, present := field.Tags().Lookup("default")
+        fmt.Printf("%s: type=%s env=%q default=%q hasDefault=%t\n",
+            field.Name(), field.Type(), field.Tags().Get("env"), text, present)
+    }
+}
+```
+
+Output:
+
+```text
+Port: type=int env="PORT" default="8080" hasDefault=true
+Label: type=string env="LABEL" default="" hasDefault=true
+Debug: type=bool env="DEBUG" default="" hasDefault=false
+```
+
+`Lookup` returns `(string, bool)`. Label has an explicit empty default; Debug
+has no default tag. Preserve that difference when applying your own rules.
+`Tags()` returns the entire raw `reflect.StructTag`, so the same field can also
+supply descriptions, validation rules or other library annotations.
+
+## Read one column from many rows
+
+A database helper needs to find the field named by a column and read it from
+many rows. `WithTaggedFields("db")` supplies that convention: explicitly named,
+exported fields become columns, and each column is read as one whole value.
+Tags inside its payload do not contribute more columns.
+
+`AccessName` returns a cached `(*Accessor, error)`. `Get` returns `(Value, error)`;
+`Value.Interface()` below is the selected row's `int`. Keep the engine across
+calls in your library, and keep the reader for repeated access.
 
 ```go
 package main
 
 import (
 	"fmt"
-	"reflect"
-	"strings"
 	"github.com/ashtonian/pkg/gowalker"
 )
 
@@ -30,10 +75,7 @@ func main() {
 	type Row struct {
 		ID int `db:"id"`
 	}
-	e, err := gowalker.New(gowalker.WithFieldResolver(func(field reflect.StructField) (gowalker.FieldRule, error) {
-		name, _, _ := strings.Cut(field.Tag.Get("db"), ",")
-		return gowalker.FieldRule{Name: name, Skip: name == "" || name == "-", Atomic: true}, nil
-	}))
+	e, err := gowalker.New(gowalker.WithTaggedFields("db"))
 	if err != nil {
 		panic(err)
 	}
@@ -41,11 +83,7 @@ func main() {
 	if err != nil {
 		panic(err)
 	}
-	field, ok := schema.Root().Lookup("id")
-	if !ok {
-		panic("missing id field")
-	}
-	id, err := schema.AccessField(field)
+	id, err := schema.AccessName("id")
 	if err != nil {
 		panic(err)
 	}
@@ -67,12 +105,48 @@ Output:
 ```
 
 For a nested path, use `schema.ResolveText("Database.Port")` instead of
-`AccessField`. Keep the returned accessor: arbitrary path resolution is not
+`AccessName`. Keep the returned accessor: arbitrary path resolution is not
 cached. Use `accessor.GetAs[int](row)` when you want `(int, error)` directly.
 
 Compile `Row` for ordinary entity access: reads accept `Row` or `*Row`, and
 writes require `*Row`. Compile `*Row` only when the root pointer itself is part
 of the value you want to read or replace; writes then require `**Row`.
+
+## Choose your library's field rules
+
+Use the default engine when tags are annotations. Use `WithTaggedFields` when
+explicit tag names identify whole fields, as in the column example. The preset:
+
+- Uses the name before the first comma and ignores the suffix.
+- Excludes private fields and missing, empty or `"-"` names.
+- Preserves whitespace and literal punctuation in names.
+- Rejects duplicate names; does not promote embedded fields.
+- Treats each selected field as a leaf, including struct and pointer payloads.
+
+These rules are deliberately specific. For nested configuration sections or
+another tag convention, `WithFieldResolver` receives a `reflect.StructField`
+and returns `(FieldRule, error)`. A rule can name a field, supply aliases,
+exclude it with Skip, expose its children with Inline, or keep it whole with
+Atomic. Use `StructTag.Lookup` in the callback when absent and empty differ.
+The [custom config-style example](../example_test.go) demonstrates these rules.
+The last WithFieldResolver or WithTaggedFields option supplies the resolver.
+
+For example, `validate:"required,min=1"` is a list of rules, not a field name.
+Read it with `Tags()` and let the validation library interpret it. A generic
+name preset cannot reproduce every library's embedding and tag conventions.
+
+## Read and write a discovered field
+
+After compiling a type, `schema.AccessName("Port")` selects one root field.
+`GetAs[int](settings)` returns its current value as `(int, error)`, and
+`Set(&settings, 9000)` assigns it. Names and aliases follow the same rules as
+field discovery. `AccessName("id.part")` selects that literal name;
+`ResolveText("Database.Port")` selects a nested location instead.
+
+If you are already iterating `Fields()`, `schema.AccessField(field)` reuses the
+same accessor cache. Both methods follow root pointers. AccessField requires a
+field from this schema's visible root fields, rather than a nested or foreign
+field. For metadata on a pointer root, follow `Root().Elem()` to its struct.
 
 ## Distinguish zero, nil and missing
 

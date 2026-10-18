@@ -2,12 +2,13 @@
 
 [![Go Reference](https://pkg.go.dev/badge/github.com/ashtonian/pkg/gowalker.svg)](https://pkg.go.dev/github.com/ashtonian/pkg/gowalker)
 
-Inspect Go types, read and write nested values, and walk object graphs through
-one reusable reflection API. Libraries supply field names, aliases, inlining and
-leaf rules; gowalker handles discovery, access and writeback.
+Build libraries that use Go struct tags. Discover fields, read their tags, and
+reuse the same field information when generating help, validating input, or
+reading and writing values.
 
-Use it to share field discovery and nested access across a library’s operations.
-The library keeps its own decoding, validation and domain behavior.
+A configuration library might read `env` and `default` tags. A database library
+might use `db` tags as column names. Gowalker handles field discovery, duplicate
+names and access through pointers; your library decides what the tags mean.
 
 Go 1.27+ · standard library only · MIT
 
@@ -15,7 +16,10 @@ Go 1.27+ · standard library only · MIT
 go get github.com/ashtonian/pkg/gowalker@latest
 ```
 
-## Quick start
+## Read a struct's tags
+
+You can inspect a type without creating a value. This program lists the fields
+and the settings a configuration library could use:
 
 ```go
 package main
@@ -26,135 +30,93 @@ import (
     "github.com/ashtonian/pkg/gowalker"
 )
 
-type Database struct{ Port int }
-type Config struct{ Database *Database }
-
 func main() {
-    var cfg Config
-    err := gowalker.Set(&cfg, "Database.Port", 8080,
-        gowalker.WithPointerAllocation(),
-    )
-    if err != nil {
-        panic(err)
+    type Settings struct {
+        Port  int    `env:"PORT" default:"8080"`
+        Label string `env:"LABEL" default:""`
+        Debug bool   `env:"DEBUG"`
     }
-    port, err := gowalker.GetAs[int](&cfg, "Database.Port")
-    if err != nil {
-        panic(err)
-    }
-    fmt.Println(port) // 8080
-}
-```
-
-Reads follow existing pointers without creating anything. `GetAs[T]` returns
-`ErrMissing` for an absent map entry or nil ancestor. Use `Get` when you need to
-distinguish `Missing`, a reached `Nil`, and ordinary `Present` values such as zero.
-
-Writes require a pointer to the declared root. Assignment follows Go’s assignability rules by default;
-`WithCheckedNumbers()` allows lossless numeric conversion. Pointer and map
-allocation require separate options. A rejected write leaves the graph unchanged.
-
-## Reuse work in a library
-
-An engine is a reusable schema compiler and cache. Its settings describe a
-library's field names, aliases, inlining and leaf types. One-call helpers compile
-and resolve on every call. Keep an engine, schema and accessor when operating on
-many values or repeatedly accessing the same field. Using `Config` above:
-
-```go
-func incrementPorts(configs []*Config) error {
     engine, err := gowalker.New()
-    if err != nil { return err }
-    schema, err := engine.Compile[Config]()
-    if err != nil { return err }
-    port, err := schema.ResolveText("Database.Port")
-    if err != nil { return err }
+    if err != nil { panic(err) }
+    schema, err := engine.Compile[Settings]()
+    if err != nil { panic(err) }
 
-    for _, cfg := range configs {
-        current, err := port.GetAs[int](cfg)
-        if err != nil { return err }
-        if err := port.Set(cfg, current+1); err != nil { return err }
+    for _, field := range schema.Root().Fields() {
+        text, present := field.Tags().Lookup("default")
+        fmt.Printf("%s: type=%s env=%q default=%q hasDefault=%t\n",
+            field.Name(), field.Type(), field.Tags().Get("env"), text, present)
     }
-    return nil
 }
 ```
 
-Use `CompileType(reflectType)` for runtime types. `GetValue`, `SetValue` and
-`WalkValueReflect` accept exact declared `reflect.Value` roots. Generic methods
-share the same implementation; types and paths remain checked at runtime.
+Output:
 
-`schema.Root()` exposes immutable type and field metadata. `WithFieldResolver`
-sets names, aliases, skip and inline rules; `WithAtomicType` defines leaves.
-Set `FieldRule.Atomic` to treat just that field as a leaf, such as a database
-column whose contents need no further inspection. `schema.AccessField(field)`
-returns `(*Accessor, error)` for a visible root field obtained from `Lookup` or
-`Fields`; repeated calls reuse it without rebuilding a path. A leaf can be read
-or replaced as a whole, but paths and walks do not descend into it. Here,
-“atomic” means a traversal leaf; it does not add synchronization.
-
-Compilation checks all visible fields. For a direct-column reader, make every
-selected column a leaf so nested payload fields do not participate in column
-naming. The [tagged-column example](example_test.go) shows this setup.
-`WithCaseFoldNames` applies the same Unicode matching to lookup and collision
-checks. The default uses exported Go names, exact matching and declared nesting.
-
-See the [compiled examples](example_test.go) for field rules, db tags,
-map/interface writeback, recursive types and walking before mutation.
-
-## What reads return
-
-For `type Row struct { Count int; Child *Row }` and `row := Row{}`:
-
-| Call | Result |
-|---|---|
-| `Get(&row, "Count")` | State `Present`, Type `int`; `Interface()` returns `int(0)` |
-| `Get(&row, "Child")` | State `Nil`, Type `*Row`; `Interface()` returns `(*Row)(nil)` |
-| `Get(&row, "Child.Count")` | State `Missing`, Type `int`; `Reflect()` is invalid |
-| `GetAs[int](&row, "Child.Count")` | `0, ErrMissing` (wrapped; use `errors.Is`) |
-| `Get(&row, "Unknown")` | An error matching `ErrPath` |
-
-`Get` returns `(Value, error)`. `Value` also carries the reached path and dynamic
-interface type. `GetAs[T]` returns `(T, error)`; it requires assignability to T.
-Writes return an error, with nil indicating success. A field declared `any`
-keeps that declaration until explicitly unboxed with `path.Deref()`; see the
-[interface example](example_test.go).
-
-## Paths and walking
-
-Text paths support fields, quoted string map keys and existing indexes:
-`Servers["primary.eu"].Ports[0]`. An empty path selects the root. The
-[`path` package](path/path.go) also supports typed keys, arbitrary field names
-and explicit dereferencing. Keys retain their Go types.
-
-`schema.WalkType` visits the visible type graph and reports recursive references.
-`schema.WalkValue` visits actual values, reports cycles, and supports pruning and
-early stop. Both have finite depth/node budgets. Collect paths during a walk and
-apply changes afterward.
-
-## Contracts and limits
-
-| Behavior | Contract |
-|---|---|
-| Sharing | Schemas/accessors can be reused concurrently; callers synchronize live values |
-| Reads | Borrow references and preserve terminal pointer/interface types; no decoding |
-| Writes | Prepare assignment and optional allocations before committing one location |
-| Containers | Map-held structs and boxed interfaces receive writeback; writes through existing references update shared storage |
-| Collections | No implicit slice growth, map deletion, wildcard updates or batch transactions |
-| Visibility | Safe reflection; no private-field access or automatic embedded-field promotion |
-| Resources | Cache bounded by root count, with separate compilation, path and walk limits |
-
-The engine is a structural utility. Codec rules, defaults, redaction, validation,
-SQL scanning, cloning and diff semantics belong to consumers.
-
-[Usage examples](docs/usage.md) · [API contracts](docs/api.md) · [Architecture](docs/architecture.md) ·
-[Scope and limits](docs/scope.md) · [Performance](docs/performance.md)
-
-## Development
-
-```sh
-go test -race ./...
-go vet ./...
-go test . -run '^$' -bench . -benchmem
+```text
+Port: type=int env="PORT" default="8080" hasDefault=true
+Label: type=string env="LABEL" default="" hasDefault=true
+Debug: type=bool env="DEBUG" default="" hasDefault=false
 ```
 
-Ordinary tests include the existing fuzz seed cases. Module archive checks also
-download the package into an isolated consumer and run this quick start.
+`Fields()` returns field descriptions in declaration order. `Tags()` returns a
+`reflect.StructTag`: `Lookup` distinguishes an explicit empty default from no
+default at all. This example reads metadata; applying defaults and loading the
+environment are jobs for your configuration library.
+
+## Use a tag as the field's name
+
+For a row containing `ID int` tagged `db:"id"`, construct the engine with
+`gowalker.New(gowalker.WithTaggedFields("db"))`. After `engine.Compile[Row]()`,
+`schema.AccessName("id")` returns a reusable reader/writer for that column.
+`id.GetAs[int](row)` returns the row's ID as `(int, error)`.
+
+This preset selects exported fields with explicit names before the first comma.
+It skips missing names, empty names and `"-"`, preserves whitespace, and ignores
+comma options. Each column is one whole value: the contents of a JSON payload,
+for example, cannot introduce more columns. Embedded fields are not promoted.
+Conflicting column names return an error during compilation.
+
+See the [complete tagged-row example](docs/usage.md#read-one-column-from-many-rows),
+which reads IDs `10` and `20` using one reader. For custom names, aliases or
+nested sections, use [custom field rules](docs/usage.md#choose-your-librarys-field-rules).
+
+## Reuse the work in your library
+
+| Step | What you keep | What it does |
+|---|---|---|
+| `New(options...)` | Engine | Holds your field rules and a bounded type cache |
+| `engine.Compile[T]()` | Schema | Describes one Go type without an instance |
+| `schema.Root().Fields()` | Field descriptions | Exposes names, tags and declared types |
+| `schema.AccessName(name)` | Accessor | Reads or writes the same field across many values |
+
+Use `CompileType` when the type is only known at runtime. Engines and compiled
+handles can be shared across goroutines; synchronize access to your own values.
+An engine retains metadata, not the rows or configurations passed to it.
+
+For nested locations, `ResolveText("Database.Port")` builds an accessor to keep
+and reuse. `AccessName("id.part")` always means one literal field name, including
+the dot. For occasional reads and writes using Go field names, `Get`, `GetAs`
+and `Set` also accept text paths directly.
+
+## When it helps
+
+Use gowalker when several library operations must agree on field selection,
+names and access, or when the same types are used repeatedly. A one-time scan
+of a simple flat struct may need only ordinary reflection.
+
+Gowalker exposes tags; it does not decode their values, apply defaults, validate
+rules, generate SQL, or reproduce another library's tag conventions. Field
+names selected by your rules must be unique; annotation values may repeat.
+
+Named fields can be read or replaced as whole values. Missing ancestors, nil
+values and zero values remain distinct. Compilation and walks have finite
+limits; even fields treated as whole values retain raw type information and
+its compilation cost. See the [API reference](docs/api.md) for these contracts.
+
+## Guides
+
+- [Usage](docs/usage.md): tags, named columns, custom rules, returned values and errors.
+- [API reference](docs/api.md): inputs, results, naming, ownership and limits.
+- [How it works](docs/architecture.md): field discovery, cached metadata and access.
+- [Scope](docs/scope.md): what gowalker and the consuming library each handle.
+- [Performance](docs/performance.md): reuse, allocations and measurements.
+- [Executable examples](example_test.go): examples checked by `go test`.

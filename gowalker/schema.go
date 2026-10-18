@@ -26,6 +26,29 @@ func (s *Schema) Type() reflect.Type { return s.root.typ }
 // to reach the struct whose Fields or Lookup supplies field handles.
 func (s *Schema) Root() *Shape { return s.root }
 
+// AccessName returns a cached accessor for one visible root field by its name
+// or alias, following non-atomic root pointers. The name is literal: "a.b"
+// selects a field named "a.b", not a nested path. Use [Schema.ResolveText] for
+// paths. A non-struct root returns ErrType; an unknown name or atomic root
+// or a recursive pointer root returns ErrPath.
+func (s *Schema) AccessName(name string) (*Accessor, error) {
+	owner, err := indirectShape(s.root)
+	if err != nil {
+		return nil, failure("resolve", err, s.Type(), emptyPath, -1, nil)
+	}
+	if owner.atomic {
+		return nil, failure("resolve", ErrPath, s.Type(), emptyPath, -1, nil)
+	}
+	if owner.Kind() != reflect.Struct {
+		return nil, failure("resolve", ErrType, s.Type(), emptyPath, -1, nil)
+	}
+	field, ok := owner.Lookup(name)
+	if !ok {
+		return nil, failure("resolve", ErrPath, s.Type(), path.Of(path.Field(name)), 0, nil)
+	}
+	return s.AccessField(field)
+}
+
 // AccessField returns a reusable accessor for a visible field of this schema's
 // root struct, following non-atomic root pointers. Obtain the field from that
 // root's Fields or Lookup. Inline descendants use their complete physical route.

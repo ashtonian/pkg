@@ -41,10 +41,7 @@ func ExampleAccessor_Get() {
 	type Row struct {
 		ID int `db:"id"`
 	}
-	e, err := gowalker.New(gowalker.WithFieldResolver(func(field reflect.StructField) (gowalker.FieldRule, error) {
-		name, _, _ := strings.Cut(field.Tag.Get("db"), ",")
-		return gowalker.FieldRule{Name: name, Skip: name == "" || name == "-", Atomic: true}, nil
-	}))
+	e, err := gowalker.New(gowalker.WithTaggedFields("db"))
 	if err != nil {
 		panic(err)
 	}
@@ -52,11 +49,7 @@ func ExampleAccessor_Get() {
 	if err != nil {
 		panic(err)
 	}
-	field, ok := schema.Root().Lookup("id")
-	if !ok {
-		panic("missing id field")
-	}
-	id, err := schema.AccessField(field)
+	id, err := schema.AccessName("id")
 	if err != nil {
 		panic(err)
 	}
@@ -416,4 +409,53 @@ func ExampleAccessor_GetAs_interface() {
 	// Output:
 	// true
 	// 42
+}
+
+func ExampleField_Tags() {
+	type Settings struct {
+		Port  int    `env:"PORT" default:"8080"`
+		Label string `env:"LABEL" default:""`
+		Debug bool   `env:"DEBUG"`
+	}
+	engine, err := gowalker.New()
+	if err != nil {
+		panic(err)
+	}
+	schema, err := engine.Compile[Settings]()
+	if err != nil {
+		panic(err)
+	}
+	for _, field := range schema.Root().Fields() {
+		text, present := field.Tags().Lookup("default")
+		fmt.Printf("%s: type=%s env=%q default=%q hasDefault=%t\n",
+			field.Name(), field.Type(), field.Tags().Get("env"), text, present)
+	}
+	// Output:
+	// Port: type=int env="PORT" default="8080" hasDefault=true
+	// Label: type=string env="LABEL" default="" hasDefault=true
+	// Debug: type=bool env="DEBUG" default="" hasDefault=false
+}
+
+func ExampleSchema_AccessName() {
+	type Row struct {
+		ID int `db:"id.part"`
+	}
+	engine, err := gowalker.New(gowalker.WithTaggedFields("db"))
+	if err != nil {
+		panic(err)
+	}
+	schema, err := engine.Compile[Row]()
+	if err != nil {
+		panic(err)
+	}
+	id, err := schema.AccessName("id.part")
+	if err != nil {
+		panic(err)
+	}
+	value, err := id.GetAs[int](&Row{ID: 42})
+	if err != nil {
+		panic(err)
+	}
+	fmt.Println(value)
+	// Output: 42
 }
