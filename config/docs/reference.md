@@ -3,6 +3,7 @@
 [Documentation](README.md) · [Quick start](../README.md#quick-start) · [Go API](https://pkg.go.dev/github.com/ashtonian/pkg/config)
 
 - [Errors](#errors)
+- [Checked inspection](#checked-inspection)
 - [Observability](#observability)
 - [Testing](#testing)
 - [Options](#options)
@@ -28,6 +29,23 @@ Every error wraps one category sentinel together with its cause, so `errors.Is` 
 `Diagnose(err)` turns any of them into a `Problem{Kind, Message}` — a bounded category for a metric label or a status endpoint.
 
 The package's own errors never quote a value meant for a sensitive field. A decode failure on one is reported by field and type; a validation failure on one omits the rule's operand (`eq=...`); a parse failure is reported by file and line, the parser's message — which can quote the file — kept only in `ParseError.Err`; and type names leave out struct tags, which can hold a default or an example. Errors your own providers, hooks and validators return pass through unchanged, so keep values out of them.
+
+## Checked inspection
+
+Use these forms when callers need to distinguish an empty result from an invalid
+schema. Errors support `errors.Is(err, config.ErrSchema)`.
+
+| Function | Returns | Failure behavior |
+|---|---|---|
+| `FieldsChecked[T]()` | `([]Field, error)` in declaration order | Rejects a non-struct root and invalid or ambiguous keys |
+| `RedactedMapChecked(cfg)` | `(map[string]string, error)` with text values keyed by path | Returns nil on structural errors, including reached dynamic types |
+| `RedactedTreeChecked(cfg)` | `(map[string]any, error)` with nested redacted values | Returns nil on structural errors; no partial tree |
+
+These functions inspect metadata without decoding default or example tags.
+The original `Fields`, `RedactedMap` and `RedactedTree` retain their single-result
+signatures and return nil on failure. `PrintRedacted` returns structural errors
+before writing output. See [inspection errors](inspection.md#inspection-errors)
+for examples and tag-validation boundaries.
 
 ## Observability
 

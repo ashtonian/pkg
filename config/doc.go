@@ -28,7 +28,9 @@
 //
 // # Keys and Tags
 //
-// [Fields] is the one definition of how a struct becomes keys: the koanf tag
+// [FieldsChecked] describes how a struct becomes keys and reports invalid or
+// ambiguous schemas. [Fields] returns the same catalog, or nil on failure.
+// The koanf tag
 // names a segment (",squash" merges into the parent, "-" skips), pointers are
 // followed, and a struct that decodes itself is one key. Every output names a
 // value in one grammar — db.host, items[0].port, named["primary"].port, and
@@ -179,10 +181,12 @@
 // [Diff] lists every key whose value differs between two configs, comparing
 // decoded values, with sensitive values redacted.
 //
-// [PrintRedacted], [RedactedMap], [RedactedTree] and [PrintEnv] show a config
+// [PrintRedacted], [RedactedMapChecked], [RedactedTreeChecked] and [PrintEnv] show a config
 // with every sensitive value redacted: tagged sensitive:"true", beneath such a
 // field, named like a credential (unless tagged sensitive:"false"), or under
-// such a map key. [PrintUsage] lists every key an operator can set with its
+// such a map key. The checked map/tree helpers return an error on an invalid
+// structural schema and never return partial results. They inspect live values
+// without decoding default or example tags. [PrintUsage] lists every key an operator can set with its
 // environment variable, type, default and description; a default that is, or
 // could hold, a sensitive value is withheld ([Field.PrintableDefault]), as is
 // such an example tag's ([Field.PrintableExample]). [PrintTemplate] writes the
