@@ -10,7 +10,7 @@
 
 ## Printing and usage
 
-`PrintRedacted(cfg)` writes a config as a table, JSON or YAML; `RedactedMap(cfg)` returns key → value text for a status page or a log line. A value is redacted when it is tagged `sensitive` or `secret`, sits inside something that is, or sits under a name containing `password`, `secret`, `token`, `key`, `credential`, `auth`, `private`, `apikey`, `api_key` or `dsn`. Mark anything the names cannot catch — a credential in a field called `URL` — `sensitive:"true"`, and take a field the names catch wrongly — `max_tokens`, `auth_enabled`, `key_prefix` — out with `sensitive:"false"`, which overrides its name only: a key named like a credential beneath it, an enclosing `sensitive:"true"`, and a `secret` tag still redact, and a `sensitive` value other than `true` or `false` fails the load with `ErrSchema`. No option prints a secret.
+`PrintRedacted(cfg)` writes a config as a table, JSON or YAML; `RedactedMapChecked(cfg)` returns `(map[string]string, error)` for a status page or log line, with text values keyed by path. A value is redacted when it is tagged `sensitive` or `secret`, sits inside something that is, or sits under a name containing `password`, `secret`, `token`, `key`, `credential`, `auth`, `private`, `apikey`, `api_key` or `dsn`. Mark anything the names cannot catch — a credential in a field called `URL` — `sensitive:"true"`, and take a field the names catch wrongly — `max_tokens`, `auth_enabled`, `key_prefix` — out with `sensitive:"false"`, which overrides its name only: a key named like a credential beneath it, an enclosing `sensitive:"true"`, and a `secret` tag still redact, and a `sensitive` value other than `true` or `false` fails the load with `ErrSchema`. No option prints a secret.
 
 `PrintUsage[T]("APP")` lists every setting an operator can set — a collection one variable can set as a whole, and its entry patterns — with key, variable, type, default, whether it is required, description. JSON rows keep the primary variable in `env`, extra names in `also_env`, and a printable sample in `example`. Export templates comment every line of a sample. Defaults that could hold a secret are withheld.
 
@@ -65,8 +65,30 @@ db:
   # password:
 ```
 
-`RedactedTree(cfg)` gives a loaded config as nested maps for any koanf parser to marshal — YAML, JSON, TOML, dotenv — and `PrintEnv(cfg, "APP")` as the `export` lines that would load it, using each list field's `sep` (commas by default). Lists that cannot round-trip, including one empty string or multiple elements with `sep:"none"`, are commented out; secrets are never exported.
+`RedactedTreeChecked(cfg)` returns `(map[string]any, error)`, giving a loaded config as nested maps for any koanf parser to marshal — YAML, JSON, TOML, dotenv — and `PrintEnv(cfg, "APP")` as the `export` lines that would load it, using each list field's `sep` (commas by default). Lists that cannot round-trip, including one empty string or multiple elements with `sep:"none"`, are commented out; secrets are never exported.
 
 ## JSON Schema
 
 `JSONSchema[T]()` returns a Draft 2020-12 schema of the config file — keys, types, descriptions, printable defaults and the validation rules JSON Schema can express — for editors and linters. It is advisory: `Load` is the authority, and a `required` key is not required in any one file, since a default or the environment may supply it.
+
+## Inspection errors
+
+`FieldsChecked[T]()` returns `([]Field, error)` and reports invalid or ambiguous
+keys with `ErrSchema`. For example, fields tagged `koanf:"Port"` and
+`koanf:"PORT"` conflict because matching ignores case. `Fields[T]()` keeps its
+slice-only signature and returns nil for an invalid schema; use the checked
+form when building integrations. Loading and the Kong bridge use the checked
+catalog.
+
+`RedactedMapChecked(cfg)` returns `(map[string]string, error)`;
+`RedactedTreeChecked(cfg)` returns `(map[string]any, error)`. Both return nil
+and `ErrSchema` if a reached type has invalid keys, including dynamic values
+inside interfaces. They never return partial results. The original
+`RedactedMap` and `RedactedTree` return nil on that error. `PrintRedacted`
+reports it before writing any output.
+
+These inspection functions read field metadata without decoding `default`
+or `example` tags. Printing a live value therefore does not invoke a custom
+unmarshaler for its examples. Invalid sensitivity tags still redact
+conservatively. Loading, templates and schema generation validate their tags;
+templates and schema generation also decode the values they show.

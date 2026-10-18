@@ -3,12 +3,15 @@ package config
 import (
 	"cmp"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
 	"reflect"
 	"slices"
 	"strings"
+
+	"github.com/ashtonian/pkg/gowalker"
 )
 
 const (
@@ -114,14 +117,18 @@ type printEntry struct {
 // (an object of key → value text) or FormatYAML (the config nested as it is
 // written in a file, values typed as they decode, keys in declaration
 // order); [PrintEnv] writes it as environment variables. It returns the first
-// write error, or an error for an unknown format.
+// write error, a structural ErrSchema error, or an error for an unknown format.
+// Structural errors produce no output. It never decodes default/example tags.
 func PrintRedacted(cfg any, opts ...PrintOption) error {
 	po := defaultPrintOptions()
 	for _, opt := range opts {
 		opt(&po)
 	}
 
-	entries := collectEntries(cfg)
+	entries, err := collectEntriesChecked(cfg)
+	if err != nil {
+		return err
+	}
 	if po.sortByName {
 		slices.SortFunc(entries, func(a, b printEntry) int { return cmp.Compare(a.name, b.name) })
 	}
@@ -133,7 +140,12 @@ func PrintRedacted(cfg any, opts ...PrintOption) error {
 		return printJSON(po.writer, entries, po.includeDescriptions)
 	case FormatYAML:
 		y := &yamlWriter{ew: &errWriter{w: po.writer}}
-		y.mapping((&valueTree{visiting: map[visit]bool{}}).root(cfg), 0, false, 0, "")
+		w := &valueTree{visiting: map[visit]bool{}}
+		n := w.root(cfg)
+		if w.err != nil {
+			return w.err
+		}
+		y.mapping(n, 0, false, 0, "")
 		return y.ew.err
 	default:
 		return fmt.Errorf("config: unknown print format %q (want %q, %q or %q)",
@@ -145,39 +157,55 @@ func PrintRedacted(cfg any, opts ...PrintOption) error {
 // sensitive value (as [PrintRedacted] defines it) replaced by "[REDACTED]".
 // It is for diagnostics — a status endpoint, a reload response, a log line —
 // not serialization: every value is its fmt %v text, and maps and slices are
-// expanded entry by entry.
+// expanded entry by entry. It returns nil on a structural schema error; use
+// [RedactedMapChecked] to receive that error.
 func RedactedMap(cfg any) map[string]string {
-	entries := collectEntries(cfg)
+	result, _ := RedactedMapChecked(cfg)
+	return result
+}
+
+// RedactedMapChecked returns [RedactedMap]'s values, or nil and ErrSchema
+// when a reached type has invalid or ambiguous keys. No partial map is returned.
+// Like PrintRedacted, it does not decode default or example tags.
+func RedactedMapChecked(cfg any) (map[string]string, error) {
+	entries, err := collectEntriesChecked(cfg)
+	if err != nil {
+		return nil, err
+	}
 	result := make(map[string]string, len(entries))
 	for _, e := range entries {
 		result[e.name] = e.value
 	}
-	return result
+	return result, nil
 }
 
 // collectEntries flattens cfg into print entries using the same key rules as
 // [Fields]. Slices and maps are expanded element by element, including
 // dynamic values held in interfaces, so a sensitive-looking map key is judged
 // like a sensitive-looking field name.
-func collectEntries(cfg any) []printEntry {
+func collectEntriesChecked(cfg any) ([]printEntry, error) {
 	w := &entryWalk{visiting: map[visit]bool{}}
 	val := reflect.ValueOf(cfg)
 	for val.Kind() == reflect.Pointer {
 		if val.IsNil() {
-			return nil
+			return nil, nil
 		}
 		w.visiting[visitOf(val)] = true
 		val = val.Elem()
 	}
 	if !val.IsValid() || !isBranch(val.Type()) {
-		return nil
+		return nil, nil
 	}
 	w.walkStruct(val, nil, false)
-	return w.entries
+	if w.err != nil {
+		return nil, w.err
+	}
+	return w.entries, nil
 }
 
 type entryWalk struct {
 	entries []printEntry
+	err     error
 	// visiting holds the struct pointers, maps and slices on the current
 	// path, so a cycle in the value graph ends instead of recursing forever.
 	visiting map[visit]bool
@@ -207,15 +235,27 @@ type site struct {
 // walkStruct emits entries for val's fields. inherited is true beneath a
 // field tagged sensitive:"true", so tagging a container hides everything in it.
 func (w *entryWalk) walkStruct(val reflect.Value, prefix keyPath, inherited bool) {
-	for kf := range keyedFields(val.Type()) {
-		path := prefix
-		if kf.key != "" {
-			path = prefix.field(kf.key)
+	if w.err != nil {
+		return
+	}
+	schema, err := metadataOf(val.Type())
+	if err != nil {
+		w.err = err
+		return
+	}
+	for _, f := range schema.fields {
+		fv, err := f.value(val)
+		if errors.Is(err, gowalker.ErrMissing) {
+			continue
 		}
-		w.walkValue(path, val.FieldByIndex(kf.field.Index), site{
-			named:     nameSensitive(kf.field),
-			desc:      kf.field.Tag.Get("desc"),
-			sensitive: inherited || taggedSensitive(kf.field.Tag),
+		if err != nil {
+			w.err = fmt.Errorf("%w: %w", ErrSchema, err)
+			return
+		}
+		w.walkValue(prefix.field(f.key), fv, site{
+			named:     f.named,
+			desc:      f.sf.Tag.Get("desc"),
+			sensitive: inherited || f.tagged,
 		})
 	}
 }

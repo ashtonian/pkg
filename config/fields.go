@@ -1,10 +1,12 @@
 package config
 
 import (
-	"iter"
+	"fmt"
 	"reflect"
 	"slices"
 	"strings"
+
+	"github.com/ashtonian/pkg/gowalker"
 )
 
 // Field is one leaf key of a configuration struct: the unit a default tag, an
@@ -51,45 +53,24 @@ type Field struct {
 //     recursing forever. Values for the recursive part still decode from
 //     files; they just have no default, environment or flag key.
 //
-// A T that is not a struct (or pointer to one) has no fields.
+// A T that is not a struct (or pointer to one), or whose keys are invalid or
+// ambiguous, has no fields. Use [FieldsChecked] to distinguish an empty
+// catalog from an invalid schema.
 func Fields[T any]() []Field {
 	return fieldsOf(reflect.TypeFor[T]())
 }
 
-// walkFields appends t's leaves under prefix, at index sequence index;
-// sensitive is true beneath a struct tagged sensitive:"true".
-func walkFields(t reflect.Type, prefix string, index []int, sensitive bool, walking map[reflect.Type]bool, out *[]Field) {
-	t = derefType(t)
-	if !isBranch(t) || walking[t] {
-		return
+// FieldsChecked returns the same catalog as [Fields], or ErrSchema for a
+// non-struct root, invalid key or ambiguous name. It reads tags as metadata;
+// it does not decode defaults or examples. Load validates those separately.
+func FieldsChecked[T any]() ([]Field, error) {
+	t := derefType(reflect.TypeFor[T]())
+	if !isBranch(t) {
+		return nil, fmt.Errorf("%w: %s is not a config struct", ErrSchema, typeText(t))
 	}
-	walking[t] = true
-	defer delete(walking, t)
-
-	for kf := range keyedFields(t) {
-		path := joinPath(prefix, kf.key)
-		tagged := sensitive || taggedSensitive(kf.field.Tag)
-		at := append(slices.Clone(index), kf.field.Index...)
-		if isBranch(derefType(kf.field.Type)) {
-			walkFields(kf.field.Type, path, at, tagged, walking, out)
-			continue
-		}
-		if kf.key == "" {
-			// squash on a leaf has no key to contribute; mapstructure rejects it too.
-			continue
-		}
-		*out = append(*out, Field{
-			Path:      path,
-			Tag:       kf.field.Tag,
-			Type:      kf.field.Type,
-			Sensitive: tagged || nameSensitive(kf.field),
-			Index:     at,
-		})
-	}
+	return catalogFieldsChecked(t, false)
 }
 
-// keyedField is a struct field paired with the key segment it contributes.
-// key is empty when the field is squashed into its parent.
 // FieldName returns the config key segment struct field f is known by: its
 // koanf tag name, or its lower-cased Go name when the tag names none — the
 // rule [Fields] applies. Register it on a go-playground validator
@@ -105,28 +86,6 @@ func FieldName(f reflect.StructField) string {
 		return strings.ToLower(f.Name)
 	}
 	return name
-}
-
-type keyedField struct {
-	field reflect.StructField
-	key   string
-}
-
-// keyedFields yields the fields of struct type t that map to config keys,
-// applying the koanf tag rules documented on [Fields].
-func keyedFields(t reflect.Type) iter.Seq[keyedField] {
-	return func(yield func(keyedField) bool) {
-		for i := range t.NumField() {
-			f := t.Field(i)
-			key, skip := fieldKey(f)
-			if skip {
-				continue
-			}
-			if !yield(keyedField{field: f, key: key}) {
-				return
-			}
-		}
-	}
 }
 
 // fieldKey is the key segment struct field f contributes under the rules on
@@ -185,37 +144,49 @@ const maxPointerDepth = 32
 // can set whole — which Fields descends rather than lists — in declaration
 // order: every key the environment reads.
 func variableFields(t reflect.Type) []Field {
-	all := append(fieldsOf(t), jsonSections(t)...)
-	slices.SortStableFunc(all, func(a, b Field) int { return slices.Compare(a.Index, b.Index) })
-	return all
+	return catalogFields(t, true)
 }
 
-// jsonSections reports t's format:"json" sections outside lists and maps.
-func jsonSections(t reflect.Type) []Field {
+// catalogFields walks the compiled view once. Collections remain leaves;
+// ordinary recursive sections contribute keys only above the recursion.
+func catalogFields(t reflect.Type, includeSections bool) []Field {
+	fields, _ := catalogFieldsChecked(t, includeSections)
+	return fields
+}
+
+func catalogFieldsChecked(t reflect.Type, includeSections bool) ([]Field, error) {
+	view, err := compileView(t)
+	if err != nil {
+		return nil, err
+	}
 	var out []Field
-	var walk func(t reflect.Type, prefix string, index []int, sensitive bool, walking map[reflect.Type]bool)
-	walk = func(t reflect.Type, prefix string, index []int, sensitive bool, walking map[reflect.Type]bool) {
-		t = derefType(t)
-		if !isBranch(t) || walking[t] {
+	walking := map[reflect.Type]bool{}
+	var walk func(*gowalker.Shape, string, []int, bool)
+	walk = func(shape *gowalker.Shape, prefix string, index []int, sensitive bool) {
+		shape = shapeBase(shape)
+		if shape.Kind() != reflect.Struct || shape.Atomic() || walking[shape.Type()] {
 			return
 		}
-		walking[t] = true
-		defer delete(walking, t)
-		for kf := range keyedFields(t) {
-			if !isBranch(derefType(kf.field.Type)) {
-				continue
+		walking[shape.Type()] = true
+		defer delete(walking, shape.Type())
+		for _, field := range shape.Fields() {
+			sf := field.GoField()
+			path := joinPath(prefix, field.Name())
+			at := append(slices.Clone(index), field.Index()...)
+			tagged := sensitive || fieldSensitive(field)
+			f := Field{Path: path, Tag: sf.Tag, Type: sf.Type, Sensitive: tagged || nameSensitive(sf), Index: at}
+			if child := shapeBase(field.Shape()); child.Kind() == reflect.Struct && !child.Atomic() {
+				if includeSections && jsonFormat(sf.Tag) {
+					out = append(out, f)
+				}
+				walk(child, path, at, tagged)
+			} else {
+				out = append(out, f)
 			}
-			path := joinPath(prefix, kf.key)
-			at := append(slices.Clone(index), kf.field.Index...)
-			tagged := sensitive || taggedSensitive(kf.field.Tag)
-			if kf.key != "" && jsonFormat(kf.field.Tag) {
-				out = append(out, Field{Path: path, Tag: kf.field.Tag, Type: kf.field.Type, Sensitive: tagged || nameSensitive(kf.field), Index: at})
-			}
-			walk(kf.field.Type, path, at, tagged, walking)
 		}
 	}
-	walk(t, "", nil, false, map[reflect.Type]bool{})
-	return out
+	walk(view.Root(), "", nil, false)
+	return out, nil
 }
 
 func joinPath(prefix, key string) string {
@@ -278,7 +249,5 @@ func defaultsFrom(fields []Field) map[string]any {
 
 // fieldsOf is Fields for a type known only at run time.
 func fieldsOf(t reflect.Type) []Field {
-	var out []Field
-	walkFields(t, "", nil, false, map[reflect.Type]bool{}, &out)
-	return out
+	return catalogFields(t, false)
 }

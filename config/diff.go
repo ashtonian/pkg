@@ -510,7 +510,7 @@ func fieldOf(s side, f *schemaField) reflect.Value {
 	if !s.v.IsValid() || s.isNil {
 		return reflect.Value{}
 	}
-	v, err := s.v.FieldByIndexErr(f.index)
+	v, err := f.value(s.v)
 	if err != nil {
 		return reflect.Value{}
 	}

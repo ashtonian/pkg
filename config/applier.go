@@ -621,7 +621,7 @@ func writeHeld(slot reflect.Value, rel keyPath, h heldValue) error {
 		if f == nil {
 			return fmt.Errorf("%s has no field %q", typeText(v.Type()), seg.name)
 		}
-		fv, err := v.FieldByIndexErr(f.index)
+		fv, err := f.value(v)
 		if err != nil {
 			return nil // beneath a nil embedded pointer
 		}

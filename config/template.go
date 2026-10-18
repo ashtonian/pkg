@@ -114,7 +114,7 @@ func (b *templateBuilder) branch(n *outNode, node *schemaNode, c cursor, val ref
 		fc := c.intoField(f)
 		fv := reflect.Value{}
 		if val.IsValid() {
-			fv, _ = val.FieldByIndexErr(f.index)
+			fv, _ = f.value(val)
 		}
 		fenv := ""
 		if env != "" {
@@ -156,7 +156,8 @@ func (b *templateBuilder) leaf(f *schemaField, c cursor, fv reflect.Value, env s
 	printable := !c.sensitive() && !mayHoldSensitive(f.sf.Type, map[reflect.Type]bool{})
 	if _, has := f.sf.Tag.Lookup("default"); has && printable {
 		w := &valueTree{visiting: map[visit]bool{}}
-		return w.value(fv, site{}), false, nil
+		n := w.value(fv, site{})
+		return n, false, w.err
 	}
 	if ex, has := f.sf.Tag.Lookup("example"); has && printable {
 		v, err := decodeTag(f.sf.Type, f.sf.Tag, ex)
@@ -164,7 +165,8 @@ func (b *templateBuilder) leaf(f *schemaField, c cursor, fv reflect.Value, env s
 			return nil, true, fmt.Errorf("decoding the example of %s: %w: %w", c.path.orRoot(), ErrSchema, err)
 		}
 		w := &valueTree{visiting: map[visit]bool{}}
-		return w.value(v, site{}), true, nil
+		n := w.value(v, site{})
+		return n, true, w.err
 	}
 	n, err := b.example(f.node, c, env, crossed)
 	return n, true, err

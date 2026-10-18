@@ -17,7 +17,7 @@ and providers through one validated pipeline.
 - **Safe inspection.** Print redacted values, diffs, provenance, starter
   files and JSON Schema from the same struct.
 
-Requires **Go 1.26 or later**. The module is pre-1.0; minor releases may
+Requires **Go 1.27 or later**. The module is pre-1.0; minor releases may
 change its API. See [design and guarantees](docs/overview.md).
 
 ## Install

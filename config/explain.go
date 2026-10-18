@@ -49,7 +49,11 @@ func PrintExplain[T any](s Snapshot[T], opts ...PrintOption) error {
 		return err
 	}
 	values := map[string]string{}
-	for _, e := range collectEntries(s.Config) {
+	entries, err := collectEntriesChecked(s.Config)
+	if err != nil {
+		return err
+	}
+	for _, e := range entries {
 		values[e.name] = e.value
 	}
 	seen := make(map[string]bool, len(s.Provenance))

@@ -415,13 +415,7 @@ func annotationPath(root *schemaNode, p keyPath) keyPath {
 			if p[i].kind != segField {
 				return p
 			}
-			f := n.byKey[p[i].name]
-			if f == nil {
-				f = foldedField(n.byKey, p[i].name)
-			}
-			if f == nil {
-				f = foldedField(n.byAlias, p[i].name)
-			}
+			f, _ := n.lookup(p[i].name)
 			if f == nil {
 				return p
 			}

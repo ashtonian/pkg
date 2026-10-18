@@ -37,7 +37,12 @@ func PrintEnv(cfg any, envPrefix string, opts ...PrintOption) error {
 	}
 	prefix := strings.TrimSuffix(envPrefix, "_")
 	e := &envWriter{ew: &errWriter{w: po.writer}, root: root, schema: newEnvSchema(variableFields(t), prefix), prefix: prefix}
-	e.mapping(nil, root, (&valueTree{visiting: map[visit]bool{}}).root(cfg))
+	w := &valueTree{visiting: map[visit]bool{}}
+	n := w.root(cfg)
+	if w.err != nil {
+		return w.err
+	}
+	e.mapping(nil, root, n)
 	return e.ew.err
 }
 

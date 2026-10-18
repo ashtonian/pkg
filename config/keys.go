@@ -85,7 +85,10 @@ func isList(v reflect.Value) bool {
 // structMap rewrites the keys of map v, decoded into struct type t. A map
 // keyed by anything but strings is keyed by their text, as koanf keys it.
 func (w *keyWalk) structMap(t reflect.Type, v reflect.Value, path keyPath) any {
-	fields, aliases, tags := structKeys(t), structAliases(t), structTags(t)
+	n, err := schemaOf(t)
+	if err != nil {
+		return v.Interface()
+	}
 	out := reflect.MakeMapWithSize(stringKeyed(v.Type()), v.Len())
 	written := make(map[string]reflect.Value, v.Len())
 	for _, k := range v.MapKeys() {
@@ -93,11 +96,12 @@ func (w *keyWalk) structMap(t reflect.Type, v reflect.Value, path keyPath) any {
 	}
 	claimed := make(map[string]string, len(written)) // field key → the key written
 	for _, k := range slices.Sorted(maps.Keys(written)) {
-		key, ft, alias, ok := matchKey(fields, aliases, k)
-		if !ok {
+		f, alias := n.lookup(k)
+		if f == nil {
 			out.SetMapIndex(reflect.ValueOf(k).Convert(out.Type().Key()), written[k])
 			continue
 		}
+		key, ft, tag := f.key, f.sf.Type, f.sf.Tag
 		if prev, dup := claimed[key]; dup {
 			at := path.field(key)
 			if safe := diagnosticPath(w.schema, at); len(safe) < len(at) {
@@ -117,7 +121,7 @@ func (w *keyWalk) structMap(t reflect.Type, v reflect.Value, path keyPath) any {
 			}
 		}
 		raw := written[k]
-		if s, ok := stringValue(raw); ok && jsonFormat(tags[key]) {
+		if s, ok := stringValue(raw); ok && jsonFormat(tag) {
 			parsed, err := parseJSON([]byte(s))
 			if err != nil {
 				w.notJSON = append(w.notJSON, w.jsonProblem(path.field(key), s, err))
@@ -126,7 +130,7 @@ func (w *keyWalk) structMap(t reflect.Type, v reflect.Value, path keyPath) any {
 			raw = reflect.ValueOf(&parsed).Elem() // JSON null stays an explicit null
 		}
 		val := w.elem(out.Type().Elem(), ft, raw, path.field(key))
-		if sep, ok := tags[key].Lookup("sep"); ok && val.Kind() == reflect.String {
+		if sep, ok := tag.Lookup("sep"); ok && val.Kind() == reflect.String {
 			val = reflect.ValueOf(splitList(val.String(), sep))
 		}
 		out = setMapValue(out, reflect.ValueOf(key).Convert(out.Type().Key()), val)
@@ -202,65 +206,6 @@ func stringKeyed(m reflect.Type) reflect.Type {
 	return reflect.TypeFor[map[string]any]()
 }
 
-// structKeys returns the keys struct type t decodes, with their types,
-// looking through squashed structs.
-func structKeys(t reflect.Type) map[string]reflect.Type {
-	fields := map[string]reflect.Type{}
-	var collect func(t reflect.Type)
-	collect = func(t reflect.Type) {
-		for kf := range keyedFields(t) {
-			switch {
-			case kf.key == "" && derefType(kf.field.Type).Kind() == reflect.Struct:
-				collect(derefType(kf.field.Type))
-			case kf.key != "":
-				fields[kf.key] = kf.field.Type
-			}
-		}
-	}
-	collect(t)
-	return fields
-}
-
-// structAliases returns the alias tags of struct type t, each name mapped to
-// its field's key, looking through squashed structs.
-func structAliases(t reflect.Type) map[string]string {
-	aliases := map[string]string{}
-	var collect func(t reflect.Type)
-	collect = func(t reflect.Type) {
-		for kf := range keyedFields(t) {
-			switch {
-			case kf.key == "" && derefType(kf.field.Type).Kind() == reflect.Struct:
-				collect(derefType(kf.field.Type))
-			case kf.key != "":
-				for _, a := range aliasNames(kf.field.Tag) {
-					aliases[a] = kf.key
-				}
-			}
-		}
-	}
-	collect(t)
-	return aliases
-}
-
-// structTags returns the tags of struct type t's fields by key, looking
-// through squashed structs.
-func structTags(t reflect.Type) map[string]reflect.StructTag {
-	tags := map[string]reflect.StructTag{}
-	var collect func(t reflect.Type)
-	collect = func(t reflect.Type) {
-		for kf := range keyedFields(t) {
-			switch {
-			case kf.key == "" && derefType(kf.field.Type).Kind() == reflect.Struct:
-				collect(derefType(kf.field.Type))
-			case kf.key != "":
-				tags[kf.key] = kf.field.Tag
-			}
-		}
-	}
-	collect(t)
-	return tags
-}
-
 // stringValue is the text v holds, when it holds a string.
 func stringValue(v reflect.Value) (string, bool) {
 	if v.Kind() == reflect.Interface {
@@ -289,29 +234,6 @@ func aliasNames(tag reflect.StructTag) []string {
 		return nil
 	}
 	return strings.Split(v, ",")
-}
-
-// matchKey finds the field a data key decodes into — spelled exactly, else
-// matching in letter case, as mapstructure matches it — and whether the key
-// is one of the field's aliases rather than its key.
-func matchKey(fields map[string]reflect.Type, aliases map[string]string, k string) (key string, ft reflect.Type, alias, ok bool) {
-	if ft, ok := fields[k]; ok {
-		return k, ft, false, true
-	}
-	if key, ok := aliases[k]; ok {
-		return key, fields[key], true, true
-	}
-	for key, ft := range fields {
-		if strings.EqualFold(key, k) {
-			return key, ft, false, true
-		}
-	}
-	for a, key := range aliases {
-		if strings.EqualFold(a, k) {
-			return key, fields[key], true, true
-		}
-	}
-	return "", nil, false, false
 }
 
 // textKeyed is data with each map keyed by anything but strings, held in

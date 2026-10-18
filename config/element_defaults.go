@@ -46,9 +46,13 @@ func fillElementDefaults(t reflect.Type, data any) {
 		if !ok {
 			return
 		}
-		for key, ft := range structKeys(t) {
-			if child, ok := m[key]; ok {
-				fillElementDefaults(ft, child)
+		n, err := schemaOf(t)
+		if err != nil {
+			return
+		}
+		for _, f := range n.fields {
+			if child, ok := m[f.key]; ok {
+				fillElementDefaults(f.sf.Type, child)
 			}
 		}
 	}

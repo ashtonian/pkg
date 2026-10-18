@@ -238,7 +238,10 @@ func load[T any](ctx context.Context, o *options) (loaded[T], error) {
 		rec = newOriginRecorder(schema)
 		l.origins = rec.tree
 	}
-	fields := Fields[T]()
+	fields, err := FieldsChecked[T]()
+	if err != nil {
+		return none, fmt.Errorf("loading config: %w", err)
+	}
 	files := fileDigests{}
 	var env envSchema
 	var unmatchedEnv []string

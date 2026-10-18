@@ -5,6 +5,7 @@ import (
 	"cmp"
 	"encoding"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"reflect"
@@ -13,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/ashtonian/pkg/gowalker"
 	"go.yaml.in/yaml/v3"
 )
 
@@ -55,6 +57,7 @@ func redactedNode() *outNode { return &outNode{kind: outScalar, scalar: redacted
 // redacted value, so the keys it holds, which may themselves be secrets, are
 // not shown. A value graph that loops back shows [CYCLE].
 type valueTree struct {
+	err      error
 	visiting map[visit]bool
 }
 
@@ -76,16 +79,24 @@ func (w *valueTree) root(cfg any) *outNode {
 
 // fields adds struct val's keys to mapping n, squashed structs' in place.
 func (w *valueTree) fields(n *outNode, val reflect.Value, inherited bool) {
-	for kf := range keyedFields(val.Type()) {
-		fv := val.FieldByIndex(kf.field.Index)
-		tagged := inherited || taggedSensitive(kf.field.Tag)
-		if kf.key == "" {
-			if inner := derefValue(fv); inner.IsValid() && inner.Kind() == reflect.Struct && isBranch(inner.Type()) {
-				w.fields(n, inner, tagged)
-			}
+	if w.err != nil {
+		return
+	}
+	schema, err := metadataOf(val.Type())
+	if err != nil {
+		w.err = err
+		return
+	}
+	for _, f := range schema.fields {
+		fv, err := f.value(val)
+		if errors.Is(err, gowalker.ErrMissing) {
 			continue
 		}
-		n.entries = append(n.entries, outEntry{key: kf.key, node: w.value(fv, site{named: nameSensitive(kf.field), sensitive: tagged})})
+		if err != nil {
+			w.err = fmt.Errorf("%w: %w", ErrSchema, err)
+			return
+		}
+		n.entries = append(n.entries, outEntry{key: f.key, node: w.value(fv, site{named: f.named, sensitive: inherited || f.tagged})})
 	}
 }
 
@@ -243,10 +254,24 @@ func (n *outNode) plain() any {
 // list or interface is replaced whole, its keys included. Marshal it with any
 // koanf parser to show a loaded config as YAML, JSON, TOML or dotenv. Loading
 // the result back gives the same config, apart from what was redacted.
+// It returns nil on a structural schema error; use [RedactedTreeChecked]
+// to receive that error.
 func RedactedTree(cfg any) map[string]any {
+	result, _ := RedactedTreeChecked(cfg)
+	return result
+}
+
+// RedactedTreeChecked returns [RedactedTree]'s values, or nil and ErrSchema
+// when a reached type has invalid or ambiguous keys. No partial tree is returned.
+// It does not decode default or example tags.
+func RedactedTreeChecked(cfg any) (map[string]any, error) {
 	w := &valueTree{visiting: map[visit]bool{}}
-	m, _ := w.root(cfg).plain().(map[string]any)
-	return m
+	n := w.root(cfg)
+	if w.err != nil {
+		return nil, w.err
+	}
+	m, _ := n.plain().(map[string]any)
+	return m, nil
 }
 
 // yamlWriter writes an outNode mapping as block YAML, in entry order, with

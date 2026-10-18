@@ -4,8 +4,9 @@ import (
 	"fmt"
 	"reflect"
 	"slices"
-	"strings"
 	"sync"
+
+	"github.com/ashtonian/pkg/gowalker"
 )
 
 // The schema graph is the one reading of a config type every walk shares:
@@ -23,12 +24,12 @@ const (
 )
 
 type schemaNode struct {
-	typ     reflect.Type // dereferenced
-	kind    nodeKind
-	fields  []*schemaField // nodeBranch, squashed fields in place, in declaration order
-	byKey   map[string]*schemaField
-	byAlias map[string]*schemaField // nodeBranch: the fields alias tags name
-	elem    *schemaNode             // nodeMap, nodeList
+	typ    reflect.Type // dereferenced
+	kind   nodeKind
+	fields []*schemaField // nodeBranch, squashed fields in place, in declaration order
+	byKey  map[string]*schemaField
+	view   *gowalker.Schema // nodeBranch: shared field identities and matching
+	elem   *schemaNode      // nodeMap, nodeList
 	// opaqueUnsafe reports a value decoded whole that could hold a func,
 	// channel or unsafe pointer: a comparison looks inside it.
 	opaqueUnsafe bool
@@ -41,31 +42,82 @@ type schemaField struct {
 	tagged bool                // the field, or a squashed struct holding it, is tagged sensitive:"true"
 	named  bool                // its Go name looks like a credential's
 	node   *schemaNode
+	access *gowalker.Accessor
 }
 
 type schemaEntry struct {
-	node *schemaNode
-	err  error
+	node       *schemaNode
+	err        error
+	check      sync.Once
+	validation error
 }
 
-var schemaCache sync.Map // reflect.Type → schemaEntry
+const schemaCacheCapacity = 256
 
-// schemaOf returns the schema of t. A struct whose keys cannot be told apart —
-// a key holding a character the key grammar uses, or two fields with one key
-// — is an ErrSchema error.
-func schemaOf(t reflect.Type) (*schemaNode, error) {
+var schemaCache = struct {
+	sync.RWMutex
+	entries map[reflect.Type]*schemaEntry
+}{entries: make(map[reflect.Type]*schemaEntry)}
+
+// metadataOf builds structural metadata without decoding defaults or examples.
+// Diagnostics can therefore inspect live values even when a tag is invalid.
+func metadataOf(t reflect.Type) (*schemaNode, error) {
+	e := schemaMetadata(t)
+	return e.node, e.err
+}
+
+func schemaMetadata(t reflect.Type) *schemaEntry {
 	t = derefType(t)
-	if e, ok := schemaCache.Load(t); ok {
-		e := e.(schemaEntry)
-		return e.node, e.err
+	schemaCache.RLock()
+	e, ok := schemaCache.entries[t]
+	schemaCache.RUnlock()
+	if ok {
+		return e
 	}
 	b := &schemaBuilder{nodes: map[reflect.Type]*schemaNode{}}
 	n := b.node(t)
-	if b.err == nil && n.kind == nodeBranch {
-		b.err = checkEnvTags(n)
+	e = &schemaEntry{node: n, err: b.err}
+	schemaCache.Lock()
+	defer schemaCache.Unlock()
+	if cached, ok := schemaCache.entries[t]; ok {
+		return cached
 	}
-	e, _ := schemaCache.LoadOrStore(t, schemaEntry{node: n, err: b.err})
-	return e.(schemaEntry).node, e.(schemaEntry).err
+	if len(schemaCache.entries) < schemaCacheCapacity {
+		schemaCache.entries[t] = e
+	}
+	return e
+}
+
+// schemaOf additionally validates load-time tags once per cached root.
+func schemaOf(t reflect.Type) (*schemaNode, error) {
+	e := schemaMetadata(t)
+	if e.err != nil {
+		return e.node, e.err
+	}
+	e.check.Do(func() {
+		b := &schemaBuilder{}
+		seen := map[*schemaNode]bool{}
+		var walk func(*schemaNode)
+		walk = func(n *schemaNode) {
+			if n == nil || seen[n] {
+				return
+			}
+			seen[n] = true
+			if n.view != nil {
+				b.validateTags(n.view.Root())
+			}
+			for _, f := range n.fields {
+				walk(f.node)
+			}
+			walk(n.elem)
+		}
+		walk(e.node)
+		if b.err == nil && e.node.kind == nodeBranch {
+			b.err = checkEnvTags(e.node)
+		}
+		e.validation = b.err
+	})
+	return e.node, e.validation
 }
 
 // rootSchema is schemaOf for a type that must be a struct.
@@ -98,8 +150,7 @@ func (b *schemaBuilder) node(t reflect.Type) *schemaNode {
 	case isBranch(t):
 		n.kind = nodeBranch
 		n.byKey = map[string]*schemaField{}
-		n.byAlias = map[string]*schemaField{}
-		b.fields(n, t, nil, false, map[reflect.Type]bool{})
+		b.fields(n)
 	case opaque(t):
 		n.kind = nodeLeaf
 	case k == reflect.Map && t.Key().Kind() == reflect.String:
@@ -118,71 +169,37 @@ func (b *schemaBuilder) node(t reflect.Type) *schemaNode {
 	return n
 }
 
-// fields adds struct t's keys to branch n, squashed structs' keys in place.
-func (b *schemaBuilder) fields(n *schemaNode, t reflect.Type, index []int, tagged bool, squashing map[reflect.Type]bool) {
-	if squashing[t] {
+// fields annotates the shared view with config policy, retaining its handles
+// and compiled access routes instead of rediscovering struct fields.
+func (b *schemaBuilder) fields(n *schemaNode) {
+	view, err := compileView(n.typ)
+	if err != nil {
+		b.fail(err)
 		return
 	}
-	squashing[t] = true
-	defer delete(squashing, t)
-	for i := range t.NumField() {
-		if f := t.Field(i); unexportedSquashedPointer(f) {
-			b.fail(fmt.Errorf("%w: field %s of %s squashes a pointer to an unexported struct, which decoding cannot allocate; embed the struct itself, or export its type", ErrSchema, f.Name, typeText(t)))
+	n.view = view
+	for _, field := range view.Root().Fields() {
+		sf := field.GoField()
+		access, err := view.AccessField(field)
+		if err != nil {
+			b.fail(fmt.Errorf("%w: %w", ErrSchema, err))
+			return
 		}
-	}
-	for kf := range keyedFields(t) {
-		if err := checkTags(t, kf.field); err != nil {
-			b.fail(err)
-			continue
-		}
-		at := append(slices.Clone(index), kf.field.Index...)
-		fieldTagged := tagged || taggedSensitive(kf.field.Tag)
-		if kf.key == "" {
-			if _, ok := kf.field.Tag.Lookup("alias"); ok {
-				b.fail(fmt.Errorf("%w: field %s of %s is squashed, so it has no key an alias could stand for", ErrSchema, kf.field.Name, typeText(t)))
-				continue
-			}
-			if ft := derefType(kf.field.Type); isBranch(ft) {
-				b.fields(n, ft, at, fieldTagged, squashing)
-			}
-			continue // squash on a leaf contributes no key; decoding rejects it
-		}
-		switch {
-		case !validFieldKey(kf.key):
-			b.fail(fmt.Errorf("%w: field %s of %s has key %q, which holds a character keys use for structure", ErrSchema, kf.field.Name, typeText(t), kf.key))
-			continue
-		case n.byKey[kf.key] != nil:
-			b.fail(fmt.Errorf("%w: fields %s and %s of %s both have key %q", ErrSchema, n.byKey[kf.key].sf.Name, kf.field.Name, typeText(n.typ), kf.key))
-			continue
-		case foldedField(n.byAlias, kf.key) != nil:
-			b.fail(fmt.Errorf("%w: field %s of %s has key %q, which field %s names as an alias", ErrSchema, kf.field.Name, typeText(n.typ), kf.key, foldedField(n.byAlias, kf.key).sf.Name))
-			continue
-		}
-		f := &schemaField{key: kf.key, sf: kf.field, index: at, tagged: fieldTagged, named: nameSensitive(kf.field), node: b.node(kf.field.Type)}
+		f := &schemaField{key: field.Name(), sf: sf, index: field.Index(), tagged: fieldSensitive(field), named: nameSensitive(sf), node: b.node(sf.Type), access: access}
 		n.fields = append(n.fields, f)
-		n.byKey[kf.key] = f
-		for _, a := range aliasNames(kf.field.Tag) {
-			switch {
-			case !validFieldKey(a) || strings.EqualFold(a, kf.key):
-				b.fail(fmt.Errorf("%w: field %s of %s has alias %q; an alias is another key, of the key grammar", ErrSchema, kf.field.Name, typeText(n.typ), a))
-			case foldedField(n.byKey, a) != nil:
-				b.fail(fmt.Errorf("%w: field %s of %s has alias %q, which is the key of field %s", ErrSchema, kf.field.Name, typeText(n.typ), a, foldedField(n.byKey, a).sf.Name))
-			case foldedField(n.byAlias, a) != nil:
-				b.fail(fmt.Errorf("%w: fields %s and %s of %s both have alias %q (ignoring case)", ErrSchema, foldedField(n.byAlias, a).sf.Name, kf.field.Name, typeText(n.typ), a))
-			default:
-				n.byAlias[a] = f
-			}
-		}
+		n.byKey[f.key] = f
 	}
 }
 
-func foldedField(fields map[string]*schemaField, key string) *schemaField {
-	for name, f := range fields {
-		if strings.EqualFold(name, key) {
-			return f
+func (b *schemaBuilder) validateTags(shape *gowalker.Shape) {
+	for _, field := range shape.DeclaredView() {
+		if err := checkTags(field.DeclaringType(), field.GoField()); err != nil {
+			b.fail(err)
+		}
+		if field.Inline() {
+			b.validateTags(shapeBase(field.Shape()))
 		}
 	}
-	return nil
 }
 
 // checkTags refuses a tag that cannot mean what it says: a sensitive value

@@ -109,14 +109,14 @@ func (s *secretSetter) branch(ctx context.Context, p keyPath, n *schemaNode, v r
 		}
 		key := p.field(f.key)
 		if tag, ok := parseSecretTag(f.sf.Tag.Get("secret")); ok {
-			if fv, err := v.FieldByIndexErr(f.index); err == nil {
+			if fv, err := f.value(v); err == nil {
 				s.set(ctx, key, tag, fv)
 			}
 			continue
 		}
 		switch f.node.kind {
 		case nodeBranch:
-			fv, err := v.FieldByIndexErr(f.index)
+			fv, err := f.value(v)
 			if err != nil {
 				continue // behind a nil pointer: a section no source configured
 			}

@@ -28,3 +28,12 @@ With `WithEnvPrefix("APP")`, `APP_DB_MAX_CONNS` sets the pool size; a file setti
 ```bash
 go get github.com/ashtonian/pkg/config
 ```
+
+## Shared reflection metadata
+
+Config uses [gowalker](https://pkg.go.dev/github.com/ashtonian/pkg/gowalker)
+for struct discovery, naming collisions, inline field routes and cached field
+access. Config retains its own decoding, redaction, validation and source
+precedence rules. Structural inspection and load-time tag validation are
+separate: diagnostics can print live values without decoding their examples.
+Neither metadata cache retains configuration values.

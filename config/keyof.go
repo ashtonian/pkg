@@ -68,7 +68,7 @@ func (f *addressFinder) branch(p keyPath, n *schemaNode, v reflect.Value) {
 	f.visiting[at] = true
 	defer delete(f.visiting, at)
 	for _, sf := range n.fields {
-		fv, err := v.FieldByIndexErr(sf.index)
+		fv, err := sf.value(v)
 		if err != nil {
 			continue // behind a nil pointer: not in cfg
 		}

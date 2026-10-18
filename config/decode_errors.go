@@ -118,8 +118,11 @@ func mayHoldSensitive(t reflect.Type, seen map[reflect.Type]bool) bool {
 	case reflect.Slice, reflect.Array:
 		return mayHoldSensitive(t.Elem(), seen)
 	case reflect.Struct:
-		for i := range t.NumField() {
-			f := t.Field(i)
+		view, err := compileView(t)
+		if err != nil {
+			return true // diagnostics withhold a value whose structure is invalid
+		}
+		for _, f := range view.Root().DeclaredFields() {
 			if !f.IsExported() && !f.Anonymous {
 				continue
 			}

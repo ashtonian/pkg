@@ -58,6 +58,9 @@ func JSONSchema[T any]() (json.RawMessage, error) {
 		return nil, err
 	}
 	doc := g.object(root, cursor{}, defaults)
+	if g.err != nil {
+		return nil, g.err
+	}
 	doc["$schema"] = JSONSchemaDraft
 	doc["title"] = typeText(derefType(t))
 	if len(g.defs) > 0 {
@@ -71,6 +74,7 @@ func JSONSchema[T any]() (json.RawMessage, error) {
 }
 
 type schemaGen struct {
+	err       error
 	defs      map[string]any
 	recursive map[*schemaNode]bool
 	defining  map[*schemaNode]bool
@@ -143,7 +147,7 @@ func (g *schemaGen) object(n *schemaNode, c cursor, val reflect.Value) map[strin
 		fc := c.intoField(f)
 		var fv reflect.Value
 		if val.IsValid() {
-			fv, _ = val.FieldByIndexErr(f.index)
+			fv, _ = f.value(val)
 		}
 		s := g.field(f, fc, fv)
 		props[f.key] = s
@@ -165,8 +169,11 @@ func (g *schemaGen) object(n *schemaNode, c cursor, val reflect.Value) map[strin
 // collects the keys no other field takes — its own, or one of a struct it
 // squashes, as decoding finds it.
 func acceptsUnknownKeys(t reflect.Type) bool {
-	for i := range t.NumField() {
-		f := t.Field(i)
+	view, err := compileView(t)
+	if err != nil {
+		return false
+	}
+	for _, f := range view.Root().DeclaredFields() {
 		_, opts, _ := strings.Cut(f.Tag.Get("koanf"), ",")
 		tagOpts := strings.Split(opts, ",")
 		switch {
@@ -199,11 +206,17 @@ func (g *schemaGen) field(f *schemaField, c cursor, fv reflect.Value) map[string
 	if _, has := f.sf.Tag.Lookup("default"); has && !sensitive && f.node.kind != nodeBranch && fv.IsValid() {
 		w := &valueTree{visiting: map[visit]bool{}}
 		s["default"] = w.value(fv, site{}).plain()
+		if g.err == nil {
+			g.err = w.err
+		}
 	}
 	if ex, has := f.sf.Tag.Lookup("example"); has && !sensitive {
 		if v, err := decodeTag(f.sf.Type, f.sf.Tag, ex); err == nil {
 			w := &valueTree{visiting: map[visit]bool{}}
 			s["examples"] = []any{w.value(v, site{}).plain()}
+			if g.err == nil {
+				g.err = w.err
+			}
 		}
 	}
 	rules(s, f.node, f.sf.Tag.Get("validate"), !sensitive)
