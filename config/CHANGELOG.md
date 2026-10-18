@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.5.0](https://github.com/ashtonian/pkg/compare/config/v0.4.0...config/v0.5.0) (2026-10-18)
+
+
+### ⚠ BREAKING CHANGES
+
+* **config:** config now requires Go 1.27 or later.
+
+### Features
+
+* **config:** adopt shared reflection metadata ([93233a4](https://github.com/ashtonian/pkg/commit/93233a420f3e84da71d53902bfd8b2d0f454e823))
+
 ## [0.4.0](https://github.com/ashtonian/pkg/compare/config/v0.3.1...config/v0.4.0) (2026-10-14)
 
 
