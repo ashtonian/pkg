@@ -20,11 +20,13 @@ jobs:
           # The file watch rests on kqueue there, inotify on Linux.
           - os: macos-latest
             go: stable
-    runs-on: ${{ matrix.os }}
+    if: github.actor_id == '4212452' && (github.event_name != 'pull_request' || (github.event.pull_request.user.id == 4212452 && github.event.pull_request.head.repo.full_name == github.repository))
+    runs-on: ${{ matrix.os == 'ubuntu-latest' && 'arc-pkg' || matrix.os }}
     steps:
       - uses: actions/checkout@v7
-      - uses: actions/setup-go@v7
+      - uses: ./.github/actions/setup-go-cache
         with:
+          workload: ${{ toJSON(matrix) }}
           go-version: ${{ matrix.go }}
           cache-dependency-path: "**/go.sum"
       - name: Config tests
@@ -33,26 +35,34 @@ jobs:
         run: make test-httpx-unit
       - name: HTTPx integration tests with race detection
         run: make test-httpx-integration
+      - name: Trim Go build cache
+        uses: ./.github/actions/trim-go-cache
 
   modules:
     name: module archives, examples and release tooling
-    runs-on: ubuntu-latest
+    if: github.actor_id == '4212452' && (github.event_name != 'pull_request' || (github.event.pull_request.user.id == 4212452 && github.event.pull_request.head.repo.full_name == github.repository))
+    runs-on: arc-pkg
     steps:
       - uses: actions/checkout@v7
-      - uses: actions/setup-go@v7
+      - uses: ./.github/actions/setup-go-cache
         with:
           go-version: stable
           cache-dependency-path: "**/go.sum"
       - run: make release-check
       - run: make cookbook-check
       - run: make tool-check
+      - name: Trim Go build cache
+        uses: ./.github/actions/trim-go-cache
 
   lint:
-    runs-on: ubuntu-latest
+    if: github.actor_id == '4212452' && (github.event_name != 'pull_request' || (github.event.pull_request.user.id == 4212452 && github.event.pull_request.head.repo.full_name == github.repository))
+    runs-on: arc-pkg
     steps:
       - uses: actions/checkout@v7
-      - uses: actions/setup-go@v7
+      - uses: ./.github/actions/setup-go-cache
         with:
           go-version: stable
           cache-dependency-path: "**/go.sum"
       - run: make lint
+      - name: Trim Go build cache
+        uses: ./.github/actions/trim-go-cache

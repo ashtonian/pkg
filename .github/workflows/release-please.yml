@@ -10,7 +10,8 @@ permissions:
 
 jobs:
   release-please:
-    runs-on: ubuntu-latest
+    if: github.actor_id == '4212452' && (github.event_name != 'pull_request' || (github.event.pull_request.user.id == 4212452 && github.event.pull_request.head.repo.full_name == github.repository))
+    runs-on: arc-pkg
     steps:
       # A release PR opened with GITHUB_TOKEN does not trigger CI; set the
       # RELEASE_PLEASE_TOKEN secret (a fine-grained token with contents and
