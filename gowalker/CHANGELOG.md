@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.0](https://github.com/ashtonian/pkg/compare/gowalker/v0.1.1...gowalker/v0.2.0) (2026-10-18)
+
+
+### Features
+
+* **gowalker:** simplify struct tag discovery and named field access ([c7af6a5](https://github.com/ashtonian/pkg/commit/c7af6a5f646aa796689a48d249adb6813e5e2b9e))
+
 ## [0.1.1](https://github.com/ashtonian/pkg/compare/gowalker/v0.1.0...gowalker/v0.1.1) (2026-10-18)
 
 
