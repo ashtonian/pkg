@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.5.1](https://github.com/ashtonian/pkg/compare/config/v0.5.0...config/v0.5.1) (2026-10-18)
+
+
+### Bug Fixes
+
+* **config:** replace retracted MIME detection dependency ([948b1a2](https://github.com/ashtonian/pkg/commit/948b1a261bdfe01bf79d6e14e864e2a2843bdb96))
+
 ## [0.5.0](https://github.com/ashtonian/pkg/compare/config/v0.4.0...config/v0.5.0) (2026-10-18)
 
 

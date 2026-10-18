@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.2.0](https://github.com/ashtonian/pkg/compare/config/kongprovider/v0.1.2...config/kongprovider/v0.2.0) (2026-10-18)
+
+
+### ⚠ BREAKING CHANGES
+
+* **kongprovider:** kongprovider now requires Go 1.27 or later.
+
+### Bug Fixes
+
+* **kongprovider:** validate config schemas before mapping flags ([71c2b55](https://github.com/ashtonian/pkg/commit/71c2b55652f6ffec7c76076699c9b8a3f059a6c7))
+
 ## [0.1.2](https://github.com/ashtonian/pkg/compare/config/kongprovider/v0.1.1...config/kongprovider/v0.1.2) (2026-10-14)
 
 
