@@ -39,6 +39,16 @@ Every module is tagged with its directory as the prefix, as Go expects for a mod
 
 Releases are cut by [release-please](https://github.com/googleapis/release-please) from [Conventional Commits](https://www.conventionalcommits.org) (`feat(config): …`, `fix(kongprovider): …`). Each commit counts toward the modules whose files it touches. release-please keeps one combined release pull request covering the modules with unreleased changes; merging it tags those modules, writes their changelogs and publishes a GitHub release per module. (One pull request per module is not possible here: a module below another, `config/kongprovider` below `config`, would need a release branch nested under the other's.) `feat` raises the minor version and `fix` the patch; a breaking change (`feat(config)!: …`) raises the minor version while the module is at `v0`.
 
+Merge a release PR with a signed merge commit whose diff includes every
+released module. If a changelog needs a follow-up edit, do not fast-forward
+only that final commit onto main: release-please finds each module's boundary
+by the files changed in its release commit. A final commit that changes only
+one module can cause another module's old changes to appear unreleased.
+The configured `last-release-sha` is the shared history floor after config
+`v0.6.0` and gowalker `v0.2.0`; newer per-module releases still determine their
+own boundaries. Leave this floor in place unless intentionally resetting the
+release history.
+
 New modules use `initial-version` in the release configuration to choose
 an initial version; a `0.0.0` manifest entry is only a pre-release marker.
 The httpx modules are configured to start at `v0.1.0`. Before their first tag,

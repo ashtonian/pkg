@@ -6,6 +6,7 @@
   "tag-separator": "/",
   "bump-minor-pre-major": true,
   "separate-pull-requests": false,
+  "last-release-sha": "b98d84c5ce000b457cdec5086dd7897368a96c42",
   "packages": {
     "config": {
       "component": "config",
