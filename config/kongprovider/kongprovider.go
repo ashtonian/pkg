@@ -162,14 +162,15 @@ func WithOverrides(ctx *kong.Context, mapping map[string]string) config.Option {
 //	cfg, err := config.Load[AppConfig](ctx, kongprovider.WithOverridesFromStruct(kctx, &cli.AppConfig))
 //
 // Each flag is mapped to the key of the field it writes, by the field's
-// address (see config.KeyOf), so no tag has to name a flag and no flag name,
+// address (see config.MatchFields), so no tag has to name a flag and no flag name,
 // prefix or alias has to agree with a key; flags outside cfg — the config
 // file's path, say — are the CLI's own and are not forwarded. The typed
 // values are copied when the option is built, so a reloader built from it
 // keeps the command line it started with. A CLI none of whose flags writes
 // into cfg fails the load with config.ErrSource.
 // Invalid config field catalogs fail the load with config.ErrSchema, including
-// when no CLI flag maps to the conflicting fields.
+// when no CLI flag maps to the conflicting fields. Ambiguous field addresses
+// fail with config.ErrKey. Both errors also match config.ErrSource during loading.
 func WithOverridesFromStruct[T any](ctx *kong.Context, cfg *T) config.Option {
 	values, flags, err := typedValues(ctx, cfg)
 	return config.WithOverrideProvider(provider{values: values, flags: flags, err: err}, nil)
@@ -196,17 +197,16 @@ func WithOverridesFromStruct[T any](ctx *kong.Context, cfg *T) config.Option {
 // run after every source, are the ones that apply.
 // An invalid config field catalog returns config.ErrSchema during parser
 // construction, even when the conflicting fields have no CLI flags.
+// Ambiguous field addresses return config.ErrKey.
 func HelpFromConfig[T any](cfg *T, envPrefix string) kong.Option {
 	return kong.PostBuild(func(k *kong.Kong) error {
-		if _, err := config.FieldsChecked[T](); err != nil {
+		flags := allFlags(k.Model.Node)
+		fields, err := fieldsOfFlags(cfg, flags)
+		if err != nil {
 			return err
 		}
-		for _, fl := range allFlags(k.Model.Node) {
-			f, ok, err := fieldOfFlag(cfg, fl)
-			if err != nil {
-				return err
-			}
-			if ok {
+		for _, fl := range flags {
+			if f, ok := fields[fl]; ok {
 				describe(fl, f, envPrefix)
 			}
 		}
@@ -234,21 +234,23 @@ func describe(fl *kong.Flag, f config.Field, envPrefix string) {
 	fl.Help = strings.TrimSpace(fl.Help + " (" + strings.Join(hints, "; ") + ")")
 }
 
-// fieldOfFlag returns the field of cfg that flag fl writes; ok is false for a
-// flag of the CLI's own.
-func fieldOfFlag[T any](cfg *T, fl *kong.Flag) (f config.Field, ok bool, err error) {
-	if !fl.Target.IsValid() || !fl.Target.CanAddr() {
-		return config.Field{}, false, nil
+// fieldsOfFlags associates all targets in one traversal of this config instance.
+func fieldsOfFlags[T any](cfg *T, flags []*kong.Flag) (map[*kong.Flag]config.Field, error) {
+	targets := make([]reflect.Value, len(flags))
+	for i, fl := range flags {
+		targets[i] = fl.Target
 	}
-	key, err := config.KeyOfValue(cfg, fl.Target)
-	switch {
-	case errors.Is(err, config.ErrSchema):
-		return config.Field{}, false, err
-	case err != nil:
-		return config.Field{}, false, nil
+	matches, err := config.MatchFields(cfg, targets)
+	if err != nil {
+		return nil, err
 	}
-	f, err = config.FieldFor[T](key)
-	return f, err == nil, err
+	fields := make(map[*kong.Flag]config.Field, len(matches))
+	for i, match := range matches {
+		if match.Path != "" {
+			fields[flags[i]] = match
+		}
+	}
+	return fields, nil
 }
 
 // typedValues copies the value of every flag typed on the command line that
@@ -257,18 +259,11 @@ func typedValues[T any](ctx *kong.Context, cfg *T) (map[string]any, map[string]s
 	if cfg == nil {
 		return nil, nil, errors.New("kongprovider: nil config")
 	}
-	if _, err := config.FieldsChecked[T](); err != nil {
+	fields, err := fieldsOfFlags(cfg, allFlags(ctx.Model.Node))
+	if err != nil {
 		return nil, nil, err
 	}
-	writes := false
-	for _, fl := range allFlags(ctx.Model.Node) {
-		_, ok, err := fieldOfFlag(cfg, fl)
-		if err != nil {
-			return nil, nil, err
-		}
-		writes = writes || ok
-	}
-	if !writes {
+	if len(fields) == 0 {
 		return nil, nil, fmt.Errorf("kongprovider: no flag of the CLI %s writes a field of the supplied config; pass a pointer into the parsed CLI struct", ctx.Model.Name)
 	}
 	values, flags := make(map[string]any), make(map[string]string)
@@ -276,10 +271,7 @@ func typedValues[T any](ctx *kong.Context, cfg *T) (map[string]any, map[string]s
 		if el.Flag == nil || el.Resolved {
 			continue
 		}
-		f, ok, err := fieldOfFlag(cfg, el.Flag)
-		if err != nil {
-			return nil, nil, err
-		}
+		f, ok := fields[el.Flag]
 		if ok {
 			values[f.Path] = copyValue(el.Flag.Target)
 			flags[f.Path] = el.Flag.Name

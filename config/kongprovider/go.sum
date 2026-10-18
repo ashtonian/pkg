@@ -4,8 +4,8 @@ github.com/alecthomas/kong v1.16.1 h1:ixhCt93XkJ98kGposQ54+bl0IK6XwqB40AsMynU7Z8
 github.com/alecthomas/kong v1.16.1/go.mod h1:wrlbXem1CWqUV5Vbmss5ISYhsVPkBb1Yo7YKJghju2I=
 github.com/alecthomas/repr v0.5.2 h1:SU73FTI9D1P5UNtvseffFSGmdNci/O6RsqzeXJtP0Qs=
 github.com/alecthomas/repr v0.5.2/go.mod h1:Fr0507jx4eOXV7AlPV6AVZLYrLIuIeSOWtW57eE/O/4=
-github.com/ashtonian/pkg/config v0.5.0 h1:oORacAA1HtIDiOM/CCyH0sMhebqQ2WQQRsrGnZL0Bcw=
-github.com/ashtonian/pkg/config v0.5.0/go.mod h1:vBChN4xfTXSkFTdG4J5sDgLE8adanc4nbDtkwp5GLlQ=
+github.com/ashtonian/pkg/config v0.6.0 h1:ewMkjUlvdA4S8mAD9/72q14OdahDI9Rc4k3xRWLHFsQ=
+github.com/ashtonian/pkg/config v0.6.0/go.mod h1:kDCva9/0tfL5Q2H95KEgW6ixVGsp2lfg6xIvCM6m5xI=
 github.com/ashtonian/pkg/gowalker v0.1.0 h1:f8kTOGpmWU1OLNsZDbqX54JxwkCXw4i2gXd38c7v2OY=
 github.com/ashtonian/pkg/gowalker v0.1.0/go.mod h1:xJM4ID4zwmfvussuRaLJMGn+3bUeNGLlETMCdOfmn0o=
 github.com/fsnotify/fsnotify v1.10.1 h1:b0/UzAf9yR5rhf3RPm9gf3ehBPpf0oZKIjtpKrx59Ho=

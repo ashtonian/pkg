@@ -121,7 +121,17 @@ $ app --help
 
 Kong records every flag it parses from argv as an element of `kong.Context.Path`, under the flag's canonical name whatever spelling was typed — long, short, alias, `--flag=value`, or negated `--no-flag` — with the value already applied. Values supplied by Kong resolvers are marked `Resolved`, defaults never appear, and tokens after `--` are positional. `New` forwards exactly the unresolved flag elements it has a mapping for. `Flag.Set` is not used: Kong sets it for applied defaults too.
 
-`WithOverridesFromStruct(kctx, &cli.AppConfig)` takes the config struct inside the parsed CLI struct — embedded, named, or the CLI struct itself — and maps each typed flag whose target is a field of it to that field's key, through `config.KeyOfValue`: by the field's address, so a flag's name, prefix or alias never has to agree with anything, and a sibling command's flag with the same name cannot reach a config key. Flags outside it, such as `--config`, are the CLI's own and are not forwarded. The typed values are copied deeply when the option is built — through pointers, slices and maps — so a reloader built from it keeps the command line it started with, whatever later writes to the flags' targets. A pointer that no flag of the CLI writes into fails the load with `config.ErrSource`.
+`WithOverridesFromStruct(kctx, &cli.AppConfig)` takes the config struct inside
+the parsed CLI struct: embedded, named, or the CLI struct itself. It matches
+all flag destinations by address in one traversal using `config.MatchFields`.
+A flag's name, prefix or alias does not need to match a config key. A sibling
+command's flag with the same name cannot override that key unless it writes
+into the supplied config. CLI-only fields such as `--config` are not forwarded.
+
+The option keeps a deep copy of typed values, including pointers, slices and
+maps. A reloader therefore keeps the command line it started with even if the
+CLI values change later. A config with no matching flag destinations fails the
+load with `config.ErrSource`.
 
 Mapped values unflatten into the key tree, so a flag for `db.host` overrides that nested key. The provider loads through `config.WithOverrideProvider`, above the environment. It is a `config.OriginProvider`: in a snapshot with provenance (`config.LoadSnapshot`, a reloader `WithProvenance`), each value it set is attributed to its flag by canonical name — `flag --db-host`, however it was typed — rather than to "override provider 0".
 
@@ -162,6 +172,11 @@ catalog, including fields with no matching CLI flag. Conflicting keys, such as
 `config.ErrSchema`. `HelpFromConfig` reports it when Kong builds the parser;
 `WithOverridesFromStruct` retains it in the returned option and reports it during
 config loading. This structural check does not decode defaults or example tags.
+
+Both operations report ambiguous field addresses with `config.ErrKey` rather
+than choosing a key. Matching uses the current instance, never caches addresses
+globally, and never allocates missing pointer ancestors. Loading still validates
+and decodes defaults; reading metadata does not.
 
 ## License
 

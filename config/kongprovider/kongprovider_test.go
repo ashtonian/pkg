@@ -2,6 +2,7 @@ package kongprovider
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -380,4 +381,52 @@ func TestConfigAdaptersRejectInvalidSchemaWithoutMatchingFlags(t *testing.T) {
 	_, err = config.Load[struct{ File string }](context.Background(), WithOverridesFromStruct(ctx, &c))
 	require.ErrorIs(t, err, config.ErrSchema)
 	require.ErrorIs(t, err, config.ErrSource)
+}
+
+func TestConfigAdaptersRejectAmbiguousAddresses(t *testing.T) {
+	type section struct {
+		Port int `koanf:"port"`
+	}
+	type settings struct {
+		Primary   *section `koanf:"primary" embed:"" prefix:"primary-"`
+		Secondary *section `koanf:"secondary" embed:"" prefix:"secondary-"`
+	}
+	var cli settings
+	// Kong allocates embedded pointers while building; alias them afterward.
+	alias := kong.PostBuild(func(*kong.Kong) error {
+		cli.Secondary = cli.Primary
+		return nil
+	})
+	_, err := kong.New(&cli, alias, HelpFromConfig(&cli, "APP"))
+	require.ErrorIs(t, err, config.ErrKey)
+	parser, err := kong.New(&cli)
+	require.NoError(t, err)
+	ctx, err := parser.Parse([]string{"--primary-port", "8080"})
+	require.NoError(t, err)
+	cli.Secondary = cli.Primary
+	_, err = config.Load[settings](context.Background(), WithOverridesFromStruct(ctx, &cli))
+	require.ErrorIs(t, err, config.ErrKey)
+	require.ErrorIs(t, err, config.ErrSource)
+}
+
+type deferredDecode string
+
+func (*deferredDecode) UnmarshalText([]byte) error { return errors.New("decode during load") }
+
+func TestConfigAdaptersDoNotDecodeMetadata(t *testing.T) {
+	type settings struct {
+		Port   int            `koanf:"port"`
+		Hidden deferredDecode `koanf:"hidden" default:"value" kong:"-"`
+	}
+	var cli settings
+	parser, err := kong.New(&cli, HelpFromConfig(&cli, "APP"))
+	require.NoError(t, err)
+	ctx, err := parser.Parse([]string{"--port", "8080"})
+	require.NoError(t, err)
+	values, _, err := typedValues(ctx, &cli)
+	require.NoError(t, err)
+	assert.Equal(t, map[string]any{"port": 8080}, values)
+	_, err = config.Load[settings](context.Background(), WithOverridesFromStruct(ctx, &cli))
+	require.Error(t, err, "loading must still decode defaults")
+	assert.Contains(t, err.Error(), "decode during load")
 }
