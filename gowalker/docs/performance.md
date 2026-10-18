@@ -18,9 +18,10 @@ for occasional access, and include compilation/resolution costs on every call.
 - Resolved reads avoid repeated field discovery. Reading a struct from a map can
   allocate because reflection materializes the map entry. Boxing a scalar through
   `Interface()` or binding a declared interface root can also allocate.
-- Writes preserve existing reference identity. Map-held structs, arrays and boxed
-  interface values can require detached owners and writeback. Creating optional
-  pointers/maps and checked numeric conversion have their own allocation costs.
+- Writes through existing pointers, maps and slices update shared storage.
+  Assigning a terminal reference can replace it. Map-held structs, arrays and
+  boxed interface values can require detached owners and writeback. Creating
+  optional pointers/maps and checked numeric conversion have their own allocation costs.
 - Walkers return retainable paths/routes, track active ancestors and order map
   keys. These operations allocate. Prune a container when its contents are not
   needed; sorted maps larger than the remaining node budget fail before key

@@ -173,6 +173,7 @@ Errors support `errors.Is` with `ErrSchema`, `ErrPath`, `ErrType`, `ErrMissing`,
 `ErrNil`, `ErrAccess`, `ErrIndex`, `ErrKey`, `ErrConversion`, `ErrCallback`, and
 `ErrLimit`. Use `errors.As` to obtain a
 `*gowalker.Error` with operation, typed path, failing step, type and wrapped cause.
+
 | Error | Typical cause |
 |---|---|
 | `ErrSchema` | Conflicting names, invalid inline rules or engine settings |

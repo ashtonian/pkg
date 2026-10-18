@@ -39,7 +39,7 @@ type declaredField struct {
 
 // Shape is an immutable descriptor of an exact declared type. Pointers retain
 // their own descriptor. Recursive relationships refer back to existing Shapes.
-// Atomic marks a policy leaf; its declared relationships remain inspectable.
+// Atomic marks a traversal leaf; its declared relationships remain inspectable.
 type Shape struct {
 	typ          reflect.Type
 	atomic       bool
