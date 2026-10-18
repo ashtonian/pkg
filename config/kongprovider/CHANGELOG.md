@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.1](https://github.com/ashtonian/pkg/compare/config/kongprovider/v0.2.0...config/kongprovider/v0.2.1) (2026-10-18)
+
+
+### Bug Fixes
+
+* **kongprovider:** match flags once and reject ambiguous destinations ([ac8d760](https://github.com/ashtonian/pkg/commit/ac8d760075384f6c966ab4c52c07adf819ab6e2a))
+
 ## [0.2.0](https://github.com/ashtonian/pkg/compare/config/kongprovider/v0.1.2...config/kongprovider/v0.2.0) (2026-10-18)
 
 
