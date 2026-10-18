@@ -5,7 +5,6 @@
 
 ### Features
 
-* **config:** reuse field catalogs and batch reflected field matching ([7ca85a9](https://github.com/ashtonian/pkg/commit/7ca85a9452d3248842bcc86296a1685c2e784357))
 * **config:** reuse field catalogs and match reflected targets in one traversal ([00233e4](https://github.com/ashtonian/pkg/commit/00233e4646aa66ff13e9717b6eda521414316256))
 
 ## [0.5.1](https://github.com/ashtonian/pkg/compare/config/v0.5.0...config/v0.5.1) (2026-10-18)
