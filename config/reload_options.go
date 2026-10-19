@@ -138,6 +138,9 @@ func WithOnReloadError(fn func(trigger string, err error)) ReloadOption {
 //   - Sources that are not files: environment variables and providers. Use
 //     [WithPollInterval], or [Reloader.SourceChanged] from whatever learns of
 //     the change.
+//   - A symlink directly under the filesystem root, such as /var or /tmp on
+//     macOS, being re-pointed. Those belong to the OS; watching / would hold a
+//     descriptor per entry on kqueue and can block on automount points.
 func WithFileWatch(debounce time.Duration) ReloadOption {
 	return func(o *reloadOptions) {
 		o.fileWatch = true

@@ -105,7 +105,7 @@ Keeping the account is cheap: per applier, the reloader holds only the keys wher
 
 ## File watching and Kubernetes
 
-`WithFileWatch` resolves each path the way the kernel does and watches every directory the resolution passes through, so it sees direct writes, rename-based saves, symlink swaps anywhere on the path — including Kubernetes ConfigMap and Secret volume updates, which swap a `..data` symlink rather than write the file — and directories removed or recreated. A periodic recheck catches what sends no event. It cannot see sources that are not files: poll them with `WithPollInterval` or call `SourceChanged`. A volume mounted with `subPath` never updates inside the container; mount it without.
+`WithFileWatch` resolves each path the way the kernel does and watches every directory the resolution passes through, so it sees direct writes, rename-based saves, symlink swaps anywhere on the path — including Kubernetes ConfigMap and Secret volume updates, which swap a `..data` symlink rather than write the file — and directories removed or recreated. A periodic recheck catches what sends no event. It cannot see sources that are not files: poll them with `WithPollInterval` or call `SourceChanged`. A volume mounted with `subPath` never updates inside the container; mount it without. Symlinks directly under the filesystem root, such as `/var` and `/tmp` on macOS, are followed but not watched for re-pointing: they belong to the OS, and watching `/` would hold a descriptor per entry and can block on automount points like `/net`.
 
 ## A reload endpoint
 

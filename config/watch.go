@@ -139,8 +139,8 @@ type resolution struct {
 	// directory. It is the target unless the path ends in a symlink.
 	entry string
 	// dirs are the directories the resolution depends on: each holding a
-	// symlink it passes through, the target's, or — while a component is
-	// missing — the deepest one that exists.
+	// symlink it passes through, except the filesystem root, the target's,
+	// or — while a component is missing — the deepest one that exists.
 	dirs []string
 }
 
@@ -191,7 +191,15 @@ func resolvePath(path string) resolution {
 			dir = next
 			continue
 		}
-		r.dirs = append(r.dirs, dir)
+		// A link directly under the filesystem root — /var, /tmp and /etc on
+		// macOS, /bin and /lib with a merged /usr — belongs to the OS install,
+		// not to a config rollout. Watching the root would hold a descriptor
+		// per entry on kqueue and open automount points such as /net and
+		// /home, which can block indefinitely. A declared path that is itself
+		// such a link is still watched.
+		if p.last || filepath.Dir(dir) != dir {
+			r.dirs = append(r.dirs, dir)
+		}
 		hops++
 		target, err := os.Readlink(next)
 		if err != nil || hops > maxLinkHops {
