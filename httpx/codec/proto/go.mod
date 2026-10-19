@@ -9,5 +9,5 @@ require (
 
 require (
 	github.com/sony/gobreaker/v2 v2.4.0 // indirect
-	golang.org/x/time v0.14.0 // indirect
+	golang.org/x/time v0.16.0 // indirect
 )
