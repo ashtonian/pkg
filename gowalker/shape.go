@@ -132,6 +132,10 @@ func (f *Field) GoField() reflect.StructField { return copyStructField(f.goField
 // Gowalker does not decode or apply tag values.
 func (f *Field) Tags() reflect.StructTag { return f.goField.Tag }
 
+// Tag parses the field's key tag in the "name,options" form. ok is false when
+// the field has no such tag.
+func (f *Field) Tag(key string) (Tag, bool) { return LookupTag(f.goField.Tag, key) }
+
 // Shape returns the declared field type with its field-specific leaf rule.
 func (f *Field) Shape() *Shape { return f.shape }
 
@@ -182,11 +186,8 @@ func (b *builder) build(t reflect.Type, depth int) (*Shape, error) {
 	if depth > limits.MaxDepth || len(b.nodes) >= limits.MaxTypes {
 		return nil, failure("compile", ErrLimit, t, emptyPath, -1, nil)
 	}
-	s := &Shape{typ: t, fold: b.engine.settings.fold}
+	s := &Shape{typ: t, fold: b.engine.settings.fold, atomic: b.engine.settings.isAtomic(t)}
 	b.nodes[t] = s
-	if b.engine.settings.atomic != nil {
-		s.atomic = b.engine.settings.atomic(t)
-	}
 	var err error
 	switch t.Kind() {
 	case reflect.Pointer, reflect.Slice, reflect.Array, reflect.Map:
@@ -252,13 +253,9 @@ func (b *builder) prepare(s *Shape) error {
 	b.prepared[s] = true
 	for i := range s.declared {
 		field := &s.declared[i]
-		rule := FieldRule{Name: field.field.Name}
-		if b.engine.settings.resolver != nil {
-			var err error
-			rule, err = b.engine.settings.resolver(copyStructField(field.field))
-			if err != nil {
-				return failure("compile", ErrSchema, s.typ, emptyPath, -1, err)
-			}
+		rule, err := b.engine.settings.rule(field.field)
+		if err != nil {
+			return failure("compile", ErrSchema, s.typ, emptyPath, -1, err)
 		}
 		if rule.Name == "" {
 			rule.Name = field.field.Name
@@ -321,7 +318,7 @@ func (b *builder) expand(owner, current *Shape, index []int, parents []reflect.S
 			at := append(append([]int(nil), index...), sf.Index...)
 			field = &Field{name: rule.Name, aliases: rule.Aliases, index: at, goField: sf, parents: append([]reflect.StructField(nil), parents...), shape: declared.shape, declaring: current.typ}
 		}
-		for _, name := range append([]string{rule.Name}, rule.Aliases...) {
+		for i, name := range append([]string{rule.Name}, rule.Aliases...) {
 			if name == "" {
 				return failure("compile", ErrSchema, current.typ, emptyPath, -1, nil)
 			}
@@ -330,7 +327,12 @@ func (b *builder) expand(owner, current *Shape, index []int, parents []reflect.S
 				name = foldName(name)
 			}
 			if previous := owner.byName[name]; previous != nil && previous != field {
-				return failure("compile", ErrSchema, owner.typ, emptyPath, -1, &NameConflict{Owner: owner.typ, Name: reportedName, First: previous, Second: field})
+				firstName := previous.name
+				if owner.fold {
+					firstName = foldName(firstName)
+				}
+				conflict := &NameConflict{Owner: owner.typ, Name: reportedName, First: previous, Second: field, firstAlias: firstName != name, secondAlias: i > 0}
+				return failure("compile", ErrSchema, owner.typ, emptyPath, -1, conflict)
 			}
 			owner.byName[name] = field
 		}

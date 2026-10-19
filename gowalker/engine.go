@@ -25,36 +25,87 @@ func DefaultLimits() Limits {
 
 type settings struct {
 	resolver FieldResolver
-	atomic   func(reflect.Type) bool
+	tagged   *tagNaming
+	atomic   []func(reflect.Type) bool
 	fold     bool
 	capacity int
 	limits   Limits
+}
+
+// rule applies the engine's naming convention to one declared field.
+func (s *settings) rule(sf reflect.StructField) (FieldRule, error) {
+	switch {
+	case s.tagged != nil:
+		return s.tagged.rule(sf, s.isAtomic), nil
+	case s.resolver != nil:
+		return s.resolver(copyStructField(sf))
+	}
+	return FieldRule{Name: sf.Name}, nil
+}
+
+func (s *settings) isAtomic(t reflect.Type) bool {
+	for _, classify := range s.atomic {
+		if classify(t) {
+			return true
+		}
+	}
+	return false
 }
 
 // Option configures a new immutable engine. Callbacks must be deterministic and
 // concurrency safe; changing captured state does not reconfigure an engine.
 type Option func(*settings) error
 
-// WithFieldResolver replaces the default naming rule. Visibility checks still
-// apply after the resolver runs; it cannot expose a private field directly.
+// WithFieldResolver replaces the default naming rule; the last WithFieldResolver
+// or [WithTaggedFields] option applies. Visibility checks still apply after the
+// resolver runs; it cannot expose a private field directly.
 func WithFieldResolver(resolver FieldResolver) Option {
 	return func(s *settings) error {
 		if resolver == nil {
 			return ErrSchema
 		}
-		s.resolver = resolver
+		s.resolver, s.tagged = resolver, nil
 		return nil
 	}
 }
 
 // WithAtomicType marks types that named paths must treat as terminal values.
-// The callback receives exact declared types, including pointer types.
+// The callback receives exact declared types, including pointer types. Leaf
+// rules accumulate: a type is a leaf when any WithAtomicType or
+// [WithAtomicImplementers] option reports it.
 func WithAtomicType(classify func(reflect.Type) bool) Option {
 	return func(s *settings) error {
 		if classify == nil {
 			return ErrSchema
 		}
-		s.atomic = classify
+		s.atomic = append(s.atomic, classify)
+		return nil
+	}
+}
+
+// WithAtomicImplementers makes a leaf of every type that implements one of
+// ifaces through its value or its pointer: types that decode, scan or render
+// themselves, such as encoding.TextUnmarshaler (time.Time, netip.Addr) or
+// sql.Scanner. Each element of ifaces must be an interface type.
+func WithAtomicImplementers(ifaces ...reflect.Type) Option {
+	return func(s *settings) error {
+		if len(ifaces) == 0 {
+			return ErrSchema
+		}
+		for _, iface := range ifaces {
+			if iface == nil || iface.Kind() != reflect.Interface {
+				return ErrSchema
+			}
+		}
+		ifaces = append([]reflect.Type(nil), ifaces...)
+		s.atomic = append(s.atomic, func(t reflect.Type) bool {
+			for _, iface := range ifaces {
+				if t.Implements(iface) || t.Kind() != reflect.Interface && reflect.PointerTo(t).Implements(iface) {
+					return true
+				}
+			}
+			return false
+		})
 		return nil
 	}
 }
@@ -109,6 +160,34 @@ func New(options ...Option) (*Engine, error) {
 		}
 	}
 	return &Engine{settings: s, cache: make(map[reflect.Type]*Schema)}, nil
+}
+
+// defaultEngine backs the package-level functions. It is unexported so that no
+// library can change the field rules every other user of the package relies on.
+var defaultEngine = MustNew()
+
+// Default returns the process-wide engine behind [Compile], [CompileType],
+// [Get], [GetAs], [Set], [WalkType] and [WalkValue]: exported Go field names,
+// exact matching, [DefaultLimits] and a cache of 256 root schemas. A library
+// with its own naming rules creates its own engine with [MustNew] or [New].
+func Default() *Engine { return defaultEngine }
+
+// Compile compiles T with the [Default] engine, reusing its cached schema.
+func Compile[T any]() (*Schema, error) { return defaultEngine.Compile[T]() }
+
+// CompileType compiles t with the [Default] engine, reusing its cached schema.
+func CompileType(t reflect.Type) (*Schema, error) { return defaultEngine.CompileType(t) }
+
+// MustNew is New for a package-level engine whose options are fixed in source.
+// It panics if an option is invalid.
+//
+//	var columns = gowalker.MustNew(gowalker.WithTaggedFields("db"))
+func MustNew(options ...Option) *Engine {
+	e, err := New(options...)
+	if err != nil {
+		panic(err)
+	}
+	return e
 }
 
 // Compile compiles T without needing an instance, including an interface T.

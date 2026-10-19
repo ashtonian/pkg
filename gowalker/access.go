@@ -2,6 +2,7 @@ package gowalker
 
 import (
 	"reflect"
+	"strconv"
 
 	"github.com/ashtonian/pkg/gowalker/path"
 )
@@ -17,6 +18,18 @@ const (
 	// Nil means the terminal itself is a nil pointer, map, slice, interface, function or channel.
 	Nil
 )
+
+func (s State) String() string {
+	switch s {
+	case Missing:
+		return "Missing"
+	case Present:
+		return "Present"
+	case Nil:
+		return "Nil"
+	}
+	return "State(" + strconv.Itoa(int(s)) + ")"
+}
 
 // Value is a read result. Type is the declared terminal type when known;
 // DynamicType is the concrete type inside a non-nil interface, or Type otherwise.
@@ -44,7 +57,7 @@ func (v Value) Interface() any {
 	return v.value.Interface()
 }
 
-// Get reads a text path using exported Go names and a short-lived default engine.
+// Get reads a text path using exported Go names and the [Default] engine.
 // Missing map entries and nil ancestors return State Missing with a nil error.
 // Invalid fields, roots, keys or indexes return an error.
 // The root's runtime type is retained, including pointers. Use Engine.Compile when
@@ -58,8 +71,7 @@ func Get(root any, text string) (Value, error) {
 }
 
 func defaultAccessor(root any, text string) (*Accessor, error) {
-	engine, _ := New()
-	schema, err := engine.CompileType(reflect.TypeOf(root))
+	schema, err := CompileType(reflect.TypeOf(root))
 	if err != nil {
 		return nil, err
 	}

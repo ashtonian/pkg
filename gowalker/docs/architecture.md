@@ -13,9 +13,10 @@ application behavior stay in those libraries.
 
 | Object | Contains | Lifetime |
 |---|---|---|
-| `Engine` | Field naming and leaf rules, resource limits, and a schema cache | Reuse for one set of rules |
+| `Engine` | Field naming and leaf rules, resource limits, and a schema cache | Reuse for one set of rules; `Default()` is shared by the package functions |
 | `Schema` | The compiled description of one exact root type under those rules | Reuse for values of that root type |
 | `Shape` / `Field` | Type relationships and field metadata | Owned by the compiled schema |
+| `TypeCache[M]` | Your library's metadata, built once per type from a schema | Reuse for the engine's lifetime |
 | `Accessor` | A resolved path, such as `Database.Port` | Reuse for the same path and schema |
 | `Value` | One read result: presence, types, reached path, and the borrowed Go value | Refers to the caller's value |
 
@@ -50,7 +51,10 @@ No instance is needed, and nil pointers do not prevent type inspection.
 
 The engine then applies field rules to build the visible field list. By default,
 this list contains exported Go fields with their original names and nesting.
-A resolver can rename fields, add aliases, skip fields or inline a struct.
+`WithTaggedFields` names fields by a tag; because it is part of the engine's
+settings rather than an opaque callback, its embedded-struct promotion can see
+the engine's leaf rules and leaves an embedded `time.Time` whole. A resolver can
+rename fields, add aliases, skip fields or inline a struct.
 Inlining gives a descendant a shorter logical name while retaining the complete
 Go field-index route needed to reach it. `DeclaredView` also retains the inline
 owner, so a consumer can inspect tags on that owner.
@@ -123,11 +127,21 @@ see the [walking contract](api.md#type-and-value-walking).
 
 ## Caches and ownership
 
+The package-level functions share one unexported default engine, so repeated
+`gowalker.Get` calls on a type reuse its schema. Its rules are fixed: a library
+that wants other rules creates its own engine instead of changing a process-wide
+setting other libraries depend on.
+
 An engine caches up to 256 root schemas by default. Completed schemas are
 published under a lock; concurrent cold requests can build independently before
 converging on the cached result. Recursive compilation never waits on an
 unfinished cache entry. At capacity, existing entries remain cached and new
 roots compile without being retained. The limit counts roots, not bytes.
+
+A `TypeCache` keeps your build function's result, or error, per exact type,
+bounded by its engine's capacity. Like the engine, it publishes completed results
+under a lock and never waits on an unfinished entry, so a build function may
+request other types.
 
 `Schema.AccessField` caches accessors for its visible root fields. `Resolve`
 and `ResolveText` return uncached accessors; callers retain those for reuse.
@@ -147,7 +161,9 @@ value. Callers synchronize shared values; the engine does not lock or copy them.
 
 | Files | Responsibility |
 |---|---|
-| `engine.go`, `shape.go` | Rules, caches, raw type graphs and visible fields |
+| `engine.go`, `shape.go` | Rules, the default engine, caches, raw type graphs and visible fields |
+| `tags.go` | Tag parsing and the `WithTaggedFields` naming conventions |
+| `cache.go` | `TypeCache`, per-type consumer metadata |
 | `schema.go`, `access.go` | Accessors, root binding and reads |
 | `write.go`, `assign.go` | Write preparation, allocation and checked assignment |
 | `walk*.go` | Type/value traversal, ordering and visitor controls |

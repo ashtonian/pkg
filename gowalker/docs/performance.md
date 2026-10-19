@@ -1,8 +1,9 @@
 # Performance and allocation costs
 
-Reuse an engine per set of field rules and an accessor per frequently used path.
-One-call helpers deliberately create a short-lived engine: they are convenient
-for occasional access, and include compilation/resolution costs on every call.
+Reuse an engine per set of field rules, a `TypeCache` for your own per-type
+metadata, and an accessor per frequently used path. The one-call helpers (`Get`,
+`GetAs`, `Set`, `WalkValue`) reuse the default engine's cached schemas but parse
+and resolve their text path on every call; keep an accessor for a loop.
 
 ## Cost model
 
@@ -26,8 +27,11 @@ for occasional access, and include compilation/resolution costs on every call.
   keys. These operations allocate. Prune a container when its contents are not
   needed; sorted maps larger than the remaining node budget fail before key
   materialization.
-- `Field.Tags()` reads the original tag string without copying an index.
-  Use it when you only need annotations; `GoField()` copies its index slice.
+- `Field.Tag(key)` and `Field.Tags()` read the original tag string without
+  copying an index. Use them when you only need annotations; `GoField()` copies
+  its index slice.
+- A `TypeCache` hit is a read-locked map lookup. Its first request per type
+  compiles (or reuses) the schema and runs your build function.
 - Metadata slice getters return defensive copies. Keep the returned catalog for
   your operation instead of calling the same getter in an inner loop.
 
@@ -47,6 +51,9 @@ fixtures, not every root shape.
 | Cached direct-field accessor, `AccessField` | 0 | 0 |
 | Cached literal-name accessor, `AccessName` | 0 | 0 |
 | Read a tag, `Tags().Lookup("db")` | 0 | 0 |
+| Parse a tag and test an option, `Tag("db")` then `Has("pk")` | 0 | 0 |
+| Cached per-type metadata, `TypeCache.For[T]` | 0 | 0 |
+| One-call read with the default engine, `gowalker.Get(&row, "Child.N")` | 480 | 5 |
 | Read through a pointer, `Child.N` | 0 | 0 |
 | Read from a map of structs, `Rows["one"].N` | 8 | 1 |
 | Read through an interface holding a pointer, `Dynamic.N` | 0 | 0 |

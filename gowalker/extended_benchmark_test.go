@@ -216,3 +216,30 @@ func BenchmarkFieldTags(b *testing.B) {
 		}
 	}
 }
+
+func BenchmarkFieldTag(b *testing.B) {
+	type row struct {
+		ID int `db:"id,pk"`
+	}
+	s := schemaFor[row](b, engine(b))
+	f, _ := s.Root().Lookup("ID")
+	b.ReportAllocs()
+	for b.Loop() {
+		if tag, ok := f.Tag("db"); !ok || !tag.Has("pk") {
+			b.Fatal(tag, ok)
+		}
+	}
+}
+
+func BenchmarkTypeCacheHit(b *testing.B) {
+	cache := gowalker.NewTypeCache(engine(b), func(s *gowalker.Schema) (int, error) { return len(s.Root().Fields()), nil })
+	if _, err := cache.For[accessRoot](); err != nil {
+		b.Fatal(err)
+	}
+	b.ReportAllocs()
+	for b.Loop() {
+		if _, err := cache.For[accessRoot](); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
