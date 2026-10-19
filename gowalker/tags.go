@@ -1,7 +1,9 @@
 package gowalker
 
 import (
+	"cmp"
 	"reflect"
+	"slices"
 	"strings"
 )
 
@@ -46,10 +48,13 @@ func (t Tag) Has(option string) bool {
 // engine's settings, rather than a FieldResolver closure, because promotion
 // must respect the engine's leaf rules: an embedded time.Time stays one field.
 type tagNaming struct {
-	key      string
-	untagged func(string) string
-	promote  bool
-	nested   bool
+	key       string
+	untagged  func(string) string
+	valid     func(string) error
+	promote   bool
+	nested    bool
+	dashComma bool
+	byDepth   bool
 }
 
 // TagOption adjusts the naming convention of [WithTaggedFields].
@@ -75,6 +80,40 @@ func UntaggedName(name func(goName string) string) TagOption {
 // An embedded field with an explicit tag name, or of a leaf type, stays one field.
 func PromoteEmbedded() TagOption {
 	return func(n *tagNaming) error { n.promote = true; return nil }
+}
+
+// DashCommaName excludes a field only when its tag value is exactly "-", and
+// reads "-," followed by options as the name "-" with those options, as
+// encoding/json does: json:"-," and json:"-,omitempty" name a field "-".
+// By default any tag whose name is "-" excludes the field.
+func DashCommaName() TagOption {
+	return func(n *tagNaming) error { n.dashComma = true; return nil }
+}
+
+// ResolveByDepth settles two promoted fields claiming one name as
+// encoding/json does, instead of failing compilation: the shallowest field
+// wins, and among fields at that depth one whose tag names it wins over one
+// named by [UntaggedName]. A tie that remains still fails compilation, where
+// encoding/json would drop every tied field. A shadowed field is absent from
+// Fields and Lookup and stays in its declaring struct's DeclaredView. It
+// requires [PromoteEmbedded]; without it New returns ErrSchema.
+func ResolveByDepth() TagOption {
+	return func(n *tagNaming) error { n.byDepth = true; return nil }
+}
+
+// ValidName checks each name a tag gives a selected field; an error fails
+// compilation with ErrSchema and wraps the error. Use it to refuse names
+// another reader of the tag parses differently, such as a json name holding
+// a quote or backslash, which encoding/json does not read as written. Names
+// from [UntaggedName] are not checked.
+func ValidName(valid func(name string) error) TagOption {
+	return func(n *tagNaming) error {
+		if valid == nil {
+			return ErrSchema
+		}
+		n.valid = valid
+		return nil
+	}
 }
 
 // NestedFields lets paths and walks descend into selected struct, map and
@@ -114,24 +153,88 @@ func WithTaggedFields(key string, options ...TagOption) Option {
 				return err
 			}
 		}
+		if naming.byDepth && !naming.promote {
+			return ErrSchema
+		}
 		s.resolver, s.tagged = nil, naming
 		return nil
 	}
 }
 
-func (n *tagNaming) rule(sf reflect.StructField, atomic func(reflect.Type) bool) FieldRule {
-	tag, _ := LookupTag(sf.Tag, n.key)
-	if tag.Name == "-" {
-		return FieldRule{Skip: true}
+func (n *tagNaming) rule(sf reflect.StructField, atomic func(reflect.Type) bool) (FieldRule, error) {
+	raw, _ := sf.Tag.Lookup(n.key)
+	tag := ParseTag(raw)
+	if raw == "-" || tag.Name == "-" && !n.dashComma {
+		return FieldRule{Skip: true}, nil
 	}
 	if tag.Name == "" && n.promote && sf.Anonymous && promotable(sf.Type, atomic) {
-		return FieldRule{Inline: true}
+		return FieldRule{Inline: true}, nil
 	}
 	name := tag.Name
+	if name != "" && n.valid != nil && sf.IsExported() {
+		if err := n.valid(name); err != nil {
+			return FieldRule{}, err
+		}
+	}
 	if name == "" && n.untagged != nil && sf.IsExported() {
 		name = n.untagged(sf.Name)
 	}
-	return FieldRule{Name: name, Skip: name == "" || !sf.IsExported(), Atomic: !n.nested}
+	return FieldRule{Name: name, Skip: name == "" || !sf.IsExported(), Atomic: !n.nested}, nil
+}
+
+// tagged reports whether f's name comes from its tag rather than from
+// UntaggedName.
+func (n *tagNaming) tagged(f *Field) bool {
+	raw, _ := f.goField.Tag.Lookup(n.key)
+	return ParseTag(raw).Name != ""
+}
+
+// resolveByDepth keeps, for each name more than one of owner's fields
+// claims, the field encoding/json would serialize, and fails on a tie.
+func (n *tagNaming) resolveByDepth(owner *Shape) error {
+	claims := make(map[string][]*Field, len(owner.fields))
+	for _, f := range owner.fields {
+		key := owner.lookupKey(f.name)
+		claims[key] = append(claims[key], f)
+	}
+	kept := owner.fields[:0]
+	for _, f := range owner.fields {
+		rivals := claims[owner.lookupKey(f.name)]
+		if len(rivals) > 1 {
+			ranked := slices.Clone(rivals)
+			slices.SortStableFunc(ranked, func(x, y *Field) int {
+				return cmp.Or(cmp.Compare(len(x.index), len(y.index)), compareBool(!n.tagged(x), !n.tagged(y)))
+			})
+			if len(ranked[0].index) == len(ranked[1].index) && n.tagged(ranked[0]) == n.tagged(ranked[1]) {
+				first, second := ranked[0], ranked[1]
+				if slices.Index(rivals, second) < slices.Index(rivals, first) {
+					first, second = second, first
+				}
+				conflict := &NameConflict{Owner: owner.typ, Name: second.name, First: first, Second: second}
+				return failure("compile", ErrSchema, owner.typ, emptyPath, -1, conflict)
+			}
+			if ranked[0] != f {
+				continue
+			}
+		}
+		kept = append(kept, f)
+	}
+	owner.fields = kept
+	clear(owner.byName)
+	for _, f := range kept {
+		owner.byName[owner.lookupKey(f.name)] = f
+	}
+	return nil
+}
+
+func compareBool(x, y bool) int {
+	switch {
+	case x == y:
+		return 0
+	case !x:
+		return -1
+	}
+	return 1
 }
 
 func promotable(t reflect.Type, atomic func(reflect.Type) bool) bool {

@@ -61,7 +61,9 @@ owner, so a consumer can inspect tags on that owner.
 
 Names and aliases must identify one field. Compilation rejects collisions using
 the same matching rule as lookup: exact matching, or Unicode case folding when
-enabled. Ordinary recursive fields are valid; recursive inline expansion is an
+enabled. Under `ResolveByDepth`, expansion records every claim first and then
+keeps, per name, the field `encoding/json` would serialize, so a shallower field
+can shadow one promoted from an embedded struct; only a tie fails. Ordinary recursive fields are valid; recursive inline expansion is an
 error because it cannot produce a finite flattened field list.
 
 A **leaf** is a value that named paths and walkers may select but do not descend

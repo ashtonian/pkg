@@ -120,6 +120,8 @@ type Event struct {
 var jsonNames = gowalker.MustNew(gowalker.WithTaggedFields("json",
 	gowalker.UntaggedName(func(goName string) string { return goName }),
 	gowalker.PromoteEmbedded(),
+	gowalker.DashCommaName(),
+	gowalker.ResolveByDepth(),
 ))
 
 func main() {
@@ -142,19 +144,27 @@ kind [1] false
 Payload [2] true
 ```
 
-`encoding/json` resolves two promoted fields with one name by depth; this
-convention reports them as a compilation error instead. Only the field naming follows the
-convention; omission, encoding and custom marshalers stay with the codec.
+With these four options the fields are the members `encoding/json` writes.
+`ResolveByDepth` settles two promoted fields with one name as `encoding/json`
+does: the shallowest wins, then a field whose tag names it. A tie that
+remains is a compilation error, where `encoding/json` would drop both fields.
+Without the option every collision is an error, which suits configuration
+keys, where a silent choice hides a mistake. `DashCommaName` reads `json:"-,"`
+as the name `-`. Only the field naming follows the convention; omission,
+encoding and custom marshalers stay with the codec.
 
 | Option | Effect |
 |---|---|
 | none | Exported fields with an explicit tag name, each one whole value |
 | `UntaggedName(fn)` | Exported fields without a tag name are named `fn(goName)` |
 | `PromoteEmbedded()` | An untagged embedded struct, or pointer to one, contributes its fields |
+| `ResolveByDepth()` | A promoted name claimed twice goes to the shallowest field, then to a tagged one; a remaining tie fails compilation. Requires `PromoteEmbedded()` |
+| `DashCommaName()` | Only a tag of exactly `"-"` excludes; `"-,"` and `"-,omitempty"` name the field `-` |
+| `ValidName(fn)` | A tag name `fn` refuses fails compilation, for names another reader parses differently |
 | `NestedFields()` | Paths and walks descend into selected structs, maps and lists |
 
-A tag name of `"-"` always excludes the field; private fields are always
-excluded. For aliases, `,squash`-style option-driven inlining or validating
+A tag name of `"-"` excludes the field, as only the exact tag `"-"` does
+with `DashCommaName`; private fields are always excluded. For aliases, `,squash`-style option-driven inlining or validating
 your tags, write a [field resolver](#write-your-own-field-rules).
 
 ## Nested sections and paths

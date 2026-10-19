@@ -235,6 +235,11 @@ func (b *builder) view(s *Shape) error {
 	if err := b.expand(s, s, nil, nil, make(map[*Shape]bool)); err != nil {
 		return err
 	}
+	if tagged := b.engine.settings.tagged; tagged != nil && tagged.byDepth {
+		if err := tagged.resolveByDepth(s); err != nil {
+			return err
+		}
+	}
 	for _, field := range s.declaredView {
 		if err := b.view(field.shape); err != nil {
 			return err
@@ -323,10 +328,8 @@ func (b *builder) expand(owner, current *Shape, index []int, parents []reflect.S
 				return failure("compile", ErrSchema, current.typ, emptyPath, -1, nil)
 			}
 			reportedName := name
-			if owner.fold {
-				name = foldName(name)
-			}
-			if previous := owner.byName[name]; previous != nil && previous != field {
+			name = owner.lookupKey(name)
+			if previous := owner.byName[name]; previous != nil && previous != field && !b.resolvesByDepth() {
 				firstName := previous.name
 				if owner.fold {
 					firstName = foldName(firstName)
@@ -339,6 +342,22 @@ func (b *builder) expand(owner, current *Shape, index []int, parents []reflect.S
 		owner.fields = append(owner.fields, field)
 	}
 	return nil
+}
+
+// resolvesByDepth reports whether name claims are settled after expansion
+// (ResolveByDepth) rather than refused as they meet.
+func (b *builder) resolvesByDepth() bool {
+	tagged := b.engine.settings.tagged
+	return tagged != nil && tagged.byDepth
+}
+
+// lookupKey is the form of name the shape's lookup and collision checks
+// compare: the name itself, or its case fold.
+func (s *Shape) lookupKey(name string) string {
+	if s.fold {
+		return foldName(name)
+	}
+	return name
 }
 
 func indirectShape(s *Shape) (*Shape, error) {

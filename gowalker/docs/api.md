@@ -95,7 +95,10 @@ Options relax those defaults:
 | Option | Changes |
 |---|---|
 | `UntaggedName(fn)` | An exported field without a tag name, including `db:",option"`, is named `fn(goName)`; an empty result excludes it. `nil` is invalid. |
-| `PromoteEmbedded()` | An embedded struct or pointer to one, without a tag name, contributes its fields as `encoding/json` does. An embedded leaf type stays one field. Two promoted fields with one name fail compilation. |
+| `PromoteEmbedded()` | An embedded struct or pointer to one, without a tag name, contributes its fields as `encoding/json` does. An embedded leaf type stays one field. Two promoted fields with one name fail compilation unless `ResolveByDepth()`. |
+| `ResolveByDepth()` | Two promoted fields claiming one name resolve as `encoding/json` resolves them: the shallowest field wins, and at equal depth a field whose tag names it beats one named by `UntaggedName`. A remaining tie fails compilation with a `*NameConflict` (`encoding/json` drops both). A shadowed field is absent from `Fields` and `Lookup` and stays in its declaring struct's `DeclaredView`. Without `PromoteEmbedded()`, `New` returns ErrSchema. |
+| `DashCommaName()` | Only a tag value of exactly `"-"` excludes a field; `"-,"` followed by options names it `-`, as `encoding/json` does. |
+| `ValidName(fn)` | Each tag name of a selected field is passed to `fn`; an error fails compilation with ErrSchema, wrapping it. Names from `UntaggedName` are not checked. `nil` is invalid. |
 | `NestedFields()` | Selected fields are not leaves: paths such as `server.port` and walks descend into them. |
 
 An empty tag key, or one containing spaces, control characters, a colon or a
@@ -133,7 +136,7 @@ its exported descendants when safe reflection permits access. Inline pointers
 are followed for reads. Writes can allocate exported inline pointers when
 requested; safe reflection cannot allocate an unexported embedded pointer.
 
-Canonical names and aliases share one collision domain. `WithCaseFoldNames`
+Canonical names and aliases share one collision domain (`ResolveByDepth` resolves canonical tag names by depth first). `WithCaseFoldNames`
 uses Unicode simple folding, including equivalences such as S and long s.
 Two different fields claiming equivalent names fail compilation; equivalent
 aliases of the same field are harmless. Inline cycles also fail compilation.

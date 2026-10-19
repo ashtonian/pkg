@@ -36,7 +36,7 @@ type settings struct {
 func (s *settings) rule(sf reflect.StructField) (FieldRule, error) {
 	switch {
 	case s.tagged != nil:
-		return s.tagged.rule(sf, s.isAtomic), nil
+		return s.tagged.rule(sf, s.isAtomic)
 	case s.resolver != nil:
 		return s.resolver(copyStructField(sf))
 	}
