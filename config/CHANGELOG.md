@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.6.1](https://github.com/ashtonian/pkg/compare/config/v0.6.0...config/v0.6.1) (2026-10-19)
+
+
+### Bug Fixes
+
+* **config:** never watch the filesystem root through a root-level symlink ([1c225bb](https://github.com/ashtonian/pkg/commit/1c225bb134a658d3cf295b1a84cdff8f7a2fd25f))
+
 ## [0.6.0](https://github.com/ashtonian/pkg/compare/config/v0.5.1...config/v0.6.0) (2026-10-18)
 
 
