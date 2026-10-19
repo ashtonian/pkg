@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"io/fs"
 	"log/slog"
 	"maps"
 	"os"
@@ -622,6 +623,29 @@ func TestResolvePath_NonDirectoryComponentResolvesNothing(t *testing.T) {
 		require.Error(t, statErr, "the kernel refuses %q", p)
 		assert.Empty(t, resolvePath(p).target, p)
 	}
+}
+
+// A link directly under the filesystem root, such as /var on macOS, is part of
+// the OS install: resolving through it must not make the watch cover the root,
+// whose automount entries can block a watcher indefinitely.
+func TestResolvePath_RootLevelLinkDoesNotWatchRoot(t *testing.T) {
+	var link string
+	for _, name := range []string{"/var", "/tmp", "/etc", "/bin", "/lib"} {
+		info, err := os.Lstat(name)
+		if err != nil || info.Mode()&fs.ModeSymlink == 0 {
+			continue
+		}
+		if target, err := os.Stat(name); err == nil && target.IsDir() {
+			link = name
+			break
+		}
+	}
+	if link == "" {
+		t.Skip("no root-level directory symlink on this system")
+	}
+	r := resolvePath(filepath.Join(link, "config-watch-test-absent", "config.yaml"))
+	assert.NotContains(t, r.dirs, string(filepath.Separator), "resolving through %s", link)
+	assert.NotEmpty(t, r.dirs, "the link's target still bounds the watch")
 }
 
 // resolvePath agrees with the kernel on the shapes a path can take.
