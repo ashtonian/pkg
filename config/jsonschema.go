@@ -7,7 +7,6 @@ import (
 	"maps"
 	"reflect"
 	"regexp"
-	"slices"
 	"strconv"
 	"strings"
 
@@ -174,12 +173,11 @@ func acceptsUnknownKeys(t reflect.Type) bool {
 		return false
 	}
 	for _, f := range view.Root().DeclaredFields() {
-		_, opts, _ := strings.Cut(f.Tag.Get("koanf"), ",")
-		tagOpts := strings.Split(opts, ",")
+		tag := koanfTag(f)
 		switch {
-		case slices.Contains(tagOpts, "remain"):
+		case tag.Has("remain"):
 			return true
-		case slices.Contains(tagOpts, "squash") && f.IsExported():
+		case tag.Has("squash") && f.IsExported():
 			if st := derefType(f.Type); st.Kind() == reflect.Struct && acceptsUnknownKeys(st) {
 				return true
 			}

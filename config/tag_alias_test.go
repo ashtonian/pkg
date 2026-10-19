@@ -65,7 +65,7 @@ func TestAlias_Refused(t *testing.T) {
 	}
 	_, err := Load[collides](t.Context())
 	require.ErrorIs(t, err, ErrSchema)
-	assert.Contains(t, err.Error(), "which field A names as an alias")
+	assert.Contains(t, err.Error(), `field B of config.collides uses the name "b", which is an alias of field A`)
 
 	type shared struct {
 		A int `koanf:"a" alias:"old"`
@@ -73,7 +73,7 @@ func TestAlias_Refused(t *testing.T) {
 	}
 	_, err = Load[shared](t.Context())
 	require.ErrorIs(t, err, ErrSchema)
-	assert.Contains(t, err.Error(), `both have alias "old"`)
+	assert.Contains(t, err.Error(), `fields A and B of config.shared both have the alias "old"`)
 
 	type Inner struct {
 		X int `koanf:"x"`

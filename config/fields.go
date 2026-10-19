@@ -5,6 +5,8 @@ import (
 	"reflect"
 	"slices"
 	"strings"
+
+	"github.com/ashtonian/pkg/gowalker"
 )
 
 // Field is one leaf key of a configuration struct: the unit a default tag, an
@@ -77,14 +79,20 @@ func FieldsChecked[T any]() ([]Field, error) {
 // operator wrote, rather than DB.MaxConns. A field tagged koanf:"-" keeps its
 // Go name, because "-" tells the validator to skip the field.
 func FieldName(f reflect.StructField) string {
-	name, _, _ := strings.Cut(f.Tag.Get("koanf"), ",")
-	switch name {
+	switch name := koanfTag(f).Name; name {
 	case "-":
 		return f.Name
 	case "":
 		return strings.ToLower(f.Name)
+	default:
+		return name
 	}
-	return name
+}
+
+// koanfTag is f's koanf tag: a key segment and options such as squash and remain.
+func koanfTag(f reflect.StructField) gowalker.Tag {
+	tag, _ := gowalker.LookupTag(f.Tag, "koanf")
+	return tag
 }
 
 // fieldKey is the key segment struct field f contributes under the rules on
@@ -94,28 +102,26 @@ func FieldName(f reflect.StructField) string {
 // a pointer it cannot be allocated, and schemas refuse it (see
 // unexportedSquashedPointer).
 func fieldKey(f reflect.StructField) (key string, skip bool) {
-	name, opts, _ := strings.Cut(f.Tag.Get("koanf"), ",")
-	tagOpts := strings.Split(opts, ",")
-	if !f.IsExported() && !(f.Anonymous && f.Type.Kind() == reflect.Struct && slices.Contains(tagOpts, "squash")) {
+	tag := koanfTag(f)
+	if !f.IsExported() && !(f.Anonymous && f.Type.Kind() == reflect.Struct && tag.Has("squash")) {
 		return "", true
 	}
 	switch {
-	case name == "-", slices.Contains(tagOpts, "remain"):
+	case tag.Name == "-", tag.Has("remain"):
 		return "", true
-	case slices.Contains(tagOpts, "squash"):
+	case tag.Has("squash"):
 		return "", false
-	case name == "":
+	case tag.Name == "":
 		return strings.ToLower(f.Name), false
 	}
-	return name, false
+	return tag.Name, false
 }
 
 // unexportedSquashedPointer reports an embedded pointer to an unexported
 // struct tagged to squash, which nothing can allocate: reflection cannot set
 // an unexported field.
 func unexportedSquashedPointer(f reflect.StructField) bool {
-	_, opts, _ := strings.Cut(f.Tag.Get("koanf"), ",")
-	return !f.IsExported() && f.Anonymous && f.Type.Kind() == reflect.Pointer && slices.Contains(strings.Split(opts, ","), "squash")
+	return !f.IsExported() && f.Anonymous && f.Type.Kind() == reflect.Pointer && koanfTag(f).Has("squash")
 }
 
 // isBranch reports whether t is a struct whose fields are keys of their own,

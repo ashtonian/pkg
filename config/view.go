@@ -11,17 +11,11 @@ import (
 
 // Naming and atomicity belong to config; discovery, collisions and physical
 // routes belong to the shared engine. Neither cache retains configuration values.
-var configView = func() *gowalker.Engine {
-	e, err := gowalker.New(
-		gowalker.WithFieldResolver(configField),
-		gowalker.WithCaseFoldNames(),
-		gowalker.WithAtomicType(func(t reflect.Type) bool { return opaque(derefType(t)) }),
-	)
-	if err != nil {
-		panic(err) // all options are fixed and valid
-	}
-	return e
-}()
+var configView = gowalker.MustNew(
+	gowalker.WithFieldResolver(configField),
+	gowalker.WithCaseFoldNames(),
+	gowalker.WithAtomicType(func(t reflect.Type) bool { return opaque(derefType(t)) }),
+)
 
 func configField(sf reflect.StructField) (gowalker.FieldRule, error) {
 	if unexportedSquashedPointer(sf) {
@@ -59,26 +53,13 @@ func compileView(t reflect.Type) (*gowalker.Schema, error) {
 	if err == nil {
 		return s, nil
 	}
+	// A name conflict names its type and both fields; matching is case-folded.
 	var collision *gowalker.NameConflict
 	if errors.As(err, &collision) {
-		a, b := collision.First, collision.Second
-		aKey := strings.EqualFold(a.Name(), collision.Name)
-		bKey := strings.EqualFold(b.Name(), collision.Name)
-		var detail string
-		switch {
-		case aKey && bKey:
-			detail = fmt.Sprintf("fields %s and %s of %s both have key %q (ignoring case)", a.GoField().Name, b.GoField().Name, typeText(collision.Owner), collision.Name)
-		case bKey:
-			detail = fmt.Sprintf("field %s of %s has key %q, which field %s names as an alias", b.GoField().Name, typeText(collision.Owner), collision.Name, a.GoField().Name)
-		case aKey:
-			detail = fmt.Sprintf("field %s of %s has alias %q, which is the key of field %s", b.GoField().Name, typeText(collision.Owner), collision.Name, a.GoField().Name)
-		default:
-			detail = fmt.Sprintf("fields %s and %s of %s both have alias %q (ignoring case)", a.GoField().Name, b.GoField().Name, typeText(collision.Owner), collision.Name)
-		}
-		return nil, fmt.Errorf("%w: %s: %w", ErrSchema, detail, err)
+		return nil, fmt.Errorf("%w: %w (ignoring case)", ErrSchema, collision)
 	}
-	// Resolver errors contain config's tag diagnostics; the shared error's
-	// default text intentionally omits field names and tag values.
+	// A resolver error is config's own tag diagnostic; report it with its type
+	// rather than inside gowalker's wrapper.
 	var failure *gowalker.Error
 	if errors.As(err, &failure) && errors.Is(failure.Cause, ErrSchema) {
 		return nil, fmt.Errorf("%w: %s: %w", ErrSchema, typeText(failure.Type), failure.Cause)
