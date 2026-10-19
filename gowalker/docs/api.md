@@ -9,20 +9,30 @@ lists every exported declaration. Go 1.27+ is required.
 
 | Need | Use | Returns |
 |---|---|---|
-| Read tags without a value instance | `New` → `Compile[T]` → `Root().Fields()` → `field.Tags()` | Field descriptions and raw `reflect.StructTag`; constructors return errors |
-| Select explicit tag names | `New(WithTaggedFields("db"))` → `Compile[T]` | Schema selecting exported, explicitly named fields as whole values |
-| Read or write one named root field repeatedly | `schema.AccessName(name)` | A cached `(*Accessor, error)`; the name is literal |
-| Access a field already discovered | `schema.AccessField(field)` | The same cached accessor, using a visible root field handle |
-| Define custom naming or nesting | `WithFieldResolver(callback)` | An engine option; callback returns `(FieldRule, error)` |
-| Repeated nested access | `schema.ResolveText(text)` / `Resolve(path)` | An uncached `(*Accessor, error)` to retain and reuse |
+| Inspect a type using Go field names | `gowalker.Compile[T]()` / `CompileType(t)` | The `Default` engine's cached `(*Schema, error)` |
+| Your own naming convention | `MustNew(WithTaggedFields(key, options...))` in a package variable | An `*Engine` whose schemas use tag names |
+| Fully custom naming, aliases or validation | `MustNew(WithFieldResolver(callback))` | An `*Engine`; the callback returns `(FieldRule, error)` |
+| Read a field's tags | `field.Tag(key)` / `field.Tags()` | Parsed `(Tag, bool)` / raw `reflect.StructTag` |
+| Compute your metadata once per type | `NewTypeCache(engine, build)` → `cache.For[T]()` | Your `(M, error)`, built once and shared |
+| Read or write one named root field repeatedly | `schema.AccessName(name)` / `AccessField(field)` | A cached `(*Accessor, error)`; the name is literal |
+| Repeated nested access | `schema.ResolveText(text)` / `Resolve(path)` | An uncached `(*Accessor, error)` to retain |
+| Annotations a section passes down | `schema.WalkType(visitor)` with `TypeVisit.Inherited(key)` | The nearest tag value on the route |
 | Read once using Go field names | `gowalker.Get(root, text)` / `GetAs[T](root, text)` | `(Value, error)` with presence, or `(T, error)` |
 | Write once using Go field names | `gowalker.Set(&root, text, input)` | `error`; nil means success |
-| Work with reflection directly | `accessor.GetValue`, `accessor.SetValue`, `schema.WalkValueReflect` | The same operations using an exact `reflect.Value` root |
-| Walk types without an instance | `schema.WalkType` | Visitor callbacks and an error |
+| Work with reflection directly | `accessor.GetValue`, `accessor.SetValue`, `schema.WalkValueReflect` | The same operations on an exact `reflect.Value` root |
 
-One-call helpers create a short-lived default engine each time. For a loop or
-library, retain an engine and schema, then keep an accessor for each repeated
-path. `Resolve` and `ResolveText` do not cache arbitrary paths.
+The package-level functions — `Compile`, `CompileType`, `Get`, `GetAs`, `Set`,
+`WalkType` and `WalkValue` — share one process-wide engine, returned by
+`Default()`: exported Go field names, exact matching, `DefaultLimits` and a
+256-schema cache. Its rules cannot be changed, because every library in the
+process shares it. A library with its own rules keeps its own engine:
+
+    var columns = gowalker.MustNew(gowalker.WithTaggedFields("db"))
+
+`New` returns `(*Engine, error)` for options built at run time; `MustNew` panics
+on an invalid option, like `regexp.MustCompile`. The one-call helpers reuse the
+default engine's schemas but resolve their text path on each call; retain an
+accessor from `ResolveText` for a loop.
 
 `AccessName` follows root pointers and looks up one name or alias. It returns
 `ErrType` for a non-struct root and `ErrPath` for an unknown name, an atomic root
@@ -36,53 +46,82 @@ roots, follow `Elem()` to find that struct. It rejects fields from another schem
 nested owners, or inline declarations that are expanded rather than directly
 visible. Repeated calls for one field return the same accessor.
 
-Construct engines with `New`; use the schema, accessor, shape and field handles
-returned by the API. Their nil/zero values are not usable handles. Engines and
-schemas must not be copied. Rule callbacks must be deterministic and safe for
-concurrent calls, including duplicate calls during concurrent cold compilation.
-Caches retain metadata, never the instances passed to reads or writes.
+Use the schema, accessor, shape and field handles returned by the API; their
+nil/zero values are not usable. Engines, schemas and type caches must not be
+copied. Rule and build callbacks must be deterministic and safe for concurrent
+calls, including duplicate calls during concurrent cold compilation. Caches
+retain metadata, never the instances passed to reads or writes.
 
 ## Generics and the Go baseline
 
 Go 1.27 is required. Its [generic methods](https://go.dev/doc/go1.27#language)
-allow `engine.Compile[Config]()` and `accessor.GetAs[int](cfg)` without separate
-wrapper types or package-level helpers for each reusable operation. The one-call
-`gowalker.GetAs[T]` delegates to that same accessor method. `CompileType` handles
-runtime types through the same compiler, using `reflect.TypeFor[T]` for typed calls.
+allow `engine.Compile[Config]()`, `cache.For[Config]()` and
+`accessor.GetAs[int](cfg)` without wrapper types or package-level helpers for
+each operation. `CompileType` and `TypeCache.Get` handle runtime types through
+the same code, using `reflect.TypeFor[T]` for typed calls.
 
 The return type is checked for assignability at runtime because paths, field rules
 and interface contents can be dynamic. Generics do not validate a string path at
 compile time or eliminate the need for reflection. Named types and typed nils
 retain the same contracts as ordinary reads; generic reads never decode or coerce.
 
-## Tags and named fields
+## Tags and naming conventions
 
-`field.Tags()` returns `reflect.StructTag` without copying field indexes.
-`Tags().Lookup("default")` returns `(text, present)` and preserves the difference
-between an absent tag and an explicit empty value. It does not decode defaults,
-validation expressions, secret paths or any other annotations.
+`field.Tag(key)` and `LookupTag(tag, key)` parse one tag in the
+`name,option,option` form and return `(Tag, bool)`; the bool is false when the
+key is absent, so `db:""` and a missing tag stay distinct. `Tag.Name` is the
+text before the first comma and `Tag.Options` the unparsed rest; `Has(option)`
+matches one comma-separated option exactly, without trimming spaces.
+`ParseTag(value)` splits a value you already have. `field.Tags()` returns the
+raw `reflect.StructTag` for tags with other syntax, such as `validate:"min=1"`.
+Gowalker never decodes tag values.
 
-`WithTaggedFields(tag)` replaces the field resolver with a direct-field preset:
+`WithTaggedFields(key, options...)` names fields by that tag. Without options:
 
 | Declaration | Result |
 |---|---|
 | `ID int` tagged `db:"id"` | Visible field named `id` |
-| `ID int` tagged `db:"id,option"` | Visible field named `id`; suffix ignored |
-| Missing tag, `db:""`, `db:",option"`, `db:"-"`, `db:"-,option"` | Excluded |
+| `ID int` tagged `db:"id,option"` | Visible field named `id`; options ignored |
+| Missing tag, `db:""`, `db:",option"` | Excluded |
+| `db:"-"`, `db:"-,option"` | Excluded |
 | Private field, with or without a tag | Excluded |
 | `db:" id "` or `db:"id.part"` | Exact name preserved, including spaces or dots |
-| Tagged struct or pointer payload | One leaf field, read or replaced whole |
-| Embedded field without an explicit name | Excluded; no implicit promotion |
+| Tagged struct, map, list or pointer | One leaf field, read or replaced whole |
+| Embedded field without an explicit name | Excluded; not promoted |
 | Two selected fields with the same name | Compilation error matching ErrSchema |
 
-An empty tag key or one containing spaces, control characters, a colon or a
-quote is an invalid option and returns ErrSchema from New. Tag names are case
-sensitive; WithCaseFoldNames affects selected field names only. The last
-WithTaggedFields or WithFieldResolver option supplies the resolver.
+Options relax those defaults:
 
-This preset does not implement JSON/YAML embedding, omission or decoding rules.
-Use custom field rules for those conventions. Compile still retains raw payload
-types and counts them against its limits, even though the fields are leaves.
+| Option | Changes |
+|---|---|
+| `UntaggedName(fn)` | An exported field without a tag name, including `db:",option"`, is named `fn(goName)`; an empty result excludes it. `nil` is invalid. |
+| `PromoteEmbedded()` | An embedded struct or pointer to one, without a tag name, contributes its fields as `encoding/json` does. An embedded leaf type stays one field. Promoted collisions are errors, not silent choices. |
+| `NestedFields()` | Selected fields are not leaves: paths such as `server.port` and walks descend into them. |
+
+An empty tag key, or one containing spaces, control characters, a colon or a
+quote, returns ErrSchema from New, as does a nil option. Tag keys are case
+sensitive; `WithCaseFoldNames` affects selected field names only. The last
+`WithTaggedFields` or `WithFieldResolver` option supplies the naming rule.
+
+The presets name fields. They do not implement omission, decoding, custom
+marshalers or a codec's tie-breaking rules. Compile still retains raw payload
+types and counts them against its limits, even when fields are leaves.
+
+## Per-type metadata
+
+`NewTypeCache(engine, build)` returns a `*TypeCache[M]` whose `For[T]()` and
+`Get(t)` return `build`'s result for that exact type, computed once from the
+engine's schema. Typical `M` values are a column list with accessors, parsed
+tag options, or a help-text catalog. Results and errors are both retained, for
+up to the engine's cache capacity of types; beyond it, or with capacity zero,
+each call compiles and builds again.
+
+Concurrent first requests for one type can each run `build`; one result is kept,
+so `build` must be deterministic and free of side effects that matter. `build`
+may request other types from the same cache. A recursive type must not request
+itself, or it recurses forever: track the types in progress inside `build`.
+A compilation error is returned unchanged; a `build` error is returned as built.
+`NewTypeCache` panics on a nil engine or build function.
 
 ## Field views
 
@@ -107,8 +146,16 @@ marks the field's shape as a leaf without changing other uses of its Go type.
 “Atomic” is a traversal rule, not a synchronization guarantee.
 The whole field can still be read or replaced, while paths cannot descend into
 it and walks visit it as a terminal. `Atomic` and `Inline` together are invalid;
-`Skip` takes precedence. `WithAtomicType` applies the same leaf rule to every use
-of a type. Both retain raw type structure and its compilation-budget cost.
+`Skip` takes precedence.
+
+`WithAtomicType(classify)` makes every use of a type a leaf; the callback
+receives exact declared types, including pointers. `WithAtomicImplementers(ifaces...)`
+makes a leaf of every type implementing one of the interfaces through its value
+or pointer, such as `encoding.TextUnmarshaler` or `sql.Scanner`; a non-interface
+argument returns ErrSchema. Leaf rules accumulate: a type is a leaf when any rule
+matches. A struct embedding a type with methods gains those methods, so
+embedding `time.Time` makes the outer struct a `TextUnmarshaler` and a leaf.
+Leaves retain raw type structure and its compilation-budget cost.
 
 `Shape.Fields()` returns visible handles in declaration/inline order. Each field
 provides its declared `Type`, raw `Tags`, Go `StructField`, declared `Shape`, copied physical `Index`,
@@ -226,8 +273,15 @@ Errors support `errors.Is` with `ErrSchema`, `ErrPath`, `ErrType`, `ErrMissing`,
 | `ErrLimit` | A configured resource budget was exceeded |
 
 Type-walk failures also carry `TypeRoute`, a detached schema route.
-Default error text omits raw keys, names and values. Callers choose how to display
-those details. `GetAs` returns `ErrMissing` rather than replacing missing with zero.
+
+Error text names the operation, the Go type and the cause, such as
+`gowalker: compile app.Row: invalid schema: fields ID and Owner of app.Row both
+use the name "id"`. Schema errors come from declarations, so they name fields,
+tags and resolver messages. Text never includes path steps, map keys or values,
+which can be caller data; read `Error.Path` and `Error.Step` to show a location
+under your own policy. A `*NameConflict` also exposes `Owner`, `Name`, `First`
+and `Second` for a custom message. `GetAs` returns `ErrMissing` rather than
+replacing missing with zero. `State` values print as `Present`, `Nil` and `Missing`.
 
 ## Writes
 
@@ -274,12 +328,19 @@ location writes, with no collection deletion, slice growth or batch transaction.
 ## Type and value walking
 
 Use `schema.WalkType(visitor, options...)` to inspect the named type graph, or
-`WalkType[T]` for a one-call default view. Each `TypeVisit` includes `Shape`,
+`WalkType[T]` with the default engine. Each `TypeVisit` includes `Shape`,
 `Kind`, `Depth` and a copied `Route`. A `TypeEdge` identifies a field, pointer
 dereference, or possible collection element. An element route is not an accessor
 path and contains no fake map key/index. Map keys are metadata and are not walked.
 Interfaces and atomic types are leaves. A type already active on the ancestor
 route emits `Reference`; repeated types on separate branches remain visitable.
+
+`TypeVisit.Inherited(key)` returns the value of tag `key` on the nearest field
+of the route that declares it: the visited field, then each enclosing field,
+including the embedded owners an inlined field was promoted through. It returns
+`("", false)` when no field on the route has the tag. Use it for annotations a
+section passes down, such as `sensitive:"true"` or `reload:"hot"`, where a deeper
+tag overrides an outer one.
 
 `schema.WalkValue(root, visitor, options...)` shares Get's root binding.
 `WalkValue(root, visitor, options...)` supplies the default view; the reflect entry
@@ -315,7 +376,7 @@ keys; prune the map node to inspect only the container.
 
 | Setting | Default | Counting rule |
 |---|---:|---|
-| Cache capacity | 256 | Root schemas, including their complete raw graphs |
+| Cache capacity | 256 | Root schemas, including their complete raw graphs; also each `TypeCache`'s retained types |
 | `MaxTypes` | 4096 | Unique declared types in one compilation |
 | `MaxFields` | 65536 | Raw declared fields plus visits while expanding named views |
 | `MaxDepth` | 128 | First-visit type edges, inline expansion depth, or consecutive runtime pointer/interface hops |

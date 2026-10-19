@@ -459,3 +459,108 @@ func ExampleSchema_AccessName() {
 	fmt.Println(value)
 	// Output: 42
 }
+
+func ExampleCompile() {
+	type Settings struct {
+		Port int `env:"PORT" default:"8080"`
+	}
+	schema, err := gowalker.Compile[Settings]()
+	if err != nil {
+		panic(err)
+	}
+	field, _ := schema.Root().Lookup("Port")
+	env, _ := field.Tag("env")
+	fmt.Println(field.Name(), env.Name, field.Tags().Get("default"))
+	// Output: Port PORT 8080
+}
+
+func ExampleParseTag() {
+	tag := gowalker.ParseTag("id,pk,omitempty")
+	fmt.Println(tag.Name, tag.Has("pk"), tag.Has("unique"))
+	// Output: id true false
+}
+
+func ExampleWithTaggedFields_conventions() {
+	type Base struct {
+		ID int `json:"id"`
+	}
+	type Event struct {
+		Base
+		Kind string
+	}
+	engine := gowalker.MustNew(gowalker.WithTaggedFields("json",
+		gowalker.UntaggedName(strings.ToLower),
+		gowalker.PromoteEmbedded(),
+	))
+	schema, err := engine.Compile[Event]()
+	if err != nil {
+		panic(err)
+	}
+	for _, field := range schema.Root().Fields() {
+		fmt.Println(field.Name(), field.Index())
+	}
+	// Output:
+	// id [0 0]
+	// kind [1]
+}
+
+func ExampleNewTypeCache() {
+	type Row struct {
+		ID    int    `db:"id,pk"`
+		Email string `db:"email"`
+	}
+	columns := gowalker.NewTypeCache(gowalker.MustNew(gowalker.WithTaggedFields("db")),
+		func(s *gowalker.Schema) ([]string, error) {
+			var names []string
+			for _, field := range s.Root().Fields() {
+				names = append(names, field.Name())
+			}
+			return names, nil
+		})
+	names, err := columns.For[Row]()
+	if err != nil {
+		panic(err)
+	}
+	fmt.Println(names)
+	// Output: [id email]
+}
+
+func ExampleTypeVisit_Inherited() {
+	type Auth struct{ Token string }
+	type Config struct {
+		Auth Auth `sensitive:"true"`
+		Host string
+	}
+	schema, err := gowalker.Compile[Config]()
+	if err != nil {
+		panic(err)
+	}
+	err = schema.WalkType(func(v gowalker.TypeVisit) (gowalker.Control, error) {
+		if v.Shape.Kind() == reflect.String {
+			_, sensitive := v.Inherited("sensitive")
+			fmt.Println(v.Route[len(v.Route)-1].Field.Name(), sensitive)
+		}
+		return gowalker.Continue, nil
+	})
+	if err != nil {
+		panic(err)
+	}
+	// Output:
+	// Token true
+	// Host false
+}
+
+func ExampleWithAtomicImplementers() {
+	type Config struct {
+		Started time.Time
+		Name    string
+	}
+	engine := gowalker.MustNew(gowalker.WithAtomicImplementers(reflect.TypeFor[encoding.TextUnmarshaler]()))
+	schema, err := engine.Compile[Config]()
+	if err != nil {
+		panic(err)
+	}
+	started, _ := schema.Root().Lookup("Started")
+	fmt.Println(started.Shape().Atomic())
+	// Output: true
+}

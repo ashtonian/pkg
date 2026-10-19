@@ -5,7 +5,7 @@ its own dependencies, version, changelog and releases.
 
 | Module | Import path | Purpose |
 |---|---|---|
-| [gowalker](gowalker/README.md) | `github.com/ashtonian/pkg/gowalker` | Build libraries around struct tags: discover fields, inspect annotations and reuse field readers/writers. |
+| [gowalker](gowalker/README.md) | `github.com/ashtonian/pkg/gowalker` | Struct-tag plumbing for libraries users configure with tags: field naming conventions, per-type metadata caching, inherited section tags, field readers/writers. |
 | [config](config/README.md) | `github.com/ashtonian/pkg/config` | Typed, layered configuration with validation, hot reload and redaction. |
 | [httpx](httpx/README.md) | `github.com/ashtonian/pkg/httpx` | HTTP standards and resilience: retries, circuit breaking, caching, compression and request budgets for `net/http`. |
 | [Kong provider](config/kongprovider/README.md) | `github.com/ashtonian/pkg/config/kongprovider` | CLI flags as config overrides, with help derived from the config struct. |
@@ -40,8 +40,8 @@ or the [standard-client example](httpx/README.md#quick-start).
 
 ## Documentation
 
-- [Gowalker quick start](gowalker/README.md): read struct tags and reuse field information in your library, with exact example output.
-- [Gowalker guides](gowalker/docs/README.md): tagged columns, custom field rules, returned values, API contracts and allocation costs.
+- [Gowalker quick start](gowalker/README.md): when to use it, picking a tag naming convention, reading your first tags.
+- [Gowalker recipes](gowalker/docs/usage.md): per-type metadata, `json`/`koanf` naming, nested sections, inherited tags, errors.
 - [httpx quick start](httpx/README.md): add compression, retry/backoff and ETag caching to a standard `http.Client`.
 - [httpx guides](httpx/docs/README.md): transport composition, use cases, HTTP behavior, streaming and complete reference.
 - [httpx Gin example](httpx/examples/gin/README.md): a runnable server and client with integration tests.

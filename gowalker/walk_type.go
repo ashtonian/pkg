@@ -29,15 +29,37 @@ type TypeVisit struct {
 	Depth int
 }
 
+// Inherited returns the value of tag key on the nearest field of this visit's
+// route that declares it: the visited field itself, else its closest enclosing
+// field, including the embedded owners an inlined field was promoted through.
+// Use it for annotations that apply to a whole section, such as a
+// sensitive:"true" or reload:"hot" tag that descendants inherit.
+func (v TypeVisit) Inherited(key string) (string, bool) {
+	for i := len(v.Route) - 1; i >= 0; i-- {
+		field := v.Route[i].Field
+		if field == nil {
+			continue
+		}
+		if value, ok := field.goField.Tag.Lookup(key); ok {
+			return value, true
+		}
+		for j := len(field.parents) - 1; j >= 0; j-- {
+			if value, ok := field.parents[j].Tag.Lookup(key); ok {
+				return value, true
+			}
+		}
+	}
+	return "", false
+}
+
 // TypeVisitor inspects a visit and chooses whether traversal continues.
 // Stop with no error ends the walk successfully. A returned error is wrapped
 // with ErrCallback and remains reachable through errors.Is/As.
 type TypeVisitor func(TypeVisit) (Control, error)
 
-// WalkType compiles T using the default view and walks its schema graph.
+// WalkType compiles T with the [Default] engine and walks its schema graph.
 func WalkType[T any](fn TypeVisitor, options ...WalkOption) error {
-	e, _ := New()
-	s, err := e.Compile[T]()
+	s, err := Compile[T]()
 	if err != nil {
 		return err
 	}

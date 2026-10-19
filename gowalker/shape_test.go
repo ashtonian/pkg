@@ -226,8 +226,9 @@ func TestNameConflictStructuredDiagnostics(t *testing.T) {
 	if conflict.Owner != reflect.TypeFor[row]() || conflict.Name != "ſ" || conflict.First.Name() != "first" || conflict.Second.GoField().Name != "B" {
 		t.Fatalf("incorrect conflict: %+v", conflict)
 	}
-	if strings.Contains(err.Error(), "first") || strings.Contains(err.Error(), "ſ") || conflict.Error() != "ambiguous field name" {
-		t.Fatal("default diagnostic exposed names")
+	want := `field B of gowalker_test.row uses the name "ſ", which is an alias of field A`
+	if conflict.Error() != want || !strings.Contains(err.Error(), want) {
+		t.Fatalf("diagnostic = %q, want it to contain %q", err.Error(), want)
 	}
 }
 

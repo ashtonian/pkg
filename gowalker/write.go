@@ -38,8 +38,7 @@ func Set(root any, text string, input any, options ...WriteOption) error {
 	if !v.IsValid() || v.Kind() != reflect.Pointer || v.IsNil() {
 		return failure("set", ErrType, nil, emptyPath, -1, nil)
 	}
-	e, _ := New()
-	schema, err := e.CompileType(v.Type().Elem())
+	schema, err := CompileType(v.Type().Elem())
 	if err != nil {
 		return err
 	}

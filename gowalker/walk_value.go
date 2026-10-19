@@ -26,11 +26,10 @@ type ValueVisit struct {
 // with ErrCallback and remains reachable through errors.Is/As.
 type ValueVisitor func(ValueVisit) (Control, error)
 
-// WalkValue walks a runtime root using a short-lived default engine. A plain nil
+// WalkValue walks a runtime root using the [Default] engine. A plain nil
 // root has no type; use an interface schema when nil is an expected root.
 func WalkValue(root any, fn ValueVisitor, options ...WalkOption) error {
-	e, _ := New()
-	s, err := e.CompileType(reflect.TypeOf(root))
+	s, err := CompileType(reflect.TypeOf(root))
 	if err != nil {
 		return err
 	}
