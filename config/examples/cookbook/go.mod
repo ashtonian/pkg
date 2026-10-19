@@ -23,7 +23,7 @@ require (
 )
 
 require (
-	github.com/ashtonian/pkg/gowalker v0.1.0 // indirect
+	github.com/ashtonian/pkg/gowalker v0.3.0 // indirect
 	github.com/aws/aws-sdk-go-v2/credentials v1.20.9 // indirect
 	github.com/aws/aws-sdk-go-v2/feature/ec2/imds v1.20.3 // indirect
 	github.com/aws/aws-sdk-go-v2/internal/configsources v1.5.6 // indirect
