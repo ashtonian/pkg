@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.6.2](https://github.com/ashtonian/pkg/compare/config/v0.6.1...config/v0.6.2) (2026-10-19)
+
+
+### Bug Fixes
+
+* **config:** report key conflicts with gowalker's diagnostics ([15f07c9](https://github.com/ashtonian/pkg/commit/15f07c9a9f8e0c956dd9ec5d75ff5e9f12d507c4))
+
 ## [0.6.1](https://github.com/ashtonian/pkg/compare/config/v0.6.0...config/v0.6.1) (2026-10-19)
 
 
