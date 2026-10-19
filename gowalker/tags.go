@@ -71,7 +71,7 @@ func UntaggedName(name func(goName string) string) TagOption {
 
 // PromoteEmbedded exposes the fields of an embedded struct, or pointer to one,
 // that has no explicit tag name, as encoding/json does. A promoted name that
-// collides with another fails compilation instead of being silently dropped.
+// collides with another fails compilation.
 // An embedded field with an explicit tag name, or of a leaf type, stays one field.
 func PromoteEmbedded() TagOption {
 	return func(n *tagNaming) error { n.promote = true; return nil }

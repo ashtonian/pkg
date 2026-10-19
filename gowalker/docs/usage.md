@@ -142,8 +142,8 @@ kind [1] false
 Payload [2] true
 ```
 
-Unlike `encoding/json`, two promoted fields with one name are a compilation
-error rather than a silent choice. Only the field naming follows the
+`encoding/json` resolves two promoted fields with one name by depth; this
+convention reports them as a compilation error instead. Only the field naming follows the
 convention; omission, encoding and custom marshalers stay with the codec.
 
 | Option | Effect |

@@ -95,7 +95,7 @@ Options relax those defaults:
 | Option | Changes |
 |---|---|
 | `UntaggedName(fn)` | An exported field without a tag name, including `db:",option"`, is named `fn(goName)`; an empty result excludes it. `nil` is invalid. |
-| `PromoteEmbedded()` | An embedded struct or pointer to one, without a tag name, contributes its fields as `encoding/json` does. An embedded leaf type stays one field. Promoted collisions are errors, not silent choices. |
+| `PromoteEmbedded()` | An embedded struct or pointer to one, without a tag name, contributes its fields as `encoding/json` does. An embedded leaf type stays one field. Two promoted fields with one name fail compilation. |
 | `NestedFields()` | Selected fields are not leaves: paths such as `server.port` and walks descend into them. |
 
 An empty tag key, or one containing spaces, control characters, a colon or a
