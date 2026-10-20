@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.0](https://github.com/ashtonian/pkg/compare/gowalker/v0.3.0...gowalker/v0.4.0) (2026-10-20)
+
+
+### Features
+
+* **gowalker:** ResolveByDepth, DashCommaName and ValidName tag options name the members encoding/json writes ([cf0d2b1](https://github.com/ashtonian/pkg/commit/cf0d2b19bac017a81b6e7a450b734f4a868def84))
+
 ## [0.3.0](https://github.com/ashtonian/pkg/compare/gowalker/v0.2.0...gowalker/v0.3.0) (2026-10-19)
 
 
