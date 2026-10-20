@@ -121,8 +121,7 @@ var jsonNames = gowalker.MustNew(gowalker.WithTaggedFields("json",
 	gowalker.UntaggedName(func(goName string) string { return goName }),
 	gowalker.PromoteEmbedded(),
 	gowalker.DashCommaName(),
-	gowalker.ResolveByDepth(),
-))
+), gowalker.ResolveByDepth())
 
 func main() {
 	schema, err := jsonNames.Compile[Event]()
@@ -144,21 +143,20 @@ kind [1] false
 Payload [2] true
 ```
 
-With these four options the fields are the members `encoding/json` writes.
-`ResolveByDepth` settles two promoted fields with one name as `encoding/json`
-does: the shallowest wins, then a field whose tag names it. A tie that
-remains is a compilation error, where `encoding/json` would drop both fields.
-Without the option every collision is an error, which suits configuration
-keys, where a silent choice hides a mistake. `DashCommaName` reads `json:"-,"`
-as the name `-`. Only the field naming follows the convention; omission,
-encoding and custom marshalers stay with the codec.
+With these options and the engine option `ResolveByDepth`, the fields are the
+members `encoding/json` writes. `ResolveByDepth` settles a name two fields claim
+as `encoding/json` does: the shallowest wins, then a field whose tag names it. A
+tie that remains is a compilation error, where `encoding/json` would drop both
+fields. Without it every collision is an error, which suits configuration keys,
+where a silent choice hides a mistake. `DashCommaName` reads `json:"-,"` as the
+name `-`. Only the field naming follows the convention; omission, encoding and
+custom marshalers stay with the codec.
 
 | Option | Effect |
 |---|---|
 | none | Exported fields with an explicit tag name, each one whole value |
 | `UntaggedName(fn)` | Exported fields without a tag name are named `fn(goName)` |
 | `PromoteEmbedded()` | An untagged embedded struct, or pointer to one, contributes its fields |
-| `ResolveByDepth()` | A promoted name claimed twice goes to the shallowest field, then to a tagged one; a remaining tie fails compilation. Requires `PromoteEmbedded()` |
 | `DashCommaName()` | Only a tag of exactly `"-"` excludes; `"-,"` and `"-,omitempty"` name the field `-` |
 | `ValidName(fn)` | A tag name `fn` refuses fails compilation, for names another reader parses differently |
 | `NestedFields()` | Paths and walks descend into selected structs, maps and lists |
@@ -373,7 +371,9 @@ embeds `time.Time` implements `TextUnmarshaler` itself and becomes a leaf;
 When a preset is not enough, `WithFieldResolver` receives each
 `reflect.StructField` and returns a `FieldRule`: a name, aliases, `Skip`,
 `Inline` to expose an embedded struct's fields, or `Atomic` to keep this one
-field whole. Return an error to reject a tag; it appears in the compile error.
+field whole. Set `Explicit` when the name is the field's own, such as a tag
+name, so `ResolveByDepth` prefers it over a derived name at equal depth.
+Return an error to reject a tag; it appears in the compile error.
 The [config-style example](../example_test.go) handles `koanf` names, `,squash`,
 `alias` tags and self-decoding types this way.
 

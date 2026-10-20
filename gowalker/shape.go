@@ -1,7 +1,9 @@
 package gowalker
 
 import (
+	"cmp"
 	"reflect"
+	"slices"
 	"strings"
 	"unicode"
 )
@@ -23,6 +25,10 @@ type FieldRule struct {
 	Inline bool
 	// Atomic makes only this field a leaf. It provides no synchronization.
 	Atomic bool
+	// Explicit marks Name as declared for the field, such as by its tag,
+	// rather than derived from its Go name. Under [ResolveByDepth] it wins
+	// over a derived name claimed at the same depth.
+	Explicit bool
 }
 
 // FieldResolver runs once per field in each reachable, non-atomic struct during
@@ -108,6 +114,7 @@ type Field struct {
 	shape     *Shape
 	declaring reflect.Type
 	inline    bool
+	explicit  bool
 }
 
 // Name returns the canonical visible name.
@@ -235,8 +242,8 @@ func (b *builder) view(s *Shape) error {
 	if err := b.expand(s, s, nil, nil, make(map[*Shape]bool)); err != nil {
 		return err
 	}
-	if tagged := b.engine.settings.tagged; tagged != nil && tagged.byDepth {
-		if err := tagged.resolveByDepth(s); err != nil {
+	if b.resolvesByDepth() {
+		if err := resolveByDepth(s); err != nil {
 			return err
 		}
 	}
@@ -280,7 +287,7 @@ func (b *builder) prepare(s *Shape) error {
 			leaf.fields, leaf.declaredView, leaf.byName = nil, nil, nil
 			field.shape = &leaf
 		}
-		field.selected = &Field{name: rule.Name, aliases: rule.Aliases, index: append([]int(nil), field.field.Index...), goField: field.field, shape: field.shape, declaring: s.typ, inline: rule.Inline}
+		field.selected = &Field{name: rule.Name, aliases: rule.Aliases, index: append([]int(nil), field.field.Index...), goField: field.field, shape: field.shape, declaring: s.typ, inline: rule.Inline, explicit: rule.Explicit}
 		s.declaredView = append(s.declaredView, field.selected)
 	}
 	return nil
@@ -321,7 +328,7 @@ func (b *builder) expand(owner, current *Shape, index []int, parents []reflect.S
 		field := declared.selected
 		if len(index) > 0 {
 			at := append(append([]int(nil), index...), sf.Index...)
-			field = &Field{name: rule.Name, aliases: rule.Aliases, index: at, goField: sf, parents: append([]reflect.StructField(nil), parents...), shape: declared.shape, declaring: current.typ}
+			field = &Field{name: rule.Name, aliases: rule.Aliases, index: at, goField: sf, parents: append([]reflect.StructField(nil), parents...), shape: declared.shape, declaring: current.typ, explicit: rule.Explicit}
 		}
 		for i, name := range append([]string{rule.Name}, rule.Aliases...) {
 			if name == "" {
@@ -346,9 +353,63 @@ func (b *builder) expand(owner, current *Shape, index []int, parents []reflect.S
 
 // resolvesByDepth reports whether name claims are settled after expansion
 // (ResolveByDepth) rather than refused as they meet.
-func (b *builder) resolvesByDepth() bool {
-	tagged := b.engine.settings.tagged
-	return tagged != nil && tagged.byDepth
+func (b *builder) resolvesByDepth() bool { return b.engine.settings.byDepth }
+
+// resolveByDepth keeps, for each canonical name more than one of owner's
+// fields claims, the field encoding/json would serialize, and fails on a
+// tie; then it indexes the kept fields' names and aliases, which must be
+// unique.
+func resolveByDepth(owner *Shape) error {
+	claims := make(map[string][]*Field, len(owner.fields))
+	for _, f := range owner.fields {
+		key := owner.lookupKey(f.name)
+		claims[key] = append(claims[key], f)
+	}
+	kept := owner.fields[:0]
+	for _, f := range owner.fields {
+		rivals := claims[owner.lookupKey(f.name)]
+		if len(rivals) > 1 {
+			ranked := slices.Clone(rivals)
+			slices.SortStableFunc(ranked, func(x, y *Field) int {
+				return cmp.Or(cmp.Compare(len(x.index), len(y.index)), compareBool(!x.explicit, !y.explicit))
+			})
+			if len(ranked[0].index) == len(ranked[1].index) && ranked[0].explicit == ranked[1].explicit {
+				first, second := ranked[0], ranked[1]
+				if slices.Index(rivals, second) < slices.Index(rivals, first) {
+					first, second = second, first
+				}
+				conflict := &NameConflict{Owner: owner.typ, Name: second.name, First: first, Second: second}
+				return failure("compile", ErrSchema, owner.typ, emptyPath, -1, conflict)
+			}
+			if ranked[0] != f {
+				continue
+			}
+		}
+		kept = append(kept, f)
+	}
+	owner.fields = kept
+	clear(owner.byName)
+	for _, f := range kept {
+		for i, name := range append([]string{f.name}, f.aliases...) {
+			key := owner.lookupKey(name)
+			if previous := owner.byName[key]; previous != nil && previous != f {
+				conflict := &NameConflict{Owner: owner.typ, Name: name, First: previous, Second: f, firstAlias: owner.lookupKey(previous.name) != key, secondAlias: i > 0}
+				return failure("compile", ErrSchema, owner.typ, emptyPath, -1, conflict)
+			}
+			owner.byName[key] = f
+		}
+	}
+	return nil
+}
+
+func compareBool(x, y bool) int {
+	switch {
+	case x == y:
+		return 0
+	case !x:
+		return -1
+	}
+	return 1
 }
 
 // lookupKey is the form of name the shape's lookup and collision checks

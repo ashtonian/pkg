@@ -21,8 +21,7 @@ func jsonNaming(t testing.TB) *gowalker.Engine {
 		gowalker.UntaggedName(func(goName string) string { return goName }),
 		gowalker.PromoteEmbedded(),
 		gowalker.DashCommaName(),
-		gowalker.ResolveByDepth(),
-	))
+	), gowalker.ResolveByDepth())
 }
 
 type jsonBase struct {
@@ -232,8 +231,7 @@ func TestJSONNaming_OptionsAreOptIn(t *testing.T) {
 
 func TestJSONNaming_InvalidOptions(t *testing.T) {
 	for name, options := range map[string][]gowalker.TagOption{
-		"by depth without promotion": {gowalker.ResolveByDepth()},
-		"nil name check":             {gowalker.ValidName(nil)},
+		"nil name check": {gowalker.ValidName(nil)},
 	} {
 		if _, err := gowalker.New(gowalker.WithTaggedFields("json", options...)); !errors.Is(err, gowalker.ErrSchema) {
 			t.Errorf("%s: %v", name, err)
@@ -263,5 +261,92 @@ func TestValidName_RefusesATagName(t *testing.T) {
 	}
 	if _, err := e.CompileType(reflect.TypeFor[jsonBase]()); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// resolverField names fields by a "name" tag, marking tag names explicit,
+// and promotes untagged embedded structs, as a hand-written rule might.
+func resolverField(sf reflect.StructField) (gowalker.FieldRule, error) {
+	name, tagged := sf.Tag.Lookup("name")
+	if !tagged && sf.Anonymous {
+		return gowalker.FieldRule{Inline: true}, nil
+	}
+	var aliases []string
+	if alias, ok := sf.Tag.Lookup("alias"); ok {
+		aliases = []string{alias}
+	}
+	return gowalker.FieldRule{Name: name, Aliases: aliases, Explicit: tagged, Atomic: true}, nil
+}
+
+type ResolverBase struct {
+	ID    int `name:"id" alias:"key"`
+	Label string
+}
+
+type resolverShadow struct {
+	ResolverBase
+	ID    string `name:"id"`
+	Label string `name:"Label"`
+}
+
+type resolverAliasClash struct {
+	ResolverBase
+	Key string `name:"key"`
+}
+
+// ResolveByDepth applies to a field resolver: the shallower field wins, an
+// explicit name beats a derived one, and a shadowed field loses its aliases.
+func TestResolveByDepth_FieldResolver(t *testing.T) {
+	e := engine(t, gowalker.WithFieldResolver(resolverField), gowalker.ResolveByDepth())
+	schema := schemaFor[resolverShadow](t, e)
+	id, _ := schema.Root().Lookup("id")
+	if id == nil || len(id.Index()) != 1 {
+		t.Fatalf("id is %v", id)
+	}
+	if _, err := schema.AccessName("key"); !errors.Is(err, gowalker.ErrPath) {
+		t.Errorf("the shadowed field's alias still resolves: %v", err)
+	}
+	label, _ := schema.Root().Lookup("Label")
+	if label == nil || len(label.Index()) != 1 {
+		t.Fatalf("Label is %v", label)
+	}
+
+	// The kept field's alias meets a shallower field's name: aliases stay unique.
+	_, err := e.CompileType(reflect.TypeFor[resolverAliasClash]())
+	conflict, ok := errors.AsType[*gowalker.NameConflict](err)
+	if !ok || conflict.Name != "key" {
+		t.Fatalf("an alias claimed twice compiled: %v", err)
+	}
+}
+
+type ExplicitA struct {
+	V int `name:"v"`
+}
+
+type DerivedB struct{ V int }
+
+type explicitBeatsDerived struct {
+	ExplicitA
+	DerivedB
+}
+
+// At equal depth an explicit name beats one the rule derives from the Go
+// name; without the option the two collide.
+func TestResolveByDepth_ExplicitBeatsDerived(t *testing.T) {
+	derived := func(sf reflect.StructField) (gowalker.FieldRule, error) {
+		rule, err := resolverField(sf)
+		if rule.Name == "" && !rule.Inline {
+			rule.Name = strings.ToLower(sf.Name)
+		}
+		return rule, err
+	}
+	schema := schemaFor[explicitBeatsDerived](t, engine(t, gowalker.WithFieldResolver(derived), gowalker.ResolveByDepth()))
+	v, _ := schema.Root().Lookup("v")
+	if v == nil || v.Index()[0] != 0 {
+		t.Errorf("v is %v, want ExplicitA.V", v)
+	}
+	strict := engine(t, gowalker.WithFieldResolver(derived))
+	if _, err := strict.CompileType(reflect.TypeFor[explicitBeatsDerived]()); !errors.Is(err, gowalker.ErrSchema) {
+		t.Errorf("without ResolveByDepth the collision compiled: %v", err)
 	}
 }

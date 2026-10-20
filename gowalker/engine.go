@@ -28,6 +28,7 @@ type settings struct {
 	tagged   *tagNaming
 	atomic   []func(reflect.Type) bool
 	fold     bool
+	byDepth  bool
 	capacity int
 	limits   Limits
 }
@@ -108,6 +109,19 @@ func WithAtomicImplementers(ifaces ...reflect.Type) Option {
 		})
 		return nil
 	}
+}
+
+// ResolveByDepth settles a name two fields claim as encoding/json does,
+// instead of failing compilation: the shallowest field wins, and among
+// fields at that depth one whose name is [FieldRule.Explicit] wins over one
+// whose name is derived. A tie that remains still fails compilation, where
+// encoding/json would drop every tied field. A shadowed field loses all its
+// names: it is absent from Fields and Lookup and stays in its declaring
+// struct's DeclaredView. Aliases of the fields that remain must be unique.
+// It applies to [WithTaggedFields], where a tag name is explicit, and to a
+// [WithFieldResolver] rule that sets Explicit.
+func ResolveByDepth() Option {
+	return func(s *settings) error { s.byDepth = true; return nil }
 }
 
 // WithCaseFoldNames uses Unicode simple folding for both lookup and collisions.

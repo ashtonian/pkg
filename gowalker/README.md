@@ -87,7 +87,7 @@ convention, once, in a package variable:
 |---|---|
 | Go field names; tags are only annotations | none: use `gowalker.Compile[T]()` |
 | `db:"id"`: only explicitly named fields, each one whole value | `gowalker.MustNew(gowalker.WithTaggedFields("db"))` |
-| `json:"id,omitempty"`: the members `encoding/json` writes — untagged fields keep Go names, embedded structs are promoted, collisions resolve by depth, `json:"-,"` names `-` | `WithTaggedFields("json", UntaggedName(goName), PromoteEmbedded(), ResolveByDepth(), DashCommaName())` |
+| `json:"id,omitempty"`: the members `encoding/json` writes — untagged fields keep Go names, embedded structs are promoted, collisions resolve by depth, `json:"-,"` names `-` | `MustNew(WithTaggedFields("json", UntaggedName(goName), PromoteEmbedded(), DashCommaName()), ResolveByDepth())` |
 | `koanf:"port"`: untagged fields are lowercased, sections nest | `WithTaggedFields("koanf", UntaggedName(strings.ToLower), NestedFields())` |
 | Aliases, option-driven inlining such as `,squash`, or tag validation | `WithFieldResolver(func(reflect.StructField) (FieldRule, error))` |
 
