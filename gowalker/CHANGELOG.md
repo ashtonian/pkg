@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.5.0](https://github.com/ashtonian/pkg/compare/gowalker/v0.4.0...gowalker/v0.5.0) (2026-10-20)
+
+
+### ⚠ BREAKING CHANGES
+
+* **gowalker:** pass ResolveByDepth to New or MustNew instead of to WithTaggedFields.
+
+### Features
+
+* **gowalker:** ResolveByDepth is an engine option and applies to field resolvers ([31c2c0e](https://github.com/ashtonian/pkg/commit/31c2c0e7751f6bb00c509379e040695c61888a45))
+
 ## [0.4.0](https://github.com/ashtonian/pkg/compare/gowalker/v0.3.0...gowalker/v0.4.0) (2026-10-20)
 
 
