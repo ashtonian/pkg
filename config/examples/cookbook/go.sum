@@ -114,8 +114,8 @@ github.com/knadh/koanf/providers/k8smount v0.1.1 h1:aWorT1CG2po1nGiDGwcSSh1RGjFP
 github.com/knadh/koanf/providers/k8smount v0.1.1/go.mod h1:vObNUiHM2QyDYRkMk6jHHqursr/0WSeT3cYB3dziwCg=
 github.com/knadh/koanf/providers/vault/v2 v2.2.2 h1:zZ9rWLy+82UGhN9osw2kM5S1IsatoIzKngc7zKkI1Bs=
 github.com/knadh/koanf/providers/vault/v2 v2.2.2/go.mod h1:gQcfjU1ttX6olZjfAinx643JVQIXwD1LAIFFBwT7h7A=
-github.com/knadh/koanf/v2 v2.3.8 h1:NftEOf0Y456FqpLJj31RYYZQnfBQ+DDhsNQPqJ6nuk4=
-github.com/knadh/koanf/v2 v2.3.8/go.mod h1:gRb40VRAbd4iJMYYD5IxZ6hfuopFcXBpc9bbQpZwo28=
+github.com/knadh/koanf/v2 v2.4.0 h1:wmp0NlAUIasxphpHIU6Su5sKQn3Up/AvI2ZA2GeJTUk=
+github.com/knadh/koanf/v2 v2.4.0/go.mod h1:gRb40VRAbd4iJMYYD5IxZ6hfuopFcXBpc9bbQpZwo28=
 github.com/leodido/go-urn v1.5.0 h1:pLqT2kq1zpHW/1D18QMjMpdtX7cekxqtJJjg5ANyWw0=
 github.com/leodido/go-urn v1.5.0/go.mod h1:9BORnCDhdPBJNDEX+w1bJisa8yOKYi116VeO96s4ifE=
 github.com/mattn/go-colorable v0.1.14 h1:9A9LHSqF/7dyVVX6g0U9cwm9pG3kP9gSzcuIPHPsaIE=
