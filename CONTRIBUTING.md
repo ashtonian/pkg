@@ -18,6 +18,8 @@ The repository's `go.work` ties the published modules together, so a change to o
 | `make cookbook-check` | The [config cookbook](config/examples/cookbook), a module of runnable recipes |
 | `make ci` | All of the above |
 
+GitHub Actions runs workflows here only for the repository owner. Pull requests opened by a bot, such as Dependabot updates or a release PR opened without the `RELEASE_PLEASE_TOKEN` secret, therefore get no checks: run CI on the branch with `gh workflow run ci.yml -R ashtonian/pkg --ref <branch>`, and the pull request shows the results.
+
 A module that requires another module of this repository requires a released version of it. When it needs an unreleased change, release the dependency first, then raise the requirement.
 
 Workspace development requires Go 1.27. Gowalker is its own module at
