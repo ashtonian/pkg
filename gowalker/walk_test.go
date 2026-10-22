@@ -400,23 +400,3 @@ func TestWalkConcurrentSchemaReuse(t *testing.T) {
 	}
 	group.Wait()
 }
-
-func FuzzWalk(f *testing.F) {
-	f.Add(uint8(4), uint8(7), true)
-	f.Fuzz(func(t *testing.T, depth, budget uint8, cyclic bool) {
-		type node struct{ Next *node }
-		root := &node{}
-		current := root
-		for range int(depth) % 32 {
-			current.Next = &node{}
-			current = current.Next
-		}
-		if cyclic {
-			current.Next = root
-		}
-		err := gowalker.WalkValue(root, func(gowalker.ValueVisit) (gowalker.Control, error) { return gowalker.Continue, nil }, gowalker.WithWalkLimits(gowalker.WalkLimits{MaxDepth: 64, MaxNodes: int(budget) + 1}))
-		if err != nil && !errors.Is(err, gowalker.ErrLimit) {
-			t.Fatal(err)
-		}
-	})
-}

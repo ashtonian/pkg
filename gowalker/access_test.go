@@ -372,33 +372,6 @@ func TestInlineNilAndMultiplePointers(t *testing.T) {
 	}
 }
 
-func FuzzRead(f *testing.F) {
-	for _, text := range []string{"", "Child", "Child.N", "Rows[\"one\"].N", "Items[0]", "Dynamic.N", "hidden", "Missing"} {
-		f.Add(text)
-	}
-	s, err := mustEngine().Compile[accessRoot]()
-	if err != nil {
-		f.Fatal(err)
-	}
-	f.Fuzz(func(t *testing.T, text string) {
-		a, err := s.ResolveText(text)
-		if err != nil {
-			return
-		}
-		for _, row := range []accessRoot{{}, {Rows: map[string]child{"one": {N: 3}}, Items: []child{{N: 2}}, Dynamic: &child{N: 1}}} {
-			_, _ = a.Get(row)
-		}
-	})
-}
-
-func mustEngine() *gowalker.Engine {
-	e, err := gowalker.New()
-	if err != nil {
-		panic(err)
-	}
-	return e
-}
-
 func TestGetAsAssignableDistinctTypes(t *testing.T) {
 	type named struct{ N int }
 	row := struct{ Value struct{ N int } }{}

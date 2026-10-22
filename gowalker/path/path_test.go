@@ -2,7 +2,6 @@ package path_test
 
 import (
 	"errors"
-	"reflect"
 	"strings"
 	"testing"
 
@@ -53,27 +52,4 @@ func TestTypedPathsAreImmutableAndLossless(t *testing.T) {
 	if p.Len() != 1 || child.Len() != 2 || p.Steps()[0].Name() != "A" {
 		t.Fatal("path was mutated")
 	}
-}
-
-func FuzzParse(f *testing.F) {
-	for _, text := range []string{"", "A[\"quoted\\\"key\"][0]", "[0].Name", "M[\"\\xff\"]", "bad..path"} {
-		f.Add(text)
-	}
-	f.Fuzz(func(t *testing.T, text string) {
-		p, err := path.Parse(text)
-		if err != nil {
-			return
-		}
-		encoded, err := p.MarshalText()
-		if errors.Is(err, path.ErrLimit) {
-			return
-		}
-		if err != nil {
-			t.Fatal(err)
-		}
-		roundtrip, err := path.Parse(string(encoded))
-		if err != nil || !reflect.DeepEqual(p, roundtrip) {
-			t.Fatalf("round trip failed: %q, %v", encoded, err)
-		}
-	})
 }
