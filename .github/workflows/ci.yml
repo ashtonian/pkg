@@ -4,6 +4,12 @@ on:
   push:
     branches: [main]
   pull_request:
+  # The repository's Actions policy runs workflows for the owner only, so a
+  # pull request a bot opens (Dependabot's, or a release PR opened with
+  # GITHUB_TOKEN) gets no checks. Run them on its branch with
+  # `gh workflow run ci.yml --ref <branch>`; they report on the head
+  # commit, so the pull request shows them.
+  workflow_dispatch:
 
 permissions:
   contents: read
