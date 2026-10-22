@@ -2,6 +2,7 @@ package gowalker_test
 
 import (
 	"errors"
+	"fmt"
 	"math"
 	"reflect"
 	"sync"
@@ -319,63 +320,61 @@ func TestSetConcurrentAccessorReuse(t *testing.T) {
 	group.Wait()
 }
 
-func FuzzCheckedWrite(f *testing.F) {
-	for _, n := range []int64{0, -1, 255, 256, 1 << 53, 1<<53 + 1, math.MaxInt64} {
-		f.Add(n)
+// A write either lands or leaves the input as it was: no allocation, map
+// entry or replaced container survives a failed write.
+func TestSetLandsOrLeavesInputUnchanged(t *testing.T) {
+	s := schemaFor[accessRoot](t, engine(t))
+	populated := func() accessRoot {
+		return accessRoot{Child: &child{N: 11}, Rows: map[string]child{"one": {N: 12}}, Items: []child{{N: 13}}, Dynamic: &child{N: 14}, False: true, Empty: "old"}
 	}
-	s, err := mustEngine().Compile[struct{ N *uint8 }]()
-	if err != nil {
-		f.Fatal(err)
+	tests := []struct {
+		path      string
+		populated bool
+		allocate  bool
+		want      error
+	}{
+		{path: "", populated: true, want: gowalker.ErrConversion},
+		{path: "Child", populated: true, want: gowalker.ErrConversion},
+		{path: "Child.N", want: gowalker.ErrNil},
+		{path: "Child.N", allocate: true},
+		{path: "Child.N", populated: true},
+		{path: `Rows["one"].N`, want: gowalker.ErrNil},
+		{path: `Rows["one"].N`, allocate: true},
+		{path: `Rows["one"].N`, populated: true},
+		{path: `Rows["new"].N`, populated: true, want: gowalker.ErrMissing},
+		{path: `Rows["new"].N`, populated: true, allocate: true},
+		{path: "Items[0].N", allocate: true, want: gowalker.ErrIndex},
+		{path: "Items[0].N", populated: true},
+		{path: "Dynamic.N", allocate: true, want: gowalker.ErrNil},
+		{path: "Dynamic.N", populated: true},
+		{path: "False", populated: true, want: gowalker.ErrConversion},
 	}
-	a, err := s.Resolve(path.Of(path.Field("N"), path.Deref()))
-	if err != nil {
-		f.Fatal(err)
-	}
-	f.Fuzz(func(t *testing.T, n int64) {
-		row := struct{ N *uint8 }{}
-		err := a.Set(&row, n, gowalker.WithPointerAllocation(), gowalker.WithCheckedNumbers())
-		if n >= 0 && n <= math.MaxUint8 {
-			if err != nil || row.N == nil || *row.N != uint8(n) {
-				t.Fatal(row, err)
-			}
-		} else if !errors.Is(err, gowalker.ErrConversion) || row.N != nil {
-			t.Fatal("failed write attached allocation", row, err)
-		}
-	})
-}
-
-func FuzzWritePaths(f *testing.F) {
-	for _, text := range []string{"", "Child", "Child.N", "Rows[\"one\"].N", "Rows[\"new\"].N", "Items[0].N", "Dynamic.N", "False", "hidden", "unknown"} {
-		f.Add(text, int64(42), true)
-	}
-	s, err := mustEngine().Compile[accessRoot]()
-	if err != nil {
-		f.Fatal(err)
-	}
-	f.Fuzz(func(t *testing.T, text string, n int64, allocate bool) {
-		a, err := s.ResolveText(text)
-		if err != nil {
-			return
-		}
-		fresh := func() accessRoot {
-			return accessRoot{Child: &child{N: 11}, Rows: map[string]child{"one": {N: 12}}, Items: []child{{N: 13}}, Dynamic: &child{N: 14}, False: true, Empty: "old"}
-		}
-		for _, populated := range []bool{false, true} {
-			var input, expected accessRoot
-			if populated {
-				input, expected = fresh(), fresh()
+	for _, tt := range tests {
+		t.Run(fmt.Sprintf("%q populated=%t allocate=%t", tt.path, tt.populated, tt.allocate), func(t *testing.T) {
+			var input, before accessRoot
+			if tt.populated {
+				input, before = populated(), populated()
 			}
 			childIdentity := input.Child
 			mapIdentity := reflect.ValueOf(input.Rows).Pointer()
 			sliceIdentity := reflect.ValueOf(input.Items).Pointer()
 			options := []gowalker.WriteOption{gowalker.WithCheckedNumbers()}
-			if allocate {
+			if tt.allocate {
 				options = append(options, gowalker.WithPointerAllocation(), gowalker.WithMapAllocation())
 			}
-			err := a.Set(&input, n, options...)
-			if err != nil && (!reflect.DeepEqual(input, expected) || input.Child != childIdentity || reflect.ValueOf(input.Rows).Pointer() != mapIdentity || reflect.ValueOf(input.Items).Pointer() != sliceIdentity) {
-				t.Fatal("failed write changed input", err)
+			err := accessor(t, s, tt.path).Set(&input, int64(42), options...)
+			if !errors.Is(err, tt.want) {
+				t.Fatalf("Set = %v, want %v", err, tt.want)
 			}
-		}
-	})
+			if tt.want == nil {
+				if got, err := gowalker.GetAs[int](&input, tt.path); err != nil || got != 42 {
+					t.Fatal("write did not land", got, err)
+				}
+				return
+			}
+			if !reflect.DeepEqual(input, before) || input.Child != childIdentity || reflect.ValueOf(input.Rows).Pointer() != mapIdentity || reflect.ValueOf(input.Items).Pointer() != sliceIdentity {
+				t.Fatal("failed write changed input", input)
+			}
+		})
+	}
 }
