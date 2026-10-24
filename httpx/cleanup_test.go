@@ -107,6 +107,7 @@ func TestDrainAndCloseHandlesNilAndKnownEmptyBodies(t *testing.T) {
 		}
 	}
 	body := &cleanupBody{read: func([]byte) (int, error) { t.Fatal("invalid context read the body"); return 0, nil }}
+	//lint:ignore SA1012 Nil context intentionally exercises invalid-config reporting and body closure.
 	result := DrainAndClose(nil, body, 1)
 	if !errors.Is(result.DrainErr, ErrInvalidConfig) || body.reads != 0 || body.closes != 1 {
 		t.Fatalf("result=%+v reads=%d closes=%d", result, body.reads, body.closes)
