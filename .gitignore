@@ -8,3 +8,7 @@ coverage.*
 .idea/
 .vscode/
 .DS_Store
+
+# TypeScript dependencies and generated SDK output
+node_modules/
+/parse/sdk/ts/dist/

@@ -1,0 +1,1054 @@
+[
+  {
+    "name": "eq_string",
+    "input": {
+      "status": "active"
+    },
+    "valid": true,
+    "canonicalAst": {
+      "field": "status",
+      "op": "eq",
+      "value": "active"
+    },
+    "sqlPostgres": "conf_entities.status = $1",
+    "sqlSqlite": "conf_entities.status = ?1"
+  },
+  {
+    "name": "eq_number",
+    "input": {
+      "count": 5
+    },
+    "valid": true,
+    "canonicalAst": {
+      "field": "count",
+      "op": "eq",
+      "value": 5
+    },
+    "sqlPostgres": "conf_entities.count = $1",
+    "sqlSqlite": "conf_entities.count = ?1"
+  },
+  {
+    "name": "eq_bool",
+    "input": {
+      "active": true
+    },
+    "valid": true,
+    "canonicalAst": {
+      "field": "active",
+      "op": "eq",
+      "value": true
+    },
+    "sqlPostgres": "conf_entities.active = $1",
+    "sqlSqlite": "conf_entities.active = ?1"
+  },
+  {
+    "name": "ne_number",
+    "input": {
+      "count": {
+        "$ne": 5
+      }
+    },
+    "valid": true,
+    "canonicalAst": {
+      "field": "count",
+      "op": "ne",
+      "value": 5
+    },
+    "sqlPostgres": "conf_entities.count \u003c\u003e $1",
+    "sqlSqlite": "conf_entities.count \u003c\u003e ?1"
+  },
+  {
+    "name": "gt_number",
+    "input": {
+      "count": {
+        "$gt": 5
+      }
+    },
+    "valid": true,
+    "canonicalAst": {
+      "field": "count",
+      "op": "gt",
+      "value": 5
+    },
+    "sqlPostgres": "conf_entities.count \u003e $1",
+    "sqlSqlite": "conf_entities.count \u003e ?1"
+  },
+  {
+    "name": "gte_number",
+    "input": {
+      "count": {
+        "$gte": 5
+      }
+    },
+    "valid": true,
+    "canonicalAst": {
+      "field": "count",
+      "op": "gte",
+      "value": 5
+    },
+    "sqlPostgres": "conf_entities.count \u003e= $1",
+    "sqlSqlite": "conf_entities.count \u003e= ?1"
+  },
+  {
+    "name": "lt_number",
+    "input": {
+      "count": {
+        "$lt": 5
+      }
+    },
+    "valid": true,
+    "canonicalAst": {
+      "field": "count",
+      "op": "lt",
+      "value": 5
+    },
+    "sqlPostgres": "conf_entities.count \u003c $1",
+    "sqlSqlite": "conf_entities.count \u003c ?1"
+  },
+  {
+    "name": "lte_number",
+    "input": {
+      "count": {
+        "$lte": 5
+      }
+    },
+    "valid": true,
+    "canonicalAst": {
+      "field": "count",
+      "op": "lte",
+      "value": 5
+    },
+    "sqlPostgres": "conf_entities.count \u003c= $1",
+    "sqlSqlite": "conf_entities.count \u003c= ?1"
+  },
+  {
+    "name": "in_array",
+    "input": {
+      "status": {
+        "$in": [
+          "active",
+          "offline"
+        ]
+      }
+    },
+    "valid": true,
+    "canonicalAst": {
+      "field": "status",
+      "op": "in",
+      "value": [
+        "active",
+        "offline"
+      ]
+    },
+    "sqlPostgres": "conf_entities.status IN ($1, $2)",
+    "sqlSqlite": "conf_entities.status IN (?1, ?2)"
+  },
+  {
+    "name": "nin_array",
+    "input": {
+      "status": {
+        "$nin": [
+          "error"
+        ]
+      }
+    },
+    "valid": true,
+    "canonicalAst": {
+      "field": "status",
+      "op": "nin",
+      "value": [
+        "error"
+      ]
+    },
+    "sqlPostgres": "conf_entities.status NOT IN ($1)",
+    "sqlSqlite": "conf_entities.status NOT IN (?1)"
+  },
+  {
+    "name": "like",
+    "input": {
+      "name": {
+        "$like": "dev%"
+      }
+    },
+    "valid": true,
+    "canonicalAst": {
+      "field": "name",
+      "op": "like",
+      "value": "dev%"
+    },
+    "sqlPostgres": "conf_entities.name LIKE $1 ESCAPE '\\'",
+    "sqlSqlite": "conf_entities.name GLOB ?1"
+  },
+  {
+    "name": "ilike",
+    "input": {
+      "name": {
+        "$ilike": "DEV%"
+      }
+    },
+    "valid": true,
+    "canonicalAst": {
+      "field": "name",
+      "op": "ilike",
+      "value": "DEV%"
+    },
+    "sqlPostgres": "conf_entities.name ILIKE $1 ESCAPE '\\'",
+    "sqlSqlite": "conf_entities.name LIKE ?1 ESCAPE '\\'"
+  },
+  {
+    "name": "contains",
+    "input": {
+      "name": {
+        "$contains": "sensor"
+      }
+    },
+    "valid": true,
+    "canonicalAst": {
+      "field": "name",
+      "op": "contains",
+      "value": "sensor"
+    },
+    "sqlPostgres": "conf_entities.name LIKE $1 ESCAPE '\\'",
+    "sqlSqlite": "instr(conf_entities.name, ?1) \u003e 0"
+  },
+  {
+    "name": "null_true",
+    "input": {
+      "name": {
+        "$null": true
+      }
+    },
+    "valid": true,
+    "canonicalAst": {
+      "field": "name",
+      "op": "null"
+    },
+    "sqlPostgres": "conf_entities.name IS NULL",
+    "sqlSqlite": "conf_entities.name IS NULL"
+  },
+  {
+    "name": "null_false",
+    "input": {
+      "name": {
+        "$null": false
+      }
+    },
+    "valid": true,
+    "canonicalAst": {
+      "field": "name",
+      "op": "not_null"
+    },
+    "sqlPostgres": "conf_entities.name IS NOT NULL",
+    "sqlSqlite": "conf_entities.name IS NOT NULL"
+  },
+  {
+    "name": "exists_true",
+    "input": {
+      "name": {
+        "$exists": true
+      }
+    },
+    "valid": true,
+    "canonicalAst": {
+      "field": "name",
+      "op": "not_null"
+    },
+    "sqlPostgres": "conf_entities.name IS NOT NULL",
+    "sqlSqlite": "conf_entities.name IS NOT NULL"
+  },
+  {
+    "name": "not_null_true",
+    "input": {
+      "name": {
+        "$not_null": true
+      }
+    },
+    "valid": true,
+    "canonicalAst": {
+      "field": "name",
+      "op": "not_null"
+    },
+    "sqlPostgres": "conf_entities.name IS NOT NULL",
+    "sqlSqlite": "conf_entities.name IS NOT NULL"
+  },
+  {
+    "name": "not_null_false",
+    "input": {
+      "name": {
+        "$not_null": false
+      }
+    },
+    "valid": true,
+    "canonicalAst": {
+      "field": "name",
+      "op": "null"
+    },
+    "sqlPostgres": "conf_entities.name IS NULL",
+    "sqlSqlite": "conf_entities.name IS NULL"
+  },
+  {
+    "name": "null_test_capability_not_null",
+    "input": {
+      "note": {
+        "$not_null": true
+      }
+    },
+    "valid": true,
+    "canonicalAst": {
+      "field": "note",
+      "op": "not_null"
+    },
+    "sqlPostgres": "conf_entities.note IS NOT NULL",
+    "sqlSqlite": "conf_entities.note IS NOT NULL"
+  },
+  {
+    "name": "null_test_capability_null",
+    "input": {
+      "note": {
+        "$null": false
+      }
+    },
+    "valid": true,
+    "canonicalAst": {
+      "field": "note",
+      "op": "not_null"
+    },
+    "sqlPostgres": "conf_entities.note IS NOT NULL",
+    "sqlSqlite": "conf_entities.note IS NOT NULL"
+  },
+  {
+    "name": "null_test_capability_exists",
+    "input": {
+      "note": {
+        "$exists": true
+      }
+    },
+    "valid": true,
+    "canonicalAst": {
+      "field": "note",
+      "op": "not_null"
+    },
+    "sqlPostgres": "conf_entities.note IS NOT NULL",
+    "sqlSqlite": "conf_entities.note IS NOT NULL"
+  },
+  {
+    "name": "err_not_null_not_bool",
+    "input": {
+      "name": {
+        "$not_null": 1
+      }
+    },
+    "valid": false,
+    "errorCode": "E2073"
+  },
+  {
+    "name": "and_explicit",
+    "input": {
+      "$and": [
+        {
+          "status": "active"
+        },
+        {
+          "count": {
+            "$gt": 5
+          }
+        }
+      ]
+    },
+    "valid": true,
+    "canonicalAst": {
+      "op": "and",
+      "conds": [
+        {
+          "field": "status",
+          "op": "eq",
+          "value": "active"
+        },
+        {
+          "field": "count",
+          "op": "gt",
+          "value": 5
+        }
+      ]
+    },
+    "sqlPostgres": "(conf_entities.status = $1 AND conf_entities.count \u003e $2)",
+    "sqlSqlite": "(conf_entities.status = ?1 AND conf_entities.count \u003e ?2)"
+  },
+  {
+    "name": "or_explicit",
+    "input": {
+      "$or": [
+        {
+          "status": "active"
+        },
+        {
+          "status": "offline"
+        }
+      ]
+    },
+    "valid": true,
+    "canonicalAst": {
+      "op": "or",
+      "conds": [
+        {
+          "field": "status",
+          "op": "eq",
+          "value": "active"
+        },
+        {
+          "field": "status",
+          "op": "eq",
+          "value": "offline"
+        }
+      ]
+    },
+    "sqlPostgres": "(conf_entities.status = $1 OR conf_entities.status = $2)",
+    "sqlSqlite": "(conf_entities.status = ?1 OR conf_entities.status = ?2)"
+  },
+  {
+    "name": "not_explicit",
+    "input": {
+      "$not": {
+        "status": "error"
+      }
+    },
+    "valid": true,
+    "canonicalAst": {
+      "op": "not",
+      "conds": [
+        {
+          "field": "status",
+          "op": "eq",
+          "value": "error"
+        }
+      ]
+    },
+    "sqlPostgres": "NOT (conf_entities.status = $1)",
+    "sqlSqlite": "NOT (conf_entities.status = ?1)"
+  },
+  {
+    "name": "nested_and_or",
+    "input": {
+      "$and": [
+        {
+          "active": true
+        },
+        {
+          "$or": [
+            {
+              "status": "active"
+            },
+            {
+              "status": "offline"
+            }
+          ]
+        }
+      ]
+    },
+    "valid": true,
+    "canonicalAst": {
+      "op": "and",
+      "conds": [
+        {
+          "field": "active",
+          "op": "eq",
+          "value": true
+        },
+        {
+          "op": "or",
+          "conds": [
+            {
+              "field": "status",
+              "op": "eq",
+              "value": "active"
+            },
+            {
+              "field": "status",
+              "op": "eq",
+              "value": "offline"
+            }
+          ]
+        }
+      ]
+    },
+    "sqlPostgres": "(conf_entities.active = $1 AND (conf_entities.status = $2 OR conf_entities.status = $3))",
+    "sqlSqlite": "(conf_entities.active = ?1 AND (conf_entities.status = ?2 OR conf_entities.status = ?3))"
+  },
+  {
+    "name": "time_token_relative",
+    "input": {
+      "created": {
+        "$gt": "now-7d"
+      }
+    },
+    "valid": true,
+    "canonicalAst": {
+      "field": "created",
+      "op": "gt",
+      "value": "2025-12-25T00:00:00.000000000Z"
+    },
+    "sqlPostgres": "conf_entities.created \u003e $1",
+    "sqlSqlite": "conf_entities.created \u003e ?1"
+  },
+  {
+    "name": "empty",
+    "input": {},
+    "valid": true
+  },
+  {
+    "name": "err_unknown_field",
+    "input": {
+      "bogus": "x"
+    },
+    "valid": false,
+    "errorCode": "E2071"
+  },
+  {
+    "name": "err_operator_not_allowed",
+    "input": {
+      "active": {
+        "$gt": 1
+      }
+    },
+    "valid": false,
+    "errorCode": "E2072"
+  },
+  {
+    "name": "err_invalid_enum",
+    "input": {
+      "status": "bogus"
+    },
+    "valid": false,
+    "errorCode": "E2087"
+  },
+  {
+    "name": "err_nin_enum",
+    "input": {
+      "status": {
+        "$nin": [
+          "bogus"
+        ]
+      }
+    },
+    "valid": false,
+    "errorCode": "E2087"
+  },
+  {
+    "name": "err_in_not_array",
+    "input": {
+      "status": {
+        "$in": "active"
+      }
+    },
+    "valid": false,
+    "errorCode": "E2062"
+  },
+  {
+    "name": "err_null_not_bool",
+    "input": {
+      "name": {
+        "$null": "yes"
+      }
+    },
+    "valid": false,
+    "errorCode": "E2073"
+  },
+  {
+    "name": "err_eq_null",
+    "input": {
+      "name": null
+    },
+    "valid": false,
+    "errorCode": "E2073"
+  },
+  {
+    "name": "err_int_type",
+    "input": {
+      "count": "five"
+    },
+    "valid": false,
+    "errorCode": "E2073"
+  },
+  {
+    "name": "err_int_fraction",
+    "input": {
+      "count": 1.5
+    },
+    "valid": false,
+    "errorCode": "E2073"
+  },
+  {
+    "name": "err_bool_type",
+    "input": {
+      "active": "true"
+    },
+    "valid": false,
+    "errorCode": "E2073"
+  },
+  {
+    "name": "err_like_trailing_escape",
+    "input": {
+      "name": {
+        "$like": "abc\\"
+      }
+    },
+    "valid": false,
+    "errorCode": "E2073"
+  },
+  {
+    "name": "err_unknown_dollar_key_is_literal",
+    "input": {
+      "count": {
+        "$bogus": 1
+      }
+    },
+    "valid": false,
+    "errorCode": "E2073"
+  },
+  {
+    "name": "err_operator_key_mixed_with_literal",
+    "input": {
+      "count": {
+        "$gt": 1,
+        "x": 2
+      }
+    },
+    "valid": false,
+    "errorCode": "E2072"
+  },
+  {
+    "name": "err_or_not_array",
+    "input": {
+      "$or": {
+        "status": "active"
+      }
+    },
+    "valid": false,
+    "errorCode": "E2086"
+  },
+  {
+    "name": "err_or_branch_not_object",
+    "input": {
+      "$or": [
+        "active"
+      ]
+    },
+    "valid": false,
+    "errorCode": "E2086"
+  },
+  {
+    "name": "err_or_empty",
+    "input": {
+      "$or": []
+    },
+    "valid": false,
+    "errorCode": "E2086"
+  },
+  {
+    "name": "err_not_not_object",
+    "input": {
+      "$not": []
+    },
+    "valid": false,
+    "errorCode": "E2086"
+  },
+  {
+    "name": "err_not_empty",
+    "input": {
+      "$not": {}
+    },
+    "valid": false,
+    "errorCode": "E2086"
+  },
+  {
+    "name": "json_eq_document",
+    "input": {
+      "meta": {
+        "env": "prod"
+      }
+    },
+    "valid": true,
+    "canonicalAst": {
+      "field": "meta",
+      "op": "eq",
+      "value": {
+        "env": "prod"
+      }
+    },
+    "sqlPostgres": "conf_entities.meta = $1::jsonb",
+    "sqlSqlite": "(CASE WHEN conf_entities.meta IS NULL THEN NULL ELSE (CASE WHEN json_type(conf_entities.meta) = 'object' THEN ((SELECT count(*) FROM json_each(conf_entities.meta)) = 1 AND EXISTS (SELECT 1 FROM json_each(conf_entities.meta) je1 WHERE je1.key = ?1 AND (je1.type = 'text' AND je1.atom = ?2))) ELSE 0 END) END)"
+  },
+  {
+    "name": "json_contains",
+    "input": {
+      "meta": {
+        "$contains": {
+          "env": "prod"
+        }
+      }
+    },
+    "valid": true,
+    "canonicalAst": {
+      "field": "meta",
+      "op": "contains",
+      "value": {
+        "env": "prod"
+      }
+    },
+    "sqlPostgres": "conf_entities.meta @\u003e $1::jsonb",
+    "sqlSqlite": "(CASE WHEN conf_entities.meta IS NULL THEN NULL ELSE (CASE WHEN json_type(conf_entities.meta) = 'object' THEN (EXISTS (SELECT 1 FROM json_each(conf_entities.meta) je1 WHERE je1.key = ?1 AND (je1.type = 'text' AND je1.atom = ?2))) ELSE 0 END) END)"
+  },
+  {
+    "name": "err_json_eq_null",
+    "input": {
+      "meta": {
+        "$eq": null
+      }
+    },
+    "valid": false,
+    "errorCode": "E2073"
+  },
+  {
+    "name": "err_json_integer_beyond_int64",
+    "input": {
+      "meta": {
+        "n": 18446744073709551615
+      }
+    },
+    "valid": false,
+    "errorCode": "E2073",
+    "tsApplicable": false
+  },
+  {
+    "name": "json_decimal",
+    "input": {
+      "meta": {
+        "n": 0.1
+      }
+    },
+    "valid": true,
+    "canonicalAst": {
+      "field": "meta",
+      "op": "eq",
+      "value": {
+        "n": 0.1
+      }
+    },
+    "sqlPostgres": "conf_entities.meta = $1::jsonb",
+    "sqlSqlite": "(CASE WHEN conf_entities.meta IS NULL THEN NULL ELSE (CASE WHEN json_type(conf_entities.meta) = 'object' THEN ((SELECT count(*) FROM json_each(conf_entities.meta)) = 1 AND EXISTS (SELECT 1 FROM json_each(conf_entities.meta) je1 WHERE je1.key = ?1 AND (je1.type IN ('integer', 'real') AND je1.atom = ?2))) ELSE 0 END) END)"
+  },
+  {
+    "name": "json_has_key",
+    "input": {
+      "meta": {
+        "$has_key": "env"
+      }
+    },
+    "valid": true,
+    "canonicalAst": {
+      "field": "meta",
+      "op": "has_key",
+      "value": "env"
+    },
+    "sqlPostgres": "conf_entities.meta ? $1",
+    "sqlSqlite": "(CASE WHEN conf_entities.meta IS NULL THEN NULL WHEN json_type(conf_entities.meta) = 'object' THEN EXISTS (SELECT 1 FROM json_each(conf_entities.meta) hk WHERE hk.key = ?1) WHEN json_type(conf_entities.meta) = 'array' THEN EXISTS (SELECT 1 FROM json_each(conf_entities.meta) hk WHERE hk.type = 'text' AND hk.value = ?2) WHEN json_type(conf_entities.meta) = 'text' THEN json_extract(conf_entities.meta, '$') = ?3 ELSE 0 END)"
+  },
+  {
+    "name": "err_json_has_key_not_string",
+    "input": {
+      "meta": {
+        "$has_key": 3
+      }
+    },
+    "valid": false,
+    "errorCode": "E2073"
+  },
+  {
+    "name": "path_eq",
+    "input": {
+      "meta.region": "eu"
+    },
+    "valid": true,
+    "canonicalAst": {
+      "field": "meta.region",
+      "op": "eq",
+      "value": "eu"
+    },
+    "sqlPostgres": "(CASE WHEN jsonb_typeof(conf_entities.meta #\u003e '{region}') = 'string' THEN (conf_entities.meta #\u003e\u003e '{region}') END) = $1",
+    "sqlSqlite": "(CASE WHEN json_type(conf_entities.meta, '$.\"region\"') = 'text' THEN json_extract(conf_entities.meta, '$.\"region\"') END) = ?1"
+  },
+  {
+    "name": "path_like",
+    "input": {
+      "meta.region": {
+        "$like": "eu-%"
+      }
+    },
+    "valid": true,
+    "canonicalAst": {
+      "field": "meta.region",
+      "op": "like",
+      "value": "eu-%"
+    },
+    "sqlPostgres": "(CASE WHEN jsonb_typeof(conf_entities.meta #\u003e '{region}') = 'string' THEN (conf_entities.meta #\u003e\u003e '{region}') END) LIKE $1 ESCAPE '\\'",
+    "sqlSqlite": "(CASE WHEN json_type(conf_entities.meta, '$.\"region\"') = 'text' THEN json_extract(conf_entities.meta, '$.\"region\"') END) GLOB ?1"
+  },
+  {
+    "name": "err_path_type",
+    "input": {
+      "meta.region": 3
+    },
+    "valid": false,
+    "errorCode": "E2073"
+  },
+  {
+    "name": "err_undeclared_path",
+    "input": {
+      "meta.zone": "eu"
+    },
+    "valid": false,
+    "errorCode": "E2071"
+  },
+  {
+    "name": "elements_some",
+    "input": {
+      "lines": {
+        "$some": {
+          "$and": [
+            {
+              "sku": "a"
+            },
+            {
+              "qty": {
+                "$gt": 2
+              }
+            }
+          ]
+        }
+      }
+    },
+    "valid": true,
+    "canonicalAst": {
+      "field": "lines",
+      "op": "some",
+      "conds": [
+        {
+          "op": "and",
+          "conds": [
+            {
+              "field": "sku",
+              "op": "eq",
+              "value": "a"
+            },
+            {
+              "field": "qty",
+              "op": "gt",
+              "value": 2
+            }
+          ]
+        }
+      ]
+    },
+    "sqlPostgres": "EXISTS (SELECT 1 FROM jsonb_array_elements(CASE WHEN jsonb_typeof(conf_entities.lines) = 'array' THEN conf_entities.lines END) AS elem1__(v) WHERE ((CASE WHEN jsonb_typeof(elem1__.v #\u003e '{sku}') = 'string' THEN (elem1__.v #\u003e\u003e '{sku}') END) = $1 AND (CASE WHEN jsonb_typeof(elem1__.v #\u003e '{qty}') = 'number' THEN (elem1__.v #\u003e\u003e '{qty}')::numeric END) \u003e $2))",
+    "sqlSqlite": "EXISTS (SELECT 1 FROM json_each(CASE WHEN json_type(conf_entities.lines) = 'array' THEN conf_entities.lines END) AS elem1__ WHERE ((CASE WHEN json_type((CASE WHEN elem1__.type = 'object' THEN elem1__.value END), '$.\"sku\"') = 'text' THEN json_extract((CASE WHEN elem1__.type = 'object' THEN elem1__.value END), '$.\"sku\"') END) = ?1 AND (CASE WHEN json_type((CASE WHEN elem1__.type = 'object' THEN elem1__.value END), '$.\"qty\"') IN ('integer', 'real') THEN json_extract((CASE WHEN elem1__.type = 'object' THEN elem1__.value END), '$.\"qty\"') END) \u003e ?2))"
+  },
+  {
+    "name": "elements_none",
+    "input": {
+      "lines": {
+        "$none": {
+          "sku": "a"
+        }
+      }
+    },
+    "valid": true,
+    "canonicalAst": {
+      "field": "lines",
+      "op": "none",
+      "conds": [
+        {
+          "field": "sku",
+          "op": "eq",
+          "value": "a"
+        }
+      ]
+    },
+    "sqlPostgres": "NOT EXISTS (SELECT 1 FROM jsonb_array_elements(CASE WHEN jsonb_typeof(conf_entities.lines) = 'array' THEN conf_entities.lines END) AS elem1__(v) WHERE (CASE WHEN jsonb_typeof(elem1__.v #\u003e '{sku}') = 'string' THEN (elem1__.v #\u003e\u003e '{sku}') END) = $1)",
+    "sqlSqlite": "NOT EXISTS (SELECT 1 FROM json_each(CASE WHEN json_type(conf_entities.lines) = 'array' THEN conf_entities.lines END) AS elem1__ WHERE (CASE WHEN json_type((CASE WHEN elem1__.type = 'object' THEN elem1__.value END), '$.\"sku\"') = 'text' THEN json_extract((CASE WHEN elem1__.type = 'object' THEN elem1__.value END), '$.\"sku\"') END) = ?1)"
+  },
+  {
+    "name": "err_elements_unknown_member",
+    "input": {
+      "lines": {
+        "$some": {
+          "colour": "red"
+        }
+      }
+    },
+    "valid": false,
+    "errorCode": "E2071"
+  },
+  {
+    "name": "err_elements_member_type",
+    "input": {
+      "lines": {
+        "$some": {
+          "qty": "two"
+        }
+      }
+    },
+    "valid": false,
+    "errorCode": "E2073"
+  },
+  {
+    "name": "err_elements_not_object",
+    "input": {
+      "lines": {
+        "$some": "a"
+      }
+    },
+    "valid": false,
+    "errorCode": "E2086"
+  },
+  {
+    "name": "err_elements_is",
+    "input": {
+      "lines": {
+        "$is": {}
+      }
+    },
+    "valid": false,
+    "errorCode": "E2072"
+  },
+  {
+    "name": "relation_some",
+    "input": {
+      "parts": {
+        "$some": {
+          "state": "worn"
+        }
+      }
+    },
+    "valid": true,
+    "canonicalAst": {
+      "field": "parts",
+      "op": "some",
+      "conds": [
+        {
+          "field": "state",
+          "op": "eq",
+          "value": "worn"
+        }
+      ]
+    },
+    "sqlPostgres": "EXISTS (SELECT 1 FROM parts WHERE parts.entity_id = conf_entities.id AND parts.state = $1)",
+    "sqlSqlite": "EXISTS (SELECT 1 FROM parts WHERE parts.entity_id = conf_entities.id AND parts.state = ?1)"
+  },
+  {
+    "name": "relation_none_any",
+    "input": {
+      "parts": {
+        "$none": {}
+      }
+    },
+    "valid": true,
+    "canonicalAst": {
+      "field": "parts",
+      "op": "none"
+    },
+    "sqlPostgres": "NOT EXISTS (SELECT 1 FROM parts WHERE parts.entity_id = conf_entities.id)",
+    "sqlSqlite": "NOT EXISTS (SELECT 1 FROM parts WHERE parts.entity_id = conf_entities.id)"
+  },
+  {
+    "name": "relation_key_shorthand",
+    "input": {
+      "parts": "p1"
+    },
+    "valid": true,
+    "canonicalAst": {
+      "field": "parts",
+      "op": "some",
+      "conds": [
+        {
+          "field": "id",
+          "op": "eq",
+          "value": "p1"
+        }
+      ]
+    },
+    "sqlPostgres": "EXISTS (SELECT 1 FROM parts WHERE parts.entity_id = conf_entities.id AND parts.id = $1)",
+    "sqlSqlite": "EXISTS (SELECT 1 FROM parts WHERE parts.entity_id = conf_entities.id AND parts.id = ?1)"
+  },
+  {
+    "name": "relation_key_list",
+    "input": {
+      "parts": {
+        "$in": [
+          "p1",
+          "p2"
+        ]
+      }
+    },
+    "valid": true,
+    "canonicalAst": {
+      "field": "parts",
+      "op": "some",
+      "conds": [
+        {
+          "field": "id",
+          "op": "in",
+          "value": [
+            "p1",
+            "p2"
+          ]
+        }
+      ]
+    },
+    "sqlPostgres": "EXISTS (SELECT 1 FROM parts WHERE parts.entity_id = conf_entities.id AND parts.id IN ($1, $2))",
+    "sqlSqlite": "EXISTS (SELECT 1 FROM parts WHERE parts.entity_id = conf_entities.id AND parts.id IN (?1, ?2))"
+  },
+  {
+    "name": "err_relation_unknown_target_field",
+    "input": {
+      "parts": {
+        "$some": {
+          "colour": "red"
+        }
+      }
+    },
+    "valid": false,
+    "errorCode": "E2071"
+  },
+  {
+    "name": "err_relation_target_enum",
+    "input": {
+      "parts": {
+        "$some": {
+          "state": "new"
+        }
+      }
+    },
+    "valid": false,
+    "errorCode": "E2087"
+  },
+  {
+    "name": "err_relation_is_on_collection",
+    "input": {
+      "parts": {
+        "$is": {}
+      }
+    },
+    "valid": false,
+    "errorCode": "E2072"
+  },
+  {
+    "name": "err_relation_not_object",
+    "input": {
+      "parts": {
+        "$some": []
+      }
+    },
+    "valid": false,
+    "errorCode": "E2086"
+  }
+]

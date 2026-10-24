@@ -5,6 +5,7 @@ go 1.27.0
 // and release tooling have separate dependency graphs and checks.
 use (
 	./gowalker
+	./parse
 	./config
 	./config/kongprovider
 	./httpx

@@ -31,7 +31,7 @@ func TestArchivesUseModuleBoundariesAndManifestVersions(t *testing.T) {
 	writeFixture(t, root, "httpx/codec/proto/codec.go", "package proto\n")
 	proxy := t.TempDir()
 	var index bytes.Buffer
-	if err := run(proxy, filepath.Join(root, ".release-please-manifest.json"), "v0.1.0",
+	if err := run(t.Context(), proxy, filepath.Join(root, ".release-please-manifest.json"), "v0.1.0",
 		[]string{filepath.Join(root, "httpx"), filepath.Join(root, "httpx/codec/proto")}, &index); err != nil {
 		t.Fatal(err)
 	}
@@ -67,12 +67,12 @@ func TestArchivesUseModuleBoundariesAndManifestVersions(t *testing.T) {
 func TestArchiveRejectsMissingLicenseAndLocalReplacements(t *testing.T) {
 	root := t.TempDir()
 	writeFixture(t, root, "go.mod", "module example.com/pkg/httpx\n\ngo 1.26.0\n")
-	if _, err := archive(t.TempDir(), "v0.1.0", root); err == nil || !strings.Contains(err.Error(), "LICENSE") {
+	if _, err := archive(t.Context(), t.TempDir(), "v0.1.0", root); err == nil || !strings.Contains(err.Error(), "LICENSE") {
 		t.Fatalf("missing license: %v", err)
 	}
 	writeFixture(t, root, "LICENSE", "license\n")
 	writeFixture(t, root, "go.mod", "module example.com/pkg/httpx\n\ngo 1.26.0\n\nreplace example.com/private => ../private\n")
-	if _, err := archive(t.TempDir(), "v0.1.0", root); err == nil || !strings.Contains(err.Error(), "replace") {
+	if _, err := archive(t.Context(), t.TempDir(), "v0.1.0", root); err == nil || !strings.Contains(err.Error(), "replace") {
 		t.Fatalf("local replacement: %v", err)
 	}
 }
@@ -101,7 +101,7 @@ func TestArchiveRejectsInternalPlanningArtifacts(t *testing.T) {
 			writeFixture(t, root, "LICENSE", "license\n")
 			writeFixture(t, root, tc.name, tc.content)
 			out := t.TempDir()
-			if _, err := archive(out, "v0.1.0", root); err == nil || !strings.Contains(err.Error(), "internal") {
+			if _, err := archive(t.Context(), out, "v0.1.0", root); err == nil || !strings.Contains(err.Error(), "internal") {
 				t.Fatalf("internal artifact was not rejected: %v", err)
 			}
 			if _, err := os.Stat(filepath.Join(out, "example.com/pkg/httpx/@v/v0.1.0.zip")); !os.IsNotExist(err) {
@@ -121,10 +121,10 @@ func TestArchiveAllowsHTTPStandardsAndRespectsNestedModules(t *testing.T) {
 	writeFixture(t, root, "nested/go.mod", "module example.com/pkg/httpx/nested\n\ngo 1.26.0\n")
 	writeFixture(t, root, "nested/LICENSE", "license\n")
 	writeFixture(t, root, "nested/docs/reports/review.md", "Internal review.\n")
-	if _, err := archive(t.TempDir(), "v0.1.0", root); err != nil {
+	if _, err := archive(t.Context(), t.TempDir(), "v0.1.0", root); err != nil {
 		t.Fatalf("public standards or an excluded nested module blocked the parent archive: %v", err)
 	}
-	if _, err := archive(t.TempDir(), "v0.1.0", filepath.Join(root, "nested")); err == nil || !strings.Contains(err.Error(), "internal") {
+	if _, err := archive(t.Context(), t.TempDir(), "v0.1.0", filepath.Join(root, "nested")); err == nil || !strings.Contains(err.Error(), "internal") {
 		t.Fatalf("nested module's own archive did not reject its internal report: %v", err)
 	}
 }

@@ -1,0 +1,334 @@
+{
+  "schema": {
+    "version": 1,
+    "resource": "conf_patches",
+    "filter": {
+      "fields": {}
+    },
+    "patch": {
+      "paths": {
+        "/active": {
+          "allowed_ops": [
+            "replace"
+          ],
+          "data_type": "bool"
+        },
+        "/count": {
+          "allowed_ops": [
+            "replace"
+          ],
+          "data_type": "int",
+          "number_kind": "int32"
+        },
+        "/labels": {
+          "allowed_ops": [
+            "replace",
+            "add",
+            "remove"
+          ],
+          "data_type": "json",
+          "nullable": true
+        },
+        "/name": {
+          "allowed_ops": [
+            "replace"
+          ],
+          "data_type": "string"
+        },
+        "/nick": {
+          "allowed_ops": [
+            "replace",
+            "remove"
+          ],
+          "data_type": "string",
+          "nullable": true
+        },
+        "/ratio": {
+          "allowed_ops": [
+            "replace"
+          ],
+          "data_type": "float",
+          "number_kind": "float64"
+        },
+        "/scores": {
+          "allowed_ops": [
+            "replace",
+            "add",
+            "remove",
+            "array_append"
+          ],
+          "data_type": "array",
+          "nullable": true,
+          "elem": "int",
+          "number_kind": "int16"
+        },
+        "/seen_at": {
+          "allowed_ops": [
+            "replace",
+            "remove"
+          ],
+          "data_type": "timestamp",
+          "nullable": true
+        },
+        "/small": {
+          "allowed_ops": [
+            "replace"
+          ],
+          "data_type": "int",
+          "number_kind": "int8"
+        },
+        "/status": {
+          "allowed_ops": [
+            "replace"
+          ],
+          "data_type": "string",
+          "enum_values": [
+            "active",
+            "offline"
+          ]
+        },
+        "/tags": {
+          "allowed_ops": [
+            "replace",
+            "add",
+            "remove",
+            "array_append"
+          ],
+          "data_type": "array",
+          "nullable": true,
+          "elem": "string"
+        }
+      },
+      "max_operations": 50
+    }
+  },
+  "cases": [
+    {
+      "name": "string",
+      "input": {
+        "name": "a"
+      },
+      "valid": true
+    },
+    {
+      "name": "err_string_type",
+      "input": {
+        "name": 3
+      },
+      "valid": false,
+      "errorCode": "E2077"
+    },
+    {
+      "name": "err_null_on_value_field",
+      "input": {
+        "name": null
+      },
+      "valid": false,
+      "errorCode": "E2077"
+    },
+    {
+      "name": "null_on_pointer_field",
+      "input": {
+        "nick": null
+      },
+      "valid": true
+    },
+    {
+      "name": "enum",
+      "input": {
+        "status": "active"
+      },
+      "valid": true
+    },
+    {
+      "name": "err_enum",
+      "input": {
+        "status": "busy"
+      },
+      "valid": false,
+      "errorCode": "E2077"
+    },
+    {
+      "name": "int",
+      "input": {
+        "count": 5
+      },
+      "valid": true
+    },
+    {
+      "name": "err_int_fraction",
+      "input": {
+        "count": 1.5
+      },
+      "valid": false,
+      "errorCode": "E2077"
+    },
+    {
+      "name": "err_int_type",
+      "input": {
+        "count": "5"
+      },
+      "valid": false,
+      "errorCode": "E2077"
+    },
+    {
+      "name": "err_int32_range",
+      "input": {
+        "count": 2147483648
+      },
+      "valid": false,
+      "errorCode": "E2077"
+    },
+    {
+      "name": "err_int8_range",
+      "input": {
+        "small": 128
+      },
+      "valid": false,
+      "errorCode": "E2077"
+    },
+    {
+      "name": "int8_min",
+      "input": {
+        "small": -128
+      },
+      "valid": true
+    },
+    {
+      "name": "float",
+      "input": {
+        "ratio": 0.5
+      },
+      "valid": true
+    },
+    {
+      "name": "err_float_type",
+      "input": {
+        "ratio": "half"
+      },
+      "valid": false,
+      "errorCode": "E2077"
+    },
+    {
+      "name": "bool",
+      "input": {
+        "active": false
+      },
+      "valid": true
+    },
+    {
+      "name": "err_bool_type",
+      "input": {
+        "active": "false"
+      },
+      "valid": false,
+      "errorCode": "E2077"
+    },
+    {
+      "name": "array",
+      "input": {
+        "tags": [
+          "a",
+          "b"
+        ]
+      },
+      "valid": true
+    },
+    {
+      "name": "err_array_type",
+      "input": {
+        "tags": "a"
+      },
+      "valid": false,
+      "errorCode": "E2077"
+    },
+    {
+      "name": "err_array_element_type",
+      "input": {
+        "tags": [
+          "a",
+          1
+        ]
+      },
+      "valid": false,
+      "errorCode": "E2077"
+    },
+    {
+      "name": "err_array_element_range",
+      "input": {
+        "scores": [
+          1,
+          40000
+        ]
+      },
+      "valid": false,
+      "errorCode": "E2077"
+    },
+    {
+      "name": "clear_array",
+      "input": {
+        "tags": null
+      },
+      "valid": true
+    },
+    {
+      "name": "document_merge",
+      "input": {
+        "labels": {
+          "a": 1,
+          "old": null
+        }
+      },
+      "valid": true
+    },
+    {
+      "name": "timestamp",
+      "input": {
+        "seen_at": "2026-10-19T12:00:00Z"
+      },
+      "valid": true
+    },
+    {
+      "name": "err_timestamp_format",
+      "input": {
+        "seen_at": "yesterday"
+      },
+      "valid": false,
+      "errorCode": "E2077",
+      "tsApplicable": false
+    },
+    {
+      "name": "err_timestamp_type",
+      "input": {
+        "seen_at": 5
+      },
+      "valid": false,
+      "errorCode": "E2077"
+    },
+    {
+      "name": "err_not_patchable",
+      "input": {
+        "readonly": "x"
+      },
+      "valid": false,
+      "errorCode": "E2076"
+    },
+    {
+      "name": "err_unknown_field",
+      "input": {
+        "colour": "red"
+      },
+      "valid": false,
+      "errorCode": "E2076"
+    },
+    {
+      "name": "several",
+      "input": {
+        "active": true,
+        "count": 1,
+        "name": "a"
+      },
+      "valid": true
+    }
+  ]
+}

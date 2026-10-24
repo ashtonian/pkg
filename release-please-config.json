@@ -8,6 +8,27 @@
   "separate-pull-requests": false,
   "last-release-sha": "b98d84c5ce000b457cdec5086dd7897368a96c42",
   "packages": {
+    "parse": {
+      "component": "parse",
+      "initial-version": "0.1.0",
+      "extra-files": [
+        {
+          "type": "json",
+          "path": "sdk/ts/package.json",
+          "jsonpath": "$.version"
+        },
+        {
+          "type": "json",
+          "path": "sdk/ts/package-lock.json",
+          "jsonpath": "$.version"
+        },
+        {
+          "type": "json",
+          "path": "sdk/ts/package-lock.json",
+          "jsonpath": "$.packages[''].version"
+        }
+      ]
+    },
     "config": {
       "component": "config",
       "exclude-paths": [
