@@ -67,6 +67,9 @@
 // A nil error is not an HTTP success check. Inspect the response status and
 // close each response body, including one returned with a typed decode error.
 // Raw client.Do bodies remain streaming and need application-owned bounds.
+// [DrainAndClose] explicitly bounds cleanup of a remaining body and reports
+// drain/close observations separately from application acceptance. Its caller
+// transfers cleanup ownership; no second deferred Close is needed.
 // EOF, read error or Close releases limiter slots and hedge winner contexts.
 // Call [CacheTransport.Close] to stop background refreshes before closing
 // idle transport connections with http.Client.CloseIdleConnections.

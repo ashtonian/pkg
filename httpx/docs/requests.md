@@ -34,6 +34,41 @@ Close each response body. Read it to EOF when appropriate for connection
 reuse, but do not drain an unbounded stream just to reuse a connection.
 Closing also releases a concurrency limiter slot or hedge winner's context.
 
+## Bounded response cleanup
+
+`DrainAndClose(ctx, body, maxDrainBytes)` is an explicit cleanup operation after
+the caller finishes inspecting a body or makes its protocol decision. It reads
+at most the supplied budget from the body's current position and attempts
+`Close` once, including after a read error, invalid budget or cancellation.
+Replace an existing drain/close sequence with this operation; do not retain a
+second deferred `Close`, call it repeatedly or use the body concurrently.
+It does not close the client or its transport.
+
+The result has `BytesDrained`, `EOF`, `DrainErr` and `CloseErr` fields. The budget
+counts bytes exposed by that body, including a buffered prefix retained after
+an oversized typed decode; it does not count earlier reads. Zero is close-only.
+A negative budget or nil context records `ErrInvalidConfig` in `DrainErr`
+without reading. Nil and typed-nil bodies are absent, and `http.NoBody` is known
+empty; these report `EOF=true`. Other bodies report completion only when a read
+returns `io.EOF`. A body exactly as long as the budget can leave `EOF=false`:
+cleanup never reads an extra byte merely to prove completion. Exhausting the
+budget alone is not a drain error. Repeated empty reads stop with
+`io.ErrNoProgress`.
+
+Cancellation is checked before and between reads. A context parameter cannot
+interrupt an arbitrary blocking `Read` or `Close`; keep the original request
+or client deadline and use a body that cooperates with cancellation. Cleanup
+starts no goroutine and does not cancel the request's context.
+
+Decide acceptance from the provider's protocol first. Required response
+decoding still has to succeed; a later cleanup-only failure cannot reverse an
+already accepted message or validated response. `CleanupResult` is an
+observation value, not an error return. Keep its read and close errors separate
+from delivery control flow. They preserve their underlying identities for
+`errors.Is`, but may contain private diagnostics: log bounded classifications
+or error-presence flags under the application's observation policy instead of
+formatting arbitrary error strings.
+
 ## Streaming and request bodies
 
 Pass an `io.Reader` to `http.NewRequestWithContext` for uploads, and set the

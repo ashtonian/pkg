@@ -2,6 +2,7 @@ package httpx
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -128,7 +129,12 @@ func closeRequestBody(req *http.Request) {
 // drainAndClose reads remaining body and closes it for connection reuse.
 func drainAndClose(resp *http.Response) {
 	if resp != nil && resp.Body != nil {
-		io.Copy(io.Discard, io.LimitReader(resp.Body, 8192))
-		resp.Body.Close()
+		// Synthetic transport responses may have no originating request.
+		ctx := context.Background()
+		if resp.Request != nil {
+			ctx = resp.Request.Context()
+		}
+		// This discarded response cannot replace the retry/cache/hedge decision.
+		DrainAndClose(ctx, resp.Body, 8192)
 	}
 }

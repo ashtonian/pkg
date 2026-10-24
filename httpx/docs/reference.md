@@ -205,6 +205,19 @@ With the `Chain` API, pass `WithRetryHook` / `WithCacheHook` explicitly: only `N
 
 The typed request helpers decode only 2xx representations; non-2xx responses, HEAD, 204 and 205 return zero `T`, the live response and a nil error. `DecodeResponse` instead decodes the supplied body with the supplied codec regardless of status or content type; the caller chooses when to call it. A larger body returns `ErrResponseTooLarge` and the response still reads the whole body (close it). After decoding, `resp.Body` holds the bytes read. When `T` is a pointer (`Do[*pb.Msg]`), the codec decodes into a newly allocated pointee. `Post` / `Put` / `Patch` encode a non-`io.Reader` body as JSON.
 
+### Response cleanup
+
+`DrainAndClose(ctx context.Context, body io.ReadCloser, maxDrainBytes int64) CleanupResult`
+explicitly transfers one body's cleanup ownership. The byte budget has no
+default: zero closes without reading; negative values record `ErrInvalidConfig`
+and still close. The budget applies only to bytes currently exposed by the
+body. `CleanupResult` contains `BytesDrained int64`, `EOF bool`, `DrainErr error`
+and `CloseErr error`; reaching the budget without an `io.EOF` read does not prove
+completion. Nil/typed-nil bodies and `http.NoBody` are known empty. The result
+does not implement `error` or decide protocol acceptance. See
+[bounded response cleanup](requests.md#bounded-response-cleanup) for error,
+cancellation, privacy and single-owner lifecycle semantics.
+
 ## Errors
 
 httpx defines sentinels, not E-codes; match them with `errors.Is`.
@@ -238,6 +251,7 @@ that is separate from retrying the current call.
 
 - `Get[T]`, `Post[T]`, `Put[T]`, `Patch[T]`, `Do[T]` — request and decode; `Delete` — request only
 - `DecodeResponse(resp, codec, v, opts...) error`, `EncodeRequest(req, codec, v) error` — sets `Body`, `GetBody` and `ContentLength` together and closes the body it replaces
+- `DrainAndClose(ctx, body, maxDrainBytes) CleanupResult` — bounded remaining-body cleanup and separate drain/close observations
 - `ParseOrigin(url) (Origin, error)`, `OriginOf(*url.URL) Origin`
 - `TransportStack(client) []http.RoundTripper` — the layers, outer to inner
 - `RegisterCodec`, `GetCodec`, `HasCodec`, `RegisteredCodecs`; `RegisterCompressor`, `GetCompressor`, `HasCompressor`, `RegisteredEncodings`
