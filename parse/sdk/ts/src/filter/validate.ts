@@ -281,4 +281,3 @@ export function validateSort(sortStr: string, schema: SortSchema): void {
     }
   }
 }
-

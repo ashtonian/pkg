@@ -122,4 +122,3 @@ function mergeOperations(obj: Record<string, unknown>, depth: number): number {
   }
   return ops;
 }
-

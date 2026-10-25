@@ -182,4 +182,3 @@ export class SchemaValidator {
     return groups;
   }
 }
-

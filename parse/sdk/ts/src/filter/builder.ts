@@ -88,4 +88,3 @@ export class SortBuilder<T> {
 export function sort<T>(): SortBuilder<T> {
   return new SortBuilder<T>();
 }
-
