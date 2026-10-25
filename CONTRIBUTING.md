@@ -11,6 +11,10 @@ The repository's `go.work` ties the published modules together, so a change to o
 | `make test-jsonvalue` / `make jsonvalue-release-check` | JSON replacement race tests / fresh module-archive consumer and README example |
 | `make test` | Every published module's tests, race detector on; both httpx build tags |
 | `make test-httpx-unit` / `make test-httpx-integration` | httpx unit or real HTTP integration lane |
+| `make test-parse-unit` / `make test-parse-integration` | Parse race tests and existing fuzz seeds; SQLite always runs, PostgreSQL/PostGIS through explicit DSNs |
+| `make test-parse-sdk` | TypeScript checks, lint, shared corpora and production build |
+| `make parse-release-check` | Fresh module-archive consumer, tagged tests, README program and dependency audit |
+| `make parse-sdk-release-check` | Packed SDK consumer, TypeScript declarations, runtime subpaths and sourcemaps |
 | `make lint` | `go vet` and staticcheck |
 | `make release-check` | Gowalker and config standalone builds plus the module archive checks below |
 | `make gowalker-release-check` | Gowalker archive downloaded into a fresh consumer, race tests, the README quick start and complete usage examples |
@@ -60,7 +64,7 @@ Published modules contain no local replacements. Validate candidate archives
 with `make httpx-release-check`, and verify public-proxy installation after
 release. Release a dependency before raising another module's requirement.
 
-The archive builder includes each module's MIT license and excludes nested
+Candidate archives include tracked files and nonignored new files, respecting Git ignore rules after SDK builds. Deleted files and symlinked subtrees stay out. Source exports outside Git retain directory-based archive support; unexpected Git failures fail the check. The archive builder includes each module's MIT license and excludes nested
 modules from its parent ZIP. It rejects internal planning documents and
 references in published archives; retain only public API documentation,
 examples, tests and normal module files. References to HTTP standards remain
@@ -79,3 +83,9 @@ The config and Kong provider quick starts match their compiled examples
 verbatim. Cookbook excerpts are checked against their source files. Keep
 examples and their documentation in sync, and run `make ci` from the
 repository root before opening a pull request.
+
+## Parse SQL matrix
+
+Parse requires Go 1.27 and publishes as `github.com/ashtonian/pkg/parse`, with `parse/v…` tags. CI runs unit tests and existing fuzz seeds under the race detector, SQLite integration, PostgreSQL 17/18 with PostGIS 3.6, and the TypeScript SDK's shared corpora. The SDK release check installs its tarball in a fresh consumer and checks public declarations, runtime subpaths and self-contained JavaScript sourcemaps. SDK package and lock versions follow the Parse release component. CI stores benchmark text and CPU/allocation profiles on main; it does not run dedicated fuzzing sessions.
+
+For an existing test server, set `PARSE_POSTGRES_DSN` and `PARSE_POSTGIS_DSN` and run `make test-parse-integration`. Each case gets a fresh schema. A requested server that is unavailable fails; an unrequested PostgreSQL case skips. `make parse-release-check` verifies a candidate archive independently of the workspace; publication additionally requires clean public-proxy installation of the immutable release.

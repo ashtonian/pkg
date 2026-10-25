@@ -1,0 +1,187 @@
+[
+  {
+    "code": "E2061",
+    "status": 422,
+    "message": "query too expensive"
+  },
+  {
+    "code": "E2062",
+    "status": 422,
+    "message": "invalid array value"
+  },
+  {
+    "code": "E2063",
+    "status": 422,
+    "message": "input too large"
+  },
+  {
+    "code": "E2064",
+    "status": 422,
+    "message": "operation not allowed"
+  },
+  {
+    "code": "E2065",
+    "status": 422,
+    "message": "sort value too large to page"
+  },
+  {
+    "code": "E2066",
+    "status": 422,
+    "message": "too many operations"
+  },
+  {
+    "code": "E2067",
+    "status": 422,
+    "message": "invalid list parameter"
+  },
+  {
+    "code": "E2068",
+    "status": 422,
+    "message": "test op cannot compile to SQL"
+  },
+  {
+    "code": "E2069",
+    "status": 500,
+    "message": "patch path has no SQL column mapping"
+  },
+  {
+    "code": "E2070",
+    "status": 422,
+    "message": "patch operation cannot compile to SQL"
+  },
+  {
+    "code": "E2071",
+    "status": 422,
+    "message": "unknown field"
+  },
+  {
+    "code": "E2072",
+    "status": 422,
+    "message": "invalid operator"
+  },
+  {
+    "code": "E2073",
+    "status": 422,
+    "message": "value type mismatch"
+  },
+  {
+    "code": "E2074",
+    "status": 422,
+    "message": "depth exceeded"
+  },
+  {
+    "code": "E2075",
+    "status": 422,
+    "message": "invalid patch operation"
+  },
+  {
+    "code": "E2076",
+    "status": 422,
+    "message": "patch field not found"
+  },
+  {
+    "code": "E2077",
+    "status": 422,
+    "message": "patch value invalid"
+  },
+  {
+    "code": "E2078",
+    "status": 422,
+    "message": "schema not found"
+  },
+  {
+    "code": "E2079",
+    "status": 422,
+    "message": "sort field not allowed"
+  },
+  {
+    "code": "E2080",
+    "status": 422,
+    "message": "SQL generation failed"
+  },
+  {
+    "code": "E2081",
+    "status": 422,
+    "message": "sort field limit exceeded"
+  },
+  {
+    "code": "E2082",
+    "status": 422,
+    "message": "invalid cursor"
+  },
+  {
+    "code": "E2083",
+    "status": 422,
+    "message": "invalid relation"
+  },
+  {
+    "code": "E2084",
+    "status": 422,
+    "message": "patch policy forbidden"
+  },
+  {
+    "code": "E2085",
+    "status": 422,
+    "message": "patch policy value violation"
+  },
+  {
+    "code": "E2086",
+    "status": 422,
+    "message": "invalid JSON"
+  },
+  {
+    "code": "E2087",
+    "status": 422,
+    "message": "invalid enum value"
+  },
+  {
+    "code": "E2088",
+    "status": 422,
+    "message": "array too large"
+  },
+  {
+    "code": "E2089",
+    "status": 422,
+    "message": "max conditions exceeded"
+  },
+  {
+    "code": "E2112",
+    "status": 400,
+    "message": "invalid geo coordinates"
+  },
+  {
+    "code": "E2113",
+    "status": 400,
+    "message": "invalid distance value"
+  },
+  {
+    "code": "E2114",
+    "status": 400,
+    "message": "invalid geo polygon"
+  },
+  {
+    "code": "E2115",
+    "status": 400,
+    "message": "geo operator not supported by dialect"
+  },
+  {
+    "code": "E2116",
+    "status": 400,
+    "message": "invalid UUID"
+  },
+  {
+    "code": "E2117",
+    "status": 422,
+    "message": "patch verb not allowed on relation field"
+  },
+  {
+    "code": "E2118",
+    "status": 422,
+    "message": "relation patch value must be array"
+  },
+  {
+    "code": "E2119",
+    "status": 422,
+    "message": "relation patch values exceed maximum"
+  }
+]

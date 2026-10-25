@@ -7,6 +7,7 @@ its own dependencies, version, changelog and releases.
 |---|---|---|
 | [gowalker](gowalker/README.md) | `github.com/ashtonian/pkg/gowalker` | Struct-tag plumbing for libraries users configure with tags: field naming conventions, per-type metadata caching, inherited section tags, field readers/writers. |
 | [jsonvalue](jsonvalue/README.md) | `github.com/ashtonian/pkg/jsonvalue` | Fresh JSON value replacement with optional non-nil representation checks. |
+| [parse](parse/README.md) | `github.com/ashtonian/pkg/parse` | Struct tags to validated HTTP filters, sorts, keyset pages and patches, compiled to PostgreSQL/SQLite plans; Go and TypeScript client builders. |
 | [config](config/README.md) | `github.com/ashtonian/pkg/config` | Typed, layered configuration with validation, hot reload and redaction. |
 | [httpx](httpx/README.md) | `github.com/ashtonian/pkg/httpx` | HTTP standards and resilience: retries, circuit breaking, caching, compression and request budgets for `net/http`. |
 | [Kong provider](config/kongprovider/README.md) | `github.com/ashtonian/pkg/config/kongprovider` | CLI flags as config overrides, with help derived from the config struct. |
@@ -18,9 +19,10 @@ go get github.com/ashtonian/pkg/config@latest
 go get github.com/ashtonian/pkg/httpx@latest
 go get github.com/ashtonian/pkg/gowalker@latest
 go get github.com/ashtonian/pkg/jsonvalue@latest
+go get github.com/ashtonian/pkg/parse@latest
 ```
 
-Gowalker, jsonvalue, config and its Kong provider require **Go 1.27 or later**; httpx requires
+Parse, gowalker, jsonvalue, config and its Kong provider require **Go 1.27 or later**; httpx requires
 **Go 1.26 or later**. Install only the modules you need. Add the Kong provider for Kong CLI integration;
 add httpx's MessagePack, protobuf or Brotli module only for that wire format.
 
@@ -42,6 +44,9 @@ or the [standard-client example](httpx/README.md#quick-start).
 
 ## Documentation
 
+- [Parse quick start](parse/README.md): request parsing, SQL compilation, scopes and pages.
+- [Parse TypeScript SDK](parse/sdk/ts/README.md): schema discovery, validation and request builders.
+
 - [Gowalker quick start](gowalker/README.md): when to use it, picking a tag naming convention, reading your first tags.
 - [Gowalker recipes](gowalker/docs/usage.md): per-type metadata, `json`/`koanf` naming, nested sections, inherited tags, errors.
 - [httpx quick start](httpx/README.md): add compression, retry/backoff and ETag caching to a standard `http.Client`.
@@ -56,7 +61,7 @@ or the [standard-client example](httpx/README.md#quick-start).
 ## Versioning
 
 Modules release independently with path-prefixed tags such as
-`gowalker/v0.1.0`, `config/v0.3.0`, `config/kongprovider/v0.1.0` and `httpx/v0.1.0`. During `v0`, minor releases
+`parse/v0.1.0`, `gowalker/v0.1.0`, `config/v0.3.0`, `config/kongprovider/v0.1.0` and `httpx/v0.1.0`. During `v0`, minor releases
 may change APIs; see [versioning](CONTRIBUTING.md#versioning) and each
 module's changelog.
 

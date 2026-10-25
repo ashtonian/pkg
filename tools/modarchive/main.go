@@ -8,20 +8,22 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
 	"io"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"time"
 
 	"golang.org/x/mod/modfile"
 	"golang.org/x/mod/module"
 	"golang.org/x/mod/semver"
-	"golang.org/x/mod/zip"
 )
 
 func main() {
@@ -29,13 +31,15 @@ func main() {
 	manifest := flag.String("manifest", "", "release-please manifest in the repository root")
 	initial := flag.String("initial-version", "v0.1.0", "candidate version for a 0.0.0 bootstrap entry")
 	flag.Parse()
-	if err := run(*out, *manifest, *initial, flag.Args(), os.Stdout); err != nil {
+	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer cancel()
+	if err := run(ctx, *out, *manifest, *initial, flag.Args(), os.Stdout); err != nil {
 		fmt.Fprintln(os.Stderr, "modarchive:", err)
 		os.Exit(1)
 	}
 }
 
-func run(out, manifest, initial string, dirs []string, index io.Writer) error {
+func run(ctx context.Context, out, manifest, initial string, dirs []string, index io.Writer) error {
 	if out == "" || manifest == "" || len(dirs) == 0 {
 		return errors.New("usage: modarchive -out DIR -manifest FILE MODULE_DIR [MODULE_DIR]")
 	}
@@ -74,7 +78,7 @@ func run(out, manifest, initial string, dirs []string, index io.Writer) error {
 		if version == "v0.0.0" {
 			version = initial
 		}
-		path, err := archive(out, version, dir)
+		path, err := archive(ctx, out, version, dir)
 		if err != nil {
 			return fmt.Errorf("%s: %w", dir, err)
 		}
@@ -87,7 +91,7 @@ func run(out, manifest, initial string, dirs []string, index io.Writer) error {
 
 // archive writes <escaped module>/@v/{list,version.info,version.mod,version.zip}.
 // Published modules must carry their own license and resolve without replace.
-func archive(out, version, dir string) (string, error) {
+func archive(ctx context.Context, out, version, dir string) (string, error) {
 	gomod, err := os.ReadFile(filepath.Join(dir, "go.mod"))
 	if err != nil {
 		return "", err
@@ -129,7 +133,7 @@ func archive(out, version, dir string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	if err := zip.CreateFromDir(zf, module.Version{Path: path, Version: version}, dir); err != nil {
+	if err := createWorkingTreeArchive(ctx, zf, module.Version{Path: path, Version: version}, dir); err != nil {
 		return "", errors.Join(err, zf.Close())
 	}
 	if err := zf.Close(); err != nil {

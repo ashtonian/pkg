@@ -1,0 +1,259 @@
+{
+  "version": 1,
+  "resource": "doc_entities",
+  "filter": {
+    "fields": {
+      "id": {
+        "name": "id",
+        "data_type": "string",
+        "operators": [
+          "eq",
+          "ne",
+          "contains",
+          "like",
+          "ilike",
+          "in",
+          "nin"
+        ],
+        "indexed": true,
+        "immutable": true
+      },
+      "lines": {
+        "name": "lines",
+        "data_type": "json",
+        "operators": [
+          "eq",
+          "ne",
+          "contains",
+          "has_key",
+          "exists",
+          "null",
+          "some",
+          "none"
+        ],
+        "elements": {
+          "qty": {
+            "name": "qty",
+            "data_type": "int",
+            "operators": [
+              "eq",
+              "gt"
+            ]
+          },
+          "sku": {
+            "name": "sku",
+            "data_type": "string",
+            "operators": [
+              "eq",
+              "in"
+            ]
+          }
+        }
+      },
+      "location": {
+        "name": "location",
+        "data_type": "geo",
+        "operators": [
+          "near",
+          "within"
+        ],
+        "geo_config": {
+          "storage_type": "jsonb",
+          "srid": 4326
+        }
+      },
+      "meta": {
+        "name": "meta",
+        "data_type": "json",
+        "operators": [
+          "eq",
+          "ne",
+          "contains",
+          "has_key",
+          "exists",
+          "null"
+        ]
+      },
+      "meta.region": {
+        "name": "meta.region",
+        "data_type": "string",
+        "operators": [
+          "eq",
+          "ne",
+          "contains",
+          "like",
+          "ilike",
+          "in",
+          "nin",
+          "null",
+          "not_null",
+          "exists"
+        ]
+      },
+      "name": {
+        "name": "name",
+        "label": "Name",
+        "description": "Display name",
+        "data_type": "string",
+        "operators": [
+          "eq",
+          "ne",
+          "contains",
+          "like",
+          "ilike",
+          "in",
+          "nin"
+        ],
+        "facetable": true,
+        "searchable": true,
+        "group": "general",
+        "order": 1
+      },
+      "parts": {
+        "name": "parts",
+        "label": "Parts",
+        "description": "The entity's parts",
+        "data_type": "string",
+        "operators": [
+          "eq",
+          "ne",
+          "in",
+          "nin",
+          "null",
+          "not_null",
+          "some",
+          "none"
+        ],
+        "facetable": true,
+        "includable": true,
+        "relation": {
+          "kind": "has_many",
+          "target": "doc_parts"
+        }
+      },
+      "rank": {
+        "name": "rank",
+        "data_type": "int",
+        "operators": [
+          "eq",
+          "ne",
+          "gt",
+          "gte",
+          "lt",
+          "lte",
+          "in",
+          "nin"
+        ]
+      },
+      "status": {
+        "name": "status",
+        "data_type": "string",
+        "operators": [
+          "eq",
+          "ne",
+          "contains",
+          "like",
+          "ilike",
+          "in",
+          "nin"
+        ],
+        "enum_values": [
+          "active",
+          "offline"
+        ]
+      },
+      "tags": {
+        "name": "tags",
+        "data_type": "string",
+        "operators": [
+          "eq",
+          "ne",
+          "in",
+          "nin",
+          "null",
+          "not_null"
+        ],
+        "includable": true,
+        "relation": {
+          "kind": "many_to_many"
+        }
+      }
+    }
+  },
+  "patch": {
+    "paths": {
+      "/name": {
+        "allowed_ops": [
+          "replace"
+        ],
+        "data_type": "string"
+      },
+      "/note": {
+        "allowed_ops": [
+          "replace",
+          "remove"
+        ],
+        "data_type": "string",
+        "nullable": true
+      },
+      "/rank": {
+        "allowed_ops": [
+          "replace"
+        ],
+        "data_type": "int",
+        "number_kind": "int32"
+      },
+      "/scores": {
+        "allowed_ops": [
+          "replace",
+          "add",
+          "remove",
+          "array_append"
+        ],
+        "data_type": "array",
+        "nullable": true,
+        "elem": "int",
+        "number_kind": "int16"
+      },
+      "/status": {
+        "allowed_ops": [
+          "replace"
+        ],
+        "data_type": "string",
+        "enum_values": [
+          "active",
+          "offline"
+        ]
+      },
+      "/tags": {
+        "allowed_ops": [
+          "replace",
+          "add",
+          "remove"
+        ],
+        "data_type": "array",
+        "nullable": true,
+        "elem": "string",
+        "relation": true
+      }
+    },
+    "max_operations": 50
+  },
+  "sort": {
+    "fields": {
+      "id": {
+        "indexed": true
+      },
+      "name": {},
+      "rank": {}
+    },
+    "max_fields": 3
+  },
+  "search": {
+    "enabled": true,
+    "fields": [
+      "name"
+    ],
+    "param": "search"
+  }
+}

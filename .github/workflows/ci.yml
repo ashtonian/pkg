@@ -28,6 +28,7 @@ jobs:
             go: '1.27.x'
     if: github.actor_id == '4212452' && (github.event_name != 'pull_request' || (github.event.pull_request.user.id == 4212452 && github.event.pull_request.head.repo.full_name == github.repository))
     runs-on: ${{ matrix.os == 'ubuntu-latest' && 'arc-pkg' || matrix.os }}
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v7
       - uses: ashtonian/go-ci-actions@470279e1ff775269324ca13b0aaaf7211951215e # v1.0.1
@@ -45,10 +46,84 @@ jobs:
         run: make test-httpx-unit
       - name: HTTPx integration tests with race detection
         run: make test-httpx-integration
+      - name: Parse unit tests and fuzz seeds with race detection
+        run: make test-parse-unit
+      - name: Parse SQLite integration tests
+        run: make test-parse-integration
+  parse-postgres:
+    name: parse (PostgreSQL ${{ matrix.postgres }})
+    strategy:
+      fail-fast: false
+      matrix:
+        postgres: ['17', '18']
+    if: github.actor_id == '4212452' && (github.event_name != 'pull_request' || (github.event.pull_request.user.id == 4212452 && github.event.pull_request.head.repo.full_name == github.repository))
+    runs-on: arc-pkg
+    timeout-minutes: 45
+    services:
+      postgres:
+        image: postgis/postgis:${{ matrix.postgres }}-3.6
+        env:
+          POSTGRES_USER: parse
+          POSTGRES_PASSWORD: parse
+          POSTGRES_DB: parse
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -h 127.0.0.1 -U parse -d parse"
+          --health-interval 5s --health-timeout 5s --health-retries 20
+    steps:
+      - uses: actions/checkout@v7
+      - uses: ashtonian/go-ci-actions@470279e1ff775269324ca13b0aaaf7211951215e # v1.0.1
+        with:
+          go-version: stable
+          cache-dependency-path: "**/go.sum"
+      - name: Parse SQL backend parity with race detection
+        env:
+          PARSE_POSTGRES_DSN: postgres://parse:parse@localhost:5432/parse?sslmode=disable
+          PARSE_POSTGIS_DSN: postgres://parse:parse@localhost:5432/parse?sslmode=disable
+        run: make test-parse-integration
+  parse-sdk:
+    name: parse TypeScript SDK and corpora
+    if: github.actor_id == '4212452' && (github.event_name != 'pull_request' || (github.event.pull_request.user.id == 4212452 && github.event.pull_request.head.repo.full_name == github.repository))
+    runs-on: arc-pkg
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: lts/*
+          cache: npm
+          cache-dependency-path: parse/sdk/ts/package-lock.json
+      - run: make test-parse-sdk
+      - name: Packed SDK consumer
+        run: make parse-sdk-release-check
+  parse-benchmarks:
+    name: parse benchmark artifacts
+    if: github.actor_id == '4212452' && github.event_name != 'pull_request'
+    runs-on: arc-pkg
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v7
+      - uses: ashtonian/go-ci-actions@470279e1ff775269324ca13b0aaaf7211951215e # v1.0.1
+        with:
+          go-version: stable
+          cache-dependency-path: "**/go.sum"
+      - name: Record parser and cursor benchmarks
+        run: >-
+          go test -tags=unit -run '^$' -bench . -benchmem -count=3
+          -cpuprofile=parse-cpu.prof -memprofile=parse-allocs.prof ./parse/filter | tee parse-benchmarks.txt
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: parse-benchmarks-${{ github.sha }}
+          path: |
+            parse-benchmarks.txt
+            parse-cpu.prof
+            parse-allocs.prof
   httpx-minimum:
     name: httpx (go 1.26)
     if: github.actor_id == '4212452' && (github.event_name != 'pull_request' || (github.event.pull_request.user.id == 4212452 && github.event.pull_request.head.repo.full_name == github.repository))
     runs-on: arc-pkg
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v7
       - uses: ashtonian/go-ci-actions@470279e1ff775269324ca13b0aaaf7211951215e # v1.0.1
@@ -69,6 +144,7 @@ jobs:
     name: module archives, examples and release tooling
     if: github.actor_id == '4212452' && (github.event_name != 'pull_request' || (github.event.pull_request.user.id == 4212452 && github.event.pull_request.head.repo.full_name == github.repository))
     runs-on: arc-pkg
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v7
       - uses: ashtonian/go-ci-actions@470279e1ff775269324ca13b0aaaf7211951215e # v1.0.1
@@ -81,6 +157,7 @@ jobs:
   lint:
     if: github.actor_id == '4212452' && (github.event_name != 'pull_request' || (github.event.pull_request.user.id == 4212452 && github.event.pull_request.head.repo.full_name == github.repository))
     runs-on: arc-pkg
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v7
       - uses: ashtonian/go-ci-actions@470279e1ff775269324ca13b0aaaf7211951215e # v1.0.1
