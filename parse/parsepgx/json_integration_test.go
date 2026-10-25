@@ -84,7 +84,7 @@ func TestJSONStorage_QueryAndUpdateEveryExecMode(t *testing.T) {
 		CREATE TABLE document_labels (document_id text, label_id text CHECK (label_id <> 'forbidden'), PRIMARY KEY(document_id, label_id));
 		INSERT INTO documents VALUES ('full', '"hello"', '"YQ=="', '7', 'true', '{"name":"original"}', '{"1":"one"}',
 		'{"value":1}', 'null', '"pointed"', '"custom"', '{native}', '\x61', 'private');
-		INSERT INTO documents(id) VALUES ('null')`)
+		INSERT INTO documents(id, secret) VALUES ('null', '')`)
 	require.NoError(t, err)
 	r := jsonResource()
 	want := jsonRecord{
