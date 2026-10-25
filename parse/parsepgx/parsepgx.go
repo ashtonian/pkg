@@ -59,7 +59,7 @@ func QueryPage[T any](ctx context.Context, db Querier, r *parse.Resource[T], pla
 	b := &pgx.Batch{}
 	b.Queue(plan.Page.SQL, plan.Page.Args...).Query(func(rows pgx.Rows) error {
 		var err error
-		items, err = pgx.CollectRows(rows, pgx.RowToStructByNameLax[T])
+		items, err = pgx.CollectRows(rows, rowToResource(r))
 		return wrap("page", err)
 	})
 	if plan.Count != nil {
@@ -136,7 +136,7 @@ func Update[T any](ctx context.Context, db DB, r *parse.Resource[T], plan *parse
 		return nil, err
 	}
 	if !plan.HasRelations() {
-		rows, err := queryOwner[T](ctx, db, plan)
+		rows, err := queryOwner(ctx, db, r, plan)
 		if err != nil {
 			return nil, fmt.Errorf("parsepgx: %s: %w", r.Table(), err)
 		}
@@ -146,7 +146,7 @@ func Update[T any](ctx context.Context, db DB, r *parse.Resource[T], plan *parse
 	var rows []T
 	err := pgx.BeginFunc(ctx, db, func(tx pgx.Tx) error {
 		var err error
-		if rows, err = queryOwner[T](ctx, tx, plan); err != nil {
+		if rows, err = queryOwner(ctx, tx, r, plan); err != nil {
 			return err
 		}
 		keys, err := ownerKeys(r, rows)
@@ -169,12 +169,12 @@ func Update[T any](ctx context.Context, db DB, r *parse.Resource[T], plan *parse
 	return rows, nil
 }
 
-func queryOwner[T any](ctx context.Context, db Querier, plan *parse.UpdatePlan) ([]T, error) {
+func queryOwner[T any](ctx context.Context, db Querier, resource *parse.Resource[T], plan *parse.UpdatePlan) ([]T, error) {
 	var rows []T
 	b := &pgx.Batch{}
 	b.Queue(plan.Owner.SQL, plan.Owner.Args...).Query(func(r pgx.Rows) error {
 		var err error
-		rows, err = pgx.CollectRows(r, pgx.RowToStructByNameLax[T])
+		rows, err = pgx.CollectRows(r, rowToResource(resource))
 		return wrap("owner", err)
 	})
 	if err := db.SendBatch(ctx, b).Close(); err != nil {
