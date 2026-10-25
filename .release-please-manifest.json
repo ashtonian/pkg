@@ -6,5 +6,5 @@
   "httpx/codec/proto": "0.1.0",
   "httpx/compress/brotli": "0.1.0",
   "gowalker": "0.5.0",
-  "jsonvalue": "0.0.0"
+  "jsonvalue": "0.1.0"
 }
