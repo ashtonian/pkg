@@ -1,5 +1,5 @@
 # Published modules. Each has its own go.mod, tags and releases.
-CORE_MODULES := gowalker
+CORE_MODULES := gowalker jsonvalue
 CONFIG_MODULES := config config/kongprovider
 HTTPX_MODULES := httpx httpx/codec/msgpack httpx/codec/proto httpx/compress/brotli
 PARSE_MODULES := parse
@@ -9,10 +9,16 @@ MODULES := $(CORE_MODULES) $(CONFIG_MODULES) $(TAGGED_MODULES)
 COOKBOOK := config/examples/cookbook
 STATICCHECK := honnef.co/go/tools/cmd/staticcheck@v0.8.2
 
-.PHONY: test test-gowalker gowalker-release-check test-config test-httpx-unit test-httpx-integration test-parse-unit test-parse-integration test-parse-sdk parse-sdk-release-check parse-release-check lint release-check httpx-release-check cookbook-check tool-check ci
+.PHONY: test test-jsonvalue jsonvalue-release-check test-gowalker gowalker-release-check test-config test-httpx-unit test-httpx-integration test-parse-unit test-parse-integration test-parse-sdk parse-sdk-release-check parse-release-check lint release-check httpx-release-check cookbook-check tool-check ci
 
 ## test: every published module from the working tree (go.work), race detector on
-test: test-gowalker test-config test-httpx-unit test-httpx-integration test-parse-unit test-parse-integration test-parse-sdk
+test: test-jsonvalue test-gowalker test-config test-httpx-unit test-httpx-integration test-parse-unit test-parse-integration test-parse-sdk
+
+test-jsonvalue:
+	go test -race -count=1 ./jsonvalue/...
+
+jsonvalue-release-check:
+	bash tools/check-jsonvalue-release.sh
 
 test-gowalker:
 	go test -race -count=1 ./gowalker/...
@@ -60,7 +66,7 @@ release-check:
 		echo "release-check $$m"; \
 		(cd $$m && GOWORK=off go mod tidy -diff && GOWORK=off go vet ./... && GOWORK=off go test -race -count=1 ./...); \
 	done
-	$(MAKE) gowalker-release-check httpx-release-check parse-release-check
+	$(MAKE) jsonvalue-release-check gowalker-release-check httpx-release-check parse-release-check
 
 parse-release-check:
 	bash tools/check-parse-release.sh

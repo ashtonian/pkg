@@ -65,6 +65,10 @@
     "gowalker": {
       "component": "gowalker",
       "initial-version": "0.1.0"
+    },
+    "jsonvalue": {
+      "component": "jsonvalue",
+      "initial-version": "0.1.0"
     }
   }
 }

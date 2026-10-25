@@ -8,6 +8,7 @@ The repository's `go.work` ties the published modules together, so a change to o
 
 | Command | What it runs |
 |---|---|
+| `make test-jsonvalue` / `make jsonvalue-release-check` | JSON replacement race tests / fresh module-archive consumer and README example |
 | `make test` | Every published module's tests, race detector on; both httpx build tags |
 | `make test-httpx-unit` / `make test-httpx-integration` | httpx unit or real HTTP integration lane |
 | `make lint` | `go vet` and staticcheck |

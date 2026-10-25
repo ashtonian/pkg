@@ -6,6 +6,7 @@ its own dependencies, version, changelog and releases.
 | Module | Import path | Purpose |
 |---|---|---|
 | [gowalker](gowalker/README.md) | `github.com/ashtonian/pkg/gowalker` | Struct-tag plumbing for libraries users configure with tags: field naming conventions, per-type metadata caching, inherited section tags, field readers/writers. |
+| [jsonvalue](jsonvalue/README.md) | `github.com/ashtonian/pkg/jsonvalue` | Fresh JSON value replacement with optional non-nil representation checks. |
 | [config](config/README.md) | `github.com/ashtonian/pkg/config` | Typed, layered configuration with validation, hot reload and redaction. |
 | [httpx](httpx/README.md) | `github.com/ashtonian/pkg/httpx` | HTTP standards and resilience: retries, circuit breaking, caching, compression and request budgets for `net/http`. |
 | [Kong provider](config/kongprovider/README.md) | `github.com/ashtonian/pkg/config/kongprovider` | CLI flags as config overrides, with help derived from the config struct. |
@@ -16,9 +17,10 @@ its own dependencies, version, changelog and releases.
 go get github.com/ashtonian/pkg/config@latest
 go get github.com/ashtonian/pkg/httpx@latest
 go get github.com/ashtonian/pkg/gowalker@latest
+go get github.com/ashtonian/pkg/jsonvalue@latest
 ```
 
-Gowalker, config and its Kong provider require **Go 1.27 or later**; httpx requires
+Gowalker, jsonvalue, config and its Kong provider require **Go 1.27 or later**; httpx requires
 **Go 1.26 or later**. Install only the modules you need. Add the Kong provider for Kong CLI integration;
 add httpx's MessagePack, protobuf or Brotli module only for that wire format.
 
