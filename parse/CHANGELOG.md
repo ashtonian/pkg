@@ -2,14 +2,12 @@
 
 ## 0.1.0 (2026-10-25)
 
+### Added
 
-### Features
+- Strict Resource-based filters, sorting, keyset pages, facets and includes with tenant and policy constraints, typed JSON paths and per-call filter cost budgets.
+- Validated merge patches and JSON Patch, explicit JSON/native-array storage, and PostgreSQL/SQLite query and update plans.
+- Optional pgx execution with native field mapping, fresh typed JSON decoding, canonical-key validation, SQL NULL handling and transactional relation updates.
+- Native error codes and HTTP mapping, versioned schema documents, standard-library-only Go request builders and TypeScript builders with shared conformance corpora.
+- PostgreSQL 17/18 and SQLite acceptance, standalone Go module/archive consumers and packed TypeScript package checks.
 
-* **parse:** publish standalone query and SQL contracts ([#76](https://github.com/ashtonian/pkg/issues/76)) ([b32b5dc](https://github.com/ashtonian/pkg/commit/b32b5dc592f1be371b305326abdb9b8a2a3cc6e7))
-* **parse:** publish standalone Resource, SQL and client contracts ([31a0c5e](https://github.com/ashtonian/pkg/commit/31a0c5e13804a3f44a16438acb599eb107d885e0))
-
-
-### Bug Fixes
-
-* **parse:** complete native JSON fixture acceptance and docs ([6964adf](https://github.com/ashtonian/pkg/commit/6964adff24dc015bc24a4b2471770439aa68a591)), closes [#77](https://github.com/ashtonian/pkg/issues/77)
-* **parse:** preserve typed JSON storage through pgx reads ([5e38a26](https://github.com/ashtonian/pkg/commit/5e38a2639b0563bbd8f758c2bcb4fadf45a6e268)), closes [#77](https://github.com/ashtonian/pkg/issues/77)
+Go requires 1.27 or later. Pre-1.0 minor releases may change APIs. npm publication is tracked separately from the Go module release.
