@@ -175,4 +175,3 @@ Three Go-emitted fixtures keep the client on the server's contract; each fails i
 - [Go package](../../README.md)
 - [HTTP and error contract](../../docs/http-errors.md)
 - [Integration responsibilities and numeric limits](../../docs/integrations.md#typescript-client)
-
