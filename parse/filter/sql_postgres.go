@@ -317,7 +317,7 @@ func pgJSONBPoint(field *FieldSchema) string {
 // map[string]any without an OID hint, and the project standardizes on
 // JSONB for those.
 func (d PostgresDialect) MarshalValue(value any, t core.TypeInfo) (any, error) {
-	if _, ok := value.(driver.Valuer); ok {
+	if _, ok := value.(driver.Valuer); ok && !t.SQLType.IsJSON() {
 		return value, nil // a database value the driver encodes, not a document
 	}
 	switch t.Type {

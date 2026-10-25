@@ -68,7 +68,11 @@ func generateSearchSchema(g *core.SchemaGenerator, t reflect.Type) (*SearchSchem
 		if fieldName == "" {
 			continue
 		}
-		fieldType := core.TypeOf(field.Type).Type
+		info, err := g.FieldType(field)
+		if err != nil {
+			return nil, fmt.Errorf("field %s: %w", field.GoName, err)
+		}
+		fieldType := info.Type
 		if fieldType != core.FieldTypeString && g.Opts.ColumnMapper == nil {
 			// Search compiles to full text over the column's text
 			// (to_tsvector on PostgreSQL, LIKE on SQLite); a document, an

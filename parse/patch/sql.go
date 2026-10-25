@@ -554,7 +554,7 @@ func marshalIfComplex(value any, schema *PathSchema, dialect SQLDialect) (any, e
 	if schema == nil || value == nil {
 		return value, nil
 	}
-	t := core.TypeInfo{Type: schema.DataType}
+	t := core.TypeInfo{Type: schema.DataType, SQLType: schema.SQLType}
 	if schema.DataType == core.FieldTypeArray && schema.GoType != nil {
 		t.Elem = core.TypeOf(schema.GoType).Elem
 	}

@@ -58,7 +58,10 @@ func generateFilterSchema(g *core.SchemaGenerator, t reflect.Type) (*ResourceSch
 			return nil, fmt.Errorf("field %s: duplicate filter field name %q", field.GoName, fieldName)
 		}
 
-		info := core.TypeOf(field.Type)
+		info, err := g.FieldType(field)
+		if err != nil {
+			return nil, fmt.Errorf("field %s: %w", field.GoName, err)
+		}
 		fieldType := info.Type
 
 		// Geo tag overrides field type detection.
@@ -157,7 +160,7 @@ func generateFilterSchema(g *core.SchemaGenerator, t reflect.Type) (*ResourceSch
 			fs.GeoConfig = geoConfig
 		}
 
-		if err := applyStorage(fs, tags); err != nil {
+		if err := applyStorage(g, fs, field); err != nil {
 			return nil, fmt.Errorf("field %s: %w", field.GoName, err)
 		}
 		if err := checkOperators(fs); err != nil {
@@ -219,12 +222,16 @@ func generateSortSchema(g *core.SchemaGenerator, t reflect.Type) (*SortSchema, e
 
 	for _, field := range walk.Fields {
 		tags := &field.Tags
+		info, err := g.FieldType(field)
+		if err != nil {
+			return nil, fmt.Errorf("field %s: %w", field.GoName, err)
+		}
 
 		// : one sort grammar — scalar sortability opts in
 		// via parse:"…,sort".
 		// The legacy sort_field:"true" tag is deleted, not dual-read.
 		if !tags.Parse.Excluded {
-			if dt := core.TypeOf(field.Type).Type; core.IsDocument(dt) {
+			if dt := info.Type; core.IsDocument(dt) {
 				if err := addDocSortPaths(g, fields, tableName, field, dt); err != nil {
 					return nil, fmt.Errorf("field %s: %w", field.GoName, err)
 				}
@@ -243,7 +250,7 @@ func generateSortSchema(g *core.SchemaGenerator, t reflect.Type) (*SortSchema, e
 		}
 		ft := field.Type
 		nullable := ft.Kind() == reflect.Pointer || ft.Kind() == reflect.Slice || ft.Kind() == reflect.Map || ft.Kind() == reflect.Interface
-		fieldType := core.TypeOf(ft).Type
+		fieldType := info.Type
 		if !sortable(ft, fieldType) {
 			// A cursor carries a scalar per key; a document, array or geo
 			// value has no portable order.

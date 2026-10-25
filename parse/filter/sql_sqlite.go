@@ -273,7 +273,7 @@ func geoUnsupported(d dialect.Dialect, op FilterOperator, shape string) error {
 // MarshalValue serializes a value for SQLite parameter binding.
 // JSON/Array/Object types are marshaled to JSON strings for TEXT storage.
 func (d SQLiteDialect) MarshalValue(value any, t core.TypeInfo) (any, error) {
-	if _, ok := value.(driver.Valuer); ok {
+	if _, ok := value.(driver.Valuer); ok && !t.SQLType.IsJSON() {
 		return value, nil // a database value the driver encodes, not a document
 	}
 	switch t.Type {

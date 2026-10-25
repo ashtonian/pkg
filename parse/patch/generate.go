@@ -83,7 +83,11 @@ func generatePatchSchema(g *core.SchemaGenerator, t reflect.Type, server bool) (
 			fieldName = cmp.Or(tags.RelationName, core.ToSnakeCase(field.GoName))
 		}
 
-		fieldType := core.TypeOf(field.Type).Type
+		info, err := g.FieldType(field)
+		if err != nil {
+			return nil, fmt.Errorf("field %s: %w", field.GoName, err)
+		}
+		fieldType := info.Type
 
 		nullable := isNullableType(field.Type)
 		var allowedOps []PatchOp
@@ -162,6 +166,7 @@ func generatePatchSchema(g *core.SchemaGenerator, t reflect.Type, server bool) (
 		paths[path] = &PathSchema{
 			AllowedOps: allowedOps,
 			DataType:   fieldType,
+			SQLType:    info.SQLType,
 			GoType:     field.Type,
 			SQLColumn:  sqlColumn,
 			Validators: validators,

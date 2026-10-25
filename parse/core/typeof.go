@@ -66,6 +66,8 @@ func UUIDText(v any) (text string, ok bool) {
 // TypeInfo is how a Go field type is advertised and stored.
 type TypeInfo struct {
 	Type FieldType
+	// SQLType is the explicit storage declaration, empty for Go-only inference.
+	SQLType SQLType
 	// Elem is the element type of a FieldTypeArray; empty otherwise.
 	Elem FieldType
 	// NumberKind is the Go numeric kind of Type, or of Elem for an array;

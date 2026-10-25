@@ -18,6 +18,8 @@ github.com/ashtonian/pkg/config/kongprovider v0.2.1 h1:Url4MvrHIJ45bBEskFp/53BXj
 github.com/ashtonian/pkg/config/kongprovider v0.2.1/go.mod h1:6dIfG+2vJsbbQNt9+B69NjlhB3dXPVAb2IDCXKbXeSg=
 github.com/ashtonian/pkg/gowalker v0.5.0 h1:7zK373vtysWV3gPAWXsqBASm/k8768hVnpKv/Teq7QE=
 github.com/ashtonian/pkg/gowalker v0.5.0/go.mod h1:xJM4ID4zwmfvussuRaLJMGn+3bUeNGLlETMCdOfmn0o=
+github.com/ashtonian/pkg/jsonvalue v0.1.0 h1:6eMnJyohNfMXkzFqD6etKKMv5+fNStyE3+4bagbKcvI=
+github.com/ashtonian/pkg/jsonvalue v0.1.0/go.mod h1:bt3GZ4sYHK2uHQXRc+/msoqE1lVvyeLF3rz6m5QjP5M=
 github.com/cenkalti/backoff/v4 v4.3.0 h1:MyRJ/UdXutAwSAT+s3wNd7MfTIcy71VQueUuFK343L8=
 github.com/cenkalti/backoff/v4 v4.3.0/go.mod h1:Y3VNntkOUPxTVeUxJ/G5vcM//AlwfmyYozVcomhLiZE=
 github.com/cespare/xxhash/v2 v2.3.0 h1:UL815xU9SqsFlibzuggzjXhog7bL6oX9BbNZnL2UFvs=

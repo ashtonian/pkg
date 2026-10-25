@@ -93,6 +93,8 @@ func literalPrefixLen(pattern string) int {
 type PathSchema struct {
 	AllowedOps []PatchOp
 	DataType   core.FieldType
+	// SQLType distinguishes declared JSON from native driver-value storage.
+	SQLType core.SQLType
 	// GoType is the Go type the path's value decodes into (the struct
 	// field's type, pointer included). It drives parse-time validation so an
 	// accepted operation always applies: numeric range
@@ -160,7 +162,7 @@ type PatchOperation struct {
 	// Merge marks an op derived from an RFC 7396 merge patch whose value is
 	// an object — it requires RECURSIVE merge semantics, not whole-value
 	// replace. The apply path deep-merges via
-	// public-pkg/jsonmerge; BuildPatchSQL compiles it to json_patch on SQLite
+	// internal/jsonmerge; BuildPatchSQL compiles it to json_patch on SQLite
 	// and per-level jsonb construction on PostgreSQL, so sibling keys survive.
 	Merge bool
 }

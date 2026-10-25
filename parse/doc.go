@@ -28,14 +28,4 @@
 //	parse.MustRegister[Product](reg)
 //	mux.HandleFunc("GET /api/{resource}/schema", reg.SchemaHandler())
 //
-// # Relationship to public-pkg/timeseries filters
-//
-// parse and timeseries both expose a filter/sort vocabulary, but they are
-// intentionally separate and share no code. parse validates
-// filters against a schema and compiles them to SQL for relational stores;
-// timeseries evaluates filters against dynamic in-memory point payloads. The
-// two are aligned at the vocabulary seam (e.g. the null-check operator is
-// named the same — timeseries.OpNull matches parse's $null) but are NOT a
-// dedup target: merging would couple timeseries to parse's schema machinery
-// for no benefit.
 package parse

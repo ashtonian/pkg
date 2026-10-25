@@ -177,10 +177,9 @@ func (p *Parser) validateOps(ops []RawPatchOp) (*ParsedPatch, error) {
 		}
 
 		// Values are normalized before validators run, so validators and every
-		// consumer (SQL binding, typed apply) see the canonical value
-		//. Validators run for every value-taking op — including
-		// explicit null.
-		value := raw.Value
+		// consumer (SQL binding, typed apply) see the canonical value.
+		// Validators run for every value-taking op, including explicit null.
+		value := normalizeNilPointer(raw.Value)
 		if err := checkNullability(pathSchema, op, value, depth); err != nil {
 			return nil, &core.ParseError{
 				Kind: core.ParseErrorKindPatch, Code: ECodePatchValueInvalid.String(),
@@ -332,6 +331,35 @@ func valueType(t reflect.Type) reflect.Type {
 	return t
 }
 
+// normalizeNilPointer gives typed nil pointers the same null contract as
+// explicit JSON null, without stripping nonnil pointer methods or changing
+// map and slice encoding semantics.
+func normalizeNilPointer(v any) any {
+	value := reflect.ValueOf(v)
+	var seen map[any]struct{}
+	for value.IsValid() && (value.Kind() == reflect.Pointer || value.Kind() == reflect.Interface) {
+		if value.IsNil() {
+			return nil
+		}
+		next := value.Elem()
+		if next.Kind() != reflect.Pointer && next.Kind() != reflect.Interface {
+			return v
+		}
+		if value.Kind() == reflect.Pointer {
+			pointer := value.Interface()
+			if _, cycle := seen[pointer]; cycle {
+				return v
+			}
+			if seen == nil {
+				seen = make(map[any]struct{})
+			}
+			seen[pointer] = struct{}{}
+		}
+		value = next
+	}
+	return v
+}
+
 // checkNullability rejects writing null into, or removing, a field whose Go
 // type cannot hold null: SQL would store NULL into a non-nullable column (or
 // fail to scan it back) while the memory backend stored a zero value.
@@ -386,6 +414,16 @@ func normalizeOpValue(ps *PathSchema, op PatchOp, v any, depth int, codec core.C
 		}
 		return normalizeTyped(target.Elem(), v, codec)
 	}
+	if ps.SQLType.IsJSON() && ps.GoType != nil {
+		normalized, err := normalizeDeclaredJSON(ps.GoType, v)
+		if err == nil {
+			err = checkNullability(ps, op, normalized, depth)
+		}
+		if err == nil && op == PatchOpTest && normalized != nil {
+			return v, nil
+		}
+		return normalized, err
+	}
 	if target == nil {
 		return core.NormalizeScalar(ps.DataType, reflect.Invalid, v)
 	}
@@ -404,6 +442,7 @@ func normalizeOpValue(ps *PathSchema, op PatchOp, v any, depth int, codec core.C
 // it, and remaining composite kinds by decoding and re-encoding their canonical
 // representation. SQL and typed apply must store the same JSON document.
 func normalizeTyped(t reflect.Type, v any, codec core.Codec) (any, error) {
+	v = normalizeNilPointer(v)
 	if v == nil {
 		if isNullableType(t) {
 			return nil, nil

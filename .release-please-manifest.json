@@ -2,10 +2,10 @@
   "parse": "0.0.0",
   "config": "0.6.2",
   "config/kongprovider": "0.2.1",
-  "httpx": "0.1.0",
+  "httpx": "0.2.0",
   "httpx/codec/msgpack": "0.1.0",
   "httpx/codec/proto": "0.1.0",
   "httpx/compress/brotli": "0.1.0",
   "gowalker": "0.5.0",
-  "jsonvalue": "0.0.0"
+  "jsonvalue": "0.1.0"
 }

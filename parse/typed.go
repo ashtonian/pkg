@@ -11,6 +11,7 @@ import (
 
 	jsonpatch "github.com/evanphx/json-patch/v5"
 
+	"github.com/ashtonian/pkg/jsonvalue"
 	"github.com/ashtonian/pkg/parse/core"
 	"github.com/ashtonian/pkg/parse/filter"
 	"github.com/ashtonian/pkg/parse/internal/jsonmerge"
@@ -102,7 +103,11 @@ func newTypedParser[T any](opts ...core.Option) (*typedParser[T], error) {
 
 // ParseFilter parses a filter query string.
 func (p *typedParser[T]) ParseFilter(query string) (*filter.ParsedFilter, error) {
-	fp := filter.NewFilterParser(p.filterSchema, p.cfg)
+	return p.parseFilter(query, p.cfg)
+}
+
+func (p *typedParser[T]) parseFilter(query string, cfg *core.ParserConfig) (*filter.ParsedFilter, error) {
+	fp := filter.NewFilterParser(p.filterSchema, cfg)
 	ast, err := fp.Parse(query)
 	if err != nil {
 		return nil, err
@@ -408,6 +413,16 @@ func (p *typedParser[T]) applyDirect(parsed *patch.ParsedPatch, target T) (T, er
 			continue
 		}
 
+		if op.Schema.SQLType.IsJSON() {
+			value := op.Value
+			if op.Op == patch.PatchOpRemove || value == nil {
+				value = op.Schema.ClearedValue()
+			}
+			if err := assignStoredJSON(fv, value); err != nil {
+				return zero, &core.ParseError{Kind: core.ParseErrorKindPatch, Code: patch.ECodePatchValueInvalid.String(), Message: fmt.Sprintf("setting JSON field %s: %v", fieldName, err), Path: op.Path, Cause: err}
+			}
+			continue
+		}
 		if op.Op == patch.PatchOpRemove || op.Value == nil {
 			if cleared := op.Schema.ClearedValue(); cleared != nil {
 				fv.Set(reflect.ValueOf(cleared))
@@ -429,6 +444,20 @@ func (p *typedParser[T]) applyDirect(parsed *patch.ParsedPatch, target T) (T, er
 	}
 
 	return target, nil
+}
+
+// Stored JSON uses the same decoder as SQL row scanning. The request codec
+// still owns request parsing, including exact numeric input validation.
+func assignStoredJSON(dst reflect.Value, value any) error {
+	if value == nil {
+		dst.SetZero()
+		return nil
+	}
+	data, err := json.Marshal(value)
+	if err != nil {
+		return err
+	}
+	return jsonvalue.UnmarshalPresent(data, dst.Addr().Interface())
 }
 
 // assignValue stores a normalized patch value into dst through one checked,
@@ -561,8 +590,8 @@ func (p *typedParser[T]) checkDocumentFieldNames(parsed *patch.ParsedPatch) erro
 // encode with the parser codec (whose field names match the schema's field
 // tag) into a number-preserving map, apply each run of RFC 6902 operations
 // with github.com/evanphx/json-patch/v5 and each RFC 7396 merge object with
-// jsonmerge, then decode back into T — the decoder range-checks every field,
-// untouched ones included.
+// jsonmerge, then decode changed fields through their storage/request codec.
+// Untouched fields retain their values without another decoder invocation.
 func (p *typedParser[T]) applyDocument(parsed *patch.ParsedPatch, target T) (T, error) {
 	var zero T
 
@@ -640,27 +669,12 @@ func (p *typedParser[T]) applyDocument(parsed *patch.ParsedPatch, target T) (T, 
 		}
 	}
 
-	out, err := p.codec.Encode(doc)
-	if err != nil {
-		return zero, fmt.Errorf("encoding patched document: %w", err)
+	type changedField struct {
+		field   *core.Field
+		storage core.SQLType
 	}
-	var result T
-	if err := p.codec.Decode(out, &result); err != nil {
-		return zero, &core.ParseError{
-			Kind:    core.ParseErrorKindPatch,
-			Code:    patch.ECodePatchValueInvalid.String(),
-			Message: fmt.Sprintf("patched document does not fit %T: %v", result, err),
-			Cause:   err,
-		}
-	}
-	// Keep untouched fields exactly as supplied, including hidden/private
-	// state inside unrelated structs. Changed document fields use their fresh
-	// decoded representation (decoding into target would retain removals).
-	preserved := copyPointee(target)
-	dst, src := reflect.ValueOf(&preserved).Elem(), reflect.ValueOf(result)
-	if dst.Kind() == reflect.Pointer {
-		dst, src = dst.Elem(), src.Elem()
-	}
+	changed := make(map[string]changedField)
+	var names []string
 	for _, op := range parsed.Operations {
 		if op.Op == patch.PatchOpTest {
 			continue
@@ -674,21 +688,70 @@ func (p *typedParser[T]) applyDocument(parsed *patch.ParsedPatch, target T) (T, 
 			if err != nil || len(tokens) == 0 {
 				return zero, fmt.Errorf("patch: invalid field path %q", path)
 			}
-			field, ok := p.patchFields[tokens[0]]
-			var d reflect.Value
-			if ok {
-				d, err = field.Settable(dst)
-			}
-			if !ok || err != nil || !d.CanSet() {
+			name := tokens[0]
+			field, ok := p.patchFields[name]
+			if !ok {
 				return zero, &core.ParseError{Kind: core.ParseErrorKindPatch, Code: patch.ECodePatchFieldNotFound.String(), Message: fmt.Sprintf("patch path %q has no writable struct field", path), Path: path}
 			}
-			// A nil embedded pointer in the decoded document holds none of
-			// its fields: the patched field is its zero value.
-			if v, err := field.Value(src); err == nil {
-				d.Set(v)
-			} else {
-				d.SetZero()
+			if _, seen := changed[name]; !seen {
+				info, err := p.gen.FieldType(field)
+				if err != nil {
+					return zero, fmt.Errorf("patch field %s: %w", name, err)
+				}
+				changed[name] = changedField{field: field, storage: info.SQLType}
+				names = append(names, name)
 			}
+		}
+	}
+	// Decode only changed fields: an unrelated custom decoder must neither
+	// transform untouched state nor reject an otherwise valid update.
+	native := make(map[string]any)
+	for _, name := range names {
+		if !changed[name].storage.IsJSON() {
+			if value, exists := doc[name]; exists {
+				native[name] = value
+			}
+		}
+	}
+	var result T
+	if len(native) > 0 {
+		out, err := p.codec.Encode(native)
+		if err != nil {
+			return zero, fmt.Errorf("encoding patched document: %w", err)
+		}
+		if err := p.codec.Decode(out, &result); err != nil {
+			return zero, &core.ParseError{Kind: core.ParseErrorKindPatch, Code: patch.ECodePatchValueInvalid.String(), Message: fmt.Sprintf("patched document does not fit %T: %v", result, err), Cause: err}
+		}
+	}
+	preserved := copyPointee(target)
+	dst := reflect.ValueOf(&preserved).Elem()
+	if dst.Kind() == reflect.Pointer {
+		dst = dst.Elem()
+	}
+	for _, name := range names {
+		change := changed[name]
+		d, err := change.field.Settable(dst)
+		if err != nil || !d.CanSet() {
+			return zero, &core.ParseError{Kind: core.ParseErrorKindPatch, Code: patch.ECodePatchFieldNotFound.String(), Message: fmt.Sprintf("patch field %q is not writable", name), Path: core.FormatPointer(name)}
+		}
+		if change.storage.IsJSON() {
+			if err := assignStoredJSON(d, doc[name]); err != nil {
+				return zero, &core.ParseError{Kind: core.ParseErrorKindPatch, Code: patch.ECodePatchValueInvalid.String(), Message: fmt.Sprintf("setting JSON field %s: %v", name, err), Path: core.FormatPointer(name), Cause: err}
+			}
+			continue
+		}
+		src := reflect.ValueOf(result)
+		if src.Kind() == reflect.Pointer {
+			if src.IsNil() {
+				d.SetZero()
+				continue
+			}
+			src = src.Elem()
+		}
+		if value, err := change.field.Value(src); err == nil {
+			d.Set(value)
+		} else {
+			d.SetZero()
 		}
 	}
 	return preserved, nil

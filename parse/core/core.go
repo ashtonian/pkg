@@ -79,9 +79,8 @@ const (
 	FieldTypeGeo       FieldType = "geo"
 )
 
-// SQLType is a column's database type, declared on a resource
-// (parse.ColumnType) when its Go field cannot read the database's encoding of
-// the value: the dialect then reads the column in a form the field scans.
+// SQLType declares a resource column's storage role and any dialect read cast.
+// JSON and native arrays remain distinct even when their Go shapes coincide.
 type SQLType string
 
 const (
@@ -91,20 +90,28 @@ const (
 	SQLInetArray     SQLType = "inet[]"
 	SQLCIDRArray     SQLType = "cidr[]"
 	SQLIntervalArray SQLType = "interval[]"
+	SQLJSON          SQLType = "json"
+	SQLJSONB         SQLType = "jsonb"
+	SQLTextArray     SQLType = "text[]"
+	SQLInt32Array    SQLType = "integer[]"
+	SQLUUIDArray     SQLType = "uuid[]"
 )
 
 // Valid reports whether t is one of the SQLType constants.
 func (t SQLType) Valid() bool {
 	switch t {
-	case SQLInet, SQLCIDR, SQLInterval, SQLInetArray, SQLCIDRArray, SQLIntervalArray:
+	case SQLInet, SQLCIDR, SQLInterval, SQLInetArray, SQLCIDRArray, SQLIntervalArray,
+		SQLJSON, SQLJSONB, SQLTextArray, SQLInt32Array, SQLUUIDArray:
 		return true
 	}
 	return false
 }
 
-// IsArray reports whether t is an array type, read into a []string field;
-// the others read into a string.
+// IsArray reports a declared native SQL array storage role.
 func (t SQLType) IsArray() bool { return strings.HasSuffix(string(t), "[]") }
+
+// IsJSON reports a declared JSON document storage role, including scalar JSON.
+func (t SQLType) IsJSON() bool { return t == SQLJSON || t == SQLJSONB }
 
 // Validator is a function that validates a value.
 type Validator func(value any) error
@@ -349,6 +356,9 @@ type GeneratorOptions struct {
 	// SQLTableName overrides the derived table name for this specific type.
 	// Takes precedence over TableConvention.
 	SQLTableName string
+
+	// ColumnTypes declares physical storage independently of Go field shape.
+	ColumnTypes map[string]SQLType
 
 	// ColumnMapper provides full control over column expression generation.
 	// Takes precedence over ColumnConvention and ColumnTag.

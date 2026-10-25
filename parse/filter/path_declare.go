@@ -268,11 +268,30 @@ func documentPathFields(g *core.SchemaGenerator, field *core.Field, doc *FieldSc
 	return out, nil
 }
 
-// applyStorage applies a document field's storage tag: the JSON storage of
+func fieldStorage(g *core.SchemaGenerator, field *core.Field) (string, error) {
+	info, err := g.FieldType(field)
+	if err != nil {
+		return "", err
+	}
+	tag := field.Tags.Storage
+	if info.SQLType.IsJSON() {
+		storage := string(info.SQLType)
+		if tag != "" && tag != storage {
+			return "", fmt.Errorf("storage %q conflicts with declared column type %q", tag, storage)
+		}
+		return storage, nil
+	}
+	return tag, nil
+}
+
+// applyStorage applies a document field's storage declaration: the JSON storage of
 // its paths, or a scalar type for a struct the database holds as a scalar
 // (which then has scalar operators and no paths).
-func applyStorage(fs *FieldSchema, tags *core.Tags) error {
-	tag := tags.Storage
+func applyStorage(g *core.SchemaGenerator, fs *FieldSchema, field *core.Field) error {
+	tag, err := fieldStorage(g, field)
+	if err != nil {
+		return err
+	}
 	if tag == "" {
 		return nil
 	}
@@ -287,11 +306,11 @@ func applyStorage(fs *FieldSchema, tags *core.Tags) error {
 		fs.Storage = storage
 		return nil
 	}
-	if tags.Paths != "" {
+	if field.Tags.Paths != "" {
 		return fmt.Errorf("a scalar (%s) has no paths", tag)
 	}
 	fs.DataType, fs.NumberKind = scalar, kindOf(scalar)
-	if tags.FilterOps == "" {
+	if field.Tags.FilterOps == "" {
 		fs.AllowedOperators = slices.Clone(defaultFilterOps[scalar])
 	}
 	return nil
@@ -300,6 +319,10 @@ func applyStorage(fs *FieldSchema, tags *core.Tags) error {
 // docSortPaths builds the path sort keys a document field declares: struct
 // members tagged parse:"sort" and `paths` entries with the sort capability.
 func docSortPaths(g *core.SchemaGenerator, field *core.Field, docType core.FieldType, sqlExpr, column string) (map[string]*SortFieldSchema, error) {
+	tag, err := fieldStorage(g, field)
+	if err != nil {
+		return nil, err
+	}
 	var decls []PathDecl
 	var kinds []reflect.Kind
 	if docType == core.FieldTypeObject {
@@ -324,12 +347,12 @@ func docSortPaths(g *core.SchemaGenerator, field *core.Field, docType core.Field
 	if len(decls) == 0 {
 		return nil, nil
 	}
-	storage, scalar, err := storageOf(field.Tags.Storage)
+	storage, scalar, err := storageOf(tag)
 	if err != nil {
 		return nil, err
 	}
 	if scalar != "" {
-		return nil, fmt.Errorf("a scalar (%s) has no paths", field.Tags.Storage)
+		return nil, fmt.Errorf("a scalar (%s) has no paths", tag)
 	}
 	name := field.External
 	out := make(map[string]*SortFieldSchema, len(decls))

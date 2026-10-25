@@ -1,6 +1,7 @@
 package parse
 
 import (
+	"encoding/json"
 	"fmt"
 	"reflect"
 	"slices"
@@ -85,12 +86,10 @@ func ReadColumns(columns ...string) ResourceOption {
 	return func(c *resourceConfig) { c.read = append(c.read, columns...) }
 }
 
-// ColumnType declares the database type of a column whose string field
-// cannot read the database's encoding of it: PostgreSQL's inet, cidr and
-// interval into a string, their arrays into a []string. Every statement over
-// the resource then reads the column as the dialect reads that type (see
-// Columns). NewResource refuses a column that is not T's, a field of another
-// Go type, and a column declared twice.
+// ColumnType declares a column's storage role, including JSON documents and
+// native SQL arrays, or a dialect read cast for network/interval values.
+// NewResource validates the field representation and refuses duplicate or
+// unknown declarations. Values still require their declared storage codec.
 func ColumnType(column string, t core.SQLType) ResourceOption {
 	return func(c *resourceConfig) { c.sqlTypes = append(c.sqlTypes, columnType{column, t}) }
 }
@@ -124,7 +123,11 @@ func NewResource[T any](table string, opts ...ResourceOption) (*Resource[T], err
 		return nil, fmt.Errorf("parse: %s: page size %d must be positive and at most the maximum %d", table, cfg.pageSize, cfg.maxPage)
 	}
 	parserOpts := append(cfg.parserOpts, func(pc *core.ParserConfig) {
-		pc.GeneratorOpts = append(pc.GeneratorOpts, core.WithSQLTableName(table))
+		types := make(map[string]core.SQLType, len(cfg.sqlTypes))
+		for _, declaration := range cfg.sqlTypes {
+			types[declaration.column] = declaration.t
+		}
+		pc.GeneratorOpts = append(pc.GeneratorOpts, core.WithSQLTableName(table), core.WithColumnTypes(types))
 	})
 	p, err := newTypedParser[T](parserOpts...)
 	if err != nil {
@@ -187,6 +190,18 @@ func NewResource[T any](table string, opts ...ResourceOption) (*Resource[T], err
 	return r, nil
 }
 
+// ParseFilterWithCost applies a caller-selected cost budget for this call while
+// preserving the resource's schema, codec, clock and other parser limits. The
+// positive budget comes from server policy; request parsing uses ParseFilter.
+func (r *Resource[T]) ParseFilterWithCost(query string, maxCost int) (*filter.ParsedFilter, error) {
+	if maxCost <= 0 {
+		return nil, fmt.Errorf("parse: filter cost budget must be positive")
+	}
+	cfg := *r.cfg
+	cfg.MaxCost = maxCost
+	return r.parseFilter(query, &cfg)
+}
+
 // readColumns is the ReadColumns set, checked to be distinct columns of T
 // that include the key; nil reads every column.
 func readColumns(table string, cfg resourceConfig, columns map[string]reflect.Type) (map[string]bool, error) {
@@ -209,8 +224,7 @@ func readColumns(table string, cfg resourceConfig, columns map[string]reflect.Ty
 	return read, nil
 }
 
-// sqlTypes is the ColumnType declarations, each checked against its
-// column's field: a string for a scalar type, a []string for an array.
+// sqlTypes validates declarations against their column's Go representation.
 func sqlTypes(table string, cfg resourceConfig, columns map[string]reflect.Type) (map[string]core.SQLType, error) {
 	if len(cfg.sqlTypes) == 0 {
 		return nil, nil
@@ -231,16 +245,46 @@ func sqlTypes(table string, cfg resourceConfig, columns map[string]reflect.Type)
 		for ft.Kind() == reflect.Pointer {
 			ft = ft.Elem()
 		}
-		if t.IsArray() {
+		switch {
+		case t.IsJSON():
+			if !jsonRepresentableType(ft) {
+				return nil, fmt.Errorf("parse: %s: column %q declares %s with unsupported JSON type %s", table, name, t, ft)
+			}
+		case t == core.SQLInt32Array:
+			if ft.Kind() != reflect.Slice || ft.Elem().Kind() != reflect.Int32 {
+				return nil, fmt.Errorf("parse: %s: column %q is %s, read into a slice of int32, not %s", table, name, t, ft)
+			}
+		case t == core.SQLUUIDArray:
+			if ft.Kind() != reflect.Slice || !core.IsUUIDType(ft.Elem()) {
+				return nil, fmt.Errorf("parse: %s: column %q is %s, read into a slice of UUIDs, not %s", table, name, t, ft)
+			}
+		case t.IsArray():
 			if ft.Kind() != reflect.Slice || ft.Elem().Kind() != reflect.String {
 				return nil, fmt.Errorf("parse: %s: column %q is %s, read into a slice of strings, not %s", table, name, t, ft)
 			}
-		} else if ft.Kind() != reflect.String {
-			return nil, fmt.Errorf("parse: %s: column %q is %s, read into a string, not %s", table, name, t, ft)
+		default:
+			if ft.Kind() != reflect.String {
+				return nil, fmt.Errorf("parse: %s: column %q is %s, read into a string, not %s", table, name, t, ft)
+			}
 		}
 		out[name] = t
 	}
 	return out, nil
+}
+
+// Values such as interfaces and nested structs are checked by the JSON encoder
+// at the write boundary; construction must not invoke user encoding hooks.
+func jsonRepresentableType(t reflect.Type) bool {
+	marshaler := reflect.TypeFor[json.Marshaler]()
+	if t.Implements(marshaler) || reflect.PointerTo(t).Implements(marshaler) {
+		return true
+	}
+	switch t.Kind() {
+	case reflect.Chan, reflect.Func, reflect.UnsafePointer, reflect.Complex64, reflect.Complex128:
+		return false
+	default:
+		return true
+	}
 }
 
 // readsSortKeys refuses a sort key whose column the resource does not read:
@@ -279,6 +323,13 @@ func (r *Resource[T]) TenantColumnName() string { return r.tenant }
 
 // DeletedColumnName is the soft-delete column; "" without soft delete.
 func (r *Resource[T]) DeletedColumnName() string { return r.deleted }
+
+// ColumnSQLType returns a column's explicit storage declaration. The returned
+// value cannot mutate the resource's metadata; false means no declaration.
+func (r *Resource[T]) ColumnSQLType(column string) (core.SQLType, bool) {
+	t, ok := r.sqlTypes[column]
+	return t, ok
+}
 
 // Columns is the projection every statement over the resource reads for
 // dialect d: a list's page, an update's RETURNING, and a repository's own
