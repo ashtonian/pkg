@@ -35,6 +35,8 @@ jobs:
           workload: ${{ toJSON(matrix) }}
           go-version: ${{ matrix.go }}
           cache-dependency-path: "**/go.sum"
+      - name: JSON value tests
+        run: make test-jsonvalue
       - name: Gowalker tests
         run: make test-gowalker
       - name: Config tests
