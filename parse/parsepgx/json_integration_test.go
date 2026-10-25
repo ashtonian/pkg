@@ -80,7 +80,7 @@ func TestJSONStorage_QueryAndUpdateEveryExecMode(t *testing.T) {
 	_, err := setup.Exec(ctx, `CREATE TABLE documents (
 		id text PRIMARY KEY, document_text jsonb, document_bytes json, number jsonb, flag jsonb,
 		object jsonb, keys json, dynamic jsonb, raw jsonb, pointer jsonb, decoded jsonb,
-		native text[], binary bytea, secret text);
+		native text[], "binary" bytea, secret text);
 		CREATE TABLE document_labels (document_id text, label_id text CHECK (label_id <> 'forbidden'), PRIMARY KEY(document_id, label_id));
 		INSERT INTO documents VALUES ('full', '"hello"', '"YQ=="', '7', 'true', '{"name":"original"}', '{"1":"one"}',
 		'{"value":1}', 'null', '"pointed"', '"custom"', '{native}', '\x61', 'private');
