@@ -6,6 +6,7 @@ go 1.27.0
 use (
 	./gowalker
 	./jsonvalue
+	./parse
 	./config
 	./config/kongprovider
 	./httpx

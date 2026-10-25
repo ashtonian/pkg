@@ -1,0 +1,61 @@
+{
+  "name": "@ashtonian/parse",
+  "version": "0.1.0",
+  "description": "TypeScript SDK for the parse package \u2014 type-safe list, filter, sort, facet, search, and patch.",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./core": {
+      "types": "./dist/core/index.d.ts",
+      "import": "./dist/core/index.js"
+    },
+    "./filter": {
+      "types": "./dist/filter/index.d.ts",
+      "import": "./dist/filter/index.js"
+    },
+    "./patch": {
+      "types": "./dist/patch/index.d.ts",
+      "import": "./dist/patch/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "src"
+  ],
+  "sideEffects": false,
+  "scripts": {
+    "build": "tsc -b tsconfig.build.json --checkers 4",
+    "check": "tsc -b --checkers 4",
+    "lint": "eslint .",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "check:compat": "node ./node_modules/typescript/bin/tsc --noEmit"
+  },
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "@types/node": "^26.6.5",
+    "@typescript/native": "npm:typescript@^7.0.2",
+    "eslint": "^10.13.0",
+    "typescript": "npm:@typescript/typescript6@^6.0.2",
+    "typescript-eslint": "^8.72.0",
+    "vite": "^8.3.5",
+    "vitest": "^5.0.5"
+  },
+  "license": "MIT",
+  "engines": {
+    "node": ">=20.3"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ashtonian/pkg.git",
+    "directory": "parse/sdk/ts"
+  },
+  "bugs": {
+    "url": "https://github.com/ashtonian/pkg/issues"
+  }
+}

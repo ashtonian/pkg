@@ -1,0 +1,307 @@
+{
+  "params": {
+    "ParamCursor": "cursor",
+    "ParamFacets": "facets",
+    "ParamFields": "fields",
+    "ParamFilter": "filter",
+    "ParamInclude": "include",
+    "ParamIncludeDeleted": "include_deleted",
+    "ParamIncludeTotal": "include_total",
+    "ParamPageSize": "page_size",
+    "ParamSearch": "search",
+    "ParamSort": "sort"
+  },
+  "page_size": 2,
+  "sort": "name",
+  "list": [
+    {
+      "cursor": "",
+      "response": {
+        "items": [
+          {
+            "id": "b",
+            "name": "alpha",
+            "labels": {},
+            "unit/si~v": null
+          },
+          {
+            "id": "d",
+            "name": "bravo",
+            "labels": {},
+            "unit/si~v": null
+          }
+        ],
+        "page_info": {
+          "has_next_page": true,
+          "has_prev_page": false,
+          "end_cursor": "gqFnzgAAAAOhcIGhZpKDoW6kbmFtZaF2pWJyYXZvoWSjYXNjg6FuomlkoXahZKFko2FzYw"
+        },
+        "_relations": {
+          "tags": {
+            "b": [
+              "t1",
+              "t2"
+            ]
+          }
+        },
+        "_truncated": {
+          "tags": [
+            "b"
+          ]
+        },
+        "facets": {
+          "name": [
+            {
+              "key": "alpha",
+              "count": 1
+            },
+            {
+              "key": "bravo",
+              "count": 1
+            },
+            {
+              "key": "charlie",
+              "count": 1
+            },
+            {
+              "key": "delta",
+              "count": 1
+            },
+            {
+              "key": "echo",
+              "count": 1
+            }
+          ]
+        }
+      }
+    },
+    {
+      "cursor": "gqFnzgAAAAOhcIGhZpKDoW6kbmFtZaF2pWJyYXZvoWSjYXNjg6FuomlkoXahZKFko2FzYw",
+      "response": {
+        "items": [
+          {
+            "id": "e",
+            "name": "charlie",
+            "labels": {},
+            "unit/si~v": null
+          },
+          {
+            "id": "c",
+            "name": "delta",
+            "labels": {},
+            "unit/si~v": null
+          }
+        ],
+        "page_info": {
+          "has_next_page": true,
+          "has_prev_page": true,
+          "start_cursor": "gqFnzgAAAAOhcIKhZpKDoW6kbmFtZaF2p2NoYXJsaWWhZKNhc2ODoW6iaWShdqFloWSjYXNjoXLD",
+          "end_cursor": "gqFnzgAAAAOhcIGhZpKDoW6kbmFtZaF2pWRlbHRhoWSjYXNjg6FuomlkoXahY6Fko2FzYw"
+        }
+      }
+    },
+    {
+      "cursor": "gqFnzgAAAAOhcIGhZpKDoW6kbmFtZaF2pWRlbHRhoWSjYXNjg6FuomlkoXahY6Fko2FzYw",
+      "response": {
+        "items": [
+          {
+            "id": "a",
+            "name": "echo",
+            "labels": {},
+            "unit/si~v": null
+          }
+        ],
+        "page_info": {
+          "has_next_page": false,
+          "has_prev_page": true,
+          "start_cursor": "gqFnzgAAAAOhcIKhZpKDoW6kbmFtZaF2pGVjaG-hZKNhc2ODoW6iaWShdqFhoWSjYXNjoXLD"
+        }
+      }
+    }
+  ],
+  "schema": {
+    "version": 1,
+    "resource": "wire_items",
+    "filter": {
+      "fields": {
+        "id": {
+          "name": "id",
+          "data_type": "string",
+          "operators": [
+            "eq",
+            "ne",
+            "contains",
+            "like",
+            "ilike",
+            "in",
+            "nin"
+          ]
+        },
+        "labels": {
+          "name": "labels",
+          "data_type": "json",
+          "operators": [
+            "eq",
+            "ne",
+            "contains",
+            "has_key",
+            "exists",
+            "null"
+          ]
+        },
+        "name": {
+          "name": "name",
+          "data_type": "string",
+          "operators": [
+            "eq",
+            "ne",
+            "like",
+            "in"
+          ],
+          "enum_values": [
+            "alpha",
+            "bravo",
+            "charlie",
+            "delta",
+            "echo"
+          ],
+          "facetable": true
+        },
+        "parts": {
+          "name": "parts",
+          "data_type": "string",
+          "operators": [
+            "eq",
+            "ne",
+            "in",
+            "nin",
+            "null",
+            "not_null",
+            "some",
+            "none"
+          ],
+          "indexed": true,
+          "relation": {
+            "kind": "has_many",
+            "target": "wire_parts"
+          }
+        },
+        "tags": {
+          "name": "tags",
+          "data_type": "string",
+          "operators": [
+            "eq",
+            "ne",
+            "in",
+            "nin",
+            "null",
+            "not_null"
+          ],
+          "includable": true,
+          "relation": {
+            "kind": "many_to_many"
+          }
+        }
+      }
+    },
+    "patch": {
+      "paths": {
+        "/labels": {
+          "allowed_ops": [
+            "replace",
+            "add",
+            "remove"
+          ],
+          "data_type": "json",
+          "nullable": true
+        },
+        "/name": {
+          "allowed_ops": [
+            "replace"
+          ],
+          "data_type": "string",
+          "enum_values": [
+            "alpha",
+            "bravo",
+            "charlie",
+            "delta",
+            "echo"
+          ]
+        },
+        "/unit~1si~0v": {
+          "allowed_ops": [
+            "replace",
+            "remove"
+          ],
+          "data_type": "string",
+          "nullable": true
+        }
+      },
+      "max_operations": 50
+    },
+    "sort": {
+      "fields": {
+        "id": {},
+        "name": {}
+      },
+      "max_fields": 3
+    }
+  },
+  "related": {
+    "wire_parts": {
+      "version": 1,
+      "resource": "wire_parts",
+      "filter": {
+        "fields": {
+          "id": {
+            "name": "id",
+            "data_type": "string",
+            "operators": [
+              "eq",
+              "ne",
+              "contains",
+              "like",
+              "ilike",
+              "in",
+              "nin"
+            ]
+          },
+          "item_id": {
+            "name": "item_id",
+            "data_type": "string",
+            "operators": [
+              "eq",
+              "ne",
+              "contains",
+              "like",
+              "ilike",
+              "in",
+              "nin"
+            ]
+          },
+          "state": {
+            "name": "state",
+            "data_type": "string",
+            "operators": [
+              "eq",
+              "ne",
+              "contains",
+              "like",
+              "ilike",
+              "in",
+              "nin"
+            ],
+            "enum_values": [
+              "ok",
+              "worn"
+            ]
+          }
+        }
+      },
+      "patch": {
+        "paths": {},
+        "max_operations": 50
+      }
+    }
+  }
+}
