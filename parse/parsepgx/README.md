@@ -58,17 +58,18 @@ sequenceDiagram
 **Exit points**
 - Include results pass through `filter.Page.SetInclude`: `_relations` and `_truncated` omit empty projections, and cut owners are reported with the retained IDs.
 - Statements to `db` through `SendBatch` (and `Begin` for an update that changes relations). Statement text and arguments come only from the plan.
-- Rows scanned into `T` with `pgx.RowToStructByNameLax` — the `db` tags that named the plan's columns; fields of columns the resource does not read (`parse.ReadColumns`) stay zero.
+- Rows use pgx's `db`-tagged, embedded-field mapping. Columns omitted by `parse.ReadColumns` stay zero; declared JSON storage and JSON/JSONB result types use the checked JSON decoder described below.
 
 **Failure modes**
 - A plan compiled for another dialect: `ErrDialect`, before any statement runs.
 - A statement error: the pgx/PostgreSQL error, wrapped with the table (`parsepgx: devices: …`); `errors.As(err, &*pgconn.PgError)` reaches it. In pgx's default mode a batch prepares every statement first, so a bad column fails there.
+- Invalid or lossy stored JSON: the decoding or key-validation error, wrapped with the table and read operation. No partial page or returned row slice is exposed.
 - A cursor value that cannot be minted from a row: `Resource.Page`'s error.
 - A relation statement that fails inside `Update`: the transaction (or savepoint) rolls back the row change too.
 - Context cancelled or past its deadline: pgx's context error; nothing is retried.
 
 **Dependencies**
-- *Imports*: `parse`, `parse/filter`, `github.com/jackc/pgx/v5`
+- *Imports*: `parse`, `parse/core`, `parse/filter`, released `pkg/jsonvalue`, `github.com/jackc/pgx/v5`
 - *Imported by*: applications serving parse resources on PostgreSQL
 - *Package boundary*: optional pgx execution; no application imports
 
@@ -84,6 +85,14 @@ The plans' arguments are typed (`[]string`, `[]uuid.UUID`, `float64`, …), so e
 | `QueryExecModeExec`, `QueryExecModeSimpleProtocol` | Poolers or proxies that cannot prepare; text encoding |
 
 `pgx.NamedArgs` rewrites whole statements and cannot compose with the plans' positional placeholders; it is not used.
+
+## JSON storage
+
+Declared JSON columns and inferred PostgreSQL JSON/JSONB results decode as typed Go values: a stored JSON string becomes a Go string, and JSON-encoded bytes become the decoded byte slice. Native text, bytea and array columns retain pgx's normal codecs.
+
+SQL NULL resets the destination field. A present JSON document decodes into a fresh candidate, with custom JSON decoders called once; canonical map keys and recognized struct-member names are checked before assignment. Lossy spellings such as `{"01":1}` into `map[int]int` are rejected. Custom JSON subtrees, interfaces and `json.RawMessage` retain their documented opaque representation.
+
+A present JSON `null` cannot be represented by a nil map, slice, pointer or interface without losing its distinction from SQL NULL; use `json.RawMessage` to retain that document. Decoding and key-validation failures preserve the prior destination. Lists, empty-patch reads and update results use the same decoding boundary.
 
 ## Consistency
 
@@ -114,6 +123,8 @@ The tenant, authorization policy and deleted-row visibility come only from the `
 | File | Responsibility |
 |------|----------------|
 | `parsepgx.go` | `Querier`, `DB`, `QueryPage`, `Update`, `ErrDialect` |
+| `json.go` | Native field mapping with fresh JSON decoding and canonical-key validation |
+| `json_integration_test.go` | Typed JSON lists/updates, nulls, projections and failure isolation in every execution mode |
 | `recipe_test.go` | The README recipe: `Device`, list and Merge Patch handlers, `Example` |
 | `recipe_integration_test.go` | `TestRecipe`: the recipe served against PostgreSQL |
 | `parsepgx_integration_test.go` | Page walks, tenancy, every exec mode, snapshots, updates and rollback |
@@ -121,5 +132,4 @@ The tenant, authorization policy and deleted-row visibility come only from the `
 ## References
 
 - [Package overview](../README.md) · [Integrations](../docs/integrations.md#pgx) · [Resource updates](../docs/patches.md#resource-updates)
--  — `parsepgx`
 - [pgx](https://pkg.go.dev/github.com/jackc/pgx/v5) — batches, exec modes, tracers
