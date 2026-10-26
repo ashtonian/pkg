@@ -85,6 +85,7 @@ const (
 type SQLType string
 
 const (
+	SQLDate          SQLType = "date"
 	SQLInet          SQLType = "inet"
 	SQLCIDR          SQLType = "cidr"
 	SQLInterval      SQLType = "interval"
@@ -101,7 +102,7 @@ const (
 // Valid reports whether t is one of the SQLType constants.
 func (t SQLType) Valid() bool {
 	switch t {
-	case SQLInet, SQLCIDR, SQLInterval, SQLInetArray, SQLCIDRArray, SQLIntervalArray,
+	case SQLDate, SQLInet, SQLCIDR, SQLInterval, SQLInetArray, SQLCIDRArray, SQLIntervalArray,
 		SQLJSON, SQLJSONB, SQLTextArray, SQLInt32Array, SQLUUIDArray:
 		return true
 	}

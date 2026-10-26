@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"maps"
-	"reflect"
 	"slices"
 	"strconv"
 	"strings"
@@ -274,8 +273,8 @@ func geoUnsupported(d dialect.Dialect, op FilterOperator, shape string) error {
 // MarshalValue serializes a value for SQLite parameter binding.
 // JSON/Array/Object types are marshaled to JSON strings for TEXT storage.
 func (d SQLiteDialect) MarshalValue(value any, t core.TypeInfo) (any, error) {
-	if t.Type == core.FieldTypeDate && value != nil {
-		return core.NormalizeScalar(core.FieldTypeDate, reflect.Invalid, value)
+	if t.Type == core.FieldTypeDate {
+		return nullableDateValue(value)
 	}
 
 	if _, ok := value.(driver.Valuer); ok && !t.SQLType.IsJSON() {
@@ -302,7 +301,15 @@ func (SQLiteDialect) RowLock() string { return "" }
 
 // ReadColumn returns column: SQLite stores network and interval values as
 // TEXT, which a string field scans.
-func (SQLiteDialect) ReadColumn(column string, _ core.SQLType) string { return column }
+func (SQLiteDialect) ReadColumn(column string, t core.SQLType) string {
+	if t == core.SQLDate {
+		// Legacy SQLite DATE adapters stored midnight timestamps in TEXT.
+		// Keep their written calendar components in reads, filters and keysets;
+		// SQLite date() would instead apply the timestamp's UTC offset.
+		return "substr(" + column + ", 1, 10)"
+	}
+	return column
+}
 
 // NativeRowCompare reports false: row-value comparison is unevenly
 // supported across the SQLite build matrix, and the expansion stays

@@ -3,6 +3,7 @@ package filter
 import (
 	"errors"
 	"fmt"
+	"reflect"
 	"regexp"
 	"strconv"
 	"strings"
@@ -492,4 +493,20 @@ func (b *SQLBuilder) buildRelationCondition(s *buildState, node *FilterNode) (st
 	sb.WriteString(scope)
 	sb.WriteByte(')')
 	return sb.String(), nil
+}
+
+// nullableDateValue is the SQL boundary: typed nil pointers are SQL NULL,
+// while request normalization separately refuses null scalar operands.
+func nullableDateValue(value any) (any, error) {
+	if value == nil {
+		return nil, nil
+	}
+	rv := reflect.ValueOf(value)
+	for rv.Kind() == reflect.Pointer {
+		if rv.IsNil() {
+			return nil, nil
+		}
+		rv = rv.Elem()
+	}
+	return core.NormalizeScalar(core.FieldTypeDate, reflect.Invalid, rv.Interface())
 }

@@ -267,6 +267,9 @@ func effectiveDirection(k CursorKey, reverse bool) SortDirection {
 // keyValue is a key's value expression: its column, or a path's typed
 // extraction.
 func keyValue(d Dialect, k CursorKey) string {
+	if k.Path == nil && k.DataType == core.FieldTypeDate {
+		return d.ReadColumn(k.SQLExpr, core.SQLDate)
+	}
 	if k.Path != nil {
 		return d.PathExpr(k.Path, k.DataType)
 	}

@@ -19,6 +19,14 @@ type civilTask struct {
 
 func TestCivilDateRequestContract(t *testing.T) {
 	resource := parse.MustResource[civilTask]("tasks")
+	_, err := parse.NewResource[civilTask]("tasks", parse.ColumnType("due_on", core.SQLDate))
+	require.NoError(t, err)
+	_, err = parse.NewResource[struct {
+		ID  string `db:"id"`
+		Day string `db:"day"`
+	}]("bad", parse.ColumnType("day", core.SQLDate))
+	require.Error(t, err)
+
 	for _, day := range []string{"2026-10-26", "2028-02-29"} {
 		query, err := resource.ParseList(url.Values{"filter": {`{"due_on":{"$lte":"` + day + `"}}`}, "sort": {"due_on,id"}})
 		require.NoError(t, err)
@@ -41,5 +49,17 @@ func TestCivilDateRequestContract(t *testing.T) {
 		require.Error(t, err)
 		_, err = resource.ParseMergePatch([]byte(`{"due_on":"` + invalid + `"}`))
 		require.Error(t, err)
+	}
+}
+
+func TestCivilDateNullableBindings(t *testing.T) {
+	for _, dialect := range []parse.Dialect{filter.PostgresDialect{}, filter.SQLiteDialect{}} {
+		var value *core.Date
+		normalized, err := dialect.MarshalValue(value, core.TypeInfo{Type: core.FieldTypeDate})
+		require.NoError(t, err)
+		assert.Nil(t, normalized)
+		value = new(core.Date("2028-02-29"))
+		_, err = dialect.MarshalValue(value, core.TypeInfo{Type: core.FieldTypeDate})
+		require.NoError(t, err)
 	}
 }

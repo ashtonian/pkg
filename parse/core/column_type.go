@@ -33,6 +33,9 @@ func (g *SchemaGenerator) FieldType(field *Field) (TypeInfo, error) {
 	if !storage.Valid() {
 		return TypeInfo{}, fmt.Errorf("column %q declares type %q, which has no read rule", column, storage)
 	}
+	if storage == SQLDate && info.Type != FieldTypeDate {
+		return TypeInfo{}, fmt.Errorf("column %q declares a civil date; use core.Date, not %s", column, field.Type)
+	}
 	if storage.IsJSON() && !IsDocument(info.Type) {
 		return TypeInfo{Type: FieldTypeJSON, SQLType: storage}, nil
 	}

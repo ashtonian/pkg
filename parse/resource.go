@@ -176,6 +176,21 @@ func NewResource[T any](table string, opts ...ResourceOption) (*Resource[T], err
 	if r.sqlTypes, err = sqlTypes(table, cfg, columns); err != nil {
 		return nil, err
 	}
+	// A native Date owns its SQL representation unless an explicit declaration
+	// stores the value as a JSON document instead.
+	for name, typ := range columns {
+		if core.TypeOf(typ).Type != core.FieldTypeDate {
+			continue
+		}
+		if _, declared := r.sqlTypes[name]; declared {
+			continue
+		}
+		if r.sqlTypes == nil {
+			r.sqlTypes = make(map[string]core.SQLType)
+		}
+		r.sqlTypes[name] = core.SQLDate
+	}
+
 	if err := r.readsSortKeys(p.sortSchema); err != nil {
 		return nil, err
 	}

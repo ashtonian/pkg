@@ -326,10 +326,10 @@ func pgJSONBPoint(field *FieldSchema) string {
 // map[string]any without an OID hint, and the project standardizes on
 // JSONB for those.
 func (d PostgresDialect) MarshalValue(value any, t core.TypeInfo) (any, error) {
-	if t.Type == core.FieldTypeDate && value != nil {
-		normalized, err := core.NormalizeScalar(core.FieldTypeDate, reflect.Invalid, value)
-		if err != nil {
-			return nil, err
+	if t.Type == core.FieldTypeDate {
+		normalized, err := nullableDateValue(value)
+		if err != nil || normalized == nil {
+			return normalized, err
 		}
 		return time.Parse(time.DateOnly, normalized.(string))
 	}

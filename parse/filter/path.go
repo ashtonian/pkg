@@ -70,6 +70,9 @@ func (p *JSONPath) validate(t core.FieldType, maxDepth int) error {
 // FieldExpr is the SQL expression of a field's value: its column, or for a
 // path the dialect's typed extraction.
 func FieldExpr(d Dialect, f *FieldSchema) string {
+	if f.Path == nil && f.DataType == core.FieldTypeDate {
+		return d.ReadColumn(f.SQLExpr, core.SQLDate)
+	}
 	if f.Path == nil {
 		return f.SQLExpr
 	}

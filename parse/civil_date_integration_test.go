@@ -31,6 +31,10 @@ func TestCivilDateSQL(t *testing.T) {
 			require.NoError(t, err)
 			_, err = db.Exec(`INSERT INTO tasks VALUES ('leap','2028-02-29'),('today','2026-10-26'),('empty',NULL)`)
 			require.NoError(t, err)
+			if backend.name == "sqlite" {
+				_, err = db.Exec(`INSERT INTO tasks VALUES ('legacy','2026-10-26T00:00:00Z')`)
+				require.NoError(t, err)
+			}
 			resource := parse.MustResource[civilTask]("tasks")
 			query, err := resource.ParseList(url.Values{"filter": {`{"due_on":{"$lte":"2026-10-26"}}`}, "sort": {"due_on,id"}})
 			require.NoError(t, err)
@@ -46,7 +50,13 @@ func TestCivilDateSQL(t *testing.T) {
 			}
 			require.NoError(t, rows.Err())
 			require.NoError(t, rows.Close())
-			require.Len(t, found, 1)
+			if backend.name == "sqlite" {
+				require.Len(t, found, 2)
+				assert.Equal(t, "legacy", found[0].ID)
+				found = found[1:]
+			} else {
+				require.Len(t, found, 1)
+			}
 			wire, err := json.Marshal(found[0])
 			require.NoError(t, err)
 			assert.JSONEq(t, `{"id":"today","due_on":"2026-10-26"}`, string(wire))
