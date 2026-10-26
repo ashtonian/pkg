@@ -309,6 +309,7 @@ var defaultFilterOps = map[core.FieldType][]FilterOperator{
 	core.FieldTypeFloat:     {OpEq, OpNe, OpGt, OpGte, OpLt, OpLte, OpIn, OpNin},
 	core.FieldTypeBool:      {OpEq, OpNe},
 	core.FieldTypeTimestamp: {OpEq, OpNe, OpGt, OpGte, OpLt, OpLte},
+	core.FieldTypeDate:      {OpEq, OpNe, OpGt, OpGte, OpLt, OpLte},
 	core.FieldTypeUUID:      {OpEq, OpNe, OpIn, OpNin},
 	core.FieldTypeJSON:      {OpEq, OpNe, OpContains, OpHasKey, OpExists, OpNull},
 	core.FieldTypeArray:     {OpContains, OpNull},
@@ -384,7 +385,7 @@ func FilterMetaFromSchema(schema *ResourceSchema) *FilterMeta {
 func sortable(t reflect.Type, ft core.FieldType) bool {
 	switch ft {
 	case core.FieldTypeString, core.FieldTypeInt, core.FieldTypeFloat,
-		core.FieldTypeBool, core.FieldTypeTimestamp, core.FieldTypeUUID:
+		core.FieldTypeBool, core.FieldTypeTimestamp, core.FieldTypeDate, core.FieldTypeUUID:
 		return true
 	case core.FieldTypeObject:
 		for t.Kind() == reflect.Pointer {

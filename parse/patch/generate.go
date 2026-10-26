@@ -262,6 +262,7 @@ var defaultPatchOps = map[core.FieldType][]PatchOp{
 	core.FieldTypeFloat:     {PatchOpReplace},
 	core.FieldTypeBool:      {PatchOpReplace},
 	core.FieldTypeTimestamp: {PatchOpReplace},
+	core.FieldTypeDate:      {PatchOpReplace},
 	core.FieldTypeUUID:      {PatchOpReplace},
 	core.FieldTypeJSON:      {PatchOpReplace, PatchOpAdd, PatchOpRemove},
 	core.FieldTypeArray:     {PatchOpReplace, PatchOpAdd, PatchOpRemove, PatchOpArrayAppend},

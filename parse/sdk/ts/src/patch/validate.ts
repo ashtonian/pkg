@@ -1,3 +1,4 @@
+import { isCivilDate } from "../core/date.js";
 import { SchemaValidationError } from "../core/errors.js";
 import type { PatchOp, PatchPathSchema, PatchSchema } from "./types.js";
 
@@ -84,6 +85,8 @@ const INT_RANGES: Record<string, [number, number]> = {
 
 function scalarOK(v: unknown, type: string, kind?: string): boolean {
   switch (type) {
+    case "date":
+      return isCivilDate(v);
     case "string":
     case "timestamp":
     case "uuid":

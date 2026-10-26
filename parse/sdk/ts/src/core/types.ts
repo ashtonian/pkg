@@ -7,6 +7,7 @@ export type FieldType =
   | "float"
   | "bool"
   | "timestamp"
+  | "date"
   | "uuid"
   | "json"
   | "array"

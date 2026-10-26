@@ -71,6 +71,7 @@ const (
 	FieldTypeFloat     FieldType = "float"
 	FieldTypeBool      FieldType = "bool"
 	FieldTypeTimestamp FieldType = "timestamp"
+	FieldTypeDate      FieldType = "date"
 	FieldTypeUUID      FieldType = "uuid"
 	FieldTypeJSON      FieldType = "json"
 	FieldTypeArray     FieldType = "array"

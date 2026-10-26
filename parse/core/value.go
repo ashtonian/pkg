@@ -29,7 +29,7 @@ func NormalizeScalar(dt FieldType, kind reflect.Kind, v any) (any, error) {
 	v = deref(v)
 	if v == nil {
 		switch dt {
-		case FieldTypeString, FieldTypeUUID, FieldTypeInt, FieldTypeFloat, FieldTypeBool, FieldTypeTimestamp:
+		case FieldTypeString, FieldTypeUUID, FieldTypeInt, FieldTypeFloat, FieldTypeBool, FieldTypeTimestamp, FieldTypeDate:
 			return nil, fmt.Errorf("expected %s, got null", dt)
 		}
 		return nil, nil
@@ -64,6 +64,16 @@ func NormalizeScalar(dt FieldType, kind reflect.Kind, v any) (any, error) {
 			return nil, fmt.Errorf("expected boolean, got %T", v)
 		}
 		return b, nil
+	case FieldTypeDate:
+		if date, ok := v.(Date); ok {
+			parsed, err := ParseDate(string(date))
+			return string(parsed), err
+		}
+		if text, ok := v.(string); ok {
+			date, err := ParseDate(text)
+			return string(date), err
+		}
+		return nil, fmt.Errorf("expected civil date string, got %T", v)
 	case FieldTypeTimestamp:
 		t, err := toTime(v)
 		if err != nil {

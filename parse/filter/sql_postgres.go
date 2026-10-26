@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"math"
+	"reflect"
 	"strconv"
 	"time"
 	"uuid"
@@ -147,6 +148,14 @@ func pgArray(elem core.FieldType, value any) (any, error) {
 				return "", err
 			}
 			return id.String(), nil
+		})
+	case core.FieldTypeDate:
+		return typedSlice(items, func(v any) (time.Time, error) {
+			normalized, err := core.NormalizeScalar(core.FieldTypeDate, reflect.Invalid, v)
+			if err != nil {
+				return time.Time{}, err
+			}
+			return time.Parse(time.DateOnly, normalized.(string))
 		})
 	case core.FieldTypeTimestamp:
 		return typedSlice(items, func(v any) (time.Time, error) {
@@ -317,6 +326,14 @@ func pgJSONBPoint(field *FieldSchema) string {
 // map[string]any without an OID hint, and the project standardizes on
 // JSONB for those.
 func (d PostgresDialect) MarshalValue(value any, t core.TypeInfo) (any, error) {
+	if t.Type == core.FieldTypeDate && value != nil {
+		normalized, err := core.NormalizeScalar(core.FieldTypeDate, reflect.Invalid, value)
+		if err != nil {
+			return nil, err
+		}
+		return time.Parse(time.DateOnly, normalized.(string))
+	}
+
 	if _, ok := value.(driver.Valuer); ok && !t.SQLType.IsJSON() {
 		return value, nil // a database value the driver encodes, not a document
 	}

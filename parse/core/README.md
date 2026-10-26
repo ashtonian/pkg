@@ -48,3 +48,5 @@ Start with the [runnable package example](../README.md#quick-start). The focused
 ## References
 
 [Package overview](../README.md) · [Integration recipes](../docs/integrations.md)
+
+Civil calendar values use `Date` / `ParseDate` and `FieldTypeDate`, distinct from timestamps. JSON, text, SQL parameters and cursors use exactly `YYYY-MM-DD`; invalid dates, instant strings and a non-nullable zero/null value fail. Use `*Date` for nullable storage. `date.go` implements validation, atomic decoding and SQL scanning/values without applying a viewing timezone; the [schema guide](../docs/schema-configuration.md#civil-dates) covers resource declarations.

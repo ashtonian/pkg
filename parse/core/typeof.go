@@ -114,6 +114,9 @@ func TypeOf(t reflect.Type) TypeInfo {
 
 // scalarType maps the scalar Go types; pointers are not stripped.
 func scalarType(t reflect.Type) (FieldType, bool) {
+	if t == reflect.TypeFor[Date]() {
+		return FieldTypeDate, true
+	}
 	if t == timeType {
 		return FieldTypeTimestamp, true
 	}

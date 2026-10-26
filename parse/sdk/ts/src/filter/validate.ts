@@ -1,3 +1,4 @@
+import { isCivilDate } from "../core/date.js";
 import { SchemaValidationError } from "../core/errors.js";
 import type { FilterFieldSchema, FilterOperator, FilterSchema, SortSchema } from "./types.js";
 
@@ -230,6 +231,9 @@ function validateMember(name: string, val: unknown, field: FilterFieldSchema): v
   const type = field.data_type;
   let ok = true;
   switch (type) {
+    case "date":
+      ok = isCivilDate(val);
+      break;
     case "string":
     case "timestamp":
     case "uuid":

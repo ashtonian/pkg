@@ -18,6 +18,7 @@ var typeOperators = map[core.FieldType][]FilterOperator{
 	core.FieldTypeInt:       {OpEq, OpNe, OpGt, OpGte, OpLt, OpLte, OpIn, OpNin, OpNull, OpNotNull, OpExists},
 	core.FieldTypeFloat:     {OpEq, OpNe, OpGt, OpGte, OpLt, OpLte, OpIn, OpNin, OpNull, OpNotNull, OpExists},
 	core.FieldTypeTimestamp: {OpEq, OpNe, OpGt, OpGte, OpLt, OpLte, OpIn, OpNin, OpNull, OpNotNull, OpExists},
+	core.FieldTypeDate:      {OpEq, OpNe, OpGt, OpGte, OpLt, OpLte, OpIn, OpNin, OpNull, OpNotNull, OpExists},
 	core.FieldTypeUUID:      {OpEq, OpNe, OpIn, OpNin, OpNull, OpNotNull, OpExists},
 	core.FieldTypeBool:      {OpEq, OpNe, OpIn, OpNin, OpNull, OpNotNull, OpExists},
 	core.FieldTypeJSON:      {OpEq, OpNe, OpContains, OpHasKey, OpNull, OpNotNull, OpExists},

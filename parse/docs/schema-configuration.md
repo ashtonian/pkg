@@ -115,3 +115,17 @@ Builder options (`filter.List*`, `filter.With*`, `patch.With*`) are in [queries]
 ## Per-call filter cost
 
 `Resource.ParseFilterWithCost(query, maxCost)` applies a positive server-selected budget to one filter parse. It preserves the Resource's schema, codec, clock and other limits without mutating shared configuration. Use `ParseFilter` and `ParseRequestFilter` for untrusted requests under the configured request budget; never accept a larger cost limit from request input. Stored filters can use a separately approved server-policy budget.
+
+## Civil dates
+
+Use `core.Date` (or `*core.Date` for a nullable column) for SQL DATE values. It is a calendar value with exactly `YYYY-MM-DD` text, JSON, filter and cursor representations. It supports equality and ordering without converting the date to an instant. TIMESTAMPTZ fields continue to use `time.Time` and RFC3339 timestamps.
+
+```go
+type Task struct {
+    ID string `json:"id" db:"id" parse:"filter,sort"`
+    DueOn *core.Date `json:"due_on" db:"due_on" parse:"filter,patch,sort"`
+    DueAt *time.Time `json:"due_at" db:"due_at" parse:"filter,patch,sort"`
+}
+```
+
+`core.ParseDate("2028-02-29")` validates a value. Invalid calendar dates, timestamp strings, relative-time tokens and null for a non-nullable date are refused. A nullable patch can explicitly clear a date; omission leaves it untouched. `Date.Scan` and `Date.Value` provide native database/sql and pgx interoperability; native DATE values retain their calendar components in every session timezone. The zero Date is invalid. `Date.Time()` is an explicit conversion for an internal API that requires UTC-midnight `time.Time`; it does not change the public date representation.

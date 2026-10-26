@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"maps"
+	"reflect"
 	"slices"
 	"strconv"
 	"strings"
@@ -273,6 +274,10 @@ func geoUnsupported(d dialect.Dialect, op FilterOperator, shape string) error {
 // MarshalValue serializes a value for SQLite parameter binding.
 // JSON/Array/Object types are marshaled to JSON strings for TEXT storage.
 func (d SQLiteDialect) MarshalValue(value any, t core.TypeInfo) (any, error) {
+	if t.Type == core.FieldTypeDate && value != nil {
+		return core.NormalizeScalar(core.FieldTypeDate, reflect.Invalid, value)
+	}
+
 	if _, ok := value.(driver.Valuer); ok && !t.SQLType.IsJSON() {
 		return value, nil // a database value the driver encodes, not a document
 	}
