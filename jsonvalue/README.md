@@ -4,6 +4,10 @@
 
 Decode JSON into a fresh Go value, then replace the destination only after decoding succeeds. Reused maps retain no old keys, omitted struct fields return to their zero values, and decode errors leave the destination unchanged. `UnmarshalPresent` additionally rejects a nil Go representation for callers that distinguish an absent value from a stored document.
 
+## Packaging review
+
+Reassess whether these helpers belong in a combined utility package or whether this standalone module should be removed in favor of explicit decode-then-assign at call sites. Any consolidation or removal must preserve replacement-on-success and presence semantics, and migrate existing consumers before removing the public API.
+
 ## Quick start
 
 Requires Go 1.27 or later. Install with `go get github.com/ashtonian/pkg/jsonvalue@latest`.
