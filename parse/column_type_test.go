@@ -4,6 +4,7 @@ package parse_test
 
 import (
 	"net/url"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -60,6 +61,29 @@ func TestColumnType_Projection(t *testing.T) {
 	only, err := sessionResource(t, parse.ReadColumns("id", "addr"))
 	require.NoError(t, err)
 	assert.Equal(t, []string{"sessions.id", "abbrev(sessions.addr) AS addr"}, only.Columns(filter.PostgresDialect{}))
+}
+
+// Every dialect's projection reads each column under the name ColumnNames
+// gives at the same position.
+func TestColumnType_ColumnNamesNameTheProjection(t *testing.T) {
+	r, err := sessionResource(t)
+	require.NoError(t, err)
+	names := []string{"id", "addr", "net", "every", "allowed", "nets", "spans", "count"}
+	assert.Equal(t, names, r.ColumnNames())
+	for _, d := range []filter.Dialect{filter.PostgresDialect{}, filter.SQLiteDialect{}} {
+		columns := r.Columns(d)
+		require.Len(t, columns, len(names))
+		for i, column := range columns {
+			assert.True(t, column == "sessions."+names[i] || strings.HasSuffix(column, " AS "+names[i]), "%T reads %q as %q", d, names[i], column)
+		}
+	}
+
+	only, err := sessionResource(t, parse.ReadColumns("id", "addr"))
+	require.NoError(t, err)
+	assert.Equal(t, []string{"id", "addr"}, only.ColumnNames())
+
+	r.ColumnNames()[0] = "changed"
+	assert.Equal(t, "id", r.ColumnNames()[0], "the names are a copy")
 }
 
 // A list's page and an update's RETURNING read the same projection.
