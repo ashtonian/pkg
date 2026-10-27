@@ -365,6 +365,10 @@ func (r *Resource[T]) Columns(d filter.Dialect) []string {
 	return out
 }
 
+// ColumnNames is the unqualified name of each Columns entry, in the same
+// order: the name every row's value scans under, whichever dialect read it.
+func (r *Resource[T]) ColumnNames() []string { return slices.Clone(r.read) }
+
 // Key reads the primary key from a model value or a pointer to one.
 func (r *Resource[T]) Key(item any) (any, error) {
 	return r.columnValue(reflect.ValueOf(item), r.pk)

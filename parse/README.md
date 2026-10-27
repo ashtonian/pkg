@@ -145,7 +145,7 @@ Tags expose capabilities explicitly: `parse:"filter,sort,patch,facet,search,incl
 
 | Package / file | Responsibility |
 |---|---|
-| [`resource.go`](resource.go) | `NewResource[T]`, `MustResource`, resource options, identity, system fields, projection, `ParseFilterWithCost`, `Key`, `WithPaths` (a request's view with declared JSON paths) |
+| [`resource.go`](resource.go) | `NewResource[T]`, `MustResource`, resource options, identity, system fields, projection (`Columns`, `ColumnNames`), `ParseFilterWithCost`, `Key`, `WithPaths` (a request's view with declared JSON paths) |
 | [`list.go`](list.go) | `ListInput`, `ParseListInput`, `ListRequest`, `ParseList`, `Scope`, `ListPlan` (`Dialect`), `BuildList`, `Page`, `PagePointers`, `IncludeQueries` |
 | [`relate.go`](relate.go) | `Relate`, `MustRelate`, `HasMany`, `BelongsTo`, `ManyToMany`, `Junction` / `Through`, `Indexed`, `Includable`, `Facetable`, `Writable`, `PolicyScoped`, `References`, `RelatedResource` |
 | [`update.go`](update.go) | `Target` (`ByID`, `ByIDs`, `ByFilter`), `BuildUpdate`, `UpdatePlan` (`Dialect`), `RelationStatements`, `Stamp`, `StampSQL`, `Dialect` |
