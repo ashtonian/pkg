@@ -1,5 +1,5 @@
-github.com/andybalholm/brotli v1.2.6 h1:ftYnfj6usCp+UGV5kSJ3+chpMQgU+gJf/AxsUQ52REI=
-github.com/andybalholm/brotli v1.2.6/go.mod h1:rzTDkvFWvIrjDXZHkuS16NPggd91W3kUSvPlQ1pLaKY=
+github.com/andybalholm/brotli v1.2.7 h1:UgafRPGMam5ySHfRkhthMqOFA6IFoeF3D7mWIDLjG5A=
+github.com/andybalholm/brotli v1.2.7/go.mod h1:rzTDkvFWvIrjDXZHkuS16NPggd91W3kUSvPlQ1pLaKY=
 github.com/ashtonian/pkg/httpx v0.1.0 h1:NmyLnAXQwZ4r+SjBDKU1z3O7K2CH/f8KFHnG0wSjBzM=
 github.com/ashtonian/pkg/httpx v0.1.0/go.mod h1:lr3uhZ4646xHiqRNs968GoDXDx3KtF3UxzWjthhi3aw=
 github.com/davecgh/go-spew v1.1.1 h1:vj9j/u1bqnvCEfJOwUhtlOARqs3+rkHYY13jYWTU97c=
