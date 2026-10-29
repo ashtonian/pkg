@@ -10,7 +10,8 @@ import type { PatchOp, PatchPathSchema, PatchSchema } from "./types.js";
  * only where the path is nullable (and `remove` allowed), every other value
  * of the path's type — numbers integral and within the path's Go kind,
  * strings in its enum, values within its bounds, arrays of its element type
- * (each element in the enum and bounds), a relation's membership a list —
+ * within its element counts (each element in the enum and bounds), a
+ * relation's membership a list —
  * and the operation count within the maximum, counting each
  * top-level member and each nested object below it. The corpus
  * testdata/patch_conformance.json holds the two to one answer per input.
@@ -63,6 +64,12 @@ function validatePatchValue(field: string, value: unknown, path: PatchPathSchema
   if (path.data_type === "array") {
     if (!Array.isArray(value)) {
       throw new SchemaValidationError(field, "E2077", `Field "${field}" expects an array`);
+    }
+    if (path.min_items !== undefined && value.length < path.min_items) {
+      throw new SchemaValidationError(field, "E2077", `Field "${field}" must hold at least ${String(path.min_items)} elements, got ${String(value.length)}`);
+    }
+    if (path.max_items !== undefined && value.length > path.max_items) {
+      throw new SchemaValidationError(field, "E2077", `Field "${field}" must hold at most ${String(path.max_items)} elements, got ${String(value.length)}`);
     }
     if (!path.elem) return;
     for (const el of value) {

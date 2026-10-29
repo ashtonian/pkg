@@ -176,6 +176,17 @@
           "data_type": "array",
           "nullable": true,
           "elem": "string"
+        },
+        "/zones": {
+          "allowed_ops": [
+            "replace",
+            "add",
+            "array_append"
+          ],
+          "data_type": "array",
+          "min_items": 1,
+          "max_items": 2,
+          "elem": "string"
         }
       },
       "max_operations": 50
@@ -620,6 +631,44 @@
           "ab",
           "abc"
         ]
+      },
+      "valid": false,
+      "errorCode": "E2077"
+    },
+    {
+      "name": "items_bounds",
+      "input": {
+        "zones": [
+          "a",
+          "b"
+        ]
+      },
+      "valid": true
+    },
+    {
+      "name": "err_items_min",
+      "input": {
+        "zones": []
+      },
+      "valid": false,
+      "errorCode": "E2077"
+    },
+    {
+      "name": "err_items_max",
+      "input": {
+        "zones": [
+          "a",
+          "b",
+          "c"
+        ]
+      },
+      "valid": false,
+      "errorCode": "E2077"
+    },
+    {
+      "name": "err_items_clear",
+      "input": {
+        "zones": null
       },
       "valid": false,
       "errorCode": "E2077"

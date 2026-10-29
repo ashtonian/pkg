@@ -252,6 +252,7 @@ type confPatchInput struct {
 	Codes    client.Nullable[[]string]        `json:"codes,omitzero"`
 	Modes    client.Nullable[[]string]        `json:"modes,omitzero"`
 	Mode     client.Nullable[string]          `json:"mode,omitzero"`
+	Zones    client.Nullable[[]string]        `json:"zones,omitzero"`
 }
 
 var patchBuilt = map[string]confPatchInput{
@@ -289,6 +290,10 @@ var patchBuilt = map[string]confPatchInput{
 	"err_decimal_min":                {Amount: client.Set(decimal.RequireFromString("0.001"))},
 	"array_element_length":           {Codes: client.Set([]string{"ab", "c"})},
 	"err_array_element_length":       {Codes: client.Set([]string{"ab", "abc"})},
+	"items_bounds":                   {Zones: client.Set([]string{"a", "b"})},
+	"err_items_min":                  {Zones: client.Set([]string{})},
+	"err_items_max":                  {Zones: client.Set([]string{"a", "b", "c"})},
+	"err_items_clear":                {Zones: client.Null[[]string]()},
 }
 
 var patchInexpressible = map[string]string{

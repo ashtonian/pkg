@@ -34,6 +34,7 @@ func TestBounds_ReadFromTags(t *testing.T) {
 		{name: "integers", tag: `min:"-5" max:"10"`, want: core.Bounds{Min: "-5", Max: "10"}},
 		{name: "decimals as canonical text", tag: `min:"0.010" max:"1.5e2"`, want: core.Bounds{Min: "0.01", Max: "150"}},
 		{name: "equal bounds", tag: `min:"2" max:"2.0"`, want: core.Bounds{Min: "2", Max: "2"}},
+		{name: "element counts", tag: `minitems:"1" maxitems:"8"`, want: core.Bounds{MinItems: new(1), MaxItems: new(8)}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -49,14 +50,16 @@ func TestBounds_ReadFromTags(t *testing.T) {
 // capabilities, instead of bounding nothing.
 func TestBounds_RefuseMalformedTags(t *testing.T) {
 	tests := map[string]struct{ tag, want string }{
-		"negative length":        {`maxlen:"-1"`, `maxlen "-1" is not a non-negative integer`},
-		"fractional length":      {`minlen:"1.5"`, `minlen "1.5" is not a non-negative integer`},
-		"empty length":           {`maxlen:""`, `maxlen "" is not a non-negative integer`},
-		"minlen above maxlen":    {`minlen:"4" maxlen:"3"`, `minlen 4 exceeds maxlen 3`},
-		"not a number":           {`min:"ten"`, `min: "ten" is not a decimal number`},
-		"hexadecimal":            {`max:"0x10"`, `max: "0x10" is not a decimal number`},
-		"min above max":          {`min:"10.5" max:"10.25"`, `min 10.5 exceeds max 10.25`},
-		"negative min above max": {`min:"-1" max:"-2"`, `min -1 exceeds max -2`},
+		"negative length":         {`maxlen:"-1"`, `maxlen "-1" is not a non-negative integer`},
+		"fractional length":       {`minlen:"1.5"`, `minlen "1.5" is not a non-negative integer`},
+		"empty length":            {`maxlen:""`, `maxlen "" is not a non-negative integer`},
+		"minlen above maxlen":     {`minlen:"4" maxlen:"3"`, `minlen 4 exceeds maxlen 3`},
+		"not a number":            {`min:"ten"`, `min: "ten" is not a decimal number`},
+		"hexadecimal":             {`max:"0x10"`, `max: "0x10" is not a decimal number`},
+		"min above max":           {`min:"10.5" max:"10.25"`, `min 10.5 exceeds max 10.25`},
+		"negative min above max":  {`min:"-1" max:"-2"`, `min -1 exceeds max -2`},
+		"negative element count":  {`minitems:"-1"`, `minitems "-1" is not a non-negative integer`},
+		"minitems above maxitems": {`minitems:"3" maxitems:"2"`, `minitems 3 exceeds maxitems 2`},
 	}
 	for name, tt := range tests {
 		t.Run(name, func(t *testing.T) {
@@ -70,6 +73,7 @@ func TestBounds_RefuseMalformedTags(t *testing.T) {
 func TestBounds_CheckTheFieldType(t *testing.T) {
 	length := core.Bounds{MaxLen: new(3)}
 	number := core.Bounds{Max: "3"}
+	items := core.Bounds{MinItems: new(1)}
 	tests := []struct {
 		name   string
 		bounds core.Bounds
@@ -86,6 +90,9 @@ func TestBounds_CheckTheFieldType(t *testing.T) {
 		{name: "length on a document", bounds: length, info: core.TypeInfo{Type: core.FieldTypeJSON}, want: "not json"},
 		{name: "number on a string", bounds: number, info: core.TypeInfo{Type: core.FieldTypeString}, want: "min and max bound numbers and arrays of numbers, not string"},
 		{name: "number on uuids", bounds: number, info: core.TypeInfo{Type: core.FieldTypeArray, Elem: core.FieldTypeUUID}, want: "not an array of uuid"},
+		{name: "element count on uuids", bounds: items, info: core.TypeInfo{Type: core.FieldTypeArray, Elem: core.FieldTypeUUID}},
+		{name: "element count on a string", bounds: items, info: core.TypeInfo{Type: core.FieldTypeString}, want: "minitems and maxitems bound arrays, not string"},
+		{name: "element count on a document", bounds: items, info: core.TypeInfo{Type: core.FieldTypeJSON}, want: "minitems and maxitems bound arrays, not json"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

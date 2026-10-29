@@ -29,6 +29,9 @@ export interface PatchPathSchema {
    */
   minimum?: string;
   maximum?: string;
+  /** The fewest and most elements of an array path. */
+  min_items?: number;
+  max_items?: number;
   /** An array path's element type. */
   elem?: FieldType;
   /** The Go numeric kind of a number path, or of an array path's elements. */
