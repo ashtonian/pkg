@@ -46,6 +46,11 @@ type confPatch struct {
 	Readonly string          `json:"readonly"  db:"readonly"`
 	Modes    []string        `json:"modes"     db:"modes"     parse:"patch" enum:"auto,manual"`
 	Mode     *string         `json:"mode"      db:"mode"      parse:"patch" enum:"auto,manual"`
+	Currency string          `json:"currency"  db:"currency"  parse:"patch" minlen:"3" maxlen:"3"`
+	Level    int32           `json:"level"     db:"level"     parse:"patch" min:"1" max:"10"`
+	Rate     float32         `json:"rate"      db:"rate"      parse:"patch" min:"0" max:"0.1"`
+	Amount   decimal.Decimal `json:"amount"    db:"amount"    parse:"patch" min:"0.01" max:"999.99"`
+	Codes    []string        `json:"codes"     db:"codes"     parse:"patch" maxlen:"2"`
 }
 
 type patchCase struct {
@@ -103,6 +108,22 @@ func patchInputs() []patchCase {
 		{Name: "array_enum", Input: map[string]any{"modes": []any{"auto", "manual"}}},
 		{Name: "err_array_enum", Input: map[string]any{"modes": []any{"auto", "off"}}},
 		{Name: "null_clears_nullable_enum", Input: map[string]any{"mode": nil}},
+		{Name: "length_bounds", Input: map[string]any{"currency": "USD"}},
+		{Name: "length_counts_code_points", Input: map[string]any{"currency": "€😀ß"}},
+		{Name: "err_maxlen", Input: map[string]any{"currency": "USDX"}},
+		{Name: "err_minlen", Input: map[string]any{"currency": "US"}},
+		{Name: "int_bounds", Input: map[string]any{"level": 10}},
+		{Name: "err_int_max", Input: map[string]any{"level": 11}},
+		{Name: "err_int_min", Input: map[string]any{"level": 0}},
+		{Name: "float32_bound_at_its_precision", Input: map[string]any{"rate": 0.1}},
+		{Name: "err_float_max", Input: map[string]any{"rate": 0.11}},
+		{Name: "decimal_bounds", Input: map[string]any{"amount": "999.99"}},
+		{Name: "decimal_bound_exponent", Input: map[string]any{"amount": "9.9999e2"}},
+		{Name: "decimal_bound_number", Input: map[string]any{"amount": 0.01}},
+		{Name: "err_decimal_max_exact", Input: map[string]any{"amount": "999.990000000000000001"}},
+		{Name: "err_decimal_min", Input: map[string]any{"amount": "0.001"}},
+		{Name: "array_element_length", Input: map[string]any{"codes": []any{"ab", "c"}}},
+		{Name: "err_array_element_length", Input: map[string]any{"codes": []any{"ab", "abc"}}},
 	}
 }
 

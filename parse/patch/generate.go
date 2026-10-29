@@ -142,6 +142,15 @@ func generatePatchSchema(g *core.SchemaGenerator, t reflect.Type, server bool) (
 			enumValues = slices.Clone(tags.Enum)
 			validators = append(validators, enumValidator(enumValues))
 		}
+		if !tags.Bounds.IsZero() {
+			if tags.Relation != "" {
+				return nil, fmt.Errorf("field %s: minlen, maxlen, min and max do not apply to a relation", field.GoName)
+			}
+			if err := tags.Bounds.Check(info); err != nil {
+				return nil, fmt.Errorf("field %s: %w", field.GoName, err)
+			}
+			validators = append(validators, boundsValidator(tags.Bounds, info))
+		}
 
 		// a field carrying both `parse:"patch"` and `relation:"…"`
 		// becomes a relation-patch path. Override the allowed-ops to the
@@ -171,6 +180,7 @@ func generatePatchSchema(g *core.SchemaGenerator, t reflect.Type, server bool) (
 			SQLColumn:  sqlColumn,
 			Validators: validators,
 			EnumValues: enumValues,
+			Bounds:     tags.Bounds,
 			Relation:   relSchema,
 		}
 	}

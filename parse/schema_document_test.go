@@ -16,14 +16,14 @@ import (
 const schemaDocumentPath = "testdata/schema_document.json"
 
 // schemaDocEntity exercises every member of the schema document: field metadata,
-// enums, facets, search, geo, JSON paths, array elements, a junction
+// enums, bounds, facets, search, geo, JSON paths, array elements, a junction
 // relation, a declared relation (schemaDocPart), and patch paths of every kind.
 type schemaDocEntity struct {
 	ID       string          `json:"id"        db:"id"        parse:"filter,sort" indexed:"true" immutable:"true"`
 	TenantID string          `json:"tenant_id" db:"tenant_id"`
-	Name     string          `json:"name"      db:"name"      parse:"filter,sort,facet,search,patch" facet:"terms:10" label:"Name" description:"Display name" group:"general" order:"1"`
+	Name     string          `json:"name"      db:"name"      parse:"filter,sort,facet,search,patch" facet:"terms:10" label:"Name" description:"Display name" group:"general" order:"1" minlen:"1" maxlen:"64"`
 	Status   string          `json:"status"    db:"status"    parse:"filter,patch" enum:"active,offline" patch_ops:"replace"`
-	Rank     int32           `json:"rank"      db:"rank"      parse:"filter,sort,patch"`
+	Rank     int32           `json:"rank"      db:"rank"      parse:"filter,sort,patch" min:"0" max:"100"`
 	Note     *string         `json:"note"      db:"note"      parse:"patch"`
 	Scores   []int16         `json:"scores"    db:"scores"    parse:"patch"`
 	Location map[string]any  `json:"location"  db:"location"  parse:"filter" filter_ops:"near,within" geo:"jsonb" geo_srid:"4326"`

@@ -25,6 +25,36 @@ export function isDecimal(value: unknown): value is number | string {
   return plainWidth(intPart + frac, intPart.length + exp) <= MAX_DECIMAL_DIGITS;
 }
 
+/**
+ * Order two decimals exactly, as Go core.CompareDecimals does: -1, 0 or 1,
+ * or undefined when either is not a decimal (isDecimal). A number compares
+ * as its shortest round-trip text, the value it holds.
+ */
+export function compareDecimals(a: unknown, b: unknown): -1 | 0 | 1 | undefined {
+  if (!isDecimal(a) || !isDecimal(b)) return undefined;
+  const x = decimalParts(a);
+  const y = decimalParts(b);
+  // Both are within 1000 plain digits, so the scale between them is too.
+  const exp = Math.min(x.exp, y.exp);
+  const xs = x.coefficient * 10n ** BigInt(x.exp - exp);
+  const ys = y.coefficient * 10n ** BigInt(y.exp - exp);
+  if (xs === ys) return 0;
+  return xs < ys ? -1 : 1;
+}
+
+// decimalParts reads a decimal as coefficient × 10^exp; zero has exponent 0,
+// whatever it was written with ("0e9").
+function decimalParts(value: number | string): { coefficient: bigint; exp: number } {
+  const text = typeof value === "number" ? String(value) : value;
+  const match = DECIMAL.exec(text);
+  if (!match) throw new Error(`not a decimal: ${text}`);
+  const frac = match[2] ?? "";
+  const magnitude = BigInt((match[1] ?? "") + frac);
+  if (magnitude === 0n) return { coefficient: 0n, exp: 0 };
+  const exp = (match[3] === undefined ? 0 : Number(match[3])) - frac.length;
+  return { coefficient: text.startsWith("-") ? -magnitude : magnitude, exp };
+}
+
 // plainWidth is the digit count of digits × 10^(point − digits.length) in
 // plain notation: the "0" of "0.…" and the zeros between the point and the
 // first significant digit included, as Go's renderDecimal counts them.

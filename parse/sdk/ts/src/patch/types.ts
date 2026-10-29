@@ -17,6 +17,18 @@ export interface PatchPathSchema {
   nullable?: boolean;
   /** The path's allowlist. */
   enum_values?: string[];
+  /**
+   * The fewest and most characters (Unicode code points) of a string path,
+   * or of each element of an array path.
+   */
+  min_length?: number;
+  max_length?: number;
+  /**
+   * The inclusive bounds of a number path, or of each element of an array
+   * path, as exact decimal text.
+   */
+  minimum?: string;
+  maximum?: string;
   /** An array path's element type. */
   elem?: FieldType;
   /** The Go numeric kind of a number path, or of an array path's elements. */

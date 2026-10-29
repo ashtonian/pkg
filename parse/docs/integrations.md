@@ -68,7 +68,7 @@ const page = await products.list({
 console.log(page.items);
 ```
 
-The client needs a server that implements the [HTTP contract](http-errors.md). It does not turn arbitrary endpoints into that contract. Schema validation is a convenience, never authorization: the Go server remains authoritative. Client patch validation covers the advertised path, value, enum, numeric-kind, relation and element metadata. Server authorization and runtime constraints remain authoritative; JavaScript validation does not replace backend execution contracts. JavaScript numbers cannot represent every Go integer exactly; keep that limitation in mind when designing numeric identifiers and payloads.
+The client needs a server that implements the [HTTP contract](http-errors.md). It does not turn arbitrary endpoints into that contract. Schema validation is a convenience, never authorization: the Go server remains authoritative. Client patch validation covers the advertised path, value, enum, bounds, numeric-kind, relation and element metadata. Server authorization and runtime constraints remain authoritative; JavaScript validation does not replace backend execution contracts. JavaScript numbers cannot represent every Go integer exactly; keep that limitation in mind when designing numeric identifiers and payloads.
 
 ## Go client
 

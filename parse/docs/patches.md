@@ -39,7 +39,7 @@ Paths are RFC 6901 JSON Pointers: `/labels/a~1b` addresses the key `a/b`, and `~
 | Nullability | Top-level null/remove requires a nullable Go type: pointer, slice, map, or interface (E2077) |
 | Field value | Normalize exact integers, canonical decimal text, canonical UUIDs/timestamps, array elements, and typed documents; invalid values are E2077 |
 | Fixed arrays | Replacement must have exactly the Go array's length; `array_append` cannot grow it |
-| Enum and policy | Enforce the `enum` validator (per element on an array path; null passes, as nullability decides it) and caller-supplied path/value policy; a value outside the enum is E2077 |
+| Enum, bounds and policy | Enforce the `enum`, `minlen` / `maxlen` and `min` / `max` validators (per element on an array path; null passes, as nullability decides it) and caller-supplied path/value policy; a value outside them is E2077 |
 | Transfer source | `move` needs permission to remove its source; top-level source must be nullable. Typed source/destination kinds must be compatible, pointers aside |
 | Runtime transfer destination | Validate the resolved value against destination nullability and validators after preceding operations run |
 | `test` | Exact JSON comparison; `1.0` equals `1`, but missing paths or different document members fail E2077 |

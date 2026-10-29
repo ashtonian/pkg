@@ -240,6 +240,14 @@ type PatchPathResponse struct {
 	Nullable bool `json:"nullable,omitempty"`
 	// EnumValues is the path's allowlist.
 	EnumValues []string `json:"enum_values,omitempty"`
+	// MinLength and MaxLength are the fewest and most characters (Unicode
+	// code points) of a string path, or of each element of an array path.
+	MinLength *int `json:"min_length,omitempty"`
+	MaxLength *int `json:"max_length,omitempty"`
+	// Minimum and Maximum are the inclusive bounds of a number path, or of
+	// each element of an array path, as exact decimal text.
+	Minimum string `json:"minimum,omitempty"`
+	Maximum string `json:"maximum,omitempty"`
 	// Elem is an array path's element type.
 	Elem core.FieldType `json:"elem,omitempty"`
 	// NumberKind is the Go numeric kind of a number path, or of an array
@@ -345,6 +353,7 @@ func patchSchemaToResponse(s *patch.PatchSchema) *PatchSchemaResponse {
 		resp := &PatchPathResponse{
 			AllowedOps: slices.Clone(p.AllowedOps), DataType: p.DataType,
 			Nullable: p.Nullable(), EnumValues: slices.Clone(p.EnumValues), Relation: p.Relation != nil,
+			MinLength: cloneInt(p.Bounds.MinLen), MaxLength: cloneInt(p.Bounds.MaxLen), Minimum: p.Bounds.Min, Maximum: p.Bounds.Max,
 		}
 		if p.GoType != nil {
 			info := core.TypeOf(p.GoType)
@@ -356,6 +365,13 @@ func patchSchemaToResponse(s *patch.PatchSchema) *PatchSchemaResponse {
 		paths[key] = resp
 	}
 	return &PatchSchemaResponse{Paths: paths, MaxOperations: s.MaxOperations}
+}
+
+func cloneInt(p *int) *int {
+	if p == nil {
+		return nil
+	}
+	return new(*p)
 }
 
 func sortSchemaToResponse(s *filter.SortSchema) *SortSchemaResponse {

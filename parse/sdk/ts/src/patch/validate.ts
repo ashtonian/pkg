@@ -1,6 +1,7 @@
 import { isCivilDate } from "../core/date.js";
-import { isDecimal } from "../core/decimal.js";
+import { compareDecimals, isDecimal } from "../core/decimal.js";
 import { SchemaValidationError } from "../core/errors.js";
+import type { FieldType } from "../core/types.js";
 import type { PatchOp, PatchPathSchema, PatchSchema } from "./types.js";
 
 /**
@@ -8,8 +9,9 @@ import type { PatchOp, PatchPathSchema, PatchSchema } from "./types.js";
  * each key is a patchable top-level path (an RFC 6901 JSON Pointer), null
  * only where the path is nullable (and `remove` allowed), every other value
  * of the path's type — numbers integral and within the path's Go kind,
- * strings in its enum, arrays of its element type (each element in the
- * enum), a relation's membership a list — and the operation count within the maximum, counting each
+ * strings in its enum, values within its bounds, arrays of its element type
+ * (each element in the enum and bounds), a relation's membership a list —
+ * and the operation count within the maximum, counting each
  * top-level member and each nested object below it. The corpus
  * testdata/patch_conformance.json holds the two to one answer per input.
  * Formats the client cannot judge exactly (timestamp and UUID spellings),
@@ -67,21 +69,55 @@ function validatePatchValue(field: string, value: unknown, path: PatchPathSchema
       if (!scalarOK(el, path.elem, path.number_kind)) {
         throw new SchemaValidationError(field, "E2077", `Field "${field}" expects ${path.elem} elements`);
       }
-      checkEnum(field, el, path);
+      checkValueTags(field, el, path.elem, path);
     }
     return;
   }
   if (!scalarOK(value, path.data_type, path.number_kind)) {
     throw new SchemaValidationError(field, "E2077", `Field "${field}" expects ${path.data_type}, got ${typeof value}`);
   }
-  checkEnum(field, value, path);
+  checkValueTags(field, value, path.data_type, path);
 }
 
-/** The path's enum, on a value or an array path's element. */
-function checkEnum(field: string, value: unknown, path: PatchPathSchema): void {
+/** The path's enum and bounds, on a value of type (an array path's element type). */
+function checkValueTags(field: string, value: unknown, type: FieldType, path: PatchPathSchema): void {
   if (path.enum_values && path.enum_values.length > 0 && typeof value === "string" && !path.enum_values.includes(value)) {
     throw new SchemaValidationError(field, "E2077", `Value "${value}" is not allowed for "${field}". Allowed: ${path.enum_values.join(", ")}`);
   }
+  if (type === "string" && typeof value === "string") {
+    // Code points, as the server and a CHAR(n) column count them: not UTF-16
+    // units (length), nor grapheme clusters.
+    const length = Array.from(value).length;
+    if (path.min_length !== undefined && length < path.min_length) {
+      throw new SchemaValidationError(field, "E2077", `Field "${field}" must hold at least ${String(path.min_length)} characters, got ${String(length)}`);
+    }
+    if (path.max_length !== undefined && length > path.max_length) {
+      throw new SchemaValidationError(field, "E2077", `Field "${field}" must hold at most ${String(path.max_length)} characters, got ${String(length)}`);
+    }
+    return;
+  }
+  if (path.minimum !== undefined && compareBound(value, path.minimum, type, path.number_kind) < 0) {
+    throw new SchemaValidationError(field, "E2077", `Field "${field}" must be at least ${path.minimum}`);
+  }
+  if (path.maximum !== undefined && compareBound(value, path.maximum, type, path.number_kind) > 0) {
+    throw new SchemaValidationError(field, "E2077", `Field "${field}" must be at most ${path.maximum}`);
+  }
+}
+
+// compareBound orders a number against a bound as the server does: a float
+// at its kind's precision (both rounded alike, so max "0.1" admits a
+// float32 0.1), an integer or decimal exactly. Anything else is not the
+// bound's to judge (0).
+function compareBound(value: unknown, bound: string, type: FieldType, kind?: string): number {
+  if (type === "float" && typeof value === "number") {
+    const round = kind === "float32" ? Math.fround : (n: number) => n;
+    const v = round(value);
+    const b = round(Number(bound));
+    if (v < b) return -1;
+    return v > b ? 1 : 0;
+  }
+  if (type === "int" || type === "decimal") return compareDecimals(value, bound) ?? 0;
+  return 0;
 }
 
 // Integer ranges a JavaScript number holds exactly; 64-bit kinds are the

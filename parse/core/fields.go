@@ -111,6 +111,7 @@ type Tags struct {
 	Relation, RelationName string
 	FilterOps, PatchOps    string
 	Enum                   []string
+	Bounds                 Bounds
 	Facet                  string
 	Paths, Elements        string
 	Storage                string
@@ -385,6 +386,9 @@ func readTags(sf reflect.StructField, k fieldsKey) (Tags, error) {
 		for v := range strings.SplitSeq(enum, ",") {
 			t.Enum = append(t.Enum, strings.TrimSpace(v)) // enum:"a, b" admits "b"
 		}
+	}
+	if t.Bounds, err = readBounds(tag); err != nil {
+		return Tags{}, err
 	}
 	return t, nil
 }

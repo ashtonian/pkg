@@ -107,7 +107,10 @@ type PathSchema struct {
 	// EnumValues is the path's `enum` allowlist (also a Validator), for
 	// schema discovery.
 	EnumValues []string
-	SQLColumn  string
+	// Bounds are the path's minlen, maxlen, min and max bounds (also a
+	// Validator), for schema discovery.
+	Bounds    core.Bounds
+	SQLColumn string
 
 	// Relation is non-nil when the path patches an M2M relation rather
 	// than a scalar column. When set, BuildPatchSQL emits
