@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.7.0](https://github.com/ashtonian/pkg/compare/parse/v0.6.0...parse/v0.7.0) (2026-10-29)
+
+
+### Features
+
+* **parse:** minitems and maxitems bound an array's element count ([646cc80](https://github.com/ashtonian/pkg/commit/646cc804dfb4dc05939c558186a67ed30b3e9305))
+* **parse:** minitems and maxitems bound an array's element count ([df9f4f3](https://github.com/ashtonian/pkg/commit/df9f4f3f598f3c4ed5257eb221da0a2d69906eb3))
+
 ## [0.6.0](https://github.com/ashtonian/pkg/compare/parse/v0.5.0...parse/v0.6.0) (2026-10-29)
 
 
