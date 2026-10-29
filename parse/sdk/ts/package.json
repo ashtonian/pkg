@@ -1,6 +1,6 @@
 {
   "name": "@ashtonian/parse",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "description": "TypeScript SDK for the parse package — type-safe list, filter, sort, facet, search, and patch.",
   "type": "module",
   "main": "dist/index.js",

@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.6.0](https://github.com/ashtonian/pkg/compare/parse/v0.5.0...parse/v0.6.0) (2026-10-29)
+
+
+### Features
+
+* **parse:** Increment moves a version column in the update itself ([8b1187d](https://github.com/ashtonian/pkg/commit/8b1187d601a2ed6c3a53b9a19c5210008e361250))
+* **parse:** Increment moves a version column in the update itself ([302fa6e](https://github.com/ashtonian/pkg/commit/302fa6ec868639feb98b384298fb9a85c57a136e))
+
 ## [0.5.0](https://github.com/ashtonian/pkg/compare/parse/v0.4.0...parse/v0.5.0) (2026-10-29)
 
 
