@@ -1,4 +1,5 @@
 import { isCivilDate } from "../core/date.js";
+import { isDecimal } from "../core/decimal.js";
 import { SchemaValidationError } from "../core/errors.js";
 import type { PatchOp, PatchPathSchema, PatchSchema } from "./types.js";
 
@@ -100,6 +101,8 @@ function scalarOK(v: unknown, type: string, kind?: string): boolean {
     }
     case "float":
       return typeof v === "number" && Number.isFinite(v);
+    case "decimal":
+      return isDecimal(v);
     default:
       return true; // documents and other shapes are the server's to check
   }

@@ -50,6 +50,10 @@ const confSchema: FilterSchema = {
       name: "count", data_type: "int",
       operators: ["eq", "ne", "gt", "gte", "lt", "lte", "in", "nin"],
     },
+    price: {
+      name: "price", data_type: "decimal",
+      operators: ["eq", "ne", "gt", "gte", "lt", "lte", "in", "nin"],
+    },
     active: { name: "active", data_type: "bool", operators: ["eq", "ne"] },
     created: { name: "created", data_type: "timestamp", operators: ["eq", "gt", "gte", "lt", "lte"] },
     meta: { name: "meta", data_type: "json", operators: ["eq", "ne", "contains", "has_key", "exists", "null"] },

@@ -17,6 +17,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/shopspring/decimal"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -32,6 +33,7 @@ var confFields = struct {
 	Name    client.Text
 	Status  client.Field[string]
 	Count   client.Ordered[int]
+	Price   client.Ordered[decimal.Decimal]
 	Active  client.Field[bool]
 	Created client.Time
 	Meta    client.Document[map[string]any]
@@ -44,6 +46,7 @@ var confFields = struct {
 	Name:    client.NewText("name"),
 	Status:  client.NewField[string]("status"),
 	Count:   client.NewOrdered[int]("count"),
+	Price:   client.NewOrdered[decimal.Decimal]("price"),
 	Active:  client.NewField[bool]("active"),
 	Created: client.NewTime("created"),
 	Meta:    client.NewDocument[map[string]any]("meta"),
@@ -76,6 +79,12 @@ func filterBuilt() map[string]client.Filter {
 		"gte_number":                    f.Count.Gte(5),
 		"lt_number":                     f.Count.Lt(5),
 		"lte_number":                    f.Count.Lte(5),
+		"eq_decimal_string":             f.Price.Eq(decimal.RequireFromString("10.50")),
+		"eq_decimal_number":             f.Price.Eq(decimal.NewFromFloat(10.5)),
+		"gt_decimal_exponent":           f.Price.Gt(decimal.RequireFromString("1.5E-3")),
+		"eq_decimal_beyond_float64":     f.Price.Eq(decimal.RequireFromString("0.10000000000000001")),
+		"in_decimal":                    f.Price.In(decimal.RequireFromString("9.5"), decimal.NewFromInt(2), decimal.RequireFromString("-0")),
+		"err_decimal_beyond_digits":     f.Price.Eq(decimal.New(1, 1000)),
 		"in_array":                      f.Status.In("active", "offline"),
 		"nin_array":                     f.Status.Nin("error"),
 		"like":                          f.Name.Like("dev%"),
@@ -132,6 +141,15 @@ var filterInexpressible = map[string]string{
 	"err_int_type":                        "Count is an Ordered[int]",
 	"err_int_fraction":                    "Count is an Ordered[int]",
 	"err_bool_type":                       "Active is a Field[bool]",
+	"err_decimal_word":                    "Price is an Ordered[decimal.Decimal]",
+	"err_decimal_bool":                    "Price is an Ordered[decimal.Decimal]",
+	"err_decimal_null":                    "Null is the null test; Eq takes a value",
+	"err_decimal_hexadecimal":             "Price is an Ordered[decimal.Decimal]",
+	"err_decimal_leading_plus":            "a decimal.Decimal marshals canonical text",
+	"err_decimal_leading_point":           "a decimal.Decimal marshals canonical text",
+	"err_decimal_leading_zero":            "a decimal.Decimal marshals canonical text",
+	"err_decimal_exponent_beyond_int32":   "a decimal.Decimal's exponent is an int32",
+	"err_decimal_in_member":               "Price is an Ordered[decimal.Decimal]",
 	"err_unknown_dollar_key_is_literal":   "operators are methods",
 	"err_operator_key_mixed_with_literal": "operators are methods",
 	"err_or_not_array":                    "Or is variadic",
@@ -216,16 +234,17 @@ func TestClient_RefusesWhatTheGrammarCannotSay(t *testing.T) {
 // confPatchInput is the merge-patch struct a generated SDK would declare for
 // confPatch.
 type confPatchInput struct {
-	Name   client.Nullable[string]         `json:"name,omitzero"`
-	Nick   client.Nullable[string]         `json:"nick,omitzero"`
-	Status client.Nullable[string]         `json:"status,omitzero"`
-	Count  client.Nullable[int32]          `json:"count,omitzero"`
-	Small  client.Nullable[int8]           `json:"small,omitzero"`
-	Ratio  client.Nullable[float64]        `json:"ratio,omitzero"`
-	Active client.Nullable[bool]           `json:"active,omitzero"`
-	Tags   client.Nullable[[]string]       `json:"tags,omitzero"`
-	Labels client.Nullable[map[string]any] `json:"labels,omitzero"`
-	SeenAt client.Nullable[time.Time]      `json:"seen_at,omitzero"`
+	Name   client.Nullable[string]          `json:"name,omitzero"`
+	Nick   client.Nullable[string]          `json:"nick,omitzero"`
+	Status client.Nullable[string]          `json:"status,omitzero"`
+	Count  client.Nullable[int32]           `json:"count,omitzero"`
+	Small  client.Nullable[int8]            `json:"small,omitzero"`
+	Ratio  client.Nullable[float64]         `json:"ratio,omitzero"`
+	Price  client.Nullable[decimal.Decimal] `json:"price,omitzero"`
+	Active client.Nullable[bool]            `json:"active,omitzero"`
+	Tags   client.Nullable[[]string]        `json:"tags,omitzero"`
+	Labels client.Nullable[map[string]any]  `json:"labels,omitzero"`
+	SeenAt client.Nullable[time.Time]       `json:"seen_at,omitzero"`
 }
 
 var patchBuilt = map[string]confPatchInput{
@@ -237,6 +256,8 @@ var patchBuilt = map[string]confPatchInput{
 	"int":                     {Count: client.Set[int32](5)},
 	"int8_min":                {Small: client.Set[int8](-128)},
 	"float":                   {Ratio: client.Set(0.5)},
+	"decimal_string":          {Price: client.Set(decimal.RequireFromString("10.25"))},
+	"err_decimal_null":        {Price: client.Null[decimal.Decimal]()},
 	"bool":                    {Active: client.Set(false)},
 	"array":                   {Tags: client.Set([]string{"a", "b"})},
 	"clear_array":             {Tags: client.Null[[]string]()},
@@ -246,20 +267,26 @@ var patchBuilt = map[string]confPatchInput{
 }
 
 var patchInexpressible = map[string]string{
-	"err_string_type":         "Name is a Nullable[string]",
-	"err_int_fraction":        "Count is a Nullable[int32]",
-	"err_int_type":            "Count is a Nullable[int32]",
-	"err_int32_range":         "Count is a Nullable[int32]",
-	"err_int8_range":          "Small is a Nullable[int8]",
-	"err_float_type":          "Ratio is a Nullable[float64]",
-	"err_bool_type":           "Active is a Nullable[bool]",
-	"err_array_type":          "Tags is a Nullable[[]string]",
-	"err_array_element_type":  "Tags is a Nullable[[]string]",
-	"err_array_element_range": "the struct declares no int16 array",
-	"err_timestamp_format":    "SeenAt is a Nullable[time.Time]",
-	"err_timestamp_type":      "SeenAt is a Nullable[time.Time]",
-	"err_not_patchable":       "the patch struct holds patchable members only",
-	"err_unknown_field":       "the patch struct holds declared members only",
+	"err_string_type":           "Name is a Nullable[string]",
+	"err_int_fraction":          "Count is a Nullable[int32]",
+	"err_int_type":              "Count is a Nullable[int32]",
+	"err_int32_range":           "Count is a Nullable[int32]",
+	"err_int8_range":            "Small is a Nullable[int8]",
+	"err_float_type":            "Ratio is a Nullable[float64]",
+	"decimal_number":            "a decimal.Decimal marshals as a JSON string",
+	"decimal_exponent":          "a decimal.Decimal marshals plain notation",
+	"err_decimal_word":          "Price is a Nullable[decimal.Decimal]",
+	"err_decimal_bool":          "Price is a Nullable[decimal.Decimal]",
+	"err_decimal_leading_plus":  "a decimal.Decimal marshals canonical text",
+	"err_decimal_beyond_digits": "a decimal.Decimal marshals plain notation",
+	"err_bool_type":             "Active is a Nullable[bool]",
+	"err_array_type":            "Tags is a Nullable[[]string]",
+	"err_array_element_type":    "Tags is a Nullable[[]string]",
+	"err_array_element_range":   "the struct declares no int16 array",
+	"err_timestamp_format":      "SeenAt is a Nullable[time.Time]",
+	"err_timestamp_type":        "SeenAt is a Nullable[time.Time]",
+	"err_not_patchable":         "the patch struct holds patchable members only",
+	"err_unknown_field":         "the patch struct holds declared members only",
 }
 
 // A merge patch is its JSON, so the client's document equals the corpus
@@ -382,7 +409,7 @@ func TestClient_CatalogsCoverTheCorpusFields(t *testing.T) {
 	schema := confSchema(t)
 	names := []string{
 		confFields.ID.Name(), confFields.Name.Name(), confFields.Status.Name(), confFields.Count.Name(),
-		confFields.Active.Name(), confFields.Created.Name(), confFields.Meta.Name(), confFields.Region.Name(),
+		confFields.Price.Name(), confFields.Active.Name(), confFields.Created.Name(), confFields.Meta.Name(), confFields.Region.Name(),
 		confFields.Note.Name(), confFields.Lines.Name(), confFields.Parts.Name(),
 	}
 	for name := range schema.Fields {

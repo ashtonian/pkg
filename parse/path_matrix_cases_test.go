@@ -84,8 +84,8 @@ func runPathMatrix(t *testing.T, p pathDB, storage filter.JSONStorage) {
 				}
 			}
 		})
-		if len(names) != 10 {
-			t.Fatalf("declared paths = %v, want the fixture's 10", names)
+		if len(names) != 11 {
+			t.Fatalf("declared paths = %v, want the fixture's 11", names)
 		}
 		for _, name := range names {
 			f := schema.Fields[name]
@@ -106,7 +106,11 @@ func runPathMatrix(t *testing.T, p pathDB, storage filter.JSONStorage) {
 				if !present {
 					want = nil
 				}
-				if !sameValue(got, want) {
+				same := sameValue(got, want)
+				if f.DataType == core.FieldTypeDecimal {
+					same = sameDecimal(got, want)
+				}
+				if !same {
 					t.Errorf("%s row %s: SQL %v (%T), PathValue %v (%T)", name, id, got, got, want, want)
 				}
 			}
@@ -179,6 +183,19 @@ func sameValue(got, want any) bool {
 		got = string(b)
 	}
 	return reflect.DeepEqual(got, want)
+}
+
+// sameDecimal compares a decimal path's SQL value — a number, or numeric
+// text keeping its scale — with PathValue's canonical text by value.
+func sameDecimal(got, want any) bool {
+	if got == nil || want == nil {
+		return got == nil && want == nil
+	}
+	if b, ok := got.([]byte); ok {
+		got = string(b)
+	}
+	c, ok := core.CompareDecimals(got, want)
+	return ok && c == 0
 }
 
 func numberOf(v any) (float64, bool) {

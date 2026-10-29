@@ -78,6 +78,26 @@ func Cases() []Case {
 		{Name: "float in", Filter: `{"score":{"$in":[0,100.25]}}`, Want: ids("eg")},
 		{Name: "float nin", Filter: `{"score":{"$nin":[2.5]}}`, Want: ids("acefg")},
 
+		// --- decimal: exact, by value, from a number or a numeric string ---
+		{Name: "decimal eq string", Filter: `{"amount":"10.25"}`, Want: ids("a")},
+		{Name: "decimal eq number", Filter: `{"amount":10.25}`, Want: ids("a")},
+		{Name: "decimal eq ignores scale", Filter: `{"amount":"10.250"}`, Want: ids("a")},
+		{Name: "decimal eq a stored scale", Filter: `{"amount":10}`, Want: ids("h")},
+		{Name: "decimal eq exponent", Filter: `{"amount":"1e2"}`, Want: ids("e")},
+		{Name: "decimal ne excludes null", Filter: `{"amount":{"$ne":"10"}}`, Want: ids("abcefg")},
+		{Name: "decimal gt orders by value, not text", Filter: `{"amount":{"$gt":"9.5"}}`, Want: ids("aeh")},
+		{Name: "decimal gte", Filter: `{"amount":{"$gte":10}}`, Want: ids("aeh")},
+		{Name: "decimal lt", Filter: `{"amount":{"$lt":"0.5"}}`, Want: ids("c")},
+		{Name: "decimal lte", Filter: `{"amount":{"$lte":0.5}}`, Want: ids("cf")},
+		{Name: "decimal lt negative", Filter: `{"amount":{"$lt":"-0.5"}}`, Want: ids("c")},
+		{Name: "decimal in", Filter: `{"amount":{"$in":["9.50",2,"1E2"]}}`, Want: ids("beg")},
+		{Name: "decimal nin", Filter: `{"amount":{"$nin":["10.25",-1]}}`, Want: ids("befgh")},
+		{Name: "decimal null", Filter: `{"amount":{"$null":true}}`, Want: ids("d")},
+		{Name: "decimal non-numeric string rejected", Filter: `{"amount":"ten"}`, ParseErr: "E2073"},
+		{Name: "decimal hexadecimal rejected", Filter: `{"amount":"0x10"}`, ParseErr: "E2073"},
+		{Name: "decimal boolean rejected", Filter: `{"amount":true}`, ParseErr: "E2073"},
+		{Name: "decimal beyond its digits rejected", Filter: `{"amount":"1e1000"}`, ParseErr: "E2073"},
+
 		// --- bool ---
 		{Name: "bool eq true", Filter: `{"active":true}`, Want: ids("acfh")},
 		{Name: "bool eq false", Filter: `{"active":false}`, Want: ids("be")},

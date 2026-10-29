@@ -1,4 +1,5 @@
 import { isCivilDate } from "../core/date.js";
+import { isDecimal } from "../core/decimal.js";
 import { SchemaValidationError } from "../core/errors.js";
 import type { FilterFieldSchema, FilterOperator, FilterSchema, SortSchema } from "./types.js";
 
@@ -244,6 +245,9 @@ function validateMember(name: string, val: unknown, field: FilterFieldSchema): v
       break;
     case "float":
       ok = typeof val === "number" && Number.isFinite(val);
+      break;
+    case "decimal":
+      ok = isDecimal(val);
       break;
     case "bool":
       ok = typeof val === "boolean";

@@ -16,7 +16,7 @@ Start with the [runnable package example](../README.md#quick-start). The focused
 
 - Schemas: `GenerateFilterSchema[T]`, `GenerateSortSchema[T]`, `GenerateSearchSchema[T]`, `OperatorsFor`, `DefaultFilterOps`, `ResourceSchema` (`PrimaryKey`: the declared final keyset column), `FieldSchema`, `SortSchema`, `SearchSchema`, `FilterMetaFromSchema`
 - Parsing: `NewFilterParser` (`Parse`, `ParseBytes`, `ParseMap`, `And` — filters parsed apart, combined and bounded as one), `ParseSort`, `NewQueryParamParser`, `NewParsedFilter`, `ResolveRelativeTime`
-- SQL: `Dialect` (`Condition`, `ReadColumn`: how a statement reads a column of a declared `core.SQLType`), `PostgresDialect`, `SQLiteDialect`, `DialectFromDSN`, `NewSQLBuilder`, `AndSearch`
+- SQL: `Dialect` (`Condition`, `ReadColumn`: how a statement reads a column of a declared `core.SQLType`, `DecimalParam`: a bound decimal's canonical text as the dialect's exact number), `PostgresDialect`, `SQLiteDialect`, `DialectFromDSN`, `NewSQLBuilder`, `AndSearch`
 - Lists: `NewListQuery` (`Build`, `WithFilterConfig`, `WithSearchSchema`), `ListResult`, `NewPage`, `Page[T]`, `CursorValueByTag`, `CursorValue`, `Keyset`, `CursorKey`, `CursorPlan`, `EncodeCursor`, `DecodeCursor`, `ValidateCursor`, `ReverseDirection`
 - Facets / includes: `BuildFacetQuery` (rows in a fixed order: request order; terms by count then key; ranges as declared; declared relations count visible related keys, `WithFacetRelatedPolicies`), `ScanFacetUnion`, `FacetMap` (results keyed by field, as `Page.Facets` carries them), `FacetBuckets` (that order for a backend counting in Go; a list facet counts each distinct element once per row), `ParseFacetTag`, `ParseIncludes`, `BuildIncludeQuery` (declared relations read visible related rows; text keys use code-point order before deduplication/capping; `WithIncludeRelatedPolicies`), `IncludeQuery.Scan` → `IncludeRows` (IDs, owners `Truncated` at the cap), `ResolveInclude` / `IncludeLookup` (the same projection outside SQL through batched owner/target pairs), `Page.SetInclude` (canonical page projection; empty results omitted), `MaxIncludes`, `Rows`
 - Policy: `PolicyConstraints` (`Merge`), `PolicyConstraint` (`UnknownIfInvalid`: a value that does not apply to the field compiles to SQL's unknown — no row satisfies it, nor its negation — instead of an error), `UnknownConstraint` (that unknown, stated), `ApplyPolicyConstraints` (values normalized as request values, without request limits), `BuildBaseConstraints`
@@ -38,7 +38,7 @@ Start with the [runnable package example](../README.md#quick-start). The focused
 | `operators.go` | `OperatorsFor` — the operator × type table |
 | `generate.go` | Schema generation from struct tags; default operators |
 | `sql.go` | `Dialect`, `SQLBuilder`, relation `EXISTS`, junction tenancy |
-| `sql_postgres.go` / `sql_sqlite.go` | Dialect predicates (strings, documents, arrays, geo) |
+| `sql_postgres.go` / `sql_sqlite.go` | Dialect predicates (strings, decimals, documents, arrays, geo) |
 | `like.go` | LIKE patterns: escaping, GLOB translation, `MatchLike` |
 | `jsondoc.go` | `JSONEqual`, `JSONContains`, `JSONHasKey` |
 | `path.go` | `JSONPath`, `FieldExpr`, `PathValue`, both dialects' `PathExpr` |

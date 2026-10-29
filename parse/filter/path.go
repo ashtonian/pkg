@@ -35,11 +35,15 @@ type JSONPath struct {
 
 var pathSegment = regexp.MustCompile(`^[A-Za-z0-9_-]{1,64}$`)
 
-// pathTypes are the member types a path may declare.
+// pathTypes are the member types a path may declare, and the scalars a
+// `storage:"scalar:<type>"` struct may be held as.
 var pathTypes = map[core.FieldType]bool{
-	core.FieldTypeString: true, core.FieldTypeInt: true, core.FieldTypeFloat: true,
+	core.FieldTypeString: true, core.FieldTypeInt: true, core.FieldTypeFloat: true, core.FieldTypeDecimal: true,
 	core.FieldTypeBool: true, core.FieldTypeTimestamp: true, core.FieldTypeUUID: true,
 }
+
+// pathTypeNames lists pathTypes for errors.
+const pathTypeNames = "string, int, float, decimal, bool, timestamp or uuid"
 
 func (p *JSONPath) validate(t core.FieldType, maxDepth int) error {
 	if p.Column == "" {
@@ -62,7 +66,7 @@ func (p *JSONPath) validate(t core.FieldType, maxDepth int) error {
 		return fmt.Errorf("unknown JSON storage %q", p.Storage)
 	}
 	if !pathTypes[t] {
-		return fmt.Errorf("path %s has type %s; paths hold string, int, float, bool, timestamp or uuid members", strings.Join(p.Segments, "."), t)
+		return fmt.Errorf("path %s has type %s; paths hold %s members", strings.Join(p.Segments, "."), t, pathTypeNames)
 	}
 	return nil
 }
@@ -88,7 +92,17 @@ var uuidShape = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f
 const (
 	timestampRegex = `^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\.[0-9]{1,9})?Z$`
 	uuidRegex      = `^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`
+	// decimalRegex is a decimal in plain notation, the text a decimal
+	// member's string holds (shopspring's JSON form): no exponent, so no
+	// cast of a member can overflow.
+	decimalRegex = `^-?(0|[1-9][0-9]*)([.][0-9]+)?$`
 )
+
+var decimalShape = regexp.MustCompile(decimalRegex)
+
+// maxDecimalMember bounds a decimal member string's length; within it, its
+// digits are within core.MaxDecimalDigits.
+var maxDecimalMember = strconv.Itoa(core.MaxDecimalDigits)
 
 // PathValue is the reference evaluator of a path: the member doc holds at
 // f.Path, typed as the filter compares it, or present false when the member
@@ -99,7 +113,10 @@ const (
 //
 // Strings come back as string, numbers as int64 when the literal is an
 // integer within int64 and float64 otherwise, booleans as bool, timestamps
-// as their canonical text and UUIDs lower-cased.
+// as their canonical text and UUIDs lower-cased. A decimal member is a JSON
+// number, or a string of at most core.MaxDecimalDigits characters in plain
+// decimal notation, and comes back as its canonical text
+// (core.DecimalText).
 func PathValue(doc any, f *FieldSchema) (any, bool, error) {
 	if f.Path == nil {
 		return nil, false, fmt.Errorf("field %s is not a JSON path", f.ExternalName)
@@ -197,6 +214,21 @@ func pathMember(v any, t core.FieldType) (any, bool, error) {
 			return nil, false, nil
 		}
 		return f, true, nil
+	case core.FieldTypeDecimal:
+		switch m := v.(type) {
+		case json.Number:
+		case string:
+			if len(m) > core.MaxDecimalDigits || !decimalShape.MatchString(m) {
+				return nil, false, nil
+			}
+		default:
+			return nil, false, nil
+		}
+		text, err := core.DecimalText(v)
+		if err != nil {
+			return nil, false, nil // more digits than a decimal holds
+		}
+		return text, true, nil
 	case core.FieldTypeBool:
 		b, ok := v.(bool)
 		return b, ok, nil
@@ -288,6 +320,9 @@ func (PostgresDialect) PathExpr(p *JSONPath, t core.FieldType) string {
 		return "(CASE WHEN " + kind + " = 'string' THEN " + text + " END)"
 	case core.FieldTypeInt, core.FieldTypeFloat:
 		return "(CASE WHEN " + kind + " = 'number' THEN " + text + "::numeric END)"
+	case core.FieldTypeDecimal:
+		return "(CASE WHEN " + kind + " = 'number' THEN " + text + "::numeric WHEN " + kind + " = 'string' AND length" + text + " <= " + maxDecimalMember +
+			" AND " + text + " ~ '" + decimalRegex + "' THEN " + text + "::numeric END)"
 	case core.FieldTypeBool:
 		return "(CASE WHEN " + kind + " = 'boolean' THEN " + text + "::boolean END)"
 	case core.FieldTypeTimestamp:
@@ -317,6 +352,17 @@ func sqliteTimestamp(kind, val string) string {
 
 func hexGlob(n int) string { return strings.Repeat("[0-9a-f]", n) }
 
+// sqliteDecimalText tests that the text val is decimalRegex's plain decimal
+// within maxDecimalMember characters, in GLOB terms: after an optional
+// minus, digits with at most one point, neither leading nor trailing, and
+// no zero leading another digit.
+func sqliteDecimalText(val string) string {
+	body := "substr(" + val + ", 1 + (substr(" + val + ", 1, 1) = '-'))"
+	return "(length(" + val + ") <= " + maxDecimalMember + " AND " + body + " <> '' AND " +
+		body + " NOT GLOB '*[^0-9.]*' AND " + body + " NOT GLOB '*.*.*' AND " +
+		body + " NOT GLOB '.*' AND " + body + " NOT GLOB '*.' AND " + body + " NOT GLOB '0[0-9]*')"
+}
+
 // PathExpr renders p's typed value for SQLite, whose documents are JSON
 // text: json_type selects the member's kind; json_extract reads it.
 func (SQLiteDialect) PathExpr(p *JSONPath, t core.FieldType) string {
@@ -328,6 +374,9 @@ func (SQLiteDialect) PathExpr(p *JSONPath, t core.FieldType) string {
 		return "(CASE WHEN " + kind + " = 'text' THEN " + val + " END)"
 	case core.FieldTypeInt, core.FieldTypeFloat:
 		return "(CASE WHEN " + kind + " IN ('integer', 'real') THEN " + val + " END)"
+	case core.FieldTypeDecimal:
+		return "(CASE WHEN " + kind + " IN ('integer', 'real') THEN " + val + " WHEN " + kind + " = 'text' AND " + sqliteDecimalText(val) +
+			" THEN CAST(" + val + " AS NUMERIC) END)"
 	case core.FieldTypeBool:
 		return "(CASE " + kind + " WHEN 'true' THEN 1 WHEN 'false' THEN 0 END)"
 	case core.FieldTypeTimestamp:

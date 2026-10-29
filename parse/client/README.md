@@ -42,7 +42,7 @@ A catalog field's type follows the operators its value type can declare on the s
 | Type | Value | Filter methods |
 |------|-------|----------------|
 | `Field[V]` | key, enum, boolean | `Eq`, `Ne`, `In`, `Nin`, `Null`, `NotNull` |
-| `Ordered[V]` | number | `Field`'s, `Gt`, `Gte`, `Lt`, `Lte` |
+| `Ordered[V]` | number, decimal (`Ordered[decimal.Decimal]`: any type that marshals its exact text) | `Field`'s, `Gt`, `Gte`, `Lt`, `Lte` |
 | `Text` | string | `Ordered`'s, `Like`, `ILike`, `Contains` |
 | `Time` (`Ordered[Moment]`) | timestamp | `Ordered`'s, with `At(t)`, `Now()`, `Ago(d)` or `FromNow(d)` operands |
 | `Document[V]` | JSON document | `Eq`, `Ne`, `Contains`, `HasKey`, `Null`, `NotNull` |

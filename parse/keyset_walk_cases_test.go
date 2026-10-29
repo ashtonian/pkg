@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/shopspring/decimal"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -18,30 +19,34 @@ import (
 )
 
 // trackItem is a generated-schema entity: table-qualified sort expressions,
-// a UUID primary key, a nullable key and a timestamp key.
+// a UUID primary key, nullable keys, a timestamp key and a decimal key.
 type trackItem struct {
-	ID        uuid.UUID `json:"id"         db:"id"         parse:"filter,sort"`
-	Rank      *int64    `json:"rank"       db:"rank"       parse:"filter,sort"`
-	Name      string    `json:"name"       db:"name"       parse:"filter,sort"`
-	CreatedAt time.Time `json:"created_at" db:"created_at" parse:"filter,sort"`
+	ID        uuid.UUID        `json:"id"         db:"id"         parse:"filter,sort"`
+	Rank      *int64           `json:"rank"       db:"rank"       parse:"filter,sort"`
+	Name      string           `json:"name"       db:"name"       parse:"filter,sort"`
+	CreatedAt time.Time        `json:"created_at" db:"created_at" parse:"filter,sort"`
+	Price     *decimal.Decimal `json:"price"      db:"price"      parse:"filter,sort"`
 }
 
 type trackSeed struct {
 	id      string
 	rank    *int64
 	name    string
-	created int // seconds after the base instant
+	created int     // seconds after the base instant
+	price   *string // decimal text, inserted as written
 }
 
-// trackSeeds ids sort a < b < … < g in both dialects.
+// trackSeeds ids sort a < b < … < g in both dialects. Prices order
+// differently as numbers than as text ("10.25" < "9.5"), and d and g hold
+// equal prices at different scales.
 var trackSeeds = []trackSeed{
-	{id: "a", rank: new(int64(1)), name: "e", created: 5},
-	{id: "b", rank: new(int64(2)), name: "d", created: 1},
-	{id: "c", rank: nil, name: "c", created: 3},
-	{id: "d", rank: new(int64(2)), name: "b", created: 4},
-	{id: "e", rank: nil, name: "a", created: 2},
-	{id: "f", rank: new(int64(3)), name: "g", created: 6},
-	{id: "g", rank: nil, name: "f", created: 0},
+	{id: "a", rank: new(int64(1)), name: "e", created: 5, price: new("10.25")},
+	{id: "b", rank: new(int64(2)), name: "d", created: 1, price: new("9.5")},
+	{id: "c", rank: nil, name: "c", created: 3, price: new("-1")},
+	{id: "d", rank: new(int64(2)), name: "b", created: 4, price: new("2.00")},
+	{id: "e", rank: nil, name: "a", created: 2, price: new("100")},
+	{id: "f", rank: new(int64(3)), name: "g", created: 6, price: nil},
+	{id: "g", rank: nil, name: "f", created: 0, price: new("2")},
 }
 
 // Expected presentation order per sort, NULL greatest, ties on id in the
@@ -53,6 +58,8 @@ var trackOrders = map[string]string{
 	"rank,-name":  "abdfgce",
 	"-created_at": "fadcebg",
 	"name":        "edcbagf",
+	"price":       "cdgbaef",
+	"-price":      "feabgdc",
 }
 
 // trackID maps a row letter to a UUID whose last hex digit preserves the
@@ -163,7 +170,7 @@ func trackSuffix(id uuid.UUID) string {
 
 func queryTrack(t *testing.T, tdb trackDB, res *filter.ListResult) []trackItem {
 	t.Helper()
-	q := "SELECT id, rank, name, created_at FROM track_items " + res.Fragment
+	q := "SELECT id, rank, name, created_at, price FROM track_items " + res.Fragment
 	rows, err := tdb.db.Query(q, res.Args...)
 	require.NoError(t, err, q)
 	defer func() { require.NoError(t, rows.Close()) }()
@@ -172,9 +179,13 @@ func queryTrack(t *testing.T, tdb trackDB, res *filter.ListResult) []trackItem {
 		var it trackItem
 		var rank sql.NullInt64
 		var created any
-		require.NoError(t, rows.Scan(&it.ID, &rank, &it.Name, &created))
+		var price decimal.NullDecimal
+		require.NoError(t, rows.Scan(&it.ID, &rank, &it.Name, &created, &price))
 		if rank.Valid {
 			it.Rank = &rank.Int64
+		}
+		if price.Valid {
+			it.Price = &price.Decimal
 		}
 		it.CreatedAt, err = tdb.scanTime(created)
 		require.NoError(t, err)

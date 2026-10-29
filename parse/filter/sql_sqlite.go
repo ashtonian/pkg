@@ -86,6 +86,9 @@ func (d SQLiteDialect) Condition(field *FieldSchema, op FilterOperator, value an
 	if isOrdering(op) && orderedAsText(field) {
 		expr = d.CodePointOrder(expr)
 	}
+	if field.DataType == core.FieldTypeDecimal {
+		bind = decimalBinder(d, bind)
+	}
 	if sql, ok, err := comparison(expr, op, value, bind); ok {
 		return sql, err
 	}
@@ -309,6 +312,15 @@ func (SQLiteDialect) ReadColumn(column string, t core.SQLType) string {
 		return "substr(" + column + ", 1, 10)"
 	}
 	return column
+}
+
+// DecimalParam casts the parameter to NUMERIC: an integer when the text
+// holds one exactly, otherwise a REAL — how a NUMERIC or REAL column stores
+// the value, so the two compare as numbers, never as text. A bare text
+// parameter compares as text against a path's number or a column of no
+// numeric affinity.
+func (SQLiteDialect) DecimalParam(placeholder string) string {
+	return "CAST(" + placeholder + " AS NUMERIC)"
 }
 
 // NativeRowCompare reports false: row-value comparison is unevenly

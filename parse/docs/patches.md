@@ -37,21 +37,21 @@ Paths are RFC 6901 JSON Pointers: `/labels/a~1b` addresses the key `a/b`, and `~
 | Required value | `add`, `replace`, `test`, and `array_append` require a `value` member; missing is E2075 |
 | Explicit null | A value, not an omitted member; `ParseOps` callers set `RawPatchOp.HasValue` to distinguish it |
 | Nullability | Top-level null/remove requires a nullable Go type: pointer, slice, map, or interface (E2077) |
-| Field value | Normalize exact integers, canonical UUIDs/timestamps, array elements, and typed documents; invalid values are E2077 |
+| Field value | Normalize exact integers, canonical decimal text, canonical UUIDs/timestamps, array elements, and typed documents; invalid values are E2077 |
 | Fixed arrays | Replacement must have exactly the Go array's length; `array_append` cannot grow it |
 | Enum and policy | Enforce schema validators and caller-supplied path/value policy |
 | Transfer source | `move` needs permission to remove its source; top-level source must be nullable. Typed source/destination kinds must be compatible, pointers aside |
 | Runtime transfer destination | Validate the resolved value against destination nullability and validators after preceding operations run |
 | `test` | Exact JSON comparison; `1.0` equals `1`, but missing paths or different document members fail E2077 |
 
-Integral decimal/exponent values remain exact through the supported integer range. Fractional JSON literals that would change on float64 decimal round-trip are rejected rather than rounded. A `test` operand preserves its supplied shape rather than filling missing struct members.
+Integral decimal/exponent values remain exact through the supported integer range. Fractional JSON literals that would change on float64 decimal round-trip are rejected rather than rounded. A [decimal field](schema-configuration.md#decimals) takes any JSON number or numeric string exactly, as its canonical text. A `test` operand preserves its supplied shape rather than filling missing struct members.
 
 
 Default operations per type. `remove` follows nullability: it is dropped for non-nullable fields (and rejected in `patch_ops` on them) and added for nullable scalars such as `*bool` or `*uuid.UUID`. `GeneratorOptions.DefaultPatchOps` replaces a type's defaults as given:
 
 | Type | Default operations |
 |---|---|
-| string, int, float, bool, timestamp, uuid | replace (+ remove when the Go type is a pointer) |
+| string, int, float, decimal, bool, timestamp, date, uuid | replace (+ remove when the Go type is a pointer) |
 | json, object | replace add remove |
 | array | replace add remove array_append |
 | relation | replace add remove (junction rows) |

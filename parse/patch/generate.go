@@ -260,6 +260,7 @@ var defaultPatchOps = map[core.FieldType][]PatchOp{
 	core.FieldTypeString:    {PatchOpReplace},
 	core.FieldTypeInt:       {PatchOpReplace},
 	core.FieldTypeFloat:     {PatchOpReplace},
+	core.FieldTypeDecimal:   {PatchOpReplace},
 	core.FieldTypeBool:      {PatchOpReplace},
 	core.FieldTypeTimestamp: {PatchOpReplace},
 	core.FieldTypeDate:      {PatchOpReplace},

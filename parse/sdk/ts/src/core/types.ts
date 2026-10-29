@@ -5,6 +5,7 @@ export type FieldType =
   | "string"
   | "int"
   | "float"
+  | "decimal"
   | "bool"
   | "timestamp"
   | "date"

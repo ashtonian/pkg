@@ -63,6 +63,11 @@ type Dialect interface {
 	// the resource declared as t: an expression the column's string field
 	// scans, or column itself when the database's own encoding scans.
 	ReadColumn(column string, t core.SQLType) string
+
+	// DecimalParam renders the placeholder of a bound decimal, its
+	// canonical text (core.DecimalText), as the exact number a decimal
+	// column or path compares and orders with.
+	DecimalParam(placeholder string) string
 }
 
 // ErrUnknownDSN is returned by DialectFromDSN for a DSN whose scheme names
@@ -80,6 +85,12 @@ func DialectFromDSN(dsn string) (Dialect, error) {
 		return SQLiteDialect{}, nil
 	}
 	return PostgresDialect{}, nil
+}
+
+// decimalBinder binds through bind, reading each parameter as a decimal
+// (Dialect.DecimalParam).
+func decimalBinder(d Dialect, bind func(any) string) func(any) string {
+	return func(v any) string { return d.DecimalParam(bind(v)) }
 }
 
 // comparison renders the operators every dialect spells alike: equality,

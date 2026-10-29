@@ -370,10 +370,26 @@ func termsKeyExpr(field *FieldSchema, dialect Dialect) string {
 	if field.DataType == core.FieldTypeBool {
 		return "CASE WHEN " + expr + " IS NULL THEN NULL WHEN " + expr + " THEN 'true' ELSE 'false' END"
 	}
+	if field.DataType == core.FieldTypeDecimal {
+		return decimalKeyExpr(expr, dialect)
+	}
 	if dialect.Name() == "postgres" {
 		return expr + "::text"
 	}
 	return "CAST(" + expr + " AS TEXT)"
+}
+
+// decimalKeyExpr projects a decimal as its canonical text (core.DecimalText)
+// rather than the stored scale: numeric's text keeps a column's scale
+// ("10.50"), and SQLite writes an integral REAL with a fraction ("10.0").
+// SQLite renders other REALs in its own 15-digit form, exponent included
+// beyond ±1e15 and below 1e-4.
+func decimalKeyExpr(expr string, dialect Dialect) string {
+	if dialect.Name() == "postgres" {
+		return "trim_scale(" + expr + ")::text"
+	}
+	return "CASE WHEN typeof(" + expr + ") = 'real' AND " + expr + " = CAST(" + expr + " AS INTEGER) THEN CAST(CAST(" + expr +
+		" AS INTEGER) AS TEXT) ELSE CAST(" + expr + " AS TEXT) END"
 }
 
 // ScanFacetUnion reads (facet_field, facet_key, facet_count) rows produced

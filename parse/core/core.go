@@ -69,6 +69,7 @@ const (
 	FieldTypeString    FieldType = "string"
 	FieldTypeInt       FieldType = "int"
 	FieldTypeFloat     FieldType = "float"
+	FieldTypeDecimal   FieldType = "decimal"
 	FieldTypeBool      FieldType = "bool"
 	FieldTypeTimestamp FieldType = "timestamp"
 	FieldTypeDate      FieldType = "date"

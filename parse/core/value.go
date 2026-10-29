@@ -16,6 +16,7 @@ import (
 //
 //   - FieldTypeInt       → int64 (signed kinds) or uint64 (unsigned), range-checked against kind
 //   - FieldTypeFloat     → finite float64, range-checked against kind
+//   - FieldTypeDecimal   → canonical decimal text (DecimalText)
 //   - FieldTypeString    → string (encoding.TextMarshaler accepted)
 //   - FieldTypeUUID      → canonical lowercase UUID string
 //   - FieldTypeBool      → bool
@@ -29,7 +30,7 @@ func NormalizeScalar(dt FieldType, kind reflect.Kind, v any) (any, error) {
 	v = deref(v)
 	if v == nil {
 		switch dt {
-		case FieldTypeString, FieldTypeUUID, FieldTypeInt, FieldTypeFloat, FieldTypeBool, FieldTypeTimestamp, FieldTypeDate:
+		case FieldTypeString, FieldTypeUUID, FieldTypeInt, FieldTypeFloat, FieldTypeDecimal, FieldTypeBool, FieldTypeTimestamp, FieldTypeDate:
 			return nil, fmt.Errorf("expected %s, got null", dt)
 		}
 		return nil, nil
@@ -58,6 +59,8 @@ func NormalizeScalar(dt FieldType, kind reflect.Kind, v any) (any, error) {
 		return NormalizeInt(v, kind)
 	case FieldTypeFloat:
 		return NormalizeFloat(v, kind)
+	case FieldTypeDecimal:
+		return DecimalText(v)
 	case FieldTypeBool:
 		b, ok := v.(bool)
 		if !ok {

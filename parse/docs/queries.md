@@ -21,7 +21,7 @@ JSON filters (`{"status":"active","price":{"$gte":10}}`) and flat query paramete
 | `near` / `within` / `intersects` | `{"$near": {"lat": 1, "lon": 2, "distance": "5km"}}` | — | Geo, WGS 84; polygons and `intersects` need PostgreSQL + PostGIS |
 | `$and` / `$or` / `$not` | `{"$or": [{…}, {…}]}` | — | Boolean composition |
 
-Values normalize before any SQL is built: integers exactly (range-checked against the Go kind, floats beyond ±2^53 rejected), UUIDs to canonical form, timestamps to RFC 3339 UTC with relative tokens (`now-7d`) resolved against the parser clock, JSON documents to a canonical form (their numbers within int64, or decimals a float64 holds exactly — E2073 otherwise, since SQLite would round them). See the sections below and [relations](relations.md).
+Values normalize before any SQL is built: integers exactly (range-checked against the Go kind, floats beyond ±2^53 rejected), decimals to their canonical exact text ([decimals](schema-configuration.md#decimals)), UUIDs to canonical form, timestamps to RFC 3339 UTC with relative tokens (`now-7d`) resolved against the parser clock, JSON documents to a canonical form (their numbers within int64, or decimals a float64 holds exactly — E2073 otherwise, since SQLite would round them). See the sections below and [relations](relations.md).
 
 ## Type capabilities
 
@@ -30,7 +30,7 @@ Values normalize before any SQL is built: integers exactly (range-checked agains
 | Type | Operators | Default when `filter_ops` is omitted |
 |---|---|---|
 | string | eq ne gt gte lt lte in nin like ilike contains null exists | eq ne contains like ilike in nin |
-| int, float | eq ne gt gte lt lte in nin null exists | eq ne gt gte lt lte in nin |
+| int, float, decimal | eq ne gt gte lt lte in nin null exists | eq ne gt gte lt lte in nin |
 | timestamp | eq ne gt gte lt lte in nin null exists | eq ne gt gte lt lte |
 | uuid | eq ne in nin null exists | eq ne in nin |
 | bool | eq ne in nin null exists | eq ne |
@@ -49,7 +49,7 @@ The operator contract is shared where supported. Backend differences and relatio
 - Geo (WGS 84): `$near` is a great-circle distance (PostGIS `ST_DWithin` on geography; SQLite spherical haversine — near the radius the two differ by up to ~0.5%). `$within` a box is boundary-inclusive; polygons bind one WKT ring; SQLite rejects polygons and `$intersects` (E2115). Boxes must not cross the antimeridian.
 - Relations compile to correlated `EXISTS` / `NOT EXISTS`: `$eq x` — some related row is x; `$ne x` — none is; `$null: true` — no related rows.
 
-Values normalize at parse (the AST carries canonical values): exact `int64` / `uint64`, finite `float64`, canonical UUID strings, RFC 3339 UTC timestamps with relative tokens (`now-7d`, `now+1h`) resolved, canonical JSON documents bounded by `MaxDepth` / `MaxArraySize`.
+Values normalize at parse (the AST carries canonical values): exact `int64` / `uint64`, finite `float64`, canonical decimal text, canonical UUID strings, RFC 3339 UTC timestamps with relative tokens (`now-7d`, `now+1h`) resolved, canonical JSON documents bounded by `MaxDepth` / `MaxArraySize`.
 
 `filtertest` holds the conformance fixture — an entity with a field of every type, its rows and the expected rows per filter; a backend passes with `filtertest.Run(t, name, backend)`.
 
@@ -63,7 +63,7 @@ A document column's typed members are filterable as dotted fields — `{"attrs.c
 | Map, `any` or `json.RawMessage` column | `paths:"color:string:filter+sort+facet;size:int:filter+indexed;dims.w:float"` | each `member.path:type[:caps]`; caps `filter` (implied), `sort`, `facet` (terms) and `indexed` |
 | Per request (tenant custom fields) | `resource.WithPaths(filter.PathDecl{Path: "custom.tier", Type: core.FieldTypeString, Sort: true, Facet: &filter.FacetSchema{Type: filter.FacetTerms}})` — or, below a resource, `schema.WithPaths` / `sorts.WithPaths(schema, …)` | a copy-on-write view that parses, lists and updates like the resource; the shared resource is unchanged |
 
-Members are identifiers (`[A-Za-z0-9_-]+`), at most `filter.MaxPathDepth` (8) deep, typed string, int, float, bool, timestamp or uuid. Operators default to the type's column defaults plus the NULL tests.
+Members are identifiers (`[A-Za-z0-9_-]+`), at most `filter.MaxPathDepth` (8) deep, typed string, int, float, decimal, bool, timestamp or uuid. Operators default to the type's column defaults plus the NULL tests.
 
 A path's value is the member when it has the declared JSON kind:
 
@@ -71,6 +71,7 @@ A path's value is the member when it has the declared JSON kind:
 |---|---|---|
 | string | a JSON string | text, code-point order |
 | int, float | a JSON number | by value: integers exactly, decimals as float64 |
+| decimal | a JSON number, or a JSON string in plain notation (`"9.50"`, not `"1e3"`) of at most 1000 characters | exactly, by value: `numeric` on PostgreSQL, INTEGER or REAL on SQLite, `core.CompareDecimals` in memory |
 | bool | true or false | boolean |
 | timestamp | a UTC RFC 3339 string (`Z`, up to nine fractional digits — what `encoding/json` writes for a UTC `time.Time`) | its canonical text (`core.TimestampLayout`), so instants order correctly |
 | uuid | a string that is a UUID once ASCII-lower-cased | lower-cased text |
@@ -85,9 +86,9 @@ Anything else is **absent**: a missing key, JSON null, another kind, a timestamp
 
 A facetable path counts like a column: terms over its values, ranges over its numbers (`facet:"range:0-5,5+"` on a struct member, `PathDecl.Facet` per request); an absent member is in no bucket.
 
-A path sort key orders like a nullable column: an absent member is NULL, greatest (`NULLS LAST` ascending, `NULLS FIRST` descending), text members by code point. A cursor reads the member from the document's row column with the same value rule, so keyset pages walk forwards and backwards over paths; a numeric path's cursor carries an int64 or a float64, since an int path may hold a decimal member. `filter.KeyValue(key, rowValue)` is that rule for any key, which a memory backend uses to order rows.
+A path sort key orders like a nullable column: an absent member is NULL, greatest (`NULLS LAST` ascending, `NULLS FIRST` descending), text members by code point. A cursor reads the member from the document's row column with the same value rule, so keyset pages walk forwards and backwards over paths; a numeric path's cursor carries an int64 or a float64, since an int path may hold a decimal member, and a decimal path's its canonical text. `filter.KeyValue(key, rowValue)` is that rule for any key, which a memory backend uses to order rows.
 
-The rendered expression is immutable, so an expression index on `filter.FieldExpr(dialect, field)` serves it; declare the path `indexed` to lower its cost. A document column's storage is its `storage` tag: `jsonb` (default), `json`, `text`, or `scalar:<type>` for a struct the database holds as a scalar, such as a decimal, which then filters as that scalar and has no paths. Run `filtertest.RunPaths(t, schema, backend)` to prove a backend's paths. A merge patch into a typed document member reads back through its path on every backend; a merge into a document that may be absent (a pointer struct) must supply every member.
+The rendered expression is immutable, so an expression index on `filter.FieldExpr(dialect, field)` serves it; declare the path `indexed` to lower its cost. A document column's storage is its `storage` tag: `jsonb` (default), `json`, `text`, or `scalar:<type>` for a struct the database holds as a scalar, such as a decimal library type without the `core.Decimal` method set, which then filters and sorts as that scalar and has no paths. Run `filtertest.RunPaths(t, schema, backend)` to prove a backend's paths. A merge patch into a typed document member reads back through its path on every backend; a merge into a document that may be absent (a pointer struct) must supply every member.
 
 ### Array elements
 
@@ -264,6 +265,6 @@ postgres SET tags = array_append(COALESCE(tags, '{}'), $1), price = $2 [clearanc
 
 ## Cursor validation
 
-Schema-backed cursor keys validate type, numeric range, and nullability before SQL construction (E2082). Manually constructed schemas need `CursorKey.NumberKind` / `SortFieldSchema.NumberKind` for numeric bounds. An identifier-only tie-breaker without schema metadata validates canonical non-null scalars only. Include the key in your schema for typed checks. Pointer-receiver `driver.Valuer` / text-marshaler scalar keys can supply canonical values, but the package cannot infer a custom database scalar's ordering from its Go encoding (for example decimal text versus a NUMERIC column). Choose keys with a known consistent SQL/Go representation. Cursors carry sort metadata, not authorization: reapply server policy on every page.
+Schema-backed cursor keys validate type, numeric range, and nullability before SQL construction (E2082). Manually constructed schemas need `CursorKey.NumberKind` / `SortFieldSchema.NumberKind` for numeric bounds. An identifier-only tie-breaker without schema metadata validates canonical non-null scalars only. Include the key in your schema for typed checks. A decimal key carries its canonical text and orders by value on every backend ([decimals](schema-configuration.md#decimals)). Other pointer-receiver `driver.Valuer` / text-marshaler scalar keys can supply canonical values, but the package cannot infer a custom database scalar's ordering from its Go encoding: declare such a column with the scalar it holds (`storage:"scalar:decimal"`), or choose keys with a known consistent SQL/Go representation. Cursors carry sort metadata, not authorization: reapply server policy on every page.
 
 [HTTP parameters](http-errors.md) · [JSON documents](patches.md#json-documents) · [Relations](relations.md)
