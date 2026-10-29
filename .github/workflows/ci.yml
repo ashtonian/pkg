@@ -30,7 +30,9 @@ jobs:
     runs-on: ${{ matrix.os == 'ubuntu-latest' && 'arc-pkg' || matrix.os }}
     timeout-minutes: 45
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - uses: ashtonian/go-ci-actions@470279e1ff775269324ca13b0aaaf7211951215e # v1.0.1
         with:
           workload: ${{ toJSON(matrix) }}
@@ -72,7 +74,9 @@ jobs:
           --health-cmd "pg_isready -h 127.0.0.1 -U parse -d parse"
           --health-interval 5s --health-timeout 5s --health-retries 20
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - uses: ashtonian/go-ci-actions@470279e1ff775269324ca13b0aaaf7211951215e # v1.0.1
         with:
           go-version: stable
@@ -88,7 +92,9 @@ jobs:
     runs-on: arc-pkg
     timeout-minutes: 45
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: lts/*
@@ -103,7 +109,9 @@ jobs:
     runs-on: arc-pkg
     timeout-minutes: 45
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - uses: ashtonian/go-ci-actions@470279e1ff775269324ca13b0aaaf7211951215e # v1.0.1
         with:
           go-version: stable
@@ -125,7 +133,9 @@ jobs:
     runs-on: arc-pkg
     timeout-minutes: 45
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - uses: ashtonian/go-ci-actions@470279e1ff775269324ca13b0aaaf7211951215e # v1.0.1
         with:
           go-version: '1.26.x'
@@ -146,7 +156,9 @@ jobs:
     runs-on: arc-pkg
     timeout-minutes: 45
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - uses: ashtonian/go-ci-actions@470279e1ff775269324ca13b0aaaf7211951215e # v1.0.1
         with:
           go-version: stable
@@ -159,7 +171,9 @@ jobs:
     runs-on: arc-pkg
     timeout-minutes: 45
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - uses: ashtonian/go-ci-actions@470279e1ff775269324ca13b0aaaf7211951215e # v1.0.1
         with:
           go-version: stable
