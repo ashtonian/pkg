@@ -142,6 +142,15 @@ func generatePatchSchema(g *core.SchemaGenerator, t reflect.Type, server bool) (
 			enumValues = slices.Clone(tags.Enum)
 			validators = append(validators, enumValidator(enumValues))
 		}
+		if !tags.Bounds.IsZero() {
+			if tags.Relation != "" {
+				return nil, fmt.Errorf("field %s: minlen, maxlen, min and max do not apply to a relation", field.GoName)
+			}
+			if err := tags.Bounds.Check(info); err != nil {
+				return nil, fmt.Errorf("field %s: %w", field.GoName, err)
+			}
+			validators = append(validators, boundsValidator(tags.Bounds, info))
+		}
 
 		// a field carrying both `parse:"patch"` and `relation:"…"`
 		// becomes a relation-patch path. Override the allowed-ops to the
@@ -171,6 +180,7 @@ func generatePatchSchema(g *core.SchemaGenerator, t reflect.Type, server bool) (
 			SQLColumn:  sqlColumn,
 			Validators: validators,
 			EnumValues: enumValues,
+			Bounds:     tags.Bounds,
 			Relation:   relSchema,
 		}
 	}
@@ -216,37 +226,6 @@ func isNullableType(t reflect.Type) bool {
 		return true
 	}
 	return false
-}
-
-// enumValidator admits a value in the enum set; on an array field each
-// element must be, as the filter side reads the tag.
-func enumValidator(values []string) core.Validator {
-	allowed := make(map[string]struct{}, len(values))
-	names := make([]string, len(values))
-	for i, v := range values {
-		names[i] = strings.TrimSpace(v)
-		allowed[names[i]] = struct{}{}
-	}
-	var check func(value any) error
-	check = func(value any) error {
-		if items, ok := core.AnySlice(value); ok {
-			for _, item := range items {
-				if err := check(item); err != nil {
-					return err
-				}
-			}
-			return nil
-		}
-		s, ok := value.(string)
-		if !ok {
-			return fmt.Errorf("expected string for enum validation, got %T", value)
-		}
-		if _, found := allowed[s]; !found {
-			return fmt.Errorf("value %q is not one of: %s", s, strings.Join(names, ", "))
-		}
-		return nil
-	}
-	return check
 }
 
 // defaultPatchOps maps FieldType to standard patch operators.

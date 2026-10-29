@@ -234,36 +234,61 @@ func TestClient_RefusesWhatTheGrammarCannotSay(t *testing.T) {
 // confPatchInput is the merge-patch struct a generated SDK would declare for
 // confPatch.
 type confPatchInput struct {
-	Name   client.Nullable[string]          `json:"name,omitzero"`
-	Nick   client.Nullable[string]          `json:"nick,omitzero"`
-	Status client.Nullable[string]          `json:"status,omitzero"`
-	Count  client.Nullable[int32]           `json:"count,omitzero"`
-	Small  client.Nullable[int8]            `json:"small,omitzero"`
-	Ratio  client.Nullable[float64]         `json:"ratio,omitzero"`
-	Price  client.Nullable[decimal.Decimal] `json:"price,omitzero"`
-	Active client.Nullable[bool]            `json:"active,omitzero"`
-	Tags   client.Nullable[[]string]        `json:"tags,omitzero"`
-	Labels client.Nullable[map[string]any]  `json:"labels,omitzero"`
-	SeenAt client.Nullable[time.Time]       `json:"seen_at,omitzero"`
+	Name     client.Nullable[string]          `json:"name,omitzero"`
+	Nick     client.Nullable[string]          `json:"nick,omitzero"`
+	Status   client.Nullable[string]          `json:"status,omitzero"`
+	Count    client.Nullable[int32]           `json:"count,omitzero"`
+	Small    client.Nullable[int8]            `json:"small,omitzero"`
+	Ratio    client.Nullable[float64]         `json:"ratio,omitzero"`
+	Price    client.Nullable[decimal.Decimal] `json:"price,omitzero"`
+	Active   client.Nullable[bool]            `json:"active,omitzero"`
+	Tags     client.Nullable[[]string]        `json:"tags,omitzero"`
+	Labels   client.Nullable[map[string]any]  `json:"labels,omitzero"`
+	SeenAt   client.Nullable[time.Time]       `json:"seen_at,omitzero"`
+	Currency client.Nullable[string]          `json:"currency,omitzero"`
+	Level    client.Nullable[int32]           `json:"level,omitzero"`
+	Rate     client.Nullable[float32]         `json:"rate,omitzero"`
+	Amount   client.Nullable[decimal.Decimal] `json:"amount,omitzero"`
+	Codes    client.Nullable[[]string]        `json:"codes,omitzero"`
+	Modes    client.Nullable[[]string]        `json:"modes,omitzero"`
+	Mode     client.Nullable[string]          `json:"mode,omitzero"`
 }
 
 var patchBuilt = map[string]confPatchInput{
-	"string":                  {Name: client.Set("a")},
-	"err_null_on_value_field": {Name: client.Null[string]()},
-	"null_on_pointer_field":   {Nick: client.Null[string]()},
-	"enum":                    {Status: client.Set("active")},
-	"err_enum":                {Status: client.Set("busy")},
-	"int":                     {Count: client.Set[int32](5)},
-	"int8_min":                {Small: client.Set[int8](-128)},
-	"float":                   {Ratio: client.Set(0.5)},
-	"decimal_string":          {Price: client.Set(decimal.RequireFromString("10.25"))},
-	"err_decimal_null":        {Price: client.Null[decimal.Decimal]()},
-	"bool":                    {Active: client.Set(false)},
-	"array":                   {Tags: client.Set([]string{"a", "b"})},
-	"clear_array":             {Tags: client.Null[[]string]()},
-	"document_merge":          {Labels: client.Set(map[string]any{"a": 1, "old": nil})},
-	"timestamp":               {SeenAt: client.Set(time.Date(2026, 10, 19, 12, 0, 0, 0, time.UTC))},
-	"several":                 {Name: client.Set("a"), Count: client.Set[int32](1), Active: client.Set(true)},
+	"string":                    {Name: client.Set("a")},
+	"err_null_on_value_field":   {Name: client.Null[string]()},
+	"null_on_pointer_field":     {Nick: client.Null[string]()},
+	"enum":                      {Status: client.Set("active")},
+	"err_enum":                  {Status: client.Set("busy")},
+	"int":                       {Count: client.Set[int32](5)},
+	"int8_min":                  {Small: client.Set[int8](-128)},
+	"float":                     {Ratio: client.Set(0.5)},
+	"decimal_string":            {Price: client.Set(decimal.RequireFromString("10.25"))},
+	"err_decimal_null":          {Price: client.Null[decimal.Decimal]()},
+	"bool":                      {Active: client.Set(false)},
+	"array":                     {Tags: client.Set([]string{"a", "b"})},
+	"clear_array":               {Tags: client.Null[[]string]()},
+	"document_merge":            {Labels: client.Set(map[string]any{"a": 1, "old": nil})},
+	"timestamp":                 {SeenAt: client.Set(time.Date(2026, 10, 19, 12, 0, 0, 0, time.UTC))},
+	"several":                   {Name: client.Set("a"), Count: client.Set[int32](1), Active: client.Set(true)},
+	"array_enum":                {Modes: client.Set([]string{"auto", "manual"})},
+	"err_array_enum":            {Modes: client.Set([]string{"auto", "off"})},
+	"null_clears_nullable_enum": {Mode: client.Null[string]()},
+	// Bounds are the server's: the client builds a value outside them.
+	"length_bounds":                  {Currency: client.Set("USD")},
+	"length_counts_code_points":      {Currency: client.Set("€😀ß")},
+	"err_maxlen":                     {Currency: client.Set("USDX")},
+	"err_minlen":                     {Currency: client.Set("US")},
+	"int_bounds":                     {Level: client.Set[int32](10)},
+	"err_int_max":                    {Level: client.Set[int32](11)},
+	"err_int_min":                    {Level: client.Set[int32](0)},
+	"float32_bound_at_its_precision": {Rate: client.Set[float32](0.1)},
+	"err_float_max":                  {Rate: client.Set[float32](0.11)},
+	"decimal_bounds":                 {Amount: client.Set(decimal.RequireFromString("999.99"))},
+	"err_decimal_max_exact":          {Amount: client.Set(decimal.RequireFromString("999.990000000000000001"))},
+	"err_decimal_min":                {Amount: client.Set(decimal.RequireFromString("0.001"))},
+	"array_element_length":           {Codes: client.Set([]string{"ab", "c"})},
+	"err_array_element_length":       {Codes: client.Set([]string{"ab", "abc"})},
 }
 
 var patchInexpressible = map[string]string{
@@ -287,6 +312,8 @@ var patchInexpressible = map[string]string{
 	"err_timestamp_type":        "SeenAt is a Nullable[time.Time]",
 	"err_not_patchable":         "the patch struct holds patchable members only",
 	"err_unknown_field":         "the patch struct holds declared members only",
+	"decimal_bound_exponent":    "a decimal.Decimal marshals plain notation",
+	"decimal_bound_number":      "a decimal.Decimal marshals as a JSON string",
 }
 
 // A merge patch is its JSON, so the client's document equals the corpus

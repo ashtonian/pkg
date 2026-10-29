@@ -13,12 +13,40 @@
           ],
           "data_type": "bool"
         },
+        "/amount": {
+          "allowed_ops": [
+            "replace"
+          ],
+          "data_type": "decimal",
+          "minimum": "0.01",
+          "maximum": "999.99"
+        },
+        "/codes": {
+          "allowed_ops": [
+            "replace",
+            "add",
+            "remove",
+            "array_append"
+          ],
+          "data_type": "array",
+          "nullable": true,
+          "max_length": 2,
+          "elem": "string"
+        },
         "/count": {
           "allowed_ops": [
             "replace"
           ],
           "data_type": "int",
           "number_kind": "int32"
+        },
+        "/currency": {
+          "allowed_ops": [
+            "replace"
+          ],
+          "data_type": "string",
+          "min_length": 3,
+          "max_length": 3
         },
         "/labels": {
           "allowed_ops": [
@@ -28,6 +56,42 @@
           ],
           "data_type": "json",
           "nullable": true
+        },
+        "/level": {
+          "allowed_ops": [
+            "replace"
+          ],
+          "data_type": "int",
+          "minimum": "1",
+          "maximum": "10",
+          "number_kind": "int32"
+        },
+        "/mode": {
+          "allowed_ops": [
+            "replace",
+            "remove"
+          ],
+          "data_type": "string",
+          "nullable": true,
+          "enum_values": [
+            "auto",
+            "manual"
+          ]
+        },
+        "/modes": {
+          "allowed_ops": [
+            "replace",
+            "add",
+            "remove",
+            "array_append"
+          ],
+          "data_type": "array",
+          "nullable": true,
+          "enum_values": [
+            "auto",
+            "manual"
+          ],
+          "elem": "string"
         },
         "/name": {
           "allowed_ops": [
@@ -48,6 +112,15 @@
             "replace"
           ],
           "data_type": "decimal"
+        },
+        "/rate": {
+          "allowed_ops": [
+            "replace"
+          ],
+          "data_type": "float",
+          "minimum": "0",
+          "maximum": "0.1",
+          "number_kind": "float32"
         },
         "/ratio": {
           "allowed_ops": [
@@ -396,6 +469,160 @@
         "name": "a"
       },
       "valid": true
+    },
+    {
+      "name": "array_enum",
+      "input": {
+        "modes": [
+          "auto",
+          "manual"
+        ]
+      },
+      "valid": true
+    },
+    {
+      "name": "err_array_enum",
+      "input": {
+        "modes": [
+          "auto",
+          "off"
+        ]
+      },
+      "valid": false,
+      "errorCode": "E2077"
+    },
+    {
+      "name": "null_clears_nullable_enum",
+      "input": {
+        "mode": null
+      },
+      "valid": true
+    },
+    {
+      "name": "length_bounds",
+      "input": {
+        "currency": "USD"
+      },
+      "valid": true
+    },
+    {
+      "name": "length_counts_code_points",
+      "input": {
+        "currency": "€😀ß"
+      },
+      "valid": true
+    },
+    {
+      "name": "err_maxlen",
+      "input": {
+        "currency": "USDX"
+      },
+      "valid": false,
+      "errorCode": "E2077"
+    },
+    {
+      "name": "err_minlen",
+      "input": {
+        "currency": "US"
+      },
+      "valid": false,
+      "errorCode": "E2077"
+    },
+    {
+      "name": "int_bounds",
+      "input": {
+        "level": 10
+      },
+      "valid": true
+    },
+    {
+      "name": "err_int_max",
+      "input": {
+        "level": 11
+      },
+      "valid": false,
+      "errorCode": "E2077"
+    },
+    {
+      "name": "err_int_min",
+      "input": {
+        "level": 0
+      },
+      "valid": false,
+      "errorCode": "E2077"
+    },
+    {
+      "name": "float32_bound_at_its_precision",
+      "input": {
+        "rate": 0.1
+      },
+      "valid": true
+    },
+    {
+      "name": "err_float_max",
+      "input": {
+        "rate": 0.11
+      },
+      "valid": false,
+      "errorCode": "E2077"
+    },
+    {
+      "name": "decimal_bounds",
+      "input": {
+        "amount": "999.99"
+      },
+      "valid": true
+    },
+    {
+      "name": "decimal_bound_exponent",
+      "input": {
+        "amount": "9.9999e2"
+      },
+      "valid": true
+    },
+    {
+      "name": "decimal_bound_number",
+      "input": {
+        "amount": 0.01
+      },
+      "valid": true
+    },
+    {
+      "name": "err_decimal_max_exact",
+      "input": {
+        "amount": "999.990000000000000001"
+      },
+      "valid": false,
+      "errorCode": "E2077"
+    },
+    {
+      "name": "err_decimal_min",
+      "input": {
+        "amount": "0.001"
+      },
+      "valid": false,
+      "errorCode": "E2077"
+    },
+    {
+      "name": "array_element_length",
+      "input": {
+        "codes": [
+          "ab",
+          "c"
+        ]
+      },
+      "valid": true
+    },
+    {
+      "name": "err_array_element_length",
+      "input": {
+        "codes": [
+          "ab",
+          "abc"
+        ]
+      },
+      "valid": false,
+      "errorCode": "E2077"
     }
   ]
 }

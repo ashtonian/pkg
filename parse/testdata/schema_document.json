@@ -186,7 +186,9 @@
         "allowed_ops": [
           "replace"
         ],
-        "data_type": "string"
+        "data_type": "string",
+        "min_length": 1,
+        "max_length": 64
       },
       "/note": {
         "allowed_ops": [
@@ -201,6 +203,8 @@
           "replace"
         ],
         "data_type": "int",
+        "minimum": "0",
+        "maximum": "100",
         "number_kind": "int32"
       },
       "/scores": {

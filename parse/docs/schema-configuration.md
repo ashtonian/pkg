@@ -14,6 +14,8 @@ Construct one `parse.Resource[T]` for each resource at startup. Schema generatio
 | `filter_ops` | `"eq,ne,in"` | filter | Allowed operators; each must apply to the field's type (`filter.OperatorsFor`) |
 | `patch_ops` | `"replace,remove"` | patch | Allowed operations; `remove` requires a nullable Go type |
 | `enum` | `"active,offline"` | filter, patch | Allowed string values (per element on array fields) |
+| `minlen`, `maxlen` | `"3"` | patch | Fewest and most characters of a string, inclusive (per element on array fields). Characters are Unicode code points, as a `CHAR(n)` / `VARCHAR(n)` column and `char_length` count them. A non-negative integer; `minlen` above `maxlen`, or either on a field that is not a string or an array of strings, fails schema generation |
+| `min`, `max` | `"0.01"`, `"1e6"` | patch | Least and greatest number, inclusive (per element on array fields). A decimal literal compared exactly with an int or decimal value, and at the field's precision with a float (`max:"0.1"` admits a `float32` field's 0.1). `min` above `max`, or either on a field that is not a number or an array of numbers, fails schema generation |
 | `indexed` | `"true"` | filter | Cost hint: the field is indexed |
 | `immutable` | `"true"` | filter | Advertised in the schema response |
 | `sort_default` | `"desc"` | sort | The default sort field and direction |
