@@ -6,8 +6,8 @@ github.com/alecthomas/repr v0.5.2 h1:SU73FTI9D1P5UNtvseffFSGmdNci/O6RsqzeXJtP0Qs
 github.com/alecthomas/repr v0.5.2/go.mod h1:Fr0507jx4eOXV7AlPV6AVZLYrLIuIeSOWtW57eE/O/4=
 github.com/ashtonian/pkg/config v0.6.2 h1:V2ephNNzMB4yGu99RZj0mqiEZWakawpthXkJsrzgve0=
 github.com/ashtonian/pkg/config v0.6.2/go.mod h1:pAe7HS6QzAr6Xe3hHoksO5Lr7oX3VNLMvCz/HlmwE0c=
-github.com/ashtonian/pkg/gowalker v0.3.0 h1:rU0wwcz0F2858z7d0d7rsKGaooDvrePyGAAmJIqFcJU=
-github.com/ashtonian/pkg/gowalker v0.3.0/go.mod h1:xJM4ID4zwmfvussuRaLJMGn+3bUeNGLlETMCdOfmn0o=
+github.com/ashtonian/pkg/gowalker v0.5.0 h1:7zK373vtysWV3gPAWXsqBASm/k8768hVnpKv/Teq7QE=
+github.com/ashtonian/pkg/gowalker v0.5.0/go.mod h1:xJM4ID4zwmfvussuRaLJMGn+3bUeNGLlETMCdOfmn0o=
 github.com/fsnotify/fsnotify v1.10.1 h1:b0/UzAf9yR5rhf3RPm9gf3ehBPpf0oZKIjtpKrx59Ho=
 github.com/fsnotify/fsnotify v1.10.1/go.mod h1:TLheqan6HD6GBK6PrDWyDPBaEV8LspOxvPSjC+bVfgo=
 github.com/gabriel-vasile/mimetype v1.4.16 h1:5izNFuvA37st1dDRAcA7TtmngBmRgiIPDmTtiEvjx1E=
