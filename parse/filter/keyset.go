@@ -113,8 +113,9 @@ func (p CursorPlan) Token(reverse bool, get func(column string) (any, error)) (*
 
 // KeyValue is a row's canonical value for key k, given raw, the row's value
 // at k.Column: CursorValue of it, or for a path key the member the path rule
-// extracts (nil when absent). Cursors and a memory backend's ordering read
-// keys through it alike.
+// extracts (nil when absent). A decimal key's value is its canonical text
+// (core.DecimalText), whatever form its column scans to. Cursors and a
+// memory backend's ordering read keys through it alike.
 func KeyValue(k CursorKey, raw any) (any, error) {
 	if k.Path != nil {
 		member, present, err := pathValueOf(raw, k.Path, k.DataType)
@@ -123,15 +124,24 @@ func KeyValue(k CursorKey, raw any) (any, error) {
 		}
 		raw = member
 	}
-	return CursorValue(raw)
+	v, err := CursorValue(raw)
+	if err != nil || v == nil || k.DataType != core.FieldTypeDecimal {
+		return v, err
+	}
+	text, err := core.DecimalText(v)
+	if err != nil {
+		return nil, fmt.Errorf("cursor: decimal key: %w", err)
+	}
+	return text, nil
 }
 
 // CursorValue reduces a row value to the canonical form a token carries and
 // SQL binds: nil, string, bool, int64, uint64 or float64. Pointers are
-// dereferenced (nil → NULL), driver.Valuer values are resolved, times become
-// RFC 3339 UTC strings (the form SQLite stores), and text-marshalling types
-// such as uuid.UUID become their text. Anything else cannot resume a page
-// and is an error, never an omitted cursor.
+// dereferenced (nil → NULL), decimals (core.IsDecimalType) become their
+// canonical text, driver.Valuer values are resolved, times become RFC 3339
+// UTC strings (the form SQLite stores), and text-marshalling types such as
+// uuid.UUID become their text. Anything else cannot resume a page and is an
+// error, never an omitted cursor.
 func CursorValue(v any) (any, error) {
 	for {
 		rv := reflect.ValueOf(v)
@@ -154,6 +164,8 @@ func CursorValue(v any) (any, error) {
 		return core.FormatTimestamp(t), nil
 	case []byte:
 		return nil, errors.New("cursor: byte-slice keys are not supported")
+	case core.Decimal:
+		return cursorDecimalValue(t)
 	case driver.Valuer:
 		return cursorDriverValue(t)
 	case encoding.TextMarshaler:
@@ -180,6 +192,9 @@ func CursorValue(v any) (any, error) {
 		}
 		return f, nil
 	case reflect.Struct:
+		if core.IsDecimalType(rv.Type()) {
+			return cursorDecimalValue(v) // its pointer has the method set
+		}
 		// Sort schema generation also accepts pointer-receiver scalar
 		// codecs. A value extracted from a row need not be addressable;
 		// give the codec a copy instead of losing its pointer methods.
@@ -206,6 +221,14 @@ func cursorDriverValue(v driver.Valuer) (any, error) {
 	return CursorValue(dv)
 }
 
+func cursorDecimalValue(v any) (any, error) {
+	text, err := core.DecimalText(v)
+	if err != nil {
+		return nil, fmt.Errorf("cursor: %T: %w", v, err)
+	}
+	return text, nil
+}
+
 func cursorTextValue(v encoding.TextMarshaler) (any, error) {
 	b, err := v.MarshalText()
 	if err != nil {
@@ -215,8 +238,9 @@ func cursorTextValue(v encoding.TextMarshaler) (any, error) {
 }
 
 // CompareKeyValues orders two canonical key values (see CursorValue) under
-// the keyset model: NULL greatest, numbers exactly, timestamps by instant,
-// strings bytewise, false before true. Direction is not applied.
+// the keyset model: NULL greatest, numbers and decimals exactly, timestamps
+// by instant, strings bytewise, false before true. Direction is not
+// applied.
 func CompareKeyValues(k CursorKey, a, b any) int {
 	switch {
 	case a == nil && b == nil:
@@ -225,6 +249,11 @@ func CompareKeyValues(k CursorKey, a, b any) int {
 		return 1
 	case b == nil:
 		return -1
+	}
+	if k.DataType == core.FieldTypeDecimal {
+		if c, ok := core.CompareDecimals(a, b); ok {
+			return c
+		}
 	}
 	if c, ok := core.CompareNumbers(a, b); ok {
 		return c
@@ -326,6 +355,9 @@ func seekPredicate(d Dialect, keys []CursorKey, token *PageToken, bind func(any)
 		v := token.Fields[i].Value
 		if v != nil {
 			phs[i] = bind(v)
+			if k.DataType == core.FieldTypeDecimal {
+				phs[i] = d.DecimalParam(phs[i])
+			}
 		}
 		if k.Nullable || v == nil || effectiveDirection(k, token.Reverse) != effectiveDirection(keys[0], token.Reverse) {
 			native = false

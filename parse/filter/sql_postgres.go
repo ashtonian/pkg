@@ -119,6 +119,9 @@ func (d PostgresDialect) Condition(field *FieldSchema, op FilterOperator, value 
 	if isOrdering(op) && orderedAsText(field) {
 		expr = d.CodePointOrder(expr)
 	}
+	if field.DataType == core.FieldTypeDecimal {
+		bind = decimalBinder(d, bind)
+	}
 	if sql, ok, err := comparison(expr, op, value, bind); ok {
 		return sql, err
 	}
@@ -387,6 +390,10 @@ func (PostgresDialect) ReadColumn(column string, t core.SQLType) string {
 	}
 	return column
 }
+
+// DecimalParam casts the parameter to numeric: pgx sends a string in text
+// format, which numeric parses exactly.
+func (PostgresDialect) DecimalParam(placeholder string) string { return placeholder + "::numeric" }
 
 // NativeRowCompare reports true: PostgreSQL evaluates row comparison
 // lexicographically with full composite-index support.

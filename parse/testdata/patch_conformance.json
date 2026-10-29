@@ -43,6 +43,12 @@
           "data_type": "string",
           "nullable": true
         },
+        "/price": {
+          "allowed_ops": [
+            "replace"
+          ],
+          "data_type": "decimal"
+        },
         "/ratio": {
           "allowed_ops": [
             "replace"
@@ -205,6 +211,67 @@
       "name": "err_float_type",
       "input": {
         "ratio": "half"
+      },
+      "valid": false,
+      "errorCode": "E2077"
+    },
+    {
+      "name": "decimal_string",
+      "input": {
+        "price": "10.25"
+      },
+      "valid": true
+    },
+    {
+      "name": "decimal_number",
+      "input": {
+        "price": 10.5
+      },
+      "valid": true
+    },
+    {
+      "name": "decimal_exponent",
+      "input": {
+        "price": "1.5e2"
+      },
+      "valid": true
+    },
+    {
+      "name": "err_decimal_word",
+      "input": {
+        "price": "ten"
+      },
+      "valid": false,
+      "errorCode": "E2077"
+    },
+    {
+      "name": "err_decimal_bool",
+      "input": {
+        "price": true
+      },
+      "valid": false,
+      "errorCode": "E2077"
+    },
+    {
+      "name": "err_decimal_null",
+      "input": {
+        "price": null
+      },
+      "valid": false,
+      "errorCode": "E2077"
+    },
+    {
+      "name": "err_decimal_leading_plus",
+      "input": {
+        "price": "+1"
+      },
+      "valid": false,
+      "errorCode": "E2077"
+    },
+    {
+      "name": "err_decimal_beyond_digits",
+      "input": {
+        "price": "1e1000"
       },
       "valid": false,
       "errorCode": "E2077"

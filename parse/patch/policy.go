@@ -138,14 +138,15 @@ func matchValueConstraint(path string, constraints map[string]*ValueConstraint) 
 }
 
 func checkValueConstraint(op *PatchOperation, vc *ValueConstraint, index int) error {
-	if len(vc.AllowedValues) > 0 && !valueInList(op.Value, vc.AllowedValues) {
+	decimal := op.Schema != nil && op.Schema.DataType == core.FieldTypeDecimal
+	if len(vc.AllowedValues) > 0 && !valueInList(op.Value, vc.AllowedValues, decimal) {
 		return &core.ParseError{
 			Kind: core.ParseErrorKindPatch, Code: ECodePatchPolicyValue.String(),
 			Message: fmt.Sprintf("value for path '%s' is not in allowed values at index %d", op.Path, index),
 			Path:    op.Path, Index: new(index),
 		}
 	}
-	if len(vc.DeniedValues) > 0 && valueInList(op.Value, vc.DeniedValues) {
+	if len(vc.DeniedValues) > 0 && valueInList(op.Value, vc.DeniedValues, decimal) {
 		return &core.ParseError{
 			Kind: core.ParseErrorKindPatch, Code: ECodePatchPolicyValue.String(),
 			Message: fmt.Sprintf("value for path '%s' is denied by policy at index %d", op.Path, index),
@@ -173,9 +174,9 @@ func checkValueConstraint(op *PatchOperation, vc *ValueConstraint, index int) er
 			}
 		}
 	}
-	if core.IsNumber(op.Value) {
+	if core.IsNumber(op.Value) || (decimal && op.Value != nil) {
 		if vc.Min != nil {
-			if c, ok := core.CompareNumbers(op.Value, *vc.Min); ok && c < 0 {
+			if c, ok := compareNumeric(op.Value, *vc.Min, decimal); ok && c < 0 {
 				return &core.ParseError{
 					Kind: core.ParseErrorKindPatch, Code: ECodePatchPolicyValue.String(),
 					Message: fmt.Sprintf("value for path '%s' is below minimum %v at index %d", op.Path, *vc.Min, index),
@@ -184,7 +185,7 @@ func checkValueConstraint(op *PatchOperation, vc *ValueConstraint, index int) er
 			}
 		}
 		if vc.Max != nil {
-			if c, ok := core.CompareNumbers(op.Value, *vc.Max); ok && c > 0 {
+			if c, ok := compareNumeric(op.Value, *vc.Max, decimal); ok && c > 0 {
 				return &core.ParseError{
 					Kind: core.ParseErrorKindPatch, Code: ECodePatchPolicyValue.String(),
 					Message: fmt.Sprintf("value for path '%s' exceeds maximum %v at index %d", op.Path, *vc.Max, index),
@@ -196,12 +197,22 @@ func checkValueConstraint(op *PatchOperation, vc *ValueConstraint, index int) er
 	return nil
 }
 
+// compareNumeric compares a patch value with a policy's number exactly:
+// as decimals for a decimal path, whose values are canonical text.
+func compareNumeric(value, bound any, decimal bool) (int, bool) {
+	if decimal {
+		return core.CompareDecimals(value, bound)
+	}
+	return core.CompareNumbers(value, bound)
+}
+
 // valueInList reports whether value is in list. Numbers compare by exact
 // value, not Go type — a normalized int64 matches a policy's float64 or int
-// literal.
-func valueInList(value any, list []any) bool {
+// literal, and a decimal path's value matches a list number or decimal
+// string of equal value.
+func valueInList(value any, list []any, decimal bool) bool {
 	for _, v := range list {
-		if c, ok := core.CompareNumbers(value, v); ok {
+		if c, ok := compareNumeric(value, v, decimal); ok {
 			if c == 0 {
 				return true
 			}

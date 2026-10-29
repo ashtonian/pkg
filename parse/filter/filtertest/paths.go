@@ -29,27 +29,30 @@ type Settings struct {
 // Settings, a struct whose members are paths. Its table is "path_records".
 type PathRecord struct {
 	ID       string          `json:"id"       db:"id"       parse:"filter" filter_ops:"eq,in"`
-	Attrs    json.RawMessage `json:"attrs"    db:"attrs"    parse:"filter" paths:"color:string:filter+sort+facet;size:int:filter+sort;ratio:float;on:bool:facet;seen:timestamp:filter+sort;owner:uuid;dims.w:float"`
+	Attrs    json.RawMessage `json:"attrs"    db:"attrs"    parse:"filter" paths:"color:string:filter+sort+facet;size:int:filter+sort;ratio:float;price:decimal:filter+sort+facet;on:bool:facet;seen:timestamp:filter+sort;owner:uuid;dims.w:float"`
 	Settings *Settings       `json:"settings" db:"settings" parse:"filter"`
 }
 
 // PathRecords is the path fixture. Rows c, d, f and h hold no typed member
-// at any attrs path: c's members have other JSON kinds, d's attrs is NULL,
-// f's is empty and h's is an array; c's timestamp carries an offset. e's
-// color is JSON null, its size is above 2^53 and its timestamp has a short
-// fraction; g's size is a decimal, its color upper-case and its owner an
-// upper-case UUID. a's timestamp is written as encoding/json writes UTC.
+// at any attrs path: c's members have other JSON kinds or shapes (its price
+// a string in exponent notation), d's attrs is NULL, f's is empty and h's
+// is an array; c's timestamp carries an offset. e's color is JSON null, its
+// size is above 2^53 and its timestamp has a short fraction; g's size is a
+// decimal, its color upper-case and its owner an upper-case UUID. a's
+// timestamp is written as encoding/json writes UTC. Prices are JSON numbers
+// (a, e) or strings in plain notation (b with a scale, g), as a decimal
+// encodes.
 func PathRecords() []PathRecord {
 	return []PathRecord{
-		{ID: "a", Attrs: json.RawMessage(`{"color":"red","size":3,"ratio":1.5,"on":true,"seen":"2026-01-02T03:04:05Z","owner":"0198a3c2-7a1e-7c00-8000-000000000001","dims":{"w":2.5}}`),
+		{ID: "a", Attrs: json.RawMessage(`{"color":"red","size":3,"ratio":1.5,"price":10.25,"on":true,"seen":"2026-01-02T03:04:05Z","owner":"0198a3c2-7a1e-7c00-8000-000000000001","dims":{"w":2.5}}`),
 			Settings: &Settings{Mode: "auto", Level: 2, Window: &Window{From: Base}}},
-		{ID: "b", Attrs: json.RawMessage(`{"color":"blue","size":10,"ratio":2,"on":false,"seen":"2026-01-02T03:04:06.000000000Z","owner":"0198a3c2-7a1e-7c00-8000-000000000002","dims":{"w":10}}`),
+		{ID: "b", Attrs: json.RawMessage(`{"color":"blue","size":10,"ratio":2,"price":"9.50","on":false,"seen":"2026-01-02T03:04:06.000000000Z","owner":"0198a3c2-7a1e-7c00-8000-000000000002","dims":{"w":10}}`),
 			Settings: &Settings{Mode: "manual", Level: 5}},
-		{ID: "c", Attrs: json.RawMessage(`{"color":3,"size":"3","ratio":"1.5","on":"true","seen":"2026-01-02T05:04:05+02:00","owner":"not-a-uuid","dims":5}`)},
+		{ID: "c", Attrs: json.RawMessage(`{"color":3,"size":"3","ratio":"1.5","price":"1e3","on":"true","seen":"2026-01-02T05:04:05+02:00","owner":"not-a-uuid","dims":5}`)},
 		{ID: "d"},
-		{ID: "e", Attrs: json.RawMessage(`{"color":null,"size":9007199254740993,"ratio":0.1,"seen":"2026-01-02T03:04:05.5Z"}`), Settings: &Settings{}},
+		{ID: "e", Attrs: json.RawMessage(`{"color":null,"size":9007199254740993,"ratio":0.1,"price":-1,"seen":"2026-01-02T03:04:05.5Z"}`), Settings: &Settings{}},
 		{ID: "f", Attrs: json.RawMessage(`{}`)},
-		{ID: "g", Attrs: json.RawMessage(`{"color":"Red","size":3.5,"ratio":-1,"on":true,"owner":"0198A3C2-7A1E-7C00-8000-000000000003"}`),
+		{ID: "g", Attrs: json.RawMessage(`{"color":"Red","size":3.5,"ratio":-1,"price":"100","on":true,"owner":"0198A3C2-7A1E-7C00-8000-000000000003"}`),
 			Settings: &Settings{Mode: "auto", Level: 7, Window: &Window{From: Base.Add(time.Hour)}}},
 		{ID: "h", Attrs: json.RawMessage(`["color","size"]`)},
 	}
@@ -66,6 +69,8 @@ var PathOrders = map[string]string{
 	"attrs.color":     "gbacdefh",
 	"settings.level":  "eabgcdfh",
 	"-settings.level": "hfdcgbae",
+	"attrs.price":     "ebagcdfh",
+	"-attrs.price":    "hfdcgabe",
 }
 
 // PathFacets are the buckets path facets count over PathRecords; an absent
@@ -75,6 +80,7 @@ var PathFacets = map[string]map[string]int64{
 	"attrs.on":       {"true": 2, "false": 1},
 	"settings.mode":  {"auto": 2, "manual": 1, "": 1},
 	"settings.level": {"0-5": 2, "5+": 2},
+	"attrs.price":    {"10.25": 1, "9.5": 1, "-1": 1, "100": 1},
 }
 
 // PathCases are the path filters and the rows each matches. An absent
@@ -105,6 +111,14 @@ func PathCases() []Case {
 		{Name: "path float eq", Filter: `{"attrs.ratio":1.5}`, Want: ids("a")},
 		{Name: "path float lt", Filter: `{"attrs.ratio":{"$lt":1}}`, Want: ids("eg")},
 		{Name: "path float gte", Filter: `{"attrs.ratio":{"$gte":0.1}}`, Want: ids("abe")},
+
+		{Name: "path decimal eq number member", Filter: `{"attrs.price":"10.25"}`, Want: ids("a")},
+		{Name: "path decimal eq string member ignores scale", Filter: `{"attrs.price":9.5}`, Want: ids("b")},
+		{Name: "path decimal gt orders by value", Filter: `{"attrs.price":{"$gt":"9.5"}}`, Want: ids("ag")},
+		{Name: "path decimal lt", Filter: `{"attrs.price":{"$lt":10}}`, Want: ids("be")},
+		{Name: "path decimal in", Filter: `{"attrs.price":{"$in":[-1,"1E2"]}}`, Want: ids("eg")},
+		{Name: "path decimal exponent string is absent", Filter: `{"attrs.price":{"$null":true}}`, Want: ids("cdfh")},
+		{Name: "path decimal invalid request", Filter: `{"attrs.price":"cheap"}`, ParseErr: "E2073"},
 
 		{Name: "path bool eq true", Filter: `{"attrs.on":true}`, Want: ids("ag")},
 		{Name: "path bool eq false", Filter: `{"attrs.on":false}`, Want: ids("b")},

@@ -382,8 +382,8 @@ func (p *FilterParser) parseOperatorObject(field *FieldSchema, obj map[string]an
 
 // normalizeValue validates value for field under op and returns the
 // canonical form the AST carries: exact int64/uint64 for
-// integers, finite float64 for floats, canonical strings for UUIDs and
-// timestamps (relative tokens resolved), generic documents for JSON fields,
+// integers, finite float64 for floats, canonical text for decimals, UUIDs
+// and timestamps (relative tokens resolved), generic documents for JSON fields,
 // typed geo values for geo operators. SQL builders and in-memory evaluators
 // consume this value as-is — nothing downstream re-interprets raw decoder
 // output.

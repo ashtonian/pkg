@@ -80,7 +80,10 @@ type TypeInfo struct {
 //
 //	string / int / float / bool kinds   string, int, float, bool
 //	time.Time, a UUID type (IsUUIDType) timestamp, uuid
-//	slice or array of those scalars     array — a PostgreSQL native array (TEXT[], BIGINT[], …); JSON text on SQLite
+//	Date                                date
+//	a decimal type (IsDecimalType)      decimal — PostgreSQL numeric; NUMERIC or REAL on SQLite
+//	slice or array of a scalar above,
+//	other than decimal                  array — a PostgreSQL native array (TEXT[], BIGINT[], …); JSON text on SQLite
 //	map, interface, json.RawMessage,
 //	slice of anything else              json — a document: PostgreSQL jsonb; JSON text on SQLite
 //	struct                              object — a JSON document with a fixed shape
@@ -100,7 +103,9 @@ func TypeOf(t reflect.Type) TypeInfo {
 		if t.Elem().Kind() == reflect.Uint8 {
 			return TypeInfo{Type: FieldTypeAny} // binary
 		}
-		if elem, ok := scalarType(t.Elem()); ok {
+		// A slice of decimals stays a document: their wire form is a string
+		// per element, which no native array column holds as numbers.
+		if elem, ok := scalarType(t.Elem()); ok && elem != FieldTypeDecimal {
 			return TypeInfo{Type: FieldTypeArray, Elem: elem, NumberKind: NumericKind(t.Elem())}
 		}
 		return TypeInfo{Type: FieldTypeJSON}
@@ -122,6 +127,9 @@ func scalarType(t reflect.Type) (FieldType, bool) {
 	}
 	if IsUUIDType(t) {
 		return FieldTypeUUID, true
+	}
+	if IsDecimalType(t) {
+		return FieldTypeDecimal, true
 	}
 	switch t.Kind() {
 	case reflect.String:

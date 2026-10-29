@@ -79,7 +79,7 @@ func storageOf(tag string) (storage JSONStorage, scalar core.FieldType, err erro
 	case strings.HasPrefix(tag, "scalar:"):
 		t := core.FieldType(strings.TrimPrefix(tag, "scalar:"))
 		if !pathTypes[t] {
-			return "", "", fmt.Errorf("storage %q: a scalar is string, int, float, bool, timestamp or uuid", tag)
+			return "", "", fmt.Errorf("storage %q: a scalar is %s", tag, pathTypeNames)
 		}
 		return "", t, nil
 	}
@@ -282,6 +282,17 @@ func fieldStorage(g *core.SchemaGenerator, field *core.Field) (string, error) {
 		return storage, nil
 	}
 	return tag, nil
+}
+
+// scalarStorage is the scalar type a document field's storage tag declares
+// (`storage:"scalar:<type>"`), or "" when the field is stored as a document.
+func scalarStorage(g *core.SchemaGenerator, field *core.Field) (core.FieldType, error) {
+	tag, err := fieldStorage(g, field)
+	if err != nil || tag == "" {
+		return "", err
+	}
+	_, scalar, err := storageOf(tag)
+	return scalar, err
 }
 
 // applyStorage applies a document field's storage declaration: the JSON storage of

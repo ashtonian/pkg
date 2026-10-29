@@ -20,6 +20,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/shopspring/decimal"
 	"github.com/stretchr/testify/require"
 
 	"github.com/ashtonian/pkg/parse"
@@ -29,19 +30,20 @@ import (
 const patchConformancePath = "testdata/patch_conformance.json"
 
 type confPatch struct {
-	ID       string         `json:"id"        db:"id"`
-	Name     string         `json:"name"      db:"name"      parse:"patch"`
-	Nick     *string        `json:"nick"      db:"nick"      parse:"patch"`
-	Status   string         `json:"status"    db:"status"    parse:"patch" enum:"active,offline"`
-	Count    int32          `json:"count"     db:"count"     parse:"patch"`
-	Small    int8           `json:"small"     db:"small"     parse:"patch"`
-	Ratio    float64        `json:"ratio"     db:"ratio"     parse:"patch"`
-	Active   bool           `json:"active"    db:"active"    parse:"patch"`
-	Tags     []string       `json:"tags"      db:"tags"      parse:"patch"`
-	Scores   []int16        `json:"scores"    db:"scores"    parse:"patch"`
-	Labels   map[string]any `json:"labels"    db:"labels"    parse:"patch"`
-	SeenAt   *time.Time     `json:"seen_at"   db:"seen_at"   parse:"patch"`
-	Readonly string         `json:"readonly"  db:"readonly"`
+	ID       string          `json:"id"        db:"id"`
+	Name     string          `json:"name"      db:"name"      parse:"patch"`
+	Nick     *string         `json:"nick"      db:"nick"      parse:"patch"`
+	Status   string          `json:"status"    db:"status"    parse:"patch" enum:"active,offline"`
+	Count    int32           `json:"count"     db:"count"     parse:"patch"`
+	Small    int8            `json:"small"     db:"small"     parse:"patch"`
+	Ratio    float64         `json:"ratio"     db:"ratio"     parse:"patch"`
+	Price    decimal.Decimal `json:"price"     db:"price"     parse:"patch"`
+	Active   bool            `json:"active"    db:"active"    parse:"patch"`
+	Tags     []string        `json:"tags"      db:"tags"      parse:"patch"`
+	Scores   []int16         `json:"scores"    db:"scores"    parse:"patch"`
+	Labels   map[string]any  `json:"labels"    db:"labels"    parse:"patch"`
+	SeenAt   *time.Time      `json:"seen_at"   db:"seen_at"   parse:"patch"`
+	Readonly string          `json:"readonly"  db:"readonly"`
 }
 
 type patchCase struct {
@@ -74,6 +76,14 @@ func patchInputs() []patchCase {
 		{Name: "int8_min", Input: map[string]any{"small": -128}},
 		{Name: "float", Input: map[string]any{"ratio": 0.5}},
 		{Name: "err_float_type", Input: map[string]any{"ratio": "half"}},
+		{Name: "decimal_string", Input: map[string]any{"price": "10.25"}},
+		{Name: "decimal_number", Input: map[string]any{"price": 10.5}},
+		{Name: "decimal_exponent", Input: map[string]any{"price": "1.5e2"}},
+		{Name: "err_decimal_word", Input: map[string]any{"price": "ten"}},
+		{Name: "err_decimal_bool", Input: map[string]any{"price": true}},
+		{Name: "err_decimal_null", Input: map[string]any{"price": nil}},
+		{Name: "err_decimal_leading_plus", Input: map[string]any{"price": "+1"}},
+		{Name: "err_decimal_beyond_digits", Input: map[string]any{"price": "1e1000"}},
 		{Name: "bool", Input: map[string]any{"active": false}},
 		{Name: "err_bool_type", Input: map[string]any{"active": "false"}},
 		{Name: "array", Input: map[string]any{"tags": []any{"a", "b"}}},

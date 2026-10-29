@@ -436,10 +436,10 @@ func normalizeOpValue(ps *PathSchema, op PatchOp, v any, depth int, codec core.C
 	return normalized, err
 }
 
-// normalizeTyped normalizes v for the Go type t: scalars via
-// core.NormalizeScalar, slices and arrays element by element, a type that is
-// a database value (driver.Valuer, such as decimal.Decimal) by decoding into
-// it, and remaining composite kinds by decoding and re-encoding their canonical
+// normalizeTyped normalizes v for the Go type t: scalars, decimals included,
+// via core.NormalizeScalar, slices and arrays element by element, another
+// type that is a database value (driver.Valuer) by decoding into it, and
+// remaining composite kinds by decoding and re-encoding their canonical
 // representation. SQL and typed apply must store the same JSON document.
 func normalizeTyped(t reflect.Type, v any, codec core.Codec) (any, error) {
 	v = normalizeNilPointer(v)
@@ -517,7 +517,7 @@ var valuerType = reflect.TypeFor[driver.Valuer]()
 // handles, or reports false for composite and unknown types.
 func scalarFieldType(t reflect.Type) (core.FieldType, bool) {
 	switch ft := core.TypeOf(t).Type; ft {
-	case core.FieldTypeString, core.FieldTypeInt, core.FieldTypeFloat, core.FieldTypeBool,
+	case core.FieldTypeString, core.FieldTypeInt, core.FieldTypeFloat, core.FieldTypeDecimal, core.FieldTypeBool,
 		core.FieldTypeTimestamp, core.FieldTypeDate, core.FieldTypeUUID:
 		return ft, true
 	}

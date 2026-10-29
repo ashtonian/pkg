@@ -35,7 +35,8 @@ func (f Field[V]) NotNull() Filter { return notNull(f.name) }
 func isNull(name string) Filter  { return condition(name, "$null", true) }
 func notNull(name string) Filter { return condition(name, "$not_null", true) }
 
-// Ordered is a field whose values have an order: a number, a timestamp.
+// Ordered is a field whose values have an order: a number, a decimal (any
+// type that marshals as its exact text, such as shopspring's), a timestamp.
 type Ordered[V any] struct{ Field[V] }
 
 // NewOrdered returns the ordered field named name.

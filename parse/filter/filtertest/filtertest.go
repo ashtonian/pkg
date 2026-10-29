@@ -15,6 +15,7 @@ import (
 
 	"github.com/ashtonian/pkg/parse/core"
 	"github.com/ashtonian/pkg/parse/filter"
+	"github.com/shopspring/decimal"
 )
 
 // Record declares every operator its field type admits (filter.OperatorsFor),
@@ -25,6 +26,7 @@ type Record struct {
 	Name   *string            `json:"name"   db:"name"   parse:"filter" filter_ops:"eq,ne,gt,gte,lt,lte,in,nin,like,ilike,contains,null,not_null,exists"`
 	Count  *int64             `json:"count"  db:"count"  parse:"filter" filter_ops:"eq,ne,gt,gte,lt,lte,in,nin,null,not_null,exists"`
 	Score  *float64           `json:"score"  db:"score"  parse:"filter" filter_ops:"eq,ne,gt,gte,lt,lte,in,nin,null,not_null,exists"`
+	Amount *decimal.Decimal   `json:"amount" db:"amount" parse:"filter" filter_ops:"eq,ne,gt,gte,lt,lte,in,nin,null,not_null,exists"`
 	Active *bool              `json:"active" db:"active" parse:"filter" filter_ops:"eq,ne,in,nin,null,not_null,exists"`
 	At     *time.Time         `json:"at"     db:"at"     parse:"filter" filter_ops:"eq,ne,gt,gte,lt,lte,in,nin,null,not_null,exists"`
 	Ref    *uuid.UUID         `json:"ref"    db:"ref"    parse:"filter" filter_ops:"eq,ne,in,nin,null,not_null,exists"`
@@ -49,25 +51,28 @@ func ref(n int) *uuid.UUID {
 
 func loc(lat, lon float64) map[string]float64 { return map[string]float64{"lat": lat, "lon": lon} }
 
+func amount(s string) *decimal.Decimal { return new(decimal.RequireFromString(s)) }
+
 // Records is the fixture data. Row d is NULL in every column but id; g's
 // document stores its integer as 1.0 with keys in a different order than
-// the cases name them.
+// the cases name them. The amounts order differently as numbers than as
+// text (9.5 < 10 < 10.25), and h's is stored with a scale (10.00).
 func Records() []Record {
 	return []Record{
-		{ID: "a", Name: new("Alpha"), Count: new(int64(1)), Score: new(1.5), Active: new(true), At: at(1), Ref: ref(1),
+		{ID: "a", Name: new("Alpha"), Count: new(int64(1)), Score: new(1.5), Amount: amount("10.25"), Active: new(true), At: at(1), Ref: ref(1),
 			Doc: json.RawMessage(`{"env":"prod","n":1,"tags":["x","y"]}`), Tags: []string{"x", "y"}, Loc: loc(10, 10)},
-		{ID: "b", Name: new("beta"), Count: new(int64(2)), Score: new(2.5), Active: new(false), At: at(2), Ref: ref(2),
+		{ID: "b", Name: new("beta"), Count: new(int64(2)), Score: new(2.5), Amount: amount("9.5"), Active: new(false), At: at(2), Ref: ref(2),
 			Doc: json.RawMessage(`{"env":"dev","n":2}`), Tags: []string{"y"}, Loc: loc(20, 20)},
-		{ID: "c", Name: new("Gamma%"), Count: new(int64(3)), Score: new(-1.0), Active: new(true), At: at(3), Ref: ref(3),
+		{ID: "c", Name: new("Gamma%"), Count: new(int64(3)), Score: new(-1.0), Amount: amount("-1"), Active: new(true), At: at(3), Ref: ref(3),
 			Doc: json.RawMessage(`{"env":"prod","nested":{"a":[1,2]}}`), Tags: []string{"z", "x"}, Loc: loc(-10, 170)},
 		{ID: "d"},
-		{ID: "e", Name: new("alpha beta"), Count: new(int64(9007199254740993)), Score: new(0.0), Active: new(false), At: at(5), Ref: ref(5),
+		{ID: "e", Name: new("alpha beta"), Count: new(int64(9007199254740993)), Score: new(0.0), Amount: amount("100"), Active: new(false), At: at(5), Ref: ref(5),
 			Doc: json.RawMessage(`[1,2,3]`), Tags: []string{}, Loc: loc(0, 0)},
-		{ID: "f", Name: new("del_ta"), Count: new(int64(0)), Score: new(0.001), Active: new(true), At: at(6), Ref: ref(6),
+		{ID: "f", Name: new("del_ta"), Count: new(int64(0)), Score: new(0.001), Amount: amount("0.5"), Active: new(true), At: at(6), Ref: ref(6),
 			Doc: json.RawMessage(`"text"`), Tags: []string{"x"}, Loc: loc(20.5, 19.5)},
-		{ID: "g", Name: new("Ωmega"), Count: new(int64(-5)), Score: new(100.25), At: at(7), Ref: ref(7),
+		{ID: "g", Name: new("Ωmega"), Count: new(int64(-5)), Score: new(100.25), Amount: amount("2"), At: at(7), Ref: ref(7),
 			Doc: json.RawMessage(`{"n":1.0,"env":"prod"}`), Tags: []string{"x", "x"}},
-		{ID: "h", Name: new(`back\slash`), Count: new(int64(9007199254740992)), Score: new(2.5), Active: new(true),
+		{ID: "h", Name: new(`back\slash`), Count: new(int64(9007199254740992)), Score: new(2.5), Amount: amount("10.00"), Active: new(true),
 			Doc: json.RawMessage(`{}`), Tags: []string{"y", "z"}, Loc: loc(25, 25)},
 	}
 }

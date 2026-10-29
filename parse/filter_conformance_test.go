@@ -31,6 +31,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/shopspring/decimal"
+
 	"github.com/ashtonian/pkg/parse/core"
 	"github.com/ashtonian/pkg/parse/filter"
 )
@@ -46,15 +48,16 @@ var confClock = func() time.Time { return time.Date(2026, 1, 1, 0, 0, 0, 0, time
 // confEntity is the schema the corpus is generated against. Its field/operator
 // set must mirror the schema the TS conformance test validates against.
 type confEntity struct {
-	ID      string         `json:"id"      parse:"filter" filter_ops:"eq,ne,in,nin"`
-	Name    string         `json:"name"    parse:"filter" filter_ops:"eq,ne,like,ilike,contains,null,not_null,exists"`
-	Status  string         `json:"status"  parse:"filter" filter_ops:"eq,ne,in,nin" enum:"active,offline,error"`
-	Count   int            `json:"count"   parse:"filter" filter_ops:"eq,ne,gt,gte,lt,lte,in,nin"`
-	Active  bool           `json:"active"  parse:"filter" filter_ops:"eq,ne"`
-	Created time.Time      `json:"created" parse:"filter" filter_ops:"eq,gt,gte,lt,lte"`
-	Meta    map[string]any `json:"meta"    parse:"filter" paths:"region:string"`
-	Note    *string        `json:"note"    parse:"filter" filter_ops:"not_null"`
-	Lines   []confLine     `json:"lines"   parse:"filter"`
+	ID      string          `json:"id"      parse:"filter" filter_ops:"eq,ne,in,nin"`
+	Name    string          `json:"name"    parse:"filter" filter_ops:"eq,ne,like,ilike,contains,null,not_null,exists"`
+	Status  string          `json:"status"  parse:"filter" filter_ops:"eq,ne,in,nin" enum:"active,offline,error"`
+	Count   int             `json:"count"   parse:"filter" filter_ops:"eq,ne,gt,gte,lt,lte,in,nin"`
+	Price   decimal.Decimal `json:"price"   parse:"filter" filter_ops:"eq,ne,gt,gte,lt,lte,in,nin"`
+	Active  bool            `json:"active"  parse:"filter" filter_ops:"eq,ne"`
+	Created time.Time       `json:"created" parse:"filter" filter_ops:"eq,gt,gte,lt,lte"`
+	Meta    map[string]any  `json:"meta"    parse:"filter" paths:"region:string"`
+	Note    *string         `json:"note"    parse:"filter" filter_ops:"not_null"`
+	Lines   []confLine      `json:"lines"   parse:"filter"`
 }
 
 // confLine is an element of confEntity's lines array.
@@ -117,6 +120,23 @@ func canonicalCases() []caseInput {
 		{name: "gte_number", input: map[string]any{"count": map[string]any{"$gte": 5}}},
 		{name: "lt_number", input: map[string]any{"count": map[string]any{"$lt": 5}}},
 		{name: "lte_number", input: map[string]any{"count": map[string]any{"$lte": 5}}},
+
+		// --- decimals: a JSON number or a numeric string, canonicalized ---
+		{name: "eq_decimal_string", input: map[string]any{"price": "10.50"}},
+		{name: "eq_decimal_number", input: map[string]any{"price": 10.5}},
+		{name: "gt_decimal_exponent", input: map[string]any{"price": map[string]any{"$gt": "1.5E-3"}}},
+		{name: "eq_decimal_beyond_float64", input: map[string]any{"price": "0.10000000000000001"}},
+		{name: "in_decimal", input: map[string]any{"price": map[string]any{"$in": []any{"9.5", 2, "-0"}}}},
+		{name: "err_decimal_word", input: map[string]any{"price": "ten"}},
+		{name: "err_decimal_bool", input: map[string]any{"price": true}},
+		{name: "err_decimal_null", input: map[string]any{"price": nil}},
+		{name: "err_decimal_hexadecimal", input: map[string]any{"price": "0x10"}},
+		{name: "err_decimal_leading_plus", input: map[string]any{"price": "+1"}},
+		{name: "err_decimal_leading_point", input: map[string]any{"price": ".5"}},
+		{name: "err_decimal_leading_zero", input: map[string]any{"price": "007"}},
+		{name: "err_decimal_beyond_digits", input: map[string]any{"price": "1e1000"}},
+		{name: "err_decimal_exponent_beyond_int32", input: map[string]any{"price": "0e2147483648"}},
+		{name: "err_decimal_in_member", input: map[string]any{"price": map[string]any{"$in": []any{"1", "one"}}}},
 
 		// --- set membership ---
 		{name: "in_array", input: map[string]any{"status": map[string]any{"$in": []any{"active", "offline"}}}},

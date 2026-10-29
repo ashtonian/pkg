@@ -264,11 +264,23 @@ func generateSortSchema(g *core.SchemaGenerator, t reflect.Type) (*SortSchema, e
 		if err != nil {
 			return nil, fmt.Errorf("field %s: %w", field.GoName, err)
 		}
+		kind := core.NumericKind(ft)
+		if core.IsDocument(fieldType) {
+			// A struct the database holds as a scalar orders as that scalar,
+			// as it filters (applyStorage).
+			scalar, err := scalarStorage(g, field)
+			if err != nil {
+				return nil, fmt.Errorf("field %s: %w", field.GoName, err)
+			}
+			if scalar != "" {
+				fieldType, kind = scalar, kindOf(scalar)
+			}
+		}
 		fields[fieldName] = &SortFieldSchema{
 			SQLExpr:    sqlExpr,
 			Column:     column,
 			DataType:   fieldType,
-			NumberKind: core.NumericKind(ft),
+			NumberKind: kind,
 			Nullable:   nullable,
 			Indexed:    tags.Indexed,
 		}
@@ -299,14 +311,15 @@ func generateSortSchema(g *core.SchemaGenerator, t reflect.Type) (*SortSchema, e
 // call DefaultFilterOps() for a defensive copy.
 //
 // `$in` and `$nin` come as a pair. JSON documents and
-// arrays default to containment, which every backend evaluates
-// . Struct-typed (object) fields get no default: several are
-// opaque scalars stored in their own column type (decimal.Decimal), not
-// documents, so they opt in with filter_ops.
+// arrays default to containment, which every backend evaluates.
+// Struct-typed (object) fields get no default: a struct the database holds
+// as a scalar declares it with `storage:"scalar:<type>"` and takes that
+// type's defaults, and a document opts in with filter_ops.
 var defaultFilterOps = map[core.FieldType][]FilterOperator{
 	core.FieldTypeString:    {OpEq, OpNe, OpContains, OpLike, OpILike, OpIn, OpNin},
 	core.FieldTypeInt:       {OpEq, OpNe, OpGt, OpGte, OpLt, OpLte, OpIn, OpNin},
 	core.FieldTypeFloat:     {OpEq, OpNe, OpGt, OpGte, OpLt, OpLte, OpIn, OpNin},
+	core.FieldTypeDecimal:   {OpEq, OpNe, OpGt, OpGte, OpLt, OpLte, OpIn, OpNin},
 	core.FieldTypeBool:      {OpEq, OpNe},
 	core.FieldTypeTimestamp: {OpEq, OpNe, OpGt, OpGte, OpLt, OpLte},
 	core.FieldTypeDate:      {OpEq, OpNe, OpGt, OpGte, OpLt, OpLte},
@@ -384,7 +397,7 @@ func FilterMetaFromSchema(schema *ResourceSchema) *FilterMeta {
 // encoding.TextMarshaler — see CursorValue).
 func sortable(t reflect.Type, ft core.FieldType) bool {
 	switch ft {
-	case core.FieldTypeString, core.FieldTypeInt, core.FieldTypeFloat,
+	case core.FieldTypeString, core.FieldTypeInt, core.FieldTypeFloat, core.FieldTypeDecimal,
 		core.FieldTypeBool, core.FieldTypeTimestamp, core.FieldTypeDate, core.FieldTypeUUID:
 		return true
 	case core.FieldTypeObject:

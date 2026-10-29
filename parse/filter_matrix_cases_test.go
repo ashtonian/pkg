@@ -28,7 +28,7 @@ type matrixDB struct {
 	casts map[string]string
 }
 
-var matrixColumns = []string{"id", "name", "count", "score", "active", "at", "ref", "doc", "tags", "loc"}
+var matrixColumns = []string{"id", "name", "count", "score", "amount", "active", "at", "ref", "doc", "tags", "loc"}
 
 func runFilterMatrix(t *testing.T, name string, mdb matrixDB) {
 	t.Helper()
