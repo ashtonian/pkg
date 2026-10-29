@@ -29,6 +29,33 @@
           "data_type": "json",
           "nullable": true
         },
+        "/mode": {
+          "allowed_ops": [
+            "replace",
+            "remove"
+          ],
+          "data_type": "string",
+          "nullable": true,
+          "enum_values": [
+            "auto",
+            "manual"
+          ]
+        },
+        "/modes": {
+          "allowed_ops": [
+            "replace",
+            "add",
+            "remove",
+            "array_append"
+          ],
+          "data_type": "array",
+          "nullable": true,
+          "enum_values": [
+            "auto",
+            "manual"
+          ],
+          "elem": "string"
+        },
         "/name": {
           "allowed_ops": [
             "replace"
@@ -394,6 +421,34 @@
         "active": true,
         "count": 1,
         "name": "a"
+      },
+      "valid": true
+    },
+    {
+      "name": "array_enum",
+      "input": {
+        "modes": [
+          "auto",
+          "manual"
+        ]
+      },
+      "valid": true
+    },
+    {
+      "name": "err_array_enum",
+      "input": {
+        "modes": [
+          "auto",
+          "off"
+        ]
+      },
+      "valid": false,
+      "errorCode": "E2077"
+    },
+    {
+      "name": "null_clears_nullable_enum",
+      "input": {
+        "mode": null
       },
       "valid": true
     }

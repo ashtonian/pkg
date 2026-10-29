@@ -245,25 +245,30 @@ type confPatchInput struct {
 	Tags   client.Nullable[[]string]        `json:"tags,omitzero"`
 	Labels client.Nullable[map[string]any]  `json:"labels,omitzero"`
 	SeenAt client.Nullable[time.Time]       `json:"seen_at,omitzero"`
+	Modes  client.Nullable[[]string]        `json:"modes,omitzero"`
+	Mode   client.Nullable[string]          `json:"mode,omitzero"`
 }
 
 var patchBuilt = map[string]confPatchInput{
-	"string":                  {Name: client.Set("a")},
-	"err_null_on_value_field": {Name: client.Null[string]()},
-	"null_on_pointer_field":   {Nick: client.Null[string]()},
-	"enum":                    {Status: client.Set("active")},
-	"err_enum":                {Status: client.Set("busy")},
-	"int":                     {Count: client.Set[int32](5)},
-	"int8_min":                {Small: client.Set[int8](-128)},
-	"float":                   {Ratio: client.Set(0.5)},
-	"decimal_string":          {Price: client.Set(decimal.RequireFromString("10.25"))},
-	"err_decimal_null":        {Price: client.Null[decimal.Decimal]()},
-	"bool":                    {Active: client.Set(false)},
-	"array":                   {Tags: client.Set([]string{"a", "b"})},
-	"clear_array":             {Tags: client.Null[[]string]()},
-	"document_merge":          {Labels: client.Set(map[string]any{"a": 1, "old": nil})},
-	"timestamp":               {SeenAt: client.Set(time.Date(2026, 10, 19, 12, 0, 0, 0, time.UTC))},
-	"several":                 {Name: client.Set("a"), Count: client.Set[int32](1), Active: client.Set(true)},
+	"string":                    {Name: client.Set("a")},
+	"err_null_on_value_field":   {Name: client.Null[string]()},
+	"null_on_pointer_field":     {Nick: client.Null[string]()},
+	"enum":                      {Status: client.Set("active")},
+	"err_enum":                  {Status: client.Set("busy")},
+	"int":                       {Count: client.Set[int32](5)},
+	"int8_min":                  {Small: client.Set[int8](-128)},
+	"float":                     {Ratio: client.Set(0.5)},
+	"decimal_string":            {Price: client.Set(decimal.RequireFromString("10.25"))},
+	"err_decimal_null":          {Price: client.Null[decimal.Decimal]()},
+	"bool":                      {Active: client.Set(false)},
+	"array":                     {Tags: client.Set([]string{"a", "b"})},
+	"clear_array":               {Tags: client.Null[[]string]()},
+	"document_merge":            {Labels: client.Set(map[string]any{"a": 1, "old": nil})},
+	"timestamp":                 {SeenAt: client.Set(time.Date(2026, 10, 19, 12, 0, 0, 0, time.UTC))},
+	"several":                   {Name: client.Set("a"), Count: client.Set[int32](1), Active: client.Set(true)},
+	"array_enum":                {Modes: client.Set([]string{"auto", "manual"})},
+	"err_array_enum":            {Modes: client.Set([]string{"auto", "off"})},
+	"null_clears_nullable_enum": {Mode: client.Null[string]()},
 }
 
 var patchInexpressible = map[string]string{

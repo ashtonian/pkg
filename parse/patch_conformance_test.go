@@ -44,6 +44,8 @@ type confPatch struct {
 	Labels   map[string]any  `json:"labels"    db:"labels"    parse:"patch"`
 	SeenAt   *time.Time      `json:"seen_at"   db:"seen_at"   parse:"patch"`
 	Readonly string          `json:"readonly"  db:"readonly"`
+	Modes    []string        `json:"modes"     db:"modes"     parse:"patch" enum:"auto,manual"`
+	Mode     *string         `json:"mode"      db:"mode"      parse:"patch" enum:"auto,manual"`
 }
 
 type patchCase struct {
@@ -98,6 +100,9 @@ func patchInputs() []patchCase {
 		{Name: "err_not_patchable", Input: map[string]any{"readonly": "x"}},
 		{Name: "err_unknown_field", Input: map[string]any{"colour": "red"}},
 		{Name: "several", Input: map[string]any{"name": "a", "count": 1, "active": true}},
+		{Name: "array_enum", Input: map[string]any{"modes": []any{"auto", "manual"}}},
+		{Name: "err_array_enum", Input: map[string]any{"modes": []any{"auto", "off"}}},
+		{Name: "null_clears_nullable_enum", Input: map[string]any{"mode": nil}},
 	}
 }
 

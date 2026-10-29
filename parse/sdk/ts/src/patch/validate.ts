@@ -8,8 +8,8 @@ import type { PatchOp, PatchPathSchema, PatchSchema } from "./types.js";
  * each key is a patchable top-level path (an RFC 6901 JSON Pointer), null
  * only where the path is nullable (and `remove` allowed), every other value
  * of the path's type — numbers integral and within the path's Go kind,
- * strings in its enum, arrays of its element type, a relation's membership
- * a list — and the operation count within the maximum, counting each
+ * strings in its enum, arrays of its element type (each element in the
+ * enum), a relation's membership a list — and the operation count within the maximum, counting each
  * top-level member and each nested object below it. The corpus
  * testdata/patch_conformance.json holds the two to one answer per input.
  * Formats the client cannot judge exactly (timestamp and UUID spellings),
@@ -62,16 +62,23 @@ function validatePatchValue(field: string, value: unknown, path: PatchPathSchema
     if (!Array.isArray(value)) {
       throw new SchemaValidationError(field, "E2077", `Field "${field}" expects an array`);
     }
+    if (!path.elem) return;
     for (const el of value) {
-      if (path.elem && !scalarOK(el, path.elem, path.number_kind)) {
+      if (!scalarOK(el, path.elem, path.number_kind)) {
         throw new SchemaValidationError(field, "E2077", `Field "${field}" expects ${path.elem} elements`);
       }
+      checkEnum(field, el, path);
     }
     return;
   }
   if (!scalarOK(value, path.data_type, path.number_kind)) {
     throw new SchemaValidationError(field, "E2077", `Field "${field}" expects ${path.data_type}, got ${typeof value}`);
   }
+  checkEnum(field, value, path);
+}
+
+/** The path's enum, on a value or an array path's element. */
+function checkEnum(field: string, value: unknown, path: PatchPathSchema): void {
   if (path.enum_values && path.enum_values.length > 0 && typeof value === "string" && !path.enum_values.includes(value)) {
     throw new SchemaValidationError(field, "E2077", `Value "${value}" is not allowed for "${field}". Allowed: ${path.enum_values.join(", ")}`);
   }
