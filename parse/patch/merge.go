@@ -135,6 +135,13 @@ func ParseMergePatchMap(raw map[string]any, schema *PatchSchema, config *core.Pa
 				}
 			}
 		}
+		if err := checkItems(pathSchema, op, value, 1); err != nil {
+			return nil, &core.ParseError{
+				Kind: core.ParseErrorKindPatch, Code: ECodePatchValueInvalid.String(),
+				Message: fmt.Sprintf("invalid value for path '%s': %v", path, err),
+				Path:    path, Cause: err,
+			}
+		}
 
 		result.Operations = append(result.Operations, &PatchOperation{
 			Op: op, Path: path, Value: value, Schema: pathSchema,

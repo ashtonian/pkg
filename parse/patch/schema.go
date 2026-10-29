@@ -108,7 +108,8 @@ type PathSchema struct {
 	// schema discovery.
 	EnumValues []string
 	// Bounds are the path's minlen, maxlen, min and max bounds (also a
-	// Validator), for schema discovery.
+	// Validator) and its minitems and maxitems element counts (checked on
+	// an array set whole, and by Nullable), for schema discovery.
 	Bounds    core.Bounds
 	SQLColumn string
 
@@ -122,10 +123,11 @@ type PathSchema struct {
 	Relation *core.RelationSchema
 }
 
-// Nullable reports whether the path's Go type can hold null. Unknown types
-// (GoType nil) are treated as nullable.
+// Nullable reports whether the path accepts null: its Go type can hold
+// null, and null does not clear it to an empty array its least element count
+// refuses. Unknown types (GoType nil) are treated as nullable.
 func (p *PathSchema) Nullable() bool {
-	return p.GoType == nil || isNullableType(p.GoType)
+	return p.GoType == nil || acceptsNull(p.GoType, p.Bounds)
 }
 
 // ClearedValue is what removing the path, or setting it to null, stores:
@@ -137,16 +139,31 @@ func (p *PathSchema) ClearedValue() any {
 	if p == nil || p.GoType == nil || p.Relation != nil {
 		return nil
 	}
-	switch p.GoType.Kind() {
-	case reflect.Slice:
-		if p.GoType.Elem().Kind() == reflect.Uint8 { // []byte, json.RawMessage
-			return nil
-		}
+	switch {
+	case clearsToEmptySlice(p.GoType):
 		return reflect.MakeSlice(p.GoType, 0, 0).Interface()
-	case reflect.Map:
+	case p.GoType.Kind() == reflect.Map:
 		return reflect.MakeMap(p.GoType).Interface()
 	}
 	return nil
+}
+
+// clearsToEmptySlice reports a slice type a clear empties; []byte and
+// json.RawMessage clear to NULL.
+func clearsToEmptySlice(t reflect.Type) bool {
+	return t.Kind() == reflect.Slice && t.Elem().Kind() != reflect.Uint8
+}
+
+// acceptsNull reports whether a path of Go type t bounded by b accepts null:
+// t can hold null, and null does not clear it to an empty array b refuses.
+func acceptsNull(t reflect.Type, b core.Bounds) bool {
+	return isNullableType(t) && !mustHoldElement(t, b)
+}
+
+// mustHoldElement reports a slice path, which a clear empties, whose least
+// element count is above zero.
+func mustHoldElement(t reflect.Type, b core.Bounds) bool {
+	return b.MinItems != nil && *b.MinItems > 0 && clearsToEmptySlice(t)
 }
 
 // AllowsOp checks whether op is in the path's allowed ops list.

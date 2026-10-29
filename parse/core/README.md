@@ -21,7 +21,7 @@ Start with the [runnable package example](../README.md#quick-start). The focused
 - Pointers: `ParsePointer`, `FormatPointer`, `EscapePointerToken`, `MatchWildcard`
 - Relations: `RelationSchema`, `ParseRelationTag`, `IsIdentifier`
 - Errors: `Code` (string constants; error identity, status and default message), `ParseError` (`ErrorCode`, `ErrorHTTPStatus`, `IsErrorUserFacing`), `ParseErrorKind`; policy: `PolicySubject`
-- Fields: `StructFieldsOf`, `StructFields` (`External`, `ColumnTagged`), `Field` (`Value`, `Settable`, `Hidden`), `Tags`, `Capabilities`, `Bounds` (`IsZero`, `Check`: a field's `minlen` / `maxlen` / `min` / `max`) — one walk of a struct type shared by every schema
+- Fields: `StructFieldsOf`, `StructFields` (`External`, `ColumnTagged`), `Field` (`Value`, `Settable`, `Hidden`), `Tags`, `Capabilities`, `Bounds` (`IsZero`, `BoundsValues`, `CountsItems`, `Check`: a field's `minlen` / `maxlen` / `min` / `max` / `minitems` / `maxitems`) — one walk of a struct type shared by every schema
 - Codec: `Codec`, `StdlibJSON`; naming: `ToSnakeCase`, `Pluralize`; `Validator`
 
 ## Code map
@@ -31,7 +31,7 @@ Start with the [runnable package example](../README.md#quick-start). The focused
 | `core.go` | `ParserConfig` + options, `Codec` / `StdlibJSON`, `FieldType`, `SQLType`, `ParseError`, `SchemaGenerator` + generator options |
 | `code.go` | Immutable error-code metadata; no application catalog dependency |
 | `fields.go` | `StructFields` — one gowalker walk per struct type: encoding/json field names with embedded structs promoted, hidden fields kept for columns, every tag parsed once (`Tags`) |
-| `bounds.go` | `Bounds` — the `minlen` / `maxlen` / `min` / `max` tags, read and checked against the field's type |
+| `bounds.go` | `Bounds` — the `minlen` / `maxlen` / `min` / `max` / `minitems` / `maxitems` tags, read and checked against the field's type |
 | `typeof.go` | `TypeOf` — Go type → storage model; `IsUUIDType` / `UUIDText` |
 | `number.go` | Exact integer / float normalization and comparison |
 | `decimal.go` | `Decimal`, `IsDecimalType`, canonical decimal text (`DecimalText`), exact decimal order (`CompareDecimals`) |

@@ -51,6 +51,7 @@ type confPatch struct {
 	Rate     float32         `json:"rate"      db:"rate"      parse:"patch" min:"0" max:"0.1"`
 	Amount   decimal.Decimal `json:"amount"    db:"amount"    parse:"patch" min:"0.01" max:"999.99"`
 	Codes    []string        `json:"codes"     db:"codes"     parse:"patch" maxlen:"2"`
+	Zones    []string        `json:"zones"     db:"zones"     parse:"patch" minitems:"1" maxitems:"2"`
 }
 
 type patchCase struct {
@@ -124,6 +125,10 @@ func patchInputs() []patchCase {
 		{Name: "err_decimal_min", Input: map[string]any{"amount": "0.001"}},
 		{Name: "array_element_length", Input: map[string]any{"codes": []any{"ab", "c"}}},
 		{Name: "err_array_element_length", Input: map[string]any{"codes": []any{"ab", "abc"}}},
+		{Name: "items_bounds", Input: map[string]any{"zones": []any{"a", "b"}}},
+		{Name: "err_items_min", Input: map[string]any{"zones": []any{}}},
+		{Name: "err_items_max", Input: map[string]any{"zones": []any{"a", "b", "c"}}},
+		{Name: "err_items_clear", Input: map[string]any{"zones": nil}},
 	}
 }
 

@@ -89,7 +89,7 @@ func generatePatchSchema(g *core.SchemaGenerator, t reflect.Type, server bool) (
 		}
 		fieldType := info.Type
 
-		nullable := isNullableType(field.Type)
+		nullable := acceptsNull(field.Type, tags.Bounds)
 		var allowedOps []PatchOp
 		if opsTag := tags.PatchOps; opsTag != "" {
 			for p := range strings.SplitSeq(opsTag, ",") {
@@ -102,6 +102,9 @@ func generatePatchSchema(g *core.SchemaGenerator, t reflect.Type, server bool) (
 					return nil, fmt.Errorf("field %s: unknown patch operation %q", field.GoName, p)
 				}
 				if op == PatchOpRemove && !nullable && tags.Relation == "" {
+					if mustHoldElement(field.Type, tags.Bounds) {
+						return nil, fmt.Errorf("field %s: patch operation remove empties the array, which minitems %d refuses", field.GoName, *tags.Bounds.MinItems)
+					}
 					return nil, fmt.Errorf("field %s: patch operation remove requires a nullable Go type (pointer, slice, map), got %s", field.GoName, field.Type)
 				}
 				if op == PatchOpArrayAppend && isFixedArray(field.Type) {
@@ -144,12 +147,14 @@ func generatePatchSchema(g *core.SchemaGenerator, t reflect.Type, server bool) (
 		}
 		if !tags.Bounds.IsZero() {
 			if tags.Relation != "" {
-				return nil, fmt.Errorf("field %s: minlen, maxlen, min and max do not apply to a relation", field.GoName)
+				return nil, fmt.Errorf("field %s: minlen, maxlen, min, max, minitems and maxitems do not apply to a relation", field.GoName)
 			}
 			if err := tags.Bounds.Check(info); err != nil {
 				return nil, fmt.Errorf("field %s: %w", field.GoName, err)
 			}
-			validators = append(validators, boundsValidator(tags.Bounds, info))
+			if tags.Bounds.BoundsValues() {
+				validators = append(validators, boundsValidator(tags.Bounds, info))
+			}
 		}
 
 		// a field carrying both `parse:"patch"` and `relation:"…"`

@@ -248,6 +248,10 @@ type PatchPathResponse struct {
 	// each element of an array path, as exact decimal text.
 	Minimum string `json:"minimum,omitempty"`
 	Maximum string `json:"maximum,omitempty"`
+	// MinItems and MaxItems are the fewest and most elements of an array
+	// path.
+	MinItems *int `json:"min_items,omitempty"`
+	MaxItems *int `json:"max_items,omitempty"`
 	// Elem is an array path's element type.
 	Elem core.FieldType `json:"elem,omitempty"`
 	// NumberKind is the Go numeric kind of a number path, or of an array
@@ -354,6 +358,7 @@ func patchSchemaToResponse(s *patch.PatchSchema) *PatchSchemaResponse {
 			AllowedOps: slices.Clone(p.AllowedOps), DataType: p.DataType,
 			Nullable: p.Nullable(), EnumValues: slices.Clone(p.EnumValues), Relation: p.Relation != nil,
 			MinLength: cloneInt(p.Bounds.MinLen), MaxLength: cloneInt(p.Bounds.MaxLen), Minimum: p.Bounds.Min, Maximum: p.Bounds.Max,
+			MinItems: cloneInt(p.Bounds.MinItems), MaxItems: cloneInt(p.Bounds.MaxItems),
 		}
 		if p.GoType != nil {
 			info := core.TypeOf(p.GoType)

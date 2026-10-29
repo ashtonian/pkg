@@ -36,10 +36,11 @@ Paths are RFC 6901 JSON Pointers: `/labels/a~1b` addresses the key `a/b`, and `~
 | Allowed path and operation | Reject undeclared paths (E2076) and disallowed operations (E2064) |
 | Required value | `add`, `replace`, `test`, and `array_append` require a `value` member; missing is E2075 |
 | Explicit null | A value, not an omitted member; `ParseOps` callers set `RawPatchOp.HasValue` to distinguish it |
-| Nullability | Top-level null/remove requires a nullable Go type: pointer, slice, map, or interface (E2077) |
+| Nullability | Top-level null/remove requires a nullable Go type: pointer, slice, map, or interface — not a slice whose `minitems` is above zero, which a clear would empty (E2077) |
 | Field value | Normalize exact integers, canonical decimal text, canonical UUIDs/timestamps, array elements, and typed documents; invalid values are E2077 |
 | Fixed arrays | Replacement must have exactly the Go array's length; `array_append` cannot grow it |
 | Enum, bounds and policy | Enforce the `enum`, `minlen` / `maxlen` and `min` / `max` validators (per element on an array path; null passes, as nullability decides it) and caller-supplied path/value policy; a value outside them is E2077 |
+| Element counts | An array a top-level `replace` or `add` sets whole holds the path's `minitems` / `maxitems` (E2077). An element added, appended or removed, and an array moved or copied in, change an array the parser does not see: the store's constraint counts those |
 | Transfer source | `move` needs permission to remove its source; top-level source must be nullable. Typed source/destination kinds must be compatible, pointers aside |
 | Runtime transfer destination | Validate the resolved value against destination nullability and validators after preceding operations run |
 | `test` | Exact JSON comparison; `1.0` equals `1`, but missing paths or different document members fail E2077 |

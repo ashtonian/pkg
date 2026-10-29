@@ -124,5 +124,119 @@ func TestBounds_RefusedOnTypesTheyCannotBound(t *testing.T) {
 	_, err = patch.GeneratePatchSchema[numberOnDocument](g)
 	assert.ErrorContains(t, err, "field M: min and max bound numbers")
 	_, err = patch.GeneratePatchSchema[onRelation](g)
-	assert.ErrorContains(t, err, "field Tags: minlen, maxlen, min and max do not apply to a relation")
+	assert.ErrorContains(t, err, "field Tags: minlen, maxlen, min, max, minitems and maxitems do not apply to a relation")
+
+	type countOnString struct {
+		S string `json:"s" parse:"patch" minitems:"1"`
+	}
+	type countOnRelation struct {
+		Tags []string `json:"tags" db:"-" parse:"patch" relation:"doc_tags,doc_id,tag_id" minitems:"1"`
+	}
+	_, err = patch.GeneratePatchSchema[countOnString](g)
+	assert.ErrorContains(t, err, "field S: minitems and maxitems bound arrays, not string")
+	_, err = patch.GeneratePatchSchema[countOnRelation](g)
+	assert.ErrorContains(t, err, "do not apply to a relation")
+
+	type removeFromRequired struct {
+		Zones []string `json:"zones" parse:"patch" patch_ops:"replace,remove" minitems:"1"`
+	}
+	_, err = patch.GeneratePatchSchema[removeFromRequired](g)
+	assert.ErrorContains(t, err, "field Zones: patch operation remove empties the array, which minitems 1 refuses")
+}
+
+type countedDoc struct {
+	Zones  []string  `json:"zones"  parse:"patch" minitems:"1" maxitems:"3"`
+	Spares []int32   `json:"spares" parse:"patch" maxitems:"2"`
+	Hosts  *[]string `json:"hosts"  parse:"patch" minitems:"1"`
+	Codes  []string  `json:"codes"  parse:"patch" minitems:"1" maxlen:"2"`
+}
+
+func countedSchema(t *testing.T) *patch.PatchSchema {
+	t.Helper()
+	schema, err := patch.GeneratePatchSchema[countedDoc](core.NewSchemaGenerator())
+	require.NoError(t, err)
+	return schema
+}
+
+// An array set whole holds its path's element counts, and a path that must
+// hold an element cannot be cleared: a slice clears to empty.
+func TestItems_ValidateArraysSetWhole(t *testing.T) {
+	schema := countedSchema(t)
+	tests := []struct {
+		name  string
+		merge string
+		want  string // empty: admitted
+	}{
+		{name: "fewest", merge: `{"zones":["a"]}`},
+		{name: "most", merge: `{"zones":["a","b","c"]}`},
+		{name: "empty", merge: `{"zones":[]}`, want: "0 elements is fewer than the minimum 1"},
+		{name: "too many", merge: `{"zones":["a","b","c","d"]}`, want: "4 elements is more than the maximum 3"},
+		{name: "null on a path that must hold an element", merge: `{"zones":null}`, want: "field cannot be cleared to an empty array (minitems 1)"},
+		{name: "null clears a path with no least count", merge: `{"spares":null}`},
+		{name: "empty under a greatest count", merge: `{"spares":[]}`},
+		{name: "too many numbers", merge: `{"spares":[1,2,3]}`, want: "3 elements is more than the maximum 2"},
+		{name: "null clears a pointer path to NULL", merge: `{"hosts":null}`},
+		{name: "a pointer path's array counted", merge: `{"hosts":[]}`, want: "0 elements is fewer than the minimum 1"},
+		{name: "element bounds beside the count", merge: `{"codes":["abc"]}`, want: "3 characters is more than the maximum length 2"},
+		{name: "count beside element bounds", merge: `{"codes":[]}`, want: "0 elements is fewer than the minimum 1"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := patch.ParseMergePatch([]byte(tt.merge), schema, nil)
+			if tt.want == "" {
+				assert.NoError(t, err)
+				return
+			}
+			var pe *core.ParseError
+			require.ErrorAs(t, err, &pe)
+			assert.Equal(t, patch.ECodePatchValueInvalid.String(), pe.Code)
+			assert.ErrorContains(t, err, tt.want)
+		})
+	}
+
+	t.Run("a refusal names the path", func(t *testing.T) {
+		for _, merge := range []string{`{"zones":null}`, `{"zones":[]}`} {
+			_, err := patch.ParseMergePatch([]byte(merge), schema, nil)
+			var pe *core.ParseError
+			require.ErrorAs(t, err, &pe)
+			assert.Equal(t, "/zones", pe.Path, merge)
+		}
+	})
+
+	p := patch.NewParser(schema, nil)
+	jsonPatch := []struct {
+		name string
+		ops  string
+		want string
+	}{
+		{name: "replace whole", ops: `[{"op":"replace","path":"/zones","value":["a","b"]}]`},
+		{name: "replace with too many", ops: `[{"op":"replace","path":"/zones","value":["a","b","c","d"]}]`, want: "4 elements is more than the maximum 3"},
+		{name: "add an empty array", ops: `[{"op":"add","path":"/zones","value":[]}]`, want: "0 elements is fewer than the minimum 1"},
+		{name: "remove a path that must hold an element", ops: `[{"op":"remove","path":"/zones"}]`, want: "operation 'remove' not allowed on path '/zones'"},
+		{name: "remove a path with no least count", ops: `[{"op":"remove","path":"/spares"}]`},
+		// The parser does not see the array an element joins; the store counts it.
+		{name: "an element appended", ops: `[{"op":"array_append","path":"/zones","value":"d"}]`},
+	}
+	for _, tt := range jsonPatch {
+		t.Run("JSON Patch "+tt.name, func(t *testing.T) {
+			_, err := p.Parse([]byte(tt.ops))
+			if tt.want == "" {
+				assert.NoError(t, err)
+				return
+			}
+			assert.ErrorContains(t, err, tt.want)
+		})
+	}
+}
+
+func TestItems_AdvertisedOnThePath(t *testing.T) {
+	paths := countedSchema(t).AllowedPaths
+	assert.Equal(t, core.Bounds{MinItems: new(1), MaxItems: new(3)}, paths["/zones"].Bounds)
+	assert.Equal(t, core.Bounds{MaxItems: new(2)}, paths["/spares"].Bounds)
+	assert.False(t, paths["/zones"].Nullable(), "a slice that must hold an element has no empty value to clear to")
+	assert.True(t, paths["/spares"].Nullable())
+	assert.True(t, paths["/hosts"].Nullable(), "a pointer clears to NULL")
+	assert.False(t, paths["/zones"].AllowsOp(patch.PatchOpRemove), "remove is not offered where it is refused")
+	assert.True(t, paths["/spares"].AllowsOp(patch.PatchOpRemove))
+	assert.Empty(t, paths["/zones"].Validators, "element counts are not a per-value validator")
 }

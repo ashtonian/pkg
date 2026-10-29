@@ -209,6 +209,13 @@ func (p *Parser) validateOps(ops []RawPatchOp) (*ParsedPatch, error) {
 				}
 			}
 		}
+		if err := checkItems(pathSchema, op, value, depth); err != nil {
+			return nil, &core.ParseError{
+				Kind: core.ParseErrorKindPatch, Code: ECodePatchValueInvalid.String(),
+				Message: fmt.Sprintf("invalid value for path '%s' at index %d: %v", raw.Path, i, err),
+				Path:    raw.Path, Index: new(i), Cause: err,
+			}
+		}
 
 		result.Operations = append(result.Operations, &PatchOperation{
 			Op: op, Path: raw.Path, From: raw.From, Value: value, Schema: pathSchema,
@@ -369,11 +376,40 @@ func checkNullability(ps *PathSchema, op PatchOp, value any, depth int) error {
 	if depth != 1 || ps.Relation != nil || ps.Nullable() {
 		return nil
 	}
-	switch {
-	case op == PatchOpRemove:
-		return fmt.Errorf("field is not nullable (%s) and cannot be removed", ps.GoType)
-	case value == nil && (op == PatchOpReplace || op == PatchOpAdd):
-		return fmt.Errorf("field is not nullable (%s)", ps.GoType)
+	clears := op == PatchOpRemove || (value == nil && (op == PatchOpReplace || op == PatchOpAdd))
+	if !clears {
+		return nil
+	}
+	reason := fmt.Sprintf("field is not nullable (%s)", ps.GoType)
+	if mustHoldElement(ps.GoType, ps.Bounds) {
+		reason = fmt.Sprintf("field cannot be cleared to an empty array (minitems %d)", *ps.Bounds.MinItems)
+	}
+	if op == PatchOpRemove {
+		return fmt.Errorf("%s and cannot be removed", reason)
+	}
+	return errors.New(reason)
+}
+
+// checkItems refuses an array a replace or add sets whole outside the path's
+// element counts. Clearing a path that must hold an element is refused as a
+// null (Nullable). An element added, appended or removed, and an array moved
+// or copied in, change an array the parser does not see; the store counts
+// those.
+func checkItems(ps *PathSchema, op PatchOp, value any, depth int) error {
+	b := ps.Bounds
+	if depth != 1 || !b.CountsItems() || ps.Relation != nil || (op != PatchOpReplace && op != PatchOpAdd) {
+		return nil
+	}
+	array := reflect.ValueOf(value)
+	if array.Kind() != reflect.Slice {
+		return nil
+	}
+	n := array.Len()
+	if b.MinItems != nil && n < *b.MinItems {
+		return fmt.Errorf("%d elements is fewer than the minimum %d", n, *b.MinItems)
+	}
+	if b.MaxItems != nil && n > *b.MaxItems {
+		return fmt.Errorf("%d elements is more than the maximum %d", n, *b.MaxItems)
 	}
 	return nil
 }

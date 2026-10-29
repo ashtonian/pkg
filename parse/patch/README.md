@@ -29,7 +29,7 @@ Start with the [runnable package example](../README.md#quick-start). The focused
 | `merge.go` | `ParseMergePatch` — RFC 7396 |
 | `schema.go` | `PatchOp`, `PatchSchema`, `PathSchema`, `PatchOperation`, `ParsedPatch` |
 | `generate.go` | Schema generation from struct tags; default operations |
-| `validators.go` | Path validators from value tags: `enum`, `minlen` / `maxlen`, `min` / `max`, per element on an array path |
+| `validators.go` | Path validators from value tags: `enum`, `minlen` / `maxlen`, `min` / `max`, per element on an array path (`minitems` / `maxitems` count an array set whole: `checkItems` in `patch.go`) |
 | `sql.go` | `BuildPatchSQL` — per-column fold, merge and append compilation |
 | `relation_sql.go` | Relation patch rendering with junction tenancy |
 | `policy.go` | Patch policy and value constraints |
