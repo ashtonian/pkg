@@ -90,6 +90,7 @@ type patchSQLConfig struct {
 	startParam       int
 	autoTimestamp    string
 	autoTimestampSQL string
+	increments       []string
 	timeFunc         func() time.Time
 }
 
@@ -111,6 +112,13 @@ func WithAutoTimestamp(col string) PatchSQLOption {
 // timestamps incomparable once they skew.
 func WithAutoTimestampSQL(col, expr string) PatchSQLOption {
 	return func(c *patchSQLConfig) { c.autoTimestamp, c.autoTimestampSQL = col, expr }
+}
+
+// WithIncrement also sets col to one more than it holds — a version the
+// server moves on every write (once, even if the patch sets it). Each
+// WithIncrement adds a column.
+func WithIncrement(col string) PatchSQLOption {
+	return func(c *patchSQLConfig) { c.increments = append(c.increments, col) }
 }
 
 // WithTimeFunc overrides the function used to generate timestamps.
@@ -146,6 +154,10 @@ func BuildPatchSQL(patch *ParsedPatch, dialect SQLDialect, opts ...PatchSQLOptio
 		opt(cfg)
 	}
 
+	server, err := serverColumns(cfg)
+	if err != nil {
+		return nil, err
+	}
 	if patch == nil || len(patch.Operations) == 0 {
 		return &PatchSQLResult{Empty: true}, nil
 	}
@@ -171,8 +183,8 @@ func BuildPatchSQL(patch *ParsedPatch, dialect SQLDialect, opts ...PatchSQLOptio
 		if err != nil {
 			return nil, err
 		}
-		if cfg.autoTimestamp != "" && col == cfg.autoTimestamp {
-			// The server owns the auto-timestamp column; its value wins.
+		if server[col] {
+			// The server owns its stamped and counted columns; its value wins.
 			continue
 		}
 		if _, seen := columnOps[col]; !seen {
@@ -190,14 +202,19 @@ func BuildPatchSQL(patch *ParsedPatch, dialect SQLDialect, opts ...PatchSQLOptio
 		b.clauses = append(b.clauses, col+" = "+expr)
 	}
 
-	if cfg.autoTimestamp != "" && len(b.clauses) > 0 {
-		value := cfg.autoTimestampSQL
-		if value == "" {
-			// Canonical text: SQLite compares it as text, pgx binds it to
-			// timestamptz.
-			value = b.bind(core.FormatTimestamp(cfg.timeFunc()))
+	if len(b.clauses) > 0 {
+		if cfg.autoTimestamp != "" {
+			value := cfg.autoTimestampSQL
+			if value == "" {
+				// Canonical text: SQLite compares it as text, pgx binds it to
+				// timestamptz.
+				value = b.bind(core.FormatTimestamp(cfg.timeFunc()))
+			}
+			b.clauses = append(b.clauses, cfg.autoTimestamp+" = "+value)
 		}
-		b.clauses = append(b.clauses, cfg.autoTimestamp+" = "+value)
+		for _, col := range cfg.increments {
+			b.clauses = append(b.clauses, col+" = "+col+" + 1")
+		}
 	}
 
 	return &PatchSQLResult{
@@ -207,6 +224,33 @@ func BuildPatchSQL(patch *ParsedPatch, dialect SQLDialect, opts ...PatchSQLOptio
 		Empty:       len(b.clauses) == 0 && len(relationOps) == 0,
 		RelationOps: relationOps,
 	}, nil
+}
+
+// serverColumns are the columns the server writes on every update: the
+// auto-timestamp and the counters, each an identifier named once.
+func serverColumns(cfg *patchSQLConfig) (map[string]bool, error) {
+	cols := map[string]bool{}
+	add := func(col string) error {
+		if !core.IsIdentifier(col) {
+			return fmt.Errorf("patch: server column %q is not an identifier", col)
+		}
+		if cols[col] {
+			return fmt.Errorf("patch: server column %q is named twice", col)
+		}
+		cols[col] = true
+		return nil
+	}
+	if cfg.autoTimestamp != "" {
+		if err := add(cfg.autoTimestamp); err != nil {
+			return nil, err
+		}
+	}
+	for _, col := range cfg.increments {
+		if err := add(col); err != nil {
+			return nil, err
+		}
+	}
+	return cols, nil
 }
 
 // checkSQLCompilable rejects operations a column SET clause cannot express.

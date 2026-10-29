@@ -21,6 +21,7 @@ type pgGadget struct {
 	ID        string     `json:"id"         db:"id"         parse:"filter,sort"`
 	TenantID  string     `json:"tenant_id"  db:"tenant_id"`
 	Name      string     `json:"name"       db:"name"       parse:"filter,patch"`
+	Version   int64      `json:"version"    db:"version"`
 	UpdatedAt *time.Time `json:"updated_at" db:"updated_at"`
 	DeletedAt *time.Time `json:"deleted_at" db:"deleted_at"`
 	Tags      []string   `json:"tags"       db:"-"          parse:"filter,patch" relation:"pg_gadget_tags,gadget_id,tag_id,id,tenant_id" indexed:"true"`
@@ -30,9 +31,9 @@ func pgGadgetDB(t *testing.T) *sql.DB {
 	t.Helper()
 	db := dbtest.Postgres(t)
 	for _, stmt := range []string{
-		`CREATE TABLE pg_gadgets (id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL, name TEXT, updated_at TIMESTAMPTZ, deleted_at TIMESTAMPTZ)`,
+		`CREATE TABLE pg_gadgets (id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL, name TEXT, version BIGINT NOT NULL DEFAULT 1, updated_at TIMESTAMPTZ, deleted_at TIMESTAMPTZ)`,
 		`CREATE TABLE pg_gadget_tags (gadget_id TEXT NOT NULL, tag_id TEXT NOT NULL, tenant_id TEXT NOT NULL)`,
-		`INSERT INTO pg_gadgets VALUES ('g1','t1','one',NULL,NULL), ('h1','t2','other',NULL,NULL)`,
+		`INSERT INTO pg_gadgets (id, tenant_id, name) VALUES ('g1','t1','one'), ('h1','t2','other')`,
 		`INSERT INTO pg_gadget_tags VALUES ('g1','red','t1'), ('h1','red','t2')`,
 	} {
 		_, err := db.Exec(stmt)
@@ -51,7 +52,7 @@ func queryPGGadgets(t *testing.T, q interface {
 	var out []pgGadget
 	for rows.Next() {
 		var g pgGadget
-		require.NoError(t, rows.Scan(&g.ID, &g.TenantID, &g.Name, &g.UpdatedAt, &g.DeletedAt))
+		require.NoError(t, rows.Scan(&g.ID, &g.TenantID, &g.Name, &g.Version, &g.UpdatedAt, &g.DeletedAt))
 		out = append(out, g)
 	}
 	require.NoError(t, rows.Err())
@@ -75,6 +76,18 @@ func TestBuildUpdate_Postgres(t *testing.T) {
 		assert.Equal(t, "renamed", got[0].Name)
 		require.NotNil(t, got[0].UpdatedAt)
 		assert.WithinDuration(t, time.Now(), *got[0].UpdatedAt, time.Minute)
+	})
+
+	t.Run("a version the server moves, returned moved", func(t *testing.T) {
+		p, err := r.ParseMergePatch([]byte(`{"name":"versioned"}`))
+		require.NoError(t, err)
+		plan, err := r.BuildUpdate(filter.PostgresDialect{}, p, parse.ByID("g1"), t1, parse.StampSQL("updated_at", "NOW()"), parse.Increment("version"))
+		require.NoError(t, err)
+		before := queryPGGadgets(t, db, parse.Statement{SQL: `SELECT id, tenant_id, name, version, updated_at, deleted_at FROM pg_gadgets WHERE id = 'g1'`})
+		require.Len(t, before, 1)
+		got := queryPGGadgets(t, db, plan.Owner)
+		require.Len(t, got, 1)
+		assert.Equal(t, before[0].Version+1, got[0].Version)
 	})
 
 	t.Run("a relation change locks its owners", func(t *testing.T) {

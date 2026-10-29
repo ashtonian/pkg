@@ -52,9 +52,11 @@ type UpdateOption func(*updateConfig)
 type updateConfig struct {
 	stampColumn, stampSQL string
 	stampValue            time.Time
+	increments            []string
 }
 
-// Stamp sets column to at on every update that writes a column.
+// Stamp sets column to at on every update that writes a column. An update
+// has one stamp: a later Stamp or StampSQL replaces it.
 func Stamp(column string, at time.Time) UpdateOption {
 	return func(c *updateConfig) { c.stampColumn, c.stampValue, c.stampSQL = column, at, "" }
 }
@@ -63,6 +65,14 @@ func Stamp(column string, at time.Time) UpdateOption {
 // every update that writes a column. expr is trusted server SQL.
 func StampSQL(column, expr string) UpdateOption {
 	return func(c *updateConfig) { c.stampColumn, c.stampSQL = column, expr }
+}
+
+// Increment sets column, an integer column, to one more than it holds on
+// every update that writes a column: a version the server moves, whatever
+// the patch says. The statement's RETURNING reports the moved value. Each
+// Increment adds a column; it composes with the stamp.
+func Increment(column string) UpdateOption {
+	return func(c *updateConfig) { c.increments = append(c.increments, column) }
 }
 
 // UpdatePlan is a patch compiled for one dialect.
@@ -123,6 +133,16 @@ func (r *Resource[T]) BuildUpdate(d Dialect, p *patch.ParsedPatch, target Target
 			at := cfg.stampValue
 			patchOpts = append(patchOpts, patch.WithAutoTimestamp(cfg.stampColumn), patch.WithTimeFunc(func() time.Time { return at }))
 		}
+	}
+	for _, col := range cfg.increments {
+		t, ok := r.tableColumns[col]
+		if !ok || !core.IsIdentifier(col) {
+			return nil, fmt.Errorf("%s: increment column %q is not a column of the resource", r.table, col)
+		}
+		if core.TypeOf(t).Type != core.FieldTypeInt {
+			return nil, fmt.Errorf("%s: increment column %q is not an integer column", r.table, col)
+		}
+		patchOpts = append(patchOpts, patch.WithIncrement(col))
 	}
 	set, err := patch.BuildPatchSQL(p, d, patchOpts...)
 	if err != nil {
