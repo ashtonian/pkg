@@ -17,6 +17,7 @@ import (
 	"github.com/ashtonian/pkg/parse/core"
 	"github.com/ashtonian/pkg/parse/filter"
 	"github.com/ashtonian/pkg/parse/internal/dbtest"
+	"github.com/ashtonian/pkg/parse/patch"
 )
 
 type gadget struct {
@@ -119,15 +120,18 @@ func TestBuildUpdate_Refuses(t *testing.T) {
 		opts   []parse.UpdateOption
 		want   error
 	}{
-		"no target":          {parse.Target{}, t1, nil, parse.ErrNoTarget},
-		"no keys":            {parse.ByIDs(), t1, nil, parse.ErrNoTarget},
-		"no filter":          {parse.ByFilter(nil), t1, nil, parse.ErrNoTarget},
-		"empty filter":       {parse.ByFilter(&filter.ParsedFilter{AST: &filter.FilterAST{}}), t1, nil, parse.ErrNoTarget},
-		"no tenant":          {parse.ByID("g1"), parse.Scope{}, nil, parse.ErrTenantRequired},
-		"governance":         {parse.ByID("g1"), parse.Scope{Tenant: "t1", Governance: &filter.PolicyConstraints{}}, nil, parse.ErrUpdateScope},
-		"deleted rows":       {parse.ByID("g1"), parse.Scope{Tenant: "t1", IncludeDeleted: true}, nil, parse.ErrUpdateScope},
-		"stamp a non-column": {parse.ByID("g1"), t1, []parse.UpdateOption{parse.StampSQL("touched_at", "NOW()")}, nil},
-		"stamp without time": {parse.ByID("g1"), t1, []parse.UpdateOption{parse.Stamp("updated_at", time.Time{})}, nil},
+		"no target":                {parse.Target{}, t1, nil, parse.ErrNoTarget},
+		"no keys":                  {parse.ByIDs(), t1, nil, parse.ErrNoTarget},
+		"no filter":                {parse.ByFilter(nil), t1, nil, parse.ErrNoTarget},
+		"empty filter":             {parse.ByFilter(&filter.ParsedFilter{AST: &filter.FilterAST{}}), t1, nil, parse.ErrNoTarget},
+		"no tenant":                {parse.ByID("g1"), parse.Scope{}, nil, parse.ErrTenantRequired},
+		"governance":               {parse.ByID("g1"), parse.Scope{Tenant: "t1", Governance: &filter.PolicyConstraints{}}, nil, parse.ErrUpdateScope},
+		"deleted rows":             {parse.ByID("g1"), parse.Scope{Tenant: "t1", IncludeDeleted: true}, nil, parse.ErrUpdateScope},
+		"stamp a non-column":       {parse.ByID("g1"), t1, []parse.UpdateOption{parse.StampSQL("touched_at", "NOW()")}, nil},
+		"stamp without time":       {parse.ByID("g1"), t1, []parse.UpdateOption{parse.Stamp("updated_at", time.Time{})}, nil},
+		"increment a non-column":   {parse.ByID("g1"), t1, []parse.UpdateOption{parse.Increment("revision")}, nil},
+		"increment a text column":  {parse.ByID("g1"), t1, []parse.UpdateOption{parse.Increment("name")}, nil},
+		"increment a column twice": {parse.ByID("g1"), t1, []parse.UpdateOption{parse.Increment("rank"), parse.Increment("rank")}, nil},
 	} {
 		t.Run(name, func(t *testing.T) {
 			_, err := r.BuildUpdate(filter.SQLiteDialect{}, p, tc.target, tc.scope, tc.opts...)
@@ -221,6 +225,64 @@ func TestBuildUpdate_Stamps(t *testing.T) {
 	require.NoError(t, err)
 	got = scanGadgets(t, db, plan.Owner)
 	assert.Equal(t, core.FormatTimestamp(at), got[0].UpdatedAt, "a relation change alone writes no column, so it stamps none")
+}
+
+type revision struct {
+	ID        string `json:"id"         db:"id"         parse:"filter,sort"`
+	TenantID  string `json:"tenant_id"  db:"tenant_id"`
+	Name      string `json:"name"       db:"name"       parse:"filter,patch"`
+	Version   int64  `json:"version"    db:"version"    parse:"filter,server"`
+	UpdatedAt string `json:"updated_at" db:"updated_at"`
+}
+
+func TestBuildUpdate_Increments(t *testing.T) {
+	r, err := parse.NewResource[revision]("revisions", parse.TenantColumn("tenant_id"))
+	require.NoError(t, err)
+	db := dbtest.SQLite(t)
+	for _, stmt := range []string{
+		`CREATE TABLE revisions (id TEXT PRIMARY KEY, tenant_id TEXT, name TEXT, version INTEGER NOT NULL DEFAULT 1, updated_at TEXT)`,
+		`INSERT INTO revisions (id, tenant_id, name, updated_at) VALUES ('r1','t1','one','old'), ('r2','t1','two','old')`,
+	} {
+		_, err := db.Exec(stmt)
+		require.NoError(t, err, stmt)
+	}
+	at := time.Date(2026, 10, 29, 12, 0, 0, 0, time.UTC)
+	update := func(t *testing.T, p *patch.ParsedPatch, target parse.Target) []revision {
+		t.Helper()
+		plan, err := r.BuildUpdate(filter.SQLiteDialect{}, p, target, parse.Scope{Tenant: "t1"},
+			parse.Increment("version"), parse.Stamp("updated_at", at))
+		require.NoError(t, err)
+		rows, err := db.Query(plan.Owner.SQL, plan.Owner.Args...)
+		require.NoError(t, err, plan.Owner.SQL)
+		defer func() { require.NoError(t, rows.Close()) }()
+		var out []revision
+		for rows.Next() {
+			var rev revision
+			require.NoError(t, rows.Scan(&rev.ID, &rev.TenantID, &rev.Name, &rev.Version, &rev.UpdatedAt))
+			out = append(out, rev)
+		}
+		require.NoError(t, rows.Err())
+		return out
+	}
+
+	rename, err := r.ParseMergePatch([]byte(`{"name":"renamed"}`))
+	require.NoError(t, err)
+	got := update(t, rename, parse.ByID("r1"))
+	require.Len(t, got, 1)
+	assert.Equal(t, int64(2), got[0].Version, "RETURNING reports the moved version")
+	assert.Equal(t, core.FormatTimestamp(at), got[0].UpdatedAt, "the stamp still applies")
+
+	got = update(t, rename, parse.ByIDs("r1", "r2"))
+	require.Len(t, got, 2)
+	versions := map[string]int64{got[0].ID: got[0].Version, got[1].ID: got[1].Version}
+	assert.Equal(t, map[string]int64{"r1": 3, "r2": 2}, versions, "each row moves one past its own version")
+
+	server, err := r.ServerMergePatchMap(map[string]any{"name": "server", "version": 40})
+	require.NoError(t, err)
+	got = update(t, server, parse.ByID("r2"))
+	require.Len(t, got, 1)
+	assert.Equal(t, int64(3), got[0].Version, "the server's own patch does not set the version either")
+	assert.Equal(t, "server", got[0].Name)
 }
 
 func TestBuildUpdate_RelationsChangeOnlyTheRowsTheOwnerMatched(t *testing.T) {

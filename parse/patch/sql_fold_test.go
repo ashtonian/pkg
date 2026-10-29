@@ -15,7 +15,7 @@ func TestBuildPatchSQL_FoldsOrderedOpsSQLite(t *testing.T) {
 	runFoldCases(t, foldDB{
 		db:       dbtest.SQLite(t),
 		dialect:  filter.SQLiteDialect{},
-		schema:   `CREATE TABLE items (id INTEGER PRIMARY KEY, tags TEXT, name TEXT NOT NULL, updated_at TEXT, meta TEXT)`,
+		schema:   `CREATE TABLE items (id INTEGER PRIMARY KEY, tags TEXT, name TEXT NOT NULL, updated_at TEXT, meta TEXT, version INTEGER NOT NULL DEFAULT 1)`,
 		seed:     `INSERT INTO items (id, tags, name) VALUES (1, '["zero"]', 'orig')`,
 		tagsExpr: "tags",
 	})

@@ -15,7 +15,7 @@ func TestBuildPatchSQL_FoldsOrderedOpsPostgres(t *testing.T) {
 	runFoldCases(t, foldDB{
 		db:       dbtest.Postgres(t),
 		dialect:  filter.PostgresDialect{},
-		schema:   `CREATE TABLE items (id BIGINT PRIMARY KEY, tags TEXT[], name TEXT NOT NULL, updated_at TIMESTAMPTZ, meta JSONB)`,
+		schema:   `CREATE TABLE items (id BIGINT PRIMARY KEY, tags TEXT[], name TEXT NOT NULL, updated_at TIMESTAMPTZ, meta JSONB, version BIGINT NOT NULL DEFAULT 1)`,
 		seed:     `INSERT INTO items (id, tags, name) VALUES (1, ARRAY['zero'], 'orig')`,
 		tagsExpr: "array_to_json(tags)::text",
 	})

@@ -117,9 +117,10 @@ The rows `Owner` returns are the rows the scope admits. Zero rows means the targ
 | `ByID(id)`, `ByIDs(ids...)`, `ByFilter(f)` | The rows to change; a zero target is `ErrNoTarget` rather than every row |
 | `Stamp(column, at)` | Set `column` to `at` on every update that writes a column; `at` must be non-zero |
 | `StampSQL(column, expr)` | Set `column` to the trusted SQL `expr` — the database clock, such as `NOW()` |
+| `Increment(column)` | Set the integer `column` to one more than it holds on every update that writes a column — a version the server moves; `RETURNING` reports the moved value. Repeat for each counter; composes with the stamp |
 | `Scope.Governance`, `Scope.IncludeDeleted` | Refused with `ErrUpdateScope`: an update reaches only its own tenant's live rows |
 
-The stamp column must be one of the resource's columns. `Dialect` is a dialect both the filter and patch compilers speak; `filter.PostgresDialect` and `filter.SQLiteDialect` are.
+An update has one stamp: a later `Stamp` or `StampSQL` replaces an earlier one. The stamp column and each increment column must be one of the resource's columns, an increment column an integer one, and none may be named twice. A patch's own write to a stamped or incremented column — a request's or the server's — is dropped: the server's value wins, and a patch writing only those columns writes nothing. `Dialect` is a dialect both the filter and patch compilers speak; `filter.PostgresDialect` and `filter.SQLiteDialect` are.
 
 ## JSON documents
 
@@ -180,6 +181,7 @@ JSON Patch `test` checks the supplied document shape; missing struct members are
 | `WithStartParam(n)` | int | `0` | Placeholder offset: the first is `n+1`, as with `filter.WithStartParam` |
 | `WithAutoTimestamp(col)` | string | none | Also set `col` to the current time (once, even if the patch sets it) |
 | `WithAutoTimestampSQL(col, expr)` | string, string | none | `WithAutoTimestamp` with `col` set to the SQL expression `expr` (the database's clock, `NOW()`) instead of a bound time — for a repository whose other writes stamp the database's clock |
+| `WithIncrement(col)` | string | none | Also set `col` to `col + 1` (once, even if the patch sets it); repeat for each counter. `col` must be an identifier and differ from the timestamp column |
 | `WithTimeFunc(fn)` | `func() time.Time` | `time.Now().UTC` | Clock for `WithAutoTimestamp` |
 
 Parsers take a `*core.ParserConfig` (`MaxDepth` — pointer segments, and merge-patch nesting; `MaxInputSize`; codec; see [schema/configuration](schema-configuration.md)); `PatchSchema.MaxOperations` (default `50` for generated schemas) bounds operations per patch, merge patches counted as above (E2066).

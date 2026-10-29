@@ -18,8 +18,8 @@ import (
 	"github.com/ashtonian/pkg/parse/patch"
 )
 
-// foldSchema models a row with an array column, a scalar column and a
-// server-managed timestamp.
+// foldSchema models a row with an array column, a scalar column, a
+// server-managed timestamp and a server-moved version.
 func foldSchema() *patch.PatchSchema {
 	return &patch.PatchSchema{
 		Resource:      "items",
@@ -36,6 +36,10 @@ func foldSchema() *patch.PatchSchema {
 			"/updated_at": {
 				AllowedOps: []patch.PatchOp{patch.PatchOpReplace},
 				DataType:   core.FieldTypeTimestamp, SQLColumn: "updated_at",
+			},
+			"/version": {
+				AllowedOps: []patch.PatchOp{patch.PatchOpReplace},
+				DataType:   core.FieldTypeInt, SQLColumn: "version",
 			},
 			"/meta/*": {
 				AllowedOps: []patch.PatchOp{patch.PatchOpReplace},
@@ -132,6 +136,47 @@ func runFoldCases(t *testing.T, fdb foldDB) {
 		_, err = fdb.db.Exec(stmt, append(res.Args, 1)...)
 		require.NoError(t, err, stmt)
 	})
+
+	t.Run("a counter moves one past what it holds, once", func(t *testing.T) {
+		resetFoldTable(t, fdb)
+		parsed, err := parser.Parse([]byte(`[{"op":"replace","path":"/version","value":99},{"op":"replace","path":"/name","value":"n"}]`))
+		require.NoError(t, err)
+		res, err := patch.BuildPatchSQL(parsed, fdb.dialect, patch.WithAutoTimestampSQL("updated_at", "CURRENT_TIMESTAMP"), patch.WithIncrement("version"))
+		require.NoError(t, err)
+		assert.Equal(t, 1, strings.Count(res.SetClause, "version ="), res.SetClause)
+		assert.Len(t, res.Args, 1, "only the name is bound")
+		stmt := fmt.Sprintf("UPDATE items SET %s WHERE id = %s RETURNING version", res.SetClause, fdb.dialect.Placeholder(res.ParamCount+1))
+		for want := 2; want <= 3; want++ {
+			var version int
+			require.NoError(t, fdb.db.QueryRow(stmt, append(res.Args, 1)...).Scan(&version), stmt)
+			assert.Equal(t, want, version, "the patch's 99 is not the server's")
+		}
+	})
+
+	t.Run("a patch writing only server columns writes nothing", func(t *testing.T) {
+		parsed, err := parser.Parse([]byte(`[{"op":"replace","path":"/version","value":99},{"op":"replace","path":"/updated_at","value":"2001-01-01T00:00:00Z"}]`))
+		require.NoError(t, err)
+		res, err := patch.BuildPatchSQL(parsed, fdb.dialect, patch.WithAutoTimestamp("updated_at"), patch.WithIncrement("version"))
+		require.NoError(t, err)
+		assert.True(t, res.Empty)
+		assert.Empty(t, res.SetClause)
+	})
+}
+
+func TestBuildPatchSQL_RefusesServerColumns(t *testing.T) {
+	parsed, err := patch.NewParser(foldSchema(), nil).Parse([]byte(`[{"op":"replace","path":"/name","value":"n"}]`))
+	require.NoError(t, err)
+	for name, opts := range map[string][]patch.PatchSQLOption{
+		"a counter that is not an identifier": {patch.WithIncrement("version; DROP TABLE items")},
+		"a counter named twice":               {patch.WithIncrement("version"), patch.WithIncrement("version")},
+		"a counter that is the timestamp":     {patch.WithAutoTimestamp("updated_at"), patch.WithIncrement("updated_at")},
+	} {
+		t.Run(name, func(t *testing.T) {
+			res, err := patch.BuildPatchSQL(parsed, filter.SQLiteDialect{}, opts...)
+			require.Error(t, err)
+			assert.Nil(t, res)
+		})
+	}
 }
 
 func resetFoldTable(t *testing.T, fdb foldDB) {
