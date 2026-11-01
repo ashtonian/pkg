@@ -85,6 +85,7 @@ On PostgreSQL, `parsepgx.QueryPage(ctx, pool, devices, plan)` runs the plan and 
 | Filter by related rows' attributes (has-many, belongs-to, many-to-many) | `Resource.Relate` with `HasMany`, `BelongsTo`, `ManyToMany`; `$some`, `$none`, `$is`, `$is_not` | [Relations](docs/relations.md#declare-relations) |
 | Match related IDs or return relation memberships | Relation tags, `filter.BuildIncludeQuery` | [Relations](docs/relations.md#pair-tables-compared-by-key) |
 | Serve an update endpoint: patch rows scoped to tenant, live rows and policy | `ParseMergePatch` / `ParsePatch`, `BuildUpdate`, `RelationStatements` | [Resource updates](docs/patches.md#resource-updates) |
+| Write, stamp and count only the rows a patch changes, and tell unchanged from not found | `SkipUnchanged`, `UpdatePlan.Current`, `Unchanged` | [Skipping unchanged rows](docs/patches.md#skipping-unchanged-rows) |
 | Merge fields or replace a JSON document | `ParseMergePatch`, `ParsePatch`, `patch.BuildPatchSQL` | [Patches](docs/patches.md) |
 | Apply a patch to an existing Go value | `ApplyValidatedPatch`, `ApplyPatch` | [Typed documents](docs/patches.md#typed-document-behavior) |
 | Advertise capabilities to a UI/client | `NewSchemaRegistry`, `RegisterResource` (or `Register[T]`), `SchemaHandler` | [HTTP and errors](docs/http-errors.md) |
@@ -148,7 +149,7 @@ Tags expose capabilities explicitly: `parse:"filter,sort,patch,facet,search,incl
 | [`resource.go`](resource.go) | `NewResource[T]`, `MustResource`, resource options, identity, system fields, projection (`Columns`, `ColumnNames`), `ParseFilterWithCost`, `Key`, `WithPaths` (a request's view with declared JSON paths) |
 | [`list.go`](list.go) | `ListInput`, `ParseListInput`, `ListRequest`, `ParseList`, `Scope`, `ListPlan` (`Dialect`), `BuildList`, `Page`, `PagePointers`, `IncludeQueries` |
 | [`relate.go`](relate.go) | `Relate`, `MustRelate`, `HasMany`, `BelongsTo`, `ManyToMany`, `Junction` / `Through`, `Indexed`, `Includable`, `Facetable`, `Writable`, `PolicyScoped`, `References`, `RelatedResource` |
-| [`update.go`](update.go) | `Target` (`ByID`, `ByIDs`, `ByFilter`), `BuildUpdate`, `UpdatePlan` (`Dialect`), `RelationStatements`, `Stamp`, `StampSQL`, `Increment`, `Dialect` |
+| [`update.go`](update.go) | `Target` (`ByID`, `ByIDs`, `ByFilter`), `BuildUpdate`, `UpdatePlan` (`Dialect`, `Current`), `RelationStatements`, `Stamp`, `StampSQL`, `Increment`, `SkipUnchanged`, `Unchanged`, `Dialect` |
 | [`typed.go`](typed.go) | `Resource` parse entry points (`MergePatchMap`, `ValidateOperations` and server variants), schema access, typed patch application |
 | [`parsehttp`](parsehttp/README.md) | `WriteError`: a parse error as an HTTP response |
 | [`parsepgx`](parsepgx/README.md) | `QueryPage`, `Update`: plans run on PostgreSQL through pgx batches |

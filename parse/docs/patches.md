@@ -80,7 +80,7 @@ Values bind through the dialect's `MarshalValue(value, core.TypeInfo)` (the `SQL
 
 A path with no `SQLColumn` fails with E2069. Relation paths go to `PatchSQLResult.RelationOps`; `RenderRelationOp(op, dialect, ownerPKs, opts)` renders their junction statements for the caller's transaction and fails closed on a tenant-scoped junction without `RenderRelationOpOptions.TenantValue` (or explicit `Unscoped`).
 
-A SET clause is not a complete UPDATE. `Resource.BuildUpdate` builds the complete statement ([Resource updates](#resource-updates)); without a resource, add a trusted table/column projection, scoped WHERE, and correctly offset placeholders, and reject or deliberately handle an empty patch before executing SQL. See [the pgx recipe](../parsepgx/recipe_test.go).
+A SET clause is not a complete UPDATE. `Resource.BuildUpdate` builds the complete statement ([Resource updates](#resource-updates)); without a resource, add a trusted table/column projection, scoped WHERE, and correctly offset placeholders, and reject or deliberately handle an empty patch before executing SQL. See [the pgx recipe](../parsepgx/recipe_test.go). With `WithChangePredicate()`, `ChangePredicate` ANDed into that WHERE writes only the rows the patch changes; it uses the SET clause's placeholders, so the WHERE's own still start after `ParamCount`.
 
 ## Patches built in code
 
@@ -111,7 +111,7 @@ err = tx.Commit()
 | Changes relations only | `SELECT <columns> … WHERE …` plus the dialect's row lock (`FOR UPDATE` on PostgreSQL), so two replacements of one relation cannot interleave their delete and insert | true |
 | Empty | `SELECT <columns> … WHERE …` — a scoped read | false |
 
-The rows `Owner` returns are the rows the scope admits. Zero rows means the target is absent, deleted, another tenant's or outside the policy; answer that as not found. Relation statements are rendered for the keys `Owner` returned, tenant-scoped as the update was, and run in its transaction. On PostgreSQL, `parsepgx.Update(ctx, pool, products, plan)` does all of this: it returns the owner rows and, when the patch changes relations, runs owner and relation statements in one transaction (a savepoint inside a caller's `pgx.Tx`).
+The rows `Owner` returns are the rows the scope admits. Zero rows means the target is absent, deleted, another tenant's or outside the policy; answer that as not found. Under `SkipUnchanged` the `UPDATE` returns only the rows it changed, and `plan.Current` tells an unchanged target from a missing one ([Skipping unchanged rows](#skipping-unchanged-rows)). Relation statements are rendered for the keys `Owner` returned, tenant-scoped as the update was, and run in its transaction. On PostgreSQL, `parsepgx.Update(ctx, pool, products, plan)` does all of this: it returns the owner rows and, when the patch changes relations, runs owner and relation statements in one transaction (a savepoint inside a caller's `pgx.Tx`).
 
 | Option / target | Effect |
 |---|---|
@@ -119,9 +119,79 @@ The rows `Owner` returns are the rows the scope admits. Zero rows means the targ
 | `Stamp(column, at)` | Set `column` to `at` on every update that writes a column; `at` must be non-zero |
 | `StampSQL(column, expr)` | Set `column` to the trusted SQL `expr` — the database clock, such as `NOW()` |
 | `Increment(column)` | Set the integer `column` to one more than it holds on every update that writes a column — a version the server moves; `RETURNING` reports the moved value. Repeat for each counter; composes with the stamp |
+| `SkipUnchanged()` | Update only the target rows the patch's columns change, so a row the patch leaves as it is keeps its stamp and counters and `RETURNING` omits it; `plan.Current` reads every target row. See [Skipping unchanged rows](#skipping-unchanged-rows) |
 | `Scope.Governance`, `Scope.IncludeDeleted` | Refused with `ErrUpdateScope`: an update reaches only its own tenant's live rows |
 
 An update has one stamp: a later `Stamp` or `StampSQL` replaces an earlier one. The stamp column and each increment column must be one of the resource's columns, an increment column an integer one, and none may be named twice. A patch's own write to a stamped or incremented column — a request's or the server's — is dropped: the server's value wins, and a patch writing only those columns writes nothing. `Dialect` is a dialect both the filter and patch compilers speak; `filter.PostgresDialect` and `filter.SQLiteDialect` are.
+
+### Skipping unchanged rows
+
+A patch that sets what a row already holds still writes it: the stamp and counters move, and a consumer that emits an event per updated row emits one for nothing. `SkipUnchanged()` ANDs the patch's change predicate into the `UPDATE`'s WHERE — null-safe comparisons of each column the patch assigns with the value it assigns, reusing the SET clause's placeholders and binding nothing of their own — so only rows that change are written, stamped, counted and returned:
+
+```text
+UPDATE notes SET rank = $1, title = $2, updated_at = NOW(), version = version + 1
+WHERE (notes.tenant_id = $3 AND notes.deleted_at IS NULL AND notes.id = $4)
+  AND (rank IS DISTINCT FROM $1 OR rank::text COLLATE "C" IS DISTINCT FROM ($1)::text
+    OR title IS DISTINCT FROM $2 OR title::text COLLATE "C" IS DISTINCT FROM ($2)::text)
+RETURNING notes.id, …
+
+SELECT notes.id, … FROM notes WHERE (notes.tenant_id = $1 AND notes.deleted_at IS NULL AND notes.id = $2) FOR UPDATE
+```
+
+The second statement is `plan.Current`: the same scoped WHERE without the predicate, with the dialect's row lock. Run `Current` first, then `Owner`, in one transaction, and split the target rows (`queryNotes` runs a statement and scans its rows):
+
+```go
+plan, err := notes.BuildUpdate(d, parsed, parse.ByID(id), scope,
+	parse.StampSQL("updated_at", "NOW()"), parse.Increment("version"), parse.SkipUnchanged())
+if err != nil {
+	return err
+}
+var current []Note
+if plan.Current != nil {
+	if current, err = queryNotes(ctx, tx, *plan.Current); err != nil { // locks every target
+		return err
+	}
+}
+changed, err := queryNotes(ctx, tx, plan.Owner) // written, stamped and counted: emit events for these
+if err != nil {
+	return err
+}
+unchanged, err := notes.Unchanged(changed, current) // matched, left as they were
+if err != nil {
+	return err
+}
+if len(changed)+len(unchanged) == 0 {
+	return ErrNotFound
+}
+```
+
+`Current` goes first because its lock holds every target while `Owner` compares them, so the two split one set of rows: the unchanged rows are exactly those the update compared and left. Run the other way, under READ COMMITTED a row another transaction changes or deletes between the two statements would read as it then stands, or not at all. SQLite has no row lock; begin the transaction as a write transaction (`BEGIN IMMEDIATE`) so no other writer commits between the two. `parsepgx.Update` sends `Current` and `Owner` in one batch, in that order. `Unchanged(changed, current)` is the rows of `current` whose keys `changed` lacks: a row the patch changed and moved out of a `ByFilter` target is in `changed` alone. `ExampleSkipUnchanged` prints both statements and is checked by the unit lane.
+
+| Patch, under `SkipUnchanged` | `plan.Owner` | `plan.Current` | What changed |
+|---|---|---|---|
+| Assigns a column | `UPDATE … WHERE … AND <change predicate> RETURNING <columns>`: the rows it changed | `SELECT <columns> … WHERE …` plus the row lock | Owner's rows; `Unchanged` gives the matched rows it left; neither returns a row: not found |
+| Changes relations only | `SELECT <columns> … WHERE …` plus the row lock, as without the option | nil: Owner returns every target row | No column, stamp or counter moves. The relation statements' affected rows count the memberships removed and added: zero means none changed (each junction pair needs a unique key, which `ON CONFLICT DO NOTHING` relies on) |
+| Assigns nothing: empty, or server columns alone | `SELECT <columns> … WHERE …` | nil | `plan.Writes` is false: nothing changes |
+
+A patch with columns and relations changes the memberships of every target row: pass the keys of the changed and the unchanged rows to `RelationStatements` in the same transaction. A membership change alone moves no stamp or counter, with the option or without it.
+
+"Unchanged" means the write would leave the column reading as it does: the stored value is compared with the value the update assigns — the expression the SET clause computes, so a merge that sets what a document already holds is unchanged and an `array_append` never is. A false "changed" costs a write; the comparisons are built never to report a false "unchanged".
+
+| Column | PostgreSQL | SQLite |
+|---|---|---|
+| Any | `col IS DISTINCT FROM <value> OR col::text COLLATE "C" IS DISTINCT FROM (<value>)::text`: the text a read returns, byte for byte, NULL equal to NULL. The equality types the placeholder as the column — an enum, a domain — since PostgreSQL types it at its first use and the WHERE precedes the SET clause | `col COLLATE BINARY IS NOT <value>` (`IS NOT` is null-safe on every SQLite version): byte for byte whatever collation the column declares (NOCASE, RTRIM), numbers by value under the column's affinity |
+| Text (string fields, enum labels) | A change of case or accents counts where the column's equality ignores it: citext, a nondeterministic collation | The same, against NOCASE and RTRIM |
+| Interval (a string field) | `1 day` and `24 hours` differ: equal intervals, other text | By text |
+| Float | `-0` and `0` differ | By value; a REAL column stores `-0.0` as `0.0` |
+| Decimal | By value, `col IS DISTINCT FROM <value>` alone: parse binds and reads a decimal in one canonical text (`1.50` binds as `1.5`), and a `numeric(p,s)` column stores scale `s` whatever text is bound, so value equality is the read's equality. The one boundary: a scale another writer stored in an unconstrained `numeric` column (`1.50` where parse writes `1.5`) is not part of the value, and a patch of the same number leaves it | By value in a NUMERIC or REAL column, which converts the value on store as it does in the comparison: `1` and `1.0` read the same |
+| Timestamp | One instant, whatever offset the patch wrote | parse's canonical text (UTC, nine fractional digits): one instant is one text where parse wrote the stored value |
+| Civil date, UUID | Their text: one value, one text | The canonical text; a legacy midnight timestamp in a date column counts as changed, and the write stores the date |
+| JSON document (`jsonb`) | jsonb's text, which is canonical: key order, whitespace and duplicate keys do not count; a number's written form (`1.0` against `1`) does | By text. parse writes compact JSON with object keys in Go's sorted order, and a merge keeps the stored order: a document stored in another order or spacing counts as changed once, and the write stores parse's text |
+| JSON declared `core.SQLJSON` (`json`) | Compared as `jsonb` text (`json` has no equality operator): a document whose stored text differs only in whitespace or key order counts as unchanged, although a read returns that text | By text, as above |
+| Native array | Its text: element by element, in order | By text, as documents |
+| Cleared value | A slice or map field clears to empty, unchanged when already empty; others to NULL | The same |
+
+A value the column rounds as it stores it — a timestamp finer than the column's precision, a decimal beyond a `numeric(p,s)` scale — is compared as the patch gave it, so sending it again counts as changed every time and writes what the column already holds. A PostgreSQL `json` column must be declared with `parse.ColumnType(column, core.SQLJSON)`: undeclared, it is compared as a `jsonb` one and the update fails with `operator does not exist: json = …`. A document in a `text` column compares by text, as on SQLite. On SQLite, a column with no affinity (an untyped or `ANY` column) compares an integer and a real of one value as equal although a read reports their storage classes apart; scanned into the field's Go type they read the same. Each assigned expression runs up to twice in the WHERE for every target row and once more in the SET clause for the rows that change, so a merge costs up to three times what it does unguarded.
 
 ## JSON documents
 
@@ -184,6 +254,7 @@ JSON Patch `test` checks the supplied document shape; missing struct members are
 | `WithAutoTimestampSQL(col, expr)` | string, string | none | `WithAutoTimestamp` with `col` set to the SQL expression `expr` (the database's clock, `NOW()`) instead of a bound time — for a repository whose other writes stamp the database's clock |
 | `WithIncrement(col)` | string | none | Also set `col` to `col + 1` (once, even if the patch sets it); repeat for each counter. `col` must be an identifier and differ from the timestamp column |
 | `WithTimeFunc(fn)` | `func() time.Time` | `time.Now().UTC` | Clock for `WithAutoTimestamp` |
+| `WithChangePredicate()` | — | off | Also render `PatchSQLResult.ChangePredicate`: true for a row the patch's columns change, over the SET clause's own placeholders and without the timestamp or increments; [Skipping unchanged rows](#skipping-unchanged-rows) defines its comparisons. Fails for a dialect other than PostgreSQL and SQLite |
 
 Parsers take a `*core.ParserConfig` (`MaxDepth` — pointer segments, and merge-patch nesting; `MaxInputSize`; codec; see [schema/configuration](schema-configuration.md)); `PatchSchema.MaxOperations` (default `50` for generated schemas) bounds operations per patch, merge patches counted as above (E2066).
 

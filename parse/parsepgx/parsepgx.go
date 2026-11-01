@@ -120,14 +120,18 @@ func queryIncludes[T any](ctx context.Context, db Querier, r *parse.Resource[T],
 	return db.SendBatch(ctx, b).Close()
 }
 
-// Update applies plan and returns the rows its owner statement matched, as
-// the update left them; none when no row in the plan's scope is a target.
+// Update applies plan and returns the target rows the plan's scope admits,
+// as the update left them; none when no row in the scope is a target.
 // A plan that changes relation memberships runs in a transaction — a
 // savepoint when db is one — so its rows and memberships change together:
-// the owner statement first, then the membership changes for the keys it
-// returned, never the requested ones. A plan that writes nothing
-// (plan.Writes false: an empty patch) reads its targets; a caller that
-// audits or notifies per updated row checks plan.Writes first.
+// the owner statement first, then the membership changes for the keys of the
+// rows returned, never the requested ones. A SkipUnchanged plan
+// (plan.Current set) returns the rows its update left unchanged too, after
+// the ones it changed, and changes the memberships of both; a caller that
+// audits or notifies per changed row runs plan.Current and then plan.Owner
+// itself and splits them with parse.Resource.Unchanged. A plan that writes nothing (plan.Writes false:
+// an empty patch) reads its targets; a caller that audits or notifies per
+// updated row checks plan.Writes first.
 func Update[T any](ctx context.Context, db DB, r *parse.Resource[T], plan *parse.UpdatePlan) ([]T, error) {
 	if plan == nil {
 		return nil, fmt.Errorf("parsepgx: %s: nil update plan", r.Table())
@@ -136,7 +140,7 @@ func Update[T any](ctx context.Context, db DB, r *parse.Resource[T], plan *parse
 		return nil, err
 	}
 	if !plan.HasRelations() {
-		rows, err := queryOwner(ctx, db, r, plan)
+		rows, err := queryTargets(ctx, db, r, plan)
 		if err != nil {
 			return nil, fmt.Errorf("parsepgx: %s: %w", r.Table(), err)
 		}
@@ -146,7 +150,7 @@ func Update[T any](ctx context.Context, db DB, r *parse.Resource[T], plan *parse
 	var rows []T
 	err := pgx.BeginFunc(ctx, db, func(tx pgx.Tx) error {
 		var err error
-		if rows, err = queryOwner(ctx, tx, r, plan); err != nil {
+		if rows, err = queryTargets(ctx, tx, r, plan); err != nil {
 			return err
 		}
 		keys, err := ownerKeys(r, rows)
@@ -169,18 +173,37 @@ func Update[T any](ctx context.Context, db DB, r *parse.Resource[T], plan *parse
 	return rows, nil
 }
 
-func queryOwner[T any](ctx context.Context, db Querier, resource *parse.Resource[T], plan *parse.UpdatePlan) ([]T, error) {
-	var rows []T
+// queryTargets runs plan's owner statement and returns the target rows as
+// it left them. A plan's Current goes first in the same batch, which runs
+// in one transaction (db's own when db is a pgx.Tx): its lock holds every
+// target while the guarded update compares them, so the rows it read and
+// the update did not return are exactly the unchanged ones.
+func queryTargets[T any](ctx context.Context, db Querier, resource *parse.Resource[T], plan *parse.UpdatePlan) ([]T, error) {
+	var current, owner []T
 	b := &pgx.Batch{}
+	if plan.Current != nil {
+		b.Queue(plan.Current.SQL, plan.Current.Args...).Query(func(r pgx.Rows) error {
+			var err error
+			current, err = pgx.CollectRows(r, rowToResource(resource))
+			return wrap("current", err)
+		})
+	}
 	b.Queue(plan.Owner.SQL, plan.Owner.Args...).Query(func(r pgx.Rows) error {
 		var err error
-		rows, err = pgx.CollectRows(r, rowToResource(resource))
+		owner, err = pgx.CollectRows(r, rowToResource(resource))
 		return wrap("owner", err)
 	})
 	if err := db.SendBatch(ctx, b).Close(); err != nil {
 		return nil, err
 	}
-	return rows, nil
+	if plan.Current == nil {
+		return owner, nil
+	}
+	unchanged, err := resource.Unchanged(owner, current)
+	if err != nil {
+		return nil, err
+	}
+	return append(owner, unchanged...), nil
 }
 
 func ownerKeys[T any](r *parse.Resource[T], items []T) ([]any, error) {

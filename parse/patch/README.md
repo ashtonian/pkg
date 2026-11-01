@@ -16,7 +16,7 @@ Start with the [runnable package example](../README.md#quick-start). The focused
 
 - Schemas: `GeneratePatchSchema[T]`, `GenerateServerPatchSchema[T]` (adds the `parse:"server"` fields, for the server's own writes), `ServerFieldName`, `PatchSchema`, `PathSchema` (`AllowsOp`, `Nullable`; `EnumValues` and `Bounds` advertise its value tags), `DefaultPatchOps`, `ValidPatchOps`
 - Parsing: `NewParser(schema, cfg)` (`Parse`, `ParseOps`), `ParseMergePatch(body, schema, cfg)`, `ParsedPatch` (`AuditInfo`), `PatchOperation`, `RawPatchOp`, `PatchOp`
-- SQL: `BuildPatchSQL`, `SQLDialect`, `PatchSQLResult`, `PatchSQLOption`
+- SQL: `BuildPatchSQL`, `SQLDialect`, `PatchSQLResult` (`ChangePredicate`), `PatchSQLOption` (`WithStartParam`, `WithAutoTimestamp`, `WithAutoTimestampSQL`, `WithIncrement`, `WithTimeFunc`, `WithChangePredicate`)
 - Relations: `RelationPatchOp`, `RelationVerb`, `RenderRelationOp`, `RenderRelationOpOptions` (`Owner` / `RelationOwner` and `TargetVisible`: guarded statements for a relation with a target table), `RenderedRelationStatement`, `RelationPath`
 - Policy: `PatchPolicyConstraints`, `ValueConstraint`, `NewValueConstraint`, `PatchValidator`, `ApplyPatchPolicyConstraints`, `PatchPolicyFromWritableFields`
 - Errors: `ECode*`, `Codes`
@@ -30,7 +30,7 @@ Start with the [runnable package example](../README.md#quick-start). The focused
 | `schema.go` | `PatchOp`, `PatchSchema`, `PathSchema`, `PatchOperation`, `ParsedPatch` |
 | `generate.go` | Schema generation from struct tags; default operations |
 | `validators.go` | Path validators from value tags: `enum`, `minlen` / `maxlen`, `min` / `max`, per element on an array path (`minitems` / `maxitems` count an array set whole: `checkItems` in `patch.go`) |
-| `sql.go` | `BuildPatchSQL` — per-column fold, merge and append compilation |
+| `sql.go` | `BuildPatchSQL` — per-column fold, merge and append compilation; the change predicate (`WithChangePredicate`) |
 | `relation_sql.go` | Relation patch rendering with junction tenancy |
 | `policy.go` | Patch policy and value constraints |
 | `errors.go` | E-codes |
