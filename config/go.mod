@@ -3,7 +3,7 @@ module github.com/ashtonian/pkg/config
 go 1.27.0
 
 require (
-	github.com/ashtonian/pkg/gowalker v0.3.0
+	github.com/ashtonian/pkg/gowalker v0.5.0
 	github.com/fsnotify/fsnotify v1.10.1
 	github.com/go-playground/validator/v10 v10.30.5
 	github.com/go-viper/mapstructure/v2 v2.5.0
@@ -11,7 +11,7 @@ require (
 	github.com/knadh/koanf/providers/confmap v1.0.1
 	github.com/knadh/koanf/v2 v2.4.1
 	github.com/stretchr/testify v1.12.1
-	go.yaml.in/yaml/v3 v3.0.5
+	go.yaml.in/yaml/v3 v3.0.6
 )
 
 require (
