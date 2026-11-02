@@ -100,10 +100,12 @@ The page, count and facet statements run in one batch, the includes in a second 
 
 `Update` reads the owners the plan's scope admits and changes the relation memberships of those rows only, never the requested keys. A plan that writes nothing (`plan.Writes` false: an empty patch) only reads its targets; a caller that audits or fans hooks for every updated row checks `plan.Writes` before calling. With relation changes it runs in a transaction — a savepoint when `db` is already a `pgx.Tx` — so the caller's own transaction can still roll it back.
 
+A [`SkipUnchanged`](../docs/patches.md#skipping-unchanged-rows) plan sends `plan.Current` and then the guarded `UPDATE` in one batch, so one transaction (the caller's when `db` is a `pgx.Tx`): `Current` locks every target first, the update writes only the rows it changes, and `Update` returns those followed by the targets it left unchanged, changing the memberships of both. No rows still means not found. A caller that emits events per changed row runs the two statements itself, in that order, and splits them with `Resource.Unchanged`.
+
 ## Operations
 
 - *Timeouts*: every statement takes the caller's context; give the request a deadline. Pool limits and lifetimes (`MaxConns`, `MaxConnLifetime`, `MaxConnIdleTime`, `ConnConfig.ConnectTimeout`) belong to the caller's `pgxpool.Config`.
-- *Observability*: the package emits no metrics or logs of its own. Instrument the pool with a pgx `QueryTracer` / `BatchTracer` (for example an OpenTelemetry tracer on `ConnConfig.Tracer`); each list is one or two batches, each update one batch, or two and a transaction.
+- *Observability*: the package emits no metrics or logs of its own. Instrument the pool with a pgx `QueryTracer` / `BatchTracer` (for example an OpenTelemetry tracer on `ConnConfig.Tracer`); each list is one or two batches, each update one batch, or two and a transaction; a `SkipUnchanged` plan's batch holds two statements.
 - *Troubleshooting*: an `ErrDialect` means the plan was built with another dialect; build it with `filter.PostgresDialect{}`. A `42703` (undefined column) means the table and `T`'s `db` tags disagree. A list whose total looks one off under load is the per-statement snapshot; use a REPEATABLE READ transaction.
 
 ## Security
@@ -113,7 +115,7 @@ The tenant, authorization policy and deleted-row visibility come only from the `
 ## API Reference
 
 - `QueryPage[T](ctx, db Querier, r *parse.Resource[T], plan *parse.ListPlan) (*filter.Page[T], error)` — the page with its total, facets (`Page.Facets`) and includes (`Page.Relations`) as the plan asks.
-- `Update[T](ctx, db DB, r *parse.Resource[T], plan *parse.UpdatePlan) ([]T, error)` — the owner rows as the update left them; none when no row in scope is a target.
+- `Update[T](ctx, db DB, r *parse.Resource[T], plan *parse.UpdatePlan) ([]T, error)` — the target rows as the update left them (a `SkipUnchanged` plan's changed rows, then its unchanged ones); none when no row in scope is a target.
 - `Querier` — `SendBatch`: `*pgxpool.Pool`, `*pgx.Conn`, `pgx.Tx`.
 - `DB` — `Querier` plus `Begin`: `*pgxpool.Pool`, `*pgx.Conn`, `pgx.Tx` (a savepoint).
 - `ErrDialect` — a plan not compiled for PostgreSQL.
@@ -127,7 +129,7 @@ The tenant, authorization policy and deleted-row visibility come only from the `
 | `json_integration_test.go` | Typed JSON lists/updates, nulls, projections and failure isolation in every execution mode |
 | `recipe_test.go` | The README recipe: `Device`, list and Merge Patch handlers, `Example` |
 | `recipe_integration_test.go` | `TestRecipe`: the recipe served against PostgreSQL |
-| `parsepgx_integration_test.go` | Page walks, tenancy, every exec mode, snapshots, updates and rollback |
+| `parsepgx_integration_test.go` | Page walks, tenancy, every exec mode, snapshots, updates (guarded ones too) and rollback |
 
 ## References
 

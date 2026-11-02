@@ -64,6 +64,35 @@ func ExampleResource_BuildUpdate() {
 	// [offline t1 d1]
 }
 
+// SkipUnchanged writes only a device the patch changes: the WHERE also
+// compares the status with the value it is set to, reusing its placeholder.
+// Current, run first in the update's transaction, reads and locks the target
+// as it stands, so a device it returns and the update does not is found and
+// unchanged; neither returning it means it is not found.
+func ExampleSkipUnchanged() {
+	devices := parse.MustResource[Device]("devices", parse.TenantColumn("tenant_id"))
+
+	parsed, err := devices.ParseMergePatch([]byte(`{"status":"offline"}`))
+	if err != nil {
+		fmt.Println(err)
+		return
+	}
+	plan, err := devices.BuildUpdate(filter.PostgresDialect{}, parsed, parse.ByID("d1"), parse.Scope{Tenant: "t1"}, parse.SkipUnchanged())
+	if err != nil {
+		fmt.Println(err)
+		return
+	}
+	fmt.Println(plan.Owner.SQL)
+	fmt.Println(plan.Owner.Args)
+	fmt.Println(plan.Current.SQL)
+	fmt.Println(plan.Current.Args)
+	// Output:
+	// UPDATE devices SET status = $1 WHERE (devices.tenant_id = $2 AND devices.id = $3) AND (status IS DISTINCT FROM $1 OR status::text COLLATE "C" IS DISTINCT FROM ($1)::text) RETURNING devices.id, devices.tenant_id, devices.name, devices.status
+	// [offline t1 d1]
+	// SELECT devices.id, devices.tenant_id, devices.name, devices.status FROM devices WHERE (devices.tenant_id = $1 AND devices.id = $2) FOR UPDATE
+	// [t1 d1]
+}
+
 type Command struct {
 	ID       string `json:"id"        db:"id"        parse:"filter,sort"`
 	TenantID string `json:"tenant_id" db:"tenant_id"`

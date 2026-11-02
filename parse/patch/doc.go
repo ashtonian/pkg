@@ -37,7 +37,11 @@
 //	    patch.WithAutoTimestamp("updated_at"),
 //	)
 //	// result.SetClause = "name = $1, status = $2, updated_at = $3"
-//	// result.Args = ["new-name", "active", <time.Time>]
+//	// result.Args = ["new-name", "active", core.FormatTimestamp(now)]
+//
+// [WithChangePredicate] also renders [PatchSQLResult.ChangePredicate], true
+// for a row the patch's columns change; ANDed into the UPDATE's WHERE, it
+// writes, stamps and counts only those rows.
 //
 // # Policy Enforcement
 //

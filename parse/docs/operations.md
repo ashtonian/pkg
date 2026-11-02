@@ -62,7 +62,8 @@ SQLite cases run locally. PostgreSQL/PostGIS tests require the corresponding DSN
 | [Main example](../example_test.go) | Public typed parser/list/patch flow |
 | [SQL examples](../examples_sql_test.go) | Request-to-SQL examples across dialects |
 | [pgx recipe](../parsepgx/recipe_test.go) | List and Merge Patch endpoints on `parsepgx`; `TestRecipe` serves them against PostgreSQL |
-| [parsepgx suite](../parsepgx/parsepgx_integration_test.go) | Page walks with totals, facets and includes; tenancy; every pgx exec mode; snapshots; update rollback |
+| [parsepgx suite](../parsepgx/parsepgx_integration_test.go) | Page walks with totals, facets and includes; tenancy; every pgx exec mode; snapshots; update rollback; guarded updates |
+| [Change predicate cases](../patch/change_predicate_cases_test.go) | `SkipUnchanged`'s comparisons per column kind, executed on SQLite and PostgreSQL |
 | [HTTP server](../examples/server/) | SQLite requests, pagination, facets, and patching |
 | [Filter conformance](../filter/filtertest/) | Shared operator/type behavior for backend implementers |
 | [Typed JSON parity](../typed_document_integration_test.go) | Stored SQLite document versus typed application |

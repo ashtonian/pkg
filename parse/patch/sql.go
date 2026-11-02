@@ -27,6 +27,15 @@ type PatchSQLResult struct {
 	// Callers append filter params starting at startParam + ParamCount.
 	ParamCount int
 
+	// ChangePredicate, rendered with WithChangePredicate, is true for a row
+	// the SET clause's patch columns would change: a parenthesized OR of
+	// null-safe comparisons of each column with the expression it is set to,
+	// over the SET clause's own placeholders and no arguments of its own. It
+	// leaves out the auto-timestamp and increments, so ANDed into an UPDATE's
+	// WHERE it keeps them from moving on a row the patch leaves as it is.
+	// Empty when SetClause is.
+	ChangePredicate string
+
 	// Empty is true when neither the column SET clause nor any relation
 	// op produced output — the caller can short-circuit with no DB writes.
 	Empty bool
@@ -92,6 +101,7 @@ type patchSQLConfig struct {
 	autoTimestampSQL string
 	increments       []string
 	timeFunc         func() time.Time
+	changePredicate  bool
 }
 
 // WithStartParam offsets the SET clause's placeholders by n: the first is
@@ -126,6 +136,12 @@ func WithTimeFunc(fn func() time.Time) PatchSQLOption {
 	return func(c *patchSQLConfig) { c.timeFunc = fn }
 }
 
+// WithChangePredicate also renders PatchSQLResult.ChangePredicate, the
+// condition under which the SET clause changes a row.
+func WithChangePredicate() PatchSQLOption {
+	return func(c *patchSQLConfig) { c.changePredicate = true }
+}
+
 // BuildPatchSQL converts a ParsedPatch into a SQL SET clause and a list
 // of relation patch ops.
 //
@@ -142,6 +158,10 @@ func WithTimeFunc(fn func() time.Time) PatchSQLOption {
 // RelationOps slice; the repository decorator is responsible for emitting the
 // junction SQL bound to the affected owner PKs in the same transaction as the
 // owner UPDATE.
+//
+// WithChangePredicate also compiles the condition under which the patch's
+// columns change a row (PatchSQLResult.ChangePredicate), for an UPDATE that
+// writes, stamps and counts only the rows it changes.
 //
 // Operations SQL cannot express are rejected, never skipped: test (E2068),
 // move/copy and nested JSON Pointer paths (E2070). Apply those through the
@@ -194,12 +214,25 @@ func BuildPatchSQL(patch *ParsedPatch, dialect SQLDialect, opts ...PatchSQLOptio
 	}
 
 	b := &setBuilder{dialect: dialect, next: cfg.startParam + 1}
+	var changes []string
 	for _, col := range columns {
-		expr, err := b.columnExpr(col, columnOps[col])
+		ops := columnOps[col]
+		expr, err := b.columnExpr(col, ops)
 		if err != nil {
 			return nil, err
 		}
 		b.clauses = append(b.clauses, col+" = "+expr)
+		if cfg.changePredicate {
+			change, err := changedSQL(dialect, col, expr, ops[len(ops)-1].Schema)
+			if err != nil {
+				return nil, fmt.Errorf("change predicate for %s: %w", col, err)
+			}
+			changes = append(changes, change)
+		}
+	}
+	var changePredicate string
+	if len(changes) > 0 {
+		changePredicate = "(" + strings.Join(changes, " OR ") + ")"
 	}
 
 	if len(b.clauses) > 0 {
@@ -218,12 +251,52 @@ func BuildPatchSQL(patch *ParsedPatch, dialect SQLDialect, opts ...PatchSQLOptio
 	}
 
 	return &PatchSQLResult{
-		SetClause:   strings.Join(b.clauses, ", "),
-		Args:        b.args,
-		ParamCount:  b.next - cfg.startParam - 1,
-		Empty:       len(b.clauses) == 0 && len(relationOps) == 0,
-		RelationOps: relationOps,
+		SetClause:       strings.Join(b.clauses, ", "),
+		Args:            b.args,
+		ParamCount:      b.next - cfg.startParam - 1,
+		ChangePredicate: changePredicate,
+		Empty:           len(b.clauses) == 0 && len(relationOps) == 0,
+		RelationOps:     relationOps,
 	}, nil
+}
+
+// changedSQL is the null-safe condition, one or more terms to OR, that col
+// set to expr reads back other than it does: a false "changed" costs a
+// write, a false "unchanged" would drop one.
+func changedSQL(d dialect.Dialect, col, expr string, schema *PathSchema) (string, error) {
+	if expr == "NULL" {
+		return col + " IS NOT NULL", nil
+	}
+	switch d.Name() {
+	case "sqlite":
+		// IS NOT is SQLite's null-safe inequality on every version that runs
+		// the SQL (IS DISTINCT FROM is a 3.39 alias). BINARY overrides a
+		// NOCASE or RTRIM column and keeps its affinity, which converts the
+		// value for the comparison as it does on store.
+		return col + " COLLATE BINARY IS NOT " + expr, nil
+	case "postgres":
+		switch {
+		case schema != nil && schema.SQLType == core.SQLJSON:
+			// json has no equality operator, and jsonb's text is canonical:
+			// key order and whitespace do not count, a number's written form
+			// does. The cast to json types the placeholder as the column.
+			return col + `::jsonb::text COLLATE "C" IS DISTINCT FROM (` + expr + ")::json::jsonb::text", nil
+		case schema != nil && schema.DataType == core.FieldTypeDecimal:
+			// A decimal's value has no scale (core.DecimalText binds 1.50 as
+			// 1.5), and a numeric(p,s) column pads every value to s: its text
+			// would differ from the bound value's on every write.
+			return col + " IS DISTINCT FROM " + expr, nil
+		}
+		// A type's equality can be coarser than the text a read returns — an
+		// interval's units, a float's zero sign, citext, a nondeterministic
+		// collation, a jsonb number's form — so the text decides. The
+		// equality goes first because PostgreSQL types a placeholder at its
+		// first use and the WHERE precedes the SET clause: it types the
+		// placeholder as the column (an enum, a domain), where a first use as
+		// text would not.
+		return col + " IS DISTINCT FROM " + expr + " OR " + col + `::text COLLATE "C" IS DISTINCT FROM (` + expr + ")::text", nil
+	}
+	return "", fmt.Errorf("not supported for dialect %q", d.Name())
 }
 
 // serverColumns are the columns the server writes on every update: the
