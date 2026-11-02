@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.8.0](https://github.com/ashtonian/pkg/compare/parse/v0.7.0...parse/v0.8.0) (2026-11-02)
+
+
+### Features
+
+* **parse:** SkipUnchanged updates only the rows a patch changes ([2fc0ed9](https://github.com/ashtonian/pkg/commit/2fc0ed98e51c8c9d328a2d805af6df83b9756d0d))
+* **parse:** SkipUnchanged updates only the rows a patch changes ([c6c8005](https://github.com/ashtonian/pkg/commit/c6c80059fae92e9fc9e2228e357b5dc6a16b3e87))
+
 ## [0.7.0](https://github.com/ashtonian/pkg/compare/parse/v0.6.0...parse/v0.7.0) (2026-10-29)
 
 
