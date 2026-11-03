@@ -69,6 +69,10 @@
     "jsonvalue": {
       "component": "jsonvalue",
       "initial-version": "0.1.0"
+    },
+    "gitx": {
+      "component": "gitx",
+      "initial-version": "0.1.0"
     }
   }
 }
