@@ -164,6 +164,32 @@ jobs:
             "$GITHUB_WORKSPACE/httpx" "$GITHUB_WORKSPACE/httpx/codec/msgpack" \
             "$GITHUB_WORKSPACE/httpx/codec/proto" "$GITHUB_WORKSPACE/httpx/compress/brotli")
           GOWORK="$workspace/go.work" make test-httpx-unit test-httpx-integration
+  gitx-minimum:
+    name: gitx (go 1.26)
+    if: github.actor_id == '4212452' && (github.event_name != 'pull_request' || (github.event.pull_request.user.id == 4212452 && github.event.pull_request.head.repo.full_name == github.repository))
+    permissions:
+      contents: read
+      id-token: write
+    runs-on: arc-pkg
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ashtonian/go-ci-actions@78710c0215622d4dd362f4c565de788934051488 # v1.1.0
+        with:
+          go-version: '1.26.x'
+          cache-dependency-path: "**/go.sum"
+      - name: Test gitx at its minimum Go version
+        # The workspace's go line is newer than gitx's floor, so the module is tested on its own.
+        env:
+          GOTOOLCHAIN: local
+          GOWORK: off
+        working-directory: gitx
+        run: |
+          go version | grep -F ' go1.26.'
+          go vet ./...
+          go test -race ./...
   modules:
     name: module archives, examples and release tooling
     if: github.actor_id == '4212452' && (github.event_name != 'pull_request' || (github.event.pull_request.user.id == 4212452 && github.event.pull_request.head.repo.full_name == github.repository))

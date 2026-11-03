@@ -161,7 +161,7 @@ the text never parses as one of its own markers.
 
 The `git` binary on `PATH`: `git ls-files` lists the files, `git merge-file` does the
 three-way merge, and `git config` reads the conflict style. Otherwise the standard
-library. Go 1.27 or later.
+library. Go 1.26 or later.
 
 ## Build / run / test
 

@@ -24,8 +24,8 @@ go get github.com/ashtonian/pkg/gitx@latest
 go get github.com/ashtonian/pkg/parse@latest
 ```
 
-Parse, gowalker, jsonvalue, gitx, config and its Kong provider require **Go 1.27 or later**; httpx requires
-**Go 1.26 or later**. Install only the modules you need. Add the Kong provider for Kong CLI integration;
+Parse, gowalker, jsonvalue, config and its Kong provider require **Go 1.27 or later**; gitx and httpx
+require **Go 1.26 or later**. Install only the modules you need. Add the Kong provider for Kong CLI integration;
 add httpx's MessagePack, protobuf or Brotli module only for that wire format.
 
 ## httpx
