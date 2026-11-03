@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.1.1](https://github.com/ashtonian/pkg/compare/gitx/v0.1.0...gitx/v0.1.1) (2026-11-03)
+
+
+### Bug Fixes
+
+* **gitx:** declare go 1.26.0, the oldest supported Go ([a9ba846](https://github.com/ashtonian/pkg/commit/a9ba84693063af32aec033b52a2d52f58a9bda9a))
+* **gitx:** declare go 1.26.0, the oldest supported Go ([fdca2c1](https://github.com/ashtonian/pkg/commit/fdca2c1af6dd583e33301157a3ad390be36241ee))
+
 ## 0.1.0 (2026-11-03)
 
 
