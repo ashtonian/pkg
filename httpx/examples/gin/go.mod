@@ -3,7 +3,7 @@ module github.com/ashtonian/pkg/httpx/examples/gin
 go 1.26.0
 
 require (
-	github.com/ashtonian/pkg/httpx v0.1.0
+	github.com/ashtonian/pkg/httpx v0.2.0
 	github.com/gin-gonic/gin v1.12.0
 )
 
