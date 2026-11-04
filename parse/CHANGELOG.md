@@ -1,5 +1,38 @@
 # Changelog
 
+## [0.10.0](https://github.com/ashtonian/pkg/compare/parse/v0.9.0...parse/v0.10.0) (2026-11-04)
+
+
+### Features
+
+* **parse:** decimal scalar type ([b9978c7](https://github.com/ashtonian/pkg/commit/b9978c74e95e5ed690e2d58de669f11b20134402))
+* **parse:** decimal scalar type ([2b27496](https://github.com/ashtonian/pkg/commit/2b27496460c948289c4fb0f1619259ee5f15f87f))
+* **parse:** expose the default patch operation bound ([dda8ca6](https://github.com/ashtonian/pkg/commit/dda8ca621696dc1955cbe41702a5325e78bb52d0))
+* **parse:** Increment moves a version column in the update itself ([8b1187d](https://github.com/ashtonian/pkg/commit/8b1187d601a2ed6c3a53b9a19c5210008e361250))
+* **parse:** Increment moves a version column in the update itself ([302fa6e](https://github.com/ashtonian/pkg/commit/302fa6ec868639feb98b384298fb9a85c57a136e))
+* **parse:** minitems and maxitems bound an array's element count ([646cc80](https://github.com/ashtonian/pkg/commit/646cc804dfb4dc05939c558186a67ed30b3e9305))
+* **parse:** minitems and maxitems bound an array's element count ([df9f4f3](https://github.com/ashtonian/pkg/commit/df9f4f3f598f3c4ed5257eb221da0a2d69906eb3))
+* **parse:** minlen, maxlen, min and max bound patch values ([0afef95](https://github.com/ashtonian/pkg/commit/0afef9508f532a105c35c3c745006d6b53e215cc))
+* **parse:** minlen, maxlen, min and max bound patch values ([bf85e3a](https://github.com/ashtonian/pkg/commit/bf85e3a7d053e258371d27642b4f721b61ec364c))
+* **parse:** name each projected column with Resource.ColumnNames ([cc35af3](https://github.com/ashtonian/pkg/commit/cc35af3008ff9437d4708783dfac478a7bfc7fbc))
+* **parse:** name each projected column with Resource.ColumnNames ([350c38e](https://github.com/ashtonian/pkg/commit/350c38ea399d5821228e9c7da77e632e4b105eda))
+* **parse:** preserve civil dates across query and SQL boundaries ([f898f6a](https://github.com/ashtonian/pkg/commit/f898f6af9bbccada60c45c2382d15157cd948c90))
+* **parse:** preserve storage contracts in standalone resource API ([593555a](https://github.com/ashtonian/pkg/commit/593555a18833be694b25f867a2c7229c272af4cb))
+* **parse:** publish standalone query and SQL contracts ([#76](https://github.com/ashtonian/pkg/issues/76)) ([b32b5dc](https://github.com/ashtonian/pkg/commit/b32b5dc592f1be371b305326abdb9b8a2a3cc6e7))
+* **parse:** publish standalone Resource, SQL and client contracts ([31a0c5e](https://github.com/ashtonian/pkg/commit/31a0c5e13804a3f44a16438acb599eb107d885e0))
+* **parse:** SkipUnchanged updates only the rows a patch changes ([2fc0ed9](https://github.com/ashtonian/pkg/commit/2fc0ed98e51c8c9d328a2d805af6df83b9756d0d))
+* **parse:** SkipUnchanged updates only the rows a patch changes ([c6c8005](https://github.com/ashtonian/pkg/commit/c6c80059fae92e9fc9e2228e357b5dc6a16b3e87))
+
+
+### Bug Fixes
+
+* **parse:** a null clears a nullable enum field ([59c2f9c](https://github.com/ashtonian/pkg/commit/59c2f9ce0a45847bf0f97c42e0c27e2d4abe4df1))
+* **parse:** complete native JSON fixture acceptance and docs ([6964adf](https://github.com/ashtonian/pkg/commit/6964adff24dc015bc24a4b2471770439aa68a591)), closes [#77](https://github.com/ashtonian/pkg/issues/77)
+* **parse:** complete native JSON fixture acceptance and docs ([d3ae7d1](https://github.com/ashtonian/pkg/commit/d3ae7d1b78f6e0b99746b51c7427431b0562601a))
+* **parse:** preserve nullable civil-date storage and legacy SQLite reads ([e1d6b4b](https://github.com/ashtonian/pkg/commit/e1d6b4b3a3e92fb284d6ab25dc925c32917c2030))
+* **parse:** preserve typed JSON storage through pgx reads ([5e38a26](https://github.com/ashtonian/pkg/commit/5e38a2639b0563bbd8f758c2bcb4fadf45a6e268)), closes [#77](https://github.com/ashtonian/pkg/issues/77)
+* **parse:** preserve typed JSON storage through pgx reads ([00dea90](https://github.com/ashtonian/pkg/commit/00dea90d5ae16b7a5ebebe8818fb8b747d37b527)), closes [#77](https://github.com/ashtonian/pkg/issues/77)
+
 ## [0.9.0](https://github.com/ashtonian/pkg/compare/parse/v0.8.0...parse/v0.9.0) (2026-11-04)
 
 
