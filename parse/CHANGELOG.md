@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.9.0](https://github.com/ashtonian/pkg/compare/parse/v0.8.0...parse/v0.9.0) (2026-11-04)
+
+
+### Features
+
+* **parse:** expose the default patch operation bound ([dda8ca6](https://github.com/ashtonian/pkg/commit/dda8ca621696dc1955cbe41702a5325e78bb52d0))
+
 ## [0.8.0](https://github.com/ashtonian/pkg/compare/parse/v0.7.0...parse/v0.8.0) (2026-11-02)
 
 
