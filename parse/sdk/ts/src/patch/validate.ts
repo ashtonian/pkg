@@ -1,6 +1,7 @@
 import { isCivilDate } from "../core/date.js";
 import { compareDecimals, isDecimal } from "../core/decimal.js";
-import { SchemaValidationError } from "../core/errors.js";
+import { SchemaValidationError, SchemaValidationErrors } from "../core/errors.js";
+import type { ConstraintFailure } from "../core/errors.js";
 import type { FieldType } from "../core/types.js";
 import type { PatchOp, PatchPathSchema, PatchSchema } from "./types.js";
 
@@ -30,85 +31,91 @@ export function validatePatch(input: Record<string, unknown>, schema: PatchSchem
     );
   }
 
-  for (const field of fields.toSorted()) {
-    const path = `/${escapePointerToken(field)}`;
-    const pathSchema = Object.hasOwn(schema.paths, path) ? schema.paths[path] : undefined;
-    if (!pathSchema) {
-      throw new SchemaValidationError(
-        field, "E2076",
-        `Field "${field}" is not patchable. Patchable fields: ${Object.keys(schema.paths).map(unescapePointer).join(", ")}`,
-      );
-    }
-    const value = input[field];
-    if (value === null && !pathSchema.nullable && !pathSchema.relation) {
-      throw new SchemaValidationError(field, "E2077", `Field "${field}" cannot be null`);
-    }
-    const op: PatchOp = value === null ? "remove" : "replace";
-    if (!pathSchema.allowed_ops.includes(op)) {
-      throw new SchemaValidationError(
-        field, "E2064",
-        `Operation "${op}" is not allowed on "${field}". Allowed: ${pathSchema.allowed_ops.join(", ")}`,
-      );
-    }
-    if (value !== null) validatePatchValue(field, value, pathSchema);
-  }
+  const failures = fields.toSorted().flatMap(field => validateField(field, input[field], schema));
+  const first = failures[0];
+  if (failures.length === 1 && first) throw first;
+  if (failures.length > 1) throw new SchemaValidationErrors(failures);
 }
 
-function validatePatchValue(field: string, value: unknown, path: PatchPathSchema): void {
+function validateField(field: string, value: unknown, schema: PatchSchema): SchemaValidationError[] {
+  const path = `/${escapePointerToken(field)}`;
+  const pathSchema = Object.hasOwn(schema.paths, path) ? schema.paths[path] : undefined;
+  if (!pathSchema) {
+    return [new SchemaValidationError(field, "E2076",
+      `Field "${field}" is not patchable. Patchable fields: ${Object.keys(schema.paths).map(unescapePointer).join(", ")}`)];
+  }
+  if (value === null && !pathSchema.nullable && !pathSchema.relation) {
+    const constraint: ConstraintFailure | undefined = pathSchema.min_items !== undefined && pathSchema.min_items > 0
+      ? { constraint: "minitems", limit: String(pathSchema.min_items) }
+      : undefined;
+    return [new SchemaValidationError(field, "E2077", `Field "${field}" cannot be null`, constraint)];
+  }
+  const op: PatchOp = value === null ? "remove" : "replace";
+  if (!pathSchema.allowed_ops.includes(op)) {
+    return [new SchemaValidationError(field, "E2064",
+      `Operation "${op}" is not allowed on "${field}". Allowed: ${pathSchema.allowed_ops.join(", ")}`)];
+  }
+  return value === null ? [] : validatePatchValue(field, value, pathSchema);
+}
+
+function validatePatchValue(field: string, value: unknown, path: PatchPathSchema): SchemaValidationError[] {
   if (path.relation) {
-    if (!Array.isArray(value)) {
-      throw new SchemaValidationError(field, "E2118", `Relation "${field}" takes a list of keys`);
-    }
-    return;
+    return Array.isArray(value) ? [] : [new SchemaValidationError(field, "E2118", `Relation "${field}" takes a list of keys`)];
   }
   if (path.data_type === "array") {
     if (!Array.isArray(value)) {
-      throw new SchemaValidationError(field, "E2077", `Field "${field}" expects an array`);
+      return [new SchemaValidationError(field, "E2077", `Field "${field}" expects an array`)];
     }
+    const elementType = path.elem;
+    if (elementType && value.some(el => !scalarOK(el, elementType, path.number_kind))) {
+      return [new SchemaValidationError(field, "E2077", `Field "${field}" expects ${elementType} elements`)];
+    }
+    const failures = elementType ? value.flatMap(el => checkValueTags(field, el, elementType, path)) : [];
     if (path.min_items !== undefined && value.length < path.min_items) {
-      throw new SchemaValidationError(field, "E2077", `Field "${field}" must hold at least ${String(path.min_items)} elements, got ${String(value.length)}`);
+      failures.push(new SchemaValidationError(field, "E2077", `Field "${field}" must hold at least ${String(path.min_items)} elements, got ${String(value.length)}`,
+        { constraint: "minitems", limit: String(path.min_items) }));
     }
     if (path.max_items !== undefined && value.length > path.max_items) {
-      throw new SchemaValidationError(field, "E2077", `Field "${field}" must hold at most ${String(path.max_items)} elements, got ${String(value.length)}`);
+      failures.push(new SchemaValidationError(field, "E2077", `Field "${field}" must hold at most ${String(path.max_items)} elements, got ${String(value.length)}`,
+        { constraint: "maxitems", limit: String(path.max_items) }));
     }
-    if (!path.elem) return;
-    for (const el of value) {
-      if (!scalarOK(el, path.elem, path.number_kind)) {
-        throw new SchemaValidationError(field, "E2077", `Field "${field}" expects ${path.elem} elements`);
-      }
-      checkValueTags(field, el, path.elem, path);
-    }
-    return;
+    return failures;
   }
   if (!scalarOK(value, path.data_type, path.number_kind)) {
-    throw new SchemaValidationError(field, "E2077", `Field "${field}" expects ${path.data_type}, got ${typeof value}`);
+    return [new SchemaValidationError(field, "E2077", `Field "${field}" expects ${path.data_type}, got ${typeof value}`)];
   }
-  checkValueTags(field, value, path.data_type, path);
+  return checkValueTags(field, value, path.data_type, path);
 }
 
 /** The path's enum and bounds, on a value of type (an array path's element type). */
-function checkValueTags(field: string, value: unknown, type: FieldType, path: PatchPathSchema): void {
+function checkValueTags(field: string, value: unknown, type: FieldType, path: PatchPathSchema): SchemaValidationError[] {
+  const failures: SchemaValidationError[] = [];
   if (path.enum_values && path.enum_values.length > 0 && typeof value === "string" && !path.enum_values.includes(value)) {
-    throw new SchemaValidationError(field, "E2077", `Value "${value}" is not allowed for "${field}". Allowed: ${path.enum_values.join(", ")}`);
+    failures.push(new SchemaValidationError(field, "E2077", `Value "${value}" is not allowed for "${field}". Allowed: ${path.enum_values.join(", ")}`,
+      { constraint: "enum", limit: path.enum_values.join(",") }));
   }
   if (type === "string" && typeof value === "string") {
-    // Code points, as the server and a CHAR(n) column count them: not UTF-16
-    // units (length), nor grapheme clusters.
+    // Count Unicode code points, matching Go's string bounds.
     const length = Array.from(value).length;
     if (path.min_length !== undefined && length < path.min_length) {
-      throw new SchemaValidationError(field, "E2077", `Field "${field}" must hold at least ${String(path.min_length)} characters, got ${String(length)}`);
+      failures.push(new SchemaValidationError(field, "E2077", `Field "${field}" must hold at least ${String(path.min_length)} characters, got ${String(length)}`,
+        { constraint: "minlen", limit: String(path.min_length) }));
     }
     if (path.max_length !== undefined && length > path.max_length) {
-      throw new SchemaValidationError(field, "E2077", `Field "${field}" must hold at most ${String(path.max_length)} characters, got ${String(length)}`);
+      failures.push(new SchemaValidationError(field, "E2077", `Field "${field}" must hold at most ${String(path.max_length)} characters, got ${String(length)}`,
+        { constraint: "maxlen", limit: String(path.max_length) }));
     }
-    return;
+    return failures;
   }
   if (path.minimum !== undefined && compareBound(value, path.minimum, type, path.number_kind) < 0) {
-    throw new SchemaValidationError(field, "E2077", `Field "${field}" must be at least ${path.minimum}`);
+    failures.push(new SchemaValidationError(field, "E2077", `Field "${field}" must be at least ${path.minimum}`,
+      { constraint: "min", limit: path.minimum }));
   }
   if (path.maximum !== undefined && compareBound(value, path.maximum, type, path.number_kind) > 0) {
-    throw new SchemaValidationError(field, "E2077", `Field "${field}" must be at most ${path.maximum}`);
+    failures.push(new SchemaValidationError(field, "E2077", `Field "${field}" must be at most ${path.maximum}`,
+      { constraint: "max", limit: path.maximum }));
   }
+  return failures;
 }
 
 // compareBound orders a number against a bound as the server does: a float

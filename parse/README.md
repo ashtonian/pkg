@@ -17,7 +17,7 @@ flowchart LR
 
 **Exit points:** Parameterized statements, parsed values and pages. Repositories execute statements; `parsepgx` provides optional pgx execution.
 
-**Failure modes:** Invalid declarations fail construction; request validation returns `core.ParseError` with its code and path; missing tenant scope returns `ErrTenantRequired`; unreadable row keys return an error while building a cursor.
+**Failure modes:** Invalid declarations fail construction; request validation returns `core.ParseError` with its code and path (patch failures can be joined); missing tenant scope returns `ErrTenantRequired`; unreadable row keys return an error while building a cursor.
 
 **Dependencies:** `Resource` composes `core`, `filter` and `patch`. The compiler packages import no application code; callers own connections, authorization and transactions.
 
@@ -162,6 +162,8 @@ Tags expose capabilities explicitly: `parse:"filter,sort,patch,facet,search,incl
 | [`sdk/ts`](sdk/ts/README.md) | TypeScript builders, HTTP client, schema validation |
 | [`filter/filtertest`](filter/filtertest/) | Shared operator conformance fixture |
 | `internal/dialect`, `internal/jsonmerge`, `internal/cursor` | Dialect primitives, RFC 7386 merge and the bounded MessagePack cursor envelope; the compiler has no private sibling imports |
+
+Patch parsers collect independent invalid values in order. Each declared enum/bounds failure carries `*core.ConstraintError` with `Constraint` and `Limit`; `errors.As` still finds the first `*core.ParseError`. See [the complete patch error contract](docs/patches.md#validation).
 
 `parse.Codes() []parse.Code` exposes the application-independent error catalog (E2061–E2089 and E2112–E2119, with gaps; E2067 is a malformed list parameter). `*parse.ParseError` carries the string code, path/index context, cause and HTTP status. A `Code` is an `errors.Is` target; Consumers map catalog metadata into their own error conventions. [Error handling and complete catalog](docs/http-errors.md#error-codes)
 

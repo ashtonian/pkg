@@ -31,6 +31,23 @@ JSON Patch bodies must be arrays of operations; resource Merge Patch bodies must
 
 Generated client and server patch schemas set `PatchSchema.MaxOperations` to `patch.DefaultMaxOperations` (50). Code generators can read this constant without constructing a resource. JSON Patch may repeat an operation on one field up to this count; a body budget must account for each operation's path and value envelope. The parser's raw-input byte limit and declared field-value bounds remain independent limits. A hand-built `PatchSchema` uses the `MaxOperations` its caller sets.
 
+A rejected patch returns no executable `ParsedPatch`. Independent member/operation failures are collected with `errors.Join`: merge members are ordered by name and JSON Patch operations by input order. Each invalid value remains a `*core.ParseError` with its path, operation index where applicable, and E2077. `errors.As(err, &pe)` still selects the first parse failure. Malformed document syntax and document-wide size/count/depth limits fail before value validation.
+
+Declared constraints carry a `*core.ConstraintError` as the parse error's cause. `Constraint` is `enum`, `minlen`, `maxlen`, `min`, `max`, `minitems` or `maxitems`; `Limit` is the schema's bound text or comma-separated enum allowlist. Value-specific messages are retained. Each invalid array element has its own parse failure; element-count failures are reported alongside value-tag failures. Type/shape failures do not invent a declared constraint.
+
+```go
+var pe *core.ParseError
+if errors.As(err, &pe) {
+    var constraint *core.ConstraintError
+    if errors.As(pe.Cause, &constraint) {
+        // pe.Path identifies the member; constraint.Constraint and Limit
+        // identify its declared rule without parsing the message.
+    }
+}
+```
+
+Traverse joined errors through `Unwrap() []error` to collect every parse failure. The TypeScript SDK mirrors the constraint names and limits; multiple merge-patch failures throw `SchemaValidationErrors`, whose `errors` contains the individual failures and whose inherited field/code identify the first.
+
 Paths are RFC 6901 JSON Pointers: `/labels/a~1b` addresses the key `a/b`, and `~0` escapes a tilde. Patterns match tokens: `*` matches one token, `**` any number. An empty key is a token, so `/labels/*` admits `/labels/` but not `/labels//x`.
 
 | Check | Behavior |

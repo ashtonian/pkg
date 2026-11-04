@@ -1,6 +1,7 @@
 package patch
 
 import (
+	"errors"
 	"fmt"
 	"maps"
 	"reflect"
@@ -75,88 +76,93 @@ func ParseMergePatchMap(raw map[string]any, schema *PatchSchema, config *core.Pa
 
 	// Sorted walk: map order made the operation list — and so the SQL SET
 	// clause and apply order — vary run to run.
+	var failures []error
 	for _, key := range slices.Sorted(maps.Keys(raw)) {
-		value := raw[key]
-		path := core.FormatPointer(key)
-		pathSchema, err := matchPath(schema, path)
+		operation, err := validateMergeMember(schema, codec, key, raw[key])
 		if err != nil {
-			return nil, &core.ParseError{
-				Kind: core.ParseErrorKindPatch, Code: ECodePatchFieldNotFound.String(),
-				Message: fmt.Sprintf("path '%s': %v", path, err),
-				Path:    path, Cause: err,
-			}
+			failures = append(failures, err)
+			continue
 		}
-		var op PatchOp
-		if value == nil {
-			op = PatchOpRemove
-		} else {
-			op = PatchOpReplace
-		}
-		// Only an object in the patch merges; a Go value normalizes to an
-		// object too (a struct) but replaces the member whole.
-		_, merges := value.(map[string]any)
-
-		// RFC 7396 null means "remove"; report it as a nullability error
-		// rather than a confusing "remove not allowed".
-		if err := checkNullability(pathSchema, op, value, 1); err != nil {
-			return nil, &core.ParseError{
-				Kind: core.ParseErrorKindPatch, Code: ECodePatchValueInvalid.String(),
-				Message: fmt.Sprintf("invalid value for path '%s': %v", path, err),
-				Path:    path,
-			}
-		}
-		if !pathSchema.AllowsOp(op) {
-			return nil, &core.ParseError{
-				Kind: core.ParseErrorKindPatch, Code: ECodeOpNotAllowed.String(),
-				Message: fmt.Sprintf("operation '%s' not allowed on path '%s'", op, path),
-				Path:    path,
-			}
-		}
-
-		if value != nil {
-			normalized, err := normalizeMergeValue(pathSchema, op, value, codec)
-			if err != nil {
-				return nil, &core.ParseError{
-					Kind: core.ParseErrorKindPatch, Code: ECodePatchValueInvalid.String(),
-					Message: fmt.Sprintf("invalid value for path '%s': %v", path, err),
-					Path:    path, Cause: err,
-				}
-			}
-			value = normalized
-		}
-		// Explicit null is a removal, but still a proposed value that custom
-		// validators may forbid, just as for JSON Patch replace with null.
-		for _, v := range pathSchema.Validators {
-			if err := v(value); err != nil {
-				return nil, &core.ParseError{
-					Kind: core.ParseErrorKindPatch, Code: ECodePatchValueInvalid.String(),
-					Message: fmt.Sprintf("invalid value for path '%s': %v", path, err),
-					Path:    path, Cause: err,
-				}
-			}
-		}
-		if err := checkItems(pathSchema, op, value, 1); err != nil {
-			return nil, &core.ParseError{
-				Kind: core.ParseErrorKindPatch, Code: ECodePatchValueInvalid.String(),
-				Message: fmt.Sprintf("invalid value for path '%s': %v", path, err),
-				Path:    path, Cause: err,
-			}
-		}
-
-		result.Operations = append(result.Operations, &PatchOperation{
-			Op: op, Path: path, Value: value, Schema: pathSchema,
-			// RFC 7396 §2: object values merge recursively; scalars/arrays/null
-			// replace or remove. Mark object values so apply/SQL honor merge
-			// semantics instead of silently replacing sub-objects.
-			Merge: merges,
-		})
-		seen[path] = struct{}{}
+		result.Operations = append(result.Operations, operation)
+		seen[operation.Path] = struct{}{}
+	}
+	if len(failures) > 0 {
+		return nil, errors.Join(failures...)
 	}
 
 	result.AffectedPaths = slices.Sorted(maps.Keys(seen))
 	result.EstimatedCost = estimatePatchCost(result)
 
 	return result, nil
+}
+
+func validateMergeMember(schema *PatchSchema, codec core.Codec, key string, value any) (*PatchOperation, error) {
+	path := core.FormatPointer(key)
+	pathSchema, err := matchPath(schema, path)
+	if err != nil {
+		return nil, &core.ParseError{
+			Kind: core.ParseErrorKindPatch, Code: ECodePatchFieldNotFound.String(),
+			Message: fmt.Sprintf("path '%s': %v", path, err),
+			Path:    path, Cause: err,
+		}
+	}
+	var op PatchOp
+	if value == nil {
+		op = PatchOpRemove
+	} else {
+		op = PatchOpReplace
+	}
+	// Only an object in the patch merges; a Go value normalizes to an
+	// object too (a struct) but replaces the member whole.
+	_, merges := value.(map[string]any)
+
+	// RFC 7396 null means "remove"; report it as a nullability error
+	// rather than a confusing "remove not allowed".
+	if err := checkNullability(pathSchema, op, value, 1); err != nil {
+		return nil, &core.ParseError{
+			Kind: core.ParseErrorKindPatch, Code: ECodePatchValueInvalid.String(),
+			Message: fmt.Sprintf("invalid value for path '%s': %v", path, err),
+			Path:    path, Cause: err,
+		}
+	}
+	if !pathSchema.AllowsOp(op) {
+		return nil, &core.ParseError{
+			Kind: core.ParseErrorKindPatch, Code: ECodeOpNotAllowed.String(),
+			Message: fmt.Sprintf("operation '%s' not allowed on path '%s'", op, path),
+			Path:    path,
+		}
+	}
+
+	if value != nil {
+		normalized, err := normalizeMergeValue(pathSchema, op, value, codec)
+		if err != nil {
+			return nil, &core.ParseError{
+				Kind: core.ParseErrorKindPatch, Code: ECodePatchValueInvalid.String(),
+				Message: fmt.Sprintf("invalid value for path '%s': %v", path, err),
+				Path:    path, Cause: err,
+			}
+		}
+		value = normalized
+	}
+	// Explicit null is a removal, but still a proposed value that custom
+	// validators may forbid, just as for JSON Patch replace with null.
+	var failures []error
+	wrap := func(err error) error {
+		return &core.ParseError{Kind: core.ParseErrorKindPatch, Code: ECodePatchValueInvalid.String(), Message: fmt.Sprintf("invalid value for path '%s': %v", path, err), Path: path, Cause: err}
+	}
+	for _, validator := range pathSchema.Validators {
+		if err := validator(value); err != nil {
+			failures = append(failures, valueFailures(err, wrap)...)
+		}
+	}
+	if err := checkItems(pathSchema, op, value, 1); err != nil {
+		failures = append(failures, valueFailures(err, wrap)...)
+	}
+	if len(failures) > 0 {
+		return nil, errors.Join(failures...)
+	}
+
+	return &PatchOperation{Op: op, Path: path, Value: value, Schema: pathSchema, Merge: merges}, nil
 }
 
 // jsonNulls returns obj with each member encoding/json writes as null — a

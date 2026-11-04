@@ -7,6 +7,7 @@ import (
 	"maps"
 	"reflect"
 	"slices"
+	"strconv"
 
 	"github.com/ashtonian/pkg/parse/core"
 )
@@ -120,113 +121,124 @@ func (p *Parser) validateOps(ops []RawPatchOp) (*ParsedPatch, error) {
 	}
 	seen := make(map[string]struct{})
 
+	var failures []error
 	for i, raw := range ops {
-		if !isValidPatchOp(raw.Op) {
-			return nil, &core.ParseError{
-				Kind: core.ParseErrorKindPatch, Code: ECodeInvalidPatchOp.String(),
-				Message: fmt.Sprintf("invalid operation '%s' at index %d", raw.Op, i),
-				Index:   new(i),
-			}
-		}
-		op := PatchOp(raw.Op)
-		if opTakesValue(op) && !raw.present() {
-			// RFC 6902 §4.1, §4.3, §4.6: add, replace and test carry a
-			// value (as array_append carries its element); without one an
-			// operation is malformed, not a clear.
-			return nil, &core.ParseError{
-				Kind: core.ParseErrorKindPatch, Code: ECodeInvalidPatchOp.String(),
-				Message: fmt.Sprintf("'value' required for %s at index %d", raw.Op, i),
-				Path:    raw.Path, Index: new(i),
-			}
-		}
-
-		pathSchema, depth, err := p.resolvePath(raw.Path, i)
+		operation, err := p.validateOperation(raw, i)
 		if err != nil {
-			return nil, err
+			failures = append(failures, err)
+			continue
 		}
-		if !pathSchema.AllowsOp(op) {
-			return nil, &core.ParseError{
-				Kind: core.ParseErrorKindPatch, Code: ECodeOpNotAllowed.String(),
-				Message: fmt.Sprintf("operation '%s' not allowed on path '%s' at index %d", op, raw.Path, i),
-				Path:    raw.Path, Index: new(i),
-			}
-		}
-
-		if op == PatchOpMove || op == PatchOpCopy {
-			if raw.From == "" {
-				return nil, &core.ParseError{
-					Kind: core.ParseErrorKindPatch, Code: ECodeInvalidPatchOp.String(),
-					Message: fmt.Sprintf("'from' required for %s at index %d", raw.Op, i),
-					Index:   new(i),
-				}
-			}
-			// The source must itself be a schema path: move/copy read it, and
-			// an unlisted source would expose a field the schema never made
-			// patchable.
-			from, fromDepth, err := p.resolvePath(raw.From, i)
-			if err != nil {
-				return nil, err
-			}
-			if err := checkTransfer(op, from, fromDepth, pathSchema, depth); err != nil {
-				return nil, &core.ParseError{
-					Kind: core.ParseErrorKindPatch, Code: err.code.String(),
-					Message: fmt.Sprintf("%s from '%s' to '%s' at index %d: %s", op, raw.From, raw.Path, i, err.msg),
-					Path:    raw.Path, Index: new(i),
-				}
-			}
-		}
-
-		// Values are normalized before validators run, so validators and every
-		// consumer (SQL binding, typed apply) see the canonical value.
-		// Validators run for every value-taking op, including explicit null.
-		value := normalizeNilPointer(raw.Value)
-		if err := checkNullability(pathSchema, op, value, depth); err != nil {
-			return nil, &core.ParseError{
-				Kind: core.ParseErrorKindPatch, Code: ECodePatchValueInvalid.String(),
-				Message: fmt.Sprintf("invalid value for path '%s' at index %d: %v", raw.Path, i, err),
-				Path:    raw.Path, Index: new(i),
-			}
-		}
-		// Relation remove carries the target IDs to remove, so it
-		// normalizes like the other membership verbs.
-		if opTakesValue(op) || (pathSchema.Relation != nil && op == PatchOpRemove) {
-			normalized, err := normalizeOpValue(pathSchema, op, value, depth, p.codec)
-			if err != nil {
-				return nil, &core.ParseError{
-					Kind: core.ParseErrorKindPatch, Code: ECodePatchValueInvalid.String(),
-					Message: fmt.Sprintf("invalid value for path '%s' at index %d: %v", raw.Path, i, err),
-					Path:    raw.Path, Index: new(i), Cause: err,
-				}
-			}
-			value = normalized
-			for _, v := range pathSchema.Validators {
-				if err := v(value); err != nil {
-					return nil, &core.ParseError{
-						Kind: core.ParseErrorKindPatch, Code: ECodePatchValueInvalid.String(),
-						Message: fmt.Sprintf("invalid value for path '%s' at index %d: %v", raw.Path, i, err),
-						Path:    raw.Path, Index: new(i), Cause: err,
-					}
-				}
-			}
-		}
-		if err := checkItems(pathSchema, op, value, depth); err != nil {
-			return nil, &core.ParseError{
-				Kind: core.ParseErrorKindPatch, Code: ECodePatchValueInvalid.String(),
-				Message: fmt.Sprintf("invalid value for path '%s' at index %d: %v", raw.Path, i, err),
-				Path:    raw.Path, Index: new(i), Cause: err,
-			}
-		}
-
-		result.Operations = append(result.Operations, &PatchOperation{
-			Op: op, Path: raw.Path, From: raw.From, Value: value, Schema: pathSchema,
-		})
+		result.Operations = append(result.Operations, operation)
 		seen[raw.Path] = struct{}{}
+	}
+	if len(failures) > 0 {
+		return nil, errors.Join(failures...)
 	}
 
 	result.AffectedPaths = slices.Sorted(maps.Keys(seen)) // deterministic audit payload
 	result.EstimatedCost = estimatePatchCost(result)
 
 	return result, nil
+}
+
+func (p *Parser) validateOperation(raw RawPatchOp, i int) (*PatchOperation, error) {
+	if !isValidPatchOp(raw.Op) {
+		return nil, &core.ParseError{
+			Kind: core.ParseErrorKindPatch, Code: ECodeInvalidPatchOp.String(),
+			Message: fmt.Sprintf("invalid operation '%s' at index %d", raw.Op, i),
+			Index:   new(i),
+		}
+	}
+	op := PatchOp(raw.Op)
+	if opTakesValue(op) && !raw.present() {
+		// RFC 6902 §4.1, §4.3, §4.6: add, replace and test carry a
+		// value (as array_append carries its element); without one an
+		// operation is malformed, not a clear.
+		return nil, &core.ParseError{
+			Kind: core.ParseErrorKindPatch, Code: ECodeInvalidPatchOp.String(),
+			Message: fmt.Sprintf("'value' required for %s at index %d", raw.Op, i),
+			Path:    raw.Path, Index: new(i),
+		}
+	}
+
+	pathSchema, depth, err := p.resolvePath(raw.Path, i)
+	if err != nil {
+		return nil, err
+	}
+	if !pathSchema.AllowsOp(op) {
+		return nil, &core.ParseError{
+			Kind: core.ParseErrorKindPatch, Code: ECodeOpNotAllowed.String(),
+			Message: fmt.Sprintf("operation '%s' not allowed on path '%s' at index %d", op, raw.Path, i),
+			Path:    raw.Path, Index: new(i),
+		}
+	}
+
+	if op == PatchOpMove || op == PatchOpCopy {
+		if raw.From == "" {
+			return nil, &core.ParseError{
+				Kind: core.ParseErrorKindPatch, Code: ECodeInvalidPatchOp.String(),
+				Message: fmt.Sprintf("'from' required for %s at index %d", raw.Op, i),
+				Index:   new(i),
+			}
+		}
+		// The source must itself be a schema path: move/copy read it, and
+		// an unlisted source would expose a field the schema never made
+		// patchable.
+		from, fromDepth, err := p.resolvePath(raw.From, i)
+		if err != nil {
+			return nil, err
+		}
+		if err := checkTransfer(op, from, fromDepth, pathSchema, depth); err != nil {
+			return nil, &core.ParseError{
+				Kind: core.ParseErrorKindPatch, Code: err.code.String(),
+				Message: fmt.Sprintf("%s from '%s' to '%s' at index %d: %s", op, raw.From, raw.Path, i, err.msg),
+				Path:    raw.Path, Index: new(i),
+			}
+		}
+	}
+
+	// Values are normalized before validators run, so validators and every
+	// consumer (SQL binding, typed apply) see the canonical value.
+	// Validators run for every value-taking op, including explicit null.
+	value := normalizeNilPointer(raw.Value)
+	if err := checkNullability(pathSchema, op, value, depth); err != nil {
+		return nil, &core.ParseError{
+			Kind: core.ParseErrorKindPatch, Code: ECodePatchValueInvalid.String(),
+			Message: fmt.Sprintf("invalid value for path '%s' at index %d: %v", raw.Path, i, err),
+			Path:    raw.Path, Index: new(i), Cause: err,
+		}
+	}
+	var failures []error
+	wrap := func(err error) error {
+		return &core.ParseError{Kind: core.ParseErrorKindPatch, Code: ECodePatchValueInvalid.String(), Message: fmt.Sprintf("invalid value for path '%s' at index %d: %v", raw.Path, i, err), Path: raw.Path, Index: new(i), Cause: err}
+	}
+
+	// Relation remove carries the target IDs to remove, so it
+	// normalizes like the other membership verbs.
+	if opTakesValue(op) || (pathSchema.Relation != nil && op == PatchOpRemove) {
+		normalized, err := normalizeOpValue(pathSchema, op, value, depth, p.codec)
+		if err != nil {
+			return nil, &core.ParseError{
+				Kind: core.ParseErrorKindPatch, Code: ECodePatchValueInvalid.String(),
+				Message: fmt.Sprintf("invalid value for path '%s' at index %d: %v", raw.Path, i, err),
+				Path:    raw.Path, Index: new(i), Cause: err,
+			}
+		}
+		value = normalized
+		for _, validator := range pathSchema.Validators {
+			if err := validator(value); err != nil {
+				failures = append(failures, valueFailures(err, wrap)...)
+			}
+		}
+	}
+	if err := checkItems(pathSchema, op, value, depth); err != nil {
+		failures = append(failures, valueFailures(err, wrap)...)
+	}
+	if len(failures) > 0 {
+		return nil, errors.Join(failures...)
+	}
+
+	return &PatchOperation{Op: op, Path: raw.Path, From: raw.From, Value: value, Schema: pathSchema}, nil
 }
 
 // resolvePath validates a JSON Pointer (RFC 6901 syntax, depth within
@@ -385,7 +397,10 @@ func checkNullability(ps *PathSchema, op PatchOp, value any, depth int) error {
 		reason = fmt.Sprintf("field cannot be cleared to an empty array (minitems %d)", *ps.Bounds.MinItems)
 	}
 	if op == PatchOpRemove {
-		return fmt.Errorf("%s and cannot be removed", reason)
+		reason += " and cannot be removed"
+	}
+	if mustHoldElement(ps.GoType, ps.Bounds) {
+		return core.NewConstraintError(core.ConstraintMinItems, strconv.Itoa(*ps.Bounds.MinItems), reason)
 	}
 	return errors.New(reason)
 }
@@ -406,10 +421,10 @@ func checkItems(ps *PathSchema, op PatchOp, value any, depth int) error {
 	}
 	n := array.Len()
 	if b.MinItems != nil && n < *b.MinItems {
-		return fmt.Errorf("%d elements is fewer than the minimum %d", n, *b.MinItems)
+		return constraintFailure(core.ConstraintMinItems, strconv.Itoa(*b.MinItems), "%d elements is fewer than the minimum %d", n, *b.MinItems)
 	}
 	if b.MaxItems != nil && n > *b.MaxItems {
-		return fmt.Errorf("%d elements is more than the maximum %d", n, *b.MaxItems)
+		return constraintFailure(core.ConstraintMaxItems, strconv.Itoa(*b.MaxItems), "%d elements is more than the maximum %d", n, *b.MaxItems)
 	}
 	return nil
 }

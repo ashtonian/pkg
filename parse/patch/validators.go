@@ -1,6 +1,7 @@
 package patch
 
 import (
+	"errors"
 	"fmt"
 	"math"
 	"reflect"
@@ -22,12 +23,13 @@ func eachValue(check func(any) error) core.Validator {
 			return nil
 		}
 		if items, ok := core.AnySlice(value); ok {
+			var failures []error
 			for _, item := range items {
 				if err := walk(item); err != nil {
-					return err
+					failures = append(failures, err)
 				}
 			}
-			return nil
+			return errors.Join(failures...)
 		}
 		return check(value)
 	}
@@ -48,7 +50,7 @@ func enumValidator(values []string) core.Validator {
 			return fmt.Errorf("expected string for enum validation, got %T", value)
 		}
 		if _, found := allowed[s]; !found {
-			return fmt.Errorf("value %q is not one of: %s", s, strings.Join(names, ", "))
+			return constraintFailure(core.ConstraintEnum, strings.Join(names, ","), "value %q is not one of: %s", s, strings.Join(names, ", "))
 		}
 		return nil
 	})
@@ -71,10 +73,10 @@ func boundsValidator(b core.Bounds, info core.TypeInfo) core.Validator {
 			}
 			n := utf8.RuneCountInString(s)
 			if b.MinLen != nil && n < *b.MinLen {
-				return fmt.Errorf("%d characters is fewer than the minimum length %d", n, *b.MinLen)
+				return constraintFailure(core.ConstraintMinLen, strconv.Itoa(*b.MinLen), "%d characters is fewer than the minimum length %d", n, *b.MinLen)
 			}
 			if b.MaxLen != nil && n > *b.MaxLen {
-				return fmt.Errorf("%d characters is more than the maximum length %d", n, *b.MaxLen)
+				return constraintFailure(core.ConstraintMaxLen, strconv.Itoa(*b.MaxLen), "%d characters is more than the maximum length %d", n, *b.MaxLen)
 			}
 			return nil
 		})
@@ -93,10 +95,10 @@ func boundsValidator(b core.Bounds, info core.TypeInfo) core.Validator {
 				return fmt.Errorf("expected float64 for range validation, got %T", value)
 			}
 			if f < lo {
-				return fmt.Errorf("%s is less than the minimum %s", strconv.FormatFloat(f, 'g', -1, bits), b.Min)
+				return constraintFailure(core.ConstraintMin, b.Min, "%s is less than the minimum %s", strconv.FormatFloat(f, 'g', -1, bits), b.Min)
 			}
 			if f > hi {
-				return fmt.Errorf("%s is greater than the maximum %s", strconv.FormatFloat(f, 'g', -1, bits), b.Max)
+				return constraintFailure(core.ConstraintMax, b.Max, "%s is greater than the maximum %s", strconv.FormatFloat(f, 'g', -1, bits), b.Max)
 			}
 			return nil
 		})
@@ -109,7 +111,7 @@ func boundsValidator(b core.Bounds, info core.TypeInfo) core.Validator {
 				return fmt.Errorf("expected a number for range validation, got %T", value)
 			}
 			if c < 0 {
-				return fmt.Errorf("%v is less than the minimum %s", value, b.Min)
+				return constraintFailure(core.ConstraintMin, b.Min, "%v is less than the minimum %s", value, b.Min)
 			}
 		}
 		if b.Max != "" {
@@ -118,7 +120,7 @@ func boundsValidator(b core.Bounds, info core.TypeInfo) core.Validator {
 				return fmt.Errorf("expected a number for range validation, got %T", value)
 			}
 			if c > 0 {
-				return fmt.Errorf("%v is greater than the maximum %s", value, b.Max)
+				return constraintFailure(core.ConstraintMax, b.Max, "%v is greater than the maximum %s", value, b.Max)
 			}
 		}
 		return nil
@@ -134,4 +136,21 @@ func floatBound(text string, bits int, unbounded float64) float64 {
 	}
 	f, _ := strconv.ParseFloat(text, bits) // canonical decimal text: only ErrRange, with ±Inf
 	return f
+}
+
+func constraintFailure(name, limit, format string, args ...any) error {
+	return core.NewConstraintError(name, limit, fmt.Sprintf(format, args...))
+}
+
+// Each invalid value remains an individual ParseError, even when a validator
+// checked several array elements or several declared constraints.
+func valueFailures(cause error, wrap func(error) error) []error {
+	if joined, ok := cause.(interface{ Unwrap() []error }); ok {
+		var failures []error
+		for _, child := range joined.Unwrap() {
+			failures = append(failures, valueFailures(child, wrap)...)
+		}
+		return failures
+	}
+	return []error{wrap(cause)}
 }

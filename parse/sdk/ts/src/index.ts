@@ -26,7 +26,7 @@
  */
 
 // Core (shared types and errors)
-export { ApiError, SchemaValidationError, SchemaVersionError } from "./core/index.js";
+export { ApiError, SchemaValidationError, SchemaValidationErrors, SchemaVersionError } from "./core/index.js";
 export type { ErrorBody, FieldType, RequestOptions } from "./core/index.js";
 
 // Filter
@@ -71,3 +71,5 @@ export type { Client, ClientConfig, Resource } from "./client.js";
 export { SCHEMA_VERSION } from "./schema.js";
 export type { ResourceSchema } from "./schema.js";
 export { SchemaValidator } from "./validate.js";
+
+export type { ConstraintName, ConstraintFailure } from "./core/errors.js";
