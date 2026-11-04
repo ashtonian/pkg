@@ -191,7 +191,7 @@ func generatePatchSchema(g *core.SchemaGenerator, t reflect.Type, server bool) (
 	}
 
 	return &PatchSchema{
-		Resource: tableName, AllowedPaths: paths, MaxOperations: 50,
+		Resource: tableName, AllowedPaths: paths, MaxOperations: DefaultMaxOperations,
 	}, nil
 }
 

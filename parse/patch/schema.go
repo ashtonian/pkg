@@ -39,6 +39,10 @@ var ValidPatchOps = map[PatchOp]bool{
 	PatchOpArrayAppend: true,
 }
 
+// DefaultMaxOperations is the operation limit used by GeneratePatchSchema and
+// GenerateServerPatchSchema. Callers constructing a PatchSchema choose its limit.
+const DefaultMaxOperations = 50
+
 // PatchSchema defines allowed patch operations for a resource.
 type PatchSchema struct {
 	Resource      string

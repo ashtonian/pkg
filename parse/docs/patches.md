@@ -29,6 +29,8 @@ A field tagged `parse:"server"` is a column only the server sets — a credentia
 
 JSON Patch bodies must be arrays of operations; resource Merge Patch bodies must be objects. A root `null` is rejected rather than treated as an empty update. Explicit null removal still runs path validators.
 
+Generated client and server patch schemas set `PatchSchema.MaxOperations` to `patch.DefaultMaxOperations` (50). Code generators can read this constant without constructing a resource. JSON Patch may repeat an operation on one field up to this count; a body budget must account for each operation's path and value envelope. The parser's raw-input byte limit and declared field-value bounds remain independent limits. A hand-built `PatchSchema` uses the `MaxOperations` its caller sets.
+
 Paths are RFC 6901 JSON Pointers: `/labels/a~1b` addresses the key `a/b`, and `~0` escapes a tilde. Patterns match tokens: `*` matches one token, `**` any number. An empty key is a token, so `/labels/*` admits `/labels/` but not `/labels//x`.
 
 | Check | Behavior |
