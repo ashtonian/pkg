@@ -2,15 +2,13 @@
 
 ## [0.2.0](https://github.com/ashtonian/pkg/compare/httpx/codec/msgpack/v0.1.0...httpx/codec/msgpack/v0.2.0) (2026-11-06)
 
+### Breaking changes
 
-### ⚠ BREAKING CHANGES
+* The default `Codec` follows JSON field selection and value semantics, including custom JSON encoders. Select `NativeCodec` explicitly for native MessagePack tags, binary values and extensions.
 
-* **httpx:** the default MessagePack codec now follows JSON field and value semantics. Select NativeCodec explicitly for native MessagePack peers.
+### Features and fixes
 
-### Features
-
-* **httpx:** add JSON representations and URL privacy policies ([939f5a9](https://github.com/ashtonian/pkg/commit/939f5a961cd6ac8e4972a60a35ef933bcb2d1cb9))
-* **httpx:** preserve JSON representations, problem details and private URLs ([caf019f](https://github.com/ashtonian/pkg/commit/caf019fbc76990e0b4ff7136ca8034e6393c7ef9))
+* Preserve JSON names, omitted/private fields, string UUID/time representations and ordered duplicate members. Reject unrepresentable integers and excessive nesting ([#114](https://github.com/ashtonian/pkg/pull/114)).
 
 ## 0.1.0 (2026-10-15)
 

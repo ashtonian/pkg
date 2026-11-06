@@ -2,13 +2,10 @@
 
 ## [0.10.0](https://github.com/ashtonian/pkg/compare/parse/v0.9.0...parse/v0.10.0) (2026-11-06)
 
-
 ### Features
 
-* **parse:** name declared constraints and aggregate patch failures ([38076d1](https://github.com/ashtonian/pkg/commit/38076d117a1eb67cce0aa3690a5476b2e7f84551))
-* **parse:** name declared constraints and aggregate patch failures ([737d209](https://github.com/ashtonian/pkg/commit/737d209152c345e862c7cdc03eadd40baa2a7a4f))
-* **parse:** publish SDK packages from immutable releases ([38076d1](https://github.com/ashtonian/pkg/commit/38076d117a1eb67cce0aa3690a5476b2e7f84551))
-* **parse:** publish SDK packages from immutable releases ([737d209](https://github.com/ashtonian/pkg/commit/737d209152c345e862c7cdc03eadd40baa2a7a4f))
+* Name declared constraints and aggregate independent patch failures in Go and TypeScript while retaining first-error access ([#109](https://github.com/ashtonian/pkg/pull/109)).
+* Publish verified SDK packages from immutable releases through GitHub OIDC, with package integrity and fresh registry-consumer checks ([#111](https://github.com/ashtonian/pkg/pull/111)).
 
 ## [0.9.0](https://github.com/ashtonian/pkg/compare/parse/v0.8.0...parse/v0.9.0) (2026-11-04)
 
