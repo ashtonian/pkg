@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.2.0](https://github.com/ashtonian/pkg/compare/httpx/codec/proto/v0.1.0...httpx/codec/proto/v0.2.0) (2026-11-06)
+
+### Dependencies
+
+* Require released HTTPx v0.2.0 and Protobuf v1.36.12, with `golang.org/x/time` v0.16.0. The codec API and implementation are unchanged.
+
 ## 0.1.0 (2026-10-15)
 
 

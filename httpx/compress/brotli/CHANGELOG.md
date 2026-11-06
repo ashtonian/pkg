@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.2.0](https://github.com/ashtonian/pkg/compare/httpx/compress/brotli/v0.1.0...httpx/compress/brotli/v0.2.0) (2026-11-06)
+
+### Dependencies
+
+* Require released HTTPx v0.2.0 and Brotli v1.2.7, with `golang.org/x/time` v0.16.0. The compression API and implementation are unchanged.
+
 ## 0.1.0 (2026-10-15)
 
 

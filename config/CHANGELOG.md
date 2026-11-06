@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.8.0](https://github.com/ashtonian/pkg/compare/config/v0.7.0...config/v0.8.0) (2026-11-06)
+
+### Features and fixes
+
+* Share conditional validation constraints between JSON Schema and usage metadata, preserving `omitempty` ordering, nullable values and exact integer bounds. Expose value, length, item and property bounds in `UsageEntry` and Markdown.
+* Add root `DefaultProvider.ConfigDefaults()` declarations shared by loading, usage, JSON Schema and templates, with explicit precedence and schema validation.
+* Add `CheckKey` and typed `DecodeKey` for source-free candidate validation, and per-provider `WithInvalidEntries` reporting that preserves lower-precedence values and final combined validation.
+* Apply `RedactText` credential-shape filtering across redacted text/byte diagnostics; withhold credential-bearing defaults from metadata and templates while preserving raw trees ([#122](https://github.com/ashtonian/pkg/pull/122)).
+
 ## [0.7.0](https://github.com/ashtonian/pkg/compare/config/v0.6.2...config/v0.7.0) (2026-11-06)
 
 ### Breaking changes
