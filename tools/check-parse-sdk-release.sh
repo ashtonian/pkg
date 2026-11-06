@@ -23,8 +23,8 @@ fi
 if [[ $registry == false && $# == 1 ]]; then
     package=$(cd -- "$(dirname -- "$1")" && pwd)/$(basename -- "$1")
 elif [[ $registry == false ]]; then
-    (cd "$sdk" && npm pack --json --pack-destination "$scratch") > "$scratch/pack.json"
-    package="$scratch/$(node --input-type=module -e 'import fs from "node:fs"; console.log(JSON.parse(fs.readFileSync(process.argv[1], "utf8"))[0].filename)' "$scratch/pack.json")"
+    (cd "$sdk" && npm pack --silent --pack-destination "$scratch") > /dev/null
+    package="$scratch/ashtonian-parse-$expected_version.tgz"
 fi
 mkdir "$scratch/consumer"
 cd "$scratch/consumer"

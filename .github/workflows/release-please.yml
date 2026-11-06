@@ -118,7 +118,7 @@ jobs:
           node --input-type=module <<'JS'
           import assert from 'node:assert/strict';
           import fs from 'node:fs';
-          const [packed] = JSON.parse(fs.readFileSync('artifacts/pack.json', 'utf8'));
+          const packed = JSON.parse(fs.readFileSync('artifacts/pack.json', 'utf8'))['@ashtonian/parse'];
           const response = await fetch(`https://registry.npmjs.org/@ashtonian%2fparse/${packed.version}`, { signal: AbortSignal.timeout(30_000) });
           if (response.status === 404) {
             fs.appendFileSync(process.env.GITHUB_OUTPUT, 'publish=true\n');
@@ -131,7 +131,13 @@ jobs:
           JS
       - name: Publish with npm trusted publishing
         if: steps.registry.outputs.publish == 'true' && (github.event_name == 'push' || inputs.publish)
-        run: npm publish "artifacts/ashtonian-parse-${RELEASE_TAG#parse/v}.tgz" --access public --provenance --registry=https://registry.npmjs.org
+        run: |
+          # npm provenance records GITHUB_SHA, not an alternate checkout's HEAD.
+          if [[ $(git -C source rev-parse HEAD) != "$GITHUB_SHA" ]]; then
+            echo '::error::Dispatch publication at the release tag so provenance identifies the package source.'
+            exit 1
+          fi
+          npm publish "artifacts/ashtonian-parse-${RELEASE_TAG#parse/v}.tgz" --access public --provenance --registry=https://registry.npmjs.org
       - name: Verify a fresh public-registry consumer
         if: steps.registry.outputs.publish == 'false' || github.event_name == 'push' || inputs.publish
         run: bash tooling/tools/check-parse-sdk-release.sh --registry "${RELEASE_TAG#parse/v}"
