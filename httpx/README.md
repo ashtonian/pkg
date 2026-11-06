@@ -32,6 +32,7 @@ Choose the behaviors your client needs and enable their layers individually.
 | [Compression negotiation](docs/codecs-compression.md) | Lazy gzip/deflate decoding, optional Brotli and configurable accepted encodings; preserve encoded partial responses. Go already handles basic gzip. |
 | [Origin-bound credentials](docs/security-observability.md#origin-bound-credentials) | Add bearer, basic or API-key credentials only when the request URL and effective host match the provider's bound origin. |
 | [Streaming and response bounds](docs/requests.md) | Ordinary `client.Do` bodies for streams/downloads; opt-in bounded reads and JSON/XML decoding, with optional MessagePack/protobuf. |
+| [Problem details](docs/requests.md#problem-details) | Bounded RFC 9457 decoding, raw JSON extensions and opt-in typed problem errors; HTTP status and body ownership remain explicit. |
 | [Operational visibility](docs/security-observability.md) | Redacted request/response logging, retry/cache events and metrics hooks. |
 
 ## Failure handling and failover

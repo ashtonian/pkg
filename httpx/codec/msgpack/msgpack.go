@@ -21,13 +21,18 @@ func init() {
 	httpx.RegisterCodec(Codec)
 }
 
-// Codec is the msgpack codec singleton.
-// Use this with [httpx.EncodeRequest] for request body encoding.
-var Codec httpx.Codec = codec{}
+// Codec encodes the JSON data model as MessagePack. JSON field selection,
+// tags and marshal methods apply in both directions; bytes and text values
+// have their JSON representation. Use [NativeCodec] for native MessagePack.
+var Codec httpx.Codec = jsonCodec{}
 
-// codec is the internal msgpack codec implementation.
-type codec struct{}
+// NativeCodec uses msgpack tags, binary values, timestamp extensions and
+// MessagePack marshal methods. It does not honor json:"-". It is not
+// registered automatically; use it only with a matching native peer.
+var NativeCodec httpx.Codec = nativeCodec{}
 
-func (codec) ContentType() string             { return httpx.ContentTypeMsgpack }
-func (codec) Encode(v any) ([]byte, error)    { return msgpack.Marshal(v) }
-func (codec) Decode(data []byte, v any) error { return msgpack.Unmarshal(data, v) }
+type nativeCodec struct{}
+
+func (nativeCodec) ContentType() string             { return httpx.ContentTypeMsgpack }
+func (nativeCodec) Encode(v any) ([]byte, error)    { return msgpack.Marshal(v) }
+func (nativeCodec) Decode(data []byte, v any) error { return msgpack.Unmarshal(data, v) }

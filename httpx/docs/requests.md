@@ -105,7 +105,7 @@ headers, a method, an idempotency key or a different request codec.
 ordinary `*http.Client`, including one configured with your own transports.
 
 They decode a 2xx representation using its `Content-Type`; JSON and XML are
-built in. Non-2xx responses return zero `T`, the response, and nil error.
+built in. By default, non-2xx responses return zero `T`, the response, and nil error.
 HEAD, 204 and 205 return zero `T` without decoding. A missing content type
 also leaves the body undecoded; an unregistered type returns `ErrNoCodec`.
 Check both the Go error and the HTTP status.
@@ -135,6 +135,56 @@ The helper allocates the pointee before handing it to the codec. See the
 [protobuf example](../codec/proto/README.md).
 
 ## Error inspection
+
+### Problem details
+
+Pass `WithProblemErrors()` to a typed helper to decode non-2xx
+`application/problem+json` responses into `*httpx.Problem` errors:
+
+```go
+value, resp, err := httpx.Get[Item](ctx, client, endpoint,
+    httpx.WithProblemErrors(), httpx.WithMaxResponseBytes(1<<20))
+if resp != nil {
+    defer resp.Body.Close()
+}
+var problem *httpx.Problem
+if errors.As(err, &problem) {
+    var code string
+    if decodeErr := problem.Extension("code", &code); decodeErr != nil {
+        return decodeErr
+    }
+    // Classify using the application's code and resp.StatusCode.
+}
+```
+
+`Problem` exposes the RFC 9457 `Type`, `Title`, `Status`, `Detail` and
+`Instance` members. Unknown members remain `json.RawMessage` values in
+`Extensions`, preserving numeric precision and application-specific schemas.
+`Extension(name, target)` explicitly decodes one; a missing member returns
+`ErrProblemExtensionNotFound`. Standard members with incompatible types are
+ignored. Missing `type` defaults to `about:blank`. HTTP status codes in `Status`
+are advisory; always use `resp.StatusCode` for the transport outcome. Relative
+type and instance URIs resolve against `resp.Request.URL` when available.
+Nothing fetches those URIs.
+
+`DecodeProblem(resp, opts...)` also works with ordinary `client.Do` responses
+and decodes regardless of status. The default media type is
+`application/problem+json`, including parameters. Accept a known vendor JSON
+type or an API's `application/json` problem format explicitly with
+`WithProblemMediaTypes(...)`; this option alone does not enable typed errors.
+Unselected media types return `ErrNotProblem` without reading or closing the
+body. With `WithProblemErrors`, those responses retain the default nil-error
+behavior; HEAD responses are also left alone. Inspect their status and body.
+
+Both paths use the same bounded read and body-retention rules as
+`DecodeResponse`. A malformed or oversized document returns a decode error,
+not a partially decoded problem; the response remains available. Automatic
+`Accept` includes `application/problem+json` when typed problem errors are
+enabled; an explicit `Accept` is preserved. Server text is untrusted.
+`Problem.Error()` omits detail, instance and extensions, but its title or type
+can still contain private data; choose safe fields for application logs.
+
+### Transport and decode errors
 
 Use `errors.Is(err, httpx.ErrResponseTooLarge)` and the other
 [sentinels](reference.md#errors), or `errors.As` for an underlying network

@@ -14,8 +14,8 @@ import (
 )
 
 type User struct {
-	ID   int    `msgpack:"id"`
-	Name string `msgpack:"name"`
+	ID   int    `json:"id"`
+	Name string `json:"name"`
 }
 
 func Example() {

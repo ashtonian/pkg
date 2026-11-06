@@ -194,6 +194,7 @@ A provider runs only when both the request URL's origin and its effective `Host`
 | `WithLogging(hook, opts...)` | `LoggingHook` | off | Detached, allowlisted request / response snapshots — no body, redirect response or TLS state — with sensitive headers, credential query parameters, URL userinfo and fragments redacted, in the request URL and in `Referer` / `Location` / `Content-Location`; `LogResponse` receives detached error text with request URLs, `url.Error` URLs and HTTP(S) URLs redacted (the caller receives the original). Other layers' hooks (`MetricsHook`, `RetryHook`, the cache hook) get the live request: do not log from them |
 | `WithSensitiveHeaders(names...)` | `...string` | `Authorization`, `Proxy-Authorization`, `Cookie`, `Set-Cookie`, `X-Api-Key`, `X-Auth-Token`, `X-Access-Token`, `X-Refresh-Token`, `X-Csrf-Token`, `X-Amz-Security-Token` | Headers redacted to `Redacted`, in addition to the defaults |
 | `WithSensitiveQueryParams(names...)` | `...string` | OAuth tokens and codes, API keys, passwords and secrets, `sig` / `signature`, AWS and GCS presigned-URL credentials | Query parameters redacted, in addition to the defaults; an unparseable query is redacted whole |
+| `WithURLRedactor(fn)` | `func(url.URL) (url.URL, error)` | none (paths visible) | Detached URL policy for request/header/error URLs; edit `Path`, with `RawPath` discarded and credential redaction enforced before/after. Error, panic, opaque input or invalid output redacts the whole URL; explicit nil is invalid |
 
 With the `Chain` API, pass `WithRetryHook` / `WithCacheHook` explicitly: only `NewClient` threads the client hook into the layers.
 
@@ -201,9 +202,18 @@ With the `Chain` API, pass `WithRetryHook` / `WithCacheHook` explicitly: only `N
 
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
-| `WithMaxResponseBytes(n)` | `int64` | `DefaultMaxResponseBytes` (10 MiB) | Largest body `Get` / `Post` / `Put` / `Patch` / `Do` / `DecodeResponse` read; must be >= 1 |
+| `WithMaxResponseBytes(n)` | `int64` | `DefaultMaxResponseBytes` (10 MiB) | Largest body `Get` / `Post` / `Put` / `Patch` / `Do` / `DecodeResponse` / `DecodeProblem` read; must be >= 1 |
+| `WithProblemErrors()` | — | off | Typed request helpers return `*Problem` for accepted non-2xx problem responses; HEAD and other media types retain default behavior |
+| `WithProblemMediaTypes(types...)` | `...string` | `application/problem+json` always accepted | Additional exact JSON media types for problem decoding; no wildcards or parameters; does not itself enable typed problem errors |
 
-The typed request helpers decode only 2xx representations; non-2xx responses, HEAD, 204 and 205 return zero `T`, the live response and a nil error. `DecodeResponse` instead decodes the supplied body with the supplied codec regardless of status or content type; the caller chooses when to call it. A larger body returns `ErrResponseTooLarge` and the response still reads the whole body (close it). After decoding, `resp.Body` holds the bytes read. When `T` is a pointer (`Do[*pb.Msg]`), the codec decodes into a newly allocated pointee. `Post` / `Put` / `Patch` encode a non-`io.Reader` body as JSON.
+By default, typed request helpers decode only 2xx representations; non-2xx responses, HEAD, 204 and 205 return zero `T`, the live response and a nil error. `DecodeResponse` instead decodes the supplied body with the supplied codec regardless of status or content type; the caller chooses when to call it. A larger body returns `ErrResponseTooLarge` and the response still reads the whole body (close it). After decoding, `resp.Body` holds the bytes read. When `T` is a pointer (`Do[*pb.Msg]`), the codec decodes into a newly allocated pointee. `Post` / `Put` / `Patch` encode a non-`io.Reader` body as JSON.
+
+`DecodeProblem` accepts selected problem media types regardless of status and
+uses the same bounded body read. `Problem` contains the five RFC 9457 members
+and raw JSON `Extensions`; its `Extension(name, target)` method decodes a member
+explicitly. `Status` never overrides `resp.StatusCode`. Use `errors.As` to
+inspect an opt-in typed problem error. See [problem details](requests.md#problem-details)
+for media selection, URI resolution, body ownership and privacy.
 
 ### Response cleanup
 
@@ -228,8 +238,10 @@ httpx defines sentinels, not E-codes; match them with `errors.Is`.
 | `ErrCircuitOpen` | `CircuitTransport` | Allow recovery time; later requests may be admitted as probes |
 | `ErrRateLimited` | `RateLimitTransport` | Respect the rate budget; consider `WithWait` |
 | `ErrLimiterTimeout` | `LimiterTransport` | Release open bodies, reduce concurrency or revise the acquisition budget |
-| `ErrResponseTooLarge` | `Get`, `Post`, `Put`, `Patch`, `Do`, `DecodeResponse`, `ReadAtMost` | Use a deliberate larger bound or stream the body |
+| `ErrResponseTooLarge` | `Get`, `Post`, `Put`, `Patch`, `Do`, `DecodeResponse`, `DecodeProblem`, `ReadAtMost` | Use a deliberate larger bound or stream the body |
 | `ErrNoCodec` | typed request helpers | Register the response content type's codec or decode explicitly |
+| `ErrNotProblem` | `DecodeProblem` | Inspect the untouched body using the API's own error format |
+| `ErrProblemExtensionNotFound` | `Problem.Extension` | Handle an absent optional member |
 
 None of these sentinels is retried by the default retry predicate. A later
 application request may succeed after a circuit or local budget recovers;
@@ -251,6 +263,7 @@ that is separate from retrying the current call.
 
 - `Get[T]`, `Post[T]`, `Put[T]`, `Patch[T]`, `Do[T]` — request and decode; `Delete` — request only
 - `DecodeResponse(resp, codec, v, opts...) error`, `EncodeRequest(req, codec, v) error` — sets `Body`, `GetBody` and `ContentLength` together and closes the body it replaces
+- `DecodeProblem(resp, opts...) (*Problem, error)` — bounded problem-details decoding with raw extensions; `(*Problem).Extension(name, v) error` — typed extension access
 - `DrainAndClose(ctx, body, maxDrainBytes) CleanupResult` — bounded remaining-body cleanup and separate drain/close observations
 - `ParseOrigin(url) (Origin, error)`, `OriginOf(*url.URL) Origin`
 - `TransportStack(client) []http.RoundTripper` — the layers, outer to inner

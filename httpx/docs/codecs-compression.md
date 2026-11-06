@@ -68,7 +68,7 @@ explicit `Accept` when the API must return one format.
 |---|---|---|
 | JSON | Core | Ordinary REST APIs and Go structs |
 | XML | Core | XML APIs that match `encoding/xml`'s model |
-| MessagePack | [codec/msgpack](../codec/msgpack/README.md) | A server that supports MessagePack's compact typed representation |
+| MessagePack | [codec/msgpack](../codec/msgpack/README.md) | A server that carries the API's JSON data model in MessagePack |
 | Protobuf | [codec/proto](../codec/proto/README.md) | Generated protobuf messages and an agreed schema; decode with `Do[*pb.Message]` |
 
 Blank-import an optional module to register it. Use a named import when
@@ -76,10 +76,21 @@ calling its codec with `EncodeRequest`. Registration replaces the same
 content type globally and is concurrency-safe; register at startup so
 content negotiation stays predictable. `RegisterCodec(nil)` panics.
 
+MessagePack's default `Codec` follows `encoding/json`: `json` tags, hidden
+fields, embedded-field selection, omission rules and custom JSON marshalers
+are shared with the JSON API. Byte slices use base64 strings and time/UUID
+types use their JSON representations. `NativeCodec` is an explicit opt-in
+for `msgpack` tags, binary values, timestamp extensions and native marshalers;
+it does not enforce `json:"-"`. Use it directly or register it at startup only
+when both endpoints agree on that native model. Switching to it changes the
+representation for all typed MessagePack responses in that process.
+
 The API does not guess a vendor-specific `application/*+json` media type;
 register a codec for the exact type or explicitly call `DecodeResponse`
 with the appropriate codec. `DecodeResponse` decodes the body you supply;
 the caller decides whether that response/status has a representation.
+Problem-details decoding has its own explicit media-type policy; see
+[problem details](requests.md#problem-details).
 
 See [compression options](reference.md#compression), [decode options](reference.md#decoding-helpers)
 and the runnable optional-module examples.
