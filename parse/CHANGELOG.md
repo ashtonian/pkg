@@ -5,7 +5,7 @@
 
 ### Bug Fixes
 
-* **parse:** publish SDK from an explicit local tarball ([f83ea96](https://github.com/ashtonian/pkg/commit/f83ea96a4c2b18a2b448ebf8350acb117562fff5)), closes [#116](https://github.com/ashtonian/pkg/issues/116)
+* Publish SDK artifacts using an explicit local path so npm 12 does not interpret them as GitHub package references ([#116](https://github.com/ashtonian/pkg/issues/116)).
 
 ## [0.10.0](https://github.com/ashtonian/pkg/compare/parse/v0.9.0...parse/v0.10.0) (2026-11-06)
 
