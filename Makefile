@@ -1,7 +1,7 @@
 # Published modules. Each has its own go.mod, tags and releases.
 CORE_MODULES := gowalker jsonvalue gitx
 CONFIG_MODULES := config config/kongprovider
-HTTPX_MODULES := httpx httpx/codec/msgpack httpx/codec/proto httpx/compress/brotli
+HTTPX_MODULES := httpx httpx/oauth2 httpx/codec/msgpack httpx/codec/proto httpx/compress/brotli
 PARSE_MODULES := parse
 TAGGED_MODULES := $(HTTPX_MODULES) $(PARSE_MODULES)
 MODULES := $(CORE_MODULES) $(CONFIG_MODULES) $(TAGGED_MODULES)

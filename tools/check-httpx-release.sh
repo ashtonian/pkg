@@ -5,7 +5,7 @@ set -euo pipefail
 repo_root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
 tmp=$(mktemp -d)
 trap 'chmod -R u+w "$tmp" 2>/dev/null; rm -rf "$tmp"' EXIT
-modules=(httpx httpx/codec/msgpack httpx/codec/proto httpx/compress/brotli)
+modules=(httpx httpx/oauth2 httpx/codec/msgpack httpx/codec/proto httpx/compress/brotli)
 httpx_module=github.com/ashtonian/pkg/httpx
 
 # The manifest holds each module's version. Before its first public release,

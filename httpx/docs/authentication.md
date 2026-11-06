@@ -98,6 +98,16 @@ inside token auth with the credential on the cached request; a background 401
 does not recursively refresh the source. Subsequent foreground calls obtain the
 current token before lookup. Configure all other [identity dimensions](caching.md#identity-and-authority).
 
+## OAuth2 grants
+
+The optional [httpx/oauth2 module](../oauth2/README.md) adapts
+`golang.org/x/oauth2` to these sources. `Source` forces a refresh grant after
+401 even before expiry, retains rotated refresh credentials and invokes the
+application's persistence callback before replay. `Reacquire` creates a fresh
+context-bound grant for client credentials and other grants without refresh
+tokens. Both return the core source and use its timeout, cancellation and
+shutdown contract. Sign-in and credential storage stay application-owned.
+
 ## Multiple processes
 
 Source coordination is in-process. When an issuer invalidates refresh tokens

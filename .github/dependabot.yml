@@ -8,6 +8,7 @@ updates:
       - /config/kongprovider
       - /config/examples/cookbook
       - /httpx
+      - /httpx/oauth2
       - /httpx/codec/msgpack
       - /httpx/codec/proto
       - /httpx/compress/brotli

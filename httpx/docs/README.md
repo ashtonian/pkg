@@ -20,4 +20,5 @@ Executable examples: [quick start](../examples/quickstart/main.go),
 [core Go examples](../example_test.go), [Gin API and client](../examples/gin/README.md),
 [MessagePack](../codec/msgpack/example_test.go),
 [protobuf](../codec/proto/example_test.go),
-[Brotli](../compress/brotli/example_test.go).
+[Brotli](../compress/brotli/example_test.go),
+[OAuth2 refresh and replay](../oauth2/example_integration_test.go).
