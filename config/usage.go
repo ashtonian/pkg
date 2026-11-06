@@ -56,8 +56,15 @@ func (f Field) PrintableDefault() (string, bool) {
 	return def, true
 }
 
-// usageRow is one key an operator can set.
-type usageRow struct {
+// UsageEntry is one key an operator can set, with safe printable metadata.
+// Field retains the original tags for custom generators and is omitted from JSON.
+type UsageEntry struct {
+	EnvVars     []string `json:"env_vars,omitempty"`
+	Allowed     []string `json:"allowed,omitempty"`
+	Deprecated  []string `json:"deprecated,omitempty"`
+	Withheld    bool     `json:"withheld,omitempty"`
+	Reload      string   `json:"reload"`
+	Field       Field    `json:"-"`
 	Key         string   `json:"key"`
 	Env         string   `json:"env,omitempty"`
 	AlsoEnv     []string `json:"also_env,omitempty"` // the variables an env tag adds
@@ -72,7 +79,20 @@ type usageRow struct {
 	// <KEY> placeholder or nothing.
 	pattern    bool
 	hasDefault bool
-	withheld   bool // the default exists but is not shown
+}
+
+type usageRow = UsageEntry
+
+// Usage returns the catalog rendered by PrintUsage, in declaration order.
+// Defaults that are sensitive or could contain secrets are empty and Withheld
+// is true. Allowed follows JSONSchema's enum and withholding rules. Collection
+// entries use [*] patterns and environment placeholders where supported.
+func Usage[T any](envPrefix string) ([]UsageEntry, error) {
+	root, err := rootMetadata(reflect.TypeFor[T]())
+	if err != nil {
+		return nil, err
+	}
+	return usageRows(root, strings.TrimSuffix(envPrefix, "_")), nil
 }
 
 // PrintUsage writes every key of T an operator can set: its path, the
@@ -82,10 +102,11 @@ type usageRow struct {
 // or one with a default, has a row of its own. A map's entries are one row
 // per element field, keyed by the pattern features[*].limit with a <KEY>
 // placeholder in the variable, and a slice of structs' elements one row per
-// element field, items[*].port, with no variable. A default diagnostics must withhold (see [Field.PrintableDefault])
-// prints as [REDACTED].
+// element field, items[*].port, with no variable. Tables mark withheld defaults
+// as [REDACTED]; JSON omits default and sets withheld (see [Field.PrintableDefault]).
 //
-// [WithFormat] selects a table (the default), JSON (an array of objects) or
+// [WithFormat] selects a table (the default), JSON (an array of objects),
+// FormatMarkdown (an escaped Markdown table), or
 // FormatEnv: a template of `export NAME='default'` lines, with a key that has
 // no default, a sensitive key and a map entry written as a commented-out
 // line; FormatEnv needs an envPrefix. [WithWriter] and [WithSortByName]
@@ -95,7 +116,10 @@ func PrintUsage[T any](envPrefix string, opts ...PrintOption) error {
 	for _, opt := range opts {
 		opt(&po)
 	}
-	rows := usageRows(reflect.TypeFor[T](), strings.TrimSuffix(envPrefix, "_"))
+	rows, err := Usage[T](envPrefix)
+	if err != nil {
+		return err
+	}
 	if po.sortByName {
 		slices.SortStableFunc(rows, func(a, b usageRow) int { return cmp.Compare(a.Key, b.Key) })
 	}
@@ -106,64 +130,74 @@ func PrintUsage[T any](envPrefix string, opts ...PrintOption) error {
 		enc := json.NewEncoder(po.writer)
 		enc.SetIndent("", "  ")
 		return enc.Encode(rows)
+	case FormatMarkdown:
+		return printUsageMarkdown(po.writer, rows, envPrefix != "")
 	case FormatEnv:
 		if envPrefix == "" {
 			return errors.New("config: usage in FormatEnv needs an environment prefix")
 		}
 		return printUsageEnv(po.writer, rows)
 	default:
-		return fmt.Errorf("config: unknown print format %q (want %q, %q or %q)",
-			po.format, FormatTable, FormatJSON, FormatEnv)
+		return fmt.Errorf("config: unknown print format %q (want %q, %q, %q or %q)",
+			po.format, FormatTable, FormatJSON, FormatMarkdown, FormatEnv)
 	}
 }
 
 // usageRows describes every key of root, a map's entries through its
 // element: a sensitive map covers all of them.
-func usageRows(root reflect.Type, prefix string) []usageRow {
-	var rows []usageRow
-	for _, f := range variableFields(root) {
-		t := derefType(f.Type)
-		isMap := t.Kind() == reflect.Map && t.Key().Kind() == reflect.String
-		isList := (t.Kind() == reflect.Slice || t.Kind() == reflect.Array) && isBranch(derefType(t.Elem()))
-		if !isMap && !isList {
-			rows = append(rows, usageRowOf(f, f.Path, f.EnvVars(prefix)...))
-			continue
+func usageRows(root *schemaNode, prefix string) []UsageEntry {
+	var rows []UsageEntry
+	walking := map[*schemaNode]bool{}
+	var walk func(*schemaNode, cursor, string, bool)
+	walk = func(n *schemaNode, c cursor, env string, pattern bool) {
+		if walking[n] {
+			return
 		}
-		if _, ok := f.Tag.Lookup("default"); ok || variableSetsField(f.Tag, t) { // the collection as a whole
-			rows = append(rows, usageRowOf(f, f.Path, f.EnvVars(prefix)...))
-		}
-		elem := derefType(t.Elem())
-		if isList { // elements are set in files; no variable addresses one
-			for _, leaf := range fieldsOf(elem) {
-				leaf.Sensitive = leaf.Sensitive || f.Sensitive
-				rows = append(rows, usagePattern(usageRowOf(leaf, f.Path+"[*]."+leaf.Path, "")))
+		walking[n] = true
+		defer delete(walking, n)
+		switch n.kind {
+		case nodeBranch:
+			for _, f := range n.fields {
+				next := c.intoField(f)
+				ownEnv := ""
+				if env != "" {
+					ownEnv = env + "_" + strings.ToUpper(f.key)
+				}
+				if f.node.kind == nodeBranch && jsonFormat(f.sf.Tag) {
+					row := usageRowOf(next.owner, next.path.String(), ownEnv)
+					row.pattern = pattern
+					rows = append(rows, row)
+				}
+				walk(f.node, next, ownEnv, pattern)
 			}
-			continue
-		}
-		key, env := f.Path+"[*]", ""
-		if prefix != "" {
-			env = f.EnvVar(prefix) + "_<KEY>"
-		}
-		if !isBranch(elem) {
-			entry := Field{Path: f.Path, Tag: reflect.StructTag(fmt.Sprintf("desc:%q", f.Tag.Get("desc"))), Type: t.Elem(), Sensitive: f.Sensitive}
-			rows = append(rows, usagePattern(usageRowOf(entry, key, env)))
-			continue
-		}
-		for _, leaf := range fieldsOf(elem) {
-			leafEnv := ""
-			if prefix != "" {
-				leafEnv = env + envName("", leaf.Path)
+		case nodeMap, nodeList:
+			_, has := c.owner.Tag.Lookup("default")
+			expand := n.kind == nodeMap || n.elem.kind == nodeBranch || n.elem.kind == nodeMap || n.elem.kind == nodeList
+			if has || variableSetsField(c.owner.Tag, c.owner.Type) || !expand {
+				row := usageRowOf(c.owner, c.path.String(), env)
+				row.pattern = pattern
+				rows = append(rows, row)
 			}
-			leaf.Sensitive = leaf.Sensitive || f.Sensitive
-			rows = append(rows, usagePattern(usageRowOf(leaf, key+"."+leaf.Path, leafEnv)))
+			if !expand {
+				return
+			}
+			nextEnv := ""
+			if n.kind == nodeMap && env != "" {
+				nextEnv = env + "_<KEY>"
+			}
+			next := c.intoEntry(segment{kind: segAny}, n.typ.Elem())
+			if n.elem.kind != nodeBranch {
+				next.owner.Tag = reflect.StructTag(fmt.Sprintf("desc:%q", c.owner.Tag.Get("desc")))
+			}
+			walk(n.elem, next, nextEnv, true)
+		default:
+			row := usageRowOf(c.owner, c.path.String(), env)
+			row.pattern = pattern
+			rows = append(rows, row)
 		}
 	}
+	walk(root, cursor{}, prefix, false)
 	return rows
-}
-
-func usagePattern(r usageRow) usageRow {
-	r.pattern = true
-	return r
 }
 
 // usageRowOf describes f, shown as key and set by env, the first of them
@@ -175,9 +209,12 @@ func usageRowOf(f Field, key string, env ...string) usageRow {
 		Required:    slices.Contains(strings.Split(f.Tag.Get("validate"), ","), "required"),
 		Sensitive:   f.Sensitive,
 		Description: f.Tag.Get("desc"),
+		Field:       cloneField(f), Reload: f.Reload, Deprecated: aliasNames(f.Tag), Allowed: usageAllowed(f),
 	}
-	if len(env) > 0 {
-		row.Env, row.AlsoEnv = env[0], env[1:]
+	if len(env) > 0 && env[0] != "" {
+		row.Env = env[0]
+		row.AlsoEnv = envTagNames(f.Tag)
+		row.EnvVars = append([]string{row.Env}, row.AlsoEnv...)
 	}
 	row.JSON = jsonFormat(f.Tag)
 	if ex, ok := f.PrintableExample(); ok {
@@ -188,8 +225,8 @@ func usageRowOf(f Field, key string, env ...string) usageRow {
 	if has {
 		row.Default = def
 		if _, printable := f.PrintableDefault(); !printable {
-			row.Default = redactedValue
-			row.withheld = true
+			row.Default = ""
+			row.Withheld = true
 		}
 	}
 	return row
@@ -198,6 +235,9 @@ func usageRowOf(f Field, key string, env ...string) usageRow {
 func printUsageTable(w io.Writer, rows []usageRow, withEnv bool) error {
 	defaultText := func(r usageRow) string {
 		text := r.Default
+		if r.Withheld {
+			text = redactedValue
+		}
 		if !r.hasDefault && r.Required {
 			text = "(required)"
 		}
@@ -213,6 +253,10 @@ func printUsageTable(w io.Writer, rows []usageRow, withEnv bool) error {
 		}
 		return text
 	}
+	reloadW := len("RELOAD")
+	for _, r := range rows {
+		reloadW = max(reloadW, len(r.Reload))
+	}
 	keyW, envW, typeW, defW := len("KEY"), len("ENV"), len("TYPE"), len("DEFAULT")
 	for _, r := range rows {
 		keyW = max(keyW, len(r.Key))
@@ -222,17 +266,17 @@ func printUsageTable(w io.Writer, rows []usageRow, withEnv bool) error {
 	}
 	ew := &errWriter{w: w}
 	if withEnv {
-		row := fmt.Sprintf("%%-%ds  %%-%ds  %%-%ds  %%-%ds  %%s\n", keyW, envW, typeW, defW)
-		ew.printf(row, "KEY", "ENV", "TYPE", "DEFAULT", "DESCRIPTION")
+		row := fmt.Sprintf("%%-%ds  %%-%ds  %%-%ds  %%-%ds  %%-%ds  %%s\n", keyW, envW, typeW, defW, reloadW)
+		ew.printf(row, "KEY", "ENV", "TYPE", "DEFAULT", "RELOAD", "DESCRIPTION")
 		for _, r := range rows {
-			ew.printf(row, r.Key, envText(r), r.Type, defaultText(r), r.Description)
+			ew.printf(row, r.Key, envText(r), r.Type, defaultText(r), r.Reload, r.Description)
 		}
 		return ew.err
 	}
-	row := fmt.Sprintf("%%-%ds  %%-%ds  %%-%ds  %%s\n", keyW, typeW, defW)
-	ew.printf(row, "KEY", "TYPE", "DEFAULT", "DESCRIPTION")
+	row := fmt.Sprintf("%%-%ds  %%-%ds  %%-%ds  %%-%ds  %%s\n", keyW, typeW, defW, reloadW)
+	ew.printf(row, "KEY", "TYPE", "DEFAULT", "RELOAD", "DESCRIPTION")
 	for _, r := range rows {
-		ew.printf(row, r.Key, r.Type, defaultText(r), r.Description)
+		ew.printf(row, r.Key, r.Type, defaultText(r), r.Reload, r.Description)
 	}
 	return ew.err
 }
@@ -258,7 +302,7 @@ func printUsageEnv(w io.Writer, rows []usageRow) error {
 			ew.printf("# set in a config file\n")
 			continue
 		}
-		if r.pattern || r.Sensitive || r.withheld || !r.hasDefault {
+		if r.pattern || r.Sensitive || r.Withheld || !r.hasDefault {
 			example := ""
 			if r.Example != "" {
 				example = shellQuote(r.Example)
@@ -269,4 +313,46 @@ func printUsageEnv(w io.Writer, rows []usageRow) error {
 		ew.printf("export %s=%s\n", r.Env, shellQuote(r.Default))
 	}
 	return ew.err
+}
+
+func usageAllowed(f Field) []string {
+	s := leafSchema(derefType(f.Type))
+	rules(s, &schemaNode{typ: derefType(f.Type)}, f.Tag.Get("validate"), !f.Sensitive && !mayHoldSensitive(f.Type, map[reflect.Type]bool{}))
+	values, _ := s["enum"].([]any)
+	var out []string
+	for _, v := range values {
+		out = append(out, fmt.Sprint(v))
+	}
+	return out
+}
+
+func printUsageMarkdown(w io.Writer, rows []UsageEntry, withEnv bool) error {
+	ew := &errWriter{w: w}
+	if withEnv {
+		ew.printf("| Key | Environment | Type | Default | Reload | Description |\n| --- | --- | --- | --- | --- | --- |\n")
+	} else {
+		ew.printf("| Key | Type | Default | Reload | Description |\n| --- | --- | --- | --- | --- |\n")
+	}
+	for _, r := range rows {
+		def := r.Default
+		if r.Withheld {
+			def = redactedValue
+		} else if !r.hasDefault && r.Required {
+			def = "(required)"
+		}
+		cells := []string{r.Key}
+		if withEnv {
+			cells = append(cells, strings.Join(r.EnvVars, ", "))
+		}
+		cells = append(cells, r.Type, def, r.Reload, r.Description)
+		for i := range cells {
+			cells[i] = markdownCell(cells[i])
+		}
+		ew.printf("| %s |\n", strings.Join(cells, " | "))
+	}
+	return ew.err
+}
+
+func markdownCell(text string) string {
+	return strings.NewReplacer("&", "&amp;", "<", "&lt;", ">", "&gt;", "\\", "\\\\", "|", "\\|", "`", "\\`", "\r\n", "<br>", "\r", "<br>", "\n", "<br>").Replace(text)
 }

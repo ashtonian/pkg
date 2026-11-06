@@ -1,6 +1,7 @@
 package config
 
 import (
+	"cmp"
 	"fmt"
 	"reflect"
 	"slices"
@@ -36,6 +37,7 @@ type schemaNode struct {
 }
 
 type schemaField struct {
+	reload string
 	key    string
 	sf     reflect.StructField // the field declaring the key
 	index  []int               // from the branch's type, through squashed structs
@@ -79,6 +81,9 @@ func schemaMetadata(t reflect.Type) *schemaEntry {
 	}
 	b := &schemaBuilder{nodes: map[reflect.Type]*schemaNode{}}
 	n := b.node(t)
+	if b.err == nil {
+		b.err = checkReloadTags(n)
+	}
 	e = &schemaEntry{node: n, err: b.err}
 	schemaCache.Lock()
 	defer schemaCache.Unlock()
@@ -200,7 +205,7 @@ func (b *schemaBuilder) fields(n *schemaNode) {
 			b.fail(fmt.Errorf("%w: %w", ErrSchema, err))
 			return
 		}
-		f := &schemaField{key: field.Name(), sf: sf, index: field.Index(), tagged: fieldSensitive(field), named: nameSensitive(sf), node: b.node(sf.Type), access: access}
+		f := &schemaField{key: field.Name(), reload: fieldReload(field), sf: sf, index: field.Index(), tagged: fieldSensitive(field), named: nameSensitive(sf), node: b.node(sf.Type), access: access}
 		n.fields = append(n.fields, f)
 		n.byKey[f.key] = f
 	}
@@ -353,6 +358,7 @@ type cursor struct {
 	owner   Field // the nearest declared field: the key's own, an element's synthesized one, or the field holding an interface
 	tagged  bool  // beneath a field or squashed struct tagged sensitive:"true"
 	covered bool  // beneath a map, list or interface named like a credential, or a map key that is
+	dynamic bool  // the declared interface owns metadata beneath its dynamic value
 }
 
 // sensitive reports whether the value at c is redacted: the rule
@@ -377,9 +383,16 @@ func (c cursor) intoField(f *schemaField) cursor {
 	next.owner = Field{
 		Path:      next.pattern.String(),
 		Tag:       f.sf.Tag,
+		EnvRef:    f.sf.Tag.Get("envref") == "true",
+		Reload:    cmp.Or(f.reload, c.owner.Reload, ReloadRestart),
 		Type:      f.sf.Type,
 		Sensitive: next.tagged || next.covered,
 		Index:     next.index,
+	}
+	if c.dynamic {
+		next.owner = cloneField(c.owner)
+		next.owner.Sensitive = next.tagged || next.covered || c.owner.Sensitive
+		next.index = nil
 	}
 	return next
 }
@@ -390,14 +403,19 @@ func (c cursor) intoEntry(s segment, elem reflect.Type) cursor {
 	next := c
 	next.path = append(slices.Clip(c.path), s)
 	if s.kind == segKey {
-		next.covered = c.covered || isSensitiveName(s.name)
+		next.covered = c.covered || isSensitiveName(s.name) && textCapable(elem)
 	}
 	next.pattern = c.pattern.any()
 	next.index = nil
 	next.owner = Field{
 		Path:      next.pattern.String(),
 		Type:      elem,
+		Reload:    cmp.Or(c.owner.Reload, ReloadRestart),
 		Sensitive: next.tagged || next.covered,
+	}
+	if c.dynamic {
+		next.owner = cloneField(c.owner)
+		next.owner.Sensitive = next.tagged || next.covered || c.owner.Sensitive
 	}
 	return next
 }

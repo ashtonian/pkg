@@ -25,6 +25,9 @@ func configField(sf reflect.StructField) (gowalker.FieldRule, error) {
 	if skip {
 		return gowalker.FieldRule{Skip: true}, nil
 	}
+	if err := checkEnvRef(sf); err != nil {
+		return gowalker.FieldRule{}, err
+	}
 	aliases := aliasNames(sf.Tag)
 	if key == "" {
 		if _, ok := sf.Tag.Lookup("alias"); ok {

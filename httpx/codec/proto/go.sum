@@ -1,5 +1,5 @@
-github.com/ashtonian/pkg/httpx v0.1.0 h1:NmyLnAXQwZ4r+SjBDKU1z3O7K2CH/f8KFHnG0wSjBzM=
-github.com/ashtonian/pkg/httpx v0.1.0/go.mod h1:lr3uhZ4646xHiqRNs968GoDXDx3KtF3UxzWjthhi3aw=
+github.com/ashtonian/pkg/httpx v0.2.0 h1:Qin5v3B+H9GutBSl2prRkgetVRK4XapAPR7OIwA9oYM=
+github.com/ashtonian/pkg/httpx v0.2.0/go.mod h1:oLFQmeD4ZqDFBITukwUdu4XKLHPdERFim+IPXrNtU9M=
 github.com/davecgh/go-spew v1.1.1 h1:vj9j/u1bqnvCEfJOwUhtlOARqs3+rkHYY13jYWTU97c=
 github.com/davecgh/go-spew v1.1.1/go.mod h1:J7Y8YcW2NihsgmVo/mv3lAwl/skON4iLHjSsI+c5H38=
 github.com/google/go-cmp v0.7.0 h1:wk8382ETsv4JYUZwIsn6YpYiWiBsYLSJiTsyBybVuN8=

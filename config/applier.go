@@ -157,9 +157,10 @@ type applierHook struct {
 // applied everything holds nothing, and a reload is accounted from its
 // publication's changes alone. Guarded by the reloader's slot.
 type application struct {
-	root     *schemaNode
-	appliers []*applierState
-	owners   ownership
+	reloadTags bool
+	root       *schemaNode
+	appliers   []*applierState
+	owners     ownership
 	// boot is the first load, for the keys no applier owns: it never
 	// acknowledges, so it holds every such key that has changed since.
 	boot ackDiff
@@ -793,6 +794,11 @@ func (a *application) plan(cfg reflect.Value, initial bool) *applyPlan {
 	// othersBeneath reports a change another applier owes strictly beneath
 	// path.
 	othersBeneath := func(i int, path keyPath) bool {
+		for _, e := range p.unclaimed {
+			if beneath(e.path, path) {
+				return true
+			}
+		}
 		for j, owes := range p.owes {
 			if j == i {
 				continue
@@ -856,7 +862,7 @@ func (a *application) rebase(prev, next reflect.Value, changes []published) (*pe
 	byOwner := make([][]published, len(a.appliers))
 	var unowned []published
 	for _, c := range changes {
-		if i := a.owners.of(c.path); i >= 0 {
+		if i := a.owner(c.path); i >= 0 {
 			byOwner[i] = append(byOwner[i], c)
 		} else {
 			unowned = append(unowned, c)
@@ -892,7 +898,7 @@ func (a *application) commit(p *pending) {
 // with no config.
 func (a *application) start(owned []published) {
 	for _, c := range owned {
-		st := a.appliers[a.owners.of(c.path)]
+		st := a.appliers[a.owner(c.path)]
 		if st.ack == nil {
 			st.ack = ackDiff{}
 		}
@@ -903,7 +909,7 @@ func (a *application) start(owned []published) {
 // initialOwner reports whether key p belongs to an applier with
 // ApplyInitial.
 func (a *application) initialOwner(p keyPath) bool {
-	i := a.owners.of(p)
+	i := a.owner(p)
 	return i >= 0 && a.appliers[i].hook.initial
 }
 

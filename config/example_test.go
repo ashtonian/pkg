@@ -216,11 +216,11 @@ func ExamplePrintUsage() {
 	}
 
 	// Output:
-	// KEY       ENV           TYPE           DEFAULT     DESCRIPTION
-	// port      APP_PORT      int            8080        HTTP listen port
-	// timeout   APP_TIMEOUT   time.Duration  30s         Request timeout
-	// name      APP_NAME      string         (required)  Service name
-	// password  APP_PASSWORD  string         [REDACTED]
+	// KEY       ENV           TYPE           DEFAULT     RELOAD   DESCRIPTION
+	// port      APP_PORT      int            8080        restart  HTTP listen port
+	// timeout   APP_TIMEOUT   time.Duration  30s         restart  Request timeout
+	// name      APP_NAME      string         (required)  restart  Service name
+	// password  APP_PASSWORD  string         [REDACTED]  restart
 }
 
 // ExampleNewReloader reloads a file: a valid edit is swapped in, an invalid

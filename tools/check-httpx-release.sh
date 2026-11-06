@@ -17,9 +17,15 @@ httpx_module=github.com/ashtonian/pkg/httpx
     "${modules[@]/#/$repo_root/}"
 ) > "$tmp/modules.tsv"
 
+httpx_version=$(awk -F '\t' -v module="$httpx_module" '$1 == module { print $2 }' "$tmp/modules.tsv")
+if [[ -z $httpx_version ]]; then
+  echo 'httpx-release-check: missing core candidate version' >&2
+  exit 1
+fi
+
 upstream=$(go env GOPROXY)
 export GOWORK=off GOFLAGS='-mod=mod -modcacherw' GOMODCACHE="$tmp/modcache"
-export GOPRIVATE= GONOPROXY= GONOSUMDB="$httpx_module"
+export GOPRIVATE='' GONOPROXY='' GONOSUMDB="$httpx_module"
 export GOPROXY="file://$tmp/proxy,$upstream"
 
 # These ZIPs describe the working tree, so their sums can differ from an
@@ -71,9 +77,17 @@ for example in examples/gin internal/bench; do
     cd "$tmp/$name"
     # Benchmarks normally measure the local tree. This check exercises their
     # code against the same archives as a downstream consumer instead.
-    go mod edit -dropreplace "$httpx_module"
+    go mod edit -dropreplace "$httpx_module" -require "$httpx_module@$httpx_version"
     clear_httpx_sums
     go mod tidy
+    selected=$(go list -m -f '{{.Version}}{{if .Replace}} (replaced){{end}}' "$httpx_module")
+    if [[ $selected != "$httpx_version" ]]; then
+      echo "httpx-release-check: $example selected $selected, expected $httpx_version" >&2
+      exit 1
+    fi
+    cmp "$tmp/proxy/$httpx_module/@v/$httpx_version.zip" \
+      "$GOMODCACHE/cache/download/$httpx_module/@v/$httpx_version.zip"
+    echo "httpx-release-check: $example uses the $httpx_module@$selected candidate archive"
     go build -tags="$tags" ./...
     go vet -tags="$tags" ./...
     if [[ $example == internal/bench ]]; then

@@ -209,9 +209,9 @@ func (f frame) field(fld *schemaField) frame {
 	}
 }
 
-func (f frame) entry(name string) frame {
+func (f frame) entry(name string, typ reflect.Type) frame {
 	if !f.covered {
-		f.covered = isSensitiveName(name)
+		f.covered = isSensitiveName(name) && textCapable(typ)
 	}
 	return f
 }
@@ -438,7 +438,7 @@ func (w *comparer) container(n *schemaNode, f frame, sa, sb side) {
 				j++
 			}
 			w.push(segment{kind: segKey, name: name}, ordSeg{s: name})
-			w.node(n.elem, f.entry(name), a, b)
+			w.node(n.elem, f.entry(name, n.typ.Elem()), a, b)
 			w.pop()
 		}
 	case nodeList:
@@ -576,7 +576,7 @@ func locate(root *schemaNode, v reflect.Value, p keyPath) (side, *schemaNode, fr
 			}
 			s, n, f = resolve(fieldOf(s, fld)), fld.node, f.field(fld)
 		case nodeMap:
-			s, n, f = resolve(newEntries(s).of(seg.name)), n.elem, f.entry(seg.name)
+			s, n, f = resolve(newEntries(s).of(seg.name)), n.elem, f.entry(seg.name, n.typ.Elem())
 		case nodeList:
 			s, n = resolve(elementOf(s, seg.index)), n.elem
 		default:

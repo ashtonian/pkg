@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
+	"slices"
 	"strings"
 )
 
@@ -93,13 +94,13 @@ func (e *validationError) Unwrap() []error {
 // errors.As reaches it, so a caller can report the keys in its own words.
 type UnknownKeysError struct {
 	// Type is the config type that was loaded.
-	Type reflect.Type
+	Type reflect.Type `json:"-"`
 	// Keys are the keys no field decodes, sorted by Key.
-	Keys []UnknownKey
+	Keys []UnknownKey `json:"keys,omitempty"`
 	// Variables are the environment variables under the WithEnvPrefix prefix
 	// that name no key, sorted by Key, which holds the variable's name.
 	// Filled only for a WithUnknownKeys handler: by default they are ignored.
-	Variables []UnknownKey
+	Variables []UnknownKey `json:"variables,omitempty"`
 }
 
 // UnknownKey is one key no field decodes, or one variable that names no key.
@@ -107,11 +108,18 @@ type UnknownKey struct {
 	// Key names it, or the enclosing sensitive container when its contents
 	// must be withheld: in the package's key grammar for a key (server.prot,
 	// items[0].prot), by its name for a variable (APP_SERVER_PROT).
-	Key string
+	Key string `json:"key"`
 	// Suggestion is what Key most likely misspells, or "" when nothing is
 	// close: the field of the same struct fewest edits away (server.port), or
 	// the variable of a field (APP_SERVER_PORT).
-	Suggestion string
+	Suggestion string `json:"suggestion,omitempty"`
+}
+
+func (e *UnknownKeysError) clone() *UnknownKeysError {
+	if e == nil {
+		return nil
+	}
+	return &UnknownKeysError{Type: e.Type, Keys: slices.Clone(e.Keys), Variables: slices.Clone(e.Variables)}
 }
 
 func (e *UnknownKeysError) Error() string {

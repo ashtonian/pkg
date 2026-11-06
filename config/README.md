@@ -85,7 +85,7 @@ The program is [`examples/quickstart`](examples/quickstart/main.go). The package
 ## Build integrations from the config fields
 
 `FieldsChecked[T]()` returns each setting's key, declared type, struct tags,
-redaction status and field index. For `Port int` tagged `koanf:"port"
+redaction status, resolved reload class, environment-reference flag and field index. For `Port int` tagged `koanf:"port"
 default:"8080"`, the catalog contains key `port`, type `int` and the unchanged
 default tag. Reading metadata does not apply or decode that default.
 
@@ -94,6 +94,66 @@ or `MatchFields(&cfg, reflectedTargets)` for a group of CLI destinations. The
 last returns fields in target order; an empty Path means no match. The
 [inspection guide](docs/inspection.md#fields-and-struct-tags) explains returned
 values, ownership and errors.
+
+`Usage[T]("APP")` supplies a safe catalog for documentation generators, and
+`PrintUsage` renders it as a table, JSON, Markdown or environment template.
+`ParseKey` reads the same grammar used by field lookup, diffs and appliers.
+`Tree` exports resolved values, including secrets; `TreeFunc` lets a support
+bundle apply its own per-leaf policy. See [inspection](docs/inspection.md).
+
+## Configuration
+
+The [tag table](docs/schema.md) defines the schema, and the
+[options table](docs/reference.md#options) lists every load, reload and print
+option with its default. Environment loading requires `WithEnvPrefix`.
+`envref:"true"` declares variable names read by the application;
+`WithKnownVariables` and `WithVariableFilter` claim names read elsewhere.
+`WithReloadTags` opts into inherited `reload` classes, while
+`WithReloadTagChecks` also checks applier coverage before loading.
+
+## Build and test
+
+From the repository root, `make test` runs module race tests and `make lint`
+runs vet and staticcheck. `make release-check` verifies standalone module
+builds; `make ci` also checks the examples and cookbook. The quick start runs
+with `cd config/examples/quickstart && APP_DB_PASSWORD=test go run .`.
+See the [contributor workflow](../CONTRIBUTING.md).
+
+## Operations and security
+
+The [operations guide](docs/reference.md#observability) lists log events,
+error categories and metric examples. Failed loads keep the previous
+snapshot; failed appliers leave the desired config published and report what
+still needs applying. `Snapshot.UnknownKeys` records only the input accepted
+by that published generation. Use `Stop(ctx)` with a shutdown deadline.
+
+Diagnostic printers, diffs and usage metadata withhold sensitive values.
+Credential-like names redact text-capable values; numeric counters, booleans
+and durations keep ordinary diagnostics. Explicit `sensitive:"true"` and
+`secret` tags remain authoritative. `Tree` and `TreeFunc` expose raw values
+for export and caller-defined policies; choose the redacted functions for
+logs. Errors returned by application providers and hooks pass through, so
+those components own their error-message redaction.
+
+## Dependencies
+
+The module uses koanf for merging/providers, mapstructure for decoding,
+gowalker for field discovery, go-playground/validator for validation,
+fsnotify for file watching, and YAML parsers for files/output. Versions are
+in [go.mod](go.mod). No external service is required; remote providers and
+secret stores are application-supplied. The module has no application or
+metrics-library dependency.
+
+## Code map
+
+| File | Responsibility |
+|---|---|
+| `config.go`, `options.go` | `Load` pipeline and source options |
+| `schema.go`, `view.go`, `fields.go`, `key.go` | Canonical metadata, discovery and key grammar |
+| `env_refs.go`, `env.go` | Environment references and variable matching |
+| `reloader.go`, `reload_tags.go`, `applier.go`, `snapshot.go` | Publication, reload policy and applied-state accounting |
+| `render.go`, `print.go`, `usage.go`, `jsonschema.go` | Trees, diagnostic output and documentation metadata |
+| `errors.go`, `provenance.go` | Error categories and value origins |
 
 ## Documentation
 

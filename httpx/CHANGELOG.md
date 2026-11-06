@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.3.0](https://github.com/ashtonian/pkg/compare/httpx/v0.2.0...httpx/v0.3.0) (2026-11-06)
+
+### Breaking changes
+
+* `CacheStore` methods accept context and return errors. `BaseOption` is opaque; use `WithTransportSettings` for supported transport customization.
+
+### Features
+
+* Add dial-time egress policy with explicit trusted-prefix exceptions and proxy-bypass protection.
+* Add context-aware token acquisition, shared cancellable refresh and one origin-bound replay of a replayable request after 401. The optional OAuth2 module is released separately.
+* Preserve cancellation, invalidation ordering and acknowledged HTTP delivery with persistent cache errors and bounded failure observations.
+* Decode bounded RFC 9457 problem details and raw extensions, with opt-in typed request errors.
+* Apply a fail-closed URL logging policy to private paths, URL-valued headers and wrapped errors without changing live requests or caller errors ([#114](https://github.com/ashtonian/pkg/pull/114)).
+
 ## [0.2.0](https://github.com/ashtonian/pkg/compare/httpx/v0.1.0...httpx/v0.2.0) (2026-10-24)
 
 

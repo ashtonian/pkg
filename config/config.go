@@ -10,6 +10,7 @@ import (
 	"os"
 	"reflect"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -217,6 +218,7 @@ type loaded[T any] struct {
 	cfg     *T
 	files   fileDigests
 	origins map[string]Origin
+	unknown *UnknownKeysError
 }
 
 // load is Load's pipeline.
@@ -287,9 +289,6 @@ func load[T any](ctx context.Context, o *options) (loaded[T], error) {
 		if err != nil {
 			return none, fmt.Errorf("loading env vars: %w: %w", ErrValidation, err)
 		}
-		if len(unmatched) > 0 {
-			o.log().DebugContext(ctx, "environment variables under the prefix name no config key", "names", unmatched)
-		}
 		unmatchedEnv = unmatched
 		if err := l.addFlat("env "+env.prefix+"*", values, envLabeler(env.prefix, names)); err != nil {
 			return none, err
@@ -335,7 +334,20 @@ func load[T any](ctx context.Context, o *options) (loaded[T], error) {
 		// value of a field that is, or could hold, a sensitive one.
 		return none, fmt.Errorf("unmarshaling config: %w: %w", ErrValidation, decodeErrors(schema, merged, err))
 	}
-	if err := o.unknownInput(ctx, root, schema, merged, md.Unused, env, unmatchedEnv); err != nil {
+	if len(unmatchedEnv) > 0 {
+		references, err := referencedVariables(schema, reflect.ValueOf(cfg))
+		if err != nil {
+			return none, err
+		}
+		unmatchedEnv = slices.DeleteFunc(unmatchedEnv, func(name string) bool {
+			return references[name] || o.knownVariables[name] || o.variableFilter != nil && o.variableFilter(name)
+		})
+		if len(unmatchedEnv) > 0 {
+			o.log().DebugContext(ctx, "environment variables under the prefix name no config key", "names", unmatchedEnv)
+		}
+	}
+	unknown, err := o.unknownInput(ctx, root, schema, merged, md.Unused, env, unmatchedEnv)
+	if err != nil {
 		return none, fmt.Errorf("unmarshaling config: %w: %w", ErrValidation, err)
 	}
 
@@ -403,7 +415,7 @@ func load[T any](ctx context.Context, o *options) (loaded[T], error) {
 		}
 	}
 
-	out := loaded[T]{cfg: cfg, files: files}
+	out := loaded[T]{cfg: cfg, files: files, unknown: unknown}
 	if rec != nil {
 		if out.origins, err = rec.origins(cv); err != nil {
 			return none, fmt.Errorf("recording provenance: %w", err)
