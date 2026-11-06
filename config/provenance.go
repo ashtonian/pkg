@@ -19,18 +19,19 @@ type SourceKind string
 
 // Source kinds, lowest precedence first among the inputs.
 const (
-	SourceZero     SourceKind = "zero"              // no source set it: the type's zero value
-	SourceTag      SourceKind = "tag_default"       // a default:"..." tag
-	SourceDefaults SourceKind = "defaults"          // WithDefaults
-	SourceBase     SourceKind = "base_provider"     // WithBaseProvider; Name is its position
-	SourceFile     SourceKind = "file"              // a config file; Name is its path
-	SourceEnv      SourceKind = "environment"       // Name is the variable
-	SourceOverride SourceKind = "override_provider" // WithOverrideProvider; Name is its position
-	SourceFlag     SourceKind = "flag"              // a command-line flag, as an OriginProvider names it
-	SourceSecrets  SourceKind = "secrets"           // the secret populator, as a transform
-	SourcePostLoad SourceKind = "post_load"         // a WithPostLoad hook, as a transform; Name is its position
-	SourceMixed    SourceKind = "mixed"             // a value compared whole that more than one source set part of
-	SourceUnknown  SourceKind = "unknown"           // decoding made the value: no source can be named
+	SourceZero           SourceKind = "zero"              // no source set it: the type's zero value
+	SourceTag            SourceKind = "tag_default"       // a default:"..." tag
+	SourceSchemaDefaults SourceKind = "schema_defaults"   // DefaultProvider
+	SourceDefaults       SourceKind = "defaults"          // WithDefaults
+	SourceBase           SourceKind = "base_provider"     // WithBaseProvider; Name is its position
+	SourceFile           SourceKind = "file"              // a config file; Name is its path
+	SourceEnv            SourceKind = "environment"       // Name is the variable
+	SourceOverride       SourceKind = "override_provider" // WithOverrideProvider; Name is its position
+	SourceFlag           SourceKind = "flag"              // a command-line flag, as an OriginProvider names it
+	SourceSecrets        SourceKind = "secrets"           // the secret populator, as a transform
+	SourcePostLoad       SourceKind = "post_load"         // a WithPostLoad hook, as a transform; Name is its position
+	SourceMixed          SourceKind = "mixed"             // a value compared whole that more than one source set part of
+	SourceUnknown        SourceKind = "unknown"           // decoding made the value: no source can be named
 )
 
 // Source names what set a value: its kind, and a name — a file's path, a

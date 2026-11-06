@@ -22,7 +22,8 @@ type Value struct {
 	// type for an interface.
 	Type string `json:"type,omitempty"`
 	// Text is the value's %v text. It is empty for a structural change, and
-	// "[REDACTED]" when Redacted.
+	// "[REDACTED]" when withheld whole, or text with recognized credentials
+	// replaced when Redacted reports partial shape-based redaction.
 	Text string `json:"text,omitempty"`
 	// Redacted reports a value PrintRedacted would redact.
 	Redacted bool `json:"redacted,omitempty"`
@@ -817,7 +818,13 @@ func describe(s side, redact bool) Value {
 		v.Text, v.Redacted = redactedValue, true
 	case s.isNil:
 	default:
+		if masked, changed := redactByteText(s.v); changed {
+			v.Text, v.Redacted = masked, true
+			break
+		}
 		v.Text = fmt.Sprintf("%v", s.v.Interface())
+		masked := RedactText(v.Text)
+		v.Text, v.Redacted = masked, masked != v.Text
 	}
 	return v
 }

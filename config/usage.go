@@ -37,7 +37,7 @@ func (f Field) EnvVars(prefix string) []string {
 // print it: under the rule [Field.PrintableDefault] applies to a default.
 func (f Field) PrintableExample() (string, bool) {
 	ex, ok := f.Tag.Lookup("example")
-	if !ok || f.Sensitive || mayHoldSensitive(f.Type, map[reflect.Type]bool{}) {
+	if !ok || f.Sensitive || mayHoldSensitive(f.Type, map[reflect.Type]bool{}) || RedactText(ex) != ex {
 		return "", false
 	}
 	return ex, true
@@ -50,7 +50,7 @@ func (f Field) PrintableExample() (string, bool) {
 // or array holding a sensitive field or one of those.
 func (f Field) PrintableDefault() (string, bool) {
 	def, ok := f.Tag.Lookup("default")
-	if !ok || f.Sensitive || mayHoldSensitive(f.Type, map[reflect.Type]bool{}) {
+	if !ok || f.Sensitive || mayHoldSensitive(f.Type, map[reflect.Type]bool{}) || RedactText(def) != def {
 		return "", false
 	}
 	return def, true
@@ -59,22 +59,23 @@ func (f Field) PrintableDefault() (string, bool) {
 // UsageEntry is one key an operator can set, with safe printable metadata.
 // Field retains the original tags for custom generators and is omitted from JSON.
 type UsageEntry struct {
-	EnvVars     []string `json:"env_vars,omitempty"`
-	Allowed     []string `json:"allowed,omitempty"`
-	Deprecated  []string `json:"deprecated,omitempty"`
-	Withheld    bool     `json:"withheld,omitempty"`
-	Reload      string   `json:"reload"`
-	Field       Field    `json:"-"`
-	Key         string   `json:"key"`
-	Env         string   `json:"env,omitempty"`
-	AlsoEnv     []string `json:"also_env,omitempty"` // the variables an env tag adds
-	JSON        bool     `json:"json,omitempty"`     // a variable sets it as JSON
-	Type        string   `json:"type"`
-	Default     string   `json:"default,omitempty"`
-	Example     string   `json:"example,omitempty"`
-	Required    bool     `json:"required,omitempty"`
-	Sensitive   bool     `json:"sensitive,omitempty"`
-	Description string   `json:"description,omitempty"`
+	EnvVars     []string      `json:"env_vars,omitempty"`
+	Allowed     []string      `json:"allowed,omitempty"`
+	Bounds      []UsageBounds `json:"bounds,omitempty"`
+	Deprecated  []string      `json:"deprecated,omitempty"`
+	Withheld    bool          `json:"withheld,omitempty"`
+	Reload      string        `json:"reload"`
+	Field       Field         `json:"-"`
+	Key         string        `json:"key"`
+	Env         string        `json:"env,omitempty"`
+	AlsoEnv     []string      `json:"also_env,omitempty"` // the variables an env tag adds
+	JSON        bool          `json:"json,omitempty"`     // a variable sets it as JSON
+	Type        string        `json:"type"`
+	Default     string        `json:"default,omitempty"`
+	Example     string        `json:"example,omitempty"`
+	Required    bool          `json:"required,omitempty"`
+	Sensitive   bool          `json:"sensitive,omitempty"`
+	Description string        `json:"description,omitempty"`
 	// pattern marks a map entry or list element: Key holds [*], and Env a
 	// <KEY> placeholder or nothing.
 	pattern    bool
@@ -92,7 +93,45 @@ func Usage[T any](envPrefix string) ([]UsageEntry, error) {
 	if err != nil {
 		return nil, err
 	}
-	return usageRows(root, strings.TrimSuffix(envPrefix, "_")), nil
+	var defaults declaredDefaults
+	_, ownsDefaults := reflect.New(root.typ).Interface().(DefaultProvider)
+	if ownsDefaults {
+		defaults, err = readDefaults(root.typ, true)
+		if err != nil {
+			return nil, err
+		}
+	}
+	rows, err := usageRows(root, strings.TrimSuffix(envPrefix, "_"), defaults)
+	if err != nil {
+		return nil, err
+	}
+	if !ownsDefaults {
+		return rows, nil
+	}
+	for i := range rows {
+		r := &rows[i]
+		path, err := parseKeyPath(r.Key)
+		if err != nil {
+			return nil, err
+		}
+		if r.pattern {
+			continue
+		}
+		if !defaults.has(path) {
+			r.Default, r.hasDefault, r.Withheld = "", false, false
+			continue
+		}
+		r.hasDefault = true
+		if r.Sensitive || mayHoldSensitive(r.Field.Type, map[reflect.Type]bool{}) {
+			r.Default, r.Withheld = "", true
+			continue
+		}
+		r.Default, r.Withheld, err = defaultText(defaults.field(root, path))
+		if err != nil {
+			return nil, err
+		}
+	}
+	return rows, nil
 }
 
 // PrintUsage writes every key of T an operator can set: its path, the
@@ -145,12 +184,25 @@ func PrintUsage[T any](envPrefix string, opts ...PrintOption) error {
 
 // usageRows describes every key of root, a map's entries through its
 // element: a sensitive map covers all of them.
-func usageRows(root *schemaNode, prefix string) []UsageEntry {
+func usageRows(root *schemaNode, prefix string, defaults declaredDefaults) ([]UsageEntry, error) {
 	var rows []UsageEntry
+	var resultErr error
+	add := func(f Field, key, env string, pattern bool) {
+		if resultErr != nil {
+			return
+		}
+		row, err := usageRowOf(f, key, env)
+		if err != nil {
+			resultErr = err
+			return
+		}
+		row.pattern = pattern
+		rows = append(rows, row)
+	}
 	walking := map[*schemaNode]bool{}
 	var walk func(*schemaNode, cursor, string, bool)
 	walk = func(n *schemaNode, c cursor, env string, pattern bool) {
-		if walking[n] {
+		if resultErr != nil || walking[n] {
 			return
 		}
 		walking[n] = true
@@ -164,19 +216,15 @@ func usageRows(root *schemaNode, prefix string) []UsageEntry {
 					ownEnv = env + "_" + strings.ToUpper(f.key)
 				}
 				if f.node.kind == nodeBranch && jsonFormat(f.sf.Tag) {
-					row := usageRowOf(next.owner, next.path.String(), ownEnv)
-					row.pattern = pattern
-					rows = append(rows, row)
+					add(next.owner, next.path.String(), ownEnv, pattern)
 				}
 				walk(f.node, next, ownEnv, pattern)
 			}
 		case nodeMap, nodeList:
 			_, has := c.owner.Tag.Lookup("default")
 			expand := n.kind == nodeMap || n.elem.kind == nodeBranch || n.elem.kind == nodeMap || n.elem.kind == nodeList
-			if has || variableSetsField(c.owner.Tag, c.owner.Type) || !expand {
-				row := usageRowOf(c.owner, c.path.String(), env)
-				row.pattern = pattern
-				rows = append(rows, row)
+			if has || defaults.has(c.path) || variableSetsField(c.owner.Tag, c.owner.Type) || !expand {
+				add(c.owner, c.path.String(), env, pattern)
 			}
 			if !expand {
 				return
@@ -191,25 +239,28 @@ func usageRows(root *schemaNode, prefix string) []UsageEntry {
 			}
 			walk(n.elem, next, nextEnv, true)
 		default:
-			row := usageRowOf(c.owner, c.path.String(), env)
-			row.pattern = pattern
-			rows = append(rows, row)
+			add(c.owner, c.path.String(), env, pattern)
 		}
 	}
 	walk(root, cursor{}, prefix, false)
-	return rows
+	return rows, resultErr
 }
 
 // usageRowOf describes f, shown as key and set by env, the first of them
 // its own variable.
-func usageRowOf(f Field, key string, env ...string) usageRow {
+func usageRowOf(f Field, key string, env ...string) (usageRow, error) {
 	row := usageRow{
 		Key:         key,
 		Type:        typeText(f.Type),
-		Required:    slices.Contains(strings.Split(f.Tag.Get("validate"), ","), "required"),
+		Required:    requiredBeforeOmission(f.Tag.Get("validate")),
 		Sensitive:   f.Sensitive,
 		Description: f.Tag.Get("desc"),
-		Field:       cloneField(f), Reload: f.Reload, Deprecated: aliasNames(f.Tag), Allowed: usageAllowed(f),
+		Field:       cloneField(f), Reload: f.Reload, Deprecated: aliasNames(f.Tag),
+	}
+	var err error
+	row.Allowed, row.Bounds, err = usageConstraints(f)
+	if err != nil {
+		return usageRow{}, err
 	}
 	if len(env) > 0 && env[0] != "" {
 		row.Env = env[0]
@@ -229,7 +280,7 @@ func usageRowOf(f Field, key string, env ...string) usageRow {
 			row.Withheld = true
 		}
 	}
-	return row
+	return row, nil
 }
 
 func printUsageTable(w io.Writer, rows []usageRow, withEnv bool) error {
@@ -315,23 +366,12 @@ func printUsageEnv(w io.Writer, rows []usageRow) error {
 	return ew.err
 }
 
-func usageAllowed(f Field) []string {
-	s := leafSchema(derefType(f.Type))
-	rules(s, &schemaNode{typ: derefType(f.Type)}, f.Tag.Get("validate"), !f.Sensitive && !mayHoldSensitive(f.Type, map[reflect.Type]bool{}))
-	values, _ := s["enum"].([]any)
-	var out []string
-	for _, v := range values {
-		out = append(out, fmt.Sprint(v))
-	}
-	return out
-}
-
 func printUsageMarkdown(w io.Writer, rows []UsageEntry, withEnv bool) error {
 	ew := &errWriter{w: w}
 	if withEnv {
-		ew.printf("| Key | Environment | Type | Default | Reload | Description |\n| --- | --- | --- | --- | --- | --- |\n")
+		ew.printf("| Key | Environment | Type | Default | Bounds | Reload | Description |\n| --- | --- | --- | --- | --- | --- | --- |\n")
 	} else {
-		ew.printf("| Key | Type | Default | Reload | Description |\n| --- | --- | --- | --- | --- |\n")
+		ew.printf("| Key | Type | Default | Bounds | Reload | Description |\n| --- | --- | --- | --- | --- | --- |\n")
 	}
 	for _, r := range rows {
 		def := r.Default
@@ -344,7 +384,7 @@ func printUsageMarkdown(w io.Writer, rows []UsageEntry, withEnv bool) error {
 		if withEnv {
 			cells = append(cells, strings.Join(r.EnvVars, ", "))
 		}
-		cells = append(cells, r.Type, def, r.Reload, r.Description)
+		cells = append(cells, r.Type, def, usageBoundsText(r.Bounds), r.Reload, r.Description)
 		for i := range cells {
 			cells[i] = markdownCell(cells[i])
 		}

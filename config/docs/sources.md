@@ -14,7 +14,8 @@ Highest wins:
 | 3 | `WithFile`, `WithRequiredFile` | Config files, merged in order, each parsed by its name's suffix: YAML or JSON built in, any koanf parser through `WithFileParser`. |
 | 4 | `WithBaseProvider(p, parser)` | A shared or remote base the files refine. |
 | 5 | `WithDefaults(map)` | Programmatic defaults keyed by dotted path. |
-| 6 | `default` tags | Always. |
+| 6 | `DefaultProvider.ConfigDefaults()` | Defaults belonging to the root schema. |
+| 7 | `default` tags | Always. |
 
 Each file takes the parser registered for the longest suffix of its name, ignoring case: `.yaml` and `.yml` are YAML, `.json` is JSON, and any other file is YAML. `WithFileParser(".toml", toml.Parser())` adds a format, so `config.yaml`, `overrides.json` and `local.toml` load together; `WithFileParser("", p)` changes the parser for every file no other suffix matches. JSON is strict: one object per file, integers within int64/uint64 kept exact (larger integer literals fail), a key set twice in one object an error.
 
@@ -42,6 +43,77 @@ A provider loads at either provider layer: pass a nil parser when it returns key
 Bridging a provider's watch to a reloader is one call — `p.Watch(func(_ any, err error) { if err == nil { reloader.SourceChanged() } })` — and bursts coalesce into one reload.
 
 `NewMapProvider(read, ".")` turns a function into a provider read on every load; with `"."` its keys are dotted paths, with `""` the map is already nested. What `read` returns is copied.
+
+## Schema-owned defaults
+
+A root config may implement `ConfigDefaults() map[string]any` (the
+`DefaultProvider` interface). Its keys are dot paths, as for `WithDefaults`.
+For shared types with different defaults at different paths:
+
+```go
+func (*Config) ConfigDefaults() map[string]any {
+    return map[string]any{
+        "read_http.retry.attempts": 3,
+        "write_http.retry.attempts": 1,
+    }
+}
+```
+
+`Load`, `Usage`, `JSONSchema` and `PrintTemplate` use the same declarations.
+They override tags and remain below caller `WithDefaults`, providers, files
+and environment. Provenance names this layer `schema_defaults`. A zero value,
+empty string or explicit null is a declared default, not an absent entry.
+
+The method runs on a fresh zero root and must return deterministic data
+without I/O or global mutation. Returned maps, structs and collections are
+copied. Unknown keys and values the built-in decoder cannot decode fail with
+`ErrSchema`, even if a later source would replace them. A section and a dot
+path beneath it cannot both appear in the map. Only the root method runs;
+collection elements retain their existing tag-default behavior. Caller
+`WithDefaults` still supplies runtime profiles that static documentation
+cannot know.
+
+## Validating stored entries
+
+`CheckKey[Config](ctx, "server.port", "8080")` decodes one key against defaults
+and validates it with the same hooks, tag validator and `Validate` method as
+`Load`. `DecodeKey` returns the resulting `*Config` when a caller also needs
+its typed values. A rejected key returns `*KeyError`: `Unknown` and `ErrKey`
+distinguish an unknown key; a known key with an invalid value matches
+`ErrValidation`. Schema/setup errors and cancellation return directly.
+No partial config is returned on failure. Error messages contain the key,
+not the value; wrapped causes are for trusted diagnostics.
+
+These calls honor `WithDefaults`, `WithDecodeHook`, `WithValidator` and
+`WithSkipValidation`. They read no provider, file or environment and run no
+secret, post-load or unknown-input callbacks. Other fields remain at defaults,
+so cross-field rules judge that context. Keys use `ParseKey` syntax, with
+aliases and case folding accepted for fields. List indexes must already
+exist in defaults or append immediately after them; pass the whole list to
+create several elements. Wildcards and sparse expansion are refused.
+
+For a store whose older rows may be invalid, pass a per-source option:
+
+```go
+config.WithBaseProvider(store, nil, config.WithInvalidEntries(
+    func(ctx context.Context, rejected []config.KeyError) error {
+        return reportRejected(ctx, rejected)
+    },
+))
+```
+
+This checks each known entry against defaults and withholds invalid entries,
+leaving their lower-precedence values intact. Struct sections are checked
+field by field; collections and self-decoding values are atomic. The callback
+receives sorted key/error pairs after every read, including an empty report;
+nil discards reports. Its error fails the load with `ErrSource`.
+
+Defaults must validate before any provider is read. Unknown keys still reach
+the normal diagnostics, including declared unknown children of a withheld
+collection. Read/parser errors and cancellation fail the load. Finally, the
+combined config must validate: independently valid rows can conflict with one
+another, and the loader does not choose arbitrary rows to discard to resolve
+such a conflict. The option applies equally to `WithOverrideProvider`.
 
 ## Environment variables
 
