@@ -161,7 +161,8 @@ jobs:
           workspace=$(mktemp -d)
           trap 'rm -rf "$workspace"' EXIT
           (cd "$workspace" && GOWORK=off go work init \
-            "$GITHUB_WORKSPACE/httpx" "$GITHUB_WORKSPACE/httpx/codec/msgpack" \
+            "$GITHUB_WORKSPACE/httpx" "$GITHUB_WORKSPACE/httpx/oauth2" \
+            "$GITHUB_WORKSPACE/httpx/codec/msgpack" \
             "$GITHUB_WORKSPACE/httpx/codec/proto" "$GITHUB_WORKSPACE/httpx/compress/brotli")
           GOWORK="$workspace/go.work" make test-httpx-unit test-httpx-integration
   gitx-minimum:

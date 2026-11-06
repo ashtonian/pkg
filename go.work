@@ -11,6 +11,7 @@ use (
 	./config
 	./config/kongprovider
 	./httpx
+	./httpx/oauth2
 	./httpx/codec/msgpack
 	./httpx/codec/proto
 	./httpx/compress/brotli
