@@ -143,8 +143,9 @@ exercise retries, gzip, ETags and 304 reuse against a local HTTP server.
 | Run tests, benchmarks or release checks | [Development](docs/development.md) |
 
 `NewClient` / `NewStandard` and typed `Get[T]` / `Do[T]` helpers are optional.
-Optional modules: [Brotli](compress/brotli/README.md),
-[MessagePack](codec/msgpack/README.md), [protobuf](codec/proto/README.md).
+Optional modules: [OAuth2 grants](oauth2/README.md),
+[Brotli](compress/brotli/README.md), [MessagePack](codec/msgpack/README.md),
+[protobuf](codec/proto/README.md).
 The [Gin example](examples/gin/README.md) demonstrates a complete API and client.
 
 ## License

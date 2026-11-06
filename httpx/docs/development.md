@@ -20,14 +20,14 @@ body lifetime, cache/retry composition and compression. The quick start is
 compiled as part of the module and tested against a real local API.
 
 Run optional modules in the repository workspace, or against released
-parent versions with `GOWORK=off`. The three optional README examples are
+parent versions with `GOWORK=off`. The four optional README examples are
 also compiled examples. See [Gin](../examples/gin/README.md) for the complete
 server/client demonstration and its integration tests.
 
 ## Release archives
 
 From the repository root, `make httpx-release-check` creates separate Go
-module ZIPs for the core, MessagePack, protobuf and Brotli modules. Fresh
+module ZIPs for the core, OAuth2, MessagePack, protobuf and Brotli modules. Fresh
 consumers resolve them through a local module proxy, outside the workspace,
 with their own module cache. The check also validates the Gin example and
 comparison benchmarks against the candidate modules.
