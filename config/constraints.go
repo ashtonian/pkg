@@ -7,11 +7,13 @@ import (
 	"reflect"
 	"slices"
 	"strings"
+	"time"
 	"unicode/utf8"
 )
 
 // UsageBounds describes one conjunction of translated bounds. Target is
-// value, length (Unicode characters), items or properties. ZeroAllowed means
+// value, duration (integer nanoseconds), length (Unicode characters), items or
+// properties. ZeroAllowed means
 // this clause also admits the field's zero value, including nil for pointers
 // and nullable containers. Other Bounds clauses still apply.
 type UsageBounds struct {
@@ -44,14 +46,14 @@ func usageBoundsText(bounds []UsageBounds) string {
 			if b.ExclusiveMinimum {
 				op = ">"
 			}
-			parts = append(parts, b.Target+" "+op+" "+b.Minimum.String())
+			parts = append(parts, b.Target+" "+op+" "+usageBoundText(b.Target, b.Minimum))
 		}
 		if b.Maximum != "" {
 			op := "<="
 			if b.ExclusiveMaximum {
 				op = "<"
 			}
-			parts = append(parts, b.Target+" "+op+" "+b.Maximum.String())
+			parts = append(parts, b.Target+" "+op+" "+usageBoundText(b.Target, b.Maximum))
 		}
 		text := strings.Join(parts, ", ")
 		if b.ZeroAllowed {
@@ -60,6 +62,15 @@ func usageBoundsText(bounds []UsageBounds) string {
 		clauses = append(clauses, text)
 	}
 	return strings.Join(clauses, "; ")
+}
+
+func usageBoundText(target string, bound json.Number) string {
+	if target == "duration" {
+		if nanos, err := bound.Int64(); err == nil {
+			return time.Duration(nanos).String()
+		}
+	}
+	return bound.String()
 }
 
 func omissionSchema(t reflect.Type) (map[string]any, bool) {
@@ -179,6 +190,16 @@ func setBound(s map[string]any, key string, value any, minimum bool) {
 }
 
 func matchesConstraint(s map[string]any, v any) bool {
+	if bounds, ok := s["x-config-duration-bounds"].(map[string]any); ok {
+		text, ok := v.(string)
+		if !ok {
+			return false
+		}
+		duration, err := time.ParseDuration(text)
+		if err != nil || !matchesConstraint(bounds, int64(duration)) {
+			return false
+		}
+	}
 	if constant, ok := s["const"]; ok && !constraintEqual(constant, v) {
 		return false
 	}
@@ -252,6 +273,13 @@ func matchesConstraint(s map[string]any, v any) bool {
 func collectBounds(s map[string]any, zero any, hasZero, optional bool, out *[]UsageBounds) {
 	if not, ok := s["not"].(map[string]any); ok && matchesConstraint(not, zero) {
 		hasZero = false
+	}
+	if bounds, ok := s["x-config-duration-bounds"].(map[string]any); ok {
+		start := len(*out)
+		collectBounds(bounds, int64(0), hasZero, optional, out)
+		for i := start; i < len(*out); i++ {
+			(*out)[i].Target = "duration"
+		}
 	}
 	if s["type"] == "integer" || s["type"] == "number" {
 		if v, ok := s["const"]; ok {

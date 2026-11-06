@@ -10,6 +10,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/go-viper/mapstructure/v2"
 )
@@ -42,7 +43,9 @@ const JSONSchemaDraft = "https://json-schema.org/draft/2020-12/schema"
 //   - Rules after omitempty apply to nonzero values. The zero alternative
 //     follows the declared type, preserving nil versus non-nil empty values;
 //     earlier rules still apply. dive and keys stop translation.
-//   - A duration is a string such as "30s"; a type that decodes itself is
+//   - A duration is a string such as "30s". Its x-config-duration-bounds
+//     annotation describes runtime bounds in integer nanoseconds; JSON Schema
+//     validators do not enforce that annotation. A type that decodes itself is
 //     described by its Go type in x-config-type, unconstrained, or as a
 //     string when it decodes from text.
 //   - A struct a type holds within itself is a $defs entry, referenced by
@@ -411,7 +414,7 @@ func rules(s map[string]any, n *schemaNode, tag string, values bool, declared re
 			continue
 		}
 		typ, _ := target["type"].(string)
-		if !values && (name == "oneof" || name == "eq" || typ == "integer" || typ == "number") {
+		if !values && (name == "oneof" || name == "eq" || typ == "integer" || typ == "number" || target["x-config-type"] == "time.Duration") {
 			continue
 		}
 		before := maps.Clone(target)
@@ -440,6 +443,29 @@ func rules(s map[string]any, n *schemaNode, tag string, values bool, declared re
 // translateRule states one rule in JSON Schema terms where its meaning on
 // n's kind of value is plain.
 func translateRule(s map[string]any, n *schemaNode, name, param string) {
+	if s["x-config-type"] == "time.Duration" {
+		switch name {
+		case "min", "max", "gte", "lte", "gt", "lt", "len", "eq":
+		default:
+			return
+		}
+		duration, err := time.ParseDuration(param)
+		if err != nil {
+			// The validator also accepts integer nanoseconds in Go literal syntax.
+			value, parseErr := strconv.ParseInt(param, 0, 64)
+			if parseErr != nil {
+				return
+			}
+			duration = time.Duration(value)
+		}
+		bounds, _ := s["x-config-duration-bounds"].(map[string]any)
+		if bounds == nil {
+			bounds = map[string]any{"type": "integer"}
+		}
+		translateRule(bounds, n, name, strconv.FormatInt(int64(duration), 10))
+		s["x-config-duration-bounds"] = bounds
+		return
+	}
 	kind := ""
 	switch t, _ := s["type"].(string); {
 	case t == "integer" || t == "number":
