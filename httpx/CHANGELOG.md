@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.4.0](https://github.com/ashtonian/pkg/compare/httpx/v0.3.0...httpx/v0.4.0) (2026-11-06)
+
+
+### Features
+
+* **httpx:** support authentication before bearer acquisition ([4c790c7](https://github.com/ashtonian/pkg/commit/4c790c71a87e077a9185eeeb8309b1ef0fded3d3)), closes [#58](https://github.com/ashtonian/pkg/issues/58)
+* **httpx:** support authentication before bearer acquisition ([#119](https://github.com/ashtonian/pkg/issues/119)) ([318dd70](https://github.com/ashtonian/pkg/commit/318dd70a1666756d308e289455dc0de557b01e7f))
+
 ## [0.3.0](https://github.com/ashtonian/pkg/compare/httpx/v0.2.0...httpx/v0.3.0) (2026-11-06)
 
 ### Breaking changes
