@@ -47,6 +47,8 @@ Every module is tagged with its directory as the prefix, as Go expects for a mod
 
 Releases are cut by [release-please](https://github.com/googleapis/release-please) from [Conventional Commits](https://www.conventionalcommits.org) (`feat(config): …`, `fix(kongprovider): …`). Each commit counts toward the modules whose files it touches. release-please keeps one combined release pull request covering the modules with unreleased changes; merging it tags those modules, writes their changelogs and publishes a GitHub release per module. (One pull request per module is not possible here: a module below another, `config/kongprovider` below `config`, would need a release branch nested under the other's.) `feat` raises the minor version and `fix` the patch; a breaking change (`feat(config)!: …`) raises the minor version while the module is at `v0`.
 
+Land feature branches with main as the first parent of a signed merge commit and a conventional subject describing the change. Its diff must contain the feature, rather than only a later main-to-feature synchronization. This preserves the module change and release classification when older feature commits precede the latest release boundary.
+
 Merge a release PR with a signed merge commit whose diff includes every
 released module. If a changelog needs a follow-up edit, do not fast-forward
 only that final commit onto main: release-please finds each module's boundary
@@ -90,3 +92,17 @@ repository root before opening a pull request.
 Parse requires Go 1.27 and publishes as `github.com/ashtonian/pkg/parse`, with `parse/v…` tags. CI runs unit tests and existing fuzz seeds under the race detector, SQLite integration, PostgreSQL 17/18 with PostGIS 3.6, and the TypeScript SDK's shared corpora. The SDK release check installs its tarball in a fresh consumer and checks public declarations, runtime subpaths and self-contained JavaScript sourcemaps. SDK package and lock versions follow the Parse release component. CI stores benchmark text and CPU/allocation profiles on main; it does not run dedicated fuzzing sessions.
 
 For an existing test server, set `PARSE_POSTGRES_DSN` and `PARSE_POSTGIS_DSN` and run `make test-parse-integration`. Each case gets a fresh schema. A requested server that is unavailable fails; an unrequested PostgreSQL case skips. `make parse-release-check` verifies a candidate archive independently of the workspace; publication additionally requires clean public-proxy installation of the immutable release.
+
+## Parse SDK publication
+
+The `publish Parse SDK` workflow builds `@ashtonian/parse` from a published stable `parse/vX.Y.Z` tag on main. It requires the tag, release manifest, SDK package and lockfile to agree on the version, verifies the packed consumer, and retains the exact tarball before publishing. Repeating a run accepts an existing registry version only when its package integrity matches. The final check installs that exact version from the public registry into a fresh consumer.
+
+Configure npm trusted publishing for repository `ashtonian/pkg` and workflow filename `parse-sdk-release.yml` in the package's npm settings. The workflow uses a GitHub-hosted runner and npm OIDC; it does not require a stored npm token. Creating the package for the first time requires an authenticated package owner. Dispatch the immutable tag with `publish=false`, download its retained tarball, publish those exact bytes with `npm publish <tarball> --access public --registry=https://registry.npmjs.org`, then configure the trusted publisher for subsequent releases. Follow [npm's trusted publisher requirements](https://docs.npmjs.com/trusted-publishers/).
+
+The repository owner can prepare an already published tag without registry writes (the dispatch default):
+
+```bash
+gh workflow run parse-sdk-release.yml -R ashtonian/pkg -f tag=parse/vX.Y.Z
+```
+
+Add `-f publish=true` to publish through the configured trusted publisher and verify registry consumption. A build-only run verifies registry consumption when that exact package already exists; an absent version leaves publication and registry acceptance unexecuted. Release events also trigger publication when the repository owner creates the release. A release created by `GITHUB_TOKEN` does not trigger another workflow; dispatch it explicitly. On authentication failure, verify the npm publisher's repository and workflow filename. On an integrity mismatch, inspect the retained artifact and registry version; do not change an existing tag or overwrite a published version.
