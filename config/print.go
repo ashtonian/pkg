@@ -370,6 +370,10 @@ func (w *entryWalk) leaf(path keyPath, declared, value reflect.Value, s site) {
 	}
 	if s.sensitive || s.named || value.IsValid() && uncheckedHolder(value) {
 		text = redactedValue
+	} else if masked, changed := redactByteText(value); changed {
+		text = masked
+	} else {
+		text = RedactText(text)
 	}
 	w.entries = append(w.entries, printEntry{name: path.String(), value: text, typeName: typeText(typ), desc: s.desc})
 }

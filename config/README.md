@@ -7,7 +7,7 @@ Declare one tagged struct, then load defaults, files, environment variables
 and providers through one validated pipeline.
 
 - **One schema.** Struct tags define keys, defaults, validation, environment
-  names, help text and redaction.
+  names, help text and redaction; a root `DefaultProvider` supplies shared path-specific defaults.
 - **Layered sources.** Combine files, environment variables, CLI flags and
   any koanf provider, with explicit precedence.
 - **Validated reloads.** Watch files, poll or use signals; a failed reload
@@ -97,7 +97,9 @@ values, ownership and errors.
 
 `Usage[T]("APP")` supplies a safe catalog for documentation generators, and
 `PrintUsage` renders it as a table, JSON, Markdown or environment template.
-`ParseKey` reads the same grammar used by field lookup, diffs and appliers.
+`UsageEntry.Bounds` shares JSON Schema’s constraint translation, including
+conditional `omitempty` rules. `ParseKey` reads the same grammar used by field
+lookup, diffs and appliers.
 `Tree` exports resolved values, including secrets; `TreeFunc` lets a support
 bundle apply its own per-leaf policy. See [inspection](docs/inspection.md).
 
@@ -110,6 +112,11 @@ option with its default. Environment loading requires `WithEnvPrefix`.
 `WithKnownVariables` and `WithVariableFilter` claim names read elsewhere.
 `WithReloadTags` opts into inherited `reload` classes, while
 `WithReloadTagChecks` also checks applier coverage before loading.
+`DefaultProvider.ConfigDefaults` supplies schema-owned defaults to loading,
+usage, schema and templates. `CheckKey` validates a stored entry without
+reading sources; `DecodeKey` also returns the typed config. Provider-level
+`WithInvalidEntries` can withhold bad stored rows while preserving lower
+sources and unknown-key diagnostics. See [sources](docs/sources.md).
 
 ## Build and test
 
@@ -130,7 +137,8 @@ by that published generation. Use `Stop(ctx)` with a shutdown deadline.
 Diagnostic printers, diffs and usage metadata withhold sensitive values.
 Credential-like names redact text-capable values; numeric counters, booleans
 and durations keep ordinary diagnostics. Explicit `sensitive:"true"` and
-`secret` tags remain authoritative. `Tree` and `TreeFunc` expose raw values
+`secret` tags remain authoritative. `RedactText` also removes recognizable
+credential shapes from text and bytes while retaining non-secret context. `Tree` and `TreeFunc` expose raw values
 for export and caller-defined policies; choose the redacted functions for
 logs. Errors returned by application providers and hooks pass through, so
 those components own their error-message redaction.
@@ -149,10 +157,11 @@ metrics-library dependency.
 | File | Responsibility |
 |---|---|
 | `config.go`, `options.go` | `Load` pipeline and source options |
+| `schema_defaults.go`, `decode_input.go`, `check_key.go`, `source_validation.go` | Shared defaults/decoding, key checks and provider entry validation |
 | `schema.go`, `view.go`, `fields.go`, `key.go` | Canonical metadata, discovery and key grammar |
 | `env_refs.go`, `env.go` | Environment references and variable matching |
 | `reloader.go`, `reload_tags.go`, `applier.go`, `snapshot.go` | Publication, reload policy and applied-state accounting |
-| `render.go`, `print.go`, `usage.go`, `jsonschema.go` | Trees, diagnostic output and documentation metadata |
+| `render.go`, `print.go`, `usage.go`, `jsonschema.go`, `constraints.go`, `redact.go` | Trees, diagnostic output and documentation metadata |
 | `errors.go`, `provenance.go` | Error categories and value origins |
 
 ## Documentation

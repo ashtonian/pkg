@@ -29,6 +29,21 @@ type outNode struct {
 	items    []*outNode
 }
 
+func (n *outNode) hasRedaction() bool {
+	if n == nil {
+		return false
+	}
+	if n.redacted {
+		return true
+	}
+	for _, e := range n.entries {
+		if e.node.hasRedaction() {
+			return true
+		}
+	}
+	return slices.ContainsFunc(n.items, (*outNode).hasRedaction)
+}
+
 type outKind uint8
 
 const (
@@ -182,6 +197,11 @@ func (w *valueTree) atValue(v reflect.Value, c cursor) *outNode {
 	if !w.raw && c.sensitive() {
 		return redactedNode()
 	}
+	if !w.raw {
+		if masked, changed := redactByteText(elem); changed {
+			return w.project(c, &outNode{kind: outScalar, scalar: masked, redacted: true})
+		}
+	}
 	value, err := scalarOf(elem)
 	if err != nil {
 		w.err = fmt.Errorf("config: projecting %s: %w", c.path.orRoot(), err)
@@ -191,6 +211,12 @@ func (w *valueTree) atValue(v reflect.Value, c cursor) *outNode {
 }
 
 func (w *valueTree) project(c cursor, n *outNode) *outNode {
+	if !w.raw && n.kind == outScalar {
+		if text, ok := n.scalar.(string); ok {
+			masked := RedactText(text)
+			n.scalar, n.redacted = masked, n.redacted || masked != text
+		}
+	}
 	if w.leaf == nil {
 		return n
 	}
