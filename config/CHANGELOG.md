@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.8.1](https://github.com/ashtonian/pkg/compare/config/v0.8.0...config/v0.8.1) (2026-11-06)
+
+
+### Bug Fixes
+
+* **config:** preserve duration bounds in schema metadata ([91571e3](https://github.com/ashtonian/pkg/commit/91571e3d33746dcb3b107fe420034af78f0641ac))
+* **config:** preserve duration bounds in schema metadata ([#124](https://github.com/ashtonian/pkg/issues/124)) ([e7e93fd](https://github.com/ashtonian/pkg/commit/e7e93fd16784cc21a19b42861ef2588e026c5a71))
+
 ## [0.8.0](https://github.com/ashtonian/pkg/compare/config/v0.7.0...config/v0.8.0) (2026-11-06)
 
 ### Features and fixes
