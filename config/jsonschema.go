@@ -197,6 +197,10 @@ func (g *schemaGen) field(f *schemaField, c cursor, fv reflect.Value) map[string
 	if desc := f.sf.Tag.Get("desc"); desc != "" {
 		s["description"] = desc
 	}
+	s["x-reload"] = c.owner.Reload
+	if c.owner.EnvRef {
+		s["x-env-ref"] = true
+	}
 	sensitive := c.sensitive() || mayHoldSensitive(f.sf.Type, map[reflect.Type]bool{})
 	if c.sensitive() {
 		s["writeOnly"] = true

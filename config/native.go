@@ -163,10 +163,11 @@ func closest(key string, candidates iter.Seq[string]) string {
 	return best
 }
 
-// editDistance is the Levenshtein distance between a and b, in runes.
+// editDistance is the optimal string alignment distance, in runes.
 func editDistance(a, b string) int {
 	ra, rb := []rune(a), []rune(b)
 	prev := make([]int, len(rb)+1)
+	var before []int
 	for j := range prev {
 		prev[j] = j
 	}
@@ -179,8 +180,11 @@ func editDistance(a, b string) int {
 				cost = 0
 			}
 			cur[j] = min(prev[j]+1, cur[j-1]+1, prev[j-1]+cost)
+			if i > 1 && j > 1 && ra[i-1] == rb[j-2] && ra[i-2] == rb[j-1] {
+				cur[j] = min(cur[j], before[j-2]+1)
+			}
 		}
-		prev = cur
+		before, prev = prev, cur
 	}
 	return prev[len(rb)]
 }

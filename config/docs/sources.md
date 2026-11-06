@@ -72,3 +72,27 @@ APP_ROUTES='[{"path":"/api","timeout":"10s"},{"path":"/health"}]'
 The JSON is parsed before decoding, so each element's keys are checked as strict keys, take aliases, and get the element struct's defaults; `Diff` and provenance see every element. Text that is not JSON fails with `ErrValidation`, naming the key and line but not the text. A section's variable and one for a key inside it cannot both be set. The same tag lets a file give the value as a JSON string, and a `default` hold it as JSON.
 
 A variable that two keys could read — `db.port` and `db_port`, a field and a map entry, or a tagged name that is another key's own variable — fails the load naming every reading, instead of guessing. A variable under the prefix that names no key is ignored and logged at debug level — other programs may share the prefix — unless a `WithUnknownKeys` handler is set, which sees it with the variable it most likely misspells. `WithEnviron(fn)` replaces `os.Environ`, which keeps tests independent of the machine. `PrintUsage` lists every variable a config reads.
+
+### Variables read by the application
+
+Mark a field that names other variables with `envref:"true"`:
+
+```go
+PasswordEnv string   `koanf:"password_env" envref:"true"`
+FallbackEnv []string `koanf:"fallback_env" envref:"true"`
+```
+
+After merging and decoding, the effective names are excluded from unknown
+variable diagnostics. A higher-precedence reference replaces its default;
+reference fields inside nested structs, maps and lists work the same way.
+This runs before secret resolution and post-load hooks. It does not read the
+referenced values or assign them to another field: the application does that.
+The `env` tag retains its separate meaning of alternate input variable names.
+
+`WithKnownVariables("APP_RUNTIME_MODE")` claims exact, case-sensitive names
+read elsewhere; repeated calls accumulate. `WithVariableFilter(fn)` claims
+names for which `fn(name)` returns true; the predicate receives no values,
+the last option wins, and nil clears it. Claims affect otherwise unmatched
+variables only. Ordinary field decoding, ambiguity detection and unknown
+config-key checks remain in force. Unclaimed names still reach the
+`WithUnknownKeys` handler, or debug logging when no handler is installed.

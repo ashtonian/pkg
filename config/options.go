@@ -33,21 +33,23 @@ type Validator interface {
 }
 
 type options struct {
-	envPrefix   string
-	environ     func() []string
-	files       []fileSource
-	fileParsers map[string]koanf.Parser // by lower-case name suffix; nil removes one
-	defaults    map[string]any
-	base        []providerSource
-	overrides   []providerSource
-	decodeHooks []mapstructure.DecodeHookFunc
-	unknownKeys func(context.Context, *UnknownKeysError) error // nil: keys fail the load
-	secrets     SecretPopulator
-	postLoad    []postLoadHook
-	skipValid   bool
-	validator   Validator
-	logger      *slog.Logger
-	provenance  bool // record origins: LoadSnapshot, or a reloader WithProvenance
+	knownVariables map[string]bool
+	variableFilter func(string) bool
+	envPrefix      string
+	environ        func() []string
+	files          []fileSource
+	fileParsers    map[string]koanf.Parser // by lower-case name suffix; nil removes one
+	defaults       map[string]any
+	base           []providerSource
+	overrides      []providerSource
+	decodeHooks    []mapstructure.DecodeHookFunc
+	unknownKeys    func(context.Context, *UnknownKeysError) error // nil: keys fail the load
+	secrets        SecretPopulator
+	postLoad       []postLoadHook
+	skipValid      bool
+	validator      Validator
+	logger         *slog.Logger
+	provenance     bool // record origins: LoadSnapshot, or a reloader WithProvenance
 }
 
 type fileSource struct {
@@ -318,12 +320,12 @@ func acceptUnknown(context.Context, *UnknownKeysError) error { return nil }
 // decoder left unused in merged, and the variables under env's prefix that
 // named no key. Without a handler, unknown keys fail and variables are
 // ignored.
-func (o *options) unknownInput(ctx context.Context, root reflect.Type, schema *schemaNode, merged map[string]any, unused []string, env envSchema, variables []string) error {
+func (o *options) unknownInput(ctx context.Context, root reflect.Type, schema *schemaNode, merged map[string]any, unused []string, env envSchema, variables []string) (*UnknownKeysError, error) {
 	if o.unknownKeys == nil {
 		variables = nil
 	}
 	if len(unused) == 0 && len(variables) == 0 {
-		return nil
+		return nil, nil
 	}
 	unknown := &UnknownKeysError{Type: root}
 	for _, name := range unused {
@@ -337,9 +339,12 @@ func (o *options) unknownInput(ctx context.Context, root reflect.Type, schema *s
 	unknown.Keys = slices.Compact(unknown.Keys)
 	slices.SortFunc(unknown.Variables, byKey)
 	if o.unknownKeys == nil {
-		return unknown
+		return nil, unknown
 	}
-	return o.unknownKeys(ctx, unknown)
+	if err := o.unknownKeys(ctx, unknown.clone()); err != nil {
+		return nil, err
+	}
+	return unknown, nil
 }
 
 // WithSecretPopulator sets the secret resolver. It runs after decoding with

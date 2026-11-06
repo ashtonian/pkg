@@ -1,6 +1,6 @@
 // Package config loads typed configuration for Go services from one tagged
 // struct, on top of koanf. The struct is the schema: its koanf, alias, env,
-// default, sep, format, example, validate, desc, sensitive and secret tags
+// envref, reload, default, sep, format, example, validate, desc, sensitive and secret tags
 // give each field its key, former names, variables, default, list separator,
 // text format, example, rules, description and secrecy. Loading, validation, redaction, usage
 // tables, starter files and the JSON Schema all read them. [Load] merges
@@ -47,16 +47,19 @@
 //   - format:"json" — a string set for a section, map or list is its JSON
 //   - alias:"old" — former keys, still read, with a warning
 //   - env:"PORT" — more variables, read as written, below the prefixed one
+//   - envref:"true" — decoded strings name variables read by the application
+//   - reload:"live" — inherited reload class; the default is restart
 //   - example:"..." — a sample value for starter files, usage and the schema
 //   - validate:"..." — go-playground rules
 //   - desc:"..." — the description every output shows
-//   - sensitive:"true" — redacted everywhere; "false" exempts a field its
+//   - sensitive:"true" — redacted in diagnostics; "false" exempts a field its
 //     name would redact
 //   - secret:"<ref>" — resolved by [SecretsFrom], and redacted
 //
-// Invalid sensitive, alias, env, sep, format and example tags, a default on
+// Invalid sensitive, alias, env, envref, reload, sep, format and example tags, a default on
 // a section, and malformed defaults fail with [ErrSchema] before sources are
-// read. [KeyOf] names a field from its address.
+// read. [KeyOf] names a field from its address. [ParseKey] exposes the same
+// canonical grammar as typed segments, including quoted keys and wildcards.
 //
 // # Sources
 //
@@ -75,6 +78,8 @@
 // (env:"PORT"); the prefixed variable wins over them. A variable that fits two
 // keys fails the load with [ErrValidation] naming both; one that fits none is
 // not loaded. [WithEnviron] replaces os.Environ.
+// [WithKnownVariables], [WithVariableFilter] and decoded envref fields claim
+// otherwise unmatched names for unknown-input reports and debug diagnostics.
 //
 // Keys match fields regardless of letter case, as decoding does; each
 // source's keys are rewritten into the fields' spelling before the sources
@@ -98,6 +103,9 @@
 // service on the default it meant to override — unless a [WithUnknownKeys]
 // handler accepts it, say after logging a warning; [WithAllowUnknownKeys]
 // accepts every one.
+// [Snapshot.UnknownKeys] retains the accepted report with its published
+// config. Clean publications clear it; refused or canceled attempts leave the
+// previous report intact. Handlers, snapshots and results get detached copies.
 // Put derivation and normalization in a post-load hook, not after Load
 // returns: the hook runs inside the load, so a Reloader applies it before
 // deciding whether to swap.
@@ -182,16 +190,23 @@
 //
 // # Diagnostics
 //
+// [WithReloadTags] opts into declared reload classes: restart keys are withheld
+// from appliers and reported in PendingRestart, including beneath a broad
+// prefix. [WithReloadTagChecks] also verifies live-key ownership before loading.
+// Untagged schemas retain prefix routing. [RestartChanges] filters declarations
+// for an offline diff; runtime ownership can defer additional changes.
+//
 // [Diff] lists every key whose value differs between two configs, comparing
 // decoded values, with sensitive values redacted.
 //
 // [PrintRedacted], [RedactedMapChecked], [RedactedTreeChecked] and [PrintEnv] show a config
 // with every sensitive value redacted: tagged sensitive:"true", beneath such a
-// field, named like a credential (unless tagged sensitive:"false"), or under
-// such a map key. The checked map/tree helpers return an error on an invalid
+// field, text-capable and named like a credential (unless tagged
+// sensitive:"false"), or under such a map key. Numeric counters, booleans and
+// durations keep ordinary diagnostics. The checked map/tree helpers return an error on an invalid
 // structural schema and never return partial results. They inspect live values
 // without decoding default or example tags. [PrintUsage] lists every key an operator can set with its
-// environment variable, type, default and description; a default that is, or
+// environment variable, type, default, reload class and description; a default that is, or
 // could hold, a sensitive value is withheld ([Field.PrintableDefault]), as is
 // such an example tag's ([Field.PrintableExample]). [PrintTemplate] writes the
 // config file a struct describes: every key with its default, which loads back
@@ -201,4 +216,10 @@
 // merge kept, and the stages that changed it after decoding — and
 // [PrintExplain] prints it, values redacted. [JSONSchema] describes the config
 // file for editors and linters — advisory, Load being the authority.
+// [Usage] exposes the same safe catalog as values for custom documentation;
+// [PrintUsage] also supports [FormatMarkdown]. [Tree] exports raw resolved
+// values, including secrets, and [TreeFunc] lets callers apply a leaf policy
+// with the declared Field metadata. Both return detached trees. Text-marshal
+// errors propagate; opaque values with no scalar representation fail, and
+// cycles use [CYCLE] rather than promising a round trip.
 package config

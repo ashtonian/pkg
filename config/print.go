@@ -24,10 +24,11 @@ const (
 
 // Print formats accepted by [WithFormat].
 const (
-	FormatTable = "table"
-	FormatJSON  = "json"
-	FormatYAML  = "yaml"
-	FormatEnv   = "env"
+	FormatTable    = "table"
+	FormatJSON     = "json"
+	FormatYAML     = "yaml"
+	FormatEnv      = "env"
+	FormatMarkdown = "markdown"
 )
 
 // sensitivePatterns are substrings that trigger auto-detection of sensitive fields.
@@ -100,8 +101,9 @@ type printEntry struct {
 
 // PrintRedacted writes a struct's fields, keyed by koanf path, redacting
 // sensitive values. A value is sensitive when its field, or any struct, slice
-// or map field containing it, is tagged sensitive:"true", or when a name it
-// sits under matches a sensitive pattern (password, secret, token, key, ...):
+// or map field containing it, is tagged sensitive:"true", or when it can
+// hold text and a name it sits under matches a sensitive pattern (password,
+// secret, token, key, ...):
 // the leaf field's name, the name of any map or slice containing it, or any
 // map key above it. A struct field's name does not cover the struct it holds
 // — an Auth block's fields are judged by their own names — but a map key's
@@ -294,7 +296,7 @@ func (w *entryWalk) walkValue(path keyPath, v reflect.Value, s site) {
 		keys := elem.MapKeys()
 		slices.SortFunc(keys, func(a, b reflect.Value) int { return cmp.Compare(a.String(), b.String()) })
 		for _, k := range keys {
-			w.walkValue(path.key(k.String()), elem.MapIndex(k), site{named: isSensitiveName(k.String()), desc: s.desc, sensitive: s.sensitive || named, keyed: true})
+			w.walkValue(path.key(k.String()), elem.MapIndex(k), site{named: isSensitiveName(k.String()) && textCapable(elem.Type().Elem()), desc: s.desc, sensitive: s.sensitive || named, keyed: true})
 		}
 	case (elem.Kind() == reflect.Slice || elem.Kind() == reflect.Array) && !opaque(elem.Type()) && elem.Len() > 0 && holdsContainers(elem.Type().Elem()):
 		if elem.Kind() == reflect.Slice {
@@ -399,7 +401,36 @@ func taggedSensitive(tag reflect.StructTag) bool {
 // nameSensitive reports a field its name makes sensitive: one named like a
 // credential that does not opt out with sensitive:"false".
 func nameSensitive(f reflect.StructField) bool {
-	return f.Tag.Get("sensitive") != "false" && isSensitiveName(f.Name)
+	return f.Tag.Get("sensitive") != "false" && isSensitiveName(f.Name) && textCapable(f.Type)
+}
+
+// textCapable limits credential-name inference to types that can contain text.
+func textCapable(t reflect.Type) bool {
+	return textCapableType(t, map[reflect.Type]bool{})
+}
+
+func textCapableType(t reflect.Type, seen map[reflect.Type]bool) bool {
+	t = derefType(t)
+	if seen[t] {
+		return false
+	}
+	seen[t] = true
+	if reflect.PointerTo(t).Implements(textUnmarshaler) {
+		return true
+	}
+	switch t.Kind() {
+	case reflect.String, reflect.Map, reflect.Interface:
+		return true
+	case reflect.Slice, reflect.Array:
+		return t.Elem().Kind() == reflect.Uint8 || textCapableType(t.Elem(), seen)
+	case reflect.Struct:
+		for f := range t.Fields() {
+			if f.IsExported() && textCapableType(f.Type, seen) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // isSensitiveName checks if a field name contains sensitive-looking substrings.

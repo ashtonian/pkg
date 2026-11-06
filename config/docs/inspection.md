@@ -4,6 +4,8 @@
 
 - [Fields and struct tags](#fields-and-struct-tags)
 - [Printing and usage](#printing-and-usage)
+- [Canonical keys](#canonical-keys)
+- [Raw and policy-controlled trees](#raw-and-policy-controlled-trees)
 - [Diffs](#diffs)
 - [Where a value came from](#where-a-value-came-from)
 - [Config files from code](#config-files-from-code)
@@ -42,17 +44,71 @@ stored in the global metadata cache.
 
 ## Printing and usage
 
-`PrintRedacted(cfg)` writes a config as a table, JSON or YAML; `RedactedMapChecked(cfg)` returns `(map[string]string, error)` for a status page or log line, with text values keyed by path. A value is redacted when it is tagged `sensitive` or `secret`, sits inside something that is, or sits under a name containing `password`, `secret`, `token`, `key`, `credential`, `auth`, `private`, `apikey`, `api_key` or `dsn`. Mark anything the names cannot catch — a credential in a field called `URL` — `sensitive:"true"`, and take a field the names catch wrongly — `max_tokens`, `auth_enabled`, `key_prefix` — out with `sensitive:"false"`, which overrides its name only: a key named like a credential beneath it, an enclosing `sensitive:"true"`, and a `secret` tag still redact, and a `sensitive` value other than `true` or `false` fails the load with `ErrSchema`. No option prints a secret.
+`PrintRedacted(cfg)` writes a config as a table, JSON or YAML;
+`RedactedMapChecked(cfg)` returns text values keyed by path. Explicit
+`sensitive`/`secret` tags and sensitive parents protect their values.
+Credential-like names also redact text-capable types, including strings,
+bytes, maps, interfaces and text decoders. Numeric counters, booleans and
+durations do not redact from their names alone. `sensitive:"false"` exempts
+a text field such as `key_prefix` from name inference; it cannot override
+an enclosing sensitive tag or a `secret` tag.
 
-`PrintUsage[T]("APP")` lists every setting an operator can set — a collection one variable can set as a whole, and its entry patterns — with key, variable, type, default, whether it is required, description. JSON rows keep the primary variable in `env`, extra names in `also_env`, and a printable sample in `example`. Export templates comment every line of a sample. Defaults that could hold a secret are withheld.
+`Usage[T]("APP")` returns `([]UsageEntry, error)` in declaration order.
+It describes whole collection inputs and entry patterns, with environment
+names, type, description, required state, safe defaults/examples, allowed
+values, former key names and resolved reload class. `Allowed` uses the same
+`oneof` parser and withholding rules as JSON Schema. `EnvVars` preserves
+primary/alternate precedence. `Field` contains caller-owned declared
+metadata, including original tags, and is excluded from JSON.
+
+A withheld default is empty in `Default` and sets `Withheld`; JSON therefore
+omits `default` and emits `withheld: true`. The table shows `[REDACTED]`.
+JSON retains `env` and `also_env` and adds `env_vars`, `allowed`, `deprecated`
+and `reload`. Callers needing an arbitrary generator can consume this
+catalog without rebuilding the schema walk.
+
+`PrintUsage[T]("APP")` renders that catalog as a table, JSON,
+`FormatMarkdown` or an environment template. Markdown escapes cell content,
+including pipes and newlines. Tables include the resolved reload class:
 
 ```txt
-KEY       ENV           TYPE           DEFAULT     DESCRIPTION
-port      APP_PORT      int            8080        HTTP listen port
-timeout   APP_TIMEOUT   time.Duration  30s         Request timeout
-name      APP_NAME      string         (required)  Service name
-password  APP_PASSWORD  string         [REDACTED]
+KEY       ENV           TYPE           DEFAULT     RELOAD   DESCRIPTION
+port      APP_PORT      int            8080        restart  HTTP listen port
+timeout   APP_TIMEOUT   time.Duration  30s         restart  Request timeout
+name      APP_NAME      string         (required)  restart  Service name
+password  APP_PASSWORD  string         [REDACTED]  restart
 ```
+
+## Canonical keys
+
+`ParseKey` applied to `named["a.b"].port` returns field, quoted-key and field
+segments. `Key.String()` preserves that canonical spelling; `Key.Fields()`
+returns `named.port`, and `Key.LastName()` returns `port`. Index selectors
+and `[*]` patterns use distinct segment kinds. Empty or malformed keys
+return an error wrapping `ErrKey`.
+
+## Raw and policy-controlled trees
+
+`Tree(cfg)` returns `(map[string]any, error)` with resolved values, including
+secrets, detached from the config. It uses canonical config keys and scalar
+representations the decoder accepts: duration text, text-marshaled values,
+byte strings, numeric byte arrays and ordinary scalar values. Supported
+finite values load back with their sensitive values intact.
+
+`TreeFunc(cfg, leaf)` passes each leaf's actual key, declared `Field` and
+detached tree value to a policy function. Its return value replaces that
+leaf. Sensitive maps, lists and interfaces reach the callback once, whole,
+so a policy can withhold their keys too. Empty and nil containers are leaves;
+a nil callback is identity. Fields inside a dynamic interface retain the
+interface's declared metadata. A redaction callback can return `[REDACTED]`
+when `f.Sensitive && value != nil`.
+
+Cycles use the diagnostic `[CYCLE]` marker and cannot round-trip. Opaque
+values without a scalar/text representation return `ErrSchema`;
+`MarshalText` failures return with the key and no partial tree. A custom
+decoder must accept its marshaler's output. Dynamic interface values retain
+the tree's scalar forms, not arbitrary original Go type identity. Redacted
+projection can withhold a sensitive opaque value without serializing it.
 
 ## Diffs
 
@@ -101,7 +157,7 @@ db:
 
 ## JSON Schema
 
-`JSONSchema[T]()` returns a Draft 2020-12 schema of the config file — keys, types, descriptions, printable defaults and the validation rules JSON Schema can express — for editors and linters. It is advisory: `Load` is the authority, and a `required` key is not required in any one file, since a default or the environment may supply it.
+`JSONSchema[T]()` returns a Draft 2020-12 schema of the config file — keys, types, descriptions, printable defaults and the validation rules JSON Schema can express — for editors and linters. `x-reload` records the resolved reload class and `x-env-ref` marks reference fields. It is advisory: `Load` is the authority, and a `required` key is not required in any one file, since a default or the environment may supply it.
 
 ## Inspection errors
 

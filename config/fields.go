@@ -20,10 +20,15 @@ type Field struct {
 	Type reflect.Type
 	// Sensitive reports that PrintRedacted redacts the leaf's value: it, or
 	// a struct above it, is tagged sensitive:"true", or its Go field name
-	// looks like a credential (password, secret, token, key, ...) and it is
-	// not tagged sensitive:"false". A struct field's name does not cover the
+	// looks like a credential (password, secret, token, key, ...) and its type
+	// can contain text, without sensitive:"false". Plain numbers, booleans and
+	// durations are not inferred sensitive. A struct field's name does not cover the
 	// struct it holds.
 	Sensitive bool
+	// EnvRef marks a string or []string whose decoded values name environment variables.
+	EnvRef bool
+	// Reload is the inherited reload class: restart by default, live or a custom label.
+	Reload string
 	// Index is the leaf's index sequence in the config struct, for
 	// reflect.Value.FieldByIndex (or FieldByIndexErr, when a pointer on the
 	// way may be nil).
@@ -166,30 +171,28 @@ func catalogFieldsChecked(t reflect.Type, includeSections bool) ([]Field, error)
 	}
 	e.catalog.Do(func() {
 		walking := map[*schemaNode]bool{}
-		var walk func(*schemaNode, string, []int, bool)
-		walk = func(n *schemaNode, prefix string, index []int, sensitive bool) {
+		var walk func(*schemaNode, cursor)
+		walk = func(n *schemaNode, c cursor) {
 			if n.kind != nodeBranch || walking[n] {
 				return
 			}
 			walking[n] = true
 			defer delete(walking, n)
 			for _, field := range n.fields {
-				path := joinPath(prefix, field.key)
-				at := append(slices.Clone(index), field.index...)
-				tagged := sensitive || field.tagged
-				f := Field{Path: path, Tag: field.sf.Tag, Type: field.sf.Type, Sensitive: tagged || field.named, Index: at}
+				next := c.intoField(field)
+				f := next.owner
 				if field.node.kind == nodeBranch {
 					if jsonFormat(f.Tag) {
 						e.variables = append(e.variables, f)
 					}
-					walk(field.node, path, at, tagged)
+					walk(field.node, next)
 				} else {
 					e.fields = append(e.fields, f)
 					e.variables = append(e.variables, f)
 				}
 			}
 		}
-		walk(e.node, "", nil, false)
+		walk(e.node, cursor{})
 	})
 	fields := e.fields
 	if includeSections {
@@ -211,17 +214,6 @@ func catalogFieldsChecked(t reflect.Type, includeSections bool) ([]Field, error)
 		indexes = indexes[n:]
 	}
 	return out, nil
-}
-
-func joinPath(prefix, key string) string {
-	switch {
-	case key == "":
-		return prefix
-	case prefix == "":
-		return key
-	default:
-		return prefix + "." + key
-	}
 }
 
 // DefaultsFromTags returns T's `default:"value"` struct tags keyed by koanf

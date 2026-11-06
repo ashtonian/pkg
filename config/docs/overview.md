@@ -16,7 +16,7 @@ type AppConfig struct {
 }
 ```
 
-With `WithEnvPrefix("APP")`, `APP_DB_MAX_CONNS` sets the pool size; a file setting `max_conns: 0` fails validation naming `db.max_conns`; a `SecretsFrom` fetch for your store fills the password from `prod/db#password`, and no output ever shows it; and usage tables, a starter config file, a JSON Schema for editors and kongprovider's flag help all describe the three fields, with no other declaration to write.
+With `WithEnvPrefix("APP")`, `APP_DB_MAX_CONNS` sets the pool size; a file setting `max_conns: 0` fails validation naming `db.max_conns`; a `SecretsFrom` fetch for your store fills the password from `prod/db#password`, and diagnostic output withholds it; and usage tables, a starter config file, a JSON Schema for editors and kongprovider's flag help all describe the three fields, with no other declaration to write.
 
 - **The struct is the schema.** No second definition to keep in step: environment variable names, flag help, usage tables, starter files and the JSON Schema are derived from the tags, so none of them drifts from the code.
 - **Any source.** Struct-tag defaults, files, environment variables, CLI flags, and any koanf provider: Kubernetes volumes, Vault, AWS, Consul, etcd, a database table.
@@ -28,6 +28,8 @@ With `WithEnvPrefix("APP")`, `APP_DB_MAX_CONNS` sets the pool size; a file setti
 ```bash
 go get github.com/ashtonian/pkg/config
 ```
+
+Raw resolved-config exports use `Tree`; support bundles can apply their own policy with `TreeFunc`. Both include sensitive values unless the caller replaces them. See [tree projection](inspection.md#raw-and-policy-controlled-trees).
 
 ## Shared reflection metadata
 

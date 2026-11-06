@@ -27,14 +27,14 @@ type usageCfg struct {
 func TestPrintUsage_Table(t *testing.T) {
 	var buf bytes.Buffer
 	require.NoError(t, PrintUsage[usageCfg]("APP", WithWriter(&buf)))
-	want := `KEY                                ENV                                   TYPE               DEFAULT     DESCRIPTION
-port                               APP_PORT                              int                8080        HTTP listen port
-timeout                            APP_TIMEOUT                           time.Duration      30s
-name                               APP_NAME                              string             (required)
-password                           APP_PASSWORD                          string             [REDACTED]
-features[*].max_page_size          APP_FEATURES_<KEY>_MAX_PAGE_SIZE      int                50          Largest page
-labels                             APP_LABELS                            map[string]string
-labels[*]                          APP_LABELS_<KEY>                      string
+	want := `KEY                                ENV                                   TYPE               DEFAULT     RELOAD    DESCRIPTION
+port                               APP_PORT                              int                8080        restart   HTTP listen port
+timeout                            APP_TIMEOUT                           time.Duration      30s                restart
+name                               APP_NAME                              string             (required)         restart
+password                           APP_PASSWORD                          string             [REDACTED]         restart
+features[*].max_page_size          APP_FEATURES_<KEY>_MAX_PAGE_SIZE      int                50          restart   Largest page
+labels                             APP_LABELS                            map[string]string                 restart
+labels[*]                          APP_LABELS_<KEY>                      string                            restart
 `
 	assert.Equal(t, normalizeSpaces(want), normalizeSpaces(buf.String()))
 }
@@ -54,8 +54,8 @@ func TestPrintUsage_JSON(t *testing.T) {
 	require.NoError(t, json.Unmarshal(buf.Bytes(), &rows))
 	require.Len(t, rows, 7)
 	assert.Equal(t, "features[*].max_page_size", rows[0].Key)
-	assert.Equal(t, usageRow{Key: "name", Env: "APP_NAME", Type: "string", Required: true}, rows[3])
-	assert.Equal(t, usageRow{Key: "password", Env: "APP_PASSWORD", Type: "string", Default: "[REDACTED]", Sensitive: true}, rows[4])
+	assert.Equal(t, usageRow{Key: "name", Env: "APP_NAME", EnvVars: []string{"APP_NAME"}, Reload: ReloadRestart, Type: "string", Required: true}, rows[3])
+	assert.Equal(t, usageRow{Key: "password", Env: "APP_PASSWORD", EnvVars: []string{"APP_PASSWORD"}, Reload: ReloadRestart, Type: "string", Withheld: true, Sensitive: true}, rows[4])
 }
 
 // The env template exports keys with a default, and comments out the rest:
@@ -132,8 +132,8 @@ func TestPrintUsage_WithholdsCompositeDefaults(t *testing.T) {
 	var rows []usageRow
 	require.NoError(t, json.Unmarshal(buf.Bytes(), &rows))
 	require.Len(t, rows, 3)
-	assert.Equal(t, usageRow{Key: "settings", Env: "APP_SETTINGS", Type: "map[string]string", Default: "[REDACTED]"}, rows[0])
-	assert.Equal(t, usageRow{Key: "settings[*]", Env: "APP_SETTINGS_<KEY>", Type: "string"}, rows[1])
+	assert.Equal(t, usageRow{Key: "settings", Env: "APP_SETTINGS", EnvVars: []string{"APP_SETTINGS"}, Reload: ReloadRestart, Type: "map[string]string", Withheld: true}, rows[0])
+	assert.Equal(t, usageRow{Key: "settings[*]", Env: "APP_SETTINGS_<KEY>", EnvVars: []string{"APP_SETTINGS_<KEY>"}, Reload: ReloadRestart, Type: "string"}, rows[1])
 	assert.Equal(t, "web,api", rows[2].Default, "a slice of scalars has no keys to hide")
 
 	f := Fields[cfg]()[0]
@@ -170,5 +170,40 @@ func TestPrintUsage_WithholdsRemainDefaults(t *testing.T) {
 	var buf bytes.Buffer
 	require.NoError(t, PrintUsage[cfg]("APP", WithFormat(FormatJSON), WithWriter(&buf)))
 	assert.NotContains(t, buf.String(), "FAKE_SECRET_VALUE")
-	assert.Contains(t, buf.String(), `"default": "[REDACTED]"`)
+	assert.Contains(t, buf.String(), `"withheld": true`)
+}
+
+func TestUsage_CatalogMatchesJSONAndSchemaEnums(t *testing.T) {
+	type cfg struct {
+		Mode     string `koanf:"mode" default:"hello world" validate:"oneof='hello world' goodbye" alias:"old_mode" env:"LEGACY_MODE" reload:"live"`
+		Count    int    `koanf:"count" validate:"oneof=1 05 +7"`
+		Password string `koanf:"password" default:"secret-value" validate:"oneof=secret-value other-secret"`
+	}
+	rows, err := Usage[cfg]("APP")
+	require.NoError(t, err)
+	require.Len(t, rows, 3)
+	assert.Equal(t, []string{"hello world", "goodbye"}, rows[0].Allowed)
+	assert.Equal(t, []string{"APP_MODE", "LEGACY_MODE"}, rows[0].EnvVars)
+	assert.Equal(t, []string{"old_mode"}, rows[0].Deprecated)
+	assert.Equal(t, ReloadLive, rows[0].Reload)
+	assert.Equal(t, "mode", rows[0].Field.Path)
+	assert.Equal(t, []string{"1"}, rows[1].Allowed)
+	assert.Empty(t, rows[2].Default)
+	assert.Empty(t, rows[2].Allowed)
+	assert.True(t, rows[2].Withheld)
+	want, err := json.Marshal(rows)
+	require.NoError(t, err)
+	var out bytes.Buffer
+	require.NoError(t, PrintUsage[cfg]("APP", WithWriter(&out), WithFormat(FormatJSON)))
+	assert.JSONEq(t, string(want), out.String())
+	assert.NotContains(t, out.String(), "secret-value")
+	assert.NotContains(t, out.String(), "other-secret")
+	rows[0].EnvVars[0] = "changed"
+	rows[0].Allowed[0] = "changed"
+	rows[0].Field.Index[0] = 999
+	again, err := Usage[cfg]("APP")
+	require.NoError(t, err)
+	assert.Equal(t, "APP_MODE", again[0].EnvVars[0])
+	assert.Equal(t, "hello world", again[0].Allowed[0])
+	assert.Equal(t, []int{0}, again[0].Field.Index)
 }

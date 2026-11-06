@@ -33,13 +33,16 @@ The package's own errors never quote a value meant for a sensitive field. A deco
 ## Checked inspection
 
 Use these forms when callers need to distinguish an empty result from an invalid
-schema. Errors support `errors.Is(err, config.ErrSchema)`.
+schema. Schema errors support `errors.Is(err, config.ErrSchema)`; malformed keys wrap `ErrKey`.
 
 | Function | Returns | Failure behavior |
 |---|---|---|
 | `FieldsChecked[T]()` | `([]Field, error)` in declaration order | Rejects a non-struct root and invalid or ambiguous keys |
 | `MatchFields(&cfg, targets)` | `([]Field, error)` in target order | Matches addresses in one traversal; empty Path means no match; ambiguous addresses are ErrKey |
 | `RedactedMapChecked(cfg)` | `(map[string]string, error)` with text values keyed by path | Returns nil on structural errors, including reached dynamic types |
+| `Usage[T](prefix)` | `([]UsageEntry, error)` with safe printable metadata | Reports invalid schema; keeps raw struct tags only in the non-JSON Field member |
+| `ParseKey(text)` | `(Key, error)` | Reports malformed keys with ErrKey |
+| `Tree(cfg)`, `TreeFunc(cfg, leaf)` | `(map[string]any, error)` with raw or policy-transformed values | Returns no partial tree on schema/scalar/text-marshaling errors |
 | `RedactedTreeChecked(cfg)` | `(map[string]any, error)` with nested redacted values | Returns nil on structural errors; no partial tree |
 
 These functions inspect metadata without decoding default or example tags.
@@ -96,6 +99,8 @@ Load options:
 | `WithFileParser(suffix, p)` | `.yaml`, `.yml`: YAML; `.json`: JSON; others: YAML | The koanf parser for files whose names end in `suffix`; the longest matching suffix wins, `""` matches every file, and a nil parser removes one. |
 | `WithEnvPrefix(prefix)` | environment not read | Read `PREFIX_*` variables. |
 | `WithEnviron(fn)` | `os.Environ` | Where variables come from. |
+| `WithKnownVariables(names...)` | none | Claim exact names read by the application; repeated calls accumulate. |
+| `WithVariableFilter(fn)` | none | Claim otherwise unmatched names when fn returns true; last call wins, nil clears. |
 | `WithDefaults(map)` | none | Defaults by dotted path, above `default` tags; repeated calls merge. |
 | `WithBaseProvider(p, parser)` | none | A provider below the files. |
 | `WithOverrideProvider(p, parser)` | none | A provider above the environment. |
@@ -117,9 +122,11 @@ Reload options:
 | `WithPollInterval(d)` | off | Reload every `d`. |
 | `WithSignalReload(sigs...)` | off | Reload on a signal, such as `SIGHUP`. |
 | `WithApplier(a)` | none | Push owned changes into the process; see [Applying changes](reloading.md#applying-changes). |
+| `WithReloadTags()` | off | Route by inherited reload classes; restart changes wait even beneath a broad applier. Untagged schemas retain prefix routing. |
+| `WithReloadTagChecks()` | off | Enable class routing and require live-key coverage and a live key per applier before loading. |
 | `WithOnReloadSuccess(fn)` | none | Called after each successful reload. |
 | `WithOnReloadError(fn)` | none | Called after each failed reload. |
 | `WithProvenance()` | off | Record each value's origin on every load. |
 | `WithReloadLogger(l)` | the load's logger | Logger for reload events. |
 
-Print options: `WithFormat` (table, JSON, YAML, env — per printer), `WithWriter` (default `os.Stdout`), `WithSortByName`, `WithIncludeDescriptions`.
+Print options: `WithFormat` (table, JSON, YAML, Markdown, env — per printer; Markdown is supported by `PrintUsage`), `WithWriter` (default `os.Stdout`), `WithSortByName`, `WithIncludeDescriptions`.
