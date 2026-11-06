@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.0](https://github.com/ashtonian/pkg/compare/httpx/compress/brotli/v0.1.0...httpx/compress/brotli/v0.2.0) (2026-11-06)
+
+
+### Features
+
+* **httpx:** preserve JSON representations, problem details and private URLs ([caf019f](https://github.com/ashtonian/pkg/commit/caf019fbc76990e0b4ff7136ca8034e6393c7ef9))
+
 ## 0.1.0 (2026-10-15)
 
 
