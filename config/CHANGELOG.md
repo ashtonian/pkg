@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.8.1](https://github.com/ashtonian/pkg/compare/config/v0.8.0...config/v0.8.1) (2026-11-06)
+
+### Bug Fixes
+
+* Preserve duration validation bounds in usage metadata and JSON Schema annotations as exact integer nanoseconds, and render them as durations in Markdown. Conditional bounds and sensitive-field withholding remain intact; runtime validation is unchanged. ([#124](https://github.com/ashtonian/pkg/pull/124))
+
 ## [0.8.0](https://github.com/ashtonian/pkg/compare/config/v0.7.0...config/v0.8.0) (2026-11-06)
 
 ### Features and fixes
