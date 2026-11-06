@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.7.0](https://github.com/ashtonian/pkg/compare/config/v0.6.2...config/v0.7.0) (2026-11-06)
+
+### Breaking changes
+
+* Withheld usage defaults are omitted from JSON and marked explicitly. Unknown-input JSON uses lowercase field names and omits `reflect.Type`. Invalid `reload` and `envref` tags fail schema construction.
+
+### Features and fixes
+
+* Expose inherited reload metadata and opt-in restart/live routing through `WithReloadTags` and ownership checks through `WithReloadTagChecks`.
+* Add structured `Usage`, Markdown formatting, canonical `ParseKey`, and raw/per-leaf `Tree` projections with explicit serialization limits.
+* Publish accepted unknown-input reports with their snapshots and claim referenced environment variables with `envref:"true"`, exact names or a predicate before callbacks and logging.
+* Count adjacent transpositions in suggestions and apply credential-name sensitivity according to the value's type ([#114](https://github.com/ashtonian/pkg/pull/114)).
+
 ## [0.6.2](https://github.com/ashtonian/pkg/compare/config/v0.6.1...config/v0.6.2) (2026-10-19)
 
 
