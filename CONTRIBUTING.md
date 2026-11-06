@@ -16,6 +16,7 @@ The repository's `go.work` ties the published modules together, so a change to o
 | `make test-parse-sdk` | TypeScript checks, lint, shared corpora and production build |
 | `make parse-release-check` | Fresh module-archive consumer, tagged tests, README program and dependency audit |
 | `make parse-sdk-release-check` | Packed SDK consumer, TypeScript declarations, runtime subpaths and sourcemaps |
+| `make parse-sdk-registry-check` | Registry processing delay, integrity and deadline regressions |
 | `make lint` | `go vet` and staticcheck |
 | `make release-check` | Gowalker and config standalone builds plus the module archive checks below |
 | `make gowalker-release-check` | Gowalker archive downloaded into a fresh consumer, race tests, the README quick start and complete usage examples |
@@ -99,7 +100,7 @@ For an existing test server, set `PARSE_POSTGRES_DSN` and `PARSE_POSTGIS_DSN` an
 
 ## Parse SDK publication
 
-The `release-please` workflow builds `@ashtonian/parse` from a published stable `parse/vX.Y.Z` tag on main. It requires the tag, release manifest, SDK package and lockfile to agree on the version, verifies the packed consumer, and retains the exact tarball before publishing. Repeating a run accepts an existing registry version only when its package integrity matches. The final check installs that exact version from the public registry into a fresh consumer.
+The `release-please` workflow builds `@ashtonian/parse` from a published stable `parse/vX.Y.Z` tag on main. It requires the tag, release manifest, SDK package and lockfile to agree on the version, verifies the packed consumer, and retains the exact tarball before publishing. Repeating a run accepts an existing registry version only when its package integrity matches. Before the final fresh-consumer check, the workflow waits up to 15 minutes for that integrity to appear in both version and installation metadata, with 30-second request deadlines. npm scans packages before making them installable; successful publication can precede availability by several minutes. An availability timeout requires inspecting npm's processing/review status and retrying acceptance after the version becomes visible. Authentication, malformed metadata, integrity mismatches and consumer failures stop immediately; the wait never republishes the package.
 
 Configure npm trusted publishing for repository `ashtonian/pkg` and workflow filename `release-please.yml` in the package's npm settings. The workflow uses a GitHub-hosted runner and npm OIDC; it does not require a stored npm token. Creating the package for the first time requires an authenticated package owner. Dispatch the immutable tag with `publish=false`, download its retained tarball, publish those exact bytes with `npm publish <tarball> --access public --registry=https://registry.npmjs.org`, then configure the trusted publisher for subsequent releases. Follow [npm's trusted publisher requirements](https://docs.npmjs.com/trusted-publishers/).
 

@@ -109,6 +109,8 @@ jobs:
           cache: npm
           cache-dependency-path: parse/sdk/ts/package-lock.json
       - run: make test-parse-sdk
+      - name: Registry availability checks
+        run: make parse-sdk-registry-check
       - name: Packed SDK consumer
         run: make parse-sdk-release-check
   parse-benchmarks:
