@@ -5,10 +5,74 @@ import (
 	"encoding/json"
 	"fmt"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+func TestDurationBoundsPreserveRuntimeConstraints(t *testing.T) {
+	type config struct {
+		Window    time.Duration  `koanf:"window" default:"30s" validate:"min=1s,min=100ms"`
+		Quorum    time.Duration  `koanf:"quorum" default:"5s" validate:"min=100ms"`
+		Exclusive time.Duration  `koanf:"exclusive" default:"1s" validate:"gte=100ms,gt=100ms,lt=2s,lte=3s"`
+		Optional  time.Duration  `koanf:"optional" validate:"omitempty,min=1s,max=5s"`
+		Pointer   *time.Duration `koanf:"pointer" validate:"omitempty,min=1s"`
+		Before    time.Duration  `koanf:"before" default:"2s" validate:"min=1s,omitempty,max=5s"`
+		Exact     time.Duration  `koanf:"exact" default:"9007199254740993ns" validate:"eq=9007199254740993ns"`
+		Literal   time.Duration  `koanf:"literal" default:"1s" validate:"min=0x3b9aca00"`
+		Secret    time.Duration  `koanf:"secret" default:"1s" sensitive:"true" validate:"min=1s"`
+	}
+	rows, err := Usage[config]("")
+	require.NoError(t, err)
+	byKey := map[string]UsageEntry{}
+	for _, row := range rows {
+		byKey[row.Key] = row
+	}
+	assert.Equal(t, []UsageBounds{{Target: "duration", Minimum: "1000000000"}}, byKey["window"].Bounds)
+	assert.Equal(t, []UsageBounds{{Target: "duration", Minimum: "100000000"}}, byKey["quorum"].Bounds)
+	assert.Equal(t, []UsageBounds{{Target: "duration", Minimum: "100000000", Maximum: "2000000000", ExclusiveMinimum: true, ExclusiveMaximum: true}}, byKey["exclusive"].Bounds)
+	assert.Equal(t, []UsageBounds{{Target: "duration", Minimum: "1000000000", Maximum: "5000000000", ZeroAllowed: true}}, byKey["optional"].Bounds)
+	assert.Equal(t, []UsageBounds{{Target: "duration", Minimum: "1000000000", ZeroAllowed: true}}, byKey["pointer"].Bounds)
+	assert.Equal(t, []UsageBounds{{Target: "duration", Minimum: "1000000000"}, {Target: "duration", Maximum: "5000000000", ZeroAllowed: true}}, byKey["before"].Bounds)
+	assert.Equal(t, []UsageBounds{{Target: "duration", Minimum: "9007199254740993", Maximum: "9007199254740993"}}, byKey["exact"].Bounds)
+	assert.Equal(t, byKey["window"].Bounds, byKey["literal"].Bounds)
+	assert.Empty(t, byKey["secret"].Bounds)
+	for _, tt := range []struct {
+		key, value string
+		valid      bool
+	}{
+		{"window", "1s", true}, {"window", "999ms", false},
+		{"quorum", "100ms", true}, {"quorum", "99ms", false},
+		{"exclusive", "100ms", false}, {"exclusive", "101ms", true}, {"exclusive", "2s", false},
+		{"optional", "0s", true}, {"optional", "500ms", false}, {"optional", "5s", true},
+		{"before", "0s", false}, {"before", "1s", true}, {"before", "6s", false},
+	} {
+		t.Run(tt.key+"/"+tt.value, func(t *testing.T) {
+			err := CheckKey[config](t.Context(), tt.key, tt.value)
+			if tt.valid {
+				assert.NoError(t, err)
+			} else {
+				assert.Error(t, err)
+			}
+		})
+	}
+	raw, err := JSONSchema[config]()
+	require.NoError(t, err)
+	var schema map[string]any
+	require.NoError(t, json.Unmarshal(raw, &schema))
+	properties := schema["properties"].(map[string]any)
+	window := properties["window"].(map[string]any)
+	assert.Equal(t, "string", window["type"])
+	assert.NotContains(t, window, "minimum")
+	assert.Contains(t, window, "x-config-duration-bounds")
+	assert.NotContains(t, properties["secret"], "x-config-duration-bounds")
+	assert.Contains(t, string(raw), `"const": 9007199254740993`)
+	var markdown bytes.Buffer
+	require.NoError(t, PrintUsage[config]("", WithFormat(FormatMarkdown), WithWriter(&markdown)))
+	assert.Contains(t, markdown.String(), "duration &gt;= 1s")
+	assert.Contains(t, markdown.String(), "duration &gt; 100ms, duration &lt; 2s")
+}
 
 type omissionConfig struct {
 	Mode     string   `koanf:"mode" validate:"omitempty,oneof=a b"`

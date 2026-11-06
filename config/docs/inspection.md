@@ -77,13 +77,16 @@ and `reload`. Callers needing an arbitrary generator can consume this
 catalog without rebuilding the schema walk.
 
 `Bounds` is a conjunction of `UsageBounds` entries. Each names its target
-(`value`, Unicode `length`, `items` or `properties`), optional minimum/maximum
+(`value`, `duration` in nanoseconds, Unicode `length`, `items` or `properties`), optional minimum/maximum
 as exact JSON numbers, exclusive flags and whether that clause admits the
 field's zero value. Other clauses still apply. Sensitive values withhold
 numeric/value operands but may expose size bounds. Markdown includes these
 bounds. Rules after `omitempty` describe zero or the constrained value;
 earlier rules still apply. Nil pointers and collections are distinct from
 non-nil zero/empty values. Integer bounds and enums retain 64-bit precision.
+Duration operands also retain exact signed 64-bit precision; Markdown renders
+them as duration strings. For example, `validate:"min=1s"` yields a duration
+minimum of `1000000000` and displays `duration >= 1s`.
 
 A root `DefaultProvider` supplies the same effective defaults to this catalog,
 JSON Schema and templates as to loading. `Field.Tag` remains the original
@@ -181,6 +184,13 @@ db:
 ## JSON Schema
 
 `JSONSchema[T]()` returns a Draft 2020-12 schema of the config file — keys, types, descriptions, printable defaults and the validation rules JSON Schema can express — for editors and linters. `x-reload` records the resolved reload class and `x-env-ref` marks reference fields. It is advisory: `Load` is the authority, and a `required` key is not required in any one file, since a default or the environment may supply it.
+
+Duration values remain strings. `x-config-duration-bounds` annotates their
+runtime bounds with integer nanoseconds, using `minimum`, `maximum`,
+`exclusiveMinimum`, `exclusiveMaximum` and `const` as applicable. Standard
+JSON Schema validators ignore this annotation; `Load` enforces the rules.
+The shared translator preserves conditional `omitempty` clauses and withholds
+these value operands for sensitive fields.
 
 ## Inspection errors
 

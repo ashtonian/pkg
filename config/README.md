@@ -98,7 +98,8 @@ values, ownership and errors.
 `Usage[T]("APP")` supplies a safe catalog for documentation generators, and
 `PrintUsage` renders it as a table, JSON, Markdown or environment template.
 `UsageEntry.Bounds` shares JSON Schema’s constraint translation, including
-conditional `omitempty` rules. `ParseKey` reads the same grammar used by field
+conditional `omitempty` rules and duration-bound annotations in exact
+nanoseconds. `ParseKey` reads the same grammar used by field
 lookup, diffs and appliers.
 `Tree` exports resolved values, including secrets; `TreeFunc` lets a support
 bundle apply its own per-leaf policy. See [inspection](docs/inspection.md).
