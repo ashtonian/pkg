@@ -14,8 +14,9 @@ import (
 //
 // The codec is auto-detected from the response Content-Type using the global
 // codec registry. Only 2xx responses are decoded; non-2xx responses return
-// zero T with the response body intact and nil error. A body larger than
-// WithMaxResponseBytes (default DefaultMaxResponseBytes) fails with
+// zero T with the response body intact and nil error unless WithProblemErrors
+// is enabled. A body larger than WithMaxResponseBytes (default
+// DefaultMaxResponseBytes) fails with
 // ErrResponseTooLarge.
 //
 // All transport decorators on the client (retry, auth, cache, compression, etc.)
@@ -69,8 +70,9 @@ func Delete(ctx context.Context, client *http.Client, url string) (*http.Respons
 //
 // If the request has no Accept header, one is set from registered codecs.
 // Only 2xx responses are decoded; non-2xx responses return zero T with the
-// response body intact and nil error. The body is read up to
-// WithMaxResponseBytes: a larger one fails with ErrResponseTooLarge and the
+// response body intact and nil error, unless WithProblemErrors is enabled.
+// That option returns *Problem for accepted problem media types. The body is
+// read up to WithMaxResponseBytes: a larger one fails with ErrResponseTooLarge and the
 // returned response still reads the whole body, which the caller must close.
 // After decoding (or a decode error) resp.Body holds the bytes read. When T
 // is a pointer type the codec decodes into a newly allocated pointee.
@@ -90,7 +92,14 @@ func Do[T any](client *http.Client, req *http.Request, opts ...DecodeOption) (T,
 
 	// Set Accept header from registered codecs if not already set.
 	if req.Header.Get("Accept") == "" {
-		if accept := registeredAccept(); accept != "" {
+		accept := registeredAccept()
+		if cfg.problemErrors {
+			if accept != "" {
+				accept += ", "
+			}
+			accept += ContentTypeProblemJSON
+		}
+		if accept != "" {
 			req.Header.Set("Accept", accept)
 		}
 	}
@@ -100,8 +109,16 @@ func Do[T any](client *http.Client, req *http.Request, opts ...DecodeOption) (T,
 		return zero, nil, err
 	}
 
-	// Only decode 2xx responses.
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		if cfg.problemErrors && req.Method != http.MethodHead {
+			problem, err := decodeProblem(resp, cfg)
+			if err == nil {
+				return zero, resp, problem
+			}
+			if !errors.Is(err, ErrNotProblem) {
+				return zero, resp, err
+			}
+		}
 		return zero, resp, nil
 	}
 	// These successful responses carry no representation. Content-Type

@@ -6,6 +6,7 @@ import (
 	"net/url"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -64,17 +65,20 @@ var defaultSensitiveQueryParams = []string{
 // (Referer, Location, Content-Location) alike; and an error is reported with
 // every such URL in its text redacted. The hook's error is detached from the
 // original cause, which only the caller receives. Redaction is always on;
-// WithSensitiveHeaders and WithSensitiveQueryParams extend the defaults.
+// WithSensitiveHeaders and WithSensitiveQueryParams extend the defaults;
+// WithURLRedactor supplies an application policy for private URL paths.
 //
 // The guarantee covers what this transport hands its LoggingHook. Hooks of
 // other transports — MetricsHook, RetryHook, the cache's hook — receive the
 // live request, because they act on it rather than record it; do not log
 // from them.
 type LoggingTransport struct {
-	base    http.RoundTripper
-	hook    LoggingHook
-	headers map[string]struct{} // canonical header keys
-	params  map[string]struct{} // lower-case query parameter names
+	base           http.RoundTripper
+	hook           LoggingHook
+	headers        map[string]struct{} // canonical header keys
+	params         map[string]struct{} // lower-case query parameter names
+	urlRedactor    func(url.URL) (url.URL, error)
+	urlRedactorSet bool
 }
 
 // LoggingOption configures a LoggingTransport.
@@ -97,7 +101,27 @@ func NewLoggingTransport(base http.RoundTripper, hook LoggingHook, opts ...Loggi
 	for _, opt := range opts {
 		opt(t)
 	}
+	if t.urlRedactorSet && t.urlRedactor == nil {
+		return nil, invalidConfig("logging: URL redactor is nil")
+	}
 	return t, nil
+}
+
+// WithURLRedactor applies a privacy policy to every observed URL, including
+// URL-valued headers and URLs in errors. It receives a detached value after
+// built-in redaction, with RawPath cleared; edit Path to normalize private
+// components. Built-in redaction is applied again to the result and RawPath
+// is discarded, so an alternate escaped path cannot bypass the policy.
+//
+// An error, panic, opaque URL or invalid output redacts the entire observed
+// URL. Policy errors are never formatted or returned to the caller. The
+// wire request, response and original error are unchanged. The callback
+// runs synchronously without a context and must be safe for concurrent use.
+// This does not sanitize arbitrary non-URL error text.
+func WithURLRedactor(redact func(url.URL) (url.URL, error)) LoggingOption {
+	return func(t *LoggingTransport) {
+		t.urlRedactor, t.urlRedactorSet = redact, true
+	}
 }
 
 // WithSensitiveHeaders redacts the named headers in addition to the
@@ -130,8 +154,8 @@ func (t *LoggingTransport) RoundTrip(req *http.Request) (*http.Response, error) 
 	duration := time.Since(start)
 
 	if err != nil {
-		t.hook.LogResponse(snap, nil, duration, t.redactError(err, req.URL))
-		return nil, err
+		t.hook.LogResponse(snap, t.responseSnapshot(resp, snap), duration, t.redactError(err, req.URL))
+		return resp, err
 	}
 	t.hook.LogResponse(snap, t.responseSnapshot(resp, snap), duration, nil)
 	return resp, nil
@@ -154,6 +178,9 @@ func (t *LoggingTransport) requestSnapshot(req *http.Request) *http.Request {
 }
 
 func (t *LoggingTransport) responseSnapshot(resp *http.Response, req *http.Request) *http.Response {
+	if resp == nil {
+		return nil
+	}
 	return &http.Response{
 		Status:           resp.Status,
 		StatusCode:       resp.StatusCode,
@@ -220,7 +247,9 @@ func (t *LoggingTransport) redactError(err error, reqURL *url.URL) error {
 		replacements[raw] = safe
 		if unquoted, uerr := url.PathUnescape(raw); uerr == nil && unquoted != raw {
 			replacements[unquoted] = safe
+			replacements[quotedURL(unquoted)] = quotedURL(safe)
 		}
+		replacements[quotedURL(raw)] = quotedURL(safe)
 	}
 	// Visit every branch, including relative URLs in a joined error; an
 	// errors.As lookup alone sees only the first matching *url.Error.
@@ -240,6 +269,11 @@ func (t *LoggingTransport) redactError(err error, reqURL *url.URL) error {
 	if reqURL != nil {
 		replace(reqURL.String())
 	}
+	// Collect before replacing so a non-idempotent policy is never applied
+	// to its own output. Relative URLs are supplied by the error chain above.
+	for _, raw := range errorHTTPURL.FindAllString(msg, -1) {
+		replace(raw)
+	}
 	// Replace longer URLs first in a single pass: one credential-bearing
 	// URL can be a prefix of another, especially in joined relative errors.
 	raws := make([]string, 0, len(replacements))
@@ -254,11 +288,12 @@ func (t *LoggingTransport) redactError(err error, reqURL *url.URL) error {
 	if len(pairs) > 0 {
 		msg = strings.NewReplacer(pairs...).Replace(msg)
 	}
-	// Error text can mention several URLs (errors.Join, proxy failures,
-	// redirect validation) without exposing each as a *url.Error. Sanitize
-	// every HTTP URL in the final text, not just the first error in a chain.
-	msg = errorHTTPURL.ReplaceAllStringFunc(msg, t.redactURLString)
 	return errors.New(msg)
+}
+
+func quotedURL(value string) string {
+	quoted := strconv.Quote(value)
+	return quoted[1 : len(quoted)-1]
 }
 
 var errorHTTPURL = regexp.MustCompile(`(?i)https?://[^\s<>"\x60]+`)
@@ -267,17 +302,52 @@ func (t *LoggingTransport) redactURL(u *url.URL) *url.URL {
 	if u == nil {
 		return nil
 	}
-	c := *u
+	c := t.redactURLCredentials(*u)
+	if t.urlRedactor != nil {
+		c.RawPath = ""
+		if c.Opaque != "" {
+			return &url.URL{Opaque: Redacted}
+		}
+		var ok bool
+		c, ok = applyURLRedactor(t.urlRedactor, c)
+		if !ok {
+			return &url.URL{Opaque: Redacted}
+		}
+		c.RawPath = ""
+		c = t.redactURLCredentials(c)
+		if c.Opaque != "" || c.String() == "" || (c.Scheme != "" && (c.Host == "" || (c.Scheme != "http" && c.Scheme != "https"))) {
+			return &url.URL{Opaque: Redacted}
+		}
+		if _, err := url.Parse(c.String()); err != nil {
+			return &url.URL{Opaque: Redacted}
+		}
+	}
+	return &c
+}
+
+// A policy is an observational boundary: its failure cannot change whether
+// the request is sent, nor expose its input through a panic/error diagnostic.
+func applyURLRedactor(redact func(url.URL) (url.URL, error), input url.URL) (result url.URL, ok bool) {
+	defer func() {
+		if recover() != nil {
+			result, ok = url.URL{}, false
+		}
+	}()
+	result, err := redact(input)
+	return result, err == nil
+}
+
+func (t *LoggingTransport) redactURLCredentials(c url.URL) url.URL {
 	c.User = nil
 	c.Fragment, c.RawFragment = "", "" // implicit-flow tokens travel in fragments
 	if c.RawQuery == "" {
-		return &c
+		return c
 	}
 	q, err := url.ParseQuery(c.RawQuery)
 	if err != nil {
 		// An unparseable query cannot be redacted parameter by parameter.
 		c.RawQuery = Redacted
-		return &c
+		return c
 	}
 	changed := false
 	for k := range q {
@@ -289,7 +359,7 @@ func (t *LoggingTransport) redactURL(u *url.URL) *url.URL {
 	if changed {
 		c.RawQuery = q.Encode()
 	}
-	return &c
+	return c
 }
 
 // StructuredLoggingHook is a LoggingHook that captures structured data.

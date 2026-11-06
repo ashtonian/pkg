@@ -49,11 +49,34 @@ transport error for programmatic inspection. Hooks receive a detached sanitized
 error with no original cause available through `errors.Unwrap` or `errors.As`.
 
 Extend the defaults with `WithSensitiveHeaders` and
-`WithSensitiveQueryParams` for application-specific secret names. A secret
-embedded in an arbitrary path, header, context value or free-form error text
-cannot be inferred reliably: avoid putting credentials there. Do not treat
-arbitrary application data as safe to log merely because URL credentials
-are redacted.
+`WithSensitiveQueryParams` for application-specific secret names. Use
+`WithURLRedactor` for private path components such as account IDs, download
+blob IDs, notification topics or webhook tokens:
+
+```go
+transport, err := httpx.NewLoggingTransport(base, hook,
+    httpx.WithURLRedactor(func(u url.URL) (url.URL, error) {
+        u.Path = "/private-endpoint"
+        return u, nil
+    }),
+)
+```
+
+The policy receives a detached URL value with credentials already scrubbed.
+It applies to request URLs, URL-valued request and response headers, and URLs
+in detached errors, including wrapped or joined `url.Error` values. Edit
+`Path`; `RawPath` is cleared before and after the policy so escaped path
+spelling cannot expose the original. Built-in credential redaction runs again
+on the output. The live request, response and caller's original error are
+unchanged.
+
+A policy error, panic, opaque input or invalid result replaces the entire
+observed URL with `[REDACTED]`; the policy's error text is never logged or
+returned to the caller. The callback runs synchronously, may run concurrently
+for different requests, and must return promptly. Without a policy, paths
+remain visible. Arbitrary header values, context values and non-URL error
+text still need application-specific handling; URL redaction cannot infer
+which of that text is private.
 
 Metrics, retry and cache hooks receive live requests. Use them to count
 bounded categories; do not dump their headers, URLs or errors to logs. Use

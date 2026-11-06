@@ -35,6 +35,7 @@ Choose the behaviors your client needs and enable their layers individually.
 | [Outbound destination policy](docs/egress.md) | Check resolved IPs at dial time, allow operator-owned trusted prefixes, and disable proxy bypass. |
 | [Persistent cache storage](docs/caching.md#storage-failures) | Context/error-bearing storage, cancellable admission, bounded diagnostics and failure quarantine. |
 | [Streaming and response bounds](docs/requests.md) | Ordinary `client.Do` bodies for streams/downloads; opt-in bounded reads and JSON/XML decoding, with optional MessagePack/protobuf. |
+| [Problem details](docs/requests.md#problem-details) | Bounded RFC 9457 decoding, raw JSON extensions and opt-in typed problem errors; HTTP status and body ownership remain explicit. |
 | [Operational visibility](docs/security-observability.md) | Redacted request/response logging, retry/cache events and metrics hooks. |
 
 ## Failure handling and failover

@@ -16,8 +16,8 @@ import (
 
 func TestMessagePackHTTPInteroperability(t *testing.T) {
 	type message struct {
-		ID   int    `msgpack:"id"`
-		Name string `msgpack:"name"`
+		ID   int    `json:"id" msgpack:"id"`
+		Name string `json:"name" msgpack:"name"`
 	}
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Header.Get("Content-Type") != httpx.ContentTypeMsgpack {

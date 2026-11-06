@@ -4,8 +4,10 @@ import (
 	"bytes"
 	"fmt"
 	"io"
+	"mime"
 	"net/http"
 	"reflect"
+	"strings"
 )
 
 // DefaultMaxResponseBytes bounds how much of a response body the decoding
@@ -13,11 +15,13 @@ import (
 const DefaultMaxResponseBytes int64 = 10 << 20
 
 // DecodeOption configures the decoding helpers ([Get], [Post], [Put],
-// [Patch], [Do] and [DecodeResponse]).
+// [Patch], [Do], [DecodeResponse] and [DecodeProblem]).
 type DecodeOption func(*decodeConfig)
 
 type decodeConfig struct {
-	maxBytes int64
+	maxBytes          int64
+	problemErrors     bool
+	problemMediaTypes []string
 }
 
 // WithMaxResponseBytes caps the response body a helper reads before
@@ -34,6 +38,14 @@ func newDecodeConfig(opts []DecodeOption) (decodeConfig, error) {
 	}
 	if c.maxBytes < 1 {
 		return c, invalidConfig("decode: WithMaxResponseBytes must be >= 1, got %d", c.maxBytes)
+	}
+	for i, value := range c.problemMediaTypes {
+		mediaType, parameters, err := mime.ParseMediaType(value)
+		_, subtype, hasSubtype := strings.Cut(mediaType, "/")
+		if err != nil || !hasSubtype || subtype == "" || strings.Contains(mediaType, "*") || len(parameters) != 0 || (mediaType != ContentTypeJSON && !strings.HasSuffix(mediaType, "+json")) {
+			return c, invalidConfig("decode: problem media type must be a JSON media type without parameters")
+		}
+		c.problemMediaTypes[i] = mediaType
 	}
 	return c, nil
 }
