@@ -3,6 +3,7 @@
 [Documentation](README.md) · [Quick start](../README.md#quick-start) · [Go API](https://pkg.go.dev/github.com/ashtonian/pkg/config)
 
 - [Applying changes](#applying-changes)
+- [Declared reload classes](#declared-reload-classes)
 - [File watching and Kubernetes](#file-watching-and-kubernetes)
 - [A reload endpoint](#a-reload-endpoint)
 
@@ -55,7 +56,7 @@ What a reloader guarantees:
 
 - **Only a config that passed goes live.** A reload runs every source, secrets, hooks and validation before the swap. A failed reload keeps the previous config, and is reported to `WithOnReloadError`, the log and `Stats().LastError`, which carries its category.
 - **No change is lost.** Reloads are serialized; an automatic trigger arriving during a reload waits and reads the sources again. Signal a change with `SourceChanged`, not by calling `Reload` from an event handler.
-- **One moment, one snapshot.** The config, its generation (1 at boot, +1 per successful reload) and the stats are published together.
+- **One moment, one snapshot.** The config, its generation (1 at boot, +1 per successful reload), accepted `UnknownKeys` report and stats are published together. A clean publication clears the report; refused or canceled loads keep the prior one. An applier failure keeps the new publication and its report.
 - **Configs are shared.** Every reader gets the same `*T`; treat it, maps and slices included, as immutable.
 
 `WithOnReloadSuccess` callbacks run after each swap with the old and new configs and the changed keys. `NewReloaderFunc` gives a loader of your own the same lifecycle; name the files it reads with `WithWatchedFiles`. `ExampleNewReloader` shows a valid edit swapped in and an invalid one refused.
@@ -102,6 +103,40 @@ reloader, err := config.NewReloader[AppConfig](ctx, loadOpts,
 - **Published is not applied.** A config an applier failed on stays live: `Reload` returns its result together with an `*ApplyError` (`ErrApply`). `Snapshot().Appliers` reports each applier's account, and `Snapshot().Applying` whether calls are still running.
 
 Keeping the account is cheap: per applier, the reloader holds only the keys where what it applied differs from the published config, as copied values, and an applier that is up to date costs nothing.
+
+## Declared reload classes
+
+```go
+type Database struct {
+    Host     string `koanf:"host" reload:"restart"`
+    MaxConns int    `koanf:"max_conns" reload:"live"`
+}
+```
+
+`Field.Reload` resolves the nearest `reload` tag, including tags on enclosing
+structs, maps, lists and squashed fields. Without one it is `restart`.
+`live` and other nonempty single-word labels, such as `hot`, are live classes;
+only `restart` requires a restart. A shared struct type that declares its own
+reload tags at multiple schema paths fails with `ErrSchema`; place classes
+on its owning fields instead.
+
+Pass `WithReloadTags()` to enable this policy. A broad `db` applier then
+receives `db.max_conns` changes while `db.host` remains in `PendingRestart`.
+Restart changes are withheld during `ApplyInitial` too. Mixed structural
+changes still require one live owner for the structure and all its children;
+a restart child prevents the whole structural transition from applying live.
+Reverting to the applied value clears the pending change.
+
+`WithReloadTagChecks()` also enables the policy and checks that every live
+schema key has an applier and every registered applier owns a live key.
+Checks include collection patterns and run before reading sources: claiming
+one literal map key cannot cover every possible entry. An untagged schema
+retains prefix routing, including when either option is supplied. Metadata
+is available without enabling routing, so callers can keep their own policy.
+
+`RestartChanges(changes)` selects declared restart changes from a successful `Diff` for
+an offline comparison. It does not account for missing/failed appliers or
+blocked structural changes; runtime `PendingRestart` does.
 
 ## File watching and Kubernetes
 

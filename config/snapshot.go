@@ -16,6 +16,8 @@ type Snapshot[T any] struct {
 	// Generation counts publications: 1 for the initial load, and one more
 	// for each successful reload.
 	Generation uint64 `json:"generation"`
+	// UnknownKeys is the input accepted by the published load, or nil when clean.
+	UnknownKeys *UnknownKeysError `json:"unknown_keys,omitempty"`
 	// Stats is the reload history.
 	Stats ReloadStats `json:"stats"`
 	// Applying reports a published config whose appliers are still being
@@ -36,7 +38,8 @@ type Snapshot[T any] struct {
 	// key an applier returned as a restart key that differs from what it
 	// acknowledged, and every key of a structure that appeared, disappeared
 	// or turned nil without one applier owning all of it. A key returns to
-	// its old value, and it leaves the list. Empty without appliers.
+	// its old value, and it leaves the list. Empty without appliers unless
+	// WithReloadTags enables the schema's restart declarations.
 	PendingRestart []Change `json:"pending_restart,omitempty"`
 }
 
@@ -88,6 +91,7 @@ type ApplyOutcome struct {
 
 func (s Snapshot[T]) clone() Snapshot[T] {
 	s.Stats = s.Stats.clone()
+	s.UnknownKeys = s.UnknownKeys.clone()
 	if s.Provenance != nil {
 		origins := make(map[string]Origin, len(s.Provenance))
 		for k, o := range s.Provenance {

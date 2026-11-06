@@ -13,17 +13,19 @@ import (
 type ReloadOption func(*reloadOptions)
 
 type reloadOptions struct {
-	appliers     []applierHook
-	onSuccess    []successHook
-	onError      []func(trigger string, err error)
-	fileWatch    bool
-	debounce     time.Duration
-	watched      []string
-	pollInterval time.Duration
-	signals      []os.Signal
-	logger       *slog.Logger
-	loggerSet    bool // WithReloadLogger was given, nil included
-	provenance   bool
+	reloadTags      bool
+	reloadTagChecks bool
+	appliers        []applierHook
+	onSuccess       []successHook
+	onError         []func(trigger string, err error)
+	fileWatch       bool
+	debounce        time.Duration
+	watched         []string
+	pollInterval    time.Duration
+	signals         []os.Signal
+	logger          *slog.Logger
+	loggerSet       bool // WithReloadLogger was given, nil included
+	provenance      bool
 }
 
 // successHook is a [WithOnReloadSuccess] callback with its config type

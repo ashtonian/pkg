@@ -346,7 +346,7 @@ func TestEditDistance(t *testing.T) {
 	}{
 		{"", "", 0},
 		{"port", "port", 0},
-		{"prot", "port", 2},
+		{"prot", "port", 1},
 		{"ssh-key", "ssh_key", 1},
 		{"timout", "timeout", 1},
 		{"größe", "grösse", 2},

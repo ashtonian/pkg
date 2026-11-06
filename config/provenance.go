@@ -95,7 +95,7 @@ func LoadSnapshot[T any](ctx context.Context, opts ...Option) (Snapshot[T], erro
 	if err != nil {
 		return Snapshot[T]{}, err
 	}
-	return Snapshot[T]{Config: l.cfg, Provenance: l.origins}, nil
+	return Snapshot[T]{Config: l.cfg, Provenance: l.origins, UnknownKeys: l.unknown}, nil
 }
 
 // originNode is what set one value of the merged tree. It mirrors koanf's

@@ -16,16 +16,20 @@ A config is a plain struct, and its tags are the whole schema: they say how each
 | `sep` | The separator that splits a string set for a list — a default, a variable, a file's string — into elements, so an element may hold a comma: `sep:";"`. `none` keeps the string as one element. Without it, commas split, after any `WithDecodeHook` hook. | Every source and tag default, element defaults, starter files, the JSON Schema, examples. | `sep:";"` |
 | `format` | `format:"json"`: a string set for the field — a variable, a default, a file's string — is the JSON of its value, for a section, map, list or interface that one variable should set whole. The JSON's keys are checked, aliased and defaulted like any source's. | Every source and tag default; usage tables, starter files and `PrintEnv` mark and write it as JSON; the JSON Schema accepts the value or its JSON text. | `format:"json"` |
 | `env` | More variables for the field, read as written, without the prefix — a platform's `PORT`, a `DATABASE_URL`, a variable a renamed key used to have. The prefixed variable wins, then the first set in the list. | Environment loading; usage tables, starter files and `Field.EnvVars` list them. | `env:"PORT,HTTP_PORT"` |
+| `envref` | `"true"` marks a string or `[]string` whose decoded value names variables read by the application. Pointers are followed; `"false"` opts out. Other types or tag values fail with `ErrSchema`. | Unknown-variable claims, `Field.EnvRef`, JSON Schema `x-env-ref`. | `envref:"true"` |
+| `reload` | A nonempty class inherited by descendants; an inner tag overrides its parent. The default is `restart`; `live` and other labels denote live changes. | `Field.Reload`, usage, JSON Schema `x-reload`; applier routing when `WithReloadTags` is enabled. | `reload:"live"` |
 | `validate` | [go-playground/validator](https://pkg.go.dev/github.com/go-playground/validator/v10) rules. | Validation on every load and reload; `required` marks usage tables and starter files; the JSON Schema states the bounds, lengths and `oneof` enums. | `validate:"required,min=1"` |
 | `desc` | What the setting is for. | Usage tables, `PrintRedacted(..., WithIncludeDescriptions())`, starter-file comments, the JSON Schema `description`, kongprovider flag help. | `desc:"Database host"` |
 | `example` | A sample value, decoded as a default would be; one its field cannot hold fails with `ErrSchema`. Never a value the service runs with. | Starter files write it, commented out, where there is no default; usage tables and the JSON Schema `examples` show it — unless the field is sensitive. | `example:"db.internal"` |
-| `sensitive` | `"true"` redacts everywhere — on a struct, slice or map, everything inside it; `"false"` exempts a field whose name only looks like a credential's (`max_tokens`). | Printing, diffs, reload results and usage tables show `[REDACTED]`; starter files and the JSON Schema leave out its default and any rule that names a value. | `sensitive:"true"` |
+| `sensitive` | `"true"` redacts diagnostics — on a struct, slice or map, everything inside it; `"false"` exempts a field whose name only looks like a credential's (`key_prefix`). Numeric counters, booleans and durations do not redact from their names alone. | Printing, diffs, reload results and usage tables show `[REDACTED]`; starter files and the JSON Schema leave out its default and any rule that names a value. | `sensitive:"true"` |
 | `secret` | Where the value lives in your secret store (see [Secrets](secrets.md#secrets)); implies `sensitive`. | `SecretsFrom` and `WithSecretPopulator`, after decoding and before validation. | `secret:"prod/db#password"` |
 
 - Pointers are followed. A struct that decodes itself — an `encoding.TextUnmarshaler` such as `time.Time` or `netip.Addr`, or a mapstructure `Unmarshaler` — is one value, not a section.
 - Maps, slices and interfaces are values whose entries are keys of their own. An element struct's `default` tags apply to every map entry and list element a source creates, below what the source set; map defaults merge missing entries there too. An explicit `null` stays null; write `{}` for an entry that should take its defaults.
 - An embedded pointer to an unexported struct cannot be squashed: decoding cannot allocate it, so the type is refused with `ErrSchema`; embed the struct itself, or export its type.
 - Two fields of one struct may not share a key, and a key may not contain `.`, `[`, `]`, `*`, a quote, a backslash or a control character: such a type is refused with `ErrSchema` before anything loads.
+
+Credential-name inference applies to text-capable types: strings, bytes, maps, interfaces, text decoders and containers that can hold text. An explicit `sensitive:"false"` overrides only the field name; a sensitive parent or `secret` tag still wins.
 
 Every output names a value the same way:
 
@@ -38,6 +42,8 @@ Every output names a value the same way:
 
 `config.KeyOf(&cfg, &cfg.DB.MaxConns)` returns `"db.max_conns"` from the field itself, so code never spells a key that can drift from its field.
 
+`ParseKey(text)` exposes this grammar as a `Key` of typed `Segment` values. `Key.String()` returns canonical spelling, `Key.Fields()` removes collection selectors, and `Key.LastName()` returns the last field or map key. Malformed or empty keys return `ErrKey`.
+
 ## Decoding and unknown keys
 
 Values decode with mapstructure's weak typing (`"8080"` fills an `int`) plus string → `time.Duration`, comma-separated string → a slice of any element type (`"80,443"` fills a `[]int`, `"1s,2m"` a `[]time.Duration`; a `[]byte` or a slice type that decodes itself takes the string whole; a field's `sep` tag splits on its own separator instead, before any hook), `key=value` entries → a map (`"team=core,tier=1"`; a map of structs takes no string), and `encoding.TextUnmarshaler`. `WithDecodeHook` adds hooks of your own, which run first.
@@ -48,7 +54,7 @@ A key that no field decodes fails the load with `ErrValidation`, naming the key 
 unmarshaling config: configuration validation failed: keys no field of main.AppConfig decodes: server.prot (did you mean server.port?)
 ```
 
-`errors.As` reaches an `*UnknownKeysError`, whose `Keys` give each key and its `Suggestion`, for a program to report them in its own words. A suggestion is the field fewest edits away, ignoring case, within a third of the key's length (at least 2) and sharing at least one character in place; a key no field is that close to has none.
+`errors.As` reaches an `*UnknownKeysError`, whose `Keys` give each key and its `Suggestion`, for a program to report them in its own words. A suggestion is the field fewest edits away, counting an adjacent transposition as one edit and ignoring case, within a third of the key's length (at least 2) and sharing at least one character in place; a key no field is that close to has none.
 
 The check follows decoding exactly: it looks inside list elements and map entries of structs, through squashed structs, and lets through a map's own keys, anything beneath an interface, and keys a `,remain` field collects. A section no field holds is one key (`legacy`, not `legacy.old`).
 
@@ -66,6 +72,13 @@ keys no field of main.AppConfig decodes: server.prot (did you mean server.port?)
 ```
 
 Or accept some and fail on the rest, by returning a copy of `unknown` without the keys you expect — a section another program reads, a setting you removed but deployed files still carry. Keys and variables are named, never their values. Diagnostics for keys inside a sensitive map or list name only the enclosing field; this also applies to alias warnings. `WithAllowUnknownKeys()` accepts everything silently, for a file shared with another program. A field typed `any` or `map[string]any` accepts everything beneath its key while the rest of the config stays strict.
+
+A successful `LoadSnapshot` or reloader publication retains its accepted report
+in `Snapshot.UnknownKeys`; a clean publication sets it to nil. Refused or
+canceled attempts preserve the previous publication's report. Reports contain
+names and suggestions, never values, and every handler/snapshot/result receives
+a detached copy. JSON uses `unknown_keys` with `keys` and `variables` arrays of
+`key`/optional `suggestion`; the Go `reflect.Type` is omitted.
 
 ### Renaming a key
 

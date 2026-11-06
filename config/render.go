@@ -52,11 +52,11 @@ func scalarNode(v any) *outNode { return &outNode{kind: outScalar, scalar: v} }
 
 func redactedNode() *outNode { return &outNode{kind: outScalar, scalar: redactedValue, redacted: true} }
 
-// valueTree lays out a config value with every sensitive value redacted: the
-// rule PrintRedacted applies. A sensitive map, list or interface is one
-// redacted value, so the keys it holds, which may themselves be secrets, are
-// not shown. A value graph that loops back shows [CYCLE].
+// valueTree shares key and scalar projection across raw and redacted output.
+// Sensitive containers stay whole so policies can also withhold their keys.
 type valueTree struct {
+	raw      bool
+	leaf     func(string, Field, any) any
 	err      error
 	visiting map[visit]bool
 }
@@ -73,12 +73,12 @@ func (w *valueTree) root(cfg any) *outNode {
 		return &outNode{kind: outMap}
 	}
 	n := &outNode{kind: outMap}
-	w.fields(n, v, false)
+	w.fields(n, v, cursor{})
 	return n
 }
 
 // fields adds struct val's keys to mapping n, squashed structs' in place.
-func (w *valueTree) fields(n *outNode, val reflect.Value, inherited bool) {
+func (w *valueTree) fields(n *outNode, val reflect.Value, c cursor) {
 	if w.err != nil {
 		return
 	}
@@ -96,41 +96,62 @@ func (w *valueTree) fields(n *outNode, val reflect.Value, inherited bool) {
 			w.err = fmt.Errorf("%w: %w", ErrSchema, err)
 			return
 		}
-		n.entries = append(n.entries, outEntry{key: f.key, node: w.value(fv, site{named: f.named, sensitive: inherited || f.tagged})})
+		next := c.intoField(f)
+		n.entries = append(n.entries, outEntry{key: f.key, node: w.atValue(fv, next)})
 	}
 }
 
 func (w *valueTree) value(v reflect.Value, s site) *outNode {
+	c := cursor{tagged: s.sensitive, covered: s.named, owner: Field{Type: v.Type()}}
+	return w.atValue(v, c)
+}
+
+func (w *valueTree) atValue(v reflect.Value, c cursor) *outNode {
 	elem := v
+	interfaceValue := false
 	for elem.Kind() == reflect.Pointer || elem.Kind() == reflect.Interface {
+		interfaceValue = interfaceValue || elem.Kind() == reflect.Interface
 		if elem.IsNil() {
-			return &outNode{kind: outNull}
+			return w.project(c, &outNode{kind: outNull})
 		}
 		if elem.Kind() == reflect.Pointer {
 			if !w.enter(elem) {
-				return scalarNode(cycleValue)
+				return w.project(c, scalarNode(cycleValue))
 			}
 			defer delete(w.visiting, visitOf(elem))
 		}
 		elem = elem.Elem()
 	}
-	named := s.named
-	t := elem.Type()
+	c.dynamic = c.dynamic || interfaceValue
+	sensitive := c.sensitive()
+	whole := expandable(elem.Type()) || interfaceValue
+	if sensitive && whole && w.leaf != nil {
+		inner := *w
+		inner.raw = true
+		inner.leaf = nil
+		// Pointer guards are already held; descend from the dereferenced value.
+		n := inner.atValue(elem, c)
+		w.err = inner.err
+		return w.project(c, n)
+	}
 	switch {
-	case isBranch(t):
-		n := &outNode{kind: outMap}
-		w.fields(n, elem, s.sensitive || s.keyed && named)
-		return n
-	case expandable(t):
-		if (elem.Kind() == reflect.Map || elem.Kind() == reflect.Slice) && elem.IsNil() {
-			return &outNode{kind: outNull}
+	case isBranch(elem.Type()):
+		if !w.raw && sensitive && interfaceValue {
+			return redactedNode()
 		}
-		if s.sensitive || named {
-			return redactedNode() // its keys and elements may be secrets
+		n := &outNode{kind: outMap}
+		w.fields(n, elem, c)
+		return n
+	case expandable(elem.Type()):
+		if (elem.Kind() == reflect.Map || elem.Kind() == reflect.Slice) && elem.IsNil() {
+			return w.project(c, &outNode{kind: outNull})
+		}
+		if !w.raw && sensitive {
+			return redactedNode()
 		}
 		if elem.Kind() != reflect.Array {
 			if !w.enter(elem) {
-				return scalarNode(cycleValue)
+				return w.project(c, scalarNode(cycleValue))
 			}
 			defer delete(w.visiting, visitOf(elem))
 		}
@@ -139,20 +160,43 @@ func (w *valueTree) value(v reflect.Value, s site) *outNode {
 			keys := elem.MapKeys()
 			slices.SortFunc(keys, func(a, b reflect.Value) int { return cmp.Compare(a.String(), b.String()) })
 			for _, k := range keys {
-				n.entries = append(n.entries, outEntry{key: k.String(), node: w.value(elem.MapIndex(k), site{named: isSensitiveName(k.String()), keyed: true})})
+				n.entries = append(n.entries, outEntry{key: k.String(), node: w.atValue(elem.MapIndex(k), c.intoEntry(segment{kind: segKey, name: k.String()}, elem.Type().Elem()))})
+			}
+			if len(n.entries) == 0 {
+				return w.project(c, n)
 			}
 			return n
 		}
 		n := &outNode{kind: outList}
 		for i := range elem.Len() {
-			n.items = append(n.items, w.value(elem.Index(i), site{named: s.named, keyed: s.keyed}))
+			n.items = append(n.items, w.atValue(elem.Index(i), c.intoEntry(segment{kind: segIndex, index: i}, elem.Type().Elem())))
+		}
+		if len(n.items) == 0 {
+			return w.project(c, n)
 		}
 		return n
 	}
-	if s.sensitive || named || uncheckedHolder(elem) {
+	if uncheckedHolder(elem) {
+		c.owner.Sensitive = true
+	}
+	if !w.raw && c.sensitive() {
 		return redactedNode()
 	}
-	return scalarNode(scalarOf(elem))
+	value, err := scalarOf(elem)
+	if err != nil {
+		w.err = fmt.Errorf("config: projecting %s: %w", c.path.orRoot(), err)
+		return &outNode{kind: outNull}
+	}
+	return w.project(c, scalarNode(value))
+}
+
+func (w *valueTree) project(c cursor, n *outNode) *outNode {
+	if w.leaf == nil {
+		return n
+	}
+	field := cloneField(c.owner)
+	field.Sensitive = c.sensitive()
+	return scalarNode(w.leaf(c.path.String(), field, n.plain()))
 }
 
 func (w *valueTree) enter(v reflect.Value) bool {
@@ -181,45 +225,55 @@ func expandable(t reflect.Type) bool {
 
 var durationType = reflect.TypeFor[time.Duration]()
 
-// scalarOf is the value v decodes from: a duration as its text (30s), a type
-// that marshals to text as that text, and other scalars as themselves.
-// Loading the result back decodes to v.
-func scalarOf(v reflect.Value) any {
+// scalarOf uses the decoder's scalar forms; custom decoders must accept their
+// text marshaler's representation.
+func scalarOf(v reflect.Value) (any, error) {
 	if v.Type() == durationType {
-		return time.Duration(v.Int()).String()
+		return time.Duration(v.Int()).String(), nil
 	}
 	if m, ok := textMarshaler(v); ok {
-		if b, err := m.MarshalText(); err == nil {
-			return string(b)
-		}
+		b, err := m.MarshalText()
+		return string(b), err
 	}
 	switch v.Kind() {
 	case reflect.Bool:
-		return v.Bool()
+		return v.Bool(), nil
 	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
-		return v.Int()
+		return v.Int(), nil
 	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64, reflect.Uintptr:
-		return v.Uint()
+		return v.Uint(), nil
 	case reflect.Float32, reflect.Float64:
-		return v.Float()
+		return v.Float(), nil
 	case reflect.String:
-		return v.String()
+		return v.String(), nil
 	case reflect.Slice:
 		if v.Type().Elem().Kind() == reflect.Uint8 {
-			return string(v.Bytes())
+			if v.IsNil() {
+				return nil, nil
+			}
+			return string(v.Bytes()), nil
+		}
+	case reflect.Array:
+		if v.Type().Elem().Kind() == reflect.Uint8 {
+			values := make([]any, v.Len())
+			for i := range v.Len() {
+				values[i] = v.Index(i).Uint()
+			}
+			return values, nil
 		}
 	}
-	return fmt.Sprintf("%v", v.Interface())
+	return nil, fmt.Errorf("%w: %s has no scalar representation; implement encoding.TextMarshaler", ErrSchema, typeText(v.Type()))
 }
 
 func textMarshaler(v reflect.Value) (encoding.TextMarshaler, bool) {
 	if m, ok := v.Interface().(encoding.TextMarshaler); ok {
 		return m, true
 	}
-	if v.CanAddr() {
-		if m, ok := v.Addr().Interface().(encoding.TextMarshaler); ok {
-			return m, true
-		}
+	if reflect.PointerTo(v.Type()).Implements(reflect.TypeFor[encoding.TextMarshaler]()) {
+		// Map values are not addressable; use a copy for pointer-receiver methods.
+		p := reflect.New(v.Type())
+		p.Elem().Set(deepCopy(v))
+		return p.Interface().(encoding.TextMarshaler), true
 	}
 	return nil, false
 }
@@ -253,19 +307,40 @@ func (n *outNode) plain() any {
 // replaced by "[REDACTED]", as [PrintRedacted] judges it; a sensitive map,
 // list or interface is replaced whole, its keys included. Marshal it with any
 // koanf parser to show a loaded config as YAML, JSON, TOML or dotenv. Loading
-// the result back gives the same config, apart from what was redacted.
-// It returns nil on a structural schema error; use [RedactedTreeChecked]
-// to receive that error.
+// supported finite values back gives the same config, apart from redaction;
+// [Tree] describes the scalar and cycle limits. It returns nil on error;
+// use [RedactedTreeChecked] to receive the error.
 func RedactedTree(cfg any) map[string]any {
 	result, _ := RedactedTreeChecked(cfg)
 	return result
 }
 
-// RedactedTreeChecked returns [RedactedTree]'s values, or nil and ErrSchema
-// when a reached type has invalid or ambiguous keys. No partial tree is returned.
+// RedactedTreeChecked returns [RedactedTree]'s values, or nil and an error
+// when a reached type has invalid keys or no scalar representation, or its
+// text marshaler fails. No partial tree is returned.
 // It does not decode default or example tags.
 func RedactedTreeChecked(cfg any) (map[string]any, error) {
-	w := &valueTree{visiting: map[visit]bool{}}
+	return (&valueTree{visiting: map[visit]bool{}}).tree(cfg)
+}
+
+// Tree returns cfg as nested maps, lists and decoder-compatible scalars,
+// including sensitive values. The result is detached from cfg. Cycles are
+// represented as [CYCLE], as in RedactedTree, and cannot round-trip. Opaque
+// types without a scalar/text representation return ErrSchema; MarshalText
+// errors are returned with the key. Custom decoders must accept that text.
+func Tree(cfg any) (map[string]any, error) { return TreeFunc(cfg, nil) }
+
+// TreeFunc projects cfg into a tree, replacing each leaf with leaf's result.
+// The key uses the package's grammar; Field carries the declared metadata.
+// Sensitive maps, lists and interfaces are passed once, whole, including
+// their keys. Empty or nil containers are leaves. A nil callback is identity.
+// The callback receives detached tree values and may change them freely.
+func TreeFunc(cfg any, leaf func(key string, f Field, v any) any) (map[string]any, error) {
+	w := &valueTree{visiting: map[visit]bool{}, raw: true, leaf: leaf}
+	return w.tree(cfg)
+}
+
+func (w *valueTree) tree(cfg any) (map[string]any, error) {
 	n := w.root(cfg)
 	if w.err != nil {
 		return nil, w.err

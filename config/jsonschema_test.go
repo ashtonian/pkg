@@ -93,7 +93,7 @@ func TestJSONSchema_Structure(t *testing.T) {
 	assert.Equal(t, "object", limits["type"])
 	elem := limits["additionalProperties"].(map[string]any)
 	assert.Equal(t, map[string]any{"type": "integer", "default": 10.0, "minimum": 1.0, "maximum": 100.0,
-		"description": "Requests per second", "x-config-validation": []any{"min", "max"}}, prop(t, elem, "rate"),
+		"description": "Requests per second", "x-config-validation": []any{"min", "max"}, "x-reload": ReloadRestart}, prop(t, elem, "rate"),
 		"an element struct's defaults and rules")
 
 	tags := nonNull(t, prop(t, doc, "tags"))
@@ -167,7 +167,7 @@ func TestJSONSchema_SensitiveKeysCarryNoValues(t *testing.T) {
 	var doc map[string]any
 	require.NoError(t, json.Unmarshal(raw, &doc))
 	password := prop(t, doc, "password")
-	assert.Equal(t, map[string]any{"type": "string", "writeOnly": true, "minLength": 8.0, "x-config-validation": []any{"min", "oneof"}}, password)
+	assert.Equal(t, map[string]any{"type": "string", "writeOnly": true, "minLength": 8.0, "x-config-validation": []any{"min", "oneof"}, "x-reload": ReloadRestart}, password)
 	token := prop(t, doc, "token")
 	assert.Equal(t, true, token["writeOnly"])
 	assert.NotContains(t, token, "const")

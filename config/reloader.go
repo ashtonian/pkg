@@ -163,9 +163,18 @@ func newReloader[T any](ro *reloadOptions, inherited *slog.Logger, configFiles [
 		return nil, err
 	}
 	var app *application
-	if len(ro.appliers) > 0 {
+	policy := ro.reloadTags && hasReloadTags(root)
+	if len(ro.appliers) > 0 || policy {
 		if app, err = newApplication(root, ro.appliers); err != nil {
 			return nil, err
+		}
+	}
+	if app != nil {
+		app.reloadTags = policy
+		if policy && ro.reloadTagChecks {
+			if err := app.checkReloadOwnership(); err != nil {
+				return nil, err
+			}
 		}
 	}
 	paths := slices.Clone(configFiles)
@@ -220,7 +229,7 @@ func (r *Reloader[T]) loadInitial(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	snap := &Snapshot[T]{Config: cfg, Generation: 1, Provenance: l.origins}
+	snap := &Snapshot[T]{Config: cfg, Generation: 1, Provenance: l.origins, UnknownKeys: l.unknown}
 	if r.app != nil {
 		r.app.start(owed)
 		p := r.app.plan(rootValue(cfg), true)
@@ -409,7 +418,7 @@ func (r *Reloader[T]) reloadHeld(ctx context.Context, trigger string) (*ReloadRe
 	}
 
 	r.loaded = files
-	next := &Snapshot[T]{Config: cfg, Generation: prev.Generation + 1, Stats: prev.Stats, Provenance: l.origins}
+	next := &Snapshot[T]{Config: cfg, Generation: prev.Generation + 1, Stats: prev.Stats, Provenance: l.origins, UnknownKeys: l.unknown}
 	next.Stats.Attempts++
 	next.Stats.Successes++
 	next.Stats.LastTrigger = trigger
@@ -450,7 +459,7 @@ func (r *Reloader[T]) reloadHeld(ctx context.Context, trigger string) (*ReloadRe
 func (r *Reloader[T]) publishFailure(prev *Snapshot[T], trigger string, err error) {
 	next := &Snapshot[T]{
 		Config: prev.Config, Generation: prev.Generation, Stats: prev.Stats,
-		Appliers: prev.Appliers, PendingRestart: prev.PendingRestart, Provenance: prev.Provenance,
+		Appliers: prev.Appliers, PendingRestart: prev.PendingRestart, Provenance: prev.Provenance, UnknownKeys: prev.UnknownKeys,
 	}
 	next.Stats.Attempts++
 	next.Stats.Failures++
