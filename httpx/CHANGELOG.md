@@ -2,11 +2,10 @@
 
 ## [0.4.0](https://github.com/ashtonian/pkg/compare/httpx/v0.3.0...httpx/v0.4.0) (2026-11-06)
 
-
 ### Features
 
-* **httpx:** support authentication before bearer acquisition ([4c790c7](https://github.com/ashtonian/pkg/commit/4c790c71a87e077a9185eeeb8309b1ef0fded3d3)), closes [#58](https://github.com/ashtonian/pkg/issues/58)
-* **httpx:** support authentication before bearer acquisition ([#119](https://github.com/ashtonian/pkg/issues/119)) ([318dd70](https://github.com/ashtonian/pkg/commit/318dd70a1666756d308e289455dc0de557b01e7f))
+- `WithDeferredAcquisition` lets a token source wait for a 401 before acquiring its first token, preserving eager acquisition by default.
+- `TokenBinding.InitialAuth` supports origin-bound authentication while the token is empty. Bearer replay omits the initial provider's credentials. See [#119](https://github.com/ashtonian/pkg/pull/119); published consumer adoption remains tracked in [#58](https://github.com/ashtonian/pkg/issues/58).
 
 ## [0.3.0](https://github.com/ashtonian/pkg/compare/httpx/v0.2.0...httpx/v0.3.0) (2026-11-06)
 
