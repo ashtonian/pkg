@@ -15,16 +15,20 @@ does not authorize credentials for every virtual host it can route to.
 Providers support bearer tokens, refreshable bearer tokens, basic auth,
 API-key headers and your own `AuthProvider`. The refreshable provider exposes
 `Refresh()` and `SetToken()`. `Refresh()` calls the supplied callback; the
-application decides when to invoke it. Requests and 401 responses do not
-trigger token refresh or reauthentication automatically.
+application decides when to invoke it. For automatic expiry and 401 refresh,
+use `NewTokenSource` with `NewTokenTransport` or `WithTokenAuth`. The
+[authentication guide](authentication.md) covers cancellation, replay and
+source ownership.
 Prefer these providers for credentials instead of a custom decorator that
 re-adds secrets on every redirect.
 
 Bindings govern credentials the provider adds. Headers the caller already
 put on a request, cookies managed by `http.Client`, and a custom transport's
 identity remain separate concerns. Use TLS for credentials. For untrusted
-destination URLs, apply an egress/SSRF policy in the dialer/transport and
-control redirects; httpx does not provide a destination allowlist.
+destination URLs, enable `WithEgressPolicy(NewEgressPolicy(...))` on the base
+transport. It checks resolved addresses before connecting, including redirect
+connections, and disables proxies. The [egress guide](egress.md) explains trusted
+network exceptions, custom dialers and the policy's limits.
 
 When combining auth with caching, follow the [cache partitioning
 rules](caching.md#identity-and-authority). Only `Authorization` and `Cookie`

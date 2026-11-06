@@ -2,6 +2,7 @@ package httpx
 
 import (
 	"container/list"
+	"context"
 	"errors"
 	"sync"
 	"time"
@@ -73,33 +74,45 @@ func NewMemoryCache(opts ...MemoryCacheOption) (*MemoryCache, error) {
 }
 
 // Get returns the stored response for key, if it has not expired.
-func (c *MemoryCache) Get(key string) (*CachedResponse, bool) {
+func (c *MemoryCache) Get(ctx context.Context, key string) (*CachedResponse, bool, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, false, err
+	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	if err := ctx.Err(); err != nil {
+		return nil, false, err
+	}
 	el, ok := c.items[key]
 	if !ok {
-		return nil, false
+		return nil, false, nil
 	}
 	e := el.Value.(*memoryCacheEntry)
 	if !e.expires.IsZero() && time.Now().After(e.expires) {
 		c.remove(el)
-		return nil, false
+		return nil, false, nil
 	}
 	c.order.MoveToFront(el)
-	return e.value, true
+	return e.value, true, nil
 }
 
 // Set stores value under key for ttl; ttl <= 0 means no expiry (the entry
 // still leaves on eviction). Stored values must not be modified afterwards.
-func (c *MemoryCache) Set(key string, value *CachedResponse, ttl time.Duration) {
+func (c *MemoryCache) Set(ctx context.Context, key string, value *CachedResponse, ttl time.Duration) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	size := responseSize(key, value)
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	if el, ok := c.items[key]; ok {
 		c.remove(el)
 	}
 	if size > c.maxBytes {
-		return
+		return ErrCacheCapacity
 	}
 	e := &memoryCacheEntry{key: key, value: value, size: size}
 	if ttl > 0 {
@@ -110,15 +123,23 @@ func (c *MemoryCache) Set(key string, value *CachedResponse, ttl time.Duration) 
 	for c.order.Len() > c.maxEntries || c.bytes > c.maxBytes {
 		c.remove(c.order.Back())
 	}
+	return nil
 }
 
 // Delete removes key.
-func (c *MemoryCache) Delete(key string) {
+func (c *MemoryCache) Delete(ctx context.Context, key string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	if el, ok := c.items[key]; ok {
 		c.remove(el)
 	}
+	return nil
 }
 
 // Len returns the number of stored responses.

@@ -62,12 +62,14 @@ not an application throughput guarantee.
 | `client.go` | `NewClient`, `Option`s and the fixed layer order |
 | `standard.go` | `NewStandard`, `MustNewStandard` |
 | `chain.go` | `Chain`, `TransportFunc`, `With*T` layer functions, presets |
+| `egress.go` | `EgressPolicy`, `WithEgressPolicy`, resolved-address enforcement |
 | `base.go` | `NewBaseTransport` and `BaseOption`s (timeout matrix, pooling) |
 | `transport.go` | Shared interfaces (`CacheStore`, `CachedResponse`, `MetricsHook`, `LoggingHook`, `AuthProvider`), content types, `RetryCause` |
 | `origin.go` | `Origin`, `ParseOrigin`, `OriginOf` |
 | `originstate.go` | Bounded per-origin LRU registry behind the breaker and rate limiter |
 | `compression.go` | `CompressionTransport`, lazy decoding, gzip and zlib-deflate compressors |
 | `cache.go` | `CacheTransport`: keys, storage, revalidation, invalidation, `Cache-Status` |
+| `cache_store.go` | `CacheError`, storage observer and cancellable stripe admission |
 | `cachepolicy.go` | `Cache-Control` parsing, corrected age, freshness |
 | `memcache.go` | `MemoryCache`, the bounded LRU `CacheStore` |
 | `circuitbreaker.go` | `CircuitTransport`, `State`, per-origin gobreaker breakers |
@@ -75,6 +77,8 @@ not an application throughput guarantee.
 | `hedging.go` | `HedgingTransport`, `AdaptiveHedgingTransport` |
 | `limiter.go` | `LimiterTransport` |
 | `ratelimit.go` | `RateLimitTransport` |
+| `token.go` | `TokenSource`, `RefreshingTokenSource`, shared refresh and shutdown |
+| `token_transport.go` | `TokenTransport`, origin-bound credentials and one 401 replay |
 | `auth.go` | `AuthTransport`, `AuthBinding` and the providers |
 | `metrics.go` | `MetricsTransport`, `CountingHook`, `LatencyHook`, `MultiHook` |
 | `logging.go` | `LoggingTransport`, redaction, `StructuredLoggingHook`, `LogEntry` |

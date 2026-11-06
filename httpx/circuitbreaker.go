@@ -259,7 +259,7 @@ func (t *CircuitTransport) complete(done func(error), outcome error) {
 // cancellation says nothing about the origin's health; a caller's deadline
 // expiring does, and counts as a failure.
 func (t *CircuitTransport) outcome(req *http.Request, resp *http.Response, err error) error {
-	if err != nil && errors.Is(req.Context().Err(), context.Canceled) {
+	if errors.Is(err, ErrDestinationRefused) || (err != nil && errors.Is(req.Context().Err(), context.Canceled)) {
 		return errBreakerExcluded
 	}
 	if t.isFailure(resp, err) {

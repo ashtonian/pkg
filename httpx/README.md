@@ -31,6 +31,9 @@ Choose the behaviors your client needs and enable their layers individually.
 | [Stale fallback and background refresh](docs/caching.md#when-to-enable-it) | `stale-if-error` and `stale-while-revalidate` when permitted; keep useful cached reads available during upstream failures or refreshes. |
 | [Compression negotiation](docs/codecs-compression.md) | Lazy gzip/deflate decoding, optional Brotli and configurable accepted encodings; preserve encoded partial responses. Go already handles basic gzip. |
 | [Origin-bound credentials](docs/security-observability.md#origin-bound-credentials) | Add bearer, basic or API-key credentials only when the request URL and effective host match the provider's bound origin. |
+| [Automatic bearer refresh](docs/authentication.md) | Shared context-aware refresh on expiry or 401, one replay with a fresh body, and origin/Host binding. |
+| [Outbound destination policy](docs/egress.md) | Check resolved IPs at dial time, allow operator-owned trusted prefixes, and disable proxy bypass. |
+| [Persistent cache storage](docs/caching.md#storage-failures) | Context/error-bearing storage, cancellable admission, bounded diagnostics and failure quarantine. |
 | [Streaming and response bounds](docs/requests.md) | Ordinary `client.Do` bodies for streams/downloads; opt-in bounded reads and JSON/XML decoding, with optional MessagePack/protobuf. |
 | [Operational visibility](docs/security-observability.md) | Redacted request/response logging, retry/cache events and metrics hooks. |
 
@@ -133,6 +136,8 @@ exercise retries, gzip, ETags and 304 reuse against a local HTTP server.
 | Negotiate compression, preserve ranges, or add a codec | [Compression and codecs](docs/codecs-compression.md) |
 | Tune retry/backoff, circuit breakers and request budgets | [Resilience](docs/resilience.md) |
 | Handle statuses, stream bodies, or use optional typed helpers | [Requests and responses](docs/requests.md) |
+| Manage automatic bearer refresh, cancellation and replay | [Authentication](docs/authentication.md) |
+| Protect untrusted outbound destinations | [Egress policy](docs/egress.md) |
 | Bind credentials, redact logs and export metrics | [Security and observability](docs/security-observability.md) |
 | Look up every constructor, option, default and error | [Reference](docs/reference.md) |
 | Run tests, benchmarks or release checks | [Development](docs/development.md) |

@@ -313,11 +313,15 @@ func BenchmarkInternal(b *testing.B) {
 
 	b.Run("MemoryCache_Get", func(b *testing.B) {
 		cache := must(httpx.NewMemoryCache())
-		cache.Set("key", &httpx.CachedResponse{StatusCode: 200, Body: []byte("test")}, time.Hour)
+		if err := cache.Set(b.Context(), "key", &httpx.CachedResponse{StatusCode: 200, Body: []byte("test")}, time.Hour); err != nil {
+			b.Fatal(err)
+		}
 		b.ReportAllocs()
 		b.ResetTimer()
 		for range b.N {
-			cache.Get("key")
+			if _, _, err := cache.Get(b.Context(), "key"); err != nil {
+				b.Fatal(err)
+			}
 		}
 	})
 
@@ -327,7 +331,9 @@ func BenchmarkInternal(b *testing.B) {
 		b.ReportAllocs()
 		b.ResetTimer()
 		for range b.N {
-			cache.Set("key", resp, time.Hour)
+			if err := cache.Set(b.Context(), "key", resp, time.Hour); err != nil {
+				b.Fatal(err)
+			}
 		}
 	})
 
@@ -340,9 +346,15 @@ func BenchmarkInternal(b *testing.B) {
 			for pb.Next() {
 				key := fmt.Sprintf("key-%d", i%100)
 				if i%2 == 0 {
-					cache.Set(key, resp, time.Hour)
+					if err := cache.Set(b.Context(), key, resp, time.Hour); err != nil {
+						b.Error(err)
+						return
+					}
 				} else {
-					cache.Get(key)
+					if _, _, err := cache.Get(b.Context(), key); err != nil {
+						b.Error(err)
+						return
+					}
 				}
 				i++
 			}

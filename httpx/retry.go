@@ -195,7 +195,7 @@ func (t *RetryTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 		}
 
 		resp, err := t.base.RoundTrip(attemptReq)
-		if !t.retryIf(resp, err) {
+		if errors.Is(err, ErrDestinationRefused) || !t.retryIf(resp, err) {
 			return resp, err
 		}
 		if ctxErr := req.Context().Err(); ctxErr != nil {

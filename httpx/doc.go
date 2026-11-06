@@ -23,7 +23,10 @@
 // Cache-Control, Vary and identity boundaries, revalidates with ETag or
 // Last-Modified, and merges a 304 response with the stored representation.
 // [MemoryCache] bounds retained entries and bytes; [CacheStore] permits a
-// custom store. Stale reuse is opt-in through origin directives or options.
+// custom store with context and error results on every operation. Storage
+// maintenance errors preserve received responses and are observed through
+// [WithOnCacheError]; uncertain mutations disable their coordination stripe.
+// Stale reuse is opt-in through origin directives or options.
 //
 // Identity includes Authorization, Cookie, effective authority and configured
 // identity headers. Configure all additional identity headers, including
@@ -46,6 +49,19 @@
 // implement deduplication for an idempotency key to make writes safe.
 // Unknown streams are recorded as sent, within a bound, rather than buffered
 // before the transport can honor cancellation.
+//
+// # Credentials and destinations
+//
+// [NewTokenSource] serializes context-aware bearer refresh. [TokenTransport]
+// binds the source to the URL origin and effective Host, refreshes on expiry
+// or rejection, and replays a 401 once when the request body is replayable.
+// Waiters cancel independently. The source owner calls Close; transports
+// borrow sources and do not close them with idle connections.
+//
+// [WithEgressPolicy] installs an immutable [EgressPolicy] on the base dialer,
+// checks resolved IPs before connecting, and disables proxies. Trusted
+// prefixes are operator configuration. [ErrDestinationRefused] is never
+// retried or counted as a circuit failure, including with custom classifiers.
 //
 // # Optional policies and helpers
 //

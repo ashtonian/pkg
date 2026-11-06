@@ -10,6 +10,8 @@
 | [Compression and codecs](codecs-compression.md) | Wire encoding, range semantics and optional representation codecs |
 | [Resilience](resilience.md) | Safe retry/backoff, Retry-After, breakers, request budgets and hedging |
 | [Requests and responses](requests.md) | Standard requests, statuses, streaming, cancellation and optional typed helpers |
+| [Authentication](authentication.md) | Shared bearer refresh, expiry, cancellation, 401 replay and source ownership |
+| [Egress policy](egress.md) | Dial-time address checks, trusted prefixes, resolvers and proxy boundaries |
 | [Security and observability](security-observability.md) | Origin binding, redaction boundaries, metrics and troubleshooting |
 | [Reference](reference.md) | Transport constructors, complete option/default tables and sentinel errors |
 | [Development](development.md) | Test lanes, executable examples, benchmarks and releases |
