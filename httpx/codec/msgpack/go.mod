@@ -3,7 +3,7 @@ module github.com/ashtonian/pkg/httpx/codec/msgpack
 go 1.26.0
 
 require (
-	github.com/ashtonian/pkg/httpx v0.1.0
+	github.com/ashtonian/pkg/httpx v0.2.0
 	github.com/vmihailenco/msgpack/v5 v5.4.1
 )
 
