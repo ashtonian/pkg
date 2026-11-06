@@ -58,6 +58,8 @@ type fileSource struct {
 }
 
 type providerSource struct {
+	withhold bool
+	rejected func(context.Context, []KeyError) error
 	provider koanf.Provider
 	parser   koanf.Parser
 }
@@ -220,7 +222,7 @@ func WithEnviron(environ func() []string) Option {
 }
 
 // WithDefaults adds programmatic default values keyed by koanf dot-path
-// (e.g. "server.port"); they override `default` tags. Repeated calls merge,
+// (e.g. "server.port"); they override schema-owned defaults and tags. Repeated calls merge,
 // a later call winning on a shared key. The values are deep-copied when
 // WithDefaults is called — every map key and value, slice, array and pointer
 // target reachable through exported fields — so changing the caller's data
@@ -245,9 +247,14 @@ func WithDefaults(defaults map[string]any) Option {
 //
 // A provider that implements [ContextProvider] is read with the load's
 // context. A provider failing to load fails the load with [ErrSource].
-func WithBaseProvider(p koanf.Provider, parser koanf.Parser) Option {
+// Source options such as [WithInvalidEntries] apply only to this provider.
+func WithBaseProvider(p koanf.Provider, parser koanf.Parser, opts ...SourceOption) Option {
+	s := providerSource{provider: p, parser: parser}
+	for _, opt := range opts {
+		opt(&s)
+	}
 	return func(o *options) {
-		o.base = append(o.base, providerSource{provider: p, parser: parser})
+		o.base = append(o.base, s)
 	}
 }
 
@@ -256,9 +263,13 @@ func WithBaseProvider(p koanf.Provider, parser koanf.Parser) Option {
 // kongprovider package) and other operator overrides. Override providers
 // load in the order added, a later one winning on a shared key. parser,
 // [ContextProvider] and failures follow [WithBaseProvider].
-func WithOverrideProvider(p koanf.Provider, parser koanf.Parser) Option {
+func WithOverrideProvider(p koanf.Provider, parser koanf.Parser, opts ...SourceOption) Option {
+	s := providerSource{provider: p, parser: parser}
+	for _, opt := range opts {
+		opt(&s)
+	}
 	return func(o *options) {
-		o.overrides = append(o.overrides, providerSource{provider: p, parser: parser})
+		o.overrides = append(o.overrides, s)
 	}
 }
 
@@ -320,14 +331,14 @@ func acceptUnknown(context.Context, *UnknownKeysError) error { return nil }
 // decoder left unused in merged, and the variables under env's prefix that
 // named no key. Without a handler, unknown keys fail and variables are
 // ignored.
-func (o *options) unknownInput(ctx context.Context, root reflect.Type, schema *schemaNode, merged map[string]any, unused []string, env envSchema, variables []string) (*UnknownKeysError, error) {
+func (o *options) unknownInput(ctx context.Context, root reflect.Type, schema *schemaNode, merged map[string]any, unused []string, env envSchema, variables []string, additional []UnknownKey) (*UnknownKeysError, error) {
 	if o.unknownKeys == nil {
 		variables = nil
 	}
-	if len(unused) == 0 && len(variables) == 0 {
+	if len(unused) == 0 && len(variables) == 0 && len(additional) == 0 {
 		return nil, nil
 	}
-	unknown := &UnknownKeysError{Type: root}
+	unknown := &UnknownKeysError{Type: root, Keys: slices.Clone(additional)}
 	for _, name := range unused {
 		unknown.Keys = append(unknown.Keys, unusedKey(schema, merged, name))
 	}

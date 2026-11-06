@@ -34,7 +34,8 @@ import (
 //  3. Config files ([WithFile], [WithRequiredFile]), a later file winning
 //  4. Base providers ([WithBaseProvider])
 //  5. Programmatic defaults ([WithDefaults])
-//  6. Struct-tag defaults (default:"value")
+//  6. Schema-owned defaults ([DefaultProvider])
+//  7. Struct-tag defaults (default:"value")
 //
 // ctx reaches the secret populator, every post-load hook, a context-aware
 // validator and every [ContextProvider].
@@ -111,12 +112,14 @@ type fileDigests map[string][sha256.Size]byte
 // and then merged, so precedence holds whatever letter case a source used.
 // With provenance, origins records what set each value as the trees merge.
 type loader struct {
-	k       *koanf.Koanf
-	root    reflect.Type
-	schema  *schemaNode
-	sources []string
-	aliased []string    // keys sources set under an alias tag's name, by source
-	origins *originNode // nil without provenance
+	checker         *keyChecker
+	withheldUnknown []UnknownKey
+	k               *koanf.Koanf
+	root            reflect.Type
+	schema          *schemaNode
+	sources         []string
+	aliased         []string    // keys sources set under an alias tag's name, by source
+	origins         *originNode // nil without provenance
 }
 
 // add merges data, the tree of the source called name, whose values label
@@ -171,15 +174,9 @@ func (l *loader) addProvider(ctx context.Context, name string, p providerSource,
 		if err != nil {
 			return fmt.Errorf("loading %s: %w: %w", name, ErrSource, err)
 		}
-		tree, err := l.rewrite(name, data)
-		if err != nil {
-			return err
-		}
-		label, err := annotationLabeler(l.schema, tree, annotations, src)
-		if err != nil {
-			return fmt.Errorf("loading %s: %w: %w", name, ErrSource, err)
-		}
-		return l.merge(name, tree, label)
+		return l.prepareProvider(ctx, name, data, p, func(tree map[string]any) (labeler, error) {
+			return annotationLabeler(l.schema, tree, annotations, src)
+		})
 	}
 	pr := bind(ctx, p.provider)
 	var data map[string]any
@@ -198,7 +195,7 @@ func (l *loader) addProvider(ctx context.Context, name string, p providerSource,
 			return fmt.Errorf("loading %s: %w: %w", name, ErrSource, err)
 		}
 	}
-	return l.add(name, data, constant(src))
+	return l.prepareProvider(ctx, name, data, p, func(map[string]any) (labeler, error) { return constant(src), nil })
 }
 
 // addFlat adds a map keyed by dot-path.
@@ -240,23 +237,20 @@ func load[T any](ctx context.Context, o *options) (loaded[T], error) {
 		rec = newOriginRecorder(schema)
 		l.origins = rec.tree
 	}
-	fields, err := FieldsChecked[T]()
-	if err != nil {
-		return none, fmt.Errorf("loading config: %w", err)
-	}
 	files := fileDigests{}
 	var env envSchema
 	var unmatchedEnv []string
 
-	if tagDefaults := defaultsFrom(fields); len(tagDefaults) > 0 {
-		if err := l.addFlat("struct-tag defaults", tagDefaults, constant(Source{Kind: SourceTag})); err != nil {
-			return none, err
-		}
+	if err := l.addDeclaredDefaults(true); err != nil {
+		return none, err
 	}
 	if len(o.defaults) > 0 {
 		if err := l.addFlat("WithDefaults", o.defaults, constant(Source{Kind: SourceDefaults})); err != nil {
 			return none, err
 		}
+	}
+	if err := l.prepareValidation(ctx, o); err != nil {
+		return none, err
 	}
 	for i, src := range o.base {
 		if err := l.addProvider(ctx, fmt.Sprintf("base provider %d", i), src, positionSource(SourceBase, i)); err != nil {
@@ -313,26 +307,13 @@ func load[T any](ctx context.Context, o *options) (loaded[T], error) {
 	// The decoder's own record of the keys it left unused is what strict
 	// keys checks, so strictness follows decoding exactly: squash, remain,
 	// custom decoders, decode hooks and weak typing included.
-	var md mapstructure.Metadata
 	var observe func(mapstructure.DecodeHookFunc) mapstructure.DecodeHookFunc
 	if rec != nil {
 		observe = rec.observeHook
 	}
-	dec, err := mapstructure.NewDecoder(&mapstructure.DecoderConfig{
-		DecodeHook:       o.decodeHook(observe),
-		WeaklyTypedInput: true,
-		Result:           cfg,
-		TagName:          "koanf",
-		Metadata:         &md,
-	})
+	md, err := o.decodeInput(schema, merged, cfg, observe)
 	if err != nil {
-		return none, fmt.Errorf("unmarshaling config: %w", err)
-	}
-	if err := dec.Decode(merged); err != nil {
-		// A value that cannot decode into its field's type (port: abc) is
-		// invalid configuration; the error names the key, and never the
-		// value of a field that is, or could hold, a sensitive one.
-		return none, fmt.Errorf("unmarshaling config: %w: %w", ErrValidation, decodeErrors(schema, merged, err))
+		return none, fmt.Errorf("unmarshaling config: %w: %w", ErrValidation, err)
 	}
 	if len(unmatchedEnv) > 0 {
 		references, err := referencedVariables(schema, reflect.ValueOf(cfg))
@@ -346,7 +327,7 @@ func load[T any](ctx context.Context, o *options) (loaded[T], error) {
 			o.log().DebugContext(ctx, "environment variables under the prefix name no config key", "names", unmatchedEnv)
 		}
 	}
-	unknown, err := o.unknownInput(ctx, root, schema, merged, md.Unused, env, unmatchedEnv)
+	unknown, err := o.unknownInput(ctx, root, schema, merged, md.Unused, env, unmatchedEnv, l.withheldUnknown)
 	if err != nil {
 		return none, fmt.Errorf("unmarshaling config: %w: %w", ErrValidation, err)
 	}
@@ -384,8 +365,23 @@ func load[T any](ctx context.Context, o *options) (loaded[T], error) {
 		}
 	}
 
-	// Field values are never logged or put in the message: a failing field
-	// may be a credential.
+	if err := o.validateConfig(ctx, cfg); err != nil {
+		return none, err
+	}
+
+	out := loaded[T]{cfg: cfg, files: files, unknown: unknown}
+	if rec != nil {
+		if out.origins, err = rec.origins(cv); err != nil {
+			return none, fmt.Errorf("recording provenance: %w", err)
+		}
+	}
+	return out, nil
+}
+
+func (o *options) validateConfig(ctx context.Context, cfg any) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	if !o.skipValid {
 		v := o.validator
 		if v == nil {
@@ -400,14 +396,14 @@ func load[T any](ctx context.Context, o *options) (loaded[T], error) {
 			if errors.As(err, &ve) {
 				summary = fieldErrorSummary(reflect.ValueOf(cfg), ve)
 			}
-			return none, &validationError{
+			return &validationError{
 				msg:   fmt.Sprintf("validating config: %s: %s", ErrValidation, summary),
 				cause: err,
 			}
 		}
 		if v, ok := any(cfg).(Validatable); ok {
 			if err := v.Validate(); err != nil {
-				return none, &validationError{
+				return &validationError{
 					msg:   fmt.Sprintf("validating config: %s: %s", ErrValidation, err),
 					cause: err,
 				}
@@ -415,13 +411,7 @@ func load[T any](ctx context.Context, o *options) (loaded[T], error) {
 		}
 	}
 
-	out := loaded[T]{cfg: cfg, files: files, unknown: unknown}
-	if rec != nil {
-		if out.origins, err = rec.origins(cv); err != nil {
-			return none, fmt.Errorf("recording provenance: %w", err)
-		}
-	}
-	return out, nil
+	return ctx.Err()
 }
 
 // bind gives a ContextProvider the load's context.

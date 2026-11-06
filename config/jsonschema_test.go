@@ -147,7 +147,8 @@ func TestJSONSchema_Rules(t *testing.T) {
 	assert.Equal(t, []any{"eu", "us"}, prop(t, doc, "region")["enum"])
 
 	mode := prop(t, doc, "mode")
-	assert.NotContains(t, mode, "minLength", "omitempty exempts an empty value, which JSON Schema cannot say")
+	assert.NotContains(t, mode, "minLength", "the bound applies only to nonempty strings")
+	assert.Contains(t, mode, "allOf")
 	assert.Equal(t, []any{"omitempty", "min"}, mode["x-config-validation"])
 
 	tags := nonNull(t, prop(t, doc, "tags"))

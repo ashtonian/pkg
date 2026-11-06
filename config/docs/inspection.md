@@ -53,10 +53,19 @@ durations do not redact from their names alone. `sensitive:"false"` exempts
 a text field such as `key_prefix` from name inference; it cannot override
 an enclosing sensitive tag or a `secret` tag.
 
+All redacted renderers also apply `RedactText` to text and byte values. It
+removes recognizable URL credentials, PEM blocks, credential key/value pairs,
+Basic/Bearer credentials and JWTs while keeping non-secret context. A URL
+with a password keeps its username, host and path; userinfo with no password
+is withheld because it may itself be a token. `RedactText` exposes the same
+policy for environment listings or logs. Shape matching is not a complete
+secret detector; retain explicit sensitivity declarations. Raw `Tree` and
+`TreeFunc` do not apply it.
+
 `Usage[T]("APP")` returns `([]UsageEntry, error)` in declaration order.
 It describes whole collection inputs and entry patterns, with environment
 names, type, description, required state, safe defaults/examples, allowed
-values, former key names and resolved reload class. `Allowed` uses the same
+values, bounds, former key names and resolved reload class. `Allowed` uses the same
 `oneof` parser and withholding rules as JSON Schema. `EnvVars` preserves
 primary/alternate precedence. `Field` contains caller-owned declared
 metadata, including original tags, and is excluded from JSON.
@@ -66,6 +75,23 @@ omits `default` and emits `withheld: true`. The table shows `[REDACTED]`.
 JSON retains `env` and `also_env` and adds `env_vars`, `allowed`, `deprecated`
 and `reload`. Callers needing an arbitrary generator can consume this
 catalog without rebuilding the schema walk.
+
+`Bounds` is a conjunction of `UsageBounds` entries. Each names its target
+(`value`, `duration` in nanoseconds, Unicode `length`, `items` or `properties`), optional minimum/maximum
+as exact JSON numbers, exclusive flags and whether that clause admits the
+field's zero value. Other clauses still apply. Sensitive values withhold
+numeric/value operands but may expose size bounds. Markdown includes these
+bounds. Rules after `omitempty` describe zero or the constrained value;
+earlier rules still apply. Nil pointers and collections are distinct from
+non-nil zero/empty values. Integer bounds and enums retain 64-bit precision.
+Duration operands also retain exact signed 64-bit precision; Markdown renders
+them as duration strings. For example, `validate:"min=1s"` yields a duration
+minimum of `1000000000` and displays `duration >= 1s`.
+
+A root `DefaultProvider` supplies the same effective defaults to this catalog,
+JSON Schema and templates as to loading. `Field.Tag` remains the original
+struct metadata. Credential-bearing defaults are withheld, so a template
+leaves them to the declared default instead of loading a redaction marker.
 
 `PrintUsage[T]("APP")` renders that catalog as a table, JSON,
 `FormatMarkdown` or an environment template. Markdown escapes cell content,
@@ -159,6 +185,13 @@ db:
 
 `JSONSchema[T]()` returns a Draft 2020-12 schema of the config file — keys, types, descriptions, printable defaults and the validation rules JSON Schema can express — for editors and linters. `x-reload` records the resolved reload class and `x-env-ref` marks reference fields. It is advisory: `Load` is the authority, and a `required` key is not required in any one file, since a default or the environment may supply it.
 
+Duration values remain strings. `x-config-duration-bounds` annotates their
+runtime bounds with integer nanoseconds, using `minimum`, `maximum`,
+`exclusiveMinimum`, `exclusiveMaximum` and `const` as applicable. Standard
+JSON Schema validators ignore this annotation; `Load` enforces the rules.
+The shared translator preserves conditional `omitempty` clauses and withholds
+these value operands for sensitive fields.
+
 ## Inspection errors
 
 `FieldsChecked[T]()` returns `([]Field, error)` and reports invalid or ambiguous
@@ -179,4 +212,5 @@ These inspection functions read field metadata without decoding `default`
 or `example` tags. Printing a live value therefore does not invoke a custom
 unmarshaler for its examples. Invalid sensitivity tags still redact
 conservatively. Loading, templates and schema generation validate their tags;
-templates and schema generation also decode the values they show.
+templates and schema generation also decode the values they show. `Usage`
+also decodes defaults when the root implements `DefaultProvider`.

@@ -5,9 +5,6 @@ import (
 	"reflect"
 	"slices"
 	"strings"
-
-	"github.com/go-viper/mapstructure/v2"
-	"github.com/knadh/koanf/providers/confmap"
 )
 
 // PrintTemplate writes a config file for T, built from its struct: the file an
@@ -25,7 +22,8 @@ import (
 // Loading the file gives the same config as loading no source at all, and
 // strict keys accept it. [WithFormat] selects FormatYAML (the default) or
 // FormatJSON, which has no comments and leaves the commented keys out;
-// [WithWriter] applies. Defaults are decoded as Load decodes them without
+// [WithWriter] applies. Tag and [DefaultProvider] defaults are decoded as Load
+// decodes them without
 // [WithDecodeHook]: a default only a custom hook can decode is an
 // ErrValidation error.
 func PrintTemplate[T any](envPrefix string, opts ...PrintOption) error {
@@ -57,44 +55,26 @@ func templateOf(t reflect.Type, prefix string) (*outNode, error) {
 	if err != nil {
 		return nil, err
 	}
-	defaults, err := decodedDefaults(t)
+	defaults, err := readDefaults(t, true)
 	if err != nil {
 		return nil, err
 	}
-	b := &templateBuilder{walking: map[reflect.Type]bool{}}
+	b := &templateBuilder{defaults: defaults, walking: map[reflect.Type]bool{}}
 	n := &outNode{kind: outMap}
-	if err := b.branch(n, root, cursor{}, defaults, prefix, false); err != nil {
+	if err := b.branch(n, root, cursor{}, defaults.value, prefix, false); err != nil {
 		return nil, err
 	}
 	return n, nil
 }
 
-// decodedDefaults decodes t's `default` tags into a new t, as the lowest
-// source of a load decodes them.
 func decodedDefaults(t reflect.Type) (reflect.Value, error) {
-	tree, err := confmap.Provider(defaultsFrom(fieldsOf(t)), ".").Read()
-	if err != nil {
-		return reflect.Value{}, fmt.Errorf("reading the default tags of %s: %w: %w", typeText(t), ErrSource, err)
-	}
-	out := reflect.New(t)
-	dec, err := mapstructure.NewDecoder(&mapstructure.DecoderConfig{
-		DecodeHook:       (&options{}).decodeHook(nil),
-		WeaklyTypedInput: true,
-		Result:           out.Interface(),
-		TagName:          "koanf",
-	})
-	if err != nil {
-		return reflect.Value{}, err
-	}
-	if err := dec.Decode(tree); err != nil {
-		root, _ := schemaOf(t)
-		return reflect.Value{}, fmt.Errorf("decoding the default tags of %s: %w: %w", typeText(t), ErrValidation, decodeErrors(root, tree, err))
-	}
-	return out.Elem(), nil
+	d, err := readDefaults(t, false)
+	return d.value, err
 }
 
 type templateBuilder struct {
-	walking map[reflect.Type]bool // the structs on the current path: a recursive type stops
+	defaults declaredDefaults
+	walking  map[reflect.Type]bool // the structs on the current path: a recursive type stops
 }
 
 // branch adds node's keys to n from val, a node value holding defaults, and
@@ -123,6 +103,11 @@ func (b *templateBuilder) branch(n *outNode, node *schemaNode, c cursor, val ref
 		e := outEntry{key: f.key}
 		if desc := f.sf.Tag.Get("desc"); desc != "" {
 			e.comments = strings.Split(desc, "\n")
+		}
+		if f.node.kind == nodeBranch && b.defaults.has(fc.path) && derefValue(fv).Kind() != reflect.Struct {
+			e.node = &outNode{kind: outNull}
+			n.entries = append(n.entries, e)
+			continue
 		}
 		if f.node.kind == nodeBranch {
 			if jsonFormat(f.sf.Tag) {
@@ -154,9 +139,12 @@ func (n *outNode) live() bool {
 // placeholder or example.
 func (b *templateBuilder) leaf(f *schemaField, c cursor, fv reflect.Value, env string, crossed bool) (*outNode, bool, error) {
 	printable := !c.sensitive() && !mayHoldSensitive(f.sf.Type, map[reflect.Type]bool{})
-	if _, has := f.sf.Tag.Lookup("default"); has && printable {
+	if _, has := f.sf.Tag.Lookup("default"); (has || b.defaults.has(c.path)) && printable {
 		w := &valueTree{visiting: map[visit]bool{}}
 		n := w.value(fv, site{})
+		if n.hasRedaction() {
+			return nil, true, w.err
+		}
 		return n, false, w.err
 	}
 	if ex, has := f.sf.Tag.Lookup("example"); has && printable {

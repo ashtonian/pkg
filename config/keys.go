@@ -28,6 +28,7 @@ type keyWalk struct {
 	twice   []string
 	aliased []string // "old.key (now new.key)"
 	notJSON []string // "key (line n)"; never the text
+	unknown []UnknownKey
 }
 
 // tree rewrites the top level of a source.
@@ -98,6 +99,19 @@ func (w *keyWalk) structMap(t reflect.Type, v reflect.Value, path keyPath) any {
 	for _, k := range slices.Sorted(maps.Keys(written)) {
 		f, alias := n.lookup(k)
 		if f == nil {
+			if !acceptsUnknownKeys(t) {
+				at := path.field(k)
+				if !validFieldKey(k) {
+					at = path.key(k)
+				}
+				u := UnknownKey{Key: diagnosticPath(w.schema, at).String()}
+				if u.Key == at.String() {
+					if closest := closestField(n, k); closest != "" {
+						u.Suggestion = path.field(closest).String()
+					}
+				}
+				w.unknown = append(w.unknown, u)
+			}
 			out.SetMapIndex(reflect.ValueOf(k).Convert(out.Type().Key()), written[k])
 			continue
 		}
@@ -125,6 +139,7 @@ func (w *keyWalk) structMap(t reflect.Type, v reflect.Value, path keyPath) any {
 			parsed, err := parseJSON([]byte(s))
 			if err != nil {
 				w.notJSON = append(w.notJSON, w.jsonProblem(path.field(key), s, err))
+				out.SetMapIndex(reflect.ValueOf(key).Convert(out.Type().Key()), raw)
 				continue
 			}
 			raw = reflect.ValueOf(&parsed).Elem() // JSON null stays an explicit null

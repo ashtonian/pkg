@@ -201,12 +201,13 @@ A provider runs only when both the request URL's origin and its effective `Host`
 ### Automatic bearer refresh
 
 `NewTokenSource(token, expiry, refresh, opts...)` returns a
-`*RefreshingTokenSource`. Empty tokens acquire on first use; zero expiry is
+`*RefreshingTokenSource`. Empty tokens acquire on first use by default; zero expiry is
 unknown. The callback receives a bounded context and must honor cancellation.
 `TokenTransport` borrows its sources; their owner calls `Close`.
 
 | Option | Type | Default | Description |
 |---|---|---|---|
+| `WithDeferredAcquisition()` | none | disabled | An empty initial token waits for explicit refresh or a 401; active refreshes are still joined |
 | `WithRefreshMargin(d)` | `time.Duration` | `DefaultRefreshMargin` (30 s) | Nonnegative early refresh margin, capped at 10% of remaining lifetime on installation; zero disables early refresh |
 | `WithRefreshTimeout(d)` | `time.Duration` | `DefaultRefreshTimeout` (30 s) | Positive timeout for shared refresh work, independent of caller wait deadlines |
 | `WithTokenClock(now)` | `func() time.Time` | `time.Now` | Clock for expiry and margin; nil is rejected |
@@ -216,6 +217,10 @@ unknown. The callback receives a bounded context and must honor cancellation.
 token returned with an error is retained, while the error reaches the current
 waiters; this preserves rotated credentials after persistence failure.
 `TokenSource` requires concurrent, context-aware `Token` and `Refresh` methods.
+`Token` may return empty before acquisition; successful `Refresh` must be nonempty.
+`TokenBinding.InitialAuth` optionally supplies a borrowed concurrent `AuthProvider`
+while `Token` returns empty without error. Its credentials obey origin/authority
+binding and are excluded from bearer replay.
 The supplied source serializes callbacks and cancels shared work when every
 waiter leaves. See [authentication](authentication.md) for replay and ownership.
 

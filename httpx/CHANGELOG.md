@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.0](https://github.com/ashtonian/pkg/compare/httpx/v0.3.0...httpx/v0.4.0) (2026-11-06)
+
+### Features
+
+- `WithDeferredAcquisition` lets a token source wait for a 401 before acquiring its first token, preserving eager acquisition by default.
+- `TokenBinding.InitialAuth` supports origin-bound authentication while the token is empty. Bearer replay omits the initial provider's credentials. See [#119](https://github.com/ashtonian/pkg/pull/119); published consumer adoption remains tracked in [#58](https://github.com/ashtonian/pkg/issues/58).
+
 ## [0.3.0](https://github.com/ashtonian/pkg/compare/httpx/v0.2.0...httpx/v0.3.0) (2026-11-06)
 
 ### Breaking changes

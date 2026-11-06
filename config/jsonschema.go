@@ -5,10 +5,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"maps"
+	"math"
 	"reflect"
 	"regexp"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/go-viper/mapstructure/v2"
 )
@@ -36,8 +38,14 @@ const JSONSchemaDraft = "https://json-schema.org/draft/2020-12/schema"
 //     translated.
 //   - A sensitive key is writeOnly. It, and any key that could hold a
 //     sensitive value, has no default, enum or const — an operand can
-//     itself be a credential — though its size bounds remain.
-//   - A duration is a string such as "30s"; a type that decodes itself is
+//     itself be a credential — though its size bounds remain. Numeric value
+//     bounds on sensitive fields are withheld too.
+//   - Rules after omitempty apply to nonzero values. The zero alternative
+//     follows the declared type, preserving nil versus non-nil empty values;
+//     earlier rules still apply. dive and keys stop translation.
+//   - A duration is a string such as "30s". Its x-config-duration-bounds
+//     annotation describes runtime bounds in integer nanoseconds; JSON Schema
+//     validators do not enforce that annotation. A type that decodes itself is
 //     described by its Go type in x-config-type, unconstrained, or as a
 //     string when it decodes from text.
 //   - A struct a type holds within itself is a $defs entry, referenced by
@@ -52,11 +60,12 @@ func JSONSchema[T any]() (json.RawMessage, error) {
 		return nil, err
 	}
 	g := &schemaGen{defs: map[string]any{}, recursive: recursiveNodes(root), names: map[*schemaNode]string{}, taken: map[string]bool{}}
-	defaults, err := decodedDefaults(derefType(t))
+	defaults, err := readDefaults(t, true)
 	if err != nil {
 		return nil, err
 	}
-	doc := g.object(root, cursor{}, defaults)
+	g.defaults = defaults
+	doc := g.object(root, cursor{}, defaults.value)
 	if g.err != nil {
 		return nil, g.err
 	}
@@ -73,6 +82,7 @@ func JSONSchema[T any]() (json.RawMessage, error) {
 }
 
 type schemaGen struct {
+	defaults  declaredDefaults
 	err       error
 	defs      map[string]any
 	recursive map[*schemaNode]bool
@@ -205,9 +215,12 @@ func (g *schemaGen) field(f *schemaField, c cursor, fv reflect.Value) map[string
 	if c.sensitive() {
 		s["writeOnly"] = true
 	}
-	if _, has := f.sf.Tag.Lookup("default"); has && !sensitive && f.node.kind != nodeBranch && fv.IsValid() {
+	if _, has := f.sf.Tag.Lookup("default"); (has || g.defaults.has(c.path)) && !sensitive && (f.node.kind != nodeBranch || derefValue(fv).Kind() != reflect.Struct) && fv.IsValid() {
 		w := &valueTree{visiting: map[visit]bool{}}
-		s["default"] = w.value(fv, site{}).plain()
+		node := w.value(fv, site{})
+		if !node.hasRedaction() {
+			s["default"] = node.plain()
+		}
 		if g.err == nil {
 			g.err = w.err
 		}
@@ -221,7 +234,7 @@ func (g *schemaGen) field(f *schemaField, c cursor, fv reflect.Value) map[string
 			}
 		}
 	}
-	rules(s, f.node, f.sf.Tag.Get("validate"), !sensitive)
+	rules(s, f.node, f.sf.Tag.Get("validate"), !sensitive, f.sf.Type)
 	return s
 }
 
@@ -338,16 +351,19 @@ func leafSchema(t reflect.Type) map[string]any {
 // rules adds what a `validate` tag says that JSON Schema can state, and
 // lists every rule's name. Without values, rules that name a value — an
 // enum, a const — are left out.
-func rules(s map[string]any, n *schemaNode, tag string, values bool) {
+func rules(s map[string]any, n *schemaNode, tag string, values bool, declared reflect.Type) {
 	if tag == "" {
 		return
 	}
 	var names []string
 	translate := true
+	conditional := false
 	target := s
 	if alts, ok := s["anyOf"].([]any); ok {
-		target = alts[0].(map[string]any) // the non-null branch
+		target = alts[0].(map[string]any)
 	}
+	leading := target
+	pointerRule := false
 	for rule := range strings.SplitSeq(tag, ",") {
 		name, param, _ := strings.Cut(rule, "=")
 		if name == "" {
@@ -355,14 +371,68 @@ func rules(s map[string]any, n *schemaNode, tag string, values bool) {
 		}
 		names = append(names, name)
 		switch name {
-		case "omitempty", "dive", "keys", "endkeys":
-			// An empty value is exempt, or what follows is the elements':
-			// leave the rest untranslated.
+		case "dive", "keys", "endkeys":
 			translate = false
 			continue
+		case "omitempty":
+			if !translate {
+				continue
+			}
+			if !conditional {
+				leading = maps.Clone(target)
+			}
+			zero, ok := omissionSchema(declared)
+			if !ok {
+				translate = false
+				continue
+			}
+			tail := map[string]any{}
+			for _, key := range []string{"type", "x-config-type"} {
+				if v, ok := target[key]; ok {
+					tail[key] = v
+				}
+			}
+			// Only the following rules are conditional; earlier constraints remain
+			// conjoined with this alternative.
+			clauses, _ := target["allOf"].([]any)
+			target["allOf"] = append(clauses, map[string]any{"anyOf": []any{zero, tail}})
+			target = tail
+			conditional = true
+			continue
 		}
-		if translate && !strings.Contains(rule, "|") && (values || name != "oneof" && name != "eq") {
-			translateRule(target, n, name, param)
+		if !translate || strings.Contains(rule, "|") {
+			continue
+		}
+		if name == "required" {
+			if zero, ok := omissionSchema(declared); ok && strings.Contains(tag, "omitempty") {
+				if conditional {
+					target["not"] = zero
+				} else {
+					s["not"] = zero
+				}
+			}
+			continue
+		}
+		typ, _ := target["type"].(string)
+		if !values && (name == "oneof" || name == "eq" || typ == "integer" || typ == "number" || target["x-config-type"] == "time.Duration") {
+			continue
+		}
+		before := maps.Clone(target)
+		translateRule(target, n, name, param)
+		if !conditional && !reflect.DeepEqual(before, target) {
+			pointerRule = true
+		}
+	}
+	if nullable(declared) {
+		rejectNil := requiredBeforeOmission(tag) || declared.Kind() == reflect.Pointer && pointerRule
+		switch declared.Kind() {
+		case reflect.Map:
+			rejectNil = rejectNil || !matchesConstraint(leading, map[string]any{})
+		case reflect.Slice:
+			rejectNil = rejectNil || !matchesConstraint(leading, []any{})
+		}
+		if rejectNil {
+			s["not"] = map[string]any{"const": nil}
 		}
 	}
 	if len(names) > 0 {
@@ -373,6 +443,29 @@ func rules(s map[string]any, n *schemaNode, tag string, values bool) {
 // translateRule states one rule in JSON Schema terms where its meaning on
 // n's kind of value is plain.
 func translateRule(s map[string]any, n *schemaNode, name, param string) {
+	if s["x-config-type"] == "time.Duration" {
+		switch name {
+		case "min", "max", "gte", "lte", "gt", "lt", "len", "eq":
+		default:
+			return
+		}
+		duration, err := time.ParseDuration(param)
+		if err != nil {
+			// The validator also accepts integer nanoseconds in Go literal syntax.
+			value, parseErr := strconv.ParseInt(param, 0, 64)
+			if parseErr != nil {
+				return
+			}
+			duration = time.Duration(value)
+		}
+		bounds, _ := s["x-config-duration-bounds"].(map[string]any)
+		if bounds == nil {
+			bounds = map[string]any{"type": "integer"}
+		}
+		translateRule(bounds, n, name, strconv.FormatInt(int64(duration), 10))
+		s["x-config-duration-bounds"] = bounds
+		return
+	}
 	kind := ""
 	switch t, _ := s["type"].(string); {
 	case t == "integer" || t == "number":
@@ -397,9 +490,34 @@ func translateRule(s map[string]any, n *schemaNode, name, param string) {
 		s["const"] = param // a string's eq is its value, not its length
 		return
 	}
-	value, err := strconv.ParseFloat(param, 64)
-	if err != nil {
-		return
+	var v any
+	if s["type"] == "integer" {
+		if n.typ.Kind() >= reflect.Uint && n.typ.Kind() <= reflect.Uintptr {
+			value, err := strconv.ParseUint(param, 10, 64)
+			if err != nil {
+				return
+			}
+			v = value
+		} else {
+			value, err := strconv.ParseInt(param, 10, 64)
+			if err != nil {
+				return
+			}
+			v = value
+		}
+	} else {
+		value, err := strconv.ParseFloat(param, 64)
+		if err != nil || math.IsNaN(value) || math.IsInf(value, 0) {
+			return
+		}
+		whole := value == float64(int64(value))
+		if kind != "number" && (!whole || value < 0) {
+			return
+		}
+		v = value
+		if whole {
+			v = int64(value)
+		}
 	}
 	bounds := map[string][2]string{
 		"number": {"minimum", "maximum"},
@@ -407,32 +525,25 @@ func translateRule(s map[string]any, n *schemaNode, name, param string) {
 		"array":  {"minItems", "maxItems"},
 		"object": {"minProperties", "maxProperties"},
 	}[kind]
-	whole := value == float64(int64(value))
-	if kind != "number" && (!whole || value < 0) {
-		return
-	}
-	var v any = value
-	if whole {
-		v = int64(value)
-	}
 	switch name {
 	case "min", "gte":
-		s[bounds[0]] = v
+		setBound(s, bounds[0], v, true)
 	case "max", "lte":
-		s[bounds[1]] = v
+		setBound(s, bounds[1], v, false)
 	case "len", "eq":
 		if kind == "number" {
 			s["const"] = v
 		} else {
-			s[bounds[0]], s[bounds[1]] = v, v
+			setBound(s, bounds[0], v, true)
+			setBound(s, bounds[1], v, false)
 		}
 	case "gt":
 		if kind == "number" {
-			s["exclusiveMinimum"] = v
+			setBound(s, "exclusiveMinimum", v, true)
 		}
 	case "lt":
 		if kind == "number" {
-			s["exclusiveMaximum"] = v
+			setBound(s, "exclusiveMaximum", v, false)
 		}
 	}
 }

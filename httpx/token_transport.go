@@ -1,6 +1,7 @@
 package httpx
 
 import (
+	"errors"
 	"fmt"
 	"net/http"
 )
@@ -9,14 +10,17 @@ import (
 type TokenBinding struct {
 	URL    string
 	Source TokenSource
+	// InitialAuth applies only when Source.Token returns an empty token without
+	// error. It is optional and is never applied to a bearer replay.
+	InitialAuth AuthProvider
 }
 
 // TokenTransport attaches bearer credentials and replays one rejected request
 // after a 401. Only replayable bodies are eligible; unlike retries of ambiguous
 // failures, an explicit 401 permits replay of any method. Sources are borrowed.
 type TokenTransport struct {
-	base    http.RoundTripper
-	sources map[Origin]TokenSource
+	base     http.RoundTripper
+	bindings map[Origin]TokenBinding
 }
 
 // NewTokenTransport binds each source to a distinct HTTP(S) origin.
@@ -24,7 +28,7 @@ func NewTokenTransport(base http.RoundTripper, bindings ...TokenBinding) (*Token
 	if base == nil || len(bindings) == 0 {
 		return nil, invalidConfig("token auth: base and bindings are required")
 	}
-	t := &TokenTransport{base: base, sources: make(map[Origin]TokenSource, len(bindings))}
+	t := &TokenTransport{base: base, bindings: make(map[Origin]TokenBinding, len(bindings))}
 	for _, binding := range bindings {
 		origin, err := ParseOrigin(binding.URL)
 		if err != nil {
@@ -33,27 +37,34 @@ func NewTokenTransport(base http.RoundTripper, bindings ...TokenBinding) (*Token
 		if binding.Source == nil {
 			return nil, invalidConfig("token auth: source is nil")
 		}
-		if _, exists := t.sources[origin]; exists {
+		if _, exists := t.bindings[origin]; exists {
 			return nil, invalidConfig("token auth: duplicate origin %s", origin)
 		}
-		t.sources[origin] = binding.Source
+		t.bindings[origin] = binding
 	}
 	return t, nil
 }
 
 func (t *TokenTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	origin := OriginOf(req.URL)
-	source, bound := t.sources[origin]
+	binding, bound := t.bindings[origin]
 	if !bound || requestAuthorityOrigin(req) != origin {
 		return t.base.RoundTrip(req)
 	}
-	token, _, err := source.Token(req.Context())
+	token, _, err := binding.Source.Token(req.Context())
 	if err != nil {
 		closeRequestBody(req)
 		return nil, &tokenRefreshError{cause: err}
 	}
 	clone := cloneRequest(req)
-	clone.Header.Set("Authorization", "Bearer "+token)
+	if token != "" {
+		clone.Header.Set("Authorization", "Bearer "+token)
+	} else if binding.InitialAuth != nil {
+		if err := binding.InitialAuth.AddAuth(clone); err != nil {
+			closeRequestBody(req)
+			return nil, &tokenRefreshError{cause: err}
+		}
+	}
 	resp, err := t.base.RoundTrip(clone)
 	if err != nil || resp.StatusCode != http.StatusUnauthorized || (req.Body != nil && req.Body != http.NoBody && req.GetBody == nil) {
 		return resp, err
@@ -61,7 +72,10 @@ func (t *TokenTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	// The rejected response cannot answer the replay. Close without draining an
 	// untrusted 401 body; cleanup failure does not change authentication outcome.
 	DrainAndClose(req.Context(), resp.Body, 0)
-	token, _, err = source.Refresh(req.Context(), token)
+	token, _, err = binding.Source.Refresh(req.Context(), token)
+	if err == nil && token == "" {
+		err = errors.New("empty access token")
+	}
 	if err != nil {
 		return nil, &tokenRefreshError{cause: err}
 	}

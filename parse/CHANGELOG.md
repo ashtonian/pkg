@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.10.1](https://github.com/ashtonian/pkg/compare/parse/v0.10.0...parse/v0.10.1) (2026-11-06)
+
+
+### Bug Fixes
+
+* Publish SDK artifacts using an explicit local path so npm 12 does not interpret them as GitHub package references ([#116](https://github.com/ashtonian/pkg/issues/116)).
+
 ## [0.10.0](https://github.com/ashtonian/pkg/compare/parse/v0.9.0...parse/v0.10.0) (2026-11-06)
 
 ### Features
