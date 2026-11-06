@@ -9,7 +9,9 @@ import (
 
 // TokenSource supplies credentials and refreshes a rejected token. Implementations
 // must be safe for concurrent callers, honor context cancellation and coalesce
-// refreshes of the same stale token. Expiry may be zero when unknown.
+// refreshes of the same stale token. Token may return an empty token to defer
+// acquisition until rejection; Refresh must return a nonempty token on success.
+// Expiry may be zero when unknown.
 type TokenSource interface {
 	Token(context.Context) (string, time.Time, error)
 	Refresh(context.Context, string) (string, time.Time, error)
@@ -42,6 +44,7 @@ type RefreshingTokenSource struct {
 	onRefresh         func(context.Context, error)
 	flight            *tokenFlight
 	closed            bool
+	deferAcquisition  bool
 }
 
 type tokenFlight struct {
@@ -56,6 +59,13 @@ type tokenFlight struct {
 
 // TokenOption configures a RefreshingTokenSource.
 type TokenOption func(*RefreshingTokenSource)
+
+// WithDeferredAcquisition permits an empty initial token until Refresh is called.
+// Token joins an active refresh, but otherwise returns empty without acquiring.
+// Once a token is installed, its normal expiry and refresh rules apply.
+func WithDeferredAcquisition() TokenOption {
+	return func(s *RefreshingTokenSource) { s.deferAcquisition = true }
+}
 
 // WithRefreshMargin sets the proactive margin, capped at 10% of the remaining
 // token lifetime when installed. Zero refreshes only at expiry or after a 401.
@@ -80,7 +90,8 @@ func WithOnRefresh(fn func(context.Context, error)) TokenOption {
 }
 
 // NewTokenSource owns a serialized refresh callback and an optional initial
-// token. An empty token triggers acquisition on the first Token call.
+// token. An empty token triggers acquisition on the first Token call unless
+// WithDeferredAcquisition is set.
 func NewTokenSource(token string, expiry time.Time, refresh RefreshFunc, opts ...TokenOption) (*RefreshingTokenSource, error) {
 	s := &RefreshingTokenSource{refresh: refresh, margin: DefaultRefreshMargin, timeout: DefaultRefreshTimeout, now: time.Now}
 	for _, opt := range opts {
@@ -122,6 +133,10 @@ func (s *RefreshingTokenSource) get(ctx context.Context, stale string, force boo
 		if s.closed {
 			s.mu.Unlock()
 			return "", time.Time{}, ErrTokenSourceClosed
+		}
+		if s.flight == nil && s.token == "" && s.deferAcquisition && !force {
+			s.mu.Unlock()
+			return "", time.Time{}, nil
 		}
 		if s.flight == nil && s.token != "" && (!force || s.token != stale) && (s.expiry.IsZero() || s.now().Before(s.refreshAt)) {
 			token, expiry := s.token, s.expiry

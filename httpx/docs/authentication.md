@@ -48,6 +48,27 @@ Transports borrow sources; `CloseIdleConnections` does not close them.
 `Close` cancels a running refresh and waits for its cooperative callback.
 Calls after close return `ErrTokenSourceClosed`.
 
+## Acquire only after a challenge
+
+Use `WithDeferredAcquisition()` when an empty initial token should permit a
+request before acquisition. An anonymous success then needs no token; a 401
+calls the shared refresh and replays once. The default remains acquisition on
+first use. Once a nonempty token is installed, normal expiry rules apply.
+
+A `TokenBinding` may also provide `InitialAuth`, for example
+`httpx.NewAPIKeyProvider("initial-key")`. It runs only when `Token` returns an
+empty token without an error, under the same origin and effective-Host binding.
+Use `NewTokenTransport` or `WithTokenAuthT` to supply this binding. The provider
+is borrowed and must be safe for concurrent use. With no initial provider, an
+empty token leaves the request's existing headers unchanged.
+
+After a successful refresh the bearer replaces initial authentication. Replay
+clones the original request, excluding headers and query parameters added by
+`InitialAuth`. Credentials placed directly on the original request remain the
+caller's responsibility. An active refresh still admits independently
+cancellable waiters. Source or provider errors never fall back to initial
+authentication, and an empty successful `Refresh` result is rejected.
+
 ## Concurrent refresh and cancellation
 
 One callback runs at a time. Concurrent expiry checks and 401 responses join
