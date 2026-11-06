@@ -43,12 +43,17 @@
       "component": "httpx",
       "initial-version": "0.1.0",
       "exclude-paths": [
+        "httpx/oauth2",
         "httpx/codec/msgpack",
         "httpx/codec/proto",
         "httpx/compress/brotli",
         "httpx/examples/gin",
         "httpx/internal/bench"
       ]
+    },
+    "httpx/oauth2": {
+      "component": "httpx/oauth2",
+      "initial-version": "0.1.0"
     },
     "httpx/codec/msgpack": {
       "component": "httpx/codec/msgpack",

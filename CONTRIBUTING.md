@@ -19,7 +19,7 @@ The repository's `go.work` ties the published modules together, so a change to o
 | `make lint` | `go vet` and staticcheck |
 | `make release-check` | Gowalker and config standalone builds plus the module archive checks below |
 | `make gowalker-release-check` | Gowalker archive downloaded into a fresh consumer, race tests, the README quick start and complete usage examples |
-| `make httpx-release-check` | Four module ZIPs downloaded by fresh consumers, both tagged race lanes, Gin integration and benchmark smoke tests |
+| `make httpx-release-check` | Five module ZIPs downloaded by fresh consumers, both tagged race lanes, Gin integration and benchmark smoke tests |
 | `make tool-check` | Module archive tooling tests and static analysis |
 | `make cookbook-check` | The [config cookbook](config/examples/cookbook), a module of runnable recipes |
 | `make ci` | All of the above |
@@ -41,7 +41,7 @@ skips them. The Gin example, comparison benchmarks and release tooling keep
 separate development modules outside the default workspace. The archive
 check tests them against candidate releases without local replacements.
 
-Every module is tagged with its directory as the prefix, as Go expects for a module below a repository's root: `gowalker/v0.1.0`, `config/v0.1.0`, `config/kongprovider/v0.1.0`, `httpx/v0.1.0`, `httpx/codec/msgpack/v0.1.0`, `httpx/codec/proto/v0.1.0`, `httpx/compress/brotli/v0.1.0`. Versions follow [semantic versioning](https://semver.org); while a module is at `v0`, a minor version may change its API. Each module's `CHANGELOG.md` lists what changed.
+Every module is tagged with its directory as the prefix, as Go expects for a module below a repository's root: `gowalker/v0.1.0`, `config/v0.1.0`, `config/kongprovider/v0.1.0`, `httpx/v0.1.0`, `httpx/oauth2/v0.1.0`, `httpx/codec/msgpack/v0.1.0`, `httpx/codec/proto/v0.1.0`, `httpx/compress/brotli/v0.1.0`. Versions follow [semantic versioning](https://semver.org); while a module is at `v0`, a minor version may change its API. Each module's `CHANGELOG.md` lists what changed.
 
 ## Releases
 
@@ -58,6 +58,10 @@ The configured `last-release-sha` is the shared history floor after config
 `v0.6.0` and gowalker `v0.2.0`; newer per-module releases still determine their
 own boundaries. Leave this floor in place unless intentionally resetting the
 release history.
+
+When editing a release PR description, preserve the standalone `---` lines
+around the component `<details>` blocks. Release-please parses those boundaries
+to identify the versions to publish after merge.
 
 New modules use `initial-version` in the release configuration to choose
 an initial version; a `0.0.0` manifest entry is only a pre-release marker.
