@@ -9,7 +9,7 @@ MODULES := $(CORE_MODULES) $(CONFIG_MODULES) $(TAGGED_MODULES)
 COOKBOOK := config/examples/cookbook
 STATICCHECK := honnef.co/go/tools/cmd/staticcheck@v0.8.2
 
-.PHONY: test test-gitx test-jsonvalue jsonvalue-release-check test-gowalker gowalker-release-check test-config test-httpx-unit test-httpx-integration test-parse-unit test-parse-integration test-parse-sdk parse-sdk-release-check parse-release-check lint release-check httpx-release-check cookbook-check tool-check ci
+.PHONY: test test-gitx test-jsonvalue jsonvalue-release-check test-gowalker gowalker-release-check test-config test-httpx-unit test-httpx-integration test-parse-unit test-parse-integration test-parse-sdk parse-sdk-release-check parse-sdk-registry-check parse-release-check lint release-check httpx-release-check cookbook-check tool-check ci
 
 ## test: every published module from the working tree (go.work), race detector on
 test: test-gitx test-jsonvalue test-gowalker test-config test-httpx-unit test-httpx-integration test-parse-unit test-parse-integration test-parse-sdk
@@ -87,9 +87,13 @@ httpx-release-check:
 cookbook-check:
 	cd $(COOKBOOK) && GOWORK=off go mod tidy -diff && GOWORK=off go vet ./... && GOWORK=off go test -race -count=1 ./...
 
+## parse-sdk-registry-check: bounded registry availability and integrity checks
+parse-sdk-registry-check:
+	node --test tools/check-parse-sdk-registry.test.mjs
+
 ## tool-check: release tooling is a development module, never published
 tool-check:
 	cd tools/modarchive && GOWORK=off go mod tidy -diff && GOWORK=off go vet ./... && GOWORK=off go test -race -count=1 ./... && GOWORK=off go run $(STATICCHECK) ./...
 
 ## ci: everything CI runs
-ci: lint test release-check parse-sdk-release-check cookbook-check tool-check
+ci: lint test release-check parse-sdk-release-check parse-sdk-registry-check cookbook-check tool-check

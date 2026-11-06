@@ -49,7 +49,7 @@ jobs:
       cancel-in-progress: false
     # npm's trusted publisher supports GitHub-hosted runners only.
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 30
     permissions:
       contents: read
       id-token: write
@@ -115,20 +115,7 @@ jobs:
       - name: Check whether this exact package is already published
         id: registry
         run: |
-          node --input-type=module <<'JS'
-          import assert from 'node:assert/strict';
-          import fs from 'node:fs';
-          const packed = JSON.parse(fs.readFileSync('artifacts/pack.json', 'utf8'))['@ashtonian/parse'];
-          const response = await fetch(`https://registry.npmjs.org/@ashtonian%2fparse/${packed.version}`, { signal: AbortSignal.timeout(30_000) });
-          if (response.status === 404) {
-            fs.appendFileSync(process.env.GITHUB_OUTPUT, 'publish=true\n');
-          } else {
-            assert.ok(response.ok, `registry returned ${response.status}`);
-            const published = await response.json();
-            assert.equal(published.dist.integrity, packed.integrity, 'published version has different bytes');
-            fs.appendFileSync(process.env.GITHUB_OUTPUT, 'publish=false\n');
-          }
-          JS
+          node tooling/tools/check-parse-sdk-registry.mjs artifacts/pack.json >> "$GITHUB_OUTPUT"
       - name: Publish with npm trusted publishing
         if: steps.registry.outputs.publish == 'true' && (github.event_name == 'push' || inputs.publish)
         run: |
@@ -138,6 +125,10 @@ jobs:
             exit 1
           fi
           npm publish "$GITHUB_WORKSPACE/artifacts/ashtonian-parse-${RELEASE_TAG#parse/v}.tgz" --access public --provenance --registry=https://registry.npmjs.org
+      - name: Wait for the exact package to become installable
+        if: steps.registry.outputs.publish == 'false' || github.event_name == 'push' || inputs.publish
+        timeout-minutes: 16
+        run: node tooling/tools/check-parse-sdk-registry.mjs artifacts/pack.json --wait
       - name: Verify a fresh public-registry consumer
         if: steps.registry.outputs.publish == 'false' || github.event_name == 'push' || inputs.publish
         run: bash tooling/tools/check-parse-sdk-release.sh --registry "${RELEASE_TAG#parse/v}"
