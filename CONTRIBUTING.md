@@ -59,6 +59,10 @@ The configured `last-release-sha` is the shared history floor after config
 own boundaries. Leave this floor in place unless intentionally resetting the
 release history.
 
+When editing a release PR description, preserve the standalone `---` lines
+around the component `<details>` blocks. Release-please parses those boundaries
+to identify the versions to publish after merge.
+
 New modules use `initial-version` in the release configuration to choose
 an initial version; a `0.0.0` manifest entry is only a pre-release marker.
 The httpx modules are configured to start at `v0.1.0`. Before their first tag,

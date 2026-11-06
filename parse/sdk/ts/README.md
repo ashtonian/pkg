@@ -6,7 +6,13 @@ Zero runtime dependencies. Runs wherever `fetch` and `AbortSignal.any` exist (No
 
 ## Install
 
-Build and package the SDK from this directory:
+Install the published package:
+
+```bash
+npm install @ashtonian/parse
+```
+
+To build and package a local checkout from this directory:
 
 ```bash
 npm ci
@@ -14,7 +20,7 @@ npm run build
 npm pack
 ```
 
-Install the resulting tarball in the consuming project with `npm install /path/to/tarball.tgz`, or use your workspace package setup. The declared import name is `@ashtonian/parse`; these examples do not assume a public registry release.
+Install the resulting tarball in the consuming project with `npm install /path/to/tarball.tgz`, or use your workspace package setup. The import name is `@ashtonian/parse` for both registry and local installations.
 
 ## Quick Start
 

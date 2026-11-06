@@ -137,7 +137,7 @@ jobs:
             echo '::error::Dispatch publication at the release tag so provenance identifies the package source.'
             exit 1
           fi
-          npm publish "artifacts/ashtonian-parse-${RELEASE_TAG#parse/v}.tgz" --access public --provenance --registry=https://registry.npmjs.org
+          npm publish "$GITHUB_WORKSPACE/artifacts/ashtonian-parse-${RELEASE_TAG#parse/v}.tgz" --access public --provenance --registry=https://registry.npmjs.org
       - name: Verify a fresh public-registry consumer
         if: steps.registry.outputs.publish == 'false' || github.event_name == 'push' || inputs.publish
         run: bash tooling/tools/check-parse-sdk-release.sh --registry "${RELEASE_TAG#parse/v}"
