@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.7.0](https://github.com/ashtonian/pkg/compare/config/v0.6.2...config/v0.7.0) (2026-11-06)
+
+
+### ⚠ BREAKING CHANGES
+
+* **config:** withheld usage defaults are omitted from JSON with a withheld flag; unknown-input JSON uses lowercase field names and omits reflect.Type. Invalid reload and envref tags fail schema construction.
+
+### Features
+
+* **config:** expose loader metadata and preserve input contracts ([064a87c](https://github.com/ashtonian/pkg/commit/064a87c77cb1e4ead1bfbc9fc1939a510b3a677c))
+* **config:** expose reload and inspection contracts ([ee7e6e2](https://github.com/ashtonian/pkg/commit/ee7e6e22beea2040b5de539ff2baffbea7bd5368))
+
 ## [0.6.2](https://github.com/ashtonian/pkg/compare/config/v0.6.1...config/v0.6.2) (2026-10-19)
 
 
