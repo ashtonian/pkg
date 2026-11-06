@@ -22,6 +22,7 @@ defer client.CloseIdleConnections()
 429, 502, 503 and 504; transient network errors can also retry. Cancellation
 and caller deadlines stop retries. `WithRetryIf` replaces the failure
 predicate, but safe replay and body availability still apply.
+`ErrDestinationRefused` is never retried, including with a custom predicate.
 
 Automatic replay is allowed for GET, HEAD, OPTIONS, TRACE, PUT and DELETE,
 or a request carrying `Idempotency-Key`. POST/PATCH without that key are
@@ -57,7 +58,8 @@ attempt; they do not turn every unsuccessful HTTP status into an error.
 |---|---|
 | Transient connection failure | Retry when the method/key and body permit replay. After the attempt budget, the last transport error remains available through `errors.Is` / `errors.As`. |
 | HTTP 429, 502, 503 or 504 | Retry within the attempt, backoff and deadline budgets. If the budget is exhausted or `Retry-After` is too long, return the last response; inspect its status and close its body. |
-| HTTP 400, 401, 403, 404, 500 or another status outside the retry set | Return the response without retry by default. Configure `WithRetryOn` / `WithRetryIf` when the API's contract calls for different behavior; authorization repair and business errors stay with the application. |
+| HTTP 400, 401, 403, 404, 500 or another status outside the retry set | Return the response without retry by default. Configure `WithRetryOn` / `WithRetryIf` when the API's contract calls for different behavior; automatic 401 repair is available through the separate `TokenTransport`; business errors stay with the application. |
+| Egress refusal | Return `ErrDestinationRefused` without retry or circuit failure accounting, including with custom classifiers. Review the destination and operator-owned trust prefixes. |
 | Open circuit | Reject before calling the origin with `ErrCircuitOpen`; admit recovery probes after the configured interval. A cache outside the breaker can still serve usable entries. |
 | Local rate or concurrency refusal | Return `ErrRateLimited` or `ErrLimiterTimeout`. These are not retried by default and do not count as origin failures in the recommended order. An outer cache may serve a permitted stale-if-error response instead. |
 | Cancellation or expired request budget | Stop retry waits and admission waits. Context errors retain `context.Canceled` / `context.DeadlineExceeded` for `errors.Is`. |
@@ -85,7 +87,8 @@ Add `NewCircuitTransport` for a persistently failing upstream. Each
 scheme/host/port has its own breaker. Five consecutive failures open it by
 default; after 30 seconds it admits two half-open probes, and two successes
 close it. Go errors returned by the wrapped transport and 5xx responses are
-failures by default. Caller cancellation is excluded; deadline expiration
+failures by default. Caller cancellation and `ErrDestinationRefused` are
+excluded before any custom classifier; deadline expiration
 counts as a failure. Rate/concurrency rejection is kept outside the breaker
 by the recommended layer order; an explicit chain in a different order can
 count local refusals as failures.

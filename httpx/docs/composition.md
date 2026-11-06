@@ -75,7 +75,8 @@ optional; the table lists enabled layers in request order, outer to inner.
 |---|---|
 | Logging | Redacted snapshots of the logical request and response |
 | Metrics | Logical round-trip latency; retry/cache events are also forwarded |
-| Auth | Destination before credential injection |
+| Auth | Destination before static credential injection |
+| Token auth | Bound bearer token; shared refresh and one replay after 401 |
 | Cache | Credential-bearing request, before origin admission |
 | Hedging | Logical slow request; may run more than one retry sequence |
 | Retry | Each sequential attempt and its status/error |
@@ -86,8 +87,10 @@ optional; the table lists enabled layers in request order, outer to inner.
 | Base transport | Dialing, TLS, HTTP/1.1 or HTTP/2, pools and socket I/O |
 
 This order makes cached hits available while an origin's breaker is open,
-protects refresh traffic with the same budgets, and avoids counting local
-admission refusal as an upstream failure. Auth precedes cache identity.
+protects cache revalidation with the same budgets, and avoids counting local
+admission refusal as an upstream failure. Both auth layers precede cache identity.
+Token acquisition uses the refresh callback's own bounded client; do not route
+that client through the same token source.
 
 | Ordering change | Consequence |
 |---|---|
@@ -106,13 +109,17 @@ They are not aliases for `NewStandard`. See [defaults](reference.md).
 
 With `NewClient` or `NewStandard`, `WithTransport(rt)` replaces the base while
 retaining the configured outer layers. It overrides `WithBaseTransport`;
-the injected transport owns its pool/TLS/proxy behavior. These constructors
+the injected transport owns its pool/TLS/proxy behavior. Combining it with a
+base `WithEgressPolicy` is rejected because that policy cannot protect an
+unrelated transport. Construct a guarded base first, then inject it. These constructors
 create a new client; use the pattern above to preserve an existing client's
 settings.
 
 Every built-in decorator forwards `CloseIdleConnections` and exposes
 `Unwrap`. A cache also needs `CacheTransport.Close()` to stop background
-refreshes; closing idle connections alone does not stop them. Custom
+refreshes; closing idle connections alone does not stop them. Token transports
+borrow sources: their owner calls `RefreshingTokenSource.Close()` once after
+stopping callers, including when several clients share the source. Custom
 decorators should forward idle close too, respect context
 cancellation, close request bodies on rejection, and preserve response body
 interfaces when supporting protocol upgrades. A transport that ignores

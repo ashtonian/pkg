@@ -20,6 +20,7 @@ functions (or a custom `TransportFunc`) with `NewChain(...).Build(base)`; the fi
 | `NewHedgingTransport(base, delay, opts...)` | Overlapping attempts for slow requests | `HedgingOption` |
 | `NewAdaptiveHedgingTransport(base, percentile, opts...)` | Hedge delay from observed latency | `HedgingOption` |
 | `NewAuthTransport(base, bindings...)` | Origin-bound credentials | `AuthBinding` values |
+| `NewTokenTransport(base, bindings...)` | Origin-bound bearer token and one 401 replay | `TokenBinding` values |
 | `NewLoggingTransport(base, hook, opts...)` | Redacted request/response snapshots | `LoggingOption` |
 | `NewMetricsTransport(base, hook)` | Round-trip metrics | `MetricsHook` |
 
@@ -39,7 +40,7 @@ Constructors validate durations, counts, levels, thresholds and required provide
 |--------|------|---------|-------------|
 | `WithTimeout(d)` | `time.Duration` | `DefaultTimeout` (30 s) | `http.Client.Timeout`; 0 disables it for long-poll / SSE |
 | `WithBaseTransport(opts...)` | `...BaseOption` | `NewBaseTransport()` defaults | Tunes the base `*http.Transport`; the last call wins |
-| `WithTransport(rt)` | `http.RoundTripper` | none | Replaces the base transport; `WithBaseTransport` then does not apply |
+| `WithTransport(rt)` | `http.RoundTripper` | none | Replaces the base transport; other base settings do not apply and combining with a base egress policy is rejected |
 | `WithJar(jar)` | `http.CookieJar` | nil | Cookie jar of the client |
 | `WithCompression(opts...)` | `...CompressionOption` | off (`NewStandard`: on) | Adds response compression negotiation and decoding |
 | `WithCache(store, opts...)` | `CacheStore`, `...CacheOption` | off | Adds `CacheTransport`; a nil store uses `NewMemoryCache()` |
@@ -49,6 +50,7 @@ Constructors validate durations, counts, levels, thresholds and required provide
 | `WithLimiter(n, opts...)` | `int`, `...LimiterOption` | off | Adds `LimiterTransport`; `n >= 1` in-flight requests |
 | `WithRateLimit(rps, burst, opts...)` | `float64`, `int`, `...RateLimitOption` | off | Adds `RateLimitTransport`; `rps > 0`, `burst >= 1` per origin |
 | `WithAuth(originURL, provider)` | `string`, `AuthProvider` | none | Binds credentials to one origin; repeat for more origins |
+| `WithTokenAuth(originURL, source)` | `string`, `TokenSource` | none | Binds automatic bearer authentication before cache; repeat for distinct origins |
 | `WithMetrics(hook)` | `MetricsHook` | off | Adds `MetricsTransport` and feeds the retry and cache layers |
 | `WithLogging(hook, opts...)` | `LoggingHook`, `...LoggingOption` | off | Adds `LoggingTransport` |
 
@@ -64,12 +66,19 @@ Constructors validate durations, counts, levels, thresholds and required provide
 | `WithResponseHeaderTimeout(d)` | `time.Duration` | 30 s | Wait for response headers after the request is written |
 | `WithExpectContinueTimeout(d)` | `time.Duration` | 1 s | Wait for `100 Continue` |
 | `WithDialer(d)` | `*net.Dialer` | 30 s dial timeout, 30 s keep-alive | Connection dialer; nil is rejected |
+| `WithEgressPolicy(policy)` | `*EgressPolicy` | off | Checks every resolved address before connecting and disables all proxies; nil is rejected |
+| `WithTransportSettings(fn)` | `func(*http.Transport)` | none | Configures standard fields; guarded bases reject alternate dial functions |
 | `WithTLSConfig(cfg)` | `*tls.Config` | nil (Go defaults) | Client TLS settings |
 | `WithHTTP2()` / `WithDisableHTTP2()` | — | HTTP/2 attempted | Enable or disable HTTP/2 |
 | `WithDisableKeepAlives()` | — | keep-alives on | One request per connection |
 | `WithWriteBufferSize(n)` / `WithReadBufferSize(n)` | `int` | 0 (4 KiB) | Connection buffer sizes |
 
-The base transport honours `HTTP_PROXY` / `HTTPS_PROXY` / `NO_PROXY` and leaves response decoding to `CompressionTransport`.
+The base transport honors `HTTP_PROXY` / `HTTPS_PROXY` / `NO_PROXY` unless
+`WithEgressPolicy` disables proxies. It leaves decoding to `CompressionTransport`.
+`BaseOption` is opaque: use named options or `WithTransportSettings`, including
+for arbitrary standard-library fields. `WithDialer` copies the dialer at
+construction and composes its resolver/control hook with the egress policy
+regardless of option order. See [egress policy](egress.md).
 
 ### Compression
 
@@ -95,6 +104,7 @@ The base transport honours `HTTP_PROXY` / `HTTPS_PROXY` / `NO_PROXY` and leaves 
 | `WithMaxRetention(d)` | `time.Duration` | `DefaultMaxRetention` (24 h) | Longest an entry is kept, including entries kept only to revalidate |
 | `WithRevalidation(timeout, n)` | `time.Duration`, `int` | `DefaultRevalidateTimeout` (30 s), `DefaultMaxConcurrentRevalidates` (8) | Timeout and concurrency of background revalidations; `Close` stops them |
 | `WithCacheHook(h)` | `MetricsHook` | the `WithMetrics` hook, else none | Receives `OnCacheHit` / `OnCacheMiss` |
+| `WithOnCacheError(fn)` | `func(context.Context, *CacheError)` | nil | Synchronous bounded storage-failure event; must be quick, concurrent-safe and non-reentrant |
 | `WithMaxEntries(n)` (`NewMemoryCache`) | `int` | `DefaultMemoryCacheMaxEntries` (1024) | Entry cap; least recently used evicted first |
 | `WithMaxBytes(n)` (`NewMemoryCache`) | `int64` | `DefaultMemoryCacheMaxBytes` (64 MiB) | Byte cap over bodies, headers and keys |
 
@@ -110,6 +120,9 @@ eligible GETs and the documented status codes, with one `Vary` variant per
 primary key. Caller-conditional, range, HEAD and body-bearing GET requests
 bypass caching. See [supported HTTP policy](caching.md#supported-http-policy)
 for storage, revalidation, stale fallback and invalidation boundaries.
+`CacheStore` receives context and returns errors on every operation. Failed
+storage maintenance preserves received responses; uncertain mutations disable
+the affected coordination stripe. See [storage failures](caching.md#storage-failures).
 
 ### Retry
 
@@ -126,7 +139,8 @@ for storage, revalidation, stale fallback and invalidation boundaries.
 
 Replay requires an idempotent method (GET, HEAD, OPTIONS, TRACE, PUT, DELETE), an `Idempotency-Key` header, or `WithRetryNonIdempotent`. The server must make the replay safe; a key or opt-in does not deduplicate requests. Retried attempts clone the request metadata; bodies are still consumed and closed. `GetBody` supplies fresh bodies (`http.NewRequest` sets it for `*bytes.Buffer`, `*bytes.Reader` and `*strings.Reader`; `EncodeRequest` installs it too). Other bodies are recorded during the first attempt and replayed only if fully consumed within `WithMaxReplayBytes`. That bound limits recording, not upload size or `GetBody` bodies. Cancellation of a blocked upload depends on the wrapped transport honoring its context.
 
-With rate/concurrency layers inside retry, an attempt can fail admission with `ErrRateLimited` / `ErrLimiterTimeout`; neither is retried by the default predicate. `WithWait` permits rate-token waiting; the concurrency limiter already waits, bounded by context and optional `WithAcquireTimeout`. A `Retry-After` longer than the max wait, or a wait past the request deadline, returns the last result unretried. Caller cancellation and deadlines are not retried.
+With rate/concurrency layers inside retry, an attempt can fail admission with `ErrRateLimited` / `ErrLimiterTimeout`; neither is retried by the default predicate. `WithWait` permits rate-token waiting; the concurrency limiter already waits, bounded by context and optional `WithAcquireTimeout`. A `Retry-After` longer than the max wait, or a wait past the request deadline, returns the last result unretried. Caller cancellation, deadlines and `ErrDestinationRefused` are never retried,
+even when a custom predicate requests replay.
 
 ### Circuit breaker
 
@@ -135,7 +149,7 @@ With rate/concurrency layers inside retry, an attempt can fail admission with `E
 | `WithFailureThreshold(n)` | `int` | `DefaultFailureThreshold` (5) | Consecutive failures that open an origin's circuit; 1 through `math.MaxUint32` |
 | `WithSuccessThreshold(n)` | `int` | `DefaultSuccessThreshold` (2) | Probes a half-open circuit admits, and consecutive successes that close it; 1 through `math.MaxUint32` |
 | `WithOpenTimeout(d)` | `time.Duration` | `DefaultOpenTimeout` (30 s) | Time open before admitting probes |
-| `WithIsFailure(fn)` | `func(*http.Response, error) bool` | any inner Go error, nil response or 5xx | Classifies an outcome; caller cancellation is excluded first; deadline errors count |
+| `WithIsFailure(fn)` | `func(*http.Response, error) bool` | any inner Go error, nil response or 5xx | Classifies an outcome; caller cancellation and egress refusal are excluded first; deadline errors count |
 | `WithMaxBreakers(n)` | `int` | `DefaultMaxOrigins` (1024) | Origins that keep a breaker; the least recently used is dropped and restarts closed. A request the dropped breaker admitted still completes but reports no transitions, so the cap bounds origins retained, not requests in flight |
 | `WithOnStateChange(fn)` | `func(Origin, from, to State)` | nil | Synchronous transition callback, also for `Reset` and dropping a non-closed breaker; must be quick and must not call back into the transport |
 
@@ -184,6 +198,27 @@ A slot is held until the response body reaches EOF, returns a read error or is c
 
 A provider runs only when both the request URL's origin and its effective `Host` match the binding (scheme, host and port). Caller-supplied URLs at that origin receive credentials; other origins, including redirect destinations, do not receive that provider's additions. Existing caller headers are passed through, not scrubbed. Bindings do not authorize destinations or implement token refresh on 401. `ParseOrigin` rejects URLs with userinfo, non-HTTP schemes and relative URLs. See [credential boundaries](security-observability.md#origin-bound-credentials).
 
+### Automatic bearer refresh
+
+`NewTokenSource(token, expiry, refresh, opts...)` returns a
+`*RefreshingTokenSource`. Empty tokens acquire on first use; zero expiry is
+unknown. The callback receives a bounded context and must honor cancellation.
+`TokenTransport` borrows its sources; their owner calls `Close`.
+
+| Option | Type | Default | Description |
+|---|---|---|---|
+| `WithRefreshMargin(d)` | `time.Duration` | `DefaultRefreshMargin` (30 s) | Nonnegative early refresh margin, capped at 10% of remaining lifetime on installation; zero disables early refresh |
+| `WithRefreshTimeout(d)` | `time.Duration` | `DefaultRefreshTimeout` (30 s) | Positive timeout for shared refresh work, independent of caller wait deadlines |
+| `WithTokenClock(now)` | `func() time.Time` | `time.Now` | Clock for expiry and margin; nil is rejected |
+| `WithOnRefresh(fn)` | `func(context.Context, error)` | nil | Observe each completed callback before waiters resume; quick and non-reentrant; error text excludes secrets |
+
+`RefreshFunc` returns `(token string, expiry time.Time, err error)`. A nonempty
+token returned with an error is retained, while the error reaches the current
+waiters; this preserves rotated credentials after persistence failure.
+`TokenSource` requires concurrent, context-aware `Token` and `Refresh` methods.
+The supplied source serializes callbacks and cancels shared work when every
+waiter leaves. See [authentication](authentication.md) for replay and ownership.
+
 ### Metrics and logging
 
 | Option | Type | Default | Description |
@@ -230,6 +265,11 @@ httpx defines sentinels, not E-codes; match them with `errors.Is`.
 | `ErrLimiterTimeout` | `LimiterTransport` | Release open bodies, reduce concurrency or revise the acquisition budget |
 | `ErrResponseTooLarge` | `Get`, `Post`, `Put`, `Patch`, `Do`, `DecodeResponse`, `ReadAtMost` | Use a deliberate larger bound or stream the body |
 | `ErrNoCodec` | typed request helpers | Register the response content type's codec or decode explicitly |
+| `ErrDestinationRefused` | `EgressPolicy` and guarded dialing | Review destination and trusted network configuration; never retried or counted as a circuit failure |
+| `ErrAuthRefresh` | token acquisition and refresh | Classify the wrapped cause; repair credentials or persistence; error text excludes callback details |
+| `ErrTokenSourceClosed` | a closed token source | Stop using the source or construct an owned replacement |
+| `ErrCacheCapacity` | `MemoryCache.Set` | Increase the deliberate storage limit or reduce entry size |
+| `ErrCacheDisabled` | cache observer after uncertain storage mutation | Repair and purge/switch the durable namespace before replacing the transport |
 
 None of these sentinels is retried by the default retry predicate. A later
 application request may succeed after a circuit or local budget recovers;
@@ -243,7 +283,9 @@ that is separate from retrying the current call.
 - `NewStandard(opts...) (*http.Client, error)` / `MustNewStandard(opts...)` — defaults plus overrides
 - `NewChain(fns...) Chain`, `Chain.Build(base)`, `Chain.Client(base, timeout)` — explicit order, first innermost; presets `DefaultChain()`, `ResilientChain()`, `APIClientChain()`
 - `NewBaseTransport(opts...) (*http.Transport, error)`
-- `NewCompressionTransport`, `NewCacheTransport`, `NewCircuitTransport`, `NewRetryTransport`, `NewHedgingTransport`, `NewAdaptiveHedgingTransport`, `NewLimiterTransport`, `NewRateLimitTransport`, `NewAuthTransport`, `NewMetricsTransport`, `NewLoggingTransport` — one decorator each, `(base, ...) (*T, error)`
+- `NewCompressionTransport`, `NewCacheTransport`, `NewCircuitTransport`, `NewRetryTransport`, `NewHedgingTransport`, `NewAdaptiveHedgingTransport`, `NewLimiterTransport`, `NewRateLimitTransport`, `NewAuthTransport`, `NewTokenTransport`, `NewMetricsTransport`, `NewLoggingTransport` — one decorator each, `(base, ...) (*T, error)`
+- `NewTokenSource(token, expiry, refresh, opts...) (*RefreshingTokenSource, error)` — shared context-aware refresh
+- `NewEgressPolicy(allow ...netip.Prefix) *EgressPolicy` — immutable address policy; `Permits` and `CheckURL` inspect inputs
 - `NewMemoryCache(opts...) (*MemoryCache, error)` — bounded `CacheStore`
 - `NewLatencyHook(window) (*LatencyHook, error)`, `NewMultiHook(hooks...)`
 
@@ -261,7 +303,8 @@ that is separate from retrying the current call.
 
 | Interface | Methods | Implement to |
 |-----------|---------|--------------|
-| `CacheStore` | `Get`, `Set(key, *CachedResponse, ttl)`, `Delete` | Back the cache with Redis or another shared store; stored values are immutable |
+| `CacheStore` | `Get(ctx, key) (*CachedResponse, bool, error)`, `Set(ctx, key, value, ttl) error`, `Delete(ctx, key) error` | Back the cache with context-aware storage; values are immutable |
+| `TokenSource` | `Token(ctx) (string, time.Time, error)`, `Refresh(ctx, stale) (string, time.Time, error)` | Supply and coalesce bearer credentials with cancellable waits |
 | `Compressor` | `Compress`, `Decompress` | Add an encoding (zstd, …) |
 | `Codec` | `ContentType`, `Encode`, `Decode` | Add a content type |
 | `AuthProvider` | `AddAuth(*http.Request) error` | Add a credential scheme |

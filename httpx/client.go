@@ -50,7 +50,7 @@ func (cfg *clientConfig) build() (*http.Client, error) {
 
 	// Layers are listed innermost to outermost:
 	//   base -> compression -> circuit -> limiter -> ratelimit -> retry ->
-	//   hedging -> cache -> auth -> metrics -> logging
+	//   hedging -> cache -> token auth -> auth -> metrics -> logging
 	//
 	// Every network attempt passes the breaker and both admission budgets:
 	// the breaker is innermost so it tracks each attempt's outcome, and the
@@ -94,6 +94,9 @@ func (cfg *clientConfig) build() (*http.Client, error) {
 		{"cache", cfg.useCache, func(rt http.RoundTripper) (http.RoundTripper, error) {
 			return asRoundTripper(NewCacheTransport(rt, cfg.cacheStore, cacheOpts...))
 		}},
+		{"token auth", len(cfg.tokenBindings) > 0, func(rt http.RoundTripper) (http.RoundTripper, error) {
+			return asRoundTripper(NewTokenTransport(rt, cfg.tokenBindings...))
+		}},
 		{"auth", len(cfg.authBindings) > 0, func(rt http.RoundTripper) (http.RoundTripper, error) {
 			return asRoundTripper(NewAuthTransport(rt, cfg.authBindings...))
 		}},
@@ -127,6 +130,13 @@ func (cfg *clientConfig) build() (*http.Client, error) {
 
 func (cfg *clientConfig) baseTransport() (http.RoundTripper, error) {
 	if cfg.transportSet {
+		base := defaultBaseConfig()
+		for _, opt := range cfg.baseOpts {
+			opt(base)
+		}
+		if base.egressSet {
+			return nil, invalidConfig("WithEgressPolicy cannot be combined with WithTransport; construct the guarded base explicitly")
+		}
 		if cfg.transport == nil {
 			return nil, invalidConfig("WithTransport requires a non-nil transport")
 		}

@@ -129,12 +129,62 @@ for _, transport := range httpx.TransportStack(client) {
 client.CloseIdleConnections()
 ```
 
-A custom `CacheStore` must be concurrent-safe and treat stored
-`CachedResponse` values as immutable. Implement `Get`, `Set` with a TTL, and
-`Delete`; constructor injection keeps a Redis-backed or other store possible.
-Request coalescing and invalidation-generation protection belong to a
-`CacheTransport` instance. They are not a distributed coordination protocol
-between separate processes/transports sharing a store.
+A custom `CacheStore` implements one context-aware, error-bearing contract:
+
+```go
+type CacheStore interface {
+    Get(ctx context.Context, key string) (*CachedResponse, bool, error)
+    Set(ctx context.Context, key string, value *CachedResponse, ttl time.Duration) error
+    Delete(ctx context.Context, key string) error
+}
+```
+
+Use `(nil, false, nil)` for a miss. A successful `Set` means storage accepted
+the value; return an error for rejected writes. Stores must be concurrent-safe,
+treat `CachedResponse` values as immutable, and propagate context into every
+SQL, blob, network and lock operation. Foreground calls receive the request
+context. Background calls receive a detached context preserving request values,
+bounded by `WithRevalidation` and canceled by `Close`. Cancellation cannot stop
+an adapter that ignores its context; do not hide blocked I/O in an orphan goroutine.
+
+Cache stripe admission is cancelable. Store calls serialize with publication
+and invalidation, while origin requests and body reads run outside that gate.
+Coalescing, generation fences and failure quarantine belong to one
+`CacheTransport`; they are not distributed coordination between processes or
+transports sharing a store. A persistent adapter must own cross-process
+invalidation, durability and namespace isolation.
+
+## Storage failures
+
+| Operation | Behavior |
+|---|---|
+| Lookup error | Report `CacheRead` and fetch from the origin; `only-if-cached` returns 504 with `detail=store-error` |
+| Canceled lookup or stripe wait | Return the caller's context error before origin delivery |
+| Failed `Set`, including rejected capacity | Return the received response without `stored`; report `CacheWrite` and disable the affected stripe |
+| Failed or canceled invalidation | Preserve the acknowledged unsafe-method response; report `CacheDelete`, mark `detail=invalidation-error`, and disable the affected stripe |
+| Failed 304 metadata replacement | Serve the validated response for this request, mark `detail=store-error`, and prevent reuse of older metadata |
+
+A storage failure after origin delivery is a maintenance failure. It must not
+turn an acknowledged write into a transport error that invites replay.
+`WithOnCacheError` observes each failure synchronously using a `CacheError`
+whose text includes only its operation. `errors.Is` / `errors.As` retain the
+underlying cause for classification; do not log an unwrapped backend error
+without redaction. Hooks must be quick, concurrent-safe and non-reentrant.
+Cache keys, URLs, credential headers and bodies are never observer fields.
+
+The cache uses a fixed 256-stripe coordination table. An uncertain mutation
+disables its stripe, including unrelated keys mapped there, for the remaining
+transport lifetime. Later requests bypass storage and carry
+`detail=store-error`; a lookup reports `ErrCacheDisabled`. This bounded fail-closed
+state prevents an older durable entry or in-flight fetch from reappearing.
+After repairing storage, purge the affected durable namespace or switch to a
+new namespace before constructing a replacement cache transport. Reconstructing
+a transport over untouched old entries would discard its safety state.
+
+`MemoryCache` uses the same interface. It returns `ErrCacheCapacity` when a
+single entry exceeds `WithMaxBytes`; that entry is not stored. Size limits,
+serialization format, corruption detection, tenant separation and durable
+recovery belong to a persistent adapter.
 
 ## Diagnose a result
 

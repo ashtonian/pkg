@@ -3,6 +3,7 @@
 package httpx
 
 import (
+	"context"
 	"io"
 	"net/http"
 	"strings"
@@ -64,11 +65,11 @@ type publicationStore struct {
 	published []string
 }
 
-func (s *publicationStore) Set(key string, value *CachedResponse, ttl time.Duration) {
+func (s *publicationStore) Set(ctx context.Context, key string, value *CachedResponse, ttl time.Duration) error {
 	s.mu.Lock()
 	s.published = append(s.published, string(value.Body))
 	s.mu.Unlock()
-	s.CacheStore.Set(key, value, ttl)
+	return s.CacheStore.Set(ctx, key, value, ttl)
 }
 
 func TestCacheInvalidatedFetchNeverPublishes(t *testing.T) {

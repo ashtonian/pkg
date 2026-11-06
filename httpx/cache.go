@@ -14,6 +14,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -59,6 +60,7 @@ type CacheTransport struct {
 	base                 http.RoundTripper
 	store                CacheStore
 	hook                 MetricsHook
+	onError              func(context.Context, *CacheError)
 	identityHeaders      []string
 	staleIfError         time.Duration
 	staleWhileRevalidate time.Duration
@@ -78,15 +80,17 @@ type CacheTransport struct {
 
 	// Stripes serialize publication with invalidation. A fetch that predates
 	// an invalidation must never publish, even briefly. Sharing a stripe only
-	// costs an unrelated key one store; no network or body reads hold a lock.
+	// costs an unrelated key one cancellable store operation. Origin requests
+	// and response-body reads never hold a stripe.
 	stripes [invalidationStripes]cacheStripe
 }
 
 const invalidationStripes = 256
 
 type cacheStripe struct {
-	mu         sync.Mutex
-	generation uint64
+	gate       chan struct{}
+	generation atomic.Uint64
+	disabled   atomic.Bool
 }
 
 // CacheOption configures a CacheTransport.
@@ -119,6 +123,9 @@ func NewCacheTransport(base http.RoundTripper, store CacheStore, opts ...CacheOp
 	}
 	if err := t.validate(); err != nil {
 		return nil, err
+	}
+	for i := range t.stripes {
+		t.stripes[i].gate = make(chan struct{}, 1)
 	}
 	t.hook = metricsHookOrNoop(t.hook)
 	t.slots = make(chan struct{}, t.maxRevalidations)
@@ -234,7 +241,10 @@ func (t *CacheTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	}
 
 	key := t.key(req)
-	entry, ok, gen := t.lookup(key)
+	entry, ok, gen, storeErr := t.lookup(req.Context(), key)
+	if storeErr != nil {
+		t.observeError(req.Context(), CacheRead, storeErr)
+	}
 	if err := req.Context().Err(); err != nil {
 		closeRequestBody(req)
 		return nil, err
@@ -244,7 +254,11 @@ func (t *CacheTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	}
 	if !ok {
 		if reqCC.onlyIfCached {
-			return gatewayTimeout(req), nil
+			resp := gatewayTimeout(req)
+			if storeErr != nil {
+				resp.Header.Set("Cache-Status", cacheStatusName+"; fwd=miss; detail=store-error")
+			}
+			return resp, nil
 		}
 		t.hook.OnCacheMiss(req)
 		return t.fetch(req, key, gen, "fwd=miss")
@@ -303,24 +317,37 @@ func (t *CacheTransport) validateSync(req *http.Request, key string, gen uint64,
 	if resp.StatusCode == http.StatusNotModified {
 		drainAndClose(resp)
 		updated := refreshEntry(entry, resp, req, requestTime)
-		t.putRefreshed(key, gen, updated)
+		status := "fwd=stale; fwd-status=304"
+		if err := t.putRefreshed(req.Context(), key, gen, updated); err != nil {
+			status += "; detail=store-error"
+		}
 		t.hook.OnCacheHit(req, true)
-		return t.serve(req, updated, computeFreshness(updated, parseCacheControl(updated.Header), time.Now()), "fwd=stale; fwd-status=304"), nil
+		return t.serve(req, updated, computeFreshness(updated, parseCacheControl(updated.Header), time.Now()), status), nil
 	}
 	t.hook.OnCacheMiss(req)
-	gen = t.retire(key, gen)
+	gen = t.retire(req.Context(), key, gen)
 	return t.storeResponse(req, key, gen, resp, requestTime, "fwd=stale"), nil
 }
 
 // putRefreshed stores an entry a 304 updated — or, when the 304's header
 // fields now forbid storing it (no-store, Vary: *), removes the old one: the
 // updated response still answers this request, but must not be reused.
-func (t *CacheTransport) putRefreshed(key string, gen uint64, updated *CachedResponse) {
+func (t *CacheTransport) putRefreshed(ctx context.Context, key string, gen uint64, updated *CachedResponse) error {
 	if !storableHeader(updated.StatusCode, updated.Header) {
-		t.retire(key, gen)
-		return
+		t.retire(ctx, key, gen)
+		if t.stripes[stripeOf(key)].disabled.Load() {
+			return ErrCacheDisabled
+		}
+		return nil
 	}
-	t.put(key, gen, updated)
+	_, err := t.put(ctx, key, gen, updated)
+	if err != nil {
+		// A stricter 304 policy must retire the older metadata even when
+		// cancellation prevents entering the store.
+		t.stripes[stripeOf(key)].disabled.Store(true)
+		t.observeError(ctx, CacheWrite, err)
+	}
+	return err
 }
 
 // fetch forwards a request the cache cannot answer and stores the response
@@ -338,6 +365,14 @@ func (t *CacheTransport) fetch(req *http.Request, key string, gen uint64, status
 // to hand the caller, whose body reads exactly as it did upstream.
 // requestTime is when the request was sent (RFC 9111 §4.2.3).
 func (t *CacheTransport) storeResponse(req *http.Request, key string, gen uint64, resp *http.Response, requestTime time.Time, status string) *http.Response {
+	if t.stripes[stripeOf(key)].disabled.Load() {
+		if resp.Header == nil {
+			resp.Header = make(http.Header)
+		}
+		resp.Header.Set("Cache-Status", cacheStatusName+"; "+status+"; detail=store-error")
+		return resp
+	}
+
 	if !storableResponse(resp) {
 		return resp
 	}
@@ -363,7 +398,11 @@ func (t *CacheTransport) storeResponse(req *http.Request, key string, gen uint64
 		ResponseTime: time.Now(),
 		VaryHeaders:  varyValues(resp.Header, req),
 	}
-	if t.put(key, gen, entry) {
+	stored, err := t.put(req.Context(), key, gen, entry)
+	if err != nil {
+		t.observeError(req.Context(), CacheWrite, err)
+		resp.Header.Set("Cache-Status", cacheStatusName+"; "+status+"; detail=store-error")
+	} else if stored {
 		resp.Header.Set("Cache-Status", cacheStatusName+"; "+status+"; stored")
 	}
 	return resp
@@ -371,28 +410,47 @@ func (t *CacheTransport) storeResponse(req *http.Request, key string, gen uint64
 
 // lookup observes the entry and its generation together, before sending a
 // request whose response may be stored.
-func (t *CacheTransport) lookup(key string) (*CachedResponse, bool, uint64) {
+func (t *CacheTransport) lookup(ctx context.Context, key string) (*CachedResponse, bool, uint64, error) {
 	s := &t.stripes[stripeOf(key)]
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	entry, ok := t.store.Get(key)
-	return entry, ok, s.generation
+	if s.disabled.Load() {
+		return nil, false, s.generation.Load(), ErrCacheDisabled
+	}
+	if err := s.lock(ctx); err != nil {
+		return nil, false, s.generation.Load(), err
+	}
+	defer s.unlock()
+	gen := s.generation.Load()
+	if s.disabled.Load() {
+		return nil, false, gen, ErrCacheDisabled
+	}
+	entry, ok, err := t.store.Get(ctx, key)
+	if err != nil {
+		return nil, false, gen, err
+	}
+	if s.disabled.Load() || s.generation.Load() != gen {
+		return nil, false, gen, nil
+	}
+	return entry, ok, gen, nil
 }
 
-// retire removes a representation that a full validation response has
-// superseded. Concurrent validations of that old representation may no
-// longer restore it. If an unsafe request already invalidated this fetch,
-// its obsolete generation is retained so the result cannot be stored.
-func (t *CacheTransport) retire(key string, gen uint64) uint64 {
+// retire fences earlier validations before removing their representation.
+func (t *CacheTransport) retire(ctx context.Context, key string, gen uint64) uint64 {
 	s := &t.stripes[stripeOf(key)]
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.generation != gen {
+	if err := s.lock(ctx); err != nil {
+		s.disabled.Store(true)
+		t.observeError(ctx, CacheDelete, err)
 		return gen
 	}
-	s.generation++
-	t.store.Delete(key)
-	return s.generation
+	defer s.unlock()
+	if s.generation.Load() != gen {
+		return gen
+	}
+	next := s.generation.Add(1)
+	if err := t.store.Delete(ctx, key); err != nil {
+		s.disabled.Store(true)
+		t.observeError(ctx, CacheDelete, err)
+	}
+	return next
 }
 
 func stripeOf(key string) int {
@@ -405,7 +463,7 @@ func stripeOf(key string) int {
 // unless key was invalidated after gen was noted. The generation check and
 // publication share the invalidation lock, so an obsolete result is never
 // visible to another lookup. It reports whether the entry was stored.
-func (t *CacheTransport) put(key string, gen uint64, entry *CachedResponse) bool {
+func (t *CacheTransport) put(ctx context.Context, key string, gen uint64, entry *CachedResponse) (bool, error) {
 	cc := parseCacheControl(entry.Header)
 	ttl := t.maxRetention
 	if !hasValidator(entry.Header) {
@@ -414,16 +472,21 @@ func (t *CacheTransport) put(key string, gen uint64, entry *CachedResponse) bool
 		ttl = min(ttl, f.lifetime-f.age+window)
 	}
 	if ttl <= 0 {
-		return false
+		return false, nil
 	}
 	s := &t.stripes[stripeOf(key)]
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.generation != gen {
-		return false
+	if err := s.lock(ctx); err != nil {
+		return false, err
 	}
-	t.store.Set(key, entry, ttl)
-	return true
+	defer s.unlock()
+	if s.disabled.Load() || s.generation.Load() != gen {
+		return false, nil
+	}
+	if err := t.store.Set(ctx, key, entry, ttl); err != nil {
+		s.disabled.Store(true)
+		return false, err
+	}
+	return !s.disabled.Load() && s.generation.Load() == gen, nil
 }
 
 // serve builds the response for a stored entry.
@@ -486,14 +549,15 @@ func (t *CacheTransport) revalidateInBackground(req *http.Request, key string, g
 		}
 		if resp.StatusCode == http.StatusNotModified {
 			drainAndClose(resp)
-			t.putRefreshed(key, gen, refreshEntry(entry, resp, clone, requestTime))
+			// putRefreshed reports storage errors through the cache observer.
+			_ = t.putRefreshed(ctx, key, gen, refreshEntry(entry, resp, clone, requestTime))
 			return
 		}
 		if resp.StatusCode >= 500 {
 			drainAndClose(resp)
 			return // a failed refresh does not supersede the stale representation
 		}
-		gen = t.retire(key, gen)
+		gen = t.retire(ctx, key, gen)
 		drainAndClose(t.storeResponse(clone, key, gen, resp, requestTime, "fwd=stale"))
 	}()
 }
@@ -502,6 +566,9 @@ func (t *CacheTransport) revalidateInBackground(req *http.Request, key string, g
 // stale: the target URI and same-origin Location / Content-Location
 // (RFC 9111 §4.4), within the caller's identity partition.
 func (t *CacheTransport) invalidate(req *http.Request, resp *http.Response) {
+	if resp.Header == nil {
+		resp.Header = make(http.Header)
+	}
 	targets := []*url.URL{req.URL}
 	for _, h := range []string{"Location", "Content-Location"} {
 		if v := resp.Header.Get(h); v != "" {
@@ -516,10 +583,22 @@ func (t *CacheTransport) invalidate(req *http.Request, resp *http.Response) {
 		get.URL = u
 		key := t.key(get)
 		s := &t.stripes[stripeOf(key)]
-		s.mu.Lock()
-		s.generation++
-		t.store.Delete(key)
-		s.mu.Unlock()
+		s.generation.Add(1)
+		if err := s.lock(req.Context()); err != nil {
+			s.disabled.Store(true)
+			t.observeError(req.Context(), CacheDelete, err)
+			resp.Header.Set("Cache-Status", cacheStatusName+"; fwd=bypass; detail=invalidation-error")
+			continue
+		}
+		err := t.store.Delete(req.Context(), key)
+		if err != nil {
+			s.disabled.Store(true)
+		}
+		s.unlock()
+		if err != nil {
+			t.observeError(req.Context(), CacheDelete, err)
+			resp.Header.Set("Cache-Status", cacheStatusName+"; fwd=bypass; detail=invalidation-error")
+		}
 	}
 }
 

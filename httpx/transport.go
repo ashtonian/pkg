@@ -1,6 +1,7 @@
 package httpx
 
 import (
+	"context"
 	"net/http"
 	"time"
 )
@@ -53,6 +54,7 @@ type clientConfig struct {
 	hedgingDelay    time.Duration
 	hedgingOpts     []HedgingOption
 	authBindings    []AuthBinding
+	tokenBindings   []TokenBinding
 
 	// Feature flags
 	useCompression    bool
@@ -116,7 +118,8 @@ type RetryCauseHook interface {
 
 // LoggingHook receives logging events from a LoggingTransport. Both methods
 // receive redacted snapshots without bodies (see LoggingTransport); resp is
-// nil and err non-nil when the request failed.
+// nil when the wrapped transport returned none; a transport may return both
+// a response and an error.
 type LoggingHook interface {
 	LogRequest(req *http.Request)
 	LogResponse(req *http.Request, resp *http.Response, duration time.Duration, err error)
@@ -125,10 +128,13 @@ type LoggingHook interface {
 // CacheStore is the storage behind CacheTransport. Implementations must be
 // safe for concurrent use and must treat stored values as immutable. ttl > 0
 // bounds how long an entry may be returned; ttl <= 0 means no expiry.
+// Calls must honor ctx and preserve atomic values. A miss is (nil, false, nil);
+// a nil Set/Delete error confirms the operation completed. Stores must not
+// retain per-request contexts. Shared stores own cross-process invalidation.
 type CacheStore interface {
-	Get(key string) (*CachedResponse, bool)
-	Set(key string, value *CachedResponse, ttl time.Duration)
-	Delete(key string)
+	Get(ctx context.Context, key string) (*CachedResponse, bool, error)
+	Set(ctx context.Context, key string, value *CachedResponse, ttl time.Duration) error
+	Delete(ctx context.Context, key string) error
 }
 
 // CachedResponse is a response held by CacheTransport. Freshness is derived
