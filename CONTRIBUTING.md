@@ -27,6 +27,22 @@ The repository's `go.work` ties the published modules together, so a change to o
 
 GitHub Actions runs workflows here only for the repository owner. Pull requests opened by a bot, such as Dependabot updates or a release PR opened without the `RELEASE_PLEASE_TOKEN` secret, therefore get no checks: run CI on the branch with `gh workflow run ci.yml -R ashtonian/pkg --ref <branch>`, and the pull request shows the results.
 
+CI classifies the complete event delta before scheduling suites. Changes confined to
+`CONTRIBUTING.md` and Markdown guides in `config/docs`, `gowalker/docs`, `httpx/docs`
+or `parse/docs` keep module archive, executable documentation, cookbook and tooling
+checks, while skipping the repeated runtime matrices, PostgreSQL services, SDK suite,
+benchmarks and lint. Package READMEs, test data, source examples, configuration and
+unknown paths retain full validation. Renames include both paths; an unavailable base
+runs every check. Explicit workflow dispatch always runs the full suite.
+
+A single signed merge onto `main` may reuse successful PR or owner-dispatched branch
+coverage from the preceding six hours. The receipt must match the complete source tree,
+workflow, repository variables, run attempt and selected scope. PR receipts also match
+both tested merge parents; a dispatched branch must be the actual merged head with the
+same resulting tree. Failed, cancelled, incomplete or missing evidence runs validation.
+Post-merge benchmark artifacts remain independent because PRs do not produce them.
+Only superseded PR runs cancel automatically; pushes and manual acceptance runs finish.
+
 A module that requires another module of this repository requires a released version of it. When it needs an unreleased change, release the dependency first, then raise the requirement.
 
 Workspace development requires Go 1.27. Gowalker is its own module at
