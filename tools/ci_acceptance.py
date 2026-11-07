@@ -121,6 +121,8 @@ class API:
 
 
 def verify(env, api=None):
+    if env.get("GITHUB_RUN_ATTEMPT") != "1":
+        return False, "explicit reruns execute validation"
     if env.get("GITHUB_EVENT_NAME") != "push" or env.get("GITHUB_REF") != "refs/heads/main":
         return False, "this event requires validation"
     try:

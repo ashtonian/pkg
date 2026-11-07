@@ -41,6 +41,7 @@ workflow, repository variables, run attempt and selected scope. PR receipts also
 both tested merge parents; a dispatched branch must be the actual merged head with the
 same resulting tree. Failed, cancelled, incomplete or missing evidence runs validation.
 Post-merge benchmark artifacts remain independent because PRs do not produce them.
+Explicit reruns execute validation even if an older receipt matches.
 Only superseded PR runs cancel automatically; pushes and manual acceptance runs finish.
 
 A module that requires another module of this repository requires a released version of it. When it needs an unreleased change, release the dependency first, then raise the requirement.

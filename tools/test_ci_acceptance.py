@@ -12,7 +12,7 @@ import zipfile
 import ci_acceptance as ci
 
 SOURCE = {"sha": "a" * 40, "parents": ["b" * 40, "c" * 40], "tree": "d" * 40}
-ENV = {"GITHUB_EVENT_NAME": "push", "GITHUB_REF": "refs/heads/main", "GITHUB_SHA": "a" * 40,
+ENV = {"GITHUB_RUN_ATTEMPT": "1", "GITHUB_EVENT_NAME": "push", "GITHUB_REF": "refs/heads/main", "GITHUB_SHA": "a" * 40,
        "GITHUB_REPOSITORY": "o/r", "BEFORE": "b" * 40, "CI_VARIABLES_JSON": "{}", "RUNTIME_REQUIRED": "true"}
 RUN = {"id": 4, "run_attempt": 2, "event": "pull_request", "head_sha": "c" * 40,
        "status": "completed", "conclusion": "success", "updated_at": "2026-11-07T06:45:00Z",
@@ -39,6 +39,9 @@ class Acceptance(unittest.TestCase):
             def receipt(self, artifact):
                 return outer.receipt
         return ci.verify(env or ENV, API())[0]
+
+    def test_explicit_rerun_cannot_hide_an_older_failure(self):
+        self.assertFalse(self.verify({**ENV, "GITHUB_RUN_ATTEMPT": "2"}))
 
     def test_identical_merge_reuses_pr_validation(self):
         self.assertTrue(self.verify())
