@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.11.0](https://github.com/ashtonian/pkg/compare/parse/v0.10.1...parse/v0.11.0) (2026-11-08)
+
+
+### Features
+
+* **parse:** compile bounded varied row update batches ([bae8fdd](https://github.com/ashtonian/pkg/commit/bae8fdd9427e32a26640233ed6f4a2e82f3c043a))
+* **parse:** compile bounded varied row update batches ([#139](https://github.com/ashtonian/pkg/issues/139)) ([eb1f4eb](https://github.com/ashtonian/pkg/commit/eb1f4eb7c65ffb8e265c475b98a45fe6094a5f32))
+
 ## [0.10.1](https://github.com/ashtonian/pkg/compare/parse/v0.10.0...parse/v0.10.1) (2026-11-06)
 
 
