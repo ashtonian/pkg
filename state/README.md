@@ -50,7 +50,7 @@ prepared
 
 ## API and external dependencies
 
-`ReadJSON` reads one bounded JSON value; `ReadJSONStrict` also rejects unknown schema fields. Reads return decoding errors and callers must reject the result on failure. `WriteJSON` and `WriteJSONBounded` atomically replace a path. `CreateJSONBounded` refuses existing files and symlinks. The path-based writers create missing parents with mode 0700 and retain existing parent permissions.
+`ReadFile(ctx, path, maxBytes)` reads exact bounded regular-file bytes and follows managed symlinks. It rejects special files before opening, checks the opened identity, and reads with cancellation checks between chunks. Linux/macOS nonblocking open also prevents a swapped FIFO from blocking the caller. `ReadJSON` shares that input boundary and reads one bounded JSON value; `ReadJSONStrict` also rejects unknown schema fields. Reads return decoding errors and callers must reject the result on failure. `WriteJSON` and `WriteJSONBounded` atomically replace a path. `CreateJSONBounded` refuses existing files and symlinks. The path-based writers create missing parents with mode 0700 and retain existing parent permissions.
 
 `ReadJSONStrictAt`, `WriteJSONAt` and `CreateJSONAt` use a caller-owned root and one leaf. Rooted reads reject nonregular/symlink entries. `WriteBytesAt` and `CreateBytesAt` preserve exact bytes, clone their input and share replacement/exclusive-create semantics. `SyncRoot` commits directory-entry durability without closing the caller's root.
 
@@ -78,6 +78,7 @@ Use private, trusted directories; this is not a sandbox against a peer who can r
 
 | File | Responsibility |
 |---|---|
+| `input.go`, `open_*.go` | Bounded regular-file input and platform open flags |
 | `files.go` | Bounded JSON/byte reads, exclusive creation and replacement |
 | `sync.go` | Directory durability |
 | `digest.go` | Exact numeric-token JSON identities |

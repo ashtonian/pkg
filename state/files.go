@@ -22,29 +22,22 @@ func ReadJSON(ctx context.Context, file string, maxBytes int64, target any) erro
 func ReadJSONStrict(ctx context.Context, file string, maxBytes int64, target any) error {
 	return readJSON(ctx, file, maxBytes, target, true)
 }
-func readJSON(ctx context.Context, file string, maxBytes int64, target any, strict bool) (err error) {
-	if err := ctx.Err(); err != nil {
+func readJSON(ctx context.Context, file string, maxBytes int64, target any, strict bool) error {
+	data, err := ReadFile(ctx, file, maxBytes)
+	if err != nil {
 		return err
 	}
-	if maxBytes <= 0 || maxBytes > 128<<20 {
-		return errors.New("state read bound must be between 1 byte and 128 MiB")
-	}
-	f, err := os.Open(file)
-	if err != nil {
-		return fmt.Errorf("open state: %w", err)
-	}
-	defer func() { err = errors.Join(err, f.Close()) }()
-	return decodeJSON(ctx, f, maxBytes, target, strict)
+	return decodeDocument(ctx, data, target, strict)
 }
 
 func decodeJSON(ctx context.Context, input io.Reader, maxBytes int64, target any, strict bool) error {
-	data, err := io.ReadAll(io.LimitReader(input, maxBytes+1))
+	data, err := readBytes(ctx, input, maxBytes)
 	if err != nil {
-		return fmt.Errorf("read state: %w", err)
+		return err
 	}
-	if int64(len(data)) > maxBytes {
-		return errors.New("state document exceeds read bound")
-	}
+	return decodeDocument(ctx, data, target, strict)
+}
+func decodeDocument(ctx context.Context, data []byte, target any, strict bool) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -143,11 +136,18 @@ func ReadJSONStrictAt(ctx context.Context, root *os.Root, name string, maxBytes 
 	if !info.Mode().IsRegular() {
 		return errors.New("rooted state must be a regular file")
 	}
-	file, err := root.Open(name)
+	file, err := root.OpenFile(name, os.O_RDONLY|nonblockingReadFlag(), 0)
 	if err != nil {
 		return err
 	}
 	defer func() { err = errors.Join(err, file.Close()) }()
+	opened, err := file.Stat()
+	if err != nil {
+		return err
+	}
+	if !opened.Mode().IsRegular() || !os.SameFile(info, opened) {
+		return errors.New("rooted state identity changed while opening")
+	}
 	return decodeJSON(ctx, file, maxBytes, target, true)
 }
 
