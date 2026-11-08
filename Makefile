@@ -2,7 +2,7 @@
 CORE_MODULES := gowalker jsonvalue gitx
 CONFIG_MODULES := config config/kongprovider
 HTTPX_MODULES := httpx httpx/oauth2 httpx/codec/msgpack httpx/codec/proto httpx/compress/brotli
-NATIVE_MODULES := process state
+NATIVE_MODULES := process state onepassword
 PARSE_MODULES := parse
 TAGGED_MODULES := $(HTTPX_MODULES) $(PARSE_MODULES) $(NATIVE_MODULES)
 MODULES := $(CORE_MODULES) $(CONFIG_MODULES) $(TAGGED_MODULES)
