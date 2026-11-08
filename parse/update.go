@@ -138,37 +138,9 @@ func (r *Resource[T]) BuildUpdate(d Dialect, p *patch.ParsedPatch, target Target
 	if s.Governance != nil || s.IncludeDeleted {
 		return nil, fmt.Errorf("%s: %w", r.table, ErrUpdateScope)
 	}
-	var cfg updateConfig
-	for _, opt := range opts {
-		opt(&cfg)
-	}
-	var patchOpts []patch.PatchSQLOption
-	if cfg.stampColumn != "" {
-		if _, ok := r.tableColumns[cfg.stampColumn]; !ok || !core.IsIdentifier(cfg.stampColumn) {
-			return nil, fmt.Errorf("%s: stamp column %q is not a column of the resource", r.table, cfg.stampColumn)
-		}
-		if cfg.stampSQL == "" && cfg.stampValue.IsZero() {
-			return nil, fmt.Errorf("%s: stamp column %q has no time", r.table, cfg.stampColumn)
-		}
-		if cfg.stampSQL != "" {
-			patchOpts = append(patchOpts, patch.WithAutoTimestampSQL(cfg.stampColumn, cfg.stampSQL))
-		} else {
-			at := cfg.stampValue
-			patchOpts = append(patchOpts, patch.WithAutoTimestamp(cfg.stampColumn), patch.WithTimeFunc(func() time.Time { return at }))
-		}
-	}
-	for _, col := range cfg.increments {
-		t, ok := r.tableColumns[col]
-		if !ok || !core.IsIdentifier(col) {
-			return nil, fmt.Errorf("%s: increment column %q is not a column of the resource", r.table, col)
-		}
-		if core.TypeOf(t).Type != core.FieldTypeInt {
-			return nil, fmt.Errorf("%s: increment column %q is not an integer column", r.table, col)
-		}
-		patchOpts = append(patchOpts, patch.WithIncrement(col))
-	}
-	if cfg.skipUnchanged {
-		patchOpts = append(patchOpts, patch.WithChangePredicate())
+	cfg, patchOpts, err := r.updateOptions(opts)
+	if err != nil {
+		return nil, err
 	}
 	set, err := patch.BuildPatchSQL(p, d, patchOpts...)
 	if err != nil {
@@ -324,4 +296,40 @@ func (r *Resource[T]) RelationStatements(plan *UpdatePlan, ownerKeys []any) ([]p
 		out = append(out, stmts...)
 	}
 	return out, nil
+}
+
+func (r *Resource[T]) updateOptions(opts []UpdateOption) (updateConfig, []patch.PatchSQLOption, error) {
+	var cfg updateConfig
+	for _, opt := range opts {
+		opt(&cfg)
+	}
+	var patchOpts []patch.PatchSQLOption
+	if cfg.stampColumn != "" {
+		if _, ok := r.tableColumns[cfg.stampColumn]; !ok || !core.IsIdentifier(cfg.stampColumn) {
+			return updateConfig{}, nil, fmt.Errorf("%s: stamp column %q is not a column of the resource", r.table, cfg.stampColumn)
+		}
+		if cfg.stampSQL == "" && cfg.stampValue.IsZero() {
+			return updateConfig{}, nil, fmt.Errorf("%s: stamp column %q has no time", r.table, cfg.stampColumn)
+		}
+		if cfg.stampSQL != "" {
+			patchOpts = append(patchOpts, patch.WithAutoTimestampSQL(cfg.stampColumn, cfg.stampSQL))
+		} else {
+			at := cfg.stampValue
+			patchOpts = append(patchOpts, patch.WithAutoTimestamp(cfg.stampColumn), patch.WithTimeFunc(func() time.Time { return at }))
+		}
+	}
+	for _, col := range cfg.increments {
+		t, ok := r.tableColumns[col]
+		if !ok || !core.IsIdentifier(col) {
+			return updateConfig{}, nil, fmt.Errorf("%s: increment column %q is not a column of the resource", r.table, col)
+		}
+		if core.TypeOf(t).Type != core.FieldTypeInt {
+			return updateConfig{}, nil, fmt.Errorf("%s: increment column %q is not an integer column", r.table, col)
+		}
+		patchOpts = append(patchOpts, patch.WithIncrement(col))
+	}
+	if cfg.skipUnchanged {
+		patchOpts = append(patchOpts, patch.WithChangePredicate())
+	}
+	return cfg, patchOpts, nil
 }

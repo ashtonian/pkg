@@ -99,6 +99,8 @@ Values bind through the dialect's `MarshalValue(value, core.TypeInfo)` (the `SQL
 
 A path with no `SQLColumn` fails with E2069. Relation paths go to `PatchSQLResult.RelationOps`; `RenderRelationOp(op, dialect, ownerPKs, opts)` renders their junction statements for the caller's transaction and fails closed on a tenant-scoped junction without `RenderRelationOpOptions.TenantValue` (or explicit `Unscoped`).
 
+`PatchSQLResult.Assignments` exposes each folded `ColumnAssignment{Column, Expression}` before rendering the comma-separated `SetClause`. Both forms share `Args` and placeholder numbering. `Resource.BuildUpdateBatch` composes these expressions for distinct per-key column patches; its [transaction and exact-preimage contract](operations.md#varied-native-update-batches) applies to every chunk.
+
 A SET clause is not a complete UPDATE. `Resource.BuildUpdate` builds the complete statement ([Resource updates](#resource-updates)); without a resource, add a trusted table/column projection, scoped WHERE, and correctly offset placeholders, and reject or deliberately handle an empty patch before executing SQL. See [the pgx recipe](../parsepgx/recipe_test.go). With `WithChangePredicate()`, `ChangePredicate` ANDed into that WHERE writes only the rows the patch changes; it uses the SET clause's placeholders, so the WHERE's own still start after `ParamCount`.
 
 ## Patches built in code

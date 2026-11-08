@@ -28,6 +28,41 @@ Treat parsed filters, patch operations, policies, and user-supplied maps as requ
 
 For read/modify/write patches (`test`, `copy`, `move`, nested pointers), protect the read and subsequent persistence with a transaction/lock or optimistic version check. A successful test against a Go value does not establish that the database row is still unchanged. Relation replacements likewise require transaction-level serialization where concurrent updates can conflict.
 
+### Varied native update batches
+
+`Resource.BuildUpdateBatch(dialect, []RowUpdate, scope, UpdateBatchLimits, options...)`
+compiles distinct column patches for unique primary keys. Each `RowUpdate` has
+`Key`, `Patch` and an optional narrowing `Policy` for its exact revision and
+authorization predicate. The common scope's tenant, live-row and policy floors
+apply to every item. This is a server-side compiler; it grants no authority.
+
+The returned `UpdateBatchPlan.Chunks` contains canonical `Keys`, a `Current`
+statement and an optional `Owner` statement per chunk. In one caller-owned
+transaction, run **all** Current statements first, require exactly their named
+keys with each chunk's `CheckCurrent(modelKeys)`, then run the Owner statements.
+Roll back completely if any target is
+missing, stale, inaccessible or invalid. PostgreSQL locks use deterministic key
+order; SQLite callers begin a write transaction before these reads. Owners
+return actual changed postimages. With `SkipUnchanged`, keys present in Current
+but absent from Owner retain their existing stamps and counters.
+
+`UpdateBatchLimits` defaults to 500 total rows and a dialect parameter budget
+of 999 for SQLite or 65535 for PostgreSQL. Positive overrides configure these
+bounds; negative values refuse. Chunks contain batched statements, not one
+UPDATE per item. A single item exceeding the parameter budget refuses the whole
+plan. Empty input has no statements. Keys normalize through the resource's
+canonical UUID/string/integer scalar type; duplicate normalized keys refuse.
+Database collation aliases must also be rejected by the caller's exact Current
+key check. All validation finishes before returning an executable plan.
+
+The initial batch contract supports column patches that the ordinary SQL
+compiler supports. It refuses relation mutations and primary-key/tenant-column
+assignments. Existing single-payload update and relation APIs retain their
+contracts. Typed JSON, arrays, nulls, change predicates, timestamps and increments
+use the same canonical patch expression builder. `patch.PatchSQLResult.Assignments`
+exposes those structured column expressions alongside its existing rendered SET
+fragment; consumers never split SQL strings to recover them.
+
 ## Query costs and limits
 
 Parser cost is a rejection heuristic, not a database execution-time estimate. The default `MaxCost` is 50; an indexed relation condition costs 8, an unindexed one 80. `indexed:"true"` describes an actual index you created; it does not create one or make a scan cheap.

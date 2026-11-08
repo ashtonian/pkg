@@ -6,14 +6,14 @@ Parse resource API filters, sorts, pagination, search, facets, relations, and pa
 
 ```mermaid
 flowchart LR
-    repo["Application repository"] -->|"ParseList / BuildList / BuildUpdate"| resource["parse.Resource"]
+    repo["Application repository"] -->|"ParseList / BuildList / BuildUpdate / BuildUpdateBatch"| resource["parse.Resource"]
     pgx["parse/parsepgx"] -->|"Run plans / build pages"| resource
     resource -->|"Walk fields / normalize values"| core["parse/core"]
     resource -->|"Compile lists / cursors"| filter["parse/filter"]
     resource -->|"Validate patches / compile writes"| patch["parse/patch"]
 ```
 
-**Entry points:** `NewResource` declares a table and key; `ParseList`, `BuildList`, `BuildUpdate`, `Page` and the filter/patch methods serve requests.
+**Entry points:** `NewResource` declares a table and key; `ParseList`, `BuildList`, `BuildUpdate`, `BuildUpdateBatch`, `Page` and the filter/patch methods serve requests.
 
 **Exit points:** Parameterized statements, parsed values and pages. Repositories execute statements; `parsepgx` provides optional pgx execution.
 
@@ -85,6 +85,7 @@ On PostgreSQL, `parsepgx.QueryPage(ctx, pool, devices, plan)` runs the plan and 
 | Filter by related rows' attributes (has-many, belongs-to, many-to-many) | `Resource.Relate` with `HasMany`, `BelongsTo`, `ManyToMany`; `$some`, `$none`, `$is`, `$is_not` | [Relations](docs/relations.md#declare-relations) |
 | Match related IDs or return relation memberships | Relation tags, `filter.BuildIncludeQuery` | [Relations](docs/relations.md#pair-tables-compared-by-key) |
 | Serve an update endpoint: patch rows scoped to tenant, live rows and policy | `ParseMergePatch` / `ParsePatch`, `BuildUpdate`, `RelationStatements` | [Resource updates](docs/patches.md#resource-updates) |
+| Compile distinct column patches with per-key revision/policy fences in one transaction | `BuildUpdateBatch`, `RowUpdate`, `UpdateBatchChunk.CheckCurrent` | [Varied update batches](docs/operations.md#varied-native-update-batches) |
 | Write, stamp and count only the rows a patch changes, and tell unchanged from not found | `SkipUnchanged`, `UpdatePlan.Current`, `Unchanged` | [Skipping unchanged rows](docs/patches.md#skipping-unchanged-rows) |
 | Merge fields or replace a JSON document | `ParseMergePatch`, `ParsePatch`, `patch.BuildPatchSQL` | [Patches](docs/patches.md) |
 | Apply a patch to an existing Go value | `ApplyValidatedPatch`, `ApplyPatch` | [Typed documents](docs/patches.md#typed-document-behavior) |
@@ -128,6 +129,8 @@ Construct parsers once, customize schemas before serving, and treat them as read
 | `filter.List*` / builder options | functional options | bounded list defaults | [List, filter, facet, include options](docs/queries.md#configuration) |
 | `patch.With*` | `patch.PatchSQLOption` | no timestamp column | [SQL patch options](docs/patches.md#configuration) |
 | `patch.DefaultMaxOperations` | int | `50` | Operation limit on generated client/server patch schemas; a hand-built `PatchSchema` chooses its own `MaxOperations`. [Patch limits](docs/patches.md#validation) |
+| `UpdateBatchLimits.MaxRows` | int | `500` | Total keys admitted by one `BuildUpdateBatch` plan; zero selects the default and negative refuses |
+| `UpdateBatchLimits.MaxParameters` | int | SQLite `999`; PostgreSQL `65535` | Parameters per batch statement; zero selects the dialect default and negative refuses |
 
 Tags expose capabilities explicitly: `parse:"filter,sort,patch,facet,search,include,server"`, `filter_ops`, `patch_ops`, `enum`, `minlen` / `maxlen` / `min` / `max` / `minitems` / `maxitems`, `relation`, `facet`, and search/geo metadata. Unknown capability names fail schema construction. [All tags and defaults](docs/schema-configuration.md)
 
@@ -151,6 +154,7 @@ Tags expose capabilities explicitly: `parse:"filter,sort,patch,facet,search,incl
 | [`list.go`](list.go) | `ListInput`, `ParseListInput`, `ListRequest`, `ParseList`, `Scope`, `ListPlan` (`Dialect`), `BuildList`, `Page`, `PagePointers`, `IncludeQueries` |
 | [`relate.go`](relate.go) | `Relate`, `MustRelate`, `HasMany`, `BelongsTo`, `ManyToMany`, `Junction` / `Through`, `Indexed`, `Includable`, `Facetable`, `Writable`, `PolicyScoped`, `References`, `RelatedResource` |
 | [`update.go`](update.go) | `Target` (`ByID`, `ByIDs`, `ByFilter`), `BuildUpdate`, `UpdatePlan` (`Dialect`, `Current`), `RelationStatements`, `Stamp`, `StampSQL`, `Increment`, `SkipUnchanged`, `Unchanged`, `Dialect` |
+| [`update_batch.go`](update_batch.go) | `RowUpdate`, `UpdateBatchLimits`, `BuildUpdateBatch`, `UpdateBatchPlan`, `UpdateBatchChunk.CheckCurrent`, `ErrUpdateBatchTargets`: bounded varied column updates with exact preimage checks |
 | [`typed.go`](typed.go) | `Resource` parse entry points (`MergePatchMap`, `ValidateOperations` and server variants), schema access, typed patch application |
 | [`parsehttp`](parsehttp/README.md) | `WriteError`: a parse error as an HTTP response |
 | [`parsepgx`](parsepgx/README.md) | `QueryPage`, `Update`: plans run on PostgreSQL through pgx batches |
