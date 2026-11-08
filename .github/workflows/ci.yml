@@ -74,6 +74,10 @@ jobs:
           workload: ${{ toJSON(matrix) }}
           go-version: ${{ matrix.go }}
           cache-dependency-path: "**/go.sum"
+      - name: Native process and document unit tests
+        run: make test-native-unit
+      - name: Native process and document integration tests
+        run: make test-native-integration
       - name: gitx tests
         run: make test-gitx
       - name: JSON value tests

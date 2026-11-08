@@ -4,6 +4,8 @@ go 1.27.0
 // working trees. The config cookbook, httpx Gin example and benchmarks,
 // and release tooling have separate dependency graphs and checks.
 use (
+	./process
+	./state
 	./gowalker
 	./jsonvalue
 	./gitx

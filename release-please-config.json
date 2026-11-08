@@ -78,6 +78,14 @@
     "gitx": {
       "component": "gitx",
       "initial-version": "0.1.0"
+    },
+    "process": {
+      "component": "process",
+      "initial-version": "0.1.0"
+    },
+    "state": {
+      "component": "state",
+      "initial-version": "0.1.0"
     }
   }
 }
