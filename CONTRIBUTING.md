@@ -8,7 +8,7 @@ The repository's `go.work` ties the published modules together, so a change to o
 
 | Command | What it runs |
 |---|---|
-| `make test-native-unit` / `make test-native-integration` / `make native-release-check` | Process/state tagged race tests and fresh candidate-archive consumers |
+| `make test-native-unit` / `make test-native-integration` / `make native-release-check` | Process/state/1Password tagged race tests and fresh candidate-archive consumers |
 | `make test-gitx` | gitx race tests: real scratch repositories, in-memory trees and a rebase through the installed driver |
 | `make test-jsonvalue` / `make jsonvalue-release-check` | JSON replacement race tests / fresh module-archive consumer and README example |
 | `make test` | Every published module's tests, race detector on; both httpx build tags |

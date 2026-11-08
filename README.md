@@ -8,6 +8,7 @@ its own dependencies, version, changelog and releases.
 | [gowalker](gowalker/README.md) | `github.com/ashtonian/pkg/gowalker` | Struct-tag plumbing for libraries users configure with tags: field naming conventions, per-type metadata caching, inherited section tags, field readers/writers. |
 | [jsonvalue](jsonvalue/README.md) | `github.com/ashtonian/pkg/jsonvalue` | Fresh JSON value replacement with optional non-nil representation checks. |
 | [process](process/README.md) | `github.com/ashtonian/pkg/process` | Bounded native subprocesses with owned descendant cleanup and separate output caps. |
+| [onepassword](onepassword/README.md) | `github.com/ashtonian/pkg/onepassword` | Complete bounded read-only native vault observations and exact selected-ID batches. |
 | [state](state/README.md) | `github.com/ashtonian/pkg/state` | Durable bounded controller documents, canonical JSON identities and local lifetime locks. |
 | [gitx](gitx/README.md) | `github.com/ashtonian/pkg/gitx` | Git-side plumbing for a repository's own checks: tracked-file listing, a conflict-marker check and a markdown merge driver that keeps both sides' insertions. |
 | [parse](parse/README.md) | `github.com/ashtonian/pkg/parse` | Struct tags to validated HTTP filters, sorts, keyset pages and patches, compiled to PostgreSQL/SQLite plans; Go and TypeScript client builders. |
@@ -25,10 +26,11 @@ go get github.com/ashtonian/pkg/jsonvalue@latest
 go get github.com/ashtonian/pkg/gitx@latest
 go get github.com/ashtonian/pkg/process@latest
 go get github.com/ashtonian/pkg/state@latest
+go get github.com/ashtonian/pkg/onepassword@latest
 go get github.com/ashtonian/pkg/parse@latest
 ```
 
-Process, state, parse, gowalker, jsonvalue, config and its Kong provider require **Go 1.27 or later**; gitx and httpx
+Process, state, onepassword, parse, gowalker, jsonvalue, config and its Kong provider require **Go 1.27 or later**; gitx and httpx
 require **Go 1.26 or later**. Install only the modules you need. Add the Kong provider for Kong CLI integration;
 add httpx's MessagePack, protobuf or Brotli module only for that wire format.
 
