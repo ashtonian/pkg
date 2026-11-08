@@ -100,6 +100,25 @@ func testUpdateBatchDatabase(t *testing.T, db *sql.DB, d parse.Dialect) {
 		assert.Equal(t, "old", updated)
 	}
 	for _, test := range []struct {
+		name, raw, reference string
+		key, version         int64
+		opt                  parse.UpdateOption
+	}{
+		{"server-counter-owns-value", `{"reference":"counter-control","version":777}`, "counter-control", 3, 4, parse.Increment("version")},
+		{"server-stamp-owns-value", `{"reference":"stamp-conflict","meta":{"value":"stamp-control"}}`, "server-stamp", 4, 3, parse.StampSQL("reference", "'server-stamp'")},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			plan, err := r.BuildUpdateBatch(d, []parse.RowUpdate{{Key: test.key, Patch: updateBatchPatch(t, r, test.raw)}}, parse.Scope{Tenant: "t1"}, parse.UpdateBatchLimits{}, test.opt)
+			require.NoError(t, err)
+			observed, _, err := executeUpdateBatch(t.Context(), db, d, plan)
+			require.NoError(t, err)
+			require.Len(t, observed, 1)
+			assert.Equal(t, test.version, observed[0].version)
+			require.NotNil(t, observed[0].reference)
+			assert.Equal(t, test.reference, *observed[0].reference)
+		})
+	}
+	for _, test := range []struct {
 		name string
 		key  int64
 		rev  int64
@@ -130,6 +149,10 @@ func testUpdateBatchDatabase(t *testing.T, db *sql.DB, d parse.Dialect) {
 	var reference string
 	require.NoError(t, db.QueryRowContext(t.Context(), "SELECT reference FROM batch_rows WHERE id=1").Scan(&reference))
 	assert.Equal(t, "new-1", reference)
+}
+
+func updateBatchVersion(version int64) *filter.PolicyConstraints {
+	return &filter.PolicyConstraints{Constraints: []*filter.PolicyConstraint{{Field: "version", Operator: filter.OpEq, Value: version}}}
 }
 
 func executeUpdateBatch(ctx context.Context, db *sql.DB, d parse.Dialect, plan *parse.UpdateBatchPlan) (out []updateBatchImage, statements int, err error) {

@@ -7,7 +7,6 @@ import (
 
 	"github.com/ashtonian/pkg/parse"
 	"github.com/ashtonian/pkg/parse/core"
-	"github.com/ashtonian/pkg/parse/filter"
 	"github.com/ashtonian/pkg/parse/patch"
 	"github.com/stretchr/testify/require"
 )
@@ -40,8 +39,4 @@ func updateBatchPatch(t *testing.T, r *parse.Resource[updateBatchRow], raw strin
 	p, err := r.ParseServerMergePatch([]byte(raw))
 	require.NoError(t, err)
 	return p
-}
-
-func updateBatchVersion(version int64) *filter.PolicyConstraints {
-	return &filter.PolicyConstraints{Constraints: []*filter.PolicyConstraint{{Field: "version", Operator: filter.OpEq, Value: version}}}
 }
