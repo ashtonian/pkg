@@ -12,5 +12,5 @@
   "httpx/oauth2": "0.1.0",
   "process": "0.1.0",
   "state": "0.2.0",
-  "onepassword": "0.0.0"
+  "onepassword": "0.1.0"
 }
