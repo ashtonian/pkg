@@ -5,7 +5,6 @@
 
 ### Features
 
-* **onepassword:** share bounded native vault observations ([73360fa](https://github.com/ashtonian/pkg/commit/73360fa942631689be9077d4760d340aca58edc9))
 * **onepassword:** share bounded native vault observations ([#137](https://github.com/ashtonian/pkg/issues/137)) ([febbdea](https://github.com/ashtonian/pkg/commit/febbdeaa268a268cf1d5a6e2bfaf2fbacdbda829))
 
 
