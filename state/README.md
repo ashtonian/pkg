@@ -1,4 +1,4 @@
-# state
+# github.com/ashtonian/pkg/state
 
 `state` stores durable local controller documents and coordinates cooperating processes through a trusted shared directory. It distinguishes exclusive creation from replacement and provides rooted leaf operations, private files, directory sync and canonical JSON identities. Business admission, native outcomes and distributed ownership remain with callers.
 
@@ -52,7 +52,7 @@ prepared
 
 `ReadFile(ctx, path, maxBytes)` reads exact bounded regular-file bytes and follows managed symlinks. It rejects special files before opening, checks the opened identity, and reads with cancellation checks between chunks. Linux/macOS nonblocking open also prevents a swapped FIFO from blocking the caller. `ReadJSON` shares that input boundary and reads one bounded JSON value; `ReadJSONStrict` also rejects unknown schema fields. Reads return decoding errors and callers must reject the result on failure. `WriteJSON` and `WriteJSONBounded` atomically replace a path. `CreateJSONBounded` refuses existing files and symlinks. The path-based writers create missing parents with mode 0700 and retain existing parent permissions.
 
-`ReadJSONStrictAt`, `WriteJSONAt` and `CreateJSONAt` use a caller-owned root and one leaf. Rooted reads reject nonregular/symlink entries. `WriteBytesAt` and `CreateBytesAt` preserve exact bytes, clone their input and share replacement/exclusive-create semantics. `SyncRoot` commits directory-entry durability without closing the caller's root.
+`ReadFileAt(ctx, root, name, maxBytes)` reads byte-exact bounded raw input through a caller-owned directory handle and one leaf. It rejects nonregular/symlink entries before opening, uses a nonblocking open on Linux/macOS, checks the opened file identity and shares the same byte/cancellation loop as managed path reads. A renamed/replaced directory path cannot redirect the handle. Open nested directories with `root.OpenRoot` and close those handles after use. `ReadJSONStrictAt` shares this raw boundary before strict schema decoding. `WriteJSONAt` and `CreateJSONAt` keep the same rooted leaf contract. `WriteBytesAt` and `CreateBytesAt` preserve exact bytes, clone their input and share replacement/exclusive-create semantics. `SyncRoot` commits directory-entry durability without closing the caller's root.
 
 `LockFile(ctx, root, name)` returns a nonblocking process-lifetime lock released by closing its file. Linux/macOS support is explicit; other platforms reject locking. All cooperating controllers must use the same trusted directory and lock identity.
 
@@ -61,6 +61,8 @@ prepared
 Runtime uses only the standard library. Testify is a test dependency. The filesystem must support same-directory hard links, rename and directory fsync.
 
 ## Build and test
+
+Rooted raw-input regressions cover directory replacement, exact/overflow bytes, empty/missing files, cancellation, malformed JSON, invalid leaf names, link/FIFO rejection and an opened-identity mismatch. They retain caller-owned roots and preserve managed path symlink semantics.
 
 `GOWORK=off go test -tags=unit,integration -race -count=1 ./...` covers real files, private modes, cancellation, oversized/invalid state, exclusive creation, rooted traversal, byte identity, lock contention and numeric digest identity. `make native-release-check` checks fresh module archives and executes the quick start.
 
