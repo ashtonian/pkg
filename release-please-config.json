@@ -86,6 +86,10 @@
     "state": {
       "component": "state",
       "initial-version": "0.1.0"
+    },
+    "onepassword": {
+      "component": "onepassword",
+      "initial-version": "0.1.0"
     }
   }
 }
