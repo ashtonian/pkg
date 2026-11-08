@@ -234,6 +234,7 @@ func (c *Client) Get(ctx context.Context, vault string, selected []ItemMetadata)
 		vaultID = item.Vault.ID
 	}
 	result := map[string]Item{}
+	remaining := c.policy.MaxNativeBytes
 	for batch := range slices.Chunk(selected, c.policy.BatchSize) {
 		input := make([]map[string]string, len(batch))
 		expected := map[string]ItemMetadata{}
@@ -249,6 +250,10 @@ func (c *Client) Get(ctx context.Context, vault string, selected []ItemMetadata)
 		if err != nil {
 			return nil, err
 		}
+		if len(data) > remaining {
+			return nil, errors.New("native item batches exceed the complete aggregate observation byte bound")
+		}
+		remaining -= len(data)
 		data = bytes.TrimSpace(data)
 		if len(data) == 0 {
 			return nil, errors.New("native vault item batch is empty")

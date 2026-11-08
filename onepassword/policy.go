@@ -12,7 +12,7 @@ type Policy struct {
 	MaxItems       int           `koanf:"max_items" default:"10000" validate:"gt=0,lte=100000" desc:"Complete vault metadata and selected item bound"`
 	MaxFields      int           `koanf:"max_fields" default:"1000" validate:"gt=0,lte=10000" desc:"Complete native fields per item bound"`
 	BatchSize      int           `koanf:"batch_size" default:"32" validate:"gt=0,lte=128" desc:"Selected item IDs per native batch"`
-	MaxNativeBytes int           `koanf:"max_native_bytes" default:"16777216" validate:"gt=0,lte=67108864" desc:"Bound for each native input/reference and captured output stream"`
+	MaxNativeBytes int           `koanf:"max_native_bytes" default:"16777216" validate:"gt=0,lte=67108864" desc:"Native input/reference, each captured stream and aggregate selected-item response byte bound"`
 }
 
 // DefaultPolicy supplies the shared configuration schema defaults.

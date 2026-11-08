@@ -125,3 +125,26 @@ func TestReadPreservesBinaryBytesAndSanitizesNativeFailure(t *testing.T) {
 	_, err = client.Read(ctx, "op://v/item/field")
 	require.ErrorIs(t, err, context.Canceled)
 }
+
+func TestSelectedBatchesShareTheCompleteObservationByteBudget(t *testing.T) {
+	policy := DefaultPolicy()
+	policy.BatchSize = 1
+	policy.MaxNativeBytes = 128
+	calls := 0
+	client, err := New(WithPolicy(policy), WithRunner(runnerFunc(func(_ context.Context, command process.Command) (process.Result, error) {
+		var input []map[string]string
+		require.NoError(t, json.Unmarshal(command.Input, &input))
+		calls++
+		item := Item{ItemMetadata: ItemMetadata{ID: input[0]["id"], Title: input[0]["id"], Vault: Vault{ID: "v"}}}
+		data, err := json.Marshal(item)
+		require.NoError(t, err)
+		require.Less(t, len(data), policy.MaxNativeBytes)
+		return process.Result{Stdout: data}, nil
+	})))
+	require.NoError(t, err)
+	selected := []ItemMetadata{{ID: "a", Title: "a", Vault: Vault{ID: "v"}}, {ID: "b", Title: "b", Vault: Vault{ID: "v"}}}
+	items, err := client.Get(t.Context(), "example-vault", selected)
+	require.ErrorContains(t, err, "aggregate observation byte bound")
+	require.Nil(t, items)
+	require.Equal(t, 2, calls)
+}

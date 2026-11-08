@@ -67,7 +67,7 @@ example
 | `Policy.MaxItems` | int | `10000` | Complete metadata and selection bound; maximum 100000. |
 | `Policy.MaxFields` | int | `1000` | Independent bound for each item's fields, files and sections arrays; maximum 10000. |
 | `Policy.BatchSize` | int | `32` | Selected IDs per native item batch; maximum 128. |
-| `Policy.MaxNativeBytes` | int | `16777216` | Each captured stdout/stderr stream, batch input and reference byte bound; maximum 67108864. |
+| `Policy.MaxNativeBytes` | int | `16777216` | Each captured stdout/stderr stream, batch input, reference and aggregate selected-item response byte bound; maximum 67108864. |
 
 `Policy` carries `koanf`, `default`, `validate` and `desc` tags for `pkg/config` and Kong consumers. All deadlines and bounds must be positive. The injected runner must enforce process cleanup and stream bounds as well; validation of an already returned result cannot recover memory consumed by an unbounded runner.
 
