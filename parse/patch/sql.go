@@ -20,6 +20,10 @@ type PatchSQLResult struct {
 	// fields (junction-only patches).
 	SetClause string
 
+	// Assignments are the same SET expressions before comma-separated rendering.
+	// Expressions share Args and its placeholder numbering.
+	Assignments []ColumnAssignment
+
 	// Args are the bound values for SetClause placeholders, in $N order.
 	Args []any
 
@@ -48,6 +52,11 @@ type PatchSQLResult struct {
 	// DELETE / INSERT bound to the affected owner PKs returned by the
 	// UPDATE … RETURNING clause.
 	RelationOps []RelationPatchOp
+}
+
+// ColumnAssignment is one canonical folded column expression.
+type ColumnAssignment struct {
+	Column, Expression string
 }
 
 // RelationVerb identifies how a relation patch op modifies junction
@@ -221,7 +230,7 @@ func BuildPatchSQL(patch *ParsedPatch, dialect SQLDialect, opts ...PatchSQLOptio
 		if err != nil {
 			return nil, err
 		}
-		b.clauses = append(b.clauses, col+" = "+expr)
+		b.assignments = append(b.assignments, ColumnAssignment{Column: col, Expression: expr})
 		if cfg.changePredicate {
 			change, err := changedSQL(dialect, col, expr, ops[len(ops)-1].Schema)
 			if err != nil {
@@ -235,7 +244,7 @@ func BuildPatchSQL(patch *ParsedPatch, dialect SQLDialect, opts ...PatchSQLOptio
 		changePredicate = "(" + strings.Join(changes, " OR ") + ")"
 	}
 
-	if len(b.clauses) > 0 {
+	if len(b.assignments) > 0 {
 		if cfg.autoTimestamp != "" {
 			value := cfg.autoTimestampSQL
 			if value == "" {
@@ -243,19 +252,24 @@ func BuildPatchSQL(patch *ParsedPatch, dialect SQLDialect, opts ...PatchSQLOptio
 				// timestamptz.
 				value = b.bind(core.FormatTimestamp(cfg.timeFunc()))
 			}
-			b.clauses = append(b.clauses, cfg.autoTimestamp+" = "+value)
+			b.assignments = append(b.assignments, ColumnAssignment{Column: cfg.autoTimestamp, Expression: value})
 		}
 		for _, col := range cfg.increments {
-			b.clauses = append(b.clauses, col+" = "+col+" + 1")
+			b.assignments = append(b.assignments, ColumnAssignment{Column: col, Expression: col + " + 1"})
 		}
 	}
 
+	clauses := make([]string, len(b.assignments))
+	for i, assignment := range b.assignments {
+		clauses[i] = assignment.Column + " = " + assignment.Expression
+	}
 	return &PatchSQLResult{
-		SetClause:       strings.Join(b.clauses, ", "),
+		SetClause:       strings.Join(clauses, ", "),
+		Assignments:     b.assignments,
 		Args:            b.args,
 		ParamCount:      b.next - cfg.startParam - 1,
 		ChangePredicate: changePredicate,
-		Empty:           len(b.clauses) == 0 && len(relationOps) == 0,
+		Empty:           len(b.assignments) == 0 && len(relationOps) == 0,
 		RelationOps:     relationOps,
 	}, nil
 }
@@ -379,10 +393,10 @@ type SQLDialect interface {
 // setBuilder accumulates SET clauses and their bound arguments. Placeholders
 // are numbered as they are bound, so Args is always in placeholder order.
 type setBuilder struct {
-	dialect SQLDialect
-	next    int
-	clauses []string
-	args    []any
+	dialect     SQLDialect
+	next        int
+	assignments []ColumnAssignment
+	args        []any
 }
 
 func (b *setBuilder) bind(v any) string {

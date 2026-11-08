@@ -16,7 +16,7 @@ Start with the [runnable package example](../README.md#quick-start). The focused
 
 - Schemas: `GeneratePatchSchema[T]`, `GenerateServerPatchSchema[T]` (adds the `parse:"server"` fields, for the server's own writes), `ServerFieldName`, `PatchSchema`, `PathSchema` (`AllowsOp`, `Nullable`; `EnumValues` and `Bounds` advertise its value tags), `DefaultPatchOps`, `ValidPatchOps`
 - Parsing: `NewParser(schema, cfg)` (`Parse`, `ParseOps`), `ParseMergePatch(body, schema, cfg)`, `ParsedPatch` (`AuditInfo`), `PatchOperation`, `RawPatchOp`, `PatchOp`
-- SQL: `BuildPatchSQL`, `SQLDialect`, `PatchSQLResult` (`ChangePredicate`), `PatchSQLOption` (`WithStartParam`, `WithAutoTimestamp`, `WithAutoTimestampSQL`, `WithIncrement`, `WithTimeFunc`, `WithChangePredicate`)
+- SQL: `BuildPatchSQL`, `SQLDialect`, `PatchSQLResult` (`Assignments`, `ChangePredicate`), `ColumnAssignment` (`Column`, `Expression`), `PatchSQLOption` (`WithStartParam`, `WithAutoTimestamp`, `WithAutoTimestampSQL`, `WithIncrement`, `WithTimeFunc`, `WithChangePredicate`)
 - Relations: `RelationPatchOp`, `RelationVerb`, `RenderRelationOp`, `RenderRelationOpOptions` (`Owner` / `RelationOwner` and `TargetVisible`: guarded statements for a relation with a target table), `RenderedRelationStatement`, `RelationPath`
 - Policy: `PatchPolicyConstraints`, `ValueConstraint`, `NewValueConstraint`, `PatchValidator`, `ApplyPatchPolicyConstraints`, `PatchPolicyFromWritableFields`
 - Errors: `ECode*`, `Codes`
