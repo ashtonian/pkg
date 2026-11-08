@@ -2,17 +2,27 @@
 CORE_MODULES := gowalker jsonvalue gitx
 CONFIG_MODULES := config config/kongprovider
 HTTPX_MODULES := httpx httpx/oauth2 httpx/codec/msgpack httpx/codec/proto httpx/compress/brotli
+NATIVE_MODULES := process state
 PARSE_MODULES := parse
-TAGGED_MODULES := $(HTTPX_MODULES) $(PARSE_MODULES)
+TAGGED_MODULES := $(HTTPX_MODULES) $(PARSE_MODULES) $(NATIVE_MODULES)
 MODULES := $(CORE_MODULES) $(CONFIG_MODULES) $(TAGGED_MODULES)
 # Programs that use the published modules; tested, never published.
 COOKBOOK := config/examples/cookbook
 STATICCHECK := honnef.co/go/tools/cmd/staticcheck@v0.8.2
 
-.PHONY: test test-gitx test-jsonvalue jsonvalue-release-check test-gowalker gowalker-release-check test-config test-httpx-unit test-httpx-integration test-parse-unit test-parse-integration test-parse-sdk parse-sdk-release-check parse-sdk-registry-check parse-release-check lint release-check httpx-release-check cookbook-check tool-check ci
+.PHONY: test test-native-unit test-native-integration native-release-check test-gitx test-jsonvalue jsonvalue-release-check test-gowalker gowalker-release-check test-config test-httpx-unit test-httpx-integration test-parse-unit test-parse-integration test-parse-sdk parse-sdk-release-check parse-sdk-registry-check parse-release-check lint release-check httpx-release-check cookbook-check tool-check ci
 
 ## test: every published module from the working tree (go.work), race detector on
-test: test-gitx test-jsonvalue test-gowalker test-config test-httpx-unit test-httpx-integration test-parse-unit test-parse-integration test-parse-sdk
+test: test-native-unit test-native-integration test-gitx test-jsonvalue test-gowalker test-config test-httpx-unit test-httpx-integration test-parse-unit test-parse-integration test-parse-sdk
+
+test-native-unit:
+	go test -tags=unit -race -count=1 $(foreach m,$(NATIVE_MODULES),./$(m)/...)
+
+test-native-integration:
+	go test -tags=integration -race -count=1 -timeout=2m $(foreach m,$(NATIVE_MODULES),./$(m)/...)
+
+native-release-check:
+	bash tools/check-native-release.sh
 
 test-gitx:
 	go test -race -count=1 ./gitx/...
@@ -69,7 +79,7 @@ release-check:
 		echo "release-check $$m"; \
 		(cd $$m && GOWORK=off go mod tidy -diff && GOWORK=off go vet ./... && GOWORK=off go test -race -count=1 ./...); \
 	done
-	$(MAKE) jsonvalue-release-check gowalker-release-check httpx-release-check parse-release-check
+	$(MAKE) native-release-check jsonvalue-release-check gowalker-release-check httpx-release-check parse-release-check
 
 parse-release-check:
 	bash tools/check-parse-release.sh
