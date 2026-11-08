@@ -15,11 +15,15 @@ on:
         default: false
 
 permissions:
+  id-token: write
   contents: read
 
 defaults:
   run:
     shell: bash
+
+env:
+  CI_ARTIFACT_ENDPOINT: ${{ vars.CI_ARTIFACT_ENDPOINT }}
 
 jobs:
   release-please:
@@ -107,7 +111,7 @@ jobs:
           bash tooling/tools/check-parse-sdk-release.sh "artifacts/ashtonian-parse-$version.tgz"
           git -C source rev-parse HEAD > artifacts/source-commit.txt
       - name: Retain the verified package
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        uses: ashtonian/go-ci-actions/upload-artifact@07fbac1477e5c6befebba17cb7326daff639ff25 # v1.3.0
         with:
           name: parse-sdk-${{ github.run_id }}-${{ github.run_attempt }}
           path: artifacts/

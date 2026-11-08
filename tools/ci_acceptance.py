@@ -6,8 +6,11 @@ import hashlib
 import io
 import json
 import os
+import re
 from pathlib import Path
 import subprocess
+import sys
+import tempfile
 import time
 import urllib.error
 import urllib.parse
@@ -84,6 +87,7 @@ class API:
     def __init__(self, env):
         self.base = env.get("GITHUB_API_URL", "https://api.github.com").rstrip("/") + "/repos/" + env["GITHUB_REPOSITORY"] + "/"
         self.token = env["GITHUB_TOKEN"]
+        self.artifact_tool = env.get("CI_ARTIFACT_TOOL")
         self.deadline = time.monotonic() + 100
 
     def read(self, url, auth=True, redirect=True, limit=4 * 1024 * 1024):
@@ -101,9 +105,33 @@ class API:
         return data
 
     def get(self, path, **query):
+        artifact_run = re.fullmatch(r"actions/runs/([0-9]+)/artifacts", path)
+        if artifact_run and self.artifact_tool:
+            artifacts = json.loads(self.artifact_command("list", "--run-id", artifact_run[1]))
+            if artifacts:
+                return {"artifacts": [{"name": item["name"], "expired": False,
+                                       "seaweed": item} for item in artifacts]}
+            # Existing GitHub receipts retain their original lifetime. New runs
+            # publish only to SeaweedFS; a backend error above fails acceptance.
         return json.loads(self.read(self.base + path + ("?" + urllib.parse.urlencode(query) if query else "")))
 
+    def artifact_command(self, *args):
+        remaining = self.deadline - time.monotonic()
+        if remaining <= 0:
+            raise TimeoutError("acceptance lookup deadline")
+        return subprocess.check_output([sys.executable, self.artifact_tool, *args], timeout=remaining)
+
     def receipt(self, artifact):
+        if item := artifact.get("seaweed"):
+            if item["size"] > MAX_BYTES:
+                raise ValueError("oversized receipt archive")
+            with tempfile.TemporaryDirectory(prefix="ci-acceptance-") as directory:
+                archive_path = Path(directory) / "receipt.zip"
+                self.artifact_command("download", "--run-id", item["run_id"],
+                                      "--run-attempt", item["run_attempt"], "--name", item["name"],
+                                      "--path", str(archive_path), "--archive", "--max-bytes", str(MAX_BYTES))
+                data = archive_path.read_bytes()
+            return self.decode_receipt(data)
         try:
             data = self.read(self.base + f"actions/artifacts/{int(artifact['id'])}/zip", redirect=False, limit=MAX_BYTES)
         except urllib.error.HTTPError as error:
@@ -114,6 +142,12 @@ class API:
             if urllib.parse.urlsplit(location).scheme != "https":
                 raise ValueError("receipt download is not HTTPS")
             data = self.read(location, auth=False, limit=MAX_BYTES)
+        return self.decode_receipt(data)
+
+    @staticmethod
+    def decode_receipt(data):
+        if len(data) > MAX_BYTES:
+            raise ValueError("oversized receipt archive")
         with zipfile.ZipFile(io.BytesIO(data)) as archive:
             if archive.namelist() != ["acceptance.json"] or archive.getinfo("acceptance.json").file_size > MAX_BYTES:
                 raise ValueError("unexpected receipt archive")

@@ -76,3 +76,7 @@ module's changelog.
 ## License
 
 [MIT](LICENSE).
+
+## CI artifacts
+
+CI stores benchmark reports, validation receipts and verified SDK packages through the shared [SeaweedFS artifact actions](https://github.com/ashtonian/go-ci-actions/blob/v1.3.0/docs/artifacts.md). Configure the `CI_ARTIFACT_ENDPOINT` repository variable; jobs authenticate with GitHub OIDC, without storage keys. Retention and source/attempt checks remain in force. Unreadable acceptance evidence runs the selected checks. Historical GitHub receipts remain readable until expiry; new summaries expose S3 URIs and digests, retrieved through the shared download action or authenticated operator S3 access. `gh run download` applies only to historical GitHub artifacts. npm publishing and release assets retain their existing destinations.

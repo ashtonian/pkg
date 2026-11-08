@@ -133,3 +133,50 @@ class Wiring(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class ArtifactTransport(unittest.TestCase):
+    def setUp(self):
+        self.api = ci.API({"GITHUB_REPOSITORY": "ashtonian/estavelle",
+                                   "GITHUB_TOKEN": "test", "CI_ARTIFACT_TOOL": "/tool/artifact.py"})
+
+    def test_seaweed_manifest_replaces_github_artifact_discovery(self):
+        item = {"name": "acceptance-race.yml-2", "run_id": "42", "run_attempt": "2"}
+        with patch.object(self.api, "artifact_command", return_value=json.dumps([item])) as command, \
+                patch.object(self.api, "read") as read:
+            self.assertEqual(self.api.get("actions/runs/42/artifacts"),
+                             {"artifacts": [{"name": item["name"], "expired": False, "seaweed": item}]})
+            command.assert_called_once_with("list", "--run-id", "42")
+            read.assert_not_called()
+
+    def test_only_empty_seaweed_listing_uses_historical_github_storage(self):
+        with patch.object(self.api, "artifact_command", return_value="[]"), \
+                patch.object(self.api, "read", return_value=b'{"artifacts": []}') as read:
+            self.assertEqual(self.api.get("actions/runs/42/artifacts"), {"artifacts": []})
+            read.assert_called_once()
+        with patch.object(self.api, "artifact_command", side_effect=TimeoutError()), \
+                patch.object(self.api, "read") as read:
+            with self.assertRaises(TimeoutError):
+                self.api.get("actions/runs/42/artifacts")
+            read.assert_not_called()
+
+    def test_seaweed_receipt_uses_verified_archive_and_common_parser(self):
+        receipt = {"run_id": 42, "attempt": 2}
+        buffer = io.BytesIO()
+        with zipfile.ZipFile(buffer, "w") as archive:
+            archive.writestr("acceptance.json", json.dumps(receipt))
+        item = {"name": "acceptance-race.yml-2", "run_id": "42", "run_attempt": "2",
+                "size": len(buffer.getvalue())}
+
+        def download(*args):
+            self.assertEqual(args[:7], ("download", "--run-id", "42", "--run-attempt", "2",
+                                        "--name", item["name"]))
+            self.assertEqual(args[-3:], ("--archive", "--max-bytes", str(ci.MAX_BYTES)))
+            Path(args[8]).write_bytes(buffer.getvalue())
+
+        with patch.object(self.api, "artifact_command", side_effect=download):
+            self.assertEqual(self.api.receipt({"seaweed": item}), receipt)
+        with patch.object(self.api, "artifact_command") as command:
+            with self.assertRaisesRegex(ValueError, "oversized"):
+                self.api.receipt({"seaweed": {**item, "size": ci.MAX_BYTES + 1}})
+            command.assert_not_called()
