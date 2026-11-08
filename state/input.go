@@ -27,6 +27,32 @@ func ReadFile(ctx context.Context, path string, maximum int64) (data []byte, err
 	if err != nil {
 		return nil, err
 	}
+	return readAndCloseRegular(ctx, file, info, maximum)
+}
+
+// ReadFileAt reads bounded bytes from one regular, non-symlink leaf beneath a caller-owned directory handle.
+func ReadFileAt(ctx context.Context, root *os.Root, name string, maximum int64) ([]byte, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if root == nil || !stateName(name) || maximum < 1 || maximum > 128<<20 {
+		return nil, errors.New("rooted file read requires a directory, leaf name and bounded size")
+	}
+	info, err := root.Lstat(name)
+	if err != nil {
+		return nil, err
+	}
+	if !info.Mode().IsRegular() || info.Size() > maximum {
+		return nil, errors.New("rooted input must be a bounded regular file")
+	}
+	file, err := root.OpenFile(name, os.O_RDONLY|nonblockingReadFlag(), 0)
+	if err != nil {
+		return nil, err
+	}
+	return readAndCloseRegular(ctx, file, info, maximum)
+}
+
+func readAndCloseRegular(ctx context.Context, file *os.File, info os.FileInfo, maximum int64) (data []byte, err error) {
 	defer func() { err = errors.Join(err, file.Close()) }()
 	opened, err := file.Stat()
 	if err != nil {

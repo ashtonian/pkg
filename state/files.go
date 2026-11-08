@@ -30,13 +30,6 @@ func readJSON(ctx context.Context, file string, maxBytes int64, target any, stri
 	return decodeDocument(ctx, data, target, strict)
 }
 
-func decodeJSON(ctx context.Context, input io.Reader, maxBytes int64, target any, strict bool) error {
-	data, err := readBytes(ctx, input, maxBytes)
-	if err != nil {
-		return err
-	}
-	return decodeDocument(ctx, data, target, strict)
-}
 func decodeDocument(ctx context.Context, data []byte, target any, strict bool) error {
 	if err := ctx.Err(); err != nil {
 		return err
@@ -122,33 +115,12 @@ func stateName(name string) bool {
 }
 
 // ReadJSONStrictAt reads one regular, non-symlink state file beneath a caller-owned directory handle.
-func ReadJSONStrictAt(ctx context.Context, root *os.Root, name string, maxBytes int64, target any) (err error) {
-	if root == nil || !stateName(name) || maxBytes <= 0 || maxBytes > 128<<20 {
-		return errors.New("rooted state read requires a directory, leaf name and bounded size")
-	}
-	if err := ctx.Err(); err != nil {
-		return err
-	}
-	info, err := root.Lstat(name)
+func ReadJSONStrictAt(ctx context.Context, root *os.Root, name string, maxBytes int64, target any) error {
+	data, err := ReadFileAt(ctx, root, name, maxBytes)
 	if err != nil {
 		return err
 	}
-	if !info.Mode().IsRegular() {
-		return errors.New("rooted state must be a regular file")
-	}
-	file, err := root.OpenFile(name, os.O_RDONLY|nonblockingReadFlag(), 0)
-	if err != nil {
-		return err
-	}
-	defer func() { err = errors.Join(err, file.Close()) }()
-	opened, err := file.Stat()
-	if err != nil {
-		return err
-	}
-	if !opened.Mode().IsRegular() || !os.SameFile(info, opened) {
-		return errors.New("rooted state identity changed while opening")
-	}
-	return decodeJSON(ctx, file, maxBytes, target, true)
+	return decodeDocument(ctx, data, target, true)
 }
 
 // WriteJSONAt atomically replaces private bounded state within a caller-owned directory handle.
