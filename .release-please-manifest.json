@@ -10,6 +10,6 @@
   "jsonvalue": "0.1.0",
   "gitx": "0.1.1",
   "httpx/oauth2": "0.1.0",
-  "process": "0.0.0",
-  "state": "0.0.0"
+  "process": "0.1.0",
+  "state": "0.1.0"
 }
