@@ -1,6 +1,7 @@
 package filter
 
 import (
+	"cmp"
 	"database/sql"
 	"fmt"
 	"strconv"
@@ -28,6 +29,7 @@ type BuildFacetQueryOption func(*facetConfig)
 type facetConfig struct {
 	scope   relationScope
 	related map[string]*PolicyConstraints
+	from    string
 }
 
 // WithFacetTenant binds the tenant every tenant-scoped relation facet's
@@ -51,6 +53,15 @@ func WithFacetUnscopedRelations() BuildFacetQueryOption {
 // relations' target tables (WithRelatedPolicies).
 func WithFacetRelatedPolicies(policies map[string]*PolicyConstraints) BuildFacetQueryOption {
 	return func(c *facetConfig) { c.related = policies }
+}
+
+// WithFacetFrom reads the facets' base rows FROM from instead of the
+// schema's table: an aliased table or a join, whose columns filterWhere and
+// the facet fields' expressions name. A relation facet projects the owner's
+// primary key as schema.Name.<pk>, so from names the owner table
+// schema.Name.
+func WithFacetFrom(from string) BuildFacetQueryOption {
+	return func(c *facetConfig) { c.from = from }
 }
 
 // BuildFacetQuery composes a single CTE + UNION ALL query covering every
@@ -256,7 +267,7 @@ func buildFacetQuery(schema *ResourceSchema, dialect Dialect, filterWhere string
 	b.WriteString(" (SELECT ")
 	b.WriteString(proj.String())
 	b.WriteString(" FROM ")
-	b.WriteString(schema.Name)
+	b.WriteString(cmp.Or(cfg.from, schema.Name))
 	b.WriteString(" WHERE ")
 	b.WriteString(filterWhere)
 	b.WriteString(") ")

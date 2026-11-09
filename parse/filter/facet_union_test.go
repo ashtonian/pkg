@@ -508,6 +508,56 @@ func TestBuildFacetQuery_RoundTrip_ListElements(t *testing.T) {
 	}
 }
 
+// WithFacetFrom facets the rows of a caller's FROM clause, an aliased table
+// joined to another, keyed and ordered as over one table; without it the
+// base reads the schema's table.
+func TestBuildFacetQuery_RoundTrip_FacetFrom(t *testing.T) {
+	require.NoError(t, parsesqlite.Register())
+	db, err := sql.Open("sqlite", ":memory:")
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, db.Close()) })
+	for _, stmt := range []string{
+		`CREATE TABLE owners (id INTEGER PRIMARY KEY, active INTEGER)`,
+		`CREATE TABLE docs (id INTEGER PRIMARY KEY, owner_id INTEGER, status TEXT, doc TEXT, tags TEXT)`,
+		`INSERT INTO owners (id, active) VALUES (1, 1), (2, 0)`,
+		`INSERT INTO docs (owner_id, status, doc, tags) VALUES
+			(1, 'open', '{"price":10.0}', '["a","b"]'),
+			(1, 'open', '{"price":9}', '["a","a"]'),
+			(1, 'done', '{"price":10}', NULL),
+			(2, 'open', '{"price":9}', '["b"]')`,
+	} {
+		_, err := db.Exec(stmt)
+		require.NoError(t, err)
+	}
+	schema := &filter.ResourceSchema{Name: "docs", Fields: map[string]*filter.FieldSchema{
+		"status": {ExternalName: "status", SQLExpr: "d.status", DataType: core.FieldTypeString, Facetable: true},
+		"doc.price": {ExternalName: "doc.price", DataType: core.FieldTypeDecimal, Facetable: true,
+			Path: &filter.JSONPath{Column: "d.doc", Segments: []string{"price"}, Storage: filter.StorageJSON}},
+		"tags": {ExternalName: "tags", SQLExpr: "d.tags", DataType: core.FieldTypeArray, Elem: core.FieldTypeString, Facetable: true},
+	}}
+	reqs := []filter.FacetRequest{{Field: "status"}, {Field: "doc.price"}, {Field: "tags"}}
+	const from = "docs d JOIN owners o ON o.id = d.owner_id"
+	q, err := filter.BuildFacetQuery(schema, filter.SQLiteDialect{}, "o.active = ?1", []any{1}, reqs, filter.WithFacetFrom(from))
+	require.NoError(t, err)
+	require.Contains(t, q.SQL, " FROM "+from+" WHERE o.active = ?1")
+	rows, err := db.Query(q.SQL, q.Args...)
+	require.NoError(t, err, q.SQL)
+	results, err := filter.ScanFacetUnion(rows)
+	require.NoError(t, errors.Join(err, rows.Close()))
+	want := []filter.FacetResult{
+		{Field: "status", Buckets: []filter.FacetBucket{{Key: "open", Count: 2}, {Key: "done", Count: 1}}},
+		{Field: "doc.price", Buckets: []filter.FacetBucket{{Key: "10", Count: 2}, {Key: "9", Count: 1}}},
+		{Field: "tags", Buckets: []filter.FacetBucket{{Key: "a", Count: 2}, {Key: "b", Count: 1}}},
+	}
+	if !reflect.DeepEqual(results, want) {
+		t.Errorf("facets = %+v\nwant     %+v\nSQL:\n%s", results, want, q.SQL)
+	}
+
+	plain, err := filter.BuildFacetQuery(schema, filter.SQLiteDialect{}, "1=1", nil, reqs)
+	require.NoError(t, err)
+	require.Contains(t, plain.SQL, " FROM docs WHERE 1=1")
+}
+
 // --- helpers ---
 
 func indexFacets(results []filter.FacetResult) map[string][]filter.FacetBucket {
