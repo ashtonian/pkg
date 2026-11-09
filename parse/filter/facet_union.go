@@ -66,8 +66,9 @@ func WithFacetRelatedPolicies(policies map[string]*PolicyConstraints) BuildFacet
 // Range facets are pre-bucketed in the CTE projection so outer GROUP BYs
 // are uniform. Terms facets enforce per-field LIMIT N via inline
 // subqueries, keeping the highest counts and, among equal counts, the
-// lowest keys in code-point order. Rows come back facet by facet in request
-// order: terms buckets by count then key, range buckets as declared. Pair
+// lowest values in the field's type order: numbers by value, other keys in
+// code-point order. Rows come back facet by facet in request order: terms
+// buckets in that order, range buckets as declared. Pair
 // with [ScanFacetUnion] to re-group rows into per-field [FacetResult]s.
 //
 // Relation predicates in filterWhere are correlated EXISTS, so the base CTE
@@ -471,7 +472,7 @@ func decimalKeyExpr(expr string, dialect Dialect) string {
 // ScanFacetUnion reads (facet_field, facet_key, facet_count) rows produced
 // by [BuildFacetQuery] and groups them into per-field [FacetResult]s in the
 // query's order: facets as requested; a terms facet's buckets by count,
-// ties by key; a range facet's as declared.
+// ties in the field's type order; a range facet's as declared.
 //
 // NULL keys are dropped (BuildFacetQuery's WHERE filters them, but defense
 // in depth).

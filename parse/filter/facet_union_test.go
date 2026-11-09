@@ -304,8 +304,8 @@ func TestBuildFacetQuery_RoundTrip_PerFacetLimit(t *testing.T) {
 }
 
 // Facet rows come back in one order on every run: facets as requested; a
-// terms facet by count, ties by key, its limit keeping the lowest tied keys;
-// a range facet as declared, whatever its counts.
+// terms facet by count, ties in the field's type order, its limit keeping
+// the lowest tied values; a range facet as declared, whatever its counts.
 func TestBuildFacetQuery_RoundTrip_Order(t *testing.T) {
 	db := setupFacetDB(t)
 	q, err := filter.BuildFacetQuery(
