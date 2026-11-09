@@ -73,7 +73,8 @@ Set limits deliberately for your endpoint. [Configuration](schema-configuration.
 
 - Match indexes to frequently filtered columns and the stable sort plus unique tie-breaker used by keyset pagination.
 - Index junction owner/target columns and the tenant scope used by the emitted correlated queries.
-- PostgreSQL JSON containment can use GIN indexes; choose an index/operator class for the predicates actually issued.
+- PostgreSQL JSON containment can use GIN indexes; choose an index/operator class for the predicates actually issued. Path `$eq` and `$in` sets of at most `PostgresDialect.ContainmentMaxValues` members on `jsonb` columns compile to containment outside `$not`, so `GIN (doc jsonb_path_ops)` serves them.
+- A `$in` / `$nin` set binds as one parameter. On PostgreSQL a column's set compares with `= ANY($1)`: index columns that large sets filter, since under a generic plan an unindexed column probes the array member by member for each row. A path's set joins its members unnested, which a hash serves in any plan.
 - SQLite JSON comparisons traverse document structure; measure representative document sizes and filter complexity.
 - Facets and exact counts can scan a much larger population than the returned page. Request them only when needed.
 - Includes cap targets per owner, but the caller still executes and assembles them. Avoid loading an unbounded related object graph.

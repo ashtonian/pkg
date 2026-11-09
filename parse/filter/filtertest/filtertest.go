@@ -113,8 +113,13 @@ func Schema() (*filter.ResourceSchema, error) {
 
 // Run evaluates every case on backend, named as Case.Unsupported names it.
 func Run(t *testing.T, name string, backend Backend) {
-	parser := Parser(t)
-	for _, c := range Cases() {
+	run(t, name, Parser(t), Cases(), backend)
+}
+
+// run evaluates cases, parsed by parser, on backend, named as
+// Case.Unsupported names it.
+func run(t *testing.T, name string, parser *filter.FilterParser, cases []Case, backend Backend) {
+	for _, c := range cases {
 		t.Run(c.Name, func(t *testing.T) {
 			ast, err := parser.Parse(c.Filter)
 			if c.ParseErr != "" {

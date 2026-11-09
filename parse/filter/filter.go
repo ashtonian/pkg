@@ -763,15 +763,16 @@ func NewParsedFilter(ast *FilterAST) *ParsedFilter {
 // costs BaseCondition, times UnindexedMultiplier on an unindexed field,
 // DocumentMultiplier on a JSON / object / array field and
 // RelationMultiplier on a relation; geo conditions use the geo multipliers
-// instead; unanchored patterns add LeadingWildcardCost and membership lists
-// PerArrayItemCost per member; an $or multiplies its children's sum.
+// instead; unanchored patterns add LeadingWildcardCost; an $or multiplies
+// its children's sum. A set costs one condition whatever its size: it binds
+// as one parameter, hashed once per statement and probed once per row, and
+// MaxArraySize alone bounds it.
 type costFactors struct {
 	BaseCondition          int
 	UnindexedMultiplier    int
 	DocumentMultiplier     int
 	OrMultiplier           int
 	LeadingWildcardCost    int
-	PerArrayItemCost       int
 	RelationMultiplier     int
 	GeoIndexedMultiplier   int
 	GeoUnindexedMultiplier int
@@ -783,7 +784,6 @@ var defaultCostFactors = costFactors{
 	DocumentMultiplier:     5,
 	OrMultiplier:           2,
 	LeadingWildcardCost:    20,
-	PerArrayItemCost:       1,
 	RelationMultiplier:     8,
 	GeoIndexedMultiplier:   5,
 	GeoUnindexedMultiplier: 50,
@@ -853,10 +853,6 @@ func estimateLeafCost(node *FilterNode, factors *costFactors) int {
 		}
 	}
 	switch node.Op {
-	case OpIn, OpNin:
-		if arr, ok := node.Value.([]any); ok {
-			cost += len(arr) * factors.PerArrayItemCost
-		}
 	case OpLike, OpILike:
 		if s, ok := node.Value.(string); ok {
 			if strings.HasPrefix(s, "%") || strings.HasPrefix(s, "_") {

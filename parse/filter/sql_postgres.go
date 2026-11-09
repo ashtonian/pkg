@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"math"
 	"reflect"
+	"slices"
 	"strconv"
 	"time"
 	"uuid"
@@ -19,10 +20,22 @@ import (
 // operators use PostGIS. Collation is the code-point collation string sorts,
 // keyset seeks and string ranges compile under; the zero value is
 // pg_c_utf8 (PostgreSQL 17+).
+//
+// ContainmentMaxValues bounds the `$in` sets a jsonb path compares by
+// containment, which a GIN index serves member by member
+// (TwoValuedCondition): 0 is DefaultContainmentMaxValues, and a negative
+// value compares no set by containment.
 type PostgresDialect struct {
 	dialect.Postgres
-	Collation PostgresCollation
+	Collation            PostgresCollation
+	ContainmentMaxValues int
 }
+
+// DefaultContainmentMaxValues is the largest `$in` set a jsonb path
+// compares by containment when PostgresDialect.ContainmentMaxValues is 0.
+// A larger set joins its members as one unnested array, which a hash
+// serves in any plan.
+const DefaultContainmentMaxValues = 256
 
 // PostgresCollation is a PostgreSQL collation that orders strings by code
 // point — the order SQLite's BINARY, the memory backend and cursor values
@@ -116,6 +129,11 @@ func (d PostgresDialect) Condition(field *FieldSchema, op FilterOperator, value 
 		}
 		return expr + keyword + bind(s) + ` ESCAPE '\'`, nil
 	}
+	if op == OpIn || op == OpNin {
+		return membership(op, value, func(members []any, in bool) (string, error) {
+			return d.membership(field, expr, members, in, bind)
+		})
+	}
 	if isOrdering(op) && orderedAsText(field) {
 		expr = d.CodePointOrder(expr)
 	}
@@ -126,6 +144,133 @@ func (d PostgresDialect) Condition(field *FieldSchema, op FilterOperator, value 
 		return sql, err
 	}
 	return "", unsupportedOperator(field, op)
+}
+
+// membership renders a set, bound as one array parameter. A column compares
+// with `= ANY`, the parameter taking the column's own array type, so the
+// column's equality applies and its index serves the set. A path's value
+// has the type PathExpr renders, so its set joins the array unnested to
+// that type: a hash serves it in every plan, where under a generic plan
+// `= ANY` probes a parameter's array member by member for each row.
+func (d PostgresDialect) membership(field *FieldSchema, expr string, members []any, in bool, bind func(any) string) (string, error) {
+	if field.Path != nil {
+		var set string
+		var arr any
+		var err error
+		switch field.DataType {
+		case core.FieldTypeInt, core.FieldTypeFloat, core.FieldTypeDecimal:
+			// Exact decimal text, cast as the path's number is.
+			arr, err = typedSlice(members, core.DecimalText)
+			set = "unnest(" + bind(arr) + "::text[])::numeric"
+		case core.FieldTypeBool:
+			arr, err = pgArray(core.FieldTypeBool, members)
+			set = "unnest(" + bind(arr) + "::boolean[])"
+		default: // string, timestamp and UUID members compare as their canonical text
+			arr, err = typedSlice(members, func(v any) (string, error) { return textValue(OpIn, v) })
+			set = "unnest(" + bind(arr) + "::text[])"
+		}
+		if err != nil {
+			return "", fmt.Errorf("field %s: %w", field.ExternalName, err)
+		}
+		if in {
+			return expr + " IN (SELECT " + set + ")", nil
+		}
+		return expr + " NOT IN (SELECT " + set + ")", nil
+	}
+	var param string
+	if field.DataType == core.FieldTypeDecimal {
+		arr, err := typedSlice(members, core.DecimalText)
+		if err != nil {
+			return "", fmt.Errorf("field %s: %w", field.ExternalName, err)
+		}
+		param = bind(arr) + "::text[]::numeric[]"
+	} else {
+		arr, err := pgArray(field.DataType, members)
+		if err != nil {
+			return "", fmt.Errorf("field %s: %w", field.ExternalName, err)
+		}
+		param = bind(arr)
+	}
+	if in {
+		return expr + " = ANY(" + param + ")", nil
+	}
+	return expr + " <> ALL(" + param + ")", nil
+}
+
+// TwoValuedCondition compares a string, boolean or number member of a jsonb
+// path by containment, which a GIN index on the document serves: `$eq` as
+// `doc @> fragment`, and `$in` with at most ContainmentMaxValues members as
+// `doc @> ANY(fragments)`, each fragment the path's objects down to the
+// value. Containment is False where the typed comparison is Unknown (a
+// missing member, or one of another JSON type), and compares numbers by
+// value and a member holding an array apart from its elements, as the typed
+// comparison does. Decimals keep the typed comparison (a decimal member may
+// be held as a string), as does a path through a segment `#>` would read as
+// an array index.
+func (d PostgresDialect) TwoValuedCondition(field *FieldSchema, op FilterOperator, value any, bind func(any) string) (string, bool, error) {
+	p := field.Path
+	if p == nil || p.Storage != StorageJSONB || !containable(field.DataType) || slices.ContainsFunc(p.Segments, isArrayIndex) {
+		return "", false, nil
+	}
+	switch op {
+	case OpEq:
+		if value == nil {
+			return "", false, nil // `= NULL` is Unknown; {"k": null} would hold
+		}
+		fragment, err := containmentFragment(p.Segments, value)
+		if err != nil {
+			return "", false, fmt.Errorf("field %s: %w", field.ExternalName, err)
+		}
+		return p.Column + " @> " + bind(fragment) + "::jsonb", true, nil
+	case OpIn:
+		members, ok := core.AnySlice(value)
+		if !ok || len(members) == 0 || len(members) > d.containmentMaxValues() || slices.Contains(members, nil) {
+			return "", false, nil
+		}
+		fragments, err := typedSlice(members, func(v any) (string, error) { return containmentFragment(p.Segments, v) })
+		if err != nil {
+			return "", false, fmt.Errorf("field %s: %w", field.ExternalName, err)
+		}
+		return p.Column + " @> ANY(" + bind(fragments) + "::jsonb[])", true, nil
+	}
+	return "", false, nil
+}
+
+func (d PostgresDialect) containmentMaxValues() int {
+	if d.ContainmentMaxValues == 0 {
+		return DefaultContainmentMaxValues
+	}
+	return d.ContainmentMaxValues // negative: no set qualifies
+}
+
+// containable reports the member types whose typed comparison containment
+// reproduces.
+func containable(t core.FieldType) bool {
+	switch t {
+	case core.FieldTypeString, core.FieldTypeBool, core.FieldTypeInt, core.FieldTypeFloat:
+		return true
+	}
+	return false
+}
+
+// isArrayIndex reports a path segment `#>` reads as an array subscript.
+func isArrayIndex(seg string) bool {
+	_, err := strconv.Atoi(seg)
+	return err == nil
+}
+
+// containmentFragment is the JSON document holding value at segs, objects
+// nested from the outermost member down.
+func containmentFragment(segs []string, value any) (string, error) {
+	doc := value
+	for i := len(segs) - 1; i >= 0; i-- {
+		doc = map[string]any{segs[i]: doc}
+	}
+	b, err := json.Marshal(doc)
+	if err != nil {
+		return "", fmt.Errorf("marshal containment fragment: %w", err)
+	}
+	return string(b), nil
 }
 
 // pgArray converts normalized array elements into the typed slice pgx
@@ -169,16 +314,23 @@ func pgArray(elem core.FieldType, value any) (any, error) {
 			return time.Parse(time.RFC3339Nano, s)
 		})
 	case core.FieldTypeInt:
+		if slices.ContainsFunc(items, func(v any) bool { n, ok := v.(uint64); return ok && n > math.MaxInt64 }) {
+			// An unsigned field's values above int64, for a numeric column.
+			return typedSlice(items, func(v any) (uint64, error) {
+				if n, ok := v.(uint64); ok {
+					return n, nil
+				}
+				return 0, fmt.Errorf("array element %v is not unsigned beside one above int64", v)
+			})
+		}
 		return typedSlice(items, func(v any) (int64, error) {
 			switch n := v.(type) {
 			case int64:
 				return n, nil
 			case uint64:
-				if n <= math.MaxInt64 {
-					return int64(n), nil
-				}
+				return int64(n), nil // at most math.MaxInt64: checked above
 			}
-			return 0, fmt.Errorf("array element %v does not fit a PostgreSQL integer", v)
+			return 0, fmt.Errorf("array element %v is not an integer", v)
 		})
 	case core.FieldTypeFloat:
 		return typedSlice(items, func(v any) (float64, error) { return core.NormalizeFloat(v, 0) })

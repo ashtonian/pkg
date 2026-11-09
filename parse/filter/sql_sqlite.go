@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"maps"
+	"math"
 	"slices"
 	"strconv"
 	"strings"
@@ -83,6 +84,11 @@ func (d SQLiteDialect) Condition(field *FieldSchema, op FilterOperator, value an
 		}
 		return expr + " LIKE " + bind(s) + ` ESCAPE '\'`, nil
 	}
+	if op == OpIn || op == OpNin {
+		return membership(op, value, func(members []any, in bool) (string, error) {
+			return sqliteMembership(field, expr, members, in, bind)
+		})
+	}
 	if isOrdering(op) && orderedAsText(field) {
 		expr = d.CodePointOrder(expr)
 	}
@@ -93,6 +99,43 @@ func (d SQLiteDialect) Condition(field *FieldSchema, op FilterOperator, value an
 		return sql, err
 	}
 	return "", unsupportedOperator(field, op)
+}
+
+// sqliteMembership renders a set bound as one JSON array, its members read
+// by json_each as the values a scalar parameter binds: integers as INTEGER,
+// floats as REAL, booleans as 1 and 0, text as TEXT, and decimals' text
+// cast as DecimalParam casts it.
+func sqliteMembership(field *FieldSchema, expr string, members []any, in bool, bind func(any) string) (string, error) {
+	doc := make([]any, len(members))
+	for i, m := range members {
+		switch v := m.(type) {
+		case float64:
+			// Always a REAL: encoding/json writes an integral float below
+			// 1e21 as an integer literal, which SQLite reads as an INTEGER
+			// unequal to the float itself above 2^53.
+			doc[i] = json.Number(strconv.FormatFloat(v, 'g', -1, 64))
+		case uint64:
+			if v > math.MaxInt64 {
+				return "", fmt.Errorf("field %s: set member %d exceeds SQLite's 64-bit signed integers", field.ExternalName, v)
+			}
+			doc[i] = v
+		default:
+			doc[i] = v
+		}
+	}
+	arr, err := json.Marshal(doc)
+	if err != nil {
+		return "", fmt.Errorf("field %s: marshal set: %w", field.ExternalName, err)
+	}
+	value := "value"
+	if field.DataType == core.FieldTypeDecimal {
+		value = "CAST(value AS NUMERIC)"
+	}
+	keyword := " IN "
+	if !in {
+		keyword = " NOT IN "
+	}
+	return expr + keyword + "(SELECT " + value + " FROM json_each(" + bind(string(arr)) + "))", nil
 }
 
 // sqliteJSONMatch compiles document equality (contains=false) or jsonb

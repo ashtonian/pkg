@@ -70,6 +70,12 @@ var elementCases = []struct {
 	{"nested member of an element", `{"items":{"$some":{"dims.w":{"$gte":2}}}}`, []string{"o1"}},
 	{"declared element paths of a map array", `{"notes":{"$some":{"by":"ann","priority":{"$gte":4}}}}`, []string{"o2"}},
 	{"with other conditions", `{"$or":[{"id":"o3"},{"notes":{"$some":{"by":"bob"}}}]}`, []string{"o2", "o3"}},
+	// An element condition is compared by containment on PostgreSQL unless
+	// a $not inside the element filter encloses it: EXISTS selects its
+	// elements whatever negation encloses it.
+	{"not over some", `{"$not":{"items":{"$some":{"sku":"a"}}}}`, []string{"o3", "o4", "o5"}},
+	{"not over none", `{"$not":{"items":{"$none":{"sku":"a"}}}}`, []string{"o1", "o2", "o6"}},
+	{"not inside some excludes members of no object", `{"items":{"$some":{"$not":{"sku":"a"}}}}`, []string{"o1"}},
 }
 
 func runElementCases(t *testing.T, d filter.Dialect, query func(t *testing.T, sql string, args []any) [][]any) {

@@ -101,7 +101,7 @@ A relation field is virtual (`db:"-"`): it is not a column but a way to filter r
 postgres WHERE EXISTS (SELECT 1 FROM product_collections rel__ WHERE rel__.product_id = products.id AND rel__.collection_id = $1)
 
 {"collections":{"$nin":["0190f3c2-…-000000000001"]}}       products not in it
-postgres WHERE NOT EXISTS (SELECT 1 FROM product_collections rel__ WHERE rel__.product_id = products.id AND rel__.collection_id IN ($1))
+postgres WHERE NOT EXISTS (SELECT 1 FROM product_collections rel__ WHERE rel__.product_id = products.id AND rel__.collection_id = ANY($1))
 
 {"reviews":{"$null":false}}                                products with at least one review
 postgres WHERE EXISTS (SELECT 1 FROM reviews rel__ WHERE rel__.product_id = products.id)

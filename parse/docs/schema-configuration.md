@@ -56,10 +56,10 @@ Declare physical storage with `parse.ColumnType(column, core.SQLJSON)` / `core.S
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
 | `WithMaxDepth(n)` | int | `5` | Filter boolean nesting, JSON filter document nesting, patch JSON Pointer segments |
-| `WithMaxCost(n)` | int | `50` | Estimated filter cost: about 1 per indexed condition, 10 per unindexed one, more for documents, relations, unanchored patterns and `$or` |
+| `WithMaxCost(n)` | int | `50` | Estimated filter cost: about 1 per indexed condition, 10 per unindexed one, more for documents, relations, unanchored patterns and `$or`; a `$in` / `$nin` set costs one condition whatever its size |
 | `WithMaxInputSize(n)` | int | `65536` | Filter / patch body bytes |
 | `WithMaxConditions(n)` | int | `20` | Filter leaf conditions |
-| `WithMaxArraySize(n)` | int | `100` | `$in` / `$nin` members, array `$contains` elements, values in a JSON filter document |
+| `WithMaxArraySize(n)` | int | `100` | `$in` / `$nin` members, array `$contains` elements, values in a JSON filter document. A set binds as one parameter whatever its size, so this alone bounds it; raise it with `WithMaxInputSize` for endpoints filtering by large sets |
 | `WithMaxPatchCopyBytes(n)` | int64 | `1048576` | Bytes a patch's `copy` operations may add during typed apply |
 | `WithCodec(c)` | `Codec` | `StdlibJSON` (numbers decode as `json.Number`, trailing data rejected) | Decodes request bodies and undeclared documents in typed apply; declared JSON storage uses fresh Go JSON decoding. Cursors use Parse's internal bounded MessagePack envelope |
 | `WithClock(fn)` | `func() time.Time` | `time.Now().UTC` | Anchor for relative-time tokens (`now-7d`) |

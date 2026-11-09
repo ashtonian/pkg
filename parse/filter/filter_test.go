@@ -111,12 +111,8 @@ func TestFilterParser_InOperator(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(result.Where, "IN") {
-		t.Errorf("expected IN, got %q", result.Where)
-	}
-	if len(result.Args) != 2 {
-		t.Errorf("expected 2 args for $in, got %d", len(result.Args))
-	}
+	assert.Equal(t, "items.status = ANY($1)", result.Where)
+	assert.Equal(t, []any{[]string{"active", "inactive"}}, result.Args, "the set binds as one parameter")
 }
 
 func TestFilterParser_UnknownField(t *testing.T) {
@@ -254,9 +250,7 @@ func TestQueryParamParser_InSuffix(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(result.Where, "IN") {
-		t.Errorf("expected IN, got %q", result.Where)
-	}
+	assert.Equal(t, "items.status = ANY($1)", result.Where)
 }
 
 func TestQueryParamParser_IgnoresReserved(t *testing.T) {

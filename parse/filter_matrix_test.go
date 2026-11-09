@@ -17,6 +17,11 @@ func TestFilterMatrix_SQLite(t *testing.T) {
 	runFilterMatrix(t, "sqlite", sqliteMatrix(t))
 }
 
+// `$in` / `$nin` sets of every size on SQLite, each bound as one JSON array.
+func TestSetMatrix_SQLite(t *testing.T) {
+	runSetMatrix(t, "sqlite", sqliteMatrix(t))
+}
+
 func sqliteMatrix(t *testing.T) matrixDB {
 	return matrixDB{
 		db:      dbtest.SQLite(t),

@@ -24,6 +24,21 @@ func TestEvaluateConformance(t *testing.T) {
 	}))
 }
 
+func TestEvaluateSetConformance(t *testing.T) {
+	filtertest.RunSets(t, "memory", evaluateOver(filtertest.Records(), func(r filtertest.Record) (string, filter.Row) {
+		return r.ID, structRow(r)
+	}))
+	schema, err := filtertest.PathSchema()
+	if err != nil {
+		t.Fatalf("path schema: %v", err)
+	}
+	t.Run("paths", func(t *testing.T) {
+		filtertest.RunPathSets(t, schema, evaluateOver(filtertest.PathRecords(), func(r filtertest.PathRecord) (string, filter.Row) {
+			return r.ID, structRow(r)
+		}))
+	})
+}
+
 func TestEvaluateMembershipConformance(t *testing.T) {
 	eval := evaluateOver(filtertest.Records(), func(r filtertest.Record) (string, filter.Row) {
 		return r.ID, structRow(r)

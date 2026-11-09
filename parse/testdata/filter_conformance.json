@@ -200,8 +200,8 @@
         "0"
       ]
     },
-    "sqlPostgres": "conf_entities.price IN ($1::numeric, $2::numeric, $3::numeric)",
-    "sqlSqlite": "conf_entities.price IN (CAST(?1 AS NUMERIC), CAST(?2 AS NUMERIC), CAST(?3 AS NUMERIC))"
+    "sqlPostgres": "conf_entities.price = ANY($1::text[]::numeric[])",
+    "sqlSqlite": "conf_entities.price IN (SELECT CAST(value AS NUMERIC) FROM json_each(?1))"
   },
   {
     "name": "err_decimal_word",
@@ -307,8 +307,8 @@
         "offline"
       ]
     },
-    "sqlPostgres": "conf_entities.status IN ($1, $2)",
-    "sqlSqlite": "conf_entities.status IN (?1, ?2)"
+    "sqlPostgres": "conf_entities.status = ANY($1)",
+    "sqlSqlite": "conf_entities.status IN (SELECT value FROM json_each(?1))"
   },
   {
     "name": "nin_array",
@@ -327,8 +327,8 @@
         "error"
       ]
     },
-    "sqlPostgres": "conf_entities.status NOT IN ($1)",
-    "sqlSqlite": "conf_entities.status NOT IN (?1)"
+    "sqlPostgres": "conf_entities.status \u003c\u003e ALL($1)",
+    "sqlSqlite": "conf_entities.status NOT IN (SELECT value FROM json_each(?1))"
   },
   {
     "name": "like",
@@ -941,7 +941,7 @@
       "op": "eq",
       "value": "eu"
     },
-    "sqlPostgres": "(CASE WHEN jsonb_typeof(conf_entities.meta #\u003e '{region}') = 'string' THEN (conf_entities.meta #\u003e\u003e '{region}') END) = $1",
+    "sqlPostgres": "conf_entities.meta @\u003e $1::jsonb",
     "sqlSqlite": "(CASE WHEN json_type(conf_entities.meta, '$.\"region\"') = 'text' THEN json_extract(conf_entities.meta, '$.\"region\"') END) = ?1"
   },
   {
@@ -1016,7 +1016,7 @@
         }
       ]
     },
-    "sqlPostgres": "EXISTS (SELECT 1 FROM jsonb_array_elements(CASE WHEN jsonb_typeof(conf_entities.lines) = 'array' THEN conf_entities.lines END) AS elem1__(v) WHERE ((CASE WHEN jsonb_typeof(elem1__.v #\u003e '{sku}') = 'string' THEN (elem1__.v #\u003e\u003e '{sku}') END) = $1 AND (CASE WHEN jsonb_typeof(elem1__.v #\u003e '{qty}') = 'number' THEN (elem1__.v #\u003e\u003e '{qty}')::numeric END) \u003e $2))",
+    "sqlPostgres": "EXISTS (SELECT 1 FROM jsonb_array_elements(CASE WHEN jsonb_typeof(conf_entities.lines) = 'array' THEN conf_entities.lines END) AS elem1__(v) WHERE (elem1__.v @\u003e $1::jsonb AND (CASE WHEN jsonb_typeof(elem1__.v #\u003e '{qty}') = 'number' THEN (elem1__.v #\u003e\u003e '{qty}')::numeric END) \u003e $2))",
     "sqlSqlite": "EXISTS (SELECT 1 FROM json_each(CASE WHEN json_type(conf_entities.lines) = 'array' THEN conf_entities.lines END) AS elem1__ WHERE ((CASE WHEN json_type((CASE WHEN elem1__.type = 'object' THEN elem1__.value END), '$.\"sku\"') = 'text' THEN json_extract((CASE WHEN elem1__.type = 'object' THEN elem1__.value END), '$.\"sku\"') END) = ?1 AND (CASE WHEN json_type((CASE WHEN elem1__.type = 'object' THEN elem1__.value END), '$.\"qty\"') IN ('integer', 'real') THEN json_extract((CASE WHEN elem1__.type = 'object' THEN elem1__.value END), '$.\"qty\"') END) \u003e ?2))"
   },
   {
@@ -1040,7 +1040,7 @@
         }
       ]
     },
-    "sqlPostgres": "NOT EXISTS (SELECT 1 FROM jsonb_array_elements(CASE WHEN jsonb_typeof(conf_entities.lines) = 'array' THEN conf_entities.lines END) AS elem1__(v) WHERE (CASE WHEN jsonb_typeof(elem1__.v #\u003e '{sku}') = 'string' THEN (elem1__.v #\u003e\u003e '{sku}') END) = $1)",
+    "sqlPostgres": "NOT EXISTS (SELECT 1 FROM jsonb_array_elements(CASE WHEN jsonb_typeof(conf_entities.lines) = 'array' THEN conf_entities.lines END) AS elem1__(v) WHERE elem1__.v @\u003e $1::jsonb)",
     "sqlSqlite": "NOT EXISTS (SELECT 1 FROM json_each(CASE WHEN json_type(conf_entities.lines) = 'array' THEN conf_entities.lines END) AS elem1__ WHERE (CASE WHEN json_type((CASE WHEN elem1__.type = 'object' THEN elem1__.value END), '$.\"sku\"') = 'text' THEN json_extract((CASE WHEN elem1__.type = 'object' THEN elem1__.value END), '$.\"sku\"') END) = ?1)"
   },
   {
@@ -1171,8 +1171,8 @@
         }
       ]
     },
-    "sqlPostgres": "EXISTS (SELECT 1 FROM parts WHERE parts.entity_id = conf_entities.id AND parts.id IN ($1, $2))",
-    "sqlSqlite": "EXISTS (SELECT 1 FROM parts WHERE parts.entity_id = conf_entities.id AND parts.id IN (?1, ?2))"
+    "sqlPostgres": "EXISTS (SELECT 1 FROM parts WHERE parts.entity_id = conf_entities.id AND parts.id = ANY($1))",
+    "sqlSqlite": "EXISTS (SELECT 1 FROM parts WHERE parts.entity_id = conf_entities.id AND parts.id IN (SELECT value FROM json_each(?1)))"
   },
   {
     "name": "err_relation_unknown_target_field",
