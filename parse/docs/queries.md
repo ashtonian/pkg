@@ -82,7 +82,7 @@ Anything else is **absent**: a missing key, JSON null, another kind, a timestamp
 |---|---|
 | PostgreSQL | `CASE WHEN jsonb_typeof(doc #> '{a,b}') = '<kind>' THEN (doc #>> '{a,b}')[::numeric \| ::boolean] END`; `json` and `text` storage read as jsonb |
 | SQLite | `CASE WHEN json_type(doc, '$."a"."b"') IN (…) THEN json_extract(doc, '$."a"."b"') END` |
-| Memory | `filter.PathValue(doc, field)` — the reference rule the SQL renderings are tested against row by row |
+| Memory | `filter.PathValue(doc, field)` — the reference rule the SQL renderings are tested against row by row, and how `filter.Evaluate` reads a path |
 
 A facetable path counts like a column: terms over its values, ranges over its numbers (`facet:"range:0-5,5+"` on a struct member, `PathDecl.Facet` per request); an absent member is in no bucket.
 
@@ -100,7 +100,34 @@ postgres EXISTS (SELECT 1 FROM jsonb_array_elements(CASE WHEN jsonb_typeof(order
 sqlite   EXISTS (SELECT 1 FROM json_each(CASE WHEN json_type(orders.items) = 'array' THEN orders.items END) AS elem1__ WHERE (… json_extract(…elem1__.value…, '$."qty"') …))
 ```
 
-An element that is not an object has no members, so a mixed array (`["a", {"sku":"a"}]`) is tested on its objects. A memory backend reads each element of `filter.DocumentElements(doc)` with `filter.PathValue(element, field)`. An element predicate costs 10 (1 when the document is tagged `indexed`) plus its filter.
+An element that is not an object has no members, so a mixed array (`["a", {"sku":"a"}]`) is tested on its objects. `filter.Evaluate` tests each element of the document, reading element paths as `filter.PathValue` does. An element predicate costs 10 (1 when the document is tagged `indexed`) plus its filter.
+
+## Evaluating outside SQL
+
+A backend that holds rows in memory evaluates a parsed filter with `filter.Evaluate(ast.Root, row)`, the reference evaluator: it returns the row's `filter.Truth` (`True`, `False` or `Unknown`) under the rules the SQL dialects render, and the row is selected only on `True`. `filtertest` runs every conformance case on it beside SQLite and PostgreSQL.
+
+```go
+row := filter.ColumnRow(func(column string) (any, bool) {
+	v, ok := columns[column] // the Go values stored under each column
+	return v, ok
+})
+truth, err := filter.Evaluate(parsed.AST.Root, row)
+if err != nil {
+	return err
+}
+selected := truth == filter.True
+```
+
+| Rule | Meaning |
+|---|---|
+| NULL | a comparison with a NULL value or an absent path member is `Unknown`; `$and`, `$or` and `$not` are three-valued, so `$ne`, `$nin` and `$not` never select it |
+| Empty sets | `$in: []` is `False` and `$nin: []` `True`, NULL or not |
+| Order | numbers and decimals by exact value; strings, UUIDs, timestamps and dates by code point |
+| Documents and arrays | jsonb's `=` and `@>` (`JSONEqual`, `JSONContains`, `JSONHasKey`); an array column `$contains` every listed element |
+| Patterns | `$like` / `$ilike` as `MatchLike`; `$contains` on a string is a case-sensitive substring |
+| Not evaluable | a membership or raw-SQL predicate is `Unknown`, so it never admits a row its SQL would refuse; resolve memberships and relation predicates first with `filter.ResolveMemberships`, since an unresolved relation predicate is E2083; a geo operator is E2115 |
+
+A `filter.Row` returns each field's value in the canonical domain filter values normalize to (`filter.Row` documents it). `filter.ColumnRow` reads a row stored as Go values by column — a field's `SQLExpr`, or a path's `Path.Column` — converting each with `filter.ColumnValue` (drivers' `Valuer`s, decimals, times and UUIDs as SQL compares them; JSON text decoded) and each path with `filter.PathValue`; a column the row lacks is an error, never NULL. `filter.RowFunc` adapts any other source. Run `filtertest.Run(t, "memory", backend)`, `filtertest.RunPaths` and `filtertest.RunMembership` (after `ResolveMemberships`) to prove a row adapter.
 
 ## Lists and keyset pagination
 

@@ -133,8 +133,14 @@ func pathValueOf(doc any, p *JSONPath, t core.FieldType) (any, bool, error) {
 	if err != nil {
 		return nil, false, err
 	}
+	return decodedPathValue(root, p.Segments, t)
+}
+
+// decodedPathValue is pathValueOf on a document already decoded to generic
+// JSON (decodeDocument's form, or encoding/json's without UseNumber).
+func decodedPathValue(root any, segs []string, t core.FieldType) (any, bool, error) {
 	v := root
-	for _, seg := range p.Segments {
+	for _, seg := range segs {
 		obj, ok := v.(map[string]any)
 		if !ok {
 			return nil, false, nil
@@ -202,7 +208,7 @@ func pathMember(v any, t core.FieldType) (any, bool, error) {
 		s, ok := v.(string)
 		return s, ok, nil
 	case core.FieldTypeInt, core.FieldTypeFloat:
-		n, ok := v.(json.Number)
+		n, ok := jsonNumber(v)
 		if !ok {
 			return nil, false, nil
 		}
@@ -215,13 +221,13 @@ func pathMember(v any, t core.FieldType) (any, bool, error) {
 		}
 		return f, true, nil
 	case core.FieldTypeDecimal:
-		switch m := v.(type) {
-		case json.Number:
-		case string:
+		if m, ok := v.(string); ok {
 			if len(m) > core.MaxDecimalDigits || !decimalShape.MatchString(m) {
 				return nil, false, nil
 			}
-		default:
+		} else if n, ok := jsonNumber(v); ok {
+			v = n
+		} else {
 			return nil, false, nil
 		}
 		text, err := core.DecimalText(v)
@@ -250,6 +256,23 @@ func pathMember(v any, t core.FieldType) (any, bool, error) {
 		return s, true, nil
 	}
 	return nil, false, fmt.Errorf("path type %s is not supported", t)
+}
+
+// jsonNumber is a JSON number member as its literal: a json.Number as
+// decoded with UseNumber, or a Go number as encoding/json writes it, so a
+// document decoded either way reads alike.
+func jsonNumber(v any) (json.Number, bool) {
+	if n, ok := v.(json.Number); ok {
+		return n, true
+	}
+	if !core.IsNumber(v) {
+		return "", false
+	}
+	b, err := json.Marshal(v)
+	if err != nil { // NaN or an infinity
+		return "", false
+	}
+	return json.Number(b), true
 }
 
 // canonicalTimestamp pads a UTC RFC 3339 member's fraction to nine digits —
