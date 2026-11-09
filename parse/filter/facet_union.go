@@ -433,40 +433,30 @@ func relationKeyExpr(rel *core.RelationSchema, dialect Dialect) string {
 	return "CAST(" + expr + " AS TEXT)"
 }
 
-// termsKeyExpr returns the SQL expression projecting a terms-facet field's
-// value as TEXT. UNION ALL branches require a uniform key column type, so
-// non-text columns are cast.
+// termsKeyExpr renders a terms facet field's value as its key, the
+// canonical text FacetKeys gives it, as TEXT: UNION ALL branches share one
+// key column type.
 func termsKeyExpr(field *FieldSchema, dialect Dialect) string {
 	expr := FieldExpr(dialect, field)
-	if field.DataType == core.FieldTypeString || field.Path != nil && (field.DataType == core.FieldTypeTimestamp || field.DataType == core.FieldTypeUUID) {
+	switch field.DataType {
+	case core.FieldTypeString:
 		return expr
-	}
-	// Boolean keys are normalized to the JSON literals so bucket keys are
-	// backend-independent: a bare text cast yields "1"/"0" on SQLite but
-	// "true"/"false" on PostgreSQL, and consumers in the SPAs) compare against the JSON form.
-	// Standard-SQL CASE works identically on both dialects; NULL stays
-	// NULL and is dropped by the scanner like every other facet key.
-	if field.DataType == core.FieldTypeBool {
+	case core.FieldTypeBool:
+		// The JSON literals: a text cast is "1" / "0" on SQLite.
 		return "CASE WHEN " + expr + " IS NULL THEN NULL WHEN " + expr + " THEN 'true' ELSE 'false' END"
-	}
-	if field.DataType == core.FieldTypeDecimal {
-		return decimalKeyExpr(expr, dialect)
+	case core.FieldTypeInt, core.FieldTypeFloat, core.FieldTypeDecimal:
+		if k, ok := dialect.(numberKeyer); ok {
+			return k.numberKey(field)
+		}
+	case core.FieldTypeTimestamp, core.FieldTypeUUID:
+		if field.Path != nil {
+			return expr // PathExpr reads both as canonical text
+		}
 	}
 	if dialect.Name() == "postgres" {
 		return expr + "::text"
 	}
 	return "CAST(" + expr + " AS TEXT)"
-}
-
-// decimalKeyExpr projects a decimal value (FieldExpr) as its canonical text
-// (core.DecimalText) rather than the stored scale: numeric's text keeps a
-// column's scale ("10.50"). SQLite's decimal value is already the canonical
-// text (parse_decimal).
-func decimalKeyExpr(expr string, dialect Dialect) string {
-	if dialect.Name() == "postgres" {
-		return "trim_scale(" + expr + ")::text"
-	}
-	return expr
 }
 
 // ScanFacetUnion reads (facet_field, facet_key, facet_count) rows produced
