@@ -1,5 +1,25 @@
 # Changelog
 
+## [0.13.0](https://github.com/ashtonian/pkg/compare/parse/v0.12.0...parse/v0.13.0) (2026-11-09)
+
+
+### ⚠ BREAKING CHANGES
+
+* **parse:** order terms facet ties on numbers by value ([#154](https://github.com/ashtonian/pkg/issues/154)): FacetBuckets takes the facet's *FieldSchema instead of its *FacetSchema; pass the field (nil is a terms facet of strings).
+* **parse:** key numeric facet terms by canonical decimal text ([#157](https://github.com/ashtonian/pkg/issues/157)): numeric facet keys change text (10.0 is 10, 1e+21 is 1000000000000000000000). SQLite facets of float fields call parse_decimal_float32, which parsesqlite.Register now registers; a driver registering parse's functions itself must add DecimalFloat32.
+
+### Features
+
+* **parse:** export keyset ORDER BY and seek rendering ([#161](https://github.com/ashtonian/pkg/issues/161)) ([276f48a](https://github.com/ashtonian/pkg/commit/276f48ae66e0fb4495474ac817617176147cfcbb)), closes [#160](https://github.com/ashtonian/pkg/issues/160)
+* **parse:** facet the rows of a caller FROM clause (WithFacetFrom) ([#159](https://github.com/ashtonian/pkg/issues/159)) ([b091770](https://github.com/ashtonian/pkg/commit/b091770e7b1c1cd14435bc9dad01763f4d823c79)), closes [#158](https://github.com/ashtonian/pkg/issues/158)
+* **parse:** read a document decoded once with filter.Document ([#164](https://github.com/ashtonian/pkg/issues/164)) ([098bb0d](https://github.com/ashtonian/pkg/commit/098bb0d04a741f7a90aa4caf10bd69f57b5fdfe0)), closes [#163](https://github.com/ashtonian/pkg/issues/163)
+
+### Bug Fixes
+
+* **parse:** bind an array $contains list as one set ([#152](https://github.com/ashtonian/pkg/issues/152)) ([e3093f7](https://github.com/ashtonian/pkg/commit/e3093f725d671d98d0d83cedd37b91a53b890675)), closes [#151](https://github.com/ashtonian/pkg/issues/151)
+* **parse:** key numeric facet terms by canonical decimal text ([#157](https://github.com/ashtonian/pkg/issues/157)) ([f957fef](https://github.com/ashtonian/pkg/commit/f957fef5fcc1c365053f6b84048b6b39a8eab112)), closes [#155](https://github.com/ashtonian/pkg/issues/155)
+* **parse:** order terms facet ties on numbers by value ([#154](https://github.com/ashtonian/pkg/issues/154)) ([05f3d54](https://github.com/ashtonian/pkg/commit/05f3d540ba3947c9a80fa442c046146549b1f639)), closes [#153](https://github.com/ashtonian/pkg/issues/153)
+
 ## [0.12.0](https://github.com/ashtonian/pkg/compare/parse/v0.11.0...parse/v0.12.0) (2026-11-09)
 
 
