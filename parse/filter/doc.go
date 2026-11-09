@@ -49,6 +49,13 @@
 // json_each). A dialect's Condition builds a predicate's SQL and arguments
 // together.
 //
+// # Evaluating Outside SQL
+//
+// [Evaluate] is the reference evaluator: the three-valued [Truth] SQL gives a
+// filter on one [Row], for backends that hold rows in memory. [ColumnRow]
+// reads a row of Go values by column and [ColumnValue] one value; resolve
+// memberships and relation predicates first with [ResolveMemberships].
+//
 // # ListResult Composition
 //
 // [ListResult] returns all SQL parts separately (Where, OrderBy, Args,

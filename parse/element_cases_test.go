@@ -5,6 +5,7 @@ package parse_test
 import (
 	"net/url"
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -31,16 +32,31 @@ type order struct {
 	Notes []map[string]any `json:"notes" db:"notes" parse:"filter" elements:"by:string;priority:int"`
 }
 
+// orderRows are the element fixture's rows: id, then the items and notes
+// documents as JSON text, nil for NULL.
+var orderRows = [][3]any{
+	{"o1", `[{"sku":"a","qty":1},{"sku":"b","qty":5,"dims":{"w":2.5}}]`, `[{"by":"ann","priority":1}]`},
+	{"o2", `[{"sku":"a","qty":3}]`, `[{"by":"bob","priority":5},{"by":"ann","priority":4}]`},
+	{"o3", `[]`, nil},
+	{"o4", nil, `[]`},
+	{"o5", `{"sku":"a","qty":9}`, `{"by":"ann"}`},
+	{"o6", `["a",{"sku":"a","qty":4}]`, `["ann"]`},
+}
+
 func orderFixtureSQL(docType string) []string {
+	literal := func(v any) string {
+		if v == nil {
+			return "NULL"
+		}
+		return "'" + v.(string) + "'"
+	}
+	values := make([]string, len(orderRows))
+	for i, r := range orderRows {
+		values[i] = "(" + literal(r[0]) + ", " + literal(r[1]) + ", " + literal(r[2]) + ")"
+	}
 	return []string{
 		`CREATE TABLE orders (id TEXT PRIMARY KEY, items ` + docType + `, notes ` + docType + `)`,
-		`INSERT INTO orders VALUES
-			('o1', '[{"sku":"a","qty":1},{"sku":"b","qty":5,"dims":{"w":2.5}}]', '[{"by":"ann","priority":1}]'),
-			('o2', '[{"sku":"a","qty":3}]', '[{"by":"bob","priority":5},{"by":"ann","priority":4}]'),
-			('o3', '[]', NULL),
-			('o4', NULL, '[]'),
-			('o5', '{"sku":"a","qty":9}', '{"by":"ann"}'),
-			('o6', '["a",{"sku":"a","qty":4}]', '["ann"]')`,
+		`INSERT INTO orders VALUES ` + strings.Join(values, ", "),
 	}
 }
 
@@ -83,5 +99,32 @@ func runElementCases(t *testing.T, d filter.Dialect, query func(t *testing.T, sq
 	} {
 		_, err := orders.ParseList(url.Values{filter.ParamFilter: {bad}})
 		assert.Error(t, err, bad)
+	}
+}
+
+// The reference evaluator selects the rows the SQL dialects select.
+func TestElementCasesEvaluate(t *testing.T) {
+	orders := parse.MustResource[order]("orders")
+	for _, tc := range elementCases {
+		t.Run(tc.name, func(t *testing.T) {
+			req, err := orders.ParseList(url.Values{filter.ParamFilter: {tc.filter}})
+			require.NoError(t, err)
+			var got []string
+			for _, r := range orderRows {
+				row := filter.ColumnRow(func(column string) (any, bool) {
+					i := slices.Index([]string{"orders.id", "orders.items", "orders.notes"}, column)
+					if i < 0 {
+						return nil, false
+					}
+					return r[i], true
+				})
+				truth, err := filter.Evaluate(req.Filter.AST.Root, row)
+				require.NoError(t, err)
+				if truth == filter.True {
+					got = append(got, r[0].(string))
+				}
+			}
+			assert.Equal(t, tc.want, got)
+		})
 	}
 }

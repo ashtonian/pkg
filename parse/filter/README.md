@@ -25,6 +25,7 @@ Start with the [runnable package example](../README.md#quick-start). The focused
 - Array elements: `FieldSchema.Elements` (a JSON array's element paths, from slice-of-struct members or the `elements` tag), `$some` / `$none` on it, `DocumentElements`
 - Memberships outside SQL: `Lookup` (`Where`, `Filter`), `WhereEq` / `WhereIn` / `WhereNull` / `WhereNotNull` / `WhereMember` / `WhereAll` / `WhereAny`, `MembershipLookup`, `RelationLookup` (lookups with a filter), `ResolveMemberships` (policy memberships and relation predicates) with `ResolveTenant`, `ResolveRelatedPolicies`, `ResolveUnscopedRelations`, `MatchLookupRow`
 - JSON paths: `JSONPath`, `JSONStorage` (`StorageJSONB`, `StorageJSON`, `StorageText`), `PathDecl`, `ResourceSchema.WithPaths` (a request's copy-on-write view), `SortSchema.WithPaths` (its sort keys), `FieldExpr` (a field's value expression in a dialect), `Dialect.PathExpr`, `PathValue` (the reference value rule a memory backend evaluates), `SortFieldSchema.Path` / `CursorKey.Path`, `KeyValue` (a row's canonical value for any key, paths included), `PathDecl.Facet`, `MaxPathDepth`; `SortResult.ToSQL(dialect)` renders ORDER BY as the keyset orders
+- Evaluation outside SQL: `Evaluate` (a filter's three-valued `Truth` — `True`, `False`, `Unknown` — on one row, as SQL gives it), `Row` (a field's value in the canonical domain), `RowFunc`, `ColumnRow` (a row of Go values read by column; paths through `PathValue`), `ColumnValue` (one stored value in that domain)
 - Reference semantics: `MatchLike`, `EscapeLike` (a literal as a LIKE pattern; append `%` for a prefix), `JSONEqual`, `JSONContains`, `JSONHasKey`, `PathValue`
 - Geo: `GeoPoint`, `GeoDistance`, `GeoBoundingBox`, `GeoPolygon`, `GeoFieldConfig`, `ParseDistance`, `ValidateGeoPoint`, `ValidateGeoBoundingBox`, `ValidateGeoPolygon`
 - Errors: `ECode*` (`core.Code` constants), `Codes`
@@ -41,6 +42,7 @@ Start with the [runnable package example](../README.md#quick-start). The focused
 | `sql_postgres.go` / `sql_sqlite.go` | Dialect predicates (strings, decimals, documents, arrays, geo) |
 | `like.go` | LIKE patterns: escaping, GLOB translation, `MatchLike` |
 | `jsondoc.go` | `JSONEqual`, `JSONContains`, `JSONHasKey` |
+| `evaluate.go` | `Evaluate`, the reference evaluator; `Row`, `RowFunc`, `ColumnRow`, `ColumnValue` |
 | `path.go` | `JSONPath`, `FieldExpr`, `PathValue`, both dialects' `PathExpr` |
 | `path_declare.go` | Path declaration: `paths` / `storage` tags, struct members, `PathDecl`, `WithPaths` |
 | `list.go` | `ListQuery`, `ListOption`s, `ListResult` |
@@ -60,7 +62,7 @@ Start with the [runnable package example](../README.md#quick-start). The focused
 | `time_token.go` | Relative-time tokens |
 | `rows.go` | `Rows` |
 | `errors.go` | E-codes |
-| `filtertest/` | Conformance fixture: the operator × type cases (`Run`), the membership cases with their lookup tables and reference lookup (`RunMembership`, `LookupTables`, `Lookups`), and the JSON path cases (`RunPaths`, `PathRecords`, `PathSchema`) |
+| `filtertest/` | Conformance fixture, run on both dialects and `Evaluate`: the operator × type cases (`Run`), the membership cases with their lookup tables and reference lookup (`RunMembership`, `LookupTables`, `Lookups`), and the JSON path cases (`RunPaths`, `PathRecords`, `PathSchema`) |
 
 ## Dependencies
 
