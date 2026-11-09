@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.12.0](https://github.com/ashtonian/pkg/compare/parse/v0.11.0...parse/v0.12.0) (2026-11-09)
+
+
+### ⚠ BREAKING CHANGES
+
+* **parse:** compare SQLite decimals exactly through registered functions ([#149](https://github.com/ashtonian/pkg/issues/149)): a SQLite database that filters, sorts or facets a decimal field must call parsesqlite.Register before it opens a connection; otherwise the statement fails with "no such function: parse_decimal". Declare decimal columns TEXT to hold every decimal exactly. Dialect has two new methods.
+
+### Features
+
+* **parse:** bind $in / $nin as one parameter and compare jsonb paths by containment where exact ([#148](https://github.com/ashtonian/pkg/issues/148)) ([89f7bdd](https://github.com/ashtonian/pkg/commit/89f7bddb844386c02ace9335e9ac401030d5e36d)), closes [#142](https://github.com/ashtonian/pkg/issues/142)
+* **parse:** compare SQLite decimals exactly through registered functions ([#149](https://github.com/ashtonian/pkg/issues/149)) ([1392480](https://github.com/ashtonian/pkg/commit/13924801dcbbd9a1dfdf0459bddf339aa8add2ca)), closes [#144](https://github.com/ashtonian/pkg/issues/144)
+* **parse:** evaluate filters outside SQL with the reference evaluator ([#146](https://github.com/ashtonian/pkg/issues/146)) ([6e99df1](https://github.com/ashtonian/pkg/commit/6e99df191e950094d717ade9bd09a7aad8835723)), closes [#145](https://github.com/ashtonian/pkg/issues/145)
+* **parse:** filter scalar arrays by element conditions and declare array paths ([#150](https://github.com/ashtonian/pkg/issues/150)) ([bf7e70b](https://github.com/ashtonian/pkg/commit/bf7e70b67debb3f011571f8076b6fb74e6509b70)), closes [#143](https://github.com/ashtonian/pkg/issues/143)
+
 ## [0.11.0](https://github.com/ashtonian/pkg/compare/parse/v0.10.1...parse/v0.11.0) (2026-11-08)
 
 
