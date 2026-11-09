@@ -54,7 +54,13 @@ func (d SQLiteDialect) Condition(field *FieldSchema, op FilterOperator, value an
 		if !ok {
 			return "", fmt.Errorf("$contains on an array requires an array value, got %T", value)
 		}
-		return sqliteJSONMatch(expr, elems, true, bind), nil
+		// The column's JSON text is read as its element type, as `$some`
+		// reads it; a NULL column is Unknown, as PostgreSQL's `@>` is.
+		held, err := containsAll(d, field, elems, "elem1__", bind)
+		if err != nil {
+			return "", err
+		}
+		return "(CASE WHEN " + expr + " IS NULL THEN NULL WHEN json_type(" + expr + ") = 'array' THEN " + held + " ELSE 0 END)", nil
 	}
 
 	switch op {
@@ -105,11 +111,25 @@ func (d SQLiteDialect) Condition(field *FieldSchema, op FilterOperator, value an
 	return "", unsupportedOperator(field, op)
 }
 
-// sqliteMembership renders a set bound as one JSON array, its members read
-// by json_each as the values a scalar parameter binds: integers as INTEGER,
-// floats as REAL, booleans as 1 and 0, text as TEXT, and decimals as their
-// canonical text, the value FieldExpr reads a decimal as.
+// sqliteMembership renders a set bound as one JSON array (setRows).
 func sqliteMembership(field *FieldSchema, expr string, members []any, in bool, bind func(any) string) (string, error) {
+	set, err := SQLiteDialect{}.setRows(field, members, bind)
+	if err != nil {
+		return "", err
+	}
+	keyword := " IN "
+	if !in {
+		keyword = " NOT IN "
+	}
+	return expr + keyword + "(" + set + ")", nil
+}
+
+// setRows is a set's members, bound as one JSON array, read back by
+// json_each as rows of v holding the values a scalar parameter binds:
+// integers as INTEGER, floats as REAL, booleans as 1 and 0, text as TEXT,
+// and decimals as their canonical text, the value FieldExpr reads a decimal
+// as.
+func (SQLiteDialect) setRows(field *FieldSchema, members []any, bind func(any) string) (string, error) {
 	doc, err := sqliteSetMembers(field, members)
 	if err != nil {
 		return "", fmt.Errorf("field %s: %w", field.ExternalName, err)
@@ -118,11 +138,7 @@ func sqliteMembership(field *FieldSchema, expr string, members []any, in bool, b
 	if err != nil {
 		return "", fmt.Errorf("field %s: marshal set: %w", field.ExternalName, err)
 	}
-	keyword := " IN "
-	if !in {
-		keyword = " NOT IN "
-	}
-	return expr + keyword + "(SELECT value FROM json_each(" + bind(string(arr)) + "))", nil
+	return "SELECT value AS v FROM json_each(" + bind(string(arr)) + ")", nil
 }
 
 // sqliteSetMembers are a set's members as its JSON array holds them.

@@ -265,21 +265,55 @@ func (b *SQLBuilder) buildArrayPath(s *buildState, node *FilterNode) (string, er
 		if err != nil {
 			return "", err
 		}
-		all := make([]string, 0, len(values))
-		for _, v := range values {
-			has, err := b.buildElements(s, &FilterNode{Field: f, Op: OpSome, Children: []*FilterNode{{Field: elementOf(f), Op: OpEq, Value: v}}})
-			if err != nil {
-				return "", err
-			}
-			all = append(all, has)
+		held, err := containsAll(b.dialect, f, values, "elem"+strconv.Itoa(b.depth+1)+"__", s.binder(b.dialect))
+		if err != nil {
+			return "", err
 		}
-		held := "1=1"
-		if len(all) > 0 {
-			held = strings.Join(all, " AND ")
-		}
-		return "(CASE WHEN " + present + " THEN (" + held + ") END)", nil
+		return "(CASE WHEN " + present + " THEN " + held + " END)", nil
 	}
 	return "", unsupportedOperator(f, node.Op)
+}
+
+// setRelation is a dialect that binds a set's members as one parameter and
+// reads them back as rows of one column, v, of the type FieldExpr reads
+// field as.
+type setRelation interface {
+	setRows(field *FieldSchema, members []any, bind func(any) string) (string, error)
+}
+
+// containsAll renders "each of values equals an element of f's array", the
+// elements read as f's element type from rows aliased alias. The values are
+// one parameter, and the SQL's size is independent of their number: the
+// distinct elements equal to a listed value number as many as the distinct
+// listed values exactly when each has an equal element, equality being an
+// equivalence. The listed values are hashed or indexed once per statement,
+// each row reading its own elements. One EXISTS per value would pass SQLite's
+// expression depth and PostgreSQL's parameter limit, and probe a row's
+// elements once per value.
+func containsAll(d Dialect, f *FieldSchema, values []any, alias string, bind func(any) string) (string, error) {
+	if len(values) == 0 {
+		return "1=1", nil
+	}
+	if slices.Contains(values, nil) {
+		return "1=0", nil // no element equals NULL
+	}
+	table, ok := d.(elementTable)
+	if !ok {
+		return "", fmt.Errorf("field %s: dialect %s reads no array elements for $contains", f.ExternalName, d.Name())
+	}
+	rel, ok := d.(setRelation)
+	if !ok {
+		return "", fmt.Errorf("field %s: dialect %s binds no set for $contains", f.ExternalName, d.Name())
+	}
+	elem := table.scalarElement(f, alias)
+	set, err := rel.setRows(elem, values, bind)
+	if err != nil {
+		return "", err
+	}
+	// set holds one placeholder, so its two uses read one parameter.
+	e := FieldExpr(d, elem)
+	return "((SELECT count(DISTINCT " + e + ") FROM " + table.elementRows(f, alias) + " WHERE " + e + " IN (" + set + "))" +
+		" = (SELECT count(DISTINCT v) FROM (" + set + ") AS " + alias + "set))", nil
 }
 
 // bindElement is n with a scalar array's element field replaced by elem,

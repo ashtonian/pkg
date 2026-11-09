@@ -138,6 +138,28 @@ func TestSetPlans_PostgreSQL(t *testing.T) {
 		_, generic := plans(t, `{"$or":[{"doc.k":{"$in":`+keys(100_000)+`}},{"id":7}]}`)
 		assert.Contains(t, generic, "hashed SubPlan")
 	})
+	t.Run("a large array containment hashes its list once", func(t *testing.T) {
+		// Under $not, where containment would not be exact: each row's
+		// elements probe one hash of the list, built once and reused as the
+		// per-row subplan is rescanned, and the list's distinct count is an
+		// InitPlan.
+		body := `{"$not":{"doc.tags":{"$contains":` + keys(100_000) + `}}}`
+		_, generic := plans(t, body)
+		assert.Regexp(t, regexp.MustCompile(`Hash (Semi )?Join`), generic)
+		assert.Contains(t, generic, "InitPlan")
+
+		ast, err := parser.Parse(body)
+		require.NoError(t, err)
+		res, err := filter.NewSQLBuilder(schema, filter.PostgresDialect{}).Build(ast)
+		require.NoError(t, err)
+		rows, err := conn.Query(ctx, "EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF) SELECT id FROM "+table+" WHERE "+res.Where, res.Args...)
+		require.NoError(t, err)
+		lines, err := pgx.CollectRows(rows, pgx.RowTo[string])
+		require.NoError(t, err)
+		analyzed := strings.Join(lines, "\n")
+		assert.Regexp(t, regexp.MustCompile(`Seq Scan on `+table+` \(actual rows=50000(\.00)? loops=1\)`), analyzed, "every row qualifies")
+		assert.Regexp(t, regexp.MustCompile(`Hash \(actual rows=100000(\.00)? loops=1\)`), analyzed, "the list is hashed once")
+	})
 	t.Run("a large column set uses the column's index in a generic plan", func(t *testing.T) {
 		_, generic := plans(t, `{"id":{"$in":`+ids(100_000)+`}}`)
 		assert.Contains(t, generic, table+"_pkey")

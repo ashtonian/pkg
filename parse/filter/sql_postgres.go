@@ -153,32 +153,19 @@ func (d PostgresDialect) Condition(field *FieldSchema, op FilterOperator, value 
 // with `= ANY`, the parameter taking the column's own array type, so the
 // column's equality applies and its index serves the set. A path's value
 // has the type PathExpr renders, so its set joins the array unnested to
-// that type: a hash serves it in every plan, where under a generic plan
-// `= ANY` probes a parameter's array member by member for each row.
+// that type (setRows): a hash serves it in every plan, where under a
+// generic plan `= ANY` probes a parameter's array member by member for each
+// row.
 func (d PostgresDialect) membership(field *FieldSchema, expr string, members []any, in bool, bind func(any) string) (string, error) {
 	if field.Path != nil {
-		var set string
-		var arr any
-		var err error
-		switch field.DataType {
-		case core.FieldTypeInt, core.FieldTypeFloat, core.FieldTypeDecimal:
-			// Exact decimal text, cast as the path's number is.
-			arr, err = typedSlice(members, core.DecimalText)
-			set = "unnest(" + bind(arr) + "::text[])::numeric"
-		case core.FieldTypeBool:
-			arr, err = pgArray(core.FieldTypeBool, members)
-			set = "unnest(" + bind(arr) + "::boolean[])"
-		default: // string, timestamp and UUID members compare as their canonical text
-			arr, err = typedSlice(members, func(v any) (string, error) { return textValue(OpIn, v) })
-			set = "unnest(" + bind(arr) + "::text[])"
-		}
+		set, err := d.setRows(field, members, bind)
 		if err != nil {
-			return "", fmt.Errorf("field %s: %w", field.ExternalName, err)
+			return "", err
 		}
 		if in {
-			return expr + " IN (SELECT " + set + ")", nil
+			return expr + " IN (" + set + ")", nil
 		}
-		return expr + " NOT IN (SELECT " + set + ")", nil
+		return expr + " NOT IN (" + set + ")", nil
 	}
 	var param string
 	if field.DataType == core.FieldTypeDecimal {
@@ -198,6 +185,33 @@ func (d PostgresDialect) membership(field *FieldSchema, expr string, members []a
 		return expr + " = ANY(" + param + ")", nil
 	}
 	return expr + " <> ALL(" + param + ")", nil
+}
+
+// setRows is a path's set members, bound as one array parameter, unnested
+// to rows of v, the type PathExpr reads the path as.
+func (d PostgresDialect) setRows(field *FieldSchema, members []any, bind func(any) string) (string, error) {
+	if field.Path == nil {
+		return "", fmt.Errorf("field %s: a set is read as rows only for a path", field.ExternalName)
+	}
+	var set string
+	var arr any
+	var err error
+	switch field.DataType {
+	case core.FieldTypeInt, core.FieldTypeFloat, core.FieldTypeDecimal:
+		// Exact decimal text, cast as the path's number is.
+		arr, err = typedSlice(members, core.DecimalText)
+		set = "unnest(" + bind(arr) + "::text[])::numeric"
+	case core.FieldTypeBool:
+		arr, err = pgArray(core.FieldTypeBool, members)
+		set = "unnest(" + bind(arr) + "::boolean[])"
+	default: // string, timestamp and UUID members compare as their canonical text
+		arr, err = typedSlice(members, func(v any) (string, error) { return textValue(OpIn, v) })
+		set = "unnest(" + bind(arr) + "::text[])"
+	}
+	if err != nil {
+		return "", fmt.Errorf("field %s: %w", field.ExternalName, err)
+	}
+	return "SELECT " + set + " AS v", nil
 }
 
 // TwoValuedCondition compares a string, boolean or number member of a jsonb

@@ -48,12 +48,12 @@ func TestPolicyConstraints_NormalizeValues(t *testing.T) {
 		args  []any
 	}{
 		{"uuid text canonical", &PolicyConstraint{Field: "id", Operator: OpEq, Value: "A0EEBC99-9C0B-4EF8-BB6D-6BB9BD380A11"}, "id = ?1", []any{id.String()}},
-		{"typed uuid list", &PolicyConstraint{Field: "id", Operator: OpIn, Value: []uuid.UUID{id}}, "id IN (SELECT value FROM json_each(?1))", []any{`["` + id.String() + `"]`}},
+		{"typed uuid list", &PolicyConstraint{Field: "id", Operator: OpIn, Value: []uuid.UUID{id}}, "id IN (SELECT value AS v FROM json_each(?1))", []any{`["` + id.String() + `"]`}},
 		{"time to UTC text", &PolicyConstraint{Field: "created_at", Operator: OpGte, Value: local}, "created_at >= ?1", []any{"2026-01-02T02:04:05.000000000Z"}},
 		{"relative time on the list clock", &PolicyConstraint{Field: "created_at", Operator: OpGte, Value: "now-1d"}, "created_at >= ?1", []any{"2026-02-28T12:00:00.000000000Z"}},
 		{"null drops its value", &PolicyConstraint{Field: "deleted_at", Operator: OpNull, Value: true}, "deleted_at IS NULL", []any{}},
 		{"exists is not null", &PolicyConstraint{Field: "deleted_at", Operator: OpExists, Value: true}, "deleted_at IS NOT NULL", []any{}},
-		{"declared operators do not bind policies", &PolicyConstraint{Field: "id", Operator: OpNin, Value: []any{id}}, "id NOT IN (SELECT value FROM json_each(?1))", []any{`["` + id.String() + `"]`}},
+		{"declared operators do not bind policies", &PolicyConstraint{Field: "id", Operator: OpNin, Value: []any{id}}, "id NOT IN (SELECT value AS v FROM json_each(?1))", []any{`["` + id.String() + `"]`}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

@@ -2,6 +2,7 @@ package filtertest
 
 import (
 	"encoding/json"
+	"fmt"
 	"slices"
 	"strings"
 	"testing"
@@ -118,12 +119,65 @@ var arrayCases = []arrayCase{
 // arrayIDs are ArrayRecords' ids.
 const arrayIDs = "abcdefghi"
 
+// containsList is a `$contains` list on ArrayRecords: values whose holders
+// are want, and a value outside them, which leaves absentWant.
+type containsList struct {
+	field            string
+	held             []any
+	absent           any
+	want, absentWant string
+	unknown          string
+}
+
+var containsLists = []containsList{
+	{field: "doc.tags", held: []any{"a", "b"}, absent: "zz", want: "a", unknown: "cdefi"},
+	{field: "doc.counts", held: []any{int64(7)}, absent: int64(123456), want: "bg", unknown: "cdefhi"},
+	{field: "doc.prices", held: []any{"9.5", "10.5"}, absent: "0.125", want: "a", unknown: "cdefhi"},
+	{field: "doc.seen", held: []any{"2026-01-02T03:04:05Z"}, absent: "2000-01-01T00:00:00Z", want: "a", unknown: "cdefghi"},
+	{field: "doc.flags", held: []any{true}, absent: false, want: "ab", absentWant: "b", unknown: "cdefghi"},
+	{field: "labels", held: []any{"a"}, absent: "zz", want: "eh", unknown: "d"},
+	{field: "scores", held: []any{int64(9)}, absent: int64(123456), want: "gh", unknown: "d"},
+}
+
+// largeContainsCases are `$contains` of lists of each SetSizes size above
+// one, past SQLite's expression depth and PostgreSQL's parameter limit: the
+// held values repeated to the list's size, and that list with its last
+// value replaced by the absent one.
+func largeContainsCases() []arrayCase {
+	var out []arrayCase
+	for _, l := range containsLists {
+		for _, size := range SetSizes {
+			if size < 2 {
+				continue
+			}
+			list := make([]any, size)
+			for i := range list {
+				list[i] = l.held[i%len(l.held)]
+			}
+			out = append(out, arrayCase{fmt.Sprintf("%s contains %d held values", l.field, size), containsFilter(l.field, list), l.want, l.unknown})
+			list[size-1] = l.absent
+			out = append(out, arrayCase{fmt.Sprintf("%s contains %d values, one absent", l.field, size), containsFilter(l.field, list), l.absentWant, l.unknown})
+		}
+	}
+	return out
+}
+
+func containsFilter(field string, list []any) string {
+	body, err := json.Marshal(map[string]any{field: map[string]any{"$contains": list}})
+	if err != nil {
+		panic(fmt.Sprintf("filtertest: marshal %s $contains list: %v", field, err)) // fixture values always encode
+	}
+	return string(body)
+}
+
 // ArrayCases are filters on ArrayRecords' array members and columns, each
 // also under $not: `$some` and `$none` are never Unknown, `$contains` is on
-// a NULL array.
+// a NULL array. Parse them under SetConfig: some `$contains` lists hold
+// 100,000 values.
 func ArrayCases() []Case {
-	out := make([]Case, 0, 2*len(arrayCases)+len(arrayParseErrors))
-	for _, c := range arrayCases {
+	cases := append(slices.Clone(arrayCases), largeContainsCases()...)
+	out := make([]Case, 0, 2*len(cases)+len(arrayParseErrors))
+	for _, c := range cases {
 		var negated strings.Builder
 		for _, id := range arrayIDs {
 			if !strings.ContainsRune(c.want, id) && !strings.ContainsRune(c.unknown, id) {
@@ -157,8 +211,7 @@ func ArraySchema() (*filter.ResourceSchema, error) {
 // RunArrays evaluates every ArrayCases case on backend, which evaluates
 // against ArrayRecords.
 func RunArrays(t *testing.T, schema *filter.ResourceSchema, backend Backend) {
-	cfg := core.DefaultConfig()
-	cfg.Clock = Now
+	cfg := SetConfig()
 	cfg.MaxCost = 100 // an element predicate on a line's tags nests two
 	run(t, "", filter.NewFilterParser(schema, cfg), ArrayCases(), backend)
 }
