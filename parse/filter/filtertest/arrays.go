@@ -18,7 +18,7 @@ type ArrayRecord struct {
 	ID     string          `json:"id"     db:"id"     parse:"filter" filter_ops:"eq,in"`
 	Doc    json.RawMessage `json:"doc"    db:"doc"    parse:"filter" paths:"tags:[]string:filter+facet;counts:[]int;prices:[]decimal;seen:[]timestamp;flags:[]bool:facet"`
 	Labels []string        `json:"labels" db:"labels" parse:"filter,facet"`
-	Scores []int64         `json:"scores" db:"scores" parse:"filter"`
+	Scores []int64         `json:"scores" db:"scores" parse:"filter,facet"`
 	Lines  json.RawMessage `json:"lines"  db:"lines"  parse:"filter" elements:"sku:string;tags:[]string"`
 }
 
@@ -54,6 +54,13 @@ var ArrayFacets = map[string]map[string]int64{
 	"doc.tags":  {"a": 2, "b": 2, "c": 1, "A": 1},
 	"doc.flags": {"true": 2, "false": 1},
 	"labels":    {"x": 2, "y": 2, "a": 2, "z": 2},
+	"scores":    {"1": 1, "3": 1, "5": 1, "7": 1, "9": 2, "20": 1, "100": 1},
+}
+
+// ArrayFacetOrders are ArrayFacets' numeric terms facets cut through a
+// tie, which by text would keep 100 before 3.
+var ArrayFacetOrders = map[string]FacetOrder{
+	"scores": {Limit: 3, Keys: []string{"9", "1", "3"}},
 }
 
 // arrayCase is a filter on ArrayRecords, the rows it selects and the rows

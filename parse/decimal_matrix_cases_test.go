@@ -94,6 +94,9 @@ func runDecimalMatrix(t *testing.T, d decimalDB) {
 		}
 		assert.Equal(t, filtertest.DecimalFacets, got)
 	})
+	t.Run("facet orders", func(t *testing.T) {
+		assertFacetOrders(t, d.db, d.dialect, schema, filtertest.DecimalFacetOrders, filtertest.DecimalFacets)
+	})
 	t.Run("values match PathValue", func(t *testing.T) {
 		f := schema.Fields["doc.price"]
 		rows, err := d.db.Query("SELECT id, doc, " + filter.FieldExpr(d.dialect, f) + " FROM " + schema.Name + " ORDER BY id")

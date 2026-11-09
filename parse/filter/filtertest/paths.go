@@ -81,6 +81,12 @@ var PathFacets = map[string]map[string]int64{
 	"attrs.price":    {"10.25": 1, "9.5": 1, "-1": 1, "100": 1},
 }
 
+// PathFacetOrders are PathFacets' numeric terms facets cut through a tie,
+// which by text would keep 10.25 and 100 before 9.5.
+var PathFacetOrders = map[string]FacetOrder{
+	"attrs.price": {Limit: 3, Keys: []string{"-1", "9.5", "10.25"}},
+}
+
 // PathCases are the path filters and the rows each matches. An absent
 // member is NULL: no comparison but the NULL tests matches it.
 func PathCases() []Case {

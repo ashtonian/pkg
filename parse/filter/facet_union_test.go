@@ -13,6 +13,7 @@ import (
 
 	"github.com/ashtonian/pkg/parse/core"
 	"github.com/ashtonian/pkg/parse/filter"
+	"github.com/ashtonian/pkg/parse/parsesqlite"
 	"github.com/stretchr/testify/require"
 )
 
@@ -94,7 +95,8 @@ func TestBuildFacetQuery_Postgres(t *testing.T) {
 		"SELECT 'price' AS facet_field, facet__2 AS facet_key, COUNT(*) AS facet_count, 2 AS facet_ord, " +
 			"CASE facet__2 WHEN '0-50' THEN 0 WHEN '50-100' THEN 1 WHEN '100+' THEN 2 END AS facet_rank FROM base WHERE facet__2 IS NOT NULL GROUP BY facet__2",
 		"UNION ALL",
-		") facets__ ORDER BY facet_ord, facet_rank, facet_count DESC, facet_key COLLATE pg_c_utf8",
+		"ROW_NUMBER() OVER (ORDER BY c DESC, k COLLATE pg_c_utf8) AS facet_rank",
+		") facets__ ORDER BY facet_ord, facet_rank",
 	}
 	for _, sub := range want {
 		if !strings.Contains(q.SQL, sub) {
@@ -334,8 +336,7 @@ func TestBuildFacetQuery_RoundTrip_Order(t *testing.T) {
 // FacetBuckets is the order a backend counting in Go returns, the order
 // the SQL facet query returns.
 func TestFacetBuckets_OrderAsTheQueryDoes(t *testing.T) {
-	price := facetSchema().Fields["price"].FacetSchema
-	got := filter.FacetBuckets(price, map[string]int64{"100+": 2, "0-50": 2, "50-100": 1, "unused": 0}, 0)
+	got := filter.FacetBuckets(facetSchema().Fields["price"], map[string]int64{"100+": 2, "0-50": 2, "50-100": 1, "unused": 0}, 0)
 	if want := []filter.FacetBucket{{Key: "0-50", Count: 2}, {Key: "50-100", Count: 1}, {Key: "100+", Count: 2}}; !reflect.DeepEqual(got, want) {
 		t.Errorf("ranges = %+v, want %+v", got, want)
 	}
@@ -343,6 +344,114 @@ func TestFacetBuckets_OrderAsTheQueryDoes(t *testing.T) {
 	got = filter.FacetBuckets(nil, counts, 3)
 	if want := []filter.FacetBucket{{Key: "u1", Count: 3}, {Key: "Z", Count: 1}, {Key: "u2", Count: 1}}; !reflect.DeepEqual(got, want) {
 		t.Errorf("terms = %+v, want %+v", got, want)
+	}
+}
+
+// A numeric terms facet breaks count ties by value, as CompareKeyValues
+// orders numbers; the limit keeps the lowest values, not the lowest texts.
+func TestFacetBuckets_NumbersTieByValue(t *testing.T) {
+	keys := func(field *filter.FieldSchema, counts map[string]int64, limit int) []string {
+		var out []string
+		for _, b := range filter.FacetBuckets(field, counts, limit) {
+			out = append(out, b.Key)
+		}
+		return out
+	}
+	field := func(t, elem core.FieldType) *filter.FieldSchema {
+		return &filter.FieldSchema{ExternalName: "n", DataType: t, Elem: elem, Facetable: true}
+	}
+	ones := func(ks ...string) map[string]int64 {
+		m := map[string]int64{}
+		for _, k := range ks {
+			m[k] = 1
+		}
+		return m
+	}
+	for _, tc := range []struct {
+		name   string
+		field  *filter.FieldSchema
+		counts map[string]int64
+		limit  int
+		want   []string
+	}{
+		{"int", field(core.FieldTypeInt, ""), ones("9", "10", "100", "-1", "-10"), 4, []string{"-10", "-1", "9", "10"}},
+		{"decimal beyond a double", field(core.FieldTypeDecimal, ""), ones("9007199254740993", "9007199254740992.5", "0.5", "10"), 0,
+			[]string{"0.5", "10", "9007199254740992.5", "9007199254740993"}},
+		{"count first", field(core.FieldTypeDecimal, ""), map[string]int64{"100": 2, "9": 1, "10": 1}, 2, []string{"100", "9"}},
+		{"float, infinities and NaN", field(core.FieldTypeFloat, ""), ones("NaN", "Infinity", "1e+21", "-Infinity", "2"), 0,
+			[]string{"-Infinity", "2", "1e+21", "Infinity", "NaN"}},
+		{"array elements", field(core.FieldTypeArray, core.FieldTypeInt), ones("10", "9"), 1, []string{"9"}},
+		{"strings by code point", field(core.FieldTypeString, ""), ones("9", "10"), 1, []string{"10"}},
+	} {
+		if got := keys(tc.field, tc.counts, tc.limit); !reflect.DeepEqual(got, tc.want) {
+			t.Errorf("%s: keys = %v, want %v", tc.name, got, tc.want)
+		}
+	}
+}
+
+// BuildFacetQuery keeps and orders the buckets FacetBuckets does: numeric
+// ties by value on an int and a float column, a decimal path and an int
+// array's elements; strings by code point.
+func TestBuildFacetQuery_RoundTrip_NumbersTieByValue(t *testing.T) {
+	require.NoError(t, parsesqlite.Register())
+	db, err := sql.Open("sqlite", ":memory:")
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, db.Close()) })
+	for _, stmt := range []string{
+		`CREATE TABLE items (id INTEGER PRIMARY KEY, qty INTEGER, ratio REAL, label TEXT, doc TEXT, scores TEXT)`,
+		`INSERT INTO items (qty, ratio, label, doc, scores) VALUES
+			(9, 9.5, '9', '{"price":9}', '[9,10]'),
+			(10, 10.25, '10', '{"price":"10.0"}', '[10,100]'),
+			(100, -1, '100', '{"price":100}', '[9]'),
+			(-1, 100, '-1', '{"price":-1.5}', '[100]')`,
+	} {
+		_, err := db.Exec(stmt)
+		require.NoError(t, err)
+	}
+	schema := &filter.ResourceSchema{Name: "items", Fields: map[string]*filter.FieldSchema{
+		"qty":   {ExternalName: "qty", SQLExpr: "items.qty", DataType: core.FieldTypeInt, Facetable: true},
+		"ratio": {ExternalName: "ratio", SQLExpr: "items.ratio", DataType: core.FieldTypeFloat, Facetable: true},
+		"label": {ExternalName: "label", SQLExpr: "items.label", DataType: core.FieldTypeString, Facetable: true},
+		"doc.price": {ExternalName: "doc.price", DataType: core.FieldTypeDecimal, Facetable: true,
+			Path: &filter.JSONPath{Column: "items.doc", Segments: []string{"price"}, Storage: filter.StorageJSON}},
+		"scores": {ExternalName: "scores", SQLExpr: "items.scores", DataType: core.FieldTypeArray, Elem: core.FieldTypeInt, Facetable: true},
+	}}
+	reqs := []filter.FacetRequest{{Field: "qty", Limit: 3}, {Field: "ratio", Limit: 3}, {Field: "label", Limit: 3}, {Field: "doc.price", Limit: 3}, {Field: "scores"}}
+	q, err := filter.BuildFacetQuery(schema, filter.SQLiteDialect{}, "1=1", nil, reqs)
+	require.NoError(t, err)
+	rows, err := db.Query(q.SQL, q.Args...)
+	require.NoError(t, err, q.SQL)
+	results, err := filter.ScanFacetUnion(rows)
+	require.NoError(t, errors.Join(err, rows.Close()))
+	one := func(ks ...string) []filter.FacetBucket {
+		out := make([]filter.FacetBucket, len(ks))
+		for i, k := range ks {
+			out[i] = filter.FacetBucket{Key: k, Count: 1}
+		}
+		return out
+	}
+	want := []filter.FacetResult{
+		{Field: "qty", Buckets: one("-1", "9", "10")},
+		{Field: "ratio", Buckets: one("-1.0", "9.5", "10.25")},
+		{Field: "label", Buckets: one("-1", "10", "100")},
+		{Field: "doc.price", Buckets: one("-1.5", "9", "10")},
+		{Field: "scores", Buckets: []filter.FacetBucket{{Key: "9", Count: 2}, {Key: "10", Count: 2}, {Key: "100", Count: 2}}},
+	}
+	if !reflect.DeepEqual(results, want) {
+		t.Errorf("facets = %+v\nwant     %+v\nSQL:\n%s", results, want, q.SQL)
+	}
+	for _, r := range results {
+		if len(r.Buckets) == 0 {
+			continue
+		}
+		counts := map[string]int64{}
+		for _, b := range r.Buckets {
+			counts[b.Key] = b.Count
+		}
+		inGo := filter.FacetBuckets(schema.Fields[r.Field], counts, 0)
+		if !reflect.DeepEqual(inGo, r.Buckets) {
+			t.Errorf("%s: FacetBuckets = %+v, the query %+v", r.Field, inGo, r.Buckets)
+		}
 	}
 }
 
