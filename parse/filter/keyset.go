@@ -325,8 +325,14 @@ func keyExpr(d Dialect, k CursorKey) string {
 	return keyValue(d, k)
 }
 
-// orderByKeys renders ORDER BY for the keyset, walked forwards or backwards.
-func orderByKeys(d Dialect, keys []CursorKey, reverse bool) string {
+// OrderByKeys renders the ORDER BY clause that walks keys forwards, or
+// backwards when reverse is set, in the keyset's order: NULL greatest on
+// nullable keys, text by code point, decimals through
+// Dialect.DecimalOrder. It is "" for no keys. ListQuery orders its pages
+// with it; a statement ListQuery does not build, such as one that also
+// orders by a computed key (a CursorKey whose SQLExpr is the expression),
+// pages the same way with OrderByKeys and SeekPredicate.
+func OrderByKeys(d Dialect, keys []CursorKey, reverse bool) string {
 	if len(keys) == 0 {
 		return ""
 	}
@@ -350,6 +356,20 @@ func orderByKeys(d Dialect, keys []CursorKey, reverse bool) string {
 		}
 	}
 	return sb.String()
+}
+
+// SeekPredicate renders the predicate holding the rows strictly after
+// token in the walk order of keys (token.Reverse walks backwards), for a
+// statement ordered by OrderByKeys(d, keys, token.Reverse). It checks token
+// against keys first (ValidateCursor), normalizing its values, and refuses
+// a token minted under another keyset with E2082 (ECodeInvalidCursor).
+// bind binds one value and returns its placeholder; every non-null value is
+// bound, never spliced into the SQL.
+func SeekPredicate(d Dialect, keys []CursorKey, token *PageToken, bind func(any) string) (string, error) {
+	if err := ValidateCursor(token, keys); err != nil {
+		return "", err
+	}
+	return seekPredicate(d, keys, token, bind), nil
 }
 
 // seekPredicate renders "rows strictly after the token" in the walk order:

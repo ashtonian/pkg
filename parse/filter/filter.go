@@ -743,7 +743,7 @@ func (s *SortResult) ToSQL(d Dialect) string {
 	if s == nil || len(s.Fields) == 0 {
 		return ""
 	}
-	return orderByKeys(d, Keyset(s, CursorKey{}), false)
+	return OrderByKeys(d, Keyset(s, CursorKey{}), false)
 }
 
 // NewParsedFilter wraps a FilterAST with computed cost and condition count.

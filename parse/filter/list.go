@@ -272,7 +272,7 @@ func (lq *ListQuery) Build(opts ...ListOption) (*ListResult, error) {
 	// ORDER BY derives from the effective keyset so the tie-breaker
 	// participates and matches the seek predicate exactly; a backward seek
 	// walks it inverted.
-	orderBy := orderByKeys(lq.dialect, keys, plan.Reverse)
+	orderBy := OrderByKeys(lq.dialect, keys, plan.Reverse)
 
 	fetchLimit := cfg.limit + 1
 
