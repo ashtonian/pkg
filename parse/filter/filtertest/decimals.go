@@ -70,6 +70,12 @@ var DecimalFacets = map[string]map[string]int64{
 	},
 }
 
+// DecimalFacetOrders are DecimalFacets' terms facets cut through a tie,
+// which by text would keep 12345678901234567890 before 9007199254740992.5.
+var DecimalFacetOrders = map[string]FacetOrder{
+	"doc.price": {Limit: 4, Keys: []string{"10.5", "0", "9007199254740992.5", "9007199254740993.5"}},
+}
+
 // DecimalCases are filters on DecimalRecords' amount column and price
 // member that a double would answer wrongly, and the rows each matches.
 func DecimalCases() []Case {

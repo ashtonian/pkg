@@ -3,9 +3,12 @@ package filter
 import (
 	"cmp"
 	"fmt"
+	"math"
 	"slices"
 	"strconv"
 	"strings"
+
+	"github.com/ashtonian/pkg/parse/core"
 )
 
 // FacetType determines how aggregation SQL is generated.
@@ -50,12 +53,17 @@ type FacetBucket struct {
 	Count int64  `json:"count"`
 }
 
-// FacetBuckets orders one facet's counts as BuildFacetQuery returns them,
-// for a backend that counts in Go: a terms facet by count, ties by key in
-// code-point order, cut to limit (none when limit <= 0); a range facet in
-// its declared order. Keys without a count are dropped.
-func FacetBuckets(cfg *FacetSchema, counts map[string]int64, limit int) []FacetBucket {
+// FacetBuckets orders field's counts as BuildFacetQuery returns them, for
+// a backend that counts in Go: a terms facet by count, ties in the order of
+// the field's type, cut to limit (none when limit <= 0); a range facet in
+// its declared order. Keys without a count are dropped. A nil field is a
+// terms facet of strings.
+func FacetBuckets(field *FieldSchema, counts map[string]int64, limit int) []FacetBucket {
 	out := make([]FacetBucket, 0, len(counts))
+	var cfg *FacetSchema
+	if field != nil {
+		cfg = field.FacetSchema
+	}
 	if cfg != nil && cfg.Type == FacetTypeRange {
 		for _, r := range cfg.Ranges {
 			if n := counts[r.Key]; n > 0 {
@@ -69,16 +77,58 @@ func FacetBuckets(cfg *FacetSchema, counts map[string]int64, limit int) []FacetB
 			out = append(out, FacetBucket{Key: k, Count: n})
 		}
 	}
+	keys := strings.Compare
+	if field != nil && isNumber(facetValueType(field)) {
+		keys = compareNumberKeys
+	}
 	slices.SortFunc(out, func(a, b FacetBucket) int {
-		if c := cmp.Compare(b.Count, a.Count); c != 0 {
-			return c
-		}
-		return strings.Compare(a.Key, b.Key)
+		return cmp.Or(cmp.Compare(b.Count, a.Count), keys(a.Key, b.Key))
 	})
 	if limit > 0 && len(out) > limit {
 		out = out[:limit]
 	}
 	return out
+}
+
+// facetValueType is the type of the values a terms facet on f counts: an
+// array's elements', or f's own.
+func facetValueType(f *FieldSchema) core.FieldType {
+	if f.DataType == core.FieldTypeArray {
+		return f.Elem
+	}
+	return f.DataType
+}
+
+func isNumber(t core.FieldType) bool {
+	return t == core.FieldTypeInt || t == core.FieldTypeFloat || t == core.FieldTypeDecimal
+}
+
+// compareNumberKeys orders two keys of a numeric facet by the numbers they
+// name, as CompareKeyValues orders numbers: exactly by value, then by text.
+// A float key that names no decimal, such as "Infinity", orders by its
+// float value, NaN greatest, as PostgreSQL orders double precision; a key
+// that names no number orders after every number.
+func compareNumberKeys(a, b string) int {
+	if c, ok := core.CompareDecimals(a, b); ok {
+		return cmp.Or(c, strings.Compare(a, b))
+	}
+	x, xerr := strconv.ParseFloat(a, 64)
+	y, yerr := strconv.ParseFloat(b, 64)
+	if xerr != nil || yerr != nil {
+		return cmp.Or(compareFalseFirst(xerr != nil, yerr != nil), strings.Compare(a, b))
+	}
+	return cmp.Or(compareFalseFirst(math.IsNaN(x), math.IsNaN(y)), cmp.Compare(x, y), strings.Compare(a, b))
+}
+
+// compareFalseFirst orders false before true.
+func compareFalseFirst(x, y bool) int {
+	switch {
+	case x == y:
+		return 0
+	case x:
+		return 1
+	}
+	return -1
 }
 
 // FacetMap keys facet results by field, the shape a list page and a facet

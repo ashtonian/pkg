@@ -73,7 +73,7 @@ The client speaks the list, patch and facet endpoints `forge/feature` serves ove
 | `facets(fields, opts)` | `OPTIONS /{resource}?facets=a,b&filter=` → `facets` |
 | `schema()` | `GET /{schemaPath}/{resource}/schema` (parse `SchemaRegistry.SchemaHandler`) |
 
-A list page is `{ items, page_info: { has_next_page, has_prev_page, start_cursor?, end_cursor?, total_count? }, _relations?, _truncated?, facets? }` — Go `filter.Page`. `_relations` carries `include` projections: relation field → owner id → related ids (at most 100 per owner by default); `_truncated` lists, per relation field, the owners whose ids were cut at that cap. `facets` carries the counts a list's `facets` option asked for, over the matched rows: field → buckets, a terms facet's by count then key, a range facet's as declared. A server that runs the plan with `parsepgx.QueryPage` answers it; `forge/feature` serves facets through `facets(fields, opts)` only. A patch returns `{ updated, failed? }`.
+A list page is `{ items, page_info: { has_next_page, has_prev_page, start_cursor?, end_cursor?, total_count? }, _relations?, _truncated?, facets? }` — Go `filter.Page`. `_relations` carries `include` projections: relation field → owner id → related ids (at most 100 per owner by default); `_truncated` lists, per relation field, the owners whose ids were cut at that cap. `facets` carries the counts a list's `facets` option asked for, over the matched rows: field → buckets, a terms facet's by count with ties in the field's type order (numbers by value), a range facet's as declared. A server that runs the plan with `parsepgx.QueryPage` answers it; `forge/feature` serves facets through `facets(fields, opts)` only. A patch returns `{ updated, failed? }`.
 
 ## Filtering
 

@@ -83,4 +83,7 @@ func runArrayMatrix(t *testing.T, d arrayDB) {
 		}
 		assert.Equal(t, filtertest.ArrayFacets, got)
 	})
+	t.Run("facet orders", func(t *testing.T) {
+		assertFacetOrders(t, d.db, d.dialect, schema, filtertest.ArrayFacetOrders, filtertest.ArrayFacets)
+	})
 }

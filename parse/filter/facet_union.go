@@ -66,8 +66,9 @@ func WithFacetRelatedPolicies(policies map[string]*PolicyConstraints) BuildFacet
 // Range facets are pre-bucketed in the CTE projection so outer GROUP BYs
 // are uniform. Terms facets enforce per-field LIMIT N via inline
 // subqueries, keeping the highest counts and, among equal counts, the
-// lowest keys in code-point order. Rows come back facet by facet in request
-// order: terms buckets by count then key, range buckets as declared. Pair
+// lowest values in the field's type order: numbers by value, other keys in
+// code-point order. Rows come back facet by facet in request order: terms
+// buckets in that order, range buckets as declared. Pair
 // with [ScanFacetUnion] to re-group rows into per-field [FacetResult]s.
 //
 // Relation predicates in filterWhere are correlated EXISTS, so the base CTE
@@ -114,6 +115,9 @@ func buildFacetQuery(schema *ResourceSchema, dialect Dialect, filterWhere string
 		// list facets count each distinct element of an array column once
 		// per row, as memory backends do.
 		list bool
+		// order orders a scalar terms facet's values as their type does,
+		// projected beside the bucket; "" where the bucket's text does.
+		order string
 	}
 	metas := make([]meta, 0, len(facets))
 	hasRelation, hasList := false, false
@@ -157,7 +161,11 @@ func buildFacetQuery(schema *ResourceSchema, dialect Dialect, filterWhere string
 		// identifier ("display-name"); the projection uses an internal
 		// alias and the name travels only as a quoted literal.
 		bucket := "facet__" + strconv.Itoa(len(metas))
-		metas = append(metas, meta{req: req, field: f, cfg: fcfg, bucketCol: bucket, list: list})
+		order := ""
+		if fcfg.Type == FacetTerms && f.Relation == nil && !list {
+			order = facetValueOrder(f, dialect)
+		}
+		metas = append(metas, meta{req: req, field: f, cfg: fcfg, bucketCol: bucket, list: list, order: order})
 	}
 
 	args := make([]any, len(filterArgs))
@@ -199,6 +207,13 @@ func buildFacetQuery(schema *ResourceSchema, dialect Dialect, filterWhere string
 		}
 		proj.WriteString(" AS ")
 		proj.WriteString(m.bucketCol)
+		if m.order != "" {
+			proj.WriteString(", ")
+			proj.WriteString(m.order)
+			proj.WriteString(" AS ")
+			proj.WriteString(m.bucketCol)
+			proj.WriteString("_o")
+		}
 	}
 	if hasList {
 		// A row identity, so an element repeated in one row counts it once.
@@ -248,9 +263,9 @@ func buildFacetQuery(schema *ResourceSchema, dialect Dialect, filterWhere string
 
 	// Each branch carries its facet's ordinal and a bucket rank so the outer
 	// ORDER BY fixes the row order: facets in request order; terms by count,
-	// ties by key in code-point order (the same tie-break picks which buckets
-	// a terms LIMIT keeps); ranges in declared order. UNION ALL alone
-	// guarantees no order.
+	// ties by value in the type's order (numbers by value, other keys by
+	// code point), the order that also picks the buckets a terms LIMIT
+	// keeps; ranges in declared order. UNION ALL alone guarantees no order.
 	b.WriteString("SELECT facet_field, facet_key, facet_count FROM (")
 	for i, m := range metas {
 		if i > 0 {
@@ -269,9 +284,10 @@ func buildFacetQuery(schema *ResourceSchema, dialect Dialect, filterWhere string
 			if limit <= 0 {
 				limit = defaultTermsLimit
 			}
-			b.WriteString("k AS facet_key, c AS facet_count, ")
-			b.WriteString(ord)
-			b.WriteString(" AS facet_ord, 0 AS facet_rank FROM (SELECT ")
+			// The branch's buckets: k, c and, where the key's text does not
+			// order the values, o, which does.
+			var in strings.Builder
+			ordered := false
 			// PostgreSQL's ORDER BY cannot collate an output alias, so the
 			// tie-break names the key's expression.
 			key := m.bucketCol
@@ -279,45 +295,78 @@ func buildFacetQuery(schema *ResourceSchema, dialect Dialect, filterWhere string
 				table := dialect.(elementTable) // checked with the request
 				source := listSource(m.field, "base."+m.bucketCol)
 				elem := table.scalarElement(source, "facet_elem__")
-				key = termsKeyExpr(elem, dialect)
-				b.WriteString("k, COUNT(*) AS c FROM (SELECT DISTINCT base.__row, ")
-				b.WriteString(key)
-				b.WriteString(" AS k FROM base, ")
-				b.WriteString(table.elementRows(source, "facet_elem__"))
-				b.WriteString(" WHERE ")
-				b.WriteString(FieldExpr(dialect, elem))
-				b.WriteString(" IS NOT NULL) e")
-				b.WriteString(ord)
-				b.WriteString(" GROUP BY k")
+				order := facetValueOrder(elem, dialect)
+				ordered = order != ""
+				in.WriteString("k, ")
+				if ordered {
+					// Two elements of a row that name one key are one row.
+					in.WriteString("COUNT(DISTINCT __row) AS c, MIN(v) AS o")
+				} else {
+					in.WriteString("COUNT(*) AS c")
+				}
+				in.WriteString(" FROM (SELECT DISTINCT base.__row, ")
+				in.WriteString(termsKeyExpr(elem, dialect))
+				in.WriteString(" AS k")
+				if ordered {
+					in.WriteString(", ")
+					in.WriteString(order)
+					in.WriteString(" AS v")
+				}
+				in.WriteString(" FROM base, ")
+				in.WriteString(table.elementRows(source, "facet_elem__"))
+				in.WriteString(" WHERE ")
+				in.WriteString(FieldExpr(dialect, elem))
+				in.WriteString(" IS NOT NULL) e")
+				in.WriteString(ord)
+				in.WriteString(" GROUP BY k")
 				key = "k"
 			} else if rel := m.field.Relation; rel != nil {
 				// Cast to TEXT so UNION ALL key columns line up with
 				// scalar terms facets that already cast.
 				key = relationKeyExpr(rel, dialect)
-				b.WriteString(key)
+				in.WriteString(key)
 				// Owners, not junction rows: two rows pairing one owner with
 				// one target (typed edges) count the owner once.
-				b.WriteString(" AS k, COUNT(DISTINCT base.__owner_pk) AS c FROM base INNER JOIN ")
-				b.WriteString(rel.JoinTable)
-				b.WriteString(" j ON j.")
-				b.WriteString(rel.SourceColumn)
-				b.WriteString(" = base.__owner_pk")
-				b.WriteString(relatedJoin(rel, "j", "target__"))
+				in.WriteString(" AS k, COUNT(DISTINCT base.__owner_pk) AS c FROM base INNER JOIN ")
+				in.WriteString(rel.JoinTable)
+				in.WriteString(" j ON j.")
+				in.WriteString(rel.SourceColumn)
+				in.WriteString(" = base.__owner_pk")
+				in.WriteString(relatedJoin(rel, "j", "target__"))
 				clause, err := relatedScope(m.field, dialect, cfg.scope, cfg.related, st, bindTenant, "j", "target__")
 				if err != nil {
 					return FacetQuery{}, fmt.Errorf("BuildFacetQuery: field %q: %w", m.req.Field, err)
 				}
-				b.WriteString(clause)
-				b.WriteString(" GROUP BY j.")
-				b.WriteString(rel.TargetColumn)
+				in.WriteString(clause)
+				in.WriteString(" GROUP BY j.")
+				in.WriteString(rel.TargetColumn)
 			} else {
-				b.WriteString(m.bucketCol)
-				b.WriteString(" AS k, COUNT(*) AS c FROM base WHERE ")
-				b.WriteString(m.bucketCol)
-				b.WriteString(" IS NOT NULL GROUP BY ")
-				b.WriteString(m.bucketCol)
+				ordered = m.order != ""
+				in.WriteString(m.bucketCol)
+				in.WriteString(" AS k, COUNT(*) AS c")
+				if ordered {
+					in.WriteString(", MIN(")
+					in.WriteString(m.bucketCol)
+					in.WriteString("_o) AS o")
+				}
+				in.WriteString(" FROM base WHERE ")
+				in.WriteString(m.bucketCol)
+				in.WriteString(" IS NOT NULL GROUP BY ")
+				in.WriteString(m.bucketCol)
 			}
+			tieOrder := ""
+			if ordered {
+				tieOrder = "o, "
+			}
+			b.WriteString("k AS facet_key, c AS facet_count, ")
+			b.WriteString(ord)
+			b.WriteString(" AS facet_ord, ROW_NUMBER() OVER (ORDER BY c DESC, ")
+			b.WriteString(tieOrder)
+			b.WriteString(dialect.CodePointOrder("k"))
+			b.WriteString(") AS facet_rank FROM (SELECT ")
+			b.WriteString(in.String())
 			b.WriteString(" ORDER BY c DESC, ")
+			b.WriteString(tieOrder)
 			b.WriteString(dialect.CodePointOrder(key))
 			b.WriteString(" LIMIT ")
 			b.WriteString(strconv.Itoa(limit))
@@ -342,10 +391,22 @@ func buildFacetQuery(schema *ResourceSchema, dialect Dialect, filterWhere string
 		b.WriteString(" IS NOT NULL GROUP BY ")
 		b.WriteString(m.bucketCol)
 	}
-	b.WriteString(") facets__ ORDER BY facet_ord, facet_rank, facet_count DESC, ")
-	b.WriteString(dialect.CodePointOrder("facet_key"))
+	b.WriteString(") facets__ ORDER BY facet_ord, facet_rank")
 
 	return FacetQuery{SQL: b.String(), Args: st.args}, nil
+}
+
+// facetValueOrder renders what orders f's values as their type does
+// (CompareKeyValues): a number exactly by value. It is "" for a type whose
+// key text (termsKeyExpr) orders by code point as its values do.
+func facetValueOrder(f *FieldSchema, dialect Dialect) string {
+	switch f.DataType {
+	case core.FieldTypeInt, core.FieldTypeFloat:
+		return FieldExpr(dialect, f)
+	case core.FieldTypeDecimal:
+		return dialect.DecimalOrder(FieldExpr(dialect, f))
+	}
+	return ""
 }
 
 // listSource is a list facet's array field reading column, the base CTE's
@@ -411,7 +472,7 @@ func decimalKeyExpr(expr string, dialect Dialect) string {
 // ScanFacetUnion reads (facet_field, facet_key, facet_count) rows produced
 // by [BuildFacetQuery] and groups them into per-field [FacetResult]s in the
 // query's order: facets as requested; a terms facet's buckets by count,
-// ties by key; a range facet's as declared.
+// ties in the field's type order; a range facet's as declared.
 //
 // NULL keys are dropped (BuildFacetQuery's WHERE filters them, but defense
 // in depth).

@@ -43,4 +43,5 @@ func runPathFacets(t *testing.T, p pathDB) {
 		}
 	}
 	assert.Equal(t, filtertest.PathFacets, got)
+	assertFacetOrders(t, p.db, p.dialect, schema, filtertest.PathFacetOrders, filtertest.PathFacets)
 }

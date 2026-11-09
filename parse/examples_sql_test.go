@@ -166,7 +166,7 @@ func Example_countFacetsSearch() {
 	// Output:
 	// where: (products.price < $1 AND to_tsvector('english', coalesce(products.name, '')) @@ plainto_tsquery('english', $2)) [200 cordless drill]
 	// count: SELECT COUNT(*) FROM products WHERE (products.price < $1 AND to_tsvector('english', coalesce(products.name, '')) @@ plainto_tsquery('english', $2)) [200 cordless drill]
-	// facets: WITH base AS MATERIALIZED (SELECT products.category AS facet__0 FROM products WHERE (products.price < $1 AND to_tsvector('english', coalesce(products.name, '')) @@ plainto_tsquery('english', $2))) SELECT facet_field, facet_key, facet_count FROM (SELECT 'category' AS facet_field, k AS facet_key, c AS facet_count, 0 AS facet_ord, 0 AS facet_rank FROM (SELECT facet__0 AS k, COUNT(*) AS c FROM base WHERE facet__0 IS NOT NULL GROUP BY facet__0 ORDER BY c DESC, facet__0 COLLATE pg_c_utf8 LIMIT 10) s0) facets__ ORDER BY facet_ord, facet_rank, facet_count DESC, facet_key COLLATE pg_c_utf8 [200 cordless drill]
+	// facets: WITH base AS MATERIALIZED (SELECT products.category AS facet__0 FROM products WHERE (products.price < $1 AND to_tsvector('english', coalesce(products.name, '')) @@ plainto_tsquery('english', $2))) SELECT facet_field, facet_key, facet_count FROM (SELECT 'category' AS facet_field, k AS facet_key, c AS facet_count, 0 AS facet_ord, ROW_NUMBER() OVER (ORDER BY c DESC, k COLLATE pg_c_utf8) AS facet_rank FROM (SELECT facet__0 AS k, COUNT(*) AS c FROM base WHERE facet__0 IS NOT NULL GROUP BY facet__0 ORDER BY c DESC, facet__0 COLLATE pg_c_utf8 LIMIT 10) s0) facets__ ORDER BY facet_ord, facet_rank [200 cordless drill]
 }
 
 // Example_relations: a many-to-many filter, a one-to-many filter through
