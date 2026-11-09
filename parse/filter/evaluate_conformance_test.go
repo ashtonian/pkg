@@ -37,6 +37,11 @@ func TestEvaluateSetConformance(t *testing.T) {
 			return r.ID, structRow(r)
 		}))
 	})
+	t.Run("paths of parsed documents", func(t *testing.T) {
+		filtertest.RunPathSets(t, schema, evaluateOver(filtertest.PathRecords(), func(r filtertest.PathRecord) (string, filter.Row) {
+			return r.ID, parsedRow(t, r)
+		}))
+	})
 }
 
 func TestEvaluateDecimalConformance(t *testing.T) {
@@ -44,9 +49,16 @@ func TestEvaluateDecimalConformance(t *testing.T) {
 	if err != nil {
 		t.Fatalf("decimal schema: %v", err)
 	}
-	filtertest.RunDecimals(t, schema, evaluateOver(filtertest.DecimalRecords(), func(r filtertest.DecimalRecord) (string, filter.Row) {
-		return r.ID, structRow(r)
-	}))
+	t.Run("stored", func(t *testing.T) {
+		filtertest.RunDecimals(t, schema, evaluateOver(filtertest.DecimalRecords(), func(r filtertest.DecimalRecord) (string, filter.Row) {
+			return r.ID, structRow(r)
+		}))
+	})
+	t.Run("parsed", func(t *testing.T) {
+		filtertest.RunDecimals(t, schema, evaluateOver(filtertest.DecimalRecords(), func(r filtertest.DecimalRecord) (string, filter.Row) {
+			return r.ID, byColumn(map[string]any{"id": r.ID, "amount": r.Amount, "doc": parsedDocument(t, r.Doc)})
+		}))
+	})
 }
 
 func TestEvaluateArrayConformance(t *testing.T) {
@@ -63,6 +75,12 @@ func TestEvaluateArrayConformance(t *testing.T) {
 		filtertest.RunArrays(t, schema, evaluateOver(filtertest.ArrayRecords(), func(r filtertest.ArrayRecord) (string, filter.Row) {
 			return r.ID, byColumn(map[string]any{"id": r.ID, "doc": decodedJSON(t, r.Doc),
 				"labels": decodedJSON(t, r.Labels), "scores": decodedJSON(t, r.Scores), "lines": decodedJSON(t, r.Lines)})
+		}))
+	})
+	t.Run("parsed", func(t *testing.T) {
+		filtertest.RunArrays(t, schema, evaluateOver(filtertest.ArrayRecords(), func(r filtertest.ArrayRecord) (string, filter.Row) {
+			return r.ID, byColumn(map[string]any{"id": r.ID, "doc": parsedDocument(t, r.Doc),
+				"labels": r.Labels, "scores": r.Scores, "lines": parsedDocument(t, r.Lines)})
 		}))
 	})
 }
@@ -93,6 +111,11 @@ func TestEvaluatePathConformance(t *testing.T) {
 	t.Run("decoded documents", func(t *testing.T) {
 		filtertest.RunPaths(t, schema, evaluateOver(filtertest.PathRecords(), func(r filtertest.PathRecord) (string, filter.Row) {
 			return r.ID, decodedRow(t, r)
+		}))
+	})
+	t.Run("parsed documents", func(t *testing.T) {
+		filtertest.RunPaths(t, schema, evaluateOver(filtertest.PathRecords(), func(r filtertest.PathRecord) (string, filter.Row) {
+			return r.ID, parsedRow(t, r)
 		}))
 	})
 }
@@ -144,6 +167,28 @@ func byColumn(columns map[string]any) filter.ColumnRow {
 // JSON, as a store holding decoded documents keeps them.
 func decodedRow(t *testing.T, r filtertest.PathRecord) filter.ColumnRow {
 	return byColumn(map[string]any{"id": r.ID, "attrs": decodedJSON(t, r.Attrs), "settings": decodedJSON(t, r.Settings)})
+}
+
+// parsedRow is structRow with every document column a filter.Document, as
+// a store that decodes each document once keeps them.
+func parsedRow(t *testing.T, r filtertest.PathRecord) filter.ColumnRow {
+	return byColumn(map[string]any{"id": r.ID, "attrs": parsedDocument(t, r.Attrs), "settings": parsedDocument(t, r.Settings)})
+}
+
+// parsedDocument is v's JSON as a filter.Document, nil (SQL NULL) for null.
+func parsedDocument(t *testing.T, v any) any {
+	b, err := json.Marshal(v)
+	if err != nil {
+		t.Fatalf("encode %T: %v", v, err)
+	}
+	if bytes.Equal(b, []byte("null")) {
+		return nil
+	}
+	doc, err := filter.DecodeDocument(b)
+	if err != nil {
+		t.Fatalf("decode %s: %v", b, err)
+	}
+	return doc
 }
 
 // decodedJSON is v as generic JSON (numbers as json.Number), nil for null.

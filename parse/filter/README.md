@@ -25,7 +25,7 @@ Start with the [runnable package example](../README.md#quick-start). The focused
 - Array elements: `FieldSchema.Elements` (a JSON array of objects' element paths, from slice-of-struct members or the `elements` tag), `FieldSchema.Element` (a scalar array's element, whose operators — `Elem`'s but the NULL tests — the conditions of `$some` / `$none` take), `$some` / `$none` on either, `DocumentElements`; `PathDecl.Elem` declares an array path (`tags:[]string`)
 - Memberships outside SQL: `Lookup` (`Where`, `Filter`), `WhereEq` / `WhereIn` / `WhereNull` / `WhereNotNull` / `WhereMember` / `WhereAll` / `WhereAny`, `MembershipLookup`, `RelationLookup` (lookups with a filter), `ResolveMemberships` (policy memberships and relation predicates) with `ResolveTenant`, `ResolveRelatedPolicies`, `ResolveUnscopedRelations`, `MatchLookupRow`
 - JSON paths: `JSONPath`, `JSONStorage` (`StorageJSONB`, `StorageJSON`, `StorageText`), `PathDecl`, `ResourceSchema.WithPaths` (a request's copy-on-write view), `SortSchema.WithPaths` (its sort keys), `FieldExpr` (a field's value expression in a dialect), `Dialect.PathExpr`, `PathValue` (the reference value rule a memory backend evaluates), `SortFieldSchema.Path` / `CursorKey.Path`, `KeyValue` (a row's canonical value for any key, paths included), `PathDecl.Facet`, `MaxPathDepth`; `SortResult.ToSQL(dialect)` renders ORDER BY as the keyset orders
-- Evaluation outside SQL: `Evaluate` (a filter's three-valued `Truth` — `True`, `False`, `Unknown` — on one row, as SQL gives it), `Row` (a field's value in the canonical domain), `RowFunc`, `ColumnRow` (a row of Go values read by column; paths through `PathValue`), `ColumnValue` (one stored value in that domain)
+- Evaluation outside SQL: `Evaluate` (a filter's three-valued `Truth` — `True`, `False`, `Unknown` — on one row, as SQL gives it), `Row` (a field's value in the canonical domain), `RowFunc`, `ColumnRow` (a row of Go values read by column; paths through `PathValue`), `ColumnValue` (one stored value in that domain), `Document` / `DecodeDocument` (a document decoded once, which every reader takes in place of its JSON text)
 - Reference semantics: `MatchLike`, `EscapeLike` (a literal as a LIKE pattern; append `%` for a prefix), `JSONEqual`, `JSONContains`, `JSONHasKey`, `PathValue`
 - Geo: `GeoPoint`, `GeoDistance`, `GeoBoundingBox`, `GeoPolygon`, `GeoFieldConfig`, `ParseDistance`, `ValidateGeoPoint`, `ValidateGeoBoundingBox`, `ValidateGeoPolygon`
 - Errors: `ECode*` (`core.Code` constants), `Codes`
@@ -44,6 +44,7 @@ Start with the [runnable package example](../README.md#quick-start). The focused
 | `jsondoc.go` | `JSONEqual`, `JSONContains`, `JSONHasKey` |
 | `evaluate.go` | `Evaluate`, the reference evaluator; `Row`, `RowFunc`, `ColumnRow`, `ColumnValue` |
 | `path.go` | `JSONPath`, `FieldExpr`, `PathValue`, both dialects' `PathExpr` |
+| `document.go` | `Document`, `DecodeDocument` |
 | `path_declare.go` | Path declaration: `paths` / `storage` tags, struct members, `PathDecl`, `WithPaths` |
 | `list.go` | `ListQuery`, `ListOption`s, `ListResult` |
 | `page.go` | Resource `Cursor` and `PageInfo` wire types |

@@ -94,8 +94,9 @@ func (r ColumnRow) Value(f *FieldSchema) (any, bool, error) {
 
 // ColumnValue is a stored column value v of field f in the domain Row
 // describes, and false for SQL NULL: a nil pointer, interface, map or slice,
-// or a driver.Valuer whose value is nil. A document is decoded from its JSON
-// text (string, []byte, json.RawMessage) or encoding; an array's elements
+// or a driver.Valuer whose value is nil. A document is a Document's decoded
+// value, or decoded from its JSON text (string, []byte, json.RawMessage) or
+// encoding; an array's elements
 // normalize to f.Elem; a scalar is reduced as CursorValue reduces it — so
 // drivers' Valuers, decimals, times and text-marshalling types such as UUIDs
 // compare as SQL compares them — then normalized to f's type.

@@ -113,7 +113,8 @@ func (p CursorPlan) Token(reverse bool, get func(column string) (any, error)) (*
 
 // KeyValue is a row's canonical value for key k, given raw, the row's value
 // at k.Column: CursorValue of it, or for a path key the member the path rule
-// extracts (nil when absent). A decimal key's value is its canonical text
+// extracts from the column's document, read as PathValue reads it (nil when
+// absent). A decimal key's value is its canonical text
 // (core.DecimalText), whatever form its column scans to. Cursors and a
 // memory backend's ordering read keys through it alike.
 func KeyValue(k CursorKey, raw any) (any, error) {
