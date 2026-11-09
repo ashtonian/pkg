@@ -160,6 +160,10 @@ type FieldSchema struct {
 	// element, which `$some` / `$none` filters test on one element at a
 	// time. Nil for a document without element paths.
 	Elements *ResourceSchema
+	// Element is a scalar array's element, an array column's or an array
+	// path's: `$some` / `$none` conditions compare it, one element at a
+	// time, with the element type's operators. Nil for any other field.
+	Element *FieldSchema
 
 	// UI metadata (populated from struct tags, used by SchemaResponse).
 	Label       string

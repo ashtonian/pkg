@@ -187,7 +187,8 @@ func isNilReference(v any) bool {
 //     timestamps and dates by code point; booleans as false < true.
 //   - Documents compare as jsonb does (JSONEqual, JSONContains, JSONHasKey);
 //     an array $contains every listed element; $like and $ilike match as
-//     MatchLike; $some / $none test a document's elements.
+//     MatchLike; $some / $none test a document's elements, or a scalar
+//     array's (an array column's, or an array path's elements of its type).
 //   - A membership or raw-SQL predicate is Unknown: it never admits a row its
 //     SQL would refuse. Resolve memberships and relation predicates first
 //     (ResolveMemberships); an unresolved relation predicate is an error.
@@ -270,19 +271,20 @@ func evaluateLogical(n *FilterNode, row Row) (Truth, error) {
 	return truthOf(decides == False), nil
 }
 
-// evaluateElements is $some / $none on a JSON array document: EXISTS / NOT
-// EXISTS of an element its child holds for. A NULL document, or one that is
-// not an array, has no elements, so the predicate is never Unknown.
+// evaluateElements is $some / $none on a JSON array document or a scalar
+// array: EXISTS / NOT EXISTS of an element its child holds for. A NULL
+// array, or a document that is not an array, has no elements, so the
+// predicate is never Unknown.
 func evaluateElements(n *FilterNode, row Row) (Truth, error) {
 	f := n.Field
-	if f.Elements == nil {
+	if f.Elements == nil && !isScalarArray(f) {
 		return False, fmt.Errorf("filter: $%s on %s: the field has no elements", n.Op, f.ExternalName)
 	}
-	doc, present, err := row.Value(f)
+	v, present, err := row.Value(f)
 	if err != nil {
 		return False, err
 	}
-	elems, _ := doc.([]any)
+	elems, _ := v.([]any)
 	found := false
 	if present {
 		for _, e := range elems {
@@ -303,18 +305,22 @@ func evaluateElements(n *FilterNode, row Row) (Truth, error) {
 	return truthOf(found == (n.Op == OpSome)), nil
 }
 
-// elementRow is one element of a JSON array document; its fields are element
-// paths. Only an object element has members.
+// elementRow is one element of an array. A scalar array's element is the
+// value of its element field (FieldSchema.Element); a JSON array document's
+// fields are element paths, and only an object element has members.
 type elementRow struct{ elem any }
 
 func (r elementRow) Value(f *FieldSchema) (any, bool, error) {
+	if isElement(f) {
+		return r.elem, r.elem != nil, nil
+	}
 	if f.Path == nil || f.Path.Column != elementColumn {
 		return nil, false, fmt.Errorf("field %s is not an element path", f.ExternalName)
 	}
 	if _, ok := r.elem.(map[string]any); !ok {
 		return nil, false, nil
 	}
-	v, present, err := decodedPathValue(r.elem, f.Path.Segments, f.DataType)
+	v, present, err := decodedPathValue(r.elem, f.Path.Segments, f.DataType, f.Elem)
 	if err != nil {
 		return nil, false, fmt.Errorf("field %s: %w", f.ExternalName, err)
 	}

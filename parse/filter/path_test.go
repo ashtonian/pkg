@@ -90,22 +90,42 @@ func TestPaths_Refused(t *testing.T) {
 		A  json.RawMessage `json:"a"   db:"a"  parse:"filter" paths:"x:string"`
 		AX string          `json:"a.x" db:"ax" parse:"filter"`
 	}
-	type arrayMember struct {
+	type arrayOfObjects struct {
 		A *struct {
-			L []string `json:"l" parse:"filter"`
+			L []struct{ V string } `json:"l" parse:"filter"`
+		} `json:"a" db:"a" parse:"filter"`
+	}
+	type arrayOfDocuments struct {
+		A json.RawMessage `json:"a" db:"a" parse:"filter" paths:"l:[]json"`
+	}
+	type arraySort struct {
+		A json.RawMessage `json:"a" db:"a" parse:"filter" paths:"l:[]string:sort"`
+	}
+	type arrayStructSort struct {
+		A *struct {
+			L []string `json:"l" parse:"filter,sort"`
+		} `json:"a" db:"a" parse:"filter"`
+	}
+	type arrayRange struct {
+		A *struct {
+			L []int `json:"l" parse:"filter,facet" facet:"range:0-5,5+"`
 		} `json:"a" db:"a" parse:"filter"`
 	}
 	g := core.NewSchemaGenerator()
 	for name, gen := range map[string]func() error{
-		"segment":      func() error { _, err := filter.GenerateFilterSchema[badSegment](g); return err },
-		"type":         func() error { _, err := filter.GenerateFilterSchema[badType](g); return err },
-		"capability":   func() error { _, err := filter.GenerateFilterSchema[badCap](g); return err },
-		"not document": func() error { _, err := filter.GenerateFilterSchema[notDocument](g); return err },
-		"storage":      func() error { _, err := filter.GenerateFilterSchema[badStorage](g); return err },
-		"scalar paths": func() error { _, err := filter.GenerateFilterSchema[scalarWithPaths](g); return err },
-		"depth":        func() error { _, err := filter.GenerateFilterSchema[tooDeep](g); return err },
-		"collision":    func() error { _, err := filter.GenerateFilterSchema[collides](g); return err },
-		"array member": func() error { _, err := filter.GenerateFilterSchema[arrayMember](g); return err },
+		"segment":            func() error { _, err := filter.GenerateFilterSchema[badSegment](g); return err },
+		"type":               func() error { _, err := filter.GenerateFilterSchema[badType](g); return err },
+		"capability":         func() error { _, err := filter.GenerateFilterSchema[badCap](g); return err },
+		"not document":       func() error { _, err := filter.GenerateFilterSchema[notDocument](g); return err },
+		"storage":            func() error { _, err := filter.GenerateFilterSchema[badStorage](g); return err },
+		"scalar paths":       func() error { _, err := filter.GenerateFilterSchema[scalarWithPaths](g); return err },
+		"depth":              func() error { _, err := filter.GenerateFilterSchema[tooDeep](g); return err },
+		"collision":          func() error { _, err := filter.GenerateFilterSchema[collides](g); return err },
+		"array of objects":   func() error { _, err := filter.GenerateFilterSchema[arrayOfObjects](g); return err },
+		"array of documents": func() error { _, err := filter.GenerateFilterSchema[arrayOfDocuments](g); return err },
+		"array sort key":     func() error { _, err := filter.GenerateSortSchema[arraySort](g); return err },
+		"array member sort":  func() error { _, err := filter.GenerateSortSchema[arrayStructSort](g); return err },
+		"array range facet":  func() error { _, err := filter.GenerateFilterSchema[arrayRange](g); return err },
 	} {
 		assert.Error(t, gen(), name)
 	}

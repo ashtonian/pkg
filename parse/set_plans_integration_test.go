@@ -24,14 +24,15 @@ import (
 // declared paths.
 type planDoc struct {
 	ID  int64           `json:"id"  db:"id"  parse:"filter" filter_ops:"eq,in"`
-	Doc json.RawMessage `json:"doc" db:"doc" parse:"filter" paths:"k:string;n:int"`
+	Doc json.RawMessage `json:"doc" db:"doc" parse:"filter" paths:"k:string;n:int;tags:[]string"`
 }
 
 // The plans PostgreSQL gives the renderings the builder chooses, custom and
 // generic (pgx caches prepared statements, and a cached statement may run a
 // generic plan): a GIN index serves a jsonb path's equality and small sets
-// under $and and $or, a large path set is a hash join, and a large column
-// set is served by the column's index.
+// under $and and $or, and an array path's `$some` of an element equal to a
+// value or in a small set, and its `$contains`; a large path set is a hash
+// join, and a large column set is served by the column's index.
 func TestSetPlans_PostgreSQL(t *testing.T) {
 	ctx := t.Context()
 	conn, err := pgx.Connect(ctx, dbtest.PostgresDSN(t))
@@ -43,7 +44,7 @@ func TestSetPlans_PostgreSQL(t *testing.T) {
 	table := schema.Name
 	for _, stmt := range []string{
 		"CREATE TABLE " + table + " (id bigint PRIMARY KEY, doc jsonb NOT NULL)",
-		"INSERT INTO " + table + " SELECT g, jsonb_build_object('k', 'v' || g, 'n', g % 100) FROM generate_series(1, 50000) g",
+		"INSERT INTO " + table + " SELECT g, jsonb_build_object('k', 'v' || g, 'n', g % 100, 'tags', jsonb_build_array('t' || g, 'x')) FROM generate_series(1, 50000) g",
 		"CREATE INDEX " + table + "_gin ON " + table + " USING gin (doc jsonb_path_ops)",
 		"ANALYZE " + table,
 		"SET max_parallel_workers_per_gather = 0",
@@ -110,6 +111,21 @@ func TestSetPlans_PostgreSQL(t *testing.T) {
 	})
 	t.Run("small sets under and use the GIN index", func(t *testing.T) {
 		custom, generic := plans(t, `{"$and":[{"doc.k":{"$in":`+keys(16)+`}},{"doc.n":5}]}`)
+		assert.Contains(t, custom, gin)
+		assert.Contains(t, generic, gin)
+	})
+	t.Run("an array element equal to a value uses the GIN index", func(t *testing.T) {
+		custom, generic := plans(t, `{"doc.tags":{"$some":{"$eq":"t777"}}}`)
+		assert.Contains(t, custom, gin)
+		assert.Contains(t, generic, gin)
+	})
+	t.Run("an array element in a small set uses the GIN index", func(t *testing.T) {
+		custom, generic := plans(t, `{"doc.tags":{"$some":{"$in":["t1","t2","t3"]}}}`)
+		assert.Contains(t, custom, gin)
+		assert.Contains(t, generic, gin)
+	})
+	t.Run("array containment uses the GIN index", func(t *testing.T) {
+		custom, generic := plans(t, `{"doc.tags":{"$contains":["t777","x"]}}`)
 		assert.Contains(t, custom, gin)
 		assert.Contains(t, generic, gin)
 	})

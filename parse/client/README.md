@@ -46,12 +46,15 @@ A catalog field's type follows the operators its value type can declare on the s
 | `Text` | string | `Ordered`'s, `Like`, `ILike`, `Contains` |
 | `Time` (`Ordered[Moment]`) | timestamp | `Ordered`'s, with `At(t)`, `Now()`, `Ago(d)` or `FromNow(d)` operands |
 | `Document[V]` | JSON document | `Eq`, `Ne`, `Contains`, `HasKey`, `Null`, `NotNull` |
+| `Array[E]`, `OrderedArray[E]`, `TextArray` | array of keys / numbers, decimals, timestamps / strings: a column or a declared document member | `Contains`, `Null`, `NotNull`, `Some`, `None` (a condition on one element); `Element()` is a `Field[E]`, `Ordered[E]` or `Text` whose comparisons, combined by `And`, `Or` and `Not`, build that condition |
 | `Elements[V]` | JSON array of objects | `Document`'s, `Some`, `None` (a filter over element members) |
 | `Relation[K]` | has-many or many-to-many | `Field`'s on target keys, `Some`, `None` (a filter over the target); `Replace`, `Add`, `Remove` membership operations |
 | `Reference[K]` | belongs-to | `Field`'s on the target key, `Is`, `IsNot` |
 | `Geo` | geographic | `Near(point, meters)`, `Within(shape)`, `Intersects(shape)`, `Null`, `NotNull` |
 
 `SortableField[V]`, `SortableOrdered[V]`, `SortableText` and `SortableTime` add `Asc` and `Desc`; a sort-only field is a `SortKey`.
+
+An element condition names no field: `tags.Some(client.Or(tag.Like("a%"), tag.Eq("b")))`, with `tag := tags.Element()`, encodes `{"tags":{"$some":{"$or":[{"$like":"a%"},{"$eq":"b"}]}}}`. The empty filter is any element: `tags.Some(client.Filter{})`.
 
 A relative `Moment` is sent as the server's token (`now-1d`) and resolved by the server's clock, so the client's clock never skews it.
 
@@ -71,10 +74,11 @@ The client refuses only what the grammar cannot express; the server judges every
 | `ErrEmptyOr` | `Or()` of no filters, which would match no row |
 | `ErrNegatedEmpty` | `Not` of the empty filter, which would match no row |
 | `ErrSubSecond` | A relative `Moment` that is not a whole number of seconds |
+| `ErrElementCondition` | A comparison of an array's `Element()` outside that array's `Some` or `None` (carried when nested in another `Some`, `None`, `Is` or `IsNot`; returned when encoded at the top), or a field's condition inside them |
 
 ## API Reference
 
-- `NewField[V]`, `NewOrdered[V]`, `NewText`, `NewTime`, `NewDocument[V]`, `NewElements[V]`, `NewRelation[K]`, `NewReference[K]`, `NewGeo`, `NewSortKey`, `NewSortable*` — catalog fields by name
+- `NewField[V]`, `NewOrdered[V]`, `NewText`, `NewTime`, `NewArray[E]`, `NewOrderedArray[E]`, `NewTextArray`, `NewDocument[V]`, `NewElements[V]`, `NewRelation[K]`, `NewReference[K]`, `NewGeo`, `NewSortKey`, `NewSortable*` — catalog fields by name
 - `And`, `Or`, `Not` — combine filters; `Filter.IsZero`, `Filter.Err`, `Filter.MarshalJSON`
 - `At`, `Now`, `Ago`, `FromNow` — timestamp operands
 - `Point`, `Box`, `Polygon` — geographic operands
@@ -99,9 +103,10 @@ A new corpus case fails the test until it is classified. The same file holds the
 | File | Responsibility |
 |------|----------------|
 | `doc.go` | Package overview |
-| `filter.go` | `Filter`, `And`, `Or`, `Not`, encoding, `ErrEmptyOr`, `ErrNegatedEmpty` |
+| `filter.go` | `Filter`, `And`, `Or`, `Not`, encoding, `ErrEmptyOr`, `ErrNegatedEmpty`, `ErrElementCondition` |
 | `field.go` | `Field`, `Ordered`, `Text`, `Time`, `SortKey` and the sortable variants |
 | `moment.go` | `Moment` (`At`, `Now`, `Ago`, `FromNow`), `ErrSubSecond` |
+| `array.go` | `Array`, `OrderedArray`, `TextArray` and their element conditions |
 | `document.go` | `Document`, `Elements`, `Relation`, `Reference` |
 | `geo.go` | `Geo`, `Point`, `Shape` (`Box`, `Polygon`) |
 | `sort.go` | `Order`, `Sort` |

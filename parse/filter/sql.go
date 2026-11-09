@@ -461,7 +461,7 @@ func (b *SQLBuilder) buildCondition(s *buildState, node *FilterNode) (string, er
 	if node.Field == nil {
 		return "", errors.New("condition node has no field schema")
 	}
-	if node.Field.Elements != nil && node.Field.Relation == nil && (node.Op == OpSome || node.Op == OpNone) {
+	if (node.Field.Elements != nil || isScalarArray(node.Field)) && node.Field.Relation == nil && (node.Op == OpSome || node.Op == OpNone) {
 		return b.buildElements(s, node)
 	}
 	if node.Field.Relation != nil {
@@ -485,6 +485,9 @@ func (b *SQLBuilder) buildCondition(s *buildState, node *FilterNode) (string, er
 		if err != nil || ok {
 			return sql, err
 		}
+	}
+	if node.Field.Path != nil && node.Field.DataType == core.FieldTypeArray {
+		return b.buildArrayPath(s, node)
 	}
 	return b.dialect.Condition(node.Field, node.Op, node.Value, bind)
 }

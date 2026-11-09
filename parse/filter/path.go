@@ -23,15 +23,22 @@ const (
 	StorageText  JSONStorage = "text"
 )
 
-// JSONPath locates a typed scalar member inside a document column. A
-// FieldSchema with a Path filters, sorts and facets on the member; its
-// SQLExpr is empty and its value expression comes from Dialect.PathExpr.
+// JSONPath locates a typed member inside a document column: a scalar, or
+// an array of scalars (FieldTypeArray with Elem). A FieldSchema with a Path
+// filters, sorts and facets on the member; its SQLExpr is empty and its
+// value expression comes from Dialect.PathExpr.
 type JSONPath struct {
 	// Column is the document column's trusted SQL expression.
 	Column string
 	// Segments are the member names from the column down.
 	Segments []string
 	Storage  JSONStorage
+
+	// element makes the path read one array element: Column is the alias
+	// of a row of the dialect's element table (elementTable) and Segments
+	// is empty. The builder makes such paths for `$some` / `$none`
+	// conditions and facets on scalar arrays; no schema declares one.
+	element bool
 }
 
 var pathSegment = regexp.MustCompile(`^[A-Za-z0-9_-]{1,64}$`)
@@ -46,7 +53,9 @@ var pathTypes = map[core.FieldType]bool{
 // pathTypeNames lists pathTypes for errors.
 const pathTypeNames = "string, int, float, decimal, bool, timestamp or uuid"
 
-func (p *JSONPath) validate(t core.FieldType, maxDepth int) error {
+// validate checks a declared path of type t, elem being an array member's
+// element type.
+func (p *JSONPath) validate(t, elem core.FieldType, maxDepth int) error {
 	if p.Column == "" {
 		return fmt.Errorf("path has no document column")
 	}
@@ -66,8 +75,14 @@ func (p *JSONPath) validate(t core.FieldType, maxDepth int) error {
 	default:
 		return fmt.Errorf("unknown JSON storage %q", p.Storage)
 	}
+	if t == core.FieldTypeArray {
+		if !pathTypes[elem] {
+			return fmt.Errorf("path %s is an array of %s; an array member holds %s elements", strings.Join(p.Segments, "."), elem, pathTypeNames)
+		}
+		return nil
+	}
 	if !pathTypes[t] {
-		return fmt.Errorf("path %s has type %s; paths hold %s members", strings.Join(p.Segments, "."), t, pathTypeNames)
+		return fmt.Errorf("path %s has type %s; paths hold %s members, or arrays of them", strings.Join(p.Segments, "."), t, pathTypeNames)
 	}
 	return nil
 }
@@ -115,28 +130,31 @@ var maxDecimalMember = strconv.Itoa(decimals.MaxMemberLength)
 // number, or a string of at most core.MaxDecimalDigits characters in plain
 // decimal notation, and comes back as its canonical text
 // (core.DecimalText).
+//
+// An array member (FieldTypeArray) comes back as []any of its elements of
+// type f.Elem, each read as a member of that type is; elements of another
+// kind are left out. It is absent when no element is left: a JSON array
+// with no element of the type has no value, as a search engine's `exists`
+// reads one.
 func PathValue(doc any, f *FieldSchema) (any, bool, error) {
 	if f.Path == nil {
 		return nil, false, fmt.Errorf("field %s is not a JSON path", f.ExternalName)
 	}
-	v, present, err := pathValueOf(doc, f.Path, f.DataType)
+	root, err := decodeDocument(doc)
+	if err != nil {
+		return nil, false, fmt.Errorf("field %s: %w", f.ExternalName, err)
+	}
+	v, present, err := decodedPathValue(root, f.Path.Segments, f.DataType, f.Elem)
 	if err != nil {
 		return nil, false, fmt.Errorf("field %s: %w", f.ExternalName, err)
 	}
 	return v, present, nil
 }
 
-func pathValueOf(doc any, p *JSONPath, t core.FieldType) (any, bool, error) {
-	root, err := decodeDocument(doc)
-	if err != nil {
-		return nil, false, err
-	}
-	return decodedPathValue(root, p.Segments, t)
-}
-
-// decodedPathValue is pathValueOf on a document already decoded to generic
-// JSON (decodeDocument's form, or encoding/json's without UseNumber).
-func decodedPathValue(root any, segs []string, t core.FieldType) (any, bool, error) {
+// decodedPathValue is the member of a document already decoded to generic
+// JSON (decodeDocument's form, or encoding/json's without UseNumber) at
+// segs, of type t (elem an array's element type).
+func decodedPathValue(root any, segs []string, t, elem core.FieldType) (any, bool, error) {
 	v := root
 	for _, seg := range segs {
 		obj, ok := v.(map[string]any)
@@ -147,7 +165,30 @@ func decodedPathValue(root any, segs []string, t core.FieldType) (any, bool, err
 			return nil, false, nil
 		}
 	}
+	if t == core.FieldTypeArray {
+		return arrayMember(v, elem)
+	}
 	return pathMember(v, t)
+}
+
+// arrayMember is a JSON array's elements of type elem, absent when it has
+// none.
+func arrayMember(v any, elem core.FieldType) (any, bool, error) {
+	items, ok := v.([]any)
+	if !ok {
+		return nil, false, nil
+	}
+	var out []any
+	for _, item := range items {
+		e, present, err := pathMember(item, elem)
+		if err != nil {
+			return nil, false, err
+		}
+		if present {
+			out = append(out, e)
+		}
+	}
+	return out, len(out) > 0, nil
 }
 
 // pathNumber validates a numeric path key's cursor value: an int path may
@@ -318,15 +359,29 @@ func orderedAsText(f *FieldSchema) bool {
 
 // PathExpr renders p's typed value for PostgreSQL. The document is read as
 // jsonb; jsonb_typeof selects the member's JSON kind before any cast, so a
-// wrong-typed member is NULL rather than a cast error.
+// wrong-typed member is NULL rather than a cast error. An element path
+// reads its row's element, jsonb_array_elements' v.
 func (PostgresDialect) PathExpr(p *JSONPath, t core.FieldType) string {
-	doc := p.Column
-	if p.Storage != StorageJSONB {
-		doc = "(" + p.Column + ")::jsonb"
+	if p.element {
+		v := p.Column + ".v"
+		return pgTypedMember(t, "jsonb_typeof("+v+")", "("+v+" #>> '{}')")
 	}
+	doc := pgPathDocument(p)
 	path := pgPathLiteral(p.Segments)
-	kind := "jsonb_typeof(" + doc + " #> " + path + ")"
-	text := "(" + doc + " #>> " + path + ")"
+	return pgTypedMember(t, "jsonb_typeof("+doc+" #> "+path+")", "("+doc+" #>> "+path+")")
+}
+
+// pgPathDocument is p's document as jsonb.
+func pgPathDocument(p *JSONPath) string {
+	if p.Storage != StorageJSONB {
+		return "(" + p.Column + ")::jsonb"
+	}
+	return p.Column
+}
+
+// pgTypedMember is a JSON value of type t, NULL when it has another kind:
+// kind is its jsonb_typeof, text its text (#>>).
+func pgTypedMember(t core.FieldType, kind, text string) string {
 	switch t {
 	case core.FieldTypeString:
 		return "(CASE WHEN " + kind + " = 'string' THEN " + text + " END)"
@@ -368,18 +423,33 @@ func hexGlob(n int) string { return strings.Repeat("[0-9a-f]", n) }
 // text: json_type selects the member's kind; json_extract reads it. A
 // decimal member is read as the JSON literal `->` returns, which keeps the
 // number as written where json_extract would round it to a double, through
-// parse_decimal (parsesqlite).
+// parse_decimal (parsesqlite). An element path reads its json_each row: its
+// type and value are json_type's and json_extract's of the element, and
+// its literal is the source document's (the hidden json column) at its
+// fullkey.
 func (SQLiteDialect) PathExpr(p *JSONPath, t core.FieldType) string {
+	if p.element {
+		row := p.Column
+		return sqliteTypedMember(t, row+".type", row+".value", row+".json -> "+row+".fullkey")
+	}
 	path := sqlitePathLiteral(p.Segments)
-	kind := "json_type(" + p.Column + ", " + path + ")"
-	val := "json_extract(" + p.Column + ", " + path + ")"
+	return sqliteTypedMember(t, "json_type("+p.Column+", "+path+")", "json_extract("+p.Column+", "+path+")", p.Column+" -> "+path)
+}
+
+// sqliteTypedMember is a JSON value of type t, NULL when it has another
+// kind: kind is its json_type, val its json_extract and literal its JSON
+// text as written (`->`). A date is an element of SQLite's JSON text array
+// column, read as ReadColumn reads a date column.
+func sqliteTypedMember(t core.FieldType, kind, val, literal string) string {
 	switch t {
 	case core.FieldTypeString:
 		return "(CASE WHEN " + kind + " = 'text' THEN " + val + " END)"
 	case core.FieldTypeInt, core.FieldTypeFloat:
 		return "(CASE WHEN " + kind + " IN ('integer', 'real') THEN " + val + " END)"
 	case core.FieldTypeDecimal:
-		return decimals.SQLiteValueFunc + "(" + p.Column + " -> " + path + ")"
+		return decimals.SQLiteValueFunc + "(" + literal + ")"
+	case core.FieldTypeDate:
+		return "(CASE WHEN " + kind + " = 'text' THEN substr(" + val + ", 1, 10) END)"
 	case core.FieldTypeBool:
 		return "(CASE " + kind + " WHEN 'true' THEN 1 WHEN 'false' THEN 0 END)"
 	case core.FieldTypeTimestamp:

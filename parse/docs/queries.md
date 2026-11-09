@@ -17,6 +17,7 @@ JSON filters (`{"status":"active","price":{"$gte":10}}`) and flat query paramete
 | `in` / `nin` | `{"$in": ["a","b"]}` | `f_in=a,b` | Membership; `[]` matches nothing / everything; the set binds as one parameter ([sets](#sets)) |
 | `like` / `ilike` | `{"$like": "a%"}` | `f_like=a%25` | `%` any run, `_` one character, `\` escapes; `ilike` folds case (ASCII only on SQLite) |
 | `contains` | `{"$contains": x}` | `f_contains=x` | String: literal substring. JSON: jsonb `@>`. Array: holds every element |
+| `some` / `none` | `{"$some": {"$gte": 5, "$lt": 10}}` | — | Array: one element meets the condition / none does ([array elements](#array-elements)). Relation: a related row matches / none does ([relations](relations.md)) |
 | `null` / `not_null` / `exists` | `{"$null": true}`, `{"$not_null": true}` | `f_null=true`, `f_not_null=true` | IS NULL / IS NOT NULL; one capability — declaring any allows all three |
 | `near` / `within` / `intersects` | `{"$near": {"lat": 1, "lon": 2, "distance": "5km"}}` | — | Geo, WGS 84; polygons and `intersects` need PostgreSQL + PostGIS |
 | `$and` / `$or` / `$not` | `{"$or": [{…}, {…}]}` | — | Boolean composition |
@@ -36,7 +37,7 @@ Values normalize before any SQL is built: integers exactly (range-checked agains
 | bool | eq ne in nin null exists | eq ne |
 | json | eq ne contains has_key null exists | eq ne contains has_key exists null |
 | object | eq ne contains has_key null exists | none |
-| array | contains null exists | contains null |
+| array | contains some none null exists | contains some none null |
 | geo | near within intersects null exists | near within |
 | relation | the target ID type's operators, without contains | eq ne in nin null not_null |
 
@@ -45,7 +46,7 @@ The operator contract is shared where supported. Backend differences and relatio
 - A predicate on a NULL field is NULL, so `ne`, `nin` and `$not` never match NULL rows; `$in: []` matches nothing, `$nin: []` everything. A NULL set member (programmatic ASTs only; the parser refuses one) makes a miss Unknown, as `x IN (…, NULL)` does.
 - Strings compare case-sensitively and order by code point. LIKE patterns: `%` any run, `_` one character, `\` escapes; a trailing `\` is rejected. `$like` is case-sensitive (SQLite: GLOB), `$ilike` folds case (SQLite: ASCII only). `$contains` is a literal substring. `MatchLike` is the reference matcher.
 - JSON documents: `$eq` / `$ne` compare by value (key order and `1` vs `1.0` irrelevant, array order significant); `$contains` is jsonb `@>`. `$has_key` is jsonb `?`: the document has the key at the top level (whatever its value, null included), a top-level array has it as a string element, or the document is that string. `JSONEqual` / `JSONContains` / `JSONHasKey` are the reference semantics; SQLite compiles the needle into `json_each` predicates. A plain object on a JSON field is equality, not an operator object. A document declared `storage:"json"` or `"text"` is read as jsonb on PostgreSQL.
-- Arrays: `$contains` holds every listed element (order and multiplicity ignored; a lone value is a one-element list).
+- Arrays: `$contains` holds every listed element (order and multiplicity ignored; a lone value is a one-element list). `$some` / `$none` test the elements one at a time ([array elements](#array-elements)).
 - Geo (WGS 84): `$near` is a great-circle distance (PostGIS `ST_DWithin` on geography; SQLite spherical haversine — near the radius the two differ by up to ~0.5%). `$within` a box is boundary-inclusive; polygons bind one WKT ring; SQLite rejects polygons and `$intersects` (E2115). Boxes must not cross the antimeridian.
 - Relations compile to correlated `EXISTS` / `NOT EXISTS`: `$eq x` — some related row is x; `$ne x` — none is; `$null: true` — no related rows.
 
@@ -74,7 +75,7 @@ A document column's typed members are filterable as dotted fields — `{"attrs.c
 | Map, `any` or `json.RawMessage` column | `paths:"color:string:filter+sort+facet;size:int:filter+indexed;dims.w:float"` | each `member.path:type[:caps]`; caps `filter` (implied), `sort`, `facet` (terms) and `indexed` |
 | Per request (tenant custom fields) | `resource.WithPaths(filter.PathDecl{Path: "custom.tier", Type: core.FieldTypeString, Sort: true, Facet: &filter.FacetSchema{Type: filter.FacetTerms}})` — or, below a resource, `schema.WithPaths` / `sorts.WithPaths(schema, …)` | a copy-on-write view that parses, lists and updates like the resource; the shared resource is unchanged |
 
-Members are identifiers (`[A-Za-z0-9_-]+`), at most `filter.MaxPathDepth` (8) deep, typed string, int, float, decimal, bool, timestamp or uuid. Operators default to the type's column defaults plus the NULL tests.
+Members are identifiers (`[A-Za-z0-9_-]+`), at most `filter.MaxPathDepth` (8) deep, typed string, int, float, decimal, bool, timestamp or uuid, or an array of one of those (`tags:[]string`, or a struct member of slice type). Operators default to the type's column defaults plus the NULL tests.
 
 A path's value is the member when it has the declared JSON kind:
 
@@ -86,6 +87,7 @@ A path's value is the member when it has the declared JSON kind:
 | bool | true or false | boolean |
 | timestamp | a UTC RFC 3339 string (`Z`, up to nine fractional digits — what `encoding/json` writes for a UTC `time.Time`) | its canonical text (`core.TimestampLayout`), so instants order correctly |
 | uuid | a string that is a UUID once ASCII-lower-cased | lower-cased text |
+| array of a type above | a JSON array | its elements of that type, each read as a member of the type is; elements of another kind are no elements, and an array with none is absent ([array elements](#array-elements)) |
 
 Anything else is **absent**: a missing key, JSON null, another kind, a timestamp with another offset, a non-object on the way, a NULL column. Absent is SQL NULL on every backend, so the NULL rules above apply: `$ne` / `$nin` / `$not` never match it and `$null: true` does.
 
@@ -95,17 +97,42 @@ Anything else is **absent**: a missing key, JSON null, another kind, a timestamp
 | SQLite | `CASE WHEN json_type(doc, '$."a"."b"') IN (…) THEN json_extract(doc, '$."a"."b"') END` |
 | Memory | `filter.PathValue(doc, field)` — the reference rule the SQL renderings are tested against row by row, and how `filter.Evaluate` reads a path |
 
-On PostgreSQL a string, bool, int or float path of a `jsonb` column compares `$eq` by containment, `doc @> '{"a":{"b":v}}'`, and `$in` with at most `PostgresDialect.ContainmentMaxValues` members as `doc @> ANY($1::jsonb[])`, which a GIN index on the document serves (`jsonb_path_ops` suffices). Containment compares numbers by value and keeps a member holding an array apart from its elements, as the typed expression does, but it is False where the typed comparison is Unknown, so it is used only where an even number of `$not` (usually none) enclose the condition within its statement or subquery (`$and` / `$or` are monotone, so the statement is monotone in the condition there, and `$some` / `$none` and relation predicates select their elements and rows): there a row is selected exactly when it is with every Unknown condition False. Under an odd number of `$not`, for decimals (a decimal member may be a string), and on a path through a segment `#>` reads as an array index (`items.0`), the typed expression stays. `SQLResult.Where` is therefore a selection predicate for a WHERE, ON or FILTER clause, not a value to negate or project.
+On PostgreSQL a string, bool, int or float path of a `jsonb` column compares `$eq` by containment, `doc @> '{"a":{"b":v}}'`, and `$in` with at most `PostgresDialect.ContainmentMaxValues` members as `doc @> ANY($1::jsonb[])`, which a GIN index on the document serves (`jsonb_path_ops` suffices). Containment compares numbers by value and keeps a member holding an array apart from its elements, as the typed expression does, but it is False where the typed comparison is Unknown, so it is used only where an even number of `$not` (usually none) enclose the condition within its statement or subquery (`$and` / `$or` are monotone, so the statement is monotone in the condition there, and `$some` / `$none` and relation predicates select their elements and rows): there a row is selected exactly when it is with every Unknown condition False. Under an odd number of `$not`, for decimals (a decimal member may be a string), and on a path through a segment `#>` reads as an array index (`items.0`), the typed expression stays. An array path of strings, bools or numbers takes `$contains` by containment on the same terms, `doc @> '{"tags":["a","b"]}'`, and `$some` of an element `$eq` or `$in` (ContainmentMaxValues at most) at any polarity, as `(doc IS NOT NULL AND doc @> '{"tags":["a"]}')`: an element condition is never Unknown, and containment holds exactly when the array has an equal element. `SQLResult.Where` is therefore a selection predicate for a WHERE, ON or FILTER clause, not a value to negate or project.
 
-A facetable path counts like a column: terms over its values, ranges over its numbers (`facet:"range:0-5,5+"` on a struct member, `PathDecl.Facet` per request); an absent member is in no bucket.
+A facetable path counts like a column: terms over its values, ranges over its numbers (`facet:"range:0-5,5+"` on a struct member, `PathDecl.Facet` per request); an absent member is in no bucket. An array path counts terms only, each row once per distinct element.
 
-A path sort key orders like a nullable column: an absent member is NULL, greatest (`NULLS LAST` ascending, `NULLS FIRST` descending), text members by code point. A cursor reads the member from the document's row column with the same value rule, so keyset pages walk forwards and backwards over paths; a numeric path's cursor carries an int64 or a float64, since an int path may hold a decimal member, and a decimal path's its canonical text. `filter.KeyValue(key, rowValue)` is that rule for any key, which a memory backend uses to order rows.
+A path sort key orders like a nullable column (an array path is no sort key): an absent member is NULL, greatest (`NULLS LAST` ascending, `NULLS FIRST` descending), text members by code point. A cursor reads the member from the document's row column with the same value rule, so keyset pages walk forwards and backwards over paths; a numeric path's cursor carries an int64 or a float64, since an int path may hold a decimal member, and a decimal path's its canonical text. `filter.KeyValue(key, rowValue)` is that rule for any key, which a memory backend uses to order rows.
 
 The rendered expression is immutable, so an expression index on `filter.FieldExpr(dialect, field)` serves it (on SQLite a decimal's calls `parse_decimal`, and an index on it needs the functions on every connection that writes the table); declare the path `indexed` to lower its cost. A document column's storage is its `storage` tag: `jsonb` (default), `json`, `text`, or `scalar:<type>` for a struct the database holds as a scalar, such as a decimal library type without the `core.Decimal` method set, which then filters and sorts as that scalar and has no paths. Run `filtertest.RunPaths(t, schema, backend)` to prove a backend's paths. A merge patch into a typed document member reads back through its path on every backend; a merge into a document that may be absent (a pointer struct) must supply every member.
 
 ### Array elements
 
-A JSON array of objects filters by its elements: every predicate inside one `$some` holds for one element, and `$none` holds when no element satisfies them (a document that is not an array, or is NULL, has no elements). Element paths are declared like paths — the members tagged `parse:"filter"` of a slice-of-struct document's element type, or an `elements:"by:string;priority:int"` tag on any JSON array — and named by their member path inside the element (`dims.w`).
+`$some` holds when one element of an array meets its condition and `$none` when none does. Neither is ever Unknown: an array that is NULL, empty, or (in a document) not an array has no elements.
+
+#### Arrays of scalars
+
+An array column (`[]string`, `[]int64`, …) or an array path (`paths:"tags:[]string"`, a struct member of slice type) takes a condition on one element: the element type's operators but the NULL tests, combined by `$and` / `$or` / `$not`, every comparison holding for the same element. `{}` holds for any element of the type.
+
+```text
+{"scores":{"$some":{"$gte":5,"$lt":10}}}                 a score in [5, 10)
+{"tags":{"$some":{"$or":[{"$like":"a%"},{"$eq":"b"}]}}}  a tag starting with a, or b
+{"tags":{"$none":{"$in":["spam","test"]}}}               no tag is spam or test
+{"doc.tags":{"$some":{}}}                                the member holds a string
+```
+
+An array path's value is its elements of the declared type, each read as a member of that type is: `9.5` and `"10.50"` are both decimals, `7.0` an int, `"7"` no int. Elements of another kind are no elements, and a member with none is absent, so `$null` holds for it and `$contains` on it is Unknown. An array column keeps SQL's rules: `$contains` is Unknown on a NULL column and False on an empty one, unless it lists nothing.
+
+| Backend | Array column | Array path |
+|---|---|---|
+| PostgreSQL | `EXISTS (SELECT 1 FROM unnest(col) AS elem1__(v) WHERE elem1__.v IS NOT NULL AND …)` | `EXISTS (SELECT 1 FROM jsonb_array_elements(CASE WHEN jsonb_typeof(doc #> '{tags}') = 'array' THEN doc #> '{tags}' END) AS elem1__(v) WHERE <typed element> IS NOT NULL AND …)`, or containment ([JSON paths](#json-paths)) |
+| SQLite | `EXISTS (SELECT 1 FROM json_each(CASE WHEN json_type(col) = 'array' THEN col END) AS elem1__ WHERE <typed element> …)` over the JSON text column | the same over `json_each(…, '$."tags"')`; a decimal element reads its literal as written, `parse_decimal(elem1__.json -> elem1__.fullkey)` |
+| Memory | `filter.Evaluate` over the Go slice, or a decoded JSON array | each element as `filter.PathValue` reads it |
+
+An array path is no sort key, and its facets are terms only; schema generation refuses either.
+
+#### Arrays of objects
+
+A JSON array of objects filters by its elements: every predicate inside one `$some` holds for one element, and `$none` holds when no element satisfies them. Element paths are declared like paths — the members tagged `parse:"filter"` of a slice-of-struct document's element type, or an `elements:"by:string;priority:int"` tag on any JSON array — and named by their member path inside the element (`dims.w`).
 
 ```text
 {"items":{"$some":{"sku":"a","qty":{"$gt":2}}}}
@@ -113,7 +140,9 @@ postgres EXISTS (SELECT 1 FROM jsonb_array_elements(CASE WHEN jsonb_typeof(order
 sqlite   EXISTS (SELECT 1 FROM json_each(CASE WHEN json_type(orders.items) = 'array' THEN orders.items END) AS elem1__ WHERE (… json_extract(…elem1__.value…, '$."qty"') …))
 ```
 
-An element that is not an object has no members, so a mixed array (`["a", {"sku":"a"}]`) is tested on its objects. `filter.Evaluate` tests each element of the document, reading element paths as `filter.PathValue` does. An element predicate costs 10 (1 when the document is tagged `indexed`) plus its filter.
+An element that is not an object has no members, so a mixed array (`["a", {"sku":"a"}]`) is tested on its objects. `filter.Evaluate` tests each element of the document, reading element paths as `filter.PathValue` does.
+
+An element predicate, on either kind of array, costs 10 (1 when the array is tagged `indexed`) plus its condition. `filtertest.RunArrays(t, schema, backend)` proves a backend's scalar arrays.
 
 ## Evaluating outside SQL
 
@@ -136,7 +165,7 @@ selected := truth == filter.True
 | NULL | a comparison with a NULL value or an absent path member is `Unknown`; `$and`, `$or` and `$not` are three-valued, so `$ne`, `$nin` and `$not` never select it |
 | Empty sets | `$in: []` is `False` and `$nin: []` `True`, NULL or not |
 | Order | numbers and decimals by exact value; strings, UUIDs, timestamps and dates by code point |
-| Documents and arrays | jsonb's `=` and `@>` (`JSONEqual`, `JSONContains`, `JSONHasKey`); an array column `$contains` every listed element |
+| Documents and arrays | jsonb's `=` and `@>` (`JSONEqual`, `JSONContains`, `JSONHasKey`); an array column `$contains` every listed element; `$some` / `$none` over the elements, never Unknown |
 | Patterns | `$like` / `$ilike` as `MatchLike`; `$contains` on a string is a case-sensitive substring |
 | Not evaluable | a membership or raw-SQL predicate is `Unknown`, so it never admits a row its SQL would refuse; resolve memberships and relation predicates first with `filter.ResolveMemberships`, since an unresolved relation predicate is E2083; a geo operator is E2115 |
 

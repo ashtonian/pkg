@@ -55,9 +55,10 @@ type confEntity struct {
 	Price   decimal.Decimal `json:"price"   parse:"filter" filter_ops:"eq,ne,gt,gte,lt,lte,in,nin"`
 	Active  bool            `json:"active"  parse:"filter" filter_ops:"eq,ne"`
 	Created time.Time       `json:"created" parse:"filter" filter_ops:"eq,gt,gte,lt,lte"`
-	Meta    map[string]any  `json:"meta"    parse:"filter" paths:"region:string"`
+	Meta    map[string]any  `json:"meta"    parse:"filter" paths:"region:string;labels:[]string;sizes:[]int"`
 	Note    *string         `json:"note"    parse:"filter" filter_ops:"not_null"`
 	Lines   []confLine      `json:"lines"   parse:"filter"`
+	Tags    []string        `json:"tags"    parse:"filter"`
 }
 
 // confLine is an element of confEntity's lines array.
@@ -232,6 +233,28 @@ func canonicalCases() []caseInput {
 		{name: "err_elements_member_type", input: map[string]any{"lines": map[string]any{"$some": map[string]any{"qty": "two"}}}},
 		{name: "err_elements_not_object", input: map[string]any{"lines": map[string]any{"$some": "a"}}},
 		{name: "err_elements_is", input: map[string]any{"lines": map[string]any{"$is": map[string]any{}}}},
+
+		// --- scalar arrays: one element meets every condition ---
+		{name: "array_some_eq", input: map[string]any{"tags": map[string]any{"$some": map[string]any{"$eq": "a"}}}},
+		{name: "array_some_and", input: map[string]any{"meta.sizes": map[string]any{"$some": map[string]any{"$and": []any{
+			map[string]any{"$gte": 1}, map[string]any{"$lt": 5},
+		}}}}},
+		{name: "array_some_or", input: map[string]any{"meta.labels": map[string]any{"$some": map[string]any{"$or": []any{
+			map[string]any{"$like": "a%"}, map[string]any{"$eq": "b"},
+		}}}}},
+		{name: "array_none_not", input: map[string]any{"tags": map[string]any{"$none": map[string]any{"$not": map[string]any{"$in": []any{"a", "b"}}}}}},
+		{name: "array_some_any", input: map[string]any{"meta.labels": map[string]any{"$some": map[string]any{}}}},
+		{name: "array_path_contains", input: map[string]any{"meta.labels": map[string]any{"$contains": []any{"a", "b"}}}},
+		{name: "array_path_null", input: map[string]any{"meta.sizes": map[string]any{"$null": true}}},
+		{name: "err_array_element_null_test", input: map[string]any{"tags": map[string]any{"$some": map[string]any{"$null": true}}}},
+		{name: "err_array_element_operator", input: map[string]any{"meta.sizes": map[string]any{"$some": map[string]any{"$like": "1%"}}}},
+		{name: "err_array_element_type", input: map[string]any{"meta.sizes": map[string]any{"$some": map[string]any{"$eq": "two"}}}},
+		{name: "err_array_element_member", input: map[string]any{"tags": map[string]any{"$some": map[string]any{"sku": "a"}}}},
+		{name: "err_array_element_not_object", input: map[string]any{"tags": map[string]any{"$some": "a"}}},
+		{name: "err_array_element_empty_or", input: map[string]any{"tags": map[string]any{"$some": map[string]any{"$or": []any{}}}}},
+		{name: "err_array_element_empty_not", input: map[string]any{"tags": map[string]any{"$some": map[string]any{"$not": map[string]any{}}}}},
+		{name: "err_array_contains_member_type", input: map[string]any{"meta.sizes": map[string]any{"$contains": []any{"a"}}}},
+		{name: "array_contains_scalar", input: map[string]any{"tags": map[string]any{"$contains": "a"}}},
 
 		// --- declared relations filter by the target's own fields ---
 		{name: "relation_some", input: map[string]any{"parts": map[string]any{"$some": map[string]any{"state": "worn"}}}},

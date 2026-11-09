@@ -119,6 +119,59 @@ func TestFilter_CarriesWhatTheGrammarCannotSay(t *testing.T) {
 	}
 }
 
+func TestArray_EncodesElementConditions(t *testing.T) {
+	tags, sizes, flags := NewTextArray("tags"), NewOrderedArray[int]("sizes"), NewArray[bool]("flags")
+	tag, size := tags.Element(), sizes.Element()
+	tests := []struct {
+		name string
+		f    Filter
+		want string
+	}{
+		{"some", tags.Some(tag.Eq("a")), `{"tags":{"$some":{"$eq":"a"}}}`},
+		{"one element in a range", sizes.Some(And(size.Gte(1), size.Lt(5))), `{"sizes":{"$some":{"$and":[{"$gte":1},{"$lt":5}]}}}`},
+		{"either", tags.Some(Or(tag.Like("a%"), tag.Eq("b"))), `{"tags":{"$some":{"$or":[{"$like":"a%"},{"$eq":"b"}]}}}`},
+		{"none outside a set", tags.None(Not(tag.In("a", "b"))), `{"tags":{"$none":{"$not":{"$in":["a","b"]}}}}`},
+		{"any element", tags.Some(Filter{}), `{"tags":{"$some":{}}}`},
+		{"no element", flags.None(Filter{}), `{"flags":{"$none":{}}}`},
+		{"boolean element", flags.Some(flags.Element().Eq(true)), `{"flags":{"$some":{"$eq":true}}}`},
+		{"contains", tags.Contains("a", "b"), `{"tags":{"$contains":["a","b"]}}`},
+		{"contains nothing", tags.Contains(), `{"tags":{"$contains":[]}}`},
+		{"null", sizes.Null(), `{"sizes":{"$null":true}}`},
+		{"beside a field", And(NewText("name").Eq("x"), tags.Some(tag.Eq("a"))), `{"$and":[{"name":{"$eq":"x"}},{"tags":{"$some":{"$eq":"a"}}}]}`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.JSONEq(t, tt.want, encode(t, tt.f))
+		})
+	}
+}
+
+func TestArray_ElementConditionsStayInTheirArray(t *testing.T) {
+	tags := NewTextArray("tags")
+	tag, name := tags.Element(), NewText("name")
+	tests := []struct {
+		name    string
+		f       Filter
+		carried bool // the filter carries the error; otherwise only encoding it fails
+	}{
+		{"a field's condition in Some", tags.Some(name.Eq("a")), true},
+		{"a field's condition beside the element's", tags.None(And(tag.Eq("a"), name.Eq("b"))), true},
+		{"an element's condition in a relation", NewRelation[string]("parts").Some(tag.Eq("a")), true},
+		{"an element's condition in a document array", NewElements[[]int]("lines").Some(Not(tag.Eq("a"))), true},
+		{"an element's condition alone", tag.Eq("a"), false},
+		{"an element's condition beside a field's", Or(name.Eq("a"), tag.Eq("a")), false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if tt.carried {
+				assert.ErrorIs(t, tt.f.Err(), ErrElementCondition)
+			}
+			_, err := json.Marshal(tt.f)
+			assert.ErrorIs(t, err, ErrElementCondition)
+		})
+	}
+}
+
 func TestFilter_DoesNotShareTheCallersSlice(t *testing.T) {
 	keys := []string{"a", "b"}
 	f := NewField[string]("k").In(keys...)

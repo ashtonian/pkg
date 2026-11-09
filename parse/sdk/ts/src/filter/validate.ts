@@ -38,7 +38,7 @@ export function validateFilter(
   for (const key of Object.keys(filter).toSorted()) {
     const value = filter[key];
     if (key === "$and" || key === "$or" || key === "$not") {
-      validateLogical(key, value, schema, related);
+      validateLogical(key, value, (branch) => { validateFilter(branch, schema, related); });
       continue;
     }
     const field = Object.hasOwn(schema.fields, key) ? schema.fields[key] : undefined;
@@ -59,7 +59,9 @@ export function validateFilter(
   }
 }
 
-function validateLogical(key: "$and" | "$or" | "$not", value: unknown, schema: FilterSchema, related?: RelatedSchemas): void {
+// validateLogical checks a $and / $or / $not of a filter or of an element
+// condition, each branch checked by validate.
+function validateLogical(key: "$and" | "$or" | "$not", value: unknown, validate: (branch: Record<string, unknown>) => void): void {
   if (key === "$not") {
     if (!isObject(value)) {
       throw new SchemaValidationError(key, "E2086", "$not requires an object value");
@@ -67,7 +69,7 @@ function validateLogical(key: "$and" | "$or" | "$not", value: unknown, schema: F
     if (Object.keys(value).length === 0) {
       throw new SchemaValidationError(key, "E2086", "$not requires a non-empty object");
     }
-    validateFilter(value, schema, related);
+    validate(value);
     return;
   }
   if (!Array.isArray(value)) {
@@ -78,7 +80,7 @@ function validateLogical(key: "$and" | "$or" | "$not", value: unknown, schema: F
     if (!isObject(branch)) {
       throw new SchemaValidationError(key, "E2086", `${key} array items must be objects`);
     }
-    validateFilter(branch, schema, related);
+    validate(branch);
     conditions += Object.keys(branch).length;
   }
   if (conditions === 0) {
@@ -114,10 +116,18 @@ function validateOperators(name: string, ops: Record<string, unknown>, field: Fi
   }
 }
 
-// validateNested checks a relation's or a JSON array's nested filter: an
-// object, valid against the element paths or the target's schema when the
-// client has it (the server checks it otherwise).
+// validateNested checks a relation's or an array's nested filter: an
+// object, valid as a condition on a scalar array's element, against a JSON
+// array's element paths, or against the target's schema when the client has
+// it (the server checks it otherwise).
 function validateNested(name: string, op: FilterOperator, val: unknown, field: FilterFieldSchema, related?: RelatedSchemas): void {
+  if (field.element) {
+    if (!isObject(val)) {
+      throw new SchemaValidationError(name, "E2086", `$${op} on "${name}" requires a condition on its elements, such as {"$in": [...]}`);
+    }
+    validateElementCondition(name, val, field.element);
+    return;
+  }
   if (!isObject(val)) {
     throw new SchemaValidationError(name, "E2086", `$${op} on "${name}" requires a filter object`);
   }
@@ -125,6 +135,19 @@ function validateNested(name: string, op: FilterOperator, val: unknown, field: F
     ? { fields: field.elements }
     : field.relation?.target !== undefined ? related?.(field.relation.target) : undefined;
   if (nested) validateFilter(val, nested, related);
+}
+
+// validateElementCondition checks a condition on one element of a scalar
+// array: the element's operators, combined by $and / $or / $not.
+function validateElementCondition(name: string, cond: Record<string, unknown>, element: FilterFieldSchema): void {
+  for (const key of Object.keys(cond).toSorted()) {
+    const value = cond[key];
+    if (key === "$and" || key === "$or" || key === "$not") {
+      validateLogical(key, value, (branch) => { validateElementCondition(name, branch, element); });
+      continue;
+    }
+    validateOperators(name, { [key]: value }, element);
+  }
 }
 
 /** Relation targets whose schemas a filter's nested relation filters need, beyond those known. */
@@ -188,8 +211,16 @@ function validateValue(name: string, op: FilterOperator, val: unknown, field: Fi
     }
     return;
   }
-  if (field.data_type === "array" || field.data_type === "geo") {
-    return; // element types and shapes are the server's to check
+  if (field.data_type === "array") {
+    // `$contains` lists elements, a single value being one; an array whose
+    // element type the schema leaves out is the server's to check.
+    if (op === "contains" && field.element) {
+      for (const member of Array.isArray(val) ? val : [val]) validateMember(name, member, field.element);
+    }
+    return;
+  }
+  if (field.data_type === "geo") {
+    return; // shapes are the server's to check
   }
   switch (op) {
     case "contains":

@@ -18,15 +18,21 @@ const MaxPathDepth = 8
 type PathDecl struct {
 	// Path is the document field's name, then its members: "labels.region".
 	Path string
+	// Type is the member's type: a scalar, or FieldTypeArray for an array
+	// of Elem.
 	Type core.FieldType
+	// Elem is an array member's element type, a scalar a path may hold.
+	Elem core.FieldType
 	// Ops are the operators allowed on the path; nil means the type's
 	// defaults with the NULL tests (a path can always be absent).
 	Ops     []FilterOperator
 	Indexed bool
-	// Sort also makes the path a sort key (SortSchema.WithPaths).
+	// Sort also makes the path a sort key (SortSchema.WithPaths). An array
+	// member is no sort key.
 	Sort bool
 	// Facet makes the path facetable with this configuration (terms or
-	// range), as a column's `facet` tag does.
+	// range), as a column's `facet` tag does. An array member's facet is
+	// terms, counting each row once per distinct element.
 	Facet *FacetSchema
 	Label string
 }
@@ -46,18 +52,24 @@ func (s *ResourceSchema) WithPaths(decls ...PathDecl) (*ResourceSchema, error) {
 		if members == "" {
 			return nil, fmt.Errorf("path %q names no member", d.Path)
 		}
-		f, err := newPathField(doc, strings.Split(members, "."), d.Type, kindOf(d.Type), d.Ops)
+		f, err := newPathField(doc, strings.Split(members, "."), d, kindOf(d.elemOrType()))
 		if err != nil {
 			return nil, fmt.Errorf("path %q: %w", d.Path, err)
 		}
-		f.Indexed, f.Label = d.Indexed, d.Label
-		setPathFacet(f, d.Facet)
 		if _, dup := out.Fields[f.ExternalName]; dup {
 			return nil, fmt.Errorf("path %q is already a field of %s", d.Path, s.Name)
 		}
 		out.Fields[f.ExternalName] = f
 	}
 	return &out, nil
+}
+
+// elemOrType is an array member's element type, or a scalar's type.
+func (d PathDecl) elemOrType() core.FieldType {
+	if d.Type == core.FieldTypeArray {
+		return d.Elem
+	}
+	return d.Type
 }
 
 func kindOf(t core.FieldType) reflect.Kind {
@@ -91,19 +103,21 @@ func storageOf(tag string) (storage JSONStorage, scalar core.FieldType, err erro
 	return "", "", fmt.Errorf("unknown storage %q (jsonb, json, text or scalar:<type>)", tag)
 }
 
-// newPathField builds a document member's field schema; ops nil takes the
-// type's defaults with the NULL tests.
-func newPathField(doc *FieldSchema, segs []string, t core.FieldType, kind reflect.Kind, ops []FilterOperator) (*FieldSchema, error) {
+// newPathField builds the field schema of d, a member of doc at segs, kind
+// being its (or its elements') Go numeric kind. d.Ops nil takes the type's
+// defaults with the NULL tests.
+func newPathField(doc *FieldSchema, segs []string, d PathDecl, kind reflect.Kind) (*FieldSchema, error) {
 	storage := StorageJSONB
 	if doc.Storage != "" {
 		storage = doc.Storage
 	}
 	p := &JSONPath{Column: doc.SQLExpr, Segments: segs, Storage: storage}
-	if err := p.validate(t, MaxPathDepth); err != nil {
+	if err := p.validate(d.Type, d.Elem, MaxPathDepth); err != nil {
 		return nil, err
 	}
+	ops := d.Ops
 	if ops == nil {
-		ops = slices.Clone(defaultFilterOps[t])
+		ops = slices.Clone(defaultFilterOps[d.Type])
 		for _, op := range []FilterOperator{OpNull, OpNotNull, OpExists} {
 			if !slices.Contains(ops, op) {
 				ops = append(ops, op)
@@ -112,12 +126,21 @@ func newPathField(doc *FieldSchema, segs []string, t core.FieldType, kind reflec
 	}
 	f := &FieldSchema{
 		ExternalName:     doc.ExternalName + "." + strings.Join(segs, "."),
-		DataType:         t,
+		DataType:         d.Type,
 		NumberKind:       kind,
 		AllowedOperators: ops,
 		Path:             p,
+		Indexed:          d.Indexed,
+		Label:            d.Label,
+	}
+	if d.Type == core.FieldTypeArray {
+		f.Elem = d.Elem
+		f.Element = newElement(f)
 	}
 	if err := checkOperators(f); err != nil {
+		return nil, err
+	}
+	if err := setPathFacet(f, d.Facet); err != nil {
 		return nil, err
 	}
 	return f, nil
@@ -125,7 +148,8 @@ func newPathField(doc *FieldSchema, segs []string, t core.FieldType, kind reflec
 
 // parsePathsTag reads a `paths` tag: entries separated by ";", each
 // "member.path:type[:caps]" with caps joined by "+" from filter, sort,
-// facet (a terms facet) and indexed (filter is implied).
+// facet (a terms facet) and indexed (filter is implied). A type "[]elem"
+// declares an array of elem.
 func parsePathsTag(tag string) ([]PathDecl, error) {
 	var out []PathDecl
 	for entry := range strings.SplitSeq(tag, ";") {
@@ -138,6 +162,9 @@ func parsePathsTag(tag string) ([]PathDecl, error) {
 			return nil, fmt.Errorf("paths entry %q: want member:type[:caps]", entry)
 		}
 		d := PathDecl{Path: strings.TrimSpace(parts[0]), Type: core.FieldType(strings.TrimSpace(parts[1]))}
+		if elem, ok := strings.CutPrefix(string(d.Type), "[]"); ok {
+			d.Type, d.Elem = core.FieldTypeArray, core.FieldType(elem)
+		}
 		if len(parts) == 3 {
 			for c := range strings.SplitSeq(parts[2], "+") {
 				switch strings.TrimSpace(c) {
@@ -182,9 +209,14 @@ func structPaths(g *core.SchemaGenerator, t reflect.Type, prefix []string, want 
 			return nil, nil, fmt.Errorf("member %s is more than %d members deep", strings.Join(segs, "."), MaxPathDepth)
 		}
 		info := core.TypeOf(m.Type)
+		elem, elemKind, isArray := scalarElements(m.Type)
 		switch {
-		case pathTypes[info.Type]:
+		case pathTypes[info.Type] || isArray:
 			d := PathDecl{Path: strings.Join(segs, "."), Type: info.Type, Indexed: m.Tags.Indexed, Label: m.Tags.Label, Sort: want == "sort"}
+			kind := info.NumberKind
+			if isArray {
+				d.Type, d.Elem, kind = core.FieldTypeArray, elem, elemKind
+			}
 			if want == "filter" && caps.Facet {
 				fs, err := ParseFacetTag(m.Tags.Facet)
 				if err != nil {
@@ -203,7 +235,7 @@ func structPaths(g *core.SchemaGenerator, t reflect.Type, prefix []string, want 
 				d.Ops = ops
 			}
 			decls = append(decls, d)
-			kinds = append(kinds, info.NumberKind)
+			kinds = append(kinds, kind)
 		case info.Type == core.FieldTypeObject:
 			nested, nestedKinds, err := structPaths(g, m.Type, segs, want)
 			if err != nil {
@@ -212,10 +244,27 @@ func structPaths(g *core.SchemaGenerator, t reflect.Type, prefix []string, want 
 			decls = append(decls, nested...)
 			kinds = append(kinds, nestedKinds...)
 		default:
-			return nil, nil, fmt.Errorf("member %s has type %s; paths hold scalars and nested structs", strings.Join(segs, "."), info.Type)
+			return nil, nil, fmt.Errorf("member %s has type %s; paths hold scalars, slices of scalars and nested structs", strings.Join(segs, "."), info.Type)
 		}
 	}
 	return decls, kinds, nil
+}
+
+// scalarElements is the element type of a slice or array of scalars a path
+// may hold, decimals included: a JSON document holds a decimal as a string
+// or a number either way.
+func scalarElements(t reflect.Type) (core.FieldType, reflect.Kind, bool) {
+	for t.Kind() == reflect.Pointer {
+		t = t.Elem()
+	}
+	if (t.Kind() != reflect.Slice && t.Kind() != reflect.Array) || t.Elem().Kind() == reflect.Uint8 {
+		return "", reflect.Invalid, false
+	}
+	info := core.TypeOf(t.Elem())
+	if !pathTypes[info.Type] {
+		return "", reflect.Invalid, false
+	}
+	return info.Type, info.NumberKind, true
 }
 
 func parseOpsTag(tag string) ([]FilterOperator, error) {
@@ -252,17 +301,15 @@ func documentPathFields(g *core.SchemaGenerator, field *core.Field, doc *FieldSc
 		}
 		for _, decl := range d {
 			decls = append(decls, decl)
-			kinds = append(kinds, kindOf(decl.Type))
+			kinds = append(kinds, kindOf(decl.elemOrType()))
 		}
 	}
 	out := make([]*FieldSchema, 0, len(decls))
 	for i, d := range decls {
-		f, err := newPathField(doc, strings.Split(d.Path, "."), d.Type, kinds[i], d.Ops)
+		f, err := newPathField(doc, strings.Split(d.Path, "."), d, kinds[i])
 		if err != nil {
 			return nil, fmt.Errorf("path %s: %w", d.Path, err)
 		}
-		f.Indexed, f.Label = d.Indexed, d.Label
-		setPathFacet(f, d.Facet)
 		out = append(out, f)
 	}
 	return out, nil
@@ -351,7 +398,7 @@ func docSortPaths(g *core.SchemaGenerator, field *core.Field, docType core.Field
 		for _, decl := range d {
 			if decl.Sort {
 				decls = append(decls, decl)
-				kinds = append(kinds, kindOf(decl.Type))
+				kinds = append(kinds, kindOf(decl.elemOrType()))
 			}
 		}
 	}
@@ -378,11 +425,14 @@ func docSortPaths(g *core.SchemaGenerator, field *core.Field, docType core.Field
 }
 
 func newPathSortField(sqlExpr, column string, storage JSONStorage, segs []string, t core.FieldType, kind reflect.Kind, indexed bool) (*SortFieldSchema, error) {
+	if t == core.FieldTypeArray {
+		return nil, fmt.Errorf("path %s is an array; an array member is no sort key", strings.Join(segs, "."))
+	}
 	if storage == "" {
 		storage = StorageJSONB
 	}
 	p := &JSONPath{Column: sqlExpr, Segments: segs, Storage: storage}
-	if err := p.validate(t, MaxPathDepth); err != nil {
+	if err := p.validate(t, "", MaxPathDepth); err != nil {
 		return nil, err
 	}
 	if column == "" {
@@ -422,12 +472,17 @@ func (s *SortSchema) WithPaths(fields *ResourceSchema, decls ...PathDecl) (*Sort
 }
 
 // setPathFacet makes a path facetable with facet's configuration; its SQL
-// is the path's value expression, rendered per dialect.
-func setPathFacet(f *FieldSchema, facet *FacetSchema) {
+// is the path's value expression, rendered per dialect. An array member's
+// facet counts its elements' terms.
+func setPathFacet(f *FieldSchema, facet *FacetSchema) error {
 	if facet == nil {
-		return
+		return nil
+	}
+	if f.DataType == core.FieldTypeArray && facet.Type != FacetTerms {
+		return fmt.Errorf("an array member's facet is terms, not %s", facet.Type)
 	}
 	cfg := *facet
 	cfg.Field, cfg.SQLExpr = f.ExternalName, ""
 	f.Facetable, f.FacetSchema = true, &cfg
+	return nil
 }

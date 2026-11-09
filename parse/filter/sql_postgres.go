@@ -207,12 +207,30 @@ func (d PostgresDialect) membership(field *FieldSchema, expr string, members []a
 // value. Containment is False where the typed comparison is Unknown (a
 // missing member, or one of another JSON type), and compares numbers by
 // value and a member holding an array apart from its elements, as the typed
-// comparison does. Decimals keep the typed comparison (a decimal member may
-// be held as a string), as does a path through a segment `#>` would read as
-// an array index.
+// comparison does. An array member of such elements takes `$contains` as
+// `doc @> fragment`, the fragment's array holding the listed elements: it is
+// False where the member has no element of its type, where `$contains` is
+// Unknown. Decimals keep the typed comparison (a decimal member may be held
+// as a string), as does a path through a segment `#>` would read as an
+// array index, and an array's element: containment of a scalar holds for an
+// element that is an array holding it.
 func (d PostgresDialect) TwoValuedCondition(field *FieldSchema, op FilterOperator, value any, bind func(any) string) (string, bool, error) {
 	p := field.Path
-	if p == nil || p.Storage != StorageJSONB || !containable(field.DataType) || slices.ContainsFunc(p.Segments, isArrayIndex) {
+	if p == nil || p.element || p.Storage != StorageJSONB || slices.ContainsFunc(p.Segments, isArrayIndex) {
+		return "", false, nil
+	}
+	if field.DataType == core.FieldTypeArray {
+		elems, ok := core.AnySlice(value)
+		if op != OpContains || !containable(field.Elem) || !ok || len(elems) == 0 || slices.Contains(elems, nil) {
+			return "", false, nil // `[]` is in every array, an empty one too
+		}
+		fragment, err := containmentFragment(p.Segments, elems)
+		if err != nil {
+			return "", false, fmt.Errorf("field %s: %w", field.ExternalName, err)
+		}
+		return p.Column + " @> " + bind(fragment) + "::jsonb", true, nil
+	}
+	if !containable(field.DataType) {
 		return "", false, nil
 	}
 	switch op {
