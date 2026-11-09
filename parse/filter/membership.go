@@ -240,7 +240,7 @@ func (b *SQLBuilder) lookupSQL(s *buildState, l *Lookup) (string, error) {
 	}
 	if l.Filter != nil && l.Filter.AST != nil && l.Filter.AST.Root != nil {
 		fb := &SQLBuilder{schema: &ResourceSchema{Name: l.Table}, dialect: b.dialect, scope: b.scope, related: b.related}
-		cond, err := fb.buildNode(s, l.Filter.AST.Root)
+		cond, err := s.selecting(func() (string, error) { return fb.buildNode(s, l.Filter.AST.Root) })
 		if err != nil {
 			return "", err
 		}

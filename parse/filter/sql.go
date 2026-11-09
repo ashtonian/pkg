@@ -70,6 +70,23 @@ type Dialect interface {
 	DecimalParam(placeholder string) string
 }
 
+// TwoValuedDialect is a Dialect with a second rendering of some predicates,
+// one an index serves better, that is exact only where a predicate's Unknown
+// and False select alike. SQLBuilder uses it for a condition an even number
+// of negations (usually none) enclose within its statement or subquery: the
+// statement is then monotone in the condition (False < Unknown < True), and
+// a Kleene result that is True with the condition Unknown is True whatever
+// it is, so a row is selected exactly when it would be with the condition
+// False.
+type TwoValuedDialect interface {
+	Dialect
+
+	// TwoValuedCondition renders `field <op> value` as a predicate True
+	// exactly where Condition's is True. ok is false when it has no such
+	// rendering for the predicate; it then binds nothing.
+	TwoValuedCondition(field *FieldSchema, op FilterOperator, value any, bind func(any) string) (sql string, ok bool, err error)
+}
+
 // ErrUnknownDSN is returned by DialectFromDSN for a DSN whose scheme names
 // neither PostgreSQL nor SQLite.
 var ErrUnknownDSN = dialect.ErrUnknownDSN
@@ -94,7 +111,7 @@ func decimalBinder(d Dialect, bind func(any) string) func(any) string {
 }
 
 // comparison renders the operators every dialect spells alike: equality,
-// ordering, membership and the NULL tests. ok is false for the rest.
+// ordering and the NULL tests. ok is false for the rest.
 func comparison(expr string, op FilterOperator, value any, bind func(any) string) (sql string, ok bool, err error) {
 	switch op {
 	case OpEq:
@@ -113,17 +130,16 @@ func comparison(expr string, op FilterOperator, value any, bind func(any) string
 		return expr + " IS NULL", true, nil
 	case OpNotNull:
 		return expr + " IS NOT NULL", true, nil
-	case OpIn, OpNin:
-		sql, err := membership(expr, op, value, bind)
-		return sql, true, err
 	}
 	return "", false, nil
 }
 
-// membership renders `$in` / `$nin`. An empty set matches nothing (`$in`)
-// or everything (`$nin`); `col IN ()` is a syntax error on PostgreSQL
-// .
-func membership(expr string, op FilterOperator, value any, bind func(any) string) (string, error) {
+// membership renders `$in` / `$nin` through render, which receives the
+// set's members, none NULL and at least one, bound as one parameter so a
+// statement's parameter count is independent of the set's size. An empty
+// set matches nothing (`$in`) or everything (`$nin`), NULL or not. A NULL
+// member makes a miss Unknown, as it does in `x IN (…, NULL)`.
+func membership(op FilterOperator, value any, render func(members []any, in bool) (string, error)) (string, error) {
 	arr, ok := core.AnySlice(value)
 	if !ok {
 		return "", fmt.Errorf("$%s requires an array value, got %T", op, value)
@@ -134,21 +150,23 @@ func membership(expr string, op FilterOperator, value any, bind func(any) string
 		}
 		return "1=1", nil
 	}
-	var sb strings.Builder
-	sb.WriteString(expr)
-	if op == OpIn {
-		sb.WriteString(" IN (")
-	} else {
-		sb.WriteString(" NOT IN (")
-	}
-	for i, item := range arr {
-		if i > 0 {
-			sb.WriteString(", ")
+	members := make([]any, 0, len(arr))
+	for _, m := range arr {
+		if m != nil {
+			members = append(members, m)
 		}
-		sb.WriteString(bind(item))
 	}
-	sb.WriteByte(')')
-	return sb.String(), nil
+	if len(members) == 0 {
+		return "NULL", nil // x IN (NULL) and x NOT IN (NULL) are Unknown for every x
+	}
+	sql, err := render(members, op == OpIn)
+	if err != nil || len(members) == len(arr) {
+		return sql, err
+	}
+	if op == OpIn {
+		return "(" + sql + " OR NULL)", nil
+	}
+	return "(" + sql + " AND NULL)", nil
 }
 
 // isOrdering reports the range operators; on strings they compare by code
@@ -249,6 +267,19 @@ type buildState struct {
 	// bind, when set, binds values instead: a predicate rendered into a
 	// statement another package numbers (VisibleRelated).
 	bind func(any) string
+	// negated is whether an odd number of $not enclose the node being built
+	// within its statement or subquery, where a condition's Unknown and
+	// False may select differently (TwoValuedDialect).
+	negated bool
+}
+
+// selecting builds a predicate a WHERE clause selects with: Unknown and
+// False agree there, whatever negation encloses the subquery it filters.
+func (s *buildState) selecting(build func() (string, error)) (string, error) {
+	enclosing := s.negated
+	s.negated = false
+	defer func() { s.negated = enclosing }()
+	return build()
 }
 
 func (s *buildState) nextParam() int {
@@ -389,7 +420,9 @@ func (b *SQLBuilder) buildNot(s *buildState, node *FilterNode) (string, error) {
 	if len(node.Children) == 0 { // parser guarantees one child; programmatic ASTs fail loud
 		return "", errors.New("filter: $not node has no children")
 	}
+	s.negated = !s.negated
 	sql, err := b.buildNode(s, node.Children[0])
+	s.negated = !s.negated
 	if err != nil {
 		return "", err
 	}
@@ -418,7 +451,14 @@ func (b *SQLBuilder) buildCondition(s *buildState, node *FilterNode) (string, er
 		}
 		return b.buildRelationCondition(s, node)
 	}
-	return b.dialect.Condition(node.Field, node.Op, node.Value, s.binder(b.dialect))
+	bind := s.binder(b.dialect)
+	if tv, ok := b.dialect.(TwoValuedDialect); ok && !s.negated {
+		sql, ok, err := tv.TwoValuedCondition(node.Field, node.Op, node.Value, bind)
+		if err != nil || ok {
+			return sql, err
+		}
+	}
+	return b.dialect.Condition(node.Field, node.Op, node.Value, bind)
 }
 
 // relationAlias names the junction inside a relation predicate's
@@ -465,9 +505,9 @@ func (b *SQLBuilder) buildRelationCondition(s *buildState, node *FilterNode) (st
 			}
 			return "1=1", nil
 		}
-		sql, err := membership(target.SQLExpr, OpIn, arr, bind)
+		sql, err := b.dialect.Condition(target, OpIn, arr, bind)
 		if err != nil {
-			return "", err
+			return "", fmt.Errorf("building relation condition: %w", err)
 		}
 		cond = sql
 		negate = node.Op == OpNin

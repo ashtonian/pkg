@@ -217,6 +217,10 @@ type FilterAST struct {
 }
 
 // SQLResult contains the generated SQL WHERE clause and bound arguments.
+// Where is a selection predicate: it selects exactly the rows the filter
+// holds True, for a WHERE, ON or FILTER clause. On a row the filter holds
+// Unknown it may be False (TwoValuedDialect), so it is not a value to
+// negate or project.
 type SQLResult struct {
 	Where      string
 	Args       []any

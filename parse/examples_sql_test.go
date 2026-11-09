@@ -86,8 +86,8 @@ func Example_filterOperators() {
 	show(tp, filter.ListFilter(`{"$or":[{"category":"books"},{"$not":{"price":{"$gt":50}}}]}`))
 	show(tp, filter.ListFilter(`{"name":{"$ilike":"%pro%"},"created_at":{"$gte":"now-7d"}}`))
 	// Output:
-	// postgres WHERE (products.category = $1 AND products.name IN ($2, $3)) ORDER BY products.created_at DESC, products.id DESC [tools saw drill]
-	// sqlite   WHERE (products.category = ?1 AND products.name IN (?2, ?3)) ORDER BY products.created_at DESC, products.id DESC [tools saw drill]
+	// postgres WHERE (products.category = $1 AND products.name = ANY($2)) ORDER BY products.created_at DESC, products.id DESC [tools [saw drill]]
+	// sqlite   WHERE (products.category = ?1 AND products.name IN (SELECT value FROM json_each(?2))) ORDER BY products.created_at DESC, products.id DESC [tools ["saw","drill"]]
 	// postgres WHERE ((products.price >= $1 AND products.price < $2) AND products.stock IS NOT NULL) ORDER BY products.created_at DESC, products.id DESC [10 100]
 	// sqlite   WHERE ((products.price >= ?1 AND products.price < ?2) AND products.stock IS NOT NULL) ORDER BY products.created_at DESC, products.id DESC [10 100]
 	// postgres WHERE (products.category = $1 OR NOT (products.price > $2)) ORDER BY products.created_at DESC, products.id DESC [books 50]
@@ -180,8 +180,8 @@ func Example_relations() {
 	// Output:
 	// postgres WHERE EXISTS (SELECT 1 FROM product_collections rel__ WHERE rel__.product_id = products.id AND rel__.collection_id = $1) ORDER BY products.created_at DESC, products.id DESC [0190f3c2-0000-7000-8000-000000000001]
 	// sqlite   WHERE EXISTS (SELECT 1 FROM product_collections rel__ WHERE rel__.product_id = products.id AND rel__.collection_id = ?1) ORDER BY products.created_at DESC, products.id DESC [0190f3c2-0000-7000-8000-000000000001]
-	// postgres WHERE NOT EXISTS (SELECT 1 FROM product_collections rel__ WHERE rel__.product_id = products.id AND rel__.collection_id IN ($1)) ORDER BY products.created_at DESC, products.id DESC [0190f3c2-0000-7000-8000-000000000001]
-	// sqlite   WHERE NOT EXISTS (SELECT 1 FROM product_collections rel__ WHERE rel__.product_id = products.id AND rel__.collection_id IN (?1)) ORDER BY products.created_at DESC, products.id DESC [0190f3c2-0000-7000-8000-000000000001]
+	// postgres WHERE NOT EXISTS (SELECT 1 FROM product_collections rel__ WHERE rel__.product_id = products.id AND rel__.collection_id = ANY($1)) ORDER BY products.created_at DESC, products.id DESC [[0190f3c2-0000-7000-8000-000000000001]]
+	// sqlite   WHERE NOT EXISTS (SELECT 1 FROM product_collections rel__ WHERE rel__.product_id = products.id AND rel__.collection_id IN (SELECT value FROM json_each(?1))) ORDER BY products.created_at DESC, products.id DESC [["0190f3c2-0000-7000-8000-000000000001"]]
 	// postgres WHERE EXISTS (SELECT 1 FROM reviews rel__ WHERE rel__.product_id = products.id) ORDER BY products.created_at DESC, products.id DESC []
 	// sqlite   WHERE EXISTS (SELECT 1 FROM reviews rel__ WHERE rel__.product_id = products.id) ORDER BY products.created_at DESC, products.id DESC []
 	// postgres WHERE products.supplier_id = $1 ORDER BY products.created_at DESC, products.id DESC [0190f3c2-0000-7000-8000-0000000000aa]

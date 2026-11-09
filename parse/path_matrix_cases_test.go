@@ -67,15 +67,15 @@ func runPathMatrix(t *testing.T, p pathDB, storage filter.JSONStorage) {
 	if storage != "" {
 		schema = withStorage(t, schema, storage)
 	}
-	t.Run("cases", func(t *testing.T) {
-		filtertest.RunPaths(t, schema, func(t *testing.T, f *filter.ParsedFilter) ([]string, error) {
-			res, err := filter.NewSQLBuilder(schema, p.dialect).Build(f.AST)
-			if err != nil {
-				return nil, err
-			}
-			return queryIDs(t, p.db, "SELECT id FROM path_records WHERE "+res.Where, res.Args), nil
-		})
-	})
+	query := func(t *testing.T, f *filter.ParsedFilter) ([]string, error) {
+		res, err := filter.NewSQLBuilder(schema, p.dialect).Build(f.AST)
+		if err != nil {
+			return nil, err
+		}
+		return queryIDs(t, p.db, "SELECT id FROM path_records WHERE "+res.Where, res.Args), nil
+	}
+	t.Run("cases", func(t *testing.T) { filtertest.RunPaths(t, schema, query) })
+	t.Run("sets", func(t *testing.T) { filtertest.RunPathSets(t, schema, query) })
 	t.Run("values match PathValue", func(t *testing.T) {
 		names := slices.Sorted(func(yield func(string) bool) {
 			for n, f := range schema.Fields {

@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/url"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -128,11 +129,11 @@ func TestRepeatedQueryParamsBecomeIn(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(res.Args) != 2 {
-		t.Fatalf("args = %v; want both values bound", res.Args)
+	if !reflect.DeepEqual(res.Args, []any{[]string{"active", "inactive"}}) {
+		t.Fatalf("args = %#v; want both values bound as one set", res.Args)
 	}
-	if !strings.Contains(res.Where, "IN") && !strings.Contains(res.Where, "= ANY") {
-		t.Errorf("WHERE %q; want IN/ANY over both values", res.Where)
+	if res.Where != "items.status = ANY($1)" {
+		t.Errorf("WHERE %q; want = ANY over the set", res.Where)
 	}
 }
 

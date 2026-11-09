@@ -98,7 +98,7 @@ func (b *SQLBuilder) buildElements(s *buildState, node *FilterNode) (string, err
 			return "", err
 		}
 		nb := &SQLBuilder{schema: b.schema, dialect: b.dialect, scope: b.scope, related: b.related, depth: b.depth + 1, visible: b.visible}
-		cond, err := nb.buildNode(s, nested)
+		cond, err := s.selecting(func() (string, error) { return nb.buildNode(s, nested) })
 		if err != nil {
 			return "", err
 		}

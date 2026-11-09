@@ -2,8 +2,6 @@ package filtertest
 
 import (
 	"encoding/json"
-	"errors"
-	"slices"
 	"testing"
 	"time"
 
@@ -151,6 +149,19 @@ func PathCases() []Case {
 
 		{Name: "paths compose", Filter: `{"$or":[{"attrs.color":"blue"},{"settings.level":7}]}`, Want: ids("bg")},
 
+		// PostgreSQL compares jsonb paths by containment where an even
+		// number of $not enclose them; under an odd number, an absent member
+		// must stay Unknown.
+		{Name: "path float in", Filter: `{"attrs.ratio":{"$in":[2,0.1]}}`, Want: ids("be")},
+		{Name: "path uuid in folds the member's case", Filter: `{"attrs.owner":{"$in":["0198a3c2-7a1e-7c00-8000-000000000003","0198a3c2-7a1e-7c00-8000-000000000002"]}}`, Want: ids("bg")},
+		{Name: "path eq under and", Filter: `{"$and":[{"attrs.color":"red"},{"attrs.on":true}]}`, Want: ids("a")},
+		{Name: "path eq beside a negation", Filter: `{"$or":[{"attrs.color":"red"},{"$not":{"attrs.size":3}}]}`, Want: ids("abeg")},
+		{Name: "path in under not excludes absent", Filter: `{"$not":{"attrs.color":{"$in":["red","blue"]}}}`, Want: ids("g")},
+		{Name: "path not of or excludes absent", Filter: `{"$not":{"$or":[{"attrs.color":"red"},{"attrs.color":"blue"}]}}`, Want: ids("g")},
+		{Name: "path not of and", Filter: `{"$not":{"$and":[{"attrs.color":"red"},{"attrs.size":3}]}}`, Want: ids("beg")},
+		{Name: "path double negation", Filter: `{"$not":{"$not":{"attrs.color":"red"}}}`, Want: ids("a")},
+		{Name: "path bool eq false under not", Filter: `{"$not":{"attrs.on":false}}`, Want: ids("ag")},
+
 		{Name: "has_key: object keys and array string elements", Filter: `{"attrs":{"$has_key":"color"}}`, Want: ids("abcegh")},
 		{Name: "has_key: a key whose value is null", Filter: `{"attrs":{"$has_key":"size"}}`, Want: ids("abcegh")},
 		{Name: "has_key: nested keys are not top-level", Filter: `{"attrs":{"$has_key":"w"}}`, Want: ids("")},
@@ -176,35 +187,5 @@ func PathSchema() (*filter.ResourceSchema, error) {
 // copy declaring the backend's storage), on backend, which evaluates against
 // PathRecords.
 func RunPaths(t *testing.T, schema *filter.ResourceSchema, backend Backend) {
-	parser := PathParser(schema)
-	for _, c := range PathCases() {
-		t.Run(c.Name, func(t *testing.T) {
-			ast, err := parser.Parse(c.Filter)
-			if c.ParseErr != "" {
-				var pe *core.ParseError
-				if !errors.As(err, &pe) || pe.Code != c.ParseErr {
-					t.Fatalf("parse %s: err = %v, want %s", c.Filter, err, c.ParseErr)
-				}
-				return
-			}
-			if err != nil {
-				t.Fatalf("parse %s: %v", c.Filter, err)
-			}
-			got, err := backend(t, filter.NewParsedFilter(ast))
-			if err != nil {
-				t.Fatalf("%s: %v", c.Filter, err)
-			}
-			slices.Sort(got)
-			want := c.Want
-			if want == nil {
-				want = []string{}
-			}
-			if got == nil {
-				got = []string{}
-			}
-			if !slices.Equal(got, want) {
-				t.Errorf("%s:\n got %v\nwant %v", c.Filter, got, want)
-			}
-		})
-	}
+	run(t, "", PathParser(schema), PathCases(), backend)
 }

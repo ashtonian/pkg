@@ -109,7 +109,7 @@ func (b *SQLBuilder) buildRelated(s *buildState, node *FilterNode) (string, erro
 			schema: &ResourceSchema{Name: related}, dialect: b.dialect, scope: b.scope, related: b.related,
 			depth: depth, visible: append(visible, join, related),
 		}
-		cond, err := nb.buildNode(s, nested)
+		cond, err := s.selecting(func() (string, error) { return nb.buildNode(s, nested) })
 		if err != nil {
 			return "", err
 		}

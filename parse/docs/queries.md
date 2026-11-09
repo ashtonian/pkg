@@ -14,7 +14,7 @@ JSON filters (`{"status":"active","price":{"$gte":10}}`) and flat query paramete
 |----------|------|-----------------|---------|
 | `eq` / `ne` | `{"f": v}`, `{"f": {"$ne": v}}` | `f=v`, `f_ne=v` | Equality; on JSON fields a document comparison (key order and `1` vs `1.0` irrelevant) |
 | `gt` `gte` `lt` `lte` | `{"$gt": 10}` | `f_gt=10` | Ordering; strings by code point (`COLLATE pg_c_utf8` on PostgreSQL 17+ or `"C"` with `CollationC`, `BINARY` on SQLite), as keyset sorts are |
-| `in` / `nin` | `{"$in": ["a","b"]}` | `f_in=a,b` | Membership; `[]` matches nothing / everything |
+| `in` / `nin` | `{"$in": ["a","b"]}` | `f_in=a,b` | Membership; `[]` matches nothing / everything; the set binds as one parameter ([sets](#sets)) |
 | `like` / `ilike` | `{"$like": "a%"}` | `f_like=a%25` | `%` any run, `_` one character, `\` escapes; `ilike` folds case (ASCII only on SQLite) |
 | `contains` | `{"$contains": x}` | `f_contains=x` | String: literal substring. JSON: jsonb `@>`. Array: holds every element |
 | `null` / `not_null` / `exists` | `{"$null": true}`, `{"$not_null": true}` | `f_null=true`, `f_not_null=true` | IS NULL / IS NOT NULL; one capability — declaring any allows all three |
@@ -42,7 +42,7 @@ Values normalize before any SQL is built: integers exactly (range-checked agains
 
 The operator contract is shared where supported. Backend differences and relation limits are explicit below:
 
-- A predicate on a NULL field is NULL, so `ne`, `nin` and `$not` never match NULL rows; `$in: []` matches nothing, `$nin: []` everything.
+- A predicate on a NULL field is NULL, so `ne`, `nin` and `$not` never match NULL rows; `$in: []` matches nothing, `$nin: []` everything. A NULL set member (programmatic ASTs only; the parser refuses one) makes a miss Unknown, as `x IN (…, NULL)` does.
 - Strings compare case-sensitively and order by code point. LIKE patterns: `%` any run, `_` one character, `\` escapes; a trailing `\` is rejected. `$like` is case-sensitive (SQLite: GLOB), `$ilike` folds case (SQLite: ASCII only). `$contains` is a literal substring. `MatchLike` is the reference matcher.
 - JSON documents: `$eq` / `$ne` compare by value (key order and `1` vs `1.0` irrelevant, array order significant); `$contains` is jsonb `@>`. `$has_key` is jsonb `?`: the document has the key at the top level (whatever its value, null included), a top-level array has it as a string element, or the document is that string. `JSONEqual` / `JSONContains` / `JSONHasKey` are the reference semantics; SQLite compiles the needle into `json_each` predicates. A plain object on a JSON field is equality, not an operator object. A document declared `storage:"json"` or `"text"` is read as jsonb on PostgreSQL.
 - Arrays: `$contains` holds every listed element (order and multiplicity ignored; a lone value is a one-element list).
@@ -52,6 +52,17 @@ The operator contract is shared where supported. Backend differences and relatio
 Values normalize at parse (the AST carries canonical values): exact `int64` / `uint64`, finite `float64`, canonical decimal text, canonical UUID strings, RFC 3339 UTC timestamps with relative tokens (`now-7d`, `now+1h`) resolved, canonical JSON documents bounded by `MaxDepth` / `MaxArraySize`.
 
 `filtertest` holds the conformance fixture — an entity with a field of every type, its rows and the expected rows per filter; a backend passes with `filtertest.Run(t, name, backend)`.
+
+### Sets
+
+A `$in` / `$nin` set binds as one array parameter, so a statement's parameter count is independent of the set's size (PostgreSQL caps a statement at 65,535 parameters). `MaxArraySize` alone bounds a set, and a set costs one condition whatever its size: raise `MaxArraySize` and `MaxInputSize` for an endpoint that filters by large sets.
+
+| Backend | Column | [Path](#json-paths) |
+|---|---|---|
+| PostgreSQL | `col = ANY($1)` / `col <> ALL($1)`: the parameter takes the column's array type, so the column's own equality applies and its index serves the set; decimals `= ANY($1::text[]::numeric[])` | `expr IN (SELECT unnest($1::text[]))` / `NOT IN`, unnested to the type the path renders (`::numeric`, `::boolean[]`) |
+| SQLite | `col IN (SELECT value FROM json_each(?1))` / `NOT IN`; floats encode as REAL, decimals read through `CAST(value AS NUMERIC)` | the same |
+
+A path's set joins its members as a relation, which PostgreSQL hashes in every plan. A column's `= ANY` is served by an index on the column; without one, under a generic plan (pgx caches prepared statements, and PostgreSQL may plan one generically after five executions) it probes the array member by member for each row it scans, so index a column that large sets filter. SQLite holds integers within int64: a `uint64` member above it is an error, as binding one is.
 
 ## JSON paths
 
@@ -80,9 +91,11 @@ Anything else is **absent**: a missing key, JSON null, another kind, a timestamp
 
 | Backend | Rendering |
 |---|---|
-| PostgreSQL | `CASE WHEN jsonb_typeof(doc #> '{a,b}') = '<kind>' THEN (doc #>> '{a,b}')[::numeric \| ::boolean] END`; `json` and `text` storage read as jsonb |
+| PostgreSQL | `CASE WHEN jsonb_typeof(doc #> '{a,b}') = '<kind>' THEN (doc #>> '{a,b}')[::numeric \| ::boolean] END`; `json` and `text` storage read as jsonb. Containment where it is exact, below |
 | SQLite | `CASE WHEN json_type(doc, '$."a"."b"') IN (…) THEN json_extract(doc, '$."a"."b"') END` |
 | Memory | `filter.PathValue(doc, field)` — the reference rule the SQL renderings are tested against row by row, and how `filter.Evaluate` reads a path |
+
+On PostgreSQL a string, bool, int or float path of a `jsonb` column compares `$eq` by containment, `doc @> '{"a":{"b":v}}'`, and `$in` with at most `PostgresDialect.ContainmentMaxValues` members as `doc @> ANY($1::jsonb[])`, which a GIN index on the document serves (`jsonb_path_ops` suffices). Containment compares numbers by value and keeps a member holding an array apart from its elements, as the typed expression does, but it is False where the typed comparison is Unknown, so it is used only where an even number of `$not` (usually none) enclose the condition within its statement or subquery (`$and` / `$or` are monotone, so the statement is monotone in the condition there, and `$some` / `$none` and relation predicates select their elements and rows): there a row is selected exactly when it is with every Unknown condition False. Under an odd number of `$not`, for decimals (a decimal member may be a string), and on a path through a segment `#>` reads as an array index (`items.0`), the typed expression stays. `SQLResult.Where` is therefore a selection predicate for a WHERE, ON or FILTER clause, not a value to negate or project.
 
 A facetable path counts like a column: terms over its values, ranges over its numbers (`facet:"range:0-5,5+"` on a struct member, `PathDecl.Facet` per request); an absent member is in no bucket.
 
@@ -216,6 +229,7 @@ PostgreSQL dialect:
 | Field | Type | Default | Description |
 |---|---|---|---|
 | `PostgresDialect.Collation` | `filter.PostgresCollation` | `CollationPgCUTF8` | Code-point collation for string sorts, keyset seeks and string ranges: `CollationPgCUTF8` (`pg_c_utf8`, PostgreSQL 17+) or `CollationC` (`"C"`, PostgreSQL 14–16). Both order by code point; index the sorted columns with the same collation |
+| `PostgresDialect.ContainmentMaxValues` | int | `0` (`DefaultContainmentMaxValues`, 256) | Largest `$in` set a jsonb path compares by containment, one GIN probe per member; a larger set joins its members unnested. Negative compares no set by containment (`$eq` still does) |
 
 ## Request-to-SQL examples
 
@@ -241,7 +255,7 @@ type Product struct {
 
 ```text
 {"category":"tools","name":{"$in":["saw","drill"]}}
-postgres WHERE (products.category = $1 AND products.name IN ($2, $3)) ORDER BY products.created_at DESC [tools saw drill]
+postgres WHERE (products.category = $1 AND products.name = ANY($2)) ORDER BY products.created_at DESC [tools [saw drill]]
 
 {"$or":[{"category":"books"},{"$not":{"price":{"$gt":50}}}]}
 postgres WHERE (products.category = $1 OR NOT (products.price > $2)) ORDER BY products.created_at DESC [books 50]

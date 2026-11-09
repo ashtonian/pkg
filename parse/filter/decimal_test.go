@@ -90,16 +90,17 @@ func TestDecimal_SQLBindsExactNumbers(t *testing.T) {
 	tests := []struct {
 		dialect filter.Dialect
 		where   string
+		args    []any
 	}{
-		{filter.PostgresDialect{}, "(priceds.price > $1::numeric AND priceds.fee IN ($2::numeric, $3::numeric))"},
-		{filter.SQLiteDialect{}, "(priceds.price > CAST(?1 AS NUMERIC) AND priceds.fee IN (CAST(?2 AS NUMERIC), CAST(?3 AS NUMERIC)))"},
+		{filter.PostgresDialect{}, "(priceds.price > $1::numeric AND priceds.fee = ANY($2::text[]::numeric[]))", []any{"9.5", []string{"1", "2.25"}}},
+		{filter.SQLiteDialect{}, "(priceds.price > CAST(?1 AS NUMERIC) AND priceds.fee IN (SELECT CAST(value AS NUMERIC) FROM json_each(?2)))", []any{"9.5", `["1","2.25"]`}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.dialect.Name(), func(t *testing.T) {
 			res, err := filter.NewSQLBuilder(fs, tt.dialect).Build(ast)
 			require.NoError(t, err)
 			assert.Equal(t, tt.where, res.Where)
-			assert.Equal(t, []any{"9.5", "1", "2.25"}, res.Args)
+			assert.Equal(t, tt.args, res.Args)
 		})
 	}
 }
@@ -110,8 +111,8 @@ func TestDecimal_QueryParams(t *testing.T) {
 	require.NoError(t, err)
 	res, err := filter.NewSQLBuilder(fs, filter.PostgresDialect{}).Build(ast)
 	require.NoError(t, err)
-	assert.Equal(t, "(priceds.cost IN ($1::numeric, $2::numeric) AND priceds.price >= $3::numeric)", res.Where)
-	assert.Equal(t, []any{"1", "2", "10.5"}, res.Args)
+	assert.Equal(t, "(priceds.cost = ANY($1::text[]::numeric[]) AND priceds.price >= $2::numeric)", res.Where)
+	assert.Equal(t, []any{[]string{"1", "2"}, "10.5"}, res.Args)
 }
 
 // Keys order as numbers, across signs, magnitudes and scales, and never as

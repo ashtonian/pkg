@@ -42,6 +42,20 @@ func runFilterMatrix(t *testing.T, name string, mdb matrixDB) {
 	})
 }
 
+// runSetMatrix runs the set cases: every scalar column's `$in` and `$nin`
+// at each of filtertest.SetSizes.
+func runSetMatrix(t *testing.T, name string, mdb matrixDB) {
+	t.Helper()
+	loadRecords(t, mdb)
+	schema, err := filtertest.Schema()
+	if err != nil {
+		t.Fatalf("schema: %v", err)
+	}
+	filtertest.RunSets(t, name, func(t *testing.T, f *filter.ParsedFilter) ([]string, error) {
+		return queryRecordIDs(t, mdb, schema, f)
+	})
+}
+
 // runMembershipMatrix runs the membership cases twice: compiled to their
 // subqueries, and resolved through filtertest.Lookups first, as a memory
 // backend resolves them. Both must select the same rows.

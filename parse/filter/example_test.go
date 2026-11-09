@@ -39,7 +39,7 @@ func Example() {
 	}
 	fmt.Println(len(lite.Args), "SQLite args")
 	// Output:
-	// (devices.labels @> $1::jsonb AND devices.status IN ($2)) [{"env":"prod"} active]
+	// (devices.labels @> $1::jsonb AND devices.status = ANY($2)) [{"env":"prod"} [active]]
 	// 3 SQLite args
 }
 
