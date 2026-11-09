@@ -121,8 +121,9 @@ var maxDecimalMember = strconv.Itoa(decimals.MaxMemberLength)
 // f.Path, typed as the filter compares it, or present false when the member
 // is absent — missing, JSON null, another JSON kind, or behind a non-object.
 // SQL dialects render the same rule; a memory backend evaluates paths with
-// it. doc is the column's value: JSON text, json.RawMessage, a decoded
-// document, or any Go value that encodes to one.
+// it. doc is the column's value: a Document, read as it was decoded, or
+// JSON text, json.RawMessage, a decoded document or any Go value that
+// encodes to one, decoded on every call.
 //
 // Strings come back as string, numbers as int64 when the literal is an
 // integer within int64 and float64 otherwise, booleans as bool, timestamps
@@ -216,6 +217,13 @@ func decodeDocument(doc any) (any, error) {
 	switch d := doc.(type) {
 	case nil:
 		return nil, nil
+	case Document:
+		return d.root, nil
+	case *Document:
+		if d == nil {
+			return nil, nil
+		}
+		return d.root, nil
 	case string:
 		data = []byte(d)
 	case []byte:
