@@ -185,7 +185,8 @@ func parseDecimal(s string) (string, error) {
 		}
 	}
 	var exp int64
-	if i < len(s) && (s[i] == 'e' || s[i] == 'E') {
+	hasExp := i < len(s) && (s[i] == 'e' || s[i] == 'E')
+	if hasExp {
 		i++
 		start := i
 		if i < len(s) && (s[i] == '+' || s[i] == '-') {
@@ -207,7 +208,7 @@ func parseDecimal(s string) (string, error) {
 	if i != len(s) {
 		return invalid()
 	}
-	if exp == 0 && !strings.HasSuffix(frac, "0") && !(neg && intPart == "0" && frac == "") {
+	if !hasExp && !strings.HasSuffix(frac, "0") && !(neg && intPart == "0" && frac == "") {
 		// Already canonical: the grammar admits no leading zeros.
 		if len(intPart)+len(frac) > MaxDecimalDigits {
 			return "", fmt.Errorf("%q has more than %d digits", s, MaxDecimalDigits)

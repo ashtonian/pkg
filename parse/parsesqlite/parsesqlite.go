@@ -1,13 +1,15 @@
 // Package parsesqlite registers the SQL functions parse's SQLite dialect
 // calls, with the modernc.org/sqlite driver. SQLite has no exact decimal
 // type: a NUMERIC column or a json_extract result holds a double, so
-// filter.SQLiteDialect compares, orders and facets decimals through two
+// filter.SQLiteDialect compares, orders and facets decimals through
 // deterministic functions instead.
 //
 //   - parse_decimal(x) is the canonical decimal text (core.DecimalText) of
 //     x, or NULL: equality, sets and facet keys compare it.
 //   - parse_decimal_key(x) is a BLOB that orders bytewise as the decimal x,
 //     or NULL: ranges, ORDER BY and keyset seeks compare it.
+//   - parse_decimal_float32(x) is the canonical decimal text of x rounded
+//     to float32, or NULL: the facet key of a float32 field's REAL column.
 //
 // x is a decimal column's value (an INTEGER, a REAL, or TEXT holding a JSON
 // number literal) or a document member as SQLite's `->` operator returns
@@ -32,20 +34,23 @@ import (
 
 // The functions' SQL names, as filter.SQLiteDialect calls them.
 const (
-	DecimalFunc    = decimals.SQLiteValueFunc
-	DecimalKeyFunc = decimals.SQLiteKeyFunc
+	DecimalFunc        = decimals.SQLiteValueFunc
+	DecimalKeyFunc     = decimals.SQLiteKeyFunc
+	DecimalFloat32Func = decimals.SQLiteFloat32Func
 )
 
-// Register registers parse_decimal and parse_decimal_key with modernc.org/sqlite,
-// for every connection the "sqlite" driver opens afterwards; connections
-// already open lack them. It registers once per process: later calls, from
-// any goroutine or package, return the first call's result.
+// Register registers parse_decimal, parse_decimal_key and
+// parse_decimal_float32 with modernc.org/sqlite, for every connection the
+// "sqlite" driver opens afterwards; connections already open lack them. It
+// registers once per process: later calls, from any goroutine or package,
+// return the first call's result.
 func Register() error { return register() }
 
 var register = sync.OnceValue(func() error {
 	for name, fn := range map[string]func(driver.Value) (driver.Value, error){
-		DecimalFunc:    Decimal,
-		DecimalKeyFunc: DecimalKey,
+		DecimalFunc:        Decimal,
+		DecimalKeyFunc:     DecimalKey,
+		DecimalFloat32Func: DecimalFloat32,
 	} {
 		err := sqlite.RegisterDeterministicScalarFunction(name, 1, func(_ *sqlite.FunctionContext, args []driver.Value) (driver.Value, error) {
 			return fn(args[0])
@@ -79,4 +84,17 @@ func DecimalKey(v driver.Value) (driver.Value, error) {
 		return nil, nil
 	}
 	return decimals.Key(text), nil
+}
+
+// DecimalFloat32 is parse_decimal_float32 for one SQLite value: the
+// canonical decimal text of the float32 it holds (an INTEGER, a REAL or TEXT
+// holding a JSON number literal, rounded to float32), or nil (SQL NULL). It
+// is exported for a SQLite driver other than modernc.org/sqlite to register
+// under DecimalFloat32Func.
+func DecimalFloat32(v driver.Value) (driver.Value, error) {
+	text, ok := decimals.Float32Value(v)
+	if !ok {
+		return nil, nil
+	}
+	return text, nil
 }

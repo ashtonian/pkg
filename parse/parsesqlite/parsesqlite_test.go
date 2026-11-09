@@ -63,6 +63,40 @@ func TestDecimal(t *testing.T) {
 	}
 }
 
+// A float32 field's REAL holds the double of its float32; the function
+// keys the float32.
+func TestDecimalFloat32(t *testing.T) {
+	db := open(t)
+	_, err := db.Exec("CREATE TABLE f (v REAL)")
+	require.NoError(t, err)
+	_, err = db.Exec("INSERT INTO f VALUES (?)", float64(float32(0.1)))
+	require.NoError(t, err)
+	tests := []struct {
+		name string
+		expr string
+		want any
+	}{
+		{"a REAL holding a float32", "(SELECT parse_decimal_float32(v) FROM f)", "0.1"},
+		{"the same REAL read as a double", "(SELECT parse_decimal(v) FROM f)", "0.10000000149011612"},
+		{"an integer", "parse_decimal_float32(2)", "2"},
+		{"an integer past float32 precision", "parse_decimal_float32(16777217)", "16777216"},
+		{"a REAL with an exponent", "parse_decimal_float32(1.5e-7)", "0.00000015"},
+		{"negative zero", "parse_decimal_float32(-0.0)", "0"},
+		{"a number literal", "parse_decimal_float32('2.50')", "2.5"},
+		{"beyond float32's range", "parse_decimal_float32(1e39)", nil},
+		{"a JSON string literal", `parse_decimal_float32('"2.5"')`, nil},
+		{"text that is no number", "parse_decimal_float32('NaN')", nil},
+		{"NULL", "parse_decimal_float32(NULL)", nil},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var got any
+			require.NoError(t, db.QueryRow("SELECT "+tt.expr).Scan(&got))
+			assert.Equal(t, tt.want, got)
+		})
+	}
+}
+
 // The comparisons CAST(… AS NUMERIC) gets wrong past double precision
 // (pkg#144) order exactly through the key.
 func TestDecimalKeyOrdersExactly(t *testing.T) {

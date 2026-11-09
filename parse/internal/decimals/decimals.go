@@ -14,10 +14,11 @@ import (
 )
 
 // The SQLite functions parse's dialect calls and parsesqlite registers:
-// Value and Key of one argument.
+// Value, Key and Float32Value of one argument.
 const (
-	SQLiteValueFunc = "parse_decimal"
-	SQLiteKeyFunc   = "parse_decimal_key"
+	SQLiteValueFunc   = "parse_decimal"
+	SQLiteKeyFunc     = "parse_decimal_key"
+	SQLiteFloat32Func = "parse_decimal_float32"
 )
 
 // PlainRegex is a decimal in plain notation, the text a decimal member's
@@ -89,6 +90,43 @@ func Value(v any) (string, bool) {
 		return Member(member)
 	}
 	text, err := core.DecimalText(json.Number(s))
+	return text, err == nil
+}
+
+// Float32Value is the canonical text of a SQLite value read as a float32
+// field scans it: an INTEGER, a REAL or TEXT holding a JSON number literal,
+// rounded to float32, in its shortest decimal form (core.DecimalText of the
+// float32). A float32 column on SQLite is REAL, a double, so the double of
+// a float32 has more digits than the float32 it holds. ok is false for any
+// other value and for one beyond float32's range.
+func Float32Value(v any) (string, bool) {
+	var f float64
+	switch x := v.(type) {
+	case int64:
+		f = float64(x)
+	case float64:
+		f = x
+	case string:
+		return float32Text(x)
+	case []byte:
+		return float32Text(string(x))
+	default:
+		return "", false
+	}
+	text, err := core.DecimalText(float32(f))
+	return text, err == nil
+}
+
+// float32Text is a JSON number literal's float32, as Float32Value reads it.
+func float32Text(s string) (string, bool) {
+	if !json.Valid([]byte(s)) || strings.HasPrefix(s, `"`) {
+		return "", false
+	}
+	f, err := strconv.ParseFloat(s, 32)
+	if err != nil {
+		return "", false
+	}
+	text, err := core.DecimalText(float32(f))
 	return text, err == nil
 }
 

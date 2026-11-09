@@ -432,7 +432,7 @@ func TestBuildFacetQuery_RoundTrip_NumbersTieByValue(t *testing.T) {
 	}
 	want := []filter.FacetResult{
 		{Field: "qty", Buckets: one("-1", "9", "10")},
-		{Field: "ratio", Buckets: one("-1.0", "9.5", "10.25")},
+		{Field: "ratio", Buckets: one("-1", "9.5", "10.25")},
 		{Field: "label", Buckets: one("-1", "10", "100")},
 		{Field: "doc.price", Buckets: one("-1.5", "9", "10")},
 		{Field: "scores", Buckets: []filter.FacetBucket{{Key: "9", Count: 2}, {Key: "10", Count: 2}, {Key: "100", Count: 2}}},

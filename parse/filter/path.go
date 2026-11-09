@@ -155,20 +155,30 @@ func PathValue(doc any, f *FieldSchema) (any, bool, error) {
 // JSON (decodeDocument's form, or encoding/json's without UseNumber) at
 // segs, of type t (elem an array's element type).
 func decodedPathValue(root any, segs []string, t, elem core.FieldType) (any, bool, error) {
-	v := root
-	for _, seg := range segs {
-		obj, ok := v.(map[string]any)
-		if !ok {
-			return nil, false, nil
-		}
-		if v, ok = obj[seg]; !ok {
-			return nil, false, nil
-		}
+	v, ok := memberAt(root, segs)
+	if !ok {
+		return nil, false, nil
 	}
 	if t == core.FieldTypeArray {
 		return arrayMember(v, elem)
 	}
 	return pathMember(v, t)
+}
+
+// memberAt is the JSON value at segs below root, a decoded document; ok is
+// false when a segment is missing or crosses a non-object.
+func memberAt(root any, segs []string) (any, bool) {
+	v := root
+	for _, seg := range segs {
+		obj, ok := v.(map[string]any)
+		if !ok {
+			return nil, false
+		}
+		if v, ok = obj[seg]; !ok {
+			return nil, false
+		}
+	}
+	return v, true
 }
 
 // arrayMember is a JSON array's elements of type elem, absent when it has
@@ -428,12 +438,21 @@ func hexGlob(n int) string { return strings.Repeat("[0-9a-f]", n) }
 // its literal is the source document's (the hidden json column) at its
 // fullkey.
 func (SQLiteDialect) PathExpr(p *JSONPath, t core.FieldType) string {
+	kind, val, literal := sqlitePathMember(p)
+	return sqliteTypedMember(t, kind, val, literal)
+}
+
+// sqlitePathMember is p's member as SQLite reads it: its json_type, its
+// json_extract value and its JSON text as written (`->`). An element path's
+// are its json_each row's type and value, and the source document's text at
+// the row's fullkey.
+func sqlitePathMember(p *JSONPath) (kind, val, literal string) {
 	if p.element {
 		row := p.Column
-		return sqliteTypedMember(t, row+".type", row+".value", row+".json -> "+row+".fullkey")
+		return row + ".type", row + ".value", row + ".json -> " + row + ".fullkey"
 	}
 	path := sqlitePathLiteral(p.Segments)
-	return sqliteTypedMember(t, "json_type("+p.Column+", "+path+")", "json_extract("+p.Column+", "+path+")", p.Column+" -> "+path)
+	return "json_type(" + p.Column + ", " + path + ")", "json_extract(" + p.Column + ", " + path + ")", p.Column + " -> " + path
 }
 
 // sqliteTypedMember is a JSON value of type t, NULL when it has another
