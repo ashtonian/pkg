@@ -240,6 +240,7 @@ Facet, include, and flat-query options:
 |---|---|---|---|
 | `WithFacetTenant(v)` | any | none | Tenant binding for standalone facet queries |
 | `WithFacetUnscopedRelations()` | — | off | Explicitly omit junction tenancy in facet queries |
+| `WithFacetFrom(from)` | string | the schema's table | The facets' base rows: an aliased table or a join whose columns the filter and the fields name. A relation facet still reads the owner's key as `Name.<pk>` |
 | `WithIncludeTenant(v)` | any | none | Tenant binding for include queries |
 | `WithIncludeUnscoped()` | — | off | Explicitly omit include tenancy |
 | `WithMaxIncludePerRelation(n)` | int | `100` | Targets per owner; distinct keys capped in SQL or non-SQL resolution. The cap must leave room for the truncation sentinel |
