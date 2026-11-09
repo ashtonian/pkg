@@ -52,6 +52,37 @@ func TestSetsBindOneParameter(t *testing.T) {
 	}
 }
 
+// An array's `$contains` list binds as one set: the statement is the same
+// text and one parameter whatever the list's size.
+func TestContainsBindsOneSet(t *testing.T) {
+	tagsPath := &FieldSchema{ExternalName: "attrs.tags", DataType: core.FieldTypeArray, Elem: core.FieldTypeString,
+		Path: &JSONPath{Column: "items.attrs", Segments: []string{"tags"}, Storage: StorageJSONB}}
+	labels := &FieldSchema{ExternalName: "labels", SQLExpr: "items.labels", DataType: core.FieldTypeArray, Elem: core.FieldTypeString}
+	contains := func(f *FieldSchema, n int) *FilterNode {
+		return &FilterNode{Field: f, Op: OpContains, Value: members(n)}
+	}
+	tests := []struct {
+		name string
+		d    Dialect
+		node func(n int) *FilterNode
+	}{
+		{"pg path", PostgresDialect{}, func(n int) *FilterNode { return notNode(contains(tagsPath, n)) }},
+		{"pg path by containment", PostgresDialect{}, func(n int) *FilterNode { return contains(tagsPath, n) }},
+		{"pg column", PostgresDialect{}, func(n int) *FilterNode { return contains(labels, n) }},
+		{"sqlite path", SQLiteDialect{}, func(n int) *FilterNode { return contains(tagsPath, n) }},
+		{"sqlite column", SQLiteDialect{}, func(n int) *FilterNode { return contains(labels, n) }},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			small := buildWhere(t, tt.d, tt.node(2))
+			large := buildWhere(t, tt.d, tt.node(100_000))
+			assert.Equal(t, small.Where, large.Where)
+			assert.Equal(t, 1, large.ParamCount)
+			assert.Len(t, large.Args, 1)
+		})
+	}
+}
+
 func TestSetCostIsIndependentOfSize(t *testing.T) {
 	cost := func(n int) int {
 		return NewParsedFilter(&FilterAST{Root: &FilterNode{Field: statusField, Op: OpIn, Value: members(n)}}).EstimatedCost
@@ -87,21 +118,21 @@ func TestSetRendering(t *testing.T) {
 		{"pg path string set by containment", PostgresDialect{}, &FilterNode{Field: colorField, Op: OpIn, Value: []any{"red", "blue"}},
 			"items.attrs @> ANY($1::jsonb[])", []any{[]string{`{"color":"red"}`, `{"color":"blue"}`}}},
 		{"pg path set beyond the containment bound", PostgresDialect{ContainmentMaxValues: 1}, &FilterNode{Field: colorField, Op: OpIn, Value: []any{"red", "blue"}},
-			"(CASE WHEN jsonb_typeof(items.attrs #> '{color}') = 'string' THEN (items.attrs #>> '{color}') END) IN (SELECT unnest($1::text[]))", []any{[]string{"red", "blue"}}},
+			"(CASE WHEN jsonb_typeof(items.attrs #> '{color}') = 'string' THEN (items.attrs #>> '{color}') END) IN (SELECT unnest($1::text[]) AS v)", []any{[]string{"red", "blue"}}},
 		{"pg path set without containment", noContainment, &FilterNode{Field: colorField, Op: OpNin, Value: []any{"red"}},
-			"(CASE WHEN jsonb_typeof(items.attrs #> '{color}') = 'string' THEN (items.attrs #>> '{color}') END) NOT IN (SELECT unnest($1::text[]))", []any{[]string{"red"}}},
+			"(CASE WHEN jsonb_typeof(items.attrs #> '{color}') = 'string' THEN (items.attrs #>> '{color}') END) NOT IN (SELECT unnest($1::text[]) AS v)", []any{[]string{"red"}}},
 		{"pg path decimal set", PostgresDialect{}, &FilterNode{Field: decimalPath, Op: OpIn, Value: []any{"9.5", "100"}},
-			FieldExpr(PostgresDialect{}, decimalPath) + " IN (SELECT unnest($1::text[])::numeric)", []any{[]string{"9.5", "100"}}},
+			FieldExpr(PostgresDialect{}, decimalPath) + " IN (SELECT unnest($1::text[])::numeric AS v)", []any{[]string{"9.5", "100"}}},
 		{"pg path bool set", noContainment, &FilterNode{Field: boolPath, Op: OpIn, Value: []any{true}},
-			FieldExpr(PostgresDialect{}, boolPath) + " IN (SELECT unnest($1::boolean[]))", []any{[]bool{true}}},
+			FieldExpr(PostgresDialect{}, boolPath) + " IN (SELECT unnest($1::boolean[]) AS v)", []any{[]bool{true}}},
 		{"pg text storage keeps the typed set", PostgresDialect{}, &FilterNode{Field: textColor, Op: OpIn, Value: []any{"red"}},
-			FieldExpr(PostgresDialect{}, textColor) + " IN (SELECT unnest($1::text[]))", []any{[]string{"red"}}},
+			FieldExpr(PostgresDialect{}, textColor) + " IN (SELECT unnest($1::text[]) AS v)", []any{[]string{"red"}}},
 		{"sqlite column", SQLiteDialect{}, &FilterNode{Field: statusField, Op: OpIn, Value: []any{"a", "b"}},
-			"items.status IN (SELECT value FROM json_each(?1))", []any{`["a","b"]`}},
+			"items.status IN (SELECT value AS v FROM json_each(?1))", []any{`["a","b"]`}},
 		{"sqlite floats are REAL", SQLiteDialect{}, &FilterNode{Field: &FieldSchema{ExternalName: "score", SQLExpr: "items.score", DataType: core.FieldTypeFloat}, Op: OpNin, Value: []any{2.5, 8.172340535545245e18, 1.0}},
-			"items.score NOT IN (SELECT value FROM json_each(?1))", []any{`[2.5,8.172340535545245e+18,1]`}},
+			"items.score NOT IN (SELECT value AS v FROM json_each(?1))", []any{`[2.5,8.172340535545245e+18,1]`}},
 		{"sqlite decimals", SQLiteDialect{}, &FilterNode{Field: &FieldSchema{ExternalName: "amount", SQLExpr: "items.amount", DataType: core.FieldTypeDecimal}, Op: OpIn, Value: []any{"9.5"}},
-			"parse_decimal(items.amount) IN (SELECT value FROM json_each(?1))", []any{`["9.5"]`}},
+			"parse_decimal(items.amount) IN (SELECT value AS v FROM json_each(?1))", []any{`["9.5"]`}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

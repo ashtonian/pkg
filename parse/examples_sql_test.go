@@ -87,7 +87,7 @@ func Example_filterOperators() {
 	show(tp, filter.ListFilter(`{"name":{"$ilike":"%pro%"},"created_at":{"$gte":"now-7d"}}`))
 	// Output:
 	// postgres WHERE (products.category = $1 AND products.name = ANY($2)) ORDER BY products.created_at DESC, products.id DESC [tools [saw drill]]
-	// sqlite   WHERE (products.category = ?1 AND products.name IN (SELECT value FROM json_each(?2))) ORDER BY products.created_at DESC, products.id DESC [tools ["saw","drill"]]
+	// sqlite   WHERE (products.category = ?1 AND products.name IN (SELECT value AS v FROM json_each(?2))) ORDER BY products.created_at DESC, products.id DESC [tools ["saw","drill"]]
 	// postgres WHERE ((products.price >= $1 AND products.price < $2) AND products.stock IS NOT NULL) ORDER BY products.created_at DESC, products.id DESC [10 100]
 	// sqlite   WHERE ((products.price >= ?1 AND products.price < ?2) AND products.stock IS NOT NULL) ORDER BY products.created_at DESC, products.id DESC [10 100]
 	// postgres WHERE (products.category = $1 OR NOT (products.price > $2)) ORDER BY products.created_at DESC, products.id DESC [books 50]
@@ -181,7 +181,7 @@ func Example_relations() {
 	// postgres WHERE EXISTS (SELECT 1 FROM product_collections rel__ WHERE rel__.product_id = products.id AND rel__.collection_id = $1) ORDER BY products.created_at DESC, products.id DESC [0190f3c2-0000-7000-8000-000000000001]
 	// sqlite   WHERE EXISTS (SELECT 1 FROM product_collections rel__ WHERE rel__.product_id = products.id AND rel__.collection_id = ?1) ORDER BY products.created_at DESC, products.id DESC [0190f3c2-0000-7000-8000-000000000001]
 	// postgres WHERE NOT EXISTS (SELECT 1 FROM product_collections rel__ WHERE rel__.product_id = products.id AND rel__.collection_id = ANY($1)) ORDER BY products.created_at DESC, products.id DESC [[0190f3c2-0000-7000-8000-000000000001]]
-	// sqlite   WHERE NOT EXISTS (SELECT 1 FROM product_collections rel__ WHERE rel__.product_id = products.id AND rel__.collection_id IN (SELECT value FROM json_each(?1))) ORDER BY products.created_at DESC, products.id DESC [["0190f3c2-0000-7000-8000-000000000001"]]
+	// sqlite   WHERE NOT EXISTS (SELECT 1 FROM product_collections rel__ WHERE rel__.product_id = products.id AND rel__.collection_id IN (SELECT value AS v FROM json_each(?1))) ORDER BY products.created_at DESC, products.id DESC [["0190f3c2-0000-7000-8000-000000000001"]]
 	// postgres WHERE EXISTS (SELECT 1 FROM reviews rel__ WHERE rel__.product_id = products.id) ORDER BY products.created_at DESC, products.id DESC []
 	// sqlite   WHERE EXISTS (SELECT 1 FROM reviews rel__ WHERE rel__.product_id = products.id) ORDER BY products.created_at DESC, products.id DESC []
 	// postgres WHERE products.supplier_id = $1 ORDER BY products.created_at DESC, products.id DESC [0190f3c2-0000-7000-8000-0000000000aa]
@@ -216,7 +216,7 @@ func Example_jsonDocuments() {
 	// postgres WHERE products.attrs @> $1::jsonb ORDER BY products.created_at DESC, products.id DESC [{"color":"red","dims":{"w":10}}]
 	// sqlite   WHERE (CASE WHEN products.attrs IS NULL THEN NULL ELSE (CASE WHEN json_type(products.attrs) = 'object' THEN (EXISTS (SELECT 1 FROM json_each(products.attrs) je1 WHERE je1.key = ?1 AND (je1.type = 'text' AND je1.atom = ?2)) AND EXISTS (SELECT 1 FROM json_each(products.attrs) je2 WHERE je2.key = ?3 AND (CASE WHEN je2.type = 'object' THEN (EXISTS (SELECT 1 FROM json_each(je2.value) je3 WHERE je3.key = ?4 AND (je3.type IN ('integer', 'real') AND je3.atom = ?5))) ELSE 0 END))) ELSE 0 END) END) ORDER BY products.created_at DESC, products.id DESC [color red dims w 10]
 	// postgres WHERE products.tags @> $1 ORDER BY products.created_at DESC, products.id DESC [[sale]]
-	// sqlite   WHERE (CASE WHEN products.tags IS NULL THEN NULL ELSE (CASE WHEN json_type(products.tags) = 'array' THEN (EXISTS (SELECT 1 FROM json_each(products.tags) je1 WHERE (je1.type = 'text' AND je1.atom = ?1))) ELSE 0 END) END) ORDER BY products.created_at DESC, products.id DESC [sale]
+	// sqlite   WHERE (CASE WHEN products.tags IS NULL THEN NULL WHEN json_type(products.tags) = 'array' THEN ((SELECT count(DISTINCT (CASE WHEN elem1__.type = 'text' THEN elem1__.value END)) FROM json_each(CASE WHEN json_type(products.tags) = 'array' THEN products.tags END) AS elem1__ WHERE (CASE WHEN elem1__.type = 'text' THEN elem1__.value END) IN (SELECT value AS v FROM json_each(?1))) = (SELECT count(DISTINCT v) FROM (SELECT value AS v FROM json_each(?1)) AS elem1__set)) ELSE 0 END) ORDER BY products.created_at DESC, products.id DESC [["sale"]]
 	// [E2071] field 'attrs.color' is not filterable
 }
 

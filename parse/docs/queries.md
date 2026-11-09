@@ -56,12 +56,12 @@ Values normalize at parse (the AST carries canonical values): exact `int64` / `u
 
 ### Sets
 
-A `$in` / `$nin` set binds as one array parameter, so a statement's parameter count is independent of the set's size (PostgreSQL caps a statement at 65,535 parameters). `MaxArraySize` alone bounds a set, and a set costs one condition whatever its size: raise `MaxArraySize` and `MaxInputSize` for an endpoint that filters by large sets.
+A `$in` / `$nin` set, and an array's `$contains` list ([array elements](#array-elements)), binds as one array parameter, so a statement's parameter count is independent of the set's size (PostgreSQL caps a statement at 65,535 parameters). `MaxArraySize` alone bounds a set, and a set costs one condition whatever its size: raise `MaxArraySize` and `MaxInputSize` for an endpoint that filters by large sets.
 
 | Backend | Column | [Path](#json-paths) |
 |---|---|---|
-| PostgreSQL | `col = ANY($1)` / `col <> ALL($1)`: the parameter takes the column's array type, so the column's own equality applies and its index serves the set; decimals `= ANY($1::text[]::numeric[])` | `expr IN (SELECT unnest($1::text[]))` / `NOT IN`, unnested to the type the path renders (`::numeric`, `::boolean[]`) |
-| SQLite | `col IN (SELECT value FROM json_each(?1))` / `NOT IN`; floats encode as REAL, decimals compare as canonical text, `parse_decimal(col) IN (SELECT value FROM json_each(?1))` ([decimals](schema-configuration.md#decimals)) | the same |
+| PostgreSQL | `col = ANY($1)` / `col <> ALL($1)`: the parameter takes the column's array type, so the column's own equality applies and its index serves the set; decimals `= ANY($1::text[]::numeric[])` | `expr IN (SELECT unnest($1::text[]) AS v)` / `NOT IN`, unnested to the type the path renders (`::numeric`, `::boolean[]`) |
+| SQLite | `col IN (SELECT value AS v FROM json_each(?1))` / `NOT IN`; floats encode as REAL, decimals compare as canonical text, `parse_decimal(col) IN (SELECT value AS v FROM json_each(?1))` ([decimals](schema-configuration.md#decimals)) | the same |
 
 A path's set joins its members as a relation, which PostgreSQL hashes in every plan. A column's `= ANY` is served by an index on the column; without one, under a generic plan (pgx caches prepared statements, and PostgreSQL may plan one generically after five executions) it probes the array member by member for each row it scans, so index a column that large sets filter. SQLite holds integers within int64: a `uint64` member above it is an error, as binding one is.
 
@@ -127,6 +127,8 @@ An array path's value is its elements of the declared type, each read as a membe
 | PostgreSQL | `EXISTS (SELECT 1 FROM unnest(col) AS elem1__(v) WHERE elem1__.v IS NOT NULL AND …)` | `EXISTS (SELECT 1 FROM jsonb_array_elements(CASE WHEN jsonb_typeof(doc #> '{tags}') = 'array' THEN doc #> '{tags}' END) AS elem1__(v) WHERE <typed element> IS NOT NULL AND …)`, or containment ([JSON paths](#json-paths)) |
 | SQLite | `EXISTS (SELECT 1 FROM json_each(CASE WHEN json_type(col) = 'array' THEN col END) AS elem1__ WHERE <typed element> …)` over the JSON text column | the same over `json_each(…, '$."tags"')`; a decimal element reads its literal as written, `parse_decimal(elem1__.json -> elem1__.fullkey)` |
 | Memory | `filter.Evaluate` over the Go slice, or a decoded JSON array | each element as `filter.PathValue` reads it |
+
+`$contains` binds its list as one [set](#sets) parameter and counts: `((SELECT count(DISTINCT <typed element>) FROM <elements> WHERE <typed element> IN (<set>)) = (SELECT count(DISTINCT v) FROM (<set>) AS elem1__set))`, the two uses of `<set>` reading the one parameter. The distinct elements equal to a listed value number as many as the distinct listed values exactly when each has an equal element, so repeats in either are irrelevant, and the statement's size and parameter count are independent of the list's: one EXISTS per value would pass SQLite's expression depth (1,000) and PostgreSQL's parameter limit. The set is hashed (PostgreSQL) or indexed (SQLite) once per statement; each row reads its own elements. On PostgreSQL an array column keeps `col @> $1`, and a `jsonb` array path of strings, bools or numbers keeps containment where the condition is two-valued ([JSON paths](#json-paths)).
 
 An array path is no sort key, and its facets are terms only; schema generation refuses either.
 

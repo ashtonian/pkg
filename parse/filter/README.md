@@ -50,7 +50,7 @@ Start with the [runnable package example](../README.md#quick-start). The focused
 | `keyset.go` | Keyset plan, cursors, `NewPage`, `Page[T]` (items, page info, `Relations`, `Truncated`, `Facets`) |
 | `facet.go` / `facet_union.go` / `facet_buckets.go` | Facet schema and the single facet query |
 | `relation_parse.go` / `relation_sql.go` | Relation predicates: target filters and key shorthand; one correlated EXISTS per predicate with per-depth aliases |
-| `elements.go` | Element paths of JSON arrays and scalar arrays' elements; one EXISTS over the elements per `$some` / `$none`; PostgreSQL element containment; array path `$contains` and NULL tests |
+| `elements.go` | Element paths of JSON arrays and scalar arrays' elements; one EXISTS over the elements per `$some` / `$none`; PostgreSQL element containment; array path NULL tests; array `$contains` as a count over its list bound as one set (`containsAll`) |
 | `membership.go` / `relation_resolve.go` | Lookups and their SQL; `ResolveMemberships` for backends outside SQL, relation predicates included |
 | `search.go` | Search schema and condition |
 | `include_resolve.go` | `ResolveInclude`, `IncludeLookup`, `IncludePair` — tenant- and policy-scoped projections outside SQL, distinct keys ordered before the per-owner cap |

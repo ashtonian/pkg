@@ -201,7 +201,7 @@
       ]
     },
     "sqlPostgres": "conf_entities.price = ANY($1::text[]::numeric[])",
-    "sqlSqlite": "parse_decimal(conf_entities.price) IN (SELECT value FROM json_each(?1))"
+    "sqlSqlite": "parse_decimal(conf_entities.price) IN (SELECT value AS v FROM json_each(?1))"
   },
   {
     "name": "err_decimal_word",
@@ -308,7 +308,7 @@
       ]
     },
     "sqlPostgres": "conf_entities.status = ANY($1)",
-    "sqlSqlite": "conf_entities.status IN (SELECT value FROM json_each(?1))"
+    "sqlSqlite": "conf_entities.status IN (SELECT value AS v FROM json_each(?1))"
   },
   {
     "name": "nin_array",
@@ -328,7 +328,7 @@
       ]
     },
     "sqlPostgres": "conf_entities.status \u003c\u003e ALL($1)",
-    "sqlSqlite": "conf_entities.status NOT IN (SELECT value FROM json_each(?1))"
+    "sqlSqlite": "conf_entities.status NOT IN (SELECT value AS v FROM json_each(?1))"
   },
   {
     "name": "like",
@@ -1228,7 +1228,7 @@
       ]
     },
     "sqlPostgres": "NOT EXISTS (SELECT 1 FROM unnest(conf_entities.tags) AS elem1__(v) WHERE elem1__.v IS NOT NULL AND NOT (elem1__.v = ANY($1)))",
-    "sqlSqlite": "NOT EXISTS (SELECT 1 FROM json_each(CASE WHEN json_type(conf_entities.tags) = 'array' THEN conf_entities.tags END) AS elem1__ WHERE (CASE WHEN elem1__.type = 'text' THEN elem1__.value END) IS NOT NULL AND NOT ((CASE WHEN elem1__.type = 'text' THEN elem1__.value END) IN (SELECT value FROM json_each(?1))))"
+    "sqlSqlite": "NOT EXISTS (SELECT 1 FROM json_each(CASE WHEN json_type(conf_entities.tags) = 'array' THEN conf_entities.tags END) AS elem1__ WHERE (CASE WHEN elem1__.type = 'text' THEN elem1__.value END) IS NOT NULL AND NOT ((CASE WHEN elem1__.type = 'text' THEN elem1__.value END) IN (SELECT value AS v FROM json_each(?1))))"
   },
   {
     "name": "array_some_any",
@@ -1265,7 +1265,7 @@
       ]
     },
     "sqlPostgres": "conf_entities.meta @\u003e $1::jsonb",
-    "sqlSqlite": "(CASE WHEN EXISTS (SELECT 1 FROM json_each(CASE WHEN json_type(conf_entities.meta, '$.\"labels\"') = 'array' THEN conf_entities.meta END, '$.\"labels\"') AS elem1__ WHERE (CASE WHEN elem1__.type = 'text' THEN elem1__.value END) IS NOT NULL) THEN (EXISTS (SELECT 1 FROM json_each(CASE WHEN json_type(conf_entities.meta, '$.\"labels\"') = 'array' THEN conf_entities.meta END, '$.\"labels\"') AS elem1__ WHERE (CASE WHEN elem1__.type = 'text' THEN elem1__.value END) IS NOT NULL AND (CASE WHEN elem1__.type = 'text' THEN elem1__.value END) = ?1) AND EXISTS (SELECT 1 FROM json_each(CASE WHEN json_type(conf_entities.meta, '$.\"labels\"') = 'array' THEN conf_entities.meta END, '$.\"labels\"') AS elem1__ WHERE (CASE WHEN elem1__.type = 'text' THEN elem1__.value END) IS NOT NULL AND (CASE WHEN elem1__.type = 'text' THEN elem1__.value END) = ?2)) END)"
+    "sqlSqlite": "(CASE WHEN EXISTS (SELECT 1 FROM json_each(CASE WHEN json_type(conf_entities.meta, '$.\"labels\"') = 'array' THEN conf_entities.meta END, '$.\"labels\"') AS elem1__ WHERE (CASE WHEN elem1__.type = 'text' THEN elem1__.value END) IS NOT NULL) THEN ((SELECT count(DISTINCT (CASE WHEN elem1__.type = 'text' THEN elem1__.value END)) FROM json_each(CASE WHEN json_type(conf_entities.meta, '$.\"labels\"') = 'array' THEN conf_entities.meta END, '$.\"labels\"') AS elem1__ WHERE (CASE WHEN elem1__.type = 'text' THEN elem1__.value END) IN (SELECT value AS v FROM json_each(?1))) = (SELECT count(DISTINCT v) FROM (SELECT value AS v FROM json_each(?1)) AS elem1__set)) END)"
   },
   {
     "name": "array_path_null",
@@ -1392,7 +1392,7 @@
       ]
     },
     "sqlPostgres": "conf_entities.tags @\u003e $1",
-    "sqlSqlite": "(CASE WHEN conf_entities.tags IS NULL THEN NULL ELSE (CASE WHEN json_type(conf_entities.tags) = 'array' THEN (EXISTS (SELECT 1 FROM json_each(conf_entities.tags) je1 WHERE (je1.type = 'text' AND je1.atom = ?1))) ELSE 0 END) END)"
+    "sqlSqlite": "(CASE WHEN conf_entities.tags IS NULL THEN NULL WHEN json_type(conf_entities.tags) = 'array' THEN ((SELECT count(DISTINCT (CASE WHEN elem1__.type = 'text' THEN elem1__.value END)) FROM json_each(CASE WHEN json_type(conf_entities.tags) = 'array' THEN conf_entities.tags END) AS elem1__ WHERE (CASE WHEN elem1__.type = 'text' THEN elem1__.value END) IN (SELECT value AS v FROM json_each(?1))) = (SELECT count(DISTINCT v) FROM (SELECT value AS v FROM json_each(?1)) AS elem1__set)) ELSE 0 END)"
   },
   {
     "name": "relation_some",
@@ -1479,7 +1479,7 @@
       ]
     },
     "sqlPostgres": "EXISTS (SELECT 1 FROM parts WHERE parts.entity_id = conf_entities.id AND parts.id = ANY($1))",
-    "sqlSqlite": "EXISTS (SELECT 1 FROM parts WHERE parts.entity_id = conf_entities.id AND parts.id IN (SELECT value FROM json_each(?1)))"
+    "sqlSqlite": "EXISTS (SELECT 1 FROM parts WHERE parts.entity_id = conf_entities.id AND parts.id IN (SELECT value AS v FROM json_each(?1)))"
   },
   {
     "name": "err_relation_unknown_target_field",
