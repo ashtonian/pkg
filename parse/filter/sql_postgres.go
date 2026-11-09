@@ -138,7 +138,10 @@ func (d PostgresDialect) Condition(field *FieldSchema, op FilterOperator, value 
 		expr = d.CodePointOrder(expr)
 	}
 	if field.DataType == core.FieldTypeDecimal {
-		bind = decimalBinder(d, bind)
+		if sql, ok, err := decimalComparison(d, field, expr, op, value, bind); ok {
+			return sql, err
+		}
+		return "", unsupportedOperator(field, op)
 	}
 	if sql, ok, err := comparison(expr, op, value, bind); ok {
 		return sql, err
@@ -543,9 +546,15 @@ func (PostgresDialect) ReadColumn(column string, t core.SQLType) string {
 	return column
 }
 
+// DecimalColumn returns column: a decimal column is numeric, exact as it is.
+func (PostgresDialect) DecimalColumn(column string) string { return column }
+
 // DecimalParam casts the parameter to numeric: pgx sends a string in text
 // format, which numeric parses exactly.
 func (PostgresDialect) DecimalParam(placeholder string) string { return placeholder + "::numeric" }
+
+// DecimalOrder returns value: numeric orders exactly.
+func (PostgresDialect) DecimalOrder(value string) string { return value }
 
 // NativeRowCompare reports true: PostgreSQL evaluates row comparison
 // lexicographically with full composite-index support.

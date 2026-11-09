@@ -60,7 +60,7 @@ A `$in` / `$nin` set binds as one array parameter, so a statement's parameter co
 | Backend | Column | [Path](#json-paths) |
 |---|---|---|
 | PostgreSQL | `col = ANY($1)` / `col <> ALL($1)`: the parameter takes the column's array type, so the column's own equality applies and its index serves the set; decimals `= ANY($1::text[]::numeric[])` | `expr IN (SELECT unnest($1::text[]))` / `NOT IN`, unnested to the type the path renders (`::numeric`, `::boolean[]`) |
-| SQLite | `col IN (SELECT value FROM json_each(?1))` / `NOT IN`; floats encode as REAL, decimals read through `CAST(value AS NUMERIC)` | the same |
+| SQLite | `col IN (SELECT value FROM json_each(?1))` / `NOT IN`; floats encode as REAL, decimals compare as canonical text, `parse_decimal(col) IN (SELECT value FROM json_each(?1))` ([decimals](schema-configuration.md#decimals)) | the same |
 
 A path's set joins its members as a relation, which PostgreSQL hashes in every plan. A column's `= ANY` is served by an index on the column; without one, under a generic plan (pgx caches prepared statements, and PostgreSQL may plan one generically after five executions) it probes the array member by member for each row it scans, so index a column that large sets filter. SQLite holds integers within int64: a `uint64` member above it is an error, as binding one is.
 
@@ -82,7 +82,7 @@ A path's value is the member when it has the declared JSON kind:
 |---|---|---|
 | string | a JSON string | text, code-point order |
 | int, float | a JSON number | by value: integers exactly, decimals as float64 |
-| decimal | a JSON number, or a JSON string in plain notation (`"9.50"`, not `"1e3"`) of at most 1000 characters | exactly, by value: `numeric` on PostgreSQL, INTEGER or REAL on SQLite, `core.CompareDecimals` in memory |
+| decimal | a JSON number, or a JSON string in plain notation (`"9.50"`, not `"1e3"`) of at most 1000 characters | exactly, by value: `numeric` on PostgreSQL; on SQLite the member's JSON literal as written (`doc -> '$.price'`) through `parse_decimal`; `core.CompareDecimals` in memory |
 | bool | true or false | boolean |
 | timestamp | a UTC RFC 3339 string (`Z`, up to nine fractional digits — what `encoding/json` writes for a UTC `time.Time`) | its canonical text (`core.TimestampLayout`), so instants order correctly |
 | uuid | a string that is a UUID once ASCII-lower-cased | lower-cased text |
@@ -101,7 +101,7 @@ A facetable path counts like a column: terms over its values, ranges over its nu
 
 A path sort key orders like a nullable column: an absent member is NULL, greatest (`NULLS LAST` ascending, `NULLS FIRST` descending), text members by code point. A cursor reads the member from the document's row column with the same value rule, so keyset pages walk forwards and backwards over paths; a numeric path's cursor carries an int64 or a float64, since an int path may hold a decimal member, and a decimal path's its canonical text. `filter.KeyValue(key, rowValue)` is that rule for any key, which a memory backend uses to order rows.
 
-The rendered expression is immutable, so an expression index on `filter.FieldExpr(dialect, field)` serves it; declare the path `indexed` to lower its cost. A document column's storage is its `storage` tag: `jsonb` (default), `json`, `text`, or `scalar:<type>` for a struct the database holds as a scalar, such as a decimal library type without the `core.Decimal` method set, which then filters and sorts as that scalar and has no paths. Run `filtertest.RunPaths(t, schema, backend)` to prove a backend's paths. A merge patch into a typed document member reads back through its path on every backend; a merge into a document that may be absent (a pointer struct) must supply every member.
+The rendered expression is immutable, so an expression index on `filter.FieldExpr(dialect, field)` serves it (on SQLite a decimal's calls `parse_decimal`, and an index on it needs the functions on every connection that writes the table); declare the path `indexed` to lower its cost. A document column's storage is its `storage` tag: `jsonb` (default), `json`, `text`, or `scalar:<type>` for a struct the database holds as a scalar, such as a decimal library type without the `core.Decimal` method set, which then filters and sorts as that scalar and has no paths. Run `filtertest.RunPaths(t, schema, backend)` to prove a backend's paths. A merge patch into a typed document member reads back through its path on every backend; a merge into a document that may be absent (a pointer struct) must supply every member.
 
 ### Array elements
 

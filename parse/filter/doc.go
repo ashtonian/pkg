@@ -49,7 +49,10 @@
 // json_each). A dialect's Condition builds a predicate's SQL and arguments
 // together. A `$in` / `$nin` set binds as one array parameter whatever its
 // size: PostgreSQL compares a column with `= ANY`, typed by the column, and
-// joins a path's set unnested; SQLite reads the set with json_each.
+// joins a path's set unnested; SQLite reads the set with json_each. SQLite
+// has no exact decimal type, so it compares and orders decimals through two
+// deterministic functions the database must have, which parse/parsesqlite
+// registers.
 //
 // A [TwoValuedDialect] renders some predicates a second way that an index
 // serves, used where an even number of $not (usually none) enclose them:

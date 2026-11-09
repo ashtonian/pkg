@@ -39,6 +39,16 @@ func TestEvaluateSetConformance(t *testing.T) {
 	})
 }
 
+func TestEvaluateDecimalConformance(t *testing.T) {
+	schema, err := filtertest.DecimalSchema()
+	if err != nil {
+		t.Fatalf("decimal schema: %v", err)
+	}
+	filtertest.RunDecimals(t, schema, evaluateOver(filtertest.DecimalRecords(), func(r filtertest.DecimalRecord) (string, filter.Row) {
+		return r.ID, structRow(r)
+	}))
+}
+
 func TestEvaluateMembershipConformance(t *testing.T) {
 	eval := evaluateOver(filtertest.Records(), func(r filtertest.Record) (string, filter.Row) {
 		return r.ID, structRow(r)

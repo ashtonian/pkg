@@ -93,7 +93,7 @@ func TestDecimal_SQLBindsExactNumbers(t *testing.T) {
 		args    []any
 	}{
 		{filter.PostgresDialect{}, "(priceds.price > $1::numeric AND priceds.fee = ANY($2::text[]::numeric[]))", []any{"9.5", []string{"1", "2.25"}}},
-		{filter.SQLiteDialect{}, "(priceds.price > CAST(?1 AS NUMERIC) AND priceds.fee IN (SELECT CAST(value AS NUMERIC) FROM json_each(?2)))", []any{"9.5", `["1","2.25"]`}},
+		{filter.SQLiteDialect{}, "(parse_decimal_key(priceds.price) > parse_decimal_key(?1) AND parse_decimal(priceds.fee) IN (SELECT value FROM json_each(?2)))", []any{"9.5", `["1","2.25"]`}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.dialect.Name(), func(t *testing.T) {
@@ -185,7 +185,7 @@ func TestDecimal_SeekBindsExactNumbers(t *testing.T) {
 		where   string
 	}{
 		{filter.PostgresDialect{}, `(priceds.price, priceds.id COLLATE pg_c_utf8) > ($1::numeric, $2)`},
-		{filter.SQLiteDialect{}, `((priceds.price > CAST(?1 AS NUMERIC)) OR (priceds.price = CAST(?1 AS NUMERIC) AND priceds.id COLLATE BINARY > ?2))`},
+		{filter.SQLiteDialect{}, `((parse_decimal_key(priceds.price) > parse_decimal_key(?1)) OR (parse_decimal_key(priceds.price) = parse_decimal_key(?1) AND priceds.id COLLATE BINARY > ?2))`},
 	}
 	for _, tt := range tests {
 		t.Run(tt.dialect.Name(), func(t *testing.T) {

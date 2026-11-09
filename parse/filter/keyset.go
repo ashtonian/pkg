@@ -296,21 +296,27 @@ func effectiveDirection(k CursorKey, reverse bool) SortDirection {
 // keyValue is a key's value expression: its column, or a path's typed
 // extraction.
 func keyValue(d Dialect, k CursorKey) string {
-	if k.Path == nil && k.DataType == core.FieldTypeDate {
-		return d.ReadColumn(k.SQLExpr, core.SQLDate)
-	}
 	if k.Path != nil {
 		return d.PathExpr(k.Path, k.DataType)
+	}
+	switch k.DataType {
+	case core.FieldTypeDate:
+		return d.ReadColumn(k.SQLExpr, core.SQLDate)
+	case core.FieldTypeDecimal:
+		return d.DecimalColumn(k.SQLExpr)
 	}
 	return k.SQLExpr
 }
 
 // keyExpr is a key's ordering expression: text keys — strings, and a path's
 // timestamp and UUID members — order by code point, as filters and the
-// memory backend compare.
+// memory backend compare; decimals order through Dialect.DecimalOrder.
 func keyExpr(d Dialect, k CursorKey) string {
-	if k.DataType == core.FieldTypeString || (k.Path != nil && (k.DataType == core.FieldTypeTimestamp || k.DataType == core.FieldTypeUUID)) {
+	switch {
+	case k.DataType == core.FieldTypeString || (k.Path != nil && (k.DataType == core.FieldTypeTimestamp || k.DataType == core.FieldTypeUUID)):
 		return d.CodePointOrder(keyValue(d, k))
+	case k.DataType == core.FieldTypeDecimal:
+		return d.DecimalOrder(keyValue(d, k))
 	}
 	return keyValue(d, k)
 }
@@ -356,7 +362,7 @@ func seekPredicate(d Dialect, keys []CursorKey, token *PageToken, bind func(any)
 		if v != nil {
 			phs[i] = bind(v)
 			if k.DataType == core.FieldTypeDecimal {
-				phs[i] = d.DecimalParam(phs[i])
+				phs[i] = d.DecimalOrder(d.DecimalParam(phs[i]))
 			}
 		}
 		if k.Nullable || v == nil || effectiveDirection(k, token.Reverse) != effectiveDirection(keys[0], token.Reverse) {

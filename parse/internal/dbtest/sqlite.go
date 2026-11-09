@@ -9,13 +9,17 @@ import (
 	"database/sql"
 	"testing"
 
-	_ "modernc.org/sqlite" // registers the "sqlite" driver
+	"github.com/ashtonian/pkg/parse/parsesqlite"
 )
 
-// SQLite returns a fresh in-memory SQLite database, closed at test cleanup.
-// One connection: every statement sees the same in-memory database.
+// SQLite returns a fresh in-memory SQLite database with parse's functions
+// (parsesqlite), closed at test cleanup. One connection: every statement
+// sees the same in-memory database.
 func SQLite(t testing.TB) *sql.DB {
 	t.Helper()
+	if err := parsesqlite.Register(); err != nil {
+		t.Fatalf("dbtest: %v", err)
+	}
 	db, err := sql.Open("sqlite", ":memory:")
 	if err != nil {
 		t.Fatalf("dbtest: open sqlite: %v", err)

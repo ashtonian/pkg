@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/ashtonian/pkg/parse/core"
+	"github.com/ashtonian/pkg/parse/internal/decimals"
 )
 
 // JSONStorage is how a document column holds its JSON. Documents are jsonb
@@ -71,16 +72,20 @@ func (p *JSONPath) validate(t core.FieldType, maxDepth int) error {
 	return nil
 }
 
-// FieldExpr is the SQL expression of a field's value: its column, or for a
-// path the dialect's typed extraction.
+// FieldExpr is the SQL expression of a field's value: its column (a decimal
+// column as the dialect's exact decimal), or for a path the dialect's typed
+// extraction.
 func FieldExpr(d Dialect, f *FieldSchema) string {
-	if f.Path == nil && f.DataType == core.FieldTypeDate {
+	if f.Path != nil {
+		return d.PathExpr(f.Path, f.DataType)
+	}
+	switch f.DataType {
+	case core.FieldTypeDate:
 		return d.ReadColumn(f.SQLExpr, core.SQLDate)
+	case core.FieldTypeDecimal:
+		return d.DecimalColumn(f.SQLExpr)
 	}
-	if f.Path == nil {
-		return f.SQLExpr
-	}
-	return d.PathExpr(f.Path, f.DataType)
+	return f.SQLExpr
 }
 
 // timestampShape is a UTC RFC 3339 instant with up to nine fractional
@@ -92,17 +97,10 @@ var uuidShape = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f
 const (
 	timestampRegex = `^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\.[0-9]{1,9})?Z$`
 	uuidRegex      = `^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`
-	// decimalRegex is a decimal in plain notation, the text a decimal
-	// member's string holds (shopspring's JSON form): no exponent, so no
-	// cast of a member can overflow.
-	decimalRegex = `^-?(0|[1-9][0-9]*)([.][0-9]+)?$`
 )
 
-var decimalShape = regexp.MustCompile(decimalRegex)
-
-// maxDecimalMember bounds a decimal member string's length; within it, its
-// digits are within core.MaxDecimalDigits.
-var maxDecimalMember = strconv.Itoa(core.MaxDecimalDigits)
+// maxDecimalMember is decimals.MaxMemberLength as SQL text.
+var maxDecimalMember = strconv.Itoa(decimals.MaxMemberLength)
 
 // PathValue is the reference evaluator of a path: the member doc holds at
 // f.Path, typed as the filter compares it, or present false when the member
@@ -221,18 +219,9 @@ func pathMember(v any, t core.FieldType) (any, bool, error) {
 		}
 		return f, true, nil
 	case core.FieldTypeDecimal:
-		if m, ok := v.(string); ok {
-			if len(m) > core.MaxDecimalDigits || !decimalShape.MatchString(m) {
-				return nil, false, nil
-			}
-		} else if n, ok := jsonNumber(v); ok {
-			v = n
-		} else {
+		text, ok := decimals.Member(v)
+		if !ok {
 			return nil, false, nil
-		}
-		text, err := core.DecimalText(v)
-		if err != nil {
-			return nil, false, nil // more digits than a decimal holds
 		}
 		return text, true, nil
 	case core.FieldTypeBool:
@@ -345,7 +334,7 @@ func (PostgresDialect) PathExpr(p *JSONPath, t core.FieldType) string {
 		return "(CASE WHEN " + kind + " = 'number' THEN " + text + "::numeric END)"
 	case core.FieldTypeDecimal:
 		return "(CASE WHEN " + kind + " = 'number' THEN " + text + "::numeric WHEN " + kind + " = 'string' AND length" + text + " <= " + maxDecimalMember +
-			" AND " + text + " ~ '" + decimalRegex + "' THEN " + text + "::numeric END)"
+			" AND " + text + " ~ '" + decimals.PlainRegex + "' THEN " + text + "::numeric END)"
 	case core.FieldTypeBool:
 		return "(CASE WHEN " + kind + " = 'boolean' THEN " + text + "::boolean END)"
 	case core.FieldTypeTimestamp:
@@ -375,19 +364,11 @@ func sqliteTimestamp(kind, val string) string {
 
 func hexGlob(n int) string { return strings.Repeat("[0-9a-f]", n) }
 
-// sqliteDecimalText tests that the text val is decimalRegex's plain decimal
-// within maxDecimalMember characters, in GLOB terms: after an optional
-// minus, digits with at most one point, neither leading nor trailing, and
-// no zero leading another digit.
-func sqliteDecimalText(val string) string {
-	body := "substr(" + val + ", 1 + (substr(" + val + ", 1, 1) = '-'))"
-	return "(length(" + val + ") <= " + maxDecimalMember + " AND " + body + " <> '' AND " +
-		body + " NOT GLOB '*[^0-9.]*' AND " + body + " NOT GLOB '*.*.*' AND " +
-		body + " NOT GLOB '.*' AND " + body + " NOT GLOB '*.' AND " + body + " NOT GLOB '0[0-9]*')"
-}
-
 // PathExpr renders p's typed value for SQLite, whose documents are JSON
-// text: json_type selects the member's kind; json_extract reads it.
+// text: json_type selects the member's kind; json_extract reads it. A
+// decimal member is read as the JSON literal `->` returns, which keeps the
+// number as written where json_extract would round it to a double, through
+// parse_decimal (parsesqlite).
 func (SQLiteDialect) PathExpr(p *JSONPath, t core.FieldType) string {
 	path := sqlitePathLiteral(p.Segments)
 	kind := "json_type(" + p.Column + ", " + path + ")"
@@ -398,8 +379,7 @@ func (SQLiteDialect) PathExpr(p *JSONPath, t core.FieldType) string {
 	case core.FieldTypeInt, core.FieldTypeFloat:
 		return "(CASE WHEN " + kind + " IN ('integer', 'real') THEN " + val + " END)"
 	case core.FieldTypeDecimal:
-		return "(CASE WHEN " + kind + " IN ('integer', 'real') THEN " + val + " WHEN " + kind + " = 'text' AND " + sqliteDecimalText(val) +
-			" THEN CAST(" + val + " AS NUMERIC) END)"
+		return decimals.SQLiteValueFunc + "(" + p.Column + " -> " + path + ")"
 	case core.FieldTypeBool:
 		return "(CASE " + kind + " WHEN 'true' THEN 1 WHEN 'false' THEN 0 END)"
 	case core.FieldTypeTimestamp:
