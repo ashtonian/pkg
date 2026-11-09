@@ -14,7 +14,7 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { SchemaValidationError } from "../core/errors.js";
-import type { FilterSchema } from "./types.js";
+import type { FilterOperator, FilterSchema } from "./types.js";
 import { validateFilter } from "./validate.js";
 
 interface ConformanceCase {
@@ -31,6 +31,9 @@ const corpus = JSON.parse(
     "utf8",
   ),
 ) as ConformanceCase[];
+
+// A string element's operators: the string operators but the NULL tests.
+const stringElementOps: FilterOperator[] = ["eq", "ne", "gt", "gte", "lt", "lte", "in", "nin", "like", "ilike", "contains"];
 
 // confSchema mirrors the Go confEntity struct the corpus is generated against.
 // Keep the field/operator/enum sets in lockstep with filter_conformance_test.go.
@@ -60,6 +63,21 @@ const confSchema: FilterSchema = {
     "meta.region": {
       name: "meta.region", data_type: "string",
       operators: ["eq", "ne", "contains", "like", "ilike", "in", "nin", "null", "not_null", "exists"],
+    },
+    "meta.labels": {
+      name: "meta.labels", data_type: "array", elem: "string",
+      operators: ["contains", "some", "none", "null", "not_null", "exists"],
+      element: { name: "meta.labels", data_type: "string", operators: stringElementOps },
+    },
+    "meta.sizes": {
+      name: "meta.sizes", data_type: "array", elem: "int",
+      operators: ["contains", "some", "none", "null", "not_null", "exists"],
+      element: { name: "meta.sizes", data_type: "int", operators: ["eq", "ne", "gt", "gte", "lt", "lte", "in", "nin"] },
+    },
+    tags: {
+      name: "tags", data_type: "array", elem: "string",
+      operators: ["contains", "some", "none", "null"],
+      element: { name: "tags", data_type: "string", operators: stringElementOps },
     },
     note: { name: "note", data_type: "string", operators: ["not_null"] },
     lines: {

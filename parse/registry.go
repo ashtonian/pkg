@@ -208,6 +208,12 @@ type FilterFieldResponse struct {
 	// Elements are a JSON array's element paths, which `$some` / `$none`
 	// filter on one element.
 	Elements map[string]*FilterFieldResponse `json:"elements,omitempty"`
+	// Elem is an array's element type.
+	Elem core.FieldType `json:"elem,omitempty"`
+	// Element is a scalar array's element (an array column's, or an array
+	// path's), which `$some` / `$none` conditions compare with its
+	// operators.
+	Element *FilterFieldResponse `json:"element,omitempty"`
 }
 
 // RelationResponse is the JSON representation of a relation field.
@@ -321,34 +327,42 @@ func filterSchemaToResponse(s *filter.ResourceSchema) *FilterSchemaResponse {
 func filterFieldsToResponse(in map[string]*filter.FieldSchema) map[string]*FilterFieldResponse {
 	fields := make(map[string]*FilterFieldResponse, len(in))
 	for key, f := range in {
-		resp := &FilterFieldResponse{
-			Name: f.ExternalName, Label: f.Label, Description: f.Description,
-			DataType: f.DataType, Operators: slices.Clone(f.AllowedOperators), Indexed: f.Indexed,
-			Immutable: f.Immutable, EnumValues: slices.Clone(f.EnumValues), Facetable: f.Facetable,
-			Searchable: f.Searchable, Includable: f.Includable, Group: f.Group, Order: f.Order,
-		}
-		if f.GeoConfig != nil {
-			resp.GeoConfig = &GeoFieldConfigResponse{
-				StorageType: string(f.GeoConfig.StorageType),
-				SRID:        f.GeoConfig.SRID,
-			}
-		}
-		if rel := f.Relation; rel != nil {
-			kind := string(rel.Kind)
-			if kind == "" {
-				kind = "many_to_many"
-			}
-			resp.Relation = &RelationResponse{Kind: kind}
-			if f.Related != nil {
-				resp.Relation.Target = f.Related.Name
-			}
-		}
-		if f.Elements != nil {
-			resp.Elements = filterFieldsToResponse(f.Elements.Fields)
-		}
-		fields[key] = resp
+		fields[key] = filterFieldToResponse(f)
 	}
 	return fields
+}
+
+func filterFieldToResponse(f *filter.FieldSchema) *FilterFieldResponse {
+	resp := &FilterFieldResponse{
+		Name: f.ExternalName, Label: f.Label, Description: f.Description,
+		DataType: f.DataType, Operators: slices.Clone(f.AllowedOperators), Indexed: f.Indexed,
+		Immutable: f.Immutable, EnumValues: slices.Clone(f.EnumValues), Facetable: f.Facetable,
+		Searchable: f.Searchable, Includable: f.Includable, Group: f.Group, Order: f.Order,
+	}
+	if f.GeoConfig != nil {
+		resp.GeoConfig = &GeoFieldConfigResponse{
+			StorageType: string(f.GeoConfig.StorageType),
+			SRID:        f.GeoConfig.SRID,
+		}
+	}
+	if rel := f.Relation; rel != nil {
+		kind := string(rel.Kind)
+		if kind == "" {
+			kind = "many_to_many"
+		}
+		resp.Relation = &RelationResponse{Kind: kind}
+		if f.Related != nil {
+			resp.Relation.Target = f.Related.Name
+		}
+	}
+	if f.Elements != nil {
+		resp.Elements = filterFieldsToResponse(f.Elements.Fields)
+	}
+	resp.Elem = f.Elem
+	if f.Element != nil {
+		resp.Element = filterFieldToResponse(f.Element)
+	}
+	return resp
 }
 
 func patchSchemaToResponse(s *patch.PatchSchema) *PatchSchemaResponse {

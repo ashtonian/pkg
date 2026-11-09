@@ -143,10 +143,13 @@ func buildFacetQuery(schema *ResourceSchema, dialect Dialect, filterWhere string
 				hasRelation = true
 			}
 		}
-		list := f.DataType == core.FieldTypeArray && f.Relation == nil && f.Path == nil
+		list := f.DataType == core.FieldTypeArray && f.Relation == nil
 		if list {
 			if fcfg.Type != FacetTerms {
 				return FacetQuery{}, fmt.Errorf("BuildFacetQuery: field %q is a list; only terms-type facets are supported", req.Field)
+			}
+			if _, ok := dialect.(elementTable); !ok {
+				return FacetQuery{}, fmt.Errorf("BuildFacetQuery: field %q is a list; dialect %s reads no array elements", req.Field, dialect.Name())
 			}
 			hasList = true
 		}
@@ -184,7 +187,13 @@ func buildFacetQuery(schema *ResourceSchema, dialect Dialect, filterWhere string
 			args = append(args, rangeArgs...)
 			paramOffset += consumed
 		case m.list:
-			proj.WriteString(FieldExpr(dialect, m.field)) // the array; its branch reads the elements
+			// The array, or an array path's document; its branch reads the
+			// elements.
+			if m.field.Path != nil {
+				proj.WriteString(m.field.Path.Column)
+			} else {
+				proj.WriteString(m.field.SQLExpr)
+			}
 		default:
 			proj.WriteString(termsKeyExpr(m.field, dialect))
 		}
@@ -267,14 +276,16 @@ func buildFacetQuery(schema *ResourceSchema, dialect Dialect, filterWhere string
 			// tie-break names the key's expression.
 			key := m.bucketCol
 			if m.list {
-				elems, value := listElements(dialect, "base."+m.bucketCol)
-				key = termsKeyExpr(&FieldSchema{SQLExpr: value, DataType: m.field.Elem}, dialect)
+				table := dialect.(elementTable) // checked with the request
+				source := listSource(m.field, "base."+m.bucketCol)
+				elem := table.scalarElement(source, "facet_elem__")
+				key = termsKeyExpr(elem, dialect)
 				b.WriteString("k, COUNT(*) AS c FROM (SELECT DISTINCT base.__row, ")
 				b.WriteString(key)
 				b.WriteString(" AS k FROM base, ")
-				b.WriteString(elems)
+				b.WriteString(table.elementRows(source, "facet_elem__"))
 				b.WriteString(" WHERE ")
-				b.WriteString(value)
+				b.WriteString(FieldExpr(dialect, elem))
 				b.WriteString(" IS NOT NULL) e")
 				b.WriteString(ord)
 				b.WriteString(" GROUP BY k")
@@ -337,14 +348,18 @@ func buildFacetQuery(schema *ResourceSchema, dialect Dialect, filterWhere string
 	return FacetQuery{SQL: b.String(), Args: st.args}, nil
 }
 
-// listElements is a FROM item reading the elements of array, a base
-// column, and the expression of one element: unnest over a PostgreSQL
-// array, json_each over SQLite's JSON text.
-func listElements(dialect Dialect, array string) (from, value string) {
-	if dialect.Name() == "postgres" {
-		return "unnest(" + array + ") AS facet_elem__(v)", "facet_elem__.v"
+// listSource is a list facet's array field reading column, the base CTE's
+// projection of its array or of its array path's document.
+func listSource(f *FieldSchema, column string) *FieldSchema {
+	out := *f
+	if f.Path != nil {
+		p := *f.Path
+		p.Column = column
+		out.Path = &p
+		return &out
 	}
-	return "json_each(" + array + ") AS facet_elem__", "facet_elem__.value"
+	out.SQLExpr = column
+	return &out
 }
 
 // relationKeyExpr renders the junction's target column as TEXT so the

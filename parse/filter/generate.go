@@ -166,6 +166,9 @@ func generateFilterSchema(g *core.SchemaGenerator, t reflect.Type) (*ResourceSch
 		if err := checkOperators(fs); err != nil {
 			return nil, fmt.Errorf("field %s: %w", field.GoName, err)
 		}
+		if isScalarArray(fs) {
+			fs.Element = newElement(fs)
+		}
 		fields[fieldName] = fs
 		if core.IsDocument(fs.DataType) {
 			paths, err := documentPathFields(g, field, fs)
@@ -310,8 +313,9 @@ func generateSortSchema(g *core.SchemaGenerator, t reflect.Type) (*SortSchema, e
 // field gets; each is a subset of typeOperators. Unexported per ;
 // call DefaultFilterOps() for a defensive copy.
 //
-// `$in` and `$nin` come as a pair. JSON documents and
-// arrays default to containment, which every backend evaluates.
+// `$in` and `$nin` come as a pair. JSON documents default to containment,
+// and arrays to containment and element conditions (`$some` / `$none`),
+// which every backend evaluates.
 // Struct-typed (object) fields get no default: a struct the database holds
 // as a scalar declares it with `storage:"scalar:<type>"` and takes that
 // type's defaults, and a document opts in with filter_ops.
@@ -325,7 +329,7 @@ var defaultFilterOps = map[core.FieldType][]FilterOperator{
 	core.FieldTypeDate:      {OpEq, OpNe, OpGt, OpGte, OpLt, OpLte},
 	core.FieldTypeUUID:      {OpEq, OpNe, OpIn, OpNin},
 	core.FieldTypeJSON:      {OpEq, OpNe, OpContains, OpHasKey, OpExists, OpNull},
-	core.FieldTypeArray:     {OpContains, OpNull},
+	core.FieldTypeArray:     {OpContains, OpSome, OpNone, OpNull},
 	core.FieldTypeGeo:       {OpNear, OpWithin},
 }
 

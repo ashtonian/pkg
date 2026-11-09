@@ -22,7 +22,7 @@ Start with the [runnable package example](../README.md#quick-start). The focused
 - Policy: `PolicyConstraints` (`Merge`), `PolicyConstraint` (`UnknownIfInvalid`: a value that does not apply to the field compiles to SQL's unknown — no row satisfies it, nor its negation — instead of an error), `UnknownConstraint` (that unknown, stated), `ApplyPolicyConstraints` (values normalized as request values, without request limits), `BuildBaseConstraints`
 - Memberships: `PolicyConstraint.Member` (`*Lookup`: the field is among the values a lookup table or view projects — a closure's descendants, granted ids, a pair relation's resources), `LookupCond` (`WhereEq`, `WhereIn`, `WhereNull`, `WhereAll`, `WhereAny`), `ResolveMemberships` (a memory backend's once-per-request resolution through its `MembershipLookup` into the `$in` SQL's subquery equals; no lookup is SQL's unknown), `MatchLookupRow` (a lookup row's condition with SQL equality)
 - Relations: `FieldSchema.Related` (the target's schema), `FieldSchema.RelatedBy` (the owner's correlation field), `OpSome` / `OpNone` (`$some`, `$none`; `$is`, `$is_not` parse to them), `MaxRelationDepth`, `MaxRelationPredicates`, `WithRelatedPolicies` / `ListRelatedPolicies`, `ErrRelatedPolicyRequired`
-- Array elements: `FieldSchema.Elements` (a JSON array's element paths, from slice-of-struct members or the `elements` tag), `$some` / `$none` on it, `DocumentElements`
+- Array elements: `FieldSchema.Elements` (a JSON array of objects' element paths, from slice-of-struct members or the `elements` tag), `FieldSchema.Element` (a scalar array's element, whose operators — `Elem`'s but the NULL tests — the conditions of `$some` / `$none` take), `$some` / `$none` on either, `DocumentElements`; `PathDecl.Elem` declares an array path (`tags:[]string`)
 - Memberships outside SQL: `Lookup` (`Where`, `Filter`), `WhereEq` / `WhereIn` / `WhereNull` / `WhereNotNull` / `WhereMember` / `WhereAll` / `WhereAny`, `MembershipLookup`, `RelationLookup` (lookups with a filter), `ResolveMemberships` (policy memberships and relation predicates) with `ResolveTenant`, `ResolveRelatedPolicies`, `ResolveUnscopedRelations`, `MatchLookupRow`
 - JSON paths: `JSONPath`, `JSONStorage` (`StorageJSONB`, `StorageJSON`, `StorageText`), `PathDecl`, `ResourceSchema.WithPaths` (a request's copy-on-write view), `SortSchema.WithPaths` (its sort keys), `FieldExpr` (a field's value expression in a dialect), `Dialect.PathExpr`, `PathValue` (the reference value rule a memory backend evaluates), `SortFieldSchema.Path` / `CursorKey.Path`, `KeyValue` (a row's canonical value for any key, paths included), `PathDecl.Facet`, `MaxPathDepth`; `SortResult.ToSQL(dialect)` renders ORDER BY as the keyset orders
 - Evaluation outside SQL: `Evaluate` (a filter's three-valued `Truth` — `True`, `False`, `Unknown` — on one row, as SQL gives it), `Row` (a field's value in the canonical domain), `RowFunc`, `ColumnRow` (a row of Go values read by column; paths through `PathValue`), `ColumnValue` (one stored value in that domain)
@@ -50,7 +50,7 @@ Start with the [runnable package example](../README.md#quick-start). The focused
 | `keyset.go` | Keyset plan, cursors, `NewPage`, `Page[T]` (items, page info, `Relations`, `Truncated`, `Facets`) |
 | `facet.go` / `facet_union.go` / `facet_buckets.go` | Facet schema and the single facet query |
 | `relation_parse.go` / `relation_sql.go` | Relation predicates: target filters and key shorthand; one correlated EXISTS per predicate with per-depth aliases |
-| `elements.go` | Element paths of JSON arrays; one EXISTS over the elements per `$some` / `$none` |
+| `elements.go` | Element paths of JSON arrays and scalar arrays' elements; one EXISTS over the elements per `$some` / `$none`; PostgreSQL element containment; array path `$contains` and NULL tests |
 | `membership.go` / `relation_resolve.go` | Lookups and their SQL; `ResolveMemberships` for backends outside SQL, relation predicates included |
 | `search.go` | Search schema and condition |
 | `include_resolve.go` | `ResolveInclude`, `IncludeLookup`, `IncludePair` — tenant- and policy-scoped projections outside SQL, distinct keys ordered before the per-owner cap |
@@ -62,7 +62,7 @@ Start with the [runnable package example](../README.md#quick-start). The focused
 | `time_token.go` | Relative-time tokens |
 | `rows.go` | `Rows` |
 | `errors.go` | E-codes |
-| `filtertest/` | Conformance fixture, run on both dialects and `Evaluate`: the operator × type cases (`Run`), the membership cases with their lookup tables and reference lookup (`RunMembership`, `LookupTables`, `Lookups`), and the JSON path cases (`RunPaths`, `PathRecords`, `PathSchema`) |
+| `filtertest/` | Conformance fixture, run on both dialects and `Evaluate`: the operator × type cases (`Run`), the membership cases with their lookup tables and reference lookup (`RunMembership`, `LookupTables`, `Lookups`), the JSON path cases (`RunPaths`, `PathRecords`, `PathSchema`), the exact-decimal cases (`RunDecimals`) and the scalar-array cases (`RunArrays`, `ArrayRecords`, `ArraySchema`, `ArrayFacets`) |
 
 ## Dependencies
 

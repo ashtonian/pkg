@@ -86,6 +86,16 @@ describe("filter builder", () => {
     expect(JSON.stringify(result)).toBe('{"__proto__":{"$eq":"value"}}');
     expect(Object.getPrototypeOf(result)).toBe(Object.prototype);
   });
+  it("takes a scalar array's element conditions, typed by the element", () => {
+    interface Device { tags: string[]; sizes: number[] }
+    const result = filter<Device>()
+      .where("tags", { $some: { $or: [{ $like: "a%" }, { $eq: "b" }] } })
+      .where("sizes", { $none: { $gte: 1, $lt: 5 } })
+      .build();
+    expect(result).toEqual({ tags: { $some: { $or: [{ $like: "a%" }, { $eq: "b" }] } }, sizes: { $none: { $gte: 1, $lt: 5 } } });
+    // @ts-expect-error a string element compares with strings
+    filter<Device>().where("tags", { $some: { $eq: 3 } });
+  });
   it("does not add later logical branches to an already built filter", () => {
     const builder = filter<{ name: string }>().or({ name: "one" }).and({ name: "one" });
     const first = builder.build();

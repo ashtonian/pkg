@@ -118,7 +118,11 @@ func (p CursorPlan) Token(reverse bool, get func(column string) (any, error)) (*
 // memory backend's ordering read keys through it alike.
 func KeyValue(k CursorKey, raw any) (any, error) {
 	if k.Path != nil {
-		member, present, err := pathValueOf(raw, k.Path, k.DataType)
+		root, err := decodeDocument(raw)
+		if err != nil {
+			return nil, err
+		}
+		member, present, err := decodedPathValue(root, k.Path.Segments, k.DataType, "")
 		if err != nil || !present {
 			return nil, err
 		}

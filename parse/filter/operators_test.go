@@ -56,7 +56,7 @@ func TestGenerateFilterSchema_DefaultsFollowTypeModel(t *testing.T) {
 	assert.Equal(t, []FilterOperator{OpEq, OpNe, OpContains, OpHasKey, OpExists, OpNull}, s.Fields["labels"].AllowedOperators)
 	assert.Equal(t, core.FieldTypeArray, s.Fields["tags"].DataType)
 	assert.Equal(t, core.FieldTypeString, s.Fields["tags"].Elem)
-	assert.Equal(t, []FilterOperator{OpContains, OpNull}, s.Fields["tags"].AllowedOperators)
+	assert.Equal(t, []FilterOperator{OpContains, OpSome, OpNone, OpNull}, s.Fields["tags"].AllowedOperators)
 	assert.Equal(t, core.FieldTypeJSON, s.Fields["tiers"].DataType, "[]any is a document, not a native array")
 	assert.Equal(t, core.FieldTypeInt, s.Fields["counts"].Elem)
 	assert.Empty(t, s.Fields["profile"].AllowedOperators, "struct fields opt in explicitly")

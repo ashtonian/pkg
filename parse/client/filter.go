@@ -12,6 +12,9 @@ var (
 	// ErrNegatedEmpty reports Not of the empty filter, which would match no
 	// row; the grammar cannot express that either.
 	ErrNegatedEmpty = errors.New("client: Not of the empty filter matches nothing")
+	// ErrElementCondition reports a comparison of an array's Element outside
+	// that array's Some or None, or a field's condition inside them.
+	ErrElementCondition = errors.New("client: an array element's conditions belong alone in the array's Some or None")
 )
 
 // Filter is a filter expression in parse's request grammar, sent as a list's
@@ -27,7 +30,8 @@ type Filter struct {
 }
 
 // node is a condition ({field: {op: operand}}) or a logical node ($and and
-// $or over children, $not over one child).
+// $or over children, $not over one child). A condition on an array's
+// element names no field ({op: operand}).
 type node struct {
 	op       string
 	field    string
@@ -52,7 +56,28 @@ func (f Filter) MarshalJSON() ([]byte, error) {
 	if f.err != nil {
 		return nil, f.err
 	}
+	if element, _ := f.n.conditions(); element {
+		return nil, ErrElementCondition
+	}
 	return json.Marshal(f.n.document())
+}
+
+// conditions reports whether n's conditions include ones on an array's
+// element and ones on a field. Operands are not searched: a nested filter
+// was checked when it was nested.
+func (n *node) conditions() (element, field bool) {
+	if n == nil {
+		return false, false
+	}
+	switch n.op {
+	case opAnd, opOr, opNot:
+		for _, c := range n.children {
+			e, f := c.conditions()
+			element, field = element || e, field || f
+		}
+		return element, field
+	}
+	return n.field == "", n.field != ""
 }
 
 func (n *node) document() any {
@@ -68,6 +93,9 @@ func (n *node) document() any {
 		return map[string]any{n.op: items}
 	case opNot:
 		return map[string]any{opNot: n.children[0].document()}
+	}
+	if n.field == "" {
+		return map[string]any{n.op: n.operand}
 	}
 	return map[string]any{n.field: map[string]any{n.op: n.operand}}
 }
@@ -146,10 +174,13 @@ func condition(field, op string, operand any) Filter {
 }
 
 // nested is a condition whose operand is a filter over a relation's target
-// or an array's elements.
+// or a document array's elements.
 func nested(field, op string, f Filter) Filter {
 	if f.err != nil {
 		return f
+	}
+	if element, _ := f.n.conditions(); element {
+		return Filter{err: ErrElementCondition}
 	}
 	return condition(field, op, f)
 }

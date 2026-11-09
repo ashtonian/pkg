@@ -49,6 +49,24 @@ func TestEvaluateDecimalConformance(t *testing.T) {
 	}))
 }
 
+func TestEvaluateArrayConformance(t *testing.T) {
+	schema, err := filtertest.ArraySchema()
+	if err != nil {
+		t.Fatalf("array schema: %v", err)
+	}
+	t.Run("stored", func(t *testing.T) {
+		filtertest.RunArrays(t, schema, evaluateOver(filtertest.ArrayRecords(), func(r filtertest.ArrayRecord) (string, filter.Row) {
+			return r.ID, structRow(r)
+		}))
+	})
+	t.Run("decoded", func(t *testing.T) {
+		filtertest.RunArrays(t, schema, evaluateOver(filtertest.ArrayRecords(), func(r filtertest.ArrayRecord) (string, filter.Row) {
+			return r.ID, byColumn(map[string]any{"id": r.ID, "doc": decodedJSON(t, r.Doc),
+				"labels": decodedJSON(t, r.Labels), "scores": decodedJSON(t, r.Scores), "lines": decodedJSON(t, r.Lines)})
+		}))
+	})
+}
+
 func TestEvaluateMembershipConformance(t *testing.T) {
 	eval := evaluateOver(filtertest.Records(), func(r filtertest.Record) (string, filter.Row) {
 		return r.ID, structRow(r)
@@ -125,21 +143,23 @@ func byColumn(columns map[string]any) filter.ColumnRow {
 // decodedRow is structRow with every document column decoded to generic
 // JSON, as a store holding decoded documents keeps them.
 func decodedRow(t *testing.T, r filtertest.PathRecord) filter.ColumnRow {
-	decode := func(v any) any {
-		b, err := json.Marshal(v)
-		if err != nil {
-			t.Fatalf("encode %T: %v", v, err)
-		}
-		if bytes.Equal(b, []byte("null")) {
-			return nil
-		}
-		dec := json.NewDecoder(bytes.NewReader(b))
-		dec.UseNumber()
-		var doc any
-		if err := dec.Decode(&doc); err != nil {
-			t.Fatalf("decode %s: %v", b, err)
-		}
-		return doc
+	return byColumn(map[string]any{"id": r.ID, "attrs": decodedJSON(t, r.Attrs), "settings": decodedJSON(t, r.Settings)})
+}
+
+// decodedJSON is v as generic JSON (numbers as json.Number), nil for null.
+func decodedJSON(t *testing.T, v any) any {
+	b, err := json.Marshal(v)
+	if err != nil {
+		t.Fatalf("encode %T: %v", v, err)
 	}
-	return byColumn(map[string]any{"id": r.ID, "attrs": decode(r.Attrs), "settings": decode(r.Settings)})
+	if bytes.Equal(b, []byte("null")) {
+		return nil
+	}
+	dec := json.NewDecoder(bytes.NewReader(b))
+	dec.UseNumber()
+	var doc any
+	if err := dec.Decode(&doc); err != nil {
+		t.Fatalf("decode %s: %v", b, err)
+	}
+	return doc
 }

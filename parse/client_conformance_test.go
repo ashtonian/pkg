@@ -40,6 +40,9 @@ var confFields = struct {
 	Region  client.Text
 	Note    client.Field[string]
 	Lines   client.Elements[[]confLine]
+	Tags    client.TextArray
+	Labels  client.TextArray
+	Sizes   client.OrderedArray[int]
 	Parts   client.Relation[string]
 }{
 	ID:      client.NewField[string]("id"),
@@ -53,6 +56,9 @@ var confFields = struct {
 	Region:  client.NewText("meta.region"),
 	Note:    client.NewField[string]("note"),
 	Lines:   client.NewElements[[]confLine]("lines"),
+	Tags:    client.NewTextArray("tags"),
+	Labels:  client.NewTextArray("meta.labels"),
+	Sizes:   client.NewOrderedArray[int]("meta.sizes"),
 	Parts:   client.NewRelation[string]("parts"),
 }
 
@@ -69,6 +75,7 @@ var confPartFields = struct {
 // as the corpus records, valid or refused with its code.
 func filterBuilt() map[string]client.Filter {
 	f, line, part := confFields, confLineFields, confPartFields
+	tag, label, size := f.Tags.Element(), f.Labels.Element(), f.Sizes.Element()
 	statusActive := f.Status.Eq("active")
 	return map[string]client.Filter{
 		"eq_string":                     statusActive,
@@ -116,6 +123,15 @@ func filterBuilt() map[string]client.Filter {
 		"path_like":                     f.Region.Like("eu-%"),
 		"elements_some":                 f.Lines.Some(client.And(line.SKU.Eq("a"), line.Qty.Gt(2))),
 		"elements_none":                 f.Lines.None(line.SKU.Eq("a")),
+		"array_some_eq":                 f.Tags.Some(tag.Eq("a")),
+		"array_some_and":                f.Sizes.Some(client.And(size.Gte(1), size.Lt(5))),
+		"array_some_or":                 f.Labels.Some(client.Or(label.Like("a%"), label.Eq("b"))),
+		"array_none_not":                f.Tags.None(client.Not(tag.In("a", "b"))),
+		"array_some_any":                f.Labels.Some(client.Filter{}),
+		"array_path_contains":           f.Labels.Contains("a", "b"),
+		"array_contains_scalar":         f.Tags.Contains("a"),
+		"array_path_null":               f.Sizes.Null(),
+		"err_array_element_null_test":   f.Tags.Some(tag.Null()),
 		"relation_some":                 f.Parts.Some(part.State.Eq("worn")),
 		"relation_none_any":             f.Parts.None(client.Filter{}),
 		"relation_key_shorthand":        f.Parts.Eq("p1"),
@@ -126,8 +142,11 @@ func filterBuilt() map[string]client.Filter {
 
 // filterRefused are the corpus cases the client refuses to encode.
 var filterRefused = map[string]error{
-	"err_or_empty":  client.ErrEmptyOr,
-	"err_not_empty": client.ErrNegatedEmpty,
+	"err_or_empty":                client.ErrEmptyOr,
+	"err_not_empty":               client.ErrNegatedEmpty,
+	"err_array_element_member":    client.ErrElementCondition,
+	"err_array_element_empty_or":  client.ErrEmptyOr,
+	"err_array_element_empty_not": client.ErrNegatedEmpty,
 }
 
 // filterInexpressible are the corpus cases the client's types rule out.
@@ -166,6 +185,10 @@ var filterInexpressible = map[string]string{
 	"err_relation_unknown_target_field":   "the target catalog names declared fields only",
 	"err_relation_is_on_collection":       "a to-many Relation has no Is",
 	"err_relation_not_object":             "Some takes a filter",
+	"err_array_element_operator":          "Sizes' element is an Ordered[int]",
+	"err_array_element_type":              "Sizes' element is an Ordered[int]",
+	"err_array_element_not_object":        "Some takes a condition",
+	"err_array_contains_member_type":      "Sizes' Contains takes ints",
 }
 
 func readFilterCorpus(t *testing.T) []conformanceCase {
@@ -216,9 +239,13 @@ func TestClient_FiltersMeanWhatTheCorpusMeans(t *testing.T) {
 }
 
 func TestClient_RefusesWhatTheGrammarCannotSay(t *testing.T) {
+	tags := confFields.Tags
 	built := map[string]client.Filter{
-		"err_or_empty":  client.Or(),
-		"err_not_empty": client.Not(client.Filter{}),
+		"err_or_empty":                client.Or(),
+		"err_not_empty":               client.Not(client.Filter{}),
+		"err_array_element_member":    tags.Some(confLineFields.SKU.Eq("a")),
+		"err_array_element_empty_or":  tags.Some(client.Or()),
+		"err_array_element_empty_not": tags.Some(client.Not(client.Filter{})),
 	}
 	for _, c := range readFilterCorpus(t) {
 		want, ok := filterRefused[c.Name]
@@ -442,7 +469,8 @@ func TestClient_CatalogsCoverTheCorpusFields(t *testing.T) {
 	names := []string{
 		confFields.ID.Name(), confFields.Name.Name(), confFields.Status.Name(), confFields.Count.Name(),
 		confFields.Price.Name(), confFields.Active.Name(), confFields.Created.Name(), confFields.Meta.Name(), confFields.Region.Name(),
-		confFields.Note.Name(), confFields.Lines.Name(), confFields.Parts.Name(),
+		confFields.Note.Name(), confFields.Lines.Name(), confFields.Tags.Name(), confFields.Labels.Name(), confFields.Sizes.Name(),
+		confFields.Parts.Name(),
 	}
 	for name := range schema.Fields {
 		assert.True(t, slices.Contains(names, name), "the catalog misses %q", name)

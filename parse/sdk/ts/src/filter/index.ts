@@ -1,6 +1,7 @@
 export { filter, FilterBuilder, sort, SortBuilder } from "./builder.js";
 export { validateFilter, validateSort } from "./validate.js";
 export type {
+  ElementCondition,
   FacetBucket,
   FacetOptions,
   FacetResult,
@@ -13,6 +14,7 @@ export type {
   GeoPoint,
   GeoShape,
   ListOptions,
+  NestedFilter,
   ListResult,
   PageInfo,
   SearchSchema,

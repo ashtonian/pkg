@@ -33,6 +33,7 @@ export type { ErrorBody, FieldType, RequestOptions } from "./core/index.js";
 export { filter, FilterBuilder, sort, SortBuilder } from "./filter/index.js";
 export { validateFilter, validateSort } from "./filter/index.js";
 export type {
+  ElementCondition,
   FacetBucket,
   FacetOptions,
   FacetResult,
@@ -46,6 +47,7 @@ export type {
   GeoShape,
   ListOptions,
   ListResult,
+  NestedFilter,
   PageInfo,
   SearchSchema,
   SortDirection,

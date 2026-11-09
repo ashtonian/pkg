@@ -1088,6 +1088,313 @@
     "errorCode": "E2072"
   },
   {
+    "name": "array_some_eq",
+    "input": {
+      "tags": {
+        "$some": {
+          "$eq": "a"
+        }
+      }
+    },
+    "valid": true,
+    "canonicalAst": {
+      "field": "tags",
+      "op": "some",
+      "conds": [
+        {
+          "field": "tags",
+          "op": "eq",
+          "value": "a"
+        }
+      ]
+    },
+    "sqlPostgres": "EXISTS (SELECT 1 FROM unnest(conf_entities.tags) AS elem1__(v) WHERE elem1__.v IS NOT NULL AND elem1__.v = $1)",
+    "sqlSqlite": "EXISTS (SELECT 1 FROM json_each(CASE WHEN json_type(conf_entities.tags) = 'array' THEN conf_entities.tags END) AS elem1__ WHERE (CASE WHEN elem1__.type = 'text' THEN elem1__.value END) IS NOT NULL AND (CASE WHEN elem1__.type = 'text' THEN elem1__.value END) = ?1)"
+  },
+  {
+    "name": "array_some_and",
+    "input": {
+      "meta.sizes": {
+        "$some": {
+          "$and": [
+            {
+              "$gte": 1
+            },
+            {
+              "$lt": 5
+            }
+          ]
+        }
+      }
+    },
+    "valid": true,
+    "canonicalAst": {
+      "field": "meta.sizes",
+      "op": "some",
+      "conds": [
+        {
+          "op": "and",
+          "conds": [
+            {
+              "field": "meta.sizes",
+              "op": "gte",
+              "value": 1
+            },
+            {
+              "field": "meta.sizes",
+              "op": "lt",
+              "value": 5
+            }
+          ]
+        }
+      ]
+    },
+    "sqlPostgres": "EXISTS (SELECT 1 FROM jsonb_array_elements(CASE WHEN jsonb_typeof(conf_entities.meta #\u003e '{sizes}') = 'array' THEN conf_entities.meta #\u003e '{sizes}' END) AS elem1__(v) WHERE (CASE WHEN jsonb_typeof(elem1__.v) = 'number' THEN (elem1__.v #\u003e\u003e '{}')::numeric END) IS NOT NULL AND ((CASE WHEN jsonb_typeof(elem1__.v) = 'number' THEN (elem1__.v #\u003e\u003e '{}')::numeric END) \u003e= $1 AND (CASE WHEN jsonb_typeof(elem1__.v) = 'number' THEN (elem1__.v #\u003e\u003e '{}')::numeric END) \u003c $2))",
+    "sqlSqlite": "EXISTS (SELECT 1 FROM json_each(CASE WHEN json_type(conf_entities.meta, '$.\"sizes\"') = 'array' THEN conf_entities.meta END, '$.\"sizes\"') AS elem1__ WHERE (CASE WHEN elem1__.type IN ('integer', 'real') THEN elem1__.value END) IS NOT NULL AND ((CASE WHEN elem1__.type IN ('integer', 'real') THEN elem1__.value END) \u003e= ?1 AND (CASE WHEN elem1__.type IN ('integer', 'real') THEN elem1__.value END) \u003c ?2))"
+  },
+  {
+    "name": "array_some_or",
+    "input": {
+      "meta.labels": {
+        "$some": {
+          "$or": [
+            {
+              "$like": "a%"
+            },
+            {
+              "$eq": "b"
+            }
+          ]
+        }
+      }
+    },
+    "valid": true,
+    "canonicalAst": {
+      "field": "meta.labels",
+      "op": "some",
+      "conds": [
+        {
+          "op": "or",
+          "conds": [
+            {
+              "field": "meta.labels",
+              "op": "like",
+              "value": "a%"
+            },
+            {
+              "field": "meta.labels",
+              "op": "eq",
+              "value": "b"
+            }
+          ]
+        }
+      ]
+    },
+    "sqlPostgres": "EXISTS (SELECT 1 FROM jsonb_array_elements(CASE WHEN jsonb_typeof(conf_entities.meta #\u003e '{labels}') = 'array' THEN conf_entities.meta #\u003e '{labels}' END) AS elem1__(v) WHERE (CASE WHEN jsonb_typeof(elem1__.v) = 'string' THEN (elem1__.v #\u003e\u003e '{}') END) IS NOT NULL AND ((CASE WHEN jsonb_typeof(elem1__.v) = 'string' THEN (elem1__.v #\u003e\u003e '{}') END) LIKE $1 ESCAPE '\\' OR (CASE WHEN jsonb_typeof(elem1__.v) = 'string' THEN (elem1__.v #\u003e\u003e '{}') END) = $2))",
+    "sqlSqlite": "EXISTS (SELECT 1 FROM json_each(CASE WHEN json_type(conf_entities.meta, '$.\"labels\"') = 'array' THEN conf_entities.meta END, '$.\"labels\"') AS elem1__ WHERE (CASE WHEN elem1__.type = 'text' THEN elem1__.value END) IS NOT NULL AND ((CASE WHEN elem1__.type = 'text' THEN elem1__.value END) GLOB ?1 OR (CASE WHEN elem1__.type = 'text' THEN elem1__.value END) = ?2))"
+  },
+  {
+    "name": "array_none_not",
+    "input": {
+      "tags": {
+        "$none": {
+          "$not": {
+            "$in": [
+              "a",
+              "b"
+            ]
+          }
+        }
+      }
+    },
+    "valid": true,
+    "canonicalAst": {
+      "field": "tags",
+      "op": "none",
+      "conds": [
+        {
+          "op": "not",
+          "conds": [
+            {
+              "field": "tags",
+              "op": "in",
+              "value": [
+                "a",
+                "b"
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    "sqlPostgres": "NOT EXISTS (SELECT 1 FROM unnest(conf_entities.tags) AS elem1__(v) WHERE elem1__.v IS NOT NULL AND NOT (elem1__.v = ANY($1)))",
+    "sqlSqlite": "NOT EXISTS (SELECT 1 FROM json_each(CASE WHEN json_type(conf_entities.tags) = 'array' THEN conf_entities.tags END) AS elem1__ WHERE (CASE WHEN elem1__.type = 'text' THEN elem1__.value END) IS NOT NULL AND NOT ((CASE WHEN elem1__.type = 'text' THEN elem1__.value END) IN (SELECT value FROM json_each(?1))))"
+  },
+  {
+    "name": "array_some_any",
+    "input": {
+      "meta.labels": {
+        "$some": {}
+      }
+    },
+    "valid": true,
+    "canonicalAst": {
+      "field": "meta.labels",
+      "op": "some"
+    },
+    "sqlPostgres": "EXISTS (SELECT 1 FROM jsonb_array_elements(CASE WHEN jsonb_typeof(conf_entities.meta #\u003e '{labels}') = 'array' THEN conf_entities.meta #\u003e '{labels}' END) AS elem1__(v) WHERE (CASE WHEN jsonb_typeof(elem1__.v) = 'string' THEN (elem1__.v #\u003e\u003e '{}') END) IS NOT NULL)",
+    "sqlSqlite": "EXISTS (SELECT 1 FROM json_each(CASE WHEN json_type(conf_entities.meta, '$.\"labels\"') = 'array' THEN conf_entities.meta END, '$.\"labels\"') AS elem1__ WHERE (CASE WHEN elem1__.type = 'text' THEN elem1__.value END) IS NOT NULL)"
+  },
+  {
+    "name": "array_path_contains",
+    "input": {
+      "meta.labels": {
+        "$contains": [
+          "a",
+          "b"
+        ]
+      }
+    },
+    "valid": true,
+    "canonicalAst": {
+      "field": "meta.labels",
+      "op": "contains",
+      "value": [
+        "a",
+        "b"
+      ]
+    },
+    "sqlPostgres": "conf_entities.meta @\u003e $1::jsonb",
+    "sqlSqlite": "(CASE WHEN EXISTS (SELECT 1 FROM json_each(CASE WHEN json_type(conf_entities.meta, '$.\"labels\"') = 'array' THEN conf_entities.meta END, '$.\"labels\"') AS elem1__ WHERE (CASE WHEN elem1__.type = 'text' THEN elem1__.value END) IS NOT NULL) THEN (EXISTS (SELECT 1 FROM json_each(CASE WHEN json_type(conf_entities.meta, '$.\"labels\"') = 'array' THEN conf_entities.meta END, '$.\"labels\"') AS elem1__ WHERE (CASE WHEN elem1__.type = 'text' THEN elem1__.value END) IS NOT NULL AND (CASE WHEN elem1__.type = 'text' THEN elem1__.value END) = ?1) AND EXISTS (SELECT 1 FROM json_each(CASE WHEN json_type(conf_entities.meta, '$.\"labels\"') = 'array' THEN conf_entities.meta END, '$.\"labels\"') AS elem1__ WHERE (CASE WHEN elem1__.type = 'text' THEN elem1__.value END) IS NOT NULL AND (CASE WHEN elem1__.type = 'text' THEN elem1__.value END) = ?2)) END)"
+  },
+  {
+    "name": "array_path_null",
+    "input": {
+      "meta.sizes": {
+        "$null": true
+      }
+    },
+    "valid": true,
+    "canonicalAst": {
+      "field": "meta.sizes",
+      "op": "null"
+    },
+    "sqlPostgres": "NOT EXISTS (SELECT 1 FROM jsonb_array_elements(CASE WHEN jsonb_typeof(conf_entities.meta #\u003e '{sizes}') = 'array' THEN conf_entities.meta #\u003e '{sizes}' END) AS elem1__(v) WHERE (CASE WHEN jsonb_typeof(elem1__.v) = 'number' THEN (elem1__.v #\u003e\u003e '{}')::numeric END) IS NOT NULL)",
+    "sqlSqlite": "NOT EXISTS (SELECT 1 FROM json_each(CASE WHEN json_type(conf_entities.meta, '$.\"sizes\"') = 'array' THEN conf_entities.meta END, '$.\"sizes\"') AS elem1__ WHERE (CASE WHEN elem1__.type IN ('integer', 'real') THEN elem1__.value END) IS NOT NULL)"
+  },
+  {
+    "name": "err_array_element_null_test",
+    "input": {
+      "tags": {
+        "$some": {
+          "$null": true
+        }
+      }
+    },
+    "valid": false,
+    "errorCode": "E2072"
+  },
+  {
+    "name": "err_array_element_operator",
+    "input": {
+      "meta.sizes": {
+        "$some": {
+          "$like": "1%"
+        }
+      }
+    },
+    "valid": false,
+    "errorCode": "E2072"
+  },
+  {
+    "name": "err_array_element_type",
+    "input": {
+      "meta.sizes": {
+        "$some": {
+          "$eq": "two"
+        }
+      }
+    },
+    "valid": false,
+    "errorCode": "E2073"
+  },
+  {
+    "name": "err_array_element_member",
+    "input": {
+      "tags": {
+        "$some": {
+          "sku": "a"
+        }
+      }
+    },
+    "valid": false,
+    "errorCode": "E2072"
+  },
+  {
+    "name": "err_array_element_not_object",
+    "input": {
+      "tags": {
+        "$some": "a"
+      }
+    },
+    "valid": false,
+    "errorCode": "E2086"
+  },
+  {
+    "name": "err_array_element_empty_or",
+    "input": {
+      "tags": {
+        "$some": {
+          "$or": []
+        }
+      }
+    },
+    "valid": false,
+    "errorCode": "E2086"
+  },
+  {
+    "name": "err_array_element_empty_not",
+    "input": {
+      "tags": {
+        "$some": {
+          "$not": {}
+        }
+      }
+    },
+    "valid": false,
+    "errorCode": "E2086"
+  },
+  {
+    "name": "err_array_contains_member_type",
+    "input": {
+      "meta.sizes": {
+        "$contains": [
+          "a"
+        ]
+      }
+    },
+    "valid": false,
+    "errorCode": "E2073"
+  },
+  {
+    "name": "array_contains_scalar",
+    "input": {
+      "tags": {
+        "$contains": "a"
+      }
+    },
+    "valid": true,
+    "canonicalAst": {
+      "field": "tags",
+      "op": "contains",
+      "value": [
+        "a"
+      ]
+    },
+    "sqlPostgres": "conf_entities.tags @\u003e $1",
+    "sqlSqlite": "(CASE WHEN conf_entities.tags IS NULL THEN NULL ELSE (CASE WHEN json_type(conf_entities.tags) = 'array' THEN (EXISTS (SELECT 1 FROM json_each(conf_entities.tags) je1 WHERE (je1.type = 'text' AND je1.atom = ?1))) ELSE 0 END) END)"
+  },
+  {
     "name": "relation_some",
     "input": {
       "parts": {

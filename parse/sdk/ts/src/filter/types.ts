@@ -40,22 +40,56 @@ export interface FilterOperators<V> {
   $null?: boolean;
   $not_null?: boolean;
   $exists?: boolean;
-  /** String: literal substring. JSON: document containment. Array: holds every element. */
+  /** String: literal substring. JSON: document containment. Array: holds every listed element (a single value is one element). */
   $contains?: unknown;
   /** JSON document: has the top-level key, a string element of a top-level array, or is the string itself (jsonb `?`). */
   $has_key?: string;
   $near?: GeoDistance;
   $within?: GeoShape;
   $intersects?: GeoShape;
-  /** Relation (has-many, many-to-many) or JSON array: some related row / element satisfies the filter. */
-  $some?: Record<string, unknown>;
-  /** Relation or JSON array: no related row / element satisfies the filter. */
-  $none?: Record<string, unknown>;
+  /** Relation (has-many, many-to-many) or array: some related row / element satisfies the filter or condition. */
+  $some?: NestedFilter<V>;
+  /** Relation or array: no related row / element satisfies the filter or condition. */
+  $none?: NestedFilter<V>;
   /** Belongs-to: the related row is visible and satisfies the filter. */
   $is?: Record<string, unknown>;
   /** Belongs-to: no visible related row satisfies the filter. */
   $is_not?: Record<string, unknown>;
 }
+
+/**
+ * A condition on one element of a scalar array, which `$some` / `$none`
+ * take: the element type's comparisons, all holding for the same element,
+ * combined by `$and` / `$or` / `$not`. `{}` holds for any element of the
+ * array's type.
+ */
+export interface ElementCondition<E> {
+  $eq?: E;
+  $ne?: E;
+  $gt?: E;
+  $gte?: E;
+  $lt?: E;
+  $lte?: E;
+  $in?: E[];
+  $nin?: E[];
+  $like?: string;
+  $ilike?: string;
+  /** String element: literal substring. */
+  $contains?: string;
+  $and?: ElementCondition<E>[];
+  $or?: ElementCondition<E>[];
+  $not?: ElementCondition<E>;
+}
+
+/**
+ * The operand of `$some` / `$none` on a field of value type V: an element
+ * condition for an array of scalars, otherwise a filter on the related
+ * rows or on an array's document elements.
+ */
+export type NestedFilter<V> =
+  NonNullable<V> extends readonly (infer E)[]
+    ? [E] extends [string | number | boolean] ? ElementCondition<E> : Record<string, unknown>
+    : Record<string, unknown>;
 
 /** A filter expression for resource type T. */
 export type FilterExpression<T> = {
@@ -99,8 +133,12 @@ export interface FilterFieldSchema {
   geo_config?: { storage_type: string; srid: number };
   /** A relation field: its kind and, for a declared relation, the target resource whose filter `$some` / `$none` / `$is` / `$is_not` take. */
   relation?: { kind: "many_to_many" | "has_many" | "belongs_to"; target?: string };
-  /** A JSON array's element paths, filtered together by `$some` / `$none`. */
+  /** A JSON array of documents' element paths, filtered together by `$some` / `$none`. */
   elements?: Record<string, FilterFieldSchema>;
+  /** An array's element type. */
+  elem?: FieldType;
+  /** A scalar array's element: the operators its `$some` / `$none` conditions take. */
+  element?: FilterFieldSchema;
 }
 
 /** Sort schema describing sortable fields. */
