@@ -101,7 +101,7 @@ func TestSetRendering(t *testing.T) {
 		{"sqlite floats are REAL", SQLiteDialect{}, &FilterNode{Field: &FieldSchema{ExternalName: "score", SQLExpr: "items.score", DataType: core.FieldTypeFloat}, Op: OpNin, Value: []any{2.5, 8.172340535545245e18, 1.0}},
 			"items.score NOT IN (SELECT value FROM json_each(?1))", []any{`[2.5,8.172340535545245e+18,1]`}},
 		{"sqlite decimals", SQLiteDialect{}, &FilterNode{Field: &FieldSchema{ExternalName: "amount", SQLExpr: "items.amount", DataType: core.FieldTypeDecimal}, Op: OpIn, Value: []any{"9.5"}},
-			"items.amount IN (SELECT CAST(value AS NUMERIC) FROM json_each(?1))", []any{`["9.5"]`}},
+			"parse_decimal(items.amount) IN (SELECT value FROM json_each(?1))", []any{`["9.5"]`}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

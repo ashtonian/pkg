@@ -64,10 +64,21 @@ type Dialect interface {
 	// scans, or column itself when the database's own encoding scans.
 	ReadColumn(column string, t core.SQLType) string
 
+	// DecimalColumn renders a decimal column as the dialect's exact decimal
+	// value, the value PathExpr reads a decimal member as and DecimalParam
+	// binds: equal decimals are equal values.
+	DecimalColumn(column string) string
+
 	// DecimalParam renders the placeholder of a bound decimal, its
-	// canonical text (core.DecimalText), as the exact number a decimal
-	// column or path compares and orders with.
+	// canonical text (core.DecimalText), as the dialect's exact decimal
+	// value.
 	DecimalParam(placeholder string) string
+
+	// DecimalOrder renders a decimal value (DecimalColumn, PathExpr or
+	// DecimalParam) as what orders decimals exactly: the value itself where
+	// the database's own type orders it, a key that orders as it does where
+	// there is none.
+	DecimalOrder(value string) string
 }
 
 // TwoValuedDialect is a Dialect with a second rendering of some predicates,
@@ -104,10 +115,27 @@ func DialectFromDSN(dsn string) (Dialect, error) {
 	return PostgresDialect{}, nil
 }
 
-// decimalBinder binds through bind, reading each parameter as a decimal
-// (Dialect.DecimalParam).
-func decimalBinder(d Dialect, bind func(any) string) func(any) string {
-	return func(v any) string { return d.DecimalParam(bind(v)) }
+// decimalComparison renders a decimal field's equality or ordering, expr
+// being the field's exact value (FieldExpr): it compares with the value's
+// canonical text bound as Dialect.DecimalParam reads it, and orders through
+// Dialect.DecimalOrder. ok is false for any other operator.
+func decimalComparison(d Dialect, field *FieldSchema, expr string, op FilterOperator, value any, bind func(any) string) (sql string, ok bool, err error) {
+	switch op {
+	case OpEq, OpNe, OpGt, OpGte, OpLt, OpLte:
+	default:
+		return "", false, nil
+	}
+	if value != nil {
+		if value, err = core.DecimalText(value); err != nil {
+			return "", true, fmt.Errorf("field %s: %w", field.ExternalName, err)
+		}
+	}
+	param := func(v any) string { return d.DecimalParam(bind(v)) }
+	if isOrdering(op) {
+		expr = d.DecimalOrder(expr)
+		param = func(v any) string { return d.DecimalOrder(d.DecimalParam(bind(v))) }
+	}
+	return comparison(expr, op, value, param)
 }
 
 // comparison renders the operators every dialect spells alike: equality,

@@ -133,7 +133,7 @@
       "value": "10.5"
     },
     "sqlPostgres": "conf_entities.price = $1::numeric",
-    "sqlSqlite": "conf_entities.price = CAST(?1 AS NUMERIC)"
+    "sqlSqlite": "parse_decimal(conf_entities.price) = ?1"
   },
   {
     "name": "eq_decimal_number",
@@ -147,7 +147,7 @@
       "value": "10.5"
     },
     "sqlPostgres": "conf_entities.price = $1::numeric",
-    "sqlSqlite": "conf_entities.price = CAST(?1 AS NUMERIC)"
+    "sqlSqlite": "parse_decimal(conf_entities.price) = ?1"
   },
   {
     "name": "gt_decimal_exponent",
@@ -163,7 +163,7 @@
       "value": "0.0015"
     },
     "sqlPostgres": "conf_entities.price \u003e $1::numeric",
-    "sqlSqlite": "conf_entities.price \u003e CAST(?1 AS NUMERIC)"
+    "sqlSqlite": "parse_decimal_key(conf_entities.price) \u003e parse_decimal_key(?1)"
   },
   {
     "name": "eq_decimal_beyond_float64",
@@ -177,7 +177,7 @@
       "value": "0.10000000000000001"
     },
     "sqlPostgres": "conf_entities.price = $1::numeric",
-    "sqlSqlite": "conf_entities.price = CAST(?1 AS NUMERIC)"
+    "sqlSqlite": "parse_decimal(conf_entities.price) = ?1"
   },
   {
     "name": "in_decimal",
@@ -201,7 +201,7 @@
       ]
     },
     "sqlPostgres": "conf_entities.price = ANY($1::text[]::numeric[])",
-    "sqlSqlite": "conf_entities.price IN (SELECT CAST(value AS NUMERIC) FROM json_each(?1))"
+    "sqlSqlite": "parse_decimal(conf_entities.price) IN (SELECT value FROM json_each(?1))"
   },
   {
     "name": "err_decimal_word",

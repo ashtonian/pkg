@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"github.com/ashtonian/pkg/parse/core"
+	"github.com/ashtonian/pkg/parse/internal/decimals"
 	"github.com/ashtonian/pkg/parse/internal/dialect"
 )
 
@@ -93,7 +94,10 @@ func (d SQLiteDialect) Condition(field *FieldSchema, op FilterOperator, value an
 		expr = d.CodePointOrder(expr)
 	}
 	if field.DataType == core.FieldTypeDecimal {
-		bind = decimalBinder(d, bind)
+		if sql, ok, err := decimalComparison(d, field, expr, op, value, bind); ok {
+			return sql, err
+		}
+		return "", unsupportedOperator(field, op)
 	}
 	if sql, ok, err := comparison(expr, op, value, bind); ok {
 		return sql, err
@@ -103,9 +107,29 @@ func (d SQLiteDialect) Condition(field *FieldSchema, op FilterOperator, value an
 
 // sqliteMembership renders a set bound as one JSON array, its members read
 // by json_each as the values a scalar parameter binds: integers as INTEGER,
-// floats as REAL, booleans as 1 and 0, text as TEXT, and decimals' text
-// cast as DecimalParam casts it.
+// floats as REAL, booleans as 1 and 0, text as TEXT, and decimals as their
+// canonical text, the value FieldExpr reads a decimal as.
 func sqliteMembership(field *FieldSchema, expr string, members []any, in bool, bind func(any) string) (string, error) {
+	doc, err := sqliteSetMembers(field, members)
+	if err != nil {
+		return "", fmt.Errorf("field %s: %w", field.ExternalName, err)
+	}
+	arr, err := json.Marshal(doc)
+	if err != nil {
+		return "", fmt.Errorf("field %s: marshal set: %w", field.ExternalName, err)
+	}
+	keyword := " IN "
+	if !in {
+		keyword = " NOT IN "
+	}
+	return expr + keyword + "(SELECT value FROM json_each(" + bind(string(arr)) + "))", nil
+}
+
+// sqliteSetMembers are a set's members as its JSON array holds them.
+func sqliteSetMembers(field *FieldSchema, members []any) (any, error) {
+	if field.DataType == core.FieldTypeDecimal {
+		return typedSlice(members, core.DecimalText)
+	}
 	doc := make([]any, len(members))
 	for i, m := range members {
 		switch v := m.(type) {
@@ -116,26 +140,14 @@ func sqliteMembership(field *FieldSchema, expr string, members []any, in bool, b
 			doc[i] = json.Number(strconv.FormatFloat(v, 'g', -1, 64))
 		case uint64:
 			if v > math.MaxInt64 {
-				return "", fmt.Errorf("field %s: set member %d exceeds SQLite's 64-bit signed integers", field.ExternalName, v)
+				return nil, fmt.Errorf("set member %d exceeds SQLite's 64-bit signed integers", v)
 			}
 			doc[i] = v
 		default:
 			doc[i] = v
 		}
 	}
-	arr, err := json.Marshal(doc)
-	if err != nil {
-		return "", fmt.Errorf("field %s: marshal set: %w", field.ExternalName, err)
-	}
-	value := "value"
-	if field.DataType == core.FieldTypeDecimal {
-		value = "CAST(value AS NUMERIC)"
-	}
-	keyword := " IN "
-	if !in {
-		keyword = " NOT IN "
-	}
-	return expr + keyword + "(SELECT " + value + " FROM json_each(" + bind(string(arr)) + "))", nil
+	return doc, nil
 }
 
 // sqliteJSONMatch compiles document equality (contains=false) or jsonb
@@ -357,13 +369,51 @@ func (SQLiteDialect) ReadColumn(column string, t core.SQLType) string {
 	return column
 }
 
-// DecimalParam casts the parameter to NUMERIC: an integer when the text
-// holds one exactly, otherwise a REAL — how a NUMERIC or REAL column stores
-// the value, so the two compare as numbers, never as text. A bare text
-// parameter compares as text against a path's number or a column of no
-// numeric affinity.
-func (SQLiteDialect) DecimalParam(placeholder string) string {
-	return "CAST(" + placeholder + " AS NUMERIC)"
+// DecimalColumn reads the column through parse_decimal (parsesqlite): its
+// canonical decimal text, exact for an INTEGER or for TEXT holding the
+// number, where CAST(… AS NUMERIC) keeps 15 significant digits.
+func (SQLiteDialect) DecimalColumn(column string) string {
+	return decimals.SQLiteValueFunc + "(" + column + ")"
+}
+
+// DecimalParam returns the placeholder: the bound canonical text is the
+// exact value DecimalColumn and PathExpr read a decimal as.
+func (SQLiteDialect) DecimalParam(placeholder string) string { return placeholder }
+
+// DecimalOrder reads the value through parse_decimal_key (parsesqlite), a
+// BLOB that orders bytewise as the decimal does. parse_decimal_key reads
+// what parse_decimal reads, so a value DecimalColumn or PathExpr read is
+// keyed from its operand: one function call per row, not two.
+func (SQLiteDialect) DecimalOrder(value string) string {
+	if operand, ok := callOperand(value, decimals.SQLiteValueFunc); ok {
+		value = operand
+	}
+	return decimals.SQLiteKeyFunc + "(" + value + ")"
+}
+
+// callOperand is the argument of expr when expr is exactly one call of fn,
+// its parentheses spanning the rest of expr; parentheses inside quoted SQL
+// literals do not count.
+func callOperand(expr, fn string) (string, bool) {
+	rest, ok := strings.CutPrefix(expr, fn+"(")
+	if !ok {
+		return "", false
+	}
+	depth, quoted := 1, false
+	for i := range len(rest) {
+		switch c := rest[i]; {
+		case c == '\'':
+			quoted = !quoted
+		case quoted:
+		case c == '(':
+			depth++
+		case c == ')':
+			if depth--; depth == 0 {
+				return rest[:i], i == len(rest)-1
+			}
+		}
+	}
+	return "", false
 }
 
 // NativeRowCompare reports false: row-value comparison is unevenly

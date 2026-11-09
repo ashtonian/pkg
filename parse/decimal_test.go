@@ -36,15 +36,16 @@ func TestDecimalRequestContract(t *testing.T) {
 		dialect filter.Dialect
 		amount  string
 		fee     string
+		order   string
 	}{
-		{filter.PostgresDialect{}, "ledger_lines.amount > $", "ledger_lines.fee <= $"},
-		{filter.SQLiteDialect{}, "ledger_lines.amount > CAST(?", "ledger_lines.fee <= CAST(?"},
+		{filter.PostgresDialect{}, "ledger_lines.amount > $", "ledger_lines.fee <= $", "ledger_lines.amount DESC"},
+		{filter.SQLiteDialect{}, "parse_decimal_key(ledger_lines.amount) > parse_decimal_key(?", "parse_decimal_key(ledger_lines.fee) <= parse_decimal_key(?", "parse_decimal_key(ledger_lines.amount) DESC"},
 	} {
 		plan, err := resource.BuildList(tt.dialect, query, parse.Scope{})
 		require.NoError(t, err)
 		assert.Contains(t, plan.Page.SQL, tt.amount, tt.dialect.Name())
 		assert.Contains(t, plan.Page.SQL, tt.fee, tt.dialect.Name())
-		assert.Contains(t, plan.Page.SQL, "ledger_lines.amount DESC", tt.dialect.Name())
+		assert.Contains(t, plan.Page.SQL, tt.order, tt.dialect.Name())
 		assert.Subset(t, plan.Page.Args, []any{"9.5", "1"}, tt.dialect.Name())
 	}
 

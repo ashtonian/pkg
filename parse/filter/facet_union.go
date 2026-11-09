@@ -176,7 +176,10 @@ func buildFacetQuery(schema *ResourceSchema, dialect Dialect, filterWhere string
 		first = false
 		switch {
 		case m.cfg.Type == FacetTypeRange:
-			caseSQL, rangeArgs, consumed := rangeBucketProjection(FieldExpr(dialect, m.field), m.cfg.Ranges, dialect, paramOffset)
+			caseSQL, rangeArgs, consumed, err := rangeBucketProjection(m.field, m.cfg.Ranges, dialect, paramOffset)
+			if err != nil {
+				return FacetQuery{}, err
+			}
 			proj.WriteString(caseSQL)
 			args = append(args, rangeArgs...)
 			paramOffset += consumed
@@ -379,17 +382,15 @@ func termsKeyExpr(field *FieldSchema, dialect Dialect) string {
 	return "CAST(" + expr + " AS TEXT)"
 }
 
-// decimalKeyExpr projects a decimal as its canonical text (core.DecimalText)
-// rather than the stored scale: numeric's text keeps a column's scale
-// ("10.50"), and SQLite writes an integral REAL with a fraction ("10.0").
-// SQLite renders other REALs in its own 15-digit form, exponent included
-// beyond ±1e15 and below 1e-4.
+// decimalKeyExpr projects a decimal value (FieldExpr) as its canonical text
+// (core.DecimalText) rather than the stored scale: numeric's text keeps a
+// column's scale ("10.50"). SQLite's decimal value is already the canonical
+// text (parse_decimal).
 func decimalKeyExpr(expr string, dialect Dialect) string {
 	if dialect.Name() == "postgres" {
 		return "trim_scale(" + expr + ")::text"
 	}
-	return "CASE WHEN typeof(" + expr + ") = 'real' AND " + expr + " = CAST(" + expr + " AS INTEGER) THEN CAST(CAST(" + expr +
-		" AS INTEGER) AS TEXT) ELSE CAST(" + expr + " AS TEXT) END"
+	return expr
 }
 
 // ScanFacetUnion reads (facet_field, facet_key, facet_count) rows produced
