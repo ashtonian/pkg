@@ -148,7 +148,10 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      # pnpm first: setup-node's pnpm cache asks pnpm for its store path. The version
+      # Before pnpm: points pnpm at the runner's in-cluster npm cache when it answers,
+      # and leaves npmjs otherwise.
+      - uses: ashtonian/go-ci-actions/npm-registry@b00eaa9d77e88056d1b4e713493efa83ef58b7f2 # v1.6.0
+      # pnpm next: setup-node's pnpm cache asks pnpm for its store path. The version
       # comes from the SDK's packageManager field.
       - uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
         with:

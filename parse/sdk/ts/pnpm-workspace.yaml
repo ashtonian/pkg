@@ -5,5 +5,6 @@
 # Left at its default, pmOnFail also records the pinned pnpm as a leading document in
 # pnpm-lock.yaml. GitHub's dependency graph ignores a two-document lockfile, so the SDK's
 # dependencies would drop out of the graph, its SBOM and any Dependabot alerts. A
-# different local pnpm therefore runs as itself rather than switching to the pinned one.
+# different local pnpm therefore runs as itself rather than switching to the pinned one,
+# and tools/check-parse-sdk-pnpm.mjs (run by make test-parse-sdk) enforces the pin.
 pmOnFail: ignore

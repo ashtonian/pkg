@@ -106,4 +106,4 @@ SQLite cases run locally. PostgreSQL/PostGIS tests require the corresponding DSN
 | [Typed JSON parity](../typed_document_integration_test.go) | Stored SQLite document versus typed application |
 | [SDK fixtures](../testdata/) | Go-to-TypeScript schema/filter/page contracts |
 
-For the SDK, run `pnpm install --frozen-lockfile`, `pnpm run check`, `pnpm run check:compat`, `pnpm run lint`, `pnpm test`, and `pnpm run build` from `sdk/ts`. Regenerate shared fixtures only when the contract change is intentional; the [SDK guide](../sdk/ts/README.md#testing) lists the commands.
+For the SDK, run `make test-parse-sdk` from the repository root, which first checks the pinned pnpm, or run `pnpm install --frozen-lockfile`, `pnpm run check`, `pnpm run check:compat`, `pnpm run lint`, `pnpm test`, and `pnpm run build` from `sdk/ts`. Regenerate shared fixtures only when the contract change is intentional; the [SDK guide](../sdk/ts/README.md#testing) lists the commands.

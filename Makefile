@@ -54,6 +54,7 @@ test-parse-integration:
 	go test -tags=integration -race -count=1 -timeout=15m ./parse/...
 
 test-parse-sdk:
+	node tools/check-parse-sdk-pnpm.mjs
 	cd parse/sdk/ts && pnpm install --frozen-lockfile && pnpm run check && pnpm run check:compat && pnpm run lint && pnpm test && pnpm run build
 
 parse-sdk-release-check:
