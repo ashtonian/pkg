@@ -54,7 +54,7 @@ test-parse-integration:
 	go test -tags=integration -race -count=1 -timeout=15m ./parse/...
 
 test-parse-sdk:
-	cd parse/sdk/ts && npm ci && npm run check && npm run check:compat && npm run lint && npm test && npm run build
+	cd parse/sdk/ts && pnpm install --frozen-lockfile && pnpm run check && pnpm run check:compat && pnpm run lint && pnpm test && pnpm run build
 
 parse-sdk-release-check:
 	bash tools/check-parse-sdk-release.sh

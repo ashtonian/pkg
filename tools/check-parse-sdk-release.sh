@@ -23,7 +23,7 @@ fi
 if [[ $registry == false && $# == 1 ]]; then
     package=$(cd -- "$(dirname -- "$1")" && pwd)/$(basename -- "$1")
 elif [[ $registry == false ]]; then
-    (cd "$sdk" && npm pack --silent --pack-destination "$scratch") > /dev/null
+    pnpm --dir "$sdk" pack --pack-destination "$scratch" > /dev/null
     package="$scratch/ashtonian-parse-$expected_version.tgz"
 fi
 mkdir "$scratch/consumer"
@@ -31,8 +31,11 @@ cd "$scratch/consumer"
 cat > package.json <<'JSON'
 {"private":true,"type":"module"}
 JSON
-npm install --ignore-scripts --no-audit --no-fund --cache "$scratch/npm-cache" \
-    --registry=https://registry.npmjs.org --fetch-timeout=30000 --fetch-retries=1 "$package"
+# A fresh store and metadata cache make the registry serve every byte. A release age of
+# zero admits the version this check exists to install, however recently it was published.
+pnpm add --ignore-scripts --store-dir "$scratch/pnpm-store" --config.cache-dir="$scratch/pnpm-cache" \
+    --registry=https://registry.npmjs.org/ --config.fetch-timeout=30000 --config.fetch-retries=1 \
+    --config.minimum-release-age=0 "$package"
 cat > tsconfig.json <<'JSON'
 {
   "compilerOptions": {
@@ -60,7 +63,7 @@ const page: ListResult<Product> = {
 if (page.items.length || SCHEMA_VERSION !== 1) throw new Error("schema/page contract");
 if (typeof ApiError !== "function" || typeof validatePatch !== "function") throw new Error("public subpath exports");
 TS
-node "$sdk/node_modules/typescript/bin/tsc" -p tsconfig.json --noEmit
+node "$sdk/node_modules/typescript/bin/tsc6" -p tsconfig.json --noEmit
 node "$sdk/node_modules/@typescript/native/bin/tsc" -p tsconfig.json
 node dist/index.js
 # Every map resolves within the installed package, including declaration maps.
@@ -74,11 +77,16 @@ assert.equal(pkg.name, '@ashtonian/parse');
 assert.equal(pkg.version, process.argv[2]);
 assert.equal(Object.keys(pkg.dependencies ?? {}).length, 0);
 if (process.argv[3] === 'true') {
-  const lock = JSON.parse(fs.readFileSync('package-lock.json', 'utf8'));
-  const installed = lock.packages['node_modules/@ashtonian/parse'];
-  assert.equal(new URL(installed.resolved).origin, 'https://registry.npmjs.org');
-  assert.equal(installed.version, pkg.version);
-  assert.ok(installed.integrity?.startsWith('sha512-'), 'registry package integrity');
+  // pnpm verified the download against the integrity it locked. The public registry's
+  // own metadata must name those bytes, whatever registry configuration served them.
+  const version = pkg.version.replaceAll('.', '\\.');
+  const locked = fs.readFileSync('pnpm-lock.yaml', 'utf8').match(new RegExp(
+    `^  '@ashtonian/parse@${version}':\\n    resolution: \\{integrity: (sha512-[A-Za-z0-9+/]+={0,2})\\}$`, 'm'));
+  assert.ok(locked, 'registry package integrity in pnpm-lock.yaml');
+  const url = `https://registry.npmjs.org/${encodeURIComponent(pkg.name)}/${pkg.version}`;
+  const response = await fetch(url, { signal: AbortSignal.timeout(30_000) });
+  assert.ok(response.ok, `registry returned HTTP ${response.status} for ${url}`);
+  assert.equal((await response.json()).dist?.integrity, locked[1], 'installed bytes differ from the public registry');
 }
 for (const entry of fs.readdirSync(root, { recursive: true })) {
   assert.ok(!entry.endsWith('.test.ts'), `test source in package: ${entry}`);

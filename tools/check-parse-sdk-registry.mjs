@@ -64,7 +64,8 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
     const [file, mode, ...extra] = process.argv.slice(2);
     assert.ok(file && (mode === undefined || mode === '--wait') && extra.length === 0,
       'usage: node tools/check-parse-sdk-registry.mjs pack.json [--wait]');
-    const packed = JSON.parse(fs.readFileSync(file, 'utf8'))['@ashtonian/parse'];
+    // `pnpm pack --json` output for the one package.
+    const packed = JSON.parse(fs.readFileSync(file, 'utf8'));
     assert.equal(packed?.name, '@ashtonian/parse');
     assert.match(packed.version, /^\d+\.\d+\.\d+$/);
     assert.match(packed.integrity, /^sha512-[A-Za-z0-9+/]+={0,2}$/);
