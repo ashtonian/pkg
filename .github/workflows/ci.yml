@@ -44,7 +44,7 @@ jobs:
       - id: scope
         run: python3 tools/ci_scope.py
       - name: Set up artifact receipt access
-        uses: ashtonian/go-ci-actions/artifact-setup@07fbac1477e5c6befebba17cb7326daff639ff25 # v1.3.0
+        uses: ashtonian/go-ci-actions/artifact-setup@fd722a57af04549dc44eeb876c53c72da97d7faf # v1.5.0
       - id: acceptance
         env:
           GITHUB_TOKEN: ${{ github.token }}
@@ -75,7 +75,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: ashtonian/go-ci-actions@78710c0215622d4dd362f4c565de788934051488 # v1.1.0
+      - uses: ashtonian/go-ci-actions@fd722a57af04549dc44eeb876c53c72da97d7faf # v1.5.0
         with:
           workload: ${{ toJSON(matrix) }}
           go-version: ${{ matrix.go }}
@@ -129,7 +129,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: ashtonian/go-ci-actions@78710c0215622d4dd362f4c565de788934051488 # v1.1.0
+      - uses: ashtonian/go-ci-actions@fd722a57af04549dc44eeb876c53c72da97d7faf # v1.5.0
         with:
           go-version: stable
           cache-dependency-path: "**/go.sum"
@@ -171,7 +171,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: ashtonian/go-ci-actions@78710c0215622d4dd362f4c565de788934051488 # v1.1.0
+      - uses: ashtonian/go-ci-actions@fd722a57af04549dc44eeb876c53c72da97d7faf # v1.5.0
         with:
           go-version: stable
           cache-dependency-path: "**/go.sum"
@@ -179,7 +179,7 @@ jobs:
         run: >-
           go test -tags=unit -run '^$' -bench . -benchmem -count=3
           -cpuprofile=parse-cpu.prof -memprofile=parse-allocs.prof ./parse/filter | tee parse-benchmarks.txt
-      - uses: ashtonian/go-ci-actions/upload-artifact@07fbac1477e5c6befebba17cb7326daff639ff25 # v1.3.0
+      - uses: ashtonian/go-ci-actions/upload-artifact@fd722a57af04549dc44eeb876c53c72da97d7faf # v1.5.0
         with:
           name: parse-benchmarks-${{ github.sha }}
           path: |
@@ -199,7 +199,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: ashtonian/go-ci-actions@78710c0215622d4dd362f4c565de788934051488 # v1.1.0
+      - uses: ashtonian/go-ci-actions@fd722a57af04549dc44eeb876c53c72da97d7faf # v1.5.0
         with:
           go-version: '1.26.x'
           cache-dependency-path: "**/go.sum"
@@ -227,7 +227,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: ashtonian/go-ci-actions@78710c0215622d4dd362f4c565de788934051488 # v1.1.0
+      - uses: ashtonian/go-ci-actions@fd722a57af04549dc44eeb876c53c72da97d7faf # v1.5.0
         with:
           go-version: '1.26.x'
           cache-dependency-path: "**/go.sum"
@@ -254,7 +254,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: ashtonian/go-ci-actions@78710c0215622d4dd362f4c565de788934051488 # v1.1.0
+      - uses: ashtonian/go-ci-actions@fd722a57af04549dc44eeb876c53c72da97d7faf # v1.5.0
         with:
           go-version: stable
           cache-dependency-path: "**/go.sum"
@@ -273,7 +273,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: ashtonian/go-ci-actions@78710c0215622d4dd362f4c565de788934051488 # v1.1.0
+      - uses: ashtonian/go-ci-actions@fd722a57af04549dc44eeb876c53c72da97d7faf # v1.5.0
         with:
           go-version: stable
           cache-dependency-path: "**/go.sum"
@@ -295,7 +295,7 @@ jobs:
           VALIDATION_JOBS: ${{ toJSON(needs) }}
           CI_VARIABLES_JSON: ${{ toJSON(vars) }}
         run: python3 tools/ci_acceptance.py record --output "$RUNNER_TEMP/ci-acceptance/acceptance.json"
-      - uses: ashtonian/go-ci-actions/upload-artifact@07fbac1477e5c6befebba17cb7326daff639ff25 # v1.3.0
+      - uses: ashtonian/go-ci-actions/upload-artifact@fd722a57af04549dc44eeb876c53c72da97d7faf # v1.5.0
         with:
           name: acceptance-${{ github.run_attempt }}
           path: ${{ runner.temp }}/ci-acceptance/acceptance.json

@@ -32,5 +32,8 @@ updates:
       interval: weekly
     cooldown:
       default-days: 7
+      # First-party actions are the owner's own signed tags. The cooldown guards
+      # against third-party releases and would only delay them.
+      exclude: ["ashtonian/*"]
     commit-message:
       prefix: ci
