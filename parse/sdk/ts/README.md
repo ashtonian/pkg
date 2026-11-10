@@ -15,9 +15,9 @@ npm install @ashtonian/parse
 To build and package a local checkout from this directory:
 
 ```bash
-npm ci
-npm run build
-npm pack
+pnpm install --frozen-lockfile
+pnpm run build
+pnpm pack
 ```
 
 Install the resulting tarball in the consuming project with `npm install /path/to/tarball.tgz`, or use your workspace package setup. The import name is `@ashtonian/parse` for both registry and local installations.
@@ -138,17 +138,17 @@ Validation codes match the Go parser: E2071 unknown field, E2072 operator not al
 ## Testing
 
 ```bash
-npm ci
-npm run check   # TypeScript 7 native build-mode check over sources and tests
-npm run check:compat # TypeScript 6 tooling API compatibility
-npm run lint    # eslint, typescript-eslint strict type-checked
-npm test        # vitest
-npm run build   # emits dist/
+pnpm install --frozen-lockfile
+pnpm run check        # TypeScript 7 native build-mode check over sources and tests
+pnpm run check:compat # TypeScript 6 tooling API compatibility (tsc6)
+pnpm run lint         # eslint, typescript-eslint strict type-checked
+pnpm test             # vitest
+pnpm run build        # emits dist/
 ```
 
-Development requires Node.js 22.13+ (or 24+). Builds use TypeScript 7 through `@typescript/native`; typed ESLint uses the supported TypeScript 6 API through the `typescript` alias. These are development dependencies; the published client has no runtime dependencies. The tarball includes compiled output and original library source for declaration-map navigation; test sources stay out. JavaScript maps include their source text.
+Development requires Node.js 22.13+ (or 24+) and pnpm 12 at the version `packageManager` pins; CI installs that version. `pnpm-workspace.yaml` sets `pmOnFail: ignore`, so another local pnpm runs as itself instead of switching: pinning would make pnpm write a second YAML document into `pnpm-lock.yaml`, which GitHub's dependency graph, its SBOM export and Dependabot alerts do not read. `make test-parse-sdk`, which CI and the release workflow run, therefore starts with `tools/check-parse-sdk-pnpm.mjs`. It fails when the pnpm on `PATH` is not the pinned release (`pnpm self-update X.Y.Z` installs it), when `pmOnFail: ignore` is missing, or when `pnpm-lock.yaml` has YAML document markers. pnpm keeps a leading `packageManagerDependencies` document once written, so delete it by hand (from the first `---` line through the second). Builds use TypeScript 7 through `@typescript/native`; typed ESLint uses the supported TypeScript 6 API through the `typescript` alias, Microsoft's `@typescript/typescript6` package, whose compiler command is `tsc6`. These are development dependencies; the published client has no runtime dependencies. The tarball includes compiled output and original library source for declaration-map navigation; test sources stay out. JavaScript maps include their source text.
 
-From the repository root, `make parse-sdk-release-check` installs the built tarball in a fresh consumer and verifies both TypeScript compilers, runtime subpath imports and packaged sourcemaps. To verify an existing public release, run `bash tools/check-parse-sdk-release.sh --registry X.Y.Z`; it requires the SDK's development dependencies and installs that exact version from the public npm registry with a fresh cache. `PARSE_SDK_DIR` selects an alternate SDK source directory, including its compiler dependencies. See [the release procedure](../../../CONTRIBUTING.md#parse-sdk-publication) for publication and authentication setup.
+From the repository root, `make parse-sdk-release-check` installs the built tarball in a fresh consumer and verifies both TypeScript compilers, runtime subpath imports and packaged sourcemaps. To verify an existing public release, run `bash tools/check-parse-sdk-release.sh --registry X.Y.Z`; it requires the SDK's development dependencies and installs that exact version from the public npm registry with a fresh pnpm store and cache, then checks that the integrity pnpm locked matches the registry's own metadata. `PARSE_SDK_DIR` selects an alternate SDK source directory, including its compiler dependencies. See [the release procedure](../../../CONTRIBUTING.md#parse-sdk-publication) for publication and authentication setup.
 
 Three Go-emitted fixtures keep the client on the server's contract; each fails its Go test when stale:
 

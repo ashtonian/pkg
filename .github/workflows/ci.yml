@@ -148,11 +148,19 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      # Before pnpm: points pnpm at the runner's in-cluster npm cache when it answers,
+      # and leaves npmjs otherwise.
+      - uses: ashtonian/go-ci-actions/npm-registry@b00eaa9d77e88056d1b4e713493efa83ef58b7f2 # v1.6.0
+      # pnpm next: setup-node's pnpm cache asks pnpm for its store path. The version
+      # comes from the SDK's packageManager field.
+      - uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
+        with:
+          package_json_file: parse/sdk/ts/package.json
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: lts/*
-          cache: npm
-          cache-dependency-path: parse/sdk/ts/package-lock.json
+          cache: pnpm
+          cache-dependency-path: parse/sdk/ts/pnpm-lock.yaml
       - run: make test-parse-sdk
       - name: Registry availability checks
         run: make parse-sdk-registry-check

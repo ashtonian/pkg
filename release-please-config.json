@@ -16,16 +16,6 @@
           "type": "json",
           "path": "sdk/ts/package.json",
           "jsonpath": "$.version"
-        },
-        {
-          "type": "json",
-          "path": "sdk/ts/package-lock.json",
-          "jsonpath": "$.version"
-        },
-        {
-          "type": "json",
-          "path": "sdk/ts/package-lock.json",
-          "jsonpath": "$.packages[''].version"
         }
       ]
     },

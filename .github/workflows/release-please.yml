@@ -80,13 +80,16 @@ jobs:
           path: source
           fetch-depth: 0
           persist-credentials: false
+      # The release's own packageManager field selects pnpm, which also exchanges the
+      # job's OIDC token for npm trusted publishing.
+      - uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
+        with:
+          package_json_file: source/parse/sdk/ts/package.json
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: lts/*
-          cache: npm
-          cache-dependency-path: source/parse/sdk/ts/package-lock.json
-      - name: Install npm with trusted publishing support
-        run: npm install --global npm@12.2.2
+          cache: pnpm
+          cache-dependency-path: source/parse/sdk/ts/pnpm-lock.yaml
       - name: Check release identity
         run: |
           git -C source merge-base --is-ancestor HEAD origin/main
@@ -94,19 +97,16 @@ jobs:
           import assert from 'node:assert/strict';
           import fs from 'node:fs';
           const pkg = JSON.parse(fs.readFileSync(`${process.env.PARSE_SDK_DIR}/package.json`, 'utf8'));
-          const lock = JSON.parse(fs.readFileSync(`${process.env.PARSE_SDK_DIR}/package-lock.json`, 'utf8'));
           const manifest = JSON.parse(fs.readFileSync('source/.release-please-manifest.json', 'utf8'));
           assert.equal(pkg.name, '@ashtonian/parse');
           assert.equal(`parse/v${pkg.version}`, process.env.RELEASE_TAG);
-          assert.equal(lock.version, pkg.version);
-          assert.equal(lock.packages[''].version, pkg.version);
           assert.equal(manifest.parse, pkg.version);
           JS
       - name: Build, pack and verify the released SDK
         run: |
           make -C source test-parse-sdk
           mkdir artifacts
-          (cd "$PARSE_SDK_DIR" && npm pack --json --pack-destination "$GITHUB_WORKSPACE/artifacts") > artifacts/pack.json
+          pnpm --dir "$PARSE_SDK_DIR" pack --json --pack-destination "$GITHUB_WORKSPACE/artifacts" > artifacts/pack.json
           version=${RELEASE_TAG#parse/v}
           bash tooling/tools/check-parse-sdk-release.sh "artifacts/ashtonian-parse-$version.tgz"
           git -C source rev-parse HEAD > artifacts/source-commit.txt
@@ -128,7 +128,7 @@ jobs:
             echo '::error::Dispatch publication at the release tag so provenance identifies the package source.'
             exit 1
           fi
-          npm publish "$GITHUB_WORKSPACE/artifacts/ashtonian-parse-${RELEASE_TAG#parse/v}.tgz" --access public --provenance --registry=https://registry.npmjs.org
+          pnpm publish "$GITHUB_WORKSPACE/artifacts/ashtonian-parse-${RELEASE_TAG#parse/v}.tgz" --access public --provenance --registry=https://registry.npmjs.org/
       - name: Wait for the exact package to become installable
         if: steps.registry.outputs.publish == 'false' || github.event_name == 'push' || inputs.publish
         timeout-minutes: 16
