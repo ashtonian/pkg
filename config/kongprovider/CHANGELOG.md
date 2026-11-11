@@ -5,14 +5,10 @@
 
 ### ⚠ BREAKING CHANGES
 
-* **kongprovider:** name every prefix's variables in flag help
-* **kongprovider:** name every prefix's variables in flag help ([#174](https://github.com/ashtonian/pkg/issues/174))
-* **kongprovider:** HelpFromConfig takes variadic prefixes. Calls with one prefix compile unchanged; function values of the former type do not.
+* **kongprovider:** name every prefix's variables in flag help ([#174](https://github.com/ashtonian/pkg/issues/174)): HelpFromConfig takes variadic prefixes. Calls with one prefix compile unchanged; function values of the former type do not.
 
 ### Features
 
-* **kongprovider:** name every prefix's variables in flag help ([cb59c85](https://github.com/ashtonian/pkg/commit/cb59c855df89b2ecf9a5456cc6b5bbd66d2b804d))
-* **kongprovider:** name every prefix's variables in flag help ([e008bd8](https://github.com/ashtonian/pkg/commit/e008bd8c311897792f2822b7930f1a55816b7327))
 * **kongprovider:** name every prefix's variables in flag help ([#174](https://github.com/ashtonian/pkg/issues/174)) ([cb59c85](https://github.com/ashtonian/pkg/commit/cb59c855df89b2ecf9a5456cc6b5bbd66d2b804d))
 
 ## [0.2.1](https://github.com/ashtonian/pkg/compare/config/kongprovider/v0.2.0...config/kongprovider/v0.2.1) (2026-10-18)
