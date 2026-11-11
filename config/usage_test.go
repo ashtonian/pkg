@@ -207,3 +207,49 @@ func TestUsage_CatalogMatchesJSONAndSchemaEnums(t *testing.T) {
 	assert.Equal(t, "hello world", again[0].Allowed[0])
 	assert.Equal(t, []int{0}, again[0].Field.Index)
 }
+
+type usageItem struct {
+	Port int `koanf:"port"`
+}
+
+type usageFeature struct {
+	Limit  int               `koanf:"limit"`
+	Labels map[string]string `koanf:"labels"`
+}
+
+type usageVariablesCfg struct {
+	Features map[string]usageFeature `koanf:"features"`
+	ByID     map[int]string          `koanf:"by_id"`
+	Items    []usageItem             `koanf:"items"`
+}
+
+func (usageVariablesCfg) ConfigDefaults() map[string]any {
+	return map[string]any{"items": []map[string]any{{"port": 80}}}
+}
+
+// Usage names a variable only where the loader reads one that can set the
+// key: not an entry of a map inside a map entry, not a map keyed by
+// anything but strings, and not a list of sections, with a default or not.
+func TestUsage_NamesOnlyVariablesThatSetAKey(t *testing.T) {
+	type cfg = usageVariablesCfg
+	rows, err := Usage[cfg]("APP")
+	require.NoError(t, err)
+	env := map[string][]string{}
+	for _, r := range rows {
+		env[r.Key] = r.EnvVars
+	}
+	assert.Equal(t, map[string][]string{
+		"features[*].limit":     {"APP_FEATURES_<KEY>_LIMIT"},
+		"features[*].labels":    {"APP_FEATURES_<KEY>_LABELS"},
+		"features[*].labels[*]": nil,
+		"by_id":                 nil,
+		"items":                 nil,
+		"items[*].port":         nil,
+	}, env)
+
+	var tmpl bytes.Buffer
+	require.NoError(t, PrintTemplate[cfg]("APP", WithWriter(&tmpl)))
+	assert.NotContains(t, tmpl.String(), "APP_BY_ID")
+	assert.NotContains(t, tmpl.String(), "APP_ITEMS")
+	assert.NotContains(t, tmpl.String(), "APP_FEATURES_<KEY>_LABELS_<KEY>")
+}

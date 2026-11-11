@@ -65,12 +65,11 @@ func newEnvSchema(fields []Field, prefix string) envSchema {
 		for i, tagName := range envTagNames(f.Tag) {
 			s.tagged[tagName] = append(s.tagged[tagName], envTagged{path: f.Path, rank: i + 1})
 		}
-		t := derefType(f.Type)
-		if t.Kind() != reflect.Map || t.Key().Kind() != reflect.String {
+		if !envEntryMap(f.Type) {
 			continue
 		}
 		m := envMap{prefix: name + "_", path: f.Path}
-		if elem := derefType(t.Elem()); isBranch(elem) {
+		if elem := derefType(derefType(f.Type).Elem()); isBranch(elem) {
 			for _, leaf := range fieldsOf(elem) {
 				m.leaves = append(m.leaves, envLeaf{suffix: envName("", leaf.Path), path: leaf.Path})
 			}
@@ -78,6 +77,13 @@ func newEnvSchema(fields []Field, prefix string) envSchema {
 		s.maps = append(s.maps, m)
 	}
 	return s
+}
+
+// envEntryMap reports a map whose entries variables address one by one: a
+// map keyed by strings, which a variable name can spell.
+func envEntryMap(t reflect.Type) bool {
+	t = derefType(t)
+	return t.Kind() == reflect.Map && t.Key().Kind() == reflect.String
 }
 
 // envReading is one key a variable could set: its dot-path for the flat
@@ -184,6 +190,63 @@ func (s envSchema) read(environ []string) (values map[string]any, names map[stri
 		}
 	}
 	return values, names, unmatched, nil
+}
+
+// envNames are the variables that address one position of a config schema
+// as diagnostics walk it. They follow the rule the loader reads by — a key's
+// segments upper-cased and joined with "_" after the prefix — and stop where
+// the loader reads no variable: beneath a list element, and beneath a map
+// entry, where a map's entries are not addressed one by one.
+type envNames struct {
+	names   []string // nil where no variable reaches
+	inEntry bool
+}
+
+// rootEnvNames are the names at the root of a schema under prefix, without
+// its trailing "_"; there are none without one.
+func rootEnvNames(prefix string) envNames {
+	if prefix == "" {
+		return envNames{}
+	}
+	return envNames{names: []string{prefix}}
+}
+
+// field is the names of the key segment key beneath e.
+func (e envNames) field(key string) envNames {
+	return e.extend(envName("", key))
+}
+
+// entries is the names of the entries of a map of type t at e: a <KEY>
+// placeholder for the entry's key.
+func (e envNames) entries(t reflect.Type) envNames {
+	if e.inEntry || !envEntryMap(t) {
+		return envNames{inEntry: true}
+	}
+	next := e.extend("_<KEY>")
+	next.inEntry = true
+	return next
+}
+
+func (e envNames) extend(suffix string) envNames {
+	if len(e.names) == 0 {
+		return envNames{inEntry: e.inEntry}
+	}
+	out := envNames{names: make([]string, len(e.names)), inEntry: e.inEntry}
+	for i, n := range e.names {
+		out.names[i] = n + suffix
+	}
+	return out
+}
+
+// set lists the variables that set a key of type t at e whose struct tag is
+// tag, in precedence order: its own name, then the names its env tag lists.
+// A value no variable sets whole — a section, a list of sections, a map a
+// string cannot fill — has none.
+func (e envNames) set(tag reflect.StructTag, t reflect.Type) []string {
+	if len(e.names) == 0 || !variableSetsField(tag, t) {
+		return nil
+	}
+	return append(slices.Clone(e.names), envTagNames(tag)...)
 }
 
 // envTagNames returns the variables a field's env tag lists, in order.

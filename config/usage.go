@@ -187,7 +187,7 @@ func PrintUsage[T any](envPrefix string, opts ...PrintOption) error {
 func usageRows(root *schemaNode, prefix string, defaults declaredDefaults) ([]UsageEntry, error) {
 	var rows []UsageEntry
 	var resultErr error
-	add := func(f Field, key, env string, pattern bool) {
+	add := func(f Field, key string, env envNames, pattern bool) {
 		if resultErr != nil {
 			return
 		}
@@ -200,8 +200,8 @@ func usageRows(root *schemaNode, prefix string, defaults declaredDefaults) ([]Us
 		rows = append(rows, row)
 	}
 	walking := map[*schemaNode]bool{}
-	var walk func(*schemaNode, cursor, string, bool)
-	walk = func(n *schemaNode, c cursor, env string, pattern bool) {
+	var walk func(*schemaNode, cursor, envNames, bool)
+	walk = func(n *schemaNode, c cursor, env envNames, pattern bool) {
 		if resultErr != nil || walking[n] {
 			return
 		}
@@ -211,14 +211,11 @@ func usageRows(root *schemaNode, prefix string, defaults declaredDefaults) ([]Us
 		case nodeBranch:
 			for _, f := range n.fields {
 				next := c.intoField(f)
-				ownEnv := ""
-				if env != "" {
-					ownEnv = env + "_" + strings.ToUpper(f.key)
-				}
+				fieldEnv := env.field(f.key)
 				if f.node.kind == nodeBranch && jsonFormat(f.sf.Tag) {
-					add(next.owner, next.path.String(), ownEnv, pattern)
+					add(next.owner, next.path.String(), fieldEnv, pattern)
 				}
-				walk(f.node, next, ownEnv, pattern)
+				walk(f.node, next, fieldEnv, pattern)
 			}
 		case nodeMap, nodeList:
 			_, has := c.owner.Tag.Lookup("default")
@@ -229,26 +226,25 @@ func usageRows(root *schemaNode, prefix string, defaults declaredDefaults) ([]Us
 			if !expand {
 				return
 			}
-			nextEnv := ""
-			if n.kind == nodeMap && env != "" {
-				nextEnv = env + "_<KEY>"
+			var elemEnv envNames // a list element has no variable
+			if n.kind == nodeMap {
+				elemEnv = env.entries(n.typ)
 			}
 			next := c.intoEntry(segment{kind: segAny}, n.typ.Elem())
 			if n.elem.kind != nodeBranch {
 				next.owner.Tag = reflect.StructTag(fmt.Sprintf("desc:%q", c.owner.Tag.Get("desc")))
 			}
-			walk(n.elem, next, nextEnv, true)
+			walk(n.elem, next, elemEnv, true)
 		default:
 			add(c.owner, c.path.String(), env, pattern)
 		}
 	}
-	walk(root, cursor{}, prefix, false)
+	walk(root, cursor{}, rootEnvNames(prefix), false)
 	return rows, resultErr
 }
 
-// usageRowOf describes f, shown as key and set by env, the first of them
-// its own variable.
-func usageRowOf(f Field, key string, env ...string) (usageRow, error) {
+// usageRowOf describes f, shown as key, at env.
+func usageRowOf(f Field, key string, env envNames) (usageRow, error) {
 	row := usageRow{
 		Key:         key,
 		Type:        typeText(f.Type),
@@ -262,10 +258,11 @@ func usageRowOf(f Field, key string, env ...string) (usageRow, error) {
 	if err != nil {
 		return usageRow{}, err
 	}
-	if len(env) > 0 && env[0] != "" {
-		row.Env = env[0]
-		row.AlsoEnv = envTagNames(f.Tag)
-		row.EnvVars = append([]string{row.Env}, row.AlsoEnv...)
+	if names := env.set(f.Tag, f.Type); len(names) > 0 {
+		row.EnvVars, row.Env = names, names[0]
+		if len(names) > 1 {
+			row.AlsoEnv = slices.Clone(names[1:])
+		}
 	}
 	row.JSON = jsonFormat(f.Tag)
 	if ex, ok := f.PrintableExample(); ok {
