@@ -135,7 +135,7 @@ load with `config.ErrSource`.
 
 Mapped values unflatten into the key tree, so a flag for `db.host` overrides that nested key. The provider loads through `config.WithOverrideProvider`, above the environment. It is a `config.OriginProvider`: in a snapshot with provenance (`config.LoadSnapshot`, a reloader `WithProvenance`), each value it set is attributed to its flag by canonical name — `flag --db-host`, however it was typed — rather than to "override provider 0".
 
-`HelpFromConfig(&cli.AppConfig, envPrefix)` is a `kong.PostBuild` option. Every flag that sets a key of the config struct takes the field's `desc` when it has no help of its own, and its help gains the key and the environment variable that set the same value. Kong prints a field's `default` itself; `HelpFromConfig` adds it to the help only for a flag Kong shows no default for, and only when diagnostics may print it (`config.Field.PrintableDefault`) — a sensitive default, or one that could hold a sensitive value, is also kept out of Kong's placeholder, which shows `VALUE` instead.
+`HelpFromConfig(&cli.AppConfig, envPrefixes...)` is a `kong.PostBuild` option. Every flag that sets a key of the config struct takes the field's `desc` when it has no help of its own, and its help gains the key and the environment variables that set the same value, in the order the load reads them. Pass the prefixes the load passes `config.WithEnvPrefixes`: with `HelpFromConfig(&cli.AppConfig, "APP_WORKER", "APP")`, `--db-host` reads `(config: db.host; env: APP_WORKER_DB_HOST, APP_DB_HOST)`. Kong prints a field's `default` itself; `HelpFromConfig` adds it to the help only for a flag Kong shows no default for, and only when diagnostics may print it (`config.Field.PrintableDefault`) — a sensitive default, or one that could hold a sensitive value, is also kept out of Kong's placeholder, which shows `VALUE` instead.
 
 ## Rules for the config struct
 
@@ -164,7 +164,7 @@ When the CLI exposes only a few settings under names of its own, keep the struct
 - `WithOverridesFromStruct(kctx, cfg *T) config.Option` — every typed flag that writes a field of `cfg`, a config struct inside the parsed CLI struct, as an override at that field's key.
 - `WithOverrides(kctx, mapping) config.Option` — the same with an explicit flag name → key mapping.
 - `New(kctx, mapping) koanf.Provider` — the provider itself, for `config.WithOverrideProvider(p, nil)`; it also implements `config.OriginProvider`, naming each value's flag.
-- `HelpFromConfig(cfg *T, envPrefix) kong.Option` — help for every flag that writes a field of `cfg`: its `desc`, key, environment variable and printable default.
+- `HelpFromConfig(cfg *T, envPrefixes...) kong.Option` — help for every flag that writes a field of `cfg`: its `desc`, key, environment variables in precedence order and printable default.
 
 `HelpFromConfig` and `WithOverridesFromStruct` validate the complete config field
 catalog, including fields with no matching CLI flag. Conflicting keys, such as
