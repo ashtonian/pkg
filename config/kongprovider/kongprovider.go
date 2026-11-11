@@ -179,8 +179,11 @@ func WithOverridesFromStruct[T any](ctx *kong.Context, cfg *T) config.Option {
 // HelpFromConfig returns a Kong option that describes each flag that writes
 // a field of cfg. A flag with no help of its own takes the field's `desc`
 // tag, and its help gains the config key it sets and the environment
-// variables that set the same key under envPrefix — its own and those its
-// `env` tag lists. The field's default is added when diagnostics may print it
+// variables that set the same key under envPrefixes, as
+// config.WithEnvPrefixes takes them, in the order the load reads them: the
+// key's variable under each prefix, most specific first, then those its
+// `env` tag lists. A load with config.WithEnvPrefixes("APP_WORKER", "APP")
+// passes HelpFromConfig(cfg, "APP_WORKER", "APP"). The field's default is added when diagnostics may print it
 // (see config.Field.PrintableDefault) and Kong does not show it already; one
 // that must be withheld is kept out of Kong's own placeholder too.
 //
@@ -198,7 +201,7 @@ func WithOverridesFromStruct[T any](ctx *kong.Context, cfg *T) config.Option {
 // An invalid config field catalog returns config.ErrSchema during parser
 // construction, even when the conflicting fields have no CLI flags.
 // Ambiguous field addresses return config.ErrKey.
-func HelpFromConfig[T any](cfg *T, envPrefix string) kong.Option {
+func HelpFromConfig[T any](cfg *T, envPrefixes ...string) kong.Option {
 	return kong.PostBuild(func(k *kong.Kong) error {
 		flags := allFlags(k.Model.Node)
 		fields, err := fieldsOfFlags(cfg, flags)
@@ -207,7 +210,7 @@ func HelpFromConfig[T any](cfg *T, envPrefix string) kong.Option {
 		}
 		for _, fl := range flags {
 			if f, ok := fields[fl]; ok {
-				describe(fl, f, envPrefix)
+				describe(fl, f, envPrefixes)
 			}
 		}
 		return nil
@@ -215,13 +218,13 @@ func HelpFromConfig[T any](cfg *T, envPrefix string) kong.Option {
 }
 
 // describe writes field f's description into flag fl's help.
-func describe(fl *kong.Flag, f config.Field, envPrefix string) {
+func describe(fl *kong.Flag, f config.Field, envPrefixes []string) {
 	if fl.Help == "" {
 		fl.Help = f.Tag.Get("desc")
 	}
 	fl.Tag.Envs, fl.Envs = nil, nil
 	hints := []string{"config: " + f.Path}
-	if envs := f.EnvVars(envPrefix); len(envs) > 0 {
+	if envs := f.EnvVars(envPrefixes...); len(envs) > 0 {
 		hints = append(hints, "env: "+strings.Join(envs, ", "))
 	}
 	def, printable := f.PrintableDefault()

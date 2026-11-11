@@ -353,6 +353,30 @@ func TestHelpFromConfig_DescribesConfigFlags(t *testing.T) {
 	assert.Equal(t, "8080", flags["port"].FormatPlaceHolder())
 }
 
+// A flag's help names the variables of a config.WithEnvPrefixes load in the
+// order it reads them: under each prefix, most specific first, then those
+// the field's env tag lists. Without a prefix it names none.
+func TestHelpFromConfig_NamesEveryPrefix(t *testing.T) {
+	type cfg struct {
+		Port int    `koanf:"port" env:"PORT" desc:"HTTP listen port"`
+		Host string `koanf:"host"`
+	}
+	help := func(prefixes ...string) map[string]string {
+		var cli cfg
+		parser, err := kong.New(&cli, HelpFromConfig(&cli, prefixes...))
+		require.NoError(t, err)
+		out := map[string]string{}
+		for _, fl := range parser.Model.Flags {
+			out[fl.Name] = fl.Help
+		}
+		return out
+	}
+	layered := help("APP_WORKER", "APP")
+	assert.Equal(t, "HTTP listen port (config: port; env: APP_WORKER_PORT, APP_PORT, PORT)", layered["port"])
+	assert.Equal(t, "(config: host; env: APP_WORKER_HOST, APP_HOST)", layered["host"])
+	assert.Equal(t, "HTTP listen port (config: port)", help()["port"])
+}
+
 // A default that could hold a secret — a map's — reaches neither the help
 // nor the placeholder.
 func TestHelpFromConfig_WithholdsACompositeDefault(t *testing.T) {
