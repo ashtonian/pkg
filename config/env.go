@@ -10,10 +10,11 @@ import (
 	"strings"
 )
 
-// envSchema names the environment variables a config struct reads. Every
-// leaf's variable is the prefix plus its key path upper-cased with "." → "_",
-// so an underscore inside a key survives: APP_DB_MAX_CONNS sets db.max_conns,
-// where the naive "_" → "." transform would produce db.max.conns.
+// envSchema names the environment variables a config struct reads under an
+// ordered list of prefixes, most specific first. Every leaf's variable under
+// a prefix is the prefix plus its key path upper-cased with "." → "_", so an
+// underscore inside a key survives: APP_DB_MAX_CONNS sets db.max_conns, where
+// the naive "_" → "." transform would produce db.max.conns.
 //
 // A map has keys no schema names, so its variables are matched by shape:
 //
@@ -24,31 +25,35 @@ import (
 //   - Any other map reads PREFIX_<MAP>_<KEY>, the whole rest lower-cased:
 //     APP_LABELS_TEAM_NAME sets labels["team_name"].
 //
-// A variable that fits more than one key — a static field and a map entry,
-// two maps whose names prefix one another, two element fields where one name
-// ends the other — is ambiguous: it sets nothing, and the load fails naming
-// it and every reading, rather than configuring a key the operator did not
-// mean. A variable under the prefix that fits no key is not loaded.
+// Each key reads its variable under the first prefix that sets one, then the
+// names its env tag lists. A variable that fits more than one key — a static
+// field and a map entry, two maps whose names prefix one another, two element
+// fields where one name ends the other, a key under one prefix and another
+// key under a second — is ambiguous: it sets nothing, and the load fails
+// naming it and every reading, rather than configuring a key the operator did
+// not mean. A variable under a prefix that fits no key under any prefix is
+// not loaded.
 type envSchema struct {
-	prefix string // e.g. "APP_"
-	static map[string][]string
-	maps   []envMap
-	tagged map[string][]envTagged // names an env tag lists, read without the prefix
+	prefixes []string              // each with its trailing "_", e.g. "APP_WORKER_", "APP_"
+	named    map[string][]envNamed // every leaf's name under each prefix, and the names env tags list
+	maps     []envMap
 }
 
-// envTagged is a field an env tag names a variable for, and the variable's
-// place in the tag: a prefixed variable outranks every tagged one, and an
-// earlier tagged one a later.
-type envTagged struct {
+// envNamed is a key one variable name reads, and the reading's rank: a lower
+// rank wins when several variables set one key. A name under the i-th prefix
+// ranks i; the i-th name an env tag lists ranks after every prefix.
+type envNamed struct {
 	path string
 	rank int
 }
 
-// envMap is one map field: the variable prefix that addresses its entries and,
-// for a map of structs, the element struct's leaves.
+// envMap is one map field under one prefix: the variable prefix that
+// addresses its entries and, for a map of structs, the element struct's
+// leaves.
 type envMap struct {
 	prefix string // e.g. "APP_FEATURES_"
 	path   string // e.g. "features"
+	rank   int
 	leaves []envLeaf
 }
 
@@ -57,24 +62,33 @@ type envLeaf struct {
 	path   string // e.g. "max_page_size"
 }
 
-func newEnvSchema(fields []Field, prefix string) envSchema {
-	s := envSchema{prefix: prefix + "_", static: make(map[string][]string, len(fields)), tagged: map[string][]envTagged{}}
+// newEnvSchema names the variables of fields under prefixes, an
+// envPrefixList.
+func newEnvSchema(fields []Field, prefixes []string) envSchema {
+	s := envSchema{named: make(map[string][]envNamed, len(fields)*(len(prefixes)+1))}
+	for _, p := range prefixes {
+		s.prefixes = append(s.prefixes, p+"_")
+	}
 	for _, f := range fields {
-		name := envName(prefix, f.Path)
-		s.static[name] = append(s.static[name], f.Path)
-		for i, tagName := range envTagNames(f.Tag) {
-			s.tagged[tagName] = append(s.tagged[tagName], envTagged{path: f.Path, rank: i + 1})
-		}
-		if !envEntryMap(f.Type) {
-			continue
-		}
-		m := envMap{prefix: name + "_", path: f.Path}
-		if elem := derefType(derefType(f.Type).Elem()); isBranch(elem) {
-			for _, leaf := range fieldsOf(elem) {
-				m.leaves = append(m.leaves, envLeaf{suffix: envName("", leaf.Path), path: leaf.Path})
+		var leaves []envLeaf
+		entries := envEntryMap(f.Type)
+		if entries {
+			if elem := derefType(derefType(f.Type).Elem()); isBranch(elem) {
+				for _, leaf := range fieldsOf(elem) {
+					leaves = append(leaves, envLeaf{suffix: envName("", leaf.Path), path: leaf.Path})
+				}
 			}
 		}
-		s.maps = append(s.maps, m)
+		for rank, p := range prefixes {
+			name := envName(p, f.Path)
+			s.named[name] = append(s.named[name], envNamed{path: f.Path, rank: rank})
+			if entries {
+				s.maps = append(s.maps, envMap{prefix: name + "_", path: f.Path, rank: rank, leaves: leaves})
+			}
+		}
+		for i, tagName := range envTagNames(f.Tag) {
+			s.named[tagName] = append(s.named[tagName], envNamed{path: f.Path, rank: len(prefixes) + i})
+		}
 	}
 	return s
 }
@@ -86,22 +100,32 @@ func envEntryMap(t reflect.Type) bool {
 	return t.Kind() == reflect.Map && t.Key().Kind() == reflect.String
 }
 
+// envPrefixList is prefixes as the environment layer reads them: in order,
+// each without its trailing "_", with empty and repeated prefixes left out.
+func envPrefixList(prefixes []string) []string {
+	var out []string
+	for _, p := range prefixes {
+		p = strings.TrimSuffix(p, "_")
+		if p != "" && !slices.Contains(out, p) {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
 // envReading is one key a variable could set: its dot-path for the flat
 // source, and the key in the package's grammar for messages.
 type envReading struct {
 	flat string
 	key  string
-	rank int // 0 for a prefixed variable; see envTagged
+	rank int // see envNamed
 }
 
 // readings returns every key the variable name could set, sorted.
 func (s envSchema) readings(name string) []envReading {
 	var out []envReading
-	for _, path := range s.static[name] {
-		out = append(out, envReading{flat: path, key: path})
-	}
-	for _, t := range s.tagged[name] {
-		out = append(out, envReading{flat: t.path, key: t.path, rank: t.rank})
+	for _, n := range s.named[name] {
+		out = append(out, envReading{flat: n.path, key: n.path, rank: n.rank})
 	}
 	for _, m := range s.maps {
 		rest, ok := strings.CutPrefix(name, m.prefix)
@@ -110,7 +134,7 @@ func (s envSchema) readings(name string) []envReading {
 		}
 		if m.leaves == nil {
 			key := strings.ToLower(rest)
-			out = append(out, envReading{flat: m.path + "." + key, key: dotPath(m.path).key(key).String()})
+			out = append(out, envReading{flat: m.path + "." + key, key: dotPath(m.path).key(key).String(), rank: m.rank})
 			continue
 		}
 		for _, leaf := range m.leaves {
@@ -119,6 +143,7 @@ func (s envSchema) readings(name string) []envReading {
 				out = append(out, envReading{
 					flat: m.path + "." + key + "." + leaf.path,
 					key:  dotPath(m.path).key(key).String() + "." + leaf.path,
+					rank: m.rank,
 				})
 			}
 		}
@@ -127,6 +152,38 @@ func (s envSchema) readings(name string) []envReading {
 		return cmp.Or(strings.Compare(a.key, b.key), cmp.Compare(a.rank, b.rank))
 	})
 	return slices.CompactFunc(out, func(a, b envReading) bool { return a.key == b.key })
+}
+
+// prefix is the prefix a reading of the given rank is under, without its
+// trailing "_", or "" for a name an env tag lists.
+func (s envSchema) prefix(rank int) string {
+	if rank >= len(s.prefixes) {
+		return ""
+	}
+	return strings.TrimSuffix(s.prefixes[rank], "_")
+}
+
+// underPrefix reports a variable named under one of the prefixes.
+func (s envSchema) underPrefix(name string) bool {
+	return slices.ContainsFunc(s.prefixes, func(p string) bool { return strings.HasPrefix(name, p) })
+}
+
+// pattern names the layer's variables for messages: "APP_WORKER_*, APP_*".
+func (s envSchema) pattern() string {
+	return strings.Join(s.prefixes, "*, ") + "*"
+}
+
+// describe is a reading as an ambiguity message names it. With more than
+// one prefix it says which prefix, or the env tag, the reading comes from.
+func (s envSchema) describe(r envReading) string {
+	switch {
+	case len(s.prefixes) < 2:
+		return r.key
+	case r.rank < len(s.prefixes):
+		return r.key + " under " + s.prefix(r.rank)
+	default:
+		return r.key + " by its env tag"
+	}
 }
 
 // dotPath is a struct-key path, every segment a field.
@@ -140,23 +197,29 @@ func dotPath(path string) keyPath {
 
 // closest is the variable of a field that name most likely misspells, or "".
 func (s envSchema) closest(name string) string {
-	names := slices.Concat(slices.Collect(maps.Keys(s.static)), slices.Collect(maps.Keys(s.tagged)))
-	return closest(name, slices.Values(names))
+	return closest(name, maps.Keys(s.named))
 }
 
-// read maps the "NAME=value" entries of environ under the prefix, and those
-// an env tag names, to their keys, and names the variable behind each flat
-// key: where several set one key, the prefixed variable, else the one its tag
-// lists first. unmatched names the variables under the prefix that fit no
-// key.
-func (s envSchema) read(environ []string) (values map[string]any, names map[string]string, unmatched []string, err error) {
+// envVariable is the variable a value of the environment layer came from,
+// and the prefix it was read under: "" for a name an env tag lists.
+type envVariable struct {
+	name   string
+	prefix string
+}
+
+// read maps the "NAME=value" entries of environ under the prefixes, and
+// those an env tag names, to their keys, and names the variable behind each
+// flat key: where several set one key, the one of the lowest rank — under
+// the most specific prefix, else the one its tag lists first. unmatched
+// names the variables under a prefix that fit no key under any.
+func (s envSchema) read(environ []string) (values map[string]any, from map[string]envVariable, unmatched []string, err error) {
 	values = make(map[string]any)
-	names = make(map[string]string)
+	from = make(map[string]envVariable)
 	ranks := make(map[string]int)
 	var ambiguous []string
 	for _, kv := range environ {
 		name, value, ok := strings.Cut(kv, "=")
-		if !ok || !strings.HasPrefix(name, s.prefix) && len(s.tagged[name]) == 0 {
+		if !ok || !s.underPrefix(name) && len(s.named[name]) == 0 {
 			continue
 		}
 		switch readings := s.readings(name); len(readings) {
@@ -167,11 +230,12 @@ func (s envSchema) read(environ []string) (values map[string]any, names map[stri
 			if rank, set := ranks[r.flat]; set && rank <= r.rank {
 				continue
 			}
-			values[r.flat], names[r.flat], ranks[r.flat] = value, name, r.rank
+			values[r.flat], ranks[r.flat] = value, r.rank
+			from[r.flat] = envVariable{name: name, prefix: s.prefix(r.rank)}
 		default:
 			keys := make([]string, len(readings))
 			for i, r := range readings {
-				keys[i] = r.key
+				keys[i] = s.describe(r)
 			}
 			ambiguous = append(ambiguous, name+" (could set "+strings.Join(keys, " or ")+")")
 		}
@@ -180,35 +244,36 @@ func (s envSchema) read(environ []string) (values map[string]any, names map[stri
 		return nil, nil, nil, fmt.Errorf("ambiguous environment variables: %s; rename a map key or field so only one reading fits",
 			strings.Join(ambiguous, "; "))
 	}
+	// A whole map or format:"json" section and a key beneath it cannot both
+	// be set, whichever prefixes set them: no merge of the two is the one an
+	// operator obviously meant.
 	for _, key := range slices.Sorted(maps.Keys(values)) {
 		segs := strings.Split(key, ".")
 		for i := 1; i < len(segs); i++ {
 			parent := strings.Join(segs[:i], ".")
 			if _, ok := values[parent]; ok {
-				return nil, nil, nil, fmt.Errorf("environment variables %s and %s set both a value and keys beneath it", names[parent], names[key])
+				return nil, nil, nil, fmt.Errorf("environment variables %s and %s set both a value and keys beneath it", from[parent].name, from[key].name)
 			}
 		}
 	}
-	return values, names, unmatched, nil
+	return values, from, unmatched, nil
 }
 
 // envNames are the variables that address one position of a config schema
-// as diagnostics walk it. They follow the rule the loader reads by — a key's
-// segments upper-cased and joined with "_" after the prefix — and stop where
-// the loader reads no variable: beneath a list element, and beneath a map
-// entry, where a map's entries are not addressed one by one.
+// as diagnostics walk it: one name under each prefix, most specific first.
+// They follow the rule the loader reads by — a key's segments upper-cased
+// and joined with "_" after the prefix — and stop where the loader reads no
+// variable: beneath a list element, and beneath a map entry, where a map's
+// entries are not addressed one by one.
 type envNames struct {
 	names   []string // nil where no variable reaches
 	inEntry bool
 }
 
-// rootEnvNames are the names at the root of a schema under prefix, without
-// its trailing "_"; there are none without one.
-func rootEnvNames(prefix string) envNames {
-	if prefix == "" {
-		return envNames{}
-	}
-	return envNames{names: []string{prefix}}
+// rootEnvNames are the names at the root of a schema under prefixes, an
+// envPrefixList.
+func rootEnvNames(prefixes []string) envNames {
+	return envNames{names: slices.Clone(prefixes)}
 }
 
 // field is the names of the key segment key beneath e.
@@ -239,9 +304,9 @@ func (e envNames) extend(suffix string) envNames {
 }
 
 // set lists the variables that set a key of type t at e whose struct tag is
-// tag, in precedence order: its own name, then the names its env tag lists.
-// A value no variable sets whole — a section, a list of sections, a map a
-// string cannot fill — has none.
+// tag, in precedence order: its name under each prefix, then the names its
+// env tag lists. A value no variable sets whole — a section, a list of
+// sections, a map a string cannot fill — has none.
 func (e envNames) set(tag reflect.StructTag, t reflect.Type) []string {
 	if len(e.names) == 0 || !variableSetsField(tag, t) {
 		return nil

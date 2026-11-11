@@ -95,7 +95,7 @@ func TestFormatJSON_ProvenanceAndDiff(t *testing.T) {
 	snap, err := LoadSnapshot[formatCfg](t.Context(), WithEnvPrefix("APP"), WithSkipValidation(),
 		WithEnviron(func() []string { return []string{`APP_ROUTES=[{"path":"/a"}]`} }))
 	require.NoError(t, err)
-	assert.Equal(t, Source{Kind: SourceEnv, Name: "APP_ROUTES"}, snap.Provenance["routes[0].path"].Input)
+	assert.Equal(t, Source{Kind: SourceEnv, Name: "APP_ROUTES", Prefix: "APP"}, snap.Provenance["routes[0].path"].Input)
 	assert.Equal(t, SourceTag, snap.Provenance["routes[0].timeout"].Input.Kind)
 
 	next := *snap.Config

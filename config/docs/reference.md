@@ -40,7 +40,7 @@ schema. Schema errors support `errors.Is(err, config.ErrSchema)`; malformed keys
 | `FieldsChecked[T]()` | `([]Field, error)` in declaration order | Rejects a non-struct root and invalid or ambiguous keys |
 | `MatchFields(&cfg, targets)` | `([]Field, error)` in target order | Matches addresses in one traversal; empty Path means no match; ambiguous addresses are ErrKey |
 | `RedactedMapChecked(cfg)` | `(map[string]string, error)` with text values keyed by path | Returns nil on structural errors, including reached dynamic types |
-| `Usage[T](prefix)` | `([]UsageEntry, error)` with safe printable metadata | Reports invalid schema; keeps raw struct tags only in the non-JSON Field member |
+| `Usage[T](prefixes...)` | `([]UsageEntry, error)` with safe printable metadata | Reports invalid schema; keeps raw struct tags only in the non-JSON Field member |
 | `ParseKey(text)` | `(Key, error)` | Reports malformed keys with ErrKey |
 | `Tree(cfg)`, `TreeFunc(cfg, leaf)` | `(map[string]any, error)` with raw or policy-transformed values | Returns no partial tree on schema/scalar/text-marshaling errors |
 | `RedactedTreeChecked(cfg)` | `(map[string]any, error)` with nested redacted values | Returns nil on structural errors; no partial tree |
@@ -62,7 +62,7 @@ The package logs through `WithLogger` (`slog.Default()` otherwise) and imports n
 | Error | `config reload failed` | A reload was refused; the previous config is live. |
 | Error | `config applier failed` | An applier errored or panicked; it is retried on the next config. |
 | Warn | `config keys set under a former name; rename them` | A source used a field alias. |
-| Debug | `environment variables under the prefix name no config key` | Probably a typo in a variable name. |
+| Debug | `environment variables under the prefix name no config key` | Probably a typo in a variable name. Under a shared `WithEnvPrefixes` prefix it may be another service's variable: claim those with `WithVariableFilter`. |
 
 `Snapshot()` is cheap and consistent, so export it with function metrics:
 
@@ -98,7 +98,8 @@ Load options:
 | `WithFile(path)`, `WithFiles(paths...)` | none | Optional config files, merged in order. |
 | `WithRequiredFile(path)`, `WithRequiredFiles(paths...)` | none | Required config files. |
 | `WithFileParser(suffix, p)` | `.yaml`, `.yml`: YAML; `.json`: JSON; others: YAML | The koanf parser for files whose names end in `suffix`; the longest matching suffix wins, `""` matches every file, and a nil parser removes one. |
-| `WithEnvPrefix(prefix)` | environment not read | Read `PREFIX_*` variables. |
+| `WithEnvPrefix(prefix)` | environment not read | Read `PREFIX_*` variables; `WithEnvPrefixes(prefix)`. |
+| `WithEnvPrefixes(prefixes...)` | environment not read | Read each prefix's variables as one layer, most specific first; for each key the first prefix that sets it wins, then its `env` tag. Empty and repeated prefixes are left out; last call wins. |
 | `WithEnviron(fn)` | `os.Environ` | Where variables come from. |
 | `WithKnownVariables(names...)` | none | Claim exact names read by the application; repeated calls accumulate. |
 | `WithVariableFilter(fn)` | none | Claim otherwise unmatched names when fn returns true; last call wins, nil clears. |
@@ -140,4 +141,4 @@ Reload options:
 | `WithProvenance()` | off | Record each value's origin on every load. |
 | `WithReloadLogger(l)` | the load's logger | Logger for reload events. |
 
-Print options: `WithFormat` (table, JSON, YAML, Markdown, env — per printer; Markdown is supported by `PrintUsage`), `WithWriter` (default `os.Stdout`), `WithSortByName`, `WithIncludeDescriptions`.
+Print options: `WithFormat` (table, JSON, YAML, Markdown, env — per printer; Markdown is supported by `PrintUsage`), `WithWriter` (default `os.Stdout`), `WithSortByName`, `WithIncludeDescriptions`, `WithFallbackEnvPrefixes(prefixes...)` (default none: the broader prefixes of a `WithEnvPrefixes` load, read beneath the one `PrintUsage`, `PrintTemplate` and `PrintEnv` are given).

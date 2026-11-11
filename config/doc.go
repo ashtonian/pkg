@@ -64,7 +64,7 @@
 // # Sources
 //
 // Highest wins: override providers ([WithOverrideProvider], e.g. CLI flags),
-// environment variables ([WithEnvPrefix]), files ([WithFile],
+// environment variables ([WithEnvPrefix], [WithEnvPrefixes]), files ([WithFile],
 // [WithRequiredFile]; YAML or JSON by suffix, any parser through
 // [WithFileParser]), base providers ([WithBaseProvider]), programmatic
 // defaults ([WithDefaults]), and default tags. Any koanf.Provider loads at
@@ -78,6 +78,12 @@
 // (env:"PORT"); the prefixed variable wins over them. A variable that fits two
 // keys fails the load with [ErrValidation] naming both; one that fits none is
 // not loaded. [WithEnviron] replaces os.Environ.
+//
+// [WithEnvPrefixes] reads several prefixes as one layer, most specific first:
+// with WithEnvPrefixes("APP_WORKER", "APP"), db.host reads APP_WORKER_DB_HOST,
+// then APP_DB_HOST, then its env tag's names, so services sharing a binary
+// share APP_* and override it under their own prefix. A variable that fits
+// two keys across prefixes fails the load as within one.
 // [WithKnownVariables], [WithVariableFilter] and decoded envref fields claim
 // otherwise unmatched names for unknown-input reports and debug diagnostics.
 //

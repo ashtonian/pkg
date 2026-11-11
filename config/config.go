@@ -30,7 +30,7 @@ import (
 // Source precedence, highest first:
 //
 //  1. Override providers ([WithOverrideProvider], including kongprovider's CLI flags)
-//  2. Environment variables ([WithEnvPrefix])
+//  2. Environment variables ([WithEnvPrefix], [WithEnvPrefixes])
 //  3. Config files ([WithFile], [WithRequiredFile]), a later file winning
 //  4. Base providers ([WithBaseProvider])
 //  5. Programmatic defaults ([WithDefaults])
@@ -275,16 +275,16 @@ func load[T any](ctx context.Context, o *options) (loaded[T], error) {
 		}
 		files[f.path] = sha256.Sum256(raw)
 	}
-	if o.envPrefix != "" {
+	if len(o.envPrefixes) > 0 {
 		// Named from T's fields so a key with an underscore in it
 		// (koanf:"max_conns") keeps it; see envSchema.
-		env = newEnvSchema(variableFields(root), strings.TrimSuffix(o.envPrefix, "_"))
-		values, names, unmatched, err := env.read(o.environ())
+		env = newEnvSchema(variableFields(root), o.envPrefixes)
+		values, from, unmatched, err := env.read(o.environ())
 		if err != nil {
 			return none, fmt.Errorf("loading env vars: %w: %w", ErrValidation, err)
 		}
 		unmatchedEnv = unmatched
-		if err := l.addFlat("env "+env.prefix+"*", values, envLabeler(env.prefix, names)); err != nil {
+		if err := l.addFlat("env "+env.pattern(), values, envLabeler(env.pattern(), from)); err != nil {
 			return none, err
 		}
 	}

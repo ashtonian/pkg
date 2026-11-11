@@ -97,8 +97,9 @@ type UnknownKeysError struct {
 	Type reflect.Type `json:"-"`
 	// Keys are the keys no field decodes, sorted by Key.
 	Keys []UnknownKey `json:"keys,omitempty"`
-	// Variables are the environment variables under the WithEnvPrefix prefix
-	// that name no key, sorted by Key, which holds the variable's name.
+	// Variables are the environment variables under a WithEnvPrefixes prefix
+	// that name no key under any of them, sorted by Key, which holds the
+	// variable's name.
 	// Filled only for a WithUnknownKeys handler: by default they are ignored.
 	Variables []UnknownKey `json:"variables,omitempty"`
 }

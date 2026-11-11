@@ -6,7 +6,7 @@
 
 - [Overview and design](overview.md): the struct as a schema, the pipeline and package guarantees.
 - [Schema and validation](schema.md): tags, key grammar, decoding, unknown keys, aliases, post-load hooks and validation.
-- [Sources and precedence](sources.md): source layers, file parsers, koanf providers and environment variables.
+- [Sources and precedence](sources.md): source layers, file parsers, koanf providers, environment variables and layered prefixes.
 - [Secrets](secrets.md): secret references, optional values, rotations and failures.
 - [Hot reload](reloading.md): lifecycle, triggers, appliers, Kubernetes volumes and admin endpoints.
 - [Inspection and output](inspection.md): redaction, usage, diffs, provenance, templates and JSON Schema.

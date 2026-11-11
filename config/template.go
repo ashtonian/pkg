@@ -11,8 +11,9 @@ import (
 // application ships, or an operator starts from. Every key appears in
 // declaration order with its default as the value decoding produces — a
 // duration as 30s, a list as a list — preceded by its `desc` and a line naming
-// its type, whether it is required or sensitive, and the environment variable
-// that sets it under envPrefix (none when envPrefix is empty). A key with no
+// its type, whether it is required or sensitive, and the environment
+// variables that set it under envPrefix and the [WithFallbackEnvPrefixes]
+// prefixes, in precedence order (none when there is no prefix). A key with no
 // default is commented out with its printable example, if any; a sensitive key
 // and a default [Field.PrintableDefault] withholds have no value. A map or
 // list with no default is commented out with one example entry built from its
@@ -22,17 +23,16 @@ import (
 // Loading the file gives the same config as loading no source at all, and
 // strict keys accept it. [WithFormat] selects FormatYAML (the default) or
 // FormatJSON, which has no comments and leaves the commented keys out;
-// [WithWriter] applies. Tag and [DefaultProvider] defaults are decoded as Load
-// decodes them without
-// [WithDecodeHook]: a default only a custom hook can decode is an
-// ErrValidation error.
+// [WithWriter] and WithFallbackEnvPrefixes apply. Tag and [DefaultProvider]
+// defaults are decoded as Load decodes them without [WithDecodeHook]: a
+// default only a custom hook can decode is an ErrValidation error.
 func PrintTemplate[T any](envPrefix string, opts ...PrintOption) error {
 	po := defaultPrintOptions()
 	for _, opt := range opts {
 		opt(&po)
 	}
 	t := reflect.TypeFor[T]()
-	n, err := templateOf(t, strings.TrimSuffix(envPrefix, "_"))
+	n, err := templateOf(t, po.envPrefixes(envPrefix))
 	if err != nil {
 		return err
 	}
@@ -49,8 +49,9 @@ func PrintTemplate[T any](envPrefix string, opts ...PrintOption) error {
 	}
 }
 
-// templateOf builds T's template tree, naming variables under prefix.
-func templateOf(t reflect.Type, prefix string) (*outNode, error) {
+// templateOf builds T's template tree, naming variables under prefixes, an
+// envPrefixList.
+func templateOf(t reflect.Type, prefixes []string) (*outNode, error) {
 	root, err := rootSchema(t)
 	if err != nil {
 		return nil, err
@@ -61,7 +62,7 @@ func templateOf(t reflect.Type, prefix string) (*outNode, error) {
 	}
 	b := &templateBuilder{defaults: defaults, walking: map[reflect.Type]bool{}}
 	n := &outNode{kind: outMap}
-	if err := b.branch(n, root, cursor{}, defaults.value, rootEnvNames(prefix)); err != nil {
+	if err := b.branch(n, root, cursor{}, defaults.value, rootEnvNames(prefixes)); err != nil {
 		return nil, err
 	}
 	return n, nil

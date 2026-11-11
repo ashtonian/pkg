@@ -108,7 +108,9 @@ bundle apply its own per-leaf policy. See [inspection](docs/inspection.md).
 
 The [tag table](docs/schema.md) defines the schema, and the
 [options table](docs/reference.md#options) lists every load, reload and print
-option with its default. Environment loading requires `WithEnvPrefix`.
+option with its default. Environment loading requires `WithEnvPrefix`, or
+`WithEnvPrefixes` for a shared layer beneath a service's own prefix
+(`APP_WORKER_DB_HOST`, then `APP_DB_HOST`).
 `envref:"true"` declares variable names read by the application;
 `WithKnownVariables` and `WithVariableFilter` claim names read elsewhere.
 `WithReloadTags` opts into inherited `reload` classes, while

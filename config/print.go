@@ -47,6 +47,7 @@ type printOptions struct {
 	writer              io.Writer
 	sortByName          bool
 	includeDescriptions bool
+	envFallbacks        []string
 }
 
 func defaultPrintOptions() printOptions {
@@ -74,6 +75,29 @@ func WithWriter(w io.Writer) PrintOption {
 	return func(o *printOptions) {
 		o.writer = w
 	}
+}
+
+// WithFallbackEnvPrefixes names the prefixes a [WithEnvPrefixes] load reads
+// beneath the one [PrintUsage], [PrintTemplate] and [PrintEnv] are given, in
+// precedence order, so their output follows that load: a load with
+// WithEnvPrefixes("APP_WORKER", "APP") is described by
+//
+//	config.PrintUsage[Config]("APP_WORKER", config.WithFallbackEnvPrefixes("APP"))
+//
+// Every variable is listed in the order the load reads them. Where one
+// variable is written for a key, as PrintEnv and FormatEnv write one, it is
+// the one under the first prefix, and a name another key reads under any of
+// the prefixes is not written. The last call wins.
+func WithFallbackEnvPrefixes(prefixes ...string) PrintOption {
+	list := slices.Clone(prefixes)
+	return func(o *printOptions) {
+		o.envFallbacks = list
+	}
+}
+
+// envPrefixes is the prefix list a printer given envPrefix describes.
+func (o printOptions) envPrefixes(envPrefix string) []string {
+	return envPrefixList(append([]string{envPrefix}, o.envFallbacks...))
 }
 
 // WithSortByName sorts output fields alphabetically by name.
