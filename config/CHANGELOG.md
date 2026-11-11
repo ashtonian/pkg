@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.9.0](https://github.com/ashtonian/pkg/compare/config/v0.8.1...config/v0.9.0) (2026-11-11)
+
+
+### ⚠ BREAKING CHANGES
+
+* **config:** Source has a Prefix field, set for every variable read under a prefix, so code comparing a whole environment Source must include it. Field.EnvVars, Usage and JSONSchema take variadic prefixes: calls compile unchanged, function values of the former types do not. UsageEntry.AlsoEnv lists the broader prefixes' variables before an env tag's.
+
+### Features
+
+* **config:** read environment variables under layered prefixes ([65fff05](https://github.com/ashtonian/pkg/commit/65fff0555d9b245840d9242aef1bb8aabdb431bb))
+
+
+### Bug Fixes
+
+* **config:** name only variables that can set a key in usage and templates ([e71292e](https://github.com/ashtonian/pkg/commit/e71292ede64e5143235d76ea227560e5ad8411d9))
+
 ## [0.8.1](https://github.com/ashtonian/pkg/compare/config/v0.8.0...config/v0.8.1) (2026-11-06)
 
 ### Bug Fixes
