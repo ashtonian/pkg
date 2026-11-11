@@ -105,6 +105,49 @@ func ExampleLoad_layers() {
 	// region=us-east-1 log_level=warn replicas=5 tags=[web api grpc] debug=true
 }
 
+// ExampleWithEnvPrefixes runs one service of a binary that hosts several:
+// APP_* is the layer every service reads, APP_WORKER_* the worker's own,
+// which wins key by key. The usage table lists both in the order the load
+// reads them.
+func ExampleWithEnvPrefixes() {
+	type DBConfig struct {
+		Host     string `koanf:"host" default:"localhost" desc:"Database host"`
+		MaxConns int    `koanf:"max_conns" default:"10" desc:"Pool size"`
+	}
+	type WorkerConfig struct {
+		DB          DBConfig `koanf:"db"`
+		Concurrency int      `koanf:"concurrency" default:"4" desc:"Jobs run at once"`
+	}
+	environ := []string{
+		"APP_DB_HOST=db.internal", // every service
+		"APP_DB_MAX_CONNS=20",
+		"APP_WORKER_DB_MAX_CONNS=50", // the worker only
+		"APP_WORKER_CONCURRENCY=16",
+	}
+
+	cfg, err := config.Load[WorkerConfig](context.Background(),
+		config.WithEnvPrefixes("APP_WORKER", "APP"),
+		config.WithEnviron(func() []string { return environ }),
+	)
+	if err != nil {
+		fmt.Println("load:", err)
+		return
+	}
+	fmt.Printf("host=%s max_conns=%d concurrency=%d\n\n", cfg.DB.Host, cfg.DB.MaxConns, cfg.Concurrency)
+
+	if err := config.PrintUsage[WorkerConfig]("APP_WORKER", config.WithFallbackEnvPrefixes("APP"), config.WithWriter(os.Stdout)); err != nil {
+		fmt.Println(err)
+	}
+
+	// Output:
+	// host=db.internal max_conns=50 concurrency=16
+	//
+	// KEY           ENV                                        TYPE    DEFAULT    RELOAD   DESCRIPTION
+	// db.host       APP_WORKER_DB_HOST, APP_DB_HOST            string  localhost  restart  Database host
+	// db.max_conns  APP_WORKER_DB_MAX_CONNS, APP_DB_MAX_CONNS  int     10         restart  Pool size
+	// concurrency   APP_WORKER_CONCURRENCY, APP_CONCURRENCY    int     4          restart  Jobs run at once
+}
+
 // overrides is a koanf.Provider over a fixed map — the shape kongprovider
 // gives CLI flags.
 type overrides map[string]any

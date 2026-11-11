@@ -50,10 +50,15 @@ const JSONSchemaDraft = "https://json-schema.org/draft/2020-12/schema"
 //     string when it decodes from text.
 //   - A struct a type holds within itself is a $defs entry, referenced by
 //     a name made of its Go type's: letters, digits, '.', '_' and '-'.
+//   - With envPrefixes, as [WithEnvPrefixes] takes them, a key a variable
+//     sets lists in x-config-env every variable that sets it, in precedence
+//     order: under each prefix, then the names its env tag lists. A map's
+//     entries are named with a <KEY> placeholder. A $defs entry, shared by
+//     every path that reaches it, names none.
 //
 // The output is deterministic: properties sort by key. T that is not a
 // struct, or whose keys cannot be told apart, is an ErrSchema error.
-func JSONSchema[T any]() (json.RawMessage, error) {
+func JSONSchema[T any](envPrefixes ...string) (json.RawMessage, error) {
 	t := reflect.TypeFor[T]()
 	root, err := rootSchema(t)
 	if err != nil {
@@ -65,7 +70,7 @@ func JSONSchema[T any]() (json.RawMessage, error) {
 		return nil, err
 	}
 	g.defaults = defaults
-	doc := g.object(root, cursor{}, defaults.value)
+	doc := g.object(root, cursor{}, defaults.value, rootEnvNames(envPrefixList(envPrefixes)))
 	if g.err != nil {
 		return nil, g.err
 	}
@@ -146,8 +151,9 @@ func recursiveNodes(root *schemaNode) map[*schemaNode]bool {
 }
 
 // object describes a struct: its keys, with defaults from val, the struct
-// its tag defaults decode to (invalid beneath a nil pointer).
-func (g *schemaGen) object(n *schemaNode, c cursor, val reflect.Value) map[string]any {
+// its tag defaults decode to (invalid beneath a nil pointer), and the
+// variables beneath env.
+func (g *schemaGen) object(n *schemaNode, c cursor, val reflect.Value, env envNames) map[string]any {
 	if val.IsValid() && val.Kind() != reflect.Struct {
 		val = reflect.Value{} // a nil pointer: no defaults beneath it
 	}
@@ -158,12 +164,13 @@ func (g *schemaGen) object(n *schemaNode, c cursor, val reflect.Value) map[strin
 		if val.IsValid() {
 			fv, _ = f.value(val)
 		}
-		s := g.field(f, fc, fv)
+		s := g.field(f, fc, fv, env.field(f.key))
 		props[f.key] = s
 		for _, a := range aliasNames(f.sf.Tag) {
 			alias := maps.Clone(s)
 			alias["deprecated"] = true
 			alias["description"] = "Renamed to " + f.key + "."
+			delete(alias, "x-config-env") // variables are named by the key, never an alias
 			props[a] = alias
 		}
 	}
@@ -197,9 +204,9 @@ func acceptsUnknownKeys(t reflect.Type) bool {
 }
 
 // field describes one key: its value's schema, then what the field's tags
-// add.
-func (g *schemaGen) field(f *schemaField, c cursor, fv reflect.Value) map[string]any {
-	s := orNull(g.node(f.node, c, derefValue(fv)), f.sf.Type)
+// add; env names the key's variables.
+func (g *schemaGen) field(f *schemaField, c cursor, fv reflect.Value, env envNames) map[string]any {
+	s := orNull(g.node(f.node, c, derefValue(fv), env), f.sf.Type)
 	if jsonFormat(f.sf.Tag) {
 		// A file may hold the value or, as a variable must, its JSON text.
 		s = map[string]any{"anyOf": []any{s, map[string]any{"type": "string", "contentMediaType": "application/json"}}}
@@ -210,6 +217,9 @@ func (g *schemaGen) field(f *schemaField, c cursor, fv reflect.Value) map[string
 	s["x-reload"] = c.owner.Reload
 	if c.owner.EnvRef {
 		s["x-env-ref"] = true
+	}
+	if names := env.set(f.sf.Tag, f.sf.Type); len(names) > 0 {
+		s["x-config-env"] = names
 	}
 	sensitive := c.sensitive() || mayHoldSensitive(f.sf.Type, map[reflect.Type]bool{})
 	if c.sensitive() {
@@ -262,8 +272,8 @@ var (
 )
 
 // node describes a value of n's type at c; val holds the defaults of a
-// struct.
-func (g *schemaGen) node(n *schemaNode, c cursor, val reflect.Value) map[string]any {
+// struct, and env names the variables that address it.
+func (g *schemaGen) node(n *schemaNode, c cursor, val reflect.Value, env envNames) map[string]any {
 	switch n.kind {
 	case nodeBranch:
 		if g.recursive[n] {
@@ -273,18 +283,23 @@ func (g *schemaGen) node(n *schemaNode, c cursor, val reflect.Value) map[string]
 					g.defining = map[*schemaNode]bool{}
 				}
 				g.defining[n] = true
-				g.defs[name] = g.object(n, c, reflect.Value{})
+				g.defs[name] = g.object(n, c, reflect.Value{}, envNames{})
 				delete(g.defining, n)
 			}
 			return map[string]any{"$ref": "#/$defs/" + name}
 		}
-		return g.object(n, c, val)
+		return g.object(n, c, val, env)
 	case nodeMap:
 		s := map[string]any{"type": "object"}
 		if c.sensitive() {
 			return s // its entries are compared whole: describe nothing inside
 		}
-		s["additionalProperties"] = orNull(g.node(n.elem, c.intoEntry(segment{kind: segAny}, n.typ.Elem()), elementDefaults(n.elem)), n.typ.Elem())
+		entryEnv := env.entries(n.typ)
+		entry := orNull(g.node(n.elem, c.intoEntry(segment{kind: segAny}, n.typ.Elem()), elementDefaults(n.elem), entryEnv), n.typ.Elem())
+		if names := entryEnv.set("", n.typ.Elem()); len(names) > 0 && n.elem.kind != nodeBranch {
+			entry["x-config-env"] = names
+		}
+		s["additionalProperties"] = entry
 		return s
 	case nodeList:
 		s := map[string]any{"type": "array"}
@@ -294,7 +309,7 @@ func (g *schemaGen) node(n *schemaNode, c cursor, val reflect.Value) map[string]
 		if c.sensitive() {
 			return s
 		}
-		s["items"] = orNull(g.node(n.elem, c.intoEntry(segment{kind: segAny}, n.typ.Elem()), elementDefaults(n.elem)), n.typ.Elem())
+		s["items"] = orNull(g.node(n.elem, c.intoEntry(segment{kind: segAny}, n.typ.Elem()), elementDefaults(n.elem), envNames{}), n.typ.Elem())
 		return s
 	case nodeDynamic:
 		return map[string]any{"x-config-type": typeText(n.typ)}

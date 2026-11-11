@@ -11,26 +11,31 @@ import (
 	"strings"
 )
 
-// EnvVar is the environment variable that sets f under prefix — the prefix
-// [WithEnvPrefix] was given, with or without its trailing "_". It is empty
-// when prefix is.
+// EnvVar is the environment variable the environment layer reads for f under
+// prefix — a prefix [WithEnvPrefix] or [WithEnvPrefixes] was given, with or
+// without its trailing "_". It is empty when prefix is.
 func (f Field) EnvVar(prefix string) string {
-	if prefix == "" {
-		return ""
+	if list := envPrefixList([]string{prefix}); len(list) > 0 {
+		return envName(list[0], f.Path)
 	}
-	return envName(strings.TrimSuffix(prefix, "_"), f.Path)
+	return ""
 }
 
-// EnvVars returns every variable that sets f under prefix, the first winning
-// when several are set: [Field.EnvVar], then the names its env tag lists,
-// read as written. With no prefix the environment is not read, and there are
-// none.
-func (f Field) EnvVars(prefix string) []string {
-	own := f.EnvVar(prefix)
-	if own == "" {
+// EnvVars returns every variable the environment layer reads for f under
+// prefixes, as [WithEnvPrefixes] takes them, the first winning when several
+// are set: [Field.EnvVar] under each prefix, most specific first, then the
+// names its env tag lists, read as written. With no prefix the environment
+// is not read, and there are none.
+func (f Field) EnvVars(prefixes ...string) []string {
+	list := envPrefixList(prefixes)
+	if len(list) == 0 {
 		return nil
 	}
-	return append([]string{own}, envTagNames(f.Tag)...)
+	names := make([]string, 0, len(list))
+	for _, p := range list {
+		names = append(names, envName(p, f.Path))
+	}
+	return append(names, envTagNames(f.Tag)...)
 }
 
 // PrintableExample returns f's `example` tag and true when diagnostics may
@@ -67,8 +72,8 @@ type UsageEntry struct {
 	Reload      string        `json:"reload"`
 	Field       Field         `json:"-"`
 	Key         string        `json:"key"`
-	Env         string        `json:"env,omitempty"`
-	AlsoEnv     []string      `json:"also_env,omitempty"` // the variables an env tag adds
+	Env         string        `json:"env,omitempty"`      // the variable under the first prefix
+	AlsoEnv     []string      `json:"also_env,omitempty"` // the rest of EnvVars: under broader prefixes, then an env tag's
 	JSON        bool          `json:"json,omitempty"`     // a variable sets it as JSON
 	Type        string        `json:"type"`
 	Default     string        `json:"default,omitempty"`
@@ -84,11 +89,14 @@ type UsageEntry struct {
 
 type usageRow = UsageEntry
 
-// Usage returns the catalog rendered by PrintUsage, in declaration order.
-// Defaults that are sensitive or could contain secrets are empty and Withheld
-// is true. Allowed follows JSONSchema's enum and withholding rules. Collection
-// entries use [*] patterns and environment placeholders where supported.
-func Usage[T any](envPrefix string) ([]UsageEntry, error) {
+// Usage returns the catalog rendered by PrintUsage, in declaration order,
+// naming each key's variables under envPrefixes as [WithEnvPrefixes] takes
+// them: Env is the one under the first prefix, AlsoEnv the rest in
+// precedence order, and EnvVars all of them. Defaults that are sensitive or
+// could contain secrets are empty and Withheld is true. Allowed follows
+// JSONSchema's enum and withholding rules. Collection entries use [*]
+// patterns and environment placeholders where supported.
+func Usage[T any](envPrefixes ...string) ([]UsageEntry, error) {
 	root, err := rootMetadata(reflect.TypeFor[T]())
 	if err != nil {
 		return nil, err
@@ -101,7 +109,7 @@ func Usage[T any](envPrefix string) ([]UsageEntry, error) {
 			return nil, err
 		}
 	}
-	rows, err := usageRows(root, strings.TrimSuffix(envPrefix, "_"), defaults)
+	rows, err := usageRows(root, envPrefixList(envPrefixes), defaults)
 	if err != nil {
 		return nil, err
 	}
@@ -135,9 +143,10 @@ func Usage[T any](envPrefix string) ([]UsageEntry, error) {
 }
 
 // PrintUsage writes every key of T an operator can set: its path, the
-// environment variable that sets it under envPrefix (none when envPrefix is
-// empty), its type, its `default` tag, whether `validate:"required"` makes it
-// mandatory, and its `desc` tag. A map or list one variable can set whole,
+// environment variables that set it under envPrefix and the
+// [WithFallbackEnvPrefixes] prefixes in precedence order (none when there is
+// no prefix), its type, its `default` tag, whether `validate:"required"`
+// makes it mandatory, and its `desc` tag. A map or list one variable can set whole,
 // or one with a default, has a row of its own. A map's entries are one row
 // per element field, keyed by the pattern features[*].limit with a <KEY>
 // placeholder in the variable, and a slice of structs' elements one row per
@@ -146,33 +155,36 @@ func Usage[T any](envPrefix string) ([]UsageEntry, error) {
 //
 // [WithFormat] selects a table (the default), JSON (an array of objects),
 // FormatMarkdown (an escaped Markdown table), or
-// FormatEnv: a template of `export NAME='default'` lines, with a key that has
-// no default, a sensitive key and a map entry written as a commented-out
-// line; FormatEnv needs an envPrefix. [WithWriter] and [WithSortByName]
-// apply; descriptions are always included.
+// FormatEnv: a template of `export NAME='default'` lines under the first
+// prefix, with a key that has no default, a sensitive key and a map entry
+// written as a commented-out line; FormatEnv needs an envPrefix.
+// [WithWriter], [WithSortByName] and WithFallbackEnvPrefixes apply;
+// descriptions are always included.
 func PrintUsage[T any](envPrefix string, opts ...PrintOption) error {
 	po := defaultPrintOptions()
 	for _, opt := range opts {
 		opt(&po)
 	}
-	rows, err := Usage[T](envPrefix)
+	prefixes := po.envPrefixes(envPrefix)
+	rows, err := Usage[T](prefixes...)
 	if err != nil {
 		return err
 	}
+	withEnv := len(prefixes) > 0
 	if po.sortByName {
 		slices.SortStableFunc(rows, func(a, b usageRow) int { return cmp.Compare(a.Key, b.Key) })
 	}
 	switch po.formatOr(FormatTable) {
 	case FormatTable:
-		return printUsageTable(po.writer, rows, envPrefix != "")
+		return printUsageTable(po.writer, rows, withEnv)
 	case FormatJSON:
 		enc := json.NewEncoder(po.writer)
 		enc.SetIndent("", "  ")
 		return enc.Encode(rows)
 	case FormatMarkdown:
-		return printUsageMarkdown(po.writer, rows, envPrefix != "")
+		return printUsageMarkdown(po.writer, rows, withEnv)
 	case FormatEnv:
-		if envPrefix == "" {
+		if !withEnv {
 			return errors.New("config: usage in FormatEnv needs an environment prefix")
 		}
 		return printUsageEnv(po.writer, rows)
@@ -184,10 +196,10 @@ func PrintUsage[T any](envPrefix string, opts ...PrintOption) error {
 
 // usageRows describes every key of root, a map's entries through its
 // element: a sensitive map covers all of them.
-func usageRows(root *schemaNode, prefix string, defaults declaredDefaults) ([]UsageEntry, error) {
+func usageRows(root *schemaNode, prefixes []string, defaults declaredDefaults) ([]UsageEntry, error) {
 	var rows []UsageEntry
 	var resultErr error
-	add := func(f Field, key, env string, pattern bool) {
+	add := func(f Field, key string, env envNames, pattern bool) {
 		if resultErr != nil {
 			return
 		}
@@ -200,8 +212,8 @@ func usageRows(root *schemaNode, prefix string, defaults declaredDefaults) ([]Us
 		rows = append(rows, row)
 	}
 	walking := map[*schemaNode]bool{}
-	var walk func(*schemaNode, cursor, string, bool)
-	walk = func(n *schemaNode, c cursor, env string, pattern bool) {
+	var walk func(*schemaNode, cursor, envNames, bool)
+	walk = func(n *schemaNode, c cursor, env envNames, pattern bool) {
 		if resultErr != nil || walking[n] {
 			return
 		}
@@ -211,14 +223,11 @@ func usageRows(root *schemaNode, prefix string, defaults declaredDefaults) ([]Us
 		case nodeBranch:
 			for _, f := range n.fields {
 				next := c.intoField(f)
-				ownEnv := ""
-				if env != "" {
-					ownEnv = env + "_" + strings.ToUpper(f.key)
-				}
+				fieldEnv := env.field(f.key)
 				if f.node.kind == nodeBranch && jsonFormat(f.sf.Tag) {
-					add(next.owner, next.path.String(), ownEnv, pattern)
+					add(next.owner, next.path.String(), fieldEnv, pattern)
 				}
-				walk(f.node, next, ownEnv, pattern)
+				walk(f.node, next, fieldEnv, pattern)
 			}
 		case nodeMap, nodeList:
 			_, has := c.owner.Tag.Lookup("default")
@@ -229,26 +238,25 @@ func usageRows(root *schemaNode, prefix string, defaults declaredDefaults) ([]Us
 			if !expand {
 				return
 			}
-			nextEnv := ""
-			if n.kind == nodeMap && env != "" {
-				nextEnv = env + "_<KEY>"
+			var elemEnv envNames // a list element has no variable
+			if n.kind == nodeMap {
+				elemEnv = env.entries(n.typ)
 			}
 			next := c.intoEntry(segment{kind: segAny}, n.typ.Elem())
 			if n.elem.kind != nodeBranch {
 				next.owner.Tag = reflect.StructTag(fmt.Sprintf("desc:%q", c.owner.Tag.Get("desc")))
 			}
-			walk(n.elem, next, nextEnv, true)
+			walk(n.elem, next, elemEnv, true)
 		default:
 			add(c.owner, c.path.String(), env, pattern)
 		}
 	}
-	walk(root, cursor{}, prefix, false)
+	walk(root, cursor{}, rootEnvNames(prefixes), false)
 	return rows, resultErr
 }
 
-// usageRowOf describes f, shown as key and set by env, the first of them
-// its own variable.
-func usageRowOf(f Field, key string, env ...string) (usageRow, error) {
+// usageRowOf describes f, shown as key, at env.
+func usageRowOf(f Field, key string, env envNames) (usageRow, error) {
 	row := usageRow{
 		Key:         key,
 		Type:        typeText(f.Type),
@@ -262,10 +270,11 @@ func usageRowOf(f Field, key string, env ...string) (usageRow, error) {
 	if err != nil {
 		return usageRow{}, err
 	}
-	if len(env) > 0 && env[0] != "" {
-		row.Env = env[0]
-		row.AlsoEnv = envTagNames(f.Tag)
-		row.EnvVars = append([]string{row.Env}, row.AlsoEnv...)
+	if names := env.set(f.Tag, f.Type); len(names) > 0 {
+		row.EnvVars, row.Env = names, names[0]
+		if len(names) > 1 {
+			row.AlsoEnv = slices.Clone(names[1:])
+		}
 	}
 	row.JSON = jsonFormat(f.Tag)
 	if ex, ok := f.PrintableExample(); ok {
@@ -298,7 +307,7 @@ func printUsageTable(w io.Writer, rows []usageRow, withEnv bool) error {
 		return text
 	}
 	envText := func(r usageRow) string {
-		text := strings.Join(append([]string{r.Env}, r.AlsoEnv...), ", ")
+		text := strings.Join(r.EnvVars, ", ")
 		if r.JSON && r.Env != "" {
 			text += " (JSON)"
 		}

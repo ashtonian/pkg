@@ -66,7 +66,7 @@ func TestProvenance_AllLayersAndEqualAssignments(t *testing.T) {
 	assert.Equal(t, origin(SourceDefaults, ""), p["zone"])
 	assert.Equal(t, origin(SourceFile, file), p["region"], "the file beats the base provider")
 	assert.Equal(t, origin(SourceOverride, "0"), p["replicas"])
-	assert.Equal(t, origin(SourceEnv, "APP_DEBUG"), p["debug"])
+	assert.Equal(t, Origin{Input: Source{Kind: SourceEnv, Name: "APP_DEBUG", Prefix: "APP"}, Exact: true}, p["debug"])
 	assert.Equal(t, origin(SourceZero, ""), p["unset"])
 	assert.Equal(t, origin(SourceTag, ""), p["db.host"])
 	assert.Equal(t, origin(SourceFile, file), p["db.port"], "set to its default, by the file")

@@ -74,10 +74,10 @@ func TestEnvSchema_ReadReportsUnmatched(t *testing.T) {
 	type cfg struct {
 		Host string `koanf:"host"`
 	}
-	s := newEnvSchema(Fields[cfg](), "APP")
-	values, names, unmatched, err := s.read([]string{"APP_HOST=h", "APP_HOTS=typo", "OTHER_HOST=x", "APP_NOEQUALS"})
+	s := newEnvSchema(Fields[cfg](), []string{"APP"})
+	values, from, unmatched, err := s.read([]string{"APP_HOST=h", "APP_HOTS=typo", "OTHER_HOST=x", "APP_NOEQUALS"})
 	require.NoError(t, err)
 	assert.Equal(t, map[string]any{"host": "h"}, values)
-	assert.Equal(t, map[string]string{"host": "APP_HOST"}, names)
+	assert.Equal(t, map[string]envVariable{"host": {name: "APP_HOST", prefix: "APP"}}, from)
 	assert.Equal(t, []string{"APP_HOTS"}, unmatched)
 }

@@ -62,12 +62,17 @@ policy for environment listings or logs. Shape matching is not a complete
 secret detector; retain explicit sensitivity declarations. Raw `Tree` and
 `TreeFunc` do not apply it.
 
-`Usage[T]("APP")` returns `([]UsageEntry, error)` in declaration order.
+`Usage[T]("APP")` returns `([]UsageEntry, error)` in declaration order;
+`Usage[T]("APP_WORKER", "APP")` names the variables of a `WithEnvPrefixes`
+load.
 It describes whole collection inputs and entry patterns, with environment
 names, type, description, required state, safe defaults/examples, allowed
 values, bounds, former key names and resolved reload class. `Allowed` uses the same
 `oneof` parser and withholding rules as JSON Schema. `EnvVars` preserves
-primary/alternate precedence. `Field` contains caller-owned declared
+precedence: the name under each prefix, most specific first, then the env
+tag's names; `Env` is the first and `AlsoEnv` the rest. A key no variable
+can set — a list of sections, a map keyed by anything but strings, an entry
+of a map inside a map entry — names none. `Field` contains caller-owned declared
 metadata, including original tags, and is excluded from JSON.
 
 A withheld default is empty in `Default` and sets `Withheld`; JSON therefore
@@ -94,7 +99,11 @@ struct metadata. Credential-bearing defaults are withheld, so a template
 leaves them to the declared default instead of loading a redaction marker.
 
 `PrintUsage[T]("APP")` renders that catalog as a table, JSON,
-`FormatMarkdown` or an environment template. Markdown escapes cell content,
+`FormatMarkdown` or an environment template. For a `WithEnvPrefixes` load,
+pass its first prefix and `WithFallbackEnvPrefixes` the rest:
+`PrintUsage[T]("APP_WORKER", config.WithFallbackEnvPrefixes("APP"))` lists
+`APP_WORKER_DB_HOST, APP_DB_HOST`; the environment template exports the
+first. Markdown escapes cell content,
 including pipes and newlines. Tables include the resolved reload class:
 
 ```txt
@@ -168,7 +177,7 @@ The input is the source the merge kept — a default, a file by path, the exact 
 
 ## Config files from code
 
-`PrintTemplate[T]("APP")` writes the config file the struct describes — every key with its default, description, type and variable; secrets and keys without a default commented out. Loading it gives exactly the defaults, so a shipped file cannot drift from the code:
+`PrintTemplate[T]("APP")` writes the config file the struct describes — every key with its default, description, type and variables (with `WithFallbackEnvPrefixes`, every prefix's in precedence order); secrets and keys without a default commented out. Loading it gives exactly the defaults, so a shipped file cannot drift from the code:
 
 ```yaml
 # HTTP listen port
@@ -179,11 +188,11 @@ db:
   # password:
 ```
 
-`RedactedTreeChecked(cfg)` returns `(map[string]any, error)`, giving a loaded config as nested maps for any koanf parser to marshal — YAML, JSON, TOML, dotenv — and `PrintEnv(cfg, "APP")` as the `export` lines that would load it, using each list field's `sep` (commas by default). Lists that cannot round-trip, including one empty string or multiple elements with `sep:"none"`, are commented out; secrets are never exported.
+`RedactedTreeChecked(cfg)` returns `(map[string]any, error)`, giving a loaded config as nested maps for any koanf parser to marshal — YAML, JSON, TOML, dotenv — and `PrintEnv(cfg, "APP")` as the `export` lines that would load it, using each list field's `sep` (commas by default). Lists that cannot round-trip, including one empty string or multiple elements with `sep:"none"`, are commented out; secrets are never exported. With `WithFallbackEnvPrefixes`, variables are written under the first prefix and a name another key reads under any of the prefixes is commented out.
 
 ## JSON Schema
 
-`JSONSchema[T]()` returns a Draft 2020-12 schema of the config file — keys, types, descriptions, printable defaults and the validation rules JSON Schema can express — for editors and linters. `x-reload` records the resolved reload class and `x-env-ref` marks reference fields. It is advisory: `Load` is the authority, and a `required` key is not required in any one file, since a default or the environment may supply it.
+`JSONSchema[T]()` returns a Draft 2020-12 schema of the config file — keys, types, descriptions, printable defaults and the validation rules JSON Schema can express — for editors and linters. `x-reload` records the resolved reload class and `x-env-ref` marks reference fields. `JSONSchema[T]("APP_WORKER", "APP")` adds `x-config-env` to each key a variable sets — every variable in precedence order, a map's entries with a `<KEY>` placeholder; a `$defs` entry, shared by every path that reaches it, names none. It is advisory: `Load` is the authority, and a `required` key is not required in any one file, since a default or the environment may supply it.
 
 Duration values remain strings. `x-config-duration-bounds` annotates their
 runtime bounds with integer nanoseconds, using `minimum`, `maximum`,

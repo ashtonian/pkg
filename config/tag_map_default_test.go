@@ -63,5 +63,5 @@ func TestMapDefault_WholeVariableProvenance(t *testing.T) {
 	snap, err := LoadSnapshot[cfg](t.Context(), WithEnvPrefix("APP"), WithSkipValidation(),
 		WithEnviron(func() []string { return []string{"APP_LABELS=team=core,tier=1"} }))
 	require.NoError(t, err)
-	assert.Equal(t, Source{Kind: SourceEnv, Name: "APP_LABELS"}, snap.Provenance[`labels["team"]`].Input)
+	assert.Equal(t, Source{Kind: SourceEnv, Name: "APP_LABELS", Prefix: "APP"}, snap.Provenance[`labels["team"]`].Input)
 }

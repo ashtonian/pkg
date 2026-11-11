@@ -230,7 +230,11 @@ func TestWithOverridesFromStruct_ProvenanceNamesTheFlag(t *testing.T) {
 	assert.Equal(t, flag("--port"), snap.Provenance["port"])
 	assert.Equal(t, flag("--db-host"), snap.Provenance["db.host"])
 	assert.Equal(t, flag("--metrics"), snap.Provenance["metrics"])
-	assert.Equal(t, config.Origin{Input: config.Source{Kind: config.SourceEnv, Name: "APP_API_KEY"}, Exact: true}, snap.Provenance["api_key"])
+	// Field by field: the environment's Source carries more than a flag's.
+	env := snap.Provenance["api_key"]
+	assert.Equal(t, config.SourceEnv, env.Input.Kind)
+	assert.Equal(t, "APP_API_KEY", env.Input.Name)
+	assert.True(t, env.Exact)
 	assert.Equal(t, config.Origin{Input: config.Source{Kind: config.SourceTag}, Exact: true}, snap.Provenance["db.password"])
 
 	mapped := parseTestCLI(t, []string{"--host", "h"})

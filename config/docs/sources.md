@@ -4,13 +4,14 @@
 
 - [Any koanf provider](#any-koanf-provider)
 - [Environment variables](#environment-variables)
+  - [Layered prefixes](#layered-prefixes)
 
 Highest wins:
 
 | | Option | Use |
 |---|---|---|
 | 1 | `WithOverrideProvider(p, parser)` | Operator overrides, such as CLI flags through [kongprovider](../kongprovider). |
-| 2 | `WithEnvPrefix(prefix)` | `PREFIX_*` environment variables. |
+| 2 | `WithEnvPrefix(prefix)`, `WithEnvPrefixes(prefixes...)` | `PREFIX_*` environment variables, under one prefix or several. |
 | 3 | `WithFile`, `WithRequiredFile` | Config files, merged in order, each parsed by its name's suffix: YAML or JSON built in, any koanf parser through `WithFileParser`. |
 | 4 | `WithBaseProvider(p, parser)` | A shared or remote base the files refine. |
 | 5 | `WithDefaults(map)` | Programmatic defaults keyed by dotted path. |
@@ -127,7 +128,7 @@ With `WithEnvPrefix("APP")`, a key's variable is the prefix and its path, upper-
 | `APP_TAGS=web,api` (`[]string`) | `tags` = `[web api]` |
 | `APP_LABELS=team=core,tier=1` (`map[string]string`) | `labels`, the whole map |
 
-An `env` tag adds variables a key reads as written, without the prefix, for names a platform or another tool sets: `Port int koanf:"port" env:"PORT"` reads `APP_PORT`, then `PORT`. The prefixed variable wins, then the first set in the tag's list. Tagged variables are read only when `WithEnvPrefix` turns the environment on; a tag on a section, on a field of a list element or map entry, or naming a variable another field names fails with `ErrSchema`.
+An `env` tag adds variables a key reads as written, without the prefix, for names a platform or another tool sets: `Port int koanf:"port" env:"PORT"` reads `APP_PORT`, then `PORT`. Every prefixed variable wins, then the first set in the tag's list. Tagged variables are read only when `WithEnvPrefix` turns the environment on; a tag on a section, on a field of a list element or map entry, or naming a variable another field names fails with `ErrSchema`.
 
 Setting a whole map and an entry beneath it in the same environment layer fails with `ErrValidation`, naming both variables; choose one form.
 
@@ -144,6 +145,35 @@ APP_ROUTES='[{"path":"/api","timeout":"10s"},{"path":"/health"}]'
 The JSON is parsed before decoding, so each element's keys are checked as strict keys, take aliases, and get the element struct's defaults; `Diff` and provenance see every element. Text that is not JSON fails with `ErrValidation`, naming the key and line but not the text. A section's variable and one for a key inside it cannot both be set. The same tag lets a file give the value as a JSON string, and a `default` hold it as JSON.
 
 A variable that two keys could read — `db.port` and `db_port`, a field and a map entry, or a tagged name that is another key's own variable — fails the load naming every reading, instead of guessing. A variable under the prefix that names no key is ignored and logged at debug level — other programs may share the prefix — unless a `WithUnknownKeys` handler is set, which sees it with the variable it most likely misspells. `WithEnviron(fn)` replaces `os.Environ`, which keeps tests independent of the machine. `PrintUsage` lists every variable a config reads.
+
+### Layered prefixes
+
+A binary that runs several services as subcommands reads one shared namespace and, above it, each service's own. `WithEnvPrefixes` takes the prefixes most specific first; for every key, the first prefix whose variable is set wins, then the names its `env` tag lists:
+
+```go
+config.WithEnvPrefixes("APP_WORKER", "APP")
+```
+
+| Set | `db.host` | `db.port` |
+|---|---|---|
+| `APP_DB_HOST=shared`, `APP_DB_PORT=5432` | `shared` | `5432` |
+| … and `APP_WORKER_DB_HOST=worker` | `worker` | `5432` |
+
+The prefixes are one layer, between the files and the override providers, with every rule above. A trailing `_` is optional; empty and repeated prefixes are left out, so `WithEnvPrefixes(servicePrefix, "APP")` with an empty `servicePrefix` reads `APP` alone. `WithEnvPrefix(p)` is `WithEnvPrefixes(p)`.
+
+- **Ambiguity spans prefixes.** A name that reads one key under one prefix and another key under a second fails the load naming both: with a `worker` section in the struct, `APP_WORKER_DB_HOST` is `db.host` under `APP_WORKER` and `worker.db.host` under `APP`. Rename the field or choose another prefix.
+- **A value and keys beneath it.** Map entries and section keys merge across prefixes key by key, the narrower prefix winning on a shared key, and a whole map or `format:"json"` section under the narrower prefix replaces the one under the broader. Setting a whole map or section under one prefix and a key beneath it under another fails with `ErrValidation` naming both variables, as it does under one prefix: no merge of the two is the one an operator obviously meant.
+- **Unknown variables.** A variable under a broad prefix that a narrower prefix's key reads (`APP_WORKER_DB_HOST`, seen from `APP`) is not unknown. One under the shared prefix that only another service reads is: claim those with `WithVariableFilter`, so a strict `WithUnknownKeys` handler still reports a misspelling with the variable it most likely meant:
+
+```go
+config.WithVariableFilter(func(name string) bool {
+	return strings.HasPrefix(name, "APP_API_") // the api service's
+})
+```
+
+- **Provenance** names the variable and, in `Source.Prefix`, the prefix it was read under; an `env` tag's name has none.
+- **Diagnostics.** `Field.EnvVars`, `Usage` and `JSONSchema` take the prefix list; `PrintUsage`, `PrintTemplate` and `PrintEnv` take its first prefix and `WithFallbackEnvPrefixes` the rest. Each names every variable in precedence order; `PrintEnv` and the `FormatEnv` template write the first prefix's.
+- **Reloading** reads every prefix again on each reload.
 
 ### Variables read by the application
 

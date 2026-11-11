@@ -35,7 +35,7 @@ type Validator interface {
 type options struct {
 	knownVariables map[string]bool
 	variableFilter func(string) bool
-	envPrefix      string
+	envPrefixes    []string // an envPrefixList; empty: the environment is not read
 	environ        func() []string
 	files          []fileSource
 	fileParsers    map[string]koanf.Parser // by lower-case name suffix; nil removes one
@@ -204,10 +204,35 @@ func WithFileParser(suffix string, p koanf.Parser) Option {
 
 // WithEnvPrefix enables environment variables named PREFIX_<KEY>, the key
 // path upper-cased with "." → "_" (APP_DB_MAX_CONNS sets db.max_conns). The
-// environment is not read without a prefix.
+// environment is not read without a prefix. WithEnvPrefix(p) is
+// WithEnvPrefixes(p).
 func WithEnvPrefix(prefix string) Option {
+	return WithEnvPrefixes(prefix)
+}
+
+// WithEnvPrefixes enables environment variables under each prefix, most
+// specific first: for every key, the first prefix whose variable is set wins,
+// then the names the field's env tag lists. A binary that runs several
+// services reads a shared layer beneath each service's own:
+//
+//	config.WithEnvPrefixes("APP_WORKER", "APP") // APP_WORKER_DB_HOST, then APP_DB_HOST
+//
+// The environment stays one source, between the config files and the
+// override providers. A prefix's trailing "_" is optional; empty and repeated
+// prefixes are left out, and with none left the environment is not read. The
+// last call wins.
+//
+// A variable two keys could read, under one prefix or across two
+// (APP_WORKER_DB_HOST is db.host under APP_WORKER and worker.db.host under
+// APP), fails the load naming every reading. So does setting a whole map or
+// format:"json" section and a key beneath it, under one prefix or two. A
+// variable under a prefix that no key reads under any prefix is unknown (see
+// [WithUnknownKeys]); claim the shared prefix's variables only other services
+// read with [WithVariableFilter] or [WithKnownVariables].
+func WithEnvPrefixes(prefixes ...string) Option {
+	list := envPrefixList(prefixes)
 	return func(o *options) {
-		o.envPrefix = prefix
+		o.envPrefixes = list
 	}
 }
 
@@ -286,7 +311,8 @@ func WithDecodeHook(hook mapstructure.DecodeHookFunc) Option {
 
 // WithUnknownKeys decides what a load does with input no field reads: keys a
 // config file, provider or WithDefaults sets that no field decodes, and
-// environment variables under the [WithEnvPrefix] prefix that name no key.
+// environment variables under a [WithEnvPrefixes] prefix that name no key
+// under any of them.
 // handle is called with them whenever there are any, at every [Load] and
 // every reload, each with the key or variable it most likely misspells. A
 // nil return lets the load go on without them; an error fails it with
@@ -328,7 +354,7 @@ func WithAllowUnknownKeys() Option {
 func acceptUnknown(context.Context, *UnknownKeysError) error { return nil }
 
 // unknownInput is the load's verdict on input no field reads: the keys the
-// decoder left unused in merged, and the variables under env's prefix that
+// decoder left unused in merged, and the variables under env's prefixes that
 // named no key. Without a handler, unknown keys fail and variables are
 // ignored.
 func (o *options) unknownInput(ctx context.Context, root reflect.Type, schema *schemaNode, merged map[string]any, unused []string, env envSchema, variables []string, additional []UnknownKey) (*UnknownKeysError, error) {

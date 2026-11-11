@@ -25,7 +25,7 @@ const (
 	SourceDefaults       SourceKind = "defaults"          // WithDefaults
 	SourceBase           SourceKind = "base_provider"     // WithBaseProvider; Name is its position
 	SourceFile           SourceKind = "file"              // a config file; Name is its path
-	SourceEnv            SourceKind = "environment"       // Name is the variable
+	SourceEnv            SourceKind = "environment"       // Name is the variable, Prefix the prefix it was read under
 	SourceOverride       SourceKind = "override_provider" // WithOverrideProvider; Name is its position
 	SourceFlag           SourceKind = "flag"              // a command-line flag, as an OriginProvider names it
 	SourceSecrets        SourceKind = "secrets"           // the secret populator, as a transform
@@ -39,6 +39,11 @@ const (
 type Source struct {
 	Kind SourceKind `json:"kind"`
 	Name string     `json:"name,omitempty"`
+	// Prefix is the [WithEnvPrefixes] prefix an environment variable was
+	// read under, without its trailing "_": "APP_WORKER" for
+	// APP_WORKER_DB_HOST. It is empty for a name an env tag lists, and for
+	// every other kind of source.
+	Prefix string `json:"prefix,omitempty"`
 }
 
 func (s Source) String() string {
@@ -345,17 +350,19 @@ func reshaped(n *originNode) Origin {
 }
 
 // envLabeler attributes each value of the environment layer to the variable
-// that set it; flat maps each flat key to its variable.
-func envLabeler(prefix string, flat map[string]string) labeler {
+// that set it and the prefix it was read under; flat maps each flat key to
+// its variable. A value no variable is found for is the layer's, named by
+// pattern.
+func envLabeler(pattern string, flat map[string]envVariable) labeler {
 	return labeler{byPath: func(path []string) Source {
 		// A key beneath one a variable set whole — a map's entries, a JSON
 		// value's keys — is that variable's.
 		for i := len(path); i > 0; i-- {
-			if name, ok := flat[strings.Join(path[:i], ".")]; ok {
-				return Source{Kind: SourceEnv, Name: name}
+			if v, ok := flat[strings.Join(path[:i], ".")]; ok {
+				return Source{Kind: SourceEnv, Name: v.name, Prefix: v.prefix}
 			}
 		}
-		return Source{Kind: SourceEnv, Name: prefix + "*"}
+		return Source{Kind: SourceEnv, Name: pattern}
 	}}
 }
 

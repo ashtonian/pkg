@@ -14,15 +14,18 @@ import (
 // default), a map entry by its key. A key no variable sets alone is written as
 // a comment saying so: a list element of a struct, a map key the variable
 // naming cannot spell, a list its separator cannot represent, a name another
-// key would also read. A sensitive value is never exported; its line is
-// commented out with no value. [WithWriter] applies; WithFormat does not.
+// key would also read — under envPrefix or, with [WithFallbackEnvPrefixes],
+// under any prefix the load reads. A sensitive value is never exported; its
+// line is commented out with no value. [WithWriter] and
+// WithFallbackEnvPrefixes apply; WithFormat does not.
 func PrintEnv(cfg any, envPrefix string, opts ...PrintOption) error {
-	if envPrefix == "" {
-		return errors.New("config: PrintEnv needs an environment prefix")
-	}
 	po := defaultPrintOptions()
 	for _, opt := range opts {
 		opt(&po)
+	}
+	prefixes := po.envPrefixes(envPrefix)
+	if len(prefixes) == 0 {
+		return errors.New("config: PrintEnv needs an environment prefix")
 	}
 	t := reflect.TypeOf(cfg)
 	for t != nil && t.Kind() == reflect.Pointer {
@@ -35,8 +38,7 @@ func PrintEnv(cfg any, envPrefix string, opts ...PrintOption) error {
 	if err != nil {
 		return err
 	}
-	prefix := strings.TrimSuffix(envPrefix, "_")
-	e := &envWriter{ew: &errWriter{w: po.writer}, root: root, schema: newEnvSchema(variableFields(t), prefix), prefix: prefix}
+	e := &envWriter{ew: &errWriter{w: po.writer}, root: root, schema: newEnvSchema(variableFields(t), prefixes), prefix: prefixes[0]}
 	w := &valueTree{visiting: map[visit]bool{}}
 	n := w.root(cfg)
 	if w.err != nil {
@@ -50,7 +52,7 @@ type envWriter struct {
 	ew     *errWriter
 	root   *schemaNode
 	schema envSchema
-	prefix string
+	prefix string // the prefix variables are written under
 }
 
 // mapping writes the keys of struct or map node n, laid out from schema node s.
@@ -154,8 +156,8 @@ func (e *envWriter) export(p keyPath, value string) {
 	e.ew.printf("export %s=%s\n", name, shellQuote(value))
 }
 
-// name is the variable that sets key p, when the environment layer reads
-// that name as p and nothing else.
+// name is the variable under e.prefix that sets key p, when the
+// environment layer reads that name as p and nothing else, under any prefix.
 func (e *envWriter) name(p keyPath) (string, bool) {
 	parts := []string{e.prefix}
 	for _, s := range p {

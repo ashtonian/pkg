@@ -11,8 +11,9 @@ import (
 // application ships, or an operator starts from. Every key appears in
 // declaration order with its default as the value decoding produces — a
 // duration as 30s, a list as a list — preceded by its `desc` and a line naming
-// its type, whether it is required or sensitive, and the environment variable
-// that sets it under envPrefix (none when envPrefix is empty). A key with no
+// its type, whether it is required or sensitive, and the environment
+// variables that set it under envPrefix and the [WithFallbackEnvPrefixes]
+// prefixes, in precedence order (none when there is no prefix). A key with no
 // default is commented out with its printable example, if any; a sensitive key
 // and a default [Field.PrintableDefault] withholds have no value. A map or
 // list with no default is commented out with one example entry built from its
@@ -22,17 +23,16 @@ import (
 // Loading the file gives the same config as loading no source at all, and
 // strict keys accept it. [WithFormat] selects FormatYAML (the default) or
 // FormatJSON, which has no comments and leaves the commented keys out;
-// [WithWriter] applies. Tag and [DefaultProvider] defaults are decoded as Load
-// decodes them without
-// [WithDecodeHook]: a default only a custom hook can decode is an
-// ErrValidation error.
+// [WithWriter] and WithFallbackEnvPrefixes apply. Tag and [DefaultProvider]
+// defaults are decoded as Load decodes them without [WithDecodeHook]: a
+// default only a custom hook can decode is an ErrValidation error.
 func PrintTemplate[T any](envPrefix string, opts ...PrintOption) error {
 	po := defaultPrintOptions()
 	for _, opt := range opts {
 		opt(&po)
 	}
 	t := reflect.TypeFor[T]()
-	n, err := templateOf(t, strings.TrimSuffix(envPrefix, "_"))
+	n, err := templateOf(t, po.envPrefixes(envPrefix))
 	if err != nil {
 		return err
 	}
@@ -49,8 +49,9 @@ func PrintTemplate[T any](envPrefix string, opts ...PrintOption) error {
 	}
 }
 
-// templateOf builds T's template tree.
-func templateOf(t reflect.Type, prefix string) (*outNode, error) {
+// templateOf builds T's template tree, naming variables under prefixes, an
+// envPrefixList.
+func templateOf(t reflect.Type, prefixes []string) (*outNode, error) {
 	root, err := rootSchema(t)
 	if err != nil {
 		return nil, err
@@ -61,7 +62,7 @@ func templateOf(t reflect.Type, prefix string) (*outNode, error) {
 	}
 	b := &templateBuilder{defaults: defaults, walking: map[reflect.Type]bool{}}
 	n := &outNode{kind: outMap}
-	if err := b.branch(n, root, cursor{}, defaults.value, prefix, false); err != nil {
+	if err := b.branch(n, root, cursor{}, defaults.value, rootEnvNames(prefixes)); err != nil {
 		return nil, err
 	}
 	return n, nil
@@ -77,11 +78,9 @@ type templateBuilder struct {
 	walking  map[reflect.Type]bool // the structs on the current path: a recursive type stops
 }
 
-// branch adds node's keys to n from val, a node value holding defaults, and
-// reports whether any key is set rather than commented out. env is the
-// variable prefix for keys here, or empty where no variable reaches; crossed
-// reports a map already crossed on the way.
-func (b *templateBuilder) branch(n *outNode, node *schemaNode, c cursor, val reflect.Value, env string, crossed bool) error {
+// branch adds node's keys to n from val, a node value holding defaults; env
+// names the variables that address node.
+func (b *templateBuilder) branch(n *outNode, node *schemaNode, c cursor, val reflect.Value, env envNames) error {
 	if b.walking[node.typ] {
 		return nil
 	}
@@ -96,10 +95,7 @@ func (b *templateBuilder) branch(n *outNode, node *schemaNode, c cursor, val ref
 		if val.IsValid() {
 			fv, _ = f.value(val)
 		}
-		fenv := ""
-		if env != "" {
-			fenv = env + "_" + strings.ToUpper(f.key)
-		}
+		fenv := env.field(f.key)
 		e := outEntry{key: f.key}
 		if desc := f.sf.Tag.Get("desc"); desc != "" {
 			e.comments = strings.Split(desc, "\n")
@@ -114,14 +110,14 @@ func (b *templateBuilder) branch(n *outNode, node *schemaNode, c cursor, val ref
 				e.comments = append(e.comments, meta(f, fc, fenv))
 			}
 			child := &outNode{kind: outMap}
-			if err := b.branch(child, f.node, fc, derefValue(fv), fenv, crossed); err != nil {
+			if err := b.branch(child, f.node, fc, derefValue(fv), fenv); err != nil {
 				return err
 			}
 			e.node, e.commented = child, !child.live()
 		} else {
 			e.comments = append(e.comments, meta(f, fc, fenv))
 			var err error
-			if e.node, e.commented, err = b.leaf(f, fc, fv, fenv, crossed); err != nil {
+			if e.node, e.commented, err = b.leaf(f, fc, fv, fenv); err != nil {
 				return err
 			}
 		}
@@ -137,7 +133,7 @@ func (n *outNode) live() bool {
 
 // leaf lays out a key that is not a struct: its default, or a commented-out
 // placeholder or example.
-func (b *templateBuilder) leaf(f *schemaField, c cursor, fv reflect.Value, env string, crossed bool) (*outNode, bool, error) {
+func (b *templateBuilder) leaf(f *schemaField, c cursor, fv reflect.Value, env envNames) (*outNode, bool, error) {
 	printable := !c.sensitive() && !mayHoldSensitive(f.sf.Type, map[reflect.Type]bool{})
 	if _, has := f.sf.Tag.Lookup("default"); (has || b.defaults.has(c.path)) && printable {
 		w := &valueTree{visiting: map[visit]bool{}}
@@ -156,19 +152,19 @@ func (b *templateBuilder) leaf(f *schemaField, c cursor, fv reflect.Value, env s
 		n := w.value(v, site{})
 		return n, true, w.err
 	}
-	n, err := b.example(f.node, c, env, crossed)
+	n, err := b.example(f.node, c, env)
 	return n, true, err
 }
 
 // example lays out one example entry of a map or list, built from its
 // element's defaults; any other key has none.
-func (b *templateBuilder) example(node *schemaNode, c cursor, env string, crossed bool) (*outNode, error) {
+func (b *templateBuilder) example(node *schemaNode, c cursor, env envNames) (*outNode, error) {
 	if node.kind != nodeMap && node.kind != nodeList {
 		return nil, nil
 	}
-	elemEnv := ""
-	if node.kind == nodeMap && env != "" && !crossed {
-		elemEnv = env + "_<KEY>"
+	var elemEnv envNames // a list element has no variable
+	if node.kind == nodeMap {
+		elemEnv = env.entries(node.typ)
 	}
 	var elem *outNode
 	switch node.elem.kind {
@@ -178,7 +174,7 @@ func (b *templateBuilder) example(node *schemaNode, c cursor, env string, crosse
 			return nil, err
 		}
 		elem = &outNode{kind: outMap}
-		if err := b.branch(elem, node.elem, c.intoEntry(segment{kind: segAny}, node.typ.Elem()), defaults, elemEnv, true); err != nil {
+		if err := b.branch(elem, node.elem, c.intoEntry(segment{kind: segAny}, node.typ.Elem()), defaults, elemEnv); err != nil {
 			return nil, err
 		}
 	default:
@@ -188,15 +184,15 @@ func (b *templateBuilder) example(node *schemaNode, c cursor, env string, crosse
 		return &outNode{kind: outList, items: []*outNode{elem}}, nil
 	}
 	entry := outEntry{key: "<name>", node: elem}
-	if elemEnv != "" && node.elem.kind != nodeBranch {
-		entry.comments = []string{"env " + elemEnv}
+	if names := elemEnv.set("", node.typ.Elem()); len(names) > 0 && node.elem.kind != nodeBranch {
+		entry.comments = []string{"env " + strings.Join(names, ", ")}
 	}
 	return &outNode{kind: outMap, entries: []outEntry{entry}}, nil
 }
 
 // meta is a key's type line: its Go type, whether it is required or
-// sensitive, and the variable that sets it.
-func meta(f *schemaField, c cursor, env string) string {
+// sensitive, and the variables that set it.
+func meta(f *schemaField, c cursor, env envNames) string {
 	parts := []string{typeText(f.sf.Type)}
 	if slices.Contains(strings.Split(f.sf.Tag.Get("validate"), ","), "required") {
 		parts = append(parts, "required")
@@ -205,14 +201,7 @@ func meta(f *schemaField, c cursor, env string) string {
 		parts = append(parts, "sensitive")
 	}
 	text := strings.Join(parts, ", ")
-	var names []string
-	if env != "" && variableSetsField(f.sf.Tag, f.sf.Type) {
-		names = append(names, env)
-	}
-	if env != "" {
-		names = append(names, envTagNames(f.sf.Tag)...)
-	}
-	if len(names) > 0 {
+	if names := env.set(f.sf.Tag, f.sf.Type); len(names) > 0 {
 		text += "; env " + strings.Join(names, ", ")
 		if jsonFormat(f.sf.Tag) {
 			text += " (JSON)"
