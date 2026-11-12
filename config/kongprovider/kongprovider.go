@@ -10,29 +10,44 @@
 // resolvers are not forwarded, so they never override a config file or an
 // environment variable — the config struct's `default` tags are the defaults.
 //
-// The simplest wiring embeds the config struct in the CLI struct: Kong makes
-// a flag of each field, and [WithOverridesFromStruct] maps every flag to the
-// key of the field it writes, so the config struct is the whole schema.
+// The default wiring embeds the config struct in the command that uses it:
+// Kong makes a flag of each field, and [Load] loads the config during Parse,
+// before Kong validates, and writes it into that struct. The command's
+// fields, a Run method's *AppConfig parameter, and the Validate methods Kong
+// calls all see the loaded config: files, environment, secrets and typed
+// flags.
 //
 //	type AppConfig struct {
 //	    Port  int  `koanf:"port" default:"8080" short:"p" desc:"HTTP listen port"`
 //	    Debug bool `koanf:"debug" negatable:""`
 //	}
-//	type CLI struct {
-//	    Config    string `type:"path" default:"config.yaml" help:"Config file."`
+//	type ServeCmd struct {
 //	    AppConfig `embed:""`
+//	}
+//	func (c *ServeCmd) Run() error { return serve(c.Port) }
+//
+//	type CLI struct {
+//	    Config string   `type:"path" default:"config.yaml" help:"Config file."`
+//	    Serve  ServeCmd `cmd:""`
 //	}
 //
 //	var cli CLI
-//	kctx := kong.Parse(&cli, kongprovider.HelpFromConfig(&cli.AppConfig, "APP"))
-//	cfg, err := config.Load[AppConfig](ctx,
-//	    config.WithFile(cli.Config),
-//	    config.WithEnvPrefix("APP"),
-//	    kongprovider.WithOverridesFromStruct(kctx, &cli.AppConfig),
-//	)
+//	kctx := kong.Parse(&cli, kongprovider.Load(ctx, &cli.Serve.AppConfig, []string{"APP"},
+//	    func(*kong.Context) ([]config.Option, error) {
+//	        return []config.Option{config.WithFile(cli.Config)}, nil
+//	    }))
+//	kctx.FatalIfErrorf(kctx.Run())
 //
-// For a CLI struct that does not hold the config struct, [WithOverrides]
-// takes an explicit flag name → key mapping.
+// A service that reloads uses [LoadReloader], which binds a
+// config.Reloader[T] for Run instead.
+//
+// [HelpFromConfig] and [WithOverridesFromStruct] are the two halves of that
+// wiring, for a program that loads the config itself after Parse. Kong then
+// validates and exposes its own copy of the struct — defaults and typed
+// flags only — so a Validate method on the config is called on that copy
+// before any file or variable is read. For a CLI struct that does not hold
+// the config struct, [WithOverrides] takes an explicit flag name → key
+// mapping.
 package kongprovider
 
 import (
@@ -161,6 +176,11 @@ func WithOverrides(ctx *kong.Context, mapping map[string]string) config.Option {
 //	kctx := kong.Parse(&cli, kongprovider.HelpFromConfig(&cli.AppConfig, "APP"))
 //	cfg, err := config.Load[AppConfig](ctx, kongprovider.WithOverridesFromStruct(kctx, &cli.AppConfig))
 //
+// That is [Load]'s wiring done by hand, after Parse: cli.AppConfig keeps
+// Kong's defaults and typed flags, and Kong has already called its Validate
+// methods on them. Prefer Load unless the program needs the load outside
+// Parse.
+//
 // Each flag is mapped to the key of the field it writes, by the field's
 // address (see config.MatchFields), so no tag has to name a flag and no flag name,
 // prefix or alias has to agree with a key; flags outside cfg — the config
@@ -194,27 +214,36 @@ func WithOverridesFromStruct[T any](ctx *kong.Context, cfg *T) config.Option {
 // the value — on a variable meant for something else, such as a Kubernetes
 // service link (REDIS_PORT=tcp://10.0.0.1:6379).
 //
-// Declare no Kong `required` on the config struct: Kong validates before the
-// config pipeline runs, so a required flag could not be satisfied by a file,
-// the environment or a secret. The config struct's `validate` rules, which
-// run after every source, are the ones that apply.
+// Declare no Kong `required` on the config struct: Kong checks it against
+// the command line alone, so a required flag could not be satisfied by a
+// file, the environment or a secret. The config struct's `validate` rules,
+// which run after every source, are the ones that apply.
 // An invalid config field catalog returns config.ErrSchema during parser
 // construction, even when the conflicting fields have no CLI flags.
-// Ambiguous field addresses return config.ErrKey.
+// Ambiguous field addresses return config.ErrKey. [Load] and [LoadReloader]
+// describe the flags themselves.
 func HelpFromConfig[T any](cfg *T, envPrefixes ...string) kong.Option {
+	envPrefixes = slices.Clone(envPrefixes)
 	return kong.PostBuild(func(k *kong.Kong) error {
-		flags := allFlags(k.Model.Node)
-		fields, err := fieldsOfFlags(cfg, flags)
-		if err != nil {
-			return err
-		}
-		for _, fl := range flags {
-			if f, ok := fields[fl]; ok {
-				describe(fl, f, envPrefixes)
-			}
-		}
-		return nil
+		_, err := describeFlags(k, cfg, envPrefixes)
+		return err
 	})
+}
+
+// describeFlags describes every flag of the CLI k built that writes a field
+// of cfg, and returns those flags with their fields.
+func describeFlags[T any](k *kong.Kong, cfg *T, envPrefixes []string) (map[*kong.Flag]config.Field, error) {
+	flags := allFlags(k.Model.Node)
+	fields, err := fieldsOfFlags(cfg, flags)
+	if err != nil {
+		return nil, err
+	}
+	for _, fl := range flags {
+		if f, ok := fields[fl]; ok {
+			describe(fl, f, envPrefixes)
+		}
+	}
+	return fields, nil
 }
 
 // describe writes field f's description into flag fl's help.
@@ -267,7 +296,7 @@ func typedValues[T any](ctx *kong.Context, cfg *T) (map[string]any, map[string]s
 		return nil, nil, err
 	}
 	if len(fields) == 0 {
-		return nil, nil, fmt.Errorf("kongprovider: no flag of the CLI %s writes a field of the supplied config; pass a pointer into the parsed CLI struct", ctx.Model.Name)
+		return nil, nil, errNoFlag(ctx.Model.Name)
 	}
 	values, flags := make(map[string]any), make(map[string]string)
 	for _, el := range ctx.Path {

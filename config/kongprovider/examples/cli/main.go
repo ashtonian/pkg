@@ -2,8 +2,8 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
-	"log"
 	"os"
 	"time"
 
@@ -12,6 +12,8 @@ import (
 	"github.com/ashtonian/pkg/config"
 	"github.com/ashtonian/pkg/config/kongprovider"
 )
+
+const envPrefix = "APP"
 
 // DBConfig becomes the --db-* flags through the prefix on its field below.
 type DBConfig struct {
@@ -32,49 +34,64 @@ type AppConfig struct {
 	Labels   map[string]string `koanf:"labels" kong:"-"`
 }
 
-// CLI embeds the config and adds what is the CLI's own: the config file's
-// path and the commands.
-type CLI struct {
-	Config    string `type:"path" default:"config.yaml" help:"Config file."`
-	AppConfig `embed:""`
+// Validate holds the rule no tag states. It sees the loaded config: the
+// file, APP_* and the typed flags, never Kong's defaults alone.
+func (c *AppConfig) Validate() error {
+	if c.DB.MaxConns > 100 && c.Timeout < time.Second {
+		return errors.New("a pool of more than 100 connections needs a timeout of at least 1s")
+	}
+	return nil
+}
 
-	Serve    struct{} `cmd:"" default:"1" help:"Run the server."`
-	Print    struct{} `cmd:"" help:"Print the effective configuration as YAML, secrets redacted."`
-	Usage    struct{} `cmd:"" help:"List every setting with its environment variable."`
-	Template struct{} `cmd:"" help:"Write a starter config file: every key with its default."`
+// ServeCmd and PrintCmd each hold the config; Load fills it for the one that
+// runs.
+type ServeCmd struct {
+	AppConfig `embed:""`
+}
+
+func (c *ServeCmd) Run() error {
+	fmt.Printf("serving on :%d (log level %s, db %s, metrics %v)\n", c.Port, c.LogLevel, c.DB.Host, c.Metrics)
+	return nil
+}
+
+type PrintCmd struct {
+	AppConfig `embed:""`
+}
+
+func (c *PrintCmd) Run() error {
+	return config.PrintRedacted(&c.AppConfig, config.WithFormat(config.FormatYAML), config.WithWriter(os.Stdout))
+}
+
+// UsageCmd and TemplateCmd hold no config, so they run without one.
+type UsageCmd struct{}
+
+func (UsageCmd) Run() error { return config.PrintUsage[AppConfig](envPrefix) }
+
+type TemplateCmd struct{}
+
+func (TemplateCmd) Run() error { return config.PrintTemplate[AppConfig](envPrefix) }
+
+// CLI adds what is the CLI's own: the config file's path and the commands.
+type CLI struct {
+	Config string `type:"path" default:"config.yaml" help:"Config file."`
+
+	Serve    ServeCmd    `cmd:"" default:"withargs" help:"Run the server."`
+	Print    PrintCmd    `cmd:"" help:"Print the effective configuration as YAML, secrets redacted."`
+	Usage    UsageCmd    `cmd:"" help:"List every setting with its environment variable."`
+	Template TemplateCmd `cmd:"" help:"Write a starter config file: every key with its default."`
 }
 
 func main() {
+	ctx := context.Background()
 	var cli CLI
-	kctx := kong.Parse(&cli, kongprovider.HelpFromConfig(&cli.AppConfig, "APP"))
-	switch kctx.Command() {
-	case "usage":
-		if err := config.PrintUsage[AppConfig]("APP"); err != nil {
-			log.Fatal(err)
-		}
-		return
-	case "template":
-		if err := config.PrintTemplate[AppConfig]("APP"); err != nil {
-			log.Fatal(err)
-		}
-		return
+	// Called during Parse, once the command line is parsed: cli.Config holds
+	// --config.
+	files := func(*kong.Context) ([]config.Option, error) {
+		return []config.Option{config.WithFile(cli.Config)}, nil
 	}
-
-	cfg, err := config.Load[AppConfig](context.Background(),
-		config.WithFile(cli.Config),
-		config.WithEnvPrefix("APP"),
-		kongprovider.WithOverridesFromStruct(kctx, &cli.AppConfig),
+	kctx := kong.Parse(&cli,
+		kongprovider.Load(ctx, &cli.Serve.AppConfig, []string{envPrefix}, files),
+		kongprovider.Load(ctx, &cli.Print.AppConfig, []string{envPrefix}, files),
 	)
-	if err != nil {
-		log.Fatal(err)
-	}
-
-	switch kctx.Command() {
-	case "print":
-		if err := config.PrintRedacted(cfg, config.WithFormat(config.FormatYAML), config.WithWriter(os.Stdout)); err != nil {
-			log.Fatal(err)
-		}
-	default:
-		fmt.Printf("serving on :%d (log level %s, db %s, metrics %v)\n", cfg.Port, cfg.LogLevel, cfg.DB.Host, cfg.Metrics)
-	}
+	kctx.FatalIfErrorf(kctx.Run())
 }
