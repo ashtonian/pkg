@@ -2,6 +2,7 @@
 
 [Documentation](README.md) · [Quick start](../README.md#quick-start) · [Go API](https://pkg.go.dev/github.com/ashtonian/pkg/config)
 
+- [Shadowed inputs](#shadowed-inputs)
 - [Any koanf provider](#any-koanf-provider)
 - [Environment variables](#environment-variables)
   - [Layered prefixes](#layered-prefixes)
@@ -25,6 +26,24 @@ To migrate the old single-parser API, register the parser for `""` and remove th
 An optional file may be absent, but one that exists and cannot be read or parsed fails the load. Under a reloader, a file that loaded once stays required, so deleting it fails the reload rather than silently reverting its keys.
 
 Keys match fields in any letter case, as decoding does, and each source's keys are respelled as the fields are before the merge — so precedence holds whatever case a source used. A source that spells one field two ways (`port` and `Port`) fails the load.
+
+## Shadowed inputs
+
+A key that two sources set takes the higher one's value, so the lower one's input is *shadowed*: it cannot take effect while the higher source sets the key. Maps merge key by key, so `APP_DB_HOST` shadows a file's `db.host` and leaves the rest of its `db` in force; any other value — a scalar, a list, `null` — replaces everything the lower source set beneath its key.
+
+| Where | What it lists |
+|---|---|
+| `Snapshot.Shadowed`, from `LoadSnapshot` and every `NewReloader` load | Every shadowed input of the load: the key, the `Source` that set it and the source kept instead (`By`). |
+| `ReloadResult.Shadowed`, and one warning in the log per entry | The inputs that changed since the previous generation — set, edited or removed — while a higher source holds their key: edits a reload read and could not apply. |
+| `WithShadowedInputs(fn)` | Called with every shadowed input at each load and reload that has any; a nil return accepts them, an error fails the load with `ErrValidation`. Return the `*ShadowedInputsError` it gets to require one source per key. |
+
+```txt
+log_level (file /etc/app/config.yaml, kept by environment APP_LOG_LEVEL)
+```
+
+Overriding a file from the environment or a flag is a legitimate pattern, so shadowed inputs never fail a load without a handler; a load that looks for them logs them at debug level. Two layerings are designed overrides and are never listed: defaults (`default` tags, `ConfigDefaults`, `WithDefaults`) beneath any source, and the precedence inside the environment layer — a narrower `WithEnvPrefixes` prefix over a broader one, a prefixed name over an `env` tag's — which is one source. Entries name keys and sources, never values; inside a sensitive map or list the key stops at the container and an environment variable is named by its prefix alone. Input no field reads is reported by [`WithUnknownKeys`](schema.md) instead.
+
+**A key meant to change while the process runs must be set only by sources that change.** A reloader reads every source again, but the process environment and typed CLI flags (kongprovider copies them when the reloader is built) stay what they were at startup, and both outrank files. A variable left behind after a setting moved into a file, or a flag on the command line, pins its key for the life of the process: the file's edit is read and ignored. `ReloadResult.Shadowed` and the warning name the key, the file and the variable or flag that kept it. A plain `Load` looks for shadowed inputs only for a `WithShadowedInputs` handler; `NewReloaderFunc` has no view of its loader's sources and reports none.
 
 ## Any koanf provider
 
@@ -87,7 +106,7 @@ not the value; wrapped causes are for trusted diagnostics.
 
 These calls honor `WithDefaults`, `WithDecodeHook`, `WithValidator` and
 `WithSkipValidation`. They read no provider, file or environment and run no
-secret, post-load or unknown-input callbacks. Other fields remain at defaults,
+secret, post-load, unknown-input or shadowed-input callbacks. Other fields remain at defaults,
 so cross-field rules judge that context. Keys use `ParseKey` syntax, with
 aliases and case folding accepted for fields. List indexes must already
 exist in defaults or append immediately after them; pass the whole list to

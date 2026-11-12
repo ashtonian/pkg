@@ -110,7 +110,8 @@ type fileDigests map[string][sha256.Size]byte
 // loader merges one load's sources into k. Each source's tree is read
 // whole, its struct keys rewritten into the fields' own spelling (keyWalk),
 // and then merged, so precedence holds whatever letter case a source used.
-// With provenance, origins records what set each value as the trees merge.
+// With provenance or shadowed-input reporting, origins records what set each
+// value as the trees merge, and inputs what each non-default source set.
 type loader struct {
 	checker         *keyChecker
 	withheldUnknown []UnknownKey
@@ -119,7 +120,9 @@ type loader struct {
 	schema          *schemaNode
 	sources         []string
 	aliased         []string    // keys sources set under an alias tag's name, by source
-	origins         *originNode // nil without provenance
+	origins         *originNode // nil unless the load attributes values
+	provenance      bool        // origins holds all provenance reads, not only what shadow detection does
+	inputs          *inputs     // nil unless the load finds shadowed inputs
 }
 
 // add merges data, the tree of the source called name, whose values label
@@ -150,14 +153,21 @@ func (l *loader) rewrite(name string, data map[string]any) (map[string]any, erro
 	return tree, nil
 }
 
-// merge merges tree into the load and, with provenance, the same tree into
-// the origins: what koanf merges and what is attributed are one tree.
+// merge merges tree into the load and, when the load attributes values, the
+// same tree into the origins: what koanf merges and what is attributed are
+// one tree. A source's rank is its position in the merge. Without
+// provenance the origins serve shadow detection alone, which defaults never
+// take part in: they merge first, so they hold nothing a source set.
 func (l *loader) merge(name string, tree map[string]any, label labeler) error {
 	if err := l.k.Load(confmap.Provider(tree, ""), nil); err != nil {
 		return fmt.Errorf("loading %s: %w: %w", name, ErrSource, err)
 	}
-	if l.origins != nil {
-		l.origins.merge(tree, &originMerge{label: label})
+	rank := len(l.sources)
+	if l.origins != nil && (l.provenance || !label.defaults()) {
+		l.origins.merge(tree, &originMerge{label: label, rank: rank, provenance: l.provenance})
+	}
+	if l.inputs != nil {
+		l.inputs.add(name, rank, tree, label)
 	}
 	l.sources = append(l.sources, name)
 	return nil
@@ -165,8 +175,8 @@ func (l *loader) merge(name string, tree map[string]any, label labeler) error {
 
 // addProvider reads a provider — a map, or bytes through parser — and adds
 // it. A read failure is ErrSource with the provider's error; bytes the parser
-// rejects are ErrSource with a *ParseError. With provenance, an
-// OriginProvider's annotations name the source of each value; any other
+// rejects are ErrSource with a *ParseError. When the load attributes values,
+// an OriginProvider's annotations name the source of each value; any other
 // provider is src's own.
 func (l *loader) addProvider(ctx context.Context, name string, p providerSource, src Source) error {
 	if op, ok := p.provider.(OriginProvider); ok && p.parser == nil && l.origins != nil {
@@ -209,13 +219,16 @@ func (l *loader) addFlat(name string, flat map[string]any, label labeler) error 
 
 // loaded is one load's outcome: the config, the config files it read and
 // what they held — which a Reloader needs to keep an optional file from
-// vanishing unnoticed and to tell whether a file changed since — and, with
-// provenance, where each key's value came from.
+// vanishing unnoticed and to tell whether a file changed since — with
+// provenance, where each key's value came from, and when the load finds
+// them, the shadowed inputs and every source's inputs.
 type loaded[T any] struct {
-	cfg     *T
-	files   fileDigests
-	origins map[string]Origin
-	unknown *UnknownKeysError
+	cfg      *T
+	files    fileDigests
+	origins  map[string]Origin
+	unknown  *UnknownKeysError
+	shadowed []Shadow
+	inputs   *inputs
 }
 
 // load is Load's pipeline.
@@ -233,9 +246,15 @@ func load[T any](ctx context.Context, o *options) (loaded[T], error) {
 	// deleted from a file, say) can survive into this one.
 	l := &loader{k: koanf.New("."), root: root, schema: schema}
 	var rec *originRecorder
-	if o.provenance {
+	switch {
+	case o.provenance:
 		rec = newOriginRecorder(schema)
-		l.origins = rec.tree
+		l.origins, l.provenance = rec.tree, true
+	case o.findsShadowed():
+		l.origins = newOriginRoot()
+	}
+	if o.findsShadowed() {
+		l.inputs = newInputs(schema, l.origins, o.inputDigests)
 	}
 	files := fileDigests{}
 	var env envSchema
@@ -296,6 +315,12 @@ func load[T any](ctx context.Context, o *options) (loaded[T], error) {
 	o.log().DebugContext(ctx, "config sources loaded", "sources", l.sources)
 	if len(l.aliased) > 0 {
 		o.log().WarnContext(ctx, "config keys set under a former name; rename them", "keys", l.aliased)
+	}
+	var shadowed []Shadow
+	if l.inputs != nil {
+		if shadowed, err = o.judgeShadowed(ctx, root, l.inputs); err != nil {
+			return none, err
+		}
 	}
 
 	merged := l.k.Raw()
@@ -369,7 +394,7 @@ func load[T any](ctx context.Context, o *options) (loaded[T], error) {
 		return none, err
 	}
 
-	out := loaded[T]{cfg: cfg, files: files, unknown: unknown}
+	out := loaded[T]{cfg: cfg, files: files, unknown: unknown, shadowed: shadowed, inputs: l.inputs}
 	if rec != nil {
 		if out.origins, err = rec.origins(cv); err != nil {
 			return none, fmt.Errorf("recording provenance: %w", err)

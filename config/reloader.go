@@ -3,6 +3,7 @@ package config
 import (
 	"cmp"
 	"context"
+	"crypto/rand"
 	"crypto/sha256"
 	"errors"
 	"fmt"
@@ -68,6 +69,11 @@ type Reloader[T any] struct {
 	// loaded is what each watched file held at the last successful load.
 	// Guarded by slot.
 	loaded fileDigests
+	// inputKey keys the digests of what each source set; nil when the
+	// loader is the caller's. inputs is what each source set at the last
+	// successful load, digested. Guarded by slot.
+	inputKey []byte
+	inputs   map[string]sourceInputs
 
 	// armSem guards armed. It is taken before the slot, never while holding
 	// it, and waited for under a context, so an Arm queued behind another
@@ -109,10 +115,13 @@ func NewReloader[T any](ctx context.Context, loadOpts []Option, opts ...ReloadOp
 	if err != nil {
 		return nil, err
 	}
+	r.inputKey = make([]byte, sha256.Size)
+	_, _ = rand.Read(r.inputKey) // never fails: crypto/rand crashes the program instead
 	r.load = func(ctx context.Context) (loaded[T], error) {
 		o := buildOptions(loadOpts)
 		o.requireFiles(r.loaded)
 		o.provenance = ro.provenance
+		o.inputDigests = r.inputKey
 		return load[T](ctx, o)
 	}
 	if err := r.loadInitial(ctx); err != nil {
@@ -229,7 +238,7 @@ func (r *Reloader[T]) loadInitial(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	snap := &Snapshot[T]{Config: cfg, Generation: 1, Provenance: l.origins, UnknownKeys: l.unknown}
+	snap := &Snapshot[T]{Config: cfg, Generation: 1, Provenance: l.origins, UnknownKeys: l.unknown, Shadowed: l.shadowed}
 	if r.app != nil {
 		r.app.start(owed)
 		p := r.app.plan(rootValue(cfg), true)
@@ -239,6 +248,9 @@ func (r *Reloader[T]) loadInitial(ctx context.Context) error {
 		snap.Appliers, snap.PendingRestart = r.app.account(p)
 	}
 	r.loaded = files
+	if l.inputs != nil {
+		r.inputs = l.inputs.bySource()
+	}
 	r.state.Store(snap)
 	return nil
 }
@@ -418,7 +430,12 @@ func (r *Reloader[T]) reloadHeld(ctx context.Context, trigger string) (*ReloadRe
 	}
 
 	r.loaded = files
-	next := &Snapshot[T]{Config: cfg, Generation: prev.Generation + 1, Stats: prev.Stats, Provenance: l.origins, UnknownKeys: l.unknown}
+	var shadowed []Shadow
+	if l.inputs != nil {
+		shadowed = l.inputs.changedSince(r.inputs)
+		r.inputs = l.inputs.bySource()
+	}
+	next := &Snapshot[T]{Config: cfg, Generation: prev.Generation + 1, Stats: prev.Stats, Provenance: l.origins, UnknownKeys: l.unknown, Shadowed: l.shadowed}
 	next.Stats.Attempts++
 	next.Stats.Successes++
 	next.Stats.LastTrigger = trigger
@@ -434,7 +451,11 @@ func (r *Reloader[T]) reloadHeld(ctx context.Context, trigger string) (*ReloadRe
 		next.Applying = slices.ContainsFunc(plan.events, func(e []owed) bool { return len(e) > 0 })
 	}
 	r.state.Store(next)
-	result := ReloadResult[T]{Changes: changes}
+	for _, s := range shadowed {
+		r.log().WarnContext(ctx, "config input changed beneath a higher-precedence source; the change does not take effect",
+			"trigger", trigger, "generation", next.Generation, "key", s.Key, "source", s.Source.String(), "by", s.By.String())
+	}
+	result := ReloadResult[T]{Changes: changes, Shadowed: shadowed}
 	if result.Changes == nil {
 		result.Changes = []Change{}
 	}
@@ -460,6 +481,7 @@ func (r *Reloader[T]) publishFailure(prev *Snapshot[T], trigger string, err erro
 	next := &Snapshot[T]{
 		Config: prev.Config, Generation: prev.Generation, Stats: prev.Stats,
 		Appliers: prev.Appliers, PendingRestart: prev.PendingRestart, Provenance: prev.Provenance, UnknownKeys: prev.UnknownKeys,
+		Shadowed: prev.Shadowed,
 	}
 	next.Stats.Attempts++
 	next.Stats.Failures++

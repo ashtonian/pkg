@@ -62,6 +62,8 @@ The package logs through `WithLogger` (`slog.Default()` otherwise) and imports n
 | Error | `config reload failed` | A reload was refused; the previous config is live. |
 | Error | `config applier failed` | An applier errored or panicked; it is retried on the next config. |
 | Warn | `config keys set under a former name; rename them` | A source used a field alias. |
+| Warn | `config input changed beneath a higher-precedence source; the change does not take effect` | A reload read an edit — a key set, changed or removed — that a higher source keeps from taking effect: `key`, the edited `source`, and `by`, the source kept. Remove `by`'s variable or flag, or change the value there. See [shadowed inputs](sources.md#shadowed-inputs). |
+| Debug | `config inputs a higher-precedence source outranks` | Every shadowed input of a load that looks for them (`LoadSnapshot`, a reloader, a `WithShadowedInputs` handler). |
 | Debug | `environment variables under the prefix name no config key` | Probably a typo in a variable name. Under a shared `WithEnvPrefixes` prefix it may be another service's variable: claim those with `WithVariableFilter`. |
 
 `Snapshot()` is cheap and consistent, so export it with function metrics:
@@ -109,6 +111,7 @@ Load options:
 | `WithDecodeHook(h)` | none | A mapstructure decode hook, run before the built-in ones. |
 | `WithUnknownKeys(fn)` | unknown keys fail, unknown variables ignored | Decide what unknown keys and variables do: report, accept, or fail. |
 | `WithAllowUnknownKeys()` | unknown keys fail | Accept keys no field decodes, silently. |
+| `WithShadowedInputs(fn)` | listed in snapshots, never fail | Decide what inputs a higher-precedence source outranks do: accept, report, or fail with `ErrValidation`. |
 | `WithSecretPopulator(fn)` | none | Resolve secrets; see `SecretsFrom`. |
 | `WithPostLoad(fn)` | none | Normalize after secrets, before validation. |
 | `WithValidator(v)` | go-playground, keys as field names | Replace the tag validator. |

@@ -82,8 +82,11 @@ type Origin struct {
 // attributed to the provider. An annotation naming a key the data does not
 // hold, using a selector of the wrong kind, naming a list element, or naming
 // the key another annotation names with another source fails the load with
-// [ErrSource]. Only provenance reads the annotations; it is used for
-// providers loaded with a nil parser.
+// [ErrSource]. A load reads the annotations when it attributes values:
+// provenance ([LoadSnapshot], a reloader [WithProvenance]) and shadowed-input
+// reporting (every [NewReloader] load, and a load [WithShadowedInputs]);
+// any other load calls Read. They are used for providers loaded with a nil
+// parser.
 type OriginProvider interface {
 	koanf.Provider
 	ReadWithOrigins(ctx context.Context) (map[string]any, map[string]Source, error)
@@ -93,7 +96,9 @@ type OriginProvider interface {
 // the snapshot's Provenance holds an [Origin] for each key, and its
 // Generation is 0. Recording costs a tree of the merged sources, a copy and
 // a comparison of the decoded config around the secret populator and each
-// post-load hook, and one walk for the rows; Load records nothing.
+// post-load hook, and one walk for the rows. The snapshot's Shadowed lists
+// the inputs a higher-precedence source outranks. Load records nothing,
+// unless [WithShadowedInputs] asks it to find shadowed inputs.
 func LoadSnapshot[T any](ctx context.Context, opts ...Option) (Snapshot[T], error) {
 	o := buildOptions(opts)
 	o.provenance = true
@@ -101,17 +106,22 @@ func LoadSnapshot[T any](ctx context.Context, opts ...Option) (Snapshot[T], erro
 	if err != nil {
 		return Snapshot[T]{}, err
 	}
-	return Snapshot[T]{Config: l.cfg, Provenance: l.origins, UnknownKeys: l.unknown}, nil
+	return Snapshot[T]{Config: l.cfg, Provenance: l.origins, UnknownKeys: l.unknown, Shadowed: l.shadowed}, nil
 }
 
 // originNode is what set one value of the merged tree. It mirrors koanf's
 // merge: a map merges key by key, an empty one changing nothing, and any
 // other value — a list included — replaces what was there, so everything
-// beneath it is the new source's. A map's entries and a list's elements are
-// nodes of their own, so what the element defaults add after the merge is
-// told from what a source set.
+// beneath it is the new source's. With provenance, a map's entries and a
+// list's elements are nodes of their own, so what the element defaults add
+// after the merge is told from what a source set; without it, the tree
+// serves shadow detection alone and a value merged whole is one node.
 type originNode struct {
-	src      Source
+	src Source
+	// rank is the merge position of the source that set the node, which
+	// tells a higher-precedence source from a lower one whatever their
+	// Sources say.
+	rank     int
 	children map[string]*originNode // a map's entries; nil for anything else
 	elems    []*originNode          // a list's elements; nil for anything else
 	// merges reports a map koanf merges into, key by key: a
@@ -132,18 +142,42 @@ type labeler struct {
 
 func constant(src Source) labeler { return labeler{fixed: src} }
 
+// at is the source of the value at path, raw.
+func (lb labeler) at(path []string) Source {
+	if lb.byPath == nil {
+		return lb.fixed
+	}
+	return lb.byPath(path)
+}
+
+// defaults reports a default layer's labeler. A default exists to be
+// overridden, so what it sets is never reported as shadowed.
+func (lb labeler) defaults() bool {
+	if lb.byPath != nil {
+		return false
+	}
+	switch lb.fixed.Kind {
+	case SourceTag, SourceSchemaDefaults, SourceDefaults:
+		return true
+	}
+	return false
+}
+
 // originMerge merges one source's tree into the origins, tracking the raw
 // path only for a labeler that reads it.
 type originMerge struct {
 	label labeler
-	path  []string
+	rank  int
+	// provenance builds the nodes of a list's elements and of another map
+	// type's entries, which only provenance reads: shadow detection stops at
+	// a value that replaces what was there whole, and that value has one
+	// source.
+	provenance bool
+	path       []string
 }
 
 func (m *originMerge) source() Source {
-	if m.label.byPath == nil {
-		return m.label.fixed
-	}
-	return m.label.byPath(m.path)
+	return m.label.at(m.path)
 }
 
 func (m *originMerge) enter(key string) {
@@ -174,7 +208,7 @@ func (n *originNode) merge(incoming map[string]any, m *originMerge) {
 
 // node is the origin of val, set whole by the source at the merge's path.
 func (m *originMerge) node(val any) *originNode {
-	n := &originNode{src: m.source()}
+	n := &originNode{src: m.source(), rank: m.rank}
 	switch v := val.(type) {
 	case map[string]any:
 		n.merges = true
@@ -185,39 +219,43 @@ func (m *originMerge) node(val any) *originNode {
 			m.leave()
 		}
 	case []any:
-		n.elems = make([]*originNode, len(v))
-		for i, e := range v {
-			n.elems[i] = setBy(e, n.src)
+		if m.provenance {
+			n.elems = make([]*originNode, len(v))
+			for i, e := range v {
+				n.elems[i] = setBy(e, n.src, n.rank)
+			}
 		}
 	default:
-		n.children, n.elems = structureOf(val, n.src)
+		if m.provenance {
+			n.children, n.elems = structureOf(val, n.src, n.rank)
+		}
 	}
 	return n
 }
 
-// setBy is the origin of val and everything in it, all set by src: a list's
-// element, which its list's source set.
-func setBy(val any, src Source) *originNode {
-	m := originMerge{label: constant(src)}
+// setBy is the origin of val and everything in it, all set by src, merged
+// at rank: a list's element, which its list's source set.
+func setBy(val any, src Source, rank int) *originNode {
+	m := originMerge{label: constant(src), rank: rank, provenance: true}
 	return m.node(val)
 }
 
 // structureOf gives a map or list of any other type its entries' or
-// elements' nodes, all set by src.
-func structureOf(val any, src Source) (map[string]*originNode, []*originNode) {
+// elements' nodes, all set by src, merged at rank.
+func structureOf(val any, src Source, rank int) (map[string]*originNode, []*originNode) {
 	v := reflect.ValueOf(val)
 	switch {
 	case !v.IsValid():
 	case v.Kind() == reflect.Map && !v.IsNil():
 		children := make(map[string]*originNode, v.Len())
 		for it := v.MapRange(); it.Next(); {
-			children[fmt.Sprint(it.Key().Interface())] = setBy(it.Value().Interface(), src)
+			children[fmt.Sprint(it.Key().Interface())] = setBy(it.Value().Interface(), src, rank)
 		}
 		return children, nil
 	case v.Kind() == reflect.Slice && !v.IsNil(), v.Kind() == reflect.Array:
 		elems := make([]*originNode, v.Len())
 		for i := range v.Len() {
-			elems[i] = setBy(v.Index(i).Interface(), src)
+			elems[i] = setBy(v.Index(i).Interface(), src, rank)
 		}
 		return nil, elems
 	}
@@ -237,7 +275,8 @@ func (n *originNode) fill(merged any) int {
 			if child := n.children[key]; child != nil {
 				count += child.fill(it.Value().Interface())
 			} else {
-				child = setBy(it.Value().Interface(), Source{Kind: SourceTag})
+				// After every source merged: no source outranks what fills in.
+				child = setBy(it.Value().Interface(), Source{Kind: SourceTag}, -1)
 				n.children[key] = child
 				count += child.values()
 			}
