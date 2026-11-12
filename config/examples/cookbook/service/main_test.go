@@ -17,25 +17,34 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/ashtonian/pkg/config"
-	"github.com/ashtonian/pkg/config/kongprovider"
 )
+
+// parse parses args with the service's own Kong options.
+func parse(t *testing.T, args ...string) (*CLI, *kong.Context, *slog.LevelVar, error) {
+	t.Helper()
+	var cli CLI
+	level := new(slog.LevelVar)
+	opts, err := loading(t.Context(), &cli, slog.New(slog.DiscardHandler), level)
+	require.NoError(t, err)
+	parser, err := kong.New(&cli, opts...)
+	require.NoError(t, err)
+	kctx, err := parser.Parse(args)
+	return &cli, kctx, level, err
+}
 
 func TestService(t *testing.T) {
 	file := filepath.Join(t.TempDir(), "service.yaml")
 	write := func(content string) { require.NoError(t, os.WriteFile(file, []byte(content), 0o600)) }
 	write("greeting: hi\nadmin_token: t0ken\nlog:\n  level: warn\n")
 
-	var cli CLI
-	parser, err := kong.New(&cli, kongprovider.HelpFromConfig(&cli.AppConfig, "APP"))
+	cli, kctx, level, err := parse(t, "--config", file, "--log-level", "debug")
 	require.NoError(t, err)
-	kctx, err := parser.Parse([]string{"--config", file, "--log-level", "debug"})
+	bound, err := kctx.Call(func(r *config.Reloader[AppConfig]) *config.Reloader[AppConfig] { return r })
 	require.NoError(t, err)
-
-	level := new(slog.LevelVar)
-	r, err := newReloader(t.Context(), &cli, kctx, slog.New(slog.DiscardHandler), level)
-	require.NoError(t, err)
+	r := bound[0].(*config.Reloader[AppConfig])
 	t.Cleanup(func() { _ = r.Stop(t.Context()) })
 	assert.Equal(t, slog.LevelDebug, level.Level(), "the flag beats the file, applied before serving")
+	assert.Equal(t, "t0ken", cli.Serve.AdminToken, "the command holds the loaded config, fields with no flag included")
 
 	srv := httptest.NewServer(routes(r))
 	t.Cleanup(srv.Close)
@@ -67,6 +76,7 @@ func TestService(t *testing.T) {
 		pending = append(pending, c.Key)
 	}
 	assert.Equal(t, []string{"http.addr"}, pending, "the listener's address waits for a restart")
+	assert.Equal(t, ":8080", cli.Serve.HTTP.Addr, "the listener keeps the startup config")
 
 	code, body = get("/admin/config", "t0ken")
 	assert.Equal(t, http.StatusOK, code)
@@ -78,6 +88,28 @@ func TestService(t *testing.T) {
 	require.ErrorIs(t, err, config.ErrValidation, "Validate refuses a blank greeting")
 	_, body = get("/", "")
 	assert.Equal(t, "hello again\n", body)
+}
+
+// The environment alone configures a command, and Validate judges the
+// loaded config — the environment's blank greeting — not Kong's defaults.
+func TestServiceEnvironmentOnly(t *testing.T) {
+	t.Setenv("APP_ADMIN_TOKEN", "t0ken")
+	t.Setenv("APP_GREETING", "from the environment")
+	cli, _, _, err := parse(t, "--config", filepath.Join(t.TempDir(), "absent.yaml"), "print")
+	require.NoError(t, err)
+	assert.Equal(t, "from the environment", cli.Print.Greeting)
+
+	t.Setenv("APP_GREETING", " ")
+	_, _, _, err = parse(t, "--config", filepath.Join(t.TempDir(), "absent.yaml"), "print")
+	require.ErrorIs(t, err, config.ErrValidation, "the loaded greeting is blank, though Kong's default is not")
+}
+
+// The commands that hold no config run without one: no admin token here.
+func TestServiceCommandsWithoutConfig(t *testing.T) {
+	for _, command := range []string{"template", "schema"} {
+		_, _, _, err := parse(t, "--config", filepath.Join(t.TempDir(), "absent.yaml"), command)
+		require.NoError(t, err, command)
+	}
 }
 
 // The config file's JSON Schema is a valid Draft 2020-12 schema, as an
