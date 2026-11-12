@@ -19,17 +19,22 @@ Complete programs, each with a test, in the [cookbook](../examples/cookbook):
 
 ## CLI flags
 
-[kongprovider](../kongprovider) loads the [Kong](https://github.com/alecthomas/kong) flags a user typed as the highest-precedence source, mapped to keys by the config field each flag writes, and fills Kong's help from the config struct:
+[kongprovider](../kongprovider) loads the [Kong](https://github.com/alecthomas/kong) flags a user typed as the highest-precedence source, mapped to keys by the config field each flag writes, and fills Kong's help from the config struct. Embed the config in the command that uses it; `kongprovider.Load` loads it while Kong parses, before Kong runs any `Validate` method, and writes it into that struct, so the command's fields and `Run` see the loaded config:
 
 ```go
-var cli CLI // embeds AppConfig
-kctx := kong.Parse(&cli, kongprovider.HelpFromConfig(&cli.AppConfig, "APP"))
-cfg, err := config.Load[AppConfig](ctx,
-	config.WithFile(cli.Config),
-	config.WithEnvPrefix("APP"),
-	kongprovider.WithOverridesFromStruct(kctx, &cli.AppConfig),
-)
+type ServeCmd struct {
+	AppConfig `embed:""`
+}
+
+var cli CLI // holds Config (the file's path) and Serve ServeCmd
+kctx := kong.Parse(&cli, kongprovider.Load(ctx, &cli.Serve.AppConfig, []string{"APP"},
+	func(*kong.Context) ([]config.Option, error) {
+		return []config.Option{config.WithFile(cli.Config)}, nil
+	}))
+kctx.FatalIfErrorf(kctx.Run())
 ```
+
+`kongprovider.LoadReloader` builds a `Reloader` the same way and binds it for `Run`. Loading after `kong.Parse` with `HelpFromConfig` and `WithOverridesFromStruct` leaves the struct inside the CLI holding Kong's defaults and typed flags — and Kong calls its `Validate` method on those during Parse — so prefer `Load`; see the [kongprovider README](../kongprovider/README.md#wiring-by-hand).
 
 ## Decoding a map
 

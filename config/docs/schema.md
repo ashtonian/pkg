@@ -118,4 +118,6 @@ func (c *AppConfig) Validate() error {
 }
 ```
 
+Kong also calls a `Validate() error` method on any struct its CLI embeds, during Parse. With the config struct embedded in a Kong command, wire it with [`kongprovider.Load`](../kongprovider/README.md), which loads before Kong validates, so both calls judge the loaded config.
+
 `WithValidator` replaces the tag validator with any `Struct(any) error` (one with `StructCtx` gets the load's context); register `config.FieldName` as its tag-name function to keep errors named by key. `WithSkipValidation` turns validation off; unknown keys still fail.
