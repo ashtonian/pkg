@@ -75,7 +75,7 @@ func (e *ShadowedInputsError) Error() string {
 // handle restores that default.
 //
 // Two kinds of layering are designed overrides and never reported: defaults
-// (default tags, [DefaultProvider] and [WithDefaults]) beneath any source,
+// (default tags, [Defaulter] and [WithDefaults]) beneath any source,
 // and the precedence inside the environment layer — [WithEnvPrefixes]'
 // narrower prefixes over broader ones, prefixed names over env tag names —
 // which is one source. Inputs are named by key and source, never value; an

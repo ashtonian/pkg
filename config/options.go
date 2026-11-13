@@ -257,7 +257,7 @@ func WithEnviron(environ func() []string) Option {
 }
 
 // WithDefaults adds programmatic default values keyed by koanf dot-path
-// (e.g. "server.port"); they override schema-owned defaults and tags. Repeated calls merge,
+// (e.g. "server.port"); they override the code defaults ([Defaulter]) and tags. Repeated calls merge,
 // a later call winning on a shared key. The values are deep-copied when
 // WithDefaults is called — every map key and value, slice, array and pointer
 // target reachable through exported fields — so changing the caller's data

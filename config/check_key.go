@@ -82,7 +82,7 @@ func newKeyChecker(t reflect.Type, o *options) (*keyChecker, error) {
 		return nil, err
 	}
 	l := &loader{k: koanf.New("."), root: t, schema: root}
-	if err := l.addDeclaredDefaults(true); err != nil {
+	if _, err := l.addSchemaDefaults(o); err != nil {
 		return nil, err
 	}
 	if err := l.addFlat("WithDefaults", o.defaults, constant(Source{Kind: SourceDefaults})); err != nil {
@@ -153,7 +153,9 @@ func (c *keyChecker) decode(ctx context.Context, tree map[string]any) (any, erro
 	if err != nil {
 		return nil, err
 	}
-	fillElementDefaults(c.root, tree)
+	if err := newElementDefaults(c.options, false).fill(c.root, tree); err != nil {
+		return nil, err
+	}
 	out := reflect.New(c.root)
 	md, err := c.options.decodeInput(c.schema, tree, out.Interface(), nil)
 	if err != nil {

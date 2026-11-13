@@ -19,19 +19,19 @@ type SourceKind string
 
 // Source kinds, lowest precedence first among the inputs.
 const (
-	SourceZero           SourceKind = "zero"              // no source set it: the type's zero value
-	SourceTag            SourceKind = "tag_default"       // a default:"..." tag
-	SourceSchemaDefaults SourceKind = "schema_defaults"   // DefaultProvider
-	SourceDefaults       SourceKind = "defaults"          // WithDefaults
-	SourceBase           SourceKind = "base_provider"     // WithBaseProvider; Name is its position
-	SourceFile           SourceKind = "file"              // a config file; Name is its path
-	SourceEnv            SourceKind = "environment"       // Name is the variable, Prefix the prefix it was read under
-	SourceOverride       SourceKind = "override_provider" // WithOverrideProvider; Name is its position
-	SourceFlag           SourceKind = "flag"              // a command-line flag, as an OriginProvider names it
-	SourceSecrets        SourceKind = "secrets"           // the secret populator, as a transform
-	SourcePostLoad       SourceKind = "post_load"         // a WithPostLoad hook, as a transform; Name is its position
-	SourceMixed          SourceKind = "mixed"             // a value compared whole that more than one source set part of
-	SourceUnknown        SourceKind = "unknown"           // decoding made the value: no source can be named
+	SourceZero         SourceKind = "zero"              // no source set it: the type's zero value
+	SourceTag          SourceKind = "tag_default"       // a default:"..." tag
+	SourceCodeDefaults SourceKind = "code_defaults"     // a Defaulter's SetDefaults
+	SourceDefaults     SourceKind = "defaults"          // WithDefaults
+	SourceBase         SourceKind = "base_provider"     // WithBaseProvider; Name is its position
+	SourceFile         SourceKind = "file"              // a config file; Name is its path
+	SourceEnv          SourceKind = "environment"       // Name is the variable, Prefix the prefix it was read under
+	SourceOverride     SourceKind = "override_provider" // WithOverrideProvider; Name is its position
+	SourceFlag         SourceKind = "flag"              // a command-line flag, as an OriginProvider names it
+	SourceSecrets      SourceKind = "secrets"           // the secret populator, as a transform
+	SourcePostLoad     SourceKind = "post_load"         // a WithPostLoad hook, as a transform; Name is its position
+	SourceMixed        SourceKind = "mixed"             // a value compared whole that more than one source set part of
+	SourceUnknown      SourceKind = "unknown"           // decoding made the value: no source can be named
 )
 
 // Source names what set a value: its kind, and a name — a file's path, a
@@ -157,7 +157,7 @@ func (lb labeler) defaults() bool {
 		return false
 	}
 	switch lb.fixed.Kind {
-	case SourceTag, SourceSchemaDefaults, SourceDefaults:
+	case SourceTag, SourceCodeDefaults, SourceDefaults:
 		return true
 	}
 	return false
@@ -263,9 +263,10 @@ func structureOf(val any, src Source, rank int) (map[string]*originNode, []*orig
 }
 
 // fill attributes what merged, the tree after element defaults filled it,
-// holds that n does not — the defaults — to the element's tag. It returns
-// how many values merged holds: about the number of keys with an origin.
-func (n *originNode) fill(merged any) int {
+// holds that n does not — the defaults — to the element's tags or its
+// Defaulters, as filled recorded. It returns how many values merged holds:
+// about the number of keys with an origin.
+func (n *originNode) fill(merged any, filled *elementDefaults) int {
 	v := reflect.ValueOf(merged)
 	switch {
 	case n.children != nil && v.IsValid() && v.Kind() == reflect.Map && v.Len() > 0:
@@ -273,10 +274,9 @@ func (n *originNode) fill(merged any) int {
 		for it := v.MapRange(); it.Next(); {
 			key := fmt.Sprint(it.Key().Interface())
 			if child := n.children[key]; child != nil {
-				count += child.fill(it.Value().Interface())
+				count += child.fill(it.Value().Interface(), filled)
 			} else {
-				// After every source merged: no source outranks what fills in.
-				child = setBy(it.Value().Interface(), Source{Kind: SourceTag}, -1)
+				child = filledOrigin(v, key, it.Value().Interface(), Source{Kind: SourceTag}, filled)
 				n.children[key] = child
 				count += child.values()
 			}
@@ -285,11 +285,31 @@ func (n *originNode) fill(merged any) int {
 	case n.elems != nil && v.IsValid() && isList(v) && v.Len() > 0:
 		count := 0
 		for i := range min(v.Len(), len(n.elems)) {
-			count += n.elems[i].fill(v.Index(i).Interface())
+			count += n.elems[i].fill(v.Index(i).Interface(), filled)
 		}
 		return count
 	}
 	return 1
+}
+
+// filledOrigin is the origin of val, which element defaults filled in at key
+// of m: the kind filled recorded there, else inherited, and so on beneath.
+// After every source merged, no source outranks what fills in.
+func filledOrigin(m reflect.Value, key string, val any, inherited Source, filled *elementDefaults) *originNode {
+	src := inherited
+	if kind, ok := filled.filledKind(m, key); ok {
+		src = Source{Kind: kind}
+	}
+	entries, ok := val.(map[string]any)
+	if !ok {
+		return setBy(val, src, -1)
+	}
+	n := &originNode{src: src, rank: -1, merges: true, children: make(map[string]*originNode, len(entries))}
+	at := reflect.ValueOf(entries)
+	for k, child := range entries {
+		n.children[k] = filledOrigin(at, k, child, src, filled)
+	}
+	return n
 }
 
 // values counts the values at and beneath n.

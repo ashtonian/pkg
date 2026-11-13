@@ -46,7 +46,7 @@ schema. Schema errors support `errors.Is(err, config.ErrSchema)`; malformed keys
 | `RedactedTreeChecked(cfg)` | `(map[string]any, error)` with nested redacted values | Returns nil on structural errors; no partial tree |
 
 These functions inspect metadata without decoding default or example tags,
-except `Usage` decodes defaults when the root implements `DefaultProvider`.
+except `Usage` decodes defaults when a `Defaulter` sets some.
 The original `Fields`, `RedactedMap` and `RedactedTree` retain their single-result
 signatures and return nil on failure. `PrintRedacted` returns structural errors
 before writing output. See [inspection errors](inspection.md#inspection-errors)
@@ -105,7 +105,7 @@ Load options:
 | `WithEnviron(fn)` | `os.Environ` | Where variables come from. |
 | `WithKnownVariables(names...)` | none | Claim exact names read by the application; repeated calls accumulate. |
 | `WithVariableFilter(fn)` | none | Claim otherwise unmatched names when fn returns true; last call wins, nil clears. |
-| `WithDefaults(map)` | none | Defaults by dotted path, above schema-owned defaults and tags; repeated calls merge. |
+| `WithDefaults(map)` | none | Defaults by dotted path, above the code defaults (`SetDefaults`) and tags; repeated calls merge. |
 | `WithBaseProvider(p, parser, opts...)` | none | A provider below the files. |
 | `WithOverrideProvider(p, parser, opts...)` | none | A provider above the environment. |
 | `WithDecodeHook(h)` | none | A mapstructure decode hook, run before the built-in ones. |
@@ -124,7 +124,7 @@ Provider source options:
 |---|---|---|
 | `WithInvalidEntries(report)` | fail on invalid entries | Withhold invalid known entries, retaining lower sources; report sorted keys/errors after each read. Unknown keys remain reportable. |
 
-`DefaultProvider`, `CheckKey` and `DecodeKey` are described in
+`Defaulter`, `CheckKey` and `DecodeKey` are described in
 [sources and precedence](sources.md). `RedactText` uses the diagnostic
 [credential-shape policy](inspection.md#printing-and-usage).
 

@@ -67,9 +67,10 @@
 // environment variables ([WithEnvPrefix], [WithEnvPrefixes]), files ([WithFile],
 // [WithRequiredFile]; YAML or JSON by suffix, any parser through
 // [WithFileParser]), base providers ([WithBaseProvider]), programmatic
-// defaults ([WithDefaults]), and default tags. Any koanf.Provider loads at
-// either provider layer, with any parser; a [ContextProvider] is read with
-// the load's context.
+// defaults ([WithDefaults]), code defaults (a [Defaulter]'s SetDefaults, for
+// what a tag cannot say: per program, per path), and default tags. Any
+// koanf.Provider loads at either provider layer, with any parser; a
+// [ContextProvider] is read with the load's context.
 //
 // With WithEnvPrefix("APP"), APP_DB_MAX_CONNS sets db.max_conns: the name is
 // looked up in the key tree, so an underscore inside a key survives. A map of
@@ -92,8 +93,9 @@
 // merge, so precedence holds whatever case a source used. A field's alias tag
 // names former keys rewritten the same way, so a renamed setting keeps
 // reading deployed files; the load logs a warning naming each. An element
-// struct's default tags apply to every map entry and slice element; an entry
-// set to null stays null — write {} for an entry that takes its defaults.
+// struct's default tags, and what its SetDefaults sets above them, apply to
+// every map entry and slice element; an entry set to null stays null — write
+// {} for an entry that takes its defaults.
 //
 // # Pipeline
 //

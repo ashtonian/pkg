@@ -101,31 +101,34 @@ func Usage[T any](envPrefixes ...string) ([]UsageEntry, error) {
 	if err != nil {
 		return nil, err
 	}
+	// Defaults are decoded only when a Defaulter sets some: a row a tag
+	// alone defaults shows the tag as written.
+	inCode := schemaSetsDefaults(root, map[*schemaNode]bool{})
 	var defaults declaredDefaults
-	_, ownsDefaults := reflect.New(root.typ).Interface().(DefaultProvider)
-	if ownsDefaults {
-		defaults, err = readDefaults(root.typ, true)
-		if err != nil {
+	if inCode {
+		if defaults, err = readDefaults(root.typ); err != nil {
 			return nil, err
 		}
 	}
 	rows, err := usageRows(root, envPrefixList(envPrefixes), defaults)
-	if err != nil {
-		return nil, err
+	if err != nil || !inCode {
+		return rows, err
 	}
-	if !ownsDefaults {
-		return rows, nil
-	}
+	elements := map[reflect.Type]declaredDefaults{}
 	for i := range rows {
 		r := &rows[i]
 		path, err := parseKeyPath(r.Key)
 		if err != nil {
 			return nil, err
 		}
-		if r.pattern {
+		d, rel, err := defaultsAt(root, defaults, path, elements)
+		if err != nil {
+			return nil, err
+		}
+		if !d.fromCode(rel) {
 			continue
 		}
-		if !defaults.has(path) {
+		if !d.has(rel) {
 			r.Default, r.hasDefault, r.Withheld = "", false, false
 			continue
 		}
@@ -134,12 +137,71 @@ func Usage[T any](envPrefixes ...string) ([]UsageEntry, error) {
 			r.Default, r.Withheld = "", true
 			continue
 		}
-		r.Default, r.Withheld, err = defaultText(defaults.field(root, path))
+		r.Default, r.Withheld, err = defaultText(d.field(d.root, rel))
 		if err != nil {
 			return nil, err
 		}
 	}
 	return rows, nil
+}
+
+// schemaSetsDefaults reports whether a Defaulter sets a default anywhere
+// in n: in the root's sections or in a collection's element type.
+func schemaSetsDefaults(n *schemaNode, seen map[*schemaNode]bool) bool {
+	if n == nil || seen[n] {
+		return false
+	}
+	seen[n] = true
+	switch n.kind {
+	case nodeBranch:
+		if setsDefaults(n.typ) {
+			return true
+		}
+		for _, f := range n.fields {
+			if schemaSetsDefaults(f.node, seen) {
+				return true
+			}
+		}
+	case nodeMap, nodeList:
+		return schemaSetsDefaults(n.elem, seen)
+	}
+	return false
+}
+
+// defaultsAt is the defaults that path, a key or a [*] pattern, takes its
+// default from, and path relative to them: root's, or below a [*] those of
+// the element type, read once into elements.
+func defaultsAt(root *schemaNode, defaults declaredDefaults, path keyPath, elements map[reflect.Type]declaredDefaults) (declaredDefaults, keyPath, error) {
+	d, rel, n := defaults, path, root
+	for i, s := range path {
+		if n == nil {
+			break
+		}
+		switch {
+		case s.kind == segAny && n.elem != nil:
+			n = n.elem
+			if n.kind != nodeBranch {
+				return declaredDefaults{}, nil, nil
+			}
+			if _, ok := elements[n.typ]; !ok {
+				read, err := readDefaults(n.typ)
+				if err != nil {
+					return declaredDefaults{}, nil, err
+				}
+				elements[n.typ] = read
+			}
+			d, rel = elements[n.typ], path[i+1:]
+		case n.kind == nodeBranch:
+			f := n.byKey[s.name]
+			if f == nil {
+				return d, rel, nil
+			}
+			n = f.node
+		default:
+			n = n.elem
+		}
+	}
+	return d, rel, nil
 }
 
 // PrintUsage writes every key of T an operator can set: its path, the

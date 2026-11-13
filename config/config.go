@@ -34,7 +34,7 @@ import (
 //  3. Config files ([WithFile], [WithRequiredFile]), a later file winning
 //  4. Base providers ([WithBaseProvider])
 //  5. Programmatic defaults ([WithDefaults])
-//  6. Schema-owned defaults ([DefaultProvider])
+//  6. Code defaults ([Defaulter])
 //  7. Struct-tag defaults (default:"value")
 //
 // ctx reaches the secret populator, every post-load hook, a context-aware
@@ -260,7 +260,7 @@ func load[T any](ctx context.Context, o *options) (loaded[T], error) {
 	var env envSchema
 	var unmatchedEnv []string
 
-	if err := l.addDeclaredDefaults(true); err != nil {
+	if _, err := l.addSchemaDefaults(o); err != nil {
 		return none, err
 	}
 	if len(o.defaults) > 0 {
@@ -324,9 +324,12 @@ func load[T any](ctx context.Context, o *options) (loaded[T], error) {
 	}
 
 	merged := l.k.Raw()
-	fillElementDefaults(root, merged)
+	elements := newElementDefaults(o, rec != nil)
+	if err := elements.fill(root, merged); err != nil {
+		return none, err
+	}
 	if rec != nil {
-		rec.values = rec.tree.fill(merged)
+		rec.values = rec.tree.fill(merged, elements)
 	}
 	cfg := new(T)
 	// The decoder's own record of the keys it left unused is what strict

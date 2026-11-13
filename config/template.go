@@ -23,7 +23,7 @@ import (
 // Loading the file gives the same config as loading no source at all, and
 // strict keys accept it. [WithFormat] selects FormatYAML (the default) or
 // FormatJSON, which has no comments and leaves the commented keys out;
-// [WithWriter] and WithFallbackEnvPrefixes apply. Tag and [DefaultProvider]
+// [WithWriter] and WithFallbackEnvPrefixes apply. Tag and [Defaulter]
 // defaults are decoded as Load decodes them without [WithDecodeHook]: a
 // default only a custom hook can decode is an ErrValidation error.
 func PrintTemplate[T any](envPrefix string, opts ...PrintOption) error {
@@ -56,7 +56,7 @@ func templateOf(t reflect.Type, prefixes []string) (*outNode, error) {
 	if err != nil {
 		return nil, err
 	}
-	defaults, err := readDefaults(t, true)
+	defaults, err := readDefaults(t)
 	if err != nil {
 		return nil, err
 	}
@@ -69,7 +69,7 @@ func templateOf(t reflect.Type, prefixes []string) (*outNode, error) {
 }
 
 func decodedDefaults(t reflect.Type) (reflect.Value, error) {
-	d, err := readDefaults(t, false)
+	d, err := readDefaults(t)
 	return d.value, err
 }
 

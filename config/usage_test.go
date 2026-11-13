@@ -223,9 +223,7 @@ type usageVariablesCfg struct {
 	Items    []usageItem             `koanf:"items"`
 }
 
-func (usageVariablesCfg) ConfigDefaults() map[string]any {
-	return map[string]any{"items": []map[string]any{{"port": 80}}}
-}
+func (c *usageVariablesCfg) SetDefaults() { c.Items = []usageItem{{Port: 80}} }
 
 // Usage names a variable only where the loader reads one that can set the
 // key: not an entry of a map inside a map entry, not a map keyed by
