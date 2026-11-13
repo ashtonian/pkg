@@ -5,17 +5,13 @@
 
 ### ⚠ BREAKING CHANGES
 
-* **config:** set defaults in code with Defaulter ([#182](https://github.com/ashtonian/pkg/issues/182))
-* **config:** DefaultProvider and ConfigDefaults are removed; implement Defaulter's SetDefaults instead. SourceSchemaDefaults ("schema_defaults") is replaced by SourceCodeDefaults ("code_defaults").
-* **config:** report inputs a higher-precedence source shadows ([#180](https://github.com/ashtonian/pkg/issues/180))
-* **config:** every NewReloader load reads an OriginProvider's annotations, not only one WithProvenance, so a provider whose annotations are invalid fails the reloader with ErrSource.
+* **config:** set defaults in code with Defaulter ([#182](https://github.com/ashtonian/pkg/issues/182)): DefaultProvider and ConfigDefaults are removed; implement Defaulter's SetDefaults instead. SourceSchemaDefaults ("schema_defaults") is replaced by SourceCodeDefaults ("code_defaults").
+* **config:** report inputs a higher-precedence source shadows ([#180](https://github.com/ashtonian/pkg/issues/180)): every NewReloader load reads an OriginProvider's annotations, not only one WithProvenance, so a provider whose annotations are invalid fails the reloader with ErrSource.
 
 ### Features
 
-* **config:** report inputs a higher-precedence source shadows ([f7ede63](https://github.com/ashtonian/pkg/commit/f7ede6395f439e4d99fcd04bda582aa2eccd2894)), closes [#177](https://github.com/ashtonian/pkg/issues/177)
-* **config:** report inputs a higher-precedence source shadows ([#180](https://github.com/ashtonian/pkg/issues/180)) ([1adbd4a](https://github.com/ashtonian/pkg/commit/1adbd4a63f5ba44d7b5e9a40fc357f33807c2263))
-* **config:** set defaults in code with Defaulter ([5b33c23](https://github.com/ashtonian/pkg/commit/5b33c23010c05d4994ec30ec06ffa3d494a2bf98)), closes [#178](https://github.com/ashtonian/pkg/issues/178)
-* **config:** set defaults in code with Defaulter ([#182](https://github.com/ashtonian/pkg/issues/182)) ([86f83d3](https://github.com/ashtonian/pkg/commit/86f83d317a7aaffcab9d18813492623d22b3a3ce))
+* **config:** report inputs a higher-precedence source shadows ([#180](https://github.com/ashtonian/pkg/issues/180)) ([f7ede63](https://github.com/ashtonian/pkg/commit/f7ede6395f439e4d99fcd04bda582aa2eccd2894)), closes [#177](https://github.com/ashtonian/pkg/issues/177)
+* **config:** set defaults in code with Defaulter ([#182](https://github.com/ashtonian/pkg/issues/182)) ([5b33c23](https://github.com/ashtonian/pkg/commit/5b33c23010c05d4994ec30ec06ffa3d494a2bf98)), closes [#178](https://github.com/ashtonian/pkg/issues/178)
 
 ## [0.9.0](https://github.com/ashtonian/pkg/compare/config/v0.8.1...config/v0.9.0) (2026-11-11)
 
