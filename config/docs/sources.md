@@ -3,6 +3,7 @@
 [Documentation](README.md) · [Quick start](../README.md#quick-start) · [Go API](https://pkg.go.dev/github.com/ashtonian/pkg/config)
 
 - [Shadowed inputs](#shadowed-inputs)
+- [Code defaults](#code-defaults)
 - [Any koanf provider](#any-koanf-provider)
 - [Environment variables](#environment-variables)
   - [Layered prefixes](#layered-prefixes)
@@ -16,7 +17,7 @@ Highest wins:
 | 3 | `WithFile`, `WithRequiredFile` | Config files, merged in order, each parsed by its name's suffix: YAML or JSON built in, any koanf parser through `WithFileParser`. |
 | 4 | `WithBaseProvider(p, parser)` | A shared or remote base the files refine. |
 | 5 | `WithDefaults(map)` | Programmatic defaults keyed by dotted path. |
-| 6 | `DefaultProvider.ConfigDefaults()` | Defaults belonging to the root schema. |
+| 6 | `SetDefaults()` ([`Defaulter`](#code-defaults)) | Defaults set in code where a tag cannot say them: per program, per path. |
 | 7 | `default` tags | Always. |
 
 Each file takes the parser registered for the longest suffix of its name, ignoring case: `.yaml` and `.yml` are YAML, `.json` is JSON, and any other file is YAML. `WithFileParser(".toml", toml.Parser())` adds a format, so `config.yaml`, `overrides.json` and `local.toml` load together; `WithFileParser("", p)` changes the parser for every file no other suffix matches. JSON is strict: one object per file, integers within int64/uint64 kept exact (larger integer literals fail), a key set twice in one object an error.
@@ -41,7 +42,7 @@ A key that two sources set takes the higher one's value, so the lower one's inpu
 log_level (file /etc/app/config.yaml, kept by environment APP_LOG_LEVEL)
 ```
 
-Overriding a file from the environment or a flag is a legitimate pattern, so shadowed inputs never fail a load without a handler; a load that looks for them logs them at debug level. Two layerings are designed overrides and are never listed: defaults (`default` tags, `ConfigDefaults`, `WithDefaults`) beneath any source, and the precedence inside the environment layer — a narrower `WithEnvPrefixes` prefix over a broader one, a prefixed name over an `env` tag's — which is one source. Entries name keys and sources, never values; inside a sensitive map or list the key stops at the container and an environment variable is named by its prefix alone. Input no field reads is reported by [`WithUnknownKeys`](schema.md) instead.
+Overriding a file from the environment or a flag is a legitimate pattern, so shadowed inputs never fail a load without a handler; a load that looks for them logs them at debug level. Two layerings are designed overrides and are never listed: defaults (`default` tags, `SetDefaults`, `WithDefaults`) beneath any source, and the precedence inside the environment layer — a narrower `WithEnvPrefixes` prefix over a broader one, a prefixed name over an `env` tag's — which is one source. Entries name keys and sources, never values; inside a sensitive map or list the key stops at the container and an environment variable is named by its prefix alone. Input no field reads is reported by [`WithUnknownKeys`](schema.md) instead.
 
 **A key meant to change while the process runs must be set only by sources that change.** A reloader reads every source again, but the process environment and typed CLI flags (kongprovider copies them when the reloader is built) stay what they were at startup, and both outrank files. A variable left behind after a setting moved into a file, or a flag on the command line, pins its key for the life of the process: the file's edit is read and ignored. `ReloadResult.Shadowed` and the warning name the key, the file and the variable or flag that kept it. A plain `Load` looks for shadowed inputs only for a `WithShadowedInputs` handler; `NewReloaderFunc` has no view of its loader's sources and reports none.
 
@@ -64,34 +65,44 @@ Bridging a provider's watch to a reloader is one call — `p.Watch(func(_ any, e
 
 `NewMapProvider(read, ".")` turns a function into a provider read on every load; with `"."` its keys are dotted paths, with `""` the map is already nested. What `read` returns is copied.
 
-## Schema-owned defaults
+## Code defaults
 
-A root config may implement `ConfigDefaults() map[string]any` (the
-`DefaultProvider` interface). Its keys are dot paths, as for `WithDefaults`.
-For shared types with different defaults at different paths:
+A `default` tag says what a field defaults to wherever its type appears. For a default that depends on where the type is used, implement `SetDefaults()` (the `Defaulter` interface) on the type that owns the choice. Each program that embeds a shared section sets that section's defaults its own way, and a type used at several paths gets different defaults at each:
 
 ```go
-func (*Config) ConfigDefaults() map[string]any {
-    return map[string]any{
-        "read_http.retry.attempts": 3,
-        "write_http.retry.attempts": 1,
-    }
+type Broker struct {
+	Host string `koanf:"host"`
+	User string `koanf:"user" default:"guest"`
+}
+
+type Brokers struct {
+	Primary   Broker `koanf:"primary"`
+	Secondary Broker `koanf:"secondary"`
+}
+
+// Only the primary broker has a default host.
+func (b *Brokers) SetDefaults() { b.Primary.Host = "tcp://localhost:1883" }
+
+type Worker struct {
+	Queue   QueueConfig `koanf:"queue"`
+	Brokers Brokers     `koanf:"brokers"`
+}
+
+// The worker's own channel and topic; every other queue field keeps its tag.
+func (w *Worker) SetDefaults() {
+	w.Queue.Channel = "worker"
+	w.Queue.Topic = "jobs"
 }
 ```
 
-`Load`, `Usage`, `JSONSchema` and `PrintTemplate` use the same declarations.
-They override tags and remain below caller `WithDefaults`, providers, files
-and environment. Provenance names this layer `schema_defaults`. A zero value,
-empty string or explicit null is a declared default, not an absent entry.
+A load fills a fresh value with the default tags, then calls `SetDefaults` on every `Defaulter` in it, innermost first, so `Worker`'s overrides what `QueueConfig.SetDefaults` sets. What the calls change is the code-defaults layer: above the tags, below `WithDefaults`, providers, files, the environment and flags. A field `SetDefaults` leaves alone keeps its tag — `primary.user` is still `guest`. Provenance names the layer `code_defaults`. Because the values are typed Go, a misspelled field or a value of the wrong type fails to compile rather than to load.
 
-The method runs on a fresh zero root and must return deterministic data
-without I/O or global mutation. Returned maps, structs and collections are
-copied. Unknown keys and values the built-in decoder cannot decode fail with
-`ErrSchema`, even if a later source would replace them. A section and a dot
-path beneath it cannot both appear in the map. Only the root method runs;
-collection elements retain their existing tag-default behavior. Caller
-`WithDefaults` still supplies runtime profiles that static documentation
-cannot know.
+- **Pointer sections.** A nil pointer section whose type sets defaults is allocated for its `SetDefaults` and kept only if it then holds anything. Setting a section to `nil` in `SetDefaults` turns off what its tags would set, as a source's `null` does.
+- **Collections.** A map's or list's element type that is a `Defaulter` runs for every entry a source creates. The entry holds what the source wrote, then, for the fields it left out, what the element's `SetDefaults` sets, then the element's tags: a file's `routes: {a: {timeout: 1s}}` keeps its timeout and takes the rest from `Route`. A map or list `SetDefaults` itself sets merges like a source's: map entries one by one, a list whole, its elements taking their element defaults.
+- **Embedding.** An embedded struct's `SetDefaults` is promoted as Go promotes methods: it runs as the enclosing struct's, unless the enclosing struct declares its own, which then calls the embedded one when it should run. Two embedded `Defaulter`s whose methods collide promote neither and fail with `ErrSchema`, as does a `SetDefaults` with a value receiver, which could change nothing.
+- **Determinism.** `SetDefaults` must be deterministic and do no I/O: it runs at every load and reload, and for `Usage`, `JSONSchema`, `PrintTemplate`, `CheckKey` and `DecodeKey`, which all show and use these defaults. A sensitive field's default stays withheld from every one of them.
+
+Caller `WithDefaults` still supplies runtime profiles — values the program knows only when it starts — above the code defaults.
 
 ## Validating stored entries
 

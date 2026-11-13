@@ -93,8 +93,9 @@ Duration operands also retain exact signed 64-bit precision; Markdown renders
 them as duration strings. For example, `validate:"min=1s"` yields a duration
 minimum of `1000000000` and displays `duration >= 1s`.
 
-A root `DefaultProvider` supplies the same effective defaults to this catalog,
-JSON Schema and templates as to loading. `Field.Tag` remains the original
+A `Defaulter`'s `SetDefaults` supplies the same effective defaults to this
+catalog, JSON Schema and templates as to loading, its own and its collection
+elements'. `Field.Tag` remains the original
 struct metadata. Credential-bearing defaults are withheld, so a template
 leaves them to the declared default instead of loading a redaction marker.
 
@@ -224,4 +225,4 @@ or `example` tags. Printing a live value therefore does not invoke a custom
 unmarshaler for its examples. Invalid sensitivity tags still redact
 conservatively. Loading, templates and schema generation validate their tags;
 templates and schema generation also decode the values they show. `Usage`
-also decodes defaults when the root implements `DefaultProvider`.
+also decodes defaults when a `Defaulter` sets some.

@@ -7,7 +7,7 @@ Declare one tagged struct, then load defaults, files, environment variables
 and providers through one validated pipeline.
 
 - **One schema.** Struct tags define keys, defaults, validation, environment
-  names, help text and redaction; a root `DefaultProvider` supplies shared path-specific defaults.
+  names, help text and redaction; a `Defaulter`'s `SetDefaults` sets, in typed code, the defaults a tag cannot say: per program, per path.
 - **Layered sources.** Combine files, environment variables, CLI flags and
   any koanf provider, with explicit precedence.
 - **Validated reloads.** Watch files, poll or use signals; a failed reload
@@ -115,8 +115,8 @@ option with its default. Environment loading requires `WithEnvPrefix`, or
 `WithKnownVariables` and `WithVariableFilter` claim names read elsewhere.
 `WithReloadTags` opts into inherited `reload` classes, while
 `WithReloadTagChecks` also checks applier coverage before loading.
-`DefaultProvider.ConfigDefaults` supplies schema-owned defaults to loading,
-usage, schema and templates. `CheckKey` validates a stored entry without
+`Defaulter.SetDefaults` sets code defaults for loading, usage, schema,
+templates and key checks. `CheckKey` validates a stored entry without
 reading sources; `DecodeKey` also returns the typed config. Provider-level
 `WithInvalidEntries` can withhold bad stored rows while preserving lower
 sources and unknown-key diagnostics. See [sources](docs/sources.md).
@@ -164,7 +164,7 @@ metrics-library dependency.
 | File | Responsibility |
 |---|---|
 | `config.go`, `options.go` | `Load` pipeline and source options |
-| `schema_defaults.go`, `decode_input.go`, `check_key.go`, `source_validation.go` | Shared defaults/decoding, key checks and provider entry validation |
+| `defaults.go`, `element_defaults.go`, `decode_input.go`, `check_key.go`, `source_validation.go` | Shared defaults/decoding, key checks and provider entry validation |
 | `schema.go`, `view.go`, `fields.go`, `key.go` | Canonical metadata, discovery and key grammar |
 | `env_refs.go`, `env.go` | Environment references and variable matching |
 | `reloader.go`, `reload_tags.go`, `applier.go`, `snapshot.go` | Publication, reload policy and applied-state accounting |

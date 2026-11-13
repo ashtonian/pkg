@@ -65,7 +65,7 @@ func JSONSchema[T any](envPrefixes ...string) (json.RawMessage, error) {
 		return nil, err
 	}
 	g := &schemaGen{defs: map[string]any{}, recursive: recursiveNodes(root), names: map[*schemaNode]string{}, taken: map[string]bool{}}
-	defaults, err := readDefaults(t, true)
+	defaults, err := readDefaults(t)
 	if err != nil {
 		return nil, err
 	}
@@ -295,7 +295,7 @@ func (g *schemaGen) node(n *schemaNode, c cursor, val reflect.Value, env envName
 			return s // its entries are compared whole: describe nothing inside
 		}
 		entryEnv := env.entries(n.typ)
-		entry := orNull(g.node(n.elem, c.intoEntry(segment{kind: segAny}, n.typ.Elem()), elementDefaults(n.elem), entryEnv), n.typ.Elem())
+		entry := orNull(g.node(n.elem, c.intoEntry(segment{kind: segAny}, n.typ.Elem()), elementDefaultValue(n.elem), entryEnv), n.typ.Elem())
 		if names := entryEnv.set("", n.typ.Elem()); len(names) > 0 && n.elem.kind != nodeBranch {
 			entry["x-config-env"] = names
 		}
@@ -309,7 +309,7 @@ func (g *schemaGen) node(n *schemaNode, c cursor, val reflect.Value, env envName
 		if c.sensitive() {
 			return s
 		}
-		s["items"] = orNull(g.node(n.elem, c.intoEntry(segment{kind: segAny}, n.typ.Elem()), elementDefaults(n.elem), envNames{}), n.typ.Elem())
+		s["items"] = orNull(g.node(n.elem, c.intoEntry(segment{kind: segAny}, n.typ.Elem()), elementDefaultValue(n.elem), envNames{}), n.typ.Elem())
 		return s
 	case nodeDynamic:
 		return map[string]any{"x-config-type": typeText(n.typ)}
@@ -317,9 +317,10 @@ func (g *schemaGen) node(n *schemaNode, c cursor, val reflect.Value, env envName
 	return leafSchema(n.typ)
 }
 
-// elementDefaults decodes an element struct's tag defaults, which the load
-// fills into every entry; anything else has none.
-func elementDefaults(n *schemaNode) reflect.Value {
+// elementDefaultValue decodes an element struct's defaults — its tags and
+// what its Defaulters set — which the load fills into every entry;
+// anything else has none.
+func elementDefaultValue(n *schemaNode) reflect.Value {
 	if n.kind != nodeBranch {
 		return reflect.Value{}
 	}

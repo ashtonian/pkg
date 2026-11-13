@@ -2,6 +2,7 @@
 
 [Documentation](README.md) · [Quick start](../README.md#quick-start) · [Go API](https://pkg.go.dev/github.com/ashtonian/pkg/config)
 
+- [Defaults in code](#defaults-in-code)
 - [Decoding and unknown keys](#decoding-and-unknown-keys)
 - [Post-load hooks](#post-load-hooks)
 - [Validation](#validation)
@@ -43,6 +44,30 @@ Every output names a value the same way:
 `config.KeyOf(&cfg, &cfg.DB.MaxConns)` returns `"db.max_conns"` from the field itself, so code never spells a key that can drift from its field.
 
 `ParseKey(text)` exposes this grammar as a `Key` of typed `Segment` values. `Key.String()` returns canonical spelling, `Key.Fields()` removes collection selectors, and `Key.LastName()` returns the last field or map key. Malformed or empty keys return `ErrKey`.
+
+## Defaults in code
+
+A `default` tag is the right place for a default that holds wherever the field's type appears. When it does not — a shared section that each program embedding it sets differently, or one type used at several paths with different defaults — set it in a `SetDefaults()` method on the type that owns the choice:
+
+```go
+type RedisConfig struct {
+	PoolSize int           `koanf:"pool_size" default:"10"`
+	TTL      time.Duration `koanf:"ttl" default:"5m"`
+}
+
+type Caches struct {
+	Sessions RedisConfig `koanf:"sessions"`
+	Queries  RedisConfig `koanf:"queries"`
+}
+
+// Query results churn: a bigger pool and a shorter TTL than sessions.
+func (c *Caches) SetDefaults() {
+	c.Queries.PoolSize = 50
+	c.Queries.TTL = 30 * time.Second
+}
+```
+
+`SetDefaults` runs on a value that already holds the tag defaults, so it changes only the fields it sets, and every source overrides it. Usage tables, the JSON Schema, starter files and key checks all show the defaults it sets. See [code defaults](sources.md#code-defaults) for the order of the calls, collections, pointer sections and embedding.
 
 ## Decoding and unknown keys
 
