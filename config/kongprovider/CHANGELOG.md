@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.5.0](https://github.com/ashtonian/pkg/compare/config/kongprovider/v0.4.0...config/kongprovider/v0.5.0) (2026-11-13)
+
+
+### Features
+
+* **kongprovider:** show code defaults in flag help ([2fc322b](https://github.com/ashtonian/pkg/commit/2fc322beea3a35a9a3b41b96820f4e44101d12a5))
+* **kongprovider:** show code defaults in flag help ([#183](https://github.com/ashtonian/pkg/issues/183)) ([73d03b1](https://github.com/ashtonian/pkg/commit/73d03b16c45e3f0fae66b472d61b8a4ee6eefaca))
+
 ## [0.4.0](https://github.com/ashtonian/pkg/compare/config/kongprovider/v0.3.0...config/kongprovider/v0.4.0) (2026-11-13)
 
 
