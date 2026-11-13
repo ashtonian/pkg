@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.0](https://github.com/ashtonian/pkg/compare/config/kongprovider/v0.3.0...config/kongprovider/v0.4.0) (2026-11-13)
+
+
+### Features
+
+* **kongprovider:** load the config before Kong validates ([#179](https://github.com/ashtonian/pkg/issues/179)) ([3fa1558](https://github.com/ashtonian/pkg/commit/3fa1558fc0f8e4d58ac7abf0bec0d35d495afb28)), closes [#176](https://github.com/ashtonian/pkg/issues/176)
+
 ## [0.3.0](https://github.com/ashtonian/pkg/compare/config/kongprovider/v0.2.1...config/kongprovider/v0.3.0) (2026-11-11)
 
 
