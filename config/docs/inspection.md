@@ -175,6 +175,8 @@ db.password  [REDACTED]  environment APP_DB_PASSWORD
 
 The input is the source the merge kept — a default, a file by path, the exact environment variable, a provider, or a CLI flag by name — followed by the stages that changed the value afterwards. Scalar list and array elements have individual rows with their values; sensitive containers remain redacted. Sources are named, never quoted. Recording costs about a third more time than `Load`, and nothing unless asked for.
 
+What the merge did not keep is in `Snapshot.Shadowed`: every input a higher-precedence source outranks, with the key, the source that set it and the source kept. A snapshot records it with or without provenance; see [shadowed inputs](sources.md#shadowed-inputs).
+
 ## Config files from code
 
 `PrintTemplate[T]("APP")` writes the config file the struct describes — every key with its default, description, type and variables (with `WithFallbackEnvPrefixes`, every prefix's in precedence order); secrets and keys without a default commented out. Loading it gives exactly the defaults, so a shipped file cannot drift from the code:

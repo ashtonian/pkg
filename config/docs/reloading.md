@@ -47,7 +47,7 @@ cfg := reloader.Config() // one atomic load; call it on every use
 | `NewReloader`, `NewReloaderFunc` | Runs the first load; its error fails construction. |
 | `Arm(ctx)` | Sets up the file watch and signals and returns their error, so a service can refuse to report ready. Optional: `Run` arms itself. |
 | `Run(ctx)` | Serves every trigger until `Stop` (returns nil) or `ctx` ends. |
-| `Reload(ctx)` | A manual reload, returning what it published and the keys that changed; `ErrReloadInProgress` if one is running. |
+| `Reload(ctx)` | A manual reload, returning what it published, the keys that changed and the edits a higher-precedence source kept from taking effect; `ErrReloadInProgress` if one is running. |
 | `SourceChanged()` | Asks for a reload after a change the reloader cannot watch. Never blocks; bursts coalesce. |
 | `Config()`, `Snapshot()`, `Stats()` | The live config; the config with its generation and reload history from one moment; the history alone. Lock-free. |
 | `Stop(ctx)` | Stops the triggers, cancels an automatic reload and waits for a manual one. |
@@ -56,7 +56,7 @@ What a reloader guarantees:
 
 - **Only a config that passed goes live.** A reload runs every source, secrets, hooks and validation before the swap. A failed reload keeps the previous config, and is reported to `WithOnReloadError`, the log and `Stats().LastError`, which carries its category.
 - **No change is lost.** Reloads are serialized; an automatic trigger arriving during a reload waits and reads the sources again. Signal a change with `SourceChanged`, not by calling `Reload` from an event handler.
-- **One moment, one snapshot.** The config, its generation (1 at boot, +1 per successful reload), accepted `UnknownKeys` report and stats are published together. A clean publication clears the report; refused or canceled loads keep the prior one. An applier failure keeps the new publication and its report.
+- **One moment, one snapshot.** The config, its generation (1 at boot, +1 per successful reload), accepted `UnknownKeys` report, `Shadowed` inputs and stats are published together. A clean publication clears the report; refused or canceled loads keep the prior one. An applier failure keeps the new publication and its report.
 - **Configs are shared.** Every reader gets the same `*T`; treat it, maps and slices included, as immutable.
 
 `WithOnReloadSuccess` callbacks run after each swap with the old and new configs and the changed keys. `NewReloaderFunc` gives a loader of your own the same lifecycle; name the files it reads with `WithWatchedFiles`. `ExampleNewReloader` shows a valid edit swapped in and an invalid one refused.
@@ -142,6 +142,14 @@ blocked structural changes; runtime `PendingRestart` does.
 
 `WithFileWatch` resolves each path the way the kernel does and watches every directory the resolution passes through, so it sees direct writes, rename-based saves, symlink swaps anywhere on the path — including Kubernetes ConfigMap and Secret volume updates, which swap a `..data` symlink rather than write the file — and directories removed or recreated. A periodic recheck catches what sends no event. It cannot see sources that are not files: poll them with `WithPollInterval` or call `SourceChanged`. A volume mounted with `subPath` never updates inside the container; mount it without. Symlinks directly under the filesystem root, such as `/var` and `/tmp` on macOS, are followed but not watched for re-pointing: they belong to the OS, and watching `/` would hold a descriptor per entry and can block on automount points like `/net`.
 
+**A key meant to change live must be set only by sources that change.** Moving settings from environment variables into a mounted ConfigMap file, so they can change without a restart, works only once the variables are gone: the environment outranks files, and a running process's environment never changes. A variable left behind pins its key — the file's edit is read, merged beneath the variable and has no effect. Typed CLI flags pin their keys the same way for the life of the process, because kongprovider copies them when the reloader is built. The reload still succeeds and the generation advances, so the reloader reports it:
+
+```txt
+level=WARN msg="config input changed beneath a higher-precedence source; the change does not take effect" trigger=file_change generation=2 key=log_level source="file /etc/app/config.yaml" by="environment APP_LOG_LEVEL"
+```
+
+`ReloadResult.Shadowed` lists the same entries, `Snapshot().Shadowed` every input a higher source outranks at any time, and a `WithShadowedInputs` handler can refuse a load that has any. On a 2am page where an edit "did not apply": read `Snapshot().Shadowed` from the status endpoint, find the key, and remove the variable or flag its `by` names (or set the value there). See [shadowed inputs](sources.md#shadowed-inputs).
+
 ## A reload endpoint
 
 The package mounts no HTTP routes; authentication is yours. Every result type encodes to JSON as is, with the config itself left out:
@@ -161,7 +169,7 @@ mux.HandleFunc("POST /admin/config/reload", func(w http.ResponseWriter, r *http.
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(result) // generation, stats, changes, applier outcomes
+	_ = json.NewEncoder(w).Encode(result) // generation, stats, changes, shadowed edits, applier outcomes
 })
 mux.HandleFunc("GET /admin/config/status", func(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")

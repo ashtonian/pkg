@@ -44,12 +44,22 @@ type options struct {
 	overrides      []providerSource
 	decodeHooks    []mapstructure.DecodeHookFunc
 	unknownKeys    func(context.Context, *UnknownKeysError) error // nil: keys fail the load
+	shadowedInputs func(context.Context, *ShadowedInputsError) error
 	secrets        SecretPopulator
 	postLoad       []postLoadHook
 	skipValid      bool
 	validator      Validator
 	logger         *slog.Logger
 	provenance     bool // record origins: LoadSnapshot, or a reloader WithProvenance
+	// inputDigests is a NewReloader's HMAC key: the load records every
+	// source's inputs, digested, for the reloader to compare with the next.
+	inputDigests []byte
+}
+
+// findsShadowed reports a load that finds shadowed inputs: one whose
+// snapshot lists them, a reloader's, or one a handler judges them for.
+func (o *options) findsShadowed() bool {
+	return o.provenance || o.inputDigests != nil || o.shadowedInputs != nil
 }
 
 type fileSource struct {

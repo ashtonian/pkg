@@ -165,9 +165,12 @@
 //	cfg := reloader.Config() // one atomic load
 //
 // A reload runs the whole pipeline and swaps only on success, returning a
-// [ReloadResult]: the [Snapshot] it published and the keys that changed. A
-// failed one keeps the previous config and is reported to
-// [WithOnReloadError], the log and [Reloader.Stats]. [Reloader.Snapshot]
+// [ReloadResult]: the [Snapshot] it published, the keys that changed, and
+// the edits a higher-precedence source kept from taking effect — a file's
+// key that a leftover environment variable or a typed flag also sets — each
+// also logged as a warning: a key meant to change live must be set only by
+// sources that change. A failed reload keeps the previous config and is
+// reported to [WithOnReloadError], the log and [Reloader.Stats]. [Reloader.Snapshot]
 // returns the config, its generation and the reload stats from one moment,
 // and encodes to JSON for a status endpoint. [WithApplier] registers code
 // that pushes a published config into the running process — a log level, a
@@ -220,7 +223,9 @@
 // [LoadSnapshot], or a reloader [WithProvenance], records where each value
 // came from — the default, file, environment variable, provider or flag the
 // merge kept, and the stages that changed it after decoding — and
-// [PrintExplain] prints it, values redacted. [JSONSchema] describes the config
+// [PrintExplain] prints it, values redacted. [Snapshot.Shadowed] lists what
+// the merge did not keep: every input a higher-precedence source outranks;
+// [WithShadowedInputs] judges them at every load. [JSONSchema] describes the config
 // file for editors and linters — advisory, Load being the authority.
 // [Usage] exposes the same safe catalog as values for custom documentation;
 // [PrintUsage] also supports [FormatMarkdown]. [Tree] exports raw resolved

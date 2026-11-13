@@ -135,7 +135,11 @@ The [operations guide](docs/reference.md#observability) lists log events,
 error categories and metric examples. Failed loads keep the previous
 snapshot; failed appliers leave the desired config published and report what
 still needs applying. `Snapshot.UnknownKeys` records only the input accepted
-by that published generation. Use `Stop(ctx)` with a shutdown deadline.
+by that published generation, and `Snapshot.Shadowed` every input a
+higher-precedence source outranks; a reload that reads an edit such a source
+keeps from taking effect lists it in `ReloadResult.Shadowed` and logs a
+warning (see [shadowed inputs](docs/sources.md#shadowed-inputs)). Use
+`Stop(ctx)` with a shutdown deadline.
 
 Diagnostic printers, diffs and usage metadata withhold sensitive values.
 Credential-like names redact text-capable values; numeric counters, booleans
@@ -166,6 +170,7 @@ metrics-library dependency.
 | `reloader.go`, `reload_tags.go`, `applier.go`, `snapshot.go` | Publication, reload policy and applied-state accounting |
 | `render.go`, `print.go`, `usage.go`, `jsonschema.go`, `constraints.go`, `redact.go` | Trees, diagnostic output and documentation metadata |
 | `errors.go`, `provenance.go` | Error categories and value origins |
+| `shadow.go` | Shadowed inputs: what a higher-precedence source outranks, and which edits a reload could not apply |
 
 ## Documentation
 

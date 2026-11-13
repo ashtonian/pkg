@@ -32,6 +32,15 @@ type Snapshot[T any] struct {
 	// the input source the merge kept and the stages that changed it. Only
 	// [LoadSnapshot] and a reloader [WithProvenance] record it.
 	Provenance map[string]Origin `json:"provenance,omitempty"`
+	// Shadowed lists every input of the published load that a
+	// higher-precedence source outranks: a key a source sets whose value the
+	// merge takes from a source above it — a config file's key that an
+	// environment variable or a typed flag also sets — sorted by key, then
+	// source. Defaults and the layering inside the environment are designed
+	// overrides and never listed (see [WithShadowedInputs]). [LoadSnapshot]
+	// and every [NewReloader] load record it; [NewReloaderFunc] has no view
+	// of its loader's sources and records nothing.
+	Shadowed []Shadow `json:"shadowed,omitempty"`
 	// PendingRestart lists, in walk order, what the published config
 	// changes that the running process has not taken and will not before a
 	// restart: a key no applier owns that differs from the first load, a
@@ -101,6 +110,7 @@ func (s Snapshot[T]) clone() Snapshot[T] {
 		s.Provenance = origins
 	}
 	s.PendingRestart = cloneChanges(s.PendingRestart)
+	s.Shadowed = slices.Clone(s.Shadowed)
 	if s.Appliers != nil {
 		appliers := make([]ApplierStatus, len(s.Appliers))
 		for i, a := range s.Appliers {
@@ -228,6 +238,12 @@ type ReloadResult[T any] struct {
 	// reload replaced, as [Diff] reports them; empty when the sources did
 	// not change.
 	Changes []Change `json:"changes"`
+	// Shadowed lists the inputs that changed since the previous generation
+	// while a higher-precedence source holds their key, so the change cannot
+	// take effect: a key a source set anew, changed or removed. A key can be
+	// in Changes too, when the source above it changed in the same reload.
+	// Each is also logged at warn level. Only [NewReloader] reports it.
+	Shadowed []Shadow `json:"shadowed,omitempty"`
 	// Applied lists, in registration order, every applier the reload
 	// called or owed a call it could not make; an applier that owed nothing
 	// is absent.
@@ -237,6 +253,7 @@ type ReloadResult[T any] struct {
 func (r ReloadResult[T]) clone() ReloadResult[T] {
 	r.Snapshot = r.Snapshot.clone()
 	r.Changes = cloneChanges(r.Changes)
+	r.Shadowed = slices.Clone(r.Shadowed)
 	if r.Applied != nil {
 		applied := make([]ApplyOutcome, len(r.Applied))
 		for i, a := range r.Applied {
