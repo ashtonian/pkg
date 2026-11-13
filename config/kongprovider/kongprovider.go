@@ -56,6 +56,7 @@ import (
 	"fmt"
 	"reflect"
 	"slices"
+	"strconv"
 	"strings"
 
 	"github.com/alecthomas/kong"
@@ -203,9 +204,11 @@ func WithOverridesFromStruct[T any](ctx *kong.Context, cfg *T) config.Option {
 // config.WithEnvPrefixes takes them, in the order the load reads them: the
 // key's variable under each prefix, most specific first, then those its
 // `env` tag lists. A load with config.WithEnvPrefixes("APP_WORKER", "APP")
-// passes HelpFromConfig(cfg, "APP_WORKER", "APP"). The field's default is added when diagnostics may print it
-// (see config.Field.PrintableDefault) and Kong does not show it already; one
-// that must be withheld is kept out of Kong's own placeholder too.
+// passes HelpFromConfig(cfg, "APP_WORKER", "APP"). The key's default — its
+// tag's, or what a config.Defaulter sets at that path, as config.Usage
+// shows it — is added when Kong shows none, and replaces Kong's placeholder
+// when a Defaulter sets another than the tag Kong shows; one that must be
+// withheld is kept out of Kong's placeholder too.
 //
 // Kong does not read those flags' `env` tags: the config package reads the
 // variables in its environment layer, where they have their precedence and
@@ -238,16 +241,42 @@ func describeFlags[T any](k *kong.Kong, cfg *T, envPrefixes []string) (map[*kong
 	if err != nil {
 		return nil, err
 	}
+	defaults, err := defaultsOf[T](envPrefixes)
+	if err != nil {
+		return nil, err
+	}
 	for _, fl := range flags {
 		if f, ok := fields[fl]; ok {
-			describe(fl, f, envPrefixes)
+			describe(fl, f, defaults[f.Path], envPrefixes)
 		}
 	}
 	return fields, nil
 }
 
-// describe writes field f's description into flag fl's help.
-func describe(fl *kong.Flag, f config.Field, envPrefixes []string) {
+// flagDefault is a key's default as diagnostics may show it: its text, or
+// withheld.
+type flagDefault struct {
+	text     string
+	withheld bool
+}
+
+// defaultsOf is the default of every key of T, by key, from its usage
+// catalog: a tag's as written, or what a Defaulter sets at that path.
+func defaultsOf[T any](envPrefixes []string) (map[string]flagDefault, error) {
+	rows, err := config.Usage[T](envPrefixes...)
+	if err != nil {
+		return nil, err
+	}
+	out := make(map[string]flagDefault, len(rows))
+	for _, r := range rows {
+		out[r.Key] = flagDefault{text: r.Default, withheld: r.Withheld}
+	}
+	return out, nil
+}
+
+// describe writes field f's description into flag fl's help, and its
+// default where Kong would show another or none.
+func describe(fl *kong.Flag, f config.Field, def flagDefault, envPrefixes []string) {
 	if fl.Help == "" {
 		fl.Help = f.Tag.Get("desc")
 	}
@@ -256,12 +285,21 @@ func describe(fl *kong.Flag, f config.Field, envPrefixes []string) {
 	if envs := f.EnvVars(envPrefixes...); len(envs) > 0 {
 		hints = append(hints, "env: "+strings.Join(envs, ", "))
 	}
-	def, printable := f.PrintableDefault()
 	switch {
-	case printable && !fl.HasDefault:
-		hints = append(hints, "default: "+def)
-	case !printable && fl.HasDefault:
-		fl.PlaceHolder = "VALUE" // Kong would print the default as the placeholder
+	case def.withheld:
+		if fl.HasDefault {
+			fl.PlaceHolder = "VALUE" // Kong would print the default as the placeholder
+		}
+	case !fl.HasDefault:
+		if def.text != "" {
+			hints = append(hints, "default: "+def.text)
+		}
+	case fl.Default != def.text:
+		// A Defaulter sets another default at this path than the tag Kong shows.
+		fl.PlaceHolder = def.text
+		if fl.Target.Kind() == reflect.String {
+			fl.PlaceHolder = strconv.Quote(def.text)
+		}
 	}
 	fl.Help = strings.TrimSpace(fl.Help + " (" + strings.Join(hints, "; ") + ")")
 }

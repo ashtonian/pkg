@@ -36,7 +36,7 @@ type ServeConfig struct {
 	Metrics bool           `koanf:"metrics" default:"true" negatable:""`
 	Level   string         `koanf:"level" default:"info"`
 	Tags    []string       `koanf:"tags"`
-	DB      DBSection         `koanf:"db" embed:"" prefix:"db-"`
+	DB      DBSection      `koanf:"db" embed:"" prefix:"db-"`
 	Limits  map[string]int `koanf:"limits" kong:"-"`
 }
 
@@ -440,4 +440,72 @@ func TestLoadReloader_FailedInitialLoad(t *testing.T) {
 	require.NoError(t, err)
 	_, err = parser.Parse([]string{"serve"})
 	require.ErrorIs(t, err, config.ErrValidation, "the defaults fail Validate in the reloader's initial load")
+}
+
+type codeDefaulted struct {
+	Port  int    `koanf:"port" default:"8080"`
+	Name  string `koanf:"name"`
+	Mode  string `koanf:"mode" default:"fast"`
+	Token string `koanf:"token"`
+	Level string `koanf:"level" default:"info"`
+}
+
+func (c *codeDefaulted) SetDefaults() {
+	c.Port, c.Name, c.Mode, c.Token = 9090, "svc", "safe", "FAKE_CODE_TOKEN"
+}
+
+// Help shows each flag's effective default, from a tag or a Defaulter,
+// and keeps a withheld one out of the placeholder; the loaded struct holds
+// the same defaults.
+func TestHelpShowsEffectiveDefaults(t *testing.T) {
+	var cli struct {
+		Serve struct {
+			codeDefaulted `embed:""`
+		} `cmd:""`
+	}
+	parser, err := kong.New(&cli, Load(t.Context(), &cli.Serve.codeDefaulted, nil, nil))
+	require.NoError(t, err)
+	flags := map[string]*kong.Flag{}
+	for _, fl := range allFlags(parser.Model.Node) {
+		flags[fl.Name] = fl
+	}
+	assert.Equal(t, "9090", flags["port"].FormatPlaceHolder(), "SetDefaults' default, not the tag's")
+	assert.Equal(t, `"safe"`, flags["mode"].FormatPlaceHolder())
+	assert.Contains(t, flags["name"].Help, "default: svc")
+	assert.Equal(t, `"info"`, flags["level"].FormatPlaceHolder(), "a tag-only default as Kong shows it")
+	assert.NotContains(t, flags["token"].Help, "FAKE_CODE_TOKEN")
+	assert.NotContains(t, flags["token"].FormatPlaceHolder(), "FAKE_CODE_TOKEN")
+
+	_, err = parser.Parse([]string{"serve"})
+	require.NoError(t, err)
+	assert.Equal(t, codeDefaulted{Port: 9090, Name: "svc", Mode: "safe", Token: "FAKE_CODE_TOKEN", Level: "info"}, cli.Serve.codeDefaulted)
+}
+
+// A typed flag pins its key for the life of the process: the reloader
+// reports a file edit to that key, naming the flag that kept it.
+func TestLoadReloader_ReportsAFlagShadowingAFileKey(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	require.NoError(t, os.WriteFile(path, []byte("port: 9000\nlevel: info\n"), 0o600))
+	var cli struct {
+		Serve reloadCmd `cmd:""`
+	}
+	parser, err := kong.New(&cli, LoadReloader(t.Context(), &cli.Serve.ServeConfig, nil, func(*kong.Context) ([]config.Option, error) {
+		return []config.Option{config.WithRequiredFile(path)}, nil
+	}))
+	require.NoError(t, err)
+	kctx, err := parser.Parse([]string{"serve", "--level", "debug"})
+	require.NoError(t, err)
+	require.NoError(t, kctx.Run())
+	r := cli.Serve.reloader
+	t.Cleanup(func() { require.NoError(t, r.Stop(context.WithoutCancel(t.Context()))) })
+
+	shadow := config.Shadow{Key: "level", Source: config.Source{Kind: config.SourceFile, Name: path}, By: config.Source{Kind: config.SourceFlag, Name: "--level"}}
+	assert.Equal(t, []config.Shadow{shadow}, r.Snapshot().Shadowed)
+
+	require.NoError(t, os.WriteFile(path, []byte("port: 9100\nlevel: warn\n"), 0o600))
+	res, err := r.Reload(t.Context())
+	require.NoError(t, err)
+	assert.Equal(t, []config.Shadow{shadow}, res.Shadowed)
+	assert.Equal(t, "debug", r.Config().Level)
+	assert.Equal(t, 9100, r.Config().Port)
 }

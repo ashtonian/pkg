@@ -4,7 +4,7 @@ go 1.27.0
 
 require (
 	github.com/alecthomas/kong v1.17.0
-	github.com/ashtonian/pkg/config v0.9.0
+	github.com/ashtonian/pkg/config v0.10.0
 	github.com/knadh/koanf/providers/confmap v1.0.1
 	github.com/knadh/koanf/v2 v2.4.1
 	github.com/stretchr/testify v1.12.1
