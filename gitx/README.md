@@ -81,7 +81,10 @@ func Merge(ours, base, theirs string, markerSize int, st Style, l Labels) (Resul
 
 `Merge` runs `git merge-file` over the three files and rewrites its output: a conflict
 whose common-ancestor section is empty becomes ours's lines then theirs's; the rest are
-written with git's markers in `StyleMerge` or `StyleDiff3`.
+written with git's markers in `StyleMerge` or `StyleDiff3`. An insertion has a point
+only against the ancestor's text, so when the ancestor holds nothing but whitespace, as
+when both sides add the file, every conflict keeps its markers rather than joining two
+whole documents.
 
 ### Commands
 
@@ -177,7 +180,8 @@ ignore rules over a directory and a pattern. The `conflictmarkers` tests run ove
 in-memory trees. The `mergeinserts` tests run real `git merge-file` over table cases,
 and an end-to-end test rebases in a scratch repository through the exact driver command
 documented above, with the test binary as the tool: insertions merge, an edit conflict
-stops with markers, and without the tool the fallback stops with markers too. Without
+stops with markers, a file both sides add stops with markers, and without the tool the
+fallback stops with markers too. Without
 `git` on `PATH` the tests that need it skip.
 
 ## Operations
@@ -198,8 +202,8 @@ stops with markers, and without the tool the fallback stops with markers too. Wi
 - **`conflictmarkers` exits 2 with a `git ls-files` error:** run it from inside the
   repository, with git installed, or point `-root` at the repository.
 - **A rebase stopped on a markdown file:** the conflict is a real one; both sides changed
-  the same or adjacent lines. Resolve it as any other, then run the marker check, which
-  refuses a leftover.
+  the same or adjacent lines, or both added the file with different text. Resolve it as
+  any other, then run the marker check, which refuses a leftover.
 - **Insertions were not merged:** check `git config --get merge.keep-inserts.driver` and
   `git check-attr merge -- <file>`. An empty driver means the clone was never configured;
   `merge: unspecified` means the path carries no attribute. A linked worktree shares the

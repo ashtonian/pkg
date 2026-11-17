@@ -69,6 +69,26 @@ func TestMerge(t *testing.T) {
 			want: "A\nb\nc\nd\nE\n",
 		},
 		{
+			name: "both sides add a file",
+			base: "", ours: "# A\nshared\n", theirs: "# B\nshared\n",
+			want: "<<<<<<< HEAD\n# A\nshared\n=======\n# B\nshared\n>>>>>>> theirs\n", conflicts: 1,
+		},
+		{
+			name: "both sides add a file, in the diff3 style",
+			base: "", ours: "# A\n", theirs: "# B\n", st: StyleDiff3,
+			want: "<<<<<<< HEAD\n# A\n||||||| base\n=======\n# B\n>>>>>>> theirs\n", conflicts: 1,
+		},
+		{
+			name: "a base of blank lines anchors no insertion",
+			base: "\n", ours: "o\n\n", theirs: "t\n\n",
+			want: "<<<<<<< HEAD\no\n=======\nt\n>>>>>>> theirs\n\n", conflicts: 1,
+		},
+		{
+			name: "both sides add the same file",
+			base: "", ours: "# A\n", theirs: "# A\n",
+			want: "# A\n",
+		},
+		{
 			name: "insertions without a final newline stay on lines of their own",
 			base: "a\n", ours: "a\no", theirs: "a\nt",
 			want: "a\no\nt\n", kept: 1,

@@ -3,7 +3,9 @@
 // both sides inserted lines at the same point and neither changed a line the other
 // kept. It keeps the current side's lines, then the other side's. During a rebase that
 // is upstream's text first, then the replayed commit's. Every other conflict is left
-// as git leaves it, with git's markers and labels in the configured conflict style.
+// as git leaves it, with git's markers and labels in the configured conflict style,
+// and so is every conflict in a file whose ancestor has no text, such as a file both
+// sides add: its two versions are two documents, not two insertions at one point.
 //
 // Several people or agents append notes, rows and log entries at the same place in a
 // shared file, and git refuses to order two insertions at one point. Without the driver

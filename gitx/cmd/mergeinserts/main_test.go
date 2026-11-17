@@ -155,6 +155,29 @@ func TestRebaseThroughTheInstalledDriver(t *testing.T) {
 		must("checkout", "-q", "main")
 	})
 
+	t.Run("a file both sides add stops with markers", func(t *testing.T) {
+		must("checkout", "-q", "-B", "side-add", "main")
+		write("added.md", "# Side\n\nside text\n")
+		must("add", "added.md")
+		must("commit", "-qm", "side adds")
+		must("checkout", "-q", "main")
+		write("added.md", "# Main\n\nmain text\n")
+		must("add", "added.md")
+		must("commit", "-qm", "main adds")
+		must("checkout", "-q", "side-add")
+		if out, err := git("rebase", "main"); err == nil {
+			t.Fatalf("rebase completed over two versions of an added file:\n%s", read("added.md")+out)
+		}
+		got := read("added.md")
+		for _, want := range []string{"<<<<<<< HEAD\n", "# Main\n", "=======\n", "# Side\n", ">>>>>>> "} {
+			if !strings.Contains(got, want) {
+				t.Errorf("added.md lacks %q:\n%s", want, got)
+			}
+		}
+		must("rebase", "--abort")
+		must("checkout", "-q", "main")
+	})
+
 	t.Run("without the tool the fallback stops with markers", func(t *testing.T) {
 		if err := os.Remove(filepath.Join(repo, ".tools", "mergeinserts")); err != nil {
 			t.Fatal(err)
