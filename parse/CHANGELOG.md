@@ -5,13 +5,11 @@
 
 ### ⚠ BREAKING CHANGES
 
-* **parse:** canonical value types for TIME, INTERVAL, INET, CIDR and MACADDR ([#187](https://github.com/ashtonian/pkg/issues/187))
-* **parse:** a column declared core.SQLInterval or core.SQLIntervalArray reads as ISO 8601 text (P1DT2H) where it read the session's IntervalStyle text (1 day 02:00:00).
+* **parse:** canonical value types for TIME, INTERVAL, INET, CIDR and MACADDR ([#187](https://github.com/ashtonian/pkg/issues/187)): a column declared core.SQLInterval or core.SQLIntervalArray reads as ISO 8601 text (P1DT2H) where it read the session's IntervalStyle text (1 day 02:00:00).
 
 ### Features
 
-* **parse:** canonical value types for TIME, INTERVAL, INET, CIDR and MACADDR ([db39295](https://github.com/ashtonian/pkg/commit/db392956f7c58409ecd08ae92cac5be85b0b0045))
-* **parse:** canonical value types for TIME, INTERVAL, INET, CIDR and MACADDR ([#187](https://github.com/ashtonian/pkg/issues/187)) ([35bda0a](https://github.com/ashtonian/pkg/commit/35bda0a620357e371b3d68c36844edef74506cd3))
+* **parse:** canonical value types for TIME, INTERVAL, INET, CIDR and MACADDR ([#187](https://github.com/ashtonian/pkg/issues/187)) ([35bda0a](https://github.com/ashtonian/pkg/commit/35bda0a620357e371b3d68c36844edef74506cd3)): core.LocalTime, core.Interval, core.Inet, core.CIDR and core.MACAddr, one canonical text each on SQLite and PostgreSQL; an interval filter compares canonical text, so P30D does not match P1M; interval, inet and cidr fields cannot be facets
 
 ## [0.13.0](https://github.com/ashtonian/pkg/compare/parse/v0.12.0...parse/v0.13.0) (2026-11-09)
 
