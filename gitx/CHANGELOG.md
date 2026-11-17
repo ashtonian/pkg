@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.2](https://github.com/ashtonian/pkg/compare/gitx/v0.1.1...gitx/v0.1.2) (2026-11-17)
+
+
+### Bug Fixes
+
+* **gitx:** leave the conflict over a file both sides add ([#189](https://github.com/ashtonian/pkg/issues/189)) ([9e5caa0](https://github.com/ashtonian/pkg/commit/9e5caa024e7a7b77005c8d9eecc6b101babad5d3)): mergeinserts joined the two versions of such a file into one, with no conflict marker; a merge now stops on it as git does. Check markdown files added on both sides since v0.1.0 for a second copy of their text.
+
 ## [0.1.1](https://github.com/ashtonian/pkg/compare/gitx/v0.1.0...gitx/v0.1.1) (2026-11-03)
 
 
