@@ -348,6 +348,20 @@ func pgArray(elem core.FieldType, value any) (any, error) {
 			}
 			return time.Parse(time.RFC3339Nano, s)
 		})
+	case core.FieldTypeTime, core.FieldTypeInterval, core.FieldTypeInet, core.FieldTypeCIDR, core.FieldTypeMACAddr:
+		// Canonical text, which the column's array type parses, and which an
+		// interval's canonical text array compares as written.
+		return typedSlice(items, func(v any) (string, error) {
+			canonical, err := core.NormalizeScalar(elem, reflect.Invalid, v)
+			if err != nil {
+				return "", err
+			}
+			s, ok := canonical.(string)
+			if !ok {
+				return "", fmt.Errorf("array element %v has no %s text", v, elem)
+			}
+			return s, nil
+		})
 	case core.FieldTypeInt:
 		if slices.ContainsFunc(items, func(v any) bool { n, ok := v.(uint64); return ok && n > math.MaxInt64 }) {
 			// An unsigned field's values above int64, for a numeric column.
@@ -561,21 +575,49 @@ func (PostgresDialect) RowLock() string { return " FOR UPDATE" }
 
 // ReadColumn reads network and interval values as text, since pgx scans
 // their binary encoding into no string: an inet in its display form (abbrev
-// drops a host's /32 or /128), cidr and interval in their output form, and
-// an array element by element, in order, with NULL kept.
+// drops a host's /32 or /128), a cidr in its output form, an interval as
+// its canonical ISO 8601 text (isoInterval), and an array element by
+// element, in order, with NULL kept.
 func (PostgresDialect) ReadColumn(column string, t core.SQLType) string {
 	switch t {
 	case core.SQLInet:
 		return "abbrev(" + column + ")"
-	case core.SQLCIDR, core.SQLInterval:
+	case core.SQLCIDR:
 		return column + "::text"
+	case core.SQLInterval:
+		return isoInterval(column)
 	case core.SQLInetArray:
-		return "CASE WHEN " + column + " IS NULL THEN NULL ELSE ARRAY(SELECT abbrev(a) FROM unnest(" + column +
-			") WITH ORDINALITY AS u(a, n) ORDER BY n) END"
-	case core.SQLCIDRArray, core.SQLIntervalArray:
+		return pgArrayOf(column, "abbrev(a)")
+	case core.SQLCIDRArray:
 		return column + "::text[]"
+	case core.SQLIntervalArray:
+		return pgArrayOf(column, isoInterval("a"))
 	}
 	return column
+}
+
+// pgArrayOf maps each element a of an array column through expr, in order,
+// NULL elements and a NULL array kept.
+func pgArrayOf(column, expr string) string {
+	return "CASE WHEN " + column + " IS NULL THEN NULL ELSE ARRAY(SELECT " + expr + " FROM unnest(" + column +
+		") WITH ORDINALITY AS u(a, n) ORDER BY n) END"
+}
+
+// isoInterval renders an interval as the text IntervalStyle iso_8601 writes,
+// which is core.Interval's canonical text, under whatever style the session
+// has: a cast to text would follow the session. Each field is extracted and
+// written with its own sign; trim_scale drops the seconds' trailing zeros.
+// An infinite interval reads as "infinity" or "-infinity", which
+// core.Interval refuses.
+func isoInterval(column string) string {
+	return "(SELECT CASE WHEN " + column + " IS NULL THEN NULL WHEN NOT isfinite(" + column + ") THEN " + column + "::text" +
+		" WHEN iso_y = 0 AND iso_mo = 0 AND iso_d = 0 AND iso_h = 0 AND iso_mi = 0 AND iso_s = 0 THEN 'PT0S'" +
+		" ELSE 'P' || CASE WHEN iso_y <> 0 THEN iso_y || 'Y' ELSE '' END || CASE WHEN iso_mo <> 0 THEN iso_mo || 'M' ELSE '' END" +
+		" || CASE WHEN iso_d <> 0 THEN iso_d || 'D' ELSE '' END || CASE WHEN iso_h <> 0 OR iso_mi <> 0 OR iso_s <> 0 THEN 'T' ELSE '' END" +
+		" || CASE WHEN iso_h <> 0 THEN iso_h || 'H' ELSE '' END || CASE WHEN iso_mi <> 0 THEN iso_mi || 'M' ELSE '' END" +
+		" || CASE WHEN iso_s <> 0 THEN trim_scale(iso_s) || 'S' ELSE '' END END" +
+		" FROM (SELECT extract(year FROM " + column + ") AS iso_y, extract(month FROM " + column + ") AS iso_mo, extract(day FROM " + column + ") AS iso_d," +
+		" extract(hour FROM " + column + ") AS iso_h, extract(minute FROM " + column + ") AS iso_mi, extract(second FROM " + column + ") AS iso_s) AS iso_fields)"
 }
 
 // DecimalColumn returns column: a decimal column is numeric, exact as it is.

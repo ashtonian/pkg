@@ -47,6 +47,20 @@ describe("schema maps have own fields only, like Go maps", () => {
   });
 });
 
+describe("time, interval and network values are text the server parses", () => {
+  for (const type of ["time", "interval", "inet", "cidr", "macaddr"] as const) {
+    it(`checks a ${type} value is a string`, () => {
+      const schema: FilterSchema = { fields: { v: { name: "v", data_type: type, operators: ["eq", "in"] } } };
+      expect(() => { validateFilter({ v: "text" }, schema); }).not.toThrow();
+      expect(() => { validateFilter({ v: { $in: ["a", "b"] } }, schema); }).not.toThrow();
+      expectCode(() => { validateFilter({ v: 42 }, schema); }, "E2073");
+      const paths = { "/v": { data_type: type, allowed_ops: ["replace" as const] } };
+      expect(() => { validatePatch({ v: "text" }, { paths, max_operations: 10 }); }).not.toThrow();
+      expectCode(() => { validatePatch({ v: 42 }, { paths, max_operations: 10 }); }, "E2077");
+    });
+  }
+});
+
 describe("sort validation matches Go ParseSort bounds", () => {
   const fields = { name: {} };
   it("counts empty comma slots before skipping them", () => {

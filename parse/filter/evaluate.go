@@ -426,7 +426,8 @@ func compareScalar(f *FieldSchema, t core.FieldType, v, lit any) (int, error) {
 		if c, ok := core.CompareDecimals(v, lit); ok {
 			return c, nil
 		}
-	case core.FieldTypeString, core.FieldTypeUUID, core.FieldTypeTimestamp, core.FieldTypeDate:
+	case core.FieldTypeString, core.FieldTypeUUID, core.FieldTypeTimestamp, core.FieldTypeDate,
+		core.FieldTypeTime, core.FieldTypeInterval, core.FieldTypeInet, core.FieldTypeCIDR, core.FieldTypeMACAddr:
 		a, aok := v.(string)
 		b, bok := lit.(string)
 		if aok && bok {

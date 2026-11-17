@@ -39,7 +39,7 @@ var endpointTypes = []parse.ResourceOption{
 
 // Network and interval columns read into string fields on PostgreSQL, whose
 // binary encoding of them pgx scans into no string: lists and updates read
-// them as text, in their display form.
+// them as text, an address in its display form and an interval as ISO 8601.
 func TestColumnType_ReadsNetworkAndIntervalColumns(t *testing.T) {
 	c := &catalog{dsn: dbtest.PostgresDSN(t)}
 	ctx := testContext(t)
@@ -56,9 +56,9 @@ func TestColumnType_ReadsNetworkAndIntervalColumns(t *testing.T) {
 		require.NoError(t, err, stmt)
 	}
 	want := []endpoint{
-		{ID: full, Addr: "10.0.0.1", Net: new("10.0.0.0/8"), Every: "1 day 02:00:00",
-			Allowed: []string{"10.0.0.1", "10.1.0.0/16", "::1"}, Nets: []string{"192.168.0.0/16"}, Spans: []string{"01:00:00", "3 days"}},
-		{ID: empty, Addr: "10.1.0.0/16", Every: "00:00:00", Nets: []string{}},
+		{ID: full, Addr: "10.0.0.1", Net: new("10.0.0.0/8"), Every: "P1DT2H",
+			Allowed: []string{"10.0.0.1", "10.1.0.0/16", "::1"}, Nets: []string{"192.168.0.0/16"}, Spans: []string{"PT1H", "P3D"}},
+		{ID: empty, Addr: "10.1.0.0/16", Every: "PT0S", Nets: []string{}},
 	}
 	list := func(t *testing.T, r *parse.Resource[endpoint]) *parse.ListPlan {
 		t.Helper()

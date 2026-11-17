@@ -88,17 +88,22 @@ func (p *JSONPath) validate(t, elem core.FieldType, maxDepth int) error {
 }
 
 // FieldExpr is the SQL expression of a field's value: its column (a decimal
-// column as the dialect's exact decimal), or for a path the dialect's typed
-// extraction.
+// column as the dialect's exact decimal, an interval as its canonical text,
+// which compares field by field where PostgreSQL's interval equality equates
+// a month with 30 days), or for a path the dialect's typed extraction.
 func FieldExpr(d Dialect, f *FieldSchema) string {
 	if f.Path != nil {
 		return d.PathExpr(f.Path, f.DataType)
 	}
-	switch f.DataType {
-	case core.FieldTypeDate:
+	switch {
+	case f.DataType == core.FieldTypeDate:
 		return d.ReadColumn(f.SQLExpr, core.SQLDate)
-	case core.FieldTypeDecimal:
+	case f.DataType == core.FieldTypeDecimal:
 		return d.DecimalColumn(f.SQLExpr)
+	case f.DataType == core.FieldTypeInterval:
+		return d.ReadColumn(f.SQLExpr, core.SQLInterval)
+	case f.DataType == core.FieldTypeArray && f.Elem == core.FieldTypeInterval:
+		return d.ReadColumn(f.SQLExpr, core.SQLIntervalArray)
 	}
 	return f.SQLExpr
 }
@@ -466,7 +471,8 @@ func sqlitePathMember(p *JSONPath) (kind, val, literal string) {
 // sqliteTypedMember is a JSON value of type t, NULL when it has another
 // kind: kind is its json_type, val its json_extract and literal its JSON
 // text as written (`->`). A date is an element of SQLite's JSON text array
-// column, read as ReadColumn reads a date column.
+// column, read as ReadColumn reads a date column; a time, interval or
+// network element is the canonical text the column was written with.
 func sqliteTypedMember(t core.FieldType, kind, val, literal string) string {
 	switch t {
 	case core.FieldTypeString:
@@ -477,6 +483,8 @@ func sqliteTypedMember(t core.FieldType, kind, val, literal string) string {
 		return decimals.SQLiteValueFunc + "(" + literal + ")"
 	case core.FieldTypeDate:
 		return "(CASE WHEN " + kind + " = 'text' THEN substr(" + val + ", 1, 10) END)"
+	case core.FieldTypeTime, core.FieldTypeInterval, core.FieldTypeInet, core.FieldTypeCIDR, core.FieldTypeMACAddr:
+		return "(CASE WHEN " + kind + " = 'text' THEN " + val + " END)"
 	case core.FieldTypeBool:
 		return "(CASE " + kind + " WHEN 'true' THEN 1 WHEN 'false' THEN 0 END)"
 	case core.FieldTypeTimestamp:

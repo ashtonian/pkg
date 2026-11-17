@@ -569,7 +569,8 @@ var valuerType = reflect.TypeFor[driver.Valuer]()
 func scalarFieldType(t reflect.Type) (core.FieldType, bool) {
 	switch ft := core.TypeOf(t).Type; ft {
 	case core.FieldTypeString, core.FieldTypeInt, core.FieldTypeFloat, core.FieldTypeDecimal, core.FieldTypeBool,
-		core.FieldTypeTimestamp, core.FieldTypeDate, core.FieldTypeUUID:
+		core.FieldTypeTimestamp, core.FieldTypeDate, core.FieldTypeUUID,
+		core.FieldTypeTime, core.FieldTypeInterval, core.FieldTypeInet, core.FieldTypeCIDR, core.FieldTypeMACAddr:
 		return ft, true
 	}
 	return "", false

@@ -45,7 +45,7 @@ Schema generation refuses the shapes encoding/json resolves silently:
 - an unexported embedded struct named by the field-name tag;
 - two fields with one column.
 
-A field's data type comes from its Go type (`core.TypeOf`): string / int / float / decimal / bool / timestamp / date / uuid scalars, a UUID being any named 16-byte array that marshals to text (the standard library's `uuid.UUID`, `github.com/google/uuid`, `github.com/gofrs/uuid`; a bare `[16]byte` is binary) and a decimal any named type with the `core.Decimal` method set ([decimals](#decimals)); slices of those other than decimals are native `array`s (PostgreSQL arrays, JSON text on SQLite); maps, `any`, `json.RawMessage` and other slices are `json` documents (`jsonb`); structs are `object` documents.
+A field's data type comes from its Go type (`core.TypeOf`): string / int / float / decimal / bool / timestamp / date / uuid scalars, the [time, interval and network value types](#time-interval-and-network-values), a UUID being any named 16-byte array that marshals to text (the standard library's `uuid.UUID`, `github.com/google/uuid`, `github.com/gofrs/uuid`; a bare `[16]byte` is binary) and a decimal any named type with the `core.Decimal` method set ([decimals](#decimals)); slices of those other than decimals are native `array`s (PostgreSQL arrays, JSON text on SQLite); maps, `any`, `json.RawMessage` and other slices are `json` documents (`jsonb`); structs are `object` documents.
 
 Declare physical storage with `parse.ColumnType(column, core.SQLJSON)` / `core.SQLJSONB`, or `core.WithColumnTypes(map[string]core.SQLType{...})` for a lower-level parser. Column names follow the configured column tag/mapper, including hidden and unread fields. Declared JSON strings, bytes and scalar slices use document operators and JSON binding; typed objects retain their member schemas. JSON columns cannot be sorted or searched. `core.SQLTextArray`, `core.SQLInt32Array` and `core.SQLUUIDArray` retain native array semantics. Each schema generator owns a copy of its declarations, so resources over the same Go type can use different storage profiles.
 
@@ -94,7 +94,7 @@ Request documents (JSON filters, JSON Patch and merge patch bodies) decode with 
 | `NormalizeInt(v, kind)` | `int64` in the signed kind's range (`reflect.Invalid`: the int64 range); `json.Number`, every Go integer kind, and integral floats within ±2^53 accepted; an unsigned kind is an error |
 | `NormalizeUint(v, kind)` | `uint64` in the unsigned kind's range (`reflect.Invalid`: the uint64 range), negatives refused; otherwise as `NormalizeInt` |
 | `NormalizeFloat(v, kind)` | Finite `float64`; float32 values are range-checked and rounded to the Go destination precision before binding |
-| `NormalizeScalar(type, kind, v)` | Per `FieldType`: exact numbers, canonical decimal text, canonical lowercase UUID string, RFC 3339 UTC timestamp, string, bool |
+| `NormalizeScalar(type, kind, v)` | Per `FieldType`: exact numbers, canonical decimal text, canonical lowercase UUID string, RFC 3339 UTC timestamp, string, bool, and the canonical text of a date, time, interval, inet, cidr or macaddr |
 | `NormalizeJSON(v)` | A generic document (`map[string]any`, `[]any`, scalars) with `int64` / `uint64` / `float64` numbers; integers outside the supported range and decimal literals that change on float64 decimal round-trip are rejected |
 | `CompareNumbers(a, b)` | Exact comparison across integer and float representations |
 | `DecimalText(v)` | A decimal's canonical text: plain notation, no exponent, no leading or trailing zeros, `"0"` for either zero; from a JSON number, a numeric string, a Go number, a `core.Decimal` or a decimal text marshaler; at most `MaxDecimalDigits` (1000) digits |
@@ -136,6 +136,32 @@ type Task struct {
 `core.ParseDate("2028-02-29")` validates a value. Invalid calendar dates, timestamp strings, relative-time tokens and null for a non-nullable date are refused. A nullable patch can explicitly clear a date; omission leaves it untouched. `Date.Scan` and `Date.Value` provide native database/sql and pgx interoperability; native DATE values retain their calendar components in every session timezone. The zero Date is invalid. `Date.Time()` is an explicit conversion for an internal API that requires UTC-midnight `time.Time`; it does not change the public date representation.
 
 `core.Date` infers the SQL DATE read rule; an explicit `ColumnType("day", core.SQLDate)` requires the same scalar. SQLite reads and compares calendar components of both canonical dates and legacy midnight-timestamp storage without rewriting rows or applying offsets. Its date expressions may require expression indexes for large date-range workloads. Request values and JSON responses remain date-only.
+
+## Time, interval and network values
+
+Five value types give SQL types that Go would otherwise hold as a `string` one canonical text each, as `core.Date` does for DATE. Request values, patches, JSON, SQL parameters and cursors use the canonical text, so both backends hold the same text and a filter compares the same values on each. Use a pointer for a nullable column.
+
+| SQL type | Go type | Canonical text | Input accepted | Default operators |
+|---|---|---|---|---|
+| `time` | `core.LocalTime` | `HH:MM:SS`, then `.` and 1–6 digits without trailing zeros (PostgreSQL's output); text order is time order | The same, with up to 9 fractional digits when those past the sixth are zeros. `24:00:00`, a leap second and an offset are refused | `$eq` `$ne` `$gt` `$gte` `$lt` `$lte`; sortable |
+| `interval` | `core.Interval` (`Months`, `Days`, `Microseconds`, as PostgreSQL holds it) | ISO 8601, as PostgreSQL's `iso_8601` IntervalStyle writes it: `P1Y2M3DT4H5M6.5S`, `P1DT-1H`, `PT0S` | ISO 8601 designators `P[nY][nM][nW][nD][T[nH][nM][nS]]`, each field signed, a fraction on seconds only | `$eq` `$ne` `$in` `$nin` |
+| `inet` | `core.Inet` (a `netip.Prefix`, host bits kept) | The address as `net/netip` writes it, with `/bits` only when shorter than the address | Any address or address/bits `netip` parses; a zone is refused | `$eq` `$ne` `$in` `$nin` |
+| `cidr` | `core.CIDR` | `address/bits` | address/bits with no host bits set | `$eq` `$ne` `$in` `$nin` |
+| `macaddr` | `core.MACAddr` | Six lowercase colon-separated octets | The six-octet forms `net.ParseMAC` reads | `$eq` `$ne` `$in` `$nin` |
+
+```go
+type Session struct {
+    ID         string          `json:"id" db:"id" parse:"filter,sort"`
+    StartsAt   *core.LocalTime `json:"starts_at" db:"starts_at" parse:"filter,patch,sort"`
+    Idle       *core.Interval  `json:"idle" db:"idle" parse:"filter,patch"`
+    ClientIP   *core.Inet      `json:"client_ip" db:"client_ip" parse:"filter,patch"`
+    AllowedIPs []core.Inet     `json:"allowed_ips" db:"allowed_ips" parse:"filter,patch"`
+}
+```
+
+Equality and sets compare values, which the canonical text names one-to-one: `192.168.0.5` and `192.168.0.5/24` are different inet values, as in PostgreSQL. PostgreSQL's own interval equality treats a month as 30 days and a day as 24 hours, so an interval filter compares the canonical text there, field by field, as SQLite does: `P30D` does not match `P1M`. Text order is not the order of an interval or an address, so interval, inet, cidr and macaddr offer no range operator and cannot be sorted. An interval, inet or cidr field cannot be a facet: PostgreSQL's text of those values is not the canonical text, so the backends would key its buckets differently. A time or macaddr field can. A slice of a value type is a native array (`INET[]`); its element conditions take the element's operators.
+
+Each type's `Scan` reads the text drivers return: PostgreSQL's output, pgx's text (`10:30:00.500000`, an inet host as `/32`, an interval as `14 mon 3 day 04:05:06.500000`), the server's default `postgres` IntervalStyle and `abbrev()`'s IPv4-compatible dotted form, and the canonical text SQLite holds. An `Interval` column reads as its ISO 8601 text on PostgreSQL under any IntervalStyle: it implies `ColumnType(column, core.SQLInterval)`. A column of a value type may declare only the storage that type reads through (`SQLInet` for an `Inet`, `SQLCIDR` for a `CIDR`, `SQLInterval` for an `Interval`, the array types for their slices) or a JSON type. An infinite PostgreSQL interval has no ISO 8601 form and is refused on read.
 
 ## Decimals
 

@@ -199,6 +199,14 @@ func valueFacetKey(v any, t core.FieldType, kind reflect.Kind) (string, bool, er
 		if s, ok := textOf(v); ok {
 			return strings.ToLower(s), true, nil
 		}
+	case core.FieldTypeTime, core.FieldTypeMACAddr:
+		canonical, err := core.NormalizeScalar(t, kind, v)
+		if err != nil {
+			return "", false, err
+		}
+		if s, ok := canonical.(string); ok {
+			return s, true, nil
+		}
 	}
 	return "", false, fmt.Errorf("%T is not a %s value", v, t)
 }

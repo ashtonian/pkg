@@ -21,6 +21,11 @@ import (
 //   - FieldTypeUUID      → canonical lowercase UUID string
 //   - FieldTypeBool      → bool
 //   - FieldTypeTimestamp → RFC 3339 UTC string with nanosecond precision (time.Time accepted)
+//   - FieldTypeDate      → YYYY-MM-DD (Date accepted)
+//   - FieldTypeTime, FieldTypeInterval, FieldTypeInet, FieldTypeCIDR,
+//     FieldTypeMACAddr   → the canonical text of LocalTime, Interval, Inet,
+//     CIDR and MACAddr (each type accepted, and netip.Addr, netip.Prefix
+//     and net.HardwareAddr where they hold the value)
 //
 // Other data types pass through unchanged. Non-nil pointers are
 // dereferenced first, so typed Go input (*int64, *time.Time) normalizes like
@@ -30,7 +35,8 @@ func NormalizeScalar(dt FieldType, kind reflect.Kind, v any) (any, error) {
 	v = deref(v)
 	if v == nil {
 		switch dt {
-		case FieldTypeString, FieldTypeUUID, FieldTypeInt, FieldTypeFloat, FieldTypeDecimal, FieldTypeBool, FieldTypeTimestamp, FieldTypeDate:
+		case FieldTypeString, FieldTypeUUID, FieldTypeInt, FieldTypeFloat, FieldTypeDecimal, FieldTypeBool, FieldTypeTimestamp, FieldTypeDate,
+			FieldTypeTime, FieldTypeInterval, FieldTypeInet, FieldTypeCIDR, FieldTypeMACAddr:
 			return nil, fmt.Errorf("expected %s, got null", dt)
 		}
 		return nil, nil
@@ -83,6 +89,16 @@ func NormalizeScalar(dt FieldType, kind reflect.Kind, v any) (any, error) {
 			return nil, err
 		}
 		return FormatTimestamp(t), nil
+	case FieldTypeTime:
+		return normalizeLocalTime(v)
+	case FieldTypeInterval:
+		return normalizeInterval(v)
+	case FieldTypeInet:
+		return normalizeInet(v)
+	case FieldTypeCIDR:
+		return normalizeCIDR(v)
+	case FieldTypeMACAddr:
+		return normalizeMACAddr(v)
 	}
 	return v, nil
 }
