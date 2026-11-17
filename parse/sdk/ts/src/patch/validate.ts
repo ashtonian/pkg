@@ -147,6 +147,11 @@ function scalarOK(v: unknown, type: string, kind?: string): boolean {
       return isCivilDate(v);
     case "string":
     case "timestamp":
+    case "time":
+    case "interval":
+    case "inet":
+    case "cidr":
+    case "macaddr":
     case "uuid":
       return typeof v === "string";
     case "bool":

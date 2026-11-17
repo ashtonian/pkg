@@ -176,10 +176,11 @@ func NewResource[T any](table string, opts ...ResourceOption) (*Resource[T], err
 	if r.sqlTypes, err = sqlTypes(table, cfg, columns); err != nil {
 		return nil, err
 	}
-	// A native Date owns its SQL representation unless an explicit declaration
-	// stores the value as a JSON document instead.
+	// A value type owns its SQL representation unless an explicit
+	// declaration stores the value as a JSON document instead.
 	for name, typ := range columns {
-		if core.TypeOf(typ).Type != core.FieldTypeDate {
+		implied, ok := core.ImpliedSQLType(core.TypeOf(typ))
+		if !ok {
 			continue
 		}
 		if _, declared := r.sqlTypes[name]; declared {
@@ -188,7 +189,7 @@ func NewResource[T any](table string, opts ...ResourceOption) (*Resource[T], err
 		if r.sqlTypes == nil {
 			r.sqlTypes = make(map[string]core.SQLType)
 		}
-		r.sqlTypes[name] = core.SQLDate
+		r.sqlTypes[name] = implied
 	}
 
 	if err := r.readsSortKeys(p.sortSchema); err != nil {
@@ -259,6 +260,14 @@ func sqlTypes(table string, cfg resourceConfig, columns map[string]reflect.Type)
 		}
 		for ft.Kind() == reflect.Pointer {
 			ft = ft.Elem()
+		}
+		if info := core.TypeOf(ft); core.IsValueType(info) && !t.IsJSON() {
+			// A value type scans the text its declaration reads.
+			if err := core.CheckValueStorage(name, info, t); err != nil {
+				return nil, fmt.Errorf("parse: %s: %w", table, err)
+			}
+			out[name] = t
+			continue
 		}
 		switch {
 		case t.IsJSON():

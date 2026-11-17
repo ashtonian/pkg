@@ -16,7 +16,8 @@ Start with the [runnable package example](../README.md#quick-start). The focused
 
 - Config: `DefaultConfig`, `ParserConfig`, `Option`, `(*ParserConfig).GetCodec`
 - Generation: `NewSchemaGenerator`, `SchemaGenerator` (`TableName`, `ColumnExpr`, `ColumnName`, `FieldColumn`, `FieldNameTag`, `ColumnTagKey`, `StructFields`), `GeneratorOptions`, `GeneratorOption`, `SQLColumnMapper`, `NamingConvention`, `TableConvention`, `SnakeCase`, `PluralSnake`
-- Types: `FieldType` (`FieldTypeString` … `FieldTypeGeo`), `SQLType` (`SQLInet`, `SQLCIDR`, `SQLInterval` and their arrays: database types a resource declares for its dialect to read as text), `TypeOf`, `TypeInfo`, `IsDocument`, `NumericKind`, `IsUUIDType` / `UUIDText` (any UUID type, recognized by shape), `Decimal` / `IsDecimalType` (any decimal type with the `Coefficient` / `Exponent` method set, recognized by shape)
+- Types: `FieldType` (`FieldTypeString` … `FieldTypeGeo`), `SQLType` (`SQLInet`, `SQLCIDR`, `SQLInterval` and their arrays: database types a resource declares for its dialect to read as text), `IsValueType` / `CheckValueStorage` / `ImpliedSQLType` (the declarations a value type's column takes), `TypeOf`, `TypeInfo`, `IsDocument`, `NumericKind`, `IsUUIDType` / `UUIDText` (any UUID type, recognized by shape), `Decimal` / `IsDecimalType` (any decimal type with the `Coefficient` / `Exponent` method set, recognized by shape)
+- Value types, each with one canonical text in JSON, text, SQL parameters and cursors: `Date` / `ParseDate`, `LocalTime` / `ParseLocalTime`, `Interval` / `ParseInterval`, `Inet` / `ParseInet` / `InetFromAddr` / `InetFromPrefix`, `CIDR` / `ParseCIDR` / `CIDRFromPrefix`, `MACAddr` / `ParseMACAddr`
 - Values: `NormalizeInt`, `NormalizeUint`, `NormalizeFloat`, `NormalizeScalar`, `NormalizeJSON`, `CompareNumbers`, `IsNumber`, `DecimalText` / `CompareDecimals` / `MaxDecimalDigits` (canonical exact decimal text and its order), `AnySlice`, `FormatTimestamp` / `TimestampLayout` (canonical timestamp text: UTC, nine fractional digits, fixed width)
 - Pointers: `ParsePointer`, `FormatPointer`, `EscapePointerToken`, `MatchWildcard`
 - Relations: `RelationSchema`, `ParseRelationTag`, `IsIdentifier`
@@ -36,6 +37,12 @@ Start with the [runnable package example](../README.md#quick-start). The focused
 | `number.go` | Exact integer / float normalization and comparison |
 | `decimal.go` | `Decimal`, `IsDecimalType`, canonical decimal text (`DecimalText`), exact decimal order (`CompareDecimals`) |
 | `value.go` | `NormalizeScalar`, canonical timestamps, `AnySlice` |
+| `date.go` | `Date`: SQL DATE, `YYYY-MM-DD` |
+| `localtime.go` | `LocalTime`: SQL TIME, `HH:MM:SS[.ffffff]` without trailing zeros |
+| `interval.go` | `Interval`: SQL INTERVAL as months, days and microseconds; ISO 8601 text as PostgreSQL's `iso_8601` style writes it; the postgres-style and pgx text drivers return |
+| `inet.go` | `Inet` and `CIDR`: SQL INET and CIDR over `netip.Prefix` |
+| `macaddr.go` | `MACAddr`: SQL MACADDR, lowercase colon-separated octets |
+| `column_type.go` | `WithColumnTypes`, `FieldType` (a field's Go type with its declared storage), value-type storage checks |
 | `json.go` | `NormalizeJSON` — canonical JSON documents |
 | `pointer.go` | RFC 6901 pointers |
 | `relation.go` | Relation tag grammar, `IsIdentifier` |
@@ -43,7 +50,7 @@ Start with the [runnable package example](../README.md#quick-start). The focused
 
 ## Dependencies
 
-- *Imports*: stdlib (`uuid`, `encoding/json/v2`), `github.com/ashtonian/pkg/gowalker`
+- *Imports*: stdlib (`uuid`, `encoding/json/v2`, `net/netip`, `net`), `github.com/ashtonian/pkg/gowalker`
 - *Imported by*: `parse`, `parse/filter`, `parse/patch`, `forge/dal/*`
 - *Package boundary*: shared Parse types; no sibling Parse package imports
 
@@ -52,3 +59,5 @@ Start with the [runnable package example](../README.md#quick-start). The focused
 [Package overview](../README.md) · [Integration recipes](../docs/integrations.md)
 
 Civil calendar values use `Date` / `ParseDate` and `FieldTypeDate`, distinct from timestamps. JSON, text, SQL parameters and cursors use exactly `YYYY-MM-DD`; invalid dates, instant strings and a non-nullable zero/null value fail. Use `*Date` for nullable storage. `date.go` implements validation, atomic decoding and SQL scanning/values without applying a viewing timezone; the [schema guide](../docs/schema-configuration.md#civil-dates) covers resource declarations.
+
+`LocalTime`, `Interval`, `Inet`, `CIDR` and `MACAddr` follow `Date`'s shape for SQL TIME, INTERVAL, INET, CIDR and MACADDR: `FieldTypeTime`, `FieldTypeInterval`, `FieldTypeInet`, `FieldTypeCIDR` and `FieldTypeMACAddr`. Each reads its accepted input forms, holds and writes one canonical text, and scans the text PostgreSQL, pgx and SQLite return. The [schema guide](../docs/schema-configuration.md#time-interval-and-network-values) lists each grammar and the filters each type offers.

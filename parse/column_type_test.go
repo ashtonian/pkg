@@ -43,16 +43,22 @@ func sessionResource(t *testing.T, opts ...parse.ResourceOption) (*parse.Resourc
 func TestColumnType_Projection(t *testing.T) {
 	r, err := sessionResource(t)
 	require.NoError(t, err)
+	// An interval reads as its ISO 8601 text under any IntervalStyle; the
+	// PostgreSQL integration suite checks the text itself.
+	pg := filter.PostgresDialect{}
 	assert.Equal(t, []string{
 		"sessions.id",
 		"abbrev(sessions.addr) AS addr",
 		"sessions.net::text AS net",
-		"sessions.every::text AS every",
+		pg.ReadColumn("sessions.every", core.SQLInterval) + " AS every",
 		"CASE WHEN sessions.allowed IS NULL THEN NULL ELSE ARRAY(SELECT abbrev(a) FROM unnest(sessions.allowed) WITH ORDINALITY AS u(a, n) ORDER BY n) END AS allowed",
 		"sessions.nets::text[] AS nets",
-		"sessions.spans::text[] AS spans",
+		"CASE WHEN sessions.spans IS NULL THEN NULL ELSE ARRAY(SELECT " + pg.ReadColumn("a", core.SQLInterval) +
+			" FROM unnest(sessions.spans) WITH ORDINALITY AS u(a, n) ORDER BY n) END AS spans",
 		"sessions.count",
-	}, r.Columns(filter.PostgresDialect{}))
+	}, r.Columns(pg))
+	assert.NotContains(t, pg.ReadColumn("sessions.every", core.SQLInterval), "::text AS",
+		"a text cast would follow the session's IntervalStyle")
 	assert.Equal(t, []string{
 		"sessions.id", "sessions.addr", "sessions.net", "sessions.every",
 		"sessions.allowed", "sessions.nets", "sessions.spans", "sessions.count",

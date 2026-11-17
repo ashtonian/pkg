@@ -81,9 +81,11 @@ type TypeInfo struct {
 //	string / int / float / bool kinds   string, int, float, bool
 //	time.Time, a UUID type (IsUUIDType) timestamp, uuid
 //	Date                                date
+//	LocalTime, Interval                 time, interval
+//	Inet, CIDR, MACAddr                 inet, cidr, macaddr
 //	a decimal type (IsDecimalType)      decimal — PostgreSQL numeric; NUMERIC or REAL on SQLite
 //	slice or array of a scalar above,
-//	other than decimal                  array — a PostgreSQL native array (TEXT[], BIGINT[], …); JSON text on SQLite
+//	other than decimal                  array — a PostgreSQL native array (TEXT[], BIGINT[], INET[], …); JSON text on SQLite
 //	map, interface, json.RawMessage,
 //	slice of anything else              json — a document: PostgreSQL jsonb; JSON text on SQLite
 //	struct                              object — a JSON document with a fixed shape
@@ -119,8 +121,8 @@ func TypeOf(t reflect.Type) TypeInfo {
 
 // scalarType maps the scalar Go types; pointers are not stripped.
 func scalarType(t reflect.Type) (FieldType, bool) {
-	if t == reflect.TypeFor[Date]() {
-		return FieldTypeDate, true
+	if ft, ok := valueTypes[t]; ok {
+		return ft, true
 	}
 	if t == timeType {
 		return FieldTypeTimestamp, true
@@ -143,6 +145,16 @@ func scalarType(t reflect.Type) (FieldType, bool) {
 		return FieldTypeBool, true
 	}
 	return "", false
+}
+
+// valueTypes are this package's value types, each with one canonical text.
+var valueTypes = map[reflect.Type]FieldType{
+	reflect.TypeFor[Date]():      FieldTypeDate,
+	reflect.TypeFor[LocalTime](): FieldTypeTime,
+	reflect.TypeFor[Interval]():  FieldTypeInterval,
+	reflect.TypeFor[Inet]():      FieldTypeInet,
+	reflect.TypeFor[CIDR]():      FieldTypeCIDR,
+	reflect.TypeFor[MACAddr]():   FieldTypeMACAddr,
 }
 
 // IsDocument reports whether values of ft are JSON documents (json, object).

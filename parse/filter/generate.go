@@ -125,6 +125,9 @@ func generateFilterSchema(g *core.SchemaGenerator, t reflect.Type) (*ResourceSch
 		}
 
 		if fs.Facetable {
+			if t := facetValueType(fs); unkeyedFacetTypes[t] {
+				return nil, fmt.Errorf("field %s: %s values have no facet key every backend reads alike", field.GoName, t)
+			}
 			if tags.Facet != "" {
 				facetSchema, err := ParseFacetTag(tags.Facet)
 				if err != nil {
@@ -256,7 +259,8 @@ func generateSortSchema(g *core.SchemaGenerator, t reflect.Type) (*SortSchema, e
 		fieldType := info.Type
 		if !sortable(ft, fieldType) {
 			// A cursor carries a scalar per key; a document, array or geo
-			// value has no portable order.
+			// value has no portable order, and an interval or network
+			// value's text order is not its order.
 			return nil, fmt.Errorf("field %s: %s fields are not sortable", field.GoName, fieldType)
 		}
 		sqlExpr, err := g.ColumnExpr(tableName, fieldName, fieldType, tags.Column)
@@ -327,6 +331,11 @@ var defaultFilterOps = map[core.FieldType][]FilterOperator{
 	core.FieldTypeBool:      {OpEq, OpNe},
 	core.FieldTypeTimestamp: {OpEq, OpNe, OpGt, OpGte, OpLt, OpLte},
 	core.FieldTypeDate:      {OpEq, OpNe, OpGt, OpGte, OpLt, OpLte},
+	core.FieldTypeTime:      {OpEq, OpNe, OpGt, OpGte, OpLt, OpLte},
+	core.FieldTypeInterval:  {OpEq, OpNe, OpIn, OpNin},
+	core.FieldTypeInet:      {OpEq, OpNe, OpIn, OpNin},
+	core.FieldTypeCIDR:      {OpEq, OpNe, OpIn, OpNin},
+	core.FieldTypeMACAddr:   {OpEq, OpNe, OpIn, OpNin},
 	core.FieldTypeUUID:      {OpEq, OpNe, OpIn, OpNin},
 	core.FieldTypeJSON:      {OpEq, OpNe, OpContains, OpHasKey, OpExists, OpNull},
 	core.FieldTypeArray:     {OpContains, OpSome, OpNone, OpNull},
@@ -396,13 +405,21 @@ func FilterMetaFromSchema(schema *ResourceSchema) *FilterMeta {
 	return meta
 }
 
+// unkeyedFacetTypes are the value types whose PostgreSQL text differs from
+// their canonical text: interval follows the session's IntervalStyle, inet
+// writes a host's /32, and both network types write an IPv4-compatible IPv6
+// address in dotted form. A terms facet's key is that text.
+var unkeyedFacetTypes = map[core.FieldType]bool{
+	core.FieldTypeInterval: true, core.FieldTypeInet: true, core.FieldTypeCIDR: true,
+}
+
 // sortable reports whether a keyset can order and resume on a field: a scalar
 // type, or a struct whose value reduces to one (driver.Valuer,
 // encoding.TextMarshaler — see CursorValue).
 func sortable(t reflect.Type, ft core.FieldType) bool {
 	switch ft {
 	case core.FieldTypeString, core.FieldTypeInt, core.FieldTypeFloat, core.FieldTypeDecimal,
-		core.FieldTypeBool, core.FieldTypeTimestamp, core.FieldTypeDate, core.FieldTypeUUID:
+		core.FieldTypeBool, core.FieldTypeTimestamp, core.FieldTypeDate, core.FieldTypeTime, core.FieldTypeUUID:
 		return true
 	case core.FieldTypeObject:
 		for t.Kind() == reflect.Pointer {

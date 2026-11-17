@@ -266,8 +266,15 @@ function validateMember(name: string, val: unknown, field: FilterFieldSchema): v
     case "date":
       ok = isCivilDate(val);
       break;
+    // The server parses these types' text; the client checks only that a
+    // value is a string, as it does for a UUID.
     case "string":
     case "timestamp":
+    case "time":
+    case "interval":
+    case "inet":
+    case "cidr":
+    case "macaddr":
     case "uuid":
       ok = typeof val === "string";
       break;
