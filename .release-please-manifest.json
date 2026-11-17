@@ -8,7 +8,7 @@
   "httpx/compress/brotli": "0.2.0",
   "gowalker": "0.5.0",
   "jsonvalue": "0.1.0",
-  "gitx": "0.1.1",
+  "gitx": "0.1.2",
   "httpx/oauth2": "0.1.0",
   "process": "0.1.0",
   "state": "0.2.0",
