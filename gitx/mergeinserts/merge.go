@@ -4,6 +4,10 @@
 // side's lines, then the other side's. Every other conflict is left as git leaves it,
 // with git's markers and labels in the requested conflict style, because only a person
 // can decide between two versions of the same text.
+//
+// An insertion has a point only against the common ancestor's text. When the ancestor
+// has no text, as when both sides add the file, each side is a whole document rather
+// than an insertion, and the conflict is left.
 package mergeinserts
 
 import (
@@ -37,18 +41,22 @@ type Result struct {
 const markerChars = "<|=>"
 
 // Merge merges the file theirs into the file ours against the file base. Conflicts
-// with an empty base section are resolved by keeping ours's lines, then theirs's;
-// the rest are written with markers markerSize long, in st, labelled by l. It runs
-// git merge-file for the three-way merge, so git must be on PATH.
+// with an empty base section are resolved by keeping ours's lines, then theirs's,
+// unless base holds only whitespace; the rest are written with markers markerSize
+// long, in st, labelled by l. It runs git merge-file for the three-way merge, so git
+// must be on PATH.
 func Merge(ours, base, theirs string, markerSize int, st Style, l Labels) (Result, error) {
+	var texts [3][]byte
 	inner := 1 + markerSize
-	for _, p := range []string{ours, base, theirs} {
+	for i, p := range []string{ours, base, theirs} {
 		b, err := os.ReadFile(p)
 		if err != nil {
 			return Result{}, err
 		}
+		texts[i] = b
 		inner = max(inner, 1+longestMarkerRun(b))
 	}
+	anchored := len(bytes.TrimSpace(texts[1])) > 0
 
 	// The internal merge marks conflicts with markers longer than any run of marker
 	// characters starting a line of the inputs, so no text line parses as one.
@@ -65,7 +73,7 @@ func Merge(ours, base, theirs string, markerSize int, st Style, l Labels) (Resul
 	default:
 		return Result{}, fmt.Errorf("git merge-file: %w: %s", err, strings.TrimSpace(stderr.String()))
 	}
-	return resolve(string(out), inner, markerSize, st, l)
+	return resolve(string(out), inner, markerSize, anchored, st, l)
 }
 
 // longestMarkerRun is the longest run of one marker character starting a line of b.
@@ -85,7 +93,8 @@ func longestMarkerRun(b []byte) int {
 }
 
 // resolve rewrites merge-file's diff3 output, whose markers are inner long.
-func resolve(merged string, inner, markerSize int, st Style, l Labels) (Result, error) {
+// It keeps insertions only when anchored, that is when the base has text.
+func resolve(merged string, inner, markerSize int, anchored bool, st Style, l Labels) (Result, error) {
 	const (
 		outside = iota
 		inOurs
@@ -128,7 +137,7 @@ func resolve(merged string, inner, markerSize int, st Style, l Labels) (Result, 
 			base = append(base, line)
 		case inTheirs:
 			if isMarker(line, '>') {
-				r.write(&out, o, base, thr, markerSize, st, l)
+				r.write(&out, o, base, thr, markerSize, anchored, st, l)
 				state = outside
 				continue
 			}
@@ -142,10 +151,10 @@ func resolve(merged string, inner, markerSize int, st Style, l Labels) (Result, 
 	return r, nil
 }
 
-// write emits one conflict: both insertions when the base section is empty, and git's
-// markers around the sides otherwise.
-func (r *Result) write(out *strings.Builder, ours, base, theirs []string, size int, st Style, l Labels) {
-	if len(base) == 0 {
+// write emits one conflict: both insertions when the base section is empty and the
+// base file anchors them, and git's markers around the sides otherwise.
+func (r *Result) write(out *strings.Builder, ours, base, theirs []string, size int, anchored bool, st Style, l Labels) {
+	if len(base) == 0 && anchored {
 		r.Kept++
 		writeLines(out, ours)
 		writeLines(out, theirs)
