@@ -47,7 +47,7 @@
 // flags only — so a Validate method on the config is called on that copy
 // before any file or variable is read. For a CLI struct that does not hold
 // the config struct, [WithOverrides] takes an explicit flag name → key
-// mapping.
+// mapping. [UsageFlags] adds each key's flag to config.PrintUsage's tables.
 package kongprovider
 
 import (
@@ -142,7 +142,7 @@ func (p provider) read() (values map[string]any, flags map[string]string, err er
 			continue
 		}
 		if key, ok := p.mapping[el.Flag.Name]; ok {
-			values[key] = el.Flag.Target.Interface()
+			values[key] = listElements(el.Flag, el.Flag.Target).Interface()
 			flags[key] = el.Flag.Name
 		}
 	}
@@ -343,11 +343,36 @@ func typedValues[T any](ctx *kong.Context, cfg *T) (map[string]any, map[string]s
 		}
 		f, ok := fields[el.Flag]
 		if ok {
-			values[f.Path] = copyValue(el.Flag.Target)
+			values[f.Path] = listElements(el.Flag, reflect.ValueOf(copyValue(el.Flag.Target))).Interface()
 			flags[f.Path] = el.Flag.Name
 		}
 	}
 	return values, flags, nil
+}
+
+// listElements is v, the value of flag fl, with the string elements of a
+// list Kong split from the command line kept as config.ListElements keeps
+// those of a list split from a string — trimmed, the empty ones dropped — so
+// --hosts "a, b" sets the list APP_HOSTS="a, b" does. A flag Kong does not
+// split (sep:"none") and any other value are returned as they are; a list
+// that changes is a new slice, never v's storage.
+func listElements(fl *kong.Flag, v reflect.Value) reflect.Value {
+	if fl.Tag.Sep == -1 || v.Kind() != reflect.Slice || v.Type().Elem().Kind() != reflect.String {
+		return v
+	}
+	parts := make([]string, v.Len())
+	for i := range parts {
+		parts[i] = v.Index(i).String()
+	}
+	kept := config.ListElements(parts)
+	if slices.Equal(kept, parts) {
+		return v
+	}
+	out := reflect.MakeSlice(v.Type(), len(kept), len(kept))
+	for i, p := range kept {
+		out.Index(i).SetString(p)
+	}
+	return out
 }
 
 // copyValue copies v, a flag's target, so later changes to the target — or

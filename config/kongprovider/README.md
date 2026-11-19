@@ -278,11 +278,39 @@ Pass the same prefixes to `HelpFromConfig` and `config.WithEnvPrefixes`, or the 
 
 When the CLI exposes only a few settings under names of its own, keep the structs apart and pass `WithOverrides` the flag name → key mapping; the load fails when a mapping names a flag the CLI does not have.
 
+## Documenting the settings
+
+`config.PrintUsage` lists every setting with its variables, type, default and bounds; `UsageFlags` adds the flag that sets each one, from the parser Kong built, so a README table or a `usage` command shows every way to set a key. With the `AppConfig` and `ServeCmd` of `example_test.go`:
+
+```go
+var cli struct {
+	Serve ServeCmd `cmd:""`
+}
+parser, err := kong.New(&cli)
+if err != nil {
+	return err
+}
+flags, err := kongprovider.UsageFlags(parser, &cli.Serve.AppConfig)
+if err != nil {
+	return err
+}
+return config.PrintUsage[AppConfig]("APP", config.WithFormat(config.FormatMarkdown), flags)
+```
+
+```txt
+| Key | Environment | Flag | Type | Default | Bounds | Description |
+| --- | --- | --- | --- | --- | --- | --- |
+| port | APP_PORT | -p, --port | int | 8080 | value &gt;= 1, value &lt;= 65535 | HTTP listen port |
+| metrics | APP_METRICS | --[no-]metrics | bool | true |  | Serve /metrics |
+```
+
+That is `ExampleUsageFlags`, whose output the tests check. Flags are matched to keys by the field each writes, as `WithOverridesFromStruct` matches them, and named as Kong's help names them: the short name, the long one, and a negatable boolean's negation (`--[no-]metrics`, or `--verbose/quiet` for `negatable:"quiet"`). A field tagged `kong:"-"`, one whose flag is hidden, and the rows of map entries and list elements have an empty cell. `cfg` must point into the struct passed to `kong.New`, and `T` is the config `PrintUsage` describes.
+
 ## Rules for the config struct
 
 - **Put the config in the command that uses it.** `Load` runs for a command whose path holds one of the config's flags. A config embedded in the CLI root is on every path, so every command — `template` and `usage` included — would load and validate it.
 - **Kong reads some of its tags.** `default` gives Kong the value it shows, and `sep` splits a list flag; `short`, `negatable`, `name`, `aliases`, `placeholder`, `embed` and `prefix` shape the flag, and an `enum` is checked by Kong against the loaded value. `koanf`, `desc`, `validate`, `sensitive` and `secret` are this package's and the config package's.
-- **Separators differ.** Kong uses one rune and recognizes backslash-escaped separators; config splits literally on the whole separator string. Use one rune (or `none`) and no escaped separators when sharing textual defaults or environment values. Typed flags are already decoded by Kong and are forwarded as lists.
+- **Separators differ.** Kong uses one rune and recognizes backslash-escaped separators; config splits literally on the whole separator string. Use one rune (or `none`) and no escaped separators when sharing textual defaults or environment values. Typed flags are already decoded by Kong and are forwarded as lists, their string elements kept as config keeps those of a list split from a string (`config.ListElements`): trimmed, the empty ones dropped, so `--hosts "a, b,"` sets the list `APP_HOSTS="a, b,"` does. A flag with `sep:"none"` is forwarded as Kong parsed it.
 - **The shared schema comes from config.** This module requires a compatible config release, including support for `env`, `sep` and checked field discovery.
 - **No Kong `required`.** Kong checks it against the command line alone, so a Kong `required` could not be satisfied by a file, the environment or a secret; use `validate:"required"`, which runs after every source.
 - **`env` belongs to the config package.** It reads a field's `env` variables in its environment layer, below the prefixed variable, and reports a value that does not decode without quoting it. `Load`, `LoadReloader` and `HelpFromConfig` clear the tag from Kong's view of each config flag and name the variables in the help instead, so Kong does not parse them as flag defaults — where a variable meant for something else, such as a Kubernetes service link (`REDIS_PORT=tcp://…`), would fail the command line before the config loads, quoting its value. Without one of them, Kong reads them.
@@ -318,6 +346,7 @@ The module reads no environment variables or files of its own; the config packag
 - `WithOverridesFromStruct(kctx, cfg *T) config.Option` — every typed flag that writes a field of `cfg`, a config struct inside the parsed CLI struct, as an override at that field's key.
 - `WithOverrides(kctx, mapping) config.Option` — the same with an explicit flag name → key mapping.
 - `New(kctx, mapping) koanf.Provider` — the provider itself, for `config.WithOverrideProvider(p, nil)`; it also implements `config.OriginProvider`, naming each value's flag.
+- `UsageFlags(k *kong.Kong, cfg *T) (config.PrintOption, error)` — a Flag column for `config.PrintUsage`'s table and Markdown: each key's flag as Kong's help names it, empty for a key no visible flag sets (see [Documenting the settings](#documenting-the-settings)).
 
 A `Run` method or `kctx.Call` function takes the bound value as a parameter: `Run(cfg *AppConfig) error` after `Load`, `Run(r *config.Reloader[AppConfig]) error` after `LoadReloader`. Each command's config is bound only when that command loads it, so commands that embed the same config type each receive their own.
 
@@ -349,7 +378,8 @@ The module logs nothing and exports no metrics; the config package's logger (`co
 | File | Responsibility |
 |---|---|
 | `load.go` | `Load`, `LoadReloader`: the Parse hook, command selection, the write into the CLI's struct |
-| `kongprovider.go` | The typed-flag provider (`New`, `WithOverrides`, `WithOverridesFromStruct`), `HelpFromConfig`, flag → field matching and value copying |
+| `kongprovider.go` | The typed-flag provider (`New`, `WithOverrides`, `WithOverridesFromStruct`), `HelpFromConfig`, flag → field matching, list-flag elements and value copying |
+| `usage.go` | `UsageFlags`: the Flag column of `config.PrintUsage` |
 | `examples/cli`, `examples/reload` | The README's two programs |
 
 ## License

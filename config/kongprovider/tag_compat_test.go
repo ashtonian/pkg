@@ -70,3 +70,53 @@ func TestOverrides_UnrelatedAnonymousConfigDoesNotQuoteTags(t *testing.T) {
 	require.Error(t, err)
 	assert.NotContains(t, err.Error(), "FAKE_CREDENTIAL")
 }
+
+// Kong splits a list flag itself, so its string elements are kept as config
+// keeps those of a list split from a string: trimmed, empty ones dropped.
+// sep:"none" leaves the flag's one element as written, and other element
+// types are Kong's to parse.
+func TestTags_ListFlagElementsAsConfigKeepsThem(t *testing.T) {
+	type names []string
+	type cfg struct {
+		Hosts []string `koanf:"hosts"`
+		Paths []string `koanf:"paths" sep:";"`
+		Whole []string `koanf:"whole" sep:"none"`
+		Names names    `koanf:"names"`
+		Ports []int    `koanf:"ports"`
+	}
+	args := []string{"--hosts", "a, b,", "--hosts", " c", "--paths", "/x ; /y;", "--whole", " p, q ", "--names", "n1 , n2", "--ports", "80,443"}
+	want := cfg{Hosts: []string{"a", "b", "c"}, Paths: []string{"/x", "/y"}, Whole: []string{" p, q "}, Names: names{"n1", "n2"}, Ports: []int{80, 443}}
+
+	t.Run("WithOverridesFromStruct", func(t *testing.T) {
+		var cli cfg
+		parser, err := kong.New(&cli)
+		require.NoError(t, err)
+		kctx, err := parser.Parse(args)
+		require.NoError(t, err)
+		got, err := config.Load[cfg](t.Context(), WithOverridesFromStruct(kctx, &cli))
+		require.NoError(t, err)
+		assert.Equal(t, want, *got)
+	})
+	t.Run("Load", func(t *testing.T) {
+		var cli struct {
+			Run struct {
+				App cfg `embed:""`
+			} `cmd:"" default:"withargs"`
+		}
+		parser, err := kong.New(&cli, Load(t.Context(), &cli.Run.App, nil, nil))
+		require.NoError(t, err)
+		_, err = parser.Parse(args)
+		require.NoError(t, err)
+		assert.Equal(t, want, cli.Run.App, "Kong applies the loaded lists")
+	})
+	t.Run("New", func(t *testing.T) {
+		var cli cfg
+		parser, err := kong.New(&cli)
+		require.NoError(t, err)
+		kctx, err := parser.Parse(args)
+		require.NoError(t, err)
+		m, err := New(kctx, map[string]string{"hosts": "hosts", "whole": "whole"}).Read()
+		require.NoError(t, err)
+		assert.Equal(t, map[string]any{"hosts": []string{"a", "b", "c"}, "whole": []string{" p, q "}}, m)
+	})
+}
