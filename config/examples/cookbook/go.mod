@@ -8,7 +8,7 @@ go 1.27.0
 
 require (
 	github.com/alecthomas/kong v1.17.0
-	github.com/ashtonian/pkg/config v0.10.0
+	github.com/ashtonian/pkg/config v0.11.0
 	github.com/ashtonian/pkg/config/kongprovider v0.4.0
 	github.com/aws/aws-sdk-go-v2 v1.47.5
 	github.com/aws/aws-sdk-go-v2/config v1.33.12
