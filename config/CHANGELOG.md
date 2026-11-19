@@ -5,23 +5,21 @@
 
 ### ⚠ BREAKING CHANGES
 
-* **config:** whole-word credential names, trimmed lists, keyed rule params, usage columns ([#191](https://github.com/ashtonian/pkg/issues/191))
-* **config:** PrintUsage's table and Markdown leave out the Reload column when every key's reload class is restart. A program parsing those formats should read the header, or use Usage or the JSON format, whose reload field is unchanged.
-* **config:** elements of a list set from a string, and entries of a map set from a key=value string, are trimmed of surrounding white space, and empty ones are dropped: "a, ,b" sets [a b], not [a " " b]. Write a list in a config file as a list to keep such elements.
-* **config:** a field or map key whose name only contains a credential word's letters (Keyspace, Author, Tokenizer, AuthenticationMode) is no longer inferred sensitive, so its value appears in redacted output and its default in usage, templates, JSON Schema and flag help. Tag such a field sensitive:"true" to keep it redacted. Names now inferred that were not before: those with the words pass, passwd, pwd, passphrase or cred.
+* **config:** infer credential names by whole words ([#191](https://github.com/ashtonian/pkg/issues/191)): a field or map key whose name only contains a credential word's letters (Keyspace, Author, Tokenizer, AuthenticationMode) is no longer inferred sensitive, so its value appears in redacted output and its default in usage, templates, JSON Schema and flag help. Tag such a field sensitive:"true" to keep it redacted. Names now inferred that were not before: those with the words pass, passwd, pwd, passphrase or cred.
+* **config:** trim the elements of lists split from a string ([#191](https://github.com/ashtonian/pkg/issues/191)): elements of a list set from a string, and entries of a map set from a key=value string, are trimmed of surrounding white space, and empty ones are dropped: "a, ,b" sets [a b], not [a " " b]. Write a list in a config file as a list to keep such elements.
+* **config:** add caller columns to usage tables, and Reload only when it informs ([#191](https://github.com/ashtonian/pkg/issues/191)): PrintUsage's table and Markdown leave out the Reload column when every key's reload class is restart. A program parsing those formats should read the header, or use Usage or the JSON format, whose reload field is unchanged.
 
 ### Features
 
-* **config:** add caller columns to usage tables, and Reload only when it informs ([1ccd869](https://github.com/ashtonian/pkg/commit/1ccd869759a678532ef8e27fa7a107ce40067cef))
-* **config:** trim the elements of lists split from a string ([30d05dc](https://github.com/ashtonian/pkg/commit/30d05dc4e7987b86048b70e27489c9a4505c255c))
-* **config:** whole-word credential names, trimmed lists, keyed rule params, usage columns ([#191](https://github.com/ashtonian/pkg/issues/191)) ([91c38ce](https://github.com/ashtonian/pkg/commit/91c38ce04a0880224beb283091235185f833a616))
+* **config:** add caller columns to usage tables, and Reload only when it informs ([#191](https://github.com/ashtonian/pkg/issues/191)) ([1ccd869](https://github.com/ashtonian/pkg/commit/1ccd869759a678532ef8e27fa7a107ce40067cef))
+* **config:** trim the elements of lists split from a string ([#191](https://github.com/ashtonian/pkg/issues/191)) ([30d05dc](https://github.com/ashtonian/pkg/commit/30d05dc4e7987b86048b70e27489c9a4505c255c))
 
 
 ### Bug Fixes
 
-* **config:** infer credential names by whole words ([7604891](https://github.com/ashtonian/pkg/commit/760489185aaf2d6cf52ef40390a203be906e9165))
-* **config:** name cross-field rule params by key in validation errors ([a6db6d8](https://github.com/ashtonian/pkg/commit/a6db6d8a76969a14912f2c093f3b69c8a345570c))
-* **config:** write the URL userinfo marker unescaped ([35b7ef4](https://github.com/ashtonian/pkg/commit/35b7ef4ba4f01699af6052dc1a05e845237ac5b6))
+* **config:** infer credential names by whole words ([#191](https://github.com/ashtonian/pkg/issues/191)) ([7604891](https://github.com/ashtonian/pkg/commit/760489185aaf2d6cf52ef40390a203be906e9165))
+* **config:** name cross-field rule params by key in validation errors ([#191](https://github.com/ashtonian/pkg/issues/191)) ([a6db6d8](https://github.com/ashtonian/pkg/commit/a6db6d8a76969a14912f2c093f3b69c8a345570c))
+* **config:** write the URL userinfo marker unescaped ([#191](https://github.com/ashtonian/pkg/issues/191)) ([35b7ef4](https://github.com/ashtonian/pkg/commit/35b7ef4ba4f01699af6052dc1a05e845237ac5b6))
 
 ## [0.10.0](https://github.com/ashtonian/pkg/compare/config/v0.9.0...config/v0.10.0) (2026-11-13)
 
