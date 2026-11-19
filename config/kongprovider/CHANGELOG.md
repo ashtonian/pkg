@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.6.0](https://github.com/ashtonian/pkg/compare/config/kongprovider/v0.5.0...config/kongprovider/v0.6.0) (2026-11-19)
+
+
+### Features
+
+* **kongprovider:** add each key's flag to config usage tables ([#193](https://github.com/ashtonian/pkg/issues/193)) ([31469d5](https://github.com/ashtonian/pkg/commit/31469d5dc669d08338e1389b7083c4bf1a348cdd))
+
+
+### Bug Fixes
+
+* **kongprovider:** keep list flag elements as config keeps a split list ([#193](https://github.com/ashtonian/pkg/issues/193)) ([9022990](https://github.com/ashtonian/pkg/commit/9022990d7af1782ee4c69d7b895747722c1e3dab))
+
 ## [0.5.0](https://github.com/ashtonian/pkg/compare/config/kongprovider/v0.4.0...config/kongprovider/v0.5.0) (2026-11-13)
 
 
