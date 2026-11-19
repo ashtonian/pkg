@@ -58,8 +58,9 @@ an enclosing sensitive tag or a `secret` tag.
 All redacted renderers also apply `RedactText` to text and byte values. It
 removes recognizable URL credentials, PEM blocks, credential key/value pairs,
 Basic/Bearer credentials and JWTs while keeping non-secret context. A URL
-with a password keeps its username, host and path; userinfo with no password
-is withheld because it may itself be a token. `RedactText` exposes the same
+with a password keeps its username, host and path
+(`postgres://alice:[REDACTED]@db.internal/app`); userinfo with no password
+is withheld because it may itself be a token (`https://[REDACTED]@api.internal/`). `RedactText` exposes the same
 policy for environment listings or logs. Shape matching is not a complete
 secret detector; retain explicit sensitivity declarations. Raw `Tree` and
 `TreeFunc` do not apply it.
