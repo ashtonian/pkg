@@ -104,8 +104,9 @@
 //	Validate method)
 //
 // Decoding adds string → time.Duration, comma-separated string → slice (a
-// field's sep tag names another separator, or none), key=value entries → map
-// and encoding.TextUnmarshaler to mapstructure's weak typing; [WithDecodeHook]
+// field's sep tag names another separator, or none; elements are trimmed and
+// empty ones dropped, see [ListElements]), key=value entries → map and
+// encoding.TextUnmarshaler to mapstructure's weak typing; [WithDecodeHook]
 // hooks precede the built-in hooks, and a sep field is split before any hook.
 // A key no field decodes fails the load — a misspelled key cannot leave a
 // service on the default it meant to override — unless a [WithUnknownKeys]
