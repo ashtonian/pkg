@@ -134,7 +134,7 @@ Do this work in a hook rather than after `Load` returns: inside the pipeline, a 
 
 ## Validation
 
-`validate` tags run on every load, and failures name config keys: `db.max_conns(min=1), port(max=65535)`. `errors.As` reaches the `validator.ValidationErrors`. Rules no tag can express go in a `Validate() error` method on the config, which runs after the tags, on the config the hooks produced:
+`validate` tags run on every load, and failures name config keys: `db.max_conns(min=1), port(max=65535)`. A cross-field rule's param names the fields it compares by key too — `max_wait(gtefield=min_wait)`, `store.bucket(required_if=store.type s3)`, `store.owner(required_with=store.bucket store.region)` — for the `*field` and `*csfield` comparisons, `fieldcontains`, `fieldexcludes` and the `required_*`, `excluded_*` and `skip_unless` families; a rule comparing against a sensitive field's value shows no param. `errors.As` reaches the `validator.ValidationErrors`. Rules no tag can express go in a `Validate() error` method on the config, which runs after the tags, on the config the hooks produced:
 
 ```go
 func (c *AppConfig) Validate() error {
