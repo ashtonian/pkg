@@ -811,34 +811,6 @@ func TestRedactedMap(t *testing.T) {
 	}
 }
 
-// --- Sensitive Auto-Detection Tests ---
-
-func TestSensitiveAutoDetection(t *testing.T) {
-	tests := []struct {
-		name     string
-		field    string
-		expected bool
-	}{
-		{"password field", "Password", true},
-		{"api key field", "APIKey", true},
-		{"token field", "AccessToken", true},
-		{"secret field", "ClientSecret", true},
-		{"normal field", "Host", false},
-		{"normal field 2", "Port", false},
-		{"credential field", "Credential", true},
-		{"auth field", "AuthHeader", true},
-		{"private field", "PrivateKey", true},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got := isSensitiveName(tt.field)
-			if got != tt.expected {
-				t.Errorf("isSensitiveName(%q) = %v, want %v", tt.field, got, tt.expected)
-			}
-		})
-	}
-}
-
 // --- Custom Validator Tests ---
 
 func TestGetConfig_CustomValidator(t *testing.T) {

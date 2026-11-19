@@ -31,9 +31,12 @@ const (
 	FormatMarkdown = "markdown"
 )
 
-// sensitivePatterns are substrings that trigger auto-detection of sensitive fields.
-// This is a fixed-size array (not a slice) so it cannot be appended to or
-// reassigned — safe for concurrent reads without synchronisation.
+// sensitivePatterns are the substrings that make a key in free text a
+// credential's for [RedactText]: text is not split into words, so the
+// patterns match anywhere in a key. Field names and map keys are judged by
+// whole words instead (see credentialWords). This is a fixed-size array (not
+// a slice) so it cannot be appended to or reassigned — safe for concurrent
+// reads without synchronisation.
 var sensitivePatterns = [...]string{
 	"password", "secret", "token", "key", "credential",
 	"auth", "private", "apikey", "api_key", "dsn",
@@ -126,8 +129,8 @@ type printEntry struct {
 // PrintRedacted writes a struct's fields, keyed by koanf path, redacting
 // sensitive values. A value is sensitive when its field, or any struct, slice
 // or map field containing it, is tagged sensitive:"true", or when it can
-// hold text and a name it sits under matches a sensitive pattern (password,
-// secret, token, key, ...):
+// hold text and a name it sits under has a credential word among its words
+// (password, secret, token, key, ...; Keyspace has none):
 // the leaf field's name, the name of any map or slice containing it, or any
 // map key above it. A struct field's name does not cover the struct it holds
 // — an Auth block's fields are judged by their own names — but a map key's
@@ -456,17 +459,6 @@ func textCapableType(t reflect.Type, seen map[reflect.Type]bool) bool {
 			if f.IsExported() && textCapableType(f.Type, seen) {
 				return true
 			}
-		}
-	}
-	return false
-}
-
-// isSensitiveName checks if a field name contains sensitive-looking substrings.
-func isSensitiveName(name string) bool {
-	lower := strings.ToLower(name)
-	for _, pattern := range sensitivePatterns {
-		if strings.Contains(lower, pattern) {
-			return true
 		}
 	}
 	return false

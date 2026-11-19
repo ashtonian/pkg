@@ -142,8 +142,9 @@ warning (see [shadowed inputs](docs/sources.md#shadowed-inputs)). Use
 `Stop(ctx)` with a shutdown deadline.
 
 Diagnostic printers, diffs and usage metadata withhold sensitive values.
-Credential-like names redact text-capable values; numeric counters, booleans
-and durations keep ordinary diagnostics. Explicit `sensitive:"true"` and
+Field names and map keys with a credential word among their words (`APIKey`,
+`db_password`; not `Keyspace`) redact text-capable values; numeric counters,
+booleans and durations keep ordinary diagnostics. Explicit `sensitive:"true"` and
 `secret` tags remain authoritative. `RedactText` also removes recognizable
 credential shapes from text and bytes while retaining non-secret context. `Tree` and `TreeFunc` expose raw values
 for export and caller-defined policies; choose the redacted functions for

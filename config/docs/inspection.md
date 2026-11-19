@@ -47,8 +47,10 @@ stored in the global metadata cache.
 `PrintRedacted(cfg)` writes a config as a table, JSON or YAML;
 `RedactedMapChecked(cfg)` returns text values keyed by path. Explicit
 `sensitive`/`secret` tags and sensitive parents protect their values.
-Credential-like names also redact text-capable types, including strings,
-bytes, maps, interfaces and text decoders. Numeric counters, booleans and
+Field names and map keys with a credential word among their words — `APIKey`,
+`db_password`, but not `Keyspace` (see
+[credential names](schema.md#defining-a-config)) — also redact text-capable
+types, including strings, bytes, maps, interfaces and text decoders. Numeric counters, booleans and
 durations do not redact from their names alone. `sensitive:"false"` exempts
 a text field such as `key_prefix` from name inference; it cannot override
 an enclosing sensitive tag or a `secret` tag.
