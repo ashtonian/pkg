@@ -47,7 +47,7 @@
 // flags only — so a Validate method on the config is called on that copy
 // before any file or variable is read. For a CLI struct that does not hold
 // the config struct, [WithOverrides] takes an explicit flag name → key
-// mapping.
+// mapping. [UsageFlags] adds each key's flag to config.PrintUsage's tables.
 package kongprovider
 
 import (

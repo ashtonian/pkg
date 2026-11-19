@@ -34,3 +34,29 @@ func TestREADMEProgramsAreTheCompiledExamples(t *testing.T) {
 		})
 	}
 }
+
+// The README's usage table is ExampleUsageFlags's checked output.
+func TestREADMEUsageTableIsTheExampleOutput(t *testing.T) {
+	readme, err := os.ReadFile("README.md")
+	require.NoError(t, err)
+	examples, err := os.ReadFile("example_test.go")
+	require.NoError(t, err)
+
+	_, example, ok := strings.Cut(string(examples), "func ExampleUsageFlags() {")
+	require.True(t, ok, "example_test.go has no ExampleUsageFlags")
+	_, output, ok := strings.Cut(example, "\t// Output:\n")
+	require.True(t, ok, "ExampleUsageFlags has no output")
+	output, _, _ = strings.Cut(output, "\n}")
+	var want []string
+	for line := range strings.Lines(output) {
+		want = append(want, strings.TrimPrefix(strings.TrimRight(line, "\n"), "\t// "))
+	}
+
+	_, section, ok := strings.Cut(string(readme), "\n## Documenting the settings\n")
+	require.True(t, ok, "README has no usage section")
+	_, rest, ok := strings.Cut(section, "```txt\n")
+	require.True(t, ok, "the usage section has no txt block")
+	block, _, ok := strings.Cut(rest, "\n```\n")
+	require.True(t, ok, "unterminated txt block")
+	assert.Equal(t, strings.Join(want, "\n"), block)
+}

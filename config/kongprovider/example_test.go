@@ -98,3 +98,30 @@ func ExampleWithOverridesFromStruct() {
 	// Kong's view: port=8080
 	// HTTP listen port (config: port; env: APP_PORT)
 }
+
+// ExampleUsageFlags documents every setting with its variable and the flag
+// that sets it.
+func ExampleUsageFlags() {
+	var cli struct {
+		Serve ServeCmd `cmd:""`
+	}
+	parser, err := kong.New(&cli)
+	if err != nil {
+		fmt.Println(err)
+		return
+	}
+	flags, err := kongprovider.UsageFlags(parser, &cli.Serve.AppConfig)
+	if err != nil {
+		fmt.Println(err)
+		return
+	}
+	if err := config.PrintUsage[AppConfig]("APP", config.WithFormat(config.FormatMarkdown), flags); err != nil {
+		fmt.Println(err)
+	}
+
+	// Output:
+	// | Key | Environment | Flag | Type | Default | Bounds | Description |
+	// | --- | --- | --- | --- | --- | --- | --- |
+	// | port | APP_PORT | -p, --port | int | 8080 | value &gt;= 1, value &lt;= 65535 | HTTP listen port |
+	// | metrics | APP_METRICS | --[no-]metrics | bool | true |  | Serve /metrics |
+}
