@@ -204,7 +204,7 @@ db:
   # password:
 ```
 
-`RedactedTreeChecked(cfg)` returns `(map[string]any, error)`, giving a loaded config as nested maps for any koanf parser to marshal — YAML, JSON, TOML, dotenv — and `PrintEnv(cfg, "APP")` as the `export` lines that would load it, using each list field's `sep` (commas by default). Lists that cannot round-trip, including one empty string or multiple elements with `sep:"none"`, are commented out; secrets are never exported. With `WithFallbackEnvPrefixes`, variables are written under the first prefix and a name another key reads under any of the prefixes is commented out.
+`RedactedTreeChecked(cfg)` returns `(map[string]any, error)`, giving a loaded config as nested maps for any koanf parser to marshal — YAML, JSON, TOML, dotenv — and `PrintEnv(cfg, "APP")` as the `export` lines that would load it, using each list field's `sep` (commas by default). Lists that cannot round-trip, including one empty string, an empty element or one with surrounding white space (splitting would drop or trim it), or multiple elements with `sep:"none"`, are commented out; secrets are never exported. With `WithFallbackEnvPrefixes`, variables are written under the first prefix and a name another key reads under any of the prefixes is commented out.
 
 ## JSON Schema
 
