@@ -142,10 +142,10 @@ func ExampleWithEnvPrefixes() {
 	// Output:
 	// host=db.internal max_conns=50 concurrency=16
 	//
-	// KEY           ENV                                        TYPE    DEFAULT    RELOAD   DESCRIPTION
-	// db.host       APP_WORKER_DB_HOST, APP_DB_HOST            string  localhost  restart  Database host
-	// db.max_conns  APP_WORKER_DB_MAX_CONNS, APP_DB_MAX_CONNS  int     10         restart  Pool size
-	// concurrency   APP_WORKER_CONCURRENCY, APP_CONCURRENCY    int     4          restart  Jobs run at once
+	// KEY           ENV                                        TYPE    DEFAULT    DESCRIPTION
+	// db.host       APP_WORKER_DB_HOST, APP_DB_HOST            string  localhost  Database host
+	// db.max_conns  APP_WORKER_DB_MAX_CONNS, APP_DB_MAX_CONNS  int     10         Pool size
+	// concurrency   APP_WORKER_CONCURRENCY, APP_CONCURRENCY    int     4          Jobs run at once
 }
 
 // overrides is a koanf.Provider over a fixed map — the shape kongprovider
@@ -259,11 +259,11 @@ func ExamplePrintUsage() {
 	}
 
 	// Output:
-	// KEY       ENV           TYPE           DEFAULT     RELOAD   DESCRIPTION
-	// port      APP_PORT      int            8080        restart  HTTP listen port
-	// timeout   APP_TIMEOUT   time.Duration  30s         restart  Request timeout
-	// name      APP_NAME      string         (required)  restart  Service name
-	// password  APP_PASSWORD  string         [REDACTED]  restart
+	// KEY       ENV           TYPE           DEFAULT     DESCRIPTION
+	// port      APP_PORT      int            8080        HTTP listen port
+	// timeout   APP_TIMEOUT   time.Duration  30s         Request timeout
+	// name      APP_NAME      string         (required)  Service name
+	// password  APP_PASSWORD  string         [REDACTED]
 }
 
 // ExampleNewReloader reloads a file: a valid edit is swapped in, an invalid

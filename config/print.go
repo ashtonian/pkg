@@ -51,6 +51,7 @@ type printOptions struct {
 	sortByName          bool
 	includeDescriptions bool
 	envFallbacks        []string
+	usageColumns        []usageColumn
 }
 
 func defaultPrintOptions() printOptions {
@@ -101,6 +102,21 @@ func WithFallbackEnvPrefixes(prefixes ...string) PrintOption {
 // envPrefixes is the prefix list a printer given envPrefix describes.
 func (o printOptions) envPrefixes(envPrefix string) []string {
 	return envPrefixList(append([]string{envPrefix}, o.envFallbacks...))
+}
+
+// WithUsageColumn adds a column to [PrintUsage]'s table and Markdown, after
+// the variables, or after the key when there is no prefix: title heads it,
+// upper-cased in the table as its headings are, and value gives each entry's
+// cell. Columns are added in the order of the calls. JSON and FormatEnv are
+// unaffected: [Usage] gives each entry to a program that extends them.
+//
+//	flags := func(e config.UsageEntry) string { return flagOf[e.Key] }
+//	config.PrintUsage[AppConfig]("APP", config.WithFormat(config.FormatMarkdown),
+//		config.WithUsageColumn("Flag", flags))
+func WithUsageColumn(title string, value func(UsageEntry) string) PrintOption {
+	return func(o *printOptions) {
+		o.usageColumns = append(slices.Clone(o.usageColumns), usageColumn{title, value})
+	}
 }
 
 // WithSortByName sorts output fields alphabetically by name.

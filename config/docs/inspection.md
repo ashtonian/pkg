@@ -108,15 +108,25 @@ pass its first prefix and `WithFallbackEnvPrefixes` the rest:
 `PrintUsage[T]("APP_WORKER", config.WithFallbackEnvPrefixes("APP"))` lists
 `APP_WORKER_DB_HOST, APP_DB_HOST`; the environment template exports the
 first. Markdown escapes cell content,
-including pipes and newlines. Tables include the resolved reload class:
+including pipes and newlines, and adds a Bounds column: the allowed values
+of a `oneof`, then the translated bounds, durations as durations
+(`one of debug, info; value >= 1`, `duration >= 1s`). Both tables add a
+Reload column, the resolved reload class, when some key's class is not
+`restart`; when every key restarts, the column is left out:
 
 ```txt
-KEY       ENV           TYPE           DEFAULT     RELOAD   DESCRIPTION
-port      APP_PORT      int            8080        restart  HTTP listen port
-timeout   APP_TIMEOUT   time.Duration  30s         restart  Request timeout
-name      APP_NAME      string         (required)  restart  Service name
-password  APP_PASSWORD  string         [REDACTED]  restart
+KEY       ENV           TYPE           DEFAULT     DESCRIPTION
+port      APP_PORT      int            8080        HTTP listen port
+timeout   APP_TIMEOUT   time.Duration  30s         Request timeout
+name      APP_NAME      string         (required)  Service name
+password  APP_PASSWORD  string         [REDACTED]
 ```
+
+`WithUsageColumn(title, value)` adds a column of the program's own to the
+table and Markdown, after the variables: the flag that sets each key, say,
+which [kongprovider](../kongprovider/README.md) computes from a Kong CLI.
+JSON and the environment template are unaffected; `Usage` gives a program
+each entry to extend them.
 
 ## Canonical keys
 

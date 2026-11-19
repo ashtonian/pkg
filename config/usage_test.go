@@ -27,14 +27,14 @@ type usageCfg struct {
 func TestPrintUsage_Table(t *testing.T) {
 	var buf bytes.Buffer
 	require.NoError(t, PrintUsage[usageCfg]("APP", WithWriter(&buf)))
-	want := `KEY                                ENV                                   TYPE               DEFAULT     RELOAD    DESCRIPTION
-port                               APP_PORT                              int                8080        restart   HTTP listen port
-timeout                            APP_TIMEOUT                           time.Duration      30s                restart
-name                               APP_NAME                              string             (required)         restart
-password                           APP_PASSWORD                          string             [REDACTED]         restart
-features[*].max_page_size          APP_FEATURES_<KEY>_MAX_PAGE_SIZE      int                50          restart   Largest page
-labels                             APP_LABELS                            map[string]string                 restart
-labels[*]                          APP_LABELS_<KEY>                      string                            restart
+	want := `KEY                                ENV                                   TYPE               DEFAULT     DESCRIPTION
+port                               APP_PORT                              int                8080        HTTP listen port
+timeout                            APP_TIMEOUT                           time.Duration      30s
+name                               APP_NAME                              string             (required)
+password                           APP_PASSWORD                          string             [REDACTED]
+features[*].max_page_size          APP_FEATURES_<KEY>_MAX_PAGE_SIZE      int                50          Largest page
+labels                             APP_LABELS                            map[string]string
+labels[*]                          APP_LABELS_<KEY>                      string
 `
 	assert.Equal(t, normalizeSpaces(want), normalizeSpaces(buf.String()))
 }
@@ -250,4 +250,73 @@ func TestUsage_NamesOnlyVariablesThatSetAKey(t *testing.T) {
 	assert.NotContains(t, tmpl.String(), "APP_BY_ID")
 	assert.NotContains(t, tmpl.String(), "APP_ITEMS")
 	assert.NotContains(t, tmpl.String(), "APP_FEATURES_<KEY>_LABELS_<KEY>")
+}
+
+type usageColumnsCfg struct {
+	Level   string        `koanf:"level" default:"info" validate:"oneof=debug info warn" desc:"Log level"`
+	Timeout time.Duration `koanf:"timeout" default:"5s" validate:"min=1s" desc:"Timeout"`
+	Rate    int           `koanf:"rate" default:"10" validate:"oneof=10 20,min=10" desc:"Rate"`
+}
+
+// A caller's column follows the variables, or the key without a prefix, in
+// both the table and Markdown; Markdown's Bounds cell shows allowed values,
+// then bounds, durations as durations.
+func TestPrintUsage_Columns(t *testing.T) {
+	flag := func(e UsageEntry) string { return "--" + e.Key }
+	second := func(e UsageEntry) string { return strings.ToUpper(e.Key[:1]) }
+	tests := []struct {
+		name   string
+		prefix string
+		format string
+		want   []string
+	}{
+		{"table", "APP", FormatTable, []string{
+			"KEY      ENV          FLAG       INITIAL  TYPE           DEFAULT  DESCRIPTION",
+			"level    APP_LEVEL    --level    L        string         info     Log level",
+		}},
+		{"table without prefix", "", FormatTable, []string{
+			"KEY      FLAG       INITIAL  TYPE           DEFAULT  DESCRIPTION",
+		}},
+		{"markdown", "APP", FormatMarkdown, []string{
+			"| Key | Environment | Flag | Initial | Type | Default | Bounds | Description |",
+			"| level | APP_LEVEL | --level | L | string | info | one of debug, info, warn | Log level |",
+			"| timeout | APP_TIMEOUT | --timeout | T | time.Duration | 5s | duration &gt;= 1s | Timeout |",
+			"| rate | APP_RATE | --rate | R | int | 10 | one of 10, 20; value &gt;= 10 | Rate |",
+		}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var buf bytes.Buffer
+			require.NoError(t, PrintUsage[usageColumnsCfg](tt.prefix, WithWriter(&buf), WithFormat(tt.format),
+				WithUsageColumn("Flag", flag), WithUsageColumn("Initial", second)))
+			for _, line := range tt.want {
+				assert.Contains(t, normalizeSpaces(buf.String()), normalizeSpaces(line))
+			}
+			assert.NotContains(t, strings.ToLower(buf.String()), "reload")
+		})
+	}
+}
+
+// The Reload column appears once some key's reload class is not restart.
+func TestPrintUsage_ReloadColumnWhenItInforms(t *testing.T) {
+	type cfg struct {
+		Port int `koanf:"port" default:"80"`
+		Rate int `koanf:"rate" default:"5" reload:"live"`
+	}
+	for _, format := range []string{FormatTable, FormatMarkdown} {
+		var buf bytes.Buffer
+		require.NoError(t, PrintUsage[cfg]("APP", WithWriter(&buf), WithFormat(format)))
+		assert.Contains(t, strings.ToLower(buf.String()), "reload", format)
+		assert.Contains(t, buf.String(), "restart", format)
+		assert.Contains(t, buf.String(), "live", format)
+	}
+}
+
+// Table lines carry no trailing padding when the last cells are empty.
+func TestPrintUsage_TableHasNoTrailingSpace(t *testing.T) {
+	var buf bytes.Buffer
+	require.NoError(t, PrintUsage[usageCfg]("APP", WithWriter(&buf)))
+	for _, line := range strings.Split(buf.String(), "\n") {
+		assert.Equal(t, strings.TrimRight(line, " "), line)
+	}
 }
