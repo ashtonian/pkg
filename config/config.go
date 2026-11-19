@@ -545,11 +545,86 @@ func fieldErrorSummary(cfg reflect.Value, ve validator.ValidationErrors) string 
 			}
 		}
 		if fe.Param() != "" && showParam {
-			tag += "=" + fe.Param()
+			if param, ok := keyedParam(cfg, root, fe); ok {
+				tag += "=" + param
+			}
 		}
 		parts = append(parts, key+"("+tag+")")
 	}
 	return strings.Join(parts, ", ")
+}
+
+// Cross-field rules name other fields of the struct holding the field, by Go
+// name, in their params: each rule's field-naming params, by position.
+var (
+	fieldParamRules = map[string]bool{ // the param is one field
+		"eqfield": true, "nefield": true, "gtfield": true, "gtefield": true, "ltfield": true, "ltefield": true,
+		"eqcsfield": true, "necsfield": true, "gtcsfield": true, "gtecsfield": true, "ltcsfield": true, "ltecsfield": true,
+		"fieldcontains": true, "fieldexcludes": true,
+	}
+	fieldValueParamRules = map[string]bool{ // field value pairs
+		"required_if": true, "required_unless": true, "excluded_if": true, "excluded_unless": true, "skip_unless": true,
+	}
+	fieldListParamRules = map[string]bool{ // a list of fields
+		"required_with": true, "required_with_all": true, "required_without": true, "required_without_all": true,
+		"excluded_with": true, "excluded_with_all": true, "excluded_without": true, "excluded_without_all": true,
+	}
+	ruleParams = regexp.MustCompile(`'[^']*'|\S+`) // the validator's own split
+)
+
+// keyedParam is fe's param as a summary shows it: with every field it names
+// replaced by that field's key, so gtefield=MinWait reads gtefield=min_wait.
+// The second result is false when the param must be withheld: a rule
+// comparing against a value of a sensitive field would reveal it. A field
+// the param names that cannot be found keeps its Go name.
+func keyedParam(cfg reflect.Value, root *schemaNode, fe validator.FieldError) (string, bool) {
+	rule, param := fe.Tag(), fe.Param()
+	if !fieldParamRules[rule] && !fieldValueParamRules[rule] && !fieldListParamRules[rule] {
+		return param, true
+	}
+	parent, ok := parentNamespace(fe.StructNamespace())
+	if !ok {
+		return param, true
+	}
+	tokens := []string{param}
+	if !fieldParamRules[rule] {
+		tokens = ruleParams.FindAllString(param, -1)
+	}
+	for i, token := range tokens {
+		if fieldValueParamRules[rule] && i%2 == 1 {
+			continue // a value, not a field
+		}
+		p, exact := validatorKey(cfg, parent+"."+token)
+		if !exact || len(p) == 0 {
+			continue
+		}
+		if fieldValueParamRules[rule] && root != nil {
+			if c, n, err := root.walkTo(cursor{}, p); err != nil || c.sensitive() || mayHoldSensitive(n.typ, map[reflect.Type]bool{}) {
+				return "", false
+			}
+		}
+		tokens[i] = p.String()
+	}
+	return strings.Join(tokens, " "), true
+}
+
+// parentNamespace is the validator namespace of the struct holding the field
+// at ns, Config.DB for Config.DB.Port, or Config for Config.Hosts[1].
+func parentNamespace(ns string) (string, bool) {
+	depth := 0
+	for i := len(ns) - 1; i >= 0; i-- {
+		switch ns[i] {
+		case ']':
+			depth++
+		case '[':
+			depth--
+		case '.':
+			if depth == 0 {
+				return ns[:i], true
+			}
+		}
+	}
+	return "", false
 }
 
 // validationKey names the field a validation error is about by its key.

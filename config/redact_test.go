@@ -47,6 +47,29 @@ func TestRedactText(t *testing.T) {
 	assert.JSONEq(t, `{"password":"[REDACTED]","name":"alice"}`, RedactText(`{"password":"secret","name":"alice"}`))
 }
 
+// The marker reads as written inside a URL's userinfo, not percent-escaped,
+// and a redacted URL redacts to itself.
+func TestRedactText_URLUserinfo(t *testing.T) {
+	tests := []struct {
+		name, input, want string
+	}{
+		{"password", "https://alice:example-password@api.test/path?q=1", "https://alice:[REDACTED]@api.test/path?q=1"},
+		{"escaped username", "https://al%40ice:example-password@api.test/", "https://al%40ice:[REDACTED]@api.test/"},
+		{"token alone", "https://example-token@api.test/path", "https://[REDACTED]@api.test/path"},
+		{"unescaped password", "postgres://alice:example/password@db.test/app", "postgres://[REDACTED]@db.test/app"},
+		{"in text", "dial amqp://guest:example-password@mq.test:5672/ failed", "dial amqp://guest:[REDACTED]@mq.test:5672/ failed"},
+		{"already redacted", "https://alice:[REDACTED]@api.test/path", "https://alice:[REDACTED]@api.test/path"},
+		{"already withheld", "https://[REDACTED]@api.test/path", "https://[REDACTED]@api.test/path"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := RedactText(tt.input)
+			assert.Equal(t, tt.want, got)
+			assert.Equal(t, got, RedactText(got))
+		})
+	}
+}
+
 type shapeConfig struct {
 	Endpoint string            `koanf:"endpoint" sensitive:"false"`
 	Values   []string          `koanf:"values"`

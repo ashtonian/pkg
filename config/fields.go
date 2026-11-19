@@ -20,8 +20,9 @@ type Field struct {
 	Type reflect.Type
 	// Sensitive reports that PrintRedacted redacts the leaf's value: it, or
 	// a struct above it, is tagged sensitive:"true", or its Go field name
-	// looks like a credential (password, secret, token, key, ...) and its type
-	// can contain text, without sensitive:"false". Plain numbers, booleans and
+	// has a credential word among its words (password, secret, token, key,
+	// ...: APIKey and DBPassword do, Keyspace does not) and its type can
+	// contain text, without sensitive:"false". Plain numbers, booleans and
 	// durations are not inferred sensitive. A struct field's name does not cover the
 	// struct it holds.
 	Sensitive bool

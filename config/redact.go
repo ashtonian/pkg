@@ -33,7 +33,9 @@ var (
 
 // RedactText removes recognizable credentials from text: URL userinfo, PEM
 // blocks, credential key/value pairs, Basic/Bearer credentials and JWTs.
-// URLs keep their username, host and path when a password is present. Other
+// URLs keep their username, host and path when a password is present,
+// postgres://alice:[REDACTED]@db.internal/app; userinfo without one is
+// withheld whole, https://[REDACTED]@api.internal/. Other
 // text is retained. This is a diagnostic filter, not a secret detector: keep
 // sensitive tags on fields whose values need protection regardless of shape.
 func RedactText(text string) string {
@@ -77,18 +79,38 @@ func redactURL(text string) string {
 		if u.User == nil {
 			return text
 		}
+		// Set as a password, the marker's brackets would be percent-escaped:
+		// splice it into the rendered URL instead.
+		masked := redactedValue
 		if _, hasPassword := u.User.Password(); hasPassword {
-			u.User = url.UserPassword(u.User.Username(), redactedValue)
-		} else {
-			u.User = url.User(redactedValue)
+			masked = url.User(u.User.Username()).String() + ":" + redactedValue
 		}
+		rendered := u.String()
+		if rest, ok := strings.CutPrefix(rendered, u.Scheme+"://"+u.User.String()+"@"); ok {
+			return u.Scheme + "://" + masked + "@" + rest
+		}
+		u.User = url.User(redactedValue)
 		return u.String()
 	}
 	// An unescaped password can make URL parsing fail. Withhold the entire
-	// apparent userinfo rather than echoing it in a diagnostic.
+	// apparent userinfo rather than echoing it in a diagnostic — unless it is
+	// already redacted, which URL parsing also refuses for its brackets.
 	scheme, rest, ok := strings.Cut(text, "://")
 	if at := strings.LastIndexByte(rest, '@'); ok && at >= 0 {
+		if redactedUserinfo(rest[:at]) {
+			return text
+		}
 		return scheme + "://" + redactedValue + "@" + rest[at+1:]
 	}
 	return text
+}
+
+// redactedUserinfo reports userinfo redactURL wrote: the marker alone, or an
+// escaped username and the marker as its password.
+func redactedUserinfo(userinfo string) bool {
+	if userinfo == redactedValue {
+		return true
+	}
+	user, password, found := strings.Cut(userinfo, ":")
+	return found && password == redactedValue && !strings.ContainsAny(user, "/?#[]@")
 }

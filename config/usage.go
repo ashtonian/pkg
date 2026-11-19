@@ -216,12 +216,15 @@ func defaultsAt(root *schemaNode, defaults declaredDefaults, path keyPath, eleme
 // as [REDACTED]; JSON omits default and sets withheld (see [Field.PrintableDefault]).
 //
 // [WithFormat] selects a table (the default), JSON (an array of objects),
-// FormatMarkdown (an escaped Markdown table), or
+// FormatMarkdown (an escaped Markdown table, with a Bounds column of the
+// allowed values and translated bounds), or
 // FormatEnv: a template of `export NAME='default'` lines under the first
 // prefix, with a key that has no default, a sensitive key and a map entry
-// written as a commented-out line; FormatEnv needs an envPrefix.
-// [WithWriter], [WithSortByName] and WithFallbackEnvPrefixes apply;
-// descriptions are always included.
+// written as a commented-out line; FormatEnv needs an envPrefix. The table
+// and Markdown have a Reload column when some key's reload class is not
+// restart; with every key restarting, the column would say nothing.
+// [WithWriter], [WithSortByName], WithFallbackEnvPrefixes and, for the table
+// and Markdown, [WithUsageColumn] apply; descriptions are always included.
 func PrintUsage[T any](envPrefix string, opts ...PrintOption) error {
 	po := defaultPrintOptions()
 	for _, opt := range opts {
@@ -238,13 +241,13 @@ func PrintUsage[T any](envPrefix string, opts ...PrintOption) error {
 	}
 	switch po.formatOr(FormatTable) {
 	case FormatTable:
-		return printUsageTable(po.writer, rows, withEnv)
+		return printUsageTable(po.writer, rows, withEnv, po.usageColumns)
 	case FormatJSON:
 		enc := json.NewEncoder(po.writer)
 		enc.SetIndent("", "  ")
 		return enc.Encode(rows)
 	case FormatMarkdown:
-		return printUsageMarkdown(po.writer, rows, withEnv)
+		return printUsageMarkdown(po.writer, rows, withEnv, po.usageColumns)
 	case FormatEnv:
 		if !withEnv {
 			return errors.New("config: usage in FormatEnv needs an environment prefix")
@@ -354,51 +357,114 @@ func usageRowOf(f Field, key string, env envNames) (usageRow, error) {
 	return row, nil
 }
 
-func printUsageTable(w io.Writer, rows []usageRow, withEnv bool) error {
-	defaultText := func(r usageRow) string {
-		text := r.Default
-		if r.Withheld {
-			text = redactedValue
+// usageColumn is one column of a usage table: its heading and each row's
+// cell.
+type usageColumn struct {
+	title string
+	value func(UsageEntry) string
+}
+
+// usageColumns are the columns of a usage table or Markdown table, in order:
+// the key, the variables when there is a prefix, the caller's columns, the
+// type, the default, Bounds in Markdown, the reload class when a row's is not
+// restart, and the description.
+func usageColumns(rows []UsageEntry, withEnv, markdown bool, extra []usageColumn) []usageColumn {
+	cols := []usageColumn{{"Key", func(r UsageEntry) string { return r.Key }}}
+	if withEnv {
+		env := usageColumn{"Env", usageEnvText}
+		if markdown {
+			env = usageColumn{"Environment", func(r UsageEntry) string { return strings.Join(r.EnvVars, ", ") }}
 		}
-		if !r.hasDefault && r.Required {
-			text = "(required)"
-		}
-		if !r.hasDefault && r.Example != "" {
-			text = strings.TrimSpace(text + " e.g. " + r.Example)
-		}
-		return text
+		cols = append(cols, env)
 	}
-	envText := func(r usageRow) string {
-		text := strings.Join(r.EnvVars, ", ")
-		if r.JSON && r.Env != "" {
-			text += " (JSON)"
+	cols = append(cols, extra...)
+	cols = append(cols, usageColumn{"Type", func(r UsageEntry) string { return r.Type }})
+	if markdown {
+		cols = append(cols,
+			usageColumn{"Default", usageMarkdownDefault},
+			usageColumn{"Bounds", usageConstraintText})
+	} else {
+		cols = append(cols, usageColumn{"Default", usageTableDefault})
+	}
+	if slices.ContainsFunc(rows, func(r UsageEntry) bool { return r.Reload != ReloadRestart }) {
+		cols = append(cols, usageColumn{"Reload", func(r UsageEntry) string { return r.Reload }})
+	}
+	return append(cols, usageColumn{"Description", func(r UsageEntry) string { return r.Description }})
+}
+
+func usageEnvText(r UsageEntry) string {
+	text := strings.Join(r.EnvVars, ", ")
+	if r.JSON && r.Env != "" {
+		text += " (JSON)"
+	}
+	return text
+}
+
+func usageTableDefault(r UsageEntry) string {
+	text := r.Default
+	if r.Withheld {
+		text = redactedValue
+	}
+	if !r.hasDefault && r.Required {
+		text = "(required)"
+	}
+	if !r.hasDefault && r.Example != "" {
+		text = strings.TrimSpace(text + " e.g. " + r.Example)
+	}
+	return text
+}
+
+func usageMarkdownDefault(r UsageEntry) string {
+	switch {
+	case r.Withheld:
+		return redactedValue
+	case !r.hasDefault && r.Required:
+		return "(required)"
+	}
+	return r.Default
+}
+
+// usageConstraintText is a row's allowed values, then its bounds.
+func usageConstraintText(r UsageEntry) string {
+	var parts []string
+	if len(r.Allowed) > 0 {
+		parts = append(parts, "one of "+strings.Join(r.Allowed, ", "))
+	}
+	if bounds := usageBoundsText(r.Bounds); bounds != "" {
+		parts = append(parts, bounds)
+	}
+	return strings.Join(parts, "; ")
+}
+
+// printUsageTable writes rows as space-aligned columns under upper-case
+// headings, the last column unpadded.
+func printUsageTable(w io.Writer, rows []usageRow, withEnv bool, extra []usageColumn) error {
+	cols := usageColumns(rows, withEnv, false, extra)
+	cells := make([][]string, len(rows)+1)
+	widths := make([]int, len(cols))
+	for i, c := range cols {
+		heading := strings.ToUpper(c.title)
+		cells[0] = append(cells[0], heading)
+		widths[i] = len(heading)
+	}
+	for r, row := range rows {
+		for i, c := range cols {
+			text := c.value(row)
+			cells[r+1] = append(cells[r+1], text)
+			widths[i] = max(widths[i], len(text))
 		}
-		return text
-	}
-	reloadW := len("RELOAD")
-	for _, r := range rows {
-		reloadW = max(reloadW, len(r.Reload))
-	}
-	keyW, envW, typeW, defW := len("KEY"), len("ENV"), len("TYPE"), len("DEFAULT")
-	for _, r := range rows {
-		keyW = max(keyW, len(r.Key))
-		envW = max(envW, len(envText(r)))
-		typeW = max(typeW, len(r.Type))
-		defW = max(defW, len(defaultText(r)))
 	}
 	ew := &errWriter{w: w}
-	if withEnv {
-		row := fmt.Sprintf("%%-%ds  %%-%ds  %%-%ds  %%-%ds  %%-%ds  %%s\n", keyW, envW, typeW, defW, reloadW)
-		ew.printf(row, "KEY", "ENV", "TYPE", "DEFAULT", "RELOAD", "DESCRIPTION")
-		for _, r := range rows {
-			ew.printf(row, r.Key, envText(r), r.Type, defaultText(r), r.Reload, r.Description)
+	for _, line := range cells {
+		var b strings.Builder
+		for i, text := range line {
+			if i == len(line)-1 {
+				b.WriteString(text)
+				break
+			}
+			fmt.Fprintf(&b, "%-*s  ", widths[i], text)
 		}
-		return ew.err
-	}
-	row := fmt.Sprintf("%%-%ds  %%-%ds  %%-%ds  %%-%ds  %%s\n", keyW, typeW, defW, reloadW)
-	ew.printf(row, "KEY", "TYPE", "DEFAULT", "RELOAD", "DESCRIPTION")
-	for _, r := range rows {
-		ew.printf(row, r.Key, r.Type, defaultText(r), r.Reload, r.Description)
+		ew.printf("%s\n", strings.TrimRight(b.String(), " "))
 	}
 	return ew.err
 }
@@ -437,27 +503,19 @@ func printUsageEnv(w io.Writer, rows []usageRow) error {
 	return ew.err
 }
 
-func printUsageMarkdown(w io.Writer, rows []UsageEntry, withEnv bool) error {
+func printUsageMarkdown(w io.Writer, rows []UsageEntry, withEnv bool, extra []usageColumn) error {
+	cols := usageColumns(rows, withEnv, true, extra)
 	ew := &errWriter{w: w}
-	if withEnv {
-		ew.printf("| Key | Environment | Type | Default | Bounds | Reload | Description |\n| --- | --- | --- | --- | --- | --- | --- |\n")
-	} else {
-		ew.printf("| Key | Type | Default | Bounds | Reload | Description |\n| --- | --- | --- | --- | --- | --- |\n")
+	titles := make([]string, len(cols))
+	rules := make([]string, len(cols))
+	for i, c := range cols {
+		titles[i], rules[i] = markdownCell(c.title), "---"
 	}
+	ew.printf("| %s |\n| %s |\n", strings.Join(titles, " | "), strings.Join(rules, " | "))
 	for _, r := range rows {
-		def := r.Default
-		if r.Withheld {
-			def = redactedValue
-		} else if !r.hasDefault && r.Required {
-			def = "(required)"
-		}
-		cells := []string{r.Key}
-		if withEnv {
-			cells = append(cells, strings.Join(r.EnvVars, ", "))
-		}
-		cells = append(cells, r.Type, def, usageBoundsText(r.Bounds), r.Reload, r.Description)
-		for i := range cells {
-			cells[i] = markdownCell(cells[i])
+		cells := make([]string, len(cols))
+		for i, c := range cols {
+			cells[i] = markdownCell(c.value(r))
 		}
 		ew.printf("| %s |\n", strings.Join(cells, " | "))
 	}

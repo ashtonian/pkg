@@ -47,8 +47,10 @@ stored in the global metadata cache.
 `PrintRedacted(cfg)` writes a config as a table, JSON or YAML;
 `RedactedMapChecked(cfg)` returns text values keyed by path. Explicit
 `sensitive`/`secret` tags and sensitive parents protect their values.
-Credential-like names also redact text-capable types, including strings,
-bytes, maps, interfaces and text decoders. Numeric counters, booleans and
+Field names and map keys with a credential word among their words — `APIKey`,
+`db_password`, but not `Keyspace` (see
+[credential names](schema.md#defining-a-config)) — also redact text-capable
+types, including strings, bytes, maps, interfaces and text decoders. Numeric counters, booleans and
 durations do not redact from their names alone. `sensitive:"false"` exempts
 a text field such as `key_prefix` from name inference; it cannot override
 an enclosing sensitive tag or a `secret` tag.
@@ -56,8 +58,9 @@ an enclosing sensitive tag or a `secret` tag.
 All redacted renderers also apply `RedactText` to text and byte values. It
 removes recognizable URL credentials, PEM blocks, credential key/value pairs,
 Basic/Bearer credentials and JWTs while keeping non-secret context. A URL
-with a password keeps its username, host and path; userinfo with no password
-is withheld because it may itself be a token. `RedactText` exposes the same
+with a password keeps its username, host and path
+(`postgres://alice:[REDACTED]@db.internal/app`); userinfo with no password
+is withheld because it may itself be a token (`https://[REDACTED]@api.internal/`). `RedactText` exposes the same
 policy for environment listings or logs. Shape matching is not a complete
 secret detector; retain explicit sensitivity declarations. Raw `Tree` and
 `TreeFunc` do not apply it.
@@ -105,15 +108,25 @@ pass its first prefix and `WithFallbackEnvPrefixes` the rest:
 `PrintUsage[T]("APP_WORKER", config.WithFallbackEnvPrefixes("APP"))` lists
 `APP_WORKER_DB_HOST, APP_DB_HOST`; the environment template exports the
 first. Markdown escapes cell content,
-including pipes and newlines. Tables include the resolved reload class:
+including pipes and newlines, and adds a Bounds column: the allowed values
+of a `oneof`, then the translated bounds, durations as durations
+(`one of debug, info; value >= 1`, `duration >= 1s`). Both tables add a
+Reload column, the resolved reload class, when some key's class is not
+`restart`; when every key restarts, the column is left out:
 
 ```txt
-KEY       ENV           TYPE           DEFAULT     RELOAD   DESCRIPTION
-port      APP_PORT      int            8080        restart  HTTP listen port
-timeout   APP_TIMEOUT   time.Duration  30s         restart  Request timeout
-name      APP_NAME      string         (required)  restart  Service name
-password  APP_PASSWORD  string         [REDACTED]  restart
+KEY       ENV           TYPE           DEFAULT     DESCRIPTION
+port      APP_PORT      int            8080        HTTP listen port
+timeout   APP_TIMEOUT   time.Duration  30s         Request timeout
+name      APP_NAME      string         (required)  Service name
+password  APP_PASSWORD  string         [REDACTED]
 ```
+
+`WithUsageColumn(title, value)` adds a column of the program's own to the
+table and Markdown, after the variables: the flag that sets each key, say,
+which [kongprovider](../kongprovider/README.md) computes from a Kong CLI.
+JSON and the environment template are unaffected; `Usage` gives a program
+each entry to extend them.
 
 ## Canonical keys
 
@@ -191,7 +204,7 @@ db:
   # password:
 ```
 
-`RedactedTreeChecked(cfg)` returns `(map[string]any, error)`, giving a loaded config as nested maps for any koanf parser to marshal — YAML, JSON, TOML, dotenv — and `PrintEnv(cfg, "APP")` as the `export` lines that would load it, using each list field's `sep` (commas by default). Lists that cannot round-trip, including one empty string or multiple elements with `sep:"none"`, are commented out; secrets are never exported. With `WithFallbackEnvPrefixes`, variables are written under the first prefix and a name another key reads under any of the prefixes is commented out.
+`RedactedTreeChecked(cfg)` returns `(map[string]any, error)`, giving a loaded config as nested maps for any koanf parser to marshal — YAML, JSON, TOML, dotenv — and `PrintEnv(cfg, "APP")` as the `export` lines that would load it, using each list field's `sep` (commas by default). Lists that cannot round-trip, including one empty string, an empty element or one with surrounding white space (splitting would drop or trim it), or multiple elements with `sep:"none"`, are commented out; secrets are never exported. With `WithFallbackEnvPrefixes`, variables are written under the first prefix and a name another key reads under any of the prefixes is commented out.
 
 ## JSON Schema
 

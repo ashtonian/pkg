@@ -144,4 +144,4 @@ Reload options:
 | `WithProvenance()` | off | Record each value's origin on every load. |
 | `WithReloadLogger(l)` | the load's logger | Logger for reload events. |
 
-Print options: `WithFormat` (table, JSON, YAML, Markdown, env — per printer; Markdown is supported by `PrintUsage`), `WithWriter` (default `os.Stdout`), `WithSortByName`, `WithIncludeDescriptions`, `WithFallbackEnvPrefixes(prefixes...)` (default none: the broader prefixes of a `WithEnvPrefixes` load, read beneath the one `PrintUsage`, `PrintTemplate` and `PrintEnv` are given).
+Print options: `WithFormat` (table, JSON, YAML, Markdown, env — per printer; Markdown is supported by `PrintUsage`), `WithWriter` (default `os.Stdout`), `WithSortByName`, `WithIncludeDescriptions`, `WithFallbackEnvPrefixes(prefixes...)` (default none: the broader prefixes of a `WithEnvPrefixes` load, read beneath the one `PrintUsage`, `PrintTemplate` and `PrintEnv` are given), `WithUsageColumn(title, value)` (default none: a column of `PrintUsage`'s table and Markdown after the variables, each cell `value(entry)`; repeated calls add columns in order).

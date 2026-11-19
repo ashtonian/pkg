@@ -104,7 +104,10 @@ func (e *envWriter) value(p keyPath, s *schemaNode, n *outNode) {
 		items := make([]string, len(n.items))
 		for i, item := range n.items {
 			items[i] = scalarText(item.scalar)
-			if sep != "none" && strings.Contains(items[i], sep) || len(n.items) == 1 && items[i] == "" || sep == "none" && len(n.items) > 1 {
+			// Splitting trims elements and drops empty ones (ListElements), so
+			// such an element would not survive the variable.
+			if sep != "none" && (strings.Contains(items[i], sep) || strings.TrimSpace(items[i]) != items[i] || items[i] == "") ||
+				len(n.items) == 1 && items[i] == "" || sep == "none" && len(n.items) > 1 {
 				e.ew.printf("# %s: its list cannot be represented by a variable; set it in a config file\n", p)
 				return
 			}
