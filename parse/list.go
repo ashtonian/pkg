@@ -293,8 +293,8 @@ type ListPlan struct {
 	dialect filter.Dialect
 	// fields is the filter schema the plan compiled, its includes' targets
 	// compiled for dialect.
-	fields  *filter.ResourceSchema
-	table   string
+	fields *filter.ResourceSchema
+	table  string
 	// tenant is Scope.Tenant in the tenant key's type; nil without one.
 	tenant  any
 	related map[string]*filter.PolicyConstraints
