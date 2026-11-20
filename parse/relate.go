@@ -20,6 +20,7 @@ type RelatedResource interface {
 	DeletedColumnName() string
 	FilterSchema() *filter.ResourceSchema
 	columnType(name string) (reflect.Type, bool)
+	computed(column string) bool
 }
 
 func (r *Resource[T]) columnType(name string) (reflect.Type, bool) {
@@ -148,6 +149,14 @@ func (r *Resource[T]) Relate(name string, rel Relation) error {
 	rs, err := r.relationSchema(name, rel)
 	if err != nil {
 		return err
+	}
+	// A relation correlates on stored columns: a computed one (ReadExpr) is
+	// no column the related rows' subquery can compare with.
+	if r.computed(rs.PrimaryKey) {
+		return fmt.Errorf("parse: %s: relation %q correlates on computed column %q", r.table, name, rs.PrimaryKey)
+	}
+	if rel.kind != core.ManyToMany && rel.target.computed(rs.SourceColumn) {
+		return fmt.Errorf("parse: %s: relation %q correlates on %s's computed column %q", r.table, name, rel.target.Table(), rs.SourceColumn)
 	}
 	if rel.includable && rel.kind == core.BelongsTo {
 		return fmt.Errorf("parse: %s: relation %q: a belongs-to's key is the owner's foreign key; it is not included", r.table, name)

@@ -120,6 +120,7 @@ Construct parsers once, customize schemas before serving, and treat them as read
 | `parse.PageSize(def, max)` | `ResourceOption` | 50, 1000 | Page size without `page_size`, and its ceiling (larger requests are clamped) |
 | `parse.AcceptParams(names...)` | `ResourceOption` | none | Query parameters the endpoint reads itself; any other unknown parameter is E2071 |
 | `parse.ReadColumns(columns...)` | `ResourceOption` | every column of T | The columns lists select and updates return; sensitive columns stay in the database. Must include the key and every sort key's column |
+| `parse.ReadExpr(column, sql)` | `ResourceOption` | none | Reads a column through a trusted SQL expression, such as a correlated count, a pair table's keys as an array, or `coalesce` over a nullable column. Lists, updates' `RETURNING` and `parsepgx` select it as `(sql) AS column`, and its filter, sort, facet and search tags compile against the same expression. It can't be the key, tenant or deleted column, be patched, or hold document paths |
 | `parse.ColumnType(column, t)` | `ResourceOption` | none | Physical storage profile, including `core.SQLJSON` / `SQLJSONB`, native arrays and PostgreSQL inet/cidr/interval text projection; [storage declarations](docs/schema-configuration.md#fields-and-embedding) |
 | `parse.ParserOptions(opts...)` | `ResourceOption` | bounded parser defaults | Limits, codec, clock and schema generation; [complete table](docs/schema-configuration.md#parser-and-generator-options) |
 | `parse.WithPatchPolicy(pc, subject)` | `parse.PatchOption` | none | Request-specific path/value restrictions |
@@ -153,6 +154,7 @@ Tags expose capabilities explicitly: `parse:"filter,sort,patch,facet,search,incl
 | [`resource.go`](resource.go) | `NewResource[T]`, `MustResource`, resource options, identity, system fields, projection (`Columns`, `ColumnNames`), `ParseFilterWithCost`, `Key`, `WithPaths` (a request's view with declared JSON paths) |
 | [`list.go`](list.go) | `ListInput`, `ParseListInput`, `ListRequest`, `ParseList`, `Scope`, `ListPlan` (`Dialect`), `BuildList`, `Page`, `PagePointers`, `IncludeQueries` |
 | [`relate.go`](relate.go) | `Relate`, `MustRelate`, `HasMany`, `BelongsTo`, `ManyToMany`, `Junction` / `Through`, `Indexed`, `Includable`, `Facetable`, `Writable`, `PolicyScoped`, `References`, `RelatedResource` |
+| [`read_expr.go`](read_expr.go) | `ReadExpr`: computed columns, read and compiled through their expressions |
 | [`update.go`](update.go) | `Target` (`ByID`, `ByIDs`, `ByFilter`), `BuildUpdate`, `UpdatePlan` (`Dialect`, `Current`), `RelationStatements`, `Stamp`, `StampSQL`, `Increment`, `SkipUnchanged`, `Unchanged`, `Dialect` |
 | [`update_batch.go`](update_batch.go) | `RowUpdate`, `UpdateBatchLimits`, `BuildUpdateBatch`, `UpdateBatchPlan`, `UpdateBatchChunk.CheckCurrent`, `ErrUpdateBatchTargets`: bounded varied column updates with exact preimage checks |
 | [`typed.go`](typed.go) | `Resource` parse entry points (`MergePatchMap`, `ValidateOperations` and server variants), schema access, typed patch application |

@@ -36,6 +36,9 @@ type Resource[T any] struct {
 	sqlTypes     map[string]core.SQLType
 	tableColumns map[string]reflect.Type
 	columnFields map[string]*core.Field
+	// readExprs are the computed columns' parenthesized expressions
+	// (ReadExpr), by column.
+	readExprs map[string]string
 }
 
 // ResourceOption configures NewResource.
@@ -48,6 +51,7 @@ type resourceConfig struct {
 	accepted            []string
 	read                []string
 	sqlTypes            []columnType
+	readExprs           []columnExpr
 }
 
 type columnType struct {
@@ -166,6 +170,12 @@ func NewResource[T any](table string, opts ...ResourceOption) (*Resource[T], err
 	}
 	read, err := readColumns(table, cfg, columns)
 	if err != nil {
+		return nil, err
+	}
+	if r.readExprs, err = readExprs(table, cfg, columns, read); err != nil {
+		return nil, err
+	}
+	if err := r.computeSchemas(); err != nil {
 		return nil, err
 	}
 	for _, name := range order {
@@ -358,16 +368,22 @@ func (r *Resource[T]) ColumnSQLType(column string) (core.SQLType, bool) {
 // Columns is the projection every statement over the resource reads for
 // dialect d: a list's page, an update's RETURNING, and a repository's own
 // reads of the table. It is T's columns in field order, or the ReadColumns
-// among them, table-qualified; a column with a declared ColumnType is read
-// as d reads that type, under the column's own name, so rows scan by name.
+// among them, table-qualified; a computed column (ReadExpr) is read through
+// its expression and a column with a declared ColumnType as d reads that
+// type, each under the column's own name, so rows scan by name.
 func (r *Resource[T]) Columns(d filter.Dialect) []string {
 	out := make([]string, len(r.read))
 	for i, name := range r.read {
-		col := r.table + "." + name
+		stored := r.table + "." + name
+		col := stored
+		if expr, ok := r.readExprs[name]; ok {
+			col = expr
+		}
 		if t, ok := r.sqlTypes[name]; ok {
-			if expr := d.ReadColumn(col, t); expr != col {
-				col = expr + " AS " + name
-			}
+			col = d.ReadColumn(col, t)
+		}
+		if col != stored {
+			col += " AS " + name
 		}
 		out[i] = col
 	}

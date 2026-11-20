@@ -24,7 +24,7 @@ For lists:
 
 1. `devices.ParseList(r.URL.Query())` validates the JSON and flat filters, sort, cursor, page size, total, facets and includes.
 2. `devices.BuildList(filter.PostgresDialect{}, req, parse.Scope{Tenant: tenant})` compiles it under the server's tenant, policy and deleted-row decision.
-3. `parsepgx.QueryPage(ctx, pool, devices, plan)` sends the page, count and facet statements in one `pgx.Batch`, scans rows with `pgx.RowToStructByNameLax[T]` (the `db` tags that named the columns; fields of columns `parse.ReadColumns` leaves out stay zero), builds the page, then reads the includes for the page's keys in a second batch. The page carries `page_info.total_count`, `facets` and `_relations` as the request asked.
+3. `parsepgx.QueryPage(ctx, pool, devices, plan)` sends the page, count and facet statements in one `pgx.Batch`, scans rows with `pgx.RowToStructByNameLax[T]` (the `db` tags that named the columns; fields of columns `parse.ReadColumns` leaves out stay zero, and a `parse.ReadExpr` column scans its expression's value), builds the page, then reads the includes for the page's keys in a second batch. The page carries `page_info.total_count`, `facets` and `_relations` as the request asked.
 
 Each statement sees its own snapshot on a pool; pass a REPEATABLE READ `pgx.Tx` when the total, facets and includes must describe exactly the page's rows. Give the request context a deadline.
 
