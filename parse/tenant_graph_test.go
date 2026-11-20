@@ -300,6 +300,28 @@ func TestTenantKey_PairTablesBindTheResourceKey(t *testing.T) {
 	})
 }
 
+func TestBuildUpdateBatch_RefusesAnInvalidTenantBeforeItsRows(t *testing.T) {
+	devices := tenanted[graphDevice[int32]]("devices")
+	duplicate := func() []parse.RowUpdate {
+		p, err := devices.ParseMergePatch([]byte(`{"name":"renamed"}`))
+		require.NoError(t, err)
+		return []parse.RowUpdate{{Key: 1, Patch: p}, {Key: 1, Patch: p}}
+	}
+	tests := []struct {
+		name string
+		rows []parse.RowUpdate
+	}{
+		{"no rows", nil},
+		{"rows the batch would refuse", duplicate()},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := devices.BuildUpdateBatch(filter.PostgresDialect{}, tt.rows, parse.Scope{Tenant: "t-44"}, parse.UpdateBatchLimits{})
+			assert.ErrorIs(t, err, parse.ErrTenantInvalid)
+		})
+	}
+}
+
 func TestTenantKey_ErrorsNameEachPartOnce(t *testing.T) {
 	type floatTenant struct {
 		ID       int     `json:"id" db:"id"`

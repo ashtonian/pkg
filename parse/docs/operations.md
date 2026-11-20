@@ -40,7 +40,11 @@ For read/modify/write patches (`test`, `copy`, `move`, nested pointers), protect
 compiles distinct column patches for unique primary keys. Each `RowUpdate` has
 `Key`, `Patch` and an optional narrowing `Policy` for its exact revision and
 authorization predicate. The common scope's tenant, live-row and policy floors
-apply to every item. This is a server-side compiler; it grants no authority.
+apply to every item. The scope is checked before any item: a missing tenant
+(`ErrTenantRequired`) or one the resource's tenant columns cannot hold
+(`ErrTenantInvalid`) refuses the batch, empty or not, and the tenant is
+normalized once for every item. This is a server-side compiler; it grants no
+authority.
 
 The returned `UpdateBatchPlan.Chunks` contains canonical `Keys`, a `Current`
 statement and an optional `Owner` statement per chunk. In one caller-owned

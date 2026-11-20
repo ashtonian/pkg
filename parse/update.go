@@ -134,8 +134,9 @@ func (r *Resource[T]) BuildUpdate(d Dialect, p *patch.ParsedPatch, target Target
 	if target.empty() {
 		return nil, fmt.Errorf("%s: %w", r.table, ErrNoTarget)
 	}
-	if r.tenant != "" && s.Tenant == "" {
-		return nil, fmt.Errorf("%s: %w", r.table, ErrTenantRequired)
+	tenant, err := r.bindTenant(s.Tenant)
+	if err != nil {
+		return nil, err
 	}
 	if s.Governance != nil || s.IncludeDeleted {
 		return nil, fmt.Errorf("%s: %w", r.table, ErrUpdateScope)
@@ -149,11 +150,8 @@ func (r *Resource[T]) BuildUpdate(d Dialect, p *patch.ParsedPatch, target Target
 		return nil, err
 	}
 
-	tenant, err := r.bindTenant(s.Tenant)
-	if err != nil {
-		return nil, err
-	}
-	where, args, err := r.updateWhere(d, target, s, set.ParamCount)
+	scope := updateScope{tenant: tenant, policy: s.Policy, related: s.Related}
+	where, args, err := r.updateWhere(d, target, scope, set.ParamCount)
 	if err != nil {
 		return nil, err
 	}
@@ -166,7 +164,7 @@ func (r *Resource[T]) BuildUpdate(d Dialect, p *patch.ParsedPatch, target Target
 			// where's root is a group, which renders parenthesized, or one
 			// condition, so the predicate ANDs onto all of it.
 			guarded += " AND " + set.ChangePredicate
-			current, currentArgs, err := r.updateWhere(d, target, s, 0)
+			current, currentArgs, err := r.updateWhere(d, target, scope, 0)
 			if err != nil {
 				return nil, err
 			}
@@ -233,14 +231,18 @@ func (r *Resource[T]) rowKey(row T) (any, error) {
 	return v.Interface(), nil
 }
 
+// updateScope is what an update statement's WHERE binds: the scope's
+// tenant as bindTenant returned it, and its policies.
+type updateScope struct {
+	tenant  any
+	policy  *filter.PolicyConstraints
+	related map[string]*filter.PolicyConstraints
+}
+
 // updateWhere is the WHERE every update statement carries, its placeholders
 // after the SET clause's offset ones.
-func (r *Resource[T]) updateWhere(d filter.Dialect, target Target, s Scope, offset int) (string, []any, error) {
-	tenant, err := r.bindTenant(s.Tenant)
-	if err != nil {
-		return "", nil, err
-	}
-	pc := filter.BuildBaseConstraints(r.tenant, tenant, r.deleted, false)
+func (r *Resource[T]) updateWhere(d filter.Dialect, target Target, s updateScope, offset int) (string, []any, error) {
+	pc := filter.BuildBaseConstraints(r.tenant, s.tenant, r.deleted, false)
 	var userAST *filter.FilterAST
 	switch {
 	case len(target.keys) == 1:
@@ -250,16 +252,16 @@ func (r *Resource[T]) updateWhere(d filter.Dialect, target Target, s Scope, offs
 	default:
 		userAST = target.filter.AST
 	}
-	if s.Policy != nil && !s.Policy.IsEmpty() {
-		pc.And = append(pc.And, s.Policy)
+	if s.policy != nil && !s.policy.IsEmpty() {
+		pc.And = append(pc.And, s.policy)
 	}
 	ast, err := filter.ApplyPolicyConstraints(r.filterSchema, userAST, pc)
 	if err != nil {
 		return "", nil, err
 	}
-	opts := []filter.SQLBuilderOption{filter.WithStartParam(offset), filter.WithRelatedPolicies(s.Related)}
-	if tenant != nil {
-		opts = append(opts, filter.WithTenant(tenant))
+	opts := []filter.SQLBuilderOption{filter.WithStartParam(offset), filter.WithRelatedPolicies(s.related)}
+	if s.tenant != nil {
+		opts = append(opts, filter.WithTenant(s.tenant))
 	}
 	res, err := filter.NewSQLBuilder(r.filterSchema, d, opts...).Build(ast)
 	if err != nil {
