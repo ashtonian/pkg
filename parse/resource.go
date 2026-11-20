@@ -43,6 +43,11 @@ type Resource[T any] struct {
 	// access is what a request may learn of each column of T (ReadColumns,
 	// QueryOnlyColumns).
 	access map[string]columnAccess
+	// readExprs are the computed columns (ReadExpr) and their per-dialect
+	// views; nil without any.
+	readExprs *computedColumns
+	// relations are the declared relations' targets (Relate), by field.
+	relations map[string]RelatedResource
 }
 
 // ResourceOption configures NewResource.
@@ -56,6 +61,7 @@ type resourceConfig struct {
 	read                []string
 	queryOnly           []string
 	sqlTypes            []columnType
+	readExprs           []columnExpr
 }
 
 type columnType struct {
@@ -200,9 +206,19 @@ func NewResource[T any](table string, opts ...ResourceOption) (*Resource[T], err
 		accepted:     slices.Clone(cfg.accepted),
 		tableColumns: columns,
 		columnFields: fieldsByColumn,
+		relations:    map[string]RelatedResource{},
 	}
 	read, err := readColumns(table, cfg, columns)
 	if err != nil {
+		return nil, err
+	}
+	if r.readExprs, err = newComputedColumns(table, cfg, columns, read); err != nil {
+		return nil, err
+	}
+	if err := r.readExprs.checkDocuments(p.filterSchema, p.sortSchema); err != nil {
+		return nil, err
+	}
+	if err := r.checkComputedPatches(); err != nil {
 		return nil, err
 	}
 	for _, name := range order {
@@ -241,6 +257,9 @@ func NewResource[T any](table string, opts ...ResourceOption) (*Resource[T], err
 		if f.Relation != nil && f.RelatedBy == nil {
 			if _, ok := columns[f.Relation.PrimaryKey]; !ok {
 				return nil, fmt.Errorf("parse: %s: relation %q correlates on %q, which is not a column of %s", table, f.ExternalName, f.Relation.PrimaryKey, reflect.TypeFor[T]())
+			}
+			if r.computed(f.Relation.PrimaryKey) {
+				return nil, computedCorrelation(table, f.ExternalName, f.Relation.PrimaryKey)
 			}
 			f.RelatedBy = r.correlationField(f.Relation.PrimaryKey)
 		}
@@ -532,16 +551,32 @@ func (r *Resource[T]) ColumnSQLType(column string) (core.SQLType, bool) {
 // Columns is the projection every statement over the resource reads for
 // dialect d: a list's page, an update's RETURNING, and a repository's own
 // reads of the table. It is T's columns in field order, or the ReadColumns
-// among them, table-qualified; a column with a declared ColumnType is read
-// as d reads that type, under the column's own name, so rows scan by name.
-func (r *Resource[T]) Columns(d filter.Dialect) []string {
+// among them, table-qualified; a computed column (ReadExpr) is read through
+// d's expression and a column with a declared ColumnType as d reads that
+// type, each under the column's own name, so rows scan by name. A dialect a
+// computed column's expression refuses is an error.
+func (r *Resource[T]) Columns(d filter.Dialect) ([]string, error) {
+	v, err := r.dialectView(d)
+	if err != nil {
+		return nil, err
+	}
+	return r.columns(d, v), nil
+}
+
+// columns is Columns for v, r's schemas already compiled for d.
+func (r *Resource[T]) columns(d filter.Dialect, v *dialectView) []string {
 	out := make([]string, len(r.read))
 	for i, name := range r.read {
-		col := r.table + "." + name
+		stored := r.table + "." + name
+		col := stored
+		if expr, ok := v.exprs[name]; ok {
+			col = expr
+		}
 		if t, ok := r.sqlTypes[name]; ok {
-			if expr := d.ReadColumn(col, t); expr != col {
-				col = expr + " AS " + name
-			}
+			col = d.ReadColumn(col, t)
+		}
+		if col != stored {
+			col += " AS " + name
 		}
 		out[i] = col
 	}
@@ -639,7 +674,8 @@ func resourceColumns(gen *core.SchemaGenerator, t reflect.Type) ([]string, map[s
 
 // WithPaths returns a view of r for one request with decls declared as JSON
 // paths — filterable, and sortable or facetable as each declares — leaving r and its other requests unchanged. A tenant's custom fields
-// are declared this way; the view parses, lists and updates like r.
+// are declared this way; the view parses, lists and updates like r. A path
+// into a computed column (ReadExpr) is refused: it reads a stored document.
 func (r *Resource[T]) WithPaths(decls ...filter.PathDecl) (*Resource[T], error) {
 	fs, err := r.filterSchema.WithPaths(decls...)
 	if err != nil {
@@ -648,6 +684,9 @@ func (r *Resource[T]) WithPaths(decls ...filter.PathDecl) (*Resource[T], error) 
 	ss, err := r.sortSchema.WithPaths(r.filterSchema, decls...)
 	if err != nil {
 		return nil, fmt.Errorf("%s: %w", r.table, err)
+	}
+	if err := r.readExprs.checkDocuments(fs, ss); err != nil {
+		return nil, err
 	}
 	// The resource's own fields were checked when it was built.
 	added := make(map[string]*filter.FieldSchema, len(decls))
@@ -678,5 +717,6 @@ func (r *Resource[T]) WithPaths(decls ...filter.PathDecl) (*Resource[T], error) 
 	}
 	view := *r
 	view.typedParser = tp
+	view.readExprs = r.readExprs.withoutViews()
 	return &view, nil
 }

@@ -125,7 +125,10 @@ func queryIncludes[T any](ctx context.Context, db Querier, r *parse.Resource[T],
 // A plan that changes relation memberships runs in a transaction — a
 // savepoint when db is one — so its rows and memberships change together:
 // the owner statement first, then the membership changes for the keys of the
-// rows returned, never the requested ones. A SkipUnchanged plan
+// rows returned, never the requested ones, then, for a resource with
+// computed columns (parse.ReadExpr), those rows again (Resource.Reread), so
+// a column over a relation's pairs reads them as the update left them. A
+// SkipUnchanged plan
 // (plan.Current set) returns the rows its update left unchanged too, after
 // the ones it changed, and changes the memberships of both; a caller that
 // audits or notifies per changed row runs plan.Current and then plan.Owner
@@ -140,19 +143,20 @@ func Update[T any](ctx context.Context, db DB, r *parse.Resource[T], plan *parse
 		return nil, err
 	}
 	if !plan.HasRelations() {
-		rows, err := queryTargets(ctx, db, r, plan)
+		changed, unchanged, err := queryTargets(ctx, db, r, plan)
 		if err != nil {
 			return nil, fmt.Errorf("parsepgx: %s: %w", r.Table(), err)
 		}
-		return rows, nil
+		return append(changed, unchanged...), nil
 	}
 
 	var rows []T
 	err := pgx.BeginFunc(ctx, db, func(tx pgx.Tx) error {
-		var err error
-		if rows, err = queryTargets(ctx, tx, r, plan); err != nil {
+		changed, unchanged, err := queryTargets(ctx, tx, r, plan)
+		if err != nil {
 			return err
 		}
+		rows = append(changed, unchanged...)
 		keys, err := ownerKeys(r, rows)
 		if err != nil {
 			return err
@@ -165,7 +169,32 @@ func Update[T any](ctx context.Context, db DB, r *parse.Resource[T], plan *parse
 		for _, s := range stmts {
 			b.Queue(s.SQL, s.Args...)
 		}
-		return wrap("relations", tx.SendBatch(ctx, b).Close())
+		// The changed and the unchanged rows are read again apart, so rows
+		// keeps the changed ones first.
+		var reread [2][]T
+		queued := false
+		for i, part := range [2][]any{keys[:len(changed)], keys[len(changed):]} {
+			stmt, err := r.Reread(plan, part)
+			if err != nil {
+				return err
+			}
+			if stmt == nil {
+				continue
+			}
+			queued = true
+			b.Queue(stmt.SQL, stmt.Args...).Query(func(rs pgx.Rows) error {
+				var err error
+				reread[i], err = pgx.CollectRows(rs, rowToResource(r))
+				return wrap("reread", err)
+			})
+		}
+		if err := wrap("relations", tx.SendBatch(ctx, b).Close()); err != nil {
+			return err
+		}
+		if queued {
+			rows = append(reread[0], reread[1]...)
+		}
+		return nil
 	})
 	if err != nil {
 		return nil, fmt.Errorf("parsepgx: %s: %w", r.Table(), err)
@@ -174,11 +203,12 @@ func Update[T any](ctx context.Context, db DB, r *parse.Resource[T], plan *parse
 }
 
 // queryTargets runs plan's owner statement and returns the target rows as
-// it left them. A plan's Current goes first in the same batch, which runs
-// in one transaction (db's own when db is a pgx.Tx): its lock holds every
+// it left them: the ones it changed, and the ones a SkipUnchanged plan left
+// unchanged. A plan's Current goes first in the same batch, which runs in
+// one transaction (db's own when db is a pgx.Tx): its lock holds every
 // target while the guarded update compares them, so the rows it read and
 // the update did not return are exactly the unchanged ones.
-func queryTargets[T any](ctx context.Context, db Querier, resource *parse.Resource[T], plan *parse.UpdatePlan) ([]T, error) {
+func queryTargets[T any](ctx context.Context, db Querier, resource *parse.Resource[T], plan *parse.UpdatePlan) (changed, unchanged []T, err error) {
 	var current, owner []T
 	b := &pgx.Batch{}
 	if plan.Current != nil {
@@ -194,16 +224,15 @@ func queryTargets[T any](ctx context.Context, db Querier, resource *parse.Resour
 		return wrap("owner", err)
 	})
 	if err := db.SendBatch(ctx, b).Close(); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	if plan.Current == nil {
-		return owner, nil
+		return owner, nil, nil
 	}
-	unchanged, err := resource.Unchanged(owner, current)
-	if err != nil {
-		return nil, err
+	if unchanged, err = resource.Unchanged(owner, current); err != nil {
+		return nil, nil, err
 	}
-	return append(owner, unchanged...), nil
+	return owner, unchanged, nil
 }
 
 func ownerKeys[T any](r *parse.Resource[T], items []T) ([]any, error) {

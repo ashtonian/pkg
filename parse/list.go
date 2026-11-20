@@ -291,7 +291,10 @@ type ListPlan struct {
 	Limit  int
 
 	dialect filter.Dialect
-	table   string
+	// fields is the filter schema the plan compiled, its includes' targets
+	// compiled for dialect.
+	fields *filter.ResourceSchema
+	table  string
 	// tenant is Scope.Tenant in the tenant key's type; nil without one.
 	tenant  any
 	related map[string]*filter.PolicyConstraints
@@ -304,8 +307,13 @@ func (p *ListPlan) Dialect() filter.Dialect { return p.dialect }
 // governance), soft-delete masking and policy ANDed with the request's
 // filter, the request's sort with the key as the final keyset column, the
 // cursor's seek, search, and the count and facets when asked. A nil req is a
-// first page with no filter.
+// first page with no filter. Computed columns (ReadExpr) compile as d's
+// expressions; a dialect one refuses is an error.
 func (r *Resource[T]) BuildList(d filter.Dialect, req *ListRequest, s Scope) (*ListPlan, error) {
+	v, err := r.dialectView(d)
+	if err != nil {
+		return nil, err
+	}
 	if req == nil {
 		req = &ListRequest{}
 	}
@@ -317,6 +325,12 @@ func (r *Resource[T]) BuildList(d filter.Dialect, req *ListRequest, s Scope) (*L
 		TenantColumn: r.tenant, TenantID: tenant,
 		DeleteColumn: r.deleted, IncludeDeleted: s.IncludeDeleted && r.deleted != "",
 	}, s.Governance, s.Policy)
+
+	// Relations the facets, includes and policies reach compile their
+	// targets for d; the filter's own reach theirs as filterAST walks it.
+	if v, err = v.withTargets(d, slices.Concat(req.Facets, req.Include, policyFields(policy))...); err != nil {
+		return nil, err
+	}
 
 	pageSize := req.PageSize
 	if pageSize <= 0 {
@@ -335,26 +349,31 @@ func (r *Resource[T]) BuildList(d filter.Dialect, req *ListRequest, s Scope) (*L
 		opts = append(opts, filter.ListTenant(tenant))
 	}
 	if req.Filter != nil {
-		opts = append(opts, filter.ListFilterAST(req.Filter.AST))
+		ast, err := v.filterAST(d, req.Filter.AST)
+		if err != nil {
+			return nil, err
+		}
+		opts = append(opts, filter.ListFilterAST(ast))
 	}
 	if req.Sort != nil {
-		opts = append(opts, filter.ListSortResult(req.Sort))
+		opts = append(opts, filter.ListSortResult(v.sortResult(req.Sort)))
 	}
 	if len(req.Facets) > 0 {
 		opts = append(opts, filter.ListFacets(req.Facets...))
 	}
-	res, err := r.ListQuery(d).Build(opts...)
+	res, err := v.listQuery(d, r.cfg).Build(opts...)
 	if err != nil {
 		return nil, err
 	}
 	plan := &ListPlan{
-		Page:     Statement{SQL: "SELECT " + strings.Join(r.Columns(d), ", ") + " FROM " + r.table + " " + res.Fragment, Args: res.Args},
+		Page:     Statement{SQL: "SELECT " + strings.Join(r.columns(d, v), ", ") + " FROM " + r.table + " " + res.Fragment, Args: res.Args},
 		Fragment: res.Fragment,
 		Facets:   res.Facets,
 		Include:  slices.Clone(req.Include),
 		Keyset:   res.Cursor,
 		Limit:    res.Limit,
 		dialect:  d,
+		fields:   v.filter,
 		table:    r.table,
 		tenant:   tenant,
 		related:  s.Related,
@@ -406,7 +425,7 @@ func (r *Resource[T]) IncludeQueries(plan *ListPlan, ownerKeys []any) ([]filter.
 	}
 	out := make([]filter.IncludeQuery, 0, len(plan.Include))
 	for _, name := range plan.Include {
-		q, err := filter.BuildIncludeQuery(r.filterSchema.Fields[name], plan.dialect, ownerKeys, opts...)
+		q, err := filter.BuildIncludeQuery(plan.fields.Fields[name], plan.dialect, ownerKeys, opts...)
 		if err != nil {
 			return nil, err
 		}

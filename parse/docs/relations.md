@@ -84,7 +84,7 @@ postgres WHERE (EXISTS (SELECT 1 FROM commands WHERE commands.device_id = device
 postgres WHERE (NOT EXISTS (SELECT 1 FROM commands WHERE commands.device_id = devices.id AND commands.tenant_id = $1 AND commands.status = $2) AND devices.tenant_id = $3) … [t1 failed t1]
 ```
 
-The output above is `ExampleResource_Relate`, checked by the unit lane. A many-to-many with a target filter joins the target inside the subquery: `EXISTS (SELECT 1 FROM device_tags rel1__ JOIN tags ON tags.id = rel1__.tag_id WHERE rel1__.device_id = devices.id AND rel1__.tenant_id = $1 AND tags.tenant_id = $2 AND tags.label = $3)`. A target field computed from something other than its table's column cannot be used through a relation (the build fails); a relation without a target resource takes no target filter (E2083).
+The output above is `ExampleResource_Relate`, checked by the unit lane. A many-to-many with a target filter joins the target inside the subquery: `EXISTS (SELECT 1 FROM device_tags rel1__ JOIN tags ON tags.id = rel1__.tag_id WHERE rel1__.device_id = devices.id AND rel1__.tenant_id = $1 AND tags.tenant_id = $2 AND tags.label = $3)`. A target's [computed column](queries.md#computed-columns) (`parse.ReadExpr`) filters as the target's expression for the owner's dialect, and fails the build where the subquery aliases the target's table, as a relation back to the owner's table does; any other target field computed from something other than its table's column cannot be used through a relation (the build fails); a relation without a target resource takes no target filter (E2083).
 
 ### Outside SQL
 

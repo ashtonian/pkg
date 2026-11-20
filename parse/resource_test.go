@@ -121,7 +121,9 @@ func TestResource_DeclaresItsIdentity(t *testing.T) {
 	assert.Equal(t, "id", r.PrimaryKeyColumn())
 	assert.Equal(t, "tenant_id", r.TenantColumnName())
 	assert.Equal(t, "deleted_at", r.DeletedColumnName())
-	assert.Equal(t, []string{"widgets.id", "widgets.tenant_id", "widgets.name", "widgets.rank", "widgets.deleted_at"}, r.Columns(filter.PostgresDialect{}))
+	columns, err := r.Columns(filter.PostgresDialect{})
+	require.NoError(t, err)
+	assert.Equal(t, []string{"widgets.id", "widgets.tenant_id", "widgets.name", "widgets.rank", "widgets.deleted_at"}, columns)
 	for _, item := range []any{widget{ID: "w9"}, &widget{ID: "w9"}} {
 		key, err := r.Key(item)
 		require.NoError(t, err)
@@ -408,7 +410,9 @@ func TestReadColumns_LimitWhatTheResourceReads(t *testing.T) {
 	r, err := parse.NewResource[account]("accounts", parse.TenantColumn("tenant_id"),
 		parse.ReadColumns("updated_at", "email", "id", "tenant_id"))
 	require.NoError(t, err)
-	assert.Equal(t, []string{"accounts.id", "accounts.tenant_id", "accounts.email", "accounts.updated_at"}, r.Columns(filter.PostgresDialect{}), "in T's field order")
+	columns, err := r.Columns(filter.PostgresDialect{})
+	require.NoError(t, err)
+	assert.Equal(t, []string{"accounts.id", "accounts.tenant_id", "accounts.email", "accounts.updated_at"}, columns, "in T's field order")
 
 	plan, err := r.BuildList(filter.PostgresDialect{}, nil, parse.Scope{Tenant: "t1"})
 	require.NoError(t, err)
