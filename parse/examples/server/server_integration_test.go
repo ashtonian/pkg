@@ -34,8 +34,17 @@ func testServer(t *testing.T) *httptest.Server {
 
 func call(t *testing.T, srv *httptest.Server, method, path string, body string, out any) int {
 	t.Helper()
+	return send(t, srv, method, path, "", body, out)
+}
+
+// send is call with a Content-Type; empty sends none.
+func send(t *testing.T, srv *httptest.Server, method, path, contentType, body string, out any) int {
+	t.Helper()
 	req, err := http.NewRequestWithContext(t.Context(), method, srv.URL+path, strings.NewReader(body))
 	require.NoError(t, err)
+	if contentType != "" {
+		req.Header.Set("Content-Type", contentType)
+	}
 	res, err := srv.Client().Do(req)
 	require.NoError(t, err)
 	defer func() { assert.NoError(t, res.Body.Close()) }()
@@ -76,6 +85,82 @@ func TestServer_ListWalk(t *testing.T) {
 		cursor = p.PageInfo.EndCursor
 	}
 	assert.Equal(t, []string{"Go Programming", "Clean Code", "Design Patterns"}, names)
+}
+
+// A list sent as a POST body to the list's path reads the pages a GET
+// reads, and each transport's cursors continue a walk on the other.
+func TestServer_ListThroughAPOSTBody(t *testing.T) {
+	srv := testServer(t)
+	const doc = `{"price":{"$lte":50}}`
+	get := func(cursor string) page {
+		t.Helper()
+		q := url.Values{filter.ParamFilter: {doc}, filter.ParamSort: {"-price"}, filter.ParamPageSize: {"2"}, filter.ParamIncludeTotal: {"true"}}
+		if cursor != "" {
+			q.Set(filter.ParamCursor, cursor)
+		}
+		var p page
+		require.Equal(t, http.StatusOK, call(t, srv, http.MethodGet, "/api/products?"+q.Encode(), "", &p))
+		return p
+	}
+	post := func(cursor string) page {
+		t.Helper()
+		members := map[string]any{filter.ParamFilter: json.RawMessage(doc), filter.ParamSort: "-price", filter.ParamPageSize: 2, filter.ParamIncludeTotal: true}
+		if cursor != "" {
+			members[filter.ParamCursor] = cursor
+		}
+		body, err := json.Marshal(members)
+		require.NoError(t, err)
+		var p page
+		require.Equal(t, http.StatusOK, send(t, srv, http.MethodPost, "/api/products", "application/json", string(body), &p))
+		return p
+	}
+	walk := func(transports ...func(cursor string) page) []page {
+		t.Helper()
+		var pages []page
+		cursor := ""
+		for n := 0; ; n++ {
+			require.Less(t, n, 10)
+			p := transports[n%len(transports)](cursor)
+			pages = append(pages, p)
+			if !p.PageInfo.HasNextPage {
+				return pages
+			}
+			cursor = p.PageInfo.EndCursor
+		}
+	}
+
+	want := walk(get)
+	require.Len(t, want, 3)
+	require.NotNil(t, want[0].PageInfo.TotalCount)
+	assert.Equal(t, int64(6), *want[0].PageInfo.TotalCount)
+	assert.Equal(t, want, walk(post), "a POST reads the pages a GET reads")
+	assert.Equal(t, want, walk(post, get), "each transport continues the other's cursors")
+}
+
+func TestServer_POSTListRefusals(t *testing.T) {
+	srv := testServer(t)
+	tests := []struct {
+		name, path, contentType, body string
+		code                          string
+		param                         string
+	}{
+		{"a list parameter in the query", "/api/products?sort=-price", "application/json", `{}`, filter.ECodeInvalidListParam.String(), "sort"},
+		{"a field filter in the query", "/api/products?category=books", "application/json", `{}`, filter.ECodeInvalidListParam.String(), "category"},
+		{"a form body", "/api/products", "application/x-www-form-urlencoded", "filter=%7B%7D", filter.ECodeInvalidListParam.String(), "content-type"},
+		{"an unknown member", "/api/products", "application/json", `{"filtr":{"category":"books"}}`, filter.ECodeInvalidListParam.String(), "filtr"},
+		{"a body over the list body limit", "/api/products", "application/json", `{"cursor":"` + strings.Repeat("c", 80<<10) + `"}`, filter.ECodeInputTooLarge.String(), ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var body parsehttp.Body
+			status := send(t, srv, http.MethodPost, tt.path, tt.contentType, tt.body, &body)
+			assert.Equal(t, http.StatusUnprocessableEntity, status)
+			assert.Equal(t, tt.code, body.Code)
+			if tt.param != "" {
+				assert.Equal(t, tt.param, body.Details["parameter"])
+			}
+		})
+	}
 }
 
 func TestServer_JSONFilterAndFlatParamsCombine(t *testing.T) {
