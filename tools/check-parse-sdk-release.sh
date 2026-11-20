@@ -49,7 +49,7 @@ cat > tsconfig.json <<'JSON'
 JSON
 cat > index.ts <<'TS'
 import { filter, sort, SCHEMA_VERSION } from "@ashtonian/parse";
-import { ApiError } from "@ashtonian/parse/core";
+import { ApiError, type FieldError, type Problem } from "@ashtonian/parse/core";
 import type { ListResult } from "@ashtonian/parse/filter";
 import { validatePatch } from "@ashtonian/parse/patch";
 
@@ -62,6 +62,9 @@ const page: ListResult<Product> = {
 };
 if (page.items.length || SCHEMA_VERSION !== 1) throw new Error("schema/page contract");
 if (typeof ApiError !== "function" || typeof validatePatch !== "function") throw new Error("public subpath exports");
+const problem: Problem = { type: "about:blank", extensions: { errors: [{ pointer: "#/price", detail: "too low" }] } };
+const fields: readonly FieldError[] = new ApiError(422, { code: "", message: "invalid" }, problem).errors;
+if (fields[0]?.pointer !== "#/price") throw new Error("problem field errors");
 TS
 node "$sdk/node_modules/typescript/bin/tsc6" -p tsconfig.json --noEmit
 node "$sdk/node_modules/@typescript/native/bin/tsc" -p tsconfig.json

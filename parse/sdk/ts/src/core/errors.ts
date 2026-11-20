@@ -1,17 +1,28 @@
+import { type FieldError, type Problem, problemFieldErrors } from "./problem.js";
 import type { ErrorBody } from "./types.js";
 
-/** A non-2xx response. `code` is the server's E-code ("" when the body was not JSON). */
+/**
+ * A non-2xx response. `code` and `message` come from a parse error body, or
+ * from an RFC 9457 problem document; `code` is `""` when the body was neither.
+ */
 export class ApiError extends Error {
   readonly status: number;
   readonly code: string;
+  /** The response body in parse's error shape; a problem's `code` and `message` as mapped. */
   readonly body: ErrorBody;
+  /** The problem document, when the response was one. */
+  readonly problem: Problem | undefined;
+  /** The entries of the problem's `errors` extension; empty otherwise. */
+  readonly errors: readonly FieldError[];
 
-  constructor(status: number, body: ErrorBody) {
+  constructor(status: number, body: ErrorBody, problem?: Problem) {
     super(body.message);
     this.name = "ApiError";
     this.status = status;
     this.code = body.code;
     this.body = body;
+    this.problem = problem;
+    this.errors = problem ? problemFieldErrors(problem) : [];
   }
 }
 

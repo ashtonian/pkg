@@ -128,12 +128,26 @@ Two Go-emitted corpora pin client to server: `testdata/filter_conformance.json` 
 
 | Error | When | Fields |
 |---|---|---|
-| `ApiError` | Non-2xx response | `status`, `code` (server E-code, `""` for a non-JSON body), `body` (`{code, message, details?, trace_id?, timestamp?, path?}`) |
+| `ApiError` | Non-2xx response | `status` (the response's), `code`, `message`, `body` (`{code, message, details?, trace_id?, timestamp?, path?}`), `problem` (the RFC 9457 document, or `undefined`), `errors` (its field errors, or `[]`) |
 | `SchemaValidationError` | Client-side validation failed | `code` (the E-code the server would return), `field`, `detail`, optional `constraint` / `limit` |
 | `SchemaValidationErrors` | Multiple merge-patch members or values failed | `errors` (ordered individual failures); inherited `code`, `field`, `detail` and constraint metadata identify the first |
 | `SchemaVersionError` | The server's schema document is in a format version this client does not read | `resource`, `version` (as served), `supported` (`SCHEMA_VERSION`) |
 
 `validatePatch` reports every independent member/value failure in sorted member order. Declared rules set `constraint` to `enum`, `minlen`, `maxlen`, `min`, `max`, `minitems` or `maxitems`, and `limit` to the schema bound text (comma-separated enum allowlist). Type failures leave both undefined. Single failures remain `SchemaValidationError`; the aggregate extends that class, so `instanceof SchemaValidationError` and its first field/code remain useful. [Go error contract](../../docs/patches.md#validation).
+
+`ApiError` reads two error bodies. A JSON object with string `code` and `message` is parse's error body and is kept as `body`. An RFC 9457 problem document, sent as `application/problem+json` or a JSON object with a string `type` or `title` or a numeric `status`, is kept as `problem`: `type` (resolved against the response URL, `"about:blank"` when absent), `title`, `status`, `detail`, `instance` and every other member under `extensions`. A standard member of the wrong type is dropped, as RFC 9457 requires; `problem.status` is advisory and never replaces `ApiError.status`. A problem that is not also in parse's shape sets `code` from its `code` extension, else its `type` (`""` for `about:blank`), and `message` from `detail`, else `title`. `errors` holds the object entries of the problem's `errors` extension (RFC 9457 §3) as `FieldError`s, with the `pointer`, `detail` and `code` members each sends as strings; everything else stays in `problem.extensions`. Any other body (an HTML error page, an empty body, other JSON) gives `code` `""` and the status text as `message`. The client sends `Accept: application/json, application/problem+json`.
+
+```typescript
+try {
+  await products.patch("prod-123", { price: -1 });
+} catch (err) {
+  if (!(err instanceof ApiError)) throw err;
+  console.warn(err.status, err.code, err.message, err.problem?.instance);
+  for (const field of err.errors) console.warn(field.pointer, field.code, field.detail);
+}
+```
+
+All of it is server-supplied text; treat it as untrusted.
 
 Validation codes match the Go parser: E2071 unknown field, E2072 operator not allowed, E2073 value type mismatch, E2062 non-array membership value, E2086 malformed `$and` / `$or` / `$not`, E2087 value outside the enum, E2116 non-string UUID, E2079 / E2081 sort field / count, E2064 / E2066 / E2076 patch operation / size / path.
 
@@ -165,7 +179,7 @@ Three Go-emitted fixtures keep the client on the server's contract; each fails i
 | Import | Contents |
 |---|---|
 | `@ashtonian/parse` | `createClient`, `SchemaValidator`, `SCHEMA_VERSION`, builders, validators, all types |
-| `@ashtonian/parse/core` | `ApiError`, `SchemaValidationError`, `SchemaValidationErrors`, `SchemaVersionError`, `ConstraintName`, `ConstraintFailure`, `ErrorBody`, `FieldType` |
+| `@ashtonian/parse/core` | `ApiError`, `SchemaValidationError`, `SchemaValidationErrors`, `SchemaVersionError`, `ConstraintName`, `ConstraintFailure`, `ErrorBody`, `Problem`, `FieldError`, `FieldType` |
 | `@ashtonian/parse/filter` | `filter`, `sort`, `validateFilter`, `validateSort`, list / facet / schema types |
 | `@ashtonian/parse/patch` | `validatePatch`, patch schema and result types |
 
@@ -181,7 +195,9 @@ Three Go-emitted fixtures keep the client on the server's contract; each fails i
 | `src/patch/validate.ts` | `validatePatch` — merge-patch semantics (null = remove) |
 | `src/patch/types.ts` | Patch schema, input and result types |
 | `src/schema.ts` | `ResourceSchema` (the schema document), `SCHEMA_VERSION` |
-| `src/core/` | `ApiError`, `SchemaValidationError`, `SchemaValidationErrors`, `SchemaVersionError`, shared types |
+| `src/core/errors.ts` | `ApiError`, `SchemaValidationError`, `SchemaValidationErrors`, `SchemaVersionError` |
+| `src/core/problem.ts` | RFC 9457 `Problem` and `FieldError`: recognition and normalization |
+| `src/core/types.ts` | Shared types: `ErrorBody`, `FieldType`, `RequestOptions` |
 
 ## References
 

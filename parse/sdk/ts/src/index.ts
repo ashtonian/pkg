@@ -28,6 +28,7 @@
 // Core (shared types and errors)
 export { ApiError, SchemaValidationError, SchemaValidationErrors, SchemaVersionError } from "./core/index.js";
 export type { ErrorBody, FieldType, RequestOptions } from "./core/index.js";
+export type { FieldError, Problem } from "./core/index.js";
 
 // Filter
 export { filter, FilterBuilder, sort, SortBuilder } from "./filter/index.js";
