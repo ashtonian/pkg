@@ -25,8 +25,11 @@ import (
 // computedAccountFixture: accounts 1–5 of t1 hold 2, 1, 2, 0 and 1
 // memberships (ties on the count), account 2 has no email, and t2's
 // account 6 has the most memberships of all. Account 1 is in groups 10 and
-// 20, account 3 in group 30.
+// 20, account 2 in group 20 and account 3 in group 30, so group 20 alone
+// has two accounts.
 var computedAccountFixture = []string{
+	`CREATE TABLE tenants (id TEXT PRIMARY KEY)`,
+	`INSERT INTO tenants VALUES ('t1'), ('t2')`,
 	`CREATE TABLE accounts (id INTEGER PRIMARY KEY, tenant_id TEXT NOT NULL, name TEXT NOT NULL, email TEXT)`,
 	`CREATE TABLE memberships (id INTEGER PRIMARY KEY, account_id INTEGER NOT NULL)`,
 	`CREATE TABLE access_groups (id INTEGER PRIMARY KEY, tenant_id TEXT NOT NULL)`,
@@ -34,7 +37,7 @@ var computedAccountFixture = []string{
 	`INSERT INTO accounts VALUES (1, 't1', 'a', 'a@example.com'), (2, 't1', 'b', NULL), (3, 't1', 'c', 'c@example.com'), (4, 't1', 'd', 'd@example.com'), (5, 't1', 'e', 'e@example.com'), (6, 't2', 'f', 'f@example.com')`,
 	`INSERT INTO memberships VALUES (1, 1), (2, 1), (3, 2), (4, 3), (5, 3), (6, 5), (7, 6), (8, 6), (9, 6)`,
 	`INSERT INTO access_groups VALUES (10, 't1'), (20, 't1'), (30, 't1')`,
-	`INSERT INTO account_groups VALUES (1, 20), (1, 10), (3, 30)`,
+	`INSERT INTO account_groups VALUES (1, 20), (1, 10), (2, 20), (3, 30)`,
 }
 
 func TestReadExpr_SQLite(t *testing.T) {
@@ -178,7 +181,33 @@ func runReadExpr(t *testing.T, db *sql.DB, d parse.Dialect, run computedDB) {
 		items := page(t, plan).Items
 		require.Len(t, items, 2)
 		assert.Equal(t, computedAccount{ID: 1, TenantID: "t1", Name: "a", Email: "a@example.com", MemberCount: 2, GroupIDs: []int64{10, 20}}, items[0])
-		assert.Equal(t, computedAccount{ID: 2, TenantID: "t1", Name: "b", Email: "", MemberCount: 1, GroupIDs: []int64{}}, items[1])
+		assert.Equal(t, computedAccount{ID: 2, TenantID: "t1", Name: "b", Email: "", MemberCount: 1, GroupIDs: []int64{20}}, items[1])
+	})
+
+	t.Run("relations filter by their targets' computed columns", func(t *testing.T) {
+		t1 := parse.Scope{Tenant: "t1"}
+		related := func(policy *filter.PolicyConstraint) parse.Scope {
+			return parse.Scope{Tenant: "t1", Related: map[string]*filter.PolicyConstraints{"accounts": {Constraints: []*filter.PolicyConstraint{policy}}}}
+		}
+		tests := []struct {
+			name string
+			ids  []string
+			want []string
+		}{
+			{"has-many", keysOf(t, db, accountTenants, d, `{"accounts":{"$some":{"email":""}}}`, t1), []string{"t1"}},
+			{"has-many, held to the tenant", keysOf(t, db, accountTenants, d, `{"accounts":{"$some":{"member_count":{"$gte":3}}}}`, t1), nil},
+			{"many-to-many", keysOf(t, db, accessGroups, d, `{"accounts":{"$some":{"email":""}}}`, t1), []string{"20"}},
+			{"many-to-many by count", keysOf(t, db, accessGroups, d, `{"accounts":{"$some":{"member_count":1}}}`, t1), []string{"20"}},
+			{"belongs-to", keysOf(t, db, accountMemberships, d, `{"account":{"$is":{"member_count":2}}}`, t1), []string{"1", "2", "4", "5"}},
+			{"has-many, then many-to-many", keysOf(t, db, accountTenants, d, `{"accounts":{"$some":{"groups":{"$some":{"size":2}}}}}`, t1), []string{"t1"}},
+			{"has-many, then many-to-many, none", keysOf(t, db, accountTenants, d, `{"accounts":{"$some":{"groups":{"$some":{"size":3}}}}}`, t1), nil},
+			{"belongs-to, then many-to-many", keysOf(t, db, accountMemberships, d, `{"account":{"$is":{"groups":{"$some":{"size":2}}}}}`, t1), []string{"1", "2", "3"}},
+			{"the target's policy", keysOf(t, db, accountTenants, d, `{"shared_accounts":{"$some":{}}}`, related(&filter.PolicyConstraint{Field: "member_count", Operator: filter.OpGte, Value: 3})), []string{"t2"}},
+			{"the target's policy, both", keysOf(t, db, accountTenants, d, `{"shared_accounts":{"$some":{}}}`, related(&filter.PolicyConstraint{Field: "member_count", Operator: filter.OpGte, Value: 2})), []string{"t1", "t2"}},
+		}
+		for _, tt := range tests {
+			assert.Equal(t, tt.want, tt.ids, tt.name)
+		}
 	})
 
 	t.Run("a keyset walk sorted by a computed column visits every row once", func(t *testing.T) {
@@ -271,6 +300,21 @@ func runReadExpr(t *testing.T, db *sql.DB, d parse.Dialect, run computedDB) {
 			assert.Equal(t, []int64{20}, row.GroupIDs, "account %d", row.ID)
 		}
 	})
+}
+
+// keysOf lists r's rows for filterJSON on d and returns their keys.
+func keysOf[T any](t *testing.T, db *sql.DB, r *parse.Resource[T], d filter.Dialect, filterJSON string, scope parse.Scope) []string {
+	t.Helper()
+	req, err := r.ParseList(url.Values{filter.ParamFilter: {filterJSON}})
+	require.NoError(t, err)
+	plan, err := r.BuildList(d, req, scope)
+	require.NoError(t, err)
+	key := slices.Index(r.ColumnNames(), r.PrimaryKeyColumn())
+	var out []string
+	for _, row := range queryRows(t, db, plan.Page.SQL, plan.Page.Args) {
+		out = append(out, fmt.Sprint(row[key]))
+	}
+	return out
 }
 
 func computedInt(t *testing.T, v any) int64 {

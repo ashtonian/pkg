@@ -3,7 +3,6 @@
 package parse_test
 
 import (
-	"errors"
 	"net/url"
 	"strings"
 	"sync"
@@ -121,7 +120,7 @@ func TestReadExpr_RefusedDialect(t *testing.T) {
 		}
 		return pgGroupIDsExpr, nil
 	}
-	accounts := newComputedAccounts(postgresOnly)
+	accounts := newComputedAccounts(accessGroups, postgresOnly)
 	req, err := accounts.ParseList(url.Values{
 		filter.ParamFilter:       {`{"member_count":{"$gte":1}}`},
 		filter.ParamFacets:       {"member_count"},
@@ -164,26 +163,67 @@ func TestReadExpr_RefusedDialect(t *testing.T) {
 	require.NoError(t, err)
 	_, err = blank.BuildList(filter.SQLiteDialect{}, nil, scope)
 	assert.ErrorContains(t, err, `parse: accounts: computed column "group_ids" for dialect sqlite: no expression`)
+
+	// A build that compiles the refusing target's schema fails too; one
+	// that never reaches the target does not.
+	tenants := newAccountTenants(accounts)
+	for _, tt := range []struct {
+		name   string
+		query  url.Values
+		scope  parse.Scope
+		refuse bool
+	}{
+		{"a relation filter", url.Values{filter.ParamFilter: {`{"accounts":{"$some":{"name":"a"}}}`}}, scope, true},
+		{"a relation include", url.Values{filter.ParamInclude: {"accounts"}}, scope, true},
+		{"a relation facet", url.Values{filter.ParamFacets: {"accounts"}}, scope, true},
+		{"a target policy", url.Values{filter.ParamFilter: {`{"shared_accounts":{"$some":{}}}`}}, parse.Scope{Tenant: "t1", Related: map[string]*filter.PolicyConstraints{
+			"accounts": {Constraints: []*filter.PolicyConstraint{{Field: "member_count", Operator: filter.OpGte, Value: 1}}},
+		}}, true},
+		{"no relation", url.Values{filter.ParamFilter: {`{"id":"t1"}`}}, scope, false},
+	} {
+		t.Run("owner's "+tt.name, func(t *testing.T) {
+			req, err := tenants.ParseList(tt.query)
+			require.NoError(t, err)
+			_, err = tenants.BuildList(filter.SQLiteDialect{}, req, tt.scope)
+			if !tt.refuse {
+				assert.NoError(t, err)
+				return
+			}
+			assert.ErrorIs(t, err, filter.ErrUnsupportedDialect)
+			assert.ErrorContains(t, err, `parse: accounts: computed column "group_ids" for dialect sqlite`)
+			_, err = tenants.BuildList(filter.PostgresDialect{}, req, tt.scope)
+			assert.NoError(t, err)
+		})
+	}
 }
 
-// Concurrent first builds for two dialects each build and read their own
-// dialect's view.
+// Concurrent first builds for two dialects, of a target and of an owner
+// whose relation filter compiles it, each build and read their own
+// dialect's views.
 func TestReadExpr_ConcurrentFirstUse(t *testing.T) {
-	accounts := newComputedAccounts(groupIDsExpr)
+	accounts := newComputedAccounts(accessGroups, groupIDsExpr)
+	tenants := newAccountTenants(accounts)
 	req, err := accounts.ParseList(url.Values{
 		filter.ParamFilter: {`{"email":{"$ne":""}}`},
 		filter.ParamSort:   {"-member_count"},
 		filter.ParamFacets: {"member_count"},
 	})
 	require.NoError(t, err)
-	plans := make([]*parse.ListPlan, 32)
+	ownerReq, err := tenants.ParseList(url.Values{filter.ParamFilter: {`{"accounts":{"$some":{"email":{"$ne":""},"groups":{"$some":{"size":2}}}}}`}})
+	require.NoError(t, err)
+	plans := make([]*parse.ListPlan, 64)
 	errs := make([]error, len(plans))
 	start := make(chan struct{})
 	var wg sync.WaitGroup
 	for i := range plans {
 		wg.Go(func() {
 			<-start
-			plans[i], errs[i] = accounts.BuildList(computedDialects[i%2].dialect, req, parse.Scope{Tenant: "t1"})
+			d := computedDialects[i%2].dialect
+			if i%4 < 2 {
+				plans[i], errs[i] = accounts.BuildList(d, req, parse.Scope{Tenant: "t1"})
+			} else {
+				plans[i], errs[i] = tenants.BuildList(d, ownerReq, parse.Scope{Tenant: "t1"})
+			}
 		})
 	}
 	close(start)
@@ -192,7 +232,11 @@ func TestReadExpr_ConcurrentFirstUse(t *testing.T) {
 		require.NoError(t, errs[i])
 		tt := computedDialects[i%2]
 		assert.Contains(t, plan.Page.SQL, "("+tt.email+") <> ")
-		assert.Contains(t, plan.Page.SQL, "("+tt.groupIDs+") AS group_ids")
+		if i%4 < 2 {
+			assert.Contains(t, plan.Page.SQL, "("+tt.groupIDs+") AS group_ids")
+		} else {
+			assert.Contains(t, plan.Page.SQL, "("+groupSizeExpr+") = ")
+		}
 	}
 }
 
@@ -246,7 +290,7 @@ func TestReadExpr_Refusals(t *testing.T) {
 		AccountID int `json:"account_id" db:"account_id" parse:"filter"`
 	}
 	memberships := parse.MustResource[membership]("memberships", parse.ReadExpr("account_id", parse.SQL("1")))
-	accounts := newComputedAccounts(groupIDsExpr)
+	accounts := newComputedAccounts(accessGroups, groupIDsExpr)
 	err = accounts.Relate("memberships", parse.HasMany(memberships, "account_id"))
 	assert.ErrorContains(t, err, `correlates on memberships's computed column "account_id"`)
 
@@ -261,25 +305,83 @@ func TestReadExpr_Refusals(t *testing.T) {
 	assert.ErrorContains(t, err, `parse: accounts: relation "labels" correlates on computed column "owner_key"`, "a relation tag as Relate")
 }
 
-// A relation's filter compiles for its owner's dialect, which resolves only
-// the owner's expressions: the target's computed columns are no fields of
-// it.
-func TestReadExpr_RelationFiltersOmitTheTargetsComputedColumns(t *testing.T) {
-	type accountTenant struct {
-		ID string `json:"id" db:"id" parse:"filter"`
+// A relation's filter compiles its target's computed columns as the
+// target's expressions for the owner's dialect: through a has-many, a
+// many-to-many and a belongs-to, at depth 1 and 2, and in the target's
+// policy (Scope.Related).
+func TestReadExpr_RelationFiltersCompileTheTargetsExpressions(t *testing.T) {
+	scope := parse.Scope{Tenant: "t1"}
+	memberCount, size := "("+memberCountExpr+")", "("+groupSizeExpr+")"
+	for _, tt := range computedDialects {
+		t.Run(tt.dialect.Name(), func(t *testing.T) {
+			email := "(" + tt.email + ")"
+			tests := []struct {
+				name, sql, want string
+			}{
+				{"has-many", pageSQL(t, accountTenants, tt.dialect, `{"accounts":{"$some":{"email":""}}}`, scope), email + " = "},
+				{"many-to-many", pageSQL(t, accessGroups, tt.dialect, `{"accounts":{"$some":{"member_count":{"$gte":2}}}}`, scope), memberCount + " >= "},
+				{"belongs-to", pageSQL(t, accountMemberships, tt.dialect, `{"account":{"$is":{"email":""}}}`, scope), email + " = "},
+				{"has-many, then many-to-many", pageSQL(t, accountTenants, tt.dialect, `{"accounts":{"$some":{"groups":{"$some":{"size":2}}}}}`, scope), size + " = "},
+				{"belongs-to, then many-to-many", pageSQL(t, accountMemberships, tt.dialect, `{"account":{"$is_not":{"groups":{"$some":{"size":2}}}}}`, scope), size + " = "},
+				{"the target's policy", pageSQL(t, accountTenants, tt.dialect, `{"shared_accounts":{"$some":{"name":"a"}}}`, parse.Scope{Tenant: "t1", Related: map[string]*filter.PolicyConstraints{
+					"accounts": {Constraints: []*filter.PolicyConstraint{{Field: "email", Operator: filter.OpEq, Value: ""}}},
+				}}), email + " = "},
+			}
+			for _, c := range tests {
+				assert.Contains(t, c.sql, c.want, c.name)
+				for _, other := range computedDialects {
+					if other.dialect.Name() != tt.dialect.Name() {
+						assert.NotContains(t, c.sql, other.email, c.name)
+					}
+				}
+			}
+		})
 	}
-	tenants := parse.MustResource[accountTenant]("tenants")
-	tenants.MustRelate("accounts", parse.HasMany(computedAccounts, "tenant_id", parse.Indexed()))
+	assert.Equal(t, "accounts.email", accountTenants.FilterSchema().Fields["accounts"].Related.Fields["email"].SQLExpr, "the relation's schema stays dialect-neutral")
+}
 
-	_, err := tenants.ParseList(url.Values{filter.ParamFilter: {`{"accounts":{"$some":{"name":"a"}}}`}})
-	require.NoError(t, err)
-	for _, field := range []string{"member_count", "email"} {
-		_, err := tenants.ParseList(url.Values{filter.ParamFilter: {`{"accounts":{"$some":{"` + field + `":"1"}}}`}})
-		var pe *core.ParseError
-		require.True(t, errors.As(err, &pe), "%s: %v", field, err)
-		assert.Equal(t, filter.ECodeUnknownField.String(), pe.Code, field)
+// Rebinding walks the filter, not the relation graph: around the
+// groups–accounts cycle it ends where the filter does. Back at groups the
+// subquery aliases the table, which a stored column follows and a computed
+// column's expression, naming the table, cannot.
+func TestReadExpr_RelationCycles(t *testing.T) {
+	scope := parse.Scope{Tenant: "t1"}
+	for _, tt := range computedDialects {
+		sql := pageSQL(t, accessGroups, tt.dialect, `{"accounts":{"$some":{"email":"","groups":{"$some":{"id":20}}}}}`, scope)
+		assert.Contains(t, sql, "access_groups_rel2__.id = ")
+		assert.Contains(t, sql, "("+tt.email+") = ")
+
+		req, err := accessGroups.ParseList(url.Values{filter.ParamFilter: {`{"accounts":{"$some":{"groups":{"$some":{"size":2}}}}}`}})
+		require.NoError(t, err)
+		_, err = accessGroups.BuildList(tt.dialect, req, scope)
+		assert.ErrorContains(t, err, "field size is not a column of access_groups and cannot be filtered through a relation")
 	}
-	assert.Contains(t, computedAccounts.FilterSchema().Fields, "member_count", "the resource's own lists filter by it")
+}
+
+// The relation's includes and facets compile its target's policy for the
+// owner's dialect too. They read the target under an alias, so a policy on
+// a computed column fails the build instead of reading a stored column the
+// table lacks.
+func TestReadExpr_RelationIncludesCompileTheTargetsPolicy(t *testing.T) {
+	scope := parse.Scope{Tenant: "t1", Related: map[string]*filter.PolicyConstraints{
+		"accounts": {Constraints: []*filter.PolicyConstraint{{Field: "member_count", Operator: filter.OpGte, Value: 1}}},
+	}}
+	req, err := accountTenants.ParseList(url.Values{filter.ParamInclude: {"shared_accounts"}})
+	require.NoError(t, err)
+	plan, err := accountTenants.BuildList(filter.SQLiteDialect{}, req, scope)
+	require.NoError(t, err)
+	_, err = accountTenants.IncludeQueries(plan, []any{"t1"})
+	assert.ErrorContains(t, err, "field member_count is not a column of accounts and cannot be filtered through a relation")
+}
+
+// pageSQL is the page statement r builds for filterJSON on d.
+func pageSQL[T any](t *testing.T, r *parse.Resource[T], d filter.Dialect, filterJSON string, scope parse.Scope) string {
+	t.Helper()
+	req, err := r.ParseList(url.Values{filter.ParamFilter: {filterJSON}})
+	require.NoError(t, err)
+	plan, err := r.BuildList(d, req, scope)
+	require.NoError(t, err)
+	return plan.Page.SQL
 }
 
 // An update's stamp and counters write the table's own columns, which a

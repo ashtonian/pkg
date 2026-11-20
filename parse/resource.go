@@ -3,7 +3,6 @@ package parse
 import (
 	"encoding/json"
 	"fmt"
-	"maps"
 	"reflect"
 	"slices"
 
@@ -40,9 +39,8 @@ type Resource[T any] struct {
 	// readExprs are the computed columns (ReadExpr) and their per-dialect
 	// views; nil without any.
 	readExprs *computedColumns
-	// relatedSchema is the filter schema relations to the resource filter
-	// its rows with (relatedFilterSchema).
-	relatedSchema *filter.ResourceSchema
+	// relations are the declared relations' targets (Relate), by field.
+	relations map[string]RelatedResource
 }
 
 // ResourceOption configures NewResource.
@@ -171,6 +169,7 @@ func NewResource[T any](table string, opts ...ResourceOption) (*Resource[T], err
 		accepted:     slices.Clone(cfg.accepted),
 		tableColumns: columns,
 		columnFields: fieldsByColumn,
+		relations:    map[string]RelatedResource{},
 	}
 	read, err := readColumns(table, cfg, columns)
 	if err != nil {
@@ -222,13 +221,6 @@ func NewResource[T any](table string, opts ...ResourceOption) (*Resource[T], err
 			}
 			f.RelatedBy = r.correlationField(f.Relation.PrimaryKey)
 		}
-	}
-	r.relatedSchema = p.filterSchema
-	if r.readExprs != nil {
-		related := *p.filterSchema
-		related.Fields = maps.Clone(p.filterSchema.Fields)
-		maps.DeleteFunc(related.Fields, func(_ string, f *filter.FieldSchema) bool { return r.readExprs.field(f) })
-		r.relatedSchema = &related
 	}
 	return r, nil
 }

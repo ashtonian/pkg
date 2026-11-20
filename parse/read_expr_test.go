@@ -18,13 +18,27 @@ type computedAccount struct {
 	GroupIDs    []int64 `json:"group_ids"    db:"group_ids"`
 }
 
-// accessGroup is a group accounts belong to through account_groups.
+// accessGroup is a group accounts belong to through account_groups; its
+// size is a count of them.
 type accessGroup struct {
-	ID       int64  `json:"id" db:"id" parse:"filter"`
-	TenantID string `json:"-"  db:"tenant_id"`
+	ID       int64  `json:"id"   db:"id"   parse:"filter"`
+	TenantID string `json:"-"    db:"tenant_id"`
+	Size     int    `json:"size" db:"size" parse:"filter"`
+}
+
+// accountTenant has its tenant's accounts.
+type accountTenant struct {
+	ID string `json:"id" db:"id" parse:"filter"`
+}
+
+// accountMembership belongs to an account.
+type accountMembership struct {
+	ID        int `json:"id"         db:"id"         parse:"filter"`
+	AccountID int `json:"account_id" db:"account_id" parse:"filter"`
 }
 
 const (
+	groupSizeExpr      = "SELECT count(*) FROM account_groups ag WHERE ag.group_id = access_groups.id"
 	memberCountExpr    = "SELECT count(*) FROM memberships m WHERE m.account_id = accounts.id"
 	pgEmailExpr        = "coalesce(accounts.email, '')"
 	sqliteEmailExpr    = "ifnull(accounts.email, '')"
@@ -52,17 +66,36 @@ func groupIDsExpr(d filter.Dialect) (string, error) {
 	return "", filter.ErrUnsupportedDialect
 }
 
-var (
-	accessGroups = parse.MustResource[accessGroup]("access_groups", parse.TenantColumn("tenant_id"))
-	// computedAccounts is declared once, before any dialect is known, and
-	// serves PostgreSQL and SQLite with each one's expressions.
-	computedAccounts = newComputedAccounts(groupIDsExpr)
-)
+// The resources are declared once, before any dialect is known, and serve
+// PostgreSQL and SQLite with each one's expressions.
+var accessGroups, computedAccounts, accountTenants, accountMemberships = newComputedResources()
 
-func newComputedAccounts(groupIDs parse.ColumnExpr) *parse.Resource[computedAccount] {
+// newComputedResources relates accounts and their groups both ways, and
+// tenants and memberships to accounts: filters reach computed columns
+// through has-many, many-to-many and belongs-to relations, at depth 2, and
+// around the accounts–groups cycle. A tenant's shared_accounts are any
+// tenant's the policy for accounts admits (Scope.Related).
+func newComputedResources() (*parse.Resource[accessGroup], *parse.Resource[computedAccount], *parse.Resource[accountTenant], *parse.Resource[accountMembership]) {
+	groups := parse.MustResource[accessGroup]("access_groups", parse.TenantColumn("tenant_id"), parse.ReadExpr("size", parse.SQL(groupSizeExpr)))
+	accounts := newComputedAccounts(groups, groupIDsExpr)
+	groups.MustRelate("accounts", parse.ManyToMany(accounts, parse.Through("account_groups", "group_id", "account_id"), parse.Indexed()))
+	tenants := newAccountTenants(accounts)
+	memberships := parse.MustResource[accountMembership]("memberships")
+	memberships.MustRelate("account", parse.BelongsTo(accounts, "account_id"))
+	return groups, accounts, tenants, memberships
+}
+
+func newComputedAccounts(groups *parse.Resource[accessGroup], groupIDs parse.ColumnExpr) *parse.Resource[computedAccount] {
 	r := parse.MustResource[computedAccount]("accounts", computedAccountOptions(groupIDs)...)
-	r.MustRelate("groups", parse.ManyToMany(accessGroups, parse.Through("account_groups", "account_id", "group_id"), parse.Writable(), parse.Includable()))
+	r.MustRelate("groups", parse.ManyToMany(groups, parse.Through("account_groups", "account_id", "group_id"), parse.Writable(), parse.Includable(), parse.Indexed()))
 	return r
+}
+
+func newAccountTenants(accounts *parse.Resource[computedAccount]) *parse.Resource[accountTenant] {
+	tenants := parse.MustResource[accountTenant]("tenants")
+	tenants.MustRelate("accounts", parse.HasMany(accounts, "tenant_id", parse.Indexed(), parse.Includable(), parse.Facetable()))
+	tenants.MustRelate("shared_accounts", parse.HasMany(accounts, "tenant_id", parse.Indexed(), parse.Includable(), parse.PolicyScoped()))
+	return tenants
 }
 
 // computedAccountOptions declares accounts and its computed columns, its

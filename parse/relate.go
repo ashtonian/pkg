@@ -21,7 +21,7 @@ type RelatedResource interface {
 	FilterSchema() *filter.ResourceSchema
 	columnType(name string) (reflect.Type, bool)
 	computed(column string) bool
-	relatedFilterSchema() *filter.ResourceSchema
+	dialectView(d filter.Dialect) (*dialectView, error)
 }
 
 func (r *Resource[T]) columnType(name string) (reflect.Type, bool) {
@@ -130,8 +130,9 @@ func Describe(label, description string) RelationOption {
 
 // Relate declares a relation named name on r: requests filter by it with
 // the target's own filter (`$some`, `$none`, `$is`, `$is_not`) or by the
-// target's key; the target's computed columns (ReadExpr) are not fields of
-// that filter. Columns are checked against both resources' types. Declare
+// target's key; the target's computed columns (ReadExpr) compile there as
+// the target's expressions for the owner's dialect. Columns are checked
+// against both resources' types. Declare
 // every relation before the resources serve requests; Relate is not safe
 // for concurrent use with them.
 func (r *Resource[T]) Relate(name string, rel Relation) error {
@@ -190,13 +191,11 @@ func (r *Resource[T]) Relate(name string, rel Relation) error {
 		Label:            rel.label,
 		Description:      rel.description,
 		Relation:         rs,
-		Related:          t.relatedFilterSchema(),
+		Related:          t.FilterSchema(),
 		RelatedBy:        r.correlationField(rs.PrimaryKey),
 	}
 	fs.Fields[name] = field
-	if r.relatedSchema != fs {
-		r.relatedSchema.Fields[name] = field
-	}
+	r.relations[name] = t
 	// The cached dialect views copied the fields before this one.
 	r.readExprs.reset()
 	if rel.writable {

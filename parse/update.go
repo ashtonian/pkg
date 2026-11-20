@@ -112,9 +112,12 @@ type UpdatePlan struct {
 
 	relations []patch.RelationPatchOp
 	dialect   Dialect
-	table     string
-	tenant    string
-	related   map[string]*filter.PolicyConstraints
+	// fields is the filter schema the plan compiled, its relation changes'
+	// targets compiled for dialect.
+	fields  *filter.ResourceSchema
+	table   string
+	tenant  string
+	related map[string]*filter.PolicyConstraints
 }
 
 // Dialect is the dialect the plan's statements are written for.
@@ -160,7 +163,16 @@ func (r *Resource[T]) BuildUpdate(d Dialect, p *patch.ParsedPatch, target Target
 		return nil, err
 	}
 	columns := strings.Join(r.columns(d, v), ", ")
-	plan := &UpdatePlan{relations: set.RelationOps, dialect: d, table: r.table, tenant: s.Tenant, related: s.Related}
+	// The membership changes hold pairs to targets the request may see,
+	// compiled with the targets' schemas for d.
+	changed := make([]string, len(set.RelationOps))
+	for i, op := range set.RelationOps {
+		changed[i] = op.Field
+	}
+	if v, err = v.withTargets(d, changed...); err != nil {
+		return nil, err
+	}
+	plan := &UpdatePlan{relations: set.RelationOps, dialect: d, fields: v.filter, table: r.table, tenant: s.Tenant, related: s.Related}
 	switch {
 	case set.SetClause != "":
 		guarded := where
@@ -239,17 +251,24 @@ func (r *Resource[T]) rowKey(row T) (any, error) {
 // after the SET clause's offset ones, compiled against v.
 func (r *Resource[T]) updateWhere(d filter.Dialect, v *dialectView, target Target, s Scope, offset int) (string, []any, error) {
 	pc := filter.BuildBaseConstraints(r.tenant, s.Tenant, r.deleted, false)
-	var userAST *filter.FilterAST
 	switch {
 	case len(target.keys) == 1:
 		pc.Constraints = append(pc.Constraints, &filter.PolicyConstraint{Field: r.pk, Operator: filter.OpEq, Value: target.keys[0]})
 	case len(target.keys) > 1:
 		pc.Constraints = append(pc.Constraints, &filter.PolicyConstraint{Field: r.pk, Operator: filter.OpIn, Value: target.keys})
-	default:
-		userAST = v.filterAST(target.filter.AST)
 	}
 	if s.Policy != nil && !s.Policy.IsEmpty() {
 		pc.And = append(pc.And, s.Policy)
+	}
+	v, err := v.withTargets(d, policyFields(pc)...)
+	if err != nil {
+		return "", nil, err
+	}
+	var userAST *filter.FilterAST
+	if len(target.keys) == 0 {
+		if userAST, err = v.filterAST(d, target.filter.AST); err != nil {
+			return "", nil, err
+		}
 	}
 	ast, err := filter.ApplyPolicyConstraints(v.filter, userAST, pc)
 	if err != nil {
@@ -285,7 +304,7 @@ func (r *Resource[T]) RelationStatements(plan *UpdatePlan, ownerKeys []any) ([]p
 			opts.TenantValue = plan.tenant
 		}
 		if op.Schema.TargetTable != "" {
-			field := r.filterSchema.Fields[op.Field]
+			field := plan.fields.Fields[op.Field]
 			opts.TargetVisible = func(alias string, bind func(any) string) (string, error) {
 				var tenant any
 				if plan.tenant != "" {

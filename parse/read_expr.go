@@ -40,8 +40,10 @@ func SQL(sql string) ColumnExpr {
 //
 // A computed column must be read, and cannot be the key, the tenant or the
 // deleted column, be patched, stamped or incremented, hold document paths
-// or element members, or correlate a relation. A relation to the resource cannot filter by it.
-// The resource's schemas (FilterSchema, SortSchema, SearchSchema) and its
+// or element members, or correlate a relation. A relation to the resource
+// filters by it through the expression of the dialect its owner's build is
+// for, and a dialect the expression refuses fails that build too. The
+// resource's schemas (FilterSchema, SortSchema, SearchSchema) and its
 // schema document stay dialect-neutral and name the column; ListQuery
 // compiles those schemas as they are, so list a resource with computed
 // columns through BuildList.
@@ -197,7 +199,7 @@ func (c *computedColumns) withoutViews() *computedColumns {
 // dialect. Dialect values then need not be comparable; dialects that differ
 // only in settings the expressions ignore, such as two PostgresDialects'
 // Collation, share a view, and dialects whose expressions differ never do.
-func (c *computedColumns) view(d filter.Dialect, fs *filter.ResourceSchema, ss *filter.SortSchema, search *filter.SearchSchema) (*dialectView, error) {
+func (c *computedColumns) view(d filter.Dialect, base *dialectView) (*dialectView, error) {
 	exprs := make([]string, len(c.columns))
 	var key strings.Builder
 	for i, col := range c.columns {
@@ -222,7 +224,7 @@ func (c *computedColumns) view(d filter.Dialect, fs *filter.ResourceSchema, ss *
 	if ok {
 		return v, nil
 	}
-	v = c.newView(exprs, fs, ss, search)
+	v = c.newView(exprs, base)
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if cached, ok := c.views[k]; ok {
@@ -237,13 +239,15 @@ func (c *computedColumns) view(d filter.Dialect, fs *filter.ResourceSchema, ss *
 	return v, nil
 }
 
-// newView copies fs, ss and search with each computed column's fields
-// compiled against exprs, its parenthesized SQL in declaration order.
-func (c *computedColumns) newView(exprs []string, fs *filter.ResourceSchema, ss *filter.SortSchema, search *filter.SearchSchema) *dialectView {
+// newView copies base's schemas with each computed column's fields compiled
+// against exprs, its parenthesized SQL in declaration order.
+func (c *computedColumns) newView(exprs []string, base *dialectView) *dialectView {
+	fs, ss, search := base.filter, base.sort, base.search
 	v := &dialectView{
-		exprs:  make(map[string]string, len(c.columns)),
-		fields: make(map[*filter.FieldSchema]*filter.FieldSchema, len(c.columns)),
-		sorts:  make(map[*filter.SortFieldSchema]*filter.SortFieldSchema, len(c.columns)),
+		exprs:     make(map[string]string, len(c.columns)),
+		fields:    make(map[*filter.FieldSchema]*filter.FieldSchema, len(c.columns)),
+		sorts:     make(map[*filter.SortFieldSchema]*filter.SortFieldSchema, len(c.columns)),
+		relations: base.relations,
 	}
 	for i, col := range c.columns {
 		v.exprs[col.column] = exprs[i]
@@ -302,17 +306,21 @@ func (c *computedColumns) newView(exprs []string, fs *filter.ResourceSchema, ss 
 // dialectView is a resource's filter, sort and search schemas with its
 // computed columns compiled against one dialect's expressions. Requests
 // parse against the dialect-neutral schemas, so a build moves their fields
-// onto the view's (filterAST, sortResult).
+// onto the view's (filterAST, sortResult), and a relation's onto its
+// target's view for the same dialect (withTargets, filterAST).
 type dialectView struct {
 	filter *filter.ResourceSchema
 	sort   *filter.SortSchema
 	search *filter.SearchSchema
 	// exprs are the computed columns' parenthesized SQL, by column.
 	exprs map[string]string
-	// fields and sorts map each computed field of the dialect-neutral
-	// schemas to the view's.
+	// fields and sorts map each field of the dialect-neutral schemas the
+	// view compiles differently to the view's: a computed column's, and a
+	// relation's that withTargets points at its target's view.
 	fields map[*filter.FieldSchema]*filter.FieldSchema
 	sorts  map[*filter.SortFieldSchema]*filter.SortFieldSchema
+	// relations are the resource's relation targets (Relate), by field.
+	relations map[string]RelatedResource
 }
 
 // dialectView is r's schemas compiled for d: its own when it has no computed
@@ -321,57 +329,154 @@ func (r *Resource[T]) dialectView(d filter.Dialect) (*dialectView, error) {
 	if d == nil {
 		return nil, fmt.Errorf("parse: %s: no dialect", r.table)
 	}
+	base := &dialectView{filter: r.filterSchema, sort: r.sortSchema, search: r.searchSchema, relations: r.relations}
 	if r.readExprs == nil {
-		return &dialectView{filter: r.filterSchema, sort: r.sortSchema, search: r.searchSchema}, nil
+		return base, nil
 	}
-	return r.readExprs.view(d, r.filterSchema, r.sortSchema, r.searchSchema)
+	return r.readExprs.view(d, base)
 }
 
 func (v *dialectView) listQuery(d filter.Dialect, cfg *core.ParserConfig) *filter.ListQuery {
 	return newListQuery(v.filter, v.sort, v.search, d, cfg)
 }
 
-// filterAST is ast with every computed field replaced by the view's.
-func (v *dialectView) filterAST(ast *filter.FilterAST) *filter.FilterAST {
-	if ast == nil || len(v.fields) == 0 {
-		return ast
+// withTargets is v with each named relation's field filtering its target
+// through the target's view for d, as a relation compiles in one of v's
+// builds: the target's policies (Scope.Related), relation facets, includes
+// and membership changes. Names of other fields are ignored. A dialect a
+// target's expression refuses is an error.
+func (v *dialectView) withTargets(d filter.Dialect, names ...string) (*dialectView, error) {
+	var out *dialectView
+	for _, name := range slices.Compact(slices.Sorted(slices.Values(names))) {
+		target, ok := v.relations[name]
+		field := v.filter.Fields[name]
+		if !ok || field == nil {
+			continue
+		}
+		tv, err := target.dialectView(d)
+		if err != nil {
+			return nil, err
+		}
+		if field.Related == tv.filter {
+			continue
+		}
+		if out == nil {
+			filters := *v.filter
+			filters.Fields = maps.Clone(v.filter.Fields)
+			copied := *v
+			copied.filter, copied.fields = &filters, maps.Clone(v.fields)
+			if copied.fields == nil {
+				copied.fields = make(map[*filter.FieldSchema]*filter.FieldSchema, len(names))
+			}
+			out = &copied
+		}
+		related := *field
+		related.Related = tv.filter
+		out.filter.Fields[name] = &related
+		out.fields[field] = &related
 	}
-	root := v.node(ast.Root)
-	if root == ast.Root {
-		return ast
+	if out == nil {
+		return v, nil
 	}
-	return &filter.FilterAST{Root: root}
+	return out, nil
 }
 
-// node is n, copied where it or a descendant names a computed field. A
-// relation's children filter its target, whose fields are its own.
-func (v *dialectView) node(n *filter.FilterNode) *filter.FilterNode {
+// filterAST is ast compiled for d: its computed fields replaced by the
+// view's, and each relation's children by its target's view for d, at any
+// depth. A dialect a target's expression refuses is an error.
+func (v *dialectView) filterAST(d filter.Dialect, ast *filter.FilterAST) (*filter.FilterAST, error) {
+	if ast == nil || (len(v.fields) == 0 && len(v.relations) == 0) {
+		return ast, nil
+	}
+	root, err := v.node(d, ast.Root)
+	if err != nil || root == ast.Root {
+		return ast, err
+	}
+	return &filter.FilterAST{Root: root}, nil
+}
+
+// node is n, copied where it or a descendant compiles differently in the
+// view. It walks the filter's finite tree, never the relation graph, so
+// relations in a cycle end where the filter does.
+func (v *dialectView) node(d filter.Dialect, n *filter.FilterNode) (*filter.FilterNode, error) {
 	if n == nil {
-		return nil
+		return nil, nil
 	}
 	field, moved := v.fields[n.Field]
-	var children []*filter.FilterNode
-	if n.Field == nil || n.Field.Relation == nil {
-		for i, child := range n.Children {
-			if c := v.node(child); c != child {
-				if children == nil {
-					children = slices.Clone(n.Children)
-				}
-				children[i] = c
+	if !moved {
+		field = n.Field
+	}
+	// A relation's children filter its target with the target's fields, so
+	// they compile in the target's view.
+	within := v
+	if field != nil && field.Relation != nil {
+		target, ok := v.relations[field.ExternalName]
+		if !ok || field.Related == nil {
+			within = nil
+		} else {
+			tv, err := target.dialectView(d)
+			if err != nil {
+				return nil, err
 			}
+			if field.Related != tv.filter {
+				related := *field
+				related.Related = tv.filter
+				field = &related
+			}
+			within = tv
 		}
 	}
-	if !moved && children == nil {
-		return n
+	children, changed := n.Children, false
+	if within != nil {
+		var err error
+		if children, changed, err = within.nodes(d, n.Children); err != nil {
+			return nil, err
+		}
+	}
+	if field == n.Field && !changed {
+		return n, nil
 	}
 	out := *n
-	if moved {
-		out.Field = field
+	out.Field, out.Children = field, children
+	return &out, nil
+}
+
+// nodes is ns compiled in v, and whether any node changed.
+func (v *dialectView) nodes(d filter.Dialect, ns []*filter.FilterNode) ([]*filter.FilterNode, bool, error) {
+	var out []*filter.FilterNode
+	for i, n := range ns {
+		c, err := v.node(d, n)
+		if err != nil {
+			return nil, false, err
+		}
+		if c != n && out == nil {
+			out = slices.Clone(ns)
+		}
+		if out != nil {
+			out[i] = c
+		}
 	}
-	if children != nil {
-		out.Children = children
+	if out == nil {
+		return ns, false, nil
 	}
-	return &out
+	return out, true, nil
+}
+
+// policyFields names every field pc constrains, at any depth.
+func policyFields(pc *filter.PolicyConstraints) []string {
+	if pc == nil {
+		return nil
+	}
+	var out []string
+	for _, c := range pc.Constraints {
+		if c.Field != "" {
+			out = append(out, c.Field)
+		}
+	}
+	for _, group := range slices.Concat(pc.And, pc.Or) {
+		out = append(out, policyFields(group)...)
+	}
+	return out
 }
 
 // sortResult is sr with every computed key replaced by the view's.
@@ -417,8 +522,3 @@ func (r *Resource[T]) checkComputedPatches() error {
 
 // computed reports whether column is read through an expression.
 func (r *Resource[T]) computed(column string) bool { return r.readExprs.has(column) }
-
-// relatedFilterSchema is the filter schema a relation to r filters r's rows
-// with: r's own less its computed columns, whose expressions only r's own
-// builds resolve for their dialect.
-func (r *Resource[T]) relatedFilterSchema() *filter.ResourceSchema { return r.relatedSchema }

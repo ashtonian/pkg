@@ -282,6 +282,9 @@ type ListPlan struct {
 	Limit  int
 
 	dialect filter.Dialect
+	// fields is the filter schema the plan compiled, its includes' targets
+	// compiled for dialect.
+	fields  *filter.ResourceSchema
 	table   string
 	tenant  string
 	related map[string]*filter.PolicyConstraints
@@ -312,6 +315,12 @@ func (r *Resource[T]) BuildList(d filter.Dialect, req *ListRequest, s Scope) (*L
 		DeleteColumn: r.deleted, IncludeDeleted: s.IncludeDeleted && r.deleted != "",
 	}, s.Governance, s.Policy)
 
+	// Relations the facets, includes and policies reach compile their
+	// targets for d; the filter's own reach theirs as filterAST walks it.
+	if v, err = v.withTargets(d, slices.Concat(req.Facets, req.Include, policyFields(policy))...); err != nil {
+		return nil, err
+	}
+
 	pageSize := req.PageSize
 	if pageSize <= 0 {
 		pageSize = r.pageSize
@@ -329,7 +338,11 @@ func (r *Resource[T]) BuildList(d filter.Dialect, req *ListRequest, s Scope) (*L
 		opts = append(opts, filter.ListTenant(s.Tenant))
 	}
 	if req.Filter != nil {
-		opts = append(opts, filter.ListFilterAST(v.filterAST(req.Filter.AST)))
+		ast, err := v.filterAST(d, req.Filter.AST)
+		if err != nil {
+			return nil, err
+		}
+		opts = append(opts, filter.ListFilterAST(ast))
 	}
 	if req.Sort != nil {
 		opts = append(opts, filter.ListSortResult(v.sortResult(req.Sort)))
@@ -349,6 +362,7 @@ func (r *Resource[T]) BuildList(d filter.Dialect, req *ListRequest, s Scope) (*L
 		Keyset:   res.Cursor,
 		Limit:    res.Limit,
 		dialect:  d,
+		fields:   v.filter,
 		table:    r.table,
 		tenant:   s.Tenant,
 		related:  s.Related,
@@ -400,7 +414,7 @@ func (r *Resource[T]) IncludeQueries(plan *ListPlan, ownerKeys []any) ([]filter.
 	}
 	out := make([]filter.IncludeQuery, 0, len(plan.Include))
 	for _, name := range plan.Include {
-		q, err := filter.BuildIncludeQuery(r.filterSchema.Fields[name], plan.dialect, ownerKeys, opts...)
+		q, err := filter.BuildIncludeQuery(plan.fields.Fields[name], plan.dialect, ownerKeys, opts...)
 		if err != nil {
 			return nil, err
 		}
