@@ -9,6 +9,12 @@ describe("readProblem", () => {
       want: { type: "about:blank", title: "Not Found", extensions: {} },
     },
     {
+      name: "reads an empty type as about:blank",
+      doc: { type: "" },
+      url: "https://api.example.com/v1/items?token=secret",
+      want: { type: "about:blank", extensions: {} },
+    },
+    {
       name: "drops standard members of the wrong type",
       doc: { type: null, title: 42, detail: ["x"], instance: {}, status: "404", balance: 30 },
       want: { type: "about:blank", extensions: { balance: 30 } },
@@ -107,8 +113,13 @@ describe("problem recognition", () => {
 
   it.each([
     [{ type: "https://example.net/x" }, true],
-    [{ title: "Not Found" }, true],
-    [{ status: 404 }, true],
+    [{ type: "about:blank" }, true],
+    [{ title: "Not Found", status: 404 }, true],
+    [{ type: "error" }, false],
+    [{ type: "/probs/x" }, false],
+    [{ title: "Not Found" }, false],
+    [{ status: 404 }, false],
+    [{ title: "Not Found", status: 404.5 }, false],
     [{ status: "error", message: "x" }, false],
     [{ code: "E2071", message: "x" }, false],
   ])("members of %j are a problem: %s", (doc, want) => {

@@ -308,15 +308,20 @@ export function createClient(cfg: ClientConfig): Client {
     shared.waiters++;
     // A caller without a signal never leaves, so the request is never cancelled under it.
     if (!signal) return shared.schema;
-    await new Promise<void>((resolve) => {
-      const done = () => {
-        signal.removeEventListener("abort", done);
-        resolve();
+    // Whichever happens first decides, as with fetch: a schema that settled
+    // before the abort is this caller's even if the abort follows at once.
+    const abortedFirst = await new Promise<boolean>((resolve) => {
+      const aborted = () => {
+        resolve(true);
       };
-      signal.addEventListener("abort", done);
-      shared.schema.then(done, done);
+      const settled = () => {
+        signal.removeEventListener("abort", aborted);
+        resolve(false);
+      };
+      signal.addEventListener("abort", aborted, { once: true });
+      shared.schema.then(settled, settled);
     });
-    if (signal.aborted) {
+    if (abortedFirst) {
       shared.waiters--;
       if (shared.waiters === 0) {
         // A later call starts a fresh request rather than joining a cancelled one.

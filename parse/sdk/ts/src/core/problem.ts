@@ -9,7 +9,7 @@ export const PROBLEM_MEDIA_TYPE = "application/problem+json";
  * `extensions`. All of it is server-supplied, untrusted text.
  */
 export interface Problem {
-  /** The problem type URI, resolved against the response URL; `"about:blank"` when absent. */
+  /** The problem type URI, resolved against the response URL; `"about:blank"` when absent or empty. */
   readonly type: string;
   readonly title?: string;
   /** The status the document states. Advisory: `ApiError.status` is the response's. */
@@ -31,6 +31,9 @@ export interface FieldError {
 
 const STANDARD_MEMBERS = new Set(["type", "title", "status", "detail", "instance"]);
 
+// An RFC 3986 scheme followed by ":".
+const ABSOLUTE_URI = /^[a-z][a-z0-9+.-]*:/i;
+
 type Mutable<T> = { -readonly [K in keyof T]: T[K] };
 
 export function isRecord(value: unknown): value is Record<string, unknown> {
@@ -45,10 +48,18 @@ export function isProblemMediaType(contentType: string | null): boolean {
 
 /**
  * Reports whether a JSON object sent without the problem media type is still
- * shaped as one: it has a standard member of the right type.
+ * unmistakably one: its `type` is an absolute URI, or it has a string `title`
+ * and an HTTP `status`. A lone `status` or a bare-word `type` is common in
+ * other error envelopes, so neither is enough.
  */
 export function hasProblemMembers(doc: Record<string, unknown>): boolean {
-  return typeof doc["type"] === "string" || typeof doc["title"] === "string" || typeof doc["status"] === "number";
+  const type = doc["type"];
+  if (typeof type === "string" && ABSOLUTE_URI.test(type)) return true;
+  return typeof doc["title"] === "string" && isHTTPStatus(doc["status"]);
+}
+
+function isHTTPStatus(value: unknown): value is number {
+  return typeof value === "number" && Number.isInteger(value) && value >= 100 && value <= 599;
 }
 
 /**
@@ -58,16 +69,16 @@ export function hasProblemMembers(doc: Record<string, unknown>): boolean {
 export function readProblem(doc: Record<string, unknown>, responseURL: string): Problem {
   // fromEntries defines members, so one named "__proto__" stays an ordinary member.
   const extensions = Object.fromEntries(Object.entries(doc).filter(([name]) => !STANDARD_MEMBERS.has(name)));
+  // An empty type would resolve to the response URL, query string included.
+  const type = stringMember(doc, "type");
   const problem: Mutable<Problem> = {
-    type: resolveReference(stringMember(doc, "type") ?? "about:blank", responseURL),
+    type: type ? resolveReference(type, responseURL) : "about:blank",
     extensions,
   };
   const title = stringMember(doc, "title");
   if (title !== undefined) problem.title = title;
   const status = doc["status"];
-  if (typeof status === "number" && Number.isInteger(status) && status >= 100 && status <= 599) {
-    problem.status = status;
-  }
+  if (isHTTPStatus(status)) problem.status = status;
   const detail = stringMember(doc, "detail");
   if (detail !== undefined) problem.detail = detail;
   const instance = stringMember(doc, "instance");

@@ -6,8 +6,10 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { createClient } from "./client.js";
-import { ApiError, SchemaValidationError, SchemaVersionError } from "./core/errors.js";
+// ApiError and the problem types come through the package's public entry points.
+import { ApiError, SchemaValidationError, SchemaVersionError } from "./core/index.js";
 import type { ListResult } from "./filter/types.js";
+import type { FieldError, Problem } from "./index.js";
 import { type ResourceSchema, SCHEMA_VERSION } from "./schema.js";
 
 interface WireItem {
@@ -175,6 +177,17 @@ describe("errors", () => {
     ],
   };
   const parseBody = { code: "E2071", message: "field 'x' is not filterable", details: { field: "x" } };
+  const validationProblem: Problem = {
+    type: validation.type,
+    title: validation.title,
+    status: 422,
+    detail: validation.detail,
+    extensions: { code: "E2077", errors: validation.errors },
+  };
+  const validationErrors: FieldError[] = [
+    { detail: "must be a positive integer", pointer: "#/age" },
+    { detail: "must be 'green', 'red' or 'blue'", pointer: "#/profile/color", code: "E2087" },
+  ];
 
   const cases: { name: string; response: () => Response; want: Record<string, unknown> }[] = [
     {
@@ -190,17 +203,8 @@ describe("errors", () => {
         code: "E2077",
         message: "2 members are invalid",
         body: { code: "E2077", message: "2 members are invalid" },
-        problem: {
-          type: validation.type,
-          title: validation.title,
-          status: 422,
-          detail: validation.detail,
-          extensions: { code: "E2077", errors: validation.errors },
-        },
-        errors: [
-          { detail: "must be a positive integer", pointer: "#/age" },
-          { detail: "must be 'green', 'red' or 'blue'", pointer: "#/profile/color", code: "E2087" },
-        ],
+        problem: validationProblem,
+        errors: validationErrors,
       },
     },
     {
@@ -209,9 +213,29 @@ describe("errors", () => {
       want: { status: 403, code: "https://example.com/probs/out-of-credit", message: "You do not have enough credit.", errors: [] },
     },
     {
-      name: "an about:blank problem recognized by its members",
+      name: "an about:blank problem recognized by its title and status",
       response: () => json({ title: "Not Found", status: 404 }, 404),
       want: { status: 404, code: "", message: "Not Found", problem: { type: "about:blank", title: "Not Found", status: 404, extensions: {} } },
+    },
+    {
+      name: "a problem recognized by its absolute type",
+      response: () => json({ type: "https://example.com/probs/out-of-credit", detail: "Your balance is 30." }, 403),
+      want: { status: 403, code: "https://example.com/probs/out-of-credit", message: "Your balance is 30." },
+    },
+    {
+      name: "JSON whose type is a bare word, not as a problem",
+      response: () => json({ type: "error", error: { message: "bad" } }, 400),
+      want: { status: 400, code: "", message: "HTTP 400", problem: undefined },
+    },
+    {
+      name: "JSON with only a status, not as a problem",
+      response: () => json({ timestamp: "2026-11-20T00:00:00Z", status: 500, error: "Internal Server Error", path: "/items" }, 500),
+      want: { status: 500, code: "", message: "HTTP 500", problem: undefined },
+    },
+    {
+      name: "a problem with an empty type as about:blank",
+      response: () => problemResponse({ type: "", title: "Bad Request" }, 400),
+      want: { status: 400, code: "", message: "Bad Request", problem: { type: "about:blank", title: "Bad Request" } },
     },
     {
       name: "a parse error body sent as a problem",
