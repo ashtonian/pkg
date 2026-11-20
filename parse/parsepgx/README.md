@@ -58,7 +58,7 @@ sequenceDiagram
 **Exit points**
 - Include results pass through `filter.Page.SetInclude`: `_relations` and `_truncated` omit empty projections, and cut owners are reported with the retained IDs.
 - Statements to `db` through `SendBatch` (and `Begin` for an update that changes relations). Statement text and arguments come only from the plan.
-- Rows use pgx's `db`-tagged, embedded-field mapping. Columns omitted by `parse.ReadColumns` stay zero; declared JSON storage and JSON/JSONB result types use the checked JSON decoder described below.
+- Rows use pgx's `db`-tagged, embedded-field mapping. Columns omitted by `parse.ReadColumns` stay zero; a `parse.ReadExpr` column scans its expression's value under its `db` name; declared JSON storage and JSON/JSONB result types use the checked JSON decoder described below.
 
 **Failure modes**
 - A plan compiled for another dialect: `ErrDialect`, before any statement runs.
