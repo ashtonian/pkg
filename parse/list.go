@@ -236,12 +236,21 @@ func listParamError(param, msg string) *core.ParseError {
 // the request.
 type Scope struct {
 	// Tenant holds rows, and tenant-scoped relation junctions, to one tenant.
-	// Required for a resource with a tenant column.
+	// Required for a resource with a tenant column. It is the tenant key's
+	// text, normalized once to the type of every tenant column the resource
+	// reaches: the key of a string column, a UUID's canonical text, or an
+	// integer's decimal digits ("44"). Text one of them cannot hold is
+	// ErrTenantInvalid.
 	Tenant string
 	// Governance, when set, replaces the tenant floor: it decides tenancy
 	// itself, grants included (filter.ComposeConstraints).
 	Governance *filter.PolicyConstraints
 	// Policy is the authorization constraint, ANDed with everything else.
+	// A constraint names a system field, or exactly one of a request field
+	// by name, a field without the filter capability by external name, or
+	// any field by its column, hidden ones included; a name designating
+	// more than one is filter.ErrAmbiguousPolicyField
+	// (filter.ResourceSchema.PolicyField).
 	Policy *filter.PolicyConstraints
 	// Related is the caller's policy for the target table of each
 	// policy-scoped relation (PolicyScoped), keyed by table: the related
@@ -283,7 +292,8 @@ type ListPlan struct {
 
 	dialect filter.Dialect
 	table   string
-	tenant  string
+	// tenant is Scope.Tenant in the tenant key's type; nil without one.
+	tenant  any
 	related map[string]*filter.PolicyConstraints
 }
 
@@ -299,11 +309,12 @@ func (r *Resource[T]) BuildList(d filter.Dialect, req *ListRequest, s Scope) (*L
 	if req == nil {
 		req = &ListRequest{}
 	}
-	if r.tenant != "" && s.Tenant == "" {
-		return nil, fmt.Errorf("%s: %w", r.table, ErrTenantRequired)
+	tenant, err := r.bindTenant(s.Tenant)
+	if err != nil {
+		return nil, err
 	}
 	policy := filter.ComposeConstraints(filter.RepositoryScope{
-		TenantColumn: r.tenant, TenantID: s.Tenant,
+		TenantColumn: r.tenant, TenantID: tenant,
 		DeleteColumn: r.deleted, IncludeDeleted: s.IncludeDeleted && r.deleted != "",
 	}, s.Governance, s.Policy)
 
@@ -320,8 +331,8 @@ func (r *Resource[T]) BuildList(d filter.Dialect, req *ListRequest, s Scope) (*L
 		filter.ListWithCount(req.IncludeTotal),
 		filter.ListRelatedPolicies(s.Related),
 	}
-	if s.Tenant != "" {
-		opts = append(opts, filter.ListTenant(s.Tenant))
+	if tenant != nil {
+		opts = append(opts, filter.ListTenant(tenant))
 	}
 	if req.Filter != nil {
 		opts = append(opts, filter.ListFilterAST(req.Filter.AST))
@@ -345,7 +356,7 @@ func (r *Resource[T]) BuildList(d filter.Dialect, req *ListRequest, s Scope) (*L
 		Limit:    res.Limit,
 		dialect:  d,
 		table:    r.table,
-		tenant:   s.Tenant,
+		tenant:   tenant,
 		related:  s.Related,
 	}
 	if req.IncludeTotal {
@@ -390,7 +401,7 @@ func (r *Resource[T]) IncludeQueries(plan *ListPlan, ownerKeys []any) ([]filter.
 		return nil, nil
 	}
 	opts := []filter.IncludeQueryOption{filter.WithIncludeRelatedPolicies(plan.related)}
-	if plan.tenant != "" {
+	if plan.tenant != nil {
 		opts = append(opts, filter.WithIncludeTenant(plan.tenant))
 	}
 	out := make([]filter.IncludeQuery, 0, len(plan.Include))

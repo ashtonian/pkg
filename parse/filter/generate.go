@@ -36,23 +36,26 @@ func generateFilterSchema(g *core.SchemaGenerator, t reflect.Type) (*ResourceSch
 		return nil, err
 	}
 	fields := make(map[string]*FieldSchema)
+	// candidates are the walk's fields as server policies may name them, in
+	// walk order.
+	var candidates []policyCandidate
 
 	for _, field := range walk.Fields {
 		tags := &field.Tags
-		if !tags.Parse.Filter {
-			continue
-		}
 		fieldName := field.External
-		if fieldName == "" {
+		if tags.Parse.Filter && fieldName == "" && tags.Relation != "" {
 			// : virtual relation fields conventionally carry
 			// `json:"-"` to hide from response payloads. They still
 			// need an addressable name. Generators can preserve their
 			// declared name with relation_name; otherwise use snake_case
 			// of the struct field name.
-			if tags.Relation == "" {
-				continue
-			}
 			fieldName = cmp.Or(tags.RelationName, core.ToSnakeCase(field.GoName))
+		}
+		if !tags.Parse.Filter || fieldName == "" {
+			if c, ok := policyColumn(g, tableName, field); ok {
+				candidates = append(candidates, c)
+			}
+			continue
 		}
 		if _, exists := fields[fieldName]; exists {
 			return nil, fmt.Errorf("field %s: duplicate filter field name %q", field.GoName, fieldName)
@@ -173,6 +176,7 @@ func generateFilterSchema(g *core.SchemaGenerator, t reflect.Type) (*ResourceSch
 			fs.Element = newElement(fs)
 		}
 		fields[fieldName] = fs
+		candidates = append(candidates, requestCandidate(g, field, fs))
 		if core.IsDocument(fs.DataType) {
 			paths, err := documentPathFields(g, field, fs)
 			if err != nil {
@@ -183,6 +187,7 @@ func generateFilterSchema(g *core.SchemaGenerator, t reflect.Type) (*ResourceSch
 					return nil, fmt.Errorf("field %s: path %q collides with another field", field.GoName, p.ExternalName)
 				}
 				fields[p.ExternalName] = p
+				candidates = append(candidates, policyCandidate{goName: field.GoName, name: p.ExternalName, request: true, field: p})
 			}
 			elems, err := documentElements(g, field, fs)
 			if err != nil {
@@ -197,7 +202,8 @@ func generateFilterSchema(g *core.SchemaGenerator, t reflect.Type) (*ResourceSch
 		}
 	}
 
-	return &ResourceSchema{Name: tableName, Fields: fields}, nil
+	policyFields, refused := indexPolicyNames(candidates)
+	return &ResourceSchema{Name: tableName, Fields: fields, PolicyFields: policyFields, policyRefused: refused}, nil
 }
 
 // GenerateSortSchema generates a SortSchema from struct tags on type T.
@@ -440,8 +446,12 @@ var (
 // RepositoryScope is the floor of a repository read: the request tenant when
 // the table is tenant-scoped, and soft-delete masking.
 type RepositoryScope struct {
-	TenantColumn   string
-	TenantID       string
+	TenantColumn string
+	// TenantID is the tenant key as the tenant column holds it: a string or
+	// a canonical UUID string, or an int64 / uint64 for an integer column.
+	// parse.Resource normalizes Scope.Tenant to it. Nil or "" admits no row
+	// (BuildBaseConstraints).
+	TenantID       any
 	DeleteColumn   string
 	IncludeDeleted bool
 }
@@ -456,7 +466,7 @@ func ComposeConstraints(scope RepositoryScope, governance, authz *PolicyConstrai
 	if governance != nil && !governance.IsEmpty() {
 		root.And = append(root.And, governance)
 		if scope.DeleteColumn != "" && !scope.IncludeDeleted {
-			root.And = append(root.And, BuildBaseConstraints("", "", scope.DeleteColumn, false))
+			root.And = append(root.And, BuildBaseConstraints("", nil, scope.DeleteColumn, false))
 		}
 	} else {
 		root.And = append(root.And, BuildBaseConstraints(scope.TenantColumn, scope.TenantID, scope.DeleteColumn, scope.IncludeDeleted))
@@ -469,15 +479,21 @@ func ComposeConstraints(scope RepositoryScope, governance, authz *PolicyConstrai
 
 // BuildBaseConstraints builds PolicyConstraints for tenant isolation and soft-delete.
 //
-// Fail-closed tenant scoping: when tenantCol is set, the tenant
-// equality predicate is ALWAYS emitted. An empty tenantID yields an impossible
-// predicate (`tenant_col = ”` — zero rows, or a type error on UUID columns)
-// instead of silently widening the query to every tenant. Repos additionally
-// reject the empty-tenant case up front with a typed error; the predicate here
-// is defense in depth for any caller that bypasses that gate.
-func BuildBaseConstraints(tenantCol, tenantID, deleteCol string, includeSoftDeleted bool) *PolicyConstraints {
+// tenantID is the tenant key in the tenant column's type (RepositoryScope).
+//
+// Fail-closed tenant scoping: when tenantCol is set, the tenant floor is
+// ALWAYS emitted. Without a tenant — nil or "" — it is UnknownConstraint,
+// which admits no row on every tenant column type, instead of widening the
+// query to every tenant or failing as a request error. Repos additionally
+// reject the missing tenant up front with a typed error; the floor here is
+// defense in depth for any caller that bypasses that gate.
+func BuildBaseConstraints(tenantCol string, tenantID any, deleteCol string, includeSoftDeleted bool) *PolicyConstraints {
 	pc := &PolicyConstraints{Source: "repository_base"}
-	if tenantCol != "" {
+	switch {
+	case tenantCol == "":
+	case tenantID == nil || tenantID == "":
+		pc.Constraints = append(pc.Constraints, UnknownConstraint())
+	default:
 		pc.Constraints = append(pc.Constraints, &PolicyConstraint{
 			Field: tenantCol, Operator: OpEq, Value: tenantID,
 		})
