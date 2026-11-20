@@ -508,7 +508,8 @@ func resourceColumns(gen *core.SchemaGenerator, t reflect.Type) ([]string, map[s
 
 // WithPaths returns a view of r for one request with decls declared as JSON
 // paths — filterable, and sortable or facetable as each declares — leaving r and its other requests unchanged. A tenant's custom fields
-// are declared this way; the view parses, lists and updates like r.
+// are declared this way; the view parses, lists and updates like r. A path
+// into a computed column (ReadExpr) is refused: it reads a stored document.
 func (r *Resource[T]) WithPaths(decls ...filter.PathDecl) (*Resource[T], error) {
 	fs, err := r.filterSchema.WithPaths(decls...)
 	if err != nil {
@@ -517,6 +518,9 @@ func (r *Resource[T]) WithPaths(decls ...filter.PathDecl) (*Resource[T], error) 
 	ss, err := r.sortSchema.WithPaths(r.filterSchema, decls...)
 	if err != nil {
 		return nil, fmt.Errorf("%s: %w", r.table, err)
+	}
+	if err := r.readExprs.checkDocuments(fs, ss); err != nil {
+		return nil, err
 	}
 	if err := r.readsSortKeys(ss); err != nil {
 		return nil, err

@@ -223,6 +223,23 @@ func TestReadExpr_Refusals(t *testing.T) {
 	_, err := parse.NewResource[document]("documents", parse.ReadExpr("attrs", parse.SQL("jsonb_build_object('color', 'red')")))
 	assert.ErrorContains(t, err, "declares document paths")
 
+	type untagged struct {
+		ID    int            `json:"id"    db:"id"`
+		Attrs map[string]any `json:"attrs" db:"attrs" parse:"filter"`
+	}
+	computedDocs, err := parse.NewResource[untagged]("documents", parse.ReadExpr("attrs", parse.SQL("jsonb_build_object('color', 'red')")))
+	require.NoError(t, err)
+	for _, decl := range []filter.PathDecl{
+		{Path: "attrs.color", Type: core.FieldTypeString},
+		{Path: "attrs.color", Type: core.FieldTypeString, Sort: true},
+	} {
+		_, err = computedDocs.WithPaths(decl)
+		assert.ErrorContains(t, err, `parse: documents: computed column "attrs": declares document paths, which read a stored document`, "a request's paths as the tags'")
+	}
+	storedDocs := parse.MustResource[untagged]("documents")
+	_, err = storedDocs.WithPaths(filter.PathDecl{Path: "attrs.color", Type: core.FieldTypeString, Sort: true})
+	require.NoError(t, err)
+
 	type membership struct {
 		ID        int `json:"id"         db:"id"         parse:"filter"`
 		AccountID int `json:"account_id" db:"account_id" parse:"filter"`
