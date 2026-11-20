@@ -195,6 +195,18 @@ func TestReadExpr_RefusedDialect(t *testing.T) {
 			assert.NoError(t, err)
 		})
 	}
+
+	t.Run("owner's membership change", func(t *testing.T) {
+		groups := parse.MustResource[accessGroup]("access_groups", parse.TenantColumn("tenant_id"))
+		groups.MustRelate("accounts", parse.ManyToMany(accounts, parse.Through("account_groups", "group_id", "account_id"), parse.Writable()))
+		p, err := groups.ParseMergePatch([]byte(`{"accounts":[1]}`))
+		require.NoError(t, err)
+		_, err = groups.BuildUpdate(filter.SQLiteDialect{}, p, parse.ByID(20), scope)
+		assert.ErrorIs(t, err, filter.ErrUnsupportedDialect)
+		assert.ErrorContains(t, err, `parse: accounts: computed column "group_ids" for dialect sqlite`)
+		_, err = groups.BuildUpdate(filter.PostgresDialect{}, p, parse.ByID(20), scope)
+		assert.NoError(t, err)
+	})
 }
 
 // Concurrent first builds for two dialects, of a target and of an owner
