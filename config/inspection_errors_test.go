@@ -23,6 +23,11 @@ func TestInspectionDoesNotDecodeTags(t *testing.T) {
 	type cfg struct {
 		Value inspectionText `koanf:"value" example:"example"`
 	}
+	// Start from an uncached schema: a cached entry validates its tags once
+	// per process, so a later run would otherwise see no decode at all.
+	schemaCache.Lock()
+	delete(schemaCache.entries, reflect.TypeFor[cfg]())
+	schemaCache.Unlock()
 	before := inspectionDecodeCalls.Load()
 	for _, format := range []string{FormatTable, FormatJSON, FormatYAML} {
 		var out bytes.Buffer
