@@ -3,9 +3,11 @@ package config
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"net/netip"
 	"path/filepath"
 	"reflect"
+	"strconv"
 	"testing"
 	"time"
 
@@ -395,4 +397,116 @@ func TestSetDefaults_EnclosingSetsAnAllocatedSection(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, cfg.Listener.TLS)
 	assert.Equal(t, "/etc/server.pem", cfg.Listener.TLS.Cert)
+}
+
+// Structs that marshal to text keep their state through the code defaults
+// layer wherever SetDefaults puts them: a list, an array, a map — an entry
+// changed or one removed — or a section inside a map — and a nil list stays
+// nil. A time.Time, which the merge copies whole, keeps its location's name
+// too.
+type addrSection struct {
+	Gateway netip.Addr `koanf:"gateway"`
+}
+
+type textDefaults struct {
+	Prefix   netip.Prefix            `koanf:"prefix"`
+	Prefixes []netip.Prefix          `koanf:"prefixes"`
+	Addrs    []netip.Addr            `koanf:"addrs"`
+	Pair     [2]netip.Addr           `koanf:"pair"`
+	Pointers []*netip.Addr           `koanf:"pointers"`
+	Changed  map[string]netip.Prefix `koanf:"changed" default:"a=10.0.0.0/8,b=10.1.0.0/16"`
+	Removed  map[string]netip.Prefix `koanf:"removed" default:"a=10.0.0.0/8,b=10.1.0.0/16"`
+	ByIndex  map[int]netip.Addr      `koanf:"by_index"`
+	Lists    map[string][]netip.Addr `koanf:"lists"`
+	Sections map[string]addrSection  `koanf:"sections"`
+	Hosts    map[int]addrSection     `koanf:"hosts"`
+	Unset    map[int][]netip.Addr    `koanf:"unset"`
+	Start    time.Time               `koanf:"start"`
+	Windows  []time.Time             `koanf:"windows"`
+}
+
+// testZone is a named zone a text round trip would lose the name of.
+var testZone = time.FixedZone("TEST", 3600)
+
+func (d *textDefaults) SetDefaults() {
+	d.Prefix = netip.MustParsePrefix("10.0.0.0/8")
+	d.Prefixes = []netip.Prefix{netip.MustParsePrefix("10.0.0.0/8"), netip.MustParsePrefix("192.168.0.0/16")}
+	d.Addrs = []netip.Addr{netip.MustParseAddr("10.0.0.1"), netip.MustParseAddr("2001:db8::1")}
+	d.Pair = [2]netip.Addr{netip.MustParseAddr("10.0.0.3"), netip.MustParseAddr("10.0.0.4")}
+	addr := netip.MustParseAddr("10.0.0.5")
+	d.Pointers = []*netip.Addr{&addr, nil}
+	d.Changed["b"] = netip.MustParsePrefix("10.2.0.0/16")
+	delete(d.Removed, "b")
+	d.ByIndex = map[int]netip.Addr{1: netip.MustParseAddr("10.0.0.6")}
+	d.Lists = map[string][]netip.Addr{"x": {netip.MustParseAddr("10.0.0.7")}}
+	d.Sections = map[string]addrSection{"lan": {Gateway: netip.MustParseAddr("192.168.0.1")}}
+	d.Hosts = map[int]addrSection{1: {Gateway: netip.MustParseAddr("192.168.1.1")}}
+	d.Unset = map[int][]netip.Addr{1: nil}
+	d.Start = time.Date(2026, 1, 2, 3, 4, 5, 0, testZone)
+	d.Windows = []time.Time{time.Date(2026, 2, 3, 4, 5, 6, 0, testZone)}
+}
+
+func TestSetDefaults_ValuesThatMarshalToText(t *testing.T) {
+	want := textDefaults{
+		Changed: map[string]netip.Prefix{"a": netip.MustParsePrefix("10.0.0.0/8"), "b": netip.MustParsePrefix("10.1.0.0/16")},
+		Removed: map[string]netip.Prefix{"a": netip.MustParsePrefix("10.0.0.0/8"), "b": netip.MustParsePrefix("10.1.0.0/16")},
+	}
+	want.SetDefaults()
+
+	got, err := Load[textDefaults](t.Context())
+	require.NoError(t, err)
+	assert.Equal(t, want, *got)
+
+	rows, err := Usage[textDefaults]("")
+	require.NoError(t, err)
+	for _, r := range rows {
+		if r.Key == "prefixes" {
+			assert.Equal(t, `["10.0.0.0/8","192.168.0.0/16"]`, r.Default)
+		}
+	}
+}
+
+// failingText marshals to text only when n is not negative.
+type failingText struct{ n int }
+
+func (f failingText) MarshalText() ([]byte, error) {
+	if f.n < 0 {
+		return nil, errors.New("negative")
+	}
+	return []byte(strconv.Itoa(f.n)), nil
+}
+
+func (f *failingText) UnmarshalText(b []byte) error {
+	n, err := strconv.Atoi(string(b))
+	f.n = n
+	return err
+}
+
+type failingDefaults struct {
+	Values []failingText `koanf:"values"`
+}
+
+func (d *failingDefaults) SetDefaults() { d.Values = []failingText{{n: 1}, {n: -1}} }
+
+// A value SetDefaults sets that cannot marshal to text fails the load, naming
+// its key, instead of loading as a zero value.
+func TestSetDefaults_ValueThatCannotMarshalFails(t *testing.T) {
+	_, err := Load[failingDefaults](t.Context())
+	require.ErrorIs(t, err, ErrValidation)
+	assert.Contains(t, err.Error(), "values[1]")
+	assert.NotContains(t, err.Error(), "values[0]")
+}
+
+type dynamicDefaults struct {
+	Any any `koanf:"any"`
+}
+
+func (d *dynamicDefaults) SetDefaults() { d.Any = netip.MustParseAddr("10.0.0.9") }
+
+// A field of interface type that SetDefaults sets to a struct whose state
+// the merge would lose receives the struct's text.
+func TestSetDefaults_InterfaceFieldTakesText(t *testing.T) {
+	got, err := Load[dynamicDefaults](t.Context())
+	require.NoError(t, err)
+	assert.Equal(t, "10.0.0.9", got.Any)
 }

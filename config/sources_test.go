@@ -4,9 +4,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -453,4 +456,139 @@ func TestLoad_CommaSeparatedSlices(t *testing.T) {
 		Raw:     []byte("a,b"),
 		Decoded: csv{"whole:a,b"},
 	}, *got)
+}
+
+// A source that sets a struct marshaling to text, such as netip.Addr, loads
+// it whole — alone, in a list, behind a pointer or in a map. A typed map of
+// them replaces the tag default's entries, as a map[string]string does, and
+// a nil list stays nil. A time.Time, which the merge copies whole, keeps its
+// location's name, in a field of interface type too.
+func TestSources_ValuesThatMarshalToText(t *testing.T) {
+	type cfg struct {
+		Prefix   netip.Prefix            `koanf:"prefix"`
+		Prefixes []netip.Prefix          `koanf:"prefixes"`
+		Addr     *netip.Addr             `koanf:"addr"`
+		Named    map[string]netip.Prefix `koanf:"named" default:"wan=10.0.0.0/8"`
+		Labels   map[string]string       `koanf:"labels" default:"tier=1"`
+		Lists    map[string][]netip.Addr `koanf:"lists"`
+		At       time.Time               `koanf:"at"`
+		Extra    any                     `koanf:"extra"`
+	}
+	addr := netip.MustParseAddr("10.0.0.5")
+	at := time.Date(2026, 1, 2, 3, 4, 5, 0, testZone)
+	values := map[string]any{
+		"prefix":   netip.MustParsePrefix("10.1.0.0/16"),
+		"prefixes": []netip.Prefix{netip.MustParsePrefix("10.0.0.0/8"), netip.MustParsePrefix("192.168.0.0/16")},
+		"addr":     &addr,
+		"named":    map[string]netip.Prefix{"lan": netip.MustParsePrefix("192.168.1.0/24")},
+		"labels":   map[string]string{"zone": "a"},
+		"lists":    map[string][]netip.Addr{"none": nil},
+		"at":       at,
+		"extra":    at,
+	}
+	want := cfg{
+		Prefix:   netip.MustParsePrefix("10.1.0.0/16"),
+		Prefixes: []netip.Prefix{netip.MustParsePrefix("10.0.0.0/8"), netip.MustParsePrefix("192.168.0.0/16")},
+		Addr:     &addr,
+		Named:    map[string]netip.Prefix{"lan": netip.MustParsePrefix("192.168.1.0/24")},
+		Labels:   map[string]string{"zone": "a"},
+		Lists:    map[string][]netip.Addr{"none": nil},
+		At:       at,
+		Extra:    at,
+	}
+	for name, opt := range map[string]Option{
+		"WithDefaults":         WithDefaults(values),
+		"WithBaseProvider":     WithBaseProvider(mapSource(values), nil),
+		"WithOverrideProvider": WithOverrideProvider(mapSource(values), nil),
+	} {
+		t.Run(name, func(t *testing.T) {
+			got, err := Load[cfg](t.Context(), opt)
+			require.NoError(t, err)
+			assert.Equal(t, want, *got)
+		})
+	}
+}
+
+// A source value that cannot marshal to text fails the load, naming its key.
+func TestSources_ValueThatCannotMarshalFails(t *testing.T) {
+	type cfg struct {
+		Value failingText `koanf:"value"`
+	}
+	for name, opt := range map[string]Option{
+		"WithDefaults":     WithDefaults(map[string]any{"value": failingText{n: -1}}),
+		"WithBaseProvider": WithBaseProvider(mapSource{"value": failingText{n: -1}}, nil),
+	} {
+		t.Run(name, func(t *testing.T) {
+			_, err := Load[cfg](t.Context(), opt)
+			require.ErrorIs(t, err, ErrValidation)
+			assert.Contains(t, err.Error(), "values that do not marshal to text: value")
+		})
+	}
+}
+
+type addrServer struct {
+	Name string     `koanf:"name" default:"unnamed"`
+	Addr netip.Addr `koanf:"addr"`
+}
+
+// A typed section from a source keeps the structs inside it that marshal to
+// text, alone, in a list or in a map, and still replaces the section beneath
+// it, as a typed value does. A field of interface type holding such a struct
+// receives its text.
+func TestSources_TypedSectionsAndInterfaces(t *testing.T) {
+	type cfg struct {
+		Server  addrServer            `koanf:"server"`
+		Servers []addrServer          `koanf:"servers"`
+		ByName  map[string]addrServer `koanf:"by_name"`
+		Any     any                   `koanf:"any"`
+		Anys    []any                 `koanf:"anys"`
+	}
+	addr := netip.MustParseAddr("10.0.0.9")
+	values := map[string]any{
+		"server":  addrServer{Addr: addr},
+		"servers": []addrServer{{Name: "a", Addr: addr}},
+		"by_name": map[string]addrServer{"b": {Name: "b", Addr: addr}},
+		"any":     addr,
+		"anys":    []any{addr, 1},
+	}
+	want := cfg{
+		Server:  addrServer{Addr: addr},
+		Servers: []addrServer{{Name: "a", Addr: addr}},
+		ByName:  map[string]addrServer{"b": {Name: "b", Addr: addr}},
+		Any:     "10.0.0.9",
+		Anys:    []any{"10.0.0.9", 1},
+	}
+	for name, opt := range map[string]Option{
+		"WithDefaults":     WithDefaults(values),
+		"WithBaseProvider": WithBaseProvider(mapSource(values), nil),
+	} {
+		t.Run(name, func(t *testing.T) {
+			got, err := Load[cfg](t.Context(), opt)
+			require.NoError(t, err)
+			assert.Equal(t, want, *got)
+		})
+	}
+}
+
+type serverDefaults struct {
+	Servers map[string]addrServer `koanf:"servers"`
+}
+
+func (d *serverDefaults) SetDefaults() {
+	d.Servers = map[string]addrServer{"a": {Name: "a"}}
+}
+
+// Whether a typed map replaces what lies beneath it depends on its type, not
+// on whether its values had to be rewritten to text.
+func TestSources_TypedMapReplacesWhateverItHolds(t *testing.T) {
+	for name, value := range map[string]any{
+		"no text":   map[string]map[string]string{"b": {"name": "b"}},
+		"with text": map[string]map[string]any{"b": {"name": "b", "addr": netip.MustParseAddr("10.0.0.2")}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			got, err := Load[serverDefaults](t.Context(), WithDefaults(map[string]any{"servers": value}))
+			require.NoError(t, err)
+			assert.Equal(t, []string{"b"}, slices.Sorted(maps.Keys(got.Servers)), "the typed map replaces SetDefaults' entries")
+		})
+	}
 }

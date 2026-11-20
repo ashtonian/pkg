@@ -15,7 +15,8 @@ import (
 // error vocabulary.
 var (
 	// ErrValidation reports invalid configuration: a validator rejected the
-	// loaded struct, a value could not decode into its field's type, an
+	// loaded struct, a value could not decode into its field's type, a
+	// struct a source or SetDefaults set failed to marshal to text, an
 	// environment variable named more than one key, a Validate method
 	// failed, or a source set a key no field decodes (unless a
 	// WithUnknownKeys handler accepts it).
