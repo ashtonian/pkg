@@ -5,8 +5,10 @@ package parse_test
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"net/url"
+	"slices"
 	"testing"
 	"time"
 
@@ -37,19 +39,83 @@ var computedAccountFixture = []string{
 
 func TestReadExpr_SQLite(t *testing.T) {
 	db := dbtest.SQLite(t)
-	runReadExpr(t, db, filter.SQLiteDialect{}, func(t *testing.T, plan *parse.ListPlan) *filter.Page[computedAccount] {
-		var items []computedAccount
-		for _, row := range queryRows(t, db, plan.Page.SQL, plan.Page.Args) {
-			items = append(items, computedAccount{
-				ID: int(computedInt(t, row[0])), TenantID: fmt.Sprint(row[1]), Name: fmt.Sprint(row[2]), Email: fmt.Sprint(row[3]),
-				MemberCount: int(computedInt(t, row[4])),
-			})
-			assert.IsType(t, "", row[5], "SQLite holds the array as JSON text")
-		}
-		page, err := computedAccounts.Page(items, plan)
-		require.NoError(t, err)
-		return page
+	runReadExpr(t, db, filter.SQLiteDialect{}, computedDB{
+		page: func(t *testing.T, plan *parse.ListPlan) *filter.Page[computedAccount] {
+			page, err := computedAccounts.Page(sqliteAccounts(t, queryRows(t, db, plan.Page.SQL, plan.Page.Args)), plan)
+			require.NoError(t, err)
+			return page
+		},
+		// The database/sql recipe: Current, Owner, the relation statements
+		// and the reread, in one transaction.
+		update: func(t *testing.T, plan *parse.UpdatePlan) []computedAccount {
+			tx, err := db.Begin()
+			require.NoError(t, err)
+			defer func() { _ = tx.Rollback() }()
+			var current []computedAccount
+			if plan.Current != nil {
+				current = sqliteAccounts(t, queryRows(t, tx, plan.Current.SQL, plan.Current.Args))
+			}
+			changed := sqliteAccounts(t, queryRows(t, tx, plan.Owner.SQL, plan.Owner.Args))
+			var unchanged []computedAccount
+			if plan.Current != nil {
+				unchanged, err = computedAccounts.Unchanged(changed, current)
+				require.NoError(t, err)
+			}
+			keys := computedKeys(t, slices.Concat(changed, unchanged))
+			stmts, err := computedAccounts.RelationStatements(plan, keys)
+			require.NoError(t, err)
+			for _, stmt := range stmts {
+				_, err := tx.Exec(stmt.SQL, stmt.Args...)
+				require.NoError(t, err, stmt.SQL)
+			}
+			// Read the changed and the unchanged rows again apart, to keep
+			// the changed ones first.
+			for i, part := range [][]any{keys[:len(changed)], keys[len(changed):]} {
+				reread, err := computedAccounts.Reread(plan, part)
+				require.NoError(t, err)
+				if reread == nil {
+					continue
+				}
+				fresh := sqliteAccounts(t, queryRows(t, tx, reread.SQL, reread.Args))
+				if i == 0 {
+					changed = fresh
+				} else {
+					unchanged = fresh
+				}
+			}
+			require.NoError(t, tx.Commit())
+			return slices.Concat(changed, unchanged)
+		},
 	})
+}
+
+// sqliteAccounts scans SQLite rows of computedAccounts.Columns, the group
+// keys held as JSON text.
+func sqliteAccounts(t *testing.T, rows [][]any) []computedAccount {
+	t.Helper()
+	var out []computedAccount
+	for _, row := range rows {
+		groups, ok := row[5].(string)
+		require.True(t, ok, "SQLite holds the array as JSON text, got %T", row[5])
+		account := computedAccount{
+			ID: int(computedInt(t, row[0])), TenantID: fmt.Sprint(row[1]), Name: fmt.Sprint(row[2]), Email: fmt.Sprint(row[3]),
+			MemberCount: int(computedInt(t, row[4])),
+		}
+		require.NoError(t, json.Unmarshal([]byte(groups), &account.GroupIDs))
+		out = append(out, account)
+	}
+	return out
+}
+
+func computedKeys(t *testing.T, rows []computedAccount) []any {
+	t.Helper()
+	keys := make([]any, len(rows))
+	for i, row := range rows {
+		key, err := computedAccounts.Key(row)
+		require.NoError(t, err)
+		keys[i] = key
+	}
+	return keys
 }
 
 func TestReadExpr_Postgres(t *testing.T) {
@@ -63,28 +129,30 @@ func TestReadExpr_Postgres(t *testing.T) {
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = conn.Close(context.Background()) })
 
-	runReadExpr(t, db, filter.PostgresDialect{}, func(t *testing.T, plan *parse.ListPlan) *filter.Page[computedAccount] {
-		page, err := parsepgx.QueryPage(ctx, conn, computedAccounts, plan)
-		require.NoError(t, err)
-		return page
+	runReadExpr(t, db, filter.PostgresDialect{}, computedDB{
+		page: func(t *testing.T, plan *parse.ListPlan) *filter.Page[computedAccount] {
+			page, err := parsepgx.QueryPage(ctx, conn, computedAccounts, plan)
+			require.NoError(t, err)
+			return page
+		},
+		update: func(t *testing.T, plan *parse.UpdatePlan) []computedAccount {
+			rows, err := parsepgx.Update(ctx, conn, computedAccounts, plan)
+			require.NoError(t, err)
+			return rows
+		},
 	})
+}
 
-	t.Run("parsepgx scans every computed column", func(t *testing.T) {
-		req, err := computedAccounts.ParseList(url.Values{filter.ParamFilter: {`{"id":{"$in":[1,2]}}`}})
-		require.NoError(t, err)
-		plan, err := computedAccounts.BuildList(filter.PostgresDialect{}, req, parse.Scope{Tenant: "t1"})
-		require.NoError(t, err)
-		page, err := parsepgx.QueryPage(ctx, conn, computedAccounts, plan)
-		require.NoError(t, err)
-		require.Len(t, page.Items, 2)
-		assert.Equal(t, computedAccount{ID: 1, TenantID: "t1", Name: "a", Email: "a@example.com", MemberCount: 2, GroupIDs: []int64{10, 20}}, page.Items[0])
-		assert.Equal(t, computedAccount{ID: 2, TenantID: "t1", Name: "b", Email: "", MemberCount: 1, GroupIDs: []int64{}}, page.Items[1])
-	})
+// computedDB runs computedAccounts' plans on one database.
+type computedDB struct {
+	page   func(*testing.T, *parse.ListPlan) *filter.Page[computedAccount]
+	update func(*testing.T, *parse.UpdatePlan) []computedAccount
 }
 
 // runReadExpr serves the one package-level resource on d: SQLite and
 // PostgreSQL read it through their own expressions.
-func runReadExpr(t *testing.T, db *sql.DB, d parse.Dialect, page func(*testing.T, *parse.ListPlan) *filter.Page[computedAccount]) {
+func runReadExpr(t *testing.T, db *sql.DB, d parse.Dialect, run computedDB) {
+	page := run.page
 	for _, stmt := range computedAccountFixture {
 		_, err := db.Exec(stmt)
 		require.NoError(t, err, stmt)
@@ -101,6 +169,17 @@ func runReadExpr(t *testing.T, db *sql.DB, d parse.Dialect, page func(*testing.T
 		}
 		return ids
 	}
+
+	t.Run("a page scans every computed column", func(t *testing.T) {
+		req, err := computedAccounts.ParseList(url.Values{filter.ParamFilter: {`{"id":{"$in":[1,2]}}`}})
+		require.NoError(t, err)
+		plan, err := computedAccounts.BuildList(d, req, parse.Scope{Tenant: "t1"})
+		require.NoError(t, err)
+		items := page(t, plan).Items
+		require.Len(t, items, 2)
+		assert.Equal(t, computedAccount{ID: 1, TenantID: "t1", Name: "a", Email: "a@example.com", MemberCount: 2, GroupIDs: []int64{10, 20}}, items[0])
+		assert.Equal(t, computedAccount{ID: 2, TenantID: "t1", Name: "b", Email: "", MemberCount: 1, GroupIDs: []int64{}}, items[1])
+	})
 
 	t.Run("a keyset walk sorted by a computed column visits every row once", func(t *testing.T) {
 		all, err := computedAccounts.ParseList(url.Values{filter.ParamSort: {"-member_count"}, filter.ParamPageSize: {"10"}})
@@ -170,6 +249,27 @@ func runReadExpr(t *testing.T, db *sql.DB, d parse.Dialect, page func(*testing.T
 		require.Len(t, rows, 1)
 		assert.Equal(t, "renamed", fmt.Sprint(rows[0][2]))
 		assert.Equal(t, int64(2), computedInt(t, rows[0][4]), "member_count")
+	})
+
+	t.Run("an update reads computed columns after its relation changes", func(t *testing.T) {
+		update := func(t *testing.T, body string, target parse.Target, opts ...parse.UpdateOption) []computedAccount {
+			t.Helper()
+			p, err := computedAccounts.ParseMergePatch([]byte(body))
+			require.NoError(t, err)
+			plan, err := computedAccounts.BuildUpdate(d, p, target, parse.Scope{Tenant: "t1"}, opts...)
+			require.NoError(t, err)
+			return run.update(t, plan)
+		}
+		rows := update(t, `{"groups":[30]}`, parse.ByID(1))
+		require.Len(t, rows, 1)
+		assert.Equal(t, []int64{30}, rows[0].GroupIDs, "the pairs the patch left, not the ones Owner read")
+
+		rows = update(t, `{"name":"a","groups":[20]}`, parse.ByIDs(1, 4), parse.SkipUnchanged())
+		require.Len(t, rows, 2)
+		assert.Equal(t, []int{4, 1}, []int{rows[0].ID, rows[1].ID}, "the changed row, then the unchanged one")
+		for _, row := range rows {
+			assert.Equal(t, []int64{20}, row.GroupIDs, "account %d", row.ID)
+		}
 	})
 }
 

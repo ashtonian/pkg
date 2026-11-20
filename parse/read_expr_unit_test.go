@@ -5,6 +5,7 @@ package parse_test
 import (
 	"errors"
 	"net/url"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -305,6 +306,35 @@ func TestReadExpr_UpdatesNeitherStampNorIncrementComputedColumns(t *testing.T) {
 			}
 		})
 	}
+}
+
+// Reread reads the owners again only when relation statements may have
+// changed what a computed column reads, held to the update's tenant.
+func TestReadExpr_Reread(t *testing.T) {
+	scope := parse.Scope{Tenant: "t1"}
+	pg := filter.PostgresDialect{}
+	rename, err := computedAccounts.BuildUpdate(pg, computedPatch(t, computedAccounts, `{"name":"x"}`), parse.ByID(1), scope)
+	require.NoError(t, err)
+	stmt, err := computedAccounts.Reread(rename, []any{1})
+	require.NoError(t, err)
+	assert.Nil(t, stmt, "no relation statements: Owner's rows are current")
+
+	groups, err := computedAccounts.BuildUpdate(pg, computedPatch(t, computedAccounts, `{"groups":[30]}`), parse.ByID(1), scope)
+	require.NoError(t, err)
+	stmt, err = computedAccounts.Reread(groups, nil)
+	require.NoError(t, err)
+	assert.Nil(t, stmt, "no owners")
+	stmt, err = computedAccounts.Reread(groups, []any{1, 3})
+	require.NoError(t, err)
+	require.NotNil(t, stmt)
+	columns, err := computedAccounts.Columns(pg)
+	require.NoError(t, err)
+	assert.True(t, strings.HasPrefix(stmt.SQL, "SELECT "+strings.Join(columns, ", ")+" FROM accounts WHERE "), stmt.SQL)
+	assert.Contains(t, stmt.SQL, "accounts.tenant_id = ")
+	assert.Contains(t, stmt.Args, "t1")
+
+	_, err = accessGroups.Reread(groups, []any{1})
+	assert.ErrorContains(t, err, `update plan built for "accounts"`)
 }
 
 func computedPatch(t *testing.T, accounts *parse.Resource[computedAccount], body string) *patch.ParsedPatch {

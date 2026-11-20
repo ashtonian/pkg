@@ -94,7 +94,9 @@ type UpdatePlan struct {
 	// locks the rows (Dialect.RowLock) when it changes relations alone; a
 	// plain SELECT — a scoped read — when it changes nothing. It matches only
 	// rows the scope admits. Under SkipUnchanged the UPDATE returns only the
-	// rows it changed.
+	// rows it changed. It runs before RelationStatements, so a computed
+	// column (ReadExpr) over a relation's pairs reads them as they were;
+	// Reread reads the rows again once the pairs have changed.
 	Owner Statement
 	// Current, set when SkipUnchanged guards Owner's UPDATE, selects every
 	// target row the scope admits, as it stands, and locks it
@@ -119,7 +121,8 @@ type UpdatePlan struct {
 func (p *UpdatePlan) Dialect() Dialect { return p.dialect }
 
 // HasRelations reports whether the patch changes relation memberships:
-// run Current when set, Owner, then RelationStatements in one transaction.
+// run Current when set, Owner, RelationStatements, then Reread when it
+// returns a statement, in one transaction.
 func (p *UpdatePlan) HasRelations() bool { return len(p.relations) > 0 }
 
 // BuildUpdate compiles a patch into the statement that applies it to target
@@ -269,11 +272,8 @@ func (r *Resource[T]) updateWhere(d filter.Dialect, v *dialectView, target Targe
 // Run them after those statements, in their transaction. No owners need no
 // statements.
 func (r *Resource[T]) RelationStatements(plan *UpdatePlan, ownerKeys []any) ([]patch.RenderedRelationStatement, error) {
-	if plan == nil {
-		return nil, fmt.Errorf("parse: %s: nil update plan", r.table)
-	}
-	if plan.table != r.table {
-		return nil, fmt.Errorf("parse: %s: update plan built for %q", r.table, plan.table)
+	if err := r.ownsUpdatePlan(plan); err != nil {
+		return nil, err
 	}
 	if len(plan.relations) == 0 || len(ownerKeys) == 0 {
 		return nil, nil
@@ -301,6 +301,56 @@ func (r *Resource[T]) RelationStatements(plan *UpdatePlan, ownerKeys []any) ([]p
 		out = append(out, stmts...)
 	}
 	return out, nil
+}
+
+// Reread is the statement that reads the rows with ownerKeys — keys passed
+// to RelationStatements — as Columns again: run it after those statements,
+// in their transaction, and its rows replace the ones Owner and Current
+// returned, in no particular order. A computed column (ReadExpr) may read a
+// relation's pairs, which Owner and Current read before the statements
+// changed them. Nil when the plan changes no relation, the resource has no
+// computed column or there are no keys: the rows already read are current.
+//
+// The rows are held to the update's tenant and nothing else: the keys are
+// the rows the update wrote, which RETURNING reports whatever their deleted
+// column or the policy now say.
+func (r *Resource[T]) Reread(plan *UpdatePlan, ownerKeys []any) (*Statement, error) {
+	if err := r.ownsUpdatePlan(plan); err != nil {
+		return nil, err
+	}
+	if len(plan.relations) == 0 || r.readExprs == nil || len(ownerKeys) == 0 {
+		return nil, nil
+	}
+	v, err := r.dialectView(plan.dialect)
+	if err != nil {
+		return nil, err
+	}
+	pc := filter.BuildBaseConstraints(r.tenant, plan.tenant, "", false)
+	pc.Constraints = append(pc.Constraints, &filter.PolicyConstraint{Field: r.pk, Operator: filter.OpIn, Value: ownerKeys})
+	ast, err := filter.ApplyPolicyConstraints(v.filter, nil, pc)
+	if err != nil {
+		return nil, err
+	}
+	where, err := filter.NewSQLBuilder(v.filter, plan.dialect).Build(ast)
+	if err != nil {
+		return nil, err
+	}
+	return &Statement{
+		SQL:  "SELECT " + strings.Join(r.columns(plan.dialect, v), ", ") + " FROM " + r.table + " WHERE " + where.Where,
+		Args: where.Args,
+	}, nil
+}
+
+// ownsUpdatePlan refuses a plan r did not build: its relation changes name
+// another table's fields.
+func (r *Resource[T]) ownsUpdatePlan(plan *UpdatePlan) error {
+	if plan == nil {
+		return fmt.Errorf("parse: %s: nil update plan", r.table)
+	}
+	if plan.table != r.table {
+		return fmt.Errorf("parse: %s: update plan built for %q", r.table, plan.table)
+	}
+	return nil
 }
 
 func (r *Resource[T]) updateOptions(opts []UpdateOption) (updateConfig, []patch.PatchSQLOption, error) {

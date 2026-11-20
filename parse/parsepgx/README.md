@@ -98,7 +98,7 @@ A present JSON `null` cannot be represented by a nil map, slice, pointer or inte
 
 The page, count and facet statements run in one batch, the includes in a second once the page's keys are known. On a pool each statement sees its own snapshot, so a concurrent write can make the total disagree with the page by a row. Pass a `pgx.Tx` begun with `IsoLevel: pgx.RepeatableRead` (read-only is enough) when the total, facets and includes must describe exactly the page's rows.
 
-`Update` reads the owners the plan's scope admits and changes the relation memberships of those rows only, never the requested keys. A plan that writes nothing (`plan.Writes` false: an empty patch) only reads its targets; a caller that audits or fans hooks for every updated row checks `plan.Writes` before calling. With relation changes it runs in a transaction — a savepoint when `db` is already a `pgx.Tx` — so the caller's own transaction can still roll it back.
+`Update` reads the owners the plan's scope admits and changes the relation memberships of those rows only, never the requested keys. A plan that writes nothing (`plan.Writes` false: an empty patch) only reads its targets; a caller that audits or fans hooks for every updated row checks `plan.Writes` before calling. With relation changes it runs in a transaction — a savepoint when `db` is already a `pgx.Tx` — so the caller's own transaction can still roll it back. For a resource with [computed columns](../docs/queries.md#computed-columns) it then reads those rows again (`Resource.Reread`), in the batch that changes the memberships and after the changes, so a column over a relation's pairs returns them as the update left them rather than as the owner statement read them.
 
 A [`SkipUnchanged`](../docs/patches.md#skipping-unchanged-rows) plan sends `plan.Current` and then the guarded `UPDATE` in one batch, so one transaction (the caller's when `db` is a `pgx.Tx`): `Current` locks every target first, the update writes only the rows it changes, and `Update` returns those followed by the targets it left unchanged, changing the memberships of both. No rows still means not found. A caller that emits events per changed row runs the two statements itself, in that order, and splits them with `Resource.Unchanged`.
 
@@ -115,7 +115,7 @@ The tenant, authorization policy and deleted-row visibility come only from the `
 ## API Reference
 
 - `QueryPage[T](ctx, db Querier, r *parse.Resource[T], plan *parse.ListPlan) (*filter.Page[T], error)` — the page with its total, facets (`Page.Facets`) and includes (`Page.Relations`) as the plan asks.
-- `Update[T](ctx, db DB, r *parse.Resource[T], plan *parse.UpdatePlan) ([]T, error)` — the target rows as the update left them (a `SkipUnchanged` plan's changed rows, then its unchanged ones); none when no row in scope is a target.
+- `Update[T](ctx, db DB, r *parse.Resource[T], plan *parse.UpdatePlan) ([]T, error)` — the target rows as the update left them, computed columns read after the membership changes (a `SkipUnchanged` plan's changed rows, then its unchanged ones); none when no row in scope is a target.
 - `Querier` — `SendBatch`: `*pgxpool.Pool`, `*pgx.Conn`, `pgx.Tx`.
 - `DB` — `Querier` plus `Begin`: `*pgxpool.Pool`, `*pgx.Conn`, `pgx.Tx` (a savepoint).
 - `ErrDialect` — a plan not compiled for PostgreSQL.
