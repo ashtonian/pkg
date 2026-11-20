@@ -48,7 +48,7 @@ Only superseded PR runs cancel automatically; pushes and manual acceptance runs 
 A module that requires another module of this repository requires a released version of it. When it needs an unreleased change, release the dependency first, then raise the requirement.
 
 Workspace development requires Go 1.27. The TypeScript SDK's targets also need Node.js
-and pnpm 12, at the version `parse/sdk/ts/package.json` pins in `packageManager`;
+22.13 or later (its `engines` floor, which CI runs exactly alongside the newest LTS) and pnpm 12, at the version `parse/sdk/ts/package.json` pins in `packageManager`;
 `make test-parse-sdk` refuses any other pnpm release.
 Gowalker is its own module at
 `github.com/ashtonian/pkg/gowalker`, released with `gowalker/v…` tags. Its
