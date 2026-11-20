@@ -81,10 +81,12 @@ func (r *Resource[T]) BuildUpdateBatch(d Dialect, rows []RowUpdate, scope Scope,
 	if scope.Governance != nil || scope.IncludeDeleted {
 		return nil, fmt.Errorf("%s: %w", r.table, ErrUpdateScope)
 	}
-	if r.tenant != "" && scope.Tenant == "" {
-		return nil, fmt.Errorf("%s: %w", r.table, ErrTenantRequired)
+	tenant, err := r.bindTenant(scope.Tenant)
+	if err != nil {
+		return nil, err
 	}
-	limits, err := updateBatchLimits(d, limits)
+	common := updateScope{tenant: tenant, policy: scope.Policy, related: scope.Related}
+	limits, err = updateBatchLimits(d, limits)
 	if err != nil {
 		return nil, err
 	}
@@ -132,7 +134,7 @@ func (r *Resource[T]) BuildUpdateBatch(d Dialect, rows []RowUpdate, scope Scope,
 	var offset int
 	for _, orderedRow := range ordered {
 		row := orderedRow.row
-		item, err := r.compileRowUpdate(d, row, scope, options, offset)
+		item, err := r.compileRowUpdate(d, row, common, options, offset)
 		if err != nil {
 			return nil, err
 		}
@@ -140,13 +142,13 @@ func (r *Resource[T]) BuildUpdateBatch(d Dialect, rows []RowUpdate, scope Scope,
 			if len(compiled) == 0 {
 				return nil, fmt.Errorf("%s: one update exceeds the parameter budget", r.table)
 			}
-			chunk, err := r.renderUpdateBatch(d, compiled, scope, keyType, config.skipUnchanged)
+			chunk, err := r.renderUpdateBatch(d, compiled, common, keyType, config.skipUnchanged)
 			if err != nil {
 				return nil, err
 			}
 			plan.Chunks = append(plan.Chunks, chunk)
 			compiled, offset = nil, 0
-			item, err = r.compileRowUpdate(d, row, scope, options, 0)
+			item, err = r.compileRowUpdate(d, row, common, options, 0)
 			if err != nil {
 				return nil, err
 			}
@@ -158,7 +160,7 @@ func (r *Resource[T]) BuildUpdateBatch(d Dialect, rows []RowUpdate, scope Scope,
 		offset += len(item.args)
 	}
 	if len(compiled) > 0 {
-		chunk, err := r.renderUpdateBatch(d, compiled, scope, keyType, config.skipUnchanged)
+		chunk, err := r.renderUpdateBatch(d, compiled, common, keyType, config.skipUnchanged)
 		if err != nil {
 			return nil, err
 		}
@@ -182,7 +184,7 @@ type compiledRowUpdate struct {
 	args        []any
 }
 
-func (r *Resource[T]) compileRowUpdate(d Dialect, row RowUpdate, scope Scope, options []patch.PatchSQLOption, offset int) (compiledRowUpdate, error) {
+func (r *Resource[T]) compileRowUpdate(d Dialect, row RowUpdate, scope updateScope, options []patch.PatchSQLOption, offset int) (compiledRowUpdate, error) {
 	set, err := patch.BuildPatchSQL(row.Patch, d, append(slices.Clone(options), patch.WithStartParam(offset))...)
 	if err != nil {
 		return compiledRowUpdate{}, err
@@ -195,7 +197,7 @@ func (r *Resource[T]) compileRowUpdate(d Dialect, row RowUpdate, scope Scope, op
 			return compiledRowUpdate{}, fmt.Errorf("%s: update batch cannot change identity column %s", r.table, assignment.Column)
 		}
 	}
-	scope.Policy = updateRowPolicy(scope.Policy, row.Policy)
+	scope.policy = updateRowPolicy(scope.policy, row.Policy)
 	where, args, err := r.updateWhere(d, ByID(row.Key), scope, offset+set.ParamCount)
 	if err != nil {
 		return compiledRowUpdate{}, err
@@ -203,7 +205,7 @@ func (r *Resource[T]) compileRowUpdate(d Dialect, row RowUpdate, scope Scope, op
 	return compiledRowUpdate{row: row, assignments: set.Assignments, where: where, change: set.ChangePredicate, args: append(set.Args, args...)}, nil
 }
 
-func (r *Resource[T]) renderUpdateBatch(d Dialect, rows []compiledRowUpdate, scope Scope, keyType core.TypeInfo, skipUnchanged bool) (UpdateBatchChunk, error) {
+func (r *Resource[T]) renderUpdateBatch(d Dialect, rows []compiledRowUpdate, scope updateScope, keyType core.TypeInfo, skipUnchanged bool) (UpdateBatchChunk, error) {
 	chunk := UpdateBatchChunk{Keys: make([]any, len(rows)), keyType: keyType}
 	var currentWhere, changedWhere []string
 	var args []any
@@ -211,7 +213,7 @@ func (r *Resource[T]) renderUpdateBatch(d Dialect, rows []compiledRowUpdate, sco
 	for i, row := range rows {
 		chunk.Keys[i] = row.row.Key
 		currentScope := scope
-		currentScope.Policy = updateRowPolicy(scope.Policy, row.row.Policy)
+		currentScope.policy = updateRowPolicy(scope.policy, row.row.Policy)
 		where, currentArgs, err := r.updateWhere(d, ByID(row.row.Key), currentScope, len(chunk.Current.Args))
 		if err != nil {
 			return UpdateBatchChunk{}, err
