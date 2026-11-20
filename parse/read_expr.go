@@ -39,8 +39,8 @@ func SQL(sql string) ColumnExpr {
 // BuildUpdate and BuildUpdateBatch — naming the column and the dialect.
 //
 // A computed column must be read, and cannot be the key, the tenant or the
-// deleted column, be patched, hold document paths or element members, or
-// correlate a relation. A relation to the resource cannot filter by it.
+// deleted column, be patched, stamped or incremented, hold document paths
+// or element members, or correlate a relation. A relation to the resource cannot filter by it.
 // The resource's schemas (FilterSchema, SortSchema, SearchSchema) and its
 // schema document stay dialect-neutral and name the column; ListQuery
 // compiles those schemas as they are, so list a resource with computed

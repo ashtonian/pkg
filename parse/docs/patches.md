@@ -143,7 +143,7 @@ The rows `Owner` returns are the rows the scope admits. Zero rows means the targ
 | `SkipUnchanged()` | Update only the target rows the patch's columns change, so a row the patch leaves as it is keeps its stamp and counters and `RETURNING` omits it; `plan.Current` reads every target row. See [Skipping unchanged rows](#skipping-unchanged-rows) |
 | `Scope.Governance`, `Scope.IncludeDeleted` | Refused with `ErrUpdateScope`: an update reaches only its own tenant's live rows |
 
-An update has one stamp: a later `Stamp` or `StampSQL` replaces an earlier one. The stamp column and each increment column must be one of the resource's columns, an increment column an integer one, and none may be named twice. A patch's own write to a stamped or incremented column — a request's or the server's — is dropped: the server's value wins, and a patch writing only those columns writes nothing. `Dialect` is a dialect both the filter and patch compilers speak; `filter.PostgresDialect` and `filter.SQLiteDialect` are.
+An update has one stamp: a later `Stamp` or `StampSQL` replaces an earlier one. The stamp column and each increment column must be one of the resource's columns, an increment column an integer one, none a [computed column](queries.md#computed-columns) (`parse.ReadExpr`), which the table does not hold, and none may be named twice. A patch's own write to a stamped or incremented column — a request's or the server's — is dropped: the server's value wins, and a patch writing only those columns writes nothing. `Dialect` is a dialect both the filter and patch compilers speak; `filter.PostgresDialect` and `filter.SQLiteDialect` are.
 
 ### Skipping unchanged rows
 

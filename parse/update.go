@@ -313,6 +313,9 @@ func (r *Resource[T]) updateOptions(opts []UpdateOption) (updateConfig, []patch.
 		if _, ok := r.tableColumns[cfg.stampColumn]; !ok || !core.IsIdentifier(cfg.stampColumn) {
 			return updateConfig{}, nil, fmt.Errorf("%s: stamp column %q is not a column of the resource", r.table, cfg.stampColumn)
 		}
+		if r.computed(cfg.stampColumn) {
+			return updateConfig{}, nil, r.readExprs.writeError(cfg.stampColumn, "is stamped")
+		}
 		if cfg.stampSQL == "" && cfg.stampValue.IsZero() {
 			return updateConfig{}, nil, fmt.Errorf("%s: stamp column %q has no time", r.table, cfg.stampColumn)
 		}
@@ -327,6 +330,9 @@ func (r *Resource[T]) updateOptions(opts []UpdateOption) (updateConfig, []patch.
 		t, ok := r.tableColumns[col]
 		if !ok || !core.IsIdentifier(col) {
 			return updateConfig{}, nil, fmt.Errorf("%s: increment column %q is not a column of the resource", r.table, col)
+		}
+		if r.computed(col) {
+			return updateConfig{}, nil, r.readExprs.writeError(col, "is incremented")
 		}
 		if core.TypeOf(t).Type != core.FieldTypeInt {
 			return updateConfig{}, nil, fmt.Errorf("%s: increment column %q is not an integer column", r.table, col)

@@ -7,6 +7,7 @@ import (
 	"net/url"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -251,6 +252,32 @@ func TestReadExpr_RelationFiltersOmitTheTargetsComputedColumns(t *testing.T) {
 		assert.Equal(t, filter.ECodeUnknownField.String(), pe.Code, field)
 	}
 	assert.Contains(t, computedAccounts.FilterSchema().Fields, "member_count", "the resource's own lists filter by it")
+}
+
+// An update's stamp and counters write the table's own columns, which a
+// computed column is not.
+func TestReadExpr_UpdatesNeitherStampNorIncrementComputedColumns(t *testing.T) {
+	rename := computedPatch(t, computedAccounts, `{"name":"x"}`)
+	scope := parse.Scope{Tenant: "t1"}
+	tests := []struct {
+		name string
+		opt  parse.UpdateOption
+		want string
+	}{
+		{"Increment", parse.Increment("member_count"), `parse: accounts: computed column "member_count": is incremented; an update writes the table's own columns`},
+		{"Stamp", parse.Stamp("email", time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)), `parse: accounts: computed column "email": is stamped; an update writes the table's own columns`},
+		{"StampSQL", parse.StampSQL("email", "CURRENT_TIMESTAMP"), `parse: accounts: computed column "email": is stamped; an update writes the table's own columns`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			for _, d := range computedDialects {
+				_, err := computedAccounts.BuildUpdate(d.dialect, rename, parse.ByID(1), scope, tt.opt)
+				assert.ErrorContains(t, err, tt.want, "BuildUpdate %s", d.dialect.Name())
+				_, err = computedAccounts.BuildUpdateBatch(d.dialect, []parse.RowUpdate{{Key: 1, Patch: rename}}, scope, parse.UpdateBatchLimits{}, tt.opt)
+				assert.ErrorContains(t, err, tt.want, "BuildUpdateBatch %s", d.dialect.Name())
+			}
+		})
+	}
 }
 
 func computedPatch(t *testing.T, accounts *parse.Resource[computedAccount], body string) *patch.ParsedPatch {
