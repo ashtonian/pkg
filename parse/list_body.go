@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"maps"
+	"math"
 	"mime"
 	"net/url"
 	"slices"
@@ -22,11 +23,14 @@ import (
 // facets, include and fields are arrays of names. It is validated as
 // ParseListInput validates, with the same limits and error codes.
 //
-// A body over MaxInputSize is E2063, read no further. A body that is not one
-// JSON object, or names a member twice, is E2086. An unknown member, or a
-// member of the wrong JSON type, is E2067, so a misspelt member cannot
-// widen a list. Flat field filters do not apply: a body has filter. An
-// error reading body is returned as it is.
+// The filter member is bounded by MaxInputSize, as the filter parameter is.
+// The whole body is bounded by the parser's list body limit
+// (core.WithMaxListBodySize; by default MaxInputSize plus room for the
+// other members), and a body over it is E2063, read no further. A body that
+// is not one JSON object, or names a member twice, is E2086. An unknown
+// member, or a member of the wrong JSON type, is E2067, so a misspelt member
+// cannot widen a list. Flat field filters do not apply: a body has filter.
+// An error reading body is returned wrapped, not as a request error.
 func (r *Resource[T]) ParseListBody(body io.Reader) (*ListRequest, error) {
 	data, err := r.readListBody(body)
 	if err != nil {
@@ -50,14 +54,13 @@ func (r *Resource[T]) ParseListBody(body io.Reader) (*ListRequest, error) {
 	return r.ParseListInput(in)
 }
 
-// readListBody reads body up to the parser's MaxInputSize: one byte more
-// tells a body that is too large without reading the rest of it.
+// readListBody reads body up to the parser's list body limit
+// (core.ParserConfig.ListBodyLimit): one byte more tells a body that is too
+// large without reading the rest of it. The limit is held below MaxInt so
+// that byte cannot overflow the reader's bound.
 func (r *Resource[T]) readListBody(body io.Reader) ([]byte, error) {
-	limit := r.cfg.MaxInputSize
-	if limit <= 0 {
-		return io.ReadAll(body)
-	}
-	data, err := io.ReadAll(io.LimitReader(body, int64(limit)+1))
+	limit := r.cfg.ListBodyLimit()
+	data, err := io.ReadAll(io.LimitReader(body, int64(min(limit, math.MaxInt-1))+1))
 	if err != nil {
 		return nil, fmt.Errorf("parse: %s: reading list body: %w", r.table, err)
 	}

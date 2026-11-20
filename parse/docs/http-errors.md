@@ -29,7 +29,7 @@ A filter document travels in the URL, and every proxy, CDN and load balancer in 
 {"filter": {"status": "active", "id": {"$in": ["…", "…"]}}, "sort": "-price,name", "page_size": 50, "include_total": true}
 ```
 
-`Resource.ParseListBody` validates it as `ParseList` validates a query string, with the same limits and codes. An unknown member, or one of the wrong JSON type, is E2067; a member named twice is E2086; a body over `MaxInputSize` is E2063, read no further. Flat field filters don't apply to a body. `parsehttp.ParseList(r, res)` serves both transports from one handler: the query string of a `GET` or `HEAD`, or the `application/json` body of a `POST`, whose query string may carry only the parameters the endpoint reads itself (`AcceptParams`). A framework that hands its handlers a request's parts rather than an `*http.Request` calls `Resource.ParseListPost(query, contentType, body)`, which applies the same rules. The TypeScript SDK sends a `POST` when a list's URL would exceed `maxURLLength`, and `client.ListParams.Body` encodes the document from Go.
+`Resource.ParseListBody` validates it as `ParseList` validates a query string, with the same limits and codes. An unknown member, or one of the wrong JSON type, is E2067; a member named twice is E2086. The `filter` member is bounded by `MaxInputSize`, as the `filter` parameter is, and the whole body by `MaxListBodySize` ([`core.WithMaxListBodySize`](schema-configuration.md#parser-and-generator-options)): by default `MaxInputSize` plus 16 KiB for the other members, or 1 MiB when `MaxInputSize` is unlimited. A body over it is E2063, read no further. Flat field filters don't apply to a body. `parsehttp.ParseList(r, res)` serves both transports from one handler: the query string of a `GET` or `HEAD`, or the `application/json` body of a `POST`, whose query string may carry only the parameters the endpoint reads itself (`AcceptParams`). A framework that hands its handlers a request's parts rather than an `*http.Request` calls `Resource.ParseListPost(query, contentType, body)`, which applies the same rules. The TypeScript SDK sends a `POST` when a list's URL would exceed `maxURLLength`, and `client.ListParams.Body` encodes the document from Go.
 
 ## Handler responsibilities
 
@@ -64,7 +64,7 @@ All known codes describe permanent failures and are listed below; retry and cata
 |------|------|---------|
 | E2061 | 422 | Filter cost exceeds `MaxCost` |
 | E2062 | 422 | `$in` / `$nin` value is not an array |
-| E2063 | 422 | Body exceeds `MaxInputSize` |
+| E2063 | 422 | Filter or patch body exceeds `MaxInputSize`, or a POST list body exceeds `MaxListBodySize` |
 | E2064 | 422 | Patch operation not allowed on the path |
 | E2065 | 422 | Sort values at a page boundary too large for a cursor |
 | E2066 | 422 | Too many patch operations |

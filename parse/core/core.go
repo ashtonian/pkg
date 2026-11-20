@@ -6,6 +6,7 @@ import (
 	jsonv2 "encoding/json/v2"
 	"errors"
 	"fmt"
+	"math"
 	"strings"
 	"time"
 )
@@ -192,6 +193,9 @@ type ParserConfig struct {
 	MaxCost int
 	// MaxInputSize bounds a filter or patch body in bytes.
 	MaxInputSize int
+	// MaxListBodySize bounds a list request sent as a POST body, in bytes;
+	// zero derives the bound from MaxInputSize (ListBodyLimit).
+	MaxListBodySize int
 	// MaxConditions bounds a filter's leaf conditions.
 	MaxConditions int
 	// MaxArraySize bounds $in / $nin members, array $contains elements and
@@ -212,6 +216,33 @@ func (c *ParserConfig) GetCodec() Codec {
 		return c.Codec
 	}
 	return defaultCodec
+}
+
+// listBodyHeadroom is the room a derived list body limit leaves beside the
+// filter, which MaxInputSize bounds: a cursor (at most 4 KiB), the sort,
+// search and name lists, and the members' JSON.
+const listBodyHeadroom = 16 << 10
+
+// defaultMaxListBodySize bounds a list body when MaxInputSize is unlimited.
+// It is net/http's default header limit (http.DefaultMaxHeaderBytes), which
+// bounded the same request in a URL.
+const defaultMaxListBodySize = 1 << 20
+
+// ListBodyLimit returns the bytes a list body may hold: MaxListBodySize when
+// it is positive; otherwise MaxInputSize plus 16 KiB for the members beside
+// the filter, or 1 MiB when MaxInputSize is unlimited. Nothing in front of a
+// handler bounds a request body as header limits bound a URL, so a list body
+// is always bounded.
+func (c *ParserConfig) ListBodyLimit() int {
+	switch {
+	case c.MaxListBodySize > 0:
+		return c.MaxListBodySize
+	case c.MaxInputSize <= 0:
+		return defaultMaxListBodySize
+	case c.MaxInputSize > math.MaxInt-listBodyHeadroom:
+		return math.MaxInt
+	}
+	return c.MaxInputSize + listBodyHeadroom
 }
 
 // Option configures a Parser.
@@ -246,9 +277,21 @@ func WithMaxCost(cost int) Option {
 	return func(c *ParserConfig) { c.MaxCost = cost }
 }
 
-// WithMaxInputSize sets the maximum input size in bytes.
+// WithMaxInputSize sets the maximum size of a filter or patch body in bytes;
+// zero or less is unlimited. A list body's bound derives from it unless
+// WithMaxListBodySize sets one (ListBodyLimit).
 func WithMaxInputSize(size int) Option {
 	return func(c *ParserConfig) { c.MaxInputSize = size }
+}
+
+// WithMaxListBodySize bounds a list request sent as a POST body (parse's
+// Resource.ParseListBody), in bytes. Zero, the default, derives the bound
+// from MaxInputSize (ListBodyLimit); a list body is never unbounded, and
+// parse.NewResource refuses a negative size. Set it to at least MaxInputSize
+// plus room for the members beside the filter, or a filter that a GET
+// carries is refused in a body.
+func WithMaxListBodySize(size int) Option {
+	return func(c *ParserConfig) { c.MaxListBodySize = size }
 }
 
 // WithMaxConditions sets the maximum number of filter conditions.
