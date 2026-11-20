@@ -22,6 +22,22 @@ type customItem struct {
 	Custom json.RawMessage `json:"custom" db:"custom" parse:"filter"`
 }
 
+// A path sort key's cursor reads its document's row column, which a column
+// mapper's computed SQL does not name; the document field's Column does.
+func TestResource_WithPathsSortsAMappedDocument(t *testing.T) {
+	r, err := parse.NewResource[customItem]("custom_items", mappedColumns)
+	require.NoError(t, err)
+	view, err := r.WithPaths(filter.PathDecl{Path: "custom.tier", Type: core.FieldTypeString, Sort: true})
+	require.NoError(t, err)
+	req, err := view.ParseList(url.Values{filter.ParamSort: {"custom.tier"}})
+	require.NoError(t, err)
+	plan, err := view.BuildList(filter.SQLiteDialect{}, req, parse.Scope{})
+	require.NoError(t, err)
+	require.NotEmpty(t, plan.Keyset.Keys)
+	assert.Equal(t, "custom.tier", plan.Keyset.Keys[0].Name)
+	assert.Equal(t, "custom", plan.Keyset.Keys[0].Column)
+}
+
 // A request declares its tenant's custom fields as paths on a view of the
 // resource; the shared resource never learns them.
 func TestResource_WithPathsIsARequestView(t *testing.T) {

@@ -126,6 +126,7 @@ func newPathField(doc *FieldSchema, segs []string, d PathDecl, kind reflect.Kind
 	}
 	f := &FieldSchema{
 		ExternalName:     doc.ExternalName + "." + strings.Join(segs, "."),
+		Column:           doc.RowColumn(),
 		DataType:         d.Type,
 		NumberKind:       kind,
 		AllowedOperators: ops,
@@ -462,7 +463,7 @@ func (s *SortSchema) WithPaths(fields *ResourceSchema, decls ...PathDecl) (*Sort
 		if _, dup := out.Fields[d.Path]; dup {
 			return nil, fmt.Errorf("sort path %q is already a sort key", d.Path)
 		}
-		key, err := newPathSortField(doc.SQLExpr, (&SortFieldSchema{SQLExpr: doc.SQLExpr}).RowColumn(), doc.Storage, strings.Split(members, "."), d.Type, kindOf(d.Type), d.Indexed)
+		key, err := newPathSortField(doc.SQLExpr, doc.RowColumn(), doc.Storage, strings.Split(members, "."), d.Type, kindOf(d.Type), d.Indexed)
 		if err != nil {
 			return nil, fmt.Errorf("sort path %q: %w", d.Path, err)
 		}

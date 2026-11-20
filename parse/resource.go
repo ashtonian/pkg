@@ -3,6 +3,7 @@ package parse
 import (
 	"encoding/json"
 	"fmt"
+	"maps"
 	"reflect"
 	"slices"
 
@@ -39,6 +40,9 @@ type Resource[T any] struct {
 	sqlTypes     map[string]core.SQLType
 	tableColumns map[string]reflect.Type
 	columnFields map[string]*core.Field
+	// access is what a request may learn of each column of T (ReadColumns,
+	// QueryOnlyColumns).
+	access map[string]columnAccess
 }
 
 // ResourceOption configures NewResource.
@@ -50,6 +54,7 @@ type resourceConfig struct {
 	parserOpts          []core.Option
 	accepted            []string
 	read                []string
+	queryOnly           []string
 	sqlTypes            []columnType
 }
 
@@ -86,10 +91,29 @@ func PageSize(def, max int) ResourceOption {
 // ReadColumns limits the columns the resource reads — Columns, a list's
 // page, an update's RETURNING — to these columns of T; the default is every
 // column. Sensitive columns (hashes, secrets, tokens) then stay in the
-// database and their fields read as zero. The key and every sort key's
-// column must be read: pages mint cursors from the rows.
+// database and their fields read as zero. No response carries a value of a
+// column the resource does not read, so the key, every sort key's column
+// (cursors carry the keys' values) and every facet's column (buckets are
+// keyed by its values) must be read, and so must the columns a relation's
+// includes and facets pair. A filter, search or relation over an unread
+// column returns no values, but its matches disclose them by inference, so
+// it must be read too unless QueryOnlyColumns names it. A relation is held to
+// its target's read set as well as its owner's. NewResource, Relate and
+// WithPaths refuse a declaration that needs another column.
 func ReadColumns(columns ...string) ResourceOption {
 	return func(c *resourceConfig) { c.read = append(c.read, columns...) }
+}
+
+// QueryOnlyColumns names columns ReadColumns leaves out that requests may
+// still filter and search by, and filter by a relation correlating on: a
+// large text column searched but never listed, for example. Their values
+// never appear in a response, but a request can infer them from which rows
+// match, so name only columns whose values the caller may learn. A
+// query-only column is still no sort key or facet, and no relation that
+// includes or facets correlates on it. Each must be a column of T the
+// resource does not read.
+func QueryOnlyColumns(columns ...string) ResourceOption {
+	return func(c *resourceConfig) { c.queryOnly = append(c.queryOnly, columns...) }
 }
 
 // ColumnType declares a column's storage role, including JSON documents and
@@ -186,6 +210,11 @@ func NewResource[T any](table string, opts ...ResourceOption) (*Resource[T], err
 			r.read = append(r.read, name)
 		}
 	}
+	queryOnly, err := queryOnlyColumns(table, cfg, columns, read)
+	if err != nil {
+		return nil, err
+	}
+	r.access = columnAccesses(columns, read, queryOnly)
 	if r.sqlTypes, err = sqlTypes(table, cfg, columns); err != nil {
 		return nil, err
 	}
@@ -205,7 +234,7 @@ func NewResource[T any](table string, opts ...ResourceOption) (*Resource[T], err
 		r.sqlTypes[name] = implied
 	}
 
-	if err := r.readsSortKeys(p.sortSchema); err != nil {
+	if err := r.checkUnreadColumns(p.filterSchema.Fields, sortKeys(p.sortSchema), searchFields(p.searchSchema)); err != nil {
 		return nil, err
 	}
 	for _, f := range p.filterSchema.Fields {
@@ -251,6 +280,44 @@ func readColumns(table string, cfg resourceConfig, columns map[string]reflect.Ty
 		return nil, fmt.Errorf("parse: %s: the read columns omit the key %q", table, cfg.pk)
 	}
 	return read, nil
+}
+
+// queryOnlyColumns is the QueryOnlyColumns set, checked to be distinct
+// columns of T that the resource does not read; read nil reads every column.
+func queryOnlyColumns(table string, cfg resourceConfig, columns map[string]reflect.Type, read map[string]bool) (map[string]bool, error) {
+	if len(cfg.queryOnly) == 0 {
+		return nil, nil
+	}
+	out := make(map[string]bool, len(cfg.queryOnly))
+	for _, name := range cfg.queryOnly {
+		if _, ok := columns[name]; !ok {
+			return nil, fmt.Errorf("parse: %s: query-only column %q is not a column of the resource", table, name)
+		}
+		if out[name] {
+			return nil, fmt.Errorf("parse: %s: query-only column %q is listed twice", table, name)
+		}
+		if read == nil || read[name] {
+			return nil, fmt.Errorf("parse: %s: query-only column %q is read; QueryOnlyColumns names columns ReadColumns leaves out", table, name)
+		}
+		out[name] = true
+	}
+	return out, nil
+}
+
+// sortKeys is ss's keys; a nil schema has none.
+func sortKeys(ss *filter.SortSchema) map[string]*filter.SortFieldSchema {
+	if ss == nil {
+		return nil
+	}
+	return ss.Fields
+}
+
+// searchFields is ss's fields; a nil schema has none.
+func searchFields(ss *filter.SearchSchema) []filter.SearchField {
+	if ss == nil {
+		return nil
+	}
+	return ss.Fields
 }
 
 // sqlTypes validates declarations against their column's Go representation.
@@ -324,16 +391,110 @@ func jsonRepresentableType(t reflect.Type) bool {
 	}
 }
 
-// readsSortKeys refuses a sort key whose column the resource does not read:
-// its cursors would carry the zero value.
-func (r *Resource[T]) readsSortKeys(ss *filter.SortSchema) error {
-	if ss == nil {
+// columnAccess is what a request may learn of a column of T. The order
+// matters: a capability that needs some access is served by any lower one.
+type columnAccess int
+
+const (
+	// columnRead is a column the resource reads: responses carry its values.
+	columnRead columnAccess = iota
+	// columnQueryOnly is an unread column QueryOnlyColumns names: a request
+	// learns its values only from which rows match.
+	columnQueryOnly
+	// columnWithheld is any other unread column.
+	columnWithheld
+)
+
+// columnAccesses records each column's access, from the read set (nil reads
+// every column) and the query-only set.
+func columnAccesses(columns map[string]reflect.Type, read, queryOnly map[string]bool) map[string]columnAccess {
+	out := make(map[string]columnAccess, len(columns))
+	for name := range columns {
+		switch {
+		case read == nil || read[name]:
+			out[name] = columnRead
+		case queryOnly[name]:
+			out[name] = columnQueryOnly
+		default:
+			out[name] = columnWithheld
+		}
+	}
+	return out
+}
+
+// admits refuses a capability over column that needs at least need. A
+// computed expression names no column ("") and passes: its SQL is the
+// application's own. Any other name must be a column of T, so a field whose
+// SQL reads a column T does not declare (`db:"-"`) cannot bypass the read set.
+func (r *Resource[T]) admits(column string, need columnAccess) error {
+	if column == "" {
 		return nil
 	}
-	for name, f := range ss.Fields {
-		col := f.RowColumn()
-		if _, ok := r.tableColumns[col]; ok && !slices.Contains(r.read, col) {
-			return fmt.Errorf("parse: %s: sort key %q reads column %q, which the resource does not read", r.table, name, col)
+	got, ok := r.access[column]
+	switch {
+	case !ok:
+		return fmt.Errorf("%q is not a column of %s", column, r.table)
+	case got <= need:
+		return nil
+	case need == columnQueryOnly:
+		return fmt.Errorf("%s does not read column %q; QueryOnlyColumns admits a filter or search on it", r.table, column)
+	default:
+		return fmt.Errorf("%s does not read column %q", r.table, column)
+	}
+}
+
+// checkUnreadColumns refuses a request capability over a column a request
+// may not learn (ReadColumns, QueryOnlyColumns). A cursor carries its sort
+// keys' values and a facet's buckets are keyed by its field's values, so
+// their columns must be read. A filter or search discloses its column's
+// values by inference, which a query-only column admits. Relations are
+// checked as Relate checks them.
+func (r *Resource[T]) checkUnreadColumns(fields map[string]*filter.FieldSchema, keys map[string]*filter.SortFieldSchema, search []filter.SearchField) error {
+	for _, name := range slices.Sorted(maps.Keys(keys)) {
+		if err := r.admits(keys[name].RowColumn(), columnRead); err != nil {
+			return fmt.Errorf("parse: %s: sort key %q: %w", r.table, name, err)
+		}
+	}
+	for _, name := range slices.Sorted(maps.Keys(fields)) {
+		f := fields[name]
+		if f.Relation != nil {
+			if err := r.checkRelation(name, f.Relation, nil, f.Includable || f.Facetable); err != nil {
+				return err
+			}
+			continue
+		}
+		capability, need := "filter field", columnQueryOnly
+		if f.Facetable {
+			capability, need = "facet", columnRead
+		}
+		if err := r.admits(f.RowColumn(), need); err != nil {
+			return fmt.Errorf("parse: %s: %s %q: %w", r.table, capability, name, err)
+		}
+	}
+	for _, f := range search {
+		if err := r.admits(f.RowColumn(), columnQueryOnly); err != nil {
+			return fmt.Errorf("parse: %s: search field %q: %w", r.table, f.Name, err)
+		}
+	}
+	return nil
+}
+
+// checkRelation refuses a relation over a column a request may not learn: the
+// owner's correlation column and, for a has-many or belongs-to, the target's
+// (target is nil for a pair table declared by tag). Includes and facets carry
+// the correlation's values, so those columns must be read; a filter by the
+// relation discloses them by inference, which a query-only column admits.
+func (r *Resource[T]) checkRelation(name string, rs *core.RelationSchema, target RelatedResource, returnsValues bool) error {
+	need := columnQueryOnly
+	if returnsValues {
+		need = columnRead
+	}
+	if err := r.admits(rs.PrimaryKey, need); err != nil {
+		return fmt.Errorf("parse: %s: relation %q: %w", r.table, name, err)
+	}
+	if target != nil && (rs.Kind == core.HasMany || rs.Kind == core.BelongsTo) {
+		if err := target.admits(rs.SourceColumn, need); err != nil {
+			return fmt.Errorf("parse: %s: relation %q: %w", r.table, name, err)
 		}
 	}
 	return nil
@@ -432,7 +593,7 @@ func systemFields(table string, cfg resourceConfig, columns map[string]reflect.T
 	field := func(column string, ops ...filter.FilterOperator) *filter.FieldSchema {
 		info := core.TypeOf(columns[column])
 		return &filter.FieldSchema{
-			ExternalName: column, SQLExpr: table + "." + column,
+			ExternalName: column, SQLExpr: table + "." + column, Column: column,
 			DataType: info.Type, NumberKind: info.NumberKind, AllowedOperators: ops,
 		}
 	}
@@ -488,7 +649,18 @@ func (r *Resource[T]) WithPaths(decls ...filter.PathDecl) (*Resource[T], error) 
 	if err != nil {
 		return nil, fmt.Errorf("%s: %w", r.table, err)
 	}
-	if err := r.readsSortKeys(ss); err != nil {
+	// The resource's own fields were checked when it was built.
+	added := make(map[string]*filter.FieldSchema, len(decls))
+	addedKeys := make(map[string]*filter.SortFieldSchema, len(decls))
+	for _, d := range decls {
+		if f, ok := fs.Fields[d.Path]; ok {
+			added[d.Path] = f
+		}
+		if k, ok := sortKeys(ss)[d.Path]; ok {
+			addedKeys[d.Path] = k
+		}
+	}
+	if err := r.checkUnreadColumns(added, addedKeys, nil); err != nil {
 		return nil, err
 	}
 	tp := &typedParser[T]{

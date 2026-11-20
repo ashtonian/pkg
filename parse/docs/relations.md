@@ -53,6 +53,17 @@ One request has one tenant, and every statement binds it as one value: `Scope.Te
 
 A pair table's `Tenant` column has no Go type. It holds the request's one tenant in the one type: the type of the typed tenant columns the resource reaches, or the text when it reaches none. An owner without a tenant column whose relations reach an integer tenant column binds an integer to every one of its pair tables, so declare those pair tenant columns with the integer type in the database; to keep a pair table's tenant as text, keep integer tenant columns out of that resource's reach.
 
+### Read columns
+
+A relation pairs owner and target rows by one column on each side: the owner's key or `References` column and a has-many's foreign key on the target, a belongs-to's foreign key on the owner and its target's key or `References` column. Filtering by the relation discloses both columns' values by which rows match, and an include or facet returns the pairs outright, so `Relate` holds each side to its own resource's `ReadColumns`:
+
+| Relation | Each correlation column must be |
+|---|---|
+| Filtered only | Read, or named in that resource's `QueryOnlyColumns` |
+| `Includable()` or `Facetable()` | Read |
+
+A many-to-many correlates on both resources' keys, which are always read; its pair table is no resource. A refused relation is not declared: `relation "members": members does not read column "team_id"` names the resource and the column to read, or to name in `QueryOnlyColumns`.
+
 ## Filter by related rows
 
 | Request | Means |

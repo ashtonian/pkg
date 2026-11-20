@@ -413,6 +413,11 @@ type GeneratorOptions struct {
 // name, or to its Go name when the field-name tag hides it. Every view of a
 // field (filter, sort, search, server policies) hands it that one column,
 // the name patch SET clauses and column type declarations use too.
+//
+// A cursor reads its keys' values from the row's columns, not from the
+// expressions, so a sort key's expression must order as its column's value
+// does: qualify, quote or cast it, but do not transform it (lower(...)
+// orders differently from the value a cursor resumes after).
 type SQLColumnMapper interface {
 	MapColumn(table, column string, fieldType FieldType) string
 }

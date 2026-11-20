@@ -23,7 +23,20 @@ const (
 type SearchField struct {
 	Name    string
 	SQLExpr string
-	Weight  SearchWeight
+	// Column is the row column the field searches, set by schema generation
+	// as FieldSchema.Column is; RowColumn falls back to SQLExpr without it.
+	Column string
+	Weight SearchWeight
+}
+
+// RowColumn returns the row column the field searches: Column, or the last
+// segment of a plain (optionally table-qualified) identifier SQLExpr; "" for a
+// computed expression.
+func (f SearchField) RowColumn() string {
+	if f.Column != "" {
+		return f.Column
+	}
+	return identifierColumn(f.SQLExpr)
 }
 
 // SearchSchema defines full-text search configuration.
@@ -90,7 +103,13 @@ func generateSearchSchema(g *core.SchemaGenerator, t reflect.Type) (*SearchSchem
 			weight = SearchWeight(w)
 		}
 
-		fields = append(fields, SearchField{Name: fieldName, SQLExpr: sqlExpr, Weight: weight})
+		sf := SearchField{Name: fieldName, SQLExpr: sqlExpr, Weight: weight}
+		// As for a filter field, a mapped column that is no identifier
+		// names no row column; parse.NewResource refuses it.
+		if column, ok, err := g.FieldColumn(field); err == nil && ok {
+			sf.Column = column
+		}
+		fields = append(fields, sf)
 	}
 
 	if len(fields) == 0 {
