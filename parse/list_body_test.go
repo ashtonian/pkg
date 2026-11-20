@@ -4,6 +4,7 @@ package parse_test
 
 import (
 	"errors"
+	"net/url"
 	"strings"
 	"testing"
 	"testing/iotest"
@@ -69,4 +70,39 @@ func TestParseListBody_ReadErrorsAreNotRequestErrors(t *testing.T) {
 	assert.ErrorIs(t, err, cause)
 	_, isParse := errors.AsType[*core.ParseError](err)
 	assert.False(t, isParse, "the request is not at fault")
+}
+
+// ParseListPost is a POST's list from its parts, for a framework that hands
+// a handler those rather than an *http.Request.
+func TestParseListPost(t *testing.T) {
+	res, err := parse.NewResource[gadgetRow]("gadgets", parse.AcceptParams("tenant"))
+	require.NoError(t, err)
+	want, err := res.ParseListInput(parse.ListInput{Sort: "-id"})
+	require.NoError(t, err)
+
+	got, err := res.ParseListPost(url.Values{"tenant": {"t1"}}, "application/json; charset=utf-8", strings.NewReader(`{"sort":"-id"}`))
+	require.NoError(t, err)
+	assert.Equal(t, want, got, "the endpoint's own parameter stays in the query")
+
+	for _, tt := range []struct {
+		query       url.Values
+		contentType string
+		param       string
+	}{
+		{url.Values{"sort": {"-id"}}, "application/json", "sort"},
+		{url.Values{"name": {"a"}}, "application/json", "name"},
+		{nil, "text/plain", "content-type"},
+		{nil, "", "content-type"},
+	} {
+		_, err := res.ParseListPost(tt.query, tt.contentType, strings.NewReader(`{}`))
+		require.ErrorIs(t, err, filter.ECodeInvalidListParam, tt.param)
+		pe, ok := errors.AsType[*core.ParseError](err)
+		require.True(t, ok)
+		assert.Equal(t, tt.param, pe.Details["parameter"])
+	}
+}
+
+type gadgetRow struct {
+	ID   int    `json:"id"   db:"id"   parse:"filter,sort"`
+	Name string `json:"name" db:"name" parse:"filter,sort"`
 }

@@ -153,7 +153,7 @@ Tags expose capabilities explicitly: `parse:"filter,sort,patch,facet,search,incl
 |---|---|
 | [`resource.go`](resource.go) | `NewResource[T]`, `MustResource`, resource options, identity, system fields, projection (`Columns`, `ColumnNames`), `ParseFilterWithCost`, `Key`, `WithPaths` (a request's view with declared JSON paths) |
 | [`list.go`](list.go) | `ListInput`, `ParseListInput`, `ListRequest`, `ParseList`, `Scope`, `ListPlan` (`Dialect`), `BuildList`, `Page`, `PagePointers`, `IncludeQueries` |
-| [`list_body.go`](list_body.go) | `ParseListBody`: a list request as one JSON document, a POST body beside the query string; `Accepts` |
+| [`list_body.go`](list_body.go) | `ParseListBody`: a list request as one JSON document, a POST body beside the query string; `ParseListPost`: a POST's list from its query string, content type and body; `Accepts` |
 | [`relate.go`](relate.go) | `Relate`, `MustRelate`, `HasMany`, `BelongsTo`, `ManyToMany`, `Junction` / `Through`, `Indexed`, `Includable`, `Facetable`, `Writable`, `PolicyScoped`, `References`, `RelatedResource` |
 | [`update.go`](update.go) | `Target` (`ByID`, `ByIDs`, `ByFilter`), `BuildUpdate`, `UpdatePlan` (`Dialect`, `Current`), `RelationStatements`, `Stamp`, `StampSQL`, `Increment`, `SkipUnchanged`, `Unchanged`, `Dialect` |
 | [`update_batch.go`](update_batch.go) | `RowUpdate`, `UpdateBatchLimits`, `BuildUpdateBatch`, `UpdateBatchPlan`, `UpdateBatchChunk.CheckCurrent`, `ErrUpdateBatchTargets`: bounded varied column updates with exact preimage checks |

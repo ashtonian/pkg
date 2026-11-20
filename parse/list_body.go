@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"io"
 	"maps"
+	"mime"
+	"net/url"
 	"slices"
 
 	"github.com/ashtonian/pkg/parse/core"
@@ -119,6 +121,25 @@ func (r *Resource[T]) listMember(in *ListInput, name string, raw json.RawMessage
 		return decode(&in.Fields, "an array of field names")
 	}
 	return nil
+}
+
+// ParseListPost validates a list request a POST sends: its query string,
+// the value of its Content-Type header and its body, for a transport that
+// hands a handler those parts rather than an *http.Request
+// (parsehttp.ParseList is this over one). The body is read with
+// ParseListBody. The query string carries only the parameters the endpoint
+// reads itself (AcceptParams), so one request cannot carry two filters, and
+// the body is application/json; anything else is E2067.
+func (r *Resource[T]) ParseListPost(query url.Values, contentType string, body io.Reader) (*ListRequest, error) {
+	for _, name := range slices.Sorted(maps.Keys(query)) {
+		if !r.Accepts(name) {
+			return nil, listParamError(name, fmt.Sprintf("a POST list takes %q in its body, not its query string", name))
+		}
+	}
+	if media, _, err := mime.ParseMediaType(contentType); err != nil || media != "application/json" {
+		return nil, listParamError("content-type", "a POST list body is application/json")
+	}
+	return r.ParseListBody(body)
 }
 
 // Accepts reports whether the endpoint reads query parameter name itself
