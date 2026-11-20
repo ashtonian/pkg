@@ -178,8 +178,20 @@ A `filter.Row` returns each field's value in the canonical domain filter values 
 A list endpoint declares its resource once — `parse.NewResource[T](table, PrimaryKey, TenantColumn, DeletedColumn, PageSize, AcceptParams, ParserOptions)` — and serves each request in three steps:
 
 1. `ParseList(url.Values)` reads every `filter.Param*` parameter into a `*ListRequest`: the JSON filter ANDed with the flat field parameters and bounded as one expression, sort, cursor, page size (missing: the default; above the maximum: clamped; malformed or not positive: E2067), `include_total` and `include_deleted` (booleans; anything else is E2067), search (E2067 on a resource without search fields), facets (unknown or not facetable: E2071), includes and the field mask. A parameter that is none of these, not a filterable field and not accepted with `AcceptParams` is E2071, so a misspelt filter cannot return an unfiltered list. Off HTTP — an RPC, a message, a saved view — build a `ListInput` (the JSON filter, `FieldFilters` keyed `field` or `field_<op>`, sort, cursor, page size, flags and name lists) and call `ParseListInput`: `ParseList` is that call behind a query-string adapter, with the same limits and codes; a `ListInput` page size of zero is the default and a negative one E2067.
-2. `BuildList(dialect, req, parse.Scope{Tenant, Governance, Policy, IncludeDeleted})` compiles it under the server's decisions: the tenant floor (or governance in its place), soft-delete masking unless `IncludeDeleted`, and the policy, ANDed with the request; the key as the final keyset column; the count and facets when asked. A tenant-scoped resource without `Scope.Tenant` is `ErrTenantRequired`. The `*ListPlan` holds `Page` (the full `SELECT` of the resource's `Columns`), `Fragment` (its `WHERE … ORDER BY … LIMIT` alone, for a caller's own projection with `Page.Args`), `Count`, `Facets`, `Include` and `Keyset`.
+2. `BuildList(dialect, req, parse.Scope{Tenant, Governance, Policy, IncludeDeleted})` compiles it under the server's decisions: the tenant floor (or governance in its place), soft-delete masking unless `IncludeDeleted`, and the policy, ANDed with the request; the key as the final keyset column; the count and facets when asked; [computed columns](#computed-columns) as the dialect's expressions. A tenant-scoped resource without `Scope.Tenant` is `ErrTenantRequired`. `Scope.Tenant` is the tenant key's text, normalized once and bound as one value at every tenant column the resource reaches, its relations' at any depth included ([Tenant key](relations.md#tenant-key)): a string, a UUID's canonical text, or an integer from its decimal digits with an optional minus sign (`"44"`), range-checked against every integer column's Go kind. Text one of those columns cannot hold is `ErrTenantInvalid`, the server's mistake rather than the request's. The `*ListPlan` holds `Page` (the full `SELECT` of the resource's `Columns`), `Fragment` (its `WHERE … ORDER BY … LIMIT` alone, for a caller's own projection with `Page.Args`; a value the table holds in no column is usually better declared with `parse.ReadExpr`, which `Page` then selects), `Count`, `Facets`, `Include` and `Keyset`.
 3. `Page(rows, plan)` (or `PagePointers`) builds the page from the fetched rows. `IncludeQueries(plan, keys)` returns the include statements for the page's keys (`Key(row)`), tenant-scoped as the list was; read each one's rows with its `Scan` into `Page.Relations` (and `Page.Truncated` for owners cut at the cap).
+
+### Policy fields
+
+A server policy (`Scope.Policy`, `Scope.Governance`, `Scope.Related`, `ListPolicy`) can name fields a request cannot. A constraint's `Field` that names a system field, the key, tenant or soft-delete column the resource declares, resolves to it. Any other name must designate exactly one of:
+
+- a request field (`parse:"filter"`), by its name;
+- a field without the filter capability, by its external name;
+- any field with a column, by that column, hidden fields (`json:"-"`) and request fields included.
+
+A relation field has no column, and neither has a field whose column tag is `-`. Requests still reach only request fields, and the schema document advertises nothing more. A policy's operator must apply to the field's type, but need not be one of its request operators.
+
+A name that designates more than one field is refused with `filter.ErrAmbiguousPolicyField` whichever field is declared first, and the error names each field and column. Such a name is one field's name and another field's column (a visible `region` stored in `region_code` beside a hidden field stored in `region`), the name of two fields, or a column two fields hold that is neither's name. Each of those fields stays reachable by its other name (`region_code` above), if it has one. A field whose type a filter field could not take (a `storage` tag on an array, a malformed `geo` tag) does not stop the resource from building; a policy that names it returns that field's error. A name no field has is E2071. `ResourceSchema.PolicyField(name)` resolves a name as a policy does, so a server can check its policies' fields at startup, and `Relate` refuses a relation name a policy already resolves.
 
 Underneath, `NewListQuery(filterSchema, sortSchema, dialect).Build(opts...)` returns a `*ListResult`:
 
@@ -198,6 +210,36 @@ Underneath, `NewListQuery(filterSchema, sortSchema, dialect).Build(opts...)` ret
 A statement the list builder does not write, such as a search ordered by a computed rank, pages the same way from its own keys. Each `filter.CursorKey` names the key, its SQL expression (`SQLExpr`, or a document member's `Path`), the result column a token reads it from (`Column`), its type and direction, and whether it can be NULL. `filter.OrderByKeys(dialect, keys, reverse)` renders the `ORDER BY`; `filter.SeekPredicate(dialect, keys, token, bind)` checks the token against the keys (`ValidateCursor`, E2082 for a token minted under other keys), normalizes its values and renders the rows strictly after it, binding every value through `bind`; `CursorPlan{Keys: keys}.Token` mints the next token from a page's last row. Keys may mix directions; NULL placement and seeks follow the rules above.
 
 Facets name facetable fields; any other name is E2071, like an unknown filter field. A relation facet counts distinct owners per target, and `BuildIncludeQuery` returns distinct `(owner, target)` pairs, at most `WithMaxIncludePerRelation` per owner, so two junction rows pairing the same rows (typed edges) count once. Search covers string fields; schema generation refuses `search` on any other type unless a `ColumnMapper` supplies the expression. On PostgreSQL an array argument binds as a typed Go slice (`[]string`, `[]int64`, `[]float64`, `[]bool`, `[]time.Time`; UUIDs as their canonical text), which pgx encodes in every query mode, including `QueryExecModeExec` and the simple protocol.
+
+### Computed columns
+
+A row often carries a value no column of its table holds: a count of related rows, a many-to-many's keys as an array, a nullable column read as text. Declare it with `parse.ReadExpr(column, expr)`, where `expr` is a `parse.ColumnExpr` — `func(filter.Dialect) (string, error)` — returning the column's trusted SQL for one dialect, or an error for a dialect it cannot serve. `parse.SQL(sql)` is the expression every dialect reads alike. A resource is declared once, before any dialect is known, and serves each dialect through that dialect's expression:
+
+```go
+var accounts = parse.MustResource[Account]("accounts",
+	parse.TenantColumn("tenant_id"),
+	parse.ReadExpr("member_count", parse.SQL("SELECT count(*) FROM memberships m WHERE m.account_id = accounts.id")),
+	parse.ReadExpr("group_ids", func(d filter.Dialect) (string, error) {
+		switch d.(type) {
+		case filter.PostgresDialect:
+			return "array(SELECT g.group_id FROM account_groups g WHERE g.account_id = accounts.id ORDER BY g.group_id)", nil
+		case filter.SQLiteDialect:
+			return "SELECT json_group_array(group_id) FROM (SELECT g.group_id FROM account_groups g WHERE g.account_id = accounts.id ORDER BY g.group_id)", nil
+		}
+		return "", filter.ErrUnsupportedDialect
+	}),
+)
+```
+
+- `Columns(d)` selects the column as `(sql) AS column`, composed with a declared `ColumnType` read cast, so `plan.Page`, an update's `RETURNING` and `parsepgx` scan it into the column's field by name.
+- The column's `filter`, `sort`, `facet` and `search` tags compile against d's expression in `BuildList`, `BuildUpdate` and `BuildUpdateBatch`, and so does a server policy that names the column ([policy fields](#policy-fields)), on the resource's own statements and as a relation's target (`Scope.Related`), a hidden or unfilterable column included; a cursor reads a computed sort key's value from the column's field. Every other part of the statement, such as a sort's collation, follows the dialect the build is given.
+- An update that changes relations runs `Owner` before the relation statements, so a computed column over a relation's pairs reads them as they were; `Reread(plan, keys)` reads the rows again once the statements have run, and `parsepgx.Update` runs it.
+- A dialect an expression refuses, or answers with empty SQL, fails `Columns`, `BuildList` (and with it the page, count, facets and includes), `BuildUpdate` and `BuildUpdateBatch` before any statement exists. The error names the table, the column and the dialect, and wraps the expression's own error: `parse: accounts: computed column "group_ids" for dialect sqlite: unsupported SQL dialect`.
+- `NewResource` refuses, whatever the dialect, a computed column that is not a column of T or not read (`ReadColumns`), that is the key, tenant or deleted column, that a patch path writes, or that declares document paths or element members, and a `relation` tag correlating on one; `Relate` refuses a relation correlating on one, `Resource.WithPaths` a request's path into one, and `BuildUpdate` and `BuildUpdateBatch` a `Stamp`, `StampSQL` or `Increment` of one.
+- A relation to the resource filters by its computed columns too: the owner's build compiles the relation's filter, at any depth, the target's policy (`Scope.Related`) and the relation's facets, includes and membership changes against each target's expressions for the owner's dialect, and fails, naming the target's table, column and dialect, for a dialect a target it reaches refuses. Builds that reach no such relation are unaffected. Where the statement reads the target under an alias of its own — a relation back to a table already in the statement, as in a cycle, and a policy-scoped relation's includes, facets and membership changes — an expression naming the table cannot follow, and the build fails instead of reading a column the table lacks.
+- `FilterSchema`, `SortSchema`, `SearchSchema`, the schema document and discovery stay dialect-neutral and name the column. `ListQuery` compiles those schemas as they are, where a computed column reads as the stored column it names; list a resource with computed columns through `BuildList`.
+
+`expr` runs on every build, so it must be cheap and return the same SQL for the same dialect. Each distinct set of resolved expressions builds one view of the resource's filter, sort and search schemas on first use, cached on the resource and safe for concurrent builds; a resource caches at most 16 views and builds any beyond that per call. A build reaches a relation's target through the target's own cached view, following the request's filter rather than the relation graph, so relations in a cycle cost no more than the filter's depth. The cache is keyed by the resolved SQL rather than the dialect value: dialect values need not be comparable, and two dialects that differ only in a setting the expressions ignore, such as `PostgresDialect.Collation`, share a view, while each build still compiles under its own dialect. Declare relations before serving; `Relate` drops the cached views.
 
 ## Search and facets
 
@@ -225,7 +267,7 @@ A `parse.Resource` declares its primary key once with `parse.PrimaryKey` (defaul
 | `ListWithCount(b)` | bool | `false` | Build `CountSQL` |
 | `ListFacets(fields...)` | `...string` | none | Build the facet query |
 | `ListSearch(q)` | string | none | Full-text predicate (WHERE only, order unchanged) |
-| `ListPolicy(pc)` | `*PolicyConstraints` | none | Server-side constraints ANDed with the filter |
+| `ListPolicy(pc)` | `*PolicyConstraints` | none | Server-side constraints ANDed with the filter; each names a [policy field](#policy-fields) |
 | `ListTenant(v)` | any | none | Tenant for tenant-scoped relation junctions (filter, count, facets) |
 | `ListUnscopedRelations()` | — | off | Build tenant-scoped junctions without a tenant — platform tooling only |
 | `ListStartParam(n)` | int | `0` | Offset the main fragment after `n` earlier arguments; standalone count/facet statements keep independent numbering |

@@ -81,7 +81,9 @@ func viewOf[T any](t *testing.T, row func(id, name string, rank int64, hash stri
 	t.Helper()
 	r, err := parse.NewResource[T]("devices", parse.TenantColumn("tenant_id"))
 	require.NoError(t, err)
-	v := resourceView{Columns: r.Columns(filter.PostgresDialect{}), Filter: map[string]string{}, Sort: map[string]string{}, Patch: map[string]string{}, Server: map[string]string{}}
+	columns, err := r.Columns(filter.PostgresDialect{})
+	require.NoError(t, err)
+	v := resourceView{Columns: columns, Filter: map[string]string{}, Sort: map[string]string{}, Patch: map[string]string{}, Server: map[string]string{}}
 	for name, f := range r.FilterSchema().Fields {
 		v.Filter[name] = f.SQLExpr + " " + string(f.DataType)
 	}

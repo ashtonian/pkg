@@ -75,16 +75,23 @@ func (c UpdateBatchChunk) CheckCurrent(keys []any) error {
 }
 
 // BuildUpdateBatch compiles distinct column patches through the same typed
-// expressions, tenant/live floors and options as BuildUpdate. Relation changes
-// and identity-column writes refuse before a plan is returned.
+// expressions, tenant/live floors and options as BuildUpdate. Relation changes,
+// identity-column writes and a dialect a computed column's expression refuses
+// fail before a plan is returned.
 func (r *Resource[T]) BuildUpdateBatch(d Dialect, rows []RowUpdate, scope Scope, limits UpdateBatchLimits, opts ...UpdateOption) (*UpdateBatchPlan, error) {
+	v, err := r.dialectView(d)
+	if err != nil {
+		return nil, err
+	}
 	if scope.Governance != nil || scope.IncludeDeleted {
 		return nil, fmt.Errorf("%s: %w", r.table, ErrUpdateScope)
 	}
-	if r.tenant != "" && scope.Tenant == "" {
-		return nil, fmt.Errorf("%s: %w", r.table, ErrTenantRequired)
+	tenant, err := r.bindTenant(scope.Tenant)
+	if err != nil {
+		return nil, err
 	}
-	limits, err := updateBatchLimits(d, limits)
+	common := updateScope{tenant: tenant, policy: scope.Policy, related: scope.Related}
+	limits, err = updateBatchLimits(d, limits)
 	if err != nil {
 		return nil, err
 	}
@@ -132,7 +139,7 @@ func (r *Resource[T]) BuildUpdateBatch(d Dialect, rows []RowUpdate, scope Scope,
 	var offset int
 	for _, orderedRow := range ordered {
 		row := orderedRow.row
-		item, err := r.compileRowUpdate(d, row, scope, options, offset)
+		item, err := r.compileRowUpdate(d, v, row, common, options, offset)
 		if err != nil {
 			return nil, err
 		}
@@ -140,13 +147,13 @@ func (r *Resource[T]) BuildUpdateBatch(d Dialect, rows []RowUpdate, scope Scope,
 			if len(compiled) == 0 {
 				return nil, fmt.Errorf("%s: one update exceeds the parameter budget", r.table)
 			}
-			chunk, err := r.renderUpdateBatch(d, compiled, scope, keyType, config.skipUnchanged)
+			chunk, err := r.renderUpdateBatch(d, v, compiled, common, keyType, config.skipUnchanged)
 			if err != nil {
 				return nil, err
 			}
 			plan.Chunks = append(plan.Chunks, chunk)
 			compiled, offset = nil, 0
-			item, err = r.compileRowUpdate(d, row, scope, options, 0)
+			item, err = r.compileRowUpdate(d, v, row, common, options, 0)
 			if err != nil {
 				return nil, err
 			}
@@ -158,7 +165,7 @@ func (r *Resource[T]) BuildUpdateBatch(d Dialect, rows []RowUpdate, scope Scope,
 		offset += len(item.args)
 	}
 	if len(compiled) > 0 {
-		chunk, err := r.renderUpdateBatch(d, compiled, scope, keyType, config.skipUnchanged)
+		chunk, err := r.renderUpdateBatch(d, v, compiled, common, keyType, config.skipUnchanged)
 		if err != nil {
 			return nil, err
 		}
@@ -182,7 +189,7 @@ type compiledRowUpdate struct {
 	args        []any
 }
 
-func (r *Resource[T]) compileRowUpdate(d Dialect, row RowUpdate, scope Scope, options []patch.PatchSQLOption, offset int) (compiledRowUpdate, error) {
+func (r *Resource[T]) compileRowUpdate(d Dialect, v *dialectView, row RowUpdate, scope updateScope, options []patch.PatchSQLOption, offset int) (compiledRowUpdate, error) {
 	set, err := patch.BuildPatchSQL(row.Patch, d, append(slices.Clone(options), patch.WithStartParam(offset))...)
 	if err != nil {
 		return compiledRowUpdate{}, err
@@ -195,15 +202,15 @@ func (r *Resource[T]) compileRowUpdate(d Dialect, row RowUpdate, scope Scope, op
 			return compiledRowUpdate{}, fmt.Errorf("%s: update batch cannot change identity column %s", r.table, assignment.Column)
 		}
 	}
-	scope.Policy = updateRowPolicy(scope.Policy, row.Policy)
-	where, args, err := r.updateWhere(d, ByID(row.Key), scope, offset+set.ParamCount)
+	scope.policy = updateRowPolicy(scope.policy, row.Policy)
+	where, args, err := r.updateWhere(d, v, ByID(row.Key), scope, offset+set.ParamCount)
 	if err != nil {
 		return compiledRowUpdate{}, err
 	}
 	return compiledRowUpdate{row: row, assignments: set.Assignments, where: where, change: set.ChangePredicate, args: append(set.Args, args...)}, nil
 }
 
-func (r *Resource[T]) renderUpdateBatch(d Dialect, rows []compiledRowUpdate, scope Scope, keyType core.TypeInfo, skipUnchanged bool) (UpdateBatchChunk, error) {
+func (r *Resource[T]) renderUpdateBatch(d Dialect, v *dialectView, rows []compiledRowUpdate, scope updateScope, keyType core.TypeInfo, skipUnchanged bool) (UpdateBatchChunk, error) {
 	chunk := UpdateBatchChunk{Keys: make([]any, len(rows)), keyType: keyType}
 	var currentWhere, changedWhere []string
 	var args []any
@@ -211,8 +218,8 @@ func (r *Resource[T]) renderUpdateBatch(d Dialect, rows []compiledRowUpdate, sco
 	for i, row := range rows {
 		chunk.Keys[i] = row.row.Key
 		currentScope := scope
-		currentScope.Policy = updateRowPolicy(scope.Policy, row.row.Policy)
-		where, currentArgs, err := r.updateWhere(d, ByID(row.row.Key), currentScope, len(chunk.Current.Args))
+		currentScope.policy = updateRowPolicy(scope.policy, row.row.Policy)
+		where, currentArgs, err := r.updateWhere(d, v, ByID(row.row.Key), currentScope, len(chunk.Current.Args))
 		if err != nil {
 			return UpdateBatchChunk{}, err
 		}
@@ -241,7 +248,7 @@ func (r *Resource[T]) renderUpdateBatch(d Dialect, rows []compiledRowUpdate, sco
 			order += ` COLLATE "C"`
 		}
 	}
-	columns := strings.Join(r.Columns(d), ", ")
+	columns := strings.Join(r.columns(d, v), ", ")
 	chunk.Current.SQL = "SELECT " + columns + " FROM " + r.table + " WHERE " + strings.Join(currentWhere, " OR ") + " ORDER BY " + order + d.RowLock()
 	if len(assignments) != 0 {
 		clauses := make([]string, 0, len(assignments))

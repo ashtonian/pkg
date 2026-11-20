@@ -109,19 +109,21 @@ A server that builds a patch need not encode JSON to parse it back. `MergePatchM
 
 ## Resource updates
 
-`Resource.BuildUpdate(dialect, parsed, target, scope, opts...)` compiles a validated patch into the statement that applies it. The WHERE carries the target (`ByID`, `ByIDs` or `ByFilter`), the tenant floor (`Scope.Tenant`, required on a tenant-scoped resource: `ErrTenantRequired`), live rows only, and `Scope.Policy`. Its placeholders continue after the SET clause's.
+`Resource.BuildUpdate(dialect, parsed, target, scope, opts...)` compiles a validated patch into the statement that applies it. The WHERE carries the target (`ByID`, `ByIDs` or `ByFilter`), the tenant floor (`Scope.Tenant`, required on a tenant-scoped resource: `ErrTenantRequired`; normalized once to the [tenant key](relations.md#tenant-key), `ErrTenantInvalid` when a tenant column the resource reaches cannot hold it), live rows only, and `Scope.Policy`. Its placeholders continue after the SET clause's.
 
 ```go
 plan, err := products.BuildUpdate(filter.PostgresDialect{}, parsed, parse.ByID(id),
 	parse.Scope{Tenant: tenantID, Policy: policy},
 	parse.StampSQL("updated_at", "NOW()"))
-if err != nil { /* ErrNoTarget, ErrUpdateScope, ErrTenantRequired or a patch error */ }
+if err != nil { /* ErrNoTarget, ErrUpdateScope, ErrTenantRequired, ErrTenantInvalid or a patch error */ }
 
 tx, err := db.BeginTx(ctx, nil)
 rows, err := tx.QueryContext(ctx, plan.Owner.SQL, plan.Owner.Args...) // the target rows as the update left them
 if plan.HasRelations() {
 	stmts, err := products.RelationStatements(plan, keysOf(rows)) // keys read with products.Key, never the requested ids
 	// execute each statement in tx
+	reread, err := products.Reread(plan, keysOf(rows))
+	// when reread is not nil, its rows in tx replace rows: computed columns read the new pairs
 }
 err = tx.Commit()
 ```
@@ -132,7 +134,7 @@ err = tx.Commit()
 | Changes relations only | `SELECT <columns> … WHERE …` plus the dialect's row lock (`FOR UPDATE` on PostgreSQL), so two replacements of one relation cannot interleave their delete and insert | true |
 | Empty | `SELECT <columns> … WHERE …` — a scoped read | false |
 
-The rows `Owner` returns are the rows the scope admits. Zero rows means the target is absent, deleted, another tenant's or outside the policy; answer that as not found. Under `SkipUnchanged` the `UPDATE` returns only the rows it changed, and `plan.Current` tells an unchanged target from a missing one ([Skipping unchanged rows](#skipping-unchanged-rows)). Relation statements are rendered for the keys `Owner` returned, tenant-scoped as the update was, and run in its transaction. On PostgreSQL, `parsepgx.Update(ctx, pool, products, plan)` does all of this: it returns the owner rows and, when the patch changes relations, runs owner and relation statements in one transaction (a savepoint inside a caller's `pgx.Tx`).
+The rows `Owner` returns are the rows the scope admits. Zero rows means the target is absent, deleted, another tenant's or outside the policy; answer that as not found. Under `SkipUnchanged` the `UPDATE` returns only the rows it changed, and `plan.Current` tells an unchanged target from a missing one ([Skipping unchanged rows](#skipping-unchanged-rows)). Relation statements are rendered for the keys `Owner` returned, tenant-scoped as the update was, and run in its transaction. `Owner` runs before them, so a [computed column](queries.md#computed-columns) over a relation's pairs reads the pairs as they were; `Reread(plan, keys)` returns the statement that reads those rows' `Columns` again after the relation statements, held to the update's tenant, or nil when the patch changes no relation or the resource has no computed column. On PostgreSQL, `parsepgx.Update(ctx, pool, products, plan)` does all of this: it returns the owner rows and, when the patch changes relations, runs owner and relation statements in one transaction (a savepoint inside a caller's `pgx.Tx`).
 
 | Option / target | Effect |
 |---|---|
@@ -143,7 +145,7 @@ The rows `Owner` returns are the rows the scope admits. Zero rows means the targ
 | `SkipUnchanged()` | Update only the target rows the patch's columns change, so a row the patch leaves as it is keeps its stamp and counters and `RETURNING` omits it; `plan.Current` reads every target row. See [Skipping unchanged rows](#skipping-unchanged-rows) |
 | `Scope.Governance`, `Scope.IncludeDeleted` | Refused with `ErrUpdateScope`: an update reaches only its own tenant's live rows |
 
-An update has one stamp: a later `Stamp` or `StampSQL` replaces an earlier one. The stamp column and each increment column must be one of the resource's columns, an increment column an integer one, and none may be named twice. A patch's own write to a stamped or incremented column — a request's or the server's — is dropped: the server's value wins, and a patch writing only those columns writes nothing. `Dialect` is a dialect both the filter and patch compilers speak; `filter.PostgresDialect` and `filter.SQLiteDialect` are.
+An update has one stamp: a later `Stamp` or `StampSQL` replaces an earlier one. The stamp column and each increment column must be one of the resource's columns, an increment column an integer one, none a [computed column](queries.md#computed-columns) (`parse.ReadExpr`), which the table does not hold, and none may be named twice. A patch's own write to a stamped or incremented column — a request's or the server's — is dropped: the server's value wins, and a patch writing only those columns writes nothing. `Dialect` is a dialect both the filter and patch compilers speak; `filter.PostgresDialect` and `filter.SQLiteDialect` are.
 
 ### Skipping unchanged rows
 

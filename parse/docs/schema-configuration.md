@@ -73,7 +73,7 @@ Declare physical storage with `parse.ColumnType(column, core.SQLJSON)` / `core.S
 | `WithSQLTableName(name)` | string | `PluralSnake(type name)` | Table name for the type |
 | `WithTableConvention(fn)` | `TableConvention` | `PluralSnake` | Table naming |
 | `WithColumnConvention(fn)` | `NamingConvention` | `SnakeCase` | Column naming when a field has no column tag |
-| `WithColumnMapper(m)` | `SQLColumnMapper` | none | Full control over column expressions; the mapper's SQL is trusted as written |
+| `WithColumnMapper(m)` | `SQLColumnMapper` | none | Maps a field's column to the SQL expression that reads it. `MapColumn(table, column, type)` gets the column the `db` tag or the column convention names (the one patch writes), the same in every view of the field; the mapper's SQL is trusted as written |
 | `WithColumnTypes(types)` | `map[string]SQLType` | none | Copied physical column declarations; authoritative JSON/native-array profile for filter, patch, sort and search schemas |
 | `WithFieldNameTag(tag)` | string | `"json"` | Tag holding external field names |
 | `WithColumnTag(tag)` | string | `"db"` | Tag holding column names |
@@ -82,7 +82,7 @@ Declare physical storage with `parse.ColumnType(column, core.SQLJSON)` / `core.S
 | `GeneratorOptions.DefaultFilterOps` | `map[FieldType][]string` | filter package defaults | Default operators per type; each must apply to the type (`filter.OperatorsFor`) |
 | `GeneratorOptions.DefaultPatchOps` | `map[FieldType][]string` | patch package defaults | Default patch operations per type |
 
-Table names and columns must be SQL identifiers; `TableName`, `ColumnExpr` and `ColumnName` return an error otherwise, so a bad tag fails at schema generation.
+Table names and columns must be SQL identifiers; `TableName`, `ColumnExpr` and `ColumnName` return an error otherwise, so a bad tag fails at schema generation. `ColumnExpr` leaves the column unchecked when a `ColumnMapper` renders it.
 
 `WithFieldNameTag` changes schema field names. Direct typed application uses those names. Document operations also require a codec whose field naming agrees: using a non-JSON field tag with the built-in JSON codec is rejected when names disagree. The option does not teach `encoding/json` a different struct-tag convention.
 

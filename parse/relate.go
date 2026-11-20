@@ -20,6 +20,9 @@ type RelatedResource interface {
 	DeletedColumnName() string
 	FilterSchema() *filter.ResourceSchema
 	columnType(name string) (reflect.Type, bool)
+	computed(column string) bool
+	dialectView(d filter.Dialect) (*dialectView, error)
+	tenantGraph() *tenantNode
 }
 
 func (r *Resource[T]) columnType(name string) (reflect.Type, bool) {
@@ -128,9 +131,14 @@ func Describe(label, description string) RelationOption {
 
 // Relate declares a relation named name on r: requests filter by it with
 // the target's own filter (`$some`, `$none`, `$is`, `$is_not`) or by the
-// target's key. Columns are checked against both resources' types. Declare
-// every relation before the resources serve requests; Relate is not safe
-// for concurrent use with them.
+// target's key; the target's computed columns (ReadExpr) compile there as
+// the target's expressions for the owner's dialect. Columns are checked
+// against both resources' types, and the tenant columns r and every
+// resource relating to it then reach, at any depth, against each other:
+// one request binds one tenant to all of them. Declare every relation
+// before the resources serve requests; Relate changes the tenant key of
+// every resource that reaches r, so it is not safe for concurrent use with
+// any of them.
 func (r *Resource[T]) Relate(name string, rel Relation) error {
 	if !core.IsIdentifier(name) {
 		return fmt.Errorf("parse: %s: relation name %q is not an identifier", r.table, name)
@@ -142,12 +150,23 @@ func (r *Resource[T]) Relate(name string, rel Relation) error {
 	if _, ok := fs.SystemFields[name]; ok {
 		return fmt.Errorf("parse: %s: relation %q names a system field", r.table, name)
 	}
+	// Refused here rather than as ambiguous later: a relation under a name
+	// policies already resolve would change what those policies constrain.
+	if _, ok, _ := fs.PolicyField(name); ok {
+		return fmt.Errorf("parse: %s: relation %q is a name server policies resolve (filter.ResourceSchema.PolicyField)", r.table, name)
+	}
 	if rel.target == nil {
 		return fmt.Errorf("parse: %s: relation %q has no target", r.table, name)
 	}
 	rs, err := r.relationSchema(name, rel)
 	if err != nil {
 		return err
+	}
+	if r.computed(rs.PrimaryKey) {
+		return computedCorrelation(r.table, name, rs.PrimaryKey)
+	}
+	if rel.kind != core.ManyToMany && rel.target.computed(rs.SourceColumn) {
+		return fmt.Errorf("parse: %s: relation %q correlates on %s's computed column %q", r.table, name, rel.target.Table(), rs.SourceColumn)
 	}
 	if rel.includable && rel.kind == core.BelongsTo {
 		return fmt.Errorf("parse: %s: relation %q: a belongs-to's key is the owner's foreign key; it is not included", r.table, name)
@@ -164,13 +183,18 @@ func (r *Resource[T]) Relate(name string, rel Relation) error {
 		}
 	}
 	t := rel.target
+	// The last check: past it nothing fails, so the graph never holds a
+	// relation the resource does not declare.
+	if err := r.tenantNode.relate(t.tenantGraph(), rel.policy); err != nil {
+		return fmt.Errorf("parse: %s: relation %q: %w", r.table, name, err)
+	}
 	keyType, _ := t.columnType(t.PrimaryKeyColumn())
 	key := core.TypeOf(keyType)
 	ops := []filter.FilterOperator{filter.OpEq, filter.OpNe, filter.OpIn, filter.OpNin, filter.OpNull, filter.OpNotNull, filter.OpSome, filter.OpNone}
 	if rel.kind == core.BelongsTo {
 		ops = []filter.FilterOperator{filter.OpEq, filter.OpNe, filter.OpIn, filter.OpNin, filter.OpNull, filter.OpNotNull, filter.OpIs, filter.OpIsNot}
 	}
-	fs.Fields[name] = &filter.FieldSchema{
+	field := &filter.FieldSchema{
 		ExternalName:     name,
 		DataType:         key.Type,
 		NumberKind:       key.NumberKind,
@@ -184,6 +208,10 @@ func (r *Resource[T]) Relate(name string, rel Relation) error {
 		Related:          t.FilterSchema(),
 		RelatedBy:        r.correlationField(rs.PrimaryKey),
 	}
+	fs.Fields[name] = field
+	r.relations[name] = t
+	// The cached dialect views copied the fields before this one.
+	r.readExprs.reset()
 	if rel.writable {
 		path := patch.RelationPath(rs, reflect.SliceOf(keyType))
 		r.patchSchema.AllowedPaths[core.FormatPointer(name)] = path

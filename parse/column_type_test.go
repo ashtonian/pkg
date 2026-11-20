@@ -46,6 +46,8 @@ func TestColumnType_Projection(t *testing.T) {
 	// An interval reads as its ISO 8601 text under any IntervalStyle; the
 	// PostgreSQL integration suite checks the text itself.
 	pg := filter.PostgresDialect{}
+	pgColumns, err := r.Columns(pg)
+	require.NoError(t, err)
 	assert.Equal(t, []string{
 		"sessions.id",
 		"abbrev(sessions.addr) AS addr",
@@ -56,17 +58,21 @@ func TestColumnType_Projection(t *testing.T) {
 		"CASE WHEN sessions.spans IS NULL THEN NULL ELSE ARRAY(SELECT " + pg.ReadColumn("a", core.SQLInterval) +
 			" FROM unnest(sessions.spans) WITH ORDINALITY AS u(a, n) ORDER BY n) END AS spans",
 		"sessions.count",
-	}, r.Columns(pg))
+	}, pgColumns)
 	assert.NotContains(t, pg.ReadColumn("sessions.every", core.SQLInterval), "::text AS",
 		"a text cast would follow the session's IntervalStyle")
+	sqliteColumns, err := r.Columns(filter.SQLiteDialect{})
+	require.NoError(t, err)
 	assert.Equal(t, []string{
 		"sessions.id", "sessions.addr", "sessions.net", "sessions.every",
 		"sessions.allowed", "sessions.nets", "sessions.spans", "sessions.count",
-	}, r.Columns(filter.SQLiteDialect{}))
+	}, sqliteColumns)
 
 	only, err := sessionResource(t, parse.ReadColumns("id", "addr"))
 	require.NoError(t, err)
-	assert.Equal(t, []string{"sessions.id", "abbrev(sessions.addr) AS addr"}, only.Columns(filter.PostgresDialect{}))
+	onlyColumns, err := only.Columns(filter.PostgresDialect{})
+	require.NoError(t, err)
+	assert.Equal(t, []string{"sessions.id", "abbrev(sessions.addr) AS addr"}, onlyColumns)
 }
 
 // Every dialect's projection reads each column under the name ColumnNames
@@ -77,7 +83,8 @@ func TestColumnType_ColumnNamesNameTheProjection(t *testing.T) {
 	names := []string{"id", "addr", "net", "every", "allowed", "nets", "spans", "count"}
 	assert.Equal(t, names, r.ColumnNames())
 	for _, d := range []filter.Dialect{filter.PostgresDialect{}, filter.SQLiteDialect{}} {
-		columns := r.Columns(d)
+		columns, err := r.Columns(d)
+		require.NoError(t, err)
 		require.Len(t, columns, len(names))
 		for i, column := range columns {
 			assert.True(t, column == "sessions."+names[i] || strings.HasSuffix(column, " AS "+names[i]), "%T reads %q as %q", d, names[i], column)

@@ -411,12 +411,12 @@ type GeneratorOptions struct {
 	// ColumnTypes declares physical storage independently of Go field shape.
 	ColumnTypes map[string]SQLType
 
-	// ColumnMapper provides full control over column expression generation.
-	// Takes precedence over ColumnConvention and ColumnTag.
+	// ColumnMapper turns each field's column, as ColumnTag and
+	// ColumnConvention name it, into the SQL expression that reads it.
 	ColumnMapper SQLColumnMapper
 
 	// ColumnConvention transforms field names to SQL column names.
-	// Default: SnakeCase. Ignored when ColumnMapper is set.
+	// Default: SnakeCase.
 	ColumnConvention NamingConvention
 
 	// TableNameConvention transforms type names to SQL table names.
@@ -450,11 +450,14 @@ type GeneratorOptions struct {
 	SearchParam string
 }
 
-// SQLColumnMapper maps struct fields to SQL column expressions.
-// Implement this for full control over column naming — it takes precedence
-// over ColumnConvention and the db/column tag.
+// SQLColumnMapper maps a field's column to the SQL expression that reads it.
+// MapColumn is handed the column ColumnName names: the column tag's name,
+// else ColumnConvention (default snake_case) applied to the field's external
+// name, or to its Go name when the field-name tag hides it. Every view of a
+// field (filter, sort, search, server policies) hands it that one column,
+// the name patch SET clauses and column type declarations use too.
 type SQLColumnMapper interface {
-	MapColumn(table, field string, fieldType FieldType) string
+	MapColumn(table, column string, fieldType FieldType) string
 }
 
 // WithSQLTableName overrides the table name for a specific type.
@@ -462,7 +465,7 @@ func WithSQLTableName(name string) GeneratorOption {
 	return func(o *GeneratorOptions) { o.SQLTableName = name }
 }
 
-// WithColumnMapper sets a custom column mapper (full control).
+// WithColumnMapper sets the mapper that turns columns into SQL expressions.
 func WithColumnMapper(mapper SQLColumnMapper) GeneratorOption {
 	return func(o *GeneratorOptions) { o.ColumnMapper = mapper }
 }
@@ -551,14 +554,14 @@ func (g *SchemaGenerator) TableName(t interface{ Name() string }) (string, error
 	return name, nil
 }
 
-// ColumnExpr builds the SQL column expression for a field.
-// Priority: ColumnMapper → columnTag value → ColumnConvention → SnakeCase default.
-// Without a ColumnMapper the result is "table.column" and the column must be
-// a plain identifier; a mapper's expressions are the developer's own SQL and
-// are emitted as returned.
+// ColumnExpr builds the SQL expression that reads the column ColumnName
+// names for field: "table.column", the column a plain identifier. A
+// ColumnMapper is handed that column instead and returns the expression; a
+// mapper's expressions are the developer's own SQL and are emitted as
+// returned, so its column is not checked.
 func (g *SchemaGenerator) ColumnExpr(table, field string, fieldType FieldType, dbTag string) (string, error) {
 	if g.Opts.ColumnMapper != nil {
-		return g.Opts.ColumnMapper.MapColumn(table, field, fieldType), nil
+		return g.Opts.ColumnMapper.MapColumn(table, g.column(field, dbTag), fieldType), nil
 	}
 	col, err := g.ColumnName(field, dbTag)
 	if err != nil {
@@ -571,17 +574,23 @@ func (g *SchemaGenerator) ColumnExpr(table, field string, fieldType FieldType, d
 // SQL SET clauses and cursor row reads.
 // Priority: columnTag value → ColumnConvention → SnakeCase default.
 func (g *SchemaGenerator) ColumnName(field, dbTag string) (string, error) {
-	col := ToSnakeCase(field)
-	switch {
-	case dbTag != "" && dbTag != "-":
-		col, _, _ = strings.Cut(dbTag, ",")
-	case g.Opts.ColumnConvention != nil:
-		col = g.Opts.ColumnConvention(field)
-	}
+	col := g.column(field, dbTag)
 	if !IsIdentifier(col) {
 		return "", fmt.Errorf("column %q for field %s is not a SQL identifier", col, field)
 	}
 	return col, nil
+}
+
+// column is ColumnName without the identifier check.
+func (g *SchemaGenerator) column(field, dbTag string) string {
+	switch {
+	case dbTag != "" && dbTag != "-":
+		col, _, _ := strings.Cut(dbTag, ",")
+		return col
+	case g.Opts.ColumnConvention != nil:
+		return g.Opts.ColumnConvention(field)
+	}
+	return ToSnakeCase(field)
 }
 
 // FieldNameTag returns the struct tag key to read for external field names.
