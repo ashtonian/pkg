@@ -11,7 +11,10 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
+
+	"github.com/stretchr/testify/assert"
 )
 
 // logRecorder is a slog.Handler that keeps every message so a test can wait
@@ -68,14 +71,45 @@ func (l *logRecorder) waitFor(t *testing.T, substr string) {
 	}
 }
 
-func eventually(t *testing.T, cond func() bool, what string) {
+// reloadEvents is an option that sends every successful reload's event to
+// the channel it returns.
+func reloadEvents[T any]() (ReloadOption, <-chan ReloadEvent[T]) {
+	ch := make(chan ReloadEvent[T], 64)
+	return WithOnReloadSuccess(func(_ context.Context, ev ReloadEvent[T]) { ch <- ev }), ch
+}
+
+// recv waits for a value on ch without moving any clock.
+func recv[V any](t *testing.T, ch <-chan V, what string) V {
 	t.Helper()
-	deadline := time.Now().Add(5 * time.Second)
-	for !cond() {
-		if time.Now().After(deadline) {
-			t.Fatalf("timeout waiting for %s", what)
+	select {
+	case v := <-ch:
+		return v
+	case <-time.After(10 * time.Second):
+		t.Fatalf("timeout waiting for %s", what)
+		panic("unreachable")
+	}
+}
+
+// awaitLog waits for a log line containing substr, firing each debounce the
+// file watch arms meanwhile, as receive does.
+func awaitLog(t *testing.T, clk *fakeClock, logs *logRecorder, substr string) {
+	t.Helper()
+	deadline := time.After(10 * time.Second)
+	for {
+		changed := clk.changes()
+		if logs.has(substr) {
+			return
 		}
-		time.Sleep(10 * time.Millisecond)
+		if due, ok := clk.debounce(); ok {
+			clk.Advance(due.Sub(clk.Now()))
+			continue
+		}
+		select {
+		case <-logs.changed:
+		case <-changed:
+		case <-deadline:
+			t.Fatalf("timeout waiting for a log line containing %q", substr)
+		}
 	}
 }
 
@@ -104,6 +138,8 @@ func TestReloader_FileChangeDuringManualReloadIsApplied(t *testing.T) {
 	entered := make(chan struct{})
 	release := make(chan struct{})
 	logs := newLogRecorder()
+	clk := newFakeClock()
+	onReload, reloads := reloadEvents[portCfg]()
 
 	r, err := NewReloader[portCfg](
 		t.Context(),
@@ -115,6 +151,8 @@ func TestReloader_FileChangeDuringManualReloadIsApplied(t *testing.T) {
 			return nil
 		})},
 		WithFileWatch(50*time.Millisecond),
+		withClock(clk),
+		onReload,
 	)
 	if err != nil {
 		t.Fatalf("NewReloader: %v", err)
@@ -133,26 +171,31 @@ func TestReloader_FileChangeDuringManualReloadIsApplied(t *testing.T) {
 	if err := os.WriteFile(path, []byte("port: 9001\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	logs.waitFor(t, "config reload waiting for the reload in flight trigger=file_change")
+	awaitLog(t, clk, logs, "config reload waiting for the reload in flight trigger=file_change")
 
 	close(release)
 	if err := <-manual; err != nil {
 		t.Fatalf("manual reload: %v", err)
 	}
-	eventually(t, func() bool { return r.Config().Port == 9001 }, "the file change to be applied")
-	if s := r.Stats(); s.Successes < 2 || s.LastTrigger != TriggerFileChange {
-		t.Errorf("stats = %+v, want the manual reload then the file change", s)
-	}
+	first := recv(t, reloads, "the manual reload")
+	assert.Equal(t, TriggerManual, first.Trigger)
+	assert.Equal(t, 9000, first.New.Port, "the manual reload read the file before it changed")
+	next := receive(t, clk, reloads, "the file-change reload")
+	assert.Equal(t, TriggerFileChange, next.Trigger)
+	assert.Equal(t, 9001, next.New.Port)
 }
 
-// A pending debounce timer dies with Stop; nothing reloads after.
+// A pending debounce timer dies with Stop: Run stops it before returning, and
+// no reload runs.
 func TestReloader_StopDuringDebounceDoesNotReload(t *testing.T) {
 	path := writeYAML(t, "port: 9000\n")
 	var changes atomic.Int32
+	clk := newFakeClock()
 	r, err := NewReloader[portCfg](
 		t.Context(),
 		[]Option{WithFile(path), WithSkipValidation()},
 		WithFileWatch(300*time.Millisecond),
+		withClock(clk),
 		WithOnReloadSuccess(func(_ context.Context, ev ReloadEvent[portCfg]) { changes.Add(1) }),
 	)
 	if err != nil {
@@ -165,15 +208,17 @@ func TestReloader_StopDuringDebounceDoesNotReload(t *testing.T) {
 	if err := os.WriteFile(path, []byte("port: 9001\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	time.Sleep(100 * time.Millisecond) // the event is in; the debounce is armed
+	clk.awaitDebounce(t)
 
 	if err := r.Stop(context.Background()); err != nil {
 		t.Fatalf("Stop: %v", err)
 	}
 	if err := <-done; err != nil {
-		t.Fatalf("Start: %v", err)
+		t.Fatalf("Run: %v", err)
 	}
-	time.Sleep(600 * time.Millisecond) // well past the debounce
+	if _, armed := clk.debounce(); armed {
+		t.Fatal("Run returned with its debounce still armed")
+	}
 
 	if got := r.Config().Port; got != 9000 {
 		t.Errorf("Port = %d, want 9000: a reload ran after Stop", got)
@@ -189,6 +234,10 @@ func TestReloader_StopDuringDebounceDoesNotReload(t *testing.T) {
 // Stop must not return while a reload that could still fire callbacks is
 // running, and nothing may reload after it returns.
 func TestReloader_StopWaitsForManualReload(t *testing.T) {
+	synctest.Test(t, testStopWaitsForManualReload)
+}
+
+func testStopWaitsForManualReload(t *testing.T) {
 	entered := make(chan struct{})
 	release := make(chan struct{})
 	var hold atomic.Bool
@@ -251,6 +300,10 @@ func TestReloader_StopWaitsForManualReload(t *testing.T) {
 // Stop cancels an automatic reload in flight; the abandoned reload is neither
 // a success nor a failure.
 func TestReloader_StopCancelsAutomaticReload(t *testing.T) {
+	synctest.Test(t, testStopCancelsAutomaticReload)
+}
+
+func testStopCancelsAutomaticReload(t *testing.T) {
 	var arm atomic.Bool
 	entered := make(chan struct{})
 	var failures atomic.Int32
@@ -283,7 +336,7 @@ func TestReloader_StopCancelsAutomaticReload(t *testing.T) {
 		t.Fatalf("Stop did not cancel the automatic reload: %v", err)
 	}
 	if err := <-done; err != nil {
-		t.Fatalf("Start: %v", err)
+		t.Fatalf("Run: %v", err)
 	}
 	if s := r.Stats(); s.Failures != before.Failures || s.Attempts != before.Attempts {
 		t.Errorf("stats moved from %+v to %+v: an abandoned reload must not count", before, s)
@@ -294,6 +347,10 @@ func TestReloader_StopCancelsAutomaticReload(t *testing.T) {
 }
 
 func TestReload_AbandonedByContextIsNotAFailure(t *testing.T) {
+	synctest.Test(t, testAbandonedByContextIsNotAFailure)
+}
+
+func testAbandonedByContextIsNotAFailure(t *testing.T) {
 	var arm atomic.Bool
 	var failures atomic.Int32
 	r, err := NewReloader[portCfg](
@@ -330,6 +387,10 @@ func TestReload_AbandonedByContextIsNotAFailure(t *testing.T) {
 }
 
 func TestReloader_StartAfterStopReturnsImmediately(t *testing.T) {
+	synctest.Test(t, testRunAfterStopReturnsImmediately)
+}
+
+func testRunAfterStopReturnsImmediately(t *testing.T) {
 	r, err := NewReloader[portCfg](
 		t.Context(),
 		[]Option{WithSkipValidation()},
@@ -346,10 +407,10 @@ func TestReloader_StartAfterStopReturnsImmediately(t *testing.T) {
 	select {
 	case err := <-done:
 		if err != nil {
-			t.Errorf("Start after Stop = %v, want nil", err)
+			t.Errorf("Run after Stop = %v, want nil", err)
 		}
-	case <-time.After(2 * time.Second):
-		t.Fatal("Start ran after Stop")
+	case <-time.After(time.Second):
+		t.Fatal("Run ran after Stop")
 	}
 	if s := r.Stats(); s.Attempts != 0 {
 		t.Errorf("stats = %+v, want no attempts", s)
@@ -369,6 +430,10 @@ func (p *portProvider) ReadBytes() ([]byte, error) {
 }
 
 func TestReloader_SourceChangedWithoutWatchers(t *testing.T) {
+	synctest.Test(t, testSourceChangedWithoutWatchers)
+}
+
+func testSourceChangedWithoutWatchers(t *testing.T) {
 	src := &portProvider{}
 	src.port.Store(9000)
 	r, err := NewReloader[portCfg](t.Context(), []Option{WithOverrideProvider(src, nil), WithSkipValidation()})
@@ -376,22 +441,25 @@ func TestReloader_SourceChangedWithoutWatchers(t *testing.T) {
 		t.Fatalf("NewReloader: %v", err)
 	}
 
-	// A request made before Start is served once Start runs.
+	// A request made before Run is served once Run runs.
 	src.port.Store(9001)
 	r.SourceChanged()
 	done := make(chan error, 1)
 	go func() { done <- r.Run(context.Background()) }()
 
-	eventually(t, func() bool { return r.Config().Port == 9001 }, "the pre-Start request to be served")
-	if got := r.Stats().LastTrigger; got != TriggerSourceChanged {
-		t.Errorf("LastTrigger = %q, want %q", got, TriggerSourceChanged)
+	synctest.Wait()
+	if got := r.Config().Port; got != 9001 {
+		t.Errorf("Port = %d, want the pre-Run request served", got)
+	}
+	if s := r.Stats(); s.Attempts != 1 || s.LastTrigger != TriggerSourceChanged {
+		t.Errorf("stats = %+v, want one %s reload", s, TriggerSourceChanged)
 	}
 
 	if err := r.Stop(context.Background()); err != nil {
 		t.Fatalf("Stop: %v", err)
 	}
 	if err := <-done; err != nil {
-		t.Errorf("Start = %v, want nil after Stop", err)
+		t.Errorf("Run = %v, want nil after Stop", err)
 	}
 	r.SourceChanged() // after Stop: ignored, must not block
 }
@@ -400,6 +468,10 @@ func TestReloader_SourceChangedWithoutWatchers(t *testing.T) {
 // committed while a reload is in flight — after it read the source — is lost
 // when the second trigger is turned away. SourceChanged must apply it.
 func TestReloader_SourceChangedDuringReloadIsApplied(t *testing.T) {
+	synctest.Test(t, testSourceChangedDuringReloadIsApplied)
+}
+
+func testSourceChangedDuringReloadIsApplied(t *testing.T) {
 	src := &portProvider{}
 	src.port.Store(9000)
 	var hold atomic.Bool
@@ -434,11 +506,21 @@ func TestReloader_SourceChangedDuringReloadIsApplied(t *testing.T) {
 	if err := <-manual; err != nil {
 		t.Fatalf("manual reload: %v", err)
 	}
-	eventually(t, func() bool { return r.Config().Port == 9001 }, "the change committed mid-reload")
+	synctest.Wait()
+	if got := r.Config().Port; got != 9001 {
+		t.Errorf("Port = %d, want the change committed mid-reload", got)
+	}
+	if s := r.Stats(); s.Attempts != 2 || s.LastTrigger != TriggerSourceChanged {
+		t.Errorf("stats = %+v, want the manual reload then one %s reload", s, TriggerSourceChanged)
+	}
 }
 
 // A burst of requests while a reload runs collapses into one more reload.
 func TestReloader_SourceChangedCoalesces(t *testing.T) {
+	synctest.Test(t, testSourceChangedCoalesces)
+}
+
+func testSourceChangedCoalesces(t *testing.T) {
 	src := &portProvider{}
 	var hold atomic.Bool
 	entered, release := make(chan struct{}), make(chan struct{})
@@ -465,21 +547,29 @@ func TestReloader_SourceChangedCoalesces(t *testing.T) {
 	}
 	close(release)
 
-	eventually(t, func() bool { return r.Stats().Attempts == 2 }, "the coalesced follow-up reload")
-	time.Sleep(100 * time.Millisecond)
+	synctest.Wait()
 	if got := r.Stats().Attempts; got != 2 {
 		t.Errorf("Attempts = %d, want 2: fifty requests during one reload are one follow-up", got)
 	}
 }
 
-// A file written steadily next to the config file cannot hold the debounce
-// open forever: a real config change still applies.
+// Files created steadily next to the config file cannot hold the debounce
+// open forever: with one every half window, the change still applies no later
+// than ten windows after the burst began. Each is a new name, which every
+// backend reports; kqueue can miss the first write to a file it has only just
+// begun to watch. That it fires at the bound and not before is asserted on
+// the file watch itself, where no late event can end a burst early.
 func TestReloader_BusyDirectoryCannotStarveAFileChange(t *testing.T) {
+	const debounce = 50 * time.Millisecond
 	path := writeYAML(t, "port: 9000\n")
+	clk := newFakeClock()
+	onReload, reloads := reloadEvents[portCfg]()
 	r, err := NewReloader[portCfg](
 		t.Context(),
 		[]Option{WithFile(path), WithSkipValidation()},
-		WithFileWatch(50*time.Millisecond),
+		WithFileWatch(debounce),
+		withClock(clk),
+		onReload,
 	)
 	if err != nil {
 		t.Fatalf("NewReloader: %v", err)
@@ -487,34 +577,27 @@ func TestReloader_BusyDirectoryCannotStarveAFileChange(t *testing.T) {
 	armReloader(t, r)
 	runReloader(t, r)
 
-	stopNoise := make(chan struct{})
-	noiseDone := make(chan struct{})
-	go func() {
-		defer close(noiseDone)
-		sibling := filepath.Join(filepath.Dir(path), "busy.log")
-		tick := time.NewTicker(10 * time.Millisecond)
-		defer tick.Stop()
-		for i := 0; ; i++ {
-			select {
-			case <-stopNoise:
-				return
-			case <-tick.C:
-				_ = os.WriteFile(sibling, []byte(strconv.Itoa(i)), 0o644)
-			}
-		}
-	}()
-	defer func() { close(stopNoise); <-noiseDone }()
-
 	if err := os.WriteFile(path, []byte("port: 9001\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	// Ten 50ms windows bound the delay at 500ms; allow slack for a loaded host
-	// but stay well inside the noise, which runs until the test ends.
-	deadline := time.Now().Add(3 * time.Second)
-	for r.Config().Port != 9001 {
-		if time.Now().After(deadline) {
-			t.Fatal("the file change never settled while a sibling file was being written")
+	clk.awaitDebounce(t)
+	began := clk.Now()
+	for i := range 2*maxDebounceWindows - 1 {
+		armed := clk.resetCount()
+		sibling := filepath.Join(filepath.Dir(path), "busy-"+strconv.Itoa(i)+".log")
+		if err := os.WriteFile(sibling, nil, 0o644); err != nil {
+			t.Fatal(err)
 		}
-		time.Sleep(20 * time.Millisecond)
+		clk.await(t, "the sibling file to re-arm the debounce", func() bool { return clk.resetCount() > armed })
+		clk.Advance(debounce / 2)
+	}
+	clk.Advance(debounce / 2)
+
+	ev := recv(t, reloads, "the file change")
+	assert.Equal(t, TriggerFileChange, ev.Trigger)
+	assert.Equal(t, 9001, ev.New.Port)
+	bound := began.Add(maxDebounceWindows * debounce).UTC()
+	if at := ev.Result.Snapshot.Stats.LastSuccess; at.After(bound) {
+		t.Errorf("the change applied %v after the burst began, past its %v bound", at.Sub(began), bound.Sub(began))
 	}
 }

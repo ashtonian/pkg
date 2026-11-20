@@ -72,7 +72,8 @@ func TestArm_SignalAndPollTriggersArmWithoutAFileWatch(t *testing.T) {
 		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			r, err := NewReloader[reloaderCfg](t.Context(), []Option{WithSkipValidation()}, tc.opts...)
+			onReload, reloads := reloadEvents[reloaderCfg]()
+			r, err := NewReloader[reloaderCfg](t.Context(), []Option{WithSkipValidation()}, append(tc.opts, onReload)...)
 			if err != nil {
 				t.Fatalf("NewReloader: %v", err)
 			}
@@ -81,8 +82,9 @@ func TestArm_SignalAndPollTriggersArmWithoutAFileWatch(t *testing.T) {
 				t.Fatal(err)
 			}
 			runReloader(t, r)
-			eventually(t, func() bool { return r.Stats().LastTrigger == TriggerSignal },
-				"the signal received before Start to reload")
+			if ev := recv(t, reloads, "the signal received before Run to reload"); ev.Trigger != TriggerSignal {
+				t.Fatalf("reload triggered by %s, want %s", ev.Trigger, TriggerSignal)
+			}
 		})
 	}
 }

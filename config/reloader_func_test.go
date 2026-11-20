@@ -74,18 +74,22 @@ func TestNewReloaderFunc_WatchesNamedFiles(t *testing.T) {
 		}
 		return &portCfg{Port: len(strings.TrimSpace(string(b)))}, nil
 	}
+	clk := newFakeClock()
+	onReload, reloads := reloadEvents[portCfg]()
 	r, err := NewReloaderFunc(t.Context(), readPort,
-		WithWatchedFiles(file), WithFileWatch(10*time.Millisecond), WithReloadLogger(discardLogger()))
+		WithWatchedFiles(file), WithFileWatch(10*time.Millisecond), WithReloadLogger(discardLogger()), withClock(clk), onReload)
 	require.NoError(t, err)
-	t.Cleanup(func() { _ = r.Stop(context.Background()) })
 
 	writeFile(t, file, "22") // before the watch exists
 	armReloader(t, r)
 	runReloader(t, r)
-	eventually(t, func() bool { return r.Config().Port == 2 }, "the catch-up reload")
+	ev := recv(t, reloads, "the catch-up reload")
+	assert.Equal(t, TriggerFileChange, ev.Trigger)
+	assert.Equal(t, 2, ev.New.Port)
 
 	writeFile(t, file, "333")
-	eventually(t, func() bool { return r.Config().Port == 3 }, "the file-change reload")
+	ev = receive(t, clk, reloads, "the file-change reload")
+	assert.Equal(t, 3, ev.New.Port)
 }
 
 // WithWatchedFiles adds files to a NewReloader's watch beyond its config
@@ -99,6 +103,8 @@ func TestNewReloader_WatchedFilesBeyondConfigFiles(t *testing.T) {
 		Host   string `koanf:"host"`
 		Secret string `koanf:"-"`
 	}
+	clk := newFakeClock()
+	onReload, reloads := reloadEvents[cfg]()
 	r, err := NewReloader[cfg](t.Context(),
 		[]Option{
 			WithFile(file), WithSkipValidation(), WithLogger(discardLogger()),
@@ -108,15 +114,15 @@ func TestNewReloader_WatchedFilesBeyondConfigFiles(t *testing.T) {
 				return err
 			}),
 		},
-		WithWatchedFiles(secret), WithFileWatch(10*time.Millisecond),
+		WithWatchedFiles(secret), WithFileWatch(10*time.Millisecond), withClock(clk), onReload,
 	)
 	require.NoError(t, err)
-	t.Cleanup(func() { _ = r.Stop(context.Background()) })
 	armReloader(t, r)
 	runReloader(t, r)
 
 	writeFile(t, secret, "two")
-	eventually(t, func() bool { return r.Config().Secret == "two" }, "a reload after the secret file changed")
+	ev := receive(t, clk, reloads, "a reload after the secret file changed")
+	assert.Equal(t, "two", ev.New.Secret)
 }
 
 func TestNewReloader_RefusesMisconfiguration(t *testing.T) {

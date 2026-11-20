@@ -50,6 +50,7 @@ type Reloader[T any] struct {
 	// the origins.
 	load   func(ctx context.Context) (loaded[T], error)
 	logger *slog.Logger // nil: slog.Default() at each line
+	clock  clock
 
 	onSuccess    []successHook
 	onError      []func(trigger string, err error)
@@ -203,6 +204,7 @@ func newReloader[T any](ro *reloadOptions, inherited *slog.Logger, configFiles [
 		root:         root,
 		app:          app,
 		logger:       logger,
+		clock:        ro.clock,
 		onSuccess:    ro.onSuccess,
 		onError:      ro.onError,
 		fileWatch:    ro.fileWatch,
@@ -441,7 +443,7 @@ func (r *Reloader[T]) reloadHeld(ctx context.Context, trigger string) (*ReloadRe
 	next.Stats.Attempts++
 	next.Stats.Successes++
 	next.Stats.LastTrigger = trigger
-	next.Stats.LastSuccess = time.Now().UTC()
+	next.Stats.LastSuccess = r.clock.Now().UTC()
 	next.Stats.LastError = nil
 	var plan *applyPlan
 	if r.app != nil {
@@ -488,7 +490,7 @@ func (r *Reloader[T]) publishFailure(prev *Snapshot[T], trigger string, err erro
 	next.Stats.Attempts++
 	next.Stats.Failures++
 	next.Stats.LastTrigger = trigger
-	next.Stats.LastFailure = time.Now().UTC()
+	next.Stats.LastFailure = r.clock.Now().UTC()
 	next.Stats.LastError = Diagnose(err)
 	r.state.Store(next)
 }
@@ -583,7 +585,7 @@ func (t *triggers) close() error {
 func (r *Reloader[T]) arm(ctx context.Context) (*triggers, error) {
 	t := &triggers{}
 	if r.fileWatch {
-		watch, err := newFileWatch(r.paths, cmp.Or(max(r.debounce, 0), DefaultFileWatchDebounce), r.log)
+		watch, err := newFileWatch(r.paths, cmp.Or(max(r.debounce, 0), DefaultFileWatchDebounce), r.clock, r.log)
 		if err != nil {
 			return nil, fmt.Errorf("setting up file watch: %w", err)
 		}
@@ -691,10 +693,10 @@ func (r *Reloader[T]) Run(ctx context.Context) error {
 		recheck   <-chan time.Time
 	)
 	if t.watch != nil {
-		events, watchErrs, settled = t.watch.watcher.Events, t.watch.watcher.Errors, t.watch.timer.C
-		ticker := time.NewTicker(t.watch.recheckEvery)
+		events, watchErrs, settled = t.watch.watcher.Events, t.watch.watcher.Errors, t.watch.timer.C()
+		ticker := r.clock.NewTicker(t.watch.recheckEvery)
 		defer ticker.Stop()
-		recheck = ticker.C
+		recheck = ticker.C()
 		if t.stale {
 			r.catchUp(runCtx)
 		}
@@ -702,8 +704,8 @@ func (r *Reloader[T]) Run(ctx context.Context) error {
 
 	var tickCh <-chan time.Time
 	if r.pollInterval > 0 {
-		ticker := time.NewTicker(r.pollInterval)
-		tickCh = ticker.C
+		ticker := r.clock.NewTicker(r.pollInterval)
+		tickCh = ticker.C()
 		defer ticker.Stop()
 	}
 

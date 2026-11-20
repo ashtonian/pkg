@@ -325,12 +325,14 @@ func TestReloader_FileWatch_DetectsConfigMapSymlinkSwap(t *testing.T) {
 	writeConfigMapMount(t, mount, "..2026_01_01_00_00_00", "host: original\nport: 8080\n")
 	cfgFile := filepath.Join(mount, "config.yaml")
 
-	changed := make(chan *reloaderCfg, 1)
+	clk := newFakeClock()
+	onReload, reloads := reloadEvents[reloaderCfg]()
 	r, err := NewReloader[reloaderCfg](
 		t.Context(),
 		[]Option{WithRequiredFile(cfgFile), WithSkipValidation()},
 		WithFileWatch(50*time.Millisecond),
-		WithOnReloadSuccess(func(_ context.Context, ev ReloadEvent[reloaderCfg]) { neu := ev.New; changed <- neu }),
+		withClock(clk),
+		onReload,
 	)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -338,26 +340,18 @@ func TestReloader_FileWatch_DetectsConfigMapSymlinkSwap(t *testing.T) {
 	if r.Config().Host != "original" {
 		t.Fatalf("initial Host = %q, want %q", r.Config().Host, "original")
 	}
-
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
 	armReloader(t, r)
-	go func() { _ = r.Run(ctx) }()
-	defer func() { _ = r.Stop(context.Background()) }()
+	runReloader(t, r)
 
 	// Publish a new version the way kubelet does.
 	writeConfigMapMount(t, mount, "..2026_01_01_00_00_01", "host: rotated\nport: 9090\n")
 
-	select {
-	case cfg := <-changed:
-		if cfg.Host != "rotated" {
-			t.Errorf("Host = %q, want %q", cfg.Host, "rotated")
-		}
-		if cfg.Port != 9090 {
-			t.Errorf("Port = %d, want %d", cfg.Port, 9090)
-		}
-	case <-time.After(10 * time.Second):
-		t.Fatal("timeout: a ConfigMap-style symlink swap did not trigger a reload")
+	cfg := receive(t, clk, reloads, "a reload after the ConfigMap-style symlink swap").New
+	if cfg.Host != "rotated" {
+		t.Errorf("Host = %q, want %q", cfg.Host, "rotated")
+	}
+	if cfg.Port != 9090 {
+		t.Errorf("Port = %d, want %d", cfg.Port, 9090)
 	}
 }
 
@@ -402,22 +396,20 @@ func TestReloader_FileWatch_DetectsReleaseDirRelink(t *testing.T) {
 		t.Fatalf("symlink: %v", err)
 	}
 
-	changed := make(chan *reloaderCfg, 1)
+	clk := newFakeClock()
+	onReload, reloads := reloadEvents[reloaderCfg]()
 	r, err := NewReloader[reloaderCfg](
 		t.Context(),
 		[]Option{WithRequiredFile(link), WithSkipValidation()},
 		WithFileWatch(50*time.Millisecond),
-		WithOnReloadSuccess(func(_ context.Context, ev ReloadEvent[reloaderCfg]) { neu := ev.New; changed <- neu }),
+		withClock(clk),
+		onReload,
 	)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
 	armReloader(t, r)
-	go func() { _ = r.Run(ctx) }()
-	defer func() { _ = r.Stop(context.Background()) }()
+	runReloader(t, r)
 
 	tmp := filepath.Join(root, "current.yaml.tmp")
 	if err := os.Symlink(v2, tmp); err != nil {
@@ -427,13 +419,8 @@ func TestReloader_FileWatch_DetectsReleaseDirRelink(t *testing.T) {
 		t.Fatalf("rename: %v", err)
 	}
 
-	select {
-	case cfg := <-changed:
-		if cfg.Host != "v2" {
-			t.Errorf("Host = %q, want %q", cfg.Host, "v2")
-		}
-	case <-time.After(10 * time.Second):
-		t.Fatal("timeout: a release-dir relink did not trigger a reload")
+	if cfg := receive(t, clk, reloads, "a reload after the release-dir relink").New; cfg.Host != "v2" {
+		t.Errorf("Host = %q, want %q", cfg.Host, "v2")
 	}
 }
 

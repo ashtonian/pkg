@@ -26,6 +26,7 @@ type reloadOptions struct {
 	logger          *slog.Logger
 	loggerSet       bool // WithReloadLogger was given, nil included
 	provenance      bool
+	clock           clock
 }
 
 // successHook is a [WithOnReloadSuccess] callback with its config type
@@ -37,7 +38,7 @@ type successHook struct {
 }
 
 func buildReloadOptions(opts []ReloadOption) *reloadOptions {
-	o := &reloadOptions{}
+	o := &reloadOptions{clock: systemClock{}}
 	for _, opt := range opts {
 		opt(o)
 	}

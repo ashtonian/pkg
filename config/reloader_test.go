@@ -7,7 +7,6 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
-	"sync/atomic"
 	"testing"
 	"testing/synctest"
 	"time"
@@ -294,164 +293,137 @@ func TestReloader_OnChange_NotCalledOnFailure(t *testing.T) {
 func TestReloader_FileWatch(t *testing.T) {
 	dir := t.TempDir()
 	cfgFile := filepath.Join(dir, "config.yaml")
-	os.WriteFile(cfgFile, []byte("host: original\nport: 8080\n"), 0o644)
+	if err := os.WriteFile(cfgFile, []byte("host: original\nport: 8080\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 
-	changed := make(chan *reloaderCfg, 1)
+	clk := newFakeClock()
+	onReload, reloads := reloadEvents[reloaderCfg]()
 	r, err := NewReloader[reloaderCfg](
 		t.Context(),
 		[]Option{WithFile(cfgFile), WithSkipValidation()},
 		WithFileWatch(50*time.Millisecond),
-		WithOnReloadSuccess(func(_ context.Context, ev ReloadEvent[reloaderCfg]) {
-			new := ev.New
-			changed <- new
-		}),
+		withClock(clk),
+		onReload,
 	)
 	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+		t.Fatalf("NewReloader: %v", err)
 	}
 	if r.Config().Host != "original" {
 		t.Fatalf("initial Host = %q, want %q", r.Config().Host, "original")
 	}
+	armReloader(t, r)
+	runReloader(t, r)
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	errCh := make(chan error, 1)
-	go func() { errCh <- r.Run(ctx) }()
-
-	// Give watcher time to initialize.
-	time.Sleep(200 * time.Millisecond)
-
-	// Modify the file.
-	os.WriteFile(cfgFile, []byte("host: updated\nport: 9090\n"), 0o644)
-
-	select {
-	case cfg := <-changed:
-		if cfg.Host != "updated" {
-			t.Errorf("Host = %q, want %q", cfg.Host, "updated")
-		}
-		if cfg.Port != 9090 {
-			t.Errorf("Port = %d, want %d", cfg.Port, 9090)
-		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("timeout waiting for config reload")
+	if err := os.WriteFile(cfgFile, []byte("host: updated\nport: 9090\n"), 0o644); err != nil {
+		t.Fatal(err)
 	}
-
-	if err := r.Stop(context.Background()); err != nil {
-		t.Errorf("Stop: %v", err)
+	ev := receive(t, clk, reloads, "the file-change reload")
+	if ev.Trigger != TriggerFileChange || ev.New.Host != "updated" || ev.New.Port != 9090 {
+		t.Errorf("reload %s published %+v, want the file change's host updated and port 9090", ev.Trigger, *ev.New)
 	}
 }
 
 // --- Poll Interval Tests ---
 
+// Each poll reloads exactly one interval after the last.
 func TestReloader_PollInterval(t *testing.T) {
-	var reloadCount atomic.Int32
-
-	r, err := NewReloader[reloaderCfg](
-		t.Context(),
-		[]Option{WithSkipValidation()},
-		WithPollInterval(50*time.Millisecond),
-		WithOnReloadSuccess(func(_ context.Context, ev ReloadEvent[reloaderCfg]) {
-			reloadCount.Add(1)
-		}),
-	)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-
-	ctx, cancel := context.WithCancel(context.Background())
-	go r.Run(ctx)
-
-	time.Sleep(300 * time.Millisecond)
-	cancel()
-
-	// Should have reloaded at least 3 times in 300ms with 50ms interval.
-	count := reloadCount.Load()
-	if count < 3 {
-		t.Errorf("reload count = %d, want >= 3", count)
-	}
+	synctest.Test(t, func(t *testing.T) {
+		const interval = 50 * time.Millisecond
+		onReload, reloads := reloadEvents[reloaderCfg]()
+		r, err := NewReloader[reloaderCfg](
+			t.Context(),
+			[]Option{WithSkipValidation()},
+			WithPollInterval(interval),
+			onReload,
+		)
+		if err != nil {
+			t.Fatalf("NewReloader: %v", err)
+		}
+		start := time.Now()
+		runReloader(t, r)
+		for i := 1; i <= 3; i++ {
+			ev := <-reloads
+			if ev.Trigger != TriggerPoll {
+				t.Fatalf("reload %d triggered by %s, want %s", i, ev.Trigger, TriggerPoll)
+			}
+			if got := time.Since(start); got != time.Duration(i)*interval {
+				t.Errorf("poll %d ran %v after Run started, want %v", i, got, time.Duration(i)*interval)
+			}
+		}
+	})
 }
 
-// --- Start / Stop Tests ---
+// --- Run / Stop Tests ---
 
 func TestReloader_Stop(t *testing.T) {
-	r, err := NewReloader[reloaderCfg](
-		t.Context(),
-		[]Option{WithSkipValidation()},
-		WithPollInterval(50*time.Millisecond),
-	)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-
-	done := make(chan error, 1)
-	go func() { done <- r.Run(context.Background()) }()
-
-	time.Sleep(100 * time.Millisecond)
-	if err := r.Stop(context.Background()); err != nil {
-		t.Errorf("Stop: %v", err)
-	}
-
-	select {
-	case err := <-done:
+	synctest.Test(t, func(t *testing.T) {
+		r, err := NewReloader[reloaderCfg](
+			t.Context(),
+			[]Option{WithSkipValidation()},
+			WithPollInterval(50*time.Millisecond),
+		)
 		if err != nil {
-			t.Errorf("Start should return nil on Stop, got: %v", err)
+			t.Fatalf("NewReloader: %v", err)
 		}
-	case <-time.After(2 * time.Second):
-		t.Fatal("Start did not return after Stop")
-	}
+
+		done := make(chan error, 1)
+		go func() { done <- r.Run(context.Background()) }()
+		synctest.Wait()
+		if err := r.Stop(context.Background()); err != nil {
+			t.Errorf("Stop: %v", err)
+		}
+		if err := <-done; err != nil {
+			t.Errorf("Run should return nil on Stop, got: %v", err)
+		}
+	})
 }
 
 func TestReloader_Stop_Idempotent(t *testing.T) {
-	r, err := NewReloader[reloaderCfg](
-		t.Context(),
-		[]Option{WithSkipValidation()},
-		WithPollInterval(50*time.Millisecond),
-	)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
+	synctest.Test(t, func(t *testing.T) {
+		r, err := NewReloader[reloaderCfg](
+			t.Context(),
+			[]Option{WithSkipValidation()},
+			WithPollInterval(50*time.Millisecond),
+		)
+		if err != nil {
+			t.Fatalf("NewReloader: %v", err)
+		}
 
-	go r.Run(context.Background())
-	time.Sleep(50 * time.Millisecond)
-
-	// Multiple stops should not panic.
-	if err := r.Stop(context.Background()); err != nil {
-		t.Errorf("Stop: %v", err)
-	}
-	if err := r.Stop(context.Background()); err != nil {
-		t.Errorf("Stop: %v", err)
-	}
-	if err := r.Stop(context.Background()); err != nil {
-		t.Errorf("Stop: %v", err)
-	}
+		done := make(chan error, 1)
+		go func() { done <- r.Run(context.Background()) }()
+		synctest.Wait()
+		for range 3 {
+			if err := r.Stop(context.Background()); err != nil {
+				t.Errorf("Stop: %v", err)
+			}
+		}
+		if err := <-done; err != nil {
+			t.Errorf("Run = %v, want nil after Stop", err)
+		}
+	})
 }
 
 func TestReloader_Start_ContextCancel(t *testing.T) {
-	r, err := NewReloader[reloaderCfg](
-		t.Context(),
-		[]Option{WithSkipValidation()},
-		WithPollInterval(50*time.Millisecond),
-	)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-
-	ctx, cancel := context.WithCancel(context.Background())
-	done := make(chan error, 1)
-	go func() { done <- r.Run(ctx) }()
-
-	time.Sleep(100 * time.Millisecond)
-	cancel()
-
-	select {
-	case err := <-done:
-		if !errors.Is(err, context.Canceled) {
-			t.Errorf("Start should return context.Canceled, got: %v", err)
+	synctest.Test(t, func(t *testing.T) {
+		r, err := NewReloader[reloaderCfg](
+			t.Context(),
+			[]Option{WithSkipValidation()},
+			WithPollInterval(50*time.Millisecond),
+		)
+		if err != nil {
+			t.Fatalf("NewReloader: %v", err)
 		}
-	case <-time.After(2 * time.Second):
-		t.Fatal("Start did not return after context cancellation")
-	}
+
+		ctx, cancel := context.WithCancel(context.Background())
+		done := make(chan error, 1)
+		go func() { done <- r.Run(ctx) }()
+		synctest.Wait()
+		cancel()
+		if err := <-done; !errors.Is(err, context.Canceled) {
+			t.Errorf("Run should return context.Canceled, got: %v", err)
+		}
+	})
 }
 
 // A Run called while another runs is refused and arms nothing: one poll

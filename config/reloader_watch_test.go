@@ -1,7 +1,6 @@
 package config
 
 import (
-	"context"
 	"errors"
 	"io"
 	"io/fs"
@@ -19,39 +18,33 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// watchedReloader starts a file-watching reloader over opts and returns the
-// channel its successful reloads arrive on.
-func watchedReloader(t *testing.T, opts ...Option) (*Reloader[reloaderCfg], <-chan *reloaderCfg) {
+// watchedReloader starts a file-watching reloader over opts on a fake clock
+// and returns the channel its successful reloads arrive on.
+func watchedReloader(t *testing.T, opts ...Option) (*fakeClock, <-chan ReloadEvent[reloaderCfg]) {
 	t.Helper()
-	changed := make(chan *reloaderCfg, 4)
+	clk := newFakeClock()
+	onReload, reloads := reloadEvents[reloaderCfg]()
 	r, err := NewReloader[reloaderCfg](
 		t.Context(),
 		append(opts, WithSkipValidation()),
 		WithFileWatch(50*time.Millisecond),
-		WithOnReloadSuccess(func(_ context.Context, ev ReloadEvent[reloaderCfg]) { neu := ev.New; changed <- neu }),
+		withClock(clk),
+		onReload,
 	)
 	if err != nil {
 		t.Fatalf("NewReloader: %v", err)
 	}
-	ctx, cancel := context.WithCancel(context.Background())
-	t.Cleanup(cancel)
 	armReloader(t, r)
-	go func() { _ = r.Run(ctx) }()
-	t.Cleanup(func() { _ = r.Stop(context.Background()) })
-	return r, changed
+	runReloader(t, r)
+	return clk, reloads
 }
 
-func awaitHost(t *testing.T, changed <-chan *reloaderCfg, want string) {
+// awaitHost settles the watch until a reload publishes host want.
+func awaitHost(t *testing.T, clk *fakeClock, reloads <-chan ReloadEvent[reloaderCfg], want string) {
 	t.Helper()
-	deadline := time.After(10 * time.Second)
 	for {
-		select {
-		case cfg := <-changed:
-			if cfg.Host == want {
-				return
-			}
-		case <-deadline:
-			t.Fatalf("timeout: no reload produced host %q", want)
+		if ev := receive(t, clk, reloads, "a reload producing host "+want); ev.New.Host == want {
+			return
 		}
 	}
 }
@@ -71,11 +64,11 @@ func TestFileWatch_EditOfTheSymlinkTarget(t *testing.T) {
 	if err := os.Symlink(target, link); err != nil {
 		t.Fatal(err)
 	}
-	_, changed := watchedReloader(t, WithRequiredFile(link))
+	clk, reloads := watchedReloader(t, WithRequiredFile(link))
 	if err := os.WriteFile(target, []byte("host: after\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	awaitHost(t, changed, "after")
+	awaitHost(t, clk, reloads, "after")
 }
 
 // Removing a file the running config was read from is a change: the reload
@@ -86,37 +79,26 @@ func TestFileWatch_RemovalIsReported(t *testing.T) {
 	if err := os.WriteFile(file, []byte("host: from-file\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	failed := make(chan error, 1)
+	clk := newFakeClock()
+	failed := make(chan error, 16)
 	r, err := NewReloader[reloaderCfg](
 		t.Context(),
 		[]Option{WithFile(file), WithSkipValidation()},
 		WithFileWatch(50*time.Millisecond),
-		WithOnReloadError(func(_ string, err error) {
-			select {
-			case failed <- err:
-			default:
-			}
-		}),
+		withClock(clk),
+		WithOnReloadError(func(_ string, err error) { failed <- err }),
 	)
 	if err != nil {
 		t.Fatal(err)
 	}
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
 	armReloader(t, r)
-	go func() { _ = r.Run(ctx) }()
-	defer func() { _ = r.Stop(context.Background()) }()
+	runReloader(t, r)
 
 	if err := os.Remove(file); err != nil {
 		t.Fatal(err)
 	}
-	select {
-	case err := <-failed:
-		if !errors.Is(err, os.ErrNotExist) {
-			t.Fatalf("reload error %v does not identify the missing file", err)
-		}
-	case <-time.After(10 * time.Second):
-		t.Fatal("timeout: removing the config file triggered no reload")
+	if err := receive(t, clk, failed, "the reload removing the file triggers"); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("reload error %v does not identify the missing file", err)
 	}
 	if r.Config().Host != "from-file" {
 		t.Fatalf("a failed reload replaced the config: host %q", r.Config().Host)
@@ -128,14 +110,14 @@ func TestFileWatch_RemovalIsReported(t *testing.T) {
 func TestFileWatch_DirectoryCreatedLater(t *testing.T) {
 	root := t.TempDir()
 	file := filepath.Join(root, "later", "deeper", "config.yaml")
-	_, changed := watchedReloader(t, WithFile(file))
+	clk, reloads := watchedReloader(t, WithFile(file))
 	if err := os.MkdirAll(filepath.Dir(file), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(file, []byte("host: appeared\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	awaitHost(t, changed, "appeared")
+	awaitHost(t, clk, reloads, "appeared")
 }
 
 // Relinking a path to new release directories keeps exactly the
@@ -156,7 +138,7 @@ func TestFileWatch_RelinksDropRetiredDirectories(t *testing.T) {
 	if err := os.Symlink(release("v1"), link); err != nil {
 		t.Fatal(err)
 	}
-	w, err := newFileWatch([]string{link}, time.Millisecond, discardLogger)
+	w, err := newFileWatch([]string{link}, time.Millisecond, newFakeClock(), discardLogger)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -200,7 +182,7 @@ func TestFileWatch_EventsOnTargetsAndRemovals(t *testing.T) {
 	if err := os.Symlink(target, link); err != nil {
 		t.Fatal(err)
 	}
-	w, err := newFileWatch([]string{link, plain}, time.Millisecond, discardLogger)
+	w, err := newFileWatch([]string{link, plain}, time.Millisecond, newFakeClock(), discardLogger)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -228,23 +210,32 @@ func TestFileWatch_EventsOnTargetsAndRemovals(t *testing.T) {
 // and Start reloads it. A change after Arm and before Start is reported by the
 // watch Arm set up. Unchanged files cause no reload.
 func TestFileWatch_ChangeBeforeStartIsNotMissed(t *testing.T) {
-	newReloader := func(t *testing.T) (*Reloader[reloaderCfg], string, <-chan *reloaderCfg, *logRecorder) {
+	type harness struct {
+		r       *Reloader[reloaderCfg]
+		file    string
+		clk     *fakeClock
+		reloads <-chan ReloadEvent[reloaderCfg]
+		logs    *logRecorder
+	}
+	newReloader := func(t *testing.T) harness {
 		file := filepath.Join(t.TempDir(), "config.yaml")
 		if err := os.WriteFile(file, []byte("host: at-load\n"), 0o644); err != nil {
 			t.Fatal(err)
 		}
-		changed := make(chan *reloaderCfg, 1)
+		clk := newFakeClock()
+		onReload, reloads := reloadEvents[reloaderCfg]()
 		logs := newLogRecorder()
 		r, err := NewReloader[reloaderCfg](
 			t.Context(),
 			[]Option{WithFile(file), WithSkipValidation(), WithLogger(slog.New(logs))},
 			WithFileWatch(50*time.Millisecond),
-			WithOnReloadSuccess(func(_ context.Context, ev ReloadEvent[reloaderCfg]) { neu := ev.New; changed <- neu }),
+			withClock(clk),
+			onReload,
 		)
 		if err != nil {
 			t.Fatal(err)
 		}
-		return r, file, changed, logs
+		return harness{r: r, file: file, clk: clk, reloads: reloads, logs: logs}
 	}
 	write := func(t *testing.T, file, content string) {
 		if err := os.WriteFile(file, []byte(content), 0o644); err != nil {
@@ -253,27 +244,28 @@ func TestFileWatch_ChangeBeforeStartIsNotMissed(t *testing.T) {
 	}
 
 	t.Run("unchanged", func(t *testing.T) {
-		r, _, _, logs := newReloader(t)
-		armReloader(t, r)
-		runReloader(t, r)
-		logs.waitFor(t, "config reloader started")
-		if s := r.Stats(); s.Attempts != 0 {
-			t.Fatalf("Start reloaded unchanged files (%d attempts)", s.Attempts)
+		h := newReloader(t)
+		armReloader(t, h.r)
+		runReloader(t, h.r)
+		h.logs.waitFor(t, "config reloader started")
+		if s := h.r.Stats(); s.Attempts != 0 {
+			t.Fatalf("Run reloaded unchanged files (%d attempts)", s.Attempts)
 		}
 	})
 	t.Run("before Arm", func(t *testing.T) {
-		r, file, changed, _ := newReloader(t)
-		write(t, file, "host: before-arm\n")
-		armReloader(t, r)
-		runReloader(t, r)
-		awaitHost(t, changed, "before-arm")
+		h := newReloader(t)
+		write(t, h.file, "host: before-arm\n")
+		armReloader(t, h.r)
+		runReloader(t, h.r)
+		ev := recv(t, h.reloads, "the catch-up reload")
+		assert.Equal(t, "before-arm", ev.New.Host, "Run reloads before serving any event")
 	})
 	t.Run("between Arm and Start", func(t *testing.T) {
-		r, file, changed, _ := newReloader(t)
-		armReloader(t, r)
-		write(t, file, "host: after-arm\n")
-		runReloader(t, r)
-		awaitHost(t, changed, "after-arm")
+		h := newReloader(t)
+		armReloader(t, h.r)
+		write(t, h.file, "host: after-arm\n")
+		runReloader(t, h.r)
+		awaitHost(t, h.clk, h.reloads, "after-arm")
 	})
 }
 
@@ -328,7 +320,7 @@ func TestFileWatch_RecreatedDirectoryIsWatchedAgain(t *testing.T) {
 		t.Fatal(err)
 	}
 	writeFile(t, file, "port: 9000\n")
-	w, err := newFileWatch([]string{file}, time.Hour, discardLogger)
+	w, err := newFileWatch([]string{file}, time.Hour, newFakeClock(), discardLogger)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -372,7 +364,7 @@ func TestFileWatch_DirectoryComponentSymlink(t *testing.T) {
 		t.Fatal(err)
 	}
 	file := filepath.Join(link, "config.yaml")
-	w, err := newFileWatch([]string{file}, time.Hour, discardLogger)
+	w, err := newFileWatch([]string{file}, time.Hour, newFakeClock(), discardLogger)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -474,7 +466,7 @@ func TestFileWatch_DotDotAfterSymlink(t *testing.T) {
 	}
 	file := filepath.Join(root, "declared", "jump") + "/../config.yaml"
 	writeFile(t, file, "value: first\n")
-	w, err := newFileWatch([]string{file}, time.Hour, discardLogger)
+	w, err := newFileWatch([]string{file}, time.Hour, newFakeClock(), discardLogger)
 	require.NoError(t, err)
 	defer w.close()
 
@@ -506,7 +498,7 @@ func TestFileWatch_RelinkInsideALinkTarget(t *testing.T) {
 	if err := os.Symlink("branch/jump/../config.yaml", file); err != nil {
 		t.Fatal(err)
 	}
-	w, err := newFileWatch([]string{file}, time.Hour, discardLogger)
+	w, err := newFileWatch([]string{file}, time.Hour, newFakeClock(), discardLogger)
 	require.NoError(t, err)
 	defer w.close()
 	require.Contains(t, w.watcher.WatchList(), filepath.Join(root, "branch"))
@@ -531,7 +523,7 @@ func TestFileWatch_DirectoryMovedAwayIsAChange(t *testing.T) {
 	file := filepath.Join(dir, "config.yaml")
 	require.NoError(t, os.MkdirAll(dir, 0o700))
 	writeFile(t, file, "value: first\n")
-	w, err := newFileWatch([]string{file}, time.Hour, discardLogger)
+	w, err := newFileWatch([]string{file}, time.Hour, newFakeClock(), discardLogger)
 	require.NoError(t, err)
 	defer w.close()
 
@@ -553,25 +545,32 @@ func TestReloader_AncestorReplacedIsReloaded(t *testing.T) {
 	file := filepath.Join(dir, "config.yaml")
 	require.NoError(t, os.MkdirAll(dir, 0o700))
 	writeFile(t, file, "port: 1\n")
+	clk := newFakeClock()
+	logs := newLogRecorder()
+	onReload, reloads := reloadEvents[portCfg]()
 	r, err := NewReloader[portCfg](t.Context(),
-		[]Option{WithFile(file), WithSkipValidation(), WithLogger(discardLogger())},
+		[]Option{WithFile(file), WithSkipValidation(), WithLogger(slog.New(logs))},
 		WithFileWatch(10*time.Millisecond),
+		withClock(clk),
+		onReload,
 	)
 	require.NoError(t, err)
-	t.Cleanup(func() { _ = r.Stop(context.Background()) })
 	armReloader(t, r)
 	runReloader(t, r)
+	logs.waitFor(t, "config reloader started") // the recheck ticker runs
 
 	require.NoError(t, os.Rename(parent, filepath.Join(root, "old")))
 	require.NoError(t, os.MkdirAll(dir, 0o700))
 	writeFile(t, file, "port: 2\n")
-	eventually(t, func() bool { return r.Config().Port == 2 }, "the recheck to reload the replaced tree")
+	clk.Advance(minRecheck)
+	ev := receive(t, clk, reloads, "the recheck to reload the replaced tree")
+	assert.Equal(t, 2, ev.New.Port)
 }
 
 // testWatch watches paths with a millisecond debounce, closed at cleanup.
 func testWatch(t *testing.T, paths ...string) *fileWatch {
 	t.Helper()
-	w, err := newFileWatch(paths, time.Millisecond, discardLogger)
+	w, err := newFileWatch(paths, time.Millisecond, newFakeClock(), discardLogger)
 	require.NoError(t, err)
 	t.Cleanup(func() { assert.NoError(t, w.close()) })
 	return w
@@ -726,32 +725,59 @@ func TestFileWatch_RecheckLeavesPendingBurstsToSettle(t *testing.T) {
 	recheckIsQuiet("after settle, again")
 }
 
-// Events that keep arriving for other files delay a pending reload by a
-// bounded number of debounce windows; they never starve it.
-func TestFileWatch_ContinuousEventsDoNotStarveAReload(t *testing.T) {
+// A burst of events settles one debounce window after its last event.
+// Events that keep arriving delay it by at most ten windows from the first:
+// they never starve it.
+func TestFileWatch_DebounceCoalescesABurst(t *testing.T) {
+	const debounce = 10 * time.Millisecond
 	root := realTempDir(t)
 	file := filepath.Join(root, "config.yaml")
 	writeFile(t, file, "value: first\n")
-	w := testWatch(t, file)
-	w.debounce = 2 * time.Millisecond
-	w.observe(fsnotify.Event{Name: file, Op: fsnotify.Write})
-
-	tick := time.NewTicker(time.Millisecond)
-	defer tick.Stop()
-	deadline := time.After(time.Second)
-	for {
+	clk := newFakeClock()
+	w, err := newFileWatch([]string{file}, debounce, clk, discardLogger)
+	require.NoError(t, err)
+	t.Cleanup(func() { assert.NoError(t, w.close()) })
+	sibling := fsnotify.Event{Name: filepath.Join(root, "sibling"), Op: fsnotify.Write}
+	fired := func() bool {
 		select {
-		case <-tick.C:
-			w.observe(fsnotify.Event{Name: filepath.Join(root, "sibling"), Op: fsnotify.Write})
-		case <-w.timer.C:
-			_, changed, err := w.settle()
-			require.NoError(t, err)
-			assert.True(t, changed)
-			return
-		case <-deadline:
-			t.Fatal("continuous events starved the pending reload")
+		case <-w.timer.C():
+			return true
+		default:
+			return false
 		}
 	}
+
+	t.Run("quiet after the last event", func(t *testing.T) {
+		w.observe(fsnotify.Event{Name: file, Op: fsnotify.Write})
+		for range 3 {
+			clk.Advance(debounce - time.Nanosecond)
+			require.False(t, fired(), "settled within a window of an event")
+			w.observe(sibling)
+		}
+		clk.Advance(debounce - time.Nanosecond)
+		require.False(t, fired())
+		clk.Advance(time.Nanosecond)
+		require.True(t, fired(), "one window after the last event")
+		path, changed, err := w.settle()
+		require.NoError(t, err)
+		assert.True(t, changed)
+		assert.Equal(t, file, path, "the burst settles as the change to its file")
+		clk.Advance(time.Hour)
+		assert.False(t, fired(), "a settled burst fires once")
+	})
+	t.Run("bounded under continuous events", func(t *testing.T) {
+		began := clk.Now()
+		w.observe(fsnotify.Event{Name: file, Op: fsnotify.Write})
+		for clk.Now().Sub(began) < maxDebounceWindows*debounce {
+			require.False(t, fired(), "settled %v into the burst", clk.Now().Sub(began))
+			clk.Advance(debounce / 2)
+			w.observe(sibling)
+		}
+		require.True(t, fired(), "ten windows after the burst began")
+		_, changed, err := w.settle()
+		require.NoError(t, err)
+		assert.True(t, changed)
+	})
 }
 
 // A directory link removed from the path makes the file unreadable; Run
@@ -761,17 +787,21 @@ func TestReloader_LostDirectoryLinkIsReported(t *testing.T) {
 	writeFile(t, filepath.Join(root, "config.yaml"), "port: 1\n")
 	link := filepath.Join(root, "current")
 	require.NoError(t, os.Symlink(".", link))
+	clk := newFakeClock()
+	failed := make(chan error, 16)
 	r, err := NewReloader[portCfg](t.Context(),
 		[]Option{WithRequiredFile(filepath.Join(link, "config.yaml")), WithSkipValidation(), WithLogger(discardLogger())},
 		WithFileWatch(5*time.Millisecond),
+		withClock(clk),
+		WithOnReloadError(func(_ string, err error) { failed <- err }),
 	)
 	require.NoError(t, err)
-	t.Cleanup(func() { _ = r.Stop(context.Background()) })
 	armReloader(t, r)
 	runReloader(t, r)
 
 	require.NoError(t, os.Remove(link))
-	eventually(t, func() bool { return r.Stats().Failures > 0 }, "the failed reload to be reported")
+	err = receive(t, clk, failed, "the failed reload to be reported")
+	assert.ErrorIs(t, err, ErrFileRead)
 	assert.Equal(t, 1, r.Config().Port, "the previous config stays live")
 }
 
