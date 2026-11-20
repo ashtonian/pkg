@@ -20,6 +20,7 @@ type RelatedResource interface {
 	DeletedColumnName() string
 	FilterSchema() *filter.ResourceSchema
 	columnType(name string) (reflect.Type, bool)
+	ownTenantKey() *tenantKey
 }
 
 func (r *Resource[T]) columnType(name string) (reflect.Type, bool) {
@@ -163,6 +164,10 @@ func (r *Resource[T]) Relate(name string, rel Relation) error {
 			return fmt.Errorf("parse: %s: relation %q: the pair table's tenant cannot be taken from the owner or the target", r.table, name)
 		}
 	}
+	tenant, err := r.relationTenantKey(name, rel)
+	if err != nil {
+		return err
+	}
 	t := rel.target
 	keyType, _ := t.columnType(t.PrimaryKeyColumn())
 	key := core.TypeOf(keyType)
@@ -189,7 +194,27 @@ func (r *Resource[T]) Relate(name string, rel Relation) error {
 		r.patchSchema.AllowedPaths[core.FormatPointer(name)] = path
 		r.serverPatchSchema.AllowedPaths[core.FormatPointer(name)] = path
 	}
+	r.tenantKey = tenant
 	return nil
+}
+
+// relationTenantKey is the resource's tenant key once rel is declared. A
+// target that holds its rows' tenant binds the request's tenant as the owner
+// does, so its tenant column must hold the owner's type; an owner without a
+// tenant column takes its first such target's. A policy-scoped target's rows
+// are the policy's, not the tenant's.
+func (r *Resource[T]) relationTenantKey(name string, rel Relation) (*tenantKey, error) {
+	target := rel.target.ownTenantKey()
+	switch {
+	case target == nil || rel.policy:
+		return r.tenantKey, nil
+	case r.tenantKey == nil:
+		return target, nil
+	case !r.tenantKey.agrees(target):
+		return nil, fmt.Errorf("parse: %s: relation %q: tenant column %s is %s, but %s is %s; one request's tenant binds to both",
+			r.table, name, target.column, target.info.Type, r.tenantKey.column, r.tenantKey.info.Type)
+	}
+	return r.tenantKey, nil
 }
 
 // correlationField is the owner's field for column: its system field, a

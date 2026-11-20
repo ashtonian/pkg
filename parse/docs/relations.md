@@ -35,7 +35,7 @@ commands.MustRelate("device", parse.BelongsTo(devices, "device_id"))
 | `References(column)` | The column a foreign key holds when it is not the referenced resource's key |
 | `Describe(label, description)` | The label and description schema discovery serves for the relation field, as the `label` and `description` tags do for a column |
 
-Related rows are live rows only (the target's `DeletedColumn`) and, unless policy-scoped, rows of the request's tenant (the target's `TenantColumn`). A pair table's `Tenant` column is bound to the request's tenant.
+Related rows are live rows only (the target's `DeletedColumn`) and, unless policy-scoped, rows of the request's tenant (the target's `TenantColumn`). A pair table's `Tenant` column is bound to the request's tenant. One request has one tenant, bound as one type: a target's `TenantColumn` must hold the owner's type (`Relate` refuses a string tenant beside an integer one), and an owner without a tenant column binds its targets' type.
 
 ## Filter by related rows
 

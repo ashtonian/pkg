@@ -111,8 +111,9 @@ type UpdatePlan struct {
 	relations []patch.RelationPatchOp
 	dialect   Dialect
 	table     string
-	tenant    string
-	related   map[string]*filter.PolicyConstraints
+	// tenant is Scope.Tenant in the tenant key's type; nil without one.
+	tenant  any
+	related map[string]*filter.PolicyConstraints
 }
 
 // Dialect is the dialect the plan's statements are written for.
@@ -147,12 +148,16 @@ func (r *Resource[T]) BuildUpdate(d Dialect, p *patch.ParsedPatch, target Target
 		return nil, err
 	}
 
+	tenant, err := r.scopeTenant(s.Tenant)
+	if err != nil {
+		return nil, err
+	}
 	where, args, err := r.updateWhere(d, target, s, set.ParamCount)
 	if err != nil {
 		return nil, err
 	}
 	columns := strings.Join(r.Columns(d), ", ")
-	plan := &UpdatePlan{relations: set.RelationOps, dialect: d, table: r.table, tenant: s.Tenant, related: s.Related}
+	plan := &UpdatePlan{relations: set.RelationOps, dialect: d, table: r.table, tenant: tenant, related: s.Related}
 	switch {
 	case set.SetClause != "":
 		guarded := where
@@ -230,7 +235,11 @@ func (r *Resource[T]) rowKey(row T) (any, error) {
 // updateWhere is the WHERE every update statement carries, its placeholders
 // after the SET clause's offset ones.
 func (r *Resource[T]) updateWhere(d filter.Dialect, target Target, s Scope, offset int) (string, []any, error) {
-	pc := filter.BuildBaseConstraints(r.tenant, s.Tenant, r.deleted, false)
+	tenant, err := r.scopeTenant(s.Tenant)
+	if err != nil {
+		return "", nil, err
+	}
+	pc := filter.BuildBaseConstraints(r.tenant, tenant, r.deleted, false)
 	var userAST *filter.FilterAST
 	switch {
 	case len(target.keys) == 1:
@@ -248,8 +257,8 @@ func (r *Resource[T]) updateWhere(d filter.Dialect, target Target, s Scope, offs
 		return "", nil, err
 	}
 	opts := []filter.SQLBuilderOption{filter.WithStartParam(offset), filter.WithRelatedPolicies(s.Related)}
-	if s.Tenant != "" {
-		opts = append(opts, filter.WithTenant(s.Tenant))
+	if tenant != nil {
+		opts = append(opts, filter.WithTenant(tenant))
 	}
 	res, err := filter.NewSQLBuilder(r.filterSchema, d, opts...).Build(ast)
 	if err != nil {
@@ -276,17 +285,11 @@ func (r *Resource[T]) RelationStatements(plan *UpdatePlan, ownerKeys []any) ([]p
 	var out []patch.RenderedRelationStatement
 	for _, op := range plan.relations {
 		opts := patch.RenderRelationOpOptions{Owner: patch.RelationOwner{Table: r.table, Key: r.pk, Tenant: r.tenant}}
-		if plan.tenant != "" {
-			opts.TenantValue = plan.tenant
-		}
+		opts.TenantValue = plan.tenant
 		if op.Schema.TargetTable != "" {
 			field := r.filterSchema.Fields[op.Field]
 			opts.TargetVisible = func(alias string, bind func(any) string) (string, error) {
-				var tenant any
-				if plan.tenant != "" {
-					tenant = plan.tenant
-				}
-				return filter.VisibleRelated(field, plan.dialect, alias, tenant, plan.related, bind)
+				return filter.VisibleRelated(field, plan.dialect, alias, plan.tenant, plan.related, bind)
 			}
 		}
 		stmts, err := patch.RenderRelationOp(op, plan.dialect, ownerKeys, opts)
