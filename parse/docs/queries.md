@@ -225,7 +225,7 @@ A `parse.Resource` declares its primary key once with `parse.PrimaryKey` (defaul
 | `ListWithCount(b)` | bool | `false` | Build `CountSQL` |
 | `ListFacets(fields...)` | `...string` | none | Build the facet query |
 | `ListSearch(q)` | string | none | Full-text predicate (WHERE only, order unchanged) |
-| `ListPolicy(pc)` | `*PolicyConstraints` | none | Server-side constraints ANDed with the filter |
+| `ListPolicy(pc)` | `*PolicyConstraints` | none | Server-side constraints ANDed with the filter. A constraint names any column of the resource, by external name or column, including hidden fields and fields without `filter`: requests still reach only `parse:"filter"` fields, and the schema document advertises nothing more. Its operator must apply to the field's type; a name no column has is E2071 |
 | `ListTenant(v)` | any | none | Tenant for tenant-scoped relation junctions (filter, count, facets) |
 | `ListUnscopedRelations()` | — | off | Build tenant-scoped junctions without a tenant — platform tooling only |
 | `ListStartParam(n)` | int | `0` | Offset the main fragment after `n` earlier arguments; standalone count/facet statements keep independent numbering |

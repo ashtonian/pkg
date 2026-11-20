@@ -5,6 +5,7 @@ import (
 	"database/sql/driver"
 	"encoding"
 	"fmt"
+	"maps"
 	"reflect"
 	"slices"
 	"strconv"
@@ -36,10 +37,23 @@ func generateFilterSchema(g *core.SchemaGenerator, t reflect.Type) (*ResourceSch
 		return nil, err
 	}
 	fields := make(map[string]*FieldSchema)
+	// policyOnly are the columns without the filter capability, which only
+	// server policies name.
+	var policyOnly []*FieldSchema
 
 	for _, field := range walk.Fields {
 		tags := &field.Tags
 		if !tags.Parse.Filter {
+			if tags.Relation != "" {
+				continue // a virtual relation field has no column
+			}
+			pf, err := policyField(g, tableName, field)
+			if err != nil {
+				return nil, fmt.Errorf("field %s: %w", field.GoName, err)
+			}
+			if pf != nil {
+				policyOnly = append(policyOnly, pf)
+			}
 			continue
 		}
 		fieldName := field.External
@@ -197,7 +211,76 @@ func generateFilterSchema(g *core.SchemaGenerator, t reflect.Type) (*ResourceSch
 		}
 	}
 
-	return &ResourceSchema{Name: tableName, Fields: fields}, nil
+	return &ResourceSchema{Name: tableName, Fields: fields, PolicyFields: policyFieldNames(tableName, fields, policyOnly)}, nil
+}
+
+// policyField is the schema of a column a request cannot filter by, typed
+// and stored as a filter field over it would be; nil for a field without a
+// column. Its operators are every one its type supports: a policy is not
+// held to request operators.
+func policyField(g *core.SchemaGenerator, table string, field *core.Field) (*FieldSchema, error) {
+	column, ok, err := g.FieldColumn(field)
+	if err != nil || !ok {
+		return nil, err
+	}
+	info, err := g.FieldType(field)
+	if err != nil {
+		return nil, err
+	}
+	fs := &FieldSchema{
+		ExternalName: cmp.Or(field.External, column),
+		DataType:     info.Type,
+		NumberKind:   info.NumberKind,
+		Elem:         info.Elem,
+		EnumValues:   slices.Clone(field.Tags.Enum),
+	}
+	if field.Tags.Geo != "" {
+		fs.DataType = core.FieldTypeGeo
+		if fs.GeoConfig, err = parseGeoTag(&field.Tags); err != nil {
+			return nil, err
+		}
+	}
+	// The column base is the one FieldColumn names: the external name, or
+	// the Go name of a hidden field.
+	if fs.SQLExpr, err = g.ColumnExpr(table, cmp.Or(field.External, field.GoName), fs.DataType, field.Tags.Column); err != nil {
+		return nil, err
+	}
+	if err := applyStorage(g, fs, field); err != nil {
+		return nil, err
+	}
+	fs.AllowedOperators = OperatorsFor(fs.DataType, false)
+	if isScalarArray(fs) {
+		fs.Element = newElement(fs)
+	}
+	return fs, nil
+}
+
+// policyFieldNames indexes the columns only policies name, by external name
+// and then by column, and every request field by its column too, so a
+// policy names any column of the table either way. A name a request field
+// holds stays the request field's: an external name never resolves to
+// another field's column. Columns are unique, so the result is the same
+// whatever order the fields come in.
+func policyFieldNames(table string, fields map[string]*FieldSchema, policyOnly []*FieldSchema) map[string]*FieldSchema {
+	out := make(map[string]*FieldSchema)
+	taken := func(name string) bool {
+		_, request := fields[name]
+		_, policy := out[name]
+		return request || policy
+	}
+	for _, f := range policyOnly {
+		if !taken(f.ExternalName) {
+			out[f.ExternalName] = f
+		}
+	}
+	for _, f := range append(slices.Clone(policyOnly), slices.Collect(maps.Values(fields))...) {
+		column, ok := strings.CutPrefix(f.SQLExpr, table+".")
+		if !ok || f.Path != nil || f.Relation != nil || !core.IsIdentifier(column) || taken(column) {
+			continue
+		}
+		out[column] = f
+	}
+	return out
 }
 
 // GenerateSortSchema generates a SortSchema from struct tags on type T.

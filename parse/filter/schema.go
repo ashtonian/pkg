@@ -121,6 +121,12 @@ type ResourceSchema struct {
 	PrimaryKey   string
 	Fields       map[string]*FieldSchema
 	SystemFields map[string]*FieldSchema
+	// PolicyFields are the fields server policies may name besides Fields
+	// and SystemFields: every column of the resource, hidden fields and
+	// fields without the filter capability included, by external name and
+	// by column. A request never reaches them, and schema documents leave
+	// them out.
+	PolicyFields map[string]*FieldSchema
 }
 
 // FieldSchema defines a single filterable field.

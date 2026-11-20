@@ -173,13 +173,16 @@ func unknownNode() *FilterNode {
 	return &FilterNode{Op: OpRawSQL, RawSQL: unknownSQL}
 }
 
+// lookupField resolves a policy constraint's field: a system field, a
+// request field, or a column only policies reach (PolicyFields).
 func lookupField(schema *ResourceSchema, name string) *FieldSchema {
-	if schema.SystemFields != nil {
-		if f, ok := schema.SystemFields[name]; ok {
-			return f
-		}
+	if f, ok := schema.SystemFields[name]; ok {
+		return f
 	}
 	if f, ok := schema.Fields[name]; ok {
+		return f
+	}
+	if f, ok := schema.PolicyFields[name]; ok {
 		return f
 	}
 	return nil
