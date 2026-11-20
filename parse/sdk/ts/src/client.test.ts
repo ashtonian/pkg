@@ -191,6 +191,112 @@ describe("schema", () => {
     expect(server.calls).toHaveLength(2);
   });
 
+  describe("a shared fetch", () => {
+    interface Held {
+      signal: AbortSignal;
+      release: () => void;
+    }
+
+    // heldServer answers each request only when released, and rejects one
+    // whose signal aborts first with the signal's reason, as fetch does.
+    function heldServer() {
+      const requests: Held[] = [];
+      const fetchFn: typeof globalThis.fetch = (_input, init) => {
+        const signal = init?.signal;
+        if (!signal) throw new Error("request sent without a signal");
+        return new Promise<Response>((resolve, reject) => {
+          signal.addEventListener("abort", () => {
+            reject(signal.reason as Error);
+          }, { once: true });
+          requests.push({ signal, release: () => { resolve(json(wire.schema)); } });
+        });
+      };
+      return { requests, fetch: fetchFn };
+    }
+
+    function request(server: { requests: Held[] }, i: number): Held {
+      const held = server.requests[i];
+      if (!held) throw new Error(`no request ${String(i)}`);
+      return held;
+    }
+
+    it("survives the first caller's abort for a second caller", async () => {
+      const server = heldServer();
+      const items = client(server.fetch).resource<WireItem>("items");
+      const first = new AbortController();
+
+      const a = items.schema({ signal: first.signal });
+      const b = items.schema();
+      first.abort();
+
+      await expect(a).rejects.toMatchObject({ name: "AbortError" });
+      expect(server.requests).toHaveLength(1);
+      expect(request(server, 0).signal.aborted).toBe(false);
+      request(server, 0).release();
+      await expect(b).resolves.toEqual(wire.schema);
+    });
+
+    it("rejects only a second caller that aborts", async () => {
+      const server = heldServer();
+      const items = client(server.fetch).resource<WireItem>("items");
+      const second = new AbortController();
+
+      const a = items.schema();
+      const b = items.schema({ signal: second.signal });
+      second.abort();
+
+      await expect(b).rejects.toMatchObject({ name: "AbortError" });
+      request(server, 0).release();
+      await expect(a).resolves.toEqual(wire.schema);
+      expect(server.requests).toHaveLength(1);
+    });
+
+    it("is cancelled when every caller aborts, and the next call refetches", async () => {
+      const server = heldServer();
+      const items = client(server.fetch).resource<WireItem>("items");
+      const one = new AbortController();
+      const two = new AbortController();
+
+      const a = items.schema({ signal: one.signal });
+      const b = items.schema({ signal: two.signal });
+      one.abort();
+      await expect(a).rejects.toMatchObject({ name: "AbortError" });
+      expect(request(server, 0).signal.aborted).toBe(false);
+      two.abort(new Error("navigated away"));
+      await expect(b).rejects.toThrow("navigated away");
+      expect(request(server, 0).signal.aborted).toBe(true);
+
+      const c = items.schema();
+      expect(server.requests).toHaveLength(2);
+      request(server, 1).release();
+      await expect(c).resolves.toEqual(wire.schema);
+      await items.schema();
+      expect(server.requests).toHaveLength(2);
+    });
+
+    it("sends nothing for a caller that has already aborted", async () => {
+      const server = heldServer();
+      const items = client(server.fetch).resource<WireItem>("items");
+      await expect(items.schema({ signal: AbortSignal.abort() })).rejects.toMatchObject({ name: "AbortError" });
+      expect(server.requests).toHaveLength(0);
+    });
+
+    it("ends a validating list's wait without failing the other caller's", async () => {
+      const server = heldServer();
+      const items = client(server.fetch, true).resource<WireItem>("items");
+      const first = new AbortController();
+
+      const listing = items.list({ sort: "name" }, { signal: first.signal });
+      const validator = items.validator();
+      first.abort();
+
+      await expect(listing).rejects.toMatchObject({ name: "AbortError" });
+      request(server, 0).release();
+      expect((await validator).filterableFields()).toContain("name");
+      expect(server.requests).toHaveLength(1);
+    });
+  });
+
   it("reads the version the Go package serves", () => {
     expect(wire.schema.version).toBe(SCHEMA_VERSION);
   });

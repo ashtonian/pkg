@@ -147,7 +147,12 @@ export interface Resource<T> {
    */
   facets(fields: (keyof T & string)[], opts?: FacetOptions<T>, reqOpts?: RequestOptions): Promise<FacetResult>;
 
-  /** Fetch the server-side schema for this resource. Cached after first call. */
+  /**
+   * Fetch the server-side schema for this resource. Cached after first call.
+   * Concurrent calls share one request, sent with the first call's headers
+   * under the client's timeout; a call's `signal` ends only that call's wait,
+   * and the request is cancelled once every waiting call has aborted.
+   */
   schema(reqOpts?: RequestOptions): Promise<ResourceSchema>;
 
   /** Get a {@link SchemaValidator} for client-side validation and introspection. */
@@ -219,26 +224,75 @@ export function createClient(cfg: ClientConfig): Client {
   }
 
   const schemaCache = new Map<string, ResourceSchema>();
-  const schemaInflight = new Map<string, Promise<ResourceSchema>>();
+
+  // One schema request shared by every concurrent caller for a resource.
+  interface SharedSchemaFetch {
+    readonly schema: Promise<ResourceSchema>;
+    readonly cancel: AbortController;
+    waiters: number;
+  }
+  const schemaInflight = new Map<string, SharedSchemaFetch>();
 
   // Concurrent callers share one fetch; only a successful schema is cached,
-  // so a failed fetch is retried by the next call.
-  function fetchSchema(resourcePath: string, reqOpts?: RequestOptions): Promise<ResourceSchema> {
+  // so a failed fetch is retried by the next call. The shared request runs
+  // under the client's timeout, never one caller's signal: a caller's abort
+  // ends only its own wait, and the request is cancelled once no caller is
+  // left waiting.
+  async function fetchSchema(resourcePath: string, reqOpts?: RequestOptions): Promise<ResourceSchema> {
     const cached = schemaCache.get(resourcePath);
-    if (cached) return Promise.resolve(cached);
-    const inflight = schemaInflight.get(resourcePath);
-    if (inflight) return inflight;
-    const promise = (async () => {
-      try {
-        const schema = checkVersion(await request<ResourceSchema>("GET", `${schemaPath}/${resourcePath}/schema`, undefined, reqOpts));
+    if (cached) return cached;
+    const signal = reqOpts?.signal;
+    signal?.throwIfAborted();
+    const shared = schemaInflight.get(resourcePath) ?? startSchemaFetch(resourcePath, reqOpts?.headers);
+    return waitForSchema(resourcePath, shared, signal);
+  }
+
+  // The first caller's headers go with the shared request; the schema cache
+  // is the client's, not any one caller's.
+  function startSchemaFetch(resourcePath: string, headers: Record<string, string> | undefined): SharedSchemaFetch {
+    const cancel = new AbortController();
+    const opts: RequestOptions = { signal: cancel.signal };
+    if (headers) opts.headers = headers;
+    const fetched = request<ResourceSchema>("GET", `${schemaPath}/${resourcePath}/schema`, undefined, opts);
+    const shared: SharedSchemaFetch = {
+      schema: fetched.then((doc) => {
+        const schema = checkVersion(doc);
         schemaCache.set(resourcePath, schema);
         return schema;
-      } finally {
-        schemaInflight.delete(resourcePath);
+      }),
+      cancel,
+      waiters: 0,
+    };
+    const forget = () => {
+      if (schemaInflight.get(resourcePath) === shared) schemaInflight.delete(resourcePath);
+    };
+    shared.schema.then(forget, forget);
+    schemaInflight.set(resourcePath, shared);
+    return shared;
+  }
+
+  async function waitForSchema(resourcePath: string, shared: SharedSchemaFetch, signal: AbortSignal | undefined): Promise<ResourceSchema> {
+    shared.waiters++;
+    // A caller without a signal never leaves, so the request is never cancelled under it.
+    if (!signal) return shared.schema;
+    await new Promise<void>((resolve) => {
+      const done = () => {
+        signal.removeEventListener("abort", done);
+        resolve();
+      };
+      signal.addEventListener("abort", done);
+      shared.schema.then(done, done);
+    });
+    if (signal.aborted) {
+      shared.waiters--;
+      if (shared.waiters === 0) {
+        // A later call starts a fresh request rather than joining a cancelled one.
+        if (schemaInflight.get(resourcePath) === shared) schemaInflight.delete(resourcePath);
+        shared.cancel.abort(signal.reason);
       }
-    })();
-    schemaInflight.set(resourcePath, promise);
-    return promise;
+      signal.throwIfAborted();
+    }
+    return shared.schema;
   }
 
   // relatedSchemas fetches the schemas of the relation targets a filter's
