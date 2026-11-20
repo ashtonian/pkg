@@ -36,23 +36,26 @@ func generateFilterSchema(g *core.SchemaGenerator, t reflect.Type) (*ResourceSch
 		return nil, err
 	}
 	fields := make(map[string]*FieldSchema)
+	// candidates are the walk's fields as server policies may name them, in
+	// walk order.
+	var candidates []policyCandidate
 
 	for _, field := range walk.Fields {
 		tags := &field.Tags
-		if !tags.Parse.Filter {
-			continue
-		}
 		fieldName := field.External
-		if fieldName == "" {
+		if tags.Parse.Filter && fieldName == "" && tags.Relation != "" {
 			// : virtual relation fields conventionally carry
 			// `json:"-"` to hide from response payloads. They still
 			// need an addressable name. Generators can preserve their
 			// declared name with relation_name; otherwise use snake_case
 			// of the struct field name.
-			if tags.Relation == "" {
-				continue
-			}
 			fieldName = cmp.Or(tags.RelationName, core.ToSnakeCase(field.GoName))
+		}
+		if !tags.Parse.Filter || fieldName == "" {
+			if c, ok := policyColumn(g, tableName, field); ok {
+				candidates = append(candidates, c)
+			}
+			continue
 		}
 		if _, exists := fields[fieldName]; exists {
 			return nil, fmt.Errorf("field %s: duplicate filter field name %q", field.GoName, fieldName)
@@ -173,6 +176,7 @@ func generateFilterSchema(g *core.SchemaGenerator, t reflect.Type) (*ResourceSch
 			fs.Element = newElement(fs)
 		}
 		fields[fieldName] = fs
+		candidates = append(candidates, requestCandidate(g, field, fs))
 		if core.IsDocument(fs.DataType) {
 			paths, err := documentPathFields(g, field, fs)
 			if err != nil {
@@ -183,6 +187,7 @@ func generateFilterSchema(g *core.SchemaGenerator, t reflect.Type) (*ResourceSch
 					return nil, fmt.Errorf("field %s: path %q collides with another field", field.GoName, p.ExternalName)
 				}
 				fields[p.ExternalName] = p
+				candidates = append(candidates, policyCandidate{goName: field.GoName, name: p.ExternalName, request: true, field: p})
 			}
 			elems, err := documentElements(g, field, fs)
 			if err != nil {
@@ -197,7 +202,8 @@ func generateFilterSchema(g *core.SchemaGenerator, t reflect.Type) (*ResourceSch
 		}
 	}
 
-	return &ResourceSchema{Name: tableName, Fields: fields}, nil
+	policyFields, refused := indexPolicyNames(candidates)
+	return &ResourceSchema{Name: tableName, Fields: fields, PolicyFields: policyFields, policyRefused: refused}, nil
 }
 
 // GenerateSortSchema generates a SortSchema from struct tags on type T.

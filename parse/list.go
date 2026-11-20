@@ -246,6 +246,11 @@ type Scope struct {
 	// itself, grants included (filter.ComposeConstraints).
 	Governance *filter.PolicyConstraints
 	// Policy is the authorization constraint, ANDed with everything else.
+	// A constraint names a system field, or exactly one of a request field
+	// by name, a field without the filter capability by external name, or
+	// any field by its column, hidden ones included; a name designating
+	// more than one is filter.ErrAmbiguousPolicyField
+	// (filter.ResourceSchema.PolicyField).
 	Policy *filter.PolicyConstraints
 	// Related is the caller's policy for the target table of each
 	// policy-scoped relation (PolicyScoped), keyed by table: the related

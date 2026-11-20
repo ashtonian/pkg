@@ -146,6 +146,11 @@ func (r *Resource[T]) Relate(name string, rel Relation) error {
 	if _, ok := fs.SystemFields[name]; ok {
 		return fmt.Errorf("parse: %s: relation %q names a system field", r.table, name)
 	}
+	// Refused here rather than as ambiguous later: a relation under a name
+	// policies already resolve would change what those policies constrain.
+	if _, ok, _ := fs.PolicyField(name); ok {
+		return fmt.Errorf("parse: %s: relation %q is a name server policies resolve (filter.ResourceSchema.PolicyField)", r.table, name)
+	}
 	if rel.target == nil {
 		return fmt.Errorf("parse: %s: relation %q has no target", r.table, name)
 	}

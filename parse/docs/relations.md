@@ -26,7 +26,7 @@ commands.MustRelate("device", parse.BelongsTo(devices, "device_id"))
 | `BelongsTo(target, fk)` | an owner to the target row its `fk` names | `target.<key> = owner.fk`; `References(col)` names another target column |
 | `ManyToMany(target, junction)` | owners and targets through a pair table | `junction.Source = owner.<key>`, `target.<key> = junction.Target` |
 
-`Relate` checks every column against both resources' types and returns an error; `MustRelate` panics. A relation may lead back to its own table (an asset's parent); the query aliases it so it does not shadow the owner.
+`Relate` checks every column against both resources' types and returns an error; `MustRelate` panics. A relation's name must be a name no server policy already resolves on the owner: a request field, a system field, or any [policy field](queries.md#policy-fields), the owner's columns among them. Otherwise the relation would change what a policy on that name constrains. A relation may lead back to its own table (an asset's parent); the query aliases it so it does not shadow the owner.
 
 | Option | Effect |
 |---|---|
