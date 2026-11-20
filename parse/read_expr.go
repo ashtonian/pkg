@@ -33,10 +33,12 @@ func SQL(sql string) ColumnExpr {
 // coalesce. A statement built for dialect d selects expr(d) as
 // `(sql) AS column`, so a list's page, an update's RETURNING and parsepgx
 // scan it into the column's field, and a field tagged filter, sort, facet or
-// search compiles those against the same expression. A resource declared once
-// serves every dialect its expressions serve; a dialect an expression refuses
-// fails every statement the resource builds for it — Columns, BuildList,
-// BuildUpdate and BuildUpdateBatch — naming the column and the dialect.
+// search compiles those against the same expression, as does a server policy
+// naming the column (filter.ResourceSchema.PolicyField), hidden or not
+// filterable. A resource declared once serves every dialect its expressions
+// serve; a dialect an expression refuses fails every statement the resource
+// builds for it — Columns, BuildList, BuildUpdate and BuildUpdateBatch —
+// naming the column and the dialect.
 //
 // A computed column must be read, and cannot be the key, the tenant or the
 // deleted column, be patched, stamped or incremented, hold document paths
@@ -269,6 +271,28 @@ func (c *computedColumns) newView(exprs []string, base *dialectView) *dialectVie
 		}
 		filters.Fields[name] = &computed
 		v.fields[f] = &computed
+	}
+	// A server policy names a computed column by its column or, without the
+	// filter capability, its external name (PolicyField): those entries
+	// compile against the expression as the request fields do. A request
+	// field reached by its column, and a field reached by both names, stay
+	// one field. The copy keeps the names PolicyField refuses.
+	if fs.PolicyFields != nil {
+		filters.PolicyFields = maps.Clone(fs.PolicyFields)
+		for name, f := range fs.PolicyFields {
+			if moved, ok := v.fields[f]; ok {
+				filters.PolicyFields[name] = moved
+				continue
+			}
+			if !c.field(f) {
+				continue
+			}
+			column, _ := c.column(f.SQLExpr)
+			computed := *f
+			computed.SQLExpr = v.exprs[column]
+			filters.PolicyFields[name] = &computed
+			v.fields[f] = &computed
+		}
 	}
 	v.filter = &filters
 

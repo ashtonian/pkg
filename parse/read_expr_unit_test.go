@@ -19,11 +19,11 @@ import (
 )
 
 var computedDialects = []struct {
-	dialect         parse.Dialect
-	email, groupIDs string
+	dialect                  parse.Dialect
+	email, groupIDs, contact string
 }{
-	{filter.PostgresDialect{}, pgEmailExpr, pgGroupIDsExpr},
-	{filter.SQLiteDialect{}, sqliteEmailExpr, sqliteGroupIDsExpr},
+	{filter.PostgresDialect{}, pgEmailExpr, pgGroupIDsExpr, pgContactExpr},
+	{filter.SQLiteDialect{}, sqliteEmailExpr, sqliteGroupIDsExpr, sqliteContactExpr},
 }
 
 func TestReadExpr_Columns(t *testing.T) {
@@ -38,10 +38,11 @@ func TestReadExpr_Columns(t *testing.T) {
 				"(" + tt.email + ") AS email",
 				"(" + memberCountExpr + ") AS member_count",
 				"(" + tt.groupIDs + ") AS group_ids",
+				"(" + tt.contact + ") AS contact",
 			}, columns)
 		})
 	}
-	assert.Equal(t, []string{"id", "tenant_id", "name", "email", "member_count", "group_ids"}, computedAccounts.ColumnNames())
+	assert.Equal(t, []string{"id", "tenant_id", "name", "email", "member_count", "group_ids", "contact"}, computedAccounts.ColumnNames())
 
 	type window struct {
 		ID   int           `json:"id"   db:"id"`
@@ -449,6 +450,44 @@ func TestReadExpr_Reread(t *testing.T) {
 
 	_, err = accessGroups.Reread(groups, []any{1})
 	assert.ErrorContains(t, err, `update plan built for "accounts"`)
+}
+
+// A server policy names a computed column requests cannot filter by — a
+// hidden one, by its column — and compiles it as the dialect's expression:
+// on the resource's own lists and updates, and as a relation's target
+// (Scope.Related).
+func TestReadExpr_PolicyFieldsCompileAgainstEachDialectsExpression(t *testing.T) {
+	contact := &filter.PolicyConstraints{Constraints: []*filter.PolicyConstraint{{Field: "contact", Operator: filter.OpEq, Value: "b"}}}
+	_, err := computedAccounts.ParseList(url.Values{filter.ParamFilter: {`{"contact":"b"}`}})
+	var pe *core.ParseError
+	require.ErrorAs(t, err, &pe, "requests cannot filter by it")
+	assert.Equal(t, filter.ECodeUnknownField.String(), pe.Code)
+
+	for _, tt := range computedDialects {
+		t.Run(tt.dialect.Name(), func(t *testing.T) {
+			expr := "(" + tt.contact + ") = "
+			plan, err := computedAccounts.BuildList(tt.dialect, nil, parse.Scope{Tenant: "t1", Policy: contact})
+			require.NoError(t, err)
+			assert.Contains(t, plan.Page.SQL, expr)
+
+			update, err := computedAccounts.BuildUpdate(tt.dialect, computedPatch(t, computedAccounts, `{"name":"x"}`), parse.ByID(2), parse.Scope{Tenant: "t1", Policy: contact})
+			require.NoError(t, err)
+			assert.Contains(t, update.Owner.SQL, expr)
+
+			sql := pageSQL(t, accountTenants, tt.dialect, `{"shared_accounts":{"$some":{}}}`, parse.Scope{Tenant: "t1", Related: map[string]*filter.PolicyConstraints{"accounts": contact}})
+			assert.Contains(t, sql, expr, "the target's policy")
+
+			for _, other := range computedDialects {
+				if other.dialect.Name() != tt.dialect.Name() {
+					assert.NotContains(t, plan.Page.SQL+update.Owner.SQL+sql, other.contact)
+				}
+			}
+		})
+	}
+	field, ok, err := computedAccounts.FilterSchema().PolicyField("contact")
+	require.NoError(t, err)
+	require.True(t, ok)
+	assert.Equal(t, "accounts.contact", field.SQLExpr, "the shared schema stays dialect-neutral")
 }
 
 func computedPatch(t *testing.T, accounts *parse.Resource[computedAccount], body string) *patch.ParsedPatch {

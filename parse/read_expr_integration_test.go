@@ -102,7 +102,7 @@ func sqliteAccounts(t *testing.T, rows [][]any) []computedAccount {
 		require.True(t, ok, "SQLite holds the array as JSON text, got %T", row[5])
 		account := computedAccount{
 			ID: int(computedInt(t, row[0])), TenantID: fmt.Sprint(row[1]), Name: fmt.Sprint(row[2]), Email: fmt.Sprint(row[3]),
-			MemberCount: int(computedInt(t, row[4])),
+			MemberCount: int(computedInt(t, row[4])), Contact: fmt.Sprint(row[6]),
 		}
 		require.NoError(t, json.Unmarshal([]byte(groups), &account.GroupIDs))
 		out = append(out, account)
@@ -180,8 +180,17 @@ func runReadExpr(t *testing.T, db *sql.DB, d parse.Dialect, run computedDB) {
 		require.NoError(t, err)
 		items := page(t, plan).Items
 		require.Len(t, items, 2)
-		assert.Equal(t, computedAccount{ID: 1, TenantID: "t1", Name: "a", Email: "a@example.com", MemberCount: 2, GroupIDs: []int64{10, 20}}, items[0])
-		assert.Equal(t, computedAccount{ID: 2, TenantID: "t1", Name: "b", Email: "", MemberCount: 1, GroupIDs: []int64{20}}, items[1])
+		assert.Equal(t, computedAccount{ID: 1, TenantID: "t1", Name: "a", Email: "a@example.com", MemberCount: 2, GroupIDs: []int64{10, 20}, Contact: "a@example.com"}, items[0])
+		assert.Equal(t, computedAccount{ID: 2, TenantID: "t1", Name: "b", Email: "", MemberCount: 1, GroupIDs: []int64{20}, Contact: "b"}, items[1])
+	})
+
+	t.Run("a policy compares a computed column requests cannot filter by", func(t *testing.T) {
+		contact := func(value string) *filter.PolicyConstraints {
+			return &filter.PolicyConstraints{Constraints: []*filter.PolicyConstraint{{Field: "contact", Operator: filter.OpEq, Value: value}}}
+		}
+		assert.Equal(t, []string{"2"}, keysOf(t, db, computedAccounts, d, `{}`, parse.Scope{Tenant: "t1", Policy: contact("b")}), "the name stands in for the NULL email")
+		assert.Equal(t, []string{"t1"}, keysOf(t, db, accountTenants, d, `{"shared_accounts":{"$some":{}}}`, parse.Scope{Tenant: "t1", Related: map[string]*filter.PolicyConstraints{"accounts": contact("b")}}), "the target's policy")
+		assert.Equal(t, []string{"t2"}, keysOf(t, db, accountTenants, d, `{"shared_accounts":{"$some":{}}}`, parse.Scope{Tenant: "t1", Related: map[string]*filter.PolicyConstraints{"accounts": contact("f@example.com")}}))
 	})
 
 	t.Run("relations filter by their targets' computed columns", func(t *testing.T) {

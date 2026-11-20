@@ -7,8 +7,9 @@ import (
 	"github.com/ashtonian/pkg/parse/filter"
 )
 
-// computedAccount reads three columns accounts has no column for: a count of
-// its memberships, its groups' keys, and its nullable email as text.
+// computedAccount reads four columns accounts has no column for: a count of
+// its memberships, its groups' keys, its nullable email as text, and a
+// hidden contact only server policies name.
 type computedAccount struct {
 	ID          int     `json:"id"           db:"id"           parse:"filter,sort"`
 	TenantID    string  `json:"-"            db:"tenant_id"`
@@ -16,6 +17,7 @@ type computedAccount struct {
 	Email       string  `json:"email"        db:"email"        parse:"filter,sort,search"`
 	MemberCount int     `json:"member_count" db:"member_count" parse:"filter,sort,facet"`
 	GroupIDs    []int64 `json:"group_ids"    db:"group_ids"`
+	Contact     string  `json:"-"            db:"contact"`
 }
 
 // accessGroup is a group accounts belong to through account_groups; its
@@ -42,6 +44,8 @@ const (
 	memberCountExpr    = "SELECT count(*) FROM memberships m WHERE m.account_id = accounts.id"
 	pgEmailExpr        = "coalesce(accounts.email, '')"
 	sqliteEmailExpr    = "ifnull(accounts.email, '')"
+	pgContactExpr      = "coalesce(accounts.email, accounts.name)"
+	sqliteContactExpr  = "ifnull(accounts.email, accounts.name)"
 	pgGroupIDsExpr     = "array(SELECT g.group_id FROM account_groups g WHERE g.account_id = accounts.id ORDER BY g.group_id)"
 	sqliteGroupIDsExpr = "SELECT json_group_array(group_id) FROM (SELECT g.group_id FROM account_groups g WHERE g.account_id = accounts.id ORDER BY g.group_id)"
 )
@@ -52,6 +56,14 @@ func emailExpr(d filter.Dialect) (string, error) {
 		return sqliteEmailExpr, nil
 	}
 	return pgEmailExpr, nil
+}
+
+// contactExpr is the account's email, or its name without one.
+func contactExpr(d filter.Dialect) (string, error) {
+	if _, ok := d.(filter.SQLiteDialect); ok {
+		return sqliteContactExpr, nil
+	}
+	return pgContactExpr, nil
 }
 
 // groupIDsExpr is the account's group keys: a native array on PostgreSQL,
@@ -106,5 +118,6 @@ func computedAccountOptions(groupIDs parse.ColumnExpr, opts ...parse.ResourceOpt
 		parse.ReadExpr("member_count", parse.SQL(memberCountExpr)),
 		parse.ReadExpr("email", emailExpr),
 		parse.ReadExpr("group_ids", groupIDs),
+		parse.ReadExpr("contact", contactExpr),
 	}, opts...)
 }
