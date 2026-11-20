@@ -284,11 +284,15 @@ func (p *typedParser[T]) ParseSort(sortParam string) (*filter.SortResult, error)
 // ListQuery returns a ListQuery builder pre-loaded with this type's filter,
 // sort, and search schemas and the parser's config, so ListFilter input is
 // held to the same limits, codec and clock as ParseFilter. When the type declares `parse:"...,search"` fields, a
-// ListSearch query composes a dialect-aware search predicate.
+// ListSearch query composes a dialect-aware search predicate. The schemas
+// are dialect-neutral: a computed column (ReadExpr) compiles as the column
+// it names, so a resource with computed columns lists through BuildList.
 func (p *typedParser[T]) ListQuery(dialect filter.Dialect) *filter.ListQuery {
-	return filter.NewListQuery(p.filterSchema, p.sortSchema, dialect).
-		WithFilterConfig(p.cfg).
-		WithSearchSchema(p.searchSchema)
+	return newListQuery(p.filterSchema, p.sortSchema, p.searchSchema, dialect, p.cfg)
+}
+
+func newListQuery(fs *filter.ResourceSchema, ss *filter.SortSchema, search *filter.SearchSchema, d filter.Dialect, cfg *core.ParserConfig) *filter.ListQuery {
+	return filter.NewListQuery(fs, ss, d).WithFilterConfig(cfg).WithSearchSchema(search)
 }
 
 // ApplyValidatedPatch applies an already-parsed patch to a target struct and

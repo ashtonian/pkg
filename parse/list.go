@@ -294,8 +294,13 @@ func (p *ListPlan) Dialect() filter.Dialect { return p.dialect }
 // governance), soft-delete masking and policy ANDed with the request's
 // filter, the request's sort with the key as the final keyset column, the
 // cursor's seek, search, and the count and facets when asked. A nil req is a
-// first page with no filter.
+// first page with no filter. Computed columns (ReadExpr) compile as d's
+// expressions; a dialect one refuses is an error.
 func (r *Resource[T]) BuildList(d filter.Dialect, req *ListRequest, s Scope) (*ListPlan, error) {
+	v, err := r.dialectView(d)
+	if err != nil {
+		return nil, err
+	}
 	if req == nil {
 		req = &ListRequest{}
 	}
@@ -324,20 +329,20 @@ func (r *Resource[T]) BuildList(d filter.Dialect, req *ListRequest, s Scope) (*L
 		opts = append(opts, filter.ListTenant(s.Tenant))
 	}
 	if req.Filter != nil {
-		opts = append(opts, filter.ListFilterAST(req.Filter.AST))
+		opts = append(opts, filter.ListFilterAST(v.filterAST(req.Filter.AST)))
 	}
 	if req.Sort != nil {
-		opts = append(opts, filter.ListSortResult(req.Sort))
+		opts = append(opts, filter.ListSortResult(v.sortResult(req.Sort)))
 	}
 	if len(req.Facets) > 0 {
 		opts = append(opts, filter.ListFacets(req.Facets...))
 	}
-	res, err := r.ListQuery(d).Build(opts...)
+	res, err := v.listQuery(d, r.cfg).Build(opts...)
 	if err != nil {
 		return nil, err
 	}
 	plan := &ListPlan{
-		Page:     Statement{SQL: "SELECT " + strings.Join(r.Columns(d), ", ") + " FROM " + r.table + " " + res.Fragment, Args: res.Args},
+		Page:     Statement{SQL: "SELECT " + strings.Join(r.columns(d, v), ", ") + " FROM " + r.table + " " + res.Fragment, Args: res.Args},
 		Fragment: res.Fragment,
 		Facets:   res.Facets,
 		Include:  slices.Clone(req.Include),

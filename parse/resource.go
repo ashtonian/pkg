@@ -3,6 +3,7 @@ package parse
 import (
 	"encoding/json"
 	"fmt"
+	"maps"
 	"reflect"
 	"slices"
 
@@ -36,9 +37,12 @@ type Resource[T any] struct {
 	sqlTypes     map[string]core.SQLType
 	tableColumns map[string]reflect.Type
 	columnFields map[string]*core.Field
-	// readExprs are the computed columns' parenthesized expressions
-	// (ReadExpr), by column.
-	readExprs map[string]string
+	// readExprs are the computed columns (ReadExpr) and their per-dialect
+	// views; nil without any.
+	readExprs *computedColumns
+	// relatedSchema is the filter schema relations to the resource filter
+	// its rows with (relatedFilterSchema).
+	relatedSchema *filter.ResourceSchema
 }
 
 // ResourceOption configures NewResource.
@@ -172,10 +176,13 @@ func NewResource[T any](table string, opts ...ResourceOption) (*Resource[T], err
 	if err != nil {
 		return nil, err
 	}
-	if r.readExprs, err = readExprs(table, cfg, columns, read); err != nil {
+	if r.readExprs, err = newComputedColumns(table, cfg, columns, read); err != nil {
 		return nil, err
 	}
-	if err := r.computeSchemas(); err != nil {
+	if err := r.readExprs.checkDocuments(p.filterSchema, p.sortSchema); err != nil {
+		return nil, err
+	}
+	if err := r.checkComputedPatches(); err != nil {
 		return nil, err
 	}
 	for _, name := range order {
@@ -212,6 +219,13 @@ func NewResource[T any](table string, opts ...ResourceOption) (*Resource[T], err
 			}
 			f.RelatedBy = r.correlationField(f.Relation.PrimaryKey)
 		}
+	}
+	r.relatedSchema = p.filterSchema
+	if r.readExprs != nil {
+		related := *p.filterSchema
+		related.Fields = maps.Clone(p.filterSchema.Fields)
+		maps.DeleteFunc(related.Fields, func(_ string, f *filter.FieldSchema) bool { return r.readExprs.field(f) })
+		r.relatedSchema = &related
 	}
 	return r, nil
 }
@@ -369,14 +383,24 @@ func (r *Resource[T]) ColumnSQLType(column string) (core.SQLType, bool) {
 // dialect d: a list's page, an update's RETURNING, and a repository's own
 // reads of the table. It is T's columns in field order, or the ReadColumns
 // among them, table-qualified; a computed column (ReadExpr) is read through
-// its expression and a column with a declared ColumnType as d reads that
-// type, each under the column's own name, so rows scan by name.
-func (r *Resource[T]) Columns(d filter.Dialect) []string {
+// d's expression and a column with a declared ColumnType as d reads that
+// type, each under the column's own name, so rows scan by name. A dialect a
+// computed column's expression refuses is an error.
+func (r *Resource[T]) Columns(d filter.Dialect) ([]string, error) {
+	v, err := r.dialectView(d)
+	if err != nil {
+		return nil, err
+	}
+	return r.columns(d, v), nil
+}
+
+// columns is Columns for v, r's schemas already compiled for d.
+func (r *Resource[T]) columns(d filter.Dialect, v *dialectView) []string {
 	out := make([]string, len(r.read))
 	for i, name := range r.read {
 		stored := r.table + "." + name
 		col := stored
-		if expr, ok := r.readExprs[name]; ok {
+		if expr, ok := v.exprs[name]; ok {
 			col = expr
 		}
 		if t, ok := r.sqlTypes[name]; ok {
@@ -509,5 +533,6 @@ func (r *Resource[T]) WithPaths(decls ...filter.PathDecl) (*Resource[T], error) 
 	}
 	view := *r
 	view.typedParser = tp
+	view.readExprs = r.readExprs.withoutViews()
 	return &view, nil
 }

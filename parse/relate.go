@@ -21,6 +21,7 @@ type RelatedResource interface {
 	FilterSchema() *filter.ResourceSchema
 	columnType(name string) (reflect.Type, bool)
 	computed(column string) bool
+	relatedFilterSchema() *filter.ResourceSchema
 }
 
 func (r *Resource[T]) columnType(name string) (reflect.Type, bool) {
@@ -129,7 +130,8 @@ func Describe(label, description string) RelationOption {
 
 // Relate declares a relation named name on r: requests filter by it with
 // the target's own filter (`$some`, `$none`, `$is`, `$is_not`) or by the
-// target's key. Columns are checked against both resources' types. Declare
+// target's key; the target's computed columns (ReadExpr) are not fields of
+// that filter. Columns are checked against both resources' types. Declare
 // every relation before the resources serve requests; Relate is not safe
 // for concurrent use with them.
 func (r *Resource[T]) Relate(name string, rel Relation) error {
@@ -179,7 +181,7 @@ func (r *Resource[T]) Relate(name string, rel Relation) error {
 	if rel.kind == core.BelongsTo {
 		ops = []filter.FilterOperator{filter.OpEq, filter.OpNe, filter.OpIn, filter.OpNin, filter.OpNull, filter.OpNotNull, filter.OpIs, filter.OpIsNot}
 	}
-	fs.Fields[name] = &filter.FieldSchema{
+	field := &filter.FieldSchema{
 		ExternalName:     name,
 		DataType:         key.Type,
 		NumberKind:       key.NumberKind,
@@ -190,9 +192,15 @@ func (r *Resource[T]) Relate(name string, rel Relation) error {
 		Label:            rel.label,
 		Description:      rel.description,
 		Relation:         rs,
-		Related:          t.FilterSchema(),
+		Related:          t.relatedFilterSchema(),
 		RelatedBy:        r.correlationField(rs.PrimaryKey),
 	}
+	fs.Fields[name] = field
+	if r.relatedSchema != fs {
+		r.relatedSchema.Fields[name] = field
+	}
+	// The cached dialect views copied the fields before this one.
+	r.readExprs.reset()
 	if rel.writable {
 		path := patch.RelationPath(rs, reflect.SliceOf(keyType))
 		r.patchSchema.AllowedPaths[core.FormatPointer(name)] = path

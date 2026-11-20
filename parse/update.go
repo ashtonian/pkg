@@ -127,8 +127,13 @@ func (p *UpdatePlan) HasRelations() bool { return len(p.relations) > 0 }
 // tenant floor, live rows only and s.Policy, then RETURNING the resource's
 // Columns; SkipUnchanged also ANDs the patch's change predicate into the
 // WHERE. A tenant-scoped resource needs s.Tenant (ErrTenantRequired); a zero
-// Target is ErrNoTarget; Governance or IncludeDeleted is ErrUpdateScope.
+// Target is ErrNoTarget; Governance or IncludeDeleted is ErrUpdateScope; a
+// dialect a computed column's expression (ReadExpr) refuses is an error.
 func (r *Resource[T]) BuildUpdate(d Dialect, p *patch.ParsedPatch, target Target, s Scope, opts ...UpdateOption) (*UpdatePlan, error) {
+	v, err := r.dialectView(d)
+	if err != nil {
+		return nil, err
+	}
 	if target.empty() {
 		return nil, fmt.Errorf("%s: %w", r.table, ErrNoTarget)
 	}
@@ -147,11 +152,11 @@ func (r *Resource[T]) BuildUpdate(d Dialect, p *patch.ParsedPatch, target Target
 		return nil, err
 	}
 
-	where, args, err := r.updateWhere(d, target, s, set.ParamCount)
+	where, args, err := r.updateWhere(d, v, target, s, set.ParamCount)
 	if err != nil {
 		return nil, err
 	}
-	columns := strings.Join(r.Columns(d), ", ")
+	columns := strings.Join(r.columns(d, v), ", ")
 	plan := &UpdatePlan{relations: set.RelationOps, dialect: d, table: r.table, tenant: s.Tenant, related: s.Related}
 	switch {
 	case set.SetClause != "":
@@ -160,7 +165,7 @@ func (r *Resource[T]) BuildUpdate(d Dialect, p *patch.ParsedPatch, target Target
 			// where's root is a group, which renders parenthesized, or one
 			// condition, so the predicate ANDs onto all of it.
 			guarded += " AND " + set.ChangePredicate
-			current, currentArgs, err := r.updateWhere(d, target, s, 0)
+			current, currentArgs, err := r.updateWhere(d, v, target, s, 0)
 			if err != nil {
 				return nil, err
 			}
@@ -228,8 +233,8 @@ func (r *Resource[T]) rowKey(row T) (any, error) {
 }
 
 // updateWhere is the WHERE every update statement carries, its placeholders
-// after the SET clause's offset ones.
-func (r *Resource[T]) updateWhere(d filter.Dialect, target Target, s Scope, offset int) (string, []any, error) {
+// after the SET clause's offset ones, compiled against v.
+func (r *Resource[T]) updateWhere(d filter.Dialect, v *dialectView, target Target, s Scope, offset int) (string, []any, error) {
 	pc := filter.BuildBaseConstraints(r.tenant, s.Tenant, r.deleted, false)
 	var userAST *filter.FilterAST
 	switch {
@@ -238,12 +243,12 @@ func (r *Resource[T]) updateWhere(d filter.Dialect, target Target, s Scope, offs
 	case len(target.keys) > 1:
 		pc.Constraints = append(pc.Constraints, &filter.PolicyConstraint{Field: r.pk, Operator: filter.OpIn, Value: target.keys})
 	default:
-		userAST = target.filter.AST
+		userAST = v.filterAST(target.filter.AST)
 	}
 	if s.Policy != nil && !s.Policy.IsEmpty() {
 		pc.And = append(pc.And, s.Policy)
 	}
-	ast, err := filter.ApplyPolicyConstraints(r.filterSchema, userAST, pc)
+	ast, err := filter.ApplyPolicyConstraints(v.filter, userAST, pc)
 	if err != nil {
 		return "", nil, err
 	}
@@ -251,7 +256,7 @@ func (r *Resource[T]) updateWhere(d filter.Dialect, target Target, s Scope, offs
 	if s.Tenant != "" {
 		opts = append(opts, filter.WithTenant(s.Tenant))
 	}
-	res, err := filter.NewSQLBuilder(r.filterSchema, d, opts...).Build(ast)
+	res, err := filter.NewSQLBuilder(v.filter, d, opts...).Build(ast)
 	if err != nil {
 		return "", nil, err
 	}

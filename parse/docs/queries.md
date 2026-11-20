@@ -178,7 +178,7 @@ A `filter.Row` returns each field's value in the canonical domain filter values 
 A list endpoint declares its resource once — `parse.NewResource[T](table, PrimaryKey, TenantColumn, DeletedColumn, PageSize, AcceptParams, ParserOptions)` — and serves each request in three steps:
 
 1. `ParseList(url.Values)` reads every `filter.Param*` parameter into a `*ListRequest`: the JSON filter ANDed with the flat field parameters and bounded as one expression, sort, cursor, page size (missing: the default; above the maximum: clamped; malformed or not positive: E2067), `include_total` and `include_deleted` (booleans; anything else is E2067), search (E2067 on a resource without search fields), facets (unknown or not facetable: E2071), includes and the field mask. A parameter that is none of these, not a filterable field and not accepted with `AcceptParams` is E2071, so a misspelt filter cannot return an unfiltered list. Off HTTP — an RPC, a message, a saved view — build a `ListInput` (the JSON filter, `FieldFilters` keyed `field` or `field_<op>`, sort, cursor, page size, flags and name lists) and call `ParseListInput`: `ParseList` is that call behind a query-string adapter, with the same limits and codes; a `ListInput` page size of zero is the default and a negative one E2067.
-2. `BuildList(dialect, req, parse.Scope{Tenant, Governance, Policy, IncludeDeleted})` compiles it under the server's decisions: the tenant floor (or governance in its place), soft-delete masking unless `IncludeDeleted`, and the policy, ANDed with the request; the key as the final keyset column; the count and facets when asked. A tenant-scoped resource without `Scope.Tenant` is `ErrTenantRequired`. The `*ListPlan` holds `Page` (the full `SELECT` of the resource's `Columns`), `Fragment` (its `WHERE … ORDER BY … LIMIT` alone, for a caller's own projection with `Page.Args`; a value the table holds in no column is usually better declared with `parse.ReadExpr`, which `Page` then selects), `Count`, `Facets`, `Include` and `Keyset`.
+2. `BuildList(dialect, req, parse.Scope{Tenant, Governance, Policy, IncludeDeleted})` compiles it under the server's decisions: the tenant floor (or governance in its place), soft-delete masking unless `IncludeDeleted`, and the policy, ANDed with the request; the key as the final keyset column; the count and facets when asked; [computed columns](#computed-columns) as the dialect's expressions. A tenant-scoped resource without `Scope.Tenant` is `ErrTenantRequired`. The `*ListPlan` holds `Page` (the full `SELECT` of the resource's `Columns`), `Fragment` (its `WHERE … ORDER BY … LIMIT` alone, for a caller's own projection with `Page.Args`; a value the table holds in no column is usually better declared with `parse.ReadExpr`, which `Page` then selects), `Count`, `Facets`, `Include` and `Keyset`.
 3. `Page(rows, plan)` (or `PagePointers`) builds the page from the fetched rows. `IncludeQueries(plan, keys)` returns the include statements for the page's keys (`Key(row)`), tenant-scoped as the list was; read each one's rows with its `Scan` into `Page.Relations` (and `Page.Truncated` for owners cut at the cap).
 
 Underneath, `NewListQuery(filterSchema, sortSchema, dialect).Build(opts...)` returns a `*ListResult`:
@@ -198,6 +198,35 @@ Underneath, `NewListQuery(filterSchema, sortSchema, dialect).Build(opts...)` ret
 A statement the list builder does not write, such as a search ordered by a computed rank, pages the same way from its own keys. Each `filter.CursorKey` names the key, its SQL expression (`SQLExpr`, or a document member's `Path`), the result column a token reads it from (`Column`), its type and direction, and whether it can be NULL. `filter.OrderByKeys(dialect, keys, reverse)` renders the `ORDER BY`; `filter.SeekPredicate(dialect, keys, token, bind)` checks the token against the keys (`ValidateCursor`, E2082 for a token minted under other keys), normalizes its values and renders the rows strictly after it, binding every value through `bind`; `CursorPlan{Keys: keys}.Token` mints the next token from a page's last row. Keys may mix directions; NULL placement and seeks follow the rules above.
 
 Facets name facetable fields; any other name is E2071, like an unknown filter field. A relation facet counts distinct owners per target, and `BuildIncludeQuery` returns distinct `(owner, target)` pairs, at most `WithMaxIncludePerRelation` per owner, so two junction rows pairing the same rows (typed edges) count once. Search covers string fields; schema generation refuses `search` on any other type unless a `ColumnMapper` supplies the expression. On PostgreSQL an array argument binds as a typed Go slice (`[]string`, `[]int64`, `[]float64`, `[]bool`, `[]time.Time`; UUIDs as their canonical text), which pgx encodes in every query mode, including `QueryExecModeExec` and the simple protocol.
+
+### Computed columns
+
+A row often carries a value no column of its table holds: a count of related rows, a many-to-many's keys as an array, a nullable column read as text. Declare it with `parse.ReadExpr(column, expr)`, where `expr` is a `parse.ColumnExpr` — `func(filter.Dialect) (string, error)` — returning the column's trusted SQL for one dialect, or an error for a dialect it cannot serve. `parse.SQL(sql)` is the expression every dialect reads alike. A resource is declared once, before any dialect is known, and serves each dialect through that dialect's expression:
+
+```go
+var accounts = parse.MustResource[Account]("accounts",
+	parse.TenantColumn("tenant_id"),
+	parse.ReadExpr("member_count", parse.SQL("SELECT count(*) FROM memberships m WHERE m.account_id = accounts.id")),
+	parse.ReadExpr("group_ids", func(d filter.Dialect) (string, error) {
+		switch d.(type) {
+		case filter.PostgresDialect:
+			return "array(SELECT g.group_id FROM account_groups g WHERE g.account_id = accounts.id ORDER BY g.group_id)", nil
+		case filter.SQLiteDialect:
+			return "SELECT json_group_array(group_id) FROM (SELECT g.group_id FROM account_groups g WHERE g.account_id = accounts.id ORDER BY g.group_id)", nil
+		}
+		return "", filter.ErrUnsupportedDialect
+	}),
+)
+```
+
+- `Columns(d)` selects the column as `(sql) AS column`, composed with a declared `ColumnType` read cast, so `plan.Page`, an update's `RETURNING` and `parsepgx` scan it into the column's field by name.
+- The column's `filter`, `sort`, `facet` and `search` tags compile against d's expression in `BuildList`, `BuildUpdate` and `BuildUpdateBatch`; a cursor reads a computed sort key's value from the column's field. Every other part of the statement, such as a sort's collation, follows the dialect the build is given.
+- A dialect an expression refuses, or answers with empty SQL, fails `Columns`, `BuildList` (and with it the page, count, facets and includes), `BuildUpdate` and `BuildUpdateBatch` before any statement exists. The error names the table, the column and the dialect, and wraps the expression's own error: `parse: accounts: computed column "group_ids" for dialect sqlite: unsupported SQL dialect`.
+- `NewResource` refuses, whatever the dialect, a computed column that is not a column of T or not read (`ReadColumns`), that is the key, tenant or deleted column, that a patch path writes, or that declares document paths or element members; `Relate` refuses a relation correlating on one.
+- A relation to the resource cannot filter by its computed columns: a relation's filter compiles for its owner's statement, which resolves only the owner's expressions, so the field is unknown there (E2071).
+- `FilterSchema`, `SortSchema`, `SearchSchema`, the schema document and discovery stay dialect-neutral and name the column. `ListQuery` compiles those schemas as they are, where a computed column reads as the stored column it names; list a resource with computed columns through `BuildList`.
+
+`expr` runs on every build, so it must be cheap and return the same SQL for the same dialect. Each distinct set of resolved expressions builds one view of the resource's filter, sort and search schemas on first use, cached on the resource and safe for concurrent builds; a resource caches at most 16 views and builds any beyond that per call. The cache is keyed by the resolved SQL rather than the dialect value: dialect values need not be comparable, and two dialects that differ only in a setting the expressions ignore, such as `PostgresDialect.Collation`, share a view, while each build still compiles under its own dialect. Declare relations before serving; `Relate` drops the cached views.
 
 ## Search and facets
 
