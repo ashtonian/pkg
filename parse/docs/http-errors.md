@@ -21,6 +21,16 @@ A list endpoint built on this package reads the `filter.Param*` query parameters
 
 Lists answer with `filter.Page[T]`: `{"items": […], "page_info": {"has_next_page", "has_prev_page", "start_cursor", "end_cursor", "total_count"}, "_relations": {…}}`. Errors answer `{"code", "message", "details"}`.
 
+### The same request as a POST body
+
+A filter document travels in the URL, and every proxy, CDN and load balancer in front of the server caps URL length, commonly at 8 or 16 KB, below what a filter may hold once an endpoint raises `MaxArraySize`. A list endpoint therefore also accepts the same request as one JSON body on `POST` to the same path: the parameters above as members, `filter` as the filter document itself (an object), `page_size` as a number, the flags as booleans, and `facets`, `include` and `fields` as arrays of names.
+
+```json
+{"filter": {"status": "active", "id": {"$in": ["…", "…"]}}, "sort": "-price,name", "page_size": 50, "include_total": true}
+```
+
+`Resource.ParseListBody` validates it as `ParseList` validates a query string, with the same limits and codes. An unknown member, or one of the wrong JSON type, is E2067; a member named twice is E2086; a body over `MaxInputSize` is E2063, read no further. Flat field filters don't apply to a body. `parsehttp.ParseList(r, res)` serves both transports from one handler: the query string of a `GET` or `HEAD`, or the `application/json` body of a `POST`, whose query string may carry only the parameters the endpoint reads itself (`AcceptParams`). The TypeScript SDK sends a `POST` when a list's URL would exceed `maxURLLength`, and `client.ListParams.Body` encodes the document from Go.
+
 ## Handler responsibilities
 
 `ParseRequestFilter(r.URL.Query())` ANDs the JSON `filter` with flat field parameters and applies limits to the combined filter. It does not parse every list option or execute a query. Your handler validates page size/booleans, selects policy from authenticated context, passes sort/search/cursor options, and executes the plan. `fields` and `include_deleted` are conventions the service implements, not automatic projection or authorization controls.

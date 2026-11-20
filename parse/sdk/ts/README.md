@@ -59,6 +59,7 @@ console.log(page.items, page.page_info.total_count, page.page_info.end_cursor);
 | `schemaPath` | string | `"api"` | Prefix of the schema endpoints (`{schemaPath}/{resource}/schema`, `{schemaPath}/schemas`) |
 | `validateBeforeSend` | boolean | `false` | Validate filters, sorts and patches against the server schema before sending |
 | `timeout` | number (ms) | `30000` | Per-request deadline, combined with any caller `AbortSignal` |
+| `maxURLLength` | number | `2000` | The longest list URL sent as a GET; a longer list is sent as the same request in a POST body to the same path ([HTTP contract](../../docs/http-errors.md#the-same-request-as-a-post-body)). `list` and `listAll` take `{ method: "GET" \| "POST" }` to force either |
 
 ## Server Contract
 

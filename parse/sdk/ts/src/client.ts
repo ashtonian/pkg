@@ -6,7 +6,7 @@
  */
 
 import { ApiError, SchemaVersionError } from "./core/errors.js";
-import type { ErrorBody, RequestOptions } from "./core/types.js";
+import type { ErrorBody, ListRequestOptions, RequestOptions } from "./core/types.js";
 import type { FacetOptions, FacetResult, FilterSchema, ListOptions, ListResult, SortField } from "./filter/types.js";
 import type { RelatedSchemas } from "./filter/validate.js";
 import type { PatchInput, PatchResult } from "./patch/types.js";
@@ -66,6 +66,23 @@ function buildListQuery<T>(opts: ListOptions<T>): string {
   return query(params);
 }
 
+// The same request as one JSON document, a POST body the server reads with
+// Resource.ParseListBody: the query parameters as members, the filter as a
+// document and the name lists as arrays.
+function buildListBody<T>(opts: ListOptions<T>): Record<string, unknown> {
+  const body: Record<string, unknown> = {};
+  if (opts.filter && Object.keys(opts.filter).length > 0) body["filter"] = opts.filter;
+  if (opts.sort) body["sort"] = encodeSort(opts.sort);
+  if (opts.cursor) body["cursor"] = opts.cursor;
+  if (opts.pageSize != null) body["page_size"] = opts.pageSize;
+  if (opts.includeTotal) body["include_total"] = true;
+  if (opts.includeDeleted) body["include_deleted"] = true;
+  if (opts.search) body["search"] = opts.search;
+  if (opts.include && opts.include.length > 0) body["include"] = [...opts.include];
+  if (opts.facets && opts.facets.length > 0) body["facets"] = [...opts.facets];
+  return body;
+}
+
 function query(params: URLSearchParams): string {
   const qs = params.toString();
   return qs ? `?${qs}` : "";
@@ -108,6 +125,11 @@ export interface ClientConfig {
    *  is enforced via `AbortSignal.timeout()` and combined with any
    *  caller-provided signal so whichever fires first wins. */
   timeout?: number;
+  /** The longest list URL sent as a GET, in characters. A list whose URL
+   *  would be longer is sent as a POST body to the same path, since proxies
+   *  and load balancers in front of a server cap URL length (8 KB is
+   *  common) below what a filter may hold. Defaults to 2000. */
+  maxURLLength?: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -124,13 +146,13 @@ export interface Resource<T> {
    * Fetch a filtered, sorted, paginated list with optional facets and count.
    * When `validateBeforeSend` is enabled, validates filter and sort against the schema.
    */
-  list(opts?: ListOptions<T>, reqOpts?: RequestOptions): Promise<ListResult<T>>;
+  list(opts?: ListOptions<T>, reqOpts?: ListRequestOptions): Promise<ListResult<T>>;
 
   /**
    * Auto-paginate through all pages. Yields one {@link ListResult} per page.
    * Follows cursors automatically until no more pages.
    */
-  listAll(opts?: Omit<ListOptions<T>, "cursor">, reqOpts?: RequestOptions): AsyncIterableIterator<ListResult<T>>;
+  listAll(opts?: Omit<ListOptions<T>, "cursor">, reqOpts?: ListRequestOptions): AsyncIterableIterator<ListResult<T>>;
 
   /**
    * Partially update one resource with a JSON Merge Patch (RFC 7396): set a
@@ -186,6 +208,7 @@ export function createClient(cfg: ClientConfig): Client {
   const schemaPath = cfg.schemaPath ?? "api";
   const validate = cfg.validateBeforeSend ?? false;
   const timeoutMs = cfg.timeout ?? 30_000;
+  const maxURLLength = cfg.maxURLLength ?? 2000;
 
   function mergeHeaders(extra?: Record<string, string>): Record<string, string> {
     return { "Content-Type": "application/json", Accept: "application/json", ...cfg.headers, ...extra };
@@ -274,7 +297,7 @@ export function createClient(cfg: ClientConfig): Client {
           return validatorInstance;
         },
 
-        async list(opts: ListOptions<T> = {}, reqOpts?: RequestOptions): Promise<ListResult<T>> {
+        async list(opts: ListOptions<T> = {}, reqOpts?: ListRequestOptions): Promise<ListResult<T>> {
           if (validate) {
             const v = await this.validator(reqOpts);
             if (opts.filter && Object.keys(opts.filter).length > 0) {
@@ -290,10 +313,15 @@ export function createClient(cfg: ClientConfig): Client {
               v.validateFacets(opts.facets);
             }
           }
-          return request<ListResult<T>>("GET", `${path}${buildListQuery(opts)}`, undefined, reqOpts);
+          const target = `${path}${buildListQuery(opts)}`;
+          const method = reqOpts?.method ?? (`${cfg.baseURL}/${target}`.length > maxURLLength ? "POST" : "GET");
+          if (method === "POST") {
+            return request<ListResult<T>>("POST", path, buildListBody(opts), reqOpts);
+          }
+          return request<ListResult<T>>("GET", target, undefined, reqOpts);
         },
 
-        async *listAll(opts: Omit<ListOptions<T>, "cursor"> = {}, reqOpts?: RequestOptions): AsyncIterableIterator<ListResult<T>> {
+        async *listAll(opts: Omit<ListOptions<T>, "cursor"> = {}, reqOpts?: ListRequestOptions): AsyncIterableIterator<ListResult<T>> {
           let cursor: string | undefined;
           for (;;) {
             const page = await this.list(cursor === undefined ? opts : { ...opts, cursor }, reqOpts);

@@ -76,6 +76,7 @@ On PostgreSQL, `parsepgx.QueryPage(ctx, pool, devices, plan)` runs the plan and 
 | Serve a list endpoint: parse, scope, compile, page | `NewResource[T]`, `ParseList` (or `ParseListInput` off HTTP), `BuildList`, `Page`, `IncludeQueries` | [List queries](docs/queries.md#lists-and-keyset-pagination) |
 | Run a list or update plan on PostgreSQL | `parsepgx.QueryPage`, `parsepgx.Update` | [pgx](docs/integrations.md#pgx) |
 | Answer a request error | `parsehttp.WriteError` | [HTTP and errors](docs/http-errors.md) |
+| Serve a list too large for a URL: the same request as a POST body | `ParseListBody`, `parsehttp.ParseList`, `client.ListParams.Body`, the SDK's `maxURLLength` | [HTTP contract](docs/http-errors.md#the-same-request-as-a-post-body) |
 | Parse a stored/server-policy filter with a per-call cost budget | `Resource.ParseFilterWithCost` | [Parser configuration](docs/schema-configuration.md#parser-and-generator-options) |
 | Parse an HTTP filter alone, including flat parameters | `Resource.ParseRequestFilter` | [Queries](docs/queries.md) |
 | Compose list fragments over a declared resource | `Resource.ListQuery(dialect).Build` (the primary key joins every keyset) | [List queries](docs/queries.md#lists-and-keyset-pagination) |
@@ -152,11 +153,12 @@ Tags expose capabilities explicitly: `parse:"filter,sort,patch,facet,search,incl
 |---|---|
 | [`resource.go`](resource.go) | `NewResource[T]`, `MustResource`, resource options, identity, system fields, projection (`Columns`, `ColumnNames`), `ParseFilterWithCost`, `Key`, `WithPaths` (a request's view with declared JSON paths) |
 | [`list.go`](list.go) | `ListInput`, `ParseListInput`, `ListRequest`, `ParseList`, `Scope`, `ListPlan` (`Dialect`), `BuildList`, `Page`, `PagePointers`, `IncludeQueries` |
+| [`list_body.go`](list_body.go) | `ParseListBody`: a list request as one JSON document, a POST body beside the query string; `Accepts` |
 | [`relate.go`](relate.go) | `Relate`, `MustRelate`, `HasMany`, `BelongsTo`, `ManyToMany`, `Junction` / `Through`, `Indexed`, `Includable`, `Facetable`, `Writable`, `PolicyScoped`, `References`, `RelatedResource` |
 | [`update.go`](update.go) | `Target` (`ByID`, `ByIDs`, `ByFilter`), `BuildUpdate`, `UpdatePlan` (`Dialect`, `Current`), `RelationStatements`, `Stamp`, `StampSQL`, `Increment`, `SkipUnchanged`, `Unchanged`, `Dialect` |
 | [`update_batch.go`](update_batch.go) | `RowUpdate`, `UpdateBatchLimits`, `BuildUpdateBatch`, `UpdateBatchPlan`, `UpdateBatchChunk.CheckCurrent`, `ErrUpdateBatchTargets`: bounded varied column updates with exact preimage checks |
 | [`typed.go`](typed.go) | `Resource` parse entry points (`MergePatchMap`, `ValidateOperations` and server variants), schema access, typed patch application |
-| [`parsehttp`](parsehttp/README.md) | `WriteError`: a parse error as an HTTP response |
+| [`parsehttp`](parsehttp/README.md) | `WriteError`: a parse error as an HTTP response; `ParseList`: a list from a GET query string or a POST body |
 | [`parsepgx`](parsepgx/README.md) | `QueryPage`, `Update`: plans run on PostgreSQL through pgx batches |
 | [`parsesqlite`](parsesqlite/README.md) | `Register`: the SQLite functions plans compare decimals through, registered with `modernc.org/sqlite` |
 | [`registry.go`](registry.go) | `NewSchemaRegistry`, `RegisterResource`, `Register[T]`, `MustRegister[T]`, discovery handlers; the versioned schema document (`SchemaResponse`, `SchemaVersion`) with relations, element paths and patch value metadata |

@@ -136,6 +136,76 @@ describe("list", () => {
   });
 });
 
+describe("list transport", () => {
+  const empty = { items: [], page_info: { has_next_page: false, has_prev_page: false } };
+  const p = (name: string): string => wire.params[name] ?? `missing ${name}`;
+  const big = { name: { $in: Array.from({ length: 200 }, (_, i) => `name-${String(i).padStart(4, "0")}`) } };
+
+  it("sends a list too long for a URL as a POST body with the same members", async () => {
+    const server = fakeServer(() => json(empty));
+    await client(server.fetch).resource<WireItem>("items").list({
+      filter: big,
+      sort: "-name",
+      cursor: "c1",
+      pageSize: 10,
+      includeTotal: true,
+      includeDeleted: true,
+      search: "al",
+      include: ["tags"],
+      facets: ["name"],
+    });
+    const call = server.calls[0];
+    expect(call?.method).toBe("POST");
+    expect(call?.url.pathname).toBe("/items");
+    expect(call?.url.search).toBe("");
+    // Member names come from the Go filter.Param* constants.
+    expect(call?.body).toEqual({
+      [p("ParamFilter")]: big,
+      [p("ParamSort")]: "-name",
+      [p("ParamCursor")]: "c1",
+      [p("ParamPageSize")]: 10,
+      [p("ParamIncludeTotal")]: true,
+      [p("ParamIncludeDeleted")]: true,
+      [p("ParamSearch")]: "al",
+      [p("ParamInclude")]: ["tags"],
+      [p("ParamFacets")]: ["name"],
+    });
+  });
+
+  it("keeps a short list a GET, and method forces either transport", async () => {
+    const server = fakeServer(() => json(empty));
+    const items = client(server.fetch).resource<WireItem>("items");
+    await items.list({ filter: { name: "alpha" } });
+    await items.list({ filter: { name: "alpha" } }, { method: "POST" });
+    await items.list({ filter: big }, { method: "GET" });
+    expect(server.calls.map((c) => c.method)).toEqual(["GET", "POST", "GET"]);
+    expect(server.calls[1]?.body).toEqual({ [p("ParamFilter")]: { name: "alpha" } });
+    expect(server.calls[2]?.url.searchParams.get(p("ParamFilter"))).toBe(JSON.stringify(big));
+  });
+
+  it("follows cursors through POST pages", async () => {
+    const server = fakeServer(({ body }) => {
+      const cursor = (body as Record<string, unknown> | undefined)?.[p("ParamCursor")] ?? "";
+      const exchange = wire.list.find((e) => e.cursor === cursor);
+      return exchange ? json(exchange.response) : json({ code: "E2082", message: "invalid cursor" }, 422);
+    });
+    const items = client(server.fetch).resource<WireItem>("items");
+    const names: string[] = [];
+    for await (const page of items.listAll({ sort: wire.sort, pageSize: wire.page_size }, { method: "POST" })) {
+      names.push(...page.items.map((i) => i.name));
+    }
+    expect(names).toEqual(["alpha", "bravo", "charlie", "delta", "echo"]);
+    expect(server.calls.every((c) => c.method === "POST")).toBe(true);
+  });
+
+  it("honours a configured maxURLLength", async () => {
+    const server = fakeServer(() => json(empty));
+    const items = createClient({ baseURL: "https://api.test", fetch: server.fetch, maxURLLength: 30 }).resource<WireItem>("items");
+    await items.list({ filter: { name: "alpha" } });
+    expect(server.calls[0]?.method).toBe("POST");
+  });
+});
+
 describe("relation filters", () => {
   it("validates a nested filter against the target's Go-emitted schema", async () => {
     const server = fakeServer(({ url }) => {

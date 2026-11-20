@@ -39,3 +39,12 @@ export interface RequestOptions {
   headers?: Record<string, string>;
   signal?: AbortSignal;
 }
+
+/** Options for one list request. */
+export interface ListRequestOptions extends RequestOptions {
+  /** The list's transport: `"GET"` sends its parameters in the query
+   *  string, `"POST"` the same request as a JSON body to the same path.
+   *  Unset, a list is a GET unless its URL would be longer than
+   *  {@link ClientConfig.maxURLLength}. */
+  method?: "GET" | "POST";
+}
