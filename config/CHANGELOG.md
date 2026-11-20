@@ -154,7 +154,7 @@
 
 ### ⚠ BREAKING CHANGES
 
-* **config:** WithFileParser takes the suffix it applies to: WithFileParser(p) becomes WithFileParser("", p) to keep one parser for every file. A .json file is parsed as JSON, not YAML, so a .json file holding YAML now fails; WithFileParser(".json", nil) restores YAML for it.
+* **config:** WithFileParser takes the suffix it applies to. To keep one parser for every file, WithFileParser(p) becomes WithFileParser("", p) together with WithFileParser(".yaml", nil), WithFileParser(".yml", nil) and WithFileParser(".json", nil): WithFileParser("", p) alone sets the parser for files no other suffix matches, and .yaml, .yml and .json files keep their built-in parsers. A .json file is parsed as JSON, not YAML, so a .json file holding YAML now fails; WithFileParser(".json", nil) restores YAML for it.
 
 ### Features
 
