@@ -21,7 +21,8 @@
 //
 // # Tag Resolution Priority
 //
-// Column name: [SQLColumnMapper] → column tag value (default "db") → [NamingConvention] → snake_case.
+// Column name: column tag value (default "db") → [NamingConvention] → snake_case.
+// A [SQLColumnMapper] maps that column to the SQL expression that reads it.
 //
 // Table name: [WithSQLTableName] → [TableConvention] → plural snake_case.
 //
