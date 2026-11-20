@@ -145,11 +145,6 @@ type tenantKeyLabel struct {
 	Label    string `json:"label"     db:"label"     parse:"filter"`
 }
 
-type untenantedDevice struct {
-	ID   int    `json:"id"   db:"id"   parse:"filter,sort"`
-	Name string `json:"name" db:"name" parse:"filter,sort,patch"`
-}
-
 func TestRelate_TenantKeysAgree(t *testing.T) {
 	commands := parse.MustResource[tenantKeyCommand]("commands", parse.TenantColumn("tenant_id"))
 	labels := parse.MustResource[tenantKeyLabel]("labels", parse.TenantColumn("tenant_id"))
@@ -157,7 +152,7 @@ func TestRelate_TenantKeysAgree(t *testing.T) {
 	t.Run("a target holding the tenant as another type is refused", func(t *testing.T) {
 		devices := parse.MustResource[int32TenantDevice]("devices", parse.TenantColumn("tenant_id"))
 		err := devices.Relate("labels", parse.HasMany(labels, "device_id"))
-		assert.ErrorContains(t, err, "tenant column labels.tenant_id is string, but devices.tenant_id is int")
+		assert.ErrorContains(t, err, "tenant columns tenant_id (int) and labels.tenant_id (string) hold different types")
 	})
 
 	t.Run("a policy-scoped target's tenancy is its policy's", func(t *testing.T) {

@@ -35,7 +35,23 @@ commands.MustRelate("device", parse.BelongsTo(devices, "device_id"))
 | `References(column)` | The column a foreign key holds when it is not the referenced resource's key |
 | `Describe(label, description)` | The label and description schema discovery serves for the relation field, as the `label` and `description` tags do for a column |
 
-Related rows are live rows only (the target's `DeletedColumn`) and, unless policy-scoped, rows of the request's tenant (the target's `TenantColumn`). A pair table's `Tenant` column is bound to the request's tenant. One request has one tenant, bound as one type: a target's `TenantColumn` must hold the owner's type (`Relate` refuses a string tenant beside an integer one), and an owner without a tenant column binds its targets' type.
+Related rows are live rows only (the target's `DeletedColumn`) and, unless policy-scoped, rows of the request's tenant (the target's `TenantColumn`). A pair table's `Tenant` column is bound to the request's tenant, as one value with every other tenant column the request reaches ([Tenant key](#tenant-key)).
+
+### Tenant key
+
+One request has one tenant, and every statement binds it as one value: `Scope.Tenant` is checked and normalized once, when the statement is built, against every tenant column the resource reaches. That is its own `TenantColumn`, each relation target's (unless the relation is `PolicyScoped`), and, at any depth, the tenant columns of the targets' own relations, since a relation predicate nests its target's filter with that target's relations (`{"commands":{"$some":{"logs":{"$some":{…}}}}}`). A policy-scoped target's own tenant column is its policy's, but its relations still bind the tenant.
+
+| Tenant columns reached | Bound value | `Scope.Tenant` refused with `ErrTenantInvalid` |
+|---|---|---|
+| Strings only | The text as given | Never |
+| A UUID, alone or beside strings | The UUID's canonical text (lowercase, hyphenated) at every column, so a string column beside a UUID one holds that canonical text | Text that is not a UUID |
+| Integers of any widths and signedness | An `int64` (a `uint64` when every column is unsigned), the decimal digits with an optional minus sign | Text that is not decimal digits, or a value out of range of any reached column's Go kind (`3000000000` beside an `int32` column) |
+| None, or only pair tables | The text as given | Never |
+| A string or UUID beside an integer | — | `Relate` refuses the declaration |
+
+`Relate` refuses a relation that would make any resource reach a string or UUID tenant column and an integer one, whichever declaration comes last: a relation on a target refuses itself when an owner already relating to that target would reach both. A refused relation is not declared, and the graph stays as it was. `Relate` therefore changes the tenant key of every resource that reaches its owner; declare the whole graph before serving.
+
+A pair table's `Tenant` column has no Go type. It holds the request's one tenant in the one type: the type of the typed tenant columns the resource reaches, or the text when it reaches none. An owner without a tenant column whose relations reach an integer tenant column binds an integer to every one of its pair tables, so declare those pair tenant columns with the integer type in the database; to keep a pair table's tenant as text, keep integer tenant columns out of that resource's reach.
 
 ## Filter by related rows
 

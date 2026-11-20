@@ -109,7 +109,7 @@ A server that builds a patch need not encode JSON to parse it back. `MergePatchM
 
 ## Resource updates
 
-`Resource.BuildUpdate(dialect, parsed, target, scope, opts...)` compiles a validated patch into the statement that applies it. The WHERE carries the target (`ByID`, `ByIDs` or `ByFilter`), the tenant floor (`Scope.Tenant`, required on a tenant-scoped resource: `ErrTenantRequired`; bound as the tenant column's type, `ErrTenantInvalid` when it cannot be), live rows only, and `Scope.Policy`. Its placeholders continue after the SET clause's.
+`Resource.BuildUpdate(dialect, parsed, target, scope, opts...)` compiles a validated patch into the statement that applies it. The WHERE carries the target (`ByID`, `ByIDs` or `ByFilter`), the tenant floor (`Scope.Tenant`, required on a tenant-scoped resource: `ErrTenantRequired`; normalized once to the [tenant key](relations.md#tenant-key), `ErrTenantInvalid` when a tenant column the resource reaches cannot hold it), live rows only, and `Scope.Policy`. Its placeholders continue after the SET clause's.
 
 ```go
 plan, err := products.BuildUpdate(filter.PostgresDialect{}, parsed, parse.ByID(id),

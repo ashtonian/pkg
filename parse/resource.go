@@ -25,9 +25,9 @@ type Resource[T any] struct {
 	deleted     string
 	pageSize    int
 	maxPageSize int
-	// tenantKey is the type the scope's tenant binds as; nil when no
-	// statement reaches a typed tenant column.
-	tenantKey *tenantKey
+	// tenantNode holds the tenant key, read from every tenant column the
+	// resource's relations reach (bindTenant).
+	tenantNode *tenantNode
 	// accepted are the query parameters the endpoint reads itself
 	// (AcceptParams).
 	accepted []string
@@ -65,7 +65,8 @@ func PrimaryKey(column string) ResourceOption { return func(c *resourceConfig) {
 // TenantColumn names the column that holds a row's tenant. Every list is then
 // held to Scope.Tenant, and so are tenant-scoped relation junctions. The
 // column's field is a string, a UUID or an integer; Scope.Tenant is
-// normalized to it.
+// normalized to it, and to every tenant column the resource's relations
+// reach (Relate).
 func TenantColumn(column string) ResourceOption {
 	return func(c *resourceConfig) { c.tenant = column }
 }
@@ -156,9 +157,9 @@ func NewResource[T any](table string, opts ...ResourceOption) (*Resource[T], err
 	}
 	p.filterSchema.SystemFields = systemFields(table, cfg, columns)
 	p.filterSchema.PrimaryKey = cfg.pk
-	var tenant *tenantKey
+	var tenant *tenantColumn
 	if cfg.tenant != "" {
-		if tenant, err = newTenantKey(table, cfg.tenant, columns[cfg.tenant]); err != nil {
+		if tenant, err = newTenantColumn(table, cfg.tenant, columns[cfg.tenant]); err != nil {
 			return nil, fmt.Errorf("parse: %s: %w", table, err)
 		}
 	}
@@ -171,7 +172,7 @@ func NewResource[T any](table string, opts ...ResourceOption) (*Resource[T], err
 		deleted:      cfg.deleted,
 		pageSize:     cfg.pageSize,
 		maxPageSize:  cfg.maxPage,
-		tenantKey:    tenant,
+		tenantNode:   newTenantNode(table, tenant),
 		accepted:     slices.Clone(cfg.accepted),
 		tableColumns: columns,
 		columnFields: fieldsByColumn,

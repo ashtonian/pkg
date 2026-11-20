@@ -20,7 +20,7 @@ type RelatedResource interface {
 	DeletedColumnName() string
 	FilterSchema() *filter.ResourceSchema
 	columnType(name string) (reflect.Type, bool)
-	ownTenantKey() *tenantKey
+	tenantGraph() *tenantNode
 }
 
 func (r *Resource[T]) columnType(name string) (reflect.Type, bool) {
@@ -129,9 +129,12 @@ func Describe(label, description string) RelationOption {
 
 // Relate declares a relation named name on r: requests filter by it with
 // the target's own filter (`$some`, `$none`, `$is`, `$is_not`) or by the
-// target's key. Columns are checked against both resources' types. Declare
-// every relation before the resources serve requests; Relate is not safe
-// for concurrent use with them.
+// target's key. Columns are checked against both resources' types, and the
+// tenant columns r and every resource relating to it then reach, at any
+// depth, against each other: one request binds one tenant to all of them.
+// Declare every relation before the resources serve requests; Relate
+// changes the tenant key of every resource that reaches r, so it is not safe
+// for concurrent use with any of them.
 func (r *Resource[T]) Relate(name string, rel Relation) error {
 	if !core.IsIdentifier(name) {
 		return fmt.Errorf("parse: %s: relation name %q is not an identifier", r.table, name)
@@ -164,11 +167,12 @@ func (r *Resource[T]) Relate(name string, rel Relation) error {
 			return fmt.Errorf("parse: %s: relation %q: the pair table's tenant cannot be taken from the owner or the target", r.table, name)
 		}
 	}
-	tenant, err := r.relationTenantKey(name, rel)
-	if err != nil {
-		return err
-	}
 	t := rel.target
+	// The last check: past it nothing fails, so the graph never holds a
+	// relation the resource does not declare.
+	if err := r.tenantNode.relate(t.tenantGraph(), rel.policy); err != nil {
+		return fmt.Errorf("parse: %s: relation %q: %w", r.table, name, err)
+	}
 	keyType, _ := t.columnType(t.PrimaryKeyColumn())
 	key := core.TypeOf(keyType)
 	ops := []filter.FilterOperator{filter.OpEq, filter.OpNe, filter.OpIn, filter.OpNin, filter.OpNull, filter.OpNotNull, filter.OpSome, filter.OpNone}
@@ -194,27 +198,7 @@ func (r *Resource[T]) Relate(name string, rel Relation) error {
 		r.patchSchema.AllowedPaths[core.FormatPointer(name)] = path
 		r.serverPatchSchema.AllowedPaths[core.FormatPointer(name)] = path
 	}
-	r.tenantKey = tenant
 	return nil
-}
-
-// relationTenantKey is the resource's tenant key once rel is declared. A
-// target that holds its rows' tenant binds the request's tenant as the owner
-// does, so its tenant column must hold the owner's type; an owner without a
-// tenant column takes its first such target's. A policy-scoped target's rows
-// are the policy's, not the tenant's.
-func (r *Resource[T]) relationTenantKey(name string, rel Relation) (*tenantKey, error) {
-	target := rel.target.ownTenantKey()
-	switch {
-	case target == nil || rel.policy:
-		return r.tenantKey, nil
-	case r.tenantKey == nil:
-		return target, nil
-	case !r.tenantKey.agrees(target):
-		return nil, fmt.Errorf("parse: %s: relation %q: tenant column %s is %s, but %s is %s; one request's tenant binds to both",
-			r.table, name, target.column, target.info.Type, r.tenantKey.column, r.tenantKey.info.Type)
-	}
-	return r.tenantKey, nil
 }
 
 // correlationField is the owner's field for column: its system field, a

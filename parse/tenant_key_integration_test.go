@@ -143,18 +143,8 @@ func runIntegerTenantKeys(t *testing.T, db *sql.DB, d parse.Dialect) {
 	})
 }
 
-func asInt64(t *testing.T, v any) int64 {
-	t.Helper()
-	switch n := v.(type) {
-	case int64:
-		return n
-	case int32:
-		return int64(n)
-	case int:
-		return int64(n)
-	}
-	require.Fail(t, fmt.Sprintf("not an integer: %T %v", v, v))
-	return 0
+func TestTenantKeyGraph_Postgres(t *testing.T) {
+	runTenantKeyGraph(t, func(t *testing.T) *sql.DB { return dbtest.Postgres(t) }, filter.PostgresDialect{}, "UUID")
 }
 
 func normalizeInts(t *testing.T, rows [][]any) [][]any {

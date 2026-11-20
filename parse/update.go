@@ -127,8 +127,9 @@ func (p *UpdatePlan) HasRelations() bool { return len(p.relations) > 0 }
 // under scope s: the patch's SET clause, then a WHERE of the target, the
 // tenant floor, live rows only and s.Policy, then RETURNING the resource's
 // Columns; SkipUnchanged also ANDs the patch's change predicate into the
-// WHERE. A tenant-scoped resource needs s.Tenant (ErrTenantRequired); a zero
-// Target is ErrNoTarget; Governance or IncludeDeleted is ErrUpdateScope.
+// WHERE. A tenant-scoped resource needs s.Tenant (ErrTenantRequired), which
+// every tenant column it reaches must hold (ErrTenantInvalid); a zero Target
+// is ErrNoTarget; Governance or IncludeDeleted is ErrUpdateScope.
 func (r *Resource[T]) BuildUpdate(d Dialect, p *patch.ParsedPatch, target Target, s Scope, opts ...UpdateOption) (*UpdatePlan, error) {
 	if target.empty() {
 		return nil, fmt.Errorf("%s: %w", r.table, ErrNoTarget)
@@ -148,7 +149,7 @@ func (r *Resource[T]) BuildUpdate(d Dialect, p *patch.ParsedPatch, target Target
 		return nil, err
 	}
 
-	tenant, err := r.scopeTenant(s.Tenant)
+	tenant, err := r.bindTenant(s.Tenant)
 	if err != nil {
 		return nil, err
 	}
@@ -235,7 +236,7 @@ func (r *Resource[T]) rowKey(row T) (any, error) {
 // updateWhere is the WHERE every update statement carries, its placeholders
 // after the SET clause's offset ones.
 func (r *Resource[T]) updateWhere(d filter.Dialect, target Target, s Scope, offset int) (string, []any, error) {
-	tenant, err := r.scopeTenant(s.Tenant)
+	tenant, err := r.bindTenant(s.Tenant)
 	if err != nil {
 		return "", nil, err
 	}

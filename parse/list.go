@@ -237,9 +237,10 @@ func listParamError(param, msg string) *core.ParseError {
 type Scope struct {
 	// Tenant holds rows, and tenant-scoped relation junctions, to one tenant.
 	// Required for a resource with a tenant column. It is the tenant key's
-	// text, normalized to the tenant column's type: the key of a string
-	// column, a UUID, or an integer's decimal digits ("44"). Text the type
-	// cannot hold is ErrTenantInvalid.
+	// text, normalized once to the type of every tenant column the resource
+	// reaches: the key of a string column, a UUID's canonical text, or an
+	// integer's decimal digits ("44"). Text one of them cannot hold is
+	// ErrTenantInvalid.
 	Tenant string
 	// Governance, when set, replaces the tenant floor: it decides tenancy
 	// itself, grants included (filter.ComposeConstraints).
@@ -303,10 +304,7 @@ func (r *Resource[T]) BuildList(d filter.Dialect, req *ListRequest, s Scope) (*L
 	if req == nil {
 		req = &ListRequest{}
 	}
-	if r.tenant != "" && s.Tenant == "" {
-		return nil, fmt.Errorf("%s: %w", r.table, ErrTenantRequired)
-	}
-	tenant, err := r.scopeTenant(s.Tenant)
+	tenant, err := r.bindTenant(s.Tenant)
 	if err != nil {
 		return nil, err
 	}
