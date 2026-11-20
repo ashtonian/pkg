@@ -9,6 +9,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 )
 
@@ -451,6 +452,66 @@ func TestReloader_Start_ContextCancel(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("Start did not return after context cancellation")
 	}
+}
+
+// A Run called while another runs is refused and arms nothing: one poll
+// interval reloads once, where a second loop's own ticker would reload again.
+// After the first Run returns, another may start.
+func TestReloader_SecondRunIsRefused(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		reloads := make(chan ReloadEvent[reloaderCfg], 4)
+		r, err := NewReloader[reloaderCfg](t.Context(), []Option{WithSkipValidation()},
+			WithPollInterval(time.Minute),
+			WithOnReloadSuccess(func(_ context.Context, ev ReloadEvent[reloaderCfg]) { reloads <- ev }))
+		if err != nil {
+			t.Fatalf("NewReloader: %v", err)
+		}
+		t.Cleanup(func() {
+			if err := r.Stop(context.Background()); err != nil {
+				t.Errorf("Stop: %v", err)
+			}
+		})
+		ctx, cancel := context.WithCancel(context.Background())
+		first := make(chan error, 1)
+		go func() { first <- r.Run(ctx) }()
+		synctest.Wait()
+
+		second := make(chan error, 1)
+		go func() { second <- r.Run(context.Background()) }()
+		synctest.Wait()
+		select {
+		case err := <-second:
+			if !errors.Is(err, ErrReloaderRunning) {
+				t.Fatalf("second Run = %v, want ErrReloaderRunning", err)
+			}
+		default:
+			t.Fatal("a second Run serves alongside the first")
+		}
+		if errors.Is(ErrReloaderRunning, ErrReload) {
+			t.Error("ErrReloaderRunning must not read as a reload failure")
+		}
+		<-reloads
+		synctest.Wait()
+		if s := r.Stats(); s.Attempts != 1 {
+			t.Fatalf("one poll interval reloaded %d times, want 1", s.Attempts)
+		}
+
+		cancel()
+		if err := <-first; !errors.Is(err, context.Canceled) {
+			t.Fatalf("first Run = %v, want context.Canceled", err)
+		}
+		next := make(chan error, 1)
+		go func() { next <- r.Run(context.Background()) }()
+		if ev := <-reloads; ev.Trigger != TriggerPoll {
+			t.Fatalf("the next Run's reload was triggered by %s, want %s", ev.Trigger, TriggerPoll)
+		}
+		if err := r.Stop(context.Background()); err != nil {
+			t.Fatalf("Stop: %v", err)
+		}
+		if err := <-next; err != nil {
+			t.Fatalf("next Run = %v, want nil after Stop", err)
+		}
+	})
 }
 
 // --- Concurrent Reload Tests ---

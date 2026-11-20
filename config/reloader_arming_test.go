@@ -54,10 +54,10 @@ func TestArm_StartServesWhatArmSetUp(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	armed := func() (*triggers, int32) {
+	armed := func() (*triggers, bool) {
 		r.armSem <- struct{}{}
 		defer func() { <-r.armSem }()
-		return r.armed, r.serving.Load()
+		return r.armed, r.running.Load()
 	}
 
 	armReloader(t, r)
@@ -68,10 +68,10 @@ func TestArm_StartServesWhatArmSetUp(t *testing.T) {
 	}
 
 	runReloader(t, r)
-	eventually(t, func() bool { tr, serving := armed(); return tr == nil && serving == 1 }, "Start to take the armed triggers")
+	eventually(t, func() bool { tr, running := armed(); return tr == nil && running }, "Start to take the armed triggers")
 	armReloader(t, r)
-	if tr, serving := armed(); tr != nil || serving != 1 {
-		t.Fatalf("Arm while Start serves set up triggers no Start serves (armed %v, serving %d)", tr != nil, serving)
+	if tr, running := armed(); tr != nil || !running {
+		t.Fatalf("Arm while Start serves set up triggers no Start serves (armed %v, running %v)", tr != nil, running)
 	}
 }
 

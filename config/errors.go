@@ -50,6 +50,9 @@ var (
 	ErrReloadInProgress = errors.New("configuration reload already in progress")
 	// ErrReloaderStopped reports a call after Stop. It does NOT wrap ErrReload.
 	ErrReloaderStopped = errors.New("configuration reloader is stopped")
+	// ErrReloaderRunning reports a Run called while another Run of the same
+	// Reloader runs. It does NOT wrap ErrReload.
+	ErrReloaderRunning = errors.New("configuration reloader is already running")
 	// ErrSchema reports a config type the package cannot address: a struct
 	// key holding a character keys use for structure (".", "[", "]", "*", a
 	// backslash, a quote or a control character), two fields with one key, a
