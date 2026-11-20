@@ -19,7 +19,7 @@ A list endpoint built on this package reads the `filter.Param*` query parameters
 | `fields` | `ParamFields` | Response field mask |
 | `include` | `ParamInclude` | Relation fields whose related IDs the page carries in `_relations` |
 
-Lists answer with `filter.Page[T]`: `{"items": […], "page_info": {"has_next_page", "has_prev_page", "start_cursor", "end_cursor", "total_count"}, "_relations": {…}}`. Errors answer `{"code", "message", "details"}`.
+Lists answer with `filter.Page[T]`: `{"items": […], "page_info": {"has_next_page", "has_prev_page", "start_cursor", "end_cursor", "total_count"}, "_relations": {…}}`. Errors answer `{"code", "message", "details"}`, or an RFC 9457 problem document ([below](#rfc-9457-problem-details)).
 
 ## Handler responsibilities
 
@@ -45,6 +45,21 @@ Use `errors.As` to extract `*core.ParseError` through wrapping. Its `ErrorHTTPSt
 Patch validation can return joined parse errors. `errors.As` returns the first; applications needing all failures traverse the joined errors. Declared enum/bounds failures expose `core.ConstraintError{Constraint, Limit}` through each E2077's cause; [patch validation](patches.md#validation) defines the vocabulary and ordering. The application still owns its HTTP envelope and any translation of these typed causes into client details.
 
 `errors.Is(err, filter.ECodeUnknownField)` matches a specific code through wrapping. `parse.Codes()` returns the distinct `parse.Code` values; each provides its wire string, default message and HTTP status. The package imports no application error catalog. Consumers can map these values when registering their own catalog.
+
+### RFC 9457 problem details
+
+The TypeScript SDK also reads RFC 9457 problem documents (`application/problem+json`), so a server whose envelope is one keeps parse's codes and per-member failures by mapping a `*core.ParseError` onto it:
+
+| Problem member | From |
+|---|---|
+| `status` | `ErrorHTTPStatus()` |
+| `detail` | `Message` |
+| `code` (extension) | `Code` |
+| `errors` (extension) | One `{"pointer": Path, "detail": Message, "code": Code}` per joined patch failure; `Path` is the member's JSON Pointer |
+
+`type` names the server's own problem type; `about:blank`, with `title` set to the status phrase, is valid when it has none. The SDK takes `ApiError.code` from the `code` extension, else from `type`, and `ApiError.errors` from the `errors` entries ([client errors](../sdk/ts/README.md#errors)).
+
+`parsehttp` writes only parse's `{code, message, details}` body, for servers that have no envelope. A server that answers RFC 9457 has a problem writer for all its errors, not only parse's: authentication, not-found and internal failures share its `type` URIs, `instance` and extension members. Parse errors go through that writer with the mapping above, so a parse-specific problem writer would answer in a second, inconsistent dialect.
 
 ## Error codes
 
