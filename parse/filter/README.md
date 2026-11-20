@@ -57,6 +57,7 @@ Start with the [runnable package example](../README.md#quick-start). The focused
 | `include_resolve.go` | `ResolveInclude`, `IncludeLookup`, `IncludePair` — tenant- and policy-scoped projections outside SQL, distinct keys ordered before the per-owner cap |
 | `include.go` | `include` relation projections — `ParseIncludes` / `ParseIncludeNames`, per-owner-capped `BuildIncludeQuery`, `IncludeQuery.Scan`, `Page.SetInclude` |
 | `policy.go` | Policy constraints |
+| `policy_fields.go` | Policy field names: `ResourceSchema.PolicyField`, the generated `PolicyFields` index, `ErrAmbiguousPolicyField` and fields kept with their typing error |
 | `queryparam.go` | Flat query parameters — `QueryParamParser` (`QueryParamAccept`, `QueryParamLenient`, `QueryParamFieldsOnly`), `IsListParam` |
 | `params.go` | `Param*` list request parameters |
 | `geo.go` | Geo types, validation, tag parsing, WKT |
