@@ -121,8 +121,11 @@ func constraintToNode(norm *FilterParser, schema *ResourceSchema, c *PolicyConst
 		return node, nil
 	}
 
-	field := lookupField(schema, c.Field)
-	if field == nil {
+	field, ok, err := schema.PolicyField(c.Field)
+	if err != nil {
+		return nil, err
+	}
+	if !ok {
 		return nil, &core.ParseError{
 			Kind:    core.ParseErrorKindFilter,
 			Code:    ECodeUnknownField.String(),
@@ -171,21 +174,6 @@ func UnknownConstraint() *PolicyConstraint {
 
 func unknownNode() *FilterNode {
 	return &FilterNode{Op: OpRawSQL, RawSQL: unknownSQL}
-}
-
-// lookupField resolves a policy constraint's field: a system field, a
-// request field, or a column only policies reach (PolicyFields).
-func lookupField(schema *ResourceSchema, name string) *FieldSchema {
-	if f, ok := schema.SystemFields[name]; ok {
-		return f
-	}
-	if f, ok := schema.Fields[name]; ok {
-		return f
-	}
-	if f, ok := schema.PolicyFields[name]; ok {
-		return f
-	}
-	return nil
 }
 
 // policyValue returns the operator and canonical value a constraint compiles

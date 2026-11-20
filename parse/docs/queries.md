@@ -181,6 +181,18 @@ A list endpoint declares its resource once — `parse.NewResource[T](table, Prim
 2. `BuildList(dialect, req, parse.Scope{Tenant, Governance, Policy, IncludeDeleted})` compiles it under the server's decisions: the tenant floor (or governance in its place), soft-delete masking unless `IncludeDeleted`, and the policy, ANDed with the request; the key as the final keyset column; the count and facets when asked. A tenant-scoped resource without `Scope.Tenant` is `ErrTenantRequired`. The `*ListPlan` holds `Page` (the full `SELECT` of the resource's `Columns`), `Fragment` (its `WHERE … ORDER BY … LIMIT` alone, for a caller's own projection with `Page.Args`), `Count`, `Facets`, `Include` and `Keyset`.
 3. `Page(rows, plan)` (or `PagePointers`) builds the page from the fetched rows. `IncludeQueries(plan, keys)` returns the include statements for the page's keys (`Key(row)`), tenant-scoped as the list was; read each one's rows with its `Scan` into `Page.Relations` (and `Page.Truncated` for owners cut at the cap).
 
+### Policy fields
+
+A server policy (`Scope.Policy`, `Scope.Governance`, `Scope.Related`, `ListPolicy`) can name fields a request cannot. A constraint's `Field` that names a system field, the key, tenant or soft-delete column the resource declares, resolves to it. Any other name must designate exactly one of:
+
+- a request field (`parse:"filter"`), by its name;
+- a field without the filter capability, by its external name;
+- any field with a column, by that column, hidden fields (`json:"-"`) and request fields included.
+
+A relation field has no column, and neither has a field whose column tag is `-`. Requests still reach only request fields, and the schema document advertises nothing more. A policy's operator must apply to the field's type, but need not be one of its request operators.
+
+A name that designates more than one field is refused with `filter.ErrAmbiguousPolicyField` whichever field is declared first, and the error names each field and column. Such a name is one field's name and another field's column (a visible `region` stored in `region_code` beside a hidden field stored in `region`), the name of two fields, or a column two fields hold that is neither's name. Each of those fields stays reachable by its other name (`region_code` above), if it has one. A field whose type a filter field could not take (a `storage` tag on an array, a malformed `geo` tag) does not stop the resource from building; a policy that names it returns that field's error. A name no field has is E2071. `ResourceSchema.PolicyField(name)` resolves a name as a policy does, so a server can check its policies' fields at startup, and `Relate` refuses a relation name a policy already resolves.
+
 Underneath, `NewListQuery(filterSchema, sortSchema, dialect).Build(opts...)` returns a `*ListResult`:
 
 | Field | Content |
@@ -225,7 +237,7 @@ A `parse.Resource` declares its primary key once with `parse.PrimaryKey` (defaul
 | `ListWithCount(b)` | bool | `false` | Build `CountSQL` |
 | `ListFacets(fields...)` | `...string` | none | Build the facet query |
 | `ListSearch(q)` | string | none | Full-text predicate (WHERE only, order unchanged) |
-| `ListPolicy(pc)` | `*PolicyConstraints` | none | Server-side constraints ANDed with the filter. A constraint names any column of the resource, by external name or column, including hidden fields and fields without `filter`: requests still reach only `parse:"filter"` fields, and the schema document advertises nothing more. Its operator must apply to the field's type; a name no column has is E2071 |
+| `ListPolicy(pc)` | `*PolicyConstraints` | none | Server-side constraints ANDed with the filter; each names a [policy field](#policy-fields) |
 | `ListTenant(v)` | any | none | Tenant for tenant-scoped relation junctions (filter, count, facets) |
 | `ListUnscopedRelations()` | — | off | Build tenant-scoped junctions without a tenant — platform tooling only |
 | `ListStartParam(n)` | int | `0` | Offset the main fragment after `n` earlier arguments; standalone count/facet statements keep independent numbering |
