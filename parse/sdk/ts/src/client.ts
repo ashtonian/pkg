@@ -125,10 +125,18 @@ export interface ClientConfig {
    *  is enforced via `AbortSignal.timeout()` and combined with any
    *  caller-provided signal so whichever fires first wins. */
   timeout?: number;
-  /** The longest list URL sent as a GET, in characters. A list whose URL
-   *  would be longer is sent as a POST body to the same path, since proxies
-   *  and load balancers in front of a server cap URL length (8 KB is
-   *  common) below what a filter may hold. Defaults to 2000. */
+  /** Opts `list` and `listAll` into the POST body transport: the longest
+   *  list URL sent as a GET, in characters, past which the same request is
+   *  sent as a JSON body in a POST to the same path. Proxies and load
+   *  balancers in front of a server cap URL length (8 KB is common) below
+   *  what a filter may hold. Unset, every list is a GET unless a call passes
+   *  `{ method: "POST" }`.
+   *
+   *  Set it only once the server routes POST lists to the collection path,
+   *  through Go `parsehttp.ParseList` or `Resource.ParseListPost`: a server
+   *  without that route answers 405, or hands the list to its create
+   *  handler. `facets` and `patchMany` always send in the URL. Must be a
+   *  positive integer. */
   maxURLLength?: number;
 }
 
@@ -145,12 +153,15 @@ export interface Resource<T> {
   /**
    * Fetch a filtered, sorted, paginated list with optional facets and count.
    * When `validateBeforeSend` is enabled, validates filter and sort against the schema.
+   * A GET, unless `reqOpts.method` or {@link ClientConfig.maxURLLength}
+   * selects the POST body transport.
    */
   list(opts?: ListOptions<T>, reqOpts?: ListRequestOptions): Promise<ListResult<T>>;
 
   /**
    * Auto-paginate through all pages. Yields one {@link ListResult} per page.
-   * Follows cursors automatically until no more pages.
+   * Follows cursors automatically until no more pages. Each page takes the
+   * transport {@link Resource.list} would.
    */
   listAll(opts?: Omit<ListOptions<T>, "cursor">, reqOpts?: ListRequestOptions): AsyncIterableIterator<ListResult<T>>;
 
@@ -160,12 +171,19 @@ export interface Resource<T> {
    */
   patch(id: string, input: PatchInput<T>, reqOpts?: RequestOptions): Promise<PatchResult<T>>;
 
-  /** Apply one JSON Merge Patch to several resources (`PATCH ?id[]=…`). */
+  /**
+   * Apply one JSON Merge Patch to several resources (`PATCH ?id[]=…`). The
+   * ids always travel in the URL: {@link ClientConfig.maxURLLength} does
+   * not apply, and the server contract has no body form for them.
+   */
   patchMany(ids: string[], input: PatchInput<T>, reqOpts?: RequestOptions): Promise<PatchResult<T>>;
 
   /**
    * Facet counts for facetable fields, optionally under a filter
-   * (`OPTIONS ?facets=`).
+   * (`OPTIONS ?facets=`). The filter always travels in the URL:
+   * {@link ClientConfig.maxURLLength} does not apply. For counts under a
+   * filter too large for a URL, ask {@link Resource.list} for `facets`
+   * over POST; a page carries the counts of the whole matched population.
    */
   facets(fields: (keyof T & string)[], opts?: FacetOptions<T>, reqOpts?: RequestOptions): Promise<FacetResult>;
 
@@ -208,7 +226,12 @@ export function createClient(cfg: ClientConfig): Client {
   const schemaPath = cfg.schemaPath ?? "api";
   const validate = cfg.validateBeforeSend ?? false;
   const timeoutMs = cfg.timeout ?? 30_000;
-  const maxURLLength = cfg.maxURLLength ?? 2000;
+  const maxURLLength = cfg.maxURLLength;
+  // NaN or Infinity would silently keep every list a GET, and zero or less
+  // silently send every list as a POST.
+  if (maxURLLength !== undefined && !(Number.isSafeInteger(maxURLLength) && maxURLLength > 0)) {
+    throw new RangeError(`maxURLLength must be a positive integer, got ${String(maxURLLength)}`);
+  }
 
   function mergeHeaders(extra?: Record<string, string>): Record<string, string> {
     return { "Content-Type": "application/json", Accept: "application/json", ...cfg.headers, ...extra };
@@ -314,7 +337,8 @@ export function createClient(cfg: ClientConfig): Client {
             }
           }
           const target = `${path}${buildListQuery(opts)}`;
-          const method = reqOpts?.method ?? (`${cfg.baseURL}/${target}`.length > maxURLLength ? "POST" : "GET");
+          const tooLong = maxURLLength !== undefined && `${cfg.baseURL}/${target}`.length > maxURLLength;
+          const method = reqOpts?.method ?? (tooLong ? "POST" : "GET");
           if (method === "POST") {
             return request<ListResult<T>>("POST", path, buildListBody(opts), reqOpts);
           }

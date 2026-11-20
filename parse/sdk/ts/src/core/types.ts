@@ -43,8 +43,10 @@ export interface RequestOptions {
 /** Options for one list request. */
 export interface ListRequestOptions extends RequestOptions {
   /** The list's transport: `"GET"` sends its parameters in the query
-   *  string, `"POST"` the same request as a JSON body to the same path.
-   *  Unset, a list is a GET unless its URL would be longer than
-   *  {@link ClientConfig.maxURLLength}. */
+   *  string, `"POST"` the same request as a JSON body to the same path,
+   *  which the server must route to its list handler (Go
+   *  `parsehttp.ParseList` or `Resource.ParseListPost`). Unset, a list is a
+   *  GET unless `ClientConfig.maxURLLength` is set and its URL would be
+   *  longer. */
   method?: "GET" | "POST";
 }

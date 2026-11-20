@@ -140,10 +140,28 @@ describe("list transport", () => {
   const empty = { items: [], page_info: { has_next_page: false, has_prev_page: false } };
   const p = (name: string): string => wire.params[name] ?? `missing ${name}`;
   const big = { name: { $in: Array.from({ length: 200 }, (_, i) => `name-${String(i).padStart(4, "0")}`) } };
+  const withMaxURLLength = (fetchFn: typeof globalThis.fetch, maxURLLength: number) =>
+    createClient({ baseURL: "https://api.test", fetch: fetchFn, maxURLLength });
 
-  it("sends a list too long for a URL as a POST body with the same members", async () => {
+  // A server without a POST list route answers 405, or hands the body to its
+  // create handler, so the body transport is the caller's to switch on.
+  it("keeps every list a GET, however long, unless maxURLLength is configured", async () => {
     const server = fakeServer(() => json(empty));
-    await client(server.fetch).resource<WireItem>("items").list({
+    const items = client(server.fetch).resource<WireItem>("items");
+    const huge = { name: { $in: Array.from({ length: 1000 }, (_, i) => `name-${String(i).padStart(4, "0")}`) } };
+    await items.list({ filter: huge });
+    for await (const page of items.listAll({ filter: huge })) {
+      expect(page.items).toEqual([]);
+    }
+    expect(server.calls.map((c) => c.method)).toEqual(["GET", "GET"]);
+    const first = server.calls[0];
+    expect(first?.url.searchParams.get(p("ParamFilter"))).toBe(JSON.stringify(huge));
+    expect(first?.url.href.length).toBeGreaterThan(16 << 10);
+  });
+
+  it("sends a list past a configured maxURLLength as a POST body with the same members", async () => {
+    const server = fakeServer(() => json(empty));
+    await withMaxURLLength(server.fetch, 2000).resource<WireItem>("items").list({
       filter: big,
       sort: "-name",
       cursor: "c1",
@@ -172,15 +190,30 @@ describe("list transport", () => {
     });
   });
 
-  it("keeps a short list a GET, and method forces either transport", async () => {
+  it("keeps a list a GET up to a configured maxURLLength and a POST past it", async () => {
     const server = fakeServer(() => json(empty));
-    const items = client(server.fetch).resource<WireItem>("items");
-    await items.list({ filter: { name: "alpha" } });
-    await items.list({ filter: { name: "alpha" } }, { method: "POST" });
-    await items.list({ filter: big }, { method: "GET" });
-    expect(server.calls.map((c) => c.method)).toEqual(["GET", "POST", "GET"]);
-    expect(server.calls[1]?.body).toEqual({ [p("ParamFilter")]: { name: "alpha" } });
-    expect(server.calls[2]?.url.searchParams.get(p("ParamFilter"))).toBe(JSON.stringify(big));
+    const opts = { filter: { name: "alpha" } };
+    await client(server.fetch).resource<WireItem>("items").list(opts);
+    const length = server.calls[0]?.url.href.length ?? 0;
+    expect(length).toBeGreaterThan(0);
+    await withMaxURLLength(server.fetch, length).resource<WireItem>("items").list(opts);
+    await withMaxURLLength(server.fetch, length - 1).resource<WireItem>("items").list(opts);
+    expect(server.calls.map((c) => c.method)).toEqual(["GET", "GET", "POST"]);
+  });
+
+  it("lets method force either transport", async () => {
+    const server = fakeServer(() => json(empty));
+    await client(server.fetch).resource<WireItem>("items").list({ filter: { name: "alpha" } }, { method: "POST" });
+    await withMaxURLLength(server.fetch, 2000).resource<WireItem>("items").list({ filter: big }, { method: "GET" });
+    expect(server.calls.map((c) => c.method)).toEqual(["POST", "GET"]);
+    expect(server.calls[0]?.body).toEqual({ [p("ParamFilter")]: { name: "alpha" } });
+    expect(server.calls[1]?.url.searchParams.get(p("ParamFilter"))).toBe(JSON.stringify(big));
+  });
+
+  it("refuses a maxURLLength that is not a positive integer", () => {
+    for (const maxURLLength of [0, -1, 1.5, Number.NaN, Number.POSITIVE_INFINITY]) {
+      expect(() => createClient({ baseURL: "https://api.test", maxURLLength }), String(maxURLLength)).toThrow(RangeError);
+    }
   });
 
   it("follows cursors through POST pages", async () => {
@@ -198,11 +231,16 @@ describe("list transport", () => {
     expect(server.calls.every((c) => c.method === "POST")).toBe(true);
   });
 
-  it("honours a configured maxURLLength", async () => {
-    const server = fakeServer(() => json(empty));
-    const items = createClient({ baseURL: "https://api.test", fetch: server.fetch, maxURLLength: 30 }).resource<WireItem>("items");
-    await items.list({ filter: { name: "alpha" } });
-    expect(server.calls[0]?.method).toBe("POST");
+  // The body transport is list's alone: the server contract has no body form
+  // for a facet request or a patch's ids.
+  it("sends facets and patchMany in the URL whatever maxURLLength", async () => {
+    const server = fakeServer(() => json({ facets: {}, updated: [] }));
+    const items = withMaxURLLength(server.fetch, 30).resource<WireItem>("items");
+    await items.facets(["name"], { filter: big });
+    await items.patchMany(["a", "b"], { name: "bravo" });
+    expect(server.calls.map((c) => c.method)).toEqual(["OPTIONS", "PATCH"]);
+    expect(server.calls[0]?.url.searchParams.get(p("ParamFilter"))).toBe(JSON.stringify(big));
+    expect(server.calls[1]?.url.searchParams.getAll("id[]")).toEqual(["a", "b"]);
   });
 
   // The Go side (TestFilterConformance_ThroughBothListTransports) holds that
