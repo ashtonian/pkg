@@ -152,10 +152,8 @@ func (r *Resource[T]) Relate(name string, rel Relation) error {
 	if err != nil {
 		return err
 	}
-	// A relation correlates on stored columns: a computed one (ReadExpr) is
-	// no column the related rows' subquery can compare with.
 	if r.computed(rs.PrimaryKey) {
-		return fmt.Errorf("parse: %s: relation %q correlates on computed column %q", r.table, name, rs.PrimaryKey)
+		return computedCorrelation(r.table, name, rs.PrimaryKey)
 	}
 	if rel.kind != core.ManyToMany && rel.target.computed(rs.SourceColumn) {
 		return fmt.Errorf("parse: %s: relation %q correlates on %s's computed column %q", r.table, name, rel.target.Table(), rs.SourceColumn)

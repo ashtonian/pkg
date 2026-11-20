@@ -105,6 +105,13 @@ func (c *computedColumns) writeError(column, how string) error {
 	return c.errorf(column, "%s; an update writes the table's own columns", how)
 }
 
+// computedCorrelation refuses a relation, declared by Relate or a relation
+// tag, that correlates on a computed column: the related rows' subquery
+// compares a stored column with it.
+func computedCorrelation(table, relation, column string) error {
+	return fmt.Errorf("parse: %s: relation %q correlates on computed column %q", table, relation, column)
+}
+
 func (c *computedColumns) has(column string) bool {
 	if c == nil {
 		return false

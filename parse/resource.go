@@ -217,6 +217,9 @@ func NewResource[T any](table string, opts ...ResourceOption) (*Resource[T], err
 			if _, ok := columns[f.Relation.PrimaryKey]; !ok {
 				return nil, fmt.Errorf("parse: %s: relation %q correlates on %q, which is not a column of %s", table, f.ExternalName, f.Relation.PrimaryKey, reflect.TypeFor[T]())
 			}
+			if r.computed(f.Relation.PrimaryKey) {
+				return nil, computedCorrelation(table, f.ExternalName, f.Relation.PrimaryKey)
+			}
 			f.RelatedBy = r.correlationField(f.Relation.PrimaryKey)
 		}
 	}

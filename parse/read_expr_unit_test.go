@@ -231,6 +231,16 @@ func TestReadExpr_Refusals(t *testing.T) {
 	accounts := newComputedAccounts(groupIDsExpr)
 	err = accounts.Relate("memberships", parse.HasMany(memberships, "account_id"))
 	assert.ErrorContains(t, err, `correlates on memberships's computed column "account_id"`)
+
+	type labelledAccount struct {
+		ID       int     `json:"id"        db:"id"`
+		OwnerKey int     `json:"owner_key" db:"owner_key"`
+		Labels   []int64 `json:"labels"    db:"-" parse:"filter" relation:"account_labels,account_key,label_id,owner_key"`
+	}
+	_, err = parse.NewResource[labelledAccount]("accounts")
+	require.NoError(t, err)
+	_, err = parse.NewResource[labelledAccount]("accounts", parse.ReadExpr("owner_key", parse.SQL("accounts.id * 10")))
+	assert.ErrorContains(t, err, `parse: accounts: relation "labels" correlates on computed column "owner_key"`, "a relation tag as Relate")
 }
 
 // A relation's filter compiles for its owner's dialect, which resolves only
