@@ -4,6 +4,7 @@ package parse_test
 
 import (
 	"net/url"
+	"slices"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -75,6 +76,37 @@ func TestPolicy_ServerFieldsKeepTheirTypes(t *testing.T) {
 
 	_, err = docs.BuildList(filter.PostgresDialect{}, nil, policyOn(&filter.PolicyConstraint{Field: "owner", Operator: filter.OpEq, Value: 7}))
 	assert.ErrorIs(t, err, filter.ECodeUnknownField, "a name no column has still fails closed")
+}
+
+// serverFieldRows are serverFieldFixture's rows as a memory backend holds
+// them, by column.
+var serverFieldRows = []map[string]any{
+	{"id": 1, "owner_id": 7, "region_code": "eu", "title": "alpha", "folder_id": 1},
+	{"id": 2, "owner_id": 7, "region_code": "us", "title": "beta", "folder_id": 1},
+	{"id": 3, "owner_id": 8, "region_code": "eu", "title": "alpha", "folder_id": 2},
+	{"id": 4, "owner_id": 7, "region_code": "eu", "title": "gamma", "folder_id": 2},
+}
+
+// TestPolicyServerFields_Memory evaluates the policy the SQLite and
+// PostgreSQL cases run over the same rows, with the reference evaluator, as
+// a memory backend does.
+func TestPolicyServerFields_Memory(t *testing.T) {
+	docs := serverFieldDocuments(t)
+	ast, err := filter.ApplyPolicyConstraints(docs.FilterSchema(), nil, ownerEUPolicy().Policy)
+	require.NoError(t, err)
+	var ids []int
+	for _, row := range serverFieldRows {
+		truth, err := filter.Evaluate(ast.Root, filter.ColumnRow(func(column string) (any, bool) {
+			v, ok := row[column[len("documents."):]]
+			return v, ok
+		}))
+		require.NoError(t, err)
+		if truth == filter.True {
+			ids = append(ids, row["id"].(int))
+		}
+	}
+	slices.Sort(ids)
+	assert.Equal(t, []int{1, 4}, ids)
 }
 
 // A hidden field whose column is a request field's name leaves the name to

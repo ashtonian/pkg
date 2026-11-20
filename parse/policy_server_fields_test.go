@@ -32,3 +32,12 @@ func serverFieldDocuments(t *testing.T) *parse.Resource[serverFieldDocument] {
 func policyOn(constraints ...*filter.PolicyConstraint) parse.Scope {
 	return parse.Scope{Policy: &filter.PolicyConstraints{Constraints: constraints}}
 }
+
+// ownerEUPolicy holds documents to owner 7's in the eu region, through a
+// hidden column and a column without the filter capability.
+func ownerEUPolicy() parse.Scope {
+	return policyOn(
+		&filter.PolicyConstraint{Field: "owner_id", Operator: filter.OpEq, Value: 7},
+		&filter.PolicyConstraint{Field: "region", Operator: filter.OpEq, Value: "eu"},
+	)
+}
