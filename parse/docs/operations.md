@@ -18,6 +18,12 @@
 
 A cursor is a position, not a permission. Always reapply authorization, soft-delete policy, and tenant scope after decoding it. Schema discovery describes capabilities, not per-user write permission. `parse:"server"` belongs only on fields written through trusted `ParseServerMergePatch` calls.
 
+### Tenant key errors
+
+- `ErrTenantInvalid`, for example `devices: parse: Scope.Tenant is not a value of the tenant column's type: commands.tenant_id: 3000000000 overflows int32`: the server's tenant does not fit the named column, which the resource reaches through a relation (a bare column name is the resource's own). Check where the server reads the tenant. If the tenant is right, the named field is narrower than the tenant keys: widen it in Go and in the database. Nothing was sent to the database.
+- A `Relate` error naming two tenant columns that "hold different types": one request would bind its tenant to a string or UUID column and an integer one. Give them one type (strings and UUIDs agree, as do integers of any width). The error names the resource that reaches both when it is not the one being related.
+- A pair table's tenant column binds the tenant as the type of the typed tenant columns its resource reaches ([Tenant key](relations.md#tenant-key)). A driver error comparing it means the database column is of another type.
+
 ## Concurrency and ownership
 
 Construct parsers once and reuse them with immutable schemas/configuration. Direct filter/sort/patch schema accessors expose pointers; they do not return isolated copies. Registry `SchemaFor` discovery responses are independent metadata snapshots. Complete manual schema customization before serving concurrent requests. `ListQuery.WithFilterConfig` and `WithSearchSchema` configure a builder: do not mutate a shared builder while requests are using it.
@@ -34,7 +40,11 @@ For read/modify/write patches (`test`, `copy`, `move`, nested pointers), protect
 compiles distinct column patches for unique primary keys. Each `RowUpdate` has
 `Key`, `Patch` and an optional narrowing `Policy` for its exact revision and
 authorization predicate. The common scope's tenant, live-row and policy floors
-apply to every item. This is a server-side compiler; it grants no authority.
+apply to every item. The scope is checked before any item: a missing tenant
+(`ErrTenantRequired`) or one the resource's tenant columns cannot hold
+(`ErrTenantInvalid`) refuses the batch, empty or not, and the tenant is
+normalized once for every item. This is a server-side compiler; it grants no
+authority.
 
 The returned `UpdateBatchPlan.Chunks` contains canonical `Keys`, a `Current`
 statement and an optional `Owner` statement per chunk. In one caller-owned
