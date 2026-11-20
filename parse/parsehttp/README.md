@@ -28,7 +28,8 @@ A parse error describes the request, never the database, so its message is safe 
 |------|----------------|
 | `parsehttp.go` | `WriteError`, `Body` |
 | `list.go` | `ParseList`: GET query strings and POST bodies |
-| `parsehttp_test.go` | Status and body of a wrapped parse error; other errors left alone |
+| `parsehttp_test.go` | `WriteError` (unit): a wrapped parse error answered with its code's status and `Body`; any other error, or nil, left to the caller with nothing written |
+| `list_test.go` | `ParseList` (unit): GET, HEAD and POST read the same request, with `AcceptParams` names left in a POST's query and `application/json` media type parameters accepted; a POST's list parameters or field filters in the query, another or a missing content type, and another method refused as E2067 |
 
 ## Dependencies
 
