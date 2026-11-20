@@ -204,6 +204,34 @@ describe("list transport", () => {
     await items.list({ filter: { name: "alpha" } });
     expect(server.calls[0]?.method).toBe("POST");
   });
+
+  // The Go side (TestFilterConformance_ThroughBothListTransports) holds that
+  // the server reads ?filter= and a body's filter member alike; this holds
+  // that the client sends each corpus filter unchanged on both.
+  it("sends every filter conformance input unchanged on both transports", async () => {
+    const corpus = JSON.parse(
+      readFileSync(new URL("../../../testdata/filter_conformance.json", import.meta.url), "utf8"),
+    ) as { name: string; input: Record<string, unknown>; tsApplicable?: boolean }[];
+    const cases = corpus.filter((c) => c.tsApplicable !== false);
+    expect(cases.length).toBeGreaterThan(0);
+
+    const server = fakeServer(() => json(empty));
+    const items = client(server.fetch).resource<WireItem>("items");
+    for (const c of cases) {
+      await items.list({ filter: c.input }, { method: "GET" });
+      await items.list({ filter: c.input }, { method: "POST" });
+    }
+    cases.forEach((c, i) => {
+      const get = server.calls[2 * i];
+      const post = server.calls[2 * i + 1];
+      // An empty filter filters nothing, so neither transport sends it.
+      const sent = Object.keys(c.input).length > 0;
+      expect(get?.method, c.name).toBe("GET");
+      expect(JSON.parse(get?.url.searchParams.get(p("ParamFilter")) ?? "null"), c.name).toEqual(sent ? c.input : null);
+      expect(post?.method, c.name).toBe("POST");
+      expect(post?.body, c.name).toEqual(sent ? { [p("ParamFilter")]: c.input } : {});
+    });
+  });
 });
 
 describe("relation filters", () => {
