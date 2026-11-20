@@ -175,22 +175,30 @@ func TestParseListPost(t *testing.T) {
 	got, err := res.ParseListPost(url.Values{"tenant": {"t1"}}, "application/json; charset=utf-8", strings.NewReader(`{"sort":"-id"}`))
 	require.NoError(t, err)
 	assert.Equal(t, want, got, "the endpoint's own parameter stays in the query")
+}
 
-	for _, tt := range []struct {
+func TestParseListPost_Refusals(t *testing.T) {
+	res, err := parse.NewResource[gadgetRow]("gadgets", parse.AcceptParams("tenant"))
+	require.NoError(t, err)
+	tests := []struct {
+		name        string
 		query       url.Values
 		contentType string
 		param       string
 	}{
-		{url.Values{"sort": {"-id"}}, "application/json", "sort"},
-		{url.Values{"name": {"a"}}, "application/json", "name"},
-		{nil, "text/plain", "content-type"},
-		{nil, "", "content-type"},
-	} {
-		_, err := res.ParseListPost(tt.query, tt.contentType, strings.NewReader(`{}`))
-		require.ErrorIs(t, err, filter.ECodeInvalidListParam, tt.param)
-		pe, ok := errors.AsType[*core.ParseError](err)
-		require.True(t, ok)
-		assert.Equal(t, tt.param, pe.Details["parameter"])
+		{"a list parameter in the query", url.Values{"sort": {"-id"}}, "application/json", "sort"},
+		{"a field filter in the query", url.Values{"name": {"a"}}, "application/json", "name"},
+		{"a body of another type", nil, "text/plain", "content-type"},
+		{"a body without a type", nil, "", "content-type"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := res.ParseListPost(tt.query, tt.contentType, strings.NewReader(`{}`))
+			require.ErrorIs(t, err, filter.ECodeInvalidListParam)
+			pe, ok := errors.AsType[*core.ParseError](err)
+			require.True(t, ok)
+			assert.Equal(t, tt.param, pe.Details["parameter"])
+		})
 	}
 }
 
