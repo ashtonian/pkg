@@ -236,14 +236,21 @@ func listParamError(param, msg string) *core.ParseError {
 // the request.
 type Scope struct {
 	// Tenant holds rows, and tenant-scoped relation junctions, to one tenant.
-	// Required for a resource with a tenant column. It is the tenant key's
-	// text, normalized once to the type of every tenant column the resource
-	// reaches: the key of a string column, a UUID's canonical text, or an
-	// integer's decimal digits ("44"). Text one of them cannot hold is
-	// ErrTenantInvalid.
+	// Required for a resource with a tenant column, unless Governance is
+	// set. It is the tenant key's text, normalized once to the type of
+	// every tenant column the resource reaches: the key of a string column,
+	// a UUID's canonical text, or an integer's decimal digits ("44"). Text
+	// one of them cannot hold is ErrTenantInvalid.
 	Tenant string
-	// Governance, when set, replaces the tenant floor: it decides tenancy
-	// itself, grants included (filter.ComposeConstraints).
+	// Governance, when set and not empty, replaces the tenant floor: it
+	// decides which rows of which tenants the list reads, grants included
+	// (filter.ComposeConstraints). A row's relations are its own tenant's:
+	// relation predicates, counts, facets and includes hold every
+	// tenant-scoped related row, at every depth, to the tenant of the
+	// listed row it hangs from (filter.ListRowTenant), so a granted row of
+	// another tenant is filtered and included by its own related rows.
+	// Tenant is then not used; on a resource without a tenant column,
+	// whose rows have no tenant, relations stay held to Tenant.
 	Governance *filter.PolicyConstraints
 	// Policy is the authorization constraint, ANDed with everything else.
 	// A constraint names a system field, or exactly one of a request field
@@ -261,8 +268,13 @@ type Scope struct {
 	IncludeDeleted bool
 }
 
-// ErrTenantRequired is a list of a tenant-scoped resource built without a
-// tenant. It is the server's mistake, never the request's.
+// governed reports whether Governance replaces the tenant floor, as
+// filter.ComposeConstraints decides: a nil or empty tree does not.
+func (s Scope) governed() bool { return s.Governance != nil && !s.Governance.IsEmpty() }
+
+// ErrTenantRequired is a list of a tenant-scoped resource built with
+// neither Scope.Tenant nor Scope.Governance, or an update without
+// Scope.Tenant. It is the server's mistake, never the request's.
 var ErrTenantRequired = errors.New("parse: a tenant-scoped resource is listed without Scope.Tenant")
 
 // Statement is one parameterized SQL statement.
@@ -295,9 +307,13 @@ type ListPlan struct {
 	// compiled for dialect.
 	fields *filter.ResourceSchema
 	table  string
-	// tenant is Scope.Tenant in the tenant key's type; nil without one.
-	tenant  any
-	related map[string]*filter.PolicyConstraints
+	// tenant is Scope.Tenant in the tenant key's type; nil without one or
+	// when relations follow each row's tenant (rowTenant).
+	tenant any
+	// rowTenant holds the includes' related rows to each owner's tenant:
+	// a governed list (Scope.Governance).
+	rowTenant bool
+	related   map[string]*filter.PolicyConstraints
 }
 
 // Dialect is the dialect the plan's statements are written for.
@@ -317,9 +333,14 @@ func (r *Resource[T]) BuildList(d filter.Dialect, req *ListRequest, s Scope) (*L
 	if req == nil {
 		req = &ListRequest{}
 	}
-	tenant, err := r.bindTenant(s.Tenant)
-	if err != nil {
-		return nil, err
+	// A governed list's rows span tenants; a resource with a tenant column
+	// holds each row's relations to the row's own.
+	rowTenant := s.governed() && r.tenant != ""
+	var tenant any
+	if !rowTenant {
+		if tenant, err = r.bindTenant(s.Tenant); err != nil {
+			return nil, err
+		}
 	}
 	policy := filter.ComposeConstraints(filter.RepositoryScope{
 		TenantColumn: r.tenant, TenantID: tenant,
@@ -345,7 +366,10 @@ func (r *Resource[T]) BuildList(d filter.Dialect, req *ListRequest, s Scope) (*L
 		filter.ListWithCount(req.IncludeTotal),
 		filter.ListRelatedPolicies(s.Related),
 	}
-	if tenant != nil {
+	switch {
+	case rowTenant:
+		opts = append(opts, filter.ListRowTenant(r.tenant))
+	case tenant != nil:
 		opts = append(opts, filter.ListTenant(tenant))
 	}
 	if req.Filter != nil {
@@ -366,17 +390,18 @@ func (r *Resource[T]) BuildList(d filter.Dialect, req *ListRequest, s Scope) (*L
 		return nil, err
 	}
 	plan := &ListPlan{
-		Page:     Statement{SQL: "SELECT " + strings.Join(r.columns(d, v), ", ") + " FROM " + r.table + " " + res.Fragment, Args: res.Args},
-		Fragment: res.Fragment,
-		Facets:   res.Facets,
-		Include:  slices.Clone(req.Include),
-		Keyset:   res.Cursor,
-		Limit:    res.Limit,
-		dialect:  d,
-		fields:   v.filter,
-		table:    r.table,
-		tenant:   tenant,
-		related:  s.Related,
+		Page:      Statement{SQL: "SELECT " + strings.Join(r.columns(d, v), ", ") + " FROM " + r.table + " " + res.Fragment, Args: res.Args},
+		Fragment:  res.Fragment,
+		Facets:    res.Facets,
+		Include:   slices.Clone(req.Include),
+		Keyset:    res.Cursor,
+		Limit:     res.Limit,
+		dialect:   d,
+		fields:    v.filter,
+		table:     r.table,
+		tenant:    tenant,
+		rowTenant: rowTenant,
+		related:   s.Related,
 	}
 	if req.IncludeTotal {
 		plan.Count = &Statement{SQL: res.CountSQL, Args: res.CountArgs}
@@ -420,7 +445,10 @@ func (r *Resource[T]) IncludeQueries(plan *ListPlan, ownerKeys []any) ([]filter.
 		return nil, nil
 	}
 	opts := []filter.IncludeQueryOption{filter.WithIncludeRelatedPolicies(plan.related)}
-	if plan.tenant != nil {
+	switch {
+	case plan.rowTenant:
+		opts = append(opts, filter.WithIncludeRowTenant(plan.fields, r.tenant))
+	case plan.tenant != nil:
 		opts = append(opts, filter.WithIncludeTenant(plan.tenant))
 	}
 	out := make([]filter.IncludeQuery, 0, len(plan.Include))

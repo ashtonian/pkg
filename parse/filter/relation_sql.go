@@ -64,7 +64,7 @@ func (b *SQLBuilder) buildRelated(s *buildState, node *FilterNode) (string, erro
 
 	// A policy-scoped relation declares no tenant column on its target:
 	// the policy below decides which target rows are visible.
-	scope, err := b.scope.clause(rel, join, bind)
+	scope, err := b.scope.clause(rel.JoinTable, rel.TenantColumn, join, joinTenantType(node.Field), bind)
 	if err != nil {
 		return "", err
 	}
@@ -72,13 +72,11 @@ func (b *SQLBuilder) buildRelated(s *buildState, node *FilterNode) (string, erro
 	if rel.DeletedColumn != "" {
 		sb.WriteString(" AND " + join + "." + rel.DeletedColumn + " IS NULL")
 	}
-	if rel.TargetTenant != "" {
-		targetScope, err := b.scope.clause(&core.RelationSchema{JoinTable: rel.TargetTable, TenantColumn: rel.TargetTenant}, related, bind)
-		if err != nil {
-			return "", err
-		}
-		sb.WriteString(targetScope)
+	targetScope, err := b.scope.clause(rel.TargetTable, rel.TargetTenant, related, tenantColumnType(target, rel.TargetTenant), bind)
+	if err != nil {
+		return "", err
 	}
+	sb.WriteString(targetScope)
 	if rel.TargetDeleted != "" {
 		sb.WriteString(" AND " + related + "." + rel.TargetDeleted + " IS NULL")
 	}
@@ -117,6 +115,16 @@ func (b *SQLBuilder) buildRelated(s *buildState, node *FilterNode) (string, erro
 	}
 	sb.WriteByte(')')
 	return sb.String(), nil
+}
+
+// joinTenantType is the declared type of a relation's join-table tenant
+// column: the target's, when the join table is the target's own table; ""
+// for a pair table, which declares no types.
+func joinTenantType(f *FieldSchema) core.FieldType {
+	if f.Relation.TargetTable != "" {
+		return ""
+	}
+	return tenantColumnType(f.Related, f.Relation.TenantColumn)
 }
 
 // relationTableAlias is table itself unless a table already in scope has

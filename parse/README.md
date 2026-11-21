@@ -17,7 +17,7 @@ flowchart LR
 
 **Exit points:** Parameterized statements, parsed values and pages. Repositories execute statements; `parsepgx` provides optional pgx execution.
 
-**Failure modes:** Invalid declarations fail construction; request validation returns `core.ParseError` with its code and path (patch failures can be joined); missing tenant scope returns `ErrTenantRequired`, and a tenant a reached tenant column cannot hold `ErrTenantInvalid`; `Relate` refuses a relation that would make one request bind its tenant to a string or UUID column and an integer one; unreadable row keys return an error while building a cursor.
+**Failure modes:** Invalid declarations fail construction; request validation returns `core.ParseError` with its code and path (patch failures can be joined); missing tenant scope (no `Scope.Tenant`, and for a list no `Scope.Governance`) returns `ErrTenantRequired`, and a tenant a reached tenant column cannot hold `ErrTenantInvalid`; `Relate` refuses a relation that would make one request bind its tenant to a string or UUID column and an integer one; unreadable row keys return an error while building a cursor.
 
 **Dependencies:** `Resource` composes `core`, `filter` and `patch`. The compiler packages import no application code; callers own connections, authorization and transactions.
 
@@ -116,7 +116,7 @@ Construct parsers once, customize schemas before serving, and treat them as read
 | Option | Type | Default | Description |
 |---|---|---|---|
 | `parse.PrimaryKey(column)` | `ResourceOption` | `"id"` | Key column; the final keyset column of every list |
-| `parse.TenantColumn(column)` | `ResourceOption` | none | Holds every list, and tenant-scoped junctions, to `Scope.Tenant`. The column's field is a string, a UUID or an integer, and `Scope.Tenant` (the key's text, `"44"` for an integer) is bound as that type, checked against every tenant column the resource's relations reach ([Tenant key](docs/relations.md#tenant-key)) |
+| `parse.TenantColumn(column)` | `ResourceOption` | none | Holds every list, and tenant-scoped junctions, to `Scope.Tenant`; a list with `Scope.Governance` holds each row's relations to the row's own tenant instead ([Governed lists](docs/relations.md#governed-lists)). The column's field is a string, a UUID or an integer, and `Scope.Tenant` (the key's text, `"44"` for an integer) is bound as that type, checked against every tenant column the resource's relations reach ([Tenant key](docs/relations.md#tenant-key)) |
 | `parse.DeletedColumn(column)` | `ResourceOption` | none | Soft-delete timestamp; deleted rows only with `Scope.IncludeDeleted` |
 | `parse.PageSize(def, max)` | `ResourceOption` | 50, 1000 | Page size without `page_size`, and its ceiling (larger requests are clamped) |
 | `parse.AcceptParams(names...)` | `ResourceOption` | none | Query parameters the endpoint reads itself; any other unknown parameter is E2071 |
