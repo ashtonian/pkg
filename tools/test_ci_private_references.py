@@ -72,6 +72,27 @@ class PrivateReferences(unittest.TestCase):
             self.assertEqual(code, 2, env)
             self.assertIn(refs.ENV, err)
 
+    def test_a_path_that_names_private_code_is_reported_by_position(self):
+        self.write("docs/codename-notes.md", "clean text\nCodename again\n")
+        code, _, err = self.run_main({refs.ENV: "codename"})
+        self.assertEqual(code, 1)
+        paths = subprocess.run(["git", "-C", str(self.root), "ls-files", "-z"], check=True, capture_output=True).stdout.split(b"\0")
+        n = paths.index(b"docs/codename-notes.md") + 1
+        self.assertIn(f"tracked path #{n}: names private code", err)
+        self.assertIn(f"tracked path #{n}:2: names private code", err, "a line in such a path is reported by position too")
+        self.assertIn("README.md:2: names private code", err)
+        self.assertNotIn("codename-notes", err, "the path's name is never printed")
+
+    def test_unusual_paths_are_reported_verbatim(self):
+        self.write("a:b.md", "x\ncodename\n")
+        self.write("caf\u00e9.md", "codename\n")
+        self.assertEqual(sorted(refs.matches(self.root, ["codename"])), ["README.md:2", "a:b.md:2", "caf\u00e9.md:1"])
+
+    def test_a_missing_pattern_file_fails_closed(self):
+        code, _, err = self.run_main({refs.ENV: "codename"}, str(self.root / "absent-patterns"))
+        self.assertEqual(code, 2)
+        self.assertIn("reading private reference patterns", err)
+
     def test_a_bad_pattern_fails_without_repeating_it(self):
         code, _, err = self.run_main({refs.ENV: "secret(unclosed"})
         self.assertEqual(code, 2)
