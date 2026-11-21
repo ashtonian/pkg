@@ -27,39 +27,44 @@ type Dialect interface {
 	QuoteIdent(name string) string
 }
 
-const supportedDSNs = "want postgres://, postgresql://, sqlite://, file:, a .db path or :memory:"
+const supportedDSNs = "want a postgres:// or postgresql:// URL, a sqlite:// or file: URI, a .db, .sqlite or .sqlite3 path, or :memory:"
 
-// FromDSN is the dialect of a connection string: postgres:// and
-// postgresql:// are PostgreSQL; sqlite://, file:, a path ending in .db and
-// :memory: are SQLite. CockroachDB's cockroach:// and crdb:// are refused:
-// the PostgreSQL dialect's SQL has never been verified there.
+// FromDSN is the dialect of a connection string, decided by its form. A
+// postgres:// or postgresql:// URL is PostgreSQL. A sqlite:// or file: URI,
+// a path ending in .db, .sqlite or .sqlite3 before any ?query, and :memory:
+// are SQLite. Schemes match case-insensitively.
+//
+// CockroachDB's cockroach:// and crdb:// are refused: the PostgreSQL
+// dialect's SQL has never been verified there. So is a keyword/value string
+// (host=… dbname=…): other drivers share its grammar, so it does not say
+// which database it names. Construct the dialect for one instead.
 //
 // Errors name the scheme and never the DSN, which may carry a password.
 func FromDSN(dsn string) (Dialect, error) {
-	if scheme, _, ok := strings.Cut(dsn, "://"); ok {
-		switch scheme {
+	if scheme, _, ok := strings.Cut(dsn, "://"); ok && isURIScheme(scheme) {
+		switch strings.ToLower(scheme) {
 		case "postgres", "postgresql":
 			return Postgres{}, nil
 		case "sqlite", "file":
 			return SQLite{}, nil
 		case "cockroach", "crdb":
 			return nil, fmt.Errorf("%w: scheme %q: CockroachDB is not supported", ErrUnknownDSN, scheme)
+		default:
+			return nil, fmt.Errorf("%w: scheme %q: %s", ErrUnknownDSN, scheme, supportedDSNs)
 		}
-		if !isURIScheme(scheme) {
-			return nil, fmt.Errorf("%w: %s", ErrUnknownDSN, supportedDSNs)
-		}
-		return nil, fmt.Errorf("%w: scheme %q: %s", ErrUnknownDSN, scheme, supportedDSNs)
 	}
-	if strings.HasPrefix(dsn, "file:") || strings.HasSuffix(dsn, ".db") || dsn == ":memory:" {
+	if isSQLitePath(dsn) {
 		return SQLite{}, nil
 	}
 	return nil, fmt.Errorf("%w: %s", ErrUnknownDSN, supportedDSNs)
 }
 
-// isURIScheme reports whether s is an RFC 3986 scheme, so an error can
-// quote it without quoting part of a malformed DSN's credentials.
+// isURIScheme reports whether s is an RFC 3986 scheme of two or more
+// characters. A single letter before :// is a Windows drive, and text that
+// is no scheme at all is part of a path, or of a malformed DSN that an
+// error must not quote.
 func isURIScheme(s string) bool {
-	if s == "" {
+	if len(s) < 2 {
 		return false
 	}
 	for i, c := range s {
@@ -71,6 +76,25 @@ func isURIScheme(s string) bool {
 		}
 	}
 	return true
+}
+
+// isSQLitePath reports whether dsn is a SQLite file name, :memory: or a
+// file: URI without an authority. A query, such as the modernc driver's
+// ?_pragma=, follows the name.
+func isSQLitePath(dsn string) bool {
+	if strings.HasPrefix(dsn, "file:") {
+		return true
+	}
+	name, _, _ := strings.Cut(dsn, "?")
+	if name == ":memory:" {
+		return true
+	}
+	for _, ext := range []string{".db", ".sqlite", ".sqlite3"} {
+		if strings.HasSuffix(name, ext) {
+			return true
+		}
+	}
+	return false
 }
 
 // Postgres is PostgreSQL: $n placeholders.
