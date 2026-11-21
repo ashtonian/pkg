@@ -34,7 +34,12 @@ type ListRequest struct {
 	Facets []string
 	// Include names relation fields whose IDs to project beside the page.
 	Include []string
-	// Fields is the response field mask, for the caller to apply.
+	// Fields is the response field mask: the fields each item returns, by
+	// name under the field-name tag; empty is every field. Each is a field a
+	// response carries, one whose column the resource reads or one with no
+	// column, which the service fills. The service applies the mask to the
+	// items it writes; the page's SELECT reads every read column whatever
+	// the mask names.
 	Fields []string
 }
 
@@ -71,8 +76,9 @@ type ListInput struct {
 // flat filters, bounded as one expression, sort, cursor, page size, the total,
 // deleted rows, search, facets, includes and the field mask. A negative page
 // size, deleted rows of a resource without them, or search on a resource
-// without search fields is E2067; a field filter, facet or include naming no
-// field it can serve is E2071 (an include that is no relation, E2083).
+// without search fields is E2067; a field filter, facet, include or field
+// mask name that names no field it can serve is E2071 (an include that is no
+// relation, E2083).
 func (r *Resource[T]) ParseListInput(in ListInput) (*ListRequest, error) {
 	req := &ListRequest{
 		Cursor: in.Cursor, PageSize: r.pageSize,
@@ -103,17 +109,36 @@ func (r *Resource[T]) ParseListInput(in ListInput) (*ListRequest, error) {
 	if req.Include, err = filter.ParseIncludeNames(r.filterSchema, in.Include); err != nil {
 		return nil, err
 	}
-	for _, name := range listNames(in.Facets) {
-		if f, ok := r.filterSchema.Fields[name]; !ok || !f.Facetable {
-			return nil, &core.ParseError{
-				Kind: core.ParseErrorKindFilter, Code: filter.ECodeUnknownField.String(),
-				Message: fmt.Sprintf("facet field '%s' does not exist or is not facetable", name), Details: map[string]any{"field": name},
-			}
-		}
-		req.Facets = append(req.Facets, name)
+	if req.Facets, err = listNames(in.Facets, r.facetName); err != nil {
+		return nil, err
 	}
-	req.Fields = listNames(in.Fields)
+	if req.Fields, err = listNames(in.Fields, r.maskName); err != nil {
+		return nil, err
+	}
 	return req, nil
+}
+
+func (r *Resource[T]) facetName(name string) error {
+	if f, ok := r.filterSchema.Fields[name]; ok && f.Facetable {
+		return nil
+	}
+	return unknownListField(fmt.Sprintf("facet field '%s' does not exist or is not facetable", name), name)
+}
+
+// maskName refuses a field mask name that is no field of the response,
+// without saying whether T has a field by that name its response withholds.
+func (r *Resource[T]) maskName(name string) error {
+	if r.maskable[name] {
+		return nil
+	}
+	return unknownListField(fmt.Sprintf("response field '%s' does not exist", name), name)
+}
+
+func unknownListField(msg, name string) *core.ParseError {
+	return &core.ParseError{
+		Kind: core.ParseErrorKindFilter, Code: filter.ECodeUnknownField.String(),
+		Message: msg, Details: map[string]any{"field": name},
+	}
 }
 
 // ParseList reads a list request's query parameters (filter.Param*) into a
@@ -214,15 +239,22 @@ func splitNames(raw string) []string {
 	return strings.Split(raw, ",")
 }
 
-// listNames trims names and drops empty and repeated ones.
-func listNames(names []string) []string {
+// listNames trims names and drops empty and repeated ones, refusing a name
+// check refuses. Each name is checked before it is kept, so the kept names,
+// and the search for repeats among them, are bounded by the fields check
+// admits rather than by the request.
+func listNames(names []string, check func(name string) error) ([]string, error) {
 	var out []string
 	for _, name := range names {
-		if name = strings.TrimSpace(name); name != "" && !slices.Contains(out, name) {
-			out = append(out, name)
+		if name = strings.TrimSpace(name); name == "" || slices.Contains(out, name) {
+			continue
 		}
+		if err := check(name); err != nil {
+			return nil, err
+		}
+		out = append(out, name)
 	}
-	return out
+	return out, nil
 }
 
 func listParamError(param, msg string) *core.ParseError {

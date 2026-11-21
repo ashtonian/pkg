@@ -43,6 +43,8 @@ type Resource[T any] struct {
 	// access is what a request may learn of each column of T (ReadColumns,
 	// QueryOnlyColumns).
 	access map[string]columnAccess
+	// maskable are the names a list's field mask may name (maskableFields).
+	maskable map[string]bool
 	// readExprs are the computed columns (ReadExpr) and their per-dialect
 	// views; nil without any.
 	readExprs *computedColumns
@@ -172,7 +174,11 @@ func NewResource[T any](table string, opts ...ResourceOption) (*Resource[T], err
 	if p.cfg.MaxListBodySize < 0 {
 		return nil, fmt.Errorf("parse: %s: list body limit %d must not be negative", table, p.cfg.MaxListBodySize)
 	}
-	order, fieldsByColumn, err := resourceColumns(p.gen, reflect.TypeFor[T]())
+	walk, err := p.gen.StructFields(reflect.TypeFor[T]())
+	if err != nil {
+		return nil, fmt.Errorf("parse: %s: %w", table, err)
+	}
+	order, fieldsByColumn, err := resourceColumns(p.gen, walk)
 	if err != nil {
 		return nil, fmt.Errorf("parse: %s: %w", table, err)
 	}
@@ -234,6 +240,7 @@ func NewResource[T any](table string, opts ...ResourceOption) (*Resource[T], err
 		return nil, err
 	}
 	r.access = columnAccesses(columns, read, queryOnly)
+	r.maskable = maskableFields(walk, fieldsByColumn, r.access)
 	if r.sqlTypes, err = sqlTypes(table, cfg, columns); err != nil {
 		return nil, err
 	}
@@ -440,6 +447,27 @@ func columnAccesses(columns map[string]reflect.Type, read, queryOnly map[string]
 		default:
 			out[name] = columnWithheld
 		}
+	}
+	return out
+}
+
+// maskableFields are the names a list's field mask may name: T's fields
+// under the field-name tag whose values a response can carry. That is a
+// field whose column the resource reads, or a field with no column, which
+// only the service fills (a relation's keys, a derived value). A field whose
+// column the resource does not read is zero in every response.
+func maskableFields(walk *core.StructFields, byColumn map[string]*core.Field, access map[string]columnAccess) map[string]bool {
+	columnOf := make(map[*core.Field]string, len(byColumn))
+	for column, f := range byColumn {
+		columnOf[f] = column
+	}
+	out := make(map[string]bool, len(walk.Fields))
+	for _, f := range walk.Fields {
+		column, isColumn := columnOf[f]
+		if f.Hidden() || (isColumn && access[column] != columnRead) {
+			continue
+		}
+		out[f.External] = true
 	}
 	return out
 }
@@ -651,11 +679,7 @@ func systemFields(table string, cfg resourceConfig, columns map[string]reflect.T
 // each, from the parser's field walk: a field's column tag name, else the
 // generator's convention on its name; a column tag of "-" has none. Two
 // fields with one column are an error.
-func resourceColumns(gen *core.SchemaGenerator, t reflect.Type) ([]string, map[string]*core.Field, error) {
-	walk, err := gen.StructFields(t)
-	if err != nil {
-		return nil, nil, err
-	}
+func resourceColumns(gen *core.SchemaGenerator, walk *core.StructFields) ([]string, map[string]*core.Field, error) {
 	var order []string
 	byColumn := make(map[string]*core.Field, len(walk.Fields))
 	for _, f := range walk.Fields {
