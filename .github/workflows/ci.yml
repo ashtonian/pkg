@@ -41,6 +41,12 @@ jobs:
           filter: blob:none
       - name: Verify CI scope policy
         run: python3 -B -m unittest discover -s tools -p 'test_ci_*.py'
+      # The patterns name private code, so they live in a secret, not here;
+      # the check prints only path:line.
+      - name: Refuse private references
+        env:
+          PRIVATE_REFERENCE_PATTERNS: ${{ secrets.PRIVATE_REFERENCE_PATTERNS }}
+        run: python3 -B tools/private_references.py
       - id: scope
         run: python3 tools/ci_scope.py
       - name: Set up artifact receipt access
