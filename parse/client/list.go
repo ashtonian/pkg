@@ -44,7 +44,9 @@ type ListParams struct {
 	Facets []string
 	// Include names the relations to return with each row.
 	Include []string
-	// Fields names the members each row returns.
+	// Fields names the members each row returns, the response field mask. A
+	// name that is no field of the response is E2071. The server applies
+	// the mask to the rows it writes; its query reads every column either way.
 	Fields []string
 }
 
