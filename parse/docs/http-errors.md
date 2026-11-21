@@ -16,7 +16,7 @@ A list endpoint built on this package reads the `filter.Param*` query parameters
 | `include_deleted` | `ParamIncludeDeleted` | Include soft-deleted rows |
 | `search` | `ParamSearch` | Free-text search |
 | `facets` | `ParamFacets` | Facet fields (on `OPTIONS`) |
-| `fields` | `ParamFields` | Response field mask |
+| `fields` | `ParamFields` | Response field mask: the fields each item returns ([field mask](queries.md#field-mask)) |
 | `include` | `ParamInclude` | Relation fields whose related IDs the page carries in `_relations` |
 
 Lists answer with `filter.Page[T]`: `{"items": […], "page_info": {"has_next_page", "has_prev_page", "start_cursor", "end_cursor", "total_count"}, "_relations": {…}}`. Errors answer `{"code", "message", "details"}`, or an RFC 9457 problem document ([below](#rfc-9457-problem-details)).
@@ -35,7 +35,7 @@ The `POST` is a separate route a server opts into: register `POST` on the collec
 
 ## Handler responsibilities
 
-`ParseRequestFilter(r.URL.Query())` ANDs the JSON `filter` with flat field parameters and applies limits to the combined filter. It does not parse every list option or execute a query. Your handler validates page size/booleans, selects policy from authenticated context, passes sort/search/cursor options, and executes the plan. `fields` and `include_deleted` are conventions the service implements, not automatic projection or authorization controls.
+`ParseRequestFilter(r.URL.Query())` ANDs the JSON `filter` with flat field parameters and applies limits to the combined filter. It does not parse every list option or execute a query. Your handler validates page size/booleans, selects policy from authenticated context, passes sort/search/cursor options, and executes the plan. `Resource.ParseList` checks every `fields` name, but neither `fields` nor `include_deleted` takes effect by itself: the service drops the members the mask leaves out when it writes the rows ([field mask](queries.md#field-mask)), and grants deleted rows through `Scope.IncludeDeleted`. Neither is an authorization control.
 
 A flat parameter naming no filterable field is E2071 unless it is a list parameter (`Param*`) or one the handler reads itself: pass those names with `filter.QueryParamAccept(names...)` (to `ParseRequestFilter` or `filter.NewQueryParamParser`) or `parse.AcceptParams` (to `Resource.ParseList`). `filter.QueryParamLenient()` ignores unknown names instead; a misspelt filter then returns every row, so prefer the accepted list. JSON filter fields are schema-checked either way.
 

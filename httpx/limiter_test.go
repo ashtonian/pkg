@@ -1,4 +1,4 @@
-//go:build integration
+//go:build unit
 
 package httpx
 
@@ -6,182 +6,119 @@ import (
 	"context"
 	"errors"
 	"net/http"
-	"net/http/httptest"
 	"sync"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 )
 
-func TestLimiterTransport(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		time.Sleep(50 * time.Millisecond)
-		w.WriteHeader(http.StatusOK)
-	}))
-	defer server.Close()
-
-	transport := must(NewLimiterTransport(http.DefaultTransport, 2))
-	client := &http.Client{Transport: transport}
-
-	if transport.Capacity() != 2 {
-		t.Errorf("expected capacity 2, got %d", transport.Capacity())
-	}
-
-	// Should complete successfully
-	resp, err := client.Get(server.URL)
-	if err != nil {
-		t.Fatalf("request failed: %v", err)
-	}
-	resp.Body.Close()
+// slowUpstream holds every request for latency and counts how many it holds
+// at once.
+type slowUpstream struct {
+	latency time.Duration
+	active  atomic.Int32
+	peak    atomic.Int32
 }
 
-func TestLimiterTransport_Concurrency(t *testing.T) {
-	var maxConcurrent int32
-	var currentConcurrent int32
+func (u *slowUpstream) RoundTrip(r *http.Request) (*http.Response, error) {
+	n := u.active.Add(1)
+	defer u.active.Add(-1)
+	for old := u.peak.Load(); old < n && !u.peak.CompareAndSwap(old, n); old = u.peak.Load() {
+	}
+	select {
+	case <-time.After(u.latency):
+		return &http.Response{StatusCode: 200, Header: http.Header{}, Body: http.NoBody, Request: r}, nil
+	case <-r.Context().Done():
+		return nil, r.Context().Err()
+	}
+}
 
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		current := atomic.AddInt32(&currentConcurrent, 1)
-		for {
-			max := atomic.LoadInt32(&maxConcurrent)
-			if current > max {
-				if atomic.CompareAndSwapInt32(&maxConcurrent, max, current) {
-					break
+func limitedGet(ctx context.Context, rt http.RoundTripper) error {
+	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, "https://api.example.com/x", nil)
+	resp, err := rt.RoundTrip(req)
+	if err == nil {
+		resp.Body.Close()
+	}
+	return err
+}
+
+func TestLimiterReportsItsSlots(t *testing.T) {
+	lt := must(NewLimiterTransport(http.DefaultTransport, 5))
+	if lt.Capacity() != 5 || lt.Available() != 5 || lt.InFlight() != 0 {
+		t.Fatalf("capacity %d, available %d, in flight %d; want 5, 5, 0", lt.Capacity(), lt.Available(), lt.InFlight())
+	}
+}
+
+// Ten requests through three slots run three at a time: they finish in four
+// rounds of the upstream's latency, and every wait for a slot is reported.
+func TestLimiterRunsAtMostItsCapacity(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		up := &slowUpstream{latency: 50 * time.Millisecond}
+		var blocked atomic.Int32
+		lt := must(NewLimiterTransport(up, 3, WithOnBlocked(func() { blocked.Add(1) })))
+
+		start := time.Now()
+		var wg sync.WaitGroup
+		for range 10 {
+			wg.Go(func() {
+				if err := limitedGet(context.Background(), lt); err != nil {
+					t.Error(err)
 				}
-			} else {
-				break
-			}
+			})
 		}
-		time.Sleep(50 * time.Millisecond)
-		atomic.AddInt32(&currentConcurrent, -1)
-		w.WriteHeader(http.StatusOK)
-	}))
-	defer server.Close()
+		wg.Wait()
 
-	transport := must(NewLimiterTransport(http.DefaultTransport, 3))
-	client := &http.Client{Transport: transport}
-
-	var wg sync.WaitGroup
-	for i := 0; i < 10; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			resp, _ := client.Get(server.URL)
-			if resp != nil {
-				resp.Body.Close()
-			}
-		}()
-	}
-
-	wg.Wait()
-
-	if maxConcurrent > 3 {
-		t.Errorf("expected max concurrent <= 3, got %d", maxConcurrent)
-	}
-}
-
-func TestLimiterTransport_Timeout(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		time.Sleep(500 * time.Millisecond)
-		w.WriteHeader(http.StatusOK)
-	}))
-	defer server.Close()
-
-	transport := must(NewLimiterTransport(http.DefaultTransport, 1,
-		WithAcquireTimeout(50*time.Millisecond),
-	))
-	client := &http.Client{Transport: transport}
-
-	// Start a slow request
-	go func() {
-		resp, _ := client.Get(server.URL)
-		if resp != nil {
-			resp.Body.Close()
+		if p := up.peak.Load(); p != 3 {
+			t.Errorf("peak concurrency %d, want 3", p)
 		}
-	}()
-
-	time.Sleep(10 * time.Millisecond)
-
-	// This should timeout waiting for a slot
-	_, err := client.Get(server.URL)
-	if !errors.Is(err, ErrLimiterTimeout) {
-		t.Errorf("expected ErrLimiterTimeout, got %v", err)
-	}
-}
-
-func TestLimiterTransport_ContextCancellation(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		time.Sleep(500 * time.Millisecond)
-		w.WriteHeader(http.StatusOK)
-	}))
-	defer server.Close()
-
-	transport := must(NewLimiterTransport(http.DefaultTransport, 1))
-	client := &http.Client{Transport: transport}
-
-	// Start a slow request
-	go func() {
-		resp, _ := client.Get(server.URL)
-		if resp != nil {
-			resp.Body.Close()
+		if took := time.Since(start); took != 200*time.Millisecond {
+			t.Errorf("ten requests took %v, want four 50ms rounds", took)
 		}
-	}()
-
-	time.Sleep(10 * time.Millisecond)
-
-	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
-	defer cancel()
-
-	req, _ := http.NewRequestWithContext(ctx, "GET", server.URL, nil)
-	_, err := client.Do(req)
-
-	if !errors.Is(err, context.DeadlineExceeded) {
-		t.Errorf("expected context.DeadlineExceeded, got %v", err)
-	}
+		if n := blocked.Load(); n != 7 {
+			t.Errorf("%d waits for a slot reported, want 7", n)
+		}
+	})
 }
 
-func TestLimiterTransport_OnBlocked(t *testing.T) {
-	var blockedCount int32
-
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		time.Sleep(100 * time.Millisecond)
-		w.WriteHeader(http.StatusOK)
-	}))
-	defer server.Close()
-
-	transport := must(NewLimiterTransport(http.DefaultTransport, 1,
-		WithOnBlocked(func() {
-			atomic.AddInt32(&blockedCount, 1)
-		}),
-	))
-	client := &http.Client{Transport: transport}
-
-	var wg sync.WaitGroup
-	for i := 0; i < 3; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			resp, _ := client.Get(server.URL)
-			if resp != nil {
-				resp.Body.Close()
-			}
-		}()
+// A request waiting for a slot gives up exactly at its acquire timeout, or
+// when its own context ends first.
+func TestLimiterWaitEnds(t *testing.T) {
+	tests := []struct {
+		name     string
+		opts     []LimiterOption
+		deadline time.Duration
+		want     error
+	}{
+		{"at the acquire timeout", []LimiterOption{WithAcquireTimeout(50 * time.Millisecond)}, 0, ErrLimiterTimeout},
+		{"with the request context", nil, 50 * time.Millisecond, context.DeadlineExceeded},
+		{"with the request context before the acquire timeout", []LimiterOption{WithAcquireTimeout(time.Second)}, 50 * time.Millisecond, context.DeadlineExceeded},
 	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				lt := must(NewLimiterTransport(&slowUpstream{latency: time.Hour}, 1, tt.opts...))
+				holder, release := context.WithCancel(context.Background())
+				held := make(chan error, 1)
+				go func() { held <- limitedGet(holder, lt) }()
+				synctest.Wait() // the slot is taken
 
-	wg.Wait()
-
-	// At least 2 requests should have been blocked (first one gets slot, others wait)
-	if atomic.LoadInt32(&blockedCount) < 2 {
-		t.Errorf("expected at least 2 blocked callbacks, got %d", blockedCount)
-	}
-}
-
-func TestLimiterTransport_Available(t *testing.T) {
-	transport := must(NewLimiterTransport(http.DefaultTransport, 5))
-
-	if transport.Available() != 5 {
-		t.Errorf("expected 5 available, got %d", transport.Available())
-	}
-	if transport.InFlight() != 0 {
-		t.Errorf("expected 0 in-flight, got %d", transport.InFlight())
+				ctx := context.Background()
+				if tt.deadline > 0 {
+					var cancel context.CancelFunc
+					ctx, cancel = context.WithTimeout(ctx, tt.deadline)
+					defer cancel()
+				}
+				start := time.Now()
+				if err := limitedGet(ctx, lt); !errors.Is(err, tt.want) {
+					t.Errorf("err = %v, want %v", err, tt.want)
+				}
+				if took := time.Since(start); took != 50*time.Millisecond {
+					t.Errorf("gave up after %v, want 50ms", took)
+				}
+				release()
+				<-held
+			})
+		})
 	}
 }
