@@ -131,9 +131,9 @@ func TestPaths_Refused(t *testing.T) {
 	}
 }
 
-// An element path reads one decoded element through ElementRow, which
-// refuses an element that is not decoded JSON; PathValue, which decodes a
-// string document as JSON text, refuses the path.
+// An element path reads one decoded element, or a Document holding it,
+// through ElementRow, which refuses an element of another type; PathValue,
+// which decodes a string document as JSON text, refuses the path.
 func TestPaths_ElementPathsReadElements(t *testing.T) {
 	schema, err := filtertest.ArraySchema()
 	require.NoError(t, err)
@@ -142,11 +142,15 @@ func TestPaths_ElementPathsReadElements(t *testing.T) {
 	_, _, err = filter.PathValue(`{"sku":"x"}`, sku)
 	assert.Error(t, err)
 
-	v, present, err := filter.ElementRow{Element: map[string]any{"sku": "x"}}.Value(sku)
+	doc, err := filter.DecodeDocument([]byte(`{"sku":"x"}`))
 	require.NoError(t, err)
-	assert.True(t, present)
-	assert.Equal(t, "x", v)
-	for _, elem := range []any{`{"sku":"x"}`, "x", json.Number("7"), 7.0, int64(7), true, nil, []any{map[string]any{"sku": "x"}}} {
+	for _, elem := range []any{map[string]any{"sku": "x"}, doc, &doc} {
+		v, present, err := filter.ElementRow{Element: elem}.Value(sku)
+		require.NoError(t, err, "%T", elem)
+		assert.True(t, present, "%T", elem)
+		assert.Equal(t, "x", v, "%T", elem)
+	}
+	for _, elem := range []any{`{"sku":"x"}`, "x", json.Number("7"), 7.0, int64(7), true, nil, (*filter.Document)(nil), []any{map[string]any{"sku": "x"}}} {
 		_, present, err := filter.ElementRow{Element: elem}.Value(sku)
 		require.NoError(t, err)
 		assert.False(t, present, "%#v is no object", elem)

@@ -368,10 +368,11 @@ func rebaseElements(n *FilterNode, value string, moved map[*FieldSchema]*FieldSc
 // DocumentElements is a JSON array document's elements, decoded as
 // PathValue decodes documents; nil for a document that is not an array. A
 // backend with its own evaluator of `$some` / `$none` tests the node's
-// condition on each element e as Evaluate does, on ElementRow{Element: e}:
+// condition, n.Children[0], on each element e as Evaluate does:
 // Evaluate(n.Children[0], ElementRow{Element: e}), or its own evaluator
-// reading each field of the condition through that row. An element that is
-// not an object, a string included, has no members.
+// reading each field of the condition through that row. A node with no
+// condition (`{}`) has no children and holds for any element. An element
+// that is not an object, a string included, has no members.
 func DocumentElements(doc any) ([]any, error) {
 	root, err := decodeDocument(doc)
 	if err != nil {
