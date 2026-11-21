@@ -32,6 +32,7 @@ func TestCheck(t *testing.T) {
 		{"other rows", geo, false, ids("a"), nil, false},
 		{"a supported backend's refusal", geo, false, nil, refusal, false},
 		{"Unsupported backends without their code", Case{Want: ids("ab"), Unsupported: []string{"memory"}}, false, ids("ab"), nil, false},
+		{"a code without Unsupported backends", Case{Want: ids("ab"), UnsupportedErr: "E2115"}, false, ids("ab"), nil, false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

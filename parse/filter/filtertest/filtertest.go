@@ -91,7 +91,8 @@ type Case struct {
 	// case.
 	Unsupported []string
 	// UnsupportedErr is the E-code an Unsupported backend refuses Filter
-	// with: E2115 for a geo operator.
+	// with: E2115 for a geo operator. It is set exactly when Unsupported
+	// is.
 	UnsupportedErr string
 }
 
@@ -149,8 +150,8 @@ func run(t *testing.T, name string, parser *filter.FilterParser, cases []Case, b
 // when it conforms. A backend c names Unsupported must refuse it with
 // c.UnsupportedErr; any other must return c.Want.
 func check(c Case, unsupported bool, got []string, err error) error {
-	if len(c.Unsupported) > 0 && c.UnsupportedErr == "" {
-		return errors.New("case names Unsupported backends without their UnsupportedErr")
+	if (len(c.Unsupported) > 0) != (c.UnsupportedErr != "") {
+		return errors.New("case sets one of Unsupported and UnsupportedErr without the other")
 	}
 	if unsupported {
 		var pe *core.ParseError
@@ -165,8 +166,13 @@ func check(c Case, unsupported bool, got []string, err error) error {
 	if err != nil {
 		return err
 	}
-	if got = slices.Sorted(slices.Values(got)); !slices.Equal(got, c.Want) {
-		return fmt.Errorf("got ids %v, want %v", got, c.Want)
+	return sameIDs(got, c.Want)
+}
+
+// sameIDs fails unless got holds want's ids, in any order.
+func sameIDs(got, want []string) error {
+	if got = slices.Sorted(slices.Values(got)); !slices.Equal(got, want) {
+		return fmt.Errorf("got ids %v, want %v", got, want)
 	}
 	return nil
 }
