@@ -104,16 +104,15 @@ var ErrUnknownDSN = dialect.ErrUnknownDSN
 
 // DialectFromDSN returns the Dialect of a database DSN, decided by its form
 // alone: PostgresDialect for a postgres:// or postgresql:// URL;
-// SQLiteDialect for a sqlite://, sqlite3:// or file: URI, :memory:, or a
-// path ending in .db, .sqlite or .sqlite3 before any ?query. It refuses
-// CockroachDB's cockroach:// and crdb://, where PostgresDialect's SQL has
-// never been verified; a postgres:// URL to a CockroachDB cluster cannot be
-// told apart and selects PostgresDialect. It also refuses a keyword/value
-// string (host=… dbname=…), which does not say which database it names,
-// and a relative name holding =, @ or (, which another driver's DSN can be
-// even with a .db extension; an absolute or ./ path is a SQLite path
-// whatever its directories hold. Construct the dialect for a refused DSN.
-// The error names the scheme, never the DSN.
+// SQLiteDialect for a sqlite:// or sqlite3:// URL, a file: URI, :memory:,
+// or an absolute, ./ or ../ path to a .db, .sqlite or .sqlite3 file. It
+// refuses every DSN another driver's could be: CockroachDB's cockroach://
+// and crdb://, where PostgresDialect's SQL has never been verified (a
+// postgres:// URL to a CockroachDB cluster cannot be told apart and selects
+// PostgresDialect); a bare name such as app.db, which keyword/value, MySQL
+// and Oracle DSNs also end as; //host/… and a one-segment /name.db.
+// Construct the dialect for a refused DSN. The error names the scheme,
+// never the DSN.
 func DialectFromDSN(dsn string) (Dialect, error) {
 	base, err := dialect.FromDSN(dsn)
 	if err != nil {

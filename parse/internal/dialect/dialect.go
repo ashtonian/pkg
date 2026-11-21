@@ -27,37 +27,37 @@ type Dialect interface {
 	QuoteIdent(name string) string
 }
 
-const (
-	supportedDSNs       = "want a postgres:// or postgresql:// URL, a sqlite://, sqlite3:// or file: URI, a .db, .sqlite or .sqlite3 path, or :memory:"
-	ambiguousSQLiteName = "a relative .db, .sqlite or .sqlite3 name holding =, @ or ( can be another driver's DSN; write a SQLite path as ./name, an absolute path or a file: URI"
-)
+const supportedDSNs = "want a postgres:// or postgresql:// URL, a sqlite:// or sqlite3:// URL, a file: URI, :memory:, or an absolute, ./ or ../ path to a .db, .sqlite or .sqlite3 file"
 
 // FromDSN is the dialect of a connection string, decided by its form alone.
-// A postgres:// or postgresql:// URL is PostgreSQL. A sqlite://, sqlite3://
-// or file: URI, :memory:, and a path ending in .db, .sqlite or .sqlite3
-// before any ?query are SQLite. Schemes and extensions match
-// case-insensitively; file: is lower case, as SQLite reads it.
+// A postgres:// or postgresql:// URL is PostgreSQL. SQLite is a sqlite:// or
+// sqlite3:// URL, a file: URI (lower case, as SQLite reads it), :memory:,
+// or a path to a .db, .sqlite or .sqlite3 file, before any ?query, that is
+// absolute (/…, C:\…, C:/…, \\server\…) or relative through ./ or ../ (or
+// .\ and ..\). Schemes and extensions match case-insensitively.
 //
-// CockroachDB's cockroach:// and crdb:// are refused: the PostgreSQL
-// dialect's SQL has never been verified there. A postgres:// URL to a
-// CockroachDB cluster cannot be told apart and selects PostgreSQL. A
-// keyword/value string (host=… dbname=…) is refused too: other drivers
-// share its grammar, so it does not say which database it names. Construct
-// the dialect for one instead.
+// Anything else is refused, because another driver's DSN can take its form:
+//   - CockroachDB's cockroach:// and crdb://, where the PostgreSQL dialect's
+//     SQL has never been verified (a postgres:// URL to a CockroachDB
+//     cluster cannot be told apart and selects PostgreSQL);
+//   - a bare name such as app.db or data/app.db, which a keyword/value
+//     string (host=h dbname=app.db), a MySQL DSN (u:pw@tcp(h)/app.db) or an
+//     Oracle easy connect (dbhost:1521/app.db) also ends as;
+//   - //host/…, Oracle's easy connect, and a one-segment /name.db, which is
+//     go-sql-driver/mysql's /dbname.
 //
-// Other drivers' DSNs can end in .db (host=h dbname=orders.db,
-// u:pw@tcp(h)/app.db, tcp(h)/app.db), so a relative name holding =, @ or (
-// is refused whatever its extension. Neither a keyword/value string nor a
-// MySQL DSN naming a host or credentials starts as an absolute or ./ path
-// does, so such a path is SQLite whatever its directories hold.
-//
-// Errors name the scheme and never the DSN, which may carry a password.
+// Construct the dialect for a refused DSN. Errors name the scheme and never
+// the DSN, which may carry a password.
 func FromDSN(dsn string) (Dialect, error) {
+	// A bare file: is SQLite's temporary database.
+	if strings.HasPrefix(dsn, "file:") {
+		return SQLite{}, nil
+	}
 	if scheme, _, ok := strings.Cut(dsn, "://"); ok && isURIScheme(scheme) {
 		switch strings.ToLower(scheme) {
 		case "postgres", "postgresql":
 			return Postgres{}, nil
-		case "sqlite", "sqlite3", "file":
+		case "sqlite", "sqlite3":
 			return SQLite{}, nil
 		case "cockroach", "crdb":
 			return nil, fmt.Errorf("%w: scheme %q: CockroachDB is not supported", ErrUnknownDSN, scheme)
@@ -65,19 +65,12 @@ func FromDSN(dsn string) (Dialect, error) {
 			return nil, fmt.Errorf("%w: scheme %q: %s", ErrUnknownDSN, scheme, supportedDSNs)
 		}
 	}
-	// A query, such as the modernc driver's ?_pragma=, follows the name. A
-	// bare file: is SQLite's temporary database.
+	// A query, such as the modernc driver's ?_pragma=, follows the name.
 	name, _, _ := strings.Cut(dsn, "?")
-	switch {
-	case strings.HasPrefix(dsn, "file:"), name == ":memory:":
+	if name == ":memory:" || isSQLitePath(name) {
 		return SQLite{}, nil
-	case !hasSQLiteExtension(name):
-		return nil, fmt.Errorf("%w: %s", ErrUnknownDSN, supportedDSNs)
-	case isExplicitPath(name), !strings.ContainsAny(name, "=@("):
-		return SQLite{}, nil
-	default:
-		return nil, fmt.Errorf("%w: %s", ErrUnknownDSN, ambiguousSQLiteName)
 	}
+	return nil, fmt.Errorf("%w: %s", ErrUnknownDSN, supportedDSNs)
 }
 
 // isURIScheme reports whether s is an RFC 3986 scheme of two or more
@@ -99,20 +92,19 @@ func isURIScheme(s string) bool {
 	return true
 }
 
-func hasSQLiteExtension(name string) bool {
-	name = strings.ToLower(name)
-	for _, ext := range []string{".db", ".sqlite", ".sqlite3"} {
-		if strings.HasSuffix(name, ext) {
-			return true
-		}
+// isSQLitePath reports whether name is a path to a SQLite file in a form no
+// other driver's DSN takes.
+func isSQLitePath(name string) bool {
+	if !hasSQLiteExtension(name) {
+		return false
 	}
-	return false
-}
-
-// isExplicitPath reports whether name is an absolute path (/…, C:\…, C:/…,
-// \\server\…) or one relative to the working directory through ./ or ../.
-func isExplicitPath(name string) bool {
-	for _, prefix := range []string{"/", "./", "../", `\\`, `.\`, `..\`} {
+	switch {
+	case strings.HasPrefix(name, "//"):
+		return false
+	case strings.HasPrefix(name, "/"):
+		return strings.Contains(name[1:], "/")
+	}
+	for _, prefix := range []string{"./", "../", `.\`, `..\`, `\\`} {
 		if strings.HasPrefix(name, prefix) {
 			return true
 		}
@@ -123,6 +115,16 @@ func isExplicitPath(name string) bool {
 	drive := name[0]
 	return ('a' <= drive && drive <= 'z' || 'A' <= drive && drive <= 'Z') &&
 		name[1] == ':' && (name[2] == '\\' || name[2] == '/')
+}
+
+func hasSQLiteExtension(name string) bool {
+	name = strings.ToLower(name)
+	for _, ext := range []string{".db", ".sqlite", ".sqlite3"} {
+		if strings.HasSuffix(name, ext) {
+			return true
+		}
+	}
+	return false
 }
 
 // Postgres is PostgreSQL: $n placeholders.
