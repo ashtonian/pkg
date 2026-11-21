@@ -1,6 +1,6 @@
 # parse/examples/server
 
-Serve a seeded product API from an in-memory SQLite database. The example exercises Resource lists over both transports (a GET query string, or the same request as a POST body for a filter too large for a URL), keyset pages, schema discovery, facets and Merge Patch through the same compiler as the PostgreSQL adapter.
+Serve a seeded product API from an in-memory SQLite database. The example exercises Resource lists over both transports (a GET query string, or the same request as a POST body for a filter too large for a URL), keyset pages, schema discovery, facets and Merge Patch of one product or a batch, through the same compiler as the PostgreSQL adapter. It serves every route the TypeScript SDK calls ([server contract](../../sdk/ts/README.md#server-contract)).
 
 ## Architecture
 
@@ -14,7 +14,7 @@ flowchart LR
 
 **Exit points:** Parameterized SQL goes to SQLite; JSON pages, schema documents, facets and native error envelopes go to the HTTP client.
 
-**Failure modes:** Invalid settings fail startup; invalid requests return Parse E-codes; SQL and response failures are observed by the handler; an expired shutdown grace forces connections closed.
+**Failure modes:** Invalid settings fail startup; invalid requests return Parse E-codes; a patch of a missing product is 404 `E4004`, and a batch's missing keys are its `failed` items; SQL and response failures are observed by the handler; an expired shutdown grace forces connections closed.
 
 **Dependencies:** The example imports Parse, the released `pkg/config` and Kong provider, Kong, and the pure-Go SQLite driver. Applications supply their own resource, storage, authenticated scope and authorization policy.
 
@@ -31,6 +31,19 @@ curl -H 'Content-Type: application/json' \
 ```
 
 The second request is the same list as a POST body ([HTTP contract](../../docs/http-errors.md#the-same-request-as-a-post-body)). `POST /api/products` lists, and the example has no create route, so nothing else claims it. A server that creates through `POST` on its collection path needs another path for POST lists.
+
+## Routes
+
+| Route | SDK call | Served by |
+|---|---|---|
+| `GET /api/products` | `list` | `parsehttp.ParseList`, `BuildList`, `Page`; the count and facets when asked |
+| `POST /api/products` | `list` over the body transport | The same handler |
+| `OPTIONS /api/products?facets=…` | `facets` | `ParseList`, `BuildList`, the plan's facet statement |
+| `PATCH /api/products/{id}` | `patch` | `ParseMergePatch`, `BuildUpdate(…, parse.ByID(id), …)`: `{"updated": [product]}`, or 404 `E4004` |
+| `PATCH /api/products?id[]=…` | `patchMany` | `BuildUpdate(…, parse.ByIDs(…), …)` for 1 to 100 keys: `{"updated": [...], "failed": [{"id", "code": "E4004", "error"}]}`; no key or more than 100 is 400 `E4001` |
+| `GET /api/{resource}/schema` | `schema` | `SchemaRegistry.SchemaHandler` |
+
+`E4001`, `E4004` and `E5001` (internal error) are the example's own codes: parse's catalog holds request errors, and whether a row exists or the server failed is the application's to say. Every other code is parse's ([HTTP contract](../../docs/http-errors.md)).
 
 The process logs its listen address as JSON. SIGINT or SIGTERM stops new requests and drains active requests for the configured grace period. Connections close if that deadline expires; the database then closes.
 
@@ -94,6 +107,6 @@ The unit checks cover explicit flags over environment values, omitted-flag prece
 | File | Responsibility |
 |---|---|
 | `main.go` | Configuration, HTTP lifecycle and seeded SQLite storage |
-| `server.go` | Resource declaration, routes, list (GET and POST), facet, schema and patch handlers |
+| `server.go` | Resource declaration, routes, list (GET and POST), facet, schema, single and batch patch handlers, the example's error codes |
 | `settings_test.go` | Configuration source precedence and bounded shutdown |
 | `server_integration_test.go` | Requests against the SQLite HTTP server |
