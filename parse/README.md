@@ -126,6 +126,7 @@ Construct parsers once, customize schemas before serving, and treat them as read
 | `parse.ColumnType(column, t)` | `ResourceOption` | none | Physical storage profile, including `core.SQLJSON` / `SQLJSONB`, native arrays and PostgreSQL inet/cidr/interval text projection; [storage declarations](docs/schema-configuration.md#fields-and-embedding) |
 | `parse.ParserOptions(opts...)` | `ResourceOption` | bounded parser defaults | Limits, codec, clock and schema generation; [complete table](docs/schema-configuration.md#parser-and-generator-options) |
 | `parse.WithPatchPolicy(pc, subject)` | `parse.PatchOption` | none | Request-specific path/value restrictions |
+| `parse.WithErrorHandler(fn)` | `parse.SchemaHandlerOption` | none (failures are not reported) | Receives what `SchemaHandler` / `SchemaListHandler` cannot put in the response: an encoding failure, answered 500/E2120 and matching `parse.ECodeSchemaEncodingFailed`, or a write error after the status is sent ([schema routes](docs/http-errors.md#schema-routes)) |
 | `filter.QueryParamAccept(names...)` | `filter.QueryParamOption` | none | Parameters `ParseRequestFilter` / `NewQueryParamParser` leave to the endpoint; any other unknown parameter is E2071 |
 | `filter.QueryParamLenient()` | `filter.QueryParamOption` | off | Ignore unknown flat parameters instead of refusing them |
 | `filter.PostgresDialect{Collation: c}` | `filter.PostgresCollation` | `filter.CollationPgCUTF8` | Code-point collation for string sorts and ranges; `filter.CollationC` on PostgreSQL 14–16 |
@@ -165,7 +166,8 @@ Tags expose capabilities explicitly: `parse:"filter,sort,patch,facet,search,incl
 | [`parsehttp`](parsehttp/README.md) | `WriteError`: a parse error as an HTTP response; `ParseList`: a list from a GET query string or a POST body |
 | [`parsepgx`](parsepgx/README.md) | `QueryPage`, `Update`: plans run on PostgreSQL through pgx batches |
 | [`parsesqlite`](parsesqlite/README.md) | `Register`: the SQLite functions plans compare decimals through, registered with `modernc.org/sqlite` |
-| [`registry.go`](registry.go) | `NewSchemaRegistry`, `RegisterResource`, `Register[T]`, `MustRegister[T]`, discovery handlers; the versioned schema document (`SchemaResponse`, `SchemaVersion`) with relations, element paths and patch value metadata |
+| [`registry.go`](registry.go) | `NewSchemaRegistry`, `RegisterResource`, `Register[T]`, `MustRegister[T]`; the versioned schema document (`SchemaResponse`, `SchemaVersion`) with relations, element paths and patch value metadata |
+| [`registry_handler.go`](registry_handler.go) | `SchemaHandler`, `SchemaListHandler`, `WithErrorHandler`: discovery routes that encode before writing and report encoding and write failures |
 | [`core`](core/README.md) | Configuration, schema generation, the field walk every schema shares (embedded structs promoted as encoding/json promotes them), values, pointers, `ParseError` |
 | [`filter`](filter/README.md) | Filter AST, dialects, list plans, pages, facets, search, SQL and non-SQL include resolution; `filter.Page.SetInclude` owns the page projection |
 | [`patch`](patch/README.md) | Patch validation, SET clauses, relation statements, patch policy |
@@ -176,7 +178,7 @@ Tags expose capabilities explicitly: `parse:"filter,sort,patch,facet,search,incl
 
 Patch parsers collect independent invalid values in order. Each declared enum/bounds failure carries `*core.ConstraintError` with `Constraint` and `Limit`; `errors.As` still finds the first `*core.ParseError`. See [the complete patch error contract](docs/patches.md#validation).
 
-`parse.Codes() []parse.Code` exposes the application-independent error catalog (E2061–E2089 and E2112–E2119, with gaps; E2067 is a malformed list parameter). `*parse.ParseError` carries the string code, path/index context, cause and HTTP status. A `Code` is an `errors.Is` target; Consumers map catalog metadata into their own error conventions. [Error handling and complete catalog](docs/http-errors.md#error-codes)
+`parse.Codes() []parse.Code` exposes the application-independent error catalog (E2061–E2089 and E2112–E2120, with gaps; E2067 is a malformed list parameter, E2120 a schema document that could not be encoded). `*parse.ParseError` carries the string code, path/index context, cause and HTTP status. A `Code` is an `errors.Is` target; Consumers map catalog metadata into their own error conventions. [Error handling and complete catalog](docs/http-errors.md#error-codes)
 
 ## Verification
 
