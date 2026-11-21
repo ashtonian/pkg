@@ -27,21 +27,29 @@ type Dialect interface {
 	QuoteIdent(name string) string
 }
 
-const supportedDSNs = "want a postgres:// or postgresql:// URL, a sqlite://, sqlite3:// or file: URI, a .db, .sqlite or .sqlite3 path, or :memory:"
+const (
+	supportedDSNs       = "want a postgres:// or postgresql:// URL, a sqlite://, sqlite3:// or file: URI, a .db, .sqlite or .sqlite3 path, or :memory:"
+	ambiguousSQLiteName = "a relative .db, .sqlite or .sqlite3 name holding =, @ or ( can be another driver's DSN; write a SQLite path as ./name, an absolute path or a file: URI"
+)
 
 // FromDSN is the dialect of a connection string, decided by its form alone.
 // A postgres:// or postgresql:// URL is PostgreSQL. A sqlite://, sqlite3://
 // or file: URI, :memory:, and a path ending in .db, .sqlite or .sqlite3
-// before any ?query are SQLite. Schemes, the file: prefix and extensions
-// match case-insensitively.
+// before any ?query are SQLite. Schemes and extensions match
+// case-insensitively; file: is lower case, as SQLite reads it.
 //
 // CockroachDB's cockroach:// and crdb:// are refused: the PostgreSQL
 // dialect's SQL has never been verified there. A postgres:// URL to a
-// CockroachDB cluster cannot be told apart and selects PostgreSQL. Also
-// refused: a keyword/value string (host=… dbname=…), whose grammar other
-// drivers share so that it does not say which database it names, and any
-// other DSN whose name holds = or @, which a path FromDSN accepts does not.
-// Construct the dialect for one instead.
+// CockroachDB cluster cannot be told apart and selects PostgreSQL. A
+// keyword/value string (host=… dbname=…) is refused too: other drivers
+// share its grammar, so it does not say which database it names. Construct
+// the dialect for one instead.
+//
+// Other drivers' DSNs can end in .db (host=h dbname=orders.db,
+// u:pw@tcp(h)/app.db, tcp(h)/app.db), so a relative name holding =, @ or (
+// is refused whatever its extension. Neither a keyword/value string nor a
+// MySQL DSN naming a host or credentials starts as an absolute or ./ path
+// does, so such a path is SQLite whatever its directories hold.
 //
 // Errors name the scheme and never the DSN, which may carry a password.
 func FromDSN(dsn string) (Dialect, error) {
@@ -57,10 +65,19 @@ func FromDSN(dsn string) (Dialect, error) {
 			return nil, fmt.Errorf("%w: scheme %q: %s", ErrUnknownDSN, scheme, supportedDSNs)
 		}
 	}
-	if isSQLitePath(dsn) {
+	// A query, such as the modernc driver's ?_pragma=, follows the name. A
+	// bare file: is SQLite's temporary database.
+	name, _, _ := strings.Cut(dsn, "?")
+	switch {
+	case strings.HasPrefix(dsn, "file:"), name == ":memory:":
 		return SQLite{}, nil
+	case !hasSQLiteExtension(name):
+		return nil, fmt.Errorf("%w: %s", ErrUnknownDSN, supportedDSNs)
+	case isExplicitPath(name), !strings.ContainsAny(name, "=@("):
+		return SQLite{}, nil
+	default:
+		return nil, fmt.Errorf("%w: %s", ErrUnknownDSN, ambiguousSQLiteName)
 	}
-	return nil, fmt.Errorf("%w: %s", ErrUnknownDSN, supportedDSNs)
 }
 
 // isURIScheme reports whether s is an RFC 3986 scheme of two or more
@@ -82,24 +99,7 @@ func isURIScheme(s string) bool {
 	return true
 }
 
-// isSQLitePath reports whether dsn is a file: URI, :memory:, or a SQLite
-// file name, optionally followed by a query such as the modernc driver's
-// ?_pragma=. A bare file: is SQLite's temporary database.
-//
-// A name holding = or @ is refused before its extension is read: a
-// keyword/value DSN (host=h dbname=orders.db) or another driver's
-// (user:pw@tcp(h)/app.db) can end in .db too.
-func isSQLitePath(dsn string) bool {
-	if len(dsn) >= len("file:") && strings.EqualFold(dsn[:len("file:")], "file:") {
-		return true
-	}
-	name, _, _ := strings.Cut(dsn, "?")
-	if name == ":memory:" {
-		return true
-	}
-	if strings.ContainsAny(name, "=@") {
-		return false
-	}
+func hasSQLiteExtension(name string) bool {
 	name = strings.ToLower(name)
 	for _, ext := range []string{".db", ".sqlite", ".sqlite3"} {
 		if strings.HasSuffix(name, ext) {
@@ -107,6 +107,22 @@ func isSQLitePath(dsn string) bool {
 		}
 	}
 	return false
+}
+
+// isExplicitPath reports whether name is an absolute path (/…, C:\…, C:/…,
+// \\server\…) or one relative to the working directory through ./ or ../.
+func isExplicitPath(name string) bool {
+	for _, prefix := range []string{"/", "./", "../", `\\`, `.\`, `..\`} {
+		if strings.HasPrefix(name, prefix) {
+			return true
+		}
+	}
+	if len(name) < 3 {
+		return false
+	}
+	drive := name[0]
+	return ('a' <= drive && drive <= 'z' || 'A' <= drive && drive <= 'Z') &&
+		name[1] == ':' && (name[2] == '\\' || name[2] == '/')
 }
 
 // Postgres is PostgreSQL: $n placeholders.

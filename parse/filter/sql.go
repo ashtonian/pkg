@@ -109,9 +109,11 @@ var ErrUnknownDSN = dialect.ErrUnknownDSN
 // CockroachDB's cockroach:// and crdb://, where PostgresDialect's SQL has
 // never been verified; a postgres:// URL to a CockroachDB cluster cannot be
 // told apart and selects PostgresDialect. It also refuses a keyword/value
-// string (host=… dbname=…), which does not say which database it names, and
-// any other DSN whose name holds = or @; construct the dialect for one. The
-// error names the scheme, never the DSN.
+// string (host=… dbname=…), which does not say which database it names,
+// and a relative name holding =, @ or (, which another driver's DSN can be
+// even with a .db extension; an absolute or ./ path is a SQLite path
+// whatever its directories hold. Construct the dialect for a refused DSN.
+// The error names the scheme, never the DSN.
 func DialectFromDSN(dsn string) (Dialect, error) {
 	base, err := dialect.FromDSN(dsn)
 	if err != nil {
