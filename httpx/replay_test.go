@@ -157,31 +157,33 @@ func TestRetryHonoursRetryAfterLimits(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			up := &scriptedUpstream{
-				statuses: []int{http.StatusServiceUnavailable},
-				header:   http.Header{"Retry-After": {tt.retryAfter}},
-			}
-			rt := must(NewRetryTransport(up, WithMaxAttempts(3), WithBackoff(time.Millisecond, 2*time.Second, 2)))
+			synctest.Test(t, func(t *testing.T) {
+				up := &scriptedUpstream{
+					statuses: []int{http.StatusServiceUnavailable},
+					header:   http.Header{"Retry-After": {tt.retryAfter}},
+				}
+				rt := must(NewRetryTransport(up, WithMaxAttempts(3), WithBackoff(time.Millisecond, 2*time.Second, 2)))
 
-			ctx := context.Background()
-			if tt.deadline > 0 {
-				var cancel context.CancelFunc
-				ctx, cancel = context.WithTimeout(ctx, tt.deadline)
-				defer cancel()
-			}
-			req, _ := http.NewRequestWithContext(ctx, http.MethodGet, "https://api.example.com/x", nil)
-			start := time.Now()
-			resp, err := rt.RoundTrip(req)
-			if err != nil {
-				t.Fatal(err)
-			}
-			resp.Body.Close()
-			if resp.StatusCode != http.StatusServiceUnavailable || up.attempts() != 1 {
-				t.Fatalf("want the 503 back after one attempt, got %d after %d", resp.StatusCode, up.attempts())
-			}
-			if elapsed := time.Since(start); elapsed > 25*time.Millisecond {
-				t.Fatalf("returned after %s; it should not wait", elapsed)
-			}
+				ctx := context.Background()
+				if tt.deadline > 0 {
+					var cancel context.CancelFunc
+					ctx, cancel = context.WithTimeout(ctx, tt.deadline)
+					defer cancel()
+				}
+				req, _ := http.NewRequestWithContext(ctx, http.MethodGet, "https://api.example.com/x", nil)
+				start := time.Now()
+				resp, err := rt.RoundTrip(req)
+				if err != nil {
+					t.Fatal(err)
+				}
+				resp.Body.Close()
+				if resp.StatusCode != http.StatusServiceUnavailable || up.attempts() != 1 {
+					t.Fatalf("want the 503 back after one attempt, got %d after %d", resp.StatusCode, up.attempts())
+				}
+				if elapsed := time.Since(start); elapsed != 0 {
+					t.Fatalf("returned after %s; it should not wait", elapsed)
+				}
+			})
 		})
 	}
 }

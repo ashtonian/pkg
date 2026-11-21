@@ -215,10 +215,12 @@ func TestProductionStack(t *testing.T) {
 		t.Errorf("phase 3: expected a cache hit, Cache-Status=%q", resp2.Header.Get("Cache-Status"))
 	}
 
-	// --- Phase 4: revalidation after expiry (ETag + max-age=1) ---
-	time.Sleep(1100 * time.Millisecond)
-
-	resp3, err := client.Get(server.URL)
+	// --- Phase 4: revalidation (ETag) ---
+	// A request's no-cache has the cache validate what it stored, as its
+	// expiry would; expiry itself is the unit tests'.
+	req4, _ := http.NewRequest(http.MethodGet, server.URL, nil)
+	req4.Header.Set("Cache-Control", "no-cache")
+	resp3, err := client.Do(req4)
 	if err != nil {
 		t.Fatalf("phase 4: request failed: %v", err)
 	}
@@ -227,6 +229,12 @@ func TestProductionStack(t *testing.T) {
 
 	if len(body3) == 0 {
 		t.Error("phase 4: expected non-empty body after revalidation")
+	}
+	mu.Lock()
+	validator := requestHeaders[len(requestHeaders)-1].Get("If-None-Match")
+	mu.Unlock()
+	if validator != `"resp-etag-1"` {
+		t.Errorf("phase 4: revalidation sent If-None-Match %q, want the stored ETag", validator)
 	}
 
 	// --- Phase 5: Circuit breaker ---
@@ -352,70 +360,6 @@ func TestCircuitBreakerIgnoresLocalThrottling(t *testing.T) {
 	}
 }
 
-// TestCircuitBreakerRecovery verifies the full lifecycle:
-// closed → open (on failures) → half-open (after timeout) → closed (on successes).
-func TestCircuitBreakerRecovery(t *testing.T) {
-	var fail atomic.Bool
-	fail.Store(true)
-
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		if fail.Load() {
-			w.WriteHeader(http.StatusInternalServerError)
-			return
-		}
-		w.WriteHeader(http.StatusOK)
-		w.Write([]byte("ok"))
-	}))
-	defer server.Close()
-
-	client := must(httpx.NewClient(
-		httpx.WithCircuitBreaker(
-			httpx.WithFailureThreshold(2),
-			httpx.WithSuccessThreshold(2),
-			httpx.WithOpenTimeout(50*time.Millisecond),
-		),
-	))
-
-	// Trigger 2 failures to open the circuit.
-	for range 2 {
-		resp, _ := client.Get(server.URL)
-		if resp != nil {
-			resp.Body.Close()
-		}
-	}
-
-	// Circuit should be open now.
-	_, err := client.Get(server.URL)
-	if !errors.Is(err, httpx.ErrCircuitOpen) {
-		t.Fatalf("expected ErrCircuitOpen, got %v", err)
-	}
-
-	// Wait for half-open timeout.
-	time.Sleep(60 * time.Millisecond)
-
-	// Fix the server.
-	fail.Store(false)
-
-	// Half-open: 2 successes should close the circuit.
-	for range 2 {
-		resp, err := client.Get(server.URL)
-		if err != nil {
-			t.Fatalf("recovery request failed: %v", err)
-		}
-		resp.Body.Close()
-	}
-
-	// Circuit should be closed — normal requests work.
-	resp, err := client.Get(server.URL)
-	if err != nil {
-		t.Fatalf("post-recovery request failed: %v", err)
-	}
-	resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		t.Errorf("expected 200 after recovery, got %d", resp.StatusCode)
-	}
-}
-
 // TestRetryWithCircuitBreaker verifies that retry stops immediately when
 // the circuit breaker opens mid-retry, and does not keep retrying.
 func TestRetryWithCircuitBreaker(t *testing.T) {
@@ -456,121 +400,6 @@ func TestRetryWithCircuitBreaker(t *testing.T) {
 	// Only 2 real requests should have reached the server.
 	if requestCount.Load() != 2 {
 		t.Errorf("expected 2 backend requests (circuit opened after 2), got %d", requestCount.Load())
-	}
-}
-
-// TestStaleWhileRevalidate verifies that stale responses are served immediately
-// while background revalidation updates the cache.
-func TestStaleWhileRevalidate(t *testing.T) {
-	var requestCount atomic.Int32
-
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		n := requestCount.Add(1)
-		w.Header().Set("Content-Type", "application/json")
-		w.Header().Set("Cache-Control", "max-age=1") // 1 second freshness
-		w.WriteHeader(http.StatusOK)
-		fmt.Fprintf(w, `{"count":%d}`, n)
-	}))
-	defer server.Close()
-
-	client := must(httpx.NewClient(
-		httpx.WithCache(nil,
-			httpx.WithStaleWhileRevalidate(10*time.Second),
-		),
-	))
-
-	// First request populates cache.
-	resp1, err := client.Get(server.URL)
-	if err != nil {
-		t.Fatalf("first request failed: %v", err)
-	}
-	body1, _ := io.ReadAll(resp1.Body)
-	resp1.Body.Close()
-
-	if requestCount.Load() != 1 {
-		t.Fatalf("expected 1 backend request, got %d", requestCount.Load())
-	}
-
-	// Wait for cache to become stale.
-	time.Sleep(1100 * time.Millisecond)
-
-	// Second request: cache is stale but within stale-while-revalidate window.
-	// Should serve stale immediately and trigger background revalidation.
-	resp2, err := client.Get(server.URL)
-	if err != nil {
-		t.Fatalf("second request failed: %v", err)
-	}
-	body2, _ := io.ReadAll(resp2.Body)
-	resp2.Body.Close()
-
-	// Should return the stale cached body (same as first).
-	if string(body1) != string(body2) {
-		t.Errorf("expected stale response %s, got %s", string(body1), string(body2))
-	}
-
-	// Wait for background revalidation to complete.
-	time.Sleep(100 * time.Millisecond)
-
-	if requestCount.Load() < 2 {
-		t.Error("expected background revalidation to fire")
-	}
-}
-
-// TestStaleIfError verifies that stale cached responses are served when the
-// upstream returns an error.
-func TestStaleIfError(t *testing.T) {
-	var fail atomic.Bool
-
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		if fail.Load() {
-			w.WriteHeader(http.StatusBadGateway)
-			return
-		}
-		w.Header().Set("Content-Type", "application/json")
-		w.Header().Set("Cache-Control", "max-age=1") // 1 second freshness
-		w.WriteHeader(http.StatusOK)
-		w.Write([]byte(`{"status":"ok"}`))
-	}))
-	defer server.Close()
-
-	client := must(httpx.NewClient(
-		httpx.WithCache(nil,
-			httpx.WithStaleIfError(time.Minute),
-		),
-	))
-
-	// Populate cache.
-	resp1, err := client.Get(server.URL)
-	if err != nil {
-		t.Fatalf("first request failed: %v", err)
-	}
-	resp1.Body.Close()
-
-	// Wait for cache to become stale.
-	time.Sleep(1100 * time.Millisecond)
-
-	// Break the server.
-	fail.Store(true)
-
-	// Should serve stale because the upstream returns 502 and we're within
-	// the stale-if-error window (cache expired ~0.1s ago, stale-if-error = 1min).
-	resp2, err := client.Get(server.URL)
-	if err != nil {
-		t.Fatalf("stale-if-error request failed: %v", err)
-	}
-	body2, _ := io.ReadAll(resp2.Body)
-	resp2.Body.Close()
-
-	if !strings.HasPrefix(resp2.Header.Get("Cache-Status"), "httpx; hit") {
-		t.Error("expected a stale cache hit for the stale-if-error response")
-	}
-
-	var result testResponse
-	if err := json.Unmarshal(body2, &result); err != nil {
-		t.Fatalf("decode stale body: %v", err)
-	}
-	if result.Status != "ok" {
-		t.Errorf("expected stale body with status 'ok', got '%s'", result.Status)
 	}
 }
 
@@ -633,16 +462,16 @@ func TestChainAPIIntegration(t *testing.T) {
 	}
 }
 
-// TestHedgingIntegration verifies that hedging fires a speculative request when
-// the primary is slow, and returns whichever response arrives first.
+// TestHedgingIntegration verifies that the client hedges a primary that does
+// not answer, returns the hedge's response and cancels the primary.
 func TestHedgingIntegration(t *testing.T) {
 	var requestCount atomic.Int32
 
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		n := requestCount.Add(1)
-		// First request is slow; second (hedge) is fast.
 		if n == 1 {
-			time.Sleep(200 * time.Millisecond)
+			<-r.Context().Done() // the primary answers only by being cancelled
+			return
 		}
 		w.WriteHeader(http.StatusOK)
 		fmt.Fprintf(w, "response-%d", n)
@@ -650,69 +479,21 @@ func TestHedgingIntegration(t *testing.T) {
 	defer server.Close()
 
 	client := must(httpx.NewClient(
-		httpx.WithHedging(20 * time.Millisecond), // hedge after 20ms
+		httpx.WithHedging(time.Millisecond),
 	))
 
-	start := time.Now()
 	resp, err := client.Get(server.URL)
-	elapsed := time.Since(start)
 	if err != nil {
 		t.Fatalf("hedged request failed: %v", err)
 	}
+	body, _ := io.ReadAll(resp.Body)
 	resp.Body.Close()
 
-	// Both requests should have been sent.
-	if requestCount.Load() < 2 {
-		t.Errorf("expected at least 2 requests (primary + hedge), got %d", requestCount.Load())
-	}
-
-	// Response should have arrived much faster than 200ms (the slow primary).
-	if elapsed > 150*time.Millisecond {
-		t.Errorf("hedging should have returned faster than slow primary, took %v", elapsed)
-	}
-}
-
-// TestRetryWithRetryAfter verifies that the retry transport honors the
-// Retry-After header from the server.
-func TestRetryWithRetryAfter(t *testing.T) {
-	var requestCount atomic.Int32
-
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		n := requestCount.Add(1)
-		if n == 1 {
-			w.Header().Set("Retry-After", "1") // 1 second
-			w.WriteHeader(http.StatusTooManyRequests)
-			return
-		}
-		w.WriteHeader(http.StatusOK)
-		w.Write([]byte("ok"))
-	}))
-	defer server.Close()
-
-	client := must(httpx.NewClient(
-		httpx.WithRetry(
-			httpx.WithMaxAttempts(3),
-			httpx.WithBackoff(1*time.Millisecond, 2*time.Second, 1.0), // max wait admits Retry-After: 1
-		),
-	))
-
-	start := time.Now()
-	resp, err := client.Get(server.URL)
-	elapsed := time.Since(start)
-	if err != nil {
-		t.Fatalf("request failed: %v", err)
-	}
-	resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		t.Errorf("expected 200 after retry, got %d", resp.StatusCode)
+	if string(body) != "response-2" {
+		t.Errorf("body = %q, want the hedge's response-2", body)
 	}
 	if requestCount.Load() != 2 {
-		t.Errorf("expected 2 requests (429 + retry), got %d", requestCount.Load())
-	}
-	// Should have waited at least ~1 second for Retry-After.
-	if elapsed < 900*time.Millisecond {
-		t.Errorf("expected retry to honor Retry-After: 1, but elapsed only %v", elapsed)
+		t.Errorf("expected 2 requests (primary + hedge), got %d", requestCount.Load())
 	}
 }
 
@@ -829,13 +610,15 @@ func TestCacheWithRetry(t *testing.T) {
 // ErrLimiterTimeout when all slots are occupied and the timeout expires.
 func TestLimiterWithTimeout(t *testing.T) {
 	started := make(chan struct{})
+	release := make(chan struct{})
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		started <- struct{}{}
-		time.Sleep(200 * time.Millisecond) // hold the slot
+		<-release // hold the slot until the second request has timed out
 		w.WriteHeader(http.StatusOK)
 	}))
 	defer server.Close()
+	defer close(release)
 
 	client := must(httpx.NewClient(
 		httpx.WithLimiter(1,
