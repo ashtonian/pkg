@@ -25,16 +25,16 @@ type ArrayRecord struct {
 
 // ArrayRecords is the fixture data. An array member's value is its
 // elements of its type, so these members hold none: c's empty arrays, d's
-// JSON null and string, e's string and object, f's NULL document, h's
-// absent counts, and i's [null]. g's elements are of mixed kinds: its tags
+// JSON null and string, e's string and object, f's and j's NULL
+// documents, h's absent counts, and i's [null]. g's elements are of mixed kinds: its tags
 // hold one string ("A"), its counts 7.0 and 5.5, its prices 1e3 as a number
 // (a string in exponent notation is no decimal). b's tags repeat an
-// element. The array columns are NULL in d and empty in c and f. A line's
+// element. The array columns are NULL in d and j and empty in c and f. A line's
 // tags follow the same rules: e's are a string, h's second line is no
-// object, i's tags are empty, and f's lines are no array. d's lines are all
-// scalars, so no line has members; one is a string holding the JSON text of
-// a line with sku x and tag a, which only a reader decoding the string
-// would see.
+// object, i's tags are empty, f's lines are no array and d's are NULL. j
+// holds only lines, all scalars, so no line has members; one is a string
+// holding the JSON text of a line with sku x and tag a, which only a reader
+// decoding the string would see.
 func ArrayRecords() []ArrayRecord {
 	return []ArrayRecord{
 		{ID: "a", Doc: json.RawMessage(`{"tags":["a","b"],"counts":[1,20],"prices":[9.5,"10.50"],"seen":["2026-01-02T03:04:05Z","2026-01-02T03:04:05.5+00:00"],"flags":[true]}`),
@@ -42,13 +42,14 @@ func ArrayRecords() []ArrayRecord {
 		{ID: "b", Doc: json.RawMessage(`{"tags":["b","b","c"],"counts":[7],"prices":["9.50"],"seen":["2026-01-01T00:00:00.000000001Z"],"flags":[false,true]}`),
 			Labels: []string{"y"}, Scores: []int64{7}, Lines: json.RawMessage(`[{"sku":"x","tags":["c"]}]`)},
 		{ID: "c", Doc: json.RawMessage(`{"tags":[],"counts":[],"prices":[],"seen":[],"flags":[]}`), Labels: []string{}, Scores: []int64{}, Lines: json.RawMessage(`[]`)},
-		{ID: "d", Doc: json.RawMessage(`{"tags":null,"counts":"7"}`), Lines: json.RawMessage(`["x","{\"sku\":\"x\",\"tags\":[\"a\"]}",7,true,null]`)},
+		{ID: "d", Doc: json.RawMessage(`{"tags":null,"counts":"7"}`)},
 		{ID: "e", Doc: json.RawMessage(`{"tags":"a","counts":{"x":1}}`), Labels: []string{"a"}, Scores: []int64{3}, Lines: json.RawMessage(`[{"sku":"x","tags":"a"}]`)},
 		{ID: "f", Labels: []string{}, Scores: []int64{}, Lines: json.RawMessage(`{"sku":"x","tags":["a"]}`)},
 		{ID: "g", Doc: json.RawMessage(`{"tags":[1,null,"A",{"x":"a"},["a"]],"counts":[7.0,"7",5.5],"prices":[1e3,"1e3",true]}`), Labels: []string{"z", "x"}, Scores: []int64{9},
 			Lines: json.RawMessage(`[{"sku":"y","tags":[1,"a"]}]`)},
 		{ID: "h", Doc: json.RawMessage(`{"tags":["a"]}`), Labels: []string{"a", "a"}, Scores: []int64{5, 9}, Lines: json.RawMessage(`[{"tags":["a"]},"x"]`)},
 		{ID: "i", Doc: json.RawMessage(`{"tags":[null],"flags":["true"]}`), Labels: []string{"z"}, Scores: []int64{100}, Lines: json.RawMessage(`[{"sku":"x","tags":[]}]`)},
+		{ID: "j", Lines: json.RawMessage(`["x","{\"sku\":\"x\",\"tags\":[\"a\"]}",7,true,null]`)},
 	}
 }
 
@@ -82,46 +83,46 @@ var arrayCases = []arrayCase{
 	{"path some ne", `{"doc.tags":{"$some":{"$ne":"a"}}}`, "abg", ""},
 	{"path some nin", `{"doc.tags":{"$some":{"$nin":["a","b"]}}}`, "bg", ""},
 	{"path elements equal under $or", `{"doc.tags":{"$some":{"$or":[{"$eq":"a"},{"$in":["c","z"]}]}}}`, "abh", ""},
-	{"path none eq", `{"doc.tags":{"$none":{"$eq":"a"}}}`, "bcdefgi", ""},
+	{"path none eq", `{"doc.tags":{"$none":{"$eq":"a"}}}`, "bcdefgij", ""},
 	{"path some any element", `{"doc.tags":{"$some":{}}}`, "abgh", ""},
-	{"path none any element", `{"doc.tags":{"$none":{}}}`, "cdefi", ""},
-	{"path contains", `{"doc.tags":{"$contains":["a","b"]}}`, "a", "cdefi"},
-	{"path contains a repeated element", `{"doc.tags":{"$contains":["b"]}}`, "ab", "cdefi"},
-	{"path contains nothing", `{"doc.tags":{"$contains":[]}}`, "abgh", "cdefi"},
-	{"path null", `{"doc.tags":{"$null":true}}`, "cdefi", ""},
+	{"path none any element", `{"doc.tags":{"$none":{}}}`, "cdefij", ""},
+	{"path contains", `{"doc.tags":{"$contains":["a","b"]}}`, "a", "cdefij"},
+	{"path contains a repeated element", `{"doc.tags":{"$contains":["b"]}}`, "ab", "cdefij"},
+	{"path contains nothing", `{"doc.tags":{"$contains":[]}}`, "abgh", "cdefij"},
+	{"path null", `{"doc.tags":{"$null":true}}`, "cdefij", ""},
 	{"path not null", `{"doc.tags":{"$not_null":true}}`, "abgh", ""},
 	{"path one element in a range", `{"doc.counts":{"$some":{"$gte":5,"$lt":10}}}`, "bg", ""},
 	{"path elements on either side", `{"doc.counts":{"$some":{"$or":[{"$lt":2},{"$gt":15}]}}}`, "a", ""},
 	{"path an element unequal", `{"doc.counts":{"$some":{"$not":{"$eq":7}}}}`, "ag", ""},
 	{"path an element in a range and a set", `{"doc.counts":{"$some":{"$and":[{"$gte":1},{"$in":[1,7]}]}}}`, "abg", ""},
-	{"path contains a number", `{"doc.counts":{"$contains":[7]}}`, "bg", "cdefhi"},
+	{"path contains a number", `{"doc.counts":{"$contains":[7]}}`, "bg", "cdefhij"},
 	{"path decimal some eq", `{"doc.prices":{"$some":{"$eq":"10.5"}}}`, "a", ""},
 	{"path decimal some gt", `{"doc.prices":{"$some":{"$gt":9.5}}}`, "ag", ""},
 	{"path decimal some in", `{"doc.prices":{"$some":{"$in":["9.5",1000]}}}`, "abg", ""},
-	{"path decimal contains", `{"doc.prices":{"$contains":["9.5","10.5"]}}`, "a", "cdefhi"},
+	{"path decimal contains", `{"doc.prices":{"$contains":["9.5","10.5"]}}`, "a", "cdefhij"},
 	{"path timestamp some gte", `{"doc.seen":{"$some":{"$gte":"2026-01-02T03:04:05Z"}}}`, "a", ""},
 	{"path bool some eq", `{"doc.flags":{"$some":{"$eq":false}}}`, "b", ""},
-	{"path bool none eq", `{"doc.flags":{"$none":{"$eq":true}}}`, "cdefghi", ""},
-	{"path bool contains", `{"doc.flags":{"$contains":[true]}}`, "ab", "cdefghi"},
+	{"path bool none eq", `{"doc.flags":{"$none":{"$eq":true}}}`, "cdefghij", ""},
+	{"path bool contains", `{"doc.flags":{"$contains":[true]}}`, "ab", "cdefghij"},
 
 	{"column some eq", `{"labels":{"$some":{"$eq":"y"}}}`, "ab", ""},
 	{"column some in", `{"labels":{"$some":{"$in":["a","z"]}}}`, "eghi", ""},
 	{"column some like", `{"labels":{"$some":{"$like":"%"}}}`, "abeghi", ""},
-	{"column none any element", `{"labels":{"$none":{}}}`, "cdf", ""},
-	{"column contains", `{"labels":{"$contains":["a"]}}`, "eh", "d"},
+	{"column none any element", `{"labels":{"$none":{}}}`, "cdfj", ""},
+	{"column contains", `{"labels":{"$contains":["a"]}}`, "eh", "dj"},
 	{"column one element in a range", `{"scores":{"$some":{"$gte":5,"$lt":10}}}`, "bgh", ""},
 	{"column elements on either side", `{"scores":{"$some":{"$or":[{"$eq":1},{"$eq":9}]}}}`, "agh", ""},
-	{"column null", `{"labels":{"$null":true}}`, "d", ""},
+	{"column null", `{"labels":{"$null":true}}`, "dj", ""},
 
 	{"a line's sku", `{"lines":{"$some":{"sku":"x"}}}`, "abei", ""},
 	{"a line's tag", `{"lines":{"$some":{"tags":{"$some":{"$eq":"a"}}}}}`, "agh", ""},
 	{"one line's sku and tag", `{"lines":{"$some":{"sku":"x","tags":{"$some":{"$eq":"a"}}}}}`, "a", ""},
-	{"a line without tags", `{"lines":{"$some":{"tags":{"$none":{}}}}}`, "dehi", ""},
-	{"no line's tags contain", `{"lines":{"$none":{"tags":{"$contains":["a"]}}}}`, "bcdefi", ""},
+	{"a line without tags", `{"lines":{"$some":{"tags":{"$none":{}}}}}`, "ehij", ""},
+	{"no line's tags contain", `{"lines":{"$none":{"tags":{"$contains":["a"]}}}}`, "bcdefij", ""},
 }
 
 // arrayIDs are ArrayRecords' ids.
-const arrayIDs = "abcdefghi"
+const arrayIDs = "abcdefghij"
 
 // containsList is a `$contains` list on ArrayRecords: values whose holders
 // are want, and a value outside them, which leaves absentWant.
@@ -134,13 +135,13 @@ type containsList struct {
 }
 
 var containsLists = []containsList{
-	{field: "doc.tags", held: []any{"a", "b"}, absent: "zz", want: "a", unknown: "cdefi"},
-	{field: "doc.counts", held: []any{int64(7)}, absent: int64(123456), want: "bg", unknown: "cdefhi"},
-	{field: "doc.prices", held: []any{"9.5", "10.5"}, absent: "0.125", want: "a", unknown: "cdefhi"},
-	{field: "doc.seen", held: []any{"2026-01-02T03:04:05Z"}, absent: "2000-01-01T00:00:00Z", want: "a", unknown: "cdefghi"},
-	{field: "doc.flags", held: []any{true}, absent: false, want: "ab", absentWant: "b", unknown: "cdefghi"},
-	{field: "labels", held: []any{"a"}, absent: "zz", want: "eh", unknown: "d"},
-	{field: "scores", held: []any{int64(9)}, absent: int64(123456), want: "gh", unknown: "d"},
+	{field: "doc.tags", held: []any{"a", "b"}, absent: "zz", want: "a", unknown: "cdefij"},
+	{field: "doc.counts", held: []any{int64(7)}, absent: int64(123456), want: "bg", unknown: "cdefhij"},
+	{field: "doc.prices", held: []any{"9.5", "10.5"}, absent: "0.125", want: "a", unknown: "cdefhij"},
+	{field: "doc.seen", held: []any{"2026-01-02T03:04:05Z"}, absent: "2000-01-01T00:00:00Z", want: "a", unknown: "cdefghij"},
+	{field: "doc.flags", held: []any{true}, absent: false, want: "ab", absentWant: "b", unknown: "cdefghij"},
+	{field: "labels", held: []any{"a"}, absent: "zz", want: "eh", unknown: "dj"},
+	{field: "scores", held: []any{int64(9)}, absent: int64(123456), want: "gh", unknown: "dj"},
 }
 
 // largeContainsCases are `$contains` of lists of each SetSizes size above

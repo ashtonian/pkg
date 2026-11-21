@@ -315,8 +315,9 @@ func evaluateElements(n *FilterNode, row Row) (Truth, error) {
 // itself. An element path (a field of FieldSchema.Elements) reads
 // Element's member as PathValue reads a document's, and is absent on an
 // element that is not an object: Element is already decoded, so a string
-// element is a JSON string, never JSON text to decode. Any other field is
-// an error.
+// element is a JSON string, never JSON text to decode. An element path on
+// an Element that is not decoded JSON (DocumentElements' form, or
+// encoding/json's) is an error, as is any other field.
 type ElementRow struct{ Element any }
 
 // Value reads f from the element.
@@ -327,8 +328,16 @@ func (r ElementRow) Value(f *FieldSchema) (any, bool, error) {
 	if !isElementPath(f) {
 		return nil, false, fmt.Errorf("field %s is not an element path", f.ExternalName)
 	}
-	if _, ok := r.Element.(map[string]any); !ok {
+	switch e := r.Element.(type) {
+	case map[string]any:
+	case nil, string, bool, []any:
 		return nil, false, nil
+	default:
+		// Numbers as jsonNumber reads a member: json.Number or a Go number.
+		if core.IsNumber(e) {
+			return nil, false, nil
+		}
+		return nil, false, fmt.Errorf("field %s: element %T is not decoded JSON", f.ExternalName, r.Element)
 	}
 	v, present, err := decodedPathValue(r.Element, f.Path.Segments, f.DataType, f.Elem)
 	if err != nil {

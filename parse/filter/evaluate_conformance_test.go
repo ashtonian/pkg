@@ -11,6 +11,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/stretchr/testify/require"
+
 	"github.com/ashtonian/pkg/parse/filter"
 	"github.com/ashtonian/pkg/parse/filter/filtertest"
 )
@@ -92,9 +94,7 @@ func TestEvaluateArrayConformance(t *testing.T) {
 // JSON text, has no members.
 func TestDocumentElementsConformance(t *testing.T) {
 	schema, err := filtertest.ArraySchema()
-	if err != nil {
-		t.Fatalf("array schema: %v", err)
-	}
+	require.NoError(t, err)
 	records := filtertest.ArrayRecords()
 	filtertest.RunArrays(t, schema, func(t *testing.T, f *filter.ParsedFilter) ([]string, error) {
 		var ids []string
@@ -114,11 +114,17 @@ func TestDocumentElementsConformance(t *testing.T) {
 
 // ownElements evaluates `$some` / `$none` and the logic above them itself,
 // as DocumentElements documents for a backend with its own evaluator, and
-// hands every other condition to filter.Evaluate. stored reads a column as
-// the store holds it.
+// hands every other condition to filter.Evaluate, as it does a malformed
+// logical node, which Evaluate refuses. stored reads a column as the store
+// holds it.
 type ownElements struct{ stored filter.ColumnRow }
 
 func (o ownElements) eval(n *filter.FilterNode, row filter.Row) (filter.Truth, error) {
+	switch {
+	case n.Op == filter.OpNot && len(n.Children) != 1,
+		(n.Op == filter.OpAnd || n.Op == filter.OpOr) && len(n.Children) == 0:
+		return filter.Evaluate(n, row)
+	}
 	switch n.Op {
 	case filter.OpSome, filter.OpNone:
 		elems, err := o.elements(n.Field, row)
