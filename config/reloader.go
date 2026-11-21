@@ -50,6 +50,7 @@ type Reloader[T any] struct {
 	// the origins.
 	load   func(ctx context.Context) (loaded[T], error)
 	logger *slog.Logger // nil: slog.Default() at each line
+	clock  clock
 
 	onSuccess    []successHook
 	onError      []func(trigger string, err error)
@@ -78,9 +79,11 @@ type Reloader[T any] struct {
 	// armSem guards armed. It is taken before the slot, never while holding
 	// it, and waited for under a context, so an Arm queued behind another
 	// gives up when its own context ends.
-	armSem  chan struct{}
-	armed   *triggers    // set up by Arm for the next Run to serve
-	serving atomic.Int32 // Run calls serving their triggers
+	armSem chan struct{}
+	armed  *triggers // set up by Arm for the next Run to serve
+	// running reports a Run serving its triggers. Set under armSem, so two
+	// Runs cannot both start; cleared when that Run returns.
+	running atomic.Bool
 
 	stopOnce sync.Once
 	stopCh   chan struct{}
@@ -201,6 +204,7 @@ func newReloader[T any](ro *reloadOptions, inherited *slog.Logger, configFiles [
 		root:         root,
 		app:          app,
 		logger:       logger,
+		clock:        ro.clock,
 		onSuccess:    ro.onSuccess,
 		onError:      ro.onError,
 		fileWatch:    ro.fileWatch,
@@ -439,7 +443,7 @@ func (r *Reloader[T]) reloadHeld(ctx context.Context, trigger string) (*ReloadRe
 	next.Stats.Attempts++
 	next.Stats.Successes++
 	next.Stats.LastTrigger = trigger
-	next.Stats.LastSuccess = time.Now().UTC()
+	next.Stats.LastSuccess = r.clock.Now().UTC()
 	next.Stats.LastError = nil
 	var plan *applyPlan
 	if r.app != nil {
@@ -486,7 +490,7 @@ func (r *Reloader[T]) publishFailure(prev *Snapshot[T], trigger string, err erro
 	next.Stats.Attempts++
 	next.Stats.Failures++
 	next.Stats.LastTrigger = trigger
-	next.Stats.LastFailure = time.Now().UTC()
+	next.Stats.LastFailure = r.clock.Now().UTC()
 	next.Stats.LastError = Diagnose(err)
 	r.state.Store(next)
 }
@@ -525,7 +529,7 @@ func (r *Reloader[T]) Arm(ctx context.Context) error {
 	if r.stopped() {
 		return ErrReloaderStopped
 	}
-	if r.armed != nil || r.serving.Load() > 0 {
+	if r.armed != nil || r.running.Load() {
 		return nil
 	}
 	t, err := r.arm(ctx)
@@ -581,7 +585,7 @@ func (t *triggers) close() error {
 func (r *Reloader[T]) arm(ctx context.Context) (*triggers, error) {
 	t := &triggers{}
 	if r.fileWatch {
-		watch, err := newFileWatch(r.paths, cmp.Or(max(r.debounce, 0), DefaultFileWatchDebounce), r.log)
+		watch, err := newFileWatch(r.paths, cmp.Or(max(r.debounce, 0), DefaultFileWatchDebounce), r.clock, r.log)
 		if err != nil {
 			return nil, fmt.Errorf("setting up file watch: %w", err)
 		}
@@ -599,7 +603,8 @@ func (r *Reloader[T]) arm(ctx context.Context) (*triggers, error) {
 	return t, nil
 }
 
-// serve hands Run the triggers Arm set up, or arms them.
+// serve hands Run the triggers Arm set up, or arms them, unless another Run
+// is serving: a second set of triggers would reload every change twice.
 func (r *Reloader[T]) serve(ctx context.Context) (*triggers, error) {
 	if err := r.lockArm(ctx); err != nil {
 		return nil, err
@@ -607,6 +612,9 @@ func (r *Reloader[T]) serve(ctx context.Context) (*triggers, error) {
 	defer r.unlockArm()
 	if r.stopped() {
 		return nil, ErrReloaderStopped
+	}
+	if r.running.Load() {
+		return nil, ErrReloaderRunning
 	}
 	t := r.armed
 	r.armed = nil
@@ -616,13 +624,13 @@ func (r *Reloader[T]) serve(ctx context.Context) (*triggers, error) {
 			return nil, err
 		}
 	}
-	r.serving.Add(1)
+	r.running.Store(true)
 	return t, nil
 }
 
 // unserve releases the triggers a returning Run served.
 func (r *Reloader[T]) unserve(ctx context.Context, t *triggers) {
-	r.serving.Add(-1)
+	r.running.Store(false)
 	if err := t.close(); err != nil {
 		r.log().WarnContext(ctx, "closing config file watcher", "error", err)
 	}
@@ -644,6 +652,10 @@ func (r *Reloader[T]) stopped() bool {
 // go reloader.Run(ctx), after [Reloader.Arm] when the caller needs to know
 // the triggers armed. Without Arm, Run arms them and returns the error when
 // it cannot.
+//
+// One Run serves a Reloader at a time. A Run called while another runs
+// returns [ErrReloaderRunning] and arms nothing; once a Run has returned
+// because its ctx ended, Run may be called again.
 //
 // Every automatic reload runs on Run's goroutine with a context that Stop
 // also cancels, and the file-watch debounce timer is owned by the same loop,
@@ -681,10 +693,10 @@ func (r *Reloader[T]) Run(ctx context.Context) error {
 		recheck   <-chan time.Time
 	)
 	if t.watch != nil {
-		events, watchErrs, settled = t.watch.watcher.Events, t.watch.watcher.Errors, t.watch.timer.C
-		ticker := time.NewTicker(t.watch.recheckEvery)
+		events, watchErrs, settled = t.watch.watcher.Events, t.watch.watcher.Errors, t.watch.timer.C()
+		ticker := r.clock.NewTicker(t.watch.recheckEvery)
 		defer ticker.Stop()
-		recheck = ticker.C
+		recheck = ticker.C()
 		if t.stale {
 			r.catchUp(runCtx)
 		}
@@ -692,8 +704,8 @@ func (r *Reloader[T]) Run(ctx context.Context) error {
 
 	var tickCh <-chan time.Time
 	if r.pollInterval > 0 {
-		ticker := time.NewTicker(r.pollInterval)
-		tickCh = ticker.C
+		ticker := r.clock.NewTicker(r.pollInterval)
+		tickCh = ticker.C()
 		defer ticker.Stop()
 	}
 

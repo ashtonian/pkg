@@ -65,6 +65,10 @@ Bridging a provider's watch to a reloader is one call — `p.Watch(func(_ any, e
 
 `NewMapProvider(read, ".")` turns a function into a provider read on every load; with `"."` its keys are dotted paths, with `""` the map is already nested. What `read` returns is copied.
 
+A provider that returns keys, `WithDefaults` and `SetDefaults` may hold typed Go values. Each source is deep-copied as it merges, and the copy keeps a struct only by its exported fields unless it knows the type, as it knows `time.Time`. A value whose state that copy would lose — a `netip.Addr` or `netip.Prefix`, alone or in a section, list, array or map — is read through its `MarshalText` instead; a field of interface type holding one receives that text. A `MarshalText` error fails the load with `ErrValidation`, naming the key and not the value. From a provider or `WithDefaults`, a typed map or section still replaces what the layers beneath it set, and a nil list stays nil.
+
+A provider whose `Read` returns a copy made with koanf's `maps.Copy` has lost such a value before the load reads it; `confmap.Provider` makes that copy when it is built. Return the map as built, or use `NewMapProvider`, which copies without the loss.
+
 ## Code defaults
 
 A `default` tag says what a field defaults to wherever its type appears. For a default that depends on where the type is used, implement `SetDefaults()` (the `Defaulter` interface) on the type that owns the choice. Each program that embeds a shared section sets that section's defaults its own way, and a type used at several paths gets different defaults at each:
@@ -100,6 +104,7 @@ A load fills a fresh value with the default tags, then calls `SetDefaults` on ev
 - **Pointer sections.** A nil pointer section whose type sets defaults is allocated for its `SetDefaults` and kept only if it then holds anything. Setting a section to `nil` in `SetDefaults` turns off what its tags would set, as a source's `null` does.
 - **Collections.** A map's or list's element type that is a `Defaulter` runs for every entry a source creates. The entry holds what the source wrote, then, for the fields it left out, what the element's `SetDefaults` sets, then the element's tags: a file's `routes: {a: {timeout: 1s}}` keeps its timeout and takes the rest from `Route`. A map or list `SetDefaults` itself sets merges like a source's: map entries one by one, a list whole, its elements taking their element defaults.
 - **Embedding.** An embedded struct's `SetDefaults` is promoted as Go promotes methods: it runs as the enclosing struct's, unless the enclosing struct declares its own, which then calls the embedded one when it should run. Two embedded `Defaulter`s whose methods collide promote neither and fail with `ErrSchema`, as does a `SetDefaults` with a value receiver, which could change nothing.
+- **Values that marshal to text.** A `netip.Prefix`, `[]netip.Addr` or `map[string]netip.Prefix` that `SetDefaults` sets loads as set, like a typed value from any source ([above](#any-koanf-provider)).
 - **Determinism.** `SetDefaults` must be deterministic and do no I/O: it runs at every load and reload, and for `Usage`, `JSONSchema`, `PrintTemplate`, `CheckKey` and `DecodeKey`, which all show and use these defaults. A sensitive field's default stays withheld from every one of them.
 
 Caller `WithDefaults` still supplies runtime profiles — values the program knows only when it starts — above the code defaults.

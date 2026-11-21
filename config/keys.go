@@ -28,6 +28,7 @@ type keyWalk struct {
 	twice   []string
 	aliased []string // "old.key (now new.key)"
 	notJSON []string // "key (line n)"; never the text
+	noText  []string // the keys of structs whose MarshalText failed; never the text
 	unknown []UnknownKey
 }
 
@@ -61,12 +62,14 @@ func (w *keyWalk) value(t reflect.Type, data any, path keyPath) any {
 	}
 	t = derefType(t)
 	if opaque(t) {
-		return data
+		return w.whole(t, data, path)
 	}
 	v := reflect.ValueOf(data)
 	switch {
 	case t.Kind() == reflect.Struct && v.Kind() == reflect.Map:
 		return w.structMap(t, v, path)
+	case isBranch(t) && derefValue(v).Kind() == reflect.Struct && derefValue(v).Type() == t:
+		return w.section(t, v, path)
 	case t.Kind() == reflect.Map && v.Kind() == reflect.Map:
 		return w.mapValues(t.Elem(), v, path)
 	case t.Kind() == reflect.Map && isList(v):
@@ -77,6 +80,55 @@ func (w *keyWalk) value(t reflect.Type, data any, path keyPath) any {
 		return w.value(t.Elem(), data, path.index(0)) // weakly typed: a map is a one-element slice
 	}
 	return data
+}
+
+// whole is data for a value of type t that decodes whole, as the merge
+// carries it (see merge_input.go): where t decodes from text, a struct whose
+// state the merge's copy would lose, such as netip.Addr, is its text; where t
+// is an interface, so is each such struct data holds.
+func (w *keyWalk) whole(t reflect.Type, data any, path keyPath) any {
+	if t.Kind() == reflect.Interface {
+		return dynamicInput(data, path, w.failText)
+	}
+	if t.Kind() != reflect.Struct || !reflect.PointerTo(t).Implements(textUnmarshaler) {
+		return data
+	}
+	text, ok, err := mergeText(reflect.ValueOf(data))
+	switch {
+	case !ok:
+		return data
+	case err != nil:
+		w.failText(path)
+		return data
+	}
+	return text
+}
+
+func (w *keyWalk) failText(at keyPath) {
+	w.noText = append(w.noText, diagnosticPath(w.schema, at).orRoot())
+}
+
+// section is v, a typed value of section t, as the merge carries it: v
+// itself, unless t can hold a struct whose state the merge's copy would lose;
+// then its fields by key, rewritten as a source's are, in a wholeMap, so it
+// still replaces the section beneath as the typed value did.
+func (w *keyWalk) section(t reflect.Type, v reflect.Value, path keyPath) any {
+	n, err := schemaOf(t)
+	if err != nil || !carriesText(n) {
+		return v.Interface()
+	}
+	v = derefValue(v)
+	fields := make(map[string]any, len(n.fields))
+	for _, f := range n.fields {
+		if fv, err := f.value(v); err == nil {
+			fields[f.key] = fv.Interface()
+		}
+	}
+	out := w.structMap(t, reflect.ValueOf(fields), path)
+	if m, ok := out.(map[string]any); ok {
+		return wholeMap(m)
+	}
+	return out
 }
 
 func isList(v reflect.Value) bool {
@@ -150,7 +202,7 @@ func (w *keyWalk) structMap(t reflect.Type, v reflect.Value, path keyPath) any {
 		}
 		out = setMapValue(out, reflect.ValueOf(key).Convert(out.Type().Key()), val)
 	}
-	return out.Interface()
+	return keepWhole(v, out)
 }
 
 // mapValues follows the values of map v into element type elem; its keys are
@@ -160,11 +212,15 @@ func (w *keyWalk) mapValues(elem reflect.Type, v reflect.Value, path keyPath) an
 	for _, k := range v.MapKeys() {
 		out = setMapValue(out, k, w.elem(v.Type().Elem(), elem, v.MapIndex(k), path.key(fmt.Sprint(k.Interface()))))
 	}
-	return out.Interface()
+	return keepWhole(v, out)
 }
 
-// elements follows each element of list v into type elem.
+// elements follows each element of list v into type elem. A nil slice stays
+// nil.
 func (w *keyWalk) elements(elem reflect.Type, v reflect.Value, path keyPath) any {
+	if v.Kind() == reflect.Slice && v.IsNil() {
+		return v.Interface()
+	}
 	out := reflect.New(v.Type()).Elem()
 	if v.Kind() == reflect.Slice {
 		out = reflect.MakeSlice(v.Type(), v.Len(), v.Len())

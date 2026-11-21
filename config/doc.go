@@ -123,15 +123,16 @@
 //
 // Every error wraps one category sentinel — [ErrValidation], [ErrFileRead],
 // [ErrFileParse], [ErrSource], [ErrSecretProvider], [ErrPostLoad], and for a
-// reload [ErrReload], [ErrReloadInProgress], [ErrReloaderStopped] — together
-// with its cause, so errors.Is and errors.As reach either. The package defines
-// no error codes; map the categories to your own. The errors it writes quote
-// no value meant for a sensitive field: a decode failure on a field that is,
-// or could hold, a sensitive value — a decode hook's failure included — names
-// the field and type only, and a [ParseError] names the source and line only.
-// A failure on an ordinary field keeps its decoder's message, which may quote
-// the value. Errors your providers, secret populator, post-load hooks and
-// validator return pass through as written.
+// reloader [ErrReload], [ErrReloadInProgress], [ErrReloaderStopped],
+// [ErrReloaderRunning] — together with its cause, so errors.Is and errors.As
+// reach either. The package defines no error codes; map the categories to
+// your own. The errors it writes quote no value meant for a sensitive field:
+// a decode failure on a field that is, or could hold, a sensitive value — a
+// decode hook's failure included — names the field and type only, and a
+// [ParseError] names the source and line only. A failure on an ordinary field
+// keeps its decoder's message, which may quote the value. Errors your
+// providers, secret populator, post-load hooks and validator return pass
+// through as written.
 //
 // # Hot Reload
 //

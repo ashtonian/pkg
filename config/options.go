@@ -263,7 +263,8 @@ func WithEnviron(environ func() []string) Option {
 // target reachable through exported fields — so changing the caller's data
 // afterwards changes nothing, including what a Reloader built from the
 // option reads later. Unexported struct fields, channels and functions are
-// copied by value.
+// copied by value. A netip.Prefix, []netip.Addr or other value whose state
+// the merge cannot copy is read through its MarshalText, as from any source.
 func WithDefaults(defaults map[string]any) Option {
 	snapshot := deepCopy(reflect.ValueOf(defaults)).Interface().(map[string]any)
 	return func(o *options) {
