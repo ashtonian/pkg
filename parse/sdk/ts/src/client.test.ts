@@ -6,8 +6,10 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { createClient } from "./client.js";
-import { ApiError, SchemaValidationError, SchemaVersionError } from "./core/errors.js";
+// ApiError and the problem types come through the package's public entry points.
+import { ApiError, SchemaValidationError, SchemaVersionError } from "./core/index.js";
 import type { ListResult } from "./filter/types.js";
+import type { FieldError, Problem } from "./index.js";
 import { type ResourceSchema, SCHEMA_VERSION } from "./schema.js";
 
 interface WireItem {
@@ -32,6 +34,7 @@ const wire = JSON.parse(
 interface Call {
   method: string;
   url: URL;
+  headers: Headers;
   body: unknown;
 }
 
@@ -42,6 +45,7 @@ function fakeServer(handler: (call: Call) => Response) {
     const call: Call = {
       method: init?.method ?? "GET",
       url: new URL(input instanceof Request ? input.url : String(input)),
+      headers: new Headers(init?.headers),
       body: typeof init?.body === "string" ? JSON.parse(init.body) : undefined,
     };
     calls.push(call);
@@ -292,17 +296,125 @@ describe("relation filters", () => {
 });
 
 describe("errors", () => {
-  it("reads the server error body", async () => {
-    const server = fakeServer(() => json({ code: "E2071", message: "field 'x' is not filterable", details: { field: "x" } }, 422));
-    const err = await client(server.fetch).resource<WireItem>("items").list().catch((e: unknown) => e);
+  function problemResponse(doc: unknown, status: number): Response {
+    return new Response(JSON.stringify(doc), { status, headers: { "Content-Type": "application/problem+json; charset=utf-8" } });
+  }
+
+  // The RFC 9457 §3 validation example, with code extensions.
+  const validation = {
+    type: "https://example.net/validation-error",
+    title: "Your request is not valid.",
+    status: 422,
+    detail: "2 members are invalid",
+    code: "E2077",
+    errors: [
+      { detail: "must be a positive integer", pointer: "#/age" },
+      { detail: "must be 'green', 'red' or 'blue'", pointer: "#/profile/color", code: "E2087" },
+    ],
+  };
+  const parseBody = { code: "E2071", message: "field 'x' is not filterable", details: { field: "x" } };
+  const validationProblem: Problem = {
+    type: validation.type,
+    title: validation.title,
+    status: 422,
+    detail: validation.detail,
+    extensions: { code: "E2077", errors: validation.errors },
+  };
+  const validationErrors: FieldError[] = [
+    { detail: "must be a positive integer", pointer: "#/age" },
+    { detail: "must be 'green', 'red' or 'blue'", pointer: "#/profile/color", code: "E2087" },
+  ];
+
+  const cases: { name: string; response: () => Response; want: Record<string, unknown> }[] = [
+    {
+      name: "a parse error body",
+      response: () => json(parseBody, 422),
+      want: { status: 422, code: "E2071", message: parseBody.message, body: parseBody, problem: undefined, errors: [] },
+    },
+    {
+      name: "an RFC 9457 problem with field errors",
+      response: () => problemResponse(validation, 422),
+      want: {
+        status: 422,
+        code: "E2077",
+        message: "2 members are invalid",
+        body: { code: "E2077", message: "2 members are invalid" },
+        problem: validationProblem,
+        errors: validationErrors,
+      },
+    },
+    {
+      name: "a problem without a code extension, by its type and title",
+      response: () => problemResponse({ type: "https://example.com/probs/out-of-credit", title: "You do not have enough credit." }, 403),
+      want: { status: 403, code: "https://example.com/probs/out-of-credit", message: "You do not have enough credit.", errors: [] },
+    },
+    {
+      name: "an about:blank problem recognized by its title and status",
+      response: () => json({ title: "Not Found", status: 404 }, 404),
+      want: { status: 404, code: "", message: "Not Found", problem: { type: "about:blank", title: "Not Found", status: 404, extensions: {} } },
+    },
+    {
+      name: "a problem recognized by its absolute type",
+      response: () => json({ type: "https://example.com/probs/out-of-credit", detail: "Your balance is 30." }, 403),
+      want: { status: 403, code: "https://example.com/probs/out-of-credit", message: "Your balance is 30." },
+    },
+    {
+      name: "JSON whose type is a bare word, not as a problem",
+      response: () => json({ type: "error", error: { message: "bad" } }, 400),
+      want: { status: 400, code: "", message: "HTTP 400", problem: undefined },
+    },
+    {
+      name: "JSON with only a status, not as a problem",
+      response: () => json({ timestamp: "2026-11-20T00:00:00Z", status: 500, error: "Internal Server Error", path: "/items" }, 500),
+      want: { status: 500, code: "", message: "HTTP 500", problem: undefined },
+    },
+    {
+      name: "a problem with an empty type as about:blank",
+      response: () => problemResponse({ type: "", title: "Bad Request" }, 400),
+      want: { status: 400, code: "", message: "Bad Request", problem: { type: "about:blank", title: "Bad Request" } },
+    },
+    {
+      name: "a parse error body sent as a problem",
+      response: () => problemResponse(parseBody, 422),
+      want: { code: "E2071", message: parseBody.message, body: parseBody, problem: { type: "about:blank", extensions: parseBody } },
+    },
+    {
+      name: "a non-JSON body",
+      response: () => new Response("<html>bad gateway</html>", { status: 502, statusText: "Bad Gateway" }),
+      want: { status: 502, code: "", message: "Bad Gateway", problem: undefined, errors: [] },
+    },
+    {
+      name: "an empty body",
+      response: () => new Response(null, { status: 503, statusText: "Service Unavailable" }),
+      want: { status: 503, code: "", message: "Service Unavailable", problem: undefined, errors: [] },
+    },
+    {
+      name: "an empty body without a status text",
+      response: () => new Response(null, { status: 500 }),
+      want: { status: 500, code: "", message: "HTTP 500", problem: undefined },
+    },
+    {
+      name: "JSON in neither shape",
+      response: () => json({ error: "boom" }, 500),
+      want: { status: 500, code: "", message: "HTTP 500", problem: undefined },
+    },
+    {
+      name: "a problem document that is not an object",
+      response: () => problemResponse(["not", "a", "problem"], 400),
+      want: { status: 400, code: "", message: "HTTP 400", problem: undefined },
+    },
+  ];
+
+  it.each(cases)("reads $name", async ({ response, want }) => {
+    const err = await client(fakeServer(response).fetch).resource<WireItem>("items").list().catch((e: unknown) => e);
     expect(err).toBeInstanceOf(ApiError);
-    expect(err).toMatchObject({ status: 422, code: "E2071", message: "field 'x' is not filterable" });
+    expect(err).toMatchObject(want);
   });
 
-  it("keeps the status when the body is not JSON", async () => {
-    const server = fakeServer(() => new Response("<html>bad gateway</html>", { status: 502, statusText: "Bad Gateway" }));
-    const err = await client(server.fetch).resource<WireItem>("items").list().catch((e: unknown) => e);
-    expect(err).toMatchObject({ status: 502, code: "", message: "Bad Gateway" });
+  it("asks for problem documents as well as JSON", async () => {
+    const server = fakeServer(() => json(wire.list[0]?.response));
+    await client(server.fetch).resource<WireItem>("items").list();
+    expect(server.calls[0]?.headers.get("Accept")).toBe("application/json, application/problem+json");
   });
 });
 
@@ -325,6 +437,112 @@ describe("schema", () => {
     expect(server.calls).toHaveLength(2);
     await items.schema();
     expect(server.calls).toHaveLength(2);
+  });
+
+  describe("a shared fetch", () => {
+    interface Held {
+      signal: AbortSignal;
+      release: () => void;
+    }
+
+    // heldServer answers each request only when released, and rejects one
+    // whose signal aborts first with the signal's reason, as fetch does.
+    function heldServer() {
+      const requests: Held[] = [];
+      const fetchFn: typeof globalThis.fetch = (_input, init) => {
+        const signal = init?.signal;
+        if (!signal) throw new Error("request sent without a signal");
+        return new Promise<Response>((resolve, reject) => {
+          signal.addEventListener("abort", () => {
+            reject(signal.reason as Error);
+          }, { once: true });
+          requests.push({ signal, release: () => { resolve(json(wire.schema)); } });
+        });
+      };
+      return { requests, fetch: fetchFn };
+    }
+
+    function request(server: { requests: Held[] }, i: number): Held {
+      const held = server.requests[i];
+      if (!held) throw new Error(`no request ${String(i)}`);
+      return held;
+    }
+
+    it("survives the first caller's abort for a second caller", async () => {
+      const server = heldServer();
+      const items = client(server.fetch).resource<WireItem>("items");
+      const first = new AbortController();
+
+      const a = items.schema({ signal: first.signal });
+      const b = items.schema();
+      first.abort();
+
+      await expect(a).rejects.toMatchObject({ name: "AbortError" });
+      expect(server.requests).toHaveLength(1);
+      expect(request(server, 0).signal.aborted).toBe(false);
+      request(server, 0).release();
+      await expect(b).resolves.toEqual(wire.schema);
+    });
+
+    it("rejects only a second caller that aborts", async () => {
+      const server = heldServer();
+      const items = client(server.fetch).resource<WireItem>("items");
+      const second = new AbortController();
+
+      const a = items.schema();
+      const b = items.schema({ signal: second.signal });
+      second.abort();
+
+      await expect(b).rejects.toMatchObject({ name: "AbortError" });
+      request(server, 0).release();
+      await expect(a).resolves.toEqual(wire.schema);
+      expect(server.requests).toHaveLength(1);
+    });
+
+    it("is cancelled when every caller aborts, and the next call refetches", async () => {
+      const server = heldServer();
+      const items = client(server.fetch).resource<WireItem>("items");
+      const one = new AbortController();
+      const two = new AbortController();
+
+      const a = items.schema({ signal: one.signal });
+      const b = items.schema({ signal: two.signal });
+      one.abort();
+      await expect(a).rejects.toMatchObject({ name: "AbortError" });
+      expect(request(server, 0).signal.aborted).toBe(false);
+      two.abort(new Error("navigated away"));
+      await expect(b).rejects.toThrow("navigated away");
+      expect(request(server, 0).signal.aborted).toBe(true);
+
+      const c = items.schema();
+      expect(server.requests).toHaveLength(2);
+      request(server, 1).release();
+      await expect(c).resolves.toEqual(wire.schema);
+      await items.schema();
+      expect(server.requests).toHaveLength(2);
+    });
+
+    it("sends nothing for a caller that has already aborted", async () => {
+      const server = heldServer();
+      const items = client(server.fetch).resource<WireItem>("items");
+      await expect(items.schema({ signal: AbortSignal.abort() })).rejects.toMatchObject({ name: "AbortError" });
+      expect(server.requests).toHaveLength(0);
+    });
+
+    it("ends a validating list's wait without failing the other caller's", async () => {
+      const server = heldServer();
+      const items = client(server.fetch, true).resource<WireItem>("items");
+      const first = new AbortController();
+
+      const listing = items.list({ sort: "name" }, { signal: first.signal });
+      const validator = items.validator();
+      first.abort();
+
+      await expect(listing).rejects.toMatchObject({ name: "AbortError" });
+      request(server, 0).release();
+      expect((await validator).filterableFields()).toContain("name");
+      expect(server.requests).toHaveLength(1);
+    });
   });
 
   it("reads the version the Go package serves", () => {

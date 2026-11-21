@@ -1,6 +1,6 @@
 # parse/sdk
 
-Client SDKs for APIs built on `parse`. Each speaks the server's wire contract — the `filter.Param*` list parameters, `filter.Page` responses, the `{code, message, details}` error body — and performs client-side validation backed by shared fixtures. The server remains authoritative for validation and authorization.
+Client SDKs for APIs built on `parse`. Each speaks the server's wire contract — the `filter.Param*` list parameters, `filter.Page` responses, the `{code, message, details}` error body or an RFC 9457 problem document — and performs client-side validation backed by shared fixtures. The server remains authoritative for validation and authorization.
 
 ## Subpackages
 

@@ -6,6 +6,7 @@
  */
 
 import { ApiError, SchemaVersionError } from "./core/errors.js";
+import { hasProblemMembers, isProblemMediaType, isRecord, PROBLEM_MEDIA_TYPE, type Problem, readProblem } from "./core/problem.js";
 import type { ErrorBody, ListRequestOptions, RequestOptions } from "./core/types.js";
 import type { FacetOptions, FacetResult, FilterSchema, ListOptions, ListResult, SortField } from "./filter/types.js";
 import type { RelatedSchemas } from "./filter/validate.js";
@@ -88,19 +89,51 @@ function query(params: URLSearchParams): string {
   return qs ? `?${qs}` : "";
 }
 
-function isErrorBody(v: unknown): v is ErrorBody {
-  return typeof v === "object" && v !== null && typeof (v as ErrorBody).code === "string" && typeof (v as ErrorBody).message === "string";
+function isErrorBody(v: Record<string, unknown>): v is Record<string, unknown> & ErrorBody {
+  return typeof v["code"] === "string" && typeof v["message"] === "string";
+}
+
+// A problem's code is its `code` extension, else its type; about:blank
+// states nothing beyond the HTTP status, so it is no code.
+function problemBody(problem: Problem, fallbackMessage: string): ErrorBody {
+  const extension = problem.extensions["code"];
+  let code = "";
+  if (typeof extension === "string" && extension !== "") {
+    code = extension;
+  } else if (problem.type !== "about:blank") {
+    code = problem.type;
+  }
+  return { code, message: problem.detail || problem.title || fallbackMessage };
+}
+
+// A body in parse's shape keeps its own code, message and details, and is
+// also read as a problem when it is one. A body in neither shape (a proxy's
+// HTML error page, an empty body, unrelated JSON) keeps only the status.
+async function readApiError(res: Response): Promise<ApiError> {
+  const statusMessage = res.statusText || `HTTP ${String(res.status)}`;
+  let doc: unknown;
+  try {
+    doc = JSON.parse(await res.text());
+  } catch {
+    doc = undefined;
+  }
+  if (!isRecord(doc)) {
+    return new ApiError(res.status, { code: "", message: statusMessage });
+  }
+  const isProblem = isProblemMediaType(res.headers.get("Content-Type")) || hasProblemMembers(doc);
+  const problem = isProblem ? readProblem(doc, res.url) : undefined;
+  if (isErrorBody(doc)) {
+    return new ApiError(res.status, doc, problem);
+  }
+  if (problem) {
+    return new ApiError(res.status, problemBody(problem, statusMessage), problem);
+  }
+  return new ApiError(res.status, { code: "", message: statusMessage });
 }
 
 async function parseResponse<R>(res: Response): Promise<R> {
   if (!res.ok) {
-    let body: unknown;
-    try {
-      body = await res.json();
-    } catch {
-      // Not JSON (a proxy's HTML error page, an empty body): keep the status.
-    }
-    throw new ApiError(res.status, isErrorBody(body) ? body : { code: "", message: res.statusText || `HTTP ${String(res.status)}` });
+    throw await readApiError(res);
   }
   return (await res.json()) as R;
 }
@@ -187,7 +220,12 @@ export interface Resource<T> {
    */
   facets(fields: (keyof T & string)[], opts?: FacetOptions<T>, reqOpts?: RequestOptions): Promise<FacetResult>;
 
-  /** Fetch the server-side schema for this resource. Cached after first call. */
+  /**
+   * Fetch the server-side schema for this resource. Cached after first call.
+   * Concurrent calls share one request, sent with the first call's headers
+   * under the client's timeout; a call's `signal` ends only that call's wait,
+   * and the request is cancelled once every waiting call has aborted.
+   */
   schema(reqOpts?: RequestOptions): Promise<ResourceSchema>;
 
   /** Get a {@link SchemaValidator} for client-side validation and introspection. */
@@ -234,7 +272,7 @@ export function createClient(cfg: ClientConfig): Client {
   }
 
   function mergeHeaders(extra?: Record<string, string>): Record<string, string> {
-    return { "Content-Type": "application/json", Accept: "application/json", ...cfg.headers, ...extra };
+    return { "Content-Type": "application/json", Accept: `application/json, ${PROBLEM_MEDIA_TYPE}`, ...cfg.headers, ...extra };
   }
 
   /** Combine the caller's signal (if any) with the per-request timeout
@@ -265,26 +303,80 @@ export function createClient(cfg: ClientConfig): Client {
   }
 
   const schemaCache = new Map<string, ResourceSchema>();
-  const schemaInflight = new Map<string, Promise<ResourceSchema>>();
+
+  // One schema request shared by every concurrent caller for a resource.
+  interface SharedSchemaFetch {
+    readonly schema: Promise<ResourceSchema>;
+    readonly cancel: AbortController;
+    waiters: number;
+  }
+  const schemaInflight = new Map<string, SharedSchemaFetch>();
 
   // Concurrent callers share one fetch; only a successful schema is cached,
-  // so a failed fetch is retried by the next call.
-  function fetchSchema(resourcePath: string, reqOpts?: RequestOptions): Promise<ResourceSchema> {
+  // so a failed fetch is retried by the next call. The shared request runs
+  // under the client's timeout, never one caller's signal: a caller's abort
+  // ends only its own wait, and the request is cancelled once no caller is
+  // left waiting.
+  async function fetchSchema(resourcePath: string, reqOpts?: RequestOptions): Promise<ResourceSchema> {
     const cached = schemaCache.get(resourcePath);
-    if (cached) return Promise.resolve(cached);
-    const inflight = schemaInflight.get(resourcePath);
-    if (inflight) return inflight;
-    const promise = (async () => {
-      try {
-        const schema = checkVersion(await request<ResourceSchema>("GET", `${schemaPath}/${resourcePath}/schema`, undefined, reqOpts));
+    if (cached) return cached;
+    const signal = reqOpts?.signal;
+    signal?.throwIfAborted();
+    const shared = schemaInflight.get(resourcePath) ?? startSchemaFetch(resourcePath, reqOpts?.headers);
+    return waitForSchema(resourcePath, shared, signal);
+  }
+
+  // The first caller's headers go with the shared request; the schema cache
+  // is the client's, not any one caller's.
+  function startSchemaFetch(resourcePath: string, headers: Record<string, string> | undefined): SharedSchemaFetch {
+    const cancel = new AbortController();
+    const opts: RequestOptions = { signal: cancel.signal };
+    if (headers) opts.headers = headers;
+    const fetched = request<ResourceSchema>("GET", `${schemaPath}/${resourcePath}/schema`, undefined, opts);
+    const shared: SharedSchemaFetch = {
+      schema: fetched.then((doc) => {
+        const schema = checkVersion(doc);
         schemaCache.set(resourcePath, schema);
         return schema;
-      } finally {
-        schemaInflight.delete(resourcePath);
+      }),
+      cancel,
+      waiters: 0,
+    };
+    const forget = () => {
+      if (schemaInflight.get(resourcePath) === shared) schemaInflight.delete(resourcePath);
+    };
+    shared.schema.then(forget, forget);
+    schemaInflight.set(resourcePath, shared);
+    return shared;
+  }
+
+  async function waitForSchema(resourcePath: string, shared: SharedSchemaFetch, signal: AbortSignal | undefined): Promise<ResourceSchema> {
+    shared.waiters++;
+    // A caller without a signal never leaves, so the request is never cancelled under it.
+    if (!signal) return shared.schema;
+    // Whichever happens first decides, as with fetch: a schema that settled
+    // before the abort is this caller's even if the abort follows at once.
+    const abortedFirst = await new Promise<boolean>((resolve) => {
+      const aborted = () => {
+        resolve(true);
+      };
+      const settled = () => {
+        signal.removeEventListener("abort", aborted);
+        resolve(false);
+      };
+      signal.addEventListener("abort", aborted, { once: true });
+      shared.schema.then(settled, settled);
+    });
+    if (abortedFirst) {
+      shared.waiters--;
+      if (shared.waiters === 0) {
+        // A later call starts a fresh request rather than joining a cancelled one.
+        if (schemaInflight.get(resourcePath) === shared) schemaInflight.delete(resourcePath);
+        shared.cancel.abort(signal.reason);
       }
-    })();
-    schemaInflight.set(resourcePath, promise);
-    return promise;
+      signal.throwIfAborted();
+    }
+    return shared.schema;
   }
 
   // relatedSchemas fetches the schemas of the relation targets a filter's

@@ -2,7 +2,7 @@
 
 TypeScript client for APIs built on the Go `parse` package: type-safe filter and sort builders, schema discovery, client-side validation for the shared schema contract, cursor pagination, facets, and JSON Merge Patch updates. Its request and response shapes are the server's wire format, verified against fixtures the Go package emits.
 
-Zero runtime dependencies. Runs wherever `fetch` and `AbortSignal.any` exist (Node.js ≥ 20.3, current browsers, Deno, edge runtimes).
+Zero runtime dependencies. Runs wherever `fetch` and `AbortSignal.any` exist: Node.js 22.13 or later (the `engines` floor, which CI tests exactly), current browsers, Deno and edge runtimes.
 
 ## Install
 
@@ -139,7 +139,9 @@ v.fieldsByGroup();          // Map of sidebar group → fields, ordered
 v.includableFields();       // relation fields a list can `include`
 ```
 
-The schema document carries its format version; the client reads version `SCHEMA_VERSION` and refuses any other with `SchemaVersionError`, so a document whose members changed meaning never validates a request. With `validateBeforeSend: true` the schema is fetched once per resource (concurrent callers share the request; a failed or refused fetch is retried by the next call) and every filter, sort, include, facet and patch is validated first. A filter's relation predicates (`$some`, `$none`, `$is`, `$is_not` on a field whose `relation.target` names another resource) validate against that resource's schema, which the client fetches the same way, two levels deep; a JSON array of objects' element filters validate against its `elements`, and a scalar array's element conditions (`{"$some": {"$gte": 5, "$lt": 10}}`, typed by `ElementCondition<E>`) against its `element`, as do its `$contains` members. `validateFilter` (with an optional `RelatedSchemas` lookup), `relatedTargets`, `validateSort` and `validatePatch` are also exported for direct use.
+The schema document carries its format version; the client reads version `SCHEMA_VERSION` and refuses any other with `SchemaVersionError`, so a document whose members changed meaning never validates a request. With `validateBeforeSend: true` the schema is fetched once per resource and every filter, sort, include, facet and patch is validated first. A filter's relation predicates (`$some`, `$none`, `$is`, `$is_not` on a field whose `relation.target` names another resource) validate against that resource's schema, which the client fetches the same way, two levels deep; a JSON array of objects' element filters validate against its `elements`, and a scalar array's element conditions (`{"$some": {"$gte": 5, "$lt": 10}}`, typed by `ElementCondition<E>`) against its `element`, as do its `$contains` members. `validateFilter` (with an optional `RelatedSchemas` lookup), `relatedTargets`, `validateSort` and `validatePatch` are also exported for direct use.
+
+Concurrent calls that need a resource's schema share one request, sent with the first call's headers. It runs under the client's `timeout`, not any one call's `signal`: a call whose signal aborts rejects with the signal's reason while the others keep waiting, and the request is cancelled once every waiting call has aborted. A call with no signal always waits for the result. A failed, cancelled or refused fetch is retried by the next call; only a schema the client reads is cached.
 
 Two Go-emitted corpora pin client to server: `testdata/filter_conformance.json` and `testdata/patch_conformance.json` record the Go parser's validity and error code for every input, and the client must give the same answer. Patch validation checks what the server checks per path — patchable, null only where `nullable`, the value's type, an integer within its Go kind (`number_kind`, exactly for kinds of 32 bits or fewer), the enum, the bounds (`min_length` / `max_length` in code points; `minimum` / `maximum`, exact decimal text compared exactly with an integer or decimal and at the kind's precision with a float), an array's element type and element counts (`min_items` / `max_items`) with each element's enum and bounds, a relation's list of keys, and the operation count. Left to the server: timestamp and UUID spellings, 64-bit integer ranges, values inside JSON documents, the `$contains` members of an array whose schema names no `element`, geo operand shapes in filters, nesting and cost bounds, and server-specific policy.
 
@@ -147,12 +149,26 @@ Two Go-emitted corpora pin client to server: `testdata/filter_conformance.json` 
 
 | Error | When | Fields |
 |---|---|---|
-| `ApiError` | Non-2xx response | `status`, `code` (server E-code, `""` for a non-JSON body), `body` (`{code, message, details?, trace_id?, timestamp?, path?}`) |
+| `ApiError` | Non-2xx response | `status` (the response's), `code`, `message`, `body` (`{code, message, details?, trace_id?, timestamp?, path?}`), `problem` (the RFC 9457 document, or `undefined`), `errors` (its field errors, or `[]`) |
 | `SchemaValidationError` | Client-side validation failed | `code` (the E-code the server would return), `field`, `detail`, optional `constraint` / `limit` |
 | `SchemaValidationErrors` | Multiple merge-patch members or values failed | `errors` (ordered individual failures); inherited `code`, `field`, `detail` and constraint metadata identify the first |
 | `SchemaVersionError` | The server's schema document is in a format version this client does not read | `resource`, `version` (as served), `supported` (`SCHEMA_VERSION`) |
 
 `validatePatch` reports every independent member/value failure in sorted member order. Declared rules set `constraint` to `enum`, `minlen`, `maxlen`, `min`, `max`, `minitems` or `maxitems`, and `limit` to the schema bound text (comma-separated enum allowlist). Type failures leave both undefined. Single failures remain `SchemaValidationError`; the aggregate extends that class, so `instanceof SchemaValidationError` and its first field/code remain useful. [Go error contract](../../docs/patches.md#validation).
+
+`ApiError` reads two error bodies. A JSON object with string `code` and `message` is parse's error body and is kept as `body`. An RFC 9457 problem document is kept as `problem`. It is one when sent as `application/problem+json`, and otherwise only when its `type` is an absolute URI or it has a string `title` and an integer HTTP `status`; a lone `status` or a bare-word `type` belongs to other error envelopes. The problem holds `type` (resolved against the response URL, `"about:blank"` when absent or empty), `title`, `status`, `detail`, `instance` and every other member under `extensions`. A standard member of the wrong type is dropped, as RFC 9457 requires; `problem.status` is advisory and never replaces `ApiError.status`. A problem that is not also in parse's shape sets `code` from its `code` extension, else its `type` (`""` for `about:blank`), and `message` from `detail`, else `title`. `errors` holds the object entries of the problem's `errors` extension (RFC 9457 §3) as `FieldError`s, with the `pointer`, `detail` and `code` members each sends as strings; everything else stays in `problem.extensions`. Any other body (an HTML error page, an empty body, other JSON) gives `code` `""` and the status text as `message`. The client sends `Accept: application/json, application/problem+json`.
+
+```typescript
+try {
+  await products.patch("prod-123", { price: -1 });
+} catch (err) {
+  if (!(err instanceof ApiError)) throw err;
+  console.warn(err.status, err.code, err.message, err.problem?.instance);
+  for (const field of err.errors) console.warn(field.pointer, field.code, field.detail);
+}
+```
+
+All of it is server-supplied text; treat it as untrusted.
 
 Validation codes match the Go parser: E2071 unknown field, E2072 operator not allowed, E2073 value type mismatch, E2062 non-array membership value, E2086 malformed `$and` / `$or` / `$not`, E2087 value outside the enum, E2116 non-string UUID, E2079 / E2081 sort field / count, E2064 / E2066 / E2076 patch operation / size / path.
 
@@ -167,7 +183,7 @@ pnpm test             # vitest
 pnpm run build        # emits dist/
 ```
 
-Development requires Node.js 22.13+ (or 24+) and pnpm 12 at the version `packageManager` pins; CI installs that version. `pnpm-workspace.yaml` sets `pmOnFail: ignore`, so another local pnpm runs as itself instead of switching: pinning would make pnpm write a second YAML document into `pnpm-lock.yaml`, which GitHub's dependency graph, its SBOM export and Dependabot alerts do not read. `make test-parse-sdk`, which CI and the release workflow run, therefore starts with `tools/check-parse-sdk-pnpm.mjs`. It fails when the pnpm on `PATH` is not the pinned release (`pnpm self-update X.Y.Z` installs it), when `pmOnFail: ignore` is missing, or when `pnpm-lock.yaml` has YAML document markers. pnpm keeps a leading `packageManagerDependencies` document once written, so delete it by hand (from the first `---` line through the second). Builds use TypeScript 7 through `@typescript/native`; typed ESLint uses the supported TypeScript 6 API through the `typescript` alias, Microsoft's `@typescript/typescript6` package, whose compiler command is `tsc6`. These are development dependencies; the published client has no runtime dependencies. The tarball includes compiled output and original library source for declaration-map navigation; test sources stay out. JavaScript maps include their source text.
+Development requires Node.js 22.13 or later and pnpm 12 at the version `packageManager` pins; CI installs that version. `pnpm-workspace.yaml` sets `pmOnFail: ignore`, so another local pnpm runs as itself instead of switching: pinning would make pnpm write a second YAML document into `pnpm-lock.yaml`, which GitHub's dependency graph, its SBOM export and Dependabot alerts do not read. CI runs `make test-parse-sdk`, the registry checks and the packed consumer on Node.js 22.13.0, exactly the `engines` floor, and on the newest LTS; that job fails when the floor leg's version and `engines.node` differ, so raise both together. `make test-parse-sdk`, which CI and the release workflow run, starts with `tools/check-parse-sdk-pnpm.mjs`. It fails when the pnpm on `PATH` is not the pinned release (`pnpm self-update X.Y.Z` installs it), when `pmOnFail: ignore` is missing, or when `pnpm-lock.yaml` has YAML document markers. pnpm keeps a leading `packageManagerDependencies` document once written, so delete it by hand (from the first `---` line through the second). Builds use TypeScript 7 through `@typescript/native`; typed ESLint uses the supported TypeScript 6 API through the `typescript` alias, Microsoft's `@typescript/typescript6` package, whose compiler command is `tsc6`. These are development dependencies; the published client has no runtime dependencies. The tarball includes compiled output and original library source for declaration-map navigation; test sources stay out. JavaScript maps include their source text.
 
 From the repository root, `make parse-sdk-release-check` installs the built tarball in a fresh consumer and verifies both TypeScript compilers, runtime subpath imports and packaged sourcemaps. To verify an existing public release, run `bash tools/check-parse-sdk-release.sh --registry X.Y.Z`; it requires the SDK's development dependencies and installs that exact version from the public npm registry with a fresh pnpm store and cache, then checks that the integrity pnpm locked matches the registry's own metadata. `PARSE_SDK_DIR` selects an alternate SDK source directory, including its compiler dependencies. See [the release procedure](../../../CONTRIBUTING.md#parse-sdk-publication) for publication and authentication setup.
 
@@ -184,7 +200,7 @@ Three Go-emitted fixtures keep the client on the server's contract; each fails i
 | Import | Contents |
 |---|---|
 | `@ashtonian/parse` | `createClient`, `SchemaValidator`, `SCHEMA_VERSION`, builders, validators, all types |
-| `@ashtonian/parse/core` | `ApiError`, `SchemaValidationError`, `SchemaValidationErrors`, `SchemaVersionError`, `ConstraintName`, `ConstraintFailure`, `ErrorBody`, `FieldType` |
+| `@ashtonian/parse/core` | `ApiError`, `SchemaValidationError`, `SchemaValidationErrors`, `SchemaVersionError`, `ConstraintName`, `ConstraintFailure`, `ErrorBody`, `Problem`, `FieldError`, `FieldType` |
 | `@ashtonian/parse/filter` | `filter`, `sort`, `validateFilter`, `validateSort`, list / facet / schema types |
 | `@ashtonian/parse/patch` | `validatePatch`, patch schema and result types |
 
@@ -200,7 +216,9 @@ Three Go-emitted fixtures keep the client on the server's contract; each fails i
 | `src/patch/validate.ts` | `validatePatch` — merge-patch semantics (null = remove) |
 | `src/patch/types.ts` | Patch schema, input and result types |
 | `src/schema.ts` | `ResourceSchema` (the schema document), `SCHEMA_VERSION` |
-| `src/core/` | `ApiError`, `SchemaValidationError`, `SchemaValidationErrors`, `SchemaVersionError`, shared types |
+| `src/core/errors.ts` | `ApiError`, `SchemaValidationError`, `SchemaValidationErrors`, `SchemaVersionError` |
+| `src/core/problem.ts` | RFC 9457 `Problem` and `FieldError`: recognition and normalization |
+| `src/core/types.ts` | Shared types: `ErrorBody`, `FieldType`, `RequestOptions` |
 
 ## References
 
