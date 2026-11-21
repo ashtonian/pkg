@@ -23,6 +23,7 @@ type RelatedResource interface {
 	computed(column string) bool
 	dialectView(d filter.Dialect) (*dialectView, error)
 	tenantGraph() *tenantNode
+	admits(column string, need columnAccess) error
 }
 
 func (r *Resource[T]) columnType(name string) (reflect.Type, bool) {
@@ -182,6 +183,9 @@ func (r *Resource[T]) Relate(name string, rel Relation) error {
 			return fmt.Errorf("parse: %s: relation %q: the pair table's tenant cannot be taken from the owner or the target", r.table, name)
 		}
 	}
+	if err := r.checkRelation(name, rs, rel.target, rel.includable || rel.facetable); err != nil {
+		return err
+	}
 	t := rel.target
 	// The last check: past it nothing fails, so the graph never holds a
 	// relation the resource does not declare.
@@ -229,12 +233,12 @@ func (r *Resource[T]) correlationField(column string) *filter.FieldSchema {
 	}
 	expr := r.table + "." + column
 	for _, f := range fs.Fields {
-		if f.Relation == nil && f.Path == nil && f.SQLExpr == expr {
+		if f.Relation == nil && f.Path == nil && f.RowColumn() == column {
 			return f
 		}
 	}
 	info := core.TypeOf(r.tableColumns[column])
-	return &filter.FieldSchema{ExternalName: column, SQLExpr: expr, DataType: info.Type, NumberKind: info.NumberKind}
+	return &filter.FieldSchema{ExternalName: column, SQLExpr: expr, Column: column, DataType: info.Type, NumberKind: info.NumberKind}
 }
 
 // MustRelate is Relate for startup declarations; it panics on a

@@ -121,6 +121,16 @@ func generateFilterSchema(g *core.SchemaGenerator, t reflect.Type) (*ResourceSch
 			Includable:       tags.Parse.Include,
 		}
 
+		if tags.Relation == "" {
+			// Not an error: FieldColumn refuses a column that is no
+			// identifier, which only a column mapper's own SQL may read
+			// (ColumnExpr). Such a field names no row column here, and
+			// parse.NewResource refuses the column outright.
+			if column, ok, err := g.FieldColumn(field); err == nil && ok {
+				fs.Column = column
+			}
+		}
+
 		if tags.Order != "" {
 			if n, err := strconv.Atoi(tags.Order); err == nil {
 				fs.Order = n
@@ -176,7 +186,7 @@ func generateFilterSchema(g *core.SchemaGenerator, t reflect.Type) (*ResourceSch
 			fs.Element = newElement(fs)
 		}
 		fields[fieldName] = fs
-		candidates = append(candidates, requestCandidate(g, field, fs))
+		candidates = append(candidates, requestCandidate(field, fs))
 		if core.IsDocument(fs.DataType) {
 			paths, err := documentPathFields(g, field, fs)
 			if err != nil {
