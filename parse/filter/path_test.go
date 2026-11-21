@@ -133,6 +133,27 @@ func TestPaths_Refused(t *testing.T) {
 
 // A struct a database holds as a scalar (a decimal) declares its type and
 // filters as that scalar.
+// An element path reads one decoded element through ElementRow; PathValue,
+// which decodes a string document as JSON text, refuses it.
+func TestPaths_ElementPathsReadElements(t *testing.T) {
+	schema, err := filtertest.ArraySchema()
+	require.NoError(t, err)
+	sku := schema.Fields["lines"].Elements.Fields["sku"]
+
+	_, _, err = filter.PathValue(`{"sku":"x"}`, sku)
+	assert.Error(t, err)
+
+	v, present, err := filter.ElementRow{Element: map[string]any{"sku": "x"}}.Value(sku)
+	require.NoError(t, err)
+	assert.True(t, present)
+	assert.Equal(t, "x", v)
+	for _, elem := range []any{`{"sku":"x"}`, "x", json.Number("7"), true, nil, []any{map[string]any{"sku": "x"}}} {
+		_, present, err := filter.ElementRow{Element: elem}.Value(sku)
+		require.NoError(t, err)
+		assert.False(t, present, "%#v is no object", elem)
+	}
+}
+
 func TestPaths_ScalarStorage(t *testing.T) {
 	type decimal struct{ Units, Scale int64 }
 	type item struct {

@@ -142,9 +142,17 @@ var maxDecimalMember = strconv.Itoa(decimals.MaxMemberLength)
 // kind are left out. It is absent when no element is left: a JSON array
 // with no element of the type has no value, as a search engine's `exists`
 // reads one.
+//
+// An element path (a field of FieldSchema.Elements) reads one element of a
+// JSON array document, not a column's document, and is an error here:
+// ElementRow reads it on the element DocumentElements decodes, where a
+// string element is a JSON string rather than JSON text.
 func PathValue(doc any, f *FieldSchema) (any, bool, error) {
 	if f.Path == nil {
 		return nil, false, fmt.Errorf("field %s is not a JSON path", f.ExternalName)
+	}
+	if isElementPath(f) {
+		return nil, false, fmt.Errorf("field %s is an element path: read it on an element with ElementRow", f.ExternalName)
 	}
 	root, err := decodeDocument(doc)
 	if err != nil {

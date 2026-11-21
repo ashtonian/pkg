@@ -31,7 +31,10 @@ type ArrayRecord struct {
 // (a string in exponent notation is no decimal). b's tags repeat an
 // element. The array columns are NULL in d and empty in c and f. A line's
 // tags follow the same rules: e's are a string, h's second line is no
-// object, i's tags are empty, and f's lines are no array.
+// object, i's tags are empty, and f's lines are no array. d's lines are all
+// scalars, so no line has members; one is a string holding the JSON text of
+// a line with sku x and tag a, which only a reader decoding the string
+// would see.
 func ArrayRecords() []ArrayRecord {
 	return []ArrayRecord{
 		{ID: "a", Doc: json.RawMessage(`{"tags":["a","b"],"counts":[1,20],"prices":[9.5,"10.50"],"seen":["2026-01-02T03:04:05Z","2026-01-02T03:04:05.5+00:00"],"flags":[true]}`),
@@ -39,7 +42,7 @@ func ArrayRecords() []ArrayRecord {
 		{ID: "b", Doc: json.RawMessage(`{"tags":["b","b","c"],"counts":[7],"prices":["9.50"],"seen":["2026-01-01T00:00:00.000000001Z"],"flags":[false,true]}`),
 			Labels: []string{"y"}, Scores: []int64{7}, Lines: json.RawMessage(`[{"sku":"x","tags":["c"]}]`)},
 		{ID: "c", Doc: json.RawMessage(`{"tags":[],"counts":[],"prices":[],"seen":[],"flags":[]}`), Labels: []string{}, Scores: []int64{}, Lines: json.RawMessage(`[]`)},
-		{ID: "d", Doc: json.RawMessage(`{"tags":null,"counts":"7"}`)},
+		{ID: "d", Doc: json.RawMessage(`{"tags":null,"counts":"7"}`), Lines: json.RawMessage(`["x","{\"sku\":\"x\",\"tags\":[\"a\"]}",7,true,null]`)},
 		{ID: "e", Doc: json.RawMessage(`{"tags":"a","counts":{"x":1}}`), Labels: []string{"a"}, Scores: []int64{3}, Lines: json.RawMessage(`[{"sku":"x","tags":"a"}]`)},
 		{ID: "f", Labels: []string{}, Scores: []int64{}, Lines: json.RawMessage(`{"sku":"x","tags":["a"]}`)},
 		{ID: "g", Doc: json.RawMessage(`{"tags":[1,null,"A",{"x":"a"},["a"]],"counts":[7.0,"7",5.5],"prices":[1e3,"1e3",true]}`), Labels: []string{"z", "x"}, Scores: []int64{9},
@@ -110,9 +113,10 @@ var arrayCases = []arrayCase{
 	{"column elements on either side", `{"scores":{"$some":{"$or":[{"$eq":1},{"$eq":9}]}}}`, "agh", ""},
 	{"column null", `{"labels":{"$null":true}}`, "d", ""},
 
+	{"a line's sku", `{"lines":{"$some":{"sku":"x"}}}`, "abei", ""},
 	{"a line's tag", `{"lines":{"$some":{"tags":{"$some":{"$eq":"a"}}}}}`, "agh", ""},
 	{"one line's sku and tag", `{"lines":{"$some":{"sku":"x","tags":{"$some":{"$eq":"a"}}}}}`, "a", ""},
-	{"a line without tags", `{"lines":{"$some":{"tags":{"$none":{}}}}}`, "ehi", ""},
+	{"a line without tags", `{"lines":{"$some":{"tags":{"$none":{}}}}}`, "dehi", ""},
 	{"no line's tags contain", `{"lines":{"$none":{"tags":{"$contains":["a"]}}}}`, "bcdefi", ""},
 }
 

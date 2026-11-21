@@ -101,3 +101,9 @@ func elementOf(array *FieldSchema) *FieldSchema {
 func isElement(f *FieldSchema) bool {
 	return f.Path == nil && f.SQLExpr == elementColumn
 }
+
+// isElementPath reports an element path of a JSON array document
+// (documentElements), which reads one element rather than a column.
+func isElementPath(f *FieldSchema) bool {
+	return f.Path != nil && f.Path.Column == elementColumn
+}
