@@ -8,7 +8,9 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"maps"
 	"net/http"
+	"slices"
 	"time"
 
 	"github.com/ashtonian/pkg/parse"
@@ -177,6 +179,9 @@ type itemError struct {
 }
 
 func (s *server) patch(w http.ResponseWriter, r *http.Request) {
+	if s.refuseParams(w, r) {
+		return
+	}
 	id := r.PathValue("id")
 	items, err := s.update(w, r, parse.ByID(id))
 	if err != nil {
@@ -193,6 +198,9 @@ func (s *server) patch(w http.ResponseWriter, r *http.Request) {
 // patchMany applies one merge patch to the products its id[] keys name. A
 // key with no product is a failed item, not a failed request.
 func (s *server) patchMany(w http.ResponseWriter, r *http.Request) {
+	if s.refuseParams(w, r, "id[]") {
+		return
+	}
 	ids := r.URL.Query()["id[]"]
 	if len(ids) == 0 || len(ids) > maxPatchIDs {
 		writeJSON(w, http.StatusBadRequest, parsehttp.Body{
@@ -225,6 +233,23 @@ func (s *server) patchMany(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	writeJSON(w, http.StatusOK, res)
+}
+
+// refuseParams answers 400 for a query parameter the route does not read,
+// and reports whether it did. A patch that ignored one, a filter meant to
+// narrow it, would write rows the client did not mean to.
+func (s *server) refuseParams(w http.ResponseWriter, r *http.Request, accepted ...string) bool {
+	q := r.URL.Query()
+	names := slices.Sorted(maps.Keys(q))
+	i := slices.IndexFunc(names, func(name string) bool { return !slices.Contains(accepted, name) })
+	if i < 0 {
+		return false
+	}
+	writeJSON(w, http.StatusBadRequest, parsehttp.Body{
+		Code:    codeBadRequest,
+		Message: fmt.Sprintf("%s %s reads no %q parameter", r.Method, r.URL.Path, names[i]),
+	})
+	return true
 }
 
 // update applies the request's merge patch to target's products and returns

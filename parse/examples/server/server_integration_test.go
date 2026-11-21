@@ -256,6 +256,14 @@ func TestServer_BatchMergePatchRefusals(t *testing.T) {
 	assert.Equal(t, http.StatusBadRequest, call(t, srv, http.MethodPatch, "/api/products?"+many.Encode(), `{"price":7}`, &body), "too many keys")
 	assert.Equal(t, codeBadRequest, body.Code)
 
+	for _, path := range []string{
+		"/api/products?id[]=p01&filter=" + url.QueryEscape(`{"category":"books"}`),
+		"/api/products/p01?category=books",
+	} {
+		assert.Equal(t, http.StatusBadRequest, call(t, srv, http.MethodPatch, path, `{"price":7}`, &body), "a parameter the route does not read could have meant to narrow it: %s", path)
+		assert.Equal(t, codeBadRequest, body.Code)
+	}
+
 	assert.Equal(t, http.StatusUnprocessableEntity, call(t, srv, http.MethodPatch, "/api/products?id[]=p01", `{"category":"toys"}`, &body))
 	assert.Equal(t, "E2077", body.Code, "the patch is validated as a single patch is")
 

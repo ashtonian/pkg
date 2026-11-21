@@ -41,6 +41,8 @@ The second request is the same list as a POST body ([HTTP contract](../../docs/h
 | `OPTIONS /api/products?facets=…` | `facets` | `ParseList`, `BuildList`, the plan's facet statement |
 | `PATCH /api/products/{id}` | `patch` | `ParseMergePatch`, `BuildUpdate(…, parse.ByID(id), …)`: `{"updated": [product]}`, or 404 `E4004` |
 | `PATCH /api/products?id[]=…` | `patchMany` | `BuildUpdate(…, parse.ByIDs(…), …)` for 1 to 100 keys: `{"updated": [...], "failed": [{"id", "code": "E4004", "error"}]}`; no key or more than 100 is 400 `E4001` |
+
+The patch routes read no query parameter but a batch's `id[]`, and answer any other with 400 `E4001`: a parameter a patch ignored, a filter meant to narrow it, would let it write rows the client did not mean to.
 | `GET /api/{resource}/schema` | `schema` | `SchemaRegistry.SchemaHandler` |
 
 `E4001`, `E4004` and `E5001` (internal error) are the example's own codes: parse's catalog holds request errors, and whether a row exists or the server failed is the application's to say. Every other code is parse's ([HTTP contract](../../docs/http-errors.md)).
