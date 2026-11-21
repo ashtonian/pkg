@@ -293,7 +293,7 @@ func evaluateElements(n *FilterNode, row Row) (Truth, error) {
 				found = true
 				break
 			}
-			t, err := evaluate(n.Children[0], elementRow{e})
+			t, err := evaluate(n.Children[0], ElementRow{Element: e})
 			if err != nil {
 				return False, err
 			}
@@ -306,22 +306,40 @@ func evaluateElements(n *FilterNode, row Row) (Truth, error) {
 	return truthOf(found == (n.Op == OpSome)), nil
 }
 
-// elementRow is one element of an array. A scalar array's element is the
-// value of its element field (FieldSchema.Element); a JSON array document's
-// fields are element paths, and only an object element has members.
-type elementRow struct{ elem any }
+// ElementRow is the Row a `$some` / `$none` condition is evaluated on: one
+// element of its array, as Evaluate tests each. Element is an element of a
+// JSON array document as DocumentElements decodes it, or of a scalar array
+// as Row.Value returns the array, in its element type's domain.
+//
+// A scalar array's element field (FieldSchema.Element) reads Element
+// itself. An element path (a field of FieldSchema.Elements) reads
+// Element's member as PathValue reads a document's, and is absent on an
+// element that is not an object: Element is already decoded, so a string
+// element is a JSON string, never JSON text to decode. An element path on
+// an Element that is not decoded JSON (DocumentElements' form, or
+// encoding/json's) is an error, as is any other field.
+type ElementRow struct{ Element any }
 
-func (r elementRow) Value(f *FieldSchema) (any, bool, error) {
+// Value reads f from the element.
+func (r ElementRow) Value(f *FieldSchema) (any, bool, error) {
 	if isElement(f) {
-		return r.elem, r.elem != nil, nil
+		return r.Element, r.Element != nil, nil
 	}
-	if f.Path == nil || f.Path.Column != elementColumn {
+	if !isElementPath(f) {
 		return nil, false, fmt.Errorf("field %s is not an element path", f.ExternalName)
 	}
-	if _, ok := r.elem.(map[string]any); !ok {
+	switch e := r.Element.(type) {
+	case map[string]any:
+	case nil, string, bool, []any:
 		return nil, false, nil
+	default:
+		// Numbers as jsonNumber reads a member: json.Number or a Go number.
+		if core.IsNumber(e) {
+			return nil, false, nil
+		}
+		return nil, false, fmt.Errorf("field %s: element %T is not decoded JSON", f.ExternalName, r.Element)
 	}
-	v, present, err := decodedPathValue(r.elem, f.Path.Segments, f.DataType, f.Elem)
+	v, present, err := decodedPathValue(r.Element, f.Path.Segments, f.DataType, f.Elem)
 	if err != nil {
 		return nil, false, fmt.Errorf("field %s: %w", f.ExternalName, err)
 	}

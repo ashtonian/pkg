@@ -131,6 +131,32 @@ func TestPaths_Refused(t *testing.T) {
 	}
 }
 
+// An element path reads one decoded element through ElementRow, which
+// refuses an element that is not decoded JSON; PathValue, which decodes a
+// string document as JSON text, refuses the path.
+func TestPaths_ElementPathsReadElements(t *testing.T) {
+	schema, err := filtertest.ArraySchema()
+	require.NoError(t, err)
+	sku := schema.Fields["lines"].Elements.Fields["sku"]
+
+	_, _, err = filter.PathValue(`{"sku":"x"}`, sku)
+	assert.Error(t, err)
+
+	v, present, err := filter.ElementRow{Element: map[string]any{"sku": "x"}}.Value(sku)
+	require.NoError(t, err)
+	assert.True(t, present)
+	assert.Equal(t, "x", v)
+	for _, elem := range []any{`{"sku":"x"}`, "x", json.Number("7"), 7.0, int64(7), true, nil, []any{map[string]any{"sku": "x"}}} {
+		_, present, err := filter.ElementRow{Element: elem}.Value(sku)
+		require.NoError(t, err)
+		assert.False(t, present, "%#v is no object", elem)
+	}
+	for _, elem := range []any{json.RawMessage(`{"sku":"x"}`), []byte(`{"sku":"x"}`), map[string]string{"sku": "x"}} {
+		_, _, err := filter.ElementRow{Element: elem}.Value(sku)
+		assert.Error(t, err, "%T is not decoded JSON", elem)
+	}
+}
+
 // A struct a database holds as a scalar (a decimal) declares its type and
 // filters as that scalar.
 func TestPaths_ScalarStorage(t *testing.T) {
