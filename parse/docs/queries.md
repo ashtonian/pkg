@@ -52,7 +52,7 @@ The operator contract is shared where supported. Backend differences and relatio
 
 Values normalize at parse (the AST carries canonical values): exact `int64` / `uint64`, finite `float64`, canonical decimal text, canonical UUID strings, RFC 3339 UTC timestamps with relative tokens (`now-7d`, `now+1h`) resolved, canonical JSON documents bounded by `MaxDepth` / `MaxArraySize`.
 
-`filtertest` holds the conformance fixture — an entity with a field of every type, its rows and the expected rows per filter; a backend passes with `filtertest.Run(t, name, backend)`.
+`filtertest` holds the conformance fixture — an entity with a field of every type, its rows and the expected rows per filter; a backend passes with `filtertest.Run(t, name, backend)`. A case names the backends that cannot evaluate it (`Case.Unsupported`, matched against `name`); each must refuse it with a `*core.ParseError` carrying the case's `UnsupportedErr` (E2115 for a geo operator), and any other error or any result fails the case.
 
 ### Sets
 
@@ -177,9 +177,15 @@ A `filter.Row` returns each field's value in the canonical domain filter values 
 
 A list endpoint declares its resource once — `parse.NewResource[T](table, PrimaryKey, TenantColumn, DeletedColumn, PageSize, AcceptParams, ParserOptions)` — and serves each request in three steps:
 
-1. `ParseList(url.Values)` reads every `filter.Param*` parameter into a `*ListRequest`: the JSON filter ANDed with the flat field parameters and bounded as one expression, sort, cursor, page size (missing: the default; above the maximum: clamped; malformed or not positive: E2067), `include_total` and `include_deleted` (booleans; anything else is E2067), search (E2067 on a resource without search fields), facets (unknown or not facetable: E2071), includes and the field mask. A parameter that is none of these, not a filterable field and not accepted with `AcceptParams` is E2071, so a misspelt filter cannot return an unfiltered list. Off HTTP — an RPC, a message, a saved view — build a `ListInput` (the JSON filter, `FieldFilters` keyed `field` or `field_<op>`, sort, cursor, page size, flags and name lists) and call `ParseListInput`: `ParseList` is that call behind a query-string adapter, with the same limits and codes; a `ListInput` page size of zero is the default and a negative one E2067.
-2. `BuildList(dialect, req, parse.Scope{Tenant, Governance, Policy, IncludeDeleted})` compiles it under the server's decisions: the tenant floor (or governance in its place), soft-delete masking unless `IncludeDeleted`, and the policy, ANDed with the request; the key as the final keyset column; the count and facets when asked; [computed columns](#computed-columns) as the dialect's expressions. A tenant-scoped resource without `Scope.Tenant` is `ErrTenantRequired`. `Scope.Tenant` is the tenant key's text, normalized once and bound as one value at every tenant column the resource reaches, its relations' at any depth included ([Tenant key](relations.md#tenant-key)): a string, a UUID's canonical text, or an integer from its decimal digits with an optional minus sign (`"44"`), range-checked against every integer column's Go kind. Text one of those columns cannot hold is `ErrTenantInvalid`, the server's mistake rather than the request's. The `*ListPlan` holds `Page` (the full `SELECT` of the resource's `Columns`), `Fragment` (its `WHERE … ORDER BY … LIMIT` alone, for a caller's own projection with `Page.Args`; a value the table holds in no column is usually better declared with `parse.ReadExpr`, which `Page` then selects), `Count`, `Facets`, `Include` and `Keyset`.
+1. `ParseList(url.Values)` reads every `filter.Param*` parameter into a `*ListRequest`: the JSON filter ANDed with the flat field parameters and bounded as one expression, sort, cursor, page size (missing: the default; above the maximum: clamped; malformed or not positive: E2067), `include_total` and `include_deleted` (booleans; anything else is E2067), search (E2067 on a resource without search fields), facets (unknown or not facetable: E2071), includes (unknown: E2071; not an includable relation: E2083) and the [field mask](#field-mask) (a name that is no field of the response: E2071). A parameter that is none of these, not a filterable field and not accepted with `AcceptParams` is E2071, so a misspelt filter cannot return an unfiltered list. Off HTTP — an RPC, a message, a saved view — build a `ListInput` (the JSON filter, `FieldFilters` keyed `field` or `field_<op>`, sort, cursor, page size, flags and name lists) and call `ParseListInput`: `ParseList` is that call behind a query-string adapter, with the same limits and codes; a `ListInput` page size of zero is the default and a negative one E2067.
+2. `BuildList(dialect, req, parse.Scope{Tenant, Governance, Policy, IncludeDeleted})` compiles it under the server's decisions: the tenant floor (or governance in its place), soft-delete masking unless `IncludeDeleted`, and the policy, ANDed with the request; the key as the final keyset column; the count and facets when asked; [computed columns](#computed-columns) as the dialect's expressions. A tenant-scoped resource without `Scope.Tenant` or `Scope.Governance` is `ErrTenantRequired`; a governed list holds each row's relations to the row's own tenant instead ([Governed lists](relations.md#governed-lists)). `Scope.Tenant` is the tenant key's text, normalized once and bound as one value at every tenant column the resource reaches, its relations' at any depth included ([Tenant key](relations.md#tenant-key)): a string, a UUID's canonical text, or an integer from its decimal digits with an optional minus sign (`"44"`), range-checked against every integer column's Go kind. Text one of those columns cannot hold is `ErrTenantInvalid`, the server's mistake rather than the request's. The `*ListPlan` holds `Page` (the full `SELECT` of the resource's `Columns`), `Fragment` (its `WHERE … ORDER BY … LIMIT` alone, for a caller's own projection with `Page.Args`; a value the table holds in no column is usually better declared with `parse.ReadExpr`, which `Page` then selects), `Count`, `Facets`, `Include` and `Keyset`.
 3. `Page(rows, plan)` (or `PagePointers`) builds the page from the fetched rows. `IncludeQueries(plan, keys)` returns the include statements for the page's keys (`Key(row)`), tenant-scoped as the list was; read each one's rows with its `Scan` into `Page.Relations` (and `Page.Truncated` for owners cut at the cap).
+
+### Field mask
+
+`fields` (`ListRequest.Fields`) names the members each item of the page returns, by name under the field-name tag (`json` by default). `ParseList`, `ParseListInput` and `ParseListBody` refuse a name that is no field of the response with E2071 and `{"field": name}` in the details, as they refuse an unknown facet, so `?fields=nmae` fails instead of returning items without the member the client expects. A field of the response is a field whose column the resource reads, a [computed column](#computed-columns) included, or a field with no column (`db:"-"`, a relation field), which the service fills itself. A field the field-name tag hides (`json:"-"`) is no field of the response, and neither is a field whose column `ReadColumns` leaves out, query-only columns included: it is zero in every item. The error for either reads as it does for a name the type lacks, so it does not tell a client which fields the server withholds. A mask names top-level members; a path into a document is no field.
+
+The mask does not narrow the query. The plan's `Page` statement selects every column the resource reads whatever the mask names, and `Page(rows, plan)` returns whole items: the service applies the mask, dropping the members it leaves out when it writes the response. An empty mask returns every field.
 
 ### Policy fields
 
@@ -269,6 +275,7 @@ A `parse.Resource` declares its primary key once with `parse.PrimaryKey` (defaul
 | `ListSearch(q)` | string | none | Full-text predicate (WHERE only, order unchanged) |
 | `ListPolicy(pc)` | `*PolicyConstraints` | none | Server-side constraints ANDed with the filter; each names a [policy field](#policy-fields) |
 | `ListTenant(v)` | any | none | Tenant for tenant-scoped relation junctions (filter, count, facets) |
+| `ListRowTenant(column)` | string | none | Hold tenant-scoped related rows to the tenant of the row they hang from, the resource's `column`, for rows of several tenants ([governed lists](relations.md#governed-lists)); excludes `ListTenant` and `ListUnscopedRelations` |
 | `ListUnscopedRelations()` | — | off | Build tenant-scoped junctions without a tenant — platform tooling only |
 | `ListStartParam(n)` | int | `0` | Offset the main fragment after `n` earlier arguments; standalone count/facet statements keep independent numbering |
 
@@ -278,6 +285,7 @@ A `parse.Resource` declares its primary key once with `parse.PrimaryKey` (defaul
 |--------|------|---------|-------------|
 | `WithStartParam(n)` | int | `0` | First placeholder is `n+1` (e.g. after an UPDATE's SET arguments) |
 | `WithTenant(v)` | any | none | Tenant for tenant-scoped relation junctions |
+| `WithRowTenant(column)` | string | none | Compare each tenant-scoped related row with the schema table's tenant `column` instead of a bound tenant; excludes `WithTenant` and `WithUnscopedRelations` |
 | `WithUnscopedRelations()` | — | off | Opt out of junction tenancy |
 
 Facet, include, and flat-query options:
@@ -285,9 +293,11 @@ Facet, include, and flat-query options:
 | Option | Type | Default | Description |
 |---|---|---|---|
 | `WithFacetTenant(v)` | any | none | Tenant binding for standalone facet queries |
+| `WithFacetRowTenant(column)` | string | none | Hold relation facets' related rows to each owner row's tenant `column`, projected beside the owner's key; excludes `WithFacetTenant` |
 | `WithFacetUnscopedRelations()` | — | off | Explicitly omit junction tenancy in facet queries |
 | `WithFacetFrom(from)` | string | the schema's table | The facets' base rows: an aliased table or a join whose columns the filter and the fields name. A relation facet still reads the owner's key as `Name.<pk>` |
 | `WithIncludeTenant(v)` | any | none | Tenant binding for include queries |
+| `WithIncludeRowTenant(owner, column)` | `*ResourceSchema`, string | none | Read each owner's related rows in the owner's tenant `column`, joining the owner's table; excludes `WithIncludeTenant`. `ResolveInclude` refuses it |
 | `WithIncludeUnscoped()` | — | off | Explicitly omit include tenancy |
 | `WithMaxIncludePerRelation(n)` | int | `100` | Targets per owner; distinct keys capped in SQL or non-SQL resolution. The cap must leave room for the truncation sentinel |
 | `QueryParamAccept(names...)` | `...string` | none | Parameters the endpoint reads itself; left alone like the list parameters |

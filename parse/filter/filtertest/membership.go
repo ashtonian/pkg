@@ -170,12 +170,8 @@ func RunMembership(t *testing.T, backend Backend) {
 			if err != nil {
 				t.Fatalf("evaluate: %v", err)
 			}
-			slices.Sort(got)
-			if got == nil {
-				got = []string{}
-			}
-			if !slices.Equal(got, c.Want) {
-				t.Errorf("got %v, want %v", got, c.Want)
+			if err := sameIDs(got, c.Want); err != nil {
+				t.Fatal(err)
 			}
 		})
 	}

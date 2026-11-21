@@ -34,7 +34,12 @@ type ListRequest struct {
 	Facets []string
 	// Include names relation fields whose IDs to project beside the page.
 	Include []string
-	// Fields is the response field mask, for the caller to apply.
+	// Fields is the response field mask: the fields each item returns, by
+	// name under the field-name tag; empty is every field. Each is a field a
+	// response carries, one whose column the resource reads or one with no
+	// column, which the service fills. The service applies the mask to the
+	// items it writes; the page's SELECT reads every read column whatever
+	// the mask names.
 	Fields []string
 }
 
@@ -71,8 +76,9 @@ type ListInput struct {
 // flat filters, bounded as one expression, sort, cursor, page size, the total,
 // deleted rows, search, facets, includes and the field mask. A negative page
 // size, deleted rows of a resource without them, or search on a resource
-// without search fields is E2067; a field filter, facet or include naming no
-// field it can serve is E2071 (an include that is no relation, E2083).
+// without search fields is E2067; a field filter, facet, include or field
+// mask name that names no field it can serve is E2071 (an include that is no
+// relation, E2083).
 func (r *Resource[T]) ParseListInput(in ListInput) (*ListRequest, error) {
 	req := &ListRequest{
 		Cursor: in.Cursor, PageSize: r.pageSize,
@@ -103,17 +109,36 @@ func (r *Resource[T]) ParseListInput(in ListInput) (*ListRequest, error) {
 	if req.Include, err = filter.ParseIncludeNames(r.filterSchema, in.Include); err != nil {
 		return nil, err
 	}
-	for _, name := range listNames(in.Facets) {
-		if f, ok := r.filterSchema.Fields[name]; !ok || !f.Facetable {
-			return nil, &core.ParseError{
-				Kind: core.ParseErrorKindFilter, Code: filter.ECodeUnknownField.String(),
-				Message: fmt.Sprintf("facet field '%s' does not exist or is not facetable", name), Details: map[string]any{"field": name},
-			}
-		}
-		req.Facets = append(req.Facets, name)
+	if req.Facets, err = listNames(in.Facets, r.facetName); err != nil {
+		return nil, err
 	}
-	req.Fields = listNames(in.Fields)
+	if req.Fields, err = listNames(in.Fields, r.maskName); err != nil {
+		return nil, err
+	}
 	return req, nil
+}
+
+func (r *Resource[T]) facetName(name string) error {
+	if f, ok := r.filterSchema.Fields[name]; ok && f.Facetable {
+		return nil
+	}
+	return unknownListField(fmt.Sprintf("facet field '%s' does not exist or is not facetable", name), name)
+}
+
+// maskName refuses a field mask name that is no field of the response,
+// without saying whether T has a field by that name its response withholds.
+func (r *Resource[T]) maskName(name string) error {
+	if r.maskable[name] {
+		return nil
+	}
+	return unknownListField(fmt.Sprintf("response field '%s' does not exist", name), name)
+}
+
+func unknownListField(msg, name string) *core.ParseError {
+	return &core.ParseError{
+		Kind: core.ParseErrorKindFilter, Code: filter.ECodeUnknownField.String(),
+		Message: msg, Details: map[string]any{"field": name},
+	}
 }
 
 // ParseList reads a list request's query parameters (filter.Param*) into a
@@ -214,15 +239,22 @@ func splitNames(raw string) []string {
 	return strings.Split(raw, ",")
 }
 
-// listNames trims names and drops empty and repeated ones.
-func listNames(names []string) []string {
+// listNames trims names and drops empty and repeated ones, refusing a name
+// check refuses. Each name is checked before it is kept, so the kept names,
+// and the search for repeats among them, are bounded by the fields check
+// admits rather than by the request.
+func listNames(names []string, check func(name string) error) ([]string, error) {
 	var out []string
 	for _, name := range names {
-		if name = strings.TrimSpace(name); name != "" && !slices.Contains(out, name) {
-			out = append(out, name)
+		if name = strings.TrimSpace(name); name == "" || slices.Contains(out, name) {
+			continue
 		}
+		if err := check(name); err != nil {
+			return nil, err
+		}
+		out = append(out, name)
 	}
-	return out
+	return out, nil
 }
 
 func listParamError(param, msg string) *core.ParseError {
@@ -236,14 +268,21 @@ func listParamError(param, msg string) *core.ParseError {
 // the request.
 type Scope struct {
 	// Tenant holds rows, and tenant-scoped relation junctions, to one tenant.
-	// Required for a resource with a tenant column. It is the tenant key's
-	// text, normalized once to the type of every tenant column the resource
-	// reaches: the key of a string column, a UUID's canonical text, or an
-	// integer's decimal digits ("44"). Text one of them cannot hold is
-	// ErrTenantInvalid.
+	// Required for a resource with a tenant column, unless Governance is
+	// set. It is the tenant key's text, normalized once to the type of
+	// every tenant column the resource reaches: the key of a string column,
+	// a UUID's canonical text, or an integer's decimal digits ("44"). Text
+	// one of them cannot hold is ErrTenantInvalid.
 	Tenant string
-	// Governance, when set, replaces the tenant floor: it decides tenancy
-	// itself, grants included (filter.ComposeConstraints).
+	// Governance, when set and not empty, replaces the tenant floor: it
+	// decides which rows of which tenants the list reads, grants included
+	// (filter.ComposeConstraints). A row's relations are its own tenant's:
+	// relation predicates, counts, facets and includes hold every
+	// tenant-scoped related row, at every depth, to the tenant of the
+	// listed row it hangs from (filter.ListRowTenant), so a granted row of
+	// another tenant is filtered and included by its own related rows.
+	// Tenant is then not used; on a resource without a tenant column,
+	// whose rows have no tenant, relations stay held to Tenant.
 	Governance *filter.PolicyConstraints
 	// Policy is the authorization constraint, ANDed with everything else.
 	// A constraint names a system field, or exactly one of a request field
@@ -261,8 +300,13 @@ type Scope struct {
 	IncludeDeleted bool
 }
 
-// ErrTenantRequired is a list of a tenant-scoped resource built without a
-// tenant. It is the server's mistake, never the request's.
+// governed reports whether Governance replaces the tenant floor, as
+// filter.ComposeConstraints decides: a nil or empty tree does not.
+func (s Scope) governed() bool { return s.Governance != nil && !s.Governance.IsEmpty() }
+
+// ErrTenantRequired is a list of a tenant-scoped resource built with
+// neither Scope.Tenant nor Scope.Governance, or an update without
+// Scope.Tenant. It is the server's mistake, never the request's.
 var ErrTenantRequired = errors.New("parse: a tenant-scoped resource is listed without Scope.Tenant")
 
 // Statement is one parameterized SQL statement.
@@ -295,9 +339,13 @@ type ListPlan struct {
 	// compiled for dialect.
 	fields *filter.ResourceSchema
 	table  string
-	// tenant is Scope.Tenant in the tenant key's type; nil without one.
-	tenant  any
-	related map[string]*filter.PolicyConstraints
+	// tenant is Scope.Tenant in the tenant key's type; nil without one or
+	// when relations follow each row's tenant (rowTenant).
+	tenant any
+	// rowTenant holds the includes' related rows to each owner's tenant:
+	// a governed list (Scope.Governance).
+	rowTenant bool
+	related   map[string]*filter.PolicyConstraints
 }
 
 // Dialect is the dialect the plan's statements are written for.
@@ -317,9 +365,14 @@ func (r *Resource[T]) BuildList(d filter.Dialect, req *ListRequest, s Scope) (*L
 	if req == nil {
 		req = &ListRequest{}
 	}
-	tenant, err := r.bindTenant(s.Tenant)
-	if err != nil {
-		return nil, err
+	// A governed list's rows span tenants; a resource with a tenant column
+	// holds each row's relations to the row's own.
+	rowTenant := s.governed() && r.tenant != ""
+	var tenant any
+	if !rowTenant {
+		if tenant, err = r.bindTenant(s.Tenant); err != nil {
+			return nil, err
+		}
 	}
 	policy := filter.ComposeConstraints(filter.RepositoryScope{
 		TenantColumn: r.tenant, TenantID: tenant,
@@ -345,7 +398,10 @@ func (r *Resource[T]) BuildList(d filter.Dialect, req *ListRequest, s Scope) (*L
 		filter.ListWithCount(req.IncludeTotal),
 		filter.ListRelatedPolicies(s.Related),
 	}
-	if tenant != nil {
+	switch {
+	case rowTenant:
+		opts = append(opts, filter.ListRowTenant(r.tenant))
+	case tenant != nil:
 		opts = append(opts, filter.ListTenant(tenant))
 	}
 	if req.Filter != nil {
@@ -366,17 +422,18 @@ func (r *Resource[T]) BuildList(d filter.Dialect, req *ListRequest, s Scope) (*L
 		return nil, err
 	}
 	plan := &ListPlan{
-		Page:     Statement{SQL: "SELECT " + strings.Join(r.columns(d, v), ", ") + " FROM " + r.table + " " + res.Fragment, Args: res.Args},
-		Fragment: res.Fragment,
-		Facets:   res.Facets,
-		Include:  slices.Clone(req.Include),
-		Keyset:   res.Cursor,
-		Limit:    res.Limit,
-		dialect:  d,
-		fields:   v.filter,
-		table:    r.table,
-		tenant:   tenant,
-		related:  s.Related,
+		Page:      Statement{SQL: "SELECT " + strings.Join(r.columns(d, v), ", ") + " FROM " + r.table + " " + res.Fragment, Args: res.Args},
+		Fragment:  res.Fragment,
+		Facets:    res.Facets,
+		Include:   slices.Clone(req.Include),
+		Keyset:    res.Cursor,
+		Limit:     res.Limit,
+		dialect:   d,
+		fields:    v.filter,
+		table:     r.table,
+		tenant:    tenant,
+		rowTenant: rowTenant,
+		related:   s.Related,
 	}
 	if req.IncludeTotal {
 		plan.Count = &Statement{SQL: res.CountSQL, Args: res.CountArgs}
@@ -420,7 +477,10 @@ func (r *Resource[T]) IncludeQueries(plan *ListPlan, ownerKeys []any) ([]filter.
 		return nil, nil
 	}
 	opts := []filter.IncludeQueryOption{filter.WithIncludeRelatedPolicies(plan.related)}
-	if plan.tenant != nil {
+	switch {
+	case plan.rowTenant:
+		opts = append(opts, filter.WithIncludeRowTenant(plan.fields, r.tenant))
+	case plan.tenant != nil:
 		opts = append(opts, filter.WithIncludeTenant(plan.tenant))
 	}
 	out := make([]filter.IncludeQuery, 0, len(plan.Include))
