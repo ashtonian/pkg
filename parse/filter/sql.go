@@ -98,12 +98,15 @@ type TwoValuedDialect interface {
 	TwoValuedCondition(field *FieldSchema, op FilterOperator, value any, bind func(any) string) (sql string, ok bool, err error)
 }
 
-// ErrUnknownDSN is returned by DialectFromDSN for a DSN whose scheme names
-// neither PostgreSQL nor SQLite.
+// ErrUnknownDSN is returned by DialectFromDSN for a DSN that names no
+// database parse compiles SQL for, CockroachDB included.
 var ErrUnknownDSN = dialect.ErrUnknownDSN
 
-// DialectFromDSN returns the Dialect of a database DSN: postgres:// (and
-// postgresql://, cockroach://, crdb://) or a SQLite file or :memory:.
+// DialectFromDSN returns the Dialect of a database DSN: PostgresDialect for
+// postgres:// and postgresql://; SQLiteDialect for sqlite://, file:, a path
+// ending in .db and :memory:. It refuses CockroachDB's cockroach:// and
+// crdb://, where PostgresDialect's SQL has never been verified. The error
+// names the scheme, never the DSN.
 func DialectFromDSN(dsn string) (Dialect, error) {
 	base, err := dialect.FromDSN(dsn)
 	if err != nil {

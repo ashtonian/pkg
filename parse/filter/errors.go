@@ -59,7 +59,9 @@ func Codes() []core.Code {
 	}
 }
 
-// ErrUnsupportedDialect is returned when a DSN references an unsupported database.
+// ErrUnsupportedDialect is what application SQL, such as a computed column's
+// expression, returns for a dialect it has no rendering for. A DSN naming
+// an unsupported database is ErrUnknownDSN.
 var ErrUnsupportedDialect = errors.New("unsupported SQL dialect")
 
 func newFilterError(code core.Code, message string) *core.ParseError {

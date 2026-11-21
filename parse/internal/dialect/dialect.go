@@ -10,9 +10,9 @@ import (
 	"strings"
 )
 
-// ErrUnknownDSN is returned by FromDSN for a DSN whose scheme names no
-// supported database.
-var ErrUnknownDSN = errors.New("parse: unknown DSN scheme")
+// ErrUnknownDSN is returned by FromDSN for a DSN that names no database
+// parse compiles SQL for.
+var ErrUnknownDSN = errors.New("parse: unsupported DSN")
 
 // Dialect is the dialect-specific part of a statement: its name, its
 // placeholders and identifier quoting.
@@ -27,21 +27,53 @@ type Dialect interface {
 	QuoteIdent(name string) string
 }
 
-// FromDSN is the dialect of a connection string.
+const supportedDSNs = "want postgres://, postgresql://, sqlite://, file:, a .db path or :memory:"
+
+// FromDSN is the dialect of a connection string: postgres:// and
+// postgresql:// are PostgreSQL; sqlite://, file:, a path ending in .db and
+// :memory: are SQLite. CockroachDB's cockroach:// and crdb:// are refused:
+// the PostgreSQL dialect's SQL has never been verified there.
+//
+// Errors name the scheme and never the DSN, which may carry a password.
 func FromDSN(dsn string) (Dialect, error) {
-	switch {
-	case strings.HasPrefix(dsn, "postgres://"), strings.HasPrefix(dsn, "postgresql://"),
-		strings.HasPrefix(dsn, "cockroach://"), strings.HasPrefix(dsn, "crdb://"):
-		return Postgres{}, nil
-	case strings.HasSuffix(dsn, ".db"), strings.HasPrefix(dsn, "file:"),
-		strings.HasPrefix(dsn, "sqlite://"), dsn == ":memory:":
-		return SQLite{}, nil
-	default:
-		return nil, fmt.Errorf("%w: %q", ErrUnknownDSN, dsn)
+	if scheme, _, ok := strings.Cut(dsn, "://"); ok {
+		switch scheme {
+		case "postgres", "postgresql":
+			return Postgres{}, nil
+		case "sqlite", "file":
+			return SQLite{}, nil
+		case "cockroach", "crdb":
+			return nil, fmt.Errorf("%w: scheme %q: CockroachDB is not supported", ErrUnknownDSN, scheme)
+		}
+		if !isURIScheme(scheme) {
+			return nil, fmt.Errorf("%w: %s", ErrUnknownDSN, supportedDSNs)
+		}
+		return nil, fmt.Errorf("%w: scheme %q: %s", ErrUnknownDSN, scheme, supportedDSNs)
 	}
+	if strings.HasPrefix(dsn, "file:") || strings.HasSuffix(dsn, ".db") || dsn == ":memory:" {
+		return SQLite{}, nil
+	}
+	return nil, fmt.Errorf("%w: %s", ErrUnknownDSN, supportedDSNs)
 }
 
-// Postgres is PostgreSQL (and CockroachDB): $n placeholders.
+// isURIScheme reports whether s is an RFC 3986 scheme, so an error can
+// quote it without quoting part of a malformed DSN's credentials.
+func isURIScheme(s string) bool {
+	if s == "" {
+		return false
+	}
+	for i, c := range s {
+		switch {
+		case 'a' <= c && c <= 'z', 'A' <= c && c <= 'Z':
+		case i > 0 && ('0' <= c && c <= '9' || c == '+' || c == '-' || c == '.'):
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+// Postgres is PostgreSQL: $n placeholders.
 type Postgres struct{}
 
 // Name returns "postgres".
