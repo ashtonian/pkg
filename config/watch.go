@@ -46,6 +46,7 @@ import (
 // reconciles every recheck interval with no event to prompt it.
 type fileWatch struct {
 	watcher *fsnotify.Watcher
+	clock   clock
 	log     func() *slog.Logger
 
 	// declared is every path the operator declared, absolute but not
@@ -62,7 +63,7 @@ type fileWatch struct {
 
 	// timer is the debounce: every event resets it, so a burst collapses into
 	// one settle. Created stopped; fires only once armed by observe.
-	timer    *time.Timer
+	timer    timer
 	debounce time.Duration
 	// burstStart is when the pending burst's first event arrived, zero when
 	// idle. A burst may postpone settle by at most maxDebounceWindows
@@ -87,16 +88,17 @@ const (
 // newFileWatch subscribes to every directory paths need. A subscription that
 // cannot be made fails construction: a watch that silently covers less than
 // it was asked to would never report the changes it misses.
-func newFileWatch(paths []string, debounce time.Duration, log func() *slog.Logger) (*fileWatch, error) {
+func newFileWatch(paths []string, debounce time.Duration, clk clock, log func() *slog.Logger) (*fileWatch, error) {
 	watcher, err := fsnotify.NewWatcher()
 	if err != nil {
 		return nil, fmt.Errorf("creating fsnotify watcher: %w", err)
 	}
 
-	timer := time.NewTimer(debounce)
+	timer := clk.NewTimer(debounce)
 	timer.Stop()
 	w := &fileWatch{
 		watcher:      watcher,
+		clock:        clk,
 		log:          log,
 		paths:        make(map[string]resolution, len(paths)),
 		watching:     make(map[string]os.FileInfo),
@@ -351,12 +353,15 @@ func (w *fileWatch) observe(ev fsnotify.Event) {
 	if p, ok := w.owner(filepath.Clean(ev.Name)); ok && ev.Op&(fsnotify.Write|fsnotify.Create|fsnotify.Remove|fsnotify.Rename) != 0 {
 		w.pendingDirect = p
 	}
-	now := time.Now()
+	now := w.clock.Now()
 	if w.burstStart.IsZero() {
 		w.burstStart = now
 	}
-	deadline := w.burstStart.Add(maxDebounceWindows * w.debounce)
-	w.timer.Reset(max(min(w.debounce, deadline.Sub(now)), 0))
+	due := now.Add(w.debounce)
+	if limit := w.burstStart.Add(maxDebounceWindows * w.debounce); limit.Before(due) {
+		due = limit
+	}
+	w.timer.ResetAt(due)
 }
 
 // maxDebounceWindows bounds how long a continuous stream of events can delay

@@ -24,6 +24,7 @@ Every error wraps one category sentinel together with its cause, so `errors.Is` 
 | `ErrApply` | A config was published but an applier did not apply it; an `*ApplyError` names which. |
 | `ErrReloadInProgress` | A manual reload found another running. Not a failure. |
 | `ErrReloaderStopped` | A reload was requested after `Stop`. |
+| `ErrReloaderRunning` | `Run` was called while another `Run` of the same reloader runs. |
 | `ErrSchema`, `ErrKey` | Invalid schema/default declarations, or a malformed/unknown key. `KeyError` distinguishes unknown keys from invalid values in `CheckKey` and `DecodeKey`. |
 
 `Diagnose(err)` turns any of them into a `Problem{Kind, Message}` — a bounded category for a metric label or a status endpoint.

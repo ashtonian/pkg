@@ -831,7 +831,7 @@ func TestGetConfig_CustomValidator(t *testing.T) {
 // reload failures.
 func TestErrors_AreDistinctSentinels(t *testing.T) {
 	all := []error{ErrValidation, ErrFileRead, ErrFileParse, ErrSecretProvider, ErrPostLoad,
-		ErrSource, ErrReload, ErrReloadInProgress, ErrReloaderStopped}
+		ErrSource, ErrReload, ErrReloadInProgress, ErrReloaderStopped, ErrReloaderRunning}
 	for i, a := range all {
 		for j, b := range all {
 			if i != j && errors.Is(a, b) {

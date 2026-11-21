@@ -123,20 +123,11 @@ func (c *computedColumns) has(column string) bool {
 	return slices.ContainsFunc(c.columns, func(d columnExpr) bool { return d.column == column })
 }
 
-// column is the computed column a schema expression names, table-qualified
-// as the schema generator writes a stored column.
-func (c *computedColumns) column(sqlExpr string) (string, bool) {
-	if c == nil {
-		return "", false
-	}
-	column, ok := strings.CutPrefix(sqlExpr, c.table+".")
-	return column, ok && c.has(column)
-}
-
-// field reports whether f is a computed column's own filter field.
+// field reports whether f is a computed column's own filter field. Fields
+// are matched by their row column, not their SQL, which a column mapper
+// need not write as table.column.
 func (c *computedColumns) field(f *filter.FieldSchema) bool {
-	_, ok := c.column(f.SQLExpr)
-	return ok && f.Relation == nil && f.Path == nil
+	return f.Relation == nil && f.Path == nil && c.has(f.RowColumn())
 }
 
 // checkDocuments refuses document paths and element members on a computed
@@ -150,12 +141,12 @@ func (c *computedColumns) checkDocuments(fs *filter.ResourceSchema, ss *filter.S
 			continue
 		}
 		if f.Path != nil {
-			if column, ok := c.column(f.Path.Column); ok {
+			if column := f.RowColumn(); c.has(column) {
 				return c.errorf(column, "declares document paths, which read a stored document")
 			}
 			continue
 		}
-		if column, ok := c.column(f.SQLExpr); ok && f.Elements != nil {
+		if column := f.RowColumn(); c.has(column) && f.Elements != nil {
 			return c.errorf(column, "declares element members, which read a stored document")
 		}
 	}
@@ -166,7 +157,7 @@ func (c *computedColumns) checkDocuments(fs *filter.ResourceSchema, ss *filter.S
 		if f.Path == nil {
 			continue
 		}
-		if column, ok := c.column(f.Path.Column); ok {
+		if column := f.RowColumn(); c.has(column) {
 			return c.errorf(column, "declares document sort paths, which read a stored document")
 		}
 	}
@@ -261,7 +252,7 @@ func (c *computedColumns) newView(exprs []string, base *dialectView) *dialectVie
 		if !c.field(f) {
 			continue
 		}
-		column, _ := c.column(f.SQLExpr)
+		column := f.RowColumn()
 		computed := *f
 		computed.SQLExpr = v.exprs[column]
 		if f.FacetSchema != nil {
@@ -287,7 +278,7 @@ func (c *computedColumns) newView(exprs []string, base *dialectView) *dialectVie
 			if !c.field(f) {
 				continue
 			}
-			column, _ := c.column(f.SQLExpr)
+			column := f.RowColumn()
 			computed := *f
 			computed.SQLExpr = v.exprs[column]
 			filters.PolicyFields[name] = &computed
@@ -300,8 +291,8 @@ func (c *computedColumns) newView(exprs []string, base *dialectView) *dialectVie
 		sorts := *ss
 		sorts.Fields = maps.Clone(ss.Fields)
 		for name, f := range ss.Fields {
-			column, ok := c.column(f.SQLExpr)
-			if !ok || f.Path != nil {
+			column := f.RowColumn()
+			if !c.has(column) || f.Path != nil {
 				continue
 			}
 			// A cursor reads the key's value from the row's column, which
@@ -318,7 +309,7 @@ func (c *computedColumns) newView(exprs []string, base *dialectView) *dialectVie
 		searched := *search
 		searched.Fields = slices.Clone(search.Fields)
 		for i, f := range searched.Fields {
-			if column, ok := c.column(f.SQLExpr); ok {
+			if column := f.RowColumn(); c.has(column) {
 				searched.Fields[i].SQLExpr = v.exprs[column]
 			}
 		}

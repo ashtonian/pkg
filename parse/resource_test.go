@@ -4,6 +4,7 @@ package parse_test
 
 import (
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"net/url"
 	"slices"
@@ -434,7 +435,7 @@ func TestReadColumns_RefusesWhatPagesCannotRead(t *testing.T) {
 		{"not a column", []string{"id", "nope"}, `read column "nope" is not a column`},
 		{"listed twice", []string{"id", "email", "id"}, `read column "id" is listed twice`},
 		{"without the key", []string{"email"}, `omit the key "id"`},
-		{"without a sort key", []string{"id", "tenant_id"}, `sort key "email" reads column "email"`},
+		{"without a sort key", []string{"id", "tenant_id"}, `sort key "email": accounts does not read column "email"`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			_, err := parse.NewResource[account]("accounts", parse.ReadColumns(tc.read...))
@@ -448,13 +449,173 @@ type profile struct {
 	Attrs map[string]any `json:"attrs" db:"attrs" parse:"filter"`
 }
 
-// A request's path sort keys read their document column, so a view cannot
-// sort by a document the resource does not read.
-func TestReadColumns_RefusesAPathSortOnAnUnreadDocument(t *testing.T) {
-	r, err := parse.NewResource[profile]("profiles", parse.ReadColumns("id"))
+// A request's path sort keys and facets read their document column, so a
+// view can neither sort nor facet by a document the resource does not read,
+// even one it may filter by.
+func TestReadColumns_RefusesAPathSortOrFacetOnAnUnreadDocument(t *testing.T) {
+	r, err := parse.NewResource[profile]("profiles", parse.ReadColumns("id"), parse.QueryOnlyColumns("attrs"))
 	require.NoError(t, err)
 	_, err = r.WithPaths(filter.PathDecl{Path: "attrs.rank", Type: core.FieldTypeInt, Sort: true})
-	assert.ErrorContains(t, err, `reads column "attrs"`)
+	assert.ErrorContains(t, err, `sort key "attrs.rank": profiles does not read column "attrs"`)
+	_, err = r.WithPaths(filter.PathDecl{Path: "attrs.tier", Type: core.FieldTypeString, Facet: &filter.FacetSchema{Type: filter.FacetTerms}})
+	assert.ErrorContains(t, err, `facet "attrs.tier": profiles does not read column "attrs"`)
 	_, err = r.WithPaths(filter.PathDecl{Path: "attrs.rank", Type: core.FieldTypeInt})
-	assert.NoError(t, err, "a filter-only path reads nothing")
+	assert.NoError(t, err, "a query-only document filters by its paths")
+}
+
+type apiKey struct {
+	ID     string          `json:"id"     db:"id"     parse:"filter,sort"`
+	Status string          `json:"status" db:"status" parse:"filter,facet"`
+	Token  string          `json:"token"  db:"token"  parse:"filter,facet"`
+	Attrs  json.RawMessage `json:"attrs"  db:"attrs"  parse:"filter" paths:"env:string:facet"`
+}
+
+// parenthesizedColumns maps every field to a computed expression, so a
+// field's SQL names no column the way a plain identifier does.
+type parenthesizedColumns struct{}
+
+func (parenthesizedColumns) MapColumn(table, column string, _ core.FieldType) string {
+	return "(" + table + "." + column + ")"
+}
+
+var mappedColumns = parse.ParserOptions(core.WithGeneratorOptions(core.WithColumnMapper(parenthesizedColumns{})))
+
+// A facet's buckets are keyed by its column's values, so a facet over a
+// column the resource does not read would answer with the withheld values,
+// whether or not requests may filter by it.
+func TestReadColumns_RefusesAFacetOnAnUnreadColumn(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		opts []parse.ResourceOption
+		want string
+	}{
+		{"a column's facet", []parse.ResourceOption{parse.ReadColumns("id", "status", "attrs"), parse.QueryOnlyColumns("token")}, `facet "token": api_keys does not read column "token"`},
+		{"a document path's facet", []parse.ResourceOption{parse.ReadColumns("id", "status", "token"), parse.QueryOnlyColumns("attrs")}, `facet "attrs.env": api_keys does not read column "attrs"`},
+		{"a mapped column's facet", []parse.ResourceOption{mappedColumns, parse.ReadColumns("id", "status", "attrs"), parse.QueryOnlyColumns("token")}, `facet "token": api_keys does not read column "token"`},
+		{"a mapped document path's facet", []parse.ResourceOption{mappedColumns, parse.ReadColumns("id", "status", "token"), parse.QueryOnlyColumns("attrs")}, `facet "attrs.env": api_keys does not read column "attrs"`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := parse.NewResource[apiKey]("api_keys", tc.opts...)
+			assert.ErrorContains(t, err, tc.want)
+		})
+	}
+
+	r, err := parse.NewResource[apiKey]("api_keys", mappedColumns, parse.ReadColumns("id", "status", "token", "attrs"))
+	require.NoError(t, err)
+	_, err = r.ParseList(url.Values{filter.ParamFacets: {"status,token,attrs.env"}})
+	assert.NoError(t, err, "facets on read columns")
+}
+
+type ticket struct {
+	ID     string `json:"id"     db:"id"     parse:"filter,sort"`
+	Title  string `json:"title"  db:"title"  parse:"filter,sort"`
+	Status string `json:"status" db:"status" parse:"filter"`
+	Body   string `json:"body"   db:"body"   parse:"search"`
+}
+
+// A filter or search returns no values, but its matches disclose them, so
+// by default it may not read a column the resource does not read.
+func TestReadColumns_RefusesAPredicateOnAnUnreadColumn(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		opts []parse.ResourceOption
+		want string
+	}{
+		{"a filter field", []parse.ResourceOption{parse.ReadColumns("id", "title", "body")}, `filter field "status": tickets does not read column "status"; QueryOnlyColumns admits`},
+		{"a search field", []parse.ResourceOption{parse.ReadColumns("id", "title", "status")}, `search field "body": tickets does not read column "body"; QueryOnlyColumns admits`},
+		{"a mapped filter field", []parse.ResourceOption{mappedColumns, parse.ReadColumns("id", "title", "body")}, `filter field "status": tickets does not read column "status"`},
+		{"a mapped search field", []parse.ResourceOption{mappedColumns, parse.ReadColumns("id", "title", "status")}, `search field "body": tickets does not read column "body"`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := parse.NewResource[ticket]("tickets", tc.opts...)
+			assert.ErrorContains(t, err, tc.want)
+		})
+	}
+}
+
+type team struct {
+	ID string `json:"id" db:"id" parse:"filter,sort"`
+}
+
+type member struct {
+	ID     string `json:"id"      db:"id"      parse:"filter,sort"`
+	TeamID string `json:"team_id" db:"team_id"`
+}
+
+// A relation pairs owner and target rows by a column on each side: a
+// belongs-to by the owner's foreign key, a has-many by the target's. Filtering
+// by the relation discloses that column as filtering by the column would, and
+// an include returns the pairs outright, so each side's read set holds.
+func TestReadColumns_RefusesARelationOverAnUnreadColumn(t *testing.T) {
+	teams := parse.MustResource[team]("teams")
+	withheld := parse.MustResource[member]("members", parse.ReadColumns("id"))
+	queryOnly := parse.MustResource[member]("members", parse.ReadColumns("id"), parse.QueryOnlyColumns("team_id"))
+
+	err := withheld.Relate("team", parse.BelongsTo(teams, "team_id"))
+	assert.ErrorContains(t, err, `relation "team": members does not read column "team_id"; QueryOnlyColumns admits`, "the owner's foreign key")
+	assert.NotContains(t, withheld.FilterSchema().Fields, "team", "a refused relation is not declared")
+	assert.NoError(t, queryOnly.Relate("team", parse.BelongsTo(teams, "team_id")))
+
+	owners := parse.MustResource[team]("teams")
+	err = owners.Relate("members", parse.HasMany(withheld, "team_id"))
+	assert.ErrorContains(t, err, `parse: teams: relation "members": members does not read column "team_id"; QueryOnlyColumns admits`, "the target's foreign key")
+	err = owners.Relate("members", parse.HasMany(queryOnly, "team_id", parse.Includable()))
+	assert.ErrorContains(t, err, `relation "members": members does not read column "team_id"`, "an include returns the pairs")
+	assert.NoError(t, owners.Relate("members", parse.HasMany(queryOnly, "team_id")))
+}
+
+// A field whose SQL reads a column T does not declare cannot bypass the read
+// set: the resource cannot say whether it reads that column.
+func TestReadColumns_RefusesAFieldOverAnUndeclaredColumn(t *testing.T) {
+	type user struct {
+		ID   string `json:"id"   db:"id"   parse:"filter,sort"`
+		Hash string `json:"hash" db:"-"    parse:"filter"`
+	}
+	_, err := parse.NewResource[user]("users", parse.ReadColumns("id"))
+	assert.ErrorContains(t, err, `filter field "hash": "hash" is not a column of users`)
+}
+
+// A belongs-to resolves its foreign key as the owner's own filter on that
+// column does, column mapper included.
+func TestRelate_CorrelatesThroughTheOwnersMappedField(t *testing.T) {
+	type mappedMember struct {
+		ID     string `json:"id"      db:"id"      parse:"filter,sort"`
+		TeamID string `json:"team_id" db:"team_id" parse:"filter"`
+	}
+	members := parse.MustResource[mappedMember]("members", mappedColumns)
+	members.MustRelate("team", parse.BelongsTo(parse.MustResource[team]("teams"), "team_id"))
+	assert.Equal(t, "(members.team_id)", members.FilterSchema().Fields["team"].RelatedBy.SQLExpr)
+}
+
+// QueryOnlyColumns lets requests filter and search by columns the resource
+// does not read; the page still selects only the read columns.
+func TestQueryOnlyColumns_FilterAndSearchUnreadColumns(t *testing.T) {
+	r, err := parse.NewResource[ticket]("tickets", parse.ReadColumns("id", "title"), parse.QueryOnlyColumns("status", "body"))
+	require.NoError(t, err)
+	req, err := r.ParseList(url.Values{filter.ParamFilter: {`{"status":{"$eq":"open"}}`}, filter.ParamSearch: {"pump"}})
+	require.NoError(t, err)
+	plan, err := r.BuildList(filter.SQLiteDialect{}, req, parse.Scope{})
+	require.NoError(t, err)
+	assert.True(t, strings.HasPrefix(plan.Page.SQL, "SELECT tickets.id, tickets.title FROM tickets "), plan.Page.SQL)
+	assert.Contains(t, plan.Fragment, "tickets.status")
+	assert.Contains(t, plan.Fragment, "tickets.body")
+}
+
+func TestQueryOnlyColumns_NameUnreadColumnsForPredicatesOnly(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		opts []parse.ResourceOption
+		want string
+	}{
+		{"not a column", []parse.ResourceOption{parse.ReadColumns("id", "title", "status"), parse.QueryOnlyColumns("body", "nope")}, `query-only column "nope" is not a column`},
+		{"listed twice", []parse.ResourceOption{parse.ReadColumns("id", "title", "status"), parse.QueryOnlyColumns("body", "body")}, `query-only column "body" is listed twice`},
+		{"a read column", []parse.ResourceOption{parse.ReadColumns("id", "title", "status"), parse.QueryOnlyColumns("body", "title")}, `query-only column "title" is read`},
+		{"every column read", []parse.ResourceOption{parse.QueryOnlyColumns("body")}, `query-only column "body" is read`},
+		{"a sort key", []parse.ResourceOption{parse.ReadColumns("id", "status"), parse.QueryOnlyColumns("title", "body")}, `sort key "title": tickets does not read column "title"`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := parse.NewResource[ticket]("tickets", tc.opts...)
+			assert.ErrorContains(t, err, tc.want)
+		})
+	}
 }

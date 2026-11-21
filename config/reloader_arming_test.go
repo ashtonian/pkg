@@ -3,10 +3,15 @@ package config
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"sync/atomic"
 	"testing"
 	"time"
 )
+
+// armWaitsForReload is what Arm logs once it holds the arming lock and waits
+// for the reload in flight before comparing the files with the last load.
+const armWaitsForReload = "config reload waiting for the reload in flight trigger=file_change"
 
 // Stop releases triggers Arm set up for a Start that never ran; after Stop,
 // Arm refuses and Start returns at once.
@@ -46,18 +51,19 @@ func TestArm_StopReleasesUnservedTriggers(t *testing.T) {
 // Start serves the triggers Arm set up, and Arm while they are served, or a
 // second Arm before Start, sets up nothing more.
 func TestArm_StartServesWhatArmSetUp(t *testing.T) {
+	logs := newLogRecorder()
 	r, err := NewReloader[portCfg](
 		t.Context(),
-		[]Option{WithFile(writeYAML(t, "port: 9000\n")), WithSkipValidation()},
+		[]Option{WithFile(writeYAML(t, "port: 9000\n")), WithSkipValidation(), WithLogger(slog.New(logs))},
 		WithFileWatch(0),
 	)
 	if err != nil {
 		t.Fatal(err)
 	}
-	armed := func() (*triggers, int32) {
+	armed := func() (*triggers, bool) {
 		r.armSem <- struct{}{}
 		defer func() { <-r.armSem }()
-		return r.armed, r.serving.Load()
+		return r.armed, r.running.Load()
 	}
 
 	armReloader(t, r)
@@ -68,10 +74,13 @@ func TestArm_StartServesWhatArmSetUp(t *testing.T) {
 	}
 
 	runReloader(t, r)
-	eventually(t, func() bool { tr, serving := armed(); return tr == nil && serving == 1 }, "Start to take the armed triggers")
+	logs.waitFor(t, "config reloader started")
+	if tr, running := armed(); tr != nil || !running {
+		t.Fatalf("Run did not take the armed triggers (armed %v, running %v)", tr != nil, running)
+	}
 	armReloader(t, r)
-	if tr, serving := armed(); tr != nil || serving != 1 {
-		t.Fatalf("Arm while Start serves set up triggers no Start serves (armed %v, serving %d)", tr != nil, serving)
+	if tr, running := armed(); tr != nil || !running {
+		t.Fatalf("Arm while Run serves set up triggers no Run serves (armed %v, running %v)", tr != nil, running)
 	}
 }
 
@@ -81,9 +90,10 @@ func TestArm_StartServesWhatArmSetUp(t *testing.T) {
 func TestArm_QueuedArmHonoursItsContext(t *testing.T) {
 	var hold atomic.Bool
 	entered, release := make(chan struct{}), make(chan struct{})
+	logs := newLogRecorder()
 	r, err := NewReloader[portCfg](
 		t.Context(),
-		[]Option{WithFile(writeYAML(t, "port: 9000\n")), WithSkipValidation(), WithLogger(discardLogger()), WithPostLoad(func(context.Context, *portCfg) error {
+		[]Option{WithFile(writeYAML(t, "port: 9000\n")), WithSkipValidation(), WithLogger(slog.New(logs)), WithPostLoad(func(context.Context, *portCfg) error {
 			if hold.Load() {
 				close(entered)
 				<-release
@@ -102,7 +112,7 @@ func TestArm_QueuedArmHonoursItsContext(t *testing.T) {
 
 	first := make(chan error, 1)
 	go func() { first <- r.Arm(context.Background()) }()
-	eventually(t, func() bool { return len(r.armSem) == 1 }, "the first Arm to hold the arming lock")
+	logs.waitFor(t, armWaitsForReload)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
 	defer cancel()
@@ -127,9 +137,10 @@ func TestArm_QueuedArmHonoursItsContext(t *testing.T) {
 func TestStop_BoundedWhileArmWaits(t *testing.T) {
 	var hold atomic.Bool
 	entered, release := make(chan struct{}), make(chan struct{})
+	logs := newLogRecorder()
 	r, err := NewReloader[portCfg](
 		t.Context(),
-		[]Option{WithFile(writeYAML(t, "port: 9000\n")), WithSkipValidation(), WithLogger(discardLogger()), WithPostLoad(func(context.Context, *portCfg) error {
+		[]Option{WithFile(writeYAML(t, "port: 9000\n")), WithSkipValidation(), WithLogger(slog.New(logs)), WithPostLoad(func(context.Context, *portCfg) error {
 			if hold.Load() {
 				close(entered)
 				<-release
@@ -147,7 +158,7 @@ func TestStop_BoundedWhileArmWaits(t *testing.T) {
 	<-entered
 	arm := make(chan error, 1)
 	go func() { arm <- r.Arm(context.Background()) }()
-	eventually(t, func() bool { return len(r.armSem) == 1 }, "Arm to hold the arming lock")
+	logs.waitFor(t, armWaitsForReload)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
 	defer cancel()

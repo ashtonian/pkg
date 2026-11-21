@@ -15,7 +15,8 @@ import (
 // error vocabulary.
 var (
 	// ErrValidation reports invalid configuration: a validator rejected the
-	// loaded struct, a value could not decode into its field's type, an
+	// loaded struct, a value could not decode into its field's type, a
+	// struct a source or SetDefaults set failed to marshal to text, an
 	// environment variable named more than one key, a Validate method
 	// failed, or a source set a key no field decodes (unless a
 	// WithUnknownKeys handler accepts it).
@@ -49,6 +50,9 @@ var (
 	ErrReloadInProgress = errors.New("configuration reload already in progress")
 	// ErrReloaderStopped reports a call after Stop. It does NOT wrap ErrReload.
 	ErrReloaderStopped = errors.New("configuration reloader is stopped")
+	// ErrReloaderRunning reports a Run called while another Run of the same
+	// Reloader runs. It does NOT wrap ErrReload.
+	ErrReloaderRunning = errors.New("configuration reloader is already running")
 	// ErrSchema reports a config type the package cannot address: a struct
 	// key holding a character keys use for structure (".", "[", "]", "*", a
 	// backslash, a quote or a control character), two fields with one key, a

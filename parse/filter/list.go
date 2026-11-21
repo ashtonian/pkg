@@ -361,7 +361,7 @@ func (lq *ListQuery) cursorKeys(sort *SortResult) ([]CursorKey, error) {
 	case ff != nil:
 		tb.SQLExpr, tb.DataType = ff.SQLExpr, ff.DataType
 		tb.NumberKind = ff.NumberKind
-		tb.Column = (&SortFieldSchema{SQLExpr: ff.SQLExpr}).RowColumn()
+		tb.Column = ff.RowColumn()
 	case identifierRe.MatchString(tieBreaker):
 		tb.SQLExpr = tieBreaker
 		tb.Column = (&SortFieldSchema{SQLExpr: tieBreaker}).RowColumn()

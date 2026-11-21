@@ -5,9 +5,9 @@ import (
 	"context"
 	"errors"
 	"log/slog"
-	"strings"
 	"sync"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/stretchr/testify/assert"
@@ -46,6 +46,10 @@ func captureDefault(t *testing.T) *safeBuffer {
 // written, so a reloader built before the process logger is configured logs
 // through the configured one.
 func TestLogger_FollowsSetDefault(t *testing.T) {
+	synctest.Test(t, testLoggerFollowsSetDefault)
+}
+
+func testLoggerFollowsSetDefault(t *testing.T) {
 	r, err := NewReloader[portCfg](t.Context(), []Option{WithDefaults(map[string]any{"port": 1}), WithSkipValidation()},
 		WithPollInterval(time.Hour))
 	require.NoError(t, err)
@@ -56,12 +60,17 @@ func TestLogger_FollowsSetDefault(t *testing.T) {
 	require.NoError(t, err)
 	assert.Contains(t, buf.String(), "config sources loaded", "the load's lines")
 	runReloader(t, r)
-	eventually(t, func() bool { return strings.Contains(buf.String(), "config reloader started") }, "the reloader's start line")
+	synctest.Wait()
+	assert.Contains(t, buf.String(), "config reloader started", "the reloader's start line")
 }
 
 // An explicit logger stays fixed; WithReloadLogger(nil) sends the reloader's
 // lines to the default even when the load options name a logger.
 func TestLogger_ExplicitAndExplicitNil(t *testing.T) {
+	synctest.Test(t, testLoggerExplicitAndExplicitNil)
+}
+
+func testLoggerExplicitAndExplicitNil(t *testing.T) {
 	var fixed safeBuffer
 	logger := slog.New(slog.NewTextHandler(&fixed, &slog.HandlerOptions{Level: slog.LevelDebug}))
 	buf := captureDefault(t)
@@ -71,7 +80,8 @@ func TestLogger_ExplicitAndExplicitNil(t *testing.T) {
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = r.Stop(context.Background()) })
 	runReloader(t, r)
-	eventually(t, func() bool { return strings.Contains(fixed.String(), "config reloader started") }, "the inherited logger")
+	synctest.Wait()
+	assert.Contains(t, fixed.String(), "config reloader started", "the inherited logger")
 	assert.NotContains(t, buf.String(), "config reloader started")
 
 	r2, err := NewReloader[portCfg](t.Context(), []Option{WithDefaults(map[string]any{"port": 1}), WithSkipValidation(), WithLogger(logger)},
@@ -79,7 +89,8 @@ func TestLogger_ExplicitAndExplicitNil(t *testing.T) {
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = r2.Stop(context.Background()) })
 	runReloader(t, r2)
-	eventually(t, func() bool { return strings.Contains(buf.String(), "config reloader started") }, "the default logger")
+	synctest.Wait()
+	assert.Contains(t, buf.String(), "config reloader started", "the default logger")
 }
 
 type rangeCfg struct {

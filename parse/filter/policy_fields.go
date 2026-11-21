@@ -57,14 +57,8 @@ type policyCandidate struct {
 	err   error
 }
 
-func requestCandidate(g *core.SchemaGenerator, field *core.Field, fs *FieldSchema) policyCandidate {
-	c := policyCandidate{goName: field.GoName, name: fs.ExternalName, request: true, field: fs}
-	if fs.Relation == nil {
-		if column, ok, err := g.FieldColumn(field); ok && err == nil {
-			c.column = column
-		}
-	}
-	return c
+func requestCandidate(field *core.Field, fs *FieldSchema) policyCandidate {
+	return policyCandidate{goName: field.GoName, name: fs.ExternalName, column: fs.Column, request: true, field: fs}
 }
 
 // policyColumn is the candidate of a column a request cannot filter by. ok
@@ -100,6 +94,7 @@ func policyFieldSchema(g *core.SchemaGenerator, table string, field *core.Field,
 	}
 	fs := &FieldSchema{
 		ExternalName: cmp.Or(field.External, column),
+		Column:       column,
 		DataType:     info.Type,
 		NumberKind:   info.NumberKind,
 		Elem:         info.Elem,

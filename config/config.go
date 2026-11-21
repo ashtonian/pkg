@@ -17,6 +17,7 @@ import (
 
 	"github.com/go-playground/validator/v10"
 	"github.com/go-viper/mapstructure/v2"
+	kmaps "github.com/knadh/koanf/maps"
 	"github.com/knadh/koanf/providers/confmap"
 	"github.com/knadh/koanf/v2"
 )
@@ -147,6 +148,9 @@ func (l *loader) rewrite(name string, data map[string]any) (map[string]any, erro
 	if len(w.notJSON) > 0 {
 		return nil, fmt.Errorf("loading %s: %w: format:\"json\" values that are not JSON: %s", name, ErrValidation, strings.Join(w.notJSON, ", "))
 	}
+	if len(w.noText) > 0 {
+		return nil, fmt.Errorf("loading %s: %w: values that do not marshal to text: %s", name, ErrValidation, strings.Join(w.noText, ", "))
+	}
 	for _, a := range w.aliased {
 		l.aliased = append(l.aliased, a+" in "+name)
 	}
@@ -208,13 +212,13 @@ func (l *loader) addProvider(ctx context.Context, name string, p providerSource,
 	return l.prepareProvider(ctx, name, data, p, func(map[string]any) (labeler, error) { return constant(src), nil })
 }
 
-// addFlat adds a map keyed by dot-path.
+// addFlat adds a map keyed by dot-path. It is unflattened from a deep copy
+// rather than through a koanf provider, whose copy keeps only exported
+// fields: add must see the values whole to turn those that marshal to text
+// into their text.
 func (l *loader) addFlat(name string, flat map[string]any, label labeler) error {
-	data, err := confmap.Provider(flat, ".").Read()
-	if err != nil {
-		return fmt.Errorf("loading %s: %w: %w", name, ErrSource, err)
-	}
-	return l.add(name, data, label)
+	copied := deepCopy(reflect.ValueOf(flat)).Interface().(map[string]any)
+	return l.add(name, kmaps.Unflatten(copied, "."), label)
 }
 
 // loaded is one load's outcome: the config, the config files it read and

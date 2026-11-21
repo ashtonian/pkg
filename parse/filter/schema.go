@@ -139,7 +139,12 @@ type ResourceSchema struct {
 type FieldSchema struct {
 	ExternalName string
 	SQLExpr      string
-	DataType     core.FieldType
+	// Column is the row column the field reads: its own column, or a path's
+	// document column. Schema generation sets it from the field's column
+	// name, so it names the column even when a column mapper makes SQLExpr
+	// a computed expression. RowColumn falls back to SQLExpr without it.
+	Column   string
+	DataType core.FieldType
 	// NumberKind is the Go numeric kind the field decodes into
 	// (reflect.Int8 … reflect.Float64). Integer and float values are
 	// range-checked against it; reflect.Invalid (hand-built schemas)
@@ -310,13 +315,36 @@ func (s *SortFieldSchema) RowColumn() string {
 	if s.Column != "" {
 		return s.Column
 	}
-	if !identifierRe.MatchString(s.SQLExpr) {
+	return identifierColumn(s.SQLExpr)
+}
+
+// RowColumn returns the row column the field's values come from: Column, or
+// the last segment of a plain (optionally table-qualified) identifier — a
+// path's document column, else SQLExpr. It is "" for a relation, whose values
+// are another table's, and for a computed expression.
+func (f *FieldSchema) RowColumn() string {
+	switch {
+	case f.Relation != nil:
+		return ""
+	case f.Column != "":
+		return f.Column
+	case f.Path != nil:
+		return identifierColumn(f.Path.Column)
+	default:
+		return identifierColumn(f.SQLExpr)
+	}
+}
+
+// identifierColumn is the column a plain, optionally table-qualified,
+// identifier names; "" for any other expression.
+func identifierColumn(expr string) string {
+	if !identifierRe.MatchString(expr) {
 		return ""
 	}
-	if i := strings.LastIndexByte(s.SQLExpr, '.'); i >= 0 {
-		return s.SQLExpr[i+1:]
+	if i := strings.LastIndexByte(expr, '.'); i >= 0 {
+		return expr[i+1:]
 	}
-	return s.SQLExpr
+	return expr
 }
 
 // identifierRe admits plain, optionally table-qualified, SQL identifiers.

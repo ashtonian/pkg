@@ -97,6 +97,38 @@ func TestReadExpr_SchemasCompileAgainstEachDialectsExpression(t *testing.T) {
 	assert.Equal(t, "accounts.email", computedAccounts.SortSchema().Fields["email"].SQLExpr)
 }
 
+// A column mapper writes each field's SQL, so a computed column's fields are
+// found by their column, not by table.column text: its filters, sorts,
+// facets and search still compile against the expression, never the
+// mapper's SQL for a column the table does not hold.
+func TestReadExpr_UnderAColumnMapper(t *testing.T) {
+	type tally struct {
+		ID    string `json:"id"    db:"id"    parse:"filter,sort"`
+		Name  string `json:"name"  db:"name"  parse:"filter"`
+		Label string `json:"label" db:"label" parse:"filter,sort,facet,search"`
+	}
+	tallies, err := parse.NewResource[tally]("tallies", mappedColumns, parse.ReadExpr("label", parse.SQL("upper(tallies.name)")))
+	require.NoError(t, err)
+	req, err := tallies.ParseList(url.Values{
+		filter.ParamFilter:       {`{"label":{"$ne":""}}`},
+		filter.ParamSort:         {"label"},
+		filter.ParamFacets:       {"label"},
+		filter.ParamSearch:       {"x"},
+		filter.ParamIncludeTotal: {"true"},
+	})
+	require.NoError(t, err)
+	plan, err := tallies.BuildList(filter.SQLiteDialect{}, req, parse.Scope{})
+	require.NoError(t, err)
+	label := "(upper(tallies.name))"
+	assert.Contains(t, plan.Page.SQL, label+" <> ")
+	assert.Contains(t, plan.Page.SQL, "ORDER BY "+label)
+	assert.Contains(t, plan.Count.SQL, label, "search")
+	assert.Contains(t, plan.Facets.SQL, label)
+	for _, sql := range []string{plan.Page.SQL, plan.Count.SQL, plan.Facets.SQL} {
+		assert.NotContains(t, sql, "(tallies.label)")
+	}
+}
+
 // Views are keyed by the expressions, not the dialect: two PostgreSQL
 // dialects with one expression share a view, and each build still compiles
 // under its own dialect's settings.

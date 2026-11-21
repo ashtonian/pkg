@@ -86,7 +86,7 @@ func (c *keyChecker) filter(ctx context.Context, tree map[string]any) (map[strin
 func (l *loader) prepareProvider(ctx context.Context, name string, data map[string]any, p providerSource, label func(map[string]any) (labeler, error)) error {
 	w := keyWalk{schema: l.schema}
 	tree := w.tree(l.root, textKeyed(data))
-	if len(w.twice) > 0 || !p.withhold && len(w.notJSON) > 0 {
+	if len(w.twice) > 0 || len(w.noText) > 0 || !p.withhold && len(w.notJSON) > 0 {
 		_, err := l.rewrite(name, data)
 		return err
 	}

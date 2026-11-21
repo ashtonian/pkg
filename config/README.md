@@ -168,7 +168,8 @@ metrics-library dependency.
 | `defaults.go`, `element_defaults.go`, `decode_input.go`, `check_key.go`, `source_validation.go` | Shared defaults/decoding, key checks and provider entry validation |
 | `schema.go`, `view.go`, `fields.go`, `key.go` | Canonical metadata, discovery and key grammar |
 | `env_refs.go`, `env.go` | Environment references and variable matching |
-| `reloader.go`, `reload_tags.go`, `applier.go`, `snapshot.go` | Publication, reload policy and applied-state accounting |
+| `reloader.go`, `reload_options.go`, `reload_tags.go`, `applier.go`, `snapshot.go` | Publication, reload triggers and policy, applied-state accounting |
+| `watch.go`, `clock.go` | The file watch and the clock its debounce, recheck and poll timers run on |
 | `render.go`, `print.go`, `usage.go`, `jsonschema.go`, `constraints.go`, `redact.go` | Trees, diagnostic output and documentation metadata |
 | `errors.go`, `provenance.go` | Error categories and value origins |
 | `shadow.go` | Shadowed inputs: what a higher-precedence source outranks, and which edits a reload could not apply |
