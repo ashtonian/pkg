@@ -26,29 +26,36 @@ func TestDialects(t *testing.T) {
 }
 
 func TestFromDSN(t *testing.T) {
-	for dsn, want := range map[string]string{
-		"postgres://u:p@h/db":                   "postgres",
-		"postgresql://h/db":                     "postgres",
-		"POSTGRES://h/db":                       "postgres",
-		"PostgreSQL://h/db":                     "postgres",
-		"postgres://h/app.db":                   "postgres",
-		"sqlite://app":                          "sqlite",
-		"file:x.db":                             "sqlite",
-		"file:x.db?mode=ro":                     "sqlite",
-		"file:///srv/app.db":                    "sqlite",
-		"app.db":                                "sqlite",
-		"/var/lib/app/state.db":                 "sqlite",
-		"app.db?_pragma=busy_timeout(5000)":     "sqlite",
-		"/data/app.sqlite":                      "sqlite",
-		"state.sqlite3?_pragma=foreign_keys(1)": "sqlite",
-		":memory:":                              "sqlite",
-		":memory:?_pragma=foreign_keys(1)":      "sqlite",
-		"/srv/a://b/app.db":                     "sqlite",
-		"C://data/app.db":                       "sqlite",
+	for _, tc := range []struct{ dsn, want string }{
+		{"postgres://u:p@h/db", "postgres"},
+		{"postgresql://h/db", "postgres"},
+		{"POSTGRES://h/db", "postgres"},
+		{"PostgreSQL://h/db", "postgres"},
+		{"postgres://h/app.db", "postgres"},
+		{"sqlite://app", "sqlite"},
+		{"sqlite3:///srv/app.db", "sqlite"},
+		{"file:x.db", "sqlite"},
+		{"file:x.db?mode=ro", "sqlite"},
+		{"file:///srv/app.db", "sqlite"},
+		{"FILE:app", "sqlite"},
+		{"file:", "sqlite"},
+		{"app.db", "sqlite"},
+		{"/var/lib/app/state.db", "sqlite"},
+		{"/Users/me/My Data/app.db", "sqlite"},
+		{`C:\Data\APP.DB`, "sqlite"},
+		{"app.db?_pragma=busy_timeout(5000)", "sqlite"},
+		{"/data/app.sqlite", "sqlite"},
+		{"state.sqlite3?_pragma=foreign_keys(1)", "sqlite"},
+		{":memory:", "sqlite"},
+		{":memory:?_pragma=foreign_keys(1)", "sqlite"},
+		{"/srv/a://b/app.db", "sqlite"},
+		{"C://data/app.db", "sqlite"},
 	} {
-		d, err := FromDSN(dsn)
-		require.NoError(t, err, dsn)
-		assert.Equal(t, want, d.Name(), dsn)
+		t.Run(tc.dsn, func(t *testing.T) {
+			d, err := FromDSN(tc.dsn)
+			require.NoError(t, err)
+			assert.Equal(t, tc.want, d.Name())
+		})
 	}
 }
 
@@ -67,6 +74,8 @@ func TestFromDSNRefuses(t *testing.T) {
 		{"misspelled postgres", "postgress://u:secret@h/db", `parse: unsupported DSN: scheme "postgress": ` + supportedDSNs},
 		{"not a scheme before ://", "u:secret@h://db", "parse: unsupported DSN: " + supportedDSNs},
 		{"keyword/value", "host=h user=u password=secret dbname=db", "parse: unsupported DSN: " + supportedDSNs},
+		{"keyword/value naming a .db database", "host=h user=u password=secret dbname=orders.db", "parse: unsupported DSN: " + supportedDSNs},
+		{"mysql naming a .db database", "u:secret@tcp(h:3306)/app.db", "parse: unsupported DSN: " + supportedDSNs},
 		{"another extension", "app.dbx", "parse: unsupported DSN: " + supportedDSNs},
 		{"empty", "", "parse: unsupported DSN: " + supportedDSNs},
 	} {

@@ -27,17 +27,21 @@ type Dialect interface {
 	QuoteIdent(name string) string
 }
 
-const supportedDSNs = "want a postgres:// or postgresql:// URL, a sqlite:// or file: URI, a .db, .sqlite or .sqlite3 path, or :memory:"
+const supportedDSNs = "want a postgres:// or postgresql:// URL, a sqlite://, sqlite3:// or file: URI, a .db, .sqlite or .sqlite3 path, or :memory:"
 
-// FromDSN is the dialect of a connection string, decided by its form. A
-// postgres:// or postgresql:// URL is PostgreSQL. A sqlite:// or file: URI,
-// a path ending in .db, .sqlite or .sqlite3 before any ?query, and :memory:
-// are SQLite. Schemes match case-insensitively.
+// FromDSN is the dialect of a connection string, decided by its form alone.
+// A postgres:// or postgresql:// URL is PostgreSQL. A sqlite://, sqlite3://
+// or file: URI, :memory:, and a path ending in .db, .sqlite or .sqlite3
+// before any ?query are SQLite. Schemes, the file: prefix and extensions
+// match case-insensitively.
 //
 // CockroachDB's cockroach:// and crdb:// are refused: the PostgreSQL
-// dialect's SQL has never been verified there. So is a keyword/value string
-// (host=… dbname=…): other drivers share its grammar, so it does not say
-// which database it names. Construct the dialect for one instead.
+// dialect's SQL has never been verified there. A postgres:// URL to a
+// CockroachDB cluster cannot be told apart and selects PostgreSQL. Also
+// refused: a keyword/value string (host=… dbname=…), whose grammar other
+// drivers share so that it does not say which database it names, and any
+// other DSN whose name holds = or @, which a path FromDSN accepts does not.
+// Construct the dialect for one instead.
 //
 // Errors name the scheme and never the DSN, which may carry a password.
 func FromDSN(dsn string) (Dialect, error) {
@@ -45,7 +49,7 @@ func FromDSN(dsn string) (Dialect, error) {
 		switch strings.ToLower(scheme) {
 		case "postgres", "postgresql":
 			return Postgres{}, nil
-		case "sqlite", "file":
+		case "sqlite", "sqlite3", "file":
 			return SQLite{}, nil
 		case "cockroach", "crdb":
 			return nil, fmt.Errorf("%w: scheme %q: CockroachDB is not supported", ErrUnknownDSN, scheme)
@@ -78,17 +82,25 @@ func isURIScheme(s string) bool {
 	return true
 }
 
-// isSQLitePath reports whether dsn is a SQLite file name, :memory: or a
-// file: URI without an authority. A query, such as the modernc driver's
-// ?_pragma=, follows the name.
+// isSQLitePath reports whether dsn is a file: URI, :memory:, or a SQLite
+// file name, optionally followed by a query such as the modernc driver's
+// ?_pragma=. A bare file: is SQLite's temporary database.
+//
+// A name holding = or @ is refused before its extension is read: a
+// keyword/value DSN (host=h dbname=orders.db) or another driver's
+// (user:pw@tcp(h)/app.db) can end in .db too.
 func isSQLitePath(dsn string) bool {
-	if strings.HasPrefix(dsn, "file:") {
+	if len(dsn) >= len("file:") && strings.EqualFold(dsn[:len("file:")], "file:") {
 		return true
 	}
 	name, _, _ := strings.Cut(dsn, "?")
 	if name == ":memory:" {
 		return true
 	}
+	if strings.ContainsAny(name, "=@") {
+		return false
+	}
+	name = strings.ToLower(name)
 	for _, ext := range []string{".db", ".sqlite", ".sqlite3"} {
 		if strings.HasSuffix(name, ext) {
 			return true
