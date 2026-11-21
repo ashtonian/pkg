@@ -4,12 +4,14 @@ package parsesqlite_test
 
 import (
 	"database/sql"
+	"encoding/hex"
 	"sync"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/ashtonian/pkg/parse/internal/geo"
 	"github.com/ashtonian/pkg/parse/parsesqlite"
 )
 
@@ -112,5 +114,51 @@ func TestDecimalKeyOrdersExactly(t *testing.T) {
 		var holds bool
 		require.NoError(t, db.QueryRow("SELECT "+expr).Scan(&holds), expr)
 		assert.True(t, holds, expr)
+	}
+}
+
+// The geo functions read a point's members as -> returns them and are NULL
+// when the point is.
+func TestGeoFunctions(t *testing.T) {
+	db := open(t)
+	const pt = `'{"lat":10,"lon":20}'`
+	square := "x'" + hex.EncodeToString(geo.AppendPolygonWKB(nil, []geo.Point{{Lat: 0, Lon: 0}, {Lat: 0, Lon: 30}, {Lat: 30, Lon: 30}, {Lat: 30, Lon: 0}})) + "'"
+	tests := []struct {
+		name string
+		expr string
+		want any
+	}{
+		{"distance from a point to itself", "parse_geo_distance(" + pt + " -> '$.lat', " + pt + " -> '$.lon', 10, 20)", 0.0},
+		{"distance along a meridian on the ellipsoid", "round(parse_geo_distance('{\"lat\":1,\"lon\":0}' -> '$.lat', '{\"lat\":1,\"lon\":0}' -> '$.lon', 0, 0), 1)", 110574.4},
+		{"distance from members held as strings", "parse_geo_distance('{\"lat\":\"10\",\"lon\":\" 20 \"}' -> '$.lat', '{\"lat\":\"10\",\"lon\":\" 20 \"}' -> '$.lon', 10, 20)", 0.0},
+		{"distance from a missing member", "parse_geo_distance(" + pt + " -> '$.lat', " + pt + " -> '$.x', 10, 20)", nil},
+		{"distance from a null member", "parse_geo_distance('{\"lat\":null,\"lon\":1}' -> '$.lat', '{\"lat\":null,\"lon\":1}' -> '$.lon', 10, 20)", nil},
+		{"distance from a boolean member", "parse_geo_distance('{\"lat\":true,\"lon\":1}' -> '$.lat', '{\"lat\":true,\"lon\":1}' -> '$.lon', 10, 20)", nil},
+		{"distance from REAL coordinates", "parse_geo_distance(10.0, 20, 10, 20)", 0.0},
+		{"in a box", "parse_geo_in_box(" + pt + " -> '$.lat', " + pt + " -> '$.lon', 0, 10, 0, 20)", int64(1)},
+		{"outside a box", "parse_geo_in_box(" + pt + " -> '$.lat', " + pt + " -> '$.lon', 0, 9.5, 0, 20)", int64(0)},
+		{"in a box, a NULL point", "parse_geo_in_box(NULL, 1, 0, 10, 0, 20)", nil},
+		{"covered by a polygon", "parse_geo_covered_by(" + pt + " -> '$.lat', " + pt + " -> '$.lon', " + square + ")", int64(1)},
+		{"on a polygon's edge", "parse_geo_covered_by(0, 15, " + square + ")", int64(1)},
+		{"outside a polygon", "parse_geo_covered_by(31, 15, " + square + ")", int64(0)},
+		{"covered by a polygon, a NULL point", "parse_geo_covered_by(1, NULL, " + square + ")", nil},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var got any
+			require.NoError(t, db.QueryRow("SELECT "+tt.expr).Scan(&got))
+			assert.Equal(t, tt.want, got)
+		})
+	}
+	for name, expr := range map[string]string{
+		"a distance to text":        "parse_geo_distance(1, 1, 'north', 2)",
+		"a box side of text":        "parse_geo_in_box(1, 1, 0, 'ten', 0, 20)",
+		"a polygon that is no blob": "parse_geo_covered_by(1, 1, 'square')",
+		"a polygon blob of a point": "parse_geo_covered_by(1, 1, x'0101000000')",
+	} {
+		t.Run(name, func(t *testing.T) {
+			var got any
+			assert.Error(t, db.QueryRow("SELECT "+expr).Scan(&got))
+		})
 	}
 }

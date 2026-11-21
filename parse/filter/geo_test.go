@@ -3,12 +3,14 @@
 package filter_test
 
 import (
+	"errors"
 	"math"
 	"strings"
 	"testing"
 
 	"github.com/ashtonian/pkg/parse/core"
 	"github.com/ashtonian/pkg/parse/filter"
+	"github.com/ashtonian/pkg/parse/internal/geo"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -252,58 +254,56 @@ func TestGeoSQL_Postgres_WithinPolygon(t *testing.T) {
 	assert.Equal(t, []any{"POLYGON((0 0, 1 1, 1 0, 0 0))"}, result.Args)
 }
 
-// --- SQL: SQLite $near (Haversine) ---
+// --- SQL: SQLite, through parsesqlite's geo functions ---
 
-func TestGeoSQL_SQLite_Near(t *testing.T) {
-	schema := geoTestSchema()
-	fp := filter.NewFilterParser(schema, nil)
-	ast, err := fp.Parse(`{"location":{"$near":{"lat":40.7128,"lon":-74.006,"distance":"5km"}}}`)
-	require.NoError(t, err)
-
-	builder := filter.NewSQLBuilder(schema, filter.SQLiteDialect{})
-	result, err := builder.Build(ast)
-	require.NoError(t, err)
-
-	assert.Contains(t, result.Where, "asin(min(1.0,") // haversine, clamped into asin's domain
-	assert.Contains(t, result.Where, "json_extract")
-	assert.Equal(t, []any{40.7128, -74.006, 5000.0}, result.Args)
-}
-
-// --- SQL: SQLite $within bbox ---
-
-func TestGeoSQL_SQLite_WithinBBox(t *testing.T) {
-	schema := geoTestSchema()
-	fp := filter.NewFilterParser(schema, nil)
-	input := `{"location":{"$within":{"top_left":{"lat":40.80,"lon":-74.10},"bottom_right":{"lat":40.65,"lon":-73.70}}}}`
-	ast, err := fp.Parse(input)
-	require.NoError(t, err)
-
-	builder := filter.NewSQLBuilder(schema, filter.SQLiteDialect{})
-	result, err := builder.Build(ast)
-	require.NoError(t, err)
-
-	assert.Contains(t, result.Where, "BETWEEN")
-	assert.Contains(t, result.Where, "json_extract")
-	assert.Len(t, result.Args, 4)
-}
-
-// --- SQL: SQLite polygon not supported ---
-
-// SQLite evaluates neither polygons nor $intersects; both fail with E2115
-// instead of compiling a polygon's points into a bounding-box predicate.
-func TestGeoSQL_SQLite_UnsupportedShapes(t *testing.T) {
+// SQLite reads a JSONB point's members with -> and decides each geo
+// operator in a parse_geo function, with the operand bound.
+func TestGeoSQL_SQLite(t *testing.T) {
 	schema := geoTestSchema()
 	schema.Fields["location"].AllowedOperators = []filter.FilterOperator{filter.OpNear, filter.OpWithin, filter.OpIntersects}
-	for name, input := range map[string]string{
-		"within polygon":  `{"location":{"$within":{"points":[{"lat":0,"lon":0},{"lat":1,"lon":1},{"lat":0,"lon":1}]}}}`,
-		"intersects bbox": `{"location":{"$intersects":{"top_left":{"lat":40.80,"lon":-74.10},"bottom_right":{"lat":40.65,"lon":-73.70}}}}`,
-	} {
-		t.Run(name, func(t *testing.T) {
-			ast, err := filter.NewFilterParser(schema, nil).Parse(input)
+	lat, lon := "devices.location -> '$.lat'", "devices.location -> '$.lon'"
+	box := `{"top_left":{"lat":40.80,"lon":-74.10},"bottom_right":{"lat":40.65,"lon":-73.70}}`
+	polygon := `{"points":[{"lat":0,"lon":0},{"lat":1,"lon":1},{"lat":0,"lon":1}]}`
+	ring := []any{geo.AppendPolygonWKB(nil, []geo.Point{{Lat: 0, Lon: 0}, {Lat: 1, Lon: 1}, {Lat: 0, Lon: 1}})}
+	tests := []struct {
+		name, input, where string
+		args               []any
+	}{
+		{"near", `{"location":{"$near":{"lat":40.7128,"lon":-74.006,"distance":"5km"}}}`,
+			"(parse_geo_distance(" + lat + ", " + lon + ", ?1, ?2) <= ?3)", []any{40.7128, -74.006, 5000.0}},
+		{"within a box", `{"location":{"$within":` + box + `}}`,
+			"parse_geo_in_box(" + lat + ", " + lon + ", ?1, ?2, ?3, ?4)", []any{40.65, 40.80, -74.10, -73.70}},
+		{"intersects a box", `{"location":{"$intersects":` + box + `}}`,
+			"parse_geo_in_box(" + lat + ", " + lon + ", ?1, ?2, ?3, ?4)", []any{40.65, 40.80, -74.10, -73.70}},
+		{"within a polygon", `{"location":{"$within":` + polygon + `}}`,
+			"parse_geo_covered_by(" + lat + ", " + lon + ", ?1)", ring},
+		{"intersects a polygon", `{"location":{"$intersects":` + polygon + `}}`,
+			"parse_geo_covered_by(" + lat + ", " + lon + ", ?1)", ring},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ast, err := filter.NewFilterParser(schema, nil).Parse(tt.input)
+			require.NoError(t, err)
+			result, err := filter.NewSQLBuilder(schema, filter.SQLiteDialect{}).Build(ast)
+			require.NoError(t, err)
+			assert.Equal(t, tt.where, result.Where)
+			assert.Equal(t, tt.args, result.Args)
+		})
+	}
+}
+
+// Native geometry and geography storage need PostGIS; SQLite refuses them
+// with E2115.
+func TestGeoSQL_SQLite_NativeStorage(t *testing.T) {
+	for _, storage := range []filter.GeoStorageType{filter.GeoStorageGeography, filter.GeoStorageGeometry} {
+		t.Run(string(storage), func(t *testing.T) {
+			schema := geoTestSchema()
+			schema.Fields["location"].GeoConfig.StorageType = storage
+			ast, err := filter.NewFilterParser(schema, nil).Parse(`{"location":{"$near":{"lat":1,"lon":1,"distance":"5km"}}}`)
 			require.NoError(t, err)
 			_, err = filter.NewSQLBuilder(schema, filter.SQLiteDialect{}).Build(ast)
-			var pe *core.ParseError
-			require.ErrorAs(t, err, &pe)
+			pe, ok := errors.AsType[*core.ParseError](err)
+			require.True(t, ok, "%v", err)
 			assert.Equal(t, filter.ECodeGeoNotSupported.String(), pe.Code)
 		})
 	}
