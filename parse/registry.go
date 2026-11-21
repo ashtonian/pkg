@@ -1,9 +1,7 @@
 package parse
 
 import (
-	"encoding/json"
 	"fmt"
-	"net/http"
 	"reflect"
 	"slices"
 	"sync"
@@ -413,47 +411,4 @@ func searchSchemaToResponse(s *filter.SearchSchema) *SearchSchemaResponse {
 		param = filter.ParamSearch // hand-built schema without a Param; the generated default
 	}
 	return &SearchSchemaResponse{Enabled: true, Fields: fields, Param: param}
-}
-
-// SchemaHandler returns an http.HandlerFunc that serves schema metadata.
-func (r *SchemaRegistry) SchemaHandler() http.HandlerFunc {
-	return func(w http.ResponseWriter, req *http.Request) {
-		resource := req.PathValue("resource")
-		if resource == "" {
-			names := r.ResourceNames()
-			w.Header().Set("Content-Type", "application/json")
-			json.NewEncoder(w).Encode(map[string]any{"resources": names}) //nolint:errcheck
-			return
-		}
-		resp := r.SchemaFor(resource)
-		if resp == nil {
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusNotFound)
-			// The HTTP error body ({code, message, details}), as the
-			// HTTP handlers and the TS SDK's ApiError read it.
-			json.NewEncoder(w).Encode(map[string]any{ //nolint:errcheck
-				"code":    filter.ECodeSchemaNotFound.String(),
-				"message": "no schema registered for resource " + resource,
-				"details": map[string]any{"resource": resource},
-			})
-			return
-		}
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(resp) //nolint:errcheck
-	}
-}
-
-// SchemaListHandler returns an http.HandlerFunc that lists all schemas.
-func (r *SchemaRegistry) SchemaListHandler() http.HandlerFunc {
-	return func(w http.ResponseWriter, _ *http.Request) {
-		names := r.ResourceNames()
-		schemas := make([]*SchemaResponse, 0, len(names))
-		for _, name := range names {
-			if s := r.SchemaFor(name); s != nil {
-				schemas = append(schemas, s)
-			}
-		}
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(map[string]any{"schemas": schemas}) //nolint:errcheck
-	}
 }

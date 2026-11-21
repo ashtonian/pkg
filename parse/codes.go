@@ -12,12 +12,16 @@ type Code = core.Code
 // ParseError carries a code and the location and context of a refused request.
 type ParseError = core.ParseError
 
-// Codes returns the distinct filter and patch codes. A shared limit has one
-// code even when both grammars can reject it.
+// ECodeSchemaEncodingFailed is a schema document SchemaHandler or
+// SchemaListHandler could not encode: a server defect, answered 500.
+const ECodeSchemaEncodingFailed Code = "E2120"
+
+// Codes returns the distinct filter, patch and schema discovery codes. A
+// shared limit has one code even when both grammars can reject it.
 func Codes() []Code {
 	seen := make(map[Code]bool)
 	var out []Code
-	for _, list := range [][]Code{filter.Codes(), patch.Codes()} {
+	for _, list := range [][]Code{filter.Codes(), patch.Codes(), {ECodeSchemaEncodingFailed}} {
 		for _, code := range list {
 			if !seen[code] {
 				seen[code] = true

@@ -44,11 +44,20 @@ A flat parameter naming no filterable field is E2071 unless it is a list paramet
 After registering resource types, mount the registry using standard `net/http` routes:
 
 ```go
-mux.HandleFunc("GET /api/{resource}/schema", registry.SchemaHandler())
-mux.HandleFunc("GET /api/schemas", registry.SchemaListHandler())
+report := parse.WithErrorHandler(func(r *http.Request, err error) {
+	level := slog.LevelWarn // the client left before the response was written
+	if errors.Is(err, parse.ECodeSchemaEncodingFailed) {
+		level = slog.LevelError // a document that cannot be encoded: a server defect
+	}
+	logger.Log(r.Context(), level, "serving schema", slog.String("path", r.URL.Path), slog.Any("error", err))
+})
+mux.HandleFunc("GET /api/{resource}/schema", registry.SchemaHandler(report))
+mux.HandleFunc("GET /api/schemas", registry.SchemaListHandler(report))
 ```
 
 The schema document advertises each resource's filterable fields and their operators, its patch paths, sort fields and search; [`testdata/schema_document.json`](../testdata/schema_document.json) is one with every member set. It is a versioned format: `version` is `parse.SchemaVersion`, which stays the same when a member is added and increments when one is removed, renamed or redefined. A client refuses a version it does not read, as the TypeScript SDK does with `SchemaVersionError`. `SchemaHandler` returns 404/E2078 for an unknown resource. Registration and discovery are separate from your list/patch routes; the [example server](../examples/server/server.go) shows both.
+
+Both handlers encode the whole response before writing any of it, and send it with its `Content-Length`. A document that cannot be encoded is answered 500/E2120 with the catalog message only; the encoding error, which names Go types, goes to the `parse.WithErrorHandler` hook alone, matching `parse.ECodeSchemaEncodingFailed` through `errors.Is`. A response that cannot be written once its status is sent, usually because the client disconnected, reaches the hook as the write error; the client has its status already, so nothing changes for it. The hook runs on the request's goroutine and must be safe for concurrent use. Without one, the handlers answer the same way and report nothing. Every member of the schema document encodes, so E2120 means a defect in parse: alert on it, not on write errors.
 
 ## Error handling
 
@@ -116,6 +125,7 @@ All known codes describe permanent failures and are listed below; retry and cata
 | E2117 | 422 | Operation not allowed on a relation field |
 | E2118 | 422 | Relation patch value must be an array |
 | E2119 | 422 | Relation patch exceeds its maximum |
+| E2120 | 500 | A schema discovery handler could not encode its document |
 
 `parse.ParseError` and `core.ParseError` name the same type. `ErrorCode()` and `ErrorHTTPStatus()` support structural error introspection without a framework dependency; `errors.Is(err, filter.ECodeUnknownField)` holds through wrapping, and the original cause remains reachable.
 
