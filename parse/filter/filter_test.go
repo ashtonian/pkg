@@ -657,7 +657,7 @@ func TestListQuery_WithStartParam(t *testing.T) {
 	}
 }
 
-// --- QueryParamParser strictness (GEN-05) ---
+// --- QueryParamParser strictness ---
 
 // A parameter naming no field is E2071 unless it is a list parameter or one
 // the caller accepts; QueryParamLenient ignores it instead.

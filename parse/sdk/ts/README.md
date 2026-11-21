@@ -63,19 +63,19 @@ console.log(page.items, page.page_info.total_count, page.page_info.end_cursor);
 
 ## Server Contract
 
-The client speaks the list, patch and facet endpoints `forge/feature` serves over parse:
+The client calls the routes a server built on the Go module serves; the [example server](../../examples/server/) serves every one:
 
-| Client call | Request |
-|---|---|
-| `list(opts)` | `GET /{resource}?filter=&sort=&cursor=&page_size=&include_total=&include_deleted=&search=&include=&facets=` |
-| `list(opts, { method: "POST" })`, or a list URL past `maxURLLength` | `POST /{resource}` with `{"filter": {…}, "sort", "cursor", "page_size", "include_total", "include_deleted", "search", "include": […], "facets": […]}` as `application/json` ([HTTP contract](../../docs/http-errors.md#the-same-request-as-a-post-body)) |
-| `listAll(opts)` | `list` repeated with `cursor = page_info.end_cursor` while `page_info.has_next_page`, each page on the transport `list` would take |
-| `patch(id, input)` | `PATCH /{resource}/{id}` with a JSON Merge Patch body |
-| `patchMany(ids, input)` | `PATCH /{resource}?id[]=…&id[]=…` with a JSON Merge Patch body |
-| `facets(fields, opts)` | `OPTIONS /{resource}?facets=a,b&filter=` → `facets` |
-| `schema()` | `GET /{schemaPath}/{resource}/schema` (parse `SchemaRegistry.SchemaHandler`) |
+| Client call | Request | Served in Go by |
+|---|---|---|
+| `list(opts)` | `GET /{resource}?filter=&sort=&cursor=&page_size=&include_total=&include_deleted=&search=&include=&facets=` | `parsehttp.ParseList` (or `Resource.ParseList`), `Resource.BuildList`, `Resource.Page` |
+| `list(opts, { method: "POST" })`, or a list URL past `maxURLLength` | `POST /{resource}` with `{"filter": {…}, "sort", "cursor", "page_size", "include_total", "include_deleted", "search", "include": […], "facets": […]}` as `application/json` ([HTTP contract](../../docs/http-errors.md#the-same-request-as-a-post-body)) | The same handler: `parsehttp.ParseList` reads either transport |
+| `listAll(opts)` | `list` repeated with `cursor = page_info.end_cursor` while `page_info.has_next_page`, each page on the transport `list` would take | The list route |
+| `patch(id, input)` | `PATCH /{resource}/{id}` with a JSON Merge Patch body | `Resource.ParseMergePatch`, `Resource.BuildUpdate(…, parse.ByID(id), …)` |
+| `patchMany(ids, input)` | `PATCH /{resource}?id[]=…&id[]=…` with a JSON Merge Patch body | `Resource.BuildUpdate(…, parse.ByIDs(ids…), …)`; a key that updated no row is an item of `failed` |
+| `facets(fields, opts)` | `OPTIONS /{resource}?facets=a,b&filter=` → `facets` | `Resource.ParseList`, `Resource.BuildList`, the plan's `Facets` statement |
+| `schema()` | `GET /{schemaPath}/{resource}/schema` | `SchemaRegistry.SchemaHandler` |
 
-A list page is `{ items, page_info: { has_next_page, has_prev_page, start_cursor?, end_cursor?, total_count? }, _relations?, _truncated?, facets? }` — Go `filter.Page`. `_relations` carries `include` projections: relation field → owner id → related ids (at most 100 per owner by default); `_truncated` lists, per relation field, the owners whose ids were cut at that cap. `facets` carries the counts a list's `facets` option asked for, over the matched rows: field → buckets, a terms facet's by count with ties in the field's type order (numbers by value), a range facet's as declared. A server that runs the plan with `parsepgx.QueryPage` answers it; `forge/feature` serves facets through `facets(fields, opts)` only. A patch returns `{ updated, failed? }`.
+A list page is `{ items, page_info: { has_next_page, has_prev_page, start_cursor?, end_cursor?, total_count? }, _relations?, _truncated?, facets? }` — Go `filter.Page`. `_relations` carries `include` projections: relation field → owner id → related ids (at most 100 per owner by default); `_truncated` lists, per relation field, the owners whose ids were cut at that cap. `facets` carries the counts a list's `facets` option asked for, over the matched rows: field → buckets, a terms facet's by count with ties in the field's type order (numbers by value), a range facet's as declared. A server answers them when it runs the list plan's facet statement, as `parsepgx.QueryPage` and the example server do; one that does not serves facets through `facets(fields, opts)` only. A patch returns `{ updated, failed? }`: `failed` lists the keys of a `patchMany` that updated no row, each with the server's `code` and `error`.
 
 ## Filtering
 

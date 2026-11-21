@@ -69,7 +69,7 @@ Start with the [runnable package example](../README.md#quick-start). The focused
 ## Dependencies
 
 - *Imports*: `parse/core`, `parse/internal/dialect`, `parse/internal/cursor`, stdlib `uuid`
-- *Imported by*: `parse`, `forge/dal/*`, `forge/feature`, `forge/fibermw/httputil`
+- *Imported by*: `parse`, `parse/parsehttp`, `parse/parsepgx`, `parse/filter/filtertest`, the example server, and servers that compile lists themselves
 - *Package boundary*: standalone Parse module
 
 ## References

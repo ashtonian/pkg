@@ -113,6 +113,26 @@ verbatim. Cookbook excerpts are checked against their source files. Keep
 examples and their documentation in sync, and run `make ci` from the
 repository root before opening a pull request.
 
+### Private references
+
+This repository is public. Docs, comments, tests, fixtures and tooling
+describe code outside it generically ("a downstream consumer", "any server
+built on parse") and cite only this repository's files; an "Imported by" line
+lists this repository's packages. CI's change-scope job runs
+`tools/private_references.py`, which fails on any tracked text line matching
+a pattern in the `PRIVATE_REFERENCE_PATTERNS` Actions secret: one POSIX
+extended regular expression per line, matched case-insensitively, `#` lines
+ignored. The patterns stay in the secret because they name what they guard,
+and the check reports only `path:line`. Without the secret the check fails.
+Run it locally with a file of the same patterns:
+
+```bash
+python3 tools/private_references.py ~/path/to/private-patterns
+```
+
+To change the patterns, replace the secret
+(`gh secret set PRIVATE_REFERENCE_PATTERNS -R ashtonian/pkg < patterns`).
+
 ## Parse SQL matrix
 
 Parse requires Go 1.27 and publishes as `github.com/ashtonian/pkg/parse`, with `parse/v…` tags. CI runs unit tests and existing fuzz seeds under the race detector, SQLite integration, PostgreSQL 17/18 with PostGIS 3.6, and the TypeScript SDK's shared corpora. The SDK release check installs its tarball in a fresh consumer and checks public declarations, runtime subpaths and self-contained JavaScript sourcemaps. The SDK package version follows the Parse release component. CI stores benchmark text and CPU/allocation profiles on main; it does not run dedicated fuzzing sessions.
