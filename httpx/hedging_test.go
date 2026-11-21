@@ -1,201 +1,155 @@
-//go:build integration
+//go:build unit
 
 package httpx
 
 import (
 	"io"
 	"net/http"
-	"net/http/httptest"
-	"sync/atomic"
+	"slices"
+	"strconv"
+	"strings"
+	"sync"
 	"testing"
+	"testing/synctest"
 	"time"
 )
 
-func TestHedgingTransport_NoHedge(t *testing.T) {
-	requestCount := int32(0)
+// hedgedUpstream answers attempt n, counted from zero across every request,
+// after latency(n) with the body "n", or with its context's error once that
+// ends. It records when each attempt was launched on the bubble's clock.
+type hedgedUpstream struct {
+	start   time.Time
+	latency func(attempt int) time.Duration
+	mu      sync.Mutex
+	at      []time.Duration
+}
 
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		atomic.AddInt32(&requestCount, 1)
-		w.WriteHeader(http.StatusOK)
-	}))
-	defer server.Close()
+func newHedgedUpstream(latency func(attempt int) time.Duration) *hedgedUpstream {
+	return &hedgedUpstream{start: time.Now(), latency: latency}
+}
 
-	// Long delay so hedging won't trigger
-	transport := must(NewHedgingTransport(http.DefaultTransport, time.Hour))
-	client := &http.Client{Transport: transport}
-
-	resp, err := client.Get(server.URL)
-	if err != nil {
-		t.Fatalf("request failed: %v", err)
-	}
-	resp.Body.Close()
-
-	if atomic.LoadInt32(&requestCount) != 1 {
-		t.Errorf("expected 1 request (no hedging), got %d", requestCount)
+func (u *hedgedUpstream) RoundTrip(r *http.Request) (*http.Response, error) {
+	u.mu.Lock()
+	n := len(u.at)
+	u.at = append(u.at, time.Since(u.start))
+	u.mu.Unlock()
+	select {
+	case <-time.After(u.latency(n)):
+		return &http.Response{StatusCode: 200, Header: http.Header{}, Body: io.NopCloser(strings.NewReader(strconv.Itoa(n))), Request: r}, nil
+	case <-r.Context().Done():
+		return nil, r.Context().Err()
 	}
 }
 
-func TestHedgingTransport_HedgeOnSlow(t *testing.T) {
-	requestCount := int32(0)
+func (u *hedgedUpstream) launches() []time.Duration {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	return slices.Clone(u.at)
+}
 
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		count := atomic.AddInt32(&requestCount, 1)
-		if count == 1 {
-			// First request is slow
-			time.Sleep(200 * time.Millisecond)
-		}
-		w.WriteHeader(http.StatusOK)
-	}))
-	defer server.Close()
-
-	transport := must(NewHedgingTransport(http.DefaultTransport, 50*time.Millisecond))
-	client := &http.Client{Transport: transport}
-
+// hedgedGet sends method through rt and returns the winning body and how
+// long the round trip took.
+func hedgedGet(t *testing.T, rt http.RoundTripper, method string) (string, time.Duration) {
+	t.Helper()
+	req, _ := http.NewRequest(method, "https://api.example.com/x", nil)
 	start := time.Now()
-	resp, err := client.Get(server.URL)
-	elapsed := time.Since(start)
-
-	if err != nil {
-		t.Fatalf("request failed: %v", err)
-	}
-	resp.Body.Close()
-
-	if atomic.LoadInt32(&requestCount) != 2 {
-		t.Errorf("expected 2 requests (with hedge), got %d", requestCount)
-	}
-
-	// Should complete faster than the slow request
-	if elapsed > 150*time.Millisecond {
-		t.Errorf("expected fast completion with hedge, got %v", elapsed)
-	}
-}
-
-func TestHedgingTransport_NonGetNotHedged(t *testing.T) {
-	requestCount := int32(0)
-
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		atomic.AddInt32(&requestCount, 1)
-		time.Sleep(100 * time.Millisecond)
-		w.WriteHeader(http.StatusOK)
-	}))
-	defer server.Close()
-
-	transport := must(NewHedgingTransport(http.DefaultTransport, 10*time.Millisecond))
-	client := &http.Client{Transport: transport}
-
-	resp, err := client.Post(server.URL, "text/plain", nil)
-	if err != nil {
-		t.Fatalf("request failed: %v", err)
-	}
-	resp.Body.Close()
-
-	// POST should not be hedged by default
-	if atomic.LoadInt32(&requestCount) != 1 {
-		t.Errorf("expected 1 request (POST not hedged), got %d", requestCount)
-	}
-}
-
-func TestHedgingTransport_WithHedgeIf(t *testing.T) {
-	requestCount := int32(0)
-
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		count := atomic.AddInt32(&requestCount, 1)
-		if count == 1 {
-			time.Sleep(100 * time.Millisecond)
-		}
-		w.WriteHeader(http.StatusOK)
-	}))
-	defer server.Close()
-
-	// Hedge POST requests
-	transport := must(NewHedgingTransport(http.DefaultTransport, 10*time.Millisecond,
-		WithHedgeIf(func(req *http.Request) bool {
-			return req.Method == http.MethodPost
-		}),
-	))
-	client := &http.Client{Transport: transport}
-
-	resp, err := client.Post(server.URL, "text/plain", nil)
-	if err != nil {
-		t.Fatalf("request failed: %v", err)
-	}
-	resp.Body.Close()
-
-	if atomic.LoadInt32(&requestCount) < 2 {
-		t.Errorf("expected at least 2 requests (POST hedged), got %d", requestCount)
-	}
-}
-
-func TestHedgingTransport_MaxHedgedRequests(t *testing.T) {
-	requestCount := int32(0)
-
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		atomic.AddInt32(&requestCount, 1)
-		time.Sleep(500 * time.Millisecond)
-		w.WriteHeader(http.StatusOK)
-	}))
-	defer server.Close()
-
-	transport := must(NewHedgingTransport(http.DefaultTransport, 10*time.Millisecond,
-		WithMaxHedgedRequests(3),
-	))
-	client := &http.Client{Transport: transport, Timeout: time.Second}
-
-	resp, err := client.Get(server.URL)
-	if err != nil {
-		t.Fatalf("request failed: %v", err)
-	}
-	resp.Body.Close()
-
-	// Should have at most 3 concurrent requests
-	count := atomic.LoadInt32(&requestCount)
-	if count > 3 {
-		t.Errorf("expected at most 3 requests, got %d", count)
-	}
-}
-func TestAdaptiveHedgingTransport(t *testing.T) {
-	requestCount := int32(0)
-
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		atomic.AddInt32(&requestCount, 1)
-		time.Sleep(10 * time.Millisecond)
-		w.WriteHeader(http.StatusOK)
-	}))
-	defer server.Close()
-
-	transport := must(NewAdaptiveHedgingTransport(http.DefaultTransport, 0.95))
-	client := &http.Client{Transport: transport}
-
-	// Make several requests to build up latency data
-	for i := 0; i < 20; i++ {
-		resp, err := client.Get(server.URL)
-		if err != nil {
-			t.Fatalf("request %d failed: %v", i, err)
-		}
-		resp.Body.Close()
-	}
-
-	// The adaptive transport should have adjusted delay based on observed latencies
-	// We can't easily test the exact value, but it should not panic
-}
-
-func TestHedgingDelayedBodyThroughRealServer(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.WriteHeader(http.StatusOK)
-		w.(http.Flusher).Flush() // headers first; the body follows later
-		time.Sleep(50 * time.Millisecond)
-		_, _ = w.Write([]byte("late body"))
-	}))
-	defer server.Close()
-
-	client := &http.Client{Transport: must(NewHedgingTransport(http.DefaultTransport, time.Hour))}
-	resp, err := client.Get(server.URL)
+	resp, err := rt.RoundTrip(req)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer resp.Body.Close()
-	body, err := io.ReadAll(resp.Body)
-	if err != nil || string(body) != "late body" {
-		t.Fatalf("delayed body = %q, %v", body, err)
+	took := time.Since(start)
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	return string(body), took
+}
+
+// A hedge is launched exactly one delay after each attempt still pending, up
+// to the concurrency cap, and the first response wins.
+func TestHedgingLaunchesAfterItsDelay(t *testing.T) {
+	slowFirst := func(n int) time.Duration {
+		if n == 0 {
+			return time.Second
+		}
+		return 0
 	}
+	allSlow := func(int) time.Duration { return 500 * time.Millisecond }
+	tests := []struct {
+		name     string
+		delay    time.Duration
+		opts     []HedgingOption
+		method   string
+		latency  func(int) time.Duration
+		launches []time.Duration
+		winner   string
+		took     time.Duration
+	}{
+		{"a fast attempt is not hedged", time.Hour, nil, http.MethodGet,
+			func(int) time.Duration { return 10 * time.Millisecond }, []time.Duration{0}, "0", 10 * time.Millisecond},
+		{"a slow attempt is hedged and the hedge wins", 50 * time.Millisecond, nil, http.MethodGet,
+			slowFirst, []time.Duration{0, 50 * time.Millisecond}, "1", 50 * time.Millisecond},
+		{"two attempts by default", 10 * time.Millisecond, nil, http.MethodGet,
+			allSlow, []time.Duration{0, 10 * time.Millisecond}, "0", 500 * time.Millisecond},
+		{"WithMaxHedgedRequests raises the cap", 10 * time.Millisecond, []HedgingOption{WithMaxHedgedRequests(3)}, http.MethodGet,
+			allSlow, []time.Duration{0, 10 * time.Millisecond, 20 * time.Millisecond}, "0", 500 * time.Millisecond},
+		{"POST is not hedged by default", 10 * time.Millisecond, nil, http.MethodPost,
+			slowFirst, []time.Duration{0}, "0", time.Second},
+		{"WithHedgeIf hedges POST", 10 * time.Millisecond, []HedgingOption{WithHedgeIf(func(r *http.Request) bool { return r.Method == http.MethodPost })}, http.MethodPost,
+			slowFirst, []time.Duration{0, 10 * time.Millisecond}, "1", 10 * time.Millisecond},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				up := newHedgedUpstream(tt.latency)
+				winner, took := hedgedGet(t, must(NewHedgingTransport(up, tt.delay, tt.opts...)), tt.method)
+				synctest.Wait()
+				if winner != tt.winner || took != tt.took {
+					t.Errorf("attempt %s won after %v, want attempt %s after %v", winner, took, tt.winner, tt.took)
+				}
+				if got := up.launches(); !slices.Equal(got, tt.launches) {
+					t.Errorf("attempts launched at %v, want %v", got, tt.launches)
+				}
+			})
+		})
+	}
+}
+
+// The adaptive transport hedges after its initial delay until it has ten
+// samples, then after the configured percentile of the latencies it saw.
+func TestAdaptiveHedgingDelayFollowsObservedLatency(t *testing.T) {
+	t.Run("the initial delay before ten samples", func(t *testing.T) {
+		synctest.Test(t, func(t *testing.T) {
+			up := newHedgedUpstream(func(n int) time.Duration {
+				if n == 0 {
+					return time.Second
+				}
+				return 0
+			})
+			_, took := hedgedGet(t, must(NewAdaptiveHedgingTransport(up, 0.95)), http.MethodGet)
+			if took != 100*time.Millisecond {
+				t.Errorf("hedged after %v, want the initial 100ms", took)
+			}
+		})
+	})
+	t.Run("the percentile after ten samples", func(t *testing.T) {
+		synctest.Test(t, func(t *testing.T) {
+			up := newHedgedUpstream(func(n int) time.Duration {
+				switch {
+				case n < 10:
+					return 30 * time.Millisecond // ten quick requests, under the initial delay
+				case n == 10:
+					return time.Second // the next request's first attempt
+				}
+				return 0
+			})
+			rt := must(NewAdaptiveHedgingTransport(up, 0.95))
+			for range 10 {
+				hedgedGet(t, rt, http.MethodGet)
+			}
+			winner, took := hedgedGet(t, rt, http.MethodGet)
+			synctest.Wait()
+			if winner != "11" || took != 30*time.Millisecond {
+				t.Errorf("attempt %s won after %v, want the hedge after the observed 30ms", winner, took)
+			}
+		})
+	})
 }

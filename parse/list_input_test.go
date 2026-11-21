@@ -4,6 +4,7 @@ package parse_test
 
 import (
 	"net/url"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -103,6 +104,10 @@ var listCorpus = []struct {
 	{
 		name: "field that is not facetable", resource: "widgets", code: filter.ECodeUnknownField.String(),
 		query: "facets=rank", input: parse.ListInput{Facets: []string{"rank"}},
+	},
+	{
+		name: "unknown response field", resource: "widgets", code: filter.ECodeUnknownField.String(),
+		query: "fields=id,nmae", input: parse.ListInput{Fields: []string{"id", "nmae"}},
 	},
 	{
 		name: "unknown include", resource: "widgets", code: filter.ECodeUnknownField.String(),
@@ -220,6 +225,50 @@ func TestParseListInput_FieldFiltersAreNeverListParameters(t *testing.T) {
 	require.NotNil(t, req.Filter)
 	assert.Equal(t, 1, req.Filter.ConditionCount, "a field named sort is filtered on")
 	assert.Nil(t, req.Sort)
+}
+
+// A field mask names the fields a response carries: a read column's, a
+// computed column's, or one with no column, which the service fills. A
+// typo, a hidden field, or a field whose column the resource does not read
+// is refused alike in a query string, an input and a body, the field named.
+func TestParseListInput_FieldMask(t *testing.T) {
+	type account struct {
+		ID     string   `json:"id"     db:"id"     parse:"filter,sort"`
+		Email  string   `json:"email"  db:"email"  parse:"filter"`
+		Label  string   `json:"label"  db:"label"`
+		Hash   string   `json:"hash"   db:"hash"`
+		Notes  string   `json:"notes"  db:"notes"  parse:"search"`
+		Secret string   `json:"-"      db:"secret"`
+		Avatar string   `json:"avatar" db:"-"`
+		Roles  []string `json:"roles"  db:"-"      parse:"filter" relation:"account_roles,account_id,role_id"`
+	}
+	accounts, err := parse.NewResource[account]("accounts",
+		parse.ReadColumns("id", "email", "label", "secret"), parse.QueryOnlyColumns("notes"),
+		parse.ReadExpr("label", parse.SQL("upper(accounts.email)")))
+	require.NoError(t, err)
+
+	mask := []string{"roles", "id", "avatar", "label", "email"}
+	req, err := accounts.ParseListInput(parse.ListInput{Fields: mask})
+	require.NoError(t, err)
+	assert.Equal(t, mask, req.Fields, "valid names round-trip in order")
+
+	for _, name := range []string{"nmae", "hash", "notes", "secret", "Secret"} {
+		t.Run(name, func(t *testing.T) {
+			fromQuery, err := accounts.ParseList(url.Values{filter.ParamFields: {"id," + name}})
+			assert.Nil(t, fromQuery)
+			var pe *core.ParseError
+			require.ErrorAs(t, err, &pe)
+			assert.Equal(t, filter.ECodeUnknownField.String(), pe.Code)
+			assert.Equal(t, map[string]any{"field": name}, pe.Details)
+			assert.Equal(t, "response field '"+name+"' does not exist", pe.Message,
+				"a withheld field reads as no field at all")
+
+			_, inputErr := accounts.ParseListInput(parse.ListInput{Fields: []string{"id", name}})
+			assert.Equal(t, err, inputErr)
+			_, bodyErr := accounts.ParseListBody(strings.NewReader(`{"fields":["id","` + name + `"]}`))
+			assert.Equal(t, err, bodyErr)
+		})
+	}
 }
 
 func TestParseListInput_LeavesItsInputAlone(t *testing.T) {
