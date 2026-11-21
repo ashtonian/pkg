@@ -52,7 +52,7 @@ The operator contract is shared where supported. Backend differences and relatio
 
 Values normalize at parse (the AST carries canonical values): exact `int64` / `uint64`, finite `float64`, canonical decimal text, canonical UUID strings, RFC 3339 UTC timestamps with relative tokens (`now-7d`, `now+1h`) resolved, canonical JSON documents bounded by `MaxDepth` / `MaxArraySize`.
 
-`filtertest` holds the conformance fixture — an entity with a field of every type, its rows and the expected rows per filter; a backend passes with `filtertest.Run(t, name, backend)`.
+`filtertest` holds the conformance fixture — an entity with a field of every type, its rows and the expected rows per filter; a backend passes with `filtertest.Run(t, name, backend)`. A case names the backends that cannot evaluate it (`Case.Unsupported`, matched against `name`); each must refuse it with a `*core.ParseError` carrying the case's `UnsupportedErr` (E2115 for a geo operator), and any other error or any result fails the case.
 
 ### Sets
 

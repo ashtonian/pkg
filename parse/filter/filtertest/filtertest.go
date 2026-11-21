@@ -8,6 +8,7 @@ package filtertest
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"slices"
 	"testing"
 	"time"
@@ -84,10 +85,14 @@ type Case struct {
 	Want   []string
 	// ParseErr is the E-code the parser rejects Filter with; Want is unused.
 	ParseErr string
-	// Unsupported names the backends that cannot evaluate the filter and
-	// must fail instead ("sqlite", "memory"); a coded failure carries
-	// E2115.
+	// Unsupported names the backends that cannot evaluate the filter
+	// ("sqlite", "memory"). Each must refuse it with a *core.ParseError
+	// carrying UnsupportedErr; any other error, or any result, fails the
+	// case.
 	Unsupported []string
+	// UnsupportedErr is the E-code an Unsupported backend refuses Filter
+	// with: E2115 for a geo operator.
+	UnsupportedErr string
 }
 
 // Backend evaluates a parsed filter over Records and returns the matching
@@ -133,27 +138,35 @@ func run(t *testing.T, name string, parser *filter.FilterParser, cases []Case, b
 				t.Fatalf("parse %s: %v", c.Filter, err)
 			}
 			got, err := backend(t, filter.NewParsedFilter(ast))
-			if slices.Contains(c.Unsupported, name) {
-				var pe *core.ParseError
-				if err == nil || errors.As(err, &pe) && pe.Code != filter.ECodeGeoNotSupported.String() {
-					t.Fatalf("%s: want an unsupported-operation error, got ids %v err %v", c.Filter, got, err)
-				}
-				return
-			}
-			if err != nil {
+			if err := check(c, slices.Contains(c.Unsupported, name), got, err); err != nil {
 				t.Fatalf("%s: %v", c.Filter, err)
-			}
-			slices.Sort(got)
-			want := c.Want
-			if want == nil {
-				want = []string{}
-			}
-			if got == nil {
-				got = []string{}
-			}
-			if !slices.Equal(got, want) {
-				t.Errorf("%s:\n got %v\nwant %v", c.Filter, got, want)
 			}
 		})
 	}
+}
+
+// check returns how a backend's answer to c departs from the case, or nil
+// when it conforms. A backend c names Unsupported must refuse it with
+// c.UnsupportedErr; any other must return c.Want.
+func check(c Case, unsupported bool, got []string, err error) error {
+	if len(c.Unsupported) > 0 && c.UnsupportedErr == "" {
+		return errors.New("case names Unsupported backends without their UnsupportedErr")
+	}
+	if unsupported {
+		var pe *core.ParseError
+		switch {
+		case err == nil:
+			return fmt.Errorf("want the unsupported-operation error %s, got ids %v", c.UnsupportedErr, got)
+		case !errors.As(err, &pe) || pe.Code != c.UnsupportedErr:
+			return fmt.Errorf("want the unsupported-operation error %s, got %v", c.UnsupportedErr, err)
+		}
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if got = slices.Sorted(slices.Values(got)); !slices.Equal(got, c.Want) {
+		return fmt.Errorf("got ids %v, want %v", got, c.Want)
+	}
+	return nil
 }
