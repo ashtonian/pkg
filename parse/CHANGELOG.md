@@ -1,5 +1,78 @@
 # Changelog
 
+## [0.15.0](https://github.com/ashtonian/pkg/compare/parse/v0.14.0...parse/v0.15.0) (2026-11-21)
+
+
+### ⚠ BREAKING CHANGES
+
+* **parse:** hold a governed list's relations to each row's tenant ([#254](https://github.com/ashtonian/pkg/issues/254))
+* **parse:** refuse CockroachDB DSNs and keep DSNs out of their errors ([#251](https://github.com/ashtonian/pkg/issues/251))
+* **parse:** refuse unknown fields names and document the field mask ([#252](https://github.com/ashtonian/pkg/issues/252))
+* **parse:** a governed list's relation predicates, counts, facets and includes read each row's own tenant's related rows instead of Scope.Tenant's, and Scope.Tenant is ignored when Governance is set on a resource with a tenant column.
+* **parse:** a list request whose fields names no field of the response is E2071 instead of being accepted.
+* **parse:** filter.DialectFromDSN returns ErrUnknownDSN for cockroach://, crdb:// and any non-SQLite scheme whose path ends in .db, where it returned PostgresDialect or SQLiteDialect. Construct the dialect directly to keep compiling for such a connection; CockroachDB is not supported.
+* **parse:** hold facets, filters, search and relations to the read set ([#248](https://github.com/ashtonian/pkg/issues/248))
+* **parse:** read RFC 9457 errors, scope schema aborts per caller and test the SDK's Node floor ([#245](https://github.com/ashtonian/pkg/issues/245))
+* **parse:** a resource that facets, filters, searches or relates by a column ReadColumns leaves out, or filters by a db:"-" field, now fails at construction. Read the column, or name it in QueryOnlyColumns for filters, search and relations that only filter.
+* **parse:** read computed columns through declared SQL expressions ([#200](https://github.com/ashtonian/pkg/issues/200))
+* **parse:** let policy constraints name columns requests cannot filter ([#199](https://github.com/ashtonian/pkg/issues/199))
+* **parse:** bind Scope.Tenant as the tenant column's type ([#198](https://github.com/ashtonian/pkg/issues/198))
+* **parse:** @ashtonian/parse requires Node.js 22.13 or later.
+* **parse:** Resource.Columns returns ([]string, error) instead of []string: a dialect a computed column's expression refuses is an error. ReadExpr takes a ColumnExpr, func(filter.Dialect) (string, error), instead of an SQL string; parse.SQL(sql) wraps a string every dialect reads alike.
+* **parse:** SQLColumnMapper.MapColumn receives the field's column (display_name for `json:"displayName"`, or the db tag's name) instead of its external name, and the column tag and ColumnConvention apply before the mapper rather than being ignored.
+* **parse:** resolve computed column expressions per dialect
+* **parse:** a policy naming a request field whose name is another field's column is refused with filter.ErrAmbiguousPolicyField instead of resolving to the request field; name the request field's column instead. Resource.Relate refuses a relation named like a column of the owner or like a field without the filter capability.
+* **parse:** filter.RepositoryScope.TenantID and the tenantID parameter of filter.BuildBaseConstraints are now any, the tenant key in its column's type. NewResource refuses a TenantColumn whose field is not a string, a UUID or an integer.
+
+### Features
+
+* **parse:** accept a list request as a POST JSON body ([cc1daa8](https://github.com/ashtonian/pkg/commit/cc1daa8a7e697acc9f4a7ac8911041666b98b158)), closes [#201](https://github.com/ashtonian/pkg/issues/201)
+* **parse:** accept a list request as a POST JSON body ([#202](https://github.com/ashtonian/pkg/issues/202)) ([68a7ed3](https://github.com/ashtonian/pkg/commit/68a7ed3072ccd158f395cae4c3bfef63b6a5bae2))
+* **parse:** bind Scope.Tenant as the tenant column's type ([7cf155b](https://github.com/ashtonian/pkg/commit/7cf155b2d03a54c82599c892481bb4f08b131529)), closes [#196](https://github.com/ashtonian/pkg/issues/196)
+* **parse:** bind Scope.Tenant as the tenant column's type ([#198](https://github.com/ashtonian/pkg/issues/198)) ([f2fb1a1](https://github.com/ashtonian/pkg/commit/f2fb1a1281793143ccec45a229e842c40562de83))
+* **parse:** compile policy fields over computed columns per dialect ([f203718](https://github.com/ashtonian/pkg/commit/f20371825b99a1dae2f602bc06ad677834fec60a))
+* **parse:** filter relations by their targets' computed columns per dialect ([c746b2b](https://github.com/ashtonian/pkg/commit/c746b2bf8e4f402a62e576b3b3e6f24731eed2f3))
+* **parse:** let policy constraints name columns requests cannot filter ([69ba4c7](https://github.com/ashtonian/pkg/commit/69ba4c75639a241fd38d5533eb65269606d82a90)), closes [#197](https://github.com/ashtonian/pkg/issues/197)
+* **parse:** let policy constraints name columns requests cannot filter ([#199](https://github.com/ashtonian/pkg/issues/199)) ([008ebee](https://github.com/ashtonian/pkg/commit/008ebeea21d8acec748ec0f36f83b71fc345b6e3))
+* **parse:** read computed columns through declared SQL expressions ([3a2d0ea](https://github.com/ashtonian/pkg/commit/3a2d0eaca9945dd6243cfaffdfa186213724d079)), closes [#195](https://github.com/ashtonian/pkg/issues/195)
+* **parse:** read computed columns through declared SQL expressions ([#200](https://github.com/ashtonian/pkg/issues/200)) ([9217002](https://github.com/ashtonian/pkg/commit/92170020b5cbff41f8e7b31c0c71fdc381d5c049))
+* **parse:** read RFC 9457 errors, scope schema aborts per caller and test the SDK's Node floor ([#245](https://github.com/ashtonian/pkg/issues/245)) ([43a50d7](https://github.com/ashtonian/pkg/commit/43a50d7966f0faabd53fdb4b2e0ba8892d451997))
+* **parse:** read RFC 9457 problem details into the SDK's ApiError ([2c5139e](https://github.com/ashtonian/pkg/commit/2c5139ee999d41d49518da15506880e70257f3c3)), closes [#223](https://github.com/ashtonian/pkg/issues/223)
+* **parse:** require Node.js 22.13 for the SDK and test it at that floor ([92cffee](https://github.com/ashtonian/pkg/commit/92cffee8ebadf03c49e97eaddf584c4d26394d34)), closes [#225](https://github.com/ashtonian/pkg/issues/225)
+* **parse:** resolve computed column expressions per dialect ([1b079fa](https://github.com/ashtonian/pkg/commit/1b079fac7bd678247162024a17a07cb23796a561))
+* **parse:** validate a POST list from its parts with ParseListPost ([db86064](https://github.com/ashtonian/pkg/commit/db8606439ea8bb5f65000d969533c5be3ee304cc))
+
+
+### Bug Fixes
+
+* **filter:** fail closed on a missing tenant in BuildBaseConstraints ([f041162](https://github.com/ashtonian/pkg/commit/f04116217f7ea2626c47129bf72df0711e59fae2))
+* **parse:** bind an update's tenant once, at the entry point ([8b21034](https://github.com/ashtonian/pkg/commit/8b21034f676173955ccc625abc38a281b4655200))
+* **parse:** bound a POST list body by its own limit, WithMaxListBodySize ([c99b270](https://github.com/ashtonian/pkg/commit/c99b27029e0b45fe4d65932947741af5d6bfd56d))
+* **parse:** check Scope.Tenant against every tenant column a request reaches ([7050500](https://github.com/ashtonian/pkg/commit/705050005061368e59d1c7bb140d93daa84b679a))
+* **parse:** end only the aborting caller's wait on a shared schema fetch ([6f13866](https://github.com/ashtonian/pkg/commit/6f138667f452c69594e8c6124ab1afe987174661)), closes [#222](https://github.com/ashtonian/pkg/issues/222)
+* **parse:** fail an Unsupported conformance case on any error but its refusal ([eb474a5](https://github.com/ashtonian/pkg/commit/eb474a5d1c37dd85e479e58736a1e51255e5ce95)), closes [#211](https://github.com/ashtonian/pkg/issues/211)
+* **parse:** fail an Unsupported conformance case on any error but its refusal ([#250](https://github.com/ashtonian/pkg/issues/250)) ([09b2507](https://github.com/ashtonian/pkg/commit/09b2507273e25314aae0a473f7705e16b81c0cc1))
+* **parse:** find a computed column's fields by their column ([ebbae6b](https://github.com/ashtonian/pkg/commit/ebbae6b7a39f96e8053c61438bd12c649d7e4ba4))
+* **parse:** hand a ColumnMapper each field's column ([cf2aa69](https://github.com/ashtonian/pkg/commit/cf2aa698fe9b6a00b0edae07c691bd8d349b4ffa))
+* **parse:** hold a governed list's relations to each row's tenant ([f4ac575](https://github.com/ashtonian/pkg/commit/f4ac575e860a56e8b7bf3db3f6db84227b7708b1)), closes [#204](https://github.com/ashtonian/pkg/issues/204)
+* **parse:** hold a governed list's relations to each row's tenant ([#254](https://github.com/ashtonian/pkg/issues/254)) ([9fe6cd0](https://github.com/ashtonian/pkg/commit/9fe6cd003fac3fc2c16844018ba48dda9038c048))
+* **parse:** hold facets, filters, search and relations to the read set ([52ef1a7](https://github.com/ashtonian/pkg/commit/52ef1a7ffdab71e269bf52c398743df5cd49e8a4)), closes [#203](https://github.com/ashtonian/pkg/issues/203)
+* **parse:** hold facets, filters, search and relations to the read set ([#248](https://github.com/ashtonian/pkg/issues/248)) ([cc1525e](https://github.com/ashtonian/pkg/commit/cc1525e11a1209949633785ab44362df9ba867a7))
+* **parse:** make the SDK's POST list transport opt-in ([9c8790a](https://github.com/ashtonian/pkg/commit/9c8790acbffe6ece9157ff9bb27b73ad27cb80dd))
+* **parse:** match DSN schemes case-insensitively and read SQLite names before a query ([5d60520](https://github.com/ashtonian/pkg/commit/5d60520ce94b976e31629ed0f3aeded1a1af822e))
+* **parsepgx:** read computed columns after an update's relation changes ([9e0842a](https://github.com/ashtonian/pkg/commit/9e0842ae240e59d956efef99025848a2e51d9d85))
+* **parse:** read only unmistakable problem documents and keep a settled schema ([f2be114](https://github.com/ashtonian/pkg/commit/f2be114a1833b2fdc308f187010f6c28545e0bfd))
+* **parse:** refuse a relation tag correlating on a computed column ([5b46001](https://github.com/ashtonian/pkg/commit/5b46001b0a816db59a5c316c759a116e1ac1d5ed))
+* **parse:** refuse CockroachDB DSNs and keep DSNs out of their errors ([0f6b2e5](https://github.com/ashtonian/pkg/commit/0f6b2e58b01e6b3bd0d09e771c2a6eb1956c99dd)), closes [#208](https://github.com/ashtonian/pkg/issues/208)
+* **parse:** refuse CockroachDB DSNs and keep DSNs out of their errors ([#251](https://github.com/ashtonian/pkg/issues/251)) ([25e291b](https://github.com/ashtonian/pkg/commit/25e291b514279a582a37030256598a47915c74e6))
+* **parse:** refuse request paths into a computed document column ([52a4414](https://github.com/ashtonian/pkg/commit/52a44144e41cbfe88b501e5f6e3c50cbdbeab8e1))
+* **parse:** refuse stamping or incrementing a computed column ([7ff9ac5](https://github.com/ashtonian/pkg/commit/7ff9ac56f8490d28a9a72bdddb8da6612eee77d2))
+* **parse:** refuse unknown fields names and document the field mask ([2f1a1f2](https://github.com/ashtonian/pkg/commit/2f1a1f28cbd082a3de11351c94f42cd85c38195c))
+* **parse:** refuse unknown fields names and document the field mask ([#252](https://github.com/ashtonian/pkg/issues/252)) ([1142f78](https://github.com/ashtonian/pkg/commit/1142f78e64d4868f36cf5f5001ecc6b90920f28a))
+* **parse:** resolve a policy field name to exactly one field ([02a0fd1](https://github.com/ashtonian/pkg/commit/02a0fd1adedd8e6cdc4fd552d11d05112630682c))
+* **parse:** serve POST lists in the example server ([12110d2](https://github.com/ashtonian/pkg/commit/12110d27f8a87a4eefcaab837f145512f21571bf))
+* **parse:** set Unsupported and UnsupportedErr together, share the id comparison ([e881fa9](https://github.com/ashtonian/pkg/commit/e881fa94dd8d192684493e033fea9e82ca883ef5))
+
 ## [0.14.0](https://github.com/ashtonian/pkg/compare/parse/v0.13.0...parse/v0.14.0) (2026-11-17)
 
 
