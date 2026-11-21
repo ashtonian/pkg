@@ -86,8 +86,8 @@ func TestSchemaListHandler(t *testing.T) {
 	assert.Empty(t, hook.errs)
 }
 
-// failingWriter is a connection the client has closed: the status goes
-// out, the body cannot.
+// failingWriter refuses the body after taking the status, as a writer past
+// net/http's buffers does once its client has left.
 type failingWriter struct {
 	header http.Header
 	status int

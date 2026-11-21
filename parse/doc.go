@@ -26,6 +26,12 @@
 //
 //	reg := parse.NewSchemaRegistry()
 //	parse.MustRegister[Product](reg)
-//	mux.HandleFunc("GET /api/{resource}/schema", reg.SchemaHandler())
+//	report := parse.WithErrorHandler(func(r *http.Request, err error) {
+//		logger.ErrorContext(r.Context(), "serving schema", slog.Any("error", err))
+//	})
+//	mux.HandleFunc("GET /api/{resource}/schema", reg.SchemaHandler(report))
+//	mux.HandleFunc("GET /api/schemas", reg.SchemaListHandler(report))
 //
+// A schema document that cannot be encoded is answered 500/E2120 and handed
+// to the WithErrorHandler hook; without one, the 500 is its only trace.
 package parse

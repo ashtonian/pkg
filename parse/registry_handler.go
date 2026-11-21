@@ -16,10 +16,11 @@ type SchemaHandlerOption func(*schemaHandler)
 // WithErrorHandler reports the failures a schema handler cannot put in its
 // response. A document that cannot be encoded is answered 500/E2120 and
 // reported as an error matching ECodeSchemaEncodingFailed (errors.Is) that
-// wraps the encoding error. A response that cannot be written once its
-// status is sent, usually because the client went away, is reported as the
-// write error. fn runs on the request's goroutine, so it must be safe for
-// concurrent use. Without it, both are dropped.
+// wraps the encoding error. A Write the ResponseWriter fails once the status
+// is sent is reported as that error. net/http buffers a small response and
+// sends it after the handler returns, so a client that disconnects in that
+// window is not reported. fn runs on the request's goroutine, so it must be
+// safe for concurrent use. Without it, both are dropped.
 func WithErrorHandler(fn func(*http.Request, error)) SchemaHandlerOption {
 	return func(h *schemaHandler) { h.onError = fn }
 }

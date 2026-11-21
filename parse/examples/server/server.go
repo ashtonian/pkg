@@ -216,8 +216,8 @@ func (s *server) fail(w http.ResponseWriter, r *http.Request, err error) {
 }
 
 // schemaFailed logs what the schema handler could not answer: a document
-// that would not encode is a defect; a response the client left before
-// receiving was dropped.
+// that would not encode is a defect; a response that could not be written
+// was dropped.
 func (s *server) schemaFailed(r *http.Request, err error) {
 	level := slog.LevelWarn
 	if errors.Is(err, parse.ECodeSchemaEncodingFailed) {

@@ -45,7 +45,7 @@ After registering resource types, mount the registry using standard `net/http` r
 
 ```go
 report := parse.WithErrorHandler(func(r *http.Request, err error) {
-	level := slog.LevelWarn // the client left before the response was written
+	level := slog.LevelWarn // the response could not be written
 	if errors.Is(err, parse.ECodeSchemaEncodingFailed) {
 		level = slog.LevelError // a document that cannot be encoded: a server defect
 	}
@@ -57,7 +57,7 @@ mux.HandleFunc("GET /api/schemas", registry.SchemaListHandler(report))
 
 The schema document advertises each resource's filterable fields and their operators, its patch paths, sort fields and search; [`testdata/schema_document.json`](../testdata/schema_document.json) is one with every member set. It is a versioned format: `version` is `parse.SchemaVersion`, which stays the same when a member is added and increments when one is removed, renamed or redefined. A client refuses a version it does not read, as the TypeScript SDK does with `SchemaVersionError`. `SchemaHandler` returns 404/E2078 for an unknown resource. Registration and discovery are separate from your list/patch routes; the [example server](../examples/server/server.go) shows both.
 
-Both handlers encode the whole response before writing any of it, and send it with its `Content-Length`. A document that cannot be encoded is answered 500/E2120 with the catalog message only; the encoding error, which names Go types, goes to the `parse.WithErrorHandler` hook alone, matching `parse.ECodeSchemaEncodingFailed` through `errors.Is`. A response that cannot be written once its status is sent, usually because the client disconnected, reaches the hook as the write error; the client has its status already, so nothing changes for it. The hook runs on the request's goroutine and must be safe for concurrent use. Without one, the handlers answer the same way and report nothing. Every member of the schema document encodes, so E2120 means a defect in parse: alert on it, not on write errors.
+Both handlers encode the whole response before writing any of it, and send it with its `Content-Length`. A document that cannot be encoded is answered 500/E2120 with the catalog message only; the encoding error, which names Go types, goes to the `parse.WithErrorHandler` hook alone, matching `parse.ECodeSchemaEncodingFailed` through `errors.Is`. A `Write` the `ResponseWriter` fails once the status is sent (a body past net/http's buffers going to a client that left, an `http.TimeoutHandler` past its deadline, a middleware writer's own error) reaches the hook as that error; the status is already sent, so nothing changes for the client. Reporting write failures is best effort: net/http buffers a response of up to about 6 KiB and sends it after the handler returns, so a client that disconnects in that window is not reported. The hook runs on the request's goroutine and must be safe for concurrent use. Without one, the handlers answer the same way and report nothing. Every member of the schema document encodes, so E2120 means a defect in parse: alert on it, not on write errors.
 
 ## Error handling
 
