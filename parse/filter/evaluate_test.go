@@ -96,6 +96,8 @@ func TestEvaluateRefusals(t *testing.T) {
 	relation := &FieldSchema{ExternalName: "tags", DataType: core.FieldTypeString, Relation: &core.RelationSchema{}}
 	doc := &FieldSchema{ExternalName: "doc", SQLExpr: "doc", DataType: core.FieldTypeJSON}
 	name := &FieldSchema{ExternalName: "name", SQLExpr: "name", DataType: core.FieldTypeString}
+	point := &FieldSchema{ExternalName: "loc", SQLExpr: "loc", DataType: core.FieldTypeGeo}
+	geography := &FieldSchema{ExternalName: "loc", SQLExpr: "loc", DataType: core.FieldTypeGeo, GeoConfig: &GeoFieldConfig{StorageType: GeoStorageGeography}}
 	tests := []struct {
 		name string
 		node *FilterNode
@@ -104,7 +106,10 @@ func TestEvaluateRefusals(t *testing.T) {
 	}{
 		{"an undefined operator fails on a NULL row too", &FilterNode{Field: countField, Op: OpLike, Value: "a%"}, valueRow(nil), ""},
 		{"unresolved $exists", &FilterNode{Field: countField, Op: OpExists, Value: true}, valueRow(nil), ""},
-		{"geo", &FilterNode{Field: countField, Op: OpNear}, valueRow(nil), ECodeGeoNotSupported},
+		{"geo on native storage", &FilterNode{Field: geography, Op: OpNear, Value: &GeoDistance{Distance: "1km"}}, valueRow(nil), ECodeGeoNotSupported},
+		{"geo without its operand", &FilterNode{Field: point, Op: OpNear}, valueRow(nil), ECodeInvalidGeoCoords},
+		{"geo with another operator's operand", &FilterNode{Field: point, Op: OpNear, Value: &GeoPolygon{Points: []GeoPoint{{0, 0}, {1, 1}, {0, 1}}}}, valueRow(`{"lat":0,"lon":0}`), ""},
+		{"geo on a point that is not JSON", &FilterNode{Field: point, Op: OpNear, Value: &GeoDistance{Distance: "1km"}}, valueRow("{"), ""},
 		{"unresolved relation", &FilterNode{Field: relation, Op: OpEq, Value: "x"}, valueRow(nil), ECodeInvalidRelation},
 		{"elements of a document without element paths", &FilterNode{Field: doc, Op: OpSome}, valueRow(nil), ""},
 		{"a row value outside the field's domain", &FilterNode{Field: name, Op: OpEq, Value: "a"}, valueRow(int64(1)), ""},

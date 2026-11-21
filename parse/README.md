@@ -103,8 +103,8 @@ Select a dialect when building SQL; connection setup and drivers belong to the c
 
 | Backend | Selection | Important differences |
 |---|---|---|
-| PostgreSQL | `filter.PostgresDialect{}` | Native arrays/JSONB, full-text search; polygon/intersection predicates require PostGIS |
-| SQLite | `filter.SQLiteDialect{}` | JSON text and JSON functions; phrase search and ASCII case folding; no polygon/intersection predicates |
+| PostgreSQL | `filter.PostgresDialect{}` | Native arrays/JSONB, full-text search; geo predicates require PostGIS |
+| SQLite | `filter.SQLiteDialect{}` | JSON text and JSON functions; phrase search and ASCII case folding; geo predicates on JSONB points through `parsesqlite`'s functions, no native geometry storage |
 | CockroachDB | Not supported | `filter.DialectFromDSN` refuses `cockroach://` and `crdb://`. A `postgres://` or `postgresql://` URL to a CockroachDB cluster still selects `PostgresDialect`, whose SQL (the `pg_c_utf8` collation, PostGIS functions, `jsonb_path_query_first`) has never run on CockroachDB |
 | Go values | `ApplyValidatedPatch` | Supports allowed nested paths, `test`, `copy`, and `move`; persist the result yourself |
 
@@ -165,7 +165,7 @@ Tags expose capabilities explicitly: `parse:"filter,sort,patch,facet,search,incl
 | [`typed.go`](typed.go) | `Resource` parse entry points (`MergePatchMap`, `ValidateOperations` and server variants), schema access, typed patch application |
 | [`parsehttp`](parsehttp/README.md) | `WriteError`: a parse error as an HTTP response; `ParseList`: a list from a GET query string or a POST body |
 | [`parsepgx`](parsepgx/README.md) | `QueryPage`, `Update`: plans run on PostgreSQL through pgx batches |
-| [`parsesqlite`](parsesqlite/README.md) | `Register`: the SQLite functions plans compare decimals through, registered with `modernc.org/sqlite` |
+| [`parsesqlite`](parsesqlite/README.md) | `Register`: the SQLite functions plans compare decimals and decide geo predicates through, registered with `modernc.org/sqlite` |
 | [`registry.go`](registry.go) | `NewSchemaRegistry`, `RegisterResource`, `Register[T]`, `MustRegister[T]`, discovery handlers; the versioned schema document (`SchemaResponse`, `SchemaVersion`) with relations, element paths and patch value metadata |
 | [`core`](core/README.md) | Configuration, schema generation, the field walk every schema shares (embedded structs promoted as encoding/json promotes them), values, pointers, `ParseError` |
 | [`filter`](filter/README.md) | Filter AST, dialects, list plans, pages, facets, search, SQL and non-SQL include resolution; `filter.Page.SetInclude` owns the page projection |
@@ -173,7 +173,7 @@ Tags expose capabilities explicitly: `parse:"filter,sort,patch,facet,search,incl
 | [`client`](client/README.md) | Go request builders: typed catalog fields, `Filter`, `Sort`, `ListParams`, `Nullable`, JSON Patch `Operation`; standard library only, held to the filter and patch corpora |
 | [`sdk/ts`](sdk/ts/README.md) | TypeScript builders, HTTP client, schema validation |
 | [`filter/filtertest`](filter/filtertest/) | Shared operator conformance fixture |
-| `internal/dialect`, `internal/jsonmerge`, `internal/cursor`, `internal/decimals` | Dialect primitives, RFC 7386 merge, the bounded MessagePack cursor envelope, and decimals as documents and SQLite hold them with their order-preserving key; the compiler has no private sibling imports |
+| `internal/dialect`, `internal/jsonmerge`, `internal/cursor`, `internal/decimals`, `internal/geo` | Dialect primitives, RFC 7386 merge, the bounded MessagePack cursor envelope, decimals as documents and SQLite hold them with their order-preserving key, and the WGS 84 geodesic distance and planar point-in-polygon test geo filters use outside PostGIS; the compiler has no private sibling imports |
 
 Patch parsers collect independent invalid values in order. Each declared enum/bounds failure carries `*core.ConstraintError` with `Constraint` and `Limit`; `errors.As` still finds the first `*core.ParseError`. See [the complete patch error contract](docs/patches.md#validation).
 

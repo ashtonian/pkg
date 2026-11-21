@@ -11,8 +11,9 @@ import (
 // filter_ops and GeneratorOptions.DefaultFilterOps choose from. Each pair
 // executes with one meaning on every dialect and the memory backend
 // ; a schema cannot advertise a combination the builders
-// cannot run. Geo shapes a dialect cannot evaluate are the one exception,
-// rejected at build with E2115.
+// cannot run. Geo operators on native geography or geometry storage are the
+// one exception: only PostGIS evaluates them, SQLite and Evaluate refuse
+// them with E2115.
 var typeOperators = map[core.FieldType][]FilterOperator{
 	core.FieldTypeString:    {OpEq, OpNe, OpGt, OpGte, OpLt, OpLte, OpIn, OpNin, OpLike, OpILike, OpContains, OpNull, OpNotNull, OpExists},
 	core.FieldTypeInt:       {OpEq, OpNe, OpGt, OpGte, OpLt, OpLte, OpIn, OpNin, OpNull, OpNotNull, OpExists},

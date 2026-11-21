@@ -51,7 +51,11 @@ func truthOf(b bool) Truth {
 //   - booleans as bool;
 //   - documents decoded from JSON (map[string]any, []any, string, bool, nil,
 //     json.Number);
-//   - arrays as []any of their elements, each in its element type's domain.
+//   - arrays as []any of their elements, each in its element type's domain;
+//   - a geo field's JSONB point as a document, or its JSON text, whose lat
+//     and lon members (GeoFieldConfig's keys) hold numbers, or strings
+//     holding numbers as PostgreSQL casts them to float8; a member missing,
+//     null or holding anything else makes the point NULL.
 //
 // A path's value is what PathValue reads from its document. ColumnRow reads
 // a row stored as Go values into this domain; ColumnValue converts one value.
@@ -193,7 +197,10 @@ func isNilReference(v any) bool {
 //   - A membership or raw-SQL predicate is Unknown: it never admits a row its
 //     SQL would refuse. Resolve memberships and relation predicates first
 //     (ResolveMemberships); an unresolved relation predicate is an error.
-//   - A geo operator is an error (E2115).
+//   - Geo operators decide a JSONB point as PostGIS does: $near by the
+//     WGS 84 geodesic distance (ST_DWithin on geography), $within and
+//     $intersects a box or polygon planar in lon/lat, boundary included. A
+//     point on native geometry or geography storage is an error (E2115).
 func Evaluate(root *FilterNode, row Row) (Truth, error) {
 	if root == nil {
 		return True, nil
@@ -219,12 +226,6 @@ func evaluate(n *FilterNode, row Row) (Truth, error) {
 		return truthOf(t == False), nil
 	case OpRawSQL, OpMember:
 		return Unknown, nil
-	case OpNear, OpWithin, OpIntersects:
-		return False, &core.ParseError{
-			Kind:    core.ParseErrorKindFilter,
-			Code:    ECodeGeoNotSupported.String(),
-			Message: fmt.Sprintf("geo operator '%s' is not supported by the reference evaluator", n.Op),
-		}
 	}
 	f := n.Field
 	if f == nil {
@@ -235,6 +236,9 @@ func evaluate(n *FilterNode, row Row) (Truth, error) {
 	}
 	if n.Op == OpSome || n.Op == OpNone {
 		return evaluateElements(n, row)
+	}
+	if isGeoOp(n.Op) {
+		return evaluateGeo(n, row)
 	}
 	v, present, err := row.Value(f)
 	if err != nil {
