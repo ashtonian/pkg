@@ -34,7 +34,8 @@ const (
 	maxPageSize     = 100
 )
 
-// server serves the list contract (filter.Param*): GET lists, OPTIONS
+// server serves the list contract (filter.Param*): lists over GET and, for
+// a filter too large for a URL, as a POST body to the same path; OPTIONS
 // facets, PATCH merge patches (through BuildUpdate), GET schema discovery.
 type server struct {
 	db             *sql.DB
@@ -59,6 +60,7 @@ func newServer(db *sql.DB, log *slog.Logger, requestTimeout time.Duration) (http
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/{resource}/schema", reg.SchemaHandler())
 	mux.HandleFunc("GET /api/products", s.list)
+	mux.HandleFunc("POST /api/products", s.list)
 	mux.HandleFunc("OPTIONS /api/products", s.facets)
 	mux.HandleFunc("PATCH /api/products/{id}", s.patch)
 	return mux, nil
@@ -67,7 +69,7 @@ func newServer(db *sql.DB, log *slog.Logger, requestTimeout time.Duration) (http
 func (s *server) list(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), s.requestTimeout)
 	defer cancel()
-	req, err := s.products.ParseList(r.URL.Query())
+	req, err := parsehttp.ParseList(r, s.products)
 	if err != nil {
 		s.fail(w, r, err)
 		return

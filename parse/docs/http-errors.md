@@ -21,6 +21,18 @@ A list endpoint built on this package reads the `filter.Param*` query parameters
 
 Lists answer with `filter.Page[T]`: `{"items": […], "page_info": {"has_next_page", "has_prev_page", "start_cursor", "end_cursor", "total_count"}, "_relations": {…}}`. Errors answer `{"code", "message", "details"}`, or an RFC 9457 problem document ([below](#rfc-9457-problem-details)).
 
+### The same request as a POST body
+
+A filter document travels in the URL, and every proxy, CDN and load balancer in front of the server caps URL length, commonly at 8 or 16 KB, below what a filter may hold once an endpoint raises `MaxArraySize`. A list endpoint therefore also accepts the same request as one JSON body on `POST` to the same path: the parameters above as members, `filter` as the filter document itself (an object), `page_size` as a number, the flags as booleans, and `facets`, `include` and `fields` as arrays of names.
+
+```json
+{"filter": {"status": "active", "id": {"$in": ["…", "…"]}}, "sort": "-price,name", "page_size": 50, "include_total": true}
+```
+
+`Resource.ParseListBody` validates it as `ParseList` validates a query string, with the same limits and codes. An unknown member, or one of the wrong JSON type, is E2067; a member named twice is E2086. The `filter` member is bounded by `MaxInputSize`, as the `filter` parameter is, and the whole body by `MaxListBodySize` ([`core.WithMaxListBodySize`](schema-configuration.md#parser-and-generator-options)): by default `MaxInputSize` plus 16 KiB for the other members, or 1 MiB when `MaxInputSize` is unlimited. A body over it is E2063, read no further. Flat field filters don't apply to a body. `parsehttp.ParseList(r, res)` serves both transports from one handler: the query string of a `GET` or `HEAD`, or the `application/json` body of a `POST`, whose query string may carry only the parameters the endpoint reads itself (`AcceptParams`). A framework that hands its handlers a request's parts rather than an `*http.Request` calls `Resource.ParseListPost(query, contentType, body)`, which applies the same rules. `client.ListParams.Body` encodes the document from Go.
+
+The `POST` is a separate route a server opts into: register `POST` on the collection path for the list handler, which reads it through `parsehttp.ParseList` or `Resource.ParseListPost`. A server that also creates through `POST` on that path needs another path for lists. The TypeScript SDK sends every list as a `GET` until a client sets `maxURLLength` (lists whose URL would exceed it are sent as a `POST`) or a call passes `{ method: "POST" }` ([large filters](../sdk/ts/README.md#large-filters)); enable either only once the server routes POST lists, or it answers 405 or hands the list to its create handler. Only `list` and `listAll` have the body form: facets (`OPTIONS`) and a patch's `id[]` keys stay in the URL.
+
 ## Handler responsibilities
 
 `ParseRequestFilter(r.URL.Query())` ANDs the JSON `filter` with flat field parameters and applies limits to the combined filter. It does not parse every list option or execute a query. Your handler validates page size/booleans, selects policy from authenticated context, passes sort/search/cursor options, and executes the plan. `fields` and `include_deleted` are conventions the service implements, not automatic projection or authorization controls.
@@ -69,7 +81,7 @@ All known codes describe permanent failures and are listed below; retry and cata
 |------|------|---------|
 | E2061 | 422 | Filter cost exceeds `MaxCost` |
 | E2062 | 422 | `$in` / `$nin` value is not an array |
-| E2063 | 422 | Body exceeds `MaxInputSize` |
+| E2063 | 422 | Filter or patch body exceeds `MaxInputSize`, or a POST list body exceeds `MaxListBodySize` |
 | E2064 | 422 | Patch operation not allowed on the path |
 | E2065 | 422 | Sort values at a page boundary too large for a cursor |
 | E2066 | 422 | Too many patch operations |

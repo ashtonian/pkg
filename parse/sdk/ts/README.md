@@ -59,6 +59,7 @@ console.log(page.items, page.page_info.total_count, page.page_info.end_cursor);
 | `schemaPath` | string | `"api"` | Prefix of the schema endpoints (`{schemaPath}/{resource}/schema`, `{schemaPath}/schemas`) |
 | `validateBeforeSend` | boolean | `false` | Validate filters, sorts and patches against the server schema before sending |
 | `timeout` | number (ms) | `30000` | Per-request deadline, combined with any caller `AbortSignal` |
+| `maxURLLength` | positive integer | none: every list is a GET | Opts `list` and `listAll` into the [POST body transport](#large-filters): the longest list URL sent as a GET, past which the same request is sent as a JSON body in a POST to the same path. Set it only once the server routes POST lists, through Go `parsehttp.ParseList` or `Resource.ParseListPost`. `createClient` throws `RangeError` for any other value |
 
 ## Server Contract
 
@@ -67,7 +68,8 @@ The client speaks the list, patch and facet endpoints `forge/feature` serves ove
 | Client call | Request |
 |---|---|
 | `list(opts)` | `GET /{resource}?filter=&sort=&cursor=&page_size=&include_total=&include_deleted=&search=&include=&facets=` |
-| `listAll(opts)` | `list` repeated with `cursor = page_info.end_cursor` while `page_info.has_next_page` |
+| `list(opts, { method: "POST" })`, or a list URL past `maxURLLength` | `POST /{resource}` with `{"filter": {…}, "sort", "cursor", "page_size", "include_total", "include_deleted", "search", "include": […], "facets": […]}` as `application/json` ([HTTP contract](../../docs/http-errors.md#the-same-request-as-a-post-body)) |
+| `listAll(opts)` | `list` repeated with `cursor = page_info.end_cursor` while `page_info.has_next_page`, each page on the transport `list` would take |
 | `patch(id, input)` | `PATCH /{resource}/{id}` with a JSON Merge Patch body |
 | `patchMany(ids, input)` | `PATCH /{resource}?id[]=…&id[]=…` with a JSON Merge Patch body |
 | `facets(fields, opts)` | `OPTIONS /{resource}?facets=a,b&filter=` → `facets` |
@@ -97,6 +99,25 @@ const counts = await products.facets(["category"], { filter: { price: { $lt: 20 
 const page = await products.list({ filter: { price: { $lt: 20 } }, facets: ["category"] });
 // page.facets: the same counts beside every page of the list
 ```
+
+## Large filters
+
+A filter travels in the list URL, and the proxies, CDNs and load balancers in front of a server cap URL length, commonly at 8 or 16 KB. A filter by a large set of keys passes that cap long before the server's own limits. The same list request can instead travel as a JSON body in a `POST` to the collection path, which the Go server reads with `parsehttp.ParseList` (one handler for both transports) or `Resource.ParseListPost`.
+
+The client sends every list as a `GET` until you opt in, because a server that does not route `POST /{resource}` to its list handler answers 405, or hands the list to its create handler. Once the server routes it:
+
+```typescript
+// Every list whose URL would pass 2000 characters is sent as a POST body.
+const client = createClient({ baseURL: "https://api.example.com", maxURLLength: 2000 });
+const products = client.resource<Product>("products");
+
+const page = await products.list({ filter: { id: { $in: ids } }, pageSize: 100 });
+
+// Or choose the transport per call, whatever maxURLLength says.
+const viaPost = await products.list({ filter: { id: { $in: ids } } }, { method: "POST" });
+```
+
+`listAll` takes the same option and follows cursors on either transport: a cursor from one continues on the other. Only `list` and `listAll` have the body transport. `facets` always sends its filter in the `OPTIONS` URL and `patchMany` its ids in the `PATCH` URL, past `maxURLLength` or not; the server contract has no body form for either. For facet counts under a filter too large for a URL, ask `list` for `facets` over `POST`: every page carries the counts of the whole matched population.
 
 ## Patching
 

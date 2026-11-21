@@ -77,6 +77,37 @@ func (p ListParams) Values() (url.Values, error) {
 	return q, nil
 }
 
+// Body encodes p as a list body: the JSON document a server reads from a
+// POST (parse's Resource.ParseListBody), for a request too large for a URL.
+// Its members are the query parameters Values sets, with the filter as a
+// document and the name lists as arrays; zero members are left out. It
+// fails only when the filter cannot be encoded (Filter.Err).
+func (p ListParams) Body() ([]byte, error) {
+	var b struct {
+		Filter         json.RawMessage `json:"filter,omitempty"`
+		Sort           string          `json:"sort,omitempty"`
+		Cursor         string          `json:"cursor,omitempty"`
+		PageSize       int             `json:"page_size,omitempty"`
+		IncludeTotal   bool            `json:"include_total,omitempty"`
+		IncludeDeleted bool            `json:"include_deleted,omitempty"`
+		Search         string          `json:"search,omitempty"`
+		Facets         []string        `json:"facets,omitempty"`
+		Include        []string        `json:"include,omitempty"`
+		Fields         []string        `json:"fields,omitempty"`
+	}
+	if !p.Filter.IsZero() {
+		doc, err := json.Marshal(p.Filter)
+		if err != nil {
+			return nil, fmt.Errorf("client: encode filter: %w", err)
+		}
+		b.Filter = doc
+	}
+	b.Sort, b.Cursor, b.PageSize = p.Sort.String(), p.Cursor, p.PageSize
+	b.IncludeTotal, b.IncludeDeleted, b.Search = p.IncludeTotal, p.IncludeDeleted, p.Search
+	b.Facets, b.Include, b.Fields = p.Facets, p.Include, p.Fields
+	return json.Marshal(b)
+}
+
 func setNonEmpty(q url.Values, name, value string) {
 	if value != "" {
 		q.Set(name, value)

@@ -169,6 +169,9 @@ func NewResource[T any](table string, opts ...ResourceOption) (*Resource[T], err
 	if err != nil {
 		return nil, fmt.Errorf("parse: %s: %w", table, err)
 	}
+	if p.cfg.MaxListBodySize < 0 {
+		return nil, fmt.Errorf("parse: %s: list body limit %d must not be negative", table, p.cfg.MaxListBodySize)
+	}
 	order, fieldsByColumn, err := resourceColumns(p.gen, reflect.TypeFor[T]())
 	if err != nil {
 		return nil, fmt.Errorf("parse: %s: %w", table, err)

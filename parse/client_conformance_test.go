@@ -436,6 +436,22 @@ func TestClient_ListParamsAreTheServersParameters(t *testing.T) {
 	empty, err := client.ListParams{}.Values()
 	require.NoError(t, err)
 	assert.Empty(t, empty, "zero members leave the server's defaults")
+
+	body, err := params.Body()
+	require.NoError(t, err)
+	fromBody, err := res.ParseListBody(bytes.NewReader(body))
+	require.NoError(t, err)
+	assert.Equal(t, want, fromBody, "the body is the same request as the query string")
+	var members map[string]json.RawMessage
+	require.NoError(t, json.Unmarshal(body, &members))
+	for key := range members {
+		assert.True(t, filter.IsListParam(key), "%q is no list parameter", key)
+	}
+	assert.Len(t, members, 10, "every member encodes to its own body member")
+
+	emptyBody, err := client.ListParams{}.Body()
+	require.NoError(t, err)
+	assert.JSONEq(t, `{}`, string(emptyBody), "zero members leave the server's defaults")
 }
 
 func TestClient_GeoFiltersParse(t *testing.T) {

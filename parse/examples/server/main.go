@@ -1,11 +1,13 @@
 // Command server is a runnable API built on github.com/ashtonian/pkg/parse. It speaks the
 // list contract HTTP handlers and the TypeScript SDK share
 // (filter.Param*): keyset-paginated lists with JSON or flat-parameter
-// filters, facets over OPTIONS, JSON Merge Patch updates and schema
-// discovery, over an in-memory SQLite database.
+// filters, read from a GET's query string or a POST's JSON body, facets
+// over OPTIONS, JSON Merge Patch updates and schema discovery, over an
+// in-memory SQLite database.
 //
 //	go run ./examples/server --addr 127.0.0.1:8080
 //	curl '127.0.0.1:8080/api/products?category=books&sort=-price&page_size=2'
+//	curl -H 'Content-Type: application/json' -d '{"filter":{"category":"books"},"sort":"-price","page_size":2}' 127.0.0.1:8080/api/products
 package main
 
 import (

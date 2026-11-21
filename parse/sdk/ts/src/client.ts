@@ -7,7 +7,7 @@
 
 import { ApiError, SchemaVersionError } from "./core/errors.js";
 import { hasProblemMembers, isProblemMediaType, isRecord, PROBLEM_MEDIA_TYPE, type Problem, readProblem } from "./core/problem.js";
-import type { ErrorBody, RequestOptions } from "./core/types.js";
+import type { ErrorBody, ListRequestOptions, RequestOptions } from "./core/types.js";
 import type { FacetOptions, FacetResult, FilterSchema, ListOptions, ListResult, SortField } from "./filter/types.js";
 import type { RelatedSchemas } from "./filter/validate.js";
 import type { PatchInput, PatchResult } from "./patch/types.js";
@@ -65,6 +65,23 @@ function buildListQuery<T>(opts: ListOptions<T>): string {
     params.set("facets", opts.facets.join(","));
   }
   return query(params);
+}
+
+// The same request as one JSON document, a POST body the server reads with
+// Resource.ParseListBody: the query parameters as members, the filter as a
+// document and the name lists as arrays.
+function buildListBody<T>(opts: ListOptions<T>): Record<string, unknown> {
+  const body: Record<string, unknown> = {};
+  if (opts.filter && Object.keys(opts.filter).length > 0) body["filter"] = opts.filter;
+  if (opts.sort) body["sort"] = encodeSort(opts.sort);
+  if (opts.cursor) body["cursor"] = opts.cursor;
+  if (opts.pageSize != null) body["page_size"] = opts.pageSize;
+  if (opts.includeTotal) body["include_total"] = true;
+  if (opts.includeDeleted) body["include_deleted"] = true;
+  if (opts.search) body["search"] = opts.search;
+  if (opts.include && opts.include.length > 0) body["include"] = [...opts.include];
+  if (opts.facets && opts.facets.length > 0) body["facets"] = [...opts.facets];
+  return body;
 }
 
 function query(params: URLSearchParams): string {
@@ -141,6 +158,19 @@ export interface ClientConfig {
    *  is enforced via `AbortSignal.timeout()` and combined with any
    *  caller-provided signal so whichever fires first wins. */
   timeout?: number;
+  /** Opts `list` and `listAll` into the POST body transport: the longest
+   *  list URL sent as a GET, in characters, past which the same request is
+   *  sent as a JSON body in a POST to the same path. Proxies and load
+   *  balancers in front of a server cap URL length (8 KB is common) below
+   *  what a filter may hold. Unset, every list is a GET unless a call passes
+   *  `{ method: "POST" }`.
+   *
+   *  Set it only once the server routes POST lists to the collection path,
+   *  through Go `parsehttp.ParseList` or `Resource.ParseListPost`: a server
+   *  without that route answers 405, or hands the list to its create
+   *  handler. `facets` and `patchMany` always send in the URL. Must be a
+   *  positive integer. */
+  maxURLLength?: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -156,14 +186,17 @@ export interface Resource<T> {
   /**
    * Fetch a filtered, sorted, paginated list with optional facets and count.
    * When `validateBeforeSend` is enabled, validates filter and sort against the schema.
+   * A GET, unless `reqOpts.method` or {@link ClientConfig.maxURLLength}
+   * selects the POST body transport.
    */
-  list(opts?: ListOptions<T>, reqOpts?: RequestOptions): Promise<ListResult<T>>;
+  list(opts?: ListOptions<T>, reqOpts?: ListRequestOptions): Promise<ListResult<T>>;
 
   /**
    * Auto-paginate through all pages. Yields one {@link ListResult} per page.
-   * Follows cursors automatically until no more pages.
+   * Follows cursors automatically until no more pages. Each page takes the
+   * transport {@link Resource.list} would.
    */
-  listAll(opts?: Omit<ListOptions<T>, "cursor">, reqOpts?: RequestOptions): AsyncIterableIterator<ListResult<T>>;
+  listAll(opts?: Omit<ListOptions<T>, "cursor">, reqOpts?: ListRequestOptions): AsyncIterableIterator<ListResult<T>>;
 
   /**
    * Partially update one resource with a JSON Merge Patch (RFC 7396): set a
@@ -171,12 +204,19 @@ export interface Resource<T> {
    */
   patch(id: string, input: PatchInput<T>, reqOpts?: RequestOptions): Promise<PatchResult<T>>;
 
-  /** Apply one JSON Merge Patch to several resources (`PATCH ?id[]=…`). */
+  /**
+   * Apply one JSON Merge Patch to several resources (`PATCH ?id[]=…`). The
+   * ids always travel in the URL: {@link ClientConfig.maxURLLength} does
+   * not apply, and the server contract has no body form for them.
+   */
   patchMany(ids: string[], input: PatchInput<T>, reqOpts?: RequestOptions): Promise<PatchResult<T>>;
 
   /**
    * Facet counts for facetable fields, optionally under a filter
-   * (`OPTIONS ?facets=`).
+   * (`OPTIONS ?facets=`). The filter always travels in the URL:
+   * {@link ClientConfig.maxURLLength} does not apply. For counts under a
+   * filter too large for a URL, ask {@link Resource.list} for `facets`
+   * over POST; a page carries the counts of the whole matched population.
    */
   facets(fields: (keyof T & string)[], opts?: FacetOptions<T>, reqOpts?: RequestOptions): Promise<FacetResult>;
 
@@ -224,6 +264,12 @@ export function createClient(cfg: ClientConfig): Client {
   const schemaPath = cfg.schemaPath ?? "api";
   const validate = cfg.validateBeforeSend ?? false;
   const timeoutMs = cfg.timeout ?? 30_000;
+  const maxURLLength = cfg.maxURLLength;
+  // NaN or Infinity would silently keep every list a GET, and zero or less
+  // silently send every list as a POST.
+  if (maxURLLength !== undefined && !(Number.isSafeInteger(maxURLLength) && maxURLLength > 0)) {
+    throw new RangeError(`maxURLLength must be a positive integer, got ${String(maxURLLength)}`);
+  }
 
   function mergeHeaders(extra?: Record<string, string>): Record<string, string> {
     return { "Content-Type": "application/json", Accept: `application/json, ${PROBLEM_MEDIA_TYPE}`, ...cfg.headers, ...extra };
@@ -366,7 +412,7 @@ export function createClient(cfg: ClientConfig): Client {
           return validatorInstance;
         },
 
-        async list(opts: ListOptions<T> = {}, reqOpts?: RequestOptions): Promise<ListResult<T>> {
+        async list(opts: ListOptions<T> = {}, reqOpts?: ListRequestOptions): Promise<ListResult<T>> {
           if (validate) {
             const v = await this.validator(reqOpts);
             if (opts.filter && Object.keys(opts.filter).length > 0) {
@@ -382,10 +428,16 @@ export function createClient(cfg: ClientConfig): Client {
               v.validateFacets(opts.facets);
             }
           }
-          return request<ListResult<T>>("GET", `${path}${buildListQuery(opts)}`, undefined, reqOpts);
+          const target = `${path}${buildListQuery(opts)}`;
+          const tooLong = maxURLLength !== undefined && `${cfg.baseURL}/${target}`.length > maxURLLength;
+          const method = reqOpts?.method ?? (tooLong ? "POST" : "GET");
+          if (method === "POST") {
+            return request<ListResult<T>>("POST", path, buildListBody(opts), reqOpts);
+          }
+          return request<ListResult<T>>("GET", target, undefined, reqOpts);
         },
 
-        async *listAll(opts: Omit<ListOptions<T>, "cursor"> = {}, reqOpts?: RequestOptions): AsyncIterableIterator<ListResult<T>> {
+        async *listAll(opts: Omit<ListOptions<T>, "cursor"> = {}, reqOpts?: ListRequestOptions): AsyncIterableIterator<ListResult<T>> {
           let cursor: string | undefined;
           for (;;) {
             const page = await this.list(cursor === undefined ? opts : { ...opts, cursor }, reqOpts);

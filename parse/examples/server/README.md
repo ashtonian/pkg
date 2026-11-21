@@ -1,6 +1,6 @@
 # parse/examples/server
 
-Serve a seeded product API from an in-memory SQLite database. The example exercises Resource lists, keyset pages, schema discovery, facets and Merge Patch through the same compiler as the PostgreSQL adapter.
+Serve a seeded product API from an in-memory SQLite database. The example exercises Resource lists over both transports (a GET query string, or the same request as a POST body for a filter too large for a URL), keyset pages, schema discovery, facets and Merge Patch through the same compiler as the PostgreSQL adapter.
 
 ## Architecture
 
@@ -25,7 +25,12 @@ From the Parse module directory (`parse/` in a repository checkout):
 ```bash
 go run ./examples/server --addr 127.0.0.1:8080
 curl 'http://127.0.0.1:8080/api/products?category=books&sort=-price&page_size=2'
+curl -H 'Content-Type: application/json' \
+  -d '{"filter":{"category":"books"},"sort":"-price","page_size":2}' \
+  http://127.0.0.1:8080/api/products
 ```
+
+The second request is the same list as a POST body ([HTTP contract](../../docs/http-errors.md#the-same-request-as-a-post-body)). `POST /api/products` lists, and the example has no create route, so nothing else claims it. A server that creates through `POST` on its collection path needs another path for POST lists.
 
 The process logs its listen address as JSON. SIGINT or SIGTERM stops new requests and drains active requests for the configured grace period. Connections close if that deadline expires; the database then closes.
 
@@ -51,8 +56,8 @@ sequenceDiagram
     participant H as examples/server
     participant R as parse.Resource
     participant DB as SQLite (embedded)
-    C->>H: GET /api/products
-    H->>R: ParseList(query), BuildList(scope)
+    C->>H: GET /api/products?… or POST /api/products with a JSON body
+    H->>R: parsehttp.ParseList(request), BuildList(scope)
     R-->>H: ListPlan
     H->>DB: Execute bound page/count/facet statements
     DB-->>H: Rows
@@ -61,11 +66,11 @@ sequenceDiagram
     H-->>C: JSON page
 ```
 
-**Entry points:** An HTTP list request supplies query parameters; server-owned scope accompanies compilation.
+**Entry points:** An HTTP list request supplies its parameters in a GET's query string or a POST's `application/json` body; server-owned scope accompanies compilation.
 
 **Exit points:** Database rows become a typed page and cursor metadata.
 
-**Failure modes:** Query validation returns the native Parse error; database execution and page construction errors reach the HTTP error boundary.
+**Failure modes:** Query validation returns the native Parse error. A POST with list parameters in its query string, or a body that is not `application/json`, is E2067; a body over the resource's list body limit (80 KiB at the default limits) is E2063, read no further. Database execution and page construction errors reach the HTTP error boundary.
 
 **Dependencies:** Request cancellation flows to database execution; the handler owns execution and the Resource owns grammar and page construction.
 
@@ -89,6 +94,6 @@ The unit checks cover explicit flags over environment values, omitted-flag prece
 | File | Responsibility |
 |---|---|
 | `main.go` | Configuration, HTTP lifecycle and seeded SQLite storage |
-| `server.go` | Resource declaration, routes, list/facet/schema and patch handlers |
+| `server.go` | Resource declaration, routes, list (GET and POST), facet, schema and patch handlers |
 | `settings_test.go` | Configuration source precedence and bounded shutdown |
 | `server_integration_test.go` | Requests against the SQLite HTTP server |

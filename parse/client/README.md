@@ -61,7 +61,7 @@ A relative `Moment` is sent as the server's token (`now-1d`) and resolved by the
 ## Encoding
 
 - **Filter** encodes every condition in operator form (`{"name":{"$eq":"a"}}`), so a document value whose members start with `$` is never read as operators. `And` and `Or` flatten nested groups, so a filter built up in a loop stays within the server's nesting depth. The zero `Filter` matches every row and encodes as `{}`.
-- **ListParams** encodes the list parameters `Resource.ParseList` reads (`filter`, `sort`, `cursor`, `page_size`, `include_total`, `include_deleted`, `search`, `facets`, `include`, `fields`) and leaves zero members out.
+- **ListParams** encodes the list parameters `Resource.ParseList` reads (`filter`, `sort`, `cursor`, `page_size`, `include_total`, `include_deleted`, `search`, `facets`, `include`, `fields`) and leaves zero members out: `Values` as a query string, `Body` as the JSON document `Resource.ParseListBody` reads from a POST, for a request too large for a URL.
 - **Nullable[T]** is a merge-patch (RFC 7386) member: with the `omitzero` tag option the zero value is absent, `Null[T]()` clears the field, `Set(v)` writes it.
 - **Operation** is a JSON Patch (RFC 6902) operation; a `[]Operation` is the document. `Pointer(tokens...)` escapes member names into a JSON Pointer.
 
@@ -84,6 +84,7 @@ The client refuses only what the grammar cannot express; the server judges every
 - `Point`, `Box`, `Polygon` — geographic operands
 - `Order`, `Sort` — sort orders; `Sort.String` is the sort parameter
 - `ListParams.Values` — a list request's query parameters
+- `ListParams.Body` — the same request as a POST body
 - `Nullable[T]`, `Null[T]`, `Set` — merge-patch members
 - `Operation`, `Add`, `Remove`, `Replace`, `Move`, `Copy`, `Test`, `Pointer` — JSON Patch
 
