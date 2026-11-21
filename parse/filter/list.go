@@ -144,6 +144,15 @@ func ListUnscopedRelations() ListOption {
 	return func(c *listConfig) { c.scope.unscoped = true }
 }
 
+// ListRowTenant holds every tenant-scoped relation in the filter, count and
+// facets to the tenant of the row it hangs from, column of the resource's
+// table, instead of a bound tenant (WithRowTenant): for a list whose rows
+// span tenants, such as a governed one (ComposeConstraints). It excludes
+// ListTenant and ListUnscopedRelations.
+func ListRowTenant(column string) ListOption {
+	return func(c *listConfig) { c.scope.row = rowTenant{column: column} }
+}
+
 // ListStartParam sets the starting parameter index offset. Use this when the
 // SQL query has preceding parameters (e.g., SET clause args in an UPDATE).
 // The filter's first placeholder will be startParam+1.
@@ -206,7 +215,7 @@ func (lq *ListQuery) Build(opts ...ListOption) (*ListResult, error) {
 		}
 		ast = merged
 	}
-	builder := &SQLBuilder{schema: lq.filterSchema, dialect: lq.dialect, startParam: cfg.startParam, scope: cfg.scope, related: cfg.related}
+	builder := &SQLBuilder{schema: lq.filterSchema, dialect: lq.dialect, startParam: cfg.startParam, scope: cfg.scope.over(lq.filterSchema), related: cfg.related}
 	filterSQL, err := builder.Build(ast)
 	if err != nil {
 		return nil, err

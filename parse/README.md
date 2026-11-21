@@ -17,7 +17,7 @@ flowchart LR
 
 **Exit points:** Parameterized statements, parsed values and pages. Repositories execute statements; `parsepgx` provides optional pgx execution.
 
-**Failure modes:** Invalid declarations fail construction; request validation returns `core.ParseError` with its code and path (patch failures can be joined); missing tenant scope returns `ErrTenantRequired`, and a tenant a reached tenant column cannot hold `ErrTenantInvalid`; `Relate` refuses a relation that would make one request bind its tenant to a string or UUID column and an integer one; unreadable row keys return an error while building a cursor.
+**Failure modes:** Invalid declarations fail construction; request validation returns `core.ParseError` with its code and path (patch failures can be joined); missing tenant scope (no `Scope.Tenant`, and for a list no `Scope.Governance`) returns `ErrTenantRequired`, and a tenant a reached tenant column cannot hold `ErrTenantInvalid`; `Relate` refuses a relation that would make one request bind its tenant to a string or UUID column and an integer one; unreadable row keys return an error while building a cursor.
 
 **Dependencies:** `Resource` composes `core`, `filter` and `patch`. The compiler packages import no application code; callers own connections, authorization and transactions.
 
@@ -105,6 +105,7 @@ Select a dialect when building SQL; connection setup and drivers belong to the c
 |---|---|---|
 | PostgreSQL | `filter.PostgresDialect{}` | Native arrays/JSONB, full-text search; polygon/intersection predicates require PostGIS |
 | SQLite | `filter.SQLiteDialect{}` | JSON text and JSON functions; phrase search and ASCII case folding; no polygon/intersection predicates |
+| CockroachDB | Not supported | `filter.DialectFromDSN` refuses `cockroach://` and `crdb://`. A `postgres://` or `postgresql://` URL to a CockroachDB cluster still selects `PostgresDialect`, whose SQL (the `pg_c_utf8` collation, PostGIS functions, `jsonb_path_query_first`) has never run on CockroachDB |
 | Go values | `ApplyValidatedPatch` | Supports allowed nested paths, `test`, `copy`, and `move`; persist the result yourself |
 
 String ordering uses PostgreSQL's `pg_c_utf8` collation (PostgreSQL 17+; `filter.CollationC` for 14–16) and SQLite binary ordering. A flat parameter naming no filterable field is refused (E2071) on every entry point unless the endpoint accepts it, and so is a facet, include or `fields` name that names no field it can serve. The `fields` mask is validated, not applied: the query reads every column the resource reads, and the service drops the members the mask leaves out ([field mask](docs/queries.md#field-mask)). Documents filter whole or by declared typed members (`{"attrs.color": "red"}`, [JSON paths](docs/queries.md#json-paths)); related rows filter by their own attributes through declared relations (`{"commands": {"$some": {"status": "pending"}}}`, [Relations](docs/relations.md)). SQL patch compilation rejects unsupported operations rather than skipping them. [Backend details](docs/queries.md#type-capabilities) · [Patch limits](docs/patches.md)
@@ -116,7 +117,7 @@ Construct parsers once, customize schemas before serving, and treat them as read
 | Option | Type | Default | Description |
 |---|---|---|---|
 | `parse.PrimaryKey(column)` | `ResourceOption` | `"id"` | Key column; the final keyset column of every list |
-| `parse.TenantColumn(column)` | `ResourceOption` | none | Holds every list, and tenant-scoped junctions, to `Scope.Tenant`. The column's field is a string, a UUID or an integer, and `Scope.Tenant` (the key's text, `"44"` for an integer) is bound as that type, checked against every tenant column the resource's relations reach ([Tenant key](docs/relations.md#tenant-key)) |
+| `parse.TenantColumn(column)` | `ResourceOption` | none | Holds every list, and tenant-scoped junctions, to `Scope.Tenant`; a list with `Scope.Governance` holds each row's relations to the row's own tenant instead ([Governed lists](docs/relations.md#governed-lists)). The column's field is a string, a UUID or an integer, and `Scope.Tenant` (the key's text, `"44"` for an integer) is bound as that type, checked against every tenant column the resource's relations reach ([Tenant key](docs/relations.md#tenant-key)) |
 | `parse.DeletedColumn(column)` | `ResourceOption` | none | Soft-delete timestamp; deleted rows only with `Scope.IncludeDeleted` |
 | `parse.PageSize(def, max)` | `ResourceOption` | 50, 1000 | Page size without `page_size`, and its ceiling (larger requests are clamped) |
 | `parse.AcceptParams(names...)` | `ResourceOption` | none | Query parameters the endpoint reads itself; any other unknown parameter is E2071 |
@@ -193,6 +194,6 @@ Database setup, targeted examples, SDK checks, and benchmarks are in [Operations
 
 The module uses MIT licensing and requires Go 1.27. Runtime dependencies include the released `pkg/gowalker` and `pkg/jsonvalue` modules, JSON Patch, UUID, decimal and MessagePack support; the optional PostgreSQL adapter uses pgx, and the SQLite functions `modernc.org/sqlite`. The runnable server example uses the released config/Kong provider and SQLite. The Go request builder and published TypeScript SDK have no third-party runtime dependencies.
 
-Before v1, minor releases may change the Go API or grammar; patch releases retain the published contract. Schema documents carry their own version, independent of module versions. The default PostgreSQL collation requires 17+; the test matrix targets PostgreSQL 17/18 and SQLite. `CollationC` can compile for PostgreSQL 14–16, with matching index collation, but those versions are outside the CI matrix.
+Before v1, minor releases may change the Go API or grammar; patch releases retain the published contract. Schema documents carry their own version, independent of module versions. The default PostgreSQL collation requires 17+; the test matrix targets PostgreSQL 17/18 and SQLite, and CockroachDB is not supported. `CollationC` can compile for PostgreSQL 14–16, with matching index collation, but those versions are outside the CI matrix.
 
 Applications own authenticated scope and trusted SQL expressions. Cursors are opaque positions, not authorization credentials. Bound request size and complexity, propagate context deadlines through execution, and follow the [operations guide](docs/operations.md) and [security policy](SECURITY.md).

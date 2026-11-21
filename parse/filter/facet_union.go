@@ -49,6 +49,14 @@ func WithFacetUnscopedRelations() BuildFacetQueryOption {
 	return func(c *facetConfig) { c.scope.unscoped = true }
 }
 
+// WithFacetRowTenant holds each tenant-scoped relation facet's related rows
+// to the tenant of the owner row they hang from, column of the schema's
+// table, instead of a bound tenant (WithRowTenant). It excludes
+// WithFacetTenant and WithFacetUnscopedRelations.
+func WithFacetRowTenant(column string) BuildFacetQueryOption {
+	return func(c *facetConfig) { c.scope.row = rowTenant{column: column} }
+}
+
 // WithFacetRelatedPolicies supplies the policies of policy-scoped
 // relations' target tables (WithRelatedPolicies).
 func WithFacetRelatedPolicies(policies map[string]*PolicyConstraints) BuildFacetQueryOption {
@@ -116,6 +124,9 @@ func buildFacetQuery(schema *ResourceSchema, dialect Dialect, filterWhere string
 	}
 	if len(facets) == 0 {
 		return FacetQuery{}, fmt.Errorf("BuildFacetQuery: at least one facet is required")
+	}
+	if err := cfg.scope.check(); err != nil {
+		return FacetQuery{}, fmt.Errorf("BuildFacetQuery: %w", err)
 	}
 
 	type meta struct {
@@ -230,6 +241,7 @@ func buildFacetQuery(schema *ResourceSchema, dialect Dialect, filterWhere string
 		// A row identity, so an element repeated in one row counts it once.
 		proj.WriteString(", ROW_NUMBER() OVER () AS __row")
 	}
+	scope := cfg.scope
 	if hasRelation {
 		if !first {
 			proj.WriteString(", ")
@@ -239,6 +251,12 @@ func buildFacetQuery(schema *ResourceSchema, dialect Dialect, filterWhere string
 		proj.WriteString(relationPK)
 		proj.WriteString(" AS __owner_pk")
 		first = false
+		if scope.row.column != "" {
+			// The relation branches read base, not the owner's table.
+			scope = scope.over(schema)
+			proj.WriteString(", " + scope.row.expr + " AS __owner_tenant")
+			scope.row.expr = "base.__owner_tenant"
+		}
 	}
 	if first {
 		// Pure-relation facet request with no scalar facets; we still
@@ -344,7 +362,7 @@ func buildFacetQuery(schema *ResourceSchema, dialect Dialect, filterWhere string
 				in.WriteString(rel.SourceColumn)
 				in.WriteString(" = base.__owner_pk")
 				in.WriteString(relatedJoin(rel, "j", "target__"))
-				clause, err := relatedScope(m.field, dialect, cfg.scope, cfg.related, st, bindTenant, "j", "target__")
+				clause, err := relatedScope(m.field, dialect, scope, cfg.related, st, bindTenant, "j", "target__")
 				if err != nil {
 					return FacetQuery{}, fmt.Errorf("BuildFacetQuery: field %q: %w", m.req.Field, err)
 				}

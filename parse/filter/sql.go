@@ -98,12 +98,18 @@ type TwoValuedDialect interface {
 	TwoValuedCondition(field *FieldSchema, op FilterOperator, value any, bind func(any) string) (sql string, ok bool, err error)
 }
 
-// ErrUnknownDSN is returned by DialectFromDSN for a DSN whose scheme names
-// neither PostgreSQL nor SQLite.
+// ErrUnknownDSN is returned by DialectFromDSN for a DSN that names no
+// database parse compiles SQL for, CockroachDB included.
 var ErrUnknownDSN = dialect.ErrUnknownDSN
 
-// DialectFromDSN returns the Dialect of a database DSN: postgres:// (and
-// postgresql://, cockroach://, crdb://) or a SQLite file or :memory:.
+// DialectFromDSN returns the Dialect of a database DSN, decided by its form:
+// PostgresDialect for a postgres:// or postgresql:// URL; SQLiteDialect for
+// a sqlite:// or file: URI, a path ending in .db, .sqlite or .sqlite3 before
+// any ?query, or :memory:. It refuses CockroachDB's cockroach:// and
+// crdb://, where PostgresDialect's SQL has never been verified, and a
+// keyword/value string (host=… dbname=…), which does not say which
+// database it names; construct the dialect for one. The error names the
+// scheme, never the DSN.
 func DialectFromDSN(dsn string) (Dialect, error) {
 	base, err := dialect.FromDSN(dsn)
 	if err != nil {
@@ -229,25 +235,101 @@ type sqlBuilderConfig struct {
 }
 
 // relationScope is how a builder scopes tenant-scoped junctions: bound to a
-// tenant, or explicitly unscoped. The zero value is neither, and any
-// relation declaring a TenantColumn fails closed.
+// tenant, held to the tenant of the row they hang from, or explicitly
+// unscoped. The zero value is none of them, and any relation declaring a
+// TenantColumn fails closed.
 type relationScope struct {
 	tenant    any
 	hasTenant bool
 	unscoped  bool
+	row       rowTenant
 }
 
-// clause returns " AND <alias>.<tenant_col> = <ph>" for a tenant-scoped
-// relation (binding the tenant through bind), "" for an unscoped junction,
-// or an error when the relation is tenant-scoped but no scope was chosen.
-func (sc relationScope) clause(rel *core.RelationSchema, alias string, bind func(any) string) (string, error) {
-	if rel.TenantColumn == "" || sc.unscoped {
+// rowTenant is the owner's tenant column a list whose rows span tenants
+// holds every tenant-scoped relation to (ListRowTenant): each related row
+// is in the tenant of the row it hangs from, at every depth.
+type rowTenant struct {
+	column string
+	// typ is column's type, "" when the schema does not declare it.
+	typ core.FieldType
+	// expr names column where the statement can see the owner's row: the
+	// owner's table in a filter, the facet base's projection, the include
+	// query's join.
+	expr string
+}
+
+// over is sc for a statement over schema's table: a row tenant names the
+// table's column, typed as schema declares it.
+func (sc relationScope) over(schema *ResourceSchema) relationScope {
+	if sc.row.column != "" && schema != nil {
+		sc.row.typ = tenantColumnType(schema, sc.row.column)
+		sc.row.expr = schema.Name + "." + sc.row.column
+	}
+	return sc
+}
+
+// tenantColumnType is the declared type of schema's column, "" when schema
+// declares none: a pair table's tenant column, or a hand-built schema.
+func tenantColumnType(schema *ResourceSchema, column string) core.FieldType {
+	if schema == nil {
+		return ""
+	}
+	if f, ok := schema.SystemFields[column]; ok {
+		return f.DataType
+	}
+	for _, f := range schema.Fields {
+		if f.Relation == nil && f.Path == nil && f.RowColumn() == column {
+			return f.DataType
+		}
+	}
+	return ""
+}
+
+// check refuses a scope that holds relations two ways, or a row tenant
+// column that is no identifier.
+func (sc relationScope) check() error {
+	if sc.row.column == "" {
+		return nil
+	}
+	if sc.hasTenant || sc.unscoped {
+		return errors.New("filter: relations follow the row's tenant, a bound tenant or none; more than one was set")
+	}
+	if !core.IsIdentifier(sc.row.column) {
+		return fmt.Errorf("filter: row tenant column %q is not an identifier", sc.row.column)
+	}
+	return nil
+}
+
+// clause returns " AND <alias>.<column>" compared with the tenant for
+// table's tenant column of type typ ("" when undeclared): the bound tenant
+// (through bind), or the owner row's tenant column. It is "" for a table
+// without one or an unscoped scope, and an error when no scope was chosen.
+func (sc relationScope) clause(table, column, alias string, typ core.FieldType, bind func(any) string) (string, error) {
+	switch {
+	case column == "" || sc.unscoped:
 		return "", nil
+	case sc.row.column != "":
+		return sc.row.match(alias+"."+column, typ), nil
+	case !sc.hasTenant:
+		return "", fmt.Errorf("relation junction %s is tenant-scoped (%s): bind a tenant or opt out explicitly with an unscoped-relations option", table, column)
 	}
-	if !sc.hasTenant {
-		return "", fmt.Errorf("relation junction %s is tenant-scoped (%s): bind a tenant or opt out explicitly with an unscoped-relations option", rel.JoinTable, rel.TenantColumn)
+	return " AND " + alias + "." + column + " = " + bind(sc.tenant), nil
+}
+
+// match is " AND <col> = <the row's tenant>". A UUID column and a string
+// column compare by the UUID's canonical text, which the string column
+// holds (a tenant key binds a UUID's canonical text to both): PostgreSQL
+// has no operator between the two types. The string side is left bare so
+// its index serves the comparison.
+func (rt rowTenant) match(col string, typ core.FieldType) string {
+	row := rt.expr
+	switch {
+	case typ == core.FieldTypeUUID && rt.typ == core.FieldTypeString:
+		col = "CAST(" + col + " AS TEXT)"
+	case typ == core.FieldTypeString && rt.typ == core.FieldTypeUUID:
+		row = "CAST(" + row + " AS TEXT)"
 	}
-	return " AND " + alias + "." + rel.TenantColumn + " = " + bind(sc.tenant), nil
+	return " AND " + col + " = " + row
 }
 
 // WithStartParam sets the starting parameter index offset. The first generated
@@ -274,6 +356,16 @@ func WithTenant(value any) SQLBuilderOption {
 // operates across tenants. Never use it on a request path.
 func WithUnscopedRelations() SQLBuilderOption {
 	return func(c *sqlBuilderConfig) { c.scope.unscoped = true }
+}
+
+// WithRowTenant holds every tenant-scoped relation to the tenant of the row
+// it hangs from, read from column of the schema's table, instead of a bound
+// tenant: for a filter over rows of more than one tenant, such as a
+// governed list's (ComposeConstraints). Each relation's tenant columns, at
+// every depth, are compared with the row's. It excludes WithTenant and
+// WithUnscopedRelations.
+func WithRowTenant(column string) SQLBuilderOption {
+	return func(c *sqlBuilderConfig) { c.scope.row = rowTenant{column: column} }
 }
 
 // SQLBuilder generates parameterized SQL from a filter AST using a dialect.
@@ -337,13 +429,16 @@ func NewSQLBuilder(schema *ResourceSchema, dialect Dialect, opts ...SQLBuilderOp
 		schema:     schema,
 		dialect:    dialect,
 		startParam: cfg.startParam,
-		scope:      cfg.scope,
+		scope:      cfg.scope.over(schema),
 		related:    cfg.related,
 	}
 }
 
 // Build walks the AST and generates a parameterized SQL WHERE clause.
 func (b *SQLBuilder) Build(ast *FilterAST) (*SQLResult, error) {
+	if err := b.scope.check(); err != nil {
+		return nil, err
+	}
 	if ast == nil || ast.Root == nil {
 		return &SQLResult{Where: "1=1"}, nil
 	}
@@ -568,7 +663,9 @@ func (b *SQLBuilder) buildRelationCondition(s *buildState, node *FilterNode) (st
 		sb.WriteString(" AND ")
 		sb.WriteString(cond)
 	}
-	scope, err := b.scope.clause(rel, relationAlias, bind)
+	// A pair table compared by key declares no types: its tenant column
+	// is taken to hold the owner's.
+	scope, err := b.scope.clause(rel.JoinTable, rel.TenantColumn, relationAlias, "", bind)
 	if err != nil {
 		return "", err
 	}

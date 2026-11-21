@@ -1,6 +1,7 @@
 package filter
 
 import (
+	"cmp"
 	"fmt"
 	"math"
 	"slices"
@@ -68,8 +69,11 @@ func (p *Page[T]) SetInclude(field string, rows IncludeRows) {
 type IncludeQueryOption func(*includeQueryConfig)
 
 type includeQueryConfig struct {
-	scope       relationScope
-	related     map[string]*PolicyConstraints
+	scope   relationScope
+	related map[string]*PolicyConstraints
+	// owner is the owner's schema, whose table the read joins when the
+	// relation follows the owner row's tenant (WithIncludeRowTenant).
+	owner       *ResourceSchema
 	maxPerOwner int
 }
 
@@ -88,6 +92,19 @@ func WithIncludeTenant(value any) IncludeQueryOption {
 // tenant predicate. Never use it on a request path.
 func WithIncludeUnscoped() IncludeQueryOption {
 	return func(c *includeQueryConfig) { c.scope.unscoped = true }
+}
+
+// WithIncludeRowTenant reads each owner's related rows in that owner's
+// tenant, column of owner's table, instead of a bound tenant (WithRowTenant):
+// for owners of more than one tenant, such as a governed list's page. The
+// read joins owner's table on the relation's owner key. It excludes
+// WithIncludeTenant and WithIncludeUnscoped. ResolveInclude refuses it:
+// resolve each tenant's owners with WithIncludeTenant.
+func WithIncludeRowTenant(owner *ResourceSchema, column string) IncludeQueryOption {
+	return func(c *includeQueryConfig) {
+		c.owner = owner
+		c.scope.row = rowTenant{column: column}
+	}
 }
 
 // WithIncludeRelatedPolicies supplies the policies of policy-scoped
@@ -152,6 +169,13 @@ func BuildIncludeQuery(field *FieldSchema, dialect Dialect, ownerPKs []any, opts
 	b.WriteString("SELECT owner_pk, target_id, ROW_NUMBER() OVER (PARTITION BY owner_pk ORDER BY target_id) AS include_rank FROM (")
 	b.WriteString("SELECT DISTINCT j." + rel.SourceColumn + " AS owner_pk, " + targetKey + " AS target_id FROM " + rel.JoinTable + " j")
 	b.WriteString(relatedJoin(rel, "j", target))
+	scope := cfg.scope
+	if scope.row.column != "" {
+		pk := cmp.Or(rel.PrimaryKey, "id")
+		b.WriteString(" JOIN " + cfg.owner.Name + " owner__ ON owner__." + pk + " = j." + rel.SourceColumn)
+		scope = scope.over(cfg.owner)
+		scope.row.expr = "owner__." + scope.row.column
+	}
 	b.WriteString(" WHERE j." + rel.SourceColumn + " IN (")
 	for i, pk := range ownerPKs {
 		if i > 0 {
@@ -160,11 +184,11 @@ func BuildIncludeQuery(field *FieldSchema, dialect Dialect, ownerPKs []any, opts
 		b.WriteString(bind(pk))
 	}
 	b.WriteByte(')')
-	scope, err := relatedScope(field, dialect, cfg.scope, cfg.related, s, bind, "j", target)
+	relScope, err := relatedScope(field, dialect, scope, cfg.related, s, bind, "j", target)
 	if err != nil {
 		return IncludeQuery{}, fmt.Errorf("BuildIncludeQuery: field %q: %w", field.ExternalName, err)
 	}
-	b.WriteString(scope)
+	b.WriteString(relScope)
 	b.WriteString(") pairs__) include__ WHERE include_rank <= ")
 	b.WriteString(strconv.Itoa(cfg.maxPerOwner + 1))
 	b.WriteString(" ORDER BY include__.owner_pk, include__.target_id")
@@ -195,6 +219,12 @@ func includeConfig(field *FieldSchema, opts ...IncludeQueryOption) (*includeQuer
 	for _, opt := range opts {
 		opt(cfg)
 	}
+	if err := cfg.scope.check(); err != nil {
+		return nil, err
+	}
+	if cfg.scope.row.column != "" && cfg.owner == nil {
+		return nil, fmt.Errorf("a row tenant needs the owner's schema")
+	}
 	if cfg.maxPerOwner <= 0 {
 		cfg.maxPerOwner = DefaultMaxIncludePerRelation
 	}
@@ -213,7 +243,7 @@ func includeConfig(field *FieldSchema, opts ...IncludeQueryOption) (*includeQuer
 func relatedScope(field *FieldSchema, dialect Dialect, scope relationScope, related map[string]*PolicyConstraints, s *buildState, bindTenant func(any) string, join, target string) (string, error) {
 	rel := field.Relation
 	var b strings.Builder
-	clause, err := scope.clause(rel, join, bindTenant)
+	clause, err := scope.clause(rel.JoinTable, rel.TenantColumn, join, joinTenantType(field), bindTenant)
 	if err != nil {
 		return "", err
 	}
@@ -243,13 +273,11 @@ func relatedScope(field *FieldSchema, dialect Dialect, scope relationScope, rela
 func targetScope(field *FieldSchema, dialect Dialect, scope relationScope, bindTenant func(any) string, alias string) (string, error) {
 	rel := field.Relation
 	var b strings.Builder
-	if rel.TargetTenant != "" {
-		tc, err := scope.clause(&core.RelationSchema{JoinTable: rel.TargetTable, TenantColumn: rel.TargetTenant}, alias, bindTenant)
-		if err != nil {
-			return "", err
-		}
-		b.WriteString(tc)
+	tc, err := scope.clause(rel.TargetTable, rel.TargetTenant, alias, tenantColumnType(field.Related, rel.TargetTenant), bindTenant)
+	if err != nil {
+		return "", err
 	}
+	b.WriteString(tc)
 	if rel.TargetDeleted != "" {
 		b.WriteString(" AND " + alias + "." + rel.TargetDeleted + " IS NULL")
 	}
