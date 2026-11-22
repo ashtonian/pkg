@@ -302,6 +302,46 @@ test('a listed merge with no header keeps its branch commits, and warns once', (
   assert.equal(warnings.length, 1);
 });
 
+// A feature added and taken back on the branch, merged as the fix the branch
+// still holds: the net change is the fix.
+test('a branch commit reverted on the same branch takes nothing over', () => {
+  const subject = 'fix(parse): y (#300)';
+  const header = commit('m1', subject);
+  const added = commit('b1', 'feat(parse)!: add X');
+  const revert = commit('b2', 'revert: feat(parse)!: add X');
+  const fix = commit('b3', 'fix(parse): y');
+  const { history, options } = landed({ m1: [subject, 'b1', 'b2', 'b3'] });
+  history.revertedWithin = new Set(['b1', 'b2']);
+
+  const kept = firstParentCommits([header, added, revert, fix], history, options);
+
+  assert.deepEqual(kept, [header]);
+  assert.equal(header.type, 'fix');
+  assert.equal(header.breaking, false);
+});
+
+test("readHistory pairs a revert with what it undid on the same merge's branch", t => {
+  const { work, git, commitFile, merge } = scratchRepo(t);
+  commitFile('a', 'chore: root');
+  const onMain = commitFile('m', 'feat: landed earlier');
+  git('switch', '-q', '-c', 'feature');
+  const added = commitFile('b', 'feat: add X');
+  git('revert', '--no-edit', added);
+  const revert = git('rev-parse', 'HEAD');
+  // A revert of a commit main already holds undoes a change that landed
+  // elsewhere; it is the branch's own change.
+  git('revert', '--no-edit', onMain);
+  const revertOfMain = git('rev-parse', 'HEAD');
+  commitFile('c', 'fix: y');
+  git('switch', '-q', 'main');
+  merge('feature', 'fix: y (#300)');
+
+  const { revertedWithin } = readHistory(work, 'HEAD');
+
+  assert.deepEqual([...revertedWithin].sort(), [added, revert].sort());
+  assert.equal(revertedWithin.has(revertOfMain), false);
+});
+
 test('readHistory refuses a shallow clone, which would map nothing', t => {
   const { dir, work, gitAt, commitFile } = scratchRepo(t);
   commitFile('a', 'chore: root');

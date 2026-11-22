@@ -34,8 +34,9 @@ async function main() {
   const args = parseOptions();
   const token = process.env.GITHUB_TOKEN;
   if (!token) throw new Error('GITHUB_TOKEN is not set');
-  const [owner, repo] = (args.repo ?? '').split('/');
-  if (!owner || !repo) throw new Error(`--repo must be owner/name, got ${JSON.stringify(args.repo)}`);
+  const parts = (args.repo ?? '').split('/');
+  if (parts.length !== 2 || !parts[0] || !parts[1]) throw new Error(`--repo must be owner/name, got ${JSON.stringify(args.repo)}`);
+  const [owner, repo] = parts;
   const output = args['dry-run'] ? undefined : stepOutput();
   console.log(`Running release-please version: ${VERSION}`);
 

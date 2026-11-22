@@ -26,9 +26,9 @@ env:
   CI_ARTIFACT_ENDPOINT: ${{ secrets.CI_ARTIFACT_ENDPOINT }}
 
 jobs:
-  # Each push's run creates the releases a merged release PR describes, as
-  # release-please-action did: publish attests the release from the run of
-  # the release commit itself, so this job is never queued behind another.
+  # Each push's run creates the releases a merged release PR describes:
+  # publish attests a release from its release commit's own run, so this job
+  # is never queued behind another.
   release-please:
     if: github.actor_id == '4212452' && github.event_name == 'push'
     permissions:

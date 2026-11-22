@@ -15,6 +15,8 @@ For each release path, the plugin's `processCommits` hook, which runs before ver
   - its `Release-As` footer;
   - its issue references (`Closes #215`), one per issue.
 
+  A branch commit that a revert on the same branch undid (git's `This reverts commit <sha>`), and the revert, take nothing over.
+
   In a path the merge's net changes don't reach, a branch commit there was taken back before the merge, so nothing takes it over;
 - drops every branch commit of a merge whose own pull request sets `BEGIN_COMMIT_OVERRIDE`: release-please lists that merge as the override, which its author wrote to stand for the whole change (as #60 and #62 did). A commit carrying the override of a stacked pull request, one merged into this one's branch, folds into the merge it landed through like any other branch commit;
 - keeps a branch commit whose merge has no header, so a change is duplicated rather than lost: a merge whose message release-please can't parse (a body that breaks the parser even though the subject parses, or a bare `Merge pull request #1 from …`), and a merge release-please lists without an entry the plugin can take as its header (with a warning). GitHub's default merge message, `Merge pull request #9 from a/b` above the pull request's title, counts as that title when it is the message's one conventional entry;
@@ -50,7 +52,7 @@ release-please's own settings (release type, components, `exclude-paths`, `last-
 
 ## Interfaces
 
-- `first-parent.mjs`: `fetchBranchHead(repoDir, remote, branch)` fetches the branch and returns its commit. `readHistory(repoDir, ref)` refuses a shallow clone and returns `{mergeOf, messageOf}`: a `Map` from each commit a first-parent merge brought in to that merge, and each such merge's whole message. `typeRanker(sections)` ranks commit types by `changelog-sections`. `firstParentCommits(commits, history, {headerOf, rank, warn})` filters release-please `ConventionalCommit`s as above. None of them imports release-please.
+- `first-parent.mjs`: `fetchBranchHead(repoDir, remote, branch)` fetches the branch and returns its commit. `readHistory(repoDir, ref)` refuses a shallow clone and returns `{mergeOf, messageOf, revertedWithin}`: a `Map` from each commit a first-parent merge brought in to that merge, each such merge's whole message, and the commits a revert on the same merge's branch undid, with the reverts. `typeRanker(sections)` ranks commit types by `changelog-sections`. `firstParentCommits(commits, history, {headerOf, rank, warn})` filters release-please `ConventionalCommit`s as above. None of them imports release-please.
 - `plugin.mjs`: `FirstParentPlugin`, which parses each merge's message with release-please's parser, refuses differing `changelog-sections` and logs each warning once a run, and `registerFirstParent(history)`, which makes the config's `"first-parent"` build it.
 - `outputs.mjs`: `Output`, `outputReleases`, `outputPullRequests`: step outputs encoded as `@actions/core` encodes them (an absent value is an empty string).
 - `run.mjs`: the workflow step. Outputs, named as `release-please-action` v5 names them: `releases_created`, `paths_released`, and per released path `<path>--release_created`, `<path>--tag_name`, `<path>--version`, `<path>--body`, `<path>--html_url` and the release's other fields; `prs_created`, `pr`, `prs`. The `publish` job reads `parse--tag_name`.
@@ -68,7 +70,7 @@ The dry run reads the live repository and prints each release PR's title and bod
 
 ## Operations
 
-Two jobs run on every push to main. `release-please` creates the releases a merged release PR describes, in each push's own run as `release-please-action` did, so `publish` attests a release from the run of its release commit. `release-pr` follows it and opens or updates the release PR, one run at a time (`concurrency: release-please-pr`): a newer push's pending run replaces an older one's, so the last push writes the release PR last. `release-pr`'s log starts with `Running release-please version:` and `first-parent: history at <sha> (origin/main), N branch commits mapped to their merges`; then release-please logs each path it considers and the plugins it runs (`running plugin: FirstParentPlugin`). The history is read at main as GitHub has it when the run starts; a merge that lands while the run is building keeps its branch commits listed until the next run, which that merge's own push starts.
+Two jobs run on every push to main. `release-please` creates the releases a merged release PR describes, in each push's own run, so `publish` attests a release from the run of its release commit. `release-pr` follows it and opens or updates the release PR, one run at a time (`concurrency: release-please-pr`): a newer push's pending run replaces an older one's, so the last push writes the release PR last. `release-pr`'s log starts with `Running release-please version:` and `first-parent: history at <sha> (origin/main), N branch commits mapped to their merges`; then release-please logs each path it considers and the plugins it runs (`running plugin: FirstParentPlugin`). The history is read at main as GitHub has it when the run starts; a merge that lands while the run is building keeps its branch commits listed until the next run, which that merge's own push starts.
 
 - **`release-please failed: Error: GITHUB_TOKEN is not set`**: the secret and the job token are both missing; check the job's `permissions` and `RELEASE_PLEASE_TOKEN`.
 - **`… has no entry with its header; its branch commits stay listed`**: release-please listed the merge, but none of its entries carries the header the plugin parsed from the merge's message, so the plugin kept the branch commits rather than risk dropping their change. Look at how release-please read that merge's message in the dry run.
@@ -81,6 +83,7 @@ Two jobs run on every push to main. `release-please` creates the releases a merg
 - **`… is listed, but no entry of it is its header; its branch commits stay listed`**: release-please parsed entries from the merge's message, but none from its first line, and more than one besides trailers, so the plugin can't tell which entry stands for the change. Give future merges a conventional subject.
 - **`git fetch` fails**: the runner fetches the target branch without credentials (`persist-credentials: false`), which works for this public repository. A private one needs the checkout's credentials.
 - **`Unknown plugin type: first-parent`**: something ran the stock release-please against this config. Run it through `run.mjs`.
+- **A release PR proposing versions that were just released**: a `release-pr` run of an earlier push was still building when a later push's `release-please` job tagged the release. Close that PR; the next push's run builds the right one.
 - **GitHub rate limits (403 `API rate limit exceeded`)**: release-please makes a few hundred REST calls a run, on the token's account. Rerun the job once the limit resets.
 
 ## Security

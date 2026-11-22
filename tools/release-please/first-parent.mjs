@@ -24,7 +24,9 @@ export function fetchBranchHead(repoDir, remote, branch) {
 }
 
 // readHistory returns mergeOf, each commit a merge on ref's first-parent chain
-// brought in mapped to that merge, and messageOf, those merges' messages.
+// brought in mapped to that merge; messageOf, those merges' messages; and
+// revertedWithin, the commits a revert on the same merge's branch undid, the
+// reverts included.
 export function readHistory(repoDir, ref) {
   const git = gitIn(repoDir);
   // A shallow clone maps nothing and would list every branch commit again.
@@ -37,11 +39,11 @@ export function readHistory(repoDir, ref) {
     const [sha, ...shas] = line.split(' ');
     parents.set(sha, shas);
   }
-  const messageOf = new Map();
-  for (const record of git('rev-list', '--first-parent', '--merges', '--no-commit-header', '--format=%x00%H%x1f%B', ref).split('\0')) {
-    if (!record) continue;
-    const [sha, message] = record.split('\x1f');
-    messageOf.set(sha, message.replace(/\n+$/, ''));
+  const messages = new Map();
+  for (const record of git('rev-list', '--no-commit-header', '--format=%x00%H%x1f%B', ref).split('\0')) {
+    const separator = record.indexOf('\x1f');
+    if (separator < 0) continue;
+    messages.set(record.slice(0, separator), record.slice(separator + 1).replace(/\n+$/, ''));
   }
   const chain = [];
   for (let sha = git('rev-parse', '--verify', `${ref}^{commit}`).trim(); sha; sha = parents.get(sha)[0]) {
@@ -60,7 +62,17 @@ export function readHistory(repoDir, ref) {
       pending.push(...(parents.get(sha) ?? []));
     }
   }
-  return { mergeOf, messageOf };
+  const messageOf = new Map();
+  for (const sha of chain) {
+    if (parents.get(sha).length > 1) messageOf.set(sha, messages.get(sha));
+  }
+  const revertedWithin = new Set();
+  for (const [sha, merge] of mergeOf) {
+    for (const [, reverted] of messages.get(sha).matchAll(/^This reverts commit ([0-9a-f]{40})/gm)) {
+      if (mergeOf.get(reverted) === merge) revertedWithin.add(sha).add(reverted);
+    }
+  }
+  return { mergeOf, messageOf, revertedWithin };
 }
 
 // typeRanker ranks a feature over the other types the changelog shows, and
@@ -119,6 +131,8 @@ export function firstParentCommits(commits, history, { headerOf, rank = typeRank
       kept.push(commit);
       continue;
     }
+    // A change the branch undid calls for nothing.
+    if (history.revertedWithin?.has(commit.sha)) continue;
     // A commit carrying another pull request's override folds too: that pull
     // request landed through this merge, stacked on its branch.
     if (rank(commit.type) > rank(header.type)) {
