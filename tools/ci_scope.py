@@ -195,7 +195,7 @@ def changes(paths, workspace):
             continue
         module = workspace.module_of(path)
         if module is None:
-            # go.work, the Makefile, workflows, CI scripts, release configuration and unknown paths.
+            # go.work, the Makefile, workflows, CI scripts and unknown paths.
             raise Unscoped(path)
         if module not in workspace.modules:
             # A module outside go.work (examples, benchmarks, release tooling): only its checks read it.
