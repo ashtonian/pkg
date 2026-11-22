@@ -106,7 +106,12 @@ type PathSchema struct {
 	// interface fields accept null or remove), array element types, and the
 	// shape of struct / map values. nil — hand-built schemas — validates by
 	// DataType alone over the widest numeric domain and admits null.
-	GoType     reflect.Type
+	GoType reflect.Type
+	// Wire is the form operations give the path's value in: core.WireString
+	// for a bool, integer or float field tagged json:",string", whose value
+	// is a JSON string ("42", not 42), as encoding/json writes the field.
+	// Values normalize from it, so SQL binds and validators see the number.
+	Wire       core.Wire
 	Validators []core.Validator
 	// EnumValues is the path's `enum` allowlist (also a Validator), for
 	// schema discovery.

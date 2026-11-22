@@ -42,6 +42,19 @@ export function compareDecimals(a: unknown, b: unknown): -1 | 0 | 1 | undefined 
   return xs < ys ? -1 : 1;
 }
 
+/**
+ * The exact integer a decimal string holds ("9007199254740993", "1.0",
+ * "1e3"), or undefined when it is no decimal (isDecimal) or not integral
+ * ("1.5") — what Go core.NormalizeInt accepts as an integer's text.
+ */
+export function decimalInteger(text: string): bigint | undefined {
+  if (!isDecimal(text)) return undefined;
+  const { coefficient, exp } = decimalParts(text);
+  if (exp >= 0) return coefficient * 10n ** BigInt(exp);
+  const scale = 10n ** BigInt(-exp);
+  return coefficient % scale === 0n ? coefficient / scale : undefined;
+}
+
 // decimalParts reads a decimal as coefficient × 10^exp; zero has exponent 0,
 // whatever it was written with ("0e9").
 function decimalParts(value: number | string): { coefficient: bigint; exp: number } {

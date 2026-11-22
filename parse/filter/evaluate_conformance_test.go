@@ -47,6 +47,12 @@ func TestEvaluateSetConformance(t *testing.T) {
 	})
 }
 
+func TestEvaluateQuotedConformance(t *testing.T) {
+	filtertest.RunQuoted(t, evaluateOver(filtertest.QuotedRecords(), func(r filtertest.QuotedRecord) (string, filter.Row) {
+		return r.ID, structRow(r)
+	}))
+}
+
 func TestEvaluateGeoConformance(t *testing.T) {
 	t.Run("stored", func(t *testing.T) {
 		filtertest.RunGeo(t, evaluateOver(filtertest.GeoRecords(), func(r filtertest.GeoRecord) (string, filter.Row) {

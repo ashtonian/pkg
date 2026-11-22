@@ -185,20 +185,25 @@ type FilterSchemaResponse struct {
 
 // FilterFieldResponse is the JSON representation of a filter field.
 type FilterFieldResponse struct {
-	Name        string                  `json:"name"`
-	Label       string                  `json:"label,omitempty"`
-	Description string                  `json:"description,omitempty"`
-	DataType    core.FieldType          `json:"data_type"`
-	Operators   []filter.FilterOperator `json:"operators"`
-	Indexed     bool                    `json:"indexed,omitempty"`
-	Immutable   bool                    `json:"immutable,omitempty"`
-	EnumValues  []string                `json:"enum_values,omitempty"`
-	Facetable   bool                    `json:"facetable,omitempty"`
-	Searchable  bool                    `json:"searchable,omitempty"`
-	Includable  bool                    `json:"includable,omitempty"`
-	Group       string                  `json:"group,omitempty"`
-	Order       int                     `json:"order,omitempty"`
-	GeoConfig   *GeoFieldConfigResponse `json:"geo_config,omitempty"`
+	Name        string         `json:"name"`
+	Label       string         `json:"label,omitempty"`
+	Description string         `json:"description,omitempty"`
+	DataType    core.FieldType `json:"data_type"`
+	// Wire is "string" for a bool, integer or float field whose comparison
+	// and set operands are JSON strings holding the value ("42"), as the
+	// field reads in responses (json:",string"); absent, operands take the
+	// data type's own JSON form.
+	Wire       core.Wire               `json:"wire,omitempty"`
+	Operators  []filter.FilterOperator `json:"operators"`
+	Indexed    bool                    `json:"indexed,omitempty"`
+	Immutable  bool                    `json:"immutable,omitempty"`
+	EnumValues []string                `json:"enum_values,omitempty"`
+	Facetable  bool                    `json:"facetable,omitempty"`
+	Searchable bool                    `json:"searchable,omitempty"`
+	Includable bool                    `json:"includable,omitempty"`
+	Group      string                  `json:"group,omitempty"`
+	Order      int                     `json:"order,omitempty"`
+	GeoConfig  *GeoFieldConfigResponse `json:"geo_config,omitempty"`
 	// Relation describes a relation field: its kind and, for a declared
 	// relation, the target resource whose schema its `$some` / `$none` /
 	// `$is` / `$is_not` filters use.
@@ -240,6 +245,10 @@ type PatchSchemaResponse struct {
 type PatchPathResponse struct {
 	AllowedOps []patch.PatchOp `json:"allowed_ops"`
 	DataType   core.FieldType  `json:"data_type"`
+	// Wire is "string" for a path whose value is a JSON string holding a
+	// bool, integer or float ("42"), as the field reads in responses
+	// (json:",string"); absent, values take the data type's own JSON form.
+	Wire core.Wire `json:"wire,omitempty"`
 	// Nullable reports that the path accepts null (remove, or clear).
 	Nullable bool `json:"nullable,omitempty"`
 	// EnumValues is the path's allowlist.
@@ -333,7 +342,7 @@ func filterFieldsToResponse(in map[string]*filter.FieldSchema) map[string]*Filte
 func filterFieldToResponse(f *filter.FieldSchema) *FilterFieldResponse {
 	resp := &FilterFieldResponse{
 		Name: f.ExternalName, Label: f.Label, Description: f.Description,
-		DataType: f.DataType, Operators: slices.Clone(f.AllowedOperators), Indexed: f.Indexed,
+		DataType: f.DataType, Wire: f.Wire, Operators: slices.Clone(f.AllowedOperators), Indexed: f.Indexed,
 		Immutable: f.Immutable, EnumValues: slices.Clone(f.EnumValues), Facetable: f.Facetable,
 		Searchable: f.Searchable, Includable: f.Includable, Group: f.Group, Order: f.Order,
 	}
@@ -367,7 +376,7 @@ func patchSchemaToResponse(s *patch.PatchSchema) *PatchSchemaResponse {
 	paths := make(map[string]*PatchPathResponse, len(s.AllowedPaths))
 	for key, p := range s.AllowedPaths {
 		resp := &PatchPathResponse{
-			AllowedOps: slices.Clone(p.AllowedOps), DataType: p.DataType,
+			AllowedOps: slices.Clone(p.AllowedOps), DataType: p.DataType, Wire: p.Wire,
 			Nullable: p.Nullable(), EnumValues: slices.Clone(p.EnumValues), Relation: p.Relation != nil,
 			MinLength: cloneInt(p.Bounds.MinLen), MaxLength: cloneInt(p.Bounds.MaxLen), Minimum: p.Bounds.Min, Maximum: p.Bounds.Max,
 			MinItems: cloneInt(p.Bounds.MinItems), MaxItems: cloneInt(p.Bounds.MaxItems),

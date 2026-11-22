@@ -6,6 +6,7 @@ import (
 	"maps"
 	"reflect"
 	"slices"
+	"strings"
 
 	"github.com/ashtonian/pkg/parse/core"
 	"github.com/ashtonian/pkg/parse/filter"
@@ -197,7 +198,7 @@ func NewResource[T any](table string, opts ...ResourceOption) (*Resource[T], err
 			return nil, fmt.Errorf("parse: %s: %s column %q is not a column of %s", table, c.option, c.column, reflect.TypeFor[T]())
 		}
 	}
-	p.filterSchema.SystemFields = systemFields(table, cfg, columns)
+	p.filterSchema.SystemFields = systemFields(table, cfg, columns, fieldsByColumn)
 	p.filterSchema.PrimaryKey = cfg.pk
 	var tenant *tenantColumn
 	if cfg.tenant != "" {
@@ -657,13 +658,18 @@ func (r *Resource[T]) columnValue(rv reflect.Value, column string) (any, error) 
 
 // systemFields are the columns policies constrain without the request
 // filtering on them: the key, the tenant and the soft-delete column, typed
-// from T's fields.
-func systemFields(table string, cfg resourceConfig, columns map[string]reflect.Type) map[string]*filter.FieldSchema {
+// from T's fields, in the wire form their fields travel in (a json:",string"
+// key's filter operands are JSON strings).
+func systemFields(table string, cfg resourceConfig, columns map[string]reflect.Type, byColumn map[string]*core.Field) map[string]*filter.FieldSchema {
 	field := func(column string, ops ...filter.FilterOperator) *filter.FieldSchema {
 		info := core.TypeOf(columns[column])
+		var wire core.Wire
+		if f, ok := byColumn[column]; ok {
+			wire = f.Wire()
+		}
 		return &filter.FieldSchema{
 			ExternalName: column, SQLExpr: table + "." + column, Column: column,
-			DataType: info.Type, NumberKind: info.NumberKind, AllowedOperators: ops,
+			DataType: info.Type, NumberKind: info.NumberKind, Wire: wire, AllowedOperators: ops,
 		}
 	}
 	fields := map[string]*filter.FieldSchema{
@@ -707,6 +713,26 @@ func resourceColumns(gen *core.SchemaGenerator, walk *core.StructFields) ([]stri
 // are declared this way; the view parses, lists and updates like r. A path
 // into a computed column (ReadExpr) is refused: it reads a stored document.
 func (r *Resource[T]) WithPaths(decls ...filter.PathDecl) (*Resource[T], error) {
+	// A struct document's quoted member (json:",string") is stored as text
+	// its path reads as NULL; the bare schema has no Go types to tell.
+	for _, d := range decls {
+		name, members, _ := strings.Cut(d.Path, ".")
+		doc, ok := r.filterSchema.Fields[name]
+		if !ok || members == "" {
+			continue // filter.ResourceSchema.WithPaths refuses these
+		}
+		f, ok := r.columnFields[doc.Column]
+		if !ok {
+			continue
+		}
+		w, err := r.gen.MemberWire(f.Type, strings.Split(members, "."))
+		if err != nil {
+			return nil, fmt.Errorf("%s: path %q: %w", r.table, d.Path, err)
+		}
+		if w != "" {
+			return nil, fmt.Errorf("%s: path %q: json:\",string\" stores the member as text, which its path cannot compare; drop the option, or declare the member a string", r.table, d.Path)
+		}
+	}
 	fs, err := r.filterSchema.WithPaths(decls...)
 	if err != nil {
 		return nil, fmt.Errorf("%s: %w", r.table, err)

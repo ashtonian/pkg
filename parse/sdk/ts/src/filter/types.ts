@@ -1,4 +1,5 @@
 import type { FieldType } from "../core/types.js";
+import type { Wire } from "../core/wire.js";
 
 /** Filter operator (mirrors Go filter.FilterOperator). */
 export type FilterOperator =
@@ -120,6 +121,13 @@ export interface FilterFieldSchema {
   label?: string;
   description?: string;
   data_type: FieldType;
+  /**
+   * "string" for a bool, integer or float field whose comparison and set
+   * operands are JSON strings holding the value ("42"), as the field reads
+   * in responses (json:",string"); absent, operands take the data type's
+   * own JSON form.
+   */
+  wire?: Wire;
   operators: FilterOperator[];
   indexed?: boolean;
   immutable?: boolean;

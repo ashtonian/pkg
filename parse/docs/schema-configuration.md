@@ -31,6 +31,7 @@ Construct one `parse.Resource[T]` for each resource at startup. Schema generatio
 | `geo_srid` | `"3857"` | filter | SRID of a native `geometry` column (jsonb / geography are 4326) |
 | `geo_lat`, `geo_lon` | `"$.latitude"` | filter | Members of a JSONB point |
 | `label`, `description`, `group`, `order` | `"Name"` | schema response | UI metadata |
+| `json:",string"` | `json:"id,string"` | filter, patch | A bool, integer or float column travels as a JSON string holding its value, as encoding/json writes it ([quoted values](#quoted-values)) |
 
 ### Fields and embedding
 
@@ -48,6 +49,20 @@ Schema generation refuses the shapes encoding/json resolves silently:
 A field's data type comes from its Go type (`core.TypeOf`): string / int / float / decimal / bool / timestamp / date / uuid scalars, the [time, interval and network value types](#time-interval-and-network-values), a UUID being any named 16-byte array that marshals to text (the standard library's `uuid.UUID`, `github.com/google/uuid`, `github.com/gofrs/uuid`; a bare `[16]byte` is binary) and a decimal any named type with the `core.Decimal` method set ([decimals](#decimals)); slices of those other than decimals are native `array`s (PostgreSQL arrays, JSON text on SQLite); maps, `any`, `json.RawMessage` and other slices are `json` documents (`jsonb`); structs are `object` documents.
 
 Declare physical storage with `parse.ColumnType(column, core.SQLJSON)` / `core.SQLJSONB`, or `core.WithColumnTypes(map[string]core.SQLType{...})` for a lower-level parser. Column names follow the configured column tag/mapper, including hidden and unread fields. Declared JSON strings, bytes and scalar slices use document operators and JSON binding; typed objects retain their member schemas. JSON columns cannot be sorted or searched. `core.SQLTextArray`, `core.SQLInt32Array` and `core.SQLUUIDArray` retain native array semantics. Each schema generator owns a copy of its declarations, so resources over the same Go type can use different storage profiles.
+
+### Quoted values
+
+A bool, integer or float field tagged with encoding/json's `string` option, `json:"id,string"`, reads in responses as a JSON string holding its value: `"9007199254740993"`, not `9007199254740993`. A 64-bit integer then survives a client whose numbers are doubles, as JavaScript's are. Requests give the field in the same form:
+
+- filter operands of `$eq`, `$ne`, `$gt`, `$gte`, `$lt`, `$lte`, `$in` and `$nin` are JSON strings: `{"id":"9007199254740993"}`, `{"id":{"$in":["1","2"]}}`. A flat query parameter's text is that string already (`?id=9007199254740993`). This holds for the primary key and tenant columns even when they are not tagged `parse:"filter"`, and a relation's shorthands (`{"author":"7"}`) compare the target's key in its form;
+- merge-patch members and JSON Patch values are JSON strings: `{"id":"9007199254740993"}`, `{"op":"replace","path":"/id","value":"42"}`;
+- the string holds the value's JSON text in JSON's own syntax — stricter than encoding/json's quoted decoding, so no `"+1"`, `"01"`, `" 1"` or `"NaN"` — and true or false for a bool. An integer may be any integral spelling (`"1.0"`, `"1e3"`), as parse reads integers anywhere, where encoding/json refuses one. The number then normalizes as any of the field's numbers do: exactly, range-checked against its Go kind and its `min` / `max` bounds;
+- a bare JSON number is refused with E2073 (filters) or E2077 (patches), naming the expected form, as encoding/json refuses to decode one into the field. A bool field also takes a bare JSON boolean, which is the same value;
+- a JSON Patch `test` compares canonical text, so `"5.0"` tests equal to a stored 5, and its value meets the field's bounds as a replace's does. A `copy` or `move` between a quoted and an unquoted field is refused: the value would not decode into the other.
+
+Code passes Go values: `ParseFilterMap`, `MergePatchMap`, `ServerMergePatchMap` and `ValidateOperations` take the field's Go number (`int64(5)`) as well as its quoted text, while a `json.Number` there is a decoded bare JSON number and is refused. Policy constraints and resolved memberships take Go values too. SQL binds the number and `filter.Evaluate` compares it, so PostgreSQL, SQLite and memory backends select the same rows (`filtertest.RunQuoted`). The schema document marks each such field and patch path `"wire": "string"`; `parse/client` sends them as `client.Quoted[T]` and the TypeScript SDK validates them as strings, checking a patch value's integer kind and bounds exactly.
+
+encoding/json ignores the option on a type that marshals itself (`json.Marshaler`, `encoding.TextMarshaler`, on the value or, for the addressable values a page encodes, its pointer), and so does parse. On a string field, which encoding/json quotes a second time, the option changes nothing parse reads. Inside a JSON document a quoted member is stored as text that a number or bool path cannot compare, so a path onto one is refused: one derived from struct tags, one declared in the `paths` or `elements` tag, a sort path, and one `Resource.WithPaths` adds. Drop the option, or declare the member a string. `filter.ResourceSchema.WithPaths`, which has no Go types, cannot tell.
 
 ## Parser and generator options
 

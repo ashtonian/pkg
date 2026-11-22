@@ -30,6 +30,7 @@ type schemaDocEntity struct {
 	Meta     map[string]any  `json:"meta"      db:"meta"      parse:"filter" paths:"region:string"`
 	Lines    []schemaDocLine `json:"lines"     db:"lines"     parse:"filter"`
 	Tags     []string        `json:"tags"      db:"-"         parse:"filter,include,patch" relation:"doc_tags,entity_id,tag_id,id,tenant_id"`
+	Serial   int64           `json:"serial,string" db:"serial" parse:"filter,sort,patch"`
 }
 
 type schemaDocLine struct {

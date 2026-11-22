@@ -249,7 +249,7 @@ func canonicalJSONReplacement(value reflect.Value, document any) (any, error) {
 				if !present {
 					continue
 				}
-			} else if !jsonStringField(field) {
+			} else if !field.Quoted() {
 				member, err = canonicalJSONReplacement(fv, member)
 				if err != nil {
 					return nil, fmt.Errorf("member %q: %w", name, err)
@@ -363,23 +363,6 @@ func jsonFieldOmitted(field *core.Field, value reflect.Value) bool {
 			return ok && zero.IsZero()
 		}
 		return value.IsZero()
-	}
-	return false
-}
-
-func jsonStringField(field *core.Field) bool {
-	if !field.HasFieldNameOption("string") {
-		return false
-	}
-	t := field.Type
-	for t.Kind() == reflect.Pointer {
-		t = t.Elem()
-	}
-	switch t.Kind() {
-	case reflect.Bool, reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64,
-		reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64, reflect.Uintptr,
-		reflect.Float32, reflect.Float64, reflect.String:
-		return true
 	}
 	return false
 }
