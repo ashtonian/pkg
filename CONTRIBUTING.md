@@ -110,8 +110,10 @@ shows passed, and runs the rest. Anything else, including a squash or rebase mer
 direct push, a rerun, a branch validated only by dispatch, or missing evidence, runs the
 push's scoped jobs. Benchmark artifacts come from pushes only: a push
 records them when it reaches `parse/filter`, the package they build, reused or not.
-A newer run of the same PR or of `main` cancels the older one, since the newer one covers
-every change since the last green run; dispatched runs finish.
+A newer run of the same PR cancels the older one. Runs on `main` all finish: each push is
+measured from the last green run, so a cancelled one would hold the next push's base back,
+and a push waiting behind another is replaced by the next, which covers both. Dispatched
+runs finish.
 
 The `nightly` workflow runs `ci.yml` on main's current commit once a day, and on
 `gh workflow run nightly.yml -R ashtonian/pkg`: every suite and release check at full scope,

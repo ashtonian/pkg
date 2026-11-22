@@ -14,7 +14,8 @@ defaults:
     shell: bash
 concurrency:
   group: artifact-storage-${{ github.ref }}
-  cancel-in-progress: true
+  # A newer push to a pull request replaces its run; main's runs all finish.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 jobs:
   contract:
     if: github.actor_id == '4212452' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
