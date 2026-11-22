@@ -88,7 +88,7 @@ encoding/json ignores the option on a type that marshals itself (`json.Marshaler
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
 | `WithSQLTableName(name)` | string | `PluralSnake(type name)` | Table name for the type |
-| `WithTableConvention(fn)` | `TableConvention` | `PluralSnake` | Table naming |
+| `WithTableConvention(fn)` | `TableConvention` | `PluralSnake` | Table naming. `PluralSnake` and `PluralCamel` pluralize by the regular English rules (`Analysis` → `analyses`, `Quiz` → `quizzes`, `userIDs` → `user_ids`); name the table of an irregular noun (`Person`, `Leaf`, `Child`) with `WithSQLTableName` |
 | `WithColumnConvention(fn)` | `NamingConvention` | `SnakeCase` | Column naming when a field has no column tag |
 | `WithColumnMapper(m)` | `SQLColumnMapper` | none | Maps a field's column to the SQL expression that reads it. `MapColumn(table, column, type)` gets the column the `db` tag or the column convention names (the one patch writes), the same in every view of the field; the mapper's SQL is trusted as written |
 | `WithColumnTypes(types)` | `map[string]SQLType` | none | Copied physical column declarations; authoritative JSON/native-array profile for filter, patch, sort and search schemas |

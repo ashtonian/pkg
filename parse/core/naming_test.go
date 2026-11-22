@@ -16,6 +16,10 @@ func TestSnakeCase(t *testing.T) {
 		{"createdAt", "created_at"},
 		{"already_snake", "already_snake"},
 		{"JSONData", "json_data"},
+		{"userIDs", "user_ids"},
+		{"IDs", "ids"},
+		{"userIDsByTenant", "user_ids_by_tenant"},
+		{"APIService", "api_service"},
 		{"", ""},
 	}
 	for _, tt := range tests {
@@ -76,6 +80,17 @@ func TestPluralize(t *testing.T) {
 		{"match", "matches"},
 		{"wish", "wishes"},
 		{"buzz", "buzzes"},
+		{"Analysis", "Analyses"},
+		{"basis", "bases"},
+		{"analyses", "analyses"},
+		{"Quiz", "Quizzes"},
+		{"fez", "fezzes"},
+		{"quizzes", "quizzes"},
+		{"topaz", "topazes"},
+		{"waltz", "waltzes"},
+		// Irregular nouns take the regular rule; name their tables.
+		{"Leaf", "Leafs"},
+		{"Person", "Persons"},
 		{"key", "keys"}, // vowel before y → just add s
 		{"day", "days"}, // vowel before y → just add s
 		{"boy", "boys"}, // vowel before y → just add s

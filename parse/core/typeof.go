@@ -62,12 +62,9 @@ var byteArrayKinds sync.Map // reflect.Type -> byteArrayKind
 // zeroText is the text t's zero value marshals to, through the value's or
 // the pointer's MarshalText; ok is false when it has none or it fails.
 func zeroText(t reflect.Type) (string, bool) {
-	zero := reflect.New(t)
-	tm, ok := zero.Elem().Interface().(encoding.TextMarshaler)
+	tm, ok := textMarshalerOf(reflect.Zero(t).Interface())
 	if !ok {
-		if tm, ok = zero.Interface().(encoding.TextMarshaler); !ok {
-			return "", false
-		}
+		return "", false
 	}
 	text, err := tm.MarshalText()
 	return string(text), err == nil
@@ -85,14 +82,9 @@ func UUIDText(v any) (text string, ok bool) {
 	if s, isStringer := v.(fmt.Stringer); isStringer {
 		return s.String(), true // a UUID type's String is its canonical text
 	}
-	// IsUUIDType admits a type whose pointer is the TextMarshaler.
-	tm, ok := v.(encoding.TextMarshaler)
+	tm, ok := textMarshalerOf(v)
 	if !ok {
-		p := reflect.New(reflect.TypeOf(v))
-		p.Elem().Set(reflect.ValueOf(v))
-		if tm, ok = p.Interface().(encoding.TextMarshaler); !ok {
-			return "", false
-		}
+		return "", false
 	}
 	b, err := tm.MarshalText()
 	if err != nil {

@@ -56,11 +56,8 @@ func (d Date) MarshalJSON() ([]byte, error) {
 }
 
 func (d *Date) UnmarshalJSON(value []byte) error {
-	var text string
-	if string(value) == "null" {
-		return fmt.Errorf("a civil date cannot be null; use *Date")
-	}
-	if err := json.Unmarshal(value, &text); err != nil {
+	text, err := jsonText(value, "a civil date", "*Date")
+	if err != nil {
 		return err
 	}
 	return d.UnmarshalText([]byte(text))
