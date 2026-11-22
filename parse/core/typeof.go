@@ -16,24 +16,62 @@ var (
 	textMarshalerType = reflect.TypeFor[encoding.TextMarshaler]()
 )
 
-// IsUUIDType reports a UUID type: a named 16-byte array that marshals to
-// text, as the standard library's uuid.UUID, github.com/google/uuid and
-// github.com/gofrs/uuid all are. A plain [16]byte is binary.
-func IsUUIDType(t reflect.Type) bool {
+// IsUUIDType reports a UUID type: a named 16-byte array whose zero value
+// writes the nil UUID's text, 00000000-0000-0000-0000-000000000000, as the
+// standard library's uuid.UUID, github.com/google/uuid and
+// github.com/gofrs/uuid do. A 16-byte array that writes other text, such as
+// a ULID or a hexadecimal hash, is a text value (TypeOf), and one that
+// writes none is binary.
+func IsUUIDType(t reflect.Type) bool { return byteArrayKindOf(t) == uuidBytes }
+
+// byteArrayKind is what a named 16-byte array holds.
+type byteArrayKind uint8
+
+const (
+	notByteArray byteArrayKind = iota
+	binaryBytes
+	uuidBytes
+	textBytes
+)
+
+// nilUUIDText is the text of the zero UUID.
+const nilUUIDText = "00000000-0000-0000-0000-000000000000"
+
+// byteArrayKindOf classifies t once by what its zero value writes.
+func byteArrayKindOf(t reflect.Type) byteArrayKind {
 	if t.Kind() != reflect.Array || t.Len() != 16 || t.Elem().Kind() != reflect.Uint8 || t.Name() == "" {
-		return false
+		return notByteArray
 	}
-	if known, ok := uuidTypes.Load(t); ok {
-		is, _ := known.(bool) // only bools are stored
-		return is
+	if known, ok := byteArrayKinds.Load(t); ok {
+		kind, _ := known.(byteArrayKind) // the only type stored
+		return kind
 	}
-	is := t.Implements(textMarshalerType) || reflect.PointerTo(t).Implements(textMarshalerType)
-	uuidTypes.Store(t, is)
-	return is
+	kind := binaryBytes
+	if text, ok := zeroText(t); ok {
+		kind = textBytes
+		if text == nilUUIDText {
+			kind = uuidBytes
+		}
+	}
+	byteArrayKinds.Store(t, kind)
+	return kind
 }
 
-// uuidTypes caches IsUUIDType's method-set check per 16-byte array type.
-var uuidTypes sync.Map // reflect.Type -> bool
+var byteArrayKinds sync.Map // reflect.Type -> byteArrayKind
+
+// zeroText is the text t's zero value marshals to, through the value's or
+// the pointer's MarshalText; ok is false when it has none or it fails.
+func zeroText(t reflect.Type) (string, bool) {
+	zero := reflect.New(t)
+	tm, ok := zero.Elem().Interface().(encoding.TextMarshaler)
+	if !ok {
+		if tm, ok = zero.Interface().(encoding.TextMarshaler); !ok {
+			return "", false
+		}
+	}
+	text, err := tm.MarshalText()
+	return string(text), err == nil
+}
 
 // UUIDText is v's canonical text when v is a UUID (IsUUIDType); ok is false
 // for any other value.
@@ -79,6 +117,7 @@ type TypeInfo struct {
 // is the storage model every backend shares:
 //
 //	string / int / float / bool kinds   string, int, float, bool
+//	a 16-byte array writing other text  string, compared as its text
 //	time.Time, a UUID type (IsUUIDType) timestamp, uuid
 //	Date                                date
 //	LocalTime, Interval                 time, interval
@@ -127,8 +166,11 @@ func scalarType(t reflect.Type) (FieldType, bool) {
 	if t == timeType {
 		return FieldTypeTimestamp, true
 	}
-	if IsUUIDType(t) {
+	switch byteArrayKindOf(t) {
+	case uuidBytes:
 		return FieldTypeUUID, true
+	case textBytes:
+		return FieldTypeString, true
 	}
 	if IsDecimalType(t) {
 		return FieldTypeDecimal, true
