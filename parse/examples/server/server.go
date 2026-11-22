@@ -336,7 +336,9 @@ func readBody(w http.ResponseWriter, r *http.Request) ([]byte, error) {
 }
 
 // writeJSON encodes v before writing anything, so a value that cannot be
-// encoded is answered 500 rather than as status with an empty body.
+// encoded is answered 500 rather than as status with an empty body. parse's
+// own handlers do the same through an internal package this example, which
+// uses parse's public API only, cannot import.
 func (s *server) writeJSON(w http.ResponseWriter, r *http.Request, status int, v any) {
 	var buf bytes.Buffer
 	if err := json.NewEncoder(&buf).Encode(v); err != nil {
@@ -349,6 +351,6 @@ func (s *server) writeJSON(w http.ResponseWriter, r *http.Request, status int, v
 	w.Header().Set("Content-Length", strconv.Itoa(buf.Len()))
 	w.WriteHeader(status)
 	if _, err := w.Write(buf.Bytes()); err != nil {
-		s.responseFailed(r, fmt.Errorf("writing response: %w", err))
+		s.responseFailed(r, err)
 	}
 }

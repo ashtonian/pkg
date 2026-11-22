@@ -55,6 +55,49 @@ func TestWriteError_AnswersWithoutDetailsItCannotEncode(t *testing.T) {
 	assert.ErrorContains(t, reported[0], `details["value"]`)
 }
 
+// flaky fails its MarshalJSON on the calls fail names, counting from 1.
+type flaky struct {
+	calls *int
+	fail  map[int]bool
+}
+
+func (f flaky) MarshalJSON() ([]byte, error) {
+	*f.calls++
+	if f.fail[*f.calls] {
+		return nil, errors.New("flaky marshal")
+	}
+	return []byte(`"ok"`), nil
+}
+
+// A value that fails only sometimes still leaves a report that names a cause,
+// and the body never claims details it lost.
+func TestWriteError_ReportsDetailsThatFailOnlySometimes(t *testing.T) {
+	cases := []struct {
+		name     string
+		fail     map[int]bool
+		wantBody string
+		wantErr  string
+	}{
+		{"fails once, then encodes", map[int]bool{1: true}, `{"code":"E2073","message":"m","details":{"field":"price","v":"ok"}}`, "flaky marshal"},
+		{"encodes alone, fails together", map[int]bool{1: true, 3: true}, `{"code":"E2073","message":"m"}`, "every other entry"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var reported []error
+			calls := 0
+			pe := &core.ParseError{Code: "E2073", Message: "m", Details: map[string]any{"field": "price", "v": flaky{calls: &calls, fail: tc.fail}}}
+			w := httptest.NewRecorder()
+			require.True(t, WriteError(w, pe, WithErrorHandler(func(err error) { reported = append(reported, err) })))
+
+			assert.JSONEq(t, tc.wantBody, w.Body.String())
+			require.Len(t, reported, 1)
+			assert.ErrorIs(t, reported[0], ErrUnencodableDetails)
+			assert.ErrorContains(t, reported[0], tc.wantErr)
+			assert.NotContains(t, reported[0].Error(), "%!w")
+		})
+	}
+}
+
 // failingWriter refuses the body after taking the status, as a writer past
 // net/http's buffers does once its client has left.
 type failingWriter struct {

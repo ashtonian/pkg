@@ -59,12 +59,19 @@ func WriteError(w http.ResponseWriter, err error, opts ...Option) bool {
 	if encErr != nil {
 		// Code and Message are strings, so only Details can fail.
 		details, dropped := encodableDetails(pe.Details)
-		o.report(fmt.Errorf("answering %s: %w: %w", pe.Code, ErrUnencodableDetails, dropped))
-		body, encErr = httpjson.Encode(Body{Code: pe.Code, Message: pe.Message, Details: details})
-		if encErr != nil {
-			// A value whose MarshalJSON failed only the second time.
+		var keptErr error
+		body, keptErr = httpjson.Encode(Body{Code: pe.Code, Message: pe.Message, Details: details})
+		switch {
+		case keptErr != nil:
+			// Each entry encoded alone but not together: a MarshalJSON that
+			// fails only sometimes. Answer without any.
+			dropped = errors.Join(dropped, fmt.Errorf("every other entry: %w", keptErr))
 			body = httpjson.ErrorBody(pe.Code, pe.Message)
+		case dropped == nil:
+			// Every entry encoded on the second try; the first failure is the cause.
+			dropped = encErr
 		}
+		o.report(fmt.Errorf("answering %s: %w: %w", pe.Code, ErrUnencodableDetails, dropped))
 	}
 	if werr := httpjson.Send(w, pe.ErrorHTTPStatus(), body); werr != nil {
 		o.report(fmt.Errorf("writing %s response: %w", pe.Code, werr))
