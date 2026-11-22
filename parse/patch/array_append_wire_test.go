@@ -51,9 +51,6 @@ func TestParser_AcceptsArrayAppend(t *testing.T) {
 	if result.Operations[0].Schema == nil {
 		t.Error("expected Schema to be resolved from PatchSchema")
 	}
-	if result.EstimatedCost <= 0 {
-		t.Errorf("expected non-zero cost, got %d", result.EstimatedCost)
-	}
 }
 
 // TestParser_RejectsArrayAppend_WhenNotAllowed asserts the AllowedOps

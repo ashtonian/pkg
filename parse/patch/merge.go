@@ -95,7 +95,6 @@ func ParseMergePatchMap(raw map[string]any, schema *PatchSchema, config *core.Pa
 	}
 
 	result.AffectedPaths = affectedPaths(result.Operations)
-	result.EstimatedCost = estimatePatchCost(result)
 
 	return result, nil
 }

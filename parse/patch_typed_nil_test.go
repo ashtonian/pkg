@@ -41,7 +41,6 @@ func TestValidateOperations_TypedNilTimestamp(t *testing.T) {
 			wire, parseErr := p.ParsePatch([]byte(`[{"op":"replace","path":"/at","value":null}]`))
 			require.NoError(t, parseErr)
 			assert.Nil(t, built.Operations[0].Value)
-			assert.Equal(t, wire.EstimatedCost, built.EstimatedCost)
 			assert.Equal(t, wire.AffectedPaths, built.AffectedPaths)
 			for _, dialect := range []patch.SQLDialect{filter.PostgresDialect{}, filter.SQLiteDialect{}} {
 				builtSQL, sqlErr := patch.BuildPatchSQL(built, dialect)

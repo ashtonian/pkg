@@ -10,7 +10,6 @@ import (
 
 	"github.com/ashtonian/pkg/parse/core"
 	"github.com/ashtonian/pkg/parse/internal/dialect"
-	"github.com/ashtonian/pkg/parse/internal/jsonmerge"
 )
 
 // PatchSQLResult holds the generated SQL SET clause and arguments.
@@ -410,21 +409,33 @@ func (b *setBuilder) bind(v any) string {
 }
 
 // columnExpr folds one column's ordered operations into a single SQL
-// expression. The last whole-value operation (replace/add/remove) sets the
-// base and earlier operations are overwritten and never bound. Merges and
-// array_appends after a base fold onto its value in Go, so one value is
-// bound; only merges and appends against the stored column compile to SQL.
+// expression. A merge patch writes a column with one operation, the only
+// kind that merges, so a merge compiles against the stored column. JSON Patch
+// operations fold: the last whole-value operation (replace/add/remove) sets
+// the base and earlier ones are overwritten and never bound, and appends
+// after it fold onto its value in Go, so one value is bound; appends with no
+// base compile against the stored column.
 func (b *setBuilder) columnExpr(col string, ops []*PatchOperation) (string, error) {
+	if slices.ContainsFunc(ops, func(op *PatchOperation) bool { return op.Merge }) {
+		if len(ops) != 1 {
+			return "", fmt.Errorf("patch: column %s: a merge shares its column with another operation, which no parser produces", col)
+		}
+		expr, err := mergeSQL(b.dialect, col, ops[0].Value, b.bind)
+		if err != nil {
+			return "", fmt.Errorf("%s for %s: %w", ops[0].Op, ops[0].Path, err)
+		}
+		return expr, nil
+	}
 	start := -1
 	for i, op := range slices.Backward(ops) {
-		if !op.Merge && op.Op != PatchOpArrayAppend {
+		if op.Op != PatchOpArrayAppend {
 			start = i
 			break
 		}
 	}
 	later := ops[start+1:]
 	for _, op := range later {
-		if op.Op == PatchOpArrayAppend && op.Schema != nil && op.Schema.DataType != "" && op.Schema.DataType != core.FieldTypeArray {
+		if op.Schema.DataType != "" && op.Schema.DataType != core.FieldTypeArray {
 			// A JSON-document array (jsonb on PostgreSQL) has no native
 			// array_append; the document path applies it.
 			return "", &core.ParseError{
@@ -438,12 +449,7 @@ func (b *setBuilder) columnExpr(col string, ops []*PatchOperation) (string, erro
 		expr := col
 		for _, op := range later {
 			var err error
-			if op.Merge {
-				expr, err = mergeSQL(b.dialect, expr, op.Value, b.bind)
-			} else {
-				expr, err = arrayAppendSQL(b.dialect, expr, op.Value, b.bind)
-			}
-			if err != nil {
+			if expr, err = arrayAppendSQL(b.dialect, expr, op.Value, b.bind); err != nil {
 				return "", fmt.Errorf("%s for %s: %w", op.Op, op.Path, err)
 			}
 		}
@@ -456,10 +462,6 @@ func (b *setBuilder) columnExpr(col string, ops []*PatchOperation) (string, erro
 		value = base.Value
 	}
 	for _, op := range later {
-		if op.Merge {
-			value = jsonmerge.Apply(value, op.Value)
-			continue
-		}
 		var elems []any
 		if value != nil {
 			arr, ok := core.AnySlice(value)

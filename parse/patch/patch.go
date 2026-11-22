@@ -140,7 +140,6 @@ func (p *Parser) validateOps(ops []RawPatchOp) (*ParsedPatch, error) {
 	}
 
 	result.AffectedPaths = affectedPaths(result.Operations)
-	result.EstimatedCost = estimatePatchCost(result)
 
 	return result, nil
 }
@@ -571,24 +570,4 @@ func scalarFieldType(t reflect.Type) (core.FieldType, bool) {
 		return ft, true
 	}
 	return "", false
-}
-
-var patchOpCosts = map[PatchOp]int{
-	PatchOpReplace:     1,
-	PatchOpAdd:         2,
-	PatchOpRemove:      1,
-	PatchOpMove:        3,
-	PatchOpCopy:        2,
-	PatchOpTest:        0,
-	PatchOpArrayAppend: 1, // single-statement append, cost on par with replace
-}
-
-func estimatePatchCost(patch *ParsedPatch) int {
-	cost := 0
-	for _, op := range patch.Operations {
-		if c, ok := patchOpCosts[op.Op]; ok {
-			cost += c
-		}
-	}
-	return cost
 }

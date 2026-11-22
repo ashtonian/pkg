@@ -298,10 +298,11 @@ type PatchOperation struct {
 	Merge bool
 }
 
-// ParsedPatch is the result of parsing a JSON Patch document.
+// ParsedPatch is a validated patch: what Parser.Parse and ParseOps make of a
+// JSON Patch document, and ParseMergePatch and ParseMergePatchMap of a merge
+// patch.
 type ParsedPatch struct {
-	Operations    []*PatchOperation
-	EstimatedCost int
+	Operations []*PatchOperation
 	// AffectedPaths are the paths the operations write, sorted and once each:
 	// a move's source included, a test's path not.
 	AffectedPaths []string
@@ -317,7 +318,6 @@ type ParsedPatch struct {
 func (p *ParsedPatch) AuditInfo() map[string]any {
 	info := map[string]any{
 		"operation_count": len(p.Operations),
-		"estimated_cost":  p.EstimatedCost,
 		"affected_paths":  p.AffectedPaths,
 	}
 	if p.policy != nil {
