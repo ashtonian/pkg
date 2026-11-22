@@ -4,8 +4,6 @@ import (
 	"fmt"
 	"reflect"
 	"strings"
-	"unicode"
-	"unicode/utf8"
 
 	"github.com/ashtonian/pkg/gowalker"
 )
@@ -33,10 +31,13 @@ func JSONFieldsOf(t reflect.Type) (*StructFields, error) {
 	return fields, nil
 }
 
-// jsonFields keeps every struct type JSONFieldsOf has walked: types are
-// finite and never unloaded.
+// jsonEngine names a document's members as encoding/json does. It keeps every
+// type it compiles, as jsonFields does: types are finite and never unloaded.
+var jsonEngine = gowalker.MustNew(gowalker.WithJSONFields(JSONTagKey), gowalker.DropTies(), gowalker.WithUnboundedCache())
+
+// jsonFields keeps every struct type JSONFieldsOf has walked.
 var jsonFields = gowalker.NewTypeCache(
-	gowalker.MustNew(gowalker.WithJSONFields(JSONTagKey), gowalker.DropTies(), gowalker.WithUnboundedCache()),
+	jsonEngine,
 	func(s *gowalker.Schema) (*StructFields, error) {
 		out := &StructFields{Type: s.Type(), external: map[string]*Field{}}
 		for _, d := range s.Root().Declarations() {
@@ -51,20 +52,3 @@ var jsonFields = gowalker.NewTypeCache(
 		return out, nil
 	},
 )
-
-// foldName appends name with each rune replaced by the least rune of its
-// Unicode simple case folding orbit, so two names fold alike exactly when
-// strings.EqualFold reports them equal: the match encoding/json falls back
-// to when no field has a member's exact name.
-func foldName(dst, name []byte) []byte {
-	for len(name) > 0 {
-		r, size := utf8.DecodeRune(name)
-		name = name[size:]
-		least := r
-		for f := unicode.SimpleFold(r); f != r; f = unicode.SimpleFold(f) {
-			least = min(least, f)
-		}
-		dst = utf8.AppendRune(dst, least)
-	}
-	return dst
-}

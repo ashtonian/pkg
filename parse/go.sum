@@ -8,8 +8,8 @@ github.com/ashtonian/pkg/config v0.6.2 h1:V2ephNNzMB4yGu99RZj0mqiEZWakawpthXkJsr
 github.com/ashtonian/pkg/config v0.6.2/go.mod h1:pAe7HS6QzAr6Xe3hHoksO5Lr7oX3VNLMvCz/HlmwE0c=
 github.com/ashtonian/pkg/config/kongprovider v0.2.1 h1:Url4MvrHIJ45bBEskFp/53BXjCS5qgdq82OHQUrgqbI=
 github.com/ashtonian/pkg/config/kongprovider v0.2.1/go.mod h1:6dIfG+2vJsbbQNt9+B69NjlhB3dXPVAb2IDCXKbXeSg=
-github.com/ashtonian/pkg/gowalker v0.8.0 h1:bvhmGqQuBKhkvURICYiHYzX8b8QIvMB/JPZn6jFg+IU=
-github.com/ashtonian/pkg/gowalker v0.8.0/go.mod h1:xJM4ID4zwmfvussuRaLJMGn+3bUeNGLlETMCdOfmn0o=
+github.com/ashtonian/pkg/gowalker v0.9.0 h1:F/1L/j2xP5KO8cPxtae9dcTM4wQVcDv/wHFQEiGW7ys=
+github.com/ashtonian/pkg/gowalker v0.9.0/go.mod h1:xJM4ID4zwmfvussuRaLJMGn+3bUeNGLlETMCdOfmn0o=
 github.com/ashtonian/pkg/jsonvalue v0.1.0 h1:6eMnJyohNfMXkzFqD6etKKMv5+fNStyE3+4bagbKcvI=
 github.com/ashtonian/pkg/jsonvalue v0.1.0/go.mod h1:bt3GZ4sYHK2uHQXRc+/msoqE1lVvyeLF3rz6m5QjP5M=
 github.com/davecgh/go-spew v1.1.0/go.mod h1:J7Y8YcW2NihsgmVo/mv3lAwl/skON4iLHjSsI+c5H38=
