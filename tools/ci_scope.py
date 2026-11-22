@@ -16,6 +16,8 @@ from pathlib import Path, PurePosixPath
 import re
 import subprocess
 
+import ci_github
+
 GUIDES = re.compile(r"^(config|gowalker|httpx|parse)/docs/.+\.md$")
 ARCHIVE_TOOLING = "tools/modarchive/"
 # Make targets in the order release-check runs them, with the trees each reads.
@@ -240,20 +242,36 @@ def git(*args):
     return subprocess.check_output(["git", *args], timeout=30, stderr=subprocess.PIPE).decode()
 
 
-def changed_paths(env):
+def last_green_push(env, api):
+    """The newest commit on main's history whose push run of ci.yml passed."""
+    runs = api.get("actions/workflows/ci.yml/runs", branch="main", event="push", status="success",
+                   per_page=30)["workflow_runs"]
+    for run in sorted(runs, key=lambda r: r["run_number"], reverse=True):
+        # A rerun's own earlier attempt is not evidence for itself.
+        if str(run["id"]) == env.get("GITHUB_RUN_ID") or not re.fullmatch(r"[0-9a-f]{40}", run["head_sha"]):
+            continue
+        if subprocess.run(["git", "merge-base", "--is-ancestor", run["head_sha"], "HEAD"],
+                          timeout=30, capture_output=True).returncode == 0:
+            return run["head_sha"]
+    return None
+
+
+def changed_paths(env, api=None):
     if env["GITHUB_EVENT_NAME"] not in {"push", "pull_request"}:
         return None
     if git("rev-parse", "HEAD").strip() != env["GITHUB_SHA"]:
         return None
-    event = json.loads(Path(env["GITHUB_EVENT_PATH"]).read_text())
     if env["GITHUB_EVENT_NAME"] == "pull_request":
+        event = json.loads(Path(env["GITHUB_EVENT_PATH"]).read_text())
         parents = git("rev-list", "--parents", "-n", "1", "HEAD").split()
         if len(parents) != 3 or parents[2] != event["pull_request"]["head"]["sha"]:
             return None
         base = parents[1]
     else:
-        base = event["before"]
-        if not re.fullmatch(r"[0-9a-f]{40}", base) or int(base, 16) == 0:
+        # The last passing run, not the push's before: a failed, cancelled or
+        # coalesced run left its changes unvalidated.
+        base = last_green_push(env, api or ci_github.API(env))
+        if base is None:
             return None
     # A missing shallow base runs the complete suite; never trust a truncated API diff.
     return git("diff", "--no-renames", "--name-only", "-z", base, "HEAD").split("\0")[:-1]

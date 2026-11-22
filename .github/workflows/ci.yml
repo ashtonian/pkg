@@ -69,6 +69,8 @@ jobs:
           PRIVATE_REFERENCE_PATTERNS: ${{ secrets.PRIVATE_REFERENCE_PATTERNS }}
         run: python3 -B tools/private_references.py
       - id: scope
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
         run: python3 -B tools/ci_scope.py
       - name: Set up artifact receipt access
         uses: ashtonian/go-ci-actions/artifact-setup@439da8bdc22311fff2f04371ca9cd9c3233ee7d0 # v1.6.2

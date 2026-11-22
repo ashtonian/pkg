@@ -281,31 +281,62 @@ class ReleaseChecks(unittest.TestCase):
 
 
 class Delta(unittest.TestCase):
+    """The base a run compares against."""
+
+    def setUp(self):
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        self.root = Path(directory.name)
+        run_git(self.root, "init", "-q", "-b", "main")
+        write(self.root, {"input.go": "package input\n"})
+        run_git(self.root, "add", ".")
+        run_git(self.root, "commit", "-q", "-m", "one")
+        self.first = run_git(self.root, "rev-parse", "HEAD")
+        (self.root / "httpx/docs").mkdir(parents=True)
+        run_git(self.root, "mv", "input.go", "httpx/docs/example.md")
+        run_git(self.root, "commit", "-q", "-m", "two")
+        self.second = run_git(self.root, "rev-parse", "HEAD")
+        write(self.root, {"CONTRIBUTING.md": "prose\n"})
+        run_git(self.root, "add", ".")
+        run_git(self.root, "commit", "-q", "-m", "three")
+        self.head = run_git(self.root, "rev-parse", "HEAD")
+        cwd = os.getcwd()
+        os.chdir(self.root)
+        self.addCleanup(os.chdir, cwd)
+        self.runs, self.queries = [], []
+
+    def push(self, run_id="99"):
+        outer = self
+
+        class API:
+            def get(self, path, **query):
+                outer.queries.append((path, query))
+                return {"workflow_runs": outer.runs}
+        env = {"GITHUB_EVENT_NAME": "push", "GITHUB_SHA": self.head, "GITHUB_RUN_ID": run_id}
+        return ci_scope.changed_paths(env, API())
+
     def test_manual_dispatch_always_runs_everything(self):
         self.assertIsNone(ci_scope.changed_paths({"GITHUB_EVENT_NAME": "workflow_dispatch"}))
 
-    def test_scope_uses_all_commits_and_both_sides_of_a_rename(self):
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            run_git(root, "init", "-q")
-            write(root, {"input.go": "package input\n"})
-            run_git(root, "add", ".")
-            base = run_git(root, "write-tree")
-            (root / "httpx/docs").mkdir(parents=True)
-            run_git(root, "mv", "input.go", "httpx/docs/example.md")
-            write(root, {"CONTRIBUTING.md": "prose\n"})
-            run_git(root, "add", ".")
-            head = run_git(root, "write-tree")
-            event = root / "event.json"
-            event.write_text(json.dumps({"before": base}))
-            # Real Git trees exercise the full delta without creating fixture commits.
-            def tree_git(*args):
-                if args == ("rev-parse", "HEAD"):
-                    return head + "\n"
-                return subprocess.check_output(["git", "-C", directory, *[head if a == "HEAD" else a for a in args]]).decode()
-            with patch.object(ci_scope, "git", side_effect=tree_git):
-                paths = ci_scope.changed_paths({"GITHUB_EVENT_NAME": "push", "GITHUB_SHA": head, "GITHUB_EVENT_PATH": str(event)})
-            self.assertEqual(sorted(paths), ["CONTRIBUTING.md", "httpx/docs/example.md", "input.go"])
+    def test_push_compares_against_the_last_green_push_with_both_sides_of_a_rename(self):
+        self.runs = [{"id": 1, "run_number": 1, "head_sha": self.first}]
+        self.assertEqual(sorted(self.push()), ["CONTRIBUTING.md", "httpx/docs/example.md", "input.go"])
+        self.assertEqual(self.queries, [("actions/workflows/ci.yml/runs",
+                                         {"branch": "main", "event": "push", "status": "success", "per_page": 30})])
+        self.runs.append({"id": 2, "run_number": 2, "head_sha": self.second})
+        self.assertEqual(self.push(), ["CONTRIBUTING.md"])
+
+    def test_push_skips_runs_off_main_history_and_its_own_attempts(self):
+        self.runs = [{"id": 1, "run_number": 1, "head_sha": self.first},
+                     {"id": 3, "run_number": 3, "head_sha": "f" * 40},
+                     {"id": 99, "run_number": 4, "head_sha": self.head}]
+        self.assertEqual(sorted(self.push()), ["CONTRIBUTING.md", "httpx/docs/example.md", "input.go"])
+
+    def test_push_without_a_green_ancestor_runs_everything(self):
+        self.runs = [{"id": 3, "run_number": 3, "head_sha": "f" * 40}]
+        self.assertIsNone(self.push())
+        self.runs = []
+        self.assertIsNone(self.push())
 
 
 class Wiring(unittest.TestCase):

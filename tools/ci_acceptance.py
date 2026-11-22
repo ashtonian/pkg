@@ -14,9 +14,9 @@ import tempfile
 import time
 import urllib.error
 import urllib.parse
-import urllib.request
 import zipfile
 
+import ci_github
 from ci_scope import VALIDATION_JOBS
 
 MAX_BYTES = 128 * 1024
@@ -84,31 +84,10 @@ def matches(receipt, run, identity, env):
     return run["event"] == "workflow_dispatch" and receipt["source"].get("sha") == identity["parents"][1]
 
 
-class NoRedirect(urllib.request.HTTPRedirectHandler):
-    def redirect_request(self, req, fp, code, msg, headers, newurl):
-        return None
-
-
-class API:
+class API(ci_github.API):
     def __init__(self, env):
-        self.base = env.get("GITHUB_API_URL", "https://api.github.com").rstrip("/") + "/repos/" + env["GITHUB_REPOSITORY"] + "/"
-        self.token = env["GITHUB_TOKEN"]
+        super().__init__(env)
         self.artifact_tool = env.get("CI_ARTIFACT_TOOL")
-        self.deadline = time.monotonic() + 100
-
-    def read(self, url, auth=True, redirect=True, limit=4 * 1024 * 1024):
-        remaining = self.deadline - time.monotonic()
-        if remaining <= 0:
-            raise TimeoutError("acceptance lookup deadline")
-        headers = {"Accept": "application/vnd.github+json", "X-GitHub-Api-Version": "2022-11-28"}
-        if auth:
-            headers["Authorization"] = "Bearer " + self.token
-        opener = urllib.request.build_opener() if redirect else urllib.request.build_opener(NoRedirect())
-        with opener.open(urllib.request.Request(url, headers=headers), timeout=min(10, remaining)) as response:
-            data = response.read(limit + 1)
-        if len(data) > limit:
-            raise ValueError("oversized acceptance evidence")
-        return data
 
     def get(self, path, **query):
         artifact_run = re.fullmatch(r"actions/runs/([0-9]+)/artifacts", path)
@@ -119,13 +98,10 @@ class API:
                                        "seaweed": item} for item in artifacts]}
             # Existing GitHub receipts retain their original lifetime. New runs
             # publish only to SeaweedFS; a backend error above fails acceptance.
-        return json.loads(self.read(self.base + path + ("?" + urllib.parse.urlencode(query) if query else "")))
+        return super().get(path, **query)
 
     def artifact_command(self, *args):
-        remaining = self.deadline - time.monotonic()
-        if remaining <= 0:
-            raise TimeoutError("acceptance lookup deadline")
-        return subprocess.check_output([sys.executable, self.artifact_tool, *args], timeout=remaining)
+        return subprocess.check_output([sys.executable, self.artifact_tool, *args], timeout=self.remaining())
 
     def receipt(self, artifact):
         if item := artifact.get("seaweed"):

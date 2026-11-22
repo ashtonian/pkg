@@ -36,8 +36,9 @@ The repository's `go.work` ties the published modules together, so a change to o
 GitHub Actions runs workflows here only for the repository owner. Pull requests opened by a bot, such as Dependabot updates or a release PR opened without the `RELEASE_PLEASE_TOKEN` secret, therefore get no checks: run CI on the branch with `gh workflow run ci.yml -R ashtonian/pkg --ref <branch>`, and the pull request shows the results.
 
 CI runs what a change reaches. The change-scope job takes the event's complete delta: a
-pull request's merge against its base, or a push against the commit it replaced.
-`tools/ci_scope.py` lists the workspace's packages with `go list -test`
+pull request's merge against its base, or a push to `main` against the newest commit of
+`main`'s history whose push run passed, so a failed, cancelled or superseded run leaves no
+change unvalidated. `tools/ci_scope.py` lists the workspace's packages with `go list -test`
 under every platform and build tag set CI compiles, and selects:
 
 - The packages a change reaches: each package it edits, and every workspace package whose
