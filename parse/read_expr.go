@@ -351,7 +351,7 @@ func (r *Resource[T]) dialectView(d filter.Dialect) (*dialectView, error) {
 	return r.readExprs.view(d, base)
 }
 
-func (v *dialectView) listQuery(d filter.Dialect, cfg *core.ParserConfig) *filter.ListQuery {
+func (v *dialectView) listQuery(d filter.Dialect, cfg *core.ParserConfig) (*filter.ListQuery, error) {
 	return newListQuery(v.filter, v.sort, v.search, d, cfg)
 }
 

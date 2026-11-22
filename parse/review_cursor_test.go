@@ -84,7 +84,9 @@ func TestListQuery_StringKeysOrderByCodePoint(t *testing.T) {
 		{filter.PostgresDialect{Collation: filter.CollationC}, `probe.name COLLATE "C"`},
 		{filter.SQLiteDialect{}, `probe.name COLLATE BINARY`},
 	} {
-		q, err := filter.NewListQuery(schema, sorts, tc.dialect).Build(filter.ListSort("name,rank"))
+		lq, err := filter.NewListQuery(schema, sorts, tc.dialect)
+		require.NoError(t, err)
+		q, err := lq.Build(filter.ListSort("name,rank"))
 		require.NoError(t, err)
 		assert.Contains(t, q.OrderBy, tc.collate+" ASC", tc.dialect.Name())
 		assert.NotContains(t, q.OrderBy, "probe.rank COLLATE", "non-string keys keep their own order")

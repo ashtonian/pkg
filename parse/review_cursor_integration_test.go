@@ -36,7 +36,8 @@ func TestKeysetWalk_LinguisticCollationWalksByCodePoint(t *testing.T) {
 			require.NoError(t, err)
 			_, err = db.Exec(`INSERT INTO probe VALUES (1, 'b'), (2, 'B'), (3, 'a'), (4, 'A'), (5, 'é'), (6, 'z')`)
 			require.NoError(t, err)
-			lq := filter.NewListQuery(schema, sorts, dialect)
+			lq, err := filter.NewListQuery(schema, sorts, dialect)
+			require.NoError(t, err)
 
 			var walked []string
 			cursor := ""

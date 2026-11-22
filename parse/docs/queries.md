@@ -217,7 +217,7 @@ A `filter.PolicyConstraints` is a group: its `Constraints` and `And` groups are 
 
 `Negate` negates one constraint.
 
-Underneath, `NewListQuery(filterSchema, sortSchema, dialect).Build(opts...)` returns a `*ListResult`:
+Underneath, `NewListQuery(filterSchema, sortSchema, dialect)` returns a `*ListQuery` (or the [key](#configuration) error), whose `Build(opts...)` returns a `*ListResult`:
 
 | Field | Content |
 |---|---|
@@ -275,7 +275,7 @@ var accounts = parse.MustResource[Account]("accounts",
 
 ## Configuration
 
-A `parse.Resource` declares its primary key once with `parse.PrimaryKey` (default `id`). Every list, including `Resource.ListQuery`, appends that key automatically. Hand-built filter schemas declare `ResourceSchema.PrimaryKey` before constructing a `ListQuery`; the key is schema metadata, never a request option.
+A `parse.Resource` declares its primary key once with `parse.PrimaryKey` (default `id`). Every list, including `Resource.ListQuery`, appends that key automatically. A hand-built filter schema declares `ResourceSchema.PrimaryKey` before constructing a `ListQuery`, naming a typed column of the sort schema, its `Fields` or its `SystemFields`; `NewListQuery` returns an error for a schema without one, for a key that is no field, declares no type or is computed, and for a nil schema, since a keyset that does not end on a unique typed column skips or repeats rows. `GenerateFilterSchema` declares no key: the resource does. The key is schema metadata, never a request option.
 
 `ListOption`s for `ListQuery.Build`:
 
@@ -412,6 +412,6 @@ postgres SET tags = array_append(COALESCE(tags, '{}'), $1), price = $2 [clearanc
 
 ## Cursor validation
 
-Schema-backed cursor keys validate type, numeric range, and nullability before SQL construction (E2082). Manually constructed schemas need `CursorKey.NumberKind` / `SortFieldSchema.NumberKind` for numeric bounds. An identifier-only tie-breaker without schema metadata validates canonical non-null scalars only. Include the key in your schema for typed checks. A decimal key carries its canonical text and orders by value on every backend ([decimals](schema-configuration.md#decimals)). Other pointer-receiver `driver.Valuer` / text-marshaler scalar keys can supply canonical values, but the package cannot infer a custom database scalar's ordering from its Go encoding: declare such a column with the scalar it holds (`storage:"scalar:decimal"`), or choose keys with a known consistent SQL/Go representation. Cursors carry sort metadata, not authorization: reapply server policy on every page.
+Schema-backed cursor keys validate type, numeric range, and nullability before SQL construction (E2082). Manually constructed schemas need `CursorKey.NumberKind` / `SortFieldSchema.NumberKind` for numeric bounds. A `ListQuery`'s key is always typed; a keyset composed by hand (`Keyset`, `ValidateCursor`) with a key that declares no type validates canonical non-null scalars only. A decimal key carries its canonical text and orders by value on every backend ([decimals](schema-configuration.md#decimals)). Other pointer-receiver `driver.Valuer` / text-marshaler scalar keys can supply canonical values, but the package cannot infer a custom database scalar's ordering from its Go encoding: declare such a column with the scalar it holds (`storage:"scalar:decimal"`), or choose keys with a known consistent SQL/Go representation. Cursors carry sort metadata, not authorization: reapply server policy on every page.
 
 [HTTP parameters](http-errors.md) · [JSON documents](patches.md#json-documents) · [Relations](relations.md)

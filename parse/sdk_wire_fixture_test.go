@@ -103,7 +103,9 @@ func buildSDKWire(t *testing.T) []byte {
 		} else {
 			opts = append(opts, filter.ListFacets("name"))
 		}
-		res, listErr := p.ListQuery(filter.SQLiteDialect{}).Build(opts...)
+		lq, listErr := p.ListQuery(filter.SQLiteDialect{})
+		require.NoError(t, listErr)
+		res, listErr := lq.Build(opts...)
 		require.NoError(t, listErr)
 		rows, listErr := db.Query("SELECT id, name FROM wire_items "+res.Fragment, res.Args...)
 		require.NoError(t, listErr)

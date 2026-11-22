@@ -95,7 +95,9 @@ func runPolicyMatrix(t *testing.T, mdb matrixDB, columnTypes map[core.FieldType]
 		t.Fatalf("schema: %v", err)
 	}
 	schema.PrimaryKey = "id"
-	lq := filter.NewListQuery(schema, nil, mdb.dialect).WithSearchSchema(filtertest.SearchSchema())
+	lq, err := filter.NewListQuery(schema, nil, mdb.dialect)
+	require.NoError(t, err)
+	lq = lq.WithSearchSchema(filtertest.SearchSchema())
 	filtertest.RunPolicy(t, true, func(t *testing.T, q filtertest.PolicyQuery) ([]string, error) {
 		var seen []string
 		cursor := ""

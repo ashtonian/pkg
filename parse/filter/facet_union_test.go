@@ -24,7 +24,11 @@ func facetSchema() *filter.ResourceSchema {
 	maxLow := 50.0
 	maxMid := 100.0
 	return &filter.ResourceSchema{
-		Name: "items",
+		Name:       "items",
+		PrimaryKey: "id",
+		SystemFields: map[string]*filter.FieldSchema{
+			"id": {ExternalName: "id", SQLExpr: "items.id", Column: "id", DataType: core.FieldTypeString},
+		},
 		Fields: map[string]*filter.FieldSchema{
 			"status": {
 				ExternalName: "status", SQLExpr: "items.status", DataType: core.FieldTypeString,

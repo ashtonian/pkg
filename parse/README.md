@@ -79,7 +79,7 @@ On PostgreSQL, `parsepgx.QueryPage(ctx, pool, devices, plan)` runs the plan and 
 | Serve a list too large for a URL: the same request as a POST body | `ParseListBody`, `parsehttp.ParseList` (route `POST` on the collection path), `WithMaxListBodySize`, `client.ListParams.Body`, the SDK's opt-in `maxURLLength` | [HTTP contract](docs/http-errors.md#the-same-request-as-a-post-body) |
 | Parse a stored/server-policy filter with a per-call cost budget | `Resource.ParseFilterWithCost` | [Parser configuration](docs/schema-configuration.md#parser-and-generator-options) |
 | Parse an HTTP filter alone, including flat parameters | `Resource.ParseRequestFilter` | [Queries](docs/queries.md) |
-| Compose list fragments over a declared resource | `Resource.ListQuery(dialect).Build` (the primary key joins every keyset) | [List queries](docs/queries.md#lists-and-keyset-pagination) |
+| Compose list fragments over a declared resource | `Resource.ListQuery(dialect)`, then `Build` (the primary key joins every keyset) | [List queries](docs/queries.md#lists-and-keyset-pagination) |
 | Compile only a predicate for existing SQL | `filter.NewSQLBuilder` | [Query composition](docs/queries.md#configuration) |
 | Filter, sort and facet typed members of JSON documents | `paths` / `storage` tags, struct member tags, `Resource.WithPaths` (per request: custom fields) | [JSON paths](docs/queries.md#json-paths) |
 | Filter JSON arrays by their elements, every predicate on one element | `elements` tag or a slice-of-struct document; `$some`, `$none` | [Array elements](docs/queries.md#array-elements) |

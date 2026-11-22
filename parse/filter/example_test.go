@@ -101,7 +101,8 @@ func ExampleNewSQLBuilder() {
 
 func ExampleNewListQuery() {
 	schema := &filter.ResourceSchema{
-		Name: "products",
+		Name:       "products",
+		PrimaryKey: "id", // ends every keyset
 		Fields: map[string]*filter.FieldSchema{
 			"category": {
 				ExternalName: "category", SQLExpr: "products.category",
@@ -115,6 +116,9 @@ func ExampleNewListQuery() {
 				AllowedOperators: []filter.FilterOperator{filter.OpGte, filter.OpLte},
 			},
 		},
+		SystemFields: map[string]*filter.FieldSchema{
+			"id": {ExternalName: "id", SQLExpr: "products.id", Column: "id", DataType: core.FieldTypeInt},
+		},
 	}
 	sortSchema := &filter.SortSchema{
 		Fields: map[string]*filter.SortFieldSchema{
@@ -125,7 +129,11 @@ func ExampleNewListQuery() {
 		MaxFields:    3,
 	}
 
-	lq := filter.NewListQuery(schema, sortSchema, filter.PostgresDialect{})
+	lq, err := filter.NewListQuery(schema, sortSchema, filter.PostgresDialect{})
+	if err != nil {
+		fmt.Println("error:", err)
+		return
+	}
 	result, err := lq.Build(
 		filter.ListFilter(`{"category":"electronics"}`),
 		filter.ListSort("-price"),

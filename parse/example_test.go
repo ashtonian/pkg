@@ -27,7 +27,11 @@ func Example() {
 	}
 
 	// A list request: filter, sort and page size compile to SQL fragments.
-	list, err := tp.ListQuery(filter.PostgresDialect{}).Build(
+	lq, err := tp.ListQuery(filter.PostgresDialect{})
+	if err != nil {
+		panic(err)
+	}
+	list, err := lq.Build(
 		filter.ListFilter(`{"status":"active","name":{"$like":"sensor-%"}}`),
 		filter.ListSort("name"),
 		filter.ListLimit(25),
@@ -171,7 +175,7 @@ func ExampleNewResource_facetedListPage() {
 	fmt.Println("parsed:", ast.Root != nil)
 
 	// List query with count + facets.
-	lq := tp.ListQuery(filter.PostgresDialect{})
+	lq, _ := tp.ListQuery(filter.PostgresDialect{})
 	result, _ := lq.Build(
 		filter.ListFilterAST(ast),
 		filter.ListSort("-created_at"),
@@ -253,7 +257,7 @@ func ExampleResource_ListQuery_customComposition() {
 	}
 
 	tp := parse.MustResource[Item]("items")
-	lq := tp.ListQuery(filter.PostgresDialect{})
+	lq, _ := tp.ListQuery(filter.PostgresDialect{})
 	result, _ := lq.Build(filter.ListFilter(`{"status":"active"}`))
 
 	// Compose with custom SQL using the returned parts.

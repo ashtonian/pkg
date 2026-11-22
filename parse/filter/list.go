@@ -1,6 +1,7 @@
 package filter
 
 import (
+	"errors"
 	"fmt"
 	"slices"
 	"strings"
@@ -22,11 +23,60 @@ type ListQuery struct {
 	searchSchema *SearchSchema
 	dialect      Dialect
 	filterConfig *core.ParserConfig
+	// key is the schema's PrimaryKey, the final column of every keyset.
+	key CursorKey
 }
 
-// NewListQuery creates a ListQuery builder.
-func NewListQuery(filterSchema *ResourceSchema, sortSchema *SortSchema, dialect Dialect) *ListQuery {
-	return &ListQuery{filterSchema: filterSchema, sortSchema: sortSchema, dialect: dialect}
+// NewListQuery creates a ListQuery builder for filterSchema's rows. The
+// schema declares its key (PrimaryKey), unique among the rows, which ends
+// every keyset so pages neither skip nor repeat rows. It must name a typed
+// column through sortSchema, the schema's Fields or its SystemFields; a
+// schema without one, or with a key that is computed, untyped or no field,
+// is an error.
+func NewListQuery(filterSchema *ResourceSchema, sortSchema *SortSchema, dialect Dialect) (*ListQuery, error) {
+	if filterSchema == nil {
+		return nil, errors.New("filter: a list query needs a filter schema")
+	}
+	key, err := listKey(filterSchema, sortSchema)
+	if err != nil {
+		return nil, fmt.Errorf("filter: list of %s: %w", filterSchema.Name, err)
+	}
+	return &ListQuery{filterSchema: filterSchema, sortSchema: sortSchema, dialect: dialect, key: key}, nil
+}
+
+// listKey resolves the schema's key to the typed cursor key that ends every
+// keyset: a sort field, else a request or system field of that name.
+func listKey(fs *ResourceSchema, ss *SortSchema) (CursorKey, error) {
+	name := fs.PrimaryKey
+	if name == "" {
+		return CursorKey{}, errors.New("the schema declares no key (ResourceSchema.PrimaryKey)")
+	}
+	key := CursorKey{Name: name}
+	var sf *SortFieldSchema
+	if ss != nil {
+		sf = ss.Fields[name]
+	}
+	ff := fs.Fields[name]
+	if ff == nil {
+		ff = fs.SystemFields[name]
+	}
+	switch {
+	case sf != nil:
+		key.SQLExpr, key.Column, key.DataType = sf.SQLExpr, sf.RowColumn(), sf.DataType
+		key.NumberKind, key.Nullable = sf.NumberKind, sf.Nullable
+	case ff != nil:
+		key.SQLExpr, key.Column, key.DataType = ff.SQLExpr, ff.RowColumn(), ff.DataType
+		key.NumberKind = ff.NumberKind
+	default:
+		return CursorKey{}, fmt.Errorf("key %q is no sort, filter or system field", name)
+	}
+	if key.DataType == "" {
+		return CursorKey{}, fmt.Errorf("key %q declares no type", name)
+	}
+	if key.Column == "" {
+		return CursorKey{}, fmt.Errorf("key %q is computed; a keyset reads its key from a column", name)
+	}
+	return key, nil
 }
 
 // WithFilterConfig sets custom filter parsing config.
@@ -342,46 +392,9 @@ func (lq *ListQuery) Build(opts ...ListOption) (*ListResult, error) {
 }
 
 // cursorKeys derives the effective keyset: the parsed sort fields followed
-// by the declared primary key, resolved through the sort schema, then the filter
-// schema; otherwise it must be a plain SQL identifier (a repository's PK
-// column) — user text is never emitted as an identifier (same principle as
-// ).
+// by the key.
 func (lq *ListQuery) cursorKeys(sort *SortResult) ([]CursorKey, error) {
-	var tieBreaker string
-	if lq.filterSchema != nil {
-		tieBreaker = lq.filterSchema.PrimaryKey
-	}
-	if tieBreaker == "" {
-		return Keyset(sort, CursorKey{}), nil
-	}
-	tb := CursorKey{Name: tieBreaker}
-	var ff *FieldSchema
-	if lq.filterSchema != nil {
-		ff = lq.filterSchema.Fields[tieBreaker]
-		if ff == nil {
-			ff = lq.filterSchema.SystemFields[tieBreaker]
-		}
-	}
-	switch {
-	case lq.sortSchema != nil && lq.sortSchema.Fields[tieBreaker] != nil:
-		sf := lq.sortSchema.Fields[tieBreaker]
-		tb.SQLExpr, tb.Column, tb.DataType = sf.SQLExpr, sf.RowColumn(), sf.DataType
-		tb.NumberKind, tb.Nullable = sf.NumberKind, sf.Nullable
-	case ff != nil:
-		tb.SQLExpr, tb.DataType = ff.SQLExpr, ff.DataType
-		tb.NumberKind = ff.NumberKind
-		tb.Column = ff.RowColumn()
-	case identifierRe.MatchString(tieBreaker):
-		tb.SQLExpr = tieBreaker
-		tb.Column = (&SortFieldSchema{SQLExpr: tieBreaker}).RowColumn()
-	default:
-		return nil, &core.ParseError{
-			Kind:    core.ParseErrorKindSort,
-			Code:    ECodeSQLGenerationFailed.String(),
-			Message: fmt.Sprintf("cursor tie-breaker '%s' is not a schema field or a plain identifier", tieBreaker),
-		}
-	}
-	keys := Keyset(sort, tb)
+	keys := Keyset(sort, lq.key)
 	for _, k := range keys {
 		if k.Column == "" {
 			return nil, &core.ParseError{

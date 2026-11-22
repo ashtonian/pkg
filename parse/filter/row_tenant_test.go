@@ -34,7 +34,8 @@ func rowTenantSchemas(ownerType, relatedType core.FieldType) (*filter.ResourceSc
 		Related:  notes, RelatedBy: key,
 	}
 	widgets := &filter.ResourceSchema{
-		Name: "widgets",
+		Name:       "widgets",
+		PrimaryKey: "id",
 		Fields: map[string]*filter.FieldSchema{
 			"notes": rel,
 			"tags": {
@@ -98,7 +99,7 @@ func TestRowTenant_RefusesAmbiguousScopes(t *testing.T) {
 		})
 	}
 
-	_, err := filter.NewListQuery(widgets, nil, filter.PostgresDialect{}).Build(filter.ListRowTenant("tenant_id"), filter.ListTenant("A"))
+	_, err := mustListQuery(t, widgets, nil, filter.PostgresDialect{}).Build(filter.ListRowTenant("tenant_id"), filter.ListTenant("A"))
 	assert.Error(t, err, "a list holds relations one way")
 	_, err = filter.BuildFacetQuery(widgets, filter.PostgresDialect{}, "1=1", nil, []filter.FacetRequest{{Field: "notes"}},
 		filter.WithFacetRowTenant("tenant_id"), filter.WithFacetTenant("A"))

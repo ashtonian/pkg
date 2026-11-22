@@ -417,7 +417,11 @@ func (r *Resource[T]) BuildList(d filter.Dialect, req *ListRequest, s Scope) (*L
 	if len(req.Facets) > 0 {
 		opts = append(opts, filter.ListFacets(req.Facets...))
 	}
-	res, err := v.listQuery(d, r.cfg).Build(opts...)
+	lq, err := v.listQuery(d, r.cfg)
+	if err != nil {
+		return nil, err
+	}
+	res, err := lq.Build(opts...)
 	if err != nil {
 		return nil, err
 	}

@@ -189,7 +189,7 @@ func TestDecimal_SeekBindsExactNumbers(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.dialect.Name(), func(t *testing.T) {
-			res, err := filter.NewListQuery(fs, ss, tt.dialect).Build(filter.ListSort("price,id"), filter.ListCursor(cur))
+			res, err := mustListQuery(t, fs, ss, tt.dialect).Build(filter.ListSort("price,id"), filter.ListCursor(cur))
 			require.NoError(t, err)
 			assert.Contains(t, res.Where, tt.where)
 			assert.Equal(t, []any{"9.5", "b"}, res.Args)

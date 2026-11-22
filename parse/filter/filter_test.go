@@ -18,7 +18,8 @@ import (
 
 func testSchema() *filter.ResourceSchema {
 	return &filter.ResourceSchema{
-		Name: "items",
+		Name:       "items",
+		PrimaryKey: "id",
 		Fields: map[string]*filter.FieldSchema{
 			"status": {
 				ExternalName: "status", SQLExpr: "items.status", DataType: core.FieldTypeString,
@@ -40,6 +41,8 @@ func testSchema() *filter.ResourceSchema {
 			},
 		},
 		SystemFields: map[string]*filter.FieldSchema{
+			"id": {ExternalName: "id", SQLExpr: "items.id", Column: "id", DataType: core.FieldTypeString,
+				AllowedOperators: []filter.FilterOperator{filter.OpEq, filter.OpIn}},
 			"tenant_id": {
 				ExternalName: "tenant_id", SQLExpr: "items.tenant_id", DataType: core.FieldTypeString,
 				AllowedOperators: []filter.FilterOperator{filter.OpEq},
@@ -267,7 +270,7 @@ func TestQueryParamParser_IgnoresReserved(t *testing.T) {
 // --- ListQuery Tests ---
 
 func TestListQuery_Basic(t *testing.T) {
-	lq := filter.NewListQuery(testSchema(), testSortSchema(), filter.PostgresDialect{})
+	lq := mustListQuery(t, testSchema(), testSortSchema(), filter.PostgresDialect{})
 	result, err := lq.Build(
 		filter.ListFilter(`{"status":"active"}`),
 		filter.ListSort("-created_at"),
@@ -291,7 +294,7 @@ func TestListQuery_Basic(t *testing.T) {
 }
 
 func TestListQuery_WithCount(t *testing.T) {
-	lq := filter.NewListQuery(testSchema(), nil, filter.PostgresDialect{})
+	lq := mustListQuery(t, testSchema(), nil, filter.PostgresDialect{})
 	result, err := lq.Build(
 		filter.ListFilter(`{"status":"active"}`),
 		filter.ListWithCount(true),
@@ -320,7 +323,7 @@ func testSearchSchema() *filter.SearchSchema {
 }
 
 func TestListQuery_WithSearch(t *testing.T) {
-	lq := filter.NewListQuery(testSchema(), nil, filter.PostgresDialect{}).
+	lq := mustListQuery(t, testSchema(), nil, filter.PostgresDialect{}).
 		WithSearchSchema(testSearchSchema())
 	result, err := lq.Build(
 		filter.ListFilter(`{"status":"active"}`),
@@ -351,7 +354,7 @@ func TestListQuery_WithSearch(t *testing.T) {
 }
 
 func TestListQuery_SearchEmptyNoOp(t *testing.T) {
-	lq := filter.NewListQuery(testSchema(), nil, filter.PostgresDialect{}).
+	lq := mustListQuery(t, testSchema(), nil, filter.PostgresDialect{}).
 		WithSearchSchema(testSearchSchema())
 	result, err := lq.Build(filter.ListSearch(""))
 	if err != nil {
@@ -364,12 +367,15 @@ func TestListQuery_SearchEmptyNoOp(t *testing.T) {
 
 func TestListQuery_WithCursor(t *testing.T) {
 	cursor, err := filter.EncodeCursor(&filter.PageToken{
-		Fields: []filter.CursorField{{Name: "created_at", Value: "2026-01-15T10:30:00Z", Direction: filter.SortDesc}},
+		Fields: []filter.CursorField{
+			{Name: "created_at", Value: "2026-01-15T10:30:00Z", Direction: filter.SortDesc},
+			{Name: "id", Value: "i7", Direction: filter.SortDesc},
+		},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	lq := filter.NewListQuery(testSchema(), testSortSchema(), filter.PostgresDialect{})
+	lq := mustListQuery(t, testSchema(), testSortSchema(), filter.PostgresDialect{})
 	result, err := lq.Build(
 		filter.ListFilter(`{"status":"active"}`),
 		filter.ListCursor(cursor),
@@ -377,13 +383,13 @@ func TestListQuery_WithCursor(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(result.Where, "items.created_at < $2") {
+	if !strings.Contains(result.Where, "(items.created_at, items.id COLLATE pg_c_utf8) < ($2, $3)") {
 		t.Errorf("expected cursor condition, got %q", result.Where)
 	}
 }
 
 func TestListQuery_PolicyConstraints(t *testing.T) {
-	lq := filter.NewListQuery(testSchema(), nil, filter.PostgresDialect{})
+	lq := mustListQuery(t, testSchema(), nil, filter.PostgresDialect{})
 	pc := &filter.PolicyConstraints{
 		Constraints: []*filter.PolicyConstraint{
 			{Field: "tenant_id", Operator: filter.OpEq, Value: "t1"},
@@ -403,7 +409,8 @@ func TestListQuery_PolicyConstraints(t *testing.T) {
 
 func TestListQuery_Facets(t *testing.T) {
 	schema := &filter.ResourceSchema{
-		Name: "products",
+		Name:       "products",
+		PrimaryKey: "id",
 		Fields: map[string]*filter.FieldSchema{
 			"category": {
 				ExternalName: "category", SQLExpr: "products.category",
@@ -412,8 +419,11 @@ func TestListQuery_Facets(t *testing.T) {
 				Facetable:        true,
 			},
 		},
+		SystemFields: map[string]*filter.FieldSchema{
+			"id": {ExternalName: "id", SQLExpr: "products.id", Column: "id", DataType: core.FieldTypeString},
+		},
 	}
-	lq := filter.NewListQuery(schema, nil, filter.PostgresDialect{})
+	lq := mustListQuery(t, schema, nil, filter.PostgresDialect{})
 	result, err := lq.Build(filter.ListFacets("category"))
 	if err != nil {
 		t.Fatal(err)
@@ -639,7 +649,7 @@ func TestSQLBuilder_ParamCount_Empty(t *testing.T) {
 // --- ListStartParam Tests ---
 
 func TestListQuery_WithStartParam(t *testing.T) {
-	lq := filter.NewListQuery(testSchema(), testSortSchema(), filter.PostgresDialect{})
+	lq := mustListQuery(t, testSchema(), testSortSchema(), filter.PostgresDialect{})
 	result, err := lq.Build(
 		filter.ListFilter(`{"status":"active"}`),
 		filter.ListStartParam(3),

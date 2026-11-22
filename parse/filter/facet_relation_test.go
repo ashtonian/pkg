@@ -158,7 +158,7 @@ func TestBuildFacetQuery_RelationFacet_SQLite(t *testing.T) {
 // TestCountStarWithoutJoin confirms the common no-relation case keeps the
 // cheaper COUNT(*) — the distinct path is scoped to actual row multiplication.
 func TestCountStarWithoutJoin(t *testing.T) {
-	lq := filter.NewListQuery(facetSchemaWithRelation(), nil, filter.PostgresDialect{})
+	lq := mustListQuery(t, facetSchemaWithRelation(), nil, filter.PostgresDialect{})
 	result, err := lq.Build(
 		filter.ListFilter(`{"status":"active"}`),
 		filter.ListWithCount(true),

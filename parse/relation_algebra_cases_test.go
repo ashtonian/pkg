@@ -96,9 +96,11 @@ func runRelationAlgebra(t *testing.T, rdb relDB) {
 	seedRelDB(t, rdb)
 	p := relParser(t)
 
+	lq, err := p.ListQuery(rdb.dialect)
+	require.NoError(t, err)
 	for name, tc := range relCases {
 		t.Run(name, func(t *testing.T) {
-			res, err := p.ListQuery(rdb.dialect).Build(
+			res, err := lq.Build(
 				filter.ListFilter(tc.filter), filter.ListPolicy(tenantA()), filter.ListTenant("A"),
 				filter.ListLimit(100), filter.ListWithCount(true))
 			require.NoError(t, err)
@@ -113,13 +115,13 @@ func runRelationAlgebra(t *testing.T, rdb relDB) {
 	}
 
 	t.Run("missing tenant fails closed", func(t *testing.T) {
-		_, err := p.ListQuery(rdb.dialect).Build(filter.ListFilter(`{"tags":"red"}`), filter.ListPolicy(tenantA()))
+		_, err := lq.Build(filter.ListFilter(`{"tags":"red"}`), filter.ListPolicy(tenantA()))
 		require.Error(t, err)
 	})
 
 	t.Run("facets count owners once", func(t *testing.T) {
 		// w1 matches through two junction rows; it must count once.
-		res, err := p.ListQuery(rdb.dialect).Build(
+		res, err := lq.Build(
 			filter.ListFilter(`{"tags":{"$in":["red","blue"]}}`), filter.ListPolicy(tenantA()), filter.ListTenant("A"),
 			filter.ListFacets("status", "tags"))
 		require.NoError(t, err)

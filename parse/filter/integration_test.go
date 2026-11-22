@@ -5,6 +5,7 @@ package filter_test
 import (
 	"database/sql"
 	"fmt"
+	"reflect"
 	"testing"
 
 	_ "modernc.org/sqlite"
@@ -59,7 +60,11 @@ func setupTestDB(t *testing.T) *sql.DB {
 
 func integrationSchema() *filter.ResourceSchema {
 	return &filter.ResourceSchema{
-		Name: "products",
+		Name:       "products",
+		PrimaryKey: "id",
+		SystemFields: map[string]*filter.FieldSchema{
+			"id": {ExternalName: "id", SQLExpr: "products.id", Column: "id", DataType: core.FieldTypeInt, NumberKind: reflect.Int64},
+		},
 		Fields: map[string]*filter.FieldSchema{
 			"name":     {ExternalName: "name", SQLExpr: "products.name", DataType: core.FieldTypeString, AllowedOperators: []filter.FilterOperator{filter.OpEq, filter.OpLike, filter.OpILike}},
 			"category": {ExternalName: "category", SQLExpr: "products.category", DataType: core.FieldTypeString, AllowedOperators: []filter.FilterOperator{filter.OpEq, filter.OpIn}, Facetable: true},
@@ -215,7 +220,7 @@ func TestIntegration_ListQuery_SortAndLimit(t *testing.T) {
 	db := setupTestDB(t)
 	schema := integrationSchema()
 	sortSchema := integrationSortSchema()
-	lq := filter.NewListQuery(schema, sortSchema, filter.SQLiteDialect{})
+	lq := mustListQuery(t, schema, sortSchema, filter.SQLiteDialect{})
 
 	result, err := lq.Build(
 		filter.ListFilter(`{"status":"active"}`),
@@ -248,7 +253,7 @@ func TestIntegration_ListQuery_SortAndLimit(t *testing.T) {
 func TestIntegration_ListQuery_PolicyConstraints(t *testing.T) {
 	db := setupTestDB(t)
 	schema := integrationSchema()
-	lq := filter.NewListQuery(schema, nil, filter.SQLiteDialect{})
+	lq := mustListQuery(t, schema, nil, filter.SQLiteDialect{})
 
 	pc := &filter.PolicyConstraints{
 		Constraints: []*filter.PolicyConstraint{
@@ -277,7 +282,7 @@ func TestIntegration_ListQuery_PolicyConstraints(t *testing.T) {
 func TestIntegration_ListQuery_WithCount(t *testing.T) {
 	db := setupTestDB(t)
 	schema := integrationSchema()
-	lq := filter.NewListQuery(schema, nil, filter.SQLiteDialect{})
+	lq := mustListQuery(t, schema, nil, filter.SQLiteDialect{})
 
 	result, err := lq.Build(
 		filter.ListFilter(`{"status":"active"}`),
@@ -347,7 +352,7 @@ func TestIntegration_WithStartParam(t *testing.T) {
 func TestIntegration_Facets(t *testing.T) {
 	db := setupTestDB(t)
 	schema := integrationSchema()
-	lq := filter.NewListQuery(schema, nil, filter.SQLiteDialect{})
+	lq := mustListQuery(t, schema, nil, filter.SQLiteDialect{})
 
 	result, err := lq.Build(
 		filter.ListFilter(`{"status":"active"}`),
@@ -392,13 +397,12 @@ func TestIntegration_Facets(t *testing.T) {
 	}
 }
 
-// --- : composite keyset walk (same-value boundaries) ---
+// --- Composite keyset walk (same-value boundaries) ---
 
-// TestIntegration_P10_CursorWalkNoLossNoDup is the P-10 acceptance case:
-// 5 rows with 3 sharing a created_at boundary value, page size 2, walk every
-// page via the emitted cursor and assert the exact multiset — the
-// single-field cursor lost the boundary-sharing rows here.
-func TestIntegration_P10_CursorWalkNoLossNoDup(t *testing.T) {
+// TestIntegration_CursorWalkNoLossNoDup: 5 rows with 3 sharing a created_at
+// boundary value, page size 2; every page walked through the emitted cursor
+// returns the exact set, the key breaking the ties.
+func TestIntegration_CursorWalkNoLossNoDup(t *testing.T) {
 	db, err := sql.Open("sqlite", ":memory:")
 	if err != nil {
 		t.Fatal(err)
@@ -429,6 +433,9 @@ func TestIntegration_P10_CursorWalkNoLossNoDup(t *testing.T) {
 
 	schema := &filter.ResourceSchema{
 		Name: "events", PrimaryKey: "id",
+		SystemFields: map[string]*filter.FieldSchema{
+			"id": {ExternalName: "id", SQLExpr: "events.id", Column: "id", DataType: core.FieldTypeInt, NumberKind: reflect.Int64},
+		},
 		Fields: map[string]*filter.FieldSchema{
 			"created_at": {ExternalName: "created_at", SQLExpr: "events.created_at", DataType: core.FieldTypeString, AllowedOperators: []filter.FilterOperator{filter.OpGt, filter.OpLt}},
 		},
@@ -446,7 +453,7 @@ func TestIntegration_P10_CursorWalkNoLossNoDup(t *testing.T) {
 
 	walk := func(t *testing.T, sortParam string) []int64 {
 		t.Helper()
-		lq := filter.NewListQuery(schema, sortSchema, filter.SQLiteDialect{})
+		lq := mustListQuery(t, schema, sortSchema, filter.SQLiteDialect{})
 		var got []int64
 		cursor := ""
 		for page := 0; ; page++ {

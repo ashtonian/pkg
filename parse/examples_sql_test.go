@@ -53,7 +53,12 @@ func products() *parse.Resource[Product] {
 // ORDER BY and bound arguments.
 func show(tp *parse.Resource[Product], opts ...filter.ListOption) {
 	for _, d := range []filter.Dialect{filter.PostgresDialect{}, filter.SQLiteDialect{}} {
-		res, err := tp.ListQuery(d).Build(opts...)
+		lq, err := tp.ListQuery(d)
+		if err != nil {
+			fmt.Println("error:", err)
+			return
+		}
+		res, err := lq.Build(opts...)
 		if err != nil {
 			fmt.Println("error:", err)
 			return
@@ -118,7 +123,11 @@ func Example_flatQueryParameters() {
 // order; the next page seeks past the last row's key instead of offsetting.
 func Example_keysetPages() {
 	tp := products()
-	first, err := tp.ListQuery(filter.PostgresDialect{}).Build(
+	lq, err := tp.ListQuery(filter.PostgresDialect{})
+	if err != nil {
+		panic(err)
+	}
+	first, err := lq.Build(
 		filter.ListSort("-price"), filter.ListLimit(2))
 	if err != nil {
 		panic(err)
@@ -150,8 +159,11 @@ func Example_keysetPages() {
 // Example_countFacetsSearch: one request can also produce its total, its
 // facet counts and a full-text predicate, all over the same filter.
 func Example_countFacetsSearch() {
-	tp := products()
-	res, err := tp.ListQuery(filter.PostgresDialect{}).Build(
+	lq, err := products().ListQuery(filter.PostgresDialect{})
+	if err != nil {
+		panic(err)
+	}
+	res, err := lq.Build(
 		filter.ListFilter(`{"price":{"$lt":200}}`),
 		filter.ListSearch("cordless drill"),
 		filter.ListWithCount(true),
@@ -265,7 +277,9 @@ func TestParseRequestFilter(t *testing.T) {
 		"debug":     {"true"},   // the endpoint's own parameter
 	}, filter.QueryParamAccept("debug"))
 	require.NoError(t, err)
-	res, err := tp.ListQuery(filter.PostgresDialect{}).Build(filter.ListFilterAST(parsed.AST))
+	lq, err := tp.ListQuery(filter.PostgresDialect{})
+	require.NoError(t, err)
+	res, err := lq.Build(filter.ListFilterAST(parsed.AST))
 	require.NoError(t, err)
 	assert.Equal(t, "(products.category = $1 AND products.price >= $2)", res.Where)
 	assert.Equal(t, []any{"tools", float64(10)}, res.Args)
