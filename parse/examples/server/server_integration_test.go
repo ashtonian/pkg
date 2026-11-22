@@ -4,6 +4,7 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -213,6 +214,66 @@ func TestServer_MergePatchKeepsSiblings(t *testing.T) {
 	assert.Equal(t, map[string]any{"brand": "acme", "refurb": true, "sale": "summer"}, res.Updated[0].Labels)
 }
 
+// patchMany sends PATCH /{resource}?id[]=…: one merge patch for every key.
+func TestServer_BatchMergePatch(t *testing.T) {
+	srv := testServer(t)
+	var res struct {
+		Updated []Product `json:"updated"`
+		Failed  []struct {
+			ID, Code, Error string
+		} `json:"failed"`
+	}
+	q := url.Values{"id[]": {"p02", "p03", "nope", "p02"}}
+	require.Equal(t, http.StatusOK, call(t, srv, http.MethodPatch, "/api/products?"+q.Encode(), `{"price":7}`, &res))
+	ids := make([]string, len(res.Updated))
+	for i, p := range res.Updated {
+		ids[i] = p.ID
+		assert.InDelta(t, 7.0, p.Price, 0)
+	}
+	assert.ElementsMatch(t, []string{"p02", "p03"}, ids)
+	require.Len(t, res.Failed, 1, "a key without a product fails once, however often it is named")
+	assert.Equal(t, "nope", res.Failed[0].ID)
+	assert.Equal(t, codeNotFound, res.Failed[0].Code)
+
+	var single struct {
+		Updated []Product `json:"updated"`
+	}
+	require.Equal(t, http.StatusOK, call(t, srv, http.MethodPatch, "/api/products/p03", `{}`, &single))
+	require.Len(t, single.Updated, 1)
+	assert.InDelta(t, 7.0, single.Updated[0].Price, 0, "the batch wrote the row")
+}
+
+func TestServer_BatchMergePatchRefusals(t *testing.T) {
+	srv := testServer(t)
+	var body parsehttp.Body
+	assert.Equal(t, http.StatusBadRequest, call(t, srv, http.MethodPatch, "/api/products", `{"price":7}`, &body), "no keys")
+	assert.Equal(t, codeBadRequest, body.Code)
+
+	many := url.Values{}
+	for i := range maxPatchIDs + 1 {
+		many.Add("id[]", fmt.Sprintf("p%03d", i))
+	}
+	assert.Equal(t, http.StatusBadRequest, call(t, srv, http.MethodPatch, "/api/products?"+many.Encode(), `{"price":7}`, &body), "too many keys")
+	assert.Equal(t, codeBadRequest, body.Code)
+
+	for _, path := range []string{
+		"/api/products?id[]=p01&filter=" + url.QueryEscape(`{"category":"books"}`),
+		"/api/products/p01?category=books",
+	} {
+		assert.Equal(t, http.StatusBadRequest, call(t, srv, http.MethodPatch, path, `{"price":7}`, &body), "a parameter the route does not read could have meant to narrow it: %s", path)
+		assert.Equal(t, codeBadRequest, body.Code)
+	}
+
+	assert.Equal(t, http.StatusUnprocessableEntity, call(t, srv, http.MethodPatch, "/api/products?id[]=p01", `{"category":"toys"}`, &body))
+	assert.Equal(t, "E2077", body.Code, "the patch is validated as a single patch is")
+
+	var res struct {
+		Updated []Product `json:"updated"`
+	}
+	require.Equal(t, http.StatusOK, call(t, srv, http.MethodPatch, "/api/products/p01", `{}`, &res))
+	assert.InDelta(t, 1299.99, res.Updated[0].Price, 0, "a refused batch writes nothing")
+}
+
 func TestServer_ErrorsCarryECodes(t *testing.T) {
 	srv := testServer(t)
 	var body parsehttp.Body
@@ -227,6 +288,10 @@ func TestServer_ErrorsCarryECodes(t *testing.T) {
 	status = call(t, srv, http.MethodPatch, "/api/products/p01", `{"category":"toys"}`, &body)
 	assert.Equal(t, http.StatusUnprocessableEntity, status)
 	assert.Equal(t, "E2077", body.Code)
+
+	status = call(t, srv, http.MethodPatch, "/api/products/nope", `{"price":1}`, &body)
+	assert.Equal(t, http.StatusNotFound, status)
+	assert.Equal(t, codeNotFound, body.Code, "a missing row is the application's code, not a patch path error")
 
 	status = call(t, srv, http.MethodGet, "/api/unknown/schema", "", &body)
 	assert.Equal(t, http.StatusNotFound, status)

@@ -439,8 +439,9 @@ func typedSlice[T any](items []any, conv func(any) (T, error)) ([]T, error) {
 
 // geoCondition renders PostGIS predicates. Filter coordinates are WGS 84:
 // `$near` measures on the geography type (meters); `$within` (boundary
-// inclusive, like SQLite's BETWEEN) and `$intersects` compare planar
-// geometry in the column's SRID.
+// inclusive) and `$intersects` compare planar geometry in the column's
+// SRID. SQLiteDialect and Evaluate decide JSONB points alike through
+// internal/geo.
 func (d PostgresDialect) geoCondition(field *FieldSchema, op FilterOperator, value any, bind func(any) string) (string, error) {
 	if err := validateGeoValue(value); err != nil {
 		return "", err
@@ -509,10 +510,7 @@ func pgGeography(field *FieldSchema) string {
 // pgJSONBPoint builds the point geometry of a JSONB {lat, lon} column. The
 // keys were validated as identifiers at schema generation.
 func pgJSONBPoint(field *FieldSchema) string {
-	latKey, lonKey := "lat", "lon"
-	if field.GeoConfig != nil {
-		latKey, lonKey = field.GeoConfig.LatKey, field.GeoConfig.LonKey
-	}
+	latKey, lonKey := geoKeys(field)
 	return fmt.Sprintf("ST_SetSRID(ST_MakePoint((%s->>'%s')::float8, (%s->>'%s')::float8), 4326)",
 		field.SQLExpr, lonKey, field.SQLExpr, latKey)
 }

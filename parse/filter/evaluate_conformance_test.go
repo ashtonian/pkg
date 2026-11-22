@@ -44,6 +44,19 @@ func TestEvaluateSetConformance(t *testing.T) {
 	})
 }
 
+func TestEvaluateGeoConformance(t *testing.T) {
+	t.Run("stored", func(t *testing.T) {
+		filtertest.RunGeo(t, evaluateOver(filtertest.GeoRecords(), func(r filtertest.GeoRecord) (string, filter.Row) {
+			return r.ID, structRow(r)
+		}))
+	})
+	t.Run("parsed", func(t *testing.T) {
+		filtertest.RunGeo(t, evaluateOver(filtertest.GeoRecords(), func(r filtertest.GeoRecord) (string, filter.Row) {
+			return r.ID, byColumn(map[string]any{"id": r.ID, "loc": parsedDocument(t, r.Loc), "pos": parsedDocument(t, r.Pos)})
+		}))
+	})
+}
+
 func TestEvaluateDecimalConformance(t *testing.T) {
 	schema, err := filtertest.DecimalSchema()
 	if err != nil {

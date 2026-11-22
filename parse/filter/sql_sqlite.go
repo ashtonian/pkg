@@ -14,6 +14,7 @@ import (
 	"github.com/ashtonian/pkg/parse/core"
 	"github.com/ashtonian/pkg/parse/internal/decimals"
 	"github.com/ashtonian/pkg/parse/internal/dialect"
+	"github.com/ashtonian/pkg/parse/internal/geo"
 )
 
 // SQLiteDialect generates SQLite-compatible SQL. JSON documents and arrays
@@ -284,13 +285,13 @@ func caseWhen(guard string, terms []string) string {
 	return "(CASE WHEN " + guard + " THEN " + body + " ELSE 0 END)"
 }
 
-// earthRadiusMeters is the mean Earth radius (IUGG). SQLite's `$near` is
-// spherical; PostgreSQL's geography distance is spheroidal, so the two can
-// disagree by up to ~0.5% of the distance at the boundary.
-const earthRadiusMeters = "6371008.8"
-
-// geoCondition supports `$near` (haversine) and `$within` a bounding box
-// over JSONB points. Polygons and `$intersects` need PostGIS: E2115.
+// geoCondition renders the geo operators over a JSONB point through
+// parsesqlite's functions (internal/geo), so SQLite decides them as PostGIS
+// and Evaluate do: $near by the WGS 84 geodesic distance, $within and
+// $intersects a box or polygon planar in lon/lat, boundary included. Each
+// function reads the point from its JSON text, with the member names bound,
+// and is NULL when the point is. Native geometry storage needs PostGIS:
+// E2115.
 func (d SQLiteDialect) geoCondition(field *FieldSchema, op FilterOperator, value any, bind func(any) string) (string, error) {
 	if err := validateGeoValue(value); err != nil {
 		return "", err
@@ -298,7 +299,14 @@ func (d SQLiteDialect) geoCondition(field *FieldSchema, op FilterOperator, value
 	if field.GeoConfig != nil && field.GeoConfig.StorageType != GeoStorageJSONB {
 		return "", geoUnsupported(d, op, "native "+string(field.GeoConfig.StorageType)+" storage")
 	}
-	lat, lon := sqliteGeoExprs(field)
+	latKey, lonKey := geoKeys(field)
+	call := func(fn string, operands ...any) string {
+		args := []string{"json(" + field.SQLExpr + ")", bind(latKey), bind(lonKey)}
+		for _, o := range operands {
+			args = append(args, bind(o))
+		}
+		return fn + "(" + strings.Join(args, ", ") + ")"
+	}
 	switch v := value.(type) {
 	case *GeoDistance:
 		if op != OpNear {
@@ -308,33 +316,20 @@ func (d SQLiteDialect) geoCondition(field *FieldSchema, op FilterOperator, value
 		if err != nil {
 			return "", err
 		}
-		pLat, pLon := bind(v.Lat), bind(v.Lon)
-		// min(1, …) keeps asin in its domain when rounding lands a hair
-		// above 1 at the antipode.
-		return fmt.Sprintf(
-			"(2 * %s * asin(min(1.0, sqrt(power(sin(radians(%s - %s) / 2), 2) + cos(radians(%s)) * cos(radians(%s)) * power(sin(radians(%s - %s) / 2), 2)))) <= %s)",
-			earthRadiusMeters, lat, pLat, pLat, lat, lon, pLon, bind(meters),
-		), nil
+		return call(geo.SQLiteNearFunc, v.Lat, v.Lon, meters), nil
 	case *GeoBoundingBox:
-		if op != OpWithin {
-			return "", geoUnsupported(d, op, "bounding boxes")
+		if op != OpWithin && op != OpIntersects {
+			break
 		}
-		return fmt.Sprintf("(%s BETWEEN %s AND %s AND %s BETWEEN %s AND %s)",
-			lat, bind(v.BottomRight.Lat), bind(v.TopLeft.Lat),
-			lon, bind(v.TopLeft.Lon), bind(v.BottomRight.Lon)), nil
+		box := geoBox(v)
+		return call(geo.SQLiteInBoxFunc, box.South, box.North, box.West, box.East), nil
 	case *GeoPolygon:
-		return "", geoUnsupported(d, op, "polygons")
+		if op != OpWithin && op != OpIntersects {
+			break
+		}
+		return call(geo.SQLiteCoveredByFunc, geo.AppendPolygonWKB(nil, geoRing(v))), nil
 	}
-	return "", fmt.Errorf("geo operator %s: unexpected value %T", op, value)
-}
-
-func sqliteGeoExprs(field *FieldSchema) (lat, lon string) {
-	latKey, lonKey := "lat", "lon"
-	if field.GeoConfig != nil {
-		latKey, lonKey = field.GeoConfig.LatKey, field.GeoConfig.LonKey
-	}
-	return "json_extract(" + field.SQLExpr + ", '$." + latKey + "')",
-		"json_extract(" + field.SQLExpr + ", '$." + lonKey + "')"
+	return "", fmt.Errorf("geo operator %s does not take %T", op, value)
 }
 
 func geoUnsupported(d dialect.Dialect, op FilterOperator, shape string) error {

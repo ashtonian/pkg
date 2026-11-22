@@ -15,8 +15,8 @@ import (
 	"github.com/ashtonian/pkg/parse/filter"
 )
 
-// GEN-15: a server type that embeds its wire type is the same
-// resource as the type written flat.
+// A server type that embeds its wire type is the same resource as the type
+// written flat.
 
 type deviceFlat struct {
 	ID       string `json:"id"        db:"id"        parse:"filter,sort"`
