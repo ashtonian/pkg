@@ -216,6 +216,49 @@ func TestStructFields_TheShallowerFieldTakesAName(t *testing.T) {
 	}
 }
 
+type settledA struct {
+	ID string `db:"a_id"`
+}
+
+type settledB struct {
+	ID string `db:"b_id"`
+}
+
+// settledInner's two ID fields tie: encoding/json writes neither.
+type settledInner struct {
+	settledA
+	settledB
+}
+
+// settledRow's own ID settles the name settledInner's fields tie over.
+type settledRow struct {
+	settledInner
+	ID   string `db:"id"`
+	Name string `json:"name" db:"name"`
+}
+
+// A row whose own field settles a tie inside an embedded struct is the row
+// encoding/json writes; the embedded struct walked alone is ambiguous.
+func TestStructFields_ARowSettlesAnEmbeddedTie(t *testing.T) {
+	s, err := core.StructFieldsOf(reflect.TypeFor[settledRow](), "json", "db")
+	require.NoError(t, err)
+	var names []string
+	for _, f := range s.Fields {
+		names = append(names, f.External)
+	}
+	data, err := json.Marshal(settledRow{ID: "outer"})
+	require.NoError(t, err)
+	assert.JSONEq(t, `{"ID":"outer","name":""}`, string(data))
+	assert.Equal(t, []string{"ID", "name"}, names)
+	id, ok := s.External("ID")
+	require.True(t, ok)
+	assert.Len(t, id.Route, 1, "the row's own ID")
+
+	_, err = core.StructFieldsOf(reflect.TypeFor[settledInner](), "json", "db")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), `"ID"`)
+}
+
 type walkMisspelt struct {
 	Name string `json:"name" parse:"fitler"`
 }

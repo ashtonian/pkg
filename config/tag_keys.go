@@ -33,9 +33,7 @@ func misspeltTagKeys(shape *gowalker.Shape) []misspeltTagKey {
 		if d.State == gowalker.Skipped {
 			continue
 		}
-		// Compiling the view already refused a tag TagKeys cannot read.
-		keys, _ := gowalker.TagKeys(d.GoField.Tag)
-		for _, key := range keys {
+		for key := range d.TagKeys() {
 			if meant, ok := gowalker.MisspeltTagKey(key, tagKeys); ok {
 				found = append(found, misspeltTagKey{declaring: d.DeclaringType, field: d.GoField.Name, written: key, meant: meant})
 			}

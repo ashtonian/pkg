@@ -83,12 +83,14 @@ func schemaMetadata(t reflect.Type) *schemaEntry {
 }
 
 // buildSchema records a type's graph and its structural errors in its entry:
-// diagnostics read the graph of a type whose reload tags are invalid.
+// diagnostics read the graph of a type whose reload tags are invalid. The
+// graph follows view's compiled shapes, so a section's node reads the same
+// shape its parent's field reached, without compiling the section's type.
 func buildSchema(view *gowalker.Schema) (*schemaEntry, error) {
-	b := &schemaBuilder{nodes: map[reflect.Type]*schemaNode{}}
-	n := b.node(view.Type())
+	b := &schemaBuilder{root: view, nodes: map[*gowalker.Shape]*schemaNode{}}
+	n := b.node(view.Root())
 	if b.err == nil {
-		b.err = checkReloadTags(n)
+		b.err = checkReloadTags(view)
 	}
 	e := &schemaEntry{node: n, err: b.err}
 	seen := map[*schemaNode]bool{}
@@ -166,36 +168,40 @@ func rootSchema(t reflect.Type) (*schemaNode, error) {
 	return n, nil
 }
 
+// schemaBuilder builds the graph of root's type from root's compiled shapes.
 type schemaBuilder struct {
-	nodes map[reflect.Type]*schemaNode
+	root  *gowalker.Schema
+	nodes map[*gowalker.Shape]*schemaNode
 	err   error
 }
 
-func (b *schemaBuilder) node(t reflect.Type) *schemaNode {
-	t = derefType(t)
-	if n, ok := b.nodes[t]; ok {
+// node is the node of shape, a shape of root's graph, past its pointers.
+func (b *schemaBuilder) node(shape *gowalker.Shape) *schemaNode {
+	shape = shapeBase(shape)
+	if n, ok := b.nodes[shape]; ok {
 		return n // a recursive type points back at its own node
 	}
+	t := shape.Type()
 	n := &schemaNode{typ: t}
-	b.nodes[t] = n
+	b.nodes[shape] = n
 	switch k := t.Kind(); {
 	case k == reflect.Interface:
 		n.kind = nodeDynamic
 	case isBranch(t):
 		n.kind = nodeBranch
 		n.byKey = map[string]*schemaField{}
-		b.fields(n)
+		b.fields(n, shape)
 	case opaque(t):
 		n.kind = nodeLeaf
 	case k == reflect.Map && t.Key().Kind() == reflect.String:
 		n.kind = nodeMap
-		n.elem = b.node(t.Elem())
+		n.elem = b.node(shape.Elem())
 	case k == reflect.Map:
 		n.kind = nodeLeaf
-		n.elem = b.node(t.Elem()) // decoded whole for diagnostics, but element tags still apply
+		n.elem = b.node(shape.Elem()) // decoded whole for diagnostics, but element tags still apply
 	case (k == reflect.Slice || k == reflect.Array) && t.Elem().Kind() != reflect.Uint8:
 		n.kind = nodeList
-		n.elem = b.node(t.Elem())
+		n.elem = b.node(shape.Elem())
 	default:
 		n.kind = nodeLeaf
 	}
@@ -205,10 +211,10 @@ func (b *schemaBuilder) node(t reflect.Type) *schemaNode {
 
 // fields annotates the shared view with config policy, retaining its handles
 // and compiled access routes instead of rediscovering struct fields.
-func (b *schemaBuilder) fields(n *schemaNode) {
-	view, err := compileView(n.typ)
+func (b *schemaBuilder) fields(n *schemaNode, shape *gowalker.Shape) {
+	view, err := b.root.At(shape)
 	if err != nil {
-		b.fail(err)
+		b.fail(viewError(n.typ, err))
 		return
 	}
 	n.view = view
@@ -222,7 +228,7 @@ func (b *schemaBuilder) fields(n *schemaNode) {
 			b.fail(fmt.Errorf("%w: %w", ErrSchema, err))
 			return
 		}
-		f := &schemaField{key: field.Name(), reload: fieldReload(field), sf: sf, index: field.Index(), tagged: fieldSensitive(field), named: nameSensitive(sf), node: b.node(sf.Type), access: access}
+		f := &schemaField{key: field.Name(), reload: fieldReload(field), sf: sf, index: field.Index(), tagged: fieldSensitive(field), named: nameSensitive(sf), node: b.node(field.Shape()), access: access}
 		n.fields = append(n.fields, f)
 		n.byKey[f.key] = f
 	}

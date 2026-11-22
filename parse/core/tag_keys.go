@@ -34,10 +34,8 @@ func (m misspeltTagKey) err() error {
 // field-name and column tags are not compared: other libraries' keys sit one
 // character from them, bson beside json.
 func misspeltTagKeys(d gowalker.Declaration, k fieldsKey) []misspeltTagKey {
-	// Compiling the walk already refused a tag TagKeys cannot read.
-	keys, _ := gowalker.TagKeys(d.GoField.Tag)
 	var found []misspeltTagKey
-	for _, key := range keys {
+	for key := range d.TagKeys() {
 		if key == k.name || key == k.column {
 			continue
 		}
