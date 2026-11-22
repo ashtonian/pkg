@@ -57,7 +57,7 @@ func TestValue(t *testing.T) {
 		{"decimal text", "12345678901234567890.123456789012345678", "12345678901234567890.123456789012345678", true},
 		{"text with an exponent and a scale", "1.500e2", "150", true},
 		{"negative zero", "-0.0", "0", true},
-		{"blob text", []byte("10.50"), "10.5", true},
+		{"a BLOB of decimal text", []byte("10.50"), "", false},
 		{"a member's JSON string", `"9.50"`, "9.5", true},
 		{"a member's JSON string with an exponent", `"1e3"`, "", false},
 		{"a malformed JSON string", `"9.5`, "", false},

@@ -143,6 +143,9 @@ func TestDecimal(t *testing.T) {
 		{"a missing member", `parse_decimal('{}' -> '$.p')`, nil},
 		{"text that is no number", "parse_decimal('ten')", nil},
 		{"a blob of no text", "parse_decimal(x'00')", nil},
+		{"a blob of decimal text", "parse_decimal(CAST('10.50' AS BLOB))", nil},
+		{"a blob literal of decimal text", "parse_decimal(x'31302E3530')", nil},
+		{"the key of a blob of decimal text", "parse_decimal_key(CAST('10.50' AS BLOB))", nil},
 		{"NULL", "parse_decimal(NULL)", nil},
 	}
 	for _, d := range databases(t) {
@@ -174,6 +177,7 @@ func TestDecimalFloat32(t *testing.T) {
 		{"beyond float32's range", "parse_decimal_float32(1e39)", nil},
 		{"a JSON string literal", `parse_decimal_float32('"2.5"')`, nil},
 		{"text that is no number", "parse_decimal_float32('NaN')", nil},
+		{"a blob of decimal text", "parse_decimal_float32(CAST('2.50' AS BLOB))", nil},
 		{"NULL", "parse_decimal_float32(NULL)", nil},
 	}
 	for _, d := range databases(t) {
