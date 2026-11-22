@@ -33,10 +33,10 @@ const supportedDSNs = "want a postgres:// or postgresql:// URL, a sqlite:// or s
 // A postgres:// or postgresql:// URL is PostgreSQL. SQLite is a sqlite:// or
 // sqlite3:// URL, a file: URI (lower case, as SQLite reads it), :memory:,
 // or a path to a .db, .sqlite or .sqlite3 file, before any ?query, that is
-// absolute (/…, C:\…, C:/…, \\server\…) or relative through ./ or ../ (or
+// absolute (/…, C:\…, C:/…, \\server\…, \\?\C:\…) or relative through ./ or ../ (or
 // .\ and ..\). Schemes and extensions match case-insensitively.
 //
-// Anything else is refused, because another driver's DSN can take its form:
+// Anything else is refused, because another driver's DSN takes its form:
 //   - CockroachDB's cockroach:// and crdb://, where the PostgreSQL dialect's
 //     SQL has never been verified (a postgres:// URL to a CockroachDB
 //     cluster cannot be told apart and selects PostgreSQL);
@@ -45,6 +45,11 @@ const supportedDSNs = "want a postgres:// or postgresql:// URL, a sqlite:// or s
 //     Oracle easy connect (dbhost:1521/app.db) also ends as;
 //   - //host/…, Oracle's easy connect, and a one-segment /name.db, which is
 //     go-sql-driver/mysql's /dbname.
+//
+// The accepted forms are SQLite's own and filesystem paths, but any string
+// is a SQLite file name, so a form is evidence, not proof: another driver's
+// DSN that takes one, such as a MySQL user named file (file:pw@tcp(h)/db),
+// selects SQLite, as a postgres:// URL to CockroachDB selects PostgreSQL.
 //
 // Construct the dialect for a refused DSN. Errors name the scheme and never
 // the DSN, which may carry a password.
@@ -65,8 +70,16 @@ func FromDSN(dsn string) (Dialect, error) {
 			return nil, fmt.Errorf("%w: scheme %q: %s", ErrUnknownDSN, scheme, supportedDSNs)
 		}
 	}
-	// A query, such as the modernc driver's ?_pragma=, follows the name.
-	name, _, _ := strings.Cut(dsn, "?")
+	// A query, such as the modernc driver's ?_pragma=, follows the name; the
+	// ? of a Windows extended-length prefix (\\?\C:\…) is part of it.
+	start := 0
+	if strings.HasPrefix(dsn, `\\?\`) {
+		start = len(`\\?\`)
+	}
+	name := dsn
+	if i := strings.IndexByte(dsn[start:], '?'); i >= 0 {
+		name = dsn[:start+i]
+	}
 	if name == ":memory:" || isSQLitePath(name) {
 		return SQLite{}, nil
 	}

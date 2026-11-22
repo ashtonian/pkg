@@ -55,6 +55,9 @@ func TestFromDSN(t *testing.T) {
 		{`.\app.db`, "sqlite"},
 		{`..\backups (old)\app.db`, "sqlite"},
 		{`\\server\share\app.db`, "sqlite"},
+		{`\\?\C:\data\app.db`, "sqlite"},
+		{`\\?\C:\data\app.db?_pragma=busy_timeout(5000)`, "sqlite"},
+		{`\\?\UNC\server\share\app.db`, "sqlite"},
 		{`C:\Users\me@corp\APP.DB`, "sqlite"},
 		{"C:/data/app.db", "sqlite"},
 		{"C://data/app.db", "sqlite"},
@@ -96,6 +99,7 @@ func TestFromDSNRefuses(t *testing.T) {
 		{"bare name with a directory", "data/app.db", "parse: unsupported DSN: " + supportedDSNs},
 		{"upper-case FILE: is a file name", "FILE:app.db", "parse: unsupported DSN: " + supportedDSNs},
 		{"another extension", "./app.dbx", "parse: unsupported DSN: " + supportedDSNs},
+		{"extended-length path to another extension", `\\?\C:\data\app.dbx?x.db`, "parse: unsupported DSN: " + supportedDSNs},
 		{"empty", "", "parse: unsupported DSN: " + supportedDSNs},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

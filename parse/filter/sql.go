@@ -106,13 +106,14 @@ var ErrUnknownDSN = dialect.ErrUnknownDSN
 // alone: PostgresDialect for a postgres:// or postgresql:// URL;
 // SQLiteDialect for a sqlite:// or sqlite3:// URL, a file: URI, :memory:,
 // or an absolute, ./ or ../ path to a .db, .sqlite or .sqlite3 file. It
-// refuses every DSN another driver's could be: CockroachDB's cockroach://
-// and crdb://, where PostgresDialect's SQL has never been verified (a
-// postgres:// URL to a CockroachDB cluster cannot be told apart and selects
-// PostgresDialect); a bare name such as app.db, which keyword/value, MySQL
-// and Oracle DSNs also end as; //host/… and a one-segment /name.db.
-// Construct the dialect for a refused DSN. The error names the scheme,
-// never the DSN.
+// refuses forms other drivers' DSNs take: CockroachDB's cockroach:// and
+// crdb://, where PostgresDialect's SQL has never been verified; a bare name
+// such as app.db, which keyword/value, MySQL and Oracle DSNs also end as;
+// //host/… and a one-segment /name.db. A form is evidence, not proof:
+// another driver's DSN that takes an accepted one, such as a postgres://
+// URL to a CockroachDB cluster or a MySQL user named file, selects that
+// form's dialect. Construct the dialect for a refused DSN. The error names
+// the scheme, never the DSN.
 func DialectFromDSN(dsn string) (Dialect, error) {
 	base, err := dialect.FromDSN(dsn)
 	if err != nil {
