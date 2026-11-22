@@ -510,8 +510,8 @@ func (b *SQLBuilder) buildNode(s *buildState, node *FilterNode) (string, error) 
 // positional (`?`) dialects, repeated and out-of-order placeholders included.
 // rawPlaceholderRe matches whole tokens, so `$1` never matches inside `$10`.
 func (b *SQLBuilder) buildRawSQL(s *buildState, node *FilterNode) (string, error) {
-	if node.RawSQL == "" {
-		return "1=1", nil
+	if strings.TrimSpace(node.RawSQL) == "" { // an empty predicate would admit every row
+		return "", errors.New("filter: raw SQL node has no SQL")
 	}
 	var rebuildErr error
 	out := rawPlaceholderRe.ReplaceAllStringFunc(node.RawSQL, func(tok string) string {
