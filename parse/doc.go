@@ -17,7 +17,7 @@
 //	tp, err := parse.NewResource[Product]("products")
 //	result, err := tp.ParseFilter(`{"status":"active"}`)
 //	patched, err := tp.ApplyPatch(body, existing)
-//	lq := tp.ListQuery(filter.PostgresDialect{})
+//	lq, err := tp.ListQuery(filter.PostgresDialect{})
 //
 // # SchemaRegistry
 //

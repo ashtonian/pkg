@@ -122,6 +122,7 @@ func widgetSchema(t *testing.T) (*filter.ResourceSchema, *filter.SortSchema, *pa
 	if err != nil {
 		t.Fatalf("filter schema: %v", err)
 	}
+	withOwnerKeys(rs)
 	ss, err := filter.GenerateSortSchema[widget](g)
 	if err != nil {
 		t.Fatalf("sort schema: %v", err)
@@ -142,12 +143,12 @@ func TestRelationE2E_Filter_TenantScopedJunction(t *testing.T) {
 
 	// Filter: widgets with tag_id IN ('tag-foo','tag-bar'), bound to tenant t1.
 	// The outer tenant predicate is redundant with the junction-side
-	// predicate emitted by WithTenant — w9 (tenant t2) is unreachable
+	// predicate the bound tenant emits — w9 (tenant t2) is unreachable
 	// because its sole junction row carries tenant_id=t2.
 	ast := &filter.FilterAST{Root: &filter.FilterNode{
 		Field: tagsField, Op: filter.OpIn, Value: []any{"tag-foo", "tag-bar"},
 	}}
-	b := filter.NewSQLBuilder(rs, dialect, filter.WithTenant("t1"))
+	b := filter.NewSQLBuilder(rs, dialect, filter.WithRelationScope(filter.RelationScope{Tenant: "t1"}))
 	res, err := b.Build(ast)
 	if err != nil {
 		t.Fatalf("build filter: %v", err)
@@ -184,7 +185,7 @@ func TestRelationE2E_Filter_CrossTenantBlocked(t *testing.T) {
 	ast := &filter.FilterAST{Root: &filter.FilterNode{
 		Field: tagsField, Op: filter.OpEq, Value: "tag-other",
 	}}
-	b := filter.NewSQLBuilder(rs, filter.SQLiteDialect{}, filter.WithTenant("t1"))
+	b := filter.NewSQLBuilder(rs, filter.SQLiteDialect{}, filter.WithRelationScope(filter.RelationScope{Tenant: "t1"}))
 	res, err := b.Build(ast)
 	if err != nil {
 		t.Fatalf("build filter: %v", err)
@@ -310,7 +311,7 @@ func TestRelationE2E_Facet_TenantScoped(t *testing.T) {
 		rs, filter.SQLiteDialect{},
 		"widgets.tenant_id = ?1", []any{"t1"},
 		[]filter.FacetRequest{{Field: "tags"}},
-		filter.WithFacetTenant("t1"),
+		filter.WithFacetRelationScope(filter.RelationScope{Tenant: "t1"}),
 	)
 	if err != nil {
 		t.Fatalf("build facet: %v", err)
@@ -345,7 +346,7 @@ func TestRelationE2E_Include_TenantScoped(t *testing.T) {
 	q, err := filter.BuildIncludeQuery(
 		rs.Fields["tags"], filter.SQLiteDialect{},
 		[]any{"w1", "w2", "w3"},
-		filter.WithIncludeTenant("t1"),
+		filter.WithIncludeRelationScope(filter.RelationScope{Tenant: "t1"}),
 	)
 	if err != nil {
 		t.Fatalf("build include: %v", err)
@@ -376,7 +377,7 @@ func TestRelationE2E_Include_CapPerOwner(t *testing.T) {
 	rs, _, _ := widgetSchema(t)
 
 	q, err := filter.BuildIncludeQuery(rs.Fields["tags"], filter.SQLiteDialect{}, []any{"w1", "w2"},
-		filter.WithIncludeTenant("t1"), filter.WithMaxIncludePerRelation(1))
+		filter.WithIncludeRelationScope(filter.RelationScope{Tenant: "t1"}), filter.WithMaxIncludePerRelation(1))
 	if err != nil {
 		t.Fatalf("build include: %v", err)
 	}

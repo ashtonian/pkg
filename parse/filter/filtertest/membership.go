@@ -28,7 +28,8 @@ type LookupColumn struct {
 
 // LookupTables are the shapes authorization resolves through: a reflexive
 // closure over record ids, a pair relation with users, groups, tenants and
-// ended pairs, grants of UUID references, and a nullable integer column.
+// ended pairs, grants of UUID references, a nullable integer column, and
+// labels that are one record's id and another's name.
 func LookupTables() []LookupTable {
 	text := func(name string) LookupColumn { return LookupColumn{Name: name, Type: core.FieldTypeString} }
 	return []LookupTable{
@@ -59,6 +60,11 @@ func LookupTables() []LookupTable {
 			Name:    "count_marks",
 			Columns: []LookupColumn{text("mark"), {Name: "value", Type: core.FieldTypeInt}},
 			Rows:    [][]any{{"big", int64(9007199254740993)}, {"small", int64(1)}, {"none", nil}},
+		},
+		{
+			Name:    "record_labels",
+			Columns: []LookupColumn{text("label"), text("kind")},
+			Rows:    [][]any{{"beta", "x"}, {"c", "x"}, {"Alpha", "y"}},
 		},
 	}
 }

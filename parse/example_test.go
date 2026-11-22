@@ -27,7 +27,11 @@ func Example() {
 	}
 
 	// A list request: filter, sort and page size compile to SQL fragments.
-	list, err := tp.ListQuery(filter.PostgresDialect{}).Build(
+	lq, err := tp.ListQuery(filter.PostgresDialect{})
+	if err != nil {
+		panic(err)
+	}
+	list, err := lq.Build(
 		filter.ListFilter(`{"status":"active","name":{"$like":"sensor-%"}}`),
 		filter.ListSort("name"),
 		filter.ListLimit(25),
@@ -142,7 +146,7 @@ func ExampleSchemaRegistry() {
 func ExampleNewResource_facetedListPage() {
 	type Product struct {
 		ID        string  `json:"id"         parse:"filter"              filter_ops:"eq,in" indexed:"true"`
-		Name      string  `json:"name"       parse:"filter,patch,search" filter_ops:"eq,ilike" patch_ops:"replace" search_weight:"A" label:"Product Name" group:"basics" order:"1"`
+		Name      string  `json:"name"       parse:"filter,patch,search" filter_ops:"eq,ilike" patch_ops:"replace" label:"Product Name" group:"basics" order:"1"`
 		Category  string  `json:"category"   parse:"filter,facet"        filter_ops:"eq,in" facet:"terms:10" label:"Category" group:"browse" order:"1" enum:"electronics,clothing,books,home"`
 		Price     float64 `json:"price"      parse:"filter,facet"        filter_ops:"gte,lte" facet:"range:0-50,50-100,100+" label:"Price" group:"browse" order:"2"`
 		Condition string  `json:"condition"  parse:"filter,facet"        filter_ops:"eq,in" facet:"terms" label:"Condition" group:"details" order:"1" enum:"new,like_new,used"`
@@ -171,7 +175,7 @@ func ExampleNewResource_facetedListPage() {
 	fmt.Println("parsed:", ast.Root != nil)
 
 	// List query with count + facets.
-	lq := tp.ListQuery(filter.PostgresDialect{})
+	lq, _ := tp.ListQuery(filter.PostgresDialect{})
 	result, _ := lq.Build(
 		filter.ListFilterAST(ast),
 		filter.ListSort("-created_at"),
@@ -253,7 +257,7 @@ func ExampleResource_ListQuery_customComposition() {
 	}
 
 	tp := parse.MustResource[Item]("items")
-	lq := tp.ListQuery(filter.PostgresDialect{})
+	lq, _ := tp.ListQuery(filter.PostgresDialect{})
 	result, _ := lq.Build(filter.ListFilter(`{"status":"active"}`))
 
 	// Compose with custom SQL using the returned parts.

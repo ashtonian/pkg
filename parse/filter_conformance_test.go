@@ -223,10 +223,13 @@ func canonicalCases() []caseInput {
 		{name: "err_int_fraction", input: map[string]any{"count": 1.5}},
 		{name: "err_bool_type", input: map[string]any{"active": "true"}},
 		{name: "err_like_trailing_escape", input: map[string]any{"name": map[string]any{"$like": `abc\`}}},
-		// An object with no known operator key is a literal value, so an
-		// unknown $-key on an int field is a type mismatch, not an operator
-		// error — on both sides.
-		{name: "err_unknown_dollar_key_is_literal", input: map[string]any{"count": map[string]any{"$bogus": 1}}},
+		// An object whose keys all start with $ is an operator object, so an
+		// unknown $-key is an unknown operator, on a document field too —
+		// on both sides. A document with such keys is written with $eq.
+		{name: "err_unknown_dollar_key", input: map[string]any{"count": map[string]any{"$bogus": 1}}},
+		{name: "err_misspelt_operator_on_document", input: map[string]any{"meta": map[string]any{"$contain": map[string]any{"env": "prod"}}}},
+		{name: "json_eq_dollar_keyed_document", input: map[string]any{"meta": map[string]any{"$eq": map[string]any{"$env": "prod"}}}},
+		{name: "json_eq_mixed_keyed_document", input: map[string]any{"meta": map[string]any{"$env": "prod", "region": "eu"}}},
 		{name: "err_operator_key_mixed_with_literal", input: map[string]any{"count": map[string]any{"$gt": 1, "x": 2}}},
 		{name: "err_or_not_array", input: map[string]any{"$or": map[string]any{"status": "active"}}},
 		{name: "err_or_branch_not_object", input: map[string]any{"$or": []any{"active"}}},

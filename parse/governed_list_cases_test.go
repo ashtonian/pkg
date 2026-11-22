@@ -368,7 +368,7 @@ func (m governedMemory) list(t *testing.T, r *parse.Resource[govDocument], filte
 	for _, tenant := range slices.Sorted(maps.Keys(byTenant)) {
 		f := req.Filter
 		if f != nil {
-			f, err = filter.ResolveMemberships(ctx, f, m, filter.ResolveTenant(tenant))
+			f, err = filter.ResolveMemberships(ctx, f, m, filter.ResolveRelationScope(filter.RelationScope{Tenant: tenant}))
 			require.NoError(t, err)
 		}
 		var keys []any
@@ -381,7 +381,7 @@ func (m governedMemory) list(t *testing.T, r *parse.Resource[govDocument], filte
 			}
 		}
 		for _, name := range governedIncludes {
-			rows, err := filter.ResolveInclude(ctx, schema.Fields[name], keys, m, filter.WithIncludeTenant(tenant))
+			rows, err := filter.ResolveInclude(ctx, schema.Fields[name], keys, m, filter.WithIncludeRelationScope(filter.RelationScope{Tenant: tenant}))
 			require.NoError(t, err)
 			if len(rows.IDs) == 0 {
 				continue

@@ -96,10 +96,12 @@ func runRelationAlgebra(t *testing.T, rdb relDB) {
 	seedRelDB(t, rdb)
 	p := relParser(t)
 
+	lq, err := p.ListQuery(rdb.dialect)
+	require.NoError(t, err)
 	for name, tc := range relCases {
 		t.Run(name, func(t *testing.T) {
-			res, err := p.ListQuery(rdb.dialect).Build(
-				filter.ListFilter(tc.filter), filter.ListPolicy(tenantA()), filter.ListTenant("A"),
+			res, err := lq.Build(
+				filter.ListFilter(tc.filter), filter.ListPolicy(tenantA()), filter.ListRelationScope(filter.RelationScope{Tenant: "A"}),
 				filter.ListLimit(100), filter.ListWithCount(true))
 			require.NoError(t, err)
 			got := queryIDs(t, rdb.db, "SELECT widgets.id FROM widgets "+res.Fragment, res.Args)
@@ -113,14 +115,14 @@ func runRelationAlgebra(t *testing.T, rdb relDB) {
 	}
 
 	t.Run("missing tenant fails closed", func(t *testing.T) {
-		_, err := p.ListQuery(rdb.dialect).Build(filter.ListFilter(`{"tags":"red"}`), filter.ListPolicy(tenantA()))
+		_, err := lq.Build(filter.ListFilter(`{"tags":"red"}`), filter.ListPolicy(tenantA()))
 		require.Error(t, err)
 	})
 
 	t.Run("facets count owners once", func(t *testing.T) {
 		// w1 matches through two junction rows; it must count once.
-		res, err := p.ListQuery(rdb.dialect).Build(
-			filter.ListFilter(`{"tags":{"$in":["red","blue"]}}`), filter.ListPolicy(tenantA()), filter.ListTenant("A"),
+		res, err := lq.Build(
+			filter.ListFilter(`{"tags":{"$in":["red","blue"]}}`), filter.ListPolicy(tenantA()), filter.ListRelationScope(filter.RelationScope{Tenant: "A"}),
 			filter.ListFacets("status", "tags"))
 		require.NoError(t, err)
 		rows, err := rdb.db.Query(res.Facets.SQL, res.Facets.Args...)
@@ -142,7 +144,7 @@ func runRelationAlgebra(t *testing.T, rdb relDB) {
 	t.Run("includes stay tenant-scoped and capped per owner", func(t *testing.T) {
 		field := p.FilterSchema().Fields["tags"]
 		read := func(opts ...filter.IncludeQueryOption) map[string][]string {
-			q, err := filter.BuildIncludeQuery(field, rdb.dialect, []any{"w1", "w2", "shared"}, append(opts, filter.WithIncludeTenant("A"))...)
+			q, err := filter.BuildIncludeQuery(field, rdb.dialect, []any{"w1", "w2", "shared"}, append(opts, filter.WithIncludeRelationScope(filter.RelationScope{Tenant: "A"}))...)
 			require.NoError(t, err)
 			rows, err := rdb.db.Query(q.SQL, q.Args...)
 			require.NoError(t, err, q.SQL)

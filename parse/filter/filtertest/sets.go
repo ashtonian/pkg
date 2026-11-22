@@ -138,17 +138,17 @@ func setCase(field, op string, members []any, want string) Case {
 
 // RunSets evaluates every SetCases case on backend, which evaluates
 // against Records.
-func RunSets(t *testing.T, name string, backend Backend) {
+func RunSets(t *testing.T, backend Backend) {
 	schema, err := Schema()
 	if err != nil {
 		t.Fatalf("filtertest: schema: %v", err)
 	}
-	run(t, name, filter.NewFilterParser(schema, SetConfig()), SetCases(), backend)
+	run(t, filter.NewFilterParser(schema, SetConfig()), SetCases(), backend)
 }
 
 // RunPathSets evaluates every PathSetCases case, parsed against schema
 // (PathSchema or a copy declaring the backend's storage), on backend, which
 // evaluates against PathRecords.
 func RunPathSets(t *testing.T, schema *filter.ResourceSchema, backend Backend) {
-	run(t, "", filter.NewFilterParser(schema, SetConfig()), PathSetCases(), backend)
+	run(t, filter.NewFilterParser(schema, SetConfig()), PathSetCases(), backend)
 }

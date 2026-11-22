@@ -77,12 +77,12 @@ func TestSubqueryRelation_AppendsTenantPredicate(t *testing.T) {
 		Value: []any{"t1", "t2"},
 	}}
 
-	builder := filter.NewSQLBuilder(schema, filter.PostgresDialect{}, filter.WithTenant("tenant-A"))
+	builder := filter.NewSQLBuilder(schema, filter.PostgresDialect{}, filter.WithRelationScope(filter.RelationScope{Tenant: "tenant-A"}))
 	res, err := builder.Build(ast)
 	if err != nil {
 		t.Fatalf("build: %v", err)
 	}
-	if !strings.Contains(res.Where, "rel__.tenant_id =") {
+	if !strings.Contains(res.Where, "widget_tags.tenant_id =") {
 		t.Errorf("expected tenant predicate inside subquery, got: %q", res.Where)
 	}
 	hasTenantArg := false
@@ -111,7 +111,7 @@ func TestRelation_NoTenantBound_FailsClosed(t *testing.T) {
 	if _, buildErr := filter.NewSQLBuilder(schema, filter.PostgresDialect{}).Build(ast); buildErr == nil || !strings.Contains(buildErr.Error(), "tenant-scoped") {
 		t.Fatalf("build without a tenant: buildErr = %v, want tenant-scoped error", buildErr)
 	}
-	res, err := filter.NewSQLBuilder(schema, filter.PostgresDialect{}, filter.WithUnscopedRelations()).Build(ast)
+	res, err := filter.NewSQLBuilder(schema, filter.PostgresDialect{}, filter.WithRelationScope(filter.RelationScope{Unscoped: true})).Build(ast)
 	if err != nil {
 		t.Fatalf("unscoped build: %v", err)
 	}
@@ -140,7 +140,7 @@ func TestSubqueryRelation_TenantOptOut(t *testing.T) {
 	}
 
 	ast := &filter.FilterAST{Root: &filter.FilterNode{Field: tagsField, Op: filter.OpIn, Value: []any{"a"}}}
-	builder := filter.NewSQLBuilder(schema, filter.PostgresDialect{}, filter.WithTenant("ignored"))
+	builder := filter.NewSQLBuilder(schema, filter.PostgresDialect{}, filter.WithRelationScope(filter.RelationScope{Tenant: "ignored"}))
 	res, err := builder.Build(ast)
 	if err != nil {
 		t.Fatalf("build: %v", err)

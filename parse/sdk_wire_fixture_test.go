@@ -97,13 +97,15 @@ func buildSDKWire(t *testing.T) []byte {
 	cursor := ""
 	for n := 0; ; n++ {
 		require.Less(t, n, 10, "walk did not terminate")
-		opts := []filter.ListOption{filter.ListSort(wire.Sort), filter.ListLimit(wire.PageSize), filter.ListUnscopedRelations()}
+		opts := []filter.ListOption{filter.ListSort(wire.Sort), filter.ListLimit(wire.PageSize), filter.ListRelationScope(filter.RelationScope{Unscoped: true})}
 		if cursor != "" {
 			opts = append(opts, filter.ListCursor(cursor))
 		} else {
 			opts = append(opts, filter.ListFacets("name"))
 		}
-		res, listErr := p.ListQuery(filter.SQLiteDialect{}).Build(opts...)
+		lq, listErr := p.ListQuery(filter.SQLiteDialect{})
+		require.NoError(t, listErr)
+		res, listErr := lq.Build(opts...)
 		require.NoError(t, listErr)
 		rows, listErr := db.Query("SELECT id, name FROM wire_items "+res.Fragment, res.Args...)
 		require.NoError(t, listErr)

@@ -71,6 +71,17 @@ func TestDeclaredRelations_Facets_Postgres(t *testing.T) {
 	})
 }
 
+func TestDeclaredRelations_UnknownPolicy_Postgres(t *testing.T) {
+	db := dbtest.Postgres(t)
+	for _, stmt := range relationFixtureSQL(`'2026-01-01T00:00:00Z'`, "TIMESTAMPTZ") {
+		_, err := db.Exec(stmt)
+		require.NoError(t, err, stmt)
+	}
+	runRelationUnknownPolicy(t, relationResources(t), filter.PostgresDialect{}, func(t *testing.T, q string, args []any) [][]any {
+		return queryRows(t, db, q, args)
+	})
+}
+
 func TestDeclaredRelations_Writes_Postgres(t *testing.T) {
 	db := dbtest.Postgres(t)
 	for _, stmt := range relationFixtureSQL(`'2026-01-01T00:00:00Z'`, "TIMESTAMPTZ") {

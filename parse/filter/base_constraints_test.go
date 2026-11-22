@@ -28,8 +28,9 @@ func TestBuildBaseConstraints_FailClosedWithoutATenant(t *testing.T) {
 	}
 	schema := func(tenant core.FieldType, kind reflect.Kind) *filter.ResourceSchema {
 		return &filter.ResourceSchema{
-			Name:   "items",
-			Fields: map[string]*filter.FieldSchema{},
+			Name:       "items",
+			PrimaryKey: "id",
+			Fields:     map[string]*filter.FieldSchema{},
 			SystemFields: map[string]*filter.FieldSchema{
 				"id":         {ExternalName: "id", SQLExpr: "items.id", DataType: core.FieldTypeInt, NumberKind: reflect.Int64},
 				"tenant_id":  {ExternalName: "tenant_id", SQLExpr: "items.tenant_id", DataType: tenant, NumberKind: kind},
@@ -54,7 +55,7 @@ func TestBuildBaseConstraints_FailClosedWithoutATenant(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			pc := filter.BuildBaseConstraints(tt.tenantCol, tt.tenantID, "deleted_at", false)
-			res, err := filter.NewListQuery(tt.schema, nil, filter.SQLiteDialect{}).Build(filter.ListPolicy(pc))
+			res, err := mustListQuery(t, tt.schema, nil, filter.SQLiteDialect{}).Build(filter.ListPolicy(pc))
 			require.NoError(t, err, "a missing tenant is never a request error")
 			rows, err := db.Query("SELECT items.id FROM items "+res.Fragment, res.Args...)
 			require.NoError(t, err)

@@ -143,7 +143,10 @@ func TestResource_ApplyPatch(t *testing.T) {
 
 func TestResource_ListQuery(t *testing.T) {
 	tp := parse.MustResource[TestDevice]("test_devices")
-	lq := tp.ListQuery(filter.PostgresDialect{})
+	lq, err := tp.ListQuery(filter.PostgresDialect{})
+	if err != nil {
+		t.Fatal(err)
+	}
 	result, err := lq.Build(
 		filter.ListFilter(`{"status":"active"}`),
 		filter.ListLimit(10),

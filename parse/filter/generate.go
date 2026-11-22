@@ -84,16 +84,8 @@ func generateFilterSchema(g *core.SchemaGenerator, t reflect.Type) (*ResourceSch
 
 		var allowedOps []FilterOperator
 		if opsTag := tags.FilterOps; opsTag != "" {
-			for p := range strings.SplitSeq(opsTag, ",") {
-				p = strings.TrimSpace(p)
-				if p == "" {
-					continue
-				}
-				op := FilterOperator(p)
-				if !ValidFilterOps[op] {
-					return nil, fmt.Errorf("field %s: unknown filter operator %q", field.GoName, p)
-				}
-				allowedOps = append(allowedOps, op)
+			if allowedOps, err = parseOperatorList(strings.Split(opsTag, ",")); err != nil {
+				return nil, fmt.Errorf("field %s: %w", field.GoName, err)
 			}
 		} else {
 			defaults, err := defaultFilterOpsFor(g, fieldType)
@@ -361,18 +353,13 @@ var defaultFilterOps = map[core.FieldType][]FilterOperator{
 
 // defaultFilterOpsFor returns a fresh copy of the default operators for a
 // field type: GeneratorOptions.DefaultFilterOps when it names the type,
-// otherwise the package defaults. Every schema owns its slice — sharing the
-// package-level slice let configuring one resource rewrite another's
-// operators.
+// otherwise the package defaults. Every schema owns its slice, so
+// configuring one resource's operators cannot change another's.
 func defaultFilterOpsFor(g *core.SchemaGenerator, ft core.FieldType) ([]FilterOperator, error) {
 	if names, ok := g.Opts.DefaultFilterOps[ft]; ok {
-		ops := make([]FilterOperator, 0, len(names))
-		for _, name := range names {
-			op := FilterOperator(strings.TrimSpace(name))
-			if !ValidFilterOps[op] {
-				return nil, fmt.Errorf("DefaultFilterOps[%s]: unknown filter operator %q", ft, name)
-			}
-			ops = append(ops, op)
+		ops, err := parseOperatorList(names)
+		if err != nil {
+			return nil, fmt.Errorf("DefaultFilterOps[%s]: %w", ft, err)
 		}
 		return ops, nil
 	}
@@ -390,36 +377,6 @@ func DefaultFilterOps() map[core.FieldType][]FilterOperator {
 		out[k] = ops
 	}
 	return out
-}
-
-// FilterMeta describes available filter fields for an entity.
-type FilterMeta struct {
-	Fields []FilterFieldMeta `json:"fields"`
-}
-
-// FilterFieldMeta describes a single filterable field.
-type FilterFieldMeta struct {
-	Name      string   `json:"name"`
-	Type      string   `json:"type"`
-	Operators []string `json:"operators,omitempty"`
-}
-
-// FilterMetaFromSchema derives FilterMeta from a ResourceSchema.
-func FilterMetaFromSchema(schema *ResourceSchema) *FilterMeta {
-	if schema == nil {
-		return &FilterMeta{}
-	}
-	meta := &FilterMeta{Fields: make([]FilterFieldMeta, 0, len(schema.Fields))}
-	for _, fs := range schema.Fields {
-		ops := make([]string, len(fs.AllowedOperators))
-		for i, op := range fs.AllowedOperators {
-			ops[i] = string(op)
-		}
-		meta.Fields = append(meta.Fields, FilterFieldMeta{
-			Name: fs.ExternalName, Type: string(fs.DataType), Operators: ops,
-		})
-	}
-	return meta
 }
 
 // unkeyedFacetTypes are the value types whose PostgreSQL text differs from
@@ -453,78 +410,6 @@ var (
 	valuerType        = reflect.TypeFor[driver.Valuer]()
 	textMarshalerType = reflect.TypeFor[encoding.TextMarshaler]()
 )
-
-// RepositoryScope is the floor of a repository read: the request tenant when
-// the table is tenant-scoped, and soft-delete masking.
-type RepositoryScope struct {
-	TenantColumn string
-	// TenantID is the tenant key as the tenant column holds it: a string or
-	// a canonical UUID string, or an int64 / uint64 for an integer column.
-	// parse.Resource normalizes Scope.Tenant to it. Nil or "" admits no row
-	// (BuildBaseConstraints).
-	TenantID       any
-	DeleteColumn   string
-	IncludeDeleted bool
-}
-
-// ComposeConstraints is the policy tree a repository read applies, the same
-// on every backend: governance when present — it scopes
-// tenancy itself, grants included — otherwise the tenant floor; soft-delete
-// masking; then authorization. The parts are ANDed under a new root, so
-// neither input is modified and a cached governance tree is never extended.
-func ComposeConstraints(scope RepositoryScope, governance, authz *PolicyConstraints) *PolicyConstraints {
-	root := &PolicyConstraints{Source: "repository"}
-	if governance != nil && !governance.IsEmpty() {
-		root.And = append(root.And, governance)
-		if scope.DeleteColumn != "" && !scope.IncludeDeleted {
-			root.And = append(root.And, BuildBaseConstraints("", nil, scope.DeleteColumn, false))
-		}
-	} else {
-		root.And = append(root.And, BuildBaseConstraints(scope.TenantColumn, scope.TenantID, scope.DeleteColumn, scope.IncludeDeleted))
-	}
-	if authz != nil && !authz.IsEmpty() {
-		root.And = append(root.And, authz)
-	}
-	return root
-}
-
-// BuildBaseConstraints builds PolicyConstraints for tenant isolation and soft-delete.
-//
-// tenantID is the tenant key in the tenant column's type (RepositoryScope).
-//
-// Fail-closed tenant scoping: when tenantCol is set, the tenant floor is
-// ALWAYS emitted. Without a tenant — nil or "" — it is UnknownConstraint,
-// which admits no row on every tenant column type, instead of widening the
-// query to every tenant or failing as a request error. Repos additionally
-// reject the missing tenant up front with a typed error; the floor here is
-// defense in depth for any caller that bypasses that gate.
-func BuildBaseConstraints(tenantCol string, tenantID any, deleteCol string, includeSoftDeleted bool) *PolicyConstraints {
-	pc := &PolicyConstraints{Source: "repository_base"}
-	switch {
-	case tenantCol == "":
-	case tenantID == nil || tenantID == "":
-		pc.Constraints = append(pc.Constraints, UnknownConstraint())
-	default:
-		pc.Constraints = append(pc.Constraints, &PolicyConstraint{
-			Field: tenantCol, Operator: OpEq, Value: tenantID,
-		})
-	}
-	if deleteCol != "" && !includeSoftDeleted {
-		pc.Constraints = append(pc.Constraints, &PolicyConstraint{
-			Field: deleteCol, Operator: OpNull, Value: true,
-		})
-	}
-	return pc
-}
-
-// ToAnySlice converts a []string to []any.
-func ToAnySlice(ss []string) []any {
-	result := make([]any, len(ss))
-	for i, s := range ss {
-		result[i] = s
-	}
-	return result
-}
 
 // addDocSortPaths adds the path sort keys a document field declares.
 func addDocSortPaths(g *core.SchemaGenerator, fields map[string]*SortFieldSchema, tableName string, field *core.Field, dt core.FieldType) error {

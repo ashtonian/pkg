@@ -166,7 +166,7 @@ func TestFieldNamedLikeSuffixNotSplit(t *testing.T) {
 // the user query — "50%" matched as a wildcard.
 func TestSearchFallbackEscapesLike(t *testing.T) {
 	schema := &filter.SearchSchema{
-		Fields: []filter.SearchField{{Name: "name", SQLExpr: "items.name", Weight: filter.SearchWeightA}},
+		Fields: []filter.SearchField{{Name: "name", SQLExpr: "items.name"}},
 	}
 	where, args, err := filter.AndSearch(schema, filter.SQLiteDialect{}, "TRUE", nil, 0, "50%_x")
 	if err != nil {

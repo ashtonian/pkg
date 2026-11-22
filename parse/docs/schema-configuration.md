@@ -23,7 +23,6 @@ Construct one `parse.Resource[T]` for each resource at startup. Schema generatio
 | `relation` | `"device_tags,device_id,tag_id[,pk[,tenant_col]]"` | filter, patch, facet, include | A virtual relation field: the table holding the pairs, its owner and target columns (see Relations); every part must be an identifier |
 | `relation_name` | `"tag_ids"` | hidden relation fields | Explicit external name when a virtual relation is hidden by the field-name tag (for example `json:"-"`); preserves acronym spellings. Ordinary visible field names are unchanged |
 | `facet` | `"terms:20"`, `"range:0-50,50-100,100+"` | facet | Facet aggregation |
-| `search_weight` | `"A"` … `"D"` | search | Full-text weight |
 | `elements` | `"by:string;priority:int"` | filter | Typed members of each element of a JSON array, filtered together with `$some` / `$none` ([array elements](queries.md#array-elements)); a slice-of-struct document derives them from its element type's members tagged `parse:"filter"` |
 | `paths` | `"color:string:filter+sort+facet;size:int:filter+indexed;dims.w:float;tags:[]string"` | filter, sort, facet | Typed members of a map / `any` document, filterable (with `sort` sortable, with `facet` a terms facet) as `<field>.<member>` ([JSON paths](queries.md#json-paths)); `[]<type>` declares an array of that type, filtered by `$contains` and its elements by `$some` / `$none` ([array elements](queries.md#array-elements)), never sorted, faceted by terms only; struct documents derive theirs from members tagged `parse:"filter"` / `parse:"sort"` / `parse:"facet"` |
 | `storage` | `"jsonb"` (default), `"json"`, `"text"`, `"scalar:decimal"` | filter, sort | How a document column holds its JSON; `scalar:<type>` marks a struct the database holds as that scalar — `string`, `int`, `float`, `decimal`, `bool`, `timestamp` or `uuid` — which filters and sorts as one (no paths) |
@@ -99,6 +98,7 @@ encoding/json ignores the option on a type that marshals itself (`json.Marshaler
 | `WithSortMaxFields(n)` | int | `3` | Sort fields a request may name |
 | `WithSearchParam(p)` | string | `"search"` | Search parameter a search schema advertises (`filter.ParamSearch`) |
 | `WithForeignTagKeys(keys...)` | `...string` | none | Tag keys another library reads, left alone though one is a character from a key parse reads; calls accumulate |
+| `WithSearchLanguage(lang)` | string | `"english"` | PostgreSQL text search configuration a search schema searches with; a name that is no (schema-qualified) identifier fails schema generation |
 | `GeneratorOptions.DefaultFilterOps` | `map[FieldType][]string` | filter package defaults | Default operators per type; each must apply to the type (`filter.OperatorsFor`) |
 | `GeneratorOptions.DefaultPatchOps` | `map[FieldType][]string` | patch package defaults | Default patch operations per type |
 

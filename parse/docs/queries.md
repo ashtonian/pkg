@@ -22,6 +22,10 @@ JSON filters (`{"status":"active","price":{"$gte":10}}`) and flat query paramete
 | `near` / `within` / `intersects` | `{"$near": {"lat": 1, "lon": 2, "distance": "5km"}}` | — | Geo, WGS 84: PostGIS, SQLite through `parsesqlite`'s functions, and `filter.Evaluate` decide them alike on a JSONB point; native `geography` / `geometry` storage needs PostGIS |
 | `$and` / `$or` / `$not` | `{"$or": [{…}, {…}]}` | — | Boolean composition |
 
+A field's object value is an operator object when one of its keys is an operator or every key starts with `$`; any other object is a JSON document compared for equality. A misspelt operator (`{"meta":{"$contain":{…}}}`) is therefore E2072, never a document no row equals, and a document whose keys all start with `$` is written as the operand of `$eq` (`{"meta":{"$eq":{"$ref":"x"}}}`).
+
+Both forms name the same fields (`ResourceSchema.RequestField`): the request fields (`parse:"filter"`) and the resource's key, with the operators the key's system field takes (`eq`, `gt`, `gte`, `lt`, `lte`, `in`). The tenant and soft-delete columns are system fields only a [server policy](#policy-fields) names; a request reaches deleted rows through `include_deleted` alone, and a filter on either column is E2071 in both forms. Flat parameters ANDed together build one operator map per field, so two that set the same operator are E2072 naming both: `status=a&status=b` coalesces to `$in`, and `status_in=c` beside it would otherwise replace it. `status=a&status_in=c` keeps both predicates.
+
 Values normalize before any SQL is built: integers exactly (range-checked against the Go kind, floats beyond ±2^53 rejected), decimals to their canonical exact text ([decimals](schema-configuration.md#decimals)), UUIDs to canonical form, timestamps to RFC 3339 UTC with relative tokens (`now-7d`) resolved against the parser clock, JSON documents to a canonical form (their numbers within int64, or decimals a float64 holds exactly — E2073 otherwise, since SQLite would round them). See the sections below and [relations](relations.md).
 
 ## Type capabilities
@@ -52,7 +56,7 @@ The operator contract is shared where supported. Backend differences and relatio
 
 Values normalize at parse (the AST carries canonical values): exact `int64` / `uint64`, finite `float64`, canonical decimal text, canonical UUID strings, RFC 3339 UTC timestamps with relative tokens (`now-7d`, `now+1h`) resolved, canonical JSON documents bounded by `MaxDepth` / `MaxArraySize`. A field tagged `json:",string"` — a filter field, the primary key, or a relation's target key under its shorthands — takes its comparison and set operands as JSON strings holding the value (`{"id":"9007199254740993"}`), as it reads in responses; a bare JSON number is E2073 ([quoted values](schema-configuration.md#quoted-values)).
 
-`filtertest` holds the conformance fixture — an entity with a field of every type, its rows and the expected rows per filter; a backend passes with `filtertest.Run(t, name, backend)`. A case names the backends that cannot evaluate it (`Case.Unsupported`, matched against `name`); each must refuse it with a `*core.ParseError` carrying the case's `UnsupportedErr` (E2115 for a geo operator), and any other error or any result fails the case.
+`filtertest` holds the conformance fixture — an entity with a field of every type, its rows and the expected rows per filter; a backend passes with `filtertest.Run(t, backend)`: every case must return exactly its rows, and any error fails it.
 
 ### Sets
 
@@ -120,7 +124,7 @@ An array column (`[]string`, `[]int64`, …) or an array path (`paths:"tags:[]st
 {"doc.tags":{"$some":{}}}                                the member holds a string
 ```
 
-An array path's value is its elements of the declared type, each read as a member of that type is: `9.5` and `"10.50"` are both decimals, `7.0` an int, `"7"` no int. Elements of another kind are no elements, and a member with none is absent, so `$null` holds for it and `$contains` on it is Unknown. An array column keeps SQL's rules: `$contains` is Unknown on a NULL column and False on an empty one, unless it lists nothing.
+An array path's value is its elements of the declared type, each read as a member of that type is: `9.5` and `"10.50"` are both decimals, `7.0` an int, `"7"` no int. Elements of another kind are no elements, and a member with none is absent, so `$null` holds for it and `$contains` on it is Unknown. An array column keeps SQL's rules: `$contains` is Unknown on a NULL column and False on an empty one, unless it lists nothing. A NULL element of an array column, which a PostgreSQL array holds whatever the Go type is, is no element: the SQL renderings skip it, and `filter.Evaluate` reads it as SQL does.
 
 | Backend | Array column | Array path |
 |---|---|---|
@@ -170,9 +174,10 @@ selected := truth == filter.True
 | Documents and arrays | jsonb's `=` and `@>` (`JSONEqual`, `JSONContains`, `JSONHasKey`); an array column `$contains` every listed element; `$some` / `$none` over the elements, never Unknown |
 | Patterns | `$like` / `$ilike` as `MatchLike`; `$contains` on a string is a case-sensitive substring |
 | Geo | `$near` by the WGS 84 geodesic distance, `$within` / `$intersects` a box or polygon with its boundary, as PostGIS decides them on a JSONB point; a NULL point is `Unknown`; native `geography` / `geometry` storage is E2115 |
+| Unknown | SQL's unknown (`filter.UnknownConstraint`) is `Unknown` |
 | Not evaluable | a membership or raw-SQL predicate is `Unknown`, so it never admits a row its SQL would refuse; resolve memberships and relation predicates first with `filter.ResolveMemberships`, since an unresolved relation predicate is E2083 |
 
-A `filter.Row` returns each field's value in the canonical domain filter values normalize to (`filter.Row` documents it). `filter.ColumnRow` reads a row stored as Go values by column — a field's `SQLExpr`, or a path's `Path.Column` — converting each with `filter.ColumnValue` (drivers' `Valuer`s, decimals, times and UUIDs as SQL compares them; JSON text decoded) and each path with `filter.PathValue`; a column the row lacks is an error, never NULL. JSON text is decoded on every read, once for each condition on its paths; a store that evaluates many filters over the same rows decodes each document once with `filter.DecodeDocument` and returns the `filter.Document` (or a pointer to it) for its column, which every reader of a document (`PathValue`, `ColumnValue`, `DocumentElements`, `KeyValue`) takes as it takes the text. `filter.RowFunc` adapts any other source. Run `filtertest.Run(t, "memory", backend)`, `filtertest.RunPaths`, `filtertest.RunGeo` and `filtertest.RunMembership` (after `ResolveMemberships`) to prove a row adapter.
+A `filter.Row` returns each field's value in the canonical domain filter values normalize to (`filter.Row` documents it). `filter.ColumnRow` reads a row stored as Go values by column — a field's `SQLExpr`, or a path's `Path.Column` — converting each with `filter.ColumnValue` (drivers' `Valuer`s, decimals, times and UUIDs as SQL compares them; JSON text decoded) and each path with `filter.PathValue`; a column the row lacks is an error, never NULL. JSON text is decoded on every read, once for each condition on its paths; a store that evaluates many filters over the same rows decodes each document once with `filter.DecodeDocument` and returns the `filter.Document` (or a pointer to it) for its column, which every reader of a document (`PathValue`, `ColumnValue`, `DocumentElements`, `KeyValue`) takes as it takes the text. `filter.RowFunc` adapts any other source. Run `filtertest.Run(t, "memory", backend)`, `filtertest.RunPaths`, `filtertest.RunGeo`, `filtertest.RunMembership` and `filtertest.RunPolicy` (after `ResolveMemberships`) to prove a row adapter.
 
 ## Lists and keyset pagination
 
@@ -200,7 +205,21 @@ A relation field has no column, and neither has a field whose column tag is `-`.
 
 A name that designates more than one field is refused with `filter.ErrAmbiguousPolicyField` whichever field is declared first, and the error names each field and column. Such a name is one field's name and another field's column (a visible `region` stored in `region_code` beside a hidden field stored in `region`), the name of two fields, or a column two fields hold that is neither's name. Each of those fields stays reachable by its other name (`region_code` above), if it has one. A field whose type a filter field could not take (a `storage` tag on an array, a malformed `geo` tag) does not stop the resource from building; a policy that names it returns that field's error. A name no field has is E2071. `ResourceSchema.PolicyField(name)` resolves a name as a policy does, so a server can check its policies' fields at startup, and `Relate` refuses a relation name a policy already resolves.
 
-Underneath, `NewListQuery(filterSchema, sortSchema, dialect).Build(opts...)` returns a `*ListResult`:
+### Policy constraints
+
+A `filter.PolicyConstraints` is a group: its `Constraints` and `And` groups are ANDed, its `Or` groups are ORed and ANDed with them, and `Not` negates the whole group. A group with nothing in it constrains nothing and is dropped. A negated group is never empty (`IsEmpty`), so one with nothing to negate is refused with E2072 wherever it stands, alone, merged (`Merge`) or composed (`ComposeConstraints`), instead of admitting every row. One constraint is one of:
+
+| Constraint | Compiles to |
+|---|---|
+| `Field`, `Operator`, `Value` | The comparison the filter grammar writes, the value normalized as a request value is. `OpNull` and `OpNotNull` take no value or a boolean, which means what it means in `$null` and `$not_null` (`OpNull` with `false` is `IS NOT NULL`); `OpExists` takes a boolean; any other value is E2073 |
+| … with `UnknownIfInvalid` | The same, except that a value the field's type or the operator cannot take is SQL's unknown instead of an error |
+| `filter.UnknownConstraint()` | SQL's unknown (`filter.OpUnknown`, `NULL`): no row satisfies it, nor its negation. `BuildBaseConstraints` writes it for a tenant floor without a tenant |
+| `Member` | `Field` among the values a `Lookup` projects ([evaluated outside SQL](#evaluating-outside-sql) through `ResolveMemberships`); every constraint sharing one lookup tests its own field, and `ResolveMemberships` asks the lookup once |
+| `RawSQL`, `RawArgs` | The fragment in parentheses, so `a OR b` stays one operand of the floor, the cursor, a search or a relation's correlation; its `$N` placeholders are renumbered. Only SQL evaluates it: the memory evaluator reads it as Unknown, and a target read under an alias (a relation back to its own table, a policy-scoped relation's include or facet) refuses it |
+
+`Negate` negates one constraint.
+
+Underneath, `NewListQuery(filterSchema, sortSchema, dialect)` returns a `*ListQuery` (or the [key](#configuration) error), whose `Build(opts...)` returns a `*ListResult`:
 
 | Field | Content |
 |---|---|
@@ -250,7 +269,7 @@ var accounts = parse.MustResource[Account]("accounts",
 
 ## Search and facets
 
-`filter.ListSearch` adds a predicate without changing sort order. PostgreSQL uses `to_tsvector` / `plainto_tsquery`; SQLite uses a LIKE phrase match. These have different tokenization and matching behavior. Tag string fields with `parse:"search"`; `search_weight:"A"` through `"D"` controls PostgreSQL weights. A custom expression must produce text for the chosen dialect.
+`filter.ListSearch` adds a predicate without changing sort order. PostgreSQL uses `to_tsvector` / `plainto_tsquery`; SQLite uses a LIKE phrase match. These have different tokenization and matching behavior. Tag string fields with `parse:"search"`; search never orders the page, and the PostgreSQL text search configuration is `english` unless `core.WithSearchLanguage` names another. A custom expression must produce text for the chosen dialect.
 
 `filter.ListFacets` builds aggregations for fields tagged `parse:"facet"`. Use `facet:"terms:20"` for the top terms or `facet:"range:0-50,50-100,100+"` for ranges. `ListWithCount` and facets share the filter, policy, and search population, excluding the page cursor. Execute the returned statements separately and scan the facet union with `filter.ScanFacetUnion`. The base page does not automatically execute counts, facets, or includes.
 
@@ -258,7 +277,7 @@ var accounts = parse.MustResource[Account]("accounts",
 
 ## Configuration
 
-A `parse.Resource` declares its primary key once with `parse.PrimaryKey` (default `id`). Every list, including `Resource.ListQuery`, appends that key automatically. Hand-built filter schemas declare `ResourceSchema.PrimaryKey` before constructing a `ListQuery`; the key is schema metadata, never a request option.
+A `parse.Resource` declares its primary key once with `parse.PrimaryKey` (default `id`). Every list, including `Resource.ListQuery`, appends that key automatically. A hand-built filter schema declares `ResourceSchema.PrimaryKey` before constructing a `ListQuery`, naming a typed column of the sort schema, its `Fields` or its `SystemFields`; `NewListQuery` returns an error for a schema without one, for a key that is no field, declares no type or is computed, and for a nil schema, since a keyset that does not end on a unique typed column skips or repeats rows. `GenerateFilterSchema` declares no key: the resource does. The key is schema metadata, never a request option.
 
 `ListOption`s for `ListQuery.Build`:
 
@@ -275,31 +294,37 @@ A `parse.Resource` declares its primary key once with `parse.PrimaryKey` (defaul
 | `ListFacets(fields...)` | `...string` | none | Build the facet query |
 | `ListSearch(q)` | string | none | Full-text predicate (WHERE only, order unchanged) |
 | `ListPolicy(pc)` | `*PolicyConstraints` | none | Server-side constraints ANDed with the filter; each names a [policy field](#policy-fields) |
-| `ListTenant(v)` | any | none | Tenant for tenant-scoped relation junctions (filter, count, facets) |
-| `ListRowTenant(column)` | string | none | Hold tenant-scoped related rows to the tenant of the row they hang from, the resource's `column`, for rows of several tenants ([governed lists](relations.md#governed-lists)); excludes `ListTenant` and `ListUnscopedRelations` |
-| `ListUnscopedRelations()` | — | off | Build tenant-scoped junctions without a tenant — platform tooling only |
+| `ListRelationScope(s)` | `RelationScope` | none | How the filter, count and facets reach related rows ([relation scope](#relation-scope)) |
 | `ListStartParam(n)` | int | `0` | Offset the main fragment after `n` earlier arguments; standalone count/facet statements keep independent numbering |
+
+### Relation scope
+
+Every statement that reaches related rows takes one `filter.RelationScope` through its builder's one option (`WithRelationScope`, `ListRelationScope`, `WithFacetRelationScope`, `WithIncludeRelationScope`, `ResolveRelationScope`), so a page, its count, facets and includes reach the same rows. `parse.BuildList` builds it from `parse.Scope`: `Tenant` from `Scope.Tenant`, `RowTenant` from the resource's tenant column under `Scope.Governance`, `Related` from `Scope.Related`.
+
+| Field | Type | Default | Meaning |
+|---|---|---|---|
+| `Tenant` | any | nil | The tenant every tenant-scoped relation is bound to, in its tenant column's type |
+| `RowTenant` | string | "" | Hold each tenant-scoped related row to the tenant of the owner row it hangs from, this column of the owner's table, for rows of several tenants ([governed lists](relations.md#governed-lists)); excludes `Tenant` and `Unscoped`. `ResolveMemberships` and `ResolveInclude` refuse it: resolve each tenant's rows with its `Tenant` |
+| `Unscoped` | bool | false | Reach tenant-scoped relations without a tenant predicate — platform tooling only |
+| `Related` | `map[string]*PolicyConstraints` | nil | The server's policy for each policy-scoped relation's target table, by table; a predicate on one without it is `ErrRelatedPolicyRequired` |
+
+The zero value scopes no tenant: a relation declaring a tenant column fails closed.
 
 `SQLBuilderOption`s for `NewSQLBuilder`:
 
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
 | `WithStartParam(n)` | int | `0` | First placeholder is `n+1` (e.g. after an UPDATE's SET arguments) |
-| `WithTenant(v)` | any | none | Tenant for tenant-scoped relation junctions |
-| `WithRowTenant(column)` | string | none | Compare each tenant-scoped related row with the schema table's tenant `column` instead of a bound tenant; excludes `WithTenant` and `WithUnscopedRelations` |
-| `WithUnscopedRelations()` | — | off | Opt out of junction tenancy |
+| `WithRelationScope(s)` | `RelationScope` | none | How the filter reaches related rows ([relation scope](#relation-scope)) |
 
 Facet, include, and flat-query options:
 
 | Option | Type | Default | Description |
 |---|---|---|---|
-| `WithFacetTenant(v)` | any | none | Tenant binding for standalone facet queries |
-| `WithFacetRowTenant(column)` | string | none | Hold relation facets' related rows to each owner row's tenant `column`, projected beside the owner's key; excludes `WithFacetTenant` |
-| `WithFacetUnscopedRelations()` | — | off | Explicitly omit junction tenancy in facet queries |
+| `WithFacetRelationScope(s)` | `RelationScope` | none | How relation facets reach related rows; a `RowTenant` is projected beside the owner's key |
 | `WithFacetFrom(from)` | string | the schema's table | The facets' base rows: an aliased table or a join whose columns the filter and the fields name. A relation facet still reads the owner's key as `Name.<pk>` |
-| `WithIncludeTenant(v)` | any | none | Tenant binding for include queries |
-| `WithIncludeRowTenant(owner, column)` | `*ResourceSchema`, string | none | Read each owner's related rows in the owner's tenant `column`, joining the owner's table; excludes `WithIncludeTenant`. `ResolveInclude` refuses it |
-| `WithIncludeUnscoped()` | — | off | Explicitly omit include tenancy |
+| `WithIncludeRelationScope(s)` | `RelationScope` | none | How the include reads related rows; a `RowTenant` joins the owner's table, which `WithIncludeOwner` names. `ResolveInclude` refuses a `RowTenant` |
+| `WithIncludeOwner(owner)` | `*ResourceSchema` | none | The owner's schema, whose table a `RowTenant` reads |
 | `WithMaxIncludePerRelation(n)` | int | `100` | Targets per owner; distinct keys capped in SQL or non-SQL resolution. The cap must leave room for the truncation sentinel |
 | `QueryParamAccept(names...)` | `...string` | none | Parameters the endpoint reads itself; left alone like the list parameters |
 | `QueryParamLenient()` | — | off | Ignore a parameter naming no filterable field instead of refusing it (E2071) |
@@ -325,7 +350,7 @@ The examples compile against this resource ([source and executable outputs](../e
 ```go
 type Product struct {
 	ID          uuid.UUID      `json:"id"          db:"id"          parse:"filter,sort"`
-	Name        string         `json:"name"        db:"name"        parse:"filter,sort,patch,search" search_weight:"A"`
+	Name        string         `json:"name"        db:"name"        parse:"filter,sort,patch,search"`
 	Category    string         `json:"category"    db:"category"    parse:"filter,facet,patch" facet:"terms:10" enum:"tools,books,garden" indexed:"true"`
 	Price       float64        `json:"price"       db:"price"       parse:"filter,sort,facet,patch" facet:"range:0-50,50-100,100+"`
 	Stock       *int64         `json:"stock"       db:"stock"       parse:"filter,patch" filter_ops:"eq,gt,lt,null"`
@@ -395,6 +420,6 @@ postgres SET tags = array_append(COALESCE(tags, '{}'), $1), price = $2 [clearanc
 
 ## Cursor validation
 
-Schema-backed cursor keys validate type, numeric range, and nullability before SQL construction (E2082). Manually constructed schemas need `CursorKey.NumberKind` / `SortFieldSchema.NumberKind` for numeric bounds. An identifier-only tie-breaker without schema metadata validates canonical non-null scalars only. Include the key in your schema for typed checks. A decimal key carries its canonical text and orders by value on every backend ([decimals](schema-configuration.md#decimals)). Other pointer-receiver `driver.Valuer` / text-marshaler scalar keys can supply canonical values, but the package cannot infer a custom database scalar's ordering from its Go encoding: declare such a column with the scalar it holds (`storage:"scalar:decimal"`), or choose keys with a known consistent SQL/Go representation. Cursors carry sort metadata, not authorization: reapply server policy on every page.
+Schema-backed cursor keys validate type, numeric range, and nullability before SQL construction (E2082). Manually constructed schemas need `CursorKey.NumberKind` / `SortFieldSchema.NumberKind` for numeric bounds. A `ListQuery`'s key is always typed; a keyset composed by hand (`Keyset`, `ValidateCursor`) with a key that declares no type validates canonical non-null scalars only. A decimal key carries its canonical text and orders by value on every backend ([decimals](schema-configuration.md#decimals)). Other pointer-receiver `driver.Valuer` / text-marshaler scalar keys can supply canonical values, but the package cannot infer a custom database scalar's ordering from its Go encoding: declare such a column with the scalar it holds (`storage:"scalar:decimal"`), or choose keys with a known consistent SQL/Go representation. Cursors carry sort metadata, not authorization: reapply server policy on every page.
 
 [HTTP parameters](http-errors.md) · [JSON documents](patches.md#json-documents) · [Relations](relations.md)

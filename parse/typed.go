@@ -287,12 +287,18 @@ func (p *typedParser[T]) ParseSort(sortParam string) (*filter.SortResult, error)
 // ListSearch query composes a dialect-aware search predicate. The schemas
 // are dialect-neutral: a computed column (ReadExpr) compiles as the column
 // it names, so a resource with computed columns lists through BuildList.
-func (p *typedParser[T]) ListQuery(dialect filter.Dialect) *filter.ListQuery {
+// The error is filter.NewListQuery's, for a key the list cannot end its
+// keyset on.
+func (p *typedParser[T]) ListQuery(dialect filter.Dialect) (*filter.ListQuery, error) {
 	return newListQuery(p.filterSchema, p.sortSchema, p.searchSchema, dialect, p.cfg)
 }
 
-func newListQuery(fs *filter.ResourceSchema, ss *filter.SortSchema, search *filter.SearchSchema, d filter.Dialect, cfg *core.ParserConfig) *filter.ListQuery {
-	return filter.NewListQuery(fs, ss, d).WithFilterConfig(cfg).WithSearchSchema(search)
+func newListQuery(fs *filter.ResourceSchema, ss *filter.SortSchema, search *filter.SearchSchema, d filter.Dialect, cfg *core.ParserConfig) (*filter.ListQuery, error) {
+	lq, err := filter.NewListQuery(fs, ss, d)
+	if err != nil {
+		return nil, err
+	}
+	return lq.WithFilterConfig(cfg).WithSearchSchema(search), nil
 }
 
 // ApplyValidatedPatch applies an already-parsed patch to a target struct and

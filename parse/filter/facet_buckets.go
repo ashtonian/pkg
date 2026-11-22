@@ -65,9 +65,13 @@ func rangeBucketProjection(field *FieldSchema, ranges []FacetRange, dialect Dial
 	return b.String(), args, paramIdx - paramOffset, nil
 }
 
-// escapeSQLString escapes single quotes for safe inclusion in a literal.
-// Range bucket keys are author-defined (not user input), but we still
-// escape defensively so a malformed key doesn't break the query.
+// escapeSQLString escapes single quotes for inclusion in a SQL string
+// literal: facet names and range bucket keys, which schemas declare and
+// requests only select, are written into the statement as literals. Doubling
+// the quote is the whole escape only where backslashes are ordinary
+// characters in literals: SQLite always, PostgreSQL under
+// standard_conforming_strings = on, its default since 9.1. A PostgreSQL
+// session that turns it off is not supported.
 func escapeSQLString(s string) string {
 	if !strings.ContainsRune(s, '\'') {
 		return s

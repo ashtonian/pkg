@@ -27,14 +27,14 @@ type IncludeLookup interface {
 // the relation predicate resolver for tenant, live-row and target-policy
 // visibility; keys are distinct and ordered before the per-owner cap.
 // Owners of more than one tenant resolve per tenant, each with its
-// WithIncludeTenant: WithIncludeRowTenant is refused.
+// RelationScope.Tenant: a RowTenant is refused.
 func ResolveInclude(ctx context.Context, field *FieldSchema, ownerPKs []any, lookup IncludeLookup, opts ...IncludeQueryOption) (IncludeRows, error) {
 	cfg, err := includeConfig(field, opts...)
 	if err != nil {
 		return IncludeRows{}, fmt.Errorf("resolving include: %w", err)
 	}
 	if cfg.scope.row.column != "" {
-		return IncludeRows{}, fmt.Errorf("resolving include %s: a lookup reads one tenant's rows; resolve each tenant's owners with WithIncludeTenant instead of WithIncludeRowTenant", field.ExternalName)
+		return IncludeRows{}, fmt.Errorf("resolving include %s: a lookup reads one tenant's rows; resolve each tenant's owners with RelationScope.Tenant instead of RowTenant", field.ExternalName)
 	}
 	out := IncludeRows{IDs: map[string][]string{}}
 	if len(ownerPKs) == 0 {
@@ -43,19 +43,19 @@ func ResolveInclude(ctx context.Context, field *FieldSchema, ownerPKs []any, loo
 	if lookup == nil {
 		return IncludeRows{}, invalidRelation(field, "needs an include lookup to be evaluated outside SQL")
 	}
-	r := newMemberResolver(ctx, lookup, resolveConfig{scope: cfg.scope, related: cfg.related})
+	r := newMemberResolver(lookup, resolveConfig{scope: cfg.scope, related: cfg.related})
 	op := OpSome
 	if field.Related == nil {
 		op = OpNotNull
 	}
-	l, _, err := r.relationLookup(&FilterNode{Field: field, Op: op})
+	l, _, err := r.relationLookup(ctx, &FilterNode{Field: field, Op: op})
 	if err != nil {
 		return IncludeRows{}, fmt.Errorf("resolving include %s: %w", field.ExternalName, err)
 	}
 	rel := field.Relation
 	l.Project = rel.TargetColumn
 	l.Where = WhereAll(l.Where, WhereIn(rel.SourceColumn, ownerPKs...))
-	l, err = r.inner(l)
+	l, err = r.inner(ctx, l)
 	if err != nil {
 		return IncludeRows{}, fmt.Errorf("resolving include %s: %w", field.ExternalName, err)
 	}

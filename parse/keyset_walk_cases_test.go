@@ -117,7 +117,8 @@ func lastPageLen(n int) int {
 // presentation order (plus, going forwards, the last page's start cursor).
 func walkTrack(t *testing.T, tdb trackDB, p *parse.Resource[trackItem], sortParam, cursor string, backward bool) (string, string) {
 	t.Helper()
-	lq := p.ListQuery(tdb.dialect)
+	lq, err := p.ListQuery(tdb.dialect)
+	require.NoError(t, err)
 	var pages []string
 	var lastStart string
 	for n := 0; ; n++ {

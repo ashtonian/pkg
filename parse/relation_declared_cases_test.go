@@ -213,7 +213,7 @@ func runRelationMemberships(t *testing.T, r relResources, d filter.Dialect, quer
 				req, err := r.assets.ParseList(q)
 				require.NoError(t, err)
 				req.Filter, err = filter.ResolveMemberships(context.Background(), req.Filter, lookup,
-					filter.ResolveTenant(scope.Tenant), filter.ResolveRelatedPolicies(scope.Related))
+					filter.ResolveRelationScope(filter.RelationScope{Tenant: scope.Tenant, Related: scope.Related}))
 				require.NoError(t, err)
 				plan, err = r.assets.BuildList(d, req, scope)
 				require.NoError(t, err)
@@ -221,7 +221,7 @@ func runRelationMemberships(t *testing.T, r relResources, d filter.Dialect, quer
 				req, err := r.devices.ParseList(q)
 				require.NoError(t, err)
 				req.Filter, err = filter.ResolveMemberships(context.Background(), req.Filter, lookup,
-					filter.ResolveTenant(scope.Tenant), filter.ResolveRelatedPolicies(scope.Related))
+					filter.ResolveRelationScope(filter.RelationScope{Tenant: scope.Tenant, Related: scope.Related}))
 				require.NoError(t, err)
 				plan, err = r.devices.BuildList(d, req, scope)
 				require.NoError(t, err)
@@ -238,13 +238,13 @@ func runRelationMemberships(t *testing.T, r relResources, d filter.Dialect, quer
 		})
 	}
 
-	_, err := filter.ResolveMemberships(context.Background(), relationFilter(t, r, `{"commands":"c1"}`), keysOnlyLookup{lookup}, filter.ResolveTenant("t1"))
+	_, err := filter.ResolveMemberships(context.Background(), relationFilter(t, r, `{"commands":"c1"}`), keysOnlyLookup{lookup}, filter.ResolveRelationScope(filter.RelationScope{Tenant: "t1"}))
 	assert.ErrorContains(t, err, "cannot evaluate filters", "a store without filter evaluation refuses rather than over-matches")
 	_, err = filter.ResolveMemberships(context.Background(), relationFilter(t, r, `{"commands":"c1"}`), nil)
 	assert.ErrorContains(t, err, "needs a membership lookup", "a backend without a lookup refuses a relation predicate")
 	_, err = filter.ResolveMemberships(context.Background(), relationFilter(t, r, `{"commands":"c1"}`), lookup)
 	assert.ErrorContains(t, err, "tenant-scoped", "a tenant-scoped relation needs the tenant")
-	_, err = filter.ResolveMemberships(context.Background(), relationFilter(t, r, `{"type":{"$is":{}}}`), lookup, filter.ResolveTenant("t1"))
+	_, err = filter.ResolveMemberships(context.Background(), relationFilter(t, r, `{"type":{"$is":{}}}`), lookup, filter.ResolveRelationScope(filter.RelationScope{Tenant: "t1"}))
 	assert.ErrorIs(t, err, filter.ErrRelatedPolicyRequired)
 }
 
@@ -378,6 +378,77 @@ func runRelationFacets(t *testing.T, r relResources, d filter.Dialect, query fun
 		"tags":         {"red": 1},
 		"shared_types": {"pt": 1, "t1x": 1},
 	}, got)
+}
+
+// runRelationUnknownPolicy lists t1's devices under a related policy that
+// is SQL's unknown, as BuildBaseConstraints writes one without a tenant: no
+// related row is visible, so a relation filter matches no owner and an
+// include or facet holds no related row. That holds where the target is
+// aliased too: in an include and a facet, and in a relation back to the
+// owner's own table. Raw policy SQL is still refused under an alias.
+func runRelationUnknownPolicy(t *testing.T, r relResources, d filter.Dialect, query func(t *testing.T, sql string, args []any) [][]any) {
+	t.Helper()
+	unknown := func(table string) parse.Scope {
+		return parse.Scope{Tenant: "t1", Related: map[string]*filter.PolicyConstraints{
+			table: {Constraints: []*filter.PolicyConstraint{filter.UnknownConstraint()}},
+		}}
+	}
+	list := func(t *testing.T, owner interface {
+		ParseList(url.Values) (*parse.ListRequest, error)
+		BuildList(filter.Dialect, *parse.ListRequest, parse.Scope) (*parse.ListPlan, error)
+	}, q url.Values, s parse.Scope) *parse.ListPlan {
+		t.Helper()
+		req, err := owner.ParseList(q)
+		require.NoError(t, err)
+		plan, err := owner.BuildList(d, req, s)
+		require.NoError(t, err)
+		return plan
+	}
+	ids := func(t *testing.T, sql string, args []any) []string {
+		var out []string
+		for _, row := range query(t, sql, args) {
+			id, ok := row[0].(string)
+			require.True(t, ok)
+			out = append(out, id)
+		}
+		return out
+	}
+
+	t.Run("relation filter", func(t *testing.T) {
+		plan := list(t, r.devices, url.Values{filter.ParamFilter: {`{"type":{"$is":{}}}`}}, unknown("device_types"))
+		assert.Empty(t, ids(t, plan.Page.SQL, plan.Page.Args), plan.Page.SQL)
+	})
+	t.Run("include", func(t *testing.T) {
+		plan := list(t, r.devices, url.Values{filter.ParamInclude: {"shared_types"}}, unknown("device_types"))
+		queries, err := r.devices.IncludeQueries(plan, []any{"d1", "d2", "d3", "d4"})
+		require.NoError(t, err)
+		require.Len(t, queries, 1)
+		assert.Empty(t, query(t, queries[0].SQL, queries[0].Args), queries[0].SQL)
+	})
+	t.Run("facet", func(t *testing.T) {
+		plan := list(t, r.devices, url.Values{filter.ParamFacets: {"shared_types"}}, unknown("device_types"))
+		require.NotNil(t, plan.Facets)
+		assert.Empty(t, query(t, plan.Facets.SQL, plan.Facets.Args), plan.Facets.SQL)
+	})
+
+	// A second resource over the assets table relates each asset to its
+	// parent through the policy, so the target is the owner's own table.
+	assets := parse.MustResource[relAsset]("assets", parse.TenantColumn("tenant_id"))
+	assets.MustRelate("parent", parse.BelongsTo(assets, "parent_id", parse.PolicyScoped()))
+	t.Run("aliased relation filter", func(t *testing.T) {
+		all := list(t, assets, url.Values{filter.ParamFilter: {`{"parent":{"$is":{}}}`}}, parse.Scope{Tenant: "t1", Related: map[string]*filter.PolicyConstraints{"assets": {}}})
+		assert.Equal(t, []string{"a2"}, ids(t, all.Page.SQL, all.Page.Args), "an empty policy admits every parent")
+		plan := list(t, assets, url.Values{filter.ParamFilter: {`{"parent":{"$is":{}}}`}}, unknown("assets"))
+		assert.Empty(t, ids(t, plan.Page.SQL, plan.Page.Args), plan.Page.SQL)
+	})
+	t.Run("raw SQL under an alias", func(t *testing.T) {
+		req, err := assets.ParseList(url.Values{filter.ParamFilter: {`{"parent":{"$is":{}}}`}})
+		require.NoError(t, err)
+		_, err = assets.BuildList(d, req, parse.Scope{Tenant: "t1", Related: map[string]*filter.PolicyConstraints{
+			"assets": {Constraints: []*filter.PolicyConstraint{{RawSQL: "assets.name = $1", RawArgs: []any{"root"}}}},
+		}})
+		assert.ErrorContains(t, err, "raw SQL cannot be applied to the aliased relation table")
+	})
 }
 
 // runRelationWrites patches t1's devices' memberships: pairs are made only
