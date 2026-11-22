@@ -97,5 +97,25 @@ class Scope(unittest.TestCase):
         self.assertEqual(ci_scope.release_checks(None), every)
 
 
+    def test_benchmarks_follow_the_go_code_they_build(self):
+        cases = {
+            ("parse/filter/sql.go",): True,
+            ("parse/docs/queries.md", "parse/README.md"): True,
+            ("gowalker/walk.go",): True,
+            ("go.work.sum",): True,
+            (".github/workflows/ci.yml",): True,
+            ("parse/sdk/ts/src/client.ts", "parse/sdk/README.md"): False,
+            ("httpx/client.go", "tools/check-parse-release.sh", "CONTRIBUTING.md"): False,
+        }
+        for paths, want in cases.items():
+            with self.subTest(paths=paths):
+                self.assertEqual(ci_scope.parse_changed(list(paths)), want)
+        self.assertTrue(ci_scope.parse_changed([]))
+        self.assertTrue(ci_scope.parse_changed(None))
+        workflow = (Path(__file__).resolve().parents[1] / ".github/workflows/ci.yml").read_text()
+        self.assertIn("parse: ${{ steps.scope.outputs.parse }}", workflow)
+        benchmarks = workflow.split("  parse-benchmarks:\n", 1)[1].split("  minimum-go:\n", 1)[0]
+        self.assertIn("needs.scope.outputs.parse == 'true'", benchmarks)
+
 if __name__ == "__main__":
     unittest.main()

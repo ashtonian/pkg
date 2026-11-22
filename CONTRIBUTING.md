@@ -64,7 +64,9 @@ workflow, repository variables, run attempt and selected scope, release checks i
 PR receipts also match both tested merge parents; a dispatched branch must be the actual
 merged head with the same resulting tree. Failed, cancelled, incomplete or missing evidence
 runs validation. Post-merge benchmark artifacts remain independent because PRs do not
-produce them. Explicit reruns execute validation even if an older receipt matches.
+produce them; a push records them only when the Go code they build changed (`parse/` outside
+the TypeScript SDK, `gowalker/`, `go.work`, `go.work.sum` or `ci.yml`). Explicit reruns
+execute validation even if an older receipt matches.
 A newer run of the same PR or of `main` cancels the older one, since it covers every change
 the older run would have; manual acceptance runs finish.
 
@@ -167,7 +169,7 @@ To change the patterns, replace the secret
 
 ## Parse SQL matrix
 
-Parse requires Go 1.27 and publishes as `github.com/ashtonian/pkg/parse`, with `parse/v…` tags. CI runs unit tests and existing fuzz seeds (under the race detector nightly, and on pull requests only the tests tagged `concurrency`), SQLite integration beside PostgreSQL 17/18 with PostGIS 3.6 under the race detector, and the TypeScript SDK's shared corpora. modernc's SQLite builds without race or checkptr instrumentation: it is C translated to Go, and instrumenting it made the SQLite-backed suites about 30 times slower without checking this repository's code. The SDK release check installs its tarball in a fresh consumer and checks public declarations, runtime subpaths and self-contained JavaScript sourcemaps. The SDK package version follows the Parse release component. CI stores benchmark text and CPU/allocation profiles on main and from the nightly run; it does not run dedicated fuzzing sessions.
+Parse requires Go 1.27 and publishes as `github.com/ashtonian/pkg/parse`, with `parse/v…` tags. CI runs unit tests and existing fuzz seeds (under the race detector nightly, and on pull requests only the tests tagged `concurrency`), SQLite integration beside PostgreSQL 17/18 with PostGIS 3.6 under the race detector, and the TypeScript SDK's shared corpora. modernc's SQLite builds without race or checkptr instrumentation: it is C translated to Go, and instrumenting it made the SQLite-backed suites about 30 times slower without checking this repository's code. The SDK release check installs its tarball in a fresh consumer and checks public declarations, runtime subpaths and self-contained JavaScript sourcemaps. The SDK package version follows the Parse release component. CI stores benchmark text and CPU/allocation profiles from main pushes that change the Go code they build, and from the nightly run; it does not run dedicated fuzzing sessions.
 
 For an existing test server, set `PARSE_POSTGRES_DSN` and `PARSE_POSTGIS_DSN` and run `make test-parse-integration`. Each case gets a fresh schema. A requested server that is unavailable fails; an unrequested PostgreSQL case skips. `make parse-release-check` verifies a candidate archive independently of the workspace; publication additionally requires clean public-proxy installation of the immutable release.
 

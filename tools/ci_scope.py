@@ -3,7 +3,8 @@
 
 Runtime suites skip for known prose paths. Release checks run per module: each
 one reads only its module's tree, its own script and the archive tooling, with
-every other dependency at the version its go.mod requires.
+every other dependency at the version its go.mod requires. Parse's benchmarks
+run when the Go code they build changed.
 """
 import json
 import os
@@ -31,6 +32,10 @@ CHECKS = {
 NESTED = {"config-release-check": ("config/kongprovider/", "config/examples/cookbook/")}
 # Prose outside every module and its tooling.
 UNCHECKED = {"CONTRIBUTING.md", "README.md"}
+# The benchmarks build parse/filter through go.work, against gowalker's working
+# tree; ci.yml defines the job. The TypeScript SDK holds no Go.
+BENCHMARK_INPUTS = ("parse/", "gowalker/", "go.work", "go.work.sum", ".github/workflows/ci.yml")
+BENCHMARK_IGNORED = ("parse/sdk/",)
 
 
 def prose(path):
@@ -64,6 +69,13 @@ def release_checks(paths):
     return [check for check in CHECKS if check in selected]
 
 
+def parse_changed(paths):
+    """Whether the Go code parse's benchmarks build changed; true when unsure."""
+    if not paths:
+        return True
+    return any(path.startswith(BENCHMARK_INPUTS) and not path.startswith(BENCHMARK_IGNORED) for path in paths)
+
+
 def git(*args):
     return subprocess.check_output(["git", *args], timeout=30, stderr=subprocess.PIPE).decode()
 
@@ -92,13 +104,15 @@ def main():
         paths = changed_paths(os.environ)
         runtime = runtime_required(paths)
         checks = release_checks(paths)
+        parse = parse_changed(paths)
         message = "runtime and archive checks required" if runtime else "known prose only: archive, documentation and example checks remain required"
     except (KeyError, TypeError, ValueError, OSError, subprocess.SubprocessError):
-        runtime, checks, message = True, list(CHECKS), "change scope unavailable: all checks required"
+        runtime, checks, parse, message = True, list(CHECKS), True, "change scope unavailable: all checks required"
     message += "; release checks: " + (" ".join(checks) or "none")
+    message += "; benchmarked parse code: " + ("changed" if parse else "unchanged")
     print(message)
     with open(os.environ["GITHUB_OUTPUT"], "a") as output:
-        output.write(f"runtime={str(runtime).lower()}\nchecks={' '.join(checks)}\n")
+        output.write(f"runtime={str(runtime).lower()}\nchecks={' '.join(checks)}\nparse={str(parse).lower()}\n")
     if summary := os.environ.get("GITHUB_STEP_SUMMARY"):
         with open(summary, "a") as output:
             output.write(message + "\n")

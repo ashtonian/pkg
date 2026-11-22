@@ -47,6 +47,7 @@ jobs:
     outputs:
       runtime: ${{ steps.scope.outputs.runtime }}
       checks: ${{ steps.scope.outputs.checks }}
+      parse: ${{ steps.scope.outputs.parse }}
       reused: ${{ steps.acceptance.outputs.reused }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -226,7 +227,9 @@ jobs:
   parse-benchmarks:
     needs: scope
     name: parse benchmark artifacts
-    if: github.actor_id == '4212452' && github.event_name != 'pull_request' && needs.scope.outputs.runtime != 'false'
+    # On main, only when the Go code the benchmarks build changed; the nightly
+    # run always records them.
+    if: github.actor_id == '4212452' && github.event_name != 'pull_request' && needs.scope.outputs.runtime != 'false' && needs.scope.outputs.parse == 'true'
     permissions:
       contents: read
       id-token: write
