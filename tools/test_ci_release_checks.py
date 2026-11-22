@@ -246,6 +246,14 @@ class Make(unittest.TestCase):
         full = f"{MODULE_PATH}/config/... {MODULE_PATH}/config/kongprovider/... {MODULE_PATH}/httpx/..."
         self.assertTrue(self.recipe("test-config", full).endswith(f"{MODULE_PATH}/config/... {MODULE_PATH}/config/kongprovider/..."))
 
+    def test_make_drops_a_listed_package_its_tags_exclude(self):
+        # Every file of parse/internal/dbtest is tagged unit or integration; go
+        # refuses it named under -tags=concurrency, where parse/... skips it.
+        listed = f"{MODULE_PATH}/parse/internal/dbtest {MODULE_PATH}/parse/core"
+        self.assertTrue(self.recipe("test-parse-race", listed).endswith(f"-tags=concurrency {MODULE_PATH}/parse/core"))
+        self.assertTrue(self.recipe("test-parse-unit", listed).endswith(f"-tags=unit {listed}"))
+        self.assertTrue(self.recipe("test-parse-race", f"{MODULE_PATH}/parse/...").endswith(f"-tags=concurrency {MODULE_PATH}/parse/..."))
+
 
 if __name__ == "__main__":
     unittest.main()

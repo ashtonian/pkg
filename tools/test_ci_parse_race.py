@@ -60,9 +60,10 @@ class ParseRaceLane(unittest.TestCase):
         self.assertEqual(missing, [], f"add `|| {RACE_LANE_TAG}` to their //go:build lines")
 
     def test_the_race_target_builds_the_tagged_files(self):
-        makefile = (ROOT / "Makefile").read_text()
-        recipe = makefile.split("\ntest-parse-race:\n", 1)[1].split("\n\n", 1)[0]
-        self.assertIn(f"-tags={RACE_LANE_TAG} $(RACE)", recipe)
+        recipe = subprocess.check_output(["make", "-s", "-n", "test-parse-race", "PACKAGES=all"],
+                                         cwd=ROOT, timeout=30).decode().split()
+        self.assertIn("-race", recipe)
+        self.assertIn(f"-tags={RACE_LANE_TAG}", recipe)
 
     def test_concurrency_is_found_in_code_not_comments(self):
         for source, want in {
