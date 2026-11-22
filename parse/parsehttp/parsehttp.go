@@ -3,9 +3,12 @@
 package parsehttp
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"net/http"
+	"slices"
 
 	"github.com/ashtonian/pkg/parse/core"
 	"github.com/ashtonian/pkg/parse/internal/httpjson"
@@ -18,8 +21,8 @@ type Body struct {
 	Details map[string]any `json:"details,omitempty"`
 }
 
-// ErrUnencodableDetails reports a parse error whose Details cannot be encoded
-// as JSON. WriteError answers it with its code and message alone.
+// ErrUnencodableDetails reports Details entries of a parse error that cannot be
+// encoded as JSON. WriteError answers with the entries that can.
 var ErrUnencodableDetails = errors.New("parse error details cannot be encoded")
 
 // Option configures WriteError.
@@ -30,9 +33,9 @@ type options struct {
 }
 
 // WithErrorHandler reports what WriteError could not put in its response.
-// Details that cannot be encoded are left out of the body and reported as an
-// error matching ErrUnencodableDetails (errors.Is) that wraps the encoding
-// error. A Write the ResponseWriter fails once the status is sent is reported
+// Details entries that cannot be encoded are left out of the body and
+// reported as an error matching ErrUnencodableDetails (errors.Is) that names
+// each one and wraps its encoding error. A Write the ResponseWriter fails once the status is sent is reported
 // as that error; net/http buffers a small response and sends it after the
 // handler returns, so a client that disconnects in that window is not
 // reported. Without it, both are dropped.
@@ -55,13 +58,33 @@ func WriteError(w http.ResponseWriter, err error, opts ...Option) bool {
 	body, encErr := httpjson.Encode(Body{Code: pe.Code, Message: pe.Message, Details: pe.Details})
 	if encErr != nil {
 		// Code and Message are strings, so only Details can fail.
-		o.report(fmt.Errorf("answering %s: %w: %w", pe.Code, ErrUnencodableDetails, encErr))
-		body = httpjson.ErrorBody(pe.Code, pe.Message)
+		details, dropped := encodableDetails(pe.Details)
+		o.report(fmt.Errorf("answering %s: %w: %w", pe.Code, ErrUnencodableDetails, dropped))
+		body, encErr = httpjson.Encode(Body{Code: pe.Code, Message: pe.Message, Details: details})
+		if encErr != nil {
+			// A value whose MarshalJSON failed only the second time.
+			body = httpjson.ErrorBody(pe.Code, pe.Message)
+		}
 	}
 	if werr := httpjson.Send(w, pe.ErrorHTTPStatus(), body); werr != nil {
 		o.report(fmt.Errorf("writing %s response: %w", pe.Code, werr))
 	}
 	return true
+}
+
+// encodableDetails returns the entries of details that encode, and an error
+// naming each one that does not.
+func encodableDetails(details map[string]any) (map[string]any, error) {
+	kept := make(map[string]any, len(details))
+	var dropped []error
+	for _, key := range slices.Sorted(maps.Keys(details)) {
+		if _, err := json.Marshal(details[key]); err != nil {
+			dropped = append(dropped, fmt.Errorf("details[%q]: %w", key, err))
+			continue
+		}
+		kept[key] = details[key]
+	}
+	return kept, errors.Join(dropped...)
 }
 
 func (o options) report(err error) {

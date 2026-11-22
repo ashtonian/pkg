@@ -32,22 +32,27 @@ func TestWriteError_AnswersAParseErrorWithItsCodesStatus(t *testing.T) {
 	assert.Equal(t, Body{Code: "E2116", Message: "invalid UUID", Details: map[string]any{"field": "ref"}}, body)
 }
 
-// Details JSON cannot hold (strconv.ParseFloat accepts "NaN") leave the
-// body, never the code: the client still reads the code and message, and
-// the hook learns what was dropped.
+// A Details value JSON cannot hold (strconv.ParseFloat accepts "NaN") leaves
+// the body, never the code or the entries that encode: the client still
+// reads which field failed, and the hook learns which entry was dropped.
 func TestWriteError_AnswersWithoutDetailsItCannotEncode(t *testing.T) {
 	var reported []error
-	pe := &core.ParseError{Code: filter.ECodeValueTypeMismatch.String(), Message: "price out of range", Details: map[string]any{"value": math.NaN()}}
+	pe := &core.ParseError{
+		Code: filter.ECodeValueTypeMismatch.String(), Message: "price out of range",
+		Details: map[string]any{"field": "price", "value": math.NaN(), "limit": math.Inf(1)},
+	}
 	w := httptest.NewRecorder()
 	require.True(t, WriteError(w, pe, WithErrorHandler(func(err error) { reported = append(reported, err) })))
 
 	assert.Equal(t, http.StatusUnprocessableEntity, w.Code)
 	assert.Equal(t, strconv.Itoa(w.Body.Len()), w.Header().Get("Content-Length"))
-	assert.JSONEq(t, `{"code": "E2073", "message": "price out of range"}`, w.Body.String())
+	assert.JSONEq(t, `{"code": "E2073", "message": "price out of range", "details": {"field": "price"}}`, w.Body.String())
 	require.Len(t, reported, 1)
 	assert.ErrorIs(t, reported[0], ErrUnencodableDetails)
 	var unsupported *json.UnsupportedValueError
 	assert.ErrorAs(t, reported[0], &unsupported)
+	assert.ErrorContains(t, reported[0], `details["limit"]`)
+	assert.ErrorContains(t, reported[0], `details["value"]`)
 }
 
 // failingWriter refuses the body after taking the status, as a writer past

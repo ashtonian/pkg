@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"encoding/json"
@@ -337,17 +338,17 @@ func readBody(w http.ResponseWriter, r *http.Request) ([]byte, error) {
 // writeJSON encodes v before writing anything, so a value that cannot be
 // encoded is answered 500 rather than as status with an empty body.
 func (s *server) writeJSON(w http.ResponseWriter, r *http.Request, status int, v any) {
-	body, err := json.Marshal(v)
-	if err != nil {
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(v); err != nil {
 		s.log.ErrorContext(r.Context(), "encoding response", slog.String("method", r.Method), slog.String("path", r.URL.Path), slog.Any("error", err))
 		// A Body of two strings always encodes, so this recursion ends.
 		s.writeJSON(w, r, http.StatusInternalServerError, parsehttp.Body{Code: codeInternal, Message: "internal error"})
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
-	w.Header().Set("Content-Length", strconv.Itoa(len(body)))
+	w.Header().Set("Content-Length", strconv.Itoa(buf.Len()))
 	w.WriteHeader(status)
-	if _, err := w.Write(body); err != nil {
+	if _, err := w.Write(buf.Bytes()); err != nil {
 		s.responseFailed(r, fmt.Errorf("writing response: %w", err))
 	}
 }
