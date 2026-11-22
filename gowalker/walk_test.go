@@ -507,3 +507,28 @@ func TestWalkType_DeclaredView(t *testing.T) {
 		t.Errorf("a value walk took WithDeclaredView: %v", err)
 	}
 }
+
+type cycleNode struct {
+	V    int
+	Next *cycleNode
+}
+
+// A cycle closes on the type that re-enters first: through a pointer field
+// the pointer type, in both walks.
+func TestWalkType_CycleThroughAPointer(t *testing.T) {
+	schema := schemaFor[struct{ N *cycleNode }](t, engine(t))
+	for name, options := range map[string][]gowalker.WalkOption{"visible": nil, "declared": {gowalker.WithDeclaredView()}} {
+		t.Run(name, func(t *testing.T) {
+			var references []string
+			err := schema.WalkType(func(v gowalker.TypeVisit) (gowalker.Control, error) {
+				if v.Kind == gowalker.Reference {
+					references = append(references, typeRoute(v)+" "+v.Shape.Type().String())
+				}
+				return gowalker.Continue, nil
+			}, options...)
+			if want := []string{"N*.Next *gowalker_test.cycleNode"}; err != nil || !slices.Equal(references, want) {
+				t.Errorf("references %q, want %q: %v", references, want, err)
+			}
+		})
+	}
+}

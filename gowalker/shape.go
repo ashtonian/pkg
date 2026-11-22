@@ -273,9 +273,10 @@ type Declaration struct {
 
 // TagKeys yields the keys of the field's tag in order, as [TagKeys] reads
 // them, skipped fields included; compilation refused any tag it cannot read.
-// It reads metadata the schema keeps: it allocates nothing, and a copied
-// Declaration yields the same keys. A Declaration the caller builds yields
-// none.
+// It reads metadata the schema keeps, so ranging over it allocates nothing;
+// keeping the iterator, or passing it to a function that is not inlined,
+// allocates its closure. A copied Declaration yields the same keys; a
+// Declaration the caller builds yields none.
 func (d Declaration) TagKeys() iter.Seq[string] { return slices.Values(d.keys) }
 
 // Declarations lists every field the struct declares and, after each inlined
@@ -350,7 +351,9 @@ func (f *Field) Tags() reflect.StructTag { return f.goField.Tag }
 
 // TagKeys yields the keys of the field's tag in order, as [TagKeys] reads
 // them; compilation refused any tag it cannot read. It reads metadata the
-// schema keeps, the same its [Declaration] yields, and allocates nothing.
+// schema keeps, the same its [Declaration] yields, so ranging over it
+// allocates nothing; keeping the iterator, or passing it to a function that is
+// not inlined, allocates its closure.
 func (f *Field) TagKeys() iter.Seq[string] { return slices.Values(f.keys) }
 
 // Tag parses the field's key tag in the "name,options" form. ok is false when

@@ -114,8 +114,9 @@ The rule, and which keys to leave alone because another library reads them, stay
 the caller's: a key such as `bson` is one character from `json`. `field.TagKeys()`
 and `declaration.TagKeys()` yield a compiled field's keys, skipped declarations
 included, which compilation has already read and checked: an `iter.Seq[string]`
-over metadata the schema keeps, which allocates nothing and cannot change it
-(`slices.Collect` copies it). A copied `Declaration` yields the same keys; one a
+over metadata the schema keeps, which cannot change it (`slices.Collect` copies
+it); ranging over it allocates nothing, while keeping the iterator, or passing
+it to a function that is not inlined, allocates its closure. A copied `Declaration` yields the same keys; one a
 caller builds yields none. `TagKeys(tag)` returns a `*TagError` for a tag
 that `reflect.StructTag` stops reading early, such as `parse: "filter"` with a
 space after the colon (`Lookup` then reports that key and every later one
@@ -483,6 +484,10 @@ dereference, or possible collection element. An element route is not an accessor
 path and contains no fake map key/index. Map keys are metadata and are not walked.
 Interfaces and atomic types are leaves. A type already active on the ancestor
 route emits `Reference`; repeated types on separate branches remain visitable.
+Pointer types are types too: a cycle closes on whichever type re-enters first,
+so a struct reached through a pointer field, `N *Node` with `Node` holding
+`Next *Node`, closes at `Next` on `*Node`, and the `Reference`'s `Shape` is the
+pointer's; follow `Elem` to reach the struct.
 
 `WithDeclaredView()` makes a type walk follow each struct's `DeclaredView`
 instead of its `Fields`, for a library that checks annotations on declarations

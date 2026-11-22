@@ -61,7 +61,9 @@ metadata builds, on every call.
 - `Field.Tag(key)` and `Field.Tags()` read the original tag string without
   copying an index. Use them when you only need annotations; `GoField()` copies
   its index slice. `Field.TagKeys()` and `Declaration.TagKeys()` yield keys read
-  once at compilation, allocating nothing; calling `TagKeys(tag)` parses again.
+  once at compilation: ranging over one allocates nothing, keeping or passing
+  the iterator on allocates its closure, and calling `TagKeys(tag)` parses
+  again.
 - A `TypeCache` hit is a read-locked map lookup. Its first request per type
   compiles (or reuses) the schema and runs your build function.
 - Metadata slice getters return defensive copies. Keep the returned catalog for
