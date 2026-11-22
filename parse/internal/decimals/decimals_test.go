@@ -4,6 +4,7 @@ package decimals
 
 import (
 	"bytes"
+	"encoding/hex"
 	"encoding/json"
 	"math/rand/v2"
 	"slices"
@@ -72,6 +73,43 @@ func TestValue(t *testing.T) {
 			got, ok := Value(tt.value)
 			assert.Equal(t, tt.ok, ok)
 			assert.Equal(t, tt.want, got)
+		})
+	}
+}
+
+// The key's bytes are a persisted format: an index on parse_decimal_key holds
+// keys an earlier release wrote, and SQLite trusts a deterministic function
+// to produce them again. Each vector is derived from the documented encoding,
+// not from Key: a sign byte; for a nonzero 0.d₁…dₙ × 10^e, e + 0x8000 in two
+// big-endian bytes and the digits' ASCII; for a negative the exponent bytes
+// and the digits complemented and 0xFF after them. A change to the bias, a
+// sign byte or the terminator fails here, and needs a REINDEX of every such
+// index.
+func TestKeyBytesArePinned(t *testing.T) {
+	nines := strings.Repeat("9", core.MaxDecimalDigits)
+	tests := []struct {
+		name string
+		text string
+		key  string
+	}{
+		{"zero", "0", "02"},
+		{"one", "1", "03" + "8001" + "31"},
+		{"minus one", "-1", "01" + "7ffe" + "38" + "ff"},
+		{"integer and fraction", "10.5", "03" + "8002" + "313035"},
+		{"a fraction with leading zeros", "0.0012", "03" + "7ffe" + "3132"},
+		{"a negative fraction with leading zeros", "-0.0012", "01" + "8001" + "3837" + "ff"},
+		{"the greatest exponent", "1" + strings.Repeat("0", core.MaxDecimalDigits-1), "03" + "83e8" + "31"},
+		{"the most digits", nines, "03" + "83e8" + strings.Repeat("39", core.MaxDecimalDigits)},
+		{"the most digits, negative", "-" + nines, "01" + "7c17" + strings.Repeat("30", core.MaxDecimalDigits) + "ff"},
+		{"the least exponent", "0." + strings.Repeat("0", core.MaxDecimalDigits-2) + "1", "03" + "7c1a" + "31"},
+		{"the least exponent, negative", "-0." + strings.Repeat("0", core.MaxDecimalDigits-2) + "1", "01" + "83e5" + "38" + "ff"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			canonical, err := core.DecimalText(tt.text)
+			require.NoError(t, err)
+			require.Equal(t, tt.text, canonical, "vectors are canonical text")
+			assert.Equal(t, tt.key, hex.EncodeToString(Key(tt.text)))
 		})
 	}
 }

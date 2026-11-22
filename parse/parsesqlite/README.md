@@ -36,7 +36,7 @@ flowchart LR
 - `GeoNear(point, latKey, lonKey, lat, lon, meters)`, `GeoInBox(point, latKey, lonKey, south, north, west, east)`, `GeoCoveredBy(point, latKey, lonKey, polygon)`: the geo functions over a stored point's JSON text, its member names and the bound operands.
 
 **Exit points**
-- Function results: TEXT, a BLOB, a REAL distance, 1 or 0, or NULL. Nothing is written or logged.
+- Function results: TEXT, a BLOB, 1 or 0, or NULL. Nothing is written or logged.
 
 **Failure modes**
 - A connection opened before `Register`, or a database whose driver never registered the functions: every statement on a decimal field, and every facet of a number, fails with SQLite's `no such function: parse_decimal` (or `parse_decimal_key`, `parse_decimal_float32`), and every geo filter with `no such function: parse_geo_near` (or `parse_geo_in_box`, `parse_geo_covered_by`). parse never falls back to a rounded comparison or key, or to a spherical distance.
@@ -120,8 +120,9 @@ go test -tags=integration -run 'MatchesPostGIS|TestGeoMatrix_PostGIS|TestFilterM
 
 ## Operations
 
-- **Cost**: one Go call per row for each decimal expression a statement evaluates, and for each number a facet keys. A key is the value's significant digits plus three bytes. A geo filter is one call per row, which decodes the point's JSON text: a distance then iterates a handful of times (more near the antipode), a polygon test is linear in its points (at most 100).
+- **Cost**: one Go call per row for each decimal expression a statement evaluates, and for each number a facet keys. A key is one byte for zero; otherwise the value's significant digits plus three bytes, and one more for a negative, which ends with a terminator. A geo filter is one call per row, which decodes the point's JSON text: a distance then iterates a handful of times (more near the antipode), a polygon test is linear in its points (at most 100).
 - **Indexes**: no index serves a geo filter on SQLite; it reads every row its other predicates leave. SQLite indexes an expression of deterministic functions. `CREATE INDEX … ON t (parse_decimal_key(amount))` serves decimal ranges, sorts and keyset seeks; `(parse_decimal(amount))` serves equality and sets. An index on them needs the functions on every connection that writes the table, the `sqlite3` shell included, since its maintenance calls them.
+- **Key format**: the bytes `parse_decimal_key` returns are a persisted format, held by every index on it, and are pinned by golden vectors in `internal/decimals`. The format is stable: a change to it is a breaking change, after which every index on `parse_decimal_key` must be rebuilt with `REINDEX` before it is read. SQLite trusts a deterministic function to return what it returned when the index was built, so an index left with the previous release's keys answers range scans, sorts and keyset seeks with wrong rows, without an error.
 - **Health and metrics**: none; a missing registration surfaces as the statement error above.
 
 ## Security
