@@ -102,7 +102,10 @@ func normalizeTypedMerge(t reflect.Type, obj map[string]any, codec core.Codec, p
 		if !ok {
 			return nil, fmt.Errorf("object merge for %s does not encode an object; use JSON Patch replace", t)
 		}
-		for name, value := range obj {
+		// Sorted, as the map branch is: the first failure reported must not
+		// depend on map order.
+		for _, name := range slices.Sorted(maps.Keys(obj)) {
+			value := obj[name]
 			field, ok := fields[name]
 			if !ok {
 				return nil, fmt.Errorf("unknown or noncanonical JSON member %q in %s", name, t)
@@ -139,7 +142,7 @@ func normalizeTypedMerge(t reflect.Type, obj map[string]any, codec core.Codec, p
 			out[name] = n
 		}
 		if !present {
-			for name := range encoded {
+			for _, name := range slices.Sorted(maps.Keys(encoded)) {
 				if _, supplied := out[name]; !supplied {
 					return nil, fmt.Errorf("object merge into potentially absent %s must supply member %q; use JSON Patch replace", t, name)
 				}
