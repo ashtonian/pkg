@@ -65,7 +65,7 @@ Start with the [runnable package example](../README.md#quick-start). The focused
 | `time_token.go` | Relative-time tokens |
 | `rows.go` | `Rows` |
 | `errors.go` | E-codes |
-| `filtertest/` | Conformance fixture, run on both dialects and `Evaluate`: the operator × type cases (`Run`), the membership cases with their lookup tables and reference lookup (`RunMembership`, `LookupTables`, `Lookups`), the JSON path cases (`RunPaths`, `PathRecords`, `PathSchema`), the exact-decimal cases (`RunDecimals`), the scalar-array cases (`RunArrays`, `ArrayRecords`, `ArraySchema`, `ArrayFacets`), the stored-point geo cases (`RunGeo`, `GeoRecords`, `GeoSchema`), the numeric facet keys (`NumberKeyRecords`, `NumberKeyFacets`) and a timestamp column written in several offsets (`TimestampRecords`, `TimestampSchema`, `TimestampFacets`, `TimestampOrders`, `TimestampFilters`) |
+| `filtertest/` | Conformance fixture, run on both dialects and `Evaluate`: the operator × type cases (`Run`), the membership cases with their lookup tables and reference lookup (`RunMembership`, `LookupTables`, `Lookups`), the JSON path cases (`RunPaths`, `PathRecords`, `PathSchema`), the exact-decimal cases (`RunDecimals`), the scalar-array cases (`RunArrays`, `ArrayRecords`, `ArraySchema`, `ArrayFacets`), the stored-point geo cases (`RunGeo`, `GeoRecords`, `GeoSchema`), the numeric facet keys (`NumberKeyRecords`, `NumberKeyFacets`) a timestamp column written in several offsets (`TimestampRecords`, `TimestampSchema`, `TimestampFacets`, `TimestampOrders`, `TimestampFilters`) and the quoted-integer cases (`RunQuoted`, `QuotedRecords`, `QuotedSchema`) |
 
 ## Dependencies
 

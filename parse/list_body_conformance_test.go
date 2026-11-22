@@ -7,7 +7,6 @@ import (
 	"encoding/json"
 	"errors"
 	"net/url"
-	"os"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -50,10 +49,7 @@ func parseErrorCode(err error) string {
 // POST body's filter member, and that verdict is the corpus's: the same
 // validity, error code and canonical AST.
 func TestFilterConformance_ThroughBothListTransports(t *testing.T) {
-	data, err := os.ReadFile(conformanceCorpusPath)
-	require.NoError(t, err)
-	var corpus []conformanceCase
-	require.NoError(t, json.Unmarshal(data, &corpus))
+	corpus := readFilterCorpus(t)
 	require.NotEmpty(t, corpus)
 
 	res := confResource(t)

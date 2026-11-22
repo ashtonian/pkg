@@ -1,5 +1,6 @@
 import { isCivilDate } from "../core/date.js";
-import { compareDecimals, isDecimal } from "../core/decimal.js";
+import { compareDecimals, decimalInteger, isDecimal } from "../core/decimal.js";
+import { fromWire } from "../core/wire.js";
 import { SchemaValidationError, SchemaValidationErrors } from "../core/errors.js";
 import type { ConstraintFailure } from "../core/errors.js";
 import type { FieldType } from "../core/types.js";
@@ -81,10 +82,44 @@ function validatePatchValue(field: string, value: unknown, path: PatchPathSchema
     }
     return failures;
   }
+  if (path.wire === "string") return validateQuotedValue(field, value, path);
   if (!scalarOK(value, path.data_type, path.number_kind)) {
     return [new SchemaValidationError(field, "E2077", `Field "${field}" expects ${path.data_type}, got ${typeof value}`)];
   }
   return checkValueTags(field, value, path.data_type, path);
+}
+
+// validateQuotedValue checks a json:",string" path's value: a JSON string
+// holding the value's JSON text. Its text keeps an integer exact, so the
+// client checks a 64-bit kind's range and every bound exactly.
+function validateQuotedValue(field: string, value: unknown, path: PatchPathSchema): SchemaValidationError[] {
+  const type = path.data_type;
+  const v = fromWire(type, value);
+  let ok = v !== undefined;
+  if (type === "int") {
+    const n = typeof v === "string" ? decimalInteger(v) : undefined;
+    ok = n !== undefined && intInKind(n, path.number_kind);
+  }
+  if (type === "float") ok = typeof v === "number" && Number.isFinite(v);
+  if (!ok) {
+    const got = typeof value === "string" ? JSON.stringify(value) : typeof value;
+    return [new SchemaValidationError(field, "E2077", `Field "${field}" expects its ${type} as a JSON string holding it (json:",string"), got ${got}`)];
+  }
+  return checkValueTags(field, v, type, path);
+}
+
+// The integer kinds' ranges, exactly. An unknown kind is the widest domain
+// the server allows, int64's minimum to uint64's maximum.
+const KIND_RANGES: Record<string, [bigint, bigint]> = {
+  int8: [-(2n ** 7n), 2n ** 7n - 1n], int16: [-(2n ** 15n), 2n ** 15n - 1n],
+  int32: [-(2n ** 31n), 2n ** 31n - 1n], int64: [-(2n ** 63n), 2n ** 63n - 1n], int: [-(2n ** 63n), 2n ** 63n - 1n],
+  uint8: [0n, 2n ** 8n - 1n], uint16: [0n, 2n ** 16n - 1n], uint32: [0n, 2n ** 32n - 1n],
+  uint64: [0n, 2n ** 64n - 1n], uint: [0n, 2n ** 64n - 1n],
+};
+
+function intInKind(n: bigint, kind?: string): boolean {
+  const [lo, hi] = (kind ? KIND_RANGES[kind] : undefined) ?? [-(2n ** 63n), 2n ** 64n - 1n];
+  return n >= lo && n <= hi;
 }
 
 /** The path's enum and bounds, on a value of type (an array path's element type). */

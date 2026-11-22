@@ -296,6 +296,10 @@ func (p *FilterParser) parseFieldCondition(fieldName string, value any, depth in
 			Message: fmt.Sprintf("operator 'eq' not allowed on field '%s'", field.ExternalName),
 		}
 	}
+	value, err := fromWire(field, OpEq, value)
+	if err != nil {
+		return nil, err
+	}
 	normalized, err := p.normalizeValue(field, OpEq, value)
 	if err != nil {
 		return nil, err
@@ -363,6 +367,10 @@ func (p *FilterParser) parseOperatorObject(field *FieldSchema, obj map[string]an
 			continue
 		}
 
+		val, err := fromWire(field, op, val)
+		if err != nil {
+			return nil, err
+		}
 		normalized, err := p.normalizeValue(field, op, val)
 		if err != nil {
 			return nil, err
@@ -378,6 +386,48 @@ func (p *FilterParser) parseOperatorObject(field *FieldSchema, obj map[string]an
 		return children[0], nil
 	}
 	return &FilterNode{Op: OpAnd, Children: children}, nil
+}
+
+// fromWire reads a request's operand for field under op in the field's wire
+// form (FieldSchema.Wire): a comparison's value, or each member of a set.
+// Policy constraints and resolved memberships carry Go values and skip it.
+func fromWire(field *FieldSchema, op FilterOperator, value any) (any, error) {
+	if field.Wire == "" {
+		return value, nil
+	}
+	switch op {
+	case OpEq, OpNe, OpGt, OpGte, OpLt, OpLte:
+		return wireMember(field, value)
+	case OpIn, OpNin:
+		items, ok := core.AnySlice(value)
+		if !ok {
+			return value, nil // normalizeValue refuses a set that is no array
+		}
+		out := make([]any, len(items))
+		for i, item := range items {
+			v, err := wireMember(field, item)
+			if err != nil {
+				return nil, err
+			}
+			out[i] = v
+		}
+		return out, nil
+	}
+	return value, nil
+}
+
+func wireMember(field *FieldSchema, value any) (any, error) {
+	v, err := core.FromWire(field.Wire, field.DataType, value)
+	if err != nil {
+		return nil, &core.ParseError{
+			Kind:    core.ParseErrorKindFilter,
+			Code:    ECodeValueTypeMismatch.String(),
+			Message: fmt.Sprintf("field '%s': %v", field.ExternalName, err),
+			Details: map[string]any{"field": field.ExternalName},
+			Cause:   err,
+		}
+	}
+	return v, nil
 }
 
 // normalizeValue validates value for field under op and returns the

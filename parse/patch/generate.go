@@ -182,6 +182,7 @@ func generatePatchSchema(g *core.SchemaGenerator, t reflect.Type, server bool) (
 			DataType:   fieldType,
 			SQLType:    info.SQLType,
 			GoType:     field.Type,
+			Wire:       field.Wire(),
 			SQLColumn:  sqlColumn,
 			Validators: validators,
 			EnumValues: enumValues,

@@ -1,6 +1,8 @@
 import { isCivilDate } from "../core/date.js";
-import { isDecimal } from "../core/decimal.js";
+import { decimalInteger, isDecimal } from "../core/decimal.js";
 import { SchemaValidationError } from "../core/errors.js";
+import type { FieldType } from "../core/types.js";
+import { fromWire } from "../core/wire.js";
 import type { FilterFieldSchema, FilterOperator, FilterSchema, SortSchema } from "./types.js";
 
 // Mirrors the Go filter parser (public-pkg/parse/filter): same structure,
@@ -261,6 +263,10 @@ function endsWithEscape(pattern: string): boolean {
 // allowlist — the Go normalizeMember order.
 function validateMember(name: string, val: unknown, field: FilterFieldSchema): void {
   const type = field.data_type;
+  if (field.wire === "string") {
+    validateQuotedMember(name, val, type);
+    return;
+  }
   let ok = true;
   switch (type) {
     case "date":
@@ -301,6 +307,24 @@ function validateMember(name: string, val: unknown, field: FilterFieldSchema): v
       `Value "${val}" is not a valid enum value for "${name}". Allowed: ${field.enum_values.join(", ")}`,
     );
   }
+}
+
+// validateQuotedMember checks an operand of a json:",string" field: a JSON
+// string holding the value's JSON text, an integer's integral (its 64-bit
+// range is the server's to check, as for any integer field).
+function validateQuotedMember(name: string, val: unknown, type: FieldType): void {
+  const v = fromWire(type, val);
+  let ok = v !== undefined;
+  if (type === "int") ok = typeof v === "string" && decimalInteger(v) !== undefined;
+  if (type === "float") ok = typeof v === "number" && Number.isFinite(v);
+  if (!ok) {
+    throw new SchemaValidationError(name, "E2073",
+      `Field "${name}" expects its ${type} as a JSON string holding it (json:",string"), got ${describe(val)}`);
+  }
+}
+
+function describe(val: unknown): string {
+  return typeof val === "string" ? JSON.stringify(val) : val === null ? "null" : typeof val;
 }
 
 /** Validate a sort string against a SortSchema. */

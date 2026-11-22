@@ -122,6 +122,231 @@
     "sqlSqlite": "conf_entities.count \u003c= ?1"
   },
   {
+    "name": "quoted_eq_int64_max",
+    "input": {
+      "serial": "9223372036854775807"
+    },
+    "valid": true,
+    "canonicalAst": {
+      "field": "serial",
+      "op": "eq",
+      "value": 9223372036854775807
+    },
+    "sqlPostgres": "conf_entities.serial = $1",
+    "sqlSqlite": "conf_entities.serial = ?1"
+  },
+  {
+    "name": "quoted_eq_int64_min",
+    "input": {
+      "serial": "-9223372036854775808"
+    },
+    "valid": true,
+    "canonicalAst": {
+      "field": "serial",
+      "op": "eq",
+      "value": -9223372036854775808
+    },
+    "sqlPostgres": "conf_entities.serial = $1",
+    "sqlSqlite": "conf_entities.serial = ?1"
+  },
+  {
+    "name": "quoted_gt_past_2_53",
+    "input": {
+      "serial": {
+        "$gt": "9007199254740992"
+      }
+    },
+    "valid": true,
+    "canonicalAst": {
+      "field": "serial",
+      "op": "gt",
+      "value": 9007199254740992
+    },
+    "sqlPostgres": "conf_entities.serial \u003e $1",
+    "sqlSqlite": "conf_entities.serial \u003e ?1"
+  },
+  {
+    "name": "quoted_in",
+    "input": {
+      "serial": {
+        "$in": [
+          "1",
+          "9007199254740993"
+        ]
+      }
+    },
+    "valid": true,
+    "canonicalAst": {
+      "field": "serial",
+      "op": "in",
+      "value": [
+        1,
+        9007199254740993
+      ]
+    },
+    "sqlPostgres": "conf_entities.serial = ANY($1)",
+    "sqlSqlite": "conf_entities.serial IN (SELECT value AS v FROM json_each(?1))"
+  },
+  {
+    "name": "quoted_eq_bool",
+    "input": {
+      "live": "true"
+    },
+    "valid": true,
+    "canonicalAst": {
+      "field": "live",
+      "op": "eq",
+      "value": true
+    },
+    "sqlPostgres": "conf_entities.live = $1",
+    "sqlSqlite": "conf_entities.live = ?1"
+  },
+  {
+    "name": "err_quoted_bare_number",
+    "input": {
+      "serial": 9007199254740993
+    },
+    "valid": false,
+    "errorCode": "E2073"
+  },
+  {
+    "name": "err_quoted_bare_number_in_set",
+    "input": {
+      "serial": {
+        "$in": [
+          "1",
+          2
+        ]
+      }
+    },
+    "valid": false,
+    "errorCode": "E2073"
+  },
+  {
+    "name": "err_quoted_not_a_number",
+    "input": {
+      "serial": "seven"
+    },
+    "valid": false,
+    "errorCode": "E2073"
+  },
+  {
+    "name": "err_quoted_spaces",
+    "input": {
+      "serial": " 7"
+    },
+    "valid": false,
+    "errorCode": "E2073"
+  },
+  {
+    "name": "quoted_bool_bare_boolean",
+    "input": {
+      "live": true
+    },
+    "valid": true,
+    "canonicalAst": {
+      "field": "live",
+      "op": "eq",
+      "value": true
+    },
+    "sqlPostgres": "conf_entities.live = $1",
+    "sqlSqlite": "conf_entities.live = ?1"
+  },
+  {
+    "name": "quoted_integral_spelling",
+    "input": {
+      "serial": "1.0e3"
+    },
+    "valid": true,
+    "canonicalAst": {
+      "field": "serial",
+      "op": "eq",
+      "value": 1000
+    },
+    "sqlPostgres": "conf_entities.serial = $1",
+    "sqlSqlite": "conf_entities.serial = ?1"
+  },
+  {
+    "name": "err_quoted_leading_plus",
+    "input": {
+      "serial": "+1"
+    },
+    "valid": false,
+    "errorCode": "E2073"
+  },
+  {
+    "name": "err_quoted_leading_zero",
+    "input": {
+      "serial": "01"
+    },
+    "valid": false,
+    "errorCode": "E2073"
+  },
+  {
+    "name": "err_quoted_null",
+    "input": {
+      "serial": null
+    },
+    "valid": false,
+    "errorCode": "E2073"
+  },
+  {
+    "name": "quoted_uint64_max",
+    "input": {
+      "big": "18446744073709551615"
+    },
+    "valid": true,
+    "canonicalAst": {
+      "field": "big",
+      "op": "eq",
+      "value": 18446744073709551615
+    },
+    "sqlPostgres": "conf_entities.big = $1",
+    "sqlSqlite": "conf_entities.big = ?1"
+  },
+  {
+    "name": "quoted_float",
+    "input": {
+      "ratio": {
+        "$lt": "0.5"
+      }
+    },
+    "valid": true,
+    "canonicalAst": {
+      "field": "ratio",
+      "op": "lt",
+      "value": 0.5
+    },
+    "sqlPostgres": "conf_entities.ratio \u003c $1",
+    "sqlSqlite": "conf_entities.ratio \u003c ?1"
+  },
+  {
+    "name": "err_quoted_float_word",
+    "input": {
+      "ratio": "half"
+    },
+    "valid": false,
+    "errorCode": "E2073"
+  },
+  {
+    "name": "err_quoted_uint_negative",
+    "input": {
+      "big": "-1"
+    },
+    "valid": false,
+    "errorCode": "E2073",
+    "tsApplicable": false
+  },
+  {
+    "name": "err_quoted_past_int64",
+    "input": {
+      "serial": "9223372036854775808"
+    },
+    "valid": false,
+    "errorCode": "E2073",
+    "tsApplicable": false
+  },
+  {
     "name": "eq_decimal_string",
     "input": {
       "price": "10.50"
