@@ -191,7 +191,7 @@ func isNilReference(v any) bool {
 //   - $in: [] is False and $nin: [] True, NULL or not.
 //   - Numbers and decimals compare by exact value; strings, UUIDs,
 //     timestamps and dates by code point; booleans as false < true.
-//   - Documents compare as jsonb does (JSONEqual, JSONContains, JSONHasKey);
+//   - Documents compare as jsonb does (core.JSONEqual, JSONContains, JSONHasKey);
 //     an array $contains every listed element; $like and $ilike match as
 //     MatchLike; $some / $none test a document's elements, or a scalar
 //     array's (an array column's, or an array path's elements of its type).
@@ -531,9 +531,9 @@ func ordered(c int, op FilterOperator) bool {
 func compareDocument(f *FieldSchema, op FilterOperator, lit, doc any) (Truth, error) {
 	switch op {
 	case OpEq:
-		return truthOf(JSONEqual(doc, lit)), nil
+		return truthOf(core.JSONEqual(doc, lit)), nil
 	case OpNe:
-		return truthOf(!JSONEqual(doc, lit)), nil
+		return truthOf(!core.JSONEqual(doc, lit)), nil
 	case OpContains:
 		return truthOf(JSONContains(doc, lit)), nil
 	case OpHasKey:

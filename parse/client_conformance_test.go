@@ -320,6 +320,10 @@ type confPatchInput struct {
 	Live     client.Nullable[client.Quoted[bool]]    `json:"live,omitzero"`
 	Share    client.Nullable[client.Quoted[float32]] `json:"share,omitzero"`
 	Opt      client.Nullable[client.Quoted[int64]]   `json:"opt,omitzero"`
+	Members  client.Nullable[[]string]               `json:"members,omitzero"`
+	// QuotedTags is a relation whose target key is quoted: its keys are
+	// client.Quoted, as a client.Relation[client.Quoted[int64]] sends them.
+	QuotedTags client.Nullable[[]client.Quoted[int64]] `json:"quoted_tags,omitzero"`
 }
 
 var patchBuilt = map[string]confPatchInput{
@@ -370,41 +374,50 @@ var patchBuilt = map[string]confPatchInput{
 	"quoted_float":                   {Share: client.Set(client.Quote[float32](0.5))},
 	"quoted_null_clears_nullable":    {Opt: client.Null[client.Quoted[int64]]()},
 	"err_quoted_null_on_value_field": {Serial: client.Null[client.Quoted[int64]]()},
+	"relation_list":                  {Members: client.Set([]string{"a", "b"})},
+	"relation_null_clears":           {Members: client.Null[[]string]()},
+	"relation_empty_clears":          {Members: client.Set([]string{})},
+	"quoted_relation_keys":           {QuotedTags: client.Set([]client.Quoted[int64]{client.Quote(int64(5)), client.Quote(int64(9007199254740993))})},
 }
 
 var patchInexpressible = map[string]string{
-	"err_string_type":           "Name is a Nullable[string]",
-	"err_quoted_bare_number":    "Serial is a Nullable[Quoted[int64]]",
-	"err_quoted_past_int64":     "Serial is a Nullable[Quoted[int64]]",
-	"err_quoted_not_a_number":   "Serial is a Nullable[Quoted[int64]]",
-	"err_quoted_spaces":         "a Quoted marshals its value's JSON text",
-	"err_quoted_uint_negative":  "Big is a Nullable[Quoted[uint64]]",
-	"quoted_bool_bare_boolean":  "a Quoted[bool] marshals a JSON string",
-	"quoted_integral_spelling":  "a Quoted marshals its value's JSON text",
-	"err_quoted_leading_plus":   "a Quoted marshals its value's JSON text",
-	"err_quoted_leading_zero":   "a Quoted marshals its value's JSON text",
-	"err_quoted_float_word":     "Share is a Nullable[Quoted[float32]]",
-	"err_int_fraction":          "Count is a Nullable[int32]",
-	"err_int_type":              "Count is a Nullable[int32]",
-	"err_int32_range":           "Count is a Nullable[int32]",
-	"err_int8_range":            "Small is a Nullable[int8]",
-	"err_float_type":            "Ratio is a Nullable[float64]",
-	"decimal_number":            "a decimal.Decimal marshals as a JSON string",
-	"decimal_exponent":          "a decimal.Decimal marshals plain notation",
-	"err_decimal_word":          "Price is a Nullable[decimal.Decimal]",
-	"err_decimal_bool":          "Price is a Nullable[decimal.Decimal]",
-	"err_decimal_leading_plus":  "a decimal.Decimal marshals canonical text",
-	"err_decimal_beyond_digits": "a decimal.Decimal marshals plain notation",
-	"err_bool_type":             "Active is a Nullable[bool]",
-	"err_array_type":            "Tags is a Nullable[[]string]",
-	"err_array_element_type":    "Tags is a Nullable[[]string]",
-	"err_array_element_range":   "the struct declares no int16 array",
-	"err_timestamp_format":      "SeenAt is a Nullable[time.Time]",
-	"err_timestamp_type":        "SeenAt is a Nullable[time.Time]",
-	"err_not_patchable":         "the patch struct holds patchable members only",
-	"err_unknown_field":         "the patch struct holds declared members only",
-	"decimal_bound_exponent":    "a decimal.Decimal marshals plain notation",
-	"decimal_bound_number":      "a decimal.Decimal marshals as a JSON string",
+	"err_string_type":                  "Name is a Nullable[string]",
+	"err_quoted_bare_number":           "Serial is a Nullable[Quoted[int64]]",
+	"err_quoted_past_int64":            "Serial is a Nullable[Quoted[int64]]",
+	"err_quoted_not_a_number":          "Serial is a Nullable[Quoted[int64]]",
+	"err_quoted_spaces":                "a Quoted marshals its value's JSON text",
+	"err_quoted_uint_negative":         "Big is a Nullable[Quoted[uint64]]",
+	"quoted_bool_bare_boolean":         "a Quoted[bool] marshals a JSON string",
+	"quoted_integral_spelling":         "a Quoted marshals its value's JSON text",
+	"err_quoted_leading_plus":          "a Quoted marshals its value's JSON text",
+	"err_quoted_leading_zero":          "a Quoted marshals its value's JSON text",
+	"err_quoted_float_word":            "Share is a Nullable[Quoted[float32]]",
+	"err_int_fraction":                 "Count is a Nullable[int32]",
+	"err_int_type":                     "Count is a Nullable[int32]",
+	"err_int32_range":                  "Count is a Nullable[int32]",
+	"err_int8_range":                   "Small is a Nullable[int8]",
+	"err_float_type":                   "Ratio is a Nullable[float64]",
+	"decimal_number":                   "a decimal.Decimal marshals as a JSON string",
+	"decimal_exponent":                 "a decimal.Decimal marshals plain notation",
+	"err_decimal_word":                 "Price is a Nullable[decimal.Decimal]",
+	"err_decimal_bool":                 "Price is a Nullable[decimal.Decimal]",
+	"err_decimal_leading_plus":         "a decimal.Decimal marshals canonical text",
+	"err_decimal_beyond_digits":        "a decimal.Decimal marshals plain notation",
+	"err_bool_type":                    "Active is a Nullable[bool]",
+	"err_array_type":                   "Tags is a Nullable[[]string]",
+	"err_array_element_type":           "Tags is a Nullable[[]string]",
+	"err_array_element_range":          "the struct declares no int16 array",
+	"err_timestamp_format":             "SeenAt is a Nullable[time.Time]",
+	"err_timestamp_type":               "SeenAt is a Nullable[time.Time]",
+	"err_not_patchable":                "the patch struct holds patchable members only",
+	"err_unknown_field":                "the patch struct holds declared members only",
+	"decimal_bound_exponent":           "a decimal.Decimal marshals plain notation",
+	"decimal_bound_number":             "a decimal.Decimal marshals as a JSON string",
+	"err_relation_not_a_list":          "Members is a Nullable[[]string]",
+	"err_relation_element_type":        "Members is a Nullable[[]string]",
+	"err_relation_null_element":        "a []string holds no null",
+	"err_quoted_relation_bare_number":  "a Quoted marshals a JSON string",
+	"err_quoted_relation_not_a_number": "QuotedTags holds Quoted[int64] keys",
 }
 
 // A merge patch is its JSON, so the client's document equals the corpus

@@ -134,7 +134,8 @@ Construct parsers once, customize schemas before serving, and treat them as read
 | `filter.PostgresDialect{Collation: c}` | `filter.PostgresCollation` | `filter.CollationPgCUTF8` | Code-point collation for string sorts and ranges; `filter.CollationC` on PostgreSQL 14–16 |
 | `filter.List*` / builder options | functional options | bounded list defaults | [List, filter, facet, include options](docs/queries.md#configuration) |
 | `patch.With*` | `patch.PatchSQLOption` | no timestamp column | [SQL patch options](docs/patches.md#configuration) |
-| `patch.DefaultMaxOperations` | int | `50` | Operation limit on generated client/server patch schemas; a hand-built `PatchSchema` chooses its own `MaxOperations`. [Patch limits](docs/patches.md#validation) |
+| `patch.DefaultMaxOperations` | int | `50` | Operation limit of every `PatchSchema` (generated, or built with `patch.NewPatchSchema`) unless its `MaxOperations` is set; 0 is unlimited. [Patch limits](docs/patches.md#validation) |
+| `patch.DefaultMaxRelationValues` | int | `1000` | Keys one operation on a relation path may name, repeats counted once, unless the schema's `MaxRelationValues` is set; 0 is unlimited; beyond it E2119. Served as `max_relation_values`. [Patch limits](docs/patches.md#validation) |
 | `UpdateBatchLimits.MaxRows` | int | `500` | Total keys admitted by one `BuildUpdateBatch` plan; zero selects the default and negative refuses |
 | `UpdateBatchLimits.MaxParameters` | int | SQLite `999`; PostgreSQL `65535` | Parameters per batch statement; zero selects the dialect default and negative refuses |
 
@@ -164,7 +165,7 @@ Tags expose capabilities explicitly: `parse:"filter,sort,patch,facet,search,incl
 | [`tenant.go`](tenant.go) | `ErrTenantInvalid`; the tenant key: the one value every statement binds `Scope.Tenant` as, checked against every tenant column a resource reaches through its relations at any depth, and the relation graph `Relate` keeps it in |
 | [`update.go`](update.go) | `Target` (`ByID`, `ByIDs`, `ByFilter`), `BuildUpdate`, `UpdatePlan` (`Dialect`, `Current`), `RelationStatements`, `Reread`, `Stamp`, `StampSQL`, `Increment`, `SkipUnchanged`, `Unchanged`, `Dialect` |
 | [`update_batch.go`](update_batch.go) | `RowUpdate`, `UpdateBatchLimits`, `BuildUpdateBatch`, `UpdateBatchPlan`, `UpdateBatchChunk.CheckCurrent`, `ErrUpdateBatchTargets`: bounded varied column updates with exact preimage checks |
-| [`typed.go`](typed.go) | `Resource` parse entry points (`MergePatchMap`, `ValidateOperations` and server variants), schema access, typed patch application |
+| [`typed.go`](typed.go) | `Resource` parse entry points (`MergePatchMap`, `ValidateOperations` and server variants), schema access, typed patch application through `patch.Applier` |
 | [`parsehttp`](parsehttp/README.md) | `WriteError`: a parse error as an HTTP response; `ParseList`: a list from a GET query string or a POST body |
 | [`parsepgx`](parsepgx/README.md) | `QueryPage`, `Update`: plans run on PostgreSQL through pgx batches |
 | [`parsesqlite`](parsesqlite/README.md) | `Register`: the SQLite functions plans compare decimals and decide geo predicates through, registered with `modernc.org/sqlite` |
@@ -178,7 +179,7 @@ Tags expose capabilities explicitly: `parse:"filter,sort,patch,facet,search,incl
 | [`filter/filtertest`](filter/filtertest/) | Shared operator conformance fixture |
 | `internal/dialect`, `internal/jsonmerge`, `internal/rfc6902`, `internal/cursor`, `internal/decimals`, `internal/geo`, `internal/httpjson` | Dialect primitives and their names, RFC 7386 merge, the RFC 6902 operation member names patch reads and parse writes, the bounded MessagePack cursor envelope, decimals as documents and SQLite hold them with their order-preserving key, the WGS 84 geodesic distance and planar point-in-polygon test geo filters use outside PostGIS, and the JSON response writer the schema handlers and `parsehttp` share (encoded before the status is sent, with its `Content-Length`); the compiler has no private sibling imports |
 
-Patch parsers collect independent invalid values in order. Each declared enum/bounds failure carries `*core.ConstraintError` with `Constraint` and `Limit`; `errors.As` still finds the first `*core.ParseError`. See [the complete patch error contract](docs/patches.md#validation).
+Patch parsers collect independent invalid values in order. Each declared enum/bounds failure carries `*patch.ConstraintError` with `Constraint` and `Limit`; `errors.As` still finds the first `*core.ParseError`. See [the complete patch error contract](docs/patches.md#validation).
 
 `parse.Codes() []parse.Code` exposes the application-independent error catalog (E2061–E2089 and E2112–E2120, with gaps; E2067 is a malformed list parameter, E2120 a schema document that could not be encoded). `*parse.ParseError` carries the string code, path/index context, cause and HTTP status. A `Code` is an `errors.Is` target; Consumers map catalog metadata into their own error conventions. [Error handling and complete catalog](docs/http-errors.md#error-codes)
 

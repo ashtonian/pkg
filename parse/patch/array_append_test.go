@@ -3,12 +3,29 @@
 package patch
 
 import (
+	"slices"
 	"strings"
 	"testing"
 
 	"github.com/ashtonian/pkg/parse/core"
 	"github.com/ashtonian/pkg/parse/filter"
 )
+
+// parseAppend parses an array_append of value to path, the column col.
+func parseAppend(t *testing.T, path, col, value string) *ParsedPatch {
+	t.Helper()
+	schema, err := NewPatchSchema("items", map[string]*PathSchema{
+		path: {AllowedOps: []PatchOp{PatchOpArrayAppend}, DataType: core.FieldTypeArray, SQLColumn: col},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	p, err := NewParser(schema, nil).Parse([]byte(`[{"op":"array_append","path":"` + path + `","value":` + value + `}]`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return p
+}
 
 // TestBuildPatchSQL_ArrayAppend asserts the dialect-specific SET fragment
 // for the PatchOpArrayAppend extension. The fragment must
@@ -47,18 +64,7 @@ func TestBuildPatchSQL_ArrayAppend(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			p := &ParsedPatch{
-				Operations: []*PatchOperation{
-					{
-						Op:    PatchOpArrayAppend,
-						Path:  "/photo_blob_keys",
-						Value: "tenants/x/work_orders/y/photos/abc.jpg",
-						// the raw-path identifier fallback is gone;
-						// schemas always carry the SQL column explicitly.
-						Schema: &PathSchema{SQLColumn: "photo_blob_keys"},
-					},
-				},
-			}
+			p := parseAppend(t, "/photo_blob_keys", "photo_blob_keys", `"tenants/x/work_orders/y/photos/abc.jpg"`)
 			got, err := BuildPatchSQL(p, tc.dialect)
 			if err != nil {
 				t.Fatalf("BuildPatchSQL: %v", err)
@@ -83,11 +89,7 @@ func TestBuildPatchSQL_ArrayAppend(t *testing.T) {
 // of silently dropping the op or generating broken SQL.
 func TestBuildPatchSQL_ArrayAppend_UnknownDialect(t *testing.T) {
 	t.Parallel()
-	p := &ParsedPatch{
-		Operations: []*PatchOperation{
-			{Op: PatchOpArrayAppend, Path: "/x", Value: "v", Schema: &PathSchema{SQLColumn: "x"}},
-		},
-	}
+	p := parseAppend(t, "/x", "x", `"v"`)
 	_, err := BuildPatchSQL(p, unknownDialect{})
 	if err == nil {
 		t.Fatal("expected error for unknown dialect, got nil")
@@ -97,14 +99,14 @@ func TestBuildPatchSQL_ArrayAppend_UnknownDialect(t *testing.T) {
 	}
 }
 
-// TestValidPatchOps_IncludesArrayAppend locks in that the wire-level
+// TestValidOps_IncludesArrayAppend locks in that the wire-level
 // validator recognises the new op. Without this entry the parser would
 // reject `{"op":"array_append",...}` at validation time, defeating the
 // helper's purpose.
-func TestValidPatchOps_IncludesArrayAppend(t *testing.T) {
+func TestValidOps_IncludesArrayAppend(t *testing.T) {
 	t.Parallel()
-	if !ValidPatchOps[PatchOpArrayAppend] {
-		t.Fatal("PatchOpArrayAppend missing from ValidPatchOps")
+	if !IsValidOp(PatchOpArrayAppend) || !slices.Contains(Ops(), PatchOpArrayAppend) {
+		t.Fatal("PatchOpArrayAppend is not a recognized operation")
 	}
 }
 

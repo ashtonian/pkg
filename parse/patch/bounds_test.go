@@ -3,6 +3,7 @@
 package patch_test
 
 import (
+	"maps"
 	"testing"
 
 	"github.com/shopspring/decimal"
@@ -96,7 +97,7 @@ func TestBounds_ValidatePatchValues(t *testing.T) {
 }
 
 func TestBounds_AdvertisedOnThePath(t *testing.T) {
-	paths := boundedSchema(t).AllowedPaths
+	paths := maps.Collect(boundedSchema(t).Paths())
 	assert.Equal(t, core.Bounds{MinLen: new(3), MaxLen: new(3)}, paths["/currency"].Bounds)
 	assert.Equal(t, core.Bounds{Min: "0.01", Max: "999.99"}, paths["/price"].Bounds)
 	assert.Equal(t, core.Bounds{Min: "1", Max: "10"}, paths["/level"].Bounds)
@@ -230,7 +231,7 @@ func TestItems_ValidateArraysSetWhole(t *testing.T) {
 }
 
 func TestItems_AdvertisedOnThePath(t *testing.T) {
-	paths := countedSchema(t).AllowedPaths
+	paths := maps.Collect(countedSchema(t).Paths())
 	assert.Equal(t, core.Bounds{MinItems: new(1), MaxItems: new(3)}, paths["/zones"].Bounds)
 	assert.Equal(t, core.Bounds{MaxItems: new(2)}, paths["/spares"].Bounds)
 	assert.False(t, paths["/zones"].Nullable(), "a slice that must hold an element has no empty value to clear to")

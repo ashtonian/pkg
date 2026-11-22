@@ -12,15 +12,11 @@ import (
 )
 
 func p3Schema() *patch.PatchSchema {
-	return &patch.PatchSchema{
-		Resource: "items",
-		AllowedPaths: map[string]*patch.PathSchema{
-			"/name":   {AllowedOps: []patch.PatchOp{patch.PatchOpReplace, patch.PatchOpAdd, patch.PatchOpRemove, patch.PatchOpTest}, DataType: core.FieldTypeString, SQLColumn: "name"},
-			"/config": {AllowedOps: []patch.PatchOp{patch.PatchOpReplace, patch.PatchOpAdd, patch.PatchOpRemove}, DataType: core.FieldTypeJSON, SQLColumn: "config"},
-			"/badcol": {AllowedOps: []patch.PatchOp{patch.PatchOpReplace}, DataType: core.FieldTypeString}, // SQLColumn deliberately empty
-		},
-		MaxOperations: 20,
-	}
+	return newSchema("items", 20, map[string]*patch.PathSchema{
+		"/name":   {AllowedOps: []patch.PatchOp{patch.PatchOpReplace, patch.PatchOpAdd, patch.PatchOpRemove, patch.PatchOpTest}, DataType: core.FieldTypeString, SQLColumn: "name"},
+		"/config": {AllowedOps: []patch.PatchOp{patch.PatchOpReplace, patch.PatchOpAdd, patch.PatchOpRemove}, DataType: core.FieldTypeJSON, SQLColumn: "config"},
+		"/badcol": {AllowedOps: []patch.PatchOp{patch.PatchOpReplace}, DataType: core.FieldTypeString}, // SQLColumn deliberately empty
+	})
 }
 
 // TestMergePatchMarksObjectValues: RFC 7396 object values need recursive

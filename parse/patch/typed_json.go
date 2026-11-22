@@ -13,14 +13,13 @@ import (
 	"github.com/ashtonian/pkg/parse/core"
 )
 
-// checkJSONMembers rejects fields encoding/json would silently discard, including
-// unknown fields inside typed maps, arrays and embedded structs. Custom JSON
-// decoders own their input contract.
-func checkJSONMembers(t reflect.Type, v any) error {
-	data, err := json.Marshal(v)
-	if err != nil {
-		return err
-	}
+// checkJSONMembers rejects members of data, a value the codec encoded, that a
+// decode into t would silently discard, inside typed maps, arrays and
+// embedded structs too. The check decodes with encoding/json because the
+// Codec interface has no mode that refuses an unknown member, and the patch
+// schema names members by encoding/json's rules; the codec still does the
+// decode that keeps the value. Custom JSON decoders own their input contract.
+func checkJSONMembers(t reflect.Type, data []byte) error {
 	dec := json.NewDecoder(bytes.NewReader(data))
 	dec.DisallowUnknownFields()
 	dec.UseNumber()
@@ -48,9 +47,7 @@ func normalizeTypedMerge(t reflect.Type, obj map[string]any, codec core.Codec, p
 		present = false
 		t = t.Elem()
 	}
-	if t.Kind() == reflect.Interface || t == reflect.TypeFor[json.RawMessage]() {
-		// RawMessage is an untyped JSON document, despite implementing the
-		// marshaler interfaces; its object shape is preserved verbatim.
+	if untypedDocument(t) {
 		return obj, nil
 	}
 	if customJSONType(t) {
@@ -102,7 +99,10 @@ func normalizeTypedMerge(t reflect.Type, obj map[string]any, codec core.Codec, p
 		if !ok {
 			return nil, fmt.Errorf("object merge for %s does not encode an object; use JSON Patch replace", t)
 		}
-		for name, value := range obj {
+		// Sorted, as the map branch is: the first failure reported must not
+		// depend on map order.
+		for _, name := range slices.Sorted(maps.Keys(obj)) {
+			value := obj[name]
 			field, ok := fields[name]
 			if !ok {
 				return nil, fmt.Errorf("unknown or noncanonical JSON member %q in %s", name, t)
@@ -139,7 +139,7 @@ func normalizeTypedMerge(t reflect.Type, obj map[string]any, codec core.Codec, p
 			out[name] = n
 		}
 		if !present {
-			for name := range encoded {
+			for _, name := range slices.Sorted(maps.Keys(encoded)) {
 				if _, supplied := out[name]; !supplied {
 					return nil, fmt.Errorf("object merge into potentially absent %s must supply member %q; use JSON Patch replace", t, name)
 				}
@@ -149,6 +149,14 @@ func normalizeTypedMerge(t reflect.Type, obj map[string]any, codec core.Codec, p
 	default:
 		return nil, fmt.Errorf("cannot merge an object into %s", t)
 	}
+}
+
+// untypedDocument reports a type that holds any JSON document: an interface,
+// or json.RawMessage, which implements the marshaler interfaces but keeps a
+// merged object's shape verbatim, so a merge into it merges as into any
+// document.
+func untypedDocument(t reflect.Type) bool {
+	return t.Kind() == reflect.Interface || t == reflect.TypeFor[json.RawMessage]()
 }
 
 func customJSONType(t reflect.Type) bool {
@@ -414,7 +422,9 @@ func rejectCustomObjectMerge(t reflect.Type, value, normalized any) error {
 	for t.Kind() == reflect.Pointer {
 		t = t.Elem()
 	}
-	if customJSONType(t) || customJSONType(reflect.TypeOf(value)) {
+	// A json.RawMessage member is a document like an interface one; a value
+	// of a custom-encoded Go type merges into neither.
+	if (customJSONType(t) && !untypedDocument(t)) || customJSONType(reflect.TypeOf(value)) {
 		return fmt.Errorf("object merge for custom JSON type %s is not supported; use JSON Patch replace", t)
 	}
 	return nil

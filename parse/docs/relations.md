@@ -119,16 +119,16 @@ Declare `Facetable()` on a has-many or many-to-many and `facets=tags` counts the
 
 ### Change membership
 
-Declare `Writable()` on a many-to-many and a patch changes its membership with target keys: a merge patch `{"tags": ["red", "blue"]}` replaces the set, a JSON Patch `add` / `remove` on `/tags` with a list adds or removes keys. `BuildUpdate` returns the owner statement and `RelationStatements` the membership statements for the keys it returned (`parsepgx.Update` runs both in one transaction). Pairs are made only with targets the request may relate — live, in the tenant, or admitted by the target's policy — by selecting the owner and target rows rather than binding raw keys, and a replace or remove reaches only pairs to such targets, so pairs the request cannot see stay:
+Declare `Writable()` on a many-to-many and a patch changes its membership with target keys: a merge patch `{"tags": ["red", "blue"]}` replaces the set, `{"tags": []}` or `{"tags": null}` clears it, and a JSON Patch `add` / `remove` on `/tags` with a list of at least one key adds or removes keys. A key is never null (E2118); the parser decides each operation's value, so a membership change it accepts always renders. Keys travel as the target's key does: a target key tagged `json:",string"` takes them as JSON strings (`{"tags":["5"]}`), as responses write it and the relation's filter shorthands take it, and the schema document marks the path `"wire": "string"` ([quoted values](schema-configuration.md#quoted-values)). `BuildUpdate` returns the owner statement and `RelationStatements` the membership statements for the keys it returned (`parsepgx.Update` runs both in one transaction). Pairs are made only with targets the request may relate — live, in the tenant, or admitted by the target's policy — by selecting the owner and target rows rather than binding raw keys, and a replace or remove reaches only pairs to such targets, so pairs the request cannot see stay:
 
 ```sql
 INSERT INTO device_tags (device_id, tag_id, tenant_id)
 SELECT owner__.id, target__.id, owner__.tenant_id FROM devices owner__, tags target__
-WHERE owner__.id IN ($1) AND owner__.tenant_id = $2 AND target__.id IN ($3, $4)
-  AND target__.tenant_id = $5 AND target__.deleted_at IS NULL ON CONFLICT DO NOTHING
+WHERE owner__.id = ANY($1) AND owner__.tenant_id = $2 AND target__.id = ANY($3)
+  AND target__.tenant_id = $4 AND target__.deleted_at IS NULL ON CONFLICT DO NOTHING
 ```
 
-A has-many is never written through its parent (that would insert or delete child rows); a belongs-to is written through its foreign-key column like any other column. A writable pair table's tenant comes from the owner or the target.
+The owner keys and the target keys each bind as one array parameter (`= ANY($n)` on PostgreSQL, `IN (SELECT value FROM json_each(?n))` on SQLite), so a statement's parameter count is the same for one key as for a thousand; one operation names at most `PatchSchema.MaxRelationValues` keys (1000 by default, E2119 beyond, repeats counted once). A has-many is never written through its parent (that would insert or delete child rows); a belongs-to is written through its foreign-key column like any other column. A writable pair table's tenant comes from the owner or the target.
 
 ## Pair tables compared by key
 
@@ -178,7 +178,7 @@ Includes return IDs, not nested child objects. The default cap is 100 distinct t
 
 ## Update membership
 
-`patch.BuildPatchSQL` separates junction operations into `RelationOps`. For each operation, `patch.RenderRelationOp` produces statements for the selected owner IDs. Run owner authorization/selection and every resulting statement in one transaction. Membership `replace` removes targets not in the new set and adds missing ones; `add` and `remove` modify the selected memberships.
+`patch.BuildPatchSQL` separates junction operations into `RelationOps`. For each operation, `patch.RenderRelationOp` produces statements for the selected owner IDs, owners and values each bound as one array. Without a target table there are no target rows to select, so PostgreSQL's insert reads the owners and values as rows of the pair table's own type (`jsonb_populate_recordset(NULL::<pair table>, $n)`), which types each key as its column; an unquoted column name is matched as PostgreSQL folds it, to lower case. Run owner authorization/selection and every resulting statement in one transaction. Membership `replace` removes targets not in the new set and adds missing ones; `add` and `remove` modify the selected memberships.
 
 Bind the trusted tenant with `patch.RenderRelationOpOptions.TenantValue`. Serialize conflicting replacements of the same owner (for example by locking the owner row in PostgreSQL) so concurrent replacements do not combine memberships. The package renders SQL; it does not open a transaction or acquire locks.
 

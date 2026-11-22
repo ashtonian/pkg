@@ -3,8 +3,12 @@
 package patch_test
 
 import (
+	"maps"
+	"reflect"
 	"strings"
 	"testing"
+
+	"github.com/stretchr/testify/assert"
 
 	"github.com/ashtonian/pkg/parse/core"
 	"github.com/ashtonian/pkg/parse/filter"
@@ -25,9 +29,9 @@ func TestGeneratePatchSchema_RelationField(t *testing.T) {
 	if err != nil {
 		t.Fatalf("generate patch schema: %v", err)
 	}
-	tagsPath, ok := schema.AllowedPaths["/tags"]
+	tagsPath, ok := schema.Path("/tags")
 	if !ok {
-		t.Fatalf("expected /tags path in schema, got %v", keys(schema.AllowedPaths))
+		t.Fatalf("expected /tags path in schema, got %v", keys(maps.Collect(schema.Paths())))
 	}
 	if tagsPath.Relation == nil {
 		t.Fatalf("expected /tags Relation to be set")
@@ -130,54 +134,79 @@ func TestBuildPatchSQL_Relation_RejectsMoveCopyTest(t *testing.T) {
 	}
 }
 
-func TestBuildPatchSQL_Relation_AddRequiresValues(t *testing.T) {
-	g := core.NewSchemaGenerator()
-	schema, err := patch.GeneratePatchSchema[widgetPatch](g)
+// A relation operation is decided when it parses: its value is a list of
+// keys, none null; null replaces with the empty set, as [] does; an add or
+// remove names at least one key. Whatever the parser accepts compiles and
+// renders.
+func TestRelationValuesAreDecidedAtParse(t *testing.T) {
+	schema, err := patch.GeneratePatchSchema[widgetPatch](core.NewSchemaGenerator())
 	if err != nil {
-		t.Fatalf("generate: %v", err)
+		t.Fatal(err)
 	}
 	parser := patch.NewParser(schema, nil)
-	parsed, err := parser.ParseOps([]patch.RawPatchOp{
-		{Op: "add", Path: "/tags", Value: []any{}},
-	})
-	if err != nil {
-		t.Fatalf("parse: %v", err)
+	parse := func(body string) (*patch.ParsedPatch, error) {
+		if body[0] == '{' {
+			return patch.ParseMergePatch([]byte(body), schema, nil)
+		}
+		return parser.Parse([]byte(body))
 	}
-	if _, err := patch.BuildPatchSQL(parsed, filter.PostgresDialect{}); err == nil {
-		t.Errorf("add with empty values should error")
+	for _, tc := range []struct {
+		body string
+		code string // "" when accepted
+		verb patch.RelationVerb
+		keys []any
+	}{
+		{`{"tags":["a","b"]}`, "", patch.RelationVerbReplace, []any{"a", "b"}},
+		{`{"tags":[]}`, "", patch.RelationVerbReplace, []any{}},
+		{`{"tags":null}`, "", patch.RelationVerbReplace, []any{}},
+		{`[{"op":"replace","path":"/tags","value":null}]`, "", patch.RelationVerbReplace, []any{}},
+		{`[{"op":"add","path":"/tags","value":["a"]}]`, "", patch.RelationVerbAdd, []any{"a"}},
+		{`[{"op":"remove","path":"/tags","value":["a"]}]`, "", patch.RelationVerbRemove, []any{"a"}},
+		{`{"tags":["a",null]}`, "E2118", "", nil},
+		{`[{"op":"add","path":"/tags","value":["a",null]}]`, "E2118", "", nil},
+		{`[{"op":"remove","path":"/tags"}]`, "E2118", "", nil},
+		{`[{"op":"remove","path":"/tags","value":[]}]`, "E2118", "", nil},
+		{`[{"op":"add","path":"/tags","value":[]}]`, "E2118", "", nil},
+		{`[{"op":"add","path":"/tags","value":null}]`, "E2118", "", nil},
+		{`{"tags":"t1"}`, "E2077", "", nil},
+		{`{"tags":[1]}`, "E2077", "", nil},
+	} {
+		parsed, err := parse(tc.body)
+		if tc.code != "" {
+			requireCode(t, err, tc.code)
+			continue
+		}
+		if !assert.NoError(t, err, tc.body) {
+			continue
+		}
+		sql, err := patch.BuildPatchSQL(parsed, filter.SQLiteDialect{})
+		if !assert.NoError(t, err, tc.body) || !assert.Len(t, sql.RelationOps, 1, tc.body) {
+			continue
+		}
+		op := sql.RelationOps[0]
+		assert.Equal(t, tc.verb, op.Verb, tc.body)
+		assert.Equal(t, tc.keys, op.Values, tc.body)
+		_, err = patch.RenderRelationOp(op, filter.SQLiteDialect{}, []any{"w1"}, patch.RenderRelationOpOptions{})
+		assert.NoError(t, err, tc.body)
 	}
+	tags, _ := schema.Path("/tags")
+	assert.True(t, tags.Nullable(), "the schema document's nullable: null parses, as the clear")
 }
 
-func TestRenderRelationOp_Replace_Diff(t *testing.T) {
-	rel := &core.RelationSchema{
-		JoinTable:    "widget_tags",
-		SourceColumn: "widget_id",
-		TargetColumn: "tag_id",
-		PrimaryKey:   "id",
+// A relation's keys are never null, so a membership of a nullable type is
+// refused when its path is built.
+func TestRelationRefusesNullableKeys(t *testing.T) {
+	type nullableKeys struct {
+		ID    string    `db:"id" json:"id"`
+		PTags []*string `db:"-" json:"ptags" parse:"patch" relation:"widget_ptags,widget_id,tag_id"`
 	}
-	op := patch.RelationPatchOp{
-		Field: "tags", Schema: rel, Verb: patch.RelationVerbReplace,
-		Values: []any{"t1", "t2"},
-	}
-	stmts, err := patch.RenderRelationOp(op, filter.PostgresDialect{}, []any{"w1"}, patch.RenderRelationOpOptions{})
-	if err != nil {
-		t.Fatalf("render: %v", err)
-	}
-	if len(stmts) != 2 {
-		t.Fatalf("expected 2 stmts (DELETE NOT IN + INSERT), got %d", len(stmts))
-	}
-	if !strings.HasPrefix(stmts[0].SQL, "DELETE FROM widget_tags") {
-		t.Errorf("stmt[0] should start with DELETE, got %q", stmts[0].SQL)
-	}
-	if !strings.Contains(stmts[0].SQL, "NOT IN") {
-		t.Errorf("stmt[0] should contain NOT IN, got %q", stmts[0].SQL)
-	}
-	if !strings.HasPrefix(stmts[1].SQL, "INSERT INTO widget_tags") {
-		t.Errorf("stmt[1] should start with INSERT, got %q", stmts[1].SQL)
-	}
-	if !strings.Contains(stmts[1].SQL, "ON CONFLICT DO NOTHING") {
-		t.Errorf("stmt[1] should contain ON CONFLICT DO NOTHING, got %q", stmts[1].SQL)
-	}
+	_, err := patch.GeneratePatchSchema[nullableKeys](core.NewSchemaGenerator())
+	assert.ErrorContains(t, err, "never null")
+	_, err = patch.RelationPath(&core.RelationSchema{JoinTable: "j", SourceColumn: "s", TargetColumn: "t"}, reflect.TypeFor[[]*string](), "")
+	assert.ErrorContains(t, err, "never null")
+	path, err := patch.RelationPath(&core.RelationSchema{JoinTable: "j", SourceColumn: "s", TargetColumn: "t"}, reflect.TypeFor[[]string](), "")
+	assert.NoError(t, err)
+	assert.NotNil(t, path)
 }
 
 func TestRenderRelationOp_Replace_Clear(t *testing.T) {
@@ -202,53 +231,33 @@ func TestRenderRelationOp_Replace_Clear(t *testing.T) {
 	}
 }
 
-func TestRenderRelationOp_Remove(t *testing.T) {
-	rel := &core.RelationSchema{
-		JoinTable: "widget_tags", SourceColumn: "widget_id", TargetColumn: "tag_id",
-	}
-	op := patch.RelationPatchOp{
-		Field: "tags", Schema: rel, Verb: patch.RelationVerbRemove, Values: []any{"t1"},
-	}
-	stmts, err := patch.RenderRelationOp(op, filter.PostgresDialect{}, []any{"w1"}, patch.RenderRelationOpOptions{})
-	if err != nil {
-		t.Fatalf("render: %v", err)
-	}
-	if len(stmts) != 1 {
-		t.Fatalf("remove should emit one DELETE, got %d stmts", len(stmts))
-	}
-	if !strings.Contains(stmts[0].SQL, "tag_id IN") {
-		t.Errorf("remove-DELETE should filter by tag_id IN (...), got %q", stmts[0].SQL)
-	}
-}
-
-func TestRenderRelationOp_TenantScoped(t *testing.T) {
-	rel := &core.RelationSchema{
-		JoinTable: "widget_tags", SourceColumn: "widget_id", TargetColumn: "tag_id",
-		TenantColumn: "tenant_id",
-	}
-	op := patch.RelationPatchOp{
-		Field: "tags", Schema: rel, Verb: patch.RelationVerbAdd, Values: []any{"t1"},
-	}
-	stmts, err := patch.RenderRelationOp(op, filter.PostgresDialect{}, []any{"w1"}, patch.RenderRelationOpOptions{TenantValue: "tenant-A"})
-	if err != nil {
-		t.Fatalf("render: %v", err)
-	}
-	if len(stmts) != 1 {
-		t.Fatalf("got %d stmts", len(stmts))
-	}
-	if !strings.Contains(stmts[0].SQL, "tenant_id") {
-		t.Errorf("tenant-scoped INSERT should include tenant_id column, got %q", stmts[0].SQL)
-	}
-	hasTenantArg := false
-	for _, a := range stmts[0].Args {
-		if s, ok := a.(string); ok && s == "tenant-A" {
-			hasTenantArg = true
+// RenderRelationOp refuses what it cannot render rather than trusting the
+// operation: a tenant-scoped pair table without a tenant fails closed.
+func TestRenderRelationOp_RefusesWhatItCannotRender(t *testing.T) {
+	rel := &core.RelationSchema{JoinTable: "widget_tags", SourceColumn: "widget_id", TargetColumn: "tag_id"}
+	scoped := &core.RelationSchema{JoinTable: "widget_tags", SourceColumn: "widget_id", TargetColumn: "tag_id", TenantColumn: "tenant_id"}
+	for name, op := range map[string]patch.RelationPatchOp{
+		"remove with no values":      {Field: "tags", Schema: rel, Verb: patch.RelationVerbRemove},
+		"add with no values":         {Field: "tags", Schema: rel, Verb: patch.RelationVerbAdd, Values: []any{}},
+		"a null value":               {Field: "tags", Schema: rel, Verb: patch.RelationVerbAdd, Values: []any{"t1", nil}},
+		"values of two types":        {Field: "tags", Schema: rel, Verb: patch.RelationVerbAdd, Values: []any{"t1", 2}},
+		"an unknown verb":            {Field: "tags", Schema: rel, Verb: "merge", Values: []any{"t1"}},
+		"a tenant-scoped pair table": {Field: "tags", Schema: scoped, Verb: patch.RelationVerbAdd, Values: []any{"t1"}},
+		"a value that is not a key":  {Field: "tags", Schema: rel, Verb: patch.RelationVerbAdd, Values: []any{map[string]any{}}},
+	} {
+		for _, d := range []patch.SQLDialect{filter.PostgresDialect{}, filter.SQLiteDialect{}} {
+			_, err := patch.RenderRelationOp(op, d, []any{"w1"}, patch.RenderRelationOpOptions{})
+			assert.Error(t, err, "%s on %s", name, d.Name())
 		}
 	}
-	if !hasTenantArg {
-		t.Errorf("expected tenant value in args, got %+v", stmts[0].Args)
-	}
+	_, err := patch.RenderRelationOp(patch.RelationPatchOp{Field: "tags", Schema: rel, Verb: patch.RelationVerbAdd, Values: []any{"t1"}}, unknownSQLDialect{}, []any{"w1"}, patch.RenderRelationOpOptions{})
+	assert.Error(t, err)
 }
+
+// unknownSQLDialect is a dialect relation statements have no form for.
+type unknownSQLDialect struct{ filter.SQLiteDialect }
+
+func (unknownSQLDialect) Name() string { return "unknown" }
 
 func TestRenderRelationOp_NoOwners(t *testing.T) {
 	rel := &core.RelationSchema{
@@ -294,4 +303,51 @@ func keys[V any](m map[string]V) []string {
 		out = append(out, k)
 	}
 	return out
+}
+
+// A relation operation names at most MaxRelationValues keys, repeats counted
+// once: one more is E2119 (422) from either parser, with the count and the
+// limit in Details, before any SQL exists.
+func TestRelationValueLimit(t *testing.T) {
+	schema, err := patch.GeneratePatchSchema[widgetPatch](core.NewSchemaGenerator())
+	if err != nil {
+		t.Fatal(err)
+	}
+	schema.MaxRelationValues = 3
+	keys := func(n int) string {
+		parts := make([]string, n)
+		for i := range parts {
+			parts[i] = `"t` + string(rune('a'+i)) + `"`
+		}
+		return "[" + strings.Join(parts, ",") + "]"
+	}
+	for _, body := range []string{`{"tags":` + keys(4) + `}`, `[{"op":"add","path":"/tags","value":` + keys(4) + `}]`} {
+		var err error
+		if body[0] == '{' {
+			_, err = patch.ParseMergePatch([]byte(body), schema, nil)
+		} else {
+			_, err = patch.NewParser(schema, nil).Parse([]byte(body))
+		}
+		var pe *core.ParseError
+		if assert.ErrorAs(t, err, &pe, body) {
+			assert.Equal(t, patch.ECodeRelationPatchTooLarge.String(), pe.Code)
+			assert.Equal(t, 422, pe.ErrorHTTPStatus())
+			assert.Equal(t, map[string]any{patch.DetailValueCount: 4, patch.DetailValueLimit: 3}, pe.Details)
+		}
+	}
+
+	parsed, err := patch.ParseMergePatch([]byte(`{"tags":["ta","tb","ta","tc","tb"]}`), schema, nil)
+	if err != nil {
+		t.Fatalf("repeated keys within the limit: %v", err)
+	}
+	assert.Equal(t, []any{"ta", "tb", "tc"}, parsed.Operations[0].Value, "each key once, in the order first named")
+	sqlPatch, err := patch.BuildPatchSQL(parsed, filter.PostgresDialect{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	stmts, err := patch.RenderRelationOp(sqlPatch.RelationOps[0], filter.PostgresDialect{}, []any{"w1"}, patch.RenderRelationOpOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	assert.Equal(t, []string{"ta", "tb", "tc"}, stmts[0].Args[1], "the replace's keys bind once")
 }

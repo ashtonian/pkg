@@ -17,7 +17,6 @@ const (
 	ECodeInvalidPatchOp       = core.CodeInvalidPatchOp
 	ECodePatchFieldNotFound   = core.CodePatchFieldNotFound
 	ECodePatchValueInvalid    = core.CodePatchValueInvalid
-	ECodePatchSchemaNotFound  = core.CodeSchemaNotFound
 	ECodePatchPolicyForbidden = core.CodePatchPolicyForbidden
 	ECodePatchPolicyValue     = core.CodePatchPolicyValue
 	ECodeInvalidJSON          = core.CodeInvalidJSON
@@ -42,7 +41,7 @@ func Codes() []core.Code {
 	return []core.Code{
 		ECodeOpNotAllowed, ECodePathTooDeep, ECodeTooManyOps, ECodeInputTooLarge,
 		ECodeInvalidPatchOp, ECodePatchFieldNotFound, ECodePatchValueInvalid,
-		ECodePatchSchemaNotFound, ECodePatchPolicyForbidden, ECodePatchPolicyValue,
+		ECodePatchPolicyForbidden, ECodePatchPolicyValue,
 		ECodeInvalidJSON,
 		ECodeRelationVerbNotAllowed, ECodeRelationValueInvalid, ECodeRelationPatchTooLarge,
 		ECodeTestOpSQL, ECodeSQLColumnMissing, ECodeOpNotSQLCompilable,

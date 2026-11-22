@@ -239,8 +239,8 @@ func ExampleNewResource_conventions() {
 	fmt.Println("id SQL:", tp.FilterSchema().Fields["id"].SQLExpr)
 	fmt.Println("name SQL:", tp.FilterSchema().Fields["name"].SQLExpr)
 
-	nameCol := tp.PatchSchema().AllowedPaths["/name"].SQLColumn
-	fmt.Println("patch name col:", nameCol)
+	name, _ := tp.PatchSchema().Path("/name")
+	fmt.Println("patch name col:", name.SQLColumn)
 	// Output:
 	// table: device
 	// id SQL: device.device_id

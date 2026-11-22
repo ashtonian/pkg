@@ -14,10 +14,10 @@
 //
 // Resource combines filter, patch, sort, and search parsing for a resource:
 //
-//	tp, err := parse.NewResource[Product]("products")
-//	result, err := tp.ParseFilter(`{"status":"active"}`)
-//	patched, err := tp.ApplyPatch(body, existing)
-//	lq, err := tp.ListQuery(filter.PostgresDialect{})
+//	products, err := parse.NewResource[Product]("products")
+//	result, err := products.ParseFilter(`{"status":"active"}`)
+//	patched, err := products.ApplyPatch(body, existing)
+//	lq, err := products.ListQuery(filter.PostgresDialect{})
 //
 // # SchemaRegistry
 //

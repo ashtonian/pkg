@@ -46,13 +46,10 @@ func TestArrayAppendKeepsElementTypesSQLite(t *testing.T) {
 			_, err = db.Exec(`INSERT INTO items (id, vals) VALUES (1, ?)`, string(seed))
 			require.NoError(t, err)
 
-			parser := patch.NewParser(&patch.PatchSchema{
-				Resource: "items", MaxOperations: 5,
-				AllowedPaths: map[string]*patch.PathSchema{"/vals": {
-					AllowedOps: []patch.PatchOp{patch.PatchOpArrayAppend},
-					DataType:   core.FieldTypeArray, GoType: tc.goType, SQLColumn: "vals",
-				}},
-			}, nil)
+			parser := patch.NewParser(newSchema("items", 5, map[string]*patch.PathSchema{"/vals": {
+				AllowedOps: []patch.PatchOp{patch.PatchOpArrayAppend},
+				DataType:   core.FieldTypeArray, GoType: tc.goType, SQLColumn: "vals",
+			}}), nil)
 			parsed, err := parser.Parse([]byte(fmt.Sprintf(`[{"op":"array_append","path":"/vals","value":%s}]`, tc.element)))
 			require.NoError(t, err)
 			res, err := patch.BuildPatchSQL(parsed, filter.SQLiteDialect{})

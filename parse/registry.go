@@ -238,6 +238,9 @@ type GeoFieldConfigResponse struct {
 type PatchSchemaResponse struct {
 	Paths         map[string]*PatchPathResponse `json:"paths"`
 	MaxOperations int                           `json:"max_operations"`
+	// MaxRelationValues is the most keys one operation on a relation path
+	// names, repeats counted once (E2119); 0 is unlimited.
+	MaxRelationValues int `json:"max_relation_values"`
 }
 
 // PatchPathResponse is the JSON representation of a patchable path: what a
@@ -373,8 +376,8 @@ func filterFieldToResponse(f *filter.FieldSchema) *FilterFieldResponse {
 }
 
 func patchSchemaToResponse(s *patch.PatchSchema) *PatchSchemaResponse {
-	paths := make(map[string]*PatchPathResponse, len(s.AllowedPaths))
-	for key, p := range s.AllowedPaths {
+	paths := map[string]*PatchPathResponse{}
+	for key, p := range s.Paths() {
 		resp := &PatchPathResponse{
 			AllowedOps: slices.Clone(p.AllowedOps), DataType: p.DataType, Wire: p.Wire,
 			Nullable: p.Nullable(), EnumValues: slices.Clone(p.EnumValues), Relation: p.Relation != nil,
@@ -390,7 +393,7 @@ func patchSchemaToResponse(s *patch.PatchSchema) *PatchSchemaResponse {
 		}
 		paths[key] = resp
 	}
-	return &PatchSchemaResponse{Paths: paths, MaxOperations: s.MaxOperations}
+	return &PatchSchemaResponse{Paths: paths, MaxOperations: s.MaxOperations, MaxRelationValues: s.MaxRelationValues}
 }
 
 func cloneInt(p *int) *int {
