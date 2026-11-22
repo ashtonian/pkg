@@ -108,7 +108,9 @@ bundle apply its own per-leaf policy. See [inspection](docs/inspection.md).
 
 The [tag table](docs/schema.md) defines the schema, and the
 [options table](docs/reference.md#options) lists every load, reload and print
-option with its default. Environment loading requires `WithEnvPrefix`, or
+option with its default. A load refuses a tag key that misspells one of
+config's (`defualt`, `envRef`); `WithForeignTagKeys` names another library's
+keys that sit that close. Environment loading requires `WithEnvPrefix`, or
 `WithEnvPrefixes` for a shared layer beneath a service's own prefix
 (`APP_WORKER_DB_HOST`, then `APP_DB_HOST`).
 `envref:"true"` declares variable names read by the application;
@@ -172,7 +174,7 @@ metrics-library dependency.
 |---|---|
 | `config.go`, `options.go` | `Load` pipeline and source options |
 | `defaults.go`, `element_defaults.go`, `decode_input.go`, `check_key.go`, `source_validation.go` | Shared defaults/decoding, key checks and provider entry validation |
-| `schema.go`, `view.go`, `fields.go`, `key.go` | Canonical metadata, discovery and key grammar |
+| `schema.go`, `view.go`, `fields.go`, `key.go`, `tag_keys.go` | Canonical metadata, discovery, key grammar and tag-key spelling |
 | `env_refs.go`, `env.go` | Environment references and variable matching |
 | `reloader.go`, `reload_options.go`, `reload_tags.go`, `applier.go`, `snapshot.go` | Publication, reload triggers and policy, applied-state accounting |
 | `watch.go`, `clock.go` | The file watch and the clock its debounce, recheck and poll timers run on |

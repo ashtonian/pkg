@@ -54,6 +54,7 @@ type schemaField struct {
 type schemaEntry struct {
 	node       *schemaNode
 	err        error
+	misspelt   []misspeltTagKey // across the graph; a load decides which it refuses
 	check      sync.Once
 	validation error
 	catalog    sync.Once
@@ -89,7 +90,24 @@ func buildSchema(view *gowalker.Schema) (*schemaEntry, error) {
 	if b.err == nil {
 		b.err = checkReloadTags(n)
 	}
-	return &schemaEntry{node: n, err: b.err}, nil
+	e := &schemaEntry{node: n, err: b.err}
+	seen := map[*schemaNode]bool{}
+	var walk func(*schemaNode)
+	walk = func(n *schemaNode) {
+		if n == nil || seen[n] {
+			return
+		}
+		seen[n] = true
+		if n.view != nil {
+			e.misspelt = append(e.misspelt, misspeltTagKeys(n.view.Root())...)
+		}
+		for _, f := range n.fields {
+			walk(f.node)
+		}
+		walk(n.elem)
+	}
+	walk(n)
+	return e, nil
 }
 
 // rootMetadata is structural inspection without load-time tag decoding.
