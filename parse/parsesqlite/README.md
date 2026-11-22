@@ -13,7 +13,7 @@ func openDB(ctx context.Context, dsn string) (*sql.DB, error) {
 }
 ```
 
-Register before the database opens its first connection: modernc.org/sqlite installs registered functions on each connection it opens afterwards. Declare decimal columns `TEXT` so they hold every decimal exactly ([decimals](../docs/schema-configuration.md#decimals)). The [example server](../examples/server/main.go) registers in `openDB`.
+Register before the database opens its first connection: modernc.org/sqlite installs registered functions on each connection it opens afterwards. Declare decimal columns `TEXT` so they hold every decimal exactly ([decimals](../docs/schema-configuration.md#decimals)). Timestamp columns need no function: they hold canonical UTC text, which compares and sorts as the instant, and rows the application inserts itself must bind it too ([timestamps](../docs/schema-configuration.md#timestamps)). The [example server](../examples/server/main.go) registers in `openDB`.
 
 ## Architecture
 

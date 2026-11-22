@@ -124,7 +124,7 @@ Builder options (`filter.List*`, `filter.With*`, `patch.With*`) are in [queries]
 
 ## Civil dates
 
-Use `core.Date` (or `*core.Date` for a nullable column) for SQL DATE values. It is a calendar value with exactly `YYYY-MM-DD` text, JSON, filter and cursor representations. It supports equality and ordering without converting the date to an instant. TIMESTAMPTZ fields continue to use `time.Time` and RFC3339 timestamps.
+Use `core.Date` (or `*core.Date` for a nullable column) for SQL DATE values. It is a calendar value with exactly `YYYY-MM-DD` text, JSON, filter and cursor representations. It supports equality and ordering without converting the date to an instant. TIMESTAMPTZ fields continue to use `time.Time` and RFC3339 timestamps ([timestamps](#timestamps)).
 
 ```go
 type Task struct {
@@ -137,6 +137,15 @@ type Task struct {
 `core.ParseDate("2028-02-29")` validates a value. Invalid calendar dates, timestamp strings, relative-time tokens and null for a non-nullable date are refused. A nullable patch can explicitly clear a date; omission leaves it untouched. `Date.Scan` and `Date.Value` provide native database/sql and pgx interoperability; native DATE values retain their calendar components in every session timezone. The zero Date is invalid. `Date.Time()` is an explicit conversion for an internal API that requires UTC-midnight `time.Time`; it does not change the public date representation.
 
 `core.Date` infers the SQL DATE read rule; an explicit `ColumnType("day", core.SQLDate)` requires the same scalar. SQLite reads and compares calendar components of both canonical dates and legacy midnight-timestamp storage without rewriting rows or applying offsets. Its date expressions may require expression indexes for large date-range workloads. Request values and JSON responses remain date-only.
+
+## Timestamps
+
+A `time.Time` field (`*time.Time` for a nullable column) holds an instant. Its canonical text is `core.FormatTimestamp`: RFC 3339 in UTC with exactly nine fractional digits (`2026-01-02T01:04:05.500000000Z`, `core.TimestampLayout`). Filter values normalize to it, whatever offset a request writes (`2026-01-02T03:04:05.5+02:00` is the same instant), and cursors, patch values, update stamps and facet keys carry it.
+
+- **PostgreSQL**: declare the column `TIMESTAMPTZ`, which compares instants. A terms facet keys it as its canonical text through `to_char(… AT TIME ZONE 'UTC', …)`, so the keys do not depend on the session's `DateStyle` or `TimeZone`. PostgreSQL holds microseconds, so a key's last three fractional digits are zero, and an infinite timestamp has no bucket. A `timestamp` column without a time zone holds no instant: its facet keys would follow the session's `TimeZone`.
+- **SQLite** has no timestamp type, so a timestamp column holds the canonical text. The zone is UTC and the width fixed, so text order is time order: ranges, sorts, keyset seeks and facets on the column agree with PostgreSQL, and a plain index on the column serves them. `SQLiteDialect.MarshalValue` writes that text from a `time.Time`, a pointer to one, a `sql.NullTime` or RFC 3339 text, and each element of a list of timestamps (`[]time.Time`, stored as JSON text) the same way; filters, cursors, patches and stamps bind it. Rows the application writes itself must hold it too: bind `core.FormatTimestamp(t)`, or `MarshalValue`'s result. modernc.org/sqlite stores a `time.Time` bound directly as `t.String()` in the value's own offset, which neither compares nor facets as an instant.
+
+To migrate a SQLite database whose timestamps were written another way, rewrite each one as the canonical text of its instant. In Go: read it into a `time.Time` (modernc.org/sqlite parses its own text in a column declared `DATE`, `DATETIME` or `TIMESTAMP`) and write back `core.FormatTimestamp(t)`. Until a column is rewritten, rows written in different offsets compare, sort and facet by their text, not their instant.
 
 ## Time, interval and network values
 
