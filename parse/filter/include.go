@@ -153,14 +153,21 @@ func BuildIncludeQuery(field *FieldSchema, dialect Dialect, ownerPKs []any, opts
 		scope = scope.over(cfg.owner)
 		scope.row.expr = includeOwnerAlias + "." + scope.row.column
 	}
-	b.WriteString(" WHERE j." + rel.SourceColumn + " IN (")
+	// The owner keys bind as one set, typed as the owner's correlation
+	// field, so the statement's text does not vary with the page.
+	owners := *field.RelatedBy
+	owners.SQLExpr, owners.Path = junctionAlias+"."+rel.SourceColumn, nil
+	keys := make([]any, len(ownerPKs))
 	for i, pk := range ownerPKs {
-		if i > 0 {
-			b.WriteString(", ")
+		if keys[i], err = core.NormalizeScalar(owners.DataType, owners.NumberKind, pk); err != nil {
+			return IncludeQuery{}, fmt.Errorf("BuildIncludeQuery: field %q: owner key %v: %w", field.ExternalName, pk, err)
 		}
-		b.WriteString(bind(pk))
 	}
-	b.WriteByte(')')
+	in, err := dialect.Condition(&owners, OpIn, keys, bind)
+	if err != nil {
+		return IncludeQuery{}, fmt.Errorf("BuildIncludeQuery: field %q: owner keys: %w", field.ExternalName, err)
+	}
+	b.WriteString(" WHERE " + in)
 	relScope, err := relatedScope(field, dialect, scope, cfg.related, s, bind, junctionAlias, targetAlias)
 	if err != nil {
 		return IncludeQuery{}, fmt.Errorf("BuildIncludeQuery: field %q: %w", field.ExternalName, err)
@@ -191,6 +198,9 @@ func includeConfig(field *FieldSchema, opts ...IncludeQueryOption) (*includeQuer
 	}
 	if field.Relation.Policy && field.Related == nil {
 		return nil, fmt.Errorf("policy-scoped relation has no target schema")
+	}
+	if field.RelatedBy == nil {
+		return nil, fmt.Errorf("field %q has no owner correlation field (FieldSchema.RelatedBy) to type the owner keys", field.ExternalName)
 	}
 	cfg := &includeQueryConfig{}
 	for _, opt := range opts {

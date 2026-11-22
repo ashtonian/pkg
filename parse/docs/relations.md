@@ -170,7 +170,7 @@ For a virtual relation hidden from the base row JSON, add `relation_name:"tag_id
 
 1. Validate the requested names with `filter.ParseIncludes(schema, parameter)`.
 2. Execute the base page query and collect its owner IDs.
-3. For each requested relation, call `filter.BuildIncludeQuery(field, dialect, ownerIDs, options...)`. Scope it with `WithIncludeRelationScope`: a `Tenant` for tenant-scoped junctions, or a `RowTenant` with `WithIncludeOwner(ownerSchema)` when the owners span tenants.
+3. For each requested relation, call `filter.BuildIncludeQuery(field, dialect, ownerIDs, options...)`. The owner IDs bind as one set, typed as the relation's owner correlation field (`FieldSchema.RelatedBy`, which a resource sets), so the statement's text is the same for every page; a field without one is an error. Scope it with `WithIncludeRelationScope`: a `Tenant` for tenant-scoped junctions, or a `RowTenant` with `WithIncludeOwner(ownerSchema)` when the owners span tenants.
 4. Execute its SQL and read the rows with the query's `Scan`, which groups target IDs by owner and lists the owners whose IDs were cut at the cap in `Truncated`.
 5. Attach the result to `filter.Page[T].Relations`, whose JSON name is `_relations`.
 

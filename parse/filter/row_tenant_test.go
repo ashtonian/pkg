@@ -116,7 +116,7 @@ func TestRowTenant_Include(t *testing.T) {
 	require.NoError(t, err)
 	assert.Contains(t, q.SQL, "JOIN widgets owner__ ON owner__.id = j.widget_id")
 	assert.Contains(t, q.SQL, "j.tenant_id = CAST(owner__.tenant_id AS TEXT)")
-	assert.Equal(t, []any{"w1", "w2"}, q.Args, "no tenant is bound")
+	assert.Equal(t, []any{[]string{"w1", "w2"}}, q.Args, "no tenant is bound")
 
 	_, err = filter.ResolveInclude(context.Background(), rel, []any{"w1"}, nil, filter.WithIncludeOwner(widgets), filter.WithIncludeRelationScope(filter.RelationScope{RowTenant: "tenant_id"}))
 	assert.ErrorContains(t, err, "RelationScope.Tenant", "a lookup resolves one tenant's owners at a time")

@@ -212,8 +212,8 @@ func Example_include() {
 	fmt.Println(q.SQL)
 	fmt.Println(q.Args)
 	// Output:
-	// SELECT CAST(include__.owner_pk AS TEXT), CAST(include__.target_id AS TEXT) FROM (SELECT owner_pk, target_id, ROW_NUMBER() OVER (PARTITION BY owner_pk ORDER BY target_id) AS include_rank FROM (SELECT DISTINCT j.product_id AS owner_pk, j.collection_id AS target_id FROM product_collections j WHERE j.product_id IN ($1, $2)) pairs__) include__ WHERE include_rank <= 101 ORDER BY include__.owner_pk, include__.target_id
-	// [0190f3c2-0000-7000-8000-000000000011 0190f3c2-0000-7000-8000-000000000012]
+	// SELECT CAST(include__.owner_pk AS TEXT), CAST(include__.target_id AS TEXT) FROM (SELECT owner_pk, target_id, ROW_NUMBER() OVER (PARTITION BY owner_pk ORDER BY target_id) AS include_rank FROM (SELECT DISTINCT j.product_id AS owner_pk, j.collection_id AS target_id FROM product_collections j WHERE j.product_id = ANY($1)) pairs__) include__ WHERE include_rank <= 101 ORDER BY include__.owner_pk, include__.target_id
+	// [[0190f3c2-0000-7000-8000-000000000011 0190f3c2-0000-7000-8000-000000000012]]
 }
 
 // Example_jsonDocuments: a JSON column is compared or contained as a whole

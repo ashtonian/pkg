@@ -1,6 +1,7 @@
 package filter
 
 import (
+	"context"
 	"fmt"
 	"slices"
 
@@ -37,7 +38,7 @@ func hasRelation(n *FilterNode) bool {
 // correlation field: `$some` is the field among the related rows'
 // correlation values, `$none` its negation or a NULL field (a NULL foreign
 // key relates no row, so NOT EXISTS admits it).
-func (r *memberResolver) relation(n *FilterNode) (*FilterNode, error) {
+func (r *memberResolver) relation(ctx context.Context, n *FilterNode) (*FilterNode, error) {
 	f := n.Field
 	if r.lookup == nil {
 		return nil, invalidRelation(f, "needs a membership lookup to be evaluated outside SQL")
@@ -52,11 +53,11 @@ func (r *memberResolver) relation(n *FilterNode) (*FilterNode, error) {
 		}
 		n = sh
 	}
-	l, some, err := r.relationLookup(n)
+	l, some, err := r.relationLookup(ctx, n)
 	if err != nil {
 		return nil, err
 	}
-	members, _, err := r.values(f.RelatedBy, l)
+	members, _, err := r.values(ctx, f.RelatedBy, l)
 	if err != nil {
 		return nil, err
 	}
@@ -73,7 +74,7 @@ func (r *memberResolver) relation(n *FilterNode) (*FilterNode, error) {
 // relationLookup is the lookup of the related rows' correlation values a
 // relation predicate tests, and whether the predicate holds for owners
 // among them (else for owners outside them).
-func (r *memberResolver) relationLookup(n *FilterNode) (*Lookup, bool, error) {
+func (r *memberResolver) relationLookup(ctx context.Context, n *FilterNode) (*Lookup, bool, error) {
 	f := n.Field
 	rel := f.Relation
 	var cond *LookupCond
@@ -106,7 +107,7 @@ func (r *memberResolver) relationLookup(n *FilterNode) (*Lookup, bool, error) {
 			}
 			nested = ast.Root
 		}
-		nested, err = r.resolve(nested) // the target's own relations, depth 2
+		nested, err = r.resolve(ctx, nested) // the target's own relations, depth 2
 		if err != nil {
 			return nil, false, err
 		}

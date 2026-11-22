@@ -61,8 +61,8 @@ func ResolveMemberships(ctx context.Context, f *ParsedFilter, lookup MembershipL
 	if cfg.scope.row.column != "" {
 		return nil, errors.New("filter: ResolveMemberships reads one tenant's rows; resolve each tenant's with RelationScope.Tenant instead of RowTenant")
 	}
-	r := newMemberResolver(ctx, lookup, cfg)
-	root, err := r.resolve(f.AST.Root)
+	r := newMemberResolver(lookup, cfg)
+	root, err := r.resolve(ctx, f.AST.Root)
 	if err != nil {
 		return nil, err
 	}
@@ -72,7 +72,6 @@ func ResolveMemberships(ctx context.Context, f *ParsedFilter, lookup MembershipL
 }
 
 type memberResolver struct {
-	ctx    context.Context
 	lookup MembershipLookup
 	// answers holds each lookup's answer by the lookup, not the node built
 	// from it: constraints on different fields may share one lookup, and
@@ -89,28 +88,28 @@ type lookupAnswer struct {
 	hasNull bool
 }
 
-func newMemberResolver(ctx context.Context, lookup MembershipLookup, cfg resolveConfig) *memberResolver {
+func newMemberResolver(lookup MembershipLookup, cfg resolveConfig) *memberResolver {
 	return &memberResolver{
-		ctx: ctx, lookup: lookup, cfg: cfg,
+		lookup: lookup, cfg: cfg,
 		answers: map[*Lookup]lookupAnswer{},
 		norm:    NewFilterParser(&ResourceSchema{}, &core.ParserConfig{MaxDepth: math.MaxInt, MaxArraySize: math.MaxInt}),
 	}
 }
 
-func (r *memberResolver) resolve(n *FilterNode) (*FilterNode, error) {
+func (r *memberResolver) resolve(ctx context.Context, n *FilterNode) (*FilterNode, error) {
 	if n == nil || !hasMember(n) && !hasRelation(n) {
 		return n, nil
 	}
 	if n.Field != nil && n.Field.Relation != nil {
-		return r.relation(n)
+		return r.relation(ctx, n)
 	}
 	if n.Op == OpMember {
-		return r.member(n)
+		return r.member(ctx, n)
 	}
 	out := *n
 	out.Children = make([]*FilterNode, len(n.Children))
 	for i, c := range n.Children {
-		rc, err := r.resolve(c)
+		rc, err := r.resolve(ctx, c)
 		if err != nil {
 			return nil, err
 		}
@@ -119,14 +118,14 @@ func (r *memberResolver) resolve(n *FilterNode) (*FilterNode, error) {
 	return &out, nil
 }
 
-func (r *memberResolver) member(n *FilterNode) (*FilterNode, error) {
+func (r *memberResolver) member(ctx context.Context, n *FilterNode) (*FilterNode, error) {
 	if r.lookup == nil {
 		return unknownNode(), nil
 	}
 	if err := n.Member.validate(); err != nil {
 		return nil, err
 	}
-	members, hasNull, err := r.values(n.Field, n.Member)
+	members, hasNull, err := r.values(ctx, n.Field, n.Member)
 	if err != nil {
 		return nil, err
 	}
@@ -139,8 +138,8 @@ func (r *memberResolver) member(n *FilterNode) (*FilterNode, error) {
 
 // values answers l and returns its distinct non-NULL values normalized for
 // field, and whether a NULL was among them.
-func (r *memberResolver) values(field *FieldSchema, l *Lookup) ([]any, bool, error) {
-	raw, hasNull, err := r.lookupValues(l)
+func (r *memberResolver) values(ctx context.Context, field *FieldSchema, l *Lookup) ([]any, bool, error) {
+	raw, hasNull, err := r.lookupValues(ctx, l)
 	if err != nil {
 		return nil, false, err
 	}
@@ -164,11 +163,11 @@ func (r *memberResolver) values(field *FieldSchema, l *Lookup) ([]any, bool, err
 
 // inner is l with every member condition answered: a store sees only
 // comparisons, the inner lookups' values as LookupOpIn.
-func (r *memberResolver) inner(l *Lookup) (*Lookup, error) {
+func (r *memberResolver) inner(ctx context.Context, l *Lookup) (*Lookup, error) {
 	if l.Where == nil || !hasMemberCond(l.Where) {
 		return l, nil
 	}
-	where, err := r.innerCond(l.Where)
+	where, err := r.innerCond(ctx, l.Where)
 	if err != nil {
 		return nil, err
 	}
@@ -177,9 +176,9 @@ func (r *memberResolver) inner(l *Lookup) (*Lookup, error) {
 	return &out, nil
 }
 
-func (r *memberResolver) innerCond(c *LookupCond) (*LookupCond, error) {
+func (r *memberResolver) innerCond(ctx context.Context, c *LookupCond) (*LookupCond, error) {
 	if c.Op == LookupOpMember {
-		vs, _, err := r.lookupValues(c.Lookup)
+		vs, _, err := r.lookupValues(ctx, c.Lookup)
 		if err != nil {
 			return nil, err
 		}
@@ -192,7 +191,7 @@ func (r *memberResolver) innerCond(c *LookupCond) (*LookupCond, error) {
 	group := func(cs []*LookupCond) ([]*LookupCond, error) {
 		res := make([]*LookupCond, len(cs))
 		for i, child := range cs {
-			rc, err := r.innerCond(child)
+			rc, err := r.innerCond(ctx, child)
 			if err != nil {
 				return nil, err
 			}
@@ -212,11 +211,11 @@ func (r *memberResolver) innerCond(c *LookupCond) (*LookupCond, error) {
 
 // lookupValues answers l — its inner lookups first — as stored values,
 // NULLs dropped and reported. Each lookup is asked once per resolution.
-func (r *memberResolver) lookupValues(l *Lookup) ([]any, bool, error) {
+func (r *memberResolver) lookupValues(ctx context.Context, l *Lookup) ([]any, bool, error) {
 	if a, ok := r.answers[l]; ok {
 		return a.values, a.hasNull, nil
 	}
-	values, hasNull, err := r.ask(l)
+	values, hasNull, err := r.ask(ctx, l)
 	if err != nil {
 		return nil, false, err
 	}
@@ -224,12 +223,12 @@ func (r *memberResolver) lookupValues(l *Lookup) ([]any, bool, error) {
 	return values, hasNull, nil
 }
 
-func (r *memberResolver) ask(l *Lookup) ([]any, bool, error) {
-	l, err := r.inner(l)
+func (r *memberResolver) ask(ctx context.Context, l *Lookup) ([]any, bool, error) {
+	l, err := r.inner(ctx, l)
 	if err != nil {
 		return nil, false, err
 	}
-	if err = r.ctx.Err(); err != nil {
+	if err = ctx.Err(); err != nil {
 		return nil, false, fmt.Errorf("filter: membership lookup on %s: %w", l.Table, err)
 	}
 	var values []any
@@ -238,9 +237,9 @@ func (r *memberResolver) ask(l *Lookup) ([]any, bool, error) {
 		if !ok {
 			return nil, false, invalidLookup(fmt.Sprintf("lookup on %s filters its rows; the membership lookup cannot evaluate filters (RelationLookup)", l.Table))
 		}
-		values, err = rl.LookupFilteredValues(r.ctx, l)
+		values, err = rl.LookupFilteredValues(ctx, l)
 	} else {
-		values, err = r.lookup.LookupValues(r.ctx, l)
+		values, err = r.lookup.LookupValues(ctx, l)
 	}
 	if err != nil {
 		return nil, false, fmt.Errorf("filter: membership lookup on %s: %w", l.Table, err)

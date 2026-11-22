@@ -43,19 +43,19 @@ func ResolveInclude(ctx context.Context, field *FieldSchema, ownerPKs []any, loo
 	if lookup == nil {
 		return IncludeRows{}, invalidRelation(field, "needs an include lookup to be evaluated outside SQL")
 	}
-	r := newMemberResolver(ctx, lookup, resolveConfig{scope: cfg.scope, related: cfg.related})
+	r := newMemberResolver(lookup, resolveConfig{scope: cfg.scope, related: cfg.related})
 	op := OpSome
 	if field.Related == nil {
 		op = OpNotNull
 	}
-	l, _, err := r.relationLookup(&FilterNode{Field: field, Op: op})
+	l, _, err := r.relationLookup(ctx, &FilterNode{Field: field, Op: op})
 	if err != nil {
 		return IncludeRows{}, fmt.Errorf("resolving include %s: %w", field.ExternalName, err)
 	}
 	rel := field.Relation
 	l.Project = rel.TargetColumn
 	l.Where = WhereAll(l.Where, WhereIn(rel.SourceColumn, ownerPKs...))
-	l, err = r.inner(l)
+	l, err = r.inner(ctx, l)
 	if err != nil {
 		return IncludeRows{}, fmt.Errorf("resolving include %s: %w", field.ExternalName, err)
 	}

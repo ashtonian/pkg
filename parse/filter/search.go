@@ -181,11 +181,9 @@ func buildFallbackSearch(schema *SearchSchema, dialect Dialect, query string, st
 	var args []any
 	paramIdx := startIdx
 
-	// Escape LIKE metacharacters in the user query:
-	// a search for "50%" must match the literal string, not act as a
-	// wildcard. The ESCAPE clause makes the backslash portable across
-	// Postgres and SQLite.
-	escaped := strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`).Replace(query)
+	// A search for "50%" matches the literal text, not a wildcard. The
+	// ESCAPE clause makes the backslash portable across Postgres and SQLite.
+	escaped := EscapeLike(query)
 	for _, f := range schema.Fields {
 		paramIdx++
 		ph := dialect.Placeholder(paramIdx)

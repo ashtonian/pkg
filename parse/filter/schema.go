@@ -197,8 +197,8 @@ type FilterNode struct {
 	Children []*FilterNode
 
 	// RawSQL/RawArgs hold a pre-built SQL expression for OpRawSQL nodes.
-	// The SQL builder renders it in parentheses and rewrites its placeholder
-	// params to the dialect's parameter indices.
+	// The SQL builder renders it in parentheses and rewrites every `$N` in
+	// it, string literals included, to the dialect's parameter indices.
 	RawSQL  string
 	RawArgs []any
 

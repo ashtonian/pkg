@@ -28,7 +28,8 @@ type PolicyConstraint struct {
 	// it: `a OR b` needs no parentheses of its own. When set,
 	// Field/Operator/Value are ignored. Use parameterized placeholders ($1,
 	// $2) with RawArgs. This enables subquery-based constraints like
-	// grant-aware scoping.
+	// grant-aware scoping. Every `$N` in it is a placeholder, inside a string
+	// literal or dollar-quoted text too: write a literal `$` some other way.
 	RawSQL  string
 	RawArgs []any
 

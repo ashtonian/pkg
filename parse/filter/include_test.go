@@ -53,6 +53,7 @@ func TestGenerateFilterSchema_IncludableTagSets_Includable(t *testing.T) {
 	if err != nil {
 		t.Fatalf("generate: %v", err)
 	}
+	withOwnerKeys(schema)
 	tags := schema.Fields["tags"]
 	if !tags.Includable {
 		t.Errorf("expected Includable=true on parse:\"filter,include\" field")
@@ -65,6 +66,7 @@ func TestBuildIncludeQuery_Postgres_TenantScoped(t *testing.T) {
 	if err != nil {
 		t.Fatalf("generate: %v", err)
 	}
+	withOwnerKeys(schema)
 	tags := schema.Fields["tags"]
 
 	q, err := filter.BuildIncludeQuery(tags, filter.PostgresDialect{}, []any{"w1", "w2"}, filter.WithIncludeRelationScope(filter.RelationScope{Tenant: "tenant-A"}))
@@ -74,17 +76,17 @@ func TestBuildIncludeQuery_Postgres_TenantScoped(t *testing.T) {
 	if !strings.Contains(q.SQL, "FROM widget_tags j") {
 		t.Errorf("missing junction FROM clause: %s", q.SQL)
 	}
-	if !strings.Contains(q.SQL, "j.widget_id IN (") {
-		t.Errorf("missing source IN clause: %s", q.SQL)
+	if !strings.Contains(q.SQL, "j.widget_id = ANY($1)") {
+		t.Errorf("missing the owner key set: %s", q.SQL)
 	}
-	if !strings.Contains(q.SQL, "j.tenant_id = $3") {
-		t.Errorf("expected tenant predicate after PK params, got: %s", q.SQL)
+	if !strings.Contains(q.SQL, "j.tenant_id = $2") {
+		t.Errorf("expected tenant predicate after the key set, got: %s", q.SQL)
 	}
 	if !strings.Contains(q.SQL, "WHERE include_rank <= 101 ORDER BY include__.owner_pk, include__.target_id") {
 		t.Errorf("expected the default per-owner cap and a stable ORDER BY: %s", q.SQL)
 	}
-	if len(q.Args) != 3 {
-		t.Errorf("want 3 args (2 PKs + tenant), got %d: %v", len(q.Args), q.Args)
+	if want := []any{[]string{"w1", "w2"}, "tenant-A"}; !reflect.DeepEqual(q.Args, want) {
+		t.Errorf("want one key set and the tenant %v, got %v", want, q.Args)
 	}
 }
 
@@ -96,6 +98,7 @@ func TestBuildIncludeQuery_NoTenantBound_FailsClosed(t *testing.T) {
 	if err != nil {
 		t.Fatalf("generate: %v", err)
 	}
+	withOwnerKeys(schema)
 	if _, buildErr := filter.BuildIncludeQuery(schema.Fields["tags"], filter.PostgresDialect{}, []any{"w1"}); buildErr == nil {
 		t.Fatal("expected a tenant-scoped error")
 	}
@@ -114,6 +117,7 @@ func TestBuildIncludeQuery_RejectsNonIncludable(t *testing.T) {
 	if err != nil {
 		t.Fatalf("generate: %v", err)
 	}
+	withOwnerKeys(schema)
 	_, err = filter.BuildIncludeQuery(schema.Fields["tags"], filter.PostgresDialect{}, []any{"w1"})
 	if err == nil {
 		t.Error("expected error on field without parse:\"include\"")
@@ -138,6 +142,7 @@ func TestBuildIncludeQuery_EmptyOwners_EmptySQL(t *testing.T) {
 	if err != nil {
 		t.Fatalf("generate: %v", err)
 	}
+	withOwnerKeys(schema)
 	q, err := filter.BuildIncludeQuery(schema.Fields["tags"], filter.PostgresDialect{}, nil)
 	if err != nil {
 		t.Fatalf("build: %v", err)
@@ -196,6 +201,7 @@ func TestBuildIncludeQuery_CapsInSQL(t *testing.T) {
 	if err != nil {
 		t.Fatalf("generate: %v", err)
 	}
+	withOwnerKeys(schema)
 	q, err := filter.BuildIncludeQuery(schema.Fields["tags"], filter.SQLiteDialect{}, []any{"w1"},
 		filter.WithIncludeRelationScope(filter.RelationScope{Unscoped: true}), filter.WithMaxIncludePerRelation(2))
 	if err != nil {
@@ -212,6 +218,7 @@ func TestParseIncludes(t *testing.T) {
 	if err != nil {
 		t.Fatalf("generate: %v", err)
 	}
+	withOwnerKeys(schema)
 	got, err := filter.ParseIncludes(schema, " tags, ,tags")
 	if err != nil || len(got) != 1 || got[0] != "tags" {
 		t.Errorf("ParseIncludes = %v, %v; want [tags]", got, err)
@@ -249,6 +256,7 @@ func TestRelation_TypedEdgesCountOnce(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	withOwnerKeys(schema)
 
 	q, err := filter.BuildIncludeQuery(schema.Fields["targets"], filter.SQLiteDialect{}, []any{"w1"})
 	if err != nil {

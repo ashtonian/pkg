@@ -122,6 +122,7 @@ func widgetSchema(t *testing.T) (*filter.ResourceSchema, *filter.SortSchema, *pa
 	if err != nil {
 		t.Fatalf("filter schema: %v", err)
 	}
+	withOwnerKeys(rs)
 	ss, err := filter.GenerateSortSchema[widget](g)
 	if err != nil {
 		t.Fatalf("sort schema: %v", err)
