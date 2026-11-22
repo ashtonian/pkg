@@ -30,9 +30,6 @@ const (
 	writeMerge
 )
 
-// whole reports a write that replaces everything below its path.
-func (k writeKind) whole() bool { return k == writeSet || k == writeCopy || k == writeClear }
-
 // write is one path an operation writes.
 type write struct {
 	path  string
