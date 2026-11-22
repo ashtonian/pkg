@@ -29,26 +29,22 @@ func changeSchema() *patch.PatchSchema {
 	tags.GoType = reflect.TypeFor[[]string]()
 	raw := path(core.FieldTypeJSON, "raw")
 	raw.SQLType = core.SQLJSON
-	return &patch.PatchSchema{
-		Resource:      "things",
-		MaxOperations: 50,
-		AllowedPaths: map[string]*patch.PathSchema{
-			"/name":       path(core.FieldTypeString, "name"),
-			"/email":      path(core.FieldTypeString, "email"),
-			"/mood":       path(core.FieldTypeString, "mood"),
-			"/rank":       path(core.FieldTypeInt, "rank"),
-			"/price":      path(core.FieldTypeDecimal, "price"),
-			"/amount":     path(core.FieldTypeDecimal, "amount"),
-			"/ratio":      path(core.FieldTypeFloat, "ratio"),
-			"/span":       path(core.FieldTypeString, "span"),
-			"/at":         path(core.FieldTypeTimestamp, "at"),
-			"/doc":        path(core.FieldTypeJSON, "doc"),
-			"/raw":        raw,
-			"/tags":       tags,
-			"/version":    path(core.FieldTypeInt, "version"),
-			"/updated_at": path(core.FieldTypeTimestamp, "updated_at"),
-		},
-	}
+	return newSchema("things", 50, map[string]*patch.PathSchema{
+		"/name":       path(core.FieldTypeString, "name"),
+		"/email":      path(core.FieldTypeString, "email"),
+		"/mood":       path(core.FieldTypeString, "mood"),
+		"/rank":       path(core.FieldTypeInt, "rank"),
+		"/price":      path(core.FieldTypeDecimal, "price"),
+		"/amount":     path(core.FieldTypeDecimal, "amount"),
+		"/ratio":      path(core.FieldTypeFloat, "ratio"),
+		"/span":       path(core.FieldTypeString, "span"),
+		"/at":         path(core.FieldTypeTimestamp, "at"),
+		"/doc":        path(core.FieldTypeJSON, "doc"),
+		"/raw":        raw,
+		"/tags":       tags,
+		"/version":    path(core.FieldTypeInt, "version"),
+		"/updated_at": path(core.FieldTypeTimestamp, "updated_at"),
+	})
 }
 
 // changeDB describes one database under test.

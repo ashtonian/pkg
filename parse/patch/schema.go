@@ -1,9 +1,14 @@
 package patch
 
 import (
+	"errors"
+	"fmt"
+	"iter"
+	"maps"
 	"reflect"
 	"slices"
 	"sync"
+	"sync/atomic"
 
 	"github.com/ashtonian/pkg/parse/core"
 )
@@ -30,41 +35,150 @@ const (
 	PatchOpArrayAppend PatchOp = "array_append"
 )
 
-// ValidPatchOps is the set of all recognized patch operations.
-var ValidPatchOps = map[PatchOp]bool{
-	PatchOpAdd: true, PatchOpRemove: true, PatchOpReplace: true,
-	PatchOpMove: true, PatchOpCopy: true, PatchOpTest: true,
-	PatchOpArrayAppend: true,
-}
+// ops are the recognized patch operations, in documentation order.
+var ops = []PatchOp{PatchOpAdd, PatchOpRemove, PatchOpReplace, PatchOpMove, PatchOpCopy, PatchOpTest, PatchOpArrayAppend}
 
-// DefaultMaxOperations is the operation limit used by GeneratePatchSchema and
-// GenerateServerPatchSchema. Callers constructing a PatchSchema choose its limit.
+// IsValidOp reports whether op is a recognized patch operation.
+func IsValidOp(op PatchOp) bool { return slices.Contains(ops, op) }
+
+// Ops returns the recognized patch operations, in documentation order. The
+// slice is the caller's.
+func Ops() []PatchOp { return slices.Clone(ops) }
+
+// DefaultMaxOperations is the operation limit a PatchSchema has unless its
+// MaxOperations is set.
 const DefaultMaxOperations = 50
 
-// PatchSchema defines allowed patch operations for a resource.
+// PatchSchema defines the paths a resource's patches may write and the
+// limits a patch is held to. Build one with NewPatchSchema, or generate it
+// with GeneratePatchSchema; AddPath adds a path, and every parse after it
+// sees the path. It is safe for concurrent use.
 type PatchSchema struct {
-	Resource      string
-	AllowedPaths  map[string]*PathSchema
+	Resource string
+	// MaxOperations bounds the operations of one patch; 0 is unlimited.
 	MaxOperations int
 
-	// sortedPathsOnce/List memoize AllowedPaths' keys most specific first,
-	// so wildcard resolution is deterministic.
-	sortedPathsOnce sync.Once
-	sortedPathsList []pathPattern
+	// mu serializes AddPath; readers load paths without it.
+	mu    sync.Mutex
+	paths atomic.Pointer[pathSet]
 }
 
-// sortedPaths returns the AllowedPaths keys as patterns, most specific first
-// (compareSpecificity). Exact-match lookup happens before this list is
-// consulted, so it only orders wildcard candidates.
-func (s *PatchSchema) sortedPaths() []pathPattern {
-	s.sortedPathsOnce.Do(func() {
-		for key := range s.AllowedPaths {
-			s.sortedPathsList = append(s.sortedPathsList, pathPattern{text: key, tokens: pointerTokens(key)})
-		}
-		slices.SortFunc(s.sortedPathsList, compareSpecificity)
-	})
-	return s.sortedPathsList
+// pathSet is one immutable version of a schema's paths: an exact key is
+// looked up in byKey, and a wildcard key is tried in patterns, most specific
+// first, so resolution is deterministic and a matched pattern always has its
+// path schema.
+type pathSet struct {
+	byKey    map[string]*PathSchema
+	patterns []pathPattern
 }
+
+// NewPatchSchema builds the schema of resource's patches with paths, keyed by
+// JSON Pointer or pattern (a token is a literal, * for exactly one token or
+// ** for zero or more), and MaxOperations DefaultMaxOperations. It refuses a
+// key whose token holds * among other characters, a nil path schema and an
+// unknown operation.
+func NewPatchSchema(resource string, paths map[string]*PathSchema) (*PatchSchema, error) {
+	s := &PatchSchema{Resource: resource, MaxOperations: DefaultMaxOperations}
+	set := &pathSet{byKey: make(map[string]*PathSchema, len(paths))}
+	var errs []error
+	for _, key := range slices.Sorted(maps.Keys(paths)) {
+		if err := set.add(key, paths[key]); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	if err := errors.Join(errs...); err != nil {
+		return nil, fmt.Errorf("patch schema %s: %w", resource, err)
+	}
+	set.sort()
+	s.paths.Store(set)
+	return s, nil
+}
+
+// AddPath adds a path to the schema, checked as NewPatchSchema checks one;
+// a key the schema already has is refused. Parses that start after it see
+// the path, and none sees a partial change.
+func (s *PatchSchema) AddPath(key string, ps *PathSchema) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	current := s.pathSet()
+	if _, exists := current.byKey[key]; exists {
+		return fmt.Errorf("patch schema %s: path %q is declared twice", s.Resource, key)
+	}
+	next := &pathSet{byKey: maps.Clone(current.byKey), patterns: slices.Clone(current.patterns)}
+	if next.byKey == nil {
+		next.byKey = map[string]*PathSchema{}
+	}
+	if err := next.add(key, ps); err != nil {
+		return fmt.Errorf("patch schema %s: %w", s.Resource, err)
+	}
+	next.sort()
+	s.paths.Store(next)
+	return nil
+}
+
+// Path returns the path schema declared under key, a JSON Pointer or
+// pattern as given to NewPatchSchema; it does not match patterns.
+func (s *PatchSchema) Path(key string) (*PathSchema, bool) {
+	ps, ok := s.pathSet().byKey[key]
+	return ps, ok
+}
+
+// Paths yields the schema's keys and path schemas in key order.
+func (s *PatchSchema) Paths() iter.Seq2[string, *PathSchema] {
+	set := s.pathSet()
+	return func(yield func(string, *PathSchema) bool) {
+		for _, key := range slices.Sorted(maps.Keys(set.byKey)) {
+			if !yield(key, set.byKey[key]) {
+				return
+			}
+		}
+	}
+}
+
+// pathSet is the schema's current paths; none for a zero PatchSchema.
+func (s *PatchSchema) pathSet() *pathSet {
+	if set := s.paths.Load(); set != nil {
+		return set
+	}
+	return &pathSet{}
+}
+
+// resolve returns the path schema for a request path: its exact key, else
+// the most specific pattern that matches it.
+func (set *pathSet) resolve(path string) (*PathSchema, bool) {
+	if ps, ok := set.byKey[path]; ok {
+		return ps, true
+	}
+	tokens := pointerTokens(path)
+	for _, pattern := range set.patterns {
+		if pattern.matches(tokens) {
+			return set.byKey[pattern.text], true
+		}
+	}
+	return nil, false
+}
+
+func (set *pathSet) add(key string, ps *PathSchema) error {
+	pattern, err := parsePattern(key)
+	if err != nil {
+		return fmt.Errorf("path: %w", err)
+	}
+	if ps == nil {
+		return fmt.Errorf("path %q has no path schema", key)
+	}
+	for _, op := range ps.AllowedOps {
+		if !IsValidOp(op) {
+			return fmt.Errorf("path %q: unknown patch operation %q", key, op)
+		}
+	}
+	set.byKey[key] = ps
+	if pattern.isWildcard() {
+		set.patterns = append(set.patterns, pattern)
+	}
+	return nil
+}
+
+func (set *pathSet) sort() { slices.SortFunc(set.patterns, compareSpecificity) }
 
 // PathSchema defines a single patchable path.
 type PathSchema struct {

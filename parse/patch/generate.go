@@ -98,7 +98,7 @@ func generatePatchSchema(g *core.SchemaGenerator, t reflect.Type, server bool) (
 					continue
 				}
 				op := PatchOp(p)
-				if !ValidPatchOps[op] {
+				if !IsValidOp(op) {
 					return nil, fmt.Errorf("field %s: unknown patch operation %q", field.GoName, p)
 				}
 				if op == PatchOpRemove && !nullable && tags.Relation == "" {
@@ -191,9 +191,7 @@ func generatePatchSchema(g *core.SchemaGenerator, t reflect.Type, server bool) (
 		}
 	}
 
-	return &PatchSchema{
-		Resource: tableName, AllowedPaths: paths, MaxOperations: DefaultMaxOperations,
-	}, nil
+	return NewPatchSchema(tableName, paths)
 }
 
 // defaultOpsFor returns a fresh copy of the default operations for a field
@@ -206,7 +204,7 @@ func defaultOpsFor(g *core.SchemaGenerator, ft core.FieldType) (ops []PatchOp, c
 		ops := make([]PatchOp, 0, len(names))
 		for _, name := range names {
 			op := PatchOp(strings.TrimSpace(name))
-			if !ValidPatchOps[op] {
+			if !IsValidOp(op) {
 				return nil, true, fmt.Errorf("DefaultPatchOps[%s]: unknown patch operation %q", ft, name)
 			}
 			ops = append(ops, op)

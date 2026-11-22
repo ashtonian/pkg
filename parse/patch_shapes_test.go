@@ -59,7 +59,7 @@ func TestPatchShapes_FixedArray(t *testing.T) {
 	assert.Equal(t, [2]int{7, 8}, got.Pair)
 
 	// It cannot grow, so append is neither advertised nor accepted.
-	assert.NotContains(t, p.PatchSchema().AllowedPaths["/pair"].AllowedOps, patch.PatchOpArrayAppend)
+	assert.NotContains(t, pathOf(p.PatchSchema(), "/pair").AllowedOps, patch.PatchOpArrayAppend)
 	_, err = p.ParsePatch([]byte(`[{"op":"array_append","path":"/pair","value":3}]`))
 	requireCode(t, err, patch.ECodeOpNotAllowed.String())
 

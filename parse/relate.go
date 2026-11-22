@@ -191,6 +191,11 @@ func (r *Resource[T]) Relate(name string, rel Relation) error {
 		if rs.TenantColumn != "" && r.tenant == "" && rs.TargetTenant == "" {
 			return fmt.Errorf("parse: %s: relation %q: the pair table's tenant cannot be taken from the owner or the target", r.table, name)
 		}
+		for _, schema := range []*patch.PatchSchema{r.patchSchema, r.serverPatchSchema} {
+			if _, taken := schema.Path(core.FormatPointer(name)); taken {
+				return fmt.Errorf("parse: %s: relation %q names an existing patch path", r.table, name)
+			}
+		}
 	}
 	if err := r.checkRelation(name, rs, rel.target, rel.includable || rel.facetable); err != nil {
 		return err
@@ -229,9 +234,14 @@ func (r *Resource[T]) Relate(name string, rel Relation) error {
 	// The cached dialect views copied the fields before this one.
 	r.readExprs.reset()
 	if rel.writable {
+		// The name is an identifier the schemas do not hold (checked above),
+		// so adding its path cannot fail.
 		path := patch.RelationPath(rs, reflect.SliceOf(keyType))
-		r.patchSchema.AllowedPaths[core.FormatPointer(name)] = path
-		r.serverPatchSchema.AllowedPaths[core.FormatPointer(name)] = path
+		for _, schema := range []*patch.PatchSchema{r.patchSchema, r.serverPatchSchema} {
+			if err := schema.AddPath(core.FormatPointer(name), path); err != nil {
+				return fmt.Errorf("parse: %s: relation %q: %w", r.table, name, err)
+			}
+		}
 	}
 	return nil
 }

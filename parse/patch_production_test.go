@@ -57,7 +57,7 @@ func TestMergeNullRunsDestinationValidators(t *testing.T) {
 	p, err := parse.NewResource[productionPatchRow]("production_patch_rows")
 	require.NoError(t, err)
 	rejected := errors.New("cannot clear")
-	p.PatchSchema().AllowedPaths["/optional"].Validators = []patch.Validator{func(value any) error {
+	pathOf(p.PatchSchema(), "/optional").Validators = []patch.Validator{func(value any) error {
 		if value == nil {
 			return rejected
 		}

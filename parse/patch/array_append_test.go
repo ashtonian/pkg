@@ -3,6 +3,7 @@
 package patch
 
 import (
+	"slices"
 	"strings"
 	"testing"
 
@@ -13,9 +14,12 @@ import (
 // parseAppend parses an array_append of value to path, the column col.
 func parseAppend(t *testing.T, path, col, value string) *ParsedPatch {
 	t.Helper()
-	schema := &PatchSchema{Resource: "items", AllowedPaths: map[string]*PathSchema{
+	schema, err := NewPatchSchema("items", map[string]*PathSchema{
 		path: {AllowedOps: []PatchOp{PatchOpArrayAppend}, DataType: core.FieldTypeArray, SQLColumn: col},
-	}}
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
 	p, err := NewParser(schema, nil).Parse([]byte(`[{"op":"array_append","path":"` + path + `","value":` + value + `}]`))
 	if err != nil {
 		t.Fatal(err)
@@ -95,14 +99,14 @@ func TestBuildPatchSQL_ArrayAppend_UnknownDialect(t *testing.T) {
 	}
 }
 
-// TestValidPatchOps_IncludesArrayAppend locks in that the wire-level
+// TestValidOps_IncludesArrayAppend locks in that the wire-level
 // validator recognises the new op. Without this entry the parser would
 // reject `{"op":"array_append",...}` at validation time, defeating the
 // helper's purpose.
-func TestValidPatchOps_IncludesArrayAppend(t *testing.T) {
+func TestValidOps_IncludesArrayAppend(t *testing.T) {
 	t.Parallel()
-	if !ValidPatchOps[PatchOpArrayAppend] {
-		t.Fatal("PatchOpArrayAppend missing from ValidPatchOps")
+	if !IsValidOp(PatchOpArrayAppend) || !slices.Contains(Ops(), PatchOpArrayAppend) {
+		t.Fatal("PatchOpArrayAppend is not a recognized operation")
 	}
 }
 

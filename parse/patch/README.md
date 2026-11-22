@@ -14,7 +14,7 @@ Start with the [runnable package example](../README.md#quick-start). The focused
 
 ## API reference
 
-- Schemas: `GeneratePatchSchema[T]`, `GenerateServerPatchSchema[T]` (adds the `parse:"server"` fields, for the server's own writes), `PatchSchema`, `PathSchema` (`AllowsOp`, `Nullable`; `EnumValues` and `Bounds` advertise its value tags), `Validator`, `DefaultPatchOps`, `ValidPatchOps`
+- Schemas: `GeneratePatchSchema[T]`, `GenerateServerPatchSchema[T]` (adds the `parse:"server"` fields, for the server's own writes), `NewPatchSchema`, `PatchSchema` (`AddPath`, `Path`, `Paths`, `MaxOperations`), `DefaultMaxOperations`, `PathSchema` (`AllowsOp`, `Nullable`; `EnumValues` and `Bounds` advertise its value tags), `Validator`, `DefaultPatchOps`, `IsValidOp`, `Ops`
 - Parsing: `NewParser(schema, cfg)` (`Parse`, `ParseOps`), `ParseMergePatch(body, schema, cfg)`, `ParseMergePatchMap`, `ParsedPatch` (`AuditInfo`), `PatchOperation`, `RawPatchOp`, `PatchOp`; `ErrUnparsed` for a `ParsedPatch` no parser produced
 - Applying to Go values: `NewApplier[T](gen, cfg)` (`Apply`), the in-memory counterpart of `BuildPatchSQL`
 - SQL: `BuildPatchSQL`, `SQLDialect`, `PatchSQLResult` (`Assignments`, `ChangePredicate`), `ColumnAssignment` (`Column`, `Expression`), `PatchSQLOption` (`WithStartParam`, `WithAutoTimestamp`, `WithAutoTimestampSQL`, `WithIncrement`, `WithTimeFunc`, `WithChangePredicate`)
@@ -30,7 +30,7 @@ Start with the [runnable package example](../README.md#quick-start). The focused
 | `merge.go` | `ParseMergePatch` — RFC 7396 |
 | `apply.go` | `Applier` — a parsed patch applied to a Go value: direct field sets, or T's JSON document; `ErrUnparsed` |
 | `apply_jsonpatch.go` | RFC 6902 runs through json-patch with one copy budget, and its empty-key escape |
-| `schema.go` | `PatchOp`, `PatchSchema`, `PathSchema`, `PatchOperation`, `ParsedPatch` |
+| `schema.go` | `PatchOp` and the operation set, `PatchSchema` and its versioned path set, `PathSchema`, `PatchOperation`, `ParsedPatch` |
 | `generate.go` | Schema generation from struct tags; default operations |
 | `validate.go` | The value check both wire formats run (`checkValue`): operation, nullability, normalization, validators, element counts; `Validator`, `ConstraintError` |
 | `validators.go` | Path validators from value tags: `enum`, `minlen` / `maxlen`, `min` / `max`, per element on an array path (`minitems` / `maxitems` count an array set whole: `checkItems` in `patch.go`) |

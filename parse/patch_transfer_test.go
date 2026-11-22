@@ -61,7 +61,8 @@ func TestPatchTransferUsesCurrentValueAndCustomValidator(t *testing.T) {
 	p, err := parse.NewResource[transferRow]("transfer_rows")
 	require.NoError(t, err)
 	sentinel := errors.New("destination validator")
-	p.PatchSchema().AllowedPaths["/status"].Validators = append(p.PatchSchema().AllowedPaths["/status"].Validators, func(value any) error {
+	status := pathOf(p.PatchSchema(), "/status")
+	status.Validators = append(status.Validators, func(value any) error {
 		if value == "offline" {
 			return sentinel
 		}
@@ -96,7 +97,7 @@ func emptyKeyParser(t *testing.T, opts ...core.Option) *parse.Resource[emptyKeyR
 	t.Helper()
 	p, err := parse.NewResource[emptyKeyRow]("empty_key_rows", parse.ParserOptions(opts...))
 	require.NoError(t, err)
-	p.PatchSchema().AllowedPaths["/meta/**"] = &patch.PathSchema{AllowedOps: []patch.PatchOp{patch.PatchOpAdd, patch.PatchOpReplace, patch.PatchOpRemove, patch.PatchOpCopy, patch.PatchOpMove, patch.PatchOpTest}}
+	require.NoError(t, p.PatchSchema().AddPath("/meta/**", &patch.PathSchema{AllowedOps: []patch.PatchOp{patch.PatchOpAdd, patch.PatchOpReplace, patch.PatchOpRemove, patch.PatchOpCopy, patch.PatchOpMove, patch.PatchOpTest}}))
 	return p
 }
 

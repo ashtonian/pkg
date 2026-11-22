@@ -25,7 +25,7 @@ func TestDecimal_PatchSchema(t *testing.T) {
 		"/total": {patch.PatchOpReplace},
 		"/tip":   {patch.PatchOpReplace, patch.PatchOpRemove},
 	} {
-		ps := schema.AllowedPaths[path]
+		ps := pathOf(schema, path)
 		require.NotNil(t, ps, path)
 		assert.Equal(t, core.FieldTypeDecimal, ps.DataType, path)
 		assert.Equal(t, ops, ps.AllowedOps, path)

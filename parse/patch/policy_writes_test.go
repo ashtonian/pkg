@@ -16,16 +16,12 @@ import (
 // document /other to move or copy from, and a native array /tags.
 func writesSchema() *patch.PatchSchema {
 	transfer := []patch.PatchOp{patch.PatchOpReplace, patch.PatchOpAdd, patch.PatchOpRemove, patch.PatchOpMove, patch.PatchOpCopy}
-	return &patch.PatchSchema{
-		Resource: "items",
-		AllowedPaths: map[string]*patch.PathSchema{
-			"/doc":    {AllowedOps: transfer, DataType: core.FieldTypeJSON, SQLColumn: "doc"},
-			"/doc/**": {AllowedOps: transfer, DataType: core.FieldTypeAny},
-			"/other":  {AllowedOps: transfer, DataType: core.FieldTypeJSON, SQLColumn: "other"},
-			"/tags":   {AllowedOps: []patch.PatchOp{patch.PatchOpReplace, patch.PatchOpRemove, patch.PatchOpArrayAppend}, DataType: core.FieldTypeArray, SQLColumn: "tags"},
-		},
-		MaxOperations: 20,
-	}
+	return newSchema("items", 20, map[string]*patch.PathSchema{
+		"/doc":    {AllowedOps: transfer, DataType: core.FieldTypeJSON, SQLColumn: "doc"},
+		"/doc/**": {AllowedOps: transfer, DataType: core.FieldTypeAny},
+		"/other":  {AllowedOps: transfer, DataType: core.FieldTypeJSON, SQLColumn: "other"},
+		"/tags":   {AllowedOps: []patch.PatchOp{patch.PatchOpReplace, patch.PatchOpRemove, patch.PatchOpArrayAppend}, DataType: core.FieldTypeArray, SQLColumn: "tags"},
+	})
 }
 
 func mustPolicy(t *testing.T, opts ...patch.PolicyOption) *patch.PatchPolicyConstraints {
@@ -179,13 +175,10 @@ func TestPolicy_ArrayElementsAndUnjudgeableValues(t *testing.T) {
 // An operation carries only what it writes: remove, move and copy no value,
 // whatever a client attached, and the paths it writes are the affected ones.
 func TestOperations_CarryWhatTheyWrite(t *testing.T) {
-	schema := &patch.PatchSchema{
-		Resource: "items",
-		AllowedPaths: map[string]*patch.PathSchema{
-			"/a": {AllowedOps: []patch.PatchOp{patch.PatchOpReplace, patch.PatchOpRemove, patch.PatchOpMove, patch.PatchOpCopy, patch.PatchOpTest}, DataType: core.FieldTypeString, SQLColumn: "a"},
-			"/b": {AllowedOps: []patch.PatchOp{patch.PatchOpReplace, patch.PatchOpRemove, patch.PatchOpMove, patch.PatchOpCopy}, DataType: core.FieldTypeString, SQLColumn: "b"},
-		},
-	}
+	schema := newSchema("items", 0, map[string]*patch.PathSchema{
+		"/a": {AllowedOps: []patch.PatchOp{patch.PatchOpReplace, patch.PatchOpRemove, patch.PatchOpMove, patch.PatchOpCopy, patch.PatchOpTest}, DataType: core.FieldTypeString, SQLColumn: "a"},
+		"/b": {AllowedOps: []patch.PatchOp{patch.PatchOpReplace, patch.PatchOpRemove, patch.PatchOpMove, patch.PatchOpCopy}, DataType: core.FieldTypeString, SQLColumn: "b"},
+	})
 	parser := patch.NewParser(schema, nil)
 	for _, body := range []string{
 		`[{"op":"remove","path":"/a","value":"kept?"}]`,

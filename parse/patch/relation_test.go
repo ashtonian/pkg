@@ -3,6 +3,7 @@
 package patch_test
 
 import (
+	"maps"
 	"strings"
 	"testing"
 
@@ -25,9 +26,9 @@ func TestGeneratePatchSchema_RelationField(t *testing.T) {
 	if err != nil {
 		t.Fatalf("generate patch schema: %v", err)
 	}
-	tagsPath, ok := schema.AllowedPaths["/tags"]
+	tagsPath, ok := schema.Path("/tags")
 	if !ok {
-		t.Fatalf("expected /tags path in schema, got %v", keys(schema.AllowedPaths))
+		t.Fatalf("expected /tags path in schema, got %v", keys(maps.Collect(schema.Paths())))
 	}
 	if tagsPath.Relation == nil {
 		t.Fatalf("expected /tags Relation to be set")

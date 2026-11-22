@@ -373,8 +373,8 @@ func filterFieldToResponse(f *filter.FieldSchema) *FilterFieldResponse {
 }
 
 func patchSchemaToResponse(s *patch.PatchSchema) *PatchSchemaResponse {
-	paths := make(map[string]*PatchPathResponse, len(s.AllowedPaths))
-	for key, p := range s.AllowedPaths {
+	paths := map[string]*PatchPathResponse{}
+	for key, p := range s.Paths() {
 		resp := &PatchPathResponse{
 			AllowedOps: slices.Clone(p.AllowedOps), DataType: p.DataType, Wire: p.Wire,
 			Nullable: p.Nullable(), EnumValues: slices.Clone(p.EnumValues), Relation: p.Relation != nil,

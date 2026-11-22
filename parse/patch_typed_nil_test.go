@@ -120,7 +120,7 @@ func TestValidateOperations_TypedNilValidatorValue(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			calls := 0
-			p := patch.NewParser(&patch.PatchSchema{AllowedPaths: map[string]*patch.PathSchema{
+			p := patch.NewParser(newSchema("", 0, map[string]*patch.PathSchema{
 				"/value": {
 					AllowedOps: []patch.PatchOp{patch.PatchOpReplace}, GoType: goType,
 					Validators: []patch.Validator{func(value any) error {
@@ -129,7 +129,7 @@ func TestValidateOperations_TypedNilValidatorValue(t *testing.T) {
 						return nil
 					}},
 				},
-			}}, nil)
+			}), nil)
 			_, err := p.ParseOps([]patch.RawPatchOp{{Op: "replace", Path: "/value", Value: reflect.Zero(goType).Interface()}})
 			require.NoError(t, err)
 			assert.Equal(t, 1, calls)

@@ -263,28 +263,13 @@ func (p *Parser) resolvePath(path string, index int) (*PathSchema, int, error) {
 }
 
 func matchPath(schema *PatchSchema, path string) (*PathSchema, error) {
-	if ps, ok := schema.AllowedPaths[path]; ok {
+	if ps, ok := schema.pathSet().resolve(path); ok {
 		return ps, nil
-	}
-	// Most specific pattern first: map iteration made overlapping patterns
-	// with different AllowedOps a per-process coin flip.
-	tokens := pointerTokens(path)
-	for _, pattern := range schema.sortedPaths() {
-		if pattern.matches(tokens) {
-			return schema.AllowedPaths[pattern.text], nil
-		}
 	}
 	return nil, errors.New("path not allowed")
 }
 
-// isValidPatchOp reports whether op is a recognised wire-level patch
-// operation. Consults ValidPatchOps (single source of truth) rather
-// than a hardcoded switch — adding a new op (e.g. PatchOpArrayAppend)
-// to that map immediately reaches the parser without a paired edit
-// here. .
-func isValidPatchOp(op string) bool {
-	return ValidPatchOps[PatchOp(op)]
-}
+func isValidPatchOp(op string) bool { return IsValidOp(PatchOp(op)) }
 
 // opTakesValue reports whether op consumes the raw.Value field and so
 // should run the field-level value validators. RFC 6902 add / replace

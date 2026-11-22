@@ -17,16 +17,12 @@ import (
 )
 
 func mergeSchema() *patch.PatchSchema {
-	return &patch.PatchSchema{
-		Resource:      "docs",
-		MaxOperations: 10,
-		AllowedPaths: map[string]*patch.PathSchema{
-			"/doc": {
-				AllowedOps: []patch.PatchOp{patch.PatchOpReplace, patch.PatchOpRemove},
-				DataType:   core.FieldTypeJSON, SQLColumn: "doc",
-			},
+	return newSchema("docs", 10, map[string]*patch.PathSchema{
+		"/doc": {
+			AllowedOps: []patch.PatchOp{patch.PatchOpReplace, patch.PatchOpRemove},
+			DataType:   core.FieldTypeJSON, SQLColumn: "doc",
 		},
-	}
+	})
 }
 
 type mergeCase struct {

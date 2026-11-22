@@ -51,13 +51,13 @@ func Example() {
 }
 
 func ExampleParser_Parse() {
-	schema := &patch.PatchSchema{
-		Resource: "devices",
-		AllowedPaths: map[string]*patch.PathSchema{
-			"/name":   {AllowedOps: []patch.PatchOp{patch.PatchOpReplace}, DataType: core.FieldTypeString, SQLColumn: "name"},
-			"/status": {AllowedOps: []patch.PatchOp{patch.PatchOpReplace}, DataType: core.FieldTypeString, SQLColumn: "status"},
-		},
-		MaxOperations: 50,
+	schema, err := patch.NewPatchSchema("devices", map[string]*patch.PathSchema{
+		"/name":   {AllowedOps: []patch.PatchOp{patch.PatchOpReplace}, DataType: core.FieldTypeString, SQLColumn: "name"},
+		"/status": {AllowedOps: []patch.PatchOp{patch.PatchOpReplace}, DataType: core.FieldTypeString, SQLColumn: "status"},
+	})
+	if err != nil {
+		fmt.Println("error:", err)
+		return
 	}
 
 	p := patch.NewParser(schema, nil)
@@ -75,12 +75,13 @@ func ExampleParser_Parse() {
 }
 
 func ExampleBuildPatchSQL() {
-	schema := &patch.PatchSchema{
-		Resource: "devices",
-		AllowedPaths: map[string]*patch.PathSchema{
-			"/name":   {AllowedOps: []patch.PatchOp{patch.PatchOpReplace}, DataType: core.FieldTypeString, SQLColumn: "name"},
-			"/status": {AllowedOps: []patch.PatchOp{patch.PatchOpReplace}, DataType: core.FieldTypeString, SQLColumn: "status"},
-		},
+	schema, err := patch.NewPatchSchema("devices", map[string]*patch.PathSchema{
+		"/name":   {AllowedOps: []patch.PatchOp{patch.PatchOpReplace}, DataType: core.FieldTypeString, SQLColumn: "name"},
+		"/status": {AllowedOps: []patch.PatchOp{patch.PatchOpReplace}, DataType: core.FieldTypeString, SQLColumn: "status"},
+	})
+	if err != nil {
+		fmt.Println("error:", err)
+		return
 	}
 	parsed, err := patch.ParseMergePatch([]byte(`{"name":"new","status":"active"}`), schema, nil)
 	if err != nil {
@@ -115,10 +116,13 @@ func ExampleGeneratePatchSchema() {
 		return
 	}
 
-	fmt.Println("has /name:", schema.AllowedPaths["/name"] != nil)
-	fmt.Println("name column:", schema.AllowedPaths["/name"].SQLColumn)
-	fmt.Println("has /status:", schema.AllowedPaths["/status"] != nil)
-	fmt.Println("has /id:", schema.AllowedPaths["/id"] != nil)
+	name, hasName := schema.Path("/name")
+	_, hasStatus := schema.Path("/status")
+	_, hasID := schema.Path("/id")
+	fmt.Println("has /name:", hasName)
+	fmt.Println("name column:", name.SQLColumn)
+	fmt.Println("has /status:", hasStatus)
+	fmt.Println("has /id:", hasID)
 	// Output:
 	// has /name: true
 	// name column: device_name
@@ -127,12 +131,13 @@ func ExampleGeneratePatchSchema() {
 }
 
 func ExampleApplyPatchPolicyConstraints() {
-	schema := &patch.PatchSchema{
-		Resource: "devices",
-		AllowedPaths: map[string]*patch.PathSchema{
-			"/status":    {AllowedOps: []patch.PatchOp{patch.PatchOpReplace}, DataType: core.FieldTypeString, SQLColumn: "status"},
-			"/tenant_id": {AllowedOps: []patch.PatchOp{patch.PatchOpReplace}, DataType: core.FieldTypeString, SQLColumn: "tenant_id"},
-		},
+	schema, err := patch.NewPatchSchema("devices", map[string]*patch.PathSchema{
+		"/status":    {AllowedOps: []patch.PatchOp{patch.PatchOpReplace}, DataType: core.FieldTypeString, SQLColumn: "status"},
+		"/tenant_id": {AllowedOps: []patch.PatchOp{patch.PatchOpReplace}, DataType: core.FieldTypeString, SQLColumn: "tenant_id"},
+	})
+	if err != nil {
+		fmt.Println("error:", err)
+		return
 	}
 	parser := patch.NewParser(schema, nil)
 	parsed, err := parser.Parse([]byte(`[{"op":"replace","path":"/status","value":"active"}]`))

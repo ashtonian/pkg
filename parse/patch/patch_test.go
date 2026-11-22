@@ -12,15 +12,11 @@ import (
 )
 
 func testPatchSchema() *patch.PatchSchema {
-	return &patch.PatchSchema{
-		Resource: "devices",
-		AllowedPaths: map[string]*patch.PathSchema{
-			"/name":   {AllowedOps: []patch.PatchOp{patch.PatchOpReplace}, DataType: core.FieldTypeString, SQLColumn: "name"},
-			"/status": {AllowedOps: []patch.PatchOp{patch.PatchOpReplace}, DataType: core.FieldTypeString, SQLColumn: "status", Validators: []patch.Validator{enumValidator("active", "offline")}},
-			// ID not in schema — not patchable (no parse:"patch" tag)
-		},
-		MaxOperations: 50,
-	}
+	return newSchema("devices", 50, map[string]*patch.PathSchema{
+		"/name":   {AllowedOps: []patch.PatchOp{patch.PatchOpReplace}, DataType: core.FieldTypeString, SQLColumn: "name"},
+		"/status": {AllowedOps: []patch.PatchOp{patch.PatchOpReplace}, DataType: core.FieldTypeString, SQLColumn: "status", Validators: []patch.Validator{enumValidator("active", "offline")}},
+		// ID not in schema — not patchable (no parse:"patch" tag)
+	})
 }
 
 func enumValidator(values ...string) patch.Validator {
@@ -118,12 +114,9 @@ func TestParser_AffectedPaths(t *testing.T) {
 // removed.
 func parseSQLPatch(t *testing.T, body string) *patch.ParsedPatch {
 	t.Helper()
-	schema := &patch.PatchSchema{
-		Resource: "devices",
-		AllowedPaths: map[string]*patch.PathSchema{
-			"/name": {AllowedOps: []patch.PatchOp{patch.PatchOpReplace, patch.PatchOpRemove}, DataType: core.FieldTypeString, SQLColumn: "name"},
-		},
-	}
+	schema := newSchema("devices", 0, map[string]*patch.PathSchema{
+		"/name": {AllowedOps: []patch.PatchOp{patch.PatchOpReplace, patch.PatchOpRemove}, DataType: core.FieldTypeString, SQLColumn: "name"},
+	})
 	parsed, err := patch.NewParser(schema, nil).Parse([]byte(body))
 	if err != nil {
 		t.Fatal(err)
@@ -188,13 +181,9 @@ func TestParseMergePatch_Replace(t *testing.T) {
 }
 
 func TestParseMergePatch_NullRemoves(t *testing.T) {
-	schema := &patch.PatchSchema{
-		Resource: "test",
-		AllowedPaths: map[string]*patch.PathSchema{
-			"/name": {AllowedOps: []patch.PatchOp{patch.PatchOpReplace, patch.PatchOpRemove}, DataType: core.FieldTypeString},
-		},
-		MaxOperations: 50,
-	}
+	schema := newSchema("test", 50, map[string]*patch.PathSchema{
+		"/name": {AllowedOps: []patch.PatchOp{patch.PatchOpReplace, patch.PatchOpRemove}, DataType: core.FieldTypeString},
+	})
 	result, err := patch.ParseMergePatch([]byte(`{"name":null}`), schema, nil)
 	if err != nil {
 		t.Fatal(err)
@@ -205,15 +194,11 @@ func TestParseMergePatch_NullRemoves(t *testing.T) {
 }
 
 func TestParseMergePatch_MaxOperations(t *testing.T) {
-	schema := &patch.PatchSchema{
-		Resource: "test",
-		AllowedPaths: map[string]*patch.PathSchema{
-			"/a": {AllowedOps: []patch.PatchOp{patch.PatchOpReplace}, DataType: core.FieldTypeString},
-			"/b": {AllowedOps: []patch.PatchOp{patch.PatchOpReplace}, DataType: core.FieldTypeString},
-			"/c": {AllowedOps: []patch.PatchOp{patch.PatchOpReplace}, DataType: core.FieldTypeString},
-		},
-		MaxOperations: 2,
-	}
+	schema := newSchema("test", 2, map[string]*patch.PathSchema{
+		"/a": {AllowedOps: []patch.PatchOp{patch.PatchOpReplace}, DataType: core.FieldTypeString},
+		"/b": {AllowedOps: []patch.PatchOp{patch.PatchOpReplace}, DataType: core.FieldTypeString},
+		"/c": {AllowedOps: []patch.PatchOp{patch.PatchOpReplace}, DataType: core.FieldTypeString},
+	})
 
 	// 3 top-level keys exceeds MaxOperations=2 → rejected like the JSON-Patch path.
 	if _, err := patch.ParseMergePatch([]byte(`{"a":"1","b":"2","c":"3"}`), schema, nil); err == nil {
@@ -265,13 +250,13 @@ func TestGeneratePatchSchema(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, ok := schema.AllowedPaths["/name"]; !ok {
+	if _, ok := schema.Path("/name"); !ok {
 		t.Error("missing /name path")
 	}
-	if _, ok := schema.AllowedPaths["/status"]; !ok {
+	if _, ok := schema.Path("/status"); !ok {
 		t.Error("missing /status path")
 	}
-	if _, ok := schema.AllowedPaths["/id"]; ok {
+	if _, ok := schema.Path("/id"); ok {
 		t.Error("/id should not be patchable (no parse:patch tag)")
 	}
 }

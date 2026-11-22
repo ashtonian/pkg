@@ -14,17 +14,13 @@ import (
 )
 
 func p2Schema() *patch.PatchSchema {
-	return &patch.PatchSchema{
-		Resource: "items",
-		AllowedPaths: map[string]*patch.PathSchema{
-			"/name":       {AllowedOps: []patch.PatchOp{patch.PatchOpReplace, patch.PatchOpAdd, patch.PatchOpRemove, patch.PatchOpMove, patch.PatchOpCopy}, DataType: core.FieldTypeString, SQLColumn: "name"},
-			"/notes":      {AllowedOps: []patch.PatchOp{patch.PatchOpReplace, patch.PatchOpAdd, patch.PatchOpRemove, patch.PatchOpMove, patch.PatchOpCopy}, DataType: core.FieldTypeString, SQLColumn: "notes"},
-			"/status":     {AllowedOps: []patch.PatchOp{patch.PatchOpReplace, patch.PatchOpAdd, patch.PatchOpMove, patch.PatchOpCopy}, DataType: core.FieldTypeString, SQLColumn: "status"},
-			"/secret_ref": {AllowedOps: []patch.PatchOp{patch.PatchOpReplace, patch.PatchOpRemove, patch.PatchOpMove, patch.PatchOpCopy}, DataType: core.FieldTypeString, SQLColumn: "secret_ref"},
-			"/config/**":  {AllowedOps: []patch.PatchOp{patch.PatchOpReplace, patch.PatchOpAdd, patch.PatchOpRemove}, DataType: core.FieldTypeJSON, SQLColumn: "config"},
-		},
-		MaxOperations: 20,
-	}
+	return newSchema("items", 20, map[string]*patch.PathSchema{
+		"/name":       {AllowedOps: []patch.PatchOp{patch.PatchOpReplace, patch.PatchOpAdd, patch.PatchOpRemove, patch.PatchOpMove, patch.PatchOpCopy}, DataType: core.FieldTypeString, SQLColumn: "name"},
+		"/notes":      {AllowedOps: []patch.PatchOp{patch.PatchOpReplace, patch.PatchOpAdd, patch.PatchOpRemove, patch.PatchOpMove, patch.PatchOpCopy}, DataType: core.FieldTypeString, SQLColumn: "notes"},
+		"/status":     {AllowedOps: []patch.PatchOp{patch.PatchOpReplace, patch.PatchOpAdd, patch.PatchOpMove, patch.PatchOpCopy}, DataType: core.FieldTypeString, SQLColumn: "status"},
+		"/secret_ref": {AllowedOps: []patch.PatchOp{patch.PatchOpReplace, patch.PatchOpRemove, patch.PatchOpMove, patch.PatchOpCopy}, DataType: core.FieldTypeString, SQLColumn: "secret_ref"},
+		"/config/**":  {AllowedOps: []patch.PatchOp{patch.PatchOpReplace, patch.PatchOpAdd, patch.PatchOpRemove}, DataType: core.FieldTypeJSON, SQLColumn: "config"},
+	})
 }
 
 func parseOps(t *testing.T, schema *patch.PatchSchema, body string) *patch.ParsedPatch {
@@ -93,12 +89,9 @@ func TestCopyIntoConstrainedPath(t *testing.T) {
 // ParserConfig.MaxDepth when the patch is parsed, so an
 // over-deep path never reaches a document or a backend.
 func TestDeepPathRejectedAtParse(t *testing.T) {
-	schema := &patch.PatchSchema{
-		Resource: "items",
-		AllowedPaths: map[string]*patch.PathSchema{
-			"/**": {AllowedOps: []patch.PatchOp{patch.PatchOpAdd}, DataType: core.FieldTypeAny},
-		},
-	}
+	schema := newSchema("items", 0, map[string]*patch.PathSchema{
+		"/**": {AllowedOps: []patch.PatchOp{patch.PatchOpAdd}, DataType: core.FieldTypeAny},
+	})
 	cfg := core.DefaultConfig()
 	cfg.MaxDepth = 3
 	p := patch.NewParser(schema, cfg)
@@ -118,19 +111,15 @@ func TestDeepPathRejectedAtParse(t *testing.T) {
 // whatever order the map yields them in.
 func TestDeterministicWildcardSelection(t *testing.T) {
 	mk := func() *patch.PatchSchema {
-		return &patch.PatchSchema{
-			Resource: "items",
-			AllowedPaths: map[string]*patch.PathSchema{
-				// /config/* is more specific than /config/** (one token, not
-				// any number) and than /*/lang (a longer literal prefix), and
-				// less than the exact /config/theme.
-				"/config/theme": {AllowedOps: []patch.PatchOp{patch.PatchOpReplace}, DataType: core.FieldTypeString, SQLColumn: "theme"},
-				"/config/*":     {AllowedOps: []patch.PatchOp{patch.PatchOpReplace, patch.PatchOpAdd}, DataType: core.FieldTypeJSON, SQLColumn: "config"},
-				"/config/**":    {AllowedOps: []patch.PatchOp{patch.PatchOpRemove}, DataType: core.FieldTypeJSON, SQLColumn: "subtree"},
-				"/*/lang":       {AllowedOps: []patch.PatchOp{patch.PatchOpRemove}, DataType: core.FieldTypeJSON, SQLColumn: "lang"},
-			},
-			MaxOperations: 20,
-		}
+		return newSchema("items", 20, map[string]*patch.PathSchema{
+			// /config/* is more specific than /config/** (one token, not
+			// any number) and than /*/lang (a longer literal prefix), and
+			// less than the exact /config/theme.
+			"/config/theme": {AllowedOps: []patch.PatchOp{patch.PatchOpReplace}, DataType: core.FieldTypeString, SQLColumn: "theme"},
+			"/config/*":     {AllowedOps: []patch.PatchOp{patch.PatchOpReplace, patch.PatchOpAdd}, DataType: core.FieldTypeJSON, SQLColumn: "config"},
+			"/config/**":    {AllowedOps: []patch.PatchOp{patch.PatchOpRemove}, DataType: core.FieldTypeJSON, SQLColumn: "subtree"},
+			"/*/lang":       {AllowedOps: []patch.PatchOp{patch.PatchOpRemove}, DataType: core.FieldTypeJSON, SQLColumn: "lang"},
+		})
 	}
 	for i := range 100 {
 		schema := mk() // a fresh map each round: a fresh iteration order
@@ -209,7 +198,7 @@ func TestValidatorsRunOnExplicitNull(t *testing.T) {
 		return nil
 	}
 	schema := p2Schema()
-	schema.AllowedPaths["/name"].Validators = []patch.Validator{rejectNil}
+	pathOf(schema, "/name").Validators = []patch.Validator{rejectNil}
 
 	_, err := patch.NewParser(schema, nil).Parse([]byte(`[{"op":"replace","path":"/name","value":null}]`))
 	if err == nil {
@@ -235,7 +224,7 @@ func TestValidatorsRunOnExplicitNull(t *testing.T) {
 
 	// A validator that tolerates nil still passes.
 	schema2 := p2Schema()
-	schema2.AllowedPaths["/name"].Validators = []patch.Validator{func(any) error { return nil }}
+	pathOf(schema2, "/name").Validators = []patch.Validator{func(any) error { return nil }}
 	if _, err := patch.NewParser(schema2, nil).Parse([]byte(`[{"op":"replace","path":"/name","value":null}]`)); err != nil {
 		t.Fatalf("nil-tolerant validator rejected: %v", err)
 	}
