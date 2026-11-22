@@ -25,24 +25,6 @@ var reservedParams = map[string]bool{
 // (Param*), which a query string never carries as a field filter.
 func IsListParam(name string) bool { return reservedParams[name] }
 
-var operatorSuffixes = []struct {
-	suffix string
-	op     FilterOperator
-}{
-	{"_ilike", OpILike},
-	{"_like", OpLike},
-	{"_contains", OpContains},
-	{"_not_null", OpNotNull},
-	{"_null", OpNull},
-	{"_nin", OpNin},
-	{"_gte", OpGte},
-	{"_lte", OpLte},
-	{"_gt", OpGt},
-	{"_lt", OpLt},
-	{"_ne", OpNe},
-	{"_in", OpIn},
-}
-
 // QueryParamOption configures a QueryParamParser.
 type QueryParamOption func(*queryParamConfig)
 
@@ -174,7 +156,7 @@ func (p *QueryParamParser) splitFieldOp(key string) (string, FilterOperator) {
 	// Prefer the split that names a real field: "a_not_null" is (a, not_null)
 	// when a exists, (a_not, null) when only a_not does.
 	first, firstOp := "", OpEq
-	for _, s := range operatorSuffixes {
+	for _, s := range querySuffixes {
 		if !strings.HasSuffix(key, s.suffix) {
 			continue
 		}

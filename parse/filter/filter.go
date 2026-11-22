@@ -191,13 +191,11 @@ func (p *FilterParser) parseNode(raw map[string]any, depth int) (*FilterNode, er
 
 	var children []*FilterNode
 
-	// Sorted walk: map iteration produced nondeterministic child order →
-	// unstable SQL text across runs (pg_stat_statements bloat, flaky
-	// snapshots). .
+	// Sorted walk: one filter always renders the same SQL text, which
+	// statement caches and pg_stat_statements key on.
 	for _, key := range slices.Sorted(maps.Keys(raw)) {
 		value := raw[key]
-		op, isLogical := OperatorFromString[key]
-		if isLogical && (op == OpOr || op == OpAnd || op == OpNot) {
+		if op, ok := ParseOperator(key); ok && isLogical(op) {
 			node, err := p.parseLogical(op, value, depth)
 			if err != nil {
 				return nil, err
@@ -319,7 +317,7 @@ func (p *FilterParser) parseOperatorObject(field *FieldSchema, obj map[string]an
 				Message: fmt.Sprintf("unexpected key '%s' in operator object (keys must start with $)", key),
 			}
 		}
-		op, ok := OperatorFromString[key]
+		op, ok := ParseOperator(key)
 		if !ok {
 			return nil, &core.ParseError{
 				Kind:    core.ParseErrorKindFilter,
@@ -711,7 +709,7 @@ func validateEnum(allowed []string, value any) error {
 
 func hasOperatorKeys(obj map[string]any) bool {
 	for key := range obj {
-		if _, ok := OperatorFromString[key]; ok {
+		if _, ok := ParseOperator(key); ok {
 			return true
 		}
 	}

@@ -84,16 +84,8 @@ func generateFilterSchema(g *core.SchemaGenerator, t reflect.Type) (*ResourceSch
 
 		var allowedOps []FilterOperator
 		if opsTag := tags.FilterOps; opsTag != "" {
-			for p := range strings.SplitSeq(opsTag, ",") {
-				p = strings.TrimSpace(p)
-				if p == "" {
-					continue
-				}
-				op := FilterOperator(p)
-				if !ValidFilterOps[op] {
-					return nil, fmt.Errorf("field %s: unknown filter operator %q", field.GoName, p)
-				}
-				allowedOps = append(allowedOps, op)
+			if allowedOps, err = parseOperatorList(strings.Split(opsTag, ",")); err != nil {
+				return nil, fmt.Errorf("field %s: %w", field.GoName, err)
 			}
 		} else {
 			defaults, err := defaultFilterOpsFor(g, fieldType)
@@ -361,18 +353,13 @@ var defaultFilterOps = map[core.FieldType][]FilterOperator{
 
 // defaultFilterOpsFor returns a fresh copy of the default operators for a
 // field type: GeneratorOptions.DefaultFilterOps when it names the type,
-// otherwise the package defaults. Every schema owns its slice — sharing the
-// package-level slice let configuring one resource rewrite another's
-// operators.
+// otherwise the package defaults. Every schema owns its slice, so
+// configuring one resource's operators cannot change another's.
 func defaultFilterOpsFor(g *core.SchemaGenerator, ft core.FieldType) ([]FilterOperator, error) {
 	if names, ok := g.Opts.DefaultFilterOps[ft]; ok {
-		ops := make([]FilterOperator, 0, len(names))
-		for _, name := range names {
-			op := FilterOperator(strings.TrimSpace(name))
-			if !ValidFilterOps[op] {
-				return nil, fmt.Errorf("DefaultFilterOps[%s]: unknown filter operator %q", ft, name)
-			}
-			ops = append(ops, op)
+		ops, err := parseOperatorList(names)
+		if err != nil {
+			return nil, fmt.Errorf("DefaultFilterOps[%s]: %w", ft, err)
 		}
 		return ops, nil
 	}

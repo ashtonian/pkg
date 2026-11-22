@@ -29,17 +29,18 @@
 //
 // # Filter Operators
 //
-// Supported operators: eq, ne, gt, gte, lt, lte, in, nin, like, ilike, null,
-// not_null, exists, contains, near, within, intersects. Logical operators:
-// $and, $or, $not. [OperatorsFor] lists the operators each field type
-// admits; each executes with one meaning on every dialect (see the
-// filtertest conformance fixture).
+// Field operators ([Operators]): eq, ne, gt, gte, lt, lte, in, nin, like,
+// ilike, contains, has_key, null, not_null, exists, near, within,
+// intersects, some, none. [OperatorsFor] lists the operators each field
+// type admits; each executes with one meaning on every dialect (see the
+// filtertest conformance fixture). Logical operators: $and, $or, $not.
+// Relation predicates: $some, $none, $is, $is_not.
 //
 // # Query Param Parsing
 //
 // [QueryParamParser] translates flat URL query parameters into a [FilterAST]
-// using suffix conventions: _gt, _gte, _lt, _lte, _ne, _in, _nin, _like,
-// _ilike, _null, _contains. No suffix means equality.
+// using suffix conventions: _ne, _gt, _gte, _lt, _lte, _in, _nin, _like,
+// _ilike, _contains, _null, _not_null. No suffix means equality.
 //
 // # SQL Dialects
 //

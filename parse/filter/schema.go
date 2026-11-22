@@ -60,62 +60,6 @@ const (
 	OpNot FilterOperator = "not"
 )
 
-// ValidFilterOps is the set of all recognized filter operators.
-// Used by the schema generator to validate filter_ops tag values.
-var ValidFilterOps = map[FilterOperator]bool{
-	OpEq: true, OpNe: true, OpGt: true, OpGte: true, OpLt: true, OpLte: true,
-	OpIn: true, OpNin: true, OpLike: true, OpILike: true,
-	OpNull: true, OpNotNull: true, OpExists: true, OpContains: true, OpHasKey: true,
-	OpNear: true, OpWithin: true, OpIntersects: true,
-}
-
-// AllOperatorStrings returns every supported value-comparison operator as a
-// stable, sorted string slice. Used by the OPTIONS endpoint to advertise
-// the operator vocabulary to clients.
-//
-// Logical operators ($and/$or/$not) and the geo operators are intentionally
-// excluded — the former are query-tree shape, not field-level comparisons,
-// and the latter only apply to geo-typed fields whose schema entry already
-// declares them.
-func AllOperatorStrings() []string {
-	return []string{
-		string(OpEq), string(OpNe),
-		string(OpGt), string(OpGte), string(OpLt), string(OpLte),
-		string(OpIn), string(OpNin),
-		string(OpLike), string(OpILike), string(OpContains), string(OpHasKey),
-		string(OpNull), string(OpNotNull), string(OpExists),
-	}
-}
-
-// OperatorFromString maps a JSON operator key (e.g. "$eq") to FilterOperator.
-var OperatorFromString = map[string]FilterOperator{
-	"$eq":         OpEq,
-	"$ne":         OpNe,
-	"$gt":         OpGt,
-	"$gte":        OpGte,
-	"$lt":         OpLt,
-	"$lte":        OpLte,
-	"$in":         OpIn,
-	"$nin":        OpNin,
-	"$like":       OpLike,
-	"$ilike":      OpILike,
-	"$null":       OpNull,
-	"$not_null":   OpNotNull,
-	"$exists":     OpExists,
-	"$contains":   OpContains,
-	"$has_key":    OpHasKey,
-	"$near":       OpNear,
-	"$within":     OpWithin,
-	"$intersects": OpIntersects,
-	"$some":       OpSome,
-	"$none":       OpNone,
-	"$is":         OpIs,
-	"$is_not":     OpIsNot,
-	"$or":         OpOr,
-	"$and":        OpAnd,
-	"$not":        OpNot,
-}
-
 // --- Filter Schema ---
 
 // ResourceSchema defines filterable fields for a resource.
