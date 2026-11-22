@@ -9,7 +9,7 @@ require (
 	github.com/alecthomas/kong v1.16.1
 	github.com/ashtonian/pkg/config v0.6.2
 	github.com/ashtonian/pkg/config/kongprovider v0.2.1
-	github.com/ashtonian/pkg/gowalker v0.6.0
+	github.com/ashtonian/pkg/gowalker v0.7.0
 	github.com/ashtonian/pkg/jsonvalue v0.1.0
 	github.com/evanphx/json-patch/v5 v5.9.11
 	github.com/google/uuid v1.6.0

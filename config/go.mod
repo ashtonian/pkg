@@ -3,7 +3,7 @@ module github.com/ashtonian/pkg/config
 go 1.27.0
 
 require (
-	github.com/ashtonian/pkg/gowalker v0.6.0
+	github.com/ashtonian/pkg/gowalker v0.7.0
 	github.com/fsnotify/fsnotify v1.10.1
 	github.com/go-playground/validator/v10 v10.30.6
 	github.com/go-viper/mapstructure/v2 v2.5.0
