@@ -409,7 +409,7 @@ func facetValueOrder(f *FieldSchema, dialect Dialect) string {
 	case core.FieldTypeInt, core.FieldTypeFloat:
 		return FieldExpr(dialect, f)
 	case core.FieldTypeDecimal:
-		return dialect.DecimalOrder(FieldExpr(dialect, f))
+		return dialect.DecimalOrder(fieldDecimal(f))
 	}
 	return ""
 }

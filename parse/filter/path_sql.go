@@ -20,7 +20,7 @@ func FieldExpr(d Dialect, f *FieldSchema) string {
 	case f.DataType == core.FieldTypeDate:
 		return d.ReadColumn(f.SQLExpr, core.SQLDate)
 	case f.DataType == core.FieldTypeDecimal:
-		return d.DecimalColumn(f.SQLExpr)
+		return d.DecimalValue(DecimalColumn(f.SQLExpr))
 	case f.DataType == core.FieldTypeInterval:
 		return d.ReadColumn(f.SQLExpr, core.SQLInterval)
 	case f.DataType == core.FieldTypeArray && f.Elem == core.FieldTypeInterval:

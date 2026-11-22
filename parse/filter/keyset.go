@@ -308,9 +308,17 @@ func keyValue(d Dialect, k CursorKey) string {
 	case core.FieldTypeDate:
 		return d.ReadColumn(k.SQLExpr, core.SQLDate)
 	case core.FieldTypeDecimal:
-		return d.DecimalColumn(k.SQLExpr)
+		return d.DecimalValue(keyDecimal(k))
 	}
 	return k.SQLExpr
+}
+
+// keyDecimal is the operand a decimal key's value is read from.
+func keyDecimal(k CursorKey) DecimalOperand {
+	if k.Path != nil {
+		return DecimalMember(k.Path)
+	}
+	return DecimalColumn(k.SQLExpr)
 }
 
 // keyExpr is a key's ordering expression: text keys — strings, and a path's
@@ -321,7 +329,7 @@ func keyExpr(d Dialect, k CursorKey) string {
 	case k.DataType == core.FieldTypeString || (k.Path != nil && (k.DataType == core.FieldTypeTimestamp || k.DataType == core.FieldTypeUUID)):
 		return d.CodePointOrder(keyValue(d, k))
 	case k.DataType == core.FieldTypeDecimal:
-		return d.DecimalOrder(keyValue(d, k))
+		return d.DecimalOrder(keyDecimal(k))
 	}
 	return keyValue(d, k)
 }
@@ -387,7 +395,7 @@ func seekPredicate(d Dialect, keys []CursorKey, token *PageToken, bind func(any)
 		if v != nil {
 			phs[i] = bind(v)
 			if k.DataType == core.FieldTypeDecimal {
-				phs[i] = d.DecimalOrder(d.DecimalParam(phs[i]))
+				phs[i] = d.DecimalOrder(DecimalParam(phs[i]))
 			}
 		}
 		if k.Nullable || v == nil || effectiveDirection(k, token.Reverse) != effectiveDirection(keys[0], token.Reverse) {

@@ -143,7 +143,7 @@ func (d PostgresDialect) Condition(field *FieldSchema, op FilterOperator, value 
 		expr = d.CodePointOrder(expr)
 	}
 	if field.DataType == core.FieldTypeDecimal {
-		if sql, ok, err := decimalComparison(d, field, expr, op, value, bind); ok {
+		if sql, ok, err := decimalComparison(d, field, op, value, bind); ok {
 			return sql, err
 		}
 		return "", unsupportedOperator(field, op)
@@ -623,15 +623,23 @@ func isoInterval(column string) string {
 		" extract(hour FROM " + column + ") AS iso_h, extract(minute FROM " + column + ") AS iso_mi, extract(second FROM " + column + ") AS iso_s) AS iso_fields)"
 }
 
-// DecimalColumn returns column: a decimal column is numeric, exact as it is.
-func (PostgresDialect) DecimalColumn(column string) string { return column }
+// DecimalValue reads a decimal column as it is (numeric is exact), a member
+// as PathExpr's numeric, and a parameter cast to numeric: pgx sends a string
+// in text format, which numeric parses exactly.
+func (d PostgresDialect) DecimalValue(o DecimalOperand) string {
+	switch o.source {
+	case decimalFromColumn:
+		return o.sql
+	case decimalFromMember:
+		return d.PathExpr(o.path, core.FieldTypeDecimal)
+	case decimalFromParam:
+		return o.sql + "::numeric"
+	}
+	panic(o.invalid())
+}
 
-// DecimalParam casts the parameter to numeric: pgx sends a string in text
-// format, which numeric parses exactly.
-func (PostgresDialect) DecimalParam(placeholder string) string { return placeholder + "::numeric" }
-
-// DecimalOrder returns value: numeric orders exactly.
-func (PostgresDialect) DecimalOrder(value string) string { return value }
+// DecimalOrder is DecimalValue: numeric orders exactly.
+func (d PostgresDialect) DecimalOrder(o DecimalOperand) string { return d.DecimalValue(o) }
 
 // NativeRowCompare reports true: PostgreSQL evaluates row comparison
 // lexicographically with full composite-index support.

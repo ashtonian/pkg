@@ -102,7 +102,7 @@ func (d SQLiteDialect) Condition(field *FieldSchema, op FilterOperator, value an
 		expr = d.CodePointOrder(expr)
 	}
 	if field.DataType == core.FieldTypeDecimal {
-		if sql, ok, err := decimalComparison(d, field, expr, op, value, bind); ok {
+		if sql, ok, err := decimalComparison(d, field, op, value, bind); ok {
 			return sql, err
 		}
 		return "", unsupportedOperator(field, op)
@@ -433,51 +433,37 @@ func (SQLiteDialect) ReadColumn(column string, t core.SQLType) string {
 	return column
 }
 
-// DecimalColumn reads the column through parse_decimal (parsesqlite): its
-// canonical decimal text, exact for an INTEGER or for TEXT holding the
-// number, where CAST(… AS NUMERIC) keeps 15 significant digits.
-func (SQLiteDialect) DecimalColumn(column string) string {
-	return decimals.SQLiteValueFunc + "(" + column + ")"
+// DecimalValue reads a column or a member through parse_decimal
+// (parsesqlite): its canonical decimal text, exact for an INTEGER or for
+// TEXT holding the number, where CAST(… AS NUMERIC) keeps 15 significant
+// digits. A parameter is the canonical text already.
+func (d SQLiteDialect) DecimalValue(o DecimalOperand) string {
+	switch o.source {
+	case decimalFromColumn:
+		return decimals.SQLiteValueFunc + "(" + o.sql + ")"
+	case decimalFromMember:
+		return d.PathExpr(o.path, core.FieldTypeDecimal)
+	case decimalFromParam:
+		return o.sql
+	}
+	panic(o.invalid())
 }
 
-// DecimalParam returns the placeholder: the bound canonical text is the
-// exact value DecimalColumn and PathExpr read a decimal as.
-func (SQLiteDialect) DecimalParam(placeholder string) string { return placeholder }
-
-// DecimalOrder reads the value through parse_decimal_key (parsesqlite), a
+// DecimalOrder reads the operand through parse_decimal_key (parsesqlite), a
 // BLOB that orders bytewise as the decimal does. parse_decimal_key reads
-// what parse_decimal reads, so a value DecimalColumn or PathExpr read is
-// keyed from its operand: one function call per row, not two.
-func (SQLiteDialect) DecimalOrder(value string) string {
-	if operand, ok := callOperand(value, decimals.SQLiteValueFunc); ok {
-		value = operand
+// what parse_decimal reads, so a column and a member are keyed from their
+// own text, one function call per row, not two.
+func (SQLiteDialect) DecimalOrder(o DecimalOperand) string {
+	var operand string
+	switch o.source {
+	case decimalFromColumn, decimalFromParam:
+		operand = o.sql
+	case decimalFromMember:
+		_, _, operand = sqlitePathMember(o.path)
+	default:
+		panic(o.invalid())
 	}
-	return decimals.SQLiteKeyFunc + "(" + value + ")"
-}
-
-// callOperand is the argument of expr when expr is exactly one call of fn,
-// its parentheses spanning the rest of expr; parentheses inside quoted SQL
-// literals do not count.
-func callOperand(expr, fn string) (string, bool) {
-	rest, ok := strings.CutPrefix(expr, fn+"(")
-	if !ok {
-		return "", false
-	}
-	depth, quoted := 1, false
-	for i := range len(rest) {
-		switch c := rest[i]; {
-		case c == '\'':
-			quoted = !quoted
-		case quoted:
-		case c == '(':
-			depth++
-		case c == ')':
-			if depth--; depth == 0 {
-				return rest[:i], i == len(rest)-1
-			}
-		}
-	}
-	return "", false
+	return decimals.SQLiteKeyFunc + "(" + operand + ")"
 }
 
 // NativeRowCompare reports false: row-value comparison is unevenly
