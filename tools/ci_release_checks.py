@@ -7,6 +7,12 @@ change runs the checks of the module trees it touches. The scope selects the
 jobs; this narrows the modules job to those checks, drops it when none is
 selected, and adds lint when the cookbook check runs, since the cookbook lints
 with it.
+
+It also writes what each job checks for acceptance: the scope's selection,
+with the modules job's release checks and the cookbook lint in place of what
+the scope cannot see. On a merge push it computes the same from the scope's
+measurement against the merge's first parent, as the pull request's run
+measured it, and the push reuses a job only when that covers its own.
 """
 import json
 import os
@@ -75,22 +81,66 @@ def plan(jobs, paths):
     return [job for job in JOBS if job in selected], checks
 
 
+def lints_cookbook(checks, scope_selections):
+    """The lint job lints the cookbook when its check runs, and whenever it lints
+    every package, so that its "all" holds the cookbook too."""
+    return "cookbook-check" in checks or scope_selections.get("lint") == "all"
+
+
+def selections(jobs, checks, scope_selections):
+    """What each job checks: the scope's selection, except the modules job's
+    release checks, and lint's packages plus the cookbook when it lints it."""
+    chosen = {}
+    for job in jobs:
+        if job == "modules":
+            chosen[job] = checks
+        elif job == "lint":
+            packages = scope_selections.get("lint", [])
+            cookbook = ["cookbook-check"] if lints_cookbook(checks, scope_selections) else []
+            chosen[job] = "all" if packages == "all" else sorted(packages) + cookbook
+        else:
+            chosen[job] = scope_selections[job]
+    return chosen
+
+
+def measure(scope_jobs, paths, scope_selections):
+    """The jobs, release checks and selections of one scope measurement."""
+    jobs, checks = plan(scope_jobs, paths)
+    return jobs, checks, selections(jobs, checks, scope_selections)
+
+
+def listed_paths(listing):
+    """The paths in a scope file listing, or None without one (a full run)."""
+    if not listing:
+        return None
+    return [line for line in Path(listing).read_text().splitlines() if line]
+
+
 def changed_paths(env):
     """The scope's changed paths, or None for a full run."""
-    if env["SCOPE_FULL"] == "true" or not env.get("SCOPE_FILES"):
+    if env["SCOPE_FULL"] == "true":
         return None
-    return [line for line in Path(env["SCOPE_FILES"]).read_text().splitlines() if line]
+    return listed_paths(env.get("SCOPE_FILES"))
 
 
 def main():
-    jobs, checks = plan(json.loads(os.environ["SCOPE_JOBS"]), changed_paths(os.environ))
+    env = os.environ
+    scope_selections = json.loads(env.get("SCOPE_SELECTIONS") or "{}")
+    jobs, checks, chosen = measure(json.loads(env["SCOPE_JOBS"]), changed_paths(env), scope_selections)
     required = [job for job in jobs if job in VALIDATION_JOBS]
+    compact = {"separators": (",", ":")}
+    # The scope's parent measurement selects the jobs the pull request's run did.
+    parent = ""
+    if env.get("SCOPE_PARENT_SELECTIONS"):
+        parent_scope = json.loads(env["SCOPE_PARENT_SELECTIONS"])
+        _, _, parent_chosen = measure(list(parent_scope), listed_paths(env.get("SCOPE_PARENT_FILES")), parent_scope)
+        parent = json.dumps(parent_chosen, **compact)
     message = "jobs: " + (" ".join(jobs) or "none") + "; release checks: " + (" ".join(checks) or "none")
     print(message)
-    compact = {"separators": (",", ":")}
-    with open(os.environ["GITHUB_OUTPUT"], "a") as output:
+    with open(env["GITHUB_OUTPUT"], "a") as output:
         output.write(f"jobs={json.dumps(jobs, **compact)}\nrequired={json.dumps(required, **compact)}\n"
-                     f"checks={' '.join(checks)}\n")
+                     f"checks={' '.join(checks)}\nlint-cookbook={str(lints_cookbook(checks, scope_selections)).lower()}\n"
+                     f"selections={json.dumps(chosen, **compact)}\nparent-selections={parent}\n")
     if summary := os.environ.get("GITHUB_STEP_SUMMARY"):
         with open(summary, "a") as output:
             output.write(message + "\n")
