@@ -5,12 +5,13 @@ import (
 	"errors"
 	"fmt"
 	"iter"
+	"math"
 	"reflect"
 	"slices"
 	"strconv"
-	"strings"
 	"sync"
 	"unicode"
+	"unicode/utf8"
 )
 
 // FieldRule chooses a field's name and aliases, excludes it, inlines its
@@ -48,6 +49,10 @@ type FieldRule struct {
 	// it can. Only WithJSONFields grants it, so a resolver still cannot
 	// expose a private field.
 	privateEmbed bool
+	// caseStrict marks a field whose json tag sets case:strict, which
+	// encoding/json matches only by its exact name: Shape.Match does too.
+	// Only WithJSONFields sets it.
+	caseStrict bool
 }
 
 // FieldResolver runs once per field in each reachable, non-atomic struct during
@@ -77,6 +82,11 @@ type Shape struct {
 	fields       []*Field
 	declaredView []*Field
 	byName       map[string]*Field
+	// byFold indexes names and aliases by their case fold for Match, where
+	// byName is exact. foldLen is the length of the longest fold Match can
+	// find, so a name whose fold is longer matches nothing.
+	byFold       map[string]*Field
+	foldLen      int
 	unnamed      []*Field
 	declarations []declaration
 	fold         bool
@@ -304,11 +314,100 @@ func (s *Shape) Declarations() []Declaration {
 // Lookup returns the field selected by a canonical name or alias, or
 // (nil, false) when none matches. It uses the same equivalence as collisions.
 func (s *Shape) Lookup(name string) (*Field, bool) {
-	if s.fold {
-		name = foldName(name)
+	if !s.fold {
+		f, ok := s.byName[name]
+		return f, ok
 	}
-	f, ok := s.byName[name]
+	var buf [foldBuffer]byte
+	key, ok := appendFold(buf[:0], name, s.foldLen)
+	if !ok {
+		return nil, false
+	}
+	f, ok := s.byName[string(key)]
 	return f, ok
+}
+
+// NameMatch is how a name selects a field in [Shape.Match].
+type NameMatch uint8
+
+const (
+	// NoMatch means no field takes the name.
+	NoMatch NameMatch = iota
+	// ExactMatch means the name is the field's name or one of its aliases.
+	ExactMatch
+	// FoldedMatch means the name equals the field's name or an alias only
+	// under Unicode simple case folding.
+	FoldedMatch
+)
+
+func (m NameMatch) String() string {
+	switch m {
+	case NoMatch:
+		return "NoMatch"
+	case ExactMatch:
+		return "ExactMatch"
+	case FoldedMatch:
+		return "FoldedMatch"
+	}
+	return "NameMatch(" + strconv.Itoa(int(m)) + ")"
+}
+
+// Match returns the field encoding/json decodes a member named name into, and
+// how the name matched it: the field with that exact name or alias, or else,
+// of the fields with a name or alias equal to it under Unicode simple case
+// folding as [strings.EqualFold] compares, the shallowest, then the first in
+// Fields order. A field whose json tag sets case:strict ([WithJSONFields])
+// matches only exactly. Under [WithCaseFoldNames] the field is Lookup's, and
+// the match is exact when name spells the field's name or an alias. A struct
+// whose view is empty, and a shape that is not a struct, match nothing. Match
+// allocates nothing unless one of the struct's names or aliases folds to more
+// than 128 bytes.
+func (s *Shape) Match(name string) (*Field, NameMatch) { return match(s, name) }
+
+// MatchBytes is [Shape.Match] for a name held as bytes, such as a member name
+// a JSON decoder has just read. It keeps no reference to name.
+func (s *Shape) MatchBytes(name []byte) (*Field, NameMatch) { return match(s, name) }
+
+func match[N string | []byte](s *Shape, name N) (*Field, NameMatch) {
+	if s.fold {
+		return matchFolding(s, name)
+	}
+	if f := s.byName[string(name)]; f != nil {
+		return f, ExactMatch
+	}
+	var buf [foldBuffer]byte
+	if key, ok := appendFold(buf[:0], name, s.foldLen); ok {
+		if f := s.byFold[string(key)]; f != nil {
+			return f, FoldedMatch
+		}
+	}
+	return nil, NoMatch
+}
+
+// matchFolding is match under WithCaseFoldNames, whose byName is keyed by
+// fold: no two fields' names fold alike, so the fold finds the only candidate.
+func matchFolding[N string | []byte](s *Shape, name N) (*Field, NameMatch) {
+	var buf [foldBuffer]byte
+	key, ok := appendFold(buf[:0], name, s.foldLen)
+	if !ok {
+		return nil, NoMatch
+	}
+	f := s.byName[string(key)]
+	if f == nil {
+		return nil, NoMatch
+	}
+	if string(name) == f.name {
+		return f, ExactMatch
+	}
+	for _, alias := range f.aliases {
+		if string(name) == alias {
+			return f, ExactMatch
+		}
+	}
+	if f.caseStrict {
+		return nil, NoMatch
+	}
+	return f, FoldedMatch
 }
 
 // Field is a stable handle within a Shape. Its logical name can differ from its
@@ -323,7 +422,9 @@ type Field struct {
 	declaring reflect.Type
 	inline    bool
 	explicit  bool
-	keys      []string
+	// caseStrict fields match only exactly in Shape.Match (FieldRule).
+	caseStrict bool
+	keys       []string
 }
 
 // Name returns the canonical visible name, or "" for a field kept without a
@@ -491,7 +592,7 @@ func (b *builder) view(s *Shape, r reach) error {
 				return err
 			}
 			s.conflict = conflict
-			s.fields, s.byName, s.unnamed, s.declarations = nil, nil, nil, nil
+			s.fields, s.byName, s.byFold, s.unnamed, s.declarations = nil, nil, nil, nil, nil
 			b.graph.conflicted = true
 			// The struct's own declarations are complete however far its
 			// expansion got, and their types reach everything below it.
@@ -532,20 +633,60 @@ func (b *builder) resolve(s *Shape) error {
 	if err := b.expand(s, s, nil, nil, make(map[*Shape]bool)); err != nil {
 		return err
 	}
-	if !b.engine.settings.resolvesByDepth() {
-		return nil
-	}
-	lost, err := resolveByDepth(s, b.engine.settings.dropTies)
-	if err != nil {
-		return err
-	}
-	for i := range s.declarations {
-		if state, ok := lost[s.declarations[i].field]; ok && s.declarations[i].state == Named {
-			s.declarations[i].state = state
+	if b.engine.settings.resolvesByDepth() {
+		lost, err := resolveByDepth(s, b.engine.settings.dropTies)
+		if err != nil {
+			return err
+		}
+		for i := range s.declarations {
+			if state, ok := lost[s.declarations[i].field]; ok && s.declarations[i].state == Named {
+				s.declarations[i].state = state
+			}
 		}
 	}
+	s.indexFolds()
 	return nil
 }
+
+// indexFolds prepares Match. Where byName is exact, it indexes the names and
+// aliases of the struct's fields by their case fold, each fold going to the
+// field encoding/json prefers among those that share it: it matches breadth
+// first, so the shallowest, then the first in Fields order. A case:strict
+// field takes no fold.
+func (s *Shape) indexFolds() {
+	if s.fold {
+		for key := range s.byName {
+			s.foldLen = max(s.foldLen, len(key))
+		}
+		return
+	}
+	fields := s.fields
+	if !slices.IsSortedFunc(fields, shallower) {
+		fields = slices.Clone(fields)
+		slices.SortStableFunc(fields, shallower)
+	}
+	s.byFold = make(map[string]*Field, len(s.byName))
+	var buf [foldBuffer]byte
+	index := func(name string, f *Field) {
+		key, _ := appendFold(buf[:0], name, math.MaxInt)
+		s.foldLen = max(s.foldLen, len(key))
+		if _, taken := s.byFold[string(key)]; !taken {
+			s.byFold[string(key)] = f
+		}
+	}
+	for _, f := range fields {
+		if f.caseStrict {
+			continue
+		}
+		index(f.name, f)
+		for _, alias := range f.aliases {
+			index(alias, f)
+		}
+	}
+}
+
+// shallower orders fields by the inline steps their routes take.
+func shallower(a, b *Field) int { return cmp.Compare(len(a.index), len(b.index)) }
 
 func (b *builder) prepare(s *Shape) error {
 	if b.prepared[s] {
@@ -584,11 +725,11 @@ func (b *builder) prepare(s *Shape) error {
 			// Leaf status belongs to this field edge, not the shared type node.
 			leaf := *field.shape
 			leaf.atomic = true
-			leaf.fields, leaf.declaredView, leaf.byName, leaf.unnamed, leaf.declarations = nil, nil, nil, nil, nil
-			leaf.viewed, leaf.conflict = false, nil
+			leaf.fields, leaf.declaredView, leaf.byName, leaf.byFold, leaf.unnamed, leaf.declarations = nil, nil, nil, nil, nil, nil
+			leaf.viewed, leaf.conflict, leaf.foldLen = false, nil, 0
 			field.shape = &leaf
 		}
-		field.selected = &Field{name: rule.Name, aliases: rule.Aliases, index: append([]int(nil), field.field.Index...), goField: field.field, shape: field.shape, declaring: s.typ, inline: rule.Inline, explicit: rule.Explicit, keys: keys}
+		field.selected = &Field{name: rule.Name, aliases: rule.Aliases, index: append([]int(nil), field.field.Index...), goField: field.field, shape: field.shape, declaring: s.typ, inline: rule.Inline, explicit: rule.Explicit, caseStrict: rule.caseStrict, keys: keys}
 		if !rule.Unnamed {
 			s.declaredView = append(s.declaredView, field.selected)
 		}
@@ -645,7 +786,7 @@ func (b *builder) expand(owner, current *Shape, index []int, parents []reflect.S
 		}
 		field := declared.selected
 		if len(index) > 0 {
-			field = &Field{name: rule.Name, aliases: rule.Aliases, index: at, goField: sf, parents: append([]reflect.StructField(nil), parents...), shape: declared.shape, declaring: current.typ, explicit: rule.Explicit, keys: declared.keys}
+			field = &Field{name: rule.Name, aliases: rule.Aliases, index: at, goField: sf, parents: append([]reflect.StructField(nil), parents...), shape: declared.shape, declaring: current.typ, explicit: rule.Explicit, caseStrict: rule.caseStrict, keys: declared.keys}
 		}
 		listed.field = field
 		if rule.Unnamed {
@@ -791,18 +932,47 @@ func indirectShape(s *Shape) (*Shape, error) {
 	return s, nil
 }
 
-// EqualFold follows Unicode simple-fold orbits, which are not equivalent to
-// lowercasing (for example, S and long s). Use one representative per orbit.
+// foldName is name's case fold: see appendFold.
 func foldName(name string) string {
-	var result strings.Builder
-	for _, r := range name {
-		min := r
-		for next := unicode.SimpleFold(r); next != r; next = unicode.SimpleFold(next) {
-			if next < min {
-				min = next
-			}
-		}
-		result.WriteRune(min)
+	folded, _ := appendFold(nil, name, math.MaxInt)
+	return string(folded)
+}
+
+// foldBuffer is the stack space a lookup folds a name into.
+const foldBuffer = 128
+
+// appendFold appends name with each rune replaced by the least rune of its
+// Unicode simple-fold orbit, so two names fold alike exactly when
+// strings.EqualFold reports them equal: an orbit, not lowercasing, relates S
+// and long s, or K and the Kelvin sign. It is encoding/json's fold. Invalid
+// UTF-8 folds to U+FFFD, as encoding/json decodes it. It stops, returning
+// false, once more than limit bytes are appended.
+func appendFold[N string | []byte](dst []byte, name N, limit int) ([]byte, bool) {
+	end := math.MaxInt
+	if limit < math.MaxInt-len(dst) {
+		end = len(dst) + limit
 	}
-	return result.String()
+	for i := 0; i < len(name); {
+		if c := name[i]; c < utf8.RuneSelf {
+			if 'a' <= c && c <= 'z' {
+				c -= 'a' - 'A'
+			}
+			dst = append(dst, c)
+			i++
+		} else {
+			// At most one rune's bytes, so converting a []byte name copies
+			// nothing to the heap.
+			r, size := utf8.DecodeRuneInString(string(name[i:min(i+utf8.UTFMax, len(name))]))
+			least := r
+			for next := unicode.SimpleFold(r); next != r; next = unicode.SimpleFold(next) {
+				least = min(least, next)
+			}
+			dst = utf8.AppendRune(dst, least)
+			i += size
+		}
+		if len(dst) > end {
+			return dst, false
+		}
+	}
+	return dst, true
 }
