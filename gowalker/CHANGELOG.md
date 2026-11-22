@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.7.0](https://github.com/ashtonian/pkg/compare/gowalker/v0.6.0...gowalker/v0.7.0) (2026-11-22)
+
+
+### ⚠ BREAKING CHANGES
+
+* gowalker names every member encoding/json writes and checks tag-key spelling; parse and config on gowalker v0.6.0 ([#298](https://github.com/ashtonian/pkg/issues/298))
+
+### Features
+
+* gowalker names every member encoding/json writes and checks tag-key spelling; parse and config on gowalker v0.6.0 ([#298](https://github.com/ashtonian/pkg/issues/298)) ([b505c00](https://github.com/ashtonian/pkg/commit/b505c0025d65e5fb7299f6faee7acbbd3bb26781))
+
 ## [0.6.0](https://github.com/ashtonian/pkg/compare/gowalker/v0.5.0...gowalker/v0.6.0) (2026-11-22)
 
 

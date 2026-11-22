@@ -1,5 +1,22 @@
 # Changelog
 
+## [0.16.0](https://github.com/ashtonian/pkg/compare/parse/v0.15.0...parse/v0.16.0) (2026-11-22)
+
+
+### ⚠ BREAKING CHANGES
+
+* two fields the field-name tag hides that share a column are refused as two fields with one column at any depth. Before, one declared alike deeper than the other was dropped from the walk without a word, and two at one depth failed with a message about hidden fields.
+* **parse/core:** one number grammar, document naming as encoding/json does, core.go split, and the defects on those seams ([#296](https://github.com/ashtonian/pkg/issues/296))
+
+### Features
+
+* gowalker names every member encoding/json writes and checks tag-key spelling; parse and config on gowalker v0.6.0 ([#298](https://github.com/ashtonian/pkg/issues/298)) ([b505c00](https://github.com/ashtonian/pkg/commit/b505c0025d65e5fb7299f6faee7acbbd3bb26781)), refs [#288](https://github.com/ashtonian/pkg/issues/288)
+
+
+### Bug Fixes
+
+* **parse/core:** one number grammar, document naming as encoding/json does, core.go split, and the defects on those seams ([#296](https://github.com/ashtonian/pkg/issues/296)) ([27e34f3](https://github.com/ashtonian/pkg/commit/27e34f30d4082e32488244084fc9a8860a9f5141))
+
 ## [0.15.0](https://github.com/ashtonian/pkg/compare/parse/v0.14.0...parse/v0.15.0) (2026-11-22)
 
 
