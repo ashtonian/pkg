@@ -64,8 +64,10 @@ the same matching rule as lookup: exact matching, or Unicode case folding when
 enabled. Under `ResolveByDepth`, expansion records every claim first and then
 keeps, per canonical name, the field `encoding/json` would serialize, by depth
 and then by `FieldRule.Explicit`, so a shallower field can shadow one promoted
-from an embedded struct; only a tie fails, and the kept fields' aliases must be
-unique. Ordinary recursive fields are valid; recursive inline expansion is an
+from an embedded struct; only a tie fails, or with `DropTies` loses every claim
+as `encoding/json` drops it, and the kept fields' aliases must be unique.
+`WithJSONFields` is `WithTaggedFields` with `encoding/json`'s tag-name grammar
+and conventions fixed, and implies `ResolveByDepth`. Ordinary recursive fields are valid; recursive inline expansion is an
 error because it cannot produce a finite flattened field list.
 
 A **leaf** is a value that named paths and walkers may select but do not descend
@@ -166,7 +168,7 @@ value. Callers synchronize shared values; the engine does not lock or copy them.
 | Files | Responsibility |
 |---|---|
 | `engine.go`, `shape.go` | Rules, the default engine, caches, raw type graphs and visible fields |
-| `tags.go` | Tag parsing and the `WithTaggedFields` naming conventions |
+| `tags.go` | Tag parsing and the `WithTaggedFields` and `WithJSONFields` naming conventions |
 | `cache.go` | `TypeCache`, per-type consumer metadata |
 | `schema.go`, `access.go` | Accessors, root binding and reads |
 | `write.go`, `assign.go` | Write preparation, allocation and checked assignment |

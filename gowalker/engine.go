@@ -1,9 +1,12 @@
 package gowalker
 
 import (
+	"errors"
 	"reflect"
 	"sync"
 )
+
+var errDropTiesAlone = errors.New("DropTies settles ties left by ResolveByDepth or WithJSONFields; give one of them")
 
 // Limits bound one compilation or resolution. All fields must be positive.
 // MaxTypes counts unique declared types. MaxFields counts declared fields plus
@@ -29,6 +32,7 @@ type settings struct {
 	atomic   []func(reflect.Type) bool
 	fold     bool
 	byDepth  bool
+	dropTies bool
 	capacity int
 	limits   Limits
 }
@@ -42,6 +46,13 @@ func (s *settings) rule(sf reflect.StructField) (FieldRule, error) {
 		return s.resolver(copyStructField(sf))
 	}
 	return FieldRule{Name: sf.Name}, nil
+}
+
+// resolvesByDepth reports whether name claims are settled after expansion
+// (ResolveByDepth, or WithJSONFields, which implies it) rather than refused
+// as they meet.
+func (s *settings) resolvesByDepth() bool {
+	return s.byDepth || s.tagged != nil && s.tagged.json
 }
 
 func (s *settings) isAtomic(t reflect.Type) bool {
@@ -119,9 +130,20 @@ func WithAtomicImplementers(ifaces ...reflect.Type) Option {
 // names: it is absent from Fields and Lookup and stays in its declaring
 // struct's DeclaredView. Aliases of the fields that remain must be unique.
 // It applies to [WithTaggedFields], where a tag name is explicit, and to a
-// [WithFieldResolver] rule that sets Explicit.
+// [WithFieldResolver] rule that sets Explicit. [WithJSONFields] implies it.
 func ResolveByDepth() Option {
 	return func(s *settings) error { s.byDepth = true; return nil }
+}
+
+// DropTies drops every field of a tie that [ResolveByDepth] leaves, as
+// encoding/json does, instead of failing compilation: two fields at the same
+// depth claiming one name, both named by a tag or both not, and every deeper
+// field claiming it, lose the name. Use it to describe exactly the members
+// encoding/json writes, as for stored documents; leave it out where a
+// silently dropped field is a defect, such as a column list. New fails
+// unless ResolveByDepth or [WithJSONFields] is also given.
+func DropTies() Option {
+	return func(s *settings) error { s.dropTies = true; return nil }
 }
 
 // WithCaseFoldNames uses Unicode simple folding for both lookup and collisions.
@@ -172,6 +194,9 @@ func New(options ...Option) (*Engine, error) {
 		if err := option(&s); err != nil {
 			return nil, failure("new", ErrSchema, nil, emptyPath, -1, err)
 		}
+	}
+	if s.dropTies && !s.resolvesByDepth() {
+		return nil, failure("new", ErrSchema, nil, emptyPath, -1, errDropTiesAlone)
 	}
 	return &Engine{settings: s, cache: make(map[reflect.Type]*Schema)}, nil
 }

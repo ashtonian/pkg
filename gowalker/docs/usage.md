@@ -117,11 +117,7 @@ type Event struct {
 	Secret  string `json:"-"`
 }
 
-var jsonNames = gowalker.MustNew(gowalker.WithTaggedFields("json",
-	gowalker.UntaggedName(func(goName string) string { return goName }),
-	gowalker.PromoteEmbedded(),
-	gowalker.DashCommaName(),
-), gowalker.ResolveByDepth())
+var jsonNames = gowalker.MustNew(gowalker.WithJSONFields("json"))
 
 func main() {
 	schema, err := jsonNames.Compile[Event]()
@@ -143,14 +139,23 @@ kind [1] false
 Payload [2] true
 ```
 
-With these options and the engine option `ResolveByDepth`, the fields are the
-members `encoding/json` writes. `ResolveByDepth` settles a name two fields claim
-as `encoding/json` does: the shallowest wins, then a field whose tag names it. A
-tie that remains is a compilation error, where `encoding/json` would drop both
-fields. Without it every collision is an error, which suits configuration keys,
-where a silent choice hides a mistake. `DashCommaName` reads `json:"-,"` as the
-name `-`. Only the field naming follows the convention; omission, encoding and
-custom marshalers stay with the codec.
+`WithJSONFields` gives the members `encoding/json` writes. It reads a tag's
+name by `encoding/json`'s grammar: the name ends at the first comma, and when a
+backslash, quote or backtick ends it instead, only its leading identifier
+counts, so `json:"a\"b"` names `a` and `json:"'a b'"` names nothing (the
+field keeps its Go name). Untagged fields keep their Go names, embedded structs
+are promoted, `json:"-,"` names `-`, and a name two fields claim is settled as
+`encoding/json` settles it: the shallowest wins, then a field whose tag names
+it. A tie that remains is a compilation error, where `encoding/json` drops
+every tied field; add the engine option `DropTies` for that behavior, as for
+stored documents. Only the field naming follows the convention; omission,
+encoding and custom marshalers stay with the codec, and a type with its own
+`MarshalJSON` or `MarshalText` is written by that method.
+
+`WithTaggedFields` with the options below builds other conventions. Its names
+are the text before the first comma, and without `ResolveByDepth` every
+collision is an error, which suits configuration keys, where a silent choice
+hides a mistake.
 
 | Option | Effect |
 |---|---|
@@ -158,7 +163,7 @@ custom marshalers stay with the codec.
 | `UntaggedName(fn)` | Exported fields without a tag name are named `fn(goName)` |
 | `PromoteEmbedded()` | An untagged embedded struct, or pointer to one, contributes its fields |
 | `DashCommaName()` | Only a tag of exactly `"-"` excludes; `"-,"` and `"-,omitempty"` name the field `-` |
-| `ValidName(fn)` | A tag name `fn` refuses fails compilation, for names another reader parses differently |
+| `ValidName(fn)` | A tag name `fn` refuses fails compilation, for names the library cannot use |
 | `NestedFields()` | Paths and walks descend into selected structs, maps and lists |
 
 A tag name of `"-"` excludes the field, as only the exact tag `"-"` does

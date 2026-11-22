@@ -100,13 +100,31 @@ Options relax those defaults:
 | `ValidName(fn)` | Each tag name of a selected field is passed to `fn`; an error fails compilation with ErrSchema, wrapping it. Names from `UntaggedName` are not checked. `nil` is invalid. |
 | `NestedFields()` | Selected fields are not leaves: paths such as `server.port` and walks descend into them. |
 
+`WithJSONFields(key, options...)` is `encoding/json`'s convention under `key`:
+
+| Declaration | Result |
+|---|---|
+| `json:"id,omitempty"` | `id`: the name ends at the first comma |
+| `json:"a\"b"`, `json:"a\\b"`, `json:"a'b"` | `a`: a backslash, quote or backtick ends the name at its leading identifier |
+| `json:"'a b'"`, `json:"\"x\""` | The Go name: no leading identifier, so the tag names nothing |
+| Untagged exported field, or `json:",omitempty"` | The Go name |
+| `json:"-"` | Excluded |
+| `json:"-,"` | `-` |
+| Embedded struct or pointer to one without a tag name, exported or not | Its fields, promoted |
+| Unexported embedded struct with a tag name | Compilation error matching ErrSchema: `encoding/json` writes it, and safe reflection cannot read it |
+| A name two fields claim | Settled as with `ResolveByDepth()`, which the option implies; a remaining tie fails, or with `DropTies()` drops every field claiming the name |
+
+`ValidName` and `NestedFields` apply. `UntaggedName`, `PromoteEmbedded` and
+`DashCommaName` return ErrSchema from New: the option already fixes them.
+
 An empty tag key, or one containing spaces, control characters, a colon or a
 quote, returns ErrSchema from New, as does a nil option. Tag keys are case
 sensitive; `WithCaseFoldNames` affects selected field names only. The last
-`WithTaggedFields` or `WithFieldResolver` option supplies the naming rule.
+`WithTaggedFields`, `WithJSONFields` or `WithFieldResolver` option supplies the
+naming rule.
 
-The presets name fields. They do not implement omission, decoding, custom
-marshalers or a codec's tie-breaking rules. Compile still retains raw payload
+The presets name fields. They do not implement omission, decoding or custom
+marshalers. Compile still retains raw payload
 types and counts them against its limits, even when fields are leaves.
 
 ## Per-type metadata
@@ -144,7 +162,9 @@ aliases of the same field are harmless. Inline cycles also fail compilation.
 does: for a name two fields claim, the shallowest field wins, and at equal depth
 a field whose rule sets `FieldRule.Explicit` (a tag name, under
 `WithTaggedFields`) beats one whose name is derived. A remaining tie fails with
-a `*NameConflict`, where `encoding/json` drops both fields. A shadowed field
+a `*NameConflict`, where `encoding/json` drops both fields; `DropTies()` drops
+them instead, and New fails when it is given without `ResolveByDepth()` or
+`WithJSONFields`. A shadowed field
 loses all its names and aliases: it is absent from `Fields` and `Lookup` and
 stays in its declaring struct's `DeclaredView`. The kept fields' names and
 aliases must then be unique. It applies to `WithTaggedFields` and to a

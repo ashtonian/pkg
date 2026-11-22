@@ -504,6 +504,32 @@ func ExampleWithTaggedFields_conventions() {
 	// kind [1]
 }
 
+func ExampleWithJSONFields() {
+	type Base struct {
+		ID int `json:"id"`
+	}
+	type Event struct {
+		Base
+		Kind   string `json:"kind,omitempty"`
+		Quoted string `json:"'q'"` // no leading identifier: keeps its Go name
+		Escape string `json:"a\"b"`
+		Secret string `json:"-"`
+	}
+	engine := gowalker.MustNew(gowalker.WithJSONFields("json"))
+	schema, err := engine.Compile[Event]()
+	if err != nil {
+		panic(err)
+	}
+	for _, field := range schema.Root().Fields() {
+		fmt.Println(field.Name(), field.Index())
+	}
+	// Output:
+	// id [0 0]
+	// kind [1]
+	// Quoted [2]
+	// a [3]
+}
+
 func ExampleNewTypeCache() {
 	type Row struct {
 		ID    int    `db:"id,pk"`

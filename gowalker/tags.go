@@ -1,8 +1,12 @@
 package gowalker
 
 import (
+	"errors"
+	"fmt"
 	"reflect"
 	"strings"
+	"unicode"
+	"unicode/utf8"
 )
 
 // Tag is one struct-tag value in the "name,option,option" form used by
@@ -52,17 +56,27 @@ type tagNaming struct {
 	promote   bool
 	nested    bool
 	dashComma bool
+	// json fixes encoding/json's grammar and conventions (WithJSONFields).
+	json bool
 }
 
-// TagOption adjusts the naming convention of [WithTaggedFields].
+// errJSONConvention refuses a TagOption that would change a convention
+// WithJSONFields fixes.
+var errJSONConvention = errors.New("WithJSONFields already names untagged fields, promotes embedded structs and reads \"-,\" as encoding/json does")
+
+// TagOption adjusts the naming convention of [WithTaggedFields] or [WithJSONFields].
 type TagOption func(*tagNaming) error
 
 // UntaggedName names exported fields that carry no explicit tag name — an
 // absent tag or one such as json:",omitempty" — name(goName), instead of
-// excluding them. Use strings.ToLower for koanf-style keys, or return the Go
-// name unchanged for encoding/json-style names. An empty result excludes the field.
+// excluding them. Use strings.ToLower for koanf-style keys. An empty result
+// excludes the field. [WithJSONFields] refuses it: untagged fields keep their
+// Go names there.
 func UntaggedName(name func(goName string) string) TagOption {
 	return func(n *tagNaming) error {
+		if n.json {
+			return errJSONConvention
+		}
 		if name == nil {
 			return ErrSchema
 		}
@@ -75,23 +89,37 @@ func UntaggedName(name func(goName string) string) TagOption {
 // that has no explicit tag name, as encoding/json does. A promoted name that
 // collides with another fails compilation.
 // An embedded field with an explicit tag name, or of a leaf type, stays one field.
+// [WithJSONFields] refuses it as already applied.
 func PromoteEmbedded() TagOption {
-	return func(n *tagNaming) error { n.promote = true; return nil }
+	return func(n *tagNaming) error {
+		if n.json {
+			return errJSONConvention
+		}
+		n.promote = true
+		return nil
+	}
 }
 
 // DashCommaName excludes a field only when its tag value is exactly "-", and
 // reads "-," followed by options as the name "-" with those options, as
 // encoding/json does: json:"-," and json:"-,omitempty" name a field "-".
-// By default any tag whose name is "-" excludes the field.
+// By default any tag whose name is "-" excludes the field. [WithJSONFields]
+// refuses it as already applied.
 func DashCommaName() TagOption {
-	return func(n *tagNaming) error { n.dashComma = true; return nil }
+	return func(n *tagNaming) error {
+		if n.json {
+			return errJSONConvention
+		}
+		n.dashComma = true
+		return nil
+	}
 }
 
 // ValidName checks each name a tag gives a selected field; an error fails
 // compilation with ErrSchema and wraps the error. Use it to refuse names
-// another reader of the tag parses differently, such as a json name holding
-// a quote or backslash, which encoding/json does not read as written. Names
-// from [UntaggedName] are not checked.
+// another reader of the tag would refuse, or that the library cannot use,
+// such as a name holding a path separator. Names from [UntaggedName] are not
+// checked.
 func ValidName(valid func(name string) error) TagOption {
 	return func(n *tagNaming) error {
 		if valid == nil {
@@ -114,55 +142,135 @@ func NestedFields() TagOption {
 // explicitly; missing and empty names, "-" and private fields are excluded,
 // whitespace in names is preserved, comma options are ignored, each selected
 // field is a whole value and embedded fields are not promoted. Options relax
-// those defaults. Duplicate names fail compilation.
+// those defaults. Duplicate names fail compilation. The name is the text
+// before the first comma; for the members encoding/json writes, use
+// [WithJSONFields], which reads names by encoding/json's grammar.
 //
-// This replaces any field resolver; the last WithTaggedFields or
-// [WithFieldResolver] option applies. Use WithFieldResolver for aliases,
+// This replaces any field resolver; the last WithTaggedFields, WithJSONFields
+// or [WithFieldResolver] option applies. Use WithFieldResolver for aliases,
 // option-driven inlining or validation. To read annotations without renaming
 // fields, use [Field.Tag] with the default engine instead.
 func WithTaggedFields(key string, options ...TagOption) Option {
+	return taggedFields(&tagNaming{key: key}, options)
+}
+
+// WithJSONFields names fields as encoding/json names the members it writes,
+// reading the tag key instead of "json" when key is another: parse's API
+// tags, say, that follow encoding/json's rules under their own key.
+//
+//   - A tag's name ends at the first comma. When a backslash, quote or
+//     backtick ends it instead, only its leading Go identifier is the name,
+//     and with none the field keeps its Go name: json:"a\"b" names "a",
+//     json:"'a b'" names nothing. Invalid UTF-8 becomes U+FFFD.
+//   - An exported field without a tag name keeps its Go name.
+//   - An embedded struct, or pointer to one, without a tag name contributes
+//     its fields, an unexported struct type included; an embedded leaf type
+//     stays one field.
+//   - Only a tag of exactly "-" excludes a field; "-," names it "-".
+//   - A name two fields claim goes to the shallower, then to the one a tag
+//     names, as with [ResolveByDepth], which this option implies. A tie that
+//     remains fails compilation, naming both fields; add [DropTies] to drop
+//     every tied field as encoding/json does.
+//
+// Compilation fails for an unexported embedded struct a tag names:
+// encoding/json writes it as a member, and safe reflection cannot read it.
+//
+// A type with its own MarshalJSON or MarshalText method, including one
+// promoted from an embedded field, is written by that method; this option
+// still describes its fields. Add [WithAtomicImplementers] with json.Marshaler
+// and encoding.TextMarshaler to treat such types as single values.
+//
+// [ValidName] and [NestedFields] apply. UntaggedName, PromoteEmbedded and
+// DashCommaName are refused: they would change what this option fixes.
+func WithJSONFields(key string, options ...TagOption) Option {
+	return taggedFields(&tagNaming{key: key, json: true, untagged: goName, promote: true, dashComma: true}, options)
+}
+
+func goName(name string) string { return name }
+
+func taggedFields(naming *tagNaming, options []TagOption) Option {
 	return func(s *settings) error {
-		if key == "" {
+		if naming.key == "" {
 			return ErrSchema
 		}
-		for _, c := range key {
+		for _, c := range naming.key {
 			if c <= ' ' || c == ':' || c == '"' || c == 0x7f {
 				return ErrSchema
 			}
 		}
-		naming := &tagNaming{key: key}
+		configured := *naming
 		for _, option := range options {
 			if option == nil {
 				return ErrSchema
 			}
-			if err := option(naming); err != nil {
+			if err := option(&configured); err != nil {
 				return err
 			}
 		}
-		s.resolver, s.tagged = nil, naming
+		s.resolver, s.tagged = nil, &configured
 		return nil
 	}
 }
 
 func (n *tagNaming) rule(sf reflect.StructField, atomic func(reflect.Type) bool) (FieldRule, error) {
 	raw, _ := sf.Tag.Lookup(n.key)
-	tag := ParseTag(raw)
-	if raw == "-" || tag.Name == "-" && !n.dashComma {
+	name, explicit := n.tagName(raw)
+	if raw == "-" || name == "-" && !n.dashComma {
 		return FieldRule{Skip: true}, nil
 	}
-	if tag.Name == "" && n.promote && sf.Anonymous && promotable(sf.Type, atomic) {
+	if !explicit && n.promote && sf.Anonymous && promotable(sf.Type, atomic) {
 		return FieldRule{Inline: true}, nil
 	}
-	name := tag.Name
-	if name != "" && n.valid != nil && sf.IsExported() {
+	if n.json && explicit && !sf.IsExported() && sf.Anonymous && promotable(sf.Type, atomic) {
+		return FieldRule{}, fmt.Errorf("field %s: encoding/json writes the unexported embedded %s as %q, which reflection cannot read; export the type or remove the name", sf.Name, sf.Type, name)
+	}
+	if explicit && n.valid != nil && sf.IsExported() {
 		if err := n.valid(name); err != nil {
 			return FieldRule{}, err
 		}
 	}
-	if name == "" && n.untagged != nil && sf.IsExported() {
+	if !explicit && n.untagged != nil && sf.IsExported() {
 		name = n.untagged(sf.Name)
 	}
-	return FieldRule{Name: name, Skip: name == "" || !sf.IsExported(), Atomic: !n.nested, Explicit: tag.Name != ""}, nil
+	return FieldRule{Name: name, Skip: name == "" || !sf.IsExported(), Atomic: !n.nested, Explicit: explicit}, nil
+}
+
+// tagName is the name a tag value gives a field, and whether it gives one.
+func (n *tagNaming) tagName(tag string) (string, bool) {
+	if n.json {
+		return jsonTagName(tag)
+	}
+	name := ParseTag(tag).Name
+	return name, name != ""
+}
+
+// jsonTagName reads a tag's name as encoding/json does (parseFieldOptions in
+// Go 1.27's encoding/json/v2, which the v1 API uses): the text before the
+// first comma, cut at a reserved character (comma, backslash, quote,
+// backtick) to its leading identifier. ok is false when the tag names
+// nothing, and the field keeps its Go name.
+func jsonTagName(tag string) (name string, ok bool) {
+	if tag == "" || strings.HasPrefix(tag, ",") {
+		return "", false
+	}
+	n := len(tag) - len(strings.TrimLeftFunc(tag, func(r rune) bool {
+		return !strings.ContainsRune(",\\'\"`", r)
+	}))
+	name = tag[:n]
+	if !strings.HasPrefix(tag[n:], ",") && len(name) != len(tag) {
+		r, _ := utf8.DecodeRuneInString(tag)
+		if r != '_' && !unicode.IsLetter(r) {
+			return "", false
+		}
+		m := len(tag) - len(strings.TrimLeftFunc(tag, func(r rune) bool {
+			return r == '_' || unicode.IsLetter(r) || unicode.IsDigit(r)
+		}))
+		name = tag[:m]
+	}
+	if !utf8.ValidString(name) {
+		name = string([]rune(name))
+	}
+	return name, true
 }
 
 func promotable(t reflect.Type, atomic func(reflect.Type) bool) bool {

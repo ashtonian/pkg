@@ -242,8 +242,8 @@ func (b *builder) view(s *Shape) error {
 	if err := b.expand(s, s, nil, nil, make(map[*Shape]bool)); err != nil {
 		return err
 	}
-	if b.resolvesByDepth() {
-		if err := resolveByDepth(s); err != nil {
+	if b.engine.settings.resolvesByDepth() {
+		if err := resolveByDepth(s, b.engine.settings.dropTies); err != nil {
 			return err
 		}
 	}
@@ -336,7 +336,7 @@ func (b *builder) expand(owner, current *Shape, index []int, parents []reflect.S
 			}
 			reportedName := name
 			name = owner.lookupKey(name)
-			if previous := owner.byName[name]; previous != nil && previous != field && !b.resolvesByDepth() {
+			if previous := owner.byName[name]; previous != nil && previous != field && !b.engine.settings.resolvesByDepth() {
 				firstName := previous.name
 				if owner.fold {
 					firstName = foldName(firstName)
@@ -351,15 +351,12 @@ func (b *builder) expand(owner, current *Shape, index []int, parents []reflect.S
 	return nil
 }
 
-// resolvesByDepth reports whether name claims are settled after expansion
-// (ResolveByDepth) rather than refused as they meet.
-func (b *builder) resolvesByDepth() bool { return b.engine.settings.byDepth }
-
 // resolveByDepth keeps, for each canonical name more than one of owner's
 // fields claims, the field encoding/json would serialize, and fails on a
-// tie; then it indexes the kept fields' names and aliases, which must be
-// unique.
-func resolveByDepth(owner *Shape) error {
+// tie unless dropTies, which drops every field claiming the name as
+// encoding/json does; then it indexes the kept fields' names and aliases,
+// which must be unique.
+func resolveByDepth(owner *Shape, dropTies bool) error {
 	claims := make(map[string][]*Field, len(owner.fields))
 	for _, f := range owner.fields {
 		key := owner.lookupKey(f.name)
@@ -374,6 +371,9 @@ func resolveByDepth(owner *Shape) error {
 				return cmp.Or(cmp.Compare(len(x.index), len(y.index)), compareBool(!x.explicit, !y.explicit))
 			})
 			if len(ranked[0].index) == len(ranked[1].index) && ranked[0].explicit == ranked[1].explicit {
+				if dropTies {
+					continue
+				}
 				first, second := ranked[0], ranked[1]
 				if slices.Index(rivals, second) < slices.Index(rivals, first) {
 					first, second = second, first
