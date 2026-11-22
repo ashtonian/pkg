@@ -53,19 +53,23 @@ jobs:
       actions: read
       id-token: write
     outputs:
-      # A merge push runs only the jobs its pull request's receipt does not show passed.
+      # A merge push runs only the jobs its pull request's run did not pass for this merge.
       jobs: ${{ steps.accepted.outputs.remaining || steps.checks.outputs.jobs }}
       # Before reuse: main's benchmark artifacts come from pushes, never from a PR.
       selected: ${{ steps.checks.outputs.jobs }}
       wide-jobs: ${{ steps.scope.outputs.wide-jobs }}
       go-args: ${{ steps.scope.outputs.go-args }}
       checks: ${{ steps.checks.outputs.checks }}
+      lint-cookbook: ${{ steps.checks.outputs.lint-cookbook }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      # Every runs-on label must be one a runner of this repository carries,
+      # or the job waits until it is cancelled; macos-latest is GitHub's.
+      - uses: ashtonian/go-ci-actions/runner-labels@2ee8735fdee91ff0ee16067a263da6c8a7770841 # v1.13.0
       # Go for scope's package graph; nothing is built.
-      - uses: ashtonian/go-ci-actions@4404b5c0617f86383381bd07ca8a72eeb11863df # v1.10.0
+      - uses: ashtonian/go-ci-actions@2ee8735fdee91ff0ee16067a263da6c8a7770841 # v1.13.0
         with:
           go-version: '1.27.x'
           cache-mode: off
@@ -82,7 +86,7 @@ jobs:
       # files tests read outside their package. tools/test_ci_release_checks.py
       # keeps both, and the module lists, in step with the Makefile and tests.
       - id: scope
-        uses: ashtonian/go-ci-actions/scope@4404b5c0617f86383381bd07ca8a72eeb11863df # v1.10.0
+        uses: ashtonian/go-ci-actions/scope@2ee8735fdee91ff0ee16067a263da6c8a7770841 # v1.13.0
         with:
           workflow: ci.yml
           jobs: |
@@ -136,19 +140,29 @@ jobs:
               "httpx/examples/quickstart/main.go": ["./httpx"],
               "gitx/README.md": ["./gitx/cmd/mergeinserts"]
             }
-      # Release checks follow the module trees a change touches; that map is pkg's.
+      # Release checks follow the module trees a change touches; that map is
+      # pkg's. On a merge push it also measures the merge from its first
+      # parent, as the pull request's run did, for acceptance to compare.
       - id: checks
         env:
           SCOPE_JOBS: ${{ steps.scope.outputs.jobs }}
           SCOPE_FULL: ${{ steps.scope.outputs.full }}
           SCOPE_FILES: ${{ steps.scope.outputs.files }}
+          SCOPE_SELECTIONS: ${{ steps.scope.outputs.selections }}
+          SCOPE_PARENT_SELECTIONS: ${{ steps.scope.outputs.parent-selections }}
+          SCOPE_PARENT_FILES: ${{ steps.scope.outputs.parent-files }}
         run: python3 -B tools/ci_release_checks.py
+      # A job is reused only when the pull request's run checked this merge,
+      # GitHub shows the job passed there, and its selection covers this one.
       - id: accepted
         if: github.event_name == 'push'
-        uses: ashtonian/go-ci-actions/acceptance@4404b5c0617f86383381bd07ca8a72eeb11863df # v1.10.0
+        uses: ashtonian/go-ci-actions/acceptance@2ee8735fdee91ff0ee16067a263da6c8a7770841 # v1.13.0
         with:
           mode: verify
+          base: ${{ steps.scope.outputs.base }}
           required: ${{ steps.checks.outputs.required }}
+          selections: ${{ steps.checks.outputs.selections }}
+          parent-selections: ${{ steps.checks.outputs.parent-selections }}
           variables: ${{ toJSON(vars) }}
 
   test:
@@ -168,7 +182,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: ashtonian/go-ci-actions@4404b5c0617f86383381bd07ca8a72eeb11863df # v1.10.0
+      - uses: ashtonian/go-ci-actions@2ee8735fdee91ff0ee16067a263da6c8a7770841 # v1.13.0
         with:
           go-version: '1.27.x'
           cache-dependency-path: "**/go.sum"
@@ -223,7 +237,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: ashtonian/go-ci-actions@4404b5c0617f86383381bd07ca8a72eeb11863df # v1.10.0
+      - uses: ashtonian/go-ci-actions@2ee8735fdee91ff0ee16067a263da6c8a7770841 # v1.13.0
         with:
           go-version: '1.27.x'
           cache-dependency-path: "**/go.sum"
@@ -267,7 +281,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: ashtonian/go-ci-actions@4404b5c0617f86383381bd07ca8a72eeb11863df # v1.10.0
+      - uses: ashtonian/go-ci-actions@2ee8735fdee91ff0ee16067a263da6c8a7770841 # v1.13.0
         with:
           go-version: stable
           cache-dependency-path: "**/go.sum"
@@ -290,7 +304,7 @@ jobs:
           persist-credentials: false
       # Before pnpm: points pnpm at the runner's in-cluster npm cache when it answers,
       # and leaves npmjs otherwise.
-      - uses: ashtonian/go-ci-actions/npm-registry@4404b5c0617f86383381bd07ca8a72eeb11863df # v1.10.0
+      - uses: ashtonian/go-ci-actions/npm-registry@2ee8735fdee91ff0ee16067a263da6c8a7770841 # v1.13.0
       # pnpm next: setup-node's pnpm cache asks pnpm for its store path. The version
       # comes from the SDK's packageManager field.
       - uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
@@ -342,7 +356,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: ashtonian/go-ci-actions@4404b5c0617f86383381bd07ca8a72eeb11863df # v1.10.0
+      - uses: ashtonian/go-ci-actions@2ee8735fdee91ff0ee16067a263da6c8a7770841 # v1.13.0
         with:
           go-version: stable
           cache-dependency-path: "**/go.sum"
@@ -350,7 +364,7 @@ jobs:
         run: >-
           go test -tags=unit -run '^$' -bench . -benchmem -count=3
           -cpuprofile=parse-cpu.prof -memprofile=parse-allocs.prof ./parse/filter | tee parse-benchmarks.txt
-      - uses: ashtonian/go-ci-actions/upload-artifact@4404b5c0617f86383381bd07ca8a72eeb11863df # v1.10.0
+      - uses: ashtonian/go-ci-actions/upload-artifact@2ee8735fdee91ff0ee16067a263da6c8a7770841 # v1.13.0
         with:
           name: parse-benchmarks-${{ github.sha }}
           path: |
@@ -370,7 +384,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: ashtonian/go-ci-actions@4404b5c0617f86383381bd07ca8a72eeb11863df # v1.10.0
+      - uses: ashtonian/go-ci-actions@2ee8735fdee91ff0ee16067a263da6c8a7770841 # v1.13.0
         with:
           go-version: '1.26.x'
           cache-dependency-path: "**/go.sum"
@@ -411,7 +425,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: ashtonian/go-ci-actions@4404b5c0617f86383381bd07ca8a72eeb11863df # v1.10.0
+      - uses: ashtonian/go-ci-actions@2ee8735fdee91ff0ee16067a263da6c8a7770841 # v1.13.0
         with:
           go-version: stable
           cache-dependency-path: "**/go.sum"
@@ -442,7 +456,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: ashtonian/go-ci-actions@4404b5c0617f86383381bd07ca8a72eeb11863df # v1.10.0
+      - uses: ashtonian/go-ci-actions@2ee8735fdee91ff0ee16067a263da6c8a7770841 # v1.13.0
         with:
           go-version: '1.27.0'
           cache-dependency-path: "**/go.sum"
@@ -455,8 +469,9 @@ jobs:
         run: |
           go version | grep -F ' go1.27.0 '
           make lint
+      # With its check, and whenever lint covers every package.
       - name: Cookbook go vet on the declared Go floor, staticcheck on Go 1.27.4
-        if: contains(needs.scope.outputs.checks, 'cookbook-check')
+        if: needs.scope.outputs.lint-cookbook == 'true'
         env:
           GOTOOLCHAIN: local
         run: make lint-cookbook
@@ -464,8 +479,10 @@ jobs:
   accepted:
     name: Preserve complete validation coverage
     needs: [scope, test, test-darwin, parse-postgres, parse-sdk, minimum-go, modules, lint]
-    # The receipt the merge push's acceptance verify reads; skipped jobs are recorded as not passed.
-    if: ${{ github.event_name == 'pull_request' && !cancelled() && needs.scope.result == 'success' && !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled') }}
+    # The receipt names the commit this run checked; the merge push reads which
+    # jobs passed from GitHub. A dispatched run on a bot's pull request branch
+    # checks every job in full and records too.
+    if: ${{ (github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch') && !cancelled() && needs.scope.result == 'success' && !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled') }}
     runs-on: arc-pkg
     timeout-minutes: 5
     permissions:
@@ -475,7 +492,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: ashtonian/go-ci-actions/acceptance@4404b5c0617f86383381bd07ca8a72eeb11863df # v1.10.0
+      - uses: ashtonian/go-ci-actions/acceptance@2ee8735fdee91ff0ee16067a263da6c8a7770841 # v1.13.0
         with:
           mode: record
           results: ${{ toJSON(needs) }}

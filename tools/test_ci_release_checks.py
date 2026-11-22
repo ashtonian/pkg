@@ -121,20 +121,67 @@ class Plan(unittest.TestCase):
             ci.plan(["deploy"], [])
 
     def test_main_reads_the_scope_and_writes_jobs_for_acceptance(self):
+        parse = f"{MODULE_PATH}/parse/filter"
         with tempfile.TemporaryDirectory() as directory:
-            files, output = Path(directory, "files"), Path(directory, "output")
-            files.write_text("parse/filter/sql.go\n")
+            files, parent_files, output = Path(directory, "files"), Path(directory, "parent"), Path(directory, "output")
+            files.write_text("parse/filter/sql.go\nhttpx/client.go\n")
+            parent_files.write_text("parse/filter/sql.go\n")
             env = {"SCOPE_JOBS": '["test","parse-benchmarks","modules"]', "SCOPE_FULL": "false",
-                   "SCOPE_FILES": str(files), "GITHUB_OUTPUT": str(output)}
+                   "SCOPE_FILES": str(files), "GITHUB_OUTPUT": str(output),
+                   "SCOPE_SELECTIONS": json.dumps({"test": [parse, f"{MODULE_PATH}/httpx"], "parse-benchmarks": [parse],
+                                                   "modules": "all"}),
+                   "SCOPE_PARENT_SELECTIONS": json.dumps({"test": [parse], "parse-benchmarks": [parse], "modules": "all"}),
+                   "SCOPE_PARENT_FILES": str(parent_files)}
             with patch.dict(os.environ, env, clear=True), contextlib.redirect_stdout(io.StringIO()):
                 ci.main()
             values = dict(line.split("=", 1) for line in output.read_text().splitlines())
             self.assertEqual(json.loads(values["jobs"]), ["test", "modules", "parse-benchmarks"])
             self.assertEqual(json.loads(values["required"]), ["test", "modules"])
-            self.assertEqual(values["checks"], "parse-release-check")
+            self.assertEqual(values["checks"], "httpx-release-check parse-release-check")
+            self.assertEqual(values["lint-cookbook"], "false")
+            self.assertEqual(json.loads(values["selections"])["modules"], ["httpx-release-check", "parse-release-check"])
+            # The pull request's run, measured from the merge's first parent,
+            # made only parse's release check: it does not cover this push's.
+            self.assertEqual(json.loads(values["parent-selections"]),
+                             {"test": [parse], "modules": ["parse-release-check"], "parse-benchmarks": [parse]})
             for full, listing in (("true", str(files)), ("false", "")):
                 with self.subTest(full=full, listing=listing):
                     self.assertIsNone(ci.changed_paths({"SCOPE_FULL": full, "SCOPE_FILES": listing}))
+
+    def test_without_a_parent_measurement_main_writes_no_parent_selections(self):
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory, "output")
+            env = {"SCOPE_JOBS": '["modules"]', "SCOPE_FULL": "true", "SCOPE_FILES": "",
+                   "SCOPE_SELECTIONS": '{"modules":"all"}', "GITHUB_OUTPUT": str(output)}
+            with patch.dict(os.environ, env, clear=True), contextlib.redirect_stdout(io.StringIO()):
+                ci.main()
+            values = dict(line.split("=", 1) for line in output.read_text().splitlines())
+            self.assertEqual(values["parent-selections"], "")
+            self.assertEqual(json.loads(values["selections"]), {"modules": list(ci.CHECKS), "lint": ["cookbook-check"]})
+
+
+class Selections(unittest.TestCase):
+    """What each job checks, for acceptance to compare a push with its pull request."""
+
+    def test_the_modules_job_checks_its_release_checks(self):
+        jobs, checks, chosen = ci.measure(["test", "modules"], ["gitx/merge.go"], {"test": ["x"], "modules": "all"})
+        self.assertEqual(chosen, {"test": ["x"], "modules": ["gitx-release-check"]})
+
+    def test_lint_holds_the_cookbook_when_it_lints_it(self):
+        _, _, chosen = ci.measure(["modules"], ["config/examples/cookbook/main.go"], {"modules": "all"})
+        self.assertEqual(chosen["lint"], ["cookbook-check"])
+        _, _, chosen = ci.measure(["lint", "modules"], ["config/watch.go"], {"lint": ["c"], "modules": "all"})
+        self.assertEqual(chosen["lint"], ["c", "cookbook-check"])
+        _, _, chosen = ci.measure(["lint"], ["httpx/client.go"], {"lint": ["h"]})
+        self.assertEqual(chosen["lint"], ["h"])
+
+    def test_lint_of_every_package_lints_the_cookbook_too(self):
+        # A go.mod change outside config reaches every package but no cookbook
+        # check: lint's "all" must still hold the cookbook it then lints.
+        _, checks, chosen = ci.measure(["lint", "modules"], ["httpx/go.mod"], {"lint": "all", "modules": "all"})
+        self.assertNotIn("cookbook-check", checks)
+        self.assertTrue(ci.lints_cookbook(checks, {"lint": "all"}))
+        self.assertEqual(chosen["lint"], "all")
 
 
 class Scope(unittest.TestCase):
@@ -148,7 +195,16 @@ class Scope(unittest.TestCase):
                 self.assertIn(f"contains(needs.scope.outputs.jobs, '\"{name}\"')", job(name))
         self.assertIn("contains(needs.scope.outputs.selected, '\"parse-benchmarks\"')", job("parse-benchmarks"))
         self.assertIn("needs: [" + ", ".join(("scope",) + ci.VALIDATION_JOBS) + "]", job("accepted"))
-        self.assertIn("required: ${{ steps.checks.outputs.required }}", job("scope"))
+        scope = job("scope")
+        for line in ("base: ${{ steps.scope.outputs.base }}", "required: ${{ steps.checks.outputs.required }}",
+                     "selections: ${{ steps.checks.outputs.selections }}",
+                     "parent-selections: ${{ steps.checks.outputs.parent-selections }}",
+                     "SCOPE_SELECTIONS: ${{ steps.scope.outputs.selections }}",
+                     "SCOPE_PARENT_SELECTIONS: ${{ steps.scope.outputs.parent-selections }}",
+                     "SCOPE_PARENT_FILES: ${{ steps.scope.outputs.parent-files }}"):
+            with self.subTest(line=line):
+                self.assertIn(line, scope)
+        self.assertIn("if: needs.scope.outputs.lint-cookbook == 'true'", job("lint"))
 
     def test_job_packages_are_the_makefile_modules(self):
         def patterns(modules):

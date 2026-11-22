@@ -85,10 +85,10 @@ paths run all of them. The suites run once each:
   starts goroutines or calls `t.Parallel` carries the tag; `tools/test_ci_parse_race.py`
   fails the change-scope job when one does not. The nightly run races every parse test.
 - Lint vets every reached package and test on Go 1.27.0, the declared floor, so it is also
-  the floor's build check; the cookbook lints there whenever its check runs. Staticcheck runs
-  on Go 1.27.4, the first 1.27 release whose export data keeps generic methods in declaration
-  order; on earlier ones its facts about methods are misattributed (golang/go#82106). httpx
-  and gitx run their tests on Go 1.26, their floor.
+  the floor's build check; the cookbook lints there whenever its check runs or lint covers
+  every package. Staticcheck runs on Go 1.27.4, the first 1.27 release whose export data
+  keeps generic methods in declaration order; on earlier ones its facts about methods are
+  misattributed (golang/go#82106). httpx and gitx run their tests on Go 1.26, their floor.
 - Parse's SQLite integration runs beside PostgreSQL 17 and 18.
 - The SDK runs every check on its Node.js floor, then only its runtime tests and packed
   consumer on the newest LTS.
@@ -102,13 +102,18 @@ paths run all of them. The suites run once each:
   dependencies come from the shared build cache; the job logs a cache summary per go command.
 
 A single merge onto `main` reuses its pull request's passing jobs (go-ci-actions
-`acceptance`). The PR run records a receipt of its merge commit's tree, head, workflow,
-run, repository variables and the jobs that passed. The push uses it only on its first
-attempt, when the merge sits on `before`, `before` itself has a green run and the PR run
-passed within six hours; it then skips each job its own scope selects that the receipt
-shows passed, and runs the rest. Anything else, including a squash or rebase merge, a
-direct push, a rerun, a branch validated only by dispatch, or missing evidence, runs the
-push's scoped jobs. Benchmark artifacts come from pushes only: a push
+`acceptance`). The PR run records a receipt naming the run, the commit it checked out,
+the workflow and a digest of the repository variables; a run dispatched on a bot's pull
+request branch records one for the branch head. The push uses it only on its first
+attempt, when the merge sits on `before`, the push's base has a green run, and the PR
+run's latest attempt passed within seven days on GitHub's merge of the head into `before`
+(a dispatched run: on the head itself) with the push's tree. It then skips each job its
+own scope selects that GitHub's jobs API shows passed in that run and whose PR selection
+covers the push's: `tools/ci_release_checks.py` writes what each job checks, the modules
+job's release checks and the cookbook lint included, for the push and again from the
+merge's first parent, as the PR measured it. The rest run. Anything else, including a
+squash or rebase merge, a direct push, a rerun, a PR run on an older `main`, or missing
+evidence, runs the push's scoped jobs. Benchmark artifacts come from pushes only: a push
 records them when it reaches `parse/filter`, the package they build, reused or not.
 A newer run of the same PR cancels the older one. Runs on `main` all finish: each push is
 measured from the last green run, so a cancelled one would hold the next push's base back,
