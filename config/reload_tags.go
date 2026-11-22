@@ -73,7 +73,7 @@ func checkReloadTags(view *gowalker.Schema) error {
 			}
 		}
 		if other, ok := paths[shape.Type()]; ok && own && other != p.orRoot() {
-			return fmt.Errorf("%w: %s declares reload tags and is shared by %s and %s; put the tags on the owning fields", ErrSchema, typeText(shape.Type()), other, p.orRoot())
+			return fmt.Errorf("%w: %s declares reload tags and is shared by %s and %s; put the tags on the owning fields", ErrSchema, gowalker.TypeText(shape.Type()), other, p.orRoot())
 		}
 		paths[shape.Type()] = p.orRoot()
 		return nil
@@ -94,7 +94,7 @@ func checkReloadTags(view *gowalker.Schema) error {
 		return gowalker.Continue, nil
 	}, gowalker.WithDeclaredView())
 	if err != nil {
-		return fmt.Errorf("%w: checking reload tags of %s: %w", ErrSchema, typeText(view.Type()), err)
+		return fmt.Errorf("%w: checking reload tags of %s: %w", ErrSchema, gowalker.TypeText(view.Type()), err)
 	}
 	return failed
 }

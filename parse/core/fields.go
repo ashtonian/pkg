@@ -300,9 +300,9 @@ func fieldEngine(nameTag string) (*gowalker.Engine, error) {
 func walkError(t reflect.Type, err error) error {
 	if conflict, ok := errors.AsType[*gowalker.NameConflict](err); ok {
 		first, second := promotedName(conflict.First), promotedName(conflict.Second)
-		return fmt.Errorf("%s: fields %s and %s are both named %q at one depth, so encoding/json writes neither; rename one", t, first, second, conflict.Name)
+		return fmt.Errorf("%s: fields %s and %s are both named %q at one depth, so encoding/json writes neither; rename one", gowalker.TypeText(t), first, second, conflict.Name)
 	}
-	return fmt.Errorf("%s: %w", t, err)
+	return fmt.Errorf("%s: %w", gowalker.TypeText(t), err)
 }
 
 // promotedName is a field's Go name behind the embedded fields it is
@@ -339,7 +339,7 @@ func buildStructFields(s *gowalker.Schema, k fieldsKey) (*StructFields, error) {
 		// gowalker names it, as encoding/json writes it; a row reads every
 		// field's value.
 		if d.State == gowalker.Named && !sf.IsExported() {
-			return nil, fmt.Errorf("field %s: %s:%q names the unexported embedded %s, which reflection cannot read; export the type or remove the name", sf.Name, k.name, sf.Tag.Get(k.name), sf.Type)
+			return nil, fmt.Errorf("field %s: %s:%q names the unexported embedded %s, which reflection cannot read; export the type or remove the name", sf.Name, k.name, sf.Tag.Get(k.name), gowalker.TypeText(sf.Type))
 		}
 		tags, err := readTags(sf, k)
 		if err != nil {

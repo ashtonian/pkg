@@ -7,6 +7,8 @@ import (
 	"strings"
 
 	"github.com/go-viper/mapstructure/v2"
+
+	"github.com/ashtonian/pkg/gowalker"
 )
 
 // decodeErrors rewrites a decode failure so it names keys in this package's
@@ -55,9 +57,11 @@ func withhold(root *schemaNode, tree any, e error) (error, bool) {
 		key := p.orRoot()
 		var unconvertible *mapstructure.UnconvertibleTypeError
 		if errors.As(u.Unwrap(), &unconvertible) && u.Unwrap() == error(unconvertible) {
-			if typeTags.MatchString(unconvertible.Error()) {
-				return fmt.Errorf("'%s' expected type '%s', got unconvertible type '%s'", key,
-					typeText(unconvertible.Expected.Type()), typeText(reflect.TypeOf(unconvertible.Value))), true
+			// mapstructure prints both types whole, an unnamed struct's tags
+			// included.
+			expected, given := unconvertible.Expected.Type(), reflect.TypeOf(unconvertible.Value)
+			if gowalker.TypeText(expected) != fmt.Sprint(expected) || gowalker.TypeText(given) != fmt.Sprint(given) {
+				return fmt.Errorf("'%s' expected type '%s', got unconvertible type '%s'", key, gowalker.TypeText(expected), gowalker.TypeText(given)), true
 			}
 			return &decodeFailure{key: key, err: u}, true // names the expected and the given type, never the value
 		}
@@ -67,9 +71,9 @@ func withhold(root *schemaNode, tree any, e error) (error, bool) {
 			c.owner.Tag.Get("sensitive") != "false"
 		switch {
 		case c.sensitive() || named:
-			return fmt.Errorf("'%s' cannot be decoded into %s (the value is sensitive and not shown)", key, typeText(n.typ)), true
+			return fmt.Errorf("'%s' cannot be decoded into %s (the value is sensitive and not shown)", key, gowalker.TypeText(n.typ)), true
 		case mayHoldSensitive(n.typ, map[reflect.Type]bool{}):
-			return fmt.Errorf("'%s' cannot be decoded into %s (it may hold a sensitive value, so the value is not shown)", key, typeText(n.typ)), true
+			return fmt.Errorf("'%s' cannot be decoded into %s (it may hold a sensitive value, so the value is not shown)", key, gowalker.TypeText(n.typ)), true
 		}
 		return &decodeFailure{key: key, err: u}, true
 	case interface{ Unwrap() []error }:

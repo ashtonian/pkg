@@ -455,3 +455,37 @@ func TestSchemaGenerator_RefusesMisspeltTagKeys(t *testing.T) {
 	_, err = core.StructFieldsOf(typ, "json", "db")
 	require.NoError(t, err)
 }
+
+// A walk's error names an unnamed row type without its tags, whose values,
+// such as a description, are the declaration's, not the error's.
+func TestStructFields_ErrorsLeaveTagValuesOut(t *testing.T) {
+	const marker = "SECRET-MARKER"
+	field := func(name, tag string) reflect.StructField {
+		return reflect.StructField{Name: name, Type: reflect.TypeFor[string](), Tag: reflect.StructTag(tag)}
+	}
+	cases := map[string]struct {
+		typ  reflect.Type
+		want string
+	}{
+		"a repeated tag key": {
+			reflect.StructOf([]reflect.StructField{field("A", `json:"a" description:"`+marker+`" db:"a" db:"b"`)}),
+			`struct tag repeats the key "db"`,
+		},
+		"two fields named alike": {
+			reflect.StructOf([]reflect.StructField{field("A", `json:"x" label:"`+marker+`"`), field("B", `json:"x"`)}),
+			`are both named "x"`,
+		},
+		"a misspelt tag key": {
+			reflect.StructOf([]reflect.StructField{field("A", `json:"a" description:"`+marker+`" filter_op:"eq"`)}),
+			`has tag key "filter_op"; did you mean "filter_ops"?`,
+		},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			_, err := core.NewSchemaGenerator().StructFields(tc.typ)
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tc.want)
+			assert.NotContains(t, err.Error(), marker)
+		})
+	}
+}

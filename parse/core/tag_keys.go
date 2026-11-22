@@ -27,7 +27,7 @@ type misspeltTagKey struct {
 }
 
 func (m misspeltTagKey) err() error {
-	return fmt.Errorf("field %s of %s has tag key %q; did you mean %q? Name a key another library reads with core.WithForeignTagKeys", m.field, m.declaring, m.written, m.meant)
+	return fmt.Errorf("field %s of %s has tag key %q; did you mean %q? Name a key another library reads with core.WithForeignTagKeys", m.field, gowalker.TypeText(m.declaring), m.written, m.meant)
 }
 
 // misspeltTagKeys lists the misspelt keys of a walked field's tag. The
