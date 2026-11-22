@@ -44,7 +44,9 @@ paths run all of them. The suites run once each:
 - Ubuntu runs every module's race tests on the newest Go 1.27 patch release; macOS runs
   only the modules with platform code (config, process, state, 1Password).
 - Lint vets every package and test on Go 1.27.0, the declared floor, so it is also the
-  floor's build check. httpx and gitx run their tests on Go 1.26, their floor.
+  floor's build check. Staticcheck runs on Go 1.27.4, the first 1.27 release whose export
+  data keeps generic methods in declaration order; on earlier ones its facts about methods
+  are misattributed (golang/go#82106). httpx and gitx run their tests on Go 1.26, their floor.
 - Parse's SQLite integration runs beside PostgreSQL 17 and 18.
 - The SDK runs every check on its Node.js floor, then only its runtime tests and packed
   consumer on the newest LTS.
@@ -67,8 +69,7 @@ Workspace development requires Go 1.27. The TypeScript SDK's targets also need N
 22.13 or later (its `engines` floor, which CI runs exactly alongside the newest LTS) and pnpm 12, at the version `parse/sdk/ts/package.json` pins in `packageManager`;
 `make test-parse-sdk` refuses any other pnpm release.
 Gowalker is its own module at
-`github.com/ashtonian/pkg/gowalker`, released with `gowalker/v…` tags. Its
-initial release is configured as `v0.1.0`. Public modules contain source, tests,
+`github.com/ashtonian/pkg/gowalker`, released with `gowalker/v…` tags. Public modules contain source, tests,
 licenses and user documentation; project plans, reviews and audits stay outside
 the public repository. Its archive check runs the README quick start and usage programs verbatim.
 

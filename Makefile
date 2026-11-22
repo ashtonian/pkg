@@ -8,7 +8,11 @@ TAGGED_MODULES := $(HTTPX_MODULES) $(PARSE_MODULES) $(NATIVE_MODULES)
 MODULES := $(CORE_MODULES) $(CONFIG_MODULES) $(TAGGED_MODULES)
 # Programs that use the published modules; tested, never published.
 COOKBOOK := config/examples/cookbook
-STATICCHECK := honnef.co/go/tools/cmd/staticcheck@v0.8.2
+# Staticcheck runs on Go 1.27.4 or later whatever toolchain vets. Earlier 1.27
+# releases write export data with a type's generic methods moved last, so its
+# facts for every method declared after a generic one belong to another method
+# (golang/go#82106), and SA4023 can panic on them.
+STATICCHECK := GOTOOLCHAIN=go1.27.4 go run honnef.co/go/tools/cmd/staticcheck@v0.8.2
 # modernc.org/sqlite is C translated to Go. Race and checkptr instrumentation of
 # it made the SQLite-backed parse suites about 30 times slower while checking
 # third-party code, so it builds uninstrumented; this repository's code keeps both.
@@ -101,13 +105,13 @@ parse-sdk-release-check:
 ## modules take both tags in one pass: no file requires either tag's absence.
 lint:
 	@set -e; for m in $(CORE_MODULES) $(CONFIG_MODULES); do \
-		echo "lint $$m"; (cd $$m && go vet ./... && go run $(STATICCHECK) ./...); \
+		echo "lint $$m"; (cd $$m && go vet ./... && $(STATICCHECK) ./...); \
 	done
 	@set -e; for m in $(TAGGED_MODULES); do \
 		echo "lint $$m"; \
-		(cd $$m && go vet -tags=unit,integration ./... && go run $(STATICCHECK) -tags=unit,integration ./...); \
+		(cd $$m && go vet -tags=unit,integration ./... && $(STATICCHECK) -tags=unit,integration ./...); \
 	done
-	@echo "lint $(COOKBOOK)"; cd $(COOKBOOK) && GOWORK=off go vet ./... && GOWORK=off go run $(STATICCHECK) ./...
+	@echo "lint $(COOKBOOK)"; cd $(COOKBOOK) && GOWORK=off go vet ./... && GOWORK=off $(STATICCHECK) ./...
 
 ## release-check: each published module as a consumer gets it — outside the
 ## workspace, its dependencies at the versions its go.mod requires. The test
@@ -151,7 +155,7 @@ parse-sdk-registry-check:
 
 ## tool-check: release tooling is a development module, never published
 tool-check:
-	cd tools/modarchive && GOWORK=off go mod tidy -diff && GOWORK=off go vet ./... && GOWORK=off go test $(RACE) -count=1 ./... && GOWORK=off go run $(STATICCHECK) ./...
+	cd tools/modarchive && GOWORK=off go mod tidy -diff && GOWORK=off go vet ./... && GOWORK=off go test $(RACE) -count=1 ./... && GOWORK=off $(STATICCHECK) ./...
 
 ## release-please-check: the release workflow's runner: first-parent notes and their release-please wiring
 release-please-check:

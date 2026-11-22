@@ -243,3 +243,45 @@ func BenchmarkTypeCacheHit(b *testing.B) {
 		}
 	}
 }
+
+func BenchmarkLocate(b *testing.B) {
+	s := schemaFor[accessRoot](b, engine(b))
+	a := accessor(b, s, "Child.N")
+	b.Run("through_pointer", func(b *testing.B) {
+		row := accessRoot{Child: &child{}}
+		root := reflect.ValueOf(&row).Elem()
+		b.ReportAllocs()
+		for b.Loop() {
+			if _, err := a.Locate(root); err != nil {
+				b.Fatal(err)
+			}
+		}
+	})
+	b.Run("allocate_pointer", func(b *testing.B) {
+		row := accessRoot{}
+		root := reflect.ValueOf(&row).Elem()
+		option := gowalker.WithPointerAllocation()
+		b.ReportAllocs()
+		for b.Loop() {
+			row.Child = nil
+			if _, err := a.Locate(root, option); err != nil {
+				b.Fatal(err)
+			}
+		}
+	})
+	// The same location by hand, as a library walking an index route does.
+	b.Run("reflect_baseline", func(b *testing.B) {
+		row := accessRoot{Child: &child{}}
+		root := reflect.ValueOf(&row).Elem()
+		b.ReportAllocs()
+		for b.Loop() {
+			v := root.Field(0)
+			if v.IsNil() {
+				b.Fatal("nil")
+			}
+			if !v.Elem().Field(0).CanSet() {
+				b.Fatal("unsettable")
+			}
+		}
+	})
+}

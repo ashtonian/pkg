@@ -2,6 +2,7 @@ package gowalker_test
 
 import (
 	"encoding"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"reflect"
@@ -504,6 +505,30 @@ func ExampleWithTaggedFields_conventions() {
 	// kind [1]
 }
 
+func ExampleWithJSONFields() {
+	type Base struct {
+		ID int `json:"id"`
+	}
+	type Event struct {
+		Base
+		Kind   string `json:"kind,omitempty"`
+		Quoted string `json:"'q'"` // no leading identifier: keeps its Go name
+		Secret string `json:"-"`
+	}
+	engine := gowalker.MustNew(gowalker.WithJSONFields("json"))
+	schema, err := engine.Compile[Event]()
+	if err != nil {
+		panic(err)
+	}
+	for _, field := range schema.Root().Fields() {
+		fmt.Println(field.Name(), field.Index())
+	}
+	// Output:
+	// id [0 0]
+	// kind [1]
+	// Quoted [2]
+}
+
 func ExampleNewTypeCache() {
 	type Row struct {
 		ID    int    `db:"id,pk"`
@@ -563,4 +588,60 @@ func ExampleWithAtomicImplementers() {
 	started, _ := schema.Root().Lookup("Started")
 	fmt.Println(started.Shape().Atomic())
 	// Output: true
+}
+
+func ExampleShape_Declarations() {
+	type User struct {
+		ID       int    `json:"id" db:"id"`
+		Password string `json:"-" db:"password_hash"`
+		//lint:ignore U1000 the example lists a private field
+		session string
+	}
+	engine := gowalker.MustNew(gowalker.WithJSONFields("json", gowalker.KeepHidden()))
+	schema, err := engine.Compile[User]()
+	if err != nil {
+		panic(err)
+	}
+	// The columns include the field the json view hides.
+	for _, d := range schema.Root().Declarations() {
+		column, ok := d.GoField.Tag.Lookup("db")
+		if d.State == gowalker.Skipped || !ok {
+			fmt.Println(d.GoField.Name, d.State)
+			continue
+		}
+		fmt.Printf("%s %v json=%q db=%q\n", d.GoField.Name, d.State, d.Field.Name(), column)
+	}
+	// Output:
+	// ID Named json="id" db="id"
+	// Password Unnamed json="" db="password_hash"
+	// session Skipped
+}
+
+func ExampleAccessor_Locate() {
+	type Audit struct {
+		Count int `json:"count"`
+	}
+	type Row struct {
+		*Audit
+		Name string `json:"name"`
+	}
+	schema, err := gowalker.MustNew(gowalker.WithJSONFields("json")).Compile[Row]()
+	if err != nil {
+		panic(err)
+	}
+	count, err := schema.AccessName("count")
+	if err != nil {
+		panic(err)
+	}
+	var row Row
+	// The nil *Audit is allocated and attached; the decoder writes the field.
+	location, err := count.Locate(reflect.ValueOf(&row).Elem(), gowalker.WithPointerAllocation())
+	if err != nil {
+		panic(err)
+	}
+	if err := json.Unmarshal([]byte("42"), location.Addr().Interface()); err != nil {
+		panic(err)
+	}
+	fmt.Println(row.Count)
+	// Output: 42
 }

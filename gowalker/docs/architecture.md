@@ -57,15 +57,21 @@ the engine's leaf rules and leaves an embedded `time.Time` whole. A resolver can
 rename fields, add aliases, skip fields or inline a struct.
 Inlining gives a descendant a shorter logical name while retaining the complete
 Go field-index route needed to reach it. `DeclaredView` also retains the inline
-owner, so a consumer can inspect tags on that owner.
+owner, so a consumer can inspect tags on that owner. Expansion also records, per
+struct, every declaration it meets with the state the view gave it (named,
+unnamed, inline owner, shadowed, tied, skipped); `Declarations` returns that
+record, so a library never re-walks the reflect type to find fields the view
+left out.
 
 Names and aliases must identify one field. Compilation rejects collisions using
 the same matching rule as lookup: exact matching, or Unicode case folding when
 enabled. Under `ResolveByDepth`, expansion records every claim first and then
 keeps, per canonical name, the field `encoding/json` would serialize, by depth
 and then by `FieldRule.Explicit`, so a shallower field can shadow one promoted
-from an embedded struct; only a tie fails, and the kept fields' aliases must be
-unique. Ordinary recursive fields are valid; recursive inline expansion is an
+from an embedded struct; only a tie fails, or with `DropTies` loses every claim
+as `encoding/json` drops it, and the kept fields' aliases must be unique.
+`WithJSONFields` is `WithTaggedFields` with `encoding/json`'s tag-name grammar
+and conventions fixed, and implies `ResolveByDepth`. Ordinary recursive fields are valid; recursive inline expansion is an
 error because it cannot produce a finite flattened field list.
 
 A **leaf** is a value that named paths and walkers may select but do not descend
@@ -92,6 +98,15 @@ routes and checks map-key types and fixed-array bounds. Map entries need not
 exist yet. Below an interface, the concrete type is only known when an actual
 value is supplied; those remaining checks happen during execution.
 
+A path of struct fields reached through pointers alone, with no interface, map
+or index, has a type fixed at every step. Resolution compiles it to a static
+route: per field, the pointers to follow and the field index. Reads, writes and
+`Locate` run that route without the general path's per-call work (shape
+tracking, pointer-cycle detection, writeback slots), since a finite chain of
+pointer types cannot revisit a pointer and a settable root keeps every location
+on it addressable. The results, states and errors are the general path's; a
+differential test holds the two to that.
+
 Reads follow intermediate pointers and interfaces, check nils and bounds, and
 return a `Value`. A reached terminal keeps its declared type: a `*Row` field
 returns a pointer, and an `any` field returns an interface location. An explicit
@@ -111,6 +126,10 @@ When a path traverses an existing pointer, map or slice, writes update its share
 storage in place. Assigning a terminal pointer, map or slice can replace that
 reference, as ordinary Go assignment does. This guarantee covers one `Set` call. User callback
 side effects and concurrent modifications are outside that guarantee.
+
+`Locate` runs the same preparation and attaches the prepared allocations
+without writing a terminal. It refuses a location inside a writeback copy, since
+nothing would attach a write made through it after the call returns.
 
 ## Walking
 
@@ -141,13 +160,16 @@ published under a lock; concurrent cold requests can build independently before
 converging on the cached result. Recursive compilation never waits on an
 unfinished cache entry. At capacity, existing entries remain cached and new
 roots compile without being retained. The limit counts roots, not bytes.
+`WithUnboundedCache` removes it.
 
 A `TypeCache` keeps your build function's result, or error, per exact type,
-bounded by its engine's capacity. Like the engine, it publishes completed results
+bounded by its engine's capacity, or unbounded with the engine. Both count the
+results they could not keep (`CacheStats`). Like the engine, it publishes completed results
 under a lock and never waits on an unfinished entry, so a build function may
 request other types.
 
-`Schema.AccessField` caches accessors for its visible root fields. `Resolve`
+`Schema.AccessField` caches accessors for its root's visible and unnamed
+fields. `Resolve`
 and `ResolveText` return uncached accessors; callers retain those for reuse.
 Engine caches do not retain caller instances or arbitrary map keys. An accessor
 itself retains keys supplied in its path for as long as the caller keeps it.
@@ -166,10 +188,11 @@ value. Callers synchronize shared values; the engine does not lock or copy them.
 | Files | Responsibility |
 |---|---|
 | `engine.go`, `shape.go` | Rules, the default engine, caches, raw type graphs and visible fields |
-| `tags.go` | Tag parsing and the `WithTaggedFields` naming conventions |
+| `tags.go` | Tag parsing and the `WithTaggedFields` and `WithJSONFields` naming conventions |
 | `cache.go` | `TypeCache`, per-type consumer metadata |
 | `schema.go`, `access.go` | Accessors, root binding and reads |
-| `write.go`, `assign.go` | Write preparation, allocation and checked assignment |
+| `write.go`, `assign.go` | Write preparation, allocation, `Locate` and checked assignment |
+| `route.go` | Static routes for paths of struct fields and pointers |
 | `walk*.go` | Type/value traversal, ordering and visitor controls |
 | `errors.go`, `path/path.go` | Structured errors and typed paths |
 
