@@ -142,13 +142,13 @@ A relation field is virtual (`db:"-"`): it is not a column but a way to filter r
 
 ```text
 {"collections":"0190f3c2-…-000000000001"}                  products in a collection
-postgres WHERE EXISTS (SELECT 1 FROM product_collections rel__ WHERE rel__.product_id = products.id AND rel__.collection_id = $1)
+postgres WHERE EXISTS (SELECT 1 FROM product_collections WHERE product_collections.product_id = products.id AND product_collections.collection_id = $1)
 
 {"collections":{"$nin":["0190f3c2-…-000000000001"]}}       products not in it
-postgres WHERE NOT EXISTS (SELECT 1 FROM product_collections rel__ WHERE rel__.product_id = products.id AND rel__.collection_id = ANY($1))
+postgres WHERE NOT EXISTS (SELECT 1 FROM product_collections WHERE product_collections.product_id = products.id AND product_collections.collection_id = ANY($1))
 
 {"reviews":{"$null":false}}                                products with at least one review
-postgres WHERE EXISTS (SELECT 1 FROM reviews rel__ WHERE rel__.product_id = products.id)
+postgres WHERE EXISTS (SELECT 1 FROM reviews WHERE reviews.product_id = products.id)
 
 {"supplier_id":"0190f3c2-…-0000000000aa"}                  a supplier's products
 postgres WHERE products.supplier_id = $1

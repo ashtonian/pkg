@@ -82,7 +82,7 @@ func TestSubqueryRelation_AppendsTenantPredicate(t *testing.T) {
 	if err != nil {
 		t.Fatalf("build: %v", err)
 	}
-	if !strings.Contains(res.Where, "rel__.tenant_id =") {
+	if !strings.Contains(res.Where, "widget_tags.tenant_id =") {
 		t.Errorf("expected tenant predicate inside subquery, got: %q", res.Where)
 	}
 	hasTenantArg := false

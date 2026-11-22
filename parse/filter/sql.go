@@ -575,10 +575,10 @@ func (b *SQLBuilder) buildCondition(s *buildState, node *FilterNode) (string, er
 			}
 			node = n
 		}
-		if node.Op == OpSome || node.Op == OpNone {
-			return b.buildRelated(s, node)
+		if node.Field.Related == nil {
+			return b.buildPairTable(s, node)
 		}
-		return b.buildRelationCondition(s, node)
+		return b.buildRelated(s, node)
 	}
 	bind := s.binder(b.dialect)
 	if tv, ok := b.dialect.(TwoValuedDialect); ok && !s.negated {
@@ -593,36 +593,28 @@ func (b *SQLBuilder) buildCondition(s *buildState, node *FilterNode) (string, er
 	return b.dialect.Condition(node.Field, node.Op, node.Value, bind)
 }
 
-// relationAlias names the junction inside a relation predicate's
-// subquery; each EXISTS has its own scope, so the alias never collides with
-// a sibling predicate.
-const relationAlias = "rel__"
-
-// buildRelationCondition compiles a relation predicate as a correlated
-// EXISTS / NOT EXISTS against the junction, so boolean
-// composition (AND / OR / NOT) keeps set semantics and no join multiplies
-// owner rows:
+// buildPairTable compiles a key comparison on a pair table the relation tag
+// declares as the relation predicate it is, through buildRelated: the pair
+// table is the target, its one typed key the target column.
 //
-//	$eq / $in / other ops  EXISTS     (… AND rel__.<tgt> <op> …)
-//	$ne / $nin             NOT EXISTS (… AND rel__.<tgt> = / IN …)
+//	$eq / $in / other ops  EXISTS     (… AND <tgt> <op> …)
+//	$ne / $nin             NOT EXISTS (… AND <tgt> = / IN …)
 //	$null: true            NOT EXISTS (…)   — no related rows
-//	$null: false, $exists  EXISTS     (…)   — at least one related row
+//	$null: false           EXISTS     (…)   — at least one related row
 //
-// The old subquery form negated $nin twice and the join form bound an
-// array to a scalar placeholder, repeated unaliased joins and multiplied
-// rows.
-func (b *SQLBuilder) buildRelationCondition(s *buildState, node *FilterNode) (string, error) {
-	rel := node.Field.Relation
-	pk := rel.OwnerKey()
-	bind := s.binder(b.dialect)
-	target := &FieldSchema{ExternalName: node.Field.ExternalName, SQLExpr: relationAlias + "." + rel.TargetColumn, DataType: node.Field.DataType}
-
-	negate := false
-	cond := ""
+// An empty `$in` matches no owner and an empty `$nin` every owner, without
+// a subquery.
+func (b *SQLBuilder) buildPairTable(s *buildState, node *FilterNode) (string, error) {
+	f := node.Field
+	rel := f.Relation
+	op, cond := OpSome, node.Op
 	switch node.Op {
 	case OpNull:
-		negate = true
+		op, cond = OpNone, ""
 	case OpNotNull:
+		cond = ""
+	case OpNe:
+		op, cond = OpNone, OpEq
 	case OpIn, OpNin:
 		arr, ok := core.AnySlice(node.Value)
 		if !ok {
@@ -634,47 +626,21 @@ func (b *SQLBuilder) buildRelationCondition(s *buildState, node *FilterNode) (st
 			}
 			return "1=1", nil
 		}
-		sql, err := b.dialect.Condition(target, OpIn, arr, bind)
-		if err != nil {
-			return "", fmt.Errorf("building relation condition: %w", err)
+		if node.Op == OpNin {
+			op, cond = OpNone, OpIn
 		}
-		cond = sql
-		negate = node.Op == OpNin
-	default:
-		op := node.Op
-		if op == OpNe {
-			op, negate = OpEq, true
-		}
-		sql, err := b.dialect.Condition(target, op, node.Value, bind)
-		if err != nil {
-			return "", fmt.Errorf("building relation condition: %w", err)
-		}
-		cond = sql
 	}
-
-	var sb strings.Builder
-	if negate {
-		sb.WriteString("NOT ")
+	key := &FieldSchema{
+		ExternalName: f.ExternalName, SQLExpr: rel.JoinTable + "." + rel.TargetColumn, Column: rel.TargetColumn,
+		DataType: f.DataType, NumberKind: f.NumberKind,
 	}
-	sb.WriteString("EXISTS (SELECT 1 FROM ")
-	sb.WriteString(rel.JoinTable)
-	sb.WriteByte(' ')
-	sb.WriteString(relationAlias)
-	sb.WriteString(" WHERE ")
-	sb.WriteString(relationAlias + "." + rel.SourceColumn + " = " + b.schema.Name + "." + pk)
+	pair := *f
+	pair.Related = &ResourceSchema{Name: rel.JoinTable, PrimaryKey: rel.TargetColumn, SystemFields: map[string]*FieldSchema{rel.TargetColumn: key}}
+	lowered := &FilterNode{Field: &pair, Op: op}
 	if cond != "" {
-		sb.WriteString(" AND ")
-		sb.WriteString(cond)
+		lowered.Children = []*FilterNode{{Field: key, Op: cond, Value: node.Value}}
 	}
-	// A pair table compared by key declares no types: its tenant column
-	// is taken to hold the owner's.
-	scope, err := b.scope.clause(rel.JoinTable, rel.TenantColumn, relationAlias, "", bind)
-	if err != nil {
-		return "", err
-	}
-	sb.WriteString(scope)
-	sb.WriteByte(')')
-	return sb.String(), nil
+	return b.buildRelated(s, lowered)
 }
 
 // nullableDateValue is the SQL boundary: typed nil pointers are SQL NULL,

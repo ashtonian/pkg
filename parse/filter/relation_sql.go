@@ -28,7 +28,9 @@ func WithRelatedPolicies(policies map[string]*PolicyConstraints) SQLBuilderOptio
 // or target rows correlated to the owner, held to the tenant (or the
 // target's policy) and to live rows, satisfying the node's child — the
 // target's own filter — on one row. Each depth has its own aliases, so a
-// relation back to the owner's table does not shadow it.
+// relation back to the owner's table does not shadow it. Every relation
+// subquery is built here, a pair table the relation tag declares included
+// (buildPairTable).
 func (b *SQLBuilder) buildRelated(s *buildState, node *FilterNode) (string, error) {
 	rel, target := node.Field.Relation, node.Field.Related
 	if target == nil {

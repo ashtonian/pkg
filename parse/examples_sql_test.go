@@ -190,12 +190,12 @@ func Example_relations() {
 	show(tp, filter.ListFilter(`{"reviews":{"$null":false}}`))
 	show(tp, filter.ListFilter(`{"supplier_id":"0190f3c2-0000-7000-8000-0000000000aa"}`))
 	// Output:
-	// postgres WHERE EXISTS (SELECT 1 FROM product_collections rel__ WHERE rel__.product_id = products.id AND rel__.collection_id = $1) ORDER BY products.created_at DESC, products.id DESC [0190f3c2-0000-7000-8000-000000000001]
-	// sqlite   WHERE EXISTS (SELECT 1 FROM product_collections rel__ WHERE rel__.product_id = products.id AND rel__.collection_id = ?1) ORDER BY products.created_at DESC, products.id DESC [0190f3c2-0000-7000-8000-000000000001]
-	// postgres WHERE NOT EXISTS (SELECT 1 FROM product_collections rel__ WHERE rel__.product_id = products.id AND rel__.collection_id = ANY($1)) ORDER BY products.created_at DESC, products.id DESC [[0190f3c2-0000-7000-8000-000000000001]]
-	// sqlite   WHERE NOT EXISTS (SELECT 1 FROM product_collections rel__ WHERE rel__.product_id = products.id AND rel__.collection_id IN (SELECT value AS v FROM json_each(?1))) ORDER BY products.created_at DESC, products.id DESC [["0190f3c2-0000-7000-8000-000000000001"]]
-	// postgres WHERE EXISTS (SELECT 1 FROM reviews rel__ WHERE rel__.product_id = products.id) ORDER BY products.created_at DESC, products.id DESC []
-	// sqlite   WHERE EXISTS (SELECT 1 FROM reviews rel__ WHERE rel__.product_id = products.id) ORDER BY products.created_at DESC, products.id DESC []
+	// postgres WHERE EXISTS (SELECT 1 FROM product_collections WHERE product_collections.product_id = products.id AND product_collections.collection_id = $1) ORDER BY products.created_at DESC, products.id DESC [0190f3c2-0000-7000-8000-000000000001]
+	// sqlite   WHERE EXISTS (SELECT 1 FROM product_collections WHERE product_collections.product_id = products.id AND product_collections.collection_id = ?1) ORDER BY products.created_at DESC, products.id DESC [0190f3c2-0000-7000-8000-000000000001]
+	// postgres WHERE NOT EXISTS (SELECT 1 FROM product_collections WHERE product_collections.product_id = products.id AND product_collections.collection_id = ANY($1)) ORDER BY products.created_at DESC, products.id DESC [[0190f3c2-0000-7000-8000-000000000001]]
+	// sqlite   WHERE NOT EXISTS (SELECT 1 FROM product_collections WHERE product_collections.product_id = products.id AND product_collections.collection_id IN (SELECT value AS v FROM json_each(?1))) ORDER BY products.created_at DESC, products.id DESC [["0190f3c2-0000-7000-8000-000000000001"]]
+	// postgres WHERE EXISTS (SELECT 1 FROM reviews WHERE reviews.product_id = products.id) ORDER BY products.created_at DESC, products.id DESC []
+	// sqlite   WHERE EXISTS (SELECT 1 FROM reviews WHERE reviews.product_id = products.id) ORDER BY products.created_at DESC, products.id DESC []
 	// postgres WHERE products.supplier_id = $1 ORDER BY products.created_at DESC, products.id DESC [0190f3c2-0000-7000-8000-0000000000aa]
 	// sqlite   WHERE products.supplier_id = ?1 ORDER BY products.created_at DESC, products.id DESC [0190f3c2-0000-7000-8000-0000000000aa]
 }

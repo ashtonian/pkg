@@ -66,13 +66,13 @@ func TestRowTenant_ComparesEachRelationWithTheRow(t *testing.T) {
 		wantNotes, wantPairs string
 	}{
 		{"one type", core.FieldTypeString, core.FieldTypeString,
-			"notes.tenant_id = widgets.tenant_id", "rel__.tenant_id = widgets.tenant_id"},
+			"notes.tenant_id = widgets.tenant_id", "widget_tags.tenant_id = widgets.tenant_id"},
 		{"a uuid owner and a string related column compare by the uuid's text", core.FieldTypeUUID, core.FieldTypeString,
-			"notes.tenant_id = CAST(widgets.tenant_id AS TEXT)", "rel__.tenant_id = widgets.tenant_id"},
+			"notes.tenant_id = CAST(widgets.tenant_id AS TEXT)", "widget_tags.tenant_id = widgets.tenant_id"},
 		{"a string owner and a uuid related column compare by the uuid's text", core.FieldTypeString, core.FieldTypeUUID,
-			"CAST(notes.tenant_id AS TEXT) = widgets.tenant_id", "rel__.tenant_id = widgets.tenant_id"},
+			"CAST(notes.tenant_id AS TEXT) = widgets.tenant_id", "widget_tags.tenant_id = widgets.tenant_id"},
 		{"integers of any width compare as they are", core.FieldTypeInt, core.FieldTypeInt,
-			"notes.tenant_id = widgets.tenant_id", "rel__.tenant_id = widgets.tenant_id"},
+			"notes.tenant_id = widgets.tenant_id", "widget_tags.tenant_id = widgets.tenant_id"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
