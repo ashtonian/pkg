@@ -38,4 +38,5 @@ for struct discovery, naming collisions, inline field routes and cached field
 access. Config retains its own decoding, redaction, validation and source
 precedence rules. Structural inspection and load-time tag validation are
 separate: diagnostics can print live values without decoding their examples.
-Neither metadata cache retains configuration values.
+Both metadata caches keep every type they see for the life of the process,
+and neither retains configuration values.

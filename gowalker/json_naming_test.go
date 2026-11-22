@@ -104,6 +104,25 @@ type jsonDashOptions struct {
 	Options int `json:"-,omitempty"`
 }
 
+// jsonSelf embeds itself.
+type jsonSelf struct {
+	*jsonSelf
+	Name string `json:"name"`
+}
+
+// jsonRecA and jsonRecB embed each other; jsonRecB.A is shadowed in
+// jsonRecA.
+type jsonRecA struct {
+	*jsonRecB
+	A int `json:"a"`
+}
+
+type jsonRecB struct {
+	*jsonRecA
+	B int `json:"b"`
+	A int `json:"a"`
+}
+
 // The fields are the members json.Marshal writes, and each reads the value
 // written under its name.
 func TestJSONNaming_TheMembersJSONWrites(t *testing.T) {
@@ -117,6 +136,8 @@ func TestJSONNaming_TheMembersJSONWrites(t *testing.T) {
 		jsonTaggedWins{jsonUntagged{"untagged"}, jsonTaggedKind{"tagged"}},
 		jsonDash{Comma: 1, Excluded: 3, Untouched: 4},
 		jsonDashOptions{Options: 2},
+		jsonSelf{&jsonSelf{Name: "inner"}, "outer"},
+		jsonRecA{&jsonRecB{B: 2, A: 9}, 1},
 	} {
 		t.Run(fmt.Sprintf("%T", value), func(t *testing.T) {
 			data, err := json.Marshal(value)
@@ -205,6 +226,37 @@ func TestJSONNaming_TiesFail(t *testing.T) {
 		if conflict.Error() != want {
 			t.Errorf("%s: %q, want %q", tc.typ, conflict.Error(), want)
 		}
+	}
+}
+
+// Under depth resolution a struct inlined inside itself contributes no
+// fields the second time; its owner is still declared. Without it, the
+// repeat's fields would claim their names again, which compilation refuses,
+// naming the field.
+func TestJSONNaming_InlinedInsideItself(t *testing.T) {
+	var got []string
+	for _, d := range schemaFor[jsonRecA](t, jsonNaming(t)).Root().Declarations() {
+		got = append(got, fmt.Sprintf("%s %s.%s", d.State, d.DeclaringType.Name(), d.GoField.Name))
+	}
+	want := []string{
+		"InlineOwner jsonRecA.jsonRecB",
+		"InlineOwner jsonRecB.jsonRecA",
+		"Named jsonRecB.B",
+		"Shadowed jsonRecB.A",
+		"Named jsonRecA.A",
+	}
+	if !slices.Equal(got, want) {
+		t.Errorf("declarations\n%s\nwant\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
+	}
+
+	strict := engine(t, gowalker.WithTaggedFields("json", gowalker.PromoteEmbedded()))
+	_, err := strict.Compile[jsonSelf]()
+	if !errors.Is(err, gowalker.ErrSchema) || !strings.Contains(err.Error(), "field jsonSelf: gowalker_test.jsonSelf is inlined inside itself") {
+		t.Errorf("strict naming: %v", err)
+	}
+	byDepth := engine(t, gowalker.WithTaggedFields("json", gowalker.PromoteEmbedded()), gowalker.ResolveByDepth())
+	if got := fieldNames(t, byDepth, reflect.TypeFor[jsonSelf]()); !slices.Equal(got, []string{"name"}) {
+		t.Errorf("ResolveByDepth names %q", got)
 	}
 }
 

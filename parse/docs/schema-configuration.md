@@ -35,7 +35,7 @@ Construct one `parse.Resource[T]` for each resource at startup. Schema generatio
 
 ### Fields and embedding
 
-Every schema, the resource's columns, its cursors and its patch paths come from one walk of the type (`core.StructFields`), so they always agree. The walk sees the fields encoding/json writes. A struct embedded without a field-name tag has its fields promoted, through any depth, through pointers and through unexported struct types, so a server type can embed its wire type and keep every filter, sort and patch field. Fields `json:"-"` hides stay in the walk for columns and server-only paths.
+Every schema, the resource's columns, its cursors and its patch paths come from one walk of the type (`core.StructFields`), so they always agree. The walk sees the fields encoding/json writes. A struct embedded without a field-name tag has its fields promoted, through any depth, through pointers and through unexported struct types, so a server type can embed its wire type and keep every filter, sort and patch field. Fields `json:"-"` hides stay in the walk for columns and server-only paths, at any depth: having no name, a hidden field is never shadowed.
 
 A name two fields claim goes to the field encoding/json writes: the shallower one, and at one depth the one whose tag names it. So a server type can shadow a field of the wire type it embeds, with another column or a narrower type, and requests reach the outer field.
 
@@ -44,7 +44,7 @@ Schema generation refuses the shapes encoding/json resolves silently:
 - two promoted fields with one name at the same depth, both tagged or both untagged (encoding/json drops both);
 - an embedded struct hidden whole by `json:"-"` (hide its fields one by one);
 - an unexported embedded struct named by the field-name tag;
-- two fields with one column.
+- two fields with one column, hidden fields included, at one depth or two.
 
 A stored document's members are named as encoding/json names them, by the `json` tag alone (`core.JSONFieldsOf`): the document type's other tags are not read, a struct it embeds with `json:"-"` holds nothing, and a name two of its fields claim at one depth belongs to neither. Reading a row checks each JSON column's member names against its Go type in one pass (`core.ValidateJSONKeyRepresentation`): a struct member spelled in another case, a map key that does not read back as written (`"01"` for an integer key, `"0:0:0:0:0:0:0:1"` for a `netip.Addr`) and a member given twice are refused. Merge patches name a document's members the same way, so a document type held in a map, a pointer, a slice or an array works wherever it sits. A document column's own struct type and element type are also walked with the rules above when the resource is built, for the member capabilities their `parse` tags grant.
 

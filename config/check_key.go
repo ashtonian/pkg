@@ -77,7 +77,7 @@ type keyChecker struct {
 }
 
 func newKeyChecker(t reflect.Type, o *options) (*keyChecker, error) {
-	root, err := rootSchema(t)
+	root, err := loadSchema(t, o)
 	if err != nil {
 		return nil, err
 	}

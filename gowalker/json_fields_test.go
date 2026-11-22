@@ -157,16 +157,62 @@ type jsonUnexportedNamed struct {
 	Note      string
 }
 
-// encoding/json writes an unexported embedded struct a tag names, which
-// safe reflection cannot read: compilation refuses it rather than leave a
-// member out.
-func TestWithJSONFields_RefusesAnUnexportedNamedEmbed(t *testing.T) {
-	_, err := engine(t, gowalker.WithJSONFields("json")).Compile[jsonUnexportedNamed]()
-	if !errors.Is(err, gowalker.ErrSchema) || !strings.Contains(err.Error(), "jsonInner") {
-		t.Fatalf("compiled: %v", err)
+type jsonUnexportedNamedPointer struct {
+	*jsonInner `json:"inner"`
+}
+
+// encoding/json writes an unexported embedded struct a tag names as a
+// member, so it is a field. Reflection cannot read or write its value whole;
+// its exported fields read and write through it.
+func TestWithJSONFields_NamesAnUnexportedNamedEmbed(t *testing.T) {
+	leaves := engine(t, gowalker.WithJSONFields("json"))
+	got := fieldNames(t, leaves, reflect.TypeFor[jsonUnexportedNamed]())
+	if want := jsonMembers(t, jsonUnexportedNamed{}); !slices.Equal(got, want) {
+		t.Fatalf("names %q; encoding/json writes %q", got, want)
 	}
-	if got := jsonMembers(t, jsonUnexportedNamed{}); !slices.Contains(got, "inner") {
-		t.Fatalf("encoding/json no longer writes the embed: %q", got)
+	inner, _ := schemaFor[jsonUnexportedNamed](t, leaves).Root().Lookup("inner")
+	if inner == nil || inner.GoField().IsExported() {
+		t.Fatalf("inner is %v", inner)
+	}
+
+	schema := schemaFor[jsonUnexportedNamed](t, engine(t, gowalker.WithJSONFields("json", gowalker.NestedFields())))
+	whole, err := schema.AccessName("inner")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := whole.Get(jsonUnexportedNamed{}); !errors.Is(err, gowalker.ErrAccess) {
+		t.Errorf("read the embed whole: %v", err)
+	}
+	if err := whole.Set(&jsonUnexportedNamed{}, jsonInner{}); !errors.Is(err, gowalker.ErrAccess) {
+		t.Errorf("wrote the embed whole: %v", err)
+	}
+	err = schema.WalkValue(jsonUnexportedNamed{}, func(gowalker.ValueVisit) (gowalker.Control, error) { return gowalker.Continue, nil })
+	if !errors.Is(err, gowalker.ErrAccess) {
+		t.Errorf("walked into the embed: %v", err)
+	}
+	id, err := schema.ResolveText("inner.id")
+	if err != nil {
+		t.Fatal(err)
+	}
+	v := jsonUnexportedNamed{jsonInner: jsonInner{ID: 3}}
+	if got, err := id.Get(v); err != nil || got.Interface() != 3 {
+		t.Errorf("inner.id reads %v, %v", got.Interface(), err)
+	}
+	if err := id.Set(&v, 7); err != nil || v.ID != 7 {
+		t.Errorf("inner.id wrote %d, %v", v.ID, err)
+	}
+
+	pointers := schemaFor[jsonUnexportedNamedPointer](t, engine(t, gowalker.WithJSONFields("json", gowalker.NestedFields())))
+	id, err = pointers.ResolveText("inner.id")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := id.Set(&jsonUnexportedNamedPointer{}, 7, gowalker.WithPointerAllocation()); !errors.Is(err, gowalker.ErrAccess) {
+		t.Errorf("allocated an unexported embedded pointer: %v", err)
+	}
+	p := jsonUnexportedNamedPointer{&jsonInner{}}
+	if err := id.Set(&p, 7); err != nil || p.ID != 7 {
+		t.Errorf("inner.id wrote %d through the pointer, %v", p.ID, err)
 	}
 }
 

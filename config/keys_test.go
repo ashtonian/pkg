@@ -152,6 +152,40 @@ func TestStrictKeys_AcceptsEveryDecodableShape(t *testing.T) {
 	assert.Equal(t, true, got.Extra["unknown"])
 }
 
+// squashedRest holds a remain map inside an unexported squashed struct,
+// which decoding fills as it fills any squashed struct.
+type squashedRest struct {
+	Rest map[string]any `koanf:",remain"`
+}
+
+type squashedRestItem struct {
+	squashedRest `koanf:",squash"`
+	Port         int `koanf:"port"`
+}
+
+type squashedRestCfg struct {
+	Items []squashedRestItem `koanf:"items"`
+}
+
+// The keys a remain map inside an unexported squashed struct collects are
+// accepted everywhere decoding accepts them: in a load, in the JSON Schema,
+// and inside an entry a source's report withholds.
+func TestStrictKeys_RemainInUnexportedSquashedStruct(t *testing.T) {
+	got, err := Load[squashedRestCfg](t.Context(), WithBaseProvider(mapSource{"items": []any{map[string]any{"port": 1, "future": true}}}, nil), WithSkipValidation())
+	require.NoError(t, err)
+	assert.Equal(t, true, got.Items[0].Rest["future"])
+
+	item := nonNull(t, prop(t, jsonSchemaOf[squashedRestCfg](t), "items"))["items"].(map[string]any)
+	assert.Equal(t, true, item["additionalProperties"])
+
+	var rejected []KeyError
+	_, err = Load[squashedRestCfg](t.Context(), WithBaseProvider(mapSource{"items": []any{map[string]any{"port": "bad", "future": true}}}, nil,
+		WithInvalidEntries(func(_ context.Context, entries []KeyError) error { rejected = entries; return nil })), WithSkipValidation())
+	require.NoError(t, err)
+	require.Len(t, rejected, 1)
+	assert.Equal(t, "items", rejected[0].Key)
+}
+
 // Sources merge after their keys take the fields' spelling, while map keys
 // stay as written: "x" and "X" are two entries.
 func TestLoad_KeyCaseMergesAcrossSources(t *testing.T) {

@@ -118,6 +118,7 @@ Load options:
 | `WithValidator(v)` | go-playground, keys as field names | Replace the tag validator. |
 | `WithSkipValidation()` | validation on | Skip tag validation and `Validate`. |
 | `WithLogger(l)` | `slog.Default()` | Load diagnostics and reload events. |
+| `WithForeignTagKeys(keys...)` | none | Tag keys another library reads, which a load would otherwise refuse as misspellings of config's own; repeated calls accumulate. |
 
 Provider source options:
 

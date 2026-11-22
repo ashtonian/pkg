@@ -31,6 +31,10 @@ type schemaNode struct {
 	byKey  map[string]*schemaField
 	view   *gowalker.Schema // nodeBranch: shared field identities and matching
 	elem   *schemaNode      // nodeMap, nodeList
+	// acceptsUnknown reports a nodeBranch with a koanf:",remain" field, which
+	// collects the keys no other field takes: its own, or one of a struct it
+	// squashes, as decoding finds it.
+	acceptsUnknown bool
 	// opaqueUnsafe reports a value decoded whole that could hold a func,
 	// channel or unsafe pointer: a comparison looks inside it.
 	opaqueUnsafe bool
@@ -50,6 +54,7 @@ type schemaField struct {
 type schemaEntry struct {
 	node       *schemaNode
 	err        error
+	misspelt   []misspeltTagKey // across the graph; a load decides which it refuses
 	check      sync.Once
 	validation error
 	catalog    sync.Once
@@ -57,12 +62,9 @@ type schemaEntry struct {
 	variables  []Field
 }
 
-const schemaCacheCapacity = 256
-
-var schemaCache = struct {
-	sync.RWMutex
-	entries map[reflect.Type]*schemaEntry
-}{entries: make(map[reflect.Type]*schemaEntry)}
+// schemaCache keeps each type's graph for as long as configView keeps its
+// schema, which is every type: a program's config types are its own fixed set.
+var schemaCache = gowalker.NewTypeCache(configView, buildSchema)
 
 // metadataOf builds structural metadata without decoding defaults or examples.
 // Diagnostics can therefore inspect live values even when a tag is invalid.
@@ -73,27 +75,39 @@ func metadataOf(t reflect.Type) (*schemaNode, error) {
 
 func schemaMetadata(t reflect.Type) *schemaEntry {
 	t = derefType(t)
-	schemaCache.RLock()
-	e, ok := schemaCache.entries[t]
-	schemaCache.RUnlock()
-	if ok {
-		return e
+	e, err := schemaCache.Get(t)
+	if err != nil {
+		return &schemaEntry{err: viewError(t, err)}
 	}
+	return e
+}
+
+// buildSchema records a type's graph and its structural errors in its entry:
+// diagnostics read the graph of a type whose reload tags are invalid.
+func buildSchema(view *gowalker.Schema) (*schemaEntry, error) {
 	b := &schemaBuilder{nodes: map[reflect.Type]*schemaNode{}}
-	n := b.node(t)
+	n := b.node(view.Type())
 	if b.err == nil {
 		b.err = checkReloadTags(n)
 	}
-	e = &schemaEntry{node: n, err: b.err}
-	schemaCache.Lock()
-	defer schemaCache.Unlock()
-	if cached, ok := schemaCache.entries[t]; ok {
-		return cached
+	e := &schemaEntry{node: n, err: b.err}
+	seen := map[*schemaNode]bool{}
+	var walk func(*schemaNode)
+	walk = func(n *schemaNode) {
+		if n == nil || seen[n] {
+			return
+		}
+		seen[n] = true
+		if n.view != nil {
+			e.misspelt = append(e.misspelt, misspeltTagKeys(n.view.Root())...)
+		}
+		for _, f := range n.fields {
+			walk(f.node)
+		}
+		walk(n.elem)
 	}
-	if len(schemaCache.entries) < schemaCacheCapacity {
-		schemaCache.entries[t] = e
-	}
-	return e
+	walk(n)
+	return e, nil
 }
 
 // rootMetadata is structural inspection without load-time tag decoding.
@@ -198,6 +212,9 @@ func (b *schemaBuilder) fields(n *schemaNode) {
 		return
 	}
 	n.view = view
+	n.acceptsUnknown = slices.ContainsFunc(view.Root().Declarations(), func(d gowalker.Declaration) bool {
+		return koanfTag(d.GoField).Has("remain")
+	})
 	for _, field := range view.Root().Fields() {
 		sf := field.GoField()
 		access, err := view.AccessField(field)
@@ -211,13 +228,15 @@ func (b *schemaBuilder) fields(n *schemaNode) {
 	}
 }
 
+// validateTags checks every field the view selects, through the structs it
+// squashes, shadowed ones included.
 func (b *schemaBuilder) validateTags(shape *gowalker.Shape) {
-	for _, field := range shape.DeclaredView() {
-		if err := checkTags(field.DeclaringType(), field.GoField()); err != nil {
-			b.fail(err)
+	for _, d := range shape.Declarations() {
+		if d.State == gowalker.Skipped {
+			continue
 		}
-		if field.Inline() {
-			b.validateTags(shapeBase(field.Shape()))
+		if err := checkTags(d.DeclaringType, d.GoField); err != nil {
+			b.fail(err)
 		}
 	}
 }

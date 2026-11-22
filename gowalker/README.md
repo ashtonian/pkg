@@ -79,7 +79,10 @@ raw `reflect.StructTag`, whose `Lookup` tells an explicit empty default from no
 default at all. Applying defaults and reading the environment stay in your library.
 Compilation refuses a struct tag that `reflect.StructTag` cannot read to its
 end, or that repeats a key, so a typo never turns an annotation off silently;
-`TagKeys` lists a tag's keys for checking them against the ones you read.
+`TagKeys` lists a tag's keys for checking them against the ones you read, and
+`MisspeltTagKey(key, known)` names the key of yours a key you do not read most
+likely misspells (equal ignoring case, `-` and `_`, or one character away), for
+your library to refuse it rather than ignore it.
 
 ## Pick a naming convention
 
@@ -181,7 +184,10 @@ goroutines. What an owner can observe:
 
 - Gowalker reads and writes exported fields only, through `reflect`'s safe API.
   It never imports `unsafe` and cannot read or allocate private fields, which
-  keeps a caller from reaching storage the type's package hid.
+  keeps a caller from reaching storage the type's package hid. The unexported
+  embedded struct `WithJSONFields` names, as `encoding/json` writes it, is a
+  field whose value reads and writes return `ErrAccess`; only its exported
+  fields are reachable.
 - Error text names operations, Go types, field names and tags, which come from
   declarations. It never includes values, map keys or path steps, which can be
   caller data; read `Error.Path` and `Error.Step` to show a location under your
@@ -204,6 +210,7 @@ The standard library only, Go 1.27 or later. There are no external services.
 |---|---|
 | `engine.go` | `Engine`, options, limits, the schema cache and `CacheStats` |
 | `tags.go` | Tag parsing, `TagKeys`, `WithTaggedFields` and `WithJSONFields` |
+| `tag_spelling.go` | `MisspeltTagKey`: the known tag key a misspelt one means |
 | `shape.go` | Compilation: the raw type graph, field rules, inlining, name resolution and `Declarations` |
 | `schema.go` | `Schema`, path resolution and cached root-field accessors |
 | `route.go` | Static routes for paths of struct fields and pointers |

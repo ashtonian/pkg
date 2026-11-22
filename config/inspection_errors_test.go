@@ -11,6 +11,9 @@ import (
 
 var inspectionDecodeCalls atomic.Int32
 
+// inspectionRuns counts TestInspectionDoesNotDecodeTags's runs in the process.
+var inspectionRuns atomic.Int32
+
 type inspectionText string
 
 func (v *inspectionText) UnmarshalText(input []byte) error {
@@ -23,11 +26,12 @@ func TestInspectionDoesNotDecodeTags(t *testing.T) {
 	type cfg struct {
 		Value inspectionText `koanf:"value" example:"example"`
 	}
-	// Start from an uncached schema: a cached entry validates its tags once
-	// per process, so a later run would otherwise see no decode at all.
-	schemaCache.Lock()
-	delete(schemaCache.entries, reflect.TypeFor[cfg]())
-	schemaCache.Unlock()
+	// The cache keeps cfg's entry for the process, and an entry validates its
+	// tags once: only the test's first run in the process sees that decode.
+	want := int32(0)
+	if inspectionRuns.Add(1) == 1 {
+		want = 1
+	}
 	before := inspectionDecodeCalls.Load()
 	for _, format := range []string{FormatTable, FormatJSON, FormatYAML} {
 		var out bytes.Buffer
@@ -50,9 +54,6 @@ func TestInspectionDoesNotDecodeTags(t *testing.T) {
 	if got := inspectionDecodeCalls.Load() - before; got != 0 {
 		t.Fatalf("inspection decoded tags %d times", got)
 	}
-	schemaCache.RLock()
-	_, cached := schemaCache.entries[reflect.TypeFor[cfg]()]
-	schemaCache.RUnlock()
 	var wg sync.WaitGroup
 	for range 12 {
 		wg.Go(func() {
@@ -63,10 +64,6 @@ func TestInspectionDoesNotDecodeTags(t *testing.T) {
 		})
 	}
 	wg.Wait()
-	want := int32(12)
-	if cached {
-		want = 1
-	}
 	if got := inspectionDecodeCalls.Load() - before; got != want {
 		t.Fatalf("load-time validation decoded the example %d times; want %d", got, want)
 	}

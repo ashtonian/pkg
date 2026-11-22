@@ -242,7 +242,7 @@ func load[T any](ctx context.Context, o *options) (loaded[T], error) {
 	if err := o.checkHookTypes(reflect.TypeFor[*T]()); err != nil {
 		return none, err
 	}
-	schema, err := rootSchema(root)
+	schema, err := loadSchema(root, o)
 	if err != nil {
 		return none, fmt.Errorf("loading config: %w", err)
 	}

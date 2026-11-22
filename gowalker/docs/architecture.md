@@ -71,8 +71,13 @@ and then by `FieldRule.Explicit`, so a shallower field can shadow one promoted
 from an embedded struct; only a tie fails, or with `DropTies` loses every claim
 as `encoding/json` drops it, and the kept fields' aliases must be unique.
 `WithJSONFields` is `WithTaggedFields` with `encoding/json`'s tag-name grammar
-and conventions fixed, and implies `ResolveByDepth`. Ordinary recursive fields are valid; recursive inline expansion is an
-error because it cannot produce a finite flattened field list.
+and conventions fixed, and implies `ResolveByDepth`. Ordinary recursive fields
+are valid. Recursive inline expansion has no finite flattened field list, so
+expansion stops at a struct already being inlined around it: without depth
+resolution that is an error, since the repeat's fields would claim their names
+again; with it the repeat is left out, which changes no outcome, as each of its
+fields is the same field nearer the root, deeper, and loses its name to it.
+`encoding/json`'s explore-each-embedded-type-once rule computes the same result.
 
 A **leaf** is a value that named paths and walkers may select but do not descend
 into. `FieldRule.Atomic` makes one field a leaf; `WithAtomicType` makes every use

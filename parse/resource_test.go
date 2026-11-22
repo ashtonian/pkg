@@ -115,6 +115,33 @@ func TestNewResource_RefusesBadDeclarations(t *testing.T) {
 	assert.Panics(t, func() { parse.MustResource[widget]("widgets", parse.PrimaryKey("nope")) })
 }
 
+type hiddenStampA struct {
+	Stamp string `json:"-"`
+}
+
+type hiddenStampB struct {
+	Stamp string `json:"-"`
+}
+
+// Fields the field-name tag hides keep their columns, so two of them on one
+// column are refused as any two fields are, at one depth or two.
+func TestNewResource_RefusesHiddenFieldsSharingAColumn(t *testing.T) {
+	type oneDepth struct {
+		hiddenStampA
+		hiddenStampB
+		ID string `json:"id" db:"id"`
+	}
+	type twoDepths struct {
+		hiddenStampA
+		ID    string `json:"id" db:"id"`
+		Stamp string `json:"-"`
+	}
+	_, err := parse.NewResource[oneDepth]("stamps")
+	require.ErrorContains(t, err, `fields Stamp and Stamp are both column "stamp"`)
+	_, err = parse.NewResource[twoDepths]("stamps")
+	require.ErrorContains(t, err, `fields Stamp and Stamp are both column "stamp"`)
+}
+
 func TestResource_DeclaresItsIdentity(t *testing.T) {
 	r := widgets(t)
 	assert.Equal(t, "widgets", r.Table())

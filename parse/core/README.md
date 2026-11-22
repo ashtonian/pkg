@@ -38,7 +38,7 @@ Start with the [runnable package example](../README.md#quick-start). The focused
 | `naming.go` | Column and table naming conventions, each a function, `Pluralize` |
 | `generator.go` | `SchemaGenerator`, `GeneratorOptions` and their options, `SQLColumnMapper` |
 | `core.go` | `Validator`, `PolicySubject`, `MatchWildcard` |
-| `fields.go` | `StructFields` — one gowalker walk per struct type: encoding/json field names with embedded structs promoted, hidden fields kept for columns, every tag parsed once (`Tags`) |
+| `fields.go` | `StructFields` — one gowalker walk per struct type and tag pair, on `WithJSONFields` under the field-name tag: encoding/json field names with embedded structs promoted, hidden fields kept unnamed for columns, every tag parsed once (`Tags`) |
 | `constraint.go` | The `Constraint*` names (each also the tag that declares it), `ConstraintError` |
 | `bounds.go` | `Bounds` — the `minlen` / `maxlen` / `min` / `max` / `minitems` / `maxitems` tags, read and checked against the field's type |
 | `typeof.go` | `TypeOf` — Go type → storage model; `IsUUIDType` / `UUIDText` |
