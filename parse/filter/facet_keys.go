@@ -20,6 +20,21 @@ type numberKeyer interface {
 	numberKey(f *FieldSchema) string
 }
 
+// timestampKeyer is a dialect that renders a timestamp column's value as
+// its terms facet key: the canonical text (core.FormatTimestamp) FacetKeys
+// gives the same instant. SQLite has none: the column holds that text
+// (SQLiteDialect.MarshalValue).
+type timestampKeyer interface {
+	timestampKey(expr string) string
+}
+
+// timestampKey renders a TIMESTAMPTZ as its UTC wall time, which no session
+// DateStyle or TimeZone changes, at microseconds, PostgreSQL's precision,
+// padded to the canonical nine digits. An infinite timestamp has no key.
+func (PostgresDialect) timestampKey(expr string) string {
+	return "to_char((" + expr + ") AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS.US\"000Z\"')"
+}
+
 // numberKey reads a path member and a decimal as the numeric FieldExpr
 // renders, exactly; trim_scale drops the scale a literal was written with
 // (7.0, 1.50). A float column's key is its shortest text at the field's
@@ -70,8 +85,7 @@ func (d SQLiteDialect) numberKey(f *FieldSchema) string {
 // true or false, a number as its canonical decimal text (core.DecimalText)
 // — a path member's exactly as written, a float32 field's at float32
 // precision — a date as YYYY-MM-DD, a timestamp as core.FormatTimestamp and
-// a UUID lower-cased. A non-finite float has none. BuildFacetQuery keys a
-// timestamp column by the database's own text of it.
+// a UUID lower-cased. A non-finite float has none.
 func FacetKeys(v any, f *FieldSchema) ([]string, error) {
 	if f.Path != nil {
 		return pathFacetKeys(v, f)
@@ -166,7 +180,7 @@ func memberFacetKey(v any, t core.FieldType) (string, bool, error) {
 // valueFacetKey is a column value's key as a field of type t holds it;
 // kind is its Go numeric kind (reflect.Float32 keys at float32 precision).
 func valueFacetKey(v any, t core.FieldType, kind reflect.Kind) (string, bool, error) {
-	v, ok, err := facetValue(v)
+	v, ok, err := storedValue(v)
 	if err != nil || !ok {
 		return "", false, err
 	}
@@ -248,9 +262,9 @@ func deref(v any) (any, bool) {
 	}
 }
 
-// facetValue dereferences a scalar and reads a driver.Valuer (sql.Null*, a
+// storedValue dereferences a scalar and reads a driver.Valuer (sql.Null*, a
 // UUID) as the value the database holds; ok is false for NULL.
-func facetValue(v any) (any, bool, error) {
+func storedValue(v any) (any, bool, error) {
 	v, ok := deref(v)
 	if !ok {
 		return nil, false, nil
