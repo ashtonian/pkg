@@ -23,6 +23,7 @@ func TestDialects(t *testing.T) {
 		assert.Equal(t, tc.kind, KindOf(tc.d))
 		assert.Equal(t, tc.name, tc.d.Name())
 		assert.Equal(t, tc.first, tc.d.Placeholder(1))
+		assert.Positive(t, tc.d.MaxParams())
 		assert.Equal(t, `"a""b"`, tc.d.QuoteIdent(`a"b`), "an embedded quote doubles")
 		assert.Panics(t, func() { tc.d.Placeholder(0) })
 	}

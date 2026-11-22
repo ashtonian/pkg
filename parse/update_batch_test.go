@@ -61,3 +61,21 @@ func TestUpdateBatchCanonicalKeys(t *testing.T) {
 	_, err = r.BuildUpdateBatch(filter.PostgresDialect{}, []parse.RowUpdate{{Key: id, Patch: p}, {Key: strings.ToUpper(id.String()), Patch: p}}, parse.Scope{}, parse.UpdateBatchLimits{})
 	require.Error(t, err)
 }
+
+// A batch locks its rows in the key's code-point order, under the collation
+// every list orders the key by.
+func TestUpdateBatchLocksInTheDialectsCodePointOrder(t *testing.T) {
+	type row struct {
+		Code string `db:"code"`
+		Name string `json:"name" db:"name" parse:"patch"`
+	}
+	r, err := parse.NewResource[row]("coded_rows", parse.PrimaryKey("code"))
+	require.NoError(t, err)
+	p, err := r.ParseMergePatch([]byte(`{"name":"new"}`))
+	require.NoError(t, err)
+	for _, d := range []parse.Dialect{filter.PostgresDialect{}, filter.PostgresDialect{Collation: filter.CollationC}, filter.SQLiteDialect{}} {
+		plan, err := r.BuildUpdateBatch(d, []parse.RowUpdate{{Key: "b", Patch: p}, {Key: "a", Patch: p}}, parse.Scope{}, parse.UpdateBatchLimits{})
+		require.NoError(t, err)
+		require.Contains(t, plan.Chunks[0].Current.SQL, " ORDER BY "+d.CodePointOrder("coded_rows.code")+d.RowLock())
+	}
+}

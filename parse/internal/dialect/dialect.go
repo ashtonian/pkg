@@ -30,6 +30,8 @@ type Dialect interface {
 	// QuoteIdent quotes an identifier with double quotes, doubling any
 	// quote inside it.
 	QuoteIdent(name string) string
+	// MaxParams is the most parameters one statement binds.
+	MaxParams() int
 
 	kind() Kind
 }
@@ -183,6 +185,9 @@ func (Postgres) Name() string { return KindPostgres.String() }
 
 func (Postgres) kind() Kind { return KindPostgres }
 
+// MaxParams is 65535: a Bind message counts its parameters in 16 bits.
+func (Postgres) MaxParams() int { return 65535 }
+
 // Placeholder returns "$n". A non-positive n is a statement builder's bug
 // and panics: it would render invalid SQL.
 func (Postgres) Placeholder(n int) string { return placeholder('$', n) }
@@ -197,6 +202,10 @@ type SQLite struct{}
 func (SQLite) Name() string { return KindSQLite.String() }
 
 func (SQLite) kind() Kind { return KindSQLite }
+
+// MaxParams is 999, SQLITE_MAX_VARIABLE_NUMBER before SQLite 3.32: a build
+// may keep that limit, and a statement cannot ask which it has.
+func (SQLite) MaxParams() int { return 999 }
 
 // Placeholder returns "?n"; a non-positive n panics, as for Postgres.
 func (SQLite) Placeholder(n int) string { return placeholder('?', n) }

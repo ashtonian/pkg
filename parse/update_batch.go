@@ -10,7 +10,6 @@ import (
 
 	"github.com/ashtonian/pkg/parse/core"
 	"github.com/ashtonian/pkg/parse/filter"
-	"github.com/ashtonian/pkg/parse/internal/dialect"
 	"github.com/ashtonian/pkg/parse/patch"
 )
 
@@ -243,11 +242,7 @@ func (r *Resource[T]) renderUpdateBatch(d Dialect, v *dialectView, rows []compil
 	}
 	order := r.table + "." + r.pk
 	if keyType.Type == core.FieldTypeString {
-		if dialect.KindOf(d) == dialect.KindSQLite {
-			order += " COLLATE BINARY"
-		} else {
-			order += ` COLLATE "C"`
-		}
+		order = d.CodePointOrder(order)
 	}
 	columns := strings.Join(r.columns(d, v), ", ")
 	chunk.Current.SQL = "SELECT " + columns + " FROM " + r.table + " WHERE " + strings.Join(currentWhere, " OR ") + " ORDER BY " + order + d.RowLock()
@@ -272,9 +267,6 @@ func updateRowPolicy(common, row *filter.PolicyConstraints) *filter.PolicyConstr
 }
 
 func updateBatchLimits(d Dialect, limits UpdateBatchLimits) (UpdateBatchLimits, error) {
-	if dialect.KindOf(d) != dialect.KindSQLite && dialect.KindOf(d) != dialect.KindPostgres {
-		return limits, fmt.Errorf("parse: update batch dialect %q is unsupported", d.Name())
-	}
 	if limits.MaxRows < 0 || limits.MaxParameters < 0 {
 		return limits, errors.New("parse: update batch limits must not be negative")
 	}
@@ -282,14 +274,7 @@ func updateBatchLimits(d Dialect, limits UpdateBatchLimits) (UpdateBatchLimits, 
 		limits.MaxRows = 500
 	}
 	if limits.MaxParameters == 0 {
-		switch dialect.KindOf(d) {
-		case dialect.KindSQLite:
-			limits.MaxParameters = 999
-		case dialect.KindPostgres:
-			limits.MaxParameters = 65535
-		default:
-			return limits, fmt.Errorf("parse: update batch dialect %q is unsupported", d.Name())
-		}
+		limits.MaxParameters = d.MaxParams()
 	}
 	return limits, nil
 }
