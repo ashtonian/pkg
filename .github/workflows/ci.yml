@@ -62,7 +62,7 @@ jobs:
         with:
           persist-credentials: false
       # Go for scope's package graph; nothing is built.
-      - uses: ashtonian/go-ci-actions@4a4ec4b5209ba9f7214e85cfab40717a8f191559 # v1.9.0
+      - uses: ashtonian/go-ci-actions@4404b5c0617f86383381bd07ca8a72eeb11863df # v1.10.0
         with:
           go-version: '1.27.x'
           cache-mode: off
@@ -79,7 +79,7 @@ jobs:
       # files tests read outside their package. tools/test_ci_release_checks.py
       # keeps both, and the module lists, in step with the Makefile and tests.
       - id: scope
-        uses: ashtonian/go-ci-actions/scope@4a4ec4b5209ba9f7214e85cfab40717a8f191559 # v1.9.0
+        uses: ashtonian/go-ci-actions/scope@4404b5c0617f86383381bd07ca8a72eeb11863df # v1.10.0
         with:
           workflow: ci.yml
           jobs: |
@@ -142,10 +142,12 @@ jobs:
         run: python3 -B tools/ci_release_checks.py
       - id: accepted
         if: github.event_name == 'push'
-        uses: ashtonian/go-ci-actions/acceptance@4a4ec4b5209ba9f7214e85cfab40717a8f191559 # v1.9.0
+        uses: ashtonian/go-ci-actions/acceptance@4404b5c0617f86383381bd07ca8a72eeb11863df # v1.10.0
         with:
           mode: verify
           required: ${{ steps.checks.outputs.required }}
+          # Reuse needs a green run on the commit the scope measured from.
+          base: ${{ steps.scope.outputs.base }}
           variables: ${{ toJSON(vars) }}
 
   test:
@@ -165,7 +167,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: ashtonian/go-ci-actions@4a4ec4b5209ba9f7214e85cfab40717a8f191559 # v1.9.0
+      - uses: ashtonian/go-ci-actions@4404b5c0617f86383381bd07ca8a72eeb11863df # v1.10.0
         with:
           go-version: '1.27.x'
           cache-dependency-path: "**/go.sum"
@@ -220,7 +222,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: ashtonian/go-ci-actions@4a4ec4b5209ba9f7214e85cfab40717a8f191559 # v1.9.0
+      - uses: ashtonian/go-ci-actions@4404b5c0617f86383381bd07ca8a72eeb11863df # v1.10.0
         with:
           go-version: '1.27.x'
           cache-dependency-path: "**/go.sum"
@@ -264,7 +266,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: ashtonian/go-ci-actions@4a4ec4b5209ba9f7214e85cfab40717a8f191559 # v1.9.0
+      - uses: ashtonian/go-ci-actions@4404b5c0617f86383381bd07ca8a72eeb11863df # v1.10.0
         with:
           go-version: stable
           cache-dependency-path: "**/go.sum"
@@ -287,7 +289,7 @@ jobs:
           persist-credentials: false
       # Before pnpm: points pnpm at the runner's in-cluster npm cache when it answers,
       # and leaves npmjs otherwise.
-      - uses: ashtonian/go-ci-actions/npm-registry@4a4ec4b5209ba9f7214e85cfab40717a8f191559 # v1.9.0
+      - uses: ashtonian/go-ci-actions/npm-registry@4404b5c0617f86383381bd07ca8a72eeb11863df # v1.10.0
       # pnpm next: setup-node's pnpm cache asks pnpm for its store path. The version
       # comes from the SDK's packageManager field.
       - uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
@@ -339,7 +341,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: ashtonian/go-ci-actions@4a4ec4b5209ba9f7214e85cfab40717a8f191559 # v1.9.0
+      - uses: ashtonian/go-ci-actions@4404b5c0617f86383381bd07ca8a72eeb11863df # v1.10.0
         with:
           go-version: stable
           cache-dependency-path: "**/go.sum"
@@ -347,7 +349,7 @@ jobs:
         run: >-
           go test -tags=unit -run '^$' -bench . -benchmem -count=3
           -cpuprofile=parse-cpu.prof -memprofile=parse-allocs.prof ./parse/filter | tee parse-benchmarks.txt
-      - uses: ashtonian/go-ci-actions/upload-artifact@4a4ec4b5209ba9f7214e85cfab40717a8f191559 # v1.9.0
+      - uses: ashtonian/go-ci-actions/upload-artifact@4404b5c0617f86383381bd07ca8a72eeb11863df # v1.10.0
         with:
           name: parse-benchmarks-${{ github.sha }}
           path: |
@@ -367,7 +369,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: ashtonian/go-ci-actions@4a4ec4b5209ba9f7214e85cfab40717a8f191559 # v1.9.0
+      - uses: ashtonian/go-ci-actions@4404b5c0617f86383381bd07ca8a72eeb11863df # v1.10.0
         with:
           go-version: '1.26.x'
           cache-dependency-path: "**/go.sum"
@@ -408,7 +410,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: ashtonian/go-ci-actions@4a4ec4b5209ba9f7214e85cfab40717a8f191559 # v1.9.0
+      - uses: ashtonian/go-ci-actions@4404b5c0617f86383381bd07ca8a72eeb11863df # v1.10.0
         with:
           go-version: stable
           cache-dependency-path: "**/go.sum"
@@ -439,7 +441,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: ashtonian/go-ci-actions@4a4ec4b5209ba9f7214e85cfab40717a8f191559 # v1.9.0
+      - uses: ashtonian/go-ci-actions@4404b5c0617f86383381bd07ca8a72eeb11863df # v1.10.0
         with:
           go-version: '1.27.0'
           cache-dependency-path: "**/go.sum"
@@ -472,7 +474,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: ashtonian/go-ci-actions/acceptance@4a4ec4b5209ba9f7214e85cfab40717a8f191559 # v1.9.0
+      - uses: ashtonian/go-ci-actions/acceptance@4404b5c0617f86383381bd07ca8a72eeb11863df # v1.10.0
         with:
           mode: record
           results: ${{ toJSON(needs) }}
