@@ -8,6 +8,9 @@ export type PatchOp = "add" | "remove" | "replace" | "move" | "copy" | "test" | 
 export interface PatchSchema {
   paths: Record<string, PatchPathSchema>;
   max_operations: number;
+  /** The most keys one operation on a relation path names, repeats
+   *  counted once (E2119); 0 or absent is unlimited. */
+  max_relation_values?: number;
 }
 
 /** A single patchable path (mirrors Go parse.PatchPathResponse). */
@@ -55,7 +58,7 @@ export type PatchInput<T> = {
   [K in keyof T]?: T[K] | null;
 };
 
-/** Result of a patch (mirrors Go repotypes.PatchResult). */
+/** Result of a patch, in the shape parse/examples/server answers a PATCH with. */
 export interface PatchResult<T> {
   updated: T[];
   failed?: BatchItemError[];

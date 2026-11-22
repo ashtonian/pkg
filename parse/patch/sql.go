@@ -10,7 +10,6 @@ import (
 
 	"github.com/ashtonian/pkg/parse/core"
 	"github.com/ashtonian/pkg/parse/internal/dialect"
-	"github.com/ashtonian/pkg/parse/internal/jsonmerge"
 )
 
 // PatchSQLResult holds the generated SQL SET clause and arguments.
@@ -187,7 +186,10 @@ func BuildPatchSQL(patch *ParsedPatch, dialect SQLDialect, opts ...PatchSQLOptio
 	if err != nil {
 		return nil, err
 	}
-	if patch == nil || len(patch.Operations) == 0 {
+	if err := checkParsed(patch); err != nil {
+		return nil, err
+	}
+	if len(patch.Operations) == 0 {
 		return &PatchSQLResult{Empty: true}, nil
 	}
 
@@ -407,21 +409,33 @@ func (b *setBuilder) bind(v any) string {
 }
 
 // columnExpr folds one column's ordered operations into a single SQL
-// expression. The last whole-value operation (replace/add/remove) sets the
-// base and earlier operations are overwritten and never bound. Merges and
-// array_appends after a base fold onto its value in Go, so one value is
-// bound; only merges and appends against the stored column compile to SQL.
+// expression. A merge patch writes a column with one operation, the only
+// kind that merges, so a merge compiles against the stored column. JSON Patch
+// operations fold: the last whole-value operation (replace/add/remove) sets
+// the base and earlier ones are overwritten and never bound, and appends
+// after it fold onto its value in Go, so one value is bound; appends with no
+// base compile against the stored column.
 func (b *setBuilder) columnExpr(col string, ops []*PatchOperation) (string, error) {
+	if slices.ContainsFunc(ops, func(op *PatchOperation) bool { return op.Merge }) {
+		if len(ops) != 1 {
+			return "", fmt.Errorf("patch: column %s: a merge shares its column with another operation, which no parser produces", col)
+		}
+		expr, err := mergeSQL(b.dialect, col, ops[0].Schema.SQLType, ops[0].Value, b.bind)
+		if err != nil {
+			return "", fmt.Errorf("%s for %s: %w", ops[0].Op, ops[0].Path, err)
+		}
+		return expr, nil
+	}
 	start := -1
 	for i, op := range slices.Backward(ops) {
-		if !op.Merge && op.Op != PatchOpArrayAppend {
+		if op.Op != PatchOpArrayAppend {
 			start = i
 			break
 		}
 	}
 	later := ops[start+1:]
 	for _, op := range later {
-		if op.Op == PatchOpArrayAppend && op.Schema != nil && op.Schema.DataType != "" && op.Schema.DataType != core.FieldTypeArray {
+		if op.Schema.DataType != "" && op.Schema.DataType != core.FieldTypeArray {
 			// A JSON-document array (jsonb on PostgreSQL) has no native
 			// array_append; the document path applies it.
 			return "", &core.ParseError{
@@ -435,12 +449,7 @@ func (b *setBuilder) columnExpr(col string, ops []*PatchOperation) (string, erro
 		expr := col
 		for _, op := range later {
 			var err error
-			if op.Merge {
-				expr, err = mergeSQL(b.dialect, expr, op.Value, b.bind)
-			} else {
-				expr, err = arrayAppendSQL(b.dialect, expr, op.Value, b.bind)
-			}
-			if err != nil {
+			if expr, err = arrayAppendSQL(b.dialect, expr, op.Value, b.bind); err != nil {
 				return "", fmt.Errorf("%s for %s: %w", op.Op, op.Path, err)
 			}
 		}
@@ -453,10 +462,6 @@ func (b *setBuilder) columnExpr(col string, ops []*PatchOperation) (string, erro
 		value = base.Value
 	}
 	for _, op := range later {
-		if op.Merge {
-			value = jsonmerge.Apply(value, op.Value)
-			continue
-		}
 		var elems []any
 		if value != nil {
 			arr, ok := core.AnySlice(value)
@@ -468,7 +473,7 @@ func (b *setBuilder) columnExpr(col string, ops []*PatchOperation) (string, erro
 		value = append(elems, op.Value)
 	}
 	if value == nil {
-		if value = base.Schema.ClearedValue(); value == nil {
+		if value = base.Schema.clearedValue(); value == nil {
 			return "NULL", nil
 		}
 	}
@@ -480,11 +485,14 @@ func (b *setBuilder) columnExpr(col string, ops []*PatchOperation) (string, erro
 }
 
 // mergeSQL returns the expression merging an RFC 7396 patch object into the
-// JSON document expr: patch members replace, nested objects merge, nulls
-// delete, and a target that is not an object merges as {} (RFC 7396 §2).
-// SQLite implements RFC 7396 as json_patch; PostgreSQL has none, so the
-// patch compiles level by level (pgMerge).
-func mergeSQL(d dialect.Dialect, expr string, patch any, bind func(any) string) (string, error) {
+// JSON document expr, stored as storage: patch members replace, nested
+// objects merge, nulls delete, and a target that is not an object merges as
+// {} (RFC 7396 §2). SQLite implements RFC 7396 as json_patch; PostgreSQL has
+// none, so the patch compiles level by level (pgMerge) over jsonb. A json
+// column (core.SQLJSON) is read as jsonb, since its cast to jsonb applies on
+// assignment but not to a function's argument, and the jsonb result assigns
+// back to it.
+func mergeSQL(d dialect.Dialect, expr string, storage core.SQLType, patch any, bind func(any) string) (string, error) {
 	obj, ok := patch.(map[string]any)
 	if !ok {
 		return "", fmt.Errorf("merge value is %T, not an object", patch)
@@ -497,6 +505,9 @@ func mergeSQL(d dialect.Dialect, expr string, patch any, bind func(any) string) 
 		}
 		return "json_patch(COALESCE(" + expr + ", '{}'), " + bind(string(doc)) + ")", nil
 	case dialect.NamePostgres:
+		if storage == core.SQLJSON {
+			expr += "::jsonb"
+		}
 		levels := 0
 		return pgMerge(expr, obj, bind, &levels)
 	}
@@ -573,8 +584,8 @@ func hasNestedObject(patch map[string]any) bool {
 }
 
 // buildRelationPatchOp turns a parsed relation op into a RelationPatchOp.
-// The wire-level value must be an array (JSON []) matching the relation's
-// target column type; remove/add reject empty arrays as a no-op miss.
+// The parser decided its value: a list of keys, at least one for an add or
+// remove (relationValue).
 func buildRelationPatchOp(op *PatchOperation) (RelationPatchOp, error) {
 	verb, err := relationVerbFromOp(op.Op)
 	if err != nil {
@@ -585,23 +596,7 @@ func buildRelationPatchOp(op *PatchOperation) (RelationPatchOp, error) {
 			Path:    op.Path,
 		}
 	}
-	values, err := coerceRelationValues(op.Value)
-	if err != nil {
-		return RelationPatchOp{}, &core.ParseError{
-			Kind:    core.ParseErrorKindPatch,
-			Code:    ECodeRelationValueInvalid.String(),
-			Message: fmt.Sprintf("relation %q: %v", strings.TrimPrefix(op.Path, "/"), err),
-			Path:    op.Path,
-		}
-	}
-	if (verb == RelationVerbAdd || verb == RelationVerbRemove) && len(values) == 0 {
-		return RelationPatchOp{}, &core.ParseError{
-			Kind:    core.ParseErrorKindPatch,
-			Code:    ECodeRelationValueInvalid.String(),
-			Message: fmt.Sprintf("relation %q: %s requires at least one value", strings.TrimPrefix(op.Path, "/"), verb),
-			Path:    op.Path,
-		}
-	}
+	values, _ := core.AnySlice(op.Value)
 	return RelationPatchOp{
 		Field:  strings.TrimPrefix(op.Path, "/"),
 		Schema: op.Schema.Relation,
@@ -620,24 +615,6 @@ func relationVerbFromOp(op PatchOp) (RelationVerb, error) {
 		return RelationVerbRemove, nil
 	default:
 		return "", fmt.Errorf("op %q has no relation-verb mapping", op)
-	}
-}
-
-func coerceRelationValues(value any) ([]any, error) {
-	if value == nil {
-		return nil, nil
-	}
-	switch v := value.(type) {
-	case []any:
-		return v, nil
-	case []string:
-		out := make([]any, len(v))
-		for i, s := range v {
-			out[i] = s
-		}
-		return out, nil
-	default:
-		return nil, fmt.Errorf("expected JSON array, got %T", value)
 	}
 }
 

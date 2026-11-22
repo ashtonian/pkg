@@ -11,6 +11,7 @@ package parse_test
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"math"
 	"os"
 	"slices"
@@ -123,6 +124,8 @@ func filterBuilt() map[string]client.Filter {
 		"err_nin_enum":                  f.Status.Nin("bogus"),
 		"err_like_trailing_escape":      f.Name.Like(`abc\`),
 		"json_eq_document":              f.Meta.Eq(map[string]any{"env": "prod"}),
+		"json_eq_dollar_keyed_document": f.Meta.Eq(map[string]any{"$env": "prod"}),
+		"json_eq_mixed_keyed_document":  f.Meta.Eq(map[string]any{"$env": "prod", "region": "eu"}),
 		"json_contains":                 f.Meta.Contains(map[string]any{"env": "prod"}),
 		"err_json_integer_beyond_int64": f.Meta.Eq(map[string]any{"n": uint64(math.MaxUint64)}),
 		"json_decimal":                  f.Meta.Eq(map[string]any{"n": 0.1}),
@@ -196,7 +199,8 @@ var filterInexpressible = map[string]string{
 	"err_decimal_leading_zero":            "a decimal.Decimal marshals canonical text",
 	"err_decimal_exponent_beyond_int32":   "a decimal.Decimal's exponent is an int32",
 	"err_decimal_in_member":               "Price is an Ordered[decimal.Decimal]",
-	"err_unknown_dollar_key_is_literal":   "operators are methods",
+	"err_unknown_dollar_key":              "operators are methods",
+	"err_misspelt_operator_on_document":   "operators are methods",
 	"err_operator_key_mixed_with_literal": "operators are methods",
 	"err_or_not_array":                    "Or is variadic",
 	"err_or_branch_not_object":            "Or takes filters",
@@ -317,6 +321,10 @@ type confPatchInput struct {
 	Live     client.Nullable[client.Quoted[bool]]    `json:"live,omitzero"`
 	Share    client.Nullable[client.Quoted[float32]] `json:"share,omitzero"`
 	Opt      client.Nullable[client.Quoted[int64]]   `json:"opt,omitzero"`
+	Members  client.Nullable[[]string]               `json:"members,omitzero"`
+	// QuotedTags is a relation whose target key is quoted: its keys are
+	// client.Quoted, as a client.Relation[client.Quoted[int64]] sends them.
+	QuotedTags client.Nullable[[]client.Quoted[int64]] `json:"quoted_tags,omitzero"`
 }
 
 var patchBuilt = map[string]confPatchInput{
@@ -367,41 +375,50 @@ var patchBuilt = map[string]confPatchInput{
 	"quoted_float":                   {Share: client.Set(client.Quote[float32](0.5))},
 	"quoted_null_clears_nullable":    {Opt: client.Null[client.Quoted[int64]]()},
 	"err_quoted_null_on_value_field": {Serial: client.Null[client.Quoted[int64]]()},
+	"relation_list":                  {Members: client.Set([]string{"a", "b"})},
+	"relation_null_clears":           {Members: client.Null[[]string]()},
+	"relation_empty_clears":          {Members: client.Set([]string{})},
+	"quoted_relation_keys":           {QuotedTags: client.Set([]client.Quoted[int64]{client.Quote(int64(5)), client.Quote(int64(9007199254740993))})},
 }
 
 var patchInexpressible = map[string]string{
-	"err_string_type":           "Name is a Nullable[string]",
-	"err_quoted_bare_number":    "Serial is a Nullable[Quoted[int64]]",
-	"err_quoted_past_int64":     "Serial is a Nullable[Quoted[int64]]",
-	"err_quoted_not_a_number":   "Serial is a Nullable[Quoted[int64]]",
-	"err_quoted_spaces":         "a Quoted marshals its value's JSON text",
-	"err_quoted_uint_negative":  "Big is a Nullable[Quoted[uint64]]",
-	"quoted_bool_bare_boolean":  "a Quoted[bool] marshals a JSON string",
-	"quoted_integral_spelling":  "a Quoted marshals its value's JSON text",
-	"err_quoted_leading_plus":   "a Quoted marshals its value's JSON text",
-	"err_quoted_leading_zero":   "a Quoted marshals its value's JSON text",
-	"err_quoted_float_word":     "Share is a Nullable[Quoted[float32]]",
-	"err_int_fraction":          "Count is a Nullable[int32]",
-	"err_int_type":              "Count is a Nullable[int32]",
-	"err_int32_range":           "Count is a Nullable[int32]",
-	"err_int8_range":            "Small is a Nullable[int8]",
-	"err_float_type":            "Ratio is a Nullable[float64]",
-	"decimal_number":            "a decimal.Decimal marshals as a JSON string",
-	"decimal_exponent":          "a decimal.Decimal marshals plain notation",
-	"err_decimal_word":          "Price is a Nullable[decimal.Decimal]",
-	"err_decimal_bool":          "Price is a Nullable[decimal.Decimal]",
-	"err_decimal_leading_plus":  "a decimal.Decimal marshals canonical text",
-	"err_decimal_beyond_digits": "a decimal.Decimal marshals plain notation",
-	"err_bool_type":             "Active is a Nullable[bool]",
-	"err_array_type":            "Tags is a Nullable[[]string]",
-	"err_array_element_type":    "Tags is a Nullable[[]string]",
-	"err_array_element_range":   "the struct declares no int16 array",
-	"err_timestamp_format":      "SeenAt is a Nullable[time.Time]",
-	"err_timestamp_type":        "SeenAt is a Nullable[time.Time]",
-	"err_not_patchable":         "the patch struct holds patchable members only",
-	"err_unknown_field":         "the patch struct holds declared members only",
-	"decimal_bound_exponent":    "a decimal.Decimal marshals plain notation",
-	"decimal_bound_number":      "a decimal.Decimal marshals as a JSON string",
+	"err_string_type":                  "Name is a Nullable[string]",
+	"err_quoted_bare_number":           "Serial is a Nullable[Quoted[int64]]",
+	"err_quoted_past_int64":            "Serial is a Nullable[Quoted[int64]]",
+	"err_quoted_not_a_number":          "Serial is a Nullable[Quoted[int64]]",
+	"err_quoted_spaces":                "a Quoted marshals its value's JSON text",
+	"err_quoted_uint_negative":         "Big is a Nullable[Quoted[uint64]]",
+	"quoted_bool_bare_boolean":         "a Quoted[bool] marshals a JSON string",
+	"quoted_integral_spelling":         "a Quoted marshals its value's JSON text",
+	"err_quoted_leading_plus":          "a Quoted marshals its value's JSON text",
+	"err_quoted_leading_zero":          "a Quoted marshals its value's JSON text",
+	"err_quoted_float_word":            "Share is a Nullable[Quoted[float32]]",
+	"err_int_fraction":                 "Count is a Nullable[int32]",
+	"err_int_type":                     "Count is a Nullable[int32]",
+	"err_int32_range":                  "Count is a Nullable[int32]",
+	"err_int8_range":                   "Small is a Nullable[int8]",
+	"err_float_type":                   "Ratio is a Nullable[float64]",
+	"decimal_number":                   "a decimal.Decimal marshals as a JSON string",
+	"decimal_exponent":                 "a decimal.Decimal marshals plain notation",
+	"err_decimal_word":                 "Price is a Nullable[decimal.Decimal]",
+	"err_decimal_bool":                 "Price is a Nullable[decimal.Decimal]",
+	"err_decimal_leading_plus":         "a decimal.Decimal marshals canonical text",
+	"err_decimal_beyond_digits":        "a decimal.Decimal marshals plain notation",
+	"err_bool_type":                    "Active is a Nullable[bool]",
+	"err_array_type":                   "Tags is a Nullable[[]string]",
+	"err_array_element_type":           "Tags is a Nullable[[]string]",
+	"err_array_element_range":          "the struct declares no int16 array",
+	"err_timestamp_format":             "SeenAt is a Nullable[time.Time]",
+	"err_timestamp_type":               "SeenAt is a Nullable[time.Time]",
+	"err_not_patchable":                "the patch struct holds patchable members only",
+	"err_unknown_field":                "the patch struct holds declared members only",
+	"decimal_bound_exponent":           "a decimal.Decimal marshals plain notation",
+	"decimal_bound_number":             "a decimal.Decimal marshals as a JSON string",
+	"err_relation_not_a_list":          "Members is a Nullable[[]string]",
+	"err_relation_element_type":        "Members is a Nullable[[]string]",
+	"err_relation_null_element":        "a []string holds no null",
+	"err_quoted_relation_bare_number":  "a Quoted marshals a JSON string",
+	"err_quoted_relation_not_a_number": "QuotedTags holds Quoted[int64] keys",
 }
 
 // A merge patch is its JSON, so the client's document equals the corpus
@@ -453,6 +470,72 @@ func TestClient_JSONPatchOperationsParse(t *testing.T) {
 		{string(patch.PatchOpAdd), "/tags"}, {string(patch.PatchOpRemove), "/tags"}, {string(patch.PatchOpReplace), "/tags"},
 	}, got)
 	assert.Equal(t, []any{"t3"}, parsed.Operations[4].Value, "a relation's remove carries its keys")
+}
+
+// opEntity declares every RFC 6902 operation on its members, so each
+// constructor's document reaches BuildUpdate.
+type opEntity struct {
+	ID   string  `json:"id"   db:"id"`
+	Name string  `json:"name" db:"name" parse:"patch" patch_ops:"replace,add,move,copy,test"`
+	Note *string `json:"note" db:"note" parse:"patch" patch_ops:"replace,add,remove,move,copy,test"`
+}
+
+// Every Operation constructor writes a document the server parses, and
+// BuildUpdate compiles it or answers the code its docs give.
+func TestClient_EveryOperationConstructorParses(t *testing.T) {
+	docs, err := parse.NewResource[schemaDocEntity]("doc_entities", parse.TenantColumn("tenant_id"))
+	require.NoError(t, err)
+	ops, err := parse.NewResource[opEntity]("op_entities")
+	require.NoError(t, err)
+	tags, scores := client.NewRelation[string]("tags"), client.NewOrderedArray[int16]("scores")
+	name, note := client.Pointer("name"), client.Pointer("note")
+	tests := []struct {
+		name string
+		op   client.Operation
+		docs bool // on schemaDocEntity, whose array and relation take it; else opEntity
+		want patch.PatchOp
+		code string // BuildUpdate's refusal; empty when it compiles
+	}{
+		{"replace", client.Replace(name, "pump"), false, patch.PatchOpReplace, ""},
+		{"remove", client.Remove(note), false, patch.PatchOpRemove, ""},
+		{"add", client.Add(name, "pump"), false, patch.PatchOpAdd, ""},
+		{"move", client.Move(note, name), false, patch.PatchOpMove, patch.ECodeOpNotSQLCompilable.String()},
+		{"copy", client.Copy(name, note), false, patch.PatchOpCopy, patch.ECodeOpNotSQLCompilable.String()},
+		{"test", client.Test(name, "pump"), false, patch.PatchOpTest, patch.ECodeTestOpSQL.String()},
+		{"append", client.Append(client.Pointer("scores"), 3), true, patch.PatchOpArrayAppend, ""},
+		{"array append", scores.Append(4), true, patch.PatchOpArrayAppend, ""},
+		{"relation add", tags.Add("t1"), true, patch.PatchOpAdd, ""},
+		{"relation remove", tags.Remove("t1"), true, patch.PatchOpRemove, ""},
+		{"relation replace", tags.Replace("t1"), true, patch.PatchOpReplace, ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			body, err := json.Marshal([]client.Operation{tt.op})
+			require.NoError(t, err)
+			var parsed *patch.ParsedPatch
+			if tt.docs {
+				parsed, err = docs.ParsePatch(body)
+			} else {
+				parsed, err = ops.ParsePatch(body)
+			}
+			require.NoError(t, err, "%s", body)
+			require.Len(t, parsed.Operations, 1)
+			assert.Equal(t, tt.want, parsed.Operations[0].Op)
+
+			if tt.docs {
+				_, err = docs.BuildUpdate(filter.PostgresDialect{}, parsed, parse.ByID("e1"), parse.Scope{Tenant: "t1"})
+			} else {
+				_, err = ops.BuildUpdate(filter.PostgresDialect{}, parsed, parse.ByID("e1"), parse.Scope{})
+			}
+			if tt.code == "" {
+				assert.NoError(t, err, "%s", body)
+				return
+			}
+			pe, ok := errors.AsType[*parse.ParseError](err)
+			require.True(t, ok, "%s: want a ParseError, got %v", body, err)
+			assert.Equal(t, tt.code, pe.Code, "%s", body)
+		})
+	}
 }
 
 // The client's list parameters are the server's: everything ListParams

@@ -19,9 +19,9 @@ func TestHiddenRelationDeclaredPatchName(t *testing.T) {
 	g := core.NewSchemaGenerator()
 	schema, err := patch.GeneratePatchSchema[row](g)
 	require.NoError(t, err)
-	require.Contains(t, schema.AllowedPaths, "/tag_ids")
-	require.NotContains(t, schema.AllowedPaths, "/tag_i_ds")
-	require.NotNil(t, schema.AllowedPaths["/tag_ids"].Relation)
+	require.NotNil(t, pathOf(schema, "/tag_ids"))
+	require.Nil(t, pathOf(schema, "/tag_i_ds"))
+	require.NotNil(t, pathOf(schema, "/tag_ids").Relation)
 	parser := patch.NewParser(schema, nil)
 	parsed, err := parser.Parse([]byte(`[{"op":"replace","path":"/tag_ids","value":["a"]}]`))
 	require.NoError(t, err)
@@ -37,7 +37,7 @@ func TestHiddenRelationDeclaredPatchName(t *testing.T) {
 	require.JSONEq(t, `{}`, string(encoded))
 	server, err := patch.GenerateServerPatchSchema[row](g)
 	require.NoError(t, err)
-	require.Contains(t, server.AllowedPaths, "/tag_ids")
+	require.NotNil(t, pathOf(server, "/tag_ids"))
 }
 
 func TestRelationPatchNameUsesVisibleTagFirst(t *testing.T) {
@@ -47,10 +47,10 @@ func TestRelationPatchNameUsesVisibleTagFirst(t *testing.T) {
 	}
 	schema, err := patch.GeneratePatchSchema[row](core.NewSchemaGenerator())
 	require.NoError(t, err)
-	require.Contains(t, schema.AllowedPaths, "/visible_tags")
-	require.Contains(t, schema.AllowedPaths, "/name")
-	require.NotContains(t, schema.AllowedPaths, "/tag_ids")
-	require.NotContains(t, schema.AllowedPaths, "/ignored")
+	require.NotNil(t, pathOf(schema, "/visible_tags"))
+	require.NotNil(t, pathOf(schema, "/name"))
+	require.Nil(t, pathOf(schema, "/tag_ids"))
+	require.Nil(t, pathOf(schema, "/ignored"))
 }
 
 func TestDuplicatePatchNamesFailConstruction(t *testing.T) {

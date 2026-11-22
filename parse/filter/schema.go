@@ -34,6 +34,11 @@ const (
 	// OpMember is a membership constraint (PolicyConstraint.Member): the
 	// field is among the values a Lookup projects. Only policies build it.
 	OpMember FilterOperator = "member"
+	// OpUnknown is SQL's unknown: no row satisfies it, nor its negation. It
+	// names no field. Only policies build it (UnknownConstraint,
+	// PolicyConstraint.UnknownIfInvalid, a membership resolved without a
+	// lookup).
+	OpUnknown FilterOperator = "unknown"
 
 	// Relation predicates on a field with a Related schema:
 	// some related row satisfies the node's child (the target's own
@@ -54,62 +59,6 @@ const (
 	OpOr  FilterOperator = "or"
 	OpNot FilterOperator = "not"
 )
-
-// ValidFilterOps is the set of all recognized filter operators.
-// Used by the schema generator to validate filter_ops tag values.
-var ValidFilterOps = map[FilterOperator]bool{
-	OpEq: true, OpNe: true, OpGt: true, OpGte: true, OpLt: true, OpLte: true,
-	OpIn: true, OpNin: true, OpLike: true, OpILike: true,
-	OpNull: true, OpNotNull: true, OpExists: true, OpContains: true, OpHasKey: true,
-	OpNear: true, OpWithin: true, OpIntersects: true,
-}
-
-// AllOperatorStrings returns every supported value-comparison operator as a
-// stable, sorted string slice. Used by the OPTIONS endpoint to advertise
-// the operator vocabulary to clients.
-//
-// Logical operators ($and/$or/$not) and the geo operators are intentionally
-// excluded — the former are query-tree shape, not field-level comparisons,
-// and the latter only apply to geo-typed fields whose schema entry already
-// declares them.
-func AllOperatorStrings() []string {
-	return []string{
-		string(OpEq), string(OpNe),
-		string(OpGt), string(OpGte), string(OpLt), string(OpLte),
-		string(OpIn), string(OpNin),
-		string(OpLike), string(OpILike), string(OpContains), string(OpHasKey),
-		string(OpNull), string(OpNotNull), string(OpExists),
-	}
-}
-
-// OperatorFromString maps a JSON operator key (e.g. "$eq") to FilterOperator.
-var OperatorFromString = map[string]FilterOperator{
-	"$eq":         OpEq,
-	"$ne":         OpNe,
-	"$gt":         OpGt,
-	"$gte":        OpGte,
-	"$lt":         OpLt,
-	"$lte":        OpLte,
-	"$in":         OpIn,
-	"$nin":        OpNin,
-	"$like":       OpLike,
-	"$ilike":      OpILike,
-	"$null":       OpNull,
-	"$not_null":   OpNotNull,
-	"$exists":     OpExists,
-	"$contains":   OpContains,
-	"$has_key":    OpHasKey,
-	"$near":       OpNear,
-	"$within":     OpWithin,
-	"$intersects": OpIntersects,
-	"$some":       OpSome,
-	"$none":       OpNone,
-	"$is":         OpIs,
-	"$is_not":     OpIsNot,
-	"$or":         OpOr,
-	"$and":        OpAnd,
-	"$not":        OpNot,
-}
 
 // --- Filter Schema ---
 
@@ -133,6 +82,21 @@ type ResourceSchema struct {
 	// policyRefused are the names a generated schema refuses to policies,
 	// with the error each returns (PolicyField).
 	policyRefused map[string]error
+}
+
+// RequestField resolves a field name a request filter uses, in either
+// grammar: a request field (Fields), or the key (PrimaryKey) from
+// SystemFields. The tenant and soft-delete columns are system fields only
+// policies reach; a request's handle on deleted rows is include_deleted.
+func (s *ResourceSchema) RequestField(name string) (*FieldSchema, bool) {
+	if f, ok := s.Fields[name]; ok {
+		return f, true
+	}
+	if name != "" && name == s.PrimaryKey {
+		f, ok := s.SystemFields[name]
+		return f, ok
+	}
+	return nil, false
 }
 
 // FieldSchema defines a single filterable field.
@@ -233,8 +197,8 @@ type FilterNode struct {
 	Children []*FilterNode
 
 	// RawSQL/RawArgs hold a pre-built SQL expression for OpRawSQL nodes.
-	// Placeholder params are rewritten by the SQL builder to use the correct
-	// dialect-specific parameter indices.
+	// The SQL builder renders it in parentheses and rewrites every `$N` in
+	// it, string literals included, to the dialect's parameter indices.
 	RawSQL  string
 	RawArgs []any
 
@@ -263,15 +227,6 @@ type ParsedFilter struct {
 	AST            *FilterAST
 	EstimatedCost  int
 	ConditionCount int
-}
-
-// AuditInfo returns a map of audit-relevant information for the parsed filter.
-func (f *ParsedFilter) AuditInfo() map[string]any {
-	return map[string]any{
-		"has_filter":      f.AST != nil && f.AST.Root != nil,
-		"estimated_cost":  f.EstimatedCost,
-		"condition_count": f.ConditionCount,
-	}
 }
 
 // --- Sort Schema ---
@@ -370,64 +325,4 @@ type SortField struct {
 	Name      string
 	Schema    *SortFieldSchema
 	Direction SortDirection
-}
-
-// --- Policy Types ---
-
-// PolicyConstraint represents a single policy-derived filter condition.
-type PolicyConstraint struct {
-	Field    string
-	Operator FilterOperator
-	Value    any
-	Negate   bool
-	// UnknownIfInvalid compiles a value that does not apply to the field —
-	// its type, or the operator's — to SQL's unknown instead of an error:
-	// no row satisfies it, nor its negation, so it narrows whatever group
-	// holds it. Authorization sets it: a policy value no row can hold
-	// neither fails a list nor widens one.
-	UnknownIfInvalid bool
-
-	// RawSQL is a pre-built SQL expression injected directly into the WHERE clause.
-	// When set, Field/Operator/Value are ignored. Use parameterized placeholders ($1, $2)
-	// with RawArgs. This enables subquery-based constraints like grant-aware scoping.
-	RawSQL  string
-	RawArgs []any
-
-	// Member makes the constraint a membership: Field's value is one of the
-	// values the lookup projects. Operator, Value and RawSQL
-	// are unused. Every backend evaluates it — SQL as a subquery, memory
-	// through ResolveMemberships — unlike RawSQL, which memory cannot.
-	Member *Lookup
-}
-
-// PolicyConstraints is a composable collection of constraints.
-type PolicyConstraints struct {
-	Constraints []*PolicyConstraint
-	Or          []*PolicyConstraints
-	And         []*PolicyConstraints
-	// Not negates the group: a row is admitted when it does not satisfy it.
-	Not      bool
-	Source   string
-	PolicyID string
-}
-
-// IsEmpty returns true when there are no constraints.
-func (pc *PolicyConstraints) IsEmpty() bool {
-	if pc == nil {
-		return true
-	}
-	return len(pc.Constraints) == 0 && len(pc.Or) == 0 && len(pc.And) == 0
-}
-
-// Merge combines two PolicyConstraints with AND semantics.
-func (pc *PolicyConstraints) Merge(other *PolicyConstraints) *PolicyConstraints {
-	if other == nil || other.IsEmpty() {
-		return pc
-	}
-	if pc == nil || pc.IsEmpty() {
-		return other
-	}
-	return &PolicyConstraints{
-		And: []*PolicyConstraints{pc, other},
-	}
 }

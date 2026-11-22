@@ -47,11 +47,11 @@ A catalog field's type follows the operators its value type can declare on the s
 | `Time` (`Ordered[Moment]`) | timestamp | `Ordered`'s, with `At(t)`, `Now()`, `Ago(d)` or `FromNow(d)` operands |
 | `Ordered[Quoted[T]]`, `Field[Quoted[T]]` | a bool, integer or float the server declares `json:",string"` (schema `"wire": "string"`) | as for `T`, with `Quote(v)` operands sent as JSON strings (`"9007199254740993"`) |
 | `Document[V]` | JSON document | `Eq`, `Ne`, `Contains`, `HasKey`, `Null`, `NotNull` |
-| `Array[E]`, `OrderedArray[E]`, `TextArray` | array of keys / numbers, decimals, timestamps / strings: a column or a declared document member | `Contains`, `Null`, `NotNull`, `Some`, `None` (a condition on one element); `Element()` is a `Field[E]`, `Ordered[E]` or `Text` whose comparisons, combined by `And`, `Or` and `Not`, build that condition |
+| `Array[E]`, `OrderedArray[E]`, `TextArray` | array of keys / numbers, decimals, timestamps / strings: a column or a declared document member | `Contains`, `Null`, `NotNull`, `Some`, `None` (a condition on one element); `Element()` is a `Field[E]`, `Ordered[E]` or `Text` whose comparisons, combined by `And`, `Or` and `Not`, build that condition; `Append(e)`, an `array_append` operation on an array column |
 | `Elements[V]` | JSON array of objects | `Document`'s, `Some`, `None` (a filter over element members) |
 | `Relation[K]` | has-many or many-to-many | `Field`'s on target keys, `Some`, `None` (a filter over the target); `Replace`, `Add`, `Remove` membership operations |
 | `Reference[K]` | belongs-to | `Field`'s on the target key, `Is`, `IsNot` |
-| `Geo` | geographic | `Near(point, meters)`, `Within(shape)`, `Intersects(shape)`, `Null`, `NotNull` |
+| `Geo` | geographic | `Near(point, meters)` (meters positive and finite), `Within(shape)`, `Intersects(shape)`, `Null`, `NotNull` |
 
 `SortableField[V]`, `SortableOrdered[V]`, `SortableText` and `SortableTime` add `Asc` and `Desc`; a sort-only field is a `SortKey`.
 
@@ -65,19 +65,21 @@ A `Quoted[T]` travels as encoding/json writes a `json:",string"` field: its JSON
 
 - **Filter** encodes every condition in operator form (`{"name":{"$eq":"a"}}`), so a document value whose members start with `$` is never read as operators. `And` and `Or` flatten nested groups, so a filter built up in a loop stays within the server's nesting depth. The zero `Filter` matches every row and encodes as `{}`.
 - **ListParams** encodes the list parameters `Resource.ParseList` reads (`filter`, `sort`, `cursor`, `page_size`, `include_total`, `include_deleted`, `search`, `facets`, `include`, `fields`) and leaves zero members out: `Values` as a query string, `Body` as the JSON document `Resource.ParseListBody` reads from a POST, for a request too large for a URL.
-- **Nullable[T]** is a merge-patch (RFC 7386) member: with the `omitzero` tag option the zero value is absent, `Null[T]()` clears the field, `Set(v)` writes it.
-- **Operation** is a JSON Patch (RFC 6902) operation; a `[]Operation` is the document. `Pointer(tokens...)` escapes member names into a JSON Pointer.
+- **Nullable[T]** is a merge-patch (RFC 7396) member: with the `omitzero` tag option the zero value is absent, `Null[T]()` clears the field, `Set(v)` writes it. Tag every `Nullable` member `omitzero`: `omitempty` does not omit a struct, so an absent member under it (or under no option) would encode as `null` and clear its column; encoding one is `ErrAbsentMember` instead. `Set` of a nil slice or map writes the empty one, and `Set` of a nil pointer is `Null`, since that is what it encodes.
+- **Operation** is a JSON Patch (RFC 6902) operation; a `[]Operation` is the document. `Append(path, element)` and `Array[E].Append(e)` write parse's `array_append` extension, which appends one element to an array column atomically. `Pointer(tokens...)` escapes member names into a JSON Pointer.
 
 ## Errors
 
-The client refuses only what the grammar cannot express; the server judges everything else. A refused filter carries its error (`Filter.Err`), and encoding it, or `ListParams.Values`, returns it.
+The client refuses only what the grammar cannot express; the server judges everything else (an operator a field does not allow, a value out of bounds, a distance past the Earth's circumference). A filter is refused where it is built: it carries its error (`Filter.Err`) from then on, and encoding it, `ListParams.Values` or `ListParams.Body` returns it. Operands are encoded when their condition is built, so a filter never shares the caller's values.
 
 | Sentinel | When |
 |----------|------|
 | `ErrEmptyOr` | `Or()` of no filters, which would match no row |
 | `ErrNegatedEmpty` | `Not` of the empty filter, which would match no row |
-| `ErrSubSecond` | A relative `Moment` that is not a whole number of seconds |
+| `ErrOperand` | An operand with no spelling in the grammar: a non-finite number (`NaN`, `±Inf`, also inside a `Quoted`, a `Point` or a document), a `Near` distance that is not positive, a value encoding/json cannot encode. It wraps the cause |
+| `ErrSubSecond` | A relative `Moment` that is not a whole number of seconds; in a filter, wrapped by `ErrOperand` |
 | `ErrElementCondition` | A comparison of an array's `Element()` outside that array's `Some` or `None` (carried when nested in another `Some`, `None`, `Is` or `IsNot`; returned when encoded at the top), or a field's condition inside them |
+| `ErrAbsentMember` | An absent `Nullable` encoded: its struct member is not tagged `omitzero` |
 
 ## API Reference
 
@@ -88,8 +90,9 @@ The client refuses only what the grammar cannot express; the server judges every
 - `Order`, `Sort` — sort orders; `Sort.String` is the sort parameter
 - `ListParams.Values` — a list request's query parameters
 - `ListParams.Body` — the same request as a POST body
-- `Nullable[T]`, `Null[T]`, `Set` — merge-patch members
-- `Operation`, `Add`, `Remove`, `Replace`, `Move`, `Copy`, `Test`, `Pointer` — JSON Patch
+- `Nullable[T]`, `Null[T]`, `Set` — merge-patch members; `ErrAbsentMember`
+- `Operation`, `Add`, `Remove`, `Replace`, `Move`, `Copy`, `Test`, `Append`, `Pointer` — JSON Patch
+- `ErrEmptyOr`, `ErrNegatedEmpty`, `ErrElementCondition`, `ErrOperand`, `ErrSubSecond` — what the grammar cannot express
 
 ## Testing
 
@@ -100,14 +103,14 @@ The client refuses only what the grammar cannot express; the server judges every
 - the client refuses it itself;
 - or the client's types cannot express it.
 
-A new corpus case fails the test until it is classified. The same file holds the list parameters to `ParseList`, and checks that JSON Patch operations and geo filters parse.
+A new corpus case fails the test until it is classified. The same file holds the list parameters to `ParseList`, parses a document from every `Operation` constructor and checks the code `BuildUpdate` answers for each, and checks that geo filters parse.
 
 ## Key Files
 
 | File | Responsibility |
 |------|----------------|
 | `doc.go` | Package overview |
-| `filter.go` | `Filter`, `And`, `Or`, `Not`, encoding, `ErrEmptyOr`, `ErrNegatedEmpty`, `ErrElementCondition` |
+| `filter.go` | `Filter`, `And`, `Or`, `Not`, encoding, `ErrEmptyOr`, `ErrNegatedEmpty`, `ErrElementCondition`, `ErrOperand` |
 | `field.go` | `Field`, `Ordered`, `Text`, `Time`, `SortKey` and the sortable variants |
 | `moment.go` | `Moment` (`At`, `Now`, `Ago`, `FromNow`), `ErrSubSecond` |
 | `quoted.go` | `Quoted[T]`, `Quote`, `QuotedScalar`: values of `json:",string"` fields |
@@ -116,7 +119,7 @@ A new corpus case fails the test until it is classified. The same file holds the
 | `geo.go` | `Geo`, `Point`, `Shape` (`Box`, `Polygon`) |
 | `sort.go` | `Order`, `Sort` |
 | `list.go` | `ListParams` |
-| `patch.go` | `Nullable`, `Operation`, `Pointer` |
+| `patch.go` | `Nullable`, `ErrAbsentMember`, `Operation`, `Append`, `Pointer` |
 
 ## Dependencies
 

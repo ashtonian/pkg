@@ -143,7 +143,10 @@ func TestResource_ApplyPatch(t *testing.T) {
 
 func TestResource_ListQuery(t *testing.T) {
 	tp := parse.MustResource[TestDevice]("test_devices")
-	lq := tp.ListQuery(filter.PostgresDialect{})
+	lq, err := tp.ListQuery(filter.PostgresDialect{})
+	if err != nil {
+		t.Fatal(err)
+	}
 	result, err := lq.Build(
 		filter.ListFilter(`{"status":"active"}`),
 		filter.ListLimit(10),
@@ -176,8 +179,8 @@ func TestResource_Conventions(t *testing.T) {
 	if tp.FilterSchema().Fields["id"].SQLExpr != "item.item_id" {
 		t.Errorf("expected item.item_id, got %q", tp.FilterSchema().Fields["id"].SQLExpr)
 	}
-	if tp.PatchSchema().AllowedPaths["/name"].SQLColumn != "item_name" {
-		t.Errorf("expected item_name, got %q", tp.PatchSchema().AllowedPaths["/name"].SQLColumn)
+	if pathOf(tp.PatchSchema(), "/name").SQLColumn != "item_name" {
+		t.Errorf("expected item_name, got %q", pathOf(tp.PatchSchema(), "/name").SQLColumn)
 	}
 }
 
@@ -197,7 +200,7 @@ func TestSchemaRegistry_Register(t *testing.T) {
 	if !ok {
 		t.Fatal("expected patch schema")
 	}
-	if _, ok := ps.AllowedPaths["/name"]; !ok {
+	if _, ok := ps.Path("/name"); !ok {
 		t.Error("expected /name path")
 	}
 }
@@ -455,11 +458,13 @@ func BenchmarkApplyPatch_JSONPath(b *testing.B) {
 }
 
 func BenchmarkBuildPatchSQL_WithStartParam(b *testing.B) {
-	parsed := &patch.ParsedPatch{
-		Operations: []*patch.PatchOperation{
-			{Op: patch.PatchOpReplace, Path: "/name", Value: "new", Schema: &patch.PathSchema{SQLColumn: "name", DataType: core.FieldTypeString}},
-			{Op: patch.PatchOpReplace, Path: "/status", Value: "active", Schema: &patch.PathSchema{SQLColumn: "status", DataType: core.FieldTypeString}},
-		},
+	schema := newSchema("devices", 0, map[string]*patch.PathSchema{
+		"/name":   {AllowedOps: []patch.PatchOp{patch.PatchOpReplace}, DataType: core.FieldTypeString, SQLColumn: "name"},
+		"/status": {AllowedOps: []patch.PatchOp{patch.PatchOpReplace}, DataType: core.FieldTypeString, SQLColumn: "status"},
+	})
+	parsed, err := patch.NewParser(schema, nil).Parse([]byte(`[{"op":"replace","path":"/name","value":"new"},{"op":"replace","path":"/status","value":"active"}]`))
+	if err != nil {
+		b.Fatal(err)
 	}
 	res, err := patch.BuildPatchSQL(parsed, filter.PostgresDialect{}, patch.WithStartParam(4))
 	if err != nil || res.SetClause != "name = $5, status = $6" || res.ParamCount != 2 {

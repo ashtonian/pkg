@@ -10,6 +10,56 @@ import (
 	"github.com/ashtonian/pkg/parse/core"
 )
 
+// PolicyConstraint represents a single policy-derived filter condition.
+type PolicyConstraint struct {
+	Field    string
+	Operator FilterOperator
+	Value    any
+	Negate   bool
+	// UnknownIfInvalid compiles a value that does not apply to the field —
+	// its type, or the operator's — to SQL's unknown instead of an error:
+	// no row satisfies it, nor its negation, so it narrows whatever group
+	// holds it. Authorization sets it: a policy value no row can hold
+	// neither fails a list nor widens one.
+	UnknownIfInvalid bool
+
+	// RawSQL is a pre-built SQL expression injected into the WHERE clause
+	// in parentheses, so it is one operand of the AND, OR or NOT that holds
+	// it: `a OR b` needs no parentheses of its own. When set,
+	// Field/Operator/Value are ignored. Use parameterized placeholders ($1,
+	// $2) with RawArgs. This enables subquery-based constraints like
+	// grant-aware scoping. Every `$N` in it is a placeholder, inside a string
+	// literal or dollar-quoted text too: write a literal `$` some other way.
+	RawSQL  string
+	RawArgs []any
+
+	// Member makes the constraint a membership: Field's value is one of the
+	// values the lookup projects. Operator, Value and RawSQL
+	// are unused. Every backend evaluates it — SQL as a subquery, memory
+	// through ResolveMemberships — unlike RawSQL, which memory cannot.
+	Member *Lookup
+}
+
+// PolicyConstraints is a composable collection of constraints.
+type PolicyConstraints struct {
+	Constraints []*PolicyConstraint
+	Or          []*PolicyConstraints
+	And         []*PolicyConstraints
+	// Not negates the group: a row is admitted when it does not satisfy it.
+	Not bool
+}
+
+// IsEmpty reports whether pc constrains nothing: no constraints, no groups
+// and no negation. A negated group is never empty, so it always reaches
+// compilation, which refuses one with nothing to negate (E2072) rather than
+// let it admit every row.
+func (pc *PolicyConstraints) IsEmpty() bool {
+	if pc == nil {
+		return true
+	}
+	return !pc.Not && len(pc.Constraints) == 0 && len(pc.Or) == 0 && len(pc.And) == 0
+}
+
 // ApplyPolicyConstraints merges policy constraints into the filter AST.
 // Constraint values are normalized as request values are,
 // since dialects and the memory backend read canonical values only; request
@@ -120,6 +170,9 @@ func constraintToNode(norm *FilterParser, schema *ResourceSchema, c *PolicyConst
 		}
 		return node, nil
 	}
+	if c.Operator == OpUnknown { // its own negation: NOT unknown is unknown
+		return unknownNode(), nil
+	}
 
 	field, ok, err := schema.PolicyField(c.Field)
 	if err != nil {
@@ -160,41 +213,46 @@ func constraintToNode(norm *FilterParser, schema *ResourceSchema, c *PolicyConst
 	return node, nil
 }
 
-// unknownSQL is a predicate whose value is SQL's unknown on every backend:
-// NULL in SQL, and the memory evaluator's unknown for a raw predicate.
+// unknownSQL is how SQL writes its unknown (OpUnknown).
 const unknownSQL = "NULL"
 
-// UnknownConstraint returns the constraint whose value is SQL's unknown: no
-// row satisfies it, nor its negation. A group holding it admits no row; a
-// negated group holding it still excludes the rows its other constraints
-// match.
+// UnknownConstraint returns the constraint whose value is SQL's unknown
+// (OpUnknown): no row satisfies it, nor its negation. A group holding it
+// admits no row; a negated group holding it still excludes the rows its
+// other constraints match.
 func UnknownConstraint() *PolicyConstraint {
-	return &PolicyConstraint{RawSQL: unknownSQL}
+	return &PolicyConstraint{Operator: OpUnknown}
 }
 
 func unknownNode() *FilterNode {
-	return &FilterNode{Op: OpRawSQL, RawSQL: unknownSQL}
+	return &FilterNode{Op: OpUnknown}
 }
 
 // policyValue returns the operator and canonical value a constraint compiles
-// to. The NULL tests carry no value (`$exists` maps onto them, as in the
-// filter grammar); typed geo shapes are validated as built; everything else
+// to. The NULL tests compile to a bare `$null` or `$not_null`: without a
+// value they are the test their operator names, and a boolean means what the
+// filter grammar means by it (`$null: false` is `$not_null`, `$exists` maps
+// onto them); typed geo shapes are validated as built; everything else
 // normalizes through the request path. The operator must apply to the
-// field's type — policies bypass a field's declared
-// operators, not its type.
+// field's type — policies bypass a field's declared operators, not its
+// type.
 func policyValue(norm *FilterParser, field *FieldSchema, op FilterOperator, value any) (FilterOperator, any, error) {
 	switch op {
-	case OpNull, OpNotNull:
-		return op, nil, nil
-	case OpExists:
-		exists, ok := value.(bool)
-		if !ok {
-			return "", nil, newFilterError(ECodeValueTypeMismatch, fmt.Sprintf("$exists requires a boolean value, got %T", value))
+	case OpNull, OpNotNull, OpExists:
+		isNull := op == OpNull
+		if value != nil || op == OpExists {
+			want, ok := value.(bool)
+			if !ok {
+				return "", nil, newFilterError(ECodeValueTypeMismatch, fmt.Sprintf("$%s requires a boolean value, got %T", op, value))
+			}
+			if !want {
+				isNull = !isNull
+			}
 		}
-		if exists {
-			return OpNotNull, nil, nil
+		if isNull {
+			return OpNull, nil, nil
 		}
-		return OpNull, nil, nil
+		return OpNotNull, nil, nil
 	}
 	if field.DataType != "" && !slices.Contains(OperatorsFor(field.DataType, field.Relation != nil), op) {
 		return "", nil, newFilterError(ECodeInvalidOperator, fmt.Sprintf("operator '%s' does not apply to %s field '%s'", op, field.DataType, field.ExternalName))

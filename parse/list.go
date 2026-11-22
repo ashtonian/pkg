@@ -279,7 +279,7 @@ type Scope struct {
 	// (filter.ComposeConstraints). A row's relations are its own tenant's:
 	// relation predicates, counts, facets and includes hold every
 	// tenant-scoped related row, at every depth, to the tenant of the
-	// listed row it hangs from (filter.ListRowTenant), so a granted row of
+	// listed row it hangs from (filter.RelationScope.RowTenant), so a granted row of
 	// another tenant is filtered and included by its own related rows.
 	// Tenant is then not used; on a resource without a tenant column,
 	// whose rows have no tenant, relations stay held to Tenant.
@@ -339,13 +339,11 @@ type ListPlan struct {
 	// compiled for dialect.
 	fields *filter.ResourceSchema
 	table  string
-	// tenant is Scope.Tenant in the tenant key's type; nil without one or
-	// when relations follow each row's tenant (rowTenant).
-	tenant any
-	// rowTenant holds the includes' related rows to each owner's tenant:
-	// a governed list (Scope.Governance).
-	rowTenant bool
-	related   map[string]*filter.PolicyConstraints
+	// relations is the scope the plan's statements reach related rows
+	// with, and its includes read them with: Scope.Tenant in the tenant
+	// key's type, or, for a governed list (Scope.Governance), each owner
+	// row's own tenant; and Scope.Related.
+	relations filter.RelationScope
 }
 
 // Dialect is the dialect the plan's statements are written for.
@@ -389,6 +387,10 @@ func (r *Resource[T]) BuildList(d filter.Dialect, req *ListRequest, s Scope) (*L
 	if pageSize <= 0 {
 		pageSize = r.pageSize
 	}
+	relations := filter.RelationScope{Tenant: tenant, Related: s.Related}
+	if rowTenant {
+		relations.RowTenant = r.tenant
+	}
 	opts := []filter.ListOption{
 		filter.ListLimit(pageSize),
 		filter.ListMaxLimit(r.maxPageSize),
@@ -396,13 +398,7 @@ func (r *Resource[T]) BuildList(d filter.Dialect, req *ListRequest, s Scope) (*L
 		filter.ListCursor(req.Cursor),
 		filter.ListSearch(req.Search),
 		filter.ListWithCount(req.IncludeTotal),
-		filter.ListRelatedPolicies(s.Related),
-	}
-	switch {
-	case rowTenant:
-		opts = append(opts, filter.ListRowTenant(r.tenant))
-	case tenant != nil:
-		opts = append(opts, filter.ListTenant(tenant))
+		filter.ListRelationScope(relations),
 	}
 	if req.Filter != nil {
 		ast, err := v.filterAST(d, req.Filter.AST)
@@ -417,7 +413,11 @@ func (r *Resource[T]) BuildList(d filter.Dialect, req *ListRequest, s Scope) (*L
 	if len(req.Facets) > 0 {
 		opts = append(opts, filter.ListFacets(req.Facets...))
 	}
-	res, err := v.listQuery(d, r.cfg).Build(opts...)
+	lq, err := v.listQuery(d, r.cfg)
+	if err != nil {
+		return nil, err
+	}
+	res, err := lq.Build(opts...)
 	if err != nil {
 		return nil, err
 	}
@@ -431,9 +431,7 @@ func (r *Resource[T]) BuildList(d filter.Dialect, req *ListRequest, s Scope) (*L
 		dialect:   d,
 		fields:    v.filter,
 		table:     r.table,
-		tenant:    tenant,
-		rowTenant: rowTenant,
-		related:   s.Related,
+		relations: relations,
 	}
 	if req.IncludeTotal {
 		plan.Count = &Statement{SQL: res.CountSQL, Args: res.CountArgs}
@@ -476,13 +474,7 @@ func (r *Resource[T]) IncludeQueries(plan *ListPlan, ownerKeys []any) ([]filter.
 	if len(plan.Include) == 0 || len(ownerKeys) == 0 {
 		return nil, nil
 	}
-	opts := []filter.IncludeQueryOption{filter.WithIncludeRelatedPolicies(plan.related)}
-	switch {
-	case plan.rowTenant:
-		opts = append(opts, filter.WithIncludeRowTenant(plan.fields, r.tenant))
-	case plan.tenant != nil:
-		opts = append(opts, filter.WithIncludeTenant(plan.tenant))
-	}
+	opts := []filter.IncludeQueryOption{filter.WithIncludeRelationScope(plan.relations), filter.WithIncludeOwner(plan.fields)}
 	out := make([]filter.IncludeQuery, 0, len(plan.Include))
 	for _, name := range plan.Include {
 		q, err := filter.BuildIncludeQuery(plan.fields.Fields[name], plan.dialect, ownerKeys, opts...)

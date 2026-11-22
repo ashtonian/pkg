@@ -21,32 +21,28 @@ import (
 // foldSchema models a row with an array column, a scalar column, a
 // server-managed timestamp and a server-moved version.
 func foldSchema() *patch.PatchSchema {
-	return &patch.PatchSchema{
-		Resource:      "items",
-		MaxOperations: 50,
-		AllowedPaths: map[string]*patch.PathSchema{
-			"/tags": {
-				AllowedOps: []patch.PatchOp{patch.PatchOpReplace, patch.PatchOpAdd, patch.PatchOpRemove, patch.PatchOpArrayAppend},
-				DataType:   core.FieldTypeArray, SQLColumn: "tags",
-			},
-			"/name": {
-				AllowedOps: []patch.PatchOp{patch.PatchOpReplace, patch.PatchOpRemove, patch.PatchOpMove, patch.PatchOpCopy, patch.PatchOpTest},
-				DataType:   core.FieldTypeString, SQLColumn: "name",
-			},
-			"/updated_at": {
-				AllowedOps: []patch.PatchOp{patch.PatchOpReplace},
-				DataType:   core.FieldTypeTimestamp, SQLColumn: "updated_at",
-			},
-			"/version": {
-				AllowedOps: []patch.PatchOp{patch.PatchOpReplace},
-				DataType:   core.FieldTypeInt, SQLColumn: "version",
-			},
-			"/meta/*": {
-				AllowedOps: []patch.PatchOp{patch.PatchOpReplace},
-				DataType:   core.FieldTypeString, SQLColumn: "meta",
-			},
+	return newSchema("items", 50, map[string]*patch.PathSchema{
+		"/tags": {
+			AllowedOps: []patch.PatchOp{patch.PatchOpReplace, patch.PatchOpAdd, patch.PatchOpRemove, patch.PatchOpArrayAppend},
+			DataType:   core.FieldTypeArray, SQLColumn: "tags",
 		},
-	}
+		"/name": {
+			AllowedOps: []patch.PatchOp{patch.PatchOpReplace, patch.PatchOpRemove, patch.PatchOpMove, patch.PatchOpCopy, patch.PatchOpTest},
+			DataType:   core.FieldTypeString, SQLColumn: "name",
+		},
+		"/updated_at": {
+			AllowedOps: []patch.PatchOp{patch.PatchOpReplace},
+			DataType:   core.FieldTypeTimestamp, SQLColumn: "updated_at",
+		},
+		"/version": {
+			AllowedOps: []patch.PatchOp{patch.PatchOpReplace},
+			DataType:   core.FieldTypeInt, SQLColumn: "version",
+		},
+		"/meta/*": {
+			AllowedOps: []patch.PatchOp{patch.PatchOpReplace},
+			DataType:   core.FieldTypeString, SQLColumn: "meta",
+		},
+	})
 }
 
 type foldCase struct {

@@ -3,6 +3,7 @@ package client
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 )
 
 var (
@@ -15,6 +16,11 @@ var (
 	// ErrElementCondition reports a comparison of an array's Element outside
 	// that array's Some or None, or a field's condition inside them.
 	ErrElementCondition = errors.New("client: an array element's conditions belong alone in the array's Some or None")
+	// ErrOperand reports an operand the grammar has no spelling for: a
+	// non-finite number, a distance that is not positive, a relative time
+	// finer than a second (ErrSubSecond), or a value encoding/json cannot
+	// encode. It wraps the cause.
+	ErrOperand = errors.New("client: an operand the grammar cannot express")
 )
 
 // Filter is a filter expression in parse's request grammar, sent as a list's
@@ -22,8 +28,8 @@ var (
 // field methods build conditions, and And, Or and Not combine them.
 //
 // A filter the grammar cannot express (an Or of nothing, Not of the empty
-// filter, a sub-second relative time) carries its error, and encoding it
-// returns that error.
+// filter, an operand with no spelling in it) carries its error from the
+// moment it is built, and encoding it returns that error.
 type Filter struct {
 	n   *node
 	err error
@@ -31,11 +37,13 @@ type Filter struct {
 
 // node is a condition ({field: {op: operand}}) or a logical node ($and and
 // $or over children, $not over one child). A condition on an array's
-// element names no field ({op: operand}).
+// element names no field ({op: operand}). The operand is encoded when the
+// condition is built, so an operand that cannot be encoded is the filter's
+// error at once and a filter never aliases the caller's values.
 type node struct {
 	op       string
 	field    string
-	operand  any
+	operand  json.RawMessage
 	children []*node
 }
 
@@ -195,7 +203,11 @@ func logical(op string, children []*node) Filter {
 }
 
 func condition(field, op string, operand any) Filter {
-	return Filter{n: &node{field: field, op: op, operand: operand}}
+	raw, err := json.Marshal(operand)
+	if err != nil {
+		return Filter{err: fmt.Errorf("%w: %s %s: %w", ErrOperand, field, op, err)}
+	}
+	return Filter{n: &node{field: field, op: op, operand: raw}}
 }
 
 // nested is a condition whose operand is a filter over a relation's target
@@ -210,8 +222,8 @@ func nested(field, op string, f Filter) Filter {
 	return condition(field, op, f)
 }
 
-// list copies vs, so a filter never shares the caller's backing array, and
-// encodes no values as [] rather than null.
+// list encodes no values as [] rather than null, and copies vs, so a value
+// built from it never shares the caller's backing array.
 func list[V any](vs []V) []V {
 	return append(make([]V, 0, len(vs)), vs...)
 }

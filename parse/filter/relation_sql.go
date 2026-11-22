@@ -15,20 +15,14 @@ import (
 // related rows the caller may see are undecided, so nothing is built.
 var ErrRelatedPolicyRequired = errors.New("filter: a policy-scoped relation is built without the target's policy")
 
-// WithRelatedPolicies supplies the server's policy for the target tables of
-// policy-scoped relations (core.RelationSchema.Policy), keyed by table. A
-// relation predicate on one without its table's policy fails with
-// ErrRelatedPolicyRequired.
-func WithRelatedPolicies(policies map[string]*PolicyConstraints) SQLBuilderOption {
-	return func(c *sqlBuilderConfig) { c.related = policies }
-}
-
 // buildRelated compiles an OpSome / OpNone relation predicate
 // to one correlated EXISTS / NOT EXISTS over the related rows: the junction
 // or target rows correlated to the owner, held to the tenant (or the
 // target's policy) and to live rows, satisfying the node's child — the
 // target's own filter — on one row. Each depth has its own aliases, so a
-// relation back to the owner's table does not shadow it.
+// relation back to the owner's table does not shadow it. Every relation
+// subquery is built here, a pair table the relation tag declares included
+// (buildPairTable).
 func (b *SQLBuilder) buildRelated(s *buildState, node *FilterNode) (string, error) {
 	rel, target := node.Field.Relation, node.Field.Related
 	if target == nil {
@@ -142,12 +136,15 @@ func writeTable(sb *strings.Builder, table, alias string) {
 }
 
 // rebaseNode is n with every field moved from table to alias: expressions
-// that are table's columns, or JSON paths into them, name alias instead. A
-// field computed some other way, or raw policy SQL, cannot be moved and is
-// an error.
+// that are table's columns, or JSON paths into them, name alias instead.
+// SQL's unknown names no table and stays as it is. A field computed some
+// other way, or raw policy SQL, cannot be moved and is an error.
 func rebaseNode(n *FilterNode, table, alias string, moved map[*FieldSchema]*FieldSchema) (*FilterNode, error) {
 	if n == nil {
 		return nil, nil
+	}
+	if n.Op == OpUnknown {
+		return n, nil
 	}
 	if n.Op == OpRawSQL {
 		return nil, fmt.Errorf("raw SQL cannot be applied to the aliased relation table %s", alias)

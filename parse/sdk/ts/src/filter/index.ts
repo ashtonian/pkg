@@ -1,4 +1,5 @@
-export { filter, FilterBuilder, sort, SortBuilder } from "./builder.js";
+export { and, filter, FilterBuilder, not, or, sort, SortBuilder } from "./builder.js";
+export type { Filterable } from "./builder.js";
 export { validateFilter, validateSort } from "./validate.js";
 export type {
   ElementCondition,

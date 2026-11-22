@@ -99,10 +99,14 @@ func TestGeneratedSortSchemaValidatesCursorRangeAndNullableValues(t *testing.T) 
 		for _, value := range []any{true, "bad", nil, int64(256)} {
 			encoded, encodeErr := filter.EncodeCursor(&filter.PageToken{Fields: []filter.CursorField{{Name: "id", Direction: filter.SortAsc, Value: value}}})
 			require.NoError(t, encodeErr)
-			_, encodeErr = filter.NewListQuery(p.FilterSchema(), p.SortSchema(), dialect).Build(filter.ListCursor(encoded))
+			lq, encodeErr := filter.NewListQuery(p.FilterSchema(), p.SortSchema(), dialect)
+			require.NoError(t, encodeErr)
+			_, encodeErr = lq.Build(filter.ListCursor(encoded))
 			require.Error(t, encodeErr)
 			// Filter-only PKs retain their numeric range too.
-			_, encodeErr = filter.NewListQuery(p.FilterSchema(), nil, dialect).Build(filter.ListCursor(encoded))
+			lq, encodeErr = filter.NewListQuery(p.FilterSchema(), nil, dialect)
+			require.NoError(t, encodeErr)
+			_, encodeErr = lq.Build(filter.ListCursor(encoded))
 			require.Error(t, encodeErr)
 		}
 	}
@@ -131,7 +135,9 @@ func TestSystemFieldCursorTieBreakerValidatesType(t *testing.T) {
 			for _, value := range values {
 				encoded, err := filter.EncodeCursor(&filter.PageToken{Fields: []filter.CursorField{{Name: "id", Direction: filter.SortAsc, Value: value}}})
 				require.NoError(t, err)
-				_, err = filter.NewListQuery(schema, nil, dialect).Build(filter.ListCursor(encoded))
+				lq, err := filter.NewListQuery(schema, nil, dialect)
+				require.NoError(t, err)
+				_, err = lq.Build(filter.ListCursor(encoded))
 				var pe *core.ParseError
 				require.True(t, errors.As(err, &pe), "type %s, value %v, error %v", dt, value, err)
 				require.Equal(t, filter.ECodeInvalidCursor.String(), pe.Code)
@@ -142,7 +148,9 @@ func TestSystemFieldCursorTieBreakerValidatesType(t *testing.T) {
 			}
 			encoded, err := filter.EncodeCursor(&filter.PageToken{Fields: []filter.CursorField{{Name: "id", Direction: filter.SortAsc, Value: valid}}})
 			require.NoError(t, err)
-			result, err := filter.NewListQuery(schema, nil, dialect).Build(filter.ListCursor(encoded))
+			lq, err := filter.NewListQuery(schema, nil, dialect)
+			require.NoError(t, err)
+			result, err := lq.Build(filter.ListCursor(encoded))
 			require.NoError(t, err)
 			require.Contains(t, result.OrderBy, "rows.id")
 		}

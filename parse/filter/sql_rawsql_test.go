@@ -43,30 +43,28 @@ func TestBuildRawSQL_Renumber(t *testing.T) {
 		wantWhere string
 		wantArgs  []any
 	}{
-		{"ordered", "$1 AND $2", []any{"a", "b"}, "$1 AND $2", []any{"a", "b"}},
-		// $10 must survive the renumber: the old substring replace corrupted it
-		// because "$1" matches inside "$10".
+		{"ordered", "$1 AND $2", []any{"a", "b"}, "($1 AND $2)", []any{"a", "b"}},
+		// $10 survives the renumber: "$1" is not a match inside "$10".
 		{
 			"multi-digit list",
 			"x IN ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)",
 			[]any{1, 2, 3, 4, 5, 6, 7, 8, 9, 10},
-			"x IN ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)",
+			"(x IN ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10))",
 			[]any{1, 2, 3, 4, 5, 6, 7, 8, 9, 10},
 		},
-		// A lone "$11" must map to RawArgs[10], not be split into "$1"+"1".
+		// A lone "$11" maps to RawArgs[10], not "$1" followed by "1".
 		{
 			"single multi-digit",
 			"v = $11",
 			[]any{0, 0, 0, 0, 0, 0, 0, 0, 0, 0, "eleven"},
-			"v = $1",
+			"(v = $1)",
 			[]any{"eleven"},
 		},
 		// Renumber follows left-to-right appearance order.
-		{"out of order", "$2 = $1", []any{"first", "second"}, "$1 = $2", []any{"second", "first"}},
+		{"out of order", "$2 = $1", []any{"first", "second"}, "($1 = $2)", []any{"second", "first"}},
 		// Each occurrence of a repeated placeholder gets its own slot + arg, so
 		// the result is correct for positional (?) dialects too.
-		{"repeated", "$1 OR $1", []any{"x", "y"}, "$1 OR $2", []any{"x", "x"}},
-		{"empty", "", nil, "1=1", []any{}},
+		{"repeated", "$1 OR $1", []any{"x", "y"}, "($1 OR $2)", []any{"x", "x"}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -90,5 +88,20 @@ func TestBuildRawSQL_PlaceholderOutOfRange(t *testing.T) {
 	}})
 	if err == nil {
 		t.Fatal("expected an error for out-of-range placeholder $5 with 1 arg, got nil")
+	}
+}
+
+// A raw node without SQL is a build error, not a predicate that admits
+// every row.
+func TestBuildRawSQL_EmptyIsRefused(t *testing.T) {
+	for _, raw := range []string{"", "  "} {
+		b := filter.NewSQLBuilder(nil, filter.PostgresDialect{})
+		_, err := b.Build(&filter.FilterAST{Root: &filter.FilterNode{Op: filter.OpAnd, Children: []*filter.FilterNode{
+			{Op: filter.OpRawSQL, RawSQL: raw},
+			{Op: filter.OpRawSQL, RawSQL: "x = $1", RawArgs: []any{1}},
+		}}})
+		if err == nil {
+			t.Fatalf("Build(%q): expected an error, got nil", raw)
+		}
 	}
 }

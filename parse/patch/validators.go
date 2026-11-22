@@ -16,8 +16,8 @@ import (
 // as the filter side reads value tags on array fields. Null, and a null
 // element, pass: whether the path or its elements may be null is the
 // nullability check's to decide, and a merge-patch null clears the field.
-func eachValue(check func(any) error) core.Validator {
-	var walk core.Validator
+func eachValue(check func(any) error) Validator {
+	var walk Validator
 	walk = func(value any) error {
 		if value == nil {
 			return nil
@@ -37,7 +37,7 @@ func eachValue(check func(any) error) core.Validator {
 }
 
 // enumValidator admits a value in the enum set.
-func enumValidator(values []string) core.Validator {
+func enumValidator(values []string) Validator {
 	allowed := make(map[string]struct{}, len(values))
 	names := make([]string, len(values))
 	for i, v := range values {
@@ -59,7 +59,7 @@ func enumValidator(values []string) core.Validator {
 // boundsValidator admits a value within the field's bounds. It reads the
 // values normalization produces: a string, an int64 or uint64, a float64,
 // or a decimal's canonical text.
-func boundsValidator(b core.Bounds, info core.TypeInfo) core.Validator {
+func boundsValidator(b core.Bounds, info core.TypeInfo) Validator {
 	elem := info.Type
 	if elem == core.FieldTypeArray {
 		elem = info.Elem
@@ -139,18 +139,5 @@ func floatBound(text string, bits int, unbounded float64) float64 {
 }
 
 func constraintFailure(name, limit, format string, args ...any) error {
-	return core.NewConstraintError(name, limit, fmt.Sprintf(format, args...))
-}
-
-// Each invalid value remains an individual ParseError, even when a validator
-// checked several array elements or several declared constraints.
-func valueFailures(cause error, wrap func(error) error) []error {
-	if joined, ok := cause.(interface{ Unwrap() []error }); ok {
-		var failures []error
-		for _, child := range joined.Unwrap() {
-			failures = append(failures, valueFailures(child, wrap)...)
-		}
-		return failures
-	}
-	return []error{wrap(cause)}
+	return NewConstraintError(name, limit, fmt.Sprintf(format, args...))
 }

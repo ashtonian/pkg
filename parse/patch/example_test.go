@@ -51,13 +51,13 @@ func Example() {
 }
 
 func ExampleParser_Parse() {
-	schema := &patch.PatchSchema{
-		Resource: "devices",
-		AllowedPaths: map[string]*patch.PathSchema{
-			"/name":   {AllowedOps: []patch.PatchOp{patch.PatchOpReplace}, DataType: core.FieldTypeString, SQLColumn: "name"},
-			"/status": {AllowedOps: []patch.PatchOp{patch.PatchOpReplace}, DataType: core.FieldTypeString, SQLColumn: "status"},
-		},
-		MaxOperations: 50,
+	schema, err := patch.NewPatchSchema("devices", map[string]*patch.PathSchema{
+		"/name":   {AllowedOps: []patch.PatchOp{patch.PatchOpReplace}, DataType: core.FieldTypeString, SQLColumn: "name"},
+		"/status": {AllowedOps: []patch.PatchOp{patch.PatchOpReplace}, DataType: core.FieldTypeString, SQLColumn: "status"},
+	})
+	if err != nil {
+		fmt.Println("error:", err)
+		return
 	}
 
 	p := patch.NewParser(schema, nil)
@@ -75,11 +75,18 @@ func ExampleParser_Parse() {
 }
 
 func ExampleBuildPatchSQL() {
-	parsed := &patch.ParsedPatch{
-		Operations: []*patch.PatchOperation{
-			{Op: patch.PatchOpReplace, Path: "/name", Value: "new", Schema: &patch.PathSchema{SQLColumn: "name", DataType: core.FieldTypeString}},
-			{Op: patch.PatchOpReplace, Path: "/status", Value: "active", Schema: &patch.PathSchema{SQLColumn: "status", DataType: core.FieldTypeString}},
-		},
+	schema, err := patch.NewPatchSchema("devices", map[string]*patch.PathSchema{
+		"/name":   {AllowedOps: []patch.PatchOp{patch.PatchOpReplace}, DataType: core.FieldTypeString, SQLColumn: "name"},
+		"/status": {AllowedOps: []patch.PatchOp{patch.PatchOpReplace}, DataType: core.FieldTypeString, SQLColumn: "status"},
+	})
+	if err != nil {
+		fmt.Println("error:", err)
+		return
+	}
+	parsed, err := patch.ParseMergePatch([]byte(`{"name":"new","status":"active"}`), schema, nil)
+	if err != nil {
+		fmt.Println("error:", err)
+		return
 	}
 
 	result, err := patch.BuildPatchSQL(parsed, filter.PostgresDialect{})
@@ -109,10 +116,13 @@ func ExampleGeneratePatchSchema() {
 		return
 	}
 
-	fmt.Println("has /name:", schema.AllowedPaths["/name"] != nil)
-	fmt.Println("name column:", schema.AllowedPaths["/name"].SQLColumn)
-	fmt.Println("has /status:", schema.AllowedPaths["/status"] != nil)
-	fmt.Println("has /id:", schema.AllowedPaths["/id"] != nil)
+	name, hasName := schema.Path("/name")
+	_, hasStatus := schema.Path("/status")
+	_, hasID := schema.Path("/id")
+	fmt.Println("has /name:", hasName)
+	fmt.Println("name column:", name.SQLColumn)
+	fmt.Println("has /status:", hasStatus)
+	fmt.Println("has /id:", hasID)
 	// Output:
 	// has /name: true
 	// name column: device_name
@@ -121,26 +131,37 @@ func ExampleGeneratePatchSchema() {
 }
 
 func ExampleApplyPatchPolicyConstraints() {
-	parsed := &patch.ParsedPatch{
-		Operations: []*patch.PatchOperation{
-			{Op: patch.PatchOpReplace, Path: "/status", Value: "active"},
-		},
+	schema, err := patch.NewPatchSchema("devices", map[string]*patch.PathSchema{
+		"/status":    {AllowedOps: []patch.PatchOp{patch.PatchOpReplace}, DataType: core.FieldTypeString, SQLColumn: "status"},
+		"/tenant_id": {AllowedOps: []patch.PatchOp{patch.PatchOpReplace}, DataType: core.FieldTypeString, SQLColumn: "tenant_id"},
+	})
+	if err != nil {
+		fmt.Println("error:", err)
+		return
+	}
+	parser := patch.NewParser(schema, nil)
+	parsed, err := parser.Parse([]byte(`[{"op":"replace","path":"/status","value":"active"}]`))
+	if err != nil {
+		fmt.Println("error:", err)
+		return
 	}
 
-	pc := &patch.PatchPolicyConstraints{
-		ForbiddenPaths: []string{"/tenant_id"},
-		ValueConstraints: map[string]*patch.ValueConstraint{
-			"/status": {AllowedValues: []any{"active", "inactive"}},
-		},
+	pc, err := patch.NewPatchPolicyConstraints(
+		patch.ForbidPaths("/tenant_id", "/internal/**"),
+		patch.ConstrainValues("/status", patch.ValueConstraint{AllowedValues: []any{"active", "inactive"}}),
+	)
+	if err != nil {
+		fmt.Println("error:", err)
+		return
 	}
 
-	err := patch.ApplyPatchPolicyConstraints(parsed, pc, nil)
+	err = patch.ApplyPatchPolicyConstraints(parsed, pc, nil)
 	fmt.Println("allowed:", err == nil)
 
-	forbidden := &patch.ParsedPatch{
-		Operations: []*patch.PatchOperation{
-			{Op: patch.PatchOpReplace, Path: "/tenant_id", Value: "hack"},
-		},
+	forbidden, err := parser.Parse([]byte(`[{"op":"replace","path":"/tenant_id","value":"hack"}]`))
+	if err != nil {
+		fmt.Println("error:", err)
+		return
 	}
 	err = patch.ApplyPatchPolicyConstraints(forbidden, pc, nil)
 	fmt.Println("forbidden:", strings.Contains(err.Error(), "forbidden"))

@@ -198,9 +198,9 @@ func declaredJSONParser(typ reflect.Type) *patch.Parser {
 }
 
 func declaredJSONSchema(typ reflect.Type) *patch.PatchSchema {
-	return &patch.PatchSchema{AllowedPaths: map[string]*patch.PathSchema{
+	return newSchema("", 0, map[string]*patch.PathSchema{
 		"/value": {GoType: typ, SQLType: core.SQLJSONB, SQLColumn: "value", DataType: core.FieldTypeJSON, AllowedOps: []patch.PatchOp{patch.PatchOpReplace, patch.PatchOpRemove}},
-	}}
+	})
 }
 
 func TestDeclaredJSONReplacementPreservesCustomCodecs(t *testing.T) {

@@ -181,9 +181,10 @@ export interface ListOptions<T> {
   filter?: FilterExpression<T>;
   /** `sort` — `"-price,name"`, or sort fields. */
   sort?: SortField<T>[] | string;
-  /** `cursor` — a `page_info` cursor from a previous page. */
+  /** `cursor` — a `page_info` cursor from an earlier page: its `end_cursor`
+   *  fetches the page after it, its `start_cursor` the page before it. */
   cursor?: string;
-  /** `page_size`. */
+  /** `page_size`; 0 or unset is the server's default. */
   pageSize?: number;
   /** `include_total` — populate `page_info.total_count`. */
   includeTotal?: boolean;
@@ -195,9 +196,14 @@ export interface ListOptions<T> {
   include?: readonly string[];
   /** `facets` — facetable fields whose counts over the matched rows the page carries in `facets`. */
   facets?: readonly string[];
+  /** `fields` — the response field mask: the members each item carries.
+   *  The server refuses a name that is no field of its response (E2071).
+   *  The schema document lists no maskable names, so `validateBeforeSend`
+   *  does not check the mask. */
+  fields?: readonly string[];
 }
 
-/** Pagination state (mirrors Go pagination.PageInfo). */
+/** Pagination state (mirrors Go filter.PageInfo). */
 export interface PageInfo {
   has_next_page: boolean;
   has_prev_page: boolean;

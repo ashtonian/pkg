@@ -12,18 +12,14 @@ import (
 )
 
 func testPatchSchema() *patch.PatchSchema {
-	return &patch.PatchSchema{
-		Resource: "devices",
-		AllowedPaths: map[string]*patch.PathSchema{
-			"/name":   {AllowedOps: []patch.PatchOp{patch.PatchOpReplace}, DataType: core.FieldTypeString, SQLColumn: "name"},
-			"/status": {AllowedOps: []patch.PatchOp{patch.PatchOpReplace}, DataType: core.FieldTypeString, SQLColumn: "status", Validators: []core.Validator{enumValidator("active", "offline")}},
-			// ID not in schema — not patchable (no parse:"patch" tag)
-		},
-		MaxOperations: 50,
-	}
+	return newSchema("devices", 50, map[string]*patch.PathSchema{
+		"/name":   {AllowedOps: []patch.PatchOp{patch.PatchOpReplace}, DataType: core.FieldTypeString, SQLColumn: "name"},
+		"/status": {AllowedOps: []patch.PatchOp{patch.PatchOpReplace}, DataType: core.FieldTypeString, SQLColumn: "status", Validators: []patch.Validator{enumValidator("active", "offline")}},
+		// ID not in schema — not patchable (no parse:"patch" tag)
+	})
 }
 
-func enumValidator(values ...string) core.Validator {
+func enumValidator(values ...string) patch.Validator {
 	allowed := make(map[string]struct{}, len(values))
 	for _, v := range values {
 		allowed[v] = struct{}{}
@@ -114,12 +110,22 @@ func TestParser_AffectedPaths(t *testing.T) {
 
 // --- BuildPatchSQL Tests ---
 
-func TestBuildPatchSQL_Replace(t *testing.T) {
-	parsed := &patch.ParsedPatch{
-		Operations: []*patch.PatchOperation{
-			{Op: patch.PatchOpReplace, Path: "/name", Value: "new", Schema: &patch.PathSchema{SQLColumn: "name", DataType: core.FieldTypeString}},
-		},
+// parseSQLPatch parses body against a schema whose /name can be replaced and
+// removed.
+func parseSQLPatch(t *testing.T, body string) *patch.ParsedPatch {
+	t.Helper()
+	schema := newSchema("devices", 0, map[string]*patch.PathSchema{
+		"/name": {AllowedOps: []patch.PatchOp{patch.PatchOpReplace, patch.PatchOpRemove}, DataType: core.FieldTypeString, SQLColumn: "name"},
+	})
+	parsed, err := patch.NewParser(schema, nil).Parse([]byte(body))
+	if err != nil {
+		t.Fatal(err)
 	}
+	return parsed
+}
+
+func TestBuildPatchSQL_Replace(t *testing.T) {
+	parsed := parseSQLPatch(t, `[{"op":"replace","path":"/name","value":"new"}]`)
 	result, err := patch.BuildPatchSQL(parsed, filter.PostgresDialect{})
 	if err != nil {
 		t.Fatal(err)
@@ -133,11 +139,7 @@ func TestBuildPatchSQL_Replace(t *testing.T) {
 }
 
 func TestBuildPatchSQL_Remove(t *testing.T) {
-	parsed := &patch.ParsedPatch{
-		Operations: []*patch.PatchOperation{
-			{Op: patch.PatchOpRemove, Path: "/name", Schema: &patch.PathSchema{SQLColumn: "name"}},
-		},
-	}
+	parsed := parseSQLPatch(t, `[{"op":"remove","path":"/name"}]`)
 	result, err := patch.BuildPatchSQL(parsed, filter.PostgresDialect{})
 	if err != nil {
 		t.Fatal(err)
@@ -148,11 +150,7 @@ func TestBuildPatchSQL_Remove(t *testing.T) {
 }
 
 func TestBuildPatchSQL_SQLite(t *testing.T) {
-	parsed := &patch.ParsedPatch{
-		Operations: []*patch.PatchOperation{
-			{Op: patch.PatchOpReplace, Path: "/name", Value: "new", Schema: &patch.PathSchema{SQLColumn: "name", DataType: core.FieldTypeString}},
-		},
-	}
+	parsed := parseSQLPatch(t, `[{"op":"replace","path":"/name","value":"new"}]`)
 	result, err := patch.BuildPatchSQL(parsed, filter.SQLiteDialect{})
 	if err != nil {
 		t.Fatal(err)
@@ -183,13 +181,9 @@ func TestParseMergePatch_Replace(t *testing.T) {
 }
 
 func TestParseMergePatch_NullRemoves(t *testing.T) {
-	schema := &patch.PatchSchema{
-		Resource: "test",
-		AllowedPaths: map[string]*patch.PathSchema{
-			"/name": {AllowedOps: []patch.PatchOp{patch.PatchOpReplace, patch.PatchOpRemove}, DataType: core.FieldTypeString},
-		},
-		MaxOperations: 50,
-	}
+	schema := newSchema("test", 50, map[string]*patch.PathSchema{
+		"/name": {AllowedOps: []patch.PatchOp{patch.PatchOpReplace, patch.PatchOpRemove}, DataType: core.FieldTypeString},
+	})
 	result, err := patch.ParseMergePatch([]byte(`{"name":null}`), schema, nil)
 	if err != nil {
 		t.Fatal(err)
@@ -200,15 +194,11 @@ func TestParseMergePatch_NullRemoves(t *testing.T) {
 }
 
 func TestParseMergePatch_MaxOperations(t *testing.T) {
-	schema := &patch.PatchSchema{
-		Resource: "test",
-		AllowedPaths: map[string]*patch.PathSchema{
-			"/a": {AllowedOps: []patch.PatchOp{patch.PatchOpReplace}, DataType: core.FieldTypeString},
-			"/b": {AllowedOps: []patch.PatchOp{patch.PatchOpReplace}, DataType: core.FieldTypeString},
-			"/c": {AllowedOps: []patch.PatchOp{patch.PatchOpReplace}, DataType: core.FieldTypeString},
-		},
-		MaxOperations: 2,
-	}
+	schema := newSchema("test", 2, map[string]*patch.PathSchema{
+		"/a": {AllowedOps: []patch.PatchOp{patch.PatchOpReplace}, DataType: core.FieldTypeString},
+		"/b": {AllowedOps: []patch.PatchOp{patch.PatchOpReplace}, DataType: core.FieldTypeString},
+		"/c": {AllowedOps: []patch.PatchOp{patch.PatchOpReplace}, DataType: core.FieldTypeString},
+	})
 
 	// 3 top-level keys exceeds MaxOperations=2 → rejected like the JSON-Patch path.
 	if _, err := patch.ParseMergePatch([]byte(`{"a":"1","b":"2","c":"3"}`), schema, nil); err == nil {
@@ -226,12 +216,8 @@ func TestParseMergePatch_MaxOperations(t *testing.T) {
 // --- Policy Tests ---
 
 func TestApplyPatchPolicy_ForbiddenPath(t *testing.T) {
-	parsed := &patch.ParsedPatch{
-		Operations: []*patch.PatchOperation{
-			{Op: patch.PatchOpReplace, Path: "/secret", Value: "x"},
-		},
-	}
-	pc := &patch.PatchPolicyConstraints{ForbiddenPaths: []string{"/secret"}}
+	parsed := parseSQLPatch(t, `[{"op":"replace","path":"/name","value":"x"}]`)
+	pc := mustPolicy(t, patch.ForbidPaths("/name"))
 	err := patch.ApplyPatchPolicyConstraints(parsed, pc, nil)
 	if err == nil {
 		t.Fatal("expected error for forbidden path")
@@ -239,55 +225,15 @@ func TestApplyPatchPolicy_ForbiddenPath(t *testing.T) {
 }
 
 func TestApplyPatchPolicy_AllowedValues(t *testing.T) {
-	parsed := &patch.ParsedPatch{
-		Operations: []*patch.PatchOperation{
-			{Op: patch.PatchOpReplace, Path: "/status", Value: "active"},
-		},
-	}
-	pc := &patch.PatchPolicyConstraints{
-		ValueConstraints: map[string]*patch.ValueConstraint{
-			"/status": {AllowedValues: []any{"active", "inactive"}},
-		},
-	}
-	err := patch.ApplyPatchPolicyConstraints(parsed, pc, nil)
+	pc := mustPolicy(t, patch.ConstrainValues("/name", patch.ValueConstraint{AllowedValues: []any{"active", "inactive"}}))
+	err := patch.ApplyPatchPolicyConstraints(parseSQLPatch(t, `[{"op":"replace","path":"/name","value":"active"}]`), pc, nil)
 	if err != nil {
 		t.Fatalf("expected allowed: %v", err)
 	}
 
-	parsed.Operations[0].Value = "forbidden"
-	err = patch.ApplyPatchPolicyConstraints(parsed, pc, nil)
+	err = patch.ApplyPatchPolicyConstraints(parseSQLPatch(t, `[{"op":"replace","path":"/name","value":"forbidden"}]`), pc, nil)
 	if err == nil {
 		t.Fatal("expected error for disallowed value")
-	}
-}
-
-func TestNewValueConstraint_ValidPattern(t *testing.T) {
-	vc, err := patch.NewValueConstraint(`^[a-z]+$`, nil, nil, nil, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if vc == nil {
-		t.Fatal("expected non-nil constraint")
-	}
-}
-
-func TestNewValueConstraint_InvalidPattern(t *testing.T) {
-	_, err := patch.NewValueConstraint(`[invalid`, nil, nil, nil, nil)
-	if err == nil {
-		t.Fatal("expected error for invalid regex pattern")
-	}
-	if !strings.Contains(err.Error(), "invalid") {
-		t.Errorf("error should mention invalid pattern, got: %s", err.Error())
-	}
-}
-
-func TestNewValueConstraint_NoPattern(t *testing.T) {
-	vc, err := patch.NewValueConstraint("", []any{"a", "b"}, nil, nil, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(vc.AllowedValues) != 2 {
-		t.Errorf("expected 2 allowed values, got %d", len(vc.AllowedValues))
 	}
 }
 
@@ -304,13 +250,13 @@ func TestGeneratePatchSchema(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, ok := schema.AllowedPaths["/name"]; !ok {
+	if _, ok := schema.Path("/name"); !ok {
 		t.Error("missing /name path")
 	}
-	if _, ok := schema.AllowedPaths["/status"]; !ok {
+	if _, ok := schema.Path("/status"); !ok {
 		t.Error("missing /status path")
 	}
-	if _, ok := schema.AllowedPaths["/id"]; ok {
+	if _, ok := schema.Path("/id"); ok {
 		t.Error("/id should not be patchable (no parse:patch tag)")
 	}
 }

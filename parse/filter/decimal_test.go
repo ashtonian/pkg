@@ -50,11 +50,7 @@ func TestDecimal_Schema(t *testing.T) {
 		assert.Equal(t, core.FieldTypeDecimal, ss.Fields[name].DataType, name)
 	}
 	assert.True(t, ss.Fields["cost"].Nullable)
-	for _, m := range filter.FilterMetaFromSchema(fs).Fields {
-		if m.Name == "price" {
-			assert.Equal(t, "decimal", m.Type)
-		}
-	}
+	assert.Equal(t, core.FieldTypeDecimal, fs.Fields["price"].DataType)
 }
 
 func TestDecimal_Literals(t *testing.T) {
@@ -189,7 +185,7 @@ func TestDecimal_SeekBindsExactNumbers(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.dialect.Name(), func(t *testing.T) {
-			res, err := filter.NewListQuery(fs, ss, tt.dialect).Build(filter.ListSort("price,id"), filter.ListCursor(cur))
+			res, err := mustListQuery(t, fs, ss, tt.dialect).Build(filter.ListSort("price,id"), filter.ListCursor(cur))
 			require.NoError(t, err)
 			assert.Contains(t, res.Where, tt.where)
 			assert.Equal(t, []any{"9.5", "b"}, res.Args)

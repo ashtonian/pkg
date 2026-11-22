@@ -56,6 +56,11 @@ type GeneratorOptions struct {
 	// parameter list handlers read (filter.ParamSearch).
 	SearchParam string
 
+	// SearchLanguage is the PostgreSQL text search configuration a
+	// generated SearchSchema searches with (`to_tsvector(<lang>, …)`). Empty
+	// means "english". It must be a (schema-qualified) identifier.
+	SearchLanguage string
+
 	// ForeignTagKeys are struct tag keys another library reads, left alone
 	// though one is a character from a key parse reads ("path" beside
 	// "paths"). Any other such key fails schema generation as a misspelling.
@@ -141,6 +146,12 @@ func WithSortMaxFields(n int) GeneratorOption {
 // (filter.ParamSearch).
 func WithSearchParam(p string) GeneratorOption {
 	return func(o *GeneratorOptions) { o.SearchParam = p }
+}
+
+// WithSearchLanguage sets the PostgreSQL text search configuration a
+// generated SearchSchema searches with. Default "english".
+func WithSearchLanguage(lang string) GeneratorOption {
+	return func(o *GeneratorOptions) { o.SearchLanguage = lang }
 }
 
 // --- Schema Generator ---

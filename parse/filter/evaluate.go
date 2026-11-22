@@ -124,16 +124,17 @@ func ColumnValue(f *FieldSchema, v any) (any, bool, error) {
 		if !ok {
 			return nil, false, fmt.Errorf("field %s: an array column holds a slice or a JSON array, got %T", f.ExternalName, v)
 		}
-		out := make([]any, len(items))
-		for i, item := range items {
+		// A NULL element is no element, as the SQL element renderings skip
+		// it: a PostgreSQL array holds NULLs whatever the Go type is.
+		out := make([]any, 0, len(items))
+		for _, item := range items {
 			e, present, err := ColumnValue(&FieldSchema{ExternalName: f.ExternalName, DataType: f.Elem, NumberKind: f.NumberKind}, item)
 			if err != nil {
 				return nil, false, err
 			}
-			if !present {
-				return nil, false, fmt.Errorf("field %s: element %d is NULL", f.ExternalName, i)
+			if present {
+				out = append(out, e)
 			}
-			out[i] = e
 		}
 		return out, true, nil
 	case f.DataType == core.FieldTypeGeo || f.DataType == core.FieldTypeAny:
@@ -190,12 +191,12 @@ func isNilReference(v any) bool {
 //   - $in: [] is False and $nin: [] True, NULL or not.
 //   - Numbers and decimals compare by exact value; strings, UUIDs,
 //     timestamps and dates by code point; booleans as false < true.
-//   - Documents compare as jsonb does (JSONEqual, JSONContains, JSONHasKey);
+//   - Documents compare as jsonb does (core.JSONEqual, JSONContains, JSONHasKey);
 //     an array $contains every listed element; $like and $ilike match as
 //     MatchLike; $some / $none test a document's elements, or a scalar
 //     array's (an array column's, or an array path's elements of its type).
-//   - A membership or raw-SQL predicate is Unknown: it never admits a row its
-//     SQL would refuse. Resolve memberships and relation predicates first
+//   - SQL's unknown (OpUnknown) is Unknown; so is a membership or raw-SQL
+//     predicate, which therefore never admits a row its SQL would refuse. Resolve memberships and relation predicates first
 //     (ResolveMemberships); an unresolved relation predicate is an error.
 //   - Geo operators decide a JSONB point as PostGIS does: $near by the
 //     WGS 84 geodesic distance (ST_DWithin on geography), $within and
@@ -224,7 +225,7 @@ func evaluate(n *FilterNode, row Row) (Truth, error) {
 			return t, err
 		}
 		return truthOf(t == False), nil
-	case OpRawSQL, OpMember:
+	case OpUnknown, OpRawSQL, OpMember:
 		return Unknown, nil
 	}
 	f := n.Field
@@ -530,9 +531,9 @@ func ordered(c int, op FilterOperator) bool {
 func compareDocument(f *FieldSchema, op FilterOperator, lit, doc any) (Truth, error) {
 	switch op {
 	case OpEq:
-		return truthOf(JSONEqual(doc, lit)), nil
+		return truthOf(core.JSONEqual(doc, lit)), nil
 	case OpNe:
-		return truthOf(!JSONEqual(doc, lit)), nil
+		return truthOf(!core.JSONEqual(doc, lit)), nil
 	case OpContains:
 		return truthOf(JSONContains(doc, lit)), nil
 	case OpHasKey:

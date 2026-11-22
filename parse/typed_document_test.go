@@ -125,9 +125,9 @@ func (c *customDocument) UnmarshalJSON(data []byte) error {
 }
 
 func TestTypedDocumentMergeFailsClosedForCustom(t *testing.T) {
-	schema := &patch.PatchSchema{AllowedPaths: map[string]*patch.PathSchema{
+	schema := newSchema("", 0, map[string]*patch.PathSchema{
 		"/doc": {GoType: reflect.TypeFor[customDocument](), AllowedOps: []patch.PatchOp{patch.PatchOpReplace}},
-	}}
+	})
 	if _, err := patch.ParseMergePatch([]byte(`{"doc":{"w":9}}`), schema, nil); err == nil {
 		t.Error("accepted a merge into a custom unmarshaler")
 	}
@@ -147,9 +147,9 @@ func TestTypedDocumentMergeNamesEmbeddedMembers(t *testing.T) {
 		Embedded
 		H int `json:"h"`
 	}
-	schema := &patch.PatchSchema{AllowedPaths: map[string]*patch.PathSchema{
+	schema := newSchema("", 0, map[string]*patch.PathSchema{
 		"/doc": {GoType: reflect.TypeFor[embedded](), AllowedOps: []patch.PatchOp{patch.PatchOpReplace}},
-	}}
+	})
 	for body, valid := range map[string]bool{
 		`{"doc":{"w":9}}`:         true,
 		`{"doc":{"w":9,"h":1}}`:   true,

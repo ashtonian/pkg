@@ -93,10 +93,10 @@ func viewOf[T any](t *testing.T, row func(id, name string, rank int64, hash stri
 	for _, f := range r.SearchSchema().Fields {
 		v.Search = append(v.Search, f.Name+" "+f.SQLExpr)
 	}
-	for path, p := range r.PatchSchema().AllowedPaths {
+	for path, p := range r.PatchSchema().Paths() {
 		v.Patch[path] = p.SQLColumn
 	}
-	for path, p := range r.ServerPatchSchema().AllowedPaths {
+	for path, p := range r.ServerPatchSchema().Paths() {
 		v.Server[path] = p.SQLColumn
 	}
 

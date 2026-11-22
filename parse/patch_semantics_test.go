@@ -3,6 +3,7 @@
 package parse_test
 
 import (
+	"maps"
 	"testing"
 
 	"github.com/google/uuid"
@@ -40,14 +41,14 @@ func docParser(t *testing.T, opts ...core.Option) *parse.Resource[docEntity] {
 	p, err := parse.NewResource[docEntity]("doc_entities", parse.ParserOptions(opts...))
 	require.NoError(t, err)
 	// Nested members are reachable only through explicit wildcard paths.
-	p.PatchSchema().AllowedPaths["/meta/*"] = &patch.PathSchema{
+	require.NoError(t, p.PatchSchema().AddPath("/meta/*", &patch.PathSchema{
 		AllowedOps: []patch.PatchOp{patch.PatchOpAdd, patch.PatchOpRemove, patch.PatchOpTest, patch.PatchOpMove},
 		DataType:   core.FieldTypeAny,
-	}
-	p.PatchSchema().AllowedPaths["/tags/*"] = &patch.PathSchema{
+	}))
+	require.NoError(t, p.PatchSchema().AddPath("/tags/*", &patch.PathSchema{
 		AllowedOps: []patch.PatchOp{patch.PatchOpAdd},
 		DataType:   core.FieldTypeString,
-	}
+	}))
 	return p
 }
 
@@ -124,7 +125,8 @@ func TestPatchSemantics_Apply(t *testing.T) {
 		wide := docEntity{Meta: map[string]any{"blob": string(make([]byte, 200))}}
 		_, err = apply(t, small, `[{"op":"move","from":"/meta/blob","path":"/meta/other"}]`, wide)
 		require.NoError(t, err, "move does not copy")
-		small.PatchSchema().AllowedPaths["/meta/*"].AllowedOps = append(small.PatchSchema().AllowedPaths["/meta/*"].AllowedOps, patch.PatchOpCopy)
+		meta := pathOf(small.PatchSchema(), "/meta/*")
+		meta.AllowedOps = append(meta.AllowedOps, patch.PatchOpCopy)
 		_, err = apply(t, small, `[{"op":"copy","from":"/meta/blob","path":"/meta/c1"}]`, wide)
 		require.Error(t, err)
 	})
@@ -194,15 +196,15 @@ func TestSchemaIsolation_DefaultOperatorSlices(t *testing.T) {
 	b, err := parse.NewResource[entity]("entities")
 	require.NoError(t, err)
 
-	a.PatchSchema().AllowedPaths["/attrs"].AllowedOps[0] = patch.PatchOpTest
+	pathOf(a.PatchSchema(), "/attrs").AllowedOps[0] = patch.PatchOpTest
 	a.FilterSchema().Fields["name"].AllowedOperators[0] = filter.OpGt
 
-	assert.Equal(t, patch.PatchOpReplace, b.PatchSchema().AllowedPaths["/attrs"].AllowedOps[0])
+	assert.Equal(t, patch.PatchOpReplace, pathOf(b.PatchSchema(), "/attrs").AllowedOps[0])
 	assert.Equal(t, filter.OpEq, b.FilterSchema().Fields["name"].AllowedOperators[0])
 
 	c, err := parse.NewResource[entity]("entities")
 	require.NoError(t, err)
-	assert.Equal(t, patch.PatchOpReplace, c.PatchSchema().AllowedPaths["/attrs"].AllowedOps[0])
+	assert.Equal(t, patch.PatchOpReplace, pathOf(c.PatchSchema(), "/attrs").AllowedOps[0])
 	assert.Equal(t, filter.OpEq, c.FilterSchema().Fields["name"].AllowedOperators[0])
 }
 
@@ -220,7 +222,7 @@ func TestGeneratePatchSchema_RemoveFollowsNullability(t *testing.T) {
 	}
 	p, err := parse.NewResource[defaults]("defaults")
 	require.NoError(t, err)
-	paths := p.PatchSchema().AllowedPaths
+	paths := maps.Collect(p.PatchSchema().Paths())
 	assert.NotContains(t, paths["/config"].AllowedOps, patch.PatchOpRemove)
 	assert.Contains(t, paths["/meta"].AllowedOps, patch.PatchOpRemove)
 	assert.Equal(t, []patch.PatchOp{patch.PatchOpReplace}, paths["/note"].AllowedOps)
@@ -240,7 +242,7 @@ func TestGeneratePatchSchema_RemoveFollowsNullability(t *testing.T) {
 		o.DefaultPatchOps = map[core.FieldType][]string{core.FieldTypeString: {"replace"}}
 	})))
 	require.NoError(t, err)
-	assert.Equal(t, []patch.PatchOp{patch.PatchOpReplace}, q.PatchSchema().AllowedPaths["/alias"].AllowedOps)
+	assert.Equal(t, []patch.PatchOp{patch.PatchOpReplace}, pathOf(q.PatchSchema(), "/alias").AllowedOps)
 
 	type tagged struct {
 		ID   string `json:"id,omitempty" db:"id"`
@@ -259,7 +261,7 @@ func TestGeneratorOptions_DefaultPatchOpsHonoured(t *testing.T) {
 		o.DefaultPatchOps = map[core.FieldType][]string{core.FieldTypeString: {"replace", "test"}}
 	})))
 	require.NoError(t, err)
-	assert.Equal(t, []patch.PatchOp{patch.PatchOpReplace, patch.PatchOpTest}, p.PatchSchema().AllowedPaths["/name"].AllowedOps)
+	assert.Equal(t, []patch.PatchOp{patch.PatchOpReplace, patch.PatchOpTest}, pathOf(p.PatchSchema(), "/name").AllowedOps)
 
 	_, err = parse.NewResource[entity]("entities", parse.ParserOptions(core.WithGeneratorOptions(func(o *core.GeneratorOptions) {
 		o.DefaultPatchOps = map[core.FieldType][]string{core.FieldTypeString: {"bogus"}}

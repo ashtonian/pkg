@@ -26,7 +26,7 @@ import (
 // but must never take patch.
 type Product struct {
 	ID          uuid.UUID      `json:"id"          db:"id"          parse:"filter,sort"`
-	Name        string         `json:"name"        db:"name"        parse:"filter,sort,patch,search" search_weight:"A"`
+	Name        string         `json:"name"        db:"name"        parse:"filter,sort,patch,search"`
 	Category    string         `json:"category"    db:"category"    parse:"filter,facet,patch" facet:"terms:10" enum:"tools,books,garden" indexed:"true"`
 	Price       float64        `json:"price"       db:"price"       parse:"filter,sort,facet,patch" facet:"range:0-50,50-100,100+"`
 	Stock       *int64         `json:"stock"       db:"stock"       parse:"filter,patch" filter_ops:"eq,gt,lt,null"`
@@ -53,7 +53,12 @@ func products() *parse.Resource[Product] {
 // ORDER BY and bound arguments.
 func show(tp *parse.Resource[Product], opts ...filter.ListOption) {
 	for _, d := range []filter.Dialect{filter.PostgresDialect{}, filter.SQLiteDialect{}} {
-		res, err := tp.ListQuery(d).Build(opts...)
+		lq, err := tp.ListQuery(d)
+		if err != nil {
+			fmt.Println("error:", err)
+			return
+		}
+		res, err := lq.Build(opts...)
 		if err != nil {
 			fmt.Println("error:", err)
 			return
@@ -118,7 +123,11 @@ func Example_flatQueryParameters() {
 // order; the next page seeks past the last row's key instead of offsetting.
 func Example_keysetPages() {
 	tp := products()
-	first, err := tp.ListQuery(filter.PostgresDialect{}).Build(
+	lq, err := tp.ListQuery(filter.PostgresDialect{})
+	if err != nil {
+		panic(err)
+	}
+	first, err := lq.Build(
 		filter.ListSort("-price"), filter.ListLimit(2))
 	if err != nil {
 		panic(err)
@@ -150,8 +159,11 @@ func Example_keysetPages() {
 // Example_countFacetsSearch: one request can also produce its total, its
 // facet counts and a full-text predicate, all over the same filter.
 func Example_countFacetsSearch() {
-	tp := products()
-	res, err := tp.ListQuery(filter.PostgresDialect{}).Build(
+	lq, err := products().ListQuery(filter.PostgresDialect{})
+	if err != nil {
+		panic(err)
+	}
+	res, err := lq.Build(
 		filter.ListFilter(`{"price":{"$lt":200}}`),
 		filter.ListSearch("cordless drill"),
 		filter.ListWithCount(true),
@@ -165,8 +177,8 @@ func Example_countFacetsSearch() {
 	fmt.Println("facets:", res.Facets.SQL, res.Facets.Args)
 	// Output:
 	// where: (products.price < $1 AND to_tsvector('english', coalesce(products.name, '')) @@ plainto_tsquery('english', $2)) [200 cordless drill]
-	// count: SELECT COUNT(*) FROM products WHERE (products.price < $1 AND to_tsvector('english', coalesce(products.name, '')) @@ plainto_tsquery('english', $2)) [200 cordless drill]
-	// facets: WITH base AS MATERIALIZED (SELECT products.category AS facet__0 FROM products WHERE (products.price < $1 AND to_tsvector('english', coalesce(products.name, '')) @@ plainto_tsquery('english', $2))) SELECT facet_field, facet_key, facet_count FROM (SELECT 'category' AS facet_field, k AS facet_key, c AS facet_count, 0 AS facet_ord, ROW_NUMBER() OVER (ORDER BY c DESC, k COLLATE pg_c_utf8) AS facet_rank FROM (SELECT facet__0 AS k, COUNT(*) AS c FROM base WHERE facet__0 IS NOT NULL GROUP BY facet__0 ORDER BY c DESC, facet__0 COLLATE pg_c_utf8 LIMIT 10) s0) facets__ ORDER BY facet_ord, facet_rank [200 cordless drill]
+	// count: SELECT COUNT(*) FROM products WHERE ((products.price < $1) AND to_tsvector('english', coalesce(products.name, '')) @@ plainto_tsquery('english', $2)) [200 cordless drill]
+	// facets: WITH base AS MATERIALIZED (SELECT products.category AS facet__0 FROM products WHERE ((products.price < $1) AND to_tsvector('english', coalesce(products.name, '')) @@ plainto_tsquery('english', $2))) SELECT facet_field, facet_key, facet_count FROM (SELECT 'category' AS facet_field, k AS facet_key, c AS facet_count, 0 AS facet_ord, ROW_NUMBER() OVER (ORDER BY c DESC, k COLLATE pg_c_utf8) AS facet_rank FROM (SELECT facet__0 AS k, COUNT(*) AS c FROM base WHERE facet__0 IS NOT NULL GROUP BY facet__0 ORDER BY c DESC, facet__0 COLLATE pg_c_utf8 LIMIT 10) s0) facets__ ORDER BY facet_ord, facet_rank [200 cordless drill]
 }
 
 // Example_relations: a many-to-many filter, a one-to-many filter through
@@ -178,12 +190,12 @@ func Example_relations() {
 	show(tp, filter.ListFilter(`{"reviews":{"$null":false}}`))
 	show(tp, filter.ListFilter(`{"supplier_id":"0190f3c2-0000-7000-8000-0000000000aa"}`))
 	// Output:
-	// postgres WHERE EXISTS (SELECT 1 FROM product_collections rel__ WHERE rel__.product_id = products.id AND rel__.collection_id = $1) ORDER BY products.created_at DESC, products.id DESC [0190f3c2-0000-7000-8000-000000000001]
-	// sqlite   WHERE EXISTS (SELECT 1 FROM product_collections rel__ WHERE rel__.product_id = products.id AND rel__.collection_id = ?1) ORDER BY products.created_at DESC, products.id DESC [0190f3c2-0000-7000-8000-000000000001]
-	// postgres WHERE NOT EXISTS (SELECT 1 FROM product_collections rel__ WHERE rel__.product_id = products.id AND rel__.collection_id = ANY($1)) ORDER BY products.created_at DESC, products.id DESC [[0190f3c2-0000-7000-8000-000000000001]]
-	// sqlite   WHERE NOT EXISTS (SELECT 1 FROM product_collections rel__ WHERE rel__.product_id = products.id AND rel__.collection_id IN (SELECT value AS v FROM json_each(?1))) ORDER BY products.created_at DESC, products.id DESC [["0190f3c2-0000-7000-8000-000000000001"]]
-	// postgres WHERE EXISTS (SELECT 1 FROM reviews rel__ WHERE rel__.product_id = products.id) ORDER BY products.created_at DESC, products.id DESC []
-	// sqlite   WHERE EXISTS (SELECT 1 FROM reviews rel__ WHERE rel__.product_id = products.id) ORDER BY products.created_at DESC, products.id DESC []
+	// postgres WHERE EXISTS (SELECT 1 FROM product_collections WHERE product_collections.product_id = products.id AND product_collections.collection_id = $1) ORDER BY products.created_at DESC, products.id DESC [0190f3c2-0000-7000-8000-000000000001]
+	// sqlite   WHERE EXISTS (SELECT 1 FROM product_collections WHERE product_collections.product_id = products.id AND product_collections.collection_id = ?1) ORDER BY products.created_at DESC, products.id DESC [0190f3c2-0000-7000-8000-000000000001]
+	// postgres WHERE NOT EXISTS (SELECT 1 FROM product_collections WHERE product_collections.product_id = products.id AND product_collections.collection_id = ANY($1)) ORDER BY products.created_at DESC, products.id DESC [[0190f3c2-0000-7000-8000-000000000001]]
+	// sqlite   WHERE NOT EXISTS (SELECT 1 FROM product_collections WHERE product_collections.product_id = products.id AND product_collections.collection_id IN (SELECT value AS v FROM json_each(?1))) ORDER BY products.created_at DESC, products.id DESC [["0190f3c2-0000-7000-8000-000000000001"]]
+	// postgres WHERE EXISTS (SELECT 1 FROM reviews WHERE reviews.product_id = products.id) ORDER BY products.created_at DESC, products.id DESC []
+	// sqlite   WHERE EXISTS (SELECT 1 FROM reviews WHERE reviews.product_id = products.id) ORDER BY products.created_at DESC, products.id DESC []
 	// postgres WHERE products.supplier_id = $1 ORDER BY products.created_at DESC, products.id DESC [0190f3c2-0000-7000-8000-0000000000aa]
 	// sqlite   WHERE products.supplier_id = ?1 ORDER BY products.created_at DESC, products.id DESC [0190f3c2-0000-7000-8000-0000000000aa]
 }
@@ -200,8 +212,8 @@ func Example_include() {
 	fmt.Println(q.SQL)
 	fmt.Println(q.Args)
 	// Output:
-	// SELECT CAST(include__.owner_pk AS TEXT), CAST(include__.target_id AS TEXT) FROM (SELECT owner_pk, target_id, ROW_NUMBER() OVER (PARTITION BY owner_pk ORDER BY target_id) AS include_rank FROM (SELECT DISTINCT j.product_id AS owner_pk, j.collection_id AS target_id FROM product_collections j WHERE j.product_id IN ($1, $2)) pairs__) include__ WHERE include_rank <= 101 ORDER BY include__.owner_pk, include__.target_id
-	// [0190f3c2-0000-7000-8000-000000000011 0190f3c2-0000-7000-8000-000000000012]
+	// SELECT CAST(include__.owner_pk AS TEXT), CAST(include__.target_id AS TEXT) FROM (SELECT owner_pk, target_id, ROW_NUMBER() OVER (PARTITION BY owner_pk ORDER BY target_id) AS include_rank FROM (SELECT DISTINCT j.product_id AS owner_pk, j.collection_id AS target_id FROM product_collections j WHERE j.product_id = ANY($1)) pairs__) include__ WHERE include_rank <= 101 ORDER BY include__.owner_pk, include__.target_id
+	// [[0190f3c2-0000-7000-8000-000000000011 0190f3c2-0000-7000-8000-000000000012]]
 }
 
 // Example_jsonDocuments: a JSON column is compared or contained as a whole
@@ -265,7 +277,9 @@ func TestParseRequestFilter(t *testing.T) {
 		"debug":     {"true"},   // the endpoint's own parameter
 	}, filter.QueryParamAccept("debug"))
 	require.NoError(t, err)
-	res, err := tp.ListQuery(filter.PostgresDialect{}).Build(filter.ListFilterAST(parsed.AST))
+	lq, err := tp.ListQuery(filter.PostgresDialect{})
+	require.NoError(t, err)
+	res, err := lq.Build(filter.ListFilterAST(parsed.AST))
 	require.NoError(t, err)
 	assert.Equal(t, "(products.category = $1 AND products.price >= $2)", res.Where)
 	assert.Equal(t, []any{"tools", float64(10)}, res.Args)

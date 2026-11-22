@@ -159,7 +159,7 @@ func BenchmarkQueryParamParser_Complex(b *testing.B) {
 
 func benchList(b *testing.B, check func(*filter.ListResult) bool, opts ...filter.ListOption) {
 	fs, ss := benchSchemas(b)
-	lq := filter.NewListQuery(fs, ss, filter.PostgresDialect{})
+	lq := mustListQuery(b, fs, ss, filter.PostgresDialect{})
 	res, err := lq.Build(opts...)
 	if err != nil || !check(res) {
 		b.Fatalf("list build: %+v, %v", res, err)
@@ -184,7 +184,7 @@ func BenchmarkListQuery_WithCountAndFacets(b *testing.B) {
 
 func BenchmarkListQuery_WithCursor(b *testing.B) {
 	fs, ss := benchSchemas(b)
-	lq := filter.NewListQuery(fs, ss, filter.PostgresDialect{})
+	lq := mustListQuery(b, fs, ss, filter.PostgresDialect{})
 	first, err := lq.Build(filter.ListSort("-created_at"), filter.ListLimit(25))
 	if err != nil {
 		b.Fatal(err)

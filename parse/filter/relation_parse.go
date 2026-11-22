@@ -16,10 +16,6 @@ const (
 	MaxRelationPredicates = 8
 )
 
-func isRelationPredicate(op FilterOperator) bool {
-	return op == OpSome || op == OpNone || op == OpIs || op == OpIsNot
-}
-
 // parseRelated parses `$some` / `$none` / `$is` / `$is_not`: the value is
 // the target's own filter, parsed against the target's schema.
 func (p *FilterParser) parseRelated(field *FieldSchema, op FilterOperator, value any, depth int) (*FilterNode, error) {
@@ -158,7 +154,8 @@ func (p *FilterParser) parseElementCondition(elem *FieldSchema, obj map[string]a
 		value := obj[key]
 		var node *FilterNode
 		var err error
-		switch op := OperatorFromString[key]; op {
+		op, _ := ParseOperator(key)
+		switch op {
 		case OpAnd, OpOr:
 			node, err = p.parseElementLogical(elem, op, value, depth)
 		case OpNot:

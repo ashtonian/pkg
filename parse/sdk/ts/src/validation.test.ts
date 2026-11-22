@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { SchemaValidationError } from "./core/errors.js";
-import { filter } from "./filter/builder.js";
-import type { FilterFieldSchema, FilterSchema } from "./filter/types.js";
+import { and, filter, not, or } from "./filter/builder.js";
+import type { FilterExpression, FilterFieldSchema, FilterSchema } from "./filter/types.js";
 import { validateFilter, validateSort } from "./filter/validate.js";
 import { validatePatch } from "./patch/validate.js";
 import { SCHEMA_VERSION } from "./schema.js";
@@ -110,12 +110,85 @@ describe("filter builder", () => {
     // @ts-expect-error a string element compares with strings
     filter<Device>().where("tags", { $some: { $eq: 3 } });
   });
-  it("does not add later logical branches to an already built filter", () => {
-    const builder = filter<{ name: string }>().or({ name: "one" }).and({ name: "one" });
-    const first = builder.build();
-    builder.or({ name: "two" }).and({ name: "two" });
-    expect(first).toEqual({ $or: [{ name: "one" }], $and: [{ name: "one" }] });
-    expect(builder.build().$or).toHaveLength(2);
-    expect(builder.build().$and).toHaveLength(2);
+  it("merges a second condition on a field and refuses one that would drop the first", () => {
+    interface P { price: number; name: string }
+    expect(filter<P>().where("price", { $gte: 1 }).where("price", { $lte: 5 }).build()).toEqual({ price: { $gte: 1, $lte: 5 } });
+    expect(() => filter<P>().where("price", { $gte: 1 }).where("price", { $gte: 2 })).toThrow(RangeError);
+    expect(() => filter<P>().where("name", "a").where("name", { $ne: "b" })).toThrow(RangeError);
+    expect(() => filter<P>().where("name", { $ne: "b" }).where("name", "a")).toThrow(RangeError);
+  });
+  it("is immutable: where returns a new builder", () => {
+    const base = filter<{ name: string; price: number }>().where("name", "a");
+    const narrowed = base.where("price", { $lt: 5 });
+    expect(base.build()).toEqual({ name: "a" });
+    expect(narrowed.build()).toEqual({ name: "a", price: { $lt: 5 } });
+    const built = narrowed.build();
+    (built as Record<string, unknown>)["name"] = "changed";
+    expect(narrowed.build()).toEqual({ name: "a", price: { $lt: 5 } });
+  });
+  it("has no logical methods: and, or and not are combinators", () => {
+    const b = filter<{ name: string }>() as unknown as Record<string, unknown>;
+    expect(b["or"]).toBeUndefined();
+    expect(b["and"]).toBeUndefined();
+    expect(b["not"]).toBeUndefined();
+  });
+});
+
+describe("filter combinators", () => {
+  interface P { name: string; price: number }
+  const a = { name: "a" }, b = { name: "b" }, c = { price: 3 };
+  it("or disjoins, and conjoins, not negates", () => {
+    expect(or<P>(a, b)).toEqual({ $or: [a, b] });
+    expect(and<P>(a, c)).toEqual({ $and: [a, c] });
+    expect(not<P>(a)).toEqual({ $not: a });
+    expect(or<P>(filter<P>().where("name", "a"), b)).toEqual({ $or: [a, b] });
+  });
+  it("flattens nested groups of the same kind and keeps mixed ones", () => {
+    expect(or<P>(a, or<P>(b, c))).toEqual({ $or: [a, b, c] });
+    expect(and<P>(and<P>(a, b), c)).toEqual({ $and: [a, b, c] });
+    expect(or<P>(and<P>(a, b), c)).toEqual({ $or: [{ $and: [a, b] }, c] });
+    let loop: FilterExpression<P> = {};
+    for (const f of [a, b, c]) loop = and<P>(loop, f);
+    expect(loop).toEqual({ $and: [a, b, c] });
+  });
+  it("treats the empty filter as every row", () => {
+    expect(and<P>()).toEqual({});
+    expect(and<P>({}, a, {})).toEqual(a);
+    expect(or<P>(a)).toEqual(a);
+    expect(or<P>(a, {})).toEqual({});
+  });
+  it("throws for what would match no row", () => {
+    expect(() => or<P>()).toThrow(RangeError);
+    expect(() => not<P>({})).toThrow(RangeError);
+  });
+  it("is the server's disjunction on the wire", () => {
+    // The old builder's .or() set $or beside the field conditions, which
+    // the server conjoins.
+    expect(JSON.stringify(or<P>(filter<P>().where("name", "a"), filter<P>().where("name", "b")))).toBe('{"$or":[{"name":"a"},{"name":"b"}]}');
+  });
+});
+
+describe("patch path patterns", () => {
+  const replace = { data_type: "string" as const, allowed_ops: ["replace" as const] };
+  it("resolves a member through the most specific matching pattern, as the server does", () => {
+    const schema = { max_operations: 10, paths: { "/*": { data_type: "int" as const, allowed_ops: ["replace" as const] }, "/name": replace } };
+    expect(() => { validatePatch({ name: "a" }, schema); }).not.toThrow();
+    expect(() => { validatePatch({ count: 1 }, schema); }).not.toThrow();
+    expectCode(() => { validatePatch({ count: "x" }, schema); }, "E2077");
+    expect(() => { validatePatch({ any: "x" }, { max_operations: 10, paths: { "**": replace } }); }).not.toThrow();
+    expectCode(() => { validatePatch({ any: "x" }, { max_operations: 10, paths: { "/a/*": replace } }); }, "E2076");
+  });
+});
+
+describe("relation key limit", () => {
+  const members = { data_type: "array" as const, elem: "string" as const, relation: true, nullable: true, allowed_ops: ["replace" as const] };
+  const quoted = { ...members, elem: "int" as const, number_kind: "int64", wire: "string" as const };
+  it("refuses more distinct keys than max_relation_values, as the server does (E2119)", () => {
+    const schema = { max_operations: 10, max_relation_values: 2, paths: { "/members": members, "/ids": quoted } };
+    expect(() => { validatePatch({ members: ["a", "b", "a", "b"] }, schema); }).not.toThrow();
+    expectCode(() => { validatePatch({ members: ["a", "b", "c"] }, schema); }, "E2119");
+    expect(() => { validatePatch({ ids: ["5", "5", "9007199254740993"] }, schema); }).not.toThrow();
+    expectCode(() => { validatePatch({ ids: ["1", "2", "3"] }, schema); }, "E2119");
+    expect(() => { validatePatch({ members: ["a", "b", "c"] }, { ...schema, max_relation_values: 0 }); }).not.toThrow();
   });
 });

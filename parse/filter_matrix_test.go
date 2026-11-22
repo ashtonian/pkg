@@ -14,12 +14,12 @@ import (
 // Every operator × type case executed on SQLite: documents and arrays are
 // JSON text, timestamps RFC 3339 text, booleans integers, decimals NUMERIC.
 func TestFilterMatrix_SQLite(t *testing.T) {
-	runFilterMatrix(t, "sqlite", sqliteMatrix(t))
+	runFilterMatrix(t, sqliteMatrix(t))
 }
 
 // `$in` / `$nin` sets of every size on SQLite, each bound as one JSON array.
 func TestSetMatrix_SQLite(t *testing.T) {
-	runSetMatrix(t, "sqlite", sqliteMatrix(t))
+	runSetMatrix(t, sqliteMatrix(t))
 }
 
 func sqliteMatrix(t *testing.T) matrixDB {
@@ -38,6 +38,13 @@ func sqliteMatrix(t *testing.T) matrixDB {
 // strings and UUIDs, INTEGER for integers.
 func TestMembershipMatrix_SQLite(t *testing.T) {
 	runMembershipMatrix(t, sqliteMatrix(t), map[core.FieldType]string{
+		core.FieldTypeString: "TEXT", core.FieldTypeUUID: "TEXT", core.FieldTypeInt: "INTEGER",
+	})
+}
+
+// Policy trees on SQLite, each listed page by page.
+func TestPolicyMatrix_SQLite(t *testing.T) {
+	runPolicyMatrix(t, sqliteMatrix(t), map[core.FieldType]string{
 		core.FieldTypeString: "TEXT", core.FieldTypeUUID: "TEXT", core.FieldTypeInt: "INTEGER",
 	})
 }

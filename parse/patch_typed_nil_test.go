@@ -41,7 +41,6 @@ func TestValidateOperations_TypedNilTimestamp(t *testing.T) {
 			wire, parseErr := p.ParsePatch([]byte(`[{"op":"replace","path":"/at","value":null}]`))
 			require.NoError(t, parseErr)
 			assert.Nil(t, built.Operations[0].Value)
-			assert.Equal(t, wire.EstimatedCost, built.EstimatedCost)
 			assert.Equal(t, wire.AffectedPaths, built.AffectedPaths)
 			for _, dialect := range []patch.SQLDialect{filter.PostgresDialect{}, filter.SQLiteDialect{}} {
 				builtSQL, sqlErr := patch.BuildPatchSQL(built, dialect)
@@ -120,16 +119,16 @@ func TestValidateOperations_TypedNilValidatorValue(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			calls := 0
-			p := patch.NewParser(&patch.PatchSchema{AllowedPaths: map[string]*patch.PathSchema{
+			p := patch.NewParser(newSchema("", 0, map[string]*patch.PathSchema{
 				"/value": {
 					AllowedOps: []patch.PatchOp{patch.PatchOpReplace}, GoType: goType,
-					Validators: []core.Validator{func(value any) error {
+					Validators: []patch.Validator{func(value any) error {
 						calls++
 						assert.Nil(t, value, "validators receive canonical null")
 						return nil
 					}},
 				},
-			}}, nil)
+			}), nil)
 			_, err := p.ParseOps([]patch.RawPatchOp{{Op: "replace", Path: "/value", Value: reflect.Zero(goType).Interface()}})
 			require.NoError(t, err)
 			assert.Equal(t, 1, calls)

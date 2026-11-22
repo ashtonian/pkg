@@ -1,7 +1,11 @@
 package patch
 
 import (
+	"database/sql/driver"
+	"encoding/json"
+	"errors"
 	"fmt"
+	"reflect"
 	"strings"
 
 	"github.com/ashtonian/pkg/parse/core"
@@ -48,360 +52,343 @@ type RelationOwner struct {
 // relationTarget is the alias the guarded statements read target rows by.
 const relationTarget = "target__"
 
-// RenderRelationOp turns a parsed RelationPatchOp into the dialect-
-// specific SQL statements that apply the membership change to the
-// junction table for the supplied owner PK set.
+// RenderRelationOp renders the statements that apply a membership change to
+// the pair table for the owners ownerPKs, for the caller to run in order in
+// one transaction with the owner statement. Owners and values each bind as
+// one array parameter, so a statement's parameter count is independent of
+// both counts; pairs written are owners times values.
 //
-// The output is a list of {SQL, Args} pairs the caller executes in
-// order on an open transaction. .
+//	replace with values:  DELETE FROM j WHERE <source in owners> [AND tenant = t] AND <target not in values> <visible>
+//	                      INSERT INTO j (source, target [, tenant]) SELECT … owners × values … ON CONFLICT DO NOTHING
+//	replace with none:    DELETE FROM j WHERE <source in owners> [AND tenant = t] <visible>
+//	add:                  INSERT … ON CONFLICT DO NOTHING
+//	remove:               DELETE FROM j WHERE <source in owners> [AND tenant = t] AND <target in values> <visible>
 //
-// Statement shapes:
+// A set is `col = ANY($n)` / `col <> ALL($n)` on PostgreSQL and
+// `col IN (SELECT value FROM json_each(?n))` / `NOT IN` on SQLite. With a
+// target table (RelationSchema.TargetTable) the insert selects the owner rows
+// and the visible target rows, and <visible> holds a delete to pairs whose
+// target the request may see, so pairs it cannot see stay. Without one,
+// PostgreSQL's insert reads its rows as the pair table's own row type
+// (jsonb_populate_recordset), which types each key as its column.
 //
-//	replace, len(values) > 0:
-//	  DELETE FROM j WHERE source = ANY/IN (pks) AND target NOT IN (vals) [AND tenant = t]
-//	  INSERT INTO j (source, target [, tenant]) VALUES (pk×val) ON CONFLICT DO NOTHING
-//	replace, len(values) == 0:
-//	  DELETE FROM j WHERE source = ANY/IN (pks) [AND tenant = t]                    -- clear
-//	add:
-//	  INSERT INTO j (source, target [, tenant]) VALUES (pk×val) ON CONFLICT DO NOTHING
-//	remove:
-//	  DELETE FROM j WHERE source = ANY/IN (pks) AND target IN (vals) [AND tenant = t]
-//
-// Cross-product semantics: a patch supplying values [a,b,c] applied to
-// PK set [p1,p2] inserts six rows (p1,a),(p1,b),(p1,c),(p2,a),…,(p2,c).
-// "Replace" diffs per (pk, target) — each PK in ownerPKs gets exactly
-// the supplied value set. Multi-PK patch is allowed but uncommon; the
-// usual call shape is one PK at a time.
-func RenderRelationOp(op RelationPatchOp, dialect dialect.Dialect, ownerPKs []any, opts RenderRelationOpOptions) ([]RenderedRelationStatement, error) {
+// No owners need no statements. An operation it cannot render is an error: a
+// tenant-scoped pair table without RenderRelationOpOptions.TenantValue (or
+// Unscoped), an add or remove with no values, a null value, values or owners
+// of more than one type, or a dialect other than PostgreSQL and SQLite.
+func RenderRelationOp(op RelationPatchOp, d SQLDialect, ownerPKs []any, opts RenderRelationOpOptions) ([]RenderedRelationStatement, error) {
 	if op.Schema == nil {
-		return nil, fmt.Errorf("relation patch op has nil schema")
+		return nil, errors.New("patch: relation patch op has nil schema")
 	}
 	if len(ownerPKs) == 0 {
-		// No rows matched the owner UPDATE — nothing to mutate on the
-		// junction. Returning empty (rather than erroring) keeps the
-		// caller from having to special-case zero-row patches.
 		return nil, nil
 	}
-
 	rel := op.Schema
+	switch op.Verb {
+	case RelationVerbReplace:
+	case RelationVerbAdd, RelationVerbRemove:
+		if len(op.Values) == 0 {
+			return nil, fmt.Errorf("patch: relation %s: %s needs at least one value", op.Field, op.Verb)
+		}
+	default:
+		return nil, fmt.Errorf("patch: relation %s: unknown relation verb %q", op.Field, op.Verb)
+	}
 	if rel.TenantColumn != "" && opts.TenantValue == nil && !opts.Unscoped {
 		return nil, fmt.Errorf("relation junction %s is tenant-scoped (%s): set TenantValue or Unscoped", rel.JoinTable, rel.TenantColumn)
 	}
-	hasTenant := rel.TenantColumn != "" && !opts.Unscoped
-	if rel.TargetTable != "" {
-		return renderGuarded(op, dialect, ownerPKs, opts, hasTenant)
+	if rel.TargetTable != "" && (opts.Owner.Table == "" || opts.Owner.Key == "" || opts.TargetVisible == nil) {
+		return nil, fmt.Errorf("relation %s: a membership change through a target needs the owner table and the target's visibility", op.Field)
 	}
-
-	switch op.Verb {
-	case RelationVerbReplace:
-		return renderReplace(rel, dialect, ownerPKs, op.Values, hasTenant, opts.TenantValue)
-	case RelationVerbAdd:
-		return renderInsert(rel, dialect, ownerPKs, op.Values, hasTenant, opts.TenantValue), nil
-	case RelationVerbRemove:
-		return []RenderedRelationStatement{
-			renderDeleteByTargets(rel, dialect, ownerPKs, op.Values, hasTenant, opts.TenantValue),
-		}, nil
+	switch d.Name() {
+	case dialect.NamePostgres, dialect.NameSQLite:
 	default:
-		return nil, fmt.Errorf("unknown relation verb %q", op.Verb)
+		return nil, fmt.Errorf("patch: relation statements are not supported for dialect %q", d.Name())
 	}
-}
+	owners, err := relationKeys(ownerPKs)
+	if err != nil {
+		return nil, fmt.Errorf("patch: relation %s: owner keys: %w", op.Field, err)
+	}
+	values, err := relationKeys(op.Values)
+	if err != nil {
+		return nil, fmt.Errorf("patch: relation %s: values: %w", op.Field, err)
+	}
+	r := relationRenderer{
+		rel: rel, d: d, opts: opts, owners: owners, values: values,
+		hasTenant: rel.TenantColumn != "" && !opts.Unscoped,
+	}
 
-func renderReplace(rel *core.RelationSchema, d dialect.Dialect, pks []any, vals []any, hasTenant bool, tenant any) ([]RenderedRelationStatement, error) {
-	stmts := []RenderedRelationStatement{}
-	if len(vals) == 0 {
-		// Clear: delete every junction row for the owners.
-		stmts = append(stmts, renderDeleteAll(rel, d, pks, hasTenant, tenant))
-		return stmts, nil
+	var stmts []RenderedRelationStatement
+	if op.Verb != RelationVerbAdd {
+		st, err := r.delete(op.Verb == RelationVerbReplace)
+		if err != nil {
+			return nil, fmt.Errorf("relation %s: %w", op.Field, err)
+		}
+		stmts = append(stmts, st)
 	}
-	// Diff: delete any current rows whose target is not in the new set,
-	// then insert the new set with ON CONFLICT DO NOTHING.
-	stmts = append(stmts, renderDeleteNotIn(rel, d, pks, vals, hasTenant, tenant))
-	stmts = append(stmts, renderInsert(rel, d, pks, vals, hasTenant, tenant)...)
+	if op.Verb != RelationVerbRemove && len(values) > 0 {
+		st, err := r.insert()
+		if err != nil {
+			return nil, fmt.Errorf("relation %s: %w", op.Field, err)
+		}
+		stmts = append(stmts, st)
+	}
 	return stmts, nil
 }
 
-func renderDeleteAll(rel *core.RelationSchema, d dialect.Dialect, pks []any, hasTenant bool, tenant any) RenderedRelationStatement {
-	var sb strings.Builder
-	args := make([]any, 0, len(pks)+1)
-	idx := 0
-
-	sb.WriteString("DELETE FROM ")
-	sb.WriteString(rel.JoinTable)
-	sb.WriteString(" WHERE ")
-	sb.WriteString(rel.SourceColumn)
-	sb.WriteString(" IN (")
-	for i, pk := range pks {
-		if i > 0 {
-			sb.WriteString(", ")
+// relationKeys are keys as one array parameter binds them: each a database
+// scalar (a driver.Valuer's value, an integer as int64 or uint64, a float as
+// float64, a string, a boolean), all of one type, none null.
+func relationKeys(keys []any) ([]any, error) {
+	out := make([]any, len(keys))
+	var kind reflect.Type
+	for i, k := range keys {
+		v, err := relationKey(k)
+		if err != nil {
+			return nil, fmt.Errorf("key %d: %w", i, err)
 		}
-		idx++
-		sb.WriteString(d.Placeholder(idx))
-		args = append(args, pk)
+		if t := reflect.TypeOf(v); kind == nil {
+			kind = t
+		} else if t != kind {
+			return nil, fmt.Errorf("key %d is %s where key 0 is %s; keys are of one type", i, t, kind)
+		}
+		out[i] = v
 	}
-	sb.WriteByte(')')
-	if hasTenant {
-		idx++
-		sb.WriteString(" AND ")
-		sb.WriteString(rel.TenantColumn)
-		sb.WriteString(" = ")
-		sb.WriteString(d.Placeholder(idx))
-		args = append(args, tenant)
-	}
-	return RenderedRelationStatement{SQL: sb.String(), Args: args}
+	return out, nil
 }
 
-func renderDeleteNotIn(rel *core.RelationSchema, d dialect.Dialect, pks []any, vals []any, hasTenant bool, tenant any) RenderedRelationStatement {
-	var sb strings.Builder
-	args := make([]any, 0, len(pks)+len(vals)+1)
-	idx := 0
-
-	sb.WriteString("DELETE FROM ")
-	sb.WriteString(rel.JoinTable)
-	sb.WriteString(" WHERE ")
-	sb.WriteString(rel.SourceColumn)
-	sb.WriteString(" IN (")
-	for i, pk := range pks {
-		if i > 0 {
-			sb.WriteString(", ")
-		}
-		idx++
-		sb.WriteString(d.Placeholder(idx))
-		args = append(args, pk)
-	}
-	sb.WriteString(") AND ")
-	sb.WriteString(rel.TargetColumn)
-	sb.WriteString(" NOT IN (")
-	for i, v := range vals {
-		if i > 0 {
-			sb.WriteString(", ")
-		}
-		idx++
-		sb.WriteString(d.Placeholder(idx))
-		args = append(args, v)
-	}
-	sb.WriteByte(')')
-	if hasTenant {
-		idx++
-		sb.WriteString(" AND ")
-		sb.WriteString(rel.TenantColumn)
-		sb.WriteString(" = ")
-		sb.WriteString(d.Placeholder(idx))
-		args = append(args, tenant)
-	}
-	return RenderedRelationStatement{SQL: sb.String(), Args: args}
-}
-
-func renderDeleteByTargets(rel *core.RelationSchema, d dialect.Dialect, pks []any, vals []any, hasTenant bool, tenant any) RenderedRelationStatement {
-	var sb strings.Builder
-	args := make([]any, 0, len(pks)+len(vals)+1)
-	idx := 0
-
-	sb.WriteString("DELETE FROM ")
-	sb.WriteString(rel.JoinTable)
-	sb.WriteString(" WHERE ")
-	sb.WriteString(rel.SourceColumn)
-	sb.WriteString(" IN (")
-	for i, pk := range pks {
-		if i > 0 {
-			sb.WriteString(", ")
-		}
-		idx++
-		sb.WriteString(d.Placeholder(idx))
-		args = append(args, pk)
-	}
-	sb.WriteString(") AND ")
-	sb.WriteString(rel.TargetColumn)
-	sb.WriteString(" IN (")
-	for i, v := range vals {
-		if i > 0 {
-			sb.WriteString(", ")
-		}
-		idx++
-		sb.WriteString(d.Placeholder(idx))
-		args = append(args, v)
-	}
-	sb.WriteByte(')')
-	if hasTenant {
-		idx++
-		sb.WriteString(" AND ")
-		sb.WriteString(rel.TenantColumn)
-		sb.WriteString(" = ")
-		sb.WriteString(d.Placeholder(idx))
-		args = append(args, tenant)
-	}
-	return RenderedRelationStatement{SQL: sb.String(), Args: args}
-}
-
-// renderInsert emits a single VALUES (pk×val) INSERT with ON CONFLICT
-// DO NOTHING. Returns a slice (rather than one statement) so callers
-// can split into chunks if a future RFC introduces a per-statement
-// row cap; today it always returns exactly one row when work is needed.
-func renderInsert(rel *core.RelationSchema, d dialect.Dialect, pks []any, vals []any, hasTenant bool, tenant any) []RenderedRelationStatement {
-	if len(pks) == 0 || len(vals) == 0 {
-		return nil
-	}
-	var sb strings.Builder
-	args := make([]any, 0, len(pks)*len(vals)*2+1)
-	idx := 0
-
-	sb.WriteString("INSERT INTO ")
-	sb.WriteString(rel.JoinTable)
-	sb.WriteString(" (")
-	sb.WriteString(rel.SourceColumn)
-	sb.WriteString(", ")
-	sb.WriteString(rel.TargetColumn)
-	if hasTenant {
-		sb.WriteString(", ")
-		sb.WriteString(rel.TenantColumn)
-	}
-	sb.WriteString(") VALUES ")
-
-	first := true
-	for _, pk := range pks {
-		for _, v := range vals {
-			if !first {
-				sb.WriteString(", ")
-			}
-			first = false
-			sb.WriteByte('(')
-			idx++
-			sb.WriteString(d.Placeholder(idx))
-			args = append(args, pk)
-			sb.WriteString(", ")
-			idx++
-			sb.WriteString(d.Placeholder(idx))
-			args = append(args, v)
-			if hasTenant {
-				sb.WriteString(", ")
-				idx++
-				sb.WriteString(d.Placeholder(idx))
-				args = append(args, tenant)
-			}
-			sb.WriteByte(')')
-		}
-	}
-	sb.WriteString(" ON CONFLICT DO NOTHING")
-
-	return []RenderedRelationStatement{{SQL: sb.String(), Args: args}}
-}
-
-// renderGuarded renders a many-to-many-with-target membership change
-// : pairs are inserted from the owner rows and the visible
-// target rows, and deletes reach only pairs whose target is visible — a
-// replace sets the visible related set, leaving pairs the request cannot
-// see alone.
-func renderGuarded(op RelationPatchOp, d dialect.Dialect, pks []any, opts RenderRelationOpOptions, hasTenant bool) ([]RenderedRelationStatement, error) {
-	rel := op.Schema
-	if opts.Owner.Table == "" || opts.Owner.Key == "" || opts.TargetVisible == nil {
-		return nil, fmt.Errorf("relation %s: a membership change through a target needs the owner table and the target's visibility", op.Field)
-	}
-	var stmts []RenderedRelationStatement
-	switch op.Verb {
-	case RelationVerbAdd:
-	case RelationVerbRemove:
-		st, err := guardedDelete(rel, d, pks, op.Values, false, opts, hasTenant)
-		return []RenderedRelationStatement{st}, err
-	case RelationVerbReplace:
-		st, err := guardedDelete(rel, d, pks, op.Values, true, opts, hasTenant)
+func relationKey(k any) (any, error) {
+	if valuer, ok := k.(driver.Valuer); ok {
+		v, err := valuer.Value()
 		if err != nil {
 			return nil, err
 		}
-		stmts = append(stmts, st)
-	default:
-		return nil, fmt.Errorf("unknown relation verb %q", op.Verb)
+		k = v
 	}
-	if len(op.Values) == 0 {
-		return stmts, nil
+	rv := reflect.ValueOf(k)
+	switch rv.Kind() {
+	case reflect.Invalid:
+		return nil, errors.New("null is not a key")
+	case reflect.String:
+		return rv.String(), nil
+	case reflect.Bool:
+		return rv.Bool(), nil
+	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+		return rv.Int(), nil
+	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
+		return rv.Uint(), nil
+	case reflect.Float32, reflect.Float64:
+		return rv.Float(), nil
 	}
-	ins, err := guardedInsert(rel, d, pks, op.Values, opts, hasTenant)
-	if err != nil {
-		return nil, err
-	}
-	return append(stmts, ins), nil
+	return nil, fmt.Errorf("%T is not a key: keys are strings, numbers or booleans", k)
 }
 
-// guardedDelete removes the owners' pairs whose target is visible and
-// among vals (keep false), or not among them (keep true: a replace).
-func guardedDelete(rel *core.RelationSchema, d dialect.Dialect, pks, vals []any, keep bool, opts RenderRelationOpOptions, hasTenant bool) (RenderedRelationStatement, error) {
+// relationRenderer renders one membership change's statements.
+type relationRenderer struct {
+	rel            *core.RelationSchema
+	d              SQLDialect
+	opts           RenderRelationOpOptions
+	owners, values []any
+	hasTenant      bool
+}
+
+// statement accumulates one statement's arguments, numbering placeholders
+// as they are bound.
+type statement struct {
+	d    SQLDialect
+	args []any
+}
+
+func (s *statement) bind(v any) string {
+	s.args = append(s.args, v)
+	return s.d.Placeholder(len(s.args))
+}
+
+// in is col's membership in keys, bound as one array: `col = ANY($n)` on
+// PostgreSQL, the parameter typed as the column's array; json_each rows on
+// SQLite, compared under the column's affinity.
+func (s *statement) in(col string, keys []any, member bool) (string, error) {
+	arr, err := s.d.MarshalValue(keys, core.TypeInfo{Type: core.FieldTypeArray})
+	if err != nil {
+		return "", err
+	}
+	param := s.bind(arr)
+	if s.d.Name() == dialect.NamePostgres {
+		if member {
+			return col + " = ANY(" + param + ")", nil
+		}
+		return col + " <> ALL(" + param + ")", nil
+	}
+	if member {
+		return col + " IN (SELECT value FROM json_each(" + param + "))", nil
+	}
+	return col + " NOT IN (SELECT value FROM json_each(" + param + "))", nil
+}
+
+// delete removes the owners' pairs, the tenant's when the pair table holds
+// one: those whose target is among the values (keep false, a remove), or
+// those whose target is not (keep true, a replace; with no values, every
+// pair). Through a target table it reaches only pairs to visible targets.
+func (r relationRenderer) delete(keep bool) (RenderedRelationStatement, error) {
+	rel := r.rel
+	s := &statement{d: r.d}
 	var sb strings.Builder
-	var args []any
-	bind := func(v any) string {
-		args = append(args, v)
-		return d.Placeholder(len(args))
-	}
-	sb.WriteString("DELETE FROM " + rel.JoinTable + " WHERE " + rel.SourceColumn + " IN (" + binds(pks, bind) + ")")
-	if hasTenant {
-		sb.WriteString(" AND " + rel.TenantColumn + " = " + bind(opts.TenantValue))
-	}
-	switch {
-	case !keep:
-		sb.WriteString(" AND " + rel.TargetColumn + " IN (" + binds(vals, bind) + ")")
-	case len(vals) > 0:
-		sb.WriteString(" AND " + rel.TargetColumn + " NOT IN (" + binds(vals, bind) + ")")
-	}
-	visible, err := opts.TargetVisible(relationTarget, bind)
+	owners, err := s.in(rel.SourceColumn, r.owners, true)
 	if err != nil {
 		return RenderedRelationStatement{}, err
 	}
-	sb.WriteString(" AND " + rel.TargetColumn + " IN (SELECT " + relationTarget + "." + rel.TargetKey + " FROM " + rel.TargetTable + " " + relationTarget)
-	if visible != "" {
-		sb.WriteString(" WHERE " + strings.TrimPrefix(visible, " AND "))
+	sb.WriteString("DELETE FROM " + rel.JoinTable + " WHERE " + owners)
+	if r.hasTenant {
+		sb.WriteString(" AND " + rel.TenantColumn + " = " + s.bind(r.opts.TenantValue))
 	}
-	sb.WriteByte(')')
-	return RenderedRelationStatement{SQL: sb.String(), Args: args}, nil
+	if !keep || len(r.values) > 0 {
+		targets, err := s.in(rel.TargetColumn, r.values, !keep)
+		if err != nil {
+			return RenderedRelationStatement{}, err
+		}
+		sb.WriteString(" AND " + targets)
+	}
+	if rel.TargetTable != "" {
+		visible, err := r.opts.TargetVisible(relationTarget, s.bind)
+		if err != nil {
+			return RenderedRelationStatement{}, err
+		}
+		sb.WriteString(" AND " + rel.TargetColumn + " IN (SELECT " + relationTarget + "." + rel.TargetKey + " FROM " + rel.TargetTable + " " + relationTarget)
+		if visible != "" {
+			sb.WriteString(" WHERE " + strings.TrimPrefix(visible, " AND "))
+		}
+		sb.WriteByte(')')
+	}
+	return RenderedRelationStatement{SQL: sb.String(), Args: s.args}, nil
 }
 
-// guardedInsert pairs every owner with every visible target among vals:
+// relationOwner is the alias the guarded insert reads owner rows by.
+const relationOwner = "owner__"
+
+// insert pairs every owner with every value, ON CONFLICT DO NOTHING (each
+// pair needs a unique key). Through a target table the pairs are selected
+// from the owner rows and the visible target rows:
 //
 //	INSERT INTO j (source, target [, tenant])
 //	SELECT owner__.key, target__.key [, owner__.tenant | target__.tenant]
 //	FROM owners owner__, targets target__
-//	WHERE owner__.key IN (pks) [AND owner__.tenant = t] AND target__.key IN (vals) <visible>
-//	ON CONFLICT DO NOTHING
+//	WHERE <owner__.key in owners> [AND owner__.tenant = t] AND <target__.key in values> <visible>
 //
-// Every value is compared with a column, so it binds as that column's
-// type on every driver and protocol.
-func guardedInsert(rel *core.RelationSchema, d dialect.Dialect, pks, vals []any, opts RenderRelationOpOptions, hasTenant bool) (RenderedRelationStatement, error) {
-	var sb strings.Builder
-	var args []any
-	bind := func(v any) string {
-		args = append(args, v)
-		return d.Placeholder(len(args))
-	}
-	const owner = "owner__"
+// so every key is compared with a column and binds as its type. Without one,
+// the owners and values are rows of their own (rows).
+func (r relationRenderer) insert() (RenderedRelationStatement, error) {
+	rel := r.rel
+	s := &statement{d: r.d}
 	cols := rel.SourceColumn + ", " + rel.TargetColumn
-	sel := owner + "." + opts.Owner.Key + ", " + relationTarget + "." + rel.TargetKey
-	if hasTenant {
+	if r.hasTenant {
 		cols += ", " + rel.TenantColumn
+	}
+	var sb strings.Builder
+	sb.WriteString("INSERT INTO " + rel.JoinTable + " (" + cols + ") SELECT ")
+	if rel.TargetTable == "" {
+		if err := r.rows(s, &sb); err != nil {
+			return RenderedRelationStatement{}, err
+		}
+		sb.WriteString(" ON CONFLICT DO NOTHING")
+		return RenderedRelationStatement{SQL: sb.String(), Args: s.args}, nil
+	}
+
+	sb.WriteString(relationOwner + "." + r.opts.Owner.Key + ", " + relationTarget + "." + rel.TargetKey)
+	if r.hasTenant {
 		switch {
-		case opts.Owner.Tenant != "":
-			sel += ", " + owner + "." + opts.Owner.Tenant
+		case r.opts.Owner.Tenant != "":
+			sb.WriteString(", " + relationOwner + "." + r.opts.Owner.Tenant)
 		case rel.TargetTenant != "":
-			sel += ", " + relationTarget + "." + rel.TargetTenant
+			sb.WriteString(", " + relationTarget + "." + rel.TargetTenant)
 		default:
 			return RenderedRelationStatement{}, fmt.Errorf("relation junction %s is tenant-scoped, but neither its owners nor its targets hold a tenant", rel.JoinTable)
 		}
 	}
-	sb.WriteString("INSERT INTO " + rel.JoinTable + " (" + cols + ") SELECT " + sel)
-	sb.WriteString(" FROM " + opts.Owner.Table + " " + owner + ", " + rel.TargetTable + " " + relationTarget)
-	sb.WriteString(" WHERE " + owner + "." + opts.Owner.Key + " IN (" + binds(pks, bind) + ")")
-	if hasTenant && opts.Owner.Tenant != "" {
-		sb.WriteString(" AND " + owner + "." + opts.Owner.Tenant + " = " + bind(opts.TenantValue))
+	sb.WriteString(" FROM " + r.opts.Owner.Table + " " + relationOwner + ", " + rel.TargetTable + " " + relationTarget)
+	owners, err := s.in(relationOwner+"."+r.opts.Owner.Key, r.owners, true)
+	if err != nil {
+		return RenderedRelationStatement{}, err
 	}
-	sb.WriteString(" AND " + relationTarget + "." + rel.TargetKey + " IN (" + binds(vals, bind) + ")")
-	visible, err := opts.TargetVisible(relationTarget, bind)
+	sb.WriteString(" WHERE " + owners)
+	if r.hasTenant && r.opts.Owner.Tenant != "" {
+		sb.WriteString(" AND " + relationOwner + "." + r.opts.Owner.Tenant + " = " + s.bind(r.opts.TenantValue))
+	}
+	targets, err := s.in(relationTarget+"."+rel.TargetKey, r.values, true)
+	if err != nil {
+		return RenderedRelationStatement{}, err
+	}
+	sb.WriteString(" AND " + targets)
+	visible, err := r.opts.TargetVisible(relationTarget, s.bind)
 	if err != nil {
 		return RenderedRelationStatement{}, err
 	}
 	sb.WriteString(visible)
 	sb.WriteString(" ON CONFLICT DO NOTHING")
-	return RenderedRelationStatement{SQL: sb.String(), Args: args}, nil
+	return RenderedRelationStatement{SQL: sb.String(), Args: s.args}, nil
 }
 
-func binds(vs []any, bind func(any) string) string {
-	phs := make([]string, len(vs))
-	for i, v := range vs {
-		phs[i] = bind(v)
+// rows writes the select list and FROM of an insert without a target
+// table: the owners and the values each as rows, crossed.
+//
+// PostgreSQL cannot type an untyped array outside a comparison, and a key's
+// Go type does not name its column's type (a string key of a uuid column),
+// so each set binds as a JSON array of records read as the pair table's own
+// row type, which types each key as its column. A record's member is the
+// column's name as an unquoted identifier names it: folded to lower case.
+//
+// SQLite types values by the column's affinity on insert, so json_each rows
+// serve, with WHERE true to part the upsert's ON from a join's.
+func (r relationRenderer) rows(s *statement, sb *strings.Builder) error {
+	rel := r.rel
+	if r.d.Name() == dialect.NameSQLite {
+		owners, err := s.d.MarshalValue(r.owners, core.TypeInfo{Type: core.FieldTypeArray})
+		if err != nil {
+			return err
+		}
+		values, err := s.d.MarshalValue(r.values, core.TypeInfo{Type: core.FieldTypeArray})
+		if err != nil {
+			return err
+		}
+		ownersParam, valuesParam := s.bind(owners), s.bind(values)
+		sb.WriteString("o.value, v.value")
+		if r.hasTenant {
+			sb.WriteString(", " + s.bind(r.opts.TenantValue))
+		}
+		sb.WriteString(" FROM json_each(" + ownersParam + ") AS o, json_each(" + valuesParam + ") AS v WHERE true")
+		return nil
 	}
-	return strings.Join(phs, ", ")
+
+	source, target, tenant := strings.ToLower(rel.SourceColumn), strings.ToLower(rel.TargetColumn), strings.ToLower(rel.TenantColumn)
+	var tenantValue any
+	if r.hasTenant {
+		v, err := relationKey(r.opts.TenantValue)
+		if err != nil {
+			return fmt.Errorf("tenant: %w", err)
+		}
+		tenantValue = v
+	}
+	ownerRows := make([]map[string]any, len(r.owners))
+	for i, o := range r.owners {
+		ownerRows[i] = map[string]any{source: o}
+		if r.hasTenant {
+			ownerRows[i][tenant] = tenantValue
+		}
+	}
+	valueRows := make([]map[string]any, len(r.values))
+	for i, v := range r.values {
+		valueRows[i] = map[string]any{target: v}
+	}
+	ownersJSON, err := json.Marshal(ownerRows)
+	if err != nil {
+		return err
+	}
+	valuesJSON, err := json.Marshal(valueRows)
+	if err != nil {
+		return err
+	}
+	sb.WriteString("o." + rel.SourceColumn + ", v." + rel.TargetColumn)
+	if r.hasTenant {
+		sb.WriteString(", o." + rel.TenantColumn)
+	}
+	sb.WriteString(" FROM jsonb_populate_recordset(NULL::" + rel.JoinTable + ", " + s.bind(string(ownersJSON)) + "::jsonb) AS o, jsonb_populate_recordset(NULL::" + rel.JoinTable + ", " + s.bind(string(valuesJSON)) + "::jsonb) AS v")
+	return nil
 }

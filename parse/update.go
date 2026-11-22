@@ -286,11 +286,8 @@ func (r *Resource[T]) updateWhere(d filter.Dialect, v *dialectView, target Targe
 	if err != nil {
 		return "", nil, err
 	}
-	opts := []filter.SQLBuilderOption{filter.WithStartParam(offset), filter.WithRelatedPolicies(s.related)}
-	if s.tenant != nil {
-		opts = append(opts, filter.WithTenant(s.tenant))
-	}
-	res, err := filter.NewSQLBuilder(v.filter, d, opts...).Build(ast)
+	res, err := filter.NewSQLBuilder(v.filter, d, filter.WithStartParam(offset),
+		filter.WithRelationScope(filter.RelationScope{Tenant: s.tenant, Related: s.related})).Build(ast)
 	if err != nil {
 		return "", nil, err
 	}

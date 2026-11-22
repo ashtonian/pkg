@@ -180,6 +180,30 @@ func TestResolveMemberships_ResolvesEachLookupOnce(t *testing.T) {
 	assert.Equal(t, 1, lookup.calls)
 }
 
+// One lookup shared by constraints on two fields is asked once, and each
+// constraint tests its own field.
+func TestResolveMemberships_SharedLookupTestsEachField(t *testing.T) {
+	id := uuid.MustParse("0198a3c2-7a1e-7c00-8000-00000000000a")
+	l := &Lookup{Table: "t", Project: "p"}
+	ast, err := ApplyPolicyConstraints(memberSchema(), nil, &PolicyConstraints{Or: []*PolicyConstraints{
+		{Constraints: []*PolicyConstraint{{Field: "id", Member: l}}},
+		{Constraints: []*PolicyConstraint{{Field: "parent_id", Member: l, Negate: true}}},
+	}})
+	require.NoError(t, err)
+	lookup := &recordingLookup{values: map[string][]any{"t": {id}}}
+	out, err := ResolveMemberships(context.Background(), NewParsedFilter(ast), lookup)
+	require.NoError(t, err)
+	assert.Equal(t, 1, lookup.calls)
+	or := out.AST.Root
+	require.Equal(t, OpOr, or.Op)
+	require.Len(t, or.Children, 2)
+	assert.Equal(t, "id", or.Children[0].Field.ExternalName)
+	assert.Equal(t, []any{id.String()}, or.Children[0].Value)
+	require.Equal(t, OpNot, or.Children[1].Op)
+	assert.Equal(t, "parent_id", or.Children[1].Children[0].Field.ExternalName)
+	assert.Equal(t, []any{id.String()}, or.Children[1].Children[0].Value)
+}
+
 func TestResolveMemberships_FailuresRefuseTheRequest(t *testing.T) {
 	ast := memberAST(t, "id", &Lookup{Table: "t", Project: "p"}, false)
 	boom := errors.New("store unavailable")
@@ -200,7 +224,7 @@ func TestResolveMemberships_FailuresRefuseTheRequest(t *testing.T) {
 }
 
 func TestResolveMemberships_LeavesFiltersWithoutMembershipsAlone(t *testing.T) {
-	f := NewParsedFilter(&FilterAST{Root: &FilterNode{Op: OpRawSQL, RawSQL: "NULL"}})
+	f := NewParsedFilter(&FilterAST{Root: &FilterNode{Op: OpAnd, Children: []*FilterNode{unknownNode(), {Op: OpRawSQL, RawSQL: "x > 1"}}}})
 	out, err := ResolveMemberships(context.Background(), f, nil)
 	require.NoError(t, err)
 	assert.Same(t, f, out)

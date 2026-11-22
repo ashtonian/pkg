@@ -5,14 +5,14 @@
 ## Choose the operation
 
 ```go
-parsed, err := tp.ParsePatch(body)                      // RFC 6902 JSON Patch
-parsed, err := tp.ParseMergePatch(body)                 // RFC 7396 JSON Merge Patch
-updated, err := tp.ApplyValidatedPatch(parsed, current) // apply to a Go value
+parsed, err := products.ParsePatch(body)                      // RFC 6902 JSON Patch
+parsed, err := products.ParseMergePatch(body)                 // RFC 7396 JSON Merge Patch
+updated, err := products.ApplyValidatedPatch(parsed, current) // apply to a Go value (patch.Applier)
 set, err := patch.BuildPatchSQL(parsed, filter.PostgresDialect{})
 plan, err := products.BuildUpdate(filter.PostgresDialect{}, parsed, parse.ByID(id), scope) // complete, scoped UPDATE
 ```
 
-A field tagged `parse:"server"` is a column only the server sets — a credential's fingerprint, a flag the issuer flips. `ParseMergePatch` refuses it, so no request body reaches it; `tp.ParseServerMergePatch(body)` admits it alongside the patchable fields, for the server's own writes, and the result applies through `ApplyValidatedPatch` and `BuildPatchSQL` like any patch. A server field the field-name tag hides (`json:"-"`) is addressed by its column (`patch.ServerFieldName`) and can only be set by a top-level replace.
+A field tagged `parse:"server"` is a column only the server sets — a credential's fingerprint, a flag the issuer flips. `ParseMergePatch` refuses it, so no request body reaches it; `products.ParseServerMergePatch(body)` admits it alongside the patchable fields, for the server's own writes, and the result applies through `ApplyValidatedPatch` and `BuildPatchSQL` like any patch. A server field the field-name tag hides (`json:"-"`) is addressed by its column and can only be set by a top-level replace.
 
 `BuildPatchSQL` folds each column's ordered operations into one expression; merge-patch objects merge into the stored document (nested nulls delete keys, siblings survive); `array_append` appends atomically. Operations SQL cannot express — `move`, `copy`, `test`, nested paths — fail with E2068 / E2070 and apply through `ApplyValidatedPatch`. See [SQL compilation](#sql-compilation).
 
@@ -27,20 +27,24 @@ A field tagged `parse:"server"` is a column only the server sets — a credentia
 
 ## Validation
 
-JSON Patch bodies must be arrays of operations; resource Merge Patch bodies must be objects. A root `null` is rejected rather than treated as an empty update. Explicit null removal still runs path validators.
+JSON Patch bodies must be arrays of operations; resource Merge Patch bodies must be objects. A root `null` is rejected rather than treated as an empty update. An operation carries only the value it writes: a `remove` of a field, a `move` and a `copy` have no `PatchOperation.Value`, whatever `value` member the client sent. A `remove`, a merge-patch null and a `move`'s source are null writes, so the path's validators run with null.
 
-Generated client and server patch schemas set `PatchSchema.MaxOperations` to `patch.DefaultMaxOperations` (50). Code generators can read this constant without constructing a resource. JSON Patch may repeat an operation on one field up to this count; a body budget must account for each operation's path and value envelope. The parser's raw-input byte limit and declared field-value bounds remain independent limits. A hand-built `PatchSchema` uses the `MaxOperations` its caller sets.
+Every patch schema — generated, or built with `patch.NewPatchSchema` — has `PatchSchema.MaxOperations` `patch.DefaultMaxOperations` (50) unless it is set (0 is unlimited). Code generators can read this constant without constructing a resource. JSON Patch may repeat an operation on one field up to this count; a body budget must account for each operation's path and value envelope. The parser's raw-input byte limit and declared field-value bounds remain independent limits.
+
+A relation operation's value is a list of target keys, decided when it parses so that nothing the parser accepts is refused later for its shape. A key is never null (E2118), so a relation's membership type cannot be nullable (`[]*string` fails schema generation and `patch.RelationPath`). A merge-patch `null`, like a JSON Patch `replace` with `null`, is the clear — the same operation as `[]` — since RFC 7396 reads null as removing the member and the member is the membership; the schema document's `nullable` for a relation path says so. An `add` or `remove` names at least one key (E2118), and a value that is not a list, or a key of the wrong type, is E2077. Each key takes its target key's wire form: a JSON string for a key tagged `json:",string"` (`patch.RelationPath`'s `wire`). The parsers keep each key once, in the order first named, and refuse more than `PatchSchema.MaxRelationValues` (`patch.DefaultMaxRelationValues`, 1000; 0 is unlimited) with E2119 (422), whose `Details` hold the count (`patch.DetailValueCount`, `"count"`) and the limit (`patch.DetailValueLimit`, `"limit"`), before any SQL exists. Every key is a pair written per owner, so the limit bounds one factor of the rows a membership change writes; the owners are the rows the update targets. The schema document serves it as `max_relation_values`.
+
+A schema's paths are its own: `NewPatchSchema(resource, paths)` checks every key as a policy checks its patterns (a token is a literal, `*` or `**`), every path schema and its operations, and `AddPath` adds a path — refusing one the schema already has — which every parse that starts after it sees. `Path(key)` looks a key up and `Paths()` yields them in key order. An exact key is matched before a pattern, and patterns most specific first. `patch.IsValidOp` and `patch.Ops` name the recognized operations.
 
 A field tagged `json:",string"` takes its value as a JSON string holding it (`{"id":"9007199254740993"}`), as it reads in responses; a bare JSON number is E2077, while a Go number passed in code is the value. A `test` compares canonical text, and a `copy` or `move` between a quoted and an unquoted field is refused ([quoted values](schema-configuration.md#quoted-values)).
 
-A rejected patch returns no executable `ParsedPatch`. Independent member/operation failures are collected with `errors.Join`: merge members are ordered by name and JSON Patch operations by input order. Each invalid value remains a `*core.ParseError` with its path, operation index where applicable, and E2077. `errors.As(err, &pe)` still selects the first parse failure. Malformed document syntax and document-wide size/count/depth limits fail before value validation.
+Both wire formats judge each value by one rule — the operation is allowed on the path, a clear is nullable, the value normalizes, its validators pass, an array set whole holds the element counts — and frame failures their own way: a JSON Patch failure names its operation's index (`at index 0`, `ParseError.Index`), a merge patch's names only the path. A merge null on a field that cannot hold null reports that it is not nullable rather than that `remove` is not allowed. A parse with a nil schema is an error. A rejected patch returns no executable `ParsedPatch`. Independent member/operation failures are collected with `errors.Join`: merge members are ordered by name and JSON Patch operations by input order. Each invalid value remains a `*core.ParseError` with its path, operation index where applicable, and E2077. `errors.As(err, &pe)` still selects the first parse failure. Malformed document syntax and document-wide size/count/depth limits fail before value validation.
 
-Declared constraints carry a `*core.ConstraintError` as the parse error's cause. `Constraint` is `enum`, `minlen`, `maxlen`, `min`, `max`, `minitems` or `maxitems`; `Limit` is the schema's bound text or comma-separated enum allowlist. Value-specific messages are retained. Each invalid array element has its own parse failure; element-count failures are reported alongside value-tag failures. Type/shape failures do not invent a declared constraint.
+Declared constraints carry a `*patch.ConstraintError` as the parse error's cause. `Constraint` is `enum`, `minlen`, `maxlen`, `min`, `max`, `minitems` or `maxitems`; `Limit` is the schema's bound text or comma-separated enum allowlist. Value-specific messages are retained. Each invalid array element has its own parse failure; element-count failures are reported alongside value-tag failures. Type/shape failures do not invent a declared constraint.
 
 ```go
 var pe *core.ParseError
 if errors.As(err, &pe) {
-    var constraint *core.ConstraintError
+    var constraint *patch.ConstraintError
     if errors.As(pe.Cause, &constraint) {
         // pe.Path identifies the member; constraint.Constraint and Limit
         // identify its declared rule without parsing the message.
@@ -50,7 +54,7 @@ if errors.As(err, &pe) {
 
 Traverse joined errors through `Unwrap() []error` to collect every parse failure. The TypeScript SDK mirrors the constraint names and limits; multiple merge-patch failures throw `SchemaValidationErrors`, whose `errors` contains the individual failures and whose inherited field/code identify the first.
 
-Paths are RFC 6901 JSON Pointers: `/labels/a~1b` addresses the key `a/b`, and `~0` escapes a tilde. Patterns match tokens: `*` matches one token, `**` any number. An empty key is a token, so `/labels/*` admits `/labels/` but not `/labels//x`.
+Paths are RFC 6901 JSON Pointers: `/labels/a~1b` addresses the key `a/b`, and `~0` escapes a tilde. Patterns match tokens: `*` matches exactly one token and `**` zero or more, wherever it stands, so `/labels/**` matches `/labels` itself. A token is a literal, `*` or `**`: a policy refuses a pattern whose token holds `*` among other characters (`/internal_*`) when it is built. An empty key is a token, so `/labels/*` admits `/labels/` but not `/labels//x`. Among overlapping patterns the most specific decides: more leading literal tokens, then fewer `**`, then fewer `*`.
 
 | Check | Behavior |
 |---|---|
@@ -62,7 +66,7 @@ Paths are RFC 6901 JSON Pointers: `/labels/a~1b` addresses the key `a/b`, and `~
 | Fixed arrays | Replacement must have exactly the Go array's length; `array_append` cannot grow it |
 | Enum, bounds and policy | Enforce the `enum`, `minlen` / `maxlen` and `min` / `max` validators (per element on an array path; null passes, as nullability decides it) and caller-supplied path/value policy; a value outside them is E2077 |
 | Element counts | An array a top-level `replace` or `add` sets whole holds the path's `minitems` / `maxitems` (E2077). An element added, appended or removed, and an array moved or copied in, change an array the parser does not see: the store's constraint counts those |
-| Transfer source | `move` needs permission to remove its source; top-level source must be nullable. Typed source/destination kinds must be compatible, pointers aside |
+| Transfer source | `move` needs permission to remove its source; top-level source must be nullable, and its validators accept null. Typed source/destination kinds must be compatible, pointers aside |
 | Runtime transfer destination | Validate the resolved value against destination nullability and validators after preceding operations run |
 | `test` | Exact JSON comparison; `1.0` equals `1`, but missing paths or different document members fail E2077 |
 
@@ -89,9 +93,9 @@ A merge patch is bounded like the JSON Patch it stands for: a member nested `d` 
 | Operations on a column | SQL |
 |---|---|
 | replace / add | `col = $n` (documents bound as JSON) |
-| remove, or a null value | `col = NULL`; a slice or map field stores its empty value (`PathSchema.ClearedValue`) — slice and map columns are usually NOT NULL with an empty default |
+| remove, or a null value | `col = NULL`; a slice or map field stores its empty value — slice and map columns are usually NOT NULL with an empty default |
 | array_append | `array_append(COALESCE(col, '{}'), $n)` (PostgreSQL), `json_insert(COALESCE(col, '[]'), '$[#]', json(?n))` with the element bound as JSON (SQLite), so booleans, numbers and strings keep their JSON types; after a replace the result binds as one array |
-| merge-patch object | SQLite `json_patch(COALESCE(col, '{}'), ?n)`; PostgreSQL, per object level, the target as an object (else `{}`) `- $deleted::text[] \|\| $members::jsonb` plus one two-argument `jsonb_build_object($key, …)` per nested object — a level with nested objects names its target once in a scalar subquery that its children read, so the SQL and its arguments grow linearly with the patch and no call nears PostgreSQL's 100-argument limit; after a replace it folds in Go into one bound document |
+| merge-patch object | SQLite `json_patch(COALESCE(col, '{}'), ?n)`; PostgreSQL, per object level, the target as an object (else `{}`) `- $deleted::text[] \|\| $members::jsonb` plus one two-argument `jsonb_build_object($key, …)` per nested object — a level with nested objects names its target once in a scalar subquery that its children read, so the SQL and its arguments grow linearly with the patch and no call nears PostgreSQL's 100-argument limit; a `json` column (declared `core.SQLJSON`) is read as `jsonb` and the result stored back. A merge patch writes its column with one operation, so nothing else folds with it |
 | move, copy, nested path, `array_append` on a JSON document | E2070 |
 | test | E2068 |
 
@@ -99,7 +103,7 @@ Values bind through the dialect's `MarshalValue(value, core.TypeInfo)` (the `SQL
 
 `parse.ColumnType` / `core.WithColumnTypes` carries the physical storage profile into patch paths and binding. A declared JSON string, byte slice or scalar slice binds its Go JSON encoding; native SQL arrays keep their array representation. Declared JSON uses this encoding even when the Go value implements `driver.Valuer`; native database values keep their driver binding.
 
-A path with no `SQLColumn` fails with E2069. Relation paths go to `PatchSQLResult.RelationOps`; `RenderRelationOp(op, dialect, ownerPKs, opts)` renders their junction statements for the caller's transaction and fails closed on a tenant-scoped junction without `RenderRelationOpOptions.TenantValue` (or explicit `Unscoped`).
+A path with no `SQLColumn` fails with E2069. Relation paths go to `PatchSQLResult.RelationOps`; `RenderRelationOp(op, dialect, ownerPKs, opts)` renders their junction statements for the caller's transaction and fails closed on a tenant-scoped junction without `RenderRelationOpOptions.TenantValue` (or explicit `Unscoped`). The owners and the values each bind as one array parameter — `col = ANY($n)` / `col <> ALL($n)` on PostgreSQL, `col IN (SELECT value FROM json_each(?n))` on SQLite — so a statement's parameter count does not depend on how many there are ([relations](relations.md#update-membership)). It refuses an operation it cannot render: an `add` or `remove` with no values, a null key, keys of two types, or a dialect other than PostgreSQL and SQLite.
 
 `PatchSQLResult.Assignments` exposes each folded `ColumnAssignment{Column, Expression}` before rendering the comma-separated `SetClause`. Both forms share `Args` and placeholder numbering. `Resource.BuildUpdateBatch` composes these expressions for distinct per-key column patches; its [transaction and exact-preimage contract](operations.md#varied-native-update-batches) applies to every chunk.
 
@@ -107,7 +111,7 @@ A SET clause is not a complete UPDATE. `Resource.BuildUpdate` builds the complet
 
 ## Patches built in code
 
-A server that builds a patch need not encode JSON to parse it back. `MergePatchMap(map[string]any{...})` validates a merge patch given as a map exactly as `ParseMergePatch` validates its body — a nested `map[string]any` merges into a document, any other value (a Go value of the path's type, such as a `time.Time` or a struct, which replaces the document whole) replaces, and null removes, null being what encoding/json writes as null: `nil` or a nil pointer, map or slice, at any depth — and `ValidateOperations([]patch.RawPatchOp{...})` validates JSON Patch operations as `ParsePatch` does. `ServerMergePatchMap` and `ValidateServerOperations` do the same against the server patch schema, for the server's own writes. Never assemble a `patch.ParsedPatch` by hand: its operations would skip validation.
+A server that builds a patch need not encode JSON to parse it back. `MergePatchMap(map[string]any{...})` validates a merge patch given as a map exactly as `ParseMergePatch` validates its body — a nested `map[string]any` merges into a document, any other value (a Go value of the path's type, such as a `time.Time` or a struct, which replaces the document whole) replaces, and null removes, null being what encoding/json writes as null: `nil` or a nil pointer, map or slice, at any depth — and `ValidateOperations([]patch.RawPatchOp{...})` validates JSON Patch operations as `ParsePatch` does. `ServerMergePatchMap` and `ValidateServerOperations` do the same against the server patch schema, for the server's own writes. A `patch.ParsedPatch` assembled by hand would skip validation, so it is refused: `ApplyValidatedPatch`, `BuildPatchSQL`, `BuildUpdate` and `ApplyPatchPolicyConstraints` return `patch.ErrUnparsed` for a patch no parser produced.
 
 ## Resource updates
 
@@ -254,11 +258,11 @@ For a document with required integer members `w` and `h`:
 | Merge deletes required `h` with `null` | E2077 because Go serialization would recreate `h` |
 | Partial merge into a nullable struct or typed-map struct value | Must supply members required if the old value is absent; otherwise E2077 |
 
-Object merges into types with custom JSON encoding or embedded fields are rejected; `json.RawMessage` remains a generic document. Omission-sensitive map merges containing only removals are rejected because deleting the last key would leave SQL `{}` while Go omitted the field. A merge containing a non-null map member guarantees a remaining key and can be accepted. Use whole-document replacement for shapes whose merge cannot be represented consistently.
+Object merges into types with custom JSON encoding are rejected, and so is a merge of a Go value of such a type (`MergePatchMap`); a `json.RawMessage`, at the top level or as a member of a declared or undeclared document, merges as a generic document. A struct's embedded fields merge as the fields encoding/json promotes; a name it resolves by depth is refused. Omission-sensitive map merges containing only removals are rejected because deleting the last key would leave SQL `{}` while Go omitted the field. A merge containing a non-null map member guarantees a remaining key and can be accepted. Use whole-document replacement for shapes whose merge cannot be represented consistently.
 
 For declared JSON columns, replacement validates a fresh typed Go JSON decode before writing. Custom-codec subtrees retain their supplied JSON representation; ordinary typed objects still fill required members and honor field omission and `,string`. Integer/text map keys use their canonical JSON names, and colliding key forms are rejected. The stored result is one fresh decode of the actual SQL-bound JSON; validation never stores a custom decoder's transformed value by encoding it again.
 
-A non-SQL-NULL document that decodes to a nil map, slice, pointer or interface is rejected before assignment; use `json.RawMessage` when explicit JSON null must be preserved. Top-level typed nil values follow the same clear semantics as nil input. Request codecs still validate input; they do not replace the declared storage codec.
+A non-SQL-NULL document that decodes to a nil map, slice, pointer or interface is rejected before assignment; use `json.RawMessage` when explicit JSON null must be preserved. Top-level typed nil values follow the same clear semantics as nil input. Request codecs still validate input; they do not replace the declared storage codec. An undeclared typed document decodes with the request codec, and its members are checked on that codec's encoding by encoding/json's rules (the `Codec` interface has no mode that refuses an unknown member), so a member the type does not declare is E2077 rather than dropped.
 
 Keep undeclared document codecs stable across round trips. Do not use top-level `omitempty` / `omitzero` as storage metadata; that enclosing-field omission metadata is not a complete storage schema.
 
@@ -281,11 +285,27 @@ JSON Patch `test` checks the supplied document shape; missing struct members are
 | `WithTimeFunc(fn)` | `func() time.Time` | `time.Now().UTC` | Clock for `WithAutoTimestamp` |
 | `WithChangePredicate()` | — | off | Also render `PatchSQLResult.ChangePredicate`: true for a row the patch's columns change, over the SET clause's own placeholders and without the timestamp or increments; [Skipping unchanged rows](#skipping-unchanged-rows) defines its comparisons. Fails for a dialect other than PostgreSQL and SQLite |
 
-Parsers take a `*core.ParserConfig` (`MaxDepth` — pointer segments, and merge-patch nesting; `MaxInputSize`; codec; see [schema/configuration](schema-configuration.md)); `PatchSchema.MaxOperations` (default `50` for generated schemas) bounds operations per patch, merge patches counted as above (E2066).
+Parsers take a `*core.ParserConfig` (`MaxDepth` — pointer segments, and merge-patch nesting; `MaxInputSize`; codec; see [schema/configuration](schema-configuration.md)); `PatchSchema.MaxOperations` (default `50`) bounds operations per patch, merge patches counted as above (E2066), and `PatchSchema.MaxRelationValues` (default `1000`) the keys of one relation operation (E2119).
 
 ## Policy
 
-`PatchPolicyConstraints{ForbiddenPaths, ValueConstraints, Validators}` restricts paths (wildcards allowed) and values; `ApplyPatchPolicyConstraints(parsed, pc, subject)` enforces it, and `parse.WithPatchPolicy` applies it inside the typed parser. `NewValueConstraint(pattern, allowed, denied, min, max)` compiles a value rule up front (numbers compare exactly); `PatchPolicyFromWritableFields` derives constraints from a writable-field set.
+A policy restricts the paths a patch may write and the values it may write there:
+
+```go
+pc, err := patch.NewPatchPolicyConstraints(
+	patch.ForbidPaths("/tenant_id", "/internal/**"),
+	patch.ConstrainValues("/status", patch.ValueConstraint{AllowedValues: []any{"active", "inactive"}}),
+	patch.ValidateWith(func(op *patch.PatchOperation, subject *patch.PolicySubject) error { return nil }),
+)
+```
+
+`NewPatchPolicyConstraints` checks the policy when it is built, so a bad pattern is a startup error and never a request's: it refuses a path pattern whose token holds `*` among other characters, a value constraint given twice for one pattern, a `ValueConstraint.Pattern` that does not compile, and a nil validator. The policy is immutable. `ApplyPatchPolicyConstraints(parsed, pc, subject)` enforces it and records it on the patch (`AuditInfo`), and `parse.WithPatchPolicy(pc, subject)` applies it inside a `Resource`'s `ParsePatch`, `ParseMergePatch`, `MergePatchMap`, `ValidateOperations` and `ApplyPatch`; `subject` is a `*patch.PolicySubject` for the validators. `AllowedValues` and `DeniedValues` compare numbers by value, a decimal path's exactly; `PatchPolicyFromWritableFields` builds a policy forbidding every path a writable-field set leaves out.
+
+Policy judges what each operation writes, not its envelope. A whole value writes every path below its own, a merge object writes the members it names, a `remove` writes null whatever `value` it carries, a `move` writes its source as well as its destination, and a `test` writes nothing.
+
+- **Forbidden paths (E2084).** An operation is refused when a pattern matches its path. One that writes or reads a path whole — `replace`, `add`, `remove`, `array_append`, a relation's membership, a `move`'s or `copy`'s destination and source, a `test`'s path, a merge member whose value is not an object — is also refused when a pattern can match a path below it, so `{"op":"replace","path":"/attrs","value":{}}` is refused under `/attrs/secret`. A merge object is refused when it names a member chain a pattern matches, null included: `{"attrs":{"secret":null}}`. A pattern forbids the paths it matches and nothing inside them: `/attrs/secret` leaves `/attrs/secret/x` writable, `/attrs/secret/**` does not.
+- **Value constraints (E2085).** Each path an operation writes is judged by its constraint: the path's own key, else the most specific pattern that matches it. A constraint below the operation's path judges the member at that sub-path of the written value: for a whole-value write an absent member reads as null, for a merge an absent member is untouched. On an array path a constraint judges each element, whichever operation writes them. Null is judged by `AllowedValues` and `DeniedValues`; `Pattern` judges strings and `Min` / `Max` numbers, and each refuses any other value. A `move` or `copy` into a path that has a constraint, or a constraint below it, is refused, since its value is read only as the patch applies; so is a merge into a path with a constraint of its own.
+- **Affected paths.** `ParsedPatch.AffectedPaths`, and `AuditInfo`'s `affected_paths`, list every path the operations write: a `move`'s source included, a `test`'s path not.
 
 `copy` / `move` validate the resolved source against destination nullability, normalization, and validators after preceding operations run. Copy budgets count every serialized source, including overwrites. These checks complement authorization; the application still decides who may modify the resource.
 

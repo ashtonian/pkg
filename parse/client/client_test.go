@@ -5,6 +5,7 @@ package client
 import (
 	"encoding/json"
 	"errors"
+	"math"
 	"testing"
 	"time"
 
@@ -204,9 +205,55 @@ func TestMoment_EncodesAbsoluteAndServerRelativeTimes(t *testing.T) {
 
 func TestMoment_RefusesSubSecondRelativeTimes(t *testing.T) {
 	for _, m := range []Moment{Ago(1500 * time.Millisecond), FromNow(time.Nanosecond), Ago(time.Duration(-1 << 63))} {
-		_, err := json.Marshal(NewTime("t").Gt(m))
+		f := NewTime("t").Gt(m)
+		assert.ErrorIs(t, f.Err(), ErrSubSecond, "the filter carries it where it is built")
+		assert.ErrorIs(t, f.Err(), ErrOperand)
+		_, err := json.Marshal(f)
 		assert.ErrorIs(t, err, ErrSubSecond)
+		_, err = json.Marshal(m)
+		assert.ErrorIs(t, err, ErrSubSecond, "a Moment alone refuses to encode too")
 	}
+}
+
+// Every operand the grammar has no spelling for is refused where its filter
+// is built, so Filter.Err, ListParams.Values and ListParams.Body all see it.
+func TestFilter_RefusesOperandsWithoutASpelling(t *testing.T) {
+	ratio, quoted := NewOrdered[float64]("ratio"), NewOrdered[Quoted[float64]]("q")
+	loc, meta := NewGeo("loc"), NewDocument[map[string]any]("meta")
+	tests := []struct {
+		name string
+		f    Filter
+	}{
+		{"NaN", ratio.Eq(math.NaN())},
+		{"+Inf", ratio.Gt(math.Inf(1))},
+		{"-Inf in a set", ratio.In(1, math.Inf(-1))},
+		{"quoted NaN", quoted.Lt(Quote(math.NaN()))},
+		{"NaN in a document", meta.Contains(map[string]any{"x": math.NaN()})},
+		{"NaN in a point", loc.Near(Point{Lat: math.NaN()}, 10)},
+		{"zero distance", loc.Near(Point{}, 0)},
+		{"negative distance", loc.Near(Point{}, -5)},
+		{"infinite distance", loc.Near(Point{}, math.Inf(1))},
+		{"NaN distance", loc.Near(Point{}, math.NaN())},
+		{"nested", NewRelation[string]("parts").Some(ratio.Eq(math.NaN()))},
+		{"inside or", Or(ratio.Eq(1), ratio.Eq(math.Inf(1)))},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.ErrorIs(t, tt.f.Err(), ErrOperand)
+			_, err := ListParams{Filter: tt.f}.Values()
+			assert.ErrorIs(t, err, ErrOperand)
+			_, err = ListParams{Filter: tt.f}.Body()
+			assert.ErrorIs(t, err, ErrOperand)
+		})
+	}
+	assert.JSONEq(t, `{"loc":{"$near":{"lat":0,"lon":0,"distance":"0.001m"}}}`, encode(t, loc.Near(Point{}, 0.001)), "any positive distance has a spelling")
+}
+
+func TestFilter_DoesNotShareTheCallersDocument(t *testing.T) {
+	doc := map[string]any{"env": "prod"}
+	f := NewDocument[map[string]any]("meta").Contains(doc)
+	doc["env"] = "changed"
+	assert.JSONEq(t, `{"meta":{"$contains":{"env":"prod"}}}`, encode(t, f))
 }
 
 func TestSort_SpellsTheSortParameter(t *testing.T) {
@@ -239,6 +286,41 @@ func TestNullable_IsAMergePatchMember(t *testing.T) {
 	assert.True(t, isTypeErr, "a value of the wrong type is an error: %v", err)
 }
 
+// A member that is not tagged omitzero reaches MarshalJSON when absent;
+// encoding it as null would clear a column the caller never touched.
+func TestNullable_AbsentMemberWithoutOmitzeroDoesNotEncode(t *testing.T) {
+	type omitEmpty struct {
+		Name Nullable[string] `json:"name,omitzero"`
+		Note Nullable[string] `json:"note,omitempty"`
+	}
+	type untagged struct {
+		Name  Nullable[string] `json:"name,omitzero"`
+		Alias Nullable[string] `json:"alias"`
+	}
+	_, err := json.Marshal(omitEmpty{Name: Set("pump")})
+	assert.ErrorIs(t, err, ErrAbsentMember)
+	_, err = json.Marshal(untagged{Name: Set("pump")})
+	assert.ErrorIs(t, err, ErrAbsentMember)
+
+	assert.Equal(t, `{"name":"pump","note":"n"}`, encode(t, omitEmpty{Name: Set("pump"), Note: Set("n")}), "a present member encodes under any tag")
+}
+
+func TestNullable_SetOfNilIsWhatItEncodes(t *testing.T) {
+	type patch struct {
+		Tags   Nullable[[]string]       `json:"tags,omitzero"`
+		Labels Nullable[map[string]int] `json:"labels,omitzero"`
+		Nick   Nullable[*string]        `json:"nick,omitzero"`
+		Any    Nullable[any]            `json:"any,omitzero"`
+	}
+	p := patch{Tags: Set[[]string](nil), Labels: Set[map[string]int](nil), Nick: Set[*string](nil), Any: Set[any](nil)}
+	assert.Equal(t, `{"tags":[],"labels":{},"nick":null,"any":null}`, encode(t, p))
+	tags, ok := p.Tags.Get()
+	assert.True(t, ok)
+	assert.NotNil(t, tags)
+	assert.True(t, p.Nick.IsNull(), "a nil pointer clears the field, so it is Null")
+	assert.True(t, p.Any.IsNull())
+}
+
 func TestOperation_EncodesTheMembersItsOpTakes(t *testing.T) {
 	tags := NewRelation[string]("tags")
 	tests := []struct {
@@ -252,6 +334,9 @@ func TestOperation_EncodesTheMembersItsOpTakes(t *testing.T) {
 		{"remove", Remove("/a"), `{"op":"remove","path":"/a"}`},
 		{"move", Move("/a", "/b"), `{"op":"move","path":"/b","from":"/a"}`},
 		{"copy", Copy("/a", "/b"), `{"op":"copy","path":"/b","from":"/a"}`},
+		{"append", Append("/scores", 3), `{"op":"array_append","path":"/scores","value":3}`},
+		{"append null", Append("/scores", nil), `{"op":"array_append","path":"/scores","value":null}`},
+		{"array append", NewOrderedArray[int]("scores").Append(4), `{"op":"array_append","path":"/scores","value":4}`},
 		{"relation add", tags.Add("t1", "t2"), `{"op":"add","path":"/tags","value":["t1","t2"]}`},
 		{"relation remove carries its keys", tags.Remove("t1"), `{"op":"remove","path":"/tags","value":["t1"]}`},
 		{"relation replace with none", tags.Replace(), `{"op":"replace","path":"/tags","value":[]}`},

@@ -14,6 +14,7 @@ import (
 	"github.com/ashtonian/pkg/parse/core"
 	"github.com/ashtonian/pkg/parse/filter"
 	"github.com/ashtonian/pkg/parse/parsesqlite"
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
@@ -24,7 +25,11 @@ func facetSchema() *filter.ResourceSchema {
 	maxLow := 50.0
 	maxMid := 100.0
 	return &filter.ResourceSchema{
-		Name: "items",
+		Name:       "items",
+		PrimaryKey: "id",
+		SystemFields: map[string]*filter.FieldSchema{
+			"id": {ExternalName: "id", SQLExpr: "items.id", Column: "id", DataType: core.FieldTypeString},
+		},
 		Fields: map[string]*filter.FieldSchema{
 			"status": {
 				ExternalName: "status", SQLExpr: "items.status", DataType: core.FieldTypeString,
@@ -619,4 +624,23 @@ func TestBuildFacetQuery_RoundTrip_BooleanKeysAreJSONLiterals(t *testing.T) {
 
 	got := indexFacets(results)
 	checkBuckets(t, got["in_stock"], map[string]int64{"true": 3, "false": 2})
+}
+
+// BuildFacetQuery numbers its own parameters after filterArgs, so a
+// fragment numbered from an offset would collide with them; it is refused.
+func TestBuildFacetQuery_RefusesAnOffsetFragment(t *testing.T) {
+	schema := facetSchema()
+	ast, err := filter.NewFilterParser(schema, nil).Parse(`{"status":"active"}`)
+	require.NoError(t, err)
+	for _, d := range []filter.Dialect{filter.PostgresDialect{}, filter.SQLiteDialect{}} {
+		offset, err := filter.NewSQLBuilder(schema, d, filter.WithStartParam(3)).Build(ast)
+		require.NoError(t, err)
+		_, err = filter.BuildFacetQuery(schema, d, offset.Where, offset.Args, []filter.FacetRequest{{Field: "status"}})
+		assert.ErrorContains(t, err, "names placeholder 4 with 1 arguments", d.Name())
+
+		plain, err := filter.NewSQLBuilder(schema, d).Build(ast)
+		require.NoError(t, err)
+		_, err = filter.BuildFacetQuery(schema, d, plain.Where, plain.Args, []filter.FacetRequest{{Field: "status"}})
+		assert.NoError(t, err, d.Name())
+	}
 }

@@ -193,5 +193,5 @@ func PathSchema() (*filter.ResourceSchema, error) {
 // copy declaring the backend's storage), on backend, which evaluates against
 // PathRecords.
 func RunPaths(t *testing.T, schema *filter.ResourceSchema, backend Backend) {
-	run(t, "", PathParser(schema), PathCases(), backend)
+	run(t, PathParser(schema), PathCases(), backend)
 }

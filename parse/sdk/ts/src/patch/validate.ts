@@ -4,16 +4,20 @@ import { fromWire } from "../core/wire.js";
 import { SchemaValidationError, SchemaValidationErrors } from "../core/errors.js";
 import type { ConstraintFailure } from "../core/errors.js";
 import type { FieldType } from "../core/types.js";
+import { resolvePath } from "./pattern.js";
 import type { PatchOp, PatchPathSchema, PatchSchema } from "./types.js";
 
 /**
  * Validate a JSON Merge Patch against a PatchSchema as the Go parser does:
- * each key is a patchable top-level path (an RFC 6901 JSON Pointer), null
+ * each key is a patchable top-level path (an RFC 6901 JSON Pointer, matched
+ * against the schema's keys and its `*` / `**` patterns as the server
+ * matches them), null
  * only where the path is nullable (and `remove` allowed), every other value
  * of the path's type — numbers integral and within the path's Go kind,
  * strings in its enum, values within its bounds, arrays of its element type
  * within its element counts (each element in the enum and bounds), a
- * relation's membership a list —
+ * relation's membership a list of keys of its element type, none null (a
+ * null membership is the clear) —
  * and the operation count within the maximum, counting each
  * top-level member and each nested object below it. The corpus
  * testdata/patch_conformance.json holds the two to one answer per input.
@@ -39,8 +43,7 @@ export function validatePatch(input: Record<string, unknown>, schema: PatchSchem
 }
 
 function validateField(field: string, value: unknown, schema: PatchSchema): SchemaValidationError[] {
-  const path = `/${escapePointerToken(field)}`;
-  const pathSchema = Object.hasOwn(schema.paths, path) ? schema.paths[path] : undefined;
+  const pathSchema = resolvePath(schema.paths, `/${escapePointerToken(field)}`);
   if (!pathSchema) {
     return [new SchemaValidationError(field, "E2076",
       `Field "${field}" is not patchable. Patchable fields: ${Object.keys(schema.paths).map(unescapePointer).join(", ")}`)];
@@ -51,18 +54,18 @@ function validateField(field: string, value: unknown, schema: PatchSchema): Sche
       : undefined;
     return [new SchemaValidationError(field, "E2077", `Field "${field}" cannot be null`, constraint)];
   }
-  const op: PatchOp = value === null ? "remove" : "replace";
+  // A relation's null is the clear, a replace with no keys, as the parser
+  // reads it.
+  const op: PatchOp = value === null && !pathSchema.relation ? "remove" : "replace";
   if (!pathSchema.allowed_ops.includes(op)) {
     return [new SchemaValidationError(field, "E2064",
       `Operation "${op}" is not allowed on "${field}". Allowed: ${pathSchema.allowed_ops.join(", ")}`)];
   }
-  return value === null ? [] : validatePatchValue(field, value, pathSchema);
+  return value === null ? [] : validatePatchValue(field, value, pathSchema, schema.max_relation_values ?? 0);
 }
 
-function validatePatchValue(field: string, value: unknown, path: PatchPathSchema): SchemaValidationError[] {
-  if (path.relation) {
-    return Array.isArray(value) ? [] : [new SchemaValidationError(field, "E2118", `Relation "${field}" takes a list of keys`)];
-  }
+function validatePatchValue(field: string, value: unknown, path: PatchPathSchema, maxRelationValues: number): SchemaValidationError[] {
+  if (path.relation) return validateMembership(field, value, path, maxRelationValues);
   if (path.data_type === "array") {
     if (!Array.isArray(value)) {
       return [new SchemaValidationError(field, "E2077", `Field "${field}" expects an array`)];
@@ -89,23 +92,66 @@ function validatePatchValue(field: string, value: unknown, path: PatchPathSchema
   return checkValueTags(field, value, path.data_type, path);
 }
 
+// validateMembership checks a relation's value as the parser does: a list of
+// keys of the path's element type (E2077 otherwise), none null (E2118), at
+// most maxRelationValues of them once repeats are removed (E2119; 0 is
+// unlimited). A path whose wire is "string" takes each key as a JSON string
+// holding it, as its target's quoted key reads in responses; repeats are
+// found on the key it holds.
+function validateMembership(field: string, value: unknown, path: PatchPathSchema, maxRelationValues: number): SchemaValidationError[] {
+  if (!Array.isArray(value)) {
+    return [new SchemaValidationError(field, "E2077", `Relation "${field}" expects an array of keys`)];
+  }
+  if (value.some(el => el === null)) {
+    return [new SchemaValidationError(field, "E2118", `Relation "${field}" takes keys, which are never null`)];
+  }
+  const elementType = path.elem;
+  if (elementType) {
+    const ok = path.wire === "string"
+      ? (el: unknown) => quotedValue(el, elementType, path.number_kind) !== undefined
+      : (el: unknown) => scalarOK(el, elementType, path.number_kind);
+    if (!value.every(ok)) {
+      const form = path.wire === "string" ? ` as JSON strings holding them (json:",string")` : "";
+      return [new SchemaValidationError(field, "E2077", `Relation "${field}" expects ${elementType} keys${form}`)];
+    }
+  }
+  if (maxRelationValues > 0) {
+    const key = path.wire === "string" && elementType
+      ? (el: unknown) => quotedValue(el, elementType, path.number_kind)
+      : (el: unknown) => el;
+    const distinct = new Set(value.map(key)).size;
+    if (distinct > maxRelationValues) {
+      return [new SchemaValidationError(field, "E2119",
+        `Relation "${field}" names ${String(distinct)} keys; at most ${String(maxRelationValues)} in one patch`)];
+    }
+  }
+  return [];
+}
+
 // validateQuotedValue checks a json:",string" path's value: a JSON string
 // holding the value's JSON text. Its text keeps an integer exact, so the
 // client checks a 64-bit kind's range and every bound exactly.
 function validateQuotedValue(field: string, value: unknown, path: PatchPathSchema): SchemaValidationError[] {
   const type = path.data_type;
-  const v = fromWire(type, value);
-  let ok = v !== undefined;
-  if (type === "int") {
-    const n = typeof v === "string" ? decimalInteger(v) : undefined;
-    ok = n !== undefined && intInKind(n, path.number_kind);
-  }
-  if (type === "float") ok = typeof v === "number" && Number.isFinite(v);
-  if (!ok) {
+  const v = quotedValue(value, type, path.number_kind);
+  if (v === undefined) {
     const got = typeof value === "string" ? JSON.stringify(value) : typeof value;
     return [new SchemaValidationError(field, "E2077", `Field "${field}" expects its ${type} as a JSON string holding it (json:",string"), got ${got}`)];
   }
   return checkValueTags(field, v, type, path);
+}
+
+// quotedValue is the value a quoted value's JSON string holds, or undefined
+// when it holds none of type (an integer within kind, a finite float).
+function quotedValue(value: unknown, type: FieldType, kind?: string): unknown {
+  const v = fromWire(type, value);
+  if (v === undefined) return undefined;
+  if (type === "int") {
+    const n = typeof v === "string" ? decimalInteger(v) : undefined;
+    return n !== undefined && intInKind(n, kind) ? v : undefined;
+  }
+  if (type === "float") return typeof v === "number" && Number.isFinite(v) ? v : undefined;
+  return v;
 }
 
 // The integer kinds' ranges, exactly. An unknown kind is the widest domain

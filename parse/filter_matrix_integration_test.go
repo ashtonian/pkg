@@ -16,19 +16,26 @@ import (
 // storage model's native types: jsonb documents, TEXT[] arrays, timestamptz,
 // uuid, numeric.
 func TestFilterMatrix_PostgreSQL(t *testing.T) {
-	runFilterMatrix(t, "postgres", postgresMatrix(dbtest.PostGIS(t)))
+	runFilterMatrix(t, postgresMatrix(dbtest.PostGIS(t)))
 }
 
 // `$in` / `$nin` sets of every size on PostgreSQL 18, each bound as one
 // array parameter.
 func TestSetMatrix_PostgreSQL(t *testing.T) {
-	runSetMatrix(t, "postgres", postgresMatrix(dbtest.Postgres(t)))
+	runSetMatrix(t, postgresMatrix(dbtest.Postgres(t)))
 }
 
 // Membership constraints on PostgreSQL 18, as subqueries and resolved, over
 // native UUID and BIGINT lookup columns.
 func TestMembershipMatrix_PostgreSQL(t *testing.T) {
 	runMembershipMatrix(t, postgresMatrix(dbtest.Postgres(t)), map[core.FieldType]string{
+		core.FieldTypeString: "TEXT", core.FieldTypeUUID: "UUID", core.FieldTypeInt: "BIGINT",
+	})
+}
+
+// Policy trees on PostgreSQL 18, each listed page by page.
+func TestPolicyMatrix_PostgreSQL(t *testing.T) {
+	runPolicyMatrix(t, postgresMatrix(dbtest.Postgres(t)), map[core.FieldType]string{
 		core.FieldTypeString: "TEXT", core.FieldTypeUUID: "UUID", core.FieldTypeInt: "BIGINT",
 	})
 }

@@ -32,13 +32,13 @@ func nestedMerge(depth int) string {
 func TestParseMergePatch_BoundsDepth(t *testing.T) {
 	cfg := core.DefaultConfig()
 	cfg.MaxDepth = 3
-	_, err := patch.ParseMergePatch([]byte(`{"doc":{"a":{"b":1}}}`), mergeSchema(), cfg)
+	_, err := patch.ParseMergePatch([]byte(`{"doc":{"a":{"b":1}}}`), mergeSchema(""), cfg)
 	require.NoError(t, err)
-	_, err = patch.ParseMergePatch([]byte(`{"doc":{"a":{"b":{"c":1}}}}`), mergeSchema(), cfg)
+	_, err = patch.ParseMergePatch([]byte(`{"doc":{"a":{"b":{"c":1}}}}`), mergeSchema(""), cfg)
 	requireCode(t, err, patch.ECodePathTooDeep.String())
 
 	// Arrays replace whole; objects inside them do not merge.
-	_, err = patch.ParseMergePatch([]byte(`{"doc":{"a":[[{"x":{"y":{"z":1}}}]]}}`), mergeSchema(), cfg)
+	_, err = patch.ParseMergePatch([]byte(`{"doc":{"a":[[{"x":{"y":{"z":1}}}]]}}`), mergeSchema(""), cfg)
 	require.NoError(t, err)
 }
 
@@ -51,16 +51,16 @@ func TestParseMergePatch_BoundsNestedObjects(t *testing.T) {
 		}
 		return `{"doc":{` + strings.Join(members, ",") + `}}`
 	}
-	_, err := patch.ParseMergePatch([]byte(objects(9)), mergeSchema(), nil) // 1 + 9 = MaxOperations
+	_, err := patch.ParseMergePatch([]byte(objects(9)), mergeSchema(""), nil) // 1 + 9 = MaxOperations
 	require.NoError(t, err)
-	_, err = patch.ParseMergePatch([]byte(objects(10)), mergeSchema(), nil)
+	_, err = patch.ParseMergePatch([]byte(objects(10)), mergeSchema(""), nil)
 	requireCode(t, err, patch.ECodeTooManyOps.String())
 
 	scalars := make([]string, 1000)
 	for i := range scalars {
 		scalars[i] = fmt.Sprintf(`"k%d":%d`, i, i)
 	}
-	_, err = patch.ParseMergePatch([]byte(`{"doc":{`+strings.Join(scalars, ",")+`}}`), mergeSchema(), nil)
+	_, err = patch.ParseMergePatch([]byte(`{"doc":{`+strings.Join(scalars, ",")+`}}`), mergeSchema(""), nil)
 	require.NoError(t, err)
 }
 
@@ -68,7 +68,7 @@ func TestParseMergePatch_BoundsNestedObjects(t *testing.T) {
 func TestBuildPatchSQL_PostgresMergeGrowsLinearly(t *testing.T) {
 	cfg := core.DefaultConfig()
 	cfg.MaxDepth = 0
-	schema := mergeSchema()
+	schema := mergeSchema("")
 	schema.MaxOperations = 0
 	size := func(depth int) (int, int) {
 		parsed, err := patch.ParseMergePatch([]byte(nestedMerge(depth)), schema, cfg)
@@ -97,7 +97,7 @@ func TestBuildPatchSQL_PostgresWideMergeBindsOnce(t *testing.T) {
 	for i := range members {
 		members[i] = fmt.Sprintf(`"k%d":%d`, i, i)
 	}
-	parsed, err := patch.ParseMergePatch([]byte(`{"doc":{`+strings.Join(members, ",")+`}}`), mergeSchema(), nil)
+	parsed, err := patch.ParseMergePatch([]byte(`{"doc":{`+strings.Join(members, ",")+`}}`), mergeSchema(""), nil)
 	require.NoError(t, err)
 	res, err := patch.BuildPatchSQL(parsed, filter.PostgresDialect{})
 	require.NoError(t, err)

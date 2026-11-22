@@ -1,11 +1,14 @@
 package patch
 
 import (
+	"errors"
+	"fmt"
+	"iter"
 	"maps"
 	"reflect"
 	"slices"
-	"strings"
 	"sync"
+	"sync/atomic"
 
 	"github.com/ashtonian/pkg/parse/core"
 )
@@ -32,66 +35,159 @@ const (
 	PatchOpArrayAppend PatchOp = "array_append"
 )
 
-// ValidPatchOps is the set of all recognized patch operations.
-var ValidPatchOps = map[PatchOp]bool{
-	PatchOpAdd: true, PatchOpRemove: true, PatchOpReplace: true,
-	PatchOpMove: true, PatchOpCopy: true, PatchOpTest: true,
-	PatchOpArrayAppend: true,
-}
+// ops are the recognized patch operations, in documentation order.
+var ops = []PatchOp{PatchOpAdd, PatchOpRemove, PatchOpReplace, PatchOpMove, PatchOpCopy, PatchOpTest, PatchOpArrayAppend}
 
-// DefaultMaxOperations is the operation limit used by GeneratePatchSchema and
-// GenerateServerPatchSchema. Callers constructing a PatchSchema choose its limit.
+// IsValidOp reports whether op is a recognized patch operation.
+func IsValidOp(op PatchOp) bool { return slices.Contains(ops, op) }
+
+// Ops returns the recognized patch operations, in documentation order. The
+// slice is the caller's.
+func Ops() []PatchOp { return slices.Clone(ops) }
+
+// DefaultMaxOperations is the operation limit a PatchSchema has unless its
+// MaxOperations is set.
 const DefaultMaxOperations = 50
 
-// PatchSchema defines allowed patch operations for a resource.
+// DefaultMaxRelationValues is the number of keys one operation on a relation
+// path may name, once repeats are removed, unless a PatchSchema's
+// MaxRelationValues is set.
+const DefaultMaxRelationValues = 1000
+
+// PatchSchema defines the paths a resource's patches may write and the
+// limits a patch is held to. Build one with NewPatchSchema, or generate it
+// with GeneratePatchSchema; AddPath adds a path, and every parse after it
+// sees the path. It is safe for concurrent use.
 type PatchSchema struct {
-	Resource      string
-	AllowedPaths  map[string]*PathSchema
+	Resource string
+	// MaxOperations bounds the operations of one patch; 0 is unlimited.
 	MaxOperations int
+	// MaxRelationValues bounds the keys one operation on a relation path
+	// names, once repeats are removed (E2119); 0 is unlimited.
+	MaxRelationValues int
 
-	// sortedPathsOnce/List memoize AllowedPaths' pattern keys in
-	// most-specific-first order so wildcard resolution is deterministic
-	//. Lazy so struct-literal construction (tests, callers
-	// bypassing GeneratePatchSchema) still works.
-	sortedPathsOnce sync.Once
-	sortedPathsList []string
+	// mu serializes AddPath; readers load paths without it.
+	mu    sync.Mutex
+	paths atomic.Pointer[pathSet]
 }
 
-// sortedPaths returns the AllowedPaths pattern keys sorted most-specific
-// first: longest literal prefix before the first '*' desc, then fewest
-// wildcards asc, then lexicographic. Exact-match lookup happens before this
-// list is consulted, so it only orders wildcard candidates.
-func (s *PatchSchema) sortedPaths() []string {
-	s.sortedPathsOnce.Do(func() {
-		s.sortedPathsList = sortPatternsBySpecificity(slices.Collect(maps.Keys(s.AllowedPaths)))
-	})
-	return s.sortedPathsList
+// pathSet is one immutable version of a schema's paths: an exact key is
+// looked up in byKey, and a wildcard key is tried in patterns, most specific
+// first, so resolution is deterministic and a matched pattern always has its
+// path schema.
+type pathSet struct {
+	byKey    map[string]*PathSchema
+	patterns []pathPattern
 }
 
-// sortPatternsBySpecificity orders wildcard patterns deterministically,
-// most-specific first. Shared by schema path matching and policy value-
-// constraint matching.
-func sortPatternsBySpecificity(patterns []string) []string {
-	slices.SortFunc(patterns, func(a, b string) int {
-		la, lb := literalPrefixLen(a), literalPrefixLen(b)
-		if la != lb {
-			return lb - la // longest literal prefix first
+// NewPatchSchema builds the schema of resource's patches with paths, keyed by
+// JSON Pointer or pattern (a token is a literal, * for exactly one token or
+// ** for zero or more), MaxOperations DefaultMaxOperations and
+// MaxRelationValues DefaultMaxRelationValues. It refuses a
+// key whose token holds * among other characters, a nil path schema and an
+// unknown operation.
+func NewPatchSchema(resource string, paths map[string]*PathSchema) (*PatchSchema, error) {
+	s := &PatchSchema{Resource: resource, MaxOperations: DefaultMaxOperations, MaxRelationValues: DefaultMaxRelationValues}
+	set := &pathSet{byKey: make(map[string]*PathSchema, len(paths))}
+	var errs []error
+	for _, key := range slices.Sorted(maps.Keys(paths)) {
+		if err := set.add(key, paths[key]); err != nil {
+			errs = append(errs, err)
 		}
-		wa, wb := strings.Count(a, "*"), strings.Count(b, "*")
-		if wa != wb {
-			return wa - wb // fewest wildcards first
-		}
-		return strings.Compare(a, b)
-	})
-	return patterns
-}
-
-func literalPrefixLen(pattern string) int {
-	if i := strings.IndexByte(pattern, '*'); i >= 0 {
-		return i
 	}
-	return len(pattern)
+	if err := errors.Join(errs...); err != nil {
+		return nil, fmt.Errorf("patch schema %s: %w", resource, err)
+	}
+	set.sort()
+	s.paths.Store(set)
+	return s, nil
 }
+
+// AddPath adds a path to the schema, checked as NewPatchSchema checks one;
+// a key the schema already has is refused. Parses that start after it see
+// the path, and none sees a partial change.
+func (s *PatchSchema) AddPath(key string, ps *PathSchema) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	current := s.pathSet()
+	if _, exists := current.byKey[key]; exists {
+		return fmt.Errorf("patch schema %s: path %q is declared twice", s.Resource, key)
+	}
+	next := &pathSet{byKey: maps.Clone(current.byKey), patterns: slices.Clone(current.patterns)}
+	if next.byKey == nil {
+		next.byKey = map[string]*PathSchema{}
+	}
+	if err := next.add(key, ps); err != nil {
+		return fmt.Errorf("patch schema %s: %w", s.Resource, err)
+	}
+	next.sort()
+	s.paths.Store(next)
+	return nil
+}
+
+// Path returns the path schema declared under key, a JSON Pointer or
+// pattern as given to NewPatchSchema; it does not match patterns.
+func (s *PatchSchema) Path(key string) (*PathSchema, bool) {
+	ps, ok := s.pathSet().byKey[key]
+	return ps, ok
+}
+
+// Paths yields the schema's keys and path schemas in key order.
+func (s *PatchSchema) Paths() iter.Seq2[string, *PathSchema] {
+	set := s.pathSet()
+	return func(yield func(string, *PathSchema) bool) {
+		for _, key := range slices.Sorted(maps.Keys(set.byKey)) {
+			if !yield(key, set.byKey[key]) {
+				return
+			}
+		}
+	}
+}
+
+// pathSet is the schema's current paths; none for a zero PatchSchema.
+func (s *PatchSchema) pathSet() *pathSet {
+	if set := s.paths.Load(); set != nil {
+		return set
+	}
+	return &pathSet{}
+}
+
+// resolve returns the path schema for a request path: its exact key, else
+// the most specific pattern that matches it.
+func (set *pathSet) resolve(path string) (*PathSchema, bool) {
+	if ps, ok := set.byKey[path]; ok {
+		return ps, true
+	}
+	tokens := pointerTokens(path)
+	for _, pattern := range set.patterns {
+		if pattern.matches(tokens) {
+			return set.byKey[pattern.text], true
+		}
+	}
+	return nil, false
+}
+
+func (set *pathSet) add(key string, ps *PathSchema) error {
+	pattern, err := parsePattern(key)
+	if err != nil {
+		return fmt.Errorf("path: %w", err)
+	}
+	if ps == nil {
+		return fmt.Errorf("path %q has no path schema", key)
+	}
+	for _, op := range ps.AllowedOps {
+		if !IsValidOp(op) {
+			return fmt.Errorf("path %q: unknown patch operation %q", key, op)
+		}
+	}
+	set.byKey[key] = ps
+	if pattern.isWildcard() {
+		set.patterns = append(set.patterns, pattern)
+	}
+	return nil
+}
+
+func (set *pathSet) sort() { slices.SortFunc(set.patterns, compareSpecificity) }
 
 // PathSchema defines a single patchable path.
 type PathSchema struct {
@@ -111,8 +207,9 @@ type PathSchema struct {
 	// for a bool, integer or float field tagged json:",string", whose value
 	// is a JSON string ("42", not 42), as encoding/json writes the field.
 	// Values normalize from it, so SQL binds and validators see the number.
+	// A relation path's wire is each key's: its target key's.
 	Wire       core.Wire
-	Validators []core.Validator
+	Validators []Validator
 	// EnumValues is the path's `enum` allowlist (also a Validator), for
 	// schema discovery.
 	EnumValues []string
@@ -139,12 +236,12 @@ func (p *PathSchema) Nullable() bool {
 	return p.GoType == nil || acceptsNull(p.GoType, p.Bounds)
 }
 
-// ClearedValue is what removing the path, or setting it to null, stores:
+// clearedValue is what removing the path, or setting it to null, stores:
 // nil (SQL NULL) for pointers, interfaces and untyped paths, and the empty
 // value for a slice or map. Slice and map columns are usually NOT NULL with
 // an empty default, where NULL fails the write, and empty is a valid cleared
 // value for a nullable one too — so clearing empties them on every backend.
-func (p *PathSchema) ClearedValue() any {
+func (p *PathSchema) clearedValue() any {
 	if p == nil || p.GoType == nil || p.Relation != nil {
 		return nil
 	}
@@ -182,11 +279,17 @@ func (p *PathSchema) AllowsOp(op PatchOp) bool {
 
 // PatchOperation represents a validated patch operation.
 type PatchOperation struct {
-	Op     PatchOp
-	Path   string
-	From   string
+	Op   PatchOp
+	Path string
+	From string
+	// Value is what the operation writes: nil for a remove of a field and
+	// for a move or copy, whose value is read from the document as the patch
+	// applies. A relation's remove holds the members it removes, and a test
+	// the document it compares.
 	Value  any
 	Schema *PathSchema
+	// fromSchema is a move's or copy's source path schema.
+	fromSchema *PathSchema
 
 	// Merge marks an op derived from an RFC 7396 merge patch whose value is
 	// an object — it requires RECURSIVE merge semantics, not whole-value
@@ -196,25 +299,32 @@ type PatchOperation struct {
 	Merge bool
 }
 
-// ParsedPatch is the result of parsing a JSON Patch document.
+// ParsedPatch is a validated patch: what Parser.Parse and ParseOps make of a
+// JSON Patch document, and ParseMergePatch and ParseMergePatchMap of a merge
+// patch.
 type ParsedPatch struct {
-	Operations        []*PatchOperation
-	EstimatedCost     int
-	AffectedPaths     []string
-	PolicyConstraints *PatchPolicyConstraints
+	Operations []*PatchOperation
+	// AffectedPaths are the paths the operations write, sorted and once each:
+	// a move's source included, a test's path not.
+	AffectedPaths []string
+
+	// schema is the schema the parser validated the patch against; a patch
+	// without one was not produced by a parser (ErrUnparsed).
+	schema *PatchSchema
+	// policy is the policy ApplyPatchPolicyConstraints held the patch to.
+	policy *PatchPolicyConstraints
 }
 
 // AuditInfo returns a map of audit-relevant information.
 func (p *ParsedPatch) AuditInfo() map[string]any {
 	info := map[string]any{
 		"operation_count": len(p.Operations),
-		"estimated_cost":  p.EstimatedCost,
 		"affected_paths":  p.AffectedPaths,
 	}
-	if p.PolicyConstraints != nil {
-		info["forbidden_path_count"] = len(p.PolicyConstraints.ForbiddenPaths)
-		info["value_constraint_count"] = len(p.PolicyConstraints.ValueConstraints)
-		info["validator_count"] = len(p.PolicyConstraints.Validators)
+	if p.policy != nil {
+		info["forbidden_path_count"] = len(p.policy.forbidden)
+		info["value_constraint_count"] = len(p.policy.constraints)
+		info["validator_count"] = len(p.policy.validators)
 	}
 	return info
 }

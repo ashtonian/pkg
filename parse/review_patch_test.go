@@ -15,7 +15,7 @@ import (
 func TestPatch_OversizedBodyIsInputTooLarge(t *testing.T) {
 	cfg := core.DefaultConfig()
 	cfg.MaxInputSize = 16
-	schema := &patch.PatchSchema{AllowedPaths: map[string]*patch.PathSchema{"/name": {AllowedOps: []patch.PatchOp{patch.PatchOpReplace}}}}
+	schema := newSchema("", 0, map[string]*patch.PathSchema{"/name": {AllowedOps: []patch.PatchOp{patch.PatchOpReplace}}})
 	body := []byte(`{"name":"` + strings.Repeat("x", 32) + `"}`)
 
 	_, err := patch.ParseMergePatch(body, schema, cfg)

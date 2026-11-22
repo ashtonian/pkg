@@ -351,7 +351,7 @@ func (r *Resource[T]) dialectView(d filter.Dialect) (*dialectView, error) {
 	return r.readExprs.view(d, base)
 }
 
-func (v *dialectView) listQuery(d filter.Dialect, cfg *core.ParserConfig) *filter.ListQuery {
+func (v *dialectView) listQuery(d filter.Dialect, cfg *core.ParserConfig) (*filter.ListQuery, error) {
 	return newListQuery(v.filter, v.sort, v.search, d, cfg)
 }
 
@@ -526,8 +526,8 @@ func (r *Resource[T]) checkComputedPatches() error {
 		if schema == nil {
 			continue
 		}
-		for _, path := range slices.Sorted(maps.Keys(schema.AllowedPaths)) {
-			if column := schema.AllowedPaths[path].SQLColumn; r.computed(column) {
+		for path, ps := range schema.Paths() {
+			if column := ps.SQLColumn; r.computed(column) {
 				return r.readExprs.writeError(column, "is patched at "+path)
 			}
 		}

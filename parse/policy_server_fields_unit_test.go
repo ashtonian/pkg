@@ -52,8 +52,8 @@ func TestPolicy_ServerFieldsStayOutOfRequests(t *testing.T) {
 	}
 
 	fields := map[string]bool{}
-	for _, f := range filter.FilterMetaFromSchema(docs.FilterSchema()).Fields {
-		fields[f.Name] = true
+	for _, f := range docs.FilterSchema().Fields {
+		fields[f.ExternalName] = true
 	}
 	assert.Equal(t, map[string]bool{"id": true, "title": true, "folderId": true}, fields, "the schema document advertises request fields only")
 }

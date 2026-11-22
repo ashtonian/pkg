@@ -33,35 +33,10 @@ type facetConfig struct {
 	from    string
 }
 
-// WithFacetTenant binds the tenant every tenant-scoped relation facet's
-// junction join is restricted to. Required when a requested
-// relation facet declares a TenantColumn; without it (or
-// WithFacetUnscopedRelations) the build fails.
-func WithFacetTenant(value any) BuildFacetQueryOption {
-	return func(c *facetConfig) {
-		c.scope.tenant = value
-		c.scope.hasTenant = value != nil
-	}
-}
-
-// WithFacetUnscopedRelations deliberately aggregates tenant-scoped relation
-// facets without a tenant predicate. Never use it on a request path.
-func WithFacetUnscopedRelations() BuildFacetQueryOption {
-	return func(c *facetConfig) { c.scope.unscoped = true }
-}
-
-// WithFacetRowTenant holds each tenant-scoped relation facet's related rows
-// to the tenant of the owner row they hang from, column of the schema's
-// table, instead of a bound tenant (WithRowTenant). It excludes
-// WithFacetTenant and WithFacetUnscopedRelations.
-func WithFacetRowTenant(column string) BuildFacetQueryOption {
-	return func(c *facetConfig) { c.scope.row = rowTenant{column: column} }
-}
-
-// WithFacetRelatedPolicies supplies the policies of policy-scoped
-// relations' target tables (WithRelatedPolicies).
-func WithFacetRelatedPolicies(policies map[string]*PolicyConstraints) BuildFacetQueryOption {
-	return func(c *facetConfig) { c.related = policies }
+// WithFacetRelationScope scopes the relation facets' related rows
+// (RelationScope). A RowTenant is a column of the schema's table.
+func WithFacetRelationScope(s RelationScope) BuildFacetQueryOption {
+	return func(c *facetConfig) { c.scope, c.related = s.tenancy(), s.Related }
 }
 
 // WithFacetFrom reads the facets' base rows FROM from instead of the
@@ -91,9 +66,13 @@ func WithFacetFrom(from string) BuildFacetQueryOption {
 // buckets in that order, range buckets as declared. Pair
 // with [ScanFacetUnion] to re-group rows into per-field [FacetResult]s.
 //
+// filterWhere numbers its placeholders from 1 to len(filterArgs), as a
+// builder without WithStartParam numbers them: the range and tenant
+// parameters follow. A fragment naming a higher placeholder is refused.
+//
 // Relation predicates in filterWhere are correlated EXISTS, so the base CTE
-// holds one row per matching owner and every count is a count of owners
-// . Relation-typed facet fields JOIN the junction inside
+// holds one row per matching owner and every count is a count of owners.
+// Relation-typed facet fields JOIN the junction inside
 // their own UNION ALL branch. The base CTE projects the owner's
 // PK under the alias `__owner_pk`; the relation branch joins on
 // `j.<source> = base.__owner_pk` and aggregates over `j.<target>`. Range
@@ -128,6 +107,9 @@ func buildFacetQuery(schema *ResourceSchema, dialect Dialect, filterWhere string
 	}
 	if err := cfg.scope.check(); err != nil {
 		return FacetQuery{}, fmt.Errorf("BuildFacetQuery: %w", err)
+	}
+	if n := highestPlaceholder(dialect, filterWhere); n > len(filterArgs) {
+		return FacetQuery{}, fmt.Errorf("BuildFacetQuery: filterWhere names placeholder %d with %d arguments; number its placeholders from 1", n, len(filterArgs))
 	}
 
 	type meta struct {
@@ -539,4 +521,26 @@ func ScanFacetUnion(rows Rows) ([]FacetResult, error) {
 		return nil, err
 	}
 	return results, nil
+}
+
+// highestPlaceholder is the highest numbered placeholder d writes ($N, ?N)
+// that where names, 0 for none.
+func highestPlaceholder(d Dialect, where string) int {
+	prefix := strings.TrimSuffix(d.Placeholder(1), "1")
+	highest := 0
+	for rest := where; ; {
+		i := strings.Index(rest, prefix)
+		if i < 0 {
+			return highest
+		}
+		rest = rest[i+len(prefix):]
+		j := 0
+		for j < len(rest) && rest[j] >= '0' && rest[j] <= '9' {
+			j++
+		}
+		if n, err := strconv.Atoi(rest[:j]); err == nil && n > highest {
+			highest = n
+		}
+		rest = rest[j:]
+	}
 }

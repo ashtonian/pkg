@@ -2,7 +2,7 @@
 
 TypeScript client for APIs built on the Go `parse` package: type-safe filter and sort builders, schema discovery, client-side validation for the shared schema contract, cursor pagination, facets, and JSON Merge Patch updates. Its request and response shapes are the server's wire format, verified against fixtures the Go package emits.
 
-Zero runtime dependencies. Runs wherever `fetch` and `AbortSignal.any` exist: Node.js 22.13 or later (the `engines` floor, which CI tests exactly), current browsers, Deno and edge runtimes.
+Zero runtime dependencies. Runs wherever `fetch` and `AbortSignal.any` exist: Node.js 22.13 or later (the `engines` floor, which CI tests exactly), current browsers, Deno and edge runtimes. The package is an ES module; its exports' `default` condition also serves `require`, which loads ES modules on every Node.js the `engines` floor admits.
 
 ## Install
 
@@ -35,7 +35,7 @@ interface Product {
   labels: Record<string, string>;
 }
 
-const client = createClient({ baseURL: "https://api.example.com", validateBeforeSend: true });
+const client = createClient({ baseURL: "https://api.example.com/api", validateBeforeSend: true });
 const products = client.resource<Product>("products");
 
 const page = await products.list({
@@ -53,40 +53,54 @@ console.log(page.items, page.page_info.total_count, page.page_info.end_cursor);
 
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
-| `baseURL` | string | — (required) | API origin and prefix, no trailing slash |
-| `headers` | `Record<string, string>` | none | Headers sent with every request (e.g. `Authorization`) |
+| `baseURL` | string | — (required) | API origin and prefix (`https://api.example.com/api`); a resource's path and its schema are below it. A trailing slash is ignored |
+| `headers` | `Record<string, string>` | none | Headers sent with every request (e.g. `Authorization`). Names are case-insensitive: a request's own `headers` replace them, and a `content-type` replaces the default rather than joining it |
 | `fetch` | `typeof fetch` | `globalThis.fetch` | Fetch implementation |
-| `schemaPath` | string | `"api"` | Prefix of the schema endpoints (`{schemaPath}/{resource}/schema`, `{schemaPath}/schemas`) |
-| `validateBeforeSend` | boolean | `false` | Validate filters, sorts and patches against the server schema before sending |
-| `timeout` | number (ms) | `30000` | Per-request deadline, combined with any caller `AbortSignal` |
+| `schemaPrefix` | string | none: schemas beside the collections | Path below `baseURL` of the schema endpoints, for a server that serves them elsewhere: `{schemaPrefix}/{name}/schema`, `{schemaPrefix}/schemas`. Slashes at either end are ignored |
+| `validateBeforeSend` | boolean | `false` | Validate filters, sorts, includes, facets, search and patches against the server schema before sending |
+| `timeout` | positive integer (ms), at most 2^32 - 1 | `30000` | Per-request deadline, combined with any caller `AbortSignal`. `createClient` throws `RangeError` for any other value, `0` included |
 | `maxURLLength` | positive integer | none: every list is a GET | Opts `list` and `listAll` into the [POST body transport](#large-filters): the longest list URL sent as a GET, past which the same request is sent as a JSON body in a POST to the same path. Set it only once the server routes POST lists, through Go `parsehttp.ParseList` or `Resource.ParseListPost`. `createClient` throws `RangeError` for any other value |
 
 ## Server Contract
 
-The client calls the routes a server built on the Go module serves; the [example server](../../examples/server/) serves every one:
+`client.resource<T>(path, { schema? })` is a collection at `{baseURL}/{path}`. Its schema document is `{baseURL}/{schemaPrefix}/{name}/schema`, where `name` is the resource's registry name (Go: its table, the document's `resource`): `schema` when given, else the path's last segment. Relation targets are fetched by registry name too, and the schema cache is keyed by it, so `schemas()` followed by any handle's `schema()` sends nothing. A collection served under another name than its table, `/api/work-orders` over `work_orders`, is `client.resource("work-orders", { schema: "work_orders" })`. A schema document for another resource than the one requested is `SchemaResourceError`. An empty path throws `RangeError`.
+
+The client calls the routes a server built on the Go module serves; the [example server](../../examples/server/) serves every one, with `baseURL` set to its origin and `/api`:
 
 | Client call | Request | Served in Go by |
 |---|---|---|
-| `list(opts)` | `GET /{resource}?filter=&sort=&cursor=&page_size=&include_total=&include_deleted=&search=&include=&facets=` | `parsehttp.ParseList` (or `Resource.ParseList`), `Resource.BuildList`, `Resource.Page` |
-| `list(opts, { method: "POST" })`, or a list URL past `maxURLLength` | `POST /{resource}` with `{"filter": {…}, "sort", "cursor", "page_size", "include_total", "include_deleted", "search", "include": […], "facets": […]}` as `application/json` ([HTTP contract](../../docs/http-errors.md#the-same-request-as-a-post-body)) | The same handler: `parsehttp.ParseList` reads either transport |
+| `list(opts)` | `GET /{resource}?filter=&sort=&cursor=&page_size=&include_total=&include_deleted=&search=&include=&facets=&fields=` | `parsehttp.ParseList` (or `Resource.ParseList`), `Resource.BuildList`, `Resource.Page` |
+| `list(opts, { method: "POST" })`, or a list URL past `maxURLLength` | `POST /{resource}` with `{"filter": {…}, "sort", "cursor", "page_size", "include_total", "include_deleted", "search", "include": […], "facets": […], "fields": […]}` as `application/json` ([HTTP contract](../../docs/http-errors.md#the-same-request-as-a-post-body)) | The same handler: `parsehttp.ParseList` reads either transport |
 | `listAll(opts)` | `list` repeated with `cursor = page_info.end_cursor` while `page_info.has_next_page`, each page on the transport `list` would take | The list route |
 | `patch(id, input)` | `PATCH /{resource}/{id}` with a JSON Merge Patch body | `Resource.ParseMergePatch`, `Resource.BuildUpdate(…, parse.ByID(id), …)` |
 | `patchMany(ids, input)` | `PATCH /{resource}?id[]=…&id[]=…` with a JSON Merge Patch body | `Resource.BuildUpdate(…, parse.ByIDs(ids…), …)`; a key that updated no row is an item of `failed` |
 | `facets(fields, opts)` | `OPTIONS /{resource}?facets=a,b&filter=` → `facets` | `Resource.ParseList`, `Resource.BuildList`, the plan's `Facets` statement |
-| `schema()` | `GET /{schemaPath}/{resource}/schema` | `SchemaRegistry.SchemaHandler` |
+| `schema()` | `GET /{schemaPrefix}/{name}/schema` | `SchemaRegistry.SchemaHandler` |
+| `schemas()` | `GET /{schemaPrefix}/schemas` → `{ schemas: […] }` | `SchemaRegistry.SchemaListHandler` |
+
+Members a list leaves zero (an empty `sort`, `include`, `facets` or `fields`, `pageSize: 0`) are not sent, so the server applies its defaults. `fields` is the response field mask, the members each item carries; the schema document lists no maskable names, so `validateBeforeSend` leaves the mask to the server. `patch("")` and `patchMany([])` throw `RangeError` before sending: either would `PATCH` the collection itself. A request carries `Content-Type: application/json` only when it has a body.
 
 A list page is `{ items, page_info: { has_next_page, has_prev_page, start_cursor?, end_cursor?, total_count? }, _relations?, _truncated?, facets? }` — Go `filter.Page`. `_relations` carries `include` projections: relation field → owner id → related ids (at most 100 per owner by default); `_truncated` lists, per relation field, the owners whose ids were cut at that cap. `facets` carries the counts a list's `facets` option asked for, over the matched rows: field → buckets, a terms facet's by count with ties in the field's type order (numbers by value), a range facet's as declared. A server answers them when it runs the list plan's facet statement, as `parsepgx.QueryPage` and the example server do; one that does not serves facets through `facets(fields, opts)` only. A patch returns `{ updated, failed? }`: `failed` lists the keys of a `patchMany` that updated no row, each with the server's `code` and `error`.
 
 ## Filtering
 
 ```typescript
-const expr = filter<Product>()
-  .where("category", { $in: ["books", "games"] })
-  .where("name", { $like: "The %" })          // % any run, _ one character, \ escapes
-  .where("labels", { $contains: { tier: "gold" } }) // JSON document containment
-  .or(filter<Product>().where("price", { $lt: 5 }))
-  .build();
+import { and, filter, not, or } from "@ashtonian/parse";
+
+// Gold-tier books and games titled "The …", or anything under 5.
+const expr = or<Product>(
+  filter<Product>()
+    .where("category", { $in: ["books", "games"] })
+    .where("name", { $like: "The %" })          // % any run, _ one character, \ escapes
+    .where("labels", { $contains: { tier: "gold" } }), // JSON document containment
+  { price: { $lt: 5 } },
+);
+const inRange = filter<Product>().where("price", { $gte: 1 }).where("price", { $lte: 5 }).build();
+// { price: { $gte: 1, $lte: 5 } }
+const notArchived = and<Product>(inRange, not<Product>({ category: "archive" }));
 ```
+
+`filter<T>()` builds a conjunction of field conditions. It is immutable: each `where` returns a new builder. A second `where` on a field merges its operators into the first; an operator the field already has, or a second condition beside a bare value, throws `RangeError`, so no call drops a condition already added. `and(...)`, `or(...)` and `not(...)` take expressions or builders and return expressions, as the Go client's `And`, `Or` and `Not` do: empty expressions match every row (`and()` is `{}`, an `or` holding one is `{}`), nested groups of the same kind flatten, and `or()` of nothing and `not({})`, which would match no row, throw `RangeError`.
 
 Operator semantics are the server's: equality and ordering are case-sensitive (strings order by code point), `$contains` is a literal substring on strings, document containment on JSON fields and element containment on arrays, `$has_key` tests a JSON document for a top-level key (jsonb `?`), declared JSON paths are fields named `document.member`, and a predicate on a missing (NULL) value never matches, so `$ne` / `$nin` / `$not` exclude it. A plain object on a JSON field is document equality.
 
@@ -139,17 +153,19 @@ v.fieldsByGroup();          // Map of sidebar group → fields, ordered
 v.includableFields();       // relation fields a list can `include`
 ```
 
-The schema document carries its format version; the client reads version `SCHEMA_VERSION` and refuses any other with `SchemaVersionError`, so a document whose members changed meaning never validates a request. With `validateBeforeSend: true` the schema is fetched once per resource and every filter, sort, include, facet and patch is validated first. A filter's relation predicates (`$some`, `$none`, `$is`, `$is_not` on a field whose `relation.target` names another resource) validate against that resource's schema, which the client fetches the same way, two levels deep; a JSON array of objects' element filters validate against its `elements`, and a scalar array's element conditions (`{"$some": {"$gte": 5, "$lt": 10}}`, typed by `ElementCondition<E>`) against its `element`, as do its `$contains` members. `validateFilter` (with an optional `RelatedSchemas` lookup), `relatedTargets`, `validateSort` and `validatePatch` are also exported for direct use.
+The schema document carries its format version; the client reads version `SCHEMA_VERSION` and refuses any other with `SchemaVersionError`, so a document whose members changed meaning never validates a request. With `validateBeforeSend: true` the schema is fetched once per resource and every filter, sort, include, facet, search and patch is validated first, by `list` and `facets` alike; a search on a resource whose schema has no search enabled is E2067, as the server answers. A patch path is looked up as the server looks it up: its exact key, else the most specific `*` / `**` pattern that matches it. A filter's relation predicates (`$some`, `$none`, `$is`, `$is_not` on a field whose `relation.target` names another resource) validate against that resource's schema, which the client fetches the same way, two levels deep; a JSON array of objects' element filters validate against its `elements`, and a scalar array's element conditions (`{"$some": {"$gte": 5, "$lt": 10}}`, typed by `ElementCondition<E>`) against its `element`, as do its `$contains` members. `validateFilter` (with an optional `RelatedSchemas` lookup), `relatedTargets`, `validateSort` and `validatePatch` are also exported for direct use.
 
 Concurrent calls that need a resource's schema share one request, sent with the first call's headers. It runs under the client's `timeout`, not any one call's `signal`: a call whose signal aborts rejects with the signal's reason while the others keep waiting, and the request is cancelled once every waiting call has aborted. A call with no signal always waits for the result. A failed, cancelled or refused fetch is retried by the next call; only a schema the client reads is cached.
 
-Two Go-emitted corpora pin client to server: `testdata/filter_conformance.json` and `testdata/patch_conformance.json` record the Go parser's validity and error code for every input, and the client must give the same answer. Patch validation checks what the server checks per path — patchable, null only where `nullable`, the value's type, an integer within its Go kind (`number_kind`, exactly for kinds of 32 bits or fewer, and for every kind when the path's `wire` is `"string"`), the enum, the bounds (`min_length` / `max_length` in code points; `minimum` / `maximum`, exact decimal text compared exactly with an integer or decimal and at the kind's precision with a float), an array's element type and element counts (`min_items` / `max_items`) with each element's enum and bounds, a relation's list of keys, and the operation count. A field or path whose schema `wire` is `"string"` (Go `json:",string"`) takes its value as a JSON string holding it (`"9007199254740993"`, never a bare number), which the client checks as the server reads it; a 64-bit integer is then compared exactly, so declare such fields `string` in generated types. Left to the server: timestamp and UUID spellings, 64-bit integer ranges of filter operands, values inside JSON documents, the `$contains` members of an array whose schema names no `element`, geo operand shapes in filters, nesting and cost bounds, and server-specific policy.
+Two Go-emitted corpora pin client to server: `testdata/filter_conformance.json` and `testdata/patch_conformance.json` record the Go parser's validity and error code for every input, and the client must give the same answer. Patch validation checks what the server checks per path — patchable, null only where `nullable`, the value's type, an integer within its Go kind (`number_kind`, exactly for kinds of 32 bits or fewer, and for every kind when the path's `wire` is `"string"`), the enum, the bounds (`min_length` / `max_length` in code points; `minimum` / `maximum`, exact decimal text compared exactly with an integer or decimal and at the kind's precision with a float), an array's element type and element counts (`min_items` / `max_items`) with each element's enum and bounds, a relation's list of keys and their count once repeats are removed (`max_relation_values`, E2119), and the operation count. A field or path whose schema `wire` is `"string"` (Go `json:",string"`) takes its value as a JSON string holding it (`"9007199254740993"`, never a bare number), which the client checks as the server reads it; a 64-bit integer is then compared exactly, so declare such fields `string` in generated types. Left to the server: timestamp and UUID spellings, 64-bit integer ranges of filter operands, values inside JSON documents, the `$contains` members of an array whose schema names no `element`, geo operand shapes in filters, nesting and cost bounds, and server-specific policy.
 
 ## Errors
 
 | Error | When | Fields |
 |---|---|---|
 | `ApiError` | Non-2xx response | `status` (the response's), `code`, `message`, `body` (`{code, message, details?, trace_id?, timestamp?, path?}`), `problem` (the RFC 9457 document, or `undefined`), `errors` (its field errors, or `[]`) |
+| `ResponseError` (an `ApiError`) | A 2xx without the JSON body the call reads: a 204, an empty 200, a proxy's HTML 200 | `status`, `url`, `code` `""`, `message` naming the status, URL and reason |
+| `SchemaResourceError` | The schema endpoint answered another resource's document than the registry name requested | `requested`, `resource` |
 | `SchemaValidationError` | Client-side validation failed | `code` (the E-code the server would return), `field`, `detail`, optional `constraint` / `limit` |
 | `SchemaValidationErrors` | Multiple merge-patch members or values failed | `errors` (ordered individual failures); inherited `code`, `field`, `detail` and constraint metadata identify the first |
 | `SchemaVersionError` | The server's schema document is in a format version this client does not read | `resource`, `version` (as served), `supported` (`SCHEMA_VERSION`) |
@@ -170,7 +186,7 @@ try {
 
 All of it is server-supplied text; treat it as untrusted.
 
-Validation codes match the Go parser: E2071 unknown field, E2072 operator not allowed, E2073 value type mismatch, E2062 non-array membership value, E2086 malformed `$and` / `$or` / `$not`, E2087 value outside the enum, E2116 non-string UUID, E2079 / E2081 sort field / count, E2064 / E2066 / E2076 patch operation / size / path.
+Validation codes match the Go parser: E2071 unknown field, E2072 operator not allowed, E2073 value type mismatch, E2062 non-array membership value, E2086 malformed `$and` / `$or` / `$not`, E2087 value outside the enum, E2116 non-string UUID, E2079 / E2081 sort field / count, E2064 / E2066 / E2076 patch operation / size / path, E2118 / E2119 a null relation key / too many relation keys, E2067 a search on a resource without one.
 
 ## Testing
 
@@ -199,9 +215,9 @@ Three Go-emitted fixtures keep the client on the server's contract; each fails i
 
 | Import | Contents |
 |---|---|
-| `@ashtonian/parse` | `createClient`, `SchemaValidator`, `SCHEMA_VERSION`, builders, validators, all types |
-| `@ashtonian/parse/core` | `ApiError`, `SchemaValidationError`, `SchemaValidationErrors`, `SchemaVersionError`, `ConstraintName`, `ConstraintFailure`, `ErrorBody`, `Problem`, `FieldError`, `FieldType` |
-| `@ashtonian/parse/filter` | `filter`, `sort`, `validateFilter`, `validateSort`, list / facet / schema types |
+| `@ashtonian/parse` | `createClient`, `SchemaValidator`, `SCHEMA_VERSION`, builders and combinators, validators, all types |
+| `@ashtonian/parse/core` | `ApiError`, `ResponseError`, `SchemaResourceError`, `SchemaValidationError`, `SchemaValidationErrors`, `SchemaVersionError`, `ConstraintName`, `ConstraintFailure`, `ErrorBody`, `Problem`, `FieldError`, `FieldType` |
+| `@ashtonian/parse/filter` | `filter`, `and`, `or`, `not`, `sort`, `validateFilter`, `validateSort`, list / facet / schema types |
 | `@ashtonian/parse/patch` | `validatePatch`, patch schema and result types |
 
 ## Key Files
@@ -210,13 +226,14 @@ Three Go-emitted fixtures keep the client on the server's contract; each fails i
 |---|---|
 | `src/client.ts` | `createClient` — requests, schema cache, pagination, patch, facets |
 | `src/validate.ts` | `SchemaValidator` — validation + schema introspection per resource |
-| `src/filter/builder.ts` | `FilterBuilder`, `SortBuilder` |
+| `src/filter/builder.ts` | `FilterBuilder` (immutable field conjunctions), `and` / `or` / `not`, `SortBuilder` |
 | `src/filter/validate.ts` | `validateFilter` / `validateSort`, mirroring the Go parser |
 | `src/filter/types.ts` | Filter, list, page and facet wire types |
 | `src/patch/validate.ts` | `validatePatch` — merge-patch semantics (null = remove) |
+| `src/patch/pattern.ts` | Patch path lookup: exact key, else the most specific `*` / `**` pattern, as `parse/patch` resolves it |
 | `src/patch/types.ts` | Patch schema, input and result types |
 | `src/schema.ts` | `ResourceSchema` (the schema document), `SCHEMA_VERSION` |
-| `src/core/errors.ts` | `ApiError`, `SchemaValidationError`, `SchemaValidationErrors`, `SchemaVersionError` |
+| `src/core/errors.ts` | `ApiError`, `ResponseError`, `SchemaResourceError`, `SchemaValidationError`, `SchemaValidationErrors`, `SchemaVersionError` |
 | `src/core/problem.ts` | RFC 9457 `Problem` and `FieldError`: recognition and normalization |
 | `src/core/types.ts` | Shared types: `ErrorBody`, `FieldType`, `RequestOptions` |
 

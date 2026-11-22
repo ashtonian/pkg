@@ -15,22 +15,18 @@ import (
 // replace is intentionally NOT allowed to prove AllowsOp gates the
 // new verb correctly).
 func arrayAppendSchema() *patch.PatchSchema {
-	return &patch.PatchSchema{
-		Resource: "work_orders",
-		AllowedPaths: map[string]*patch.PathSchema{
-			"/photo_blob_keys": {
-				AllowedOps: []patch.PatchOp{patch.PatchOpArrayAppend},
-				DataType:   core.FieldTypeString,
-				SQLColumn:  "photo_blob_keys",
-			},
-			"/title": {
-				AllowedOps: []patch.PatchOp{patch.PatchOpReplace},
-				DataType:   core.FieldTypeString,
-				SQLColumn:  "title",
-			},
+	return newSchema("work_orders", 10, map[string]*patch.PathSchema{
+		"/photo_blob_keys": {
+			AllowedOps: []patch.PatchOp{patch.PatchOpArrayAppend},
+			DataType:   core.FieldTypeString,
+			SQLColumn:  "photo_blob_keys",
 		},
-		MaxOperations: 10,
-	}
+		"/title": {
+			AllowedOps: []patch.PatchOp{patch.PatchOpReplace},
+			DataType:   core.FieldTypeString,
+			SQLColumn:  "title",
+		},
+	})
 }
 
 // TestParser_AcceptsArrayAppend exercises the wire-level path: a
@@ -55,9 +51,6 @@ func TestParser_AcceptsArrayAppend(t *testing.T) {
 	if result.Operations[0].Schema == nil {
 		t.Error("expected Schema to be resolved from PatchSchema")
 	}
-	if result.EstimatedCost <= 0 {
-		t.Errorf("expected non-zero cost, got %d", result.EstimatedCost)
-	}
 }
 
 // TestParser_RejectsArrayAppend_WhenNotAllowed asserts the AllowedOps
@@ -78,7 +71,7 @@ func TestParser_RejectsArrayAppend_WhenNotAllowed(t *testing.T) {
 }
 
 // TestParser_RejectsUnknownPatchOp confirms isValidPatchOp still
-// catches genuinely-bogus ops even after the ValidPatchOps refactor.
+// catches genuinely-bogus ops.
 // The drift-killer change MUST NOT widen the accepted set beyond what
 // schema.go declares.
 func TestParser_RejectsUnknownPatchOp(t *testing.T) {
@@ -101,7 +94,7 @@ func TestParser_RejectsUnknownPatchOp(t *testing.T) {
 func TestParser_ArrayAppend_ValidatorFires(t *testing.T) {
 	t.Parallel()
 	schema := arrayAppendSchema()
-	schema.AllowedPaths["/photo_blob_keys"].Validators = []core.Validator{
+	pathOf(schema, "/photo_blob_keys").Validators = []patch.Validator{
 		func(v any) error {
 			s, ok := v.(string)
 			if !ok || !strings.HasPrefix(s, "tenants/") {
