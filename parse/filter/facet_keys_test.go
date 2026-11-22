@@ -53,6 +53,22 @@ func TestFacetKeys_NumberKeyFixture(t *testing.T) {
 	assert.Equal(t, filtertest.NumberKeyFacets, got)
 }
 
+// FacetKeys over the timestamp fixture counts the buckets the SQL facet
+// query does (TestTimestamps_SQLite / _PostgreSQL): one per instant.
+func TestFacetKeys_TimestampFixture(t *testing.T) {
+	schema, err := filtertest.TimestampSchema()
+	require.NoError(t, err)
+	got := map[string]int64{}
+	for _, r := range filtertest.TimestampRecords() {
+		keys, err := filter.FacetKeys(r.At, schema.Fields["at"])
+		require.NoError(t, err, r.ID)
+		for _, k := range keys {
+			got[k]++
+		}
+	}
+	assert.Equal(t, filtertest.TimestampFacets, got)
+}
+
 func TestFacetKeys(t *testing.T) {
 	ts := time.Date(2026, 1, 2, 3, 4, 5, 500000000, time.FixedZone("x", 2*3600))
 	id := uuid.MustParse("0198A3C2-7A1E-7C00-8000-000000000001")

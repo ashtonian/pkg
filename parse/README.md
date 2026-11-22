@@ -104,7 +104,7 @@ Select a dialect when building SQL; connection setup and drivers belong to the c
 | Backend | Selection | Important differences |
 |---|---|---|
 | PostgreSQL | `filter.PostgresDialect{}` | Native arrays/JSONB, full-text search; geo predicates require PostGIS |
-| SQLite | `filter.SQLiteDialect{}` | JSON text and JSON functions; phrase search and ASCII case folding; geo predicates on JSONB points through `parsesqlite`'s functions, no native geometry storage |
+| SQLite | `filter.SQLiteDialect{}` | JSON text and JSON functions; timestamps stored as canonical UTC text ([timestamps](docs/schema-configuration.md#timestamps)); phrase search and ASCII case folding; geo predicates on JSONB points through `parsesqlite`'s functions, no native geometry storage |
 | CockroachDB | Not supported | `filter.DialectFromDSN` refuses `cockroach://` and `crdb://`. A `postgres://` or `postgresql://` URL to a CockroachDB cluster still selects `PostgresDialect`, whose SQL (the `pg_c_utf8` collation, PostGIS functions, `jsonb_path_query_first`) has never run on CockroachDB |
 | Go values | `ApplyValidatedPatch` | Supports allowed nested paths, `test`, `copy`, and `move`; persist the result yourself |
 

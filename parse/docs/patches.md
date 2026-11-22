@@ -95,7 +95,7 @@ A merge patch is bounded like the JSON Patch it stands for: a member nested `d` 
 | move, copy, nested path, `array_append` on a JSON document | E2070 |
 | test | E2068 |
 
-Values bind through the dialect's `MarshalValue(value, core.TypeInfo)` (the `SQLDialect` interface): documents as JSON text; on PostgreSQL an array as a typed Go slice — UUIDs as their canonical text — which pgx encodes in every query mode, and on SQLite as JSON text. A hand-built `PathSchema` naming no Go type binds an array typed by its elements.
+Values bind through the dialect's `MarshalValue(value, core.TypeInfo)` (the `SQLDialect` interface): documents as JSON text; on PostgreSQL an array as a typed Go slice — UUIDs as their canonical text — which pgx encodes in every query mode, and on SQLite as JSON text; a timestamp on SQLite as its canonical text ([timestamps](schema-configuration.md#timestamps)). A hand-built `PathSchema` naming no Go type binds an array typed by its elements.
 
 `parse.ColumnType` / `core.WithColumnTypes` carries the physical storage profile into patch paths and binding. A declared JSON string, byte slice or scalar slice binds its Go JSON encoding; native SQL arrays keep their array representation. Declared JSON uses this encoding even when the Go value implements `driver.Valuer`; native database values keep their driver binding.
 

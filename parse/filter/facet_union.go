@@ -477,9 +477,16 @@ func termsKeyExpr(field *FieldSchema, dialect Dialect) string {
 		if k, ok := dialect.(numberKeyer); ok {
 			return k.numberKey(field)
 		}
-	case core.FieldTypeTimestamp, core.FieldTypeUUID:
+	case core.FieldTypeTimestamp:
 		if field.Path != nil {
-			return expr // PathExpr reads both as canonical text
+			return expr // PathExpr reads it as canonical text
+		}
+		if k, ok := dialect.(timestampKeyer); ok {
+			return k.timestampKey(expr)
+		}
+	case core.FieldTypeUUID:
+		if field.Path != nil {
+			return expr // PathExpr reads it as canonical text
 		}
 	}
 	if dialect.Name() == "postgres" {
