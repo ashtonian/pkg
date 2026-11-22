@@ -35,7 +35,10 @@ func routeRoots() []func() routeRoot {
 		func() routeRoot {
 			inner := &routeInner{X: 1, P: &n}
 			return routeRoot{
-				routeMid:    routeMid{routeInner: inner, Ptr: inner, PP: &inner, Inner: routeInner{X: 2}},
+				routeInner:  inner,
+				Ptr:         inner,
+				PP:          &inner,
+				Inner:       routeInner{X: 2},
 				routeHidden: &routeHidden{H: 4},
 				M:           &routeMid{Ptr: &routeInner{X: 5}},
 				N:           6,
