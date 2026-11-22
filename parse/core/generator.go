@@ -55,6 +55,11 @@ type GeneratorOptions struct {
 	// advertises for its free-text search box. Empty means "search", the
 	// parameter list handlers read (filter.ParamSearch).
 	SearchParam string
+
+	// ForeignTagKeys are struct tag keys another library reads, left alone
+	// though one is a character from a key parse reads ("path" beside
+	// "paths"). Any other such key fails schema generation as a misspelling.
+	ForeignTagKeys []string
 }
 
 // SQLColumnMapper maps a field's column to the SQL expression that reads it.
@@ -116,6 +121,13 @@ func WithFieldNameTag(tag string) GeneratorOption {
 //	core.WithColumnTag("column")   // read from `column:"col_name"`
 func WithColumnTag(tag string) GeneratorOption {
 	return func(o *GeneratorOptions) { o.ColumnTag = tag }
+}
+
+// WithForeignTagKeys names struct tag keys another library reads, which
+// schema generation would otherwise refuse as misspellings of keys parse
+// reads: a router's path beside paths, say. Calls accumulate.
+func WithForeignTagKeys(keys ...string) GeneratorOption {
+	return func(o *GeneratorOptions) { o.ForeignTagKeys = append(o.ForeignTagKeys, keys...) }
 }
 
 // WithSortMaxFields caps how many sort fields a generated SortSchema accepts.

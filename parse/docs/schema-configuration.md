@@ -33,6 +33,8 @@ Construct one `parse.Resource[T]` for each resource at startup. Schema generatio
 | `label`, `description`, `group`, `order` | `"Name"` | schema response | UI metadata |
 | `json:",string"` | `json:"id,string"` | filter, patch | A bool, integer or float column travels as a JSON string holding its value, as encoding/json writes it ([quoted values](#quoted-values)) |
 
+Schema generation refuses a key on a walked field, hidden fields included, that parse does not read but that misspells one of the keys above: one equal to it ignoring case, `-` and `_` (`filterOps`, `minItems`), or one inserted, deleted, replaced or swapped character from it (`filter_op`, `ptach_ops`). Parse would otherwise ignore it without a word, and a dropped `patch_ops` or `maxlen` widens what requests may do. The error names the field, the key written and the key meant. The field-name and column tags are not compared, as other libraries' keys sit one character from them (`bson` beside `json`). A key another library reads that is near one of parse's, such as a router's `path` beside `paths`, is left alone once named with `core.WithForeignTagKeys`.
+
 ### Fields and embedding
 
 Every schema, the resource's columns, its cursors and its patch paths come from one walk of the type (`core.StructFields`), so they always agree. The walk sees the fields encoding/json writes. A struct embedded without a field-name tag has its fields promoted, through any depth, through pointers and through unexported struct types, so a server type can embed its wire type and keep every filter, sort and patch field. Fields `json:"-"` hides stay in the walk for columns and server-only paths, at any depth: having no name, a hidden field is never shadowed.
@@ -96,6 +98,7 @@ encoding/json ignores the option on a type that marshals itself (`json.Marshaler
 | `WithColumnTag(tag)` | string | `"db"` | Tag holding column names |
 | `WithSortMaxFields(n)` | int | `3` | Sort fields a request may name |
 | `WithSearchParam(p)` | string | `"search"` | Search parameter a search schema advertises (`filter.ParamSearch`) |
+| `WithForeignTagKeys(keys...)` | `...string` | none | Tag keys another library reads, left alone though one is a character from a key parse reads; calls accumulate |
 | `GeneratorOptions.DefaultFilterOps` | `map[FieldType][]string` | filter package defaults | Default operators per type; each must apply to the type (`filter.OperatorsFor`) |
 | `GeneratorOptions.DefaultPatchOps` | `map[FieldType][]string` | patch package defaults | Default patch operations per type |
 

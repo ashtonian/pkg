@@ -371,3 +371,44 @@ func BenchmarkStructFields(b *testing.B) {
 		})
 	}
 }
+
+type misspeltSection struct {
+	Tags []string `json:"tags" minItems:"1"`
+}
+
+type misspeltRow struct {
+	misspeltSection
+	Name   string `json:"name" db:"name" filter_op:"eq" bson:"name" yaml:"name" validate:"required"`
+	Secret string `json:"-" db:"secret" Patch_Ops:"replace"`
+	Route  string `json:"route" path:"route"`
+}
+
+// Schema generation refuses each walked field's tag key that misspells one
+// parse reads, through embedded structs and on hidden fields, naming the
+// field, the key written and the key meant; the keys named as another
+// library's, and the configured tags, are left alone. The walk itself
+// refuses nothing.
+func TestSchemaGenerator_RefusesMisspeltTagKeys(t *testing.T) {
+	typ := reflect.TypeFor[misspeltRow]()
+	_, err := core.NewSchemaGenerator().StructFields(typ)
+	require.Error(t, err)
+	for _, want := range []string{
+		`field Name of core_test.misspeltRow has tag key "filter_op"; did you mean "filter_ops"?`,
+		`field Secret of core_test.misspeltRow has tag key "Patch_Ops"; did you mean "patch_ops"?`,
+		`field Tags of core_test.misspeltSection has tag key "minItems"; did you mean "minitems"?`,
+		`field Route of core_test.misspeltRow has tag key "path"; did you mean "paths"?`,
+	} {
+		assert.Contains(t, err.Error(), want)
+	}
+	for _, foreign := range []string{`"bson"`, `"yaml"`, `"validate"`, `"db"`, `"json"`} {
+		assert.NotContains(t, err.Error(), foreign)
+	}
+
+	_, err = core.NewSchemaGenerator(core.WithForeignTagKeys("filter_op"), core.WithForeignTagKeys("Patch_Ops", "minItems", "path")).StructFields(typ)
+	require.NoError(t, err)
+	_, err = core.NewSchemaGenerator(core.WithColumnTag("path"), core.WithForeignTagKeys("filter_op", "Patch_Ops", "minItems")).StructFields(typ)
+	require.NoError(t, err, "path is the column tag")
+
+	_, err = core.StructFieldsOf(typ, "json", "db")
+	require.NoError(t, err)
+}
