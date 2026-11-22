@@ -6,9 +6,12 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"reflect"
 	"strings"
 	"testing"
+
+	"github.com/stretchr/testify/require"
 
 	"github.com/ashtonian/pkg/parse/filter"
 	"github.com/ashtonian/pkg/parse/filter/filtertest"
@@ -102,6 +105,117 @@ func TestEvaluateArrayConformance(t *testing.T) {
 				"labels": r.Labels, "scores": r.Scores, "lines": parsedDocument(t, r.Lines)})
 		}))
 	})
+}
+
+// A backend with its own evaluator of `$some` / `$none`, following
+// DocumentElements' contract, selects the rows Evaluate and the SQL
+// dialects select: a scalar element, even a string holding an object's
+// JSON text, has no members.
+func TestDocumentElementsConformance(t *testing.T) {
+	schema, err := filtertest.ArraySchema()
+	require.NoError(t, err)
+	records := filtertest.ArrayRecords()
+	filtertest.RunArrays(t, schema, func(t *testing.T, f *filter.ParsedFilter) ([]string, error) {
+		var ids []string
+		for _, r := range records {
+			row := structRow(r)
+			truth, err := ownElements{stored: row}.eval(f.AST.Root, row)
+			if err != nil {
+				return nil, err
+			}
+			if truth == filter.True {
+				ids = append(ids, r.ID)
+			}
+		}
+		return ids, nil
+	})
+}
+
+// ownElements evaluates `$some` / `$none` and the logic above them itself,
+// as DocumentElements documents for a backend with its own evaluator, and
+// hands every other condition to filter.Evaluate, as it does a malformed
+// logical node, which Evaluate refuses. stored reads a column as the store
+// holds it.
+type ownElements struct{ stored filter.ColumnRow }
+
+func (o ownElements) eval(n *filter.FilterNode, row filter.Row) (filter.Truth, error) {
+	switch {
+	case n.Op == filter.OpNot && len(n.Children) != 1,
+		(n.Op == filter.OpAnd || n.Op == filter.OpOr) && len(n.Children) == 0:
+		return filter.Evaluate(n, row)
+	}
+	switch n.Op {
+	case filter.OpSome, filter.OpNone:
+		elems, err := o.elements(n.Field, row)
+		if err != nil {
+			return filter.False, err
+		}
+		found := false
+		for _, e := range elems {
+			t := filter.True
+			if len(n.Children) > 0 {
+				if t, err = o.eval(n.Children[0], filter.ElementRow{Element: e}); err != nil {
+					return filter.False, err
+				}
+			}
+			if t == filter.True {
+				found = true
+				break
+			}
+		}
+		return truthOf(found == (n.Op == filter.OpSome)), nil
+	case filter.OpNot:
+		t, err := o.eval(n.Children[0], row)
+		if err != nil || t == filter.Unknown {
+			return t, err
+		}
+		return truthOf(t == filter.False), nil
+	case filter.OpAnd, filter.OpOr:
+		decides, out := truthOf(n.Op == filter.OpOr), truthOf(n.Op == filter.OpAnd)
+		for _, c := range n.Children {
+			t, err := o.eval(c, row)
+			if err != nil {
+				return filter.False, err
+			}
+			if t == decides {
+				return t, nil
+			}
+			if t == filter.Unknown {
+				out = filter.Unknown
+			}
+		}
+		return out, nil
+	}
+	return filter.Evaluate(n, row)
+}
+
+// elements are the elements a `$some` / `$none` on f tests: a JSON array
+// document's decoded from its stored column by DocumentElements, a scalar
+// array's as row reads them.
+func (o ownElements) elements(f *filter.FieldSchema, row filter.Row) ([]any, error) {
+	if f.Elements != nil {
+		doc, ok := o.stored(f.SQLExpr)
+		if !ok {
+			return nil, fmt.Errorf("field %s: no column %s", f.ExternalName, f.SQLExpr)
+		}
+		return filter.DocumentElements(doc)
+	}
+	v, present, err := row.Value(f)
+	if err != nil || !present {
+		return nil, err
+	}
+	elems, ok := v.([]any)
+	if !ok {
+		return nil, fmt.Errorf("field %s: elements are %T", f.ExternalName, v)
+	}
+	return elems, nil
+}
+
+func truthOf(b bool) filter.Truth {
+	if b {
+		return filter.True
+	}
+	return filter.False
 }
 
 func TestEvaluateMembershipConformance(t *testing.T) {

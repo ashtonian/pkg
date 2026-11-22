@@ -96,6 +96,8 @@ func TestEvaluateRefusals(t *testing.T) {
 	relation := &FieldSchema{ExternalName: "tags", DataType: core.FieldTypeString, Relation: &core.RelationSchema{}}
 	doc := &FieldSchema{ExternalName: "doc", SQLExpr: "doc", DataType: core.FieldTypeJSON}
 	name := &FieldSchema{ExternalName: "name", SQLExpr: "name", DataType: core.FieldTypeString}
+	labels := &FieldSchema{ExternalName: "labels", SQLExpr: "labels", DataType: core.FieldTypeArray, Elem: core.FieldTypeString}
+	items := &FieldSchema{ExternalName: "items", SQLExpr: "items", DataType: core.FieldTypeJSON, Elements: &ResourceSchema{}}
 	point := &FieldSchema{ExternalName: "loc", SQLExpr: "loc", DataType: core.FieldTypeGeo}
 	geography := &FieldSchema{ExternalName: "loc", SQLExpr: "loc", DataType: core.FieldTypeGeo, GeoConfig: &GeoFieldConfig{StorageType: GeoStorageGeography}}
 	tests := []struct {
@@ -115,6 +117,8 @@ func TestEvaluateRefusals(t *testing.T) {
 		{"geo on a point that is not JSON", &FilterNode{Field: point, Op: OpNear, Value: &GeoDistance{Distance: "1km"}}, valueRow("{"), ""},
 		{"unresolved relation", &FilterNode{Field: relation, Op: OpEq, Value: "x"}, valueRow(nil), ECodeInvalidRelation},
 		{"elements of a document without element paths", &FilterNode{Field: doc, Op: OpSome}, valueRow(nil), ""},
+		{"a scalar array held outside []any", &FilterNode{Field: labels, Op: OpNone}, valueRow([]string{"a"}), ""},
+		{"a document held outside decoded JSON", &FilterNode{Field: items, Op: OpNone}, valueRow(json.RawMessage(`[{}]`)), ""},
 		{"a row value outside the field's domain", &FilterNode{Field: name, Op: OpEq, Value: "a"}, valueRow(int64(1)), ""},
 		{"and without children", &FilterNode{Op: OpAnd}, valueRow(nil), ""},
 		{"not with two children", &FilterNode{Op: OpNot, Children: []*FilterNode{{Op: OpRawSQL}, {Op: OpRawSQL}}}, valueRow(nil), ""},
@@ -206,6 +210,7 @@ func TestEvaluateElementsOfDecodedDocuments(t *testing.T) {
 		{"json.Number", []any{map[string]any{"qty": json.Number("1")}}, False, True},
 		{"scalar elements have no members", []any{float64(3)}, False, True},
 		{"an object is not an array", map[string]any{"qty": float64(3)}, False, True},
+		{"a string is not an array", "[]", False, True},
 		{"NULL has no elements", nil, False, True},
 	}
 	for _, tt := range tests {

@@ -1,5 +1,10 @@
 #!/usr/bin/env python3
-"""Keep archive/document checks while avoiding runtime suites for known prose paths."""
+"""Select the CI work an event's changes require.
+
+Runtime suites skip for known prose paths. Release checks run per module: each
+one reads only its module's tree, its own script and the archive tooling, with
+every other dependency at the version its go.mod requires.
+"""
 import json
 import os
 from pathlib import Path, PurePosixPath
@@ -7,6 +12,25 @@ import re
 import subprocess
 
 GUIDES = re.compile(r"^(config|gowalker|httpx|parse)/docs/.+\.md$")
+ARCHIVE_TOOLING = "tools/modarchive/"
+# Make targets in the order release-check runs them, with the trees each reads.
+CHECKS = {
+    "gitx-release-check": ("gitx/",),
+    "config-release-check": ("config/",),
+    "kongprovider-release-check": ("config/kongprovider/",),
+    "native-release-check": ("process/", "state/", "onepassword/", "tools/check-native-release.sh"),
+    "jsonvalue-release-check": ("jsonvalue/", "tools/check-jsonvalue-release.sh"),
+    "gowalker-release-check": ("gowalker/", "tools/check-gowalker-release.sh"),
+    "httpx-release-check": ("httpx/", "tools/check-httpx-release.sh"),
+    "parse-release-check": ("parse/", "tools/check-parse-release.sh"),
+    # The cookbook replaces both config modules with their working trees.
+    "cookbook-check": ("config/",),
+    "tool-check": (ARCHIVE_TOOLING,),
+}
+# Modules nested in another module's directory are not part of its archive.
+NESTED = {"config-release-check": ("config/kongprovider/", "config/examples/cookbook/")}
+# Prose outside every module and its tooling.
+UNCHECKED = {"CONTRIBUTING.md", "README.md"}
 
 
 def prose(path):
@@ -16,6 +40,28 @@ def prose(path):
 
 def runtime_required(paths):
     return not paths or not all(prose(path) for path in paths)
+
+
+def reads(check, path):
+    if any(path.startswith(nested) for nested in NESTED.get(check, ())):
+        return False
+    return any(path == tree or path.startswith(tree) for tree in CHECKS[check])
+
+
+def release_checks(paths):
+    """The release checks whose inputs changed; every one when unsure."""
+    if not paths:
+        return list(CHECKS)
+    selected = set()
+    for path in paths:
+        if path in UNCHECKED:
+            continue
+        owners = [check for check in CHECKS if reads(check, path)]
+        if not owners or path.startswith(ARCHIVE_TOOLING):
+            # Shared build files, workflow, tooling, manifests and unknown paths.
+            return list(CHECKS)
+        selected.update(owners)
+    return [check for check in CHECKS if check in selected]
 
 
 def git(*args):
@@ -45,12 +91,14 @@ def main():
     try:
         paths = changed_paths(os.environ)
         runtime = runtime_required(paths)
+        checks = release_checks(paths)
         message = "runtime and archive checks required" if runtime else "known prose only: archive, documentation and example checks remain required"
     except (KeyError, TypeError, ValueError, OSError, subprocess.SubprocessError):
-        runtime, message = True, "change scope unavailable: all checks required"
+        runtime, checks, message = True, list(CHECKS), "change scope unavailable: all checks required"
+    message += "; release checks: " + (" ".join(checks) or "none")
     print(message)
     with open(os.environ["GITHUB_OUTPUT"], "a") as output:
-        output.write(f"runtime={str(runtime).lower()}\n")
+        output.write(f"runtime={str(runtime).lower()}\nchecks={' '.join(checks)}\n")
     if summary := os.environ.get("GITHUB_STEP_SUMMARY"):
         with open(summary, "a") as output:
             output.write(message + "\n")
