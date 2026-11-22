@@ -13,6 +13,8 @@ import (
 	"slices"
 	"strconv"
 	"sync"
+
+	"github.com/ashtonian/pkg/gowalker"
 )
 
 // CanonicalJSONMapKey decodes a member name into a key of map key type t, as
@@ -169,11 +171,12 @@ var decodedJSONOptions = jsonv2.JoinOptions(jsontext.AllowDuplicateNames(true), 
 type jsonShape struct {
 	kind shapeKind
 	typ  reflect.Type
-	// fields, byName and byFold name a struct's members; members holds each
-	// member's shape, in fields order.
+	// fields and byName name a struct's members; members holds each
+	// member's shape, in fields order. view is the struct's compiled view,
+	// which says what a member no field names exactly decodes into.
 	fields  []*Field
 	byName  map[string]int
-	byFold  map[string]int
+	view    *gowalker.Shape
 	members []*jsonShape
 	// key is a map's key rule; elem a map's value or a list's element.
 	key  jsonKeyRule
@@ -246,17 +249,15 @@ func buildJSONShape(t reflect.Type, building map[reflect.Type]*jsonShape) (*json
 		if err != nil {
 			return nil, err
 		}
+		schema, err := jsonEngine.CompileType(t)
+		if err != nil {
+			return nil, walkError(t, err)
+		}
+		shape.view = schema.Root()
 		shape.fields = walk.Fields
 		shape.byName = make(map[string]int, len(walk.Fields))
-		shape.byFold = make(map[string]int, len(walk.Fields))
 		for i, f := range walk.Fields {
 			shape.byName[f.External] = i
-			// Decoding matches a member by case only when no field has its
-			// exact name; the first such field in declaration order takes it.
-			folded := string(foldName(nil, []byte(f.External)))
-			if _, taken := shape.byFold[folded]; !taken {
-				shape.byFold[folded] = i
-			}
 		}
 		shape.members = make([]*jsonShape, len(walk.Fields))
 		for i, f := range walk.Fields {
@@ -316,8 +317,6 @@ type keyValidator struct {
 	dec    *jsontext.Decoder
 	// name holds the member name just read when it had to be unquoted.
 	name []byte
-	// fold holds a member name folded for a case-insensitive lookup.
-	fold []byte
 	// seen marks the struct members met in each open struct object, a
 	// stack.
 	seen []bool
@@ -344,7 +343,7 @@ func (v *keyValidator) release() {
 	if cap(v.mapNames) > maxPooledScratch || cap(v.seen) > maxPooledScratch {
 		return
 	}
-	v.name, v.fold = v.name[:0], v.fold[:0]
+	v.name = v.name[:0]
 	v.seen, v.mapNames, v.mapSpans = v.seen[:0], v.mapNames[:0], v.mapSpans[:0]
 	keyValidators.Put(v)
 }
@@ -417,9 +416,10 @@ func (v *keyValidator) memberName() ([]byte, error) {
 func (v *keyValidator) structMember(shape *jsonShape, seen []bool, name []byte) error {
 	i, ok := shape.byName[string(name)]
 	if !ok {
-		v.fold = foldName(v.fold[:0], name)
-		if f, folded := shape.byFold[string(v.fold)]; folded {
-			return fmt.Errorf("JSON member %q is noncanonical for %s; use %q", v.dec.StackPointer(), shape.typ, shape.fields[f].External)
+		// Decoding gives a member no field names exactly to a field its name
+		// matches by case, if one does.
+		if f, match := shape.view.MatchBytes(name); match == gowalker.FoldedMatch {
+			return fmt.Errorf("JSON member %q is noncanonical for %s; use %q", v.dec.StackPointer(), shape.typ, f.Name())
 		}
 		return v.skip() // not a member of the type
 	}

@@ -122,10 +122,11 @@ func referenceStructKeys(raw []byte, value reflect.Value, path string) error {
 	for _, member := range members {
 		field, ok := fields.External(member.name)
 		if !ok {
+			// Decoding matches by case breadth first: the shallowest
+			// candidate, then the first declared.
 			for _, candidate := range fields.Fields {
-				if !candidate.Hidden() && strings.EqualFold(candidate.External, member.name) {
+				if !candidate.Hidden() && strings.EqualFold(candidate.External, member.name) && (!ok || len(candidate.Route) < len(field.Route)) {
 					field, ok = candidate, true
-					break
 				}
 			}
 		}
