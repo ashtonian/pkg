@@ -141,6 +141,12 @@ keeps from taking effect lists it in `ReloadResult.Shadowed` and logs a
 warning (see [shadowed inputs](docs/sources.md#shadowed-inputs)). Use
 `Stop(ctx)` with a shutdown deadline.
 
+Reflection metadata (field routes, the key graph, tag checks) is computed
+once per Go type and kept for the life of the process, never with a
+configuration value in it. It grows with the config types a program loads,
+inspects or prints, which is a fixed set unless the program builds types at
+run time with `reflect.StructOf`.
+
 Diagnostic printers, diffs and usage metadata withhold sensitive values.
 Field names and map keys with a credential word among their words (`APIKey`,
 `db_password`; not `Keyspace`) redact text-capable values; numeric counters,

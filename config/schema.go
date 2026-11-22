@@ -61,12 +61,9 @@ type schemaEntry struct {
 	variables  []Field
 }
 
-const schemaCacheCapacity = 256
-
-var schemaCache = struct {
-	sync.RWMutex
-	entries map[reflect.Type]*schemaEntry
-}{entries: make(map[reflect.Type]*schemaEntry)}
+// schemaCache keeps each type's graph for as long as configView keeps its
+// schema, which is every type: a program's config types are its own fixed set.
+var schemaCache = gowalker.NewTypeCache(configView, buildSchema)
 
 // metadataOf builds structural metadata without decoding defaults or examples.
 // Diagnostics can therefore inspect live values even when a tag is invalid.
@@ -77,27 +74,22 @@ func metadataOf(t reflect.Type) (*schemaNode, error) {
 
 func schemaMetadata(t reflect.Type) *schemaEntry {
 	t = derefType(t)
-	schemaCache.RLock()
-	e, ok := schemaCache.entries[t]
-	schemaCache.RUnlock()
-	if ok {
-		return e
+	e, err := schemaCache.Get(t)
+	if err != nil {
+		return &schemaEntry{err: viewError(t, err)}
 	}
+	return e
+}
+
+// buildSchema records a type's graph and its structural errors in its entry:
+// diagnostics read the graph of a type whose reload tags are invalid.
+func buildSchema(view *gowalker.Schema) (*schemaEntry, error) {
 	b := &schemaBuilder{nodes: map[reflect.Type]*schemaNode{}}
-	n := b.node(t)
+	n := b.node(view.Type())
 	if b.err == nil {
 		b.err = checkReloadTags(n)
 	}
-	e = &schemaEntry{node: n, err: b.err}
-	schemaCache.Lock()
-	defer schemaCache.Unlock()
-	if cached, ok := schemaCache.entries[t]; ok {
-		return cached
-	}
-	if len(schemaCache.entries) < schemaCacheCapacity {
-		schemaCache.entries[t] = e
-	}
-	return e
+	return &schemaEntry{node: n, err: b.err}, nil
 }
 
 // rootMetadata is structural inspection without load-time tag decoding.

@@ -10,11 +10,14 @@ import (
 )
 
 // Naming and atomicity belong to config; discovery, collisions and physical
-// routes belong to the shared engine. Neither cache retains configuration values.
+// routes belong to the shared engine. It keeps every type it compiles, as
+// schemaCache and the other per-type memos do. Neither cache retains
+// configuration values.
 var configView = gowalker.MustNew(
 	gowalker.WithFieldResolver(configField),
 	gowalker.WithCaseFoldNames(),
 	gowalker.WithAtomicType(func(t reflect.Type) bool { return opaque(derefType(t)) }),
+	gowalker.WithUnboundedCache(),
 )
 
 func configField(sf reflect.StructField) (gowalker.FieldRule, error) {
@@ -53,21 +56,26 @@ func configField(sf reflect.StructField) (gowalker.FieldRule, error) {
 
 func compileView(t reflect.Type) (*gowalker.Schema, error) {
 	s, err := configView.CompileType(derefType(t))
-	if err == nil {
-		return s, nil
+	if err != nil {
+		return nil, viewError(t, err)
 	}
+	return s, nil
+}
+
+// viewError reports configView's failure to compile t as ErrSchema.
+func viewError(t reflect.Type, err error) error {
 	// A name conflict names its type and both fields; matching is case-folded.
 	var collision *gowalker.NameConflict
 	if errors.As(err, &collision) {
-		return nil, fmt.Errorf("%w: %w (ignoring case)", ErrSchema, collision)
+		return fmt.Errorf("%w: %w (ignoring case)", ErrSchema, collision)
 	}
 	// A resolver error is config's own tag diagnostic; report it with its type
 	// rather than inside gowalker's wrapper.
 	var failure *gowalker.Error
 	if errors.As(err, &failure) && errors.Is(failure.Cause, ErrSchema) {
-		return nil, fmt.Errorf("%w: %s: %w", ErrSchema, typeText(failure.Type), failure.Cause)
+		return fmt.Errorf("%w: %s: %w", ErrSchema, typeText(failure.Type), failure.Cause)
 	}
-	return nil, fmt.Errorf("%w: %s: %w", ErrSchema, typeText(t), err)
+	return fmt.Errorf("%w: %s: %w", ErrSchema, typeText(t), err)
 }
 
 func fieldSensitive(f *gowalker.Field) bool {
