@@ -219,7 +219,7 @@ func (b *SQLBuilder) buildElements(s *buildState, node *FilterNode) (string, err
 			return negate + sql, err
 		}
 	}
-	alias := "elem" + strconv.Itoa(b.depth+1) + "__"
+	alias := elementAlias(b.depth + 1)
 	var conds []string
 	if isScalarArray(f) {
 		elem := table.scalarElement(f, alias)
@@ -267,7 +267,7 @@ func (b *SQLBuilder) buildArrayPath(s *buildState, node *FilterNode) (string, er
 		if err != nil {
 			return "", err
 		}
-		held, err := containsAll(b.dialect, f, values, "elem"+strconv.Itoa(b.depth+1)+"__", s.binder(b.dialect))
+		held, err := containsAll(b.dialect, f, values, elementAlias(b.depth+1), s.binder(b.dialect))
 		if err != nil {
 			return "", err
 		}
@@ -317,6 +317,10 @@ func containsAll(d Dialect, f *FieldSchema, values []any, alias string, bind fun
 	return "((SELECT count(DISTINCT " + e + ") FROM " + table.elementRows(f, alias) + " WHERE " + e + " IN (" + set + "))" +
 		" = (SELECT count(DISTINCT v) FROM (" + set + ") AS " + alias + "set))", nil
 }
+
+// elementAlias is the alias of the element rows a predicate at depth reads,
+// distinct from an enclosing predicate's.
+func elementAlias(depth int) string { return "elem" + strconv.Itoa(depth) + "__" }
 
 // bindElement is n with a scalar array's element field replaced by elem,
 // the element of one row of its element table.

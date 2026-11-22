@@ -155,8 +155,7 @@ func BuildIncludeQuery(field *FieldSchema, dialect Dialect, ownerPKs []any, opts
 
 	s := &buildState{args: make([]any, 0, len(ownerPKs)+2)}
 	bind := s.binder(dialect)
-	target := "target__"
-	targetKey := "j." + rel.TargetColumn
+	targetKey := junctionAlias + "." + rel.TargetColumn
 	if field.DataType == core.FieldTypeString {
 		// The projection's collation governs DISTINCT, ranking and output
 		// order, including keys stored under a different column collation.
@@ -166,14 +165,14 @@ func BuildIncludeQuery(field *FieldSchema, dialect Dialect, ownerPKs []any, opts
 	var b strings.Builder
 	b.WriteString("SELECT CAST(include__.owner_pk AS TEXT), CAST(include__.target_id AS TEXT) FROM (")
 	b.WriteString("SELECT owner_pk, target_id, ROW_NUMBER() OVER (PARTITION BY owner_pk ORDER BY target_id) AS include_rank FROM (")
-	b.WriteString("SELECT DISTINCT j." + rel.SourceColumn + " AS owner_pk, " + targetKey + " AS target_id FROM " + rel.JoinTable + " j")
-	b.WriteString(relatedJoin(rel, "j", target))
+	b.WriteString("SELECT DISTINCT " + junctionAlias + "." + rel.SourceColumn + " AS owner_pk, " + targetKey + " AS target_id FROM " + rel.JoinTable + " " + junctionAlias)
+	b.WriteString(relatedJoin(rel, junctionAlias, targetAlias))
 	scope := cfg.scope
 	if scope.row.column != "" {
 		pk := rel.OwnerKey()
-		b.WriteString(" JOIN " + cfg.owner.Name + " owner__ ON owner__." + pk + " = j." + rel.SourceColumn)
+		b.WriteString(" JOIN " + cfg.owner.Name + " " + includeOwnerAlias + " ON " + includeOwnerAlias + "." + pk + " = " + junctionAlias + "." + rel.SourceColumn)
 		scope = scope.over(cfg.owner)
-		scope.row.expr = "owner__." + scope.row.column
+		scope.row.expr = includeOwnerAlias + "." + scope.row.column
 	}
 	b.WriteString(" WHERE j." + rel.SourceColumn + " IN (")
 	for i, pk := range ownerPKs {
@@ -183,7 +182,7 @@ func BuildIncludeQuery(field *FieldSchema, dialect Dialect, ownerPKs []any, opts
 		b.WriteString(bind(pk))
 	}
 	b.WriteByte(')')
-	relScope, err := relatedScope(field, dialect, scope, cfg.related, s, bind, "j", target)
+	relScope, err := relatedScope(field, dialect, scope, cfg.related, s, bind, junctionAlias, targetAlias)
 	if err != nil {
 		return IncludeQuery{}, fmt.Errorf("BuildIncludeQuery: field %q: %w", field.ExternalName, err)
 	}
@@ -334,6 +333,15 @@ func VisibleRelated(field *FieldSchema, dialect Dialect, alias string, tenant an
 	}
 	return tc + pc, nil
 }
+
+// Aliases the relation statements of includes and relation facets read
+// the junction table, the related target rows and, for an include scoped
+// to each owner row's tenant, the owner rows by.
+const (
+	junctionAlias     = "j"
+	targetAlias       = "target__"
+	includeOwnerAlias = "owner__"
+)
 
 // relatedJoin is the JOIN of a many-to-many's target onto its pair table
 // (alias join), as target; empty for every other relation.

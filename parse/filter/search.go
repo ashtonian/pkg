@@ -1,6 +1,7 @@
 package filter
 
 import (
+	"cmp"
 	"fmt"
 	"reflect"
 	"slices"
@@ -40,9 +41,15 @@ func (f SearchField) RowColumn() string {
 	return identifierColumn(f.SQLExpr)
 }
 
+// defaultSearchLanguage is the PostgreSQL text search configuration a
+// search schema without a Language uses.
+const defaultSearchLanguage = "english"
+
 // SearchSchema defines full-text search configuration.
 type SearchSchema struct {
-	Fields   []SearchField
+	Fields []SearchField
+	// Language is the PostgreSQL text search configuration; empty is
+	// "english".
 	Language string
 	// Param is the query-string parameter the free-text search box binds
 	// to: GeneratorOptions.SearchParam, defaulting to ParamSearch — the
@@ -121,7 +128,7 @@ func generateSearchSchema(g *core.SchemaGenerator, t reflect.Type) (*SearchSchem
 	if param == "" {
 		param = ParamSearch
 	}
-	return &SearchSchema{Fields: fields, Language: "english", Param: param}, nil
+	return &SearchSchema{Fields: fields, Language: defaultSearchLanguage, Param: param}, nil
 }
 
 // searchCondition is the generated SQL for full-text search: a WHERE-only
@@ -162,10 +169,7 @@ func buildSearchCondition(schema *SearchSchema, dialect Dialect, query string, s
 }
 
 func buildPostgresSearch(schema *SearchSchema, dialect Dialect, query string, startIdx int) (*searchCondition, error) {
-	lang := schema.Language
-	if lang == "" {
-		lang = "english"
-	}
+	lang := cmp.Or(schema.Language, defaultSearchLanguage)
 	if !identifierRe.MatchString(lang) {
 		return nil, fmt.Errorf("search language %q is not a text search configuration name", lang)
 	}

@@ -195,7 +195,7 @@ func membership(op FilterOperator, value any, render func(members []any, in bool
 		}
 	}
 	if len(members) == 0 {
-		return "NULL", nil // x IN (NULL) and x NOT IN (NULL) are Unknown for every x
+		return unknownSQL, nil // x IN (NULL) and x NOT IN (NULL) are Unknown for every x
 	}
 	sql, err := render(members, op == OpIn)
 	if err != nil || len(members) == len(arr) {
