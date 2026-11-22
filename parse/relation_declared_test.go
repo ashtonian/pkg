@@ -68,6 +68,17 @@ func TestDeclaredRelations_Facets_SQLite(t *testing.T) {
 	})
 }
 
+func TestDeclaredRelations_UnknownPolicy_SQLite(t *testing.T) {
+	db := dbtest.SQLite(t)
+	for _, stmt := range relationFixtureSQL(`'2026-01-01T00:00:00Z'`, "TEXT") {
+		_, err := db.Exec(stmt)
+		require.NoError(t, err, stmt)
+	}
+	runRelationUnknownPolicy(t, relationResources(t), filter.SQLiteDialect{}, func(t *testing.T, q string, args []any) [][]any {
+		return queryRows(t, db, q, args)
+	})
+}
+
 func TestDeclaredRelations_Writes_SQLite(t *testing.T) {
 	db := dbtest.SQLite(t)
 	for _, stmt := range relationFixtureSQL(`'2026-01-01T00:00:00Z'`, "TEXT") {

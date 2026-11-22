@@ -34,6 +34,11 @@ const (
 	// OpMember is a membership constraint (PolicyConstraint.Member): the
 	// field is among the values a Lookup projects. Only policies build it.
 	OpMember FilterOperator = "member"
+	// OpUnknown is SQL's unknown: no row satisfies it, nor its negation. It
+	// names no field. Only policies build it (UnknownConstraint,
+	// PolicyConstraint.UnknownIfInvalid, a membership resolved without a
+	// lookup).
+	OpUnknown FilterOperator = "unknown"
 
 	// Relation predicates on a field with a Related schema:
 	// some related row satisfies the node's child (the target's own
@@ -370,67 +375,4 @@ type SortField struct {
 	Name      string
 	Schema    *SortFieldSchema
 	Direction SortDirection
-}
-
-// --- Policy Types ---
-
-// PolicyConstraint represents a single policy-derived filter condition.
-type PolicyConstraint struct {
-	Field    string
-	Operator FilterOperator
-	Value    any
-	Negate   bool
-	// UnknownIfInvalid compiles a value that does not apply to the field —
-	// its type, or the operator's — to SQL's unknown instead of an error:
-	// no row satisfies it, nor its negation, so it narrows whatever group
-	// holds it. Authorization sets it: a policy value no row can hold
-	// neither fails a list nor widens one.
-	UnknownIfInvalid bool
-
-	// RawSQL is a pre-built SQL expression injected into the WHERE clause
-	// in parentheses, so it is one operand of the AND, OR or NOT that holds
-	// it: `a OR b` needs no parentheses of its own. When set,
-	// Field/Operator/Value are ignored. Use parameterized placeholders ($1,
-	// $2) with RawArgs. This enables subquery-based constraints like
-	// grant-aware scoping.
-	RawSQL  string
-	RawArgs []any
-
-	// Member makes the constraint a membership: Field's value is one of the
-	// values the lookup projects. Operator, Value and RawSQL
-	// are unused. Every backend evaluates it — SQL as a subquery, memory
-	// through ResolveMemberships — unlike RawSQL, which memory cannot.
-	Member *Lookup
-}
-
-// PolicyConstraints is a composable collection of constraints.
-type PolicyConstraints struct {
-	Constraints []*PolicyConstraint
-	Or          []*PolicyConstraints
-	And         []*PolicyConstraints
-	// Not negates the group: a row is admitted when it does not satisfy it.
-	Not      bool
-	Source   string
-	PolicyID string
-}
-
-// IsEmpty returns true when there are no constraints.
-func (pc *PolicyConstraints) IsEmpty() bool {
-	if pc == nil {
-		return true
-	}
-	return len(pc.Constraints) == 0 && len(pc.Or) == 0 && len(pc.And) == 0
-}
-
-// Merge combines two PolicyConstraints with AND semantics.
-func (pc *PolicyConstraints) Merge(other *PolicyConstraints) *PolicyConstraints {
-	if other == nil || other.IsEmpty() {
-		return pc
-	}
-	if pc == nil || pc.IsEmpty() {
-		return other
-	}
-	return &PolicyConstraints{
-		And: []*PolicyConstraints{pc, other},
-	}
 }

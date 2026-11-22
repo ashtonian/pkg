@@ -354,18 +354,28 @@ func ResolveMemberships(ctx context.Context, f *ParsedFilter, lookup MembershipL
 }
 
 type memberResolver struct {
-	ctx      context.Context
-	lookup   MembershipLookup
-	resolved map[*Lookup]*FilterNode
-	norm     *FilterParser
-	cfg      resolveConfig
+	ctx    context.Context
+	lookup MembershipLookup
+	// answers holds each lookup's answer by the lookup, not the node built
+	// from it: constraints on different fields may share one lookup, and
+	// each normalizes the values for its own field.
+	answers map[*Lookup]lookupAnswer
+	norm    *FilterParser
+	cfg     resolveConfig
+}
+
+// lookupAnswer is what a lookup determines: its non-NULL values as stored,
+// and whether a NULL was among them.
+type lookupAnswer struct {
+	values  []any
+	hasNull bool
 }
 
 func newMemberResolver(ctx context.Context, lookup MembershipLookup, cfg resolveConfig) *memberResolver {
 	return &memberResolver{
 		ctx: ctx, lookup: lookup, cfg: cfg,
-		resolved: map[*Lookup]*FilterNode{},
-		norm:     NewFilterParser(&ResourceSchema{}, &core.ParserConfig{MaxDepth: math.MaxInt, MaxArraySize: math.MaxInt}),
+		answers: map[*Lookup]lookupAnswer{},
+		norm:    NewFilterParser(&ResourceSchema{}, &core.ParserConfig{MaxDepth: math.MaxInt, MaxArraySize: math.MaxInt}),
 	}
 }
 
@@ -395,9 +405,6 @@ func (r *memberResolver) member(n *FilterNode) (*FilterNode, error) {
 	if r.lookup == nil {
 		return unknownNode(), nil
 	}
-	if node, ok := r.resolved[n.Member]; ok {
-		return node, nil
-	}
 	if err := n.Member.validate(); err != nil {
 		return nil, err
 	}
@@ -409,7 +416,6 @@ func (r *memberResolver) member(n *FilterNode) (*FilterNode, error) {
 	if hasNull {
 		node = &FilterNode{Op: OpOr, Children: []*FilterNode{node, unknownNode()}}
 	}
-	r.resolved[n.Member] = node
 	return node, nil
 }
 
@@ -487,8 +493,20 @@ func (r *memberResolver) innerCond(c *LookupCond) (*LookupCond, error) {
 }
 
 // lookupValues answers l — its inner lookups first — as stored values,
-// NULLs dropped and reported.
+// NULLs dropped and reported. Each lookup is asked once per resolution.
 func (r *memberResolver) lookupValues(l *Lookup) ([]any, bool, error) {
+	if a, ok := r.answers[l]; ok {
+		return a.values, a.hasNull, nil
+	}
+	values, hasNull, err := r.ask(l)
+	if err != nil {
+		return nil, false, err
+	}
+	r.answers[l] = lookupAnswer{values: values, hasNull: hasNull}
+	return values, hasNull, nil
+}
+
+func (r *memberResolver) ask(l *Lookup) ([]any, bool, error) {
 	l, err := r.inner(l)
 	if err != nil {
 		return nil, false, err

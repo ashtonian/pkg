@@ -194,8 +194,8 @@ func isNilReference(v any) bool {
 //     an array $contains every listed element; $like and $ilike match as
 //     MatchLike; $some / $none test a document's elements, or a scalar
 //     array's (an array column's, or an array path's elements of its type).
-//   - A membership or raw-SQL predicate is Unknown: it never admits a row its
-//     SQL would refuse. Resolve memberships and relation predicates first
+//   - SQL's unknown (OpUnknown) is Unknown; so is a membership or raw-SQL
+//     predicate, which therefore never admits a row its SQL would refuse. Resolve memberships and relation predicates first
 //     (ResolveMemberships); an unresolved relation predicate is an error.
 //   - Geo operators decide a JSONB point as PostGIS does: $near by the
 //     WGS 84 geodesic distance (ST_DWithin on geography), $within and
@@ -224,7 +224,7 @@ func evaluate(n *FilterNode, row Row) (Truth, error) {
 			return t, err
 		}
 		return truthOf(t == False), nil
-	case OpRawSQL, OpMember:
+	case OpUnknown, OpRawSQL, OpMember:
 		return Unknown, nil
 	}
 	f := n.Field

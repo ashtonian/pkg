@@ -482,6 +482,8 @@ func (b *SQLBuilder) buildNode(s *buildState, node *FilterNode) (string, error) 
 		return b.buildNot(s, node)
 	case OpRawSQL:
 		return b.buildRawSQL(s, node)
+	case OpUnknown:
+		return unknownSQL, nil
 	case OpMember:
 		return b.buildMember(s, node)
 	default:
@@ -502,9 +504,6 @@ func (b *SQLBuilder) buildNode(s *buildState, node *FilterNode) (string, error) 
 func (b *SQLBuilder) buildRawSQL(s *buildState, node *FilterNode) (string, error) {
 	if node.RawSQL == "" {
 		return "1=1", nil
-	}
-	if node.RawSQL == unknownSQL {
-		return unknownSQL, nil // one token
 	}
 	var rebuildErr error
 	out := rawPlaceholderRe.ReplaceAllStringFunc(node.RawSQL, func(tok string) string {

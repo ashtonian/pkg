@@ -142,12 +142,15 @@ func writeTable(sb *strings.Builder, table, alias string) {
 }
 
 // rebaseNode is n with every field moved from table to alias: expressions
-// that are table's columns, or JSON paths into them, name alias instead. A
-// field computed some other way, or raw policy SQL, cannot be moved and is
-// an error.
+// that are table's columns, or JSON paths into them, name alias instead.
+// SQL's unknown names no table and stays as it is. A field computed some
+// other way, or raw policy SQL, cannot be moved and is an error.
 func rebaseNode(n *FilterNode, table, alias string, moved map[*FieldSchema]*FieldSchema) (*FilterNode, error) {
 	if n == nil {
 		return nil, nil
+	}
+	if n.Op == OpUnknown {
+		return n, nil
 	}
 	if n.Op == OpRawSQL {
 		return nil, fmt.Errorf("raw SQL cannot be applied to the aliased relation table %s", alias)

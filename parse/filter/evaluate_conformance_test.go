@@ -231,6 +231,30 @@ func TestEvaluateMembershipConformance(t *testing.T) {
 	})
 }
 
+func TestEvaluatePolicyConformance(t *testing.T) {
+	schema, err := filtertest.Schema()
+	if err != nil {
+		t.Fatalf("schema: %v", err)
+	}
+	eval := evaluateOver(filtertest.Records(), func(r filtertest.Record) (string, filter.Row) {
+		return r.ID, structRow(r)
+	})
+	filtertest.RunPolicy(t, false, func(t *testing.T, q filtertest.PolicyQuery) ([]string, error) {
+		ast, err := filter.ApplyPolicyConstraints(schema, q.Filter, q.Policy)
+		if err != nil {
+			return nil, err
+		}
+		if ast == nil {
+			ast = &filter.FilterAST{}
+		}
+		resolved, err := filter.ResolveMemberships(context.Background(), filter.NewParsedFilter(ast), filtertest.Lookups())
+		if err != nil {
+			return nil, err
+		}
+		return eval(t, resolved)
+	})
+}
+
 func TestEvaluatePathConformance(t *testing.T) {
 	schema, err := filtertest.PathSchema()
 	if err != nil {

@@ -1,8 +1,8 @@
 // Package filtertest is the filter conformance fixture: one entity with a
 // field of every filterable type, its rows, and the rows every backend must
-// return for each filter. SQL dialects and in-memory evaluators run the
-// same cases through Run, so an operator means one thing everywhere
-// .
+// return for each filter and each server policy. SQL dialects and in-memory
+// evaluators run the same cases through Run and RunPolicy, so an operator
+// and a policy mean one thing everywhere.
 package filtertest
 
 import (

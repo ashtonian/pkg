@@ -33,6 +33,13 @@ func TestMembershipMatrix_PostgreSQL(t *testing.T) {
 	})
 }
 
+// Policy trees on PostgreSQL 18, each listed page by page.
+func TestPolicyMatrix_PostgreSQL(t *testing.T) {
+	runPolicyMatrix(t, postgresMatrix(dbtest.Postgres(t)), map[core.FieldType]string{
+		core.FieldTypeString: "TEXT", core.FieldTypeUUID: "UUID", core.FieldTypeInt: "BIGINT",
+	})
+}
+
 func postgresMatrix(db *sql.DB) matrixDB {
 	return matrixDB{
 		db:      db,

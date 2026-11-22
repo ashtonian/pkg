@@ -42,6 +42,13 @@ func TestMembershipMatrix_SQLite(t *testing.T) {
 	})
 }
 
+// Policy trees on SQLite, each listed page by page.
+func TestPolicyMatrix_SQLite(t *testing.T) {
+	runPolicyMatrix(t, sqliteMatrix(t), map[core.FieldType]string{
+		core.FieldTypeString: "TEXT", core.FieldTypeUUID: "TEXT", core.FieldTypeInt: "INTEGER",
+	})
+}
+
 func timeText(r filtertest.Record) any {
 	if r.At == nil {
 		return nil

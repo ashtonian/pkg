@@ -52,6 +52,9 @@ func TestPolicyConstraints_NormalizeValues(t *testing.T) {
 		{"time to UTC text", &PolicyConstraint{Field: "created_at", Operator: OpGte, Value: local}, "created_at >= ?1", []any{"2026-01-02T02:04:05.000000000Z"}},
 		{"relative time on the list clock", &PolicyConstraint{Field: "created_at", Operator: OpGte, Value: "now-1d"}, "created_at >= ?1", []any{"2026-02-28T12:00:00.000000000Z"}},
 		{"null drops its value", &PolicyConstraint{Field: "deleted_at", Operator: OpNull, Value: true}, "deleted_at IS NULL", []any{}},
+		{"null false is not null", &PolicyConstraint{Field: "deleted_at", Operator: OpNull, Value: false}, "deleted_at IS NOT NULL", []any{}},
+		{"not null false is null", &PolicyConstraint{Field: "deleted_at", Operator: OpNotNull, Value: false}, "deleted_at IS NULL", []any{}},
+		{"null without a value", &PolicyConstraint{Field: "deleted_at", Operator: OpNull}, "deleted_at IS NULL", []any{}},
 		{"exists is not null", &PolicyConstraint{Field: "deleted_at", Operator: OpExists, Value: true}, "deleted_at IS NOT NULL", []any{}},
 		{"declared operators do not bind policies", &PolicyConstraint{Field: "id", Operator: OpNin, Value: []any{id}}, "id NOT IN (SELECT value AS v FROM json_each(?1))", []any{`["` + id.String() + `"]`}},
 	}
@@ -128,4 +131,26 @@ func TestPolicyConstraints_UnknownIfInvalid(t *testing.T) {
 
 func TestEscapeLike(t *testing.T) {
 	assert.Equal(t, `50\%\_off\\`, EscapeLike(`50%_off\`))
+}
+
+// A negated empty group is refused wherever it stands: alone, merged into
+// another policy or composed into a repository read. Nothing drops it as
+// empty first, which would admit every row.
+func TestPolicyConstraints_NegatedEmptyGroupIsRefused(t *testing.T) {
+	name := &PolicyConstraints{Constraints: []*PolicyConstraint{{Field: "name", Operator: OpEq, Value: "x"}}}
+	for label, pc := range map[string]*PolicyConstraints{
+		"alone":               {Not: true},
+		"merged":              name.Merge(&PolicyConstraints{Not: true}),
+		"merged into":         (&PolicyConstraints{Not: true}).Merge(name),
+		"composed":            ComposeConstraints(RepositoryScope{}, nil, &PolicyConstraints{Not: true}),
+		"composed governance": ComposeConstraints(RepositoryScope{}, &PolicyConstraints{Not: true}, nil),
+	} {
+		t.Run(label, func(t *testing.T) {
+			assert.False(t, pc.IsEmpty())
+			_, err := ApplyPolicyConstraints(policySchema(), nil, pc)
+			var pe *core.ParseError
+			require.ErrorAs(t, err, &pe)
+			assert.Equal(t, ECodeInvalidOperator.String(), pe.Code)
+		})
+	}
 }
