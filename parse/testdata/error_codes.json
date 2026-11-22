@@ -183,5 +183,10 @@
     "code": "E2119",
     "status": 422,
     "message": "relation patch values exceed maximum"
+  },
+  {
+    "code": "E2120",
+    "status": 500,
+    "message": "schema encoding failed"
   }
 ]

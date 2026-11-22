@@ -51,7 +51,7 @@ Start with the [runnable package example](../README.md#quick-start). The focused
 ## Dependencies
 
 - *Imports*: stdlib (`uuid`, `encoding/json/v2`, `net/netip`, `net`), `github.com/ashtonian/pkg/gowalker`
-- *Imported by*: `parse`, `parse/filter`, `parse/patch`, `forge/dal/*`
+- *Imported by*: `parse`, `parse/filter`, `parse/patch`, `parse/parsehttp`, `parse/parsepgx`, `parse/filter/filtertest`, `parse/internal/decimals`, the example server, and applications that use parse's types
 - *Package boundary*: shared Parse types; no sibling Parse package imports
 
 ## References

@@ -137,7 +137,7 @@ if __name__ == '__main__':
 
 class ArtifactTransport(unittest.TestCase):
     def setUp(self):
-        self.api = ci.API({"GITHUB_REPOSITORY": "ashtonian/estavelle",
+        self.api = ci.API({"GITHUB_REPOSITORY": "ashtonian/pkg",
                                    "GITHUB_TOKEN": "test", "CI_ARTIFACT_TOOL": "/tool/artifact.py"})
 
     def test_seaweed_manifest_replaces_github_artifact_discovery(self):
