@@ -8,7 +8,6 @@ import (
 	"math/big"
 	"reflect"
 	"strconv"
-	"strings"
 )
 
 // maxExactFloatInt is 2^53: every integer of magnitude ≤ this is exactly
@@ -22,6 +21,77 @@ const (
 	maxLiteralLen = 64
 	maxLiteralExp = 64
 )
+
+// numberLiteral is a JSON number literal split into its parts.
+type numberLiteral struct {
+	neg bool
+	// integer is the digits before the point; frac the digits after it,
+	// empty without a point.
+	integer, frac string
+	// exp is the exponent with its sign, empty without one.
+	exp string
+}
+
+// integral reports a literal written without a fraction or an exponent.
+func (l numberLiteral) integral() bool { return l.frac == "" && l.exp == "" }
+
+// scanNumber splits s when it is one JSON number literal (RFC 8259 §6),
+// -?(0|[1-9][0-9]*)(\.[0-9]+)?([eE][+-]?[0-9]+)?, and nothing else. It is
+// the package's one number grammar: strconv and math/big read Go's, which
+// also admits hexadecimal, a leading "+" or ".", leading zeros, digit
+// separators and the names of infinity and NaN, so every literal passes
+// through here before either sees it.
+func scanNumber(s string) (numberLiteral, bool) {
+	var lit numberLiteral
+	i := 0
+	if i < len(s) && s[i] == '-' {
+		lit.neg = true
+		i++
+	}
+	start := i
+	if i < len(s) && s[i] == '0' {
+		i++
+	} else {
+		for i < len(s) && isDigit(s[i]) {
+			i++
+		}
+	}
+	if lit.integer = s[start:i]; lit.integer == "" {
+		return numberLiteral{}, false
+	}
+	if i < len(s) && s[i] == '.' {
+		i++
+		start = i
+		for i < len(s) && isDigit(s[i]) {
+			i++
+		}
+		if lit.frac = s[start:i]; lit.frac == "" {
+			return numberLiteral{}, false
+		}
+	}
+	if i < len(s) && (s[i] == 'e' || s[i] == 'E') {
+		i++
+		start = i
+		if i < len(s) && (s[i] == '+' || s[i] == '-') {
+			i++
+		}
+		digits := i
+		for i < len(s) && isDigit(s[i]) {
+			i++
+		}
+		if i == digits {
+			return numberLiteral{}, false
+		}
+		lit.exp = s[start:i]
+	}
+	if i != len(s) {
+		return numberLiteral{}, false
+	}
+	return lit, true
+}
+
+// errNotNumber is the error for text that is not a JSON number literal.
+func errNotNumber(s string) error { return fmt.Errorf("%q is not a number", s) }
 
 // NumericKind reports the numeric reflect.Kind a Go type decodes into
 // (after pointer indirection), or reflect.Invalid for non-numeric types.
@@ -110,6 +180,9 @@ func NormalizeFloat(v any, kind reflect.Kind) (float64, error) {
 	var f float64
 	switch n := v.(type) {
 	case json.Number:
+		if _, ok := scanNumber(string(n)); !ok {
+			return 0, errNotNumber(string(n))
+		}
 		bits := 64
 		if kind == reflect.Float32 {
 			bits = 32
@@ -222,6 +295,9 @@ func toComparable(v any) (comparableNum, bool) {
 		return comparableNum{f: float64(n), isFloat: true}, true
 	case json.Number:
 		s := string(n)
+		if _, ok := scanNumber(s); !ok {
+			return comparableNum{}, false
+		}
 		if i, err := strconv.ParseInt(s, 10, 64); err == nil {
 			return comparableNum{x: exactInt{i: i}}, true
 		}
@@ -352,25 +428,29 @@ func floatToExactInt(f float64) (exactInt, error) {
 // the strconv fast path; fraction/exponent forms ("1e3", "2.0") are accepted
 // when they denote an integer.
 func parseIntLiteral(s string) (exactInt, error) {
-	if i, err := strconv.ParseInt(s, 10, 64); err == nil {
-		return exactInt{i: i}, nil
-	} else if errors.Is(err, strconv.ErrRange) && !strings.HasPrefix(s, "-") {
-		if u, uerr := strconv.ParseUint(s, 10, 64); uerr == nil {
+	lit, ok := scanNumber(s)
+	if !ok {
+		return exactInt{}, errNotNumber(s)
+	}
+	if lit.integral() {
+		i, err := strconv.ParseInt(s, 10, 64)
+		switch {
+		case err == nil:
+			return exactInt{i: i}, nil
+		case lit.neg:
+			return exactInt{}, fmt.Errorf("%s overflows int64", s)
+		}
+		if u, err := strconv.ParseUint(s, 10, 64); err == nil {
 			return exactInt{u: u, isUint: true}, nil
 		}
 		return exactInt{}, fmt.Errorf("%s overflows 64-bit integers", s)
-	} else if errors.Is(err, strconv.ErrRange) {
-		return exactInt{}, fmt.Errorf("%s overflows int64", s)
 	}
-	if !strings.ContainsAny(s, ".eE") {
-		return exactInt{}, fmt.Errorf("%q is not a number", s)
-	}
-	if len(s) > maxLiteralLen || literalExponent(s) > maxLiteralExp {
+	if len(s) > maxLiteralLen || lit.exponentMagnitude() > maxLiteralExp {
 		return exactInt{}, fmt.Errorf("%s is not an exact 64-bit integer", s)
 	}
 	r, ok := new(big.Rat).SetString(s)
 	if !ok {
-		return exactInt{}, fmt.Errorf("%q is not a number", s)
+		return exactInt{}, errNotNumber(s)
 	}
 	if !r.IsInt() {
 		return exactInt{}, fmt.Errorf("expected an integer, got %s", s)
@@ -385,16 +465,15 @@ func parseIntLiteral(s string) (exactInt, error) {
 	return exactInt{}, fmt.Errorf("%s overflows 64-bit integers", s)
 }
 
-// literalExponent returns |exponent| of a number literal, or 0 when absent
-// or unparseable (the big.Rat parse then decides validity).
-func literalExponent(s string) int {
-	i := strings.IndexAny(s, "eE")
-	if i < 0 {
+// exponentMagnitude is the exponent's absolute value: 0 without one, and
+// math.MaxInt when it does not fit an int.
+func (l numberLiteral) exponentMagnitude() int {
+	if l.exp == "" {
 		return 0
 	}
-	e, err := strconv.Atoi(s[i+1:])
+	e, err := strconv.Atoi(l.exp)
 	if err != nil {
-		return maxLiteralExp + 1
+		return math.MaxInt
 	}
 	if e < 0 {
 		return -e
@@ -449,6 +528,10 @@ func domainName(k reflect.Kind, fallback string) string {
 // longer literal carries more digits than any float64 holds anyway.
 const maxPortableLiteralLen = 128
 
+// maxPortableExp bounds the exponent PortableDecimal hands to math/big; a
+// float64's exponent range is far inside it.
+const maxPortableExp = 400
+
 // PortableDecimal reports whether a JSON number literal denotes exactly the
 // decimal of its nearest float64's shortest form, so every backend compares
 // the same value: PostgreSQL's numeric sees the literal, SQLite and Go see
@@ -458,11 +541,9 @@ func PortableDecimal(s string) bool {
 	if len(s) > maxPortableLiteralLen {
 		return false
 	}
-	if i := strings.IndexAny(s, "eE"); i >= 0 {
-		exp, err := strconv.Atoi(strings.TrimPrefix(s[i+1:], "+"))
-		if err != nil || exp > 400 || exp < -400 {
-			return false
-		}
+	lit, ok := scanNumber(s)
+	if !ok || lit.exponentMagnitude() > maxPortableExp {
+		return false
 	}
 	f, err := strconv.ParseFloat(s, 64)
 	if err != nil || math.IsInf(f, 0) {

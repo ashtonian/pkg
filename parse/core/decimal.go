@@ -152,70 +152,29 @@ func compareMagnitude(x, y string) int {
 	return strings.Compare(xf, yf)
 }
 
-// parseDecimal reads s in the JSON number grammar,
-// -?(0|[1-9][0-9]*)(\.[0-9]+)?([eE][+-]?[0-9]+)?, into canonical text.
+// parseDecimal reads s, a JSON number literal (scanNumber), into canonical
+// text.
 func parseDecimal(s string) (string, error) {
-	invalid := func() (string, error) { return "", fmt.Errorf("%q is not a decimal number", s) }
-	i := 0
-	neg := i < len(s) && s[i] == '-'
-	if neg {
-		i++
-	}
-	intStart := i
-	if i < len(s) && s[i] == '0' {
-		i++
-	} else {
-		for i < len(s) && isDigit(s[i]) {
-			i++
-		}
-	}
-	intPart := s[intStart:i]
-	if intPart == "" {
-		return invalid()
-	}
-	var frac string
-	if i < len(s) && s[i] == '.' {
-		i++
-		start := i
-		for i < len(s) && isDigit(s[i]) {
-			i++
-		}
-		if frac = s[start:i]; frac == "" {
-			return invalid()
-		}
+	lit, ok := scanNumber(s)
+	if !ok {
+		return "", fmt.Errorf("%q is not a decimal number", s)
 	}
 	var exp int64
-	hasExp := i < len(s) && (s[i] == 'e' || s[i] == 'E')
-	if hasExp {
-		i++
-		start := i
-		if i < len(s) && (s[i] == '+' || s[i] == '-') {
-			i++
-		}
-		digits := i
-		for i < len(s) && isDigit(s[i]) {
-			i++
-		}
-		if i == digits {
-			return invalid()
-		}
-		e, err := strconv.ParseInt(s[start:i], 10, 32)
+	if lit.exp != "" {
+		e, err := strconv.ParseInt(lit.exp, 10, 32)
 		if err != nil {
 			return "", fmt.Errorf("%q has more than %d digits", s, MaxDecimalDigits)
 		}
 		exp = e
 	}
-	if i != len(s) {
-		return invalid()
-	}
-	if !hasExp && !strings.HasSuffix(frac, "0") && !(neg && intPart == "0" && frac == "") {
+	if lit.exp == "" && !strings.HasSuffix(lit.frac, "0") && !(lit.neg && lit.integer == "0" && lit.frac == "") {
 		// Already canonical: the grammar admits no leading zeros.
-		if len(intPart)+len(frac) > MaxDecimalDigits {
+		if len(lit.integer)+len(lit.frac) > MaxDecimalDigits {
 			return "", fmt.Errorf("%q has more than %d digits", s, MaxDecimalDigits)
 		}
 		return s, nil
 	}
-	text, ok := renderDecimal(neg, intPart, frac, exp)
+	text, ok := renderDecimal(lit.neg, lit.integer, lit.frac, exp)
 	if !ok {
 		return "", fmt.Errorf("%q has more than %d digits", s, MaxDecimalDigits)
 	}

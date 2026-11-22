@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"math"
 	"strconv"
-	"strings"
 )
 
 // NormalizeJSON returns v as a generic JSON document: map[string]any, []any,
@@ -63,13 +62,17 @@ func jsonNumber(v any) (any, error) {
 	switch n := v.(type) {
 	case json.Number:
 		s := string(n)
+		lit, ok := scanNumber(s)
+		if !ok {
+			return nil, errNotNumber(s)
+		}
 		if x, err := parseIntLiteral(s); err == nil {
 			if x.isUint {
 				return x.u, nil
 			}
 			return x.i, nil
 		}
-		if !strings.ContainsAny(s, ".eE") {
+		if lit.integral() {
 			return nil, fmt.Errorf("integer %s exceeds 64 bits", s)
 		}
 		if !PortableDecimal(s) {

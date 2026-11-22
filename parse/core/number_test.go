@@ -200,3 +200,72 @@ func TestNormalizeScalar(t *testing.T) {
 		})
 	}
 }
+
+// Every reader of a number literal takes the JSON grammar and nothing
+// wider: strconv and math/big alone would read each of these.
+func TestNumberGrammar_EveryReaderRefusesGoLiterals(t *testing.T) {
+	for _, s := range []string{
+		"0x1e1", "0X10", ".5e1", "+7", "007.0", "007", "0b11e0", "0o17", "0x1p-2", "1_0", ".5", "5.",
+		"1e", "1e+", "-", "", " 1", "1 ", "NaN", "Inf", "-Infinity", "1/2", "１",
+	} {
+		t.Run(s, func(t *testing.T) {
+			n := json.Number(s)
+			_, ok := scanNumber(s)
+			assert.False(t, ok, "scanNumber")
+			_, err := NormalizeInt(n, reflect.Int64)
+			assert.Error(t, err, "NormalizeInt")
+			_, err = NormalizeUint(n, reflect.Uint64)
+			assert.Error(t, err, "NormalizeUint")
+			_, err = NormalizeFloat(n, reflect.Float64)
+			assert.Error(t, err, "NormalizeFloat")
+			_, err = NormalizeJSON(n)
+			assert.Error(t, err, "NormalizeJSON")
+			_, ok = CompareNumbers(n, 1)
+			assert.False(t, ok, "CompareNumbers")
+			_, err = DecimalText(n)
+			assert.Error(t, err, "DecimalText")
+			_, err = FromWire(WireString, FieldTypeInt, s)
+			assert.Error(t, err, "FromWire")
+			assert.False(t, PortableDecimal(s), "PortableDecimal")
+		})
+	}
+}
+
+func TestNumberGrammar_JSONLiteralsKeepTheirValue(t *testing.T) {
+	tests := []struct {
+		literal string
+		integer int64 // the literal's value when it is integral
+		ok      bool  // whether the literal is an integer
+		float   float64
+	}{
+		{literal: "0", ok: true, float: 0},
+		{literal: "-0", ok: true, float: math.Copysign(0, -1)},
+		{literal: "7", integer: 7, ok: true, float: 7},
+		{literal: "-7", integer: -7, ok: true, float: -7},
+		{literal: "1.0", integer: 1, ok: true, float: 1},
+		{literal: "1e3", integer: 1000, ok: true, float: 1000},
+		{literal: "1E+3", integer: 1000, ok: true, float: 1000},
+		{literal: "2500e-3", float: 2.5},
+		{literal: "0.5", float: 0.5},
+		{literal: "-0.25e1", float: -2.5},
+	}
+	for _, tt := range tests {
+		t.Run(tt.literal, func(t *testing.T) {
+			n := json.Number(tt.literal)
+			_, scanned := scanNumber(tt.literal)
+			assert.True(t, scanned)
+			got, err := NormalizeInt(n, reflect.Int64)
+			if tt.ok {
+				require.NoError(t, err)
+				assert.Equal(t, tt.integer, got)
+			} else {
+				assert.Error(t, err)
+			}
+			f, err := NormalizeFloat(n, reflect.Float64)
+			require.NoError(t, err)
+			assert.Equal(t, tt.float, f)
+			_, err = DecimalText(n)
+			assert.NoError(t, err)
+		})
+	}
+}
