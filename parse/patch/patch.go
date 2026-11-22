@@ -306,12 +306,12 @@ func matchPath(schema *PatchSchema, path string) (*PathSchema, error) {
 	if ps, ok := schema.AllowedPaths[path]; ok {
 		return ps, nil
 	}
-	// Deterministic wildcard resolution: most-specific pattern first
-	//. Map iteration made overlapping patterns with different
-	// AllowedOps a per-process coin flip.
+	// Most specific pattern first: map iteration made overlapping patterns
+	// with different AllowedOps a per-process coin flip.
+	tokens := pointerTokens(path)
 	for _, pattern := range schema.sortedPaths() {
-		if core.MatchWildcard(pattern, path) {
-			return schema.AllowedPaths[pattern], nil
+		if pattern.matches(tokens) {
+			return schema.AllowedPaths[pattern.text], nil
 		}
 	}
 	return nil, errors.New("path not allowed")

@@ -1,10 +1,8 @@
 package patch
 
 import (
-	"maps"
 	"reflect"
 	"slices"
-	"strings"
 	"sync"
 
 	"github.com/ashtonian/pkg/parse/core"
@@ -49,48 +47,23 @@ type PatchSchema struct {
 	AllowedPaths  map[string]*PathSchema
 	MaxOperations int
 
-	// sortedPathsOnce/List memoize AllowedPaths' pattern keys in
-	// most-specific-first order so wildcard resolution is deterministic
-	//. Lazy so struct-literal construction (tests, callers
-	// bypassing GeneratePatchSchema) still works.
+	// sortedPathsOnce/List memoize AllowedPaths' keys most specific first,
+	// so wildcard resolution is deterministic.
 	sortedPathsOnce sync.Once
-	sortedPathsList []string
+	sortedPathsList []pathPattern
 }
 
-// sortedPaths returns the AllowedPaths pattern keys sorted most-specific
-// first: longest literal prefix before the first '*' desc, then fewest
-// wildcards asc, then lexicographic. Exact-match lookup happens before this
-// list is consulted, so it only orders wildcard candidates.
-func (s *PatchSchema) sortedPaths() []string {
+// sortedPaths returns the AllowedPaths keys as patterns, most specific first
+// (compareSpecificity). Exact-match lookup happens before this list is
+// consulted, so it only orders wildcard candidates.
+func (s *PatchSchema) sortedPaths() []pathPattern {
 	s.sortedPathsOnce.Do(func() {
-		s.sortedPathsList = sortPatternsBySpecificity(slices.Collect(maps.Keys(s.AllowedPaths)))
+		for key := range s.AllowedPaths {
+			s.sortedPathsList = append(s.sortedPathsList, pathPattern{text: key, tokens: pointerTokens(key)})
+		}
+		slices.SortFunc(s.sortedPathsList, compareSpecificity)
 	})
 	return s.sortedPathsList
-}
-
-// sortPatternsBySpecificity orders wildcard patterns deterministically,
-// most-specific first. Shared by schema path matching and policy value-
-// constraint matching.
-func sortPatternsBySpecificity(patterns []string) []string {
-	slices.SortFunc(patterns, func(a, b string) int {
-		la, lb := literalPrefixLen(a), literalPrefixLen(b)
-		if la != lb {
-			return lb - la // longest literal prefix first
-		}
-		wa, wb := strings.Count(a, "*"), strings.Count(b, "*")
-		if wa != wb {
-			return wa - wb // fewest wildcards first
-		}
-		return strings.Compare(a, b)
-	})
-	return patterns
-}
-
-func literalPrefixLen(pattern string) int {
-	if i := strings.IndexByte(pattern, '*'); i >= 0 {
-		return i
-	}
-	return len(pattern)
 }
 
 // PathSchema defines a single patchable path.
@@ -222,9 +195,9 @@ func (p *ParsedPatch) AuditInfo() map[string]any {
 		"affected_paths":  p.AffectedPaths,
 	}
 	if p.policy != nil {
-		info["forbidden_path_count"] = len(p.policy.ForbiddenPaths)
-		info["value_constraint_count"] = len(p.policy.ValueConstraints)
-		info["validator_count"] = len(p.policy.Validators)
+		info["forbidden_path_count"] = len(p.policy.forbidden)
+		info["value_constraint_count"] = len(p.policy.constraints)
+		info["validator_count"] = len(p.policy.validators)
 	}
 	return info
 }

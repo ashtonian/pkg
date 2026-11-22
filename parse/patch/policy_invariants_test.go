@@ -40,7 +40,7 @@ func parseOps(t *testing.T, schema *patch.PatchSchema, body string) *patch.Parse
 // must be rejected — previously only move checked From, so copy exfiltrated
 // protected values into readable fields.
 func TestCopyFromForbiddenPath(t *testing.T) {
-	pc := &patch.PatchPolicyConstraints{ForbiddenPaths: []string{"/secret_ref"}}
+	pc := mustPolicy(t, patch.ForbidPaths("/secret_ref"))
 	parsed := parseOps(t, p2Schema(), `[{"op":"copy","from":"/secret_ref","path":"/notes"}]`)
 	err := patch.ApplyPatchPolicyConstraints(parsed, pc, nil)
 	if err == nil {
@@ -54,7 +54,7 @@ func TestCopyFromForbiddenPath(t *testing.T) {
 
 // TestMoveFromForbiddenPathStillRejected pins the pre-existing move check.
 func TestMoveFromForbiddenPathStillRejected(t *testing.T) {
-	pc := &patch.PatchPolicyConstraints{ForbiddenPaths: []string{"/secret_ref"}}
+	pc := mustPolicy(t, patch.ForbidPaths("/secret_ref"))
 	parsed := parseOps(t, p2Schema(), `[{"op":"move","from":"/secret_ref","path":"/notes"}]`)
 	if err := patch.ApplyPatchPolicyConstraints(parsed, pc, nil); err == nil {
 		t.Fatal("move from forbidden path allowed; want policy rejection")
@@ -66,11 +66,7 @@ func TestMoveFromForbiddenPathStillRejected(t *testing.T) {
 // unconstrained field and copied over a constrained one. Constrained paths
 // accept only add/replace now.
 func TestCopyIntoConstrainedPath(t *testing.T) {
-	vc, err := patch.NewValueConstraint("", []any{"active", "inactive"}, nil, nil, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	pc := &patch.PatchPolicyConstraints{ValueConstraints: map[string]*patch.ValueConstraint{"/status": vc}}
+	pc := mustPolicy(t, patch.ConstrainValues("/status", patch.ValueConstraint{AllowedValues: []any{"active", "inactive"}}))
 
 	for _, op := range []string{"copy", "move"} {
 		t.Run(op, func(t *testing.T) {
@@ -118,30 +114,26 @@ func TestDeepPathRejectedAtParse(t *testing.T) {
 }
 
 // TestDeterministicWildcardSelection: overlapping wildcard patterns with
-// different AllowedOps must resolve to the same (most-specific) PathSchema on
-// every call — previously map iteration made the selection random per
-// process/call.
+// different AllowedOps resolve to the most specific PathSchema on every call,
+// whatever order the map yields them in.
 func TestDeterministicWildcardSelection(t *testing.T) {
 	mk := func() *patch.PatchSchema {
 		return &patch.PatchSchema{
 			Resource: "items",
 			AllowedPaths: map[string]*patch.PathSchema{
-				// /config/* is more specific (longer literal prefix) than /c**
-				// and less than the exact /config/theme.
+				// /config/* is more specific than /config/** (one token, not
+				// any number) and than /*/lang (a longer literal prefix), and
+				// less than the exact /config/theme.
 				"/config/theme": {AllowedOps: []patch.PatchOp{patch.PatchOpReplace}, DataType: core.FieldTypeString, SQLColumn: "theme"},
 				"/config/*":     {AllowedOps: []patch.PatchOp{patch.PatchOpReplace, patch.PatchOpAdd}, DataType: core.FieldTypeJSON, SQLColumn: "config"},
-				"/c**":          {AllowedOps: []patch.PatchOp{patch.PatchOpRemove}, DataType: core.FieldTypeJSON, SQLColumn: "cstar"},
+				"/config/**":    {AllowedOps: []patch.PatchOp{patch.PatchOpRemove}, DataType: core.FieldTypeJSON, SQLColumn: "subtree"},
+				"/*/lang":       {AllowedOps: []patch.PatchOp{patch.PatchOpRemove}, DataType: core.FieldTypeJSON, SQLColumn: "lang"},
 			},
 			MaxOperations: 20,
 		}
 	}
-
-	// /config/lang matches both /config/* and /c** — /config/* has the longer
-	// literal prefix so its ops must win, every single time. With the old map
-	// iteration, ~half the runs picked /c** (remove-only) and this parse
-	// failed.
 	for i := range 100 {
-		schema := mk() // fresh schema each round — fresh map iteration order
+		schema := mk() // a fresh map each round: a fresh iteration order
 		parsed, err := patch.NewParser(schema, nil).Parse([]byte(`[{"op":"add","path":"/config/lang","value":"en"}]`))
 		if err != nil {
 			t.Fatalf("iteration %d: add on /config/lang rejected — nondeterministic wildcard pick: %v", i, err)
@@ -152,44 +144,59 @@ func TestDeterministicWildcardSelection(t *testing.T) {
 	}
 }
 
-// TestValueConstraintDeterministicSelection: same class via the policy map.
+// TestValueConstraintDeterministicSelection: the same rule for a policy's
+// constraints, given broadest first so that only the specificity order picks
+// the specific one.
 func TestValueConstraintDeterministicSelection(t *testing.T) {
-	specific, _ := patch.NewValueConstraint("", []any{"a"}, nil, nil, nil)
-	broad, _ := patch.NewValueConstraint("", []any{"zzz"}, nil, nil, nil)
-	pc := &patch.PatchPolicyConstraints{ValueConstraints: map[string]*patch.ValueConstraint{
-		"/config/*": specific, // longer literal prefix — must win for /config/x
-		"/c**":      broad,
-	}}
-	for i := range 100 {
-		parsed := parseOps(t, p2Schema(), `[{"op":"replace","path":"/config/x","value":"a"}]`)
-		if err := patch.ApplyPatchPolicyConstraints(parsed, pc, nil); err != nil {
-			t.Fatalf("iteration %d: allowed value rejected — broad constraint won the pick: %v", i, err)
-		}
+	pc := mustPolicy(t,
+		patch.ConstrainValues("/config/**", patch.ValueConstraint{AllowedValues: []any{"zzz"}}),
+		patch.ConstrainValues("/*/x", patch.ValueConstraint{AllowedValues: []any{"zzz"}}),
+		patch.ConstrainValues("/config/*", patch.ValueConstraint{AllowedValues: []any{"a"}}),
+	)
+	parsed := parseOps(t, p2Schema(), `[{"op":"replace","path":"/config/x","value":"a"}]`)
+	if err := patch.ApplyPatchPolicyConstraints(parsed, pc, nil); err != nil {
+		t.Fatalf("allowed value rejected — a broader constraint won the pick: %v", err)
 	}
 }
 
-// TestSlashStarMatchesOneSegmentOnly: the "/*" special case treated it as
-// match-everything; it must mean exactly one segment under root.
-func TestSlashStarMatchesOneSegmentOnly(t *testing.T) {
-	cases := []struct {
-		pattern, path string
-		want          bool
+// A policy is checked when it is built: a token holding * among other
+// characters, which would match nothing, and a value pattern that does not
+// compile are startup errors, never a request's E2085.
+func TestPolicyRefusesBadPatternsAtConstruction(t *testing.T) {
+	for _, tc := range []struct {
+		opt  patch.PolicyOption
+		want string
 	}{
-		{"/*", "/a", true},
-		{"/*", "/name", true},
-		{"/*", "/a/b", false},
-		{"/*", "/a/b/c", false},
-		{"**", "/a", true},
-		{"**", "/a/b/c", true},
-		{"/config/*", "/config/x", true},
-		{"/config/*", "/config/x/y", false},
-		{"/config/**", "/config/x/y", true},
-	}
-	for _, tc := range cases {
-		if got := core.MatchWildcard(tc.pattern, tc.path); got != tc.want {
-			t.Errorf("MatchWildcard(%q, %q) = %v; want %v", tc.pattern, tc.path, got, tc.want)
+		{patch.ForbidPaths("/tenant_id", "/internal_*"), `token "internal_*"`},
+		{patch.ForbidPaths("/c**"), `token "c**"`},
+		{patch.ForbidPaths(""), "names no path"},
+		{patch.ForbidPaths("/a/~2"), `"/a/~2"`},
+		{patch.ConstrainValues("/config/*_x", patch.ValueConstraint{}), `token "*_x"`},
+		{patch.ConstrainValues("/status", patch.ValueConstraint{Pattern: "[invalid"}), `pattern "[invalid"`},
+		{patch.ValidateWith(nil), "validator 0 is nil"},
+	} {
+		_, err := patch.NewPatchPolicyConstraints(tc.opt)
+		if assert.Error(t, err) {
+			assert.Contains(t, err.Error(), tc.want)
 		}
 	}
+	_, err := patch.NewPatchPolicyConstraints(
+		patch.ConstrainValues("/status", patch.ValueConstraint{}),
+		patch.ConstrainValues("/status", patch.ValueConstraint{}),
+	)
+	assert.ErrorContains(t, err, `value constraint "/status" is given twice`)
+}
+
+// ** takes zero tokens too, so a subtree pattern forbids its root.
+func TestForbiddenSubtreeCoversItsRoot(t *testing.T) {
+	pc := mustPolicy(t, patch.ForbidPaths("/doc/**"))
+	for _, body := range []string{
+		`[{"op":"replace","path":"/doc","value":{}}]`,
+		`[{"op":"replace","path":"/doc/a","value":1}]`,
+	} {
+		requireCode(t, patch.ApplyPatchPolicyConstraints(parseWrites(t, false, body), pc, nil), patch.ECodePatchPolicyForbidden.String())
+	}
+	assert.NoError(t, patch.ApplyPatchPolicyConstraints(parseWrites(t, false, `[{"op":"replace","path":"/other","value":{}}]`), pc, nil))
 }
 
 // TestValidatorsRunOnExplicitNull: a replace carrying an explicit null

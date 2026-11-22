@@ -83,7 +83,7 @@ func TestPatchTransferUsesCurrentValueAndCustomValidator(t *testing.T) {
 		require.Equal(t, "invalid", *target.Source)
 	}
 	// A policy-constrained destination remains rejected before document execution.
-	_, err = p.ParsePatch([]byte(`[{"op":"copy","from":"/source","path":"/status"}]`), parse.WithPatchPolicy(&patch.PatchPolicyConstraints{ValueConstraints: map[string]*patch.ValueConstraint{"/status": {AllowedValues: []any{"active"}}}}, nil))
+	_, err = p.ParsePatch([]byte(`[{"op":"copy","from":"/source","path":"/status"}]`), parse.WithPatchPolicy(mustPolicy(t, patch.ConstrainValues("/status", patch.ValueConstraint{AllowedValues: []any{"active"}})), nil))
 	require.Error(t, err)
 }
 

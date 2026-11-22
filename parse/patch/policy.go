@@ -1,71 +1,159 @@
 package patch
 
 import (
+	"errors"
 	"fmt"
-	"maps"
 	"reflect"
 	"regexp"
 	"slices"
-	"sync"
 
 	"github.com/ashtonian/pkg/parse/core"
 )
 
-// PatchPolicyConstraints holds policy restrictions for patch operations.
-type PatchPolicyConstraints struct {
-	ForbiddenPaths   []string
-	ValueConstraints map[string]*ValueConstraint
-	Validators       []PatchValidator
+// PolicySubject describes the actor making the request, for a policy's
+// validators (ValidateWith).
+type PolicySubject struct {
+	ID          string
+	TenantID    string
+	TenantPath  string
+	Roles       []string
+	Groups      []string
+	Permissions []string
+	Attributes  map[string]any
 }
 
-// ValueConstraint restricts values for a specific patch path.
+// PatchPolicyConstraints restricts the paths a patch may write and the
+// values it may write there. Build one with NewPatchPolicyConstraints, which
+// checks every pattern and compiles every value pattern, so a bad pattern is
+// a startup error and never a request's. It is immutable and safe for
+// concurrent use.
+type PatchPolicyConstraints struct {
+	forbidden []pathPattern
+	// constraints are the value rules by key; patterns are their keys,
+	// most specific first.
+	constraints map[string]*valueRule
+	patterns    []pathPattern
+	validators  []PatchValidator
+}
+
+// ValueConstraint restricts the values written at a path. AllowedValues and
+// DeniedValues compare numbers by value; Pattern is a regular expression a
+// string must match; Min and Max bound a number.
 type ValueConstraint struct {
 	AllowedValues []any
 	DeniedValues  []any
 	Pattern       string
 	Min           *float64
 	Max           *float64
-
-	compiledPattern *regexp.Regexp
-	patternErr      error
-	patternOnce     sync.Once
 }
 
-// NewValueConstraint creates a ValueConstraint and eagerly compiles the regex
-// pattern (if set), returning an error for invalid patterns. Prefer this over
-// direct struct construction to catch regex errors at startup.
-func NewValueConstraint(pattern string, allowed, denied []any, min, max *float64) (*ValueConstraint, error) {
-	vc := &ValueConstraint{
-		AllowedValues: allowed,
-		DeniedValues:  denied,
-		Pattern:       pattern,
-		Min:           min,
-		Max:           max,
-	}
-	if pattern != "" {
-		compiled, err := regexp.Compile(pattern)
-		if err != nil {
-			return nil, fmt.Errorf("invalid value constraint pattern %q: %w", pattern, err)
-		}
-		vc.compiledPattern = compiled
-		vc.patternOnce.Do(func() {}) // mark as done so lazy path is a no-op
-	}
-	return vc, nil
+// valueRule is a ValueConstraint with its pattern compiled.
+type valueRule struct {
+	ValueConstraint
+	pattern *regexp.Regexp
 }
 
 // PatchValidator is a function that validates a patch operation against policy.
-type PatchValidator func(op *PatchOperation, subject *core.PolicySubject) error
+type PatchValidator func(op *PatchOperation, subject *PolicySubject) error
+
+// PolicyOption configures NewPatchPolicyConstraints.
+type PolicyOption func(*policyConfig)
+
+type policyConfig struct {
+	forbidden   []string
+	constraints []keyedConstraint
+	validators  []PatchValidator
+}
+
+type keyedConstraint struct {
+	pattern    string
+	constraint ValueConstraint
+}
+
+// ForbidPaths forbids writing the paths the patterns match. A pattern is a
+// JSON Pointer whose tokens are each a literal, * (exactly one token) or **
+// (zero or more): "/tenant_id", "/internal/**".
+func ForbidPaths(patterns ...string) PolicyOption {
+	return func(c *policyConfig) { c.forbidden = append(c.forbidden, patterns...) }
+}
+
+// ConstrainValues restricts the values written at the paths pattern matches.
+// A path is judged by its own key, else by the most specific pattern that
+// matches it.
+func ConstrainValues(pattern string, constraint ValueConstraint) PolicyOption {
+	return func(c *policyConfig) {
+		c.constraints = append(c.constraints, keyedConstraint{pattern, constraint})
+	}
+}
+
+// ValidateWith adds validators each operation must pass, with the request's
+// subject.
+func ValidateWith(validators ...PatchValidator) PolicyOption {
+	return func(c *policyConfig) { c.validators = append(c.validators, validators...) }
+}
+
+// NewPatchPolicyConstraints builds a policy, refusing a pattern whose token
+// holds * among other characters ("/internal_*", which would otherwise match
+// nothing), a value constraint given twice for one key, a value pattern that
+// does not compile, and a nil validator.
+func NewPatchPolicyConstraints(opts ...PolicyOption) (*PatchPolicyConstraints, error) {
+	var cfg policyConfig
+	for _, opt := range opts {
+		opt(&cfg)
+	}
+	pc := &PatchPolicyConstraints{constraints: make(map[string]*valueRule, len(cfg.constraints))}
+	var errs []error
+	for _, text := range cfg.forbidden {
+		pattern, err := parsePattern(text)
+		if err != nil {
+			errs = append(errs, fmt.Errorf("forbidden path: %w", err))
+			continue
+		}
+		pc.forbidden = append(pc.forbidden, pattern)
+	}
+	for _, kc := range cfg.constraints {
+		pattern, err := parsePattern(kc.pattern)
+		if err != nil {
+			errs = append(errs, fmt.Errorf("value constraint: %w", err))
+			continue
+		}
+		if _, duplicate := pc.constraints[kc.pattern]; duplicate {
+			errs = append(errs, fmt.Errorf("value constraint %q is given twice", kc.pattern))
+			continue
+		}
+		rule := &valueRule{ValueConstraint: kc.constraint}
+		if kc.constraint.Pattern != "" {
+			if rule.pattern, err = regexp.Compile(kc.constraint.Pattern); err != nil {
+				errs = append(errs, fmt.Errorf("value constraint %q: pattern %q: %w", kc.pattern, kc.constraint.Pattern, err))
+				continue
+			}
+		}
+		pc.constraints[kc.pattern] = rule
+		pc.patterns = append(pc.patterns, pattern)
+	}
+	slices.SortFunc(pc.patterns, compareSpecificity)
+	for i, v := range cfg.validators {
+		if v == nil {
+			errs = append(errs, fmt.Errorf("validator %d is nil", i))
+		}
+	}
+	pc.validators = slices.Clone(cfg.validators)
+	if err := errors.Join(errs...); err != nil {
+		return nil, fmt.Errorf("patch policy: %w", err)
+	}
+	return pc, nil
+}
 
 // ApplyPatchPolicyConstraints judges a ParsedPatch against policy by what
 // each operation writes and reads, not by its envelope: a whole value writes
 // every path below its own, a merge object the members it names, a remove
 // null and a move its source. On success the policy is recorded on patch
 // (AuditInfo).
-func ApplyPatchPolicyConstraints(patch *ParsedPatch, pc *PatchPolicyConstraints, subject *core.PolicySubject) error {
+func ApplyPatchPolicyConstraints(patch *ParsedPatch, pc *PatchPolicyConstraints, subject *PolicySubject) error {
 	if pc == nil {
 		return nil
 	}
-	j := policyJudge{pc: pc, patterns: sortPatternsBySpecificity(slices.Collect(maps.Keys(pc.ValueConstraints)))}
+	j := policyJudge{pc}
 	for i, op := range patch.Operations {
 		if err := j.checkForbidden(op, i); err != nil {
 			return err
@@ -75,7 +163,7 @@ func ApplyPatchPolicyConstraints(patch *ParsedPatch, pc *PatchPolicyConstraints,
 				return err
 			}
 		}
-		for _, v := range pc.Validators {
+		for _, v := range pc.validators {
 			if err := v(op, subject); err != nil {
 				return &core.ParseError{
 					Kind: core.ParseErrorKindPatch, Code: ECodePatchValueInvalid.String(),
@@ -92,8 +180,6 @@ func ApplyPatchPolicyConstraints(patch *ParsedPatch, pc *PatchPolicyConstraints,
 // policyJudge applies one policy to one patch.
 type policyJudge struct {
 	pc *PatchPolicyConstraints
-	// patterns are the value constraints' keys, most specific first.
-	patterns []string
 }
 
 // checkForbidden refuses an operation that writes or reads a forbidden path:
@@ -130,11 +216,12 @@ func (j policyJudge) forbiddenWrite(op *PatchOperation, w write, index int) erro
 // read whole, a path below it.
 func (j policyJudge) forbidden(op *PatchOperation, path string, whole bool, index int) error {
 	tokens := pointerTokens(path)
-	for _, pattern := range j.pc.ForbiddenPaths {
-		exact := pattern == path || core.MatchWildcard(pattern, path)
-		if !exact && !(whole && matchesBelow(pointerTokens(pattern), tokens)) {
+	for _, p := range j.pc.forbidden {
+		exact := p.matches(tokens)
+		if !exact && !(whole && p.matchesBelow(tokens)) {
 			continue
 		}
+		pattern := p.text
 		var msg string
 		switch {
 		case path == op.From && exact:
@@ -222,7 +309,7 @@ func (j policyJudge) checkWhole(path string, value any, schema *PathSchema, inde
 			return err
 		}
 	}
-	if len(j.patterns) == 0 {
+	if len(j.pc.patterns) == 0 {
 		return nil
 	}
 	checked := map[string]bool{}
@@ -235,8 +322,8 @@ func (j policyJudge) checkWhole(path string, value any, schema *PathSchema, inde
 		}
 	}
 	base := pointerTokens(path)
-	for _, pattern := range j.patterns {
-		for _, absent := range absentPaths(pointerTokens(pattern), base, value) {
+	for _, pattern := range j.pc.patterns {
+		for _, absent := range absentPaths(pattern, base, value) {
 			if checked[absent] {
 				continue
 			}
@@ -253,13 +340,14 @@ func (j policyJudge) checkWhole(path string, value any, schema *PathSchema, inde
 
 // selectConstraint is the constraint that judges path: its exact key, else
 // the most specific pattern that matches it.
-func (j policyJudge) selectConstraint(path string) *ValueConstraint {
-	if vc, ok := j.pc.ValueConstraints[path]; ok {
-		return vc
+func (j policyJudge) selectConstraint(path string) *valueRule {
+	if rule, ok := j.pc.constraints[path]; ok {
+		return rule
 	}
-	for _, pattern := range j.patterns {
-		if core.MatchWildcard(pattern, path) {
-			return j.pc.ValueConstraints[pattern]
+	tokens := pointerTokens(path)
+	for _, pattern := range j.pc.patterns {
+		if pattern.matches(tokens) {
+			return j.pc.constraints[pattern.text]
 		}
 	}
 	return nil
@@ -268,8 +356,8 @@ func (j policyJudge) selectConstraint(path string) *ValueConstraint {
 // constrainedBelow reports a value constraint that can match a path below path.
 func (j policyJudge) constrainedBelow(path string) bool {
 	tokens := pointerTokens(path)
-	for _, pattern := range j.patterns {
-		if matchesBelow(pointerTokens(pattern), tokens) {
+	for _, pattern := range j.pc.patterns {
+		if pattern.matchesBelow(tokens) {
 			return true
 		}
 	}
@@ -283,7 +371,7 @@ func isDecimal(schema *PathSchema) bool {
 // check judges one value written at path. Null is judged by AllowedValues and
 // DeniedValues; a pattern judges strings and the bounds numbers, and any
 // other value at a path they constrain is refused rather than passed.
-func (vc *ValueConstraint) check(path string, value any, decimal bool, index int) error {
+func (vc *valueRule) check(path string, value any, decimal bool, index int) error {
 	refuse := func(format string, args ...any) error {
 		return &core.ParseError{
 			Kind: core.ParseErrorKindPatch, Code: ECodePatchPolicyValue.String(),
@@ -299,24 +387,12 @@ func (vc *ValueConstraint) check(path string, value any, decimal bool, index int
 	if value == nil {
 		return nil
 	}
-	if vc.Pattern != "" {
-		vc.patternOnce.Do(func() {
-			if vc.compiledPattern == nil {
-				vc.compiledPattern, vc.patternErr = regexp.Compile(vc.Pattern)
-			}
-		})
-		if vc.patternErr != nil {
-			return &core.ParseError{
-				Kind: core.ParseErrorKindPatch, Code: ECodePatchPolicyValue.String(),
-				Message: fmt.Sprintf("invalid regex pattern '%s' for path '%s': %v", vc.Pattern, path, vc.patternErr),
-				Path:    path, Index: new(index), Cause: vc.patternErr,
-			}
-		}
+	if vc.pattern != nil {
 		s, ok := value.(string)
 		if !ok {
 			return refuse("value for path '%s' is not a string, which pattern '%s' requires, at index %d", path, vc.Pattern, index)
 		}
-		if !vc.compiledPattern.MatchString(s) {
+		if !vc.pattern.MatchString(s) {
 			return refuse("value for path '%s' does not match pattern '%s' at index %d", path, vc.Pattern, index)
 		}
 	}
@@ -367,14 +443,14 @@ func valueInList(value any, list []any, decimal bool) bool {
 	return false
 }
 
-// PatchPolicyFromWritableFields builds PatchPolicyConstraints with ForbiddenPaths
-// for every path NOT in the writable map.
-func PatchPolicyFromWritableFields(allPaths []string, writable map[string]bool) *PatchPolicyConstraints {
+// PatchPolicyFromWritableFields builds a policy forbidding every path of
+// allPaths the writable set leaves out.
+func PatchPolicyFromWritableFields(allPaths []string, writable map[string]bool) (*PatchPolicyConstraints, error) {
 	var forbidden []string
 	for _, p := range allPaths {
 		if !writable[p] {
 			forbidden = append(forbidden, p)
 		}
 	}
-	return &PatchPolicyConstraints{ForbiddenPaths: forbidden}
+	return NewPatchPolicyConstraints(ForbidPaths(forbidden...))
 }

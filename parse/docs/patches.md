@@ -50,7 +50,7 @@ if errors.As(err, &pe) {
 
 Traverse joined errors through `Unwrap() []error` to collect every parse failure. The TypeScript SDK mirrors the constraint names and limits; multiple merge-patch failures throw `SchemaValidationErrors`, whose `errors` contains the individual failures and whose inherited field/code identify the first.
 
-Paths are RFC 6901 JSON Pointers: `/labels/a~1b` addresses the key `a/b`, and `~0` escapes a tilde. Patterns match tokens: `*` matches one token, `**` any number. An empty key is a token, so `/labels/*` admits `/labels/` but not `/labels//x`.
+Paths are RFC 6901 JSON Pointers: `/labels/a~1b` addresses the key `a/b`, and `~0` escapes a tilde. Patterns match tokens: `*` matches exactly one token and `**` zero or more, wherever it stands, so `/labels/**` matches `/labels` itself. A token is a literal, `*` or `**`: a policy refuses a pattern whose token holds `*` among other characters (`/internal_*`) when it is built. An empty key is a token, so `/labels/*` admits `/labels/` but not `/labels//x`. Among overlapping patterns the most specific decides: more leading literal tokens, then fewer `**`, then fewer `*`.
 
 | Check | Behavior |
 |---|---|
@@ -285,7 +285,17 @@ Parsers take a `*core.ParserConfig` (`MaxDepth` — pointer segments, and merge-
 
 ## Policy
 
-`PatchPolicyConstraints{ForbiddenPaths, ValueConstraints, Validators}` restricts paths (wildcards allowed) and values; `ApplyPatchPolicyConstraints(parsed, pc, subject)` enforces it and records it on the patch (`AuditInfo`), and `parse.WithPatchPolicy` applies it inside the typed parser. `NewValueConstraint(pattern, allowed, denied, min, max)` compiles a value rule up front (numbers compare exactly); `PatchPolicyFromWritableFields` derives constraints from a writable-field set.
+A policy restricts the paths a patch may write and the values it may write there:
+
+```go
+pc, err := patch.NewPatchPolicyConstraints(
+	patch.ForbidPaths("/tenant_id", "/internal/**"),
+	patch.ConstrainValues("/status", patch.ValueConstraint{AllowedValues: []any{"active", "inactive"}}),
+	patch.ValidateWith(func(op *patch.PatchOperation, subject *patch.PolicySubject) error { return nil }),
+)
+```
+
+`NewPatchPolicyConstraints` checks the policy when it is built, so a bad pattern is a startup error and never a request's: it refuses a path pattern whose token holds `*` among other characters, a value constraint given twice for one pattern, a `ValueConstraint.Pattern` that does not compile, and a nil validator. The policy is immutable. `ApplyPatchPolicyConstraints(parsed, pc, subject)` enforces it and records it on the patch (`AuditInfo`), and `parse.WithPatchPolicy(pc, subject)` applies it inside the typed parser; `subject` is a `*patch.PolicySubject` for the validators. `AllowedValues` and `DeniedValues` compare numbers by value, a decimal path's exactly; `PatchPolicyFromWritableFields` builds a policy forbidding every path a writable-field set leaves out.
 
 Policy judges what each operation writes, not its envelope. A whole value writes every path below its own, a merge object writes the members it names, a `remove` writes null whatever `value` it carries, a `move` writes its source as well as its destination, and a `test` writes nothing.
 

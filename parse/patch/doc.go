@@ -46,13 +46,14 @@
 // # Policy Enforcement
 //
 // [ApplyPatchPolicyConstraints] validates parsed patches against policy rules:
-// forbidden paths, allowed/denied values, regex patterns, and custom validators.
+// forbidden paths, allowed/denied values, regex patterns, and custom
+// validators. [NewPatchPolicyConstraints] checks every pattern when the policy
+// is built: a token is a literal, * (one token) or ** (zero or more), so
+// "/internal/**" forbids /internal and everything below it.
 //
-//	pc := &patch.PatchPolicyConstraints{
-//	    ForbiddenPaths: []string{"/tenant_id", "/internal_*"},
-//	    ValueConstraints: map[string]*patch.ValueConstraint{
-//	        "/status": {AllowedValues: []any{"active", "inactive"}},
-//	    },
-//	}
-//	err := patch.ApplyPatchPolicyConstraints(parsed, pc, subject)
+//	pc, err := patch.NewPatchPolicyConstraints(
+//	    patch.ForbidPaths("/tenant_id", "/internal/**"),
+//	    patch.ConstrainValues("/status", patch.ValueConstraint{AllowedValues: []any{"active", "inactive"}}),
+//	)
+//	err = patch.ApplyPatchPolicyConstraints(parsed, pc, subject)
 package patch

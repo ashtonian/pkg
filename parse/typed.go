@@ -973,10 +973,10 @@ type PatchOption func(*patchOptConfig)
 
 type patchOptConfig struct {
 	policy  *patch.PatchPolicyConstraints
-	subject *core.PolicySubject
+	subject *patch.PolicySubject
 }
 
 // WithPatchPolicy sets policy constraints for patch validation.
-func WithPatchPolicy(pc *patch.PatchPolicyConstraints, subject *core.PolicySubject) PatchOption {
+func WithPatchPolicy(pc *patch.PatchPolicyConstraints, subject *patch.PolicySubject) PatchOption {
 	return func(c *patchOptConfig) { c.policy = pc; c.subject = subject }
 }

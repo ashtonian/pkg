@@ -231,7 +231,7 @@ func TestApplyPatchPolicy_ForbiddenPath(t *testing.T) {
 			{Op: patch.PatchOpReplace, Path: "/secret", Value: "x"},
 		},
 	}
-	pc := &patch.PatchPolicyConstraints{ForbiddenPaths: []string{"/secret"}}
+	pc := mustPolicy(t, patch.ForbidPaths("/secret"))
 	err := patch.ApplyPatchPolicyConstraints(parsed, pc, nil)
 	if err == nil {
 		t.Fatal("expected error for forbidden path")
@@ -244,11 +244,7 @@ func TestApplyPatchPolicy_AllowedValues(t *testing.T) {
 			{Op: patch.PatchOpReplace, Path: "/status", Value: "active"},
 		},
 	}
-	pc := &patch.PatchPolicyConstraints{
-		ValueConstraints: map[string]*patch.ValueConstraint{
-			"/status": {AllowedValues: []any{"active", "inactive"}},
-		},
-	}
+	pc := mustPolicy(t, patch.ConstrainValues("/status", patch.ValueConstraint{AllowedValues: []any{"active", "inactive"}}))
 	err := patch.ApplyPatchPolicyConstraints(parsed, pc, nil)
 	if err != nil {
 		t.Fatalf("expected allowed: %v", err)
@@ -258,36 +254,6 @@ func TestApplyPatchPolicy_AllowedValues(t *testing.T) {
 	err = patch.ApplyPatchPolicyConstraints(parsed, pc, nil)
 	if err == nil {
 		t.Fatal("expected error for disallowed value")
-	}
-}
-
-func TestNewValueConstraint_ValidPattern(t *testing.T) {
-	vc, err := patch.NewValueConstraint(`^[a-z]+$`, nil, nil, nil, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if vc == nil {
-		t.Fatal("expected non-nil constraint")
-	}
-}
-
-func TestNewValueConstraint_InvalidPattern(t *testing.T) {
-	_, err := patch.NewValueConstraint(`[invalid`, nil, nil, nil, nil)
-	if err == nil {
-		t.Fatal("expected error for invalid regex pattern")
-	}
-	if !strings.Contains(err.Error(), "invalid") {
-		t.Errorf("error should mention invalid pattern, got: %s", err.Error())
-	}
-}
-
-func TestNewValueConstraint_NoPattern(t *testing.T) {
-	vc, err := patch.NewValueConstraint("", []any{"a", "b"}, nil, nil, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(vc.AllowedValues) != 2 {
-		t.Errorf("expected 2 allowed values, got %d", len(vc.AllowedValues))
 	}
 }
 

@@ -6,7 +6,6 @@ import (
 	"maps"
 	"slices"
 	"strconv"
-	"strings"
 
 	"github.com/ashtonian/pkg/parse/core"
 )
@@ -119,56 +118,14 @@ func affectedPaths(ops []*PatchOperation) []string {
 	return slices.Sorted(maps.Keys(seen))
 }
 
-// pointerTokens are a JSON Pointer's or pattern's reference tokens, still
-// escaped: "" (the whole document) has none, "/" one empty token, and "/a//b"
-// the three tokens "a", "" and "b". A leading slash is optional.
-func pointerTokens(s string) []string {
-	if s == "" {
-		return nil
-	}
-	return strings.Split(strings.TrimPrefix(s, "/"), "/")
-}
-
-// residues are what remains of pattern once path's tokens are matched
-// against its leading tokens, one entry per way the match can go: the
-// pattern a path below path must still match. `**` takes zero or more tokens.
-func residues(pattern, path []string) [][]string {
-	if len(path) == 0 {
-		return [][]string{pattern}
-	}
-	if len(pattern) == 0 {
-		return nil
-	}
-	switch pattern[0] {
-	case "**":
-		return append(residues(pattern[1:], path), residues(pattern, path[1:])...)
-	case "*", path[0]:
-		return residues(pattern[1:], path[1:])
-	}
-	return nil
-}
-
-// matchesBelow reports whether pattern matches a path strictly below path:
-// a write that replaces path whole writes such a path too.
-func matchesBelow(pattern, path []string) bool {
-	for _, rest := range residues(pattern, path) {
-		if len(rest) > 0 {
-			return true
-		}
-	}
-	return false
-}
-
 // absentPaths are the paths below base that pattern names by literal tokens
 // alone and that value, written whole at base, does not hold: a whole write
 // leaves them null. A member under a wildcard names no path while it is
 // absent, and neither does an array index.
-func absentPaths(pattern, base []string, value any) []string {
+func absentPaths(pattern pathPattern, base []string, value any) []string {
 	var out []string
-	for _, rest := range residues(pattern, base) {
-		if len(rest) > 0 {
-			collectAbsent(rest, value, true, joinPointer(base), &out)
-		}
+	for _, rest := range pattern.remainders(base) {
+		collectAbsent(rest, value, true, joinPointer(base), &out)
 	}
 	return out
 }
@@ -185,12 +142,12 @@ func collectAbsent(rest []string, value any, present bool, path string, out *[]s
 		children = documentMembers(value)
 	}
 	switch rest[0] {
-	case "**":
+	case wildcardAny:
 		collectAbsent(rest[1:], value, present, path, out)
 		for _, c := range children {
 			collectAbsent(rest, c.value, true, path+"/"+c.token, out)
 		}
-	case "*":
+	case wildcardOne:
 		for _, c := range children {
 			collectAbsent(rest[1:], c.value, true, path+"/"+c.token, out)
 		}
@@ -278,14 +235,4 @@ func presentPaths(base string, value any) []pathValue {
 	}
 	walk(base, value)
 	return out
-}
-
-func isWildcardToken(t string) bool { return t == "*" || t == "**" }
-
-// joinPointer is the JSON Pointer of escaped tokens.
-func joinPointer(tokens []string) string {
-	if len(tokens) == 0 {
-		return ""
-	}
-	return "/" + strings.Join(tokens, "/")
 }

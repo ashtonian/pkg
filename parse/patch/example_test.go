@@ -127,14 +127,16 @@ func ExampleApplyPatchPolicyConstraints() {
 		},
 	}
 
-	pc := &patch.PatchPolicyConstraints{
-		ForbiddenPaths: []string{"/tenant_id"},
-		ValueConstraints: map[string]*patch.ValueConstraint{
-			"/status": {AllowedValues: []any{"active", "inactive"}},
-		},
+	pc, err := patch.NewPatchPolicyConstraints(
+		patch.ForbidPaths("/tenant_id", "/internal/**"),
+		patch.ConstrainValues("/status", patch.ValueConstraint{AllowedValues: []any{"active", "inactive"}}),
+	)
+	if err != nil {
+		fmt.Println("error:", err)
+		return
 	}
 
-	err := patch.ApplyPatchPolicyConstraints(parsed, pc, nil)
+	err = patch.ApplyPatchPolicyConstraints(parsed, pc, nil)
 	fmt.Println("allowed:", err == nil)
 
 	forbidden := &patch.ParsedPatch{

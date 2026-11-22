@@ -69,9 +69,7 @@ func TestDecimal_PolicyConstraints(t *testing.T) {
 	schema, err := patch.GeneratePatchSchema[invoice](core.NewSchemaGenerator())
 	require.NoError(t, err)
 	parser := patch.NewParser(schema, nil)
-	bounded, err := patch.NewValueConstraint("", nil, []any{"13.00"}, new(0.1), new(100.0))
-	require.NoError(t, err)
-	pc := &patch.PatchPolicyConstraints{ValueConstraints: map[string]*patch.ValueConstraint{"/total": bounded}}
+	pc := mustPolicy(t, patch.ConstrainValues("/total", patch.ValueConstraint{DeniedValues: []any{"13.00"}, Min: new(0.1), Max: new(100.0)}))
 	tests := []struct {
 		value   string
 		allowed bool
@@ -100,9 +98,7 @@ func TestDecimal_PolicyConstraints(t *testing.T) {
 		})
 	}
 
-	allowed, err := patch.NewValueConstraint("", []any{"0.5", 2}, nil, nil, nil)
-	require.NoError(t, err)
-	pc = &patch.PatchPolicyConstraints{ValueConstraints: map[string]*patch.ValueConstraint{"/tip": allowed}}
+	pc = mustPolicy(t, patch.ConstrainValues("/tip", patch.ValueConstraint{AllowedValues: []any{"0.5", 2}}))
 	for value, ok := range map[string]bool{`"0.50"`: true, `"2.0"`: true, `2`: true, `"5e-1"`: true, `"0.25"`: false} {
 		parsed, err := parser.Parse([]byte(`[{"op":"replace","path":"/tip","value":` + value + `}]`))
 		require.NoError(t, err)

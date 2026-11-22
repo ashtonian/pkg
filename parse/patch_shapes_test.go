@@ -96,24 +96,9 @@ func TestPatchShapes_ValueMemberRequired(t *testing.T) {
 	requireCode(t, err, patch.ECodeInvalidJSON.String())
 }
 
-// * is exactly one reference token, and an empty key is a token.
+// A path schema's * is exactly one reference token, and an empty key is a
+// token.
 func TestPatchShapes_WildcardTokens(t *testing.T) {
-	for _, tc := range []struct {
-		pattern, path string
-		want          bool
-	}{
-		{"/a/*", "/a//b", false},
-		{"/a/*", "/a/", true},
-		{"/a/*/c", "/a//c", true},
-		{"/a/**", "/a//b", true},
-		{"/*", "/", true},
-		{"/*", "//", false},
-		{"/a~1b/*", "/a~1b/c", true},
-		{"/a/*", "/a~1b", false},
-	} {
-		assert.Equal(t, tc.want, core.MatchWildcard(tc.pattern, tc.path), "MatchWildcard(%q, %q)", tc.pattern, tc.path)
-	}
-
 	p := docParser(t) // allows /meta/*
 	_, err := p.ParsePatch([]byte(`[{"op":"add","path":"/meta//b","value":1}]`))
 	requireCode(t, err, patch.ECodePatchFieldNotFound.String())

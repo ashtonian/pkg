@@ -18,7 +18,7 @@ Start with the [runnable package example](../README.md#quick-start). The focused
 - Parsing: `NewParser(schema, cfg)` (`Parse`, `ParseOps`), `ParseMergePatch(body, schema, cfg)`, `ParsedPatch` (`AuditInfo`), `PatchOperation`, `RawPatchOp`, `PatchOp`
 - SQL: `BuildPatchSQL`, `SQLDialect`, `PatchSQLResult` (`Assignments`, `ChangePredicate`), `ColumnAssignment` (`Column`, `Expression`), `PatchSQLOption` (`WithStartParam`, `WithAutoTimestamp`, `WithAutoTimestampSQL`, `WithIncrement`, `WithTimeFunc`, `WithChangePredicate`)
 - Relations: `RelationPatchOp`, `RelationVerb`, `RenderRelationOp`, `RenderRelationOpOptions` (`Owner` / `RelationOwner` and `TargetVisible`: guarded statements for a relation with a target table), `RenderedRelationStatement`, `RelationPath`
-- Policy: `PatchPolicyConstraints`, `ValueConstraint`, `NewValueConstraint`, `PatchValidator`, `ApplyPatchPolicyConstraints`, `PatchPolicyFromWritableFields`
+- Policy: `NewPatchPolicyConstraints` (`ForbidPaths`, `ConstrainValues`, `ValidateWith`: `PolicyOption`), `PatchPolicyConstraints`, `ValueConstraint`, `PatchValidator`, `PolicySubject`, `ApplyPatchPolicyConstraints`, `PatchPolicyFromWritableFields`
 - Errors: `ECode*` (aliases of `core.Code*`, each code's one definition), `Codes`
 
 ## Code map
@@ -32,7 +32,9 @@ Start with the [runnable package example](../README.md#quick-start). The focused
 | `validators.go` | Path validators from value tags: `enum`, `minlen` / `maxlen`, `min` / `max`, per element on an array path (`minitems` / `maxitems` count an array set whole: `checkItems` in `patch.go`) |
 | `sql.go` | `BuildPatchSQL` — per-column fold, merge and append compilation; the change predicate (`WithChangePredicate`) |
 | `relation_sql.go` | Relation patch rendering with junction tenancy |
-| `policy.go` | Patch policy and value constraints |
+| `policy.go` | Patch policy and value constraints, judged by what operations write (`writes.go`) |
+| `pattern.go` | Path patterns: token check, matching (`*` one token, `**` zero or more), specificity order |
+| `writes.go` | The paths an operation writes and reads, and the members a written value holds |
 | `errors.go` | E-codes |
 
 ## Dependencies

@@ -27,16 +27,10 @@ func TestPatchPolicy_JudgesWhatIsWritten(t *testing.T) {
 	docs, err := parse.NewResource[policyDoc]("docs")
 	require.NoError(t, err)
 
-	secret := &patch.PatchPolicyConstraints{ForbiddenPaths: []string{"/attrs/secret", "/attrs/secret/**"}}
-	level := &patch.PatchPolicyConstraints{ValueConstraints: map[string]*patch.ValueConstraint{
-		"/attrs/level": {AllowedValues: []any{"low", "high"}},
-	}}
-	tags := &patch.PatchPolicyConstraints{ValueConstraints: map[string]*patch.ValueConstraint{
-		"/tags": {Pattern: "^[a-z]+$", DeniedValues: []any{"admin"}},
-	}}
-	status := &patch.PatchPolicyConstraints{ValueConstraints: map[string]*patch.ValueConstraint{
-		"/status": {AllowedValues: []any{"active", "inactive"}},
-	}}
+	secret := mustPolicy(t, patch.ForbidPaths("/attrs/secret/**"))
+	level := mustPolicy(t, patch.ConstrainValues("/attrs/level", patch.ValueConstraint{AllowedValues: []any{"low", "high"}}))
+	tags := mustPolicy(t, patch.ConstrainValues("/tags", patch.ValueConstraint{Pattern: "^[a-z]+$", DeniedValues: []any{"admin"}}))
+	status := mustPolicy(t, patch.ConstrainValues("/status", patch.ValueConstraint{AllowedValues: []any{"active", "inactive"}}))
 	for _, tc := range []struct {
 		name   string
 		policy *patch.PatchPolicyConstraints
@@ -63,6 +57,13 @@ func TestPatchPolicy_JudgesWhatIsWritten(t *testing.T) {
 			requireCode(t, err, tc.code)
 		})
 	}
+}
+
+func mustPolicy(t *testing.T, opts ...patch.PolicyOption) *patch.PatchPolicyConstraints {
+	t.Helper()
+	pc, err := patch.NewPatchPolicyConstraints(opts...)
+	require.NoError(t, err)
+	return pc
 }
 
 // A remove clears the field whatever value the client attached.

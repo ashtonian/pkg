@@ -28,6 +28,13 @@ func writesSchema() *patch.PatchSchema {
 	}
 }
 
+func mustPolicy(t *testing.T, opts ...patch.PolicyOption) *patch.PatchPolicyConstraints {
+	t.Helper()
+	pc, err := patch.NewPatchPolicyConstraints(opts...)
+	require.NoError(t, err)
+	return pc
+}
+
 func parseWrites(t *testing.T, merge bool, body string) *patch.ParsedPatch {
 	t.Helper()
 	var (
@@ -48,11 +55,9 @@ func parseWrites(t *testing.T, merge bool, body string) *patch.ParsedPatch {
 // merge, writes the members it names); one at the path writes it; one below
 // it writes inside it, which a pattern for the path alone does not forbid.
 func TestPolicy_JudgesWhatAnOperationWrites(t *testing.T) {
-	forbidA := &patch.PatchPolicyConstraints{ForbiddenPaths: []string{"/doc/a"}}
-	forbidTree := &patch.PatchPolicyConstraints{ForbiddenPaths: []string{"/doc/a", "/doc/a/**"}}
-	constrainA := &patch.PatchPolicyConstraints{ValueConstraints: map[string]*patch.ValueConstraint{
-		"/doc/a": {AllowedValues: []any{"ok"}},
-	}}
+	forbidA := mustPolicy(t, patch.ForbidPaths("/doc/a"))
+	forbidTree := mustPolicy(t, patch.ForbidPaths("/doc/a/**"))
+	constrainA := mustPolicy(t, patch.ConstrainValues("/doc/a", patch.ValueConstraint{AllowedValues: []any{"ok"}}))
 	const (
 		accepted  = ""
 		forbidden = "E2084"
@@ -86,7 +91,7 @@ func TestPolicy_JudgesWhatAnOperationWrites(t *testing.T) {
 		{"forbidden: copy from it", false, `[{"op":"copy","from":"/doc/a","path":"/doc/z"}]`, forbidA, forbidden},
 		// A forbidden pattern, from a descendant: the path alone leaves
 		// what is inside it writable, its subtree does not.
-		{"forbidden: merge below it", true, `{"doc":{"a":{"b":1}}}`, &patch.PatchPolicyConstraints{ForbiddenPaths: []string{"/doc/a/b"}}, forbidden},
+		{"forbidden: merge below it", true, `{"doc":{"a":{"b":1}}}`, mustPolicy(t, patch.ForbidPaths("/doc/a/b")), forbidden},
 		{"forbidden: replace below the path", false, `[{"op":"replace","path":"/doc/a/b","value":1}]`, forbidA, accepted},
 		{"forbidden: replace below the subtree", false, `[{"op":"replace","path":"/doc/a/b","value":1}]`, forbidTree, forbidden},
 		{"forbidden: add below the subtree", false, `[{"op":"add","path":"/doc/a/b","value":1}]`, forbidTree, forbidden},
@@ -117,9 +122,7 @@ func TestPolicy_JudgesWhatAnOperationWrites(t *testing.T) {
 		{"value: move into it", false, `[{"op":"move","from":"/doc/z","path":"/doc/a"}]`, constrainA, refused},
 		{"value: copy into it", false, `[{"op":"copy","from":"/doc/z","path":"/doc/a"}]`, constrainA, refused},
 		// A value constraint, from a descendant: it judges its own path.
-		{"value: merge below it", true, `{"doc":{"a":{"b":"bad"}}}`, &patch.PatchPolicyConstraints{ValueConstraints: map[string]*patch.ValueConstraint{
-			"/doc/a/b": {AllowedValues: []any{"ok"}},
-		}}, refused},
+		{"value: merge below it", true, `{"doc":{"a":{"b":"bad"}}}`, mustPolicy(t, patch.ConstrainValues("/doc/a/b", patch.ValueConstraint{AllowedValues: []any{"ok"}})), refused},
 		{"value: replace below it", false, `[{"op":"replace","path":"/doc/a/b","value":"bad"}]`, constrainA, accepted},
 		{"value: remove below it", false, `[{"op":"remove","path":"/doc/a/b"}]`, constrainA, accepted},
 		{"value: move below it", false, `[{"op":"move","from":"/doc/z","path":"/doc/a/b"}]`, constrainA, accepted},
@@ -139,12 +142,11 @@ func TestPolicy_JudgesWhatAnOperationWrites(t *testing.T) {
 // A constraint on an array path judges each element, however the array is
 // written; a value its pattern or bounds cannot judge is refused.
 func TestPolicy_ArrayElementsAndUnjudgeableValues(t *testing.T) {
-	min := 1.0
-	pc := &patch.PatchPolicyConstraints{ValueConstraints: map[string]*patch.ValueConstraint{
-		"/tags":    {Pattern: "^[a-z]+$", DeniedValues: []any{"admin"}},
-		"/doc/n":   {Min: &min},
-		"/doc/tag": {Pattern: "^[a-z]+$"},
-	}}
+	pc := mustPolicy(t,
+		patch.ConstrainValues("/tags", patch.ValueConstraint{Pattern: "^[a-z]+$", DeniedValues: []any{"admin"}}),
+		patch.ConstrainValues("/doc/n", patch.ValueConstraint{Min: new(1.0)}),
+		patch.ConstrainValues("/doc/tag", patch.ValueConstraint{Pattern: "^[a-z]+$"}),
+	)
 	for _, tc := range []struct {
 		name  string
 		merge bool
