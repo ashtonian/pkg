@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.6.0](https://github.com/ashtonian/pkg/compare/gowalker/v0.5.0...gowalker/v0.6.0) (2026-11-22)
+
+
+### ⚠ BREAKING CHANGES
+
+* **gowalker:** compiling a type fails with ErrSchema, wrapping a *TagError that names the field, when a struct tag of a field gowalker reads is not key:"value" pairs that reflect.StructTag reads to the end (such as `json:"a" parse: "filter"`, with a space after the colon) or repeats a key. reflect.StructTag.Lookup reported every key after such a mistake as absent; correct the tag.
+
+### Features
+
+* **gowalker:** encoding/json names, strict struct tags, unnamed fields and declarations, Accessor.Locate on static routes, unbounded cache with stats ([80f1b3c](https://github.com/ashtonian/pkg/commit/80f1b3cfea49f860e07c696d79b4d4532e590156))
+
 ## [0.5.0](https://github.com/ashtonian/pkg/compare/gowalker/v0.4.0...gowalker/v0.5.0) (2026-10-20)
 
 
