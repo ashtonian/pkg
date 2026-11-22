@@ -55,8 +55,7 @@ type Field struct {
 	Route []int
 	// External is the field's name under the field-name tag, by
 	// encoding/json's rule (the tag's name, else the Go name). It is empty
-	// when the tag hides the field, or the embedded struct it is promoted
-	// from (`json:"-"`).
+	// when the tag hides the field (`json:"-"`).
 	External string
 	// Tags are the field's annotations, parsed once.
 	Tags Tags
@@ -219,10 +218,12 @@ var fieldCaches sync.Map // fieldsKey -> *gowalker.TypeCache[*StructFields]
 
 // StructFields walks t (a struct, or a pointer to one) under the
 // generator's field-name and column tags. The walk is cached per type and
-// tag pair. A name two fields claim — a shallower field shadowing a promoted
-// one, or two promoted fields at one depth — is an error naming both
-// fields: encoding/json keeps the shallower field or drops both, and parse
-// must see exactly the fields encoding/json writes.
+// tag pair. A name two fields claim goes to the field encoding/json writes
+// under it: the shallower one, then at one depth the one the tag names.
+// Two fields that claim a name at one depth, both tagged or both untagged,
+// are an error naming both, since encoding/json writes neither and parse
+// must see exactly the fields it writes. A stored document's members are
+// named by JSONFieldsOf, which drops such a tie as encoding/json does.
 func (g *SchemaGenerator) StructFields(t reflect.Type) (*StructFields, error) {
 	return StructFieldsOf(t, g.FieldNameTag(), g.ColumnTagKey())
 }
@@ -270,13 +271,25 @@ func fieldsCache(k fieldsKey) (*gowalker.TypeCache[*StructFields], error) {
 // walkError names the fields of a name conflict.
 func walkError(t reflect.Type, err error) error {
 	if conflict, ok := errors.AsType[*gowalker.NameConflict](err); ok {
-		first, second := conflict.First.GoField().Name, conflict.Second.GoField().Name
+		first, second := promotedName(conflict.First), promotedName(conflict.Second)
 		if strings.HasPrefix(conflict.Name, hiddenPrefix) {
 			return fmt.Errorf("%s: hidden fields %s and %s are declared alike; give one its own column", t, first, second)
 		}
-		return fmt.Errorf("%s: fields %s and %s are both named %q; rename one (parse refuses names encoding/json resolves by depth)", t, first, second, conflict.Name)
+		return fmt.Errorf("%s: fields %s and %s are both named %q at one depth, so encoding/json writes neither; rename one", t, first, second, conflict.Name)
 	}
 	return fmt.Errorf("%s: %w", t, err)
+}
+
+// promotedName is a field's Go name behind the embedded fields it is
+// promoted through, so two promoted ID fields read as Audit.ID and Base.ID.
+func promotedName(f *gowalker.Field) string {
+	var b strings.Builder
+	for _, parent := range f.InlineParents() {
+		b.WriteString(parent.Name)
+		b.WriteByte('.')
+	}
+	b.WriteString(f.GoField().Name)
+	return b.String()
 }
 
 // hiddenName is the walk-internal name of a field the field-name tag hides:
@@ -287,12 +300,12 @@ func hiddenName(sf reflect.StructField) string {
 }
 
 // fieldRule names a field as Go 1.27's encoding/json does under tag key:
-// the tag's name, else the Go name; a struct embedded without a name has
-// its fields promoted, and a name two fields claim goes to the shallower,
-// then to the one the tag names (ResolveByDepth, Explicit). A field the
-// tag hides keeps a walk-internal name so its column survives. Every named
-// field is a leaf: views that read inside one (documents, elements) walk
-// its type themselves.
+// the tag's name, else the Go name, and a struct embedded without a name
+// promotes its fields. A name two fields claim is settled by
+// ResolveByDepth, a tag's name marked Explicit (StructFields states the
+// rule). A field the tag hides keeps a walk-internal name so its column
+// survives. Every named field is a leaf: views that read inside one
+// (documents, elements) walk its type themselves.
 func fieldRule(sf reflect.StructField, key string) (gowalker.FieldRule, error) {
 	tag, tagged := sf.Tag.Lookup(key)
 	if !sf.IsExported() && !sf.Anonymous {

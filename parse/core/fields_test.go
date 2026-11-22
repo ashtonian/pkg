@@ -243,7 +243,7 @@ func TestStructFields_RefuseAmbiguousNamesAndUnknownCapabilities(t *testing.T) {
 	cases["two promoted fields at one depth"] = struct {
 		typ  reflect.Type
 		want string
-	}{tie, `both named "b1"`}
+	}{tie, `fields ShadowBase.B1 and Other.B1 are both named "b1" at one depth, so encoding/json writes neither; rename one`}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
 			_, err := core.StructFieldsOf(tc.typ, "json", "db")
