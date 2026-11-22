@@ -31,6 +31,7 @@ Construct one `parse.Resource[T]` for each resource at startup. Schema generatio
 | `geo_srid` | `"3857"` | filter | SRID of a native `geometry` column (jsonb / geography are 4326) |
 | `geo_lat`, `geo_lon` | `"$.latitude"` | filter | Members of a JSONB point |
 | `label`, `description`, `group`, `order` | `"Name"` | schema response | UI metadata |
+| `json:",string"` | `json:"id,string"` | filter, patch | A bool, integer or float column travels as a JSON string holding its value, as encoding/json writes it ([quoted values](#quoted-values)) |
 
 ### Fields and embedding
 
@@ -48,6 +49,19 @@ Schema generation refuses the shapes encoding/json resolves silently:
 A field's data type comes from its Go type (`core.TypeOf`): string / int / float / decimal / bool / timestamp / date / uuid scalars, the [time, interval and network value types](#time-interval-and-network-values), a UUID being any named 16-byte array that marshals to text (the standard library's `uuid.UUID`, `github.com/google/uuid`, `github.com/gofrs/uuid`; a bare `[16]byte` is binary) and a decimal any named type with the `core.Decimal` method set ([decimals](#decimals)); slices of those other than decimals are native `array`s (PostgreSQL arrays, JSON text on SQLite); maps, `any`, `json.RawMessage` and other slices are `json` documents (`jsonb`); structs are `object` documents.
 
 Declare physical storage with `parse.ColumnType(column, core.SQLJSON)` / `core.SQLJSONB`, or `core.WithColumnTypes(map[string]core.SQLType{...})` for a lower-level parser. Column names follow the configured column tag/mapper, including hidden and unread fields. Declared JSON strings, bytes and scalar slices use document operators and JSON binding; typed objects retain their member schemas. JSON columns cannot be sorted or searched. `core.SQLTextArray`, `core.SQLInt32Array` and `core.SQLUUIDArray` retain native array semantics. Each schema generator owns a copy of its declarations, so resources over the same Go type can use different storage profiles.
+
+### Quoted values
+
+A bool, integer or float field tagged with encoding/json's `string` option, `json:"id,string"`, reads in responses as a JSON string holding its value: `"9007199254740993"`, not `9007199254740993`. A 64-bit integer then survives a client whose numbers are doubles, as JavaScript's are. Requests give the field in the same form:
+
+- filter operands of `$eq`, `$ne`, `$gt`, `$gte`, `$lt`, `$lte`, `$in` and `$nin` are JSON strings: `{"id":"9007199254740993"}`, `{"id":{"$in":["1","2"]}}`. A flat query parameter's text is that string already (`?id=9007199254740993`);
+- merge-patch members and JSON Patch values are JSON strings: `{"id":"9007199254740993"}`, `{"op":"replace","path":"/id","value":"42"}`;
+- the string holds the value's JSON text exactly as encoding/json reads it: a JSON number for an integer or float (no spaces, no `+`, no leading zeros), `true` or `false` for a bool. The number then normalizes as any of the field's numbers do: exactly, range-checked against its Go kind and its `min` / `max` bounds;
+- a bare JSON number or boolean is refused with E2073 (filters) or E2077 (patches), naming the expected form, as encoding/json refuses to decode one into the field.
+
+Policy constraints and other filters built in Go take the field's Go values, not its wire form. SQL binds the number and `filter.Evaluate` compares it, so PostgreSQL, SQLite and memory backends select the same rows (`filtertest.RunQuoted`). The schema document marks each such field and patch path `"wire": "string"`; `parse/client` sends them as `client.Quoted[T]` and the TypeScript SDK validates them as strings, checking a patch value's integer kind and bounds exactly.
+
+encoding/json ignores the option on a type that marshals itself (`json.Marshaler`, `encoding.TextMarshaler`), and so does parse. On a string field, which encoding/json quotes a second time, the option changes nothing parse reads. Inside a JSON document a quoted member is stored as text that a number or bool path cannot compare, so schema generation refuses a member path, element path or sort path declared on one: drop the option, or declare the member a string.
 
 ## Parser and generator options
 

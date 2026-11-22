@@ -446,6 +446,13 @@ func normalizeOpValue(ps *PathSchema, op PatchOp, v any, depth int, codec core.C
 	if v == nil && op != PatchOpArrayAppend {
 		return nil, nil
 	}
+	// RFC 6902 tests compare the supplied document, which holds a
+	// quoted field's wire form, not its number.
+	supplied := v
+	v, err := core.FromWire(ps.Wire, ps.DataType, v)
+	if err != nil {
+		return nil, err
+	}
 	if ps.Relation != nil {
 		if ps.GoType == nil {
 			return v, nil
@@ -482,7 +489,7 @@ func normalizeOpValue(ps *PathSchema, op PatchOp, v any, depth int, codec core.C
 	if err == nil && op == PatchOpTest {
 		// RFC 6902 tests compare the supplied document, not a replacement
 		// with missing struct members filled or omitted by Go encoding.
-		return v, nil
+		return supplied, nil
 	}
 	return normalized, err
 }

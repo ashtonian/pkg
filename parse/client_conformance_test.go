@@ -44,6 +44,8 @@ var confFields = struct {
 	Labels  client.TextArray
 	Sizes   client.OrderedArray[int]
 	Parts   client.Relation[string]
+	Serial  client.Ordered[client.Quoted[int64]]
+	Live    client.Field[client.Quoted[bool]]
 }{
 	ID:      client.NewField[string]("id"),
 	Name:    client.NewText("name"),
@@ -59,6 +61,8 @@ var confFields = struct {
 	Tags:    client.NewTextArray("tags"),
 	Labels:  client.NewTextArray("meta.labels"),
 	Sizes:   client.NewOrderedArray[int]("meta.sizes"),
+	Serial:  client.NewOrdered[client.Quoted[int64]]("serial"),
+	Live:    client.NewField[client.Quoted[bool]]("live"),
 	Parts:   client.NewRelation[string]("parts"),
 }
 
@@ -137,6 +141,11 @@ func filterBuilt() map[string]client.Filter {
 		"relation_key_shorthand":        f.Parts.Eq("p1"),
 		"relation_key_list":             f.Parts.In("p1", "p2"),
 		"err_relation_target_enum":      f.Parts.Some(part.State.Eq("new")),
+		"quoted_eq_int64_max":           f.Serial.Eq(client.Quote(int64(math.MaxInt64))),
+		"quoted_eq_int64_min":           f.Serial.Eq(client.Quote(int64(math.MinInt64))),
+		"quoted_gt_past_2_53":           f.Serial.Gt(client.Quote(int64(9007199254740992))),
+		"quoted_in":                     f.Serial.In(client.Quote(int64(1)), client.Quote(int64(9007199254740993))),
+		"quoted_eq_bool":                f.Live.Eq(client.Quote(true)),
 	}
 }
 
@@ -158,6 +167,12 @@ var filterInexpressible = map[string]string{
 	"err_null_not_bool":                   "null tests take no operand",
 	"err_eq_null":                         "Null is the null test; Eq takes a value",
 	"err_int_type":                        "Count is an Ordered[int]",
+	"err_quoted_bare_number":              "Serial is an Ordered[Quoted[int64]]",
+	"err_quoted_bare_number_in_set":       "Serial is an Ordered[Quoted[int64]]",
+	"err_quoted_not_a_number":             "Serial is an Ordered[Quoted[int64]]",
+	"err_quoted_spaces":                   "a Quoted marshals its value's JSON text",
+	"err_quoted_past_int64":               "Serial is an Ordered[Quoted[int64]]",
+	"err_quoted_bare_bool":                "Live is a Field[Quoted[bool]]",
 	"err_int_fraction":                    "Count is an Ordered[int]",
 	"err_bool_type":                       "Active is a Field[bool]",
 	"err_decimal_word":                    "Price is an Ordered[decimal.Decimal]",
@@ -191,12 +206,16 @@ var filterInexpressible = map[string]string{
 	"err_array_contains_member_type":      "Sizes' Contains takes ints",
 }
 
+// readFilterCorpus reads the filter corpus with its numbers exact: a quoted
+// int64 case's AST holds 2^63-1, which a float64 would round.
 func readFilterCorpus(t *testing.T) []conformanceCase {
 	t.Helper()
 	data, err := os.ReadFile(conformanceCorpusPath)
-	require.NoError(t, err)
+	require.NoError(t, err, "read the corpus (regenerate with -run TestEmitFilterConformance -update)")
+	dec := json.NewDecoder(bytes.NewReader(data))
+	dec.UseNumber()
 	var corpus []conformanceCase
-	require.NoError(t, json.Unmarshal(data, &corpus))
+	require.NoError(t, dec.Decode(&corpus))
 	return corpus
 }
 
@@ -261,25 +280,30 @@ func TestClient_RefusesWhatTheGrammarCannotSay(t *testing.T) {
 // confPatchInput is the merge-patch struct a generated SDK would declare for
 // confPatch.
 type confPatchInput struct {
-	Name     client.Nullable[string]          `json:"name,omitzero"`
-	Nick     client.Nullable[string]          `json:"nick,omitzero"`
-	Status   client.Nullable[string]          `json:"status,omitzero"`
-	Count    client.Nullable[int32]           `json:"count,omitzero"`
-	Small    client.Nullable[int8]            `json:"small,omitzero"`
-	Ratio    client.Nullable[float64]         `json:"ratio,omitzero"`
-	Price    client.Nullable[decimal.Decimal] `json:"price,omitzero"`
-	Active   client.Nullable[bool]            `json:"active,omitzero"`
-	Tags     client.Nullable[[]string]        `json:"tags,omitzero"`
-	Labels   client.Nullable[map[string]any]  `json:"labels,omitzero"`
-	SeenAt   client.Nullable[time.Time]       `json:"seen_at,omitzero"`
-	Currency client.Nullable[string]          `json:"currency,omitzero"`
-	Level    client.Nullable[int32]           `json:"level,omitzero"`
-	Rate     client.Nullable[float32]         `json:"rate,omitzero"`
-	Amount   client.Nullable[decimal.Decimal] `json:"amount,omitzero"`
-	Codes    client.Nullable[[]string]        `json:"codes,omitzero"`
-	Modes    client.Nullable[[]string]        `json:"modes,omitzero"`
-	Mode     client.Nullable[string]          `json:"mode,omitzero"`
-	Zones    client.Nullable[[]string]        `json:"zones,omitzero"`
+	Name     client.Nullable[string]                 `json:"name,omitzero"`
+	Nick     client.Nullable[string]                 `json:"nick,omitzero"`
+	Status   client.Nullable[string]                 `json:"status,omitzero"`
+	Count    client.Nullable[int32]                  `json:"count,omitzero"`
+	Small    client.Nullable[int8]                   `json:"small,omitzero"`
+	Ratio    client.Nullable[float64]                `json:"ratio,omitzero"`
+	Price    client.Nullable[decimal.Decimal]        `json:"price,omitzero"`
+	Active   client.Nullable[bool]                   `json:"active,omitzero"`
+	Tags     client.Nullable[[]string]               `json:"tags,omitzero"`
+	Labels   client.Nullable[map[string]any]         `json:"labels,omitzero"`
+	SeenAt   client.Nullable[time.Time]              `json:"seen_at,omitzero"`
+	Currency client.Nullable[string]                 `json:"currency,omitzero"`
+	Level    client.Nullable[int32]                  `json:"level,omitzero"`
+	Rate     client.Nullable[float32]                `json:"rate,omitzero"`
+	Amount   client.Nullable[decimal.Decimal]        `json:"amount,omitzero"`
+	Codes    client.Nullable[[]string]               `json:"codes,omitzero"`
+	Modes    client.Nullable[[]string]               `json:"modes,omitzero"`
+	Mode     client.Nullable[string]                 `json:"mode,omitzero"`
+	Zones    client.Nullable[[]string]               `json:"zones,omitzero"`
+	Serial   client.Nullable[client.Quoted[int64]]   `json:"serial,omitzero"`
+	Big      client.Nullable[client.Quoted[uint64]]  `json:"big,omitzero"`
+	Quota    client.Nullable[client.Quoted[int64]]   `json:"quota,omitzero"`
+	Live     client.Nullable[client.Quoted[bool]]    `json:"live,omitzero"`
+	Share    client.Nullable[client.Quoted[float32]] `json:"share,omitzero"`
 }
 
 var patchBuilt = map[string]confPatchInput{
@@ -321,10 +345,24 @@ var patchBuilt = map[string]confPatchInput{
 	"err_items_min":                  {Zones: client.Set([]string{})},
 	"err_items_max":                  {Zones: client.Set([]string{"a", "b", "c"})},
 	"err_items_clear":                {Zones: client.Null[[]string]()},
+	"quoted_int64_max":               {Serial: client.Set(client.Quote(int64(math.MaxInt64)))},
+	"quoted_int64_min":               {Serial: client.Set(client.Quote(int64(math.MinInt64)))},
+	"quoted_uint64_max":              {Big: client.Set(client.Quote(uint64(math.MaxUint64)))},
+	"quoted_bound_past_2_53":         {Quota: client.Set(client.Quote(int64(9007199254740993)))},
+	"err_quoted_bound_past_2_53":     {Quota: client.Set(client.Quote(int64(9007199254740994)))},
+	"quoted_bool":                    {Live: client.Set(client.Quote(false))},
+	"quoted_float":                   {Share: client.Set(client.Quote[float32](0.5))},
 }
 
 var patchInexpressible = map[string]string{
 	"err_string_type":           "Name is a Nullable[string]",
+	"err_quoted_bare_number":    "Serial is a Nullable[Quoted[int64]]",
+	"err_quoted_past_int64":     "Serial is a Nullable[Quoted[int64]]",
+	"err_quoted_not_a_number":   "Serial is a Nullable[Quoted[int64]]",
+	"err_quoted_spaces":         "a Quoted marshals its value's JSON text",
+	"err_quoted_uint_negative":  "Big is a Nullable[Quoted[uint64]]",
+	"err_quoted_bare_bool":      "Live is a Nullable[Quoted[bool]]",
+	"err_quoted_float_word":     "Share is a Nullable[Quoted[float32]]",
 	"err_int_fraction":          "Count is a Nullable[int32]",
 	"err_int_type":              "Count is a Nullable[int32]",
 	"err_int32_range":           "Count is a Nullable[int32]",
@@ -486,7 +524,7 @@ func TestClient_CatalogsCoverTheCorpusFields(t *testing.T) {
 		confFields.ID.Name(), confFields.Name.Name(), confFields.Status.Name(), confFields.Count.Name(),
 		confFields.Price.Name(), confFields.Active.Name(), confFields.Created.Name(), confFields.Meta.Name(), confFields.Region.Name(),
 		confFields.Note.Name(), confFields.Lines.Name(), confFields.Tags.Name(), confFields.Labels.Name(), confFields.Sizes.Name(),
-		confFields.Parts.Name(),
+		confFields.Parts.Name(), confFields.Serial.Name(), confFields.Live.Name(),
 	}
 	for name := range schema.Fields {
 		assert.True(t, slices.Contains(names, name), "the catalog misses %q", name)

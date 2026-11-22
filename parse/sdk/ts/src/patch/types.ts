@@ -1,4 +1,5 @@
 import type { FieldType } from "../core/types.js";
+import type { Wire } from "../core/wire.js";
 
 /** Patch operation type (mirrors Go patch.PatchOp). */
 export type PatchOp = "add" | "remove" | "replace" | "move" | "copy" | "test" | "array_append";
@@ -13,6 +14,12 @@ export interface PatchSchema {
 export interface PatchPathSchema {
   allowed_ops: PatchOp[];
   data_type: FieldType;
+  /**
+   * "string" for a path whose value is a JSON string holding a bool,
+   * integer or float ("42"), as the field reads in responses
+   * (json:",string"); absent, values take the data type's own JSON form.
+   */
+  wire?: Wire;
   /** The path accepts null (remove, or clear). */
   nullable?: boolean;
   /** The path's allowlist. */

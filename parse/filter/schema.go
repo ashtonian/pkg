@@ -150,6 +150,11 @@ type FieldSchema struct {
 	// range-checked against it; reflect.Invalid (hand-built schemas)
 	// validates against the widest domain, int64 / float64.
 	NumberKind reflect.Kind
+	// Wire is the form requests give the field's values in: core.WireString
+	// for a bool, integer or float field tagged json:",string", whose
+	// comparison and set operands are JSON strings ("42", not 42), as
+	// encoding/json writes the field. The zero Wire is the data type's form.
+	Wire core.Wire
 	// Elem is the element type of a FieldTypeArray field; `$contains`
 	// values normalize to it (and NumberKind is the element's kind).
 	Elem             core.FieldType

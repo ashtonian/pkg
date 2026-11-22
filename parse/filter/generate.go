@@ -108,6 +108,7 @@ func generateFilterSchema(g *core.SchemaGenerator, t reflect.Type) (*ResourceSch
 			SQLExpr:          sqlExpr,
 			DataType:         fieldType,
 			NumberKind:       info.NumberKind,
+			Wire:             field.Wire(),
 			Elem:             info.Elem,
 			AllowedOperators: allowedOps,
 			Indexed:          tags.Indexed,

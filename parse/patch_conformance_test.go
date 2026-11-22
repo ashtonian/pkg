@@ -52,6 +52,13 @@ type confPatch struct {
 	Amount   decimal.Decimal `json:"amount"    db:"amount"    parse:"patch" min:"0.01" max:"999.99"`
 	Codes    []string        `json:"codes"     db:"codes"     parse:"patch" maxlen:"2"`
 	Zones    []string        `json:"zones"     db:"zones"     parse:"patch" minitems:"1" maxitems:"2"`
+	// Serial, Big, Quota, Live and Share travel as JSON strings
+	// (json:",string").
+	Serial int64   `json:"serial,string" db:"serial" parse:"patch"`
+	Big    uint64  `json:"big,string"    db:"big"    parse:"patch"`
+	Quota  int64   `json:"quota,string"  db:"quota"  parse:"patch" min:"0" max:"9007199254740993"`
+	Live   bool    `json:"live,string"   db:"live"   parse:"patch"`
+	Share  float32 `json:"share,string"  db:"share"  parse:"patch"`
 }
 
 type patchCase struct {
@@ -129,6 +136,20 @@ func patchInputs() []patchCase {
 		{Name: "err_items_min", Input: map[string]any{"zones": []any{}}},
 		{Name: "err_items_max", Input: map[string]any{"zones": []any{"a", "b", "c"}}},
 		{Name: "err_items_clear", Input: map[string]any{"zones": nil}},
+		{Name: "quoted_int64_max", Input: map[string]any{"serial": "9223372036854775807"}},
+		{Name: "quoted_int64_min", Input: map[string]any{"serial": "-9223372036854775808"}},
+		{Name: "err_quoted_bare_number", Input: map[string]any{"serial": json.Number("9007199254740993")}},
+		{Name: "err_quoted_past_int64", Input: map[string]any{"serial": "9223372036854775808"}},
+		{Name: "err_quoted_not_a_number", Input: map[string]any{"serial": "seven"}},
+		{Name: "err_quoted_spaces", Input: map[string]any{"serial": " 7"}},
+		{Name: "quoted_uint64_max", Input: map[string]any{"big": "18446744073709551615"}},
+		{Name: "err_quoted_uint_negative", Input: map[string]any{"big": "-1"}},
+		{Name: "quoted_bound_past_2_53", Input: map[string]any{"quota": "9007199254740993"}},
+		{Name: "err_quoted_bound_past_2_53", Input: map[string]any{"quota": "9007199254740994"}},
+		{Name: "quoted_bool", Input: map[string]any{"live": "false"}},
+		{Name: "err_quoted_bare_bool", Input: map[string]any{"live": false}},
+		{Name: "quoted_float", Input: map[string]any{"share": "0.5"}},
+		{Name: "err_quoted_float_word", Input: map[string]any{"share": "half"}},
 	}
 }
 

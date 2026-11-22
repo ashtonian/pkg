@@ -88,6 +88,11 @@ const confSchema: FilterSchema = {
         qty: { name: "qty", data_type: "int", operators: ["eq", "gt", "lt"] },
       },
     },
+    serial: {
+      name: "serial", data_type: "int", wire: "string",
+      operators: ["eq", "ne", "gt", "gte", "lt", "lte", "in", "nin"],
+    },
+    live: { name: "live", data_type: "bool", wire: "string", operators: ["eq", "ne"] },
     parts: {
       name: "parts", data_type: "string",
       operators: ["eq", "ne", "in", "nin", "null", "not_null", "some", "none"],

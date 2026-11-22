@@ -209,6 +209,11 @@ func structPaths(g *core.SchemaGenerator, t reflect.Type, prefix []string, want 
 		if len(segs) > MaxPathDepth {
 			return nil, nil, fmt.Errorf("member %s is more than %d members deep", strings.Join(segs, "."), MaxPathDepth)
 		}
+		if m.Wire() != "" {
+			// The document holds the member as a JSON string, which a
+			// number or bool path reads as NULL on every backend.
+			return nil, nil, fmt.Errorf("member %s: json:\",string\" stores the value as text, which its path cannot compare; drop the option, or declare the member a string", strings.Join(segs, "."))
+		}
 		info := core.TypeOf(m.Type)
 		elem, elemKind, isArray := scalarElements(m.Type)
 		switch {

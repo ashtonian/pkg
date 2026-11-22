@@ -45,6 +45,7 @@ A catalog field's type follows the operators its value type can declare on the s
 | `Ordered[V]` | number, decimal (`Ordered[decimal.Decimal]`: any type that marshals its exact text) | `Field`'s, `Gt`, `Gte`, `Lt`, `Lte` |
 | `Text` | string | `Ordered`'s, `Like`, `ILike`, `Contains` |
 | `Time` (`Ordered[Moment]`) | timestamp | `Ordered`'s, with `At(t)`, `Now()`, `Ago(d)` or `FromNow(d)` operands |
+| `Ordered[Quoted[T]]`, `Field[Quoted[T]]` | a bool, integer or float the server declares `json:",string"` (schema `"wire": "string"`) | as for `T`, with `Quote(v)` operands sent as JSON strings (`"9007199254740993"`) |
 | `Document[V]` | JSON document | `Eq`, `Ne`, `Contains`, `HasKey`, `Null`, `NotNull` |
 | `Array[E]`, `OrderedArray[E]`, `TextArray` | array of keys / numbers, decimals, timestamps / strings: a column or a declared document member | `Contains`, `Null`, `NotNull`, `Some`, `None` (a condition on one element); `Element()` is a `Field[E]`, `Ordered[E]` or `Text` whose comparisons, combined by `And`, `Or` and `Not`, build that condition |
 | `Elements[V]` | JSON array of objects | `Document`'s, `Some`, `None` (a filter over element members) |
@@ -57,6 +58,8 @@ A catalog field's type follows the operators its value type can declare on the s
 An element condition names no field: `tags.Some(client.Or(tag.Like("a%"), tag.Eq("b")))`, with `tag := tags.Element()`, encodes `{"tags":{"$some":{"$or":[{"$like":"a%"},{"$eq":"b"}]}}}`. The empty filter is any element: `tags.Some(client.Filter{})`.
 
 A relative `Moment` is sent as the server's token (`now-1d`) and resolved by the server's clock, so the client's clock never skews it.
+
+A `Quoted[T]` travels as encoding/json writes a `json:",string"` field: its JSON text inside a JSON string. Use it for operands, merge-patch members (`client.Nullable[client.Quoted[int64]]`) and JSON Patch values (`client.Replace("/id", client.Quote(int64(42)))`) of such a field, and to decode its responses, so a 64-bit integer stays exact end to end.
 
 ## Encoding
 
@@ -107,6 +110,7 @@ A new corpus case fails the test until it is classified. The same file holds the
 | `filter.go` | `Filter`, `And`, `Or`, `Not`, encoding, `ErrEmptyOr`, `ErrNegatedEmpty`, `ErrElementCondition` |
 | `field.go` | `Field`, `Ordered`, `Text`, `Time`, `SortKey` and the sortable variants |
 | `moment.go` | `Moment` (`At`, `Now`, `Ago`, `FromNow`), `ErrSubSecond` |
+| `quoted.go` | `Quoted[T]`, `Quote`, `QuotedScalar`: values of `json:",string"` fields |
 | `array.go` | `Array`, `OrderedArray`, `TextArray` and their element conditions |
 | `document.go` | `Document`, `Elements`, `Relation`, `Reference` |
 | `geo.go` | `Geo`, `Point`, `Shape` (`Box`, `Polygon`) |

@@ -21,6 +21,14 @@
           "minimum": "0.01",
           "maximum": "999.99"
         },
+        "/big": {
+          "allowed_ops": [
+            "replace"
+          ],
+          "data_type": "int",
+          "wire": "string",
+          "number_kind": "uint64"
+        },
         "/codes": {
           "allowed_ops": [
             "replace",
@@ -65,6 +73,13 @@
           "minimum": "1",
           "maximum": "10",
           "number_kind": "int32"
+        },
+        "/live": {
+          "allowed_ops": [
+            "replace"
+          ],
+          "data_type": "bool",
+          "wire": "string"
         },
         "/mode": {
           "allowed_ops": [
@@ -113,6 +128,16 @@
           ],
           "data_type": "decimal"
         },
+        "/quota": {
+          "allowed_ops": [
+            "replace"
+          ],
+          "data_type": "int",
+          "wire": "string",
+          "minimum": "0",
+          "maximum": "9007199254740993",
+          "number_kind": "int64"
+        },
         "/rate": {
           "allowed_ops": [
             "replace"
@@ -148,6 +173,22 @@
           ],
           "data_type": "timestamp",
           "nullable": true
+        },
+        "/serial": {
+          "allowed_ops": [
+            "replace"
+          ],
+          "data_type": "int",
+          "wire": "string",
+          "number_kind": "int64"
+        },
+        "/share": {
+          "allowed_ops": [
+            "replace"
+          ],
+          "data_type": "float",
+          "wire": "string",
+          "number_kind": "float32"
         },
         "/small": {
           "allowed_ops": [
@@ -669,6 +710,112 @@
       "name": "err_items_clear",
       "input": {
         "zones": null
+      },
+      "valid": false,
+      "errorCode": "E2077"
+    },
+    {
+      "name": "quoted_int64_max",
+      "input": {
+        "serial": "9223372036854775807"
+      },
+      "valid": true
+    },
+    {
+      "name": "quoted_int64_min",
+      "input": {
+        "serial": "-9223372036854775808"
+      },
+      "valid": true
+    },
+    {
+      "name": "err_quoted_bare_number",
+      "input": {
+        "serial": 9007199254740993
+      },
+      "valid": false,
+      "errorCode": "E2077"
+    },
+    {
+      "name": "err_quoted_past_int64",
+      "input": {
+        "serial": "9223372036854775808"
+      },
+      "valid": false,
+      "errorCode": "E2077"
+    },
+    {
+      "name": "err_quoted_not_a_number",
+      "input": {
+        "serial": "seven"
+      },
+      "valid": false,
+      "errorCode": "E2077"
+    },
+    {
+      "name": "err_quoted_spaces",
+      "input": {
+        "serial": " 7"
+      },
+      "valid": false,
+      "errorCode": "E2077"
+    },
+    {
+      "name": "quoted_uint64_max",
+      "input": {
+        "big": "18446744073709551615"
+      },
+      "valid": true
+    },
+    {
+      "name": "err_quoted_uint_negative",
+      "input": {
+        "big": "-1"
+      },
+      "valid": false,
+      "errorCode": "E2077"
+    },
+    {
+      "name": "quoted_bound_past_2_53",
+      "input": {
+        "quota": "9007199254740993"
+      },
+      "valid": true
+    },
+    {
+      "name": "err_quoted_bound_past_2_53",
+      "input": {
+        "quota": "9007199254740994"
+      },
+      "valid": false,
+      "errorCode": "E2077"
+    },
+    {
+      "name": "quoted_bool",
+      "input": {
+        "live": "false"
+      },
+      "valid": true
+    },
+    {
+      "name": "err_quoted_bare_bool",
+      "input": {
+        "live": false
+      },
+      "valid": false,
+      "errorCode": "E2077"
+    },
+    {
+      "name": "quoted_float",
+      "input": {
+        "share": "0.5"
+      },
+      "valid": true
+    },
+    {
+      "name": "err_quoted_float_word",
+      "input": {
+        "share": "half"
       },
       "valid": false,
       "errorCode": "E2077"

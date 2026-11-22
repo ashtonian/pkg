@@ -624,7 +624,11 @@ func (p *typedParser[T]) applyDocument(parsed *patch.ParsedPatch, target T) (T, 
 			if pointerErr != nil || len(tokens) != 1 {
 				return zero, fmt.Errorf("merge path %q is not a top-level field", op.Path)
 			}
-			doc[tokens[0]] = jsonmerge.Apply(doc[tokens[0]], op.Value)
+			value, err := documentValue(op)
+			if err != nil {
+				return zero, err
+			}
+			doc[tokens[0]] = jsonmerge.Apply(doc[tokens[0]], value)
 			i++
 		case op.Op == patch.PatchOpTest:
 			// RFC 6902 §4.6: the target must exist and equal the value as
@@ -643,7 +647,11 @@ func (p *typedParser[T]) applyDocument(parsed *patch.ParsedPatch, target T) (T, 
 					return zero, err
 				}
 			}
-			if doc, err = run.apply(doc, []map[string]any{wireOp(op)}, i); err != nil {
+			w, err := wireOp(op)
+			if err != nil {
+				return zero, err
+			}
+			if doc, err = run.apply(doc, []map[string]any{w}, i); err != nil {
 				return zero, err
 			}
 			i++
@@ -663,7 +671,11 @@ func (p *typedParser[T]) applyDocument(parsed *patch.ParsedPatch, target T) (T, 
 			j := i
 			var wire []map[string]any
 			for j < len(ops) && !ops[j].Merge && ops[j].Op != patch.PatchOpTest && ops[j].Op != patch.PatchOpArrayAppend && ops[j].Op != patch.PatchOpCopy && ops[j].Op != patch.PatchOpMove {
-				wire = append(wire, wireOp(ops[j]))
+				w, err := wireOp(ops[j])
+				if err != nil {
+					return zero, err
+				}
+				wire = append(wire, w)
 				j++
 			}
 			if doc, err = run.apply(doc, wire, i); err != nil {
@@ -790,15 +802,19 @@ func testValue(doc map[string]any, op *patch.PatchOperation, index int) error {
 }
 
 // wireOp renders a parsed operation as an RFC 6902 operation object.
-func wireOp(op *patch.PatchOperation) map[string]any {
+func wireOp(op *patch.PatchOperation) (map[string]any, error) {
 	// Clearing a top-level slice or map empties it (PathSchema.ClearedValue);
 	// add also covers a member the encoding omitted.
 	if (op.Op == patch.PatchOpRemove || op.Value == nil) && op.Op != patch.PatchOpMove && op.Op != patch.PatchOpCopy && op.Op != patch.PatchOpTest {
 		if tokens, err := core.ParsePointer(op.Path); err == nil && len(tokens) == 1 {
 			if cleared := op.Schema.ClearedValue(); cleared != nil {
-				return map[string]any{"op": "add", "path": op.Path, "value": cleared}
+				return map[string]any{"op": "add", "path": op.Path, "value": cleared}, nil
 			}
 		}
+	}
+	value, err := documentValue(op)
+	if err != nil {
+		return nil, err
 	}
 	// Top-level schema fields exist even when omitempty omits their current
 	// value. Keep fallback replacement/clearing equivalent to direct apply;
@@ -806,9 +822,9 @@ func wireOp(op *patch.PatchOperation) map[string]any {
 	if tokens, err := core.ParsePointer(op.Path); err == nil && len(tokens) == 1 {
 		switch op.Op {
 		case patch.PatchOpReplace:
-			return map[string]any{"op": "add", "path": op.Path, "value": op.Value}
+			return map[string]any{"op": "add", "path": op.Path, "value": value}, nil
 		case patch.PatchOpRemove:
-			return map[string]any{"op": "add", "path": op.Path, "value": nil}
+			return map[string]any{"op": "add", "path": op.Path, "value": nil}, nil
 		}
 	}
 	w := map[string]any{"op": string(op.Op), "path": op.Path}
@@ -817,9 +833,23 @@ func wireOp(op *patch.PatchOperation) map[string]any {
 		w["from"] = op.From
 	case patch.PatchOpRemove:
 	default:
-		w["value"] = op.Value
+		w["value"] = value
 	}
-	return w
+	return w, nil
+}
+
+// documentValue is op's value as the target's JSON document holds it: a
+// quoted field's (PathSchema.Wire) in its wire form, which the document
+// decodes back into the field from.
+func documentValue(op *patch.PatchOperation) (any, error) {
+	if op.Schema == nil {
+		return op.Value, nil
+	}
+	v, err := core.ToWire(op.Schema.Wire, op.Value)
+	if err != nil {
+		return nil, &core.ParseError{Kind: core.ParseErrorKindPatch, Code: patch.ECodePatchValueInvalid.String(), Message: fmt.Sprintf("value for path %s: %v", op.Path, err), Path: op.Path, Cause: err}
+	}
+	return v, nil
 }
 
 // jsonPatchRun applies RFC 6902 operations with

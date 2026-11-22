@@ -145,6 +145,21 @@
           "nin"
         ]
       },
+      "serial": {
+        "name": "serial",
+        "data_type": "int",
+        "wire": "string",
+        "operators": [
+          "eq",
+          "ne",
+          "gt",
+          "gte",
+          "lt",
+          "lte",
+          "in",
+          "nin"
+        ]
+      },
       "status": {
         "name": "status",
         "data_type": "string",
@@ -219,6 +234,14 @@
         "elem": "int",
         "number_kind": "int16"
       },
+      "/serial": {
+        "allowed_ops": [
+          "replace"
+        ],
+        "data_type": "int",
+        "wire": "string",
+        "number_kind": "int64"
+      },
       "/status": {
         "allowed_ops": [
           "replace"
@@ -249,7 +272,8 @@
         "indexed": true
       },
       "name": {},
-      "rank": {}
+      "rank": {},
+      "serial": {}
     },
     "max_fields": 3
   },

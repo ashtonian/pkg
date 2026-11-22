@@ -59,6 +59,9 @@ type confEntity struct {
 	Note    *string         `json:"note"    parse:"filter" filter_ops:"not_null"`
 	Lines   []confLine      `json:"lines"   parse:"filter"`
 	Tags    []string        `json:"tags"    parse:"filter"`
+	// Serial and Live travel as JSON strings (json:",string").
+	Serial int64 `json:"serial,string" parse:"filter" filter_ops:"eq,ne,gt,gte,lt,lte,in,nin"`
+	Live   bool  `json:"live,string"   parse:"filter" filter_ops:"eq,ne"`
 }
 
 // confLine is an element of confEntity's lines array.
@@ -121,6 +124,20 @@ func canonicalCases() []caseInput {
 		{name: "gte_number", input: map[string]any{"count": map[string]any{"$gte": 5}}},
 		{name: "lt_number", input: map[string]any{"count": map[string]any{"$lt": 5}}},
 		{name: "lte_number", input: map[string]any{"count": map[string]any{"$lte": 5}}},
+
+		// --- json:",string" fields: operands are JSON strings, exact past 2^53 ---
+		{name: "quoted_eq_int64_max", input: map[string]any{"serial": "9223372036854775807"}},
+		{name: "quoted_eq_int64_min", input: map[string]any{"serial": "-9223372036854775808"}},
+		{name: "quoted_gt_past_2_53", input: map[string]any{"serial": map[string]any{"$gt": "9007199254740992"}}},
+		{name: "quoted_in", input: map[string]any{"serial": map[string]any{"$in": []any{"1", "9007199254740993"}}}},
+		{name: "quoted_eq_bool", input: map[string]any{"live": "true"}},
+		{name: "err_quoted_bare_number", input: map[string]any{"serial": json.Number("9007199254740993")}},
+		{name: "err_quoted_bare_number_in_set", input: map[string]any{"serial": map[string]any{"$in": []any{"1", 2}}}},
+		{name: "err_quoted_not_a_number", input: map[string]any{"serial": "seven"}},
+		{name: "err_quoted_spaces", input: map[string]any{"serial": " 7"}},
+		{name: "err_quoted_bare_bool", input: map[string]any{"live": true}},
+		// 64-bit ranges are the server's to check.
+		{name: "err_quoted_past_int64", input: map[string]any{"serial": "9223372036854775808"}, tsApplicable: ptrFalse()},
 
 		// --- decimals: a JSON number or a numeric string, canonicalized ---
 		{name: "eq_decimal_string", input: map[string]any{"price": "10.50"}},
@@ -404,14 +421,7 @@ func TestEmitFilterConformance(t *testing.T) {
 // AST / SQL / validity / error code still match the live Go parser. This guards
 // accidental Go-side regressions between regenerations.
 func TestFilterConformance(t *testing.T) {
-	data, err := os.ReadFile(conformanceCorpusPath)
-	if err != nil {
-		t.Fatalf("read corpus (run `go test -run TestEmitFilterConformance -update`): %v", err)
-	}
-	var corpus []conformanceCase
-	if err := json.Unmarshal(data, &corpus); err != nil {
-		t.Fatalf("unmarshal corpus: %v", err)
-	}
+	corpus := readFilterCorpus(t)
 	if len(corpus) == 0 {
 		t.Fatal("corpus is empty")
 	}
