@@ -392,15 +392,19 @@ func timestampText(value any) (any, error) {
 	return core.NormalizeScalar(core.FieldTypeTimestamp, reflect.Invalid, v)
 }
 
-// timestampTexts is a list of timestamps with each element its canonical
-// text: json.Marshal writes a time.Time in its own offset, and an element
-// reads as a timestamp only in UTC (PathExpr). A nil list, or a value that
-// is no list, is unchanged.
+// timestampTexts is a list of timestamps, or a pointer to one, with each
+// element its canonical text: json.Marshal writes a time.Time in its own
+// offset, and an element reads as a timestamp only in UTC (PathExpr). A
+// nil list, or a value that is no list, is unchanged.
 func timestampTexts(value any) (any, error) {
-	if rv := reflect.ValueOf(value); !rv.IsValid() || (rv.Kind() == reflect.Slice && rv.IsNil()) {
+	list, ok := deref(value)
+	if !ok {
 		return value, nil
 	}
-	items, ok := core.AnySlice(value)
+	if rv := reflect.ValueOf(list); rv.Kind() == reflect.Slice && rv.IsNil() {
+		return value, nil
+	}
+	items, ok := core.AnySlice(list)
 	if !ok {
 		return value, nil
 	}

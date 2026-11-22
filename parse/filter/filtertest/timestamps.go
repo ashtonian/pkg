@@ -22,7 +22,7 @@ func TimestampSchema() (*filter.ResourceSchema, error) {
 // TimestampRecords is the fixture data. a, b and c hold one instant,
 // 2026-01-02T01:04:05.5Z, a and b written at +02:00 and c in UTC. d, at
 // -07:00, is the latest instant though its wall time is the earliest; e,
-// at +05:30, the earliest though its wall time falls between. g is NULL.
+// at +05:30, the earliest though its wall time falls between. f is NULL.
 // Each holds whole microseconds, PostgreSQL's precision.
 func TimestampRecords() []TimestampRecord {
 	plus2 := time.FixedZone("", 2*60*60)
@@ -33,7 +33,7 @@ func TimestampRecords() []TimestampRecord {
 		{ID: "c", At: new(instant.UTC())},
 		{ID: "d", At: new(time.Date(2026, 1, 1, 20, 0, 0, 0, time.FixedZone("", -7*60*60)))},
 		{ID: "e", At: new(time.Date(2026, 1, 2, 2, 30, 0, 250_000_000, time.FixedZone("", 5*60*60+30*60)))},
-		{ID: "g"},
+		{ID: "f"},
 	}
 }
 
@@ -49,8 +49,8 @@ var TimestampFacets = map[string]int64{
 // TimestampOrders are the ids each sort lists TimestampRecords in: by
 // instant, NULL greatest, ties on id in the sort's direction.
 var TimestampOrders = map[string]string{
-	"at":  "eabcdg",
-	"-at": "gdcbae",
+	"at":  "eabcdf",
+	"-at": "fdcbae",
 }
 
 // TimestampFilters are filters on at and the ids each selects, in id
