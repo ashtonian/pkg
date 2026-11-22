@@ -38,10 +38,7 @@ func (b *SQLBuilder) buildRelated(s *buildState, node *FilterNode) (string, erro
 	visible := append([]string{b.schema.Name}, b.visible...)
 	bind := s.binder(b.dialect)
 
-	pk := rel.PrimaryKey
-	if pk == "" {
-		pk = "id"
-	}
+	pk := rel.OwnerKey()
 	join := relationTableAlias(rel.JoinTable, depth, visible)
 	related := join
 	if rel.TargetTable != "" {
@@ -210,6 +207,6 @@ func rebaseField(f *FieldSchema, table, alias string, moved map[*FieldSchema]*Fi
 func invalidRelation(f *FieldSchema, msg string) error {
 	return &core.ParseError{
 		Kind: core.ParseErrorKindFilter, Code: ECodeInvalidRelation.String(),
-		Message: fmt.Sprintf("relation '%s' %s", f.ExternalName, msg), Details: map[string]any{"field": f.ExternalName},
+		Message: fmt.Sprintf("relation '%s' %s", f.ExternalName, msg), Details: map[string]any{core.DetailField: f.ExternalName},
 	}
 }

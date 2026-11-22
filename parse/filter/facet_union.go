@@ -144,7 +144,7 @@ func buildFacetQuery(schema *ResourceSchema, dialect Dialect, filterWhere string
 	}
 	metas := make([]meta, 0, len(facets))
 	hasRelation, hasList := false, false
-	relationPK := "id"
+	relationPK := core.DefaultPrimaryKey
 	for _, req := range facets {
 		f, ok := schema.Fields[req.Field]
 		if !ok || !f.Facetable {
@@ -164,9 +164,7 @@ func buildFacetQuery(schema *ResourceSchema, dialect Dialect, filterWhere string
 				return FacetQuery{}, fmt.Errorf("BuildFacetQuery: field %q is a relation; only terms-type facets are supported", req.Field)
 			}
 			if !hasRelation {
-				if pk := f.Relation.PrimaryKey; pk != "" {
-					relationPK = pk
-				}
+				relationPK = f.Relation.OwnerKey()
 				hasRelation = true
 			}
 		}

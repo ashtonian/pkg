@@ -61,7 +61,7 @@ Both handlers encode the whole response before writing any of it, and send it wi
 
 ## Error handling
 
-Use `errors.As` to extract `*core.ParseError` through wrapping. Its `ErrorHTTPStatus()` provides the status; expose `Code`, `Message`, and appropriate `Details` in the error envelope. Treat unrelated database/internal errors through your normal server error handling rather than labeling every failure a bad request. Do not leak underlying SQL or credentials through error details.
+Use `errors.As` to extract `*core.ParseError` through wrapping. Its `ErrorHTTPStatus()` provides the status; expose `Code`, `Message`, and appropriate `Details` in the error envelope. `Details` is keyed by `core.DetailField` (`"field"`, the request field a refusal is about) and `core.DetailParameter` (`"parameter"`, the list parameter). Treat unrelated database/internal errors through your normal server error handling rather than labeling every failure a bad request. Do not leak underlying SQL or credentials through error details.
 
 Patch validation can return joined parse errors. `errors.As` returns the first; applications needing all failures traverse the joined errors. Declared enum/bounds failures expose `core.ConstraintError{Constraint, Limit}` through each E2077's cause; [patch validation](patches.md#validation) defines the vocabulary and ordering. The application still owns its HTTP envelope and any translation of these typed causes into client details.
 

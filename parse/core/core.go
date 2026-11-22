@@ -137,14 +137,21 @@ const (
 	ParseErrorKindSchema ParseErrorKind = "schema"
 )
 
+// The Details keys a ParseError carries: DetailField names the request
+// field a refusal is about, DetailParameter the list parameter.
+const (
+	DetailField     = "field"
+	DetailParameter = "parameter"
+)
+
 // ParseError is the single error type for all parse operations.
 type ParseError struct {
 	Code    string         `json:"code"`
 	Message string         `json:"message"`
 	Kind    ParseErrorKind `json:"kind"`
 	Path    string         `json:"path,omitempty"`
-	Index   *int           `json:"index,omitempty"` // pointer so op index 0 survives the wire
-	Details map[string]any `json:"details,omitempty"`
+	Index   *int           `json:"index,omitempty"`   // pointer so op index 0 survives the wire
+	Details map[string]any `json:"details,omitempty"` // keyed by the Detail constants
 	Cause   error          `json:"-"`
 }
 

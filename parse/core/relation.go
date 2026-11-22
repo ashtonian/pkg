@@ -1,6 +1,7 @@
 package core
 
 import (
+	"cmp"
 	"fmt"
 	"strings"
 )
@@ -46,8 +47,8 @@ type RelationSchema struct {
 	// entity's PK (e.g. "tag_id").
 	TargetColumn string
 
-	// PrimaryKey is the owner entity's PK column (defaults to "id" when
-	// empty).
+	// PrimaryKey is the owner entity's PK column; empty is
+	// DefaultPrimaryKey (OwnerKey).
 	PrimaryKey string
 
 	// TenantColumn names a tenant-scope column on the junction (typically
@@ -76,6 +77,14 @@ type RelationSchema struct {
 	// target table instead of the tenant column.
 	Policy bool
 }
+
+// DefaultPrimaryKey is the key column of a resource, or a relation's owner,
+// that declares none.
+const DefaultPrimaryKey = "id"
+
+// OwnerKey is the owner entity's key column: PrimaryKey, or
+// DefaultPrimaryKey when it is empty.
+func (r *RelationSchema) OwnerKey() string { return cmp.Or(r.PrimaryKey, DefaultPrimaryKey) }
 
 // RelatedTable is the table whose rows a relation's nested predicates test:
 // TargetTable through a pair table, else JoinTable itself.
@@ -117,7 +126,7 @@ func ParseRelationTag(tag string) (*RelationSchema, error) {
 		JoinTable:    parts[0],
 		SourceColumn: parts[1],
 		TargetColumn: parts[2],
-		PrimaryKey:   "id",
+		PrimaryKey:   DefaultPrimaryKey,
 	}
 	if len(parts) > 3 && parts[3] != "" {
 		rel.PrimaryKey = parts[3]

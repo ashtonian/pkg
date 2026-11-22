@@ -1,7 +1,6 @@
 package filter
 
 import (
-	"cmp"
 	"fmt"
 	"math"
 	"slices"
@@ -171,7 +170,7 @@ func BuildIncludeQuery(field *FieldSchema, dialect Dialect, ownerPKs []any, opts
 	b.WriteString(relatedJoin(rel, "j", target))
 	scope := cfg.scope
 	if scope.row.column != "" {
-		pk := cmp.Or(rel.PrimaryKey, "id")
+		pk := rel.OwnerKey()
 		b.WriteString(" JOIN " + cfg.owner.Name + " owner__ ON owner__." + pk + " = j." + rel.SourceColumn)
 		scope = scope.over(cfg.owner)
 		scope.row.expr = "owner__." + scope.row.column
@@ -406,13 +405,13 @@ func ParseIncludeNames(schema *ResourceSchema, names []string) ([]string, error)
 		if !ok {
 			return nil, &core.ParseError{
 				Kind: core.ParseErrorKindFilter, Code: ECodeUnknownField.String(),
-				Message: fmt.Sprintf("include field '%s' does not exist", name), Details: map[string]any{"field": name},
+				Message: fmt.Sprintf("include field '%s' does not exist", name), Details: map[string]any{core.DetailField: name},
 			}
 		}
 		if f.Relation == nil || !f.Includable {
 			return nil, &core.ParseError{
 				Kind: core.ParseErrorKindFilter, Code: ECodeInvalidRelation.String(),
-				Message: fmt.Sprintf("field '%s' is not an includable relation", name), Details: map[string]any{"field": name},
+				Message: fmt.Sprintf("field '%s' is not an includable relation", name), Details: map[string]any{core.DetailField: name},
 			}
 		}
 		fields = append(fields, name)
@@ -421,7 +420,7 @@ func ParseIncludeNames(schema *ResourceSchema, names []string) ([]string, error)
 		return nil, &core.ParseError{
 			Kind: core.ParseErrorKindFilter, Code: ECodeInvalidRelation.String(),
 			Message: fmt.Sprintf("a list includes at most %d relations, got %d", MaxIncludes, len(fields)),
-			Details: map[string]any{"parameter": ParamInclude},
+			Details: map[string]any{core.DetailParameter: ParamInclude},
 		}
 	}
 	return fields, nil

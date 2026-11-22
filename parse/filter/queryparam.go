@@ -136,7 +136,7 @@ func (p *QueryParamParser) Parse(params url.Values) (*FilterAST, error) {
 					Kind:    core.ParseErrorKindFilter,
 					Code:    ECodeUnknownField.String(),
 					Message: "unknown filter field '" + fieldName + "'",
-					Details: map[string]any{"field": fieldName},
+					Details: map[string]any{core.DetailField: fieldName},
 				}
 			}
 			continue
@@ -148,7 +148,7 @@ func (p *QueryParamParser) Parse(params url.Values) (*FilterAST, error) {
 				Kind:    core.ParseErrorKindFilter,
 				Code:    ECodeInvalidOperator.String(),
 				Message: fmt.Sprintf("parameter '%s' repeated %d times; repeated values are only supported for equality (coalesced to $in)", key, len(values)),
-				Details: map[string]any{"field": fieldName},
+				Details: map[string]any{core.DetailField: fieldName},
 			}
 		}
 		opKey, value, err := queryParamOperand(field, op, values)

@@ -611,10 +611,7 @@ const relationAlias = "rel__"
 // rows.
 func (b *SQLBuilder) buildRelationCondition(s *buildState, node *FilterNode) (string, error) {
 	rel := node.Field.Relation
-	pk := rel.PrimaryKey
-	if pk == "" {
-		pk = "id"
-	}
+	pk := rel.OwnerKey()
 	bind := s.binder(b.dialect)
 	target := &FieldSchema{ExternalName: node.Field.ExternalName, SQLExpr: relationAlias + "." + rel.TargetColumn, DataType: node.Field.DataType}
 
