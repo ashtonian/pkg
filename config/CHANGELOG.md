@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.12.0](https://github.com/ashtonian/pkg/compare/config/v0.11.1...config/v0.12.0) (2026-11-22)
+
+
+### ⚠ BREAKING CHANGES
+
+* a struct tag reflect cannot read whole (an unquoted value, a key written twice) is refused with ErrSchema wherever the type is used, and a load, reload or CheckKey refuses a tag key one edit from one config reads, or equal to one ignoring case, '-' and '_', such as defualt or envRef. Name another library's keys that close to config's with WithForeignTagKeys.
+
+### Features
+
+* gowalker names every member encoding/json writes and checks tag-key spelling; parse and config on gowalker v0.6.0 ([#298](https://github.com/ashtonian/pkg/issues/298)) ([b505c00](https://github.com/ashtonian/pkg/commit/b505c0025d65e5fb7299f6faee7acbbd3bb26781)), refs [#288](https://github.com/ashtonian/pkg/issues/288)
+
 ## [0.11.1](https://github.com/ashtonian/pkg/compare/config/v0.11.0...config/v0.11.1) (2026-11-22)
 
 
