@@ -16,6 +16,7 @@ import (
 	"github.com/ashtonian/pkg/parse"
 	"github.com/ashtonian/pkg/parse/core"
 	"github.com/ashtonian/pkg/parse/filter"
+	"github.com/ashtonian/pkg/parse/internal/httpjson"
 	"github.com/ashtonian/pkg/parse/parsehttp"
 	"github.com/ashtonian/pkg/parse/patch"
 )
@@ -121,7 +122,7 @@ func (s *server) list(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	writeJSON(w, http.StatusOK, page)
+	s.writeJSON(w, r, http.StatusOK, page)
 }
 
 func (s *server) facets(w http.ResponseWriter, r *http.Request) {
@@ -145,7 +146,7 @@ func (s *server) facets(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"facets": counts})
+	s.writeJSON(w, r, http.StatusOK, map[string]any{"facets": counts})
 }
 
 func (s *server) facetCounts(ctx context.Context, query *filter.FacetQuery) (map[string][]filter.FacetBucket, error) {
@@ -189,10 +190,10 @@ func (s *server) patch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if len(items) == 0 {
-		writeJSON(w, http.StatusNotFound, parsehttp.Body{Code: codeNotFound, Message: "product " + id + " not found"})
+		s.writeJSON(w, r, http.StatusNotFound, parsehttp.Body{Code: codeNotFound, Message: "product " + id + " not found"})
 		return
 	}
-	writeJSON(w, http.StatusOK, patchResult{Updated: items})
+	s.writeJSON(w, r, http.StatusOK, patchResult{Updated: items})
 }
 
 // patchMany applies one merge patch to the products its id[] keys name. A
@@ -203,7 +204,7 @@ func (s *server) patchMany(w http.ResponseWriter, r *http.Request) {
 	}
 	ids := r.URL.Query()["id[]"]
 	if len(ids) == 0 || len(ids) > maxPatchIDs {
-		writeJSON(w, http.StatusBadRequest, parsehttp.Body{
+		s.writeJSON(w, r, http.StatusBadRequest, parsehttp.Body{
 			Code:    codeBadRequest,
 			Message: fmt.Sprintf("a batch patch names 1 to %d id[] keys, got %d", maxPatchIDs, len(ids)),
 		})
@@ -232,7 +233,7 @@ func (s *server) patchMany(w http.ResponseWriter, r *http.Request) {
 			res.Failed = append(res.Failed, itemError{ID: id, Code: codeNotFound, Error: "product " + id + " not found"})
 		}
 	}
-	writeJSON(w, http.StatusOK, res)
+	s.writeJSON(w, r, http.StatusOK, res)
 }
 
 // refuseParams answers 400 for a query parameter the route does not read,
@@ -245,7 +246,7 @@ func (s *server) refuseParams(w http.ResponseWriter, r *http.Request, accepted .
 	if i < 0 {
 		return false
 	}
-	writeJSON(w, http.StatusBadRequest, parsehttp.Body{
+	s.writeJSON(w, r, http.StatusBadRequest, parsehttp.Body{
 		Code:    codeBadRequest,
 		Message: fmt.Sprintf("%s %s reads no %q parameter", r.Method, r.URL.Path, names[i]),
 	})
@@ -305,11 +306,23 @@ func (s *server) query(ctx context.Context, q string, args ...any) (_ []Product,
 // fail answers a parse error with its E-code and the status the code
 // carries; anything else is logged and answered as a 500 without internals.
 func (s *server) fail(w http.ResponseWriter, r *http.Request, err error) {
-	if parsehttp.WriteError(w, err) {
+	if parsehttp.WriteError(w, err, parsehttp.WithErrorHandler(func(answered error) {
+		s.parseAnswerFailed(r, answered)
+	})) {
 		return
 	}
 	s.log.ErrorContext(r.Context(), "request failed", slog.String("method", r.Method), slog.String("path", r.URL.Path), slog.Any("error", err))
-	writeJSON(w, http.StatusInternalServerError, parsehttp.Body{Code: codeInternal, Message: "internal error"})
+	s.writeJSON(w, r, http.StatusInternalServerError, parsehttp.Body{Code: codeInternal, Message: "internal error"})
+}
+
+// parseAnswerFailed logs what a parse error's answer could not carry: details
+// that do not encode, or a response that could not be written.
+func (s *server) parseAnswerFailed(r *http.Request, err error) {
+	level := slog.LevelWarn
+	if errors.Is(err, parsehttp.ErrUnencodableDetails) {
+		level = slog.LevelError
+	}
+	s.log.Log(r.Context(), level, "answering parse error", slog.String("path", r.URL.Path), slog.Any("error", err))
 }
 
 // schemaFailed logs what the schema handler could not answer: a document
@@ -333,9 +346,22 @@ func readBody(w http.ResponseWriter, r *http.Request) ([]byte, error) {
 	return body, nil
 }
 
-func writeJSON(w http.ResponseWriter, status int, v any) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	// The status line is written; an encode failure can only truncate.
-	_ = json.NewEncoder(w).Encode(v)
+// writeJSON encodes v before writing anything, so a value that cannot be
+// encoded is answered as an internal error rather than a truncated body, and
+// reports a write that fails once the status is sent.
+func (s *server) writeJSON(w http.ResponseWriter, r *http.Request, status int, v any) {
+	body, err := httpjson.Encode(v)
+	if err != nil {
+		s.log.ErrorContext(r.Context(), "encoding response", slog.String("path", r.URL.Path), slog.Any("error", err))
+		status = http.StatusInternalServerError
+		body, err = httpjson.Encode(parsehttp.Body{Code: codeInternal, Message: "internal error"})
+		if err != nil {
+			s.log.ErrorContext(r.Context(), "encoding internal error body", slog.Any("error", err))
+			w.WriteHeader(status)
+			return
+		}
+	}
+	if err := httpjson.Send(w, status, body); err != nil {
+		s.log.WarnContext(r.Context(), "writing response", slog.String("path", r.URL.Path), slog.Any("error", err))
+	}
 }

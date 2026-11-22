@@ -16,7 +16,9 @@ func (s *server) fail(w http.ResponseWriter, r *http.Request, err error) {
 
 ## API Reference
 
-- `WriteError(w http.ResponseWriter, err error) bool` — answers err when a `*core.ParseError` is in its chain, with `ParseError.ErrorHTTPStatus()` and `Body`; reports whether it did. Any other error is the caller's.
+- `WriteError(w http.ResponseWriter, err error, opts ...Option) bool` — answers err when a `*core.ParseError` is in its chain, with `ParseError.ErrorHTTPStatus()` and `Body`; reports whether it did. Any other error is the caller's. `Body` is encoded before the status is sent, so details that do not encode are answered with the code's status and message alone instead of a status with no body.
+- `WithErrorHandler(fn func(error)) Option` — reports what the answer cannot carry: details that do not encode, and a `Write` the `ResponseWriter` fails once the status is sent. Both are dropped without it. `fn` runs on the request's goroutine.
+- `ErrUnencodableDetails` — the sentinel the hook receives, wrapping the encoding error, for a parse error whose details do not encode (`errors.Is`).
 - `Body` — `{"code", "message", "details"}`, the shape the TypeScript SDK reads.
 - `ParseList[T](r *http.Request, res *parse.Resource[T]) (*parse.ListRequest, error)` — a list from the query string of a `GET` or `HEAD`, or the `application/json` body of a `POST` ([the same request as a POST body](../docs/http-errors.md#the-same-request-as-a-post-body)). A POST's query string may carry only the endpoint's own parameters (`AcceptParams`); anything else, another content type or another method is E2067. The body is read no further than the resource's list body limit (`core.WithMaxListBodySize`, by default `MaxInputSize` plus 16 KiB); a longer one is E2063. It is `Resource.ParseListPost` over an `*http.Request`.
 
@@ -26,14 +28,14 @@ A parse error describes the request, never the database, so its message is safe 
 
 | File | Responsibility |
 |------|----------------|
-| `parsehttp.go` | `WriteError`, `Body` |
+| `parsehttp.go` | `WriteError`, `Body`, `WithErrorHandler`, `ErrUnencodableDetails` |
 | `list.go` | `ParseList`: GET query strings and POST bodies |
-| `parsehttp_test.go` | `WriteError` (unit): a wrapped parse error answered with its code's status and `Body`; any other error, or nil, left to the caller with nothing written |
+| `parsehttp_test.go` | `WriteError` (unit): a wrapped parse error answered with its code's status and `Body`; details that do not encode answered without them and reported as `ErrUnencodableDetails`; a write that fails after the status reported; any other error, or nil, left to the caller with nothing written |
 | `list_test.go` | `ParseList` (unit): GET, HEAD and POST read the same request, with `AcceptParams` names left in a POST's query and `application/json` media type parameters accepted; a POST's list parameters or field filters in the query, another or a missing content type, and another method refused as E2067 |
 
 ## Dependencies
 
-- *Imports*: `parse`, `parse/core`, `parse/filter`, standard library
+- *Imports*: `parse`, `parse/core`, `parse/filter`, `parse/internal/httpjson`, standard library
 - *Imported by*: `parse/examples/server`
 - *Package boundary*: standalone Parse module
 
