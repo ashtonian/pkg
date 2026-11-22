@@ -118,7 +118,7 @@ func validateMergeMember(schema *PatchSchema, codec core.Codec, key string, valu
 		op = PatchOpRemove
 	}
 	_, merges := value.(map[string]any)
-	value, failures := checkValue(pathSchema, op, value, 1, true, codec)
+	value, failures := newValueChecker(schema, codec).check(pathSchema, op, value, 1, true)
 	if len(failures) > 0 {
 		errs := make([]error, len(failures))
 		for i, f := range failures {
@@ -133,7 +133,7 @@ func validateMergeMember(schema *PatchSchema, codec core.Codec, key string, valu
 			errs[i] = &core.ParseError{
 				Kind: core.ParseErrorKindPatch, Code: f.code.String(),
 				Message: fmt.Sprintf("invalid value for path '%s': %v", path, f.cause),
-				Path:    path, Cause: f.cause,
+				Path:    path, Cause: f.cause, Details: f.details,
 			}
 		}
 		return nil, errors.Join(errs...)

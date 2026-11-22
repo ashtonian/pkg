@@ -2,6 +2,8 @@ package patch
 
 import (
 	"errors"
+	"fmt"
+	"reflect"
 
 	"github.com/ashtonian/pkg/parse/core"
 )
@@ -36,26 +38,45 @@ func (e *ConstraintError) Error() string {
 	return e.Constraint + " constraint: " + e.Limit
 }
 
-// stepFailure is why checkValue refuses an operation, before the parser that
-// asked frames it with the operation's path and, for JSON Patch, its index:
-// ECodeOpNotAllowed, or ECodePatchValueInvalid and its cause.
+// The Details keys of E2119, a relation operation naming more values than
+// its path's limit (PatchSchema.MaxRelationValues).
+const (
+	DetailValueCount = "count"
+	DetailValueLimit = "limit"
+)
+
+// stepFailure is why a valueChecker refuses an operation, before the parser
+// that asked frames it with the operation's path and, for JSON Patch, its
+// index: ECodeOpNotAllowed, or another code with its cause and details.
 type stepFailure struct {
-	code  core.Code
-	cause error
+	code    core.Code
+	cause   error
+	details map[string]any
 }
 
-// checkValue is the check both wire formats run on one operation's value:
-// the operation is allowed on the path, a clear is nullable, the value
-// normalizes, its validators pass, and an array set whole holds the path's
-// element counts. value is what the operation writes, at a path depth tokens
+// valueChecker is what checks values against a schema's paths: the codec
+// values decode with and the schema's relation value limit.
+type valueChecker struct {
+	codec             core.Codec
+	maxRelationValues int
+}
+
+func newValueChecker(schema *PatchSchema, codec core.Codec) valueChecker {
+	return valueChecker{codec: codec, maxRelationValues: schema.MaxRelationValues}
+}
+
+// check is the check both wire formats run on one operation's value: the
+// operation is allowed on the path, a clear is nullable, the value
+// normalizes (a relation's keys once each, within the limit), its validators
+// pass, and an array set whole holds the path's element counts. value is what the operation writes, at a path depth tokens
 // deep. It returns the normalized value, or the failures: the first of the
 // first three checks, else every validator's and the count's, in order.
 //
 // merge marks an RFC 7396 member: an object merges into the document rather
 // than replacing it, and a null reports that the field is not nullable
 // before that its remove is not allowed.
-func checkValue(ps *PathSchema, op PatchOp, value any, depth int, merge bool, codec core.Codec) (any, []stepFailure) {
-	invalid := func(err error) []stepFailure { return []stepFailure{{ECodePatchValueInvalid, err}} }
+func (c valueChecker) check(ps *PathSchema, op PatchOp, value any, depth int, merge bool) (any, []stepFailure) {
+	invalid := func(err error) []stepFailure { return []stepFailure{{code: ECodePatchValueInvalid, cause: err}} }
 	notAllowed := []stepFailure{{code: ECodeOpNotAllowed}}
 	if merge {
 		if err := checkNullability(ps, op, value, depth); err != nil {
@@ -86,18 +107,24 @@ func checkValue(ps *PathSchema, op PatchOp, value any, depth int, merge bool, co
 			err        error
 		)
 		if merge {
-			normalized, err = normalizeMergeValue(ps, op, value, codec)
+			normalized, err = normalizeMergeValue(ps, op, value, c.codec)
 		} else {
-			normalized, err = normalizeOpValue(ps, op, value, depth, codec)
+			normalized, err = normalizeOpValue(ps, op, value, depth, c.codec)
 		}
 		if err != nil {
 			return nil, invalid(err)
+		}
+		if relation {
+			var tooMany *stepFailure
+			if normalized, tooMany = c.relationValues(normalized); tooMany != nil {
+				return nil, []stepFailure{*tooMany}
+			}
 		}
 		checked := normalized
 		if op == PatchOpTest {
 			// A test keeps the document it compares; validators judge the
 			// value as a replace normalizes it.
-			if checked, err = normalizeOpValue(ps, PatchOpReplace, value, depth, codec); err != nil {
+			if checked, err = normalizeOpValue(ps, PatchOpReplace, value, depth, c.codec); err != nil {
 				return nil, invalid(err)
 			}
 		}
@@ -111,6 +138,35 @@ func checkValue(ps *PathSchema, op PatchOp, value any, depth int, merge bool, co
 		return nil, failures
 	}
 	return value, nil
+}
+
+// relationValues are a relation operation's keys once each, in the order
+// first named, refused with E2119 beyond the limit: every key is a pair
+// written per owner, so the count bounds the statements' rows.
+func (c valueChecker) relationValues(value any) (any, *stepFailure) {
+	items, ok := value.([]any)
+	if !ok {
+		return value, nil
+	}
+	seen := make(map[any]struct{}, len(items))
+	unique := make([]any, 0, len(items))
+	for _, v := range items {
+		if v != nil && reflect.TypeOf(v).Comparable() {
+			if _, repeated := seen[v]; repeated {
+				continue
+			}
+			seen[v] = struct{}{}
+		}
+		unique = append(unique, v)
+	}
+	if c.maxRelationValues > 0 && len(unique) > c.maxRelationValues {
+		return nil, &stepFailure{
+			code:    ECodeRelationPatchTooLarge,
+			cause:   fmt.Errorf("%d values exceed the maximum %d", len(unique), c.maxRelationValues),
+			details: map[string]any{DetailValueCount: len(unique), DetailValueLimit: c.maxRelationValues},
+		}
+	}
+	return unique, nil
 }
 
 // validate runs the path's validators on value.
@@ -135,5 +191,5 @@ func splitFailures(cause error) []stepFailure {
 		}
 		return failures
 	}
-	return []stepFailure{{ECodePatchValueInvalid, cause}}
+	return []stepFailure{{code: ECodePatchValueInvalid, cause: cause}}
 }

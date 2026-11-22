@@ -97,6 +97,13 @@ encoding/json ignores the option on a type that marshals itself (`json.Marshaler
 | `GeneratorOptions.DefaultFilterOps` | `map[FieldType][]string` | filter package defaults | Default operators per type; each must apply to the type (`filter.OperatorsFor`) |
 | `GeneratorOptions.DefaultPatchOps` | `map[FieldType][]string` | patch package defaults | Default patch operations per type |
 
+A patch schema carries the two limits a patch is held to beside the parser's. Set them on the schema a resource generated (`Resource.PatchSchema()`, `ServerPatchSchema()`) or one built with `patch.NewPatchSchema`, before it serves requests:
+
+| Field | Type | Default | Description |
+|--------|------|---------|-------------|
+| `PatchSchema.MaxOperations` | int | `patch.DefaultMaxOperations` (`50`) | Operations in one patch, a merge patch's members and merged objects counted (E2066); `0` is unlimited |
+| `PatchSchema.MaxRelationValues` | int | `patch.DefaultMaxRelationValues` (`1000`) | Keys one operation on a relation path names, repeats counted once (E2119, `Details` `count` and `limit`); `0` is unlimited. Served in the schema document as `max_relation_values` |
+
 Table names and columns must be SQL identifiers; `TableName`, `ColumnExpr` and `ColumnName` return an error otherwise, so a bad tag fails at schema generation. `ColumnExpr` leaves the column unchecked when a `ColumnMapper` renders it.
 
 `WithFieldNameTag` changes schema field names. Direct typed application uses those names. Document operations also require a codec whose field naming agrees: using a non-JSON field tag with the built-in JSON codec is rejected when names disagree. The option does not teach `encoding/json` a different struct-tag convention.

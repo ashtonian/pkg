@@ -177,7 +177,7 @@ func (p *Parser) validateOperation(raw RawPatchOp, i int) (*PatchOperation, erro
 	if opTakesValue(op) || (pathSchema.Relation != nil && op == PatchOpRemove) {
 		value = normalizeNilPointer(raw.Value)
 	}
-	value, failures := checkValue(pathSchema, op, value, depth, false, p.codec)
+	value, failures := newValueChecker(p.schema, p.codec).check(pathSchema, op, value, depth, false)
 	if len(failures) > 0 {
 		errs := make([]error, len(failures))
 		for j, f := range failures {
@@ -192,7 +192,7 @@ func (p *Parser) validateOperation(raw RawPatchOp, i int) (*PatchOperation, erro
 			errs[j] = &core.ParseError{
 				Kind: core.ParseErrorKindPatch, Code: f.code.String(),
 				Message: fmt.Sprintf("invalid value for path '%s' at index %d: %v", raw.Path, i, f.cause),
-				Path:    raw.Path, Index: new(i), Cause: f.cause,
+				Path:    raw.Path, Index: new(i), Cause: f.cause, Details: f.details,
 			}
 		}
 		return nil, errors.Join(errs...)

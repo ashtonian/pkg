@@ -240,7 +240,8 @@
           "elem": "string"
         }
       },
-      "max_operations": 50
+      "max_operations": 50,
+      "max_relation_values": 1000
     }
   },
   "cases": [

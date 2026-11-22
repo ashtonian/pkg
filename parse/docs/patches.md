@@ -31,6 +31,8 @@ JSON Patch bodies must be arrays of operations; resource Merge Patch bodies must
 
 Every patch schema — generated, or built with `patch.NewPatchSchema` — has `PatchSchema.MaxOperations` `patch.DefaultMaxOperations` (50) unless it is set (0 is unlimited). Code generators can read this constant without constructing a resource. JSON Patch may repeat an operation on one field up to this count; a body budget must account for each operation's path and value envelope. The parser's raw-input byte limit and declared field-value bounds remain independent limits.
 
+A relation operation's value is a set of target keys: the parsers keep each key once, in the order first named, and refuse more than `PatchSchema.MaxRelationValues` (`patch.DefaultMaxRelationValues`, 1000; 0 is unlimited) with E2119 (422), whose `Details` hold the count (`patch.DetailValueCount`, `"count"`) and the limit (`patch.DetailValueLimit`, `"limit"`), before any SQL exists. Every key is a pair written per owner, so the limit bounds one factor of the rows a membership change writes; the owners are the rows the update targets. The schema document serves it as `max_relation_values`.
+
 A schema's paths are its own: `NewPatchSchema(resource, paths)` checks every key as a policy checks its patterns (a token is a literal, `*` or `**`), every path schema and its operations, and `AddPath` adds a path — refusing one the schema already has — which every parse that starts after it sees. `Path(key)` looks a key up and `Paths()` yields them in key order. An exact key is matched before a pattern, and patterns most specific first. `patch.IsValidOp` and `patch.Ops` name the recognized operations.
 
 A field tagged `json:",string"` takes its value as a JSON string holding it (`{"id":"9007199254740993"}`), as it reads in responses; a bare JSON number is E2077, while a Go number passed in code is the value. A `test` compares canonical text, and a `copy` or `move` between a quoted and an unquoted field is refused ([quoted values](schema-configuration.md#quoted-values)).
@@ -101,7 +103,7 @@ Values bind through the dialect's `MarshalValue(value, core.TypeInfo)` (the `SQL
 
 `parse.ColumnType` / `core.WithColumnTypes` carries the physical storage profile into patch paths and binding. A declared JSON string, byte slice or scalar slice binds its Go JSON encoding; native SQL arrays keep their array representation. Declared JSON uses this encoding even when the Go value implements `driver.Valuer`; native database values keep their driver binding.
 
-A path with no `SQLColumn` fails with E2069. Relation paths go to `PatchSQLResult.RelationOps`; `RenderRelationOp(op, dialect, ownerPKs, opts)` renders their junction statements for the caller's transaction and fails closed on a tenant-scoped junction without `RenderRelationOpOptions.TenantValue` (or explicit `Unscoped`).
+A path with no `SQLColumn` fails with E2069. Relation paths go to `PatchSQLResult.RelationOps`; `RenderRelationOp(op, dialect, ownerPKs, opts)` renders their junction statements for the caller's transaction and fails closed on a tenant-scoped junction without `RenderRelationOpOptions.TenantValue` (or explicit `Unscoped`). The owners and the values each bind as one array parameter — `col = ANY($n)` / `col <> ALL($n)` on PostgreSQL, `col IN (SELECT value FROM json_each(?n))` on SQLite — so a statement's parameter count does not depend on how many there are ([relations](relations.md#update-membership)). It refuses an operation it cannot render: an `add` or `remove` with no values, a null key, keys of two types, or a dialect other than PostgreSQL and SQLite.
 
 `PatchSQLResult.Assignments` exposes each folded `ColumnAssignment{Column, Expression}` before rendering the comma-separated `SetClause`. Both forms share `Args` and placeholder numbering. `Resource.BuildUpdateBatch` composes these expressions for distinct per-key column patches; its [transaction and exact-preimage contract](operations.md#varied-native-update-batches) applies to every chunk.
 
@@ -283,7 +285,7 @@ JSON Patch `test` checks the supplied document shape; missing struct members are
 | `WithTimeFunc(fn)` | `func() time.Time` | `time.Now().UTC` | Clock for `WithAutoTimestamp` |
 | `WithChangePredicate()` | — | off | Also render `PatchSQLResult.ChangePredicate`: true for a row the patch's columns change, over the SET clause's own placeholders and without the timestamp or increments; [Skipping unchanged rows](#skipping-unchanged-rows) defines its comparisons. Fails for a dialect other than PostgreSQL and SQLite |
 
-Parsers take a `*core.ParserConfig` (`MaxDepth` — pointer segments, and merge-patch nesting; `MaxInputSize`; codec; see [schema/configuration](schema-configuration.md)); `PatchSchema.MaxOperations` (default `50` for generated schemas) bounds operations per patch, merge patches counted as above (E2066).
+Parsers take a `*core.ParserConfig` (`MaxDepth` — pointer segments, and merge-patch nesting; `MaxInputSize`; codec; see [schema/configuration](schema-configuration.md)); `PatchSchema.MaxOperations` (default `50`) bounds operations per patch, merge patches counted as above (E2066), and `PatchSchema.MaxRelationValues` (default `1000`) the keys of one relation operation (E2119).
 
 ## Policy
 

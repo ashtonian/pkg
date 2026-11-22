@@ -124,7 +124,7 @@ All known codes describe permanent failures and are listed below; retry and cata
 | E2116 | 400 | Invalid UUID |
 | E2117 | 422 | Operation not allowed on a relation field |
 | E2118 | 422 | Relation patch value must be an array |
-| E2119 | 422 | Relation patch exceeds its maximum |
+| E2119 | 422 | Relation patch exceeds its maximum: more keys in one relation operation than `PatchSchema.MaxRelationValues`; `Details` holds `count` and `limit` |
 | E2120 | 500 | A schema discovery handler could not encode its document |
 
 `parse.ParseError` and `core.ParseError` name the same type. `ErrorCode()` and `ErrorHTTPStatus()` support structural error introspection without a framework dependency; `errors.Is(err, filter.ECodeUnknownField)` holds through wrapping, and the original cause remains reachable.

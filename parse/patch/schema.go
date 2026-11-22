@@ -49,6 +49,11 @@ func Ops() []PatchOp { return slices.Clone(ops) }
 // MaxOperations is set.
 const DefaultMaxOperations = 50
 
+// DefaultMaxRelationValues is the number of keys one operation on a relation
+// path may name, once repeats are removed, unless a PatchSchema's
+// MaxRelationValues is set.
+const DefaultMaxRelationValues = 1000
+
 // PatchSchema defines the paths a resource's patches may write and the
 // limits a patch is held to. Build one with NewPatchSchema, or generate it
 // with GeneratePatchSchema; AddPath adds a path, and every parse after it
@@ -57,6 +62,9 @@ type PatchSchema struct {
 	Resource string
 	// MaxOperations bounds the operations of one patch; 0 is unlimited.
 	MaxOperations int
+	// MaxRelationValues bounds the keys one operation on a relation path
+	// names, once repeats are removed (E2119); 0 is unlimited.
+	MaxRelationValues int
 
 	// mu serializes AddPath; readers load paths without it.
 	mu    sync.Mutex
@@ -74,11 +82,12 @@ type pathSet struct {
 
 // NewPatchSchema builds the schema of resource's patches with paths, keyed by
 // JSON Pointer or pattern (a token is a literal, * for exactly one token or
-// ** for zero or more), and MaxOperations DefaultMaxOperations. It refuses a
+// ** for zero or more), MaxOperations DefaultMaxOperations and
+// MaxRelationValues DefaultMaxRelationValues. It refuses a
 // key whose token holds * among other characters, a nil path schema and an
 // unknown operation.
 func NewPatchSchema(resource string, paths map[string]*PathSchema) (*PatchSchema, error) {
-	s := &PatchSchema{Resource: resource, MaxOperations: DefaultMaxOperations}
+	s := &PatchSchema{Resource: resource, MaxOperations: DefaultMaxOperations, MaxRelationValues: DefaultMaxRelationValues}
 	set := &pathSet{byKey: make(map[string]*PathSchema, len(paths))}
 	var errs []error
 	for _, key := range slices.Sorted(maps.Keys(paths)) {

@@ -35,7 +35,7 @@ Start with the [runnable package example](../README.md#quick-start). The focused
 | `validate.go` | The value check both wire formats run (`checkValue`): operation, nullability, normalization, validators, element counts; `Validator`, `ConstraintError` |
 | `validators.go` | Path validators from value tags: `enum`, `minlen` / `maxlen`, `min` / `max`, per element on an array path (`minitems` / `maxitems` count an array set whole: `checkItems` in `patch.go`) |
 | `sql.go` | `BuildPatchSQL` — per-column fold, merge and append compilation; the change predicate (`WithChangePredicate`) |
-| `relation_sql.go` | Relation patch rendering with junction tenancy |
+| `relation_sql.go` | Relation statements: one delete and one insert builder, owners and values each one array parameter, junction tenancy and target visibility |
 | `policy.go` | Patch policy and value constraints, judged by what operations write (`writes.go`) |
 | `pattern.go` | Path patterns: token check, matching (`*` one token, `**` zero or more), specificity order |
 | `writes.go` | The paths an operation writes and reads, and the members a written value holds |
