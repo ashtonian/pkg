@@ -29,8 +29,9 @@ const (
 type ListParams struct {
 	Filter Filter
 	Sort   Sort
-	// Cursor is the end_cursor of the page before the one to fetch; empty
-	// fetches the first page.
+	// Cursor is a cursor from an earlier page's page_info: its end_cursor
+	// fetches the page after it, its start_cursor the page before it.
+	// Empty fetches the first page.
 	Cursor string
 	// PageSize is the number of rows per page; 0 is the server's default.
 	PageSize int
@@ -50,8 +51,8 @@ type ListParams struct {
 	Fields []string
 }
 
-// Values encodes p as query parameters. It fails only when the filter
-// cannot be encoded (Filter.Err).
+// Values encodes p as query parameters. It fails only with the filter's
+// error (Filter.Err).
 func (p ListParams) Values() (url.Values, error) {
 	q := url.Values{}
 	if !p.Filter.IsZero() {
@@ -83,7 +84,7 @@ func (p ListParams) Values() (url.Values, error) {
 // POST (parse's Resource.ParseListBody), for a request too large for a URL.
 // Its members are the query parameters Values sets, with the filter as a
 // document and the name lists as arrays; zero members are left out. It
-// fails only when the filter cannot be encoded (Filter.Err).
+// fails only with the filter's error (Filter.Err).
 func (p ListParams) Body() ([]byte, error) {
 	var b struct {
 		Filter         json.RawMessage `json:"filter,omitempty"`

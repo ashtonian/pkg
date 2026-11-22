@@ -3,12 +3,20 @@ package client
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
+	"reflect"
 	"strings"
 )
 
-// Nullable is a member of a merge patch (RFC 7386) struct. The zero value is
+// ErrAbsentMember reports an absent Nullable that reached encoding: its
+// struct member is not tagged omitzero. Encoding it as null would clear the
+// field, a write the caller never asked for.
+var ErrAbsentMember = errors.New("client: an absent Nullable has no encoding; tag its struct member omitzero")
+
+// Nullable is a member of a merge patch (RFC 7396) struct. The zero value is
 // absent and, with the omitzero tag option, leaves the field alone; Null
-// clears it; Set writes a value.
+// clears it; Set writes a value. Every Nullable member is tagged omitzero:
+// encoding an absent one is ErrAbsentMember.
 //
 //	type DevicePatch struct {
 //		Name client.Nullable[string] `json:"name,omitzero"`
@@ -32,8 +40,26 @@ const (
 // Null clears a field.
 func Null[T any]() Nullable[T] { return Nullable[T]{state: nullableNull} }
 
-// Set writes v to a field.
-func Set[T any](v T) Nullable[T] { return Nullable[T]{value: v, state: nullableSet} }
+// Set writes v to a field. A nil slice or map writes the empty one; a nil
+// pointer or interface, which encodes as null, is Null.
+func Set[T any](v T) Nullable[T] {
+	rv := reflect.ValueOf(&v).Elem()
+	switch rv.Kind() {
+	case reflect.Slice:
+		if rv.IsNil() {
+			rv.Set(reflect.MakeSlice(rv.Type(), 0, 0))
+		}
+	case reflect.Map:
+		if rv.IsNil() {
+			rv.Set(reflect.MakeMap(rv.Type()))
+		}
+	case reflect.Pointer, reflect.Interface:
+		if rv.IsNil() {
+			return Null[T]()
+		}
+	}
+	return Nullable[T]{value: v, state: nullableSet}
+}
 
 // IsZero reports whether n is absent, for the omitzero tag option.
 func (n Nullable[T]) IsZero() bool { return n.state == nullableAbsent }
@@ -44,13 +70,17 @@ func (n Nullable[T]) IsNull() bool { return n.state == nullableNull }
 // Get returns the value n writes and whether it writes one.
 func (n Nullable[T]) Get() (T, bool) { return n.value, n.state == nullableSet }
 
-// MarshalJSON encodes a set value, and null otherwise. An absent member is
-// left out by its struct's omitzero option, never encoded.
+// MarshalJSON encodes a set value, and null for Null. An absent member is
+// left out by its struct's omitzero option; one that reaches MarshalJSON is
+// ErrAbsentMember.
 func (n Nullable[T]) MarshalJSON() ([]byte, error) {
-	if n.state != nullableSet {
+	switch n.state {
+	case nullableSet:
+		return json.Marshal(n.value)
+	case nullableNull:
 		return []byte("null"), nil
 	}
-	return json.Marshal(n.value)
+	return nil, ErrAbsentMember
 }
 
 // UnmarshalJSON reads null as Null and any other value as Set.
@@ -67,19 +97,21 @@ func (n *Nullable[T]) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
-// The RFC 6902 operations the builders write.
+// The RFC 6902 operations the builders write, and parse's array_append
+// extension.
 const (
-	patchAdd     = "add"
-	patchRemove  = "remove"
-	patchReplace = "replace"
-	patchMove    = "move"
-	patchCopy    = "copy"
-	patchTest    = "test"
+	patchAdd         = "add"
+	patchRemove      = "remove"
+	patchReplace     = "replace"
+	patchMove        = "move"
+	patchCopy        = "copy"
+	patchTest        = "test"
+	patchArrayAppend = "array_append"
 )
 
 // Operation is one JSON Patch (RFC 6902) operation; a []Operation is a JSON
-// Patch document. Build one with Add, Remove, Replace, Move, Copy, Test or
-// a Relation's membership methods.
+// Patch document. Build one with Add, Remove, Replace, Move, Copy, Test,
+// Append, an Array's Append or a Relation's membership methods.
 type Operation struct {
 	op       string
 	path     string
@@ -112,9 +144,16 @@ func Test(path string, value any) Operation {
 	return Operation{op: patchTest, path: path, value: value, hasValue: true}
 }
 
+// Append appends element to the array at path, creating the array when it
+// is missing or null: parse's array_append extension, which a server
+// compiles to one atomic SQL expression on an array column.
+func Append(path string, element any) Operation {
+	return Operation{op: patchArrayAppend, path: path, value: element, hasValue: true}
+}
+
 // MarshalJSON encodes the operation with the members its op takes: value
-// for add, replace and test (null included) and for a relation's remove,
-// from for move and copy.
+// for add, replace, test and array_append (null included) and for a
+// relation's remove, from for move and copy.
 func (o Operation) MarshalJSON() ([]byte, error) {
 	w := struct {
 		Op    string          `json:"op"`

@@ -20,6 +20,8 @@
 //
 // The field types follow the operators each value type can declare; the
 // server still refuses an operator a field does not allow. The client
-// refuses only what the grammar cannot express: an Or of nothing, Not of the
-// empty filter, and a relative time finer than a second.
+// refuses only what the grammar cannot express, where the filter is built:
+// an Or of nothing, Not of the empty filter, an array element's condition
+// outside its array, and an operand with no spelling (a non-finite number, a
+// distance that is not positive, a relative time finer than a second).
 package client

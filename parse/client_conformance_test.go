@@ -11,6 +11,7 @@ package parse_test
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"math"
 	"os"
 	"slices"
@@ -469,6 +470,72 @@ func TestClient_JSONPatchOperationsParse(t *testing.T) {
 		{string(patch.PatchOpAdd), "/tags"}, {string(patch.PatchOpRemove), "/tags"}, {string(patch.PatchOpReplace), "/tags"},
 	}, got)
 	assert.Equal(t, []any{"t3"}, parsed.Operations[4].Value, "a relation's remove carries its keys")
+}
+
+// opEntity declares every RFC 6902 operation on its members, so each
+// constructor's document reaches BuildUpdate.
+type opEntity struct {
+	ID   string  `json:"id"   db:"id"`
+	Name string  `json:"name" db:"name" parse:"patch" patch_ops:"replace,add,move,copy,test"`
+	Note *string `json:"note" db:"note" parse:"patch" patch_ops:"replace,add,remove,move,copy,test"`
+}
+
+// Every Operation constructor writes a document the server parses, and
+// BuildUpdate compiles it or answers the code its docs give.
+func TestClient_EveryOperationConstructorParses(t *testing.T) {
+	docs, err := parse.NewResource[schemaDocEntity]("doc_entities", parse.TenantColumn("tenant_id"))
+	require.NoError(t, err)
+	ops, err := parse.NewResource[opEntity]("op_entities")
+	require.NoError(t, err)
+	tags, scores := client.NewRelation[string]("tags"), client.NewOrderedArray[int16]("scores")
+	name, note := client.Pointer("name"), client.Pointer("note")
+	tests := []struct {
+		name string
+		op   client.Operation
+		docs bool // on schemaDocEntity, whose array and relation take it; else opEntity
+		want patch.PatchOp
+		code string // BuildUpdate's refusal; empty when it compiles
+	}{
+		{"replace", client.Replace(name, "pump"), false, patch.PatchOpReplace, ""},
+		{"remove", client.Remove(note), false, patch.PatchOpRemove, ""},
+		{"add", client.Add(name, "pump"), false, patch.PatchOpAdd, ""},
+		{"move", client.Move(note, name), false, patch.PatchOpMove, patch.ECodeOpNotSQLCompilable.String()},
+		{"copy", client.Copy(name, note), false, patch.PatchOpCopy, patch.ECodeOpNotSQLCompilable.String()},
+		{"test", client.Test(name, "pump"), false, patch.PatchOpTest, patch.ECodeTestOpSQL.String()},
+		{"append", client.Append(client.Pointer("scores"), 3), true, patch.PatchOpArrayAppend, ""},
+		{"array append", scores.Append(4), true, patch.PatchOpArrayAppend, ""},
+		{"relation add", tags.Add("t1"), true, patch.PatchOpAdd, ""},
+		{"relation remove", tags.Remove("t1"), true, patch.PatchOpRemove, ""},
+		{"relation replace", tags.Replace("t1"), true, patch.PatchOpReplace, ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			body, err := json.Marshal([]client.Operation{tt.op})
+			require.NoError(t, err)
+			var parsed *patch.ParsedPatch
+			if tt.docs {
+				parsed, err = docs.ParsePatch(body)
+			} else {
+				parsed, err = ops.ParsePatch(body)
+			}
+			require.NoError(t, err, "%s", body)
+			require.Len(t, parsed.Operations, 1)
+			assert.Equal(t, tt.want, parsed.Operations[0].Op)
+
+			if tt.docs {
+				_, err = docs.BuildUpdate(filter.PostgresDialect{}, parsed, parse.ByID("e1"), parse.Scope{Tenant: "t1"})
+			} else {
+				_, err = ops.BuildUpdate(filter.PostgresDialect{}, parsed, parse.ByID("e1"), parse.Scope{})
+			}
+			if tt.code == "" {
+				assert.NoError(t, err, "%s", body)
+				return
+			}
+			pe, ok := errors.AsType[*parse.ParseError](err)
+			require.True(t, ok, "%s: want a ParseError, got %v", body, err)
+			assert.Equal(t, tt.code, pe.Code, "%s", body)
+		})
+	}
 }
 
 // The client's list parameters are the server's: everything ListParams
