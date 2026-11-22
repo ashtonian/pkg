@@ -429,10 +429,9 @@ func claimJSONMapKey(sources map[string]string, name, canonical string) error {
 }
 
 // mergeStructFields are the members a JSON object merge into t may name:
-// the fields encoding/json writes, embedded structs promoted. A name
-// encoding/json resolves by depth is refused (core.StructFields).
+// the fields encoding/json writes, as it names them (core.JSONFieldsOf).
 func mergeStructFields(t reflect.Type) (map[string]*core.Field, error) {
-	walk, err := core.StructFieldsOf(t, core.JSONTagKey, core.DefaultColumnTagKey)
+	walk, err := core.JSONFieldsOf(t)
 	if err != nil {
 		return nil, fmt.Errorf("object merge into %w; use JSON Patch replace", err)
 	}

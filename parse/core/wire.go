@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"reflect"
-	"regexp"
 	"strconv"
 )
 
@@ -107,9 +106,6 @@ func (g *SchemaGenerator) MemberWire(t reflect.Type, path []string) (Wire, error
 	return "", nil
 }
 
-// jsonNumberLiteral is a JSON number literal (RFC 8259 §6), whole.
-var jsonNumberLiteral = regexp.MustCompile(`^-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?(?:[eE][+-]?[0-9]+)?$`)
-
 // FromWire is a request's value for a field of data type t in wire form w,
 // ready for NormalizeScalar. The zero Wire passes v through. Under
 // WireString:
@@ -143,7 +139,7 @@ func FromWire(w Wire, t FieldType, v any) (any, error) {
 func unquote(t FieldType, s string) (any, error) {
 	switch t {
 	case FieldTypeInt, FieldTypeFloat:
-		if !jsonNumberLiteral.MatchString(s) {
+		if _, ok := scanNumber(s); !ok {
 			return nil, fmt.Errorf("%q does not hold a JSON number", s)
 		}
 		return json.Number(s), nil

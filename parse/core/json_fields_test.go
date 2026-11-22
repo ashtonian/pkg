@@ -1,0 +1,141 @@
+//go:build unit
+
+package core
+
+import (
+	"encoding/json"
+	"maps"
+	"reflect"
+	"slices"
+	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+)
+
+// nameX1 and nameX2 each give X its Go name; a json tag repeated across
+// embeds is a vet error.
+type nameX1 struct{ X int }
+
+type nameX2 struct{ X int }
+
+type nameLeaf struct {
+	A int `json:"a"`
+	B int
+}
+
+type NameExported struct {
+	C int `json:"c"`
+}
+
+type nameCount int
+
+type nameTwiceA struct{ nameLeaf }
+
+type nameTwiceB struct{ nameLeaf }
+
+type (
+	// Two promoted fields claim "X" at one depth: neither takes it.
+	nameTie struct {
+		nameX1
+		nameX2
+		Y int `json:"y"`
+	}
+	// A shallower field takes a name from a promoted one.
+	nameShadow struct {
+		nameLeaf
+		A int `json:"a"`
+	}
+	// At one depth, a tagged field takes a name from an untagged one.
+	nameTaggedWins struct {
+		nameLeaf
+		NameExported
+		Other int `json:"B"`
+	}
+	nameHidden struct {
+		nameLeaf `json:"-"`
+		D        int `json:"d"`
+	}
+	// An unexported embedded struct named by its tag is a member.
+	nameUnexportedNamed struct {
+		nameLeaf `json:"leaf"`
+		D        int `json:"d"`
+	}
+	nameEmbeds struct {
+		*NameExported
+		nameCount
+		//lint:ignore U1000 encoding/json skips an unexported field; so must the walk
+		unexported int
+		//lint:ignore SA5008 "-," names a field "-"
+		Dash int `json:"-,"`
+		//lint:ignore SA5008 a name is cut at a reserved character
+		Bad    int `json:"a\"b"`
+		Omit   int `json:",omitempty"`
+		Quoted int `json:"q,string"`
+	}
+	// One struct type embedded twice at one depth gives each of its fields
+	// two claims.
+	nameTwice struct {
+		nameTwiceA
+		nameTwiceB
+		E int `json:"e"`
+	}
+)
+
+// JSONFieldsOf names exactly the members encoding/json writes, and each
+// decodes into the field its route reaches.
+func TestJSONFieldsOf_NamesWhatEncodingJSONWrites(t *testing.T) {
+	for _, value := range []any{
+		nameTie{}, nameShadow{}, nameTaggedWins{}, nameHidden{}, nameUnexportedNamed{},
+		nameEmbeds{NameExported: &NameExported{}, nameCount: 1, Omit: 1}, nameTwice{},
+	} {
+		typ := reflect.TypeOf(value)
+		t.Run(typ.Name(), func(t *testing.T) {
+			raw, err := json.Marshal(value)
+			require.NoError(t, err)
+			var written map[string]json.RawMessage
+			require.NoError(t, json.Unmarshal(raw, &written))
+
+			walk, err := JSONFieldsOf(typ)
+			require.NoError(t, err)
+			var named []string
+			for _, f := range walk.Fields {
+				named = append(named, f.External)
+			}
+			assert.ElementsMatch(t, slices.Collect(maps.Keys(written)), named)
+
+			for _, f := range walk.Fields {
+				if f.Type.Kind() != reflect.Int {
+					continue
+				}
+				var seven any = 7
+				if f.Quoted() {
+					seven = "7"
+				}
+				member, err := json.Marshal(map[string]any{f.External: seven})
+				require.NoError(t, err)
+				fresh := reflect.New(typ)
+				require.NoError(t, json.Unmarshal(member, fresh.Interface()))
+				got, err := f.Value(fresh.Elem())
+				require.NoError(t, err)
+				assert.Equal(t, int64(7), got.Int(), "member %q", f.External)
+			}
+		})
+	}
+}
+
+func TestJSONFieldsOf_IsSharedAndReadsNoRowTags(t *testing.T) {
+	type doc struct {
+		A int `json:"a,omitempty" min:"abc" parse:"nonsense" indexed:"maybe"`
+	}
+	first, err := JSONFieldsOf(reflect.TypeFor[*doc]())
+	require.NoError(t, err)
+	second, err := JSONFieldsOf(reflect.TypeFor[doc]())
+	require.NoError(t, err)
+	assert.Same(t, first, second)
+	require.Len(t, first.Fields, 1)
+	assert.Equal(t, Tags{FieldNameOptions: "omitempty"}, first.Fields[0].Tags)
+
+	_, err = JSONFieldsOf(reflect.TypeFor[map[string]int]())
+	assert.EqualError(t, err, "expected struct type, got map")
+}
