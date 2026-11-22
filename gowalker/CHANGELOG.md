@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.9.0](https://github.com/ashtonian/pkg/compare/gowalker/v0.8.0...gowalker/v0.9.0) (2026-11-22)
+
+
+### Features
+
+* **gowalker:** Shape.Match and MatchBytes, a member name matched as encoding/json decodes it ([#352](https://github.com/ashtonian/pkg/issues/352)) ([f17f627](https://github.com/ashtonian/pkg/commit/f17f627a80115c485834e279d1a31e0ed22dd54b)), refs [#326](https://github.com/ashtonian/pkg/issues/326)
+
 ## [0.8.0](https://github.com/ashtonian/pkg/compare/gowalker/v0.7.0...gowalker/v0.8.0) (2026-11-22)
 
 
