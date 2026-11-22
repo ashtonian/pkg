@@ -161,3 +161,52 @@ func storedDocument(t *testing.T, db *sql.DB, id int64) map[string]any {
 	}
 	return doc
 }
+
+type rawMemberDoc struct {
+	R json.RawMessage `json:"r"`
+	N int             `json:"n"`
+}
+
+type rawMemberRow struct {
+	ID  int64        `json:"id" db:"id"`
+	Doc rawMemberDoc `json:"doc" db:"doc" parse:"patch"`
+}
+
+// A json.RawMessage member is an untyped document: an object merges into it,
+// in a declared JSON column as in an undeclared one, and Go and SQLite agree.
+func TestApplier_MergesIntoARawMessageMember(t *testing.T) {
+	for name, gen := range map[string]*core.SchemaGenerator{
+		"undeclared": core.NewSchemaGenerator(),
+		"declared":   core.NewSchemaGenerator(core.WithColumnTypes(map[string]core.SQLType{"doc": core.SQLJSONB})),
+	} {
+		t.Run(name, func(t *testing.T) {
+			schema, err := patch.GeneratePatchSchema[rawMemberRow](gen)
+			require.NoError(t, err)
+			applier, err := patch.NewApplier[rawMemberRow](gen, nil)
+			require.NoError(t, err)
+			parsed, err := patch.ParseMergePatch([]byte(`{"doc":{"r":{"q":1,"k":null}}}`), schema, nil)
+			require.NoError(t, err)
+
+			seed := rawMemberRow{ID: 1, Doc: rawMemberDoc{R: json.RawMessage(`{"k":2,"z":3}`), N: 1}}
+			applied, err := applier.Apply(parsed, seed)
+			require.NoError(t, err)
+			want := `{"r":{"q":1,"z":3},"n":1}`
+			got, err := json.Marshal(applied.Doc)
+			require.NoError(t, err)
+			assert.JSONEq(t, want, string(got), "Go")
+
+			db := dbtest.SQLite(t)
+			_, err = db.Exec(`CREATE TABLE raw_member_rows (id INTEGER PRIMARY KEY, doc TEXT NOT NULL)`)
+			require.NoError(t, err)
+			_, err = db.Exec(`INSERT INTO raw_member_rows (id, doc) VALUES (1, ?)`, `{"r":{"k":2,"z":3},"n":1}`)
+			require.NoError(t, err)
+			res, err := patch.BuildPatchSQL(parsed, filter.SQLiteDialect{})
+			require.NoError(t, err)
+			_, err = db.Exec("UPDATE raw_member_rows SET "+res.SetClause+fmt.Sprintf(" WHERE id = ?%d", res.ParamCount+1), append(res.Args, 1)...)
+			require.NoError(t, err)
+			var stored string
+			require.NoError(t, db.QueryRow(`SELECT doc FROM raw_member_rows WHERE id = 1`).Scan(&stored))
+			assert.JSONEq(t, want, stored, "SQLite")
+		})
+	}
+}

@@ -48,9 +48,7 @@ func normalizeTypedMerge(t reflect.Type, obj map[string]any, codec core.Codec, p
 		present = false
 		t = t.Elem()
 	}
-	if t.Kind() == reflect.Interface || t == reflect.TypeFor[json.RawMessage]() {
-		// RawMessage is an untyped JSON document, despite implementing the
-		// marshaler interfaces; its object shape is preserved verbatim.
+	if untypedDocument(t) {
 		return obj, nil
 	}
 	if customJSONType(t) {
@@ -152,6 +150,14 @@ func normalizeTypedMerge(t reflect.Type, obj map[string]any, codec core.Codec, p
 	default:
 		return nil, fmt.Errorf("cannot merge an object into %s", t)
 	}
+}
+
+// untypedDocument reports a type that holds any JSON document: an interface,
+// or json.RawMessage, which implements the marshaler interfaces but keeps a
+// merged object's shape verbatim, so a merge into it merges as into any
+// document.
+func untypedDocument(t reflect.Type) bool {
+	return t.Kind() == reflect.Interface || t == reflect.TypeFor[json.RawMessage]()
 }
 
 func customJSONType(t reflect.Type) bool {
@@ -417,7 +423,9 @@ func rejectCustomObjectMerge(t reflect.Type, value, normalized any) error {
 	for t.Kind() == reflect.Pointer {
 		t = t.Elem()
 	}
-	if customJSONType(t) || customJSONType(reflect.TypeOf(value)) {
+	// A json.RawMessage member is a document like an interface one; a value
+	// of a custom-encoded Go type merges into neither.
+	if (customJSONType(t) && !untypedDocument(t)) || customJSONType(reflect.TypeOf(value)) {
 		return fmt.Errorf("object merge for custom JSON type %s is not supported; use JSON Patch replace", t)
 	}
 	return nil
