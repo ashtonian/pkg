@@ -8,73 +8,132 @@ import { fetchBranchHead, firstParentCommits, readHistory, typeRanker } from './
 
 // commit builds a release-please ConventionalCommit; a "!" in the header gives
 // it the note release-please derives from the subject.
-function commit(sha, header, { footer, releaseAs, references = [] } = {}) {
-  const [, type, scope, bang, subject] = header.match(/^(\w+)(?:\((.+)\))?(!)?: (.+)$/);
+function commit(sha, header, { footer, releaseAs, references = [], pullRequest } = {}) {
+  const [, type, scope, bang, subject] = header.match(/^([\w-]+)(?:\((.+)\))?(!)?: (.+)$/);
   const notes = [];
   if (bang || footer) notes.push({ title: 'BREAKING CHANGE', text: footer ?? subject });
   const breaking = notes.length > 0;
   if (releaseAs) notes.push({ title: 'RELEASE AS', text: releaseAs });
-  return { sha, message: header, type, scope, bareMessage: subject, notes, references, breaking, files: [] };
+  return { sha, message: header, type, scope, bareMessage: subject, notes, references, breaking, files: [], pullRequest };
+}
+
+// landed describes merges: each {merge: [subject, ...branch shas]} is a
+// first-parent merge with a conventional subject that brought those commits in.
+function landed(merges, { unparsed = [] } = {}) {
+  const mergeOf = new Map();
+  const subjectOf = new Map();
+  for (const [merge, [subject, ...branch]] of Object.entries(merges)) {
+    subjectOf.set(merge, subject);
+    for (const sha of branch) mergeOf.set(sha, merge);
+  }
+  const conventionalMerges = new Set([...subjectOf.keys()].filter(sha => !unparsed.includes(sha)));
+  return { history: { mergeOf, subjectOf }, options: { conventionalMerges } };
 }
 
 const closes = issue => ({ prefix: '#', action: 'Closes', issue });
 const fixes = issue => ({ prefix: '#', action: 'Fixes', issue });
 
+function keep(commits, merges, extra = {}) {
+  const { history, options } = landed(merges, extra);
+  return firstParentCommits(commits, history, { ...options, ...extra.options });
+}
+
 test('a pull request counts once, as its merge', () => {
   const merge = commit('m1', 'feat(parse): report schema errors (#255)');
   const branch = [commit('b1', 'feat(parse): report schema errors'), commit('b2', 'docs(parse): describe the hook')];
   const direct = commit('d1', 'fix(parse): a commit pushed to main');
-  const history = { mergeOf: new Map([['b1', 'm1'], ['b2', 'm1']]) };
 
-  const kept = firstParentCommits([merge, ...branch, direct], history);
+  const kept = keep([merge, ...branch, direct], { m1: ['feat(parse): report schema errors (#255)', 'b1', 'b2'] });
 
   assert.deepEqual(kept.map(c => c.sha), ['m1', 'd1']);
 });
 
-test('a branch commit stays when its merge is not a conventional commit', () => {
+test('a branch commit stays when release-please cannot parse its merge', () => {
   // GitHub's default "Merge pull request #1 from …" parses as no commit at all.
   const branch = commit('b1', 'feat(parse): accept POST lists');
-  const history = { mergeOf: new Map([['b1', 'm1']]) };
 
-  assert.deepEqual(firstParentCommits([branch], history).map(c => c.sha), ['b1']);
+  const kept = keep([branch], { m1: ['Merge pull request #1 from a/b', 'b1'] }, { unparsed: ['m1'] });
+
+  assert.deepEqual(kept.map(c => c.sha), ['b1']);
 });
 
-test('a commit newer than the checkout stays', () => {
-  const unknown = commit('n1', 'fix(parse): merged after the checkout');
-  assert.deepEqual(firstParentCommits([unknown], { mergeOf: new Map() }).map(c => c.sha), ['n1']);
+// The pull request's net change misses this path: its branch touched it and
+// took the change back, so the merge counts nowhere here and nor do they.
+test("a branch commit goes when its merge's change does not reach this path", () => {
+  const reverted = commit('b1', 'fix(httpx): temporary hack');
+
+  const kept = keep([reverted], { m1: ['feat(parse): x (#270)', 'b1'] });
+
+  assert.deepEqual(kept, []);
+});
+
+test('a commit newer than the history stays', () => {
+  const unknown = commit('n1', 'fix(parse): merged after the history read');
+  assert.deepEqual(keep([unknown], {}).map(c => c.sha), ['n1']);
+});
+
+// release-please parses each footer trailer of a merge's message into a
+// commit of its own, with the merge's sha, ahead of the header.
+test("the merge's header takes the branch over, not a trailer release-please split off", () => {
+  const trailer = commit('m1', 'Co-authored-by: Pat <pat@example.com>');
+  const header = commit('m1', 'fix(parse): tidy reader (#260)');
+  const branch = commit('b1', 'feat(parse)!: add Stream', { footer: 'Reader is gone.', references: [closes('5')] });
+
+  const kept = keep([trailer, header, branch], { m1: ['fix(parse): tidy reader (#260)', 'b1'] });
+
+  assert.deepEqual(kept, [trailer, header]);
+  assert.equal(trailer.type, 'Co-authored-by');
+  assert.deepEqual(trailer.notes, []);
+  assert.equal(header.type, 'feat');
+  assert.equal(header.breaking, true);
+  assert.deepEqual(header.notes, [{ title: 'BREAKING CHANGE', text: 'Reader is gone.' }]);
+  assert.deepEqual(header.references.map(r => r.issue), ['5']);
+});
+
+test("a pull request's BEGIN_COMMIT_OVERRIDE entries stand as the author wrote them", () => {
+  const pullRequest = { mergeCommitOid: 'm1', body: 'BEGIN_COMMIT_OVERRIDE\nfix(parse): only this\nEND_COMMIT_OVERRIDE' };
+  // release-please gives every commit of the pull request the override.
+  const merge = commit('m1', 'fix(parse): only this', { pullRequest });
+  const copy = commit('b1', 'fix(parse): only this', { pullRequest });
+
+  const kept = keep([merge, copy], { m1: ['Merge pull request #9 from a/b', 'b1'] }, { unparsed: ['m1'] });
+
+  assert.deepEqual(kept, [merge]);
+  assert.equal(merge.breaking, false);
 });
 
 test("a branch commit's breaking description replaces the one the merge's ! repeats", () => {
   const merge = commit('m1', 'fix(parse)!: refuse CockroachDB DSNs (#251)');
   const branch = commit('b1', 'fix(parse)!: refuse CockroachDB DSNs', { footer: 'DialectFromDSN returns ErrUnknownDSN for cockroach://.' });
 
-  const [kept] = firstParentCommits([merge, branch], { mergeOf: new Map([['b1', 'm1']]) });
+  const [kept] = keep([merge, branch], { m1: ['fix(parse)!: refuse CockroachDB DSNs (#251)', 'b1'] });
 
   assert.equal(kept.breaking, true);
   assert.deepEqual(kept.notes, [{ title: 'BREAKING CHANGE', text: 'DialectFromDSN returns ErrUnknownDSN for cockroach://.' }]);
 });
 
 test('a merge without ! still bumps for a breaking branch commit', () => {
-  const merge = commit('m1', 'feat(parse): canonical value types (#187)');
+  const subject = 'feat(parse): canonical value types (#187)';
   const marked = commit('b1', 'feat(parse)!: canonical value types');
   const described = commit('b2', 'feat(parse)!: interval text', { footer: 'An interval reads as ISO 8601 text.' });
 
-  const [onlyMarked] = firstParentCommits([structuredClone(merge), marked], { mergeOf: new Map([['b1', 'm1']]) });
+  const [onlyMarked] = keep([commit('m1', subject), marked], { m1: [subject, 'b1'] });
   assert.equal(onlyMarked.breaking, true);
   assert.deepEqual(onlyMarked.notes, [{ title: 'BREAKING CHANGE', text: 'canonical value types (#187)' }]);
 
-  const [withText] = firstParentCommits([merge, marked, described], { mergeOf: new Map([['b1', 'm1'], ['b2', 'm1']]) });
+  const [withText] = keep([commit('m1', subject), marked, described], { m1: [subject, 'b1', 'b2'] });
   assert.deepEqual(withText.notes.map(n => n.text), ['An interval reads as ISO 8601 text.']);
 });
 
 test("branch commits' closed issues move to the merge, once each", () => {
-  const merge = commit('m1', 'fix(config): keep netip defaults whole (#247)', { references: [closes('186')] });
+  const subject = 'fix(config): keep netip defaults whole (#247)';
+  const merge = commit('m1', subject, { references: [closes('186')] });
   const branch = [
     commit('b1', 'fix(config): keep netip values whole', { references: [fixes('186')] }),
     commit('b2', 'fix(config): refuse a second Reloader.Run', { references: [closes('230')] }),
   ];
 
-  const [kept] = firstParentCommits([merge, ...branch], { mergeOf: new Map([['b1', 'm1'], ['b2', 'm1']]) });
+  const [kept] = keep([merge, ...branch], { m1: [subject, 'b1', 'b2'] });
 
   assert.deepEqual(kept.references.map(r => r.issue), ['186', '230']);
 });
@@ -88,40 +147,43 @@ test("a merge takes its branch's highest type, so the release it calls for stays
   ];
   for (const tc of cases) {
     const warnings = [];
-    const [kept] = firstParentCommits([commit('m1', tc.merge), commit('b1', tc.branch)], { mergeOf: new Map([['b1', 'm1']]) }, {
-      warn: message => warnings.push(message),
+    const [kept] = keep([commit('m1', tc.merge), commit('b1', tc.branch)], { m1: [tc.merge, 'b1'] }, {
+      options: { warn: message => warnings.push(message) },
     });
     assert.equal(kept.type, tc.want, tc.name);
     assert.equal(warnings.length, tc.merge.startsWith(`${tc.want}(`) ? 0 : 1, `${tc.name}: a raised type is warned about`);
   }
 });
 
-test("typeRanker follows the paths' changelog sections", () => {
+test('typeRanker follows changelog-sections', () => {
   const stock = typeRanker();
-  assert.deepEqual(['feat', 'fix', 'perf', 'docs', 'chore'].map(stock), [2, 1, 1, 0, 0]);
-  const shown = typeRanker([undefined, [{ type: 'feat' }, { type: 'docs', section: 'Documentation' }]]);
-  assert.equal(shown('docs'), 1, 'a section a path shows calls for a release');
+  assert.deepEqual(['feat', 'fix', 'perf', 'docs', 'chore', 'Co-authored-by'].map(stock), [2, 1, 1, 0, 0, 0]);
+  const shown = typeRanker([{ type: 'feat' }, { type: 'docs', section: 'Documentation' }]);
+  assert.equal(shown('docs'), 1, 'a section the config shows calls for a release');
+  assert.equal(shown('fix'), 0, 'a type the config leaves out is hidden');
 });
 
 test("a branch commit's Release-As moves to the merge", () => {
-  const merge = commit('m1', 'feat(parse): stable API (#270)');
+  const subject = 'feat(parse): stable API (#270)';
   const branch = commit('b1', 'chore(parse): mark 1.0', { releaseAs: '1.0.0' });
 
-  const [kept] = firstParentCommits([merge, branch], { mergeOf: new Map([['b1', 'm1']]) });
+  const [kept] = keep([commit('m1', subject), branch], { m1: [subject, 'b1'] });
 
   assert.deepEqual(kept.notes, [{ title: 'RELEASE AS', text: '1.0.0' }]);
 });
 
-test('one merge commit split into several conventional commits keeps them all', () => {
+test('a merge split into several conventional commits folds into its header', () => {
   // release-please splits a message whose paragraphs start feat:/fix: into one
   // commit each, all with the merge's sha.
-  const parts = [commit('m1', 'feat(parse): first (#9)'), commit('m1', 'fix(parse): second')];
+  const subject = 'feat(parse): first (#9)';
+  const parts = [commit('m1', subject), commit('m1', 'fix(parse): second')];
   const branch = commit('b1', 'feat(parse): first', { footer: 'Breaks a thing.' });
 
-  const kept = firstParentCommits([...parts, branch], { mergeOf: new Map([['b1', 'm1']]) });
+  const kept = keep([...parts, branch], { m1: [subject, 'b1'] });
 
-  assert.deepEqual(kept.map(c => c.message), ['feat(parse): first (#9)', 'fix(parse): second']);
-  assert.equal(kept[0].breaking, true, 'the fold goes to the first commit of the merge');
+  assert.deepEqual(kept.map(c => c.message), [subject, 'fix(parse): second']);
+  assert.equal(kept[0].breaking, true);
+  assert.equal(kept[1].breaking, false);
 });
 
 function scratchRepo(t) {
@@ -158,12 +220,13 @@ test('readHistory maps branch commits, sync merges included, to the merge that l
   const sync = git('rev-parse', 'HEAD');
   const b2 = commitFile('d', 'feat: after the sync');
   git('switch', '-q', 'main');
-  const landed = merge('feature', 'feat: the feature (#1)');
+  const landing = merge('feature', 'feat: the feature (#1)');
 
-  const { mergeOf } = readHistory(work, 'HEAD');
+  const { mergeOf, subjectOf } = readHistory(work, 'HEAD');
 
-  assert.deepEqual(Object.fromEntries(mergeOf), { [b1]: landed, [sync]: landed, [b2]: landed });
-  for (const mainline of [root, onMain, landed]) assert.equal(mergeOf.has(mainline), false);
+  assert.deepEqual(Object.fromEntries(mergeOf), { [b1]: landing, [sync]: landing, [b2]: landing });
+  for (const mainline of [root, onMain, landing]) assert.equal(mergeOf.has(mainline), false);
+  assert.deepEqual(Object.fromEntries(subjectOf), { [landing]: 'feat: the feature (#1)' }, 'only first-parent merges have subjects');
 });
 
 // A branch cut from another unmerged branch: the first merge claims the
@@ -197,4 +260,32 @@ test('fetchBranchHead returns the branch as the remote has it now', t => {
 
   assert.equal(fetchBranchHead(clone, 'origin', 'main'), pushed);
   assert.equal(readHistory(clone, pushed).mergeOf.size, 0);
+});
+
+// A merge listed here whose entries don't carry its subject (a message
+// release-please rewrote some other way) leaves its branch commits listed:
+// duplicated rather than lost.
+test('a listed merge without its header keeps its branch commits, and warns', () => {
+  const warnings = [];
+  const other = commit('m1', 'feat(parse): something else (#9)');
+  const branch = commit('b1', 'feat(parse)!: add Stream');
+
+  const kept = keep([other, branch], { m1: ['feat(parse): add Stream (#9)', 'b1'] }, { options: { warn: m => warnings.push(m) } });
+
+  assert.deepEqual(kept.map(c => c.sha), ['m1', 'b1']);
+  assert.equal(warnings.length, 1);
+});
+
+test("readHistory's subject is the first line of a merge's message", t => {
+  const { work, git, commitFile } = scratchRepo(t);
+  commitFile('a', 'chore: root');
+  git('switch', '-q', '-c', 'feature');
+  commitFile('b', 'feat: on the branch');
+  git('switch', '-q', 'main');
+  // A first paragraph of two lines: git's %s would join them.
+  git('merge', '-q', '--no-ff', '-m', 'feat: the feature (#1)\nwrapped onto a second line\n\nCo-authored-by: Pat <pat@example.com>', 'feature');
+
+  const { subjectOf } = readHistory(work, 'HEAD');
+
+  assert.deepEqual([...subjectOf.values()], ['feat: the feature (#1)']);
 });

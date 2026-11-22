@@ -26,9 +26,10 @@ export function fetchBranchHead(repoDir, remote, branch) {
   return git('rev-parse', '--verify', 'FETCH_HEAD^{commit}').trim();
 }
 
-// readHistory maps every commit a merge on ref's first-parent chain brought in
-// to that merge, from one read of the history. A commit on the chain itself,
-// or one newer than ref, has no entry.
+// readHistory reads ref's history. mergeOf maps every commit a merge on ref's
+// first-parent chain brought in to that merge; a commit on the chain itself,
+// or one newer than ref, has no entry. subjectOf holds each of those merges'
+// subject: the first line of its message, the header release-please parses.
 export function readHistory(repoDir, ref) {
   const git = gitIn(repoDir);
   const parents = new Map();
@@ -36,6 +37,12 @@ export function readHistory(repoDir, ref) {
     if (!line) continue;
     const [sha, ...shas] = line.split(' ');
     parents.set(sha, shas);
+  }
+  const subjectOf = new Map();
+  for (const record of git('rev-list', '--first-parent', '--merges', '--no-commit-header', '--format=%x00%H%x1f%B', ref).split('\0')) {
+    if (!record) continue;
+    const [sha, message] = record.split('\x1f');
+    subjectOf.set(sha, message.split('\n')[0].trim());
   }
   const chain = [];
   for (let sha = git('rev-parse', '--verify', `${ref}^{commit}`).trim(); sha; sha = parents.get(sha)[0]) {
@@ -55,90 +62,128 @@ export function readHistory(repoDir, ref) {
       pending.push(...(parents.get(sha) ?? []));
     }
   }
-  return { mergeOf };
+  return { mergeOf, subjectOf };
 }
 
 // typeRanker orders commit types by what they call for in a release: a
 // feature, then any other type the changelog shows, then hidden types, which
-// alone cut no release. sectionLists are the release paths' changelog-sections;
-// a path without them uses release-please's defaults.
-export function typeRanker(sectionLists = []) {
-  const visible = new Set();
-  for (const sections of sectionLists.length > 0 ? sectionLists : [undefined]) {
-    for (const section of sections ?? DEFAULT_SECTIONS) {
-      if (!section.hidden) visible.add(section.type);
-    }
-  }
-  return type => (type === 'feat' || type === 'feature' ? 2 : visible.has(type) ? 1 : 0);
+// alone cut no release. sections are changelog-sections; undefined means
+// release-please's defaults.
+export function typeRanker(sections = DEFAULT_SECTIONS) {
+  const shown = new Set(sections.filter(section => !section.hidden).map(section => section.type));
+  return type => {
+    if (type === 'feat' || type === 'feature') return 2;
+    if (shown.has(type)) return 1;
+    return 0;
+  };
 }
 
 // firstParentCommits drops each conventional commit a merge brought in when
-// that merge is itself a conventional commit of the same list, so a pull
-// request counts once, as its merge. The merge takes over what the dropped
-// commit calls for: a higher-ranked type (a fix merged as a chore still cuts
-// a release), its breaking change and Release-As, and its issue references.
-// A commit whose merge is not in the list is kept: a merge with a subject
-// release-please cannot parse would otherwise drop its change.
-export function firstParentCommits(commits, history, { rank = typeRanker(), warn = () => {} } = {}) {
-  const records = new Map();
+// release-please parses that merge's subject (conventionalMerges), so a pull
+// request counts once, as its merge:
+//
+//   - In a release path the merge's changes reach, the merge's own entry (its
+//     header, matched by subject) takes over what the dropped commit calls
+//     for: a higher-ranked type, so a fix merged as chore(…) still cuts a
+//     release; its breaking change and Release-As; its issue references.
+//   - In a path they don't reach, the branch's change there did not land, so
+//     nothing takes it over.
+//   - A pull request whose body sets BEGIN_COMMIT_OVERRIDE wrote its entries
+//     itself: release-please gave every one of its commits that message, and
+//     the merge's copy stands alone.
+//
+// A commit whose merge release-please cannot parse is kept, so its change is
+// listed rather than lost; so is one whose merge is listed here without the
+// header its subject names.
+export function firstParentCommits(commits, history, { conventionalMerges, rank = typeRanker(), warn = () => {} }) {
+  const listed = new Set(commits.map(commit => commit.sha));
+  const headers = new Map();
   for (const commit of commits) {
-    if (!records.has(commit.sha)) records.set(commit.sha, commit);
+    const subject = history.subjectOf.get(commit.sha);
+    if (subject !== undefined && !headers.has(commit.sha) && commit.message.trim() === subject) {
+      headers.set(commit.sha, commit);
+    }
   }
+  const unmatched = new Set();
   const kept = [];
   for (const commit of commits) {
-    const record = records.get(history.mergeOf.get(commit.sha));
-    if (record === undefined) {
+    const merge = history.mergeOf.get(commit.sha);
+    if (merge === undefined) {
       kept.push(commit);
       continue;
     }
-    foldType(record, commit, rank, warn);
-    foldBreaking(record, commit);
-    foldReleaseAs(record, commit);
-    foldReferences(record, commit);
+    if (overriddenBy(commit, merge)) continue;
+    if (!conventionalMerges.has(merge)) {
+      kept.push(commit);
+      continue;
+    }
+    const header = headers.get(merge);
+    if (header === undefined) {
+      if (!listed.has(merge)) continue;
+      if (!unmatched.has(merge)) {
+        unmatched.add(merge);
+        warn(`${merge.slice(0, 7)} (${history.subjectOf.get(merge)}) has no entry with its subject; its branch commits stay listed`);
+      }
+      kept.push(commit);
+      continue;
+    }
+    foldType(header, commit, rank, warn);
+    foldBreaking(header, commit);
+    foldReleaseAs(header, commit);
+    foldReferences(header, commit);
   }
   return kept;
 }
 
-function foldType(record, dropped, rank, warn) {
-  if (rank(dropped.type) <= rank(record.type)) return;
-  warn(`${record.sha.slice(0, 7)} (${record.message}) counts as ${dropped.type}, from ${dropped.sha.slice(0, 7)} (${dropped.message}); its subject's type is lower than its change's`);
-  record.type = dropped.type;
+// overriddenBy reports a commit of the pull request merged as merge whose
+// body sets BEGIN_COMMIT_OVERRIDE, read as release-please reads it.
+function overriddenBy(commit, merge) {
+  const pr = commit.pullRequest;
+  if (pr === undefined || pr.mergeCommitOid !== merge) return false;
+  const override = (pr.body ?? '').split('BEGIN_COMMIT_OVERRIDE')[1] ?? '';
+  return override.split('END_COMMIT_OVERRIDE')[0].trim() !== '';
+}
+
+function foldType(header, dropped, rank, warn) {
+  if (rank(dropped.type) <= rank(header.type)) return;
+  warn(`${header.sha.slice(0, 7)} (${header.message}) counts as ${dropped.type}, from ${dropped.sha.slice(0, 7)} (${dropped.message}); its subject's type is lower than its change's`);
+  header.type = dropped.type;
 }
 
 const isBreaking = note => note.title === BREAKING;
 
-// foldBreaking marks record breaking when dropped was. A description in
-// dropped's BREAKING CHANGE footer replaces the note record's own "!" gave it,
+// foldBreaking marks header breaking when dropped was. A description in
+// dropped's BREAKING CHANGE footer replaces the note header's own "!" gave it,
 // which only repeats its subject.
-function foldBreaking(record, dropped) {
+function foldBreaking(header, dropped) {
   if (!dropped.breaking) return;
-  record.breaking = true;
+  header.breaking = true;
   const described = dropped.notes.filter(note => isBreaking(note) && note.text !== dropped.bareMessage);
   if (described.length === 0) {
-    if (!record.notes.some(isBreaking)) record.notes.push({ title: BREAKING, text: record.bareMessage });
+    if (!header.notes.some(isBreaking)) header.notes.push({ title: BREAKING, text: header.bareMessage });
     return;
   }
-  record.notes = record.notes.filter(note => !(isBreaking(note) && note.text === record.bareMessage));
+  header.notes = header.notes.filter(note => !(isBreaking(note) && note.text === header.bareMessage));
   for (const note of described) {
-    if (!record.notes.some(n => isBreaking(n) && n.text === note.text)) record.notes.push({ ...note });
+    if (!header.notes.some(n => isBreaking(n) && n.text === note.text)) header.notes.push({ ...note });
   }
 }
 
-function foldReleaseAs(record, dropped) {
+function foldReleaseAs(header, dropped) {
   for (const note of dropped.notes) {
     if (note.title !== RELEASE_AS) continue;
-    if (!record.notes.some(n => n.title === RELEASE_AS && n.text === note.text)) record.notes.push({ ...note });
+    if (!header.notes.some(n => n.title === RELEASE_AS && n.text === note.text)) header.notes.push({ ...note });
   }
 }
 
 // foldReferences adds dropped's issue references; one issue is one reference,
 // whether a footer says Closes or Fixes.
-function foldReferences(record, dropped) {
+function foldReferences(header, dropped) {
   const key = ref => [ref.owner, ref.repository, ref.prefix, ref.issue].join('|');
-  const seen = new Set(record.references.map(key));
+  const seen = new Set(header.references.map(key));
   for (const ref of dropped.references) {
     if (seen.has(key(ref))) continue;
     seen.add(key(ref));
-    record.references.push({ ...ref });
+    header.references.push({ ...ref });
   }
 }

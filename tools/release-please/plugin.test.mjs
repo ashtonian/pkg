@@ -1,19 +1,61 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { parseConventionalCommits } from 'release-please/build/src/commit.js';
 import { buildPlugin } from 'release-please/build/src/factories/plugin-factory.js';
 import { FIRST_PARENT, FirstParentPlugin, registerFirstParent } from './plugin.mjs';
+
+const github = { repository: { owner: 'o', repo: 'r', defaultBranch: 'main' } };
+const quiet = { debug() {}, info() {}, warn() {}, error() {}, trace() {} };
+
+function plugin(history, repositoryConfig = { parse: {} }) {
+  registerFirstParent(history);
+  return buildPlugin({ type: FIRST_PARENT, github, targetBranch: 'main', repositoryConfig, manifestPath: '.release-please-manifest.json' });
+}
+
+// The commits as release-please hands them to processCommits: raw messages
+// through its own parser.
+const parsed = raw => parseConventionalCommits(raw.map(([sha, message]) => ({ sha, message, files: [] })), quiet);
 
 // release-please builds the config's plugins through its factory; this is the
 // path a release-please upgrade that moves the plugin API would break.
 test('a config naming first-parent builds the plugin over the history', () => {
-  const history = { mergeOf: new Map([['b1', 'm1']]) };
-  registerFirstParent(history);
-  const github = { repository: { owner: 'o', repo: 'r', defaultBranch: 'main' } };
+  const built = plugin({ mergeOf: new Map(), subjectOf: new Map() });
+  assert.ok(built instanceof FirstParentPlugin);
+});
 
-  const plugin = buildPlugin({ type: FIRST_PARENT, github, targetBranch: 'main', repositoryConfig: {}, manifestPath: '.release-please-manifest.json' });
+test("release-please's own parse of a merge with trailers folds the branch into its header", () => {
+  const subject = 'fix(parse): tidy reader (#260)';
+  const history = { mergeOf: new Map([['b1', 'm1']]), subjectOf: new Map([['m1', subject]]) };
+  const commits = parsed([
+    ['m1', `${subject}\n\nCo-authored-by: Pat <pat@example.com>`],
+    ['b1', 'feat(parse)!: add Stream\n\nBREAKING CHANGE: Reader is gone.\n\nCloses #5'],
+  ]);
 
-  assert.ok(plugin instanceof FirstParentPlugin);
-  const merge = { sha: 'm1', bareMessage: 'x (#1)', notes: [], references: [], breaking: false };
-  const branch = { sha: 'b1', bareMessage: 'x', notes: [], references: [], breaking: false };
-  assert.deepEqual(plugin.processCommits([merge, branch]), [merge]);
+  const kept = plugin(history).processCommits(commits);
+
+  const header = kept.find(c => c.message === subject);
+  assert.equal(header.type, 'feat');
+  assert.equal(header.breaking, true);
+  assert.deepEqual(header.notes.filter(n => n.title === 'BREAKING CHANGE').map(n => n.text), ['Reader is gone.']);
+  assert.deepEqual(header.references.map(r => r.issue), ['5']);
+  assert.ok(kept.every(c => c.sha === 'm1'), 'the branch commit is gone');
+  for (const trailer of kept.filter(c => c !== header)) {
+    assert.equal(trailer.breaking, false, `${trailer.message} takes nothing`);
+  }
+});
+
+test("a merge whose subject release-please can't parse keeps its branch commits", () => {
+  const history = { mergeOf: new Map([['b1', 'm1']]), subjectOf: new Map([['m1', 'Merge pull request #1 from a/b']]) };
+  const commits = parsed([['b1', 'feat(parse): accept POST lists']]);
+
+  assert.deepEqual(plugin(history).processCommits(commits).map(c => c.sha), ['b1']);
+});
+
+test('release paths with different changelog-sections are refused', () => {
+  const history = { mergeOf: new Map(), subjectOf: new Map() };
+  assert.throws(
+    () => plugin(history, { parse: {}, config: { changelogSections: [{ type: 'feat', section: 'Features' }] } }),
+    /set different changelog-sections/,
+  );
+  assert.ok(plugin(history, { parse: {}, config: {} }) instanceof FirstParentPlugin, 'paths that all use the defaults agree');
 });

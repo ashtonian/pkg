@@ -11,7 +11,7 @@ export class Output {
   }
 
   set(key, value) {
-    const text = value === null || value === undefined ? '' : typeof value === 'string' ? value : JSON.stringify(value);
+    const text = encode(value);
     const delimiter = `ghadelimiter_${randomUUID()}`;
     this.append(`${key}<<${delimiter}\n${text}\n${delimiter}\n`);
   }
@@ -19,6 +19,12 @@ export class Output {
   setPath(path, key, value) {
     this.set(path === '.' ? key : `${path}--${key}`, value);
   }
+}
+
+function encode(value) {
+  if (value === null || value === undefined) return '';
+  if (typeof value === 'string') return value;
+  return JSON.stringify(value);
 }
 
 const RELEASE_KEYS = { tagName: 'tag_name', uploadUrl: 'upload_url', notes: 'body', url: 'html_url' };
