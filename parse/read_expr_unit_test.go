@@ -5,7 +5,6 @@ package parse_test
 import (
 	"net/url"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 
@@ -17,14 +16,6 @@ import (
 	"github.com/ashtonian/pkg/parse/filter"
 	"github.com/ashtonian/pkg/parse/patch"
 )
-
-var computedDialects = []struct {
-	dialect                  parse.Dialect
-	email, groupIDs, contact string
-}{
-	{filter.PostgresDialect{}, pgEmailExpr, pgGroupIDsExpr, pgContactExpr},
-	{filter.SQLiteDialect{}, sqliteEmailExpr, sqliteGroupIDsExpr, sqliteContactExpr},
-}
 
 func TestReadExpr_Columns(t *testing.T) {
 	for _, tt := range computedDialects {
@@ -240,49 +231,6 @@ func TestReadExpr_RefusedDialect(t *testing.T) {
 		_, err = groups.BuildUpdate(filter.PostgresDialect{}, p, parse.ByID(20), scope)
 		assert.NoError(t, err)
 	})
-}
-
-// Concurrent first builds for two dialects, of a target and of an owner
-// whose relation filter compiles it, each build and read their own
-// dialect's views.
-func TestReadExpr_ConcurrentFirstUse(t *testing.T) {
-	accounts := newComputedAccounts(accessGroups, groupIDsExpr)
-	tenants := newAccountTenants(accounts)
-	req, err := accounts.ParseList(url.Values{
-		filter.ParamFilter: {`{"email":{"$ne":""}}`},
-		filter.ParamSort:   {"-member_count"},
-		filter.ParamFacets: {"member_count"},
-	})
-	require.NoError(t, err)
-	ownerReq, err := tenants.ParseList(url.Values{filter.ParamFilter: {`{"accounts":{"$some":{"email":{"$ne":""},"groups":{"$some":{"size":2}}}}}`}})
-	require.NoError(t, err)
-	plans := make([]*parse.ListPlan, 64)
-	errs := make([]error, len(plans))
-	start := make(chan struct{})
-	var wg sync.WaitGroup
-	for i := range plans {
-		wg.Go(func() {
-			<-start
-			d := computedDialects[i%2].dialect
-			if i%4 < 2 {
-				plans[i], errs[i] = accounts.BuildList(d, req, parse.Scope{Tenant: "t1"})
-			} else {
-				plans[i], errs[i] = tenants.BuildList(d, ownerReq, parse.Scope{Tenant: "t1"})
-			}
-		})
-	}
-	close(start)
-	wg.Wait()
-	for i, plan := range plans {
-		require.NoError(t, errs[i])
-		tt := computedDialects[i%2]
-		assert.Contains(t, plan.Page.SQL, "("+tt.email+") <> ")
-		if i%4 < 2 {
-			assert.Contains(t, plan.Page.SQL, "("+tt.groupIDs+") AS group_ids")
-		} else {
-			assert.Contains(t, plan.Page.SQL, "("+groupSizeExpr+") = ")
-		}
-	}
 }
 
 func TestReadExpr_Refusals(t *testing.T) {

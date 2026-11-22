@@ -19,51 +19,80 @@ STATICCHECK := GOTOOLCHAIN=go1.27.4 go run honnef.co/go/tools/cmd/staticcheck@v0
 RACE := -race -gcflags='modernc.org/...=-race=false -d=checkptr=0'
 # Every published module's release check; CI passes only the changed ones.
 RELEASE_CHECKS := gitx-release-check config-release-check kongprovider-release-check native-release-check jsonvalue-release-check gowalker-release-check httpx-release-check parse-release-check
+MODULE_PATH := github.com/ashtonian/pkg
+# The packages the test and lint targets cover: "all", or the import paths CI's
+# change scope reaches (go-ci-actions scope's go-args).
+PACKAGES ?= all
+# $(call module-packages,<module dir>): its covered packages: the import paths
+# under it, less those of the workspace modules nested inside it.
+module-packages = $(filter-out $(foreach n,$(filter $(1)/%,$(MODULES)),$(MODULE_PATH)/$(n) $(MODULE_PATH)/$(n)/%),$(filter $(MODULE_PATH)/$(1) $(MODULE_PATH)/$(1)/%,$(PACKAGES)))
+# $(call packages,<module dirs>): those modules' covered packages, as go
+# command arguments from the repository root.
+packages = $(strip $(foreach m,$(1),$(if $(filter all,$(PACKAGES)),./$(m)/...,$(call module-packages,$(m)))))
+# $(call scoped,<command and flags>,<module dirs>): run it over their covered
+# packages; a change that reaches none of them runs nothing.
+scoped = $(if $(call packages,$(2)),$(1) $(call packages,$(2)),@echo "no covered packages in $(strip $(2))")
+UNTAGGED_MODULES := $(CORE_MODULES) $(CONFIG_MODULES)
+LINT_TAGS := -tags=unit,integration
 
 .PHONY: test test-native-unit test-native-integration native-release-check test-gitx test-jsonvalue jsonvalue-release-check test-gowalker gowalker-release-check test-config test-httpx-unit test-httpx-integration test-parse-unit test-parse-integration parse-postgres-up parse-postgres-down test-parse-sdk parse-sdk-release-check parse-sdk-registry-check parse-release-check lint release-check gitx-release-check config-release-check kongprovider-release-check httpx-release-check cookbook-check tool-check release-please-check ci
 
 ## test: every published module from the working tree (go.work), race detector on.
 ## -count=1 only where a test depends on state the test cache cannot see:
 ## processes it starts, the installed git, real servers.
-test: test-native-unit test-native-integration test-gitx test-jsonvalue test-gowalker test-config test-httpx-unit test-httpx-integration test-parse-unit test-parse-integration test-parse-sdk
+test: test-native-unit test-native-integration test-gitx test-jsonvalue test-gowalker test-config test-httpx-unit test-httpx-integration test-parse-race-all test-parse-integration test-parse-sdk
 
 test-native-unit:
-	go test -tags=unit $(RACE) -count=1 $(foreach m,$(NATIVE_MODULES),./$(m)/...)
+	$(call scoped,go test -tags=unit $(RACE) -count=1,$(NATIVE_MODULES))
 
 test-native-integration:
-	go test -tags=integration $(RACE) -count=1 -timeout=2m $(foreach m,$(NATIVE_MODULES),./$(m)/...)
+	$(call scoped,go test -tags=integration $(RACE) -count=1 -timeout=2m,$(NATIVE_MODULES))
 
 native-release-check:
 	bash tools/check-native-release.sh
 
 test-gitx:
-	go test $(RACE) -count=1 ./gitx/...
+	$(call scoped,go test $(RACE) -count=1,gitx)
 
 test-jsonvalue:
-	go test $(RACE) ./jsonvalue/...
+	$(call scoped,go test $(RACE),jsonvalue)
 
 jsonvalue-release-check:
 	bash tools/check-jsonvalue-release.sh
 
 test-gowalker:
-	go test $(RACE) ./gowalker/...
+	$(call scoped,go test $(RACE),gowalker)
 
 test-config:
-	go test $(RACE) $(foreach m,$(CONFIG_MODULES),./$(m)/...)
+	$(call scoped,go test $(RACE),$(CONFIG_MODULES))
 
 # HTTPx uses build tags: an untagged go test would skip all its tests.
 test-httpx-unit:
-	go test -tags=unit $(RACE) $(foreach m,$(HTTPX_MODULES),./$(m)/...)
+	$(call scoped,go test -tags=unit $(RACE),$(HTTPX_MODULES))
 
 test-httpx-integration:
-	go test -tags=integration $(RACE) -count=1 $(foreach m,$(HTTPX_MODULES),./$(m)/...)
+	$(call scoped,go test -tags=integration $(RACE) -count=1,$(HTTPX_MODULES))
 
+.PHONY: test-parse-race test-parse-race-all lint-cookbook
+
+## test-parse-unit: parse unit tests and fuzz seeds, without the race detector.
 test-parse-unit:
-	go test -tags=unit $(RACE) ./parse/...
+	$(call scoped,go test -tags=unit,$(PARSE_MODULES))
+
+## test-parse-race: under the race detector, the parse tests that run its code
+## on several goroutines (files tagged concurrency). Parse starts no goroutines
+## of its own, so only these can race; the rest would cost a race build of
+## parse's large test package for no coverage.
+test-parse-race:
+	$(call scoped,go test -tags=concurrency $(RACE),$(PARSE_MODULES))
+
+## test-parse-race-all: every parse unit test and fuzz seed under the race detector.
+test-parse-race-all:
+	$(call scoped,go test -tags=unit $(RACE),$(PARSE_MODULES))
 
 # SQLite always runs. Supply PARSE_POSTGRES_DSN and PARSE_POSTGIS_DSN for SQL parity.
 test-parse-integration:
-	go test -tags=integration $(RACE) -count=1 -timeout=15m ./parse/...
+	$(call scoped,go test -tags=integration $(RACE) -count=1 -timeout=15m,$(PARSE_MODULES))
 
 # The PostgreSQL integration server: one PostGIS server serves both DSN
 # variables, as in CI. postgis/postgis publishes amd64 images only, so arm64
@@ -101,17 +130,18 @@ test-parse-sdk:
 parse-sdk-release-check:
 	bash tools/check-parse-sdk-release.sh
 
-## lint: go vet and staticcheck over every module and the cookbook. Tagged
-## modules take both tags in one pass: no file requires either tag's absence.
+## lint: go vet and staticcheck over every published module's covered
+## packages. Tagged modules take both tags in one pass: no file requires either
+## tag's absence.
 lint:
-	@set -e; for m in $(CORE_MODULES) $(CONFIG_MODULES); do \
-		echo "lint $$m"; (cd $$m && go vet ./... && $(STATICCHECK) ./...); \
-	done
-	@set -e; for m in $(TAGGED_MODULES); do \
-		echo "lint $$m"; \
-		(cd $$m && go vet -tags=unit,integration ./... && $(STATICCHECK) -tags=unit,integration ./...); \
-	done
-	@echo "lint $(COOKBOOK)"; cd $(COOKBOOK) && GOWORK=off go vet ./... && GOWORK=off $(STATICCHECK) ./...
+	$(call scoped,go vet,$(UNTAGGED_MODULES))
+	$(call scoped,$(STATICCHECK),$(UNTAGGED_MODULES))
+	$(call scoped,go vet $(LINT_TAGS),$(TAGGED_MODULES))
+	$(call scoped,$(STATICCHECK) $(LINT_TAGS),$(TAGGED_MODULES))
+
+## lint-cookbook: go vet and staticcheck over the cookbook, outside the workspace.
+lint-cookbook:
+	cd $(COOKBOOK) && GOWORK=off go vet ./... && GOWORK=off $(STATICCHECK) ./...
 
 ## release-check: each published module as a consumer gets it — outside the
 ## workspace, its dependencies at the versions its go.mod requires. The test
@@ -162,4 +192,4 @@ release-please-check:
 	cd tools/release-please && pnpm install --frozen-lockfile && node --test
 
 ## ci: everything CI runs
-ci: lint test release-check parse-sdk-release-check parse-sdk-registry-check cookbook-check tool-check release-please-check
+ci: lint lint-cookbook test release-check parse-sdk-release-check parse-sdk-registry-check cookbook-check tool-check release-please-check

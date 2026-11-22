@@ -1,0 +1,25 @@
+name: nightly
+
+# What pull requests and main pushes scope down: ci.yml at full scope (every
+# suite and release check), every parse unit test under the race detector, and
+# the parse benchmarks, on main's current commit. ci.yml's scope runs nothing
+# when an earlier scheduled run already passed on that commit.
+on:
+  schedule:
+    - cron: '41 8 * * *'
+  workflow_dispatch:
+
+permissions:
+  id-token: write
+  contents: read
+  actions: read
+
+jobs:
+  ci:
+    if: github.actor_id == '4212452'
+    uses: ./.github/workflows/ci.yml
+    with:
+      nightly: true
+    secrets:
+      CI_ARTIFACT_ENDPOINT: ${{ secrets.CI_ARTIFACT_ENDPOINT }}
+      PRIVATE_REFERENCE_PATTERNS: ${{ secrets.PRIVATE_REFERENCE_PATTERNS }}
