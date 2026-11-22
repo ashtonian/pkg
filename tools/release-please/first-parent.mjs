@@ -1,14 +1,13 @@
-// First-parent release notes. Pull requests land as merge commits whose
-// subjects are conventional, and their branch commits are conventional too.
-// release-please reads the whole history, so each change would count once
-// per branch commit and again as its merge. These functions keep the merge.
+// First-parent release notes: a pull request merged with a merge commit
+// counts once, as its merge, though its branch commits are conventional too.
+// README.md describes each rule.
 import { execFileSync } from 'node:child_process';
 
 const BREAKING = 'BREAKING CHANGE';
 const RELEASE_AS = 'RELEASE AS';
 
-// The changelog sections release-please uses without changelog-sections
-// (conventional-changelog-conventionalcommits' defaults).
+// conventional-changelog-conventionalcommits' sections, which release-please
+// uses without changelog-sections.
 const DEFAULT_SECTIONS = [
   { type: 'feat' }, { type: 'feature' }, { type: 'fix' }, { type: 'perf' }, { type: 'revert' },
   ...['docs', 'style', 'chore', 'refactor', 'test', 'build', 'ci'].map(type => ({ type, hidden: true })),
@@ -18,18 +17,14 @@ function gitIn(repoDir) {
   return (...args) => execFileSync('git', ['-C', repoDir, ...args], { encoding: 'utf8', maxBuffer: 256 << 20 });
 }
 
-// fetchBranchHead fetches branch from remote into repoDir and returns the
-// commit it names there now.
 export function fetchBranchHead(repoDir, remote, branch) {
   const git = gitIn(repoDir);
   git('fetch', '--quiet', '--no-tags', remote, `refs/heads/${branch}`);
   return git('rev-parse', '--verify', 'FETCH_HEAD^{commit}').trim();
 }
 
-// readHistory reads ref's history. mergeOf maps every commit a merge on ref's
-// first-parent chain brought in to that merge; a commit on the chain itself,
-// or one newer than ref, has no entry. messageOf holds each of those merges'
-// whole message, as release-please parses it.
+// readHistory returns mergeOf, each commit a merge on ref's first-parent chain
+// brought in mapped to that merge, and messageOf, those merges' messages.
 export function readHistory(repoDir, ref) {
   const git = gitIn(repoDir);
   const parents = new Map();
@@ -50,9 +45,8 @@ export function readHistory(repoDir, ref) {
   }
   const onChain = new Set(chain);
   const mergeOf = new Map();
-  // Oldest first: everything an older chain commit reaches is on the chain or
-  // already mapped, so a walk from a merge's other parents stops there and
-  // claims exactly what that merge brought in.
+  // Oldest first: an older chain commit reaches only chain commits and ones
+  // already mapped, so each walk claims exactly what its merge brought in.
   for (const merge of chain.reverse()) {
     const pending = parents.get(merge).slice(1);
     while (pending.length > 0) {
@@ -65,10 +59,8 @@ export function readHistory(repoDir, ref) {
   return { mergeOf, messageOf };
 }
 
-// typeRanker orders commit types by what they call for in a release: a
-// feature, then any other type the changelog shows, then hidden types, which
-// alone cut no release. sections are changelog-sections; undefined means
-// release-please's defaults.
+// typeRanker ranks a feature over the other types the changelog shows, and
+// those over hidden types, which alone cut no release.
 export function typeRanker(sections = DEFAULT_SECTIONS) {
   const shown = new Set(sections.filter(section => !section.hidden).map(section => section.type));
   return type => {
@@ -78,32 +70,18 @@ export function typeRanker(sections = DEFAULT_SECTIONS) {
   };
 }
 
-// firstParentCommits drops each conventional commit a merge brought in when
-// the merge has a header: headerOf maps each merge whose message
-// release-please parses into an entry for its first line to that entry's
-// header. So a pull request counts once, as its merge:
-//
-//   - In a release path the merge's changes reach, the merge's entry with that
-//     header takes over what the dropped commit calls for: a higher-ranked
-//     type, so a fix merged as refactor(…) still cuts a release; its breaking
-//     change and Release-As; its issue references.
-//   - In a path they don't reach, the branch's change there did not land, so
-//     nothing takes it over.
-//
-// A commit release-please gave a pull request's BEGIN_COMMIT_OVERRIDE message
-// carries that message, not its own. When the pull request is the merge's,
-// the merge's copy of the override stands as the author wrote it, and the
-// commit is dropped. When it is another's (a stacked pull request), the
-// commit takes nothing over, but is dropped only where a header carries the
-// change.
-//
-// A commit whose merge has no header is kept, so its change is listed rather
-// than lost; so is one whose merge is listed here without that header.
+// firstParentCommits drops the commits a merge with a header brought in, and
+// folds into that header what they call for. headerOf maps a merge to the
+// header release-please's parse of its message gives its first line.
 export function firstParentCommits(commits, history, { headerOf, rank = typeRanker(), warn = () => {} }) {
   const listed = new Set(commits.map(commit => commit.sha));
   const headers = new Map();
+  // A merge whose own pull request sets an override is listed as that
+  // override, which its author wrote to stand for the whole change.
+  const overridden = new Set();
   for (const commit of commits) {
     if (!headers.has(commit.sha) && headerOf.get(commit.sha) === commit.message) headers.set(commit.sha, commit);
+    if (ownOverride(commit, commit.sha)) overridden.add(commit.sha);
   }
   const unmatched = new Set();
   const raised = new Map();
@@ -114,14 +92,17 @@ export function firstParentCommits(commits, history, { headerOf, rank = typeRank
       kept.push(commit);
       continue;
     }
-    const overridden = hasOverride(commit);
-    if (overridden && commit.pullRequest.mergeCommitOid === merge) continue;
+    // The second test catches a copy of the merge's override in a path the
+    // merge's own change does not reach.
+    if (overridden.has(merge) || ownOverride(commit, merge)) continue;
+    // Without a header, the branch commits are the only record of the change.
     if (!headerOf.has(merge)) {
       kept.push(commit);
       continue;
     }
     const header = headers.get(merge);
     if (header === undefined) {
+      // Not listed: the merge's net change misses this path.
       if (!listed.has(merge)) continue;
       if (!unmatched.has(merge)) {
         unmatched.add(merge);
@@ -130,7 +111,8 @@ export function firstParentCommits(commits, history, { headerOf, rank = typeRank
       kept.push(commit);
       continue;
     }
-    if (overridden) continue;
+    // A commit carrying another pull request's override folds too: that pull
+    // request landed through this merge, stacked on its branch.
     if (rank(commit.type) > rank(header.type)) {
       header.type = commit.type;
       raised.set(header, commit);
@@ -145,19 +127,19 @@ export function firstParentCommits(commits, history, { headerOf, rank = typeRank
   return kept;
 }
 
-// hasOverride reports a commit whose pull request's body sets
-// BEGIN_COMMIT_OVERRIDE, read as release-please reads it: release-please
-// gave the commit that message in place of its own.
-function hasOverride(commit) {
-  const override = (commit.pullRequest?.body ?? '').split('BEGIN_COMMIT_OVERRIDE')[1] ?? '';
+// ownOverride reports a commit release-please gave the override of the pull
+// request merged as merge, read as release-please reads an override.
+function ownOverride(commit, merge) {
+  const pr = commit.pullRequest;
+  if (pr === undefined || pr.mergeCommitOid !== merge) return false;
+  const override = (pr.body ?? '').split('BEGIN_COMMIT_OVERRIDE')[1] ?? '';
   return override.split('END_COMMIT_OVERRIDE')[0].trim() !== '';
 }
 
 const isBreaking = note => note.title === BREAKING;
 
-// foldBreaking marks header breaking when dropped was. A description in
-// dropped's BREAKING CHANGE footer replaces the note header's own "!" gave it,
-// which only repeats its subject.
+// foldBreaking prefers a footer's description to the note a "!" gives the
+// header, which only repeats its subject.
 function foldBreaking(header, dropped) {
   if (!dropped.breaking) return;
   header.breaking = true;
@@ -179,8 +161,7 @@ function foldReleaseAs(header, dropped) {
   }
 }
 
-// foldReferences adds dropped's issue references; one issue is one reference,
-// whether a footer says Closes or Fixes.
+// One issue is one reference, whether a footer says Closes or Fixes.
 function foldReferences(header, dropped) {
   const key = ref => [ref.owner, ref.repository, ref.prefix, ref.issue].join('|');
   const seen = new Set(header.references.map(key));

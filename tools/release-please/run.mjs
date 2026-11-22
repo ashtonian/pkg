@@ -43,15 +43,16 @@ async function main() {
   registerFirstParent(history);
   // Each phase reads the repository afresh, as the action does: creating the
   // releases changes what the release PR holds.
+  let warned = false;
   const manifest = async () => {
     const loaded = await Manifest.fromManifest(github, branch, args['config-file'], args['manifest-file']);
-    // The config names the plugin so the stock action refuses it. A config
-    // that does not (the target branch's, before it does) still gets it. It
-    // runs first: it finds a merge's entry by the header release-please
-    // parsed, which a plugin that rewrites messages would change.
+    // The config names the plugin so the stock action refuses it; a config
+    // that does not still gets it. It runs first, before any plugin that
+    // rewrites the messages it matches headers by.
     let plugin = loaded.plugins.find(p => p instanceof FirstParentPlugin);
     if (plugin === undefined) {
-      console.warn(`${args['config-file']} on ${branch} names no ${FIRST_PARENT} plugin; adding it`);
+      if (!warned) console.warn(`${args['config-file']} on ${branch} names no ${FIRST_PARENT} plugin; adding it`);
+      warned = true;
       plugin = new FirstParentPlugin(github, branch, loaded.repositoryConfig, history);
     }
     loaded.plugins = [plugin, ...loaded.plugins.filter(p => p !== plugin)];

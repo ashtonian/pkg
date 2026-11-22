@@ -1,5 +1,4 @@
-// The first-parent plugin as release-please loads it: named "first-parent" in
-// release-please-config.json's plugins.
+// The first-parent plugin, named in release-please-config.json's plugins.
 import { registerPlugin } from 'release-please';
 import { parseConventionalCommits } from 'release-please/build/src/commit.js';
 import { ManifestPlugin } from 'release-please/build/src/plugin.js';
@@ -16,8 +15,7 @@ export class FirstParentPlugin extends ManifestPlugin {
     this.warned = new Set();
   }
 
-  // processCommits runs, once per release path, before release-please
-  // computes versions and notes.
+  // processCommits runs once per release path, before versions and notes.
   processCommits(commits) {
     return firstParentCommits(commits, this.history, {
       headerOf: this.headerOf,
@@ -26,8 +24,7 @@ export class FirstParentPlugin extends ManifestPlugin {
     });
   }
 
-  // warnOnce logs a message once a run: the same merge reaches several
-  // release paths.
+  // The same merge reaches several release paths.
   warnOnce(message) {
     if (this.warned.has(message)) return;
     this.warned.add(message);
@@ -35,9 +32,8 @@ export class FirstParentPlugin extends ManifestPlugin {
   }
 }
 
-// sharedChangelogSections returns the changelog-sections every release path
-// uses. processCommits is not told which path its commits belong to, so the
-// plugin ranks types by one set of sections and refuses paths that differ.
+// processCommits is not told which path it handles, so types rank by one set
+// of changelog-sections, which every path must share.
 function sharedChangelogSections(repositoryConfig) {
   const distinct = new Map();
   for (const [path, config] of Object.entries(repositoryConfig)) {
@@ -49,21 +45,18 @@ function sharedChangelogSections(repositoryConfig) {
   return Object.values(repositoryConfig)[0]?.changelogSections;
 }
 
-// sectionsKey identifies a changelog-sections list by what it means, not by
-// how its JSON is written.
+// Equal sections compare equal however their JSON is written.
 function sectionsKey(sections) {
   if (sections === undefined) return 'defaults';
   return JSON.stringify(sections.map(s => [s.type, s.section ?? '', Boolean(s.hidden)]));
 }
 
-// parsedHeaders parses each merge's whole message as release-please does and
-// maps the merge to the header of the entry its first line gave, exactly as
-// release-please's entry carries it. A merge whose message gives no such
-// entry (it parses to nothing, or only to trailers) has no header, so its
-// branch commits stay listed.
+// parsedHeaders parses each merge's whole message as release-please does: its
+// subject alone can parse where the message does not, and its entries carry
+// the header as the parser respaces it. A merge whose first line gives no
+// entry has no header.
 function parsedHeaders(messageOf) {
-  // The parser logs each message it cannot parse; release-please logs the
-  // same commits again when it parses them itself.
+  // release-please logs the same parse failures itself.
   const quiet = { error() {}, warn() {}, info() {}, debug() {}, trace() {} };
   const headers = new Map();
   for (const [sha, message] of messageOf) {
@@ -75,12 +68,8 @@ function parsedHeaders(messageOf) {
   return headers;
 }
 
-// collapse compares headers as release-please's parser rebuilds them, which
-// can respace them.
 const collapse = text => text.replace(/\s+/g, ' ').trim();
 
-// registerFirstParent makes the config's "first-parent" build a plugin over
-// history (readHistory's result).
 export function registerFirstParent(history) {
   registerPlugin(FIRST_PARENT, options =>
     new FirstParentPlugin(options.github, options.targetBranch, options.repositoryConfig, history, options.logger));

@@ -16,7 +16,7 @@ For each release path, the plugin's `processCommits` hook, which runs before ver
   - its issue references (`Closes #215`), one per issue.
 
   In a path the merge's net changes don't reach, a branch commit there was taken back before the merge, so nothing takes it over;
-- drops a branch commit release-please gave its own pull request's `BEGIN_COMMIT_OVERRIDE` message in place of its own: the merge's copy of the override stands as the author wrote it. A commit carrying another pull request's override (one of two stacked pull requests) takes nothing over, and is dropped only where its merge has a header;
+- drops every branch commit of a merge whose own pull request sets `BEGIN_COMMIT_OVERRIDE`: release-please lists that merge as the override, which its author wrote to stand for the whole change (as #60 and #62 did). A commit carrying the override of a stacked pull request, one merged into this one's branch, folds into the merge it landed through like any other branch commit;
 - keeps a branch commit whose merge has no header, so a change is duplicated rather than lost: a merge whose message release-please can't parse (GitHub's default `Merge pull request #1 from …`, or a body that breaks the parser even though the subject parses), and a merge listed without an entry carrying its header (with a warning);
 - keeps a commit newer than the history it read, which it cannot place.
 
@@ -90,6 +90,6 @@ The job holds `contents: write` and `pull-requests: write`. `run.mjs` passes the
 | `plugin.mjs` | `FirstParentPlugin`, `registerFirstParent`: the plugin release-please builds from the config |
 | `outputs.mjs` | The action's step outputs |
 | `run.mjs` | The workflow step: releases, the release PR, step outputs, `--dry-run` |
-| `first-parent.test.mjs` | Counting, the fallbacks, trailers, overrides (a stacked pull request's included), paths a merge doesn't reach, type, breaking, Release-As and reference folding; `readHistory` on scratch repositories (a sync merge, a branch cut from another, a wrapped subject); `fetchBranchHead` against a bare remote |
+| `first-parent.test.mjs` | Counting, the fallbacks, trailers, overrides (the merge's own, a stacked pull request's, and one nothing carries), paths a merge doesn't reach, type, breaking, Release-As and reference folding; `readHistory` on scratch repositories (a sync merge, a branch cut from another, a wrapped subject); `fetchBranchHead` against a bare remote |
 | `outputs.test.mjs` | Output names and encoding |
 | `plugin.test.mjs` | The config's `first-parent` built through release-please's factory; release-please's own parse of a merge with trailers, a respaced subject, a subject with trailing space and a body, and a body that breaks the parser; unparseable merges; one warning a run; `changelog-sections` that differ refused, the same written differently accepted |

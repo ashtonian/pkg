@@ -104,19 +104,34 @@ test("a pull request's BEGIN_COMMIT_OVERRIDE entries stand as the author wrote t
   assert.equal(merge.breaking, false);
 });
 
-// release-please associates a commit of two stacked pull requests with one of
-// them; when that one sets an override, the commit carries its text.
-test("a branch commit carrying another pull request's override takes nothing over", () => {
-  const subject = 'fix(parse): tidy reader (#260)';
-  const other = { mergeCommitOid: 'm9', body: 'BEGIN_COMMIT_OVERRIDE\nfeat(parse)!: the other change\nEND_COMMIT_OVERRIDE' };
-  const header = commit('m1', subject);
-  const foreign = commit('b1', 'feat(parse)!: the other change', { pullRequest: other });
+// A pull request merged into another's branch, stacked, lands through the
+// outer merge; release-please gives its commits its override's text.
+test("a stacked pull request's override folds into the merge it landed through", () => {
+  const subject = 'fix(parse): tidy (#12)';
+  const stacked = { mergeCommitOid: 'mi', body: 'BEGIN_COMMIT_OVERRIDE\nfeat(parse)!: drop Reader\nEND_COMMIT_OVERRIDE' };
+  const header = commit('m2', subject);
+  const inner = commit('mi', 'feat(parse)!: drop Reader', { pullRequest: stacked });
 
-  const kept = keep([header, foreign], { m1: [subject, 'b1'] });
+  const kept = keep([header, inner], { m2: [subject, 'mi'] });
 
   assert.deepEqual(kept, [header]);
-  assert.equal(header.type, 'fix');
-  assert.equal(header.breaking, false);
+  assert.equal(header.type, 'feat');
+  assert.equal(header.breaking, true);
+});
+
+// The merge's own override stands for the whole change, so a branch commit
+// GitHub associates with some other pull request goes too, without a warning.
+test("a merge listed as its own pull request's override drops every branch commit", () => {
+  const warnings = [];
+  const own = { mergeCommitOid: 'm1', body: 'BEGIN_COMMIT_OVERRIDE\nfix(parse): one line\nEND_COMMIT_OVERRIDE' };
+  const entry = commit('m1', 'fix(parse): one line', { pullRequest: own });
+  const elsewhere = commit('b1', 'feat(parse): add X', { pullRequest: { mergeCommitOid: undefined, body: '' } });
+
+  const kept = keep([entry, elsewhere], { m1: ['feat(parse): add X and Y (#20)', 'b1'] }, { options: { warn: m => warnings.push(m) } });
+
+  assert.deepEqual(kept, [entry]);
+  assert.equal(entry.type, 'fix');
+  assert.deepEqual(warnings, []);
 });
 
 test("another pull request's override stays listed when nothing carries its change", () => {
