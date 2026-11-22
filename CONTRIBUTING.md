@@ -19,7 +19,7 @@ The repository's `go.work` ties the published modules together, so a change to o
 | `make parse-release-check` | Fresh module-archive consumer, tagged tests, README program and dependency audit |
 | `make parse-sdk-release-check` | Packed SDK consumer, TypeScript declarations, runtime subpaths and sourcemaps |
 | `make parse-sdk-registry-check` | Registry processing delay, integrity and deadline regressions |
-| `make lint` | `go vet` and staticcheck; tagged modules in one pass with both tags |
+| `make lint` / `make lint-cookbook` | `go vet` and staticcheck over the published modules, tagged ones in one pass with both tags / over the cookbook |
 | `make release-check` | Every module as a consumer gets it, without the race detector: gitx and config standalone builds plus the module archive checks below. `RELEASE_CHECKS='parse-release-check'` runs a subset |
 | `make gowalker-release-check` | Gowalker archive downloaded into a fresh consumer, its tests, the README quick start and complete usage examples |
 | `make httpx-release-check` | Five module ZIPs downloaded by fresh consumers, both tagged lanes, Gin integration and benchmark smoke tests |
@@ -28,31 +28,54 @@ The repository's `go.work` ties the published modules together, so a change to o
 | `make cookbook-check` | The [config cookbook](config/examples/cookbook), a module of runnable recipes |
 | `make ci` | All of the above |
 
+| Make variable | Default | Description |
+|---|---|---|
+| `PACKAGES` | `all` | The packages the `test-*` and `lint` targets cover: `all`, or space-separated `<module dir>:<package dir>` entries, as CI passes the packages a change reaches. `make test-parse-unit PACKAGES='parse:parse parse:parse/filter'` tests those two packages; a target whose modules have no entry runs nothing |
+| `RELEASE_CHECKS` | every module's release check | The checks `make release-check` runs |
+
 GitHub Actions runs workflows here only for the repository owner. Pull requests opened by a bot, such as Dependabot updates or a release PR opened without the `RELEASE_PLEASE_TOKEN` secret, therefore get no checks: run CI on the branch with `gh workflow run ci.yml -R ashtonian/pkg --ref <branch>`, and the pull request shows the results.
 
-CI classifies the complete event delta before scheduling suites, and runs each suite once.
-Changes confined to `CONTRIBUTING.md` and Markdown guides in `config/docs`, `gowalker/docs`,
-`httpx/docs` or `parse/docs` skip the runtime suites, PostgreSQL services, SDK suite,
-benchmarks and lint. Package READMEs, test data, source examples, configuration and
-unknown paths retain full validation. Renames include both paths; an unavailable base
-runs every check. Explicit workflow dispatch and the nightly run always run the full suite.
+CI runs what a change reaches. The change-scope job takes the event's complete delta: a
+pull request's merge against its base, or a push against the commit it replaced.
+`tools/ci_scope.py` lists the workspace's packages with `go list -test`
+under every platform and build tag set CI compiles, and selects:
+
+- The packages a change reaches: each package it edits, and every workspace package whose
+  build or tests link one of them. A test file reaches only its own package. Any other file
+  in a module (a README, test data, an embedded file) reaches every package of that module,
+  because tests read and packages embed files anywhere in it.
+- The jobs whose modules hold a reached package: the Ubuntu suites and lint for any, macOS
+  for the platform modules, the PostgreSQL legs for parse, Go 1.26 for httpx and gitx. Their
+  test and lint targets cover only the reached packages (`PACKAGES`).
+- The release checks of the module trees the change touches, and the SDK job when the SDK,
+  the corpora in `parse/testdata` or its check scripts change.
+
+`CONTRIBUTING.md`, the root `README.md` and the Markdown guides in `config/docs`,
+`gowalker/docs`, `httpx/docs` or `parse/docs` reach no package. Module manifests (`go.mod`,
+`go.sum`), `go.work`, `go.work.sum`, the Makefile, workflows, CI scripts, release
+configuration and unknown paths reach everything, as do a delta the job cannot compute, a
+package `go list` cannot read, and a module outside the workspace that requires a workspace
+module. Renames include both paths. Explicit workflow dispatch and the nightly run always
+run the full suite. When a job you expected is skipped, the change-scope job's summary lists
+the selected jobs, packages and release checks, or why it selected everything.
 
 Release checks run per module: each reads only its module's tree, its own script and the
 archive tooling, so a change runs the checks of the modules it touches (the cookbook's with
 either config module), and shared build files, workflow, tooling, manifests and unknown
 paths run all of them. The suites run once each:
 
-- Ubuntu runs every module's race tests (parse's unit tests as below) on the newest Go 1.27
-  patch release; macOS runs only the modules with platform code (config, process, state,
-  1Password).
+- Ubuntu runs the reached packages' race tests (parse's unit tests as below) on the newest
+  Go 1.27 patch release; macOS runs only the modules with platform code (config, process,
+  state, 1Password).
 - Parse's unit tests run without the race detector, then under it only the tests that run
   parse code on several goroutines: files tagged `concurrency`. Parse starts no goroutines
   of its own, so no other test can fail under race; racing the rest would add minutes of
   instrumented compiling and matrix suites to every pull request. A unit test file that
   starts goroutines or calls `t.Parallel` carries the tag; `tools/test_ci_parse_race.py`
   fails the change-scope job when one does not. The nightly run races every parse test.
-- Lint vets every package and test on Go 1.27.0, the declared floor, so it is also the
-  floor's build check. httpx and gitx run their tests on Go 1.26, their floor.
+- Lint vets every reached package and test on Go 1.27.0, the declared floor, so it is also
+  the floor's build check; the cookbook lints there whenever its check runs. httpx and gitx
+  run their tests on Go 1.26, their floor.
 - Parse's SQLite integration runs beside PostgreSQL 17 and 18.
 - The SDK runs every check on its Node.js floor, then only its runtime tests and packed
   consumer on the newest LTS.
@@ -63,13 +86,13 @@ paths run all of them. The suites run once each:
 
 A single signed merge onto `main` may reuse successful PR or owner-dispatched branch
 coverage from the preceding six hours. The receipt must match the complete source tree,
-workflow, repository variables, run attempt and selected scope, release checks included.
+workflow, repository variables, run attempt and selected scope: jobs, packages and release
+checks. Every job the scope selected passed, and none it left out ran.
 PR receipts also match both tested merge parents; a dispatched branch must be the actual
 merged head with the same resulting tree. Failed, cancelled, incomplete or missing evidence
 runs validation. Post-merge benchmark artifacts remain independent because PRs do not
-produce them; a push records them only when the Go code they build changed (`parse/` outside
-the TypeScript SDK, `gowalker/`, `go.work`, `go.work.sum` or `ci.yml`). Explicit reruns
-execute validation even if an older receipt matches.
+produce them; a push records them only when it reaches `parse/filter`, the package they
+build. Explicit reruns execute validation even if an older receipt matches.
 A newer run of the same PR or of `main` cancels the older one, since it covers every change
 the older run would have; manual acceptance runs finish.
 

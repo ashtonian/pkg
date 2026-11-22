@@ -17,8 +17,9 @@ import urllib.parse
 import urllib.request
 import zipfile
 
+from ci_scope import VALIDATION_JOBS
+
 MAX_BYTES = 128 * 1024
-JOBS = {"test", "parse-postgres", "parse-sdk", "minimum-go", "modules", "lint"}
 
 
 def git(*args):
@@ -53,25 +54,28 @@ def record(env, output):
     elif event_name != "workflow_dispatch":
         raise ValueError("only PR and explicit validation runs produce receipts")
     results = json.loads(env["VALIDATION_JOBS"])
-    if set(results) != JOBS | {"scope"}:
+    if set(results) != set(VALIDATION_JOBS) | {"scope"}:
         raise ValueError("incomplete validation job inventory")
-    runtime = results["scope"]["outputs"]["runtime"]
-    checks = results["scope"]["outputs"]["checks"]
-    for name, job in results.items():
-        allowed = {"success", "skipped"} if runtime == "false" and name not in {"scope", "modules"} else {"success"}
-        if job["result"] not in allowed:
+    scope = results["scope"]["outputs"]
+    plan = json.loads(scope["jobs"])
+    if results["scope"]["result"] != "success" or not set(VALIDATION_JOBS) <= set(plan):
+        raise ValueError("validation did not pass: scope")
+    # A job the scope left out must not have run, and every job it selected passed.
+    for name in VALIDATION_JOBS:
+        if results[name]["result"] != ("success" if plan[name] is True else "skipped"):
             raise ValueError("validation did not pass: " + name)
-    receipt = {"version": 2, "repository": env["GITHUB_REPOSITORY"], "event": event_name,
-               "source": identity, "policy": policy(env), "runtime": runtime, "checks": checks,
+    receipt = {"version": 3, "repository": env["GITHUB_REPOSITORY"], "event": event_name,
+               "source": identity, "policy": policy(env), "jobs": scope["jobs"],
+               "packages": scope["packages"], "checks": scope["checks"],
                "run_id": int(env["GITHUB_RUN_ID"]), "attempt": int(env["GITHUB_RUN_ATTEMPT"])}
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(json.dumps(receipt, sort_keys=True) + "\n")
 
 
 def matches(receipt, run, identity, env):
-    if (receipt.get("version") != 2 or receipt.get("repository") != env["GITHUB_REPOSITORY"]
-            or receipt.get("policy") != policy(env) or receipt.get("runtime") != env["RUNTIME_REQUIRED"]
-            or receipt.get("checks") != env["CHECKS_REQUIRED"]
+    if (receipt.get("version") != 3 or receipt.get("repository") != env["GITHUB_REPOSITORY"]
+            or receipt.get("policy") != policy(env) or receipt.get("jobs") != env["JOBS_REQUIRED"]
+            or receipt.get("packages") != env["PACKAGES_REQUIRED"] or receipt.get("checks") != env["CHECKS_REQUIRED"]
             or receipt.get("run_id") != run["id"] or receipt.get("attempt") != run["run_attempt"]
             or receipt.get("event") != run["event"] or receipt.get("source", {}).get("tree") != identity["tree"]):
         return False

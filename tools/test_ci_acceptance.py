@@ -10,11 +10,14 @@ import urllib.error
 import zipfile
 
 import ci_acceptance as ci
+import ci_scope
 
 SOURCE = {"sha": "a" * 40, "parents": ["b" * 40, "c" * 40], "tree": "d" * 40}
+PLAN = {name: name in {"test", "parse-postgres", "modules", "lint"} for name in ci_scope.JOBS}
+JOBS = json.dumps(PLAN, sort_keys=True, separators=(",", ":"))
 ENV = {"GITHUB_RUN_ATTEMPT": "1", "GITHUB_EVENT_NAME": "push", "GITHUB_REF": "refs/heads/main", "GITHUB_SHA": "a" * 40,
-       "GITHUB_REPOSITORY": "o/r", "BEFORE": "b" * 40, "CI_VARIABLES_JSON": "{}", "RUNTIME_REQUIRED": "true",
-       "CHECKS_REQUIRED": "parse-release-check"}
+       "GITHUB_REPOSITORY": "o/r", "BEFORE": "b" * 40, "CI_VARIABLES_JSON": "{}", "JOBS_REQUIRED": JOBS,
+       "PACKAGES_REQUIRED": "parse:parse parse:parse/filter", "CHECKS_REQUIRED": "parse-release-check"}
 RUN = {"id": 4, "run_attempt": 2, "event": "pull_request", "head_sha": "c" * 40,
        "status": "completed", "conclusion": "success", "updated_at": "2026-11-07T06:45:00Z",
        "repository": {"full_name": "o/r"}, "head_repository": {"full_name": "o/r"}, "html_url": "https://example/run/4"}
@@ -22,9 +25,10 @@ RUN = {"id": 4, "run_attempt": 2, "event": "pull_request", "head_sha": "c" * 40,
 
 class Acceptance(unittest.TestCase):
     def setUp(self):
-        self.receipt = {"version": 2, "repository": "o/r", "event": "pull_request", "source": copy.deepcopy(SOURCE),
-                        "policy": {"workflow": "policy", "variables": "vars"}, "runtime": "true",
-                        "checks": "parse-release-check", "run_id": 4, "attempt": 2}
+        self.receipt = {"version": 3, "repository": "o/r", "event": "pull_request", "source": copy.deepcopy(SOURCE),
+                        "policy": {"workflow": "policy", "variables": "vars"}, "jobs": JOBS,
+                        "packages": "parse:parse parse:parse/filter", "checks": "parse-release-check",
+                        "run_id": 4, "attempt": 2}
         self.run = copy.deepcopy(RUN)
         self.artifacts = [{"id": 1, "name": "acceptance-2", "expired": False}]
         patches = [patch.object(ci, "source", return_value=copy.deepcopy(SOURCE)),
@@ -63,9 +67,12 @@ class Acceptance(unittest.TestCase):
                 self.receipt[field][key] = value
                 self.assertFalse(self.verify())
                 self.receipt = previous
-        self.assertFalse(self.verify({**ENV, "RUNTIME_REQUIRED": "false"}))
+        wider = json.dumps({**PLAN, "parse-sdk": True}, sort_keys=True, separators=(",", ":"))
+        self.assertFalse(self.verify({**ENV, "JOBS_REQUIRED": wider}))
+        self.assertFalse(self.verify({**ENV, "PACKAGES_REQUIRED": "parse:parse"}))
+        self.assertFalse(self.verify({**ENV, "PACKAGES_REQUIRED": "all"}))
         self.assertFalse(self.verify({**ENV, "CHECKS_REQUIRED": "parse-release-check httpx-release-check"}))
-        self.receipt["version"] = 1
+        self.receipt["version"] = 2
         self.assertFalse(self.verify())
 
     def test_failure_staleness_foreign_repo_and_missing_evidence_run_checks(self):
@@ -86,27 +93,29 @@ class Acceptance(unittest.TestCase):
         with patch.object(ci, "source", return_value={**SOURCE, "parents": ["b" * 40]}):
             self.assertFalse(self.verify())
 
-    def test_receipt_requires_all_selected_jobs_and_archive_examples(self):
+    def test_receipt_requires_exactly_the_selected_jobs(self):
         with tempfile.TemporaryDirectory() as directory:
             event = Path(directory, "event.json")
             event.write_text('{}')
-            jobs = {name: {"result": "success"} for name in ci.JOBS | {"scope"}}
-            jobs["scope"]["outputs"] = {"runtime": "true", "checks": "parse-release-check"}
+            jobs = {name: {"result": "success" if PLAN[name] else "skipped"} for name in ci_scope.VALIDATION_JOBS}
+            jobs["scope"] = {"result": "success", "outputs": {"jobs": JOBS, "packages": "parse:parse",
+                                                              "checks": "parse-release-check"}}
             env = {**ENV, "GITHUB_EVENT_NAME": "workflow_dispatch", "GITHUB_ACTOR_ID": "4212452",
                    "GITHUB_RUN_ID": "4", "GITHUB_RUN_ATTEMPT": "2", "GITHUB_EVENT_PATH": str(event)}
             output = Path(directory, "acceptance.json")
             ci.record({**env, "VALIDATION_JOBS": json.dumps(jobs)}, output)
-            self.assertEqual(json.loads(output.read_text())["checks"], "parse-release-check")
-            for name in ci.JOBS:
-                jobs[name]["result"] = "skipped"
-                with self.assertRaises(ValueError):
-                    ci.record({**env, "VALIDATION_JOBS": json.dumps(jobs)}, output)
-                jobs[name]["result"] = "success"
-            jobs["scope"]["outputs"]["runtime"] = "false"
-            for name in ci.JOBS - {"modules"}:
-                jobs[name]["result"] = "skipped"
-            ci.record({**env, "VALIDATION_JOBS": json.dumps(jobs)}, output)
-            jobs["modules"]["result"] = "skipped"
+            receipt = json.loads(output.read_text())
+            self.assertEqual((receipt["jobs"], receipt["packages"], receipt["checks"]),
+                             (JOBS, "parse:parse", "parse-release-check"))
+            for name in ci_scope.VALIDATION_JOBS:
+                with self.subTest(job=name):
+                    previous = jobs[name]["result"]
+                    # A selected job that did not pass, or a job that ran unselected.
+                    jobs[name]["result"] = "skipped" if PLAN[name] else "success"
+                    with self.assertRaises(ValueError):
+                        ci.record({**env, "VALIDATION_JOBS": json.dumps(jobs)}, output)
+                    jobs[name]["result"] = previous
+            del jobs["test-darwin"]
             with self.assertRaises(ValueError):
                 ci.record({**env, "VALIDATION_JOBS": json.dumps(jobs)}, output)
 
@@ -132,7 +141,7 @@ class Wiring(unittest.TestCase):
         text = (Path(__file__).resolve().parents[1] / '.github/workflows/ci.yml').read_text()
         benchmark = text.split('  parse-benchmarks:\n', 1)[1].split('  minimum-go:\n', 1)[0]
         self.assertNotIn('outputs.reused', benchmark)
-        self.assertIn('outputs.runtime', benchmark)
+        self.assertIn("fromJSON(needs.scope.outputs.jobs)['parse-benchmarks']", benchmark)
         self.assertIn("github.event_name != 'pull_request'", benchmark)
         self.assertIn('test_ci_*.py', text)
 

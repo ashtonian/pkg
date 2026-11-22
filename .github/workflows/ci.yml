@@ -45,9 +45,9 @@ jobs:
     runs-on: arc-pkg
     timeout-minutes: 5
     outputs:
-      runtime: ${{ steps.scope.outputs.runtime }}
+      jobs: ${{ steps.scope.outputs.jobs }}
+      packages: ${{ steps.scope.outputs.packages }}
       checks: ${{ steps.scope.outputs.checks }}
-      parse: ${{ steps.scope.outputs.parse }}
       reused: ${{ steps.acceptance.outputs.reused }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -55,6 +55,11 @@ jobs:
           persist-credentials: false
           fetch-depth: 0
           filter: blob:none
+      # go list maps the change to the packages it reaches; nothing is built.
+      - uses: ashtonian/go-ci-actions@439da8bdc22311fff2f04371ca9cd9c3233ee7d0 # v1.6.2
+        with:
+          go-version: '1.27.x'
+          cache-mode: off
       - name: Verify CI scope policy
         run: python3 -B -m unittest discover -s tools -p 'test_ci_*.py'
       # The patterns name private code, so they live in a secret, not here;
@@ -64,44 +69,37 @@ jobs:
           PRIVATE_REFERENCE_PATTERNS: ${{ secrets.PRIVATE_REFERENCE_PATTERNS }}
         run: python3 -B tools/private_references.py
       - id: scope
-        run: python3 tools/ci_scope.py
+        run: python3 -B tools/ci_scope.py
       - name: Set up artifact receipt access
         uses: ashtonian/go-ci-actions/artifact-setup@439da8bdc22311fff2f04371ca9cd9c3233ee7d0 # v1.6.2
       - id: acceptance
         env:
           GITHUB_TOKEN: ${{ github.token }}
           BEFORE: ${{ github.event.before }}
-          RUNTIME_REQUIRED: ${{ steps.scope.outputs.runtime }}
+          JOBS_REQUIRED: ${{ steps.scope.outputs.jobs }}
+          PACKAGES_REQUIRED: ${{ steps.scope.outputs.packages }}
           CHECKS_REQUIRED: ${{ steps.scope.outputs.checks }}
           CI_VARIABLES_JSON: ${{ toJSON(vars) }}
         run: python3 tools/ci_acceptance.py verify
 
   test:
     needs: scope
-    name: test (${{ matrix.os }})
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - os: ubuntu-latest
-          # Only the modules with platform code: config's file watch rests on
-          # kqueue there, and the native modules' processes and files on Darwin.
-          # Lint vets every module on the declared Go floor.
-          - os: macos-latest
-            platform-only: true
-    if: github.actor_id == '4212452' && (github.event_name != 'pull_request' || (github.event.pull_request.user.id == 4212452 && github.event.pull_request.head.repo.full_name == github.repository)) && needs.scope.outputs.runtime != 'false' && needs.scope.outputs.reused != 'true'
+    name: test (ubuntu-latest)
+    if: github.actor_id == '4212452' && (github.event_name != 'pull_request' || (github.event.pull_request.user.id == 4212452 && github.event.pull_request.head.repo.full_name == github.repository)) && fromJSON(needs.scope.outputs.jobs).test && needs.scope.outputs.reused != 'true'
     permissions:
       contents: read
       id-token: write
-    runs-on: ${{ matrix.os == 'ubuntu-latest' && 'arc-pkg' || matrix.os }}
+    runs-on: arc-pkg
     timeout-minutes: 45
+    env:
+      # The packages the change reaches; each target tests its modules' share.
+      PACKAGES: ${{ needs.scope.outputs.packages }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - uses: ashtonian/go-ci-actions@439da8bdc22311fff2f04371ca9cd9c3233ee7d0 # v1.6.2
         with:
-          workload: ${{ toJSON(matrix) }}
           go-version: '1.27.x'
           cache-dependency-path: "**/go.sum"
       - name: Native process and document unit tests
@@ -111,32 +109,55 @@ jobs:
       - name: Config tests
         run: make test-config
       - name: gitx tests
-        if: ${{ !matrix.platform-only }}
         run: make test-gitx
       - name: JSON value tests
-        if: ${{ !matrix.platform-only }}
         run: make test-jsonvalue
       - name: Gowalker tests
-        if: ${{ !matrix.platform-only }}
         run: make test-gowalker
       - name: HTTPx unit tests with race detection
-        if: ${{ !matrix.platform-only }}
         run: make test-httpx-unit
       - name: HTTPx integration tests with race detection
-        if: ${{ !matrix.platform-only }}
         run: make test-httpx-integration
       # Parse's SQLite integration runs in parse-postgres, beside PostgreSQL.
       # Pull requests race only the parse tests that run code concurrently;
       # the nightly run races every one.
       - name: Parse unit tests and fuzz seeds
-        if: ${{ !matrix.platform-only && !inputs.nightly }}
+        if: ${{ !inputs.nightly }}
         run: make test-parse-unit
       - name: Parse concurrency tests with race detection
-        if: ${{ !matrix.platform-only && !inputs.nightly }}
+        if: ${{ !inputs.nightly }}
         run: make test-parse-race
       - name: Parse unit tests and fuzz seeds with race detection
-        if: ${{ !matrix.platform-only && inputs.nightly }}
+        if: ${{ inputs.nightly }}
         run: make test-parse-race-all
+  # Only the modules with platform code: config's file watch rests on kqueue
+  # there, and the native modules' processes and files on Darwin. Lint vets
+  # every module on the declared Go floor.
+  test-darwin:
+    needs: scope
+    name: test (macos-latest)
+    if: github.actor_id == '4212452' && (github.event_name != 'pull_request' || (github.event.pull_request.user.id == 4212452 && github.event.pull_request.head.repo.full_name == github.repository)) && fromJSON(needs.scope.outputs.jobs)['test-darwin'] && needs.scope.outputs.reused != 'true'
+    permissions:
+      contents: read
+      id-token: write
+    runs-on: macos-latest
+    timeout-minutes: 45
+    env:
+      PACKAGES: ${{ needs.scope.outputs.packages }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ashtonian/go-ci-actions@439da8bdc22311fff2f04371ca9cd9c3233ee7d0 # v1.6.2
+        with:
+          go-version: '1.27.x'
+          cache-dependency-path: "**/go.sum"
+      - name: Native process and document unit tests
+        run: make test-native-unit
+      - name: Native process and document integration tests
+        run: make test-native-integration
+      - name: Config tests
+        run: make test-config
   parse-postgres:
     needs: scope
     name: parse integration (SQLite, PostgreSQL ${{ matrix.postgres }})
@@ -144,12 +165,14 @@ jobs:
       fail-fast: false
       matrix:
         postgres: ['17', '18']
-    if: github.actor_id == '4212452' && (github.event_name != 'pull_request' || (github.event.pull_request.user.id == 4212452 && github.event.pull_request.head.repo.full_name == github.repository)) && needs.scope.outputs.runtime != 'false' && needs.scope.outputs.reused != 'true'
+    if: github.actor_id == '4212452' && (github.event_name != 'pull_request' || (github.event.pull_request.user.id == 4212452 && github.event.pull_request.head.repo.full_name == github.repository)) && fromJSON(needs.scope.outputs.jobs)['parse-postgres'] && needs.scope.outputs.reused != 'true'
     permissions:
       contents: read
       id-token: write
     runs-on: arc-pkg
     timeout-minutes: 45
+    env:
+      PACKAGES: ${{ needs.scope.outputs.packages }}
     services:
       postgres:
         image: postgis/postgis:${{ matrix.postgres }}-3.6
@@ -178,7 +201,7 @@ jobs:
   parse-sdk:
     needs: scope
     name: parse TypeScript SDK and corpora (node 22.13.0 and lts/*)
-    if: github.actor_id == '4212452' && (github.event_name != 'pull_request' || (github.event.pull_request.user.id == 4212452 && github.event.pull_request.head.repo.full_name == github.repository)) && needs.scope.outputs.runtime != 'false' && needs.scope.outputs.reused != 'true'
+    if: github.actor_id == '4212452' && (github.event_name != 'pull_request' || (github.event.pull_request.user.id == 4212452 && github.event.pull_request.head.repo.full_name == github.repository)) && fromJSON(needs.scope.outputs.jobs)['parse-sdk'] && needs.scope.outputs.reused != 'true'
     runs-on: arc-pkg
     timeout-minutes: 45
     steps:
@@ -227,9 +250,9 @@ jobs:
   parse-benchmarks:
     needs: scope
     name: parse benchmark artifacts
-    # On main, only when the Go code the benchmarks build changed; the nightly
-    # run always records them.
-    if: github.actor_id == '4212452' && github.event_name != 'pull_request' && needs.scope.outputs.runtime != 'false' && needs.scope.outputs.parse == 'true'
+    # On main, only when the change reaches the benchmarked package; the
+    # nightly run always records them.
+    if: github.actor_id == '4212452' && github.event_name != 'pull_request' && fromJSON(needs.scope.outputs.jobs)['parse-benchmarks']
     permissions:
       contents: read
       id-token: write
@@ -257,7 +280,7 @@ jobs:
   minimum-go:
     needs: scope
     name: httpx and gitx (go 1.26)
-    if: github.actor_id == '4212452' && (github.event_name != 'pull_request' || (github.event.pull_request.user.id == 4212452 && github.event.pull_request.head.repo.full_name == github.repository)) && needs.scope.outputs.runtime != 'false' && needs.scope.outputs.reused != 'true'
+    if: github.actor_id == '4212452' && (github.event_name != 'pull_request' || (github.event.pull_request.user.id == 4212452 && github.event.pull_request.head.repo.full_name == github.repository)) && fromJSON(needs.scope.outputs.jobs)['minimum-go'] && needs.scope.outputs.reused != 'true'
     permissions:
       contents: read
       id-token: write
@@ -295,7 +318,7 @@ jobs:
   modules:
     needs: scope
     name: module archives, examples and release tooling
-    if: github.actor_id == '4212452' && (github.event_name != 'pull_request' || (github.event.pull_request.user.id == 4212452 && github.event.pull_request.head.repo.full_name == github.repository)) && needs.scope.outputs.reused != 'true'
+    if: github.actor_id == '4212452' && (github.event_name != 'pull_request' || (github.event.pull_request.user.id == 4212452 && github.event.pull_request.head.repo.full_name == github.repository)) && fromJSON(needs.scope.outputs.jobs).modules && needs.scope.outputs.reused != 'true'
     permissions:
       contents: read
       id-token: write
@@ -320,20 +343,18 @@ jobs:
           GOCACHEPROG_LOG_LEVEL: info
         run: |
           read -ra checks <<< "$CHECKS"
-          if [ "${#checks[@]}" -eq 0 ]; then
-            echo "No module, cookbook or release tooling changed"
-            exit 0
-          fi
           make "${checks[@]}"
   lint:
     needs: scope
     name: lint (go 1.27.0 floor)
-    if: github.actor_id == '4212452' && (github.event_name != 'pull_request' || (github.event.pull_request.user.id == 4212452 && github.event.pull_request.head.repo.full_name == github.repository)) && needs.scope.outputs.runtime != 'false' && needs.scope.outputs.reused != 'true'
+    if: github.actor_id == '4212452' && (github.event_name != 'pull_request' || (github.event.pull_request.user.id == 4212452 && github.event.pull_request.head.repo.full_name == github.repository)) && fromJSON(needs.scope.outputs.jobs).lint && needs.scope.outputs.reused != 'true'
     permissions:
       contents: read
       id-token: write
     runs-on: arc-pkg
     timeout-minutes: 45
+    env:
+      PACKAGES: ${{ needs.scope.outputs.packages }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -350,11 +371,17 @@ jobs:
         run: |
           go version | grep -F ' go1.27.0 '
           make lint
+      - name: Cookbook go vet and staticcheck on the declared Go floor
+        if: contains(needs.scope.outputs.checks, 'cookbook-check')
+        env:
+          GOTOOLCHAIN: local
+        run: make lint-cookbook
 
   accepted:
     name: Preserve complete validation coverage
-    needs: [scope, test, parse-postgres, parse-sdk, minimum-go, modules, lint]
-    if: ${{ !cancelled() && !inputs.nightly && (github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch') && needs.scope.result == 'success' && needs.modules.result == 'success' && !contains(needs.*.result, 'failure') }}
+    needs: [scope, test, test-darwin, parse-postgres, parse-sdk, minimum-go, modules, lint]
+    # The record step checks each job against the scope's selection.
+    if: ${{ !cancelled() && !inputs.nightly && (github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch') && needs.scope.result == 'success' && !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled') }}
     runs-on: arc-pkg
     timeout-minutes: 5
     steps:
