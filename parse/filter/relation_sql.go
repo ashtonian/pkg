@@ -156,7 +156,9 @@ func rebaseNode(n *FilterNode, table, alias string, moved map[*FieldSchema]*Fiel
 		return nil, fmt.Errorf("raw SQL cannot be applied to the aliased relation table %s", alias)
 	}
 	out := *n
-	if n.Field != nil && n.Field.Relation == nil {
+	// An element field or element path stays a placeholder: its own
+	// `$some` / `$none` binds it to the element alias.
+	if n.Field != nil && n.Field.Relation == nil && !isElement(n.Field) && !isElementPath(n.Field) {
 		f, err := rebaseField(n.Field, table, alias, moved)
 		if err != nil {
 			return nil, err

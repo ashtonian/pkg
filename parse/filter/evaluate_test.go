@@ -185,6 +185,32 @@ func TestColumnValue(t *testing.T) {
 	assert.Error(t, err, "a NULL element has no canonical value")
 }
 
+// A hand-built schema's scalar array element, built without newElement,
+// takes element conditions in memory and in SQL.
+func TestEvaluateHandBuiltElement(t *testing.T) {
+	labels := &FieldSchema{
+		ExternalName: "labels", SQLExpr: "t.labels", DataType: core.FieldTypeArray, Elem: core.FieldTypeString,
+		AllowedOperators: []FilterOperator{OpSome, OpNone},
+		Element:          &FieldSchema{ExternalName: "labels", DataType: core.FieldTypeString, AllowedOperators: []FilterOperator{OpEq}},
+	}
+	schema := &ResourceSchema{Name: "t", Fields: map[string]*FieldSchema{"labels": labels}}
+	parsed, err := NewFilterParser(schema, core.DefaultConfig()).Parse(`{"labels":{"$some":{"$eq":"a"}}}`)
+	require.NoError(t, err)
+
+	for _, tt := range []struct {
+		labels []any
+		want   Truth
+	}{{[]any{"b", "a"}, True}, {[]any{"b"}, False}} {
+		got, err := Evaluate(parsed.Root, valueRow(tt.labels))
+		require.NoError(t, err)
+		assert.Equal(t, tt.want, got, "%v", tt.labels)
+	}
+	res, err := NewSQLBuilder(schema, SQLiteDialect{}).Build(parsed)
+	require.NoError(t, err)
+	assert.Contains(t, res.Where, "json_each(")
+	assert.NotContains(t, res.Where, elementColumn, "the element is bound to its alias")
+}
+
 func TestEvaluateElementsOfDecodedDocuments(t *testing.T) {
 	type item struct {
 		Qty int64 `json:"qty" parse:"filter"`

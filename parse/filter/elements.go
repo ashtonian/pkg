@@ -10,8 +10,9 @@ import (
 	"github.com/ashtonian/pkg/parse/core"
 )
 
-// elementColumn is the placeholder document column of an element path:
-// each predicate on the elements rebinds it to its own element alias.
+// elementColumn is the SQL an unbound element field or element path reads
+// until a predicate on the elements binds it to its own element alias. It
+// only labels the placeholder: FieldSchema.role, not this text, marks one.
 const elementColumn = "elem__"
 
 // documentElements derives the element schema of a JSON array document
@@ -61,6 +62,7 @@ func documentElements(g *core.SchemaGenerator, field *core.Field, doc *FieldSche
 		if err != nil {
 			return nil, fmt.Errorf("element path %s: %w", d.Path, err)
 		}
+		f.role = roleElementPath
 		f.ExternalName = d.Path
 		if f.Element != nil {
 			f.Element.ExternalName = d.Path
@@ -109,7 +111,7 @@ func (PostgresDialect) objectElement(alias string) string { return alias + ".v" 
 // scalarElement reads a native array column's element as it is, and a JSON
 // array's as an element path (PathExpr).
 func (PostgresDialect) scalarElement(f *FieldSchema, alias string) *FieldSchema {
-	e := *elementOf(f)
+	e := bound(elementOf(f))
 	if f.Path == nil {
 		e.SQLExpr = alias + ".v"
 		return &e
@@ -139,7 +141,7 @@ func (SQLiteDialect) objectElement(alias string) string {
 // scalarElement reads every element as an element path (PathExpr): an
 // array column is JSON text too.
 func (SQLiteDialect) scalarElement(f *FieldSchema, alias string) *FieldSchema {
-	e := *elementOf(f)
+	e := bound(elementOf(f))
 	e.SQLExpr = ""
 	e.Path = &JSONPath{Column: alias, Storage: StorageJSONB, element: true}
 	return &e
@@ -343,7 +345,7 @@ func rebaseElements(n *FilterNode, value string, moved map[*FieldSchema]*FieldSc
 		}
 		m, ok := moved[f]
 		if !ok {
-			c := *f
+			c := bound(f)
 			p := *f.Path
 			p.Column, p.Storage = value, StorageJSONB
 			c.Path = &p
