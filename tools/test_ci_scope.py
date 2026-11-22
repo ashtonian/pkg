@@ -80,6 +80,7 @@ class Scope(unittest.TestCase):
             ("config/kongprovider/load.go",): ["kongprovider-release-check", "cookbook-check"],
             ("config/examples/cookbook/main.go",): ["cookbook-check"],
             ("gitx/merge.go", "jsonvalue/value.go"): ["gitx-release-check", "jsonvalue-release-check"],
+            ("tools/release-please/first-parent.mjs",): ["release-please-check"],
             ("CONTRIBUTING.md", "README.md"): [],
         }
         for paths, want in cases.items():
