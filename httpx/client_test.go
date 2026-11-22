@@ -5,6 +5,7 @@ package httpx
 import (
 	"net/http"
 	"net/http/httptest"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -320,5 +321,61 @@ func TestWithLogging(t *testing.T) {
 
 	if !found {
 		t.Error("expected LoggingTransport in stack")
+	}
+}
+
+func TestClientComposesRetryOptions(t *testing.T) {
+	for _, ctor := range []struct {
+		name      string
+		newClient func(...Option) (*http.Client, error)
+	}{{"client", NewClient}, {"standard", NewStandard}} {
+		t.Run(ctor.name, func(t *testing.T) {
+			for _, tc := range []struct {
+				name string
+				opts []Option
+				want int32
+			}{
+				{"grouped", []Option{WithRetry(WithMaxAttempts(1), WithRetryOn(503), WithBackoff(time.Millisecond, time.Millisecond, 2))}, 1},
+				{"split", []Option{WithRetry(WithMaxAttempts(1)), WithRetry(WithRetryOn(503), WithBackoff(time.Millisecond, time.Millisecond, 2))}, 1},
+				{"override", []Option{WithRetry(WithMaxAttempts(1)), WithRetry(WithMaxAttempts(2), WithRetryOn(503), WithBackoff(time.Millisecond, time.Millisecond, 2))}, 2},
+			} {
+				t.Run(tc.name, func(t *testing.T) {
+					var attempts atomic.Int32
+					server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+						attempts.Add(1)
+						w.WriteHeader(http.StatusServiceUnavailable)
+					}))
+					defer server.Close()
+					client := must(ctor.newClient(tc.opts...))
+					defer client.CloseIdleConnections()
+					response, err := client.Get(server.URL)
+					if err != nil {
+						t.Fatal(err)
+					}
+					response.Body.Close()
+					if got := attempts.Load(); got != tc.want {
+						t.Errorf("origin received %d attempts, want %d", got, tc.want)
+					}
+				})
+			}
+		})
+	}
+}
+
+func TestClientComposesBaseAndLimiterOptions(t *testing.T) {
+	client := must(NewClient(
+		WithBaseTransport(WithMaxIdleConns(12)),
+		WithBaseTransport(WithMaxIdleConnsPerHost(5)),
+		WithLimiter(1, WithAcquireTimeout(time.Second)),
+		WithLimiter(2),
+	))
+	defer client.CloseIdleConnections()
+	limiter := client.Transport.(*LimiterTransport)
+	if got := cap(limiter.sem); got != 2 || limiter.timeout != time.Second {
+		t.Errorf("limiter capacity %d, timeout %s; want 2, 1s", got, limiter.timeout)
+	}
+	base := limiter.Unwrap().(*http.Transport)
+	if base.MaxIdleConns != 12 || base.MaxIdleConnsPerHost != 5 {
+		t.Errorf("base idle limits %d/%d, want 12/5", base.MaxIdleConns, base.MaxIdleConnsPerHost)
 	}
 }
