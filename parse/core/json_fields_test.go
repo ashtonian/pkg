@@ -80,6 +80,22 @@ type (
 		nameTwiceB
 		E int `json:"e"`
 	}
+	// A struct embedding itself contributes its fields once.
+	nameSelf struct {
+		*nameSelf
+		F int `json:"f"`
+	}
+	// Two structs embedding each other, exported so encoding/json can allocate
+	// the pointers it decodes through: NameMutualB.G is shadowed.
+	NameMutualA struct {
+		*NameMutualB
+		G int `json:"g"`
+	}
+	NameMutualB struct {
+		*NameMutualA
+		G int `json:"g"`
+		H int `json:"h"`
+	}
 )
 
 // JSONFieldsOf names exactly the members encoding/json writes, and each
@@ -88,6 +104,7 @@ func TestJSONFieldsOf_NamesWhatEncodingJSONWrites(t *testing.T) {
 	for _, value := range []any{
 		nameTie{}, nameShadow{}, nameTaggedWins{}, nameHidden{}, nameUnexportedNamed{},
 		nameEmbeds{NameExported: &NameExported{}, nameCount: 1, Omit: 1}, nameTwice{},
+		nameSelf{nameSelf: &nameSelf{}}, NameMutualA{NameMutualB: &NameMutualB{}},
 	} {
 		typ := reflect.TypeOf(value)
 		t.Run(typ.Name(), func(t *testing.T) {
@@ -138,4 +155,16 @@ func TestJSONFieldsOf_IsSharedAndReadsNoRowTags(t *testing.T) {
 
 	_, err = JSONFieldsOf(reflect.TypeFor[map[string]int]())
 	assert.EqualError(t, err, "expected struct type, got map")
+}
+
+// A tag reflect cannot read whole is refused, naming the field, and so is
+// validating a document of its type. The type is built at run time, as vet
+// refuses such a tag in source.
+func TestJSONFieldsOf_RefusesUnreadableTags(t *testing.T) {
+	typ := reflect.StructOf([]reflect.StructField{{Name: "Doc", Type: reflect.TypeFor[int](), Tag: `json:"doc" bson: "doc"`}})
+	_, err := JSONFieldsOf(typ)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "field Doc")
+	err = ValidateJSONKeyRepresentation([]byte(`{"doc":1}`), reflect.New(typ).Interface())
+	assert.ErrorContains(t, err, "field Doc")
 }
