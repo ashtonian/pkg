@@ -30,35 +30,42 @@ The repository's `go.work` ties the published modules together, so a change to o
 
 | Make variable | Default | Description |
 |---|---|---|
-| `PACKAGES` | `all` | The packages the `test-*` and `lint` targets cover: `all`, or space-separated `<module dir>:<package dir>` entries, as CI passes the packages a change reaches. `make test-parse-unit PACKAGES='parse:parse parse:parse/filter'` tests those two packages; a target whose modules have no entry runs nothing |
+| `PACKAGES` | `all` | The packages the `test-*` and `lint` targets cover: `all`, or space-separated import paths, as CI passes the packages a change reaches. `make test-parse-unit PACKAGES='github.com/ashtonian/pkg/parse github.com/ashtonian/pkg/parse/filter'` tests those two packages; each target takes its own modules' paths, and one with none runs nothing |
 | `RELEASE_CHECKS` | every module's release check | The checks `make release-check` runs |
 
 GitHub Actions runs workflows here only for the repository owner. Pull requests opened by a bot, such as Dependabot updates or a release PR opened without the `RELEASE_PLEASE_TOKEN` secret, therefore get no checks: run CI on the branch with `gh workflow run ci.yml -R ashtonian/pkg --ref <branch>`, and the pull request shows the results.
 
-CI runs what a change reaches. The change-scope job takes the event's complete delta: a
-pull request's merge against its base, or a push to `main` against the newest commit of
-`main`'s history whose push run passed, so a failed, cancelled or superseded run leaves no
-change unvalidated. `tools/ci_scope.py` lists the workspace's packages with `go list -test`
-under every platform and build tag set CI compiles, and selects:
+CI runs what a change reaches. Its change-scope job runs go-ci-actions `scope`, configured
+in `ci.yml`. A pull request is measured from the base its merge commit merges into, and a
+push to `main` from the newest green `ci.yml` run on `main`, so a failed, cancelled or
+superseded run leaves no change unvalidated. The scope lists the workspace's packages with
+`go list -test` and selects:
 
-- The packages a change reaches: each package it edits, and every workspace package whose
-  build or tests link one of them. A test file reaches only its own package. Any other file
-  in a module (a README, test data, an embedded file) reaches every package of that module,
-  because tests read and packages embed files anywhere in it.
-- The jobs whose modules hold a reached package: the Ubuntu suites and lint for any, macOS
-  for the platform modules, the PostgreSQL legs for parse, Go 1.26 for httpx and gitx. Their
-  test and lint targets cover only the reached packages (`PACKAGES`).
-- The release checks of the module trees the change touches, and the SDK job when the SDK,
-  the corpora in `parse/testdata` or its check scripts change.
+- The packages a change reaches: each package holding a changed file (its directory, its
+  `testdata` tree, or an embedded file), and every workspace package whose build or tests
+  depend on one. A file a test reads from outside its package, such as a README program
+  under `examples/`, is declared in the scope's `go-owners`, so a change to it reaches the
+  package that reads it; `tools/test_ci_release_checks.py` fails when a test reads a tracked
+  file outside its directory that `go-owners` does not name.
+- The jobs whose packages or paths the change reaches: the Ubuntu suites and lint for any
+  package, macOS for the platform modules, the PostgreSQL legs for parse, Go 1.26 for httpx
+  and gitx, the SDK job for the SDK, the corpora in `parse/testdata` or its check scripts.
+  Their test and lint targets cover only the reached packages (`PACKAGES`).
+- The release checks of the module trees the change touches (`tools/ci_release_checks.py`,
+  below); the modules job runs only when one is selected.
 
-`CONTRIBUTING.md`, the root `README.md` and the Markdown guides in `config/docs`,
-`gowalker/docs`, `httpx/docs` or `parse/docs` reach no package, and the release-please
-manifest and configuration only the release checks. Module manifests (`go.mod`, `go.sum`),
-`go.work`, `go.work.sum`, the Makefile, workflows, CI scripts and unknown paths reach
-everything, as do a delta the job cannot compute, a package `go list` cannot read, and a
-module outside the workspace that requires a workspace module. Renames include both paths. Explicit workflow dispatch and the nightly run always
-run the full suite. When a job you expected is skipped, the change-scope job's summary lists
-the selected jobs, packages and release checks, or why it selected everything.
+`go-ignore` lists what no workspace Go code reads: `CONTRIBUTING.md`, the root `README.md`,
+changelogs, the Markdown guides in `config/docs`, `gowalker/docs`, `httpx/docs` and
+`parse/docs`, the SDK, the release-please manifest and configuration, the release and SDK
+scripts, and the modules outside the workspace (the cookbook, the Gin example, httpx's
+benchmarks, the archive and release tooling), whose own checks read them. A module manifest
+(`go.mod`, `go.sum`), `go.work`, `go.work.sum` or any other file no package owns reaches
+every package; workflows, the Makefile and the CI scripts run every job. So do explicit
+workflow dispatch, the `full-ci` label on a pull request (it applies from the next push or
+run), a delta the scope cannot compute, and a package `go list` cannot load. Renames
+include both paths. When a job you expected is skipped, or ran unexpectedly, read the scope
+step's log: each job's line names the file or package that selected it, and `reason` and
+`go-reason` say what the change was measured from and why the Go scope widened.
 
 Release checks run per module: each reads only its module's tree, its own script and the
 archive tooling, so a change runs the checks of the modules it touches (the cookbook's with
@@ -89,24 +96,24 @@ paths run all of them. The suites run once each:
   which keeps the scratch module cache's random path out of build-cache keys, so the
   dependencies come from the shared build cache; the job logs a cache summary per go command.
 
-A single signed merge onto `main` may reuse successful PR or owner-dispatched branch
-coverage from the preceding six hours. The receipt must match the complete source tree,
-workflow, repository variables, run attempt and selected scope: jobs, packages and release
-checks. Every job the scope selected passed, and none it left out ran.
-PR receipts also match both tested merge parents; a dispatched branch must be the actual
-merged head with the same resulting tree. Failed, cancelled, incomplete or missing evidence
-runs validation. Post-merge benchmark artifacts remain independent because PRs do not
-produce them; a push records them only when it reaches `parse/filter`, the package they
-build. Explicit reruns execute validation even if an older receipt matches.
-A newer run of the same PR or of `main` cancels the older one, since it covers every change
-the older run would have; manual acceptance runs finish.
+A single merge onto `main` reuses its pull request's passing jobs (go-ci-actions
+`acceptance`). The PR run records a receipt of its merge commit's tree, head, workflow,
+run, repository variables and the jobs that passed. The push uses it only on its first
+attempt, when the merge sits on `before`, `before` itself has a green run and the PR run
+passed within six hours; it then skips each job its own scope selects that the receipt
+shows passed, and runs the rest. Anything else, including a squash or rebase merge, a
+direct push, a rerun, a branch validated only by dispatch, or missing evidence, runs the
+push's scoped jobs. Benchmark artifacts come from pushes only: a push
+records them when it reaches `parse/filter`, the package they build, reused or not.
+A newer run of the same PR or of `main` cancels the older one, since the newer one covers
+every change since the last green run; dispatched runs finish.
 
 The `nightly` workflow runs `ci.yml` on main's current commit once a day, and on
 `gh workflow run nightly.yml -R ashtonian/pkg`: every suite and release check at full scope,
-every parse unit test under the race detector, every test rerun (`-count=1`) rather than
-replayed from the cache, and the benchmarks. A scheduled run skips when an earlier nightly
-already passed every job on the same commit; a dispatched one always runs. It records no
-acceptance receipt. Its failure is a regression that scoping or the targeted race run let through, or a
+every parse unit test under the race detector, every test rerun after `go clean -testcache`
+(recording the results pull requests replay; a pull request's results stay in its own
+namespace), and the benchmarks. A scheduled run selects nothing when the last
+green scheduled run was on the same commit; a dispatched one always runs everything. Its failure is a regression that scoping or the targeted race run let through, or a
 new toolchain release breaking a floating Go or Node.js version: reproduce it with the failing
 step's make target (`make test-parse-race-all` for a parse race report) and fix it on a branch.
 GitHub turns off a public repository's schedules after 60 days without activity; turn the

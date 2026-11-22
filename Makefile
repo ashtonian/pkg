@@ -15,12 +15,16 @@ STATICCHECK := honnef.co/go/tools/cmd/staticcheck@v0.8.2
 RACE := -race -gcflags='modernc.org/...=-race=false -d=checkptr=0'
 # Every published module's release check; CI passes only the changed ones.
 RELEASE_CHECKS := gitx-release-check config-release-check kongprovider-release-check native-release-check jsonvalue-release-check gowalker-release-check httpx-release-check parse-release-check
-# The packages the test and lint targets cover: "all", or CI's list of the
-# packages a change reaches, each <module dir>:<package dir> (tools/ci_scope.py).
+MODULE_PATH := github.com/ashtonian/pkg
+# The packages the test and lint targets cover: "all", or the import paths CI's
+# change scope reaches (go-ci-actions scope's go-args).
 PACKAGES ?= all
+# $(call module-packages,<module dir>): its covered packages: the import paths
+# under it, less those of the workspace modules nested inside it.
+module-packages = $(filter-out $(foreach n,$(filter $(1)/%,$(MODULES)),$(MODULE_PATH)/$(n) $(MODULE_PATH)/$(n)/%),$(filter $(MODULE_PATH)/$(1) $(MODULE_PATH)/$(1)/%,$(PACKAGES)))
 # $(call packages,<module dirs>): those modules' covered packages, as go
 # command arguments from the repository root.
-packages = $(strip $(foreach m,$(1),$(if $(filter all,$(PACKAGES)),./$(m)/...,$(patsubst $(m):%,./%,$(filter $(m):%,$(PACKAGES))))))
+packages = $(strip $(foreach m,$(1),$(if $(filter all,$(PACKAGES)),./$(m)/...,$(call module-packages,$(m)))))
 # $(call scoped,<go subcommand and flags>,<module dirs>): run it over their
 # covered packages; a change that reaches none of them runs nothing.
 scoped = $(if $(call packages,$(2)),go $(1) $(call packages,$(2)),@echo "no covered packages in $(strip $(2))")
