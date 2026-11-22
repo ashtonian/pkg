@@ -21,7 +21,9 @@ func TestExampleClientExecutable(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		binary += ".exe"
 	}
-	build := exec.CommandContext(ctx, filepath.Join(runtime.GOROOT(), "bin", "go"), "build", "-race", "-o", binary, "../client")
+	// go test puts its own GOROOT/bin first on PATH; runtime.GOROOT is empty
+	// in a binary built with -trimpath.
+	build := exec.CommandContext(ctx, "go", "build", "-race", "-o", binary, "../client")
 	if output, err := build.CombinedOutput(); err != nil {
 		t.Fatalf("build example client: %v\n%s", err, output)
 	}
