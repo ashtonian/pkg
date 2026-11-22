@@ -169,6 +169,11 @@ type walkWithHiddenSection struct {
 	walkHiddenSection `json:"-"`
 }
 
+type walkWithNamedSection struct {
+	ID                string `json:"id"`
+	walkHiddenSection `json:"section"`
+}
+
 // ShadowBase is exported for reflect.StructOf, which embeds only exported
 // types.
 type ShadowBase struct {
@@ -229,8 +234,8 @@ func TestStructFields_RefuseCapabilityAliases(t *testing.T) {
 }
 
 // A name two fields claim at one depth, which encoding/json drops, a
-// misspelt capability and an embedded struct hidden whole fail the walk
-// with an error naming the fields.
+// misspelt capability, an embedded struct hidden whole and an unexported one
+// named whole fail the walk with an error naming the fields.
 func TestStructFields_RefuseAmbiguousNamesAndUnknownCapabilities(t *testing.T) {
 	cases := map[string]struct {
 		typ  reflect.Type
@@ -238,6 +243,10 @@ func TestStructFields_RefuseAmbiguousNamesAndUnknownCapabilities(t *testing.T) {
 	}{
 		"a misspelt capability":           {reflect.TypeFor[walkMisspelt](), `unknown parse capability "fitler"`},
 		"an embedded struct hidden whole": {reflect.TypeFor[walkWithHiddenSection](), `hide its fields one by one`},
+		"an unexported embedded struct named whole": {
+			reflect.TypeFor[walkWithNamedSection](),
+			`which reflection cannot read; export the type or remove the name`,
+		},
 	}
 	_, tie := shadowing()
 	cases["two promoted fields at one depth"] = struct {

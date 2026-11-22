@@ -317,6 +317,11 @@ func buildStructFields(s *gowalker.Schema, k fieldsKey) (*StructFields, error) {
 		if d.State != gowalker.Named && d.State != gowalker.Unnamed {
 			continue
 		}
+		// gowalker names it, as encoding/json writes it; a row reads every
+		// field's value.
+		if d.State == gowalker.Named && !sf.IsExported() {
+			return nil, fmt.Errorf("field %s: %s:%q names the unexported embedded %s, which reflection cannot read; export the type or remove the name", sf.Name, k.name, sf.Tag.Get(k.name), sf.Type)
+		}
 		tags, err := readTags(sf, k)
 		if err != nil {
 			return nil, fmt.Errorf("field %s: %w", sf.Name, err)
