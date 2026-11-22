@@ -23,8 +23,8 @@ cd "$scratch/consumer"
 go mod init example.com/parse-consumer
 go get "$module@$version"
 go vet -tags=unit "$module/..."
-go test -tags=unit -race -count=1 "$module/..."
-go test -tags=integration -race -count=1 -timeout=15m "$module/..."
+go test -tags=unit -count=1 "$module/..."
+go test -tags=integration -count=1 -timeout=15m "$module/..."
 # Dependencies resolve through the public proxy alone, so a private module
 # cannot download; within the owner's namespace only this repository's
 # modules are public, and parse may depend on no other.

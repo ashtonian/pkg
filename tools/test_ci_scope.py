@@ -55,13 +55,46 @@ class Scope(unittest.TestCase):
             self.assertTrue(ci_scope.runtime_required(paths))
 
     def test_archive_examples_remain_required_for_prose(self):
+        self.assertEqual(ci_scope.release_checks(["parse/docs/queries.md"]), ["parse-release-check"])
         workflow = (Path(__file__).resolve().parents[1] / ".github/workflows/ci.yml").read_text()
         modules = workflow.split("  modules:\n", 1)[1].split("  lint:\n", 1)[0]
         self.assertIn("needs: scope", modules)
         self.assertNotIn("outputs.runtime", modules)
-        self.assertIn("make release-check", modules)
-        self.assertIn("make cookbook-check", modules)
-        self.assertIn("make tool-check", modules)
+        self.assertIn("needs.scope.outputs.checks", modules)
+        self.assertIn('make "${checks[@]}"', modules)
+        makefile = (Path(__file__).resolve().parents[1] / "Makefile").read_text()
+        for check in ci_scope.CHECKS:
+            with self.subTest(check=check):
+                self.assertIn(f"\n{check}:", makefile)
+        listed = makefile.split("\nRELEASE_CHECKS := ", 1)[1].split("\n", 1)[0].split()
+        self.assertEqual(listed, [c for c in ci_scope.CHECKS if c.endswith("-release-check")])
+
+    def test_release_checks_follow_the_changed_modules(self):
+        cases = {
+            ("parse/internal/dialect/dialect.go",): ["parse-release-check"],
+            ("parse/sdk/ts/src/client.ts", "parse/README.md"): ["parse-release-check"],
+            ("httpx/codec/proto/codec.go",): ["httpx-release-check"],
+            ("tools/check-httpx-release.sh",): ["httpx-release-check"],
+            ("state/store.go", "onepassword/client.go"): ["native-release-check"],
+            ("config/watch.go",): ["config-release-check", "cookbook-check"],
+            ("config/kongprovider/load.go",): ["kongprovider-release-check", "cookbook-check"],
+            ("config/examples/cookbook/main.go",): ["cookbook-check"],
+            ("gitx/merge.go", "jsonvalue/value.go"): ["gitx-release-check", "jsonvalue-release-check"],
+            ("CONTRIBUTING.md", "README.md"): [],
+        }
+        for paths, want in cases.items():
+            with self.subTest(paths=paths):
+                self.assertEqual(ci_scope.release_checks(list(paths)), want)
+
+    def test_shared_unknown_or_unavailable_inputs_run_every_release_check(self):
+        every = list(ci_scope.CHECKS)
+        for path in ("Makefile", "go.work", ".github/workflows/ci.yml", "tools/ci_scope.py",
+                     "tools/modarchive/main.go", ".release-please-manifest.json", "new-module/go.mod",
+                     "tools/check-parse-sdk-release.sh"):
+            with self.subTest(path=path):
+                self.assertEqual(ci_scope.release_checks(["parse/list.go", path]), every)
+        self.assertEqual(ci_scope.release_checks([]), every)
+        self.assertEqual(ci_scope.release_checks(None), every)
 
 
 if __name__ == "__main__":

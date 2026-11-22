@@ -19,7 +19,7 @@ while IFS=$'\t' read -r module version source; do
     go mod init "example.com/$name-consumer"
     go get "$module@$version"
     go vet -tags=unit,integration "$module/..."
-    go test -tags=unit,integration -race -count=1 -timeout=2m "$module/..."
+    go test -tags=unit,integration -count=1 -timeout=2m "$module/..."
     go list -m -f '{{if .Replace}}unexpected replacement{{end}}' all | awk 'NF {exit 1}'
     go list -deps -f '{{if not .Standard}}{{.ImportPath}}{{end}}' "$module" |
       awk -v module="$module" 'NF && $0 != module && !(module == "github.com/ashtonian/pkg/onepassword" && $0 == "github.com/ashtonian/pkg/process") {print "unexpected runtime dependency: " $0 > "/dev/stderr"; bad=1} END {exit bad}'

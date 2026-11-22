@@ -18,7 +18,7 @@ import urllib.request
 import zipfile
 
 MAX_BYTES = 128 * 1024
-JOBS = {"test", "parse-postgres", "parse-sdk", "httpx-minimum", "gitx-minimum", "modules", "lint"}
+JOBS = {"test", "parse-postgres", "parse-sdk", "minimum-go", "modules", "lint"}
 
 
 def git(*args):
@@ -56,20 +56,22 @@ def record(env, output):
     if set(results) != JOBS | {"scope"}:
         raise ValueError("incomplete validation job inventory")
     runtime = results["scope"]["outputs"]["runtime"]
+    checks = results["scope"]["outputs"]["checks"]
     for name, job in results.items():
         allowed = {"success", "skipped"} if runtime == "false" and name not in {"scope", "modules"} else {"success"}
         if job["result"] not in allowed:
             raise ValueError("validation did not pass: " + name)
-    receipt = {"version": 1, "repository": env["GITHUB_REPOSITORY"], "event": event_name,
-               "source": identity, "policy": policy(env), "runtime": runtime,
+    receipt = {"version": 2, "repository": env["GITHUB_REPOSITORY"], "event": event_name,
+               "source": identity, "policy": policy(env), "runtime": runtime, "checks": checks,
                "run_id": int(env["GITHUB_RUN_ID"]), "attempt": int(env["GITHUB_RUN_ATTEMPT"])}
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(json.dumps(receipt, sort_keys=True) + "\n")
 
 
 def matches(receipt, run, identity, env):
-    if (receipt.get("version") != 1 or receipt.get("repository") != env["GITHUB_REPOSITORY"]
+    if (receipt.get("version") != 2 or receipt.get("repository") != env["GITHUB_REPOSITORY"]
             or receipt.get("policy") != policy(env) or receipt.get("runtime") != env["RUNTIME_REQUIRED"]
+            or receipt.get("checks") != env["CHECKS_REQUIRED"]
             or receipt.get("run_id") != run["id"] or receipt.get("attempt") != run["run_attempt"]
             or receipt.get("event") != run["event"] or receipt.get("source", {}).get("tree") != identity["tree"]):
         return False

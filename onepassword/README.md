@@ -89,7 +89,7 @@ From the repository root:
 make test-native-unit test-native-integration native-release-check
 ```
 
-The integration fixture executes only an owned native-command shim through the real process supervisor. The release check downloads candidate archives into fresh consumers, runs tagged race tests and this README program, rejects replacements and checks module tidiness outside the workspace. Runtime dependencies are restricted to the canonical process module and standard library.
+The integration fixture executes only an owned native-command shim through the real process supervisor. The release check downloads candidate archives into fresh consumers, runs the tagged tests and this README program, rejects replacements and checks module tidiness outside the workspace. Runtime dependencies are restricted to the canonical process module and standard library.
 
 ## Operations
 

@@ -79,7 +79,7 @@ GOWORK=off go vet ./...
 GOWORK=off go mod tidy -diff
 ```
 
-From the repository root, `make test-jsonvalue` runs the workspace race tests. `make jsonvalue-release-check` installs a candidate module ZIP into a fresh consumer, checks the absence of replacements and runtime dependencies, runs race tests and executes the quick start above.
+From the repository root, `make test-jsonvalue` runs the workspace race tests. `make jsonvalue-release-check` installs a candidate module ZIP into a fresh consumer, checks the absence of replacements and runtime dependencies, runs its tests and executes the quick start above.
 
 ## Operations
 
