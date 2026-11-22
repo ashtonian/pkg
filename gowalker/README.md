@@ -79,7 +79,10 @@ raw `reflect.StructTag`, whose `Lookup` tells an explicit empty default from no
 default at all. Applying defaults and reading the environment stay in your library.
 Compilation refuses a struct tag that `reflect.StructTag` cannot read to its
 end, or that repeats a key, so a typo never turns an annotation off silently;
-`TagKeys` lists a tag's keys for checking them against the ones you read.
+`TagKeys` lists a tag's keys for checking them against the ones you read, and
+`MisspeltTagKey(key, known)` names the key of yours a key you do not read most
+likely misspells (equal ignoring case, `-` and `_`, or one character away), for
+your library to refuse it rather than ignore it.
 
 ## Pick a naming convention
 
@@ -207,6 +210,7 @@ The standard library only, Go 1.27 or later. There are no external services.
 |---|---|
 | `engine.go` | `Engine`, options, limits, the schema cache and `CacheStats` |
 | `tags.go` | Tag parsing, `TagKeys`, `WithTaggedFields` and `WithJSONFields` |
+| `tag_spelling.go` | `MisspeltTagKey`: the known tag key a misspelt one means |
 | `shape.go` | Compilation: the raw type graph, field rules, inlining, name resolution and `Declarations` |
 | `schema.go` | `Schema`, path resolution and cached root-field accessors |
 | `route.go` | Static routes for paths of struct fields and pointers |

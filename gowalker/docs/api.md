@@ -81,7 +81,12 @@ raw `reflect.StructTag` for tags with other syntax, such as `validate:"min=1"`.
 Gowalker never decodes tag values.
 
 `TagKeys(tag)` lists a tag's keys in order, so a library can compare them with
-the keys it reads and refuse a misspelt one; `field.TagKeys()` lists a compiled
+the keys it reads and refuse a misspelt one. `MisspeltTagKey(key, known)` makes
+that comparison: it returns the key of `known` that `key` equals ignoring case,
+`-` and `_`, else the first one inserted, deleted, replaced or swapped character
+away under that folding, and false when `key` is one of `known` or near none.
+The rule, and which keys to leave alone because another library reads them, stay
+the caller's: a key such as `bson` is one character from `json`. `field.TagKeys()` lists a compiled
 field's, which compilation has already checked. It returns a `*TagError` for a tag
 that `reflect.StructTag` stops reading early, such as `parse: "filter"` with a
 space after the colon (`Lookup` then reports that key and every later one

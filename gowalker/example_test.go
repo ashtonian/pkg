@@ -481,6 +481,27 @@ func ExampleParseTag() {
 	// Output: id true false
 }
 
+// A library refuses a tag key it does not read that misspells one it does,
+// rather than ignore it; another library's key, such as json, is left alone.
+func ExampleMisspeltTagKey() {
+	type Server struct {
+		Port int `json:"port" env:"PORT" defualt:"8080"`
+	}
+	known := []string{"env", "default"}
+	schema, err := gowalker.Compile[Server]()
+	if err != nil {
+		panic(err)
+	}
+	for _, f := range schema.Root().Fields() {
+		for _, key := range f.TagKeys() {
+			if meant, ok := gowalker.MisspeltTagKey(key, known); ok {
+				fmt.Printf("field %s: tag key %q; did you mean %q?\n", f.Name(), key, meant)
+			}
+		}
+	}
+	// Output: field Port: tag key "defualt"; did you mean "default"?
+}
+
 func ExampleWithTaggedFields_conventions() {
 	type Base struct {
 		ID int `json:"id"`
