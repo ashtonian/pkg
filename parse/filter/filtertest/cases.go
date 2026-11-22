@@ -162,13 +162,24 @@ func Cases() []Case {
 		{Name: "array eq not defined", Filter: `{"tags":["x"]}`, ParseErr: "E2072"},
 
 		// --- geo ---
-		{Name: "near", Filter: `{"loc":{"$near":{"lat":10,"lon":10,"distance":"50km"}}}`, Want: ids("a"), Unsupported: []string{"memory"}, UnsupportedErr: "E2115"},
-		{Name: "near radius", Filter: `{"loc":{"$near":{"lat":20,"lon":20,"distance":"100km"}}}`, Want: ids("bf"), Unsupported: []string{"memory"}, UnsupportedErr: "E2115"},
-		{Name: "near at the center point", Filter: `{"loc":{"$near":{"lat":0,"lon":0,"distance":"1m"}}}`, Want: ids("e"), Unsupported: []string{"memory"}, UnsupportedErr: "E2115"},
-		{Name: "within box includes corner", Filter: `{"loc":{"$within":{"top_left":{"lat":25,"lon":0},"bottom_right":{"lat":5,"lon":25}}}}`, Want: ids("abfh"), Unsupported: []string{"memory"}, UnsupportedErr: "E2115"},
-		{Name: "within box includes edge", Filter: `{"loc":{"$within":{"top_left":{"lat":20,"lon":19},"bottom_right":{"lat":0,"lon":21}}}}`, Want: ids("b"), Unsupported: []string{"memory"}, UnsupportedErr: "E2115"},
-		{Name: "within polygon", Filter: `{"loc":{"$within":{"points":[{"lat":0,"lon":0},{"lat":30,"lon":0},{"lat":0,"lon":30}]}}}`, Want: ids("ae"), Unsupported: []string{"memory", "sqlite"}, UnsupportedErr: "E2115"},
-		{Name: "intersects box", Filter: `{"loc":{"$intersects":{"top_left":{"lat":25,"lon":0},"bottom_right":{"lat":5,"lon":25}}}}`, Want: ids("abfh"), Unsupported: []string{"memory", "sqlite"}, UnsupportedErr: "E2115"},
+		{Name: "near", Filter: `{"loc":{"$near":{"lat":10,"lon":10,"distance":"50km"}}}`, Want: ids("a")},
+		{Name: "near radius", Filter: `{"loc":{"$near":{"lat":20,"lon":20,"distance":"100km"}}}`, Want: ids("bf")},
+		{Name: "near at the center point", Filter: `{"loc":{"$near":{"lat":0,"lon":0,"distance":"1m"}}}`, Want: ids("e")},
+		{Name: "within box includes corner", Filter: `{"loc":{"$within":{"top_left":{"lat":25,"lon":0},"bottom_right":{"lat":5,"lon":25}}}}`, Want: ids("abfh")},
+		{Name: "within box includes edge", Filter: `{"loc":{"$within":{"top_left":{"lat":20,"lon":19},"bottom_right":{"lat":0,"lon":21}}}}`, Want: ids("b")},
+		{Name: "within polygon", Filter: `{"loc":{"$within":{"points":[{"lat":0,"lon":0},{"lat":30,"lon":0},{"lat":0,"lon":30}]}}}`, Want: ids("ae")},
+		{Name: "intersects box", Filter: `{"loc":{"$intersects":{"top_left":{"lat":25,"lon":0},"bottom_right":{"lat":5,"lon":25}}}}`, Want: ids("abfh")},
+		// On the ellipsoid a degree at the equator is 110.6km of latitude and
+		// 111.3km of longitude; on a sphere it is 111.2km either way.
+		{Name: "near measures the ellipsoid along a meridian", Filter: `{"loc":{"$near":{"lat":1,"lon":0,"distance":"110.8km"}}}`, Want: ids("e")},
+		{Name: "near measures the ellipsoid along the equator", Filter: `{"loc":{"$near":{"lat":0,"lon":1,"distance":"111.25km"}}}`, Want: ids("")},
+		{Name: "near across the antimeridian", Filter: `{"loc":{"$near":{"lat":-10,"lon":-175,"distance":"1700km"}}}`, Want: ids("c")},
+		{Name: "not near excludes null", Filter: `{"$not":{"loc":{"$near":{"lat":10,"lon":10,"distance":"50km"}}}}`, Want: ids("bcefh")},
+		{Name: "within polygon includes its vertices and edges", Filter: `{"loc":{"$within":{"points":[{"lat":0,"lon":0},{"lat":40,"lon":0},{"lat":0,"lon":40}]}}}`, Want: ids("abef")},
+		{Name: "within concave polygon", Filter: `{"loc":{"$within":{"points":[{"lat":0,"lon":15},{"lat":0,"lon":30},{"lat":30,"lon":30},{"lat":30,"lon":0},{"lat":15,"lon":0},{"lat":12,"lon":12}]}}}`, Want: ids("bfh")},
+		{Name: "intersects polygon", Filter: `{"loc":{"$intersects":{"points":[{"lat":0,"lon":0},{"lat":40,"lon":0},{"lat":0,"lon":40}]}}}`, Want: ids("abef")},
+		{Name: "not within box excludes null", Filter: `{"$not":{"loc":{"$within":{"top_left":{"lat":25,"lon":0},"bottom_right":{"lat":5,"lon":25}}}}}`, Want: ids("ce")},
+		{Name: "not within polygon excludes null", Filter: `{"$not":{"loc":{"$within":{"points":[{"lat":0,"lon":0},{"lat":40,"lon":0},{"lat":0,"lon":40}]}}}}`, Want: ids("ch")},
 		{Name: "within inverted box rejected", Filter: `{"loc":{"$within":{"top_left":{"lat":25,"lon":25},"bottom_right":{"lat":5,"lon":0}}}}`, ParseErr: "E2112"},
 		{Name: "geo null", Filter: `{"loc":{"$null":true}}`, Want: ids("dg")},
 

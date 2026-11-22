@@ -3,6 +3,7 @@
 package dialect
 
 import (
+	"fmt"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -26,48 +27,79 @@ func TestDialects(t *testing.T) {
 }
 
 func TestFromDSN(t *testing.T) {
-	for dsn, want := range map[string]string{
-		"postgres://u:p@h/db":                   "postgres",
-		"postgresql://h/db":                     "postgres",
-		"POSTGRES://h/db":                       "postgres",
-		"PostgreSQL://h/db":                     "postgres",
-		"postgres://h/app.db":                   "postgres",
-		"sqlite://app":                          "sqlite",
-		"file:x.db":                             "sqlite",
-		"file:x.db?mode=ro":                     "sqlite",
-		"file:///srv/app.db":                    "sqlite",
-		"app.db":                                "sqlite",
-		"/var/lib/app/state.db":                 "sqlite",
-		"app.db?_pragma=busy_timeout(5000)":     "sqlite",
-		"/data/app.sqlite":                      "sqlite",
-		"state.sqlite3?_pragma=foreign_keys(1)": "sqlite",
-		":memory:":                              "sqlite",
-		":memory:?_pragma=foreign_keys(1)":      "sqlite",
-		"/srv/a://b/app.db":                     "sqlite",
-		"C://data/app.db":                       "sqlite",
+	for _, tc := range []struct{ dsn, want string }{
+		{"postgres://u:p@h/db", "postgres"},
+		{"postgresql://h/db", "postgres"},
+		{"POSTGRES://h/db", "postgres"},
+		{"PostgreSQL://h/db", "postgres"},
+		{"postgres://h/app.db", "postgres"},
+		{"sqlite://app", "sqlite"},
+		{"sqlite3:///srv/app.db", "sqlite"},
+		{"file:x.db", "sqlite"},
+		{"file:x.db?mode=ro", "sqlite"},
+		{"file:///srv/app.db", "sqlite"},
+		{"file:", "sqlite"},
+		{":memory:", "sqlite"},
+		{":memory:?_pragma=foreign_keys(1)", "sqlite"},
+		{"/var/lib/app/state.db", "sqlite"},
+		{"/Users/me/My Data/app.db", "sqlite"},
+		{"/Users/me/Library/CloudStorage/GoogleDrive-me@example.com/My Drive/app.db", "sqlite"},
+		{"/data/tenant=42/app.db", "sqlite"},
+		{"/data/app.db?_pragma=busy_timeout(5000)", "sqlite"},
+		{"/data/app.sqlite", "sqlite"},
+		{"/data/state.SQLITE3", "sqlite"},
+		{"/srv/a://b/app.db", "sqlite"},
+		{"./app.db", "sqlite"},
+		{"./tenant=42/app.db", "sqlite"},
+		{"../state.sqlite3?_pragma=foreign_keys(1)", "sqlite"},
+		{`.\app.db`, "sqlite"},
+		{`..\backups (old)\app.db`, "sqlite"},
+		{`\\server\share\app.db`, "sqlite"},
+		{`\\?\C:\data\app.db`, "sqlite"},
+		{`\\?\C:\data\app.db?_pragma=busy_timeout(5000)`, "sqlite"},
+		{`\\?\UNC\server\share\app.db`, "sqlite"},
+		{`C:\Users\me@corp\APP.DB`, "sqlite"},
+		{"C:/data/app.db", "sqlite"},
+		{"C://data/app.db", "sqlite"},
 	} {
-		d, err := FromDSN(dsn)
-		require.NoError(t, err, dsn)
-		assert.Equal(t, want, d.Name(), dsn)
+		t.Run(tc.dsn, func(t *testing.T) {
+			d, err := FromDSN(tc.dsn)
+			require.NoError(t, err)
+			assert.Equal(t, tc.want, d.Name())
+		})
 	}
 }
 
 func TestFromDSNRefuses(t *testing.T) {
+	const cockroach = "parse: unsupported DSN: scheme %q: CockroachDB is not supported"
 	for _, tc := range []struct {
 		name string
 		dsn  string
 		want string
 	}{
-		{"cockroach", "cockroach://root:secret@h:26257/db", `parse: unsupported DSN: scheme "cockroach": CockroachDB is not supported`},
-		{"crdb", "crdb://root:secret@h/db", `parse: unsupported DSN: scheme "crdb": CockroachDB is not supported`},
-		{"crdb with a .db database", "crdb://h/app.db", `parse: unsupported DSN: scheme "crdb": CockroachDB is not supported`},
-		{"crdb in capitals", "CRDB://h/db", `parse: unsupported DSN: scheme "CRDB": CockroachDB is not supported`},
+		{"cockroach", "cockroach://root:secret@h:26257/db", fmt.Sprintf(cockroach, "cockroach")},
+		{"crdb", "crdb://root:secret@h/db", fmt.Sprintf(cockroach, "crdb")},
+		{"crdb with a .db database", "crdb://h/app.db", fmt.Sprintf(cockroach, "crdb")},
+		{"crdb in capitals", "CRDB://h/db", fmt.Sprintf(cockroach, "CRDB")},
 		{"another database", "mysql://u:secret@h/db", `parse: unsupported DSN: scheme "mysql": ` + supportedDSNs},
 		{"another scheme ending in .db", "mysql://h/app.db", `parse: unsupported DSN: scheme "mysql": ` + supportedDSNs},
 		{"misspelled postgres", "postgress://u:secret@h/db", `parse: unsupported DSN: scheme "postgress": ` + supportedDSNs},
+		{"upper-case FILE is no URI", "FILE:///srv/app.db", `parse: unsupported DSN: scheme "FILE": ` + supportedDSNs},
 		{"not a scheme before ://", "u:secret@h://db", "parse: unsupported DSN: " + supportedDSNs},
 		{"keyword/value", "host=h user=u password=secret dbname=db", "parse: unsupported DSN: " + supportedDSNs},
-		{"another extension", "app.dbx", "parse: unsupported DSN: " + supportedDSNs},
+		{"keyword/value naming a .db database", "host=h user=u password=secret dbname=orders.db", "parse: unsupported DSN: " + supportedDSNs},
+		{"mysql naming a .db database", "u:secret@tcp(h:3306)/app.db", "parse: unsupported DSN: " + supportedDSNs},
+		{"mysql over tcp without credentials", "tcp(db:3306)/orders.db", "parse: unsupported DSN: " + supportedDSNs},
+		{"mysql over a socket", "unix(/var/run/mysqld.sock)/app.db", "parse: unsupported DSN: " + supportedDSNs},
+		{"mysql with a ? in its password", "u:s.db?x@tcp(h:3306)/app", "parse: unsupported DSN: " + supportedDSNs},
+		{"mysql /dbname", "/app.db?parseTime=true", "parse: unsupported DSN: " + supportedDSNs},
+		{"oracle easy connect", "dbhost:1521/sales.db", "parse: unsupported DSN: " + supportedDSNs},
+		{"oracle easy connect with //", "//dbhost:1521/sales.db", "parse: unsupported DSN: " + supportedDSNs},
+		{"bare name", "app.db", "parse: unsupported DSN: " + supportedDSNs},
+		{"bare name with a directory", "data/app.db", "parse: unsupported DSN: " + supportedDSNs},
+		{"upper-case FILE: is a file name", "FILE:app.db", "parse: unsupported DSN: " + supportedDSNs},
+		{"another extension", "./app.dbx", "parse: unsupported DSN: " + supportedDSNs},
+		{"extended-length path to another extension", `\\?\C:\data\app.dbx?x.db`, "parse: unsupported DSN: " + supportedDSNs},
 		{"empty", "", "parse: unsupported DSN: " + supportedDSNs},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
