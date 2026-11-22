@@ -14,9 +14,9 @@ import (
 
 // PatchSQLResult holds the generated SQL SET clause and arguments.
 type PatchSQLResult struct {
-	// SetClause is the comma-separated `col = $N` fragment ready to drop
-	// into UPDATE … SET. Empty when the patch only touches relation
-	// fields (junction-only patches).
+	// SetClause is the comma-separated `"col" = $N` fragment ready to drop
+	// into UPDATE … SET, each column quoted by the dialect. Empty when the
+	// patch only touches relation fields (junction-only patches).
 	SetClause string
 
 	// Assignments are the same SET expressions before comma-separated rendering.
@@ -55,6 +55,9 @@ type PatchSQLResult struct {
 
 // ColumnAssignment is one canonical folded column expression.
 type ColumnAssignment struct {
+	// Column is the column's name, unquoted; Expression reads the stored
+	// column, where it does, quoted and unqualified, so it is the target's
+	// own in an UPDATE of one table.
 	Column, Expression string
 }
 
@@ -234,7 +237,7 @@ func BuildPatchSQL(patch *ParsedPatch, dialect SQLDialect, opts ...PatchSQLOptio
 		}
 		b.assignments = append(b.assignments, ColumnAssignment{Column: col, Expression: expr})
 		if cfg.changePredicate {
-			change, err := changedSQL(dialect, col, expr, ops[len(ops)-1].Schema)
+			change, err := changedSQL(dialect, dialect.QuoteIdent(col), expr, ops[len(ops)-1].Schema)
 			if err != nil {
 				return nil, fmt.Errorf("change predicate for %s: %w", col, err)
 			}
@@ -257,13 +260,13 @@ func BuildPatchSQL(patch *ParsedPatch, dialect SQLDialect, opts ...PatchSQLOptio
 			b.assignments = append(b.assignments, ColumnAssignment{Column: cfg.autoTimestamp, Expression: value})
 		}
 		for _, col := range cfg.increments {
-			b.assignments = append(b.assignments, ColumnAssignment{Column: col, Expression: col + " + 1"})
+			b.assignments = append(b.assignments, ColumnAssignment{Column: col, Expression: dialect.QuoteIdent(col) + " + 1"})
 		}
 	}
 
 	clauses := make([]string, len(b.assignments))
 	for i, assignment := range b.assignments {
-		clauses[i] = assignment.Column + " = " + assignment.Expression
+		clauses[i] = dialect.QuoteIdent(assignment.Column) + " = " + assignment.Expression
 	}
 	return &PatchSQLResult{
 		SetClause:       strings.Join(clauses, ", "),
@@ -421,7 +424,7 @@ func (b *setBuilder) columnExpr(col string, ops []*PatchOperation) (string, erro
 		if len(ops) != 1 {
 			return "", fmt.Errorf("patch: column %s: a merge shares its column with another operation, which no parser produces", col)
 		}
-		expr, err := mergeSQL(b.dialect, col, ops[0].Schema.SQLType, ops[0].Value, b.bind)
+		expr, err := mergeSQL(b.dialect, b.dialect.QuoteIdent(col), ops[0].Schema.SQLType, ops[0].Value, b.bind)
 		if err != nil {
 			return "", fmt.Errorf("%s for %s: %w", ops[0].Op, ops[0].Path, err)
 		}
@@ -447,7 +450,7 @@ func (b *setBuilder) columnExpr(col string, ops []*PatchOperation) (string, erro
 		}
 	}
 	if start < 0 {
-		expr := col
+		expr := b.dialect.QuoteIdent(col)
 		for _, op := range later {
 			var err error
 			if expr, err = arrayAppendSQL(b.dialect, expr, op.Value, b.bind); err != nil {

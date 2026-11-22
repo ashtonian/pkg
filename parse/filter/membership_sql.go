@@ -22,20 +22,22 @@ func (b *SQLBuilder) buildMember(s *buildState, node *FilterNode) (string, error
 
 // lookupSQL renders a lookup as the subquery `(SELECT project FROM table
 // WHERE …)`: its condition, then its filter on the table's own columns.
+// Every column is qualified by the table, which may name its schema.
 func (b *SQLBuilder) lookupSQL(s *buildState, l *Lookup) (string, error) {
 	q := b.dialect.QuoteIdent
-	table := make([]string, 0, 2)
+	parts := make([]string, 0, 2)
 	for part := range strings.SplitSeq(l.Table, ".") {
-		table = append(table, q(part))
+		parts = append(parts, q(part))
 	}
+	table := strings.Join(parts, ".")
 	var sb strings.Builder
 	sb.WriteString("(SELECT ")
-	sb.WriteString(q(l.Project))
+	sb.WriteString(table + "." + q(l.Project))
 	sb.WriteString(" FROM ")
-	sb.WriteString(strings.Join(table, "."))
+	sb.WriteString(table)
 	var where []string
 	if l.Where != nil {
-		cond, err := b.lookupCondSQL(s, l.Where)
+		cond, err := b.lookupCondSQL(s, l.Where, table)
 		if err != nil {
 			return "", err
 		}
@@ -57,12 +59,14 @@ func (b *SQLBuilder) lookupSQL(s *buildState, l *Lookup) (string, error) {
 	return sb.String(), nil
 }
 
-func (b *SQLBuilder) lookupCondSQL(s *buildState, c *LookupCond) (string, error) {
-	q, bind := b.dialect.QuoteIdent, s.binder(b.dialect)
+// lookupCondSQL renders c on the columns of table, already quoted.
+func (b *SQLBuilder) lookupCondSQL(s *buildState, c *LookupCond, table string) (string, error) {
+	bind := s.binder(b.dialect)
+	q := func(column string) string { return table + "." + b.dialect.QuoteIdent(column) }
 	join := func(children []*LookupCond, sep string) (string, error) {
 		parts := make([]string, len(children))
 		for i, child := range children {
-			part, err := b.lookupCondSQL(s, child)
+			part, err := b.lookupCondSQL(s, child, table)
 			if err != nil {
 				return "", err
 			}

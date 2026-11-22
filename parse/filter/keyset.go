@@ -27,10 +27,15 @@ import (
 // carried in tokens, the SQL expression emitted into ORDER BY and seek
 // predicates, the row column a token value is read from, and how the key
 // orders.
+//
+// A key reads Column of Table, quoted by the dialect, unless Expr is set, as
+// a FieldSchema does; Column is also the result column a cursor reads the
+// key's value from, so a computed key (Expr) names its result column there.
 type CursorKey struct {
 	Name     string
-	SQLExpr  string
+	Table    string
 	Column   string
+	Expr     string
 	DataType core.FieldType
 	// NumberKind retains the schema numeric range (Invalid uses int64/float64).
 	NumberKind reflect.Kind
@@ -52,8 +57,9 @@ func Keyset(sort *SortResult, tieBreaker CursorKey) []CursorKey {
 		for _, f := range sort.Fields {
 			keys = append(keys, CursorKey{
 				Name:       f.Name,
-				SQLExpr:    f.Schema.SQLExpr,
+				Table:      f.Schema.Table,
 				Column:     f.Schema.RowColumn(),
+				Expr:       f.Schema.Expr,
 				DataType:   f.Schema.DataType,
 				NumberKind: f.Schema.NumberKind,
 				Direction:  f.Direction,
@@ -306,19 +312,22 @@ func keyValue(d Dialect, k CursorKey) string {
 	}
 	switch k.DataType {
 	case core.FieldTypeDate:
-		return d.ReadColumn(k.SQLExpr, core.SQLDate)
+		return d.ReadColumn(k.sql(d), core.SQLDate)
 	case core.FieldTypeDecimal:
-		return d.DecimalValue(keyDecimal(k))
+		return d.DecimalValue(keyDecimal(d, k))
 	}
-	return k.SQLExpr
+	return k.sql(d)
 }
 
+// sql is the SQL that reads the key's column (columnSQL).
+func (k CursorKey) sql(d Dialect) string { return columnSQL(d, k.Table, k.Column, k.Expr) }
+
 // keyDecimal is the operand a decimal key's value is read from.
-func keyDecimal(k CursorKey) DecimalOperand {
+func keyDecimal(d Dialect, k CursorKey) DecimalOperand {
 	if k.Path != nil {
 		return DecimalMember(k.Path)
 	}
-	return DecimalColumn(k.SQLExpr)
+	return DecimalColumn(k.sql(d))
 }
 
 // keyExpr is a key's ordering expression: text keys — strings, and a path's
@@ -329,7 +338,7 @@ func keyExpr(d Dialect, k CursorKey) string {
 	case k.DataType == core.FieldTypeString || (k.Path != nil && (k.DataType == core.FieldTypeTimestamp || k.DataType == core.FieldTypeUUID)):
 		return d.CodePointOrder(keyValue(d, k))
 	case k.DataType == core.FieldTypeDecimal:
-		return d.DecimalOrder(keyDecimal(k))
+		return d.DecimalOrder(keyDecimal(d, k))
 	}
 	return keyValue(d, k)
 }
@@ -339,7 +348,7 @@ func keyExpr(d Dialect, k CursorKey) string {
 // nullable keys, text by code point, decimals through
 // Dialect.DecimalOrder. It is "" for no keys. ListQuery orders its pages
 // with it; a statement ListQuery does not build, such as one that also
-// orders by a computed key (a CursorKey whose SQLExpr is the expression),
+// orders by a computed key (a CursorKey whose Expr is the expression),
 // pages the same way with OrderByKeys and SeekPredicate.
 func OrderByKeys(d Dialect, keys []CursorKey, reverse bool) string {
 	if len(keys) == 0 {

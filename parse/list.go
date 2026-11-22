@@ -422,7 +422,7 @@ func (r *Resource[T]) BuildList(d filter.Dialect, req *ListRequest, s Scope) (*L
 		return nil, err
 	}
 	plan := &ListPlan{
-		Page:      Statement{SQL: "SELECT " + strings.Join(r.columns(d, v), ", ") + " FROM " + r.table + " " + res.Fragment, Args: res.Args},
+		Page:      Statement{SQL: "SELECT " + strings.Join(r.columns(d, v), ", ") + " FROM " + d.QuoteIdent(r.table) + " " + res.Fragment, Args: res.Args},
 		Fragment:  res.Fragment,
 		Facets:    res.Facets,
 		Include:   slices.Clone(req.Include),

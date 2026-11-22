@@ -118,7 +118,7 @@ func TestReadExpr_ConcurrentFirstUse(t *testing.T) {
 		tt := computedDialects[i%2]
 		assert.Contains(t, plan.Page.SQL, "("+tt.email+") <> ")
 		if i%4 < 2 {
-			assert.Contains(t, plan.Page.SQL, "("+tt.groupIDs+") AS group_ids")
+			assert.Contains(t, plan.Page.SQL, "("+tt.groupIDs+`) AS "group_ids"`)
 		} else {
 			assert.Contains(t, plan.Page.SQL, "("+groupSizeExpr+") = ")
 		}

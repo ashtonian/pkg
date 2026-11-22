@@ -158,13 +158,13 @@ An update has one stamp: a later `Stamp` or `StampSQL` replaces an earlier one. 
 A patch that sets what a row already holds still writes it: the stamp and counters move, and a consumer that emits an event per updated row emits one for nothing. `SkipUnchanged()` ANDs the patch's change predicate into the `UPDATE`'s WHERE — null-safe comparisons of each column the patch assigns with the value it assigns, reusing the SET clause's placeholders and binding nothing of their own — so only rows that change are written, stamped, counted and returned:
 
 ```text
-UPDATE notes SET rank = $1, title = $2, updated_at = NOW(), version = version + 1
-WHERE (notes.tenant_id = $3 AND notes.deleted_at IS NULL AND notes.id = $4)
-  AND (rank IS DISTINCT FROM $1 OR rank::text COLLATE "C" IS DISTINCT FROM ($1)::text
-    OR title IS DISTINCT FROM $2 OR title::text COLLATE "C" IS DISTINCT FROM ($2)::text)
-RETURNING notes.id, …
+UPDATE "notes" SET "rank" = $1, "title" = $2, "updated_at" = NOW(), "version" = "version" + 1
+WHERE ("notes"."tenant_id" = $3 AND "notes"."deleted_at" IS NULL AND "notes"."id" = $4)
+  AND ("rank" IS DISTINCT FROM $1 OR "rank"::text COLLATE "C" IS DISTINCT FROM ($1)::text
+    OR "title" IS DISTINCT FROM $2 OR "title"::text COLLATE "C" IS DISTINCT FROM ($2)::text)
+RETURNING "notes"."id", …
 
-SELECT notes.id, … FROM notes WHERE (notes.tenant_id = $1 AND notes.deleted_at IS NULL AND notes.id = $2) FOR UPDATE
+SELECT "notes"."id", … FROM "notes" WHERE ("notes"."tenant_id" = $1 AND "notes"."deleted_at" IS NULL AND "notes"."id" = $2) FOR UPDATE
 ```
 
 The second statement is `plan.Current`: the same scoped WHERE without the predicate, with the dialect's row lock. Run `Current` first, then `Owner`, in one transaction, and split the target rows (`queryNotes` runs a statement and scans its rows):
@@ -240,7 +240,7 @@ postgres WHERE products.tags @> $1 [[sale]]
 
 - `{"attrs":{"color":"red"}}` is **whole-document equality**, not a partial match; use `$contains` for that. A `$gt` inside a `$contains` operand is data, a literal `"$gt"` key.
 - `$null` / `$exists` test the column, not a key: a stored JSON `null` and `{}` are both "exists". `{"$contains":{"color":null}}` finds an explicit JSON null; the public grammar has no general key-presence predicate.
-- No path into a document can be filtered, compared, sorted or faceted, and a JSON field cannot be sorted or searched at all. A `filter.FieldSchema` with your own `SQLExpr` (`attrs ->> 'color'`) is the escape hatch, with its typing and dialect left to you.
+- No path into a document can be filtered, compared, sorted or faceted, and a JSON field cannot be sorted or searched at all. A `filter.FieldSchema` with your own `Expr` (`"attrs" ->> 'color'`) is the escape hatch, with its typing and dialect left to you.
 - Updates: a merge patch merges recursively in SQL on both dialects and in `ApplyValidatedPatch` — siblings survive, nested `null` deletes. A JSON Patch to `/attrs/color` is refused (E2076); with a `/attrs/*` path pattern it parses, but SQL refuses nested paths (E2070) and it applies only in Go.
 - Typed documents have additional canonicalization and merge limits; see [typed document behavior](#typed-document-behavior).
 - Empty JSON Pointer tokens address empty object keys, including intermediate keys, when the path schema allows them.

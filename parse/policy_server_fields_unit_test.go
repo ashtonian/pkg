@@ -22,11 +22,11 @@ func TestPolicy_NamesColumnsRequestsCannotFilter(t *testing.T) {
 		wantSQL    string
 		wantArg    any
 	}{
-		{"a hidden field by column", &filter.PolicyConstraint{Field: "owner_id", Operator: filter.OpEq, Value: 7}, "documents.owner_id = $1", int64(7)},
-		{"a field without the filter capability by name", &filter.PolicyConstraint{Field: "region", Operator: filter.OpEq, Value: "eu"}, "documents.region_code = $1", "eu"},
-		{"the same field by column", &filter.PolicyConstraint{Field: "region_code", Operator: filter.OpEq, Value: "us"}, "documents.region_code = $1", "us"},
-		{"a filter field by column", &filter.PolicyConstraint{Field: "folder_id", Operator: filter.OpEq, Value: 3}, "documents.folder_id = $1", int64(3)},
-		{"an operator the field's request operators lack", &filter.PolicyConstraint{Field: "owner_id", Operator: filter.OpIn, Value: []any{7, 8}}, "documents.owner_id = ANY($1)", []int64{7, 8}},
+		{"a hidden field by column", &filter.PolicyConstraint{Field: "owner_id", Operator: filter.OpEq, Value: 7}, `"documents"."owner_id" = $1`, int64(7)},
+		{"a field without the filter capability by name", &filter.PolicyConstraint{Field: "region", Operator: filter.OpEq, Value: "eu"}, `"documents"."region_code" = $1`, "eu"},
+		{"the same field by column", &filter.PolicyConstraint{Field: "region_code", Operator: filter.OpEq, Value: "us"}, `"documents"."region_code" = $1`, "us"},
+		{"a filter field by column", &filter.PolicyConstraint{Field: "folder_id", Operator: filter.OpEq, Value: 3}, `"documents"."folder_id" = $1`, int64(3)},
+		{"an operator the field's request operators lack", &filter.PolicyConstraint{Field: "owner_id", Operator: filter.OpIn, Value: []any{7, 8}}, `"documents"."owner_id" = ANY($1)`, []int64{7, 8}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -167,10 +167,10 @@ func TestPolicy_AmbiguousNamesAreRefused(t *testing.T) {
 	}{
 		{"a visible field's name and a hidden column, hidden first", policySQL[regionHiddenFirst], "region", []string{"field Region (column region_code)", "field Legacy (column region)"}, ""},
 		{"a visible field's name and a hidden column, hidden last", policySQL[regionHiddenLast], "region", []string{"field Region (column region_code)", "field Legacy (column region)"}, ""},
-		{"the visible field by its column", policySQL[regionHiddenFirst], "region_code", nil, "documents.region_code = $1"},
+		{"the visible field by its column", policySQL[regionHiddenFirst], "region_code", nil, `"documents"."region_code" = $1`},
 		{"a request field's name and a hidden column, hidden first", policySQL[titleHiddenFirst], "title", []string{"field Label (column label)", "field Old (column title)"}, ""},
 		{"a request field's name and a hidden column, hidden last", policySQL[titleHiddenLast], "title", []string{"field Label (column label)", "field Old (column title)"}, ""},
-		{"the request field by its column", policySQL[titleHiddenLast], "label", nil, "documents.label = $1"},
+		{"the request field by its column", policySQL[titleHiddenLast], "label", nil, `"documents"."label" = $1`},
 		{"a relation's name and a hidden column", policySQL[tagsRelation], "tags", []string{"relation field Tags", "field TagText (column tags)"}, ""},
 	}
 	for _, tt := range tests {
@@ -195,7 +195,7 @@ func TestPolicy_AmbiguousNamesAreRefused(t *testing.T) {
 		require.NoError(t, err)
 		plan, err := r.BuildList(filter.PostgresDialect{}, req, parse.Scope{})
 		require.NoError(t, err)
-		assert.Contains(t, plan.Page.SQL, "documents.label = $1")
+		assert.Contains(t, plan.Page.SQL, `"documents"."label" = $1`)
 	})
 }
 
@@ -230,7 +230,7 @@ func TestPolicy_UntypedFieldsKeepTheirErrors(t *testing.T) {
 
 	plan, err := docs.BuildList(filter.PostgresDialect{}, nil, policyOn(&filter.PolicyConstraint{Field: "id", Operator: filter.OpEq, Value: 1}))
 	require.NoError(t, err)
-	assert.Contains(t, plan.Page.SQL, "documents.id = $1", "the resource's other fields still resolve")
+	assert.Contains(t, plan.Page.SQL, `"documents"."id" = $1`, "the resource's other fields still resolve")
 }
 
 type serverFieldComment struct {

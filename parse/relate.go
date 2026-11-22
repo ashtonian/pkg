@@ -259,14 +259,13 @@ func (r *Resource[T]) correlationField(column string) *filter.FieldSchema {
 	if f, ok := fs.SystemFields[column]; ok {
 		return f
 	}
-	expr := r.table + "." + column
 	for _, f := range fs.Fields {
 		if f.Relation == nil && f.Path == nil && f.RowColumn() == column {
 			return f
 		}
 	}
 	info := core.TypeOf(r.tableColumns[column])
-	return &filter.FieldSchema{ExternalName: column, SQLExpr: expr, Column: column, DataType: info.Type, NumberKind: info.NumberKind}
+	return &filter.FieldSchema{ExternalName: column, Table: r.table, Column: column, DataType: info.Type, NumberKind: info.NumberKind}
 }
 
 // MustRelate is Relate for startup declarations; it panics on a

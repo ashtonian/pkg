@@ -185,20 +185,20 @@ func (r *Resource[T]) BuildUpdate(d Dialect, p *patch.ParsedPatch, target Target
 			if err != nil {
 				return nil, err
 			}
-			plan.Current = &Statement{SQL: "SELECT " + columns + " FROM " + r.table + " WHERE " + current + d.RowLock(), Args: currentArgs}
+			plan.Current = &Statement{SQL: "SELECT " + columns + " FROM " + d.QuoteIdent(r.table) + " WHERE " + current + d.RowLock(), Args: currentArgs}
 		}
 		plan.Owner = Statement{
-			SQL:  "UPDATE " + r.table + " SET " + set.SetClause + " WHERE " + guarded + " RETURNING " + columns,
+			SQL:  "UPDATE " + d.QuoteIdent(r.table) + " SET " + set.SetClause + " WHERE " + guarded + " RETURNING " + columns,
 			Args: append(set.Args, args...),
 		}
 		plan.Writes = true
 	case len(set.RelationOps) > 0:
 		// No column changes: lock the owners so concurrent replacements of
 		// one relation cannot interleave their DELETE and INSERT.
-		plan.Owner = Statement{SQL: "SELECT " + columns + " FROM " + r.table + " WHERE " + where + d.RowLock(), Args: args}
+		plan.Owner = Statement{SQL: "SELECT " + columns + " FROM " + d.QuoteIdent(r.table) + " WHERE " + where + d.RowLock(), Args: args}
 		plan.Writes = true
 	default:
-		plan.Owner = Statement{SQL: "SELECT " + columns + " FROM " + r.table + " WHERE " + where, Args: args}
+		plan.Owner = Statement{SQL: "SELECT " + columns + " FROM " + d.QuoteIdent(r.table) + " WHERE " + where, Args: args}
 	}
 	return plan, nil
 }
@@ -355,7 +355,7 @@ func (r *Resource[T]) Reread(plan *UpdatePlan, ownerKeys []any) (*Statement, err
 		return nil, err
 	}
 	return &Statement{
-		SQL:  "SELECT " + strings.Join(r.columns(plan.dialect, v), ", ") + " FROM " + r.table + " WHERE " + where.Where,
+		SQL:  "SELECT " + strings.Join(r.columns(plan.dialect, v), ", ") + " FROM " + plan.dialect.QuoteIdent(r.table) + " WHERE " + where.Where,
 		Args: where.Args,
 	}, nil
 }

@@ -76,6 +76,6 @@ func TestUpdateBatchLocksInTheDialectsCodePointOrder(t *testing.T) {
 	for _, d := range []parse.Dialect{filter.PostgresDialect{}, filter.PostgresDialect{Collation: filter.CollationC}, filter.SQLiteDialect{}} {
 		plan, err := r.BuildUpdateBatch(d, []parse.RowUpdate{{Key: "b", Patch: p}, {Key: "a", Patch: p}}, parse.Scope{}, parse.UpdateBatchLimits{})
 		require.NoError(t, err)
-		require.Contains(t, plan.Chunks[0].Current.SQL, " ORDER BY "+d.CodePointOrder("coded_rows.code")+d.RowLock())
+		require.Contains(t, plan.Chunks[0].Current.SQL, " ORDER BY "+d.CodePointOrder(`"coded_rows"."code"`)+d.RowLock())
 	}
 }

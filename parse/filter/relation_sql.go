@@ -31,6 +31,7 @@ func (b *SQLBuilder) buildRelated(s *buildState, node *FilterNode) (string, erro
 	depth := b.depth + 1
 	visible := append([]string{b.schema.Name}, b.visible...)
 	bind := s.binder(b.dialect)
+	d := b.dialect
 
 	pk := rel.OwnerKey()
 	join := relationTableAlias(rel.JoinTable, depth, visible)
@@ -45,31 +46,31 @@ func (b *SQLBuilder) buildRelated(s *buildState, node *FilterNode) (string, erro
 		sb.WriteString("NOT ")
 	}
 	sb.WriteString("EXISTS (SELECT 1 FROM ")
-	writeTable(&sb, rel.JoinTable, join)
+	writeTable(&sb, d, rel.JoinTable, join)
 	if rel.TargetTable != "" {
 		sb.WriteString(" JOIN ")
-		writeTable(&sb, rel.TargetTable, related)
-		sb.WriteString(" ON " + related + "." + rel.TargetKey + " = " + join + "." + rel.TargetColumn)
+		writeTable(&sb, d, rel.TargetTable, related)
+		sb.WriteString(" ON " + qualified(d, related, rel.TargetKey) + " = " + qualified(d, join, rel.TargetColumn))
 	}
-	sb.WriteString(" WHERE " + join + "." + rel.SourceColumn + " = " + b.schema.Name + "." + pk)
+	sb.WriteString(" WHERE " + qualified(d, join, rel.SourceColumn) + " = " + qualified(d, b.schema.Name, pk))
 
 	// A policy-scoped relation declares no tenant column on its target:
 	// the policy below decides which target rows are visible.
-	scope, err := b.scope.clause(rel.JoinTable, rel.TenantColumn, join, joinTenantType(node.Field), bind)
+	scope, err := b.scope.clause(d, rel.JoinTable, rel.TenantColumn, join, joinTenantType(node.Field), bind)
 	if err != nil {
 		return "", err
 	}
 	sb.WriteString(scope)
 	if rel.DeletedColumn != "" {
-		sb.WriteString(" AND " + join + "." + rel.DeletedColumn + " IS NULL")
+		sb.WriteString(" AND " + qualified(d, join, rel.DeletedColumn) + " IS NULL")
 	}
-	targetScope, err := b.scope.clause(rel.TargetTable, rel.TargetTenant, related, tenantColumnType(target, rel.TargetTenant), bind)
+	targetScope, err := b.scope.clause(d, rel.TargetTable, rel.TargetTenant, related, tenantColumnType(target, rel.TargetTenant), bind)
 	if err != nil {
 		return "", err
 	}
 	sb.WriteString(targetScope)
 	if rel.TargetDeleted != "" {
-		sb.WriteString(" AND " + related + "." + rel.TargetDeleted + " IS NULL")
+		sb.WriteString(" AND " + qualified(d, related, rel.TargetDeleted) + " IS NULL")
 	}
 
 	nested := (*FilterNode)(nil)
@@ -127,11 +128,13 @@ func relationTableAlias(table string, depth int, visible []string) string {
 	return table
 }
 
-func writeTable(sb *strings.Builder, table, alias string) {
-	sb.WriteString(table)
+// writeTable writes table as a FROM item named alias, both quoted: an alias
+// made from a table's name is the name's exact spelling too.
+func writeTable(sb *strings.Builder, d Dialect, table, alias string) {
+	sb.WriteString(d.QuoteIdent(table))
 	if alias != table {
 		sb.WriteByte(' ')
-		sb.WriteString(alias)
+		sb.WriteString(d.QuoteIdent(alias))
 	}
 }
 
@@ -182,21 +185,20 @@ func rebaseField(f *FieldSchema, table, alias string, moved map[*FieldSchema]*Fi
 	if m, ok := moved[f]; ok {
 		return m, nil
 	}
-	prefix := table + "."
 	c := *f
 	switch {
 	case f.Path != nil:
-		if !strings.HasPrefix(f.Path.Column, prefix) {
+		if f.Path.Expr != "" || f.Path.Table != table {
 			return nil, fmt.Errorf("field %s is not a column of %s and cannot be filtered through a relation", f.ExternalName, table)
 		}
 		p := *f.Path
-		p.Column = alias + "." + strings.TrimPrefix(p.Column, prefix)
+		p.Table = alias
 		c.Path = &p
-	case strings.HasPrefix(f.SQLExpr, prefix) && core.IsIdentifier(strings.TrimPrefix(f.SQLExpr, prefix)):
-		c.SQLExpr = alias + "." + strings.TrimPrefix(f.SQLExpr, prefix)
+	case f.Expr == "" && f.Table == table:
 	default:
 		return nil, fmt.Errorf("field %s is not a column of %s and cannot be filtered through a relation", f.ExternalName, table)
 	}
+	c.Table = alias
 	moved[f] = &c
 	return &c, nil
 }

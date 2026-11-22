@@ -24,7 +24,7 @@ func withOwnerKeys(schema *filter.ResourceSchema) {
 	for _, f := range schema.Fields {
 		if f.Relation != nil && f.RelatedBy == nil {
 			key := f.Relation.OwnerKey()
-			f.RelatedBy = &filter.FieldSchema{ExternalName: key, SQLExpr: schema.Name + "." + key, Column: key, DataType: core.FieldTypeString}
+			f.RelatedBy = &filter.FieldSchema{ExternalName: key, Table: schema.Name, Column: key, DataType: core.FieldTypeString}
 		}
 	}
 }

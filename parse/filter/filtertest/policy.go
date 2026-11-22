@@ -42,7 +42,7 @@ type PolicyBackend func(t *testing.T, q PolicyQuery) ([]string, error)
 
 // SearchSchema is the free-text search a policy case's Search runs: name.
 func SearchSchema() *filter.SearchSchema {
-	return &filter.SearchSchema{Fields: []filter.SearchField{{Name: "name", SQLExpr: "records.name", Column: "name"}}, Param: filter.ParamSearch}
+	return &filter.SearchSchema{Fields: []filter.SearchField{{Name: "name", Table: "records", Column: "name"}}, Param: filter.ParamSearch}
 }
 
 func constraint(field string, op filter.FilterOperator, value any) *filter.PolicyConstraints {

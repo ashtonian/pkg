@@ -38,8 +38,8 @@ func TestDecimalRequestContract(t *testing.T) {
 		fee     string
 		order   string
 	}{
-		{filter.PostgresDialect{}, "ledger_lines.amount > $", "ledger_lines.fee <= $", "ledger_lines.amount DESC"},
-		{filter.SQLiteDialect{}, "parse_decimal_key(ledger_lines.amount) > parse_decimal_key(?", "parse_decimal_key(ledger_lines.fee) <= parse_decimal_key(?", "parse_decimal_key(ledger_lines.amount) DESC"},
+		{filter.PostgresDialect{}, `"ledger_lines"."amount" > $`, `"ledger_lines"."fee" <= $`, `"ledger_lines"."amount" DESC`},
+		{filter.SQLiteDialect{}, `parse_decimal_key("ledger_lines"."amount") > parse_decimal_key(?`, `parse_decimal_key("ledger_lines"."fee") <= parse_decimal_key(?`, `parse_decimal_key("ledger_lines"."amount") DESC`},
 	} {
 		plan, err := resource.BuildList(tt.dialect, query, parse.Scope{})
 		require.NoError(t, err)

@@ -16,7 +16,6 @@ func facetSchemaWithRelation() *filter.ResourceSchema {
 	rs := facetSchema()
 	rs.Fields["tags"] = &filter.FieldSchema{
 		ExternalName:     "tags",
-		SQLExpr:          "",
 		DataType:         core.FieldTypeString,
 		AllowedOperators: []filter.FilterOperator{filter.OpEq, filter.OpIn},
 		Facetable:        true,
@@ -36,7 +35,7 @@ func TestBuildFacetQuery_RelationFacet_PostgresJoin(t *testing.T) {
 	q, err := filter.BuildFacetQuery(
 		facetSchemaWithRelation(),
 		filter.PostgresDialect{},
-		"items.tenant_id = $1",
+		`"items"."tenant_id" = $1`,
 		[]any{"t1"},
 		[]filter.FacetRequest{
 			{Field: "tags"},
@@ -48,11 +47,11 @@ func TestBuildFacetQuery_RelationFacet_PostgresJoin(t *testing.T) {
 	}
 	wants := []string{
 		"WITH base AS",
-		"items.id AS __owner_pk",
-		"INNER JOIN item_tags j ON j.item_id = base.__owner_pk",
-		"AND j.tenant_id = ",
-		"GROUP BY j.tag_id",
-		"ORDER BY c DESC, j.tag_id::text COLLATE pg_c_utf8 LIMIT 5",
+		`"items"."id" AS __owner_pk`,
+		`INNER JOIN "item_tags" j ON "j"."item_id" = base.__owner_pk`,
+		`AND "j"."tenant_id" = `,
+		`GROUP BY "j"."tag_id"`,
+		`ORDER BY c DESC, "j"."tag_id"::text COLLATE pg_c_utf8 LIMIT 5`,
 	}
 	for _, sub := range wants {
 		if !strings.Contains(q.SQL, sub) {
@@ -106,10 +105,10 @@ func TestBuildFacetQuery_RelationFacet_MixedWithScalar(t *testing.T) {
 		t.Fatalf("BuildFacetQuery: %v", err)
 	}
 	// Base CTE projects both the scalar facet column AND the owner PK.
-	if !strings.Contains(q.SQL, "items.status AS facet__0") {
+	if !strings.Contains(q.SQL, `"items"."status" AS facet__0`) {
 		t.Errorf("scalar projection missing: %s", q.SQL)
 	}
-	if !strings.Contains(q.SQL, "items.id AS __owner_pk") {
+	if !strings.Contains(q.SQL, `"items"."id" AS __owner_pk`) {
 		t.Errorf("owner PK projection missing: %s", q.SQL)
 	}
 	// Each facet has its own UNION ALL leg.
@@ -150,7 +149,7 @@ func TestBuildFacetQuery_RelationFacet_SQLite(t *testing.T) {
 		t.Fatalf("BuildFacetQuery: %v", err)
 	}
 	// SQLite uses CAST for type coercion rather than ::text.
-	if !strings.Contains(q.SQL, "CAST(j.tag_id AS TEXT)") {
+	if !strings.Contains(q.SQL, `CAST("j"."tag_id" AS TEXT)`) {
 		t.Errorf("expected CAST(...AS TEXT) on SQLite, got: %s", q.SQL)
 	}
 }

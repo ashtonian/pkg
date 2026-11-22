@@ -62,10 +62,10 @@ func listKey(fs *ResourceSchema, ss *SortSchema) (CursorKey, error) {
 	}
 	switch {
 	case sf != nil:
-		key.SQLExpr, key.Column, key.DataType = sf.SQLExpr, sf.RowColumn(), sf.DataType
+		key.Table, key.Column, key.Expr, key.DataType = sf.Table, sf.RowColumn(), sf.Expr, sf.DataType
 		key.NumberKind, key.Nullable = sf.NumberKind, sf.Nullable
 	case ff != nil:
-		key.SQLExpr, key.Column, key.DataType = ff.SQLExpr, ff.RowColumn(), ff.DataType
+		key.Table, key.Column, key.Expr, key.DataType = ff.Table, ff.RowColumn(), ff.Expr, ff.DataType
 		key.NumberKind = ff.NumberKind
 	default:
 		return CursorKey{}, fmt.Errorf("key %q is no sort, filter or system field", name)
@@ -240,7 +240,7 @@ func (lq *ListQuery) Build(opts ...ListOption) (*ListResult, error) {
 		}
 		ast = merged
 	}
-	builder := &SQLBuilder{schema: lq.filterSchema, dialect: lq.dialect, startParam: cfg.startParam, scope: cfg.scope.over(lq.filterSchema), related: cfg.related}
+	builder := &SQLBuilder{schema: lq.filterSchema, dialect: lq.dialect, startParam: cfg.startParam, scope: cfg.scope.over(lq.dialect, lq.filterSchema), related: cfg.related}
 	filterSQL, err := builder.Build(ast)
 	if err != nil {
 		return nil, err
@@ -347,7 +347,7 @@ func (lq *ListQuery) Build(opts ...ListOption) (*ListResult, error) {
 	if cfg.withCount {
 		// Relation predicates are correlated EXISTS, so no join multiplies
 		// owner rows and a plain COUNT(*) is exact.
-		result.CountSQL = "SELECT COUNT(*) FROM " + lq.filterSchema.Name + " WHERE " + popWhere
+		result.CountSQL = "SELECT COUNT(*) FROM " + lq.dialect.QuoteIdent(lq.filterSchema.Name) + " WHERE " + popWhere
 		result.CountArgs = slices.Clone(popArgs)
 	}
 

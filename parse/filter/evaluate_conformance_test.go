@@ -194,9 +194,10 @@ func (o ownElements) eval(n *filter.FilterNode, row filter.Row) (filter.Truth, e
 // array's as row reads them.
 func (o ownElements) elements(f *filter.FieldSchema, row filter.Row) ([]any, error) {
 	if f.Elements != nil {
-		doc, ok := o.stored(f.SQLExpr)
+		column := f.Table + "." + f.Column
+		doc, ok := o.stored(column)
 		if !ok {
-			return nil, fmt.Errorf("field %s: no column %s", f.ExternalName, f.SQLExpr)
+			return nil, fmt.Errorf("field %s: no column %s", f.ExternalName, column)
 		}
 		return filter.DocumentElements(doc)
 	}

@@ -16,10 +16,10 @@ import (
 
 func memberSchema() *ResourceSchema {
 	return &ResourceSchema{Name: "docs", Fields: map[string]*FieldSchema{
-		"id":        {ExternalName: "id", SQLExpr: "docs.id", DataType: core.FieldTypeString},
-		"parent_id": {ExternalName: "parent_id", SQLExpr: "docs.parent_id", DataType: core.FieldTypeUUID},
-		"count":     {ExternalName: "count", SQLExpr: "docs.count", DataType: core.FieldTypeInt},
-		"at":        {ExternalName: "at", SQLExpr: "docs.at", DataType: core.FieldTypeTimestamp},
+		"id":        {ExternalName: "id", Table: "docs", Column: "id", DataType: core.FieldTypeString},
+		"parent_id": {ExternalName: "parent_id", Table: "docs", Column: "parent_id", DataType: core.FieldTypeUUID},
+		"count":     {ExternalName: "count", Table: "docs", Column: "count", DataType: core.FieldTypeInt},
+		"at":        {ExternalName: "at", Table: "docs", Column: "at", DataType: core.FieldTypeTimestamp},
 	}}
 }
 
@@ -41,8 +41,8 @@ func TestMembership_CompilesToAnInSubquery(t *testing.T) {
 		d     Dialect
 		where string
 	}{
-		"postgres": {PostgresDialect{}, `docs.parent_id IN (SELECT "descendant_id" FROM "authz"."node_closure" WHERE ("root_id" IN ($1, $2) AND ("user_id" = $3 OR "ended_at" IS NULL)))`},
-		"sqlite":   {SQLiteDialect{}, `docs.parent_id IN (SELECT "descendant_id" FROM "authz"."node_closure" WHERE ("root_id" IN (?1, ?2) AND ("user_id" = ?3 OR "ended_at" IS NULL)))`},
+		"postgres": {PostgresDialect{}, `"docs"."parent_id" IN (SELECT "authz"."node_closure"."descendant_id" FROM "authz"."node_closure" WHERE ("authz"."node_closure"."root_id" IN ($1, $2) AND ("authz"."node_closure"."user_id" = $3 OR "authz"."node_closure"."ended_at" IS NULL)))`},
+		"sqlite":   {SQLiteDialect{}, `"docs"."parent_id" IN (SELECT "authz"."node_closure"."descendant_id" FROM "authz"."node_closure" WHERE ("authz"."node_closure"."root_id" IN (?1, ?2) AND ("authz"."node_closure"."user_id" = ?3 OR "authz"."node_closure"."ended_at" IS NULL)))`},
 	} {
 		t.Run(name, func(t *testing.T) {
 			res, err := NewSQLBuilder(memberSchema(), tc.d).Build(memberAST(t, "parent_id", l, false))
@@ -59,11 +59,11 @@ func TestMembership_SQLShapes(t *testing.T) {
 		negate bool
 		where  string
 	}{
-		"every row":      {&Lookup{Table: "t", Project: "p"}, false, `docs.id IN (SELECT "p" FROM "t")`},
-		"empty list":     {&Lookup{Table: "t", Project: "p", Where: WhereIn("c")}, false, `docs.id IN (SELECT "p" FROM "t" WHERE 1=0)`},
-		"negated":        {&Lookup{Table: "t", Project: "p", Where: WhereEq("c", "x")}, true, `NOT (docs.id IN (SELECT "p" FROM "t" WHERE "c" = $1))`},
-		"one-child And":  {&Lookup{Table: "t", Project: "p", Where: WhereAll(WhereNull("c"))}, false, `docs.id IN (SELECT "p" FROM "t" WHERE ("c" IS NULL))`},
-		"placeholder ok": {&Lookup{Table: "t", Project: "p", Where: WhereEq("c", "$1; DROP TABLE t")}, false, `docs.id IN (SELECT "p" FROM "t" WHERE "c" = $1)`},
+		"every row":      {&Lookup{Table: "t", Project: "p"}, false, `"docs"."id" IN (SELECT "t"."p" FROM "t")`},
+		"empty list":     {&Lookup{Table: "t", Project: "p", Where: WhereIn("c")}, false, `"docs"."id" IN (SELECT "t"."p" FROM "t" WHERE 1=0)`},
+		"negated":        {&Lookup{Table: "t", Project: "p", Where: WhereEq("c", "x")}, true, `NOT ("docs"."id" IN (SELECT "t"."p" FROM "t" WHERE "t"."c" = $1))`},
+		"one-child And":  {&Lookup{Table: "t", Project: "p", Where: WhereAll(WhereNull("c"))}, false, `"docs"."id" IN (SELECT "t"."p" FROM "t" WHERE ("t"."c" IS NULL))`},
+		"placeholder ok": {&Lookup{Table: "t", Project: "p", Where: WhereEq("c", "$1; DROP TABLE t")}, false, `"docs"."id" IN (SELECT "t"."p" FROM "t" WHERE "t"."c" = $1)`},
 	} {
 		t.Run(name, func(t *testing.T) {
 			res, err := NewSQLBuilder(memberSchema(), PostgresDialect{}).Build(memberAST(t, "id", tc.l, tc.negate))

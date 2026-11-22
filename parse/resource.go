@@ -599,7 +599,7 @@ func (r *Resource[T]) ColumnSQLType(column string) (core.SQLType, bool) {
 // Columns is the projection every statement over the resource reads for
 // dialect d: a list's page, an update's RETURNING, and a repository's own
 // reads of the table. It is T's columns in field order, or the ReadColumns
-// among them, table-qualified; a computed column (ReadExpr) is read through
+// among them, table-qualified and quoted by d; a computed column (ReadExpr) is read through
 // d's expression and a column with a declared ColumnType as d reads that
 // type, each under the column's own name, so rows scan by name. A dialect a
 // computed column's expression refuses is an error.
@@ -615,7 +615,7 @@ func (r *Resource[T]) Columns(d filter.Dialect) ([]string, error) {
 func (r *Resource[T]) columns(d filter.Dialect, v *dialectView) []string {
 	out := make([]string, len(r.read))
 	for i, name := range r.read {
-		stored := r.table + "." + name
+		stored := d.QuoteIdent(r.table) + "." + d.QuoteIdent(name)
 		col := stored
 		if expr, ok := v.exprs[name]; ok {
 			col = expr
@@ -624,7 +624,7 @@ func (r *Resource[T]) columns(d filter.Dialect, v *dialectView) []string {
 			col = d.ReadColumn(col, t)
 		}
 		if col != stored {
-			col += " AS " + name
+			col += " AS " + d.QuoteIdent(name)
 		}
 		out[i] = col
 	}
@@ -681,7 +681,7 @@ func systemFields(table string, cfg resourceConfig, columns map[string]reflect.T
 			wire = f.Wire()
 		}
 		return &filter.FieldSchema{
-			ExternalName: column, SQLExpr: table + "." + column, Column: column,
+			ExternalName: column, Table: table, Column: column,
 			DataType: info.Type, NumberKind: info.NumberKind, Wire: wire, AllowedOperators: ops,
 		}
 	}

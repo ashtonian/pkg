@@ -13,6 +13,23 @@ import (
 	"github.com/ashtonian/pkg/parse/core"
 )
 
+// rowColumn is the row column a field named name reads, the column the
+// read-set checks hold to T's own. Without a column mapper (expr "") it is
+// the column the field's SQL names, MappedExpr having held it to an
+// identifier; a column tag of "-" leaves the field reading its
+// conventional column, which a resource then refuses as none of T's. With
+// a mapper it is FieldColumn's: "" for a column that is no identifier or a
+// field that is no column, since only the mapper's own SQL reads it.
+func rowColumn(g *core.SchemaGenerator, field *core.Field, name, expr string) (string, error) {
+	if expr == "" {
+		return g.ColumnName(name, field.Tags.Column)
+	}
+	if column, ok, err := g.FieldColumn(field); err == nil && ok {
+		return column, nil
+	}
+	return "", nil
+}
+
 // GenerateFilterSchema generates a ResourceSchema from struct tags on type T.
 func GenerateFilterSchema[T any](g *core.SchemaGenerator) (*ResourceSchema, error) {
 	t := reflect.TypeFor[T]()
@@ -77,7 +94,7 @@ func generateFilterSchema(g *core.SchemaGenerator, t reflect.Type) (*ResourceSch
 			}
 		}
 
-		sqlExpr, err := g.ColumnExpr(tableName, fieldName, fieldType, tags.Column)
+		expr, err := g.MappedExpr(tableName, fieldName, fieldType, tags.Column)
 		if err != nil {
 			return nil, fmt.Errorf("field %s: %w", field.GoName, err)
 		}
@@ -97,7 +114,8 @@ func generateFilterSchema(g *core.SchemaGenerator, t reflect.Type) (*ResourceSch
 
 		fs := &FieldSchema{
 			ExternalName:     fieldName,
-			SQLExpr:          sqlExpr,
+			Table:            tableName,
+			Expr:             expr,
 			DataType:         fieldType,
 			NumberKind:       info.NumberKind,
 			Wire:             field.Wire(),
@@ -115,12 +133,8 @@ func generateFilterSchema(g *core.SchemaGenerator, t reflect.Type) (*ResourceSch
 		}
 
 		if tags.Relation == "" {
-			// Not an error: FieldColumn refuses a column that is no
-			// identifier, which only a column mapper's own SQL may read
-			// (ColumnExpr). Such a field names no row column here, and
-			// parse.NewResource refuses the column outright.
-			if column, ok, err := g.FieldColumn(field); err == nil && ok {
-				fs.Column = column
+			if fs.Column, err = rowColumn(g, field, fieldName, expr); err != nil {
+				return nil, fmt.Errorf("field %s: %w", field.GoName, err)
 			}
 		}
 
@@ -141,7 +155,6 @@ func generateFilterSchema(g *core.SchemaGenerator, t reflect.Type) (*ResourceSch
 				}
 				if facetSchema != nil {
 					facetSchema.Field = fieldName
-					facetSchema.SQLExpr = sqlExpr
 					fs.FacetSchema = facetSchema
 				}
 			}
@@ -272,7 +285,7 @@ func generateSortSchema(g *core.SchemaGenerator, t reflect.Type) (*SortSchema, e
 			// value's text order is not its order.
 			return nil, fmt.Errorf("field %s: %s fields are not sortable", field.GoName, fieldType)
 		}
-		sqlExpr, err := g.ColumnExpr(tableName, fieldName, fieldType, tags.Column)
+		expr, err := g.MappedExpr(tableName, fieldName, fieldType, tags.Column)
 		if err != nil {
 			return nil, fmt.Errorf("field %s: %w", field.GoName, err)
 		}
@@ -293,8 +306,9 @@ func generateSortSchema(g *core.SchemaGenerator, t reflect.Type) (*SortSchema, e
 			}
 		}
 		fields[fieldName] = &SortFieldSchema{
-			SQLExpr:    sqlExpr,
+			Table:      tableName,
 			Column:     column,
+			Expr:       expr,
 			DataType:   fieldType,
 			NumberKind: kind,
 			Nullable:   nullable,
@@ -417,7 +431,7 @@ func addDocSortPaths(g *core.SchemaGenerator, fields map[string]*SortFieldSchema
 	if name == "" {
 		return nil
 	}
-	sqlExpr, err := g.ColumnExpr(tableName, name, dt, field.Tags.Column)
+	expr, err := g.MappedExpr(tableName, name, dt, field.Tags.Column)
 	if err != nil {
 		return err
 	}
@@ -425,7 +439,7 @@ func addDocSortPaths(g *core.SchemaGenerator, fields map[string]*SortFieldSchema
 	if err != nil {
 		return err
 	}
-	keys, err := docSortPaths(g, field, dt, sqlExpr, column)
+	keys, err := docSortPaths(g, field, dt, tableName, column, expr)
 	if err != nil {
 		return err
 	}

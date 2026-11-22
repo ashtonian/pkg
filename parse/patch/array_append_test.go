@@ -44,8 +44,8 @@ func TestBuildPatchSQL_ArrayAppend(t *testing.T) {
 			name:    "postgres",
 			dialect: filter.PostgresDialect{},
 			wantContain: []string{
-				"photo_blob_keys = array_append",
-				"COALESCE(photo_blob_keys, '{}')",
+				`"photo_blob_keys" = array_append`,
+				`COALESCE("photo_blob_keys", '{}')`,
 				"$1",
 			},
 		},
@@ -53,8 +53,8 @@ func TestBuildPatchSQL_ArrayAppend(t *testing.T) {
 			name:    "sqlite",
 			dialect: filter.SQLiteDialect{},
 			wantContain: []string{
-				"photo_blob_keys = json_insert",
-				"COALESCE(photo_blob_keys, '[]')",
+				`"photo_blob_keys" = json_insert`,
+				`COALESCE("photo_blob_keys", '[]')`,
 				"'$[#]'",
 				"?1",
 			},

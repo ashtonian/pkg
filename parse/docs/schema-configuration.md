@@ -91,7 +91,7 @@ encoding/json ignores the option on a type that marshals itself (`json.Marshaler
 | `WithSQLTableName(name)` | string | `PluralSnake(type name)` | Table name for the type |
 | `WithTableConvention(fn)` | `TableConvention` | `PluralSnake` | Table naming. `PluralSnake` and `PluralCamel` pluralize by the regular English rules (`Analysis` → `analyses`, `Quiz` → `quizzes`, `userIDs` → `user_ids`); name the table of an irregular noun (`Person`, `Leaf`, `Child`) with `WithSQLTableName` |
 | `WithColumnConvention(fn)` | `NamingConvention` | `SnakeCase` | Column naming when a field has no column tag |
-| `WithColumnMapper(m)` | `SQLColumnMapper` | none | Maps a field's column to the SQL expression that reads it. `MapColumn(table, column, type)` gets the column the `db` tag or the column convention names (the one patch writes), the same in every view of the field; the mapper's SQL is trusted as written |
+| `WithColumnMapper(m)` | `SQLColumnMapper` | none | Maps a field's column to the SQL expression that reads it. `MapColumn(table, column, type)` gets the column the `db` tag or the column convention names (the one patch writes), the same in every view of the field; the mapper's SQL is trusted and emitted as written, so it quotes any name a statement must quote (a reserved word, a mixed-case column) |
 | `WithColumnTypes(types)` | `map[string]SQLType` | none | Copied physical column declarations; authoritative JSON/native-array profile for filter, patch, sort and search schemas |
 | `WithFieldNameTag(tag)` | string | `"json"` | Tag holding external field names |
 | `WithColumnTag(tag)` | string | `"db"` | Tag holding column names |
@@ -109,7 +109,9 @@ A patch schema carries the two limits a patch is held to beside the parser's. Se
 | `PatchSchema.MaxOperations` | int | `patch.DefaultMaxOperations` (`50`) | Operations in one patch, a merge patch's members and merged objects counted (E2066); `0` is unlimited |
 | `PatchSchema.MaxRelationValues` | int | `patch.DefaultMaxRelationValues` (`1000`) | Keys one operation on a relation path names, repeats counted once (E2119, `Details` `count` and `limit`); `0` is unlimited. Served in the schema document as `max_relation_values` |
 
-Table names and columns must be SQL identifiers; `TableName`, `ColumnExpr` and `ColumnName` return an error otherwise, so a bad tag fails at schema generation. `ColumnExpr` leaves the column unchecked when a `ColumnMapper` renders it.
+Table names and columns must be SQL identifiers (`[A-Za-z_][A-Za-z0-9_]*`); `TableName`, `ColumnName` and `MappedExpr` return an error otherwise, so a bad tag fails at schema generation. `MappedExpr` leaves the column unchecked when a `ColumnMapper` renders it.
+
+Every statement quotes the tables and columns it names (`"user"."order"`) and qualifies each column it reads by its table — an `UPDATE`'s targets, and the stored values its `SET` and change predicate read, are its one table's columns — so a reserved word (`user`, `order`, `group`) or a mixed-case column reads as a name. A quoted name is case-sensitive: on PostgreSQL the `db` tag and the table name must be spelt as the catalog holds them — lower case for a column created unquoted, as written for one created quoted (`createdAt`). SQLite compares names without regard to case. Qualifying matters on SQLite, which reads an unqualified quoted name that matches no column as a string literal: a misspelt column is an error at execution, never a constant.
 
 `WithFieldNameTag` changes schema field names. Direct typed application uses those names. Document operations also require a codec whose field naming agrees: using a non-JSON field tag with the built-in JSON codec is rejected when names disagree. The option does not teach `encoding/json` a different struct-tag convention.
 

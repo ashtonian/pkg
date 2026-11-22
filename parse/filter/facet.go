@@ -21,11 +21,10 @@ const (
 
 // FacetSchema defines a single facetable field.
 type FacetSchema struct {
-	Field   string
-	SQLExpr string
-	Type    FacetType
-	Limit   int
-	Ranges  []FacetRange
+	Field  string
+	Type   FacetType
+	Limit  int
+	Ranges []FacetRange
 }
 
 // FacetRange defines a bucket boundary for range facets.

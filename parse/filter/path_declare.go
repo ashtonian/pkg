@@ -111,7 +111,7 @@ func newPathField(doc *FieldSchema, segs []string, d PathDecl, kind reflect.Kind
 	if doc.Storage != "" {
 		storage = doc.Storage
 	}
-	p := &JSONPath{Column: doc.SQLExpr, Segments: segs, Storage: storage}
+	p := &JSONPath{Table: doc.Table, Column: doc.Column, Expr: doc.Expr, Segments: segs, Storage: storage}
 	if err := p.validate(d.Type, d.Elem, MaxPathDepth); err != nil {
 		return nil, err
 	}
@@ -391,7 +391,7 @@ func applyStorage(g *core.SchemaGenerator, fs *FieldSchema, field *core.Field) e
 
 // docSortPaths builds the path sort keys a document field declares: struct
 // members tagged parse:"sort" and `paths` entries with the sort capability.
-func docSortPaths(g *core.SchemaGenerator, field *core.Field, docType core.FieldType, sqlExpr, column string) (map[string]*SortFieldSchema, error) {
+func docSortPaths(g *core.SchemaGenerator, field *core.Field, docType core.FieldType, table, column, expr string) (map[string]*SortFieldSchema, error) {
 	tag, err := fieldStorage(g, field)
 	if err != nil {
 		return nil, err
@@ -433,7 +433,7 @@ func docSortPaths(g *core.SchemaGenerator, field *core.Field, docType core.Field
 	name := field.External
 	out := make(map[string]*SortFieldSchema, len(decls))
 	for i, d := range decls {
-		key, err := newPathSortField(sqlExpr, column, storage, strings.Split(d.Path, "."), d.Type, kinds[i], d.Indexed)
+		key, err := newPathSortField(table, column, expr, storage, strings.Split(d.Path, "."), d.Type, kinds[i], d.Indexed)
 		if err != nil {
 			return nil, fmt.Errorf("path %s: %w", d.Path, err)
 		}
@@ -442,21 +442,21 @@ func docSortPaths(g *core.SchemaGenerator, field *core.Field, docType core.Field
 	return out, nil
 }
 
-func newPathSortField(sqlExpr, column string, storage JSONStorage, segs []string, t core.FieldType, kind reflect.Kind, indexed bool) (*SortFieldSchema, error) {
+func newPathSortField(table, column, expr string, storage JSONStorage, segs []string, t core.FieldType, kind reflect.Kind, indexed bool) (*SortFieldSchema, error) {
 	if t == core.FieldTypeArray {
 		return nil, fmt.Errorf("path %s is an array; an array member is no sort key", strings.Join(segs, "."))
 	}
 	if storage == "" {
 		storage = StorageJSONB
 	}
-	p := &JSONPath{Column: sqlExpr, Segments: segs, Storage: storage}
+	p := &JSONPath{Table: table, Column: column, Expr: expr, Segments: segs, Storage: storage}
 	if err := p.validate(t, "", MaxPathDepth); err != nil {
 		return nil, err
 	}
 	if column == "" {
-		return nil, fmt.Errorf("document %s has no row column to resume a cursor from", sqlExpr)
+		return nil, fmt.Errorf("document %s has no row column to resume a cursor from", expr)
 	}
-	return &SortFieldSchema{Column: column, DataType: t, NumberKind: kind, Nullable: true, Indexed: indexed, Path: p}, nil
+	return &SortFieldSchema{Table: table, Column: column, Expr: expr, DataType: t, NumberKind: kind, Nullable: true, Indexed: indexed, Path: p}, nil
 }
 
 // WithPaths returns a copy of s with the decls marked Sort added as sort
@@ -480,7 +480,7 @@ func (s *SortSchema) WithPaths(fields *ResourceSchema, decls ...PathDecl) (*Sort
 		if _, dup := out.Fields[d.Path]; dup {
 			return nil, fmt.Errorf("sort path %q is already a sort key", d.Path)
 		}
-		key, err := newPathSortField(doc.SQLExpr, doc.RowColumn(), doc.Storage, strings.Split(members, "."), d.Type, kindOf(d.Type), d.Indexed)
+		key, err := newPathSortField(doc.Table, doc.RowColumn(), doc.Expr, doc.Storage, strings.Split(members, "."), d.Type, kindOf(d.Type), d.Indexed)
 		if err != nil {
 			return nil, fmt.Errorf("sort path %q: %w", d.Path, err)
 		}
@@ -500,7 +500,7 @@ func setPathFacet(f *FieldSchema, facet *FacetSchema) error {
 		return fmt.Errorf("an array member's facet is terms, not %s", facet.Type)
 	}
 	cfg := *facet
-	cfg.Field, cfg.SQLExpr = f.ExternalName, ""
+	cfg.Field = f.ExternalName
 	f.Facetable, f.FacetSchema = true, &cfg
 	return nil
 }

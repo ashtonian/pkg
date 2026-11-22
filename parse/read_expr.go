@@ -254,12 +254,7 @@ func (c *computedColumns) newView(exprs []string, base *dialectView) *dialectVie
 		}
 		column := f.RowColumn()
 		computed := *f
-		computed.SQLExpr = v.exprs[column]
-		if f.FacetSchema != nil {
-			facet := *f.FacetSchema
-			facet.SQLExpr = computed.SQLExpr
-			computed.FacetSchema = &facet
-		}
+		computed.Expr = v.exprs[column]
 		filters.Fields[name] = &computed
 		v.fields[f] = &computed
 	}
@@ -280,7 +275,7 @@ func (c *computedColumns) newView(exprs []string, base *dialectView) *dialectVie
 			}
 			column := f.RowColumn()
 			computed := *f
-			computed.SQLExpr = v.exprs[column]
+			computed.Expr = v.exprs[column]
 			filters.PolicyFields[name] = &computed
 			v.fields[f] = &computed
 		}
@@ -298,7 +293,7 @@ func (c *computedColumns) newView(exprs []string, base *dialectView) *dialectVie
 			// A cursor reads the key's value from the row's column, which
 			// the expression's text no longer names.
 			computed := *f
-			computed.SQLExpr, computed.Column = v.exprs[column], column
+			computed.Expr, computed.Column = v.exprs[column], column
 			sorts.Fields[name] = &computed
 			v.sorts[f] = &computed
 		}
@@ -310,7 +305,7 @@ func (c *computedColumns) newView(exprs []string, base *dialectView) *dialectVie
 		searched.Fields = slices.Clone(search.Fields)
 		for i, f := range searched.Fields {
 			if column := f.RowColumn(); c.has(column) {
-				searched.Fields[i].SQLExpr = v.exprs[column]
+				searched.Fields[i].Expr = v.exprs[column]
 			}
 		}
 		v.search = &searched

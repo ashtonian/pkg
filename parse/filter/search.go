@@ -11,22 +11,34 @@ import (
 )
 
 // SearchField describes a single field included in full-text search.
+// It searches Column of Table, quoted by the dialect, unless Expr is set,
+// as a FieldSchema does.
 type SearchField struct {
-	Name    string
-	SQLExpr string
+	Name  string
+	Table string
 	// Column is the row column the field searches, set by schema generation
-	// as FieldSchema.Column is; RowColumn falls back to SQLExpr without it.
+	// as FieldSchema.Column is.
 	Column string
+	// Expr is the searched SQL when it is not Column of Table (a column
+	// mapper's or a computed column's), emitted as written.
+	Expr string
 }
 
-// RowColumn returns the row column the field searches: Column, or the last
-// segment of a plain (optionally table-qualified) identifier SQLExpr; "" for a
-// computed expression.
-func (f SearchField) RowColumn() string {
-	if f.Column != "" {
-		return f.Column
+// RowColumn returns the row column the field searches; "" for a computed
+// expression that names none.
+func (f SearchField) RowColumn() string { return f.Column }
+
+func (f SearchField) sql(d Dialect) string { return columnSQL(d, f.Table, f.Column, f.Expr) }
+
+// isTextSearchConfig reports whether lang names a text search
+// configuration, optionally schema-qualified: it is written into a string
+// literal, so it is held to identifiers.
+func isTextSearchConfig(lang string) bool {
+	schema, name, qualified := strings.Cut(lang, ".")
+	if !qualified {
+		return core.IsIdentifier(lang)
 	}
-	return identifierColumn(f.SQLExpr)
+	return core.IsIdentifier(schema) && core.IsIdentifier(name)
 }
 
 // defaultSearchLanguage is the PostgreSQL text search configuration a
@@ -89,18 +101,16 @@ func generateSearchSchema(g *core.SchemaGenerator, t reflect.Type) (*SearchSchem
 			// time. A ColumnMapper owns its expression and may make one.
 			return nil, fmt.Errorf("field %s: only string fields are searchable, not %s", field.GoName, fieldType)
 		}
-		sqlExpr, err := g.ColumnExpr(tableName, fieldName, fieldType, field.Tags.Column)
+		expr, err := g.MappedExpr(tableName, fieldName, fieldType, field.Tags.Column)
 		if err != nil {
 			return nil, fmt.Errorf("field %s: %w", field.GoName, err)
 		}
 
-		sf := SearchField{Name: fieldName, SQLExpr: sqlExpr}
-		// As for a filter field, a mapped column that is no identifier
-		// names no row column; parse.NewResource refuses it.
-		if column, ok, err := g.FieldColumn(field); err == nil && ok {
-			sf.Column = column
+		column, err := rowColumn(g, field, fieldName, expr)
+		if err != nil {
+			return nil, fmt.Errorf("field %s: %w", field.GoName, err)
 		}
-		fields = append(fields, sf)
+		fields = append(fields, SearchField{Name: fieldName, Table: tableName, Column: column, Expr: expr})
 	}
 
 	if len(fields) == 0 {
@@ -112,7 +122,7 @@ func generateSearchSchema(g *core.SchemaGenerator, t reflect.Type) (*SearchSchem
 		param = ParamSearch
 	}
 	lang := cmp.Or(g.Opts.SearchLanguage, defaultSearchLanguage)
-	if !identifierRe.MatchString(lang) {
+	if !isTextSearchConfig(lang) {
 		return nil, fmt.Errorf("search language %q is not a text search configuration name", lang)
 	}
 	return &SearchSchema{Fields: fields, Language: lang, Param: param}, nil
@@ -153,13 +163,13 @@ func buildSearchCondition(schema *SearchSchema, dialect Dialect, query string, s
 
 func buildPostgresSearch(schema *SearchSchema, dialect Dialect, query string, startIdx int) (*searchCondition, error) {
 	lang := cmp.Or(schema.Language, defaultSearchLanguage)
-	if !identifierRe.MatchString(lang) {
+	if !isTextSearchConfig(lang) {
 		return nil, fmt.Errorf("search language %q is not a text search configuration name", lang)
 	}
 
 	var tsvParts []string
 	for _, f := range schema.Fields {
-		tsvParts = append(tsvParts, fmt.Sprintf("coalesce(%s, '')", f.SQLExpr))
+		tsvParts = append(tsvParts, fmt.Sprintf("coalesce(%s, '')", f.sql(dialect)))
 	}
 	tsvExpr := fmt.Sprintf("to_tsvector('%s', %s)", lang, strings.Join(tsvParts, " || ' ' || "))
 	tsqExpr := fmt.Sprintf("plainto_tsquery('%s', %s)", lang, dialect.Placeholder(startIdx+1))
@@ -181,7 +191,7 @@ func buildLikeSearch(schema *SearchSchema, dialect Dialect, query string, startI
 	for _, f := range schema.Fields {
 		paramIdx++
 		ph := dialect.Placeholder(paramIdx)
-		parts = append(parts, fmt.Sprintf(`%s LIKE %s ESCAPE '\'`, f.SQLExpr, ph))
+		parts = append(parts, fmt.Sprintf(`%s LIKE %s ESCAPE '\'`, f.sql(dialect), ph))
 		args = append(args, "%"+escaped+"%")
 	}
 

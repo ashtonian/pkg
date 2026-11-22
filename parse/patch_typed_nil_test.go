@@ -48,7 +48,7 @@ func TestValidateOperations_TypedNilTimestamp(t *testing.T) {
 				wireSQL, sqlErr := patch.BuildPatchSQL(wire, dialect)
 				require.NoError(t, sqlErr)
 				assert.Equal(t, wireSQL, builtSQL)
-				assert.Contains(t, builtSQL.SetClause, "at = NULL")
+				assert.Contains(t, builtSQL.SetClause, `"at" = NULL`)
 			}
 			got, applyErr := p.ApplyValidatedPatch(built, nullablePatchRow{At: &at, Required: at})
 			require.NoError(t, applyErr)

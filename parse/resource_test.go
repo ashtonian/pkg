@@ -161,7 +161,7 @@ func TestResource_DeclaresItsIdentity(t *testing.T) {
 	assert.Equal(t, "deleted_at", r.DeletedColumnName())
 	columns, err := r.Columns(filter.PostgresDialect{})
 	require.NoError(t, err)
-	assert.Equal(t, []string{"widgets.id", "widgets.tenant_id", "widgets.name", "widgets.rank", "widgets.deleted_at"}, columns)
+	assert.Equal(t, []string{`"widgets"."id"`, `"widgets"."tenant_id"`, `"widgets"."name"`, `"widgets"."rank"`, `"widgets"."deleted_at"`}, columns)
 	for _, item := range []any{widget{ID: "w9"}, &widget{ID: "w9"}} {
 		key, err := r.Key(item)
 		require.NoError(t, err)
@@ -169,7 +169,7 @@ func TestResource_DeclaresItsIdentity(t *testing.T) {
 	}
 	sys := r.FilterSchema().SystemFields
 	assert.Equal(t, core.FieldTypeTimestamp, sys["deleted_at"].DataType, "system fields are typed from T")
-	assert.Equal(t, "widgets.tenant_id", sys["tenant_id"].SQLExpr)
+	assert.Equal(t, `"widgets"."tenant_id"`, filter.FieldExpr(filter.PostgresDialect{}, sys["tenant_id"]))
 }
 
 func TestParseList_ReadsEveryListParameter(t *testing.T) {
@@ -341,7 +341,7 @@ func TestBuildList_UsesTheDeclaredKeyOnRequestViews(t *testing.T) {
 		require.NoError(t, buildErr)
 		require.Len(t, plan.Keyset.Keys, 1)
 		assert.Equal(t, "code", plan.Keyset.Keys[0].Name)
-		assert.Contains(t, plan.Page.SQL, "ORDER BY entries.code COLLATE BINARY ASC")
+		assert.Contains(t, plan.Page.SQL, `ORDER BY "entries"."code" COLLATE BINARY ASC`)
 	}
 	req, err := view.ParseList(url.Values{filter.ParamSort: {"data.rank"}})
 	require.NoError(t, err)
@@ -450,17 +450,17 @@ func TestReadColumns_LimitWhatTheResourceReads(t *testing.T) {
 	require.NoError(t, err)
 	columns, err := r.Columns(filter.PostgresDialect{})
 	require.NoError(t, err)
-	assert.Equal(t, []string{"accounts.id", "accounts.tenant_id", "accounts.email", "accounts.updated_at"}, columns, "in T's field order")
+	assert.Equal(t, []string{`"accounts"."id"`, `"accounts"."tenant_id"`, `"accounts"."email"`, `"accounts"."updated_at"`}, columns, "in T's field order")
 
 	plan, err := r.BuildList(filter.PostgresDialect{}, nil, parse.Scope{Tenant: "t1"})
 	require.NoError(t, err)
-	assert.True(t, strings.HasPrefix(plan.Page.SQL, "SELECT accounts.id, accounts.tenant_id, accounts.email, accounts.updated_at FROM accounts "), plan.Page.SQL)
+	assert.True(t, strings.HasPrefix(plan.Page.SQL, `SELECT "accounts"."id", "accounts"."tenant_id", "accounts"."email", "accounts"."updated_at" FROM "accounts" `), plan.Page.SQL)
 
 	p, err := r.ParseMergePatch([]byte(`{"email":"a@example.com"}`))
 	require.NoError(t, err)
 	upd, err := r.BuildUpdate(filter.PostgresDialect{}, p, parse.ByID("a1"), parse.Scope{Tenant: "t1"}, parse.StampSQL("updated_at", "NOW()"))
 	require.NoError(t, err)
-	assert.True(t, strings.HasSuffix(upd.Owner.SQL, " RETURNING accounts.id, accounts.tenant_id, accounts.email, accounts.updated_at"), upd.Owner.SQL)
+	assert.True(t, strings.HasSuffix(upd.Owner.SQL, ` RETURNING "accounts"."id", "accounts"."tenant_id", "accounts"."email", "accounts"."updated_at"`), upd.Owner.SQL)
 	assert.NotContains(t, upd.Owner.SQL+plan.Page.SQL, "secret_hash")
 }
 
@@ -622,7 +622,7 @@ func TestRelate_CorrelatesThroughTheOwnersMappedField(t *testing.T) {
 	}
 	members := parse.MustResource[mappedMember]("members", mappedColumns)
 	members.MustRelate("team", parse.BelongsTo(parse.MustResource[team]("teams"), "team_id"))
-	assert.Equal(t, "(members.team_id)", members.FilterSchema().Fields["team"].RelatedBy.SQLExpr)
+	assert.Equal(t, "(members.team_id)", members.FilterSchema().Fields["team"].RelatedBy.Expr)
 }
 
 // QueryOnlyColumns lets requests filter and search by columns the resource
@@ -634,9 +634,9 @@ func TestQueryOnlyColumns_FilterAndSearchUnreadColumns(t *testing.T) {
 	require.NoError(t, err)
 	plan, err := r.BuildList(filter.SQLiteDialect{}, req, parse.Scope{})
 	require.NoError(t, err)
-	assert.True(t, strings.HasPrefix(plan.Page.SQL, "SELECT tickets.id, tickets.title FROM tickets "), plan.Page.SQL)
-	assert.Contains(t, plan.Fragment, "tickets.status")
-	assert.Contains(t, plan.Fragment, "tickets.body")
+	assert.True(t, strings.HasPrefix(plan.Page.SQL, `SELECT "tickets"."id", "tickets"."title" FROM "tickets" `), plan.Page.SQL)
+	assert.Contains(t, plan.Fragment, `"tickets"."status"`)
+	assert.Contains(t, plan.Fragment, `"tickets"."body"`)
 }
 
 func TestQueryOnlyColumns_NameUnreadColumnsForPredicatesOnly(t *testing.T) {

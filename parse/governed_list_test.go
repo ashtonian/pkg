@@ -67,16 +67,16 @@ func TestBuildList_GovernedRelationsFollowTheRow(t *testing.T) {
 		plan, err := build(t, parse.Scope{Governance: governanceA()})
 		require.NoError(t, err, "a governed list needs no Scope.Tenant")
 		for _, want := range []string{
-			"notes.tenant_id = documents.tenant_id",           // depth one
-			"reactions.tenant_id = documents.tenant_id",       // depth two
-			"rel1__.tenant_id = documents.tenant_id",          // the pair table
-			"labels.tenant_id = documents.tenant_id",          // the pair's target
-			"document_topics.tenant_id = documents.tenant_id", // the pair table compared by key
+			`"notes"."tenant_id" = "documents"."tenant_id"`,           // depth one
+			`"reactions"."tenant_id" = "documents"."tenant_id"`,       // depth two
+			`"rel1__"."tenant_id" = "documents"."tenant_id"`,          // the pair table
+			`"labels"."tenant_id" = "documents"."tenant_id"`,          // the pair's target
+			`"document_topics"."tenant_id" = "documents"."tenant_id"`, // the pair table compared by key
 		} {
 			assert.Contains(t, plan.Page.SQL, want)
 		}
-		assert.Contains(t, plan.Facets.SQL, "documents.tenant_id AS __owner_tenant")
-		assert.Contains(t, plan.Facets.SQL, "j.tenant_id = base.__owner_tenant")
+		assert.Contains(t, plan.Facets.SQL, `"documents"."tenant_id" AS __owner_tenant`)
+		assert.Contains(t, plan.Facets.SQL, `"j"."tenant_id" = base.__owner_tenant`)
 		bound := 0
 		for _, arg := range plan.Page.Args {
 			if arg == "A" {
@@ -89,8 +89,8 @@ func TestBuildList_GovernedRelationsFollowTheRow(t *testing.T) {
 		require.NoError(t, err)
 		require.Len(t, queries, 2)
 		for _, q := range queries {
-			assert.Contains(t, q.SQL, "JOIN documents owner__ ON owner__.id = j.document_id", q.Field)
-			assert.Contains(t, q.SQL, "j.tenant_id = owner__.tenant_id", q.Field)
+			assert.Contains(t, q.SQL, `JOIN "documents" owner__ ON "owner__"."id" = "j"."document_id"`, q.Field)
+			assert.Contains(t, q.SQL, `"j"."tenant_id" = "owner__"."tenant_id"`, q.Field)
 		}
 	})
 
@@ -110,7 +110,7 @@ func TestBuildList_GovernedRelationsFollowTheRow(t *testing.T) {
 		floor, err := build(t, parse.Scope{Tenant: "A"})
 		require.NoError(t, err)
 		assert.Equal(t, floor.Page, plan.Page)
-		assert.NotContains(t, plan.Page.SQL, "= documents.tenant_id")
+		assert.NotContains(t, plan.Page.SQL, `= "documents"."tenant_id"`)
 	})
 
 	t.Run("a resource without a tenant column holds relations to Scope.Tenant", func(t *testing.T) {

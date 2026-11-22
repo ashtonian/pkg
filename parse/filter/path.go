@@ -11,6 +11,7 @@ import (
 
 	"github.com/ashtonian/pkg/parse/core"
 	"github.com/ashtonian/pkg/parse/internal/decimals"
+	"github.com/ashtonian/pkg/parse/internal/dialect"
 )
 
 // JSONStorage is how a document column holds its JSON. Documents are jsonb
@@ -25,20 +26,34 @@ const (
 
 // JSONPath locates a typed member inside a document column: a scalar, or
 // an array of scalars (FieldTypeArray with Elem). A FieldSchema with a Path
-// filters, sorts and facets on the member; its SQLExpr is empty and its
-// value expression comes from Dialect.PathExpr.
+// filters, sorts and facets on the member; its value expression comes from
+// Dialect.PathExpr.
 type JSONPath struct {
-	// Column is the document column's trusted SQL expression.
+	// Table, Column and Expr are the document column, read as a
+	// FieldSchema reads its column: Column of Table, quoted by the
+	// dialect, unless Expr is set.
+	Table  string
 	Column string
+	Expr   string
 	// Segments are the member names from the column down.
 	Segments []string
 	Storage  JSONStorage
 
-	// element makes the path read one array element: Column is the alias
-	// of a row of the dialect's element table (Dialect.elementRows) and Segments
-	// is empty. The builder makes such paths for `$some` / `$none`
-	// conditions and facets on scalar arrays; no schema declares one.
+	// element makes the path read one array element: alias is a row of the
+	// dialect's element table (Dialect.elementRows) and Segments is empty.
+	// The builder makes such paths for `$some` / `$none` conditions and
+	// facets on scalar arrays; no schema declares one.
 	element bool
+	alias   string
+}
+
+// document is the SQL that reads the path's document: its column, or the
+// element row's alias.
+func (p *JSONPath) document(d dialect.Dialect) string {
+	if p.element {
+		return p.alias
+	}
+	return columnSQL(d, p.Table, p.Column, p.Expr)
 }
 
 var pathSegment = regexp.MustCompile(`^[A-Za-z0-9_-]{1,64}$`)
@@ -56,7 +71,7 @@ const pathTypeNames = "string, int, float, decimal, bool, timestamp or uuid"
 // validate checks a declared path of type t, elem being an array member's
 // element type.
 func (p *JSONPath) validate(t, elem core.FieldType, maxDepth int) error {
-	if p.Column == "" {
+	if p.Column == "" && p.Expr == "" {
 		return fmt.Errorf("path has no document column")
 	}
 	if len(p.Segments) == 0 {

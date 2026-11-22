@@ -2,11 +2,10 @@ package filter
 
 import (
 	"reflect"
-	"regexp"
 	"slices"
-	"strings"
 
 	"github.com/ashtonian/pkg/parse/core"
+	"github.com/ashtonian/pkg/parse/internal/dialect"
 )
 
 // FilterOperator represents a comparison or logical operator.
@@ -100,14 +99,25 @@ func (s *ResourceSchema) RequestField(name string) (*FieldSchema, bool) {
 }
 
 // FieldSchema defines a single filterable field.
+//
+// A field reads Column of Table, which the dialect quotes, unless Expr is
+// set. Schema generation sets all three; a schema built by hand sets Table
+// too, since SQLite reads a lone quoted name that names no column as a
+// string literal, which a misspelt column would then compare as.
 type FieldSchema struct {
 	ExternalName string
-	SQLExpr      string
+	// Table is the table, or the statement's alias of it, whose Column the
+	// field reads.
+	Table string
 	// Column is the row column the field reads: its own column, or a path's
 	// document column. Schema generation sets it from the field's column
-	// name, so it names the column even when a column mapper makes SQLExpr
-	// a computed expression. RowColumn falls back to SQLExpr without it.
-	Column   string
+	// name, so it names the column even when a column mapper makes Expr a
+	// computed expression.
+	Column string
+	// Expr is the field's SQL when it is not Column of Table: a column
+	// mapper's expression (core.SQLColumnMapper) or a computed column's,
+	// emitted as written.
+	Expr     string
 	DataType core.FieldType
 	// NumberKind is the Go numeric kind the field decodes into
 	// (reflect.Int8 … reflect.Float64). Integer and float values are
@@ -136,8 +146,8 @@ type FieldSchema struct {
 	// predicates as memberships (ResolveMemberships).
 	RelatedBy *FieldSchema
 	// Path makes the field a typed member of a document column; its value
-	// expression is Dialect.PathExpr (render with FieldExpr) and SQLExpr is
-	// empty.
+	// expression is Dialect.PathExpr (render with FieldExpr), and Table,
+	// Column and Expr are the document's.
 	Path *JSONPath
 	// Storage is how a document column holds its JSON (storage tag);
 	// empty means jsonb.
@@ -247,16 +257,19 @@ type SortSchema struct {
 	MaxFields    int
 }
 
-// SortFieldSchema defines a single sortable field.
+// SortFieldSchema defines a single sortable field. ORDER BY and keyset
+// predicates read Column of Table, quoted by the dialect, unless Expr is set,
+// as a FieldSchema does.
 type SortFieldSchema struct {
-	// SQLExpr is the expression emitted into ORDER BY and keyset
-	// predicates, usually table-qualified (`items.rank`).
-	SQLExpr string
+	// Table is the table, or the statement's alias of it, whose Column the
+	// key reads.
+	Table string
 	// Column is the row column the key's value is read from when a cursor
-	// is minted — the bare column name, never the qualified expression
-	//. Empty falls back to SQLExpr's last identifier
-	// segment (see RowColumn).
+	// is minted.
 	Column string
+	// Expr is the key's SQL when it is not Column of Table (a column
+	// mapper's or a computed column's), emitted as written.
+	Expr string
 	// DataType lets keyset values bind and compare by type (timestamps
 	// chronologically, numbers exactly).
 	DataType core.FieldType
@@ -273,47 +286,51 @@ type SortFieldSchema struct {
 	Path *JSONPath
 }
 
-// RowColumn returns the row column for the key: Column, or the last
-// segment of a plain (optionally table-qualified) identifier SQLExpr, or ""
-// when the expression is computed and has no row column.
+// RowColumn returns the row column the key's value is read from: Column,
+// or a path's document column; "" for a computed key, which has none.
 func (s *SortFieldSchema) RowColumn() string {
-	if s.Column != "" {
-		return s.Column
+	if s.Column == "" && s.Path != nil {
+		return s.Path.Column
 	}
-	return identifierColumn(s.SQLExpr)
+	return s.Column
 }
 
 // RowColumn returns the row column the field's values come from: Column, or
-// the last segment of a plain (optionally table-qualified) identifier — a
-// path's document column, else SQLExpr. It is "" for a relation, whose values
-// are another table's, and for a computed expression.
+// a path's document column. It is "" for a relation, whose values are
+// another table's, and for a computed expression.
 func (f *FieldSchema) RowColumn() string {
 	switch {
 	case f.Relation != nil:
 		return ""
-	case f.Column != "":
-		return f.Column
-	case f.Path != nil:
-		return identifierColumn(f.Path.Column)
-	default:
-		return identifierColumn(f.SQLExpr)
+	case f.Column == "" && f.Path != nil:
+		return f.Path.Column
 	}
+	return f.Column
 }
 
-// identifierColumn is the column a plain, optionally table-qualified,
-// identifier names; "" for any other expression.
-func identifierColumn(expr string) string {
-	if !identifierRe.MatchString(expr) {
-		return ""
+// columnSQL is the SQL that reads column of table, each quoted by d, or
+// expr when it is set: a column mapper's or a computed column's SQL, as
+// written. A table qualifies every column, so on SQLite a misspelt one is
+// an error rather than a string.
+func columnSQL(d dialect.Dialect, table, column, expr string) string {
+	switch {
+	case expr != "":
+		return expr
+	case table == "":
+		return d.QuoteIdent(column)
 	}
-	if i := strings.LastIndexByte(expr, '.'); i >= 0 {
-		return expr[i+1:]
-	}
-	return expr
+	return qualified(d, table, column)
 }
 
-// identifierRe admits plain, optionally table-qualified, SQL identifiers.
-var identifierRe = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*)?$`)
+// qualified is column of qualifier, a table or a statement's alias of one,
+// each quoted.
+func qualified(d dialect.Dialect, qualifier, column string) string {
+	return d.QuoteIdent(qualifier) + "." + d.QuoteIdent(column)
+}
+
+// sql is the SQL that reads the field's column (columnSQL): the document's,
+// for a path.
+func (f *FieldSchema) sql(d dialect.Dialect) string { return columnSQL(d, f.Table, f.Column, f.Expr) }
 
 // SortResult holds parsed sort fields.
 type SortResult struct {

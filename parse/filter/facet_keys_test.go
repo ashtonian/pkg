@@ -73,9 +73,9 @@ func TestFacetKeys(t *testing.T) {
 	ts := time.Date(2026, 1, 2, 3, 4, 5, 500000000, time.FixedZone("x", 2*3600))
 	id := uuid.MustParse("0198A3C2-7A1E-7C00-8000-000000000001")
 	field := func(t core.FieldType) *filter.FieldSchema {
-		return &filter.FieldSchema{ExternalName: "v", SQLExpr: "v", DataType: t}
+		return &filter.FieldSchema{ExternalName: "v", Column: "v", DataType: t}
 	}
-	float32Field := &filter.FieldSchema{ExternalName: "v", SQLExpr: "v", DataType: core.FieldTypeFloat, NumberKind: reflect.Float32}
+	float32Field := &filter.FieldSchema{ExternalName: "v", Column: "v", DataType: core.FieldTypeFloat, NumberKind: reflect.Float32}
 	tests := []struct {
 		name  string
 		field *filter.FieldSchema
@@ -99,8 +99,8 @@ func TestFacetKeys(t *testing.T) {
 		{"a timestamp in canonical UTC", field(core.FieldTypeTimestamp), ts, []string{"2026-01-02T01:04:05.500000000Z"}},
 		{"a date", field(core.FieldTypeDate), core.Date("2026-01-02"), []string{"2026-01-02"}},
 		{"a UUID lower-cased", field(core.FieldTypeUUID), id, []string{"0198a3c2-7a1e-7c00-8000-000000000001"}},
-		{"a list's distinct elements", &filter.FieldSchema{ExternalName: "v", SQLExpr: "v", DataType: core.FieldTypeArray, Elem: core.FieldTypeInt}, []int64{3, 1, 3}, []string{"3", "1"}},
-		{"a NULL list", &filter.FieldSchema{ExternalName: "v", SQLExpr: "v", DataType: core.FieldTypeArray, Elem: core.FieldTypeString}, []string(nil), nil},
+		{"a list's distinct elements", &filter.FieldSchema{ExternalName: "v", Column: "v", DataType: core.FieldTypeArray, Elem: core.FieldTypeInt}, []int64{3, 1, 3}, []string{"3", "1"}},
+		{"a NULL list", &filter.FieldSchema{ExternalName: "v", Column: "v", DataType: core.FieldTypeArray, Elem: core.FieldTypeString}, []string(nil), nil},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -132,7 +132,7 @@ func TestFacetKeys_PathNumberExact(t *testing.T) {
 
 // A value its field's type cannot hold is an error naming the field.
 func TestFacetKeys_RefusesAMismatchedValue(t *testing.T) {
-	_, err := filter.FacetKeys(42, &filter.FieldSchema{ExternalName: "status", SQLExpr: "status", DataType: core.FieldTypeString})
+	_, err := filter.FacetKeys(42, &filter.FieldSchema{ExternalName: "status", Column: "status", DataType: core.FieldTypeString})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "facet status")
 }

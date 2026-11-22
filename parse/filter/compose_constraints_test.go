@@ -29,12 +29,12 @@ func TestComposeConstraints(t *testing.T) {
 		Name:       "items",
 		PrimaryKey: "id",
 		Fields: map[string]*filter.FieldSchema{
-			"owner": {ExternalName: "owner", SQLExpr: "items.owner", Column: "owner", DataType: core.FieldTypeString},
+			"owner": {ExternalName: "owner", Table: "items", Column: "owner", DataType: core.FieldTypeString},
 		},
 		SystemFields: map[string]*filter.FieldSchema{
-			"id":         {ExternalName: "id", SQLExpr: "items.id", DataType: core.FieldTypeInt, NumberKind: reflect.Int64},
-			"tenant_id":  {ExternalName: "tenant_id", SQLExpr: "items.tenant_id", DataType: core.FieldTypeString},
-			"deleted_at": {ExternalName: "deleted_at", SQLExpr: "items.deleted_at", DataType: core.FieldTypeTimestamp},
+			"id":         {ExternalName: "id", Table: "items", Column: "id", DataType: core.FieldTypeInt, NumberKind: reflect.Int64},
+			"tenant_id":  {ExternalName: "tenant_id", Table: "items", Column: "tenant_id", DataType: core.FieldTypeString},
+			"deleted_at": {ExternalName: "deleted_at", Table: "items", Column: "deleted_at", DataType: core.FieldTypeTimestamp},
 		},
 	}
 	eq := func(field string, v any) *filter.PolicyConstraints {

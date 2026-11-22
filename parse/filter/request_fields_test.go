@@ -30,11 +30,11 @@ func paritySchema(t *testing.T) *filter.ResourceSchema {
 	require.NoError(t, err)
 	s.PrimaryKey = "id"
 	s.SystemFields = map[string]*filter.FieldSchema{
-		"id": {ExternalName: "id", SQLExpr: "parity_items.id", Column: "id", DataType: core.FieldTypeString,
+		"id": {ExternalName: "id", Table: "parity_items", Column: "id", DataType: core.FieldTypeString,
 			AllowedOperators: []filter.FilterOperator{filter.OpEq, filter.OpGt, filter.OpLt, filter.OpGte, filter.OpLte, filter.OpIn}},
-		"tenant_id": {ExternalName: "tenant_id", SQLExpr: "parity_items.tenant_id", Column: "tenant_id", DataType: core.FieldTypeString,
+		"tenant_id": {ExternalName: "tenant_id", Table: "parity_items", Column: "tenant_id", DataType: core.FieldTypeString,
 			AllowedOperators: []filter.FilterOperator{filter.OpEq, filter.OpIn}},
-		"deleted_at": {ExternalName: "deleted_at", SQLExpr: "parity_items.deleted_at", Column: "deleted_at", DataType: core.FieldTypeTimestamp,
+		"deleted_at": {ExternalName: "deleted_at", Table: "parity_items", Column: "deleted_at", DataType: core.FieldTypeTimestamp,
 			AllowedOperators: []filter.FilterOperator{filter.OpNull, filter.OpNotNull}},
 	}
 	return s
@@ -137,5 +137,5 @@ func TestQueryParamParser_OneOperatorFromTwoParameters(t *testing.T) {
 	require.NoError(t, err)
 	res, err := filter.NewSQLBuilder(testSchema(), filter.PostgresDialect{}).Build(ast)
 	require.NoError(t, err)
-	assert.Equal(t, "(items.status = $1 AND items.status = ANY($2))", res.Where)
+	assert.Equal(t, `("items"."status" = $1 AND "items"."status" = ANY($2))`, res.Where)
 }

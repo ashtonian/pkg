@@ -301,7 +301,7 @@ func (d SQLiteDialect) geoCondition(field *FieldSchema, op FilterOperator, value
 	}
 	latKey, lonKey := geoKeys(field)
 	call := func(fn string, operands ...any) string {
-		args := []string{"json(" + field.SQLExpr + ")", bind(latKey), bind(lonKey)}
+		args := []string{"json(" + field.sql(d) + ")", bind(latKey), bind(lonKey)}
 		for _, o := range operands {
 			args = append(args, bind(o))
 		}
@@ -453,13 +453,13 @@ func (d SQLiteDialect) DecimalValue(o DecimalOperand) string {
 // BLOB that orders bytewise as the decimal does. parse_decimal_key reads
 // what parse_decimal reads, so a column and a member are keyed from their
 // own text, one function call per row, not two.
-func (SQLiteDialect) DecimalOrder(o DecimalOperand) string {
+func (d SQLiteDialect) DecimalOrder(o DecimalOperand) string {
 	var operand string
 	switch o.source {
 	case decimalFromColumn, decimalFromParam:
 		operand = o.sql
 	case decimalFromMember:
-		_, _, operand = sqlitePathMember(o.path)
+		_, _, operand = sqlitePathMember(d, o.path)
 	default:
 		panic(o.invalid())
 	}
@@ -490,12 +490,13 @@ func sqliteHasKey(expr, key string, bind func(any) string) string {
 // elementRows reads a JSON array, an array path's member or an array
 // column's JSON text, with json_each when it is an array: json_each would
 // read an object's members, or a scalar as one row.
-func (SQLiteDialect) elementRows(f *FieldSchema, alias string) string {
+func (d SQLiteDialect) elementRows(f *FieldSchema, alias string) string {
 	if p := f.Path; p != nil {
 		path := sqlitePathLiteral(p.Segments)
-		return "json_each(CASE WHEN json_type(" + p.Column + ", " + path + ") = 'array' THEN " + p.Column + " END, " + path + ") AS " + alias
+		doc := p.document(d)
+		return "json_each(CASE WHEN json_type(" + doc + ", " + path + ") = 'array' THEN " + doc + " END, " + path + ") AS " + alias
 	}
-	return "json_each(CASE WHEN json_type(" + f.SQLExpr + ") = 'array' THEN " + f.SQLExpr + " END) AS " + alias
+	return "json_each(CASE WHEN json_type(" + f.sql(d) + ") = 'array' THEN " + f.sql(d) + " END) AS " + alias
 }
 
 // objectElement is an object element's JSON text; json_extract would refuse
@@ -508,8 +509,8 @@ func (SQLiteDialect) objectElement(alias string) string {
 // array column is JSON text too.
 func (SQLiteDialect) scalarElement(f *FieldSchema, alias string) *FieldSchema {
 	e := bound(elementOf(f))
-	e.SQLExpr = ""
-	e.Path = &JSONPath{Column: alias, Storage: StorageJSONB, element: true}
+	e.Table, e.Column, e.Expr = "", "", ""
+	e.Path = &JSONPath{alias: alias, Storage: StorageJSONB, element: true}
 	return &e
 }
 
@@ -522,14 +523,14 @@ func (d SQLiteDialect) numberKey(f *FieldSchema) string {
 	case f.DataType == core.FieldTypeDecimal:
 		return FieldExpr(d, f)
 	case f.Path != nil:
-		kind, _, literal := sqlitePathMember(f.Path)
+		kind, _, literal := sqlitePathMember(d, f.Path)
 		return "(CASE WHEN " + kind + " IN ('integer', 'real') THEN " + decimals.SQLiteValueFunc + "(" + literal + ") END)"
 	case f.DataType == core.FieldTypeInt:
-		return "CAST(" + f.SQLExpr + " AS TEXT)"
+		return "CAST(" + f.sql(d) + " AS TEXT)"
 	case f.NumberKind == reflect.Float32:
-		return decimals.SQLiteFloat32Func + "(" + f.SQLExpr + ")"
+		return decimals.SQLiteFloat32Func + "(" + f.sql(d) + ")"
 	}
-	return decimals.SQLiteValueFunc + "(" + f.SQLExpr + ")"
+	return decimals.SQLiteValueFunc + "(" + f.sql(d) + ")"
 }
 
 // PathExpr renders p's typed value for SQLite, whose documents are JSON
@@ -540,8 +541,8 @@ func (d SQLiteDialect) numberKey(f *FieldSchema) string {
 // type and value are json_type's and json_extract's of the element, and
 // its literal is the source document's (the hidden json column) at its
 // fullkey.
-func (SQLiteDialect) PathExpr(p *JSONPath, t core.FieldType) string {
-	kind, val, literal := sqlitePathMember(p)
+func (d SQLiteDialect) PathExpr(p *JSONPath, t core.FieldType) string {
+	kind, val, literal := sqlitePathMember(d, p)
 	return sqliteTypedMember(t, kind, val, literal)
 }
 

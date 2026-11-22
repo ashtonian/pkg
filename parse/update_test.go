@@ -343,7 +343,7 @@ func TestBuildUpdate_ColumnsAndRelationsTogether(t *testing.T) {
 	db := gadgetDB(t)
 	plan, err := r.BuildUpdate(filter.SQLiteDialect{}, p, parse.ByID("g1"), parse.Scope{Tenant: "t1"})
 	require.NoError(t, err)
-	assert.True(t, strings.HasPrefix(plan.Owner.SQL, "UPDATE gadgets SET "))
+	assert.True(t, strings.HasPrefix(plan.Owner.SQL, `UPDATE "gadgets" SET `))
 	assert.True(t, plan.HasRelations())
 	owners := scanGadgets(t, db, plan.Owner)
 	require.Len(t, owners, 1)
@@ -381,8 +381,8 @@ func TestBuildUpdate_LocksRelationOwnersOnPostgres(t *testing.T) {
 	require.NoError(t, err)
 	plan, err = r.BuildUpdate(filter.PostgresDialect{}, sc, parse.ByID("g1"), parse.Scope{Tenant: "t1"}, parse.StampSQL("updated_at", "NOW()"))
 	require.NoError(t, err)
-	assert.Equal(t, "UPDATE gadgets SET name = $1, rank = $2, updated_at = NOW() WHERE (gadgets.tenant_id = $3 AND gadgets.deleted_at IS NULL AND gadgets.id = $4) "+
-		"RETURNING gadgets.id, gadgets.tenant_id, gadgets.name, gadgets.rank, gadgets.updated_at, gadgets.deleted_at", plan.Owner.SQL)
+	assert.Equal(t, `UPDATE "gadgets" SET "name" = $1, "rank" = $2, "updated_at" = NOW() WHERE ("gadgets"."tenant_id" = $3 AND "gadgets"."deleted_at" IS NULL AND "gadgets"."id" = $4) `+
+		`RETURNING "gadgets"."id", "gadgets"."tenant_id", "gadgets"."name", "gadgets"."rank", "gadgets"."updated_at", "gadgets"."deleted_at"`, plan.Owner.SQL)
 	assert.Equal(t, []any{"n", int64(2), "t1", "g1"}, plan.Owner.Args)
 }
 

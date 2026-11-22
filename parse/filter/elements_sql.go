@@ -147,7 +147,7 @@ func rebaseElements(n *FilterNode, value string, moved map[*FieldSchema]*FieldSc
 		if !ok {
 			c := bound(f)
 			p := *f.Path
-			p.Column, p.Storage = value, StorageJSONB
+			p.Table, p.Column, p.Expr, p.Storage = "", "", value, StorageJSONB
 			c.Path = &p
 			m = &c
 			moved[f] = m

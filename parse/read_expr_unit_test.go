@@ -23,13 +23,13 @@ func TestReadExpr_Columns(t *testing.T) {
 			columns, err := computedAccounts.Columns(tt.dialect)
 			require.NoError(t, err)
 			assert.Equal(t, []string{
-				"accounts.id",
-				"accounts.tenant_id",
-				"accounts.name",
-				"(" + tt.email + ") AS email",
-				"(" + memberCountExpr + ") AS member_count",
-				"(" + tt.groupIDs + ") AS group_ids",
-				"(" + tt.contact + ") AS contact",
+				`"accounts"."id"`,
+				`"accounts"."tenant_id"`,
+				`"accounts"."name"`,
+				"(" + tt.email + `) AS "email"`,
+				"(" + memberCountExpr + `) AS "member_count"`,
+				"(" + tt.groupIDs + `) AS "group_ids"`,
+				"(" + tt.contact + `) AS "contact"`,
 			}, columns)
 		})
 	}
@@ -44,7 +44,7 @@ func TestReadExpr_Columns(t *testing.T) {
 	cols, err := windows.Columns(filter.PostgresDialect{})
 	require.NoError(t, err)
 	assert.Contains(t, cols[1], "(windows.ends - windows.starts)", "a declared read cast applies to the expression")
-	assert.Contains(t, cols[1], " AS idle")
+	assert.Contains(t, cols[1], ` AS "idle"`)
 }
 
 // One resource compiles each dialect's statements against that dialect's
@@ -84,8 +84,8 @@ func TestReadExpr_SchemasCompileAgainstEachDialectsExpression(t *testing.T) {
 		})
 	}
 
-	assert.Equal(t, "accounts.member_count", computedAccounts.FilterSchema().Fields["member_count"].SQLExpr, "the shared schema stays dialect-neutral")
-	assert.Equal(t, "accounts.email", computedAccounts.SortSchema().Fields["email"].SQLExpr)
+	assert.Equal(t, `"accounts"."member_count"`, filter.FieldExpr(filter.PostgresDialect{}, computedAccounts.FilterSchema().Fields["member_count"]), "the shared schema stays dialect-neutral")
+	assert.Empty(t, computedAccounts.SortSchema().Fields["email"].Expr, "the shared schema stays dialect-neutral")
 }
 
 // A column mapper writes each field's SQL, so a computed column's fields are
@@ -116,7 +116,7 @@ func TestReadExpr_UnderAColumnMapper(t *testing.T) {
 	assert.Contains(t, plan.Count.SQL, label, "search")
 	assert.Contains(t, plan.Facets.SQL, label)
 	for _, sql := range []string{plan.Page.SQL, plan.Count.SQL, plan.Facets.SQL} {
-		assert.NotContains(t, sql, "(tallies.label)")
+		assert.NotContains(t, sql, `"tallies"."label"`)
 	}
 }
 
@@ -330,7 +330,7 @@ func TestReadExpr_RelationFiltersCompileTheTargetsExpressions(t *testing.T) {
 			}
 		})
 	}
-	assert.Equal(t, "accounts.email", accountTenants.FilterSchema().Fields["accounts"].Related.Fields["email"].SQLExpr, "the relation's schema stays dialect-neutral")
+	assert.Equal(t, `"accounts"."email"`, filter.FieldExpr(filter.PostgresDialect{}, accountTenants.FilterSchema().Fields["accounts"].Related.Fields["email"]), "the relation's schema stays dialect-neutral")
 }
 
 // Rebinding walks the filter, not the relation graph: around the
@@ -341,7 +341,7 @@ func TestReadExpr_RelationCycles(t *testing.T) {
 	scope := parse.Scope{Tenant: "t1"}
 	for _, tt := range computedDialects {
 		sql := pageSQL(t, accessGroups, tt.dialect, `{"accounts":{"$some":{"email":"","groups":{"$some":{"id":20}}}}}`, scope)
-		assert.Contains(t, sql, "access_groups_rel2__.id = ")
+		assert.Contains(t, sql, `"access_groups_rel2__"."id" = `)
 		assert.Contains(t, sql, "("+tt.email+") = ")
 
 		req, err := accessGroups.ParseList(url.Values{filter.ParamFilter: {`{"accounts":{"$some":{"groups":{"$some":{"size":2}}}}}`}})
@@ -424,8 +424,8 @@ func TestReadExpr_Reread(t *testing.T) {
 	require.NotNil(t, stmt)
 	columns, err := computedAccounts.Columns(pg)
 	require.NoError(t, err)
-	assert.True(t, strings.HasPrefix(stmt.SQL, "SELECT "+strings.Join(columns, ", ")+" FROM accounts WHERE "), stmt.SQL)
-	assert.Contains(t, stmt.SQL, "accounts.tenant_id = ")
+	assert.True(t, strings.HasPrefix(stmt.SQL, "SELECT "+strings.Join(columns, ", ")+` FROM "accounts" WHERE `), stmt.SQL)
+	assert.Contains(t, stmt.SQL, `"accounts"."tenant_id" = `)
 	assert.Contains(t, stmt.Args, "t1")
 
 	_, err = accessGroups.Reread(groups, []any{1})
@@ -467,7 +467,7 @@ func TestReadExpr_PolicyFieldsCompileAgainstEachDialectsExpression(t *testing.T)
 	field, ok, err := computedAccounts.FilterSchema().PolicyField("contact")
 	require.NoError(t, err)
 	require.True(t, ok)
-	assert.Equal(t, "accounts.contact", field.SQLExpr, "the shared schema stays dialect-neutral")
+	assert.Equal(t, `"accounts"."contact"`, filter.FieldExpr(filter.PostgresDialect{}, field), "the shared schema stays dialect-neutral")
 }
 
 func computedPatch(t *testing.T, accounts *parse.Resource[computedAccount], body string) *patch.ParsedPatch {

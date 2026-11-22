@@ -52,7 +52,7 @@ func TestPageRelationsOmitEmpty(t *testing.T) {
 func TestNewPageTruncatesAndMintsCursor(t *testing.T) {
 	t.Parallel()
 	type row struct{ ID string }
-	plan := CursorPlan{Keys: []CursorKey{{Name: "id", SQLExpr: "id", Column: "id", Direction: SortAsc}}}
+	plan := CursorPlan{Keys: []CursorKey{{Name: "id", Column: "id", Direction: SortAsc}}}
 	get := func(r row, _ string) (any, error) { return r.ID, nil }
 
 	// limit+1 rows fetched → truncate, HasNextPage, EndCursor minted.

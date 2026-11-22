@@ -21,7 +21,7 @@ import (
 // matching document on SQLite and PostgreSQL — no neighbour rounds onto it.
 func TestJSONIntegerEdges_SameRowsOnEveryBackend(t *testing.T) {
 	schema := &filter.ResourceSchema{Name: "docs", Fields: map[string]*filter.FieldSchema{
-		"doc": {ExternalName: "doc", SQLExpr: "docs.doc", DataType: core.FieldTypeJSON, AllowedOperators: []filter.FilterOperator{filter.OpEq, filter.OpContains}},
+		"doc": {ExternalName: "doc", Table: "docs", Column: "doc", DataType: core.FieldTypeJSON, AllowedOperators: []filter.FilterOperator{filter.OpEq, filter.OpContains}},
 	}}
 	stored := []string{`{"n":9223372036854775807}`, `{"n":9223372036854775806}`, `{"n":18446744073709551615}`, `{"n":-9223372036854775808}`}
 	queries := map[string][]int{
@@ -86,7 +86,7 @@ func TestIncludeQuery_NativePgxUUIDKeysAreCanonicalText(t *testing.T) {
 
 	field := &filter.FieldSchema{ExternalName: "tags", Includable: true, Relation: &core.RelationSchema{
 		JoinTable: "widget_tags", SourceColumn: "widget_id", TargetColumn: "tag_id",
-	}, RelatedBy: &filter.FieldSchema{ExternalName: "id", SQLExpr: "widgets.id", Column: "id", DataType: core.FieldTypeUUID}}
+	}, RelatedBy: &filter.FieldSchema{ExternalName: "id", Table: "widgets", Column: "id", DataType: core.FieldTypeUUID}}
 	q, err := filter.BuildIncludeQuery(field, filter.PostgresDialect{}, []any{"00000000-0000-0000-0000-000000000001"}, filter.WithIncludeRelationScope(filter.RelationScope{Unscoped: true}))
 	require.NoError(t, err)
 

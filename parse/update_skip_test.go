@@ -297,24 +297,24 @@ func TestSkipUnchanged_Relations(t *testing.T) {
 func TestSkipUnchanged_SQL(t *testing.T) {
 	r := notes(t)
 	at := core.FormatTimestamp(skipAt)
-	const columns = "notes.id, notes.tenant_id, notes.title, notes.rank, notes.version, notes.updated_at, notes.deleted_at"
+	const columns = `"notes"."id", "notes"."tenant_id", "notes"."title", "notes"."rank", "notes"."version", "notes"."updated_at", "notes"."deleted_at"`
 	for _, tc := range []struct {
 		dialect        parse.Dialect
 		owner, current string
 	}{
 		{filter.PostgresDialect{},
-			`UPDATE notes SET rank = $1, title = $2, updated_at = $3, version = version + 1 ` +
-				`WHERE (notes.tenant_id = $4 AND notes.deleted_at IS NULL AND notes.id = $5) ` +
-				`AND (rank IS DISTINCT FROM $1 OR rank::text COLLATE "C" IS DISTINCT FROM ($1)::text ` +
-				`OR title IS DISTINCT FROM $2 OR title::text COLLATE "C" IS DISTINCT FROM ($2)::text) ` +
+			`UPDATE "notes" SET "rank" = $1, "title" = $2, "updated_at" = $3, "version" = "version" + 1 ` +
+				`WHERE ("notes"."tenant_id" = $4 AND "notes"."deleted_at" IS NULL AND "notes"."id" = $5) ` +
+				`AND ("rank" IS DISTINCT FROM $1 OR "rank"::text COLLATE "C" IS DISTINCT FROM ($1)::text ` +
+				`OR "title" IS DISTINCT FROM $2 OR "title"::text COLLATE "C" IS DISTINCT FROM ($2)::text) ` +
 				`RETURNING ` + columns,
-			`SELECT ` + columns + ` FROM notes WHERE (notes.tenant_id = $1 AND notes.deleted_at IS NULL AND notes.id = $2) FOR UPDATE`},
+			`SELECT ` + columns + ` FROM "notes" WHERE ("notes"."tenant_id" = $1 AND "notes"."deleted_at" IS NULL AND "notes"."id" = $2) FOR UPDATE`},
 		{filter.SQLiteDialect{},
-			`UPDATE notes SET rank = ?1, title = ?2, updated_at = ?3, version = version + 1 ` +
-				`WHERE (notes.tenant_id = ?4 AND notes.deleted_at IS NULL AND notes.id = ?5) ` +
-				`AND (rank COLLATE BINARY IS NOT ?1 OR title COLLATE BINARY IS NOT ?2) ` +
+			`UPDATE "notes" SET "rank" = ?1, "title" = ?2, "updated_at" = ?3, "version" = "version" + 1 ` +
+				`WHERE ("notes"."tenant_id" = ?4 AND "notes"."deleted_at" IS NULL AND "notes"."id" = ?5) ` +
+				`AND ("rank" COLLATE BINARY IS NOT ?1 OR "title" COLLATE BINARY IS NOT ?2) ` +
 				`RETURNING ` + columns,
-			`SELECT ` + columns + ` FROM notes WHERE (notes.tenant_id = ?1 AND notes.deleted_at IS NULL AND notes.id = ?2)`},
+			`SELECT ` + columns + ` FROM "notes" WHERE ("notes"."tenant_id" = ?1 AND "notes"."deleted_at" IS NULL AND "notes"."id" = ?2)`},
 	} {
 		t.Run(tc.dialect.Name(), func(t *testing.T) {
 			plan := skipUpdate(t, r, tc.dialect, `{"title":"n","rank":2}`, parse.ByID("n1"))

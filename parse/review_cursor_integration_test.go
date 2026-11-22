@@ -20,11 +20,11 @@ import (
 // PostgreSQL 14–16), and a string range filter seeks in the same order.
 func TestKeysetWalk_LinguisticCollationWalksByCodePoint(t *testing.T) {
 	schema := &filter.ResourceSchema{Name: "probe", PrimaryKey: "id", Fields: map[string]*filter.FieldSchema{
-		"name": {ExternalName: "name", SQLExpr: "probe.name", DataType: core.FieldTypeString, AllowedOperators: []filter.FilterOperator{filter.OpGt}},
+		"name": {ExternalName: "name", Table: "probe", Column: "name", DataType: core.FieldTypeString, AllowedOperators: []filter.FilterOperator{filter.OpGt}},
 	}}
 	sorts := &filter.SortSchema{Fields: map[string]*filter.SortFieldSchema{
-		"name": {SQLExpr: "probe.name", Column: "name", DataType: core.FieldTypeString},
-		"id":   {SQLExpr: "probe.id", Column: "id", DataType: core.FieldTypeInt},
+		"name": {Table: "probe", Column: "name", DataType: core.FieldTypeString},
+		"id":   {Table: "probe", Column: "id", DataType: core.FieldTypeInt},
 	}}
 	for name, dialect := range map[string]filter.PostgresDialect{
 		"pg_c_utf8": {},

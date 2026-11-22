@@ -117,13 +117,13 @@ func TestDeclaredRelations_Memberships_SQLite(t *testing.T) {
 func TestDeclaredRelations_SQL(t *testing.T) {
 	r := relationResources(t)
 	plan := relationPlan(t, r.devices, `{"commands":{"$some":{"status":"pending","attempts":{"$gt":2}}}}`, relationScopeT1())
-	assert.Contains(t, plan.Page.SQL, "EXISTS (SELECT 1 FROM commands WHERE commands.device_id = devices.id AND commands.tenant_id = $1 AND commands.deleted_at IS NULL AND (commands.attempts > $2 AND commands.status = $3))")
+	assert.Contains(t, plan.Page.SQL, `EXISTS (SELECT 1 FROM "commands" WHERE "commands"."device_id" = "devices"."id" AND "commands"."tenant_id" = $1 AND "commands"."deleted_at" IS NULL AND ("commands"."attempts" > $2 AND "commands"."status" = $3))`)
 
 	plan = relationPlan(t, r.devices, `{"tags":{"$some":{"label":"red"}}}`, relationScopeT1())
-	assert.Contains(t, plan.Page.SQL, "EXISTS (SELECT 1 FROM device_tags rel1__ JOIN tags ON tags.id = rel1__.tag_id WHERE rel1__.device_id = devices.id AND rel1__.tenant_id = $1 AND tags.tenant_id = $2 AND tags.deleted_at IS NULL AND tags.label = $3)")
+	assert.Contains(t, plan.Page.SQL, `EXISTS (SELECT 1 FROM "device_tags" "rel1__" JOIN "tags" ON "tags"."id" = "rel1__"."tag_id" WHERE "rel1__"."device_id" = "devices"."id" AND "rel1__"."tenant_id" = $1 AND "tags"."tenant_id" = $2 AND "tags"."deleted_at" IS NULL AND "tags"."label" = $3)`)
 
 	assets := relationPlan(t, r.assets, `{"parent":{"$is":{"name":"root"}}}`, parse.Scope{Tenant: "t1"})
-	assert.Contains(t, assets.Page.SQL, "EXISTS (SELECT 1 FROM assets assets_rel1__ WHERE assets_rel1__.id = assets.parent_id AND assets_rel1__.tenant_id = $1 AND assets_rel1__.name = $2)", "the target is aliased away from its owner")
+	assert.Contains(t, assets.Page.SQL, `EXISTS (SELECT 1 FROM "assets" "assets_rel1__" WHERE "assets_rel1__"."id" = "assets"."parent_id" AND "assets_rel1__"."tenant_id" = $1 AND "assets_rel1__"."name" = $2)`, "the target is aliased away from its owner")
 }
 
 func relationPlan(t *testing.T, r interface {
@@ -204,13 +204,13 @@ func TestDeclaredRelations_EveryEntryReachesOnlyVisibleRows(t *testing.T) {
 	s.Policy = &filter.PolicyConstraints{Constraints: []*filter.PolicyConstraint{{Field: "commands", Operator: filter.OpEq, Value: "c4"}}}
 	plan, err := r.devices.BuildList(filter.PostgresDialect{}, nil, s)
 	require.NoError(t, err)
-	assert.Contains(t, plan.Page.SQL, "commands.deleted_at IS NULL", "the policy's key comparison is a relation predicate")
+	assert.Contains(t, plan.Page.SQL, `"commands"."deleted_at" IS NULL`, "the policy's key comparison is a relation predicate")
 
 	req, err := r.devices.ParseList(url.Values{"commands": {"c1"}})
 	require.NoError(t, err)
 	plan, err = r.devices.BuildList(filter.PostgresDialect{}, req, s)
 	require.NoError(t, err)
-	assert.Equal(t, 2, strings.Count(plan.Page.SQL, "commands.deleted_at IS NULL"), plan.Page.SQL)
+	assert.Equal(t, 2, strings.Count(plan.Page.SQL, `"commands"."deleted_at" IS NULL`), plan.Page.SQL)
 }
 
 // A relation's label and description reach schema discovery as a column's

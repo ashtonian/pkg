@@ -25,7 +25,7 @@ func rangeBucketProjection(field *FieldSchema, ranges []FacetRange, dialect Dial
 	param := dialect.Placeholder
 	arg := func(bound float64) (any, error) { return bound, nil }
 	if field.DataType == core.FieldTypeDecimal {
-		expr = dialect.DecimalOrder(fieldDecimal(field))
+		expr = dialect.DecimalOrder(fieldDecimal(dialect, field))
 		param = func(n int) string { return dialect.DecimalOrder(DecimalParam(dialect.Placeholder(n))) }
 		arg = func(bound float64) (any, error) { return core.DecimalText(bound) }
 	}

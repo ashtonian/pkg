@@ -37,7 +37,7 @@ func ExampleResource_BuildList() {
 	fmt.Println(plan.Page.SQL)
 	fmt.Println(plan.Page.Args)
 	// Output:
-	// SELECT devices.id, devices.tenant_id, devices.name, devices.status FROM devices WHERE ((devices.name <> $1 AND devices.status = $2) AND devices.tenant_id = $3) ORDER BY devices.name COLLATE pg_c_utf8 ASC, devices.id COLLATE pg_c_utf8 ASC LIMIT 11
+	// SELECT "devices"."id", "devices"."tenant_id", "devices"."name", "devices"."status" FROM "devices" WHERE (("devices"."name" <> $1 AND "devices"."status" = $2) AND "devices"."tenant_id" = $3) ORDER BY "devices"."name" COLLATE pg_c_utf8 ASC, "devices"."id" COLLATE pg_c_utf8 ASC LIMIT 11
 	// [spare active t1]
 }
 
@@ -60,7 +60,7 @@ func ExampleResource_BuildUpdate() {
 	fmt.Println(plan.Owner.SQL)
 	fmt.Println(plan.Owner.Args)
 	// Output:
-	// UPDATE devices SET status = $1 WHERE (devices.tenant_id = $2 AND devices.id = $3) RETURNING devices.id, devices.tenant_id, devices.name, devices.status
+	// UPDATE "devices" SET "status" = $1 WHERE ("devices"."tenant_id" = $2 AND "devices"."id" = $3) RETURNING "devices"."id", "devices"."tenant_id", "devices"."name", "devices"."status"
 	// [offline t1 d1]
 }
 
@@ -87,9 +87,9 @@ func ExampleSkipUnchanged() {
 	fmt.Println(plan.Current.SQL)
 	fmt.Println(plan.Current.Args)
 	// Output:
-	// UPDATE devices SET status = $1 WHERE (devices.tenant_id = $2 AND devices.id = $3) AND (status IS DISTINCT FROM $1 OR status::text COLLATE "C" IS DISTINCT FROM ($1)::text) RETURNING devices.id, devices.tenant_id, devices.name, devices.status
+	// UPDATE "devices" SET "status" = $1 WHERE ("devices"."tenant_id" = $2 AND "devices"."id" = $3) AND ("status" IS DISTINCT FROM $1 OR "status"::text COLLATE "C" IS DISTINCT FROM ($1)::text) RETURNING "devices"."id", "devices"."tenant_id", "devices"."name", "devices"."status"
 	// [offline t1 d1]
-	// SELECT devices.id, devices.tenant_id, devices.name, devices.status FROM devices WHERE (devices.tenant_id = $1 AND devices.id = $2) FOR UPDATE
+	// SELECT "devices"."id", "devices"."tenant_id", "devices"."name", "devices"."status" FROM "devices" WHERE ("devices"."tenant_id" = $1 AND "devices"."id" = $2) FOR UPDATE
 	// [t1 d1]
 }
 
@@ -127,6 +127,6 @@ func ExampleResource_Relate() {
 		fmt.Println(plan.Fragment, plan.Page.Args)
 	}
 	// Output:
-	// WHERE (EXISTS (SELECT 1 FROM commands WHERE commands.device_id = devices.id AND commands.tenant_id = $1 AND (commands.attempts > $2 AND commands.status = $3)) AND devices.tenant_id = $4) ORDER BY devices.id COLLATE pg_c_utf8 ASC LIMIT 51 [t1 2 pending t1]
-	// WHERE (NOT EXISTS (SELECT 1 FROM commands WHERE commands.device_id = devices.id AND commands.tenant_id = $1 AND commands.status = $2) AND devices.tenant_id = $3) ORDER BY devices.id COLLATE pg_c_utf8 ASC LIMIT 51 [t1 failed t1]
+	// WHERE (EXISTS (SELECT 1 FROM "commands" WHERE "commands"."device_id" = "devices"."id" AND "commands"."tenant_id" = $1 AND ("commands"."attempts" > $2 AND "commands"."status" = $3)) AND "devices"."tenant_id" = $4) ORDER BY "devices"."id" COLLATE pg_c_utf8 ASC LIMIT 51 [t1 2 pending t1]
+	// WHERE (NOT EXISTS (SELECT 1 FROM "commands" WHERE "commands"."device_id" = "devices"."id" AND "commands"."tenant_id" = $1 AND "commands"."status" = $2) AND "devices"."tenant_id" = $3) ORDER BY "devices"."id" COLLATE pg_c_utf8 ASC LIMIT 51 [t1 failed t1]
 }

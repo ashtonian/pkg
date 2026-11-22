@@ -176,8 +176,8 @@ func TestResource_Conventions(t *testing.T) {
 	if tp.FilterSchema().Name != "item" {
 		t.Errorf("expected table 'item', got %q", tp.FilterSchema().Name)
 	}
-	if tp.FilterSchema().Fields["id"].SQLExpr != "item.item_id" {
-		t.Errorf("expected item.item_id, got %q", tp.FilterSchema().Fields["id"].SQLExpr)
+	if id := tp.FilterSchema().Fields["id"]; id.Table != "item" || id.Column != "item_id" || id.Expr != "" {
+		t.Errorf("expected item.item_id, got %q.%q (expr %q)", id.Table, id.Column, id.Expr)
 	}
 	if pathOf(tp.PatchSchema(), "/name").SQLColumn != "item_name" {
 		t.Errorf("expected item_name, got %q", pathOf(tp.PatchSchema(), "/name").SQLColumn)

@@ -203,11 +203,11 @@ func (o DecimalOperand) invalid() string {
 }
 
 // fieldDecimal is the operand a decimal field's value is read from.
-func fieldDecimal(f *FieldSchema) DecimalOperand {
+func fieldDecimal(d Dialect, f *FieldSchema) DecimalOperand {
 	if f.Path != nil {
 		return DecimalMember(f.Path)
 	}
-	return DecimalColumn(f.SQLExpr)
+	return DecimalColumn(f.sql(d))
 }
 
 // decimalComparison renders a decimal field's equality or ordering: it
@@ -230,7 +230,7 @@ func decimalComparison(d Dialect, field *FieldSchema, op FilterOperator, value a
 		render = d.DecimalOrder
 	}
 	param := func(v any) string { return render(DecimalParam(bind(v))) }
-	return comparison(render(fieldDecimal(field)), op, value, param)
+	return comparison(render(fieldDecimal(d, field)), op, value, param)
 }
 
 // comparison renders the operators every dialect spells alike: equality,
@@ -380,10 +380,10 @@ type rowTenant struct {
 
 // over is sc for a statement over schema's table: a row tenant names the
 // table's column, typed as schema declares it.
-func (sc relationScope) over(schema *ResourceSchema) relationScope {
+func (sc relationScope) over(d Dialect, schema *ResourceSchema) relationScope {
 	if sc.row.column != "" && schema != nil {
 		sc.row.typ = tenantColumnType(schema, sc.row.column)
-		sc.row.expr = schema.Name + "." + sc.row.column
+		sc.row.expr = qualified(d, schema.Name, sc.row.column)
 	}
 	return sc
 }
@@ -424,16 +424,16 @@ func (sc relationScope) check() error {
 // table's tenant column of type typ ("" when undeclared): the bound tenant
 // (through bind), or the owner row's tenant column. It is "" for a table
 // without one or an unscoped scope, and an error when no scope was chosen.
-func (sc relationScope) clause(table, column, alias string, typ core.FieldType, bind func(any) string) (string, error) {
+func (sc relationScope) clause(d Dialect, table, column, alias string, typ core.FieldType, bind func(any) string) (string, error) {
 	switch {
 	case column == "" || sc.unscoped:
 		return "", nil
 	case sc.row.column != "":
-		return sc.row.match(alias+"."+column, typ), nil
+		return sc.row.match(qualified(d, alias, column), typ), nil
 	case sc.tenant == nil:
 		return "", fmt.Errorf("relation junction %s is tenant-scoped (%s): bind a tenant or opt out explicitly with an unscoped-relations option", table, column)
 	}
-	return " AND " + alias + "." + column + " = " + bind(sc.tenant), nil
+	return " AND " + qualified(d, alias, column) + " = " + bind(sc.tenant), nil
 }
 
 // match is " AND <col> = <the row's tenant>". A UUID column and a string
@@ -526,7 +526,7 @@ func NewSQLBuilder(schema *ResourceSchema, dialect Dialect, opts ...SQLBuilderOp
 		schema:     schema,
 		dialect:    dialect,
 		startParam: cfg.startParam,
-		scope:      cfg.scope.over(schema),
+		scope:      cfg.scope.over(dialect, schema),
 		related:    cfg.related,
 	}
 }
@@ -724,7 +724,7 @@ func (b *SQLBuilder) buildPairTable(s *buildState, node *FilterNode) (string, er
 		}
 	}
 	key := &FieldSchema{
-		ExternalName: f.ExternalName, SQLExpr: rel.JoinTable + "." + rel.TargetColumn, Column: rel.TargetColumn,
+		ExternalName: f.ExternalName, Table: rel.JoinTable, Column: rel.TargetColumn,
 		DataType: f.DataType, NumberKind: f.NumberKind,
 	}
 	pair := *f

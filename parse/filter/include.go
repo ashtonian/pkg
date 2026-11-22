@@ -134,7 +134,7 @@ func BuildIncludeQuery(field *FieldSchema, dialect Dialect, ownerPKs []any, opts
 
 	s := &buildState{args: make([]any, 0, len(ownerPKs)+2)}
 	bind := s.binder(dialect)
-	targetKey := junctionAlias + "." + rel.TargetColumn
+	targetKey := qualified(dialect, junctionAlias, rel.TargetColumn)
 	if field.DataType == core.FieldTypeString {
 		// The projection's collation governs DISTINCT, ranking and output
 		// order, including keys stored under a different column collation.
@@ -144,19 +144,19 @@ func BuildIncludeQuery(field *FieldSchema, dialect Dialect, ownerPKs []any, opts
 	var b strings.Builder
 	b.WriteString("SELECT CAST(include__.owner_pk AS TEXT), CAST(include__.target_id AS TEXT) FROM (")
 	b.WriteString("SELECT owner_pk, target_id, ROW_NUMBER() OVER (PARTITION BY owner_pk ORDER BY target_id) AS include_rank FROM (")
-	b.WriteString("SELECT DISTINCT " + junctionAlias + "." + rel.SourceColumn + " AS owner_pk, " + targetKey + " AS target_id FROM " + rel.JoinTable + " " + junctionAlias)
-	b.WriteString(relatedJoin(rel, junctionAlias, targetAlias))
+	b.WriteString("SELECT DISTINCT " + qualified(dialect, junctionAlias, rel.SourceColumn) + " AS owner_pk, " + targetKey + " AS target_id FROM " + dialect.QuoteIdent(rel.JoinTable) + " " + junctionAlias)
+	b.WriteString(relatedJoin(dialect, rel, junctionAlias, targetAlias))
 	scope := cfg.scope
 	if scope.row.column != "" {
 		pk := rel.OwnerKey()
-		b.WriteString(" JOIN " + cfg.owner.Name + " " + includeOwnerAlias + " ON " + includeOwnerAlias + "." + pk + " = " + junctionAlias + "." + rel.SourceColumn)
-		scope = scope.over(cfg.owner)
-		scope.row.expr = includeOwnerAlias + "." + scope.row.column
+		b.WriteString(" JOIN " + dialect.QuoteIdent(cfg.owner.Name) + " " + includeOwnerAlias + " ON " + qualified(dialect, includeOwnerAlias, pk) + " = " + qualified(dialect, junctionAlias, rel.SourceColumn))
+		scope = scope.over(dialect, cfg.owner)
+		scope.row.expr = qualified(dialect, includeOwnerAlias, scope.row.column)
 	}
 	// The owner keys bind as one set, typed as the owner's correlation
 	// field, so the statement's text does not vary with the page.
 	owners := *field.RelatedBy
-	owners.SQLExpr, owners.Path = junctionAlias+"."+rel.SourceColumn, nil
+	owners.Table, owners.Column, owners.Expr, owners.Path = junctionAlias, rel.SourceColumn, "", nil
 	keys := make([]any, len(ownerPKs))
 	for i, pk := range ownerPKs {
 		if keys[i], err = core.NormalizeScalar(owners.DataType, owners.NumberKind, pk); err != nil {
@@ -230,13 +230,13 @@ func includeConfig(field *FieldSchema, opts ...IncludeQueryOption) (*includeQuer
 func relatedScope(field *FieldSchema, dialect Dialect, scope relationScope, related map[string]*PolicyConstraints, s *buildState, bindTenant func(any) string, join, target string) (string, error) {
 	rel := field.Relation
 	var b strings.Builder
-	clause, err := scope.clause(rel.JoinTable, rel.TenantColumn, join, joinTenantType(field), bindTenant)
+	clause, err := scope.clause(dialect, rel.JoinTable, rel.TenantColumn, join, joinTenantType(field), bindTenant)
 	if err != nil {
 		return "", err
 	}
 	b.WriteString(clause)
 	if rel.DeletedColumn != "" {
-		b.WriteString(" AND " + join + "." + rel.DeletedColumn + " IS NULL")
+		b.WriteString(" AND " + qualified(dialect, join, rel.DeletedColumn) + " IS NULL")
 	}
 	visible := join
 	if rel.TargetTable != "" {
@@ -260,13 +260,13 @@ func relatedScope(field *FieldSchema, dialect Dialect, scope relationScope, rela
 func targetScope(field *FieldSchema, dialect Dialect, scope relationScope, bindTenant func(any) string, alias string) (string, error) {
 	rel := field.Relation
 	var b strings.Builder
-	tc, err := scope.clause(rel.TargetTable, rel.TargetTenant, alias, tenantColumnType(field.Related, rel.TargetTenant), bindTenant)
+	tc, err := scope.clause(dialect, rel.TargetTable, rel.TargetTenant, alias, tenantColumnType(field.Related, rel.TargetTenant), bindTenant)
 	if err != nil {
 		return "", err
 	}
 	b.WriteString(tc)
 	if rel.TargetDeleted != "" {
-		b.WriteString(" AND " + alias + "." + rel.TargetDeleted + " IS NULL")
+		b.WriteString(" AND " + qualified(dialect, alias, rel.TargetDeleted) + " IS NULL")
 	}
 	return b.String(), nil
 }
@@ -334,11 +334,11 @@ const (
 
 // relatedJoin is the JOIN of a many-to-many's target onto its pair table
 // (alias join), as target; empty for every other relation.
-func relatedJoin(rel *core.RelationSchema, join, target string) string {
+func relatedJoin(d Dialect, rel *core.RelationSchema, join, target string) string {
 	if rel.TargetTable == "" {
 		return ""
 	}
-	return " JOIN " + rel.TargetTable + " " + target + " ON " + target + "." + rel.TargetKey + " = " + join + "." + rel.TargetColumn
+	return " JOIN " + d.QuoteIdent(rel.TargetTable) + " " + target + " ON " + qualified(d, target, rel.TargetKey) + " = " + qualified(d, join, rel.TargetColumn)
 }
 
 // Scan reads the (owner_pk, target_id) rows of q, grouped by owner key as

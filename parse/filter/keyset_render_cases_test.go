@@ -58,10 +58,10 @@ func runKeysetRender(t *testing.T, r renderDB) {
 		require.NoError(t, err)
 	}
 
-	rank := filter.CursorKey{Name: "rank", SQLExpr: renderRank, Column: "rank", DataType: core.FieldTypeFloat}
+	rank := filter.CursorKey{Name: "rank", Expr: renderRank, Column: "rank", DataType: core.FieldTypeFloat}
 	n := filter.CursorKey{Name: "n", Column: "doc", DataType: core.FieldTypeDecimal, Nullable: true,
-		Path: &filter.JSONPath{Column: "items.doc", Segments: []string{"n"}, Storage: r.storage}}
-	id := filter.CursorKey{Name: "id", SQLExpr: "items.id", Column: "id", DataType: core.FieldTypeString}
+		Path: &filter.JSONPath{Table: "items", Column: "doc", Segments: []string{"n"}, Storage: r.storage}}
+	id := filter.CursorKey{Name: "id", Table: "items", Column: "id", DataType: core.FieldTypeString}
 	keyset := func(pairs ...any) []filter.CursorKey {
 		var keys []filter.CursorKey
 		for i := 0; i < len(pairs); i += 2 {

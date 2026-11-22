@@ -240,18 +240,19 @@ func (r *Resource[T]) renderUpdateBatch(d Dialect, v *dialectView, rows []compil
 			assignments[assignment.Column] = append(assignments[assignment.Column], "WHEN ("+row.where+") THEN "+assignment.Expression)
 		}
 	}
-	order := r.table + "." + r.pk
+	order := d.QuoteIdent(r.table) + "." + d.QuoteIdent(r.pk)
 	if keyType.Type == core.FieldTypeString {
 		order = d.CodePointOrder(order)
 	}
 	columns := strings.Join(r.columns(d, v), ", ")
-	chunk.Current.SQL = "SELECT " + columns + " FROM " + r.table + " WHERE " + strings.Join(currentWhere, " OR ") + " ORDER BY " + order + d.RowLock()
+	chunk.Current.SQL = "SELECT " + columns + " FROM " + d.QuoteIdent(r.table) + " WHERE " + strings.Join(currentWhere, " OR ") + " ORDER BY " + order + d.RowLock()
 	if len(assignments) != 0 {
 		clauses := make([]string, 0, len(assignments))
 		for _, column := range slices.Sorted(maps.Keys(assignments)) {
-			clauses = append(clauses, column+" = CASE "+strings.Join(assignments[column], " ")+" ELSE "+column+" END")
+			quoted := d.QuoteIdent(column)
+			clauses = append(clauses, quoted+" = CASE "+strings.Join(assignments[column], " ")+" ELSE "+quoted+" END")
 		}
-		chunk.Owner = &Statement{SQL: "UPDATE " + r.table + " SET " + strings.Join(clauses, ", ") + " WHERE " + strings.Join(changedWhere, " OR ") + " RETURNING " + columns, Args: args}
+		chunk.Owner = &Statement{SQL: "UPDATE " + d.QuoteIdent(r.table) + " SET " + strings.Join(clauses, ", ") + " WHERE " + strings.Join(changedWhere, " OR ") + " RETURNING " + columns, Args: args}
 	}
 	return chunk, nil
 }

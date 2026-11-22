@@ -6,6 +6,7 @@ import (
 
 	"github.com/ashtonian/pkg/parse/core"
 	"github.com/ashtonian/pkg/parse/internal/decimals"
+	"github.com/ashtonian/pkg/parse/internal/dialect"
 )
 
 // FieldExpr is the SQL expression of a field's value: its column (a decimal
@@ -16,17 +17,18 @@ func FieldExpr(d Dialect, f *FieldSchema) string {
 	if f.Path != nil {
 		return d.PathExpr(f.Path, f.DataType)
 	}
+	column := f.sql(d)
 	switch {
 	case f.DataType == core.FieldTypeDate:
-		return d.ReadColumn(f.SQLExpr, core.SQLDate)
+		return d.ReadColumn(column, core.SQLDate)
 	case f.DataType == core.FieldTypeDecimal:
-		return d.DecimalValue(DecimalColumn(f.SQLExpr))
+		return d.DecimalValue(DecimalColumn(column))
 	case f.DataType == core.FieldTypeInterval:
-		return d.ReadColumn(f.SQLExpr, core.SQLInterval)
+		return d.ReadColumn(column, core.SQLInterval)
 	case f.DataType == core.FieldTypeArray && f.Elem == core.FieldTypeInterval:
-		return d.ReadColumn(f.SQLExpr, core.SQLIntervalArray)
+		return d.ReadColumn(column, core.SQLIntervalArray)
 	}
-	return f.SQLExpr
+	return column
 }
 
 const (
@@ -68,11 +70,11 @@ func orderedAsText(f *FieldSchema) bool {
 }
 
 // pgPathDocument is p's document as jsonb.
-func pgPathDocument(p *JSONPath) string {
+func pgPathDocument(d dialect.Dialect, p *JSONPath) string {
 	if p.Storage != StorageJSONB {
-		return "(" + p.Column + ")::jsonb"
+		return "(" + p.document(d) + ")::jsonb"
 	}
-	return p.Column
+	return p.document(d)
 }
 
 // pgTypedMember is a JSON value of type t, NULL when it has another kind:
@@ -119,13 +121,13 @@ func hexGlob(n int) string { return strings.Repeat("[0-9a-f]", n) }
 // json_extract value and its JSON text as written (`->`). An element path's
 // are its json_each row's type and value, and the source document's text at
 // the row's fullkey.
-func sqlitePathMember(p *JSONPath) (kind, val, literal string) {
+func sqlitePathMember(d dialect.Dialect, p *JSONPath) (kind, val, literal string) {
+	doc := p.document(d)
 	if p.element {
-		row := p.Column
-		return row + ".type", row + ".value", row + ".json -> " + row + ".fullkey"
+		return doc + ".type", doc + ".value", doc + ".json -> " + doc + ".fullkey"
 	}
 	path := sqlitePathLiteral(p.Segments)
-	return "json_type(" + p.Column + ", " + path + ")", "json_extract(" + p.Column + ", " + path + ")", p.Column + " -> " + path
+	return "json_type(" + doc + ", " + path + ")", "json_extract(" + doc + ", " + path + ")", doc + " -> " + path
 }
 
 // sqliteTypedMember is a JSON value of type t, NULL when it has another

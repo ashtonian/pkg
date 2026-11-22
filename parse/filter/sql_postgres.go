@@ -84,13 +84,13 @@ func (d PostgresDialect) Condition(field *FieldSchema, op FilterOperator, value 
 			}
 			// The ? operator, not jsonb_exists(): only the operator can use a
 			// GIN index on the column.
-			return pgDocument(field) + " ? " + bind(key), nil
+			return pgDocument(d, field) + " ? " + bind(key), nil
 		}
 		doc, err := json.Marshal(value)
 		if err != nil {
 			return "", fmt.Errorf("marshal %s document: %w", field.ExternalName, err)
 		}
-		col := pgDocument(field)
+		col := pgDocument(d, field)
 		switch op {
 		case OpEq:
 			return col + " = " + bind(string(doc)) + "::jsonb", nil
@@ -247,7 +247,7 @@ func (d PostgresDialect) TwoValuedCondition(field *FieldSchema, op FilterOperato
 		if err != nil {
 			return "", false, fmt.Errorf("field %s: %w", field.ExternalName, err)
 		}
-		return p.Column + " @> " + bind(fragment) + "::jsonb", true, nil
+		return p.document(d) + " @> " + bind(fragment) + "::jsonb", true, nil
 	}
 	if !containable(field.DataType) {
 		return "", false, nil
@@ -261,7 +261,7 @@ func (d PostgresDialect) TwoValuedCondition(field *FieldSchema, op FilterOperato
 		if err != nil {
 			return "", false, fmt.Errorf("field %s: %w", field.ExternalName, err)
 		}
-		return p.Column + " @> " + bind(fragment) + "::jsonb", true, nil
+		return p.document(d) + " @> " + bind(fragment) + "::jsonb", true, nil
 	case OpIn:
 		members, ok := core.AnySlice(value)
 		if !ok || len(members) == 0 || len(members) > d.containmentMaxValues() || slices.Contains(members, nil) {
@@ -271,7 +271,7 @@ func (d PostgresDialect) TwoValuedCondition(field *FieldSchema, op FilterOperato
 		if err != nil {
 			return "", false, fmt.Errorf("field %s: %w", field.ExternalName, err)
 		}
-		return p.Column + " @> ANY(" + bind(fragments) + "::jsonb[])", true, nil
+		return p.document(d) + " @> ANY(" + bind(fragments) + "::jsonb[])", true, nil
 	}
 	return "", false, nil
 }
@@ -461,19 +461,19 @@ func (d PostgresDialect) geoCondition(field *FieldSchema, op FilterOperator, val
 			return "", err
 		}
 		center := "ST_SetSRID(ST_MakePoint(" + bind(v.Lon) + ", " + bind(v.Lat) + "), 4326)::geography"
-		return "ST_DWithin(" + pgGeography(field) + ", " + center + ", " + bind(meters) + ")", nil
+		return "ST_DWithin(" + pgGeography(d, field) + ", " + center + ", " + bind(meters) + ")", nil
 	case *GeoBoundingBox:
 		envelope := "ST_MakeEnvelope(" + bind(v.TopLeft.Lon) + ", " + bind(v.BottomRight.Lat) + ", " +
 			bind(v.BottomRight.Lon) + ", " + bind(v.TopLeft.Lat) + ", 4326)"
-		return pgShapePredicate(field, op, envelope)
+		return pgShapePredicate(d, field, op, envelope)
 	case *GeoPolygon:
-		return pgShapePredicate(field, op, "ST_GeomFromText("+bind(polygonWKT(v))+", 4326)")
+		return pgShapePredicate(d, field, op, "ST_GeomFromText("+bind(polygonWKT(v))+", 4326)")
 	}
 	return "", fmt.Errorf("geo operator %s: unexpected value %T", op, value)
 }
 
-func pgShapePredicate(field *FieldSchema, op FilterOperator, shape string) (string, error) {
-	geom, srid := pgGeometry(field)
+func pgShapePredicate(d dialect.Dialect, field *FieldSchema, op FilterOperator, shape string) (string, error) {
+	geom, srid := pgGeometry(d, field)
 	if srid != wgs84 {
 		shape = "ST_Transform(" + shape + ", " + strconv.Itoa(srid) + ")"
 	}
@@ -487,37 +487,37 @@ func pgShapePredicate(field *FieldSchema, op FilterOperator, shape string) (stri
 }
 
 // pgGeometry returns the field as geometry and the SRID it is in.
-func pgGeometry(field *FieldSchema) (string, int) {
+func pgGeometry(d dialect.Dialect, field *FieldSchema) (string, int) {
 	cfg := field.GeoConfig
 	switch {
 	case cfg == nil || cfg.StorageType == GeoStorageJSONB:
-		return pgJSONBPoint(field), wgs84
+		return pgJSONBPoint(d, field), wgs84
 	case cfg.StorageType == GeoStorageGeography:
-		return field.SQLExpr + "::geometry", wgs84
+		return field.sql(d) + "::geometry", wgs84
 	}
-	return field.SQLExpr, cfg.SRID
+	return field.sql(d), cfg.SRID
 }
 
 // pgGeography returns the field as WGS 84 geography.
-func pgGeography(field *FieldSchema) string {
+func pgGeography(d dialect.Dialect, field *FieldSchema) string {
 	cfg := field.GeoConfig
 	switch {
 	case cfg == nil || cfg.StorageType == GeoStorageJSONB:
-		return pgJSONBPoint(field) + "::geography"
+		return pgJSONBPoint(d, field) + "::geography"
 	case cfg.StorageType == GeoStorageGeography:
-		return field.SQLExpr
+		return field.sql(d)
 	case cfg.SRID != wgs84:
-		return "ST_Transform(" + field.SQLExpr + ", 4326)::geography"
+		return "ST_Transform(" + field.sql(d) + ", 4326)::geography"
 	}
-	return field.SQLExpr + "::geography"
+	return field.sql(d) + "::geography"
 }
 
 // pgJSONBPoint builds the point geometry of a JSONB {lat, lon} column. The
 // keys were validated as identifiers at schema generation.
-func pgJSONBPoint(field *FieldSchema) string {
+func pgJSONBPoint(d dialect.Dialect, field *FieldSchema) string {
 	latKey, lonKey := geoKeys(field)
 	return fmt.Sprintf("ST_SetSRID(ST_MakePoint((%s->>'%s')::float8, (%s->>'%s')::float8), 4326)",
-		field.SQLExpr, lonKey, field.SQLExpr, latKey)
+		field.sql(d), lonKey, field.sql(d), latKey)
 }
 
 // MarshalValue serializes a value for PostgreSQL parameter binding.
@@ -653,24 +653,24 @@ func (d PostgresDialect) CodePointOrder(expr string) string {
 }
 
 // pgDocument is a document column read as jsonb, whatever its storage.
-func pgDocument(field *FieldSchema) string {
+func pgDocument(d dialect.Dialect, field *FieldSchema) string {
 	if field.Storage == "" || field.Storage == StorageJSONB {
-		return field.SQLExpr
+		return field.sql(d)
 	}
-	return "(" + field.SQLExpr + ")::jsonb"
+	return "(" + field.sql(d) + ")::jsonb"
 }
 
 // elementRows reads a JSON array as jsonb_array_elements, an array path's
 // member when it is one, and an array column with unnest.
-func (PostgresDialect) elementRows(f *FieldSchema, alias string) string {
+func (d PostgresDialect) elementRows(f *FieldSchema, alias string) string {
 	var array string
 	switch {
 	case f.Path != nil:
-		array = pgPathDocument(f.Path) + " #> " + pgPathLiteral(f.Path.Segments)
+		array = pgPathDocument(d, f.Path) + " #> " + pgPathLiteral(f.Path.Segments)
 	case f.DataType == core.FieldTypeArray:
-		return "unnest(" + f.SQLExpr + ") AS " + alias + "(v)"
+		return "unnest(" + f.sql(d) + ") AS " + alias + "(v)"
 	default:
-		array = pgDocument(f)
+		array = pgDocument(d, f)
 	}
 	return "jsonb_array_elements(CASE WHEN jsonb_typeof(" + array + ") = 'array' THEN " + array + " END) AS " + alias + "(v)"
 }
@@ -682,11 +682,11 @@ func (PostgresDialect) objectElement(alias string) string { return alias + ".v" 
 func (PostgresDialect) scalarElement(f *FieldSchema, alias string) *FieldSchema {
 	e := bound(elementOf(f))
 	if f.Path == nil {
-		e.SQLExpr = alias + ".v"
+		e.Table, e.Column, e.Expr = "", "", alias+".v"
 		return &e
 	}
-	e.SQLExpr = ""
-	e.Path = &JSONPath{Column: alias, Storage: StorageJSONB, element: true}
+	e.Table, e.Column, e.Expr = "", "", ""
+	e.Path = &JSONPath{alias: alias, Storage: StorageJSONB, element: true}
 	return &e
 }
 
@@ -715,7 +715,7 @@ func (d PostgresDialect) containsElement(f *FieldSchema, cond *FilterNode, bind 
 		if err != nil {
 			return "", false, fmt.Errorf("field %s: %w", f.ExternalName, err)
 		}
-		return "(" + p.Column + " IS NOT NULL AND " + p.Column + " @> " + bind(frag) + "::jsonb)", true, nil
+		return "(" + p.document(d) + " IS NOT NULL AND " + p.document(d) + " @> " + bind(frag) + "::jsonb)", true, nil
 	case OpIn:
 		members, ok := core.AnySlice(cond.Value)
 		if !ok || len(members) == 0 || len(members) > d.containmentMaxValues() || slices.Contains(members, nil) {
@@ -725,7 +725,7 @@ func (d PostgresDialect) containsElement(f *FieldSchema, cond *FilterNode, bind 
 		if err != nil {
 			return "", false, fmt.Errorf("field %s: %w", f.ExternalName, err)
 		}
-		return "(" + p.Column + " IS NOT NULL AND " + p.Column + " @> ANY(" + bind(frags) + "::jsonb[]))", true, nil
+		return "(" + p.document(d) + " IS NOT NULL AND " + p.document(d) + " @> ANY(" + bind(frags) + "::jsonb[]))", true, nil
 	}
 	return "", false, nil
 }
@@ -762,12 +762,12 @@ func (d PostgresDialect) numberKey(f *FieldSchema) string {
 // jsonb; jsonb_typeof selects the member's JSON kind before any cast, so a
 // wrong-typed member is NULL rather than a cast error. An element path
 // reads its row's element, jsonb_array_elements' v.
-func (PostgresDialect) PathExpr(p *JSONPath, t core.FieldType) string {
+func (d PostgresDialect) PathExpr(p *JSONPath, t core.FieldType) string {
 	if p.element {
-		v := p.Column + ".v"
+		v := p.document(d) + ".v"
 		return pgTypedMember(t, "jsonb_typeof("+v+")", "("+v+" #>> '{}')")
 	}
-	doc := pgPathDocument(p)
+	doc := pgPathDocument(d, p)
 	path := pgPathLiteral(p.Segments)
 	return pgTypedMember(t, "jsonb_typeof("+doc+" #> "+path+")", "("+doc+" #>> "+path+")")
 }

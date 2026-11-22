@@ -54,10 +54,10 @@ func Example() {
 	}
 	fmt.Println("SET", set.SetClause, set.Args)
 	// Output:
-	// (devices.name LIKE $1 ESCAPE '\' AND devices.status = $2)
-	// ORDER BY devices.name COLLATE pg_c_utf8 ASC, devices.id COLLATE pg_c_utf8 ASC
+	// ("devices"."name" LIKE $1 ESCAPE '\' AND "devices"."status" = $2)
+	// ORDER BY "devices"."name" COLLATE pg_c_utf8 ASC, "devices"."id" COLLATE pg_c_utf8 ASC
 	// [sensor-% active] 26
-	// SET status = $1 [offline]
+	// SET "status" = $1 [offline]
 }
 
 func ExampleNewResource_filter() {
@@ -194,7 +194,7 @@ func ExampleNewResource_facetedListPage() {
 	// limit+1 rows into a page with cursors.
 	type Row struct{ ID string }
 	items := []Row{{"p1"}, {"p2"}, {"p3"}}
-	plan := filter.CursorPlan{Keys: []filter.CursorKey{{Name: "id", SQLExpr: "id", Column: "id", Direction: filter.SortDesc}}}
+	plan := filter.CursorPlan{Keys: []filter.CursorKey{{Name: "id", Column: "id", Direction: filter.SortDesc}}}
 	page, _ := filter.NewPage(items, 2, plan, func(r Row, _ string) (any, error) { return r.ID, nil })
 	fmt.Println("\n=== Pagination ===")
 	fmt.Println("items:", len(page.Items))
@@ -236,15 +236,15 @@ func ExampleNewResource_conventions() {
 	}
 
 	fmt.Println("table:", tp.FilterSchema().Name)
-	fmt.Println("id SQL:", tp.FilterSchema().Fields["id"].SQLExpr)
-	fmt.Println("name SQL:", tp.FilterSchema().Fields["name"].SQLExpr)
+	fmt.Println("id SQL:", filter.FieldExpr(filter.PostgresDialect{}, tp.FilterSchema().Fields["id"]))
+	fmt.Println("name SQL:", filter.FieldExpr(filter.PostgresDialect{}, tp.FilterSchema().Fields["name"]))
 
 	name, _ := tp.PatchSchema().Path("/name")
 	fmt.Println("patch name col:", name.SQLColumn)
 	// Output:
 	// table: device
-	// id SQL: device.device_id
-	// name SQL: device.device_name
+	// id SQL: "device"."device_id"
+	// name SQL: "device"."device_name"
 	// patch name col: device_name
 }
 
@@ -266,7 +266,7 @@ func ExampleResource_ListQuery_customComposition() {
 		result.Where, result.OrderBy, result.FetchLimit,
 	)
 	fmt.Println("has custom:", strings.Contains(customSQL, "custom_flag"))
-	fmt.Println("has filter:", strings.Contains(customSQL, "items.status"))
+	fmt.Println("has filter:", strings.Contains(customSQL, `"items"."status"`))
 	// Output:
 	// has custom: true
 	// has filter: true

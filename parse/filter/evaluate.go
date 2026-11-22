@@ -70,18 +70,29 @@ type RowFunc func(f *FieldSchema) (any, bool, error)
 func (r RowFunc) Value(f *FieldSchema) (any, bool, error) { return r(f) }
 
 // ColumnRow is a Row stored by column: it returns the Go value held under a
-// column, named by the expression the schema holds — a field's SQLExpr, or
-// for a path its document's Path.Column, table-qualified as generated
-// schemas qualify them (records.name) — and false when the row has no such
-// column. A missing column is an error, so a misspelt column cannot read as
+// column, named table.column, unquoted (records.name), from the field's
+// Table and Column — the document's, for a path — or by a computed field's
+// Expr, and false when the row has no such column. A missing column is an error, so a misspelt column cannot read as
 // NULL. Columns read through ColumnValue, paths through PathValue.
 type ColumnRow func(column string) (value any, ok bool)
 
+// rowKey is the name a ColumnRow holds a column under: table.column, or
+// expr for a computed one.
+func rowKey(table, column, expr string) string {
+	switch {
+	case expr != "":
+		return expr
+	case table == "":
+		return column
+	}
+	return table + "." + column
+}
+
 // Value reads f from the row's columns.
 func (r ColumnRow) Value(f *FieldSchema) (any, bool, error) {
-	column := f.SQLExpr
-	if f.Path != nil {
-		column = f.Path.Column
+	column := rowKey(f.Table, f.Column, f.Expr)
+	if p := f.Path; p != nil {
+		column = rowKey(p.Table, p.Column, p.Expr)
 	}
 	if column == "" {
 		return nil, false, fmt.Errorf("field %s names no column", f.ExternalName)

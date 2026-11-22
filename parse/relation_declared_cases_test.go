@@ -267,13 +267,13 @@ func (l sqlMembershipLookup) LookupFilteredValues(ctx context.Context, lk *filte
 }
 
 func (l sqlMembershipLookup) LookupValues(_ context.Context, lk *filter.Lookup) ([]any, error) {
-	probe := &filter.FieldSchema{ExternalName: "probe", SQLExpr: "probe", DataType: core.FieldTypeString}
+	probe := &filter.FieldSchema{ExternalName: "probe", Column: "probe", DataType: core.FieldTypeString}
 	res, err := filter.NewSQLBuilder(&filter.ResourceSchema{Name: "probe"}, l.d).
 		Build(&filter.FilterAST{Root: &filter.FilterNode{Field: probe, Op: filter.OpMember, Member: lk}})
 	if err != nil {
 		return nil, err
 	}
-	sub := strings.TrimSuffix(strings.TrimPrefix(res.Where, "probe IN ("), ")")
+	sub := strings.TrimSuffix(strings.TrimPrefix(res.Where, `"probe" IN (`), ")")
 	var out []any
 	for _, row := range l.query(l.t, sub, res.Args) {
 		out = append(out, row[0])
