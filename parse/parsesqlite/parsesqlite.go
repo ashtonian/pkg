@@ -33,14 +33,17 @@
 // last value. Each function is NULL when the point is: NULL, not an object,
 // or a member missing, null or no number.
 //
-// Call Register before the database opens its first connection. A statement
-// on a connection without the functions fails with SQLite's "no such
-// function: parse_decimal" rather than comparing a rounded double.
+// Call Register before the database opens its first connection, or
+// RegisterOn for a sqlite.Driver of your own. A statement on a connection
+// without the functions fails with SQLite's "no such function:
+// parse_decimal" rather than comparing a rounded double. Another SQLite
+// driver registers the table Functions returns.
 package parsesqlite
 
 import (
 	"database/sql/driver"
 	"fmt"
+	"slices"
 	"sync"
 
 	"modernc.org/sqlite"
@@ -59,38 +62,70 @@ const (
 	GeoCoveredByFunc   = geo.SQLiteCoveredByFunc
 )
 
+// Function is one of the SQL functions filter.SQLiteDialect calls: the name
+// it calls, the number of arguments it passes, and the implementation over
+// the argument values a database/sql driver hands a scalar function. Each is
+// deterministic, and a driver must register it as such for an index on it to
+// be usable.
+type Function struct {
+	Name  string
+	NArgs int
+	Call  func(args []driver.Value) (driver.Value, error)
+}
+
+// functions is the table Register and RegisterOn install, in that order.
+var functions = [...]Function{
+	{DecimalFunc, 1, func(a []driver.Value) (driver.Value, error) { return Decimal(a[0]) }},
+	{DecimalKeyFunc, 1, func(a []driver.Value) (driver.Value, error) { return DecimalKey(a[0]) }},
+	{DecimalFloat32Func, 1, func(a []driver.Value) (driver.Value, error) { return DecimalFloat32(a[0]) }},
+	{GeoNearFunc, 6, func(a []driver.Value) (driver.Value, error) { return GeoNear(a[0], a[1], a[2], a[3], a[4], a[5]) }},
+	{GeoInBoxFunc, 7, func(a []driver.Value) (driver.Value, error) {
+		return GeoInBox(a[0], a[1], a[2], a[3], a[4], a[5], a[6])
+	}},
+	{GeoCoveredByFunc, 4, func(a []driver.Value) (driver.Value, error) { return GeoCoveredBy(a[0], a[1], a[2], a[3]) }},
+}
+
+// Functions returns the table of functions Register installs, for a SQLite
+// driver other than modernc.org/sqlite to register under the same names.
+// Each call returns a new slice.
+func Functions() []Function { return slices.Clone(functions[:]) }
+
 // Register registers parse_decimal, parse_decimal_key,
 // parse_decimal_float32, parse_geo_near, parse_geo_in_box and
 // parse_geo_covered_by with modernc.org/sqlite, for every connection the
 // "sqlite" driver opens afterwards; connections already open lack them. It
 // registers once per process: later calls, from any goroutine or package,
-// return the first call's result.
+// return the first call's result. When a name is already taken, the
+// functions before it in [Functions] are registered and the rest are not.
 func Register() error { return register() }
 
 var register = sync.OnceValue(func() error {
-	for _, fn := range []struct {
-		name  string
-		nArgs int32
-		call  func(args []driver.Value) (driver.Value, error)
-	}{
-		{DecimalFunc, 1, func(a []driver.Value) (driver.Value, error) { return Decimal(a[0]) }},
-		{DecimalKeyFunc, 1, func(a []driver.Value) (driver.Value, error) { return DecimalKey(a[0]) }},
-		{DecimalFloat32Func, 1, func(a []driver.Value) (driver.Value, error) { return DecimalFloat32(a[0]) }},
-		{GeoNearFunc, 6, func(a []driver.Value) (driver.Value, error) { return GeoNear(a[0], a[1], a[2], a[3], a[4], a[5]) }},
-		{GeoInBoxFunc, 7, func(a []driver.Value) (driver.Value, error) {
-			return GeoInBox(a[0], a[1], a[2], a[3], a[4], a[5], a[6])
-		}},
-		{GeoCoveredByFunc, 4, func(a []driver.Value) (driver.Value, error) { return GeoCoveredBy(a[0], a[1], a[2], a[3]) }},
-	} {
-		err := sqlite.RegisterDeterministicScalarFunction(fn.name, fn.nArgs, func(_ *sqlite.FunctionContext, args []driver.Value) (driver.Value, error) {
-			return fn.call(args)
+	return registerAll(sqlite.RegisterDeterministicScalarFunction)
+})
+
+// RegisterOn registers the functions on d alone, so they reach only the
+// connections d opens: a driver the caller constructs and registers under a
+// name of its own with sql.Register, or opens through a connector. Call it
+// once per driver, before d opens its first connection. When a name is
+// already taken on d, the functions before it in [Functions] are registered
+// and the rest are not.
+func RegisterOn(d *sqlite.Driver) error {
+	return registerAll(d.RegisterDeterministicScalarFunction)
+}
+
+type registerFunc func(name string, nArgs int32, call func(*sqlite.FunctionContext, []driver.Value) (driver.Value, error)) error
+
+func registerAll(register registerFunc) error {
+	for _, fn := range functions {
+		err := register(fn.Name, int32(fn.NArgs), func(_ *sqlite.FunctionContext, args []driver.Value) (driver.Value, error) {
+			return fn.Call(args)
 		})
 		if err != nil {
-			return fmt.Errorf("parsesqlite: register %s: %w", fn.name, err)
+			return fmt.Errorf("parsesqlite: register %s: %w", fn.Name, err)
 		}
 	}
 	return nil
-})
+}
 
 // Decimal is parse_decimal for one SQLite value: its canonical decimal
 // text, or nil (SQL NULL) when it holds no decimal. It is exported for a
