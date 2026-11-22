@@ -58,7 +58,7 @@ func newServer(db *sql.DB, log *slog.Logger, requestTimeout time.Duration) (http
 	}
 	s := &server{db: db, products: products, log: log, requestTimeout: requestTimeout}
 	mux := http.NewServeMux()
-	mux.HandleFunc("GET /api/{resource}/schema", reg.SchemaHandler())
+	mux.HandleFunc("GET /api/{resource}/schema", reg.SchemaHandler(parse.WithErrorHandler(s.schemaFailed)))
 	mux.HandleFunc("GET /api/products", s.list)
 	mux.HandleFunc("POST /api/products", s.list)
 	mux.HandleFunc("OPTIONS /api/products", s.facets)
@@ -213,6 +213,17 @@ func (s *server) fail(w http.ResponseWriter, r *http.Request, err error) {
 	}
 	s.log.ErrorContext(r.Context(), "request failed", slog.String("method", r.Method), slog.String("path", r.URL.Path), slog.Any("error", err))
 	writeJSON(w, http.StatusInternalServerError, parsehttp.Body{Code: "E5001", Message: "internal error"})
+}
+
+// schemaFailed logs what the schema handler could not answer: a document
+// that would not encode is a defect; a response that could not be written
+// was dropped.
+func (s *server) schemaFailed(r *http.Request, err error) {
+	level := slog.LevelWarn
+	if errors.Is(err, parse.ECodeSchemaEncodingFailed) {
+		level = slog.LevelError
+	}
+	s.log.Log(r.Context(), level, "serving schema", slog.String("path", r.URL.Path), slog.Any("error", err))
 }
 
 const maxBody = 64 << 10

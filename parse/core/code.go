@@ -20,7 +20,7 @@ func (c Code) ErrorHTTPStatus() int {
 	switch c {
 	case "E2112", "E2113", "E2114", "E2115", "E2116":
 		return http.StatusBadRequest
-	case "E2069":
+	case "E2069", "E2120":
 		return http.StatusInternalServerError
 	}
 	return http.StatusUnprocessableEntity
@@ -103,6 +103,8 @@ func (c Code) ErrorMessage() string {
 		return "relation patch value must be array"
 	case "E2119":
 		return "relation patch values exceed maximum"
+	case "E2120":
+		return "schema encoding failed"
 	}
 	return ""
 }
