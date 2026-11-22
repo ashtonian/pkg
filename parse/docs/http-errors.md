@@ -65,7 +65,7 @@ Both handlers encode the whole response before writing any of it, and send it wi
 
 Use `errors.As` to extract `*core.ParseError` through wrapping. Its `ErrorHTTPStatus()` provides the status; expose `Code`, `Message`, and appropriate `Details` in the error envelope. `Details` is keyed by `core.DetailField` (`"field"`, the request field a refusal is about) and `core.DetailParameter` (`"parameter"`, the list parameter). Treat unrelated database/internal errors through your normal server error handling rather than labeling every failure a bad request. Do not leak underlying SQL or credentials through error details.
 
-Patch validation can return joined parse errors. `errors.As` returns the first; applications needing all failures traverse the joined errors. Declared enum/bounds failures expose `core.ConstraintError{Constraint, Limit}` through each E2077's cause; [patch validation](patches.md#validation) defines the vocabulary and ordering. The application still owns its HTTP envelope and any translation of these typed causes into client details.
+Patch validation can return joined parse errors. `errors.As` returns the first; applications needing all failures traverse the joined errors. Declared enum/bounds failures expose `patch.ConstraintError{Constraint, Limit}` through each E2077's cause; [patch validation](patches.md#validation) defines the vocabulary and ordering. The application still owns its HTTP envelope and any translation of these typed causes into client details.
 
 `errors.Is(err, filter.ECodeUnknownField)` matches a specific code through wrapping. `parse.Codes()` returns the distinct `parse.Code` values; each provides its wire string, default message and HTTP status. Each code is defined once, as a `core.Code` constant (`core.CodeUnknownField`) holding its status and message; `filter`, `patch` and `parse` name the codes they raise as aliases of those constants, so a limit both grammars enforce, such as E2063, is one value. The package imports no application error catalog. Consumers can map these values when registering their own catalog.
 
@@ -125,8 +125,8 @@ All known codes describe permanent failures and are listed below; retry and cata
 | E2115 | 400 | Geo operator or shape not supported by the dialect |
 | E2116 | 400 | Invalid UUID |
 | E2117 | 422 | Operation not allowed on a relation field |
-| E2118 | 422 | Relation patch value must be an array |
-| E2119 | 422 | Relation patch exceeds its maximum |
+| E2118 | 422 | Relation patch value is not a set of keys: an `add` or `remove` naming none, or a null key (a value that is not a list, or a key of the wrong type, is E2077) |
+| E2119 | 422 | Relation patch exceeds its maximum: more keys in one relation operation than `PatchSchema.MaxRelationValues`; `Details` holds `count` and `limit` |
 | E2120 | 500 | A schema discovery handler could not encode its document |
 
 `parse.ParseError` and `core.ParseError` name the same type. `ErrorCode()` and `ErrorHTTPStatus()` support structural error introspection without a framework dependency; `errors.Is(err, filter.ECodeUnknownField)` holds through wrapping, and the original cause remains reachable.

@@ -34,7 +34,8 @@ func rowTenantSchemas(ownerType, relatedType core.FieldType) (*filter.ResourceSc
 		Related:  notes, RelatedBy: key,
 	}
 	widgets := &filter.ResourceSchema{
-		Name: "widgets",
+		Name:       "widgets",
+		PrimaryKey: "id",
 		Fields: map[string]*filter.FieldSchema{
 			"notes": rel,
 			"tags": {
@@ -65,18 +66,18 @@ func TestRowTenant_ComparesEachRelationWithTheRow(t *testing.T) {
 		wantNotes, wantPairs string
 	}{
 		{"one type", core.FieldTypeString, core.FieldTypeString,
-			"notes.tenant_id = widgets.tenant_id", "rel__.tenant_id = widgets.tenant_id"},
+			"notes.tenant_id = widgets.tenant_id", "widget_tags.tenant_id = widgets.tenant_id"},
 		{"a uuid owner and a string related column compare by the uuid's text", core.FieldTypeUUID, core.FieldTypeString,
-			"notes.tenant_id = CAST(widgets.tenant_id AS TEXT)", "rel__.tenant_id = widgets.tenant_id"},
+			"notes.tenant_id = CAST(widgets.tenant_id AS TEXT)", "widget_tags.tenant_id = widgets.tenant_id"},
 		{"a string owner and a uuid related column compare by the uuid's text", core.FieldTypeString, core.FieldTypeUUID,
-			"CAST(notes.tenant_id AS TEXT) = widgets.tenant_id", "rel__.tenant_id = widgets.tenant_id"},
+			"CAST(notes.tenant_id AS TEXT) = widgets.tenant_id", "widget_tags.tenant_id = widgets.tenant_id"},
 		{"integers of any width compare as they are", core.FieldTypeInt, core.FieldTypeInt,
-			"notes.tenant_id = widgets.tenant_id", "rel__.tenant_id = widgets.tenant_id"},
+			"notes.tenant_id = widgets.tenant_id", "widget_tags.tenant_id = widgets.tenant_id"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			widgets, _ := rowTenantSchemas(tt.owner, tt.related)
-			res, err := filter.NewSQLBuilder(widgets, filter.PostgresDialect{}, filter.WithRowTenant("tenant_id")).Build(someNote(widgets))
+			res, err := filter.NewSQLBuilder(widgets, filter.PostgresDialect{}, filter.WithRelationScope(filter.RelationScope{RowTenant: "tenant_id"})).Build(someNote(widgets))
 			require.NoError(t, err)
 			assert.Contains(t, res.Where, tt.wantNotes)
 			assert.Contains(t, res.Where, tt.wantPairs, "a pair table is taken to hold the owner's type")
@@ -88,9 +89,9 @@ func TestRowTenant_ComparesEachRelationWithTheRow(t *testing.T) {
 func TestRowTenant_RefusesAmbiguousScopes(t *testing.T) {
 	widgets, rel := rowTenantSchemas(core.FieldTypeString, core.FieldTypeString)
 	for name, opts := range map[string][]filter.SQLBuilderOption{
-		"with a bound tenant":       {filter.WithRowTenant("tenant_id"), filter.WithTenant("A")},
-		"with unscoped relations":   {filter.WithUnscopedRelations(), filter.WithRowTenant("tenant_id")},
-		"a column that is no ident": {filter.WithRowTenant("tenant_id; --")},
+		"with a bound tenant":       {filter.WithRelationScope(filter.RelationScope{RowTenant: "tenant_id", Tenant: "A"})},
+		"with unscoped relations":   {filter.WithRelationScope(filter.RelationScope{Unscoped: true, RowTenant: "tenant_id"})},
+		"a column that is no ident": {filter.WithRelationScope(filter.RelationScope{RowTenant: "tenant_id; --"})},
 	} {
 		t.Run(name, func(t *testing.T) {
 			_, err := filter.NewSQLBuilder(widgets, filter.PostgresDialect{}, opts...).Build(someNote(widgets))
@@ -98,25 +99,27 @@ func TestRowTenant_RefusesAmbiguousScopes(t *testing.T) {
 		})
 	}
 
-	_, err := filter.NewListQuery(widgets, nil, filter.PostgresDialect{}).Build(filter.ListRowTenant("tenant_id"), filter.ListTenant("A"))
+	_, err := mustListQuery(t, widgets, nil, filter.PostgresDialect{}).Build(filter.ListRelationScope(filter.RelationScope{RowTenant: "tenant_id", Tenant: "A"}))
 	assert.Error(t, err, "a list holds relations one way")
 	_, err = filter.BuildFacetQuery(widgets, filter.PostgresDialect{}, "1=1", nil, []filter.FacetRequest{{Field: "notes"}},
-		filter.WithFacetRowTenant("tenant_id"), filter.WithFacetTenant("A"))
+		filter.WithFacetRelationScope(filter.RelationScope{RowTenant: "tenant_id", Tenant: "A"}))
 	assert.Error(t, err, "facets hold relations one way")
-	_, err = filter.BuildIncludeQuery(rel, filter.PostgresDialect{}, []any{"w1"}, filter.WithIncludeRowTenant(nil, "tenant_id"))
+	_, err = filter.BuildIncludeQuery(rel, filter.PostgresDialect{}, []any{"w1"}, filter.WithIncludeRelationScope(filter.RelationScope{RowTenant: "tenant_id"}))
 	assert.ErrorContains(t, err, "owner's schema", "an include joins the owner's table")
-	_, err = filter.BuildIncludeQuery(rel, filter.PostgresDialect{}, []any{"w1"}, filter.WithIncludeRowTenant(widgets, "tenant_id"), filter.WithIncludeTenant("A"))
+	_, err = filter.BuildIncludeQuery(rel, filter.PostgresDialect{}, []any{"w1"}, filter.WithIncludeOwner(widgets), filter.WithIncludeRelationScope(filter.RelationScope{RowTenant: "tenant_id", Tenant: "A"}))
 	assert.Error(t, err, "an include holds relations one way")
 }
 
 func TestRowTenant_Include(t *testing.T) {
 	widgets, rel := rowTenantSchemas(core.FieldTypeUUID, core.FieldTypeString)
-	q, err := filter.BuildIncludeQuery(rel, filter.PostgresDialect{}, []any{"w1", "w2"}, filter.WithIncludeRowTenant(widgets, "tenant_id"))
+	q, err := filter.BuildIncludeQuery(rel, filter.PostgresDialect{}, []any{"w1", "w2"}, filter.WithIncludeOwner(widgets), filter.WithIncludeRelationScope(filter.RelationScope{RowTenant: "tenant_id"}))
 	require.NoError(t, err)
 	assert.Contains(t, q.SQL, "JOIN widgets owner__ ON owner__.id = j.widget_id")
 	assert.Contains(t, q.SQL, "j.tenant_id = CAST(owner__.tenant_id AS TEXT)")
-	assert.Equal(t, []any{"w1", "w2"}, q.Args, "no tenant is bound")
+	assert.Equal(t, []any{[]string{"w1", "w2"}}, q.Args, "no tenant is bound")
 
-	_, err = filter.ResolveInclude(context.Background(), rel, []any{"w1"}, nil, filter.WithIncludeRowTenant(widgets, "tenant_id"))
-	assert.ErrorContains(t, err, "WithIncludeTenant", "a lookup resolves one tenant's owners at a time")
+	_, err = filter.ResolveInclude(context.Background(), rel, []any{"w1"}, nil, filter.WithIncludeOwner(widgets), filter.WithIncludeRelationScope(filter.RelationScope{RowTenant: "tenant_id"}))
+	assert.ErrorContains(t, err, "RelationScope.Tenant", "a lookup resolves one tenant's owners at a time")
+	_, err = filter.ResolveMemberships(context.Background(), filter.NewParsedFilter(someNote(widgets)), nil, filter.ResolveRelationScope(filter.RelationScope{RowTenant: "tenant_id"}))
+	assert.ErrorContains(t, err, "RelationScope.Tenant", "a lookup resolves one tenant's rows at a time")
 }

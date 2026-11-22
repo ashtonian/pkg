@@ -26,7 +26,8 @@ func TestComposeConstraints(t *testing.T) {
 		require.NoError(t, err, stmt)
 	}
 	schema := &filter.ResourceSchema{
-		Name: "items",
+		Name:       "items",
+		PrimaryKey: "id",
 		Fields: map[string]*filter.FieldSchema{
 			"owner": {ExternalName: "owner", SQLExpr: "items.owner", Column: "owner", DataType: core.FieldTypeString},
 		},
@@ -46,7 +47,7 @@ func TestComposeConstraints(t *testing.T) {
 	floor := filter.RepositoryScope{TenantColumn: "tenant_id", TenantID: "t1", DeleteColumn: "deleted_at"}
 	ids := func(t *testing.T, pc *filter.PolicyConstraints) []int64 {
 		t.Helper()
-		res, err := filter.NewListQuery(schema, nil, filter.SQLiteDialect{}).Build(filter.ListPolicy(pc))
+		res, err := mustListQuery(t, schema, nil, filter.SQLiteDialect{}).Build(filter.ListPolicy(pc))
 		require.NoError(t, err)
 		rows, err := db.Query("SELECT items.id FROM items "+res.Fragment, res.Args...)
 		require.NoError(t, err)

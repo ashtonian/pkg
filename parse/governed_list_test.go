@@ -67,11 +67,11 @@ func TestBuildList_GovernedRelationsFollowTheRow(t *testing.T) {
 		plan, err := build(t, parse.Scope{Governance: governanceA()})
 		require.NoError(t, err, "a governed list needs no Scope.Tenant")
 		for _, want := range []string{
-			"notes.tenant_id = documents.tenant_id",     // depth one
-			"reactions.tenant_id = documents.tenant_id", // depth two
-			"rel1__.tenant_id = documents.tenant_id",    // the pair table
-			"labels.tenant_id = documents.tenant_id",    // the pair's target
-			"rel__.tenant_id = documents.tenant_id",     // the pair table compared by key
+			"notes.tenant_id = documents.tenant_id",           // depth one
+			"reactions.tenant_id = documents.tenant_id",       // depth two
+			"rel1__.tenant_id = documents.tenant_id",          // the pair table
+			"labels.tenant_id = documents.tenant_id",          // the pair's target
+			"document_topics.tenant_id = documents.tenant_id", // the pair table compared by key
 		} {
 			assert.Contains(t, plan.Page.SQL, want)
 		}

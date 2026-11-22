@@ -18,6 +18,25 @@
         "indexed": true,
         "immutable": true
       },
+      "labels": {
+        "name": "labels",
+        "data_type": "int",
+        "wire": "string",
+        "operators": [
+          "eq",
+          "ne",
+          "in",
+          "nin",
+          "null",
+          "not_null",
+          "some",
+          "none"
+        ],
+        "relation": {
+          "kind": "many_to_many",
+          "target": "doc_labels"
+        }
+      },
       "lines": {
         "name": "lines",
         "data_type": "json",
@@ -197,6 +216,19 @@
   },
   "patch": {
     "paths": {
+      "/labels": {
+        "allowed_ops": [
+          "replace",
+          "add",
+          "remove"
+        ],
+        "data_type": "array",
+        "wire": "string",
+        "nullable": true,
+        "elem": "int",
+        "number_kind": "int64",
+        "relation": true
+      },
       "/name": {
         "allowed_ops": [
           "replace"
@@ -264,7 +296,8 @@
         "relation": true
       }
     },
-    "max_operations": 50
+    "max_operations": 50,
+    "max_relation_values": 1000
   },
   "sort": {
     "fields": {

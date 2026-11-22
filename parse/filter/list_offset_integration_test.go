@@ -15,7 +15,9 @@ import (
 
 func TestListOffsetDoesNotOffsetStandaloneQueries(t *testing.T) {
 	bound := 50.0
-	schema := &filter.ResourceSchema{Name: "items", Fields: map[string]*filter.FieldSchema{
+	schema := &filter.ResourceSchema{Name: "items", PrimaryKey: "id", SystemFields: map[string]*filter.FieldSchema{
+		"id": {ExternalName: "id", SQLExpr: "items.id", Column: "id", DataType: core.FieldTypeString},
+	}, Fields: map[string]*filter.FieldSchema{
 		"status": {ExternalName: "status", SQLExpr: "items.status", DataType: core.FieldTypeString, AllowedOperators: []filter.FilterOperator{filter.OpEq}, Facetable: true},
 		"price": {ExternalName: "price", SQLExpr: "items.price", DataType: core.FieldTypeFloat, Facetable: true, FacetSchema: &filter.FacetSchema{
 			Type: filter.FacetTypeRange, Ranges: []filter.FacetRange{{Key: "low", Max: &bound}, {Key: "high", Min: &bound}},
@@ -28,7 +30,7 @@ func TestListOffsetDoesNotOffsetStandaloneQueries(t *testing.T) {
 			if backend == "postgres" {
 				dialect = filter.PostgresDialect{}
 			}
-			result, err := filter.NewListQuery(schema, nil, dialect).WithSearchSchema(search).Build(
+			result, err := mustListQuery(t, schema, nil, dialect).WithSearchSchema(search).Build(
 				filter.ListFilter(`{"status":"active"}`), filter.ListSearch("active"),
 				filter.ListStartParam(3), filter.ListWithCount(true), filter.ListFacets("status", "price"),
 			)
@@ -43,9 +45,9 @@ func TestListOffsetDoesNotOffsetStandaloneQueries(t *testing.T) {
 			} else {
 				db = dbtest.SQLite(t)
 			}
-			_, err = db.ExecContext(t.Context(), "CREATE TABLE items (status TEXT, price REAL)")
+			_, err = db.ExecContext(t.Context(), "CREATE TABLE items (id TEXT PRIMARY KEY, status TEXT, price REAL)")
 			require.NoError(t, err)
-			_, err = db.ExecContext(t.Context(), "INSERT INTO items VALUES ('active', 10), ('active', 60), ('inactive', 10)")
+			_, err = db.ExecContext(t.Context(), "INSERT INTO items VALUES ('a', 'active', 10), ('b', 'active', 60), ('c', 'inactive', 10)")
 			require.NoError(t, err)
 			var total int
 			require.NoError(t, db.QueryRowContext(t.Context(), result.CountSQL, result.CountArgs...).Scan(&total))

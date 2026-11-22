@@ -988,14 +988,66 @@
     "errorCode": "E2073"
   },
   {
-    "name": "err_unknown_dollar_key_is_literal",
+    "name": "err_unknown_dollar_key",
     "input": {
       "count": {
         "$bogus": 1
       }
     },
     "valid": false,
-    "errorCode": "E2073"
+    "errorCode": "E2072"
+  },
+  {
+    "name": "err_misspelt_operator_on_document",
+    "input": {
+      "meta": {
+        "$contain": {
+          "env": "prod"
+        }
+      }
+    },
+    "valid": false,
+    "errorCode": "E2072"
+  },
+  {
+    "name": "json_eq_dollar_keyed_document",
+    "input": {
+      "meta": {
+        "$eq": {
+          "$env": "prod"
+        }
+      }
+    },
+    "valid": true,
+    "canonicalAst": {
+      "field": "meta",
+      "op": "eq",
+      "value": {
+        "$env": "prod"
+      }
+    },
+    "sqlPostgres": "conf_entities.meta = $1::jsonb",
+    "sqlSqlite": "(CASE WHEN conf_entities.meta IS NULL THEN NULL ELSE (CASE WHEN json_type(conf_entities.meta) = 'object' THEN ((SELECT count(*) FROM json_each(conf_entities.meta)) = 1 AND EXISTS (SELECT 1 FROM json_each(conf_entities.meta) je1 WHERE je1.key = ?1 AND (je1.type = 'text' AND je1.atom = ?2))) ELSE 0 END) END)"
+  },
+  {
+    "name": "json_eq_mixed_keyed_document",
+    "input": {
+      "meta": {
+        "$env": "prod",
+        "region": "eu"
+      }
+    },
+    "valid": true,
+    "canonicalAst": {
+      "field": "meta",
+      "op": "eq",
+      "value": {
+        "$env": "prod",
+        "region": "eu"
+      }
+    },
+    "sqlPostgres": "conf_entities.meta = $1::jsonb",
+    "sqlSqlite": "(CASE WHEN conf_entities.meta IS NULL THEN NULL ELSE (CASE WHEN json_type(conf_entities.meta) = 'object' THEN ((SELECT count(*) FROM json_each(conf_entities.meta)) = 2 AND EXISTS (SELECT 1 FROM json_each(conf_entities.meta) je1 WHERE je1.key = ?1 AND (je1.type = 'text' AND je1.atom = ?2)) AND EXISTS (SELECT 1 FROM json_each(conf_entities.meta) je2 WHERE je2.key = ?3 AND (je2.type = 'text' AND je2.atom = ?4))) ELSE 0 END) END)"
   },
   {
     "name": "err_operator_key_mixed_with_literal",

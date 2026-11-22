@@ -23,7 +23,7 @@ func GeneratePatchSchema[T any](g *core.SchemaGenerator) (*PatchSchema, error) {
 // writes: every field GeneratePatchSchema admits, and every field tagged
 // `parse:"server"` — a column only the server sets, such as a credential's
 // fingerprint, which a request body must never reach. A server field the
-// field-name tag hides (`json:"-"`) is addressed by ServerFieldName.
+// field-name tag hides (`json:"-"`) is addressed by its column.
 func GenerateServerPatchSchema[T any](g *core.SchemaGenerator) (*PatchSchema, error) {
 	t := reflect.TypeFor[T]()
 	if t.Kind() == reflect.Pointer {
@@ -32,10 +32,10 @@ func GenerateServerPatchSchema[T any](g *core.SchemaGenerator) (*PatchSchema, er
 	return generatePatchSchema(g, t, true)
 }
 
-// ServerFieldName returns the patch path name of a server field: its
+// serverFieldName returns the patch path name of a server field: its
 // external name, or its column when the field-name tag hides it. ok is false
 // for a field that is not a server field.
-func ServerFieldName(g *core.SchemaGenerator, field *core.Field) (name string, ok bool) {
+func serverFieldName(g *core.SchemaGenerator, field *core.Field) (name string, ok bool) {
 	if !field.Tags.Parse.Server {
 		return "", false
 	}
@@ -69,7 +69,7 @@ func generatePatchSchema(g *core.SchemaGenerator, t reflect.Type, server bool) (
 		}
 		fieldName := field.External
 		if serverField {
-			fieldName, _ = ServerFieldName(g, field)
+			fieldName, _ = serverFieldName(g, field)
 		}
 		if fieldName == "" {
 			// virtual relation fields conventionally carry
@@ -98,7 +98,7 @@ func generatePatchSchema(g *core.SchemaGenerator, t reflect.Type, server bool) (
 					continue
 				}
 				op := PatchOp(p)
-				if !ValidPatchOps[op] {
+				if !IsValidOp(op) {
 					return nil, fmt.Errorf("field %s: unknown patch operation %q", field.GoName, p)
 				}
 				if op == PatchOpRemove && !nullable && tags.Relation == "" {
@@ -139,7 +139,7 @@ func generatePatchSchema(g *core.SchemaGenerator, t reflect.Type, server bool) (
 			return nil, fmt.Errorf("field %s: %w", field.GoName, err)
 		}
 
-		var validators []core.Validator
+		var validators []Validator
 		var enumValues []string
 		if len(tags.Enum) > 0 {
 			enumValues = slices.Clone(tags.Enum)
@@ -168,6 +168,9 @@ func generatePatchSchema(g *core.SchemaGenerator, t reflect.Type, server bool) (
 			if err != nil {
 				return nil, fmt.Errorf("field %s: %w", field.GoName, err)
 			}
+			if err := checkRelationKeyType(field.Type); err != nil {
+				return nil, fmt.Errorf("field %s: %w", field.GoName, err)
+			}
 			relSchema = rel
 			allowedOps = relationPatchOps()
 			sqlColumn = "" // relation paths don't touch a column
@@ -191,9 +194,7 @@ func generatePatchSchema(g *core.SchemaGenerator, t reflect.Type, server bool) (
 		}
 	}
 
-	return &PatchSchema{
-		Resource: tableName, AllowedPaths: paths, MaxOperations: DefaultMaxOperations,
-	}, nil
+	return NewPatchSchema(tableName, paths)
 }
 
 // defaultOpsFor returns a fresh copy of the default operations for a field
@@ -206,7 +207,7 @@ func defaultOpsFor(g *core.SchemaGenerator, ft core.FieldType) (ops []PatchOp, c
 		ops := make([]PatchOp, 0, len(names))
 		for _, name := range names {
 			op := PatchOp(strings.TrimSpace(name))
-			if !ValidPatchOps[op] {
+			if !IsValidOp(op) {
 				return nil, true, fmt.Errorf("DefaultPatchOps[%s]: unknown patch operation %q", ft, name)
 			}
 			ops = append(ops, op)
@@ -282,7 +283,25 @@ func relationPatchOps() []PatchOp {
 }
 
 // RelationPath is the patch path of a relation's membership: replace, add
-// and remove of a slice of target keys (goType), routed to RelationOps.
-func RelationPath(rel *core.RelationSchema, goType reflect.Type) *PathSchema {
-	return &PathSchema{AllowedOps: relationPatchOps(), DataType: core.TypeOf(goType).Type, GoType: goType, Relation: rel}
+// and remove of a slice of target keys (goType), routed to RelationOps. A key
+// is never null, so goType's element must not be nullable. wire is the form
+// each key travels in, the target key's: core.WireString for one tagged
+// json:",string", whose keys are JSON strings ("5"), as responses write them.
+func RelationPath(rel *core.RelationSchema, goType reflect.Type, wire core.Wire) (*PathSchema, error) {
+	if err := checkRelationKeyType(goType); err != nil {
+		return nil, err
+	}
+	return &PathSchema{AllowedOps: relationPatchOps(), DataType: core.TypeOf(goType).Type, GoType: goType, Wire: wire, Relation: rel}, nil
+}
+
+// checkRelationKeyType refuses a membership type that is not a slice of
+// keys that cannot be null.
+func checkRelationKeyType(t reflect.Type) error {
+	if t.Kind() != reflect.Slice {
+		return fmt.Errorf("a relation's membership is a slice of keys, not %s", t)
+	}
+	if isNullableType(t.Elem()) {
+		return fmt.Errorf("a relation's keys are never null; declare them as %s's element without a pointer", t)
+	}
+	return nil
 }

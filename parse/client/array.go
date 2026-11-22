@@ -32,6 +32,10 @@ func (a Array[E]) Null() Filter { return isNull(a.name) }
 // NotNull matches rows whose array is not null.
 func (a Array[E]) NotNull() Filter { return notNull(a.name) }
 
+// Append appends e to the array, as a JSON Patch operation (array_append).
+// The server takes it on an array column, not on a document member.
+func (a Array[E]) Append(e E) Operation { return Append(Pointer(a.name), e) }
+
 // Some matches rows with an element c holds for, every comparison in c
 // holding for that one element. The empty filter matches rows with any
 // element.

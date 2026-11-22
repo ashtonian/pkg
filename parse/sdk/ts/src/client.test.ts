@@ -7,7 +7,7 @@ import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { createClient } from "./client.js";
 // ApiError and the problem types come through the package's public entry points.
-import { ApiError, SchemaValidationError, SchemaVersionError } from "./core/index.js";
+import { ApiError, ResponseError, SchemaResourceError, SchemaValidationError, SchemaVersionError } from "./core/index.js";
 import type { ListResult } from "./filter/types.js";
 import type { FieldError, Problem } from "./index.js";
 import { type ResourceSchema, SCHEMA_VERSION } from "./schema.js";
@@ -69,7 +69,7 @@ describe("listAll", () => {
       const exchange = wire.list.find((e) => e.cursor === cursor);
       return exchange ? json(exchange.response) : json({ code: "E2082", message: "invalid cursor" }, 422);
     });
-    const items = client(server.fetch).resource<WireItem>("items");
+    const items = client(server.fetch).resource<WireItem>("items", { schema: "wire_items" });
 
     const names: string[] = [];
     for await (const page of items.listAll({ sort: wire.sort, pageSize: wire.page_size })) {
@@ -86,7 +86,7 @@ describe("listAll", () => {
 
   it("surfaces include projections and facet counts", async () => {
     const first = wire.list[0]?.response;
-    const items = client(fakeServer(() => json(first)).fetch).resource<WireItem>("items");
+    const items = client(fakeServer(() => json(first)).fetch).resource<WireItem>("items", { schema: "wire_items" });
     const page = await items.list();
     expect(page._relations?.["tags"]?.["b"]).toEqual(["t1", "t2"]);
     expect(page._truncated?.["tags"]).toEqual(["b"]);
@@ -97,7 +97,7 @@ describe("listAll", () => {
 describe("list", () => {
   it("sends the server's query parameters", async () => {
     const server = fakeServer(() => json({ items: [], page_info: { has_next_page: false, has_prev_page: false } }));
-    await client(server.fetch).resource<WireItem>("items").list({
+    await client(server.fetch).resource<WireItem>("items", { schema: "wire_items" }).list({
       filter: { name: "alpha" },
       sort: [{ field: "name", order: "desc" }],
       cursor: "c1",
@@ -126,7 +126,7 @@ describe("list", () => {
 
   it("validates against the Go-emitted schema before sending", async () => {
     const server = fakeServer(({ url }) => (url.pathname.endsWith("/schema") ? json(wire.schema) : json(wire.list[0]?.response)));
-    const items = client(server.fetch, true).resource<WireItem>("items");
+    const items = client(server.fetch, true).resource<WireItem>("items", { schema: "wire_items" });
 
     await expect(items.list({ filter: { name: "zulu" } })).rejects.toMatchObject({ code: "E2087" });
     await expect(items.list({ filter: { labels: { $gt: 1 } } })).rejects.toBeInstanceOf(SchemaValidationError);
@@ -151,7 +151,7 @@ describe("list transport", () => {
   // create handler, so the body transport is the caller's to switch on.
   it("keeps every list a GET, however long, unless maxURLLength is configured", async () => {
     const server = fakeServer(() => json(empty));
-    const items = client(server.fetch).resource<WireItem>("items");
+    const items = client(server.fetch).resource<WireItem>("items", { schema: "wire_items" });
     const huge = { name: { $in: Array.from({ length: 1000 }, (_, i) => `name-${String(i).padStart(4, "0")}`) } };
     await items.list({ filter: huge });
     for await (const page of items.listAll({ filter: huge })) {
@@ -165,7 +165,7 @@ describe("list transport", () => {
 
   it("sends a list past a configured maxURLLength as a POST body with the same members", async () => {
     const server = fakeServer(() => json(empty));
-    await withMaxURLLength(server.fetch, 2000).resource<WireItem>("items").list({
+    await withMaxURLLength(server.fetch, 2000).resource<WireItem>("items", { schema: "wire_items" }).list({
       filter: big,
       sort: "-name",
       cursor: "c1",
@@ -197,18 +197,18 @@ describe("list transport", () => {
   it("keeps a list a GET up to a configured maxURLLength and a POST past it", async () => {
     const server = fakeServer(() => json(empty));
     const opts = { filter: { name: "alpha" } };
-    await client(server.fetch).resource<WireItem>("items").list(opts);
+    await client(server.fetch).resource<WireItem>("items", { schema: "wire_items" }).list(opts);
     const length = server.calls[0]?.url.href.length ?? 0;
     expect(length).toBeGreaterThan(0);
-    await withMaxURLLength(server.fetch, length).resource<WireItem>("items").list(opts);
-    await withMaxURLLength(server.fetch, length - 1).resource<WireItem>("items").list(opts);
+    await withMaxURLLength(server.fetch, length).resource<WireItem>("items", { schema: "wire_items" }).list(opts);
+    await withMaxURLLength(server.fetch, length - 1).resource<WireItem>("items", { schema: "wire_items" }).list(opts);
     expect(server.calls.map((c) => c.method)).toEqual(["GET", "GET", "POST"]);
   });
 
   it("lets method force either transport", async () => {
     const server = fakeServer(() => json(empty));
-    await client(server.fetch).resource<WireItem>("items").list({ filter: { name: "alpha" } }, { method: "POST" });
-    await withMaxURLLength(server.fetch, 2000).resource<WireItem>("items").list({ filter: big }, { method: "GET" });
+    await client(server.fetch).resource<WireItem>("items", { schema: "wire_items" }).list({ filter: { name: "alpha" } }, { method: "POST" });
+    await withMaxURLLength(server.fetch, 2000).resource<WireItem>("items", { schema: "wire_items" }).list({ filter: big }, { method: "GET" });
     expect(server.calls.map((c) => c.method)).toEqual(["POST", "GET"]);
     expect(server.calls[0]?.body).toEqual({ [p("ParamFilter")]: { name: "alpha" } });
     expect(server.calls[1]?.url.searchParams.get(p("ParamFilter"))).toBe(JSON.stringify(big));
@@ -226,7 +226,7 @@ describe("list transport", () => {
       const exchange = wire.list.find((e) => e.cursor === cursor);
       return exchange ? json(exchange.response) : json({ code: "E2082", message: "invalid cursor" }, 422);
     });
-    const items = client(server.fetch).resource<WireItem>("items");
+    const items = client(server.fetch).resource<WireItem>("items", { schema: "wire_items" });
     const names: string[] = [];
     for await (const page of items.listAll({ sort: wire.sort, pageSize: wire.page_size }, { method: "POST" })) {
       names.push(...page.items.map((i) => i.name));
@@ -239,7 +239,7 @@ describe("list transport", () => {
   // for a facet request or a patch's ids.
   it("sends facets and patchMany in the URL whatever maxURLLength", async () => {
     const server = fakeServer(() => json({ facets: {}, updated: [] }));
-    const items = withMaxURLLength(server.fetch, 30).resource<WireItem>("items");
+    const items = withMaxURLLength(server.fetch, 30).resource<WireItem>("items", { schema: "wire_items" });
     await items.facets(["name"], { filter: big });
     await items.patchMany(["a", "b"], { name: "bravo" });
     expect(server.calls.map((c) => c.method)).toEqual(["OPTIONS", "PATCH"]);
@@ -258,7 +258,7 @@ describe("list transport", () => {
     expect(cases.length).toBeGreaterThan(0);
 
     const server = fakeServer(() => json(empty));
-    const items = client(server.fetch).resource<WireItem>("items");
+    const items = client(server.fetch).resource<WireItem>("items", { schema: "wire_items" });
     for (const c of cases) {
       await items.list({ filter: c.input }, { method: "GET" });
       await items.list({ filter: c.input }, { method: "POST" });
@@ -283,7 +283,7 @@ describe("relation filters", () => {
       if (url.pathname.endsWith("/schema")) return json(wire.schema);
       return json(wire.list[0]?.response);
     });
-    const items = client(server.fetch, true).resource<WireItem>("items");
+    const items = client(server.fetch, true).resource<WireItem>("items", { schema: "wire_items" });
 
     await expect(items.list({ filter: { parts: { $some: { state: "worn" } } } as never })).resolves.toBeDefined();
     await expect(items.list({ filter: { parts: { $some: { colour: "red" } } } as never })).rejects.toMatchObject({ code: "E2071" });
@@ -406,14 +406,14 @@ describe("errors", () => {
   ];
 
   it.each(cases)("reads $name", async ({ response, want }) => {
-    const err = await client(fakeServer(response).fetch).resource<WireItem>("items").list().catch((e: unknown) => e);
+    const err = await client(fakeServer(response).fetch).resource<WireItem>("items", { schema: "wire_items" }).list().catch((e: unknown) => e);
     expect(err).toBeInstanceOf(ApiError);
     expect(err).toMatchObject(want);
   });
 
   it("asks for problem documents as well as JSON", async () => {
     const server = fakeServer(() => json(wire.list[0]?.response));
-    await client(server.fetch).resource<WireItem>("items").list();
+    await client(server.fetch).resource<WireItem>("items", { schema: "wire_items" }).list();
     expect(server.calls[0]?.headers.get("Accept")).toBe("application/json, application/problem+json");
   });
 });
@@ -428,7 +428,7 @@ describe("schema", () => {
       }
       return json(wire.schema);
     });
-    const items = client(server.fetch).resource<WireItem>("items");
+    const items = client(server.fetch).resource<WireItem>("items", { schema: "wire_items" });
 
     await expect(items.schema()).rejects.toMatchObject({ status: 503 });
     const [a, b] = await Promise.all([items.schema(), items.schema()]);
@@ -470,7 +470,7 @@ describe("schema", () => {
 
     it("survives the first caller's abort for a second caller", async () => {
       const server = heldServer();
-      const items = client(server.fetch).resource<WireItem>("items");
+      const items = client(server.fetch).resource<WireItem>("items", { schema: "wire_items" });
       const first = new AbortController();
 
       const a = items.schema({ signal: first.signal });
@@ -486,7 +486,7 @@ describe("schema", () => {
 
     it("rejects only a second caller that aborts", async () => {
       const server = heldServer();
-      const items = client(server.fetch).resource<WireItem>("items");
+      const items = client(server.fetch).resource<WireItem>("items", { schema: "wire_items" });
       const second = new AbortController();
 
       const a = items.schema();
@@ -501,7 +501,7 @@ describe("schema", () => {
 
     it("is cancelled when every caller aborts, and the next call refetches", async () => {
       const server = heldServer();
-      const items = client(server.fetch).resource<WireItem>("items");
+      const items = client(server.fetch).resource<WireItem>("items", { schema: "wire_items" });
       const one = new AbortController();
       const two = new AbortController();
 
@@ -524,14 +524,14 @@ describe("schema", () => {
 
     it("sends nothing for a caller that has already aborted", async () => {
       const server = heldServer();
-      const items = client(server.fetch).resource<WireItem>("items");
+      const items = client(server.fetch).resource<WireItem>("items", { schema: "wire_items" });
       await expect(items.schema({ signal: AbortSignal.abort() })).rejects.toMatchObject({ name: "AbortError" });
       expect(server.requests).toHaveLength(0);
     });
 
     it("ends a validating list's wait without failing the other caller's", async () => {
       const server = heldServer();
-      const items = client(server.fetch, true).resource<WireItem>("items");
+      const items = client(server.fetch, true).resource<WireItem>("items", { schema: "wire_items" });
       const first = new AbortController();
 
       const listing = items.list({ sort: "name" }, { signal: first.signal });
@@ -552,7 +552,7 @@ describe("schema", () => {
   it("refuses a document in a version it does not read, without caching it", async () => {
     const future = { ...wire.schema, version: SCHEMA_VERSION + 1 };
     const server = fakeServer(() => json(future));
-    const items = client(server.fetch, true).resource<WireItem>("items");
+    const items = client(server.fetch, true).resource<WireItem>("items", { schema: "wire_items" });
 
     const err = await items.schema().catch((e: unknown) => e);
     expect(err).toBeInstanceOf(SchemaVersionError);
@@ -572,7 +572,7 @@ describe("patch", () => {
 
   it("sends a merge patch to the entity", async () => {
     const server = fakeServer(() => json(updated));
-    const res = await client(server.fetch).resource<WireItem>("items").patch("a/b", { name: "bravo", labels: null });
+    const res = await client(server.fetch).resource<WireItem>("items", { schema: "wire_items" }).patch("a/b", { name: "bravo", labels: null });
     expect(server.calls[0]).toMatchObject({ method: "PATCH", body: { name: "bravo", labels: null } });
     expect(server.calls[0]?.url.pathname).toBe("/items/a%2Fb");
     expect(res.updated).toHaveLength(1);
@@ -580,7 +580,7 @@ describe("patch", () => {
 
   it("patches several entities through id[] parameters", async () => {
     const server = fakeServer(() => json(updated));
-    await client(server.fetch).resource<WireItem>("items").patchMany(["a", "b"], { name: "bravo" });
+    await client(server.fetch).resource<WireItem>("items", { schema: "wire_items" }).patchMany(["a", "b"], { name: "bravo" });
     expect(server.calls[0]?.method).toBe("PATCH");
     expect(server.calls[0]?.url.pathname).toBe("/items");
     expect(server.calls[0]?.url.searchParams.getAll("id[]")).toEqual(["a", "b"]);
@@ -588,7 +588,7 @@ describe("patch", () => {
 
   it("validates null against the Go-emitted schema", async () => {
     const server = fakeServer(({ url }) => (url.pathname.endsWith("/schema") ? json(wire.schema) : json(updated)));
-    const items = client(server.fetch, true).resource<WireItem>("items");
+    const items = client(server.fetch, true).resource<WireItem>("items", { schema: "wire_items" });
     // name is a non-nullable string: null is not one of its values, as the server answers.
     await expect(items.patch("a", { name: null })).rejects.toMatchObject({ code: "E2077" });
     await expect(items.patch("a", { id: "x" })).rejects.toMatchObject({ code: "E2076" });
@@ -597,7 +597,7 @@ describe("patch", () => {
 
   it("looks up field names as escaped JSON Pointer tokens", async () => {
     const server = fakeServer(({ url }) => (url.pathname.endsWith("/schema") ? json(wire.schema) : json(updated)));
-    const items = client(server.fetch, true).resource<Record<string, unknown>>("items");
+    const items = client(server.fetch, true).resource<Record<string, unknown>>("items", { schema: "wire_items" });
     // The Go schema holds "/unit~1si~0v" for the field named "unit/si~v".
     await expect(items.patch("a", { "unit/si~v": "kg" })).resolves.toBeDefined();
     await expect(items.patch("a", { "unit~1si~0v": "kg" })).rejects.toMatchObject({ code: "E2076" });
@@ -607,7 +607,7 @@ describe("patch", () => {
 describe("facets", () => {
   it("reads facet counts from OPTIONS ?facets=", async () => {
     const server = fakeServer(() => json({ fields: [], facets: { name: [{ key: "alpha", count: 2 }] } }));
-    const res = await client(server.fetch).resource<WireItem>("items").facets(["name"], { filter: { name: { $ne: "echo" } } });
+    const res = await client(server.fetch).resource<WireItem>("items", { schema: "wire_items" }).facets(["name"], { filter: { name: { $ne: "echo" } } });
     expect(server.calls[0]?.method).toBe("OPTIONS");
     expect(server.calls[0]?.url.searchParams.get(wire.params["ParamFacets"] ?? "")).toBe("name");
     expect(server.calls[0]?.url.searchParams.get("filter")).toBe(JSON.stringify({ name: { $ne: "echo" } }));
@@ -616,7 +616,197 @@ describe("facets", () => {
 
   it("sends the search the counts describe", async () => {
     const server = fakeServer(() => json({ fields: [], facets: {} }));
-    await client(server.fetch).resource<WireItem>("items").facets(["name"], { search: "cordless drill" });
+    await client(server.fetch).resource<WireItem>("items", { schema: "wire_items" }).facets(["name"], { search: "cordless drill" });
     expect(server.calls[0]?.url.searchParams.get(wire.params["ParamSearch"] ?? "")).toBe("cordless drill");
+  });
+});
+
+// The example server's mux (parse/examples/server/server.go): its route
+// patterns exactly, http.ServeMux's 307 for a path holding "//", and 404
+// text/plain for anything else, so a URL the client builds wrong fails here
+// as it would against the server.
+function exampleServer(schemas: Record<string, ResourceSchema>) {
+  const page = { items: [], page_info: { has_next_page: false, has_prev_page: false } };
+  return fakeServer(({ method, url }) => {
+    const path = url.pathname;
+    if (path.includes("//")) return new Response(null, { status: 307, headers: { Location: path.replace(/\/{2,}/g, "/") } });
+    const schemaRoute = /^\/api\/([^/]+)\/schema$/.exec(path);
+    if (method === "GET" && schemaRoute) {
+      const doc = schemas[decodeURIComponent(schemaRoute[1] ?? "")];
+      return doc ? json(doc) : json({ code: "E2078", message: "no schema registered" }, 404);
+    }
+    if (method === "GET" && path === "/api/schemas") return json({ schemas: Object.values(schemas) });
+    for (const name of Object.keys(schemas)) {
+      const collection = name === "work_orders" ? "work-orders" : name;
+      if (path === `/api/${collection}` && (method === "GET" || method === "POST")) return json(page);
+    }
+    return new Response("404 page not found\n", { status: 404, headers: { "Content-Type": "text/plain; charset=utf-8" } });
+  });
+}
+
+describe("routes", () => {
+  const products: ResourceSchema = { ...wire.schema, resource: "products" };
+  const workOrders: ResourceSchema = { ...wire.schema, resource: "work_orders" };
+  const atAPI = (fetchFn: typeof globalThis.fetch) =>
+    createClient({ baseURL: "https://api.test/api", fetch: fetchFn, validateBeforeSend: true });
+
+  it("reaches the list and the schema routes of the example server with default options", async () => {
+    const server = exampleServer({ products });
+    const res = atAPI(server.fetch).resource<WireItem>("products");
+    await expect(res.list({ filter: { name: "alpha" } })).resolves.toBeDefined();
+    await expect(res.schema()).resolves.toEqual(products);
+    expect(server.calls.map((c) => `${c.method} ${c.url.pathname}`)).toEqual(["GET /api/products/schema", "GET /api/products"]);
+  });
+
+  it("fetches a collection's schema under its registry name", async () => {
+    const server = exampleServer({ work_orders: workOrders });
+    const res = atAPI(server.fetch).resource<WireItem>("work-orders", { schema: "work_orders" });
+    await expect(res.list({ filter: { name: "alpha" } })).resolves.toBeDefined();
+    expect(server.calls.map((c) => c.url.pathname)).toEqual(["/api/work_orders/schema", "/api/work-orders"]);
+  });
+
+  it("caches schemas() by registry name, so a handle's schema() sends nothing", async () => {
+    const server = exampleServer({ products, work_orders: workOrders });
+    const c = atAPI(server.fetch);
+    await c.schemas();
+    await c.resource<WireItem>("products").schema();
+    await c.resource<WireItem>("work-orders", { schema: "work_orders" }).schema();
+    expect(server.calls.map((call) => call.url.pathname)).toEqual(["/api/schemas"]);
+  });
+
+  it("refuses a schema document for another resource than requested", async () => {
+    const server = fakeServer(() => json(wire.schema));
+    await expect(client(server.fetch).resource<WireItem>("items").schema()).rejects.toMatchObject({
+      name: "SchemaResourceError", requested: "items", resource: "wire_items",
+    });
+    await expect(client(server.fetch).resource<WireItem>("items").schema()).rejects.toBeInstanceOf(SchemaResourceError);
+  });
+
+  it("joins segments with one slash and puts schemas under schemaPrefix", async () => {
+    const server = fakeServer(({ url }) => (url.pathname.endsWith("/schema") ? json(wire.schema) : json(wire.list[0]?.response)));
+    const c = createClient({ baseURL: "https://api.test/v1/", fetch: server.fetch, schemaPrefix: "/meta/", validateBeforeSend: true });
+    await c.resource<WireItem>("/items/", { schema: "wire_items" }).list();
+    await c.resource<WireItem>("shop/items", { schema: "wire_items" }).list();
+    expect(server.calls.map((call) => call.url.pathname)).toEqual(["/v1/meta/wire_items/schema", "/v1/items", "/v1/shop/items"]);
+  });
+
+  it("defaults a nested path's registry name to its last segment", async () => {
+    const server = fakeServer(() => json(wire.schema));
+    await client(server.fetch).resource<WireItem>("shop/wire_items").schema();
+    expect(server.calls[0]?.url.pathname).toBe("/wire_items/schema");
+  });
+
+  it("refuses an empty path or schema name", () => {
+    const c = client(fakeServer(() => json({})).fetch);
+    expect(() => c.resource("")).toThrow(RangeError);
+    expect(() => c.resource("/")).toThrow(RangeError);
+    expect(() => c.resource("items", { schema: "" })).toThrow(RangeError);
+    expect(() => c.resource("items", { schema: "a/b" })).toThrow(RangeError);
+  });
+});
+
+describe("headers", () => {
+  const empty = { items: [], page_info: { has_next_page: false, has_prev_page: false } };
+
+  it("lets a lower-case override replace a default rather than join it", async () => {
+    const server = fakeServer(() => json(empty));
+    const c = createClient({ baseURL: "https://api.test", fetch: server.fetch, headers: { accept: "application/json" } });
+    await c.resource<WireItem>("items").list({}, { method: "POST", headers: { "content-type": "application/json; charset=utf-8" } });
+    expect(server.calls[0]?.headers.get("Content-Type")).toBe("application/json; charset=utf-8");
+    expect(server.calls[0]?.headers.get("Accept")).toBe("application/json");
+  });
+
+  it("sends Content-Type only with a body", async () => {
+    const server = fakeServer(({ method }) => (method === "OPTIONS" ? json({ facets: {} }) : json(empty)));
+    const items = client(server.fetch).resource<WireItem>("items");
+    await items.list();
+    await items.facets(["name"]);
+    await items.list({}, { method: "POST" });
+    expect(server.calls.map((c) => c.headers.get("Content-Type"))).toEqual([null, null, "application/json"]);
+  });
+});
+
+describe("2xx responses without a JSON body", () => {
+  const cases: { name: string; response: () => Response; status: number }[] = [
+    { name: "a 204", response: () => new Response(null, { status: 204 }), status: 204 },
+    { name: "an empty 200", response: () => new Response("", { status: 200 }), status: 200 },
+    { name: "an HTML 200", response: () => new Response("<html>ok</html>", { status: 200, headers: { "Content-Type": "text/html" } }), status: 200 },
+  ];
+
+  it.each(cases)("reject $name with a ResponseError carrying the status", async ({ response, status }) => {
+    const err = await client(fakeServer(response).fetch).resource<WireItem>("items").patch("a", { name: "b" }).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(ResponseError);
+    expect(err).toBeInstanceOf(ApiError);
+    expect(err).toMatchObject({ status, code: "", url: "https://api.test/items/a" });
+  });
+});
+
+describe("timeout", () => {
+  it.each([0, -1, Number.NaN, Number.POSITIVE_INFINITY, 1.5, 2 ** 32])("refuses %s", (timeout) => {
+    expect(() => createClient({ baseURL: "https://api.test", timeout })).toThrow(RangeError);
+  });
+  it("takes a positive integer up to 2^32 - 1", () => {
+    expect(() => createClient({ baseURL: "https://api.test", timeout: 1 })).not.toThrow();
+    expect(() => createClient({ baseURL: "https://api.test", timeout: 2 ** 32 - 1 })).not.toThrow();
+  });
+});
+
+describe("list members", () => {
+  const empty = { items: [], page_info: { has_next_page: false, has_prev_page: false } };
+  const p = (name: string): string => wire.params[name] ?? `missing ${name}`;
+
+  it("sends fields on both transports", async () => {
+    const server = fakeServer(() => json(empty));
+    const items = client(server.fetch).resource<WireItem>("items");
+    await items.list({ fields: ["id", "name"] });
+    await items.list({ fields: ["id", "name"] }, { method: "POST" });
+    expect(server.calls[0]?.url.searchParams.get(p("ParamFields"))).toBe("id,name");
+    expect(server.calls[1]?.body).toEqual({ [p("ParamFields")]: ["id", "name"] });
+  });
+
+  it("leaves zero members out, as the Go client does", async () => {
+    const server = fakeServer(() => json(empty));
+    const items = client(server.fetch).resource<WireItem>("items");
+    const zero = { sort: [], pageSize: 0, include: [], facets: [], fields: [], search: "", cursor: "" };
+    await items.list(zero);
+    await items.list(zero, { method: "POST" });
+    expect(server.calls[0]?.url.search).toBe("");
+    expect(server.calls[1]?.body).toEqual({});
+  });
+});
+
+describe("requests the server would misroute", () => {
+  it("refuses patch without an id and patchMany without ids before sending", async () => {
+    const server = fakeServer(() => json({ updated: [] }));
+    const items = client(server.fetch).resource<WireItem>("items");
+    await expect(items.patch("", { name: "a" })).rejects.toBeInstanceOf(RangeError);
+    await expect(items.patchMany([], { name: "a" })).rejects.toBeInstanceOf(RangeError);
+    expect(server.calls).toHaveLength(0);
+  });
+});
+
+describe("validation before sending", () => {
+  const facetServer = () => fakeServer(({ url }) => {
+    if (url.pathname.endsWith("/wire_parts/schema")) return json(wire.related["wire_parts"]);
+    if (url.pathname.endsWith("/schema")) return json(wire.schema);
+    return json({ facets: {} });
+  });
+
+  it("validates facets' fields and their filter's relation predicates as list does", async () => {
+    const server = facetServer();
+    const items = client(server.fetch, true).resource<WireItem>("items", { schema: "wire_items" });
+    await expect(items.facets(["nope" as "name"])).rejects.toMatchObject({ code: "E2071" });
+    await expect(items.facets(["labels"])).rejects.toMatchObject({ code: "E2071" });
+    await expect(items.facets(["name"], { filter: { parts: { $some: { nope: 1 } } } as never })).rejects.toBeInstanceOf(SchemaValidationError);
+    await expect(items.facets(["name"])).resolves.toEqual({});
+    expect(server.calls.filter((c) => c.method === "OPTIONS")).toHaveLength(1);
+  });
+
+  it("refuses a search on a resource whose schema has no search", async () => {
+    const server = facetServer();
+    const items = client(server.fetch, true).resource<WireItem>("items", { schema: "wire_items" });
+    await expect(items.list({ search: "drill" })).rejects.toMatchObject({ code: "E2067", field: "search" });
+    await expect(items.facets(["name"], { search: "drill" })).rejects.toMatchObject({ code: "E2067" });
+    await expect(items.list({ search: "  " })).resolves.toBeDefined();
   });
 });

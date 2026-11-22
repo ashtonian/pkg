@@ -84,5 +84,5 @@ func RunGeo(t *testing.T, backend Backend) {
 	if err != nil {
 		t.Fatalf("filtertest: geo schema: %v", err)
 	}
-	run(t, "", filter.NewFilterParser(schema, core.DefaultConfig()), GeoCases(), backend)
+	run(t, filter.NewFilterParser(schema, core.DefaultConfig()), GeoCases(), backend)
 }

@@ -238,19 +238,50 @@ type sqlBuilderConfig struct {
 	related    map[string]*PolicyConstraints
 }
 
+// RelationScope is how a statement reaches related rows: which tenant's
+// rows a tenant-scoped relation holds, and which rows of a policy-scoped
+// relation's target the server's policy admits. Every builder takes one
+// (WithRelationScope, ListRelationScope, WithFacetRelationScope,
+// WithIncludeRelationScope, ResolveRelationScope), so a list's page,
+// count, facets and includes are scoped alike. The zero value scopes no
+// tenant, and a relation declaring a tenant column fails closed.
+type RelationScope struct {
+	// Tenant binds every tenant-scoped relation, at every depth, to one
+	// tenant, in its tenant column's type. Nil binds none.
+	Tenant any
+	// RowTenant holds every tenant-scoped relation to the tenant of the
+	// row it hangs from, read from this column of the owner's table: for
+	// rows of more than one tenant, such as a governed list's
+	// (ComposeConstraints). It excludes Tenant and Unscoped.
+	RowTenant string
+	// Unscoped deliberately reaches tenant-scoped relations without a
+	// tenant predicate, for platform tooling that works across tenants.
+	// Never set it on a request path.
+	Unscoped bool
+	// Related is the server's policy for each policy-scoped relation's
+	// target table (core.RelationSchema.Policy), by table. A relation
+	// predicate on one without its table's policy is
+	// ErrRelatedPolicyRequired.
+	Related map[string]*PolicyConstraints
+}
+
+// tenancy is s's hold on tenant-scoped relations.
+func (s RelationScope) tenancy() relationScope {
+	return relationScope{tenant: s.Tenant, unscoped: s.Unscoped, row: rowTenant{column: s.RowTenant}}
+}
+
 // relationScope is how a builder scopes tenant-scoped junctions: bound to a
 // tenant, held to the tenant of the row they hang from, or explicitly
 // unscoped. The zero value is none of them, and any relation declaring a
 // TenantColumn fails closed.
 type relationScope struct {
-	tenant    any
-	hasTenant bool
-	unscoped  bool
-	row       rowTenant
+	tenant   any
+	unscoped bool
+	row      rowTenant
 }
 
 // rowTenant is the owner's tenant column a list whose rows span tenants
-// holds every tenant-scoped relation to (ListRowTenant): each related row
+// holds every tenant-scoped relation to (RelationScope.RowTenant): each related row
 // is in the tenant of the row it hangs from, at every depth.
 type rowTenant struct {
 	column string
@@ -295,7 +326,7 @@ func (sc relationScope) check() error {
 	if sc.row.column == "" {
 		return nil
 	}
-	if sc.hasTenant || sc.unscoped {
+	if sc.tenant != nil || sc.unscoped {
 		return errors.New("filter: relations follow the row's tenant, a bound tenant or none; more than one was set")
 	}
 	if !core.IsIdentifier(sc.row.column) {
@@ -314,7 +345,7 @@ func (sc relationScope) clause(table, column, alias string, typ core.FieldType, 
 		return "", nil
 	case sc.row.column != "":
 		return sc.row.match(alias+"."+column, typ), nil
-	case !sc.hasTenant:
+	case sc.tenant == nil:
 		return "", fmt.Errorf("relation junction %s is tenant-scoped (%s): bind a tenant or opt out explicitly with an unscoped-relations option", table, column)
 	}
 	return " AND " + alias + "." + column + " = " + bind(sc.tenant), nil
@@ -343,33 +374,10 @@ func WithStartParam(n int) SQLBuilderOption {
 	return func(c *sqlBuilderConfig) { c.startParam = n }
 }
 
-// WithTenant binds the tenant every tenant-scoped relation junction is
-// restricted to. Required whenever a filter touches a relation
-// whose RelationSchema.TenantColumn is set; without it (or
-// WithUnscopedRelations) the build fails rather than matching owners
-// through other tenants' junction rows.
-func WithTenant(value any) SQLBuilderOption {
-	return func(c *sqlBuilderConfig) {
-		c.scope.tenant = value
-		c.scope.hasTenant = value != nil
-	}
-}
-
-// WithUnscopedRelations deliberately builds tenant-scoped relation
-// junctions without a tenant predicate — for platform-level tooling that
-// operates across tenants. Never use it on a request path.
-func WithUnscopedRelations() SQLBuilderOption {
-	return func(c *sqlBuilderConfig) { c.scope.unscoped = true }
-}
-
-// WithRowTenant holds every tenant-scoped relation to the tenant of the row
-// it hangs from, read from column of the schema's table, instead of a bound
-// tenant: for a filter over rows of more than one tenant, such as a
-// governed list's (ComposeConstraints). Each relation's tenant columns, at
-// every depth, are compared with the row's. It excludes WithTenant and
-// WithUnscopedRelations.
-func WithRowTenant(column string) SQLBuilderOption {
-	return func(c *sqlBuilderConfig) { c.scope.row = rowTenant{column: column} }
+// WithRelationScope scopes the relations the filter reaches
+// (RelationScope).
+func WithRelationScope(s RelationScope) SQLBuilderOption {
+	return func(c *sqlBuilderConfig) { c.scope, c.related = s.tenancy(), s.Related }
 }
 
 // SQLBuilder generates parameterized SQL from a filter AST using a dialect.
@@ -482,6 +490,8 @@ func (b *SQLBuilder) buildNode(s *buildState, node *FilterNode) (string, error) 
 		return b.buildNot(s, node)
 	case OpRawSQL:
 		return b.buildRawSQL(s, node)
+	case OpUnknown:
+		return unknownSQL, nil
 	case OpMember:
 		return b.buildMember(s, node)
 	default:
@@ -489,19 +499,19 @@ func (b *SQLBuilder) buildNode(s *buildState, node *FilterNode) (string, error) 
 	}
 }
 
-// buildRawSQL injects a pre-built SQL expression, renumbering its local `$N`
-// placeholders to the builder's current parameter indices and binding each to
-// the matching RawArgs entry.
+// buildRawSQL injects a pre-built SQL expression in parentheses, so it is one
+// operand of whatever joins it: a raw `a OR b` ANDed with the tenant floor
+// must not bind the floor to `a` alone. Its local `$N` placeholders are
+// renumbered to the builder's parameter indices, each bound to the matching
+// RawArgs entry.
 //
-// Renumbering is token-based (via rawPlaceholderRe), not substring-based: the
-// old two-pass `strings.Replace(sql, "$1", …, 1)` corrupted multi-digit
-// placeholders because "$1" substring-matches inside "$10"/"$11". Each `$N`
-// OCCURRENCE — in left-to-right order — gets its own parameter slot and its own
-// RawArgs[N-1] append, so the result is correct for both numbered (`$K`) and
-// positional (`?`) dialects, including repeated and out-of-order placeholders.
+// Each `$N` occurrence, left to right, gets its own parameter slot and its own
+// RawArgs[N-1] append, so the result is correct for numbered (`$K`) and
+// positional (`?`) dialects, repeated and out-of-order placeholders included.
+// rawPlaceholderRe matches whole tokens, so `$1` never matches inside `$10`.
 func (b *SQLBuilder) buildRawSQL(s *buildState, node *FilterNode) (string, error) {
-	if node.RawSQL == "" {
-		return "1=1", nil
+	if strings.TrimSpace(node.RawSQL) == "" { // an empty predicate would admit every row
+		return "", errors.New("filter: raw SQL node has no SQL")
 	}
 	var rebuildErr error
 	out := rawPlaceholderRe.ReplaceAllStringFunc(node.RawSQL, func(tok string) string {
@@ -517,7 +527,7 @@ func (b *SQLBuilder) buildRawSQL(s *buildState, node *FilterNode) (string, error
 	if rebuildErr != nil {
 		return "", rebuildErr
 	}
-	return out, nil
+	return "(" + out + ")", nil
 }
 
 func (b *SQLBuilder) buildLogical(s *buildState, node *FilterNode, joiner string) (string, error) {
@@ -573,10 +583,10 @@ func (b *SQLBuilder) buildCondition(s *buildState, node *FilterNode) (string, er
 			}
 			node = n
 		}
-		if node.Op == OpSome || node.Op == OpNone {
-			return b.buildRelated(s, node)
+		if node.Field.Related == nil {
+			return b.buildPairTable(s, node)
 		}
-		return b.buildRelationCondition(s, node)
+		return b.buildRelated(s, node)
 	}
 	bind := s.binder(b.dialect)
 	if tv, ok := b.dialect.(TwoValuedDialect); ok && !s.negated {
@@ -591,36 +601,28 @@ func (b *SQLBuilder) buildCondition(s *buildState, node *FilterNode) (string, er
 	return b.dialect.Condition(node.Field, node.Op, node.Value, bind)
 }
 
-// relationAlias names the junction inside a relation predicate's
-// subquery; each EXISTS has its own scope, so the alias never collides with
-// a sibling predicate.
-const relationAlias = "rel__"
-
-// buildRelationCondition compiles a relation predicate as a correlated
-// EXISTS / NOT EXISTS against the junction, so boolean
-// composition (AND / OR / NOT) keeps set semantics and no join multiplies
-// owner rows:
+// buildPairTable compiles a key comparison on a pair table the relation tag
+// declares as the relation predicate it is, through buildRelated: the pair
+// table is the target, its one typed key the target column.
 //
-//	$eq / $in / other ops  EXISTS     (… AND rel__.<tgt> <op> …)
-//	$ne / $nin             NOT EXISTS (… AND rel__.<tgt> = / IN …)
+//	$eq / $in / other ops  EXISTS     (… AND <tgt> <op> …)
+//	$ne / $nin             NOT EXISTS (… AND <tgt> = / IN …)
 //	$null: true            NOT EXISTS (…)   — no related rows
-//	$null: false, $exists  EXISTS     (…)   — at least one related row
+//	$null: false           EXISTS     (…)   — at least one related row
 //
-// The old subquery form negated $nin twice and the join form bound an
-// array to a scalar placeholder, repeated unaliased joins and multiplied
-// rows.
-func (b *SQLBuilder) buildRelationCondition(s *buildState, node *FilterNode) (string, error) {
-	rel := node.Field.Relation
-	pk := rel.OwnerKey()
-	bind := s.binder(b.dialect)
-	target := &FieldSchema{ExternalName: node.Field.ExternalName, SQLExpr: relationAlias + "." + rel.TargetColumn, DataType: node.Field.DataType}
-
-	negate := false
-	cond := ""
+// An empty `$in` matches no owner and an empty `$nin` every owner, without
+// a subquery.
+func (b *SQLBuilder) buildPairTable(s *buildState, node *FilterNode) (string, error) {
+	f := node.Field
+	rel := f.Relation
+	op, cond := OpSome, node.Op
 	switch node.Op {
 	case OpNull:
-		negate = true
+		op, cond = OpNone, ""
 	case OpNotNull:
+		cond = ""
+	case OpNe:
+		op, cond = OpNone, OpEq
 	case OpIn, OpNin:
 		arr, ok := core.AnySlice(node.Value)
 		if !ok {
@@ -632,47 +634,21 @@ func (b *SQLBuilder) buildRelationCondition(s *buildState, node *FilterNode) (st
 			}
 			return "1=1", nil
 		}
-		sql, err := b.dialect.Condition(target, OpIn, arr, bind)
-		if err != nil {
-			return "", fmt.Errorf("building relation condition: %w", err)
+		if node.Op == OpNin {
+			op, cond = OpNone, OpIn
 		}
-		cond = sql
-		negate = node.Op == OpNin
-	default:
-		op := node.Op
-		if op == OpNe {
-			op, negate = OpEq, true
-		}
-		sql, err := b.dialect.Condition(target, op, node.Value, bind)
-		if err != nil {
-			return "", fmt.Errorf("building relation condition: %w", err)
-		}
-		cond = sql
 	}
-
-	var sb strings.Builder
-	if negate {
-		sb.WriteString("NOT ")
+	key := &FieldSchema{
+		ExternalName: f.ExternalName, SQLExpr: rel.JoinTable + "." + rel.TargetColumn, Column: rel.TargetColumn,
+		DataType: f.DataType, NumberKind: f.NumberKind,
 	}
-	sb.WriteString("EXISTS (SELECT 1 FROM ")
-	sb.WriteString(rel.JoinTable)
-	sb.WriteByte(' ')
-	sb.WriteString(relationAlias)
-	sb.WriteString(" WHERE ")
-	sb.WriteString(relationAlias + "." + rel.SourceColumn + " = " + b.schema.Name + "." + pk)
+	pair := *f
+	pair.Related = &ResourceSchema{Name: rel.JoinTable, PrimaryKey: rel.TargetColumn, SystemFields: map[string]*FieldSchema{rel.TargetColumn: key}}
+	lowered := &FilterNode{Field: &pair, Op: op}
 	if cond != "" {
-		sb.WriteString(" AND ")
-		sb.WriteString(cond)
+		lowered.Children = []*FilterNode{{Field: key, Op: cond, Value: node.Value}}
 	}
-	// A pair table compared by key declares no types: its tenant column
-	// is taken to hold the owner's.
-	scope, err := b.scope.clause(rel.JoinTable, rel.TenantColumn, relationAlias, "", bind)
-	if err != nil {
-		return "", err
-	}
-	sb.WriteString(scope)
-	sb.WriteByte(')')
-	return sb.String(), nil
+	return b.buildRelated(s, lowered)
 }
 
 // nullableDateValue is the SQL boundary: typed nil pointers are SQL NULL,

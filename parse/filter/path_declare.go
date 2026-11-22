@@ -272,19 +272,7 @@ func scalarElements(t reflect.Type) (core.FieldType, reflect.Kind, bool) {
 }
 
 func parseOpsTag(tag string) ([]FilterOperator, error) {
-	var ops []FilterOperator
-	for p := range strings.SplitSeq(tag, ",") {
-		p = strings.TrimSpace(p)
-		if p == "" {
-			continue
-		}
-		op := FilterOperator(p)
-		if !ValidFilterOps[op] {
-			return nil, fmt.Errorf("unknown filter operator %q", p)
-		}
-		ops = append(ops, op)
-	}
-	return ops, nil
+	return parseOperatorList(strings.Split(tag, ","))
 }
 
 // quotedMemberError refuses a path onto a struct member encoding/json quotes

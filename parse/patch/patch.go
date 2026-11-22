@@ -4,9 +4,7 @@ import (
 	"database/sql/driver"
 	"errors"
 	"fmt"
-	"maps"
 	"reflect"
-	"slices"
 	"strconv"
 
 	"github.com/ashtonian/pkg/parse/core"
@@ -48,11 +46,17 @@ func (r RawPatchOp) present() bool { return r.HasValue || r.Value != nil }
 // Use this when the input has already been decoded from a non-JSON format
 // (protobuf, msgpack, YAML, etc.).
 func (p *Parser) ParseOps(ops []RawPatchOp) (*ParsedPatch, error) {
+	if p.schema == nil {
+		return nil, errNoSchema
+	}
 	return p.validateOps(ops)
 }
 
 // Parse validates and parses a JSON Patch document from JSON bytes.
 func (p *Parser) Parse(body []byte) (*ParsedPatch, error) {
+	if p.schema == nil {
+		return nil, errNoSchema
+	}
 	if p.config.MaxInputSize > 0 && len(body) > p.config.MaxInputSize {
 		return nil, &core.ParseError{
 			Kind: core.ParseErrorKindPatch, Code: ECodeInputTooLarge.String(),
@@ -119,8 +123,8 @@ func (p *Parser) validateOps(ops []RawPatchOp) (*ParsedPatch, error) {
 
 	result := &ParsedPatch{
 		Operations: make([]*PatchOperation, 0, len(ops)),
+		schema:     p.schema,
 	}
-	seen := make(map[string]struct{})
 
 	var failures []error
 	for i, raw := range ops {
@@ -130,14 +134,12 @@ func (p *Parser) validateOps(ops []RawPatchOp) (*ParsedPatch, error) {
 			continue
 		}
 		result.Operations = append(result.Operations, operation)
-		seen[raw.Path] = struct{}{}
 	}
 	if len(failures) > 0 {
 		return nil, errors.Join(failures...)
 	}
 
-	result.AffectedPaths = slices.Sorted(maps.Keys(seen)) // deterministic audit payload
-	result.EstimatedCost = estimatePatchCost(result)
+	result.AffectedPaths = affectedPaths(result.Operations)
 
 	return result, nil
 }
@@ -166,14 +168,36 @@ func (p *Parser) validateOperation(raw RawPatchOp, i int) (*PatchOperation, erro
 	if err != nil {
 		return nil, err
 	}
-	if !pathSchema.AllowsOp(op) {
-		return nil, &core.ParseError{
-			Kind: core.ParseErrorKindPatch, Code: ECodeOpNotAllowed.String(),
-			Message: fmt.Sprintf("operation '%s' not allowed on path '%s' at index %d", op, raw.Path, i),
-			Path:    raw.Path, Index: new(i),
+
+	// An operation carries only the value it writes: a remove writes null
+	// whatever value a client attached, and a move or copy writes its
+	// source's. A relation's remove names the members it removes.
+	var value any
+	if opTakesValue(op) || (pathSchema.Relation != nil && op == PatchOpRemove) {
+		value = normalizeNilPointer(raw.Value)
+	}
+	value, failures := newValueChecker(p.schema, p.codec).check(pathSchema, op, value, depth, false)
+	if len(failures) > 0 {
+		errs := make([]error, len(failures))
+		for j, f := range failures {
+			if f.code == ECodeOpNotAllowed {
+				errs[j] = &core.ParseError{
+					Kind: core.ParseErrorKindPatch, Code: f.code.String(),
+					Message: fmt.Sprintf("operation '%s' not allowed on path '%s' at index %d", op, raw.Path, i),
+					Path:    raw.Path, Index: new(i),
+				}
+				continue
+			}
+			errs[j] = &core.ParseError{
+				Kind: core.ParseErrorKindPatch, Code: f.code.String(),
+				Message: fmt.Sprintf("invalid value for path '%s' at index %d: %v", raw.Path, i, f.cause),
+				Path:    raw.Path, Index: new(i), Cause: f.cause, Details: f.details,
+			}
 		}
+		return nil, errors.Join(errs...)
 	}
 
+	var fromSchema *PathSchema
 	if op == PatchOpMove || op == PatchOpCopy {
 		if raw.From == "" {
 			return nil, &core.ParseError{
@@ -193,65 +217,12 @@ func (p *Parser) validateOperation(raw RawPatchOp, i int) (*PatchOperation, erro
 			return nil, &core.ParseError{
 				Kind: core.ParseErrorKindPatch, Code: err.code.String(),
 				Message: fmt.Sprintf("%s from '%s' to '%s' at index %d: %s", op, raw.From, raw.Path, i, err.msg),
-				Path:    raw.Path, Index: new(i),
+				Path:    raw.Path, Index: new(i), Cause: err.cause,
 			}
 		}
+		fromSchema = from
 	}
-
-	// Values are normalized before validators run, so validators and every
-	// consumer (SQL binding, typed apply) see the canonical value.
-	// Validators run for every value-taking op, including explicit null.
-	value := normalizeNilPointer(raw.Value)
-	if err := checkNullability(pathSchema, op, value, depth); err != nil {
-		return nil, &core.ParseError{
-			Kind: core.ParseErrorKindPatch, Code: ECodePatchValueInvalid.String(),
-			Message: fmt.Sprintf("invalid value for path '%s' at index %d: %v", raw.Path, i, err),
-			Path:    raw.Path, Index: new(i), Cause: err,
-		}
-	}
-	var failures []error
-	wrap := func(err error) error {
-		return &core.ParseError{Kind: core.ParseErrorKindPatch, Code: ECodePatchValueInvalid.String(), Message: fmt.Sprintf("invalid value for path '%s' at index %d: %v", raw.Path, i, err), Path: raw.Path, Index: new(i), Cause: err}
-	}
-
-	// Relation remove carries the target IDs to remove, so it
-	// normalizes like the other membership verbs.
-	if opTakesValue(op) || (pathSchema.Relation != nil && op == PatchOpRemove) {
-		normalized, err := normalizeOpValue(pathSchema, op, value, depth, p.codec)
-		if err != nil {
-			return nil, &core.ParseError{
-				Kind: core.ParseErrorKindPatch, Code: ECodePatchValueInvalid.String(),
-				Message: fmt.Sprintf("invalid value for path '%s' at index %d: %v", raw.Path, i, err),
-				Path:    raw.Path, Index: new(i), Cause: err,
-			}
-		}
-		checked := normalized
-		if op == PatchOpTest {
-			// A test keeps the document it compares; validators judge the
-			// value, normalized as a replace normalizes it.
-			if checked, err = normalizeOpValue(pathSchema, PatchOpReplace, value, depth, p.codec); err != nil {
-				return nil, &core.ParseError{
-					Kind: core.ParseErrorKindPatch, Code: ECodePatchValueInvalid.String(),
-					Message: fmt.Sprintf("invalid value for path '%s' at index %d: %v", raw.Path, i, err),
-					Path:    raw.Path, Index: new(i), Cause: err,
-				}
-			}
-		}
-		value = normalized
-		for _, validator := range pathSchema.Validators {
-			if err := validator(checked); err != nil {
-				failures = append(failures, valueFailures(err, wrap)...)
-			}
-		}
-	}
-	if err := checkItems(pathSchema, op, value, depth); err != nil {
-		failures = append(failures, valueFailures(err, wrap)...)
-	}
-	if len(failures) > 0 {
-		return nil, errors.Join(failures...)
-	}
-
-	return &PatchOperation{Op: op, Path: raw.Path, From: raw.From, Value: value, Schema: pathSchema}, nil
+	return &PatchOperation{Op: op, Path: raw.Path, From: raw.From, Value: value, Schema: pathSchema, fromSchema: fromSchema}, nil
 }
 
 // resolvePath validates a JSON Pointer (RFC 6901 syntax, depth within
@@ -291,28 +262,13 @@ func (p *Parser) resolvePath(path string, index int) (*PathSchema, int, error) {
 }
 
 func matchPath(schema *PatchSchema, path string) (*PathSchema, error) {
-	if ps, ok := schema.AllowedPaths[path]; ok {
+	if ps, ok := schema.pathSet().resolve(path); ok {
 		return ps, nil
-	}
-	// Deterministic wildcard resolution: most-specific pattern first
-	//. Map iteration made overlapping patterns with different
-	// AllowedOps a per-process coin flip.
-	for _, pattern := range schema.sortedPaths() {
-		if core.MatchWildcard(pattern, path) {
-			return schema.AllowedPaths[pattern], nil
-		}
 	}
 	return nil, errors.New("path not allowed")
 }
 
-// isValidPatchOp reports whether op is a recognised wire-level patch
-// operation. Consults ValidPatchOps (single source of truth) rather
-// than a hardcoded switch — adding a new op (e.g. PatchOpArrayAppend)
-// to that map immediately reaches the parser without a paired edit
-// here. .
-func isValidPatchOp(op string) bool {
-	return ValidPatchOps[PatchOp(op)]
-}
+func isValidPatchOp(op string) bool { return IsValidOp(PatchOp(op)) }
 
 // opTakesValue reports whether op consumes the raw.Value field and so
 // should run the field-level value validators. RFC 6902 add / replace
@@ -329,8 +285,9 @@ func opTakesValue(op PatchOp) bool {
 
 // transferError is why a move or copy is refused, with the code to report.
 type transferError struct {
-	code core.Code
-	msg  string
+	code  core.Code
+	msg   string
+	cause error
 }
 
 // checkTransfer applies a move's or copy's source-side rules. RFC 6902
@@ -343,19 +300,25 @@ type transferError struct {
 func checkTransfer(op PatchOp, from *PathSchema, fromDepth int, to *PathSchema, toDepth int) *transferError {
 	if op == PatchOpMove {
 		if !from.AllowsOp(PatchOpRemove) {
-			return &transferError{ECodeOpNotAllowed, "the source does not allow remove"}
+			return &transferError{code: ECodeOpNotAllowed, msg: "the source does not allow remove"}
 		}
 		if err := checkNullability(from, PatchOpRemove, nil, fromDepth); err != nil {
-			return &transferError{ECodePatchValueInvalid, "the source " + err.Error()}
+			return &transferError{ECodePatchValueInvalid, "the source " + err.Error(), err}
+		}
+		// The move writes null into its source, as a remove does.
+		for _, validator := range from.Validators {
+			if err := validator(nil); err != nil {
+				return &transferError{ECodePatchValueInvalid, "the source " + err.Error(), err}
+			}
 		}
 	}
 	if fromDepth == 1 && toDepth == 1 && from.GoType != nil && to.GoType != nil && valueType(from.GoType) != valueType(to.GoType) {
-		return &transferError{ECodePatchValueInvalid, fmt.Sprintf("the source holds %s, the destination %s", from.GoType, to.GoType)}
+		return &transferError{code: ECodePatchValueInvalid, msg: fmt.Sprintf("the source holds %s, the destination %s", from.GoType, to.GoType)}
 	}
 	if fromDepth == 1 && toDepth == 1 && from.Wire != to.Wire {
 		// The document holds each in its own wire form; the value would not
 		// decode into the other.
-		return &transferError{ECodePatchValueInvalid, fmt.Sprintf("the source travels as %s, the destination as %s", wireName(from.Wire), wireName(to.Wire))}
+		return &transferError{code: ECodePatchValueInvalid, msg: fmt.Sprintf("the source travels as %s, the destination as %s", wireName(from.Wire), wireName(to.Wire))}
 	}
 	return nil
 }
@@ -426,7 +389,7 @@ func checkNullability(ps *PathSchema, op PatchOp, value any, depth int) error {
 		reason += " and cannot be removed"
 	}
 	if mustHoldElement(ps.GoType, ps.Bounds) {
-		return core.NewConstraintError(core.ConstraintMinItems, strconv.Itoa(*ps.Bounds.MinItems), reason)
+		return NewConstraintError(core.ConstraintMinItems, strconv.Itoa(*ps.Bounds.MinItems), reason)
 	}
 	return errors.New(reason)
 }
@@ -472,16 +435,13 @@ func normalizeOpValue(ps *PathSchema, op PatchOp, v any, depth int, codec core.C
 	if v == nil && op != PatchOpArrayAppend {
 		return nil, nil
 	}
+	if ps.Relation != nil {
+		return normalizeRelationKeys(ps, v, codec)
+	}
 	supplied := v
 	v, err := core.FromWire(ps.Wire, ps.DataType, v)
 	if err != nil {
 		return nil, err
-	}
-	if ps.Relation != nil {
-		if ps.GoType == nil {
-			return v, nil
-		}
-		return normalizeTyped(ps.GoType, v, codec)
 	}
 	target := ps.GoType
 	for target != nil && target.Kind() == reflect.Pointer {
@@ -518,6 +478,35 @@ func normalizeOpValue(ps *PathSchema, op PatchOp, v any, depth int, codec core.C
 		return supplied, nil
 	}
 	return normalized, err
+}
+
+// normalizeRelationKeys normalizes a membership's keys as the target's key:
+// each from the path's wire form (a quoted key's JSON string, or a Go value
+// code passes), then to the key's Go type.
+func normalizeRelationKeys(ps *PathSchema, v any, codec core.Codec) (any, error) {
+	if ps.Wire != "" {
+		items, ok := core.AnySlice(v)
+		if !ok {
+			return nil, fmt.Errorf("expected an array, got %T", v)
+		}
+		key := ps.DataType
+		if ps.GoType != nil {
+			key = core.TypeOf(ps.GoType.Elem()).Type
+		}
+		keys := make([]any, len(items))
+		for i, item := range items {
+			k, err := core.FromWire(ps.Wire, key, item)
+			if err != nil {
+				return nil, fmt.Errorf("element %d: %w", i, err)
+			}
+			keys[i] = k
+		}
+		v = keys
+	}
+	if ps.GoType == nil {
+		return v, nil
+	}
+	return normalizeTyped(ps.GoType, v, codec)
 }
 
 // normalizeTyped normalizes v for the Go type t: scalars, decimals included,
@@ -570,7 +559,7 @@ func normalizeTyped(t reflect.Type, v any, codec core.Codec) (any, error) {
 		return nil, err
 	}
 	dst := reflect.New(t)
-	if err = checkJSONMembers(t, v); err != nil {
+	if err = checkJSONMembers(t, data); err != nil {
 		return nil, err
 	}
 	if err = codec.Decode(data, dst.Interface()); err != nil {
@@ -607,24 +596,4 @@ func scalarFieldType(t reflect.Type) (core.FieldType, bool) {
 		return ft, true
 	}
 	return "", false
-}
-
-var patchOpCosts = map[PatchOp]int{
-	PatchOpReplace:     1,
-	PatchOpAdd:         2,
-	PatchOpRemove:      1,
-	PatchOpMove:        3,
-	PatchOpCopy:        2,
-	PatchOpTest:        0,
-	PatchOpArrayAppend: 1, // single-statement append, cost on par with replace
-}
-
-func estimatePatchCost(patch *ParsedPatch) int {
-	cost := 0
-	for _, op := range patch.Operations {
-		if c, ok := patchOpCosts[op.Op]; ok {
-			cost += c
-		}
-	}
-	return cost
 }

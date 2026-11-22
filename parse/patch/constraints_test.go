@@ -55,7 +55,7 @@ func TestDeclaredConstraintFailures(t *testing.T) {
 			for i, failure := range failures {
 				assert.Equal(t, "E2077", failure.Code)
 				assert.Equal(t, expected[i].path, failure.Path)
-				var constraint *core.ConstraintError
+				var constraint *patch.ConstraintError
 				require.ErrorAs(t, failure.Cause, &constraint)
 				assert.Equal(t, expected[i].name, constraint.Constraint)
 				assert.Equal(t, expected[i].limit, constraint.Limit)
@@ -89,7 +89,7 @@ func TestDeclaredConstraintLimits(t *testing.T) {
 			var failure *core.ParseError
 			require.ErrorAs(t, err, &failure)
 			assert.Equal(t, "E2077", failure.Code)
-			var constraint *core.ConstraintError
+			var constraint *patch.ConstraintError
 			require.ErrorAs(t, failure.Cause, &constraint)
 			assert.Equal(t, tc.name, constraint.Constraint)
 			assert.Equal(t, tc.limit, constraint.Limit)

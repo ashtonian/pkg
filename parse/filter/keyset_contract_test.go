@@ -45,9 +45,7 @@ func TestPostgresNativeRowCompare(t *testing.T) {
 		filter.CursorField{Name: "created_at", Value: "2026-01-15T10:30:00Z", Direction: filter.SortDesc},
 		filter.CursorField{Name: "id", Value: "01HF3K", Direction: filter.SortDesc},
 	)
-	schema := testSchema()
-	schema.PrimaryKey = "id"
-	lq := filter.NewListQuery(schema, testSortSchema(), filter.PostgresDialect{})
+	lq := mustListQuery(t, testSchema(), testSortSchema(), filter.PostgresDialect{})
 	result, err := lq.Build(
 		filter.ListSort("-created_at"),
 		filter.ListCursor(cur),
@@ -55,10 +53,10 @@ func TestPostgresNativeRowCompare(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(result.Where, "(items.created_at, id) < ($1, $2)") {
+	if !strings.Contains(result.Where, "(items.created_at, items.id COLLATE pg_c_utf8) < ($1, $2)") {
 		t.Errorf("expected native row comparison, got %q", result.Where)
 	}
-	if result.OrderBy != "ORDER BY items.created_at DESC, id DESC" {
+	if result.OrderBy != "ORDER BY items.created_at DESC, items.id COLLATE pg_c_utf8 DESC" {
 		t.Errorf("expected tie-breaker in ORDER BY, got %q", result.OrderBy)
 	}
 	if len(result.Args) != 2 {
@@ -73,9 +71,7 @@ func TestSQLiteExpansion(t *testing.T) {
 		filter.CursorField{Name: "created_at", Value: "2026-01-15T10:30:00Z", Direction: filter.SortDesc},
 		filter.CursorField{Name: "id", Value: "01HF3K", Direction: filter.SortDesc},
 	)
-	schema := testSchema()
-	schema.PrimaryKey = "id"
-	lq := filter.NewListQuery(schema, testSortSchema(), filter.SQLiteDialect{})
+	lq := mustListQuery(t, testSchema(), testSortSchema(), filter.SQLiteDialect{})
 	result, err := lq.Build(
 		filter.ListSort("-created_at"),
 		filter.ListCursor(cur),
@@ -83,7 +79,7 @@ func TestSQLiteExpansion(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := "((items.created_at < ?1) OR (items.created_at = ?1 AND id < ?2))"
+	want := "((items.created_at < ?1) OR (items.created_at = ?1 AND items.id COLLATE BINARY < ?2))"
 	if !strings.Contains(result.Where, want) {
 		t.Errorf("expected expansion %q, got %q", want, result.Where)
 	}
@@ -100,9 +96,7 @@ func TestMixedDirectionsExpandOnPostgres(t *testing.T) {
 		filter.CursorField{Name: "created_at", Value: "2026-01-15T10:30:00Z", Direction: filter.SortDesc},
 		filter.CursorField{Name: "id", Value: "01HF3K", Direction: filter.SortAsc},
 	)
-	schema := testSchema()
-	schema.PrimaryKey = "id"
-	lq := filter.NewListQuery(schema, testSortSchema(), filter.PostgresDialect{})
+	lq := mustListQuery(t, testSchema(), testSortSchema(), filter.PostgresDialect{})
 	result, err := lq.Build(
 		filter.ListSort("name,-created_at"),
 		filter.ListCursor(cur),
@@ -110,7 +104,7 @@ func TestMixedDirectionsExpandOnPostgres(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := "((items.name > $1) OR (items.name = $1 AND items.created_at < $2) OR (items.name = $1 AND items.created_at = $2 AND id > $3))"
+	want := "((items.name > $1) OR (items.name = $1 AND items.created_at < $2) OR (items.name = $1 AND items.created_at = $2 AND items.id COLLATE pg_c_utf8 > $3))"
 	if !strings.Contains(result.Where, want) {
 		t.Errorf("expected mixed-direction expansion %q, got %q", want, result.Where)
 	}
@@ -123,9 +117,7 @@ func TestReverseFlipsComparators(t *testing.T) {
 		filter.CursorField{Name: "created_at", Value: "2026-01-15T10:30:00Z", Direction: filter.SortDesc},
 		filter.CursorField{Name: "id", Value: "01HF3K", Direction: filter.SortDesc},
 	)
-	schema := testSchema()
-	schema.PrimaryKey = "id"
-	lq := filter.NewListQuery(schema, testSortSchema(), filter.PostgresDialect{})
+	lq := mustListQuery(t, testSchema(), testSortSchema(), filter.PostgresDialect{})
 	result, err := lq.Build(
 		filter.ListSort("-created_at"),
 		filter.ListCursor(cur),
@@ -133,7 +125,7 @@ func TestReverseFlipsComparators(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(result.Where, "(items.created_at, id) > ($1, $2)") {
+	if !strings.Contains(result.Where, "(items.created_at, items.id COLLATE pg_c_utf8) > ($1, $2)") {
 		t.Errorf("expected flipped comparators, got %q", result.Where)
 	}
 }
@@ -142,9 +134,7 @@ func TestReverseFlipsComparators(t *testing.T) {
 // rejected under another — name, direction, and arity mismatches all fail
 // with ECodeInvalidCursor.
 func TestCursorFromDifferentSortRejected(t *testing.T) {
-	schema := testSchema()
-	schema.PrimaryKey = "id"
-	lq := filter.NewListQuery(schema, testSortSchema(), filter.PostgresDialect{})
+	lq := mustListQuery(t, testSchema(), testSortSchema(), filter.PostgresDialect{})
 	cases := []struct {
 		name   string
 		fields []filter.CursorField
@@ -174,48 +164,18 @@ func TestCursorFromDifferentSortRejected(t *testing.T) {
 	}
 }
 
-// TestCursorWithoutKeysRejected: a cursor with no active sort and no
-// tie-breaker has nothing to compare against — explicit error, not silent
-// acceptance.
-func TestCursorWithoutKeysRejected(t *testing.T) {
-	noDefault := &filter.SortSchema{Fields: map[string]*filter.SortFieldSchema{
-		"name": {SQLExpr: "items.name"},
-	}}
-	cur := mintCursor(t, false, filter.CursorField{Name: "name", Value: "x", Direction: filter.SortAsc})
-	lq := filter.NewListQuery(testSchema(), noDefault, filter.PostgresDialect{})
-	_, err := lq.Build(filter.ListCursor(cur))
-	assertParseCode(t, err, filter.ECodeInvalidCursor)
-}
-
-// A primary key that resolves through
-// no schema must be a plain identifier — user text is never emitted as SQL.
-func TestPrimaryKeyRejectsNonIdentifier(t *testing.T) {
-	schema := testSchema()
-	schema.PrimaryKey = "id; DROP TABLE items"
-	lq := filter.NewListQuery(schema, testSortSchema(), filter.PostgresDialect{})
-	_, err := lq.Build(
-		filter.ListSort("-created_at"),
-	)
-	if err == nil {
-		t.Fatal("expected non-identifier tie-breaker to be rejected")
-	}
-}
-
-// TestTieBreakerOrderByWithoutSort: tie-breaker alone still yields a
-// deterministic ORDER BY — cursor paging over an unordered SELECT was
-// undefined before P-10.
+// TestTieBreakerOrderByWithoutSort: the key alone still yields a
+// deterministic ORDER BY.
 func TestTieBreakerOrderByWithoutSort(t *testing.T) {
 	noDefault := &filter.SortSchema{Fields: map[string]*filter.SortFieldSchema{
 		"name": {SQLExpr: "items.name"},
 	}}
-	schema := testSchema()
-	schema.PrimaryKey = "id"
-	lq := filter.NewListQuery(schema, noDefault, filter.PostgresDialect{})
+	lq := mustListQuery(t, testSchema(), noDefault, filter.PostgresDialect{})
 	result, err := lq.Build()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.OrderBy != "ORDER BY id ASC" {
+	if result.OrderBy != "ORDER BY items.id COLLATE pg_c_utf8 ASC" {
 		t.Errorf("expected PK-only ORDER BY, got %q", result.OrderBy)
 	}
 }

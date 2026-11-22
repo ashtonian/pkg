@@ -3,7 +3,27 @@
     "version": 1,
     "resource": "conf_patches",
     "filter": {
-      "fields": {}
+      "fields": {
+        "quoted_tags": {
+          "name": "quoted_tags",
+          "data_type": "int",
+          "wire": "string",
+          "operators": [
+            "eq",
+            "ne",
+            "in",
+            "nin",
+            "null",
+            "not_null",
+            "some",
+            "none"
+          ],
+          "relation": {
+            "kind": "many_to_many",
+            "target": "conf_tags"
+          }
+        }
+      }
     },
     "patch": {
       "paths": {
@@ -81,6 +101,17 @@
           "data_type": "bool",
           "wire": "string"
         },
+        "/members": {
+          "allowed_ops": [
+            "replace",
+            "add",
+            "remove"
+          ],
+          "data_type": "array",
+          "nullable": true,
+          "elem": "string",
+          "relation": true
+        },
         "/mode": {
           "allowed_ops": [
             "replace",
@@ -147,6 +178,19 @@
           "minimum": "0",
           "maximum": "9007199254740993",
           "number_kind": "int64"
+        },
+        "/quoted_tags": {
+          "allowed_ops": [
+            "replace",
+            "add",
+            "remove"
+          ],
+          "data_type": "array",
+          "wire": "string",
+          "nullable": true,
+          "elem": "int",
+          "number_kind": "int64",
+          "relation": true
         },
         "/rate": {
           "allowed_ops": [
@@ -240,7 +284,8 @@
           "elem": "string"
         }
       },
-      "max_operations": 50
+      "max_operations": 50,
+      "max_relation_values": 1000
     }
   },
   "cases": [
@@ -863,6 +908,89 @@
       "name": "err_quoted_float_word",
       "input": {
         "share": "half"
+      },
+      "valid": false,
+      "errorCode": "E2077"
+    },
+    {
+      "name": "relation_list",
+      "input": {
+        "members": [
+          "a",
+          "b"
+        ]
+      },
+      "valid": true
+    },
+    {
+      "name": "err_relation_not_a_list",
+      "input": {
+        "members": "a"
+      },
+      "valid": false,
+      "errorCode": "E2077"
+    },
+    {
+      "name": "relation_null_clears",
+      "input": {
+        "members": null
+      },
+      "valid": true
+    },
+    {
+      "name": "relation_empty_clears",
+      "input": {
+        "members": []
+      },
+      "valid": true
+    },
+    {
+      "name": "err_relation_element_type",
+      "input": {
+        "members": [
+          1
+        ]
+      },
+      "valid": false,
+      "errorCode": "E2077"
+    },
+    {
+      "name": "err_relation_null_element",
+      "input": {
+        "members": [
+          "a",
+          null
+        ]
+      },
+      "valid": false,
+      "errorCode": "E2118"
+    },
+    {
+      "name": "quoted_relation_keys",
+      "input": {
+        "quoted_tags": [
+          "5",
+          "9007199254740993"
+        ]
+      },
+      "valid": true
+    },
+    {
+      "name": "err_quoted_relation_bare_number",
+      "input": {
+        "quoted_tags": [
+          5
+        ]
+      },
+      "valid": false,
+      "errorCode": "E2077"
+    },
+    {
+      "name": "err_quoted_relation_not_a_number",
+      "input": {
+        "quoted_tags": [
+          "five"
+        ]
       },
       "valid": false,
       "errorCode": "E2077"

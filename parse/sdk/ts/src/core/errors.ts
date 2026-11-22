@@ -2,8 +2,10 @@ import { type FieldError, type Problem, problemFieldErrors } from "./problem.js"
 import type { ErrorBody } from "./types.js";
 
 /**
- * A non-2xx response. `code` and `message` come from a parse error body, or
- * from an RFC 9457 problem document; `code` is `""` when the body was neither.
+ * A failed response. For a non-2xx, `code` and `message` come from a parse
+ * error body, or from an RFC 9457 problem document; `code` is `""` when the
+ * body was neither. A 2xx without the JSON body the call reads is the
+ * subclass {@link ResponseError}.
  */
 export class ApiError extends Error {
   readonly status: number;
@@ -23,6 +25,38 @@ export class ApiError extends Error {
     this.body = body;
     this.problem = problem;
     this.errors = problem ? problemFieldErrors(problem) : [];
+  }
+}
+
+/**
+ * A 2xx response without the JSON body the call reads: no body (a 204, an
+ * empty 200), or one that is not JSON (a proxy's HTML page). `code` is `""`.
+ */
+export class ResponseError extends ApiError {
+  /** The URL the response came from. */
+  readonly url: string;
+
+  constructor(status: number, url: string, reason: string) {
+    super(status, { code: "", message: `HTTP ${String(status)} from ${url}: ${reason}` });
+    this.name = "ResponseError";
+    this.url = url;
+  }
+}
+
+/**
+ * A schema document for another resource than the one requested: the server
+ * serves schemas under names other than their registry names, so the
+ * client's cache, keyed by registry name, cannot hold it.
+ */
+export class SchemaResourceError extends Error {
+  readonly requested: string;
+  readonly resource: string;
+
+  constructor(requested: string, resource: string) {
+    super(`requested the schema of ${requested}, got the schema of ${resource}; pass the registry name as resource(path, { schema })`);
+    this.name = "SchemaResourceError";
+    this.requested = requested;
+    this.resource = resource;
   }
 }
 

@@ -26,12 +26,13 @@
  */
 
 // Core (shared types and errors)
-export { ApiError, SchemaValidationError, SchemaValidationErrors, SchemaVersionError } from "./core/index.js";
+export { ApiError, ResponseError, SchemaResourceError, SchemaValidationError, SchemaValidationErrors, SchemaVersionError } from "./core/index.js";
 export type { ErrorBody, FieldType, ListRequestOptions, RequestOptions } from "./core/index.js";
 export type { FieldError, Problem } from "./core/index.js";
 
 // Filter
-export { filter, FilterBuilder, sort, SortBuilder } from "./filter/index.js";
+export { and, filter, FilterBuilder, not, or, sort, SortBuilder } from "./filter/index.js";
+export type { Filterable } from "./filter/index.js";
 export { validateFilter, validateSort } from "./filter/index.js";
 export type {
   ElementCondition,

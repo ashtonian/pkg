@@ -8,6 +8,7 @@ import (
 
 	"github.com/ashtonian/pkg/parse"
 	"github.com/ashtonian/pkg/parse/core"
+	"github.com/ashtonian/pkg/parse/patch"
 	"github.com/stretchr/testify/require"
 )
 
@@ -56,7 +57,7 @@ func TestMergeNullRunsDestinationValidators(t *testing.T) {
 	p, err := parse.NewResource[productionPatchRow]("production_patch_rows")
 	require.NoError(t, err)
 	rejected := errors.New("cannot clear")
-	p.PatchSchema().AllowedPaths["/optional"].Validators = []core.Validator{func(value any) error {
+	pathOf(p.PatchSchema(), "/optional").Validators = []patch.Validator{func(value any) error {
 		if value == nil {
 			return rejected
 		}

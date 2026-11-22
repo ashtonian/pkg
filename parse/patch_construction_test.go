@@ -144,3 +144,15 @@ func TestValidateOperations_IsTheBodysPatch(t *testing.T) {
 	_, err = p.ValidateServerOperations([]patch.RawPatchOp{{Op: "replace", Path: "/rotated", Value: time.Now()}})
 	assert.NoError(t, err)
 }
+
+// A ParsedPatch assembled by hand skipped validation: applying or compiling
+// it is an error, never a panic or a write.
+func TestHandBuiltPatchIsRefused(t *testing.T) {
+	p, err := parse.NewResource[sensor]("sensors")
+	require.NoError(t, err)
+	byHand := &patch.ParsedPatch{Operations: []*patch.PatchOperation{{Op: patch.PatchOpReplace, Path: "/name", Value: "x"}}}
+	_, err = p.ApplyValidatedPatch(byHand, sensor{})
+	assert.ErrorIs(t, err, patch.ErrUnparsed)
+	_, err = p.BuildUpdate(filter.SQLiteDialect{}, byHand, parse.ByID("1"), parse.Scope{})
+	assert.ErrorIs(t, err, patch.ErrUnparsed)
+}

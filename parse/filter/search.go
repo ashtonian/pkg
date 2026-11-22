@@ -11,16 +11,6 @@ import (
 	idialect "github.com/ashtonian/pkg/parse/internal/dialect"
 )
 
-// SearchWeight controls the relative importance of a field in full-text search.
-type SearchWeight string
-
-const (
-	SearchWeightA SearchWeight = "A"
-	SearchWeightB SearchWeight = "B"
-	SearchWeightC SearchWeight = "C"
-	SearchWeightD SearchWeight = "D"
-)
-
 // SearchField describes a single field included in full-text search.
 type SearchField struct {
 	Name    string
@@ -28,7 +18,6 @@ type SearchField struct {
 	// Column is the row column the field searches, set by schema generation
 	// as FieldSchema.Column is; RowColumn falls back to SQLExpr without it.
 	Column string
-	Weight SearchWeight
 }
 
 // RowColumn returns the row column the field searches: Column, or the last
@@ -106,12 +95,7 @@ func generateSearchSchema(g *core.SchemaGenerator, t reflect.Type) (*SearchSchem
 			return nil, fmt.Errorf("field %s: %w", field.GoName, err)
 		}
 
-		weight := SearchWeightB
-		if w := field.Tags.SearchWeight; w != "" {
-			weight = SearchWeight(w)
-		}
-
-		sf := SearchField{Name: fieldName, SQLExpr: sqlExpr, Weight: weight}
+		sf := SearchField{Name: fieldName, SQLExpr: sqlExpr}
 		// As for a filter field, a mapped column that is no identifier
 		// names no row column; parse.NewResource refuses it.
 		if column, ok, err := g.FieldColumn(field); err == nil && ok {
@@ -128,7 +112,11 @@ func generateSearchSchema(g *core.SchemaGenerator, t reflect.Type) (*SearchSchem
 	if param == "" {
 		param = ParamSearch
 	}
-	return &SearchSchema{Fields: fields, Language: defaultSearchLanguage, Param: param}, nil
+	lang := cmp.Or(g.Opts.SearchLanguage, defaultSearchLanguage)
+	if !identifierRe.MatchString(lang) {
+		return nil, fmt.Errorf("search language %q is not a text search configuration name", lang)
+	}
+	return &SearchSchema{Fields: fields, Language: lang, Param: param}, nil
 }
 
 // searchCondition is the generated SQL for full-text search: a WHERE-only
@@ -140,15 +128,16 @@ type searchCondition struct {
 
 // AndSearch ANDs a free-text search onto a WHERE fragment, numbering the
 // search's placeholders after args (themselves after offset earlier
-// placeholders). An empty query, or a schema with no searchable fields,
-// returns the fragment unchanged. Count, list and facet queries fold search
-// through it, so all three describe the same population.
+// placeholders). The fragment is parenthesized, so one whose top level is an
+// OR stays one operand. An empty query, or a schema with no searchable
+// fields, returns the fragment unchanged. Count, list and facet queries fold
+// search through it, so all three describe the same population.
 func AndSearch(schema *SearchSchema, d Dialect, where string, args []any, offset int, query string) (string, []any, error) {
 	sc, err := buildSearchCondition(schema, d, query, offset+len(args))
 	if err != nil || sc == nil {
 		return where, args, err
 	}
-	return "(" + where + " AND " + sc.Where + ")", append(slices.Clone(args), sc.Args...), nil
+	return "((" + where + ") AND " + sc.Where + ")", append(slices.Clone(args), sc.Args...), nil
 }
 
 // buildSearchCondition generates dialect-specific full-text search SQL. It
@@ -192,11 +181,9 @@ func buildFallbackSearch(schema *SearchSchema, dialect Dialect, query string, st
 	var args []any
 	paramIdx := startIdx
 
-	// Escape LIKE metacharacters in the user query:
-	// a search for "50%" must match the literal string, not act as a
-	// wildcard. The ESCAPE clause makes the backslash portable across
-	// Postgres and SQLite.
-	escaped := strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`).Replace(query)
+	// A search for "50%" matches the literal text, not a wildcard. The
+	// ESCAPE clause makes the backslash portable across Postgres and SQLite.
+	escaped := EscapeLike(query)
 	for _, f := range schema.Fields {
 		paramIdx++
 		ph := dialect.Placeholder(paramIdx)

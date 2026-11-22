@@ -60,6 +60,15 @@ type confPatch struct {
 	Live   bool    `json:"live,string"   db:"live"   parse:"patch"`
 	Share  float32 `json:"share,string"  db:"share"  parse:"patch"`
 	Opt    *int64  `json:"opt,string"    db:"opt"    parse:"patch"`
+	// Members is a writable relation: its patch value is the membership's
+	// target keys.
+	Members []string `json:"members" db:"-" parse:"patch" relation:"conf_members,patch_id,member_id"`
+}
+
+// confTag is the target of confPatch's writable relation quoted_tags, a key
+// that travels as a JSON string.
+type confTag struct {
+	ID int64 `json:"id,string" db:"id"`
 }
 
 type patchCase struct {
@@ -156,12 +165,23 @@ func patchInputs() []patchCase {
 		{Name: "err_quoted_null_on_value_field", Input: map[string]any{"serial": nil}},
 		{Name: "quoted_float", Input: map[string]any{"share": "0.5"}},
 		{Name: "err_quoted_float_word", Input: map[string]any{"share": "half"}},
+		{Name: "relation_list", Input: map[string]any{"members": []any{"a", "b"}}},
+		{Name: "err_relation_not_a_list", Input: map[string]any{"members": "a"}},
+		{Name: "relation_null_clears", Input: map[string]any{"members": nil}},
+		{Name: "relation_empty_clears", Input: map[string]any{"members": []any{}}},
+		{Name: "err_relation_element_type", Input: map[string]any{"members": []any{1}}},
+		{Name: "err_relation_null_element", Input: map[string]any{"members": []any{"a", nil}}},
+		{Name: "quoted_relation_keys", Input: map[string]any{"quoted_tags": []any{"5", "9007199254740993"}}},
+		{Name: "err_quoted_relation_bare_number", Input: map[string]any{"quoted_tags": []any{json.Number("5")}}},
+		{Name: "err_quoted_relation_not_a_number", Input: map[string]any{"quoted_tags": []any{"five"}}},
 	}
 }
 
 func buildPatchCorpus(t *testing.T) []byte {
 	t.Helper()
 	res := parse.MustResource[confPatch]("conf_patches")
+	res.MustRelate("quoted_tags", parse.ManyToMany(parse.MustResource[confTag]("conf_tags"),
+		parse.Through("conf_patch_tags", "patch_id", "tag_id"), parse.Writable()))
 	reg := parse.NewSchemaRegistry()
 	parse.RegisterResource(reg, res)
 	out := patchCorpus{Schema: reg.SchemaFor("conf_patches")}

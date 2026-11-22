@@ -191,6 +191,21 @@ func (r *Resource[T]) Relate(name string, rel Relation) error {
 		if rs.TenantColumn != "" && r.tenant == "" && rs.TargetTenant == "" {
 			return fmt.Errorf("parse: %s: relation %q: the pair table's tenant cannot be taken from the owner or the target", r.table, name)
 		}
+		for _, schema := range []*patch.PatchSchema{r.patchSchema, r.serverPatchSchema} {
+			if _, taken := schema.Path(core.FormatPointer(name)); taken {
+				return fmt.Errorf("parse: %s: relation %q names an existing patch path", r.table, name)
+			}
+		}
+	}
+	// The relation's keys are the target's key, in its type and wire form:
+	// the filter shorthands and the membership patch both take them so.
+	keyType, _ := rel.target.columnType(rel.target.PrimaryKeyColumn())
+	keyWire := rel.target.columnWire(rel.target.PrimaryKeyColumn())
+	var membership *patch.PathSchema
+	if rel.writable {
+		if membership, err = patch.RelationPath(rs, reflect.SliceOf(keyType), keyWire); err != nil {
+			return fmt.Errorf("parse: %s: relation %q: %w", r.table, name, err)
+		}
 	}
 	if err := r.checkRelation(name, rs, rel.target, rel.includable || rel.facetable); err != nil {
 		return err
@@ -201,19 +216,16 @@ func (r *Resource[T]) Relate(name string, rel Relation) error {
 	if err := r.tenantNode.relate(t.tenantGraph(), rel.policy); err != nil {
 		return fmt.Errorf("parse: %s: relation %q: %w", r.table, name, err)
 	}
-	keyType, _ := t.columnType(t.PrimaryKeyColumn())
 	key := core.TypeOf(keyType)
 	ops := []filter.FilterOperator{filter.OpEq, filter.OpNe, filter.OpIn, filter.OpNin, filter.OpNull, filter.OpNotNull, filter.OpSome, filter.OpNone}
 	if rel.kind == core.BelongsTo {
 		ops = []filter.FilterOperator{filter.OpEq, filter.OpNe, filter.OpIn, filter.OpNin, filter.OpNull, filter.OpNotNull, filter.OpIs, filter.OpIsNot}
 	}
 	field := &filter.FieldSchema{
-		ExternalName: name,
-		DataType:     key.Type,
-		NumberKind:   key.NumberKind,
-		// The shorthands ($eq, $in, ...) compare the target's key, in its
-		// wire form.
-		Wire:             t.columnWire(t.PrimaryKeyColumn()),
+		ExternalName:     name,
+		DataType:         key.Type,
+		NumberKind:       key.NumberKind,
+		Wire:             keyWire,
 		AllowedOperators: ops,
 		Indexed:          rel.indexed || rel.kind == core.BelongsTo,
 		Includable:       rel.includable,
@@ -228,10 +240,14 @@ func (r *Resource[T]) Relate(name string, rel Relation) error {
 	r.relations[name] = t
 	// The cached dialect views copied the fields before this one.
 	r.readExprs.reset()
-	if rel.writable {
-		path := patch.RelationPath(rs, reflect.SliceOf(keyType))
-		r.patchSchema.AllowedPaths[core.FormatPointer(name)] = path
-		r.serverPatchSchema.AllowedPaths[core.FormatPointer(name)] = path
+	if membership != nil {
+		// The name is an identifier the schemas do not hold (checked above),
+		// so adding its path cannot fail.
+		for _, schema := range []*patch.PatchSchema{r.patchSchema, r.serverPatchSchema} {
+			if err := schema.AddPath(core.FormatPointer(name), membership); err != nil {
+				return fmt.Errorf("parse: %s: relation %q: %w", r.table, name, err)
+			}
+		}
 	}
 	return nil
 }

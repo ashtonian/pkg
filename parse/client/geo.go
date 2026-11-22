@@ -2,6 +2,8 @@ package client
 
 import (
 	"encoding/json"
+	"fmt"
+	"math"
 	"strconv"
 )
 
@@ -47,8 +49,12 @@ func NewGeo(name string) Geo { return Geo{name: name} }
 // Name is the field's name in the grammar.
 func (g Geo) Name() string { return g.name }
 
-// Near matches rows within meters of p.
+// Near matches rows within meters of p. A distance that is not a positive,
+// finite length is ErrOperand: the grammar's distances are positive.
 func (g Geo) Near(p Point, meters float64) Filter {
+	if !(meters > 0) || math.IsInf(meters, 1) {
+		return Filter{err: fmt.Errorf("%w: %s %s: distance %vm is not a positive length", ErrOperand, g.name, opNear, meters)}
+	}
 	return condition(g.name, opNear, struct {
 		Point
 		Distance string `json:"distance"`

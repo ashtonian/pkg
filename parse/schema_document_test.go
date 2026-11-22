@@ -38,6 +38,13 @@ type schemaDocLine struct {
 	Qty int    `json:"qty" parse:"filter" filter_ops:"eq,gt"`
 }
 
+// schemaDocLabel is the target of a writable relation whose key travels as
+// a JSON string, so its membership path's keys do too.
+type schemaDocLabel struct {
+	ID       int64  `json:"id,string" db:"id"`
+	TenantID string `json:"tenant_id" db:"tenant_id"`
+}
+
 type schemaDocPart struct {
 	ID       string `json:"id"        db:"id"        parse:"filter,sort"`
 	TenantID string `json:"tenant_id" db:"tenant_id"`
@@ -53,6 +60,9 @@ func schemaDocument(t *testing.T) *parse.SchemaResponse {
 	require.NoError(t, err)
 	require.NoError(t, entities.Relate("parts", parse.HasMany(parts, "entity_id", parse.Includable(), parse.Facetable(),
 		parse.Describe("Parts", "The entity's parts"))))
+	labels, err := parse.NewResource[schemaDocLabel]("doc_labels", parse.TenantColumn("tenant_id"))
+	require.NoError(t, err)
+	require.NoError(t, entities.Relate("labels", parse.ManyToMany(labels, parse.Through("doc_entity_labels", "entity_id", "label_id"), parse.Writable())))
 	reg := parse.NewSchemaRegistry()
 	parse.RegisterResource(reg, entities)
 	parse.RegisterResource(reg, parts)

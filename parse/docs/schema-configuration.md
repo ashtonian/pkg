@@ -23,7 +23,6 @@ Construct one `parse.Resource[T]` for each resource at startup. Schema generatio
 | `relation` | `"device_tags,device_id,tag_id[,pk[,tenant_col]]"` | filter, patch, facet, include | A virtual relation field: the table holding the pairs, its owner and target columns (see Relations); every part must be an identifier |
 | `relation_name` | `"tag_ids"` | hidden relation fields | Explicit external name when a virtual relation is hidden by the field-name tag (for example `json:"-"`); preserves acronym spellings. Ordinary visible field names are unchanged |
 | `facet` | `"terms:20"`, `"range:0-50,50-100,100+"` | facet | Facet aggregation |
-| `search_weight` | `"A"` … `"D"` | search | Full-text weight |
 | `elements` | `"by:string;priority:int"` | filter | Typed members of each element of a JSON array, filtered together with `$some` / `$none` ([array elements](queries.md#array-elements)); a slice-of-struct document derives them from its element type's members tagged `parse:"filter"` |
 | `paths` | `"color:string:filter+sort+facet;size:int:filter+indexed;dims.w:float;tags:[]string"` | filter, sort, facet | Typed members of a map / `any` document, filterable (with `sort` sortable, with `facet` a terms facet) as `<field>.<member>` ([JSON paths](queries.md#json-paths)); `[]<type>` declares an array of that type, filtered by `$contains` and its elements by `$some` / `$none` ([array elements](queries.md#array-elements)), never sorted, faceted by terms only; struct documents derive theirs from members tagged `parse:"filter"` / `parse:"sort"` / `parse:"facet"` |
 | `storage` | `"jsonb"` (default), `"json"`, `"text"`, `"scalar:decimal"` | filter, sort | How a document column holds its JSON; `scalar:<type>` marks a struct the database holds as that scalar — `string`, `int`, `float`, `decimal`, `bool`, `timestamp` or `uuid` — which filters and sorts as one (no paths) |
@@ -59,12 +58,12 @@ Declare physical storage with `parse.ColumnType(column, core.SQLJSON)` / `core.S
 A bool, integer or float field tagged with encoding/json's `string` option, `json:"id,string"`, reads in responses as a JSON string holding its value: `"9007199254740993"`, not `9007199254740993`. A 64-bit integer then survives a client whose numbers are doubles, as JavaScript's are. Requests give the field in the same form:
 
 - filter operands of `$eq`, `$ne`, `$gt`, `$gte`, `$lt`, `$lte`, `$in` and `$nin` are JSON strings: `{"id":"9007199254740993"}`, `{"id":{"$in":["1","2"]}}`. A flat query parameter's text is that string already (`?id=9007199254740993`). This holds for the primary key and tenant columns even when they are not tagged `parse:"filter"`, and a relation's shorthands (`{"author":"7"}`) compare the target's key in its form;
-- merge-patch members and JSON Patch values are JSON strings: `{"id":"9007199254740993"}`, `{"op":"replace","path":"/id","value":"42"}`;
+- merge-patch members and JSON Patch values are JSON strings: `{"id":"9007199254740993"}`, `{"op":"replace","path":"/id","value":"42"}`. So are the keys of a writable relation whose target's key is quoted, in a merge patch and in `replace`, `add` and `remove` alike: `{"tags":["5","9007199254740993"]}`. A relation declared with the `relation:"…"` tag has no target resource, so its keys take the owner field's JSON form, where encoding/json ignores the option on a slice;
 - the string holds the value's JSON text in JSON's own syntax — stricter than encoding/json's quoted decoding, so no `"+1"`, `"01"`, `" 1"` or `"NaN"` — and true or false for a bool. An integer may be any integral spelling (`"1.0"`, `"1e3"`), as parse reads integers anywhere, where encoding/json refuses one. The number then normalizes as any of the field's numbers do: exactly, range-checked against its Go kind and its `min` / `max` bounds;
 - a bare JSON number is refused with E2073 (filters) or E2077 (patches), naming the expected form, as encoding/json refuses to decode one into the field. A bool field also takes a bare JSON boolean, which is the same value;
 - a JSON Patch `test` compares canonical text, so `"5.0"` tests equal to a stored 5, and its value meets the field's bounds as a replace's does. A `copy` or `move` between a quoted and an unquoted field is refused: the value would not decode into the other.
 
-Code passes Go values: `ParseFilterMap`, `MergePatchMap`, `ServerMergePatchMap` and `ValidateOperations` take the field's Go number (`int64(5)`) as well as its quoted text, while a `json.Number` there is a decoded bare JSON number and is refused. Policy constraints and resolved memberships take Go values too. SQL binds the number and `filter.Evaluate` compares it, so PostgreSQL, SQLite and memory backends select the same rows (`filtertest.RunQuoted`). The schema document marks each such field and patch path `"wire": "string"`; `parse/client` sends them as `client.Quoted[T]` and the TypeScript SDK validates them as strings, checking a patch value's integer kind and bounds exactly.
+Code passes Go values: `ParseFilterMap`, `MergePatchMap`, `ServerMergePatchMap` and `ValidateOperations` take the field's Go number (`int64(5)`) as well as its quoted text, while a `json.Number` there is a decoded bare JSON number and is refused. Policy constraints and resolved memberships take Go values too. SQL binds the number and `filter.Evaluate` compares it, so PostgreSQL, SQLite and memory backends select the same rows (`filtertest.RunQuoted`). The schema document marks each such field and patch path `"wire": "string"`, a relation path's for each key; `parse/client` sends them as `client.Quoted[T]` (a relation's as `client.Relation[client.Quoted[K]]`) and the TypeScript SDK validates them as strings, checking a patch value's integer kind and bounds exactly.
 
 encoding/json ignores the option on a type that marshals itself (`json.Marshaler`, `encoding.TextMarshaler`, on the value or, for the addressable values a page encodes, its pointer), and so does parse. On a string field, which encoding/json quotes a second time, the option changes nothing parse reads. Inside a JSON document a quoted member is stored as text that a number or bool path cannot compare, so a path onto one is refused: one derived from struct tags, one declared in the `paths` or `elements` tag, a sort path, and one `Resource.WithPaths` adds. Drop the option, or declare the member a string. `filter.ResourceSchema.WithPaths`, which has no Go types, cannot tell.
 
@@ -83,7 +82,7 @@ encoding/json ignores the option on a type that marshals itself (`json.Marshaler
 | `WithMaxPatchCopyBytes(n)` | int64 | `1048576` | Bytes a patch's `copy` operations may add during typed apply |
 | `WithCodec(c)` | `Codec` | `StdlibJSON` (numbers decode as `json.Number`, trailing data rejected) | Decodes request bodies and undeclared documents in typed apply; declared JSON storage uses fresh Go JSON decoding. Cursors use Parse's internal bounded MessagePack envelope |
 | `WithClock(fn)` | `func() time.Time` | `time.Now().UTC` | Anchor for relative-time tokens (`now-7d`) |
-| `WithGeneratorOptions(o...)` | `...GeneratorOption` | none | Schema generation options used by typed parsers |
+| `WithGeneratorOptions(o...)` | `...GeneratorOption` | none | Schema generation options a `Resource` generates its schemas with |
 
 `GeneratorOption`s configure a `SchemaGenerator` (`NewSchemaGenerator`, `parse.NewSchemaRegistry`, or `WithGeneratorOptions`):
 
@@ -99,8 +98,16 @@ encoding/json ignores the option on a type that marshals itself (`json.Marshaler
 | `WithSortMaxFields(n)` | int | `3` | Sort fields a request may name |
 | `WithSearchParam(p)` | string | `"search"` | Search parameter a search schema advertises (`filter.ParamSearch`) |
 | `WithForeignTagKeys(keys...)` | `...string` | none | Tag keys another library reads, left alone though one is a character from a key parse reads; calls accumulate |
+| `WithSearchLanguage(lang)` | string | `"english"` | PostgreSQL text search configuration a search schema searches with; a name that is no (schema-qualified) identifier fails schema generation |
 | `GeneratorOptions.DefaultFilterOps` | `map[FieldType][]string` | filter package defaults | Default operators per type; each must apply to the type (`filter.OperatorsFor`) |
 | `GeneratorOptions.DefaultPatchOps` | `map[FieldType][]string` | patch package defaults | Default patch operations per type |
+
+A patch schema carries the two limits a patch is held to beside the parser's. Set them on the schema a resource generated (`Resource.PatchSchema()`, `ServerPatchSchema()`) or one built with `patch.NewPatchSchema`, before it serves requests:
+
+| Field | Type | Default | Description |
+|--------|------|---------|-------------|
+| `PatchSchema.MaxOperations` | int | `patch.DefaultMaxOperations` (`50`) | Operations in one patch, a merge patch's members and merged objects counted (E2066); `0` is unlimited |
+| `PatchSchema.MaxRelationValues` | int | `patch.DefaultMaxRelationValues` (`1000`) | Keys one operation on a relation path names, repeats counted once (E2119, `Details` `count` and `limit`); `0` is unlimited. Served in the schema document as `max_relation_values` |
 
 Table names and columns must be SQL identifiers; `TableName`, `ColumnExpr` and `ColumnName` return an error otherwise, so a bad tag fails at schema generation. `ColumnExpr` leaves the column unchecked when a `ColumnMapper` renders it.
 

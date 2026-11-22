@@ -9,7 +9,8 @@ import (
 )
 
 // ErrSubSecond reports a relative Moment that is not a whole number of
-// seconds, the server's finest relative unit.
+// seconds, the server's finest relative unit. A filter holding one carries
+// ErrOperand wrapping it.
 var ErrSubSecond = errors.New("client: a relative time is a whole number of seconds")
 
 // Moment is a timestamp operand: an absolute time (At), or a time relative to

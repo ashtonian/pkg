@@ -10,6 +10,7 @@ import (
 
 	"github.com/ashtonian/pkg/parse/core"
 	"github.com/ashtonian/pkg/parse/filter"
+	"github.com/ashtonian/pkg/parse/patch"
 )
 
 // Resource is one table's request grammar and identity: its key,
@@ -19,7 +20,21 @@ import (
 // (BuildList) and turns fetched rows into a page (Page). It also parses
 // filters and patches. Build one per type at startup; it is safe for concurrent use.
 type Resource[T any] struct {
-	*typedParser[T]
+	// cfg is shared by every parser, so limits, codec and clock apply
+	// consistently through the resource API; gen generated the schemas.
+	cfg   *core.ParserConfig
+	gen   *core.SchemaGenerator
+	codec core.Codec
+
+	filterSchema *filter.ResourceSchema
+	sortSchema   *filter.SortSchema
+	searchSchema *filter.SearchSchema
+	patchSchema  *patch.PatchSchema
+	// serverPatchSchema admits the server's own writes: patchSchema's paths
+	// and the `parse:"server"` fields (ParseServerMergePatch).
+	serverPatchSchema *patch.PatchSchema
+	// applier applies either patch schema's patches to a T.
+	applier *patch.Applier[T]
 
 	table       string
 	pk          string
@@ -168,18 +183,27 @@ func NewResource[T any](table string, opts ...ResourceOption) (*Resource[T], err
 		}
 		pc.GeneratorOpts = append(pc.GeneratorOpts, core.WithSQLTableName(table), core.WithColumnTypes(types))
 	})
-	p, err := newTypedParser[T](parserOpts...)
+	r := &Resource[T]{
+		table:       table,
+		pk:          cfg.pk,
+		tenant:      cfg.tenant,
+		deleted:     cfg.deleted,
+		pageSize:    cfg.pageSize,
+		maxPageSize: cfg.maxPage,
+		accepted:    slices.Clone(cfg.accepted),
+		relations:   map[string]RelatedResource{},
+	}
+	if err := r.generateSchemas(parserOpts); err != nil {
+		return nil, fmt.Errorf("parse: %s: %w", table, err)
+	}
+	if r.cfg.MaxListBodySize < 0 {
+		return nil, fmt.Errorf("parse: %s: list body limit %d must not be negative", table, r.cfg.MaxListBodySize)
+	}
+	walk, err := r.gen.StructFields(reflect.TypeFor[T]())
 	if err != nil {
 		return nil, fmt.Errorf("parse: %s: %w", table, err)
 	}
-	if p.cfg.MaxListBodySize < 0 {
-		return nil, fmt.Errorf("parse: %s: list body limit %d must not be negative", table, p.cfg.MaxListBodySize)
-	}
-	walk, err := p.gen.StructFields(reflect.TypeFor[T]())
-	if err != nil {
-		return nil, fmt.Errorf("parse: %s: %w", table, err)
-	}
-	order, fieldsByColumn, err := resourceColumns(p.gen, walk)
+	order, fieldsByColumn, err := resourceColumns(r.gen, walk)
 	if err != nil {
 		return nil, fmt.Errorf("parse: %s: %w", table, err)
 	}
@@ -198,29 +222,18 @@ func NewResource[T any](table string, opts ...ResourceOption) (*Resource[T], err
 			return nil, fmt.Errorf("parse: %s: %s column %q is not a column of %s", table, c.option, c.column, reflect.TypeFor[T]())
 		}
 	}
-	p.filterSchema.SystemFields = systemFields(table, cfg, columns, fieldsByColumn)
-	p.filterSchema.PrimaryKey = cfg.pk
+	r.filterSchema.SystemFields = systemFields(table, cfg, columns, fieldsByColumn)
+	r.filterSchema.PrimaryKey = cfg.pk
 	var tenant *tenantColumn
 	if cfg.tenant != "" {
 		if tenant, err = newTenantColumn(table, cfg.tenant, columns[cfg.tenant]); err != nil {
 			return nil, fmt.Errorf("parse: %s: %w", table, err)
 		}
 	}
+	r.tenantNode = newTenantNode(table, tenant)
+	r.tableColumns = columns
+	r.columnFields = fieldsByColumn
 
-	r := &Resource[T]{
-		typedParser:  p,
-		table:        table,
-		pk:           cfg.pk,
-		tenant:       cfg.tenant,
-		deleted:      cfg.deleted,
-		pageSize:     cfg.pageSize,
-		maxPageSize:  cfg.maxPage,
-		tenantNode:   newTenantNode(table, tenant),
-		accepted:     slices.Clone(cfg.accepted),
-		tableColumns: columns,
-		columnFields: fieldsByColumn,
-		relations:    map[string]RelatedResource{},
-	}
 	read, err := readColumns(table, cfg, columns)
 	if err != nil {
 		return nil, err
@@ -228,7 +241,7 @@ func NewResource[T any](table string, opts ...ResourceOption) (*Resource[T], err
 	if r.readExprs, err = newComputedColumns(table, cfg, columns, read); err != nil {
 		return nil, err
 	}
-	if err := r.readExprs.checkDocuments(p.filterSchema, p.sortSchema); err != nil {
+	if err := r.readExprs.checkDocuments(r.filterSchema, r.sortSchema); err != nil {
 		return nil, err
 	}
 	if err := r.checkComputedPatches(); err != nil {
@@ -264,10 +277,10 @@ func NewResource[T any](table string, opts ...ResourceOption) (*Resource[T], err
 		r.sqlTypes[name] = implied
 	}
 
-	if err := r.checkUnreadColumns(p.filterSchema.Fields, sortKeys(p.sortSchema), searchFields(p.searchSchema)); err != nil {
+	if err := r.checkUnreadColumns(r.filterSchema.Fields, sortKeys(r.sortSchema), searchFields(r.searchSchema)); err != nil {
 		return nil, err
 	}
-	for _, f := range p.filterSchema.Fields {
+	for _, f := range r.filterSchema.Fields {
 		if f.Relation != nil && f.RelatedBy == nil {
 			if _, ok := columns[f.Relation.PrimaryKey]; !ok {
 				return nil, fmt.Errorf("parse: %s: relation %q correlates on %q, which is not a column of %s", table, f.ExternalName, f.Relation.PrimaryKey, reflect.TypeFor[T]())
@@ -758,21 +771,8 @@ func (r *Resource[T]) WithPaths(decls ...filter.PathDecl) (*Resource[T], error) 
 	if err := r.checkUnreadColumns(added, addedKeys, nil); err != nil {
 		return nil, err
 	}
-	tp := &typedParser[T]{
-		filterSchema:      fs,
-		patchSchema:       r.patchSchema,
-		serverPatchSchema: r.serverPatchSchema,
-		hiddenPaths:       r.hiddenPaths,
-		sortSchema:        ss,
-		codec:             r.codec,
-		searchSchema:      r.searchSchema,
-		cfg:               r.cfg,
-		fieldNameTag:      r.fieldNameTag,
-		patchFields:       r.patchFields,
-		gen:               r.gen,
-	}
 	view := *r
-	view.typedParser = tp
+	view.filterSchema, view.sortSchema = fs, ss
 	view.readExprs = r.readExprs.withoutViews()
 	return &view, nil
 }

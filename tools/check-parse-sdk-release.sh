@@ -48,7 +48,7 @@ cat > tsconfig.json <<'JSON'
 }
 JSON
 cat > index.ts <<'TS'
-import { filter, sort, SCHEMA_VERSION } from "@ashtonian/parse";
+import { filter, or, sort, SCHEMA_VERSION } from "@ashtonian/parse";
 import { ApiError } from "@ashtonian/parse/core";
 import type { ListResult } from "@ashtonian/parse/filter";
 import { validatePatch } from "@ashtonian/parse/patch";
@@ -56,6 +56,7 @@ import { validatePatch } from "@ashtonian/parse/patch";
 type Product = { id: string; price: number };
 const query = filter<Product>().where("price", { $lt: 20 }).build();
 if (JSON.stringify(query) !== '{"price":{"$lt":20}}') throw new Error("filter wire contract");
+if (JSON.stringify(or<Product>(query, { id: "a" })) !== '{"$or":[{"price":{"$lt":20}},{"id":"a"}]}') throw new Error("or wire contract");
 if (sort<Product>().desc("price").toString() !== "-price") throw new Error("sort wire contract");
 const page: ListResult<Product> = {
   items: [], page_info: { has_next_page: false, has_prev_page: false },
@@ -66,6 +67,9 @@ TS
 node "$sdk/node_modules/typescript/bin/tsc6" -p tsconfig.json --noEmit
 node "$sdk/node_modules/@typescript/native/bin/tsc" -p tsconfig.json
 node dist/index.js
+# The exports' default condition serves require, which loads the ES module
+# on every Node the package's engines admit.
+node -e 'const p = require("@ashtonian/parse"); if (typeof p.or !== "function" || typeof require("@ashtonian/parse/filter").and !== "function") throw new Error("require entry points"); if (require("@ashtonian/parse/package.json").name !== "@ashtonian/parse") throw new Error("package.json export")'
 # Every map resolves within the installed package, including declaration maps.
 node --input-type=module - "$expected_version" "$registry" <<'JS'
 import assert from 'node:assert/strict';

@@ -5,7 +5,7 @@ import type { FieldType } from "../core/types.js";
 import { fromWire } from "../core/wire.js";
 import type { FilterFieldSchema, FilterOperator, FilterSchema, SortSchema } from "./types.js";
 
-// Mirrors the Go filter parser (public-pkg/parse/filter): same structure,
+// Mirrors the Go filter parser (parse/filter): same structure,
 // same E-codes. The conformance corpus (testdata/filter_conformance.json)
 // holds the two to one answer per input. Checks the server bounds by
 // deployment config (depth, cost, sizes) and value formats the client cannot
@@ -31,6 +31,11 @@ function isObject(v: unknown): v is Record<string, unknown> {
   return typeof v === "object" && v !== null && !Array.isArray(v);
 }
 
+function isOperatorObject(v: Record<string, unknown>): boolean {
+  const keys = Object.keys(v);
+  return keys.length > 0 && (keys.some((k) => OPERATOR_KEYS.has(k)) || keys.every((k) => k.startsWith("$")));
+}
+
 /** Validate a filter expression against a FilterSchema. */
 export function validateFilter(
   filter: Record<string, unknown>,
@@ -50,9 +55,10 @@ export function validateFilter(
         `Unknown filter field "${key}". Valid fields: ${Object.keys(schema.fields).join(", ")}`,
       );
     }
-    // An object with operator keys is an operator object; any other value —
+    // An object with an operator key, or whose keys all start with $, is an
+    // operator object, so a misspelt operator is refused; any other value —
     // including a plain object, which is a JSON document — is equality.
-    if (isObject(value) && Object.keys(value).some((k) => OPERATOR_KEYS.has(k))) {
+    if (isObject(value) && isOperatorObject(value)) {
       validateOperators(key, value, field, related);
       continue;
     }

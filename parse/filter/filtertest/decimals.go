@@ -118,5 +118,5 @@ func DecimalSchema() (*filter.ResourceSchema, error) {
 // (DecimalSchema or a copy declaring the backend's storage), on backend,
 // which evaluates against DecimalRecords.
 func RunDecimals(t *testing.T, schema *filter.ResourceSchema, backend Backend) {
-	run(t, "", PathParser(schema), DecimalCases(), backend)
+	run(t, PathParser(schema), DecimalCases(), backend)
 }

@@ -5,7 +5,7 @@
  * @module
  */
 
-import { ApiError, SchemaVersionError } from "./core/errors.js";
+import { ApiError, ResponseError, SchemaResourceError, SchemaValidationError, SchemaVersionError } from "./core/errors.js";
 import { hasProblemMembers, isProblemMediaType, isRecord, PROBLEM_MEDIA_TYPE, type Problem, readProblem } from "./core/problem.js";
 import type { ErrorBody, ListRequestOptions, RequestOptions } from "./core/types.js";
 import type { FacetOptions, FacetResult, FilterSchema, ListOptions, ListResult, SortField } from "./filter/types.js";
@@ -34,19 +34,26 @@ function encodeSort<T>(sort: SortField<T>[] | string): string {
     .join(",");
 }
 
-// Query parameters the server's list handler reads (filter.Param*).
+function hasFilter(f: object | undefined): f is Record<string, unknown> {
+  return f !== undefined && Object.keys(f).length > 0;
+}
+
+// Query parameters the server's list handler reads (filter.Param*). Zero
+// members (an empty sort or name list, page size 0) are left out, so the
+// server applies its defaults, as the Go client does.
 function buildListQuery<T>(opts: ListOptions<T>): string {
   const params = new URLSearchParams();
-  if (opts.filter && Object.keys(opts.filter).length > 0) {
+  if (hasFilter(opts.filter)) {
     params.set("filter", JSON.stringify(opts.filter));
   }
-  if (opts.sort) {
-    params.set("sort", encodeSort(opts.sort));
+  const sort = opts.sort === undefined ? "" : encodeSort(opts.sort);
+  if (sort) {
+    params.set("sort", sort);
   }
   if (opts.cursor) {
     params.set("cursor", opts.cursor);
   }
-  if (opts.pageSize != null) {
+  if (opts.pageSize) {
     params.set("page_size", String(opts.pageSize));
   }
   if (opts.includeTotal) {
@@ -64,24 +71,43 @@ function buildListQuery<T>(opts: ListOptions<T>): string {
   if (opts.facets && opts.facets.length > 0) {
     params.set("facets", opts.facets.join(","));
   }
+  if (opts.fields && opts.fields.length > 0) {
+    params.set("fields", opts.fields.join(","));
+  }
   return query(params);
 }
 
 // The same request as one JSON document, a POST body the server reads with
 // Resource.ParseListBody: the query parameters as members, the filter as a
-// document and the name lists as arrays.
+// document and the name lists as arrays; zero members are left out.
 function buildListBody<T>(opts: ListOptions<T>): Record<string, unknown> {
   const body: Record<string, unknown> = {};
-  if (opts.filter && Object.keys(opts.filter).length > 0) body["filter"] = opts.filter;
-  if (opts.sort) body["sort"] = encodeSort(opts.sort);
+  if (hasFilter(opts.filter)) body["filter"] = opts.filter;
+  const sort = opts.sort === undefined ? "" : encodeSort(opts.sort);
+  if (sort) body["sort"] = sort;
   if (opts.cursor) body["cursor"] = opts.cursor;
-  if (opts.pageSize != null) body["page_size"] = opts.pageSize;
+  if (opts.pageSize) body["page_size"] = opts.pageSize;
   if (opts.includeTotal) body["include_total"] = true;
   if (opts.includeDeleted) body["include_deleted"] = true;
   if (opts.search) body["search"] = opts.search;
   if (opts.include && opts.include.length > 0) body["include"] = [...opts.include];
   if (opts.facets && opts.facets.length > 0) body["facets"] = [...opts.facets];
+  if (opts.fields && opts.fields.length > 0) body["fields"] = [...opts.fields];
   return body;
+}
+
+// trimSlashes is a URL path segment, or several, without the slashes that
+// would double or end it.
+function trimSlashes(s: string): string {
+  return s.replace(/^\/+|\/+$/g, "");
+}
+
+// joinURL joins a base URL and path segments with exactly one slash between
+// each, leaving out empty segments.
+function joinURL(base: string, ...segments: string[]): string {
+  const parts = segments.map(trimSlashes).filter((p) => p !== "");
+  const root = base.replace(/\/+$/, "");
+  return parts.length === 0 ? root : `${root}/${parts.join("/")}`;
 }
 
 function query(params: URLSearchParams): string {
@@ -131,12 +157,24 @@ async function readApiError(res: Response): Promise<ApiError> {
   return new ApiError(res.status, { code: "", message: statusMessage });
 }
 
-async function parseResponse<R>(res: Response): Promise<R> {
+// A 2xx is read as text once, so a body that is empty or not JSON is a
+// ResponseError carrying the status, never a bare SyntaxError.
+async function parseResponse<R>(res: Response, url: string): Promise<R> {
   if (!res.ok) {
     throw await readApiError(res);
   }
-  return (await res.json()) as R;
+  const text = await res.text();
+  if (text.trim() === "") {
+    throw new ResponseError(res.status, url, "the response has no body");
+  }
+  try {
+    return JSON.parse(text) as R;
+  } catch {
+    throw new ResponseError(res.status, url, `the body is not JSON (Content-Type ${res.headers.get("Content-Type") ?? "unset"})`);
+  }
 }
+
+const MAX_TIMEOUT_MS = 2 ** 32 - 1;
 
 // ---------------------------------------------------------------------------
 // Client configuration
@@ -144,19 +182,26 @@ async function parseResponse<R>(res: Response): Promise<R> {
 
 /** Configuration for {@link createClient}. */
 export interface ClientConfig {
-  /** Base URL of the API (no trailing slash). */
+  /** Base URL of the API: origin and prefix, such as
+   *  `"https://api.example.com/api"`. A resource's path is relative to it. */
   baseURL: string;
-  /** Default headers sent with every request (e.g. Authorization). */
+  /** Default headers sent with every request (e.g. Authorization). Names
+   *  are case-insensitive; a request's own headers replace them. */
   headers?: Record<string, string>;
   /** Custom fetch implementation. Defaults to `globalThis.fetch`. */
   fetch?: typeof globalThis.fetch;
-  /** Path prefix for schema discovery endpoints. Defaults to `"api"`. */
-  schemaPath?: string;
+  /** Path below `baseURL` under which the server serves schema documents:
+   *  `{schemaPrefix}/{resource}/schema` and `{schemaPrefix}/schemas`.
+   *  Unset, schemas are beside the collections,
+   *  `{baseURL}/{resource}/schema`, where parse's example server serves
+   *  them. Leading and trailing slashes are ignored. */
+  schemaPrefix?: string;
   /** Validate filters, sorts, and patches against the server schema before sending. */
   validateBeforeSend?: boolean;
-  /** Per-request timeout in milliseconds. Defaults to 30000. The deadline
-   *  is enforced via `AbortSignal.timeout()` and combined with any
-   *  caller-provided signal so whichever fires first wins. */
+  /** Per-request timeout in milliseconds: a positive integer up to
+   *  2^32 - 1. Defaults to 30000. The deadline is enforced with
+   *  `AbortSignal.timeout()` and combined with any caller-provided signal,
+   *  so whichever fires first wins. */
   timeout?: number;
   /** Opts `list` and `listAll` into the POST body transport: the longest
    *  list URL sent as a GET, in characters, past which the same request is
@@ -236,12 +281,24 @@ export interface Resource<T> {
 // Client
 // ---------------------------------------------------------------------------
 
+/** Options for {@link Client.resource}. */
+export interface ResourceOptions {
+  /** The resource's registry name: the server's name for its schema
+   *  document (Go: its table), which relation targets name too. Its schema
+   *  is fetched from `{baseURL}/{schemaPrefix}/{schema}/schema`. Defaults
+   *  to the path's last segment, for a collection served under its
+   *  registry name. */
+  schema?: string;
+}
+
 /** Top-level API client. Use {@link createClient} to create one. */
 export interface Client {
-  /** Create a typed resource handle for a given API path. */
-  resource<T>(path: string): Resource<T>;
+  /** Create a typed resource handle for a collection path below `baseURL`.
+   *  An empty path throws a `RangeError`. */
+  resource<T>(path: string, opts?: ResourceOptions): Resource<T>;
 
-  /** Fetch schemas for all registered resources. Populates the schema cache. */
+  /** Fetch schemas for all registered resources. Populates the schema
+   *  cache, keyed by each document's registry name. */
   schemas(reqOpts?: RequestOptions): Promise<ResourceSchema[]>;
 }
 
@@ -261,47 +318,62 @@ export interface Client {
  */
 export function createClient(cfg: ClientConfig): Client {
   const fetchFn = cfg.fetch ?? globalThis.fetch;
-  const schemaPath = cfg.schemaPath ?? "api";
+  const schemaPrefix = trimSlashes(cfg.schemaPrefix ?? "");
   const validate = cfg.validateBeforeSend ?? false;
   const timeoutMs = cfg.timeout ?? 30_000;
   const maxURLLength = cfg.maxURLLength;
+  // AbortSignal.timeout throws on each request for a delay outside this
+  // range, and fires at once for 0: refuse both here, once.
+  if (!(Number.isSafeInteger(timeoutMs) && timeoutMs > 0 && timeoutMs <= MAX_TIMEOUT_MS)) {
+    throw new RangeError(`timeout must be a positive integer of milliseconds up to ${String(MAX_TIMEOUT_MS)}, got ${String(timeoutMs)}`);
+  }
   // NaN or Infinity would silently keep every list a GET, and zero or less
   // silently send every list as a POST.
   if (maxURLLength !== undefined && !(Number.isSafeInteger(maxURLLength) && maxURLLength > 0)) {
     throw new RangeError(`maxURLLength must be a positive integer, got ${String(maxURLLength)}`);
   }
 
-  function mergeHeaders(extra?: Record<string, string>): Record<string, string> {
-    return { "Content-Type": "application/json", Accept: `application/json, ${PROBLEM_MEDIA_TYPE}`, ...cfg.headers, ...extra };
+  // Headers' set is case-insensitive, so a caller's content-type replaces
+  // the default rather than joining it. Content-Type goes only with a body:
+  // on a bodiless GET it would make a cross-origin list a preflighted one.
+  function requestHeaders(hasBody: boolean, extra?: Record<string, string>): Headers {
+    const headers = new Headers({ Accept: `application/json, ${PROBLEM_MEDIA_TYPE}` });
+    if (hasBody) headers.set("Content-Type", "application/json");
+    for (const layer of [cfg.headers, extra]) {
+      if (!layer) continue;
+      for (const [name, value] of Object.entries(layer)) headers.set(name, value);
+    }
+    return headers;
   }
 
-  /** Combine the caller's signal (if any) with the per-request timeout
-   *  signal so cancellation from either side aborts the fetch. */
+  // The caller's signal, if any, and the per-request timeout: whichever
+  // fires first aborts the fetch.
   function combineSignals(callerSignal?: AbortSignal): AbortSignal {
     const timeoutSignal = AbortSignal.timeout(timeoutMs);
     if (!callerSignal) return timeoutSignal;
-    // `AbortSignal.any` is well-supported on all of our targets; if a
-    // consumer needs older runtimes they can disable the timeout by
-    // passing their own signal and `cfg.timeout = 0`-equivalent (a no-op
-    // timeout would be ergonomically odd, so we don't expose that toggle
-    // — they should use a runtime that supports the API).
     return AbortSignal.any([callerSignal, timeoutSignal]);
   }
 
-  async function request<R>(method: string, path: string, body?: unknown, reqOpts?: RequestOptions): Promise<R> {
-    const url = `${cfg.baseURL}/${path}`;
+  async function request<R>(method: string, url: string, body?: unknown, reqOpts?: RequestOptions): Promise<R> {
+    const hasBody = body != null;
     const init: RequestInit = {
       method,
-      headers: mergeHeaders(reqOpts?.headers),
+      headers: requestHeaders(hasBody, reqOpts?.headers),
       signal: combineSignals(reqOpts?.signal),
     };
-    if (body != null) {
+    if (hasBody) {
       init.body = JSON.stringify(body);
     }
     const res = await fetchFn(url, init);
-    return parseResponse<R>(res);
+    return parseResponse<R>(res, url);
   }
 
+  function schemaURL(name: string): string {
+    return joinURL(cfg.baseURL, schemaPrefix, encodeURIComponent(name), "schema");
+  }
+
+  // Keyed by registry name: a handle's, a relation target's and a listed
+  // document's `resource` are the same name.
   const schemaCache = new Map<string, ResourceSchema>();
 
   // One schema request shared by every concurrent caller for a resource.
@@ -317,40 +389,41 @@ export function createClient(cfg: ClientConfig): Client {
   // under the client's timeout, never one caller's signal: a caller's abort
   // ends only its own wait, and the request is cancelled once no caller is
   // left waiting.
-  async function fetchSchema(resourcePath: string, reqOpts?: RequestOptions): Promise<ResourceSchema> {
-    const cached = schemaCache.get(resourcePath);
+  async function fetchSchema(name: string, reqOpts?: RequestOptions): Promise<ResourceSchema> {
+    const cached = schemaCache.get(name);
     if (cached) return cached;
     const signal = reqOpts?.signal;
     signal?.throwIfAborted();
-    const shared = schemaInflight.get(resourcePath) ?? startSchemaFetch(resourcePath, reqOpts?.headers);
-    return waitForSchema(resourcePath, shared, signal);
+    const shared = schemaInflight.get(name) ?? startSchemaFetch(name, reqOpts?.headers);
+    return waitForSchema(name, shared, signal);
   }
 
   // The first caller's headers go with the shared request; the schema cache
   // is the client's, not any one caller's.
-  function startSchemaFetch(resourcePath: string, headers: Record<string, string> | undefined): SharedSchemaFetch {
+  function startSchemaFetch(name: string, headers: Record<string, string> | undefined): SharedSchemaFetch {
     const cancel = new AbortController();
     const opts: RequestOptions = { signal: cancel.signal };
     if (headers) opts.headers = headers;
-    const fetched = request<ResourceSchema>("GET", `${schemaPath}/${resourcePath}/schema`, undefined, opts);
+    const fetched = request<ResourceSchema>("GET", schemaURL(name), undefined, opts);
     const shared: SharedSchemaFetch = {
       schema: fetched.then((doc) => {
         const schema = checkVersion(doc);
-        schemaCache.set(resourcePath, schema);
+        if (schema.resource !== name) throw new SchemaResourceError(name, schema.resource);
+        schemaCache.set(name, schema);
         return schema;
       }),
       cancel,
       waiters: 0,
     };
     const forget = () => {
-      if (schemaInflight.get(resourcePath) === shared) schemaInflight.delete(resourcePath);
+      if (schemaInflight.get(name) === shared) schemaInflight.delete(name);
     };
     shared.schema.then(forget, forget);
-    schemaInflight.set(resourcePath, shared);
+    schemaInflight.set(name, shared);
     return shared;
   }
 
-  async function waitForSchema(resourcePath: string, shared: SharedSchemaFetch, signal: AbortSignal | undefined): Promise<ResourceSchema> {
+  async function waitForSchema(name: string, shared: SharedSchemaFetch, signal: AbortSignal | undefined): Promise<ResourceSchema> {
     shared.waiters++;
     // A caller without a signal never leaves, so the request is never cancelled under it.
     if (!signal) return shared.schema;
@@ -371,7 +444,7 @@ export function createClient(cfg: ClientConfig): Client {
       shared.waiters--;
       if (shared.waiters === 0) {
         // A later call starts a fresh request rather than joining a cancelled one.
-        if (schemaInflight.get(resourcePath) === shared) schemaInflight.delete(resourcePath);
+        if (schemaInflight.get(name) === shared) schemaInflight.delete(name);
         shared.cancel.abort(signal.reason);
       }
       signal.throwIfAborted();
@@ -396,43 +469,63 @@ export function createClient(cfg: ClientConfig): Client {
     return lookup;
   }
 
+  // validateRequest checks a list's or a facet request's members against the
+  // schema, related schemas included, as the server would.
+  async function validateRequest<T>(v: SchemaValidator, opts: ListOptions<T>, reqOpts?: RequestOptions): Promise<void> {
+    if (hasFilter(opts.filter)) {
+      v.validateFilter(opts.filter, await relatedSchemas(v, opts.filter, reqOpts));
+    }
+    const sort = opts.sort === undefined ? "" : encodeSort(opts.sort);
+    if (sort) {
+      v.validateSort(sort);
+    }
+    if (opts.include) {
+      v.validateInclude(opts.include);
+    }
+    if (opts.facets) {
+      v.validateFacets(opts.facets);
+    }
+    if (opts.search?.trim() && !v.isSearchEnabled()) {
+      throw new SchemaValidationError("search", "E2067", "this resource has no search fields");
+    }
+  }
+
   return {
-    resource<T>(path: string): Resource<T> {
+    resource<T>(path: string, resourceOpts: ResourceOptions = {}): Resource<T> {
+      const collection = trimSlashes(path);
+      if (collection === "") {
+        throw new RangeError(`resource path must name a collection, got ${JSON.stringify(path)}`);
+      }
+      // A registry name is one segment (Go: a table), so a nested path's
+      // last segment is its default.
+      const name = resourceOpts.schema ?? collection.slice(collection.lastIndexOf("/") + 1);
+      if (name === "" || name.includes("/")) {
+        throw new RangeError(`resource schema name must be one non-empty segment, got ${JSON.stringify(name)}`);
+      }
+      const collectionURL = joinURL(cfg.baseURL, collection);
       let validatorInstance: SchemaValidator | undefined;
 
       return {
         async schema(reqOpts?: RequestOptions): Promise<ResourceSchema> {
-          return fetchSchema(path, reqOpts);
+          return fetchSchema(name, reqOpts);
         },
 
         async validator(reqOpts?: RequestOptions): Promise<SchemaValidator> {
           if (validatorInstance) return validatorInstance;
-          const schema = await fetchSchema(path, reqOpts);
+          const schema = await fetchSchema(name, reqOpts);
           validatorInstance = new SchemaValidator(schema);
           return validatorInstance;
         },
 
         async list(opts: ListOptions<T> = {}, reqOpts?: ListRequestOptions): Promise<ListResult<T>> {
           if (validate) {
-            const v = await this.validator(reqOpts);
-            if (opts.filter && Object.keys(opts.filter).length > 0) {
-              v.validateFilter(opts.filter, await relatedSchemas(v, opts.filter, reqOpts));
-            }
-            if (opts.sort) {
-              v.validateSort(typeof opts.sort === "string" ? opts.sort : encodeSort(opts.sort));
-            }
-            if (opts.include) {
-              v.validateInclude(opts.include);
-            }
-            if (opts.facets) {
-              v.validateFacets(opts.facets);
-            }
+            await validateRequest(await this.validator(reqOpts), opts, reqOpts);
           }
-          const target = `${path}${buildListQuery(opts)}`;
-          const tooLong = maxURLLength !== undefined && `${cfg.baseURL}/${target}`.length > maxURLLength;
+          const target = `${collectionURL}${buildListQuery(opts)}`;
+          const tooLong = maxURLLength !== undefined && target.length > maxURLLength;
           const method = reqOpts?.method ?? (tooLong ? "POST" : "GET");
           if (method === "POST") {
-            return request<ListResult<T>>("POST", path, buildListBody(opts), reqOpts);
+            return request<ListResult<T>>("POST", collectionURL, buildListBody(opts), reqOpts);
           }
           return request<ListResult<T>>("GET", target, undefined, reqOpts);
         },
@@ -449,30 +542,38 @@ export function createClient(cfg: ClientConfig): Client {
         },
 
         async patch(id: string, input: PatchInput<T>, reqOpts?: RequestOptions): Promise<PatchResult<T>> {
+          if (id === "") {
+            throw new RangeError("patch needs an id: PATCH without one targets the collection");
+          }
           if (validate) {
             const v = await this.validator(reqOpts);
             v.validatePatch(input);
           }
-          return request<PatchResult<T>>("PATCH", `${path}/${encodeURIComponent(id)}`, input, reqOpts);
+          return request<PatchResult<T>>("PATCH", `${collectionURL}/${encodeURIComponent(id)}`, input, reqOpts);
         },
 
         async patchMany(ids: string[], input: PatchInput<T>, reqOpts?: RequestOptions): Promise<PatchResult<T>> {
+          if (ids.length === 0) {
+            throw new RangeError("patchMany needs at least one id: PATCH without one targets no row");
+          }
           if (validate) {
             const v = await this.validator(reqOpts);
             v.validatePatch(input);
           }
           const params = new URLSearchParams();
           for (const id of ids) params.append("id[]", id);
-          return request<PatchResult<T>>("PATCH", `${path}${query(params)}`, input, reqOpts);
+          return request<PatchResult<T>>("PATCH", `${collectionURL}${query(params)}`, input, reqOpts);
         },
 
         async facets(fields: (keyof T & string)[], opts: FacetOptions<T> = {}, reqOpts?: RequestOptions): Promise<FacetResult> {
-          if (validate && opts.filter && Object.keys(opts.filter).length > 0) {
-            const v = await this.validator(reqOpts);
-            v.validateFilter(opts.filter);
+          if (validate) {
+            const listOpts: ListOptions<T> = { facets: fields };
+            if (opts.filter) listOpts.filter = opts.filter;
+            if (opts.search !== undefined) listOpts.search = opts.search;
+            await validateRequest(await this.validator(reqOpts), listOpts, reqOpts);
           }
           const params = new URLSearchParams({ facets: fields.join(",") });
-          if (opts.filter && Object.keys(opts.filter).length > 0) {
+          if (hasFilter(opts.filter)) {
             params.set("filter", JSON.stringify(opts.filter));
           }
           if (opts.search) {
@@ -481,14 +582,14 @@ export function createClient(cfg: ClientConfig): Client {
           if (opts.includeDeleted) {
             params.set("include_deleted", "true");
           }
-          const res = await request<{ facets?: FacetResult }>("OPTIONS", `${path}${query(params)}`, undefined, reqOpts);
+          const res = await request<{ facets?: FacetResult }>("OPTIONS", `${collectionURL}${query(params)}`, undefined, reqOpts);
           return res.facets ?? {};
         },
       };
     },
 
     async schemas(reqOpts?: RequestOptions): Promise<ResourceSchema[]> {
-      const resp = await request<{ schemas: ResourceSchema[] }>("GET", `${schemaPath}/schemas`, undefined, reqOpts);
+      const resp = await request<{ schemas: ResourceSchema[] }>("GET", joinURL(cfg.baseURL, schemaPrefix, "schemas"), undefined, reqOpts);
       for (const s of resp.schemas) {
         schemaCache.set(s.resource, checkVersion(s));
       }
