@@ -104,7 +104,9 @@ the older run would have; manual acceptance runs finish.
 The `nightly` workflow runs `ci.yml` on main's current commit once a day, and on
 `gh workflow run nightly.yml -R ashtonian/pkg`: every suite and release check at full scope,
 every parse unit test under the race detector, every test rerun (`-count=1`) rather than
-replayed from the cache, and the benchmarks. It records no acceptance receipt. Its failure is a regression that scoping or the targeted race run let through, or a
+replayed from the cache, and the benchmarks. A scheduled run skips when an earlier nightly
+already passed every job on the same commit; a dispatched one always runs. It records no
+acceptance receipt. Its failure is a regression that scoping or the targeted race run let through, or a
 new toolchain release breaking a floating Go or Node.js version: reproduce it with the failing
 step's make target (`make test-parse-race-all` for a parse race report) and fix it on a branch.
 GitHub turns off a public repository's schedules after 60 days without activity; turn the

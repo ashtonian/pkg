@@ -14,8 +14,32 @@ permissions:
   actions: read
 
 jobs:
+  # A scheduled run on a commit an earlier nightly already passed checks
+  # nothing new; a dispatched run always runs.
+  unchanged:
+    name: main unchanged since a passing nightly
+    if: github.actor_id == '4212452' && github.event_name == 'schedule'
+    runs-on: arc-pkg
+    timeout-minutes: 5
+    outputs:
+      passed: ${{ steps.history.outputs.passed }}
+    steps:
+      - id: history
+        uses: ashtonian/go-ci-actions/already-passed@8e752cd5a7669bf98f3861cadc24a0441757cae6 # v1.7.0 with go-ci-actions#18 and #19
+        with:
+          # ci.yml's jobs as this workflow names them; a name covers its matrix legs.
+          jobs: |
+            ci / CI change scope
+            ci / test
+            ci / parse integration
+            ci / parse TypeScript SDK and corpora
+            ci / parse benchmark artifacts
+            ci / httpx and gitx
+            ci / module archives, examples and release tooling
+            ci / lint
   ci:
-    if: github.actor_id == '4212452'
+    needs: unchanged
+    if: ${{ !cancelled() && github.actor_id == '4212452' && needs.unchanged.outputs.passed != 'true' }}
     uses: ./.github/workflows/ci.yml
     with:
       nightly: true

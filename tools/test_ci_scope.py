@@ -14,6 +14,7 @@ import ci_scope
 
 ROOT = Path(__file__).resolve().parents[1]
 WORKFLOW = (ROOT / ".github/workflows/ci.yml").read_text()
+NIGHTLY = (ROOT / ".github/workflows/nightly.yml").read_text()
 MAKEFILE = (ROOT / "Makefile").read_text()
 
 
@@ -366,6 +367,15 @@ class Wiring(unittest.TestCase):
         self.assertEqual(darwin, ["test-native-unit", "test-native-integration", "test-config"])
         self.assertIn("./parse/filter", job("parse-benchmarks"))
         self.assertEqual(ci_scope.BENCHMARKED, "parse/filter")
+
+    def test_the_nightly_skips_only_when_every_job_passed(self):
+        names = NIGHTLY.split("jobs: |\n", 1)[1].split("\n  ci:\n", 1)[0].split("\n")
+        listed = {line.strip() for line in names if line.strip()}
+        # Every job the nightly runs, by its name without the matrix variant.
+        ran = {"ci / " + re.search(r"^    name: (.+)$", job(name), re.M)[1].split(" (")[0]
+               for name in ("scope",) + ci_scope.JOBS}
+        self.assertEqual(listed, ran)
+        self.assertIn("github.event_name == 'schedule'", NIGHTLY)
 
     def test_listing_covers_every_tag_set_ci_compiles(self):
         tags = set(re.findall(r"-tags=(\w+(?:,\w+)*)", MAKEFILE + WORKFLOW))
