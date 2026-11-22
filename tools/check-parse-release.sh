@@ -18,8 +18,9 @@ IFS=$'\t' read -r module version source < "$scratch/module.tsv"
 export GOWORK=off GOTOOLCHAIN=local GOFLAGS='-mod=mod -modcacherw -trimpath'
 export GOMODCACHE="$scratch/modcache" GOPROXY="file://$scratch/proxy,https://proxy.golang.org"
 export GOPRIVATE= GONOPROXY= GONOSUMDB="$module"
-# Real PostgreSQL/PostGIS parity is a separate, explicitly provisioned matrix.
-export PARSE_POSTGRES_DSN= PARSE_POSTGIS_DSN= PARSE_INTEG_PG=
+# Real PostgreSQL/PostGIS parity is a separate, explicitly provisioned matrix;
+# here every PostgreSQL test skips.
+export PARSE_POSTGRES_DSN= PARSE_POSTGIS_DSN= PARSE_REQUIRE_PG=
 mkdir "$scratch/consumer"
 cd "$scratch/consumer"
 go mod init example.com/parse-consumer

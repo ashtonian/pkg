@@ -199,6 +199,8 @@ jobs:
         env:
           PARSE_POSTGRES_DSN: postgres://parse:parse@localhost:5432/parse?sslmode=disable
           PARSE_POSTGIS_DSN: postgres://parse:parse@localhost:5432/parse?sslmode=disable
+          # A missing DSN fails the fixture's tests here instead of skipping them.
+          PARSE_REQUIRE_PG: '1'
         run: make test-parse-integration
   parse-sdk:
     needs: scope

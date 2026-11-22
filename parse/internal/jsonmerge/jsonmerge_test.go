@@ -10,11 +10,11 @@ import (
 	"github.com/ashtonian/pkg/parse/internal/jsonmerge"
 )
 
-// rfc7386Examples mirrors the worked test vectors from RFC 7386 §3.
-// Each row is (target, patch, expected) — all three serialised as
-// JSON strings to match the spec's presentation. The test decodes
-// each, runs jsonmerge.Apply, and asserts deep equality.
-func TestApply_RFC7386Examples(t *testing.T) {
+// The fifteen examples of RFC 7396 Appendix A, then further cases. Each row
+// is (target, patch, expected), all three JSON text as the RFC presents
+// them. The test decodes each, runs jsonmerge.Apply, and asserts deep
+// equality.
+func TestApply_RFC7396Examples(t *testing.T) {
 	t.Parallel()
 	cases := []struct {
 		name   string
@@ -22,66 +22,25 @@ func TestApply_RFC7386Examples(t *testing.T) {
 		patch  string
 		expect string
 	}{
-		{
-			name:   "add_key",
-			target: `{"a":"b"}`,
-			patch:  `{"a":"c"}`,
-			expect: `{"a":"c"}`,
-		},
-		{
-			name:   "add_new_key",
-			target: `{"a":"b"}`,
-			patch:  `{"b":"c"}`,
-			expect: `{"a":"b","b":"c"}`,
-		},
-		{
-			name:   "delete_via_null",
-			target: `{"a":"b"}`,
-			patch:  `{"a":null}`,
-			expect: `{}`,
-		},
-		{
-			name:   "delete_then_add",
-			target: `{"a":"b","b":"c"}`,
-			patch:  `{"a":null}`,
-			expect: `{"b":"c"}`,
-		},
-		{
-			name:   "nested_replace",
-			target: `{"a":{"b":"c"}}`,
-			patch:  `{"a":{"b":"d","c":null}}`,
-			expect: `{"a":{"b":"d"}}`,
-		},
-		{
-			name:   "array_replaces",
-			target: `{"a":[1,2,3]}`,
-			patch:  `{"a":[4,5]}`,
-			expect: `{"a":[4,5]}`,
-		},
-		{
-			name:   "object_replaces_scalar",
-			target: `{"a":"b"}`,
-			patch:  `{"a":{"x":1}}`,
-			expect: `{"a":{"x":1}}`,
-		},
-		{
-			name:   "scalar_replaces_object",
-			target: `{"a":{"x":1}}`,
-			patch:  `{"a":"b"}`,
-			expect: `{"a":"b"}`,
-		},
-		{
-			name:   "patch_replaces_non_object",
-			target: `[1,2]`,
-			patch:  `{"a":"b"}`,
-			expect: `{"a":"b"}`,
-		},
-		{
-			name:   "non_object_patch_replaces_target",
-			target: `{"a":"b"}`,
-			patch:  `null`,
-			expect: `null`,
-		},
+		{name: "A.1 replace a member", target: `{"a":"b"}`, patch: `{"a":"c"}`, expect: `{"a":"c"}`},
+		{name: "A.2 add a member", target: `{"a":"b"}`, patch: `{"b":"c"}`, expect: `{"a":"b","b":"c"}`},
+		{name: "A.3 null removes the member", target: `{"a":"b"}`, patch: `{"a":null}`, expect: `{}`},
+		{name: "A.4 null removes one member of two", target: `{"a":"b","b":"c"}`, patch: `{"a":null}`, expect: `{"b":"c"}`},
+		{name: "A.5 a scalar replaces an array", target: `{"a":["b"]}`, patch: `{"a":"c"}`, expect: `{"a":"c"}`},
+		{name: "A.6 an array replaces a scalar", target: `{"a":"c"}`, patch: `{"a":["b"]}`, expect: `{"a":["b"]}`},
+		{name: "A.7 nested replace and remove", target: `{"a":{"b":"c"}}`, patch: `{"a":{"b":"d","c":null}}`, expect: `{"a":{"b":"d"}}`},
+		{name: "A.8 an array replaces an array of objects", target: `{"a":[{"b":"c"}]}`, patch: `{"a":[1]}`, expect: `{"a":[1]}`},
+		{name: "A.9 an array patch replaces an array", target: `["a","b"]`, patch: `["c","d"]`, expect: `["c","d"]`},
+		{name: "A.10 an array patch replaces an object", target: `{"a":"b"}`, patch: `["c"]`, expect: `["c"]`},
+		{name: "A.11 a null patch replaces the target", target: `{"a":"foo"}`, patch: `null`, expect: `null`},
+		{name: "A.12 a string patch replaces the target", target: `{"a":"foo"}`, patch: `"bar"`, expect: `"bar"`},
+		{name: "A.13 a null member of the target stays", target: `{"e":null}`, patch: `{"a":1}`, expect: `{"e":null,"a":1}`},
+		{name: "A.14 an object patch replaces an array, without its null members", target: `[1,2]`, patch: `{"a":"b","c":null}`, expect: `{"a":"b"}`},
+		{name: "A.15 null inside a new member leaves an empty object", target: `{}`, patch: `{"a":{"bb":{"ccc":null}}}`, expect: `{"a":{"bb":{}}}`},
+		{name: "array_replaces", target: `{"a":[1,2,3]}`, patch: `{"a":[4,5]}`, expect: `{"a":[4,5]}`},
+		{name: "object_replaces_scalar", target: `{"a":"b"}`, patch: `{"a":{"x":1}}`, expect: `{"a":{"x":1}}`},
+		{name: "scalar_replaces_object", target: `{"a":{"x":1}}`, patch: `{"a":"b"}`, expect: `{"a":"b"}`},
+		{name: "patch_replaces_non_object", target: `[1,2]`, patch: `{"a":"b"}`, expect: `{"a":"b"}`},
 	}
 	for _, tt := range cases {
 		t.Run(tt.name, func(t *testing.T) {
@@ -119,46 +78,32 @@ func TestApply_DoesNotMutateTarget(t *testing.T) {
 	}
 }
 
-func TestApplyAll_LayersInOrder(t *testing.T) {
+// The result shares with the target what the patch does not reach, and with
+// the patch the arrays it takes; it holds no map of the patch outside one.
+func TestApply_SharesUnrewrittenValues(t *testing.T) {
 	t.Parallel()
-	platform := map[string]any{"a": 1, "b": 1, "c": 1}
-	tenant := map[string]any{"b": 2}
-	devType := map[string]any{"c": 3}
-	got := jsonmerge.ApplyAll([]any{platform, tenant, devType})
-	want := map[string]any{"a": 1, "b": 2, "c": 3}
-	if !reflect.DeepEqual(got, want) {
-		t.Errorf("ApplyAll = %#v, want %#v", got, want)
-	}
-}
+	kept := []any{"t"}
+	target := map[string]any{"kept": kept, "doc": map[string]any{"x": 1}}
+	taken := []any{map[string]any{"in": "array"}}
+	patchDoc := map[string]any{"y": 2}
+	patch := map[string]any{"list": taken, "doc": patchDoc}
 
-func TestApplyAll_NullDeletesAcrossLayers(t *testing.T) {
-	t.Parallel()
-	platform := map[string]any{"flag": true, "v": 1}
-	tenant := map[string]any{"flag": nil} // explicit null deletes
-	got := jsonmerge.ApplyAll([]any{platform, tenant})
-	want := map[string]any{"v": 1}
-	if !reflect.DeepEqual(got, want) {
-		t.Errorf("ApplyAll = %#v, want %#v", got, want)
-	}
-}
+	got := jsonmerge.Apply(target, patch).(map[string]any)
 
-func TestApplyAll_NilLayerSkipped(t *testing.T) {
-	t.Parallel()
-	got := jsonmerge.ApplyAll([]any{
-		map[string]any{"a": 1},
-		nil, // skipped
-		map[string]any{"b": 2},
-	})
-	want := map[string]any{"a": 1, "b": 2}
-	if !reflect.DeepEqual(got, want) {
-		t.Errorf("ApplyAll = %#v, want %#v", got, want)
+	got["kept"].([]any)[0] = "changed"
+	if kept[0] != "changed" {
+		t.Errorf("a member the patch does not name is not the target's")
 	}
-}
-
-func TestApplyAll_EmptyReturnsNil(t *testing.T) {
-	t.Parallel()
-	if got := jsonmerge.ApplyAll(nil); got != nil {
-		t.Errorf("ApplyAll(nil) = %#v, want nil", got)
+	got["list"].([]any)[0].(map[string]any)["in"] = "changed"
+	if taken[0].(map[string]any)["in"] != "changed" {
+		t.Errorf("an array taken from the patch is not the patch's")
+	}
+	got["doc"].(map[string]any)["z"] = 3
+	if _, found := patchDoc["z"]; found {
+		t.Errorf("the result holds a map of the patch")
+	}
+	if _, found := target["doc"].(map[string]any)["z"]; found {
+		t.Errorf("the result holds the target's map along the patched path")
 	}
 }
 

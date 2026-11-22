@@ -124,6 +124,40 @@ func TestCoveredByMatchesPostGIS(t *testing.T) {
 	}
 }
 
+// The same, in the shape a production plan has: one polygon bound once for
+// every row of the statement, where PostGIS may decide the points through
+// its cached, prepared polygon rather than one built per row.
+func TestCoveredByMatchesPostGISConstantPolygon(t *testing.T) {
+	db := dbtest.PostGIS(t)
+	rng := rand.New(rand.NewPCG(276, 10))
+	for i := range 40 {
+		ring := randomRing(rng, 3+rng.IntN(8), i%2 == 0)
+		var points []geo.Point
+		for j, v := range ring {
+			w := ring[(j+1)%len(ring)]
+			points = append(points, v, geo.Point{Lat: (v.Lat + w.Lat) / 2, Lon: (v.Lon + w.Lon) / 2})
+		}
+		for range 200 {
+			points = append(points, geo.Point{Lat: rng.Float64()*24 - 12, Lon: rng.Float64()*24 - 12})
+		}
+		coveredBy := column[bool](t, db, `
+			SELECT ST_CoveredBy(ST_SetSRID(ST_MakePoint(lon, lat), 4326), ST_SetSRID(ST_GeomFromWKB($3::bytea), 4326))
+			FROM unnest($1::float8[], $2::float8[]) WITH ORDINALITY AS t(lat, lon, i)
+			ORDER BY i`, lats(points), lons(points), geo.AppendPolygonWKB(nil, ring))
+		intersects := column[bool](t, db, `
+			SELECT ST_Intersects(ST_SetSRID(ST_MakePoint(lon, lat), 4326), ST_SetSRID(ST_GeomFromWKB($3::bytea), 4326))
+			FROM unnest($1::float8[], $2::float8[]) WITH ORDINALITY AS t(lat, lon, i)
+			ORDER BY i`, lats(points), lons(points), geo.AppendPolygonWKB(nil, ring))
+		require.Len(t, coveredBy, len(points))
+		require.Len(t, intersects, len(points))
+		for k, p := range points {
+			got := geo.CoveredBy(p, ring)
+			assert.Equal(t, coveredBy[k], got, "ST_CoveredBy(%v, %v)", p, ring)
+			assert.Equal(t, intersects[k], got, "ST_Intersects(%v, %v)", p, ring)
+		}
+	}
+}
+
 // randomRing is a simple polygon of n vertices around the origin, in angle
 // order, on a grid of eighths when grid is set; others are concave.
 func randomRing(rng *rand.Rand, n int, grid bool) []geo.Point {

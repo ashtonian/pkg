@@ -18,6 +18,10 @@ const maxEnvelopeDepth = 32
 // header bytes could otherwise request millions of elements; after this check
 // every allocation is bounded by the input size. Exactly one value must fill
 // data.
+//
+// It also refuses a map that names a key twice, at any depth. msgpack decodes
+// a repeated member into the value the first occurrence left behind, and when
+// that value is a non-nil interface the decoder panics.
 func checkMsgpackBounds(data []byte) error {
 	w := boundsWalker{data: data}
 	if err := w.value(0); err != nil {
@@ -64,21 +68,80 @@ func (w *boundsWalker) uint(size int) (uint64, error) {
 	}
 }
 
-// container checks that n children, each at least minBytes long, can fit,
-// then walks them.
-func (w *boundsWalker) container(n uint64, minBytes uint64, children int, depth int) error {
+// array checks that n elements, each at least one byte, can fit, then walks
+// them.
+func (w *boundsWalker) array(n uint64, depth int) error {
+	if err := w.fits(n, 1, depth); err != nil {
+		return err
+	}
+	for range n {
+		if err := w.value(depth + 1); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// mapEntries checks that n entries, each at least two bytes, can fit, then
+// walks them, refusing a key an earlier entry of the same map named.
+func (w *boundsWalker) mapEntries(n uint64, depth int) error {
+	if err := w.fits(n, 2, depth); err != nil {
+		return err
+	}
+	seen := make(map[string]struct{}, n)
+	for range n {
+		start := w.pos
+		if err := w.value(depth + 1); err != nil {
+			return err
+		}
+		key := keyIdentity(w.data[start:w.pos])
+		if _, dup := seen[key]; dup {
+			return fmt.Errorf("a map names the key %q twice", key[1:])
+		}
+		seen[key] = struct{}{}
+		if err := w.value(depth + 1); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (w *boundsWalker) fits(n uint64, minBytes uint64, depth int) error {
 	if depth >= maxEnvelopeDepth {
 		return fmt.Errorf("nesting exceeds %d levels", maxEnvelopeDepth)
 	}
 	if n > uint64(w.remaining())/minBytes {
 		return errTruncated
 	}
-	for range n * uint64(children) {
-		if err := w.value(depth + 1); err != nil {
-			return err
-		}
-	}
 	return nil
+}
+
+// keyIdentity names the member an encoded map key selects. The decoder reads
+// a struct member's name from any string or binary encoding, and nil as the
+// empty name, so those compare by content: fixstr "v", str8 "v" and bin8 "v"
+// are one member. Any other key compares by its encoded bytes.
+func keyIdentity(enc []byte) string {
+	c := enc[0]
+	switch {
+	case c == 0xc0:
+		return "t"
+	case c >= 0xa0 && c <= 0xbf:
+		return "t" + string(enc[1:])
+	}
+	switch c {
+	case 0xc4, 0xd9:
+		return "t" + string(enc[2:])
+	case 0xc5, 0xda:
+		return "t" + string(enc[3:])
+	case 0xc6, 0xdb:
+		return "t" + string(enc[5:])
+	}
+	return "r" + string(enc)
+}
+
+// isMap reports whether c opens a MessagePack map.
+func isMap(c byte) bool {
+	return (c >= 0x80 && c <= 0x8f) || c == 0xde || c == 0xdf
 }
 
 func (w *boundsWalker) value(depth int) error {
@@ -91,9 +154,9 @@ func (w *boundsWalker) value(depth int) error {
 	case c <= 0x7f, c >= 0xe0: // positive / negative fixint
 		return nil
 	case c <= 0x8f: // fixmap
-		return w.container(uint64(c&0x0f), 2, 2, depth)
+		return w.mapEntries(uint64(c&0x0f), depth)
 	case c <= 0x9f: // fixarray
-		return w.container(uint64(c&0x0f), 1, 1, depth)
+		return w.array(uint64(c&0x0f), depth)
 	case c <= 0xbf: // fixstr
 		return w.skip(uint64(c & 0x1f))
 	}
@@ -139,25 +202,25 @@ func (w *boundsWalker) value(depth int) error {
 		if err != nil {
 			return err
 		}
-		return w.container(n, 1, 1, depth)
+		return w.array(n, depth)
 	case 0xdd: // array32
 		n, err := w.uint(4)
 		if err != nil {
 			return err
 		}
-		return w.container(n, 1, 1, depth)
+		return w.array(n, depth)
 	case 0xde: // map16
 		n, err := w.uint(2)
 		if err != nil {
 			return err
 		}
-		return w.container(n, 2, 2, depth)
+		return w.mapEntries(n, depth)
 	case 0xdf: // map32
 		n, err := w.uint(4)
 		if err != nil {
 			return err
 		}
-		return w.container(n, 2, 2, depth)
+		return w.mapEntries(n, depth)
 	}
 	return fmt.Errorf("invalid MessagePack type byte 0x%02x", c)
 }
