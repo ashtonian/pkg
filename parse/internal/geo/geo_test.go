@@ -146,7 +146,7 @@ func TestCoordinate(t *testing.T) {
 	}{
 		{json.Number("10"), 10, true},
 		{json.Number("1.0E1"), 10, true},
-		{json.Number("-0"), math.Copysign(0, -1), true},
+		{"-0", math.Copysign(0, -1), true},
 		{json.Number("1e400"), 0, false},
 		{json.Number("1e-400"), 0, false},
 		{"10", 10, true},
