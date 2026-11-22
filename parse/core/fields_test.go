@@ -4,6 +4,7 @@ package core_test
 
 import (
 	"encoding/json"
+	"fmt"
 	"reflect"
 	"slices"
 	"testing"
@@ -309,4 +310,55 @@ func TestStructFields_ReadBooleanTagsStrictly(t *testing.T) {
 	}
 	_, err := parse.NewResource[misspelt]("misspelts")
 	assert.ErrorContains(t, err, `field Slug: indexed: "yes" is neither true nor false`)
+}
+
+// registryTypes builds n distinct struct types, as a large API declares
+// resource, document and element types.
+func registryTypes(n int) []reflect.Type {
+	types := make([]reflect.Type, n)
+	for i := range types {
+		types[i] = reflect.StructOf([]reflect.StructField{
+			{Name: "ID", Type: reflect.TypeFor[string](), Tag: `json:"id" db:"id"`},
+			{Name: fmt.Sprintf("F%d", i), Type: reflect.TypeFor[int](), Tag: reflect.StructTag(fmt.Sprintf(`json:"f%d" parse:"filter"`, i))},
+		})
+	}
+	return types
+}
+
+// Every walked type stays cached however many there are: a second walk of
+// any type returns the walk of the first, whose fields maps are keyed by.
+func TestStructFields_CacheEveryType(t *testing.T) {
+	types := registryTypes(1100)
+	walks := make([]*core.StructFields, len(types))
+	for i, typ := range types {
+		walk, err := core.StructFieldsOf(typ, "json", "registry")
+		require.NoError(t, err)
+		walks[i] = walk
+	}
+	for i, typ := range types {
+		walk, err := core.StructFieldsOf(typ, "json", "registry")
+		require.NoError(t, err)
+		require.Same(t, walks[i], walk, "type %d", i)
+	}
+}
+
+// BenchmarkStructFields walks the first and the last of more struct types
+// than a small cache holds.
+func BenchmarkStructFields(b *testing.B) {
+	types := registryTypes(1100)
+	for _, typ := range types {
+		if _, err := core.StructFieldsOf(typ, "json", "bench"); err != nil {
+			b.Fatal(err)
+		}
+	}
+	for name, typ := range map[string]reflect.Type{"first type": types[0], "type 1100": types[len(types)-1]} {
+		b.Run(name, func(b *testing.B) {
+			b.ReportAllocs()
+			for b.Loop() {
+				if _, err := core.StructFieldsOf(typ, "json", "bench"); err != nil {
+					b.Fatal(err)
+				}
+			}
+		})
+	}
 }

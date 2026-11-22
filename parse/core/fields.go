@@ -3,6 +3,7 @@ package core
 import (
 	"errors"
 	"fmt"
+	"math"
 	"reflect"
 	"slices"
 	"strings"
@@ -202,9 +203,10 @@ func parseCapabilities(tag string) (Capabilities, error) {
 	return c, nil
 }
 
-// fieldsCacheCapacity is how many struct types each field-name tag keeps
-// walked: every resource, document and element type of a large API.
-const fieldsCacheCapacity = 1024
+// fieldsCacheCapacity keeps every walked type: struct types are finite and
+// never unloaded, and a walk must be the same *StructFields every time,
+// since views key maps by its *Field.
+const fieldsCacheCapacity = math.MaxInt
 
 // hiddenPrefix starts the walk-internal name of a field the field-name tag
 // hides. No field-name tag name can hold a NUL (it is a control
