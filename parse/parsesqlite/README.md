@@ -23,28 +23,28 @@ flowchart LR
     sqlite -->|"per row: column value or JSON literal"| fns["parse_decimal / parse_decimal_key / parse_decimal_float32<br/>(this package)"]
     fns --> dec["internal/decimals<br/>Value · Float32Value · Key"]
     dec --> core["core.DecimalText"]
-    geoplan["filter.SQLiteDialect<br/>parse_geo_distance(loc -> '$.lat', loc -> '$.lon', ?1, ?2) <= ?3"] --> sqlite
-    sqlite -->|"per row: the point's members as JSON text"| geofns["parse_geo_distance / parse_geo_in_box / parse_geo_covered_by<br/>(this package)"]
-    geofns --> geo["internal/geo<br/>Distance · Box.Covers · CoveredBy"]
+    geoplan["filter.SQLiteDialect<br/>parse_geo_near(json(loc), ?1, ?2, ?3, ?4, ?5)"] --> sqlite
+    sqlite -->|"per row: the point's JSON text and member names"| geofns["parse_geo_near / parse_geo_in_box / parse_geo_covered_by<br/>(this package)"]
+    geofns --> geo["internal/geo<br/>ReadPointJSON · Near · Box.Covers · CoveredBy"]
 ```
 
 **Entry points**
-- `Register()`: registers the three functions with the driver, once per process.
+- `Register()`: registers the six functions with the driver, once per process.
 - `Decimal(v)`, `DecimalKey(v)`, `DecimalFloat32(v)`: the functions over one SQLite value, for registering with another driver.
-- `GeoDistance(lat, lon, lat2, lon2)`, `GeoInBox(lat, lon, south, north, west, east)`, `GeoCoveredBy(lat, lon, polygon)`: the geo functions over a point's members and the bound operand, for registering with another driver.
+- `GeoNear(point, latKey, lonKey, lat, lon, meters)`, `GeoInBox(point, latKey, lonKey, south, north, west, east)`, `GeoCoveredBy(point, latKey, lonKey, polygon)`: the geo functions over a stored point's JSON text, its member names and the bound operand, for registering with another driver.
 
 **Exit points**
 - Function results: TEXT, a BLOB, a REAL distance, 1 or 0, or NULL. Nothing is written or logged.
 
 **Failure modes**
-- A connection opened before `Register`, or a database whose driver never registered the functions: every statement on a decimal field, and every facet of a number, fails with SQLite's `no such function: parse_decimal` (or `parse_decimal_key`, `parse_decimal_float32`), and every geo filter with `no such function: parse_geo_distance` (or `parse_geo_in_box`, `parse_geo_covered_by`). parse never falls back to a rounded comparison or key, or to a spherical distance.
+- A connection opened before `Register`, or a database whose driver never registered the functions: every statement on a decimal field, and every facet of a number, fails with SQLite's `no such function: parse_decimal` (or `parse_decimal_key`, `parse_decimal_float32`), and every geo filter with `no such function: parse_geo_near` (or `parse_geo_in_box`, `parse_geo_covered_by`). parse never falls back to a rounded comparison or key, or to a spherical distance.
 - `Register` failing: `parsesqlite: register parse_decimal: a function named "parse_decimal" is already registered` means another package registered that name with modernc.org/sqlite first. `Register` returns its first result on every call.
 - A value that holds no decimal (a JSON boolean, a string with an exponent, text that is no number, a BLOB): NULL, so a filter treats it as missing, as `filter.PathValue` does.
-- A point member that holds no coordinate (missing, JSON `null`, a boolean, text that is no number): the point is NULL, so the geo filter is unknown and `$not` does not select the row. PostgreSQL refuses the query on a boolean or non-numeric text member instead; check the stored documents when the two disagree.
-- `parse_geo_distance: want a number for each coordinate`, `parse_geo_in_box: want a number for each side of the box`, `parse_geo_covered_by: want the polygon as a WKB blob` or `geo: want a little-endian one-ring polygon WKB`: hand-written SQL called a geo function with an operand `filter.SQLiteDialect` never binds. The dialect binds numbers and the polygon `geo.AppendPolygonWKB` writes.
+- A point member that holds no coordinate (missing, JSON `null`, a boolean, an object or array, text float8 rejects such as `1_0`, a value beyond float8's range): the point is NULL, so the geo filter is unknown and `$not` does not select the row. PostgreSQL refuses the query on any of these but a missing or null member; check the stored documents when the two disagree. A member holding `NaN` or `Infinity` is a coordinate on both, and its point is near, in and on nothing.
+- `parse_geo_near: geo: decode point: …`: the stored point is not JSON (`json()` in the plan reports malformed JSON first). `want the point's member names as text`, `want the point as JSON text`, `want a number for operand n`, `parse_geo_covered_by: want the polygon as a WKB blob` or `geo: want a little-endian one-ring polygon WKB`: hand-written SQL called a geo function with arguments `filter.SQLiteDialect` never binds. The dialect passes `json(column)`, the member names as text, numbers, and the polygon `geo.AppendPolygonWKB` writes.
 
 **Dependencies**
-- *Imports*: `parse/internal/decimals`, `parse/internal/geo`, `parse/core`, `modernc.org/sqlite`
+- *Imports*: `parse/internal/decimals`, `parse/internal/geo`, `modernc.org/sqlite`
 - *Imported by*: applications running parse plans on SQLite, `parse/internal/dbtest`, the example server
 - *Package boundary*: `filter` does not import this package, so the compiler stays driver-free; both read the function names from `internal/decimals` and `internal/geo`
 
@@ -72,19 +72,17 @@ The key is a sign byte (negative, zero, positive), then for a nonzero value `0.d
 
 | SQL | Returns | Used for |
 |---|---|---|
-| `parse_geo_distance(lat, lon, lat2, lon2)` | the geodesic distance in meters on the WGS 84 ellipsoid from the stored point to `(lat2, lon2)`, as PostGIS measures geography (Karney's algorithm, to nanometres); a stored latitude beyond a pole is coerced as geography coerces it; NULL when the point is | `$near`: `parse_geo_distance(…) <= meters` |
-| `parse_geo_in_box(lat, lon, south, north, west, east)` | 1 when the stored point lies in the box or on its edge, else 0; NULL when the point is | `$within` and `$intersects` a box |
-| `parse_geo_covered_by(lat, lon, polygon)` | 1 when the stored point lies in the polygon or on its boundary (the ring's winding number, as PostGIS's point-in-polygon test), else 0; NULL when the point is. `polygon` is a little-endian one-ring polygon WKB in lon/lat order | `$within` and `$intersects` a polygon |
+| `parse_geo_near(point, latKey, lonKey, lat, lon, meters)` | 1 when the stored point lies within `meters` of `(lat, lon)` by the geodesic distance on the WGS 84 ellipsoid, as PostGIS's `ST_DWithin` measures geography (Karney's algorithm, to nanometres), else 0; a stored latitude beyond a pole is coerced as geography coerces it; NULL when the point is | `$near` |
+| `parse_geo_in_box(point, latKey, lonKey, south, north, west, east)` | 1 when the stored point lies in the box or on its edge, else 0; NULL when the point is | `$within` and `$intersects` a box |
+| `parse_geo_covered_by(point, latKey, lonKey, polygon)` | 1 when the stored point lies in the polygon or on its boundary (the ring's winding number, as PostGIS's point-in-polygon test), else 0; NULL when the point is. `polygon` is a little-endian one-ring polygon WKB in lon/lat order | `$within` and `$intersects` a polygon |
 
-`lat` and `lon` are the point's members as `->` returns them, read as PostgreSQL reads `(doc->>'lat')::float8`:
+`point` is the column's JSON text (`json(column)` in the plan); it is NULL when the column is NULL, is not an object, or lacks a coordinate under `latKey` or `lonKey`. A duplicated member reads its last value, as jsonb keeps it. Each member is read as PostgreSQL reads `(doc->>'lat')::float8`:
 
 | Member | Coordinate |
 |---|---|
 | a JSON number (`10`, `1e1`) | its value |
-| a JSON string holding a number (`"10"`, `" 10 "`, `"1e1"`) | its value |
-| missing, JSON `null`, a boolean, an object, an array, text that is no number, a value that is not finite | none: the point is NULL |
-
-An INTEGER or REAL argument is its value, so `json_extract` results work too.
+| a JSON string float8 accepts: decimal (`"10"`, `" 10 "`, `"1e1"`, `".5"`), hexadecimal (`"0x10"`, `"0x1.8"`, `"0x1p3"`), `"NaN"`, `"Infinity"`, `"-inf"` | its value; a point holding NaN or an infinity is near, in and on nothing |
+| missing, JSON `null`, a boolean, an object, an array, a string float8 rejects (`"1_0"`, `"1e"`, `"ten"`), a value beyond float8's range (`1e400`, `"1e-400"`) | none: the point is NULL |
 
 ## Configuration
 
@@ -104,18 +102,18 @@ PARSE_INTEG_PG=1 go test -tags=integration -run 'MatchesPostGIS|TestGeoMatrix_Po
 
 ## Operations
 
-- **Cost**: one Go call per row for each decimal expression a statement evaluates, and for each number a facet keys. A key is the value's significant digits plus three bytes. A geo filter is one call per row: a distance iterates a handful of times (more near the antipode), a polygon test is linear in its points (at most 100).
+- **Cost**: one Go call per row for each decimal expression a statement evaluates, and for each number a facet keys. A key is the value's significant digits plus three bytes. A geo filter is one call per row, which decodes the point's JSON text: a distance then iterates a handful of times (more near the antipode), a polygon test is linear in its points (at most 100).
 - **Indexes**: no index serves a geo filter on SQLite; it reads every row its other predicates leave. SQLite indexes an expression of deterministic functions. `CREATE INDEX … ON t (parse_decimal_key(amount))` serves decimal ranges, sorts and keyset seeks; `(parse_decimal(amount))` serves equality and sets. An index on them needs the functions on every connection that writes the table, the `sqlite3` shell included, since its maintenance calls them.
 - **Health and metrics**: none; a missing registration surfaces as the statement error above.
 
 ## Security
 
-The functions read only their argument, allocate at most the value's digits (bounded by `core.MaxDecimalDigits`), and have no side effects. A string member longer than 1000 characters is NULL before it is parsed. A polygon blob must hold exactly the points its header counts, and its points must be finite, before it is read.
+The functions read only their argument, allocate at most the value's digits (bounded by `core.MaxDecimalDigits`), and have no side effects. A decimal string member longer than 1000 characters is NULL before it is parsed. A polygon blob must hold exactly the points its header counts, and its points must be finite, before it is read.
 
 ## Code Map
 
 | File | Responsibility |
 |---|---|
-| [`parsesqlite.go`](parsesqlite.go) | `Register`, `Decimal`, `DecimalKey`, `DecimalFloat32`, `GeoDistance`, `GeoInBox`, `GeoCoveredBy` and the function names |
+| [`parsesqlite.go`](parsesqlite.go) | `Register`, `Decimal`, `DecimalKey`, `DecimalFloat32`, `GeoNear`, `GeoInBox`, `GeoCoveredBy` and the function names |
 | [`../internal/decimals`](../internal/decimals/decimals.go) | `Value` (a SQLite value as a decimal), `Float32Value` (as a float32), `Member` (a document member as a decimal), `Key`, the function names |
-| [`../internal/geo`](../internal/geo/geo.go) | `Distance` (WGS 84 geodesic, ported from GeographicLib), `Geodetic`, `Box`, `CoveredBy`, `Coordinate` / `CoordinateJSON` (a stored point's member), the polygon WKB, the function names |
+| [`../internal/geo`](../internal/geo/geo.go) | `Distance` (WGS 84 geodesic, ported from GeographicLib), `Geodetic`, `Box`, `CoveredBy`, `Near`, `ReadPoint` / `ReadPointJSON` and `Coordinate` (a stored point, its members read as float8), the polygon WKB, the function names |

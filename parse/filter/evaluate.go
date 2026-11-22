@@ -237,7 +237,7 @@ func evaluate(n *FilterNode, row Row) (Truth, error) {
 	if n.Op == OpSome || n.Op == OpNone {
 		return evaluateElements(n, row)
 	}
-	if isGeoOp(n.Op) {
+	if isGeoOp(n.Op) && f.DataType == core.FieldTypeGeo {
 		return evaluateGeo(n, row)
 	}
 	v, present, err := row.Value(f)

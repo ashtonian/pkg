@@ -7,65 +7,33 @@ package geo
 
 import (
 	"encoding/binary"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"math"
-	"strconv"
-	"strings"
 )
 
-// The SQLite functions' names. Each reads a stored point as its lat and lon
-// members as SQLite's -> returns them (JSON text, or NULL when missing),
-// through CoordinateJSON, and is NULL when the point is.
+// The SQLite functions' names. Each takes the stored point as its JSON
+// text and its member names, reads it with ReadPointJSON, and is NULL when
+// the point is, else 1 or 0.
 const (
-	// SQLiteDistanceFunc(lat, lon, lat2, lon2) is Distance in meters from
-	// the stored point, made Geodetic, to (lat2, lon2).
-	SQLiteDistanceFunc = "parse_geo_distance"
-	// SQLiteInBoxFunc(lat, lon, south, north, west, east) is Box.Covers: 1
-	// or 0.
+	// SQLiteNearFunc(point, latKey, lonKey, lat, lon, meters) is Near.
+	SQLiteNearFunc = "parse_geo_near"
+	// SQLiteInBoxFunc(point, latKey, lonKey, south, north, west, east) is
+	// Box.Covers.
 	SQLiteInBoxFunc = "parse_geo_in_box"
-	// SQLiteCoveredByFunc(lat, lon, polygon) is CoveredBy, the polygon a
-	// WKB blob as AppendPolygonWKB writes it: 1 or 0.
+	// SQLiteCoveredByFunc(point, latKey, lonKey, polygon) is CoveredBy, the
+	// polygon a WKB blob as AppendPolygonWKB writes it.
 	SQLiteCoveredByFunc = "parse_geo_covered_by"
 )
 
 // Point is a WGS 84 coordinate in degrees.
 type Point struct{ Lat, Lon float64 }
 
-// Coordinate reads a stored point's member, decoded from JSON, as
-// PostgreSQL reads (doc->>'lat')::float8: a JSON number, or a JSON string
-// holding one with spaces around it allowed. ok is false for a missing or
-// null member, a coordinate that is not finite, and any other value, where
-// PostgreSQL refuses the query instead.
-func Coordinate(member any) (float64, bool) {
-	switch m := member.(type) {
-	case json.Number:
-		return number(string(m))
-	case float64:
-		return m, !math.IsNaN(m) && !math.IsInf(m, 0)
-	case string:
-		return number(strings.Trim(m, " \t\n\r\v\f"))
-	}
-	return 0, false
-}
-
-// CoordinateJSON is Coordinate of a member held as JSON text, as SQLite's
-// -> returns it.
-func CoordinateJSON(text string) (float64, bool) {
-	if !strings.HasPrefix(text, `"`) {
-		return number(text)
-	}
-	var s string
-	if json.Unmarshal([]byte(text), &s) != nil {
-		return 0, false
-	}
-	return Coordinate(s)
-}
-
-func number(s string) (float64, bool) {
-	f, err := strconv.ParseFloat(s, 64)
-	return f, err == nil && !math.IsNaN(f) && !math.IsInf(f, 0)
+// Near reports whether the stored point p, made Geodetic, lies within
+// meters of center: ST_DWithin on geography. A point with a coordinate that
+// is not finite is near nothing.
+func Near(p, center Point, meters float64) bool {
+	return Distance(Geodetic(p), center) <= meters
 }
 
 // Geodetic is p as PostGIS coerces a point cast to geography: a latitude

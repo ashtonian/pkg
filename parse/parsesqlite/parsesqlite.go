@@ -18,20 +18,20 @@
 // decimal in plain notation, as filter.PathValue reads a decimal member.
 // Anything else is NULL, so a filter treats it as missing.
 //
-//   - parse_geo_distance(lat, lon, lat2, lon2) is the WGS 84 geodesic
-//     distance in meters from the stored point to (lat2, lon2), as PostGIS
-//     measures geography, or NULL: $near.
-//   - parse_geo_in_box(lat, lon, south, north, west, east) is 1 when the
-//     stored point lies in the box or on its edge, else 0, or NULL: $within
-//     and $intersects a box.
-//   - parse_geo_covered_by(lat, lon, polygon) is 1 when the stored point
-//     lies in the polygon (a WKB blob) or on its boundary, else 0, or NULL:
-//     $within and $intersects a polygon.
+//   - parse_geo_near(point, latKey, lonKey, lat, lon, meters) is 1 when the
+//     stored point lies within meters of (lat, lon) by the WGS 84 geodesic
+//     distance, as PostGIS measures geography, else 0: $near.
+//   - parse_geo_in_box(point, latKey, lonKey, south, north, west, east) is
+//     1 when the stored point lies in the box or on its edge, else 0:
+//     $within and $intersects a box.
+//   - parse_geo_covered_by(point, latKey, lonKey, polygon) is 1 when the
+//     stored point lies in the polygon (a WKB blob) or on its boundary, else
+//     0: $within and $intersects a polygon.
 //
-// lat and lon are the point's members as SQLite's -> returns them: a JSON
-// number, or a JSON string holding one, as PostgreSQL casts ->> text to
-// float8. A member that is missing, null or anything else makes the point
-// NULL.
+// point is the stored point's JSON text; its latKey and lonKey members are
+// read as PostgreSQL reads (doc->>'lat')::float8, a duplicated member by its
+// last value. Each function is NULL when the point is: NULL, not an object,
+// or a member missing, null or no number.
 //
 // Call Register before the database opens its first connection. A statement
 // on a connection without the functions fails with SQLite's "no such
@@ -54,13 +54,13 @@ const (
 	DecimalFunc        = decimals.SQLiteValueFunc
 	DecimalKeyFunc     = decimals.SQLiteKeyFunc
 	DecimalFloat32Func = decimals.SQLiteFloat32Func
-	GeoDistanceFunc    = geo.SQLiteDistanceFunc
+	GeoNearFunc        = geo.SQLiteNearFunc
 	GeoInBoxFunc       = geo.SQLiteInBoxFunc
 	GeoCoveredByFunc   = geo.SQLiteCoveredByFunc
 )
 
 // Register registers parse_decimal, parse_decimal_key,
-// parse_decimal_float32, parse_geo_distance, parse_geo_in_box and
+// parse_decimal_float32, parse_geo_near, parse_geo_in_box and
 // parse_geo_covered_by with modernc.org/sqlite, for every connection the
 // "sqlite" driver opens afterwards; connections already open lack them. It
 // registers once per process: later calls, from any goroutine or package,
@@ -76,9 +76,11 @@ var register = sync.OnceValue(func() error {
 		{DecimalFunc, 1, func(a []driver.Value) (driver.Value, error) { return Decimal(a[0]) }},
 		{DecimalKeyFunc, 1, func(a []driver.Value) (driver.Value, error) { return DecimalKey(a[0]) }},
 		{DecimalFloat32Func, 1, func(a []driver.Value) (driver.Value, error) { return DecimalFloat32(a[0]) }},
-		{GeoDistanceFunc, 4, func(a []driver.Value) (driver.Value, error) { return GeoDistance(a[0], a[1], a[2], a[3]) }},
-		{GeoInBoxFunc, 6, func(a []driver.Value) (driver.Value, error) { return GeoInBox(a[0], a[1], a[2], a[3], a[4], a[5]) }},
-		{GeoCoveredByFunc, 3, func(a []driver.Value) (driver.Value, error) { return GeoCoveredBy(a[0], a[1], a[2]) }},
+		{GeoNearFunc, 6, func(a []driver.Value) (driver.Value, error) { return GeoNear(a[0], a[1], a[2], a[3], a[4], a[5]) }},
+		{GeoInBoxFunc, 7, func(a []driver.Value) (driver.Value, error) {
+			return GeoInBox(a[0], a[1], a[2], a[3], a[4], a[5], a[6])
+		}},
+		{GeoCoveredByFunc, 4, func(a []driver.Value) (driver.Value, error) { return GeoCoveredBy(a[0], a[1], a[2], a[3]) }},
 	} {
 		err := sqlite.RegisterDeterministicScalarFunction(fn.name, fn.nArgs, func(_ *sqlite.FunctionContext, args []driver.Value) (driver.Value, error) {
 			return fn.call(args)
@@ -127,55 +129,48 @@ func DecimalFloat32(v driver.Value) (driver.Value, error) {
 	return text, nil
 }
 
-// GeoDistance is parse_geo_distance: the WGS 84 geodesic distance in meters
-// from the stored point (lat, lon) to the point (lat2, lon2), or nil (SQL
-// NULL) when the stored point is NULL. A stored latitude beyond a pole is
+// GeoNear is parse_geo_near: 1 when the stored point lies within meters of
+// (lat, lon) by the WGS 84 geodesic distance, 0 when it does not, or nil
+// (SQL NULL) when the point is NULL. A stored latitude beyond a pole is
 // coerced as PostGIS coerces geography. It is exported for a SQLite driver
-// other than modernc.org/sqlite to register under GeoDistanceFunc.
-func GeoDistance(lat, lon, lat2, lon2 driver.Value) (driver.Value, error) {
-	p, ok := storedPoint(lat, lon)
-	if !ok {
-		return nil, nil
+// other than modernc.org/sqlite to register under GeoNearFunc.
+func GeoNear(point, latKey, lonKey, lat, lon, meters driver.Value) (driver.Value, error) {
+	p, ok, err := storedPoint(GeoNearFunc, point, latKey, lonKey)
+	if !ok || err != nil {
+		return nil, err
 	}
-	to, err := point(GeoDistanceFunc, lat2, lon2)
+	operands, err := numbers(GeoNearFunc, lat, lon, meters)
 	if err != nil {
 		return nil, err
 	}
-	return geo.Distance(geo.Geodetic(p), to), nil
+	return truth(geo.Near(p, geo.Point{Lat: operands[0], Lon: operands[1]}, operands[2])), nil
 }
 
-// GeoInBox is parse_geo_in_box: 1 when the stored point (lat, lon) lies in
-// the box or on its edge, 0 when it does not, or nil (SQL NULL) when the
-// point is NULL. It is exported for a SQLite driver other than
-// modernc.org/sqlite to register under GeoInBoxFunc.
-func GeoInBox(lat, lon, south, north, west, east driver.Value) (driver.Value, error) {
-	p, ok := storedPoint(lat, lon)
-	if !ok {
-		return nil, nil
+// GeoInBox is parse_geo_in_box: 1 when the stored point lies in the box or
+// on its edge, 0 when it does not, or nil (SQL NULL) when the point is
+// NULL. It is exported for a SQLite driver other than modernc.org/sqlite to
+// register under GeoInBoxFunc.
+func GeoInBox(point, latKey, lonKey, south, north, west, east driver.Value) (driver.Value, error) {
+	p, ok, err := storedPoint(GeoInBoxFunc, point, latKey, lonKey)
+	if !ok || err != nil {
+		return nil, err
 	}
-	var box geo.Box
-	for _, side := range []struct {
-		v   driver.Value
-		dst *float64
-	}{{south, &box.South}, {north, &box.North}, {west, &box.West}, {east, &box.East}} {
-		f, ok := numeric(side.v)
-		if !ok {
-			return nil, fmt.Errorf("%s: want a number for each side of the box, got %T", GeoInBoxFunc, side.v)
-		}
-		*side.dst = f
+	sides, err := numbers(GeoInBoxFunc, south, north, west, east)
+	if err != nil {
+		return nil, err
 	}
-	return truth(box.Covers(p)), nil
+	return truth(geo.Box{South: sides[0], North: sides[1], West: sides[2], East: sides[3]}.Covers(p)), nil
 }
 
-// GeoCoveredBy is parse_geo_covered_by: 1 when the stored point (lat, lon)
-// lies in the polygon or on its boundary, 0 when it does not, or nil (SQL
-// NULL) when the point is NULL. polygon is a little-endian one-ring polygon
-// WKB. It is exported for a SQLite driver other than modernc.org/sqlite to
-// register under GeoCoveredByFunc.
-func GeoCoveredBy(lat, lon, polygon driver.Value) (driver.Value, error) {
-	p, ok := storedPoint(lat, lon)
-	if !ok {
-		return nil, nil
+// GeoCoveredBy is parse_geo_covered_by: 1 when the stored point lies in the
+// polygon or on its boundary, 0 when it does not, or nil (SQL NULL) when the
+// point is NULL. polygon is a little-endian one-ring polygon WKB. It is
+// exported for a SQLite driver other than modernc.org/sqlite to register
+// under GeoCoveredByFunc.
+func GeoCoveredBy(point, latKey, lonKey, polygon driver.Value) (driver.Value, error) {
+	p, ok, err := storedPoint(GeoCoveredByFunc, point, latKey, lonKey)
+	if !ok || err != nil {
+		return nil, err
 	}
 	wkb, isBlob := polygon.([]byte)
 	if !isBlob {
@@ -190,45 +185,46 @@ func GeoCoveredBy(lat, lon, polygon driver.Value) (driver.Value, error) {
 	return truth(geo.CoveredBy(p, ring)), nil
 }
 
-// storedPoint reads a JSONB point's members as -> returns them; ok is false
-// when the point is NULL.
-func storedPoint(lat, lon driver.Value) (geo.Point, bool) {
-	la, latOK := member(lat)
-	lo, lonOK := member(lon)
-	return geo.Point{Lat: la, Lon: lo}, latOK && lonOK
-}
-
-// member is a point member as -> returns it: JSON text, or NULL when the
-// member is missing.
-func member(v driver.Value) (float64, bool) {
-	switch m := v.(type) {
-	case string:
-		return geo.CoordinateJSON(m)
-	case []byte:
-		return geo.CoordinateJSON(string(m))
-	}
-	return numeric(v)
-}
-
-// point reads a bound point, which the dialect always binds.
-func point(fn string, lat, lon driver.Value) (geo.Point, error) {
-	la, latOK := numeric(lat)
-	lo, lonOK := numeric(lon)
+// storedPoint reads the stored point: its JSON text and member names. ok is
+// false when the point is NULL.
+func storedPoint(fn string, point, latKey, lonKey driver.Value) (geo.Point, bool, error) {
+	lat, latOK := latKey.(string)
+	lon, lonOK := lonKey.(string)
 	if !latOK || !lonOK {
-		return geo.Point{}, fmt.Errorf("%s: want a number for each coordinate, got %T and %T", fn, lat, lon)
+		return geo.Point{}, false, fmt.Errorf("%s: want the point's member names as text, got %T and %T", fn, latKey, lonKey)
 	}
-	return geo.Point{Lat: la, Lon: lo}, nil
+	var text []byte
+	switch v := point.(type) {
+	case nil:
+		return geo.Point{}, false, nil
+	case string:
+		text = []byte(v)
+	case []byte:
+		text = v
+	default:
+		return geo.Point{}, false, fmt.Errorf("%s: want the point as JSON text, got %T", fn, point)
+	}
+	p, ok, err := geo.ReadPointJSON(text, lat, lon)
+	if err != nil {
+		return geo.Point{}, false, fmt.Errorf("%s: %w", fn, err)
+	}
+	return p, ok, nil
 }
 
-// numeric is an INTEGER or REAL value as a finite float64.
-func numeric(v driver.Value) (float64, bool) {
-	switch n := v.(type) {
-	case float64:
-		return geo.Coordinate(n)
-	case int64:
-		return float64(n), true
+// numbers reads the bound operands, INTEGERs or REALs.
+func numbers(fn string, vs ...driver.Value) ([]float64, error) {
+	out := make([]float64, len(vs))
+	for i, v := range vs {
+		switch n := v.(type) {
+		case float64:
+			out[i] = n
+		case int64:
+			out[i] = float64(n)
+		default:
+			return nil, fmt.Errorf("%s: want a number for operand %d, got %T", fn, i+1, v)
+		}
 	}
-	return 0, false
+	return out, nil
 }
 
 func truth(b bool) int64 {

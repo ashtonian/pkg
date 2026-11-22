@@ -288,8 +288,9 @@ func caseWhen(guard string, terms []string) string {
 // parsesqlite's functions (internal/geo), so SQLite decides them as PostGIS
 // and Evaluate do: $near by the WGS 84 geodesic distance, $within and
 // $intersects a box or polygon planar in lon/lat, boundary included. Each
-// function reads the point's members as -> returns them and is NULL when
-// the point is. Native geometry storage needs PostGIS: E2115.
+// function reads the point from its JSON text, with the member names bound,
+// and is NULL when the point is. Native geometry storage needs PostGIS:
+// E2115.
 func (d SQLiteDialect) geoCondition(field *FieldSchema, op FilterOperator, value any, bind func(any) string) (string, error) {
 	if err := validateGeoValue(value); err != nil {
 		return "", err
@@ -297,7 +298,14 @@ func (d SQLiteDialect) geoCondition(field *FieldSchema, op FilterOperator, value
 	if field.GeoConfig != nil && field.GeoConfig.StorageType != GeoStorageJSONB {
 		return "", geoUnsupported(d, op, "native "+string(field.GeoConfig.StorageType)+" storage")
 	}
-	lat, lon := sqliteGeoMembers(field)
+	latKey, lonKey := geoKeys(field)
+	call := func(fn string, operands ...any) string {
+		args := []string{"json(" + field.SQLExpr + ")", bind(latKey), bind(lonKey)}
+		for _, o := range operands {
+			args = append(args, bind(o))
+		}
+		return fn + "(" + strings.Join(args, ", ") + ")"
+	}
 	switch v := value.(type) {
 	case *GeoDistance:
 		if op != OpNear {
@@ -307,31 +315,20 @@ func (d SQLiteDialect) geoCondition(field *FieldSchema, op FilterOperator, value
 		if err != nil {
 			return "", err
 		}
-		return fmt.Sprintf("(%s(%s, %s, %s, %s) <= %s)", geo.SQLiteDistanceFunc, lat, lon, bind(v.Lat), bind(v.Lon), bind(meters)), nil
+		return call(geo.SQLiteNearFunc, v.Lat, v.Lon, meters), nil
 	case *GeoBoundingBox:
-		if op == OpNear {
+		if op != OpWithin && op != OpIntersects {
 			break
 		}
 		box := geoBox(v)
-		return fmt.Sprintf("%s(%s, %s, %s, %s, %s, %s)", geo.SQLiteInBoxFunc, lat, lon,
-			bind(box.South), bind(box.North), bind(box.West), bind(box.East)), nil
+		return call(geo.SQLiteInBoxFunc, box.South, box.North, box.West, box.East), nil
 	case *GeoPolygon:
-		if op == OpNear {
+		if op != OpWithin && op != OpIntersects {
 			break
 		}
-		return fmt.Sprintf("%s(%s, %s, %s)", geo.SQLiteCoveredByFunc, lat, lon, bind(geo.AppendPolygonWKB(nil, geoRing(v)))), nil
+		return call(geo.SQLiteCoveredByFunc, geo.AppendPolygonWKB(nil, geoRing(v))), nil
 	}
-	return "", fmt.Errorf("geo operator %s: unexpected value %T", op, value)
-}
-
-// sqliteGeoMembers returns the JSONB point's lat and lon members as JSON
-// text, as the geo functions read them.
-func sqliteGeoMembers(field *FieldSchema) (lat, lon string) {
-	latKey, lonKey := "lat", "lon"
-	if field.GeoConfig != nil {
-		latKey, lonKey = field.GeoConfig.LatKey, field.GeoConfig.LonKey
-	}
-	return field.SQLExpr + " -> '$." + latKey + "'", field.SQLExpr + " -> '$." + lonKey + "'"
+	return "", fmt.Errorf("geo operator %s does not take %T", op, value)
 }
 
 func geoUnsupported(d dialect.Dialect, op FilterOperator, shape string) error {

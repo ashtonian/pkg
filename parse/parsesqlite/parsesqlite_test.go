@@ -117,31 +117,39 @@ func TestDecimalKeyOrdersExactly(t *testing.T) {
 	}
 }
 
-// The geo functions read a point's members as -> returns them and are NULL
-// when the point is.
+// The geo functions read the stored point from its JSON text, as
+// PostgreSQL reads (doc->>'lat')::float8, and are NULL when it is NULL.
 func TestGeoFunctions(t *testing.T) {
 	db := open(t)
-	const pt = `'{"lat":10,"lon":20}'`
 	square := "x'" + hex.EncodeToString(geo.AppendPolygonWKB(nil, []geo.Point{{Lat: 0, Lon: 0}, {Lat: 0, Lon: 30}, {Lat: 30, Lon: 30}, {Lat: 30, Lon: 0}})) + "'"
+	near := func(point string) string { return "parse_geo_near(" + point + ", 'lat', 'lon', 10, 20, 1)" }
 	tests := []struct {
 		name string
 		expr string
 		want any
 	}{
-		{"distance from a point to itself", "parse_geo_distance(" + pt + " -> '$.lat', " + pt + " -> '$.lon', 10, 20)", 0.0},
-		{"distance along a meridian on the ellipsoid", "round(parse_geo_distance('{\"lat\":1,\"lon\":0}' -> '$.lat', '{\"lat\":1,\"lon\":0}' -> '$.lon', 0, 0), 1)", 110574.4},
-		{"distance from members held as strings", "parse_geo_distance('{\"lat\":\"10\",\"lon\":\" 20 \"}' -> '$.lat', '{\"lat\":\"10\",\"lon\":\" 20 \"}' -> '$.lon', 10, 20)", 0.0},
-		{"distance from a missing member", "parse_geo_distance(" + pt + " -> '$.lat', " + pt + " -> '$.x', 10, 20)", nil},
-		{"distance from a null member", "parse_geo_distance('{\"lat\":null,\"lon\":1}' -> '$.lat', '{\"lat\":null,\"lon\":1}' -> '$.lon', 10, 20)", nil},
-		{"distance from a boolean member", "parse_geo_distance('{\"lat\":true,\"lon\":1}' -> '$.lat', '{\"lat\":true,\"lon\":1}' -> '$.lon', 10, 20)", nil},
-		{"distance from REAL coordinates", "parse_geo_distance(10.0, 20, 10, 20)", 0.0},
-		{"in a box", "parse_geo_in_box(" + pt + " -> '$.lat', " + pt + " -> '$.lon', 0, 10, 0, 20)", int64(1)},
-		{"outside a box", "parse_geo_in_box(" + pt + " -> '$.lat', " + pt + " -> '$.lon', 0, 9.5, 0, 20)", int64(0)},
-		{"in a box, a NULL point", "parse_geo_in_box(NULL, 1, 0, 10, 0, 20)", nil},
-		{"covered by a polygon", "parse_geo_covered_by(" + pt + " -> '$.lat', " + pt + " -> '$.lon', " + square + ")", int64(1)},
-		{"on a polygon's edge", "parse_geo_covered_by(0, 15, " + square + ")", int64(1)},
-		{"outside a polygon", "parse_geo_covered_by(31, 15, " + square + ")", int64(0)},
-		{"covered by a polygon, a NULL point", "parse_geo_covered_by(1, NULL, " + square + ")", nil},
+		{"near itself", near(`'{"lat":10,"lon":20}'`), int64(1)},
+		{"near, members held as strings", near(`'{"lat":"10","lon":" 20 "}'`), int64(1)},
+		{"near, a duplicated member read by its last value", near(`'{"lat":50,"lon":20,"lat":10}'`), int64(1)},
+		{"near, a latitude beyond the pole", "parse_geo_near('{\"lat\":100,\"lon\":20}', 'lat', 'lon', 80, 20, 1)", int64(1)},
+		{"not near", near(`'{"lat":10.01,"lon":20}'`), int64(0)},
+		{"near on the ellipsoid along a meridian", "parse_geo_near('{\"lat\":0,\"lon\":0}', 'lat', 'lon', 1, 0, 110600)", int64(1)},
+		{"not near on the ellipsoid along a meridian", "parse_geo_near('{\"lat\":0,\"lon\":0}', 'lat', 'lon', 1, 0, 110500)", int64(0)},
+		{"near, a NaN member", near(`'{"lat":"NaN","lon":20}'`), int64(0)},
+		{"near, declared members", "parse_geo_near('{\"y\":10,\"x\":20}', 'y', 'x', 10, 20, 1)", int64(1)},
+		{"near, a missing member", near(`'{"lat":10}'`), nil},
+		{"near, a null member", near(`'{"lat":null,"lon":20}'`), nil},
+		{"near, a boolean member", near(`'{"lat":true,"lon":20}'`), nil},
+		{"near, a member float8 refuses", near(`'{"lat":"1_0","lon":20}'`), nil},
+		{"near, an array", near(`'[10,20]'`), nil},
+		{"near, a NULL point", near("NULL"), nil},
+		{"in a box", `parse_geo_in_box('{"lat":10,"lon":20}', 'lat', 'lon', 0, 10, 0, 20)`, int64(1)},
+		{"outside a box", `parse_geo_in_box('{"lat":10,"lon":20}', 'lat', 'lon', 0, 9.5, 0, 20)`, int64(0)},
+		{"in a box, a NULL point", "parse_geo_in_box(NULL, 'lat', 'lon', 0, 10, 0, 20)", nil},
+		{"covered by a polygon", `parse_geo_covered_by('{"lat":10,"lon":20}', 'lat', 'lon', ` + square + ")", int64(1)},
+		{"on a polygon's edge", `parse_geo_covered_by('{"lat":0,"lon":15}', 'lat', 'lon', ` + square + ")", int64(1)},
+		{"outside a polygon", `parse_geo_covered_by('{"lat":31,"lon":15}', 'lat', 'lon', ` + square + ")", int64(0)},
+		{"covered by a polygon, a NULL point", "parse_geo_covered_by(NULL, 'lat', 'lon', " + square + ")", nil},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -151,10 +159,13 @@ func TestGeoFunctions(t *testing.T) {
 		})
 	}
 	for name, expr := range map[string]string{
-		"a distance to text":        "parse_geo_distance(1, 1, 'north', 2)",
-		"a box side of text":        "parse_geo_in_box(1, 1, 0, 'ten', 0, 20)",
-		"a polygon that is no blob": "parse_geo_covered_by(1, 1, 'square')",
-		"a polygon blob of a point": "parse_geo_covered_by(1, 1, x'0101000000')",
+		"a point that is not JSON":       "parse_geo_near('{', 'lat', 'lon', 1, 1, 1)",
+		"a point that is a number":       "parse_geo_near(10, 'lat', 'lon', 1, 1, 1)",
+		"member names that are not text": "parse_geo_near('{}', 1, 2, 1, 1, 1)",
+		"a center of text":               "parse_geo_near('{\"lat\":1,\"lon\":1}', 'lat', 'lon', 'north', 1, 1)",
+		"a box side of text":             "parse_geo_in_box('{\"lat\":1,\"lon\":1}', 'lat', 'lon', 0, 'ten', 0, 20)",
+		"a polygon that is no blob":      "parse_geo_covered_by('{\"lat\":1,\"lon\":1}', 'lat', 'lon', 'square')",
+		"a polygon blob of a point":      "parse_geo_covered_by('{\"lat\":1,\"lon\":1}', 'lat', 'lon', x'0101000000')",
 	} {
 		t.Run(name, func(t *testing.T) {
 			var got any

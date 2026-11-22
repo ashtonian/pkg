@@ -23,6 +23,10 @@ func evaluateGeo(n *FilterNode, row Row) (Truth, error) {
 			Message: fmt.Sprintf("geo operator '%s' on native %s storage is not supported by the reference evaluator", n.Op, cfg.StorageType),
 		}
 	}
+	holds, err := geoPredicate(n.Op, n.Value)
+	if err != nil {
+		return False, err
+	}
 	v, present, err := row.Value(f)
 	if err != nil {
 		return False, err
@@ -30,57 +34,61 @@ func evaluateGeo(n *FilterNode, row Row) (Truth, error) {
 	if !present {
 		return Unknown, nil
 	}
-	p, ok, err := storedPoint(f, v)
+	doc, err := decodeDocument(v)
 	if err != nil {
-		return False, err
+		return False, fmt.Errorf("field %s: %w", f.ExternalName, err)
 	}
+	latKey, lonKey := geoKeys(f)
+	p, ok := geo.ReadPoint(doc, latKey, lonKey)
 	if !ok {
 		return Unknown, nil
 	}
-	switch value := n.Value.(type) {
-	case *GeoDistance:
-		if n.Op != OpNear {
-			break
-		}
-		meters, err := ParseDistance(value.Distance)
-		if err != nil {
-			return False, err
-		}
-		return truthOf(geo.Distance(geo.Geodetic(p), geo.Point{Lat: value.Lat, Lon: value.Lon}) <= meters), nil
-	case *GeoBoundingBox:
-		if n.Op == OpNear {
-			break
-		}
-		return truthOf(geoBox(value).Covers(p)), nil
-	case *GeoPolygon:
-		if n.Op == OpNear {
-			break
-		}
-		return truthOf(geo.CoveredBy(p, geoRing(value))), nil
-	}
-	return False, fmt.Errorf("geo operator %s: unexpected value %T", n.Op, n.Value)
+	return truthOf(holds(p)), nil
 }
 
-// storedPoint reads a JSONB point: a document, or its JSON text, whose
-// GeoConfig lat and lon members are coordinates (geo.Coordinate). ok is
-// false, the point NULL, when the document is not an object or either
-// member is missing, null or not a number.
-func storedPoint(f *FieldSchema, v any) (geo.Point, bool, error) {
-	doc, err := decodeDocument(v)
-	if err != nil {
-		return geo.Point{}, false, fmt.Errorf("field %s: %w", f.ExternalName, err)
+// geoPredicate is the test op makes of a stored point with value, its
+// operand: a distance for $near, a box or polygon for $within and
+// $intersects. Any other pairing is the error the dialects build.
+func geoPredicate(op FilterOperator, value any) (func(geo.Point) bool, error) {
+	switch v := value.(type) {
+	case *GeoDistance:
+		if op != OpNear {
+			break
+		}
+		meters, err := ParseDistance(v.Distance)
+		if err != nil {
+			return nil, err
+		}
+		center := geo.Point{Lat: v.Lat, Lon: v.Lon}
+		return func(p geo.Point) bool { return geo.Near(p, center, meters) }, nil
+	case *GeoBoundingBox:
+		if op != OpWithin && op != OpIntersects {
+			break
+		}
+		return geoBox(v).Covers, nil
+	case *GeoPolygon:
+		if op != OpWithin && op != OpIntersects {
+			break
+		}
+		ring := geoRing(v)
+		return func(p geo.Point) bool { return geo.CoveredBy(p, ring) }, nil
 	}
-	obj, isObject := doc.(map[string]any)
-	if !isObject {
-		return geo.Point{}, false, nil
+	return nil, fmt.Errorf("geo operator %s does not take %T", op, value)
+}
+
+// geoKeys are the members a JSONB point holds its latitude and longitude
+// under: GeoFieldConfig's, "lat" and "lon" by default.
+func geoKeys(f *FieldSchema) (lat, lon string) {
+	lat, lon = "lat", "lon"
+	if cfg := f.GeoConfig; cfg != nil {
+		if cfg.LatKey != "" {
+			lat = cfg.LatKey
+		}
+		if cfg.LonKey != "" {
+			lon = cfg.LonKey
+		}
 	}
-	latKey, lonKey := "lat", "lon"
-	if f.GeoConfig != nil {
-		latKey, lonKey = f.GeoConfig.LatKey, f.GeoConfig.LonKey
-	}
-	lat, latOK := geo.Coordinate(obj[latKey])
-	lon, lonOK := geo.Coordinate(obj[lonKey])
-	return geo.Point{Lat: lat, Lon: lon}, latOK && lonOK, nil
+	return lat, lon
 }
 
 // geoBox is the envelope PostgresDialect builds for bb.

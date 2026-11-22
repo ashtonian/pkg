@@ -3,6 +3,7 @@
 package geo
 
 import (
+	"encoding/json"
 	"math"
 	"testing"
 
@@ -132,5 +133,123 @@ func TestPolygonWKB(t *testing.T) {
 	} {
 		_, err := ReadPolygonWKB(nil, bad)
 		assert.ErrorIs(t, err, errPolygonWKB, name)
+	}
+}
+
+// Coordinate reads text as PostgreSQL's float8 input does; each want is
+// what PostgreSQL 18 answered, ok false where it refused the cast.
+func TestCoordinate(t *testing.T) {
+	tests := []struct {
+		member any
+		want   float64
+		ok     bool
+	}{
+		{json.Number("10"), 10, true},
+		{json.Number("1.0E1"), 10, true},
+		{json.Number("-0"), math.Copysign(0, -1), true},
+		{json.Number("1e400"), 0, false},
+		{json.Number("1e-400"), 0, false},
+		{"10", 10, true},
+		{" 10 ", 10, true},
+		{"\t10\n", 10, true},
+		{"+5", 5, true},
+		{".5", 0.5, true},
+		{"10.", 10, true},
+		{"00010", 10, true},
+		{"1e1", 10, true},
+		{"4.9e-324", 5e-324, true},
+		{"1e-320", 1e-320, true},
+		{"0x10", 16, true},
+		{"0X10", 16, true},
+		{"0x1.8", 1.5, true},
+		{"0x1p3", 8, true},
+		{"inf", math.Inf(1), true},
+		{"-inf", math.Inf(-1), true},
+		{"+Infinity", math.Inf(1), true},
+		{"1e-400", 0, false},
+		{"0x1p-2000", 0, false},
+		{"1e400", 0, false},
+		{"0x1P99999", 0, false},
+		{"1_0", 0, false},
+		{"10 x", 0, false},
+		{"1e", 0, false},
+		{"0x", 0, false},
+		{"0x-1", 0, false},
+		{"+-1", 0, false},
+		{"infinit", 0, false},
+		{"", 0, false},
+		{"ten", 0, false},
+		{true, 0, false},
+		{nil, 0, false},
+		{map[string]any{}, 0, false},
+		{[]any{json.Number("1")}, 0, false},
+	}
+	for _, tt := range tests {
+		got, ok := Coordinate(tt.member)
+		assert.Equal(t, tt.ok, ok, "%#v", tt.member)
+		if tt.ok {
+			assert.Equal(t, tt.want, got, "%#v", tt.member)
+			assert.Equal(t, math.Signbit(tt.want), math.Signbit(got), "%#v", tt.member)
+		}
+	}
+	for _, s := range []string{"NaN", "nan", "NAN", "-nan", "nan(1)"} {
+		got, ok := Coordinate(s)
+		assert.True(t, ok && math.IsNaN(got), "%q", s)
+	}
+	for _, s := range []string{"nan(", "nan(1", "nan(-1)", "nana"} {
+		_, ok := Coordinate(s)
+		assert.False(t, ok, "%q", s)
+	}
+}
+
+func TestReadPointJSON(t *testing.T) {
+	tests := []struct {
+		text string
+		want Point
+		ok   bool
+	}{
+		{`{"lat":10,"lon":20}`, Point{10, 20}, true},
+		{`{"y":10,"x":20}`, Point{}, false},
+		{`{"lat":"10","lon":" 20 "}`, Point{10, 20}, true},
+		{`{"lat":50,"lon":20,"lat":10}`, Point{10, 20}, true},
+		{`{"lat":10}`, Point{}, false},
+		{`{"lat":null,"lon":20}`, Point{}, false},
+		{`{"lat":true,"lon":20}`, Point{}, false},
+		{`[10,20]`, Point{}, false},
+		{`10`, Point{}, false},
+		{`null`, Point{}, false},
+	}
+	for _, tt := range tests {
+		got, ok, err := ReadPointJSON([]byte(tt.text), "lat", "lon")
+		require.NoError(t, err, tt.text)
+		assert.Equal(t, tt.ok, ok, tt.text)
+		if tt.ok {
+			assert.Equal(t, tt.want, got, tt.text)
+		}
+	}
+	_, _, err := ReadPointJSON([]byte(`{"lat":`), "lat", "lon")
+	assert.Error(t, err)
+}
+
+// Geodetic coerces latitudes as PostgreSQL 18 with PostGIS 3.6 coerced
+// ST_MakePoint(0, lat)::geography.
+func TestGeodetic(t *testing.T) {
+	for lat, want := range map[float64]float64{
+		90: 90, -90: -90, 45: 45, 91: 89, 180: 0, 200: -20, 270: -90, 359: -1, 361: 1, 450: 90,
+		1000: -80, -91: -89, -200: 20, -1000: 80,
+	} {
+		assert.Equal(t, want, Geodetic(Point{Lat: lat, Lon: 7}).Lat, "lat %v", lat)
+		assert.Equal(t, 7.0, Geodetic(Point{Lat: lat, Lon: 7}).Lon, "lat %v", lat)
+	}
+}
+
+// A point holding NaN or an infinity is near, in and on nothing.
+func TestNonFinitePoints(t *testing.T) {
+	square := []Point{{-90, -180}, {-90, 180}, {90, 180}, {90, -180}}
+	world := Box{South: -90, North: 90, West: -180, East: 180}
+	for _, p := range []Point{{math.NaN(), 0}, {0, math.NaN()}, {math.Inf(1), 0}, {0, math.Inf(-1)}} {
+		assert.False(t, Near(p, Point{0, 0}, 4e7), "%v", p)
+		assert.False(t, world.Covers(p), "%v", p)
+		assert.False(t, CoveredBy(p, square), "%v", p)
 	}
 }

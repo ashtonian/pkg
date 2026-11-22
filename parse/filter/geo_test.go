@@ -4,6 +4,7 @@ package filter_test
 
 import (
 	"errors"
+	"fmt"
 	"math"
 	"strings"
 	"testing"
@@ -256,29 +257,28 @@ func TestGeoSQL_Postgres_WithinPolygon(t *testing.T) {
 
 // --- SQL: SQLite, through parsesqlite's geo functions ---
 
-// SQLite reads a JSONB point's members with -> and decides each geo
-// operator in a parse_geo function, with the operand bound.
+// SQLite passes a JSONB point's text and member names to a parse_geo
+// function, with the operand bound.
 func TestGeoSQL_SQLite(t *testing.T) {
 	schema := geoTestSchema()
 	schema.Fields["location"].AllowedOperators = []filter.FilterOperator{filter.OpNear, filter.OpWithin, filter.OpIntersects}
-	lat, lon := "devices.location -> '$.lat'", "devices.location -> '$.lon'"
 	box := `{"top_left":{"lat":40.80,"lon":-74.10},"bottom_right":{"lat":40.65,"lon":-73.70}}`
 	polygon := `{"points":[{"lat":0,"lon":0},{"lat":1,"lon":1},{"lat":0,"lon":1}]}`
-	ring := []any{geo.AppendPolygonWKB(nil, []geo.Point{{Lat: 0, Lon: 0}, {Lat: 1, Lon: 1}, {Lat: 0, Lon: 1}})}
+	ring := geo.AppendPolygonWKB(nil, []geo.Point{{Lat: 0, Lon: 0}, {Lat: 1, Lon: 1}, {Lat: 0, Lon: 1}})
 	tests := []struct {
 		name, input, where string
 		args               []any
 	}{
 		{"near", `{"location":{"$near":{"lat":40.7128,"lon":-74.006,"distance":"5km"}}}`,
-			"(parse_geo_distance(" + lat + ", " + lon + ", ?1, ?2) <= ?3)", []any{40.7128, -74.006, 5000.0}},
+			"parse_geo_near(json(devices.location), ?1, ?2, ?3, ?4, ?5)", []any{"lat", "lon", 40.7128, -74.006, 5000.0}},
 		{"within a box", `{"location":{"$within":` + box + `}}`,
-			"parse_geo_in_box(" + lat + ", " + lon + ", ?1, ?2, ?3, ?4)", []any{40.65, 40.80, -74.10, -73.70}},
+			"parse_geo_in_box(json(devices.location), ?1, ?2, ?3, ?4, ?5, ?6)", []any{"lat", "lon", 40.65, 40.80, -74.10, -73.70}},
 		{"intersects a box", `{"location":{"$intersects":` + box + `}}`,
-			"parse_geo_in_box(" + lat + ", " + lon + ", ?1, ?2, ?3, ?4)", []any{40.65, 40.80, -74.10, -73.70}},
+			"parse_geo_in_box(json(devices.location), ?1, ?2, ?3, ?4, ?5, ?6)", []any{"lat", "lon", 40.65, 40.80, -74.10, -73.70}},
 		{"within a polygon", `{"location":{"$within":` + polygon + `}}`,
-			"parse_geo_covered_by(" + lat + ", " + lon + ", ?1)", ring},
+			"parse_geo_covered_by(json(devices.location), ?1, ?2, ?3)", []any{"lat", "lon", ring}},
 		{"intersects a polygon", `{"location":{"$intersects":` + polygon + `}}`,
-			"parse_geo_covered_by(" + lat + ", " + lon + ", ?1)", ring},
+			"parse_geo_covered_by(json(devices.location), ?1, ?2, ?3)", []any{"lat", "lon", ring}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -289,6 +289,30 @@ func TestGeoSQL_SQLite(t *testing.T) {
 			assert.Equal(t, tt.where, result.Where)
 			assert.Equal(t, tt.args, result.Args)
 		})
+	}
+}
+
+// A hand-built node pairing a geo operand with an operator that does not
+// take it fails on both dialects, as Evaluate refuses it.
+func TestGeoSQL_OperandMismatch(t *testing.T) {
+	field := geoTestSchema().Fields["location"]
+	box := &filter.GeoBoundingBox{TopLeft: filter.GeoPoint{Lat: 1, Lon: 0}, BottomRight: filter.GeoPoint{Lat: 0, Lon: 1}}
+	polygon := &filter.GeoPolygon{Points: []filter.GeoPoint{{Lat: 0, Lon: 0}, {Lat: 1, Lon: 1}, {Lat: 0, Lon: 1}}}
+	distance := &filter.GeoDistance{Lat: 0, Lon: 0, Distance: "1km"}
+	for _, d := range []filter.Dialect{filter.SQLiteDialect{}, filter.PostgresDialect{}} {
+		for name, node := range map[string]*filter.FilterNode{
+			"a box under $ne":          {Field: field, Op: filter.OpNe, Value: box},
+			"a box under $near":        {Field: field, Op: filter.OpNear, Value: box},
+			"a polygon under $eq":      {Field: field, Op: filter.OpEq, Value: polygon},
+			"a distance under $within": {Field: field, Op: filter.OpWithin, Value: distance},
+		} {
+			t.Run(fmt.Sprintf("%T %s", d, name), func(t *testing.T) {
+				_, err := d.Condition(field, node.Op, node.Value, func(any) string { return "?" })
+				assert.Error(t, err)
+				_, err = filter.Evaluate(node, filter.RowFunc(func(*filter.FieldSchema) (any, bool, error) { return nil, false, nil }))
+				assert.Error(t, err, "Evaluate on a NULL point")
+			})
+		}
 	}
 }
 
