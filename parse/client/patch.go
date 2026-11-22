@@ -67,6 +67,16 @@ func (n *Nullable[T]) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
+// The RFC 6902 operations the builders write.
+const (
+	patchAdd     = "add"
+	patchRemove  = "remove"
+	patchReplace = "replace"
+	patchMove    = "move"
+	patchCopy    = "copy"
+	patchTest    = "test"
+)
+
 // Operation is one JSON Patch (RFC 6902) operation; a []Operation is a JSON
 // Patch document. Build one with Add, Remove, Replace, Move, Copy, Test or
 // a Relation's membership methods.
@@ -80,26 +90,26 @@ type Operation struct {
 
 // Add adds value at path.
 func Add(path string, value any) Operation {
-	return Operation{op: "add", path: path, value: value, hasValue: true}
+	return Operation{op: patchAdd, path: path, value: value, hasValue: true}
 }
 
 // Remove removes the value at path.
-func Remove(path string) Operation { return Operation{op: "remove", path: path} }
+func Remove(path string) Operation { return Operation{op: patchRemove, path: path} }
 
 // Replace replaces the value at path with value.
 func Replace(path string, value any) Operation {
-	return Operation{op: "replace", path: path, value: value, hasValue: true}
+	return Operation{op: patchReplace, path: path, value: value, hasValue: true}
 }
 
 // Move moves the value at from to path.
-func Move(from, path string) Operation { return Operation{op: "move", path: path, from: from} }
+func Move(from, path string) Operation { return Operation{op: patchMove, path: path, from: from} }
 
 // Copy copies the value at from to path.
-func Copy(from, path string) Operation { return Operation{op: "copy", path: path, from: from} }
+func Copy(from, path string) Operation { return Operation{op: patchCopy, path: path, from: from} }
 
 // Test checks that the value at path equals value.
 func Test(path string, value any) Operation {
-	return Operation{op: "test", path: path, value: value, hasValue: true}
+	return Operation{op: patchTest, path: path, value: value, hasValue: true}
 }
 
 // MarshalJSON encodes the operation with the members its op takes: value

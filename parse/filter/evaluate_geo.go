@@ -77,9 +77,9 @@ func geoPredicate(op FilterOperator, value any) (func(geo.Point) bool, error) {
 }
 
 // geoKeys are the members a JSONB point holds its latitude and longitude
-// under: GeoFieldConfig's, "lat" and "lon" by default.
+// under: GeoFieldConfig's, a point's by default.
 func geoKeys(f *FieldSchema) (lat, lon string) {
-	lat, lon = "lat", "lon"
+	lat, lon = geoMemberLat, geoMemberLon
 	if cfg := f.GeoConfig; cfg != nil {
 		if cfg.LatKey != "" {
 			lat = cfg.LatKey

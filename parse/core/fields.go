@@ -124,11 +124,46 @@ type Tags struct {
 	SearchWeight           string
 }
 
+// Capability is a value of a field's `parse` tag. A document's `paths`
+// tag grants its members the same filter, sort and facet capabilities.
+type Capability string
+
+const (
+	CapabilityFilter  Capability = "filter"
+	CapabilitySort    Capability = "sort"
+	CapabilityPatch   Capability = "patch"
+	CapabilitySearch  Capability = "search"
+	CapabilityFacet   Capability = "facet"
+	CapabilityInclude Capability = "include"
+	CapabilityServer  Capability = "server"
+)
+
 // Capabilities are the values of a field's `parse` tag. Excluded is
 // `parse:"-"`, which also keeps a document's declared paths out of sorts.
 type Capabilities struct {
 	Filter, Sort, Patch, Search, Facet, Include, Server bool
 	Excluded                                            bool
+}
+
+// Has reports whether c grants capability.
+func (c Capabilities) Has(capability Capability) bool {
+	switch capability {
+	case CapabilityFilter:
+		return c.Filter
+	case CapabilitySort:
+		return c.Sort
+	case CapabilityPatch:
+		return c.Patch
+	case CapabilitySearch:
+		return c.Search
+	case CapabilityFacet:
+		return c.Facet
+	case CapabilityInclude:
+		return c.Include
+	case CapabilityServer:
+		return c.Server
+	}
+	return false
 }
 
 // parseCapabilities reads a `parse` tag. "-" or an empty tag grants
@@ -144,21 +179,21 @@ func parseCapabilities(tag string) (Capabilities, error) {
 		return c, nil
 	}
 	for part := range strings.SplitSeq(tag, ",") {
-		switch strings.TrimSpace(part) {
+		switch Capability(strings.TrimSpace(part)) {
 		case "":
-		case "filter":
+		case CapabilityFilter:
 			c.Filter = true
-		case "sort":
+		case CapabilitySort:
 			c.Sort = true
-		case "patch":
+		case CapabilityPatch:
 			c.Patch = true
-		case "search":
+		case CapabilitySearch:
 			c.Search = true
-		case "facet":
+		case CapabilityFacet:
 			c.Facet = true
-		case "include":
+		case CapabilityInclude:
 			c.Include = true
-		case "server":
+		case CapabilityServer:
 			c.Server = true
 		default:
 			return Capabilities{}, fmt.Errorf("unknown parse capability %q", strings.TrimSpace(part))
@@ -382,7 +417,7 @@ func readTags(sf reflect.StructField, k fieldsKey) (Tags, error) {
 		SortDefault:      tag.Get("sort_default"),
 		SearchWeight:     tag.Get("search_weight"),
 	}
-	if enum := tag.Get("enum"); enum != "" {
+	if enum := tag.Get(ConstraintEnum); enum != "" {
 		for v := range strings.SplitSeq(enum, ",") {
 			t.Enum = append(t.Enum, strings.TrimSpace(v)) // enum:"a, b" admits "b"
 		}

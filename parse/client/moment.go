@@ -47,6 +47,9 @@ var relativeUnits = []struct {
 	{"s", time.Second},
 }
 
+// relativeNow is the request instant a relative Moment is written against.
+const relativeNow = "now"
+
 // MarshalJSON encodes an absolute Moment in RFC 3339 and a relative one as
 // the server's token: now, or now±N with the largest unit that states the
 // offset exactly (now-7d is now-1w).
@@ -55,7 +58,7 @@ func (m Moment) MarshalJSON() ([]byte, error) {
 		return json.Marshal(m.at)
 	}
 	if m.offset == 0 {
-		return json.Marshal("now")
+		return json.Marshal(relativeNow)
 	}
 	if m.offset%time.Second != 0 {
 		return nil, fmt.Errorf("%w: %v", ErrSubSecond, m.offset)
@@ -66,7 +69,7 @@ func (m Moment) MarshalJSON() ([]byte, error) {
 	}
 	for _, u := range relativeUnits {
 		if offset%u.unit == 0 {
-			return json.Marshal("now" + sign + strconv.FormatInt(int64(offset/u.unit), 10) + u.suffix)
+			return json.Marshal(relativeNow + sign + strconv.FormatInt(int64(offset/u.unit), 10) + u.suffix)
 		}
 	}
 	panic("unreachable: a whole number of seconds")

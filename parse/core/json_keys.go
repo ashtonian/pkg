@@ -140,7 +140,7 @@ func validateJSONStructKeys(raw []byte, value reflect.Value, path string) error 
 	if err != nil || len(members) == 0 {
 		return err
 	}
-	fields, err := StructFieldsOf(value.Type(), "json", "db")
+	fields, err := StructFieldsOf(value.Type(), JSONTagKey, DefaultColumnTagKey)
 	if err != nil {
 		return fmt.Errorf("JSON object at %q: %w", path, err)
 	}
