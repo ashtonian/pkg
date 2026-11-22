@@ -25,6 +25,9 @@ const (
 	PostGISDSNEnv  = "PARSE_POSTGIS_DSN"
 )
 
+// driverName is the database/sql driver the helpers open servers with.
+const driverName = "pgx"
+
 // server is one lazily started PostgreSQL server shared by a test binary.
 type server struct {
 	image    string
@@ -73,7 +76,7 @@ func PostgresDSN(t testing.TB) string {
 
 func (s *server) open(t testing.TB) *sql.DB {
 	t.Helper()
-	db, err := sql.Open("pgx", s.schemaDSN(t))
+	db, err := sql.Open(driverName, s.schemaDSN(t))
 	if err != nil {
 		t.Fatalf("dbtest: open postgres schema: %v", err)
 	}
@@ -98,7 +101,7 @@ func (s *server) schemaDSN(t testing.TB) string {
 	}
 
 	schema := fmt.Sprintf("t_%d", time.Now().UnixNano())
-	admin, err := sql.Open("pgx", dsn)
+	admin, err := sql.Open(driverName, dsn)
 	if err != nil {
 		t.Fatalf("dbtest: open postgres: %v", err)
 	}
@@ -116,7 +119,7 @@ func (s *server) schemaDSN(t testing.TB) string {
 	q.Set("search_path", schema+",public")
 	u.RawQuery = q.Encode()
 	t.Cleanup(func() {
-		if cleanup, err := sql.Open("pgx", dsn); err == nil {
+		if cleanup, err := sql.Open(driverName, dsn); err == nil {
 			_, _ = cleanup.Exec("DROP SCHEMA " + schema + " CASCADE")
 			_ = cleanup.Close()
 		}

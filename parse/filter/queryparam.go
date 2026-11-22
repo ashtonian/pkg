@@ -212,7 +212,7 @@ func queryParamOperand(field *FieldSchema, op FilterOperator, values []string) (
 		return "$" + string(op), b, nil
 	case len(values) > 1:
 		items, err := queryParamValues(field, values)
-		return "$in", items, err
+		return "$" + string(OpIn), items, err
 	case op == OpIn || op == OpNin:
 		items, err := queryParamValues(field, strings.Split(values[0], ","))
 		return "$" + string(op), items, err

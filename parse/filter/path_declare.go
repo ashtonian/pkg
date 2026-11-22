@@ -85,11 +85,11 @@ func kindOf(t core.FieldType) reflect.Kind {
 // storageOf reads a document field's storage tag; scalar reports a
 // "scalar:<type>" declaration, a struct type the database holds as a scalar.
 func storageOf(tag string) (storage JSONStorage, scalar core.FieldType, err error) {
-	switch {
-	case tag == "":
+	if tag == "" {
 		return StorageJSONB, "", nil
-	case strings.HasPrefix(tag, "scalar:"):
-		t := core.FieldType(strings.TrimPrefix(tag, "scalar:"))
+	}
+	if name, ok := strings.CutPrefix(tag, "scalar:"); ok {
+		t := core.FieldType(name)
 		if !pathTypes[t] {
 			return "", "", fmt.Errorf("storage %q: a scalar is %s", tag, pathTypeNames)
 		}

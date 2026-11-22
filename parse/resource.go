@@ -186,8 +186,11 @@ func NewResource[T any](table string, opts ...ResourceOption) (*Resource[T], err
 	for name, f := range fieldsByColumn {
 		columns[name] = f.Type
 	}
-	for _, c := range []struct{ option, column string }{{"key", cfg.pk}, {"tenant", cfg.tenant}, {"deleted", cfg.deleted}} {
-		if c.column == "" && c.option != "key" {
+	for _, c := range []struct {
+		option, column string
+		required       bool
+	}{{"key", cfg.pk, true}, {"tenant", cfg.tenant, false}, {"deleted", cfg.deleted, false}} {
+		if c.column == "" && !c.required {
 			continue
 		}
 		if _, ok := columns[c.column]; !ok {
