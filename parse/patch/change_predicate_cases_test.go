@@ -118,6 +118,8 @@ var changeCases = []changeCase{
 	{name: "a merge deleting a missing member", seed: `[{"op":"replace","path":"/doc","value":{"a":1}}]`, patch: `{"doc":{"z":null}}`},
 	{name: "a merge that changes a member", seed: `[{"op":"replace","path":"/doc","value":{"a":1,"b":{"c":2}}}]`, patch: `{"doc":{"b":{"c":3}}}`, changed: true},
 	{name: "a merge into NULL", seed: `{"doc":null}`, patch: `{"doc":{"z":null}}`, changed: true},
+	{name: "a merge into a json column that sets what is there", seed: `[{"op":"replace","path":"/raw","value":{"a":1,"b":{"c":2}}}]`, patch: `{"raw":{"b":{"c":2}}}`},
+	{name: "a merge into a json column that changes a member", seed: `[{"op":"replace","path":"/raw","value":{"a":1}}]`, patch: `{"raw":{"b":{"c":3},"a":null}}`, changed: true},
 	{name: "the same array", seed: `{"tags":["x","y"]}`, patch: `{"tags":["x","y"]}`},
 	{name: "an array in another order", seed: `{"tags":["x","y"]}`, patch: `{"tags":["y","x"]}`, changed: true},
 	{name: "an append", seed: `{"tags":["x"]}`, patch: `[{"op":"array_append","path":"/tags","value":"x"}]`, changed: true, repeats: true},

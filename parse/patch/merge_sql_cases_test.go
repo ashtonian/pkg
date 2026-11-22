@@ -16,11 +16,13 @@ import (
 	"github.com/ashtonian/pkg/parse/patch"
 )
 
-func mergeSchema() *patch.PatchSchema {
+// mergeSchema is a schema whose /doc is a document column stored as
+// storage.
+func mergeSchema(storage core.SQLType) *patch.PatchSchema {
 	return newSchema("docs", 10, map[string]*patch.PathSchema{
 		"/doc": {
 			AllowedOps: []patch.PatchOp{patch.PatchOpReplace, patch.PatchOpRemove},
-			DataType:   core.FieldTypeJSON, SQLColumn: "doc",
+			DataType:   core.FieldTypeJSON, SQLType: storage, SQLColumn: "doc",
 		},
 	})
 }
@@ -78,6 +80,9 @@ type mergeDB struct {
 	db      *sql.DB
 	dialect patch.SQLDialect
 	schema  string
+	// storage is the doc column's declared type: core.SQLJSON for a json
+	// column, "" otherwise.
+	storage core.SQLType
 	insert  string // INSERT with one placeholder for the document text
 	read    string // SELECT yielding the document as JSON text
 }
@@ -100,7 +105,7 @@ func runMergeCases(t *testing.T, mdb mergeDB) {
 			_, err = mdb.db.Exec(mdb.insert, start)
 			require.NoError(t, err)
 
-			parsed, err := patch.ParseMergePatch([]byte(tc.body), mergeSchema(), nil)
+			parsed, err := patch.ParseMergePatch([]byte(tc.body), mergeSchema(mdb.storage), nil)
 			require.NoError(t, err)
 			res, err := patch.BuildPatchSQL(parsed, mdb.dialect)
 			require.NoError(t, err)

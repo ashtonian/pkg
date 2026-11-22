@@ -420,7 +420,7 @@ func (b *setBuilder) columnExpr(col string, ops []*PatchOperation) (string, erro
 		if len(ops) != 1 {
 			return "", fmt.Errorf("patch: column %s: a merge shares its column with another operation, which no parser produces", col)
 		}
-		expr, err := mergeSQL(b.dialect, col, ops[0].Value, b.bind)
+		expr, err := mergeSQL(b.dialect, col, ops[0].Schema.SQLType, ops[0].Value, b.bind)
 		if err != nil {
 			return "", fmt.Errorf("%s for %s: %w", ops[0].Op, ops[0].Path, err)
 		}
@@ -485,11 +485,14 @@ func (b *setBuilder) columnExpr(col string, ops []*PatchOperation) (string, erro
 }
 
 // mergeSQL returns the expression merging an RFC 7396 patch object into the
-// JSON document expr: patch members replace, nested objects merge, nulls
-// delete, and a target that is not an object merges as {} (RFC 7396 §2).
-// SQLite implements RFC 7396 as json_patch; PostgreSQL has none, so the
-// patch compiles level by level (pgMerge).
-func mergeSQL(d dialect.Dialect, expr string, patch any, bind func(any) string) (string, error) {
+// JSON document expr, stored as storage: patch members replace, nested
+// objects merge, nulls delete, and a target that is not an object merges as
+// {} (RFC 7396 §2). SQLite implements RFC 7396 as json_patch; PostgreSQL has
+// none, so the patch compiles level by level (pgMerge) over jsonb. A json
+// column (core.SQLJSON) is read as jsonb, since its cast to jsonb applies on
+// assignment but not to a function's argument, and the jsonb result assigns
+// back to it.
+func mergeSQL(d dialect.Dialect, expr string, storage core.SQLType, patch any, bind func(any) string) (string, error) {
 	obj, ok := patch.(map[string]any)
 	if !ok {
 		return "", fmt.Errorf("merge value is %T, not an object", patch)
@@ -502,6 +505,9 @@ func mergeSQL(d dialect.Dialect, expr string, patch any, bind func(any) string) 
 		}
 		return "json_patch(COALESCE(" + expr + ", '{}'), " + bind(string(doc)) + ")", nil
 	case dialect.NamePostgres:
+		if storage == core.SQLJSON {
+			expr += "::jsonb"
+		}
 		levels := 0
 		return pgMerge(expr, obj, bind, &levels)
 	}
