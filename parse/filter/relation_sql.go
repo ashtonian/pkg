@@ -15,14 +15,6 @@ import (
 // related rows the caller may see are undecided, so nothing is built.
 var ErrRelatedPolicyRequired = errors.New("filter: a policy-scoped relation is built without the target's policy")
 
-// WithRelatedPolicies supplies the server's policy for the target tables of
-// policy-scoped relations (core.RelationSchema.Policy), keyed by table. A
-// relation predicate on one without its table's policy fails with
-// ErrRelatedPolicyRequired.
-func WithRelatedPolicies(policies map[string]*PolicyConstraints) SQLBuilderOption {
-	return func(c *sqlBuilderConfig) { c.related = policies }
-}
-
 // buildRelated compiles an OpSome / OpNone relation predicate
 // to one correlated EXISTS / NOT EXISTS over the related rows: the junction
 // or target rows correlated to the owner, held to the tenant (or the

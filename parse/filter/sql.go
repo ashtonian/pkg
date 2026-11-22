@@ -238,19 +238,50 @@ type sqlBuilderConfig struct {
 	related    map[string]*PolicyConstraints
 }
 
+// RelationScope is how a statement reaches related rows: which tenant's
+// rows a tenant-scoped relation holds, and which rows of a policy-scoped
+// relation's target the server's policy admits. Every builder takes one
+// (WithRelationScope, ListRelationScope, WithFacetRelationScope,
+// WithIncludeRelationScope, ResolveRelationScope), so a list's page,
+// count, facets and includes are scoped alike. The zero value scopes no
+// tenant, and a relation declaring a tenant column fails closed.
+type RelationScope struct {
+	// Tenant binds every tenant-scoped relation, at every depth, to one
+	// tenant, in its tenant column's type. Nil binds none.
+	Tenant any
+	// RowTenant holds every tenant-scoped relation to the tenant of the
+	// row it hangs from, read from this column of the owner's table: for
+	// rows of more than one tenant, such as a governed list's
+	// (ComposeConstraints). It excludes Tenant and Unscoped.
+	RowTenant string
+	// Unscoped deliberately reaches tenant-scoped relations without a
+	// tenant predicate, for platform tooling that works across tenants.
+	// Never set it on a request path.
+	Unscoped bool
+	// Related is the server's policy for each policy-scoped relation's
+	// target table (core.RelationSchema.Policy), by table. A relation
+	// predicate on one without its table's policy is
+	// ErrRelatedPolicyRequired.
+	Related map[string]*PolicyConstraints
+}
+
+// tenancy is s's hold on tenant-scoped relations.
+func (s RelationScope) tenancy() relationScope {
+	return relationScope{tenant: s.Tenant, unscoped: s.Unscoped, row: rowTenant{column: s.RowTenant}}
+}
+
 // relationScope is how a builder scopes tenant-scoped junctions: bound to a
 // tenant, held to the tenant of the row they hang from, or explicitly
 // unscoped. The zero value is none of them, and any relation declaring a
 // TenantColumn fails closed.
 type relationScope struct {
-	tenant    any
-	hasTenant bool
-	unscoped  bool
-	row       rowTenant
+	tenant   any
+	unscoped bool
+	row      rowTenant
 }
 
 // rowTenant is the owner's tenant column a list whose rows span tenants
-// holds every tenant-scoped relation to (ListRowTenant): each related row
+// holds every tenant-scoped relation to (RelationScope.RowTenant): each related row
 // is in the tenant of the row it hangs from, at every depth.
 type rowTenant struct {
 	column string
@@ -295,7 +326,7 @@ func (sc relationScope) check() error {
 	if sc.row.column == "" {
 		return nil
 	}
-	if sc.hasTenant || sc.unscoped {
+	if sc.tenant != nil || sc.unscoped {
 		return errors.New("filter: relations follow the row's tenant, a bound tenant or none; more than one was set")
 	}
 	if !core.IsIdentifier(sc.row.column) {
@@ -314,7 +345,7 @@ func (sc relationScope) clause(table, column, alias string, typ core.FieldType, 
 		return "", nil
 	case sc.row.column != "":
 		return sc.row.match(alias+"."+column, typ), nil
-	case !sc.hasTenant:
+	case sc.tenant == nil:
 		return "", fmt.Errorf("relation junction %s is tenant-scoped (%s): bind a tenant or opt out explicitly with an unscoped-relations option", table, column)
 	}
 	return " AND " + alias + "." + column + " = " + bind(sc.tenant), nil
@@ -343,33 +374,10 @@ func WithStartParam(n int) SQLBuilderOption {
 	return func(c *sqlBuilderConfig) { c.startParam = n }
 }
 
-// WithTenant binds the tenant every tenant-scoped relation junction is
-// restricted to. Required whenever a filter touches a relation
-// whose RelationSchema.TenantColumn is set; without it (or
-// WithUnscopedRelations) the build fails rather than matching owners
-// through other tenants' junction rows.
-func WithTenant(value any) SQLBuilderOption {
-	return func(c *sqlBuilderConfig) {
-		c.scope.tenant = value
-		c.scope.hasTenant = value != nil
-	}
-}
-
-// WithUnscopedRelations deliberately builds tenant-scoped relation
-// junctions without a tenant predicate — for platform-level tooling that
-// operates across tenants. Never use it on a request path.
-func WithUnscopedRelations() SQLBuilderOption {
-	return func(c *sqlBuilderConfig) { c.scope.unscoped = true }
-}
-
-// WithRowTenant holds every tenant-scoped relation to the tenant of the row
-// it hangs from, read from column of the schema's table, instead of a bound
-// tenant: for a filter over rows of more than one tenant, such as a
-// governed list's (ComposeConstraints). Each relation's tenant columns, at
-// every depth, are compared with the row's. It excludes WithTenant and
-// WithUnscopedRelations.
-func WithRowTenant(column string) SQLBuilderOption {
-	return func(c *sqlBuilderConfig) { c.scope.row = rowTenant{column: column} }
+// WithRelationScope scopes the relations the filter reaches
+// (RelationScope).
+func WithRelationScope(s RelationScope) SQLBuilderOption {
+	return func(c *sqlBuilderConfig) { c.scope, c.related = s.tenancy(), s.Related }
 }
 
 // SQLBuilder generates parameterized SQL from a filter AST using a dialect.

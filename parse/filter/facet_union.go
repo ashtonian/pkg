@@ -33,35 +33,10 @@ type facetConfig struct {
 	from    string
 }
 
-// WithFacetTenant binds the tenant every tenant-scoped relation facet's
-// junction join is restricted to. Required when a requested
-// relation facet declares a TenantColumn; without it (or
-// WithFacetUnscopedRelations) the build fails.
-func WithFacetTenant(value any) BuildFacetQueryOption {
-	return func(c *facetConfig) {
-		c.scope.tenant = value
-		c.scope.hasTenant = value != nil
-	}
-}
-
-// WithFacetUnscopedRelations deliberately aggregates tenant-scoped relation
-// facets without a tenant predicate. Never use it on a request path.
-func WithFacetUnscopedRelations() BuildFacetQueryOption {
-	return func(c *facetConfig) { c.scope.unscoped = true }
-}
-
-// WithFacetRowTenant holds each tenant-scoped relation facet's related rows
-// to the tenant of the owner row they hang from, column of the schema's
-// table, instead of a bound tenant (WithRowTenant). It excludes
-// WithFacetTenant and WithFacetUnscopedRelations.
-func WithFacetRowTenant(column string) BuildFacetQueryOption {
-	return func(c *facetConfig) { c.scope.row = rowTenant{column: column} }
-}
-
-// WithFacetRelatedPolicies supplies the policies of policy-scoped
-// relations' target tables (WithRelatedPolicies).
-func WithFacetRelatedPolicies(policies map[string]*PolicyConstraints) BuildFacetQueryOption {
-	return func(c *facetConfig) { c.related = policies }
+// WithFacetRelationScope scopes the relation facets' related rows
+// (RelationScope). A RowTenant is a column of the schema's table.
+func WithFacetRelationScope(s RelationScope) BuildFacetQueryOption {
+	return func(c *facetConfig) { c.scope, c.related = s.tenancy(), s.Related }
 }
 
 // WithFacetFrom reads the facets' base rows FROM from instead of the

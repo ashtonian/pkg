@@ -67,7 +67,7 @@ func TestBuildIncludeQuery_Postgres_TenantScoped(t *testing.T) {
 	}
 	tags := schema.Fields["tags"]
 
-	q, err := filter.BuildIncludeQuery(tags, filter.PostgresDialect{}, []any{"w1", "w2"}, filter.WithIncludeTenant("tenant-A"))
+	q, err := filter.BuildIncludeQuery(tags, filter.PostgresDialect{}, []any{"w1", "w2"}, filter.WithIncludeRelationScope(filter.RelationScope{Tenant: "tenant-A"}))
 	if err != nil {
 		t.Fatalf("build: %v", err)
 	}
@@ -99,7 +99,7 @@ func TestBuildIncludeQuery_NoTenantBound_FailsClosed(t *testing.T) {
 	if _, buildErr := filter.BuildIncludeQuery(schema.Fields["tags"], filter.PostgresDialect{}, []any{"w1"}); buildErr == nil {
 		t.Fatal("expected a tenant-scoped error")
 	}
-	q, err := filter.BuildIncludeQuery(schema.Fields["tags"], filter.PostgresDialect{}, []any{"w1"}, filter.WithIncludeUnscoped())
+	q, err := filter.BuildIncludeQuery(schema.Fields["tags"], filter.PostgresDialect{}, []any{"w1"}, filter.WithIncludeRelationScope(filter.RelationScope{Unscoped: true}))
 	if err != nil {
 		t.Fatalf("unscoped: %v", err)
 	}
@@ -197,7 +197,7 @@ func TestBuildIncludeQuery_CapsInSQL(t *testing.T) {
 		t.Fatalf("generate: %v", err)
 	}
 	q, err := filter.BuildIncludeQuery(schema.Fields["tags"], filter.SQLiteDialect{}, []any{"w1"},
-		filter.WithIncludeUnscoped(), filter.WithMaxIncludePerRelation(2))
+		filter.WithIncludeRelationScope(filter.RelationScope{Unscoped: true}), filter.WithMaxIncludePerRelation(2))
 	if err != nil {
 		t.Fatalf("build: %v", err)
 	}

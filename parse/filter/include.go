@@ -71,45 +71,24 @@ type includeQueryConfig struct {
 	scope   relationScope
 	related map[string]*PolicyConstraints
 	// owner is the owner's schema, whose table the read joins when the
-	// relation follows the owner row's tenant (WithIncludeRowTenant).
+	// relation follows the owner row's tenant (WithIncludeOwner).
 	owner       *ResourceSchema
 	maxPerOwner int
 }
 
-// WithIncludeTenant binds the tenant a tenant-scoped relation's junction
-// read is restricted to. Required when the relation declares a
-// TenantColumn; without it (or WithIncludeUnscoped) the build fails
-// .
-func WithIncludeTenant(value any) IncludeQueryOption {
-	return func(c *includeQueryConfig) {
-		c.scope.tenant = value
-		c.scope.hasTenant = value != nil
-	}
+// WithIncludeRelationScope scopes the related rows the include reads
+// (RelationScope). A RowTenant is a column of the owner's table, which the
+// read joins on the relation's owner key: it needs WithIncludeOwner.
+// ResolveInclude refuses a RowTenant: resolve each tenant's owners with
+// its Tenant.
+func WithIncludeRelationScope(s RelationScope) IncludeQueryOption {
+	return func(c *includeQueryConfig) { c.scope, c.related = s.tenancy(), s.Related }
 }
 
-// WithIncludeUnscoped deliberately reads a tenant-scoped junction without a
-// tenant predicate. Never use it on a request path.
-func WithIncludeUnscoped() IncludeQueryOption {
-	return func(c *includeQueryConfig) { c.scope.unscoped = true }
-}
-
-// WithIncludeRowTenant reads each owner's related rows in that owner's
-// tenant, column of owner's table, instead of a bound tenant (WithRowTenant):
-// for owners of more than one tenant, such as a governed list's page. The
-// read joins owner's table on the relation's owner key. It excludes
-// WithIncludeTenant and WithIncludeUnscoped. ResolveInclude refuses it:
-// resolve each tenant's owners with WithIncludeTenant.
-func WithIncludeRowTenant(owner *ResourceSchema, column string) IncludeQueryOption {
-	return func(c *includeQueryConfig) {
-		c.owner = owner
-		c.scope.row = rowTenant{column: column}
-	}
-}
-
-// WithIncludeRelatedPolicies supplies the policies of policy-scoped
-// relations' target tables (WithRelatedPolicies).
-func WithIncludeRelatedPolicies(policies map[string]*PolicyConstraints) IncludeQueryOption {
-	return func(c *includeQueryConfig) { c.related = policies }
+// WithIncludeOwner names the owner's schema, whose table a RowTenant reads
+// (WithIncludeRelationScope).
+func WithIncludeOwner(owner *ResourceSchema) IncludeQueryOption {
+	return func(c *includeQueryConfig) { c.owner = owner }
 }
 
 // WithMaxIncludePerRelation overrides DefaultMaxIncludePerRelation for
@@ -221,7 +200,7 @@ func includeConfig(field *FieldSchema, opts ...IncludeQueryOption) (*includeQuer
 		return nil, err
 	}
 	if cfg.scope.row.column != "" && cfg.owner == nil {
-		return nil, fmt.Errorf("a row tenant needs the owner's schema")
+		return nil, fmt.Errorf("a row tenant needs the owner's schema (WithIncludeOwner)")
 	}
 	if cfg.maxPerOwner <= 0 {
 		cfg.maxPerOwner = DefaultMaxIncludePerRelation
@@ -322,7 +301,7 @@ func VisibleRelated(field *FieldSchema, dialect Dialect, alias string, tenant an
 	if field == nil || field.Relation == nil || field.Relation.TargetTable == "" {
 		return "", fmt.Errorf("VisibleRelated: field is not a many-to-many with a target")
 	}
-	scope := relationScope{tenant: tenant, hasTenant: tenant != nil}
+	scope := relationScope{tenant: tenant}
 	tc, err := targetScope(field, dialect, scope, bind, alias)
 	if err != nil {
 		return "", err

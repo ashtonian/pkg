@@ -16,25 +16,11 @@ type resolveConfig struct {
 	related map[string]*PolicyConstraints
 }
 
-// ResolveTenant binds the tenant tenant-scoped relations' related rows are
-// held to (WithTenant).
-func ResolveTenant(value any) ResolveOption {
-	return func(c *resolveConfig) {
-		c.scope.tenant = value
-		c.scope.hasTenant = value != nil
-	}
-}
-
-// ResolveUnscopedRelations deliberately resolves tenant-scoped relations
-// without a tenant (WithUnscopedRelations). Never use it on a request path.
-func ResolveUnscopedRelations() ResolveOption {
-	return func(c *resolveConfig) { c.scope.unscoped = true }
-}
-
-// ResolveRelatedPolicies supplies the policies of policy-scoped relations'
-// target tables (WithRelatedPolicies).
-func ResolveRelatedPolicies(policies map[string]*PolicyConstraints) ResolveOption {
-	return func(c *resolveConfig) { c.related = policies }
+// ResolveRelationScope scopes the relations ResolveMemberships resolves
+// (RelationScope). A lookup reads one tenant's rows, so a RowTenant is
+// refused: resolve each tenant's rows with its Tenant.
+func ResolveRelationScope(s RelationScope) ResolveOption {
+	return func(c *resolveConfig) { c.scope, c.related = s.tenancy(), s.Related }
 }
 
 func hasRelation(n *FilterNode) bool {
@@ -157,7 +143,7 @@ func (r *memberResolver) relationLookup(n *FilterNode) (*Lookup, bool, error) {
 func (r *memberResolver) scoped(table, project, tenant, deleted string, cond *LookupCond) (*LookupCond, error) {
 	conds := []*LookupCond{WhereNotNull(project)}
 	if tenant != "" && !r.cfg.scope.unscoped {
-		if !r.cfg.scope.hasTenant {
+		if r.cfg.scope.tenant == nil {
 			return nil, fmt.Errorf("relation table %s is tenant-scoped (%s): bind a tenant or opt out explicitly with an unscoped-relations option", table, tenant)
 		}
 		conds = append(conds, WhereEq(tenant, r.cfg.scope.tenant))

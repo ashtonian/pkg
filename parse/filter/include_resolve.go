@@ -27,14 +27,14 @@ type IncludeLookup interface {
 // the relation predicate resolver for tenant, live-row and target-policy
 // visibility; keys are distinct and ordered before the per-owner cap.
 // Owners of more than one tenant resolve per tenant, each with its
-// WithIncludeTenant: WithIncludeRowTenant is refused.
+// RelationScope.Tenant: a RowTenant is refused.
 func ResolveInclude(ctx context.Context, field *FieldSchema, ownerPKs []any, lookup IncludeLookup, opts ...IncludeQueryOption) (IncludeRows, error) {
 	cfg, err := includeConfig(field, opts...)
 	if err != nil {
 		return IncludeRows{}, fmt.Errorf("resolving include: %w", err)
 	}
 	if cfg.scope.row.column != "" {
-		return IncludeRows{}, fmt.Errorf("resolving include %s: a lookup reads one tenant's rows; resolve each tenant's owners with WithIncludeTenant instead of WithIncludeRowTenant", field.ExternalName)
+		return IncludeRows{}, fmt.Errorf("resolving include %s: a lookup reads one tenant's rows; resolve each tenant's owners with RelationScope.Tenant instead of RowTenant", field.ExternalName)
 	}
 	out := IncludeRows{IDs: map[string][]string{}}
 	if len(ownerPKs) == 0 {

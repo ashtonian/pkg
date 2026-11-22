@@ -172,35 +172,10 @@ func ListSearch(query string) ListOption {
 	return func(c *listConfig) { c.searchQuery = query }
 }
 
-// ListTenant binds the tenant every tenant-scoped relation junction in the
-// filter and facets is restricted to. Required whenever
-// the resource declares relations with a TenantColumn.
-func ListTenant(value any) ListOption {
-	return func(c *listConfig) {
-		c.scope.tenant = value
-		c.scope.hasTenant = value != nil
-	}
-}
-
-// ListRelatedPolicies supplies the server's policy for the target tables of
-// policy-scoped relations, keyed by table (WithRelatedPolicies).
-func ListRelatedPolicies(policies map[string]*PolicyConstraints) ListOption {
-	return func(c *listConfig) { c.related = policies }
-}
-
-// ListUnscopedRelations deliberately builds tenant-scoped relation junctions
-// without a tenant predicate. Never use it on a request path.
-func ListUnscopedRelations() ListOption {
-	return func(c *listConfig) { c.scope.unscoped = true }
-}
-
-// ListRowTenant holds every tenant-scoped relation in the filter, count and
-// facets to the tenant of the row it hangs from, column of the resource's
-// table, instead of a bound tenant (WithRowTenant): for a list whose rows
-// span tenants, such as a governed one (ComposeConstraints). It excludes
-// ListTenant and ListUnscopedRelations.
-func ListRowTenant(column string) ListOption {
-	return func(c *listConfig) { c.scope.row = rowTenant{column: column} }
+// ListRelationScope scopes the relations the filter, count and facets
+// reach (RelationScope).
+func ListRelationScope(s RelationScope) ListOption {
+	return func(c *listConfig) { c.scope, c.related = s.tenancy(), s.Related }
 }
 
 // ListStartParam sets the starting parameter index offset. Use this when the

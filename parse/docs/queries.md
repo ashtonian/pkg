@@ -292,31 +292,37 @@ A `parse.Resource` declares its primary key once with `parse.PrimaryKey` (defaul
 | `ListFacets(fields...)` | `...string` | none | Build the facet query |
 | `ListSearch(q)` | string | none | Full-text predicate (WHERE only, order unchanged) |
 | `ListPolicy(pc)` | `*PolicyConstraints` | none | Server-side constraints ANDed with the filter; each names a [policy field](#policy-fields) |
-| `ListTenant(v)` | any | none | Tenant for tenant-scoped relation junctions (filter, count, facets) |
-| `ListRowTenant(column)` | string | none | Hold tenant-scoped related rows to the tenant of the row they hang from, the resource's `column`, for rows of several tenants ([governed lists](relations.md#governed-lists)); excludes `ListTenant` and `ListUnscopedRelations` |
-| `ListUnscopedRelations()` | — | off | Build tenant-scoped junctions without a tenant — platform tooling only |
+| `ListRelationScope(s)` | `RelationScope` | none | How the filter, count and facets reach related rows ([relation scope](#relation-scope)) |
 | `ListStartParam(n)` | int | `0` | Offset the main fragment after `n` earlier arguments; standalone count/facet statements keep independent numbering |
+
+### Relation scope
+
+Every statement that reaches related rows takes one `filter.RelationScope` through its builder's one option (`WithRelationScope`, `ListRelationScope`, `WithFacetRelationScope`, `WithIncludeRelationScope`, `ResolveRelationScope`), so a page, its count, facets and includes reach the same rows. `parse.BuildList` builds it from `parse.Scope`: `Tenant` from `Scope.Tenant`, `RowTenant` from the resource's tenant column under `Scope.Governance`, `Related` from `Scope.Related`.
+
+| Field | Type | Default | Meaning |
+|---|---|---|---|
+| `Tenant` | any | nil | The tenant every tenant-scoped relation is bound to, in its tenant column's type |
+| `RowTenant` | string | "" | Hold each tenant-scoped related row to the tenant of the owner row it hangs from, this column of the owner's table, for rows of several tenants ([governed lists](relations.md#governed-lists)); excludes `Tenant` and `Unscoped`. `ResolveMemberships` and `ResolveInclude` refuse it: resolve each tenant's rows with its `Tenant` |
+| `Unscoped` | bool | false | Reach tenant-scoped relations without a tenant predicate — platform tooling only |
+| `Related` | `map[string]*PolicyConstraints` | nil | The server's policy for each policy-scoped relation's target table, by table; a predicate on one without it is `ErrRelatedPolicyRequired` |
+
+The zero value scopes no tenant: a relation declaring a tenant column fails closed.
 
 `SQLBuilderOption`s for `NewSQLBuilder`:
 
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
 | `WithStartParam(n)` | int | `0` | First placeholder is `n+1` (e.g. after an UPDATE's SET arguments) |
-| `WithTenant(v)` | any | none | Tenant for tenant-scoped relation junctions |
-| `WithRowTenant(column)` | string | none | Compare each tenant-scoped related row with the schema table's tenant `column` instead of a bound tenant; excludes `WithTenant` and `WithUnscopedRelations` |
-| `WithUnscopedRelations()` | — | off | Opt out of junction tenancy |
+| `WithRelationScope(s)` | `RelationScope` | none | How the filter reaches related rows ([relation scope](#relation-scope)) |
 
 Facet, include, and flat-query options:
 
 | Option | Type | Default | Description |
 |---|---|---|---|
-| `WithFacetTenant(v)` | any | none | Tenant binding for standalone facet queries |
-| `WithFacetRowTenant(column)` | string | none | Hold relation facets' related rows to each owner row's tenant `column`, projected beside the owner's key; excludes `WithFacetTenant` |
-| `WithFacetUnscopedRelations()` | — | off | Explicitly omit junction tenancy in facet queries |
+| `WithFacetRelationScope(s)` | `RelationScope` | none | How relation facets reach related rows; a `RowTenant` is projected beside the owner's key |
 | `WithFacetFrom(from)` | string | the schema's table | The facets' base rows: an aliased table or a join whose columns the filter and the fields name. A relation facet still reads the owner's key as `Name.<pk>` |
-| `WithIncludeTenant(v)` | any | none | Tenant binding for include queries |
-| `WithIncludeRowTenant(owner, column)` | `*ResourceSchema`, string | none | Read each owner's related rows in the owner's tenant `column`, joining the owner's table; excludes `WithIncludeTenant`. `ResolveInclude` refuses it |
-| `WithIncludeUnscoped()` | — | off | Explicitly omit include tenancy |
+| `WithIncludeRelationScope(s)` | `RelationScope` | none | How the include reads related rows; a `RowTenant` joins the owner's table, which `WithIncludeOwner` names. `ResolveInclude` refuses a `RowTenant` |
+| `WithIncludeOwner(owner)` | `*ResourceSchema` | none | The owner's schema, whose table a `RowTenant` reads |
 | `WithMaxIncludePerRelation(n)` | int | `100` | Targets per owner; distinct keys capped in SQL or non-SQL resolution. The cap must leave room for the truncation sentinel |
 | `QueryParamAccept(names...)` | `...string` | none | Parameters the endpoint reads itself; left alone like the list parameters |
 | `QueryParamLenient()` | — | off | Ignore a parameter naming no filterable field instead of refusing it (E2071) |

@@ -41,7 +41,7 @@ func TestBuildFacetQuery_RelationFacet_PostgresJoin(t *testing.T) {
 		[]filter.FacetRequest{
 			{Field: "tags"},
 		},
-		filter.WithFacetTenant("t1"),
+		filter.WithFacetRelationScope(filter.RelationScope{Tenant: "t1"}),
 	)
 	if err != nil {
 		t.Fatalf("BuildFacetQuery: %v", err)
@@ -81,7 +81,7 @@ func TestBuildFacetQuery_RelationFacet_NoTenantBound_FailsClosed(t *testing.T) {
 	if _, err := build(); err == nil || !strings.Contains(err.Error(), "tenant-scoped") {
 		t.Fatalf("err = %v, want tenant-scoped error", err)
 	}
-	q, err := build(filter.WithFacetUnscopedRelations())
+	q, err := build(filter.WithFacetRelationScope(filter.RelationScope{Unscoped: true}))
 	if err != nil {
 		t.Fatalf("unscoped: %v", err)
 	}
@@ -100,7 +100,7 @@ func TestBuildFacetQuery_RelationFacet_MixedWithScalar(t *testing.T) {
 			{Field: "status"},
 			{Field: "tags"},
 		},
-		filter.WithFacetTenant("tenant-A"),
+		filter.WithFacetRelationScope(filter.RelationScope{Tenant: "tenant-A"}),
 	)
 	if err != nil {
 		t.Fatalf("BuildFacetQuery: %v", err)
@@ -144,7 +144,7 @@ func TestBuildFacetQuery_RelationFacet_SQLite(t *testing.T) {
 		filter.SQLiteDialect{},
 		"1=1", nil,
 		[]filter.FacetRequest{{Field: "tags"}},
-		filter.WithFacetTenant("tenant-A"),
+		filter.WithFacetRelationScope(filter.RelationScope{Tenant: "tenant-A"}),
 	)
 	if err != nil {
 		t.Fatalf("BuildFacetQuery: %v", err)

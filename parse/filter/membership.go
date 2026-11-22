@@ -2,6 +2,7 @@ package filter
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"math"
 	"reflect"
@@ -333,7 +334,7 @@ type RelationLookup interface {
 // Relation predicates resolve the same way (RelationLookup): `$some` is the
 // owner's correlation field `$in` the related rows' correlation values,
 // `$none` its negation or a NULL correlation, as NOT EXISTS admits one. They
-// need a lookup and, for tenant-scoped relations, ResolveTenant; without one
+// need a lookup and, for tenant-scoped relations, a RelationScope.Tenant (ResolveRelationScope); without one
 // they are refused rather than answered empty.
 func ResolveMemberships(ctx context.Context, f *ParsedFilter, lookup MembershipLookup, opts ...ResolveOption) (*ParsedFilter, error) {
 	if f == nil || f.AST == nil || !hasMember(f.AST.Root) && !hasRelation(f.AST.Root) {
@@ -342,6 +343,9 @@ func ResolveMemberships(ctx context.Context, f *ParsedFilter, lookup MembershipL
 	cfg := resolveConfig{}
 	for _, opt := range opts {
 		opt(&cfg)
+	}
+	if cfg.scope.row.column != "" {
+		return nil, errors.New("filter: ResolveMemberships reads one tenant's rows; resolve each tenant's with RelationScope.Tenant instead of RowTenant")
 	}
 	r := newMemberResolver(ctx, lookup, cfg)
 	root, err := r.resolve(f.AST.Root)

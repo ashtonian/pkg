@@ -55,14 +55,14 @@ A pair table's `Tenant` column has no Go type. It holds the request's one tenant
 
 ### Governed lists
 
-`Scope.Governance` replaces the tenant floor: the list reads the rows the governance tree admits, of any tenant — a grant of another tenant's row, a parent tenant's view of its children's. A row's relations are its own tenant's. Every tenant-scoped related row, at every depth — a target's `TenantColumn`, a pair table's `Tenant` — is compared with the tenant column of the listed row it hangs from (`filter.ListRowTenant`) instead of being bound to one tenant:
+`Scope.Governance` replaces the tenant floor: the list reads the rows the governance tree admits, of any tenant — a grant of another tenant's row, a parent tenant's view of its children's. A row's relations are its own tenant's. Every tenant-scoped related row, at every depth — a target's `TenantColumn`, a pair table's `Tenant` — is compared with the tenant column of the listed row it hangs from (`filter.RelationScope.RowTenant`) instead of being bound to one tenant:
 
 ```
 WHERE … EXISTS (SELECT 1 FROM notes WHERE notes.document_id = documents.id
   AND notes.tenant_id = documents.tenant_id AND notes.deleted_at IS NULL AND notes.body = $1)
 ```
 
-A granted row of tenant B is filtered, counted, faceted and included by B's related rows, and a row of tenant A hanging from it (A's note on B's document, A's pair to it) is not its relation. `Scope.Tenant` is neither required nor used. Under the floor every listed row is the request's tenant, so the two agree: a governance tree that admits only the request's tenant lists exactly what the floor lists, and a nil or empty tree is the floor (`ErrTenantRequired` without `Scope.Tenant`). Includes join the owner's table to read each owner's tenant (`filter.WithIncludeRowTenant`), and facets project it beside the owner's key (`filter.WithFacetRowTenant`). Updates refuse governance (`ErrUpdateScope`).
+A granted row of tenant B is filtered, counted, faceted and included by B's related rows, and a row of tenant A hanging from it (A's note on B's document, A's pair to it) is not its relation. `Scope.Tenant` is neither required nor used. Under the floor every listed row is the request's tenant, so the two agree: a governance tree that admits only the request's tenant lists exactly what the floor lists, and a nil or empty tree is the floor (`ErrTenantRequired` without `Scope.Tenant`). Includes join the owner's table to read each owner's tenant (`filter.WithIncludeOwner`), and facets project it beside the owner's key, both under the list's `RelationScope.RowTenant`. Updates refuse governance (`ErrUpdateScope`).
 
 The comparison is between two columns, so their types must meet. A UUID tenant column and a string one compare by the UUID's canonical text, `CAST(… AS TEXT)` on the UUID side, which a string tenant column beside a UUID one holds ([Tenant key](#tenant-key)); integer columns of any width compare as they are. A pair table's `Tenant` column declares no type and is compared as it is with the owner's: give it the type of the owner's tenant column, or PostgreSQL refuses the statement (`operator does not exist: text = uuid`).
 
@@ -103,11 +103,11 @@ The output above is `ExampleResource_Relate`, checked by the unit lane. A many-t
 
 ### Outside SQL
 
-A backend that holds rows in memory evaluates relation predicates as memberships: `filter.ResolveMemberships(ctx, f, lookup, filter.ResolveTenant(tenant), filter.ResolveRelatedPolicies(related))` replaces each one, before any row is read, with a comparison on the owner's correlation field (`FieldSchema.RelatedBy`, the key or a belongs-to's foreign key): `$some` is the field among the related rows' correlation values, `$none` the field outside them or NULL, exactly as `NOT EXISTS` admits a NULL foreign key. The related rows are a `filter.Lookup` over the target (or pair) table — its live rows of the tenant, the projected column never NULL — and, for a target filter, `Lookup.Filter`, the target's filter with its policy composed in. A many-to-many is the pair rows whose target is in the target's lookup (`WhereMember`); depth-two relations resolve inside the target's filter first.
+A backend that holds rows in memory evaluates relation predicates as memberships: `filter.ResolveMemberships(ctx, f, lookup, filter.ResolveRelationScope(filter.RelationScope{Tenant: tenant, Related: related}))` replaces each one, before any row is read, with a comparison on the owner's correlation field (`FieldSchema.RelatedBy`, the key or a belongs-to's foreign key): `$some` is the field among the related rows' correlation values, `$none` the field outside them or NULL, exactly as `NOT EXISTS` admits a NULL foreign key. The related rows are a `filter.Lookup` over the target (or pair) table — its live rows of the tenant, the projected column never NULL — and, for a target filter, `Lookup.Filter`, the target's filter with its policy composed in. A many-to-many is the pair rows whose target is in the target's lookup (`WhereMember`); depth-two relations resolve inside the target's filter first.
 
 Lookups with a `Filter` go only to a `filter.RelationLookup`, whose `LookupFilteredValues` evaluates the filter with the store's own evaluator; a store that is only a `MembershipLookup` refuses those requests (E2083) rather than ignore the filter and over-match. Without a lookup, or without a tenant for a tenant-scoped relation, the request is refused too. `relation_declared_cases_test.go` answers every case both ways — `EXISTS` and resolved memberships — on SQLite and PostgreSQL and requires the same rows.
 
-A lookup reads one tenant's related rows, and a [governed list](#governed-lists)'s rows span tenants. Select the rows with the composed policy (`filter.ApplyPolicyConstraints` over `filter.ComposeConstraints(scope, governance, policy)`), group them by tenant, and resolve the filter once per tenant with that tenant's `ResolveTenant`: each row is evaluated with its own tenant's resolved filter. Includes resolve the same way, each tenant's owners with `ResolveInclude(…, filter.WithIncludeTenant(tenant))`; `ResolveInclude` refuses `WithIncludeRowTenant`. `governed_list_cases_test.go` lists rows held in memory this way and requires the rows and includes SQL returns.
+A lookup reads one tenant's related rows, and a [governed list](#governed-lists)'s rows span tenants. Select the rows with the composed policy (`filter.ApplyPolicyConstraints` over `filter.ComposeConstraints(scope, governance, policy)`), group them by tenant, and resolve the filter once per tenant with that tenant's `RelationScope.Tenant`: each row is evaluated with its own tenant's resolved filter. Includes resolve the same way, each tenant's owners with `ResolveInclude(…, filter.WithIncludeRelationScope(filter.RelationScope{Tenant: tenant}))`; `ResolveMemberships` and `ResolveInclude` refuse a `RowTenant`. `governed_list_cases_test.go` lists rows held in memory this way and requires the rows and includes SQL returns.
 
 ### Include related keys
 
@@ -158,7 +158,7 @@ postgres WHERE products.supplier_id = $1
 
 A tag relation compares related IDs only; filter by a related row's attributes through a declared relation. It costs 8 when the field is tagged `indexed:"true"` and 80 when not, against a default `MaxCost` of 50 (`core.WithMaxCost`); tag it indexed when the pair table is indexed on the owner column, as it should be. Outside SQL its key comparisons resolve as memberships of the pair table (`ResolveMemberships`); other operators on it are SQL-only.
 
-A junction with a tenant column (`relation:"…,id,tenant_id"`) binds the caller's tenant in every statement and refuses to build without one (`filter.ListTenant`, `WithIncludeTenant`, `RenderRelationOpOptions.TenantValue`), or, for rows of several tenants, compares it with the owner row's tenant column (`filter.ListRowTenant`, `WithIncludeRowTenant`, as a [governed list](#governed-lists) does); `ListUnscopedRelations` is the explicit opt-out for platform tooling.
+A junction with a tenant column (`relation:"…,id,tenant_id"`) binds the caller's tenant in every statement and refuses to build without one (`filter.RelationScope.Tenant`, `RenderRelationOpOptions.TenantValue`), or, for rows of several tenants, compares it with the owner row's tenant column (`RelationScope.RowTenant`, as a [governed list](#governed-lists) does); `RelationScope.Unscoped` is the explicit opt-out for platform tooling.
 
 ## Declare the relation
 
@@ -170,7 +170,7 @@ For a virtual relation hidden from the base row JSON, add `relation_name:"tag_id
 
 1. Validate the requested names with `filter.ParseIncludes(schema, parameter)`.
 2. Execute the base page query and collect its owner IDs.
-3. For each requested relation, call `filter.BuildIncludeQuery(field, dialect, ownerIDs, options...)`. Bind `WithIncludeTenant` for tenant-scoped junctions, or `WithIncludeRowTenant(ownerSchema, tenantColumn)` when the owners span tenants.
+3. For each requested relation, call `filter.BuildIncludeQuery(field, dialect, ownerIDs, options...)`. Scope it with `WithIncludeRelationScope`: a `Tenant` for tenant-scoped junctions, or a `RowTenant` with `WithIncludeOwner(ownerSchema)` when the owners span tenants.
 4. Execute its SQL and read the rows with the query's `Scan`, which groups target IDs by owner and lists the owners whose IDs were cut at the cap in `Truncated`.
 5. Attach the result to `filter.Page[T].Relations`, whose JSON name is `_relations`.
 
