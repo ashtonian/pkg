@@ -123,6 +123,35 @@ func jsonReadable(sf reflect.StructField) bool {
 	return sf.IsExported()
 }
 
+// tagName is the name of a json tag as Go 1.27's encoding/json reads it
+// (encoding/json/v2 parseFieldOptions in v1 mode): the text before the first
+// comma, cut at a reserved character (comma, backslash, quotes, backtick) to
+// its leading identifier; ok is false when there is none, and the field takes
+// its Go name. "-," names a field "-".
+func tagName(tag string) (name string, ok bool) {
+	if tag == "" || strings.HasPrefix(tag, ",") {
+		return "", false
+	}
+	n := len(tag) - len(strings.TrimLeftFunc(tag, func(r rune) bool {
+		return !strings.ContainsRune(",\\'\"`", r)
+	}))
+	name = tag[:n]
+	if !strings.HasPrefix(tag[n:], ",") && len(name) != len(tag) {
+		r, _ := utf8.DecodeRuneInString(tag)
+		if r != '_' && !unicode.IsLetter(r) {
+			return "", false
+		}
+		m := len(tag) - len(strings.TrimLeftFunc(tag, func(r rune) bool {
+			return r == '_' || unicode.IsLetter(r) || unicode.IsDigit(r)
+		}))
+		name = tag[:m]
+	}
+	if !utf8.ValidString(name) {
+		name = string([]rune(name))
+	}
+	return name, true
+}
+
 // derefUnnamed follows one unnamed pointer, as encoding/json does for an
 // embedded or member type.
 func derefUnnamed(t reflect.Type) reflect.Type {

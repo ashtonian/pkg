@@ -3,13 +3,10 @@ package core
 import (
 	"errors"
 	"fmt"
-	"math"
 	"reflect"
 	"slices"
 	"strings"
 	"sync"
-	"unicode"
-	"unicode/utf8"
 
 	"github.com/ashtonian/pkg/gowalker"
 )
@@ -202,17 +199,12 @@ func parseCapabilities(tag string) (Capabilities, error) {
 	return c, nil
 }
 
-// fieldsCacheCapacity keeps every walked type: struct types are finite and
-// never unloaded, and a walk must be the same *StructFields every time,
-// since views key maps by its *Field.
-const fieldsCacheCapacity = math.MaxInt
-
-// hiddenPrefix starts the walk-internal name of a field the field-name tag
-// hides. No field-name tag name can hold a NUL (it is a control
-// character), so a hidden field never collides with a named one.
-const hiddenPrefix = "\x00"
-
 type fieldsKey struct{ name, column string }
+
+// fieldEngines holds one engine per field-name tag: naming reads no other
+// tag. Each keeps every type it compiles, as views key maps by *Field and a
+// walk must be the same *StructFields every time.
+var fieldEngines sync.Map // field-name tag -> *gowalker.Engine
 
 var fieldCaches sync.Map // fieldsKey -> *gowalker.TypeCache[*StructFields]
 
@@ -252,13 +244,9 @@ func fieldsCache(k fieldsKey) (*gowalker.TypeCache[*StructFields], error) {
 		cache, _ := c.(*gowalker.TypeCache[*StructFields]) // the only type stored
 		return cache, nil
 	}
-	engine, err := gowalker.New(
-		gowalker.WithFieldResolver(func(sf reflect.StructField) (gowalker.FieldRule, error) { return fieldRule(sf, k.name) }),
-		gowalker.ResolveByDepth(),
-		gowalker.WithCacheCapacity(fieldsCacheCapacity),
-	)
+	engine, err := fieldEngine(k.name)
 	if err != nil {
-		return nil, fmt.Errorf("field walk engine: %w", err)
+		return nil, err
 	}
 	cache := gowalker.NewTypeCache(engine, func(s *gowalker.Schema) (*StructFields, error) {
 		return buildStructFields(s, k)
@@ -268,13 +256,31 @@ func fieldsCache(k fieldsKey) (*gowalker.TypeCache[*StructFields], error) {
 	return stored, nil
 }
 
+// fieldEngine names fields as encoding/json does under the field-name tag,
+// every named field a leaf (views that read inside one, documents and
+// elements, walk its type themselves). A field the tag hides is kept without
+// a name, so its column survives.
+func fieldEngine(nameTag string) (*gowalker.Engine, error) {
+	if e, ok := fieldEngines.Load(nameTag); ok {
+		engine, _ := e.(*gowalker.Engine) // the only type stored
+		return engine, nil
+	}
+	engine, err := gowalker.New(
+		gowalker.WithJSONFields(nameTag, gowalker.KeepHidden()),
+		gowalker.WithUnboundedCache(),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("field walk engine: %w", err)
+	}
+	actual, _ := fieldEngines.LoadOrStore(nameTag, engine)
+	stored, _ := actual.(*gowalker.Engine)
+	return stored, nil
+}
+
 // walkError names the fields of a name conflict.
 func walkError(t reflect.Type, err error) error {
 	if conflict, ok := errors.AsType[*gowalker.NameConflict](err); ok {
 		first, second := promotedName(conflict.First), promotedName(conflict.Second)
-		if strings.HasPrefix(conflict.Name, hiddenPrefix) {
-			return fmt.Errorf("%s: hidden fields %s and %s are declared alike; give one its own column", t, first, second)
-		}
 		return fmt.Errorf("%s: fields %s and %s are both named %q at one depth, so encoding/json writes neither; rename one", t, first, second, conflict.Name)
 	}
 	return fmt.Errorf("%s: %w", t, err)
@@ -292,79 +298,6 @@ func promotedName(f *gowalker.Field) string {
 	return b.String()
 }
 
-// hiddenName is the walk-internal name of a field the field-name tag hides:
-// unique unless two hidden fields share a Go name and every tag, which would
-// also share a column.
-func hiddenName(sf reflect.StructField) string {
-	return hiddenPrefix + sf.Name + hiddenPrefix + string(sf.Tag)
-}
-
-// fieldRule names a field as Go 1.27's encoding/json does under tag key:
-// the tag's name, else the Go name, and a struct embedded without a name
-// promotes its fields. A name two fields claim is settled by
-// ResolveByDepth, a tag's name marked Explicit (StructFields states the
-// rule). A field the tag hides keeps a walk-internal name so its column
-// survives. Every named field is a leaf: views that read inside one
-// (documents, elements) walk its type themselves.
-func fieldRule(sf reflect.StructField, key string) (gowalker.FieldRule, error) {
-	tag, tagged := sf.Tag.Lookup(key)
-	if !sf.IsExported() && !sf.Anonymous {
-		return gowalker.FieldRule{Skip: true}, nil
-	}
-	name, hasName := tagName(tag)
-	promotable := sf.Anonymous && !hasName && isStructType(sf.Type)
-	switch {
-	case tag == "-":
-		if sf.Anonymous && isStructType(sf.Type) {
-			return gowalker.FieldRule{}, fmt.Errorf("field %s: an embedded struct hidden by %s:\"-\" has no fields encoding/json writes; hide its fields one by one", sf.Name, key)
-		}
-		if !sf.IsExported() {
-			return gowalker.FieldRule{Skip: true}, nil
-		}
-		return gowalker.FieldRule{Name: hiddenName(sf), Atomic: true}, nil
-	case promotable:
-		return gowalker.FieldRule{Inline: true}, nil
-	case !sf.IsExported():
-		if tagged && sf.Anonymous && isStructType(sf.Type) {
-			return gowalker.FieldRule{}, fmt.Errorf("field %s: an unexported embedded struct named by %s:%q cannot be read; promote it or export it", sf.Name, key, tag)
-		}
-		return gowalker.FieldRule{Skip: true}, nil
-	}
-	if !hasName {
-		name = sf.Name
-	}
-	return gowalker.FieldRule{Name: name, Atomic: true, Explicit: hasName}, nil
-}
-
-// tagName is the name of a field-name tag as Go 1.27's encoding/json reads
-// it (encoding/json/v2 parseFieldOptions in v1 mode): the text before the
-// first comma, cut at a reserved character (comma, backslash, quotes,
-// backtick) to its leading identifier; ok is false when there is none, and
-// the field takes its Go name. "-," names a field "-".
-func tagName(tag string) (name string, ok bool) {
-	if tag == "" || strings.HasPrefix(tag, ",") {
-		return "", false
-	}
-	n := len(tag) - len(strings.TrimLeftFunc(tag, func(r rune) bool {
-		return !strings.ContainsRune(",\\'\"`", r)
-	}))
-	name = tag[:n]
-	if !strings.HasPrefix(tag[n:], ",") && len(name) != len(tag) {
-		r, _ := utf8.DecodeRuneInString(tag)
-		if r != '_' && !unicode.IsLetter(r) {
-			return "", false
-		}
-		m := len(tag) - len(strings.TrimLeftFunc(tag, func(r rune) bool {
-			return r == '_' || unicode.IsLetter(r) || unicode.IsDigit(r)
-		}))
-		name = tag[:m]
-	}
-	if !utf8.ValidString(name) {
-		name = string([]rune(name))
-	}
-	return name, true
-}
-
 func isStructType(t reflect.Type) bool {
 	if t.Kind() == reflect.Pointer && t.Name() == "" {
 		t = t.Elem()
@@ -372,21 +305,25 @@ func isStructType(t reflect.Type) bool {
 	return t.Kind() == reflect.Struct
 }
 
+// buildStructFields lists the named fields and the ones the field-name tag
+// hides, in declaration order, an embedded struct's in place of it.
 func buildStructFields(s *gowalker.Schema, k fieldsKey) (*StructFields, error) {
-	root := s.Root()
-	for root.Kind() == reflect.Pointer {
-		root = root.Elem()
-	}
-	out := &StructFields{Type: root.Type(), external: map[string]*Field{}, columnTagged: map[string]*Field{}}
-	for _, wf := range root.Fields() {
-		sf := wf.GoField()
+	out := &StructFields{Type: s.Type(), external: map[string]*Field{}, columnTagged: map[string]*Field{}}
+	for _, d := range s.Root().Declarations() {
+		sf := d.GoField
+		if sf.Anonymous && isStructType(sf.Type) && sf.Tag.Get(k.name) == "-" {
+			return nil, fmt.Errorf("field %s: an embedded struct hidden by %s:\"-\" has no fields encoding/json writes; hide its fields one by one", sf.Name, k.name)
+		}
+		if d.State != gowalker.Named && d.State != gowalker.Unnamed {
+			continue
+		}
 		tags, err := readTags(sf, k)
 		if err != nil {
 			return nil, fmt.Errorf("field %s: %w", sf.Name, err)
 		}
-		f := &Field{GoName: sf.Name, Type: sf.Type, Route: wf.Index(), Tags: tags}
-		if !strings.HasPrefix(wf.Name(), hiddenPrefix) {
-			f.External = wf.Name()
+		f := &Field{GoName: sf.Name, Type: sf.Type, Route: d.Index, Tags: tags}
+		if d.State == gowalker.Named {
+			f.External = d.Field.Name()
 			out.external[f.External] = f
 		}
 		if col, _, _ := strings.Cut(tags.Column, ","); col != "" && col != "-" {
