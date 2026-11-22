@@ -27,17 +27,15 @@ type misspeltTagKey struct {
 }
 
 func (m misspeltTagKey) err() error {
-	return fmt.Errorf("field %s of %s has tag key %q; did you mean %q? Name a key another library reads with core.WithForeignTagKeys", m.field, m.declaring, m.written, m.meant)
+	return fmt.Errorf("field %s of %s has tag key %q; did you mean %q? Name a key another library reads with core.WithForeignTagKeys", m.field, gowalker.TypeText(m.declaring), m.written, m.meant)
 }
 
 // misspeltTagKeys lists the misspelt keys of a walked field's tag. The
 // field-name and column tags are not compared: other libraries' keys sit one
 // character from them, bson beside json.
 func misspeltTagKeys(d gowalker.Declaration, k fieldsKey) []misspeltTagKey {
-	// Compiling the walk already refused a tag TagKeys cannot read.
-	keys, _ := gowalker.TagKeys(d.GoField.Tag)
 	var found []misspeltTagKey
-	for _, key := range keys {
+	for key := range d.TagKeys() {
 		if key == k.name || key == k.column {
 			continue
 		}

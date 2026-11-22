@@ -35,8 +35,11 @@ Raw resolved-config exports use `Tree`; support bundles can apply their own poli
 
 Config uses [gowalker](https://pkg.go.dev/github.com/ashtonian/pkg/gowalker)
 for struct discovery, naming collisions, inline field routes and cached field
-access. Config retains its own decoding, redaction, validation and source
-precedence rules. Structural inspection and load-time tag validation are
+access. A config type is compiled once: its sections, list elements and map
+entries are nodes of that compiled graph, whose field accessors read a section
+or element in hand, and the reload-class check walks the same graph's
+declarations, squashed sections included. Config retains its own decoding,
+redaction, validation and source precedence rules. Structural inspection and load-time tag validation are
 separate: diagnostics can print live values without decoding their examples.
 Both metadata caches keep every type they see for the life of the process,
 and neither retains configuration values.

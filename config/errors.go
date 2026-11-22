@@ -6,6 +6,8 @@ import (
 	"reflect"
 	"slices"
 	"strings"
+
+	"github.com/ashtonian/pkg/gowalker"
 )
 
 // Category sentinels. Every error Load or a Reloader returns wraps exactly
@@ -130,14 +132,14 @@ func (e *UnknownKeysError) clone() *UnknownKeysError {
 func (e *UnknownKeysError) Error() string {
 	var b strings.Builder
 	if len(e.Keys) > 0 {
-		fmt.Fprintf(&b, "keys no field of %s decodes: ", typeText(e.Type))
+		fmt.Fprintf(&b, "keys no field of %s decodes: ", gowalker.TypeText(e.Type))
 		writeUnknown(&b, e.Keys)
 	}
 	if len(e.Variables) > 0 {
 		if b.Len() > 0 {
 			b.WriteString("; ")
 		}
-		fmt.Fprintf(&b, "environment variables no field of %s reads: ", typeText(e.Type))
+		fmt.Fprintf(&b, "environment variables no field of %s reads: ", gowalker.TypeText(e.Type))
 		writeUnknown(&b, e.Variables)
 	}
 	return b.String()

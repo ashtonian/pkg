@@ -93,3 +93,33 @@ func TestLoad_RefusesUnreadableTags(t *testing.T) {
 		})
 	}
 }
+
+type repeatedSecretCfg struct {
+	//lint:ignore SA5008 the repeated key is what a load refuses
+	Password string `koanf:"password" sensitive:"true" default:"SECRET-MARKER" default:"x"`
+}
+
+// A schema error names the field and the tag key, never a tag's value: a
+// default on a sensitive field is the secret itself. An unnamed section's
+// type prints without its tags.
+func TestLoad_SchemaErrorsLeaveTagValuesOut(t *testing.T) {
+	_, err := Load[repeatedSecretCfg](t.Context(), WithSkipValidation())
+	require.ErrorIs(t, err, ErrSchema)
+	assert.NotContains(t, err.Error(), "SECRET-MARKER")
+	assert.Contains(t, err.Error(), `field Password: struct tag repeats the key "default"`)
+
+	for _, tag := range []reflect.StructTag{
+		`koanf:"token" default:"SECRET-MARKER" env: "TOKEN"`,
+		`koanf:"token" default:"SECRET-MARKER" default:"x"`,
+	} {
+		section := reflect.StructOf([]reflect.StructField{{Name: "Token", Type: reflect.TypeFor[string](), Tag: tag}})
+		root := reflect.StructOf([]reflect.StructField{
+			{Name: "Auth", Type: section, Tag: `koanf:"auth"`},
+			{Name: "Other", Type: reflect.TypeFor[string](), Tag: `koanf:"other" default:"SECRET-MARKER"`},
+		})
+		_, err := loadSchema(root, buildOptions(nil))
+		require.ErrorIs(t, err, ErrSchema)
+		assert.NotContains(t, err.Error(), "SECRET-MARKER")
+		assert.Contains(t, err.Error(), "field Token")
+	}
+}

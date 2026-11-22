@@ -9,6 +9,8 @@ import (
 	"sync"
 
 	"github.com/knadh/koanf/v2"
+
+	"github.com/ashtonian/pkg/gowalker"
 )
 
 // Defaulter is a config type that sets defaults in code, for what a default
@@ -88,7 +90,7 @@ func codeDefaults(t reflect.Type, schema *schemaNode, tags map[string]any, o *op
 	}
 	before := reflect.New(t)
 	if _, err := o.decodeInput(schema, tags, before.Interface(), nil); err != nil {
-		return nil, fmt.Errorf("decoding the default tags of %s for SetDefaults: %w: %w", typeText(t), ErrValidation, err)
+		return nil, fmt.Errorf("decoding the default tags of %s for SetDefaults: %w: %w", gowalker.TypeText(t), ErrValidation, err)
 	}
 	after := reflect.New(t)
 	after.Elem().Set(deepCopy(before.Elem()))
@@ -98,7 +100,7 @@ func codeDefaults(t reflect.Type, schema *schemaNode, tags map[string]any, o *op
 	d := defaultsDiff{schema: schema}
 	tree, _ := d.tree(schema, nil, before.Elem(), after.Elem())
 	if len(d.noText) > 0 {
-		return nil, fmt.Errorf("SetDefaults of %s: %w: values that do not marshal to text: %s", typeText(t), ErrValidation, strings.Join(d.noText, ", "))
+		return nil, fmt.Errorf("SetDefaults of %s: %w: values that do not marshal to text: %s", gowalker.TypeText(t), ErrValidation, strings.Join(d.noText, ", "))
 	}
 	m, _ := tree.(map[string]any)
 	return m, nil
@@ -163,9 +165,9 @@ func checkDefaultersOf(t reflect.Type, walking map[reflect.Type]bool) error {
 	embedded := embeddedDefaulters(t)
 	switch {
 	case t.Kind() != reflect.Interface && t.Implements(defaulterType) && len(embedded) == 0:
-		return fmt.Errorf("%w: %s.SetDefaults has a value receiver, so it cannot change the config; declare it on *%s", ErrSchema, typeText(t), typeText(t))
+		return fmt.Errorf("%w: %s.SetDefaults has a value receiver, so it cannot change the config; declare it on *%s", ErrSchema, gowalker.TypeText(t), gowalker.TypeText(t))
 	case t.Kind() == reflect.Struct && len(embedded) > 0 && !reflect.PointerTo(t).Implements(defaulterType):
-		return fmt.Errorf("%w: %s embeds %s, whose SetDefaults methods collide, so none runs; declare %s.SetDefaults calling each", ErrSchema, typeText(t), strings.Join(embedded, " and "), typeText(t))
+		return fmt.Errorf("%w: %s embeds %s, whose SetDefaults methods collide, so none runs; declare %s.SetDefaults calling each", ErrSchema, gowalker.TypeText(t), strings.Join(embedded, " and "), gowalker.TypeText(t))
 	}
 	if t.Kind() != reflect.Struct {
 		return nil
@@ -198,7 +200,7 @@ func embeddedDefaulters(t reflect.Type) []string {
 		et := derefType(sf.Type)
 		if et.Kind() == reflect.Interface && et.Implements(defaulterType) ||
 			reflect.PointerTo(et).Implements(defaulterType) || len(embeddedDefaulters(et)) > 0 {
-			names = append(names, typeText(et))
+			names = append(names, gowalker.TypeText(et))
 		}
 	}
 	return names
@@ -473,14 +475,14 @@ func decodeDefaultTree(t reflect.Type, root *schemaNode, tree map[string]any) (r
 	out := reflect.New(derefType(t))
 	md, err := (&options{}).decodeInput(root, tree, out.Interface(), nil)
 	if err != nil {
-		return reflect.Value{}, fmt.Errorf("decoding defaults of %s: %w", typeText(t), err)
+		return reflect.Value{}, fmt.Errorf("decoding defaults of %s: %w", gowalker.TypeText(t), err)
 	}
 	if len(md.Unused) > 0 {
 		unknown := &UnknownKeysError{Type: t}
 		for _, name := range md.Unused {
 			unknown.Keys = append(unknown.Keys, unusedKey(root, tree, name))
 		}
-		return reflect.Value{}, fmt.Errorf("defaults of %s: %w: %w", typeText(t), ErrSchema, unknown)
+		return reflect.Value{}, fmt.Errorf("defaults of %s: %w: %w", gowalker.TypeText(t), ErrSchema, unknown)
 	}
 	return out.Elem(), nil
 }

@@ -14,6 +14,8 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+
+	"github.com/ashtonian/pkg/gowalker"
 )
 
 // Shadow is one shadowed input: Source sets Key, and a higher-precedence
@@ -46,7 +48,7 @@ type ShadowedInputsError struct {
 
 func (e *ShadowedInputsError) Error() string {
 	var b strings.Builder
-	fmt.Fprintf(&b, "inputs of %s that a higher-precedence source outranks: ", typeText(e.Type))
+	fmt.Fprintf(&b, "inputs of %s that a higher-precedence source outranks: ", gowalker.TypeText(e.Type))
 	for i, s := range e.Inputs {
 		if i > 0 {
 			b.WriteString(", ")

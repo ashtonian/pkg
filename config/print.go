@@ -373,7 +373,7 @@ func (w *entryWalk) enter(v reflect.Value) bool {
 }
 
 func (w *entryWalk) cycle(path keyPath, v reflect.Value, s site) {
-	w.entries = append(w.entries, printEntry{name: path.String(), value: cycleValue, typeName: typeText(v.Type()), desc: s.desc})
+	w.entries = append(w.entries, printEntry{name: path.String(), value: cycleValue, typeName: gowalker.TypeText(v.Type()), desc: s.desc})
 }
 
 // holdsContainers reports whether slice or array elements of type t may hold
@@ -418,7 +418,7 @@ func (w *entryWalk) leaf(path keyPath, declared, value reflect.Value, s site) {
 	} else {
 		text = RedactText(text)
 	}
-	w.entries = append(w.entries, printEntry{name: path.String(), value: text, typeName: typeText(typ), desc: s.desc})
+	w.entries = append(w.entries, printEntry{name: path.String(), value: text, typeName: gowalker.TypeText(typ), desc: s.desc})
 }
 
 // uncheckedHolder reports a value printed whole that could hold a sensitive

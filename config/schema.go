@@ -83,12 +83,14 @@ func schemaMetadata(t reflect.Type) *schemaEntry {
 }
 
 // buildSchema records a type's graph and its structural errors in its entry:
-// diagnostics read the graph of a type whose reload tags are invalid.
+// diagnostics read the graph of a type whose reload tags are invalid. The
+// graph follows view's compiled shapes, so a section's node reads the same
+// shape its parent's field reached, without compiling the section's type.
 func buildSchema(view *gowalker.Schema) (*schemaEntry, error) {
-	b := &schemaBuilder{nodes: map[reflect.Type]*schemaNode{}}
-	n := b.node(view.Type())
+	b := &schemaBuilder{root: view, nodes: map[*gowalker.Shape]*schemaNode{}}
+	n := b.node(view.Root())
 	if b.err == nil {
-		b.err = checkReloadTags(n)
+		b.err = checkReloadTags(view)
 	}
 	e := &schemaEntry{node: n, err: b.err}
 	seen := map[*schemaNode]bool{}
@@ -117,7 +119,7 @@ func rootMetadata(t reflect.Type) (*schemaNode, error) {
 		return nil, err
 	}
 	if n.kind != nodeBranch {
-		return nil, fmt.Errorf("%w: %s is not a struct", ErrSchema, typeText(t))
+		return nil, fmt.Errorf("%w: %s is not a struct", ErrSchema, gowalker.TypeText(t))
 	}
 	return n, nil
 }
@@ -161,41 +163,45 @@ func rootSchema(t reflect.Type) (*schemaNode, error) {
 		return nil, err
 	}
 	if n.kind != nodeBranch {
-		return nil, fmt.Errorf("%w: %s is not a struct", ErrSchema, typeText(t))
+		return nil, fmt.Errorf("%w: %s is not a struct", ErrSchema, gowalker.TypeText(t))
 	}
 	return n, nil
 }
 
+// schemaBuilder builds the graph of root's type from root's compiled shapes.
 type schemaBuilder struct {
-	nodes map[reflect.Type]*schemaNode
+	root  *gowalker.Schema
+	nodes map[*gowalker.Shape]*schemaNode
 	err   error
 }
 
-func (b *schemaBuilder) node(t reflect.Type) *schemaNode {
-	t = derefType(t)
-	if n, ok := b.nodes[t]; ok {
+// node is the node of shape, a shape of root's graph, past its pointers.
+func (b *schemaBuilder) node(shape *gowalker.Shape) *schemaNode {
+	shape = shapeBase(shape)
+	if n, ok := b.nodes[shape]; ok {
 		return n // a recursive type points back at its own node
 	}
+	t := shape.Type()
 	n := &schemaNode{typ: t}
-	b.nodes[t] = n
+	b.nodes[shape] = n
 	switch k := t.Kind(); {
 	case k == reflect.Interface:
 		n.kind = nodeDynamic
 	case isBranch(t):
 		n.kind = nodeBranch
 		n.byKey = map[string]*schemaField{}
-		b.fields(n)
+		b.fields(n, shape)
 	case opaque(t):
 		n.kind = nodeLeaf
 	case k == reflect.Map && t.Key().Kind() == reflect.String:
 		n.kind = nodeMap
-		n.elem = b.node(t.Elem())
+		n.elem = b.node(shape.Elem())
 	case k == reflect.Map:
 		n.kind = nodeLeaf
-		n.elem = b.node(t.Elem()) // decoded whole for diagnostics, but element tags still apply
+		n.elem = b.node(shape.Elem()) // decoded whole for diagnostics, but element tags still apply
 	case (k == reflect.Slice || k == reflect.Array) && t.Elem().Kind() != reflect.Uint8:
 		n.kind = nodeList
-		n.elem = b.node(t.Elem())
+		n.elem = b.node(shape.Elem())
 	default:
 		n.kind = nodeLeaf
 	}
@@ -205,10 +211,10 @@ func (b *schemaBuilder) node(t reflect.Type) *schemaNode {
 
 // fields annotates the shared view with config policy, retaining its handles
 // and compiled access routes instead of rediscovering struct fields.
-func (b *schemaBuilder) fields(n *schemaNode) {
-	view, err := compileView(n.typ)
+func (b *schemaBuilder) fields(n *schemaNode, shape *gowalker.Shape) {
+	view, err := b.root.At(shape)
 	if err != nil {
-		b.fail(err)
+		b.fail(viewError(n.typ, err))
 		return
 	}
 	n.view = view
@@ -222,7 +228,7 @@ func (b *schemaBuilder) fields(n *schemaNode) {
 			b.fail(fmt.Errorf("%w: %w", ErrSchema, err))
 			return
 		}
-		f := &schemaField{key: field.Name(), reload: fieldReload(field), sf: sf, index: field.Index(), tagged: fieldSensitive(field), named: nameSensitive(sf), node: b.node(sf.Type), access: access}
+		f := &schemaField{key: field.Name(), reload: fieldReload(field), sf: sf, index: field.Index(), tagged: fieldSensitive(field), named: nameSensitive(sf), node: b.node(field.Shape()), access: access}
 		n.fields = append(n.fields, f)
 		n.byKey[f.key] = f
 	}
@@ -251,18 +257,18 @@ func checkTags(t reflect.Type, f reflect.StructField) error {
 	if v, ok := f.Tag.Lookup("sensitive"); ok {
 		switch {
 		case v != "true" && v != "false":
-			return fmt.Errorf("%w: field %s of %s has sensitive:%q; want \"true\" or \"false\"", ErrSchema, f.Name, typeText(t), v)
+			return fmt.Errorf("%w: field %s of %s has sensitive:%q; want \"true\" or \"false\"", ErrSchema, f.Name, gowalker.TypeText(t), v)
 		case v == "false" && taggedSensitive(f.Tag):
-			return fmt.Errorf("%w: field %s of %s names a secret and is tagged sensitive:\"false\"", ErrSchema, f.Name, typeText(t))
+			return fmt.Errorf("%w: field %s of %s names a secret and is tagged sensitive:\"false\"", ErrSchema, f.Name, gowalker.TypeText(t))
 		}
 	}
 	if sep, ok := f.Tag.Lookup("sep"); ok {
 		lt := derefType(f.Type)
 		switch {
 		case lt.Kind() != reflect.Slice || lt.Elem().Kind() == reflect.Uint8 || decodesItself(lt) || isBranch(derefType(lt.Elem())):
-			return fmt.Errorf("%w: field %s of %s has a sep tag, but only a list of values is split", ErrSchema, f.Name, typeText(t))
+			return fmt.Errorf("%w: field %s of %s has a sep tag, but only a list of values is split", ErrSchema, f.Name, gowalker.TypeText(t))
 		case sep == "":
-			return fmt.Errorf("%w: field %s of %s has an empty sep tag; name a separator, or none", ErrSchema, f.Name, typeText(t))
+			return fmt.Errorf("%w: field %s of %s has an empty sep tag; name a separator, or none", ErrSchema, f.Name, gowalker.TypeText(t))
 		}
 	}
 	if v, ok := f.Tag.Lookup("format"); ok {
@@ -272,45 +278,45 @@ func checkTags(t reflect.Type, f reflect.StructField) error {
 			(ft.Kind() == reflect.Slice || ft.Kind() == reflect.Array) && ft.Elem().Kind() != reflect.Uint8
 		switch {
 		case v != "json":
-			return fmt.Errorf("%w: field %s of %s has format:%q; the one format is \"json\"", ErrSchema, f.Name, typeText(t), v)
+			return fmt.Errorf("%w: field %s of %s has format:%q; the one format is \"json\"", ErrSchema, f.Name, gowalker.TypeText(t), v)
 		case !shaped || decodesItself(ft):
-			return fmt.Errorf("%w: field %s of %s has format:\"json\", which is for a section, map, list or interface", ErrSchema, f.Name, typeText(t))
+			return fmt.Errorf("%w: field %s of %s has format:\"json\", which is for a section, map, list or interface", ErrSchema, f.Name, gowalker.TypeText(t))
 		case sep:
-			return fmt.Errorf("%w: field %s of %s has format:\"json\" and a sep tag; JSON is not split", ErrSchema, f.Name, typeText(t))
+			return fmt.Errorf("%w: field %s of %s has format:\"json\" and a sep tag; JSON is not split", ErrSchema, f.Name, gowalker.TypeText(t))
 		}
 	}
 	if v, ok := f.Tag.Lookup("env"); ok {
 		if !variableSetsField(f.Tag, f.Type) {
-			return fmt.Errorf("%w: field %s of %s has an env tag, but no variable can set a %s", ErrSchema, f.Name, typeText(t), typeText(f.Type))
+			return fmt.Errorf("%w: field %s of %s has an env tag, but no variable can set a %s", ErrSchema, f.Name, gowalker.TypeText(t), gowalker.TypeText(f.Type))
 		}
 		for _, name := range envTagNames(f.Tag) {
 			if !envVarName.MatchString(name) {
-				return fmt.Errorf("%w: field %s of %s has env:%q; %q is not a variable name", ErrSchema, f.Name, typeText(t), v, name)
+				return fmt.Errorf("%w: field %s of %s has env:%q; %q is not a variable name", ErrSchema, f.Name, gowalker.TypeText(t), v, name)
 			}
 		}
 	}
 	if ex, ok := f.Tag.Lookup("example"); ok {
 		if isBranch(derefType(f.Type)) {
-			return fmt.Errorf("%w: field %s of %s has an example tag, but %s is a section; give its fields examples", ErrSchema, f.Name, typeText(t), f.Name)
+			return fmt.Errorf("%w: field %s of %s has an example tag, but %s is a section; give its fields examples", ErrSchema, f.Name, gowalker.TypeText(t), f.Name)
 		}
 		// The value is not quoted: an example on a sensitive field may be one.
 		if _, err := decodeTag(f.Type, f.Tag, ex); err != nil {
-			return fmt.Errorf("%w: field %s of %s has an example that does not decode into %s", ErrSchema, f.Name, typeText(t), typeText(f.Type))
+			return fmt.Errorf("%w: field %s of %s has an example that does not decode into %s", ErrSchema, f.Name, gowalker.TypeText(t), gowalker.TypeText(f.Type))
 		}
 	}
 	def, ok := f.Tag.Lookup("default")
 	switch {
 	case !ok:
 	case isBranch(derefType(f.Type)):
-		return fmt.Errorf("%w: field %s of %s has a default tag, but %s is a section; give its fields defaults", ErrSchema, f.Name, typeText(t), f.Name)
+		return fmt.Errorf("%w: field %s of %s has a default tag, but %s is a section; give its fields defaults", ErrSchema, f.Name, gowalker.TypeText(t), f.Name)
 	case jsonFormat(f.Tag):
 		// The value is not quoted: a default on a sensitive field may be one.
 		if _, err := decodeTag(f.Type, f.Tag, def); err != nil {
-			return fmt.Errorf("%w: field %s of %s has a default that does not decode into %s", ErrSchema, f.Name, typeText(t), typeText(f.Type))
+			return fmt.Errorf("%w: field %s of %s has a default that does not decode into %s", ErrSchema, f.Name, gowalker.TypeText(t), gowalker.TypeText(f.Type))
 		}
 	case textMap(derefType(f.Type)):
 		if _, err := parseMapEntries(def); err != nil {
-			return fmt.Errorf("%w: field %s of %s has a default that is not key=value entries: %w", ErrSchema, f.Name, typeText(t), err)
+			return fmt.Errorf("%w: field %s of %s has a default that is not key=value entries: %w", ErrSchema, f.Name, gowalker.TypeText(t), err)
 		}
 	}
 	return nil
@@ -344,7 +350,7 @@ func checkEnvTags(root *schemaNode) error {
 			at := path.field(f.key)
 			names := envTagNames(f.sf.Tag)
 			if len(names) > 0 && crossed {
-				return fmt.Errorf("%w: field %s of %s has an env tag, but %s is a key of every list element or map entry, which no one variable sets", ErrSchema, f.sf.Name, typeText(n.typ), at)
+				return fmt.Errorf("%w: field %s of %s has an env tag, but %s is a key of every list element or map entry, which no one variable sets", ErrSchema, f.sf.Name, gowalker.TypeText(n.typ), at)
 			}
 			for _, name := range names {
 				if other, dup := owners[name]; dup {
@@ -499,7 +505,7 @@ func (n *schemaNode) walkTo(c cursor, p keyPath) (cursor, *schemaNode, error) {
 			if canHoldKeys(n.typ) {
 				return c, n, nil // decoded whole; its field owns what is inside
 			}
-			return cursor{}, nil, fmt.Errorf("%w %s: %s is a %s, which has no keys beneath it", ErrKey, p, p[:i].orRoot(), typeText(n.typ))
+			return cursor{}, nil, fmt.Errorf("%w %s: %s is a %s, which has no keys beneath it", ErrKey, p, p[:i].orRoot(), gowalker.TypeText(n.typ))
 		}
 	}
 	return c, n, nil

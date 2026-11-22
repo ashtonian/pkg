@@ -5,6 +5,8 @@ import (
 	"reflect"
 	"slices"
 	"strings"
+
+	"github.com/ashtonian/pkg/gowalker"
 )
 
 // PrintTemplate writes a config file for T, built from its struct: the file an
@@ -39,7 +41,7 @@ func PrintTemplate[T any](envPrefix string, opts ...PrintOption) error {
 	switch po.formatOr(FormatYAML) {
 	case FormatYAML:
 		y := &yamlWriter{ew: &errWriter{w: po.writer}}
-		y.ew.printf("# Configuration for %s: every key with its default. A commented key has\n# no default, or one that is not shown; uncomment it to set it.\n", typeText(t))
+		y.ew.printf("# Configuration for %s: every key with its default. A commented key has\n# no default, or one that is not shown; uncomment it to set it.\n", gowalker.TypeText(t))
 		y.mapping(n, 0, false, 0, "")
 		return y.ew.err
 	case FormatJSON:
@@ -178,7 +180,7 @@ func (b *templateBuilder) example(node *schemaNode, c cursor, env envNames) (*ou
 			return nil, err
 		}
 	default:
-		elem = scalarNode("<" + typeText(node.typ.Elem()) + ">")
+		elem = scalarNode("<" + gowalker.TypeText(node.typ.Elem()) + ">")
 	}
 	if node.kind == nodeList {
 		return &outNode{kind: outList, items: []*outNode{elem}}, nil
@@ -193,7 +195,7 @@ func (b *templateBuilder) example(node *schemaNode, c cursor, env envNames) (*ou
 // meta is a key's type line: its Go type, whether it is required or
 // sensitive, and the variables that set it.
 func meta(f *schemaField, c cursor, env envNames) string {
-	parts := []string{typeText(f.sf.Type)}
+	parts := []string{gowalker.TypeText(f.sf.Type)}
 	if slices.Contains(strings.Split(f.sf.Tag.Get("validate"), ","), "required") {
 		parts = append(parts, "required")
 	}

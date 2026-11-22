@@ -275,3 +275,119 @@ func TestReloadTags_RecursiveObjectHasLivePresence(t *testing.T) {
 	assert.Contains(t, keys, "root.next")
 	assert.Empty(t, res.Snapshot.PendingRestart)
 }
+
+type reloadEmptySection struct{}
+
+type ReloadClassed struct {
+	Port int `koanf:"port" reload:"live"`
+}
+
+// The reload check reads every declaration on every route: an empty squashed
+// section's own tag, a squashed pointer's, and a section type reached through
+// pointers, map entries and list elements, whose tags two keys would share.
+func TestReloadTags_DeclarationsOnEveryRoute(t *testing.T) {
+	_, err := FieldsChecked[struct {
+		reloadEmptySection `koanf:",squash" reload:""`
+		Port               int `koanf:"port"`
+	}]()
+	require.ErrorIs(t, err, ErrSchema)
+	assert.Contains(t, err.Error(), `field reloadEmptySection has invalid reload class ""`)
+
+	_, err = FieldsChecked[struct {
+		*ReloadClassed `koanf:",squash" reload:"two words"`
+	}]()
+	require.ErrorIs(t, err, ErrSchema)
+	assert.Contains(t, err.Error(), `field ReloadClassed has invalid reload class "two words"`)
+
+	for name, check := range map[string]func() error{
+		"pointers": func() error {
+			_, err := FieldsChecked[struct {
+				A *ReloadClassed `koanf:"a"`
+				B *ReloadClassed `koanf:"b"`
+			}]()
+			return err
+		},
+		"map entries and list elements": func() error {
+			_, err := FieldsChecked[struct {
+				A map[string]ReloadClassed `koanf:"a"`
+				B []*ReloadClassed         `koanf:"b"`
+			}]()
+			return err
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			err := check()
+			require.ErrorIs(t, err, ErrSchema)
+			assert.Contains(t, err.Error(), "is shared by a")
+			assert.Contains(t, err.Error(), " and b")
+		})
+	}
+
+	// One route to a classed section, however deep, is not shared.
+	_, err = FieldsChecked[struct {
+		Outer struct {
+			reloadEmptySection `koanf:",squash"`
+			Items              map[string][]ReloadClassed `koanf:"items"`
+		} `koanf:"outer"`
+	}]()
+	require.NoError(t, err)
+}
+
+type reloadRecursive struct {
+	Name  string           `koanf:"name" reload:"live"`
+	Child *reloadRecursive `koanf:"child"`
+}
+
+type reloadRecursiveList struct {
+	Name     string                 `koanf:"name" reload:"live"`
+	Children []*reloadRecursiveList `koanf:"children"`
+}
+
+// A recursive section that declares reload tags is reached at every depth of
+// its recursion, whether the cycle closes on the section or on a pointer to it.
+func TestReloadTags_RecursiveSectionsAreShared(t *testing.T) {
+	tests := []struct {
+		name   string
+		check  func() error
+		shared string
+	}{
+		{"the root", func() error { _, err := FieldsChecked[reloadRecursive](); return err }, "$ and child"},
+		{"a section", func() error {
+			_, err := FieldsChecked[struct {
+				N reloadRecursive `koanf:"n"`
+			}]()
+			return err
+		}, "n and n.child"},
+		{"a pointer section", func() error {
+			_, err := FieldsChecked[struct {
+				N *reloadRecursive `koanf:"n"`
+			}]()
+			return err
+		}, "n and n.child"},
+		{"list elements", func() error {
+			_, err := FieldsChecked[struct {
+				N []*reloadRecursive `koanf:"n"`
+			}]()
+			return err
+		}, "n[*] and n[*].child"},
+		{"map entries", func() error {
+			_, err := FieldsChecked[struct {
+				N map[string]*reloadRecursive `koanf:"n"`
+			}]()
+			return err
+		}, "n[*] and n[*].child"},
+		{"through its own list", func() error {
+			_, err := FieldsChecked[struct {
+				N *reloadRecursiveList `koanf:"n"`
+			}]()
+			return err
+		}, "n and n.children[*]"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := tt.check()
+			require.ErrorIs(t, err, ErrSchema)
+			assert.Contains(t, err.Error(), "is shared by "+tt.shared+";")
+		})
+	}
+}
