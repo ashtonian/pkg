@@ -14,11 +14,12 @@ defaults:
     shell: bash
 concurrency:
   group: artifact-storage-${{ github.ref }}
-  cancel-in-progress: true
+  # A newer push to a pull request replaces its run; main's runs all finish.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 jobs:
   contract:
     if: github.actor_id == '4212452' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
-    uses: ashtonian/go-ci-actions/.github/workflows/artifact-consumer.yml@ce77d25782e078b8e9a5d4ed2e6c53c4ae54927c # v1.6.4
+    uses: ashtonian/go-ci-actions/.github/workflows/artifact-consumer.yml@2ee8735fdee91ff0ee16067a263da6c8a7770841 # v1.13.0
     with:
       runner: arc-pkg
     secrets:

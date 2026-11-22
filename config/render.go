@@ -288,7 +288,7 @@ func scalarOf(v reflect.Value) (any, error) {
 			return values, nil
 		}
 	}
-	return nil, fmt.Errorf("%w: %s has no scalar representation; implement encoding.TextMarshaler", ErrSchema, typeText(v.Type()))
+	return nil, fmt.Errorf("%w: %s has no scalar representation; implement encoding.TextMarshaler", ErrSchema, gowalker.TypeText(v.Type()))
 }
 
 func textMarshaler(v reflect.Value) (encoding.TextMarshaler, bool) {

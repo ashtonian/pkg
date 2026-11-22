@@ -14,6 +14,8 @@ import (
 	"github.com/go-viper/mapstructure/v2"
 	"github.com/knadh/koanf/parsers/yaml"
 	"github.com/knadh/koanf/v2"
+
+	"github.com/ashtonian/pkg/gowalker"
 )
 
 // Option configures [Load] and the pipeline a [Reloader] re-runs.
@@ -506,7 +508,7 @@ func (o *options) decodeHook(observe func(mapstructure.DecodeHookFunc) mapstruct
 func (o *options) checkHookTypes(cfg reflect.Type) error {
 	for i, h := range o.postLoad {
 		if h.target != cfg {
-			return fmt.Errorf("%w: hook %d is for %s, the load produces %s", ErrPostLoad, i, typeText(h.target), typeText(cfg))
+			return fmt.Errorf("%w: hook %d is for %s, the load produces %s", ErrPostLoad, i, gowalker.TypeText(h.target), gowalker.TypeText(cfg))
 		}
 	}
 	return nil

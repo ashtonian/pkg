@@ -13,6 +13,8 @@ import (
 	"time"
 
 	"github.com/go-viper/mapstructure/v2"
+
+	"github.com/ashtonian/pkg/gowalker"
 )
 
 // JSONSchemaDraft is the dialect JSONSchema writes.
@@ -75,7 +77,7 @@ func JSONSchema[T any](envPrefixes ...string) (json.RawMessage, error) {
 		return nil, g.err
 	}
 	doc["$schema"] = JSONSchemaDraft
-	doc["title"] = typeText(derefType(t))
+	doc["title"] = gowalker.TypeText(derefType(t))
 	if len(g.defs) > 0 {
 		doc["$defs"] = g.defs
 	}
@@ -110,7 +112,7 @@ func (g *schemaGen) defName(n *schemaNode) string {
 			return r
 		}
 		return '_'
-	}, typeText(n.typ))
+	}, gowalker.TypeText(n.typ))
 	name := base
 	for i := 2; g.taken[name]; i++ {
 		name = base + "_" + strconv.Itoa(i)
@@ -290,7 +292,7 @@ func (g *schemaGen) node(n *schemaNode, c cursor, val reflect.Value, env envName
 		s["items"] = orNull(g.node(n.elem, c.intoEntry(segment{kind: segAny}, n.typ.Elem()), elementDefaultValue(n.elem), envNames{}), n.typ.Elem())
 		return s
 	case nodeDynamic:
-		return map[string]any{"x-config-type": typeText(n.typ)}
+		return map[string]any{"x-config-type": gowalker.TypeText(n.typ)}
 	}
 	return leafSchema(n.typ)
 }
@@ -317,9 +319,9 @@ func leafSchema(t reflect.Type) map[string]any {
 	p := reflect.PointerTo(t)
 	switch {
 	case p.Implements(decoderType):
-		return map[string]any{"x-config-type": typeText(t)}
+		return map[string]any{"x-config-type": gowalker.TypeText(t)}
 	case p.Implements(textUnmarshalerType):
-		return map[string]any{"type": "string", "x-config-type": typeText(t)}
+		return map[string]any{"type": "string", "x-config-type": gowalker.TypeText(t)}
 	}
 	switch t.Kind() {
 	case reflect.Bool:
@@ -334,12 +336,12 @@ func leafSchema(t reflect.Type) map[string]any {
 		return map[string]any{"type": "string"}
 	case reflect.Slice:
 		if t.Elem().Kind() == reflect.Uint8 {
-			return map[string]any{"type": "string", "x-config-type": typeText(t)}
+			return map[string]any{"type": "string", "x-config-type": gowalker.TypeText(t)}
 		}
 	case reflect.Map:
-		return map[string]any{"type": "object", "x-config-type": typeText(t)}
+		return map[string]any{"type": "object", "x-config-type": gowalker.TypeText(t)}
 	}
-	return map[string]any{"x-config-type": typeText(t)}
+	return map[string]any{"x-config-type": gowalker.TypeText(t)}
 }
 
 // rules adds what a `validate` tag says that JSON Schema can state, and

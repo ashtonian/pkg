@@ -118,7 +118,10 @@ structs, maps, lists and squashed fields. Without one it is `restart`.
 `live` and other nonempty single-word labels, such as `hot`, are live classes;
 only `restart` requires a restart. A shared struct type that declares its own
 reload tags at multiple schema paths fails with `ErrSchema`; place classes
-on its owning fields instead.
+on its owning fields instead. The check walks the type once per key path,
+squashed sections included; a type whose walk takes more than 100,000 steps
+(each field, pointer and element is one) or nests more than 128 deep fails
+with `ErrSchema` rather than being checked in part.
 
 Pass `WithReloadTags()` to enable this policy. A broad `db` applier then
 receives `db.max_conns` changes while `db.host` remains in `PendingRestart`.

@@ -14,7 +14,7 @@ application behavior stay in those libraries.
 | Object | Contains | Lifetime |
 |---|---|---|
 | `Engine` | Field naming and leaf rules, resource limits, and a schema cache | Reuse for one set of rules; `Default()` is shared by the package functions |
-| `Schema` | The compiled description of one exact root type under those rules | Reuse for values of that root type |
+| `Schema` | The compiled description of one exact root type under those rules, or of a node of one (`At`) | Reuse for values of that type |
 | `Shape` / `Field` | Type relationships and field metadata | Owned by the compiled schema |
 | `TypeCache[M]` | Your library's metadata, built once per type from a schema | Reuse for the engine's lifetime |
 | `Accessor` | A resolved path, such as `Database.Port` | Reuse for the same path and schema |
@@ -61,7 +61,8 @@ owner, so a consumer can inspect tags on that owner. Expansion also records, per
 struct, every declaration it meets with the state the view gave it (named,
 unnamed, inline owner, shadowed, tied, skipped); `Declarations` returns that
 record, so a library never re-walks the reflect type to find fields the view
-left out.
+left out. Each field's tag keys are read once, when its struct is first
+prepared, and every handle and declaration of the field shares them.
 
 Names and aliases must identify one field. Compilation rejects collisions using
 the same matching rule as lookup: exact matching, or Unicode case folding when
@@ -78,6 +79,28 @@ resolution that is an error, since the repeat's fields would claim their names
 again; with it the repeat is left out, which changes no outcome, as each of its
 fields is the same field nearer the root, deeper, and loses its name to it.
 `encoding/json`'s explore-each-embedded-type-once rule computes the same result.
+
+Every struct the compiled graph exposes gets its own view: the root, each
+field's type and each element type, which paths and walks can land on, and
+also each inline owner's type and each type of a field that lost its name,
+which a consumer can reach through `DeclaredView`, `Declarations` and
+`Field.Shape`. The view pass tracks how it reached each struct. A struct on a
+path from the root must have a valid view, so a conflict among its names fails
+compilation. A struct reached only aside, as an inline owner or through a field
+that lost its name, is not a location of the view that reaches it: under depth
+resolution, its own fields can tie over a name its owner settles, as when a
+struct embeds two structs that each declare `ID` and its owner declares its own
+`ID`, and `encoding/json` writes the owner without reading the tie. Such a
+struct keeps the conflict in place of a view (its `Fields` and `Declarations`
+are empty) and its owner compiles. The types its own fields declare are still
+viewed aside, so every check compilation makes, such as of tags, applies below
+it. Reaching it on a path later in the same pass, as a named section or an
+element, reports the conflict; so do compiling it alone, or any type that
+reaches it on a path, and `Schema.At` on it or on a node from which a path
+reaches it. `At` searches for such a struct in the order compiling the node's
+type alone meets it, so both report the same conflict, and only in a graph
+that holds one; it keeps each node's outcome. Each struct is resolved once and
+each is checked at most once per kind of reach.
 
 A **leaf** is a value that named paths and walkers may select but do not descend
 into. `FieldRule.Atomic` makes one field a leaf; `WithAtomicType` makes every use
@@ -140,7 +163,11 @@ nothing would attach a write made through it after the call returns.
 
 A type walk visits the visible type graph. It reports `Reference` when a type
 is already on the current ancestor route. Collection elements have a type edge,
-not a fabricated key or index.
+not a fabricated key or index. With `WithDeclaredView`, it follows each
+struct's declared view instead: named fields by their own handles, and inline
+owners by an `InlineEdge` into their types, empty ones included, so a library
+can check annotations on the declarations themselves along each route that
+reaches them.
 
 A value walk visits actual locations and returns concrete paths that can later
 be resolved. It reports `Cycle` for an active ancestor reached again. Shared
@@ -174,15 +201,20 @@ under a lock and never waits on an unfinished entry, so a build function may
 request other types.
 
 `Schema.AccessField` caches accessors for its root's visible and unnamed
-fields. `Resolve`
+fields. `Schema.At` gives a node of the compiled graph a schema of its own,
+whose accessors and walks start at that node; the compilation keeps one per
+node it is asked for, shared by every schema of the graph, so it is bounded by
+the graph and adds nothing to the engine's cache. `Resolve`
 and `ResolveText` return uncached accessors; callers retain those for reuse.
 Engine caches do not retain caller instances or arbitrary map keys. An accessor
 itself retains keys supplied in its path for as long as the caller keeps it.
 
 Schemas, fields, shapes and accessors expose immutable metadata; slice getters
-return copies. Their internal caches are synchronized. Engines and schemas must
-not be copied. Rule callbacks must be deterministic and safe for concurrent
-calls; create another engine to change the rules.
+return copies and tag keys are yielded, never exposed. Their internal caches are
+synchronized. Engines and schemas must not be copied. Rule callbacks must be
+deterministic and safe for concurrent calls; create another engine to change the
+rules. The built-in options copy what they are given when they are made, so one
+option can configure many engines, concurrently.
 
 Live values still follow ordinary Go ownership rules. Reads borrow references,
 and `Value.Reflect()` exposes the capabilities of the underlying reflected

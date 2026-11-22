@@ -7,6 +7,8 @@ import (
 	"slices"
 	"strings"
 	"sync"
+
+	"github.com/ashtonian/pkg/gowalker"
 )
 
 // Value is one side of a [Change]: whether a value is there, and its text
@@ -464,7 +466,7 @@ func (w *comparer) checked(s side) bool {
 		return true
 	}
 	if t := uncomparableIn(s.v); t != nil {
-		w.fail(fmt.Errorf("%w: %s holds a %s, which cannot be compared", ErrSchema, w.path.orRoot(), typeText(t)))
+		w.fail(fmt.Errorf("%w: %s holds a %s, which cannot be compared", ErrSchema, w.path.orRoot(), gowalker.TypeText(t)))
 		return false
 	}
 	return true
@@ -500,7 +502,7 @@ func resolve(v reflect.Value) side {
 
 func (s side) typeName() string {
 	if s.v.IsValid() {
-		return typeText(s.v.Type())
+		return gowalker.TypeText(s.v.Type())
 	}
 	return ""
 }

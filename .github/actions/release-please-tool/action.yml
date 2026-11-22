@@ -4,7 +4,7 @@ runs:
   using: composite
   steps:
     # Points pnpm at the runner's in-cluster npm cache when it answers.
-    - uses: ashtonian/go-ci-actions/npm-registry@439da8bdc22311fff2f04371ca9cd9c3233ee7d0 # v1.6.2
+    - uses: ashtonian/go-ci-actions/npm-registry@2ee8735fdee91ff0ee16067a263da6c8a7770841 # v1.13.0
     - uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
       with:
         package_json_file: tools/release-please/package.json

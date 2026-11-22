@@ -150,3 +150,37 @@ func BenchmarkMatchFields(b *testing.B) {
 		}
 	})
 }
+
+// A type's schema compiles the type once: its sections, collection elements
+// included, are nodes of that compiled graph, and their accessors read a
+// section or element in hand.
+func TestSchema_CompilesOnlyTheRoot(t *testing.T) {
+	type section struct {
+		Port int `koanf:"port"`
+	}
+	type entry struct {
+		Name string `koanf:"name"`
+	}
+	type cfg struct {
+		Server section            `koanf:"server"`
+		Items  []entry            `koanf:"items"`
+		ByName map[string]*entry  `koanf:"by_name"`
+		Nested map[string][]entry `koanf:"nested"`
+	}
+	before := configView.CacheStats().Entries
+	root, err := rootSchema(reflect.TypeFor[cfg]())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if compiled := configView.CacheStats().Entries - before; compiled != 1 {
+		t.Errorf("building the schema compiled %d types", compiled)
+	}
+	items := root.byKey["items"].node.elem
+	if items != root.byKey["by_name"].node.elem || items != root.byKey["nested"].node.elem.elem {
+		t.Error("one element type has several nodes")
+	}
+	name, err := items.byKey["name"].value(reflect.ValueOf(entry{Name: "x"}))
+	if err != nil || name.Interface() != "x" {
+		t.Errorf("an element's field reads %v, %v", name, err)
+	}
+}

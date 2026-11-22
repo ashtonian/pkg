@@ -22,7 +22,7 @@ type misspeltTagKey struct {
 }
 
 func (m misspeltTagKey) err() error {
-	return fmt.Errorf("%w: field %s of %s has tag key %q; did you mean %q? Name a key another library reads with WithForeignTagKeys", ErrSchema, m.field, typeText(m.declaring), m.written, m.meant)
+	return fmt.Errorf("%w: field %s of %s has tag key %q; did you mean %q? Name a key another library reads with WithForeignTagKeys", ErrSchema, m.field, gowalker.TypeText(m.declaring), m.written, m.meant)
 }
 
 // misspeltTagKeys lists the misspelt keys of the fields shape's view
@@ -33,9 +33,7 @@ func misspeltTagKeys(shape *gowalker.Shape) []misspeltTagKey {
 		if d.State == gowalker.Skipped {
 			continue
 		}
-		// Compiling the view already refused a tag TagKeys cannot read.
-		keys, _ := gowalker.TagKeys(d.GoField.Tag)
-		for _, key := range keys {
+		for key := range d.TagKeys() {
 			if meant, ok := gowalker.MisspeltTagKey(key, tagKeys); ok {
 				found = append(found, misspeltTagKey{declaring: d.DeclaringType, field: d.GoField.Name, written: key, meant: meant})
 			}

@@ -55,19 +55,14 @@ func fieldReload(f *gowalker.Field) string {
 	return ""
 }
 
-func checkReloadTags(root *schemaNode) error {
-	view, err := compileView(root.typ)
-	if err != nil {
-		return err
-	}
+// checkReloadTags refuses an invalid reload class, and reload tags on a
+// section type two keys reach, which the tags would claim for both. It checks
+// every declaration on every route through view's type, the inline owners a
+// koanf:",squash" tag names included.
+func checkReloadTags(view *gowalker.Schema) error {
 	paths := map[reflect.Type]string{}
-	walking := map[*gowalker.Shape]bool{}
-	var walk func(*gowalker.Shape, keyPath) error
-	walk = func(shape *gowalker.Shape, p keyPath) error {
-		shape = shapeBase(shape)
-		if shape.Atomic() {
-			return nil
-		}
+	var failed error
+	check := func(shape *gowalker.Shape, p keyPath) error {
 		own := false
 		for _, f := range shape.DeclaredView() {
 			if value, ok := f.Tags().Lookup("reload"); ok {
@@ -78,29 +73,45 @@ func checkReloadTags(root *schemaNode) error {
 			}
 		}
 		if other, ok := paths[shape.Type()]; ok && own && other != p.orRoot() {
-			return fmt.Errorf("%w: %s declares reload tags and is shared by %s and %s; put the tags on the owning fields", ErrSchema, typeText(shape.Type()), other, p.orRoot())
+			return fmt.Errorf("%w: %s declares reload tags and is shared by %s and %s; put the tags on the owning fields", ErrSchema, gowalker.TypeText(shape.Type()), other, p.orRoot())
 		}
 		paths[shape.Type()] = p.orRoot()
-		if walking[shape] {
-			return nil
-		}
-		walking[shape] = true
-		defer delete(walking, shape)
-		for _, f := range shape.DeclaredView() {
-			path := p
-			if !f.Inline() {
-				path = p.field(f.Name())
-			}
-			if err := walk(f.Shape(), path); err != nil {
-				return err
-			}
-		}
-		if shape.Elem() != nil {
-			return walk(shape.Elem(), p.any())
-		}
 		return nil
 	}
-	return walk(view.Root(), nil)
+	err := view.WalkType(func(v gowalker.TypeVisit) (gowalker.Control, error) {
+		shape := v.Shape
+		if v.Kind == gowalker.Reference {
+			// A cycle closes on the type it re-enters, a pointer to the
+			// section included: the section is reached again at this key.
+			shape = shapeBase(shape)
+		}
+		if shape.Kind() != reflect.Struct || shape.Atomic() {
+			return gowalker.Continue, nil
+		}
+		if failed = check(shape, routeKey(v.Route)); failed != nil {
+			return gowalker.Stop, nil
+		}
+		return gowalker.Continue, nil
+	}, gowalker.WithDeclaredView())
+	if err != nil {
+		return fmt.Errorf("%w: checking reload tags of %s: %w", ErrSchema, gowalker.TypeText(view.Type()), err)
+	}
+	return failed
+}
+
+// routeKey is the key pattern a type walk's route reaches: inline owners and
+// pointers add no segment, and a collection's elements are any entry.
+func routeKey(route []gowalker.TypeEdge) keyPath {
+	var p keyPath
+	for _, edge := range route {
+		switch edge.Kind {
+		case gowalker.FieldEdge:
+			p = p.field(edge.Field.Name())
+		case gowalker.ElementEdge:
+			p = p.any()
+		}
+	}
+	return p
 }
 
 func hasReloadTags(root *schemaNode) bool {

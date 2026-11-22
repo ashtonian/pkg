@@ -143,7 +143,7 @@ jobs:
           bash tooling/tools/check-parse-sdk-release.sh "artifacts/ashtonian-parse-$version.tgz"
           git -C source rev-parse HEAD > artifacts/source-commit.txt
       - name: Retain the verified package
-        uses: ashtonian/go-ci-actions/upload-artifact@439da8bdc22311fff2f04371ca9cd9c3233ee7d0 # v1.6.2
+        uses: ashtonian/go-ci-actions/upload-artifact@2ee8735fdee91ff0ee16067a263da6c8a7770841 # v1.13.0
         with:
           name: parse-sdk-${{ github.run_id }}-${{ github.run_attempt }}
           path: artifacts/

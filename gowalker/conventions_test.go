@@ -304,6 +304,59 @@ func TestAtomicImplementers(t *testing.T) {
 	}
 }
 
+type label struct{ Text string }
+
+func (l label) String() string { return l.Text }
+
+// An option keeps what it was given when it was made: changing the caller's
+// slices afterwards changes no engine, and engines built concurrently from one
+// option write nothing they share.
+func TestOptionsAreSafeToReuse(t *testing.T) {
+	type row struct {
+		At       stamp
+		Label    label
+		Untagged int
+	}
+	ifaces := []reflect.Type{reflect.TypeFor[encoding.TextUnmarshaler]()}
+	leaves := gowalker.WithAtomicImplementers(ifaces...)
+	tagOptions := []gowalker.TagOption{gowalker.UntaggedName(strings.ToLower), gowalker.NestedFields()}
+	naming := gowalker.WithTaggedFields("json", tagOptions...)
+	ifaces[0] = reflect.TypeFor[fmt.Stringer]()
+	tagOptions[0] = gowalker.UntaggedName(strings.ToUpper)
+
+	classify := func(e *gowalker.Engine) error {
+		s, err := e.Compile[row]()
+		if err != nil {
+			return err
+		}
+		for text, want := range map[string]error{"at": nil, "at.unix": gowalker.ErrPath, "label.text": nil, "untagged": nil} {
+			if _, err := s.ResolveText(text); !errors.Is(err, want) {
+				return fmt.Errorf("%s: %v, want %v", text, err, want)
+			}
+		}
+		return nil
+	}
+	if err := classify(engine(t, leaves, naming)); err != nil {
+		t.Fatal(err)
+	}
+
+	var wg sync.WaitGroup
+	errs := make([]error, 8)
+	for i := range errs {
+		wg.Go(func() {
+			e, err := gowalker.New(leaves, naming)
+			if err == nil {
+				err = classify(e)
+			}
+			errs[i] = err
+		})
+	}
+	wg.Wait()
+	if err := errors.Join(errs...); err != nil {
+		t.Error(err)
+	}
+}
+
 func TestTypeVisitInherited(t *testing.T) {
 	type tls struct {
 		Cert string

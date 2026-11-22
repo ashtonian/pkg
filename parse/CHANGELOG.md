@@ -1,5 +1,23 @@
 # Changelog
 
+## [0.17.0](https://github.com/ashtonian/pkg/compare/parse/v0.16.0...parse/v0.17.0) (2026-11-22)
+
+
+### ⚠ BREAKING CHANGES
+
+* **parse:** raw OR policies held to the tenant floor, patch policy judged by what is written, SDK or() disjoins and reaches the schema routes ([#345](https://github.com/ashtonian/pkg/issues/345))
+* **parse:** schema generation, and so NewResource, refuses a struct whose walked fields carry such a key, such as filter_op, minItems or a router's path beside paths. Correct the key, or name another library's with core.WithForeignTagKeys.
+* **parse:** a document type with a struct tag reflect cannot read whole, or one that repeats a key, is refused by JSONFieldsOf, and validating a stored document of that type returns the error, as a row type with such a tag already is refused.
+
+### Features
+
+* **parse:** document members on gowalker's WithJSONFields and misspelt tag keys refused; config on gowalker's matcher ([#300](https://github.com/ashtonian/pkg/issues/300)) ([35cc7f0](https://github.com/ashtonian/pkg/commit/35cc7f0911b70804f2db1960441780db1138cf63))
+
+
+### Bug Fixes
+
+* **parse:** raw OR policies held to the tenant floor, patch policy judged by what is written, SDK or() disjoins and reaches the schema routes ([#345](https://github.com/ashtonian/pkg/issues/345)) ([b479e85](https://github.com/ashtonian/pkg/commit/b479e85321d58fb619820dca3a56ee97ac2b1320))
+
 ## [0.16.0](https://github.com/ashtonian/pkg/compare/parse/v0.15.0...parse/v0.16.0) (2026-11-22)
 
 

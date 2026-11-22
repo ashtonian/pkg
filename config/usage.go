@@ -9,6 +9,8 @@ import (
 	"reflect"
 	"slices"
 	"strings"
+
+	"github.com/ashtonian/pkg/gowalker"
 )
 
 // EnvVar is the environment variable the environment layer reads for f under
@@ -324,7 +326,7 @@ func usageRows(root *schemaNode, prefixes []string, defaults declaredDefaults) (
 func usageRowOf(f Field, key string, env envNames) (usageRow, error) {
 	row := usageRow{
 		Key:         key,
-		Type:        typeText(f.Type),
+		Type:        gowalker.TypeText(f.Type),
 		Required:    requiredBeforeOmission(f.Tag.Get("validate")),
 		Sensitive:   f.Sensitive,
 		Description: f.Tag.Get("desc"),

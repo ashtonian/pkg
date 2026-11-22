@@ -7,6 +7,8 @@ import (
 	"os"
 	"reflect"
 	"time"
+
+	"github.com/ashtonian/pkg/gowalker"
 )
 
 // ReloadOption configures a [Reloader].
@@ -48,12 +50,12 @@ func buildReloadOptions(opts []ReloadOption) *reloadOptions {
 func (o *reloadOptions) checkHookTypes(cfg reflect.Type) error {
 	for i, h := range o.onSuccess {
 		if h.target != cfg {
-			return fmt.Errorf("config: WithOnReloadSuccess callback %d is for %s, the reloader loads %s", i, typeText(h.target), typeText(cfg))
+			return fmt.Errorf("config: WithOnReloadSuccess callback %d is for %s, the reloader loads %s", i, gowalker.TypeText(h.target), gowalker.TypeText(cfg))
 		}
 	}
 	for _, a := range o.appliers {
 		if a.target != cfg {
-			return fmt.Errorf("config: WithApplier %q is for %s, the reloader loads %s", a.name, typeText(a.target), typeText(cfg))
+			return fmt.Errorf("config: WithApplier %q is for %s, the reloader loads %s", a.name, gowalker.TypeText(a.target), gowalker.TypeText(cfg))
 		}
 	}
 	return nil

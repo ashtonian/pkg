@@ -73,9 +73,9 @@ func viewError(t reflect.Type, err error) error {
 	// rather than inside gowalker's wrapper.
 	var failure *gowalker.Error
 	if errors.As(err, &failure) && errors.Is(failure.Cause, ErrSchema) {
-		return fmt.Errorf("%w: %s: %w", ErrSchema, typeText(failure.Type), failure.Cause)
+		return fmt.Errorf("%w: %s: %w", ErrSchema, gowalker.TypeText(failure.Type), failure.Cause)
 	}
-	return fmt.Errorf("%w: %s: %w", ErrSchema, typeText(t), err)
+	return fmt.Errorf("%w: %s: %w", ErrSchema, gowalker.TypeText(t), err)
 }
 
 func fieldSensitive(f *gowalker.Field) bool {

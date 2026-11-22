@@ -7,12 +7,19 @@ import "reflect"
 type EdgeKind uint8
 
 const (
+	// FieldEdge enters a named field's type.
 	FieldEdge EdgeKind = iota + 1
+	// DerefEdge enters a pointer's element type.
 	DerefEdge
+	// ElementEdge enters a map, slice or array element type.
 	ElementEdge
+	// InlineEdge enters an inlined struct field's type. Only a walk of
+	// declared views ([WithDeclaredView]) takes it; it adds no name to a path.
+	InlineEdge
 )
 
-// TypeEdge is one step in a type route. Field is non-nil only for FieldEdge.
+// TypeEdge is one step in a type route. Field is non-nil only for FieldEdge
+// and InlineEdge.
 type TypeEdge struct {
 	Kind  EdgeKind
 	Field *Field
@@ -31,7 +38,8 @@ type TypeVisit struct {
 
 // Inherited returns the value of tag key on the nearest field of this visit's
 // route that declares it: the visited field itself, else its closest enclosing
-// field, including the embedded owners an inlined field was promoted through.
+// field, including the embedded owners an inlined field was promoted through
+// (InlineEdges, in a walk of declared views).
 // Use it for annotations that apply to a whole section, such as a
 // sensitive:"true" or reload:"hot" tag that descendants inherit.
 func (v TypeVisit) Inherited(key string) (string, bool) {
@@ -66,8 +74,9 @@ func WalkType[T any](fn TypeVisitor, options ...WalkOption) error {
 	return s.WalkType(fn, options...)
 }
 
-// WalkType traverses visible fields, pointers and collection element types. An
-// interface or atomic type is a leaf. Callback errors are wrapped with Unwrap.
+// WalkType traverses visible fields, pointers and collection element types, or
+// with [WithDeclaredView] each struct's declared view. An interface or atomic
+// type is a leaf. Callback errors are wrapped with Unwrap.
 func (s *Schema) WalkType(fn TypeVisitor, options ...WalkOption) error {
 	settings, err := walkOptions(options)
 	if err != nil {
@@ -123,8 +132,16 @@ func (w *typeWalk) visit(shape *Shape, route []TypeEdge) error {
 	if control != SkipChildren && !shape.atomic {
 		switch shape.Kind() {
 		case reflect.Struct:
-			for _, field := range shape.fields {
-				if err := w.visit(field.shape, append(route, TypeEdge{Kind: FieldEdge, Field: field})); err != nil {
+			fields := shape.fields
+			if w.settings.declared {
+				fields = shape.declaredView
+			}
+			for _, field := range fields {
+				edge := TypeEdge{Kind: FieldEdge, Field: field}
+				if field.inline {
+					edge.Kind = InlineEdge
+				}
+				if err := w.visit(field.shape, append(route, edge)); err != nil {
 					return err
 				}
 			}

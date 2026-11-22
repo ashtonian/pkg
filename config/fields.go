@@ -73,7 +73,7 @@ func Fields[T any]() []Field {
 func FieldsChecked[T any]() ([]Field, error) {
 	t := derefType(reflect.TypeFor[T]())
 	if !isBranch(t) {
-		return nil, fmt.Errorf("%w: %s is not a config struct", ErrSchema, typeText(t))
+		return nil, fmt.Errorf("%w: %s is not a config struct", ErrSchema, gowalker.TypeText(t))
 	}
 	return catalogFieldsChecked(t, false)
 }
