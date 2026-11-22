@@ -10,6 +10,20 @@ on:
   # `gh workflow run ci.yml --ref <branch>`; they report on the head
   # commit, so the pull request shows them.
   workflow_dispatch:
+  # nightly.yml: every suite at full scope, every parse unit test under the
+  # race detector, and the benchmarks; nothing when main has not moved since
+  # the last green nightly (scope decides).
+  workflow_call:
+    inputs:
+      nightly:
+        description: Run every parse unit test under the race detector.
+        type: boolean
+        default: false
+    secrets:
+      CI_ARTIFACT_ENDPOINT:
+        required: true
+      PRIVATE_REFERENCE_PATTERNS:
+        required: true
 
 permissions:
   id-token: write
@@ -17,7 +31,7 @@ permissions:
   actions: read
 
 # A newer run of the same PR or of main cancels the older one: it covers every
-# change the older run would have. Manual acceptance runs complete.
+# change since the last green run. Dispatched runs complete.
 concurrency:
   group: ci-${{ github.event_name }}-${{ github.event_name == 'workflow_dispatch' && github.run_id || github.ref }}
   cancel-in-progress: ${{ github.event_name != 'workflow_dispatch' }}
@@ -30,17 +44,28 @@ jobs:
     name: CI change scope
     if: github.actor_id == '4212452' && (github.event_name != 'pull_request' || (github.event.pull_request.user.id == 4212452 && github.event.pull_request.head.repo.full_name == github.repository))
     runs-on: arc-pkg
-    timeout-minutes: 5
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      actions: read
+      id-token: write
     outputs:
-      runtime: ${{ steps.scope.outputs.runtime }}
-      checks: ${{ steps.scope.outputs.checks }}
-      reused: ${{ steps.acceptance.outputs.reused }}
+      # A merge push runs only the jobs its pull request's receipt does not show passed.
+      jobs: ${{ steps.accepted.outputs.remaining || steps.checks.outputs.jobs }}
+      # Before reuse: main's benchmark artifacts come from pushes, never from a PR.
+      selected: ${{ steps.checks.outputs.jobs }}
+      wide-jobs: ${{ steps.scope.outputs.wide-jobs }}
+      go-args: ${{ steps.scope.outputs.go-args }}
+      checks: ${{ steps.checks.outputs.checks }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-          fetch-depth: 0
-          filter: blob:none
+      # Go for scope's package graph; nothing is built.
+      - uses: ashtonian/go-ci-actions@4404b5c0617f86383381bd07ca8a72eeb11863df # v1.10.0
+        with:
+          go-version: '1.27.x'
+          cache-mode: off
       - name: Verify CI scope policy
         run: python3 -B -m unittest discover -s tools -p 'test_ci_*.py'
       # The patterns name private code, so they live in a secret, not here;
@@ -49,47 +74,106 @@ jobs:
         env:
           PRIVATE_REFERENCE_PATTERNS: ${{ secrets.PRIVATE_REFERENCE_PATTERNS }}
         run: python3 -B tools/private_references.py
+      # A job runs when one of its paths changed or the change reaches one of its
+      # packages. go-ignore lists what no workspace Go code reads; go-owners, the
+      # files tests read outside their package. tools/test_ci_release_checks.py
+      # keeps both, and the module lists, in step with the Makefile and tests.
       - id: scope
-        run: python3 tools/ci_scope.py
-      - name: Set up artifact receipt access
-        uses: ashtonian/go-ci-actions/artifact-setup@439da8bdc22311fff2f04371ca9cd9c3233ee7d0 # v1.6.2
-      - id: acceptance
+        uses: ashtonian/go-ci-actions/scope@4404b5c0617f86383381bd07ca8a72eeb11863df # v1.10.0
+        with:
+          workflow: ci.yml
+          jobs: |
+            {
+              "test": {"go": ["./..."]},
+              "test-darwin": {"go": ["./process/...", "./state/...", "./onepassword/...", "./config/...", "./config/kongprovider/..."]},
+              "parse-postgres": {"go": ["./parse/..."]},
+              "parse-sdk": ["parse/sdk/**", "parse/testdata/**", "tools/check-parse-sdk-*"],
+              "parse-benchmarks": {"go": ["./parse/filter"]},
+              "minimum-go": {"go": ["./httpx/...", "./httpx/oauth2/...", "./httpx/codec/msgpack/...", "./httpx/codec/proto/...", "./httpx/compress/brotli/...", "./gitx/..."]},
+              "modules": ["**"],
+              "lint": {"go": ["./..."]}
+            }
+          shared: |
+            .github/**
+            Makefile
+            tools/ci_release_checks.py
+            tools/private_references.py
+            tools/test_ci_*.py
+          # Every platform and -tags set CI compiles: a file joins a package only under some.
+          go-builds: |
+            GOOS=linux GOARCH=amd64
+            GOOS=darwin GOARCH=arm64
+          go-tags: |
+            -
+            unit
+            integration
+            concurrency
+            unit,integration
+          go-ignore: |
+            CONTRIBUTING.md
+            README.md
+            **/CHANGELOG.md
+            config/docs/**/*.md
+            gowalker/docs/**/*.md
+            httpx/docs/**/*.md
+            parse/docs/**/*.md
+            parse/sdk/**
+            .release-please-manifest.json
+            release-please-config.json
+            tools/check-*
+            tools/release-please/**
+            tools/modarchive/**
+            config/examples/cookbook/**
+            httpx/examples/gin/**
+            httpx/internal/bench/**
+          go-owners: |
+            {
+              "config/examples/quickstart/main.go": ["./config"],
+              "config/kongprovider/examples/**": ["./config/kongprovider"],
+              "httpx/examples/quickstart/main.go": ["./httpx"],
+              "gitx/README.md": ["./gitx/cmd/mergeinserts"]
+            }
+      # Release checks follow the module trees a change touches; that map is pkg's.
+      - id: checks
         env:
-          GITHUB_TOKEN: ${{ github.token }}
-          BEFORE: ${{ github.event.before }}
-          RUNTIME_REQUIRED: ${{ steps.scope.outputs.runtime }}
-          CHECKS_REQUIRED: ${{ steps.scope.outputs.checks }}
-          CI_VARIABLES_JSON: ${{ toJSON(vars) }}
-        run: python3 tools/ci_acceptance.py verify
+          SCOPE_JOBS: ${{ steps.scope.outputs.jobs }}
+          SCOPE_FULL: ${{ steps.scope.outputs.full }}
+          SCOPE_FILES: ${{ steps.scope.outputs.files }}
+        run: python3 -B tools/ci_release_checks.py
+      - id: accepted
+        if: github.event_name == 'push'
+        uses: ashtonian/go-ci-actions/acceptance@4404b5c0617f86383381bd07ca8a72eeb11863df # v1.10.0
+        with:
+          mode: verify
+          required: ${{ steps.checks.outputs.required }}
+          variables: ${{ toJSON(vars) }}
 
   test:
     needs: scope
-    name: test (${{ matrix.os }})
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - os: ubuntu-latest
-          # Only the modules with platform code: config's file watch rests on
-          # kqueue there, and the native modules' processes and files on Darwin.
-          # Lint vets every module on the declared Go floor.
-          - os: macos-latest
-            platform-only: true
-    if: github.actor_id == '4212452' && (github.event_name != 'pull_request' || (github.event.pull_request.user.id == 4212452 && github.event.pull_request.head.repo.full_name == github.repository)) && needs.scope.outputs.runtime != 'false' && needs.scope.outputs.reused != 'true'
+    name: test (ubuntu-latest)
+    if: github.actor_id == '4212452' && (github.event_name != 'pull_request' || (github.event.pull_request.user.id == 4212452 && github.event.pull_request.head.repo.full_name == github.repository)) && contains(needs.scope.outputs.jobs, '"test"')
     permissions:
       contents: read
       id-token: write
-    runs-on: ${{ matrix.os == 'ubuntu-latest' && 'arc-pkg' || matrix.os }}
+    runs-on: arc-pkg
     timeout-minutes: 45
+    env:
+      # The import paths the change reaches, or every package when the job is
+      # wide; each target tests its modules' share.
+      PACKAGES: ${{ contains(needs.scope.outputs.wide-jobs, '"test"') && 'all' || needs.scope.outputs.go-args }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: ashtonian/go-ci-actions@439da8bdc22311fff2f04371ca9cd9c3233ee7d0 # v1.6.2
+      - uses: ashtonian/go-ci-actions@4404b5c0617f86383381bd07ca8a72eeb11863df # v1.10.0
         with:
-          workload: ${{ toJSON(matrix) }}
           go-version: '1.27.x'
           cache-dependency-path: "**/go.sum"
+      # The nightly reruns every test and records the results pull requests
+      # replay: a pull request's own results stay in its namespace.
+      - name: Expire cached test results
+        if: ${{ inputs.nightly }}
+        run: go clean -testcache
       - name: Native process and document unit tests
         run: make test-native-unit
       - name: Native process and document integration tests
@@ -97,24 +181,58 @@ jobs:
       - name: Config tests
         run: make test-config
       - name: gitx tests
-        if: ${{ !matrix.platform-only }}
         run: make test-gitx
       - name: JSON value tests
-        if: ${{ !matrix.platform-only }}
         run: make test-jsonvalue
       - name: Gowalker tests
-        if: ${{ !matrix.platform-only }}
         run: make test-gowalker
       - name: HTTPx unit tests with race detection
-        if: ${{ !matrix.platform-only }}
         run: make test-httpx-unit
       - name: HTTPx integration tests with race detection
-        if: ${{ !matrix.platform-only }}
         run: make test-httpx-integration
       # Parse's SQLite integration runs in parse-postgres, beside PostgreSQL.
-      - name: Parse unit tests and fuzz seeds with race detection
-        if: ${{ !matrix.platform-only }}
+      # Pull requests race only the parse tests that run code concurrently;
+      # the nightly run races every one.
+      - name: Parse unit tests and fuzz seeds
+        if: ${{ !inputs.nightly }}
         run: make test-parse-unit
+      - name: Parse concurrency tests with race detection
+        if: ${{ !inputs.nightly }}
+        run: make test-parse-race
+      - name: Parse unit tests and fuzz seeds with race detection
+        if: ${{ inputs.nightly }}
+        run: make test-parse-race-all
+  # Only the modules with platform code: config's file watch rests on kqueue
+  # there, and the native modules' processes and files on Darwin. Lint vets
+  # every module on the declared Go floor.
+  test-darwin:
+    needs: scope
+    name: test (macos-latest)
+    if: github.actor_id == '4212452' && (github.event_name != 'pull_request' || (github.event.pull_request.user.id == 4212452 && github.event.pull_request.head.repo.full_name == github.repository)) && contains(needs.scope.outputs.jobs, '"test-darwin"')
+    permissions:
+      contents: read
+      id-token: write
+    runs-on: macos-latest
+    timeout-minutes: 45
+    env:
+      PACKAGES: ${{ contains(needs.scope.outputs.wide-jobs, '"test-darwin"') && 'all' || needs.scope.outputs.go-args }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ashtonian/go-ci-actions@4404b5c0617f86383381bd07ca8a72eeb11863df # v1.10.0
+        with:
+          go-version: '1.27.x'
+          cache-dependency-path: "**/go.sum"
+      - name: Expire cached test results
+        if: ${{ inputs.nightly }}
+        run: go clean -testcache
+      - name: Native process and document unit tests
+        run: make test-native-unit
+      - name: Native process and document integration tests
+        run: make test-native-integration
+      - name: Config tests
+        run: make test-config
   parse-postgres:
     needs: scope
     name: parse integration (SQLite, PostgreSQL ${{ matrix.postgres }})
@@ -122,12 +240,14 @@ jobs:
       fail-fast: false
       matrix:
         postgres: ['17', '18']
-    if: github.actor_id == '4212452' && (github.event_name != 'pull_request' || (github.event.pull_request.user.id == 4212452 && github.event.pull_request.head.repo.full_name == github.repository)) && needs.scope.outputs.runtime != 'false' && needs.scope.outputs.reused != 'true'
+    if: github.actor_id == '4212452' && (github.event_name != 'pull_request' || (github.event.pull_request.user.id == 4212452 && github.event.pull_request.head.repo.full_name == github.repository)) && contains(needs.scope.outputs.jobs, '"parse-postgres"')
     permissions:
       contents: read
       id-token: write
     runs-on: arc-pkg
     timeout-minutes: 45
+    env:
+      PACKAGES: ${{ contains(needs.scope.outputs.wide-jobs, '"parse-postgres"') && 'all' || needs.scope.outputs.go-args }}
     services:
       postgres:
         image: postgis/postgis:${{ matrix.postgres }}-3.6
@@ -144,7 +264,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: ashtonian/go-ci-actions@439da8bdc22311fff2f04371ca9cd9c3233ee7d0 # v1.6.2
+      - uses: ashtonian/go-ci-actions@4404b5c0617f86383381bd07ca8a72eeb11863df # v1.10.0
         with:
           go-version: stable
           cache-dependency-path: "**/go.sum"
@@ -158,7 +278,7 @@ jobs:
   parse-sdk:
     needs: scope
     name: parse TypeScript SDK and corpora (node 22.13.0 and lts/*)
-    if: github.actor_id == '4212452' && (github.event_name != 'pull_request' || (github.event.pull_request.user.id == 4212452 && github.event.pull_request.head.repo.full_name == github.repository)) && needs.scope.outputs.runtime != 'false' && needs.scope.outputs.reused != 'true'
+    if: github.actor_id == '4212452' && (github.event_name != 'pull_request' || (github.event.pull_request.user.id == 4212452 && github.event.pull_request.head.repo.full_name == github.repository)) && contains(needs.scope.outputs.jobs, '"parse-sdk"')
     runs-on: arc-pkg
     timeout-minutes: 45
     steps:
@@ -167,7 +287,7 @@ jobs:
           persist-credentials: false
       # Before pnpm: points pnpm at the runner's in-cluster npm cache when it answers,
       # and leaves npmjs otherwise.
-      - uses: ashtonian/go-ci-actions/npm-registry@439da8bdc22311fff2f04371ca9cd9c3233ee7d0 # v1.6.2
+      - uses: ashtonian/go-ci-actions/npm-registry@4404b5c0617f86383381bd07ca8a72eeb11863df # v1.10.0
       # pnpm next: setup-node's pnpm cache asks pnpm for its store path. The version
       # comes from the SDK's packageManager field.
       - uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
@@ -207,7 +327,9 @@ jobs:
   parse-benchmarks:
     needs: scope
     name: parse benchmark artifacts
-    if: github.actor_id == '4212452' && github.event_name != 'pull_request' && needs.scope.outputs.runtime != 'false'
+    # On main, only when the change reaches the benchmarked package; the
+    # nightly run always records them.
+    if: github.actor_id == '4212452' && github.event_name != 'pull_request' && contains(needs.scope.outputs.selected, '"parse-benchmarks"')
     permissions:
       contents: read
       id-token: write
@@ -217,7 +339,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: ashtonian/go-ci-actions@439da8bdc22311fff2f04371ca9cd9c3233ee7d0 # v1.6.2
+      - uses: ashtonian/go-ci-actions@4404b5c0617f86383381bd07ca8a72eeb11863df # v1.10.0
         with:
           go-version: stable
           cache-dependency-path: "**/go.sum"
@@ -225,7 +347,7 @@ jobs:
         run: >-
           go test -tags=unit -run '^$' -bench . -benchmem -count=3
           -cpuprofile=parse-cpu.prof -memprofile=parse-allocs.prof ./parse/filter | tee parse-benchmarks.txt
-      - uses: ashtonian/go-ci-actions/upload-artifact@439da8bdc22311fff2f04371ca9cd9c3233ee7d0 # v1.6.2
+      - uses: ashtonian/go-ci-actions/upload-artifact@4404b5c0617f86383381bd07ca8a72eeb11863df # v1.10.0
         with:
           name: parse-benchmarks-${{ github.sha }}
           path: |
@@ -235,7 +357,7 @@ jobs:
   minimum-go:
     needs: scope
     name: httpx and gitx (go 1.26)
-    if: github.actor_id == '4212452' && (github.event_name != 'pull_request' || (github.event.pull_request.user.id == 4212452 && github.event.pull_request.head.repo.full_name == github.repository)) && needs.scope.outputs.runtime != 'false' && needs.scope.outputs.reused != 'true'
+    if: github.actor_id == '4212452' && (github.event_name != 'pull_request' || (github.event.pull_request.user.id == 4212452 && github.event.pull_request.head.repo.full_name == github.repository)) && contains(needs.scope.outputs.jobs, '"minimum-go"')
     permissions:
       contents: read
       id-token: write
@@ -245,10 +367,13 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: ashtonian/go-ci-actions@439da8bdc22311fff2f04371ca9cd9c3233ee7d0 # v1.6.2
+      - uses: ashtonian/go-ci-actions@4404b5c0617f86383381bd07ca8a72eeb11863df # v1.10.0
         with:
           go-version: '1.26.x'
           cache-dependency-path: "**/go.sum"
+      - name: Expire cached test results
+        if: ${{ inputs.nightly }}
+        run: go clean -testcache
       - name: Test HTTPx at its minimum Go version
         env:
           GOTOOLCHAIN: local
@@ -273,7 +398,7 @@ jobs:
   modules:
     needs: scope
     name: module archives, examples and release tooling
-    if: github.actor_id == '4212452' && (github.event_name != 'pull_request' || (github.event.pull_request.user.id == 4212452 && github.event.pull_request.head.repo.full_name == github.repository)) && needs.scope.outputs.reused != 'true'
+    if: github.actor_id == '4212452' && (github.event_name != 'pull_request' || (github.event.pull_request.user.id == 4212452 && github.event.pull_request.head.repo.full_name == github.repository)) && contains(needs.scope.outputs.jobs, '"modules"')
     permissions:
       contents: read
       id-token: write
@@ -283,7 +408,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: ashtonian/go-ci-actions@439da8bdc22311fff2f04371ca9cd9c3233ee7d0 # v1.6.2
+      - uses: ashtonian/go-ci-actions@4404b5c0617f86383381bd07ca8a72eeb11863df # v1.10.0
         with:
           go-version: stable
           cache-dependency-path: "**/go.sum"
@@ -293,58 +418,62 @@ jobs:
       - name: Release, cookbook and release-tool checks for the changed modules
         env:
           CHECKS: ${{ needs.scope.outputs.checks }}
+          # A summary per go command: the fresh consumers' dependency compiles
+          # should be remote hits (the scripts build with -trimpath).
+          GOCACHEPROG_LOG_LEVEL: info
         run: |
           read -ra checks <<< "$CHECKS"
-          if [ "${#checks[@]}" -eq 0 ]; then
-            echo "No module, cookbook or release tooling changed"
-            exit 0
-          fi
           make "${checks[@]}"
   lint:
     needs: scope
     name: lint (go 1.27.0 floor)
-    if: github.actor_id == '4212452' && (github.event_name != 'pull_request' || (github.event.pull_request.user.id == 4212452 && github.event.pull_request.head.repo.full_name == github.repository)) && needs.scope.outputs.runtime != 'false' && needs.scope.outputs.reused != 'true'
+    if: github.actor_id == '4212452' && (github.event_name != 'pull_request' || (github.event.pull_request.user.id == 4212452 && github.event.pull_request.head.repo.full_name == github.repository)) && contains(needs.scope.outputs.jobs, '"lint"')
     permissions:
       contents: read
       id-token: write
     runs-on: arc-pkg
     timeout-minutes: 45
+    env:
+      PACKAGES: ${{ contains(needs.scope.outputs.wide-jobs, '"lint"') && 'all' || needs.scope.outputs.go-args }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: ashtonian/go-ci-actions@439da8bdc22311fff2f04371ca9cd9c3233ee7d0 # v1.6.2
+      - uses: ashtonian/go-ci-actions@4404b5c0617f86383381bd07ca8a72eeb11863df # v1.10.0
         with:
           go-version: '1.27.0'
           cache-dependency-path: "**/go.sum"
+          test-input-mtimes: off
       # Vet type-checks every package and test, so on the declared floor it is
       # also the floor's build check.
-      - name: go vet and staticcheck on the declared Go floor
+      - name: go vet on the declared Go floor, staticcheck on Go 1.27.4
         env:
           GOTOOLCHAIN: local
         run: |
           go version | grep -F ' go1.27.0 '
           make lint
+      - name: Cookbook go vet on the declared Go floor, staticcheck on Go 1.27.4
+        if: contains(needs.scope.outputs.checks, 'cookbook-check')
+        env:
+          GOTOOLCHAIN: local
+        run: make lint-cookbook
 
   accepted:
     name: Preserve complete validation coverage
-    needs: [scope, test, parse-postgres, parse-sdk, minimum-go, modules, lint]
-    if: ${{ !cancelled() && (github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch') && needs.scope.result == 'success' && needs.modules.result == 'success' && !contains(needs.*.result, 'failure') }}
+    needs: [scope, test, test-darwin, parse-postgres, parse-sdk, minimum-go, modules, lint]
+    # The receipt the merge push's acceptance verify reads; skipped jobs are recorded as not passed.
+    if: ${{ github.event_name == 'pull_request' && !cancelled() && needs.scope.result == 'success' && !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled') }}
     runs-on: arc-pkg
     timeout-minutes: 5
+    permissions:
+      contents: read
+      id-token: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-          fetch-depth: 2
-      - name: Record complete validation inputs
-        env:
-          VALIDATION_JOBS: ${{ toJSON(needs) }}
-          CI_VARIABLES_JSON: ${{ toJSON(vars) }}
-        run: python3 tools/ci_acceptance.py record --output "$RUNNER_TEMP/ci-acceptance/acceptance.json"
-      - uses: ashtonian/go-ci-actions/upload-artifact@439da8bdc22311fff2f04371ca9cd9c3233ee7d0 # v1.6.2
+      - uses: ashtonian/go-ci-actions/acceptance@4404b5c0617f86383381bd07ca8a72eeb11863df # v1.10.0
         with:
-          name: acceptance-${{ github.run_attempt }}
-          path: ${{ runner.temp }}/ci-acceptance/acceptance.json
-          if-no-files-found: error
-          retention-days: 1
+          mode: record
+          results: ${{ toJSON(needs) }}
+          variables: ${{ toJSON(vars) }}

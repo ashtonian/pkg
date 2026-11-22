@@ -24,7 +24,9 @@ if [[ -z $httpx_version ]]; then
 fi
 
 upstream=$(go env GOPROXY)
-export GOWORK=off GOFLAGS='-mod=mod -modcacherw' GOMODCACHE="$tmp/modcache"
+# -trimpath keeps the scratch module cache's path out of build cache keys,
+# so the consumer's dependencies hit the shared build cache.
+export GOWORK=off GOFLAGS='-mod=mod -modcacherw -trimpath' GOMODCACHE="$tmp/modcache"
 export GOPRIVATE='' GONOPROXY='' GONOSUMDB="$httpx_module"
 export GOPROXY="file://$tmp/proxy,$upstream"
 

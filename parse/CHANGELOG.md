@@ -1,5 +1,54 @@
 # Changelog
 
+## [0.15.0](https://github.com/ashtonian/pkg/compare/parse/v0.14.0...parse/v0.15.0) (2026-11-22)
+
+
+### ⚠ BREAKING CHANGES
+
+* **parse:** parse requires pgx v5.13.0, whose pgx.BatchResults has a Tx() method; a test double of parsepgx.Querier must return a BatchResults that implements it.
+* **parse:** a field tagged json:",string" takes its filter operands, merge-patch members and JSON Patch values as JSON strings holding the value. Clients that sent bare numbers or booleans for such a field are refused (E2073 for filters, E2077 for patches). A json:",string" member of a struct document can no longer be declared a filter, element or sort path; drop the option or declare the member a string.
+* **parse:** a PostgreSQL timestamp facet bucket is keyed by the canonical text (2026-01-02T01:04:05.500000000Z) instead of the session's timestamptz text. SQLiteDialect.MarshalValue returns a timestamp's canonical text instead of the time.Time, and SQLite rows the application writes itself must store that text (core.FormatTimestamp).
+* **parse:** filter.PathValue returns an error for an element path (a field of FieldSchema.Elements). Read it on a decoded element with filter.ElementRow{Element: e}.Value(field), or evaluate the condition with filter.Evaluate(condition, filter.ElementRow{Element: e}).
+* **parse:** SQLite geo filters call parsesqlite's functions. A connection without them fails with "no such function: parse_geo_distance" (or parse_geo_in_box, parse_geo_covered_by). Register them with parsesqlite.Register, or with another driver through GeoDistance, GeoInBox and GeoCoveredBy. SQLite $near now measures the ellipsoid and no longer agrees with the spherical distance to within 0.5%.
+* **parse:** filter.DialectFromDSN returns ErrUnknownDSN for a bare SQLite name (app.db, data/app.db), for //host/… and for a one-segment /name.db, where it returned SQLiteDialect. Write the path as ./app.db, an absolute path or a file: URI.
+* **parse:** filter.DialectFromDSN returns ErrUnknownDSN for a DSN without a URL scheme whose name holds = or @, where it returned SQLiteDialect when the name ended in .db. Construct filter.SQLiteDialect{} for such a path.
+* **parse:** a governed list's relation predicates, counts, facets and includes read each row's own tenant's related rows instead of Scope.Tenant's, and Scope.Tenant is ignored when Governance is set on a resource with a tenant column.
+* **parse:** filter.DialectFromDSN returns ErrUnknownDSN for cockroach://, crdb:// and any non-SQLite scheme whose path ends in .db, where it returned PostgresDialect or SQLiteDialect. Construct the dialect directly to keep compiling for such a connection; CockroachDB is not supported.
+* **parse:** a list request whose fields names no field of the response is E2071 instead of being accepted.
+* **parse:** a resource that facets, filters, searches or relates by a column ReadColumns leaves out, or filters by a db:"-" field, now fails at construction. Read the column, or name it in QueryOnlyColumns for filters, search and relations that only filter.
+* **parse:** @ashtonian/parse requires Node.js 22.13 or later.
+* **parse:** Resource.Columns returns ([]string, error) instead of []string: a dialect a computed column's expression refuses is an error. ReadExpr takes a ColumnExpr, func(filter.Dialect) (string, error), instead of an SQL string; parse.SQL(sql) wraps a string every dialect reads alike.
+* **parse:** SQLColumnMapper.MapColumn receives the field's column (display_name for `json:"displayName"`, or the db tag's name) instead of its external name, and the column tag and ColumnConvention apply before the mapper rather than being ignored.
+* **parse:** a policy naming a request field whose name is another field's column is refused with filter.ErrAmbiguousPolicyField instead of resolving to the request field; name the request field's column instead. Resource.Relate refuses a relation named like a column of the owner or like a field without the filter capability.
+* **parse:** filter.RepositoryScope.TenantID and the tenantID parameter of filter.BuildBaseConstraints are now any, the tenant key in its column's type. NewResource refuses a TenantColumn whose field is not a string, a UUID or an integer.
+
+### Features
+
+* **parse:** accept a list request as a POST JSON body ([#202](https://github.com/ashtonian/pkg/issues/202)) ([68a7ed3](https://github.com/ashtonian/pkg/commit/68a7ed3072ccd158f395cae4c3bfef63b6a5bae2)), refs [#201](https://github.com/ashtonian/pkg/issues/201)
+* **parse:** answer parse errors whole, without details JSON cannot hold ([#265](https://github.com/ashtonian/pkg/issues/265)) ([a4f1e18](https://github.com/ashtonian/pkg/commit/a4f1e18d1b990202c64b26f57f6502823d2ded5f)), refs [#264](https://github.com/ashtonian/pkg/issues/264)
+* **parse:** bind Scope.Tenant as the tenant column's type ([#198](https://github.com/ashtonian/pkg/issues/198)) ([f2fb1a1](https://github.com/ashtonian/pkg/commit/f2fb1a1281793143ccec45a229e842c40562de83)), refs [#196](https://github.com/ashtonian/pkg/issues/196)
+* **parse:** evaluate geo filters in memory and on SQLite as PostGIS does ([#258](https://github.com/ashtonian/pkg/issues/258)) ([bd36d29](https://github.com/ashtonian/pkg/commit/bd36d290ba78fef1f1f20eccf9a745b16b2e748b)), refs [#219](https://github.com/ashtonian/pkg/issues/219) [#220](https://github.com/ashtonian/pkg/issues/220)
+* **parse:** let policy constraints name columns requests cannot filter ([#199](https://github.com/ashtonian/pkg/issues/199)) ([008ebee](https://github.com/ashtonian/pkg/commit/008ebeea21d8acec748ec0f36f83b71fc345b6e3)), refs [#197](https://github.com/ashtonian/pkg/issues/197)
+* **parse:** read computed columns through declared SQL expressions ([#200](https://github.com/ashtonian/pkg/issues/200)) ([9217002](https://github.com/ashtonian/pkg/commit/92170020b5cbff41f8e7b31c0c71fdc381d5c049)), refs [#195](https://github.com/ashtonian/pkg/issues/195)
+* **parse:** read RFC 9457 errors, scope schema aborts per caller and test the SDK's Node floor ([#245](https://github.com/ashtonian/pkg/issues/245)) ([43a50d7](https://github.com/ashtonian/pkg/commit/43a50d7966f0faabd53fdb4b2e0ba8892d451997)), refs [#225](https://github.com/ashtonian/pkg/issues/225) [#223](https://github.com/ashtonian/pkg/issues/223) [#222](https://github.com/ashtonian/pkg/issues/222)
+* **parse:** refuse repeated cursor members, require pgx v5.13.0, DSN-only PostgreSQL tests and parsesqlite's function table ([#287](https://github.com/ashtonian/pkg/issues/287)) ([d1953fb](https://github.com/ashtonian/pkg/commit/d1953fb8e24954116f83c855eef85ab18fd30251)), refs [#276](https://github.com/ashtonian/pkg/issues/276) [#213](https://github.com/ashtonian/pkg/issues/213)
+* **parse:** report schema discovery encoding and write errors ([#255](https://github.com/ashtonian/pkg/issues/255)) ([ed9ebae](https://github.com/ashtonian/pkg/commit/ed9ebaee23bb54da92127e2c5d54e45a54aba16f)), refs [#215](https://github.com/ashtonian/pkg/issues/215)
+* **parse:** take json:",string" fields in their wire form, with schema, Go client and TS SDK parity ([#262](https://github.com/ashtonian/pkg/issues/262)) ([c6b2466](https://github.com/ashtonian/pkg/commit/c6b246605a98bd12b36aad962e1194316d207a62)), refs [#205](https://github.com/ashtonian/pkg/issues/205)
+
+
+### Bug Fixes
+
+* **parse:** describe parse through this repository's code and refuse private references ([#257](https://github.com/ashtonian/pkg/issues/257)) ([f8e8ee7](https://github.com/ashtonian/pkg/commit/f8e8ee7513b96575b9d45a623578f5d9424bcf7b))
+* **parse:** fail an Unsupported conformance case on any error but its refusal ([#250](https://github.com/ashtonian/pkg/issues/250)) ([09b2507](https://github.com/ashtonian/pkg/commit/09b2507273e25314aae0a473f7705e16b81c0cc1)), refs [#211](https://github.com/ashtonian/pkg/issues/211)
+* **parse:** hold a governed list's relations to each row's tenant ([#254](https://github.com/ashtonian/pkg/issues/254)) ([9fe6cd0](https://github.com/ashtonian/pkg/commit/9fe6cd003fac3fc2c16844018ba48dda9038c048)), refs [#204](https://github.com/ashtonian/pkg/issues/204)
+* **parse:** hold facets, filters, search and relations to the read set ([#248](https://github.com/ashtonian/pkg/issues/248)) ([cc1525e](https://github.com/ashtonian/pkg/commit/cc1525e11a1209949633785ab44362df9ba867a7)), refs [#203](https://github.com/ashtonian/pkg/issues/203)
+* **parse:** key timestamp facets by the canonical instant on every backend ([#259](https://github.com/ashtonian/pkg/issues/259)) ([93aa206](https://github.com/ashtonian/pkg/commit/93aa2061b8727805ae876e16e8d0e4876c755d80))
+* **parse:** one definition per repeated literal; mark element fields structurally ([#272](https://github.com/ashtonian/pkg/issues/272)) ([1bb94c1](https://github.com/ashtonian/pkg/commit/1bb94c1205df3285b76a10fed7735b84802c9f1b))
+* **parse:** read a DSN as SQLite only in a form no other driver takes ([#256](https://github.com/ashtonian/pkg/issues/256)) ([6dd5d32](https://github.com/ashtonian/pkg/commit/6dd5d329ceffda3b1bfcf4a73ae4ee68855d1547))
+* **parse:** read array elements through filter.ElementRow, not PathValue ([#253](https://github.com/ashtonian/pkg/issues/253)) ([bc94aa8](https://github.com/ashtonian/pkg/commit/bc94aa826e0ab4bf9d2a115ea12bb69d8149927c))
+* **parse:** refuse CockroachDB DSNs and keep DSNs out of their errors ([#251](https://github.com/ashtonian/pkg/issues/251)) ([25e291b](https://github.com/ashtonian/pkg/commit/25e291b514279a582a37030256598a47915c74e6)), refs [#208](https://github.com/ashtonian/pkg/issues/208)
+* **parse:** refuse unknown fields names and document the field mask ([#252](https://github.com/ashtonian/pkg/issues/252)) ([1142f78](https://github.com/ashtonian/pkg/commit/1142f78e64d4868f36cf5f5001ecc6b90920f28a))
+
 ## [0.14.0](https://github.com/ashtonian/pkg/compare/parse/v0.13.0...parse/v0.14.0) (2026-11-17)
 
 

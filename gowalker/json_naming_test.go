@@ -17,11 +17,26 @@ import (
 // promoted embedded structs, "-," as a name, collisions settled by depth.
 func jsonNaming(t testing.TB) *gowalker.Engine {
 	t.Helper()
-	return engine(t, gowalker.WithTaggedFields("json",
+	return engine(t, gowalker.WithJSONFields("json"))
+}
+
+// The four options WithJSONFields fixes still compose to the same names for
+// tags without reserved characters.
+func TestJSONNaming_ComposedOptions(t *testing.T) {
+	composed := engine(t, gowalker.WithTaggedFields("json",
 		gowalker.UntaggedName(func(goName string) string { return goName }),
 		gowalker.PromoteEmbedded(),
 		gowalker.DashCommaName(),
 	), gowalker.ResolveByDepth())
+	for _, typ := range []reflect.Type{
+		reflect.TypeFor[jsonShadow](), reflect.TypeFor[jsonRenamed](), reflect.TypeFor[jsonDeep](),
+		reflect.TypeFor[jsonPointer](), reflect.TypeFor[jsonUnexported](), reflect.TypeFor[jsonTaggedWins](),
+		reflect.TypeFor[jsonDash](), reflect.TypeFor[jsonDashOptions](),
+	} {
+		if got, want := fieldNames(t, composed, typ), fieldNames(t, jsonNaming(t), typ); !slices.Equal(got, want) {
+			t.Errorf("%v: composed options name %q, WithJSONFields %q", typ, got, want)
+		}
+	}
 }
 
 type jsonBase struct {

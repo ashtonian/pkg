@@ -13,7 +13,9 @@ module=github.com/ashtonian/pkg/gowalker
 ) > "$tmp/module.tsv"
 IFS=$'\t' read -r module version source < "$tmp/module.tsv"
 
-export GOWORK=off GOTOOLCHAIN=local GOFLAGS='-mod=mod -modcacherw'
+# -trimpath keeps the scratch module cache's path out of build cache keys,
+# so the consumer's dependencies hit the shared build cache.
+export GOWORK=off GOTOOLCHAIN=local GOFLAGS='-mod=mod -modcacherw -trimpath'
 export GOMODCACHE="$tmp/modcache" GOPROXY="file://$tmp/proxy"
 export GOPRIVATE= GONOPROXY= GONOSUMDB="$module"
 mkdir "$tmp/consumer"

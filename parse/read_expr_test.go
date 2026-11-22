@@ -1,4 +1,4 @@
-//go:build unit || integration
+//go:build unit || integration || concurrency
 
 package parse_test
 
@@ -49,6 +49,16 @@ const (
 	pgGroupIDsExpr     = "array(SELECT g.group_id FROM account_groups g WHERE g.account_id = accounts.id ORDER BY g.group_id)"
 	sqliteGroupIDsExpr = "SELECT json_group_array(group_id) FROM (SELECT g.group_id FROM account_groups g WHERE g.account_id = accounts.id ORDER BY g.group_id)"
 )
+
+// computedDialects are the dialects the computed columns compile for, with
+// each one's expressions.
+var computedDialects = []struct {
+	dialect                  parse.Dialect
+	email, groupIDs, contact string
+}{
+	{filter.PostgresDialect{}, pgEmailExpr, pgGroupIDsExpr, pgContactExpr},
+	{filter.SQLiteDialect{}, sqliteEmailExpr, sqliteGroupIDsExpr, sqliteContactExpr},
+}
 
 // emailExpr reads the nullable email through each dialect's own function.
 func emailExpr(d filter.Dialect) (string, error) {

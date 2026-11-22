@@ -164,6 +164,9 @@ func (a *Accessor) GetValue(root reflect.Value) (Value, error) {
 	if !root.IsValid() || root.Type() != a.schema.Type() {
 		return Value{}, failure("get", ErrType, a.schema.Type(), a.path, -1, nil)
 	}
+	if a.route != nil {
+		return a.getStatic(root)
+	}
 	v, shape := root, a.schema.root
 	for i, compiled := range a.steps {
 		var missing bool

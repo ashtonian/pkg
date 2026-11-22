@@ -12,7 +12,7 @@ lists every exported declaration. Go 1.27+ is required.
 | Inspect a type using Go field names | `gowalker.Compile[T]()` / `CompileType(t)` | The `Default` engine's cached `(*Schema, error)` |
 | Your own naming convention | `MustNew(WithTaggedFields(key, options...))` in a package variable | An `*Engine` whose schemas use tag names |
 | Fully custom naming, aliases or validation | `MustNew(WithFieldResolver(callback))` | An `*Engine`; the callback returns `(FieldRule, error)` |
-| Read a field's tags | `field.Tag(key)` / `field.Tags()` | Parsed `(Tag, bool)` / raw `reflect.StructTag` |
+| Read a field's tags | `field.Tag(key)` / `field.Tags()` / `field.TagKeys()` | Parsed `(Tag, bool)` / raw `reflect.StructTag` / its keys in order |
 | Compute your metadata once per type | `NewTypeCache(engine, build)` → `cache.For[T]()` | Your `(M, error)`, built once and shared |
 | Read or write one named root field repeatedly | `schema.AccessName(name)` / `AccessField(field)` | A cached `(*Accessor, error)`; the name is literal |
 | Repeated nested access | `schema.ResolveText(text)` / `Resolve(path)` | An uncached `(*Accessor, error)` to retain |
@@ -20,6 +20,7 @@ lists every exported declaration. Go 1.27+ is required.
 | Read once using Go field names | `gowalker.Get(root, text)` / `GetAs[T](root, text)` | `(Value, error)` with presence, or `(T, error)` |
 | Write once using Go field names | `gowalker.Set(&root, text, input)` | `error`; nil means success |
 | Work with reflection directly | `accessor.GetValue`, `accessor.SetValue`, `schema.WalkValueReflect` | The same operations on an exact `reflect.Value` root |
+| Hand a field's location to a decoder or scanner | `accessor.Locate(rootValue, options...)` | The settable `reflect.Value`, allocated as `SetValue` would |
 
 The package-level functions — `Compile`, `CompileType`, `Get`, `GetAs`, `Set`,
 `WalkType` and `WalkValue` — share one process-wide engine, returned by
@@ -40,11 +41,14 @@ or a recursive pointer root. Punctuation is literal: `"a.b"` is one field name.
 Use ResolveText when the dot should select a nested field. AccessName and
 AccessField share the same bounded cache of visible root-field accessors.
 
-`AccessField` is useful when a library already has a field from `Fields()` or
-`Lookup()`. It accepts visible fields of this schema's root struct; for pointer
-roots, follow `Elem()` to find that struct. It rejects fields from another schema,
-nested owners, or inline declarations that are expanded rather than directly
-visible. Repeated calls for one field return the same accessor.
+`AccessField` is useful when a library already has a field from `Fields()`,
+`Lookup()` or `Declarations()`. It accepts visible fields of this schema's root
+struct and the root's fields kept without a name; for pointer roots, follow
+`Elem()` to find that struct. It rejects fields from another schema, nested
+owners, shadowed or tied fields, or inline declarations that are expanded rather
+than directly visible. Repeated calls for one field return the same accessor.
+An unnamed field's accessor has a path whose one field step names nothing; that
+path has no text form (`MarshalText` returns `ErrUnrepresentable`).
 
 Use the schema, accessor, shape and field handles returned by the API; their
 nil/zero values are not usable. Engines, schemas and type caches must not be
@@ -76,6 +80,17 @@ matches one comma-separated option exactly, without trimming spaces.
 raw `reflect.StructTag` for tags with other syntax, such as `validate:"min=1"`.
 Gowalker never decodes tag values.
 
+`TagKeys(tag)` lists a tag's keys in order, so a library can compare them with
+the keys it reads and refuse a misspelt one; `field.TagKeys()` lists a compiled
+field's, which compilation has already checked. It returns a `*TagError` for a tag
+that `reflect.StructTag` stops reading early, such as `parse: "filter"` with a
+space after the colon (`Lookup` then reports that key and every later one
+absent), or that repeats a key (`Lookup` returns only the first). Compiling a
+type applies the same check to every field of every struct the engine reads,
+skipped and private fields included, and fails with ErrSchema wrapping the
+`*TagError` and naming the field. The fields of a leaf type are not read, so
+their tags are not checked.
+
 `WithTaggedFields(key, options...)` names fields by that tag. Without options:
 
 | Declaration | Result |
@@ -100,13 +115,31 @@ Options relax those defaults:
 | `ValidName(fn)` | Each tag name of a selected field is passed to `fn`; an error fails compilation with ErrSchema, wrapping it. Names from `UntaggedName` are not checked. `nil` is invalid. |
 | `NestedFields()` | Selected fields are not leaves: paths such as `server.port` and walks descend into them. |
 
+`WithJSONFields(key, options...)` is `encoding/json`'s convention under `key`:
+
+| Declaration | Result |
+|---|---|
+| `json:"id,omitempty"` | `id`: the name ends at the first comma |
+| `json:"a\"b"`, `json:"a\\b"`, `json:"a'b"` | `a`: a backslash, quote or backtick ends the name at its leading identifier |
+| `json:"'a b'"`, `json:"\"x\""` | The Go name: no leading identifier, so the tag names nothing |
+| Untagged exported field, or `json:",omitempty"` | The Go name |
+| `json:"-"` | Excluded |
+| `json:"-,"` | `-` |
+| Embedded struct or pointer to one without a tag name, exported or not | Its fields, promoted |
+| Unexported embedded struct with a tag name | Compilation error matching ErrSchema: `encoding/json` writes it, and safe reflection cannot read it |
+| A name two fields claim | Settled as with `ResolveByDepth()`, which the option implies; a remaining tie fails, or with `DropTies()` drops every field claiming the name |
+
+`ValidName` and `NestedFields` apply. `UntaggedName`, `PromoteEmbedded` and
+`DashCommaName` return ErrSchema from New: the option already fixes them.
+
 An empty tag key, or one containing spaces, control characters, a colon or a
 quote, returns ErrSchema from New, as does a nil option. Tag keys are case
 sensitive; `WithCaseFoldNames` affects selected field names only. The last
-`WithTaggedFields` or `WithFieldResolver` option supplies the naming rule.
+`WithTaggedFields`, `WithJSONFields` or `WithFieldResolver` option supplies the
+naming rule.
 
-The presets name fields. They do not implement omission, decoding, custom
-marshalers or a codec's tie-breaking rules. Compile still retains raw payload
+The presets name fields. They do not implement omission, decoding or custom
+marshalers. Compile still retains raw payload
 types and counts them against its limits, even when fields are leaves.
 
 ## Per-type metadata
@@ -115,8 +148,11 @@ types and counts them against its limits, even when fields are leaves.
 `Get(t)` return `build`'s result for that exact type, computed once from the
 engine's schema. Typical `M` values are a column list with accessors, parsed
 tag options, or a help-text catalog. Results and errors are both retained, for
-up to the engine's cache capacity of types; beyond it, or with capacity zero,
-each call compiles and builds again.
+up to the engine's cache capacity of types, or for every type when the engine
+has `WithUnboundedCache()`; beyond the capacity, or with capacity zero, each
+call compiles and builds again. `CacheStats()` on the engine and on a
+`TypeCache` reports `Entries`, `Capacity`, `Unbounded` and `Uncached`, the
+compilations or builds whose result was not kept.
 
 Concurrent first requests for one type can each run `build`; one result is kept,
 so `build` must be deterministic and free of side effects that matter. `build`
@@ -144,7 +180,9 @@ aliases of the same field are harmless. Inline cycles also fail compilation.
 does: for a name two fields claim, the shallowest field wins, and at equal depth
 a field whose rule sets `FieldRule.Explicit` (a tag name, under
 `WithTaggedFields`) beats one whose name is derived. A remaining tie fails with
-a `*NameConflict`, where `encoding/json` drops both fields. A shadowed field
+a `*NameConflict`, where `encoding/json` drops both fields; `DropTies()` drops
+them instead, and New fails when it is given without `ResolveByDepth()` or
+`WithJSONFields`. A shadowed field
 loses all its names and aliases: it is absent from `Fields` and `Lookup` and
 stays in its declaring struct's `DeclaredView`. The kept fields' names and
 aliases must then be unique. It applies to `WithTaggedFields` and to a
@@ -174,8 +212,34 @@ provides its declared `Type`, raw `Tags`, Go `StructField`, declared `Shape`, co
 original `DeclaringType`, and copied `InlineParents` for inherited consumer metadata.
 `Shape.DeclaredView()` returns selected declarations before inline expansion;
 `Field.Inline()` identifies inline owners, including empty ones whose tags a
-consumer still needs to validate. Skipped fields are absent from both views.
+consumer still needs to validate. Skipped fields and fields kept without a name
+are absent from both views.
 Use `StructTag.Lookup` for absent versus present-empty tags; tag option syntax belongs to the resolver.
+
+`Shape.Declarations()` lists every field the struct declares and, after each
+inlined struct field, that struct's declarations, with what the view made of
+each, so a library can check its own tags on every field, read fields under
+another tag, or explain why a field is missing:
+
+| State | The field | `Field` |
+|---|---|---|
+| `Named` | Is in `Fields` and `Lookup` | Its handle |
+| `Unnamed` | Is kept without a name (`FieldRule.Unnamed`) | Its handle, for `AccessField` |
+| `InlineOwner` | Is inlined; its struct's declarations follow | The inline owner's handle |
+| `Shadowed` | Lost its names to a shallower or explicitly named field (`ResolveByDepth`) | A handle no accessor accepts |
+| `Tied` | Was dropped with the fields it tied with (`DropTies`) | A handle no accessor accepts |
+| `Skipped` | Is excluded by the rule, or private | nil |
+
+Each entry carries the Go `StructField`, the `DeclaringType`, the `Index` route
+from the listing's struct and the `InlineParents`, all copies. The list is empty
+for a pointer, whose fields belong to `Elem()`, and for a leaf.
+
+`FieldRule.Unnamed` keeps a field as a leaf without a name: it claims no name,
+no path or walk reaches it, and `Declarations` and `AccessField` do. A column
+list reads the `db` column of a `json:"-"` field this way. It cannot be combined
+with `Name`, `Aliases` or `Inline`; `Skip` takes precedence. The `KeepHidden()`
+tag option applies it to exported fields a tag hides with `"-"`, under
+`WithTaggedFields` and `WithJSONFields` alike.
 
 Schema collisions wrap `*NameConflict`, available with `errors.As`. Its owner,
 conflicting name and two field handles let adapters build their own diagnostics.
@@ -273,7 +337,7 @@ Errors support `errors.Is` with `ErrSchema`, `ErrPath`, `ErrType`, `ErrMissing`,
 
 | Error | Typical cause |
 |---|---|
-| `ErrSchema` | Conflicting names, invalid inline rules or engine settings |
+| `ErrSchema` | Conflicting names, a malformed or repeated struct tag (`*TagError`), invalid inline rules or engine settings |
 | `ErrPath` | Unknown field, malformed text path or descent into a leaf |
 | `ErrType` | Wrong root type, incompatible assignment or requested result type |
 | `ErrMissing` | A typed read needs an absent value; a write needs a missing map intermediate |
@@ -308,6 +372,15 @@ append `path.Deref()` to assign its pointee. A typed nil clears a compatible
 nullable terminal. An untyped nil has no declared type and returns `ErrType`.
 For a nil interface itself, pass `reflect.Zero(interfaceType)` through `SetValue`.
 A valid nil map entry is stored, not deleted.
+
+`accessor.Locate(rootValue, options...)` returns the settable location the path
+reaches, for a caller that writes it itself: `json.Unmarshal` into
+`location.Addr().Interface()`, or a `Scan` destination. It takes the same root
+and allocation options as `SetValue`, attaches what it allocated before
+returning, and on an error leaves the graph unchanged. A location a write
+through the result would not reach returns `ErrAccess`: a map entry, an
+interface's dynamic value, or a struct or array `SetValue` would copy and write
+back, such as a struct held in a map. `WithCheckedNumbers` has no effect.
 
 Defaults permit assignable inputs and replacement/insertion of terminal map
 entries in existing maps. Additional behavior is explicit:
@@ -388,7 +461,7 @@ keys; prune the map node to inspect only the container.
 
 | Setting | Default | Counting rule |
 |---|---:|---|
-| Cache capacity | 256 | Root schemas, including their complete raw graphs; also each `TypeCache`'s retained types |
+| Cache capacity | 256 | Root schemas, including their complete raw graphs; also each `TypeCache`'s retained types. `WithUnboundedCache()` removes the bound |
 | `MaxTypes` | 4096 | Unique declared types in one compilation |
 | `MaxFields` | 65536 | Raw declared fields plus visits while expanding named views |
 | `MaxDepth` | 128 | First-visit type edges, inline expansion depth, or consecutive runtime pointer/interface hops |
@@ -402,7 +475,8 @@ again. Runtime indirection counts each pointer/interface hop. A direct two-field
 struct requires four field visits: two raw fields and two named-view fields.
 
 Use `WithCacheCapacity(0)` to disable retention; at capacity, existing entries
-remain and new types compile uncached. `WithLimits` accepts a complete positive
+remain and new types compile uncached. `WithUnboundedCache()` keeps every type;
+the last of the two options applies. `WithLimits` accepts a complete positive
 limits value (start from `DefaultLimits()`). There is no unlimited mode. These
 budgets bound traversal and metadata construction, rather than execution time
 or heap bytes. `WithWalkLimits`

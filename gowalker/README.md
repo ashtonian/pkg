@@ -77,6 +77,9 @@ Debug bool env=DEBUG default="" hasDefault=false
 `Field.Tag("env")` parses the common `name,option,option` form; `Tags()` is the
 raw `reflect.StructTag`, whose `Lookup` tells an explicit empty default from no
 default at all. Applying defaults and reading the environment stay in your library.
+Compilation refuses a struct tag that `reflect.StructTag` cannot read to its
+end, or that repeats a key, so a typo never turns an annotation off silently;
+`TagKeys` lists a tag's keys for checking them against the ones you read.
 
 ## Pick a naming convention
 
@@ -87,7 +90,7 @@ convention, once, in a package variable:
 |---|---|
 | Go field names; tags are only annotations | none: use `gowalker.Compile[T]()` |
 | `db:"id"`: only explicitly named fields, each one whole value | `gowalker.MustNew(gowalker.WithTaggedFields("db"))` |
-| `json:"id,omitempty"`: the members `encoding/json` writes — untagged fields keep Go names, embedded structs are promoted, collisions resolve by depth, `json:"-,"` names `-` | `MustNew(WithTaggedFields("json", UntaggedName(goName), PromoteEmbedded(), DashCommaName()), ResolveByDepth())` |
+| `json:"id,omitempty"`: the members `encoding/json` writes — its tag-name grammar, Go names for untagged fields, promoted embedded structs, collisions resolved by depth, `json:"-,"` naming `-` | `MustNew(WithJSONFields("json"))`; add `DropTies()` to drop tied fields as `encoding/json` does |
 | `koanf:"port"`: untagged fields are lowercased, sections nest | `WithTaggedFields("koanf", UntaggedName(strings.ToLower), NestedFields())` |
 | Aliases, option-driven inlining such as `,squash`, or tag validation | `WithFieldResolver(func(reflect.StructField) (FieldRule, error))` |
 
@@ -102,6 +105,7 @@ Two fields claiming one name fail compilation with an error naming both.
 |---|---|---|
 | `gowalker.Compile[T]()` or `engine.Compile[T]()` | `*Schema`, cached by the engine | Every use of `T` |
 | `schema.Root().Fields()` | `[]*Field`: `Name`, `Type`, `Tag(key)`, `Tags`, `Index` | Building your metadata |
+| `schema.Root().Declarations()` | Every declared field with what the view made of it: named, unnamed, shadowed, tied, skipped | Checking your tags on every field; reading fields the view hides, with `KeepHidden` |
 | `gowalker.NewTypeCache(engine, build)` | Your per-type metadata, built once | Your library's hot path |
 | `schema.AccessName(name)` | `*Accessor`, cached by the schema | Reading or writing one field across many values |
 | `schema.ResolveText("server.port")` | `*Accessor`, not cached | Nested locations; keep it yourself |
@@ -123,6 +127,92 @@ retain metadata only, never the values you pass them. Synchronize your own value
   a nil, or could not reach the location (absent map entry, nil parent).
 - **Route**: the fields from the root to a visited type, used to find tags a
   section passes down to its fields.
+
+## Configuration
+
+An engine is configured once, by options to `New` or `MustNew`; it has no
+other settings and reads no environment.
+
+| Option | Default | Effect |
+|---|---|---|
+| `WithTaggedFields(key, ...TagOption)` | Go field names | Names fields by a tag; `UntaggedName`, `PromoteEmbedded`, `DashCommaName`, `KeepHidden`, `ValidName` and `NestedFields` adjust it |
+| `WithJSONFields(key, ...TagOption)` | Go field names | `encoding/json`'s names under `key`; implies `ResolveByDepth` |
+| `WithFieldResolver(fn)` | Go field names | Your own `FieldRule` per field |
+| `WithCaseFoldNames()` | Exact matching | Lookup and collisions under Unicode simple folding |
+| `ResolveByDepth()` | Every collision fails | The shallowest claim wins, then an explicit name |
+| `DropTies()` | A remaining tie fails | Every tied field is dropped; requires `ResolveByDepth` or `WithJSONFields` |
+| `WithAtomicType(fn)`, `WithAtomicImplementers(ifaces...)` | None | Types treated as leaves |
+| `WithCacheCapacity(n)` | 256 | Root schemas retained; 0 retains none |
+| `WithUnboundedCache()` | Off | Retains every type |
+| `WithLimits(Limits)` | `DefaultLimits()`: 4096 types, 65536 fields, depth 128, 256 path steps | Compilation and access budgets |
+
+Walks take `WithWalkLimits` (default depth 128, 100000 nodes), `WithLeaveEvents`,
+`WithUnorderedMaps` and `WithMapKeyOrder`; writes take
+`WithPointerAllocation`, `WithMapAllocation` and `WithCheckedNumbers`. The
+[API reference](docs/api.md) defines each one.
+
+## Build and test
+
+From the repository root: `make test-gowalker` runs the race tests, `make lint`
+vets and lints every module, and `make gowalker-release-check` builds the
+module from its release archive, runs its tests there, and runs the quick start
+above and every program in the [usage guide](docs/usage.md) against their
+printed output. `go test -run '^$' -fuzz FuzzWithJSONFields ./gowalker` fuzzes
+the `encoding/json` naming against `json.Marshal`.
+
+## Operations
+
+Gowalker is a library: it logs nothing, exports no metrics and starts no
+goroutines. What an owner can observe:
+
+- `Engine.CacheStats()` and `TypeCache.CacheStats()`. A rising `Uncached` means
+  a type compiles, or its metadata builds, on every call: raise the capacity or
+  use `WithUnboundedCache` (see [choosing a cache bound](docs/performance.md#choosing-a-cache-bound)).
+- Every failure is a `*gowalker.Error` matching one sentinel (`ErrSchema`,
+  `ErrPath`, `ErrType`, `ErrLimit` and the others in the
+  [API reference](docs/api.md#results-and-errors)), with the operation, the
+  type, the path and the failing step. Compilation errors name the declaring
+  type and field: a malformed or repeated struct tag (`*TagError`), two fields
+  claiming one name (`*NameConflict`), or a rule the engine refuses.
+- `ErrLimit` means a type or path exceeded `Limits` or a walk exceeded
+  `WalkLimits`; the budgets bound work, not time or bytes.
+
+## Security
+
+- Gowalker reads and writes exported fields only, through `reflect`'s safe API.
+  It never imports `unsafe` and cannot read or allocate private fields, which
+  keeps a caller from reaching storage the type's package hid.
+- Error text names operations, Go types, field names and tags, which come from
+  declarations. It never includes values, map keys or path steps, which can be
+  caller data; read `Error.Path` and `Error.Step` to show a location under your
+  own policy.
+- Text paths from untrusted input are bounded: `path.Parse` refuses input over
+  65536 bytes and resolution refuses more than `MaxPathSteps` steps. Walks of
+  untrusted values stop at `WalkLimits`; compilation of a hostile type stops at
+  `Limits`.
+- Schemas and accessors retain metadata only. An accessor retains the map keys
+  of its own path, and nothing retains the values you pass. Synchronize your
+  own values; gowalker does not lock them.
+
+## Dependencies
+
+The standard library only, Go 1.27 or later. There are no external services.
+
+## Code map
+
+| File | Responsibility |
+|---|---|
+| `engine.go` | `Engine`, options, limits, the schema cache and `CacheStats` |
+| `tags.go` | Tag parsing, `TagKeys`, `WithTaggedFields` and `WithJSONFields` |
+| `shape.go` | Compilation: the raw type graph, field rules, inlining, name resolution and `Declarations` |
+| `schema.go` | `Schema`, path resolution and cached root-field accessors |
+| `route.go` | Static routes for paths of struct fields and pointers |
+| `access.go` | Reads and value states |
+| `write.go`, `assign.go` | Writes, allocation, `Locate` and checked numeric assignment |
+| `walk.go`, `walk_type.go`, `walk_value.go` | Type and value walks |
+| `cache.go` | `TypeCache` for your per-type metadata |
+| `errors.go` | `Error`, sentinels and `NameConflict` |
+| `path/` | Typed paths and their text grammar |
 
 ## Guides
 
