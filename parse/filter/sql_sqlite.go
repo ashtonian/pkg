@@ -500,3 +500,84 @@ func sqliteHasKey(expr, key string, bind func(any) string) string {
 		" WHEN " + t + " = 'text' THEN json_extract(" + expr + ", '$') = " + bind(key) +
 		" ELSE 0 END)"
 }
+
+// elementRows reads a JSON array, an array path's member or an array
+// column's JSON text, with json_each when it is an array: json_each would
+// read an object's members, or a scalar as one row.
+func (SQLiteDialect) elementRows(f *FieldSchema, alias string) string {
+	if p := f.Path; p != nil {
+		path := sqlitePathLiteral(p.Segments)
+		return "json_each(CASE WHEN json_type(" + p.Column + ", " + path + ") = 'array' THEN " + p.Column + " END, " + path + ") AS " + alias
+	}
+	return "json_each(CASE WHEN json_type(" + f.SQLExpr + ") = 'array' THEN " + f.SQLExpr + " END) AS " + alias
+}
+
+// objectElement is an object element's JSON text; json_extract would refuse
+// a scalar's text.
+func (SQLiteDialect) objectElement(alias string) string {
+	return "(CASE WHEN " + alias + ".type = 'object' THEN " + alias + ".value END)"
+}
+
+// scalarElement reads every element as an element path (PathExpr): an
+// array column is JSON text too.
+func (SQLiteDialect) scalarElement(f *FieldSchema, alias string) *FieldSchema {
+	e := bound(elementOf(f))
+	e.SQLExpr = ""
+	e.Path = &JSONPath{Column: alias, Storage: StorageJSONB, element: true}
+	return &e
+}
+
+// numberKey reads a number member's JSON literal as written through
+// parse_decimal, which json_extract would round to a double, and a REAL
+// column through parse_decimal (a double) or parse_decimal_float32 (a
+// float32 field's). A decimal's FieldExpr is already its canonical text.
+func (d SQLiteDialect) numberKey(f *FieldSchema) string {
+	switch {
+	case f.DataType == core.FieldTypeDecimal:
+		return FieldExpr(d, f)
+	case f.Path != nil:
+		kind, _, literal := sqlitePathMember(f.Path)
+		return "(CASE WHEN " + kind + " IN ('integer', 'real') THEN " + decimals.SQLiteValueFunc + "(" + literal + ") END)"
+	case f.DataType == core.FieldTypeInt:
+		return "CAST(" + f.SQLExpr + " AS TEXT)"
+	case f.NumberKind == reflect.Float32:
+		return decimals.SQLiteFloat32Func + "(" + f.SQLExpr + ")"
+	}
+	return decimals.SQLiteValueFunc + "(" + f.SQLExpr + ")"
+}
+
+// PathExpr renders p's typed value for SQLite, whose documents are JSON
+// text: json_type selects the member's kind; json_extract reads it. A
+// decimal member is read as the JSON literal `->` returns, which keeps the
+// number as written where json_extract would round it to a double, through
+// parse_decimal (parsesqlite). An element path reads its json_each row: its
+// type and value are json_type's and json_extract's of the element, and
+// its literal is the source document's (the hidden json column) at its
+// fullkey.
+func (SQLiteDialect) PathExpr(p *JSONPath, t core.FieldType) string {
+	kind, val, literal := sqlitePathMember(p)
+	return sqliteTypedMember(t, kind, val, literal)
+}
+
+// TwoValuedCondition has no second rendering on SQLite.
+func (SQLiteDialect) TwoValuedCondition(*FieldSchema, FilterOperator, any, func(any) string) (string, bool, error) {
+	return "", false, nil
+}
+
+// containsElement reads the element table: SQLite has no containment an
+// index serves.
+func (SQLiteDialect) containsElement(*FieldSchema, *FilterNode, func(any) string) (string, bool, error) {
+	return "", false, nil
+}
+
+// timestampKey is the column's text: SQLite holds a timestamp as the
+// canonical text (MarshalValue).
+func (d SQLiteDialect) timestampKey(expr string) string { return d.textKey(expr) }
+
+func (SQLiteDialect) textKey(expr string) string { return "CAST(" + expr + " AS TEXT)" }
+
+// search matches each field with LIKE: SQLite has no text search the
+// module can assume.
+func (d SQLiteDialect) search(schema *SearchSchema, query string, startIdx int) (*searchCondition, error) {
+	return buildLikeSearch(schema, d, query, startIdx), nil
+}

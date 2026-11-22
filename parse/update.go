@@ -40,12 +40,9 @@ var ErrNoTarget = errors.New("parse: an update needs a key or a filter")
 // do not apply to it.
 var ErrUpdateScope = errors.New("parse: an update reaches only its tenant's live rows")
 
-// Dialect is a dialect both the filter and the patch compiler speak, as
-// filter.PostgresDialect and filter.SQLiteDialect do.
-type Dialect interface {
-	filter.Dialect
-	patch.SQLDialect
-}
+// Dialect is the dialect the filter and the patch compiler both speak:
+// filter.PostgresDialect or filter.SQLiteDialect.
+type Dialect = filter.Dialect
 
 // UpdateOption configures BuildUpdate.
 type UpdateOption func(*updateConfig)

@@ -35,7 +35,7 @@ type JSONPath struct {
 	Storage  JSONStorage
 
 	// element makes the path read one array element: Column is the alias
-	// of a row of the dialect's element table (elementTable) and Segments
+	// of a row of the dialect's element table (Dialect.elementRows) and Segments
 	// is empty. The builder makes such paths for `$some` / `$none`
 	// conditions and facets on scalar arrays; no schema declares one.
 	element bool

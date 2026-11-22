@@ -79,23 +79,58 @@ type Dialect interface {
 	// the database's own type orders it, a key that orders as it does where
 	// there is none.
 	DecimalOrder(value string) string
-}
 
-// TwoValuedDialect is a Dialect with a second rendering of some predicates,
-// one an index serves better, that is exact only where a predicate's Unknown
-// and False select alike. SQLBuilder uses it for a condition an even number
-// of negations (usually none) enclose within its statement or subquery: the
-// statement is then monotone in the condition (False < Unknown < True), and
-// a Kleene result that is True with the condition Unknown is True whatever
-// it is, so a row is selected exactly when it would be with the condition
-// False.
-type TwoValuedDialect interface {
-	Dialect
-
-	// TwoValuedCondition renders `field <op> value` as a predicate True
-	// exactly where Condition's is True. ok is false when it has no such
-	// rendering for the predicate; it then binds nothing.
+	// TwoValuedCondition renders `field <op> value` a second way, one an
+	// index serves better, True exactly where Condition's is True: it is
+	// exact only where a predicate's Unknown and False select alike.
+	// SQLBuilder uses it for a condition an even number of negations
+	// (usually none) enclose within its statement or subquery: the
+	// statement is then monotone in the condition (False < Unknown <
+	// True), and a Kleene result that is True with the condition Unknown is
+	// True whatever it is, so a row is selected exactly when it would be
+	// with the condition False. ok is false when the dialect has no second
+	// rendering of the predicate; it then binds nothing.
 	TwoValuedCondition(field *FieldSchema, op FilterOperator, value any, bind func(any) string) (sql string, ok bool, err error)
+
+	// MarshalValue converts a value to the form the dialect binds for a
+	// column of type t: composite values (arrays, documents) as the
+	// database's driver takes them.
+	MarshalValue(value any, t core.TypeInfo) (any, error)
+
+	// elementRows is a FROM item yielding a row aliased alias per element
+	// of the array f holds — a JSON array document, an array path member or
+	// an array column — and none when f holds no array. `$some` / `$none`,
+	// an array path's NULL tests and `$contains`, and list facets read it.
+	elementRows(f *FieldSchema, alias string) string
+	// objectElement is row alias's element as the document its element
+	// paths read, NULL for an element that is not an object.
+	objectElement(alias string) string
+	// scalarElement is row alias's element as a field of f's element type
+	// (f.Element), NULL for an element of another kind.
+	scalarElement(f *FieldSchema, alias string) *FieldSchema
+	// containsElement answers `$some` of an element equal to a value, or to
+	// one of a set, by containment, which an index on the document serves;
+	// ok is false where the dialect reads the element table instead.
+	containsElement(f *FieldSchema, cond *FilterNode, bind func(any) string) (sql string, ok bool, err error)
+	// setRows binds a set's members as one parameter and reads them back
+	// as rows of one column, v, of the type FieldExpr reads field as.
+	setRows(field *FieldSchema, members []any, bind func(any) string) (string, error)
+
+	// numberKey renders an int, float or decimal field's value as its
+	// terms facet key: the canonical decimal text (core.DecimalText)
+	// FacetKeys gives the same value.
+	numberKey(f *FieldSchema) string
+	// timestampKey renders a timestamp column's value as its terms facet
+	// key: the canonical text (core.FormatTimestamp) FacetKeys gives the
+	// same instant.
+	timestampKey(expr string) string
+	// textKey renders any other value's facet key as TEXT, so the UNION
+	// ALL branches of a facet query share one key column type.
+	textKey(expr string) string
+
+	// search renders a free-text search of schema's fields for query, its
+	// parameters numbered after startIdx.
+	search(schema *SearchSchema, query string, startIdx int) (*searchCondition, error)
 }
 
 // ErrUnknownDSN is returned by DialectFromDSN for a DSN that names no
@@ -119,10 +154,14 @@ func DialectFromDSN(dsn string) (Dialect, error) {
 	if err != nil {
 		return nil, err
 	}
-	if _, ok := base.(dialect.SQLite); ok {
+	switch k := dialect.KindOf(base); k {
+	case dialect.KindPostgres:
+		return PostgresDialect{}, nil
+	case dialect.KindSQLite:
 		return SQLiteDialect{}, nil
+	default:
+		return nil, dialect.Unsupported(k, "DialectFromDSN")
 	}
-	return PostgresDialect{}, nil
 }
 
 // decimalComparison renders a decimal field's equality or ordering, expr
@@ -401,7 +440,7 @@ type buildState struct {
 	bind func(any) string
 	// negated is whether an odd number of $not enclose the node being built
 	// within its statement or subquery, where a condition's Unknown and
-	// False may select differently (TwoValuedDialect).
+	// False may select differently (Dialect.TwoValuedCondition).
 	negated bool
 }
 
@@ -589,8 +628,8 @@ func (b *SQLBuilder) buildCondition(s *buildState, node *FilterNode) (string, er
 		return b.buildRelated(s, node)
 	}
 	bind := s.binder(b.dialect)
-	if tv, ok := b.dialect.(TwoValuedDialect); ok && !s.negated {
-		sql, ok, err := tv.TwoValuedCondition(node.Field, node.Op, node.Value, bind)
+	if !s.negated {
+		sql, ok, err := b.dialect.TwoValuedCondition(node.Field, node.Op, node.Value, bind)
 		if err != nil || ok {
 			return sql, err
 		}

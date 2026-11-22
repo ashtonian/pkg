@@ -67,20 +67,6 @@ func orderedAsText(f *FieldSchema) bool {
 	return f.Path != nil && (f.DataType == core.FieldTypeTimestamp || f.DataType == core.FieldTypeUUID)
 }
 
-// PathExpr renders p's typed value for PostgreSQL. The document is read as
-// jsonb; jsonb_typeof selects the member's JSON kind before any cast, so a
-// wrong-typed member is NULL rather than a cast error. An element path
-// reads its row's element, jsonb_array_elements' v.
-func (PostgresDialect) PathExpr(p *JSONPath, t core.FieldType) string {
-	if p.element {
-		v := p.Column + ".v"
-		return pgTypedMember(t, "jsonb_typeof("+v+")", "("+v+" #>> '{}')")
-	}
-	doc := pgPathDocument(p)
-	path := pgPathLiteral(p.Segments)
-	return pgTypedMember(t, "jsonb_typeof("+doc+" #> "+path+")", "("+doc+" #>> "+path+")")
-}
-
 // pgPathDocument is p's document as jsonb.
 func pgPathDocument(p *JSONPath) string {
 	if p.Storage != StorageJSONB {
@@ -128,19 +114,6 @@ func sqliteTimestamp(kind, val string) string {
 }
 
 func hexGlob(n int) string { return strings.Repeat("[0-9a-f]", n) }
-
-// PathExpr renders p's typed value for SQLite, whose documents are JSON
-// text: json_type selects the member's kind; json_extract reads it. A
-// decimal member is read as the JSON literal `->` returns, which keeps the
-// number as written where json_extract would round it to a double, through
-// parse_decimal (parsesqlite). An element path reads its json_each row: its
-// type and value are json_type's and json_extract's of the element, and
-// its literal is the source document's (the hidden json column) at its
-// fullkey.
-func (SQLiteDialect) PathExpr(p *JSONPath, t core.FieldType) string {
-	kind, val, literal := sqlitePathMember(p)
-	return sqliteTypedMember(t, kind, val, literal)
-}
 
 // sqlitePathMember is p's member as SQLite reads it: its json_type, its
 // json_extract value and its JSON text as written (`->`). An element path's

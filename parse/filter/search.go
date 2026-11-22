@@ -8,7 +8,6 @@ import (
 	"strings"
 
 	"github.com/ashtonian/pkg/parse/core"
-	idialect "github.com/ashtonian/pkg/parse/internal/dialect"
 )
 
 // SearchField describes a single field included in full-text search.
@@ -149,12 +148,7 @@ func buildSearchCondition(schema *SearchSchema, dialect Dialect, query string, s
 		return nil, nil
 	}
 
-	switch idialect.KindOf(dialect) {
-	case idialect.KindPostgres:
-		return buildPostgresSearch(schema, dialect, query, startParamIdx)
-	default:
-		return buildFallbackSearch(schema, dialect, query, startParamIdx), nil
-	}
+	return dialect.search(schema, query, startParamIdx)
 }
 
 func buildPostgresSearch(schema *SearchSchema, dialect Dialect, query string, startIdx int) (*searchCondition, error) {
@@ -176,7 +170,7 @@ func buildPostgresSearch(schema *SearchSchema, dialect Dialect, query string, st
 	}, nil
 }
 
-func buildFallbackSearch(schema *SearchSchema, dialect Dialect, query string, startIdx int) *searchCondition {
+func buildLikeSearch(schema *SearchSchema, dialect Dialect, query string, startIdx int) *searchCondition {
 	var parts []string
 	var args []any
 	paramIdx := startIdx

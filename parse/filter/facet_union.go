@@ -8,7 +8,6 @@ import (
 	"strings"
 
 	"github.com/ashtonian/pkg/parse/core"
-	idialect "github.com/ashtonian/pkg/parse/internal/dialect"
 )
 
 // defaultTermsLimit caps a terms facet's bucket count when neither
@@ -155,9 +154,6 @@ func buildFacetQuery(schema *ResourceSchema, dialect Dialect, filterWhere string
 			if fcfg.Type != FacetTerms {
 				return FacetQuery{}, fmt.Errorf("BuildFacetQuery: field %q is a list; only terms-type facets are supported", req.Field)
 			}
-			if _, ok := dialect.(elementTable); !ok {
-				return FacetQuery{}, fmt.Errorf("BuildFacetQuery: field %q is a list; dialect %s reads no array elements", req.Field, dialect.Name())
-			}
 			hasList = true
 		}
 		// The external name is request data and need not be an SQL
@@ -302,9 +298,8 @@ func buildFacetQuery(schema *ResourceSchema, dialect Dialect, filterWhere string
 			// tie-break names the key's expression.
 			key := m.bucketCol
 			if m.list {
-				table := dialect.(elementTable) // checked with the request
 				source := listSource(m.field, "base."+m.bucketCol)
-				elem := table.scalarElement(source, facetElementAlias)
+				elem := dialect.scalarElement(source, facetElementAlias)
 				order := facetValueOrder(elem, dialect)
 				ordered = order != ""
 				in.WriteString("k, ")
@@ -323,7 +318,7 @@ func buildFacetQuery(schema *ResourceSchema, dialect Dialect, filterWhere string
 					in.WriteString(" AS v")
 				}
 				in.WriteString(" FROM base, ")
-				in.WriteString(table.elementRows(source, facetElementAlias))
+				in.WriteString(dialect.elementRows(source, facetElementAlias))
 				in.WriteString(" WHERE ")
 				in.WriteString(FieldExpr(dialect, elem))
 				in.WriteString(" IS NOT NULL) e")
@@ -444,11 +439,7 @@ const (
 // relationKeyExpr renders the junction's target column as TEXT so the
 // UNION ALL key column lines up with scalar terms facets.
 func relationKeyExpr(rel *core.RelationSchema, dialect Dialect) string {
-	expr := junctionAlias + "." + rel.TargetColumn
-	if idialect.KindOf(dialect) == idialect.KindPostgres {
-		return expr + "::text"
-	}
-	return "CAST(" + expr + " AS TEXT)"
+	return dialect.textKey(junctionAlias + "." + rel.TargetColumn)
 }
 
 // termsKeyExpr renders a terms facet field's value as its key, the
@@ -463,25 +454,18 @@ func termsKeyExpr(field *FieldSchema, dialect Dialect) string {
 		// The JSON literals: a text cast is "1" / "0" on SQLite.
 		return "CASE WHEN " + expr + " IS NULL THEN NULL WHEN " + expr + " THEN 'true' ELSE 'false' END"
 	case core.FieldTypeInt, core.FieldTypeFloat, core.FieldTypeDecimal:
-		if k, ok := dialect.(numberKeyer); ok {
-			return k.numberKey(field)
-		}
+		return dialect.numberKey(field)
 	case core.FieldTypeTimestamp:
 		if field.Path != nil {
 			return expr // PathExpr reads it as canonical text
 		}
-		if k, ok := dialect.(timestampKeyer); ok {
-			return k.timestampKey(expr)
-		}
+		return dialect.timestampKey(expr)
 	case core.FieldTypeUUID:
 		if field.Path != nil {
 			return expr // PathExpr reads it as canonical text
 		}
 	}
-	if idialect.KindOf(dialect) == idialect.KindPostgres {
-		return expr + "::text"
-	}
-	return "CAST(" + expr + " AS TEXT)"
+	return dialect.textKey(expr)
 }
 
 // ScanFacetUnion reads (facet_field, facet_key, facet_count) rows produced

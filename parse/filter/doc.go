@@ -55,8 +55,9 @@
 // deterministic functions the database must have, which parse/parsesqlite
 // registers.
 //
-// A [TwoValuedDialect] renders some predicates a second way that an index
-// serves, used where an even number of $not (usually none) enclose them:
+// A dialect's TwoValuedCondition renders some predicates a second way that
+// an index serves, used where an even number of $not (usually none) enclose
+// them:
 // PostgreSQL compares a jsonb path's `$eq` and small `$in` sets by
 // containment, which a GIN index on the document serves. [SQLResult].Where
 // is therefore a selection predicate.

@@ -651,3 +651,122 @@ func pgDocument(field *FieldSchema) string {
 	}
 	return "(" + field.SQLExpr + ")::jsonb"
 }
+
+// elementRows reads a JSON array as jsonb_array_elements, an array path's
+// member when it is one, and an array column with unnest.
+func (PostgresDialect) elementRows(f *FieldSchema, alias string) string {
+	var array string
+	switch {
+	case f.Path != nil:
+		array = pgPathDocument(f.Path) + " #> " + pgPathLiteral(f.Path.Segments)
+	case f.DataType == core.FieldTypeArray:
+		return "unnest(" + f.SQLExpr + ") AS " + alias + "(v)"
+	default:
+		array = pgDocument(f)
+	}
+	return "jsonb_array_elements(CASE WHEN jsonb_typeof(" + array + ") = 'array' THEN " + array + " END) AS " + alias + "(v)"
+}
+
+func (PostgresDialect) objectElement(alias string) string { return alias + ".v" }
+
+// scalarElement reads a native array column's element as it is, and a JSON
+// array's as an element path (PathExpr).
+func (PostgresDialect) scalarElement(f *FieldSchema, alias string) *FieldSchema {
+	e := bound(elementOf(f))
+	if f.Path == nil {
+		e.SQLExpr = alias + ".v"
+		return &e
+	}
+	e.SQLExpr = ""
+	e.Path = &JSONPath{Column: alias, Storage: StorageJSONB, element: true}
+	return &e
+}
+
+// containsElement renders `$some` of a string, boolean or number element of
+// a jsonb array path equal to a value (`$eq`) as `doc @> fragment`, and to
+// one of at most ContainmentMaxValues values (`$in`) as `doc @> ANY(...)`,
+// each fragment the path's objects down to a one-element array. Containment
+// holds exactly when the member is an array with an equal element; the
+// document's NULL test keeps a NULL document False rather than Unknown, so
+// `$some` stays two-valued under any negation. Decimals keep the element
+// table (a decimal element may be held as a string), as does a path through
+// a segment `#>` would read as an array index.
+func (d PostgresDialect) containsElement(f *FieldSchema, cond *FilterNode, bind func(any) string) (string, bool, error) {
+	p := f.Path
+	if p == nil || p.Storage != StorageJSONB || !containable(f.Elem) || slices.ContainsFunc(p.Segments, isArrayIndex) ||
+		cond == nil || cond.Field == nil || !isElement(cond.Field) {
+		return "", false, nil
+	}
+	fragment := func(v any) (string, error) { return containmentFragment(p.Segments, []any{v}) }
+	switch cond.Op {
+	case OpEq:
+		if cond.Value == nil {
+			return "", false, nil // `= NULL` holds for no element; [null] would contain it
+		}
+		frag, err := fragment(cond.Value)
+		if err != nil {
+			return "", false, fmt.Errorf("field %s: %w", f.ExternalName, err)
+		}
+		return "(" + p.Column + " IS NOT NULL AND " + p.Column + " @> " + bind(frag) + "::jsonb)", true, nil
+	case OpIn:
+		members, ok := core.AnySlice(cond.Value)
+		if !ok || len(members) == 0 || len(members) > d.containmentMaxValues() || slices.Contains(members, nil) {
+			return "", false, nil
+		}
+		frags, err := typedSlice(members, fragment)
+		if err != nil {
+			return "", false, fmt.Errorf("field %s: %w", f.ExternalName, err)
+		}
+		return "(" + p.Column + " IS NOT NULL AND " + p.Column + " @> ANY(" + bind(frags) + "::jsonb[]))", true, nil
+	}
+	return "", false, nil
+}
+
+// timestampKey renders a TIMESTAMPTZ as its UTC wall time, which no session
+// DateStyle or TimeZone changes, at microseconds, PostgreSQL's precision,
+// padded to the canonical nine digits. An infinite timestamp has no key.
+func (PostgresDialect) timestampKey(expr string) string {
+	return "to_char((" + expr + ") AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS.US\"000Z\"')"
+}
+
+// numberKey reads a path member and a decimal as the numeric FieldExpr
+// renders, exactly; trim_scale drops the scale a literal was written with
+// (7.0, 1.50). A float column's key is its shortest text at the field's
+// precision, which float8 and float4 output give while extra_float_digits
+// is positive (PostgreSQL's default), read as numeric for plain notation.
+// A non-finite float has none.
+func (d PostgresDialect) numberKey(f *FieldSchema) string {
+	expr := FieldExpr(d, f)
+	switch {
+	case f.Path != nil || f.DataType == core.FieldTypeDecimal:
+		return "trim_scale(" + expr + ")::text"
+	case f.DataType == core.FieldTypeInt:
+		return "(" + expr + ")::text"
+	}
+	text := "(" + expr + ")::float8::text"
+	if f.NumberKind == reflect.Float32 {
+		text = "(" + expr + ")::float4::text"
+	}
+	return "(CASE WHEN " + text + " IN ('NaN', 'Infinity', '-Infinity') THEN NULL ELSE " + text + "::numeric::text END)"
+}
+
+// PathExpr renders p's typed value for PostgreSQL. The document is read as
+// jsonb; jsonb_typeof selects the member's JSON kind before any cast, so a
+// wrong-typed member is NULL rather than a cast error. An element path
+// reads its row's element, jsonb_array_elements' v.
+func (PostgresDialect) PathExpr(p *JSONPath, t core.FieldType) string {
+	if p.element {
+		v := p.Column + ".v"
+		return pgTypedMember(t, "jsonb_typeof("+v+")", "("+v+" #>> '{}')")
+	}
+	doc := pgPathDocument(p)
+	path := pgPathLiteral(p.Segments)
+	return pgTypedMember(t, "jsonb_typeof("+doc+" #> "+path+")", "("+doc+" #>> "+path+")")
+}
+
+func (PostgresDialect) textKey(expr string) string { return expr + "::text" }
+
+// search matches the fields' text search vector against the query's.
+func (d PostgresDialect) search(schema *SearchSchema, query string, startIdx int) (*searchCondition, error) {
+	return buildPostgresSearch(schema, d, query, startIdx)
+}

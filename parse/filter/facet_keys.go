@@ -10,70 +10,7 @@ import (
 	"time"
 
 	"github.com/ashtonian/pkg/parse/core"
-	"github.com/ashtonian/pkg/parse/internal/decimals"
 )
-
-// numberKeyer is a dialect that renders an int, float or decimal field's
-// value as its terms facet key: the canonical decimal text
-// (core.DecimalText) FacetKeys gives the same value.
-type numberKeyer interface {
-	numberKey(f *FieldSchema) string
-}
-
-// timestampKeyer is a dialect that renders a timestamp column's value as
-// its terms facet key: the canonical text (core.FormatTimestamp) FacetKeys
-// gives the same instant. SQLite has none: the column holds that text
-// (SQLiteDialect.MarshalValue).
-type timestampKeyer interface {
-	timestampKey(expr string) string
-}
-
-// timestampKey renders a TIMESTAMPTZ as its UTC wall time, which no session
-// DateStyle or TimeZone changes, at microseconds, PostgreSQL's precision,
-// padded to the canonical nine digits. An infinite timestamp has no key.
-func (PostgresDialect) timestampKey(expr string) string {
-	return "to_char((" + expr + ") AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS.US\"000Z\"')"
-}
-
-// numberKey reads a path member and a decimal as the numeric FieldExpr
-// renders, exactly; trim_scale drops the scale a literal was written with
-// (7.0, 1.50). A float column's key is its shortest text at the field's
-// precision, which float8 and float4 output give while extra_float_digits
-// is positive (PostgreSQL's default), read as numeric for plain notation.
-// A non-finite float has none.
-func (d PostgresDialect) numberKey(f *FieldSchema) string {
-	expr := FieldExpr(d, f)
-	switch {
-	case f.Path != nil || f.DataType == core.FieldTypeDecimal:
-		return "trim_scale(" + expr + ")::text"
-	case f.DataType == core.FieldTypeInt:
-		return "(" + expr + ")::text"
-	}
-	text := "(" + expr + ")::float8::text"
-	if f.NumberKind == reflect.Float32 {
-		text = "(" + expr + ")::float4::text"
-	}
-	return "(CASE WHEN " + text + " IN ('NaN', 'Infinity', '-Infinity') THEN NULL ELSE " + text + "::numeric::text END)"
-}
-
-// numberKey reads a number member's JSON literal as written through
-// parse_decimal, which json_extract would round to a double, and a REAL
-// column through parse_decimal (a double) or parse_decimal_float32 (a
-// float32 field's). A decimal's FieldExpr is already its canonical text.
-func (d SQLiteDialect) numberKey(f *FieldSchema) string {
-	switch {
-	case f.DataType == core.FieldTypeDecimal:
-		return FieldExpr(d, f)
-	case f.Path != nil:
-		kind, _, literal := sqlitePathMember(f.Path)
-		return "(CASE WHEN " + kind + " IN ('integer', 'real') THEN " + decimals.SQLiteValueFunc + "(" + literal + ") END)"
-	case f.DataType == core.FieldTypeInt:
-		return "CAST(" + f.SQLExpr + " AS TEXT)"
-	case f.NumberKind == reflect.Float32:
-		return decimals.SQLiteFloat32Func + "(" + f.SQLExpr + ")"
-	}
-	return decimals.SQLiteValueFunc + "(" + f.SQLExpr + ")"
-}
 
 // FacetKeys returns the terms buckets a value of f counts in, keyed as
 // BuildFacetQuery keys them, for a backend that counts in Go: none for NULL
