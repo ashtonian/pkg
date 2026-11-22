@@ -127,7 +127,7 @@ go test -tags=integration -run 'MatchesPostGIS|TestGeoMatrix_PostGIS|TestFilterM
 
 ## Security
 
-The functions read only their argument, allocate at most the value's digits (bounded by `core.MaxDecimalDigits`), and have no side effects. A decimal string member longer than 1000 characters is NULL before it is parsed. A polygon blob must hold exactly the points its header counts, and its points must be finite, before it is read.
+The functions read only their argument, allocate at most the value's digits (bounded by `core.MaxDecimalDigits`), and have no side effects. A decimal string member longer than 1000 characters is NULL before it is parsed. A polygon blob must hold exactly the points its header counts, at least four of them with the last repeating the first, and its points must be finite, before it is read.
 
 ## Code Map
 

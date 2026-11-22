@@ -3,6 +3,7 @@
 package geo
 
 import (
+	"encoding/binary"
 	"encoding/json"
 	"math"
 	"testing"
@@ -123,17 +124,42 @@ func TestPolygonWKB(t *testing.T) {
 	assert.Equal(t, append(ring, ring[0]), got, "closed by its first point")
 
 	for name, bad := range map[string][]byte{
-		"empty":       nil,
-		"big-endian":  append([]byte{0}, b[1:]...),
-		"a point":     append(append([]byte{1}, 1, 0, 0, 0), b[5:]...),
-		"two rings":   append(append([]byte{}, b[:5]...), append([]byte{2, 0, 0, 0}, b[9:]...)...),
-		"truncated":   b[:len(b)-1],
-		"extra bytes": append(append([]byte{}, b...), 0),
-		"NaN":         AppendPolygonWKB(nil, []Point{{math.NaN(), 0}, {1, 1}, {0, 1}}),
+		"empty":        nil,
+		"big-endian":   append([]byte{0}, b[1:]...),
+		"a point":      append(append([]byte{1}, 1, 0, 0, 0), b[5:]...),
+		"two rings":    append(append([]byte{}, b[:5]...), append([]byte{2, 0, 0, 0}, b[9:]...)...),
+		"truncated":    b[:len(b)-1],
+		"extra bytes":  append(append([]byte{}, b...), 0),
+		"NaN":          AppendPolygonWKB(nil, []Point{{math.NaN(), 0}, {1, 1}, {0, 1}}),
+		"no points":    polygonWKB(),
+		"a short ring": polygonWKB(Point{0, 0}, Point{1, 1}, Point{0, 0}),
+		"an open ring": polygonWKB(Point{0, 0}, Point{1, 1}, Point{0, 1}, Point{1, 0}),
 	} {
 		_, err := ReadPolygonWKB(nil, bad)
 		assert.ErrorIs(t, err, errPolygonWKB, name)
 	}
+
+	// The smallest ring the reader takes is the smallest the writer writes.
+	smallest, err := ReadPolygonWKB(nil, AppendPolygonWKB(nil, ring))
+	require.NoError(t, err)
+	assert.Len(t, smallest, MinRingPoints+1)
+	for _, short := range [][]Point{nil, {{0, 0}, {1, 1}}} {
+		assert.Panics(t, func() { AppendPolygonWKB(nil, short) }, "%d points", len(short))
+	}
+}
+
+// polygonWKB is a one-ring polygon WKB of exactly points, for blobs the
+// writer refuses to produce.
+func polygonWKB(points ...Point) []byte {
+	b := []byte{wkbLittleEndian}
+	b = binary.LittleEndian.AppendUint32(b, wkbPolygon)
+	b = binary.LittleEndian.AppendUint32(b, 1)
+	b = binary.LittleEndian.AppendUint32(b, uint32(len(points)))
+	for _, p := range points {
+		b = binary.LittleEndian.AppendUint64(b, math.Float64bits(p.Lon))
+		b = binary.LittleEndian.AppendUint64(b, math.Float64bits(p.Lat))
+	}
+	return b
 }
 
 // Coordinate reads text as PostgreSQL's float8 input does; each want is
