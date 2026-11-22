@@ -66,10 +66,10 @@ func QueryParamConfig(cfg *core.ParserConfig) QueryParamOption {
 }
 
 // QueryParamParser translates flat URL query params into a FilterAST. Params
-// compile to the same operator map the JSON grammar uses and run through
-// [FilterParser.ParseMap], so operator allowlists, enums, custom validators,
-// array limits and cost limits apply identically on both ingresses
-// .
+// name the fields the JSON grammar does ([ResourceSchema.RequestField]),
+// compile to the same operator map and run through [FilterParser.ParseMap],
+// so operator allowlists, enums, custom validators, array limits and cost
+// limits apply identically on both ingresses.
 type QueryParamParser struct {
 	schema     *ResourceSchema
 	lenient    bool
@@ -104,14 +104,14 @@ func (p *QueryParamParser) ParseHTTP(r *http.Request) (*FilterAST, error) {
 
 // Parse converts url.Values to a FilterAST.
 func (p *QueryParamParser) Parse(params url.Values) (*FilterAST, error) {
-	raw := make(map[string]any)
+	operands := flatOperands{}
 	for _, key := range slices.Sorted(maps.Keys(params)) { // deterministic SQL text
 		values := params[key]
 		if len(values) == 0 || (reservedParams[key] && !p.fieldsOnly) || p.accepted[key] {
 			continue
 		}
 		fieldName, op := p.splitFieldOp(key)
-		field, ok := p.schema.Fields[fieldName]
+		field, ok := p.schema.RequestField(fieldName)
 		if !ok {
 			if !p.lenient {
 				return nil, &core.ParseError{
@@ -137,20 +137,60 @@ func (p *QueryParamParser) Parse(params url.Values) (*FilterAST, error) {
 		if err != nil {
 			return nil, err
 		}
-		ops, _ := raw[fieldName].(map[string]any)
-		if ops == nil {
-			ops = make(map[string]any)
-			raw[fieldName] = ops
+		if err := operands.add(fieldName, opKey, key, value); err != nil {
+			return nil, err
 		}
-		ops[opKey] = value
 	}
-	return p.parser.ParseMap(raw)
+	return p.parser.ParseMap(operands.operatorMap())
+}
+
+// flatOperands are the operator objects flat parameters build, by field and
+// operator key, each with the parameter that set it.
+type flatOperands map[string]map[string]flatOperand
+
+type flatOperand struct {
+	param string
+	value any
+}
+
+// add sets field's operator opKey from param. Two parameters setting one
+// operator (`status=a&status=b` and `status_in=c` are both `$in`) are
+// refused rather than one dropping the other's predicate.
+func (o flatOperands) add(field, opKey, param string, value any) error {
+	ops := o[field]
+	if ops == nil {
+		ops = map[string]flatOperand{}
+		o[field] = ops
+	}
+	if prev, dup := ops[opKey]; dup {
+		return &core.ParseError{
+			Kind:    core.ParseErrorKindFilter,
+			Code:    ECodeInvalidOperator.String(),
+			Message: fmt.Sprintf("parameters '%s' and '%s' both set %s on field '%s'", prev.param, param, opKey, field),
+			Details: map[string]any{core.DetailField: field},
+		}
+	}
+	ops[opKey] = flatOperand{param: param, value: value}
+	return nil
+}
+
+// operatorMap is the operands in the JSON grammar's operator-map form.
+func (o flatOperands) operatorMap() map[string]any {
+	raw := make(map[string]any, len(o))
+	for field, ops := range o {
+		m := make(map[string]any, len(ops))
+		for key, operand := range ops {
+			m[key] = operand.value
+		}
+		raw[field] = m
+	}
+	return raw
 }
 
 func (p *QueryParamParser) splitFieldOp(key string) (string, FilterOperator) {
 	// A real field named e.g. "email_like" must not be split into
 	// (email, $like) — exact schema match takes precedence.
-	if _, ok := p.schema.Fields[key]; ok {
+	if _, ok := p.schema.RequestField(key); ok {
 		return key, OpEq
 	}
 	// Prefer the split that names a real field: "a_not_null" is (a, not_null)
@@ -164,7 +204,7 @@ func (p *QueryParamParser) splitFieldOp(key string) (string, FilterOperator) {
 		if fieldName == "" {
 			continue
 		}
-		if _, ok := p.schema.Fields[fieldName]; ok {
+		if _, ok := p.schema.RequestField(fieldName); ok {
 			return fieldName, s.op
 		}
 		if first == "" {

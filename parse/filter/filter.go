@@ -266,13 +266,7 @@ func (p *FilterParser) parseLogical(op FilterOperator, value any, depth int) (*F
 }
 
 func (p *FilterParser) parseFieldCondition(fieldName string, value any, depth int) (*FilterNode, error) {
-	// User-facing fields take precedence; fall back to the system-fields
-	// registry (id, tenant_id, deleted_at) so callers can filter by
-	// primary key without a per-resource opt-in tag.
-	field, ok := p.schema.Fields[fieldName]
-	if !ok && p.schema.SystemFields != nil {
-		field, ok = p.schema.SystemFields[fieldName]
-	}
+	field, ok := p.schema.RequestField(fieldName)
 	if !ok {
 		return nil, &core.ParseError{
 			Kind:    core.ParseErrorKindFilter,

@@ -84,6 +84,21 @@ type ResourceSchema struct {
 	policyRefused map[string]error
 }
 
+// RequestField resolves a field name a request filter uses, in either
+// grammar: a request field (Fields), or the key (PrimaryKey) from
+// SystemFields. The tenant and soft-delete columns are system fields only
+// policies reach; a request's handle on deleted rows is include_deleted.
+func (s *ResourceSchema) RequestField(name string) (*FieldSchema, bool) {
+	if f, ok := s.Fields[name]; ok {
+		return f, true
+	}
+	if name != "" && name == s.PrimaryKey {
+		f, ok := s.SystemFields[name]
+		return f, ok
+	}
+	return nil, false
+}
+
 // FieldSchema defines a single filterable field.
 type FieldSchema struct {
 	ExternalName string

@@ -22,6 +22,8 @@ JSON filters (`{"status":"active","price":{"$gte":10}}`) and flat query paramete
 | `near` / `within` / `intersects` | `{"$near": {"lat": 1, "lon": 2, "distance": "5km"}}` | — | Geo, WGS 84: PostGIS, SQLite through `parsesqlite`'s functions, and `filter.Evaluate` decide them alike on a JSONB point; native `geography` / `geometry` storage needs PostGIS |
 | `$and` / `$or` / `$not` | `{"$or": [{…}, {…}]}` | — | Boolean composition |
 
+Both forms name the same fields (`ResourceSchema.RequestField`): the request fields (`parse:"filter"`) and the resource's key, with the operators the key's system field takes (`eq`, `gt`, `gte`, `lt`, `lte`, `in`). The tenant and soft-delete columns are system fields only a [server policy](#policy-fields) names; a request reaches deleted rows through `include_deleted` alone, and a filter on either column is E2071 in both forms. Flat parameters ANDed together build one operator map per field, so two that set the same operator are E2072 naming both: `status=a&status=b` coalesces to `$in`, and `status_in=c` beside it would otherwise replace it. `status=a&status_in=c` keeps both predicates.
+
 Values normalize before any SQL is built: integers exactly (range-checked against the Go kind, floats beyond ±2^53 rejected), decimals to their canonical exact text ([decimals](schema-configuration.md#decimals)), UUIDs to canonical form, timestamps to RFC 3339 UTC with relative tokens (`now-7d`) resolved against the parser clock, JSON documents to a canonical form (their numbers within int64, or decimals a float64 holds exactly — E2073 otherwise, since SQLite would round them). See the sections below and [relations](relations.md).
 
 ## Type capabilities
