@@ -305,7 +305,7 @@ Facet, include, and flat-query options:
 | `QueryParamLenient()` | — | off | Ignore a parameter naming no filterable field instead of refusing it (E2071) |
 | `QueryParamConfig(cfg)` | `*core.ParserConfig` | `core.DefaultConfig()` | Limits and value configuration for flat filters |
 | `ListQuery.WithFilterConfig(cfg)` | `*core.ParserConfig` | default parser config | Configure JSON filter parsing before using the builder |
-| `ListQuery.WithSearchSchema(schema)` | `*SearchSchema` | nil | Supply searchable fields for `ListSearch`; typed parsers do this automatically |
+| `ListQuery.WithSearchSchema(schema)` | `*SearchSchema` | nil | Supply searchable fields for `ListSearch`; `Resource.ListQuery` does this automatically |
 
 A relation that declares a `tenant_col` fails the build unless a tenant is bound or an unscoped option is given — junction rows of other tenants never match.
 

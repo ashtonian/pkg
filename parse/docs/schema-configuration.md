@@ -79,7 +79,7 @@ encoding/json ignores the option on a type that marshals itself (`json.Marshaler
 | `WithMaxPatchCopyBytes(n)` | int64 | `1048576` | Bytes a patch's `copy` operations may add during typed apply |
 | `WithCodec(c)` | `Codec` | `StdlibJSON` (numbers decode as `json.Number`, trailing data rejected) | Decodes request bodies and undeclared documents in typed apply; declared JSON storage uses fresh Go JSON decoding. Cursors use Parse's internal bounded MessagePack envelope |
 | `WithClock(fn)` | `func() time.Time` | `time.Now().UTC` | Anchor for relative-time tokens (`now-7d`) |
-| `WithGeneratorOptions(o...)` | `...GeneratorOption` | none | Schema generation options used by typed parsers |
+| `WithGeneratorOptions(o...)` | `...GeneratorOption` | none | Schema generation options a `Resource` generates its schemas with |
 
 `GeneratorOption`s configure a `SchemaGenerator` (`NewSchemaGenerator`, `parse.NewSchemaRegistry`, or `WithGeneratorOptions`):
 
