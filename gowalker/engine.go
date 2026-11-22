@@ -34,7 +34,28 @@ type settings struct {
 	byDepth  bool
 	dropTies bool
 	capacity int
-	limits   Limits
+	// unbounded keeps every type, whatever capacity says.
+	unbounded bool
+	limits    Limits
+}
+
+// retains reports whether a cache holding entries keeps one more.
+func (s *settings) retains(entries int) bool {
+	return s.unbounded || entries < s.capacity
+}
+
+// CacheStats describes an engine's or a [TypeCache]'s cache.
+type CacheStats struct {
+	// Entries is the number of types held.
+	Entries int
+	// Capacity is the most types held; it does not apply when Unbounded.
+	Capacity int
+	// Unbounded reports a cache that keeps every type ([WithUnboundedCache]).
+	Unbounded bool
+	// Uncached counts the compilations, or builds, whose result was returned
+	// and not kept because the cache was full. A steady rise means a type is
+	// compiled on every call.
+	Uncached uint64
 }
 
 // rule applies the engine's naming convention to one declared field.
@@ -152,15 +173,26 @@ func WithCaseFoldNames() Option {
 }
 
 // WithCacheCapacity limits retained root schemas, including each schema's graph.
-// Zero disables retention. At capacity, new types compile without being cached.
+// Zero disables retention. At capacity, new types compile without being cached,
+// on every call: [Engine.CacheStats] counts them. A [TypeCache] has the same
+// capacity. The last of WithCacheCapacity and [WithUnboundedCache] applies.
 func WithCacheCapacity(capacity int) Option {
 	return func(s *settings) error {
 		if capacity < 0 {
 			return ErrSchema
 		}
-		s.capacity = capacity
+		s.capacity, s.unbounded = capacity, false
 		return nil
 	}
+}
+
+// WithUnboundedCache keeps every root schema the engine compiles, and every
+// type its [TypeCache]s build, for the engine's lifetime. Choose it when the
+// program's struct types are fixed when it is built, which bounds the cache
+// by the program; keep a capacity for a caller that creates types at run
+// time, such as with reflect.StructOf, or compiles types its users supply.
+func WithUnboundedCache() Option {
+	return func(s *settings) error { s.unbounded = true; return nil }
 }
 
 // WithLimits replaces all compile/access budgets. Start from DefaultLimits to
@@ -181,6 +213,14 @@ type Engine struct {
 	settings settings
 	mu       sync.RWMutex
 	cache    map[reflect.Type]*Schema
+	uncached uint64
+}
+
+// CacheStats reports the engine's schema cache.
+func (e *Engine) CacheStats() CacheStats {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	return CacheStats{Entries: len(e.cache), Capacity: e.settings.capacity, Unbounded: e.settings.unbounded, Uncached: e.uncached}
 }
 
 // New creates an engine using exported Go field names, exact matching, a cache
@@ -262,8 +302,10 @@ func (e *Engine) CompileType(t reflect.Type) (*Schema, error) {
 	if cached := e.cache[t]; cached != nil {
 		return cached, nil
 	}
-	if len(e.cache) < e.settings.capacity {
+	if e.settings.retains(len(e.cache)) {
 		e.cache[t] = schema
+	} else {
+		e.uncached++
 	}
 	return schema, nil
 }

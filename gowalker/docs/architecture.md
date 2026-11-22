@@ -160,9 +160,11 @@ published under a lock; concurrent cold requests can build independently before
 converging on the cached result. Recursive compilation never waits on an
 unfinished cache entry. At capacity, existing entries remain cached and new
 roots compile without being retained. The limit counts roots, not bytes.
+`WithUnboundedCache` removes it.
 
 A `TypeCache` keeps your build function's result, or error, per exact type,
-bounded by its engine's capacity. Like the engine, it publishes completed results
+bounded by its engine's capacity, or unbounded with the engine. Both count the
+results they could not keep (`CacheStats`). Like the engine, it publishes completed results
 under a lock and never waits on an unfinished entry, so a build function may
 request other types.
 

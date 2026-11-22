@@ -148,8 +148,11 @@ types and counts them against its limits, even when fields are leaves.
 `Get(t)` return `build`'s result for that exact type, computed once from the
 engine's schema. Typical `M` values are a column list with accessors, parsed
 tag options, or a help-text catalog. Results and errors are both retained, for
-up to the engine's cache capacity of types; beyond it, or with capacity zero,
-each call compiles and builds again.
+up to the engine's cache capacity of types, or for every type when the engine
+has `WithUnboundedCache()`; beyond the capacity, or with capacity zero, each
+call compiles and builds again. `CacheStats()` on the engine and on a
+`TypeCache` reports `Entries`, `Capacity`, `Unbounded` and `Uncached`, the
+compilations or builds whose result was not kept.
 
 Concurrent first requests for one type can each run `build`; one result is kept,
 so `build` must be deterministic and free of side effects that matter. `build`
@@ -458,7 +461,7 @@ keys; prune the map node to inspect only the container.
 
 | Setting | Default | Counting rule |
 |---|---:|---|
-| Cache capacity | 256 | Root schemas, including their complete raw graphs; also each `TypeCache`'s retained types |
+| Cache capacity | 256 | Root schemas, including their complete raw graphs; also each `TypeCache`'s retained types. `WithUnboundedCache()` removes the bound |
 | `MaxTypes` | 4096 | Unique declared types in one compilation |
 | `MaxFields` | 65536 | Raw declared fields plus visits while expanding named views |
 | `MaxDepth` | 128 | First-visit type edges, inline expansion depth, or consecutive runtime pointer/interface hops |
@@ -472,7 +475,8 @@ again. Runtime indirection counts each pointer/interface hop. A direct two-field
 struct requires four field visits: two raw fields and two named-view fields.
 
 Use `WithCacheCapacity(0)` to disable retention; at capacity, existing entries
-remain and new types compile uncached. `WithLimits` accepts a complete positive
+remain and new types compile uncached. `WithUnboundedCache()` keeps every type;
+the last of the two options applies. `WithLimits` accepts a complete positive
 limits value (start from `DefaultLimits()`). There is no unlimited mode. These
 budgets bound traversal and metadata construction, rather than execution time
 or heap bytes. `WithWalkLimits`

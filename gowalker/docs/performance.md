@@ -12,8 +12,27 @@ and resolve their text path on every call; keep an accessor for a loop.
 - The engine caches at most 256 root schemas by default, including dynamic types
   encountered through interfaces. `WithCacheCapacity` changes that count; zero
   disables retention. Existing entries stay cached when capacity is reached;
-  new types compile uncached. Capacity bounds roots, not total bytes or Go's own
-  runtime type metadata.
+  new types compile uncached, on every call. Capacity bounds roots, not total
+  bytes or Go's own runtime type metadata. A `TypeCache` has its engine's bound.
+
+## Choosing a cache bound
+
+Past the capacity, every call for a new type compiles again and returns a new
+`*Schema`, with new `*Field` handles and a fresh `TypeCache` build. The cost is
+the compilation per call; the hazard is identity: a map keyed by a field handle,
+or a check that two calls returned the same metadata, holds only while the type
+is cached.
+
+- Struct types fixed when the program is built: use `WithUnboundedCache()`.
+  The program's own types bound the cache, and every call after the first is a
+  lookup.
+- Types created at run time (`reflect.StructOf`, plugins, types users supply
+  to a long-running service): keep a capacity, sized above the working set.
+
+`Engine.CacheStats()` and `TypeCache.CacheStats()` report `Entries`, `Capacity`,
+`Unbounded` and `Uncached`. Export `Uncached` as a counter, or assert it stays
+zero in a test that exercises every type: a rise means a type compiles, or its
+metadata builds, on every call.
 - `Schema.AccessName` and `Schema.AccessField` share cached accessors for visible root fields. General path
   resolution is uncached; retain its result.
 - A path of struct fields reached only through pointers compiles, once per
