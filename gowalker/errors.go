@@ -65,7 +65,7 @@ type NameConflict struct {
 }
 
 func (e *NameConflict) Error() string {
-	first, second, owner := fieldLabel(e.First), fieldLabel(e.Second), typeText(e.Owner)
+	first, second, owner := fieldLabel(e.First), fieldLabel(e.Second), TypeText(e.Owner)
 	switch {
 	case !e.firstAlias && !e.secondAlias:
 		return fmt.Sprintf("fields %s and %s of %s both use the name %q", first, second, owner, e.Name)
@@ -78,10 +78,15 @@ func (e *NameConflict) Error() string {
 	}
 }
 
-// typeText is t's Go syntax without struct tags. reflect prints an unnamed
-// struct type's tags, in its own text and in a generic type's arguments, and a
-// tag value can hold a secret, such as a default.
-func typeText(t reflect.Type) string {
+// TypeText is t's Go syntax as reflect prints it, without struct tags, for
+// error text: reflect prints an unnamed struct type's tags, in its own text and
+// in a generic type's arguments, and a tag value can hold a secret, such as a
+// default. Every error gowalker formats prints its types this way. A nil t is
+// "<nil>".
+func TypeText(t reflect.Type) string {
+	if t == nil {
+		return "<nil>"
+	}
 	text := t.String()
 	if !strings.Contains(text, `"`) {
 		return text
@@ -123,7 +128,7 @@ func (e *Error) Error() string {
 	b.WriteString(e.Op)
 	if e.Type != nil {
 		b.WriteByte(' ')
-		b.WriteString(typeText(e.Type))
+		b.WriteString(TypeText(e.Type))
 	}
 	b.WriteString(": ")
 	b.WriteString(e.Kind.Error())

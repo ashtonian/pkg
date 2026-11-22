@@ -194,7 +194,8 @@ goroutines. What an owner can observe:
   from declarations. It never includes values, map keys or path steps, which
   can be caller data, nor tag values, which can hold secrets such as a default
   password: an unnamed struct type is printed without its tags, in a generic
-  type's arguments too. Read `Error.Path` and `Error.Step` to show a location,
+  type's arguments too, and `TypeText(t)` prints a type that way for your own
+  errors. Read `Error.Path` and `Error.Step` to show a location,
   and `Error.Type` or `TagError.Tag` to show a tag, under your own policy.
 - Text paths from untrusted input are bounded: `path.Parse` refuses input over
   65536 bytes and resolution refuses more than `MaxPathSteps` steps. Walks of

@@ -54,7 +54,7 @@ path has no text form (`MarshalText` returns `ErrUnrepresentable`).
 
 `At(shape)` returns the schema of a node of this schema's compiled graph: its
 root, the `Shape` of a field from any view or declaration, or an `Elem()` of
-one. The node's schema works as a schema compiled for that type does, with
+one that is not a leaf. The node's schema works as a schema compiled for that type does, with
 `AccessName`, `AccessField`, `ResolveText`, `WalkType` and the rest taking
 values of the node's type, but it uses this compilation's field handles and
 field-specific leaves (a `FieldRule.Atomic` field's node is a leaf here too),
@@ -68,7 +68,7 @@ accessors are shared; there is at most one per node.
 |---|---|
 | A node of this compilation | Its schema |
 | A node of another compilation, even of the same type, or `nil` | ErrPath |
-| A map's key node, which no view reads | ErrPath |
+| A node only map keys or a leaf's contents reach, which no view reads | ErrPath; nodes are per type, so a key type the view reaches elsewhere is that node and has its schema |
 | A struct reached only as an inline owner or through a field that lost its name, whose own names conflict ([field views](#field-views)), or a node from which a path reaches one: a pointer to it, a struct with a field of its type | The ErrSchema error compiling the node's type alone returns |
 
 Use the schema, accessor, shape and field handles returned by the API; their
@@ -415,9 +415,10 @@ values, which can be caller data, nor struct tag values, which can hold secrets
 such as a default password: a `*TagError` names the repeated key or the byte
 where reading stopped (`struct tag repeats the key "default" at byte 24`), and
 an unnamed struct type, alone or in a generic type's arguments, prints without
-its tags (`struct { Password string }`). Read `Error.Path` and `Error.Step` to
-show a location, and `Error.Type` or `TagError.Tag` to show the full type or
-tag, under your own policy. A resolver's error is its own text. A
+its tags (`struct { Password string }`). `TypeText(t)` prints a type that way
+for a library's own error text. Read `Error.Path` and `Error.Step` to show a
+location, and `Error.Type` or `TagError.Tag` to show the full type or tag,
+under your own policy. A resolver's error is its own text. A
 `*NameConflict` also exposes `Owner`, `Name`, `First` and `Second` for a custom
 message. `GetAs` returns `ErrMissing` rather than
 replacing missing with zero. `State` values print as `Present`, `Nil` and `Missing`.

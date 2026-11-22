@@ -82,7 +82,8 @@ type Shape struct {
 	fold         bool
 	graph        *graph
 	// viewed reports a shape the view pass reached, leaves included: one a
-	// path, walk or declaration can reach, rather than a map key's.
+	// path, walk or declaration can reach, rather than one only map keys or a
+	// leaf's contents reach.
 	viewed bool
 	// conflict is the name conflict of a struct reached only aside (see
 	// builder.view), in place of its view.
@@ -616,10 +617,10 @@ func (b *builder) expand(owner, current *Shape, index []int, parents []reflect.S
 		if rule.Inline {
 			child, err := indirectShape(declared.shape)
 			if err != nil {
-				return failure("compile", ErrSchema, sf.Type, emptyPath, -1, fmt.Errorf("field %s: inlining %s: %w", sf.Name, typeText(sf.Type), err))
+				return failure("compile", ErrSchema, sf.Type, emptyPath, -1, fmt.Errorf("field %s: inlining %s: %w", sf.Name, TypeText(sf.Type), err))
 			}
 			if child.atomic || child.Kind() != reflect.Struct {
-				return failure("compile", ErrSchema, current.typ, emptyPath, -1, fmt.Errorf("field %s: %s is not a struct with fields to inline", sf.Name, typeText(sf.Type)))
+				return failure("compile", ErrSchema, current.typ, emptyPath, -1, fmt.Errorf("field %s: %s is not a struct with fields to inline", sf.Name, TypeText(sf.Type)))
 			}
 			listed.state, listed.field = InlineOwner, declared.selected
 			owner.declarations = append(owner.declarations, listed)
@@ -631,7 +632,7 @@ func (b *builder) expand(owner, current *Shape, index []int, parents []reflect.S
 				if b.engine.settings.resolvesByDepth() {
 					continue
 				}
-				return failure("compile", ErrSchema, current.typ, emptyPath, -1, fmt.Errorf("field %s: %s is inlined inside itself, and its fields would claim their names again; ResolveByDepth leaves the repeat out", sf.Name, typeText(child.typ)))
+				return failure("compile", ErrSchema, current.typ, emptyPath, -1, fmt.Errorf("field %s: %s is inlined inside itself, and its fields would claim their names again; ResolveByDepth leaves the repeat out", sf.Name, TypeText(child.typ)))
 			}
 			lineage := append(append([]reflect.StructField(nil), parents...), sf)
 			if err := b.expand(owner, child, at, lineage, active); err != nil {

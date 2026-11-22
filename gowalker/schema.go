@@ -29,15 +29,16 @@ func (s *Schema) Root() *Shape { return s.root }
 
 // At returns the schema rooted at shape, a node of s's compiled graph: its
 // root, the Shape of a field from any of its views or declarations, or an Elem
-// of one. Its accessors and walks take values of shape's type, as a schema
+// of one that is not a leaf. Its accessors and walks take values of shape's type, as a schema
 // compiled for that type does, but use this graph's field handles and
 // field-specific leaves, and nothing is compiled: use it to read a field of a
 // collection element, or of any value already in hand, relative to that value.
 // Every schema of one graph returns the same schema for a shape, so accessors
 // it caches are shared; there is at most one per shape of the graph.
 //
-// A shape from another compilation, or a map key's, which no view reads,
-// returns ErrPath. The graph may reach a struct whose own names conflict
+// A shape from another compilation, or one only map keys or a leaf's contents
+// reach, which no view reads, returns ErrPath. Nodes are per type, so a key
+// type the view reaches elsewhere is that node and has its schema. The graph may reach a struct whose own names conflict
 // only as an inline owner, or through a field that lost its name, where its
 // owner settles the names; a shape from which a path reaches such a struct,
 // the struct itself, a pointer to it or a struct with a field of its type,

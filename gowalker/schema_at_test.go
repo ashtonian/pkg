@@ -351,8 +351,9 @@ func TestSchemaAt_PathsToAConflict(t *testing.T) {
 	}
 }
 
-// A leaf a field reaches is a node; a map key, which no view reads, is not,
-// leaf or not.
+// A leaf a field reaches is a node; a type only map keys or a leaf's contents
+// reach, which no view reads, is not, while a key type the view reaches
+// elsewhere is that node.
 func TestSchemaAt_LeavesAndMapKeys(t *testing.T) {
 	e := engine(t, gowalker.WithAtomicType(func(t reflect.Type) bool { return t == reflect.TypeFor[AtDeep]() }))
 	fielded := schemaFor[struct{ Point AtDeep }](t, e)
@@ -364,5 +365,23 @@ func TestSchemaAt_LeavesAndMapKeys(t *testing.T) {
 	byPoint, _ := keyed.Root().Lookup("ByPoint")
 	if _, err := keyed.At(byPoint.Shape().Key()); !errors.Is(err, gowalker.ErrPath) {
 		t.Errorf("At took a leaf map key: %v", err)
+	}
+
+	leafList := engine(t, gowalker.WithAtomicType(func(t reflect.Type) bool { return t == reflect.TypeFor[[]atChild]() }))
+	listed := schemaFor[struct{ L []atChild }](t, leafList)
+	l, _ := listed.Root().Lookup("L")
+	if _, err := listed.At(l.Shape().Elem()); !errors.Is(err, gowalker.ErrPath) {
+		t.Errorf("At took a leaf's element: %v", err)
+	}
+
+	both := schemaFor[struct {
+		P AtDeep
+		M map[AtDeep]int
+	}](t, engine(t))
+	p, _ := both.Root().Lookup("P")
+	m, _ := both.Root().Lookup("M")
+	fromKey, err := both.At(m.Shape().Key())
+	if fromField, _ := both.At(p.Shape()); err != nil || fromKey != fromField {
+		t.Errorf("At(a key type a field reaches) = %v", err)
 	}
 }

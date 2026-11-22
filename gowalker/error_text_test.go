@@ -142,3 +142,29 @@ func TestErrorTextOmitsTagsOfAnUnnamedRoot(t *testing.T) {
 		t.Errorf("text %q", text)
 	}
 }
+
+// TypeText prints a type as reflect does, less its struct tags.
+func TestTypeText(t *testing.T) {
+	tests := []struct {
+		name string
+		typ  reflect.Type
+		want string
+	}{
+		{"nil", nil, "<nil>"},
+		{"named", reflect.TypeFor[secretDuplicateKey](), "gowalker_test.secretDuplicateKey"},
+		{"unnamed, escaped quotes in the tag", secretType, "struct { Password string }"},
+		{"a pointer to an unnamed struct", reflect.PointerTo(secretType), "*struct { Password string }"},
+		{"in a generic type's arguments", reflect.TypeFor[secretBox[struct {
+			A int `default:"SECRET-MARKER"`
+			B string
+		}]](), "gowalker_test.secretBox[struct { A int; B string }]"},
+		{"in a map and a slice", reflect.MapOf(reflect.TypeFor[string](), reflect.SliceOf(secretType)), "map[string][]struct { Password string }"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := gowalker.TypeText(tt.typ); got != tt.want {
+				t.Errorf("TypeText = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
