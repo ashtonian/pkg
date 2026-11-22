@@ -126,7 +126,8 @@ Options relax those defaults:
 | `json:"-"` | Excluded |
 | `json:"-,"` | `-` |
 | Embedded struct or pointer to one without a tag name, exported or not | Its fields, promoted |
-| Unexported embedded struct with a tag name | Compilation error matching ErrSchema: `encoding/json` writes it, and safe reflection cannot read it |
+| Unexported embedded struct with a tag name | A field under that name, as `encoding/json` writes it as a member. Its `GoField` is unexported: reading or writing its value whole, or walking a value into it, returns ErrAccess; with `NestedFields()`, paths to its exported fields read and write |
+| A struct embedded inside itself, directly or through others | Its fields once, at the shallowest depth, as `encoding/json` explores each embedded struct once |
 | A name two fields claim | Settled as with `ResolveByDepth()`, which the option implies; a remaining tie fails, or with `DropTies()` drops every field claiming the name |
 
 `ValidName` and `NestedFields` apply. `UntaggedName`, `PromoteEmbedded` and
@@ -167,14 +168,20 @@ The default view uses exported Go names, exact matching and declared nesting.
 Embedding does not imply promotion. A resolver returns a `FieldRule` with a name,
 aliases, skip, inline or leaf behavior. An empty name falls back to the Go name.
 Private fields remain excluded; an explicitly inlined anonymous struct can expose
-its exported descendants when safe reflection permits access. Inline pointers
+its exported descendants when safe reflection permits access, and
+`WithJSONFields` names an unexported embedded struct a tag names. Inline pointers
 are followed for reads. Writes can allocate exported inline pointers when
 requested; safe reflection cannot allocate an unexported embedded pointer.
 
 Canonical names and aliases share one collision domain. `WithCaseFoldNames`
 uses Unicode simple folding, including equivalences such as S and long s.
 Two different fields claiming equivalent names fail compilation; equivalent
-aliases of the same field are harmless. Inline cycles also fail compilation.
+aliases of the same field are harmless. A struct inlined inside itself,
+directly or through others, fails compilation naming the field, since its fields
+would claim their names again; under `ResolveByDepth()` the repeat contributes
+no fields instead, as each would lose its name to the same field nearer the root.
+Its owner is still listed by `Declarations`, as an `InlineOwner` with nothing
+after it.
 
 `ResolveByDepth()` settles canonical names before that check, as `encoding/json`
 does: for a name two fields claim, the shallowest field wins, and at equal depth

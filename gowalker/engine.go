@@ -150,6 +150,9 @@ func WithAtomicImplementers(ifaces ...reflect.Type) Option {
 // encoding/json would drop every tied field. A shadowed field loses all its
 // names: it is absent from Fields and Lookup and stays in its declaring
 // struct's DeclaredView. Aliases of the fields that remain must be unique.
+// A struct inlined inside itself, directly or through others, contributes no
+// fields the second time: each would be shadowed by the same field nearer
+// the root, and encoding/json explores each embedded struct once.
 // It applies to [WithTaggedFields], where a tag name is explicit, and to a
 // [WithFieldResolver] rule that sets Explicit. [WithJSONFields] implies it.
 func ResolveByDepth() Option {
@@ -229,7 +232,7 @@ func New(options ...Option) (*Engine, error) {
 	s := settings{capacity: 256, limits: DefaultLimits()}
 	for _, option := range options {
 		if option == nil {
-			return nil, failure("new", ErrSchema, nil, emptyPath, -1, nil)
+			return nil, failure("new", ErrSchema, nil, emptyPath, -1, errors.New("a nil Option"))
 		}
 		if err := option(&s); err != nil {
 			return nil, failure("new", ErrSchema, nil, emptyPath, -1, err)

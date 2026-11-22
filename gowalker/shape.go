@@ -16,7 +16,8 @@ import (
 // cannot inline an atomic type. Atomic treats this field as a leaf without
 // changing other uses of its type. It cannot be combined with Inline. Raw
 // type relationships remain inspectable. Private fields are always excluded
-// except explicitly inlined anonymous fields.
+// except explicitly inlined anonymous fields, and the unexported embedded
+// structs [WithJSONFields] names as encoding/json does.
 type FieldRule struct {
 	// Name is canonical; empty uses the Go field name.
 	Name string
@@ -38,6 +39,12 @@ type FieldRule struct {
 	// it under another tag. [Schema.AccessField] reads and writes it. It
 	// cannot be combined with Name, Aliases or Inline.
 	Unnamed bool
+
+	// privateEmbed selects an unexported embedded struct the rule names.
+	// Reflection cannot read or write its value whole; its exported fields
+	// it can. Only WithJSONFields grants it, so a resolver still cannot
+	// expose a private field.
+	privateEmbed bool
 }
 
 // FieldResolver runs once per field in each reachable, non-atomic struct during
@@ -122,7 +129,9 @@ const (
 	Named DeclarationState = iota + 1
 	// Unnamed fields are kept without a name ([FieldRule.Unnamed]).
 	Unnamed
-	// InlineOwner is an inlined struct field; its fields follow it.
+	// InlineOwner is an inlined struct field; its fields follow it, but for
+	// a struct inlined inside itself under [ResolveByDepth], which
+	// contributes none.
 	InlineOwner
 	// Shadowed fields lost their names to a shallower field, or at equal
 	// depth to one whose name is explicit ([ResolveByDepth]).
@@ -394,12 +403,12 @@ func (b *builder) prepare(s *Shape) error {
 		}
 		rule.Aliases = append([]string(nil), rule.Aliases...)
 		field.rule = rule
-		if rule.Skip || !field.field.IsExported() && !(field.field.Anonymous && rule.Inline) {
+		if rule.Skip || !field.field.IsExported() && !(field.field.Anonymous && (rule.Inline || rule.privateEmbed)) {
 			continue
 		}
 		if rule.Atomic || rule.Unnamed {
 			if rule.Inline {
-				return failure("compile", ErrSchema, s.typ, emptyPath, -1, nil)
+				return failure("compile", ErrSchema, s.typ, emptyPath, -1, fmt.Errorf("field %s: an inlined field cannot be a leaf", field.field.Name))
 			}
 			// Leaf status belongs to this field edge, not the shared type node.
 			leaf := *field.shape
@@ -416,9 +425,6 @@ func (b *builder) prepare(s *Shape) error {
 }
 
 func (b *builder) expand(owner, current *Shape, index []int, parents []reflect.StructField, active map[*Shape]bool) error {
-	if active[current] {
-		return failure("compile", ErrSchema, current.typ, emptyPath, -1, nil)
-	}
 	if len(active) > b.engine.settings.limits.MaxDepth {
 		return failure("compile", ErrLimit, current.typ, emptyPath, -1, nil)
 	}
@@ -441,11 +447,24 @@ func (b *builder) expand(owner, current *Shape, index []int, parents []reflect.S
 		}
 		if rule.Inline {
 			child, err := indirectShape(declared.shape)
-			if err != nil || child.atomic || child.Kind() != reflect.Struct {
-				return failure("compile", ErrSchema, sf.Type, emptyPath, -1, err)
+			if err != nil {
+				return failure("compile", ErrSchema, sf.Type, emptyPath, -1, fmt.Errorf("field %s: inlining %s: %w", sf.Name, sf.Type, err))
+			}
+			if child.atomic || child.Kind() != reflect.Struct {
+				return failure("compile", ErrSchema, current.typ, emptyPath, -1, fmt.Errorf("field %s: %s is not a struct with fields to inline", sf.Name, sf.Type))
 			}
 			listed.state, listed.field = InlineOwner, declared.selected
 			owner.declarations = append(owner.declarations, listed)
+			if active[child] {
+				// Each field of the repeat is the same field nearer the root,
+				// deeper: under depth resolution it would lose its name to that
+				// one, so the repeat changes no outcome. encoding/json likewise
+				// explores each embedded struct once.
+				if b.engine.settings.resolvesByDepth() {
+					continue
+				}
+				return failure("compile", ErrSchema, current.typ, emptyPath, -1, fmt.Errorf("field %s: %s is inlined inside itself, and its fields would claim their names again; ResolveByDepth leaves the repeat out", sf.Name, child.typ))
+			}
 			lineage := append(append([]reflect.StructField(nil), parents...), sf)
 			if err := b.expand(owner, child, at, lineage, active); err != nil {
 				return err
@@ -467,7 +486,7 @@ func (b *builder) expand(owner, current *Shape, index []int, parents []reflect.S
 		owner.declarations = append(owner.declarations, listed)
 		for i, name := range append([]string{rule.Name}, rule.Aliases...) {
 			if name == "" {
-				return failure("compile", ErrSchema, current.typ, emptyPath, -1, nil)
+				return failure("compile", ErrSchema, current.typ, emptyPath, -1, fmt.Errorf("field %s: an empty alias", sf.Name))
 			}
 			reportedName := name
 			name = owner.lookupKey(name)

@@ -181,7 +181,10 @@ goroutines. What an owner can observe:
 
 - Gowalker reads and writes exported fields only, through `reflect`'s safe API.
   It never imports `unsafe` and cannot read or allocate private fields, which
-  keeps a caller from reaching storage the type's package hid.
+  keeps a caller from reaching storage the type's package hid. The unexported
+  embedded struct `WithJSONFields` names, as `encoding/json` writes it, is a
+  field whose value reads and writes return `ErrAccess`; only its exported
+  fields are reachable.
 - Error text names operations, Go types, field names and tags, which come from
   declarations. It never includes values, map keys or path steps, which can be
   caller data; read `Error.Path` and `Error.Step` to show a location under your

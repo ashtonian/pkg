@@ -249,8 +249,12 @@ func WithTaggedFields(key string, options ...TagOption) Option {
 //     remains fails compilation, naming both fields; add [DropTies] to drop
 //     every tied field as encoding/json does.
 //
-// Compilation fails for an unexported embedded struct a tag names:
-// encoding/json writes it as a member, and safe reflection cannot read it.
+// An unexported embedded struct a tag names is a field, as encoding/json
+// writes it as a member. Reflection cannot read or write its value whole, so
+// reading it, or walking a value into it, returns [ErrAccess]; with
+// [NestedFields], paths to its exported fields read and write as through any
+// struct. Its declaration's GoField is unexported, for a consumer that reads
+// values to refuse it up front.
 //
 // A type with its own MarshalJSON or MarshalText method, including one
 // promoted from an embedded field, is written by that method; this option
@@ -300,7 +304,7 @@ func (n *tagNaming) rule(sf reflect.StructField, atomic func(reflect.Type) bool)
 		return FieldRule{Inline: true}, nil
 	}
 	if n.json && explicit && !sf.IsExported() && sf.Anonymous && promotable(sf.Type, atomic) {
-		return FieldRule{}, fmt.Errorf("field %s: encoding/json writes the unexported embedded %s as %q, which reflection cannot read; export the type or remove the name", sf.Name, sf.Type, name)
+		return FieldRule{Name: name, Atomic: !n.nested, Explicit: true, privateEmbed: true}, nil
 	}
 	if explicit && n.valid != nil && sf.IsExported() {
 		if err := n.valid(name); err != nil {
