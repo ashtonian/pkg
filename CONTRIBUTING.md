@@ -13,7 +13,8 @@ The repository's `go.work` ties the published modules together, so a change to o
 | `make test-jsonvalue` / `make jsonvalue-release-check` | JSON replacement race tests / fresh module-archive consumer and README example |
 | `make test` | Every published module's tests, race detector on (modernc's SQLite builds uninstrumented); both httpx build tags. `-count=1` only where tests start processes, run the installed git or reach servers |
 | `make test-httpx-unit` / `make test-httpx-integration` | httpx unit or real HTTP integration lane |
-| `make test-parse-unit` / `make test-parse-integration` | Parse race tests and existing fuzz seeds; SQLite always runs, PostgreSQL/PostGIS through explicit DSNs |
+| `make test-parse-unit` / `make test-parse-race` / `make test-parse-race-all` | Parse unit tests and existing fuzz seeds without the race detector / under it, only the tests that run parse code on several goroutines (files tagged `concurrency`) / every unit test under it |
+| `make test-parse-integration` | Parse integration race tests; SQLite always runs, PostgreSQL/PostGIS through explicit DSNs |
 | `make test-parse-sdk` | TypeScript checks, lint, shared corpora and production build |
 | `make parse-release-check` | Fresh module-archive consumer, tagged tests, README program and dependency audit |
 | `make parse-sdk-release-check` | Packed SDK consumer, TypeScript declarations, runtime subpaths and sourcemaps |
@@ -33,15 +34,22 @@ Changes confined to `CONTRIBUTING.md` and Markdown guides in `config/docs`, `gow
 `httpx/docs` or `parse/docs` skip the runtime suites, PostgreSQL services, SDK suite,
 benchmarks and lint. Package READMEs, test data, source examples, configuration and
 unknown paths retain full validation. Renames include both paths; an unavailable base
-runs every check. Explicit workflow dispatch always runs the full suite.
+runs every check. Explicit workflow dispatch and the nightly run always run the full suite.
 
 Release checks run per module: each reads only its module's tree, its own script and the
 archive tooling, so a change runs the checks of the modules it touches (the cookbook's with
 either config module), and shared build files, workflow, tooling, manifests and unknown
 paths run all of them. The suites run once each:
 
-- Ubuntu runs every module's race tests on the newest Go 1.27 patch release; macOS runs
-  only the modules with platform code (config, process, state, 1Password).
+- Ubuntu runs every module's race tests (parse's unit tests as below) on the newest Go 1.27
+  patch release; macOS runs only the modules with platform code (config, process, state,
+  1Password).
+- Parse's unit tests run without the race detector, then under it only the tests that run
+  parse code on several goroutines: files tagged `concurrency`. Parse starts no goroutines
+  of its own, so no other test can fail under race; racing the rest would add minutes of
+  instrumented compiling and matrix suites to every pull request. A unit test file that
+  starts goroutines or calls `t.Parallel` carries the tag; `tools/test_ci_parse_race.py`
+  fails the change-scope job when one does not. The nightly run races every parse test.
 - Lint vets every package and test on Go 1.27.0, the declared floor, so it is also the
   floor's build check. httpx and gitx run their tests on Go 1.26, their floor.
 - Parse's SQLite integration runs beside PostgreSQL 17 and 18.
@@ -59,6 +67,15 @@ runs validation. Post-merge benchmark artifacts remain independent because PRs d
 produce them. Explicit reruns execute validation even if an older receipt matches.
 A newer run of the same PR or of `main` cancels the older one, since it covers every change
 the older run would have; manual acceptance runs finish.
+
+The `nightly` workflow runs `ci.yml` on main's current commit once a day, and on
+`gh workflow run nightly.yml -R ashtonian/pkg`: every suite and release check at full scope,
+every parse unit test under the race detector, and the benchmarks. It records no acceptance
+receipt. Its failure is a regression that scoping or the targeted race run let through, or a
+new toolchain release breaking a floating Go or Node.js version: reproduce it with the failing
+step's make target (`make test-parse-race-all` for a parse race report) and fix it on a branch.
+GitHub turns off a public repository's schedules after 60 days without activity; turn the
+workflow back on from the Actions tab.
 
 A module that requires another module of this repository requires a released version of it. When it needs an unreleased change, release the dependency first, then raise the requirement.
 
@@ -150,7 +167,7 @@ To change the patterns, replace the secret
 
 ## Parse SQL matrix
 
-Parse requires Go 1.27 and publishes as `github.com/ashtonian/pkg/parse`, with `parse/v…` tags. CI runs unit tests and existing fuzz seeds under the race detector, SQLite integration beside PostgreSQL 17/18 with PostGIS 3.6, and the TypeScript SDK's shared corpora. modernc's SQLite builds without race or checkptr instrumentation: it is C translated to Go, and instrumenting it made the SQLite-backed suites about 30 times slower without checking this repository's code. The SDK release check installs its tarball in a fresh consumer and checks public declarations, runtime subpaths and self-contained JavaScript sourcemaps. The SDK package version follows the Parse release component. CI stores benchmark text and CPU/allocation profiles on main; it does not run dedicated fuzzing sessions.
+Parse requires Go 1.27 and publishes as `github.com/ashtonian/pkg/parse`, with `parse/v…` tags. CI runs unit tests and existing fuzz seeds (under the race detector nightly, and on pull requests only the tests tagged `concurrency`), SQLite integration beside PostgreSQL 17/18 with PostGIS 3.6 under the race detector, and the TypeScript SDK's shared corpora. modernc's SQLite builds without race or checkptr instrumentation: it is C translated to Go, and instrumenting it made the SQLite-backed suites about 30 times slower without checking this repository's code. The SDK release check installs its tarball in a fresh consumer and checks public declarations, runtime subpaths and self-contained JavaScript sourcemaps. The SDK package version follows the Parse release component. CI stores benchmark text and CPU/allocation profiles on main and from the nightly run; it does not run dedicated fuzzing sessions.
 
 For an existing test server, set `PARSE_POSTGRES_DSN` and `PARSE_POSTGIS_DSN` and run `make test-parse-integration`. Each case gets a fresh schema. A requested server that is unavailable fails; an unrequested PostgreSQL case skips. `make parse-release-check` verifies a candidate archive independently of the workspace; publication additionally requires clean public-proxy installation of the immutable release.
 

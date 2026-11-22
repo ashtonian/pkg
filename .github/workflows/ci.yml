@@ -10,6 +10,19 @@ on:
   # `gh workflow run ci.yml --ref <branch>`; they report on the head
   # commit, so the pull request shows them.
   workflow_dispatch:
+  # nightly.yml: every suite at full scope, every parse unit test under the
+  # race detector, and the benchmarks.
+  workflow_call:
+    inputs:
+      nightly:
+        description: Run every parse unit test under the race detector.
+        type: boolean
+        default: false
+    secrets:
+      CI_ARTIFACT_ENDPOINT:
+        required: true
+      PRIVATE_REFERENCE_PATTERNS:
+        required: true
 
 permissions:
   id-token: write
@@ -112,9 +125,17 @@ jobs:
         if: ${{ !matrix.platform-only }}
         run: make test-httpx-integration
       # Parse's SQLite integration runs in parse-postgres, beside PostgreSQL.
-      - name: Parse unit tests and fuzz seeds with race detection
-        if: ${{ !matrix.platform-only }}
+      # Pull requests race only the parse tests that run code concurrently;
+      # the nightly run races every one.
+      - name: Parse unit tests and fuzz seeds
+        if: ${{ !matrix.platform-only && !inputs.nightly }}
         run: make test-parse-unit
+      - name: Parse concurrency tests with race detection
+        if: ${{ !matrix.platform-only && !inputs.nightly }}
+        run: make test-parse-race
+      - name: Parse unit tests and fuzz seeds with race detection
+        if: ${{ !matrix.platform-only && inputs.nightly }}
+        run: make test-parse-race-all
   parse-postgres:
     needs: scope
     name: parse integration (SQLite, PostgreSQL ${{ matrix.postgres }})
@@ -324,7 +345,7 @@ jobs:
   accepted:
     name: Preserve complete validation coverage
     needs: [scope, test, parse-postgres, parse-sdk, minimum-go, modules, lint]
-    if: ${{ !cancelled() && (github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch') && needs.scope.result == 'success' && needs.modules.result == 'success' && !contains(needs.*.result, 'failure') }}
+    if: ${{ !cancelled() && !inputs.nightly && (github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch') && needs.scope.result == 'success' && needs.modules.result == 'success' && !contains(needs.*.result, 'failure') }}
     runs-on: arc-pkg
     timeout-minutes: 5
     steps:

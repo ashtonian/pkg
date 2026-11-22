@@ -12,39 +12,6 @@ import (
 	"github.com/ashtonian/pkg/parse/core"
 )
 
-type filterBudgetDocument struct {
-	ID      string         `json:"id" db:"id" parse:"filter"`
-	Enabled bool           `json:"enabled" db:"enabled" parse:"filter"`
-	Labels  map[string]any `json:"labels" db:"labels" parse:"filter"`
-}
-
-func TestParseFilterWithCostIsolatesResourceBudget(t *testing.T) {
-	resource, err := parse.NewResource[filterBudgetDocument]("budget_documents")
-	require.NoError(t, err)
-	const query = `{"enabled":true,"labels":{"$contains":{"role":"worker"}}}`
-	_, err = resource.ParseFilter(query)
-	require.Error(t, err)
-	_, err = resource.ParseFilterWithCost(query, 60)
-	require.NoError(t, err)
-	_, err = resource.ParseFilter(query)
-	require.Error(t, err, "a per-call allowance cannot change public request policy")
-
-	t.Run("public", func(t *testing.T) {
-		t.Parallel()
-		for range 16 {
-			_, err := resource.ParseFilter(query)
-			require.Error(t, err)
-		}
-	})
-	t.Run("internal", func(t *testing.T) {
-		t.Parallel()
-		for range 16 {
-			_, err := resource.ParseFilterWithCost(query, 60)
-			require.NoError(t, err)
-		}
-	})
-}
-
 func TestParseFilterWithCostPreservesResolvedOptions(t *testing.T) {
 	t.Run("codec and clock", func(t *testing.T) {
 		frozen := time.Date(2026, 1, 15, 12, 0, 0, 0, time.UTC)

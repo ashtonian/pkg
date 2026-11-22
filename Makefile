@@ -21,7 +21,7 @@ RELEASE_CHECKS := gitx-release-check config-release-check kongprovider-release-c
 ## test: every published module from the working tree (go.work), race detector on.
 ## -count=1 only where a test depends on state the test cache cannot see:
 ## processes it starts, the installed git, real servers.
-test: test-native-unit test-native-integration test-gitx test-jsonvalue test-gowalker test-config test-httpx-unit test-httpx-integration test-parse-unit test-parse-integration test-parse-sdk
+test: test-native-unit test-native-integration test-gitx test-jsonvalue test-gowalker test-config test-httpx-unit test-httpx-integration test-parse-race-all test-parse-integration test-parse-sdk
 
 test-native-unit:
 	go test -tags=unit $(RACE) -count=1 $(foreach m,$(NATIVE_MODULES),./$(m)/...)
@@ -54,7 +54,21 @@ test-httpx-unit:
 test-httpx-integration:
 	go test -tags=integration $(RACE) -count=1 $(foreach m,$(HTTPX_MODULES),./$(m)/...)
 
+.PHONY: test-parse-race test-parse-race-all
+
+## test-parse-unit: parse unit tests and fuzz seeds, without the race detector.
 test-parse-unit:
+	go test -tags=unit ./parse/...
+
+## test-parse-race: under the race detector, the parse tests that run its code
+## on several goroutines (files tagged concurrency). Parse starts no goroutines
+## of its own, so only these can race; the rest would cost a race build of
+## parse's large test package for no coverage.
+test-parse-race:
+	go test -tags=concurrency $(RACE) ./parse/...
+
+## test-parse-race-all: every parse unit test and fuzz seed under the race detector.
+test-parse-race-all:
 	go test -tags=unit $(RACE) ./parse/...
 
 # SQLite always runs. Supply PARSE_POSTGRES_DSN and PARSE_POSTGIS_DSN for SQL parity.

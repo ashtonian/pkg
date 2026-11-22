@@ -102,6 +102,8 @@ go test -tags=integration -race ./...
 go test -tags=unit -run '^$' -bench . ./...
 ```
 
+`go test -tags=concurrency -race ./...` is the quick race check: it builds only the tests that run parse code on several goroutines (files tagged `concurrency`). Parse starts no goroutines of its own, so the race detector can fail no other unit test.
+
 SQLite cases run locally. PostgreSQL/PostGIS tests require the corresponding DSN or opt-in container setup (`PARSE_POSTGRES_DSN`, `PARSE_POSTGIS_DSN`, or `PARSE_INTEG_PG=1`); see [database test helpers](../internal/dbtest/). An explicitly requested container that cannot start fails the test. Skipped backend tests are not a backend verification result.
 
 | Source | What it exercises |
