@@ -24,7 +24,7 @@ func (a Array[E]) Element() Field[E] { return Field[E]{} }
 
 // Contains matches rows whose array holds every one of es. Contains of
 // nothing matches every row whose array is not null.
-func (a Array[E]) Contains(es ...E) Filter { return condition(a.name, "$contains", list(es)) }
+func (a Array[E]) Contains(es ...E) Filter { return condition(a.name, opContains, list(es)) }
 
 // Null matches rows whose array is null.
 func (a Array[E]) Null() Filter { return isNull(a.name) }
@@ -35,11 +35,11 @@ func (a Array[E]) NotNull() Filter { return notNull(a.name) }
 // Some matches rows with an element c holds for, every comparison in c
 // holding for that one element. The empty filter matches rows with any
 // element.
-func (a Array[E]) Some(c Filter) Filter { return elements(a.name, "$some", c) }
+func (a Array[E]) Some(c Filter) Filter { return elements(a.name, opSome, c) }
 
 // None matches rows with no element c holds for. The empty filter matches
 // rows with no element.
-func (a Array[E]) None(c Filter) Filter { return elements(a.name, "$none", c) }
+func (a Array[E]) None(c Filter) Filter { return elements(a.name, opNone, c) }
 
 // OrderedArray is an Array whose elements have an order: numbers,
 // decimals, timestamps.

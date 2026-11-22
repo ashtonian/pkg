@@ -118,7 +118,7 @@ func (h *schemaHandler) failEncoding(w http.ResponseWriter, req *http.Request, e
 }
 
 func (h *schemaHandler) send(w http.ResponseWriter, req *http.Request, status int, body []byte) {
-	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Content-Type", jsonMediaType)
 	w.Header().Set("Content-Length", strconv.Itoa(len(body)))
 	w.WriteHeader(status)
 	if _, err := w.Write(body); err != nil {
