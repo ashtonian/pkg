@@ -26,7 +26,7 @@ func TestCheckMsgpackBounds_AcceptsEncodedEnvelopes(t *testing.T) {
 		"",
 	}
 	for _, p := range payloads {
-		cur, err := Encode(p, WithGeneration(7), WithTenantHash(42))
+		cur, err := Encode(p, WithGeneration(7))
 		require.NoError(t, err)
 		data, err := base64.RawURLEncoding.DecodeString(string(cur))
 		require.NoError(t, err)
@@ -58,6 +58,42 @@ func TestCheckMsgpackBounds_RejectsHostileLengths(t *testing.T) {
 	}
 }
 
+// A key is refused when an earlier entry of the same map selects the same
+// member, however deep the map sits. Keys in different maps never collide.
+func TestCheckMsgpackBounds_RepeatedMapKeys(t *testing.T) {
+	tests := []struct {
+		name string
+		data []byte
+		ok   bool
+	}{
+		{"distinct keys", []byte{0x82, 0xa1, 'a', 0x01, 0xa1, 'b', 0x02}, true},
+		{"one key in sibling maps", []byte{0x92, 0x81, 0xa1, 'a', 0x01, 0x81, 0xa1, 'a', 0x02}, true},
+		{"one key in nested maps", []byte{0x81, 0xa1, 'a', 0x81, 0xa1, 'a', 0x01}, true},
+		{"repeated fixstr", []byte{0x82, 0xa1, 'a', 0x01, 0xa1, 'a', 0x02}, false},
+		{"fixstr and str8", []byte{0x82, 0xa1, 'a', 0x01, 0xd9, 0x01, 'a', 0x02}, false},
+		{"fixstr and str16", []byte{0x82, 0xa1, 'a', 0x01, 0xda, 0x00, 0x01, 'a', 0x02}, false},
+		{"fixstr and str32", []byte{0x82, 0xa1, 'a', 0x01, 0xdb, 0x00, 0x00, 0x00, 0x01, 'a', 0x02}, false},
+		{"fixstr and bin8", []byte{0x82, 0xa1, 'a', 0x01, 0xc4, 0x01, 'a', 0x02}, false},
+		{"bin16 and bin32", []byte{0x82, 0xc5, 0x00, 0x01, 'a', 0x01, 0xc6, 0x00, 0x00, 0x00, 0x01, 'a', 0x02}, false},
+		{"nil and the empty string", []byte{0x82, 0xc0, 0x01, 0xa0, 0x02}, false},
+		{"repeated integer", []byte{0x82, 0x01, 0x01, 0x01, 0x02}, false},
+		{"one integer in two encodings", []byte{0x82, 0x01, 0x01, 0xcc, 0x01, 0x02}, true},
+		{"repeated key four levels down", []byte{0x81, 0xa1, 'p', 0x91, 0x81, 0xa1, 'q', 0x82, 0xa1, 'v', 0x01, 0xa1, 'v', 0x02}, false},
+		{"repeated key in a map16", []byte{0xde, 0x00, 0x02, 0xa1, 'a', 0x01, 0xa1, 'a', 0x02}, false},
+		{"repeated key in a map32", []byte{0xdf, 0x00, 0x00, 0x00, 0x02, 0xa1, 'a', 0x01, 0xa1, 'a', 0x02}, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := checkMsgpackBounds(tt.data)
+			if tt.ok {
+				assert.NoError(t, err)
+			} else {
+				assert.Error(t, err)
+			}
+		})
+	}
+}
+
 func bytesRepeat(b byte, n int) []byte {
 	out := make([]byte, n)
 	for i := range out {
@@ -67,8 +103,8 @@ func bytesRepeat(b byte, n int) []byte {
 }
 
 // A cursor declaring four billion payload elements is rejected without the
-// decoder allocating for them (review N01: msgpack sizes the slice from the
-// header before reading any element).
+// decoder allocating for them: msgpack sizes the slice from the header before
+// reading any element.
 func TestDecode_HostileLengthDoesNotAllocate(t *testing.T) {
 	hostile := base64.RawURLEncoding.EncodeToString([]byte{0x81, 0xa1, 'p', 0xdd, 0xff, 0xff, 0xff, 0xff, 0x80})
 
