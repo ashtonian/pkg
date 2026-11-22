@@ -67,8 +67,7 @@ Workspace development requires Go 1.27. The TypeScript SDK's targets also need N
 22.13 or later (its `engines` floor, which CI runs exactly alongside the newest LTS) and pnpm 12, at the version `parse/sdk/ts/package.json` pins in `packageManager`;
 `make test-parse-sdk` refuses any other pnpm release.
 Gowalker is its own module at
-`github.com/ashtonian/pkg/gowalker`, released with `gowalker/v…` tags. Its
-initial release is configured as `v0.1.0`. Public modules contain source, tests,
+`github.com/ashtonian/pkg/gowalker`, released with `gowalker/v…` tags. Public modules contain source, tests,
 licenses and user documentation; project plans, reviews and audits stay outside
 the public repository. Its archive check runs the README quick start and usage programs verbatim.
 
