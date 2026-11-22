@@ -188,6 +188,8 @@ class Plan(unittest.TestCase):
             ("tools/release-please/run.mjs",): {"modules"},
             ("CONTRIBUTING.md", "README.md"): set(),
             ("parse/docs/queries.md",): {"modules"},
+            # A release: the manifest runs every release check, and a changelog its module's suites.
+            (".release-please-manifest.json", "config/kongprovider/CHANGELOG.md"): {"test", "test-darwin", "modules", "lint"},
         }
         for paths, want in cases.items():
             with self.subTest(paths=paths):
@@ -207,7 +209,7 @@ class Plan(unittest.TestCase):
 
     def test_shared_inputs_are_unscoped(self):
         for path in ("Makefile", "go.work", "go.work.sum", ".github/workflows/ci.yml", ".github/actions/release-please-tool/action.yml",
-                     "tools/ci_scope.py", "parse/go.mod", "httpx/go.sum", ".release-please-manifest.json", "LICENSE", "new-module/go.mod"):
+                     "tools/ci_scope.py", "parse/go.mod", "httpx/go.sum", "LICENSE", "new-module/go.mod"):
             with self.subTest(path=path):
                 with self.assertRaises(ci_scope.Unscoped):
                     self.plan("parse/list.go", path)

@@ -39,8 +39,10 @@ CHECKS = {
 NESTED = {"config-release-check": ("config/kongprovider/", "config/examples/cookbook/")}
 # Prose outside every module and its tooling.
 UNCHECKED = {"CONTRIBUTING.md", "README.md"}
-# Tooling only the release checks above read.
+# Tooling and configuration only the release checks above read; the
+# configuration runs all of them.
 RELEASE_TOOLING = tuple(tree for trees in CHECKS.values() for tree in trees if tree.startswith("tools/"))
+RELEASE_CONFIGURATION = (".release-please-manifest.json", "release-please-config.json")
 # The SDK job's inputs: its sources, the corpora parse's Go tests write and it
 # replays, and its check scripts. The SDK tree and the scripts hold no Go.
 SDK_TREE = "parse/sdk/"
@@ -189,7 +191,7 @@ def changes(paths, workspace):
             continue
         if path.startswith(SDK_INPUTS):
             sdk = True
-        if path.startswith((SDK_TREE, SDK_TOOLING) + RELEASE_TOOLING):
+        if path.startswith((SDK_TREE, SDK_TOOLING) + RELEASE_TOOLING) or path in RELEASE_CONFIGURATION:
             continue
         module = workspace.module_of(path)
         if module is None:

@@ -52,11 +52,11 @@ under every platform and build tag set CI compiles, and selects:
   the corpora in `parse/testdata` or its check scripts change.
 
 `CONTRIBUTING.md`, the root `README.md` and the Markdown guides in `config/docs`,
-`gowalker/docs`, `httpx/docs` or `parse/docs` reach no package. Module manifests (`go.mod`,
-`go.sum`), `go.work`, `go.work.sum`, the Makefile, workflows, CI scripts, release
-configuration and unknown paths reach everything, as do a delta the job cannot compute, a
-package `go list` cannot read, and a module outside the workspace that requires a workspace
-module. Renames include both paths. Explicit workflow dispatch and the nightly run always
+`gowalker/docs`, `httpx/docs` or `parse/docs` reach no package, and the release-please
+manifest and configuration only the release checks. Module manifests (`go.mod`, `go.sum`),
+`go.work`, `go.work.sum`, the Makefile, workflows, CI scripts and unknown paths reach
+everything, as do a delta the job cannot compute, a package `go list` cannot read, and a
+module outside the workspace that requires a workspace module. Renames include both paths. Explicit workflow dispatch and the nightly run always
 run the full suite. When a job you expected is skipped, the change-scope job's summary lists
 the selected jobs, packages and release checks, or why it selected everything.
 
