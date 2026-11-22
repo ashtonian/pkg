@@ -202,7 +202,7 @@ func (g *SchemaGenerator) column(field, dbTag string) string {
 	case g.Opts.ColumnConvention != nil:
 		return g.Opts.ColumnConvention(field)
 	}
-	return ToSnakeCase(field)
+	return SnakeCase(field)
 }
 
 // JSONTagKey is the struct tag encoding/json names members by, and the

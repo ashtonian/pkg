@@ -8,7 +8,7 @@ import (
 	"github.com/ashtonian/pkg/parse/core"
 )
 
-func TestToSnakeCase(t *testing.T) {
+func TestSnakeCase(t *testing.T) {
 	tests := []struct{ in, want string }{
 		{"DeviceType", "device_type"},
 		{"ID", "id"},
@@ -19,9 +19,9 @@ func TestToSnakeCase(t *testing.T) {
 		{"", ""},
 	}
 	for _, tt := range tests {
-		got := core.ToSnakeCase(tt.in)
+		got := core.SnakeCase(tt.in)
 		if got != tt.want {
-			t.Errorf("ToSnakeCase(%q) = %q, want %q", tt.in, got, tt.want)
+			t.Errorf("SnakeCase(%q) = %q, want %q", tt.in, got, tt.want)
 		}
 	}
 }

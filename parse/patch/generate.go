@@ -80,7 +80,7 @@ func generatePatchSchema(g *core.SchemaGenerator, t reflect.Type, server bool) (
 			if tags.Relation == "" {
 				continue
 			}
-			fieldName = cmp.Or(tags.RelationName, core.ToSnakeCase(field.GoName))
+			fieldName = cmp.Or(tags.RelationName, core.SnakeCase(field.GoName))
 		}
 
 		info, err := g.FieldType(field)

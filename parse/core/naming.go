@@ -5,35 +5,63 @@ import "strings"
 // NamingConvention transforms an identifier string according to a convention.
 type NamingConvention func(string) string
 
-// Built-in naming conventions.
-var (
-	// SnakeCase converts PascalCase/camelCase to snake_case (default).
-	SnakeCase NamingConvention = ToSnakeCase
+// The built-in naming conventions. Each is a function, so a
+// generator's default cannot be changed from outside the package.
 
-	// CamelCase converts PascalCase to camelCase (first letter lowercase).
-	CamelCase NamingConvention = toCamelCase
+// SnakeCase converts PascalCase or camelCase to snake_case: the default
+// column convention.
+func SnakeCase(s string) string {
+	var result []byte
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if c >= 'A' && c <= 'Z' {
+			if i > 0 {
+				prev := s[i-1]
+				if (prev >= 'a' && prev <= 'z') || (prev >= '0' && prev <= '9') {
+					result = append(result, '_')
+				} else if prev >= 'A' && prev <= 'Z' && i+1 < len(s) && s[i+1] >= 'a' && s[i+1] <= 'z' {
+					result = append(result, '_')
+				}
+			}
+			result = append(result, c+32) // toLower
+		} else {
+			result = append(result, c)
+		}
+	}
+	return string(result)
+}
 
-	// PascalCase returns the string unchanged (Go's default naming).
-	PascalCase NamingConvention = func(s string) string { return s }
+// CamelCase converts PascalCase to camelCase: the first letter lowercase.
+func CamelCase(s string) string {
+	if len(s) == 0 {
+		return s
+	}
+	if first := s[0]; first >= 'A' && first <= 'Z' {
+		return string(first+32) + s[1:]
+	}
+	return s
+}
 
-	// LowerCase converts to all lowercase with no separators.
-	LowerCase NamingConvention = strings.ToLower
-)
+// PascalCase returns s unchanged: Go's own naming.
+func PascalCase(s string) string { return s }
+
+// LowerCase converts s to lowercase, with no separators.
+func LowerCase(s string) string { return strings.ToLower(s) }
 
 // TableConvention transforms a type name into a SQL table name.
 type TableConvention func(string) string
 
-// Built-in table conventions.
-var (
-	// PluralSnake converts PascalCase to plural snake_case: "Product" → "products" (default).
-	PluralSnake TableConvention = func(s string) string { return Pluralize(ToSnakeCase(s)) }
+// PluralSnake converts PascalCase to plural snake_case, "Product" to
+// "products": the default table convention.
+func PluralSnake(s string) string { return Pluralize(SnakeCase(s)) }
 
-	// Singular converts PascalCase to singular snake_case: "Product" → "product".
-	Singular TableConvention = func(s string) string { return ToSnakeCase(s) }
+// Singular converts PascalCase to singular snake_case: "Product" to
+// "product".
+func Singular(s string) string { return SnakeCase(s) }
 
-	// PluralCamel converts PascalCase to plural camelCase: "Product" → "products".
-	PluralCamel TableConvention = func(s string) string { return Pluralize(toCamelCase(s)) }
-)
+// PluralCamel converts PascalCase to plural camelCase: "Product" to
+// "products".
+func PluralCamel(s string) string { return Pluralize(CamelCase(s)) }
 
 // Pluralize returns the English plural form of a word using common rules.
 // Handles -y → -ies, sibilant suffixes → -es, and default -s.
@@ -67,38 +95,4 @@ func isVowel(b byte) bool {
 		return true
 	}
 	return false
-}
-
-// ToSnakeCase converts PascalCase or camelCase to snake_case.
-func ToSnakeCase(s string) string {
-	var result []byte
-	for i := 0; i < len(s); i++ {
-		c := s[i]
-		if c >= 'A' && c <= 'Z' {
-			if i > 0 {
-				prev := s[i-1]
-				if (prev >= 'a' && prev <= 'z') || (prev >= '0' && prev <= '9') {
-					result = append(result, '_')
-				} else if prev >= 'A' && prev <= 'Z' && i+1 < len(s) && s[i+1] >= 'a' && s[i+1] <= 'z' {
-					result = append(result, '_')
-				}
-			}
-			result = append(result, c+32) // toLower
-		} else {
-			result = append(result, c)
-		}
-	}
-	return string(result)
-}
-
-func toCamelCase(s string) string {
-	if len(s) == 0 {
-		return s
-	}
-	// Lowercase first letter.
-	first := s[0]
-	if first >= 'A' && first <= 'Z' {
-		return string(first+32) + s[1:]
-	}
-	return s
 }
