@@ -71,7 +71,7 @@ type columnType struct {
 	t      core.SQLType
 }
 
-// PrimaryKey names the key column; default "id". It is the final keyset
+// PrimaryKey names the key column; default core.DefaultPrimaryKey ("id"). It is the final keyset
 // column of every list, so pages are stable over a non-unique sort.
 func PrimaryKey(column string) ResourceOption { return func(c *resourceConfig) { c.pk = column } }
 
@@ -150,7 +150,7 @@ func AcceptParams(names ...string) ResourceOption {
 // must be SQL identifiers, and the columns must be T's (a `db` tag, or the
 // snake-case field name).
 func NewResource[T any](table string, opts ...ResourceOption) (*Resource[T], error) {
-	cfg := resourceConfig{pk: "id", pageSize: filter.DefaultListLimit, maxPage: filter.MaxListLimit}
+	cfg := resourceConfig{pk: core.DefaultPrimaryKey, pageSize: filter.DefaultListLimit, maxPage: filter.MaxListLimit}
 	for _, opt := range opts {
 		opt(&cfg)
 	}
@@ -186,8 +186,11 @@ func NewResource[T any](table string, opts ...ResourceOption) (*Resource[T], err
 	for name, f := range fieldsByColumn {
 		columns[name] = f.Type
 	}
-	for _, c := range []struct{ option, column string }{{"key", cfg.pk}, {"tenant", cfg.tenant}, {"deleted", cfg.deleted}} {
-		if c.column == "" && c.option != "key" {
+	for _, c := range []struct {
+		option, column string
+		required       bool
+	}{{"key", cfg.pk, true}, {"tenant", cfg.tenant, false}, {"deleted", cfg.deleted, false}} {
+		if c.column == "" && !c.required {
 			continue
 		}
 		if _, ok := columns[c.column]; !ok {

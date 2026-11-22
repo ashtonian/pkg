@@ -280,7 +280,7 @@ func (p *FilterParser) parseFieldCondition(fieldName string, value any, depth in
 			Kind:    core.ParseErrorKindFilter,
 			Code:    ECodeUnknownField.String(),
 			Message: fmt.Sprintf("field '%s' is not filterable", fieldName),
-			Details: map[string]any{"field": fieldName},
+			Details: map[string]any{core.DetailField: fieldName},
 		}
 	}
 
@@ -444,7 +444,7 @@ func (p *FilterParser) normalizeText(field *FieldSchema, value any, pattern bool
 			Kind:    core.ParseErrorKindFilter,
 			Code:    ECodeValueTypeMismatch.String(),
 			Message: fmt.Sprintf("field '%s': %v", field.ExternalName, err),
-			Details: map[string]any{"field": field.ExternalName},
+			Details: map[string]any{core.DetailField: field.ExternalName},
 			Cause:   err,
 		}
 	}
@@ -461,7 +461,7 @@ func (p *FilterParser) normalizeDocument(field *FieldSchema, value any) (any, er
 			Kind:    core.ParseErrorKindFilter,
 			Code:    ECodeValueTypeMismatch.String(),
 			Message: fmt.Sprintf("field '%s': null is not a comparable document; use $null", field.ExternalName),
-			Details: map[string]any{"field": field.ExternalName},
+			Details: map[string]any{core.DetailField: field.ExternalName},
 		}
 	}
 	if err := portableNumbers(value); err != nil {
@@ -469,7 +469,7 @@ func (p *FilterParser) normalizeDocument(field *FieldSchema, value any) (any, er
 			Kind:    core.ParseErrorKindFilter,
 			Code:    ECodeValueTypeMismatch.String(),
 			Message: fmt.Sprintf("field '%s': %v", field.ExternalName, err),
-			Details: map[string]any{"field": field.ExternalName},
+			Details: map[string]any{core.DetailField: field.ExternalName},
 		}
 	}
 	doc, err := core.NormalizeJSON(value)
@@ -478,7 +478,7 @@ func (p *FilterParser) normalizeDocument(field *FieldSchema, value any) (any, er
 			Kind:    core.ParseErrorKindFilter,
 			Code:    ECodeValueTypeMismatch.String(),
 			Message: fmt.Sprintf("field '%s': %v", field.ExternalName, err),
-			Details: map[string]any{"field": field.ExternalName},
+			Details: map[string]any{core.DetailField: field.ExternalName},
 			Cause:   err,
 		}
 	}
@@ -487,7 +487,7 @@ func (p *FilterParser) normalizeDocument(field *FieldSchema, value any) (any, er
 			Kind:    core.ParseErrorKindFilter,
 			Code:    ECodeValueTypeMismatch.String(),
 			Message: fmt.Sprintf("field '%s': %v", field.ExternalName, err),
-			Details: map[string]any{"field": field.ExternalName},
+			Details: map[string]any{core.DetailField: field.ExternalName},
 		}
 	}
 	depth, nodes := jsonShape(doc)
@@ -540,7 +540,7 @@ func (p *FilterParser) normalizeElements(field *FieldSchema, value any) (any, er
 			Kind:    core.ParseErrorKindFilter,
 			Code:    ECodeValueTypeMismatch.String(),
 			Message: fmt.Sprintf("field '%s': %v", field.ExternalName, err),
-			Details: map[string]any{"field": field.ExternalName},
+			Details: map[string]any{core.DetailField: field.ExternalName},
 		}
 	}
 	return out, nil
@@ -597,7 +597,7 @@ func (p *FilterParser) normalizeMember(field *FieldSchema, value any) (any, erro
 			Kind:    core.ParseErrorKindFilter,
 			Code:    code.String(),
 			Message: fmt.Sprintf("field '%s': %v", field.ExternalName, err),
-			Details: map[string]any{"field": field.ExternalName},
+			Details: map[string]any{core.DetailField: field.ExternalName},
 			Cause:   err,
 		}
 	}
@@ -607,7 +607,7 @@ func (p *FilterParser) normalizeMember(field *FieldSchema, value any) (any, erro
 				Kind:    core.ParseErrorKindFilter,
 				Code:    ECodeInvalidEnumValue.String(),
 				Message: fmt.Sprintf("field '%s': %v", field.ExternalName, err),
-				Details: map[string]any{"field": field.ExternalName},
+				Details: map[string]any{core.DetailField: field.ExternalName},
 			}
 		}
 	}
@@ -617,7 +617,7 @@ func (p *FilterParser) normalizeMember(field *FieldSchema, value any) (any, erro
 				Kind:    core.ParseErrorKindFilter,
 				Code:    ECodeValueTypeMismatch.String(),
 				Message: fmt.Sprintf("field '%s': %v", field.ExternalName, err),
-				Details: map[string]any{"field": field.ExternalName},
+				Details: map[string]any{core.DetailField: field.ExternalName},
 				Cause:   err,
 			}
 		}
@@ -727,7 +727,7 @@ func ParseSort(schema *SortSchema, sortParam string) (*SortResult, error) {
 				Kind:    core.ParseErrorKindSort,
 				Code:    ECodeSortFieldNotAllowed.String(),
 				Message: fmt.Sprintf("sort field '%s' is not allowed", name),
-				Details: map[string]any{"field": name},
+				Details: map[string]any{core.DetailField: name},
 			}
 		}
 		fields = append(fields, SortField{Name: name, Schema: fieldSchema, Direction: dir})

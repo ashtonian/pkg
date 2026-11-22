@@ -1,6 +1,10 @@
 package filtertest
 
-import "strings"
+import (
+	"strings"
+
+	"github.com/ashtonian/pkg/parse/filter"
+)
 
 func ids(s string) []string {
 	if s == "" {
@@ -33,7 +37,7 @@ func Cases() []Case {
 		{Name: "like escaped percent", Filter: `{"name":{"$like":"%\\%"}}`, Want: ids("c")},
 		{Name: "like escaped backslash", Filter: `{"name":{"$like":"back\\\\%"}}`, Want: ids("h")},
 		{Name: "like glob metacharacters are literal", Filter: `{"name":{"$like":"*"}}`, Want: ids("")},
-		{Name: "like trailing escape rejected", Filter: `{"name":{"$like":"abc\\"}}`, ParseErr: "E2073"},
+		{Name: "like trailing escape rejected", Filter: `{"name":{"$like":"abc\\"}}`, ParseErr: filter.ECodeValueTypeMismatch.String()},
 		{Name: "ilike folds case", Filter: `{"name":{"$ilike":"alpha%"}}`, Want: ids("ae")},
 		{Name: "ilike with escape", Filter: `{"name":{"$ilike":"%GAMMA\\%"}}`, Want: ids("c")},
 		{Name: "ilike prefix", Filter: `{"name":{"$ilike":"B%"}}`, Want: ids("bh")},
@@ -65,7 +69,7 @@ func Cases() []Case {
 		{Name: "int nin", Filter: `{"count":{"$nin":[1,2]}}`, Want: ids("cefgh")},
 		{Name: "int in empty", Filter: `{"count":{"$in":[]}}`, Want: ids("")},
 		{Name: "int nin empty matches null too", Filter: `{"count":{"$nin":[]}}`, Want: ids("abcdefgh")},
-		{Name: "int fraction rejected", Filter: `{"count":1.5}`, ParseErr: "E2073"},
+		{Name: "int fraction rejected", Filter: `{"count":1.5}`, ParseErr: filter.ECodeValueTypeMismatch.String()},
 
 		// --- float ---
 		{Name: "float eq", Filter: `{"score":2.5}`, Want: ids("bh")},
@@ -93,10 +97,10 @@ func Cases() []Case {
 		{Name: "decimal in", Filter: `{"amount":{"$in":["9.50",2,"1E2"]}}`, Want: ids("beg")},
 		{Name: "decimal nin", Filter: `{"amount":{"$nin":["10.25",-1]}}`, Want: ids("befgh")},
 		{Name: "decimal null", Filter: `{"amount":{"$null":true}}`, Want: ids("d")},
-		{Name: "decimal non-numeric string rejected", Filter: `{"amount":"ten"}`, ParseErr: "E2073"},
-		{Name: "decimal hexadecimal rejected", Filter: `{"amount":"0x10"}`, ParseErr: "E2073"},
-		{Name: "decimal boolean rejected", Filter: `{"amount":true}`, ParseErr: "E2073"},
-		{Name: "decimal beyond its digits rejected", Filter: `{"amount":"1e1000"}`, ParseErr: "E2073"},
+		{Name: "decimal non-numeric string rejected", Filter: `{"amount":"ten"}`, ParseErr: filter.ECodeValueTypeMismatch.String()},
+		{Name: "decimal hexadecimal rejected", Filter: `{"amount":"0x10"}`, ParseErr: filter.ECodeValueTypeMismatch.String()},
+		{Name: "decimal boolean rejected", Filter: `{"amount":true}`, ParseErr: filter.ECodeValueTypeMismatch.String()},
+		{Name: "decimal beyond its digits rejected", Filter: `{"amount":"1e1000"}`, ParseErr: filter.ECodeValueTypeMismatch.String()},
 
 		// --- bool ---
 		{Name: "bool eq true", Filter: `{"active":true}`, Want: ids("acfh")},
@@ -124,7 +128,7 @@ func Cases() []Case {
 		{Name: "uuid ne", Filter: `{"ref":{"$ne":"0198a3c2-7a1e-7c00-8000-000000000001"}}`, Want: ids("bcefg")},
 		{Name: "uuid in", Filter: `{"ref":{"$in":["0198a3c2-7a1e-7c00-8000-000000000001","0198a3c2-7a1e-7c00-8000-000000000007"]}}`, Want: ids("ag")},
 		{Name: "uuid nin", Filter: `{"ref":{"$nin":["0198a3c2-7a1e-7c00-8000-000000000001"]}}`, Want: ids("bcefg")},
-		{Name: "uuid malformed rejected", Filter: `{"ref":"not-a-uuid"}`, ParseErr: "E2116"},
+		{Name: "uuid malformed rejected", Filter: `{"ref":"not-a-uuid"}`, ParseErr: filter.ECodeInvalidUUID.String()},
 
 		// --- JSON documents: jsonb equality ---
 		{Name: "json eq ignores key order and 1 vs 1.0", Filter: `{"doc":{"env":"prod","n":1}}`, Want: ids("g")},
@@ -135,7 +139,7 @@ func Cases() []Case {
 		{Name: "json eq scalar document", Filter: `{"doc":{"$eq":"text"}}`, Want: ids("f")},
 		{Name: "json eq empty object", Filter: `{"doc":{"$eq":{}}}`, Want: ids("h")},
 		{Name: "json ne excludes null", Filter: `{"doc":{"$ne":{"env":"dev","n":2}}}`, Want: ids("acefgh")},
-		{Name: "json eq null rejected", Filter: `{"doc":{"$eq":null}}`, ParseErr: "E2073"},
+		{Name: "json eq null rejected", Filter: `{"doc":{"$eq":null}}`, ParseErr: filter.ECodeValueTypeMismatch.String()},
 
 		// --- JSON documents: jsonb containment ---
 		{Name: "json contains member", Filter: `{"doc":{"$contains":{"env":"prod"}}}`, Want: ids("acg")},
@@ -159,7 +163,7 @@ func Cases() []Case {
 		{Name: "array contains ignores multiplicity", Filter: `{"tags":{"$contains":["x","x"]}}`, Want: ids("acfg")},
 		{Name: "array contains empty set", Filter: `{"tags":{"$contains":[]}}`, Want: ids("abcefgh")},
 		{Name: "array null", Filter: `{"tags":{"$null":true}}`, Want: ids("d")},
-		{Name: "array eq not defined", Filter: `{"tags":["x"]}`, ParseErr: "E2072"},
+		{Name: "array eq not defined", Filter: `{"tags":["x"]}`, ParseErr: filter.ECodeInvalidOperator.String()},
 
 		// --- geo ---
 		{Name: "near", Filter: `{"loc":{"$near":{"lat":10,"lon":10,"distance":"50km"}}}`, Want: ids("a")},
@@ -180,7 +184,7 @@ func Cases() []Case {
 		{Name: "intersects polygon", Filter: `{"loc":{"$intersects":{"points":[{"lat":0,"lon":0},{"lat":40,"lon":0},{"lat":0,"lon":40}]}}}`, Want: ids("abef")},
 		{Name: "not within box excludes null", Filter: `{"$not":{"loc":{"$within":{"top_left":{"lat":25,"lon":0},"bottom_right":{"lat":5,"lon":25}}}}}`, Want: ids("ce")},
 		{Name: "not within polygon excludes null", Filter: `{"$not":{"loc":{"$within":{"points":[{"lat":0,"lon":0},{"lat":40,"lon":0},{"lat":0,"lon":40}]}}}}`, Want: ids("ch")},
-		{Name: "within inverted box rejected", Filter: `{"loc":{"$within":{"top_left":{"lat":25,"lon":25},"bottom_right":{"lat":5,"lon":0}}}}`, ParseErr: "E2112"},
+		{Name: "within inverted box rejected", Filter: `{"loc":{"$within":{"top_left":{"lat":25,"lon":25},"bottom_right":{"lat":5,"lon":0}}}}`, ParseErr: filter.ECodeInvalidGeoCoords.String()},
 		{Name: "geo null", Filter: `{"loc":{"$null":true}}`, Want: ids("dg")},
 
 		// --- three-valued logic ---

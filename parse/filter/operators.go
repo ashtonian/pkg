@@ -70,8 +70,21 @@ func elementOperators(elem core.FieldType) []FilterOperator {
 	return slices.DeleteFunc(slices.Clone(typeOperators[elem]), isNullTest)
 }
 
-// newElement is the element field of array, a scalar array: elementColumn
-// stands for the element until the builder or an evaluator binds it to one.
+// elementRole is what a field of an element condition stands for until it
+// is bound to one element.
+type elementRole uint8
+
+const (
+	// roleNone is a field read from a row: a column or a path.
+	roleNone elementRole = iota
+	// roleElement is a scalar array's element (newElement).
+	roleElement
+	// roleElementPath is a path into one element of a JSON array document
+	// (documentElements).
+	roleElementPath
+)
+
+// newElement is the element field of array, a scalar array.
 func newElement(array *FieldSchema) *FieldSchema {
 	return &FieldSchema{
 		ExternalName:     array.ExternalName,
@@ -80,6 +93,7 @@ func newElement(array *FieldSchema) *FieldSchema {
 		NumberKind:       array.NumberKind,
 		AllowedOperators: elementOperators(array.Elem),
 		EnumValues:       slices.Clone(array.EnumValues),
+		role:             roleElement,
 	}
 }
 
@@ -90,21 +104,32 @@ func isScalarArray(f *FieldSchema) bool {
 }
 
 // elementOf is a scalar array's element field: its Element, or the element
-// its Elem implies for a schema built without one.
+// its Elem implies for a schema built without one. A hand-built Element is
+// marked on a copy, leaving the shared schema unchanged.
 func elementOf(array *FieldSchema) *FieldSchema {
-	if array.Element != nil {
-		return array.Element
+	e := array.Element
+	if e == nil {
+		return newElement(array)
 	}
-	return newElement(array)
+	if e.role != roleElement {
+		c := *e
+		c.role = roleElement
+		return &c
+	}
+	return e
 }
 
 // isElement reports the element field of a scalar array (newElement).
-func isElement(f *FieldSchema) bool {
-	return f.Path == nil && f.SQLExpr == elementColumn
-}
+func isElement(f *FieldSchema) bool { return f.role == roleElement }
 
 // isElementPath reports an element path of a JSON array document
 // (documentElements), which reads one element rather than a column.
-func isElementPath(f *FieldSchema) bool {
-	return f.Path != nil && f.Path.Column == elementColumn
+func isElementPath(f *FieldSchema) bool { return f.role == roleElementPath }
+
+// bound is f, an element field or element path, bound to an element the SQL
+// reads by alias: a field read from a row again.
+func bound(f *FieldSchema) FieldSchema {
+	c := *f
+	c.role = roleNone
+	return c
 }

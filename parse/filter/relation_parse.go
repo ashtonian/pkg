@@ -36,7 +36,7 @@ func (p *FilterParser) parseRelated(field *FieldSchema, op FilterOperator, value
 		return nil, &core.ParseError{
 			Kind: core.ParseErrorKindFilter, Code: ECodeDepthExceeded.String(),
 			Message: fmt.Sprintf("relation predicates nest at most %d deep", MaxRelationDepth),
-			Details: map[string]any{"field": field.ExternalName},
+			Details: map[string]any{core.DetailField: field.ExternalName},
 		}
 	}
 	obj, ok := value.(map[string]any)

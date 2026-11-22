@@ -38,10 +38,7 @@ func (b *SQLBuilder) buildRelated(s *buildState, node *FilterNode) (string, erro
 	visible := append([]string{b.schema.Name}, b.visible...)
 	bind := s.binder(b.dialect)
 
-	pk := rel.PrimaryKey
-	if pk == "" {
-		pk = "id"
-	}
+	pk := rel.OwnerKey()
 	join := relationTableAlias(rel.JoinTable, depth, visible)
 	related := join
 	if rel.TargetTable != "" {
@@ -156,7 +153,9 @@ func rebaseNode(n *FilterNode, table, alias string, moved map[*FieldSchema]*Fiel
 		return nil, fmt.Errorf("raw SQL cannot be applied to the aliased relation table %s", alias)
 	}
 	out := *n
-	if n.Field != nil && n.Field.Relation == nil {
+	// An element field or element path stays a placeholder: its own
+	// `$some` / `$none` binds it to the element alias.
+	if n.Field != nil && n.Field.Relation == nil && !isElement(n.Field) && !isElementPath(n.Field) {
 		f, err := rebaseField(n.Field, table, alias, moved)
 		if err != nil {
 			return nil, err
@@ -208,6 +207,6 @@ func rebaseField(f *FieldSchema, table, alias string, moved map[*FieldSchema]*Fi
 func invalidRelation(f *FieldSchema, msg string) error {
 	return &core.ParseError{
 		Kind: core.ParseErrorKindFilter, Code: ECodeInvalidRelation.String(),
-		Message: fmt.Sprintf("relation '%s' %s", f.ExternalName, msg), Details: map[string]any{"field": f.ExternalName},
+		Message: fmt.Sprintf("relation '%s' %s", f.ExternalName, msg), Details: map[string]any{core.DetailField: f.ExternalName},
 	}
 }

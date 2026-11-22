@@ -19,7 +19,7 @@ Start with the [runnable package example](../README.md#quick-start). The focused
 - SQL: `BuildPatchSQL`, `SQLDialect`, `PatchSQLResult` (`Assignments`, `ChangePredicate`), `ColumnAssignment` (`Column`, `Expression`), `PatchSQLOption` (`WithStartParam`, `WithAutoTimestamp`, `WithAutoTimestampSQL`, `WithIncrement`, `WithTimeFunc`, `WithChangePredicate`)
 - Relations: `RelationPatchOp`, `RelationVerb`, `RenderRelationOp`, `RenderRelationOpOptions` (`Owner` / `RelationOwner` and `TargetVisible`: guarded statements for a relation with a target table), `RenderedRelationStatement`, `RelationPath`
 - Policy: `PatchPolicyConstraints`, `ValueConstraint`, `NewValueConstraint`, `PatchValidator`, `ApplyPatchPolicyConstraints`, `PatchPolicyFromWritableFields`
-- Errors: `ECode*`, `Codes`
+- Errors: `ECode*` (aliases of `core.Code*`, each code's one definition), `Codes`
 
 ## Code map
 
@@ -37,7 +37,7 @@ Start with the [runnable package example](../README.md#quick-start). The focused
 
 ## Dependencies
 
-- *Imports*: `parse/core`, `parse/internal/{dialect,jsonmerge}`
+- *Imports*: `parse/core`, `parse/internal/{dialect,jsonmerge,rfc6902}`
 - *Imported by*: `parse`, the example server, and servers that apply patches themselves
 - *Package boundary*: standalone Parse module
 

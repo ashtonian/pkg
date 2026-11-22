@@ -8,41 +8,41 @@ import (
 
 // Error codes for filter and list operations.
 const (
-	ECodeQueryTooExpensive core.Code = "E2061"
-	ECodeInvalidArray      core.Code = "E2062"
-	ECodeInputTooLarge     core.Code = "E2063"
-	ECodeCursorTooLarge    core.Code = "E2065"
+	ECodeQueryTooExpensive = core.CodeQueryTooExpensive
+	ECodeInvalidArray      = core.CodeInvalidArray
+	ECodeInputTooLarge     = core.CodeInputTooLarge
+	ECodeCursorTooLarge    = core.CodeCursorTooLarge
 
-	ECodeUnknownField        core.Code = "E2071"
-	ECodeInvalidOperator     core.Code = "E2072"
-	ECodeValueTypeMismatch   core.Code = "E2073"
-	ECodeDepthExceeded       core.Code = "E2074"
-	ECodeSchemaNotFound      core.Code = "E2078"
-	ECodeSortFieldNotAllowed core.Code = "E2079"
-	ECodeSQLGenerationFailed core.Code = "E2080"
-	ECodeSortFieldLimit      core.Code = "E2081"
-	ECodeInvalidCursor       core.Code = "E2082"
-	ECodeInvalidRelation     core.Code = "E2083"
-	ECodeInvalidJSON         core.Code = "E2086"
-	ECodeInvalidEnumValue    core.Code = "E2087"
-	ECodeArrayTooLarge       core.Code = "E2088"
-	ECodeMaxConditions       core.Code = "E2089"
+	ECodeUnknownField        = core.CodeUnknownField
+	ECodeInvalidOperator     = core.CodeInvalidOperator
+	ECodeValueTypeMismatch   = core.CodeValueTypeMismatch
+	ECodeDepthExceeded       = core.CodeDepthExceeded
+	ECodeSchemaNotFound      = core.CodeSchemaNotFound
+	ECodeSortFieldNotAllowed = core.CodeSortFieldNotAllowed
+	ECodeSQLGenerationFailed = core.CodeSQLGenerationFailed
+	ECodeSortFieldLimit      = core.CodeSortFieldLimit
+	ECodeInvalidCursor       = core.CodeInvalidCursor
+	ECodeInvalidRelation     = core.CodeInvalidRelation
+	ECodeInvalidJSON         = core.CodeInvalidJSON
+	ECodeInvalidEnumValue    = core.CodeInvalidEnumValue
+	ECodeArrayTooLarge       = core.CodeArrayTooLarge
+	ECodeMaxConditions       = core.CodeMaxConditions
 
 	// Geo-spatial error codes.
-	ECodeInvalidGeoCoords  core.Code = "E2112"
-	ECodeInvalidDistance   core.Code = "E2113"
-	ECodeInvalidGeoPolygon core.Code = "E2114"
-	ECodeGeoNotSupported   core.Code = "E2115"
+	ECodeInvalidGeoCoords  = core.CodeInvalidGeoCoords
+	ECodeInvalidDistance   = core.CodeInvalidDistance
+	ECodeInvalidGeoPolygon = core.CodeInvalidGeoPolygon
+	ECodeGeoNotSupported   = core.CodeGeoNotSupported
 
 	// malformed UUID at the filter boundary returns 400 instead
 	// of zero rows.
-	ECodeInvalidUUID core.Code = "E2116"
+	ECodeInvalidUUID = core.CodeInvalidUUID
 
 	// ECodeInvalidListParam is a list request parameter that is malformed or
 	// that the resource cannot honor: a page size that is not a positive
 	// integer, a boolean flag that is not a boolean, search on a resource
 	// without search fields.
-	ECodeInvalidListParam core.Code = "E2067"
+	ECodeInvalidListParam = core.CodeInvalidListParam
 )
 
 // Codes returns the codes defined by this package.

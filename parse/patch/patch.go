@@ -10,6 +10,7 @@ import (
 	"strconv"
 
 	"github.com/ashtonian/pkg/parse/core"
+	"github.com/ashtonian/pkg/parse/internal/rfc6902"
 )
 
 // Parser parses and validates JSON Patch documents.
@@ -89,7 +90,7 @@ func rawOpFrom(doc map[string]any, i int) (RawPatchOp, error) {
 	for _, m := range []struct {
 		name string
 		dst  *string
-	}{{"op", &op.Op}, {"path", &op.Path}, {"from", &op.From}} {
+	}{{rfc6902.Op, &op.Op}, {rfc6902.Path, &op.Path}, {rfc6902.From, &op.From}} {
 		v, ok := doc[m.name]
 		if !ok {
 			continue
@@ -104,7 +105,7 @@ func rawOpFrom(doc map[string]any, i int) (RawPatchOp, error) {
 		}
 		*m.dst = s
 	}
-	op.Value, op.HasValue = doc["value"]
+	op.Value, op.HasValue = doc[rfc6902.Value]
 	return op, nil
 }
 

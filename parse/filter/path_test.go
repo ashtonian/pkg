@@ -159,6 +159,14 @@ func TestPaths_ElementPathsReadElements(t *testing.T) {
 		_, _, err := filter.ElementRow{Element: elem}.Value(sku)
 		assert.Error(t, err, "%T is not decoded JSON", elem)
 	}
+
+	// A document column named like the element placeholder is a column.
+	color := &filter.FieldSchema{ExternalName: "doc.color", DataType: core.FieldTypeString,
+		Path: &filter.JSONPath{Column: "elem__", Segments: []string{"color"}, Storage: filter.StorageJSONB}}
+	v, present, err := filter.PathValue(`{"color":"red"}`, color)
+	require.NoError(t, err)
+	assert.True(t, present)
+	assert.Equal(t, "red", v)
 }
 
 // A struct a database holds as a scalar (a decimal) declares its type and
