@@ -40,6 +40,15 @@ func TestQuoted_DecodesTheServersForm(t *testing.T) {
 	assert.Equal(t, int64(math.MinInt64), row.ID.Value)
 	assert.Equal(t, uint64(math.MaxUint64), row.Big.Value)
 
+	// A nullable quoted field writes null, which leaves the value as
+	// encoding/json leaves one.
+	var nullable struct {
+		Opt Quoted[int64] `json:"opt"`
+	}
+	nullable.Opt = Quote(int64(3))
+	require.NoError(t, json.Unmarshal([]byte(`{"opt":null}`), &nullable))
+	assert.Equal(t, int64(3), nullable.Opt.Value)
+
 	var q Quoted[int64]
 	assert.Error(t, json.Unmarshal([]byte(`9007199254740993`), &q), "a bare number")
 	assert.Error(t, json.Unmarshal([]byte(`"seven"`), &q), "text that is no number")

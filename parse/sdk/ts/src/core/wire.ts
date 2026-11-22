@@ -14,10 +14,13 @@ const JSON_NUMBER = /^-?(0|[1-9][0-9]*)(?:\.[0-9]+)?(?:[eE][+-]?[0-9]+)?$/;
 /**
  * The value a string-wire operand holds, as Go core.FromWire reads it: the
  * JSON number text for an int (kept as text, so a 64-bit integer stays
- * exact), the number for a float, true or false for a bool; undefined when
- * the operand is no such string — a bare number or boolean included.
+ * exact), the number for a float, true or false for a bool. A bool also
+ * takes a bare boolean, which the server decodes to the same value; a bare
+ * number, which reaches the server as a JSON number, is undefined, as is
+ * text that is no such literal.
  */
 export function fromWire(type: FieldType, value: unknown): string | number | boolean | undefined {
+  if (type === "bool" && typeof value === "boolean") return value;
   if (typeof value !== "string") return undefined;
   switch (type) {
     case "int":

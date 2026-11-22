@@ -210,9 +210,7 @@ func structPaths(g *core.SchemaGenerator, t reflect.Type, prefix []string, want 
 			return nil, nil, fmt.Errorf("member %s is more than %d members deep", strings.Join(segs, "."), MaxPathDepth)
 		}
 		if m.Wire() != "" {
-			// The document holds the member as a JSON string, which a
-			// number or bool path reads as NULL on every backend.
-			return nil, nil, fmt.Errorf("member %s: json:\",string\" stores the value as text, which its path cannot compare; drop the option, or declare the member a string", strings.Join(segs, "."))
+			return nil, nil, quotedMemberError(strings.Join(segs, "."))
 		}
 		info := core.TypeOf(m.Type)
 		elem, elemKind, isArray := scalarElements(m.Type)
@@ -289,6 +287,26 @@ func parseOpsTag(tag string) ([]FilterOperator, error) {
 	return ops, nil
 }
 
+// quotedMemberError refuses a path onto a struct member encoding/json quotes
+// (json:",string"): the document holds it as a JSON string, which a number
+// or bool path reads as NULL on every backend.
+func quotedMemberError(path string) error {
+	return fmt.Errorf("member %s: json:\",string\" stores the value as text, which its path cannot compare; drop the option, or declare the member a string", path)
+}
+
+// checkDeclaredMember refuses a declared path (the paths or elements tag, or
+// a runtime declaration) onto a quoted member of the document's Go type t.
+func checkDeclaredMember(g *core.SchemaGenerator, t reflect.Type, path string) error {
+	w, err := g.MemberWire(t, strings.Split(path, "."))
+	if err != nil {
+		return err
+	}
+	if w != "" {
+		return quotedMemberError(path)
+	}
+	return nil
+}
+
 // documentPathFields builds the path fields a document field declares.
 func documentPathFields(g *core.SchemaGenerator, field *core.Field, doc *FieldSchema) ([]*FieldSchema, error) {
 	var decls []PathDecl
@@ -306,6 +324,9 @@ func documentPathFields(g *core.SchemaGenerator, field *core.Field, doc *FieldSc
 			return nil, err
 		}
 		for _, decl := range d {
+			if err := checkDeclaredMember(g, field.Type, decl.Path); err != nil {
+				return nil, err
+			}
 			decls = append(decls, decl)
 			kinds = append(kinds, kindOf(decl.elemOrType()))
 		}
@@ -402,6 +423,9 @@ func docSortPaths(g *core.SchemaGenerator, field *core.Field, docType core.Field
 			return nil, err
 		}
 		for _, decl := range d {
+			if err := checkDeclaredMember(g, field.Type, decl.Path); err != nil {
+				return nil, err
+			}
 			if decl.Sort {
 				decls = append(decls, decl)
 				kinds = append(kinds, kindOf(decl.elemOrType()))

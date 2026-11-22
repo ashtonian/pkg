@@ -26,8 +26,9 @@ func documentElements(g *core.SchemaGenerator, field *core.Field, doc *FieldSche
 	for t.Kind() == reflect.Pointer {
 		t = t.Elem()
 	}
+	var elem reflect.Type
 	if t.Kind() == reflect.Slice || t.Kind() == reflect.Array {
-		elem := t.Elem()
+		elem = t.Elem()
 		for elem.Kind() == reflect.Pointer {
 			elem = elem.Elem()
 		}
@@ -45,6 +46,11 @@ func documentElements(g *core.SchemaGenerator, field *core.Field, doc *FieldSche
 			return nil, fmt.Errorf("elements: %w", err)
 		}
 		for _, decl := range d {
+			if elem != nil {
+				if err := checkDeclaredMember(g, elem, decl.Path); err != nil {
+					return nil, fmt.Errorf("elements: %w", err)
+				}
+			}
 			decls = append(decls, decl)
 			kinds = append(kinds, kindOf(decl.elemOrType()))
 		}

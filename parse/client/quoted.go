@@ -37,6 +37,9 @@ func (q Quoted[T]) MarshalJSON() ([]byte, error) {
 // UnmarshalJSON reads a JSON string holding the value's JSON text, as
 // encoding/json reads a quoted field.
 func (q *Quoted[T]) UnmarshalJSON(data []byte) error {
+	if string(data) == "null" {
+		return nil // as encoding/json leaves a value on null
+	}
 	var text string
 	if err := json.Unmarshal(data, &text); err != nil {
 		return fmt.Errorf("client: a quoted value is a JSON string: %w", err)

@@ -46,6 +46,8 @@ var confFields = struct {
 	Parts   client.Relation[string]
 	Serial  client.Ordered[client.Quoted[int64]]
 	Live    client.Field[client.Quoted[bool]]
+	Big     client.Ordered[client.Quoted[uint64]]
+	Ratio   client.Ordered[client.Quoted[float64]]
 }{
 	ID:      client.NewField[string]("id"),
 	Name:    client.NewText("name"),
@@ -63,6 +65,8 @@ var confFields = struct {
 	Sizes:   client.NewOrderedArray[int]("meta.sizes"),
 	Serial:  client.NewOrdered[client.Quoted[int64]]("serial"),
 	Live:    client.NewField[client.Quoted[bool]]("live"),
+	Big:     client.NewOrdered[client.Quoted[uint64]]("big"),
+	Ratio:   client.NewOrdered[client.Quoted[float64]]("ratio"),
 	Parts:   client.NewRelation[string]("parts"),
 }
 
@@ -146,6 +150,8 @@ func filterBuilt() map[string]client.Filter {
 		"quoted_gt_past_2_53":           f.Serial.Gt(client.Quote(int64(9007199254740992))),
 		"quoted_in":                     f.Serial.In(client.Quote(int64(1)), client.Quote(int64(9007199254740993))),
 		"quoted_eq_bool":                f.Live.Eq(client.Quote(true)),
+		"quoted_uint64_max":             f.Big.Eq(client.Quote(uint64(math.MaxUint64))),
+		"quoted_float":                  f.Ratio.Lt(client.Quote(0.5)),
 	}
 }
 
@@ -172,7 +178,13 @@ var filterInexpressible = map[string]string{
 	"err_quoted_not_a_number":             "Serial is an Ordered[Quoted[int64]]",
 	"err_quoted_spaces":                   "a Quoted marshals its value's JSON text",
 	"err_quoted_past_int64":               "Serial is an Ordered[Quoted[int64]]",
-	"err_quoted_bare_bool":                "Live is a Field[Quoted[bool]]",
+	"quoted_bool_bare_boolean":            "a Quoted[bool] marshals a JSON string",
+	"quoted_integral_spelling":            "a Quoted marshals its value's JSON text",
+	"err_quoted_leading_plus":             "a Quoted marshals its value's JSON text",
+	"err_quoted_leading_zero":             "a Quoted marshals its value's JSON text",
+	"err_quoted_null":                     "Null is the null test; Eq takes a value",
+	"err_quoted_float_word":               "Ratio is an Ordered[Quoted[float64]]",
+	"err_quoted_uint_negative":            "Big is an Ordered[Quoted[uint64]]",
 	"err_int_fraction":                    "Count is an Ordered[int]",
 	"err_bool_type":                       "Active is a Field[bool]",
 	"err_decimal_word":                    "Price is an Ordered[decimal.Decimal]",
@@ -304,6 +316,7 @@ type confPatchInput struct {
 	Quota    client.Nullable[client.Quoted[int64]]   `json:"quota,omitzero"`
 	Live     client.Nullable[client.Quoted[bool]]    `json:"live,omitzero"`
 	Share    client.Nullable[client.Quoted[float32]] `json:"share,omitzero"`
+	Opt      client.Nullable[client.Quoted[int64]]   `json:"opt,omitzero"`
 }
 
 var patchBuilt = map[string]confPatchInput{
@@ -352,6 +365,8 @@ var patchBuilt = map[string]confPatchInput{
 	"err_quoted_bound_past_2_53":     {Quota: client.Set(client.Quote(int64(9007199254740994)))},
 	"quoted_bool":                    {Live: client.Set(client.Quote(false))},
 	"quoted_float":                   {Share: client.Set(client.Quote[float32](0.5))},
+	"quoted_null_clears_nullable":    {Opt: client.Null[client.Quoted[int64]]()},
+	"err_quoted_null_on_value_field": {Serial: client.Null[client.Quoted[int64]]()},
 }
 
 var patchInexpressible = map[string]string{
@@ -361,7 +376,10 @@ var patchInexpressible = map[string]string{
 	"err_quoted_not_a_number":   "Serial is a Nullable[Quoted[int64]]",
 	"err_quoted_spaces":         "a Quoted marshals its value's JSON text",
 	"err_quoted_uint_negative":  "Big is a Nullable[Quoted[uint64]]",
-	"err_quoted_bare_bool":      "Live is a Nullable[Quoted[bool]]",
+	"quoted_bool_bare_boolean":  "a Quoted[bool] marshals a JSON string",
+	"quoted_integral_spelling":  "a Quoted marshals its value's JSON text",
+	"err_quoted_leading_plus":   "a Quoted marshals its value's JSON text",
+	"err_quoted_leading_zero":   "a Quoted marshals its value's JSON text",
 	"err_quoted_float_word":     "Share is a Nullable[Quoted[float32]]",
 	"err_int_fraction":          "Count is a Nullable[int32]",
 	"err_int_type":              "Count is a Nullable[int32]",
@@ -524,7 +542,7 @@ func TestClient_CatalogsCoverTheCorpusFields(t *testing.T) {
 		confFields.ID.Name(), confFields.Name.Name(), confFields.Status.Name(), confFields.Count.Name(),
 		confFields.Price.Name(), confFields.Active.Name(), confFields.Created.Name(), confFields.Meta.Name(), confFields.Region.Name(),
 		confFields.Note.Name(), confFields.Lines.Name(), confFields.Tags.Name(), confFields.Labels.Name(), confFields.Sizes.Name(),
-		confFields.Parts.Name(), confFields.Serial.Name(), confFields.Live.Name(),
+		confFields.Parts.Name(), confFields.Serial.Name(), confFields.Live.Name(), confFields.Big.Name(), confFields.Ratio.Name(),
 	}
 	for name := range schema.Fields {
 		assert.True(t, slices.Contains(names, name), "the catalog misses %q", name)

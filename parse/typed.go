@@ -791,7 +791,11 @@ func testValue(doc map[string]any, op *patch.PatchOperation, index int) error {
 	if err != nil {
 		return fail(fmt.Sprintf("value at %s: %v", op.Path, err))
 	}
-	want, err := core.NormalizeJSON(op.Value)
+	value, err := documentValue(op)
+	if err != nil {
+		return err
+	}
+	want, err := core.NormalizeJSON(value)
 	if err != nil {
 		return fail(fmt.Sprintf("test value: %v", err))
 	}

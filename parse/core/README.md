@@ -35,7 +35,7 @@ Start with the [runnable package example](../README.md#quick-start). The focused
 | `bounds.go` | `Bounds` — the `minlen` / `maxlen` / `min` / `max` / `minitems` / `maxitems` tags, read and checked against the field's type |
 | `typeof.go` | `TypeOf` — Go type → storage model; `IsUUIDType` / `UUIDText` |
 | `number.go` | Exact integer / float normalization and comparison |
-| `wire.go` | `Wire`, `WireString`, `Field.Wire`: a `json:",string"` field's wire form; `FromWire` / `ToWire` between it and the canonical value |
+| `wire.go` | `Wire`, `WireString`, `Field.Quoted` (encoding/json quotes the field), `Field.Wire` (its request form), `SchemaGenerator.MemberWire` (a document member's); `FromWire` / `ToWire` between the wire form and the canonical value |
 | `decimal.go` | `Decimal`, `IsDecimalType`, canonical decimal text (`DecimalText`), exact decimal order (`CompareDecimals`) |
 | `value.go` | `NormalizeScalar`, canonical timestamps, `AnySlice` |
 | `date.go` | `Date`: SQL DATE, `YYYY-MM-DD` |

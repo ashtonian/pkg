@@ -20,6 +20,7 @@ type RelatedResource interface {
 	DeletedColumnName() string
 	FilterSchema() *filter.ResourceSchema
 	columnType(name string) (reflect.Type, bool)
+	columnWire(name string) core.Wire
 	computed(column string) bool
 	dialectView(d filter.Dialect) (*dialectView, error)
 	tenantGraph() *tenantNode
@@ -29,6 +30,14 @@ type RelatedResource interface {
 func (r *Resource[T]) columnType(name string) (reflect.Type, bool) {
 	t, ok := r.tableColumns[name]
 	return t, ok
+}
+
+// columnWire is the wire form of the field holding column (core.Field.Wire).
+func (r *Resource[T]) columnWire(name string) core.Wire {
+	if f, ok := r.columnFields[name]; ok {
+		return f.Wire()
+	}
+	return ""
 }
 
 // Relation is a declared relation: HasMany, BelongsTo or
@@ -199,9 +208,12 @@ func (r *Resource[T]) Relate(name string, rel Relation) error {
 		ops = []filter.FilterOperator{filter.OpEq, filter.OpNe, filter.OpIn, filter.OpNin, filter.OpNull, filter.OpNotNull, filter.OpIs, filter.OpIsNot}
 	}
 	field := &filter.FieldSchema{
-		ExternalName:     name,
-		DataType:         key.Type,
-		NumberKind:       key.NumberKind,
+		ExternalName: name,
+		DataType:     key.Type,
+		NumberKind:   key.NumberKind,
+		// The shorthands ($eq, $in, ...) compare the target's key, in its
+		// wire form.
+		Wire:             t.columnWire(t.PrimaryKeyColumn()),
 		AllowedOperators: ops,
 		Indexed:          rel.indexed || rel.kind == core.BelongsTo,
 		Includable:       rel.includable,

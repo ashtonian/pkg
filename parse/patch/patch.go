@@ -224,9 +224,21 @@ func (p *Parser) validateOperation(raw RawPatchOp, i int) (*PatchOperation, erro
 				Path:    raw.Path, Index: new(i), Cause: err,
 			}
 		}
+		checked := normalized
+		if op == PatchOpTest {
+			// A test keeps the document it compares; validators judge the
+			// value, normalized as a replace normalizes it.
+			if checked, err = normalizeOpValue(pathSchema, PatchOpReplace, value, depth, p.codec); err != nil {
+				return nil, &core.ParseError{
+					Kind: core.ParseErrorKindPatch, Code: ECodePatchValueInvalid.String(),
+					Message: fmt.Sprintf("invalid value for path '%s' at index %d: %v", raw.Path, i, err),
+					Path:    raw.Path, Index: new(i), Cause: err,
+				}
+			}
+		}
 		value = normalized
 		for _, validator := range pathSchema.Validators {
-			if err := validator(value); err != nil {
+			if err := validator(checked); err != nil {
 				failures = append(failures, valueFailures(err, wrap)...)
 			}
 		}
@@ -339,7 +351,20 @@ func checkTransfer(op PatchOp, from *PathSchema, fromDepth int, to *PathSchema, 
 	if fromDepth == 1 && toDepth == 1 && from.GoType != nil && to.GoType != nil && valueType(from.GoType) != valueType(to.GoType) {
 		return &transferError{ECodePatchValueInvalid, fmt.Sprintf("the source holds %s, the destination %s", from.GoType, to.GoType)}
 	}
+	if fromDepth == 1 && toDepth == 1 && from.Wire != to.Wire {
+		// The document holds each in its own wire form; the value would not
+		// decode into the other.
+		return &transferError{ECodePatchValueInvalid, fmt.Sprintf("the source travels as %s, the destination as %s", wireName(from.Wire), wireName(to.Wire))}
+	}
 	return nil
+}
+
+// wireName describes a wire form for messages.
+func wireName(w core.Wire) string {
+	if w == core.WireString {
+		return `a JSON string (json:",string")`
+	}
+	return "its JSON type"
 }
 
 // valueType is the type a field's non-null value has: pointers stripped.
@@ -446,8 +471,6 @@ func normalizeOpValue(ps *PathSchema, op PatchOp, v any, depth int, codec core.C
 	if v == nil && op != PatchOpArrayAppend {
 		return nil, nil
 	}
-	// RFC 6902 tests compare the supplied document, which holds a
-	// quoted field's wire form, not its number.
 	supplied := v
 	v, err := core.FromWire(ps.Wire, ps.DataType, v)
 	if err != nil {
@@ -486,9 +509,11 @@ func normalizeOpValue(ps *PathSchema, op PatchOp, v any, depth int, codec core.C
 		return core.NormalizeScalar(ps.DataType, reflect.Invalid, v)
 	}
 	normalized, err := normalizeTyped(target, v, codec)
-	if err == nil && op == PatchOpTest {
+	if err == nil && op == PatchOpTest && ps.Wire == "" {
 		// RFC 6902 tests compare the supplied document, not a replacement
-		// with missing struct members filled or omitted by Go encoding.
+		// with missing struct members filled or omitted by Go encoding. A
+		// quoted field's test compares its canonical wire text instead, so
+		// "5.0" tests equal to a stored 5 as it replaces one.
 		return supplied, nil
 	}
 	return normalized, err

@@ -122,6 +122,16 @@
           "data_type": "string",
           "nullable": true
         },
+        "/opt": {
+          "allowed_ops": [
+            "replace",
+            "remove"
+          ],
+          "data_type": "int",
+          "wire": "string",
+          "nullable": true,
+          "number_kind": "int64"
+        },
         "/price": {
           "allowed_ops": [
             "replace"
@@ -798,9 +808,46 @@
       "valid": true
     },
     {
-      "name": "err_quoted_bare_bool",
+      "name": "quoted_bool_bare_boolean",
       "input": {
         "live": false
+      },
+      "valid": true
+    },
+    {
+      "name": "quoted_integral_spelling",
+      "input": {
+        "serial": "1e3"
+      },
+      "valid": true
+    },
+    {
+      "name": "err_quoted_leading_plus",
+      "input": {
+        "serial": "+1"
+      },
+      "valid": false,
+      "errorCode": "E2077"
+    },
+    {
+      "name": "err_quoted_leading_zero",
+      "input": {
+        "serial": "01"
+      },
+      "valid": false,
+      "errorCode": "E2077"
+    },
+    {
+      "name": "quoted_null_clears_nullable",
+      "input": {
+        "opt": null
+      },
+      "valid": true
+    },
+    {
+      "name": "err_quoted_null_on_value_field",
+      "input": {
+        "serial": null
       },
       "valid": false,
       "errorCode": "E2077"

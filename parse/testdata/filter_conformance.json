@@ -239,12 +239,103 @@
     "errorCode": "E2073"
   },
   {
-    "name": "err_quoted_bare_bool",
+    "name": "quoted_bool_bare_boolean",
     "input": {
       "live": true
     },
+    "valid": true,
+    "canonicalAst": {
+      "field": "live",
+      "op": "eq",
+      "value": true
+    },
+    "sqlPostgres": "conf_entities.live = $1",
+    "sqlSqlite": "conf_entities.live = ?1"
+  },
+  {
+    "name": "quoted_integral_spelling",
+    "input": {
+      "serial": "1.0e3"
+    },
+    "valid": true,
+    "canonicalAst": {
+      "field": "serial",
+      "op": "eq",
+      "value": 1000
+    },
+    "sqlPostgres": "conf_entities.serial = $1",
+    "sqlSqlite": "conf_entities.serial = ?1"
+  },
+  {
+    "name": "err_quoted_leading_plus",
+    "input": {
+      "serial": "+1"
+    },
     "valid": false,
     "errorCode": "E2073"
+  },
+  {
+    "name": "err_quoted_leading_zero",
+    "input": {
+      "serial": "01"
+    },
+    "valid": false,
+    "errorCode": "E2073"
+  },
+  {
+    "name": "err_quoted_null",
+    "input": {
+      "serial": null
+    },
+    "valid": false,
+    "errorCode": "E2073"
+  },
+  {
+    "name": "quoted_uint64_max",
+    "input": {
+      "big": "18446744073709551615"
+    },
+    "valid": true,
+    "canonicalAst": {
+      "field": "big",
+      "op": "eq",
+      "value": 18446744073709551615
+    },
+    "sqlPostgres": "conf_entities.big = $1",
+    "sqlSqlite": "conf_entities.big = ?1"
+  },
+  {
+    "name": "quoted_float",
+    "input": {
+      "ratio": {
+        "$lt": "0.5"
+      }
+    },
+    "valid": true,
+    "canonicalAst": {
+      "field": "ratio",
+      "op": "lt",
+      "value": 0.5
+    },
+    "sqlPostgres": "conf_entities.ratio \u003c $1",
+    "sqlSqlite": "conf_entities.ratio \u003c ?1"
+  },
+  {
+    "name": "err_quoted_float_word",
+    "input": {
+      "ratio": "half"
+    },
+    "valid": false,
+    "errorCode": "E2073"
+  },
+  {
+    "name": "err_quoted_uint_negative",
+    "input": {
+      "big": "-1"
+    },
+    "valid": false,
+    "errorCode": "E2073",
+    "tsApplicable": false
   },
   {
     "name": "err_quoted_past_int64",

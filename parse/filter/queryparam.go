@@ -234,11 +234,11 @@ func queryParamValues(field *FieldSchema, raws []string) ([]any, error) {
 }
 
 func queryParamValue(field *FieldSchema, raw string) (any, error) {
-	if field.Wire == core.WireString {
-		return raw, nil // the text is the wire form; FromWire reads it
-	}
 	switch field.DataType {
 	case core.FieldTypeInt, core.FieldTypeFloat:
+		if field.Wire == core.WireString {
+			return raw, nil // the text is the wire form; FromWire reads it exactly
+		}
 		return json.Number(raw), nil
 	case core.FieldTypeBool:
 		b, err := strconv.ParseBool(raw)

@@ -7,6 +7,7 @@ import (
 	"math"
 	"reflect"
 	"strconv"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -26,20 +27,20 @@ func (c jsonCount) MarshalJSON() ([]byte, error) { return []byte(strconv.FormatI
 type countPtr *int64
 
 type wired struct {
-	ID       int64     `json:"id,string"`
-	Big      uint64    `json:"big,string,omitempty"`
-	Ratio    float64   `json:"ratio,string"`
-	Small    float32   `json:"small,string"`
-	On       bool      `json:"on,string"`
-	Opt      *int64    `json:"opt,string"`
-	Named    textCount `json:"named,string"`
-	Self     jsonCount `json:"self,string"`
-	Name     string    `json:"name,string"`
-	Plain    int64     `json:"plain"`
-	Omit     int64     `json:"omit,omitempty"`
+	ID    int64     `json:"id,string"`
+	Big   uint64    `json:"big,string,omitempty"`
+	Ratio float64   `json:"ratio,string"`
+	Small float32   `json:"small,string"`
+	On    bool      `json:"on,string"`
+	Opt   *int64    `json:"opt,string"`
+	Named textCount `json:"named,string"`
+	Self  jsonCount `json:"self,string"`
+	Name  string    `json:"name,string"`
+	Plain int64     `json:"plain"`
+	Omit  int64     `json:"omit,omitempty"`
 	//lint:ignore SA5008 encoding/json ignores the option on a slice; so must Wire
-	Tags     []int64   `json:"tags,string"`
-	Indirect countPtr  `json:"indirect,string"`
+	Tags     []int64  `json:"tags,string"`
+	Indirect countPtr `json:"indirect,string"`
 }
 
 // Wire follows encoding/json: the string option quotes a bool, integer or
@@ -52,8 +53,10 @@ func TestFieldWire(t *testing.T) {
 		"on": core.WireString, "opt": core.WireString,
 		"named": "", "self": "", "name": "", "plain": "", "omit": "", "tags": "", "indirect": "",
 	}
+	quoted := map[string]bool{"id": true, "big": true, "ratio": true, "small": true, "on": true, "opt": true, "name": true}
 	for _, f := range walk.Fields {
 		assert.Equal(t, want[f.External], f.Wire(), f.External)
+		assert.Equal(t, quoted[f.External], f.Quoted(), f.External)
 	}
 
 	// Each WireString field reads in responses as a JSON string.
@@ -83,10 +86,15 @@ func TestFromWire(t *testing.T) {
 		{core.FieldTypeBool, "true", true, ""},
 		{core.FieldTypeBool, "false", false, ""},
 		{core.FieldTypeInt, nil, nil, ""},
-		{core.FieldTypeInt, json.Number("1"), nil, "got a number"},
-		{core.FieldTypeInt, float64(1), nil, "got a number"},
-		{core.FieldTypeBool, true, nil, "got a boolean"},
+		{core.FieldTypeInt, json.Number("9007199254740993"), nil, "got the bare number 9007199254740993"},
 		{core.FieldTypeInt, []any{"1"}, nil, "got an array"},
+		{core.FieldTypeInt, map[string]any{}, nil, "got an object"},
+		// Go values, as code and policy pass them, are the value itself.
+		{core.FieldTypeInt, int64(9007199254740993), int64(9007199254740993), ""},
+		{core.FieldTypeInt, uint64(math.MaxUint64), uint64(math.MaxUint64), ""},
+		{core.FieldTypeInt, 7, 7, ""},
+		{core.FieldTypeFloat, 0.5, 0.5, ""},
+		{core.FieldTypeBool, true, true, ""},
 		{core.FieldTypeInt, " 1", nil, "does not hold a JSON number"},
 		{core.FieldTypeInt, "1 ", nil, "does not hold a JSON number"},
 		{core.FieldTypeInt, "+1", nil, "does not hold a JSON number"},
@@ -184,4 +192,29 @@ func wireKind(v any) reflect.Kind {
 		return reflect.Bool
 	}
 	return reflect.Int64
+}
+
+type quotedSpec struct {
+	Qty  int64 `json:"qty,string"`
+	Name string
+}
+
+type quotedDoc struct {
+	Spec  quotedSpec  `json:"spec"`
+	Ptr   *quotedSpec `json:"ptr"`
+	Attrs map[string]any
+}
+
+// MemberWire follows a path through nested structs and pointers to them,
+// and is the zero Wire where the path leaves structs.
+func TestMemberWire(t *testing.T) {
+	g := core.NewSchemaGenerator()
+	for path, want := range map[string]core.Wire{
+		"spec.qty": core.WireString, "ptr.qty": core.WireString, "spec.Name": "", "spec.missing": "",
+		"Attrs.qty": "", "spec": "", "spec.qty.deeper": "",
+	} {
+		got, err := g.MemberWire(reflect.TypeFor[quotedDoc](), strings.Split(path, "."))
+		require.NoError(t, err, path)
+		assert.Equal(t, want, got, path)
+	}
 }

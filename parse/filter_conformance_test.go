@@ -60,8 +60,10 @@ type confEntity struct {
 	Lines   []confLine      `json:"lines"   parse:"filter"`
 	Tags    []string        `json:"tags"    parse:"filter"`
 	// Serial and Live travel as JSON strings (json:",string").
-	Serial int64 `json:"serial,string" parse:"filter" filter_ops:"eq,ne,gt,gte,lt,lte,in,nin"`
-	Live   bool  `json:"live,string"   parse:"filter" filter_ops:"eq,ne"`
+	Serial int64   `json:"serial,string" parse:"filter" filter_ops:"eq,ne,gt,gte,lt,lte,in,nin"`
+	Live   bool    `json:"live,string"   parse:"filter" filter_ops:"eq,ne"`
+	Big    uint64  `json:"big,string"    parse:"filter" filter_ops:"eq,gt"`
+	Ratio  float64 `json:"ratio,string"  parse:"filter" filter_ops:"eq,lt"`
 }
 
 // confLine is an element of confEntity's lines array.
@@ -135,7 +137,15 @@ func canonicalCases() []caseInput {
 		{name: "err_quoted_bare_number_in_set", input: map[string]any{"serial": map[string]any{"$in": []any{"1", 2}}}},
 		{name: "err_quoted_not_a_number", input: map[string]any{"serial": "seven"}},
 		{name: "err_quoted_spaces", input: map[string]any{"serial": " 7"}},
-		{name: "err_quoted_bare_bool", input: map[string]any{"live": true}},
+		{name: "quoted_bool_bare_boolean", input: map[string]any{"live": true}},
+		{name: "quoted_integral_spelling", input: map[string]any{"serial": "1.0e3"}},
+		{name: "err_quoted_leading_plus", input: map[string]any{"serial": "+1"}},
+		{name: "err_quoted_leading_zero", input: map[string]any{"serial": "01"}},
+		{name: "err_quoted_null", input: map[string]any{"serial": nil}},
+		{name: "quoted_uint64_max", input: map[string]any{"big": "18446744073709551615"}},
+		{name: "quoted_float", input: map[string]any{"ratio": map[string]any{"$lt": "0.5"}}},
+		{name: "err_quoted_float_word", input: map[string]any{"ratio": "half"}},
+		{name: "err_quoted_uint_negative", input: map[string]any{"big": "-1"}, tsApplicable: ptrFalse()},
 		// 64-bit ranges are the server's to check.
 		{name: "err_quoted_past_int64", input: map[string]any{"serial": "9223372036854775808"}, tsApplicable: ptrFalse()},
 

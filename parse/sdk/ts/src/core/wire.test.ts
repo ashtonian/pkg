@@ -14,12 +14,13 @@ describe("fromWire", () => {
     expect(fromWire("float", "0.5")).toBe(0.5);
     expect(fromWire("bool", "true")).toBe(true);
     expect(fromWire("bool", "false")).toBe(false);
+    expect(fromWire("bool", true)).toBe(true);
   });
 
   it("refuses a bare value and text no JSON literal", () => {
     for (const [type, value] of [
       ["int", 7], ["int", " 7"], ["int", "+7"], ["int", "07"], ["int", "1_0"], ["int", "0x10"],
-      ["int", "seven"], ["int", ""], ["bool", true], ["bool", "True"], ["bool", "1"], ["float", 0.5], ["string", "x"],
+      ["int", "seven"], ["int", ""], ["int", true], ["bool", "True"], ["bool", "1"], ["bool", 1], ["float", 0.5], ["string", "x"],
     ] as const) {
       expect(fromWire(type, value), `${type} ${JSON.stringify(value)}`).toBeUndefined();
     }

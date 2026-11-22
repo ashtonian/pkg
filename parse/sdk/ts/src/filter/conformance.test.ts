@@ -93,6 +93,8 @@ const confSchema: FilterSchema = {
       operators: ["eq", "ne", "gt", "gte", "lt", "lte", "in", "nin"],
     },
     live: { name: "live", data_type: "bool", wire: "string", operators: ["eq", "ne"] },
+    big: { name: "big", data_type: "int", wire: "string", operators: ["eq", "gt"] },
+    ratio: { name: "ratio", data_type: "float", wire: "string", operators: ["eq", "lt"] },
     parts: {
       name: "parts", data_type: "string",
       operators: ["eq", "ne", "in", "nin", "null", "not_null", "some", "none"],

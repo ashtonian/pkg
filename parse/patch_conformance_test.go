@@ -59,6 +59,7 @@ type confPatch struct {
 	Quota  int64   `json:"quota,string"  db:"quota"  parse:"patch" min:"0" max:"9007199254740993"`
 	Live   bool    `json:"live,string"   db:"live"   parse:"patch"`
 	Share  float32 `json:"share,string"  db:"share"  parse:"patch"`
+	Opt    *int64  `json:"opt,string"    db:"opt"    parse:"patch"`
 }
 
 type patchCase struct {
@@ -147,7 +148,12 @@ func patchInputs() []patchCase {
 		{Name: "quoted_bound_past_2_53", Input: map[string]any{"quota": "9007199254740993"}},
 		{Name: "err_quoted_bound_past_2_53", Input: map[string]any{"quota": "9007199254740994"}},
 		{Name: "quoted_bool", Input: map[string]any{"live": "false"}},
-		{Name: "err_quoted_bare_bool", Input: map[string]any{"live": false}},
+		{Name: "quoted_bool_bare_boolean", Input: map[string]any{"live": false}},
+		{Name: "quoted_integral_spelling", Input: map[string]any{"serial": "1e3"}},
+		{Name: "err_quoted_leading_plus", Input: map[string]any{"serial": "+1"}},
+		{Name: "err_quoted_leading_zero", Input: map[string]any{"serial": "01"}},
+		{Name: "quoted_null_clears_nullable", Input: map[string]any{"opt": nil}},
+		{Name: "err_quoted_null_on_value_field", Input: map[string]any{"serial": nil}},
 		{Name: "quoted_float", Input: map[string]any{"share": "0.5"}},
 		{Name: "err_quoted_float_word", Input: map[string]any{"share": "half"}},
 	}
