@@ -666,3 +666,30 @@ func ExampleAccessor_Locate() {
 	fmt.Println(row.Count)
 	// Output: 42
 }
+
+// Match tells a member spelled in another case from an unknown one, as
+// encoding/json decodes them: json:"K" and json:"k" each match exactly, and
+// the Kelvin sign folds to the first declared.
+func ExampleShape_Match() {
+	type Reading struct {
+		Kelvin int `json:"K"`
+		Count  int `json:"k"`
+	}
+	schema, err := gowalker.MustNew(gowalker.WithJSONFields("json")).Compile[Reading]()
+	if err != nil {
+		panic(err)
+	}
+	for _, member := range []string{"K", "k", "\u212a", "unit"} {
+		field, match := schema.Root().Match(member)
+		if field == nil {
+			fmt.Printf("%+q: %s\n", member, match)
+			continue
+		}
+		fmt.Printf("%+q: %s %s\n", member, match, field.GoField().Name)
+	}
+	// Output:
+	// "K": ExactMatch Kelvin
+	// "k": ExactMatch Count
+	// "\u212a": FoldedMatch Kelvin
+	// "unit": NoMatch
+}

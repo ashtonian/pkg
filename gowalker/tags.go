@@ -320,13 +320,30 @@ func (n *tagNaming) rule(sf reflect.StructField, atomic func(reflect.Type) bool)
 			return FieldRule{}, err
 		}
 	}
+	caseStrict := n.json && jsonCaseStrict(raw)
 	if privateEmbed {
-		return FieldRule{Name: name, Atomic: !n.nested, Explicit: true, privateEmbed: true}, nil
+		return FieldRule{Name: name, Atomic: !n.nested, Explicit: true, privateEmbed: true, caseStrict: caseStrict}, nil
 	}
 	if !explicit && n.untagged != nil && sf.IsExported() {
 		name = n.untagged(sf.Name)
 	}
-	return FieldRule{Name: name, Skip: name == "" || !sf.IsExported(), Atomic: !n.nested, Explicit: explicit}, nil
+	return FieldRule{Name: name, Skip: name == "" || !sf.IsExported(), Atomic: !n.nested, Explicit: explicit, caseStrict: caseStrict}, nil
+}
+
+// jsonCaseStrict reports a json tag's case:strict option, with which
+// encoding/json matches the field only by its exact name. Options follow the
+// name's comma; format, whose value may hold commas, is the last.
+func jsonCaseStrict(tag string) bool {
+	_, options, _ := strings.Cut(tag, ",")
+	for option := range strings.SplitSeq(options, ",") {
+		if strings.HasPrefix(option, "format:") {
+			return false
+		}
+		if option == "case:strict" {
+			return true
+		}
+	}
+	return false
 }
 
 // tagName is the name a tag value gives a field, and whether it gives one.
