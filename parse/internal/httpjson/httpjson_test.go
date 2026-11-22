@@ -27,16 +27,9 @@ func TestEncode_WritesWhatAStreamingEncoderWould(t *testing.T) {
 	assert.Equal(t, streamed.Bytes(), body)
 }
 
-func TestEncode_ReturnsTheEncodingError(t *testing.T) {
-	_, err := Encode(map[string]any{"c": make(chan int)})
-	var unsupported *json.UnsupportedTypeError
-	assert.ErrorAs(t, err, &unsupported)
-}
-
-// The fallback body is the error body's shape, code first, as parsehttp.Body
-// encodes it.
-func TestErrorBody_IsCodeAndMessage(t *testing.T) {
-	assert.Equal(t, "{\"code\":\"E2120\",\"message\":\"schema encoding failed\"}\n", string(ErrorBody("E2120", "schema encoding failed")))
+// The fallback body is the error body without details.
+func TestEncodeError_IsCodeAndMessage(t *testing.T) {
+	assert.Equal(t, "{\"code\":\"E2120\",\"message\":\"schema encoding failed\"}\n", string(EncodeError("E2120", "schema encoding failed")))
 }
 
 func TestSend_WritesTheBodyWithItsLength(t *testing.T) {

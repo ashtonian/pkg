@@ -35,14 +35,6 @@ func newSchemaHandler(opts []SchemaHandlerOption) *schemaHandler {
 	return h
 }
 
-// errorBody is the HTTP error body ({code, message, details}), as
-// parsehttp.Body writes it and the TS SDK's ApiError reads it.
-type errorBody struct {
-	Code    string            `json:"code"`
-	Message string            `json:"message"`
-	Details map[string]string `json:"details,omitempty"`
-}
-
 type resourceList struct {
 	Resources []string `json:"resources"`
 }
@@ -64,10 +56,10 @@ func (r *SchemaRegistry) SchemaHandler(opts ...SchemaHandlerOption) http.Handler
 		}
 		doc := r.SchemaFor(resource)
 		if doc == nil {
-			h.respond(w, req, http.StatusNotFound, errorBody{
+			h.respond(w, req, http.StatusNotFound, httpjson.ErrorBody{
 				Code:    filter.ECodeSchemaNotFound.String(),
 				Message: "no schema registered for resource " + resource,
-				Details: map[string]string{"resource": resource},
+				Details: map[string]any{"resource": resource},
 			})
 			return
 		}
@@ -99,7 +91,7 @@ func (h *schemaHandler) respond(w http.ResponseWriter, req *http.Request, status
 		code := ECodeSchemaEncodingFailed
 		h.report(req, fmt.Errorf("%w: %w", code, err))
 		// The cause names Go types; the client gets the catalog message only.
-		status, body = code.ErrorHTTPStatus(), httpjson.ErrorBody(code.String(), code.ErrorMessage())
+		status, body = code.ErrorHTTPStatus(), httpjson.EncodeError(code.String(), code.ErrorMessage())
 	}
 	if err := httpjson.Send(w, status, body); err != nil {
 		h.report(req, fmt.Errorf("writing schema response: %w", err))

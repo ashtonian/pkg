@@ -23,13 +23,18 @@ func Encode(v any) ([]byte, error) {
 	return buf.Bytes(), nil
 }
 
-// ErrorBody returns the error body {code, message}: the answer for a
+// ErrorBody is the HTTP error body parse answers with, as the TS SDK's
+// ApiError reads it; parsehttp exports it as Body.
+type ErrorBody struct {
+	Code    string         `json:"code"`
+	Message string         `json:"message"`
+	Details map[string]any `json:"details,omitempty"`
+}
+
+// EncodeError returns ErrorBody{code, message} encoded: the answer for a
 // response whose own body cannot be encoded.
-func ErrorBody(code, message string) []byte {
-	body, err := Encode(struct {
-		Code    string `json:"code"`
-		Message string `json:"message"`
-	}{code, message})
+func EncodeError(code, message string) []byte {
+	body, err := Encode(ErrorBody{Code: code, Message: message})
 	if err != nil {
 		// Two strings always encode; reaching here is a defect in encoding/json.
 		panic("httpjson: encoding an error body: " + err.Error())

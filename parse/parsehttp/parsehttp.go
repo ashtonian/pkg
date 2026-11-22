@@ -14,12 +14,9 @@ import (
 	"github.com/ashtonian/pkg/parse/internal/httpjson"
 )
 
-// Body is the JSON a parse error is answered with.
-type Body struct {
-	Code    string         `json:"code"`
-	Message string         `json:"message"`
-	Details map[string]any `json:"details,omitempty"`
-}
+// Body is the JSON a parse error is answered with: {code, message, details},
+// the body parse's own handlers answer with too.
+type Body = httpjson.ErrorBody
 
 // ErrUnencodableDetails reports Details entries of a parse error that cannot be
 // encoded as JSON. WriteError answers with the entries that can.
@@ -35,10 +32,14 @@ type options struct {
 // WithErrorHandler reports what WriteError could not put in its response.
 // Details entries that cannot be encoded are left out of the body and
 // reported as an error matching ErrUnencodableDetails (errors.Is) that names
-// each one and wraps its encoding error. A Write the ResponseWriter fails once the status is sent is reported
-// as that error; net/http buffers a small response and sends it after the
-// handler returns, so a client that disconnects in that window is not
-// reported. Without it, both are dropped.
+// each one and wraps its encoding error. A Write the ResponseWriter fails
+// once the status is sent is reported as that error; net/http buffers a
+// small response and sends it after the handler returns, so a client that
+// disconnects in that window is not reported. Without it, both are dropped.
+//
+// fn takes only the error: WriteError runs inside the caller's handler,
+// which has the request. It runs on that request's goroutine, so fn must be
+// safe for concurrent use.
 func WithErrorHandler(fn func(error)) Option {
 	return func(o *options) { o.onError = fn }
 }
@@ -66,7 +67,7 @@ func WriteError(w http.ResponseWriter, err error, opts ...Option) bool {
 			// Each entry encoded alone but not together: a MarshalJSON that
 			// fails only sometimes. Answer without any.
 			dropped = errors.Join(dropped, fmt.Errorf("every other entry: %w", keptErr))
-			body = httpjson.ErrorBody(pe.Code, pe.Message)
+			body = httpjson.EncodeError(pe.Code, pe.Message)
 		case dropped == nil:
 			// Every entry encoded on the second try; the first failure is the cause.
 			dropped = encErr
