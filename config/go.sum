@@ -1,5 +1,5 @@
-github.com/ashtonian/pkg/gowalker v0.6.0 h1:8FqqnTrf39mNEMAtf3Xn6aYNJzWf54/OPvG7U80hFFw=
-github.com/ashtonian/pkg/gowalker v0.6.0/go.mod h1:xJM4ID4zwmfvussuRaLJMGn+3bUeNGLlETMCdOfmn0o=
+github.com/ashtonian/pkg/gowalker v0.7.0 h1:FETdoZdoPOq3nx2U6cFFhStbJ1ktI/fnxY5/UJ6YqQU=
+github.com/ashtonian/pkg/gowalker v0.7.0/go.mod h1:xJM4ID4zwmfvussuRaLJMGn+3bUeNGLlETMCdOfmn0o=
 github.com/fsnotify/fsnotify v1.10.1 h1:b0/UzAf9yR5rhf3RPm9gf3ehBPpf0oZKIjtpKrx59Ho=
 github.com/fsnotify/fsnotify v1.10.1/go.mod h1:TLheqan6HD6GBK6PrDWyDPBaEV8LspOxvPSjC+bVfgo=
 github.com/gabriel-vasile/mimetype v1.4.16 h1:5izNFuvA37st1dDRAcA7TtmngBmRgiIPDmTtiEvjx1E=

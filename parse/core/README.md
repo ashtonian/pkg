@@ -15,7 +15,7 @@ Start with the [runnable package example](../README.md#quick-start). The focused
 ## API reference
 
 - Config: `DefaultConfig`, `ParserConfig`, `Option`, `(*ParserConfig).GetCodec`, `(*ParserConfig).ListBodyLimit` (the bound a POST list body takes: `MaxListBodySize`, or one derived from `MaxInputSize`), and the options `WithMaxDepth`, `WithMaxCost`, `WithMaxInputSize`, `WithMaxListBodySize`, `WithMaxConditions`, `WithMaxArraySize`, `WithMaxPatchCopyBytes`, `WithGeneratorOptions`, `WithClock`, `WithCodec` ([options and defaults](../docs/schema-configuration.md))
-- Generation: `NewSchemaGenerator`, `SchemaGenerator` (`TableName`, `ColumnExpr`, `ColumnName`, `FieldColumn`, `FieldNameTag`, `ColumnTagKey`, `StructFields`), `JSONTagKey` (the tag encoding/json names members by; the default field-name tag), `DefaultColumnTagKey`, `GeneratorOptions`, `GeneratorOption` (`WithSQLTableName`, `WithColumnTypes`, `WithColumnMapper`, `WithColumnConvention`, `WithTableConvention`, `WithFieldNameTag`, `WithColumnTag`, `WithSortMaxFields`, `WithSearchParam`), `SQLColumnMapper`, `NamingConvention` (`SnakeCase`, the default, `CamelCase`, `PascalCase`, `LowerCase`), `TableConvention` (`PluralSnake`, the default, `Singular`, `PluralCamel`)
+- Generation: `NewSchemaGenerator`, `SchemaGenerator` (`TableName`, `ColumnExpr`, `ColumnName`, `FieldColumn`, `FieldNameTag`, `ColumnTagKey`, `StructFields`), `JSONTagKey` (the tag encoding/json names members by; the default field-name tag), `DefaultColumnTagKey`, `GeneratorOptions`, `GeneratorOption` (`WithSQLTableName`, `WithColumnTypes`, `WithColumnMapper`, `WithColumnConvention`, `WithTableConvention`, `WithFieldNameTag`, `WithColumnTag`, `WithSortMaxFields`, `WithSearchParam`, `WithForeignTagKeys`), `SQLColumnMapper`, `NamingConvention` (`SnakeCase`, the default, `CamelCase`, `PascalCase`, `LowerCase`), `TableConvention` (`PluralSnake`, the default, `Singular`, `PluralCamel`)
 - Types: `FieldType` (`FieldTypeString` … `FieldTypeGeo`), `SQLType` (`SQLInet`, `SQLCIDR`, `SQLInterval` and their arrays: database types a resource declares for its dialect to read as text; `Valid`, `IsArray`, `IsJSON`), `IsValueType` / `CheckValueStorage` / `ImpliedSQLType` (the declarations a value type's column takes), `TypeOf`, `TypeInfo`, `IsDocument`, `NumericKind`, `IsUUIDType` / `UUIDText` (any UUID type: a named 16-byte array whose zero value writes the nil UUID's text), `Decimal` / `IsDecimalType` (any decimal type with the `Coefficient` / `Exponent` method set, recognized by shape)
 - Value types, each with one canonical text in JSON, text, SQL parameters and cursors: `Date` / `ParseDate`, `LocalTime` / `ParseLocalTime`, `Interval` / `ParseInterval`, `Inet` / `ParseInet` / `InetFromAddr` / `InetFromPrefix`, `CIDR` / `ParseCIDR` / `CIDRFromPrefix`, `MACAddr` / `ParseMACAddr`
 - Values: `NormalizeInt`, `NormalizeUint`, `NormalizeFloat`, `NormalizeScalar`, `NormalizeJSON`, `CompareNumbers`, `IsNumber`, `DecimalText` / `CompareDecimals` / `MaxDecimalDigits` (canonical exact decimal text and its order), `PortableDecimal` (a JSON number literal every backend compares as the same value), `AnySlice`, `FormatTimestamp` / `TimestampLayout` (canonical timestamp text: UTC, nine fractional digits, fixed width)
@@ -37,6 +37,7 @@ Start with the [runnable package example](../README.md#quick-start). The focused
 | `config.go` | `ParserConfig`, `DefaultConfig`, the parser options, `ListBodyLimit` |
 | `naming.go` | Column and table naming conventions, each a function, `Pluralize` |
 | `generator.go` | `SchemaGenerator`, `GeneratorOptions` and their options, `SQLColumnMapper` |
+| `tag_keys.go` | The tag keys parse reads, and the walked fields' keys that misspell one, which `SchemaGenerator.StructFields` refuses |
 | `core.go` | `Validator`, `PolicySubject`, `MatchWildcard` |
 | `fields.go` | `StructFields` — one gowalker walk per struct type and tag pair, on `WithJSONFields` under the field-name tag: encoding/json field names with embedded structs promoted, hidden fields kept unnamed for columns, every tag parsed once (`Tags`) |
 | `constraint.go` | The `Constraint*` names (each also the tag that declares it), `ConstraintError` |
@@ -54,7 +55,7 @@ Start with the [runnable package example](../README.md#quick-start). The focused
 | `macaddr.go` | `MACAddr`: SQL MACADDR, lowercase colon-separated octets |
 | `column_type.go` | `WithColumnTypes`, `FieldType` (a field's Go type with its declared storage), value-type storage checks |
 | `json.go` | `NormalizeJSON` — canonical JSON documents |
-| `json_fields.go` | `JSONFieldsOf` — encoding/json's member naming for document types: embedded structs promoted, ties dropped, no row tag read |
+| `json_fields.go` | `JSONFieldsOf` — encoding/json's member naming for document types, on gowalker's `WithJSONFields` with ties dropped; no row tag read |
 | `json_keys.go` | `ValidateJSONKeyRepresentation`, `CanonicalJSONMapKey` — a stored document's member names keep their JSON spelling; each type's shape and map key rule found once |
 | `pointer.go` | RFC 6901 pointers |
 | `relation.go` | Relation tag grammar, `IsIdentifier` |

@@ -142,6 +142,17 @@ func TestNewResource_RefusesHiddenFieldsSharingAColumn(t *testing.T) {
 	require.ErrorContains(t, err, `fields Stamp and Stamp are both column "stamp"`)
 }
 
+func TestNewResource_RefusesMisspeltTagKeys(t *testing.T) {
+	type row struct {
+		ID   string `json:"id" db:"id"`
+		Name string `json:"name" db:"name" parse:"filter" filter_op:"eq"`
+	}
+	_, err := parse.NewResource[row]("rows")
+	require.ErrorContains(t, err, `field Name of parse_test.row has tag key "filter_op"; did you mean "filter_ops"?`)
+	_, err = parse.NewResource[row]("rows", parse.ParserOptions(core.WithGeneratorOptions(core.WithForeignTagKeys("filter_op"))))
+	require.NoError(t, err)
+}
+
 func TestResource_DeclaresItsIdentity(t *testing.T) {
 	r := widgets(t)
 	assert.Equal(t, "widgets", r.Table())

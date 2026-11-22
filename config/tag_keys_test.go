@@ -4,30 +4,27 @@ import (
 	"reflect"
 	"testing"
 
+	"github.com/ashtonian/pkg/gowalker"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
-func TestMeantTagKey(t *testing.T) {
+// The keys config reads are far enough from other libraries' keys that
+// none is taken for a misspelling.
+func TestTagKeys_Misspellings(t *testing.T) {
 	tests := []struct {
 		written string
 		meant   string
 	}{
-		{"defualt", "default"},  // swapped
-		{"defaul", "default"},   // deleted
-		{"defaults", "default"}, // inserted
+		{"defualt", "default"},
 		{"vaildate", "validate"},
 		{"konaf", "koanf"},
 		{"sensitve", "sensitive"},
-		{"Default", "default"}, // case
-		{"env_ref", "envref"},  // '_'
-		{"env-Ref", "envref"},  // '-' and case
+		{"env_ref", "envref"},
 		{"DESC", "desc"},
 		{"secert", "secret"},
-		{"reloads", "reload"},
 		{"exmaple", "example"},
-		{"sep", ""}, // read
-		{"default", ""},
+		{"sep", ""},
 		{"json", ""},
 		{"yaml", ""},
 		{"mapstructure", ""},
@@ -36,40 +33,12 @@ func TestMeantTagKey(t *testing.T) {
 		{"enum", ""},
 		{"doc", ""},
 		{"form", ""},
-		{"dfeualt", ""}, // two edits
 	}
 	for _, tt := range tests {
 		t.Run(tt.written, func(t *testing.T) {
-			meant, ok := meantTagKey(tt.written)
+			meant, ok := gowalker.MisspeltTagKey(tt.written, tagKeys)
 			assert.Equal(t, tt.meant, meant)
 			assert.Equal(t, tt.meant != "", ok)
-		})
-	}
-}
-
-func TestOneEdit(t *testing.T) {
-	tests := []struct {
-		a, b string
-		want bool
-	}{
-		{"abc", "abc", false},
-		{"abc", "abd", true},
-		{"abc", "xbc", true},
-		{"abc", "ab", true},
-		{"abc", "bc", true},
-		{"abc", "abcd", true},
-		{"abc", "bac", true},
-		{"abc", "acb", true},
-		{"abc", "cba", false},
-		{"abc", "a", false},
-		{"", "a", true},
-		{"ab", "ba", true},
-		{"abcd", "badc", false},
-	}
-	for _, tt := range tests {
-		t.Run(tt.a+"/"+tt.b, func(t *testing.T) {
-			assert.Equal(t, tt.want, oneEdit(tt.a, tt.b))
-			assert.Equal(t, tt.want, oneEdit(tt.b, tt.a))
 		})
 	}
 }

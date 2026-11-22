@@ -141,7 +141,10 @@ func ValidateJSONKeyRepresentation(raw []byte, decoded any) error {
 	if !target.IsValid() || target.Kind() != reflect.Pointer || target.IsNil() {
 		return fmt.Errorf("JSON key validation target must be a non-nil pointer, got %T", decoded)
 	}
-	shape := jsonShapeOf(target.Type().Elem())
+	shape, err := jsonShapeOf(target.Type().Elem())
+	if err != nil {
+		return fmt.Errorf("JSON key validation: %w", err)
+	}
 	v, _ := keyValidators.Get().(*keyValidator)
 	defer v.release()
 	v.reader.Reset(raw)
@@ -197,41 +200,52 @@ var (
 )
 
 // jsonShapeOf is t's shape, built with the shapes of every type t reaches.
-func jsonShapeOf(t reflect.Type) *jsonShape {
+// A struct type JSONFieldsOf refuses fails it, and stores none of the shapes
+// built on the way.
+func jsonShapeOf(t reflect.Type) (*jsonShape, error) {
 	if known, ok := jsonShapes.Load(t); ok {
 		shape, _ := known.(*jsonShape) // the only type stored
-		return shape
+		return shape, nil
 	}
 	jsonShapesMu.Lock()
 	defer jsonShapesMu.Unlock()
 	building := map[reflect.Type]*jsonShape{}
-	shape := buildJSONShape(t, building)
+	shape, err := buildJSONShape(t, building)
+	if err != nil {
+		return nil, err
+	}
 	for typ, s := range building {
 		jsonShapes.LoadOrStore(typ, s)
 	}
-	return shape
+	return shape, nil
 }
 
-func buildJSONShape(t reflect.Type, building map[reflect.Type]*jsonShape) *jsonShape {
+func buildJSONShape(t reflect.Type, building map[reflect.Type]*jsonShape) (*jsonShape, error) {
 	if known, ok := jsonShapes.Load(t); ok {
 		shape, _ := known.(*jsonShape)
-		return shape
+		return shape, nil
 	}
 	if shape, ok := building[t]; ok {
-		return shape
+		return shape, nil
 	}
 	if decodesItself(t) || t == rawJSONType {
-		return opaqueShape
+		return opaqueShape, nil
 	}
 	switch t.Kind() {
 	case reflect.Pointer:
-		shape := buildJSONShape(t.Elem(), building)
+		shape, err := buildJSONShape(t.Elem(), building)
+		if err != nil {
+			return nil, err
+		}
 		building[t] = shape
-		return shape
+		return shape, nil
 	case reflect.Struct:
 		shape := &jsonShape{kind: shapeStruct, typ: t}
 		building[t] = shape
-		walk, _ := JSONFieldsOf(t) // a struct type always walks
+		walk, err := JSONFieldsOf(t)
+		if err != nil {
+			return nil, err
+		}
 		shape.fields = walk.Fields
 		shape.byName = make(map[string]int, len(walk.Fields))
 		shape.byFold = make(map[string]int, len(walk.Fields))
@@ -246,24 +260,36 @@ func buildJSONShape(t reflect.Type, building map[reflect.Type]*jsonShape) *jsonS
 		}
 		shape.members = make([]*jsonShape, len(walk.Fields))
 		for i, f := range walk.Fields {
-			shape.members[i] = buildJSONShape(f.Type, building)
+			member, err := buildJSONShape(f.Type, building)
+			if err != nil {
+				return nil, err
+			}
+			shape.members[i] = member
 		}
-		return shape
+		return shape, nil
 	case reflect.Map:
 		shape := &jsonShape{kind: shapeMap, typ: t, key: jsonKeyRuleOf(t.Key())}
 		building[t] = shape
-		shape.elem = buildJSONShape(t.Elem(), building)
-		return shape
+		elem, err := buildJSONShape(t.Elem(), building)
+		if err != nil {
+			return nil, err
+		}
+		shape.elem = elem
+		return shape, nil
 	case reflect.Slice, reflect.Array:
 		shape := &jsonShape{kind: shapeList, typ: t, length: -1}
 		if t.Kind() == reflect.Array {
 			shape.length = t.Len()
 		}
 		building[t] = shape
-		shape.elem = buildJSONShape(t.Elem(), building)
-		return shape
+		elem, err := buildJSONShape(t.Elem(), building)
+		if err != nil {
+			return nil, err
+		}
+		shape.elem = elem
+		return shape, nil
 	}
-	return opaqueShape
+	return opaqueShape, nil
 }
 
 var (

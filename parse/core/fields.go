@@ -27,6 +27,9 @@ type StructFields struct {
 
 	external     map[string]*Field
 	columnTagged map[string]*Field
+	// misspelt are the walked fields' misspelt tag keys, which each
+	// generator refuses but for the ones it names as another library's.
+	misspelt []misspeltTagKey
 }
 
 // External returns the field named name under the field-name tag.
@@ -216,8 +219,25 @@ var fieldCaches sync.Map // fieldsKey -> *gowalker.TypeCache[*StructFields]
 // are an error naming both, since encoding/json writes neither and parse
 // must see exactly the fields it writes. A stored document's members are
 // named by JSONFieldsOf, which drops such a tie as encoding/json does.
+//
+// A walked field's tag key parse does not read that misspells one it does
+// (gowalker.MisspeltTagKey) is an error naming the field, the key written
+// and the key meant, unless GeneratorOptions.ForeignTagKeys names it.
 func (g *SchemaGenerator) StructFields(t reflect.Type) (*StructFields, error) {
-	return StructFieldsOf(t, g.FieldNameTag(), g.ColumnTagKey())
+	s, err := StructFieldsOf(t, g.FieldNameTag(), g.ColumnTagKey())
+	if err != nil {
+		return nil, err
+	}
+	var errs []error
+	for _, m := range s.misspelt {
+		if !slices.Contains(g.Opts.ForeignTagKeys, m.written) {
+			errs = append(errs, m.err())
+		}
+	}
+	if len(errs) > 0 {
+		return nil, errors.Join(errs...)
+	}
+	return s, nil
 }
 
 // StructFieldsOf is SchemaGenerator.StructFields for explicit tag keys.
@@ -326,6 +346,7 @@ func buildStructFields(s *gowalker.Schema, k fieldsKey) (*StructFields, error) {
 		if err != nil {
 			return nil, fmt.Errorf("field %s: %w", sf.Name, err)
 		}
+		out.misspelt = append(out.misspelt, misspeltTagKeys(d, k)...)
 		f := &Field{GoName: sf.Name, Type: sf.Type, Route: d.Index, Tags: tags}
 		if d.State == gowalker.Named {
 			f.External = d.Field.Name()
