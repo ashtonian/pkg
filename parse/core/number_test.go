@@ -3,9 +3,12 @@
 package core
 
 import (
+	"cmp"
 	"encoding/json"
+	"fmt"
 	"math"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -42,7 +45,15 @@ func TestNormalizeInt(t *testing.T) {
 		{name: "trailing zero fraction", in: json.Number("42.0"), kind: reflect.Int64, want: int64(42)},
 		{name: "fraction rejected", in: json.Number("3.7"), kind: reflect.Int64, wantErr: true},
 		{name: "exponent overflow", in: json.Number("1e400"), kind: reflect.Int64, wantErr: true},
-		{name: "huge negative exponent bounded", in: json.Number("1e-1000000000"), kind: reflect.Int64, wantErr: true},
+		{name: "huge negative exponent is a fraction", in: json.Number("1e-1000000000"), kind: reflect.Int64, wantErr: true},
+		{name: "zero with a huge exponent", in: json.Number("0e-1000000000"), kind: reflect.Int64, want: int64(0)},
+		{name: "huge positive exponent overflows", in: json.Number("1e99999999999999999999"), kind: reflect.Int64, wantErr: true},
+		{name: "zero with an exponent beyond int32", in: json.Number("0e2147483648"), kind: reflect.Int64, wantErr: true},
+		{name: "zero with the least int32 exponent", in: json.Number("0e-2147483648"), kind: reflect.Int64, want: int64(0)},
+		{name: "long integral literal", in: json.Number("1." + strings.Repeat("0", 100) + "e2"), kind: reflect.Int64, want: int64(100)},
+		{name: "digits shifted past the point", in: json.Number("12345e-2"), kind: reflect.Int64, wantErr: true},
+		{name: "min int64 with an exponent", in: json.Number("-9.223372036854775808e18"), kind: reflect.Int64, want: int64(math.MinInt64)},
+		{name: "below min int64 with an exponent", in: json.Number("-9.223372036854775809e18"), kind: reflect.Int64, wantErr: true},
 		{name: "integral float within 2^53", in: float64(1 << 53), kind: reflect.Int64, want: int64(1 << 53)},
 		{name: "float beyond 2^53 lost precision", in: float64(1<<53) + 2, kind: reflect.Int64, wantErr: true},
 		{name: "fractional float", in: 3.7, kind: reflect.Int, wantErr: true},
@@ -140,7 +151,25 @@ func TestCompareNumbers(t *testing.T) {
 		{name: "negative vs uint64", a: int64(-1), b: uint64(1 << 63), want: -1, ok: true},
 		{name: "int vs fractional float", a: 2, b: 2.5, want: -1, ok: true},
 		{name: "named float", a: namedFloat(1.5), b: 1.5, want: 0, ok: true},
+		{name: "named integer", a: level(3), b: json.Number("3.0"), want: 0, ok: true},
+		{name: "integer with a fraction vs native", a: json.Number("9007199254740993.0"), b: int64(9007199254740993), want: 0, ok: true},
+		{name: "integer with an exponent vs plain", a: json.Number("9007199254740993e0"), b: json.Number("9007199254740993"), want: 0, ok: true},
+		{name: "fractional literal vs its integer part", a: json.Number("9007199254740992.5"), b: int64(9007199254740992), want: 0, ok: true},
+		{name: "int64 above the float below it", a: int64(9007199254740993), b: 9007199254740992.0, want: 1, ok: true},
+		{name: "max int64 below 2^63", a: int64(math.MaxInt64), b: float64(1 << 63), want: -1, ok: true},
+		{name: "min int64 equals -2^63", a: int64(math.MinInt64), b: -float64(1 << 63), want: 0, ok: true},
+		{name: "2^63 as uint64 equals the float", a: uint64(1 << 63), b: float64(1 << 63), want: 0, ok: true},
+		{name: "max uint64 below 2^64", a: uint64(math.MaxUint64), b: float64(1<<63) * 2, want: -1, ok: true},
+		{name: "uint64 above a float under 2^63", a: uint64(1<<63 + 1), b: 1e18, want: 1, ok: true},
+		{name: "negative int vs fractional float", a: -2, b: -2.5, want: 1, ok: true},
+		{name: "int vs infinity", a: int64(math.MaxInt64), b: math.Inf(1), want: -1, ok: true},
+		{name: "uint64 vs negative infinity", a: uint64(math.MaxUint64), b: math.Inf(-1), want: 1, ok: true},
+		{name: "integer beyond 64 bits is its float", a: json.Number("18446744073709551616"), b: uint64(math.MaxUint64), want: 1, ok: true},
+		{name: "fraction against a fraction", a: json.Number("0.1"), b: 0.1, want: 0, ok: true},
+		{name: "beyond float64 range", a: json.Number("1e400"), b: 1, ok: false},
+		{name: "not a literal", a: json.Number("abc"), b: 1, ok: false},
 		{name: "not a number", a: "1", b: 1, ok: false},
+		{name: "a pointer is not a number", a: new(int64(1)), b: 1, ok: false},
 		{name: "NaN", a: math.NaN(), b: 1.0, ok: false},
 	}
 	for _, tt := range tests {
@@ -155,6 +184,102 @@ func TestCompareNumbers(t *testing.T) {
 }
 
 type namedFloat float64
+
+type level int
+
+// An integer is one value however a literal writes it: CompareNumbers and
+// NormalizeInt read it alike, at the edges of both 64-bit domains.
+func TestCompareNumbers_IntegerLiteralsAreExact(t *testing.T) {
+	values := []any{
+		int64(math.MinInt64), int64(math.MinInt64 + 1), int64(-9007199254740993), int64(-1), int64(0),
+		int64(1), int64(9007199254740993), int64(math.MaxInt64),
+		uint64(1 << 63), uint64(math.MaxUint64 - 1), uint64(math.MaxUint64),
+	}
+	for _, v := range values {
+		plain := fmt.Sprint(v)
+		for _, literal := range integerSpellings(plain) {
+			t.Run(literal, func(t *testing.T) {
+				c, ok := CompareNumbers(json.Number(literal), v)
+				require.True(t, ok)
+				assert.Equal(t, 0, c, "against %T", v)
+				c, ok = CompareNumbers(json.Number(literal), json.Number(plain))
+				require.True(t, ok)
+				assert.Equal(t, 0, c, "against %s", plain)
+
+				var normalized any
+				var err error
+				if _, unsigned := v.(uint64); unsigned {
+					normalized, err = NormalizeUint(json.Number(literal), reflect.Uint64)
+				} else {
+					normalized, err = NormalizeInt(json.Number(literal), reflect.Int64)
+				}
+				require.NoError(t, err)
+				assert.Equal(t, v, normalized)
+			})
+		}
+	}
+}
+
+// integerSpellings writes an integer's decimal text as a JSON literal in
+// plain, fraction and exponent form.
+func integerSpellings(plain string) []string {
+	sign, digits := "", plain
+	if plain[0] == '-' {
+		sign, digits = "-", plain[1:]
+	}
+	out := []string{plain, plain + ".0", plain + ".000", plain + "e0", plain + "E+0"}
+	if digits != "0" { // a zero takes no digit after its leading one
+		out = append(out, plain+"0e-1", plain+"00E-2")
+	}
+	if len(digits) > 1 {
+		trimmed := strings.TrimRight(digits[1:], "0")
+		out = append(out, fmt.Sprintf("%s%c.%se%d", sign, digits[0], cmp.Or(trimmed, "0"), len(digits)-1))
+	}
+	return out
+}
+
+func TestIsNumber_AgreesWithCompareNumbers(t *testing.T) {
+	for _, v := range []any{
+		int8(1), uint16(2), 3, int64(4), uint64(5), float32(1.5), 2.5,
+		level(3), namedInt(4), namedFloat(1.5), textCount(6), json.Number("7"),
+	} {
+		assert.True(t, IsNumber(v), "%T", v)
+		_, ok := CompareNumbers(v, 1)
+		assert.True(t, ok, "%T", v)
+	}
+	for _, v := range []any{nil, "1", true, new(int64(1)), []int{1}, time.Time{}, uintptr(1)} {
+		assert.False(t, IsNumber(v), "%T", v)
+		_, ok := CompareNumbers(v, 1)
+		assert.False(t, ok, "%T", v)
+	}
+}
+
+type textCount int64
+
+func (c textCount) MarshalText() ([]byte, error) { return []byte(fmt.Sprint(int64(c))), nil }
+
+// Comparison is on the keyset and membership paths, where most operands
+// are not numbers: probing one must not allocate, nor reading a fractional
+// literal, nor comparing an integer with a float.
+func TestCompareNumbers_DoesNotAllocate(t *testing.T) {
+	if raceEnabled {
+		t.Skip("the race detector's instrumentation allocates")
+	}
+	stamp := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
+	for _, pair := range [][2]any{
+		{"2026-01-02T03:04:05.000000000Z", "2026-01-03T03:04:05.000000000Z"},
+		{stamp, stamp},
+		{true, false},
+		{json.Number("1.25"), json.Number("1.5")},
+		{int64(3), 2.5},
+		{uint64(math.MaxUint64), 1.5},
+		{json.Number("9007199254740993.0"), int64(9007199254740993)},
+		{level(3), namedFloat(2.5)},
+	} {
+		allocs := testing.AllocsPerRun(100, func() { CompareNumbers(pair[0], pair[1]) })
+		assert.Zero(t, allocs, "%T vs %T", pair[0], pair[1])
+	}
+}
 
 func TestStdlibJSONDecodePreservesNumbers(t *testing.T) {
 	var v map[string]any

@@ -112,7 +112,7 @@ Request documents (JSON filters, JSON Patch and merge patch bodies) decode with 
 | `NormalizeFloat(v, kind)` | Finite `float64`; float32 values are range-checked and rounded to the Go destination precision before binding |
 | `NormalizeScalar(type, kind, v)` | Per `FieldType`: exact numbers, canonical decimal text, canonical lowercase UUID string, RFC 3339 UTC timestamp, string, bool, and the canonical text of a date, time, interval, inet, cidr or macaddr |
 | `NormalizeJSON(v)` | A generic document (`map[string]any`, `[]any`, scalars) with `int64` / `uint64` / `float64` numbers; integers outside the supported range and decimal literals that change on float64 decimal round-trip are rejected |
-| `CompareNumbers(a, b)` | Exact comparison across integer and float representations |
+| `CompareNumbers(a, b)` | Comparison by value without allocating: an integer exactly however it is written (`9007199254740993`, `"9007199254740993.0"`, `"9.007199254740993e15"`), against a float as the float's exact value; a fractional literal, or an integer literal beyond 64 bits, as its nearest float64. `IsNumber(v)` is true for the same types: `json.Number` and every Go integer or float kind, named types included |
 | `DecimalText(v)` | A decimal's canonical text: plain notation, no exponent, no leading or trailing zeros, `"0"` for either zero; from a JSON number, a numeric string, a Go number, a `core.Decimal` or a decimal text marshaler; at most `MaxDecimalDigits` (1000) digits |
 | `CompareDecimals(a, b)` | Exact decimal order of any two values `DecimalText` accepts |
 | `ParsePointer` / `FormatPointer` / `EscapePointerToken` | RFC 6901 paths (`~0`, `~1` escapes) |

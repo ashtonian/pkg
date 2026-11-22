@@ -167,14 +167,14 @@ func parseDecimal(s string) (string, error) {
 		}
 		exp = e
 	}
-	if lit.exp == "" && !strings.HasSuffix(lit.frac, "0") && !(lit.neg && lit.integer == "0" && lit.frac == "") {
+	if lit.exp == "" && !strings.HasSuffix(lit.fracDigits, "0") && !(lit.neg && lit.intDigits == "0" && lit.fracDigits == "") {
 		// Already canonical: the grammar admits no leading zeros.
-		if len(lit.integer)+len(lit.frac) > MaxDecimalDigits {
+		if len(lit.intDigits)+len(lit.fracDigits) > MaxDecimalDigits {
 			return "", fmt.Errorf("%q has more than %d digits", s, MaxDecimalDigits)
 		}
 		return s, nil
 	}
-	text, ok := renderDecimal(lit.neg, lit.integer, lit.frac, exp)
+	text, ok := renderDecimal(lit.neg, lit.intDigits, lit.fracDigits, exp)
 	if !ok {
 		return "", fmt.Errorf("%q has more than %d digits", s, MaxDecimalDigits)
 	}

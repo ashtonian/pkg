@@ -59,39 +59,30 @@ func NormalizeJSON(v any) (any, error) {
 }
 
 func jsonNumber(v any) (any, error) {
-	switch n := v.(type) {
-	case json.Number:
-		s := string(n)
-		lit, ok := scanNumber(s)
-		if !ok {
-			return nil, errNotNumber(s)
+	n, isLiteral := v.(json.Number)
+	if !isLiteral {
+		if x, ok := nativeInt(v); ok {
+			return x.value(), nil
 		}
-		if x, err := parseIntLiteral(s); err == nil {
-			if x.isUint {
-				return x.u, nil
-			}
-			return x.i, nil
-		}
-		if lit.integral() {
-			return nil, fmt.Errorf("integer %s exceeds 64 bits", s)
-		}
-		if !PortableDecimal(s) {
-			return nil, fmt.Errorf("%s cannot be represented without decimal rounding", s)
-		}
-		f, err := strconv.ParseFloat(s, 64)
-		if err != nil || math.Trunc(f) == f {
-			return nil, fmt.Errorf("%s is not a representable number", s)
-		}
-		return f, nil
-	case float64, float32:
-		return NormalizeFloat(n, 0)
+		return NormalizeFloat(v, 0)
 	}
-	x, err := nativeInt(v)
-	if err != nil {
-		return nil, err
+	s := string(n)
+	lit, ok := scanNumber(s)
+	if !ok {
+		return nil, errNotNumber(s)
 	}
-	if x.isUint {
-		return x.u, nil
+	switch x, r := lit.exactInteger(); {
+	case r == integerExact:
+		return x.value(), nil
+	case lit.integral():
+		return nil, fmt.Errorf("integer %s exceeds 64 bits", s)
 	}
-	return x.i, nil
+	if !PortableDecimal(s) {
+		return nil, fmt.Errorf("%s cannot be represented without decimal rounding", s)
+	}
+	f, err := strconv.ParseFloat(s, 64)
+	if err != nil || math.Trunc(f) == f {
+		return nil, fmt.Errorf("%s is not a representable number", s)
+	}
+	return f, nil
 }

@@ -1,6 +1,7 @@
 package core
 
 import (
+	"cmp"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -14,85 +15,6 @@ import (
 // representable as a float64; above it, adjacent integers collapse.
 const maxExactFloatInt = 1 << 53
 
-// maxLiteralLen / maxLiteralExp bound the literals NormalizeInt hands to
-// math/big. A short literal such as "1e-1000000000" would otherwise make
-// big.Rat materialise a billion-digit denominator.
-const (
-	maxLiteralLen = 64
-	maxLiteralExp = 64
-)
-
-// numberLiteral is a JSON number literal split into its parts.
-type numberLiteral struct {
-	neg bool
-	// integer is the digits before the point; frac the digits after it,
-	// empty without a point.
-	integer, frac string
-	// exp is the exponent with its sign, empty without one.
-	exp string
-}
-
-// integral reports a literal written without a fraction or an exponent.
-func (l numberLiteral) integral() bool { return l.frac == "" && l.exp == "" }
-
-// scanNumber splits s when it is one JSON number literal (RFC 8259 §6),
-// -?(0|[1-9][0-9]*)(\.[0-9]+)?([eE][+-]?[0-9]+)?, and nothing else. It is
-// the package's one number grammar: strconv and math/big read Go's, which
-// also admits hexadecimal, a leading "+" or ".", leading zeros, digit
-// separators and the names of infinity and NaN, so every literal passes
-// through here before either sees it.
-func scanNumber(s string) (numberLiteral, bool) {
-	var lit numberLiteral
-	i := 0
-	if i < len(s) && s[i] == '-' {
-		lit.neg = true
-		i++
-	}
-	start := i
-	if i < len(s) && s[i] == '0' {
-		i++
-	} else {
-		for i < len(s) && isDigit(s[i]) {
-			i++
-		}
-	}
-	if lit.integer = s[start:i]; lit.integer == "" {
-		return numberLiteral{}, false
-	}
-	if i < len(s) && s[i] == '.' {
-		i++
-		start = i
-		for i < len(s) && isDigit(s[i]) {
-			i++
-		}
-		if lit.frac = s[start:i]; lit.frac == "" {
-			return numberLiteral{}, false
-		}
-	}
-	if i < len(s) && (s[i] == 'e' || s[i] == 'E') {
-		i++
-		start = i
-		if i < len(s) && (s[i] == '+' || s[i] == '-') {
-			i++
-		}
-		digits := i
-		for i < len(s) && isDigit(s[i]) {
-			i++
-		}
-		if i == digits {
-			return numberLiteral{}, false
-		}
-		lit.exp = s[start:i]
-	}
-	if i != len(s) {
-		return numberLiteral{}, false
-	}
-	return lit, true
-}
-
-// errNotNumber is the error for text that is not a JSON number literal.
-func errNotNumber(s string) error { return fmt.Errorf("%q is not a number", s) }
-
 // NumericKind reports the numeric reflect.Kind a Go type decodes into
 // (after pointer indirection), or reflect.Invalid for non-numeric types.
 // Schemas record it so request values are range-checked against the real
@@ -104,13 +26,21 @@ func NumericKind(t reflect.Type) reflect.Kind {
 	if t == nil {
 		return reflect.Invalid
 	}
-	switch k := t.Kind(); k {
-	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64,
-		reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64,
-		reflect.Float32, reflect.Float64:
+	if k := t.Kind(); isNumericKind(k) {
 		return k
 	}
 	return reflect.Invalid
+}
+
+// isNumericKind reports a Go integer or float kind.
+func isNumericKind(k reflect.Kind) bool {
+	switch k {
+	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64,
+		reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64,
+		reflect.Float32, reflect.Float64:
+		return true
+	}
+	return false
 }
 
 // exactInt is an integer known exactly: i when it fits int64, otherwise u
@@ -126,6 +56,15 @@ func (x exactInt) String() string {
 		return strconv.FormatUint(x.u, 10)
 	}
 	return strconv.FormatInt(x.i, 10)
+}
+
+// value is x as the Go integer NormalizeJSON gives it: int64, or uint64
+// above math.MaxInt64.
+func (x exactInt) value() any {
+	if x.isUint {
+		return x.u
+	}
+	return x.i
 }
 
 // NormalizeInt converts a decoded request value into an exact int64 in the
@@ -230,113 +169,122 @@ func NormalizeFloat(v any, kind reflect.Kind) (float64, error) {
 	return f, nil
 }
 
-// IsNumber reports whether v is a numeric value NormalizeInt / NormalizeFloat
-// / CompareNumbers accept: json.Number or any Go integer or float kind.
+// IsNumber reports whether v is of a numeric type: json.Number, or a Go
+// integer or float kind, named types included. They are the operands
+// CompareNumbers reads; a json.Number's text is checked where it is read.
 func IsNumber(v any) bool {
 	switch v.(type) {
-	case json.Number, float64, float32,
-		int, int8, int16, int32, int64,
-		uint, uint8, uint16, uint32, uint64:
+	case json.Number:
 		return true
+	case nil:
+		return false
 	}
-	return false
+	return isNumericKind(reflect.TypeOf(v).Kind())
 }
 
-// CompareNumbers compares two numeric values exactly — no float64 widening
-// of integers — returning -1, 0 or +1. ok is false when either operand is
-// not a number (see IsNumber) or is NaN.
+// CompareNumbers compares two numbers by value, returning -1, 0 or +1. An
+// integer compares exactly however it is written — 9007199254740993,
+// "9007199254740993.0" and "9.007199254740993e15" are one value — and
+// against a float as the exact binary value the float holds: nothing is
+// widened to float64. A literal that is not an integer, or is an integer
+// beyond 64 bits, is the float64 nearest it. ok is false when an operand is
+// not a number (IsNumber), is NaN, or is a json.Number that is no JSON
+// number literal or lies beyond float64's range. It does not allocate.
 func CompareNumbers(a, b any) (cmp int, ok bool) {
-	na, ok := toComparable(a)
+	x, ok := numberOperand(a)
 	if !ok {
 		return 0, false
 	}
-	nb, ok := toComparable(b)
+	y, ok := numberOperand(b)
 	if !ok {
 		return 0, false
 	}
 	switch {
-	case !na.isFloat && !nb.isFloat:
-		return compareExactInts(na.x, nb.x), true
-	case na.isFloat && nb.isFloat:
-		return cmpFloat(na.f, nb.f), true
+	case x.kind == operandFloat && y.kind == operandFloat:
+		return compareFloats(x.float(), y.float()), true
+	case x.kind == operandFloat:
+		return -compareIntFloat(y, x.float()), true
+	case y.kind == operandFloat:
+		return compareIntFloat(x, y.float()), true
 	}
-	return na.big().Cmp(nb.big()), true
+	return compareInts(x, y), true
 }
 
-// comparableNum is a number reduced for exact comparison: an exact integer,
-// or a finite float64 compared as the exact binary value it holds.
-type comparableNum struct {
-	x       exactInt
-	f       float64
-	isFloat bool
+// operand is a number reduced for comparison: an int64, a uint64 above
+// math.MaxInt64, or the bits of a float64 other than NaN, tagged by kind. At
+// two words it is reduced and compared in registers.
+type operand struct {
+	bits uint64
+	kind operandKind
 }
 
-func (c comparableNum) big() *big.Float {
-	if c.isFloat {
-		return new(big.Float).SetFloat64(c.f)
+type operandKind uint8
+
+const (
+	operandSigned operandKind = iota + 1
+	operandUnsigned
+	operandFloat
+)
+
+func signedOperand(i int64) operand { return operand{bits: uint64(i), kind: operandSigned} }
+
+func exactOperand(x exactInt) operand {
+	if x.isUint {
+		return operand{bits: x.u, kind: operandUnsigned}
 	}
-	if c.x.isUint {
-		return new(big.Float).SetUint64(c.x.u)
-	}
-	return new(big.Float).SetInt64(c.x.i)
+	return signedOperand(x.i)
 }
 
-func toComparable(v any) (comparableNum, bool) {
+func floatOperand(f float64) (operand, bool) {
+	if math.IsNaN(f) {
+		return operand{}, false
+	}
+	return operand{bits: math.Float64bits(f), kind: operandFloat}, true
+}
+
+func (o operand) float() float64 { return math.Float64frombits(o.bits) }
+
+// numberOperand reduces v as CompareNumbers reads it.
+func numberOperand(v any) (operand, bool) {
 	switch n := v.(type) {
 	case float64:
-		if math.IsNaN(n) {
-			return comparableNum{}, false
-		}
-		return comparableNum{f: n, isFloat: true}, true
-	case float32:
-		if math.IsNaN(float64(n)) {
-			return comparableNum{}, false
-		}
-		return comparableNum{f: float64(n), isFloat: true}, true
+		return floatOperand(n)
+	case int64:
+		return signedOperand(n), true
 	case json.Number:
-		s := string(n)
-		if _, ok := scanNumber(s); !ok {
-			return comparableNum{}, false
-		}
-		if i, err := strconv.ParseInt(s, 10, 64); err == nil {
-			return comparableNum{x: exactInt{i: i}}, true
-		}
-		if u, err := strconv.ParseUint(s, 10, 64); err == nil {
-			return comparableNum{x: exactInt{u: u, isUint: true}}, true
-		}
-		f, err := strconv.ParseFloat(s, 64)
-		if err != nil || math.IsNaN(f) {
-			return comparableNum{}, false
-		}
-		return comparableNum{f: f, isFloat: true}, true
+		return literalOperand(string(n))
+	case string, bool, nil:
+		return operand{}, false
 	}
-	if rv := reflect.ValueOf(v); rv.IsValid() && (rv.Kind() == reflect.Float32 || rv.Kind() == reflect.Float64) {
-		f := rv.Float()
-		if math.IsNaN(f) {
-			return comparableNum{}, false
-		}
-		return comparableNum{f: f, isFloat: true}, true
+	if x, ok := nativeInt(v); ok {
+		return exactOperand(x), true
 	}
-	x, err := nativeInt(v)
-	if err != nil {
-		return comparableNum{}, false
+	if rv := reflect.ValueOf(v); rv.Kind() == reflect.Float32 || rv.Kind() == reflect.Float64 {
+		return floatOperand(rv.Float())
 	}
-	return comparableNum{x: x}, true
+	return operand{}, false
 }
 
-func compareExactInts(a, b exactInt) int {
-	switch {
-	case a.isUint && b.isUint:
-		return cmpOrdered(a.u, b.u)
-	case a.isUint: // a > MaxInt64 ≥ b
-		return 1
-	case b.isUint:
-		return -1
+// literalOperand reads a literal through the integer reader NormalizeInt
+// uses, so the two agree on every integer; only a literal that is not one
+// is read as a float.
+func literalOperand(s string) (operand, bool) {
+	lit, ok := scanNumber(s)
+	if !ok {
+		return operand{}, false
 	}
-	return cmpOrdered(a.i, b.i)
+	if x, r := lit.exactInteger(); r == integerExact {
+		return exactOperand(x), true
+	}
+	f, err := strconv.ParseFloat(s, 64)
+	if err != nil { // beyond float64's range
+		return operand{}, false
+	}
+	return floatOperand(f)
 }
 
-func cmpOrdered[T int64 | uint64](a, b T) int {
+// compareFloats orders two float64s other than NaN.
+func compareFloats(a, b float64) int {
 	switch {
 	case a < b:
 		return -1
@@ -346,14 +294,46 @@ func cmpOrdered[T int64 | uint64](a, b T) int {
 	return 0
 }
 
-func cmpFloat(a, b float64) int {
+// compareInts orders two integer operands.
+func compareInts(a, b operand) int {
 	switch {
-	case a < b:
+	case a.kind == operandUnsigned && b.kind == operandUnsigned:
+		return cmp.Compare(a.bits, b.bits)
+	case a.kind == operandUnsigned: // a > MaxInt64 ≥ b
+		return 1
+	case b.kind == operandUnsigned:
 		return -1
-	case a > b:
+	}
+	return cmp.Compare(int64(a.bits), int64(b.bits))
+}
+
+// two63 is 2^63, exactly a float64.
+const two63 = float64(1 << 63)
+
+// compareIntFloat orders an integer operand against the exact value of f, a
+// float64 other than NaN. Within int64 or uint64 range the float's integer
+// part converts exactly, so only its fraction is left to compare.
+func compareIntFloat(x operand, f float64) int {
+	if x.kind == operandUnsigned { // x ≥ 2^63
+		switch {
+		case f < two63:
+			return 1
+		case f >= 2*two63:
+			return -1
+		}
+		return cmp.Compare(x.bits, uint64(f)) // f ≥ 2^53 is an integer
+	}
+	switch {
+	case f >= two63:
+		return -1
+	case f < -two63:
 		return 1
 	}
-	return 0
+	whole := math.Trunc(f)
+	if c := cmp.Compare(int64(x.bits), int64(whole)); c != 0 {
+		return c
+	}
+	return cmp.Compare(whole, f)
 }
 
 // toExactInt reduces v to an exact integer, accepting json.Number, Go
@@ -369,40 +349,46 @@ func toExactInt(v any) (exactInt, error) {
 	case nil:
 		return exactInt{}, errors.New("expected a number, got null")
 	}
-	x, err := nativeInt(v)
-	if err != nil {
+	x, ok := nativeInt(v)
+	if !ok {
 		return exactInt{}, fmt.Errorf("expected a number, got %T", v)
 	}
 	return x, nil
 }
 
-// nativeInt handles every Go integer kind, including named types.
-func nativeInt(v any) (exactInt, error) {
+// nativeInt reads every Go integer kind, named types included; ok is false
+// for any other value.
+func nativeInt(v any) (exactInt, bool) {
 	switch n := v.(type) {
 	case int:
-		return exactInt{i: int64(n)}, nil
+		return exactInt{i: int64(n)}, true
 	case int8:
-		return exactInt{i: int64(n)}, nil
+		return exactInt{i: int64(n)}, true
 	case int16:
-		return exactInt{i: int64(n)}, nil
+		return exactInt{i: int64(n)}, true
 	case int32:
-		return exactInt{i: int64(n)}, nil
+		return exactInt{i: int64(n)}, true
 	case int64:
-		return exactInt{i: n}, nil
-	case uint, uint8, uint16, uint32, uint64:
-		return uintToExactInt(reflect.ValueOf(n).Uint()), nil
+		return exactInt{i: n}, true
+	case uint:
+		return uintToExactInt(uint64(n)), true
+	case uint8:
+		return uintToExactInt(uint64(n)), true
+	case uint16:
+		return uintToExactInt(uint64(n)), true
+	case uint32:
+		return uintToExactInt(uint64(n)), true
+	case uint64:
+		return uintToExactInt(n), true
 	}
 	rv := reflect.ValueOf(v)
-	if !rv.IsValid() {
-		return exactInt{}, errors.New("not an integer")
-	}
 	switch rv.Kind() {
 	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
-		return exactInt{i: rv.Int()}, nil
+		return exactInt{i: rv.Int()}, true
 	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
-		return uintToExactInt(rv.Uint()), nil
+		return uintToExactInt(rv.Uint()), true
 	}
-	return exactInt{}, errors.New("not an integer")
+	return exactInt{}, false
 }
 
 func uintToExactInt(u uint64) exactInt {
@@ -424,61 +410,26 @@ func floatToExactInt(f float64) (exactInt, error) {
 	return exactInt{i: int64(f)}, nil
 }
 
-// parseIntLiteral parses a JSON number literal exactly. Plain integers take
-// the strconv fast path; fraction/exponent forms ("1e3", "2.0") are accepted
-// when they denote an integer.
+// parseIntLiteral reads a JSON number literal as an exact integer: "1e3" and
+// "2.0" are integers, "2.5" is not.
 func parseIntLiteral(s string) (exactInt, error) {
 	lit, ok := scanNumber(s)
 	if !ok {
 		return exactInt{}, errNotNumber(s)
 	}
-	if lit.integral() {
-		i, err := strconv.ParseInt(s, 10, 64)
-		switch {
-		case err == nil:
-			return exactInt{i: i}, nil
-		case lit.neg:
-			return exactInt{}, fmt.Errorf("%s overflows int64", s)
-		}
-		if u, err := strconv.ParseUint(s, 10, 64); err == nil {
-			return exactInt{u: u, isUint: true}, nil
-		}
+	if !lit.exponentFitsInt32() {
+		return exactInt{}, errExponentBeyondInt32(s)
+	}
+	x, r := lit.exactInteger()
+	switch {
+	case r == integerFraction:
+		return exactInt{}, fmt.Errorf("expected an integer, got %s", s)
+	case r == integerOverflow && lit.neg:
+		return exactInt{}, fmt.Errorf("%s overflows int64", s)
+	case r == integerOverflow:
 		return exactInt{}, fmt.Errorf("%s overflows 64-bit integers", s)
 	}
-	if len(s) > maxLiteralLen || lit.exponentMagnitude() > maxLiteralExp {
-		return exactInt{}, fmt.Errorf("%s is not an exact 64-bit integer", s)
-	}
-	r, ok := new(big.Rat).SetString(s)
-	if !ok {
-		return exactInt{}, errNotNumber(s)
-	}
-	if !r.IsInt() {
-		return exactInt{}, fmt.Errorf("expected an integer, got %s", s)
-	}
-	n := r.Num()
-	if n.IsInt64() {
-		return exactInt{i: n.Int64()}, nil
-	}
-	if n.IsUint64() {
-		return exactInt{u: n.Uint64(), isUint: true}, nil
-	}
-	return exactInt{}, fmt.Errorf("%s overflows 64-bit integers", s)
-}
-
-// exponentMagnitude is the exponent's absolute value: 0 without one, and
-// math.MaxInt when it does not fit an int.
-func (l numberLiteral) exponentMagnitude() int {
-	if l.exp == "" {
-		return 0
-	}
-	e, err := strconv.Atoi(l.exp)
-	if err != nil {
-		return math.MaxInt
-	}
-	if e < 0 {
-		return -e
-	}
-	return e
+	return x, nil
 }
 
 func isUnsignedKind(k reflect.Kind) bool {
@@ -542,7 +493,7 @@ func PortableDecimal(s string) bool {
 		return false
 	}
 	lit, ok := scanNumber(s)
-	if !ok || lit.exponentMagnitude() > maxPortableExp {
+	if e := lit.exponent(); !ok || e > maxPortableExp || e < -maxPortableExp {
 		return false
 	}
 	f, err := strconv.ParseFloat(s, 64)
