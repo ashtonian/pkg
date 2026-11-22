@@ -99,11 +99,6 @@ func RenderRelationOp(op RelationPatchOp, d SQLDialect, ownerPKs []any, opts Ren
 	if rel.TargetTable != "" && (opts.Owner.Table == "" || opts.Owner.Key == "" || opts.TargetVisible == nil) {
 		return nil, fmt.Errorf("relation %s: a membership change through a target needs the owner table and the target's visibility", op.Field)
 	}
-	switch d.Name() {
-	case dialect.NamePostgres, dialect.NameSQLite:
-	default:
-		return nil, fmt.Errorf("patch: relation statements are not supported for dialect %q", d.Name())
-	}
 	owners, err := relationKeys(ownerPKs)
 	if err != nil {
 		return nil, fmt.Errorf("patch: relation %s: owner keys: %w", op.Field, err)
@@ -212,11 +207,15 @@ func (s *statement) in(col string, keys []any, member bool) (string, error) {
 		return "", err
 	}
 	param := s.bind(arr)
-	if s.d.Name() == dialect.NamePostgres {
+	switch k := dialect.KindOf(s.d); k {
+	case dialect.KindPostgres:
 		if member {
 			return col + " = ANY(" + param + ")", nil
 		}
 		return col + " <> ALL(" + param + ")", nil
+	case dialect.KindSQLite:
+	default:
+		return "", dialect.Unsupported(k, "a relation key set")
 	}
 	if member {
 		return col + " IN (SELECT value FROM json_each(" + param + "))", nil
@@ -338,25 +337,36 @@ func (r relationRenderer) insert() (RenderedRelationStatement, error) {
 // SQLite types values by the column's affinity on insert, so json_each rows
 // serve, with WHERE true to part the upsert's ON from a join's.
 func (r relationRenderer) rows(s *statement, sb *strings.Builder) error {
-	rel := r.rel
-	if r.d.Name() == dialect.NameSQLite {
-		owners, err := s.d.MarshalValue(r.owners, core.TypeInfo{Type: core.FieldTypeArray})
-		if err != nil {
-			return err
-		}
-		values, err := s.d.MarshalValue(r.values, core.TypeInfo{Type: core.FieldTypeArray})
-		if err != nil {
-			return err
-		}
-		ownersParam, valuesParam := s.bind(owners), s.bind(values)
-		sb.WriteString("o.value, v.value")
-		if r.hasTenant {
-			sb.WriteString(", " + s.bind(r.opts.TenantValue))
-		}
-		sb.WriteString(" FROM json_each(" + ownersParam + ") AS o, json_each(" + valuesParam + ") AS v WHERE true")
-		return nil
+	switch k := dialect.KindOf(r.d); k {
+	case dialect.KindSQLite:
+		return r.sqliteRows(s, sb)
+	case dialect.KindPostgres:
+		return r.postgresRows(s, sb)
+	default:
+		return dialect.Unsupported(k, "a relation insert")
 	}
+}
 
+func (r relationRenderer) sqliteRows(s *statement, sb *strings.Builder) error {
+	owners, err := s.d.MarshalValue(r.owners, core.TypeInfo{Type: core.FieldTypeArray})
+	if err != nil {
+		return err
+	}
+	values, err := s.d.MarshalValue(r.values, core.TypeInfo{Type: core.FieldTypeArray})
+	if err != nil {
+		return err
+	}
+	ownersParam, valuesParam := s.bind(owners), s.bind(values)
+	sb.WriteString("o.value, v.value")
+	if r.hasTenant {
+		sb.WriteString(", " + s.bind(r.opts.TenantValue))
+	}
+	sb.WriteString(" FROM json_each(" + ownersParam + ") AS o, json_each(" + valuesParam + ") AS v WHERE true")
+	return nil
+}
+
+func (r relationRenderer) postgresRows(s *statement, sb *strings.Builder) error {
+	rel := r.rel
 	source, target, tenant := strings.ToLower(rel.SourceColumn), strings.ToLower(rel.TargetColumn), strings.ToLower(rel.TenantColumn)
 	var tenantValue any
 	if r.hasTenant {

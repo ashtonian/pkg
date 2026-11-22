@@ -243,7 +243,7 @@ func (r *Resource[T]) renderUpdateBatch(d Dialect, v *dialectView, rows []compil
 	}
 	order := r.table + "." + r.pk
 	if keyType.Type == core.FieldTypeString {
-		if d.Name() == dialect.NameSQLite {
+		if dialect.KindOf(d) == dialect.KindSQLite {
 			order += " COLLATE BINARY"
 		} else {
 			order += ` COLLATE "C"`
@@ -272,7 +272,7 @@ func updateRowPolicy(common, row *filter.PolicyConstraints) *filter.PolicyConstr
 }
 
 func updateBatchLimits(d Dialect, limits UpdateBatchLimits) (UpdateBatchLimits, error) {
-	if d.Name() != dialect.NameSQLite && d.Name() != dialect.NamePostgres {
+	if dialect.KindOf(d) != dialect.KindSQLite && dialect.KindOf(d) != dialect.KindPostgres {
 		return limits, fmt.Errorf("parse: update batch dialect %q is unsupported", d.Name())
 	}
 	if limits.MaxRows < 0 || limits.MaxParameters < 0 {
@@ -282,10 +282,10 @@ func updateBatchLimits(d Dialect, limits UpdateBatchLimits) (UpdateBatchLimits, 
 		limits.MaxRows = 500
 	}
 	if limits.MaxParameters == 0 {
-		switch d.Name() {
-		case dialect.NameSQLite:
+		switch dialect.KindOf(d) {
+		case dialect.KindSQLite:
 			limits.MaxParameters = 999
-		case dialect.NamePostgres:
+		case dialect.KindPostgres:
 			limits.MaxParameters = 65535
 		default:
 			return limits, fmt.Errorf("parse: update batch dialect %q is unsupported", d.Name())

@@ -445,7 +445,7 @@ const (
 // UNION ALL key column lines up with scalar terms facets.
 func relationKeyExpr(rel *core.RelationSchema, dialect Dialect) string {
 	expr := junctionAlias + "." + rel.TargetColumn
-	if dialect.Name() == idialect.NamePostgres {
+	if idialect.KindOf(dialect) == idialect.KindPostgres {
 		return expr + "::text"
 	}
 	return "CAST(" + expr + " AS TEXT)"
@@ -478,7 +478,7 @@ func termsKeyExpr(field *FieldSchema, dialect Dialect) string {
 			return expr // PathExpr reads it as canonical text
 		}
 	}
-	if dialect.Name() == idialect.NamePostgres {
+	if idialect.KindOf(dialect) == idialect.KindPostgres {
 		return expr + "::text"
 	}
 	return "CAST(" + expr + " AS TEXT)"

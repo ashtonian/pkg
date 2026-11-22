@@ -283,14 +283,14 @@ func changedSQL(d dialect.Dialect, col, expr string, schema *PathSchema) (string
 	if expr == "NULL" {
 		return col + " IS NOT NULL", nil
 	}
-	switch d.Name() {
-	case dialect.NameSQLite:
+	switch k := dialect.KindOf(d); k {
+	case dialect.KindSQLite:
 		// IS NOT is SQLite's null-safe inequality on every version that runs
 		// the SQL (IS DISTINCT FROM is a 3.39 alias). BINARY overrides a
 		// NOCASE or RTRIM column and keeps its affinity, which converts the
 		// value for the comparison as it does on store.
 		return col + " COLLATE BINARY IS NOT " + expr, nil
-	case dialect.NamePostgres:
+	case dialect.KindPostgres:
 		switch {
 		case schema != nil && schema.SQLType == core.SQLJSON:
 			// json has no equality operator, and jsonb's text is canonical:
@@ -311,8 +311,9 @@ func changedSQL(d dialect.Dialect, col, expr string, schema *PathSchema) (string
 		// placeholder as the column (an enum, a domain), where a first use as
 		// text would not.
 		return col + " IS DISTINCT FROM " + expr + " OR " + col + `::text COLLATE "C" IS DISTINCT FROM (` + expr + ")::text", nil
+	default:
+		return "", dialect.Unsupported(k, "a change predicate")
 	}
-	return "", fmt.Errorf("not supported for dialect %q", d.Name())
 }
 
 // serverColumns are the columns the server writes on every update: the
@@ -497,21 +498,22 @@ func mergeSQL(d dialect.Dialect, expr string, storage core.SQLType, patch any, b
 	if !ok {
 		return "", fmt.Errorf("merge value is %T, not an object", patch)
 	}
-	switch d.Name() {
-	case dialect.NameSQLite:
+	switch k := dialect.KindOf(d); k {
+	case dialect.KindSQLite:
 		doc, err := json.Marshal(obj)
 		if err != nil {
 			return "", err
 		}
 		return "json_patch(COALESCE(" + expr + ", '{}'), " + bind(string(doc)) + ")", nil
-	case dialect.NamePostgres:
+	case dialect.KindPostgres:
 		if storage == core.SQLJSON {
 			expr += "::jsonb"
 		}
 		levels := 0
 		return pgMerge(expr, obj, bind, &levels)
+	default:
+		return "", dialect.Unsupported(k, "a merge patch")
 	}
-	return "", fmt.Errorf("merge patch not supported for dialect %q", d.Name())
 }
 
 // pgMerge compiles the merge of patch into the document target: the target
@@ -633,17 +635,16 @@ func columnName(op *PatchOperation) (string, error) {
 
 // arrayAppendSQL returns the dialect-specific expression appending element
 // to the array expression expr. NULL coalesces to the empty container so the
-// first append to a fresh NULL column yields a one-element array. Branches on
-// dialect.Name(); a dialect without a case is rejected rather than guessed.
+// first append to a fresh NULL column yields a one-element array.
 func arrayAppendSQL(d dialect.Dialect, expr string, element any, bind func(any) string) (string, error) {
-	switch d.Name() {
-	case dialect.NamePostgres:
+	switch k := dialect.KindOf(d); k {
+	case dialect.KindPostgres:
 		// array_append preserves element order; the UPDATE's row lock
 		// serialises concurrent appenders without losing values.
 		// The untyped '{}' takes the column's array type, so BIGINT[] and
 		// UUID[] columns append as well as TEXT[].
 		return fmt.Sprintf("array_append(COALESCE(%s, '{}'), %s)", expr, bind(element)), nil
-	case dialect.NameSQLite:
+	case dialect.KindSQLite:
 		// SQLite stores arrays as JSON TEXT; '$[#]' appends. The element is
 		// bound as its JSON encoding — the one a full replace writes — and
 		// read back through json(): a bound SQL value would be inserted as
@@ -654,7 +655,7 @@ func arrayAppendSQL(d dialect.Dialect, expr string, element any, bind func(any) 
 		}
 		return fmt.Sprintf("json_insert(COALESCE(%s, '[]'), '$[#]', json(%s))", expr, bind(string(data))), nil
 	default:
-		return "", fmt.Errorf("array_append not supported for dialect %q", d.Name())
+		return "", dialect.Unsupported(k, "array_append")
 	}
 }
 

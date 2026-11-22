@@ -46,7 +46,8 @@
 // [PostgresDialect] generates PostgreSQL SQL ($1 placeholders, jsonb
 // documents, native arrays, PostGIS geo). [SQLiteDialect] generates SQLite
 // SQL (?1 placeholders, JSON text documents and arrays matched through
-// json_each). A dialect's Condition builds a predicate's SQL and arguments
+// json_each). These are the only dialects: [Dialect] has unexported
+// methods, so no type outside the module implements it. A dialect's Condition builds a predicate's SQL and arguments
 // together. A `$in` / `$nin` set binds as one array parameter whatever its
 // size: PostgreSQL compares a column with `= ANY`, typed by the column, and
 // joins a path's set unnested; SQLite reads the set with json_each. SQLite

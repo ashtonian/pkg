@@ -336,6 +336,8 @@ A relation that declares a `tenant_col` fails the build unless a tenant is bound
 
 A flat parameter that is neither a list parameter (`filter.Param*`), an accepted name nor a filterable field is E2071 on every entry point — `Resource.ParseList` (`AcceptParams`), `Resource.ParseRequestFilter` and `filter.NewQueryParamParser` (`QueryParamAccept`) — so a misspelt filter cannot return every row.
 
+The dialects are `filter.PostgresDialect` and `filter.SQLiteDialect`, and the set is closed: `filter.Dialect` has unexported methods, so no type outside the module implements it, and every dialect-specific choice is made on which of the two a dialect is. `filter.DialectFromDSN` picks one from a connection string. Application code can still type-switch on the two types, as the computed-column example below does.
+
 PostgreSQL dialect:
 
 | Field | Type | Default | Description |

@@ -149,8 +149,8 @@ func buildSearchCondition(schema *SearchSchema, dialect Dialect, query string, s
 		return nil, nil
 	}
 
-	switch dialect.Name() {
-	case idialect.NamePostgres:
+	switch idialect.KindOf(dialect) {
+	case idialect.KindPostgres:
 		return buildPostgresSearch(schema, dialect, query, startParamIdx)
 	default:
 		return buildFallbackSearch(schema, dialect, query, startParamIdx), nil

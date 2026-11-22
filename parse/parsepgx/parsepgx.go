@@ -14,6 +14,7 @@ import (
 
 	"github.com/ashtonian/pkg/parse"
 	"github.com/ashtonian/pkg/parse/filter"
+	"github.com/ashtonian/pkg/parse/internal/dialect"
 )
 
 // Querier sends statement batches: *pgxpool.Pool, *pgx.Conn and pgx.Tx have
@@ -248,7 +249,7 @@ func ownerKeys[T any](r *parse.Resource[T], items []T) ([]any, error) {
 }
 
 func postgres(table string, d filter.Dialect) error {
-	if d == nil || d.Name() != (filter.PostgresDialect{}).Name() {
+	if d == nil || dialect.KindOf(d) != dialect.KindPostgres {
 		return fmt.Errorf("parsepgx: %s: %w", table, ErrDialect)
 	}
 	return nil

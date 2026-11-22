@@ -108,17 +108,3 @@ func TestBuildPatchSQL_ChangePredicateIsOptIn(t *testing.T) {
 	assert.True(t, res.Empty)
 	assert.Empty(t, res.ChangePredicate, "a patch of server columns alone assigns nothing to compare")
 }
-
-type otherDialect struct{ filter.SQLiteDialect }
-
-func (otherDialect) Name() string { return "other" }
-
-func TestBuildPatchSQL_ChangePredicateRefusesAnUnknownDialect(t *testing.T) {
-	p := patchOf(t, `{"name":"n"}`)
-	_, err := patch.BuildPatchSQL(p, otherDialect{})
-	require.NoError(t, err, "the SET clause alone compiles for any dialect")
-	res, err := patch.BuildPatchSQL(p, otherDialect{}, patch.WithChangePredicate())
-	require.Error(t, err)
-	assert.Nil(t, res)
-	assert.ErrorContains(t, err, `dialect "other"`)
-}

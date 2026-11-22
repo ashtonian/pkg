@@ -250,14 +250,7 @@ func TestRenderRelationOp_RefusesWhatItCannotRender(t *testing.T) {
 			assert.Error(t, err, "%s on %s", name, d.Name())
 		}
 	}
-	_, err := patch.RenderRelationOp(patch.RelationPatchOp{Field: "tags", Schema: rel, Verb: patch.RelationVerbAdd, Values: []any{"t1"}}, unknownSQLDialect{}, []any{"w1"}, patch.RenderRelationOpOptions{})
-	assert.Error(t, err)
 }
-
-// unknownSQLDialect is a dialect relation statements have no form for.
-type unknownSQLDialect struct{ filter.SQLiteDialect }
-
-func (unknownSQLDialect) Name() string { return "unknown" }
 
 func TestRenderRelationOp_NoOwners(t *testing.T) {
 	rel := &core.RelationSchema{

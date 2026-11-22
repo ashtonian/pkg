@@ -39,26 +39,31 @@ const DefaultContainmentMaxValues = 256
 
 // PostgresCollation is a PostgreSQL collation that orders strings by code
 // point — the order SQLite's BINARY, the memory backend and cursor values
-// use — so the values are closed: CollationPgCUTF8 and CollationC.
-type PostgresCollation struct{ name string }
+// use — so the values are closed: CollationPgCUTF8 and CollationC. Another
+// integer converted to one names no collation, and SQL rendered with it
+// panics.
+type PostgresCollation uint8
 
-var (
+const (
 	// CollationPgCUTF8 is pg_c_utf8 (PostgreSQL 17+), the zero value:
 	// code-point order with Unicode case mapping, so ILIKE on a column
 	// declared with it still folds non-ASCII letters.
-	CollationPgCUTF8 = PostgresCollation{}
+	CollationPgCUTF8 PostgresCollation = iota
 	// CollationC is "C", for PostgreSQL 14–16: the same order (UTF-8 bytes
 	// sort as their code points), but a column declared with it folds only
 	// ASCII letters under ILIKE.
-	CollationC = PostgresCollation{name: `"C"`}
+	CollationC
 )
 
 // String is the collation's SQL name.
 func (c PostgresCollation) String() string {
-	if c.name == "" {
+	switch c {
+	case CollationPgCUTF8:
 		return "pg_c_utf8"
+	case CollationC:
+		return `"C"`
 	}
-	return c.name
+	panic("parse: PostgresCollation(" + strconv.Itoa(int(c)) + ") is no collation")
 }
 
 // Condition renders one predicate; see Dialect.Condition.
