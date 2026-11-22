@@ -101,8 +101,8 @@ paths run all of them. The suites run once each:
 A single merge onto `main` reuses its pull request's passing jobs (go-ci-actions
 `acceptance`). The PR run records a receipt of its merge commit's tree, head, workflow,
 run, repository variables and the jobs that passed. The push uses it only on its first
-attempt, when the merge sits on `before`, the commit its scope was measured from has a
-green run and the PR run passed within six hours; it then skips each job its own scope selects that the receipt
+attempt, when the merge sits on `before`, `before` itself has a green run and the PR run
+passed within six hours; it then skips each job its own scope selects that the receipt
 shows passed, and runs the rest. Anything else, including a squash or rebase merge, a
 direct push, a rerun, a branch validated only by dispatch, or missing evidence, runs the
 push's scoped jobs. Benchmark artifacts come from pushes only: a push

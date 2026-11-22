@@ -146,8 +146,6 @@ jobs:
         with:
           mode: verify
           required: ${{ steps.checks.outputs.required }}
-          # Reuse needs a green run on the commit the scope measured from.
-          base: ${{ steps.scope.outputs.base }}
           variables: ${{ toJSON(vars) }}
 
   test:
