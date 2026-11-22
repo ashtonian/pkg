@@ -56,7 +56,7 @@ jobs:
           fetch-depth: 0
           filter: blob:none
       # go list maps the change to the packages it reaches; nothing is built.
-      - uses: ashtonian/go-ci-actions@439da8bdc22311fff2f04371ca9cd9c3233ee7d0 # v1.6.2
+      - uses: ashtonian/go-ci-actions@8e752cd5a7669bf98f3861cadc24a0441757cae6 # v1.7.0 with go-ci-actions#18 and #19
         with:
           go-version: '1.27.x'
           cache-mode: off
@@ -73,7 +73,7 @@ jobs:
           GITHUB_TOKEN: ${{ github.token }}
         run: python3 -B tools/ci_scope.py
       - name: Set up artifact receipt access
-        uses: ashtonian/go-ci-actions/artifact-setup@439da8bdc22311fff2f04371ca9cd9c3233ee7d0 # v1.6.2
+        uses: ashtonian/go-ci-actions/artifact-setup@8e752cd5a7669bf98f3861cadc24a0441757cae6 # v1.7.0 with go-ci-actions#18 and #19
       - id: acceptance
         env:
           GITHUB_TOKEN: ${{ github.token }}
@@ -96,11 +96,13 @@ jobs:
     env:
       # The packages the change reaches; each target tests its modules' share.
       PACKAGES: ${{ needs.scope.outputs.packages }}
+      # The nightly reruns what the test cache would replay.
+      GOFLAGS: ${{ inputs.nightly && '-count=1' || '' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: ashtonian/go-ci-actions@439da8bdc22311fff2f04371ca9cd9c3233ee7d0 # v1.6.2
+      - uses: ashtonian/go-ci-actions@8e752cd5a7669bf98f3861cadc24a0441757cae6 # v1.7.0 with go-ci-actions#18 and #19
         with:
           go-version: '1.27.x'
           cache-dependency-path: "**/go.sum"
@@ -146,11 +148,12 @@ jobs:
     timeout-minutes: 45
     env:
       PACKAGES: ${{ needs.scope.outputs.packages }}
+      GOFLAGS: ${{ inputs.nightly && '-count=1' || '' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: ashtonian/go-ci-actions@439da8bdc22311fff2f04371ca9cd9c3233ee7d0 # v1.6.2
+      - uses: ashtonian/go-ci-actions@8e752cd5a7669bf98f3861cadc24a0441757cae6 # v1.7.0 with go-ci-actions#18 and #19
         with:
           go-version: '1.27.x'
           cache-dependency-path: "**/go.sum"
@@ -191,7 +194,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: ashtonian/go-ci-actions@439da8bdc22311fff2f04371ca9cd9c3233ee7d0 # v1.6.2
+      - uses: ashtonian/go-ci-actions@8e752cd5a7669bf98f3861cadc24a0441757cae6 # v1.7.0 with go-ci-actions#18 and #19
         with:
           go-version: stable
           cache-dependency-path: "**/go.sum"
@@ -214,7 +217,7 @@ jobs:
           persist-credentials: false
       # Before pnpm: points pnpm at the runner's in-cluster npm cache when it answers,
       # and leaves npmjs otherwise.
-      - uses: ashtonian/go-ci-actions/npm-registry@439da8bdc22311fff2f04371ca9cd9c3233ee7d0 # v1.6.2
+      - uses: ashtonian/go-ci-actions/npm-registry@8e752cd5a7669bf98f3861cadc24a0441757cae6 # v1.7.0 with go-ci-actions#18 and #19
       # pnpm next: setup-node's pnpm cache asks pnpm for its store path. The version
       # comes from the SDK's packageManager field.
       - uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
@@ -266,7 +269,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: ashtonian/go-ci-actions@439da8bdc22311fff2f04371ca9cd9c3233ee7d0 # v1.6.2
+      - uses: ashtonian/go-ci-actions@8e752cd5a7669bf98f3861cadc24a0441757cae6 # v1.7.0 with go-ci-actions#18 and #19
         with:
           go-version: stable
           cache-dependency-path: "**/go.sum"
@@ -274,7 +277,7 @@ jobs:
         run: >-
           go test -tags=unit -run '^$' -bench . -benchmem -count=3
           -cpuprofile=parse-cpu.prof -memprofile=parse-allocs.prof ./parse/filter | tee parse-benchmarks.txt
-      - uses: ashtonian/go-ci-actions/upload-artifact@439da8bdc22311fff2f04371ca9cd9c3233ee7d0 # v1.6.2
+      - uses: ashtonian/go-ci-actions/upload-artifact@8e752cd5a7669bf98f3861cadc24a0441757cae6 # v1.7.0 with go-ci-actions#18 and #19
         with:
           name: parse-benchmarks-${{ github.sha }}
           path: |
@@ -290,11 +293,13 @@ jobs:
       id-token: write
     runs-on: arc-pkg
     timeout-minutes: 45
+    env:
+      GOFLAGS: ${{ inputs.nightly && '-count=1' || '' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: ashtonian/go-ci-actions@439da8bdc22311fff2f04371ca9cd9c3233ee7d0 # v1.6.2
+      - uses: ashtonian/go-ci-actions@8e752cd5a7669bf98f3861cadc24a0441757cae6 # v1.7.0 with go-ci-actions#18 and #19
         with:
           go-version: '1.26.x'
           cache-dependency-path: "**/go.sum"
@@ -332,7 +337,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: ashtonian/go-ci-actions@439da8bdc22311fff2f04371ca9cd9c3233ee7d0 # v1.6.2
+      - uses: ashtonian/go-ci-actions@8e752cd5a7669bf98f3861cadc24a0441757cae6 # v1.7.0 with go-ci-actions#18 and #19
         with:
           go-version: stable
           cache-dependency-path: "**/go.sum"
@@ -363,10 +368,11 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: ashtonian/go-ci-actions@439da8bdc22311fff2f04371ca9cd9c3233ee7d0 # v1.6.2
+      - uses: ashtonian/go-ci-actions@8e752cd5a7669bf98f3861cadc24a0441757cae6 # v1.7.0 with go-ci-actions#18 and #19
         with:
           go-version: '1.27.0'
           cache-dependency-path: "**/go.sum"
+          test-input-mtimes: off
       # Vet type-checks every package and test, so on the declared floor it is
       # also the floor's build check.
       - name: go vet and staticcheck on the declared Go floor
@@ -398,7 +404,7 @@ jobs:
           VALIDATION_JOBS: ${{ toJSON(needs) }}
           CI_VARIABLES_JSON: ${{ toJSON(vars) }}
         run: python3 tools/ci_acceptance.py record --output "$RUNNER_TEMP/ci-acceptance/acceptance.json"
-      - uses: ashtonian/go-ci-actions/upload-artifact@439da8bdc22311fff2f04371ca9cd9c3233ee7d0 # v1.6.2
+      - uses: ashtonian/go-ci-actions/upload-artifact@8e752cd5a7669bf98f3861cadc24a0441757cae6 # v1.7.0 with go-ci-actions#18 and #19
         with:
           name: acceptance-${{ github.run_attempt }}
           path: ${{ runner.temp }}/ci-acceptance/acceptance.json

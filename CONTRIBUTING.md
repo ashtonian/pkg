@@ -80,6 +80,10 @@ paths run all of them. The suites run once each:
 - Parse's SQLite integration runs beside PostgreSQL 17 and 18.
 - The SDK runs every check on its Node.js floor, then only its runtime tests and packed
   consumer on the newest LTS.
+- Tests that depend only on their inputs replay passing results across runs and runners:
+  setup gives every tracked file an mtime derived from its content, so `go test`'s cache key
+  matches between checkouts and the shared build cache answers. Tests that start processes,
+  run the installed git or reach servers keep `-count=1`.
 - Release checks repeat the tests once, without the race detector, against each archive and
   the dependency versions its go.mod requires. Their fresh consumers build with `-trimpath`,
   which keeps the scratch module cache's random path out of build-cache keys, so the
@@ -99,8 +103,8 @@ the older run would have; manual acceptance runs finish.
 
 The `nightly` workflow runs `ci.yml` on main's current commit once a day, and on
 `gh workflow run nightly.yml -R ashtonian/pkg`: every suite and release check at full scope,
-every parse unit test under the race detector, and the benchmarks. It records no acceptance
-receipt. Its failure is a regression that scoping or the targeted race run let through, or a
+every parse unit test under the race detector, every test rerun (`-count=1`) rather than
+replayed from the cache, and the benchmarks. It records no acceptance receipt. Its failure is a regression that scoping or the targeted race run let through, or a
 new toolchain release breaking a floating Go or Node.js version: reproduce it with the failing
 step's make target (`make test-parse-race-all` for a parse race report) and fix it on a branch.
 GitHub turns off a public repository's schedules after 60 days without activity; turn the
