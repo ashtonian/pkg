@@ -3,7 +3,27 @@
     "version": 1,
     "resource": "conf_patches",
     "filter": {
-      "fields": {}
+      "fields": {
+        "quoted_tags": {
+          "name": "quoted_tags",
+          "data_type": "int",
+          "wire": "string",
+          "operators": [
+            "eq",
+            "ne",
+            "in",
+            "nin",
+            "null",
+            "not_null",
+            "some",
+            "none"
+          ],
+          "relation": {
+            "kind": "many_to_many",
+            "target": "conf_tags"
+          }
+        }
+      }
     },
     "patch": {
       "paths": {
@@ -158,6 +178,19 @@
           "minimum": "0",
           "maximum": "9007199254740993",
           "number_kind": "int64"
+        },
+        "/quoted_tags": {
+          "allowed_ops": [
+            "replace",
+            "add",
+            "remove"
+          ],
+          "data_type": "array",
+          "wire": "string",
+          "nullable": true,
+          "elem": "int",
+          "number_kind": "int64",
+          "relation": true
         },
         "/rate": {
           "allowed_ops": [
@@ -931,6 +964,36 @@
       },
       "valid": false,
       "errorCode": "E2118"
+    },
+    {
+      "name": "quoted_relation_keys",
+      "input": {
+        "quoted_tags": [
+          "5",
+          "9007199254740993"
+        ]
+      },
+      "valid": true
+    },
+    {
+      "name": "err_quoted_relation_bare_number",
+      "input": {
+        "quoted_tags": [
+          5
+        ]
+      },
+      "valid": false,
+      "errorCode": "E2077"
+    },
+    {
+      "name": "err_quoted_relation_not_a_number",
+      "input": {
+        "quoted_tags": [
+          "five"
+        ]
+      },
+      "valid": false,
+      "errorCode": "E2077"
     }
   ]
 }

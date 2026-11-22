@@ -435,16 +435,13 @@ func normalizeOpValue(ps *PathSchema, op PatchOp, v any, depth int, codec core.C
 	if v == nil && op != PatchOpArrayAppend {
 		return nil, nil
 	}
+	if ps.Relation != nil {
+		return normalizeRelationKeys(ps, v, codec)
+	}
 	supplied := v
 	v, err := core.FromWire(ps.Wire, ps.DataType, v)
 	if err != nil {
 		return nil, err
-	}
-	if ps.Relation != nil {
-		if ps.GoType == nil {
-			return v, nil
-		}
-		return normalizeTyped(ps.GoType, v, codec)
 	}
 	target := ps.GoType
 	for target != nil && target.Kind() == reflect.Pointer {
@@ -481,6 +478,35 @@ func normalizeOpValue(ps *PathSchema, op PatchOp, v any, depth int, codec core.C
 		return supplied, nil
 	}
 	return normalized, err
+}
+
+// normalizeRelationKeys normalizes a membership's keys as the target's key:
+// each from the path's wire form (a quoted key's JSON string, or a Go value
+// code passes), then to the key's Go type.
+func normalizeRelationKeys(ps *PathSchema, v any, codec core.Codec) (any, error) {
+	if ps.Wire != "" {
+		items, ok := core.AnySlice(v)
+		if !ok {
+			return nil, fmt.Errorf("expected an array, got %T", v)
+		}
+		key := ps.DataType
+		if ps.GoType != nil {
+			key = core.TypeOf(ps.GoType.Elem()).Type
+		}
+		keys := make([]any, len(items))
+		for i, item := range items {
+			k, err := core.FromWire(ps.Wire, key, item)
+			if err != nil {
+				return nil, fmt.Errorf("element %d: %w", i, err)
+			}
+			keys[i] = k
+		}
+		v = keys
+	}
+	if ps.GoType == nil {
+		return v, nil
+	}
+	return normalizeTyped(ps.GoType, v, codec)
 }
 
 // normalizeTyped normalizes v for the Go type t: scalars, decimals included,

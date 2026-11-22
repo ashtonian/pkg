@@ -91,7 +91,9 @@ function validatePatchValue(field: string, value: unknown, path: PatchPathSchema
 }
 
 // validateMembership checks a relation's value as the parser does: a list of
-// keys of the path's element type (E2077 otherwise), none null (E2118).
+// keys of the path's element type (E2077 otherwise), none null (E2118). A
+// path whose wire is "string" takes each key as a JSON string holding it,
+// as its target's quoted key reads in responses.
 function validateMembership(field: string, value: unknown, path: PatchPathSchema): SchemaValidationError[] {
   if (!Array.isArray(value)) {
     return [new SchemaValidationError(field, "E2077", `Relation "${field}" expects an array of keys`)];
@@ -100,8 +102,13 @@ function validateMembership(field: string, value: unknown, path: PatchPathSchema
     return [new SchemaValidationError(field, "E2118", `Relation "${field}" takes keys, which are never null`)];
   }
   const elementType = path.elem;
-  if (elementType && value.some(el => !scalarOK(el, elementType, path.number_kind))) {
-    return [new SchemaValidationError(field, "E2077", `Relation "${field}" expects ${elementType} keys`)];
+  if (!elementType) return [];
+  const ok = path.wire === "string"
+    ? (el: unknown) => quotedValue(el, elementType, path.number_kind) !== undefined
+    : (el: unknown) => scalarOK(el, elementType, path.number_kind);
+  if (!value.every(ok)) {
+    const form = path.wire === "string" ? ` as JSON strings holding them (json:",string")` : "";
+    return [new SchemaValidationError(field, "E2077", `Relation "${field}" expects ${elementType} keys${form}`)];
   }
   return [];
 }
@@ -111,18 +118,25 @@ function validateMembership(field: string, value: unknown, path: PatchPathSchema
 // client checks a 64-bit kind's range and every bound exactly.
 function validateQuotedValue(field: string, value: unknown, path: PatchPathSchema): SchemaValidationError[] {
   const type = path.data_type;
-  const v = fromWire(type, value);
-  let ok = v !== undefined;
-  if (type === "int") {
-    const n = typeof v === "string" ? decimalInteger(v) : undefined;
-    ok = n !== undefined && intInKind(n, path.number_kind);
-  }
-  if (type === "float") ok = typeof v === "number" && Number.isFinite(v);
-  if (!ok) {
+  const v = quotedValue(value, type, path.number_kind);
+  if (v === undefined) {
     const got = typeof value === "string" ? JSON.stringify(value) : typeof value;
     return [new SchemaValidationError(field, "E2077", `Field "${field}" expects its ${type} as a JSON string holding it (json:",string"), got ${got}`)];
   }
   return checkValueTags(field, v, type, path);
+}
+
+// quotedValue is the value a quoted value's JSON string holds, or undefined
+// when it holds none of type (an integer within kind, a finite float).
+function quotedValue(value: unknown, type: FieldType, kind?: string): unknown {
+  const v = fromWire(type, value);
+  if (v === undefined) return undefined;
+  if (type === "int") {
+    const n = typeof v === "string" ? decimalInteger(v) : undefined;
+    return n !== undefined && intInKind(n, kind) ? v : undefined;
+  }
+  if (type === "float") return typeof v === "number" && Number.isFinite(v) ? v : undefined;
+  return v;
 }
 
 // The integer kinds' ranges, exactly. An unknown kind is the widest domain

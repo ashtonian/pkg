@@ -197,10 +197,13 @@ func (r *Resource[T]) Relate(name string, rel Relation) error {
 			}
 		}
 	}
+	// The relation's keys are the target's key, in its type and wire form:
+	// the filter shorthands and the membership patch both take them so.
 	keyType, _ := rel.target.columnType(rel.target.PrimaryKeyColumn())
+	keyWire := rel.target.columnWire(rel.target.PrimaryKeyColumn())
 	var membership *patch.PathSchema
 	if rel.writable {
-		if membership, err = patch.RelationPath(rs, reflect.SliceOf(keyType)); err != nil {
+		if membership, err = patch.RelationPath(rs, reflect.SliceOf(keyType), keyWire); err != nil {
 			return fmt.Errorf("parse: %s: relation %q: %w", r.table, name, err)
 		}
 	}
@@ -219,12 +222,10 @@ func (r *Resource[T]) Relate(name string, rel Relation) error {
 		ops = []filter.FilterOperator{filter.OpEq, filter.OpNe, filter.OpIn, filter.OpNin, filter.OpNull, filter.OpNotNull, filter.OpIs, filter.OpIsNot}
 	}
 	field := &filter.FieldSchema{
-		ExternalName: name,
-		DataType:     key.Type,
-		NumberKind:   key.NumberKind,
-		// The shorthands ($eq, $in, ...) compare the target's key, in its
-		// wire form.
-		Wire:             t.columnWire(t.PrimaryKeyColumn()),
+		ExternalName:     name,
+		DataType:         key.Type,
+		NumberKind:       key.NumberKind,
+		Wire:             keyWire,
 		AllowedOperators: ops,
 		Indexed:          rel.indexed || rel.kind == core.BelongsTo,
 		Includable:       rel.includable,

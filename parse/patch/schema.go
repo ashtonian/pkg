@@ -207,6 +207,7 @@ type PathSchema struct {
 	// for a bool, integer or float field tagged json:",string", whose value
 	// is a JSON string ("42", not 42), as encoding/json writes the field.
 	// Values normalize from it, so SQL binds and validators see the number.
+	// A relation path's wire is each key's: its target key's.
 	Wire       core.Wire
 	Validators []Validator
 	// EnumValues is the path's `enum` allowlist (also a Validator), for

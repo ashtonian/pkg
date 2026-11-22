@@ -284,12 +284,14 @@ func relationPatchOps() []PatchOp {
 
 // RelationPath is the patch path of a relation's membership: replace, add
 // and remove of a slice of target keys (goType), routed to RelationOps. A key
-// is never null, so goType's element must not be nullable.
-func RelationPath(rel *core.RelationSchema, goType reflect.Type) (*PathSchema, error) {
+// is never null, so goType's element must not be nullable. wire is the form
+// each key travels in, the target key's: core.WireString for one tagged
+// json:",string", whose keys are JSON strings ("5"), as responses write them.
+func RelationPath(rel *core.RelationSchema, goType reflect.Type, wire core.Wire) (*PathSchema, error) {
 	if err := checkRelationKeyType(goType); err != nil {
 		return nil, err
 	}
-	return &PathSchema{AllowedOps: relationPatchOps(), DataType: core.TypeOf(goType).Type, GoType: goType, Relation: rel}, nil
+	return &PathSchema{AllowedOps: relationPatchOps(), DataType: core.TypeOf(goType).Type, GoType: goType, Wire: wire, Relation: rel}, nil
 }
 
 // checkRelationKeyType refuses a membership type that is not a slice of

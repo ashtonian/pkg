@@ -202,9 +202,9 @@ func TestRelationRefusesNullableKeys(t *testing.T) {
 	}
 	_, err := patch.GeneratePatchSchema[nullableKeys](core.NewSchemaGenerator())
 	assert.ErrorContains(t, err, "never null")
-	_, err = patch.RelationPath(&core.RelationSchema{JoinTable: "j", SourceColumn: "s", TargetColumn: "t"}, reflect.TypeFor[[]*string]())
+	_, err = patch.RelationPath(&core.RelationSchema{JoinTable: "j", SourceColumn: "s", TargetColumn: "t"}, reflect.TypeFor[[]*string](), "")
 	assert.ErrorContains(t, err, "never null")
-	path, err := patch.RelationPath(&core.RelationSchema{JoinTable: "j", SourceColumn: "s", TargetColumn: "t"}, reflect.TypeFor[[]string]())
+	path, err := patch.RelationPath(&core.RelationSchema{JoinTable: "j", SourceColumn: "s", TargetColumn: "t"}, reflect.TypeFor[[]string](), "")
 	assert.NoError(t, err)
 	assert.NotNil(t, path)
 }

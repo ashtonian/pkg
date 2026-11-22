@@ -65,6 +65,12 @@ type confPatch struct {
 	Members []string `json:"members" db:"-" parse:"patch" relation:"conf_members,patch_id,member_id"`
 }
 
+// confTag is the target of confPatch's writable relation quoted_tags, a key
+// that travels as a JSON string.
+type confTag struct {
+	ID int64 `json:"id,string" db:"id"`
+}
+
 type patchCase struct {
 	Name         string         `json:"name"`
 	Input        map[string]any `json:"input"`
@@ -165,12 +171,17 @@ func patchInputs() []patchCase {
 		{Name: "relation_empty_clears", Input: map[string]any{"members": []any{}}},
 		{Name: "err_relation_element_type", Input: map[string]any{"members": []any{1}}},
 		{Name: "err_relation_null_element", Input: map[string]any{"members": []any{"a", nil}}},
+		{Name: "quoted_relation_keys", Input: map[string]any{"quoted_tags": []any{"5", "9007199254740993"}}},
+		{Name: "err_quoted_relation_bare_number", Input: map[string]any{"quoted_tags": []any{json.Number("5")}}},
+		{Name: "err_quoted_relation_not_a_number", Input: map[string]any{"quoted_tags": []any{"five"}}},
 	}
 }
 
 func buildPatchCorpus(t *testing.T) []byte {
 	t.Helper()
 	res := parse.MustResource[confPatch]("conf_patches")
+	res.MustRelate("quoted_tags", parse.ManyToMany(parse.MustResource[confTag]("conf_tags"),
+		parse.Through("conf_patch_tags", "patch_id", "tag_id"), parse.Writable()))
 	reg := parse.NewSchemaRegistry()
 	parse.RegisterResource(reg, res)
 	out := patchCorpus{Schema: reg.SchemaFor("conf_patches")}
