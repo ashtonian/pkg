@@ -3,43 +3,9 @@ package filter
 import "github.com/ashtonian/pkg/parse/core"
 
 // JSON document semantics shared by every backend. They are
-// PostgreSQL jsonb's: `$eq` / `$ne` compare documents, `$contains` is `@>`.
-// Arguments are generic documents as core.NormalizeJSON returns them.
-
-// JSONEqual reports whether two documents are equal: objects by key set and
-// member values, arrays element by element in order, numbers by exact value
-// (1 equals 1.0), other scalars by value.
-func JSONEqual(a, b any) bool {
-	switch x := a.(type) {
-	case map[string]any:
-		y, ok := b.(map[string]any)
-		if !ok || len(x) != len(y) {
-			return false
-		}
-		for k, xv := range x {
-			yv, ok := y[k]
-			if !ok || !JSONEqual(xv, yv) {
-				return false
-			}
-		}
-		return true
-	case []any:
-		y, ok := b.([]any)
-		if !ok || len(x) != len(y) {
-			return false
-		}
-		for i := range x {
-			if !JSONEqual(x[i], y[i]) {
-				return false
-			}
-		}
-		return true
-	case string, bool, nil:
-		return a == b
-	}
-	c, ok := core.CompareNumbers(a, b)
-	return ok && c == 0
-}
+// PostgreSQL jsonb's: `$eq` / `$ne` compare documents (core.JSONEqual),
+// `$contains` is `@>`. Arguments are generic documents as core.NormalizeJSON
+// returns them.
 
 // JSONContains reports whether doc contains needle: an object contains
 // every needle member (recursively), an array contains every needle element
@@ -49,7 +15,7 @@ func JSONEqual(a, b any) bool {
 func JSONContains(doc, needle any) bool {
 	if arr, ok := doc.([]any); ok && isJSONScalar(needle) {
 		for _, e := range arr {
-			if JSONEqual(e, needle) {
+			if core.JSONEqual(e, needle) {
 				return true
 			}
 		}
@@ -91,7 +57,7 @@ func jsonContains(doc, needle any) bool {
 		}
 		return true
 	}
-	return isJSONScalar(doc) && JSONEqual(doc, needle)
+	return isJSONScalar(doc) && core.JSONEqual(doc, needle)
 }
 
 func isJSONScalar(v any) bool {

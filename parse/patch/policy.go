@@ -148,8 +148,11 @@ func NewPatchPolicyConstraints(opts ...PolicyOption) (*PatchPolicyConstraints, e
 // each operation writes and reads, not by its envelope: a whole value writes
 // every path below its own, a merge object the members it names, a remove
 // null and a move its source. On success the policy is recorded on patch
-// (AuditInfo).
+// (AuditInfo). A patch no parser produced is ErrUnparsed.
 func ApplyPatchPolicyConstraints(patch *ParsedPatch, pc *PatchPolicyConstraints, subject *PolicySubject) error {
+	if err := checkParsed(patch); err != nil {
+		return err
+	}
 	if pc == nil {
 		return nil
 	}

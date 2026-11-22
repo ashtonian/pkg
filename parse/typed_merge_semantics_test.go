@@ -73,7 +73,7 @@ func TestMergePatchNestedNullDeletes(t *testing.T) {
 }
 
 // TestTopLevelNullStillRemoves: a top-level null clears the whole field.
-// A map has no NULL state (patch.PathSchema.ClearedValue), so it empties.
+// A map field clears to its empty value, never NULL.
 func TestTopLevelNullStillRemoves(t *testing.T) {
 	tp, err := parse.NewResource[cfgEntity]("cfg_entities")
 	if err != nil {

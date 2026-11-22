@@ -71,7 +71,7 @@ func ParseMergePatchMap(raw map[string]any, schema *PatchSchema, config *core.Pa
 		}
 	}
 
-	result := &ParsedPatch{Operations: make([]*PatchOperation, 0, len(raw))}
+	result := &ParsedPatch{Operations: make([]*PatchOperation, 0, len(raw)), schema: schema}
 
 	// Sorted walk: map order made the operation list — and so the SQL SET
 	// clause and apply order — vary run to run.

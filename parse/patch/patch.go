@@ -117,6 +117,7 @@ func (p *Parser) validateOps(ops []RawPatchOp) (*ParsedPatch, error) {
 
 	result := &ParsedPatch{
 		Operations: make([]*PatchOperation, 0, len(ops)),
+		schema:     p.schema,
 	}
 
 	var failures []error

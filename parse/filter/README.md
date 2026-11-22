@@ -26,7 +26,7 @@ Start with the [runnable package example](../README.md#quick-start). The focused
 - Memberships outside SQL: `Lookup` (`Where`, `Filter`), `WhereEq` / `WhereIn` / `WhereNull` / `WhereNotNull` / `WhereMember` / `WhereAll` / `WhereAny`, `MembershipLookup`, `RelationLookup` (lookups with a filter), `ResolveMemberships` (policy memberships and relation predicates) with `ResolveTenant`, `ResolveRelatedPolicies`, `ResolveUnscopedRelations`, `MatchLookupRow`
 - JSON paths: `JSONPath`, `JSONStorage` (`StorageJSONB`, `StorageJSON`, `StorageText`), `PathDecl`, `ResourceSchema.WithPaths` (a request's copy-on-write view), `SortSchema.WithPaths` (its sort keys), `FieldExpr` (a field's value expression in a dialect), `Dialect.PathExpr`, `PathValue` (the reference value rule a memory backend evaluates), `SortFieldSchema.Path` / `CursorKey.Path`, `KeyValue` (a row's canonical value for any key, paths included), `PathDecl.Facet`, `MaxPathDepth`; `SortResult.ToSQL(dialect)` renders ORDER BY as the keyset orders
 - Evaluation outside SQL: `Evaluate` (a filter's three-valued `Truth` — `True`, `False`, `Unknown` — on one row, as SQL gives it), `Row` (a field's value in the canonical domain), `RowFunc`, `ColumnRow` (a row of Go values read by column; paths through `PathValue`), `ElementRow` (one array element), `ColumnValue` (one stored value in that domain), `Document` / `DecodeDocument` (a document decoded once, which every reader takes in place of its JSON text)
-- Reference semantics: `MatchLike`, `EscapeLike` (a literal as a LIKE pattern; append `%` for a prefix), `JSONEqual`, `JSONContains`, `JSONHasKey`, `PathValue`
+- Reference semantics: `MatchLike`, `EscapeLike` (a literal as a LIKE pattern; append `%` for a prefix), `JSONContains`, `JSONHasKey` (document equality is `core.JSONEqual`), `PathValue`
 - Geo: `GeoPoint`, `GeoDistance`, `GeoBoundingBox`, `GeoPolygon`, `GeoFieldConfig`, `ParseDistance`, `ValidateGeoPoint`, `ValidateGeoBoundingBox`, `ValidateGeoPolygon`
 - Errors: `ECode*` (aliases of `core.Code*`, each code's one definition), `Codes`, `ErrUnknownDSN` (a DSN `DialectFromDSN` names no dialect for), `ErrUnsupportedDialect` (what application SQL, such as a computed column's expression, returns for a dialect it has no rendering for)
 
@@ -41,7 +41,7 @@ Start with the [runnable package example](../README.md#quick-start). The focused
 | `sql.go` | `Dialect`, `TwoValuedDialect`, `SQLBuilder` (negation tracking), set rendering, relation `EXISTS`, junction tenancy (a bound tenant or the owner row's) |
 | `sql_postgres.go` / `sql_sqlite.go` | Dialect predicates (strings, decimals, documents, arrays, sets, geo); PostgreSQL path containment |
 | `like.go` | LIKE patterns: escaping, GLOB translation, `MatchLike` |
-| `jsondoc.go` | `JSONEqual`, `JSONContains`, `JSONHasKey` |
+| `jsondoc.go` | `JSONContains`, `JSONHasKey` |
 | `evaluate.go` | `Evaluate`, the reference evaluator; `Row`, `RowFunc`, `ColumnRow`, `ColumnValue`, `ElementRow` |
 | `evaluate_geo.go` | `Evaluate`'s geo operators on a JSONB point, through `internal/geo` |
 | `path.go` | `JSONPath`, `FieldExpr`, `PathValue`, both dialects' `PathExpr` |

@@ -12,7 +12,6 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/ashtonian/pkg/parse/core"
-	"github.com/ashtonian/pkg/parse/filter"
 	"github.com/ashtonian/pkg/parse/internal/jsonmerge"
 	"github.com/ashtonian/pkg/parse/patch"
 )
@@ -123,38 +122,6 @@ func runMergeCases(t *testing.T, mdb mergeDB) {
 			assert.Equal(t, oracle, decodeDoc(t, got.String), "matches the document path")
 		})
 	}
-	t.Run("two merges of one column", func(t *testing.T) { runChainedMerge(t, mdb) })
-}
-
-// runChainedMerge executes two merges of one column in one statement, the
-// second applied to the first's result, against the same oracle.
-func runChainedMerge(t *testing.T, mdb mergeDB) {
-	t.Helper()
-	const start = `{"a":{"b":{"c":1,"d":2},"e":[1]},"f":3}`
-	first := map[string]any{"a": map[string]any{"b": map[string]any{"c": nil, "g": 4.0}}, "f": nil}
-	second := map[string]any{"a": map[string]any{"b": map[string]any{"d": 5.0}, "e": map[string]any{"h": true}}}
-	schema := mergeSchema().AllowedPaths["/doc"]
-	parsed := &patch.ParsedPatch{Operations: []*patch.PatchOperation{
-		{Op: patch.PatchOpReplace, Path: "/doc", Value: first, Schema: schema, Merge: true},
-		{Op: patch.PatchOpReplace, Path: "/doc", Value: second, Schema: schema, Merge: true},
-	}}
-	_, err := mdb.db.Exec("DROP TABLE IF EXISTS docs")
-	require.NoError(t, err)
-	_, err = mdb.db.Exec(mdb.schema)
-	require.NoError(t, err)
-	_, err = mdb.db.Exec(mdb.insert, start)
-	require.NoError(t, err)
-
-	res, err := patch.BuildPatchSQL(parsed, mdb.dialect)
-	require.NoError(t, err)
-	stmt := fmt.Sprintf("UPDATE docs SET %s WHERE id = %s", res.SetClause, mdb.dialect.Placeholder(res.ParamCount+1))
-	_, err = mdb.db.Exec(stmt, append(res.Args, 1)...)
-	require.NoError(t, err, stmt)
-
-	var got sql.NullString
-	require.NoError(t, mdb.db.QueryRow(mdb.read).Scan(&got))
-	want := jsonmerge.Apply(jsonmerge.Apply(decodeDoc(t, start), first), second)
-	assert.Equal(t, want, decodeDoc(t, got.String))
 }
 
 func decodeDoc(t *testing.T, s string) any {
@@ -165,21 +132,4 @@ func decodeDoc(t *testing.T, s string) any {
 	var v any
 	require.NoError(t, json.Unmarshal([]byte(s), &v))
 	return v
-}
-
-// A merge after a known base folds in Go: one bound document.
-func TestBuildPatchSQL_MergeAfterReplaceFoldsInGo(t *testing.T) {
-	schema := mergeSchema().AllowedPaths["/doc"]
-	parsed := &patch.ParsedPatch{Operations: []*patch.PatchOperation{
-		{Op: patch.PatchOpReplace, Path: "/doc", Value: map[string]any{"a": 1.0, "b": 2.0}, Schema: schema},
-		{Op: patch.PatchOpReplace, Path: "/doc", Value: map[string]any{"b": nil, "c": 3.0}, Schema: schema, Merge: true},
-	}}
-	for _, d := range []patch.SQLDialect{filter.SQLiteDialect{}, filter.PostgresDialect{}} {
-		res, err := patch.BuildPatchSQL(parsed, d)
-		require.NoError(t, err)
-		require.Len(t, res.Args, 1, res.SetClause)
-		value, ok := res.Args[0].(string)
-		require.True(t, ok)
-		assert.JSONEq(t, `{"a":1,"c":3}`, value)
-	}
 }

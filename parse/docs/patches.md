@@ -5,14 +5,14 @@
 ## Choose the operation
 
 ```go
-parsed, err := tp.ParsePatch(body)                      // RFC 6902 JSON Patch
-parsed, err := tp.ParseMergePatch(body)                 // RFC 7396 JSON Merge Patch
-updated, err := tp.ApplyValidatedPatch(parsed, current) // apply to a Go value
+parsed, err := products.ParsePatch(body)                      // RFC 6902 JSON Patch
+parsed, err := products.ParseMergePatch(body)                 // RFC 7396 JSON Merge Patch
+updated, err := products.ApplyValidatedPatch(parsed, current) // apply to a Go value (patch.Applier)
 set, err := patch.BuildPatchSQL(parsed, filter.PostgresDialect{})
 plan, err := products.BuildUpdate(filter.PostgresDialect{}, parsed, parse.ByID(id), scope) // complete, scoped UPDATE
 ```
 
-A field tagged `parse:"server"` is a column only the server sets — a credential's fingerprint, a flag the issuer flips. `ParseMergePatch` refuses it, so no request body reaches it; `tp.ParseServerMergePatch(body)` admits it alongside the patchable fields, for the server's own writes, and the result applies through `ApplyValidatedPatch` and `BuildPatchSQL` like any patch. A server field the field-name tag hides (`json:"-"`) is addressed by its column (`patch.ServerFieldName`) and can only be set by a top-level replace.
+A field tagged `parse:"server"` is a column only the server sets — a credential's fingerprint, a flag the issuer flips. `ParseMergePatch` refuses it, so no request body reaches it; `products.ParseServerMergePatch(body)` admits it alongside the patchable fields, for the server's own writes, and the result applies through `ApplyValidatedPatch` and `BuildPatchSQL` like any patch. A server field the field-name tag hides (`json:"-"`) is addressed by its column and can only be set by a top-level replace.
 
 `BuildPatchSQL` folds each column's ordered operations into one expression; merge-patch objects merge into the stored document (nested nulls delete keys, siblings survive); `array_append` appends atomically. Operations SQL cannot express — `move`, `copy`, `test`, nested paths — fail with E2068 / E2070 and apply through `ApplyValidatedPatch`. See [SQL compilation](#sql-compilation).
 
@@ -89,7 +89,7 @@ A merge patch is bounded like the JSON Patch it stands for: a member nested `d` 
 | Operations on a column | SQL |
 |---|---|
 | replace / add | `col = $n` (documents bound as JSON) |
-| remove, or a null value | `col = NULL`; a slice or map field stores its empty value (`PathSchema.ClearedValue`) — slice and map columns are usually NOT NULL with an empty default |
+| remove, or a null value | `col = NULL`; a slice or map field stores its empty value — slice and map columns are usually NOT NULL with an empty default |
 | array_append | `array_append(COALESCE(col, '{}'), $n)` (PostgreSQL), `json_insert(COALESCE(col, '[]'), '$[#]', json(?n))` with the element bound as JSON (SQLite), so booleans, numbers and strings keep their JSON types; after a replace the result binds as one array |
 | merge-patch object | SQLite `json_patch(COALESCE(col, '{}'), ?n)`; PostgreSQL, per object level, the target as an object (else `{}`) `- $deleted::text[] \|\| $members::jsonb` plus one two-argument `jsonb_build_object($key, …)` per nested object — a level with nested objects names its target once in a scalar subquery that its children read, so the SQL and its arguments grow linearly with the patch and no call nears PostgreSQL's 100-argument limit; after a replace it folds in Go into one bound document |
 | move, copy, nested path, `array_append` on a JSON document | E2070 |
@@ -107,7 +107,7 @@ A SET clause is not a complete UPDATE. `Resource.BuildUpdate` builds the complet
 
 ## Patches built in code
 
-A server that builds a patch need not encode JSON to parse it back. `MergePatchMap(map[string]any{...})` validates a merge patch given as a map exactly as `ParseMergePatch` validates its body — a nested `map[string]any` merges into a document, any other value (a Go value of the path's type, such as a `time.Time` or a struct, which replaces the document whole) replaces, and null removes, null being what encoding/json writes as null: `nil` or a nil pointer, map or slice, at any depth — and `ValidateOperations([]patch.RawPatchOp{...})` validates JSON Patch operations as `ParsePatch` does. `ServerMergePatchMap` and `ValidateServerOperations` do the same against the server patch schema, for the server's own writes. Never assemble a `patch.ParsedPatch` by hand: its operations would skip validation.
+A server that builds a patch need not encode JSON to parse it back. `MergePatchMap(map[string]any{...})` validates a merge patch given as a map exactly as `ParseMergePatch` validates its body — a nested `map[string]any` merges into a document, any other value (a Go value of the path's type, such as a `time.Time` or a struct, which replaces the document whole) replaces, and null removes, null being what encoding/json writes as null: `nil` or a nil pointer, map or slice, at any depth — and `ValidateOperations([]patch.RawPatchOp{...})` validates JSON Patch operations as `ParsePatch` does. `ServerMergePatchMap` and `ValidateServerOperations` do the same against the server patch schema, for the server's own writes. A `patch.ParsedPatch` assembled by hand would skip validation, so it is refused: `ApplyValidatedPatch`, `BuildPatchSQL`, `BuildUpdate` and `ApplyPatchPolicyConstraints` return `patch.ErrUnparsed` for a patch no parser produced.
 
 ## Resource updates
 

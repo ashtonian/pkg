@@ -114,12 +114,25 @@ func TestParser_AffectedPaths(t *testing.T) {
 
 // --- BuildPatchSQL Tests ---
 
-func TestBuildPatchSQL_Replace(t *testing.T) {
-	parsed := &patch.ParsedPatch{
-		Operations: []*patch.PatchOperation{
-			{Op: patch.PatchOpReplace, Path: "/name", Value: "new", Schema: &patch.PathSchema{SQLColumn: "name", DataType: core.FieldTypeString}},
+// parseSQLPatch parses body against a schema whose /name can be replaced and
+// removed.
+func parseSQLPatch(t *testing.T, body string) *patch.ParsedPatch {
+	t.Helper()
+	schema := &patch.PatchSchema{
+		Resource: "devices",
+		AllowedPaths: map[string]*patch.PathSchema{
+			"/name": {AllowedOps: []patch.PatchOp{patch.PatchOpReplace, patch.PatchOpRemove}, DataType: core.FieldTypeString, SQLColumn: "name"},
 		},
 	}
+	parsed, err := patch.NewParser(schema, nil).Parse([]byte(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return parsed
+}
+
+func TestBuildPatchSQL_Replace(t *testing.T) {
+	parsed := parseSQLPatch(t, `[{"op":"replace","path":"/name","value":"new"}]`)
 	result, err := patch.BuildPatchSQL(parsed, filter.PostgresDialect{})
 	if err != nil {
 		t.Fatal(err)
@@ -133,11 +146,7 @@ func TestBuildPatchSQL_Replace(t *testing.T) {
 }
 
 func TestBuildPatchSQL_Remove(t *testing.T) {
-	parsed := &patch.ParsedPatch{
-		Operations: []*patch.PatchOperation{
-			{Op: patch.PatchOpRemove, Path: "/name", Schema: &patch.PathSchema{SQLColumn: "name"}},
-		},
-	}
+	parsed := parseSQLPatch(t, `[{"op":"remove","path":"/name"}]`)
 	result, err := patch.BuildPatchSQL(parsed, filter.PostgresDialect{})
 	if err != nil {
 		t.Fatal(err)
@@ -148,11 +157,7 @@ func TestBuildPatchSQL_Remove(t *testing.T) {
 }
 
 func TestBuildPatchSQL_SQLite(t *testing.T) {
-	parsed := &patch.ParsedPatch{
-		Operations: []*patch.PatchOperation{
-			{Op: patch.PatchOpReplace, Path: "/name", Value: "new", Schema: &patch.PathSchema{SQLColumn: "name", DataType: core.FieldTypeString}},
-		},
-	}
+	parsed := parseSQLPatch(t, `[{"op":"replace","path":"/name","value":"new"}]`)
 	result, err := patch.BuildPatchSQL(parsed, filter.SQLiteDialect{})
 	if err != nil {
 		t.Fatal(err)
@@ -226,12 +231,8 @@ func TestParseMergePatch_MaxOperations(t *testing.T) {
 // --- Policy Tests ---
 
 func TestApplyPatchPolicy_ForbiddenPath(t *testing.T) {
-	parsed := &patch.ParsedPatch{
-		Operations: []*patch.PatchOperation{
-			{Op: patch.PatchOpReplace, Path: "/secret", Value: "x"},
-		},
-	}
-	pc := mustPolicy(t, patch.ForbidPaths("/secret"))
+	parsed := parseSQLPatch(t, `[{"op":"replace","path":"/name","value":"x"}]`)
+	pc := mustPolicy(t, patch.ForbidPaths("/name"))
 	err := patch.ApplyPatchPolicyConstraints(parsed, pc, nil)
 	if err == nil {
 		t.Fatal("expected error for forbidden path")
@@ -239,19 +240,13 @@ func TestApplyPatchPolicy_ForbiddenPath(t *testing.T) {
 }
 
 func TestApplyPatchPolicy_AllowedValues(t *testing.T) {
-	parsed := &patch.ParsedPatch{
-		Operations: []*patch.PatchOperation{
-			{Op: patch.PatchOpReplace, Path: "/status", Value: "active"},
-		},
-	}
-	pc := mustPolicy(t, patch.ConstrainValues("/status", patch.ValueConstraint{AllowedValues: []any{"active", "inactive"}}))
-	err := patch.ApplyPatchPolicyConstraints(parsed, pc, nil)
+	pc := mustPolicy(t, patch.ConstrainValues("/name", patch.ValueConstraint{AllowedValues: []any{"active", "inactive"}}))
+	err := patch.ApplyPatchPolicyConstraints(parseSQLPatch(t, `[{"op":"replace","path":"/name","value":"active"}]`), pc, nil)
 	if err != nil {
 		t.Fatalf("expected allowed: %v", err)
 	}
 
-	parsed.Operations[0].Value = "forbidden"
-	err = patch.ApplyPatchPolicyConstraints(parsed, pc, nil)
+	err = patch.ApplyPatchPolicyConstraints(parseSQLPatch(t, `[{"op":"replace","path":"/name","value":"forbidden"}]`), pc, nil)
 	if err == nil {
 		t.Fatal("expected error for disallowed value")
 	}

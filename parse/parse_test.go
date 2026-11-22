@@ -455,11 +455,13 @@ func BenchmarkApplyPatch_JSONPath(b *testing.B) {
 }
 
 func BenchmarkBuildPatchSQL_WithStartParam(b *testing.B) {
-	parsed := &patch.ParsedPatch{
-		Operations: []*patch.PatchOperation{
-			{Op: patch.PatchOpReplace, Path: "/name", Value: "new", Schema: &patch.PathSchema{SQLColumn: "name", DataType: core.FieldTypeString}},
-			{Op: patch.PatchOpReplace, Path: "/status", Value: "active", Schema: &patch.PathSchema{SQLColumn: "status", DataType: core.FieldTypeString}},
-		},
+	schema := &patch.PatchSchema{Resource: "devices", AllowedPaths: map[string]*patch.PathSchema{
+		"/name":   {AllowedOps: []patch.PatchOp{patch.PatchOpReplace}, DataType: core.FieldTypeString, SQLColumn: "name"},
+		"/status": {AllowedOps: []patch.PatchOp{patch.PatchOpReplace}, DataType: core.FieldTypeString, SQLColumn: "status"},
+	}}
+	parsed, err := patch.NewParser(schema, nil).Parse([]byte(`[{"op":"replace","path":"/name","value":"new"},{"op":"replace","path":"/status","value":"active"}]`))
+	if err != nil {
+		b.Fatal(err)
 	}
 	res, err := patch.BuildPatchSQL(parsed, filter.PostgresDialect{}, patch.WithStartParam(4))
 	if err != nil || res.SetClause != "name = $5, status = $6" || res.ParamCount != 2 {

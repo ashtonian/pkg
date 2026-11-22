@@ -762,13 +762,11 @@ func (r *Resource[T]) WithPaths(decls ...filter.PathDecl) (*Resource[T], error) 
 		filterSchema:      fs,
 		patchSchema:       r.patchSchema,
 		serverPatchSchema: r.serverPatchSchema,
-		hiddenPaths:       r.hiddenPaths,
+		applier:           r.applier,
 		sortSchema:        ss,
 		codec:             r.codec,
 		searchSchema:      r.searchSchema,
 		cfg:               r.cfg,
-		fieldNameTag:      r.fieldNameTag,
-		patchFields:       r.patchFields,
 		gen:               r.gen,
 	}
 	view := *r

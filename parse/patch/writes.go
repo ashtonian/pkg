@@ -158,7 +158,7 @@ func collectAbsent(rest []string, value any, present bool, path string, out *[]s
 				return
 			}
 		}
-		if _, array := documentValue(value).([]any); present && array {
+		if _, array := asDocument(value).([]any); present && array {
 			return
 		}
 		if !slices.ContainsFunc(rest, isWildcardToken) {
@@ -177,7 +177,7 @@ type docMember struct {
 // documentMembers are a document value's members, in name order, or its
 // elements; none for a scalar.
 func documentMembers(value any) []docMember {
-	switch v := documentValue(value).(type) {
+	switch v := asDocument(value).(type) {
 	case map[string]any:
 		out := make([]docMember, 0, len(v))
 		for _, name := range slices.Sorted(maps.Keys(v)) {
@@ -194,9 +194,9 @@ func documentMembers(value any) []docMember {
 	return nil
 }
 
-// documentValue is value as a decoded JSON document holds it: a
+// asDocument is value as a decoded JSON document holds it: a
 // json.RawMessage decoded, a Go slice as []any, anything else as it is.
-func documentValue(value any) any {
+func asDocument(value any) any {
 	switch v := value.(type) {
 	case map[string]any, []any, nil, string, bool:
 		return v

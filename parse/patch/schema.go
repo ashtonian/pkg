@@ -112,12 +112,12 @@ func (p *PathSchema) Nullable() bool {
 	return p.GoType == nil || acceptsNull(p.GoType, p.Bounds)
 }
 
-// ClearedValue is what removing the path, or setting it to null, stores:
+// clearedValue is what removing the path, or setting it to null, stores:
 // nil (SQL NULL) for pointers, interfaces and untyped paths, and the empty
 // value for a slice or map. Slice and map columns are usually NOT NULL with
 // an empty default, where NULL fails the write, and empty is a valid cleared
 // value for a nullable one too — so clearing empties them on every backend.
-func (p *PathSchema) ClearedValue() any {
+func (p *PathSchema) clearedValue() any {
 	if p == nil || p.GoType == nil || p.Relation != nil {
 		return nil
 	}
@@ -183,6 +183,9 @@ type ParsedPatch struct {
 	// a move's source included, a test's path not.
 	AffectedPaths []string
 
+	// schema is the schema the parser validated the patch against; a patch
+	// without one was not produced by a parser (ErrUnparsed).
+	schema *PatchSchema
 	// policy is the policy ApplyPatchPolicyConstraints held the patch to.
 	policy *PatchPolicyConstraints
 }

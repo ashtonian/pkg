@@ -23,7 +23,7 @@ func GeneratePatchSchema[T any](g *core.SchemaGenerator) (*PatchSchema, error) {
 // writes: every field GeneratePatchSchema admits, and every field tagged
 // `parse:"server"` — a column only the server sets, such as a credential's
 // fingerprint, which a request body must never reach. A server field the
-// field-name tag hides (`json:"-"`) is addressed by ServerFieldName.
+// field-name tag hides (`json:"-"`) is addressed by its column.
 func GenerateServerPatchSchema[T any](g *core.SchemaGenerator) (*PatchSchema, error) {
 	t := reflect.TypeFor[T]()
 	if t.Kind() == reflect.Pointer {
@@ -32,10 +32,10 @@ func GenerateServerPatchSchema[T any](g *core.SchemaGenerator) (*PatchSchema, er
 	return generatePatchSchema(g, t, true)
 }
 
-// ServerFieldName returns the patch path name of a server field: its
+// serverFieldName returns the patch path name of a server field: its
 // external name, or its column when the field-name tag hides it. ok is false
 // for a field that is not a server field.
-func ServerFieldName(g *core.SchemaGenerator, field *core.Field) (name string, ok bool) {
+func serverFieldName(g *core.SchemaGenerator, field *core.Field) (name string, ok bool) {
 	if !field.Tags.Parse.Server {
 		return "", false
 	}
@@ -69,7 +69,7 @@ func generatePatchSchema(g *core.SchemaGenerator, t reflect.Type, server bool) (
 		}
 		fieldName := field.External
 		if serverField {
-			fieldName, _ = ServerFieldName(g, field)
+			fieldName, _ = serverFieldName(g, field)
 		}
 		if fieldName == "" {
 			// virtual relation fields conventionally carry

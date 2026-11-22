@@ -187,7 +187,10 @@ func BuildPatchSQL(patch *ParsedPatch, dialect SQLDialect, opts ...PatchSQLOptio
 	if err != nil {
 		return nil, err
 	}
-	if patch == nil || len(patch.Operations) == 0 {
+	if err := checkParsed(patch); err != nil {
+		return nil, err
+	}
+	if len(patch.Operations) == 0 {
 		return &PatchSQLResult{Empty: true}, nil
 	}
 
@@ -468,7 +471,7 @@ func (b *setBuilder) columnExpr(col string, ops []*PatchOperation) (string, erro
 		value = append(elems, op.Value)
 	}
 	if value == nil {
-		if value = base.Schema.ClearedValue(); value == nil {
+		if value = base.Schema.clearedValue(); value == nil {
 			return "NULL", nil
 		}
 	}
