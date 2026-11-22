@@ -28,7 +28,6 @@ func TestKeysetWalk_SQLite(t *testing.T) {
 						trackID(s.id).String(), s.rank, s.name, core.FormatTimestamp(trackTime(s)), s.price)
 					return err
 				},
-				scanTime: scanTimeValue,
 			})
 		})
 	}

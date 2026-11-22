@@ -4,13 +4,11 @@ package parse_test
 
 import (
 	"database/sql"
-	"encoding/json"
 	"fmt"
 	"maps"
 	"slices"
 	"testing"
 
-	"github.com/shopspring/decimal"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -70,7 +68,7 @@ func runDecimalMatrix(t *testing.T, d decimalDB) {
 	t.Run("walks", func(t *testing.T) {
 		r, err := parse.NewResource[filtertest.DecimalRecord](schema.Name, parse.PageSize(walkPage, 10))
 		require.NoError(t, err)
-		walkOrders(t, walker[filtertest.DecimalRecord]{db: d.db, dialect: d.dialect, resource: r, scan: scanDecimalRecord,
+		walkOrders(t, walker[filtertest.DecimalRecord]{db: d.db, dialect: d.dialect, resource: r,
 			id: func(r filtertest.DecimalRecord) string { return r.ID }}, filtertest.DecimalOrders)
 	})
 	t.Run("facets", func(t *testing.T) {
@@ -115,23 +113,4 @@ func runDecimalMatrix(t *testing.T, d decimalDB) {
 		require.NoError(t, rows.Err())
 		require.NoError(t, rows.Close())
 	})
-}
-
-func scanDecimalRecord(rows *sql.Rows) (filtertest.DecimalRecord, error) {
-	var rec filtertest.DecimalRecord
-	var amount, doc any
-	if err := rows.Scan(&rec.ID, &amount, &doc); err != nil {
-		return rec, err
-	}
-	if a, ok := textOf(amount).(string); ok {
-		d, err := decimal.NewFromString(a)
-		if err != nil {
-			return rec, err
-		}
-		rec.Amount = &d
-	}
-	if s, ok := textOf(doc).(string); ok {
-		rec.Doc = json.RawMessage(s)
-	}
-	return rec, nil
 }

@@ -157,14 +157,11 @@ func TestJSONFieldsOf_IsSharedAndReadsNoRowTags(t *testing.T) {
 	assert.EqualError(t, err, "expected struct type, got map")
 }
 
-// A tag reflect cannot read whole is refused, naming the field, and so is
-// validating a document of its type. The type is built at run time, as vet
-// refuses such a tag in source.
+// A tag reflect cannot read whole is refused, naming the field. The type is
+// built at run time, as vet refuses such a tag in source.
 func TestJSONFieldsOf_RefusesUnreadableTags(t *testing.T) {
 	typ := reflect.StructOf([]reflect.StructField{{Name: "Doc", Type: reflect.TypeFor[int](), Tag: `json:"doc" bson: "doc"`}})
 	_, err := JSONFieldsOf(typ)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "field Doc")
-	err = ValidateJSONKeyRepresentation([]byte(`{"doc":1}`), reflect.New(typ).Interface())
-	assert.ErrorContains(t, err, "field Doc")
 }

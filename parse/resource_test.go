@@ -55,27 +55,6 @@ func widgetDB(t *testing.T) *sql.DB {
 	return db
 }
 
-func scanWidgets(t *testing.T, db *sql.DB, st parse.Statement) []widget {
-	t.Helper()
-	rows, err := db.Query(st.SQL, st.Args...)
-	require.NoError(t, err, st.SQL)
-	defer func() { require.NoError(t, rows.Close()) }()
-	var out []widget
-	for rows.Next() {
-		var w widget
-		var deleted sql.NullString
-		require.NoError(t, rows.Scan(&w.ID, &w.TenantID, &w.Name, &w.Rank, &deleted))
-		if deleted.Valid {
-			at, err := time.Parse(time.RFC3339, deleted.String)
-			require.NoError(t, err)
-			w.DeletedAt = &at
-		}
-		out = append(out, w)
-	}
-	require.NoError(t, rows.Err())
-	return out
-}
-
 func ids(ws []widget) []string {
 	out := make([]string, len(ws))
 	for i, w := range ws {
@@ -92,7 +71,7 @@ func list(t *testing.T, r *parse.Resource[widget], db *sql.DB, query string, s p
 	require.NoError(t, err)
 	plan, err := r.BuildList(filter.SQLiteDialect{}, req, s)
 	require.NoError(t, err)
-	page, err := r.Page(scanWidgets(t, db, plan.Page), plan)
+	page, err := r.Page(resourceRows(t, db, r, filter.SQLiteDialect{}, plan.Page), plan)
 	require.NoError(t, err)
 	return page, plan
 }
@@ -403,7 +382,7 @@ func TestPagePointers(t *testing.T) {
 	plan, err := r.BuildList(filter.SQLiteDialect{}, req, parse.Scope{Tenant: "t1"})
 	require.NoError(t, err)
 	var ptrs []*widget
-	for _, w := range scanWidgets(t, db, plan.Page) {
+	for _, w := range resourceRows(t, db, r, filter.SQLiteDialect{}, plan.Page) {
 		ptrs = append(ptrs, &w)
 	}
 	page, err := r.PagePointers(ptrs, plan)

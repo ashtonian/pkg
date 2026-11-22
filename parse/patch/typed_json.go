@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"github.com/ashtonian/pkg/parse/core"
+	"github.com/ashtonian/pkg/parse/internal/jsonkeys"
 )
 
 // checkJSONMembers rejects members of data, a value the codec encoded, that a
@@ -65,7 +66,7 @@ func normalizeTypedMerge(t reflect.Type, obj map[string]any, codec core.Codec, p
 			value := obj[name]
 			canonical := name
 			if declared {
-				_, key, err := core.CanonicalJSONMapKey(t.Key(), name)
+				_, key, err := jsonkeys.CanonicalMapKey(t.Key(), name)
 				if err != nil {
 					return nil, err
 				}
@@ -274,7 +275,7 @@ func canonicalJSONReplacement(value reflect.Value, document any) (any, error) {
 		out := make(map[string]any, len(input))
 		sources := make(map[string]string, len(input))
 		for _, name := range slices.Sorted(maps.Keys(input)) {
-			key, canonical, err := core.CanonicalJSONMapKey(t.Key(), name)
+			key, canonical, err := jsonkeys.CanonicalMapKey(t.Key(), name)
 			if err != nil {
 				return nil, err
 			}

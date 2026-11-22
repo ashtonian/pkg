@@ -55,21 +55,6 @@ func gadgetDB(t *testing.T) *sql.DB {
 	return db
 }
 
-func scanGadgets(t *testing.T, db *sql.DB, st parse.Statement) []gadget {
-	t.Helper()
-	rows, err := db.Query(st.SQL, st.Args...)
-	require.NoError(t, err, st.SQL)
-	defer func() { require.NoError(t, rows.Close()) }()
-	var out []gadget
-	for rows.Next() {
-		var g gadget
-		require.NoError(t, rows.Scan(&g.ID, &g.TenantID, &g.Name, &g.Rank, &g.UpdatedAt, &g.DeletedAt))
-		out = append(out, g)
-	}
-	require.NoError(t, rows.Err())
-	return out
-}
-
 func gadgetIDs(gs []gadget) []string {
 	out := make([]string, len(gs))
 	for i, g := range gs {
@@ -164,7 +149,7 @@ func TestBuildUpdate_ChangesOnlyTheScopedTargetRows(t *testing.T) {
 			plan, err := r.BuildUpdate(filter.SQLiteDialect{}, p, tc.target, tc.scope)
 			require.NoError(t, err)
 			require.True(t, plan.Writes)
-			got := scanGadgets(t, db, plan.Owner)
+			got := resourceRows(t, db, r, filter.SQLiteDialect{}, plan.Owner)
 			assert.Equal(t, tc.want, nilIfEmpty(gadgetIDs(got)), "the rows RETURNING reports")
 			for _, g := range got {
 				assert.Equal(t, "renamed", g.Name)
@@ -209,13 +194,13 @@ func TestBuildUpdate_Stamps(t *testing.T) {
 	db := gadgetDB(t)
 	plan, err := r.BuildUpdate(filter.SQLiteDialect{}, p, parse.ByID("g1"), parse.Scope{Tenant: "t1"}, parse.Stamp("updated_at", at))
 	require.NoError(t, err)
-	got := scanGadgets(t, db, plan.Owner)
+	got := resourceRows(t, db, r, filter.SQLiteDialect{}, plan.Owner)
 	require.Len(t, got, 1)
 	assert.Equal(t, core.FormatTimestamp(at), got[0].UpdatedAt)
 
 	plan, err = r.BuildUpdate(filter.SQLiteDialect{}, p, parse.ByID("g2"), parse.Scope{Tenant: "t1"}, parse.StampSQL("updated_at", "'database clock'"))
 	require.NoError(t, err)
-	got = scanGadgets(t, db, plan.Owner)
+	got = resourceRows(t, db, r, filter.SQLiteDialect{}, plan.Owner)
 	require.Len(t, got, 1)
 	assert.Equal(t, "database clock", got[0].UpdatedAt)
 
@@ -223,7 +208,7 @@ func TestBuildUpdate_Stamps(t *testing.T) {
 	require.NoError(t, err)
 	plan, err = r.BuildUpdate(filter.SQLiteDialect{}, rel, parse.ByID("g1"), parse.Scope{Tenant: "t1"}, parse.Stamp("updated_at", at.Add(time.Hour)))
 	require.NoError(t, err)
-	got = scanGadgets(t, db, plan.Owner)
+	got = resourceRows(t, db, r, filter.SQLiteDialect{}, plan.Owner)
 	assert.Equal(t, core.FormatTimestamp(at), got[0].UpdatedAt, "a relation change alone writes no column, so it stamps none")
 }
 
@@ -299,7 +284,7 @@ func TestBuildUpdate_RelationsChangeOnlyTheRowsTheOwnerMatched(t *testing.T) {
 
 	tx, err := db.Begin()
 	require.NoError(t, err)
-	owners := scanGadgetsTx(t, tx, plan.Owner)
+	owners := resourceRows(t, tx, r, filter.SQLiteDialect{}, plan.Owner)
 	assert.Equal(t, []string{"g1"}, gadgetIDs(owners), "h1 is t2's, g3 is deleted")
 	keys := make([]any, len(owners))
 	for i, o := range owners {
@@ -321,21 +306,6 @@ func TestBuildUpdate_RelationsChangeOnlyTheRowsTheOwnerMatched(t *testing.T) {
 	assert.Empty(t, none, "no matched owners, no junction writes")
 }
 
-func scanGadgetsTx(t *testing.T, tx *sql.Tx, st parse.Statement) []gadget {
-	t.Helper()
-	rows, err := tx.Query(st.SQL, st.Args...)
-	require.NoError(t, err, st.SQL)
-	defer func() { require.NoError(t, rows.Close()) }()
-	var out []gadget
-	for rows.Next() {
-		var g gadget
-		require.NoError(t, rows.Scan(&g.ID, &g.TenantID, &g.Name, &g.Rank, &g.UpdatedAt, &g.DeletedAt))
-		out = append(out, g)
-	}
-	require.NoError(t, rows.Err())
-	return out
-}
-
 func TestBuildUpdate_ColumnsAndRelationsTogether(t *testing.T) {
 	r := gadgets(t)
 	p, err := r.ParseMergePatch([]byte(`{"name":"both","tags":["blue"]}`))
@@ -345,7 +315,7 @@ func TestBuildUpdate_ColumnsAndRelationsTogether(t *testing.T) {
 	require.NoError(t, err)
 	assert.True(t, strings.HasPrefix(plan.Owner.SQL, `UPDATE "gadgets" SET `))
 	assert.True(t, plan.HasRelations())
-	owners := scanGadgets(t, db, plan.Owner)
+	owners := resourceRows(t, db, r, filter.SQLiteDialect{}, plan.Owner)
 	require.Len(t, owners, 1)
 	stmts, err := r.RelationStatements(plan, []any{owners[0].ID})
 	require.NoError(t, err)
@@ -366,7 +336,7 @@ func TestBuildUpdate_AnEmptyPatchIsAScopedRead(t *testing.T) {
 	require.NoError(t, err)
 	assert.False(t, plan.Writes)
 	assert.False(t, plan.HasRelations())
-	assert.Equal(t, []string{"g1"}, gadgetIDs(scanGadgets(t, db, plan.Owner)))
+	assert.Equal(t, []string{"g1"}, gadgetIDs(resourceRows(t, db, r, filter.SQLiteDialect{}, plan.Owner)))
 }
 
 func TestBuildUpdate_LocksRelationOwnersOnPostgres(t *testing.T) {

@@ -33,9 +33,8 @@ type DB interface {
 // ErrDialect is a plan compiled for a dialect other than PostgreSQL.
 var ErrDialect = errors.New("parsepgx: plan is not compiled for PostgreSQL")
 
-// QueryPage reads the page plan selects, scanned into T by its db tags
-// (pgx.RowToStructByNameLax: fields of columns the resource does not read
-// stay zero), and returns it as r.Page builds it: with its
+// QueryPage reads the page plan selects, scanned into T through r's row
+// contract (parse.RowScanner), and returns it as r.Page builds it: with its
 // total when the plan counts, its facet counts when the plan facets, and the
 // related IDs of the page's rows for each relation the plan includes.
 //
@@ -60,7 +59,7 @@ func QueryPage[T any](ctx context.Context, db Querier, r *parse.Resource[T], pla
 	b := &pgx.Batch{}
 	b.Queue(plan.Page.SQL, plan.Page.Args...).Query(func(rows pgx.Rows) error {
 		var err error
-		items, err = pgx.CollectRows(rows, rowToResource(r))
+		items, err = collect(rows, r)
 		return wrap("page", err)
 	})
 	if plan.Count != nil {
@@ -91,6 +90,23 @@ func QueryPage[T any](ctx context.Context, db Querier, r *parse.Resource[T], pla
 		return nil, fmt.Errorf("parsepgx: %s: %w", r.Table(), err)
 	}
 	return page, nil
+}
+
+// Query runs st, a statement over r compiled for PostgreSQL that reads
+// r.Columns (a repository's own read of the table, or a plan's Current or
+// Reread), and returns its rows scanned through r's row contract.
+func Query[T any](ctx context.Context, db Querier, r *parse.Resource[T], st parse.Statement) ([]T, error) {
+	var rows []T
+	b := &pgx.Batch{}
+	b.Queue(st.SQL, st.Args...).Query(func(rs pgx.Rows) error {
+		var err error
+		rows, err = collect(rs, r)
+		return err
+	})
+	if err := db.SendBatch(ctx, b).Close(); err != nil {
+		return nil, fmt.Errorf("parsepgx: %s: %w", r.Table(), err)
+	}
+	return rows, nil
 }
 
 // queryIncludes reads the related IDs of the page's rows, one statement per
@@ -185,7 +201,7 @@ func Update[T any](ctx context.Context, db DB, r *parse.Resource[T], plan *parse
 			queued = true
 			b.Queue(stmt.SQL, stmt.Args...).Query(func(rs pgx.Rows) error {
 				var err error
-				reread[i], err = pgx.CollectRows(rs, rowToResource(r))
+				reread[i], err = collect(rs, r)
 				return wrap("reread", err)
 			})
 		}
@@ -215,13 +231,13 @@ func queryTargets[T any](ctx context.Context, db Querier, resource *parse.Resour
 	if plan.Current != nil {
 		b.Queue(plan.Current.SQL, plan.Current.Args...).Query(func(r pgx.Rows) error {
 			var err error
-			current, err = pgx.CollectRows(r, rowToResource(resource))
+			current, err = collect(r, resource)
 			return wrap("current", err)
 		})
 	}
 	b.Queue(plan.Owner.SQL, plan.Owner.Args...).Query(func(r pgx.Rows) error {
 		var err error
-		owner, err = pgx.CollectRows(r, rowToResource(resource))
+		owner, err = collect(r, resource)
 		return wrap("owner", err)
 	})
 	if err := db.SendBatch(ctx, b).Close(); err != nil {

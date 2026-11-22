@@ -1,6 +1,6 @@
 //go:build unit
 
-package core
+package jsonkeys
 
 import (
 	"bytes"
@@ -8,9 +8,11 @@ import (
 	"fmt"
 	"reflect"
 	"strings"
+
+	"github.com/ashtonian/pkg/parse/core"
 )
 
-// The implementation ValidateJSONKeyRepresentation replaced, kept as the
+// The implementation Validate replaced, kept as the
 // reference its rewrite is fuzzed against.
 
 func referenceValidate(raw []byte, decoded any) error {
@@ -114,7 +116,7 @@ func referenceStructKeys(raw []byte, value reflect.Value, path string) error {
 	if err != nil || len(members) == 0 {
 		return err
 	}
-	fields, err := StructFieldsOf(value.Type(), JSONTagKey, DefaultColumnTagKey)
+	fields, err := core.StructFieldsOf(value.Type(), core.JSONTagKey, core.DefaultColumnTagKey)
 	if err != nil {
 		return fmt.Errorf("JSON object at %q: %w", path, err)
 	}

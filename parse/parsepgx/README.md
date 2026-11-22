@@ -58,7 +58,7 @@ sequenceDiagram
 **Exit points**
 - Include results pass through `filter.Page.SetInclude`: `_relations` and `_truncated` omit empty projections, and cut owners are reported with the retained IDs.
 - Statements to `db` through `SendBatch` (and `Begin` for an update that changes relations). Statement text and arguments come only from the plan.
-- Rows use pgx's `db`-tagged, embedded-field mapping. Columns omitted by `parse.ReadColumns` stay zero; a `parse.ReadExpr` column scans its expression's value under its `db` name; declared JSON storage and JSON/JSONB result types use the checked JSON decoder described below.
+- Rows scan through the resource's row contract (`parse.RowScanner`): each column into the field the resource compiled it from — the column tag `core.WithColumnTag` names (default `db`), else the column convention over the field's JSON name, with embedded structs promoted as encoding/json promotes them and nil embedded pointers allocated. Columns omitted by `parse.ReadColumns` stay zero; a `parse.ReadExpr` column scans its expression's value under its column name; declared JSON storage and JSON/JSONB result types (`parse.ScanJSON`, from the result's type OIDs) use the checked JSON decoder described below.
 
 **Failure modes**
 - A plan compiled for another dialect: `ErrDialect`, before any statement runs.
@@ -106,7 +106,7 @@ A [`SkipUnchanged`](../docs/patches.md#skipping-unchanged-rows) plan sends `plan
 
 - *Timeouts*: every statement takes the caller's context; give the request a deadline. Pool limits and lifetimes (`MaxConns`, `MaxConnLifetime`, `MaxConnIdleTime`, `ConnConfig.ConnectTimeout`) belong to the caller's `pgxpool.Config`.
 - *Observability*: the package emits no metrics or logs of its own. Instrument the pool with a pgx `QueryTracer` / `BatchTracer` (for example an OpenTelemetry tracer on `ConnConfig.Tracer`); each list is one or two batches, each update one batch, or two and a transaction; a `SkipUnchanged` plan's batch holds two statements.
-- *Troubleshooting*: an `ErrDialect` means the plan was built with another dialect; build it with `filter.PostgresDialect{}`. A `42703` (undefined column) means the table and `T`'s `db` tags disagree. A list whose total looks one off under load is the per-statement snapshot; use a REPEATABLE READ transaction.
+- *Troubleshooting*: an `ErrDialect` means the plan was built with another dialect; build it with `filter.PostgresDialect{}`. A `42703` (undefined column) means the table and the columns `T`'s fields compile to (the column tag, else the column convention over the JSON name) disagree. A list whose total looks one off under load is the per-statement snapshot; use a REPEATABLE READ transaction.
 
 ## Security
 
@@ -116,6 +116,7 @@ The tenant, authorization policy and deleted-row visibility come only from the `
 
 - `QueryPage[T](ctx, db Querier, r *parse.Resource[T], plan *parse.ListPlan) (*filter.Page[T], error)` — the page with its total, facets (`Page.Facets`) and includes (`Page.Relations`) as the plan asks.
 - `Update[T](ctx, db DB, r *parse.Resource[T], plan *parse.UpdatePlan) ([]T, error)` — the target rows as the update left them, computed columns read after the membership changes (a `SkipUnchanged` plan's changed rows, then its unchanged ones); none when no row in scope is a target.
+- `Query[T](ctx, db Querier, r *parse.Resource[T], st parse.Statement) ([]T, error)` — the rows of one statement over `r.Columns`, scanned through the row contract: a repository's own read of the table, or a plan's `Current` or `Reread`.
 - `Querier` — `SendBatch`: `*pgxpool.Pool`, `*pgx.Conn`, `pgx.Tx`.
 - `DB` — `Querier` plus `Begin`: `*pgxpool.Pool`, `*pgx.Conn`, `pgx.Tx` (a savepoint).
 - `ErrDialect` — a plan not compiled for PostgreSQL.
@@ -124,8 +125,8 @@ The tenant, authorization policy and deleted-row visibility come only from the `
 
 | File | Responsibility |
 |------|----------------|
-| `parsepgx.go` | `Querier`, `DB`, `QueryPage`, `Update`, `ErrDialect` |
-| `json.go` | Native field mapping with fresh JSON decoding and canonical-key validation |
+| `parsepgx.go` | `Querier`, `DB`, `QueryPage`, `Query`, `Update`, `ErrDialect` |
+| `json.go` | Rows through `parse.RowScanner`, JSON/JSONB result columns named to it (`parse.ScanJSON`) from the first row's field descriptions |
 | `json_integration_test.go` | Typed JSON lists/updates, nulls, projections and failure isolation in every execution mode |
 | `recipe_test.go` | The README recipe: `Device`, list and Merge Patch handlers, `Example` |
 | `recipe_integration_test.go` | `TestRecipe`: the recipe served against PostgreSQL |

@@ -5,7 +5,6 @@ package parse_test
 import (
 	"context"
 	"database/sql"
-	"encoding/json"
 	"fmt"
 	"net/url"
 	"slices"
@@ -44,7 +43,7 @@ func TestReadExpr_SQLite(t *testing.T) {
 	db := dbtest.SQLite(t)
 	runReadExpr(t, db, filter.SQLiteDialect{}, computedDB{
 		page: func(t *testing.T, plan *parse.ListPlan) *filter.Page[computedAccount] {
-			page, err := computedAccounts.Page(sqliteAccounts(t, queryRows(t, db, plan.Page.SQL, plan.Page.Args)), plan)
+			page, err := computedAccounts.Page(resourceRows(t, db, computedAccounts, filter.SQLiteDialect{}, plan.Page), plan)
 			require.NoError(t, err)
 			return page
 		},
@@ -56,9 +55,9 @@ func TestReadExpr_SQLite(t *testing.T) {
 			defer func() { _ = tx.Rollback() }()
 			var current []computedAccount
 			if plan.Current != nil {
-				current = sqliteAccounts(t, queryRows(t, tx, plan.Current.SQL, plan.Current.Args))
+				current = resourceRows(t, tx, computedAccounts, filter.SQLiteDialect{}, *plan.Current)
 			}
-			changed := sqliteAccounts(t, queryRows(t, tx, plan.Owner.SQL, plan.Owner.Args))
+			changed := resourceRows(t, tx, computedAccounts, filter.SQLiteDialect{}, plan.Owner)
 			var unchanged []computedAccount
 			if plan.Current != nil {
 				unchanged, err = computedAccounts.Unchanged(changed, current)
@@ -79,7 +78,7 @@ func TestReadExpr_SQLite(t *testing.T) {
 				if reread == nil {
 					continue
 				}
-				fresh := sqliteAccounts(t, queryRows(t, tx, reread.SQL, reread.Args))
+				fresh := resourceRows(t, tx, computedAccounts, filter.SQLiteDialect{}, *reread)
 				if i == 0 {
 					changed = fresh
 				} else {
@@ -90,24 +89,6 @@ func TestReadExpr_SQLite(t *testing.T) {
 			return slices.Concat(changed, unchanged)
 		},
 	})
-}
-
-// sqliteAccounts scans SQLite rows of computedAccounts.Columns, the group
-// keys held as JSON text.
-func sqliteAccounts(t *testing.T, rows [][]any) []computedAccount {
-	t.Helper()
-	var out []computedAccount
-	for _, row := range rows {
-		groups, ok := row[5].(string)
-		require.True(t, ok, "SQLite holds the array as JSON text, got %T", row[5])
-		account := computedAccount{
-			ID: int(computedInt(t, row[0])), TenantID: fmt.Sprint(row[1]), Name: fmt.Sprint(row[2]), Email: fmt.Sprint(row[3]),
-			MemberCount: int(computedInt(t, row[4])), Contact: fmt.Sprint(row[6]),
-		}
-		require.NoError(t, json.Unmarshal([]byte(groups), &account.GroupIDs))
-		out = append(out, account)
-	}
-	return out
 }
 
 func computedKeys(t *testing.T, rows []computedAccount) []any {

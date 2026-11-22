@@ -22,7 +22,7 @@ Start with the [runnable package example](../README.md#quick-start). The focused
 - Pointers: `ParsePointer`, `FormatPointer`, `EscapePointerToken`
 - Relations: `RelationSchema` (`OwnerKey`: its `PrimaryKey`, or `DefaultPrimaryKey`; `RelatedTable`: the table its nested predicates test), `RelationKind` (`ManyToMany`, the zero kind, `HasMany`, `BelongsTo`), `DefaultPrimaryKey` (`"id"`, a resource's or relation owner's key when none is declared), `ParseRelationTag`, `IsIdentifier`
 - Errors: `Code` and its constants `Code*` (`CodeUnknownField` = E2071, …: each code's one definition, with its status and default message; filter, patch and parse alias them as `ECode*`), `ParseError` (`ErrorCode`, `ErrorMessage`, `ErrorHTTPStatus`, `IsErrorUserFacing`), `ParseErrorKind`, `DetailField` / `DetailParameter` (the `Details` keys)
-- Documents: `JSONFieldsOf` (a struct type's members as encoding/json names them, no other tag read), `ValidateJSONKeyRepresentation` (a stored document's member names against its Go type, in one pass), `CanonicalJSONMapKey` (a member name as a map key and back)
+- Documents: `JSONFieldsOf` (a struct type's members as encoding/json names them, no other tag read; the module's internal key validation of stored documents reads it)
 - Fields: `StructFieldsOf`, `StructFields` (`External`, `ColumnTagged`), `Field` (`Value`, `Settable`, `Hidden`, `HasFieldNameOption`, `Quoted`, `Wire`), `Tags`, `Capabilities` (`Has`), `Capability` (`CapabilityFilter`, … — the `parse` tag's values, which the `paths` tag's member capabilities share), `Bounds` (`IsZero`, `BoundsValues`, `CountsItems`, `Check`: a field's `minlen` / `maxlen` / `min` / `max` / `minitems` / `maxitems`, the tags the `Constraint*` constants name) — one walk of a struct type shared by every schema
 - Codec: `Codec`, `StdlibJSON`; naming: `Pluralize`; the declared-constraint names `Constraint*` (`ConstraintEnum`, …), which `patch.ConstraintError` reports
 
@@ -56,7 +56,6 @@ Start with the [runnable package example](../README.md#quick-start). The focused
 | `json.go` | `NormalizeJSON` — canonical JSON documents |
 | `json_equal.go` | `JSONEqual` — document equality, numbers by value |
 | `json_fields.go` | `JSONFieldsOf` — encoding/json's member naming for document types, on gowalker's `WithJSONFields` with ties dropped; no row tag read |
-| `json_keys.go` | `ValidateJSONKeyRepresentation`, `CanonicalJSONMapKey` — a stored document's member names keep their JSON spelling; each type's shape and map key rule found once |
 | `pointer.go` | RFC 6901 pointers |
 | `relation.go` | Relation tag grammar, `IsIdentifier` |
 | `doc.go` | Package documentation |

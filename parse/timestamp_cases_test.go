@@ -114,7 +114,7 @@ func walkTimestamps(t *testing.T, d timestampDB, res *parse.Resource[filtertest.
 		require.NoError(t, err)
 		plan, err := res.BuildList(d.dialect, req, parse.Scope{})
 		require.NoError(t, err)
-		page, err := res.Page(scanTimestamps(t, d.db, plan.Page), plan)
+		page, err := res.Page(resourceRows(t, d.db, res, d.dialect, plan.Page), plan)
 		require.NoError(t, err)
 		var ids strings.Builder
 		for _, r := range page.Items {
@@ -136,25 +136,4 @@ func walkTimestamps(t *testing.T, d timestampDB, res *parse.Resource[filtertest.
 		slices.Reverse(pages)
 	}
 	return strings.Join(pages, ""), lastStart
-}
-
-func scanTimestamps(t *testing.T, db *sql.DB, st parse.Statement) []filtertest.TimestampRecord {
-	t.Helper()
-	rows, err := db.Query(st.SQL, st.Args...)
-	require.NoError(t, err, st.SQL)
-	defer func() { require.NoError(t, rows.Close()) }()
-	var out []filtertest.TimestampRecord
-	for rows.Next() {
-		var r filtertest.TimestampRecord
-		var at any
-		require.NoError(t, rows.Scan(&r.ID, &at))
-		if at != nil {
-			ts, err := scanTimeValue(at)
-			require.NoError(t, err)
-			r.At = &ts
-		}
-		out = append(out, r)
-	}
-	require.NoError(t, rows.Err())
-	return out
 }

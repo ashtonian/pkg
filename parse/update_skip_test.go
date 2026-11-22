@@ -66,25 +66,6 @@ func skipUpdate(t *testing.T, r *parse.Resource[note], d parse.Dialect, body str
 	return plan
 }
 
-type queryer interface {
-	Query(query string, args ...any) (*sql.Rows, error)
-}
-
-func scanNotes(t *testing.T, q queryer, st parse.Statement) []note {
-	t.Helper()
-	rows, err := q.Query(st.SQL, st.Args...)
-	require.NoError(t, err, st.SQL)
-	defer func() { require.NoError(t, rows.Close()) }()
-	var out []note
-	for rows.Next() {
-		var n note
-		require.NoError(t, rows.Scan(&n.ID, &n.TenantID, &n.Title, &n.Rank, &n.Version, &n.UpdatedAt, &n.DeletedAt))
-		out = append(out, n)
-	}
-	require.NoError(t, rows.Err())
-	return out
-}
-
 // noteIDs are the rows' keys, sorted; nil for none.
 func noteIDs(ns []note) []string {
 	var out []string
@@ -102,8 +83,8 @@ func applied(t *testing.T, r *parse.Resource[note], db *sql.DB, plan *parse.Upda
 	require.NotNil(t, plan.Current)
 	tx, err := db.Begin()
 	require.NoError(t, err)
-	current := scanNotes(t, tx, *plan.Current)
-	changed = scanNotes(t, tx, plan.Owner)
+	current := resourceRows(t, tx, r, filter.SQLiteDialect{}, *plan.Current)
+	changed = resourceRows(t, tx, r, filter.SQLiteDialect{}, plan.Owner)
 	require.NoError(t, tx.Commit())
 	unchanged, err = r.Unchanged(changed, current)
 	require.NoError(t, err)
@@ -112,7 +93,7 @@ func applied(t *testing.T, r *parse.Resource[note], db *sql.DB, plan *parse.Upda
 
 func storedNote(t *testing.T, db *sql.DB, id string) note {
 	t.Helper()
-	got := scanNotes(t, db, parse.Statement{SQL: `SELECT id, tenant_id, title, rank, version, updated_at, deleted_at FROM notes WHERE id = ?1`, Args: []any{id}})
+	got := resourceRows(t, db, notes(t), filter.SQLiteDialect{}, parse.Statement{SQL: `SELECT id, tenant_id, title, rank, version, updated_at, deleted_at FROM notes WHERE id = ?1`, Args: []any{id}})
 	require.Len(t, got, 1)
 	return got[0]
 }
@@ -258,7 +239,7 @@ func TestSkipUnchanged_Relations(t *testing.T) {
 			assert.True(t, plan.Writes)
 			tx, err := db.Begin()
 			require.NoError(t, err)
-			owners := scanNotes(t, tx, plan.Owner)
+			owners := resourceRows(t, tx, r, filter.SQLiteDialect{}, plan.Owner)
 			require.Equal(t, []string{"n1"}, noteIDs(owners))
 			assert.Equal(t, tc.changes, relationRows(t, r, tx, plan, owners), tc.body)
 			require.NoError(t, tx.Commit())
@@ -273,8 +254,8 @@ func TestSkipUnchanged_Relations(t *testing.T) {
 		require.NotNil(t, plan.Current)
 		tx, err := db.Begin()
 		require.NoError(t, err)
-		current := scanNotes(t, tx, *plan.Current)
-		changed := scanNotes(t, tx, plan.Owner)
+		current := resourceRows(t, tx, r, filter.SQLiteDialect{}, *plan.Current)
+		changed := resourceRows(t, tx, r, filter.SQLiteDialect{}, plan.Owner)
 		assert.Equal(t, []string{"n2"}, noteIDs(changed), "n1 already reads one")
 		unchanged, err := r.Unchanged(changed, current)
 		require.NoError(t, err)
@@ -290,7 +271,7 @@ func TestSkipUnchanged_Relations(t *testing.T) {
 		plan := skipUpdate(t, r, d, `{}`, parse.ByID("n1"))
 		assert.False(t, plan.Writes)
 		assert.Nil(t, plan.Current)
-		assert.Equal(t, []string{"n1"}, noteIDs(scanNotes(t, noteDB(t), plan.Owner)))
+		assert.Equal(t, []string{"n1"}, noteIDs(resourceRows(t, noteDB(t), r, filter.SQLiteDialect{}, plan.Owner)))
 	})
 }
 

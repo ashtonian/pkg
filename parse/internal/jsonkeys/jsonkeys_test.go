@@ -1,6 +1,6 @@
 //go:build unit
 
-package core
+package jsonkeys
 
 import (
 	"encoding/json"
@@ -12,6 +12,8 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+type namedKey string
 
 type keyInner struct {
 	Y int `json:"y"`
@@ -49,10 +51,10 @@ func decodeAndValidate(t *testing.T, doc string, target reflect.Type) error {
 	t.Helper()
 	fresh := reflect.New(target)
 	require.NoError(t, json.Unmarshal([]byte(doc), fresh.Interface()))
-	return ValidateJSONKeyRepresentation([]byte(doc), fresh.Interface())
+	return Validate([]byte(doc), fresh.Interface())
 }
 
-func TestValidateJSONKeyRepresentation(t *testing.T) {
+func TestValidate(t *testing.T) {
 	docType := reflect.TypeFor[keyDoc]()
 	tests := []struct {
 		name string
@@ -63,9 +65,9 @@ func TestValidateJSONKeyRepresentation(t *testing.T) {
 		{name: "canonical members", doc: `{"x":1,"items":[{"y":1}],"ints":{"-3":1,"10":2},"Names":{"a":{"y":2}},"e":"v"}`},
 		{name: "null", doc: `null`},
 		{name: "empty object", doc: `{}`},
-		{name: "member spelled in another case", doc: `{"X":1}`, err: `JSON member "/X" is noncanonical for core.keyDoc; use "x"`},
-		{name: "field named by its Go name in another case", doc: `{"names":{}}`, err: `JSON member "/names" is noncanonical for core.keyDoc; use "Names"`},
-		{name: "duplicate member", doc: `{"x":1,"x":2}`, err: `duplicate JSON member "/x" in core.keyDoc`},
+		{name: "member spelled in another case", doc: `{"X":1}`, err: `JSON member "/X" is noncanonical for jsonkeys.keyDoc; use "x"`},
+		{name: "field named by its Go name in another case", doc: `{"names":{}}`, err: `JSON member "/names" is noncanonical for jsonkeys.keyDoc; use "Names"`},
+		{name: "duplicate member", doc: `{"x":1,"x":2}`, err: `duplicate JSON member "/x" in jsonkeys.keyDoc`},
 		// An unknown member is not part of the value: decoding drops it, so
 		// neither its spelling nor its repetition changes what is stored.
 		{name: "duplicate unknown member", doc: `{"zz":1,"zz":2}`},
@@ -75,20 +77,20 @@ func TestValidateJSONKeyRepresentation(t *testing.T) {
 		{name: "integer key negative zero", doc: `{"ints":{"-0":1}}`, err: `JSON map member "/ints/-0" does not preserve its decoded key spelling in map[int]int; use canonical JSON member names`},
 		{name: "canonical integer keys", doc: `{"ints":{"1":1,"0":2,"-9223372036854775808":3},"uints":{"255":{"y":1}}}`},
 		{name: "duplicate integer key", doc: `{"ints":{"1":1,"1":2}}`, err: `duplicate JSON map member "/ints/1" in map[int]int`},
-		{name: "duplicate string key", doc: `{"Names":{"a":null,"a":{"y":1}}}`, err: `duplicate JSON map member "/Names/a" in map[string]*core.keyInner`},
+		{name: "duplicate string key", doc: `{"Names":{"a":null,"a":{"y":1}}}`, err: `duplicate JSON map member "/Names/a" in map[string]*jsonkeys.keyInner`},
 		{name: "address key in a longer form", doc: `{"addrs":{"0:0:0:0:0:0:0:1":1}}`, err: `JSON map member "/addrs/0:0:0:0:0:0:0:1" does not preserve its decoded key spelling in map[netip.Addr]int; use canonical JSON member names`},
 		{name: "canonical address key", doc: `{"addrs":{"::ffff:1.2.3.4":1,"::1":2}}`},
-		{name: "element member in another case", doc: `{"items":[{"y":1},{"Y":2}]}`, err: `JSON member "/items/1/Y" is noncanonical for core.keyInner; use "y"`},
-		{name: "array element member in another case", doc: `{"pair":[{"Y":2}]}`, err: `JSON member "/pair/0/Y" is noncanonical for core.keyInner; use "y"`},
-		{name: "map value member in another case", doc: `{"uints":{"7":{"Y":1}}}`, err: `JSON member "/uints/7/Y" is noncanonical for core.keyInner; use "y"`},
-		{name: "nested document", doc: `{"nested":{"nested":{"X":1}}}`, err: `JSON member "/nested/nested/X" is noncanonical for core.keyDoc; use "x"`},
-		{name: "member promoted from a pointer embed", doc: `{"E":"v"}`, err: `JSON member "/E" is noncanonical for core.keyDoc; use "e"`},
+		{name: "element member in another case", doc: `{"items":[{"y":1},{"Y":2}]}`, err: `JSON member "/items/1/Y" is noncanonical for jsonkeys.keyInner; use "y"`},
+		{name: "array element member in another case", doc: `{"pair":[{"Y":2}]}`, err: `JSON member "/pair/0/Y" is noncanonical for jsonkeys.keyInner; use "y"`},
+		{name: "map value member in another case", doc: `{"uints":{"7":{"Y":1}}}`, err: `JSON member "/uints/7/Y" is noncanonical for jsonkeys.keyInner; use "y"`},
+		{name: "nested document", doc: `{"nested":{"nested":{"X":1}}}`, err: `JSON member "/nested/nested/X" is noncanonical for jsonkeys.keyDoc; use "x"`},
+		{name: "member promoted from a pointer embed", doc: `{"E":"v"}`, err: `JSON member "/E" is noncanonical for jsonkeys.keyDoc; use "e"`},
 		{name: "escaped member name", doc: `{"a~b/c":1,"x":2}`},
-		{name: "escaped name in a path", doc: `{"Names":{"a/b~c":{"Y":1}}}`, err: `JSON member "/Names/a~1b~0c/Y" is noncanonical for core.keyInner; use "y"`},
+		{name: "escaped name in a path", doc: `{"Names":{"a/b~c":{"Y":1}}}`, err: `JSON member "/Names/a~1b~0c/Y" is noncanonical for jsonkeys.keyInner; use "y"`},
 		{name: "raw message is opaque", doc: `{"raw":{"X":1,"X":2}}`},
 		{name: "a type decoding itself is opaque", doc: `{"own":{"M":{"a":1,"a":2}}}`},
 		{name: "interface is opaque", doc: `{"any":{"X":1,"X":2}}`},
-		{name: "top-level map", doc: `{"1":{"Y":1}}`, typ: reflect.TypeFor[map[int]keyInner](), err: `JSON member "/1/Y" is noncanonical for core.keyInner; use "y"`},
+		{name: "top-level map", doc: `{"1":{"Y":1}}`, typ: reflect.TypeFor[map[int]keyInner](), err: `JSON member "/1/Y" is noncanonical for jsonkeys.keyInner; use "y"`},
 		{name: "top-level slice", doc: `[{"y":1},null,{"y":2}]`, typ: reflect.TypeFor[[]*keyInner]()},
 	}
 	for _, tt := range tests {
@@ -107,10 +109,10 @@ func TestValidateJSONKeyRepresentation(t *testing.T) {
 	}
 }
 
-func TestValidateJSONKeyRepresentation_RefusesBadInput(t *testing.T) {
-	assert.EqualError(t, ValidateJSONKeyRepresentation([]byte(`{}`), keyDoc{}), "JSON key validation target must be a non-nil pointer, got core.keyDoc")
-	assert.EqualError(t, ValidateJSONKeyRepresentation([]byte(`{}`), (*keyDoc)(nil)), "JSON key validation target must be a non-nil pointer, got *core.keyDoc")
-	assert.EqualError(t, ValidateJSONKeyRepresentation([]byte(`{"x":`), new(keyDoc)), "invalid JSON document")
+func TestValidate_RefusesBadInput(t *testing.T) {
+	assert.EqualError(t, Validate([]byte(`{}`), keyDoc{}), "JSON key validation target must be a non-nil pointer, got jsonkeys.keyDoc")
+	assert.EqualError(t, Validate([]byte(`{}`), (*keyDoc)(nil)), "JSON key validation target must be a non-nil pointer, got *jsonkeys.keyDoc")
+	assert.EqualError(t, Validate([]byte(`{"x":`), new(keyDoc)), "invalid JSON document")
 }
 
 type textKey string
@@ -122,7 +124,7 @@ func (k *textKey) UnmarshalText(b []byte) error {
 	return nil
 }
 
-func TestCanonicalJSONMapKey(t *testing.T) {
+func TestCanonicalMapKey(t *testing.T) {
 	tests := []struct {
 		name      string
 		keyType   reflect.Type
@@ -132,7 +134,7 @@ func TestCanonicalJSONMapKey(t *testing.T) {
 		err       bool
 	}{
 		{name: "string", keyType: reflect.TypeFor[string](), member: "Ab", key: "Ab", canonical: "Ab"},
-		{name: "named string", keyType: reflect.TypeFor[Capability](), member: "x", key: Capability("x"), canonical: "x"},
+		{name: "named string", keyType: reflect.TypeFor[namedKey](), member: "x", key: namedKey("x"), canonical: "x"},
 		{name: "integer", keyType: reflect.TypeFor[int](), member: "12", key: 12, canonical: "12"},
 		{name: "integer with a plus sign", keyType: reflect.TypeFor[int16](), member: "+12", key: int16(12), canonical: "12"},
 		{name: "integer with a leading zero", keyType: reflect.TypeFor[int64](), member: "-012", key: int64(-12), canonical: "-12"},
@@ -148,7 +150,7 @@ func TestCanonicalJSONMapKey(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			key, canonical, err := CanonicalJSONMapKey(tt.keyType, tt.member)
+			key, canonical, err := CanonicalMapKey(tt.keyType, tt.member)
 			if tt.err {
 				assert.Error(t, err)
 				return
@@ -158,9 +160,9 @@ func TestCanonicalJSONMapKey(t *testing.T) {
 			assert.Equal(t, tt.canonical, canonical)
 		})
 	}
-	_, _, err := CanonicalJSONMapKey(reflect.TypeFor[[]int](), "a")
+	_, _, err := CanonicalMapKey(reflect.TypeFor[[]int](), "a")
 	assert.EqualError(t, err, "invalid JSON map key type []int")
-	_, _, err = CanonicalJSONMapKey(nil, "a")
+	_, _, err = CanonicalMapKey(nil, "a")
 	assert.EqualError(t, err, "invalid JSON map key type <nil>")
 }
 
@@ -194,14 +196,14 @@ func mapHeavyDocument(keys int) []byte {
 	return raw
 }
 
-func BenchmarkValidateJSONKeyRepresentation(b *testing.B) {
+func BenchmarkValidate(b *testing.B) {
 	raw := mapHeavyDocument(50)
 	var decoded benchDoc
 	require.NoError(b, json.Unmarshal(raw, &decoded))
 	b.SetBytes(int64(len(raw)))
 	b.ReportAllocs()
 	for b.Loop() {
-		if err := ValidateJSONKeyRepresentation(raw, &decoded); err != nil {
+		if err := Validate(raw, &decoded); err != nil {
 			b.Fatal(err)
 		}
 	}
@@ -209,7 +211,7 @@ func BenchmarkValidateJSONKeyRepresentation(b *testing.B) {
 
 // Validation costs no allocation per member for string and integer keys:
 // a document ten times the size allocates no more.
-func TestValidateJSONKeyRepresentation_AllocatesNothingPerKey(t *testing.T) {
+func TestValidate_AllocatesNothingPerKey(t *testing.T) {
 	if raceEnabled {
 		t.Skip("the race detector's instrumentation allocates")
 	}
@@ -217,8 +219,8 @@ func TestValidateJSONKeyRepresentation_AllocatesNothingPerKey(t *testing.T) {
 		raw := mapHeavyDocument(keys)
 		var decoded benchDoc
 		require.NoError(t, json.Unmarshal(raw, &decoded))
-		require.NoError(t, ValidateJSONKeyRepresentation(raw, &decoded))
-		return testing.AllocsPerRun(50, func() { _ = ValidateJSONKeyRepresentation(raw, &decoded) })
+		require.NoError(t, Validate(raw, &decoded))
+		return testing.AllocsPerRun(50, func() { _ = Validate(raw, &decoded) })
 	}
 	small, large := allocs(10), allocs(100)
 	assert.Equal(t, small, large, "allocations grow with the document")
@@ -227,7 +229,7 @@ func TestValidateJSONKeyRepresentation_AllocatesNothingPerKey(t *testing.T) {
 
 // The rewrite accepts and refuses what the implementation it replaced did,
 // on a type whose members that implementation could name.
-func FuzzValidateJSONKeyRepresentation(f *testing.F) {
+func FuzzValidate(f *testing.F) {
 	for _, seed := range []string{
 		`{"x":1,"items":[{"y":1}],"ints":{"-3":1,"10":2},"Names":{"a":{"y":2}},"e":"v"}`,
 		`{"X":1}`, `{"names":{}}`, `{"x":1,"x":2}`, `{"zz":1,"zz":2}`, `{"ints":{"01":1}}`, `{"ints":{"+1":1,"1":2}}`,
@@ -243,10 +245,18 @@ func FuzzValidateJSONKeyRepresentation(f *testing.F) {
 		if json.Unmarshal(raw, &decoded) != nil {
 			return
 		}
-		got := ValidateJSONKeyRepresentation(raw, &decoded)
+		got := Validate(raw, &decoded)
 		want := referenceValidate(raw, &decoded)
 		if (got == nil) != (want == nil) {
 			t.Fatalf("validation of %s: got %v, the replaced implementation %v", raw, got, want)
 		}
 	})
+}
+
+// A document type whose tag reflect cannot read whole is refused, naming the
+// field. The type is built at run time, as vet refuses such a tag in source.
+func TestValidate_RefusesUnreadableTags(t *testing.T) {
+	typ := reflect.StructOf([]reflect.StructField{{Name: "Doc", Type: reflect.TypeFor[int](), Tag: `json:"doc" bson: "doc"`}})
+	err := Validate([]byte(`{"doc":1}`), reflect.New(typ).Interface())
+	assert.ErrorContains(t, err, "field Doc")
 }

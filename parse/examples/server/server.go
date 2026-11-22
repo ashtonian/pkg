@@ -19,6 +19,7 @@ import (
 	"github.com/ashtonian/pkg/parse/core"
 	"github.com/ashtonian/pkg/parse/filter"
 	"github.com/ashtonian/pkg/parse/parsehttp"
+	"github.com/ashtonian/pkg/parse/parsesql"
 	"github.com/ashtonian/pkg/parse/patch"
 )
 
@@ -98,7 +99,7 @@ func (s *server) list(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, r, err)
 		return
 	}
-	items, err := s.query(ctx, plan.Page.SQL, plan.Page.Args...)
+	items, err := parsesql.Query(ctx, s.db, s.products, plan.Page)
 	if err != nil {
 		s.fail(w, r, err)
 		return
@@ -273,35 +274,7 @@ func (s *server) update(w http.ResponseWriter, r *http.Request, target parse.Tar
 	if err != nil {
 		return nil, err
 	}
-	items, err := s.query(ctx, plan.Owner.SQL, plan.Owner.Args...)
-	if err != nil {
-		return nil, fmt.Errorf("update products: %w", err)
-	}
-	return items, nil
-}
-
-func (s *server) query(ctx context.Context, q string, args ...any) (_ []Product, err error) {
-	rows, err := s.db.QueryContext(ctx, q, args...)
-	if err != nil {
-		return nil, fmt.Errorf("query products: %w", err)
-	}
-	defer func() { err = errors.Join(err, rows.Close()) }()
-	var out []Product
-	for rows.Next() {
-		var p Product
-		var labels, created string
-		if err = rows.Scan(&p.ID, &p.Name, &p.Category, &p.Price, &labels, &created); err != nil {
-			return nil, fmt.Errorf("scan product: %w", err)
-		}
-		if err = json.Unmarshal([]byte(labels), &p.Labels); err != nil {
-			return nil, fmt.Errorf("product %s labels: %w", p.ID, err)
-		}
-		if p.CreatedAt, err = time.Parse(time.RFC3339Nano, created); err != nil {
-			return nil, fmt.Errorf("product %s created_at: %w", p.ID, err)
-		}
-		out = append(out, p)
-	}
-	return out, rows.Err()
+	return parsesql.Query(ctx, s.db, s.products, plan.Owner)
 }
 
 // fail answers a parse error with its E-code and the status the code
