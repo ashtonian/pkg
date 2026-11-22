@@ -43,29 +43,28 @@ func TestBuildRawSQL_Renumber(t *testing.T) {
 		wantWhere string
 		wantArgs  []any
 	}{
-		{"ordered", "$1 AND $2", []any{"a", "b"}, "$1 AND $2", []any{"a", "b"}},
-		// $10 must survive the renumber: the old substring replace corrupted it
-		// because "$1" matches inside "$10".
+		{"ordered", "$1 AND $2", []any{"a", "b"}, "($1 AND $2)", []any{"a", "b"}},
+		// $10 survives the renumber: "$1" is not a match inside "$10".
 		{
 			"multi-digit list",
 			"x IN ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)",
 			[]any{1, 2, 3, 4, 5, 6, 7, 8, 9, 10},
-			"x IN ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)",
+			"(x IN ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10))",
 			[]any{1, 2, 3, 4, 5, 6, 7, 8, 9, 10},
 		},
-		// A lone "$11" must map to RawArgs[10], not be split into "$1"+"1".
+		// A lone "$11" maps to RawArgs[10], not "$1" followed by "1".
 		{
 			"single multi-digit",
 			"v = $11",
 			[]any{0, 0, 0, 0, 0, 0, 0, 0, 0, 0, "eleven"},
-			"v = $1",
+			"(v = $1)",
 			[]any{"eleven"},
 		},
 		// Renumber follows left-to-right appearance order.
-		{"out of order", "$2 = $1", []any{"first", "second"}, "$1 = $2", []any{"second", "first"}},
+		{"out of order", "$2 = $1", []any{"first", "second"}, "($1 = $2)", []any{"second", "first"}},
 		// Each occurrence of a repeated placeholder gets its own slot + arg, so
 		// the result is correct for positional (?) dialects too.
-		{"repeated", "$1 OR $1", []any{"x", "y"}, "$1 OR $2", []any{"x", "x"}},
+		{"repeated", "$1 OR $1", []any{"x", "y"}, "($1 OR $2)", []any{"x", "x"}},
 		{"empty", "", nil, "1=1", []any{}},
 	}
 	for _, tt := range tests {

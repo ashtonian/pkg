@@ -489,19 +489,22 @@ func (b *SQLBuilder) buildNode(s *buildState, node *FilterNode) (string, error) 
 	}
 }
 
-// buildRawSQL injects a pre-built SQL expression, renumbering its local `$N`
-// placeholders to the builder's current parameter indices and binding each to
-// the matching RawArgs entry.
+// buildRawSQL injects a pre-built SQL expression in parentheses, so it is one
+// operand of whatever joins it: a raw `a OR b` ANDed with the tenant floor
+// must not bind the floor to `a` alone. Its local `$N` placeholders are
+// renumbered to the builder's parameter indices, each bound to the matching
+// RawArgs entry.
 //
-// Renumbering is token-based (via rawPlaceholderRe), not substring-based: the
-// old two-pass `strings.Replace(sql, "$1", …, 1)` corrupted multi-digit
-// placeholders because "$1" substring-matches inside "$10"/"$11". Each `$N`
-// OCCURRENCE — in left-to-right order — gets its own parameter slot and its own
-// RawArgs[N-1] append, so the result is correct for both numbered (`$K`) and
-// positional (`?`) dialects, including repeated and out-of-order placeholders.
+// Each `$N` occurrence, left to right, gets its own parameter slot and its own
+// RawArgs[N-1] append, so the result is correct for numbered (`$K`) and
+// positional (`?`) dialects, repeated and out-of-order placeholders included.
+// rawPlaceholderRe matches whole tokens, so `$1` never matches inside `$10`.
 func (b *SQLBuilder) buildRawSQL(s *buildState, node *FilterNode) (string, error) {
 	if node.RawSQL == "" {
 		return "1=1", nil
+	}
+	if node.RawSQL == unknownSQL {
+		return unknownSQL, nil // one token
 	}
 	var rebuildErr error
 	out := rawPlaceholderRe.ReplaceAllStringFunc(node.RawSQL, func(tok string) string {
@@ -517,7 +520,7 @@ func (b *SQLBuilder) buildRawSQL(s *buildState, node *FilterNode) (string, error
 	if rebuildErr != nil {
 		return "", rebuildErr
 	}
-	return out, nil
+	return "(" + out + ")", nil
 }
 
 func (b *SQLBuilder) buildLogical(s *buildState, node *FilterNode, joiner string) (string, error) {

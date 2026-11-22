@@ -140,15 +140,16 @@ type searchCondition struct {
 
 // AndSearch ANDs a free-text search onto a WHERE fragment, numbering the
 // search's placeholders after args (themselves after offset earlier
-// placeholders). An empty query, or a schema with no searchable fields,
-// returns the fragment unchanged. Count, list and facet queries fold search
-// through it, so all three describe the same population.
+// placeholders). The fragment is parenthesized, so one whose top level is an
+// OR stays one operand. An empty query, or a schema with no searchable
+// fields, returns the fragment unchanged. Count, list and facet queries fold
+// search through it, so all three describe the same population.
 func AndSearch(schema *SearchSchema, d Dialect, where string, args []any, offset int, query string) (string, []any, error) {
 	sc, err := buildSearchCondition(schema, d, query, offset+len(args))
 	if err != nil || sc == nil {
 		return where, args, err
 	}
-	return "(" + where + " AND " + sc.Where + ")", append(slices.Clone(args), sc.Args...), nil
+	return "((" + where + ") AND " + sc.Where + ")", append(slices.Clone(args), sc.Args...), nil
 }
 
 // buildSearchCondition generates dialect-specific full-text search SQL. It

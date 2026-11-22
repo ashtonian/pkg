@@ -233,8 +233,8 @@ type FilterNode struct {
 	Children []*FilterNode
 
 	// RawSQL/RawArgs hold a pre-built SQL expression for OpRawSQL nodes.
-	// Placeholder params are rewritten by the SQL builder to use the correct
-	// dialect-specific parameter indices.
+	// The SQL builder renders it in parentheses and rewrites its placeholder
+	// params to the dialect's parameter indices.
 	RawSQL  string
 	RawArgs []any
 
@@ -387,9 +387,12 @@ type PolicyConstraint struct {
 	// neither fails a list nor widens one.
 	UnknownIfInvalid bool
 
-	// RawSQL is a pre-built SQL expression injected directly into the WHERE clause.
-	// When set, Field/Operator/Value are ignored. Use parameterized placeholders ($1, $2)
-	// with RawArgs. This enables subquery-based constraints like grant-aware scoping.
+	// RawSQL is a pre-built SQL expression injected into the WHERE clause
+	// in parentheses, so it is one operand of the AND, OR or NOT that holds
+	// it: `a OR b` needs no parentheses of its own. When set,
+	// Field/Operator/Value are ignored. Use parameterized placeholders ($1,
+	// $2) with RawArgs. This enables subquery-based constraints like
+	// grant-aware scoping.
 	RawSQL  string
 	RawArgs []any
 
