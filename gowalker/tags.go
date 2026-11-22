@@ -86,7 +86,8 @@ func TagKeys(tag reflect.StructTag) ([]string, error) {
 
 // TagError reports a struct tag [TagKeys] refuses. Offset is the byte where
 // reading stopped, or where the repeated Key starts; Key is empty for a
-// malformed tag.
+// malformed tag. Its text leaves Tag out, since a tag value can hold a secret,
+// such as a default; a caller that shows the tag reads Tag.
 type TagError struct {
 	Tag    reflect.StructTag
 	Offset int
@@ -95,9 +96,9 @@ type TagError struct {
 
 func (e *TagError) Error() string {
 	if e.Key != "" {
-		return fmt.Sprintf("struct tag `%s` repeats the key %q", e.Tag, e.Key)
+		return fmt.Sprintf("struct tag repeats the key %q at byte %d", e.Key, e.Offset)
 	}
-	return fmt.Sprintf("struct tag `%s` is malformed at byte %d: want key:\"value\" pairs separated by spaces", e.Tag, e.Offset)
+	return fmt.Sprintf("struct tag is malformed at byte %d: want key:\"value\" pairs separated by spaces", e.Offset)
 }
 
 // Has reports whether option is one of t's comma-separated options. The
@@ -228,7 +229,7 @@ func NestedFields() TagOption {
 // option-driven inlining or validation. To read annotations without renaming
 // fields, use [Field.Tag] with the default engine instead.
 func WithTaggedFields(key string, options ...TagOption) Option {
-	return taggedFields(&tagNaming{key: key}, options)
+	return taggedFields(tagNaming{key: key}, options)
 }
 
 // WithJSONFields names fields as encoding/json names the members it writes,
@@ -265,33 +266,43 @@ func WithTaggedFields(key string, options ...TagOption) Option {
 // PromoteEmbedded and DashCommaName are refused: they would change what this
 // option fixes.
 func WithJSONFields(key string, options ...TagOption) Option {
-	return taggedFields(&tagNaming{key: key, json: true, untagged: goName, promote: true, dashComma: true}, options)
+	return taggedFields(tagNaming{key: key, json: true, untagged: goName, promote: true, dashComma: true}, options)
 }
 
 func goName(name string) string { return name }
 
-func taggedFields(naming *tagNaming, options []TagOption) Option {
+// taggedFields applies options once, when the Option is made, so the Option
+// holds no reference to the caller's slice and can be reused concurrently.
+func taggedFields(naming tagNaming, options []TagOption) Option {
+	configured, err := configureTags(naming, options)
 	return func(s *settings) error {
-		if naming.key == "" {
-			return ErrSchema
+		if err != nil {
+			return err
 		}
-		for _, c := range naming.key {
-			if c <= ' ' || c == ':' || c == '"' || c == 0x7f {
-				return ErrSchema
-			}
-		}
-		configured := *naming
-		for _, option := range options {
-			if option == nil {
-				return ErrSchema
-			}
-			if err := option(&configured); err != nil {
-				return err
-			}
-		}
-		s.resolver, s.tagged = nil, &configured
+		// configured is never modified, so every engine can share it.
+		s.resolver, s.tagged = nil, configured
 		return nil
 	}
+}
+
+func configureTags(naming tagNaming, options []TagOption) (*tagNaming, error) {
+	if naming.key == "" {
+		return nil, ErrSchema
+	}
+	for _, c := range naming.key {
+		if c <= ' ' || c == ':' || c == '"' || c == 0x7f {
+			return nil, ErrSchema
+		}
+	}
+	for _, option := range options {
+		if option == nil {
+			return nil, ErrSchema
+		}
+		if err := option(&naming); err != nil {
+			return nil, err
+		}
+	}
+	return &naming, nil
 }
 
 func (n *tagNaming) rule(sf reflect.StructField, atomic func(reflect.Type) bool) (FieldRule, error) {
@@ -303,13 +314,14 @@ func (n *tagNaming) rule(sf reflect.StructField, atomic func(reflect.Type) bool)
 	if !explicit && n.promote && sf.Anonymous && promotable(sf.Type, atomic) {
 		return FieldRule{Inline: true}, nil
 	}
-	if n.json && explicit && !sf.IsExported() && sf.Anonymous && promotable(sf.Type, atomic) {
-		return FieldRule{Name: name, Atomic: !n.nested, Explicit: true, privateEmbed: true}, nil
-	}
-	if explicit && n.valid != nil && sf.IsExported() {
+	privateEmbed := n.json && explicit && !sf.IsExported() && sf.Anonymous && promotable(sf.Type, atomic)
+	if explicit && n.valid != nil && (sf.IsExported() || privateEmbed) {
 		if err := n.valid(name); err != nil {
 			return FieldRule{}, err
 		}
+	}
+	if privateEmbed {
+		return FieldRule{Name: name, Atomic: !n.nested, Explicit: true, privateEmbed: true}, nil
 	}
 	if !explicit && n.untagged != nil && sf.IsExported() {
 		name = n.untagged(sf.Name)

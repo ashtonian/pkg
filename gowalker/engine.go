@@ -3,6 +3,7 @@ package gowalker
 import (
 	"errors"
 	"reflect"
+	"slices"
 	"sync"
 )
 
@@ -119,8 +120,19 @@ func WithAtomicType(classify func(reflect.Type) bool) Option {
 // WithAtomicImplementers makes a leaf of every type that implements one of
 // ifaces through its value or its pointer: types that decode, scan or render
 // themselves, such as encoding.TextUnmarshaler (time.Time, netip.Addr) or
-// sql.Scanner. Each element of ifaces must be an interface type.
+// sql.Scanner. Each element of ifaces must be an interface type. The option
+// keeps its own copy of ifaces, so it can be reused across engines and
+// goroutines.
 func WithAtomicImplementers(ifaces ...reflect.Type) Option {
+	ifaces = slices.Clone(ifaces)
+	implements := func(t reflect.Type) bool {
+		for _, iface := range ifaces {
+			if t.Implements(iface) || t.Kind() != reflect.Interface && reflect.PointerTo(t).Implements(iface) {
+				return true
+			}
+		}
+		return false
+	}
 	return func(s *settings) error {
 		if len(ifaces) == 0 {
 			return ErrSchema
@@ -130,15 +142,7 @@ func WithAtomicImplementers(ifaces ...reflect.Type) Option {
 				return ErrSchema
 			}
 		}
-		ifaces = append([]reflect.Type(nil), ifaces...)
-		s.atomic = append(s.atomic, func(t reflect.Type) bool {
-			for _, iface := range ifaces {
-				if t.Implements(iface) || t.Kind() != reflect.Interface && reflect.PointerTo(t).Implements(iface) {
-					return true
-				}
-			}
-			return false
-		})
+		s.atomic = append(s.atomic, implements)
 		return nil
 	}
 }
@@ -291,15 +295,16 @@ func (e *Engine) CompileType(t reflect.Type) (*Schema, error) {
 	if cached != nil {
 		return cached, nil
 	}
-	b := builder{engine: e, nodes: make(map[reflect.Type]*Shape)}
+	b := newBuilder(e)
 	root, err := b.build(t, 0)
 	if err != nil {
 		return nil, err
 	}
-	if err := b.view(root); err != nil {
+	if err := b.view(root, onPath); err != nil {
 		return nil, err
 	}
 	schema := &Schema{engine: e, root: root}
+	b.graph.schemas[root] = schema
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	if cached := e.cache[t]; cached != nil {

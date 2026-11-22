@@ -2,11 +2,14 @@ package gowalker
 
 import (
 	"cmp"
+	"errors"
 	"fmt"
+	"iter"
 	"reflect"
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"unicode"
 )
 
@@ -57,6 +60,9 @@ type declaredField struct {
 	shape    *Shape
 	rule     FieldRule
 	selected *Field
+	// keys are the field's tag keys in order, which every handle and
+	// declaration of the field shares and none modifies.
+	keys []string
 }
 
 // Shape is an immutable descriptor of an exact declared type. Pointers retain
@@ -74,6 +80,86 @@ type Shape struct {
 	unnamed      []*Field
 	declarations []declaration
 	fold         bool
+	graph        *graph
+	// viewed reports a shape the view pass reached, leaves included: one a
+	// path, walk or declaration can reach, rather than one only map keys or a
+	// leaf's contents reach.
+	viewed bool
+	// conflict is the name conflict of a struct reached only aside (see
+	// builder.view), in place of its view.
+	conflict *NameConflict
+}
+
+// conflictError is the error compiling s alone returns for its conflict, new
+// for each caller, which may change it.
+func (s *Shape) conflictError() error {
+	conflict := *s.conflict
+	return failure("compile", ErrSchema, s.typ, emptyPath, -1, &conflict)
+}
+
+// graph is the shapes one compilation builds. It keeps one schema per shape
+// for [Schema.At], so repeated calls share accessors, and the outcome of each
+// search for a conflict below a shape; the shapes bound both.
+type graph struct {
+	mu      sync.RWMutex
+	schemas map[*Shape]*Schema
+	// conflicted reports a struct that keeps a conflict in place of its view;
+	// without one, no shape's paths reach a conflict.
+	conflicted bool
+	// blocked maps a shape to the conflicted struct its paths reach first.
+	blocked map[*Shape]*Shape
+	// clear holds shapes whose paths reach no conflicted struct.
+	clear map[*Shape]bool
+}
+
+// conflictBelow returns the first struct keeping a conflict in place of its
+// view that a path from start reaches, in the order compiling start's type
+// alone meets it, or nil. The caller holds g.mu for writing.
+func (g *graph) conflictBelow(start *Shape) *Shape {
+	if !g.conflicted {
+		return nil
+	}
+	if blocked := g.blocked[start]; blocked != nil {
+		return blocked
+	}
+	visited := make(map[*Shape]bool)
+	var search func(*Shape) *Shape
+	search = func(s *Shape) *Shape {
+		if s.atomic || visited[s] || g.clear[s] {
+			return nil
+		}
+		visited[s] = true
+		switch {
+		case s.conflict != nil:
+			return s
+		case s.Kind() == reflect.Struct:
+			for _, field := range s.fields {
+				if found := search(field.shape); found != nil {
+					return found
+				}
+			}
+		case s.elem != nil:
+			return search(s.elem)
+		}
+		return nil
+	}
+	found := search(start)
+	if found != nil {
+		if g.blocked == nil {
+			g.blocked = make(map[*Shape]*Shape)
+		}
+		g.blocked[start] = found
+		return found
+	}
+	// A search that finds nothing has read every path from each shape it
+	// visited.
+	if g.clear == nil {
+		g.clear = make(map[*Shape]bool)
+	}
+	for s := range visited {
+		g.clear[s] = true
+	}
+	return nil
 }
 
 // declaration is a Declaration before copying; field is nil for a skipped one.
@@ -84,6 +170,7 @@ type declaration struct {
 	declaring reflect.Type
 	index     []int
 	parents   []reflect.StructField
+	keys      []string
 }
 
 // Type returns the exact Go type represented by this descriptor.
@@ -104,6 +191,9 @@ func (s *Shape) Key() *Shape { return s.key }
 
 // Fields returns the visible fields in declaration/inline order, with no backing
 // slice exposed. A pointer's fields belong to Elem, not the pointer descriptor.
+// It is empty for a struct reached only as an inline owner, or through a field
+// that lost its name, whose own names conflict: the view inlining it does not
+// read them, and [Schema.At] reports the conflict.
 func (s *Shape) Fields() []*Field { return append([]*Field(nil), s.fields...) }
 
 // DeclaredView returns selected fields before inline expansion. Inline owners,
@@ -177,14 +267,24 @@ type Declaration struct {
 	// InlineParents are the inlined fields the field is reached through,
 	// outermost first.
 	InlineParents []reflect.StructField
+
+	keys []string
 }
+
+// TagKeys yields the keys of the field's tag in order, as [TagKeys] reads
+// them, skipped fields included; compilation refused any tag it cannot read.
+// It reads metadata the schema keeps, so ranging over it allocates nothing;
+// keeping the iterator, or passing it to a function that is not inlined,
+// allocates its closure. A copied Declaration yields the same keys; a
+// Declaration the caller builds yields none.
+func (d Declaration) TagKeys() iter.Seq[string] { return slices.Values(d.keys) }
 
 // Declarations lists every field the struct declares and, after each inlined
 // struct field, that struct's declarations, in declaration order, with what
 // the view made of each: the fields of Fields, those kept without a name,
 // inline owners, shadowed and tied fields, and skipped and private fields. It
-// is empty for a pointer, whose fields belong to Elem, and for a leaf. The
-// result is a copy.
+// is empty for a pointer, whose fields belong to Elem, for a leaf, and where
+// [Shape.Fields] is for a conflict. The result is a copy.
 func (s *Shape) Declarations() []Declaration {
 	result := make([]Declaration, len(s.declarations))
 	for i, d := range s.declarations {
@@ -195,6 +295,7 @@ func (s *Shape) Declarations() []Declaration {
 			DeclaringType: d.declaring,
 			Index:         append([]int(nil), d.index...),
 			InlineParents: copyStructFields(d.parents),
+			keys:          d.keys,
 		}
 	}
 	return result
@@ -222,6 +323,7 @@ type Field struct {
 	declaring reflect.Type
 	inline    bool
 	explicit  bool
+	keys      []string
 }
 
 // Name returns the canonical visible name, or "" for a field kept without a
@@ -247,12 +349,12 @@ func (f *Field) GoField() reflect.StructField { return copyStructField(f.goField
 // Gowalker does not decode or apply tag values.
 func (f *Field) Tags() reflect.StructTag { return f.goField.Tag }
 
-// TagKeys returns the keys of the field's tag in order, in a new slice.
-// Compilation refused the field's tag if [TagKeys] could not read it.
-func (f *Field) TagKeys() []string {
-	keys, _ := TagKeys(f.goField.Tag)
-	return keys
-}
+// TagKeys yields the keys of the field's tag in order, as [TagKeys] reads
+// them; compilation refused any tag it cannot read. It reads metadata the
+// schema keeps, the same its [Declaration] yields, so ranging over it
+// allocates nothing; keeping the iterator, or passing it to a function that is
+// not inlined, allocates its closure.
+func (f *Field) TagKeys() iter.Seq[string] { return slices.Values(f.keys) }
 
 // Tag parses the field's key tag in the "name,options" form. ok is false when
 // the field has no such tag.
@@ -288,10 +390,27 @@ func copyStructFields(fields []reflect.StructField) []reflect.StructField {
 
 type builder struct {
 	engine   *Engine
+	graph    *graph
 	nodes    map[reflect.Type]*Shape
 	prepared map[*Shape]bool
-	viewed   map[*Shape]bool
+	reached  map[*Shape]reach
 	fields   int
+}
+
+// reach is how a compilation's view pass reaches a shape.
+type reach uint8
+
+const (
+	unreached reach = iota
+	// aside: only as an inline owner, or as the type of a field that lost
+	// its name. No path or walk of the view that reaches it lands on it.
+	aside
+	// onPath: from the root through visible fields, pointers and elements.
+	onPath
+)
+
+func newBuilder(e *Engine) *builder {
+	return &builder{engine: e, graph: &graph{schemas: make(map[*Shape]*Schema)}, nodes: make(map[reflect.Type]*Shape), reached: make(map[*Shape]reach)}
 }
 
 func (b *builder) countField(t reflect.Type) error {
@@ -310,7 +429,7 @@ func (b *builder) build(t reflect.Type, depth int) (*Shape, error) {
 	if depth > limits.MaxDepth || len(b.nodes) >= limits.MaxTypes {
 		return nil, failure("compile", ErrLimit, t, emptyPath, -1, nil)
 	}
-	s := &Shape{typ: t, fold: b.engine.settings.fold, atomic: b.engine.settings.isAtomic(t)}
+	s := &Shape{typ: t, fold: b.engine.settings.fold, atomic: b.engine.settings.isAtomic(t), graph: b.graph}
 	b.nodes[t] = s
 	var err error
 	switch t.Kind() {
@@ -341,38 +460,88 @@ func (b *builder) build(t reflect.Type, depth int) (*Shape, error) {
 	return s, nil
 }
 
-func (b *builder) view(s *Shape) error {
-	if s.atomic || b.viewed[s] {
+// view gives s, and each shape its view exposes, a view. A shape on a path
+// from the root must have a valid one. A struct reached only aside keeps a
+// conflict among its own names in place of a view, as encoding/json writes
+// the struct that inlines it without reading them; compiling it alone,
+// reaching it on a path, or a path from a node At is given, reports the
+// conflict. Its declared fields' types are still read aside, so every check
+// a view makes, such as of tags, applies below it. Reaching a shape aside
+// and then on a path checks it, and what it exposes, again.
+func (b *builder) view(s *Shape, r reach) error {
+	if b.reached[s] >= r {
 		return nil
 	}
-	if b.viewed == nil {
-		b.viewed = make(map[*Shape]bool)
+	first := b.reached[s] == unreached
+	b.reached[s] = r
+	s.viewed = true
+	if s.atomic {
+		return nil
 	}
-	b.viewed[s] = true
 	if s.Kind() != reflect.Struct {
 		if s.elem != nil {
-			return b.view(s.elem)
+			return b.view(s.elem, r)
 		}
 		return nil
 	}
+	if first {
+		if err := b.resolve(s); err != nil {
+			var conflict *NameConflict
+			if r == onPath || !errors.As(err, &conflict) || conflict.Owner != s.typ {
+				return err
+			}
+			s.conflict = conflict
+			s.fields, s.byName, s.unnamed, s.declarations = nil, nil, nil, nil
+			b.graph.conflicted = true
+			// The struct's own declarations are complete however far its
+			// expansion got, and their types reach everything below it.
+			for _, declared := range s.declared {
+				if declared.selected != nil {
+					if err := b.view(declared.shape, aside); err != nil {
+						return err
+					}
+				}
+			}
+			return nil
+		}
+	}
+	if s.conflict != nil {
+		if r == onPath {
+			return s.conflictError()
+		}
+		return nil
+	}
+	for _, field := range s.fields {
+		if err := b.view(field.shape, r); err != nil {
+			return err
+		}
+	}
+	for _, d := range s.declarations {
+		if d.field != nil && d.state != Named {
+			if err := b.view(d.field.shape, aside); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+// resolve expands the struct s into its view and settles its names.
+func (b *builder) resolve(s *Shape) error {
 	s.byName = make(map[string]*Field)
 	if err := b.expand(s, s, nil, nil, make(map[*Shape]bool)); err != nil {
 		return err
 	}
-	if b.engine.settings.resolvesByDepth() {
-		lost, err := resolveByDepth(s, b.engine.settings.dropTies)
-		if err != nil {
-			return err
-		}
-		for i := range s.declarations {
-			if state, ok := lost[s.declarations[i].field]; ok && s.declarations[i].state == Named {
-				s.declarations[i].state = state
-			}
-		}
+	if !b.engine.settings.resolvesByDepth() {
+		return nil
 	}
-	for _, field := range s.declaredView {
-		if err := b.view(field.shape); err != nil {
-			return err
+	lost, err := resolveByDepth(s, b.engine.settings.dropTies)
+	if err != nil {
+		return err
+	}
+	for i := range s.declarations {
+		if state, ok := lost[s.declarations[i].field]; ok && s.declarations[i].state == Named {
+			s.declarations[i].state = state
 		}
 	}
 	return nil
@@ -388,9 +557,11 @@ func (b *builder) prepare(s *Shape) error {
 	b.prepared[s] = true
 	for i := range s.declared {
 		field := &s.declared[i]
-		if _, err := TagKeys(field.field.Tag); err != nil {
+		keys, err := TagKeys(field.field.Tag)
+		if err != nil {
 			return failure("compile", ErrSchema, s.typ, emptyPath, -1, fmt.Errorf("field %s: %w", field.field.Name, err))
 		}
+		field.keys = keys
 		rule, err := b.engine.settings.rule(field.field)
 		if err != nil {
 			return failure("compile", ErrSchema, s.typ, emptyPath, -1, err)
@@ -414,9 +585,10 @@ func (b *builder) prepare(s *Shape) error {
 			leaf := *field.shape
 			leaf.atomic = true
 			leaf.fields, leaf.declaredView, leaf.byName, leaf.unnamed, leaf.declarations = nil, nil, nil, nil, nil
+			leaf.viewed, leaf.conflict = false, nil
 			field.shape = &leaf
 		}
-		field.selected = &Field{name: rule.Name, aliases: rule.Aliases, index: append([]int(nil), field.field.Index...), goField: field.field, shape: field.shape, declaring: s.typ, inline: rule.Inline, explicit: rule.Explicit}
+		field.selected = &Field{name: rule.Name, aliases: rule.Aliases, index: append([]int(nil), field.field.Index...), goField: field.field, shape: field.shape, declaring: s.typ, inline: rule.Inline, explicit: rule.Explicit, keys: keys}
 		if !rule.Unnamed {
 			s.declaredView = append(s.declaredView, field.selected)
 		}
@@ -439,7 +611,7 @@ func (b *builder) expand(owner, current *Shape, index []int, parents []reflect.S
 		}
 		sf, rule := declared.field, declared.rule
 		at := append(append([]int(nil), index...), sf.Index...)
-		listed := declaration{goField: sf, declaring: current.typ, index: at, parents: parents}
+		listed := declaration{goField: sf, declaring: current.typ, index: at, parents: parents, keys: declared.keys}
 		if declared.selected == nil {
 			listed.state = Skipped
 			owner.declarations = append(owner.declarations, listed)
@@ -448,10 +620,10 @@ func (b *builder) expand(owner, current *Shape, index []int, parents []reflect.S
 		if rule.Inline {
 			child, err := indirectShape(declared.shape)
 			if err != nil {
-				return failure("compile", ErrSchema, sf.Type, emptyPath, -1, fmt.Errorf("field %s: inlining %s: %w", sf.Name, sf.Type, err))
+				return failure("compile", ErrSchema, sf.Type, emptyPath, -1, fmt.Errorf("field %s: inlining %s: %w", sf.Name, TypeText(sf.Type), err))
 			}
 			if child.atomic || child.Kind() != reflect.Struct {
-				return failure("compile", ErrSchema, current.typ, emptyPath, -1, fmt.Errorf("field %s: %s is not a struct with fields to inline", sf.Name, sf.Type))
+				return failure("compile", ErrSchema, current.typ, emptyPath, -1, fmt.Errorf("field %s: %s is not a struct with fields to inline", sf.Name, TypeText(sf.Type)))
 			}
 			listed.state, listed.field = InlineOwner, declared.selected
 			owner.declarations = append(owner.declarations, listed)
@@ -463,7 +635,7 @@ func (b *builder) expand(owner, current *Shape, index []int, parents []reflect.S
 				if b.engine.settings.resolvesByDepth() {
 					continue
 				}
-				return failure("compile", ErrSchema, current.typ, emptyPath, -1, fmt.Errorf("field %s: %s is inlined inside itself, and its fields would claim their names again; ResolveByDepth leaves the repeat out", sf.Name, child.typ))
+				return failure("compile", ErrSchema, current.typ, emptyPath, -1, fmt.Errorf("field %s: %s is inlined inside itself, and its fields would claim their names again; ResolveByDepth leaves the repeat out", sf.Name, TypeText(child.typ)))
 			}
 			lineage := append(append([]reflect.StructField(nil), parents...), sf)
 			if err := b.expand(owner, child, at, lineage, active); err != nil {
@@ -473,7 +645,7 @@ func (b *builder) expand(owner, current *Shape, index []int, parents []reflect.S
 		}
 		field := declared.selected
 		if len(index) > 0 {
-			field = &Field{name: rule.Name, aliases: rule.Aliases, index: at, goField: sf, parents: append([]reflect.StructField(nil), parents...), shape: declared.shape, declaring: current.typ, explicit: rule.Explicit}
+			field = &Field{name: rule.Name, aliases: rule.Aliases, index: at, goField: sf, parents: append([]reflect.StructField(nil), parents...), shape: declared.shape, declaring: current.typ, explicit: rule.Explicit, keys: declared.keys}
 		}
 		listed.field = field
 		if rule.Unnamed {
@@ -512,45 +684,41 @@ func (b *builder) expand(owner, current *Shape, index []int, parents []reflect.S
 // which must be unique. It returns the state of each field that lost its
 // name: Shadowed, or Tied for a field at the tie's own rank.
 func resolveByDepth(owner *Shape, dropTies bool) (map[*Field]DeclarationState, error) {
-	lost := make(map[*Field]DeclarationState)
 	claims := make(map[string][]*Field, len(owner.fields))
 	for _, f := range owner.fields {
 		key := owner.lookupKey(f.name)
 		claims[key] = append(claims[key], f)
 	}
-	kept := owner.fields[:0]
+	lost := make(map[*Field]DeclarationState)
+	// Each contested name is settled once, at its first claim, so names are
+	// settled, and the first tie reported, in declaration order.
 	for _, f := range owner.fields {
 		rivals := claims[owner.lookupKey(f.name)]
-		if len(rivals) > 1 {
-			ranked := slices.Clone(rivals)
-			slices.SortStableFunc(ranked, func(x, y *Field) int {
-				return cmp.Or(cmp.Compare(len(x.index), len(y.index)), compareBool(!x.explicit, !y.explicit))
-			})
-			if len(ranked[0].index) == len(ranked[1].index) && ranked[0].explicit == ranked[1].explicit {
-				if dropTies {
-					lost[f] = Shadowed
-					if len(f.index) == len(ranked[0].index) && f.explicit == ranked[0].explicit {
-						lost[f] = Tied
-					}
-					continue
-				}
-				first, second := ranked[0], ranked[1]
-				if slices.Index(rivals, second) < slices.Index(rivals, first) {
-					first, second = second, first
-				}
-				conflict := &NameConflict{Owner: owner.typ, Name: second.name, First: first, Second: second}
-				return nil, failure("compile", ErrSchema, owner.typ, emptyPath, -1, conflict)
-			}
-			if ranked[0] != f {
-				lost[f] = Shadowed
-				continue
-			}
+		if len(rivals) < 2 || rivals[0] != f {
+			continue
 		}
-		kept = append(kept, f)
+		top := dominant(rivals)
+		if len(top) > 1 && !dropTies {
+			conflict := &NameConflict{Owner: owner.typ, Name: top[1].name, First: top[0], Second: top[1]}
+			return nil, failure("compile", ErrSchema, owner.typ, emptyPath, -1, conflict)
+		}
+		for _, rival := range rivals {
+			lost[rival] = Shadowed
+		}
+		if len(top) == 1 {
+			delete(lost, top[0])
+			continue
+		}
+		for _, tied := range top {
+			lost[tied] = Tied
+		}
 	}
-	owner.fields = kept
+	owner.fields = slices.DeleteFunc(owner.fields, func(f *Field) bool {
+		_, ok := lost[f]
+		return ok
+	})
 	clear(owner.byName)
-	for _, f := range kept {
+	for _, f := range owner.fields {
 		for i, name := range append([]string{f.name}, f.aliases...) {
 			key := owner.lookupKey(name)
 			if previous := owner.byName[key]; previous != nil && previous != f {
@@ -561,6 +729,25 @@ func resolveByDepth(owner *Shape, dropTies bool) (map[*Field]DeclarationState, e
 		}
 	}
 	return lost, nil
+}
+
+// dominant returns the claims to one name that rank first, in declaration
+// order: the shallowest, then those whose name is explicit. More than one is
+// a tie.
+func dominant(claims []*Field) []*Field {
+	var top []*Field
+	for _, f := range claims {
+		if len(top) > 0 {
+			switch c := cmp.Or(cmp.Compare(len(f.index), len(top[0].index)), compareBool(!f.explicit, !top[0].explicit)); {
+			case c > 0:
+				continue
+			case c < 0:
+				top = top[:0]
+			}
+		}
+		top = append(top, f)
+	}
+	return top
 }
 
 func compareBool(x, y bool) int {

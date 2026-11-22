@@ -12,11 +12,13 @@ lists every exported declaration. Go 1.27+ is required.
 | Inspect a type using Go field names | `gowalker.Compile[T]()` / `CompileType(t)` | The `Default` engine's cached `(*Schema, error)` |
 | Your own naming convention | `MustNew(WithTaggedFields(key, options...))` in a package variable | An `*Engine` whose schemas use tag names |
 | Fully custom naming, aliases or validation | `MustNew(WithFieldResolver(callback))` | An `*Engine`; the callback returns `(FieldRule, error)` |
-| Read a field's tags | `field.Tag(key)` / `field.Tags()` / `field.TagKeys()` | Parsed `(Tag, bool)` / raw `reflect.StructTag` / its keys in order |
+| Read a field's tags | `field.Tag(key)` / `field.Tags()` / `field.TagKeys()` | Parsed `(Tag, bool)` / raw `reflect.StructTag` / an `iter.Seq[string]` of its keys in order |
 | Compute your metadata once per type | `NewTypeCache(engine, build)` → `cache.For[T]()` | Your `(M, error)`, built once and shared |
 | Read or write one named root field repeatedly | `schema.AccessName(name)` / `AccessField(field)` | A cached `(*Accessor, error)`; the name is literal |
+| Access relative to a nested value, such as a collection element | `schema.At(shape)` | The `(*Schema, error)` of that node of the compiled graph, cached per node |
 | Repeated nested access | `schema.ResolveText(text)` / `Resolve(path)` | An uncached `(*Accessor, error)` to retain |
 | Annotations a section passes down | `schema.WalkType(visitor)` with `TypeVisit.Inherited(key)` | The nearest tag value on the route |
+| Every named declaration along every route, inline owners and fields that lost their name included | `schema.WalkType(visitor, WithDeclaredView())` | Visits over declared views, with `InlineEdge`s |
 | Read once using Go field names | `gowalker.Get(root, text)` / `GetAs[T](root, text)` | `(Value, error)` with presence, or `(T, error)` |
 | Write once using Go field names | `gowalker.Set(&root, text, input)` | `error`; nil means success |
 | Work with reflection directly | `accessor.GetValue`, `accessor.SetValue`, `schema.WalkValueReflect` | The same operations on an exact `reflect.Value` root |
@@ -50,11 +52,34 @@ than directly visible. Repeated calls for one field return the same accessor.
 An unnamed field's accessor has a path whose one field step names nothing; that
 path has no text form (`MarshalText` returns `ErrUnrepresentable`).
 
+`At(shape)` returns the schema of a node of this schema's compiled graph: its
+root, the `Shape` of a field from any view or declaration, or an `Elem()` of
+one that is not a leaf. The node's schema works as a schema compiled for that type does, with
+`AccessName`, `AccessField`, `ResolveText`, `WalkType` and the rest taking
+values of the node's type, but it uses this compilation's field handles and
+field-specific leaves (a `FieldRule.Atomic` field's node is a leaf here too),
+and nothing is compiled or added to the engine's cache. Use it when a value is
+already in hand, such as a map or slice element, whose location relative to the
+root would need a particular key or index. Every schema of one compilation
+returns the same schema for a node, `At(root)` the root's own, so cached
+accessors are shared; there is at most one per node.
+
+| `At` given | Returns |
+|---|---|
+| A node of this compilation | Its schema |
+| A node of another compilation, even of the same type, or `nil` | ErrPath |
+| A node only map keys or a leaf's contents reach, which no view reads | ErrPath; nodes are per type, so a key type the view reaches elsewhere is that node and has its schema |
+| A struct reached only as an inline owner or through a field that lost its name, whose own names conflict ([field views](#field-views)), or a node from which a path reaches one: a pointer to it, a struct with a field of its type | The ErrSchema error compiling the node's type alone returns |
+
 Use the schema, accessor, shape and field handles returned by the API; their
 nil/zero values are not usable. Engines, schemas and type caches must not be
 copied. Rule and build callbacks must be deterministic and safe for concurrent
 calls, including duplicate calls during concurrent cold compilation. Caches
-retain metadata, never the instances passed to reads or writes.
+retain metadata, never the instances passed to reads or writes. The built-in
+options keep their own copies of the slices they are given, such as
+`WithAtomicImplementers`' interfaces and `WithTaggedFields`' tag options, so
+one option can configure any number of engines, concurrently, and changing the
+slice afterwards changes none of them.
 
 ## Generics and the Go baseline
 
@@ -86,8 +111,13 @@ that comparison: it returns the key of `known` that `key` equals ignoring case,
 `-` and `_`, else the first one inserted, deleted, replaced or swapped character
 away under that folding, and false when `key` is one of `known` or near none.
 The rule, and which keys to leave alone because another library reads them, stay
-the caller's: a key such as `bson` is one character from `json`. `field.TagKeys()` lists a compiled
-field's, which compilation has already checked. It returns a `*TagError` for a tag
+the caller's: a key such as `bson` is one character from `json`. `field.TagKeys()`
+and `declaration.TagKeys()` yield a compiled field's keys, skipped declarations
+included, which compilation has already read and checked: an `iter.Seq[string]`
+over metadata the schema keeps, which cannot change it (`slices.Collect` copies
+it); ranging over it allocates nothing, while keeping the iterator, or passing
+it to a function that is not inlined, allocates its closure. A copied `Declaration` yields the same keys; one a
+caller builds yields none. `TagKeys(tag)` returns a `*TagError` for a tag
 that `reflect.StructTag` stops reading early, such as `parse: "filter"` with a
 space after the colon (`Lookup` then reports that key and every later one
 absent), or that repeats a key (`Lookup` returns only the first). Compiling a
@@ -117,7 +147,7 @@ Options relax those defaults:
 | `UntaggedName(fn)` | An exported field without a tag name, including `db:",option"`, is named `fn(goName)`; an empty result excludes it. `nil` is invalid. |
 | `PromoteEmbedded()` | An embedded struct or pointer to one, without a tag name, contributes its fields as `encoding/json` does. An embedded leaf type stays one field. Two promoted fields with one name fail compilation unless `ResolveByDepth()`. |
 | `DashCommaName()` | Only a tag value of exactly `"-"` excludes a field; `"-,"` followed by options names it `-`, as `encoding/json` does. |
-| `ValidName(fn)` | Each tag name of a selected field is passed to `fn`; an error fails compilation with ErrSchema, wrapping it. Names from `UntaggedName` are not checked. `nil` is invalid. |
+| `ValidName(fn)` | Each tag name of a selected field, an unexported embedded struct's that `WithJSONFields` names included, is passed to `fn`; an error fails compilation with ErrSchema, wrapping it. Names from `UntaggedName` are not checked. `nil` is invalid. |
 | `NestedFields()` | Selected fields are not leaves: paths such as `server.port` and walks descend into them. |
 
 `WithJSONFields(key, options...)` is `encoding/json`'s convention under `key`:
@@ -134,6 +164,7 @@ Options relax those defaults:
 | Unexported embedded struct with a tag name | A field under that name, as `encoding/json` writes it as a member. Its `GoField` is unexported: reading or writing its value whole, or walking a value into it, returns ErrAccess; with `NestedFields()`, paths to its exported fields read and write |
 | A struct embedded inside itself, directly or through others | Its fields once, at the shallowest depth, as `encoding/json` explores each embedded struct once |
 | A name two fields claim | Settled as with `ResolveByDepth()`, which the option implies; a remaining tie fails, or with `DropTies()` drops every field claiming the name |
+| An embedded struct whose own fields tie, in a struct whose own field settles the name | The struct compiles, with the settling field, as `encoding/json` writes it; the embedded struct compiled alone, or as a named section, still fails |
 
 `ValidName` and `NestedFields` apply. `UntaggedName`, `PromoteEmbedded` and
 `DashCommaName` return ErrSchema from New: the option already fixes them.
@@ -198,7 +229,22 @@ them instead, and New fails when it is given without `ResolveByDepth()` or
 loses all its names and aliases: it is absent from `Fields` and `Lookup` and
 stays in its declaring struct's `DeclaredView`. The kept fields' names and
 aliases must then be unique. It applies to `WithTaggedFields` and to a
-`WithFieldResolver` rule alike.
+`WithFieldResolver` rule alike. Each contested name is settled once, in the
+order its first claim is declared, so the tie a failure reports is the first
+declared.
+
+Under `ResolveByDepth()` a struct's own fields can tie over a name the struct
+that inlines it settles: embed `A` and `B`, each declaring `ID`, in `Inner`,
+and `Inner` in `Row`, which declares its own `ID`. `Row` compiles with its own
+`ID`, as `encoding/json` writes it. `Inner` alone still fails, and so does any
+type that reaches `Inner` on a path, as a named section (with `NestedFields`) or
+an element. Within `Row`'s compilation `Inner` is reached only as an inline
+owner, so it keeps the conflict in place of a view: its `Fields`, `Lookup` and
+`Declarations` are empty, and `schema.At` returns the error compiling `Inner`
+alone returns, as it does for `*Inner` or a struct with an `Inner` field. The
+types `Inner`'s fields declare still get views, so their tags are checked and
+`At` and a declared-view walk reach them. The same holds for the type of a
+field that lost its name. A tie among `Row`'s own visible fields still fails.
 Ordinary recursive children refer to existing shapes and remain valid.
 
 Compilation validates the entire reachable named view, even if you later read
@@ -365,10 +411,17 @@ Type-walk failures also carry `TypeRoute`, a detached schema route.
 Error text names the operation, the Go type and the cause, such as
 `gowalker: compile app.Row: invalid schema: fields ID and Owner of app.Row both
 use the name "id"`. Schema errors come from declarations, so they name fields,
-tags and resolver messages. Text never includes path steps, map keys or values,
-which can be caller data; read `Error.Path` and `Error.Step` to show a location
-under your own policy. A `*NameConflict` also exposes `Owner`, `Name`, `First`
-and `Second` for a custom message. `GetAs` returns `ErrMissing` rather than
+tag keys and resolver messages. Text never includes path steps, map keys or
+values, which can be caller data, nor struct tag values, which can hold secrets
+such as a default password: a `*TagError` names the repeated key or the byte
+where reading stopped (`struct tag repeats the key "default" at byte 24`), and
+an unnamed struct type, alone or in a generic type's arguments, prints without
+its tags (`struct { Password string }`). `TypeText(t)` prints a type that way
+for a library's own error text. Read `Error.Path` and `Error.Step` to show a
+location, and `Error.Type` or `TagError.Tag` to show the full type or tag,
+under your own policy. A resolver's error is its own text. A
+`*NameConflict` also exposes `Owner`, `Name`, `First` and `Second` for a custom
+message. `GetAs` returns `ErrMissing` rather than
 replacing missing with zero. `State` values print as `Present`, `Nil` and `Missing`.
 
 ## Writes
@@ -431,10 +484,32 @@ dereference, or possible collection element. An element route is not an accessor
 path and contains no fake map key/index. Map keys are metadata and are not walked.
 Interfaces and atomic types are leaves. A type already active on the ancestor
 route emits `Reference`; repeated types on separate branches remain visitable.
+Pointer types are types too: a cycle closes on whichever type re-enters first,
+so a struct reached through a pointer field, `N *Node` with `Node` holding
+`Next *Node`, closes at `Next` on `*Node`, and the `Reference`'s `Shape` is the
+pointer's; follow `Elem` to reach the struct.
+
+`WithDeclaredView()` makes a type walk follow each struct's `DeclaredView`
+instead of its `Fields`, for a library that checks annotations on declarations
+rather than on the flattened view:
+
+| Declaration | Visible walk (default) | Declared-view walk |
+|---|---|---|
+| A named field | `FieldEdge` with the view's handle, routed from the visited struct | `FieldEdge` with the declaration's own handle, relative to its declaring struct |
+| An inlined struct field | Not visited; its fields appear among the owner's | `InlineEdge` with the owner's handle into its type, then that type's declared view; visited even when it contributes no fields |
+| A struct inlined inside itself (`ResolveByDepth`) | Its fields once | A `Reference` |
+
+A type two routes reach is visited on each in both modes. Skipped fields and
+fields kept without a name (`FieldRule.Unnamed`) are in no declared view; read
+them from `Declarations`. Translate a declared route into a logical path by its
+`FieldEdge` names and `ElementEdge`s;
+`InlineEdge` and `DerefEdge` add nothing. `WalkValue` refuses the option with
+ErrType.
 
 `TypeVisit.Inherited(key)` returns the value of tag `key` on the nearest field
 of the route that declares it: the visited field, then each enclosing field,
-including the embedded owners an inlined field was promoted through. It returns
+including the embedded owners an inlined field was promoted through, which a
+declared-view walk routes as `InlineEdge`s. It returns
 `("", false)` when no field on the route has the tag. Use it for annotations a
 section passes down, such as `sensitive:"true"` or `reload:"hot"`, where a deeper
 tag overrides an outer one.

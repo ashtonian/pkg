@@ -1,6 +1,7 @@
 package gowalker
 
 import (
+	"errors"
 	"reflect"
 	"sort"
 
@@ -58,6 +59,9 @@ func (s *Schema) WalkValueReflect(root reflect.Value, fn ValueVisitor, options .
 	if err != nil {
 		return failure("walkvalue", err, s.Type(), emptyPath, -1, nil)
 	}
+	if settings.declared {
+		return failure("walkvalue", ErrType, s.Type(), emptyPath, -1, errDeclaredValueWalk)
+	}
 	if fn == nil {
 		return failure("walkvalue", ErrType, s.Type(), emptyPath, -1, nil)
 	}
@@ -68,6 +72,8 @@ func (s *Schema) WalkValueReflect(root reflect.Value, fn ValueVisitor, options .
 	}
 	return err
 }
+
+var errDeclaredValueWalk = errors.New("WithDeclaredView applies to WalkType")
 
 type valueID struct {
 	typ              reflect.Type

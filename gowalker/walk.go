@@ -41,6 +41,7 @@ type walkSettings struct {
 	leave     bool
 	unordered bool
 	less      func(reflect.Value, reflect.Value) bool
+	declared  bool
 }
 
 // WalkOption configures a single traversal, without changing the engine's view.
@@ -60,6 +61,20 @@ func WithWalkLimits(limits WalkLimits) WalkOption {
 // WithLeaveEvents adds Leave after ordinary entries, including pruned nodes.
 // References and cycles remain terminal events without a Leave.
 func WithLeaveEvents() WalkOption { return func(s *walkSettings) error { s.leave = true; return nil } }
+
+// WithDeclaredView makes [Schema.WalkType] follow each struct's
+// [Shape.DeclaredView] instead of its Fields: a named field by a FieldEdge
+// whose Field is the declaration's own handle, relative to its declaring
+// struct, and an inlined struct field by an InlineEdge to its type, whose
+// declared view follows. Inline owners are visited even when they contribute
+// no fields, a type two routes reach is visited on each, and a struct inlined
+// inside itself is a Reference. Skipped and unnamed fields are in no
+// declared view. Use it to check annotations on declarations, inline owners
+// included, along the routes that reach them; a FieldEdge's name and an
+// ElementEdge are a route's logical path. [Schema.WalkValue] refuses it.
+func WithDeclaredView() WalkOption {
+	return func(s *walkSettings) error { s.declared = true; return nil }
+}
 
 // WithUnorderedMaps permits MapRange order for non-string-keyed maps. String-keyed
 // maps remain sorted. This option and WithMapKeyOrder are mutually exclusive.

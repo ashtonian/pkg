@@ -2,6 +2,7 @@ package gowalker_test
 
 import (
 	"errors"
+	"maps"
 	"reflect"
 	"slices"
 	"strings"
@@ -157,19 +158,70 @@ func TestTagKeys(t *testing.T) {
 	}
 }
 
-// A compiled field lists its tag's keys; unnamed fields included.
-func TestField_TagKeys(t *testing.T) {
+type tagKeysInner struct {
+	Deep string `env:"DEEP" default:""`
+}
+
+// Every declaration, and every field handle, yields its tag's keys in order,
+// including keys with empty values: named, unnamed, inline owner, promoted,
+// shadowed and skipped fields alike.
+func TestTagKeys_OnDeclarationsAndFields(t *testing.T) {
 	type row struct {
-		ID     int    `json:"id" db:"id,pk" parse:"filter"`
-		Hidden string `json:"-" db:"hidden"`
-		Plain  int
+		ID           int    `json:"id" db:"id,pk" parse:"filter"`
+		Hidden       string `json:"-" db:"hidden"`
+		Plain        int
+		tagKeysInner `json:",inline" note:""`
+		Deep         string `json:"Deep" env:""`
+		_            int    `db:"private" check:""`
 	}
 	schema := schemaFor[row](t, engine(t, gowalker.WithJSONFields("json", gowalker.KeepHidden())))
-	want := map[string][]string{"ID": {"json", "db", "parse"}, "Hidden": {"json", "db"}, "Plain": nil}
+	want := map[string][]string{
+		"ID": {"json", "db", "parse"}, "Hidden": {"json", "db"}, "Plain": nil, "tagKeysInner": {"json", "note"},
+		"row.Deep": {"json", "env"}, "tagKeysInner.Deep": {"env", "default"}, "_": {"db", "check"},
+	}
+	states := map[string]gowalker.DeclarationState{}
 	for _, d := range schema.Root().Declarations() {
-		if got := d.Field.TagKeys(); !slices.Equal(got, want[d.GoField.Name]) {
-			t.Errorf("%s: keys %q, want %q", d.GoField.Name, got, want[d.GoField.Name])
+		name := d.GoField.Name
+		if name == "Deep" {
+			name = d.DeclaringType.Name() + ".Deep"
 		}
+		states[name] = d.State
+		if got := slices.Collect(d.TagKeys()); !slices.Equal(got, want[name]) {
+			t.Errorf("%s declaration: keys %q, want %q", name, got, want[name])
+		}
+		if d.Field == nil {
+			continue
+		}
+		if got := slices.Collect(d.Field.TagKeys()); !slices.Equal(got, want[name]) {
+			t.Errorf("%s field: keys %q, want %q", name, got, want[name])
+		}
+	}
+	wantStates := map[string]gowalker.DeclarationState{
+		"ID": gowalker.Named, "Hidden": gowalker.Unnamed, "Plain": gowalker.Named, "tagKeysInner": gowalker.InlineOwner,
+		"row.Deep": gowalker.Named, "tagKeysInner.Deep": gowalker.Shadowed, "_": gowalker.Skipped,
+	}
+	if !maps.Equal(states, wantStates) {
+		t.Errorf("states %v, want %v", states, wantStates)
+	}
+	for _, f := range schema.Root().DeclaredView() {
+		if got := slices.Collect(f.TagKeys()); !slices.Equal(got, want[f.GoField().Name]) && f.GoField().Name != "Deep" {
+			t.Errorf("%s declared view: keys %q", f.GoField().Name, got)
+		}
+	}
+	// A copied declaration yields the same keys; one the caller builds, none.
+	first := schema.Root().Declarations()[0]
+	copied := first
+	if got := slices.Collect(copied.TagKeys()); !slices.Equal(got, want["ID"]) {
+		t.Errorf("copied declaration: keys %q", got)
+	}
+	if got := slices.Collect(gowalker.Declaration{GoField: first.GoField}.TagKeys()); got != nil {
+		t.Errorf("built declaration: keys %q", got)
+	}
+	// What a caller does with a collected slice leaves the schema's keys alone.
+	collected := slices.Collect(first.TagKeys())
+	collected[0] = "changed"
+	if got := slices.Collect(schema.Root().Declarations()[0].TagKeys()); !slices.Equal(got, want["ID"]) {
+		t.Errorf("keys changed through a collected slice: %q", got)
 	}
 }
 
@@ -188,7 +240,7 @@ func TestCompileRefusesUnreadableTags(t *testing.T) {
 			if _, ok := errors.AsType[*gowalker.TagError](err); !ok || !errors.Is(err, gowalker.ErrSchema) {
 				t.Fatalf("%s: compiled: %v", field.Name, err)
 			}
-			if !strings.Contains(err.Error(), "field "+field.Name+":") || !strings.Contains(err.Error(), typ.String()) {
+			if !strings.Contains(err.Error(), "field "+field.Name+":") || !strings.Contains(err.Error(), "struct { OK int; "+field.Name+" string }") {
 				t.Errorf("%s: %v does not name the field and type", field.Name, err)
 			}
 		}

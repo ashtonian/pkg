@@ -35,6 +35,14 @@ zero in a test that exercises every type: a rise means a type compiles, or its
 metadata builds, on every call.
 - `Schema.AccessName` and `Schema.AccessField` share cached accessors for visible root fields. General path
   resolution is uncached; retain its result.
+- `Schema.At` compiles nothing: a node's schema is a read-locked lookup after
+  the first request, kept by its compilation, at most one per node, so it adds
+  no engine cache entry. Reach a nested type's fields through `At` on the
+  schema you hold rather than compiling the type as a second root. Only in a
+  graph holding a struct that keeps a conflict in place of its view does a
+  first request search the node's paths for one: once per node, skipping the
+  shapes an earlier search cleared, so all the searches of a graph that find
+  nothing read each shape once.
 - A path of struct fields reached only through pointers compiles, once per
   accessor, to a static route: reads, writes and `Locate` over it skip the
   general path's per-call shape tracking and pointer-cycle checks. Paths through
@@ -52,7 +60,10 @@ metadata builds, on every call.
   materialization.
 - `Field.Tag(key)` and `Field.Tags()` read the original tag string without
   copying an index. Use them when you only need annotations; `GoField()` copies
-  its index slice.
+  its index slice. `Field.TagKeys()` and `Declaration.TagKeys()` yield keys read
+  once at compilation: ranging over one allocates nothing, keeping or passing
+  the iterator on allocates its closure, and calling `TagKeys(tag)` parses
+  again.
 - A `TypeCache` hit is a read-locked map lookup. Its first request per type
   compiles (or reuses) the schema and runs your build function.
 - Metadata slice getters return defensive copies. Keep the returned catalog for
