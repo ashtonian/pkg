@@ -4,11 +4,14 @@ import { fromWire } from "../core/wire.js";
 import { SchemaValidationError, SchemaValidationErrors } from "../core/errors.js";
 import type { ConstraintFailure } from "../core/errors.js";
 import type { FieldType } from "../core/types.js";
+import { resolvePath } from "./pattern.js";
 import type { PatchOp, PatchPathSchema, PatchSchema } from "./types.js";
 
 /**
  * Validate a JSON Merge Patch against a PatchSchema as the Go parser does:
- * each key is a patchable top-level path (an RFC 6901 JSON Pointer), null
+ * each key is a patchable top-level path (an RFC 6901 JSON Pointer, matched
+ * against the schema's keys and its `*` / `**` patterns as the server
+ * matches them), null
  * only where the path is nullable (and `remove` allowed), every other value
  * of the path's type — numbers integral and within the path's Go kind,
  * strings in its enum, values within its bounds, arrays of its element type
@@ -40,8 +43,7 @@ export function validatePatch(input: Record<string, unknown>, schema: PatchSchem
 }
 
 function validateField(field: string, value: unknown, schema: PatchSchema): SchemaValidationError[] {
-  const path = `/${escapePointerToken(field)}`;
-  const pathSchema = Object.hasOwn(schema.paths, path) ? schema.paths[path] : undefined;
+  const pathSchema = resolvePath(schema.paths, `/${escapePointerToken(field)}`);
   if (!pathSchema) {
     return [new SchemaValidationError(field, "E2076",
       `Field "${field}" is not patchable. Patchable fields: ${Object.keys(schema.paths).map(unescapePointer).join(", ")}`)];

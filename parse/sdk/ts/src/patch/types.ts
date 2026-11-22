@@ -55,7 +55,7 @@ export type PatchInput<T> = {
   [K in keyof T]?: T[K] | null;
 };
 
-/** Result of a patch (mirrors Go repotypes.PatchResult). */
+/** Result of a patch, in the shape parse/examples/server answers a PATCH with. */
 export interface PatchResult<T> {
   updated: T[];
   failed?: BatchItemError[];

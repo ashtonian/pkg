@@ -5,7 +5,7 @@ import type { FieldType } from "../core/types.js";
 import { fromWire } from "../core/wire.js";
 import type { FilterFieldSchema, FilterOperator, FilterSchema, SortSchema } from "./types.js";
 
-// Mirrors the Go filter parser (public-pkg/parse/filter): same structure,
+// Mirrors the Go filter parser (parse/filter): same structure,
 // same E-codes. The conformance corpus (testdata/filter_conformance.json)
 // holds the two to one answer per input. Checks the server bounds by
 // deployment config (depth, cost, sizes) and value formats the client cannot

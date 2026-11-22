@@ -1,11 +1,11 @@
 // Go⇔TS filter-grammar conformance.
 //
-// The corpus at public-pkg/parse/testdata/filter_conformance.json is generated
+// The corpus at parse/testdata/filter_conformance.json is generated
 // from the authoritative Go parser. This test asserts the TS validator agrees
 // on validity + error code for every case, so the two grammar implementations
 // can't silently drift. Regenerate the corpus with:
 //
-//   go test -tags=unit -run TestEmitFilterConformance -update ./public-pkg/parse/
+//   go test -tags=unit -run TestEmitFilterConformance -update .   (in parse/)
 //
 // The TS client has no parser, so it does not reconstruct the canonical AST or
 // SQL (those are Go-side checks in filter_conformance_test.go). What the client
