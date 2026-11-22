@@ -47,6 +47,14 @@ func oneField(tag reflect.StructTag) reflect.Type {
 	return reflect.StructOf([]reflect.StructField{{Name: "V", Type: reflect.TypeFor[int](), Tag: tag}})
 }
 
+// oneValue is a oneField value with V set, so omitempty and omitzero keep
+// the member.
+func oneValue(typ reflect.Type) any {
+	v := reflect.New(typ).Elem()
+	v.Field(0).SetInt(1)
+	return v.Interface()
+}
+
 // The name a json tag gives is the one json.Marshal writes, for every tag
 // value up to four characters over the characters that end a name, start
 // an identifier or are neither.
@@ -71,7 +79,7 @@ func TestWithJSONFields_NamesAsJSONWrites(t *testing.T) {
 			}
 			continue
 		}
-		want := jsonMembers(t, reflect.New(typ).Elem().Interface())
+		want := jsonMembers(t, oneValue(typ))
 		if got := fieldNames(t, e, typ); !slices.Equal(got, want) {
 			t.Errorf("json:%q names %q; encoding/json writes %q", value, got, want)
 		}
@@ -94,12 +102,42 @@ func TestWithJSONFields_ReservedCharacters(t *testing.T) {
 		"-,":        "-",
 		" a":        " a",
 		",omitzero": "V",
+		"a-b":       "a-b",
+		"$ref":      "$ref",
+		"a!b":       "a!b",
+		// Options never change which members exist.
+		"a,omitempty":   "a",
+		"a,string":      "a",
+		"a,inline":      "a",
+		"a,unknown":     "a",
+		"a,format:x":    "a",
+		"a,case:ignore": "a",
+		",inline":       "V",
 	} {
 		got := fieldNames(t, e, oneField(reflect.StructTag("json:"+strconv.Quote(value))))
 		if !slices.Equal(got, []string{want}) {
 			t.Errorf("json:%q names %q, want %q", value, got, want)
 		}
 	}
+}
+
+// Any tag value names the member json.Marshal writes. The seeds are the
+// shapes where the grammar matters and the options after a name.
+func FuzzWithJSONFields(f *testing.F) {
+	for _, seed := range []string{"a", `a"b`, `a\b`, "a'b", "'a b'", `"x"`, "a b", "-,", ",omitempty", "a,string", "a,inline", "a,format:RFC3339", "a,case:ignore", "\xff", "é,unknown"} {
+		f.Add(seed)
+	}
+	e := engine(f, gowalker.WithJSONFields("json"))
+	f.Fuzz(func(t *testing.T, value string) {
+		typ := oneField(reflect.StructTag("json:" + strconv.Quote(value)))
+		if _, err := json.Marshal(oneValue(typ)); err != nil {
+			t.Skipf("encoding/json refuses json:%q: %v", value, err)
+		}
+		want := jsonMembers(t, oneValue(typ))
+		if got := fieldNames(t, e, typ); !slices.Equal(got, want) {
+			t.Errorf("json:%q names %q; encoding/json writes %q", value, got, want)
+		}
+	})
 }
 
 // A key other than json follows encoding/json's rules under that key.
