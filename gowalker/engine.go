@@ -1,9 +1,12 @@
 package gowalker
 
 import (
+	"errors"
 	"reflect"
 	"sync"
 )
+
+var errDropTiesAlone = errors.New("DropTies settles ties left by ResolveByDepth or WithJSONFields; give one of them")
 
 // Limits bound one compilation or resolution. All fields must be positive.
 // MaxTypes counts unique declared types. MaxFields counts declared fields plus
@@ -29,8 +32,30 @@ type settings struct {
 	atomic   []func(reflect.Type) bool
 	fold     bool
 	byDepth  bool
+	dropTies bool
 	capacity int
-	limits   Limits
+	// unbounded keeps every type, whatever capacity says.
+	unbounded bool
+	limits    Limits
+}
+
+// retains reports whether a cache holding entries keeps one more.
+func (s *settings) retains(entries int) bool {
+	return s.unbounded || entries < s.capacity
+}
+
+// CacheStats describes an engine's or a [TypeCache]'s cache.
+type CacheStats struct {
+	// Entries is the number of types held.
+	Entries int
+	// Capacity is the most types held; it does not apply when Unbounded.
+	Capacity int
+	// Unbounded reports a cache that keeps every type ([WithUnboundedCache]).
+	Unbounded bool
+	// Uncached counts the compilations, or builds, whose result was returned
+	// and not kept because the cache was full. A steady rise means a type is
+	// compiled on every call.
+	Uncached uint64
 }
 
 // rule applies the engine's naming convention to one declared field.
@@ -42,6 +67,13 @@ func (s *settings) rule(sf reflect.StructField) (FieldRule, error) {
 		return s.resolver(copyStructField(sf))
 	}
 	return FieldRule{Name: sf.Name}, nil
+}
+
+// resolvesByDepth reports whether name claims are settled after expansion
+// (ResolveByDepth, or WithJSONFields, which implies it) rather than refused
+// as they meet.
+func (s *settings) resolvesByDepth() bool {
+	return s.byDepth || s.tagged != nil && s.tagged.json
 }
 
 func (s *settings) isAtomic(t reflect.Type) bool {
@@ -119,9 +151,20 @@ func WithAtomicImplementers(ifaces ...reflect.Type) Option {
 // names: it is absent from Fields and Lookup and stays in its declaring
 // struct's DeclaredView. Aliases of the fields that remain must be unique.
 // It applies to [WithTaggedFields], where a tag name is explicit, and to a
-// [WithFieldResolver] rule that sets Explicit.
+// [WithFieldResolver] rule that sets Explicit. [WithJSONFields] implies it.
 func ResolveByDepth() Option {
 	return func(s *settings) error { s.byDepth = true; return nil }
+}
+
+// DropTies drops every field of a tie that [ResolveByDepth] leaves, as
+// encoding/json does, instead of failing compilation: two fields at the same
+// depth claiming one name, both named by a tag or both not, and every deeper
+// field claiming it, lose the name. Use it to describe exactly the members
+// encoding/json writes, as for stored documents; leave it out where a
+// silently dropped field is a defect, such as a column list. New fails
+// unless ResolveByDepth or [WithJSONFields] is also given.
+func DropTies() Option {
+	return func(s *settings) error { s.dropTies = true; return nil }
 }
 
 // WithCaseFoldNames uses Unicode simple folding for both lookup and collisions.
@@ -130,15 +173,26 @@ func WithCaseFoldNames() Option {
 }
 
 // WithCacheCapacity limits retained root schemas, including each schema's graph.
-// Zero disables retention. At capacity, new types compile without being cached.
+// Zero disables retention. At capacity, new types compile without being cached,
+// on every call: [Engine.CacheStats] counts them. A [TypeCache] has the same
+// capacity. The last of WithCacheCapacity and [WithUnboundedCache] applies.
 func WithCacheCapacity(capacity int) Option {
 	return func(s *settings) error {
 		if capacity < 0 {
 			return ErrSchema
 		}
-		s.capacity = capacity
+		s.capacity, s.unbounded = capacity, false
 		return nil
 	}
+}
+
+// WithUnboundedCache keeps every root schema the engine compiles, and every
+// type its [TypeCache]s build, for the engine's lifetime. Choose it when the
+// program's struct types are fixed when it is built, which bounds the cache
+// by the program; keep a capacity for a caller that creates types at run
+// time, such as with reflect.StructOf, or compiles types its users supply.
+func WithUnboundedCache() Option {
+	return func(s *settings) error { s.unbounded = true; return nil }
 }
 
 // WithLimits replaces all compile/access budgets. Start from DefaultLimits to
@@ -159,6 +213,14 @@ type Engine struct {
 	settings settings
 	mu       sync.RWMutex
 	cache    map[reflect.Type]*Schema
+	uncached uint64
+}
+
+// CacheStats reports the engine's schema cache.
+func (e *Engine) CacheStats() CacheStats {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	return CacheStats{Entries: len(e.cache), Capacity: e.settings.capacity, Unbounded: e.settings.unbounded, Uncached: e.uncached}
 }
 
 // New creates an engine using exported Go field names, exact matching, a cache
@@ -172,6 +234,9 @@ func New(options ...Option) (*Engine, error) {
 		if err := option(&s); err != nil {
 			return nil, failure("new", ErrSchema, nil, emptyPath, -1, err)
 		}
+	}
+	if s.dropTies && !s.resolvesByDepth() {
+		return nil, failure("new", ErrSchema, nil, emptyPath, -1, errDropTiesAlone)
 	}
 	return &Engine{settings: s, cache: make(map[reflect.Type]*Schema)}, nil
 }
@@ -237,8 +302,10 @@ func (e *Engine) CompileType(t reflect.Type) (*Schema, error) {
 	if cached := e.cache[t]; cached != nil {
 		return cached, nil
 	}
-	if len(e.cache) < e.settings.capacity {
+	if e.settings.retains(len(e.cache)) {
 		e.cache[t] = schema
+	} else {
+		e.uncached++
 	}
 	return schema, nil
 }

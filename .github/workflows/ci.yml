@@ -446,13 +446,13 @@ jobs:
           test-input-mtimes: off
       # Vet type-checks every package and test, so on the declared floor it is
       # also the floor's build check.
-      - name: go vet and staticcheck on the declared Go floor
+      - name: go vet on the declared Go floor, staticcheck on Go 1.27.4
         env:
           GOTOOLCHAIN: local
         run: |
           go version | grep -F ' go1.27.0 '
           make lint
-      - name: Cookbook go vet and staticcheck on the declared Go floor
+      - name: Cookbook go vet on the declared Go floor, staticcheck on Go 1.27.4
         if: contains(needs.scope.outputs.checks, 'cookbook-check')
         env:
           GOTOOLCHAIN: local

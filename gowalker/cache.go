@@ -8,13 +8,24 @@ import (
 // TypeCache computes a library's own metadata once per Go type — column lists,
 // parsed tag options, help text — from an engine's schema, and shares it across
 // calls and goroutines. Results, including errors, are retained for up to the
-// engine's cache capacity of types; beyond it they are computed on each call.
+// engine's cache capacity of types, or for every type with
+// [WithUnboundedCache]; beyond the capacity they are computed on each call,
+// which [TypeCache.CacheStats] counts.
 type TypeCache[M any] struct {
 	engine *Engine
 	build  func(*Schema) (M, error)
 
-	mu      sync.RWMutex
-	entries map[reflect.Type]typeCacheEntry[M]
+	mu       sync.RWMutex
+	entries  map[reflect.Type]typeCacheEntry[M]
+	uncached uint64
+}
+
+// CacheStats reports the cache; Uncached counts builds not kept.
+func (c *TypeCache[M]) CacheStats() CacheStats {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	s := c.engine.settings
+	return CacheStats{Entries: len(c.entries), Capacity: s.capacity, Unbounded: s.unbounded, Uncached: c.uncached}
 }
 
 type typeCacheEntry[M any] struct {
@@ -60,8 +71,10 @@ func (c *TypeCache[M]) Get(t reflect.Type) (M, error) {
 	if cached, ok := c.entries[t]; ok {
 		return cached.value, cached.err
 	}
-	if len(c.entries) < c.engine.settings.capacity {
+	if c.engine.settings.retains(len(c.entries)) {
 		c.entries[t] = entry
+	} else {
+		c.uncached++
 	}
 	return entry.value, entry.err
 }
