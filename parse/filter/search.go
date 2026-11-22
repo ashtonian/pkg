@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/ashtonian/pkg/parse/core"
+	idialect "github.com/ashtonian/pkg/parse/internal/dialect"
 )
 
 // SearchWeight controls the relative importance of a field in full-text search.
@@ -153,7 +154,7 @@ func buildSearchCondition(schema *SearchSchema, dialect Dialect, query string, s
 	}
 
 	switch dialect.Name() {
-	case "postgres":
+	case idialect.NamePostgres:
 		return buildPostgresSearch(schema, dialect, query, startParamIdx)
 	default:
 		return buildFallbackSearch(schema, dialect, query, startParamIdx), nil

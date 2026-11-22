@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/ashtonian/pkg/parse/core"
+	idialect "github.com/ashtonian/pkg/parse/internal/dialect"
 )
 
 // defaultTermsLimit caps a terms facet's bucket count when neither
@@ -456,7 +457,7 @@ func listSource(f *FieldSchema, column string) *FieldSchema {
 // UNION ALL key column lines up with scalar terms facets.
 func relationKeyExpr(rel *core.RelationSchema, dialect Dialect) string {
 	expr := "j." + rel.TargetColumn
-	if dialect.Name() == "postgres" {
+	if dialect.Name() == idialect.NamePostgres {
 		return expr + "::text"
 	}
 	return "CAST(" + expr + " AS TEXT)"
@@ -489,7 +490,7 @@ func termsKeyExpr(field *FieldSchema, dialect Dialect) string {
 			return expr // PathExpr reads it as canonical text
 		}
 	}
-	if dialect.Name() == "postgres" {
+	if dialect.Name() == idialect.NamePostgres {
 		return expr + "::text"
 	}
 	return "CAST(" + expr + " AS TEXT)"
