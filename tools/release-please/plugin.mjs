@@ -12,7 +12,7 @@ export class FirstParentPlugin extends ManifestPlugin {
     super(github, targetBranch, repositoryConfig, logger);
     this.history = history;
     this.rank = typeRanker(sharedChangelogSections(repositoryConfig));
-    this.headerOf = parsedHeaders(history.subjectOf);
+    this.headerOf = parsedHeaders(history.messageOf);
     this.warned = new Set();
   }
 
@@ -41,7 +41,7 @@ export class FirstParentPlugin extends ManifestPlugin {
 function sharedChangelogSections(repositoryConfig) {
   const distinct = new Map();
   for (const [path, config] of Object.entries(repositoryConfig)) {
-    distinct.set(JSON.stringify(config.changelogSections ?? null), path);
+    distinct.set(sectionsKey(config.changelogSections), path);
   }
   if (distinct.size > 1) {
     throw new Error(`${FIRST_PARENT}: release paths ${[...distinct.values()].join(', ')} set different changelog-sections; set one for all of them`);
@@ -49,21 +49,35 @@ function sharedChangelogSections(repositoryConfig) {
   return Object.values(repositoryConfig)[0]?.changelogSections;
 }
 
-// parsedHeaders maps each merge whose subject release-please's parser reads
-// as a conventional commit to the header it makes of it, which is the header
-// it gives the merge's entry: a branch commit is dropped only when its merge
-// can carry the change, and the entry is found by that exact text.
-function parsedHeaders(subjectOf) {
-  // The parser logs each subject it cannot parse; release-please logs the
+// sectionsKey identifies a changelog-sections list by what it means, not by
+// how its JSON is written.
+function sectionsKey(sections) {
+  if (sections === undefined) return 'defaults';
+  return JSON.stringify(sections.map(s => [s.type, s.section ?? '', Boolean(s.hidden)]));
+}
+
+// parsedHeaders parses each merge's whole message as release-please does and
+// maps the merge to the header of the entry its first line gave, exactly as
+// release-please's entry carries it. A merge whose message gives no such
+// entry (it parses to nothing, or only to trailers) has no header, so its
+// branch commits stay listed.
+function parsedHeaders(messageOf) {
+  // The parser logs each message it cannot parse; release-please logs the
   // same commits again when it parses them itself.
   const quiet = { error() {}, warn() {}, info() {}, debug() {}, trace() {} };
   const headers = new Map();
-  for (const [sha, subject] of subjectOf) {
-    const [header] = parseConventionalCommits([{ sha, message: subject, files: [] }], quiet);
+  for (const [sha, message] of messageOf) {
+    const firstLine = collapse(message.split('\n')[0]);
+    const entries = parseConventionalCommits([{ sha, message, files: [] }], quiet);
+    const header = entries.find(entry => collapse(entry.message) === firstLine);
     if (header !== undefined) headers.set(sha, header.message);
   }
   return headers;
 }
+
+// collapse compares headers as release-please's parser rebuilds them, which
+// can respace them.
+const collapse = text => text.replace(/\s+/g, ' ').trim();
 
 // registerFirstParent makes the config's "first-parent" build a plugin over
 // history (readHistory's result).

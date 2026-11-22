@@ -22,14 +22,14 @@ function commit(sha, header, { footer, releaseAs, references = [], pullRequest }
 // parsed header unless it is unparsed.
 function landed(merges, { unparsed = [] } = {}) {
   const mergeOf = new Map();
-  const subjectOf = new Map();
+  const messageOf = new Map();
   const headerOf = new Map();
   for (const [merge, [subject, ...branch]] of Object.entries(merges)) {
-    subjectOf.set(merge, subject);
+    messageOf.set(merge, subject);
     if (!unparsed.includes(merge)) headerOf.set(merge, subject);
     for (const sha of branch) mergeOf.set(sha, merge);
   }
-  return { history: { mergeOf, subjectOf }, options: { headerOf } };
+  return { history: { mergeOf, messageOf }, options: { headerOf } };
 }
 
 const closes = issue => ({ prefix: '#', action: 'Closes', issue });
@@ -117,6 +117,15 @@ test("a branch commit carrying another pull request's override takes nothing ove
   assert.deepEqual(kept, [header]);
   assert.equal(header.type, 'fix');
   assert.equal(header.breaking, false);
+});
+
+test("another pull request's override stays listed when nothing carries its change", () => {
+  const other = { mergeCommitOid: 'm9', body: 'BEGIN_COMMIT_OVERRIDE\nfeat(parse)!: the other change\nEND_COMMIT_OVERRIDE' };
+  const foreign = commit('b1', 'feat(parse)!: the other change', { pullRequest: other });
+
+  const kept = keep([foreign], { m1: ['Merge pull request #10 from a/b', 'b1'] }, { unparsed: ['m1'] });
+
+  assert.deepEqual(kept, [foreign]);
 });
 
 test("a branch commit's breaking description replaces the one the merge's ! repeats", () => {
@@ -239,11 +248,11 @@ test('readHistory maps branch commits, sync merges included, to the merge that l
   git('switch', '-q', 'main');
   const landing = merge('feature', 'feat: the feature (#1)');
 
-  const { mergeOf, subjectOf } = readHistory(work, 'HEAD');
+  const { mergeOf, messageOf } = readHistory(work, 'HEAD');
 
   assert.deepEqual(Object.fromEntries(mergeOf), { [b1]: landing, [sync]: landing, [b2]: landing });
   for (const mainline of [root, onMain, landing]) assert.equal(mergeOf.has(mainline), false);
-  assert.deepEqual(Object.fromEntries(subjectOf), { [landing]: 'feat: the feature (#1)' }, 'only first-parent merges have subjects');
+  assert.deepEqual(Object.fromEntries(messageOf), { [landing]: 'feat: the feature (#1)' }, 'only first-parent merges have messages');
 });
 
 // A branch cut from another unmerged branch: the first merge claims the
@@ -293,16 +302,16 @@ test('a listed merge without its header keeps its branch commits, and warns once
   assert.equal(warnings.length, 1);
 });
 
-test("readHistory's subject is the first line of a merge's message", t => {
+test("readHistory keeps a merge's whole message", t => {
   const { work, git, commitFile } = scratchRepo(t);
   commitFile('a', 'chore: root');
   git('switch', '-q', '-c', 'feature');
   commitFile('b', 'feat: on the branch');
   git('switch', '-q', 'main');
-  // A first paragraph of two lines: git's %s would join them.
-  git('merge', '-q', '--no-ff', '-m', 'feat: the feature (#1)\nwrapped onto a second line\n\nCo-authored-by: Pat <pat@example.com>', 'feature');
+  const message = 'feat: the feature (#1)\nwrapped onto a second line\n\nCo-authored-by: Pat <pat@example.com>';
+  git('merge', '-q', '--no-ff', '-m', message, 'feature');
 
-  const { subjectOf } = readHistory(work, 'HEAD');
+  const { messageOf } = readHistory(work, 'HEAD');
 
-  assert.deepEqual([...subjectOf.values()], ['feat: the feature (#1)']);
+  assert.deepEqual([...messageOf.values()], [message]);
 });

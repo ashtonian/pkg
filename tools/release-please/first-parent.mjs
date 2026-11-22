@@ -28,8 +28,8 @@ export function fetchBranchHead(repoDir, remote, branch) {
 
 // readHistory reads ref's history. mergeOf maps every commit a merge on ref's
 // first-parent chain brought in to that merge; a commit on the chain itself,
-// or one newer than ref, has no entry. subjectOf holds each of those merges'
-// subject: the first line of its message, the header release-please parses.
+// or one newer than ref, has no entry. messageOf holds each of those merges'
+// whole message, as release-please parses it.
 export function readHistory(repoDir, ref) {
   const git = gitIn(repoDir);
   const parents = new Map();
@@ -38,11 +38,11 @@ export function readHistory(repoDir, ref) {
     const [sha, ...shas] = line.split(' ');
     parents.set(sha, shas);
   }
-  const subjectOf = new Map();
+  const messageOf = new Map();
   for (const record of git('rev-list', '--first-parent', '--merges', '--no-commit-header', '--format=%x00%H%x1f%B', ref).split('\0')) {
     if (!record) continue;
     const [sha, message] = record.split('\x1f');
-    subjectOf.set(sha, message.split('\n')[0].trim());
+    messageOf.set(sha, message.replace(/\n+$/, ''));
   }
   const chain = [];
   for (let sha = git('rev-parse', '--verify', `${ref}^{commit}`).trim(); sha; sha = parents.get(sha)[0]) {
@@ -62,7 +62,7 @@ export function readHistory(repoDir, ref) {
       pending.push(...(parents.get(sha) ?? []));
     }
   }
-  return { mergeOf, subjectOf };
+  return { mergeOf, messageOf };
 }
 
 // typeRanker orders commit types by what they call for in a release: a
@@ -79,9 +79,9 @@ export function typeRanker(sections = DEFAULT_SECTIONS) {
 }
 
 // firstParentCommits drops each conventional commit a merge brought in when
-// the merge has a header: headerOf maps each merge whose subject
-// release-please parses to the header its parser makes of it. So a pull
-// request counts once, as its merge:
+// the merge has a header: headerOf maps each merge whose message
+// release-please parses into an entry for its first line to that entry's
+// header. So a pull request counts once, as its merge:
 //
 //   - In a release path the merge's changes reach, the merge's entry with that
 //     header takes over what the dropped commit calls for: a higher-ranked
@@ -91,8 +91,11 @@ export function typeRanker(sections = DEFAULT_SECTIONS) {
 //     nothing takes it over.
 //
 // A commit release-please gave a pull request's BEGIN_COMMIT_OVERRIDE message
-// is not its own, so it is dropped without taking anything over; the merge's
-// copy of the override stands as the author wrote it.
+// carries that message, not its own. When the pull request is the merge's,
+// the merge's copy of the override stands as the author wrote it, and the
+// commit is dropped. When it is another's (a stacked pull request), the
+// commit takes nothing over, but is dropped only where a header carries the
+// change.
 //
 // A commit whose merge has no header is kept, so its change is listed rather
 // than lost; so is one whose merge is listed here without that header.
@@ -111,7 +114,8 @@ export function firstParentCommits(commits, history, { headerOf, rank = typeRank
       kept.push(commit);
       continue;
     }
-    if (hasOverride(commit)) continue;
+    const overridden = hasOverride(commit);
+    if (overridden && commit.pullRequest.mergeCommitOid === merge) continue;
     if (!headerOf.has(merge)) {
       kept.push(commit);
       continue;
@@ -126,6 +130,7 @@ export function firstParentCommits(commits, history, { headerOf, rank = typeRank
       kept.push(commit);
       continue;
     }
+    if (overridden) continue;
     if (rank(commit.type) > rank(header.type)) {
       header.type = commit.type;
       raised.set(header, commit);
