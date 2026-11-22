@@ -1,0 +1,231 @@
+package core
+
+import (
+	"fmt"
+	"strings"
+)
+
+// GeneratorOption configures a SchemaGenerator.
+type GeneratorOption func(*GeneratorOptions)
+
+// GeneratorOptions holds options for schema generation. All fields have
+// sensible defaults — override only what you need.
+type GeneratorOptions struct {
+	// SQLTableName overrides the derived table name for this specific type.
+	// Takes precedence over TableConvention.
+	SQLTableName string
+
+	// ColumnTypes declares physical storage independently of Go field shape.
+	ColumnTypes map[string]SQLType
+
+	// ColumnMapper turns each field's column, as ColumnTag and
+	// ColumnConvention name it, into the SQL expression that reads it.
+	ColumnMapper SQLColumnMapper
+
+	// ColumnConvention transforms field names to SQL column names.
+	// Default: SnakeCase.
+	ColumnConvention NamingConvention
+
+	// TableNameConvention transforms type names to SQL table names.
+	// Default: PluralSnake ("Product" → "products").
+	// Ignored when SQLTableName is set.
+	TableNameConvention TableConvention
+
+	// FieldNameTag is the struct tag to read for external field names.
+	// Default: "json". Set to "bson", "yaml", etc. for non-JSON APIs.
+	FieldNameTag string
+
+	// ColumnTag is the struct tag to read for SQL column names.
+	// Default: "db". Set to "sql", "column", etc. for your ORM.
+	ColumnTag string
+
+	// DefaultFilterOps maps FieldType to default filter operators when the
+	// filter_ops tag is omitted.
+	DefaultFilterOps map[FieldType][]string
+
+	// DefaultPatchOps maps FieldType to default patch operations when the
+	// patch_ops tag is omitted.
+	DefaultPatchOps map[FieldType][]string
+
+	// SortMaxFields caps how many sort fields a generated SortSchema accepts.
+	// Zero means the default of 3.
+	SortMaxFields int
+
+	// SearchParam is the query-string parameter name a generated SearchSchema
+	// advertises for its free-text search box. Empty means "search", the
+	// parameter list handlers read (filter.ParamSearch).
+	SearchParam string
+}
+
+// SQLColumnMapper maps a field's column to the SQL expression that reads it.
+// MapColumn is handed the column ColumnName names: the column tag's name,
+// else ColumnConvention (default snake_case) applied to the field's external
+// name, or to its Go name when the field-name tag hides it. Every view of a
+// field (filter, sort, search, server policies) hands it that one column,
+// the name patch SET clauses and column type declarations use too.
+//
+// A cursor reads its keys' values from the row's columns, not from the
+// expressions, so a sort key's expression must order as its column's value
+// does: qualify, quote or cast it, but do not transform it (lower(...)
+// orders differently from the value a cursor resumes after).
+type SQLColumnMapper interface {
+	MapColumn(table, column string, fieldType FieldType) string
+}
+
+// WithSQLTableName overrides the table name for a specific type.
+func WithSQLTableName(name string) GeneratorOption {
+	return func(o *GeneratorOptions) { o.SQLTableName = name }
+}
+
+// WithColumnMapper sets the mapper that turns columns into SQL expressions.
+func WithColumnMapper(mapper SQLColumnMapper) GeneratorOption {
+	return func(o *GeneratorOptions) { o.ColumnMapper = mapper }
+}
+
+// WithColumnConvention sets the naming convention for SQL columns.
+// Default: SnakeCase. Common alternatives: CamelCase, LowerCase.
+//
+//	core.WithColumnConvention(core.CamelCase)
+func WithColumnConvention(conv NamingConvention) GeneratorOption {
+	return func(o *GeneratorOptions) { o.ColumnConvention = conv }
+}
+
+// WithTableConvention sets the naming convention for SQL table names.
+// Default: PluralSnake ("Product" → "products").
+//
+//	core.WithTableConvention(core.Singular)      // "product"
+//	core.WithTableConvention(core.PluralCamel)   // "products"
+func WithTableConvention(conv TableConvention) GeneratorOption {
+	return func(o *GeneratorOptions) { o.TableNameConvention = conv }
+}
+
+// WithFieldNameTag sets which struct tag provides the external field name.
+// Default: "json". Use for APIs that serialize with a different format.
+//
+//	core.WithFieldNameTag("bson")   // read from `bson:"field_name"`
+//	core.WithFieldNameTag("yaml")   // read from `yaml:"field_name"`
+func WithFieldNameTag(tag string) GeneratorOption {
+	return func(o *GeneratorOptions) { o.FieldNameTag = tag }
+}
+
+// WithColumnTag sets which struct tag provides the SQL column name.
+// Default: "db". The column tag value takes precedence over the naming
+// convention.
+//
+//	core.WithColumnTag("sql")      // read from `sql:"column_name"`
+//	core.WithColumnTag("column")   // read from `column:"col_name"`
+func WithColumnTag(tag string) GeneratorOption {
+	return func(o *GeneratorOptions) { o.ColumnTag = tag }
+}
+
+// WithSortMaxFields caps how many sort fields a generated SortSchema accepts.
+// Default 3.
+func WithSortMaxFields(n int) GeneratorOption {
+	return func(o *GeneratorOptions) { o.SortMaxFields = n }
+}
+
+// WithSearchParam sets the query-string parameter name a generated
+// SearchSchema advertises for its free-text search box. Default "search"
+// (filter.ParamSearch).
+func WithSearchParam(p string) GeneratorOption {
+	return func(o *GeneratorOptions) { o.SearchParam = p }
+}
+
+// --- Schema Generator ---
+
+// SchemaGenerator generates schemas from Go struct types using configurable
+// naming conventions and struct tag keys.
+type SchemaGenerator struct {
+	Opts *GeneratorOptions
+}
+
+// NewSchemaGenerator creates a SchemaGenerator with the given options.
+func NewSchemaGenerator(opts ...GeneratorOption) *SchemaGenerator {
+	o := &GeneratorOptions{}
+	for _, opt := range opts {
+		opt(o)
+	}
+	return &SchemaGenerator{Opts: o}
+}
+
+// TableName derives the SQL table name for a type.
+// Priority: SQLTableName (explicit) → TableNameConvention → PluralSnake default.
+// The name is emitted into SQL verbatim, so anything but a plain identifier
+// is an error at schema generation.
+func (g *SchemaGenerator) TableName(t interface{ Name() string }) (string, error) {
+	name := PluralSnake(t.Name())
+	switch {
+	case g.Opts.SQLTableName != "":
+		name = g.Opts.SQLTableName
+	case g.Opts.TableNameConvention != nil:
+		name = g.Opts.TableNameConvention(t.Name())
+	}
+	if !IsIdentifier(name) {
+		return "", fmt.Errorf("table name %q is not a SQL identifier", name)
+	}
+	return name, nil
+}
+
+// ColumnExpr builds the SQL expression that reads the column ColumnName
+// names for field: "table.column", the column a plain identifier. A
+// ColumnMapper is handed that column instead and returns the expression; a
+// mapper's expressions are the developer's own SQL and are emitted as
+// returned, so its column is not checked.
+func (g *SchemaGenerator) ColumnExpr(table, field string, fieldType FieldType, dbTag string) (string, error) {
+	if g.Opts.ColumnMapper != nil {
+		return g.Opts.ColumnMapper.MapColumn(table, g.column(field, dbTag), fieldType), nil
+	}
+	col, err := g.ColumnName(field, dbTag)
+	if err != nil {
+		return "", err
+	}
+	return table + "." + col, nil
+}
+
+// ColumnName returns just the column name (without table prefix), for patch
+// SQL SET clauses and cursor row reads.
+// Priority: columnTag value → ColumnConvention → SnakeCase default.
+func (g *SchemaGenerator) ColumnName(field, dbTag string) (string, error) {
+	col := g.column(field, dbTag)
+	if !IsIdentifier(col) {
+		return "", fmt.Errorf("column %q for field %s is not a SQL identifier", col, field)
+	}
+	return col, nil
+}
+
+// column is ColumnName without the identifier check.
+func (g *SchemaGenerator) column(field, dbTag string) string {
+	switch {
+	case dbTag != "" && dbTag != "-":
+		col, _, _ := strings.Cut(dbTag, ",")
+		return col
+	case g.Opts.ColumnConvention != nil:
+		return g.Opts.ColumnConvention(field)
+	}
+	return ToSnakeCase(field)
+}
+
+// JSONTagKey is the struct tag encoding/json names members by, and the
+// default FieldNameTag; DefaultColumnTagKey is the default ColumnTag.
+const (
+	JSONTagKey          = "json"
+	DefaultColumnTagKey = "db"
+)
+
+// FieldNameTag returns the struct tag key to read for external field names.
+// Default: JSONTagKey.
+func (g *SchemaGenerator) FieldNameTag() string {
+	if g.Opts.FieldNameTag != "" {
+		return g.Opts.FieldNameTag
+	}
+	return JSONTagKey
+}
+
+// ColumnTagKey returns the struct tag key to read for SQL column names.
+// Default: DefaultColumnTagKey.
+func (g *SchemaGenerator) ColumnTagKey() string {
+	if g.Opts.ColumnTag != "" {
+		return g.Opts.ColumnTag
+	}
+	return DefaultColumnTagKey
+}

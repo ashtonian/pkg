@@ -29,9 +29,16 @@ Start with the [runnable package example](../README.md#quick-start). The focused
 
 | File | Responsibility |
 |------|----------------|
-| `core.go` | `ParserConfig` + options, `Codec` / `StdlibJSON`, `FieldType`, `SQLType`, `ParseError`, `SchemaGenerator` + generator options |
+| `codec.go` | `Codec`, `StdlibJSON` and its strict request decoder |
+| `types.go` | `FieldType`, `SQLType` |
+| `errors.go` | `ParseError`, `ParseErrorKind`, the `Detail*` keys |
 | `code.go` | The error codes and their status and message table; no application catalog dependency |
+| `config.go` | `ParserConfig`, `DefaultConfig`, the parser options, `ListBodyLimit` |
+| `naming.go` | Column and table naming conventions, `Pluralize`, `ToSnakeCase` |
+| `generator.go` | `SchemaGenerator`, `GeneratorOptions` and their options, `SQLColumnMapper` |
+| `core.go` | `Validator`, `PolicySubject`, `MatchWildcard` |
 | `fields.go` | `StructFields` — one gowalker walk per struct type: encoding/json field names with embedded structs promoted, hidden fields kept for columns, every tag parsed once (`Tags`) |
+| `constraint.go` | The `Constraint*` names (each also the tag that declares it), `ConstraintError` |
 | `bounds.go` | `Bounds` — the `minlen` / `maxlen` / `min` / `max` / `minitems` / `maxitems` tags, read and checked against the field's type |
 | `typeof.go` | `TypeOf` — Go type → storage model; `IsUUIDType` / `UUIDText` |
 | `number.go` | Exact integer / float normalization and comparison |
@@ -45,6 +52,7 @@ Start with the [runnable package example](../README.md#quick-start). The focused
 | `macaddr.go` | `MACAddr`: SQL MACADDR, lowercase colon-separated octets |
 | `column_type.go` | `WithColumnTypes`, `FieldType` (a field's Go type with its declared storage), value-type storage checks |
 | `json.go` | `NormalizeJSON` — canonical JSON documents |
+| `json_keys.go` | `ValidateJSONKeyRepresentation`, `CanonicalJSONMapKey` — a stored document's member names keep their JSON spelling |
 | `pointer.go` | RFC 6901 pointers |
 | `relation.go` | Relation tag grammar, `IsIdentifier` |
 | `doc.go` | Package documentation |

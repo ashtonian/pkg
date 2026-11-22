@@ -8,63 +8,6 @@ import (
 	"github.com/ashtonian/pkg/parse/core"
 )
 
-func TestToSnakeCase(t *testing.T) {
-	tests := []struct{ in, want string }{
-		{"DeviceType", "device_type"},
-		{"ID", "id"},
-		{"HTTPStatus", "http_status"},
-		{"createdAt", "created_at"},
-		{"already_snake", "already_snake"},
-		{"JSONData", "json_data"},
-		{"", ""},
-	}
-	for _, tt := range tests {
-		got := core.ToSnakeCase(tt.in)
-		if got != tt.want {
-			t.Errorf("ToSnakeCase(%q) = %q, want %q", tt.in, got, tt.want)
-		}
-	}
-}
-
-func TestColumnConventions(t *testing.T) {
-	tests := []struct {
-		name string
-		conv core.NamingConvention
-		in   string
-		want string
-	}{
-		{"snake", core.SnakeCase, "DeviceType", "device_type"},
-		{"camel", core.CamelCase, "DeviceType", "deviceType"},
-		{"pascal", core.PascalCase, "DeviceType", "DeviceType"},
-		{"lower", core.LowerCase, "DeviceType", "devicetype"},
-	}
-	for _, tt := range tests {
-		got := tt.conv(tt.in)
-		if got != tt.want {
-			t.Errorf("%s(%q) = %q, want %q", tt.name, tt.in, got, tt.want)
-		}
-	}
-}
-
-func TestTableConventions(t *testing.T) {
-	tests := []struct {
-		name string
-		conv core.TableConvention
-		in   string
-		want string
-	}{
-		{"plural_snake", core.PluralSnake, "Device", "devices"},
-		{"singular", core.Singular, "Device", "device"},
-		{"plural_camel", core.PluralCamel, "Device", "devices"},
-	}
-	for _, tt := range tests {
-		got := tt.conv(tt.in)
-		if got != tt.want {
-			t.Errorf("%s(%q) = %q, want %q", tt.name, tt.in, got, tt.want)
-		}
-	}
-}
-
 func TestSchemaGenerator_ColumnExpr(t *testing.T) {
 	tests := []struct {
 		name  string
@@ -145,32 +88,6 @@ func TestSchemaGenerator_FieldNameTag(t *testing.T) {
 	gen2 := core.NewSchemaGenerator(core.WithFieldNameTag("bson"))
 	if gen2.FieldNameTag() != "bson" {
 		t.Errorf("expected bson, got %q", gen2.FieldNameTag())
-	}
-}
-
-func TestPluralize(t *testing.T) {
-	tests := []struct{ in, want string }{
-		{"device", "devices"},
-		{"policy", "policies"},
-		{"inventory", "inventories"},
-		{"status", "statuses"},
-		{"address", "addresses"},
-		{"fox", "foxes"},
-		{"match", "matches"},
-		{"wish", "wishes"},
-		{"buzz", "buzzes"},
-		{"key", "keys"}, // vowel before y → just add s
-		{"day", "days"}, // vowel before y → just add s
-		{"boy", "boys"}, // vowel before y → just add s
-		{"category", "categories"},
-		{"entity", "entities"},
-		{"", ""},
-	}
-	for _, tt := range tests {
-		got := core.Pluralize(tt.in)
-		if got != tt.want {
-			t.Errorf("Pluralize(%q) = %q, want %q", tt.in, got, tt.want)
-		}
 	}
 }
 
