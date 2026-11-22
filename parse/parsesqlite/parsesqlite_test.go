@@ -258,13 +258,17 @@ func TestGeoFunctions(t *testing.T) {
 		}
 	}
 	for name, expr := range map[string]string{
-		"a point that is not JSON":       "parse_geo_near('{', 'lat', 'lon', 1, 1, 1)",
-		"a point that is a number":       "parse_geo_near(10, 'lat', 'lon', 1, 1, 1)",
-		"member names that are not text": "parse_geo_near('{}', 1, 2, 1, 1, 1)",
-		"a center of text":               "parse_geo_near('{\"lat\":1,\"lon\":1}', 'lat', 'lon', 'north', 1, 1)",
-		"a box side of text":             "parse_geo_in_box('{\"lat\":1,\"lon\":1}', 'lat', 'lon', 0, 'ten', 0, 20)",
-		"a polygon that is no blob":      "parse_geo_covered_by('{\"lat\":1,\"lon\":1}', 'lat', 'lon', 'square')",
-		"a polygon blob of a point":      "parse_geo_covered_by('{\"lat\":1,\"lon\":1}', 'lat', 'lon', x'0101000000')",
+		"a point that is not JSON":         "parse_geo_near('{', 'lat', 'lon', 1, 1, 1)",
+		"a point that is a number":         "parse_geo_near(10, 'lat', 'lon', 1, 1, 1)",
+		"member names that are not text":   "parse_geo_near('{}', 1, 2, 1, 1, 1)",
+		"a center of text":                 "parse_geo_near('{\"lat\":1,\"lon\":1}', 'lat', 'lon', 'north', 1, 1)",
+		"a box side of text":               "parse_geo_in_box('{\"lat\":1,\"lon\":1}', 'lat', 'lon', 0, 'ten', 0, 20)",
+		"a polygon that is no blob":        "parse_geo_covered_by('{\"lat\":1,\"lon\":1}', 'lat', 'lon', 'square')",
+		"a polygon blob of a point":        "parse_geo_covered_by('{\"lat\":1,\"lon\":1}', 'lat', 'lon', x'0101000000')",
+		"a center of text, a NULL point":   "parse_geo_near(NULL, 'lat', 'lon', 'north', 1, 1)",
+		"a box side of text, a NULL point": "parse_geo_in_box(NULL, 'lat', 'lon', 0, 'ten', 0, 20)",
+		"a polygon of text, a NULL point":  "parse_geo_covered_by(NULL, 'lat', 'lon', 'square')",
+		"a short polygon, a NULL point":    "parse_geo_covered_by(NULL, 'lat', 'lon', x'01030000000100000000000000')",
 	} {
 		for _, d := range dbs {
 			t.Run(d.name+"/"+name, func(t *testing.T) {

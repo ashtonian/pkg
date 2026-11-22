@@ -126,6 +126,15 @@ func TestKeyOrdersAsTheDecimals(t *testing.T) {
 		"12345678901234567890.123456789012345678", "12345678901234567890.123456789012345679",
 		widest, "-" + widest, "0." + strings.Repeat("0", core.MaxDecimalDigits-3) + "1",
 	}
+	// The digit and exponent extremes, beside each one's nearest neighbours.
+	least := "0." + strings.Repeat("0", core.MaxDecimalDigits-2)
+	greatest := "1" + strings.Repeat("0", core.MaxDecimalDigits-1)
+	texts = append(texts,
+		greatest, "-"+greatest, strings.Repeat("9", core.MaxDecimalDigits-1), strings.Repeat("9", core.MaxDecimalDigits-1)+".9",
+		strings.Repeat("9", core.MaxDecimalDigits-1)+"8", "-"+strings.Repeat("9", core.MaxDecimalDigits-1)+"8",
+		least+"1", least+"2", "-"+least+"1", "-"+least+"2", "0."+strings.Repeat("9", core.MaxDecimalDigits-1),
+		"-0."+strings.Repeat("9", core.MaxDecimalDigits-1), "1e-998", "1e999", "-1e999",
+	)
 	r := rand.New(rand.NewPCG(144, 2026))
 	for range 5000 {
 		texts = append(texts, randomDecimal(t, r))

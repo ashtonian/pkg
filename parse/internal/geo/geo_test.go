@@ -209,6 +209,7 @@ func TestCoordinate(t *testing.T) {
 		{nil, 0, false},
 		{map[string]any{}, 0, false},
 		{[]any{json.Number("1")}, 0, false},
+		{float64(10), 0, false},
 	}
 	for _, tt := range tests {
 		got, ok := Coordinate(tt.member)

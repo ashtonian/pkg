@@ -31,7 +31,8 @@
 // point is the stored point's JSON text; its latKey and lonKey members are
 // read as PostgreSQL reads (doc->>'lat')::float8, a duplicated member by its
 // last value. Each function is NULL when the point is: NULL, not an object,
-// or a member missing, null or no number.
+// or a member missing, null or no number. An operand of the wrong type is
+// an error on every row, one whose point is NULL included.
 //
 // Call Register before the database opens its first connection, or
 // RegisterOn for a sqlite.Driver of your own. A statement on a connection
@@ -170,12 +171,12 @@ func DecimalFloat32(v driver.Value) (driver.Value, error) {
 // coerced as PostGIS coerces geography. It is exported for a SQLite driver
 // other than modernc.org/sqlite to register under GeoNearFunc.
 func GeoNear(point, latKey, lonKey, lat, lon, meters driver.Value) (driver.Value, error) {
-	p, ok, err := storedPoint(GeoNearFunc, point, latKey, lonKey)
-	if !ok || err != nil {
-		return nil, err
-	}
 	operands, err := numbers(GeoNearFunc, lat, lon, meters)
 	if err != nil {
+		return nil, err
+	}
+	p, ok, err := storedPoint(GeoNearFunc, point, latKey, lonKey)
+	if !ok || err != nil {
 		return nil, err
 	}
 	return truth(geo.Near(p, geo.Point{Lat: operands[0], Lon: operands[1]}, operands[2])), nil
@@ -186,12 +187,12 @@ func GeoNear(point, latKey, lonKey, lat, lon, meters driver.Value) (driver.Value
 // NULL. It is exported for a SQLite driver other than modernc.org/sqlite to
 // register under GeoInBoxFunc.
 func GeoInBox(point, latKey, lonKey, south, north, west, east driver.Value) (driver.Value, error) {
-	p, ok, err := storedPoint(GeoInBoxFunc, point, latKey, lonKey)
-	if !ok || err != nil {
-		return nil, err
-	}
 	sides, err := numbers(GeoInBoxFunc, south, north, west, east)
 	if err != nil {
+		return nil, err
+	}
+	p, ok, err := storedPoint(GeoInBoxFunc, point, latKey, lonKey)
+	if !ok || err != nil {
 		return nil, err
 	}
 	return truth(geo.Box{South: sides[0], North: sides[1], West: sides[2], East: sides[3]}.Covers(p)), nil
@@ -203,10 +204,6 @@ func GeoInBox(point, latKey, lonKey, south, north, west, east driver.Value) (dri
 // exported for a SQLite driver other than modernc.org/sqlite to register
 // under GeoCoveredByFunc.
 func GeoCoveredBy(point, latKey, lonKey, polygon driver.Value) (driver.Value, error) {
-	p, ok, err := storedPoint(GeoCoveredByFunc, point, latKey, lonKey)
-	if !ok || err != nil {
-		return nil, err
-	}
 	wkb, isBlob := polygon.([]byte)
 	if !isBlob {
 		return nil, fmt.Errorf("%s: want the polygon as a WKB blob, got %T", GeoCoveredByFunc, polygon)
@@ -216,6 +213,10 @@ func GeoCoveredBy(point, latKey, lonKey, polygon driver.Value) (driver.Value, er
 	ring, err := geo.ReadPolygonWKB(buf[:0], wkb)
 	if err != nil {
 		return nil, fmt.Errorf("%s: %w", GeoCoveredByFunc, err)
+	}
+	p, ok, err := storedPoint(GeoCoveredByFunc, point, latKey, lonKey)
+	if !ok || err != nil {
+		return nil, err
 	}
 	return truth(geo.CoveredBy(p, ring)), nil
 }
