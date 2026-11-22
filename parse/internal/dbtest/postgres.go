@@ -3,23 +3,20 @@
 package dbtest
 
 import (
-	"context"
 	"database/sql"
 	"fmt"
 	"net/url"
 	"os"
-	"sync"
 	"testing"
 	"time"
 
 	_ "github.com/jackc/pgx/v5/stdlib" // registers the "pgx" driver
-	"github.com/testcontainers/testcontainers-go"
-	tcpostgres "github.com/testcontainers/testcontainers-go/modules/postgres"
-	"github.com/testcontainers/testcontainers-go/wait"
 )
 
-// PostgresDSNEnv and PostGISDSNEnv point the helpers at existing servers
-// instead of starting containers.
+// PostgresDSNEnv and PostGISDSNEnv name the servers the helpers use. A test
+// that asks for a server whose variable is unset skips. `make
+// parse-postgres-up` starts one PostGIS server that serves both and prints
+// the exports.
 const (
 	PostgresDSNEnv = "PARSE_POSTGRES_DSN"
 	PostGISDSNEnv  = "PARSE_POSTGIS_DSN"
@@ -28,36 +25,27 @@ const (
 // driverName is the database/sql driver the helpers open servers with.
 const driverName = "pgx"
 
-// server is one lazily started PostgreSQL server shared by a test binary.
+// server is a PostgreSQL server named by an environment variable.
 type server struct {
-	image    string
-	platform string // empty: the host's
-	dsnEnv   string
-	once     sync.Once
-	dsn      string
-	err      error
+	dsnEnv string
 }
 
 var (
-	postgresServer = &server{image: "postgres:18", dsnEnv: PostgresDSNEnv}
-	// postgis/postgis publishes amd64 images only; arm64 hosts run it
-	// emulated.
-	postgisServer = &server{image: "postgis/postgis:18-3.6", platform: "linux/amd64", dsnEnv: PostGISDSNEnv}
+	postgresServer = &server{dsnEnv: PostgresDSNEnv}
+	postgisServer  = &server{dsnEnv: PostGISDSNEnv}
 )
 
-// Postgres returns a database/sql handle on a PostgreSQL 18 server, scoped
-// to a fresh schema per test so tests share one server without colliding.
-// The server is PARSE_POSTGRES_DSN when set; otherwise, with
-// PARSE_INTEG_PG=1, one testcontainers
-// postgres:18 per test binary. Skips only when neither is requested;
-// a requested backend that cannot start fails the test.
+// Postgres returns a database/sql handle on the PARSE_POSTGRES_DSN server,
+// scoped to a fresh schema per test so tests share one server without
+// colliding. Skips when the variable is unset; a server that is set and
+// unavailable fails the test.
 func Postgres(t testing.TB) *sql.DB {
 	t.Helper()
 	return postgresServer.open(t)
 }
 
-// PostGIS is Postgres on a PostGIS 3.6 server (PARSE_POSTGIS_DSN, or a
-// postgis/postgis:18-3.6 container), for geo predicates.
+// PostGIS is Postgres on the PARSE_POSTGIS_DSN server, which must have the
+// PostGIS extension available, for geo predicates.
 func PostGIS(t testing.TB) *sql.DB {
 	t.Helper()
 	db := postgisServer.open(t)
@@ -90,14 +78,7 @@ func (s *server) schemaDSN(t testing.TB) string {
 	t.Helper()
 	dsn := os.Getenv(s.dsnEnv)
 	if dsn == "" {
-		if os.Getenv("PARSE_INTEG_PG") != "1" {
-			t.Skipf("dbtest: set %s or PARSE_INTEG_PG=1 to run PostgreSQL tests", s.dsnEnv)
-		}
-		s.once.Do(s.start)
-		if s.err != nil {
-			t.Fatalf("dbtest: requested %s unavailable: %v", s.image, s.err)
-		}
-		dsn = s.dsn
+		t.Skipf("dbtest: set %s to run PostgreSQL tests", s.dsnEnv)
 	}
 
 	schema := fmt.Sprintf("t_%d", time.Now().UnixNano())
@@ -125,30 +106,4 @@ func (s *server) schemaDSN(t testing.TB) string {
 		}
 	})
 	return u.String()
-}
-
-func (s *server) start() {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
-	defer cancel()
-	opts := []testcontainers.ContainerCustomizer{
-		tcpostgres.WithDatabase("parse_test"),
-		tcpostgres.WithUsername("parse"),
-		tcpostgres.WithPassword("parse"),
-		testcontainers.WithWaitStrategy(
-			wait.ForLog("database system is ready to accept connections").
-				WithOccurrence(2).
-				WithStartupTimeout(3 * time.Minute),
-		),
-	}
-	if s.platform != "" {
-		opts = append(opts, testcontainers.WithImagePlatform(s.platform))
-	}
-	c, err := tcpostgres.Run(ctx, s.image, opts...)
-	if err != nil {
-		s.err = err
-		return
-	}
-	// The container lives for the test binary; testcontainers' reaper
-	// removes it when the process exits.
-	s.dsn, s.err = c.ConnectionString(ctx, "sslmode=disable")
 }

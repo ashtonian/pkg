@@ -16,7 +16,7 @@ RACE := -race -gcflags='modernc.org/...=-race=false -d=checkptr=0'
 # Every published module's release check; CI passes only the changed ones.
 RELEASE_CHECKS := gitx-release-check config-release-check kongprovider-release-check native-release-check jsonvalue-release-check gowalker-release-check httpx-release-check parse-release-check
 
-.PHONY: test test-native-unit test-native-integration native-release-check test-gitx test-jsonvalue jsonvalue-release-check test-gowalker gowalker-release-check test-config test-httpx-unit test-httpx-integration test-parse-unit test-parse-integration test-parse-sdk parse-sdk-release-check parse-sdk-registry-check parse-release-check lint release-check gitx-release-check config-release-check kongprovider-release-check httpx-release-check cookbook-check tool-check ci
+.PHONY: test test-native-unit test-native-integration native-release-check test-gitx test-jsonvalue jsonvalue-release-check test-gowalker gowalker-release-check test-config test-httpx-unit test-httpx-integration test-parse-unit test-parse-integration parse-postgres-up parse-postgres-down test-parse-sdk parse-sdk-release-check parse-sdk-registry-check parse-release-check lint release-check gitx-release-check config-release-check kongprovider-release-check httpx-release-check cookbook-check tool-check ci
 
 ## test: every published module from the working tree (go.work), race detector on.
 ## -count=1 only where a test depends on state the test cache cannot see:
@@ -60,6 +60,35 @@ test-parse-unit:
 # SQLite always runs. Supply PARSE_POSTGRES_DSN and PARSE_POSTGIS_DSN for SQL parity.
 test-parse-integration:
 	go test -tags=integration $(RACE) -count=1 -timeout=15m ./parse/...
+
+# The PostgreSQL integration server: one PostGIS server serves both DSN
+# variables, as in CI. postgis/postgis publishes amd64 images only, so arm64
+# hosts run it emulated.
+PARSE_PG_IMAGE ?= postgis/postgis:18-3.6
+PARSE_PG_NAME ?= parse-postgres
+PARSE_PG_PORT ?= 55432
+PARSE_PG_READY_SECONDS ?= 180
+PARSE_PG_DSN = postgres://parse:parse@127.0.0.1:$(PARSE_PG_PORT)/parse?sslmode=disable
+
+## parse-postgres-up: start the PostgreSQL integration server and print the
+## exports that point the parse tests at it: eval "$(make -s parse-postgres-up)".
+parse-postgres-up:
+	@docker run -d --rm --name $(PARSE_PG_NAME) --platform linux/amd64 \
+		-e POSTGRES_USER=parse -e POSTGRES_PASSWORD=parse -e POSTGRES_DB=parse \
+		-p 127.0.0.1:$(PARSE_PG_PORT):5432 $(PARSE_PG_IMAGE) >/dev/null
+	@i=0; until docker exec $(PARSE_PG_NAME) pg_isready -q -h 127.0.0.1 -U parse -d parse; do \
+		i=$$((i + 1)); \
+		if [ $$i -ge $(PARSE_PG_READY_SECONDS) ]; then \
+			echo "$(PARSE_PG_NAME): not ready after $(PARSE_PG_READY_SECONDS)s" >&2; exit 1; \
+		fi; \
+		sleep 1; \
+	done
+	@echo "export PARSE_POSTGRES_DSN='$(PARSE_PG_DSN)'"
+	@echo "export PARSE_POSTGIS_DSN='$(PARSE_PG_DSN)'"
+
+## parse-postgres-down: stop and remove the PostgreSQL integration server.
+parse-postgres-down:
+	docker rm -f $(PARSE_PG_NAME)
 
 test-parse-sdk:
 	node tools/check-parse-sdk-pnpm.mjs
