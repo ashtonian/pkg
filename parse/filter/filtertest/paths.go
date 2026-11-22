@@ -109,7 +109,7 @@ func PathCases() []Case {
 		{Name: "path int lt", Filter: `{"attrs.size":{"$lt":4}}`, Want: ids("ag")},
 		{Name: "path int in", Filter: `{"attrs.size":{"$in":[3,10]}}`, Want: ids("ab")},
 		{Name: "path int null", Filter: `{"attrs.size":{"$null":true}}`, Want: ids("cdfh")},
-		{Name: "path int fraction rejected", Filter: `{"attrs.size":1.5}`, ParseErr: "E2073"},
+		{Name: "path int fraction rejected", Filter: `{"attrs.size":1.5}`, ParseErr: filter.ECodeValueTypeMismatch.String()},
 
 		{Name: "path float eq integer member", Filter: `{"attrs.ratio":2}`, Want: ids("b")},
 		{Name: "path float eq", Filter: `{"attrs.ratio":1.5}`, Want: ids("a")},
@@ -122,7 +122,7 @@ func PathCases() []Case {
 		{Name: "path decimal lt", Filter: `{"attrs.price":{"$lt":10}}`, Want: ids("be")},
 		{Name: "path decimal in", Filter: `{"attrs.price":{"$in":[-1,"1E2"]}}`, Want: ids("eg")},
 		{Name: "path decimal exponent string is absent", Filter: `{"attrs.price":{"$null":true}}`, Want: ids("cdfh")},
-		{Name: "path decimal invalid request", Filter: `{"attrs.price":"cheap"}`, ParseErr: "E2073"},
+		{Name: "path decimal invalid request", Filter: `{"attrs.price":"cheap"}`, ParseErr: filter.ECodeValueTypeMismatch.String()},
 
 		{Name: "path bool eq true", Filter: `{"attrs.on":true}`, Want: ids("ag")},
 		{Name: "path bool eq false", Filter: `{"attrs.on":false}`, Want: ids("b")},
@@ -137,8 +137,8 @@ func PathCases() []Case {
 		{Name: "path uuid eq", Filter: `{"attrs.owner":"0198a3c2-7a1e-7c00-8000-000000000002"}`, Want: ids("b")},
 		{Name: "path uuid eq folds the member's case", Filter: `{"attrs.owner":"0198a3c2-7a1e-7c00-8000-000000000003"}`, Want: ids("g")},
 		{Name: "path uuid malformed member is absent", Filter: `{"attrs.owner":{"$null":true}}`, Want: ids("cdefh")},
-		{Name: "path uuid invalid request", Filter: `{"attrs.owner":"nope"}`, ParseErr: "E2116"},
-		{Name: "path string default operators exclude ordering", Filter: `{"attrs.color":{"$gt":"a"}}`, ParseErr: "E2072"},
+		{Name: "path uuid invalid request", Filter: `{"attrs.owner":"nope"}`, ParseErr: filter.ECodeInvalidUUID.String()},
+		{Name: "path string default operators exclude ordering", Filter: `{"attrs.color":{"$gt":"a"}}`, ParseErr: filter.ECodeInvalidOperator.String()},
 
 		{Name: "nested path", Filter: `{"attrs.dims.w":{"$gt":5}}`, Want: ids("b")},
 		{Name: "nested path through a scalar is absent", Filter: `{"attrs.dims.w":{"$null":true}}`, Want: ids("cdefgh")},
@@ -150,8 +150,8 @@ func PathCases() []Case {
 		{Name: "struct zero member is present", Filter: `{"settings.level":0}`, Want: ids("e")},
 		{Name: "nested struct member", Filter: `{"settings.window.from":{"$gt":"2026-01-02T03:04:05Z"}}`, Want: ids("g")},
 		{Name: "struct null document", Filter: `{"settings.mode":{"$null":true}}`, Want: ids("cdfh")},
-		{Name: "untagged struct member is not a path", Filter: `{"settings.note":"x"}`, ParseErr: "E2071"},
-		{Name: "undeclared map path", Filter: `{"attrs.shade":"x"}`, ParseErr: "E2071"},
+		{Name: "untagged struct member is not a path", Filter: `{"settings.note":"x"}`, ParseErr: filter.ECodeUnknownField.String()},
+		{Name: "undeclared map path", Filter: `{"attrs.shade":"x"}`, ParseErr: filter.ECodeUnknownField.String()},
 
 		{Name: "paths compose", Filter: `{"$or":[{"attrs.color":"blue"},{"settings.level":7}]}`, Want: ids("bg")},
 
@@ -172,7 +172,7 @@ func PathCases() []Case {
 		{Name: "has_key: a key whose value is null", Filter: `{"attrs":{"$has_key":"size"}}`, Want: ids("abcegh")},
 		{Name: "has_key: nested keys are not top-level", Filter: `{"attrs":{"$has_key":"w"}}`, Want: ids("")},
 		{Name: "has_key: not excludes a NULL document", Filter: `{"$not":{"attrs":{"$has_key":"color"}}}`, Want: ids("f")},
-		{Name: "has_key requires a string", Filter: `{"attrs":{"$has_key":3}}`, ParseErr: "E2073"},
+		{Name: "has_key requires a string", Filter: `{"attrs":{"$has_key":3}}`, ParseErr: filter.ECodeValueTypeMismatch.String()},
 	}
 }
 
