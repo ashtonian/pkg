@@ -44,6 +44,31 @@ test("release-please's own parse of a merge with trailers folds the branch into 
   }
 });
 
+// The parser collapses the whitespace in a header, so the merge's entry is
+// found by the header it makes of the subject, not by the subject's text.
+test("a merge subject the parser respaces still finds its entry", () => {
+  const subject = 'fix(parse):  tidy reader (#260)';
+  const history = { mergeOf: new Map([['b1', 'm1']]), subjectOf: new Map([['m1', subject]]) };
+  const commits = parsed([['m1', subject], ['b1', 'feat(parse): add Stream']]);
+
+  const kept = plugin(history).processCommits(commits);
+
+  assert.deepEqual(kept.map(c => [c.sha, c.type]), [['m1', 'feat']]);
+});
+
+test('a raised type warns once a run, however many paths the merge reaches', () => {
+  const warnings = [];
+  const logger = { ...quiet, warn: message => warnings.push(message) };
+  const subject = 'fix(parse): tidy reader (#260)';
+  const history = { mergeOf: new Map([['b1', 'm1']]), subjectOf: new Map([['m1', subject]]) };
+  const built = new FirstParentPlugin(github, 'main', { parse: {}, 'parse/sdk': {} }, history, logger);
+
+  for (let path = 0; path < 2; path++) built.processCommits(parsed([['m1', subject], ['b1', 'feat(parse): add Stream']]));
+
+  assert.equal(warnings.length, 1);
+  assert.match(warnings[0], /counts as feat/);
+});
+
 test("a merge whose subject release-please can't parse keeps its branch commits", () => {
   const history = { mergeOf: new Map([['b1', 'm1']]), subjectOf: new Map([['m1', 'Merge pull request #1 from a/b']]) };
   const commits = parsed([['b1', 'feat(parse): accept POST lists']]);

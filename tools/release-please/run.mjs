@@ -1,7 +1,8 @@
 // Runs release-please as release-please-action does, with the first-parent
 // plugin registered: creates the GitHub releases a merged release PR
 // describes, then opens or updates the release PR, and writes the action's
-// outputs. --dry-run prints the release PRs it would open and writes nothing.
+// outputs. --dry-run prints the release PRs it would open and writes nothing
+// to GitHub; it still fetches the target branch into the clone.
 //
 //   GITHUB_TOKEN=… node tools/release-please/run.mjs --repo owner/name [--dry-run]
 import fs from 'node:fs';
@@ -45,11 +46,15 @@ async function main() {
   const manifest = async () => {
     const loaded = await Manifest.fromManifest(github, branch, args['config-file'], args['manifest-file']);
     // The config names the plugin so the stock action refuses it. A config
-    // that does not (the target branch's, before it does) still gets it, first.
-    if (!loaded.plugins.some(plugin => plugin instanceof FirstParentPlugin)) {
+    // that does not (the target branch's, before it does) still gets it. It
+    // runs first: it finds a merge's entry by the header release-please
+    // parsed, which a plugin that rewrites messages would change.
+    let plugin = loaded.plugins.find(p => p instanceof FirstParentPlugin);
+    if (plugin === undefined) {
       console.warn(`${args['config-file']} on ${branch} names no ${FIRST_PARENT} plugin; adding it`);
-      loaded.plugins.unshift(new FirstParentPlugin(github, branch, loaded.repositoryConfig, history));
+      plugin = new FirstParentPlugin(github, branch, loaded.repositoryConfig, history);
     }
+    loaded.plugins = [plugin, ...loaded.plugins.filter(p => p !== plugin)];
     return loaded;
   };
 

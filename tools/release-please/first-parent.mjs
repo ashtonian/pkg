@@ -79,32 +79,31 @@ export function typeRanker(sections = DEFAULT_SECTIONS) {
 }
 
 // firstParentCommits drops each conventional commit a merge brought in when
-// release-please parses that merge's subject (conventionalMerges), so a pull
+// the merge has a header: headerOf maps each merge whose subject
+// release-please parses to the header its parser makes of it. So a pull
 // request counts once, as its merge:
 //
-//   - In a release path the merge's changes reach, the merge's own entry (its
-//     header, matched by subject) takes over what the dropped commit calls
-//     for: a higher-ranked type, so a fix merged as chore(…) still cuts a
-//     release; its breaking change and Release-As; its issue references.
+//   - In a release path the merge's changes reach, the merge's entry with that
+//     header takes over what the dropped commit calls for: a higher-ranked
+//     type, so a fix merged as refactor(…) still cuts a release; its breaking
+//     change and Release-As; its issue references.
 //   - In a path they don't reach, the branch's change there did not land, so
 //     nothing takes it over.
-//   - A pull request whose body sets BEGIN_COMMIT_OVERRIDE wrote its entries
-//     itself: release-please gave every one of its commits that message, and
-//     the merge's copy stands alone.
 //
-// A commit whose merge release-please cannot parse is kept, so its change is
-// listed rather than lost; so is one whose merge is listed here without the
-// header its subject names.
-export function firstParentCommits(commits, history, { conventionalMerges, rank = typeRanker(), warn = () => {} }) {
+// A commit release-please gave a pull request's BEGIN_COMMIT_OVERRIDE message
+// is not its own, so it is dropped without taking anything over; the merge's
+// copy of the override stands as the author wrote it.
+//
+// A commit whose merge has no header is kept, so its change is listed rather
+// than lost; so is one whose merge is listed here without that header.
+export function firstParentCommits(commits, history, { headerOf, rank = typeRanker(), warn = () => {} }) {
   const listed = new Set(commits.map(commit => commit.sha));
   const headers = new Map();
   for (const commit of commits) {
-    const subject = history.subjectOf.get(commit.sha);
-    if (subject !== undefined && !headers.has(commit.sha) && commit.message.trim() === subject) {
-      headers.set(commit.sha, commit);
-    }
+    if (!headers.has(commit.sha) && headerOf.get(commit.sha) === commit.message) headers.set(commit.sha, commit);
   }
   const unmatched = new Set();
+  const raised = new Map();
   const kept = [];
   for (const commit of commits) {
     const merge = history.mergeOf.get(commit.sha);
@@ -112,8 +111,8 @@ export function firstParentCommits(commits, history, { conventionalMerges, rank 
       kept.push(commit);
       continue;
     }
-    if (overriddenBy(commit, merge)) continue;
-    if (!conventionalMerges.has(merge)) {
+    if (hasOverride(commit)) continue;
+    if (!headerOf.has(merge)) {
       kept.push(commit);
       continue;
     }
@@ -122,32 +121,31 @@ export function firstParentCommits(commits, history, { conventionalMerges, rank 
       if (!listed.has(merge)) continue;
       if (!unmatched.has(merge)) {
         unmatched.add(merge);
-        warn(`${merge.slice(0, 7)} (${history.subjectOf.get(merge)}) has no entry with its subject; its branch commits stay listed`);
+        warn(`${merge.slice(0, 7)} (${headerOf.get(merge)}) has no entry with its header; its branch commits stay listed`);
       }
       kept.push(commit);
       continue;
     }
-    foldType(header, commit, rank, warn);
+    if (rank(commit.type) > rank(header.type)) {
+      header.type = commit.type;
+      raised.set(header, commit);
+    }
     foldBreaking(header, commit);
     foldReleaseAs(header, commit);
     foldReferences(header, commit);
   }
+  for (const [header, from] of raised) {
+    warn(`${header.sha.slice(0, 7)} (${header.message}) counts as ${header.type}, from ${from.sha.slice(0, 7)} (${from.message}); its subject's type is lower than its change's`);
+  }
   return kept;
 }
 
-// overriddenBy reports a commit of the pull request merged as merge whose
-// body sets BEGIN_COMMIT_OVERRIDE, read as release-please reads it.
-function overriddenBy(commit, merge) {
-  const pr = commit.pullRequest;
-  if (pr === undefined || pr.mergeCommitOid !== merge) return false;
-  const override = (pr.body ?? '').split('BEGIN_COMMIT_OVERRIDE')[1] ?? '';
+// hasOverride reports a commit whose pull request's body sets
+// BEGIN_COMMIT_OVERRIDE, read as release-please reads it: release-please
+// gave the commit that message in place of its own.
+function hasOverride(commit) {
+  const override = (commit.pullRequest?.body ?? '').split('BEGIN_COMMIT_OVERRIDE')[1] ?? '';
   return override.split('END_COMMIT_OVERRIDE')[0].trim() !== '';
-}
-
-function foldType(header, dropped, rank, warn) {
-  if (rank(dropped.type) <= rank(header.type)) return;
-  warn(`${header.sha.slice(0, 7)} (${header.message}) counts as ${dropped.type}, from ${dropped.sha.slice(0, 7)} (${dropped.message}); its subject's type is lower than its change's`);
-  header.type = dropped.type;
 }
 
 const isBreaking = note => note.title === BREAKING;

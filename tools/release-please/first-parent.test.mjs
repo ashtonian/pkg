@@ -18,16 +18,18 @@ function commit(sha, header, { footer, releaseAs, references = [], pullRequest }
 }
 
 // landed describes merges: each {merge: [subject, ...branch shas]} is a
-// first-parent merge with a conventional subject that brought those commits in.
+// first-parent merge that brought those commits in, and whose subject is its
+// parsed header unless it is unparsed.
 function landed(merges, { unparsed = [] } = {}) {
   const mergeOf = new Map();
   const subjectOf = new Map();
+  const headerOf = new Map();
   for (const [merge, [subject, ...branch]] of Object.entries(merges)) {
     subjectOf.set(merge, subject);
+    if (!unparsed.includes(merge)) headerOf.set(merge, subject);
     for (const sha of branch) mergeOf.set(sha, merge);
   }
-  const conventionalMerges = new Set([...subjectOf.keys()].filter(sha => !unparsed.includes(sha)));
-  return { history: { mergeOf, subjectOf }, options: { conventionalMerges } };
+  return { history: { mergeOf, subjectOf }, options: { headerOf } };
 }
 
 const closes = issue => ({ prefix: '#', action: 'Closes', issue });
@@ -100,6 +102,21 @@ test("a pull request's BEGIN_COMMIT_OVERRIDE entries stand as the author wrote t
 
   assert.deepEqual(kept, [merge]);
   assert.equal(merge.breaking, false);
+});
+
+// release-please associates a commit of two stacked pull requests with one of
+// them; when that one sets an override, the commit carries its text.
+test("a branch commit carrying another pull request's override takes nothing over", () => {
+  const subject = 'fix(parse): tidy reader (#260)';
+  const other = { mergeCommitOid: 'm9', body: 'BEGIN_COMMIT_OVERRIDE\nfeat(parse)!: the other change\nEND_COMMIT_OVERRIDE' };
+  const header = commit('m1', subject);
+  const foreign = commit('b1', 'feat(parse)!: the other change', { pullRequest: other });
+
+  const kept = keep([header, foreign], { m1: [subject, 'b1'] });
+
+  assert.deepEqual(kept, [header]);
+  assert.equal(header.type, 'fix');
+  assert.equal(header.breaking, false);
 });
 
 test("a branch commit's breaking description replaces the one the merge's ! repeats", () => {
@@ -265,14 +282,14 @@ test('fetchBranchHead returns the branch as the remote has it now', t => {
 // A merge listed here whose entries don't carry its subject (a message
 // release-please rewrote some other way) leaves its branch commits listed:
 // duplicated rather than lost.
-test('a listed merge without its header keeps its branch commits, and warns', () => {
+test('a listed merge without its header keeps its branch commits, and warns once', () => {
   const warnings = [];
   const other = commit('m1', 'feat(parse): something else (#9)');
-  const branch = commit('b1', 'feat(parse)!: add Stream');
+  const branch = [commit('b1', 'feat(parse)!: add Stream'), commit('b2', 'fix(parse): close rows')];
 
-  const kept = keep([other, branch], { m1: ['feat(parse): add Stream (#9)', 'b1'] }, { options: { warn: m => warnings.push(m) } });
+  const kept = keep([other, ...branch], { m1: ['feat(parse): add Stream (#9)', 'b1', 'b2'] }, { options: { warn: m => warnings.push(m) } });
 
-  assert.deepEqual(kept.map(c => c.sha), ['m1', 'b1']);
+  assert.deepEqual(kept.map(c => c.sha), ['m1', 'b1', 'b2']);
   assert.equal(warnings.length, 1);
 });
 

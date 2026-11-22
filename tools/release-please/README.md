@@ -9,18 +9,20 @@ The `release-please` workflow runs release-please from here instead of through `
 For each release path, the plugin's `processCommits` hook, which runs before versions and notes are computed, takes the conventional commits release-please gathered and:
 
 - keeps commits on main's first-parent chain: merge commits, release commits, anything pushed to main directly;
-- drops each commit a merge brought in when release-please's own parser reads that merge's subject as a conventional commit. In a path the merge's changes reach, the merge's entry (the one whose header is the merge's subject, not a trailer such as `Co-authored-by:` that release-please parses into an entry of its own) takes over what the dropped commit calls for:
+- drops each commit a merge brought in when release-please's own parser reads that merge's subject as a conventional commit. In a path the merge's changes reach, the merge's entry takes over what the dropped commit calls for. That entry is the one carrying the header the parser makes of the merge's subject (it collapses whitespace), not a trailer such as `Co-authored-by:` that release-please parses into an entry of its own:
   - its type, when that ranks higher (`feat` over any other type the changelog shows, over hidden types such as `chore`, `refactor` and `test`), so a feature merged as `fix(…)` still bumps the minor version and a fix merged as `refactor(…)` still cuts a release and is listed. The job warns when this happens;
   - its `BREAKING CHANGE` notes. A breaking branch commit still raises the version, and its description replaces the note the merge's `!` gives it, which only repeats the subject;
   - its `Release-As` footer;
   - its issue references (`Closes #215`), one per issue.
 
   In a path the merge's net changes don't reach, a branch commit there was taken back before the merge, so nothing takes it over;
-- drops the copies of a pull request whose body sets `BEGIN_COMMIT_OVERRIDE`: release-please gives every commit of that pull request the override's message, and the merge's copy stands as the author wrote it;
-- keeps a branch commit whose merge subject release-please can't parse, such as GitHub's default `Merge pull request #1 from …`, and one whose merge is listed without an entry carrying its subject (with a warning), so a change is duplicated rather than lost;
+- drops, without taking anything over, a branch commit release-please gave a pull request's `BEGIN_COMMIT_OVERRIDE` message in place of its own: the merge's copy of the override stands as the author wrote it;
+- keeps a branch commit whose merge subject release-please can't parse, such as GitHub's default `Merge pull request #1 from …`, and one whose merge is listed without an entry carrying its header (with a warning), so a change is duplicated rather than lost;
 - keeps a commit newer than the history it read, which it cannot place.
 
-`run.mjs` does what the action does: it creates the GitHub releases a merged release PR describes, then opens or updates the release PR, and writes the action's step outputs. `release-please-config.json` names the plugin under `plugins`, so the stock action, which cannot load it, refuses the config (`Unknown plugin type: first-parent`) instead of producing duplicate notes. When the target branch's config doesn't name it, the runner adds it anyway and logs a warning.
+The plugin sees only the commits release-please gathers, which it cuts at each path's last release in history (date) order. A branch commit older than that release, on a pull request merged after it, never reaches the plugin, so that pull request's merge subject alone decides its entry and bump, as it would without the plugin. That is one more reason the merge subject must summarize the whole change.
+
+`run.mjs` does what the action does: it creates the GitHub releases a merged release PR describes, then opens or updates the release PR, and writes the action's step outputs. `release-please-config.json` names the plugin under `plugins`, so the stock action, which cannot load it, refuses the config (`Unknown plugin type: first-parent`) instead of producing duplicate notes. When the target branch's config doesn't name it, the runner adds it anyway and logs a warning. Either way the runner puts it ahead of the config's other plugins, so a plugin that rewrites messages (`sentence-case`) runs after it has found each merge's entry.
 
 ## Configuration
 
@@ -33,7 +35,7 @@ For each release path, the plugin's `processCommits` hook, which runs before ver
 | `--manifest-file` | path in the repository | `.release-please-manifest.json` | Released versions, read from the target branch on GitHub |
 | `--checkout` | local path | `.` | A clone of the repository with its full history (`fetch-depth: 0`). The runner fetches the target branch into it and reads the history there |
 | `--remote` | remote name | `origin` | The clone's remote for the repository; the target branch is fetched from it as GitHub has it when the run starts |
-| `--dry-run` | flag | off | Print the release PRs release-please would open, and write nothing |
+| `--dry-run` | flag | off | Print the release PRs release-please would open, and write nothing to GitHub. It still fetches the target branch into the clone, which moves `FETCH_HEAD` and the remote-tracking branch, and it shows no release a merged release PR is waiting on |
 
 release-please's own settings (release type, components, `exclude-paths`, `last-release-sha`) stay in `release-please-config.json`. The plugin ranks types by `changelog-sections`, which every path must then share: `processCommits` is not told which path it is handling, so a config whose paths set different sections is refused.
 
@@ -46,8 +48,8 @@ release-please's own settings (release type, components, `exclude-paths`, `last-
 
 ## Interfaces
 
-- `first-parent.mjs`: `fetchBranchHead(repoDir, remote, branch)` fetches the branch and returns its commit. `readHistory(repoDir, ref)` returns `{mergeOf, subjectOf}`: a `Map` from each commit a first-parent merge brought in to that merge, and each such merge's subject (its message's first line). `typeRanker(sections)` ranks commit types by `changelog-sections`. `firstParentCommits(commits, history, {conventionalMerges, rank, warn})` filters release-please `ConventionalCommit`s as above. None of them imports release-please.
-- `plugin.mjs`: `FirstParentPlugin`, which finds the conventional merges with release-please's parser and refuses differing `changelog-sections`, and `registerFirstParent(history)`, which makes the config's `"first-parent"` build it.
+- `first-parent.mjs`: `fetchBranchHead(repoDir, remote, branch)` fetches the branch and returns its commit. `readHistory(repoDir, ref)` returns `{mergeOf, subjectOf}`: a `Map` from each commit a first-parent merge brought in to that merge, and each such merge's subject (its message's first line). `typeRanker(sections)` ranks commit types by `changelog-sections`. `firstParentCommits(commits, history, {headerOf, rank, warn})` filters release-please `ConventionalCommit`s as above. None of them imports release-please.
+- `plugin.mjs`: `FirstParentPlugin`, which parses each merge's subject with release-please's parser, refuses differing `changelog-sections` and logs each warning once a run, and `registerFirstParent(history)`, which makes the config's `"first-parent"` build it.
 - `outputs.mjs`: `Output`, `outputReleases`, `outputPullRequests`: step outputs encoded as `@actions/core` encodes them (an absent value is an empty string).
 - `run.mjs`: the workflow step. Outputs, named as `release-please-action` v5 names them: `releases_created`, `paths_released`, and per released path `<path>--release_created`, `<path>--tag_name`, `<path>--version`, `<path>--body`, `<path>--html_url` and the release's other fields; `prs_created`, `pr`, `prs`. The `publish` job reads `parse--tag_name`.
 
@@ -65,7 +67,7 @@ The dry run reads the live repository and prints each release PR's title and bod
 The job runs on every push to main, one run at a time (`concurrency: release-please`), so the last push's run writes the release PR last. Its log starts with `Running release-please version:` and `first-parent: history at <sha> (origin/main), N branch commits mapped to their merges`; then release-please logs each path it considers and the plugins it runs (`running plugin: FirstParentPlugin`). The history is read at main as GitHub has it when the run starts; a merge that lands while the run is building keeps its branch commits listed until the next run, which that merge's own push starts.
 
 - **`release-please failed: Error: GITHUB_TOKEN is not set`**: the secret and the job token are both missing; check the job's `permissions` and `RELEASE_PLEASE_TOKEN`.
-- **`… has no entry with its subject; its branch commits stay listed`**: release-please listed the merge, but none of its entries carries the merge's subject, so the plugin kept the branch commits rather than risk dropping their change. Look at how release-please read that merge's message in the dry run.
+- **`… has no entry with its header; its branch commits stay listed`**: release-please listed the merge, but none of its entries carries the header it parses from the merge's subject, so the plugin kept the branch commits rather than risk dropping their change. Look at how release-please read that merge's message in the dry run.
 - **`first-parent: release paths … set different changelog-sections`**: give every path the same `changelog-sections`, or none.
 - **`… counts as feat, from … ; its subject's type is lower than its change's`**: a merge subject understates its branch (`fix(…)` over a `feat` commit). The release is right; the release PR lists the entry under the raised type with the merge's subject. Word future merge subjects by the change's highest type.
 - **`… names no first-parent plugin; adding it`**: the target branch's config doesn't list `first-parent`. The notes are still first-parent; restore the entry so the stock action keeps refusing the config.
@@ -88,6 +90,6 @@ The job holds `contents: write` and `pull-requests: write`. `run.mjs` passes the
 | `plugin.mjs` | `FirstParentPlugin`, `registerFirstParent`: the plugin release-please builds from the config |
 | `outputs.mjs` | The action's step outputs |
 | `run.mjs` | The workflow step: releases, the release PR, step outputs, `--dry-run` |
-| `first-parent.test.mjs` | Counting, the fallbacks, trailers, overrides, paths a merge doesn't reach, type, breaking, Release-As and reference folding; `readHistory` on scratch repositories (a sync merge, a branch cut from another, a wrapped subject); `fetchBranchHead` against a bare remote |
+| `first-parent.test.mjs` | Counting, the fallbacks, trailers, overrides (a stacked pull request's included), paths a merge doesn't reach, type, breaking, Release-As and reference folding; `readHistory` on scratch repositories (a sync merge, a branch cut from another, a wrapped subject); `fetchBranchHead` against a bare remote |
 | `outputs.test.mjs` | Output names and encoding |
-| `plugin.test.mjs` | The config's `first-parent` built through release-please's factory; release-please's own parse of a merge with trailers; unparseable merges; differing `changelog-sections` refused |
+| `plugin.test.mjs` | The config's `first-parent` built through release-please's factory; release-please's own parse of a merge with trailers and of a respaced subject; unparseable merges; one warning a run; differing `changelog-sections` refused |

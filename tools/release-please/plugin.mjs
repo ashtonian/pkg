@@ -12,17 +12,26 @@ export class FirstParentPlugin extends ManifestPlugin {
     super(github, targetBranch, repositoryConfig, logger);
     this.history = history;
     this.rank = typeRanker(sharedChangelogSections(repositoryConfig));
-    this.conventionalMerges = conventionalMerges(history.subjectOf);
+    this.headerOf = parsedHeaders(history.subjectOf);
+    this.warned = new Set();
   }
 
   // processCommits runs, once per release path, before release-please
   // computes versions and notes.
   processCommits(commits) {
     return firstParentCommits(commits, this.history, {
-      conventionalMerges: this.conventionalMerges,
+      headerOf: this.headerOf,
       rank: this.rank,
-      warn: message => this.logger.warn(message),
+      warn: message => this.warnOnce(message),
     });
+  }
+
+  // warnOnce logs a message once a run: the same merge reaches several
+  // release paths.
+  warnOnce(message) {
+    if (this.warned.has(message)) return;
+    this.warned.add(message);
+    this.logger.warn(message);
   }
 }
 
@@ -40,18 +49,20 @@ function sharedChangelogSections(repositoryConfig) {
   return Object.values(repositoryConfig)[0]?.changelogSections;
 }
 
-// conventionalMerges returns the merges whose subjects release-please parses
-// as a conventional commit, by its own parser: a branch commit is dropped only
-// when its merge can carry the change.
-function conventionalMerges(subjectOf) {
+// parsedHeaders maps each merge whose subject release-please's parser reads
+// as a conventional commit to the header it makes of it, which is the header
+// it gives the merge's entry: a branch commit is dropped only when its merge
+// can carry the change, and the entry is found by that exact text.
+function parsedHeaders(subjectOf) {
   // The parser logs each subject it cannot parse; release-please logs the
   // same commits again when it parses them itself.
   const quiet = { error() {}, warn() {}, info() {}, debug() {}, trace() {} };
-  const merges = new Set();
+  const headers = new Map();
   for (const [sha, subject] of subjectOf) {
-    if (parseConventionalCommits([{ sha, message: subject, files: [] }], quiet).length > 0) merges.add(sha);
+    const [header] = parseConventionalCommits([{ sha, message: subject, files: [] }], quiet);
+    if (header !== undefined) headers.set(sha, header.message);
   }
-  return merges;
+  return headers;
 }
 
 // registerFirstParent makes the config's "first-parent" build a plugin over
