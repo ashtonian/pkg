@@ -36,20 +36,21 @@ func ReadPointJSON(text []byte, latKey, lonKey string) (Point, bool, error) {
 	return p, ok, nil
 }
 
-// Coordinate reads a point member as PostgreSQL's float8 input reads the
-// member's ->> text: a JSON number, or a JSON string holding a number as
-// float8 accepts it. ok is false for a missing or null member and wherever
-// PostgreSQL refuses the query instead: a boolean, an object or array, text
-// float8 rejects, a value beyond float8's range. NaN and the infinities are
-// coordinates; no point holding one is near, in or on anything.
+// Coordinate reads a point member, decoded from JSON with numbers as
+// json.Number, as PostgreSQL's float8 input reads the member's ->> text: a
+// JSON number, or a JSON string holding a number as float8 accepts it. ok
+// is false for a missing or null member and wherever PostgreSQL refuses the
+// query instead: a boolean, an object or array, text float8 rejects, a value
+// beyond float8's range. NaN and the infinities are coordinates; no point
+// holding one is near, in or on anything. A float64 is no member: every
+// reader of a stored point decodes it with UseNumber, so the number's text
+// is what float8 reads.
 func Coordinate(member any) (float64, bool) {
 	switch m := member.(type) {
 	case json.Number:
 		return float8(string(m))
 	case string:
 		return float8(m)
-	case float64:
-		return m, true
 	}
 	return 0, false
 }

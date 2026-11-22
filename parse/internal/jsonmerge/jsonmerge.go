@@ -1,4 +1,4 @@
-// Package jsonmerge implements RFC 7386 (JSON Merge Patch) on top of
+// Package jsonmerge implements RFC 7396 (JSON Merge Patch) on top of
 // stdlib encoding/json's `any` representation.
 //
 // parse applies merge patches to documents with it. The algorithm is small,
@@ -13,9 +13,9 @@
 //     key from the target. This is the only way to express deletion.
 //   - Arrays are NOT merged element-wise — the patch's array replaces
 //     the target's array entirely. Element-wise array patching needs
-//     RFC 6902 (JSON Patch), not RFC 7386.
+//     RFC 6902 (JSON Patch), not RFC 7396.
 //
-// The functions here operate on `any` decoded from JSON via
+// Apply operates on `any` decoded from JSON via
 // stdlib encoding/json. Callers serialise both target and patch to
 // JSON and decode them with `json.Unmarshal` before calling [Apply].
 //
@@ -26,17 +26,25 @@
 //	merged := jsonmerge.Apply(target, patch)
 //	// merged == map[string]any{"a": 1, "b": map[string]any{"y": 2}}
 //
-// Merging is non-destructive on the target: the function returns a
-// new value rather than mutating the input. Nested maps inside the
-// target ARE shared with the result (the implementation copies only
-// when a value is rewritten); callers that need a deep clone should
-// marshal and unmarshal through encoding/json before applying patches.
+// Apply mutates neither argument, and copies only what it rewrites. The
+// result shares with both arguments:
+//
+//   - with the target, every value the patch does not reach: a member the
+//     patch does not name keeps the target's map, array or scalar.
+//   - with the patch, every value it takes from it that is not an object:
+//     an array, and every map and array inside it, is the patch's own.
+//     An object in the patch is rebuilt, so the result never holds the
+//     patch's maps outside an array.
+//
+// A caller that mutates the result, or either argument afterwards, needs a
+// deep clone first (marshal and unmarshal through encoding/json).
 package jsonmerge
 
 import "maps"
 
-// Apply returns the result of merging patch into target per RFC 7386.
-// Both arguments are read-only — Apply does not mutate them.
+// Apply returns the result of merging patch into target per RFC 7396.
+// Both arguments are read-only — Apply does not mutate them; the package
+// documentation states what the result shares with each.
 //
 // Top-level behaviour:
 //
@@ -45,7 +53,7 @@ import "maps"
 //   - patch is an object → recursively merge each key into target,
 //     coercing target to an object first if it isn't already.
 //
-// nil patch is a special case: per RFC 7386 it semantically means
+// nil patch is a special case: per RFC 7396 it semantically means
 // "replace target with null." Apply returns nil.
 func Apply(target, patch any) any {
 	pm, isObj := asObject(patch)
@@ -70,32 +78,6 @@ func Apply(target, patch any) any {
 		out[k] = Apply(out[k], v)
 	}
 	return out
-}
-
-// ApplyAll merges layers in order from index 0 (lowest precedence) to
-// the last (highest precedence). Each layer is applied as a JSON
-// Merge Patch onto the accumulated result. An empty layers slice
-// returns the zero value (nil).
-//
-// A nil layer is treated as an ABSENT tier (no override) and skipped —
-// the common N-tier case where a tier supplied no config. Consequently
-// ApplyAll cannot express a top-level JSON `null` "reset to null": a
-// decoded JSON null and an absent layer are both Go nil and
-// indistinguishable here. If you need RFC 7386 top-level null-replace
-// semantics, call Apply(result, nil) directly (it returns nil).
-//
-// Use this for the canonical N-tier override pattern: pass
-// `[]any{platformConfig, tenantConfig, projectConfig, serviceConfig,
-// instanceConfig}` and get the effective resolved config.
-func ApplyAll(layers []any) any {
-	var result any
-	for _, layer := range layers {
-		if layer == nil {
-			continue
-		}
-		result = Apply(result, layer)
-	}
-	return result
 }
 
 // asObject reports whether v is a JSON object (map[string]any) and

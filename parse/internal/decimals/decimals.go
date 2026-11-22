@@ -62,11 +62,14 @@ func Member(v any) (string, bool) {
 //   - INTEGER (int64): its digits;
 //   - REAL (float64): its shortest decimal form, as core.DecimalText reads a
 //     float64;
-//   - TEXT (string or []byte): a JSON number literal, the text a decimal
-//     column holds exactly; or a JSON string literal, a document member as
-//     the `->` operator returns it, read as Member reads a string.
+//   - TEXT (string): a JSON number literal, the text a decimal column holds
+//     exactly; or a JSON string literal, a document member as the `->`
+//     operator returns it, read as Member reads a string.
 //
-// A JSON literal of another kind (null, true, an object) is none.
+// A JSON literal of another kind (null, true, an object) is none, and so is
+// a BLOB ([]byte), whatever bytes it holds: SQLite's storage classes keep a
+// BLOB apart from TEXT, so its comparisons never equal a decimal column's
+// text, and the driver hands TEXT over as a string.
 func Value(v any) (string, bool) {
 	var s string
 	switch x := v.(type) {
@@ -77,8 +80,6 @@ func Value(v any) (string, bool) {
 		return text, err == nil
 	case string:
 		s = x
-	case []byte:
-		s = string(x)
 	default:
 		return "", false
 	}
@@ -98,7 +99,7 @@ func Value(v any) (string, bool) {
 // rounded to float32, in its shortest decimal form (core.DecimalText of the
 // float32). A float32 column on SQLite is REAL, a double, so the double of
 // a float32 has more digits than the float32 it holds. ok is false for any
-// other value and for one beyond float32's range.
+// other value, a BLOB included, and for one beyond float32's range.
 func Float32Value(v any) (string, bool) {
 	var f float64
 	switch x := v.(type) {
@@ -108,8 +109,6 @@ func Float32Value(v any) (string, bool) {
 		f = x
 	case string:
 		return float32Text(x)
-	case []byte:
-		return float32Text(string(x))
 	default:
 		return "", false
 	}
