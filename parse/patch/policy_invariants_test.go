@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/stretchr/testify/assert"
+
 	"github.com/ashtonian/pkg/parse/core"
 	"github.com/ashtonian/pkg/parse/patch"
 )
@@ -209,6 +211,20 @@ func TestValidatorsRunOnExplicitNull(t *testing.T) {
 	if !strings.Contains(err.Error(), "null not permitted") {
 		t.Errorf("unexpected error: %v", err)
 	}
+
+	// A remove writes null too, whatever value it carries; so does a merge
+	// patch's null.
+	for _, body := range []string{`[{"op":"remove","path":"/name"}]`, `[{"op":"remove","path":"/name","value":"x"}]`} {
+		_, err = patch.NewParser(schema, nil).Parse([]byte(body))
+		requireCode(t, err, patch.ECodePatchValueInvalid.String())
+		assert.ErrorContains(t, err, "null not permitted", body)
+	}
+	_, err = patch.ParseMergePatch([]byte(`{"name":null}`), schema, nil)
+	requireCode(t, err, patch.ECodePatchValueInvalid.String())
+	// A move writes null into its source.
+	_, err = patch.NewParser(schema, nil).Parse([]byte(`[{"op":"move","from":"/name","path":"/notes"}]`))
+	requireCode(t, err, patch.ECodePatchValueInvalid.String())
+	assert.ErrorContains(t, err, "null not permitted")
 
 	// A validator that tolerates nil still passes.
 	schema2 := p2Schema()

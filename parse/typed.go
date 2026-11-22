@@ -216,11 +216,8 @@ func applyPatchOptions(parsed *patch.ParsedPatch, opts []PatchOption) (*patch.Pa
 	for _, o := range opts {
 		o(&cfg)
 	}
-	if cfg.policy != nil {
-		if err := patch.ApplyPatchPolicyConstraints(parsed, cfg.policy, cfg.subject); err != nil {
-			return nil, err
-		}
-		parsed.PolicyConstraints = cfg.policy
+	if err := patch.ApplyPatchPolicyConstraints(parsed, cfg.policy, cfg.subject); err != nil {
+		return nil, err
 	}
 	return parsed, nil
 }

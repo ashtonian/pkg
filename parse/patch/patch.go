@@ -4,9 +4,7 @@ import (
 	"database/sql/driver"
 	"errors"
 	"fmt"
-	"maps"
 	"reflect"
-	"slices"
 	"strconv"
 
 	"github.com/ashtonian/pkg/parse/core"
@@ -120,7 +118,6 @@ func (p *Parser) validateOps(ops []RawPatchOp) (*ParsedPatch, error) {
 	result := &ParsedPatch{
 		Operations: make([]*PatchOperation, 0, len(ops)),
 	}
-	seen := make(map[string]struct{})
 
 	var failures []error
 	for i, raw := range ops {
@@ -130,13 +127,12 @@ func (p *Parser) validateOps(ops []RawPatchOp) (*ParsedPatch, error) {
 			continue
 		}
 		result.Operations = append(result.Operations, operation)
-		seen[raw.Path] = struct{}{}
 	}
 	if len(failures) > 0 {
 		return nil, errors.Join(failures...)
 	}
 
-	result.AffectedPaths = slices.Sorted(maps.Keys(seen)) // deterministic audit payload
+	result.AffectedPaths = affectedPaths(result.Operations)
 	result.EstimatedCost = estimatePatchCost(result)
 
 	return result, nil
@@ -174,6 +170,7 @@ func (p *Parser) validateOperation(raw RawPatchOp, i int) (*PatchOperation, erro
 		}
 	}
 
+	var fromSchema *PathSchema
 	if op == PatchOpMove || op == PatchOpCopy {
 		if raw.From == "" {
 			return nil, &core.ParseError{
@@ -193,15 +190,20 @@ func (p *Parser) validateOperation(raw RawPatchOp, i int) (*PatchOperation, erro
 			return nil, &core.ParseError{
 				Kind: core.ParseErrorKindPatch, Code: err.code.String(),
 				Message: fmt.Sprintf("%s from '%s' to '%s' at index %d: %s", op, raw.From, raw.Path, i, err.msg),
-				Path:    raw.Path, Index: new(i),
+				Path:    raw.Path, Index: new(i), Cause: err.cause,
 			}
 		}
+		fromSchema = from
 	}
 
-	// Values are normalized before validators run, so validators and every
-	// consumer (SQL binding, typed apply) see the canonical value.
-	// Validators run for every value-taking op, including explicit null.
-	value := normalizeNilPointer(raw.Value)
+	// An operation carries only the value it writes: a remove writes null
+	// whatever value a client attached, and a move or copy writes its
+	// source's. A relation's remove names the members it removes.
+	relation := pathSchema.Relation != nil
+	var value any
+	if opTakesValue(op) || (relation && op == PatchOpRemove) {
+		value = normalizeNilPointer(raw.Value)
+	}
 	if err := checkNullability(pathSchema, op, value, depth); err != nil {
 		return nil, &core.ParseError{
 			Kind: core.ParseErrorKindPatch, Code: ECodePatchValueInvalid.String(),
@@ -214,9 +216,19 @@ func (p *Parser) validateOperation(raw RawPatchOp, i int) (*PatchOperation, erro
 		return &core.ParseError{Kind: core.ParseErrorKindPatch, Code: ECodePatchValueInvalid.String(), Message: fmt.Sprintf("invalid value for path '%s' at index %d: %v", raw.Path, i, err), Path: raw.Path, Index: new(i), Cause: err}
 	}
 
-	// Relation remove carries the target IDs to remove, so it
-	// normalizes like the other membership verbs.
-	if opTakesValue(op) || (pathSchema.Relation != nil && op == PatchOpRemove) {
+	// Values are normalized before validators run, so validators and every
+	// consumer (SQL binding, typed apply) see the canonical value. Validators
+	// run for every write, a remove's null and an explicit null included.
+	switch {
+	case op == PatchOpRemove && !relation:
+		for _, validator := range pathSchema.Validators {
+			if err := validator(nil); err != nil {
+				failures = append(failures, valueFailures(err, wrap)...)
+			}
+		}
+	case opTakesValue(op) || relation && op == PatchOpRemove:
+		// A relation's remove normalizes its members like the other
+		// membership verbs.
 		normalized, err := normalizeOpValue(pathSchema, op, value, depth, p.codec)
 		if err != nil {
 			return nil, &core.ParseError{
@@ -251,7 +263,7 @@ func (p *Parser) validateOperation(raw RawPatchOp, i int) (*PatchOperation, erro
 		return nil, errors.Join(failures...)
 	}
 
-	return &PatchOperation{Op: op, Path: raw.Path, From: raw.From, Value: value, Schema: pathSchema}, nil
+	return &PatchOperation{Op: op, Path: raw.Path, From: raw.From, Value: value, Schema: pathSchema, fromSchema: fromSchema}, nil
 }
 
 // resolvePath validates a JSON Pointer (RFC 6901 syntax, depth within
@@ -329,8 +341,9 @@ func opTakesValue(op PatchOp) bool {
 
 // transferError is why a move or copy is refused, with the code to report.
 type transferError struct {
-	code core.Code
-	msg  string
+	code  core.Code
+	msg   string
+	cause error
 }
 
 // checkTransfer applies a move's or copy's source-side rules. RFC 6902
@@ -343,19 +356,25 @@ type transferError struct {
 func checkTransfer(op PatchOp, from *PathSchema, fromDepth int, to *PathSchema, toDepth int) *transferError {
 	if op == PatchOpMove {
 		if !from.AllowsOp(PatchOpRemove) {
-			return &transferError{ECodeOpNotAllowed, "the source does not allow remove"}
+			return &transferError{code: ECodeOpNotAllowed, msg: "the source does not allow remove"}
 		}
 		if err := checkNullability(from, PatchOpRemove, nil, fromDepth); err != nil {
-			return &transferError{ECodePatchValueInvalid, "the source " + err.Error()}
+			return &transferError{ECodePatchValueInvalid, "the source " + err.Error(), err}
+		}
+		// The move writes null into its source, as a remove does.
+		for _, validator := range from.Validators {
+			if err := validator(nil); err != nil {
+				return &transferError{ECodePatchValueInvalid, "the source " + err.Error(), err}
+			}
 		}
 	}
 	if fromDepth == 1 && toDepth == 1 && from.GoType != nil && to.GoType != nil && valueType(from.GoType) != valueType(to.GoType) {
-		return &transferError{ECodePatchValueInvalid, fmt.Sprintf("the source holds %s, the destination %s", from.GoType, to.GoType)}
+		return &transferError{code: ECodePatchValueInvalid, msg: fmt.Sprintf("the source holds %s, the destination %s", from.GoType, to.GoType)}
 	}
 	if fromDepth == 1 && toDepth == 1 && from.Wire != to.Wire {
 		// The document holds each in its own wire form; the value would not
 		// decode into the other.
-		return &transferError{ECodePatchValueInvalid, fmt.Sprintf("the source travels as %s, the destination as %s", wireName(from.Wire), wireName(to.Wire))}
+		return &transferError{code: ECodePatchValueInvalid, msg: fmt.Sprintf("the source travels as %s, the destination as %s", wireName(from.Wire), wireName(to.Wire))}
 	}
 	return nil
 }

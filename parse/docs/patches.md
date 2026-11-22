@@ -27,7 +27,7 @@ A field tagged `parse:"server"` is a column only the server sets — a credentia
 
 ## Validation
 
-JSON Patch bodies must be arrays of operations; resource Merge Patch bodies must be objects. A root `null` is rejected rather than treated as an empty update. Explicit null removal still runs path validators.
+JSON Patch bodies must be arrays of operations; resource Merge Patch bodies must be objects. A root `null` is rejected rather than treated as an empty update. An operation carries only the value it writes: a `remove` of a field, a `move` and a `copy` have no `PatchOperation.Value`, whatever `value` member the client sent. A `remove`, a merge-patch null and a `move`'s source are null writes, so the path's validators run with null.
 
 Generated client and server patch schemas set `PatchSchema.MaxOperations` to `patch.DefaultMaxOperations` (50). Code generators can read this constant without constructing a resource. JSON Patch may repeat an operation on one field up to this count; a body budget must account for each operation's path and value envelope. The parser's raw-input byte limit and declared field-value bounds remain independent limits. A hand-built `PatchSchema` uses the `MaxOperations` its caller sets.
 
@@ -62,7 +62,7 @@ Paths are RFC 6901 JSON Pointers: `/labels/a~1b` addresses the key `a/b`, and `~
 | Fixed arrays | Replacement must have exactly the Go array's length; `array_append` cannot grow it |
 | Enum, bounds and policy | Enforce the `enum`, `minlen` / `maxlen` and `min` / `max` validators (per element on an array path; null passes, as nullability decides it) and caller-supplied path/value policy; a value outside them is E2077 |
 | Element counts | An array a top-level `replace` or `add` sets whole holds the path's `minitems` / `maxitems` (E2077). An element added, appended or removed, and an array moved or copied in, change an array the parser does not see: the store's constraint counts those |
-| Transfer source | `move` needs permission to remove its source; top-level source must be nullable. Typed source/destination kinds must be compatible, pointers aside |
+| Transfer source | `move` needs permission to remove its source; top-level source must be nullable, and its validators accept null. Typed source/destination kinds must be compatible, pointers aside |
 | Runtime transfer destination | Validate the resolved value against destination nullability and validators after preceding operations run |
 | `test` | Exact JSON comparison; `1.0` equals `1`, but missing paths or different document members fail E2077 |
 
@@ -285,7 +285,13 @@ Parsers take a `*core.ParserConfig` (`MaxDepth` — pointer segments, and merge-
 
 ## Policy
 
-`PatchPolicyConstraints{ForbiddenPaths, ValueConstraints, Validators}` restricts paths (wildcards allowed) and values; `ApplyPatchPolicyConstraints(parsed, pc, subject)` enforces it, and `parse.WithPatchPolicy` applies it inside the typed parser. `NewValueConstraint(pattern, allowed, denied, min, max)` compiles a value rule up front (numbers compare exactly); `PatchPolicyFromWritableFields` derives constraints from a writable-field set.
+`PatchPolicyConstraints{ForbiddenPaths, ValueConstraints, Validators}` restricts paths (wildcards allowed) and values; `ApplyPatchPolicyConstraints(parsed, pc, subject)` enforces it and records it on the patch (`AuditInfo`), and `parse.WithPatchPolicy` applies it inside the typed parser. `NewValueConstraint(pattern, allowed, denied, min, max)` compiles a value rule up front (numbers compare exactly); `PatchPolicyFromWritableFields` derives constraints from a writable-field set.
+
+Policy judges what each operation writes, not its envelope. A whole value writes every path below its own, a merge object writes the members it names, a `remove` writes null whatever `value` it carries, a `move` writes its source as well as its destination, and a `test` writes nothing.
+
+- **Forbidden paths (E2084).** An operation is refused when a pattern matches its path. One that writes or reads a path whole — `replace`, `add`, `remove`, `array_append`, a relation's membership, a `move`'s or `copy`'s destination and source, a `test`'s path, a merge member whose value is not an object — is also refused when a pattern can match a path below it, so `{"op":"replace","path":"/attrs","value":{}}` is refused under `/attrs/secret`. A merge object is refused when it names a member chain a pattern matches, null included: `{"attrs":{"secret":null}}`. A pattern forbids the paths it matches and nothing inside them: `/attrs/secret` leaves `/attrs/secret/x` writable, `/attrs/secret/**` does not.
+- **Value constraints (E2085).** Each path an operation writes is judged by its constraint: the path's own key, else the most specific pattern that matches it. A constraint below the operation's path judges the member at that sub-path of the written value: for a whole-value write an absent member reads as null, for a merge an absent member is untouched. On an array path a constraint judges each element, whichever operation writes them. Null is judged by `AllowedValues` and `DeniedValues`; `Pattern` judges strings and `Min` / `Max` numbers, and each refuses any other value. A `move` or `copy` into a path that has a constraint, or a constraint below it, is refused, since its value is read only as the patch applies; so is a merge into a path with a constraint of its own.
+- **Affected paths.** `ParsedPatch.AffectedPaths`, and `AuditInfo`'s `affected_paths`, list every path the operations write: a `move`'s source included, a `test`'s path not.
 
 `copy` / `move` validate the resolved source against destination nullability, normalization, and validators after preceding operations run. Copy budgets count every serialized source, including overwrites. These checks complement authorization; the application still decides who may modify the resource.
 

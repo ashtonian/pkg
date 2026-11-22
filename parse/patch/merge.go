@@ -72,7 +72,6 @@ func ParseMergePatchMap(raw map[string]any, schema *PatchSchema, config *core.Pa
 	}
 
 	result := &ParsedPatch{Operations: make([]*PatchOperation, 0, len(raw))}
-	seen := make(map[string]struct{})
 
 	// Sorted walk: map order made the operation list — and so the SQL SET
 	// clause and apply order — vary run to run.
@@ -84,13 +83,12 @@ func ParseMergePatchMap(raw map[string]any, schema *PatchSchema, config *core.Pa
 			continue
 		}
 		result.Operations = append(result.Operations, operation)
-		seen[operation.Path] = struct{}{}
 	}
 	if len(failures) > 0 {
 		return nil, errors.Join(failures...)
 	}
 
-	result.AffectedPaths = slices.Sorted(maps.Keys(seen))
+	result.AffectedPaths = affectedPaths(result.Operations)
 	result.EstimatedCost = estimatePatchCost(result)
 
 	return result, nil

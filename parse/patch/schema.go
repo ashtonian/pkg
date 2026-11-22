@@ -182,11 +182,17 @@ func (p *PathSchema) AllowsOp(op PatchOp) bool {
 
 // PatchOperation represents a validated patch operation.
 type PatchOperation struct {
-	Op     PatchOp
-	Path   string
-	From   string
+	Op   PatchOp
+	Path string
+	From string
+	// Value is what the operation writes: nil for a remove of a field and
+	// for a move or copy, whose value is read from the document as the patch
+	// applies. A relation's remove holds the members it removes, and a test
+	// the document it compares.
 	Value  any
 	Schema *PathSchema
+	// fromSchema is a move's or copy's source path schema.
+	fromSchema *PathSchema
 
 	// Merge marks an op derived from an RFC 7396 merge patch whose value is
 	// an object — it requires RECURSIVE merge semantics, not whole-value
@@ -198,10 +204,14 @@ type PatchOperation struct {
 
 // ParsedPatch is the result of parsing a JSON Patch document.
 type ParsedPatch struct {
-	Operations        []*PatchOperation
-	EstimatedCost     int
-	AffectedPaths     []string
-	PolicyConstraints *PatchPolicyConstraints
+	Operations    []*PatchOperation
+	EstimatedCost int
+	// AffectedPaths are the paths the operations write, sorted and once each:
+	// a move's source included, a test's path not.
+	AffectedPaths []string
+
+	// policy is the policy ApplyPatchPolicyConstraints held the patch to.
+	policy *PatchPolicyConstraints
 }
 
 // AuditInfo returns a map of audit-relevant information.
@@ -211,10 +221,10 @@ func (p *ParsedPatch) AuditInfo() map[string]any {
 		"estimated_cost":  p.EstimatedCost,
 		"affected_paths":  p.AffectedPaths,
 	}
-	if p.PolicyConstraints != nil {
-		info["forbidden_path_count"] = len(p.PolicyConstraints.ForbiddenPaths)
-		info["value_constraint_count"] = len(p.PolicyConstraints.ValueConstraints)
-		info["validator_count"] = len(p.PolicyConstraints.Validators)
+	if p.policy != nil {
+		info["forbidden_path_count"] = len(p.policy.ForbiddenPaths)
+		info["value_constraint_count"] = len(p.policy.ValueConstraints)
+		info["validator_count"] = len(p.policy.Validators)
 	}
 	return info
 }
