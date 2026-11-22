@@ -142,7 +142,7 @@ postgres EXISTS (SELECT 1 FROM jsonb_array_elements(CASE WHEN jsonb_typeof(order
 sqlite   EXISTS (SELECT 1 FROM json_each(CASE WHEN json_type(orders.items) = 'array' THEN orders.items END) AS elem1__ WHERE (… json_extract(…elem1__.value…, '$."qty"') …))
 ```
 
-An element that is not an object has no members, so a mixed array (`["a", {"sku":"a"}]`) is tested on its objects. `filter.Evaluate` tests each element of the document, reading element paths as `filter.PathValue` does.
+An element that is not an object has no members, so a mixed array (`["a", {"sku":"a"}]`) is tested on its objects, and a string element is a JSON string even when its text is an object's JSON. `filter.Evaluate` tests the condition on each element of the document as a `filter.ElementRow`, which reads element paths on the decoded element. A backend with its own evaluator of `$some` / `$none` does the same: it reads a document's elements with `filter.DocumentElements` and tests each with `filter.Evaluate(condition, filter.ElementRow{Element: e})`, or reads the condition's fields through that row. A `$some` / `$none` with no condition (`{}`) has no child and holds for any element. `filter.ElementRow` takes decoded JSON or a `filter.Document`, and refuses an element of any other type, as `filter.Evaluate` refuses an array a `filter.Row` holds as anything but `[]any`, or a document held as anything but decoded JSON. `filter.PathValue` reads a column's document, decoding a string as JSON text, so it refuses an element path.
 
 An element predicate, on either kind of array, costs 10 (1 when the array is tagged `indexed`) plus its condition. `filtertest.RunArrays(t, schema, backend)` proves a backend's scalar arrays.
 
