@@ -25,18 +25,14 @@ func governedPostgres(t *testing.T) *sql.DB {
 
 func TestGovernedLists_Postgres(t *testing.T) {
 	db := governedPostgres(t)
-	runGovernedLists(t, filter.PostgresDialect{}, func(t *testing.T, q string, args []any) [][]any {
-		return queryRows(t, db, q, args)
-	})
+	runGovernedLists(t, filter.PostgresDialect{}, db)
 }
 
 func TestGovernedLists_MemoryMatchesPostgres(t *testing.T) {
 	db := governedPostgres(t)
 	r := governedDocuments(t)
 	runGovernedMemory(t, func(t *testing.T, filterJSON string) governedResult {
-		return listGoverned(t, r, filter.PostgresDialect{}, func(t *testing.T, q string, args []any) [][]any {
-			return queryRows(t, db, q, args)
-		}, filterJSON, parse.Scope{Governance: governanceA()})
+		return listGoverned(t, r, filter.PostgresDialect{}, db, filterJSON, parse.Scope{Governance: governanceA()})
 	})
 }
 
@@ -44,10 +40,5 @@ func TestGovernedLists_MemoryMatchesPostgres(t *testing.T) {
 // the UUID's text.
 func TestGovernedMixedTypes_Postgres(t *testing.T) {
 	db := dbtest.Postgres(t)
-	runGovernedMixedTypes(t, filter.PostgresDialect{}, "UUID", func(t *testing.T, stmt string) {
-		_, err := db.Exec(stmt)
-		require.NoError(t, err, stmt)
-	}, func(t *testing.T, q string, args []any) [][]any {
-		return queryRows(t, db, q, args)
-	})
+	runGovernedMixedTypes(t, filter.PostgresDialect{}, "UUID", db)
 }

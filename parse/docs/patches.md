@@ -123,15 +123,11 @@ plan, err := products.BuildUpdate(filter.PostgresDialect{}, parsed, parse.ByID(i
 	parse.StampSQL("updated_at", "NOW()"))
 if err != nil { /* ErrNoTarget, ErrUpdateScope, ErrTenantRequired, ErrTenantInvalid or a patch error */ }
 
-tx, err := db.BeginTx(ctx, nil)
-rows, err := tx.QueryContext(ctx, plan.Owner.SQL, plan.Owner.Args...) // the target rows as the update left them
-if plan.HasRelations() {
-	stmts, err := products.RelationStatements(plan, keysOf(rows)) // keys read with products.Key, never the requested ids
-	// execute each statement in tx
-	reread, err := products.Reread(plan, keysOf(rows))
-	// when reread is not nil, its rows in tx replace rows: computed columns read the new pairs
-}
-err = tx.Commit()
+res, err := parsepgx.Update(ctx, pool, products, plan) // parsesql.Update on SQLite
+if err != nil { /* the database's error; the row and membership changes are rolled back together */ }
+if len(res.Changed)+len(res.Unchanged) == 0 { /* not found */ }
+// res.Changed: the rows whose columns the update wrote. res.Unchanged: the
+// rows it left. res.RelationRows: the junction rows it deleted and inserted.
 ```
 
 | Patch | `plan.Owner` | `plan.Writes` |
@@ -140,7 +136,9 @@ err = tx.Commit()
 | Changes relations only | `SELECT <columns> … WHERE …` plus the dialect's row lock (`FOR UPDATE` on PostgreSQL), so two replacements of one relation cannot interleave their delete and insert | true |
 | Empty | `SELECT <columns> … WHERE …` — a scoped read | false |
 
-The rows `Owner` returns are the rows the scope admits. Zero rows means the target is absent, deleted, another tenant's or outside the policy; answer that as not found. Under `SkipUnchanged` the `UPDATE` returns only the rows it changed, and `plan.Current` tells an unchanged target from a missing one ([Skipping unchanged rows](#skipping-unchanged-rows)). Relation statements are rendered for the keys `Owner` returned, tenant-scoped as the update was, and run in its transaction. `Owner` runs before them, so a [computed column](queries.md#computed-columns) over a relation's pairs reads the pairs as they were; `Reread(plan, keys)` returns the statement that reads those rows' `Columns` again after the relation statements, held to the update's tenant, or nil when the patch changes no relation or the resource has no computed column. On PostgreSQL, `parsepgx.Update(ctx, pool, products, plan)` does all of this: it returns the owner rows and, when the patch changes relations, runs owner and relation statements in one transaction (a savepoint inside a caller's `pgx.Tx`).
+The rows `Owner` returns are the rows the scope admits. Zero rows means the target is absent, deleted, another tenant's or outside the policy; answer that as not found. Under `SkipUnchanged` the `UPDATE` returns only the rows it changed, and `plan.Current` tells an unchanged target from a missing one ([Skipping unchanged rows](#skipping-unchanged-rows)). Relation statements are rendered for the keys `Owner` returned, tenant-scoped as the update was, and run in its transaction. `Owner` runs before them, so a [computed column](queries.md#computed-columns) over a relation's pairs reads the pairs as they were; `Reread(plan, keys)` returns the statement that reads those rows' `Columns` again after the relation statements, held to the update's tenant, or nil when the patch changes no relation or the resource has no computed column.
+
+`parsepgx.Update(ctx, pool, products, plan)` on PostgreSQL and `parsesql.Update(ctx, db, products, plan)` on SQLite do all of this and return a `parse.UpdateResult`. `Changed` holds the target rows whose columns the update wrote; `Unchanged` holds the rows it left: every row of a plan that assigns no column (`plan.Owner` a `SELECT`: an empty or relation-only patch), and under `SkipUnchanged` the rows the patch already described (`Resource.UpdatedRows` splits them). `RelationRows` counts the junction rows the relation statements deleted and inserted. A plan with `Current` or relation changes runs in one transaction — a savepoint inside the caller's — so its rows and memberships change together. A replace or add writes one junction row per matched owner and value: a `ByFilter` update over many rows writes as many pairs as its rows times the patch's values, so bound the target.
 
 | Option / target | Effect |
 |---|---|
@@ -169,7 +167,7 @@ RETURNING "notes"."id", …
 SELECT "notes"."id", … FROM "notes" WHERE ("notes"."tenant_id" = $1 AND "notes"."deleted_at" IS NULL AND "notes"."id" = $2) FOR UPDATE
 ```
 
-The second statement is `plan.Current`: the same scoped WHERE without the predicate, with the dialect's row lock. Run `Current` first, then `Owner`, in one transaction, and split the target rows (`queryNotes` runs a statement and scans its rows):
+The second statement is `plan.Current`: the same scoped WHERE without the predicate, with the dialect's row lock. The executors run `Current` first, then `Owner`, in one transaction, and split the target rows:
 
 ```go
 plan, err := notes.BuildUpdate(d, parsed, parse.ByID(id), scope,
@@ -177,34 +175,26 @@ plan, err := notes.BuildUpdate(d, parsed, parse.ByID(id), scope,
 if err != nil {
 	return err
 }
-var current []Note
-if plan.Current != nil {
-	if current, err = queryNotes(ctx, tx, *plan.Current); err != nil { // locks every target
-		return err
-	}
-}
-changed, err := queryNotes(ctx, tx, plan.Owner) // written, stamped and counted: emit events for these
+res, err := parsepgx.Update(ctx, pool, notes, plan) // parsesql.Update on SQLite
 if err != nil {
 	return err
 }
-unchanged, err := notes.Unchanged(changed, current) // matched, left as they were
-if err != nil {
-	return err
-}
-if len(changed)+len(unchanged) == 0 {
+if len(res.Changed)+len(res.Unchanged) == 0 {
 	return ErrNotFound
 }
+// res.Changed: written, stamped and counted — emit events for these.
+// res.Unchanged: matched, left as they were.
 ```
 
-`Current` goes first because its lock holds every target while `Owner` compares them, so the two split one set of rows: the unchanged rows are exactly those the update compared and left. Run the other way, under READ COMMITTED a row another transaction changes or deletes between the two statements would read as it then stands, or not at all. SQLite has no row lock; begin the transaction as a write transaction (`BEGIN IMMEDIATE`) so no other writer commits between the two. `parsepgx.Update` sends `Current` and `Owner` in one batch, in that order. `Unchanged(changed, current)` is the rows of `current` whose keys `changed` lacks: a row the patch changed and moved out of a `ByFilter` target is in `changed` alone. `ExampleSkipUnchanged` prints both statements and is checked by the unit lane.
+`Current` goes first because its lock holds every target while `Owner` compares them, so the two split one set of rows: the unchanged rows are exactly those the update compared and left. Run the other way, under READ COMMITTED a row another transaction changes or deletes between the two statements would read as it then stands, or not at all. SQLite has no row lock; the transaction must be a write transaction so no other writer commits between the two, which with `database/sql` is the connection's `_txlock=immediate` setting ([database/sql](integrations.md#databasesql-and-sqlite)), not a statement. `parsepgx.Update` sends `Current` and `Owner` in one batch, in that order. `Unchanged(changed, current)` is the rows of `current` whose keys `changed` lacks: a row the patch changed and moved out of a `ByFilter` target is in `changed` alone. `ExampleSkipUnchanged` prints both statements and is checked by the unit lane.
 
 | Patch, under `SkipUnchanged` | `plan.Owner` | `plan.Current` | What changed |
 |---|---|---|---|
-| Assigns a column | `UPDATE … WHERE … AND <change predicate> RETURNING <columns>`: the rows it changed | `SELECT <columns> … WHERE …` plus the row lock | Owner's rows; `Unchanged` gives the matched rows it left; neither returns a row: not found |
-| Changes relations only | `SELECT <columns> … WHERE …` plus the row lock, as without the option | nil: Owner returns every target row | No column, stamp or counter moves. The relation statements' affected rows count the memberships removed and added: zero means none changed (each junction pair needs a unique key, which `ON CONFLICT DO NOTHING` relies on) |
-| Assigns nothing: empty, or server columns alone | `SELECT <columns> … WHERE …` | nil | `plan.Writes` is false: nothing changes |
+| Assigns a column | `UPDATE … WHERE … AND <change predicate> RETURNING <columns>`: the rows it changed | `SELECT <columns> … WHERE …` plus the row lock | `Changed`: Owner's rows; `Unchanged`: the matched rows it left; neither holds a row: not found |
+| Changes relations only | `SELECT <columns> … WHERE …` plus the row lock, as without the option | nil: Owner returns every target row | Every target is `Unchanged`: no column, stamp or counter moves. `RelationRows` counts the memberships removed and added: zero means none changed (each junction pair needs a unique key, which `ON CONFLICT DO NOTHING` relies on) |
+| Assigns nothing: empty, or server columns alone | `SELECT <columns> … WHERE …` | nil | `plan.Writes` is false and every target is `Unchanged`: nothing changes |
 
-A patch with columns and relations changes the memberships of every target row: pass the keys of the changed and the unchanged rows to `RelationStatements` in the same transaction. A membership change alone moves no stamp or counter, with the option or without it.
+A patch with columns and relations changes the memberships of every target row, changed and unchanged: the executors pass the keys of both to `RelationStatements` in the same transaction. A membership change alone moves no stamp or counter, with the option or without it.
 
 "Unchanged" means the write would leave the column reading as it does: the stored value is compared with the value the update assigns — the expression the SET clause computes, so a merge that sets what a document already holds is unchanged and an `array_append` never is. A false "changed" costs a write; the comparisons are built never to report a false "unchanged".
 

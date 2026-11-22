@@ -26,29 +26,20 @@ func governedSQLite(t *testing.T) *sql.DB {
 
 func TestGovernedLists_SQLite(t *testing.T) {
 	db := governedSQLite(t)
-	runGovernedLists(t, filter.SQLiteDialect{}, func(t *testing.T, q string, args []any) [][]any {
-		return queryRows(t, db, q, args)
-	})
+	runGovernedLists(t, filter.SQLiteDialect{}, db)
 }
 
 func TestGovernedLists_Memory(t *testing.T) {
 	db := governedSQLite(t)
 	r := governedDocuments(t)
 	runGovernedMemory(t, func(t *testing.T, filterJSON string) governedResult {
-		return listGoverned(t, r, filter.SQLiteDialect{}, func(t *testing.T, q string, args []any) [][]any {
-			return queryRows(t, db, q, args)
-		}, filterJSON, parse.Scope{Governance: governanceA()})
+		return listGoverned(t, r, filter.SQLiteDialect{}, db, filterJSON, parse.Scope{Governance: governanceA()})
 	})
 }
 
 func TestGovernedMixedTypes_SQLite(t *testing.T) {
 	db := dbtest.SQLite(t)
-	runGovernedMixedTypes(t, filter.SQLiteDialect{}, "TEXT", func(t *testing.T, stmt string) {
-		_, err := db.Exec(stmt)
-		require.NoError(t, err, stmt)
-	}, func(t *testing.T, q string, args []any) [][]any {
-		return queryRows(t, db, q, args)
-	})
+	runGovernedMixedTypes(t, filter.SQLiteDialect{}, "TEXT", db)
 }
 
 func TestBuildList_GovernedRelationsFollowTheRow(t *testing.T) {

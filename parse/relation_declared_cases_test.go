@@ -455,7 +455,7 @@ func runRelationUnknownPolicy(t *testing.T, r relResources, d filter.Dialect, qu
 // with targets the request may relate (live, in the tenant, or admitted by
 // the target's policy), and a replace or remove reaches only pairs to such
 // targets, so pairs the request cannot see stay.
-func runRelationWrites(t *testing.T, r relResources, d parse.Dialect, query func(t *testing.T, sql string, args []any) [][]any) {
+func runRelationWrites(t *testing.T, r relResources, d parse.Dialect, db *sql.DB) {
 	t.Helper()
 	apply := func(id, body string, merge bool) {
 		t.Helper()
@@ -469,21 +469,13 @@ func runRelationWrites(t *testing.T, r relResources, d parse.Dialect, query func
 		require.NoError(t, err, body)
 		plan, err := r.devices.BuildUpdate(d, p, parse.ByID(id), relationScopeT1())
 		require.NoError(t, err)
-		owners := query(t, plan.Owner.SQL, plan.Owner.Args)
-		keys := make([]any, len(owners))
-		for i, o := range owners {
-			keys[i] = o[0]
-		}
-		stmts, err := r.devices.RelationStatements(plan, keys)
-		require.NoError(t, err)
-		for _, st := range stmts {
-			query(t, st.SQL, st.Args)
-		}
+		_, err = applyUpdate(t, db, r.devices, d, plan, false)
+		require.NoError(t, err, body)
 	}
 	pairs := func(table, column, device string) []string {
 		t.Helper()
 		var out []string
-		for _, row := range query(t, "SELECT "+column+" FROM "+table+" WHERE device_id = '"+device+"' ORDER BY "+column, nil) {
+		for _, row := range queryRows(t, db, "SELECT "+column+" FROM "+table+" WHERE device_id = '"+device+"' ORDER BY "+column, nil) {
 			id, ok := row[0].(string)
 			require.True(t, ok)
 			out = append(out, id)

@@ -33,7 +33,12 @@ var ErrUpdateBatchTargets = errors.New("parse: update batch targets did not matc
 // every chunk's Current keys before executing any Owner statement.
 type UpdateBatchPlan struct {
 	Chunks []UpdateBatchChunk
+
+	dialect Dialect
 }
+
+// Dialect is the dialect the plan's statements are written for.
+func (p *UpdateBatchPlan) Dialect() Dialect { return p.dialect }
 
 // UpdateBatchChunk contains one bounded preimage read and its optional update.
 // Owner returns changed rows; absent changed keys retain their Current images.
@@ -134,7 +139,7 @@ func (r *Resource[T]) BuildUpdateBatch(d Dialect, rows []RowUpdate, scope Scope,
 	slices.SortFunc(ordered, func(a, b orderedRowUpdate) int {
 		return cmp.Or(cmp.Compare(a.signed, b.signed), cmp.Compare(a.unsigned, b.unsigned), strings.Compare(a.text, b.text))
 	})
-	plan := &UpdateBatchPlan{Chunks: []UpdateBatchChunk{}}
+	plan := &UpdateBatchPlan{Chunks: []UpdateBatchChunk{}, dialect: d}
 	var compiled []compiledRowUpdate
 	var offset int
 	for _, orderedRow := range ordered {

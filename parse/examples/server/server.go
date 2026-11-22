@@ -99,30 +99,10 @@ func (s *server) list(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, r, err)
 		return
 	}
-	items, err := parsesql.Query(ctx, s.db, s.products, plan.Page)
+	page, err := parsesql.QueryPage(ctx, s.db, s.products, plan)
 	if err != nil {
 		s.fail(w, r, err)
 		return
-	}
-	page, err := s.products.Page(items, plan)
-	if err != nil {
-		s.fail(w, r, err)
-		return
-	}
-	if plan.Count != nil {
-		var total int64
-		if err = s.db.QueryRowContext(ctx, plan.Count.SQL, plan.Count.Args...).Scan(&total); err != nil {
-			s.fail(w, r, fmt.Errorf("count products: %w", err))
-			return
-		}
-		page.PageInfo.TotalCount = &total
-	}
-	if plan.Facets != nil {
-		page.Facets, err = s.facetCounts(ctx, plan.Facets)
-		if err != nil {
-			s.fail(w, r, err)
-			return
-		}
 	}
 	s.writeJSON(w, r, http.StatusOK, page)
 }
@@ -256,7 +236,8 @@ func (s *server) refuseParams(w http.ResponseWriter, r *http.Request, accepted .
 }
 
 // update applies the request's merge patch to target's products and returns
-// the rows it updated.
+// the rows the target matched, as the update left them: those it wrote, and
+// those a patch of what they already hold or an empty patch left.
 func (s *server) update(w http.ResponseWriter, r *http.Request, target parse.Target) ([]Product, error) {
 	ctx, cancel := context.WithTimeout(r.Context(), s.requestTimeout)
 	defer cancel()
@@ -268,13 +249,15 @@ func (s *server) update(w http.ResponseWriter, r *http.Request, target parse.Tar
 	if err != nil {
 		return nil, err
 	}
-	// Product declares no relations, so the owner statement is the whole
-	// update: UPDATE … RETURNING, or a scoped read for an empty patch.
 	plan, err := s.products.BuildUpdate(filter.SQLiteDialect{}, parsed, target, parse.Scope{})
 	if err != nil {
 		return nil, err
 	}
-	return parsesql.Query(ctx, s.db, s.products, plan.Owner)
+	res, err := parsesql.Update(ctx, s.db, s.products, plan)
+	if err != nil {
+		return nil, err
+	}
+	return slices.Concat(res.Changed, res.Unchanged), nil
 }
 
 // fail answers a parse error with its E-code and the status the code

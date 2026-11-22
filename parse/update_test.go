@@ -17,6 +17,7 @@ import (
 	"github.com/ashtonian/pkg/parse/core"
 	"github.com/ashtonian/pkg/parse/filter"
 	"github.com/ashtonian/pkg/parse/internal/dbtest"
+	"github.com/ashtonian/pkg/parse/parsesql"
 	"github.com/ashtonian/pkg/parse/patch"
 )
 
@@ -237,17 +238,10 @@ func TestBuildUpdate_Increments(t *testing.T) {
 		plan, err := r.BuildUpdate(filter.SQLiteDialect{}, p, target, parse.Scope{Tenant: "t1"},
 			parse.Increment("version"), parse.Stamp("updated_at", at))
 		require.NoError(t, err)
-		rows, err := db.Query(plan.Owner.SQL, plan.Owner.Args...)
-		require.NoError(t, err, plan.Owner.SQL)
-		defer func() { require.NoError(t, rows.Close()) }()
-		var out []revision
-		for rows.Next() {
-			var rev revision
-			require.NoError(t, rows.Scan(&rev.ID, &rev.TenantID, &rev.Name, &rev.Version, &rev.UpdatedAt))
-			out = append(out, rev)
-		}
-		require.NoError(t, rows.Err())
-		return out
+		res, err := parsesql.Update(t.Context(), db, r, plan)
+		require.NoError(t, err)
+		assert.Empty(t, res.Unchanged, "a plain update writes every target")
+		return res.Changed
 	}
 
 	rename, err := r.ParseMergePatch([]byte(`{"name":"renamed"}`))
@@ -282,23 +276,11 @@ func TestBuildUpdate_RelationsChangeOnlyTheRowsTheOwnerMatched(t *testing.T) {
 	assert.True(t, plan.HasRelations())
 	assert.True(t, strings.HasPrefix(plan.Owner.SQL, "SELECT "), "a relation-only patch selects its owners")
 
-	tx, err := db.Begin()
+	res, err := parsesql.Update(t.Context(), db, r, plan)
 	require.NoError(t, err)
-	owners := resourceRows(t, tx, r, filter.SQLiteDialect{}, plan.Owner)
-	assert.Equal(t, []string{"g1"}, gadgetIDs(owners), "h1 is t2's, g3 is deleted")
-	keys := make([]any, len(owners))
-	for i, o := range owners {
-		keys[i], err = r.Key(o)
-		require.NoError(t, err)
-	}
-	stmts, err := r.RelationStatements(plan, keys)
-	require.NoError(t, err)
-	require.NotEmpty(t, stmts)
-	for _, st := range stmts {
-		_, execErr := tx.Exec(st.SQL, st.Args...)
-		require.NoError(t, execErr, st.SQL)
-	}
-	require.NoError(t, tx.Commit())
+	assert.Empty(t, res.Changed)
+	assert.Equal(t, []string{"g1"}, gadgetIDs(res.Unchanged), "h1 is t2's, g3 is deleted")
+	assert.Equal(t, int64(3), res.RelationRows, "red out of g1, blue and green in")
 	assert.Equal(t, []string{"g1:blue@t1", "g1:green@t1", "h1:red@t2"}, tagPairs(t, db), "the requested h1 is not the matched one")
 
 	none, err := r.RelationStatements(plan, nil)
@@ -315,14 +297,10 @@ func TestBuildUpdate_ColumnsAndRelationsTogether(t *testing.T) {
 	require.NoError(t, err)
 	assert.True(t, strings.HasPrefix(plan.Owner.SQL, `UPDATE "gadgets" SET `))
 	assert.True(t, plan.HasRelations())
-	owners := resourceRows(t, db, r, filter.SQLiteDialect{}, plan.Owner)
-	require.Len(t, owners, 1)
-	stmts, err := r.RelationStatements(plan, []any{owners[0].ID})
+	res, err := parsesql.Update(t.Context(), db, r, plan)
 	require.NoError(t, err)
-	for _, st := range stmts {
-		_, err := db.Exec(st.SQL, st.Args...)
-		require.NoError(t, err)
-	}
+	require.Len(t, res.Changed, 1)
+	assert.Equal(t, "both", res.Changed[0].Name)
 	assert.Equal(t, "both", gadgetNames(t, db)["g1"])
 	assert.Equal(t, []string{"g1:blue@t1", "h1:red@t2"}, tagPairs(t, db))
 }
@@ -336,7 +314,10 @@ func TestBuildUpdate_AnEmptyPatchIsAScopedRead(t *testing.T) {
 	require.NoError(t, err)
 	assert.False(t, plan.Writes)
 	assert.False(t, plan.HasRelations())
-	assert.Equal(t, []string{"g1"}, gadgetIDs(resourceRows(t, db, r, filter.SQLiteDialect{}, plan.Owner)))
+	res, err := parsesql.Update(t.Context(), db, r, plan)
+	require.NoError(t, err)
+	assert.Empty(t, res.Changed)
+	assert.Equal(t, []string{"g1"}, gadgetIDs(res.Unchanged))
 }
 
 func TestBuildUpdate_LocksRelationOwnersOnPostgres(t *testing.T) {

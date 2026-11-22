@@ -96,16 +96,7 @@ func runReservedIdentifiers(t *testing.T, db *sql.DB, d parse.Dialect) {
 	}
 	page := func(plan *parse.ListPlan) *filter.Page[reservedUser] {
 		t.Helper()
-		var items []reservedUser
-		for _, row := range queryRows(t, db, plan.Page.SQL, plan.Page.Args) {
-			items = append(items, reservedUser{
-				ID: asInt64(t, row[0]), TenantID: asInt64(t, row[1]), Order: asInt64(t, row[2]),
-				Group: reservedText(t, row[3]), CreatedAt: reservedText(t, row[4]),
-			})
-		}
-		p, err := users.Page(items, plan)
-		require.NoError(t, err)
-		return p
+		return listPage(t, db, users, d, plan)
 	}
 	ids := func(p *filter.Page[reservedUser]) []int64 {
 		out := make([]int64, len(p.Items))
@@ -126,7 +117,8 @@ func runReservedIdentifiers(t *testing.T, db *sql.DB, d parse.Dialect) {
 		first := page(plan)
 		assert.Equal(t, []int64{1, 3}, ids(first))
 		require.True(t, first.PageInfo.HasNextPage)
-		assert.Equal(t, [][]any{{int64(3)}}, normalizeInts(t, queryRows(t, db, plan.Count.SQL, plan.Count.Args)))
+		require.NotNil(t, first.PageInfo.TotalCount)
+		assert.Equal(t, int64(3), *first.PageInfo.TotalCount)
 
 		q.Set(filter.ParamCursor, string(first.PageInfo.EndCursor))
 		assert.Equal(t, []int64{2}, ids(page(list(q))))
@@ -144,8 +136,10 @@ func runReservedIdentifiers(t *testing.T, db *sql.DB, d parse.Dialect) {
 		plan := list(url.Values{filter.ParamFacets: {"group,tables"}})
 		require.NotNil(t, plan.Facets)
 		counts := map[string]int64{}
-		for _, row := range queryRows(t, db, plan.Facets.SQL, plan.Facets.Args) {
-			counts[fmt.Sprint(reservedText(t, row[0]), "=", reservedText(t, row[1]))] = asInt64(t, row[2])
+		for field, buckets := range page(plan).Facets {
+			for _, b := range buckets {
+				counts[field+"="+b.Key] = b.Count
+			}
 		}
 		assert.Equal(t, map[string]int64{"group=alpha": 2, "group=beta": 1, "tables=20": 2, "tables=21": 1}, counts)
 	})
@@ -166,15 +160,8 @@ func runReservedIdentifiers(t *testing.T, db *sql.DB, d parse.Dialect) {
 	})
 
 	t.Run("includes the tenant's pairs", func(t *testing.T) {
-		plan := list(url.Values{filter.ParamInclude: {"tables"}})
-		queries, err := users.IncludeQueries(plan, []any{int64(1), int64(2)})
-		require.NoError(t, err)
-		require.Len(t, queries, 1)
-		var pairs []string
-		for _, row := range queryRows(t, db, queries[0].SQL, queries[0].Args) {
-			pairs = append(pairs, reservedText(t, row[0])+":"+reservedText(t, row[1]))
-		}
-		assert.Equal(t, []string{"1:20", "2:20", "2:21"}, pairs)
+		got := page(list(url.Values{filter.ParamInclude: {"tables"}}))
+		assert.Equal(t, map[string][]string{"1": {"20"}, "2": {"20", "21"}}, got.Relations["tables"])
 	})
 
 	t.Run("updates columns and memberships", func(t *testing.T) {
@@ -182,24 +169,24 @@ func runReservedIdentifiers(t *testing.T, db *sql.DB, d parse.Dialect) {
 		require.NoError(t, err)
 		plan, err := users.BuildUpdate(d, p, parse.ByID(int64(1)), parse.Scope{Tenant: "1"}, parse.SkipUnchanged())
 		require.NoError(t, err)
-		rows := queryRows(t, db, plan.Owner.SQL, plan.Owner.Args)
-		require.Len(t, rows, 1)
-		assert.Equal(t, int64(7), asInt64(t, rows[0][2]))
-		assert.Equal(t, "gamma", reservedText(t, rows[0][3]))
-		assert.Empty(t, queryRows(t, db, plan.Owner.SQL, plan.Owner.Args), "the unchanged row is skipped")
+		res, err := applyUpdate(t, db, users, d, plan, false)
+		require.NoError(t, err)
+		require.Len(t, res.Changed, 1)
+		assert.Equal(t, int64(7), res.Changed[0].Order)
+		assert.Equal(t, "gamma", res.Changed[0].Group)
+		res, err = applyUpdate(t, db, users, d, plan, false)
+		require.NoError(t, err)
+		assert.Empty(t, res.Changed, "the unchanged row is skipped")
+		require.Len(t, res.Unchanged, 1)
 
 		p, err = users.ParseMergePatch([]byte(`{"tables":[21]}`))
 		require.NoError(t, err)
 		plan, err = users.BuildUpdate(d, p, parse.ByID(int64(1)), parse.Scope{Tenant: "1"})
 		require.NoError(t, err)
-		owners := queryRows(t, db, plan.Owner.SQL, plan.Owner.Args)
-		require.Len(t, owners, 1)
-		stmts, err := users.RelationStatements(plan, []any{owners[0][0]})
+		res, err = applyUpdate(t, db, users, d, plan, false)
 		require.NoError(t, err)
-		for _, st := range stmts {
-			_, err := db.Exec(st.SQL, st.Args...)
-			require.NoError(t, err, st.SQL)
-		}
+		require.Len(t, res.Unchanged, 1)
+		assert.Equal(t, int64(2), res.RelationRows, "20 removed, 21 added")
 		pairs := normalizeInts(t, queryRows(t, db, `SELECT "table" FROM "grant" WHERE "user" = 1 ORDER BY "table"`, nil))
 		assert.Equal(t, [][]any{{int64(21)}}, pairs)
 	})
@@ -217,10 +204,10 @@ func runReservedIdentifiers(t *testing.T, db *sql.DB, d parse.Dialect) {
 		plan, err := users.BuildUpdateBatch(d, rows, parse.Scope{Tenant: "1"}, parse.UpdateBatchLimits{}, parse.SkipUnchanged())
 		require.NoError(t, err)
 		require.Len(t, plan.Chunks, 1)
-		chunk := plan.Chunks[0]
-		assert.Len(t, queryRows(t, db, chunk.Current.SQL, chunk.Current.Args), 2)
-		require.NotNil(t, chunk.Owner)
-		assert.Len(t, queryRows(t, db, chunk.Owner.SQL, chunk.Owner.Args), 2)
+		res, err := applyUpdateBatch(t, db, users, d, plan)
+		require.NoError(t, err)
+		assert.Len(t, res.Changed, 2)
+		assert.Empty(t, res.Unchanged)
 		got := queryRows(t, db, `SELECT id, "order", "group" FROM "user" WHERE id IN (2, 3) ORDER BY id`, nil)
 		require.Len(t, got, 2)
 		assert.Equal(t, []any{int64(2), int64(5), "alpha"}, []any{asInt64(t, got[0][0]), asInt64(t, got[0][1]), reservedText(t, got[0][2])})

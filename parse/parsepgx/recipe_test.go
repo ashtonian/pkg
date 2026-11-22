@@ -13,6 +13,7 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"slices"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -126,11 +127,12 @@ func (a *deviceAPI) update(w http.ResponseWriter, r *http.Request) {
 		a.fail(w, r, err)
 		return
 	}
-	rows, err := parsepgx.Update(r.Context(), a.db, devices, plan)
+	res, err := parsepgx.Update(r.Context(), a.db, devices, plan)
 	if err != nil {
 		a.fail(w, r, err)
 		return
 	}
+	rows := slices.Concat(res.Changed, res.Unchanged)
 	if len(rows) == 0 { // not the tenant's, or no such device
 		http.NotFound(w, r)
 		return

@@ -15,6 +15,7 @@ import (
 	"github.com/ashtonian/pkg/parse/core"
 	"github.com/ashtonian/pkg/parse/filter"
 	"github.com/ashtonian/pkg/parse/internal/dbtest"
+	"github.com/ashtonian/pkg/parse/parsesql"
 )
 
 type note struct {
@@ -76,19 +77,14 @@ func noteIDs(ns []note) []string {
 	return out
 }
 
-// applied runs a guarded plan the way a consumer does — Current, then Owner,
-// in one transaction — and splits the target rows.
+// applied runs a guarded plan through the executor and splits the target
+// rows.
 func applied(t *testing.T, r *parse.Resource[note], db *sql.DB, plan *parse.UpdatePlan) (changed, unchanged []note) {
 	t.Helper()
 	require.NotNil(t, plan.Current)
-	tx, err := db.Begin()
+	res, err := parsesql.Update(t.Context(), db, r, plan)
 	require.NoError(t, err)
-	current := resourceRows(t, tx, r, filter.SQLiteDialect{}, *plan.Current)
-	changed = resourceRows(t, tx, r, filter.SQLiteDialect{}, plan.Owner)
-	require.NoError(t, tx.Commit())
-	unchanged, err = r.Unchanged(changed, current)
-	require.NoError(t, err)
-	return changed, unchanged
+	return res.Changed, res.Unchanged
 }
 
 func storedNote(t *testing.T, db *sql.DB, id string) note {
@@ -173,38 +169,6 @@ func byNoteFilter(t *testing.T, r *parse.Resource[note], f string) parse.Target 
 	return parse.ByFilter(pf)
 }
 
-// execAll runs statements and reports the rows they changed.
-func execAll(t *testing.T, tx *sql.Tx, stmts []string, args [][]any) int64 {
-	t.Helper()
-	var total int64
-	for i, st := range stmts {
-		res, err := tx.Exec(st, args[i]...)
-		require.NoError(t, err, st)
-		n, err := res.RowsAffected()
-		require.NoError(t, err)
-		total += n
-	}
-	return total
-}
-
-func relationRows(t *testing.T, r *parse.Resource[note], tx *sql.Tx, plan *parse.UpdatePlan, owners []note) int64 {
-	t.Helper()
-	keys := make([]any, len(owners))
-	for i, o := range owners {
-		k, err := r.Key(o)
-		require.NoError(t, err)
-		keys[i] = k
-	}
-	stmts, err := r.RelationStatements(plan, keys)
-	require.NoError(t, err)
-	sqls := make([]string, len(stmts))
-	args := make([][]any, len(stmts))
-	for i, st := range stmts {
-		sqls[i], args[i] = st.SQL, st.Args
-	}
-	return execAll(t, tx, sqls, args)
-}
-
 func noteTags(t *testing.T, db *sql.DB) []string {
 	t.Helper()
 	rows, err := db.Query(`SELECT note_id || ':' || tag_id FROM note_tags ORDER BY 1`)
@@ -237,12 +201,11 @@ func TestSkipUnchanged_Relations(t *testing.T) {
 			plan := skipUpdate(t, r, d, tc.body, parse.ByID("n1"))
 			assert.Nil(t, plan.Current, "Owner returns every target row")
 			assert.True(t, plan.Writes)
-			tx, err := db.Begin()
+			res, err := parsesql.Update(t.Context(), db, r, plan)
 			require.NoError(t, err)
-			owners := resourceRows(t, tx, r, filter.SQLiteDialect{}, plan.Owner)
-			require.Equal(t, []string{"n1"}, noteIDs(owners))
-			assert.Equal(t, tc.changes, relationRows(t, r, tx, plan, owners), tc.body)
-			require.NoError(t, tx.Commit())
+			assert.Empty(t, res.Changed, "a relation change moves no column")
+			require.Equal(t, []string{"n1"}, noteIDs(res.Unchanged))
+			assert.Equal(t, tc.changes, res.RelationRows, tc.body)
 			assert.Equal(t, tc.tags, noteTags(t, db))
 			assert.Equal(t, int64(1), storedNote(t, db, "n1").Version, "a relation change moves no column")
 		}
@@ -252,16 +215,11 @@ func TestSkipUnchanged_Relations(t *testing.T) {
 		db := noteDB(t)
 		plan := skipUpdate(t, r, d, `{"title":"one","tags":["blue"]}`, parse.ByIDs("n1", "n2"))
 		require.NotNil(t, plan.Current)
-		tx, err := db.Begin()
+		res, err := parsesql.Update(t.Context(), db, r, plan)
 		require.NoError(t, err)
-		current := resourceRows(t, tx, r, filter.SQLiteDialect{}, *plan.Current)
-		changed := resourceRows(t, tx, r, filter.SQLiteDialect{}, plan.Owner)
-		assert.Equal(t, []string{"n2"}, noteIDs(changed), "n1 already reads one")
-		unchanged, err := r.Unchanged(changed, current)
-		require.NoError(t, err)
-		assert.Equal(t, []string{"n1"}, noteIDs(unchanged))
-		assert.Equal(t, int64(3), relationRows(t, r, tx, plan, append(changed, unchanged...)), "red out of n1, blue into both")
-		require.NoError(t, tx.Commit())
+		assert.Equal(t, []string{"n2"}, noteIDs(res.Changed), "n1 already reads one")
+		assert.Equal(t, []string{"n1"}, noteIDs(res.Unchanged))
+		assert.Equal(t, int64(3), res.RelationRows, "red out of n1, blue into both")
 		assert.Equal(t, []string{"n1:blue", "n2:blue"}, noteTags(t, db))
 		assert.Equal(t, int64(1), storedNote(t, db, "n1").Version)
 		assert.Equal(t, int64(2), storedNote(t, db, "n2").Version)
@@ -271,7 +229,10 @@ func TestSkipUnchanged_Relations(t *testing.T) {
 		plan := skipUpdate(t, r, d, `{}`, parse.ByID("n1"))
 		assert.False(t, plan.Writes)
 		assert.Nil(t, plan.Current)
-		assert.Equal(t, []string{"n1"}, noteIDs(resourceRows(t, noteDB(t), r, filter.SQLiteDialect{}, plan.Owner)))
+		res, err := parsesql.Update(t.Context(), noteDB(t), r, plan)
+		require.NoError(t, err)
+		assert.Empty(t, res.Changed)
+		assert.Equal(t, []string{"n1"}, noteIDs(res.Unchanged))
 	})
 }
 

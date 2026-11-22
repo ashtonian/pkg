@@ -15,6 +15,7 @@ import (
 	"github.com/ashtonian/pkg/parse/core"
 	"github.com/ashtonian/pkg/parse/filter"
 	"github.com/ashtonian/pkg/parse/internal/dbtest"
+	"github.com/ashtonian/pkg/parse/parsesql"
 )
 
 type customItem struct {
@@ -64,21 +65,7 @@ func TestResource_WithPathsIsARequestView(t *testing.T) {
 		_, insertErr := db.Exec(`INSERT INTO custom_items VALUES (?1, ?2)`, id, doc)
 		require.NoError(t, insertErr)
 	}
-	rows, err := db.Query(plan.Page.SQL, plan.Page.Args...)
-	require.NoError(t, err, plan.Page.SQL)
-	var items []customItem
-	for rows.Next() {
-		var it customItem
-		var doc *string
-		require.NoError(t, rows.Scan(&it.ID, &doc))
-		if doc != nil {
-			it.Custom = json.RawMessage(*doc)
-		}
-		items = append(items, it)
-	}
-	require.NoError(t, rows.Err())
-	require.NoError(t, rows.Close())
-	page, err := view.Page(items, plan)
+	page, err := parsesql.QueryPage(t.Context(), db, view, plan)
 	require.NoError(t, err)
 	var ids []string
 	for _, it := range page.Items {
@@ -87,13 +74,8 @@ func TestResource_WithPathsIsARequestView(t *testing.T) {
 	assert.Equal(t, []string{"b", "a"}, ids, "silver then gold; bronze filtered out, absent tiers never match $ne")
 
 	require.NotNil(t, plan.Facets)
-	frows, err := db.Query(plan.Facets.SQL, plan.Facets.Args...)
-	require.NoError(t, err, plan.Facets.SQL)
-	facets, err := filter.ScanFacetUnion(frows)
-	require.NoError(t, err)
-	require.NoError(t, frows.Close())
-	require.Len(t, facets, 1)
-	assert.ElementsMatch(t, []filter.FacetBucket{{Key: "gold", Count: 1}, {Key: "silver", Count: 1}}, facets[0].Buckets)
+	require.Len(t, page.Facets, 1)
+	assert.ElementsMatch(t, []filter.FacetBucket{{Key: "gold", Count: 1}, {Key: "silver", Count: 1}}, page.Facets["custom.tier"])
 
 	_, err = r.WithPaths(filter.PathDecl{Path: "id.x", Type: core.FieldTypeString})
 	assert.Error(t, err, "a path needs a document field")

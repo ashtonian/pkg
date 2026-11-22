@@ -112,12 +112,13 @@ func run(ctx context.Context, settings *serverSettings, log *slog.Logger) (err e
 
 // openDB creates and seeds an in-memory database. One connection: every
 // statement sees the same in-memory database. parse's SQLite functions are
-// registered before the database opens a connection.
+// registered before the database opens a connection. Transactions begin
+// IMMEDIATE, as parsesql needs for an update that reads before it writes.
 func openDB(ctx context.Context) (*sql.DB, error) {
 	if err := parsesqlite.Register(); err != nil {
 		return nil, err
 	}
-	db, err := sql.Open("sqlite", ":memory:")
+	db, err := sql.Open("sqlite", ":memory:?_txlock=immediate")
 	if err != nil {
 		return nil, fmt.Errorf("open sqlite: %w", err)
 	}

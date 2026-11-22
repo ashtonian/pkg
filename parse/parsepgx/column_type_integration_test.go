@@ -92,7 +92,7 @@ func TestColumnType_ReadsNetworkAndIntervalColumns(t *testing.T) {
 	require.NoError(t, err)
 	got, err := parsepgx.Update(ctx, setup, typed, plan)
 	require.NoError(t, err)
-	require.Len(t, got, 1)
-	assert.Equal(t, "192.168.1.1", got[0].Addr, "RETURNING reads the column as the list does")
-	assert.Equal(t, []string{"::2", "10.2.0.0/24"}, got[0].Allowed)
+	require.Len(t, got.Changed, 1)
+	assert.Equal(t, "192.168.1.1", got.Changed[0].Addr, "RETURNING reads the column as the list does")
+	assert.Equal(t, []string{"::2", "10.2.0.0/24"}, got.Changed[0].Allowed)
 }

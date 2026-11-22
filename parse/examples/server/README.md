@@ -36,11 +36,11 @@ The second request is the same list as a POST body ([HTTP contract](../../docs/h
 
 | Route | SDK call | Served by |
 |---|---|---|
-| `GET /api/products` | `list` | `parsehttp.ParseList`, `BuildList`, `Page`; the count and facets when asked |
+| `GET /api/products` | `list` | `parsehttp.ParseList`, `BuildList`, `parsesql.QueryPage`: the page, with the count and facets when asked |
 | `POST /api/products` | `list` over the body transport | The same handler |
 | `OPTIONS /api/products?facets=…` | `facets` | `ParseList`, `BuildList`, the plan's facet statement |
-| `PATCH /api/products/{id}` | `patch` | `ParseMergePatch`, `BuildUpdate(…, parse.ByID(id), …)`: `{"updated": [product]}`, or 404 `E4004` |
-| `PATCH /api/products?id[]=…` | `patchMany` | `BuildUpdate(…, parse.ByIDs(…), …)` for 1 to 100 keys: `{"updated": [...], "failed": [{"id", "code": "E4004", "error"}]}`; no key or more than 100 is 400 `E4001` |
+| `PATCH /api/products/{id}` | `patch` | `ParseMergePatch`, `BuildUpdate(…, parse.ByID(id), …)`, `parsesql.Update`: `{"updated": [product]}`, or 404 `E4004` |
+| `PATCH /api/products?id[]=…` | `patchMany` | `BuildUpdate(…, parse.ByIDs(…), …)`, `parsesql.Update` for 1 to 100 keys: `{"updated": [...], "failed": [{"id", "code": "E4004", "error"}]}`; no key or more than 100 is 400 `E4001` |
 
 The patch routes read no query parameter but a batch's `id[]`, and answer any other with 400 `E4001`: a parameter a patch ignored, a filter meant to narrow it, would let it write rows the client did not mean to.
 | `GET /api/{resource}/schema` | `schema` | `SchemaRegistry.SchemaHandler` |
@@ -74,10 +74,8 @@ sequenceDiagram
     C->>H: GET /api/products?… or POST /api/products with a JSON body
     H->>R: parsehttp.ParseList(request), BuildList(scope)
     R-->>H: ListPlan
-    H->>DB: Execute bound page/count/facet statements
-    DB-->>H: Rows
-    H->>R: Page(rows, plan)
-    R-->>H: Page and cursor metadata
+    H->>DB: parsesql.QueryPage: page, count, facet and include statements
+    DB-->>H: Rows, scanned through the resource's row contract
     H-->>C: JSON page
 ```
 
@@ -87,7 +85,7 @@ sequenceDiagram
 
 **Failure modes:** Query validation returns the native Parse error. A POST with list parameters in its query string, or a body that is not `application/json`, is E2067; a body over the resource's list body limit (80 KiB at the default limits) is E2063, read no further. Database execution and page construction errors reach the HTTP error boundary.
 
-**Dependencies:** Request cancellation flows to database execution; the handler owns execution and the Resource owns grammar and page construction.
+**Dependencies:** Request cancellation flows to database execution; `parsesql` runs the plans (an update with relation changes or `SkipUnchanged` in one transaction, begun IMMEDIATE by the connection's `_txlock=immediate`), and the Resource owns grammar and page construction. A patch answers every target row it matched: those it wrote and those it left as they were.
 
 ## Security and operation
 

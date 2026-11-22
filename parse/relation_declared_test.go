@@ -85,9 +85,7 @@ func TestDeclaredRelations_Writes_SQLite(t *testing.T) {
 		_, err := db.Exec(stmt)
 		require.NoError(t, err, stmt)
 	}
-	runRelationWrites(t, relationResources(t), filter.SQLiteDialect{}, func(t *testing.T, q string, args []any) [][]any {
-		return queryRows(t, db, q, args)
-	})
+	runRelationWrites(t, relationResources(t), filter.SQLiteDialect{}, db)
 }
 
 func TestElementPredicates_SQLite(t *testing.T) {

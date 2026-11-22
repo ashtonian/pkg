@@ -46,15 +46,23 @@ apply to every item. The scope is checked before any item: a missing tenant
 normalized once for every item. This is a server-side compiler; it grants no
 authority.
 
-The returned `UpdateBatchPlan.Chunks` contains canonical `Keys`, a `Current`
-statement and an optional `Owner` statement per chunk. In one caller-owned
-transaction, run **all** Current statements first, require exactly their named
-keys with each chunk's `CheckCurrent(modelKeys)`, then run the Owner statements.
-Roll back completely if any target is
-missing, stale, inaccessible or invalid. PostgreSQL locks use deterministic key
-order; SQLite callers begin a write transaction before these reads. Owners
-return actual changed postimages. With `SkipUnchanged`, keys present in Current
-but absent from Owner retain their existing stamps and counters.
+Apply the plan with `parsepgx.UpdateBatch(ctx, pool, r, plan)` on PostgreSQL
+or `parsesql.UpdateBatch(ctx, db, r, plan)` on SQLite. Either runs it in one
+transaction (a savepoint inside the caller's): every chunk's `Current` first,
+each required to hold exactly its chunk's keys (`UpdateBatchChunk.CheckCurrent`),
+then every `Owner` in chunk order. A target that is missing, stale,
+inaccessible or invalid returns `ErrUpdateBatchTargets` and writes nothing.
+PostgreSQL locks the targets in key order; on SQLite the connection begins
+write transactions (`_txlock=immediate`, see
+[database/sql](integrations.md#databasesql-and-sqlite)). The returned
+`UpdateResult` holds the owners' changed postimages in `Changed` and, with
+`SkipUnchanged`, the targets they left — which keep their stamps and counters —
+in `Unchanged`.
+
+`UpdateBatchPlan.Chunks` holds each chunk's canonical `Keys`, its `Current`
+statement and an optional `Owner` statement, for an executor of your own: it
+runs the statements in that order in one write transaction and rolls back on
+the first error.
 
 `UpdateBatchLimits` defaults to 500 total rows and a dialect parameter budget
 of 999 for SQLite or 65535 for PostgreSQL. Positive overrides configure these

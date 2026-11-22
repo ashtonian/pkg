@@ -104,9 +104,14 @@ type UpdatePlan struct {
 	// patch left unchanged (Unchanged); neither returning a row means the
 	// target is not found. Nil when Owner returns every target row.
 	Current *Statement
-	// Writes reports whether Owner changes rows.
+	// Writes reports whether the plan changes anything: a column Owner
+	// assigns, or a relation membership. False for an empty patch, whose
+	// Owner is a scoped read.
 	Writes bool
 
+	// assigns reports whether Owner is an UPDATE: the patch assigns a
+	// column, so the rows it returns are the ones it wrote.
+	assigns   bool
 	relations []patch.RelationPatchOp
 	dialect   Dialect
 	// fields is the filter schema the plan compiled, its relation changes'
@@ -194,7 +199,7 @@ func (r *Resource[T]) BuildUpdate(d Dialect, p *patch.ParsedPatch, target Target
 			SQL:  "UPDATE " + d.QuoteIdent(r.table) + " SET " + set.SetClause + " WHERE " + guarded + " RETURNING " + columns,
 			Args: append(set.Args, args...),
 		}
-		plan.Writes = true
+		plan.Writes, plan.assigns = true, true
 	case len(set.RelationOps) > 0:
 		// No column changes: lock the owners so concurrent replacements of
 		// one relation cannot interleave their DELETE and INSERT.
@@ -204,6 +209,44 @@ func (r *Resource[T]) BuildUpdate(d Dialect, p *patch.ParsedPatch, target Target
 		plan.Owner = Statement{SQL: "SELECT " + columns + " FROM " + d.QuoteIdent(r.table) + " WHERE " + where, Args: args}
 	}
 	return plan, nil
+}
+
+// UpdateResult is what an executor reports for an update it ran: the target
+// rows the scope admits, as the update left them, split by whether it wrote
+// their columns, and how many junction rows its membership changes touched.
+// No row in either means the target is not found.
+type UpdateResult[T any] struct {
+	// Changed are the rows whose columns the update wrote, stamped and
+	// counted: emit a per-row event for these.
+	Changed []T
+	// Unchanged are the target rows whose columns it left: the rows a
+	// SkipUnchanged update matched and left as they were, and every row of
+	// an update that assigns no column (an empty or a relation-only patch).
+	Unchanged []T
+	// RelationRows is how many junction rows the relation statements
+	// deleted and inserted: zero when no membership changed.
+	RelationRows int64
+}
+
+// UpdatedRows splits plan's target rows as UpdateResult reports them:
+// owner are the rows Owner returned, current the rows Current returned (nil
+// when the plan has none). An executor calls it with both before the
+// relation statements run, whose owner keys are those of changed and then
+// unchanged.
+func (r *Resource[T]) UpdatedRows(plan *UpdatePlan, owner, current []T) (changed, unchanged []T, err error) {
+	if err := r.ownsUpdatePlan(plan); err != nil {
+		return nil, nil, err
+	}
+	switch {
+	case !plan.assigns:
+		return nil, owner, nil
+	case plan.Current == nil:
+		return owner, nil, nil
+	}
+	if unchanged, err = r.Unchanged(owner, current); err != nil {
+		return nil, nil, err
+	}
+	return owner, unchanged, nil
 }
 
 // Unchanged returns the rows of current (read with UpdatePlan.Current) whose
@@ -297,8 +340,12 @@ func (r *Resource[T]) updateWhere(d filter.Dialect, v *dialectView, target Targe
 // RelationStatements renders the patch's relation changes for the rows
 // Owner returned, and Current when the plan has it — ownerKeys read from
 // them with Key, never the requested keys — tenant-scoped as the update was.
-// Run them after those statements, in their transaction. No owners need no
-// statements.
+// Run them after those statements, in their transaction; the executors
+// (parsepgx.Update, parsesql.Update) do. No owners need no statements.
+//
+// A replace or an add writes one junction row per owner and value, so a
+// ByFilter update that matches many rows writes as many pairs as its rows
+// times the patch's values: bound the target as the batch it is.
 func (r *Resource[T]) RelationStatements(plan *UpdatePlan, ownerKeys []any) ([]patch.RenderedRelationStatement, error) {
 	if err := r.ownsUpdatePlan(plan); err != nil {
 		return nil, err

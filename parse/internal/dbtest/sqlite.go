@@ -14,13 +14,14 @@ import (
 
 // SQLite returns a fresh in-memory SQLite database with parse's functions
 // (parsesqlite), closed at test cleanup. One connection: every statement
-// sees the same in-memory database.
+// sees the same in-memory database. Transactions begin IMMEDIATE, as
+// parsesql documents for its updates.
 func SQLite(t testing.TB) *sql.DB {
 	t.Helper()
 	if err := parsesqlite.Register(); err != nil {
 		t.Fatalf("dbtest: %v", err)
 	}
-	db, err := sql.Open("sqlite", ":memory:")
+	db, err := sql.Open("sqlite", ":memory:?_txlock=immediate")
 	if err != nil {
 		t.Fatalf("dbtest: open sqlite: %v", err)
 	}
