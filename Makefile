@@ -26,14 +26,22 @@ PACKAGES ?= all
 # $(call module-packages,<module dir>): its covered packages: the import paths
 # under it, less those of the workspace modules nested inside it.
 module-packages = $(filter-out $(foreach n,$(filter $(1)/%,$(MODULES)),$(MODULE_PATH)/$(n) $(MODULE_PATH)/$(n)/%),$(filter $(MODULE_PATH)/$(1) $(MODULE_PATH)/$(1)/%,$(PACKAGES)))
-# $(call packages,<module dirs>): those modules' covered packages, as go
-# command arguments from the repository root.
-packages = $(strip $(foreach m,$(1),$(if $(filter all,$(PACKAGES)),./$(m)/...,$(call module-packages,$(m)))))
-# $(call scoped,<command and flags>,<module dirs>): run it over their covered
-# packages; a change that reaches none of them runs nothing.
-scoped = $(if $(call packages,$(2)),$(1) $(call packages,$(2)),@echo "no covered packages in $(strip $(2))")
+# $(call packages,<module dirs>,<build tags>): those modules' covered packages
+# under the tags, as go command arguments from the repository root. A ./...
+# pattern skips a package whose files the tags all exclude, but go refuses one
+# named explicitly, so an explicit list keeps only the packages with a file.
+packages = $(strip $(if $(filter all,$(PACKAGES)),$(foreach m,$(1),./$(m)/...),$(call buildable,$(foreach m,$(1),$(call module-packages,$(m))),$(2))))
+# $(call buildable,<packages>,<build tags>): the import paths among them with a
+# Go file under the tags, and their path/... patterns as they are.
+buildable = $(call buildable-paths,$(filter-out %/...,$(1)),$(2)) $(filter %/...,$(1))
+buildable-paths = $(if $(strip $(1)),$(shell go list -e -tags='$(2)' -f '{{if or .GoFiles .CgoFiles .TestGoFiles .XTestGoFiles}}{{.ImportPath}}{{end}}' $(1)))
+# $(call scoped,<command and flags>,<module dirs>[,<build tags>]): run it with
+# the tags over their covered packages; a change that reaches none of them runs
+# nothing.
+scoped = $(call scoped-over,$(1)$(if $(3), -tags=$(3)),$(2),$(call packages,$(2),$(3)))
+scoped-over = $(if $(3),$(1) $(3),@echo "no covered packages in $(strip $(2))")
 UNTAGGED_MODULES := $(CORE_MODULES) $(CONFIG_MODULES)
-LINT_TAGS := -tags=unit,integration
+LINT_TAGS := unit,integration
 
 .PHONY: test test-native-unit test-native-integration native-release-check test-gitx test-jsonvalue jsonvalue-release-check test-gowalker gowalker-release-check test-config test-httpx-unit test-httpx-integration test-parse-unit test-parse-integration parse-postgres-up parse-postgres-down test-parse-sdk parse-sdk-release-check parse-sdk-registry-check parse-release-check lint release-check gitx-release-check config-release-check kongprovider-release-check httpx-release-check cookbook-check tool-check release-please-check ci
 
@@ -43,10 +51,10 @@ LINT_TAGS := -tags=unit,integration
 test: test-native-unit test-native-integration test-gitx test-jsonvalue test-gowalker test-config test-httpx-unit test-httpx-integration test-parse-race-all test-parse-integration test-parse-sdk
 
 test-native-unit:
-	$(call scoped,go test -tags=unit $(RACE) -count=1,$(NATIVE_MODULES))
+	$(call scoped,go test $(RACE) -count=1,$(NATIVE_MODULES),unit)
 
 test-native-integration:
-	$(call scoped,go test -tags=integration $(RACE) -count=1 -timeout=2m,$(NATIVE_MODULES))
+	$(call scoped,go test $(RACE) -count=1 -timeout=2m,$(NATIVE_MODULES),integration)
 
 native-release-check:
 	bash tools/check-native-release.sh
@@ -68,31 +76,31 @@ test-config:
 
 # HTTPx uses build tags: an untagged go test would skip all its tests.
 test-httpx-unit:
-	$(call scoped,go test -tags=unit $(RACE),$(HTTPX_MODULES))
+	$(call scoped,go test $(RACE),$(HTTPX_MODULES),unit)
 
 test-httpx-integration:
-	$(call scoped,go test -tags=integration $(RACE) -count=1,$(HTTPX_MODULES))
+	$(call scoped,go test $(RACE) -count=1,$(HTTPX_MODULES),integration)
 
 .PHONY: test-parse-race test-parse-race-all lint-cookbook
 
 ## test-parse-unit: parse unit tests and fuzz seeds, without the race detector.
 test-parse-unit:
-	$(call scoped,go test -tags=unit,$(PARSE_MODULES))
+	$(call scoped,go test,$(PARSE_MODULES),unit)
 
 ## test-parse-race: under the race detector, the parse tests that run its code
 ## on several goroutines (files tagged concurrency). Parse starts no goroutines
 ## of its own, so only these can race; the rest would cost a race build of
 ## parse's large test package for no coverage.
 test-parse-race:
-	$(call scoped,go test -tags=concurrency $(RACE),$(PARSE_MODULES))
+	$(call scoped,go test $(RACE),$(PARSE_MODULES),concurrency)
 
 ## test-parse-race-all: every parse unit test and fuzz seed under the race detector.
 test-parse-race-all:
-	$(call scoped,go test -tags=unit $(RACE),$(PARSE_MODULES))
+	$(call scoped,go test $(RACE),$(PARSE_MODULES),unit)
 
 # SQLite always runs. Supply PARSE_POSTGRES_DSN and PARSE_POSTGIS_DSN for SQL parity.
 test-parse-integration:
-	$(call scoped,go test -tags=integration $(RACE) -count=1 -timeout=15m,$(PARSE_MODULES))
+	$(call scoped,go test $(RACE) -count=1 -timeout=15m,$(PARSE_MODULES),integration)
 
 # The PostgreSQL integration server: one PostGIS server serves both DSN
 # variables, as in CI. postgis/postgis publishes amd64 images only, so arm64
@@ -136,8 +144,8 @@ parse-sdk-release-check:
 lint:
 	$(call scoped,go vet,$(UNTAGGED_MODULES))
 	$(call scoped,$(STATICCHECK),$(UNTAGGED_MODULES))
-	$(call scoped,go vet $(LINT_TAGS),$(TAGGED_MODULES))
-	$(call scoped,$(STATICCHECK) $(LINT_TAGS),$(TAGGED_MODULES))
+	$(call scoped,go vet,$(TAGGED_MODULES),$(LINT_TAGS))
+	$(call scoped,$(STATICCHECK),$(TAGGED_MODULES),$(LINT_TAGS))
 
 ## lint-cookbook: go vet and staticcheck over the cookbook, outside the workspace.
 lint-cookbook:

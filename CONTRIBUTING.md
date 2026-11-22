@@ -50,7 +50,10 @@ superseded run leaves no change unvalidated. The scope lists the workspace's pac
 - The jobs whose packages or paths the change reaches: the Ubuntu suites and lint for any
   package, macOS for the platform modules, the PostgreSQL legs for parse, Go 1.26 for httpx
   and gitx, the SDK job for the SDK, the corpora in `parse/testdata` or its check scripts.
-  Their test and lint targets cover only the reached packages (`PACKAGES`).
+  Their test and lint targets cover only the reached packages (`PACKAGES`), and of those
+  only the ones with a file under the target's build tags, as a `path/...` pattern does: go
+  refuses a package named explicitly whose files the tags all exclude, such as
+  `parse/internal/dbtest` under `-tags=concurrency`.
 - The release checks of the module trees the change touches (`tools/ci_release_checks.py`,
   below); the modules job runs only when one is selected.
 
