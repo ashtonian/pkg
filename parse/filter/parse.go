@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"maps"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/ashtonian/pkg/parse/core"
@@ -335,13 +336,25 @@ func (p *FilterParser) parseOperatorObject(field *FieldSchema, obj map[string]an
 	return &FilterNode{Op: OpAnd, Children: children}, nil
 }
 
+// hasOperatorKeys reports whether a field's object value is an operator
+// object rather than a literal: some key is an operator, or every key starts
+// with `$`. A misspelt operator ({"$contain": …}) is then an unknown
+// operator, never a document compared for equality; a document whose keys
+// all start with `$` is written as the operand of `$eq`.
 func hasOperatorKeys(obj map[string]any) bool {
+	if len(obj) == 0 {
+		return false
+	}
+	dollars := true
 	for key := range obj {
 		if _, ok := ParseOperator(key); ok {
 			return true
 		}
+		if !strings.HasPrefix(key, "$") {
+			dollars = false
+		}
 	}
-	return false
+	return dollars
 }
 
 // NewParsedFilter wraps a FilterAST with computed cost and condition count.
