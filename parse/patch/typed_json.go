@@ -332,7 +332,7 @@ func replacementMember(input map[string]any, name string) (any, bool, error) {
 }
 
 func jsonFieldOmitted(field *core.Field, value reflect.Value) bool {
-	if field.HasFieldNameOption("omitempty") {
+	if field.HasFieldNameOption(jsonOmitEmpty) {
 		switch value.Kind() {
 		case reflect.Array, reflect.Map, reflect.Slice, reflect.String:
 			if value.Len() == 0 {
@@ -346,7 +346,7 @@ func jsonFieldOmitted(field *core.Field, value reflect.Value) bool {
 			}
 		}
 	}
-	if field.HasFieldNameOption("omitzero") {
+	if field.HasFieldNameOption(jsonOmitZero) {
 		zeroer := reflect.TypeFor[interface{ IsZero() bool }]()
 		if value.Type().Implements(zeroer) {
 			if (value.Kind() == reflect.Pointer && value.IsNil()) ||
@@ -432,7 +432,7 @@ func claimJSONMapKey(sources map[string]string, name, canonical string) error {
 // the fields encoding/json writes, embedded structs promoted. A name
 // encoding/json resolves by depth is refused (core.StructFields).
 func mergeStructFields(t reflect.Type) (map[string]*core.Field, error) {
-	walk, err := core.StructFieldsOf(t, "json", "db")
+	walk, err := core.StructFieldsOf(t, core.JSONTagKey, core.DefaultColumnTagKey)
 	if err != nil {
 		return nil, fmt.Errorf("object merge into %w; use JSON Patch replace", err)
 	}
@@ -445,8 +445,14 @@ func mergeStructFields(t reflect.Type) (map[string]*core.Field, error) {
 	return fields, nil
 }
 
+// The encoding/json tag options that omit a member's value.
+const (
+	jsonOmitEmpty = "omitempty"
+	jsonOmitZero  = "omitzero"
+)
+
 func fieldOmits(f *core.Field) bool {
-	return f.HasFieldNameOption("omitempty") || f.HasFieldNameOption("omitzero")
+	return f.HasFieldNameOption(jsonOmitEmpty) || f.HasFieldNameOption(jsonOmitZero)
 }
 
 // A merge containing only removals can empty an existing map. SQL preserves

@@ -9,13 +9,13 @@ import (
 	"slices"
 	"strconv"
 
-	jsonpatch "github.com/evanphx/json-patch/v5"
-
 	"github.com/ashtonian/pkg/jsonvalue"
 	"github.com/ashtonian/pkg/parse/core"
 	"github.com/ashtonian/pkg/parse/filter"
 	"github.com/ashtonian/pkg/parse/internal/jsonmerge"
+	"github.com/ashtonian/pkg/parse/internal/rfc6902"
 	"github.com/ashtonian/pkg/parse/patch"
+	jsonpatch "github.com/evanphx/json-patch/v5"
 )
 
 // typedParser combines filter, patch, sort, and search parsing for a resource type.
@@ -552,7 +552,7 @@ func assignValue(dst reflect.Value, v any, codec core.Codec) error {
 // different schema tag before a document operation can silently hit another
 // key. Custom codecs must encode the configured field-name tag themselves.
 func (p *typedParser[T]) checkDocumentFieldNames(parsed *patch.ParsedPatch) error {
-	if p.fieldNameTag == "json" {
+	if p.fieldNameTag == core.JSONTagKey {
 		return nil
 	}
 	switch p.codec.(type) {
@@ -560,7 +560,7 @@ func (p *typedParser[T]) checkDocumentFieldNames(parsed *patch.ParsedPatch) erro
 	default:
 		return nil
 	}
-	jsonWalk, err := core.StructFieldsOf(reflect.TypeFor[T](), "json", p.gen.ColumnTagKey())
+	jsonWalk, err := core.StructFieldsOf(reflect.TypeFor[T](), core.JSONTagKey, p.gen.ColumnTagKey())
 	if err != nil {
 		return fmt.Errorf("patch: the JSON codec cannot name T's fields: %w", err)
 	}
@@ -659,9 +659,9 @@ func (p *typedParser[T]) applyDocument(parsed *patch.ParsedPatch, target T) (T, 
 			// Translated to `add <path>/-`, preceded by `add <path> []` when
 			// the array is missing or null at this step — the SQL backends'
 			// COALESCE-to-empty.
-			steps := []map[string]any{{"op": "add", "path": op.Path + "/-", "value": op.Value}}
+			steps := []map[string]any{addOp(op.Path+"/-", op.Value)}
 			if current, ok := pointerValue(doc, op.Path); !ok || current == nil {
-				steps = append([]map[string]any{{"op": "add", "path": op.Path, "value": []any{}}}, steps...)
+				steps = append([]map[string]any{addOp(op.Path, []any{})}, steps...)
 			}
 			if doc, err = run.apply(doc, steps, i); err != nil {
 				return zero, err
@@ -812,7 +812,7 @@ func wireOp(op *patch.PatchOperation) (map[string]any, error) {
 	if (op.Op == patch.PatchOpRemove || op.Value == nil) && op.Op != patch.PatchOpMove && op.Op != patch.PatchOpCopy && op.Op != patch.PatchOpTest {
 		if tokens, err := core.ParsePointer(op.Path); err == nil && len(tokens) == 1 {
 			if cleared := op.Schema.ClearedValue(); cleared != nil {
-				return map[string]any{"op": "add", "path": op.Path, "value": cleared}, nil
+				return addOp(op.Path, cleared), nil
 			}
 		}
 	}
@@ -826,18 +826,18 @@ func wireOp(op *patch.PatchOperation) (map[string]any, error) {
 	if tokens, err := core.ParsePointer(op.Path); err == nil && len(tokens) == 1 {
 		switch op.Op {
 		case patch.PatchOpReplace:
-			return map[string]any{"op": "add", "path": op.Path, "value": value}, nil
+			return addOp(op.Path, value), nil
 		case patch.PatchOpRemove:
-			return map[string]any{"op": "add", "path": op.Path, "value": nil}, nil
+			return addOp(op.Path, nil), nil
 		}
 	}
-	w := map[string]any{"op": string(op.Op), "path": op.Path}
+	w := map[string]any{rfc6902.Op: string(op.Op), rfc6902.Path: op.Path}
 	switch op.Op {
 	case patch.PatchOpMove, patch.PatchOpCopy:
-		w["from"] = op.From
+		w[rfc6902.From] = op.From
 	case patch.PatchOpRemove:
 	default:
-		w["value"] = value
+		w[rfc6902.Value] = value
 	}
 	return w, nil
 }
@@ -856,6 +856,11 @@ func documentValue(op *patch.PatchOperation) (any, error) {
 	return v, nil
 }
 
+// addOp is the RFC 6902 operation adding value at path.
+func addOp(path string, value any) map[string]any {
+	return map[string]any{rfc6902.Op: string(patch.PatchOpAdd), rfc6902.Path: path, rfc6902.Value: value}
+}
+
 // jsonPatchRun applies RFC 6902 operations with
 // github.com/evanphx/json-patch/v5, enforcing one copy budget across every
 // step of a patch (ParserConfig.MaxPatchCopyBytes; 0 means unlimited).
@@ -870,7 +875,7 @@ func (r *jsonPatchRun) apply(doc map[string]any, ops []map[string]any, offset in
 	// Copies are applied individually, so charge their source size rather than
 	// document growth (overwriting an existing value may not grow it at all).
 	for _, op := range ops {
-		if from, hasFrom := op["from"].(string); hasFrom && op["op"] == string(patch.PatchOpCopy) {
+		if from, hasFrom := op[rfc6902.From].(string); hasFrom && op[rfc6902.Op] == string(patch.PatchOpCopy) {
 			if value, ok := pointerValue(doc, from); ok {
 				encoded, err := json.Marshal(value)
 				if err != nil {

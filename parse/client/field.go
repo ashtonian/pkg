@@ -15,16 +15,16 @@ func NewField[V any](name string) Field[V] { return Field[V]{name: name} }
 func (f Field[V]) Name() string { return f.name }
 
 // Eq matches rows whose field equals v.
-func (f Field[V]) Eq(v V) Filter { return condition(f.name, "$eq", v) }
+func (f Field[V]) Eq(v V) Filter { return condition(f.name, opEq, v) }
 
 // Ne matches rows whose field differs from v.
-func (f Field[V]) Ne(v V) Filter { return condition(f.name, "$ne", v) }
+func (f Field[V]) Ne(v V) Filter { return condition(f.name, opNe, v) }
 
 // In matches rows whose field is one of vs.
-func (f Field[V]) In(vs ...V) Filter { return condition(f.name, "$in", list(vs)) }
+func (f Field[V]) In(vs ...V) Filter { return condition(f.name, opIn, list(vs)) }
 
 // Nin matches rows whose field is none of vs.
-func (f Field[V]) Nin(vs ...V) Filter { return condition(f.name, "$nin", list(vs)) }
+func (f Field[V]) Nin(vs ...V) Filter { return condition(f.name, opNin, list(vs)) }
 
 // Null matches rows whose field is null.
 func (f Field[V]) Null() Filter { return isNull(f.name) }
@@ -32,8 +32,8 @@ func (f Field[V]) Null() Filter { return isNull(f.name) }
 // NotNull matches rows whose field is not null.
 func (f Field[V]) NotNull() Filter { return notNull(f.name) }
 
-func isNull(name string) Filter  { return condition(name, "$null", true) }
-func notNull(name string) Filter { return condition(name, "$not_null", true) }
+func isNull(name string) Filter  { return condition(name, opNull, true) }
+func notNull(name string) Filter { return condition(name, opNotNull, true) }
 
 // Ordered is a field whose values have an order: a number, a decimal (any
 // type that marshals as its exact text, such as shopspring's), a timestamp.
@@ -43,16 +43,16 @@ type Ordered[V any] struct{ Field[V] }
 func NewOrdered[V any](name string) Ordered[V] { return Ordered[V]{Field[V]{name: name}} }
 
 // Gt matches rows whose field is greater than v.
-func (f Ordered[V]) Gt(v V) Filter { return condition(f.name, "$gt", v) }
+func (f Ordered[V]) Gt(v V) Filter { return condition(f.name, opGt, v) }
 
 // Gte matches rows whose field is at least v.
-func (f Ordered[V]) Gte(v V) Filter { return condition(f.name, "$gte", v) }
+func (f Ordered[V]) Gte(v V) Filter { return condition(f.name, opGte, v) }
 
 // Lt matches rows whose field is less than v.
-func (f Ordered[V]) Lt(v V) Filter { return condition(f.name, "$lt", v) }
+func (f Ordered[V]) Lt(v V) Filter { return condition(f.name, opLt, v) }
 
 // Lte matches rows whose field is at most v.
-func (f Ordered[V]) Lte(v V) Filter { return condition(f.name, "$lte", v) }
+func (f Ordered[V]) Lte(v V) Filter { return condition(f.name, opLte, v) }
 
 // Text is a string field, matched by pattern and substring as well.
 type Text struct{ Ordered[string] }
@@ -62,13 +62,13 @@ func NewText(name string) Text { return Text{NewOrdered[string](name)} }
 
 // Like matches rows whose field matches the SQL LIKE pattern (% any run, _
 // one character, \ escapes).
-func (f Text) Like(pattern string) Filter { return condition(f.name, "$like", pattern) }
+func (f Text) Like(pattern string) Filter { return condition(f.name, opLike, pattern) }
 
 // ILike is Like, ignoring case.
-func (f Text) ILike(pattern string) Filter { return condition(f.name, "$ilike", pattern) }
+func (f Text) ILike(pattern string) Filter { return condition(f.name, opILike, pattern) }
 
 // Contains matches rows whose field contains s.
-func (f Text) Contains(s string) Filter { return condition(f.name, "$contains", s) }
+func (f Text) Contains(s string) Filter { return condition(f.name, opContains, s) }
 
 // Time is a timestamp field. Its operands are Moments: an absolute time, or
 // one relative to the server's clock.

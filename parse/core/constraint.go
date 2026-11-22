@@ -1,6 +1,7 @@
 package core
 
-// Declared constraints shared by schema discovery and patch diagnostics.
+// Declared constraints shared by schema discovery and patch diagnostics;
+// each is also the struct tag that declares it (`minlen:"3"`).
 const (
 	ConstraintEnum     = "enum"
 	ConstraintMinLen   = "minlen"

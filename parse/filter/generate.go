@@ -311,7 +311,7 @@ func generateSortSchema(g *core.SchemaGenerator, t reflect.Type) (*SortSchema, e
 
 		if defaultTag := tags.SortDefault; defaultTag != "" {
 			defaultField = fieldName
-			if defaultTag == "desc" {
+			if defaultTag == string(SortDesc) {
 				defaultDir = SortDesc
 			} else {
 				defaultDir = SortAsc

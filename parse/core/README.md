@@ -15,14 +15,14 @@ Start with the [runnable package example](../README.md#quick-start). The focused
 ## API reference
 
 - Config: `DefaultConfig`, `ParserConfig`, `Option`, `(*ParserConfig).GetCodec`, `(*ParserConfig).ListBodyLimit` (the bound a POST list body takes: `MaxListBodySize`, or one derived from `MaxInputSize`)
-- Generation: `NewSchemaGenerator`, `SchemaGenerator` (`TableName`, `ColumnExpr`, `ColumnName`, `FieldColumn`, `FieldNameTag`, `ColumnTagKey`, `StructFields`), `GeneratorOptions`, `GeneratorOption`, `SQLColumnMapper`, `NamingConvention`, `TableConvention`, `SnakeCase`, `PluralSnake`
+- Generation: `NewSchemaGenerator`, `SchemaGenerator` (`TableName`, `ColumnExpr`, `ColumnName`, `FieldColumn`, `FieldNameTag`, `ColumnTagKey`, `StructFields`), `JSONTagKey` (the tag encoding/json names members by; the default field-name tag), `DefaultColumnTagKey`, `GeneratorOptions`, `GeneratorOption`, `SQLColumnMapper`, `NamingConvention`, `TableConvention`, `SnakeCase`, `PluralSnake`
 - Types: `FieldType` (`FieldTypeString` … `FieldTypeGeo`), `SQLType` (`SQLInet`, `SQLCIDR`, `SQLInterval` and their arrays: database types a resource declares for its dialect to read as text), `IsValueType` / `CheckValueStorage` / `ImpliedSQLType` (the declarations a value type's column takes), `TypeOf`, `TypeInfo`, `IsDocument`, `NumericKind`, `IsUUIDType` / `UUIDText` (any UUID type, recognized by shape), `Decimal` / `IsDecimalType` (any decimal type with the `Coefficient` / `Exponent` method set, recognized by shape)
 - Value types, each with one canonical text in JSON, text, SQL parameters and cursors: `Date` / `ParseDate`, `LocalTime` / `ParseLocalTime`, `Interval` / `ParseInterval`, `Inet` / `ParseInet` / `InetFromAddr` / `InetFromPrefix`, `CIDR` / `ParseCIDR` / `CIDRFromPrefix`, `MACAddr` / `ParseMACAddr`
 - Values: `NormalizeInt`, `NormalizeUint`, `NormalizeFloat`, `NormalizeScalar`, `NormalizeJSON`, `CompareNumbers`, `IsNumber`, `DecimalText` / `CompareDecimals` / `MaxDecimalDigits` (canonical exact decimal text and its order), `AnySlice`, `FormatTimestamp` / `TimestampLayout` (canonical timestamp text: UTC, nine fractional digits, fixed width)
 - Pointers: `ParsePointer`, `FormatPointer`, `EscapePointerToken`, `MatchWildcard`
-- Relations: `RelationSchema`, `ParseRelationTag`, `IsIdentifier`
-- Errors: `Code` (string constants; error identity, status and default message), `ParseError` (`ErrorCode`, `ErrorHTTPStatus`, `IsErrorUserFacing`), `ParseErrorKind`; policy: `PolicySubject`
-- Fields: `StructFieldsOf`, `StructFields` (`External`, `ColumnTagged`), `Field` (`Value`, `Settable`, `Hidden`), `Tags`, `Capabilities`, `Bounds` (`IsZero`, `BoundsValues`, `CountsItems`, `Check`: a field's `minlen` / `maxlen` / `min` / `max` / `minitems` / `maxitems`) — one walk of a struct type shared by every schema
+- Relations: `RelationSchema` (`OwnerKey`: its `PrimaryKey`, or `DefaultPrimaryKey`), `DefaultPrimaryKey` (`"id"`, a resource's or relation owner's key when none is declared), `ParseRelationTag`, `IsIdentifier`
+- Errors: `Code` and its constants `Code*` (`CodeUnknownField` = E2071, …: each code's one definition, with its status and default message; filter, patch and parse alias them as `ECode*`), `ParseError` (`ErrorCode`, `ErrorHTTPStatus`, `IsErrorUserFacing`), `ParseErrorKind`, `DetailField` / `DetailParameter` (the `Details` keys); policy: `PolicySubject`
+- Fields: `StructFieldsOf`, `StructFields` (`External`, `ColumnTagged`), `Field` (`Value`, `Settable`, `Hidden`), `Tags`, `Capabilities` (`Has`), `Capability` (`CapabilityFilter`, … — the `parse` tag's values, which the `paths` tag's member capabilities share), `Bounds` (`IsZero`, `BoundsValues`, `CountsItems`, `Check`: a field's `minlen` / `maxlen` / `min` / `max` / `minitems` / `maxitems`, the tags the `Constraint*` constants name) — one walk of a struct type shared by every schema
 - Codec: `Codec`, `StdlibJSON`; naming: `ToSnakeCase`, `Pluralize`; `Validator`
 
 ## Code map
@@ -30,7 +30,7 @@ Start with the [runnable package example](../README.md#quick-start). The focused
 | File | Responsibility |
 |------|----------------|
 | `core.go` | `ParserConfig` + options, `Codec` / `StdlibJSON`, `FieldType`, `SQLType`, `ParseError`, `SchemaGenerator` + generator options |
-| `code.go` | Immutable error-code metadata; no application catalog dependency |
+| `code.go` | The error codes and their status and message table; no application catalog dependency |
 | `fields.go` | `StructFields` — one gowalker walk per struct type: encoding/json field names with embedded structs promoted, hidden fields kept for columns, every tag parsed once (`Tags`) |
 | `bounds.go` | `Bounds` — the `minlen` / `maxlen` / `min` / `max` / `minitems` / `maxitems` tags, read and checked against the field's type |
 | `typeof.go` | `TypeOf` — Go type → storage model; `IsUUIDType` / `UUIDText` |

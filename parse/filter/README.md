@@ -28,7 +28,7 @@ Start with the [runnable package example](../README.md#quick-start). The focused
 - Evaluation outside SQL: `Evaluate` (a filter's three-valued `Truth` — `True`, `False`, `Unknown` — on one row, as SQL gives it), `Row` (a field's value in the canonical domain), `RowFunc`, `ColumnRow` (a row of Go values read by column; paths through `PathValue`), `ElementRow` (one array element), `ColumnValue` (one stored value in that domain), `Document` / `DecodeDocument` (a document decoded once, which every reader takes in place of its JSON text)
 - Reference semantics: `MatchLike`, `EscapeLike` (a literal as a LIKE pattern; append `%` for a prefix), `JSONEqual`, `JSONContains`, `JSONHasKey`, `PathValue`
 - Geo: `GeoPoint`, `GeoDistance`, `GeoBoundingBox`, `GeoPolygon`, `GeoFieldConfig`, `ParseDistance`, `ValidateGeoPoint`, `ValidateGeoBoundingBox`, `ValidateGeoPolygon`
-- Errors: `ECode*` (`core.Code` constants), `Codes`, `ErrUnknownDSN` (a DSN `DialectFromDSN` names no dialect for), `ErrUnsupportedDialect` (what application SQL, such as a computed column's expression, returns for a dialect it has no rendering for)
+- Errors: `ECode*` (aliases of `core.Code*`, each code's one definition), `Codes`, `ErrUnknownDSN` (a DSN `DialectFromDSN` names no dialect for), `ErrUnsupportedDialect` (what application SQL, such as a computed column's expression, returns for a dialect it has no rendering for)
 
 ## Code map
 

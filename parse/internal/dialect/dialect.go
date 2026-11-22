@@ -140,11 +140,18 @@ func hasSQLiteExtension(name string) bool {
 	return false
 }
 
+// The names the dialects' Name methods return, which dialect-specific SQL
+// is chosen by.
+const (
+	NamePostgres = "postgres"
+	NameSQLite   = "sqlite"
+)
+
 // Postgres is PostgreSQL: $n placeholders.
 type Postgres struct{}
 
-// Name returns "postgres".
-func (Postgres) Name() string { return "postgres" }
+// Name returns NamePostgres.
+func (Postgres) Name() string { return NamePostgres }
 
 // Placeholder returns "$n". A non-positive n is a statement builder's bug
 // and panics: it would render invalid SQL.
@@ -156,8 +163,8 @@ func (Postgres) QuoteIdent(name string) string { return quoteIdent(name) }
 // SQLite is SQLite: ?n placeholders.
 type SQLite struct{}
 
-// Name returns "sqlite".
-func (SQLite) Name() string { return "sqlite" }
+// Name returns NameSQLite.
+func (SQLite) Name() string { return NameSQLite }
 
 // Placeholder returns "?n"; a non-positive n panics, as for Postgres.
 func (SQLite) Placeholder(n int) string { return placeholder('?', n) }

@@ -61,11 +61,11 @@ Both handlers encode the whole response before writing any of it, and send it wi
 
 ## Error handling
 
-Use `errors.As` to extract `*core.ParseError` through wrapping. Its `ErrorHTTPStatus()` provides the status; expose `Code`, `Message`, and appropriate `Details` in the error envelope. Treat unrelated database/internal errors through your normal server error handling rather than labeling every failure a bad request. Do not leak underlying SQL or credentials through error details.
+Use `errors.As` to extract `*core.ParseError` through wrapping. Its `ErrorHTTPStatus()` provides the status; expose `Code`, `Message`, and appropriate `Details` in the error envelope. `Details` is keyed by `core.DetailField` (`"field"`, the request field a refusal is about) and `core.DetailParameter` (`"parameter"`, the list parameter). Treat unrelated database/internal errors through your normal server error handling rather than labeling every failure a bad request. Do not leak underlying SQL or credentials through error details.
 
 Patch validation can return joined parse errors. `errors.As` returns the first; applications needing all failures traverse the joined errors. Declared enum/bounds failures expose `core.ConstraintError{Constraint, Limit}` through each E2077's cause; [patch validation](patches.md#validation) defines the vocabulary and ordering. The application still owns its HTTP envelope and any translation of these typed causes into client details.
 
-`errors.Is(err, filter.ECodeUnknownField)` matches a specific code through wrapping. `parse.Codes()` returns the distinct `parse.Code` values; each provides its wire string, default message and HTTP status. The package imports no application error catalog. Consumers can map these values when registering their own catalog.
+`errors.Is(err, filter.ECodeUnknownField)` matches a specific code through wrapping. `parse.Codes()` returns the distinct `parse.Code` values; each provides its wire string, default message and HTTP status. Each code is defined once, as a `core.Code` constant (`core.CodeUnknownField`) holding its status and message; `filter`, `patch` and `parse` name the codes they raise as aliases of those constants, so a limit both grammars enforce, such as E2063, is one value. The package imports no application error catalog. Consumers can map these values when registering their own catalog.
 
 ### RFC 9457 problem details
 

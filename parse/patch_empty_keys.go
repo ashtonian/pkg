@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/ashtonian/pkg/parse/core"
+	"github.com/ashtonian/pkg/parse/internal/rfc6902"
 )
 
 // escapeEmptyPatchKeys isolates json-patch's special treatment of an empty
@@ -16,7 +17,7 @@ func escapeEmptyPatchKeys(doc map[string]any, ops []map[string]any) (map[string]
 	needsEscape := false
 	used := make(map[string]bool)
 	for _, op := range ops {
-		for _, key := range []string{"path", "from"} {
+		for _, key := range []string{rfc6902.Path, rfc6902.From} {
 			if pointer, ok := op[key].(string); ok {
 				tokens, err := core.ParsePointer(pointer)
 				if err != nil {
@@ -57,14 +58,14 @@ func escapeEmptyPatchKeys(doc map[string]any, ops []map[string]any) (map[string]
 	}
 	collect(doc)
 	for _, op := range wire {
-		collect(op["value"])
+		collect(op[rfc6902.Value])
 	}
 	sentinel := "\x00"
 	for used[sentinel] {
 		sentinel += "\x00"
 	}
 	for _, op := range wire {
-		for _, key := range []string{"path", "from"} {
+		for _, key := range []string{rfc6902.Path, rfc6902.From} {
 			if pointer, ok := op[key].(string); ok {
 				// Split the encoded pointer so escaped slashes and tildes stay intact.
 				tokens := strings.Split(pointer, "/")
@@ -76,8 +77,8 @@ func escapeEmptyPatchKeys(doc map[string]any, ops []map[string]any) (map[string]
 				op[key] = strings.Join(tokens, "/")
 			}
 		}
-		if value, ok := op["value"]; ok {
-			op["value"] = renamePatchKey(value, "", sentinel)
+		if value, ok := op[rfc6902.Value]; ok {
+			op[rfc6902.Value] = renamePatchKey(value, "", sentinel)
 		}
 	}
 	restore := func(v map[string]any) map[string]any { return renamePatchMapKey(v, sentinel, "") }

@@ -201,6 +201,11 @@ type FieldSchema struct {
 
 	FacetSchema *FacetSchema    // Parsed facet configuration (from `facet` tag).
 	GeoConfig   *GeoFieldConfig // Geo-spatial metadata (from `geo` tag). Non-nil when DataType == FieldTypeGeo.
+
+	// role marks the fields `$some` / `$none` conditions stand on until the
+	// builder or an evaluator binds them to one element. It is unexported so
+	// that no declared column, whatever its name, reads as one.
+	role elementRole
 }
 
 // AllowsOperator checks whether op is in the field's allowed operators list.

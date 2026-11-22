@@ -85,11 +85,11 @@ func kindOf(t core.FieldType) reflect.Kind {
 // storageOf reads a document field's storage tag; scalar reports a
 // "scalar:<type>" declaration, a struct type the database holds as a scalar.
 func storageOf(tag string) (storage JSONStorage, scalar core.FieldType, err error) {
-	switch {
-	case tag == "":
+	if tag == "" {
 		return StorageJSONB, "", nil
-	case strings.HasPrefix(tag, "scalar:"):
-		t := core.FieldType(strings.TrimPrefix(tag, "scalar:"))
+	}
+	if name, ok := strings.CutPrefix(tag, "scalar:"); ok {
+		t := core.FieldType(name)
 		if !pathTypes[t] {
 			return "", "", fmt.Errorf("storage %q: a scalar is %s", tag, pathTypeNames)
 		}
@@ -168,11 +168,11 @@ func parsePathsTag(tag string) ([]PathDecl, error) {
 		}
 		if len(parts) == 3 {
 			for c := range strings.SplitSeq(parts[2], "+") {
-				switch strings.TrimSpace(c) {
-				case "filter":
-				case "sort":
+				switch core.Capability(strings.TrimSpace(c)) {
+				case core.CapabilityFilter:
+				case core.CapabilitySort:
 					d.Sort = true
-				case "facet":
+				case core.CapabilityFacet:
 					d.Facet = &FacetSchema{Type: FacetTerms}
 				case "indexed":
 					d.Indexed = true
@@ -187,9 +187,9 @@ func parsePathsTag(tag string) ([]PathDecl, error) {
 }
 
 // structPaths derives the paths of a struct-typed document: every member
-// tagged parse:"<want>" (filter or sort), nested structs recursed when
-// tagged too, named by their field-name tag.
-func structPaths(g *core.SchemaGenerator, t reflect.Type, prefix []string, want string) ([]PathDecl, []reflect.Kind, error) {
+// granted want (filter or sort), nested structs recursed when granted it
+// too, named by their field-name tag.
+func structPaths(g *core.SchemaGenerator, t reflect.Type, prefix []string, want core.Capability) ([]PathDecl, []reflect.Kind, error) {
 	walk, err := g.StructFields(t)
 	if err != nil {
 		return nil, nil, err
@@ -198,7 +198,7 @@ func structPaths(g *core.SchemaGenerator, t reflect.Type, prefix []string, want 
 	var kinds []reflect.Kind
 	for _, m := range walk.Fields {
 		caps := m.Tags.Parse
-		if want == "filter" && !caps.Filter || want == "sort" && !caps.Sort {
+		if !caps.Has(want) {
 			continue
 		}
 		name := m.External
@@ -216,12 +216,12 @@ func structPaths(g *core.SchemaGenerator, t reflect.Type, prefix []string, want 
 		elem, elemKind, isArray := scalarElements(m.Type)
 		switch {
 		case pathTypes[info.Type] || isArray:
-			d := PathDecl{Path: strings.Join(segs, "."), Type: info.Type, Indexed: m.Tags.Indexed, Label: m.Tags.Label, Sort: want == "sort"}
+			d := PathDecl{Path: strings.Join(segs, "."), Type: info.Type, Indexed: m.Tags.Indexed, Label: m.Tags.Label, Sort: want == core.CapabilitySort}
 			kind := info.NumberKind
 			if isArray {
 				d.Type, d.Elem, kind = core.FieldTypeArray, elem, elemKind
 			}
-			if want == "filter" && caps.Facet {
+			if want == core.CapabilityFilter && caps.Facet {
 				fs, err := ParseFacetTag(m.Tags.Facet)
 				if err != nil {
 					return nil, nil, fmt.Errorf("member %s: %w", d.Path, err)
@@ -312,7 +312,7 @@ func documentPathFields(g *core.SchemaGenerator, field *core.Field, doc *FieldSc
 	var decls []PathDecl
 	var kinds []reflect.Kind
 	if doc.DataType == core.FieldTypeObject {
-		d, k, err := structPaths(g, field.Type, nil, "filter")
+		d, k, err := structPaths(g, field.Type, nil, core.CapabilityFilter)
 		if err != nil {
 			return nil, err
 		}
@@ -411,7 +411,7 @@ func docSortPaths(g *core.SchemaGenerator, field *core.Field, docType core.Field
 	var decls []PathDecl
 	var kinds []reflect.Kind
 	if docType == core.FieldTypeObject {
-		d, k, err := structPaths(g, field.Type, nil, "sort")
+		d, k, err := structPaths(g, field.Type, nil, core.CapabilitySort)
 		if err != nil {
 			return nil, err
 		}
