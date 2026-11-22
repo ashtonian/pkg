@@ -1,6 +1,7 @@
 package parse
 
 import (
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"maps"
@@ -100,8 +101,11 @@ func TenantColumn(column string) ResourceOption {
 	return func(c *resourceConfig) { c.tenant = column }
 }
 
-// DeletedColumn names the soft-delete timestamp. Lists exclude deleted rows
-// unless Scope.IncludeDeleted.
+// DeletedColumn names the soft-delete timestamp: a row is live while it is
+// NULL, so its field must hold NULL (a pointer or an sql.Scanner such as
+// sql.NullTime),
+// and it is neither the key nor the tenant column. Lists exclude deleted rows
+// unless Scope.IncludeDeleted; updates never reach them.
 func DeletedColumn(column string) ResourceOption {
 	return func(c *resourceConfig) { c.deleted = column }
 }
@@ -222,6 +226,9 @@ func NewResource[T any](table string, opts ...ResourceOption) (*Resource[T], err
 			return nil, fmt.Errorf("parse: %s: %s column %q is not a column of %s", table, c.option, c.column, reflect.TypeFor[T]())
 		}
 	}
+	if err := checkDeletedColumn(cfg, columns[cfg.deleted]); err != nil {
+		return nil, fmt.Errorf("parse: %s: %w", table, err)
+	}
 	r.filterSchema.SystemFields = systemFields(table, cfg, columns, fieldsByColumn)
 	r.filterSchema.PrimaryKey = cfg.pk
 	var tenant *tenantColumn
@@ -245,6 +252,9 @@ func NewResource[T any](table string, opts ...ResourceOption) (*Resource[T], err
 		return nil, err
 	}
 	if err := r.checkComputedPatches(); err != nil {
+		return nil, err
+	}
+	if err := r.checkIdentityPatches(); err != nil {
 		return nil, err
 	}
 	for _, name := range order {
@@ -667,6 +677,64 @@ func (r *Resource[T]) columnValue(rv reflect.Value, column string) (any, error) 
 		return nil, fmt.Errorf("parse: %s: column %s: %w", r.table, column, err)
 	}
 	return fv.Interface(), nil
+}
+
+// checkDeletedColumn refuses a deleted column no row can be live under: the
+// key or the tenant column, which a live row always holds, or a field that
+// cannot hold NULL, such as a bool soft-delete flag, under which every row
+// would be live.
+func checkDeletedColumn(cfg resourceConfig, t reflect.Type) error {
+	switch {
+	case cfg.deleted == "":
+		return nil
+	case cfg.deleted == cfg.pk:
+		return fmt.Errorf("deleted column %q is the key column", cfg.deleted)
+	case cfg.deleted == cfg.tenant:
+		return fmt.Errorf("deleted column %q is the tenant column", cfg.deleted)
+	case !holdsNull(t):
+		return fmt.Errorf("deleted column %q is %s, which cannot hold NULL: a row is live while the column is NULL, so declare a pointer or an sql.Scanner such as sql.NullTime", cfg.deleted, t)
+	}
+	return nil
+}
+
+// holdsNull reports whether a field of type t scans a NULL: a pointer, or
+// an sql.Scanner (sql.NullTime, sql.Null[T], a driver's nullable type), to
+// which the driver hands NULL as nil.
+func holdsNull(t reflect.Type) bool {
+	return t.Kind() == reflect.Pointer || reflect.PointerTo(t).Implements(reflect.TypeFor[sql.Scanner]())
+}
+
+// checkIdentityPatches refuses a patch path, request or server, that writes
+// the key or the tenant column. An update's WHERE holds the scope's tenant
+// and the row's key, so such a write would move the row out of its tenant
+// or away from every relation correlated on its key; a tenant transfer is
+// not a patch.
+func (r *Resource[T]) checkIdentityPatches() error {
+	for _, schema := range []*patch.PatchSchema{r.patchSchema, r.serverPatchSchema} {
+		if schema == nil {
+			continue
+		}
+		for path, ps := range schema.Paths() {
+			if err := r.checkIdentityWrite(ps.SQLColumn); err != nil {
+				return fmt.Errorf("parse: %s: patch path %s: %w", r.table, path, err)
+			}
+		}
+	}
+	return nil
+}
+
+// checkIdentityWrite refuses a write of column when it is the key or the
+// tenant column.
+func (r *Resource[T]) checkIdentityWrite(column string) error {
+	switch {
+	case column == "":
+		return nil
+	case column == r.pk:
+		return fmt.Errorf("writes the key column %q", column)
+	case column == r.tenant:
+		return fmt.Errorf("writes the tenant column %q", column)
+	}
+	return nil
 }
 
 // systemFields are the columns policies constrain without the request

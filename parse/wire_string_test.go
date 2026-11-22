@@ -19,8 +19,10 @@ import (
 )
 
 // quotedItem's quoted fields travel as JSON strings, as encoding/json writes
-// them; Count is a plain number.
+// them; Count is a plain number. Key is the key, so the quoted int64 ID can
+// be patched.
 type quotedItem struct {
+	Key   int64   `json:"key"          db:"key"   parse:"filter,sort"`
 	ID    int64   `json:"id,string"    db:"id"    parse:"filter,sort,patch" patch_ops:"replace,test,copy"`
 	Big   uint64  `json:"big,string"   db:"big"   parse:"filter,patch"`
 	Ratio float64 `json:"ratio,string" db:"ratio" parse:"filter,patch"`
@@ -31,7 +33,7 @@ type quotedItem struct {
 
 func quotedItems(t *testing.T) *parse.Resource[quotedItem] {
 	t.Helper()
-	r, err := parse.NewResource[quotedItem]("quoted_items")
+	r, err := parse.NewResource[quotedItem]("quoted_items", parse.PrimaryKey("key"))
 	require.NoError(t, err)
 	return r
 }

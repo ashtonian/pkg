@@ -67,6 +67,12 @@ func generatePatchSchema(g *core.SchemaGenerator, t reflect.Type, server bool) (
 		if !tags.Parse.Patch && !serverField {
 			continue
 		}
+		if tags.Parse.Patch && tags.Immutable {
+			// Nothing creates rows through a patch, so every patch of the
+			// field would change it. The server's own write is not a
+			// request's: a server field may stay immutable.
+			return nil, fmt.Errorf("field %s: an immutable field cannot have the patch capability", field.GoName)
+		}
 		fieldName := field.External
 		if serverField {
 			fieldName, _ = serverFieldName(g, field)

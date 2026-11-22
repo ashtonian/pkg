@@ -20,20 +20,21 @@ func TestUpdateBatchRefusals(t *testing.T) {
 		rows   []parse.RowUpdate
 		scope  parse.Scope
 		limits parse.UpdateBatchLimits
+		opts   []parse.UpdateOption
 	}{
-		{"duplicate-normalized", []parse.RowUpdate{{Key: int32(1), Patch: patch}, {Key: int64(1), Patch: patch}}, parse.Scope{Tenant: "t1"}, parse.UpdateBatchLimits{}},
-		{"missing-tenant", []parse.RowUpdate{{Key: int64(1), Patch: patch}}, parse.Scope{}, parse.UpdateBatchLimits{}},
-		{"widened-scope", []parse.RowUpdate{{Key: int64(1), Patch: patch}}, parse.Scope{Tenant: "t1", IncludeDeleted: true}, parse.UpdateBatchLimits{}},
-		{"negative-limit", nil, parse.Scope{Tenant: "t1"}, parse.UpdateBatchLimits{MaxRows: -1}},
-		{"row-limit", []parse.RowUpdate{{Key: int64(1), Patch: patch}, {Key: int64(2), Patch: patch}}, parse.Scope{Tenant: "t1"}, parse.UpdateBatchLimits{MaxRows: 1}},
-		{"parameter-limit", []parse.RowUpdate{{Key: int64(1), Patch: patch}}, parse.Scope{Tenant: "t1"}, parse.UpdateBatchLimits{MaxParameters: 1}},
-		{"invalid-key", []parse.RowUpdate{{Key: "not-an-integer", Patch: patch}}, parse.Scope{Tenant: "t1"}, parse.UpdateBatchLimits{}},
-		{"relation", []parse.RowUpdate{{Key: int64(1), Patch: updateBatchPatch(t, r, `{"tags":["x"]}`)}}, parse.Scope{Tenant: "t1"}, parse.UpdateBatchLimits{}},
-		{"key-write", []parse.RowUpdate{{Key: int64(1), Patch: updateBatchPatch(t, r, `{"id":2}`)}}, parse.Scope{Tenant: "t1"}, parse.UpdateBatchLimits{}},
-		{"tenant-write", []parse.RowUpdate{{Key: int64(1), Patch: updateBatchPatch(t, r, `{"tenant_id":"t2"}`)}}, parse.Scope{Tenant: "t1"}, parse.UpdateBatchLimits{}},
+		{"duplicate-normalized", []parse.RowUpdate{{Key: int32(1), Patch: patch}, {Key: int64(1), Patch: patch}}, parse.Scope{Tenant: "t1"}, parse.UpdateBatchLimits{}, nil},
+		{"missing-tenant", []parse.RowUpdate{{Key: int64(1), Patch: patch}}, parse.Scope{}, parse.UpdateBatchLimits{}, nil},
+		{"widened-scope", []parse.RowUpdate{{Key: int64(1), Patch: patch}}, parse.Scope{Tenant: "t1", IncludeDeleted: true}, parse.UpdateBatchLimits{}, nil},
+		{"negative-limit", nil, parse.Scope{Tenant: "t1"}, parse.UpdateBatchLimits{MaxRows: -1}, nil},
+		{"row-limit", []parse.RowUpdate{{Key: int64(1), Patch: patch}, {Key: int64(2), Patch: patch}}, parse.Scope{Tenant: "t1"}, parse.UpdateBatchLimits{MaxRows: 1}, nil},
+		{"parameter-limit", []parse.RowUpdate{{Key: int64(1), Patch: patch}}, parse.Scope{Tenant: "t1"}, parse.UpdateBatchLimits{MaxParameters: 1}, nil},
+		{"invalid-key", []parse.RowUpdate{{Key: "not-an-integer", Patch: patch}}, parse.Scope{Tenant: "t1"}, parse.UpdateBatchLimits{}, nil},
+		{"relation", []parse.RowUpdate{{Key: int64(1), Patch: updateBatchPatch(t, r, `{"tags":["x"]}`)}}, parse.Scope{Tenant: "t1"}, parse.UpdateBatchLimits{}, nil},
+		{"key-write", []parse.RowUpdate{{Key: int64(1), Patch: patch}}, parse.Scope{Tenant: "t1"}, parse.UpdateBatchLimits{}, []parse.UpdateOption{parse.Increment("id")}},
+		{"tenant-write", []parse.RowUpdate{{Key: int64(1), Patch: patch}}, parse.Scope{Tenant: "t1"}, parse.UpdateBatchLimits{}, []parse.UpdateOption{parse.StampSQL("tenant_id", "'t2'")}},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			plan, err := r.BuildUpdateBatch(filter.SQLiteDialect{}, test.rows, test.scope, test.limits)
+			plan, err := r.BuildUpdateBatch(filter.SQLiteDialect{}, test.rows, test.scope, test.limits, test.opts...)
 			require.Error(t, err)
 			require.Nil(t, plan)
 		})

@@ -157,6 +157,9 @@ func (r *Resource[T]) BuildUpdate(d Dialect, p *patch.ParsedPatch, target Target
 	if err != nil {
 		return nil, err
 	}
+	if err := r.checkAssignments(set.Assignments, "update"); err != nil {
+		return nil, err
+	}
 
 	scope := updateScope{tenant: tenant, policy: s.Policy, related: s.Related}
 	where, args, err := r.updateWhere(d, v, target, scope, set.ParamCount)
@@ -412,4 +415,17 @@ func (r *Resource[T]) updateOptions(opts []UpdateOption) (updateConfig, []patch.
 		patchOpts = append(patchOpts, patch.WithChangePredicate())
 	}
 	return cfg, patchOpts, nil
+}
+
+// checkAssignments refuses a statement of builder that assigns the key or
+// the tenant column. NewResource refuses a patch path over either, so only
+// a server column (Stamp, Increment) can name one here; both builders hold
+// every write to the rule checkIdentityPatches states.
+func (r *Resource[T]) checkAssignments(assignments []patch.ColumnAssignment, builder string) error {
+	for _, assignment := range assignments {
+		if assignment.Column == r.pk || (r.tenant != "" && assignment.Column == r.tenant) {
+			return fmt.Errorf("%s: %s cannot change identity column %s", r.table, builder, assignment.Column)
+		}
+	}
+	return nil
 }

@@ -197,10 +197,8 @@ func (r *Resource[T]) compileRowUpdate(d Dialect, v *dialectView, row RowUpdate,
 	if len(set.RelationOps) != 0 {
 		return compiledRowUpdate{}, fmt.Errorf("%s: update batch relation mutations are unsupported", r.table)
 	}
-	for _, assignment := range set.Assignments {
-		if assignment.Column == r.pk || assignment.Column == r.tenant {
-			return compiledRowUpdate{}, fmt.Errorf("%s: update batch cannot change identity column %s", r.table, assignment.Column)
-		}
+	if err := r.checkAssignments(set.Assignments, "update batch"); err != nil {
+		return compiledRowUpdate{}, err
 	}
 	scope.policy = updateRowPolicy(scope.policy, row.Policy)
 	where, args, err := r.updateWhere(d, v, ByID(row.Key), scope, offset+set.ParamCount)
