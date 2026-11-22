@@ -12,19 +12,26 @@ import { fetchBranchHead, readHistory } from './first-parent.mjs';
 import { Output, outputPullRequests, outputReleases } from './outputs.mjs';
 import { FIRST_PARENT, FirstParentPlugin, registerFirstParent } from './plugin.mjs';
 
-const { values: args } = parseArgs({
-  options: {
-    repo: { type: 'string', default: process.env.GITHUB_REPOSITORY },
-    'config-file': { type: 'string', default: 'release-please-config.json' },
-    'manifest-file': { type: 'string', default: '.release-please-manifest.json' },
-    // A clone of the repository with its full history, and its remote for it.
-    checkout: { type: 'string', default: '.' },
-    remote: { type: 'string', default: 'origin' },
-    'dry-run': { type: 'boolean', default: false },
-  },
-});
+function parseOptions() {
+  return parseArgs({
+    options: {
+      repo: { type: 'string', default: process.env.GITHUB_REPOSITORY },
+      'config-file': { type: 'string', default: 'release-please-config.json' },
+      'manifest-file': { type: 'string', default: '.release-please-manifest.json' },
+      // A clone of the repository with its full history, and its remote for it.
+      checkout: { type: 'string', default: '.' },
+      remote: { type: 'string', default: 'origin' },
+      // The action's inputs: the workflow creates releases and updates the
+      // release PR in separate jobs.
+      'skip-github-release': { type: 'boolean', default: false },
+      'skip-github-pull-request': { type: 'boolean', default: false },
+      'dry-run': { type: 'boolean', default: false },
+    },
+  }).values;
+}
 
 async function main() {
+  const args = parseOptions();
   const token = process.env.GITHUB_TOKEN;
   if (!token) throw new Error('GITHUB_TOKEN is not set');
   const [owner, repo] = (args.repo ?? '').split('/');
@@ -34,12 +41,17 @@ async function main() {
 
   const github = await GitHub.create({ owner, repo, token });
   const branch = github.repository.defaultBranch;
-  // release-please reads the branch as GitHub has it now, which can be ahead
-  // of the commit this job checked out. A merge newer than the history read
-  // keeps its branch commits listed until the next run.
-  const head = fetchBranchHead(args.checkout, args.remote, branch);
-  const history = readHistory(args.checkout, head);
-  console.log(`first-parent: history at ${head} (${args.remote}/${branch}), ${history.mergeOf.size} branch commits mapped to their merges`);
+  const buildsPullRequests = args['dry-run'] || !args['skip-github-pull-request'];
+  // Creating releases reads the merged release PR, not commits, so only
+  // building one needs the history.
+  let history = { mergeOf: new Map(), messageOf: new Map() };
+  if (buildsPullRequests) {
+    // release-please reads the branch as GitHub has it now, which can be
+    // ahead of the commit this job checked out.
+    const head = fetchBranchHead(args.checkout, args.remote, branch);
+    history = readHistory(args.checkout, head);
+    console.log(`first-parent: history at ${head} (${args.remote}/${branch}), ${history.mergeOf.size} branch commits mapped to their merges`);
+  }
   registerFirstParent(history);
   // Each phase reads the repository afresh, as the action does: creating the
   // releases changes what the release PR holds.
@@ -65,8 +77,8 @@ async function main() {
     }
     return;
   }
-  outputReleases(output, await (await manifest()).createReleases());
-  outputPullRequests(output, await (await manifest()).createPullRequests());
+  if (!args['skip-github-release']) outputReleases(output, await (await manifest()).createReleases());
+  if (!args['skip-github-pull-request']) outputPullRequests(output, await (await manifest()).createPullRequests());
 }
 
 function stepOutput() {

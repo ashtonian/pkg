@@ -53,22 +53,28 @@ function sectionsKey(sections) {
 
 // parsedHeaders parses each merge's whole message as release-please does: its
 // subject alone can parse where the message does not, and its entries carry
-// the header as the parser respaces it. A merge whose first line gives no
-// entry has no header.
+// the header as the parser respaces it, adding or removing whitespace.
 function parsedHeaders(messageOf) {
   // release-please logs the same parse failures itself.
   const quiet = { error() {}, warn() {}, info() {}, debug() {}, trace() {} };
   const headers = new Map();
   for (const [sha, message] of messageOf) {
-    const firstLine = collapse(message.split('\n')[0]);
     const entries = parseConventionalCommits([{ sha, message, files: [] }], quiet);
-    const header = entries.find(entry => collapse(entry.message) === firstLine);
+    const firstLine = unspaced(message.split('\n')[0]);
+    let header = entries.find(entry => unspaced(entry.message) === firstLine);
+    if (header === undefined) {
+      // GitHub's default merge message, "Merge pull request #9 from a/b"
+      // above the pull request's title: that title is the merge's one entry
+      // other than its trailers (Co-authored-by and the like).
+      const conventional = entries.filter(entry => /^[a-z]+$/.test(entry.type));
+      if (conventional.length === 1) header = conventional[0];
+    }
     if (header !== undefined) headers.set(sha, header.message);
   }
   return headers;
 }
 
-const collapse = text => text.replace(/\s+/g, ' ').trim();
+const unspaced = text => text.replace(/\s+/g, '');
 
 export function registerFirstParent(history) {
   registerPlugin(FIRST_PARENT, options =>

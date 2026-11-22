@@ -51,7 +51,7 @@ test('a pull request counts once, as its merge', () => {
 });
 
 test('a branch commit stays when release-please cannot parse its merge', () => {
-  // GitHub's default "Merge pull request #1 from …" parses as no commit at all.
+  // A message of only GitHub's default first line parses to no entry.
   const branch = commit('b1', 'feat(parse): accept POST lists');
 
   const kept = keep([branch], { m1: ['Merge pull request #1 from a/b', 'b1'] }, { unparsed: ['m1'] });
@@ -286,6 +286,30 @@ test('readHistory gives a commit to the oldest merge that landed it', t => {
   const { mergeOf } = readHistory(work, 'HEAD');
 
   assert.deepEqual(Object.fromEntries(mergeOf), { [shared]: m1, [own]: m2 });
+});
+
+test('a listed merge with no header keeps its branch commits, and warns once', () => {
+  const warnings = [];
+  const entry = commit('m1', 'feat(parse): one of two entries');
+  const branch = [commit('b1', 'feat(parse): add Stream'), commit('b2', 'fix(parse): close rows')];
+
+  const kept = keep([entry, ...branch], { m1: ['Merge pull request #9 from a/b', 'b1', 'b2'] }, {
+    unparsed: ['m1'],
+    options: { warn: m => warnings.push(m) },
+  });
+
+  assert.deepEqual(kept.map(c => c.sha), ['m1', 'b1', 'b2']);
+  assert.equal(warnings.length, 1);
+});
+
+test('readHistory refuses a shallow clone, which would map nothing', t => {
+  const { dir, work, gitAt, commitFile } = scratchRepo(t);
+  commitFile('a', 'chore: root');
+  commitFile('b', 'fix: second');
+  const shallow = path.join(dir, 'shallow');
+  gitAt(dir)('clone', '-q', '--depth', '1', `file://${work}`, shallow);
+
+  assert.throws(() => readHistory(shallow, 'HEAD'), /shallow clone/);
 });
 
 test('fetchBranchHead returns the branch as the remote has it now', t => {

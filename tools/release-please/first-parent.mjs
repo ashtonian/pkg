@@ -27,6 +27,10 @@ export function fetchBranchHead(repoDir, remote, branch) {
 // brought in mapped to that merge, and messageOf, those merges' messages.
 export function readHistory(repoDir, ref) {
   const git = gitIn(repoDir);
+  // A shallow clone maps nothing and would list every branch commit again.
+  if (git('rev-parse', '--is-shallow-repository').trim() === 'true') {
+    throw new Error(`${repoDir} is a shallow clone; first-parent needs the whole history (fetch-depth: 0)`);
+  }
   const parents = new Map();
   for (const line of git('rev-list', '--parents', ref).split('\n')) {
     if (!line) continue;
@@ -97,6 +101,10 @@ export function firstParentCommits(commits, history, { headerOf, rank = typeRank
     if (overridden.has(merge) || ownOverride(commit, merge)) continue;
     // Without a header, the branch commits are the only record of the change.
     if (!headerOf.has(merge)) {
+      if (listed.has(merge) && !unmatched.has(merge)) {
+        unmatched.add(merge);
+        warn(`${merge.slice(0, 7)} is listed, but no entry of it is its header; its branch commits stay listed`);
+      }
       kept.push(commit);
       continue;
     }

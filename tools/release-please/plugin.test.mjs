@@ -94,6 +94,26 @@ test("a merge whose whole message release-please can't parse keeps its branch co
   assert.deepEqual(kept.map(c => c.sha), ['b1']);
 });
 
+test('a merge subject the parser adds a space to still finds its entry', () => {
+  const subject = 'feat(parse):add Stream (#9)';
+  const history = { mergeOf: new Map([['b1', 'm1'], ['b2', 'm1']]), messageOf: new Map([['m1', subject]]) };
+  const commits = parsed([['m1', subject], ['b1', 'feat(parse): add Stream'], ['b2', 'fix(parse): tidy']]);
+
+  assert.deepEqual(plugin(history).processCommits(commits).map(c => c.sha), ['m1']);
+});
+
+// GitHub's default merge message puts the pull request's title under its
+// first line; release-please lists that title as the merge's entry.
+test("GitHub's default merge message counts as the pull request's title", () => {
+  const message = 'Merge pull request #9 from a/b\n\nfeat(parse): add Stream\n\nCo-authored-by: P <p@example.com>';
+  const history = { mergeOf: new Map([['b1', 'm1']]), messageOf: new Map([['m1', message]]) };
+  const commits = parsed([['m1', message], ['b1', 'fix(parse): add Stream']]);
+
+  const kept = plugin(history).processCommits(commits);
+
+  assert.ok(kept.every(c => c.sha === 'm1'), 'the branch commit is gone');
+});
+
 test("a merge whose subject release-please can't parse keeps its branch commits", () => {
   const history = { mergeOf: new Map([['b1', 'm1']]), messageOf: new Map([['m1', 'Merge pull request #1 from a/b']]) };
   const commits = parsed([['b1', 'feat(parse): accept POST lists']]);

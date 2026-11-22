@@ -26,6 +26,9 @@ env:
   CI_ARTIFACT_ENDPOINT: ${{ secrets.CI_ARTIFACT_ENDPOINT }}
 
 jobs:
+  # Each push's run creates the releases a merged release PR describes, as
+  # release-please-action did: publish attests the release from the run of
+  # the release commit itself, so this job is never queued behind another.
   release-please:
     if: github.actor_id == '4212452' && github.event_name == 'push'
     permissions:
@@ -35,38 +38,44 @@ jobs:
       parse_tag: ${{ steps.release.outputs['parse--tag_name'] }}
     runs-on: arc-pkg
     timeout-minutes: 15
-    # One run at a time, the latest push's last: each reads main as GitHub has
-    # it when it starts, so the last run leaves the release PR current.
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/release-please-tool
+      # A release PR opened with GITHUB_TOKEN does not trigger CI; set the
+      # RELEASE_PLEASE_TOKEN secret (a fine-grained token with contents and
+      # pull-request write) for checks to run on it.
+      - id: release
+        env:
+          GITHUB_TOKEN: ${{ secrets.RELEASE_PLEASE_TOKEN || github.token }}
+        run: node tools/release-please/run.mjs --skip-github-pull-request
+
+  # Opens or updates the release PR with first-parent notes (tools/release-please),
+  # one run at a time: each reads main as GitHub has it when it starts, and a
+  # newer push's pending run replaces an older one's, so the last push writes
+  # the release PR last.
+  release-pr:
+    needs: release-please
+    if: github.actor_id == '4212452' && github.event_name == 'push'
+    permissions:
+      contents: write
+      pull-requests: write
+    runs-on: arc-pkg
+    timeout-minutes: 15
     concurrency:
-      group: release-please
+      group: release-please-pr
       cancel-in-progress: false
     steps:
-      # The whole history: the first-parent plugin maps each branch commit to
-      # the merge that landed it (tools/release-please).
+      # The whole history: the plugin maps each branch commit to its merge.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
           persist-credentials: false
-      - uses: ashtonian/go-ci-actions/npm-registry@439da8bdc22311fff2f04371ca9cd9c3233ee7d0 # v1.6.2
-      - uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
-        with:
-          package_json_file: tools/release-please/package.json
-      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
-        with:
-          node-version: 'lts/*'
-          cache: pnpm
-          cache-dependency-path: tools/release-please/pnpm-lock.yaml
-      - name: Install release-please
-        working-directory: tools/release-please
-        run: pnpm install --frozen-lockfile
-      # release-please-action's run, with first-parent release notes and the
-      # action's outputs. A release PR opened with GITHUB_TOKEN does not
-      # trigger CI; set the RELEASE_PLEASE_TOKEN secret (a fine-grained token
-      # with contents and pull-request write) for checks to run on it.
-      - id: release
-        env:
+      - uses: ./.github/actions/release-please-tool
+      - env:
           GITHUB_TOKEN: ${{ secrets.RELEASE_PLEASE_TOKEN || github.token }}
-        run: node tools/release-please/run.mjs
+        run: node tools/release-please/run.mjs --skip-github-release
 
   publish:
     needs: release-please
