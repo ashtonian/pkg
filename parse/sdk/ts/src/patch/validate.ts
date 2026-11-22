@@ -61,11 +61,11 @@ function validateField(field: string, value: unknown, schema: PatchSchema): Sche
     return [new SchemaValidationError(field, "E2064",
       `Operation "${op}" is not allowed on "${field}". Allowed: ${pathSchema.allowed_ops.join(", ")}`)];
   }
-  return value === null ? [] : validatePatchValue(field, value, pathSchema);
+  return value === null ? [] : validatePatchValue(field, value, pathSchema, schema.max_relation_values ?? 0);
 }
 
-function validatePatchValue(field: string, value: unknown, path: PatchPathSchema): SchemaValidationError[] {
-  if (path.relation) return validateMembership(field, value, path);
+function validatePatchValue(field: string, value: unknown, path: PatchPathSchema, maxRelationValues: number): SchemaValidationError[] {
+  if (path.relation) return validateMembership(field, value, path, maxRelationValues);
   if (path.data_type === "array") {
     if (!Array.isArray(value)) {
       return [new SchemaValidationError(field, "E2077", `Field "${field}" expects an array`)];
@@ -93,10 +93,12 @@ function validatePatchValue(field: string, value: unknown, path: PatchPathSchema
 }
 
 // validateMembership checks a relation's value as the parser does: a list of
-// keys of the path's element type (E2077 otherwise), none null (E2118). A
-// path whose wire is "string" takes each key as a JSON string holding it,
-// as its target's quoted key reads in responses.
-function validateMembership(field: string, value: unknown, path: PatchPathSchema): SchemaValidationError[] {
+// keys of the path's element type (E2077 otherwise), none null (E2118), at
+// most maxRelationValues of them once repeats are removed (E2119; 0 is
+// unlimited). A path whose wire is "string" takes each key as a JSON string
+// holding it, as its target's quoted key reads in responses; repeats are
+// found on the key it holds.
+function validateMembership(field: string, value: unknown, path: PatchPathSchema, maxRelationValues: number): SchemaValidationError[] {
   if (!Array.isArray(value)) {
     return [new SchemaValidationError(field, "E2077", `Relation "${field}" expects an array of keys`)];
   }
@@ -104,13 +106,24 @@ function validateMembership(field: string, value: unknown, path: PatchPathSchema
     return [new SchemaValidationError(field, "E2118", `Relation "${field}" takes keys, which are never null`)];
   }
   const elementType = path.elem;
-  if (!elementType) return [];
-  const ok = path.wire === "string"
-    ? (el: unknown) => quotedValue(el, elementType, path.number_kind) !== undefined
-    : (el: unknown) => scalarOK(el, elementType, path.number_kind);
-  if (!value.every(ok)) {
-    const form = path.wire === "string" ? ` as JSON strings holding them (json:",string")` : "";
-    return [new SchemaValidationError(field, "E2077", `Relation "${field}" expects ${elementType} keys${form}`)];
+  if (elementType) {
+    const ok = path.wire === "string"
+      ? (el: unknown) => quotedValue(el, elementType, path.number_kind) !== undefined
+      : (el: unknown) => scalarOK(el, elementType, path.number_kind);
+    if (!value.every(ok)) {
+      const form = path.wire === "string" ? ` as JSON strings holding them (json:",string")` : "";
+      return [new SchemaValidationError(field, "E2077", `Relation "${field}" expects ${elementType} keys${form}`)];
+    }
+  }
+  if (maxRelationValues > 0) {
+    const key = path.wire === "string" && elementType
+      ? (el: unknown) => quotedValue(el, elementType, path.number_kind)
+      : (el: unknown) => el;
+    const distinct = new Set(value.map(key)).size;
+    if (distinct > maxRelationValues) {
+      return [new SchemaValidationError(field, "E2119",
+        `Relation "${field}" names ${String(distinct)} keys; at most ${String(maxRelationValues)} in one patch`)];
+    }
   }
   return [];
 }

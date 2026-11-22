@@ -8,6 +8,9 @@ export type PatchOp = "add" | "remove" | "replace" | "move" | "copy" | "test" | 
 export interface PatchSchema {
   paths: Record<string, PatchPathSchema>;
   max_operations: number;
+  /** The most keys one operation on a relation path names, repeats
+   *  counted once (E2119); 0 or absent is unlimited. */
+  max_relation_values?: number;
 }
 
 /** A single patchable path (mirrors Go parse.PatchPathResponse). */

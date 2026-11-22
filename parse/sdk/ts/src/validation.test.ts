@@ -179,3 +179,16 @@ describe("patch path patterns", () => {
     expectCode(() => { validatePatch({ any: "x" }, { max_operations: 10, paths: { "/a/*": replace } }); }, "E2076");
   });
 });
+
+describe("relation key limit", () => {
+  const members = { data_type: "array" as const, elem: "string" as const, relation: true, nullable: true, allowed_ops: ["replace" as const] };
+  const quoted = { ...members, elem: "int" as const, number_kind: "int64", wire: "string" as const };
+  it("refuses more distinct keys than max_relation_values, as the server does (E2119)", () => {
+    const schema = { max_operations: 10, max_relation_values: 2, paths: { "/members": members, "/ids": quoted } };
+    expect(() => { validatePatch({ members: ["a", "b", "a", "b"] }, schema); }).not.toThrow();
+    expectCode(() => { validatePatch({ members: ["a", "b", "c"] }, schema); }, "E2119");
+    expect(() => { validatePatch({ ids: ["5", "5", "9007199254740993"] }, schema); }).not.toThrow();
+    expectCode(() => { validatePatch({ ids: ["1", "2", "3"] }, schema); }, "E2119");
+    expect(() => { validatePatch({ members: ["a", "b", "c"] }, { ...schema, max_relation_values: 0 }); }).not.toThrow();
+  });
+});
