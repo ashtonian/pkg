@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"maps"
-	"net/http"
 	"net/url"
 	"slices"
 	"strconv"
@@ -95,11 +94,6 @@ func NewQueryParamParser(schema *ResourceSchema, opts ...QueryParamOption) *Quer
 		schema: schema, lenient: cfg.lenient, fieldsOnly: cfg.fieldsOnly,
 		accepted: accepted, parser: NewFilterParser(schema, cfg.parser),
 	}
-}
-
-// ParseHTTP extracts query params from an *http.Request and parses them.
-func (p *QueryParamParser) ParseHTTP(r *http.Request) (*FilterAST, error) {
-	return p.Parse(r.URL.Query())
 }
 
 // Parse converts url.Values to a FilterAST.

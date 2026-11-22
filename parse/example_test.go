@@ -146,7 +146,7 @@ func ExampleSchemaRegistry() {
 func ExampleNewResource_facetedListPage() {
 	type Product struct {
 		ID        string  `json:"id"         parse:"filter"              filter_ops:"eq,in" indexed:"true"`
-		Name      string  `json:"name"       parse:"filter,patch,search" filter_ops:"eq,ilike" patch_ops:"replace" search_weight:"A" label:"Product Name" group:"basics" order:"1"`
+		Name      string  `json:"name"       parse:"filter,patch,search" filter_ops:"eq,ilike" patch_ops:"replace" label:"Product Name" group:"basics" order:"1"`
 		Category  string  `json:"category"   parse:"filter,facet"        filter_ops:"eq,in" facet:"terms:10" label:"Category" group:"browse" order:"1" enum:"electronics,clothing,books,home"`
 		Price     float64 `json:"price"      parse:"filter,facet"        filter_ops:"gte,lte" facet:"range:0-50,50-100,100+" label:"Price" group:"browse" order:"2"`
 		Condition string  `json:"condition"  parse:"filter,facet"        filter_ops:"eq,in" facet:"terms" label:"Condition" group:"details" order:"1" enum:"new,like_new,used"`

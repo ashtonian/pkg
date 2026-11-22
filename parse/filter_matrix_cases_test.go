@@ -30,28 +30,28 @@ type matrixDB struct {
 
 var matrixColumns = []string{"id", "name", "count", "score", "amount", "active", "at", "ref", "doc", "tags", "loc"}
 
-func runFilterMatrix(t *testing.T, name string, mdb matrixDB) {
+func runFilterMatrix(t *testing.T, mdb matrixDB) {
 	t.Helper()
 	loadRecords(t, mdb)
 	schema, err := filtertest.Schema()
 	if err != nil {
 		t.Fatalf("schema: %v", err)
 	}
-	filtertest.Run(t, name, func(t *testing.T, f *filter.ParsedFilter) ([]string, error) {
+	filtertest.Run(t, func(t *testing.T, f *filter.ParsedFilter) ([]string, error) {
 		return queryRecordIDs(t, mdb, schema, f)
 	})
 }
 
 // runSetMatrix runs the set cases: every scalar column's `$in` and `$nin`
 // at each of filtertest.SetSizes.
-func runSetMatrix(t *testing.T, name string, mdb matrixDB) {
+func runSetMatrix(t *testing.T, mdb matrixDB) {
 	t.Helper()
 	loadRecords(t, mdb)
 	schema, err := filtertest.Schema()
 	if err != nil {
 		t.Fatalf("schema: %v", err)
 	}
-	filtertest.RunSets(t, name, func(t *testing.T, f *filter.ParsedFilter) ([]string, error) {
+	filtertest.RunSets(t, func(t *testing.T, f *filter.ParsedFilter) ([]string, error) {
 		return queryRecordIDs(t, mdb, schema, f)
 	})
 }

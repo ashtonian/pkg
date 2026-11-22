@@ -85,15 +85,6 @@ type Case struct {
 	Want   []string
 	// ParseErr is the E-code the parser rejects Filter with; Want is unused.
 	ParseErr string
-	// Unsupported names the backends that cannot evaluate the filter
-	// ("sqlite", "memory"). Each must refuse it with a *core.ParseError
-	// carrying UnsupportedErr; any other error, or any result, fails the
-	// case.
-	Unsupported []string
-	// UnsupportedErr is the E-code an Unsupported backend refuses Filter
-	// with: E2115 for a geo operator. It is set exactly when Unsupported
-	// is.
-	UnsupportedErr string
 }
 
 // Backend evaluates a parsed filter over Records and returns the matching
@@ -117,14 +108,13 @@ func Schema() (*filter.ResourceSchema, error) {
 	return filter.GenerateFilterSchema[Record](core.NewSchemaGenerator())
 }
 
-// Run evaluates every case on backend, named as Case.Unsupported names it.
-func Run(t *testing.T, name string, backend Backend) {
-	run(t, name, Parser(t), Cases(), backend)
+// Run evaluates every case on backend.
+func Run(t *testing.T, backend Backend) {
+	run(t, Parser(t), Cases(), backend)
 }
 
-// run evaluates cases, parsed by parser, on backend, named as
-// Case.Unsupported names it.
-func run(t *testing.T, name string, parser *filter.FilterParser, cases []Case, backend Backend) {
+// run evaluates cases, parsed by parser, on backend.
+func run(t *testing.T, parser *filter.FilterParser, cases []Case, backend Backend) {
 	for _, c := range cases {
 		t.Run(c.Name, func(t *testing.T) {
 			ast, err := parser.Parse(c.Filter)
@@ -139,34 +129,14 @@ func run(t *testing.T, name string, parser *filter.FilterParser, cases []Case, b
 				t.Fatalf("parse %s: %v", c.Filter, err)
 			}
 			got, err := backend(t, filter.NewParsedFilter(ast))
-			if err := check(c, slices.Contains(c.Unsupported, name), got, err); err != nil {
+			if err != nil {
+				t.Fatalf("%s: %v", c.Filter, err)
+			}
+			if err := sameIDs(got, c.Want); err != nil {
 				t.Fatalf("%s: %v", c.Filter, err)
 			}
 		})
 	}
-}
-
-// check returns how a backend's answer to c departs from the case, or nil
-// when it conforms. A backend c names Unsupported must refuse it with
-// c.UnsupportedErr; any other must return c.Want.
-func check(c Case, unsupported bool, got []string, err error) error {
-	if (len(c.Unsupported) > 0) != (c.UnsupportedErr != "") {
-		return errors.New("case sets one of Unsupported and UnsupportedErr without the other")
-	}
-	if unsupported {
-		var pe *core.ParseError
-		switch {
-		case err == nil:
-			return fmt.Errorf("want the unsupported-operation error %s, got ids %v", c.UnsupportedErr, got)
-		case !errors.As(err, &pe) || pe.Code != c.UnsupportedErr:
-			return fmt.Errorf("want the unsupported-operation error %s, got %v", c.UnsupportedErr, err)
-		}
-		return nil
-	}
-	if err != nil {
-		return err
-	}
-	return sameIDs(got, c.Want)
 }
 
 // sameIDs fails unless got holds want's ids, in any order.

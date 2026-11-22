@@ -45,9 +45,7 @@ type PolicyConstraints struct {
 	Or          []*PolicyConstraints
 	And         []*PolicyConstraints
 	// Not negates the group: a row is admitted when it does not satisfy it.
-	Not      bool
-	Source   string
-	PolicyID string
+	Not bool
 }
 
 // IsEmpty reports whether pc constrains nothing: no constraints, no groups

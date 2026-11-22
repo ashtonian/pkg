@@ -50,11 +50,7 @@ func TestDecimal_Schema(t *testing.T) {
 		assert.Equal(t, core.FieldTypeDecimal, ss.Fields[name].DataType, name)
 	}
 	assert.True(t, ss.Fields["cost"].Nullable)
-	for _, m := range filter.FilterMetaFromSchema(fs).Fields {
-		if m.Name == "price" {
-			assert.Equal(t, "decimal", m.Type)
-		}
-	}
+	assert.Equal(t, core.FieldTypeDecimal, fs.Fields["price"].DataType)
 }
 
 func TestDecimal_Literals(t *testing.T) {

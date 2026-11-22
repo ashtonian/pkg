@@ -67,5 +67,5 @@ func RunQuoted(t *testing.T, backend Backend) {
 	if err != nil {
 		t.Fatalf("filtertest: quoted schema: %v", err)
 	}
-	run(t, "", filter.NewFilterParser(schema, core.DefaultConfig()), QuotedCases(), backend)
+	run(t, filter.NewFilterParser(schema, core.DefaultConfig()), QuotedCases(), backend)
 }

@@ -379,36 +379,6 @@ func DefaultFilterOps() map[core.FieldType][]FilterOperator {
 	return out
 }
 
-// FilterMeta describes available filter fields for an entity.
-type FilterMeta struct {
-	Fields []FilterFieldMeta `json:"fields"`
-}
-
-// FilterFieldMeta describes a single filterable field.
-type FilterFieldMeta struct {
-	Name      string   `json:"name"`
-	Type      string   `json:"type"`
-	Operators []string `json:"operators,omitempty"`
-}
-
-// FilterMetaFromSchema derives FilterMeta from a ResourceSchema.
-func FilterMetaFromSchema(schema *ResourceSchema) *FilterMeta {
-	if schema == nil {
-		return &FilterMeta{}
-	}
-	meta := &FilterMeta{Fields: make([]FilterFieldMeta, 0, len(schema.Fields))}
-	for _, fs := range schema.Fields {
-		ops := make([]string, len(fs.AllowedOperators))
-		for i, op := range fs.AllowedOperators {
-			ops[i] = string(op)
-		}
-		meta.Fields = append(meta.Fields, FilterFieldMeta{
-			Name: fs.ExternalName, Type: string(fs.DataType), Operators: ops,
-		})
-	}
-	return meta
-}
-
 // unkeyedFacetTypes are the value types whose PostgreSQL text differs from
 // their canonical text: interval follows the session's IntervalStyle, inet
 // writes a host's /32, and both network types write an IPv4-compatible IPv6
@@ -440,15 +410,6 @@ var (
 	valuerType        = reflect.TypeFor[driver.Valuer]()
 	textMarshalerType = reflect.TypeFor[encoding.TextMarshaler]()
 )
-
-// ToAnySlice converts a []string to []any.
-func ToAnySlice(ss []string) []any {
-	result := make([]any, len(ss))
-	for i, s := range ss {
-		result[i] = s
-	}
-	return result
-}
 
 // addDocSortPaths adds the path sort keys a document field declares.
 func addDocSortPaths(g *core.SchemaGenerator, fields map[string]*SortFieldSchema, tableName string, field *core.Field, dt core.FieldType) error {

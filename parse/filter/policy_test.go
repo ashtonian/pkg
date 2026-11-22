@@ -75,7 +75,7 @@ func TestPolicyConstraints_ListsAreUnbounded(t *testing.T) {
 	for i := range ids {
 		ids[i] = uuid.NewSHA1(uuid.NameSpaceOID, fmt.Appendf(nil, "item-%d", i)).String()
 	}
-	res, err := buildPolicy(t, policyListQuery(t, PostgresDialect{}), &PolicyConstraint{Field: "id", Operator: OpIn, Value: ToAnySlice(ids)})
+	res, err := buildPolicy(t, policyListQuery(t, PostgresDialect{}), &PolicyConstraint{Field: "id", Operator: OpIn, Value: ids})
 	require.NoError(t, err)
 	assert.Equal(t, []any{ids}, res.Args, "one parameter holds the whole set")
 }

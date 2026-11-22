@@ -32,7 +32,7 @@ type RepositoryScope struct {
 // masking; then authorization. The parts are ANDed under a new root, so
 // neither input is modified and a cached governance tree is never extended.
 func ComposeConstraints(scope RepositoryScope, governance, authz *PolicyConstraints) *PolicyConstraints {
-	root := &PolicyConstraints{Source: "repository"}
+	root := &PolicyConstraints{}
 	if governance != nil && !governance.IsEmpty() {
 		root.And = append(root.And, governance)
 		if scope.DeleteColumn != "" && !scope.IncludeDeleted {
@@ -58,7 +58,7 @@ func ComposeConstraints(scope RepositoryScope, governance, authz *PolicyConstrai
 // reject the missing tenant up front with a typed error; the floor here is
 // defense in depth for any caller that bypasses that gate.
 func BuildBaseConstraints(tenantCol string, tenantID any, deleteCol string, includeSoftDeleted bool) *PolicyConstraints {
-	pc := &PolicyConstraints{Source: "repository_base"}
+	pc := &PolicyConstraints{}
 	switch {
 	case tenantCol == "":
 	case tenantID == nil || tenantID == "":

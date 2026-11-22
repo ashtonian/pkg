@@ -16,13 +16,13 @@ import (
 // storage model's native types: jsonb documents, TEXT[] arrays, timestamptz,
 // uuid, numeric.
 func TestFilterMatrix_PostgreSQL(t *testing.T) {
-	runFilterMatrix(t, "postgres", postgresMatrix(dbtest.PostGIS(t)))
+	runFilterMatrix(t, postgresMatrix(dbtest.PostGIS(t)))
 }
 
 // `$in` / `$nin` sets of every size on PostgreSQL 18, each bound as one
 // array parameter.
 func TestSetMatrix_PostgreSQL(t *testing.T) {
-	runSetMatrix(t, "postgres", postgresMatrix(dbtest.Postgres(t)))
+	runSetMatrix(t, postgresMatrix(dbtest.Postgres(t)))
 }
 
 // Membership constraints on PostgreSQL 18, as subqueries and resolved, over

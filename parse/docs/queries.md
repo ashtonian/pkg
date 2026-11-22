@@ -54,7 +54,7 @@ The operator contract is shared where supported. Backend differences and relatio
 
 Values normalize at parse (the AST carries canonical values): exact `int64` / `uint64`, finite `float64`, canonical decimal text, canonical UUID strings, RFC 3339 UTC timestamps with relative tokens (`now-7d`, `now+1h`) resolved, canonical JSON documents bounded by `MaxDepth` / `MaxArraySize`. A field tagged `json:",string"` — a filter field, the primary key, or a relation's target key under its shorthands — takes its comparison and set operands as JSON strings holding the value (`{"id":"9007199254740993"}`), as it reads in responses; a bare JSON number is E2073 ([quoted values](schema-configuration.md#quoted-values)).
 
-`filtertest` holds the conformance fixture — an entity with a field of every type, its rows and the expected rows per filter; a backend passes with `filtertest.Run(t, name, backend)`. A case names the backends that cannot evaluate it (`Case.Unsupported`, matched against `name`); each must refuse it with a `*core.ParseError` carrying the case's `UnsupportedErr` (E2115 for a geo operator), and any other error or any result fails the case.
+`filtertest` holds the conformance fixture — an entity with a field of every type, its rows and the expected rows per filter; a backend passes with `filtertest.Run(t, backend)`: every case must return exactly its rows, and any error fails it.
 
 ### Sets
 
@@ -267,7 +267,7 @@ var accounts = parse.MustResource[Account]("accounts",
 
 ## Search and facets
 
-`filter.ListSearch` adds a predicate without changing sort order. PostgreSQL uses `to_tsvector` / `plainto_tsquery`; SQLite uses a LIKE phrase match. These have different tokenization and matching behavior. Tag string fields with `parse:"search"`; `search_weight:"A"` through `"D"` controls PostgreSQL weights. A custom expression must produce text for the chosen dialect.
+`filter.ListSearch` adds a predicate without changing sort order. PostgreSQL uses `to_tsvector` / `plainto_tsquery`; SQLite uses a LIKE phrase match. These have different tokenization and matching behavior. Tag string fields with `parse:"search"`; search never orders the page, and the PostgreSQL text search configuration is `english` unless `core.WithSearchLanguage` names another. A custom expression must produce text for the chosen dialect.
 
 `filter.ListFacets` builds aggregations for fields tagged `parse:"facet"`. Use `facet:"terms:20"` for the top terms or `facet:"range:0-50,50-100,100+"` for ranges. `ListWithCount` and facets share the filter, policy, and search population, excluding the page cursor. Execute the returned statements separately and scan the facet union with `filter.ScanFacetUnion`. The base page does not automatically execute counts, facets, or includes.
 
@@ -348,7 +348,7 @@ The examples compile against this resource ([source and executable outputs](../e
 ```go
 type Product struct {
 	ID          uuid.UUID      `json:"id"          db:"id"          parse:"filter,sort"`
-	Name        string         `json:"name"        db:"name"        parse:"filter,sort,patch,search" search_weight:"A"`
+	Name        string         `json:"name"        db:"name"        parse:"filter,sort,patch,search"`
 	Category    string         `json:"category"    db:"category"    parse:"filter,facet,patch" facet:"terms:10" enum:"tools,books,garden" indexed:"true"`
 	Price       float64        `json:"price"       db:"price"       parse:"filter,sort,facet,patch" facet:"range:0-50,50-100,100+"`
 	Stock       *int64         `json:"stock"       db:"stock"       parse:"filter,patch" filter_ops:"eq,gt,lt,null"`

@@ -316,7 +316,7 @@ func TestListQuery_WithCount(t *testing.T) {
 func testSearchSchema() *filter.SearchSchema {
 	return &filter.SearchSchema{
 		Fields: []filter.SearchField{
-			{Name: "name", SQLExpr: "items.name", Weight: filter.SearchWeightA},
+			{Name: "name", SQLExpr: "items.name"},
 		},
 		Language: "english",
 	}
@@ -532,8 +532,8 @@ func TestGenerateSortSchema(t *testing.T) {
 
 func TestGenerateSearchSchema(t *testing.T) {
 	type Device struct {
-		Name        string `json:"name" parse:"filter,search" search_weight:"A"`
-		Description string `json:"description" parse:"search" search_weight:"B"`
+		Name        string `json:"name" parse:"filter,search"`
+		Description string `json:"description" parse:"search"`
 	}
 	gen := core.NewSchemaGenerator()
 	ss, err := filter.GenerateSearchSchema[Device](gen)
@@ -546,6 +546,22 @@ func TestGenerateSearchSchema(t *testing.T) {
 	if len(ss.Fields) != 2 {
 		t.Errorf("expected 2 search fields, got %d", len(ss.Fields))
 	}
+}
+
+// The text search configuration is a generator option, checked when the
+// schema is generated.
+func TestGenerateSearchSchema_Language(t *testing.T) {
+	type Device struct {
+		Name string `json:"name" parse:"search"`
+	}
+	ss, err := filter.GenerateSearchSchema[Device](core.NewSchemaGenerator())
+	require.NoError(t, err)
+	assert.Equal(t, "english", ss.Language)
+	ss, err = filter.GenerateSearchSchema[Device](core.NewSchemaGenerator(core.WithSearchLanguage("pg_catalog.simple")))
+	require.NoError(t, err)
+	assert.Equal(t, "pg_catalog.simple", ss.Language)
+	_, err = filter.GenerateSearchSchema[Device](core.NewSchemaGenerator(core.WithSearchLanguage("english') OR (1=1")))
+	assert.ErrorContains(t, err, "is not a text search configuration name")
 }
 
 // Only text is searchable: a JSON document tagged search would compile to

@@ -229,15 +229,6 @@ type ParsedFilter struct {
 	ConditionCount int
 }
 
-// AuditInfo returns a map of audit-relevant information for the parsed filter.
-func (f *ParsedFilter) AuditInfo() map[string]any {
-	return map[string]any{
-		"has_filter":      f.AST != nil && f.AST.Root != nil,
-		"estimated_cost":  f.EstimatedCost,
-		"condition_count": f.ConditionCount,
-	}
-}
-
 // --- Sort Schema ---
 
 // SortDirection represents ascending or descending sort order.

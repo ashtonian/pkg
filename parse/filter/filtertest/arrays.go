@@ -218,5 +218,5 @@ func ArraySchema() (*filter.ResourceSchema, error) {
 func RunArrays(t *testing.T, schema *filter.ResourceSchema, backend Backend) {
 	cfg := SetConfig()
 	cfg.MaxCost = 100 // an element predicate on a line's tags nests two
-	run(t, "", filter.NewFilterParser(schema, cfg), ArrayCases(), backend)
+	run(t, filter.NewFilterParser(schema, cfg), ArrayCases(), backend)
 }

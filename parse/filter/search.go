@@ -11,16 +11,6 @@ import (
 	idialect "github.com/ashtonian/pkg/parse/internal/dialect"
 )
 
-// SearchWeight controls the relative importance of a field in full-text search.
-type SearchWeight string
-
-const (
-	SearchWeightA SearchWeight = "A"
-	SearchWeightB SearchWeight = "B"
-	SearchWeightC SearchWeight = "C"
-	SearchWeightD SearchWeight = "D"
-)
-
 // SearchField describes a single field included in full-text search.
 type SearchField struct {
 	Name    string
@@ -28,7 +18,6 @@ type SearchField struct {
 	// Column is the row column the field searches, set by schema generation
 	// as FieldSchema.Column is; RowColumn falls back to SQLExpr without it.
 	Column string
-	Weight SearchWeight
 }
 
 // RowColumn returns the row column the field searches: Column, or the last
@@ -106,12 +95,7 @@ func generateSearchSchema(g *core.SchemaGenerator, t reflect.Type) (*SearchSchem
 			return nil, fmt.Errorf("field %s: %w", field.GoName, err)
 		}
 
-		weight := SearchWeightB
-		if w := field.Tags.SearchWeight; w != "" {
-			weight = SearchWeight(w)
-		}
-
-		sf := SearchField{Name: fieldName, SQLExpr: sqlExpr, Weight: weight}
+		sf := SearchField{Name: fieldName, SQLExpr: sqlExpr}
 		// As for a filter field, a mapped column that is no identifier
 		// names no row column; parse.NewResource refuses it.
 		if column, ok, err := g.FieldColumn(field); err == nil && ok {
@@ -128,7 +112,11 @@ func generateSearchSchema(g *core.SchemaGenerator, t reflect.Type) (*SearchSchem
 	if param == "" {
 		param = ParamSearch
 	}
-	return &SearchSchema{Fields: fields, Language: defaultSearchLanguage, Param: param}, nil
+	lang := cmp.Or(g.Opts.SearchLanguage, defaultSearchLanguage)
+	if !identifierRe.MatchString(lang) {
+		return nil, fmt.Errorf("search language %q is not a text search configuration name", lang)
+	}
+	return &SearchSchema{Fields: fields, Language: lang, Param: param}, nil
 }
 
 // searchCondition is the generated SQL for full-text search: a WHERE-only

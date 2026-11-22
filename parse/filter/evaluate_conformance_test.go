@@ -22,13 +22,13 @@ import (
 // held as JSON text, Go structs or decoded JSON.
 
 func TestEvaluateConformance(t *testing.T) {
-	filtertest.Run(t, "memory", evaluateOver(filtertest.Records(), func(r filtertest.Record) (string, filter.Row) {
+	filtertest.Run(t, evaluateOver(filtertest.Records(), func(r filtertest.Record) (string, filter.Row) {
 		return r.ID, structRow(r)
 	}))
 }
 
 func TestEvaluateSetConformance(t *testing.T) {
-	filtertest.RunSets(t, "memory", evaluateOver(filtertest.Records(), func(r filtertest.Record) (string, filter.Row) {
+	filtertest.RunSets(t, evaluateOver(filtertest.Records(), func(r filtertest.Record) (string, filter.Row) {
 		return r.ID, structRow(r)
 	}))
 	schema, err := filtertest.PathSchema()

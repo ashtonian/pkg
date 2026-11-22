@@ -23,7 +23,6 @@
 //	group:"section"         — UI sidebar section grouping
 //	order:"1"               — UI display order within group
 //	facet:"terms"           — facet type: "terms", "terms:20", "range:0-50,50-100,100+"
-//	search_weight:"A"       — full-text search weight: A (highest) through D (lowest)
 //	parse:"filter,include"  — relation field projectable with the include parameter
 //	geo:"jsonb"             — geo field (jsonb | geography | geometry); geo_srid, geo_lat, geo_lon refine it
 //

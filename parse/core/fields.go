@@ -121,7 +121,6 @@ type Tags struct {
 	Label, Description     string
 	Group, Order           string
 	SortDefault            string
-	SearchWeight           string
 }
 
 // Capability is a value of a field's `parse` tag. A document's `paths`
@@ -415,7 +414,6 @@ func readTags(sf reflect.StructField, k fieldsKey) (Tags, error) {
 		Group:            tag.Get("group"),
 		Order:            tag.Get("order"),
 		SortDefault:      tag.Get("sort_default"),
-		SearchWeight:     tag.Get("search_weight"),
 	}
 	if enum := tag.Get(ConstraintEnum); enum != "" {
 		for v := range strings.SplitSeq(enum, ",") {

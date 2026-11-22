@@ -26,7 +26,7 @@ import (
 // but must never take patch.
 type Product struct {
 	ID          uuid.UUID      `json:"id"          db:"id"          parse:"filter,sort"`
-	Name        string         `json:"name"        db:"name"        parse:"filter,sort,patch,search" search_weight:"A"`
+	Name        string         `json:"name"        db:"name"        parse:"filter,sort,patch,search"`
 	Category    string         `json:"category"    db:"category"    parse:"filter,facet,patch" facet:"terms:10" enum:"tools,books,garden" indexed:"true"`
 	Price       float64        `json:"price"       db:"price"       parse:"filter,sort,facet,patch" facet:"range:0-50,50-100,100+"`
 	Stock       *int64         `json:"stock"       db:"stock"       parse:"filter,patch" filter_ops:"eq,gt,lt,null"`
