@@ -117,7 +117,7 @@ A new corpus case fails the test until it is classified. The same file holds the
 ## Dependencies
 
 - *Imports*: standard library only
-- *Imported by*: parse's conformance tests; generated Go SDKs once they move off `forge/sdkgo` (A4.18)
+- *Imported by*: parse's conformance tests (`client_conformance_test.go`) and Go clients of a parse server
 - *Package boundary*: standard-library-only request builders; no Parse server package imports
 
 ## References

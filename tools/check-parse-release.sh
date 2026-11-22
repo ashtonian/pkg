@@ -25,7 +25,11 @@ go get "$module@$version"
 go vet -tags=unit "$module/..."
 go test -tags=unit -race -count=1 "$module/..."
 go test -tags=integration -race -count=1 -timeout=15m "$module/..."
-go list -deps "$module/..." | awk '/github.com\/ashtonian\/karsto/ {bad=1} END {exit bad}'
+# Dependencies resolve through the public proxy alone, so a private module
+# cannot download; within the owner's namespace only this repository's
+# modules are public, and parse may depend on no other.
+go list -deps -f '{{with .Module}}{{.Path}}{{end}}' "$module/..." | sort -u |
+    awk '/^github\.com\/ashtonian\// && !/^github\.com\/ashtonian\/pkg(\/|$)/ {print "dependency outside this repository: " $0 > "/dev/stderr"; bad=1} END {exit bad}'
 go list -m -f '{{if .Replace}}unexpected replacement{{end}}' all | awk 'NF {exit 1}'
 # Generated Go SDKs must import the request builder without server dependencies.
 go list -deps -f '{{if not .Standard}}{{.ImportPath}}{{end}}' "$module/client" |
