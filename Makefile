@@ -16,7 +16,7 @@ RACE := -race -gcflags='modernc.org/...=-race=false -d=checkptr=0'
 # Every published module's release check; CI passes only the changed ones.
 RELEASE_CHECKS := gitx-release-check config-release-check kongprovider-release-check native-release-check jsonvalue-release-check gowalker-release-check httpx-release-check parse-release-check
 
-.PHONY: test test-native-unit test-native-integration native-release-check test-gitx test-jsonvalue jsonvalue-release-check test-gowalker gowalker-release-check test-config test-httpx-unit test-httpx-integration test-parse-unit test-parse-integration parse-postgres-up parse-postgres-down test-parse-sdk parse-sdk-release-check parse-sdk-registry-check parse-release-check lint release-check gitx-release-check config-release-check kongprovider-release-check httpx-release-check cookbook-check tool-check ci
+.PHONY: test test-native-unit test-native-integration native-release-check test-gitx test-jsonvalue jsonvalue-release-check test-gowalker gowalker-release-check test-config test-httpx-unit test-httpx-integration test-parse-unit test-parse-integration parse-postgres-up parse-postgres-down test-parse-sdk parse-sdk-release-check parse-sdk-registry-check parse-release-check lint release-check gitx-release-check config-release-check kongprovider-release-check httpx-release-check cookbook-check tool-check release-please-check ci
 
 ## test: every published module from the working tree (go.work), race detector on.
 ## -count=1 only where a test depends on state the test cache cannot see:
@@ -153,5 +153,9 @@ parse-sdk-registry-check:
 tool-check:
 	cd tools/modarchive && GOWORK=off go mod tidy -diff && GOWORK=off go vet ./... && GOWORK=off go test $(RACE) -count=1 ./... && GOWORK=off go run $(STATICCHECK) ./...
 
+## release-please-check: the release workflow's runner: first-parent notes and their release-please wiring
+release-please-check:
+	cd tools/release-please && pnpm install --frozen-lockfile && node --test
+
 ## ci: everything CI runs
-ci: lint test release-check parse-sdk-release-check parse-sdk-registry-check cookbook-check tool-check
+ci: lint test release-check parse-sdk-release-check parse-sdk-registry-check cookbook-check tool-check release-please-check

@@ -287,6 +287,9 @@ jobs:
         with:
           go-version: stable
           cache-dependency-path: "**/go.sum"
+      # The release-please runner's check needs Node.js and pnpm.
+      - if: contains(needs.scope.outputs.checks, 'release-please-check')
+        uses: ./.github/actions/release-please-tool
       - name: Release, cookbook and release-tool checks for the changed modules
         env:
           CHECKS: ${{ needs.scope.outputs.checks }}

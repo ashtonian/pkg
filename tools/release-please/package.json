@@ -1,0 +1,16 @@
+{
+  "name": "pkg-release-please",
+  "private": true,
+  "description": "release-please with first-parent release notes, as the release-please workflow runs it",
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "packageManager": "pnpm@12.21.0",
+  "scripts": {
+    "test": "node --test"
+  },
+  "dependencies": {
+    "release-please": "17.11.2"
+  }
+}
