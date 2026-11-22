@@ -319,7 +319,7 @@ jobs:
           cache-dependency-path: "**/go.sum"
       # Vet type-checks every package and test, so on the declared floor it is
       # also the floor's build check.
-      - name: go vet and staticcheck on the declared Go floor
+      - name: go vet on the declared Go floor, staticcheck on Go 1.27.4
         env:
           GOTOOLCHAIN: local
         run: |
