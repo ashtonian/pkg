@@ -61,6 +61,8 @@ Both handlers encode the whole response before writing any of it, and send it wi
 
 ## Error handling
 
+`parsehttp.WriteError(w, err)` answers a parse error anywhere in `err`'s chain with its code's status and `{code, message, details}`, and reports whether it did; any other error is the caller's. It encodes the body before writing anything and sends it with its `Content-Length`. `Details` that JSON cannot hold, such as a `NaN` from `strconv.ParseFloat`, are left out: the client still gets the status, code and message, and `parsehttp.WithErrorHandler(fn)` receives an error matching `parsehttp.ErrUnencodableDetails` that wraps the encoding error. The hook also receives a `Write` that fails once the status is sent, on the same best-effort terms as the [schema routes](#schema-routes). Without it, both are dropped.
+
 Use `errors.As` to extract `*core.ParseError` through wrapping. Its `ErrorHTTPStatus()` provides the status; expose `Code`, `Message`, and appropriate `Details` in the error envelope. Treat unrelated database/internal errors through your normal server error handling rather than labeling every failure a bad request. Do not leak underlying SQL or credentials through error details.
 
 Patch validation can return joined parse errors. `errors.As` returns the first; applications needing all failures traverse the joined errors. Declared enum/bounds failures expose `core.ConstraintError{Constraint, Limit}` through each E2077's cause; [patch validation](patches.md#validation) defines the vocabulary and ordering. The application still owns its HTTP envelope and any translation of these typed causes into client details.
