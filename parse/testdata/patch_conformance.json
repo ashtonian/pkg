@@ -81,6 +81,17 @@
           "data_type": "bool",
           "wire": "string"
         },
+        "/members": {
+          "allowed_ops": [
+            "replace",
+            "add",
+            "remove"
+          ],
+          "data_type": "array",
+          "nullable": true,
+          "elem": "string",
+          "relation": true
+        },
         "/mode": {
           "allowed_ops": [
             "replace",
@@ -867,6 +878,59 @@
       },
       "valid": false,
       "errorCode": "E2077"
+    },
+    {
+      "name": "relation_list",
+      "input": {
+        "members": [
+          "a",
+          "b"
+        ]
+      },
+      "valid": true
+    },
+    {
+      "name": "err_relation_not_a_list",
+      "input": {
+        "members": "a"
+      },
+      "valid": false,
+      "errorCode": "E2077"
+    },
+    {
+      "name": "relation_null_clears",
+      "input": {
+        "members": null
+      },
+      "valid": true
+    },
+    {
+      "name": "relation_empty_clears",
+      "input": {
+        "members": []
+      },
+      "valid": true
+    },
+    {
+      "name": "err_relation_element_type",
+      "input": {
+        "members": [
+          1
+        ]
+      },
+      "valid": false,
+      "errorCode": "E2077"
+    },
+    {
+      "name": "err_relation_null_element",
+      "input": {
+        "members": [
+          "a",
+          null
+        ]
+      },
+      "valid": false,
+      "errorCode": "E2118"
     }
   ]
 }

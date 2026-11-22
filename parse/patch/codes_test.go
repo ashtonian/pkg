@@ -76,7 +76,7 @@ func TestEveryCodeIsProvoked(t *testing.T) {
 			return policy(`[{"op":"replace","path":"/name","value":"x"}]`, patch.ConstrainValues("/name", patch.ValueConstraint{AllowedValues: []any{"y"}}))
 		},
 		patch.ECodeRelationVerbNotAllowed: func() error { return compile(`[{"op":"test","path":"/tags","value":["a"]}]`) },
-		patch.ECodeRelationValueInvalid:   func() error { return compile(`[{"op":"add","path":"/tags","value":[]}]`) },
+		patch.ECodeRelationValueInvalid:   func() error { return jsonPatch(`[{"op":"add","path":"/tags","value":[]}]`, nil) },
 		patch.ECodeRelationPatchTooLarge:  func() error { return jsonPatch(`[{"op":"add","path":"/tags","value":["a","b","c"]}]`, nil) },
 		patch.ECodeTestOpSQL:              func() error { return compile(`[{"op":"test","path":"/name","value":"x"}]`) },
 		patch.ECodeSQLColumnMissing:       func() error { return compile(`[{"op":"replace","path":"/loose","value":"x"}]`) },

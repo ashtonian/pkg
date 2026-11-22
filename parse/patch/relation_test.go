@@ -4,6 +4,7 @@ package patch_test
 
 import (
 	"maps"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -133,22 +134,79 @@ func TestBuildPatchSQL_Relation_RejectsMoveCopyTest(t *testing.T) {
 	}
 }
 
-func TestBuildPatchSQL_Relation_AddRequiresValues(t *testing.T) {
-	g := core.NewSchemaGenerator()
-	schema, err := patch.GeneratePatchSchema[widgetPatch](g)
+// A relation operation is decided when it parses: its value is a list of
+// keys, none null; null replaces with the empty set, as [] does; an add or
+// remove names at least one key. Whatever the parser accepts compiles and
+// renders.
+func TestRelationValuesAreDecidedAtParse(t *testing.T) {
+	schema, err := patch.GeneratePatchSchema[widgetPatch](core.NewSchemaGenerator())
 	if err != nil {
-		t.Fatalf("generate: %v", err)
+		t.Fatal(err)
 	}
 	parser := patch.NewParser(schema, nil)
-	parsed, err := parser.ParseOps([]patch.RawPatchOp{
-		{Op: "add", Path: "/tags", Value: []any{}},
-	})
-	if err != nil {
-		t.Fatalf("parse: %v", err)
+	parse := func(body string) (*patch.ParsedPatch, error) {
+		if body[0] == '{' {
+			return patch.ParseMergePatch([]byte(body), schema, nil)
+		}
+		return parser.Parse([]byte(body))
 	}
-	if _, err := patch.BuildPatchSQL(parsed, filter.PostgresDialect{}); err == nil {
-		t.Errorf("add with empty values should error")
+	for _, tc := range []struct {
+		body string
+		code string // "" when accepted
+		verb patch.RelationVerb
+		keys []any
+	}{
+		{`{"tags":["a","b"]}`, "", patch.RelationVerbReplace, []any{"a", "b"}},
+		{`{"tags":[]}`, "", patch.RelationVerbReplace, []any{}},
+		{`{"tags":null}`, "", patch.RelationVerbReplace, []any{}},
+		{`[{"op":"replace","path":"/tags","value":null}]`, "", patch.RelationVerbReplace, []any{}},
+		{`[{"op":"add","path":"/tags","value":["a"]}]`, "", patch.RelationVerbAdd, []any{"a"}},
+		{`[{"op":"remove","path":"/tags","value":["a"]}]`, "", patch.RelationVerbRemove, []any{"a"}},
+		{`{"tags":["a",null]}`, "E2118", "", nil},
+		{`[{"op":"add","path":"/tags","value":["a",null]}]`, "E2118", "", nil},
+		{`[{"op":"remove","path":"/tags"}]`, "E2118", "", nil},
+		{`[{"op":"remove","path":"/tags","value":[]}]`, "E2118", "", nil},
+		{`[{"op":"add","path":"/tags","value":[]}]`, "E2118", "", nil},
+		{`[{"op":"add","path":"/tags","value":null}]`, "E2118", "", nil},
+		{`{"tags":"t1"}`, "E2077", "", nil},
+		{`{"tags":[1]}`, "E2077", "", nil},
+	} {
+		parsed, err := parse(tc.body)
+		if tc.code != "" {
+			requireCode(t, err, tc.code)
+			continue
+		}
+		if !assert.NoError(t, err, tc.body) {
+			continue
+		}
+		sql, err := patch.BuildPatchSQL(parsed, filter.SQLiteDialect{})
+		if !assert.NoError(t, err, tc.body) || !assert.Len(t, sql.RelationOps, 1, tc.body) {
+			continue
+		}
+		op := sql.RelationOps[0]
+		assert.Equal(t, tc.verb, op.Verb, tc.body)
+		assert.Equal(t, tc.keys, op.Values, tc.body)
+		_, err = patch.RenderRelationOp(op, filter.SQLiteDialect{}, []any{"w1"}, patch.RenderRelationOpOptions{})
+		assert.NoError(t, err, tc.body)
 	}
+	tags, _ := schema.Path("/tags")
+	assert.True(t, tags.Nullable(), "the schema document's nullable: null parses, as the clear")
+}
+
+// A relation's keys are never null, so a membership of a nullable type is
+// refused when its path is built.
+func TestRelationRefusesNullableKeys(t *testing.T) {
+	type nullableKeys struct {
+		ID    string    `db:"id" json:"id"`
+		PTags []*string `db:"-" json:"ptags" parse:"patch" relation:"widget_ptags,widget_id,tag_id"`
+	}
+	_, err := patch.GeneratePatchSchema[nullableKeys](core.NewSchemaGenerator())
+	assert.ErrorContains(t, err, "never null")
+	_, err = patch.RelationPath(&core.RelationSchema{JoinTable: "j", SourceColumn: "s", TargetColumn: "t"}, reflect.TypeFor[[]*string]())
+	assert.ErrorContains(t, err, "never null")
+	path, err := patch.RelationPath(&core.RelationSchema{JoinTable: "j", SourceColumn: "s", TargetColumn: "t"}, reflect.TypeFor[[]string]())
+	assert.NoError(t, err)
+	assert.NotNil(t, path)
 }
 
 func TestRenderRelationOp_Replace_Clear(t *testing.T) {

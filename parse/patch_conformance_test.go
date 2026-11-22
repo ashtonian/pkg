@@ -60,6 +60,9 @@ type confPatch struct {
 	Live   bool    `json:"live,string"   db:"live"   parse:"patch"`
 	Share  float32 `json:"share,string"  db:"share"  parse:"patch"`
 	Opt    *int64  `json:"opt,string"    db:"opt"    parse:"patch"`
+	// Members is a writable relation: its patch value is the membership's
+	// target keys.
+	Members []string `json:"members" db:"-" parse:"patch" relation:"conf_members,patch_id,member_id"`
 }
 
 type patchCase struct {
@@ -156,6 +159,12 @@ func patchInputs() []patchCase {
 		{Name: "err_quoted_null_on_value_field", Input: map[string]any{"serial": nil}},
 		{Name: "quoted_float", Input: map[string]any{"share": "0.5"}},
 		{Name: "err_quoted_float_word", Input: map[string]any{"share": "half"}},
+		{Name: "relation_list", Input: map[string]any{"members": []any{"a", "b"}}},
+		{Name: "err_relation_not_a_list", Input: map[string]any{"members": "a"}},
+		{Name: "relation_null_clears", Input: map[string]any{"members": nil}},
+		{Name: "relation_empty_clears", Input: map[string]any{"members": []any{}}},
+		{Name: "err_relation_element_type", Input: map[string]any{"members": []any{1}}},
+		{Name: "err_relation_null_element", Input: map[string]any{"members": []any{"a", nil}}},
 	}
 }
 

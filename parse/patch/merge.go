@@ -113,7 +113,7 @@ func validateMergeMember(schema *PatchSchema, codec core.Codec, key string, valu
 	// only an object in the patch merges. A Go value normalizes to an object
 	// too (a struct) but replaces the member whole.
 	op := PatchOpReplace
-	if value == nil {
+	if value == nil && pathSchema.Relation == nil {
 		op = PatchOpRemove
 	}
 	_, merges := value.(map[string]any)

@@ -168,6 +168,9 @@ func generatePatchSchema(g *core.SchemaGenerator, t reflect.Type, server bool) (
 			if err != nil {
 				return nil, fmt.Errorf("field %s: %w", field.GoName, err)
 			}
+			if err := checkRelationKeyType(field.Type); err != nil {
+				return nil, fmt.Errorf("field %s: %w", field.GoName, err)
+			}
 			relSchema = rel
 			allowedOps = relationPatchOps()
 			sqlColumn = "" // relation paths don't touch a column
@@ -280,7 +283,23 @@ func relationPatchOps() []PatchOp {
 }
 
 // RelationPath is the patch path of a relation's membership: replace, add
-// and remove of a slice of target keys (goType), routed to RelationOps.
-func RelationPath(rel *core.RelationSchema, goType reflect.Type) *PathSchema {
-	return &PathSchema{AllowedOps: relationPatchOps(), DataType: core.TypeOf(goType).Type, GoType: goType, Relation: rel}
+// and remove of a slice of target keys (goType), routed to RelationOps. A key
+// is never null, so goType's element must not be nullable.
+func RelationPath(rel *core.RelationSchema, goType reflect.Type) (*PathSchema, error) {
+	if err := checkRelationKeyType(goType); err != nil {
+		return nil, err
+	}
+	return &PathSchema{AllowedOps: relationPatchOps(), DataType: core.TypeOf(goType).Type, GoType: goType, Relation: rel}, nil
+}
+
+// checkRelationKeyType refuses a membership type that is not a slice of
+// keys that cannot be null.
+func checkRelationKeyType(t reflect.Type) error {
+	if t.Kind() != reflect.Slice {
+		return fmt.Errorf("a relation's membership is a slice of keys, not %s", t)
+	}
+	if isNullableType(t.Elem()) {
+		return fmt.Errorf("a relation's keys are never null; declare them as %s's element without a pointer", t)
+	}
+	return nil
 }

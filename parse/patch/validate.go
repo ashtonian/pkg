@@ -68,8 +68,8 @@ func newValueChecker(schema *PatchSchema, codec core.Codec) valueChecker {
 // check is the check both wire formats run on one operation's value: the
 // operation is allowed on the path, a clear is nullable, the value
 // normalizes (a relation's keys once each, within the limit), its validators
-// pass, and an array set whole holds the path's element counts. value is what the operation writes, at a path depth tokens
-// deep. It returns the normalized value, or the failures: the first of the
+// pass, and an array set whole holds the path's element counts. value is
+// what the operation writes, at a path depth tokens deep. It returns the normalized value, or the failures: the first of the
 // first three checks, else every validator's and the count's, in order.
 //
 // merge marks an RFC 7396 member: an object merges into the document rather
@@ -96,6 +96,12 @@ func (c valueChecker) check(ps *PathSchema, op PatchOp, value any, depth int, me
 
 	var failures []stepFailure
 	relation := ps.Relation != nil
+	if relation {
+		var refused *stepFailure
+		if value, refused = relationValue(op, value); refused != nil {
+			return nil, []stepFailure{*refused}
+		}
+	}
 	switch {
 	case op == PatchOpRemove && !relation:
 		failures = validate(ps, nil)
@@ -136,6 +142,36 @@ func (c valueChecker) check(ps *PathSchema, op PatchOp, value any, depth int, me
 	}
 	if len(failures) > 0 {
 		return nil, failures
+	}
+	return value, nil
+}
+
+// relationValue decides a relation operation's value as it parses, so that
+// nothing the parser accepts is refused later for its shape: the value is a
+// list of keys, none null. A replace with null is the clear, the same
+// operation as [] (RFC 7396 reads null as removing the member, and the
+// member is the membership); an add or remove names at least one key.
+func relationValue(op PatchOp, value any) (any, *stepFailure) {
+	refuse := func(format string, args ...any) *stepFailure {
+		return &stepFailure{code: ECodeRelationValueInvalid, cause: fmt.Errorf(format, args...)}
+	}
+	if value == nil {
+		if op == PatchOpReplace {
+			return []any{}, nil
+		}
+		return nil, refuse("%s names the keys it changes; it needs at least one", op)
+	}
+	items, ok := core.AnySlice(value)
+	if !ok {
+		return value, nil // not a list: normalization refuses it (E2077)
+	}
+	if len(items) == 0 && op != PatchOpReplace {
+		return nil, refuse("%s names the keys it changes; it needs at least one", op)
+	}
+	for i, item := range items {
+		if normalizeNilPointer(item) == nil {
+			return nil, refuse("element %d is null; a key is never null", i)
+		}
 	}
 	return value, nil
 }

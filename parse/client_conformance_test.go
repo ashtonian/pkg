@@ -317,6 +317,7 @@ type confPatchInput struct {
 	Live     client.Nullable[client.Quoted[bool]]    `json:"live,omitzero"`
 	Share    client.Nullable[client.Quoted[float32]] `json:"share,omitzero"`
 	Opt      client.Nullable[client.Quoted[int64]]   `json:"opt,omitzero"`
+	Members  client.Nullable[[]string]               `json:"members,omitzero"`
 }
 
 var patchBuilt = map[string]confPatchInput{
@@ -367,6 +368,9 @@ var patchBuilt = map[string]confPatchInput{
 	"quoted_float":                   {Share: client.Set(client.Quote[float32](0.5))},
 	"quoted_null_clears_nullable":    {Opt: client.Null[client.Quoted[int64]]()},
 	"err_quoted_null_on_value_field": {Serial: client.Null[client.Quoted[int64]]()},
+	"relation_list":                  {Members: client.Set([]string{"a", "b"})},
+	"relation_null_clears":           {Members: client.Null[[]string]()},
+	"relation_empty_clears":          {Members: client.Set([]string{})},
 }
 
 var patchInexpressible = map[string]string{
@@ -402,6 +406,9 @@ var patchInexpressible = map[string]string{
 	"err_unknown_field":         "the patch struct holds declared members only",
 	"decimal_bound_exponent":    "a decimal.Decimal marshals plain notation",
 	"decimal_bound_number":      "a decimal.Decimal marshals as a JSON string",
+	"err_relation_not_a_list":   "Members is a Nullable[[]string]",
+	"err_relation_element_type": "Members is a Nullable[[]string]",
+	"err_relation_null_element": "a []string holds no null",
 }
 
 // A merge patch is its JSON, so the client's document equals the corpus

@@ -13,7 +13,8 @@ import type { PatchOp, PatchPathSchema, PatchSchema } from "./types.js";
  * of the path's type — numbers integral and within the path's Go kind,
  * strings in its enum, values within its bounds, arrays of its element type
  * within its element counts (each element in the enum and bounds), a
- * relation's membership a list —
+ * relation's membership a list of keys of its element type, none null (a
+ * null membership is the clear) —
  * and the operation count within the maximum, counting each
  * top-level member and each nested object below it. The corpus
  * testdata/patch_conformance.json holds the two to one answer per input.
@@ -51,7 +52,9 @@ function validateField(field: string, value: unknown, schema: PatchSchema): Sche
       : undefined;
     return [new SchemaValidationError(field, "E2077", `Field "${field}" cannot be null`, constraint)];
   }
-  const op: PatchOp = value === null ? "remove" : "replace";
+  // A relation's null is the clear, a replace with no keys, as the parser
+  // reads it.
+  const op: PatchOp = value === null && !pathSchema.relation ? "remove" : "replace";
   if (!pathSchema.allowed_ops.includes(op)) {
     return [new SchemaValidationError(field, "E2064",
       `Operation "${op}" is not allowed on "${field}". Allowed: ${pathSchema.allowed_ops.join(", ")}`)];
@@ -60,9 +63,7 @@ function validateField(field: string, value: unknown, schema: PatchSchema): Sche
 }
 
 function validatePatchValue(field: string, value: unknown, path: PatchPathSchema): SchemaValidationError[] {
-  if (path.relation) {
-    return Array.isArray(value) ? [] : [new SchemaValidationError(field, "E2118", `Relation "${field}" takes a list of keys`)];
-  }
+  if (path.relation) return validateMembership(field, value, path);
   if (path.data_type === "array") {
     if (!Array.isArray(value)) {
       return [new SchemaValidationError(field, "E2077", `Field "${field}" expects an array`)];
@@ -87,6 +88,22 @@ function validatePatchValue(field: string, value: unknown, path: PatchPathSchema
     return [new SchemaValidationError(field, "E2077", `Field "${field}" expects ${path.data_type}, got ${typeof value}`)];
   }
   return checkValueTags(field, value, path.data_type, path);
+}
+
+// validateMembership checks a relation's value as the parser does: a list of
+// keys of the path's element type (E2077 otherwise), none null (E2118).
+function validateMembership(field: string, value: unknown, path: PatchPathSchema): SchemaValidationError[] {
+  if (!Array.isArray(value)) {
+    return [new SchemaValidationError(field, "E2077", `Relation "${field}" expects an array of keys`)];
+  }
+  if (value.some(el => el === null)) {
+    return [new SchemaValidationError(field, "E2118", `Relation "${field}" takes keys, which are never null`)];
+  }
+  const elementType = path.elem;
+  if (elementType && value.some(el => !scalarOK(el, elementType, path.number_kind))) {
+    return [new SchemaValidationError(field, "E2077", `Relation "${field}" expects ${elementType} keys`)];
+  }
+  return [];
 }
 
 // validateQuotedValue checks a json:",string" path's value: a JSON string

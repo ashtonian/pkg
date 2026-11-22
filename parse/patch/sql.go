@@ -578,8 +578,8 @@ func hasNestedObject(patch map[string]any) bool {
 }
 
 // buildRelationPatchOp turns a parsed relation op into a RelationPatchOp.
-// The wire-level value must be an array (JSON []) matching the relation's
-// target column type; remove/add reject empty arrays as a no-op miss.
+// The parser decided its value: a list of keys, at least one for an add or
+// remove (relationValue).
 func buildRelationPatchOp(op *PatchOperation) (RelationPatchOp, error) {
 	verb, err := relationVerbFromOp(op.Op)
 	if err != nil {
@@ -590,23 +590,7 @@ func buildRelationPatchOp(op *PatchOperation) (RelationPatchOp, error) {
 			Path:    op.Path,
 		}
 	}
-	values, err := coerceRelationValues(op.Value)
-	if err != nil {
-		return RelationPatchOp{}, &core.ParseError{
-			Kind:    core.ParseErrorKindPatch,
-			Code:    ECodeRelationValueInvalid.String(),
-			Message: fmt.Sprintf("relation %q: %v", strings.TrimPrefix(op.Path, "/"), err),
-			Path:    op.Path,
-		}
-	}
-	if (verb == RelationVerbAdd || verb == RelationVerbRemove) && len(values) == 0 {
-		return RelationPatchOp{}, &core.ParseError{
-			Kind:    core.ParseErrorKindPatch,
-			Code:    ECodeRelationValueInvalid.String(),
-			Message: fmt.Sprintf("relation %q: %s requires at least one value", strings.TrimPrefix(op.Path, "/"), verb),
-			Path:    op.Path,
-		}
-	}
+	values, _ := core.AnySlice(op.Value)
 	return RelationPatchOp{
 		Field:  strings.TrimPrefix(op.Path, "/"),
 		Schema: op.Schema.Relation,
@@ -625,24 +609,6 @@ func relationVerbFromOp(op PatchOp) (RelationVerb, error) {
 		return RelationVerbRemove, nil
 	default:
 		return "", fmt.Errorf("op %q has no relation-verb mapping", op)
-	}
-}
-
-func coerceRelationValues(value any) ([]any, error) {
-	if value == nil {
-		return nil, nil
-	}
-	switch v := value.(type) {
-	case []any:
-		return v, nil
-	case []string:
-		out := make([]any, len(v))
-		for i, s := range v {
-			out[i] = s
-		}
-		return out, nil
-	default:
-		return nil, fmt.Errorf("expected JSON array, got %T", value)
 	}
 }
 
