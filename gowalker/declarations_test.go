@@ -10,8 +10,9 @@ import (
 )
 
 type declBase struct {
-	ID     int    `json:"id"`
-	Name   string `json:"name"`
+	ID   int    `json:"id"`
+	Name string `json:"name"`
+	//lint:ignore U1000 reflection fixture for a private field
 	secret string
 	Notes  string `json:"-"`
 }
@@ -21,6 +22,7 @@ type declRow struct {
 	Name     string `json:"name"`
 	Password string `json:"-" db:"password_hash"`
 	Skipped  int    `json:"-"`
+	//lint:ignore U1000 reflection fixture for a private field
 	internal int
 }
 

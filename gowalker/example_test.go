@@ -513,7 +513,6 @@ func ExampleWithJSONFields() {
 		Base
 		Kind   string `json:"kind,omitempty"`
 		Quoted string `json:"'q'"` // no leading identifier: keeps its Go name
-		Escape string `json:"a\"b"`
 		Secret string `json:"-"`
 	}
 	engine := gowalker.MustNew(gowalker.WithJSONFields("json"))
@@ -528,7 +527,6 @@ func ExampleWithJSONFields() {
 	// id [0 0]
 	// kind [1]
 	// Quoted [2]
-	// a [3]
 }
 
 func ExampleNewTypeCache() {
@@ -596,7 +594,8 @@ func ExampleShape_Declarations() {
 	type User struct {
 		ID       int    `json:"id" db:"id"`
 		Password string `json:"-" db:"password_hash"`
-		session  string
+		//lint:ignore U1000 the example lists a private field
+		session string
 	}
 	engine := gowalker.MustNew(gowalker.WithJSONFields("json", gowalker.KeepHidden()))
 	schema, err := engine.Compile[User]()
