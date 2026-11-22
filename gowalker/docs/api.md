@@ -12,7 +12,7 @@ lists every exported declaration. Go 1.27+ is required.
 | Inspect a type using Go field names | `gowalker.Compile[T]()` / `CompileType(t)` | The `Default` engine's cached `(*Schema, error)` |
 | Your own naming convention | `MustNew(WithTaggedFields(key, options...))` in a package variable | An `*Engine` whose schemas use tag names |
 | Fully custom naming, aliases or validation | `MustNew(WithFieldResolver(callback))` | An `*Engine`; the callback returns `(FieldRule, error)` |
-| Read a field's tags | `field.Tag(key)` / `field.Tags()` | Parsed `(Tag, bool)` / raw `reflect.StructTag` |
+| Read a field's tags | `field.Tag(key)` / `field.Tags()` / `field.TagKeys()` | Parsed `(Tag, bool)` / raw `reflect.StructTag` / its keys in order |
 | Compute your metadata once per type | `NewTypeCache(engine, build)` → `cache.For[T]()` | Your `(M, error)`, built once and shared |
 | Read or write one named root field repeatedly | `schema.AccessName(name)` / `AccessField(field)` | A cached `(*Accessor, error)`; the name is literal |
 | Repeated nested access | `schema.ResolveText(text)` / `Resolve(path)` | An uncached `(*Accessor, error)` to retain |
@@ -80,7 +80,8 @@ raw `reflect.StructTag` for tags with other syntax, such as `validate:"min=1"`.
 Gowalker never decodes tag values.
 
 `TagKeys(tag)` lists a tag's keys in order, so a library can compare them with
-the keys it reads and refuse a misspelt one. It returns a `*TagError` for a tag
+the keys it reads and refuse a misspelt one; `field.TagKeys()` lists a compiled
+field's, which compilation has already checked. It returns a `*TagError` for a tag
 that `reflect.StructTag` stops reading early, such as `parse: "filter"` with a
 space after the colon (`Lookup` then reports that key and every later one
 absent), or that repeats a key (`Lookup` returns only the first). Compiling a

@@ -238,6 +238,13 @@ func (f *Field) GoField() reflect.StructField { return copyStructField(f.goField
 // Gowalker does not decode or apply tag values.
 func (f *Field) Tags() reflect.StructTag { return f.goField.Tag }
 
+// TagKeys returns the keys of the field's tag in order, in a new slice.
+// Compilation refused the field's tag if [TagKeys] could not read it.
+func (f *Field) TagKeys() []string {
+	keys, _ := TagKeys(f.goField.Tag)
+	return keys
+}
+
 // Tag parses the field's key tag in the "name,options" form. ok is false when
 // the field has no such tag.
 func (f *Field) Tag(key string) (Tag, bool) { return LookupTag(f.goField.Tag, key) }

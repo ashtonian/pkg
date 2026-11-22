@@ -157,6 +157,22 @@ func TestTagKeys(t *testing.T) {
 	}
 }
 
+// A compiled field lists its tag's keys; unnamed fields included.
+func TestField_TagKeys(t *testing.T) {
+	type row struct {
+		ID     int    `json:"id" db:"id,pk" parse:"filter"`
+		Hidden string `json:"-" db:"hidden"`
+		Plain  int
+	}
+	schema := schemaFor[row](t, engine(t, gowalker.WithJSONFields("json", gowalker.KeepHidden())))
+	want := map[string][]string{"ID": {"json", "db", "parse"}, "Hidden": {"json", "db"}, "Plain": nil}
+	for _, d := range schema.Root().Declarations() {
+		if got := d.Field.TagKeys(); !slices.Equal(got, want[d.GoField.Name]) {
+			t.Errorf("%s: keys %q, want %q", d.GoField.Name, got, want[d.GoField.Name])
+		}
+	}
+}
+
 // Compilation refuses a malformed or repeated tag on any field the engine
 // reads, a skipped one included, naming the type and the field.
 func TestCompileRefusesUnreadableTags(t *testing.T) {
