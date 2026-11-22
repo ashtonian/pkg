@@ -26,6 +26,7 @@ CHECKS = {
     # The cookbook replaces both config modules with their working trees.
     "cookbook-check": ("config/",),
     "tool-check": (ARCHIVE_TOOLING,),
+    "release-please-check": ("tools/release-please/",),
 }
 # Modules nested in another module's directory are not part of its archive.
 NESTED = {"config-release-check": ("config/kongprovider/", "config/examples/cookbook/")}
