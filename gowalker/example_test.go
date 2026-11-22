@@ -590,3 +590,29 @@ func ExampleWithAtomicImplementers() {
 	fmt.Println(started.Shape().Atomic())
 	// Output: true
 }
+
+func ExampleShape_Declarations() {
+	type User struct {
+		ID       int    `json:"id" db:"id"`
+		Password string `json:"-" db:"password_hash"`
+		session  string
+	}
+	engine := gowalker.MustNew(gowalker.WithJSONFields("json", gowalker.KeepHidden()))
+	schema, err := engine.Compile[User]()
+	if err != nil {
+		panic(err)
+	}
+	// The columns include the field the json view hides.
+	for _, d := range schema.Root().Declarations() {
+		column, ok := d.GoField.Tag.Lookup("db")
+		if d.State == gowalker.Skipped || !ok {
+			fmt.Println(d.GoField.Name, d.State)
+			continue
+		}
+		fmt.Printf("%s %v json=%q db=%q\n", d.GoField.Name, d.State, d.Field.Name(), column)
+	}
+	// Output:
+	// ID Named json="id" db="id"
+	// Password Unnamed json="" db="password_hash"
+	// session Skipped
+}

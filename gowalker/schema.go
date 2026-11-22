@@ -51,17 +51,16 @@ func (s *Schema) AccessName(name string) (*Accessor, error) {
 
 // AccessField returns a reusable accessor for a visible field of this schema's
 // root struct, following non-atomic root pointers. Obtain the field from that
-// root's Fields or Lookup. Inline descendants use their complete physical route.
-// Fields from other schemas, nested owners, or unexpanded inline declarations
-// return ErrPath. Repeated calls for the same field return the same accessor;
-// this bounded cache contains only the root's visible fields, never map keys.
+// root's Fields, Lookup or Declarations: a field kept without a name
+// ([FieldRule.Unnamed]) is reachable only this way, and its accessor's path
+// step names nothing. Inline descendants use their complete physical route.
+// Fields from other schemas, nested owners, shadowed or tied fields, or
+// unexpanded inline declarations return ErrPath. Repeated calls for the same
+// field return the same accessor; this bounded cache contains only the root's
+// fields, never map keys.
 func (s *Schema) AccessField(field *Field) (*Accessor, error) {
 	owner, err := indirectShape(s.root)
-	if err != nil || owner.atomic || owner.Kind() != reflect.Struct || field == nil {
-		return nil, failure("resolve", ErrPath, s.Type(), emptyPath, -1, nil)
-	}
-	selected, ok := owner.Lookup(field.name)
-	if !ok || selected != field {
+	if err != nil || owner.atomic || owner.Kind() != reflect.Struct || field == nil || !owner.owns(field) {
 		return nil, failure("resolve", ErrPath, s.Type(), emptyPath, -1, nil)
 	}
 	s.fieldMu.RLock()

@@ -40,11 +40,14 @@ or a recursive pointer root. Punctuation is literal: `"a.b"` is one field name.
 Use ResolveText when the dot should select a nested field. AccessName and
 AccessField share the same bounded cache of visible root-field accessors.
 
-`AccessField` is useful when a library already has a field from `Fields()` or
-`Lookup()`. It accepts visible fields of this schema's root struct; for pointer
-roots, follow `Elem()` to find that struct. It rejects fields from another schema,
-nested owners, or inline declarations that are expanded rather than directly
-visible. Repeated calls for one field return the same accessor.
+`AccessField` is useful when a library already has a field from `Fields()`,
+`Lookup()` or `Declarations()`. It accepts visible fields of this schema's root
+struct and the root's fields kept without a name; for pointer roots, follow
+`Elem()` to find that struct. It rejects fields from another schema, nested
+owners, shadowed or tied fields, or inline declarations that are expanded rather
+than directly visible. Repeated calls for one field return the same accessor.
+An unnamed field's accessor has a path whose one field step names nothing; that
+path has no text form (`MarshalText` returns `ErrUnrepresentable`).
 
 Use the schema, accessor, shape and field handles returned by the API; their
 nil/zero values are not usable. Engines, schemas and type caches must not be
@@ -204,8 +207,34 @@ provides its declared `Type`, raw `Tags`, Go `StructField`, declared `Shape`, co
 original `DeclaringType`, and copied `InlineParents` for inherited consumer metadata.
 `Shape.DeclaredView()` returns selected declarations before inline expansion;
 `Field.Inline()` identifies inline owners, including empty ones whose tags a
-consumer still needs to validate. Skipped fields are absent from both views.
+consumer still needs to validate. Skipped fields and fields kept without a name
+are absent from both views.
 Use `StructTag.Lookup` for absent versus present-empty tags; tag option syntax belongs to the resolver.
+
+`Shape.Declarations()` lists every field the struct declares and, after each
+inlined struct field, that struct's declarations, with what the view made of
+each, so a library can check its own tags on every field, read fields under
+another tag, or explain why a field is missing:
+
+| State | The field | `Field` |
+|---|---|---|
+| `Named` | Is in `Fields` and `Lookup` | Its handle |
+| `Unnamed` | Is kept without a name (`FieldRule.Unnamed`) | Its handle, for `AccessField` |
+| `InlineOwner` | Is inlined; its struct's declarations follow | The inline owner's handle |
+| `Shadowed` | Lost its names to a shallower or explicitly named field (`ResolveByDepth`) | A handle no accessor accepts |
+| `Tied` | Was dropped with the fields it tied with (`DropTies`) | A handle no accessor accepts |
+| `Skipped` | Is excluded by the rule, or private | nil |
+
+Each entry carries the Go `StructField`, the `DeclaringType`, the `Index` route
+from the listing's struct and the `InlineParents`, all copies. The list is empty
+for a pointer, whose fields belong to `Elem()`, and for a leaf.
+
+`FieldRule.Unnamed` keeps a field as a leaf without a name: it claims no name,
+no path or walk reaches it, and `Declarations` and `AccessField` do. A column
+list reads the `db` column of a `json:"-"` field this way. It cannot be combined
+with `Name`, `Aliases` or `Inline`; `Skip` takes precedence. The `KeepHidden()`
+tag option applies it to exported fields a tag hides with `"-"`, under
+`WithTaggedFields` and `WithJSONFields` alike.
 
 Schema collisions wrap `*NameConflict`, available with `errors.As`. Its owner,
 conflicting name and two field handles let adapters build their own diagnostics.

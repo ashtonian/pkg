@@ -375,9 +375,10 @@ embeds `time.Time` implements `TextUnmarshaler` itself and becomes a leaf;
 
 When a preset is not enough, `WithFieldResolver` receives each
 `reflect.StructField` and returns a `FieldRule`: a name, aliases, `Skip`,
-`Inline` to expose an embedded struct's fields, or `Atomic` to keep this one
-field whole. Set `Explicit` when the name is the field's own, such as a tag
-name, so `ResolveByDepth` prefers it over a derived name at equal depth.
+`Inline` to expose an embedded struct's fields, `Atomic` to keep this one
+field whole, or `Unnamed` to keep it, nameless, for `Declarations` and
+`AccessField` only. Set `Explicit` when the name is the field's own, such as a
+tag name, so `ResolveByDepth` prefers it over a derived name at equal depth.
 Return an error to reject a tag; it appears in the compile error.
 The [config-style example](../example_test.go) handles `koanf` names, `,squash`,
 `alias` tags and self-decoding types this way.

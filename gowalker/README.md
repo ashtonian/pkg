@@ -105,6 +105,7 @@ Two fields claiming one name fail compilation with an error naming both.
 |---|---|---|
 | `gowalker.Compile[T]()` or `engine.Compile[T]()` | `*Schema`, cached by the engine | Every use of `T` |
 | `schema.Root().Fields()` | `[]*Field`: `Name`, `Type`, `Tag(key)`, `Tags`, `Index` | Building your metadata |
+| `schema.Root().Declarations()` | Every declared field with what the view made of it: named, unnamed, shadowed, tied, skipped | Checking your tags on every field; reading fields the view hides, with `KeepHidden` |
 | `gowalker.NewTypeCache(engine, build)` | Your per-type metadata, built once | Your library's hot path |
 | `schema.AccessName(name)` | `*Accessor`, cached by the schema | Reading or writing one field across many values |
 | `schema.ResolveText("server.port")` | `*Accessor`, not cached | Nested locations; keep it yourself |

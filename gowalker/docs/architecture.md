@@ -57,7 +57,11 @@ the engine's leaf rules and leaves an embedded `time.Time` whole. A resolver can
 rename fields, add aliases, skip fields or inline a struct.
 Inlining gives a descendant a shorter logical name while retaining the complete
 Go field-index route needed to reach it. `DeclaredView` also retains the inline
-owner, so a consumer can inspect tags on that owner.
+owner, so a consumer can inspect tags on that owner. Expansion also records, per
+struct, every declaration it meets with the state the view gave it (named,
+unnamed, inline owner, shadowed, tied, skipped); `Declarations` returns that
+record, so a library never re-walks the reflect type to find fields the view
+left out.
 
 Names and aliases must identify one field. Compilation rejects collisions using
 the same matching rule as lookup: exact matching, or Unicode case folding when
@@ -149,7 +153,8 @@ bounded by its engine's capacity. Like the engine, it publishes completed result
 under a lock and never waits on an unfinished entry, so a build function may
 request other types.
 
-`Schema.AccessField` caches accessors for its visible root fields. `Resolve`
+`Schema.AccessField` caches accessors for its root's visible and unnamed
+fields. `Resolve`
 and `ResolveText` return uncached accessors; callers retain those for reuse.
 Engine caches do not retain caller instances or arbitrary map keys. An accessor
 itself retains keys supplied in its path for as long as the caller keeps it.

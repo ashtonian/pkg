@@ -117,12 +117,13 @@ func (t Tag) Has(option string) bool {
 // engine's settings, rather than a FieldResolver closure, because promotion
 // must respect the engine's leaf rules: an embedded time.Time stays one field.
 type tagNaming struct {
-	key       string
-	untagged  func(string) string
-	valid     func(string) error
-	promote   bool
-	nested    bool
-	dashComma bool
+	key        string
+	untagged   func(string) string
+	valid      func(string) error
+	promote    bool
+	nested     bool
+	dashComma  bool
+	keepHidden bool
 	// json fixes encoding/json's grammar and conventions (WithJSONFields).
 	json bool
 }
@@ -180,6 +181,15 @@ func DashCommaName() TagOption {
 		n.dashComma = true
 		return nil
 	}
+}
+
+// KeepHidden keeps an exported field the tag hides with "-" as an unnamed
+// leaf ([FieldRule.Unnamed]) instead of skipping it: no name, path or walk
+// reaches it, and [Shape.Declarations] and [Schema.AccessField] do, for a
+// library that reads such fields under another tag, as a column list reads
+// the columns of json:"-" fields. A private field stays excluded.
+func KeepHidden() TagOption {
+	return func(n *tagNaming) error { n.keepHidden = true; return nil }
 }
 
 // ValidName checks each name a tag gives a selected field; an error fails
@@ -247,8 +257,9 @@ func WithTaggedFields(key string, options ...TagOption) Option {
 // still describes its fields. Add [WithAtomicImplementers] with json.Marshaler
 // and encoding.TextMarshaler to treat such types as single values.
 //
-// [ValidName] and [NestedFields] apply. UntaggedName, PromoteEmbedded and
-// DashCommaName are refused: they would change what this option fixes.
+// [ValidName], [NestedFields] and [KeepHidden] apply. UntaggedName,
+// PromoteEmbedded and DashCommaName are refused: they would change what this
+// option fixes.
 func WithJSONFields(key string, options ...TagOption) Option {
 	return taggedFields(&tagNaming{key: key, json: true, untagged: goName, promote: true, dashComma: true}, options)
 }
@@ -283,7 +294,7 @@ func (n *tagNaming) rule(sf reflect.StructField, atomic func(reflect.Type) bool)
 	raw, _ := sf.Tag.Lookup(n.key)
 	name, explicit := n.tagName(raw)
 	if raw == "-" || name == "-" && !n.dashComma {
-		return FieldRule{Skip: true}, nil
+		return FieldRule{Unnamed: n.keepHidden, Skip: !n.keepHidden || !sf.IsExported()}, nil
 	}
 	if !explicit && n.promote && sf.Anonymous && promotable(sf.Type, atomic) {
 		return FieldRule{Inline: true}, nil
