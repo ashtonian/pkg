@@ -1,13 +1,11 @@
 package parse
 
 import (
-	"bytes"
-	"encoding/json"
 	"fmt"
 	"net/http"
-	"strconv"
 
 	"github.com/ashtonian/pkg/parse/filter"
+	"github.com/ashtonian/pkg/parse/internal/httpjson"
 )
 
 // SchemaHandlerOption configures SchemaHandler and SchemaListHandler.
@@ -37,14 +35,6 @@ func newSchemaHandler(opts []SchemaHandlerOption) *schemaHandler {
 	return h
 }
 
-// errorBody is the HTTP error body ({code, message, details}), as
-// parsehttp.Body writes it and the TS SDK's ApiError reads it.
-type errorBody struct {
-	Code    string            `json:"code"`
-	Message string            `json:"message"`
-	Details map[string]string `json:"details,omitempty"`
-}
-
 type resourceList struct {
 	Resources []string `json:"resources"`
 }
@@ -66,10 +56,10 @@ func (r *SchemaRegistry) SchemaHandler(opts ...SchemaHandlerOption) http.Handler
 		}
 		doc := r.SchemaFor(resource)
 		if doc == nil {
-			h.respond(w, req, http.StatusNotFound, errorBody{
+			h.respond(w, req, http.StatusNotFound, httpjson.ErrorBody{
 				Code:    filter.ECodeSchemaNotFound.String(),
 				Message: "no schema registered for resource " + resource,
-				Details: map[string]string{"resource": resource},
+				Details: map[string]any{"resource": resource},
 			})
 			return
 		}
@@ -96,32 +86,14 @@ func (r *SchemaRegistry) SchemaListHandler(opts ...SchemaHandlerOption) http.Han
 // respond encodes doc before writing anything, so a document that cannot be
 // encoded can still be answered with a status of its own.
 func (h *schemaHandler) respond(w http.ResponseWriter, req *http.Request, status int, doc any) {
-	body, err := encodeJSON(doc)
+	body, err := httpjson.Encode(doc)
 	if err != nil {
-		h.failEncoding(w, req, err)
-		return
+		code := ECodeSchemaEncodingFailed
+		h.report(req, fmt.Errorf("%w: %w", code, err))
+		// The cause names Go types; the client gets the catalog message only.
+		status, body = code.ErrorHTTPStatus(), httpjson.EncodeError(code.String(), code.ErrorMessage())
 	}
-	h.send(w, req, status, body)
-}
-
-func (h *schemaHandler) failEncoding(w http.ResponseWriter, req *http.Request, err error) {
-	code := ECodeSchemaEncodingFailed
-	h.report(req, fmt.Errorf("%w: %w", code, err))
-	// The cause names Go types; the client gets the catalog message only.
-	body, err := encodeJSON(errorBody{Code: code.String(), Message: code.ErrorMessage()})
-	if err != nil {
-		h.report(req, fmt.Errorf("encoding schema error body: %w", err))
-		w.WriteHeader(code.ErrorHTTPStatus())
-		return
-	}
-	h.send(w, req, code.ErrorHTTPStatus(), body)
-}
-
-func (h *schemaHandler) send(w http.ResponseWriter, req *http.Request, status int, body []byte) {
-	w.Header().Set("Content-Type", jsonMediaType)
-	w.Header().Set("Content-Length", strconv.Itoa(len(body)))
-	w.WriteHeader(status)
-	if _, err := w.Write(body); err != nil {
+	if err := httpjson.Send(w, status, body); err != nil {
 		h.report(req, fmt.Errorf("writing schema response: %w", err))
 	}
 }
@@ -130,14 +102,4 @@ func (h *schemaHandler) report(req *http.Request, err error) {
 	if h.onError != nil {
 		h.onError(req, err)
 	}
-}
-
-// encodeJSON encodes v as json.Encoder writes it, newline included, so a
-// buffered response carries the same bytes a streamed one would.
-func encodeJSON(v any) ([]byte, error) {
-	var buf bytes.Buffer
-	if err := json.NewEncoder(&buf).Encode(v); err != nil {
-		return nil, err
-	}
-	return buf.Bytes(), nil
 }
