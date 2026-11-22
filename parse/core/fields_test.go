@@ -4,6 +4,7 @@ package core_test
 
 import (
 	"encoding/json"
+	"fmt"
 	"reflect"
 	"slices"
 	"testing"
@@ -11,6 +12,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/ashtonian/pkg/parse"
 	"github.com/ashtonian/pkg/parse/core"
 )
 
@@ -241,7 +243,7 @@ func TestStructFields_RefuseAmbiguousNamesAndUnknownCapabilities(t *testing.T) {
 	cases["two promoted fields at one depth"] = struct {
 		typ  reflect.Type
 		want string
-	}{tie, `both named "b1"`}
+	}{tie, `fields ShadowBase.B1 and Other.B1 are both named "b1" at one depth, so encoding/json writes neither; rename one`}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
 			_, err := core.StructFieldsOf(tc.typ, "json", "db")
@@ -262,4 +264,101 @@ func TestStructFields_AreSharedPerType(t *testing.T) {
 	require.NoError(t, err)
 	assert.NotSame(t, a, c)
 	assert.True(t, slices.ContainsFunc(c.Fields, func(f *core.Field) bool { return f.External == "ID" }), "yaml names untagged fields by Go name")
+}
+
+// indexed and immutable are true, false or absent: anything else fails the
+// walk naming the field and the tag, as a misspelt capability does.
+func TestStructFields_ReadBooleanTagsStrictly(t *testing.T) {
+	for _, tc := range []struct {
+		typ                any
+		indexed, immutable bool
+		err                string
+	}{
+		{typ: struct {
+			A int `indexed:"true" immutable:"true"`
+		}{}, indexed: true, immutable: true},
+		{typ: struct {
+			A int `indexed:"false" immutable:"false"`
+		}{}},
+		{typ: struct{ A int }{}},
+		{typ: struct {
+			A int `indexed:"yes"`
+		}{}, err: `field A: indexed: "yes" is neither true nor false`},
+		{typ: struct {
+			A int `indexed:"1"`
+		}{}, err: `field A: indexed: "1" is neither true nor false`},
+		{typ: struct {
+			A int `immutable:"TRUE"`
+		}{}, err: `field A: immutable: "TRUE" is neither true nor false`},
+		{typ: struct {
+			A int `immutable:""`
+		}{}, err: `field A: immutable: "" is neither true nor false`},
+	} {
+		walk, err := core.StructFieldsOf(reflect.TypeOf(tc.typ), "json", "db")
+		if tc.err != "" {
+			assert.ErrorContains(t, err, tc.err)
+			continue
+		}
+		require.NoError(t, err)
+		assert.Equal(t, tc.indexed, walk.Fields[0].Tags.Indexed)
+		assert.Equal(t, tc.immutable, walk.Fields[0].Tags.Immutable)
+	}
+
+	type misspelt struct {
+		ID   string `json:"id" db:"id"`
+		Slug string `json:"slug" db:"slug" parse:"filter" indexed:"yes"`
+	}
+	_, err := parse.NewResource[misspelt]("misspelts")
+	assert.ErrorContains(t, err, `field Slug: indexed: "yes" is neither true nor false`)
+}
+
+// registryTypes builds n distinct struct types, as a large API declares
+// resource, document and element types.
+func registryTypes(n int) []reflect.Type {
+	types := make([]reflect.Type, n)
+	for i := range types {
+		types[i] = reflect.StructOf([]reflect.StructField{
+			{Name: "ID", Type: reflect.TypeFor[string](), Tag: `json:"id" db:"id"`},
+			{Name: fmt.Sprintf("F%d", i), Type: reflect.TypeFor[int](), Tag: reflect.StructTag(fmt.Sprintf(`json:"f%d" parse:"filter"`, i))},
+		})
+	}
+	return types
+}
+
+// Every walked type stays cached however many there are: a second walk of
+// any type returns the walk of the first, whose fields maps are keyed by.
+func TestStructFields_CacheEveryType(t *testing.T) {
+	types := registryTypes(1100)
+	walks := make([]*core.StructFields, len(types))
+	for i, typ := range types {
+		walk, err := core.StructFieldsOf(typ, "json", "registry")
+		require.NoError(t, err)
+		walks[i] = walk
+	}
+	for i, typ := range types {
+		walk, err := core.StructFieldsOf(typ, "json", "registry")
+		require.NoError(t, err)
+		require.Same(t, walks[i], walk, "type %d", i)
+	}
+}
+
+// BenchmarkStructFields walks the first and the last of more struct types
+// than a small cache holds.
+func BenchmarkStructFields(b *testing.B) {
+	types := registryTypes(1100)
+	for _, typ := range types {
+		if _, err := core.StructFieldsOf(typ, "json", "bench"); err != nil {
+			b.Fatal(err)
+		}
+	}
+	for name, typ := range map[string]reflect.Type{"first type": types[0], "type 1100": types[len(types)-1]} {
+		b.Run(name, func(b *testing.B) {
+			b.ReportAllocs()
+			for b.Loop() {
+				if _, err := core.StructFieldsOf(typ, "json", "bench"); err != nil {
+					b.Fatal(err)
+				}
+			}
+		})
+	}
 }

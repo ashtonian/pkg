@@ -80,13 +80,11 @@ func DecimalText(v any) (string, error) {
 	rv := reflect.ValueOf(v)
 	if IsDecimalType(rv.Type()) {
 		// IsDecimalType admits a type whose pointer has the method set.
-		p := reflect.New(rv.Type())
-		p.Elem().Set(rv)
-		if d, ok := p.Interface().(Decimal); ok {
+		if d, ok := addressable(rv).Interface().(Decimal); ok {
 			return partsDecimal(d.Coefficient(), d.Exponent())
 		}
 	}
-	if tm, ok := v.(encoding.TextMarshaler); ok {
+	if tm, ok := textMarshalerOf(v); ok {
 		b, err := tm.MarshalText()
 		if err != nil {
 			return "", fmt.Errorf("marshal %T: %w", v, err)
@@ -152,70 +150,25 @@ func compareMagnitude(x, y string) int {
 	return strings.Compare(xf, yf)
 }
 
-// parseDecimal reads s in the JSON number grammar,
-// -?(0|[1-9][0-9]*)(\.[0-9]+)?([eE][+-]?[0-9]+)?, into canonical text.
+// parseDecimal reads s, a JSON number literal (scanNumber), into canonical
+// text.
 func parseDecimal(s string) (string, error) {
-	invalid := func() (string, error) { return "", fmt.Errorf("%q is not a decimal number", s) }
-	i := 0
-	neg := i < len(s) && s[i] == '-'
-	if neg {
-		i++
+	lit, ok := scanNumber(s)
+	if !ok {
+		return "", fmt.Errorf("%q is not a decimal number", s)
 	}
-	intStart := i
-	if i < len(s) && s[i] == '0' {
-		i++
-	} else {
-		for i < len(s) && isDigit(s[i]) {
-			i++
-		}
+	if !lit.exponentFitsInt32() {
+		return "", errExponentBeyondInt32(s)
 	}
-	intPart := s[intStart:i]
-	if intPart == "" {
-		return invalid()
-	}
-	var frac string
-	if i < len(s) && s[i] == '.' {
-		i++
-		start := i
-		for i < len(s) && isDigit(s[i]) {
-			i++
-		}
-		if frac = s[start:i]; frac == "" {
-			return invalid()
-		}
-	}
-	var exp int64
-	hasExp := i < len(s) && (s[i] == 'e' || s[i] == 'E')
-	if hasExp {
-		i++
-		start := i
-		if i < len(s) && (s[i] == '+' || s[i] == '-') {
-			i++
-		}
-		digits := i
-		for i < len(s) && isDigit(s[i]) {
-			i++
-		}
-		if i == digits {
-			return invalid()
-		}
-		e, err := strconv.ParseInt(s[start:i], 10, 32)
-		if err != nil {
-			return "", fmt.Errorf("%q has more than %d digits", s, MaxDecimalDigits)
-		}
-		exp = e
-	}
-	if i != len(s) {
-		return invalid()
-	}
-	if !hasExp && !strings.HasSuffix(frac, "0") && !(neg && intPart == "0" && frac == "") {
+	exp := lit.exponent()
+	if lit.exp == "" && !strings.HasSuffix(lit.fracDigits, "0") && !(lit.neg && lit.intDigits == "0" && lit.fracDigits == "") {
 		// Already canonical: the grammar admits no leading zeros.
-		if len(intPart)+len(frac) > MaxDecimalDigits {
+		if len(lit.intDigits)+len(lit.fracDigits) > MaxDecimalDigits {
 			return "", fmt.Errorf("%q has more than %d digits", s, MaxDecimalDigits)
 		}
 		return s, nil
 	}
-	text, ok := renderDecimal(neg, intPart, frac, exp)
+	text, ok := renderDecimal(lit.neg, lit.intDigits, lit.fracDigits, exp)
 	if !ok {
 		return "", fmt.Errorf("%q has more than %d digits", s, MaxDecimalDigits)
 	}
@@ -224,6 +177,9 @@ func parseDecimal(s string) (string, error) {
 
 // partsDecimal renders coefficient × 10^exponent.
 func partsDecimal(coefficient *big.Int, exponent int32) (string, error) {
+	if coefficient == nil {
+		return "", errors.New("decimal has no coefficient")
+	}
 	digits := coefficient.String()
 	neg := strings.HasPrefix(digits, "-")
 	if neg {
@@ -310,3 +266,25 @@ func renderDecimal(neg bool, intPart, frac string, exp int64) (text string, ok b
 }
 
 func isDigit(c byte) bool { return '0' <= c && c <= '9' }
+
+// addressable returns a pointer to a copy of v, whose pointer methods it
+// then has.
+func addressable(v reflect.Value) reflect.Value {
+	p := reflect.New(v.Type())
+	p.Elem().Set(v)
+	return p
+}
+
+// textMarshalerOf returns v's MarshalText, on the value or, for a value
+// whose pointer has it, on a pointer to a copy.
+func textMarshalerOf(v any) (encoding.TextMarshaler, bool) {
+	if tm, ok := v.(encoding.TextMarshaler); ok {
+		return tm, true
+	}
+	rv := reflect.ValueOf(v)
+	if !rv.IsValid() || !reflect.PointerTo(rv.Type()).Implements(textMarshalerType) {
+		return nil, false
+	}
+	tm, ok := addressable(rv).Interface().(encoding.TextMarshaler)
+	return tm, ok
+}

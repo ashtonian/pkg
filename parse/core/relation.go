@@ -20,8 +20,8 @@ const (
 	BelongsTo RelationKind = "belongs_to"
 )
 
-// RelationSchema describes how a field's owner rows relate to other rows
-// . Every predicate correlates JoinTable's rows to the
+// RelationSchema describes how a field's owner rows relate to other rows.
+// Every predicate correlates JoinTable's rows to the
 // owner by `JoinTable.SourceColumn = <owner>.PrimaryKey` and compiles to an
 // EXISTS / NOT EXISTS. For a many-to-many JoinTable is the pair
 // table and TargetColumn its target key; for a has-many or belongs-to
@@ -134,12 +134,14 @@ func ParseRelationTag(tag string) (*RelationSchema, error) {
 	if len(parts) > 4 && parts[4] != "-" {
 		rel.TenantColumn = parts[4]
 	}
-	for name, ident := range map[string]string{
-		"junction": rel.JoinTable, "source column": rel.SourceColumn,
-		"target column": rel.TargetColumn, "primary key": rel.PrimaryKey,
+	// In the tag's own order, so a tag with several bad parts always reports
+	// the first.
+	for _, part := range []struct{ name, ident string }{
+		{"junction", rel.JoinTable}, {"source column", rel.SourceColumn},
+		{"target column", rel.TargetColumn}, {"primary key", rel.PrimaryKey},
 	} {
-		if !IsIdentifier(ident) {
-			return nil, fmt.Errorf("relation tag %s %q is not a SQL identifier", name, ident)
+		if !IsIdentifier(part.ident) {
+			return nil, fmt.Errorf("relation tag %s %q is not a SQL identifier", part.name, part.ident)
 		}
 	}
 	if rel.TenantColumn != "" && !IsIdentifier(rel.TenantColumn) {

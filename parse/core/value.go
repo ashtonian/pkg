@@ -20,7 +20,7 @@ import (
 //   - FieldTypeString    → string (encoding.TextMarshaler accepted)
 //   - FieldTypeUUID      → canonical lowercase UUID string
 //   - FieldTypeBool      → bool
-//   - FieldTypeTimestamp → RFC 3339 UTC string with nanosecond precision (time.Time accepted)
+//   - FieldTypeTimestamp → RFC 3339 UTC string with nanosecond precision, of fixed width (TimestampLayout); a UTC year outside 0001 to 9999 is an error (time.Time accepted)
 //   - FieldTypeDate      → YYYY-MM-DD (Date accepted)
 //   - FieldTypeTime, FieldTypeInterval, FieldTypeInet, FieldTypeCIDR,
 //     FieldTypeMACAddr   → the canonical text of LocalTime, Interval, Inet,
@@ -88,6 +88,9 @@ func NormalizeScalar(dt FieldType, kind reflect.Kind, v any) (any, error) {
 		if err != nil {
 			return nil, err
 		}
+		if y := t.UTC().Year(); y < minTimestampYear || y > maxTimestampYear {
+			return nil, fmt.Errorf("timestamp %s is outside the years 0001 to 9999 in UTC", t.Format(time.RFC3339Nano))
+		}
 		return FormatTimestamp(t), nil
 	case FieldTypeTime:
 		return normalizeLocalTime(v)
@@ -105,12 +108,21 @@ func NormalizeScalar(dt FieldType, kind reflect.Kind, v any) (any, error) {
 
 // TimestampLayout is the canonical timestamp text: RFC 3339 in UTC with
 // exactly nine fractional digits. The width is fixed, so where timestamps
-// are stored and compared as text (SQLite) text order is time order
-// ; time.RFC3339Nano trims trailing zeros, which sorts
-// `…05.5Z` before `…05Z`.
+// are stored and compared as text (SQLite), text order is time order:
+// time.RFC3339Nano trims trailing zeros, which sorts `…05.5Z` before
+// `…05Z`. A timestamp's UTC year is 0001 to 9999, so its year has four
+// digits too.
 const TimestampLayout = "2006-01-02T15:04:05.000000000Z07:00"
 
-// FormatTimestamp renders t in the canonical timestamp form (TimestampLayout).
+// The years a timestamp's UTC instant may fall in.
+const (
+	minTimestampYear = 1
+	maxTimestampYear = 9999
+)
+
+// FormatTimestamp renders t in the canonical timestamp form
+// (TimestampLayout). Its width is fixed for a UTC year of 0001 to 9999,
+// the instants NormalizeScalar accepts.
 func FormatTimestamp(t time.Time) string {
 	return t.UTC().Format(TimestampLayout)
 }
@@ -138,13 +150,52 @@ func toTime(v any) (time.Time, error) {
 	case time.Time:
 		return t, nil
 	case string:
+		if !rfc3339Text(t) {
+			return time.Time{}, errInvalidTimestamp
+		}
 		parsed, err := time.Parse(time.RFC3339Nano, t)
 		if err != nil {
-			return time.Time{}, errors.New("invalid timestamp, expected RFC 3339")
+			return time.Time{}, errInvalidTimestamp
 		}
 		return parsed, nil
 	}
 	return time.Time{}, fmt.Errorf("expected timestamp string, got %T", v)
+}
+
+var errInvalidTimestamp = errors.New("invalid timestamp, expected RFC 3339")
+
+// rfc3339Text reports s in RFC 3339's date-time form: YYYY-MM-DDTHH:MM:SS,
+// a fraction of one to nine digits after a dot, then Z or an offset ±HH:MM
+// within ±23:59. time.Parse, which checks each field's range after this,
+// also takes a comma fraction, a one-digit hour, a tenth fractional digit it
+// drops and an offset of +24:00 or with a minute of 60.
+func rfc3339Text(s string) bool {
+	const shape = "dddd-dd-ddTdd:dd:dd"
+	if len(s) <= len(shape) {
+		return false
+	}
+	for i := range len(shape) {
+		if shape[i] == 'd' && !isDigit(s[i]) || shape[i] != 'd' && s[i] != shape[i] {
+			return false
+		}
+	}
+	rest := s[len(shape):]
+	if rest[0] == '.' {
+		n := 1
+		for n < len(rest) && isDigit(rest[n]) {
+			n++
+		}
+		if n == 1 || n > 10 {
+			return false
+		}
+		rest = rest[n:]
+	}
+	if rest == "Z" {
+		return true
+	}
+	return len(rest) == 6 && (rest[0] == '+' || rest[0] == '-') && rest[3] == ':' &&
+		isDigit(rest[1]) && isDigit(rest[2]) && isDigit(rest[4]) && isDigit(rest[5]) &&
+		rest[1:3] <= "23" && rest[4:6] <= "59"
 }
 
 // text returns v as a string when it is one (including named string types),

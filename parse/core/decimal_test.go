@@ -30,6 +30,18 @@ type textDecimal struct{ text string }
 
 func (d textDecimal) MarshalText() ([]byte, error) { return []byte(d.text), nil }
 
+// pointerTextDecimal marshals to text through its pointer.
+type pointerTextDecimal struct{ text string }
+
+func (d *pointerTextDecimal) MarshalText() ([]byte, error) { return []byte(d.text), nil }
+
+// nilDecimal has the Decimal method set and no coefficient.
+type nilDecimal struct{}
+
+func (nilDecimal) Coefficient() *big.Int { return nil }
+
+func (nilDecimal) Exponent() int32 { return 0 }
+
 func TestDecimalText(t *testing.T) {
 	tests := []struct {
 		name string
@@ -47,6 +59,7 @@ func TestDecimalText(t *testing.T) {
 		{"negative", "-1.50", "-1.5"},
 		{"small fraction", "0.0012", "0.0012"},
 		{"exponent", "1e3", "1000"},
+		{"text through the pointer", pointerTextDecimal{text: "2.50"}, "2.5"},
 		{"upper-case exponent with sign", "1.5E+2", "150"},
 		{"negative exponent", "125e-2", "1.25"},
 		{"negative exponent below one", "-5e-3", "-0.005"},
@@ -115,6 +128,9 @@ func TestDecimalText_Rejects(t *testing.T) {
 		{"exponent past the digit bound", "1e1000"},
 		{"negative exponent past the digit bound", "1e-1000"},
 		{"exponent beyond int32", "1e99999999999"},
+		{"negative exponent beyond int32", "1e-99999999999"},
+		{"zero with an exponent beyond int32", "0e99999999999"},
+		{"no coefficient", nilDecimal{}},
 		{"plain literal past the digit bound", strings.Repeat("9", core.MaxDecimalDigits+1)},
 		{"decimal past the digit bound", decimal.New(1, core.MaxDecimalDigits)},
 	}

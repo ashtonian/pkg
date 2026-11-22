@@ -3,6 +3,7 @@ package core
 import (
 	"errors"
 	"fmt"
+	"math"
 	"reflect"
 	"slices"
 	"strings"
@@ -54,8 +55,7 @@ type Field struct {
 	Route []int
 	// External is the field's name under the field-name tag, by
 	// encoding/json's rule (the tag's name, else the Go name). It is empty
-	// when the tag hides the field, or the embedded struct it is promoted
-	// from (`json:"-"`).
+	// when the tag hides the field (`json:"-"`).
 	External string
 	// Tags are the field's annotations, parsed once.
 	Tags Tags
@@ -202,9 +202,10 @@ func parseCapabilities(tag string) (Capabilities, error) {
 	return c, nil
 }
 
-// fieldsCacheCapacity is how many struct types each field-name tag keeps
-// walked: every resource, document and element type of a large API.
-const fieldsCacheCapacity = 1024
+// fieldsCacheCapacity keeps every walked type: struct types are finite and
+// never unloaded, and a walk must be the same *StructFields every time,
+// since views key maps by its *Field.
+const fieldsCacheCapacity = math.MaxInt
 
 // hiddenPrefix starts the walk-internal name of a field the field-name tag
 // hides. No field-name tag name can hold a NUL (it is a control
@@ -217,10 +218,12 @@ var fieldCaches sync.Map // fieldsKey -> *gowalker.TypeCache[*StructFields]
 
 // StructFields walks t (a struct, or a pointer to one) under the
 // generator's field-name and column tags. The walk is cached per type and
-// tag pair. A name two fields claim — a shallower field shadowing a promoted
-// one, or two promoted fields at one depth — is an error naming both
-// fields: encoding/json keeps the shallower field or drops both, and parse
-// must see exactly the fields encoding/json writes.
+// tag pair. A name two fields claim goes to the field encoding/json writes
+// under it: the shallower one, then at one depth the one the tag names.
+// Two fields that claim a name at one depth, both tagged or both untagged,
+// are an error naming both, since encoding/json writes neither and parse
+// must see exactly the fields it writes. A stored document's members are
+// named by JSONFieldsOf, which drops such a tie as encoding/json does.
 func (g *SchemaGenerator) StructFields(t reflect.Type) (*StructFields, error) {
 	return StructFieldsOf(t, g.FieldNameTag(), g.ColumnTagKey())
 }
@@ -268,13 +271,25 @@ func fieldsCache(k fieldsKey) (*gowalker.TypeCache[*StructFields], error) {
 // walkError names the fields of a name conflict.
 func walkError(t reflect.Type, err error) error {
 	if conflict, ok := errors.AsType[*gowalker.NameConflict](err); ok {
-		first, second := conflict.First.GoField().Name, conflict.Second.GoField().Name
+		first, second := promotedName(conflict.First), promotedName(conflict.Second)
 		if strings.HasPrefix(conflict.Name, hiddenPrefix) {
 			return fmt.Errorf("%s: hidden fields %s and %s are declared alike; give one its own column", t, first, second)
 		}
-		return fmt.Errorf("%s: fields %s and %s are both named %q; rename one (parse refuses names encoding/json resolves by depth)", t, first, second, conflict.Name)
+		return fmt.Errorf("%s: fields %s and %s are both named %q at one depth, so encoding/json writes neither; rename one", t, first, second, conflict.Name)
 	}
 	return fmt.Errorf("%s: %w", t, err)
+}
+
+// promotedName is a field's Go name behind the embedded fields it is
+// promoted through, so two promoted ID fields read as Audit.ID and Base.ID.
+func promotedName(f *gowalker.Field) string {
+	var b strings.Builder
+	for _, parent := range f.InlineParents() {
+		b.WriteString(parent.Name)
+		b.WriteByte('.')
+	}
+	b.WriteString(f.GoField().Name)
+	return b.String()
 }
 
 // hiddenName is the walk-internal name of a field the field-name tag hides:
@@ -285,12 +300,12 @@ func hiddenName(sf reflect.StructField) string {
 }
 
 // fieldRule names a field as Go 1.27's encoding/json does under tag key:
-// the tag's name, else the Go name; a struct embedded without a name has
-// its fields promoted, and a name two fields claim goes to the shallower,
-// then to the one the tag names (ResolveByDepth, Explicit). A field the
-// tag hides keeps a walk-internal name so its column survives. Every named
-// field is a leaf: views that read inside one (documents, elements) walk
-// its type themselves.
+// the tag's name, else the Go name, and a struct embedded without a name
+// promotes its fields. A name two fields claim is settled by
+// ResolveByDepth, a tag's name marked Explicit (StructFields states the
+// rule). A field the tag hides keeps a walk-internal name so its column
+// survives. Every named field is a leaf: views that read inside one
+// (documents, elements) walk its type themselves.
 func fieldRule(sf reflect.StructField, key string) (gowalker.FieldRule, error) {
 	tag, tagged := sf.Tag.Lookup(key)
 	if !sf.IsExported() && !sf.Anonymous {
@@ -392,6 +407,14 @@ func readTags(sf reflect.StructField, k fieldsKey) (Tags, error) {
 		return Tags{}, err
 	}
 	_, opts, _ := strings.Cut(tag.Get(k.name), ",")
+	indexed, err := boolTag(tag, "indexed")
+	if err != nil {
+		return Tags{}, err
+	}
+	immutable, err := boolTag(tag, "immutable")
+	if err != nil {
+		return Tags{}, err
+	}
 	t := Tags{
 		Parse:            caps,
 		Column:           tag.Get(k.column),
@@ -408,8 +431,8 @@ func readTags(sf reflect.StructField, k fieldsKey) (Tags, error) {
 		GeoSRID:          tag.Get("geo_srid"),
 		GeoLat:           tag.Get("geo_lat"),
 		GeoLon:           tag.Get("geo_lon"),
-		Indexed:          tag.Get("indexed") == "true",
-		Immutable:        tag.Get("immutable") == "true",
+		Indexed:          indexed,
+		Immutable:        immutable,
 		Label:            tag.Get("label"),
 		Description:      tag.Get("description"),
 		Group:            tag.Get("group"),
@@ -426,6 +449,19 @@ func readTags(sf reflect.StructField, k fieldsKey) (Tags, error) {
 		return Tags{}, err
 	}
 	return t, nil
+}
+
+// boolTag reads a tag that is "true", "false" or absent, so a misspelt
+// value fails schema generation instead of reading as false.
+func boolTag(tag reflect.StructTag, key string) (bool, error) {
+	switch v, ok := tag.Lookup(key); {
+	case !ok || v == "false":
+		return false, nil
+	case v == "true":
+		return true, nil
+	default:
+		return false, fmt.Errorf("%s: %q is neither true nor false", key, v)
+	}
 }
 
 // HasFieldNameOption reports whether the field-name tag carries option

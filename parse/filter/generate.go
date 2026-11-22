@@ -49,7 +49,7 @@ func generateFilterSchema(g *core.SchemaGenerator, t reflect.Type) (*ResourceSch
 			// need an addressable name. Generators can preserve their
 			// declared name with relation_name; otherwise use snake_case
 			// of the struct field name.
-			fieldName = cmp.Or(tags.RelationName, core.ToSnakeCase(field.GoName))
+			fieldName = cmp.Or(tags.RelationName, core.SnakeCase(field.GoName))
 		}
 		if !tags.Parse.Filter || fieldName == "" {
 			if c, ok := policyColumn(g, tableName, field); ok {
