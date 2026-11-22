@@ -16,14 +16,14 @@ func testPatchSchema() *patch.PatchSchema {
 		Resource: "devices",
 		AllowedPaths: map[string]*patch.PathSchema{
 			"/name":   {AllowedOps: []patch.PatchOp{patch.PatchOpReplace}, DataType: core.FieldTypeString, SQLColumn: "name"},
-			"/status": {AllowedOps: []patch.PatchOp{patch.PatchOpReplace}, DataType: core.FieldTypeString, SQLColumn: "status", Validators: []core.Validator{enumValidator("active", "offline")}},
+			"/status": {AllowedOps: []patch.PatchOp{patch.PatchOpReplace}, DataType: core.FieldTypeString, SQLColumn: "status", Validators: []patch.Validator{enumValidator("active", "offline")}},
 			// ID not in schema — not patchable (no parse:"patch" tag)
 		},
 		MaxOperations: 50,
 	}
 }
 
-func enumValidator(values ...string) core.Validator {
+func enumValidator(values ...string) patch.Validator {
 	allowed := make(map[string]struct{}, len(values))
 	for _, v := range values {
 		allowed[v] = struct{}{}

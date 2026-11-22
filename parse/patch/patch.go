@@ -46,11 +46,17 @@ func (r RawPatchOp) present() bool { return r.HasValue || r.Value != nil }
 // Use this when the input has already been decoded from a non-JSON format
 // (protobuf, msgpack, YAML, etc.).
 func (p *Parser) ParseOps(ops []RawPatchOp) (*ParsedPatch, error) {
+	if p.schema == nil {
+		return nil, errNoSchema
+	}
 	return p.validateOps(ops)
 }
 
 // Parse validates and parses a JSON Patch document from JSON bytes.
 func (p *Parser) Parse(body []byte) (*ParsedPatch, error) {
+	if p.schema == nil {
+		return nil, errNoSchema
+	}
 	if p.config.MaxInputSize > 0 && len(body) > p.config.MaxInputSize {
 		return nil, &core.ParseError{
 			Kind: core.ParseErrorKindPatch, Code: ECodeInputTooLarge.String(),
@@ -163,12 +169,33 @@ func (p *Parser) validateOperation(raw RawPatchOp, i int) (*PatchOperation, erro
 	if err != nil {
 		return nil, err
 	}
-	if !pathSchema.AllowsOp(op) {
-		return nil, &core.ParseError{
-			Kind: core.ParseErrorKindPatch, Code: ECodeOpNotAllowed.String(),
-			Message: fmt.Sprintf("operation '%s' not allowed on path '%s' at index %d", op, raw.Path, i),
-			Path:    raw.Path, Index: new(i),
+
+	// An operation carries only the value it writes: a remove writes null
+	// whatever value a client attached, and a move or copy writes its
+	// source's. A relation's remove names the members it removes.
+	var value any
+	if opTakesValue(op) || (pathSchema.Relation != nil && op == PatchOpRemove) {
+		value = normalizeNilPointer(raw.Value)
+	}
+	value, failures := checkValue(pathSchema, op, value, depth, false, p.codec)
+	if len(failures) > 0 {
+		errs := make([]error, len(failures))
+		for j, f := range failures {
+			if f.code == ECodeOpNotAllowed {
+				errs[j] = &core.ParseError{
+					Kind: core.ParseErrorKindPatch, Code: f.code.String(),
+					Message: fmt.Sprintf("operation '%s' not allowed on path '%s' at index %d", op, raw.Path, i),
+					Path:    raw.Path, Index: new(i),
+				}
+				continue
+			}
+			errs[j] = &core.ParseError{
+				Kind: core.ParseErrorKindPatch, Code: f.code.String(),
+				Message: fmt.Sprintf("invalid value for path '%s' at index %d: %v", raw.Path, i, f.cause),
+				Path:    raw.Path, Index: new(i), Cause: f.cause,
+			}
 		}
+		return nil, errors.Join(errs...)
 	}
 
 	var fromSchema *PathSchema
@@ -196,74 +223,6 @@ func (p *Parser) validateOperation(raw RawPatchOp, i int) (*PatchOperation, erro
 		}
 		fromSchema = from
 	}
-
-	// An operation carries only the value it writes: a remove writes null
-	// whatever value a client attached, and a move or copy writes its
-	// source's. A relation's remove names the members it removes.
-	relation := pathSchema.Relation != nil
-	var value any
-	if opTakesValue(op) || (relation && op == PatchOpRemove) {
-		value = normalizeNilPointer(raw.Value)
-	}
-	if err := checkNullability(pathSchema, op, value, depth); err != nil {
-		return nil, &core.ParseError{
-			Kind: core.ParseErrorKindPatch, Code: ECodePatchValueInvalid.String(),
-			Message: fmt.Sprintf("invalid value for path '%s' at index %d: %v", raw.Path, i, err),
-			Path:    raw.Path, Index: new(i), Cause: err,
-		}
-	}
-	var failures []error
-	wrap := func(err error) error {
-		return &core.ParseError{Kind: core.ParseErrorKindPatch, Code: ECodePatchValueInvalid.String(), Message: fmt.Sprintf("invalid value for path '%s' at index %d: %v", raw.Path, i, err), Path: raw.Path, Index: new(i), Cause: err}
-	}
-
-	// Values are normalized before validators run, so validators and every
-	// consumer (SQL binding, typed apply) see the canonical value. Validators
-	// run for every write, a remove's null and an explicit null included.
-	switch {
-	case op == PatchOpRemove && !relation:
-		for _, validator := range pathSchema.Validators {
-			if err := validator(nil); err != nil {
-				failures = append(failures, valueFailures(err, wrap)...)
-			}
-		}
-	case opTakesValue(op) || relation && op == PatchOpRemove:
-		// A relation's remove normalizes its members like the other
-		// membership verbs.
-		normalized, err := normalizeOpValue(pathSchema, op, value, depth, p.codec)
-		if err != nil {
-			return nil, &core.ParseError{
-				Kind: core.ParseErrorKindPatch, Code: ECodePatchValueInvalid.String(),
-				Message: fmt.Sprintf("invalid value for path '%s' at index %d: %v", raw.Path, i, err),
-				Path:    raw.Path, Index: new(i), Cause: err,
-			}
-		}
-		checked := normalized
-		if op == PatchOpTest {
-			// A test keeps the document it compares; validators judge the
-			// value, normalized as a replace normalizes it.
-			if checked, err = normalizeOpValue(pathSchema, PatchOpReplace, value, depth, p.codec); err != nil {
-				return nil, &core.ParseError{
-					Kind: core.ParseErrorKindPatch, Code: ECodePatchValueInvalid.String(),
-					Message: fmt.Sprintf("invalid value for path '%s' at index %d: %v", raw.Path, i, err),
-					Path:    raw.Path, Index: new(i), Cause: err,
-				}
-			}
-		}
-		value = normalized
-		for _, validator := range pathSchema.Validators {
-			if err := validator(checked); err != nil {
-				failures = append(failures, valueFailures(err, wrap)...)
-			}
-		}
-	}
-	if err := checkItems(pathSchema, op, value, depth); err != nil {
-		failures = append(failures, valueFailures(err, wrap)...)
-	}
-	if len(failures) > 0 {
-		return nil, errors.Join(failures...)
-	}
-
 	return &PatchOperation{Op: op, Path: raw.Path, From: raw.From, Value: value, Schema: pathSchema, fromSchema: fromSchema}, nil
 }
 
@@ -446,7 +405,7 @@ func checkNullability(ps *PathSchema, op PatchOp, value any, depth int) error {
 		reason += " and cannot be removed"
 	}
 	if mustHoldElement(ps.GoType, ps.Bounds) {
-		return core.NewConstraintError(core.ConstraintMinItems, strconv.Itoa(*ps.Bounds.MinItems), reason)
+		return NewConstraintError(core.ConstraintMinItems, strconv.Itoa(*ps.Bounds.MinItems), reason)
 	}
 	return errors.New(reason)
 }

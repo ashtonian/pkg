@@ -123,7 +123,7 @@ func TestValidateOperations_TypedNilValidatorValue(t *testing.T) {
 			p := patch.NewParser(&patch.PatchSchema{AllowedPaths: map[string]*patch.PathSchema{
 				"/value": {
 					AllowedOps: []patch.PatchOp{patch.PatchOpReplace}, GoType: goType,
-					Validators: []core.Validator{func(value any) error {
+					Validators: []patch.Validator{func(value any) error {
 						calls++
 						assert.Nil(t, value, "validators receive canonical null")
 						return nil

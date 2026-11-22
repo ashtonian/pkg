@@ -12,6 +12,9 @@ import (
 
 // ParseMergePatch parses a JSON Merge Patch (RFC 7396) body into a ParsedPatch.
 func ParseMergePatch(body []byte, schema *PatchSchema, config *core.ParserConfig) (*ParsedPatch, error) {
+	if schema == nil {
+		return nil, errNoSchema
+	}
 	if config == nil {
 		config = core.DefaultConfig()
 	}
@@ -42,6 +45,9 @@ func ParseMergePatch(body []byte, schema *PatchSchema, config *core.ParserConfig
 // slice. It avoids the JSON round trip of building a body only to parse it
 // again.
 func ParseMergePatchMap(raw map[string]any, schema *PatchSchema, config *core.ParserConfig) (*ParsedPatch, error) {
+	if schema == nil {
+		return nil, errNoSchema
+	}
 	if config == nil {
 		config = core.DefaultConfig()
 	}
@@ -64,7 +70,7 @@ func ParseMergePatchMap(raw map[string]any, schema *PatchSchema, config *core.Pa
 			Message: fmt.Sprintf("merge patch nests %d levels deep; maximum is %d", depth, config.MaxDepth),
 		}
 	}
-	if schema != nil && schema.MaxOperations > 0 && ops > schema.MaxOperations {
+	if schema.MaxOperations > 0 && ops > schema.MaxOperations {
 		return nil, &core.ParseError{
 			Kind: core.ParseErrorKindPatch, Code: ECodeTooManyOps.String(),
 			Message: fmt.Sprintf("too many operations: %d exceeds maximum %d", ops, schema.MaxOperations),
@@ -104,62 +110,34 @@ func validateMergeMember(schema *PatchSchema, codec core.Codec, key string, valu
 			Path:    path, Cause: err,
 		}
 	}
-	var op PatchOp
+	// RFC 7396: null removes the member, any other value replaces it, and
+	// only an object in the patch merges. A Go value normalizes to an object
+	// too (a struct) but replaces the member whole.
+	op := PatchOpReplace
 	if value == nil {
 		op = PatchOpRemove
-	} else {
-		op = PatchOpReplace
 	}
-	// Only an object in the patch merges; a Go value normalizes to an
-	// object too (a struct) but replaces the member whole.
 	_, merges := value.(map[string]any)
-
-	// RFC 7396 null means "remove"; report it as a nullability error
-	// rather than a confusing "remove not allowed".
-	if err := checkNullability(pathSchema, op, value, 1); err != nil {
-		return nil, &core.ParseError{
-			Kind: core.ParseErrorKindPatch, Code: ECodePatchValueInvalid.String(),
-			Message: fmt.Sprintf("invalid value for path '%s': %v", path, err),
-			Path:    path, Cause: err,
-		}
-	}
-	if !pathSchema.AllowsOp(op) {
-		return nil, &core.ParseError{
-			Kind: core.ParseErrorKindPatch, Code: ECodeOpNotAllowed.String(),
-			Message: fmt.Sprintf("operation '%s' not allowed on path '%s'", op, path),
-			Path:    path,
-		}
-	}
-
-	if value != nil {
-		normalized, err := normalizeMergeValue(pathSchema, op, value, codec)
-		if err != nil {
-			return nil, &core.ParseError{
-				Kind: core.ParseErrorKindPatch, Code: ECodePatchValueInvalid.String(),
-				Message: fmt.Sprintf("invalid value for path '%s': %v", path, err),
-				Path:    path, Cause: err,
+	value, failures := checkValue(pathSchema, op, value, 1, true, codec)
+	if len(failures) > 0 {
+		errs := make([]error, len(failures))
+		for i, f := range failures {
+			if f.code == ECodeOpNotAllowed {
+				errs[i] = &core.ParseError{
+					Kind: core.ParseErrorKindPatch, Code: f.code.String(),
+					Message: fmt.Sprintf("operation '%s' not allowed on path '%s'", op, path),
+					Path:    path,
+				}
+				continue
+			}
+			errs[i] = &core.ParseError{
+				Kind: core.ParseErrorKindPatch, Code: f.code.String(),
+				Message: fmt.Sprintf("invalid value for path '%s': %v", path, f.cause),
+				Path:    path, Cause: f.cause,
 			}
 		}
-		value = normalized
+		return nil, errors.Join(errs...)
 	}
-	// Explicit null is a removal, but still a proposed value that custom
-	// validators may forbid, just as for JSON Patch replace with null.
-	var failures []error
-	wrap := func(err error) error {
-		return &core.ParseError{Kind: core.ParseErrorKindPatch, Code: ECodePatchValueInvalid.String(), Message: fmt.Sprintf("invalid value for path '%s': %v", path, err), Path: path, Cause: err}
-	}
-	for _, validator := range pathSchema.Validators {
-		if err := validator(value); err != nil {
-			failures = append(failures, valueFailures(err, wrap)...)
-		}
-	}
-	if err := checkItems(pathSchema, op, value, 1); err != nil {
-		failures = append(failures, valueFailures(err, wrap)...)
-	}
-	if len(failures) > 0 {
-		return nil, errors.Join(failures...)
-	}
-
 	return &PatchOperation{Op: op, Path: path, Value: value, Schema: pathSchema, Merge: merges}, nil
 }
 

@@ -85,7 +85,7 @@ type PathSchema struct {
 	// is a JSON string ("42", not 42), as encoding/json writes the field.
 	// Values normalize from it, so SQL binds and validators see the number.
 	Wire       core.Wire
-	Validators []core.Validator
+	Validators []Validator
 	// EnumValues is the path's `enum` allowlist (also a Validator), for
 	// schema discovery.
 	EnumValues []string

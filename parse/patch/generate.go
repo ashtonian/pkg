@@ -139,7 +139,7 @@ func generatePatchSchema(g *core.SchemaGenerator, t reflect.Type, server bool) (
 			return nil, fmt.Errorf("field %s: %w", field.GoName, err)
 		}
 
-		var validators []core.Validator
+		var validators []Validator
 		var enumValues []string
 		if len(tags.Enum) > 0 {
 			enumValues = slices.Clone(tags.Enum)

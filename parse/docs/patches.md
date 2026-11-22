@@ -33,14 +33,14 @@ Generated client and server patch schemas set `PatchSchema.MaxOperations` to `pa
 
 A field tagged `json:",string"` takes its value as a JSON string holding it (`{"id":"9007199254740993"}`), as it reads in responses; a bare JSON number is E2077, while a Go number passed in code is the value. A `test` compares canonical text, and a `copy` or `move` between a quoted and an unquoted field is refused ([quoted values](schema-configuration.md#quoted-values)).
 
-A rejected patch returns no executable `ParsedPatch`. Independent member/operation failures are collected with `errors.Join`: merge members are ordered by name and JSON Patch operations by input order. Each invalid value remains a `*core.ParseError` with its path, operation index where applicable, and E2077. `errors.As(err, &pe)` still selects the first parse failure. Malformed document syntax and document-wide size/count/depth limits fail before value validation.
+Both wire formats judge each value by one rule — the operation is allowed on the path, a clear is nullable, the value normalizes, its validators pass, an array set whole holds the element counts — and frame failures their own way: a JSON Patch failure names its operation's index (`at index 0`, `ParseError.Index`), a merge patch's names only the path. A merge null on a field that cannot hold null reports that it is not nullable rather than that `remove` is not allowed. A parse with a nil schema is an error. A rejected patch returns no executable `ParsedPatch`. Independent member/operation failures are collected with `errors.Join`: merge members are ordered by name and JSON Patch operations by input order. Each invalid value remains a `*core.ParseError` with its path, operation index where applicable, and E2077. `errors.As(err, &pe)` still selects the first parse failure. Malformed document syntax and document-wide size/count/depth limits fail before value validation.
 
-Declared constraints carry a `*core.ConstraintError` as the parse error's cause. `Constraint` is `enum`, `minlen`, `maxlen`, `min`, `max`, `minitems` or `maxitems`; `Limit` is the schema's bound text or comma-separated enum allowlist. Value-specific messages are retained. Each invalid array element has its own parse failure; element-count failures are reported alongside value-tag failures. Type/shape failures do not invent a declared constraint.
+Declared constraints carry a `*patch.ConstraintError` as the parse error's cause. `Constraint` is `enum`, `minlen`, `maxlen`, `min`, `max`, `minitems` or `maxitems`; `Limit` is the schema's bound text or comma-separated enum allowlist. Value-specific messages are retained. Each invalid array element has its own parse failure; element-count failures are reported alongside value-tag failures. Type/shape failures do not invent a declared constraint.
 
 ```go
 var pe *core.ParseError
 if errors.As(err, &pe) {
-    var constraint *core.ConstraintError
+    var constraint *patch.ConstraintError
     if errors.As(pe.Cause, &constraint) {
         // pe.Path identifies the member; constraint.Constraint and Limit
         // identify its declared rule without parsing the message.

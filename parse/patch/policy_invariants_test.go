@@ -209,7 +209,7 @@ func TestValidatorsRunOnExplicitNull(t *testing.T) {
 		return nil
 	}
 	schema := p2Schema()
-	schema.AllowedPaths["/name"].Validators = []core.Validator{rejectNil}
+	schema.AllowedPaths["/name"].Validators = []patch.Validator{rejectNil}
 
 	_, err := patch.NewParser(schema, nil).Parse([]byte(`[{"op":"replace","path":"/name","value":null}]`))
 	if err == nil {
@@ -235,7 +235,7 @@ func TestValidatorsRunOnExplicitNull(t *testing.T) {
 
 	// A validator that tolerates nil still passes.
 	schema2 := p2Schema()
-	schema2.AllowedPaths["/name"].Validators = []core.Validator{func(any) error { return nil }}
+	schema2.AllowedPaths["/name"].Validators = []patch.Validator{func(any) error { return nil }}
 	if _, err := patch.NewParser(schema2, nil).Parse([]byte(`[{"op":"replace","path":"/name","value":null}]`)); err != nil {
 		t.Fatalf("nil-tolerant validator rejected: %v", err)
 	}

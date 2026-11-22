@@ -101,7 +101,7 @@ func TestParser_RejectsUnknownPatchOp(t *testing.T) {
 func TestParser_ArrayAppend_ValidatorFires(t *testing.T) {
 	t.Parallel()
 	schema := arrayAppendSchema()
-	schema.AllowedPaths["/photo_blob_keys"].Validators = []core.Validator{
+	schema.AllowedPaths["/photo_blob_keys"].Validators = []patch.Validator{
 		func(v any) error {
 			s, ok := v.(string)
 			if !ok || !strings.HasPrefix(s, "tenants/") {

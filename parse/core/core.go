@@ -122,9 +122,6 @@ func (t SQLType) IsArray() bool { return strings.HasSuffix(string(t), "[]") }
 // IsJSON reports a declared JSON document storage role, including scalar JSON.
 func (t SQLType) IsJSON() bool { return t == SQLJSON || t == SQLJSONB }
 
-// Validator is a function that validates a value.
-type Validator func(value any) error
-
 // --- Error Types ---
 
 // ParseErrorKind identifies the subsystem that produced the error.

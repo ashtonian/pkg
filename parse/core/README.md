@@ -23,7 +23,7 @@ Start with the [runnable package example](../README.md#quick-start). The focused
 - Relations: `RelationSchema` (`OwnerKey`: its `PrimaryKey`, or `DefaultPrimaryKey`), `DefaultPrimaryKey` (`"id"`, a resource's or relation owner's key when none is declared), `ParseRelationTag`, `IsIdentifier`
 - Errors: `Code` and its constants `Code*` (`CodeUnknownField` = E2071, …: each code's one definition, with its status and default message; filter, patch and parse alias them as `ECode*`), `ParseError` (`ErrorCode`, `ErrorHTTPStatus`, `IsErrorUserFacing`), `ParseErrorKind`, `DetailField` / `DetailParameter` (the `Details` keys)
 - Fields: `StructFieldsOf`, `StructFields` (`External`, `ColumnTagged`), `Field` (`Value`, `Settable`, `Hidden`), `Tags`, `Capabilities` (`Has`), `Capability` (`CapabilityFilter`, … — the `parse` tag's values, which the `paths` tag's member capabilities share), `Bounds` (`IsZero`, `BoundsValues`, `CountsItems`, `Check`: a field's `minlen` / `maxlen` / `min` / `max` / `minitems` / `maxitems`, the tags the `Constraint*` constants name) — one walk of a struct type shared by every schema
-- Codec: `Codec`, `StdlibJSON`; naming: `ToSnakeCase`, `Pluralize`; `Validator`
+- Codec: `Codec`, `StdlibJSON`; naming: `ToSnakeCase`, `Pluralize`; the declared-constraint names `Constraint*` (`ConstraintEnum`, …), which `patch.ConstraintError` reports
 
 ## Code map
 
