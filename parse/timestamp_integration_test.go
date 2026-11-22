@@ -22,7 +22,8 @@ func TestTimestamps_PostgreSQL(t *testing.T) {
 	require.NoError(t, err)
 	q := u.Query()
 	q.Set("TimeZone", "Asia/Kolkata")
-	q.Set("DateStyle", "SQL, DMY")
+	// No space: pgx reads a DSN query's + literally, not as a space.
+	q.Set("DateStyle", "SQL,DMY")
 	u.RawQuery = q.Encode()
 	db, err := sql.Open("pgx", u.String())
 	require.NoError(t, err)
