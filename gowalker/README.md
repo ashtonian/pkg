@@ -79,10 +79,11 @@ raw `reflect.StructTag`, whose `Lookup` tells an explicit empty default from no
 default at all. Applying defaults and reading the environment stay in your library.
 Compilation refuses a struct tag that `reflect.StructTag` cannot read to its
 end, or that repeats a key, so a typo never turns an annotation off silently;
-`TagKeys` lists a tag's keys for checking them against the ones you read, and
-`MisspeltTagKey(key, known)` names the key of yours a key you do not read most
-likely misspells (equal ignoring case, `-` and `_`, or one character away), for
-your library to refuse it rather than ignore it.
+`TagKeys` lists a tag's keys for checking them against the ones you read, a
+compiled field or declaration yields the keys compilation already read
+(`TagKeys()`), and `MisspeltTagKey(key, known)` names the key of yours a key you
+do not read most likely misspells (equal ignoring case, `-` and `_`, or one
+character away), for your library to refuse it rather than ignore it.
 
 ## Pick a naming convention
 
@@ -112,7 +113,8 @@ Two fields claiming one name fail compilation with an error naming both.
 | `gowalker.NewTypeCache(engine, build)` | Your per-type metadata, built once | Your library's hot path |
 | `schema.AccessName(name)` | `*Accessor`, cached by the schema | Reading or writing one field across many values |
 | `schema.ResolveText("server.port")` | `*Accessor`, not cached | Nested locations; keep it yourself |
-| `schema.WalkType(visit)` | Every field and nested type, with `Inherited(tag)` | Catalogs, section-wide annotations |
+| `schema.WalkType(visit)` | Every field and nested type, with `Inherited(tag)`; with `WithDeclaredView()`, every named declaration, inline owners and fields that lost their name included | Catalogs, section-wide annotations, checking your tags along every route |
+| `schema.At(shape)` | The `*Schema` of a node of the compiled graph, such as a collection's element, cached per node | Accessors relative to a nested value in hand, without compiling its type again |
 | `gowalker.Get`, `GetAs`, `Set` | One read or write using Go names | Occasional access |
 
 Engines, schemas, caches and accessors are safe to share across goroutines and
@@ -150,7 +152,7 @@ other settings and reads no environment.
 | `WithLimits(Limits)` | `DefaultLimits()`: 4096 types, 65536 fields, depth 128, 256 path steps | Compilation and access budgets |
 
 Walks take `WithWalkLimits` (default depth 128, 100000 nodes), `WithLeaveEvents`,
-`WithUnorderedMaps` and `WithMapKeyOrder`; writes take
+`WithUnorderedMaps`, `WithMapKeyOrder` and, for type walks, `WithDeclaredView`; writes take
 `WithPointerAllocation`, `WithMapAllocation` and `WithCheckedNumbers`. The
 [API reference](docs/api.md) defines each one.
 
@@ -188,10 +190,12 @@ goroutines. What an owner can observe:
   embedded struct `WithJSONFields` names, as `encoding/json` writes it, is a
   field whose value reads and writes return `ErrAccess`; only its exported
   fields are reachable.
-- Error text names operations, Go types, field names and tags, which come from
-  declarations. It never includes values, map keys or path steps, which can be
-  caller data; read `Error.Path` and `Error.Step` to show a location under your
-  own policy.
+- Error text names operations, Go types, field names and tag keys, which come
+  from declarations. It never includes values, map keys or path steps, which
+  can be caller data, nor tag values, which can hold secrets such as a default
+  password: an unnamed struct type is printed without its tags, in a generic
+  type's arguments too. Read `Error.Path` and `Error.Step` to show a location,
+  and `Error.Type` or `TagError.Tag` to show a tag, under your own policy.
 - Text paths from untrusted input are bounded: `path.Parse` refuses input over
   65536 bytes and resolution refuses more than `MaxPathSteps` steps. Walks of
   untrusted values stop at `WalkLimits`; compilation of a hostile type stops at
@@ -211,8 +215,8 @@ The standard library only, Go 1.27 or later. There are no external services.
 | `engine.go` | `Engine`, options, limits, the schema cache and `CacheStats` |
 | `tags.go` | Tag parsing, `TagKeys`, `WithTaggedFields` and `WithJSONFields` |
 | `tag_spelling.go` | `MisspeltTagKey`: the known tag key a misspelt one means |
-| `shape.go` | Compilation: the raw type graph, field rules, inlining, name resolution and `Declarations` |
-| `schema.go` | `Schema`, path resolution and cached root-field accessors |
+| `shape.go` | Compilation: the raw type graph, field rules, inlining, name resolution, the view pass and `Declarations` |
+| `schema.go` | `Schema`, `At`, path resolution and cached root-field accessors |
 | `route.go` | Static routes for paths of struct fields and pointers |
 | `access.go` | Reads and value states |
 | `write.go`, `assign.go` | Writes, allocation, `Locate` and checked numeric assignment |

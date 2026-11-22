@@ -493,7 +493,7 @@ func ExampleMisspeltTagKey() {
 		panic(err)
 	}
 	for _, f := range schema.Root().Fields() {
-		for _, key := range f.TagKeys() {
+		for key := range f.TagKeys() {
 			if meant, ok := gowalker.MisspeltTagKey(key, known); ok {
 				fmt.Printf("field %s: tag key %q; did you mean %q?\n", f.Name(), key, meant)
 			}

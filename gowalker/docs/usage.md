@@ -229,6 +229,74 @@ Output:
 Paths use `.` between fields, `["key"]` for string map keys and `[0]` for
 indexes. `Set` follows Go assignment rules and needs a pointer to the root.
 
+## Fields of an element in hand
+
+A path from the root to a map entry or slice element needs its key or index.
+When the element is already in hand, `At` gives its node of the compiled graph
+a schema of its own, whose accessors take the element itself. Nothing is
+compiled again: the engine still holds one schema.
+
+```go
+package main
+
+import (
+	"fmt"
+	"strings"
+
+	"github.com/ashtonian/pkg/gowalker"
+)
+
+type Upstream struct {
+	Host string `koanf:"host"`
+	Port int    `koanf:"port"`
+}
+
+type Config struct {
+	Upstreams map[string]Upstream
+}
+
+var keys = gowalker.MustNew(gowalker.WithTaggedFields("koanf",
+	gowalker.UntaggedName(strings.ToLower),
+	gowalker.NestedFields(),
+))
+
+func main() {
+	schema, err := keys.Compile[Config]()
+	if err != nil {
+		panic(err)
+	}
+	upstreams, _ := schema.Root().Lookup("upstreams")
+	upstream, err := schema.At(upstreams.Shape().Elem())
+	if err != nil {
+		panic(err)
+	}
+	port, err := upstream.AccessName("port")
+	if err != nil {
+		panic(err)
+	}
+	cfg := Config{Upstreams: map[string]Upstream{"a": {Port: 80}, "b": {Port: 443}}}
+	for _, name := range []string{"a", "b"} {
+		value, err := port.GetAs[int](cfg.Upstreams[name])
+		if err != nil {
+			panic(err)
+		}
+		fmt.Println(name, value)
+	}
+	fmt.Println(keys.CacheStats().Entries)
+}
+```
+
+Output:
+
+```text
+a 80
+b 443
+1
+```
+
+Every schema of the compilation returns the same schema for a node, so its
+cached accessors are shared. A node of another compilation returns `ErrPath`.
+
 ## Tags a section passes down
 
 Some annotations describe a whole section: everything under a field tagged

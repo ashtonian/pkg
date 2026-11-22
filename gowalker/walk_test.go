@@ -49,6 +49,11 @@ func typeRoute(v gowalker.TypeVisit) string {
 			out.WriteByte('*')
 		case gowalker.ElementEdge:
 			out.WriteString("[]")
+		case gowalker.InlineEdge:
+			if out.Len() > 0 {
+				out.WriteByte('.')
+			}
+			out.WriteString("(" + edge.Field.GoField().Name + ")")
 		}
 	}
 	return out.String()
@@ -399,4 +404,106 @@ func TestWalkConcurrentSchemaReuse(t *testing.T) {
 		})
 	}
 	group.Wait()
+}
+
+type dwEmpty struct{ _ int }
+
+type dwShared struct{ Port int }
+
+type dwInner struct {
+	Shared dwShared `cfg:"shared"`
+}
+
+type dwNode struct {
+	Next    *dwNode `cfg:"next"`
+	dwEmpty `cfg:",inline"`
+}
+
+type dwConfig struct {
+	dwEmpty  `cfg:",inline" reload:"empty"`
+	*dwInner `cfg:",inline" reload:"inner"`
+	A        dwShared   `cfg:"a"`
+	B        []dwShared `cfg:"b"`
+	Node     dwNode     `cfg:"node"`
+}
+
+// A walk of declared views visits each struct's selected declarations, inline
+// owners included, empty ones too, along every route; the default walk visits
+// visible fields as before.
+func TestWalkType_DeclaredView(t *testing.T) {
+	schema := schemaFor[dwConfig](t, engine(t, gowalker.WithFieldResolver(tagged("cfg"))))
+	walk := func(options ...gowalker.WalkOption) ([]string, map[string]gowalker.TypeVisit, error) {
+		var routes []string
+		visits := map[string]gowalker.TypeVisit{}
+		err := schema.WalkType(func(v gowalker.TypeVisit) (gowalker.Control, error) {
+			route := typeRoute(v)
+			if v.Kind == gowalker.Reference {
+				route += "@ref"
+			}
+			routes = append(routes, route)
+			visits[route] = v
+			return gowalker.Continue, nil
+		}, options...)
+		return routes, visits, err
+	}
+	visible, _, err := walk()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := []string{"", "shared", "shared.Port", "a", "a.Port", "b", "b[]", "b[].Port", "node", "node.next", "node.next*@ref"}; !slices.Equal(visible, want) {
+		t.Errorf("visible walk %q, want %q", visible, want)
+	}
+	declared, visits, err := walk(gowalker.WithDeclaredView())
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{
+		"", "(dwEmpty)", "(dwInner)", "(dwInner)*", "(dwInner)*.shared", "(dwInner)*.shared.Port",
+		"a", "a.Port", "b", "b[]", "b[].Port", "node", "node.next", "node.next*@ref", "node.(dwEmpty)",
+	}
+	if !slices.Equal(declared, want) {
+		t.Errorf("declared walk %q, want %q", declared, want)
+	}
+	for route, want := range map[string]string{"(dwEmpty)": "empty", "(dwInner)*.shared.Port": "inner"} {
+		if got, ok := visits[route].Inherited("reload"); !ok || got != want {
+			t.Errorf("%s inherits reload %q, want %q", route, got, want)
+		}
+	}
+	if f := visits["(dwInner)*.shared"].Route[2].Field; f.DeclaringType() != reflect.TypeFor[dwInner]() || !slices.Equal(f.Index(), []int{0}) {
+		t.Errorf("a declared field's handle is relative to %v at %v", f.DeclaringType(), f.Index())
+	}
+
+	// A leaf stays a leaf.
+	leaves := schemaFor[dwConfig](t, engine(t, gowalker.WithFieldResolver(tagged("cfg")),
+		gowalker.WithAtomicType(func(t reflect.Type) bool { return t == reflect.TypeFor[dwShared]() })))
+	var leafRoutes []string
+	err = leaves.WalkType(func(v gowalker.TypeVisit) (gowalker.Control, error) {
+		leafRoutes = append(leafRoutes, typeRoute(v))
+		return gowalker.Continue, nil
+	}, gowalker.WithDeclaredView())
+	if err != nil || !slices.Contains(leafRoutes, "a") || slices.Contains(leafRoutes, "a.Port") || slices.Contains(leafRoutes, "(dwInner)*.shared.Port") {
+		t.Errorf("declared walk with leaves %q: %v", leafRoutes, err)
+	}
+
+	// Controls and limits hold.
+	var pruned []string
+	err = schema.WalkType(func(v gowalker.TypeVisit) (gowalker.Control, error) {
+		pruned = append(pruned, typeRoute(v))
+		if typeRoute(v) == "(dwInner)" {
+			return gowalker.SkipChildren, nil
+		}
+		return gowalker.Continue, nil
+	}, gowalker.WithDeclaredView())
+	if err != nil || slices.Contains(pruned, "(dwInner)*") {
+		t.Errorf("SkipChildren at an inline owner: %q, %v", pruned, err)
+	}
+	err = schema.WalkType(func(gowalker.TypeVisit) (gowalker.Control, error) { return gowalker.Continue, nil },
+		gowalker.WithDeclaredView(), gowalker.WithWalkLimits(gowalker.WalkLimits{MaxDepth: 1, MaxNodes: 100}))
+	if !errors.Is(err, gowalker.ErrLimit) {
+		t.Errorf("depth limit: %v", err)
+	}
+	err = schema.WalkValue(dwConfig{dwEmpty: dwEmpty{}, Node: dwNode{dwEmpty: dwEmpty{}}}, func(gowalker.ValueVisit) (gowalker.Control, error) { return gowalker.Continue, nil }, gowalker.WithDeclaredView())
+	if !errors.Is(err, gowalker.ErrType) {
+		t.Errorf("a value walk took WithDeclaredView: %v", err)
+	}
 }
