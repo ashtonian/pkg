@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.13.0](https://github.com/ashtonian/pkg/compare/config/v0.12.0...config/v0.13.0) (2026-11-22)
+
+
+### ⚠ BREAKING CHANGES
+
+* **parse:** document members on gowalker's WithJSONFields and misspelt tag keys refused; config on gowalker's matcher ([#300](https://github.com/ashtonian/pkg/issues/300))
+
+### Features
+
+* **parse:** document members on gowalker's WithJSONFields and misspelt tag keys refused; config on gowalker's matcher ([#300](https://github.com/ashtonian/pkg/issues/300)) ([35cc7f0](https://github.com/ashtonian/pkg/commit/35cc7f0911b70804f2db1960441780db1138cf63))
+
 ## [0.12.0](https://github.com/ashtonian/pkg/compare/config/v0.11.1...config/v0.12.0) (2026-11-22)
 
 

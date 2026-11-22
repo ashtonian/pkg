@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.8.0](https://github.com/ashtonian/pkg/compare/gowalker/v0.7.0...gowalker/v0.8.0) (2026-11-22)
+
+
+### ⚠ BREAKING CHANGES
+
+* **gowalker:** Field.TagKeys returns iter.Seq[string] instead of a new []string; use slices.Collect for a slice. TagError's text no longer includes the tag.
+
+### Features
+
+* **gowalker:** Schema.At, declared-view type walks and compiled tag keys; tag values out of error text, ties an owner settles compile, reusable options ([#347](https://github.com/ashtonian/pkg/issues/347)) ([b344dda](https://github.com/ashtonian/pkg/commit/b344ddaca7e4ffc44a196fd37c4333e3f1c178fb)), refs [#316](https://github.com/ashtonian/pkg/issues/316) [#317](https://github.com/ashtonian/pkg/issues/317) [#321](https://github.com/ashtonian/pkg/issues/321) [#302](https://github.com/ashtonian/pkg/issues/302) [#303](https://github.com/ashtonian/pkg/issues/303) [#304](https://github.com/ashtonian/pkg/issues/304) [#305](https://github.com/ashtonian/pkg/issues/305) [#315](https://github.com/ashtonian/pkg/issues/315)
+
 ## [0.7.0](https://github.com/ashtonian/pkg/compare/gowalker/v0.6.0...gowalker/v0.7.0) (2026-11-22)
 
 
