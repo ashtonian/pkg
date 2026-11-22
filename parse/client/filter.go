@@ -39,10 +39,35 @@ type node struct {
 	children []*node
 }
 
+// The operators the builders write, as the server's filter grammar
+// (parse/filter's operator table) names them; parse's client conformance
+// tests read the builders' requests with the server's parser.
 const (
 	opAnd = "$and"
 	opOr  = "$or"
 	opNot = "$not"
+
+	opEq         = "$eq"
+	opNe         = "$ne"
+	opGt         = "$gt"
+	opGte        = "$gte"
+	opLt         = "$lt"
+	opLte        = "$lte"
+	opIn         = "$in"
+	opNin        = "$nin"
+	opLike       = "$like"
+	opILike      = "$ilike"
+	opContains   = "$contains"
+	opHasKey     = "$has_key"
+	opNull       = "$null"
+	opNotNull    = "$not_null"
+	opSome       = "$some"
+	opNone       = "$none"
+	opIs         = "$is"
+	opIsNot      = "$is_not"
+	opNear       = "$near"
+	opWithin     = "$within"
+	opIntersects = "$intersects"
 )
 
 // IsZero reports whether f is the empty filter, which matches every row.

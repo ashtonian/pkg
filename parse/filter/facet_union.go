@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/ashtonian/pkg/parse/core"
+	idialect "github.com/ashtonian/pkg/parse/internal/dialect"
 )
 
 // defaultTermsLimit caps a terms facet's bucket count when neither
@@ -143,7 +144,7 @@ func buildFacetQuery(schema *ResourceSchema, dialect Dialect, filterWhere string
 	}
 	metas := make([]meta, 0, len(facets))
 	hasRelation, hasList := false, false
-	relationPK := "id"
+	relationPK := core.DefaultPrimaryKey
 	for _, req := range facets {
 		f, ok := schema.Fields[req.Field]
 		if !ok || !f.Facetable {
@@ -163,9 +164,7 @@ func buildFacetQuery(schema *ResourceSchema, dialect Dialect, filterWhere string
 				return FacetQuery{}, fmt.Errorf("BuildFacetQuery: field %q is a relation; only terms-type facets are supported", req.Field)
 			}
 			if !hasRelation {
-				if pk := f.Relation.PrimaryKey; pk != "" {
-					relationPK = pk
-				}
+				relationPK = f.Relation.OwnerKey()
 				hasRelation = true
 			}
 		}
@@ -249,7 +248,7 @@ func buildFacetQuery(schema *ResourceSchema, dialect Dialect, filterWhere string
 		proj.WriteString(schema.Name)
 		proj.WriteByte('.')
 		proj.WriteString(relationPK)
-		proj.WriteString(" AS __owner_pk")
+		proj.WriteString(" AS " + facetOwnerKey)
 		first = false
 		if scope.row.column != "" {
 			// The relation branches read base, not the owner's table.
@@ -265,7 +264,7 @@ func buildFacetQuery(schema *ResourceSchema, dialect Dialect, filterWhere string
 		proj.WriteString(schema.Name)
 		proj.WriteByte('.')
 		proj.WriteString(relationPK)
-		proj.WriteString(" AS __owner_pk")
+		proj.WriteString(" AS " + facetOwnerKey)
 	}
 
 	// The tenant is bound once, after the range args, and its placeholder
@@ -323,7 +322,7 @@ func buildFacetQuery(schema *ResourceSchema, dialect Dialect, filterWhere string
 			if m.list {
 				table := dialect.(elementTable) // checked with the request
 				source := listSource(m.field, "base."+m.bucketCol)
-				elem := table.scalarElement(source, "facet_elem__")
+				elem := table.scalarElement(source, facetElementAlias)
 				order := facetValueOrder(elem, dialect)
 				ordered = order != ""
 				in.WriteString("k, ")
@@ -342,7 +341,7 @@ func buildFacetQuery(schema *ResourceSchema, dialect Dialect, filterWhere string
 					in.WriteString(" AS v")
 				}
 				in.WriteString(" FROM base, ")
-				in.WriteString(table.elementRows(source, "facet_elem__"))
+				in.WriteString(table.elementRows(source, facetElementAlias))
 				in.WriteString(" WHERE ")
 				in.WriteString(FieldExpr(dialect, elem))
 				in.WriteString(" IS NOT NULL) e")
@@ -356,13 +355,13 @@ func buildFacetQuery(schema *ResourceSchema, dialect Dialect, filterWhere string
 				in.WriteString(key)
 				// Owners, not junction rows: two rows pairing one owner with
 				// one target (typed edges) count the owner once.
-				in.WriteString(" AS k, COUNT(DISTINCT base.__owner_pk) AS c FROM base INNER JOIN ")
+				in.WriteString(" AS k, COUNT(DISTINCT base." + facetOwnerKey + ") AS c FROM base INNER JOIN ")
 				in.WriteString(rel.JoinTable)
-				in.WriteString(" j ON j.")
+				in.WriteString(" " + junctionAlias + " ON " + junctionAlias + ".")
 				in.WriteString(rel.SourceColumn)
-				in.WriteString(" = base.__owner_pk")
-				in.WriteString(relatedJoin(rel, "j", "target__"))
-				clause, err := relatedScope(m.field, dialect, scope, cfg.related, st, bindTenant, "j", "target__")
+				in.WriteString(" = base." + facetOwnerKey)
+				in.WriteString(relatedJoin(rel, junctionAlias, targetAlias))
+				clause, err := relatedScope(m.field, dialect, scope, cfg.related, st, bindTenant, junctionAlias, targetAlias)
 				if err != nil {
 					return FacetQuery{}, fmt.Errorf("BuildFacetQuery: field %q: %w", m.req.Field, err)
 				}
@@ -452,11 +451,19 @@ func listSource(f *FieldSchema, column string) *FieldSchema {
 	return &out
 }
 
+// facetOwnerKey is the column of a facet query's base rows that holds each
+// owner's key, which relation facets count distinct; facetElementAlias is
+// the alias of a list facet's element rows.
+const (
+	facetOwnerKey     = "__owner_pk"
+	facetElementAlias = "facet_elem__"
+)
+
 // relationKeyExpr renders the junction's target column as TEXT so the
 // UNION ALL key column lines up with scalar terms facets.
 func relationKeyExpr(rel *core.RelationSchema, dialect Dialect) string {
-	expr := "j." + rel.TargetColumn
-	if dialect.Name() == "postgres" {
+	expr := junctionAlias + "." + rel.TargetColumn
+	if dialect.Name() == idialect.NamePostgres {
 		return expr + "::text"
 	}
 	return "CAST(" + expr + " AS TEXT)"
@@ -489,7 +496,7 @@ func termsKeyExpr(field *FieldSchema, dialect Dialect) string {
 			return expr // PathExpr reads it as canonical text
 		}
 	}
-	if dialect.Name() == "postgres" {
+	if dialect.Name() == idialect.NamePostgres {
 		return expr + "::text"
 	}
 	return "CAST(" + expr + " AS TEXT)"

@@ -26,6 +26,6 @@ func ParseList[T any](r *http.Request, res *parse.Resource[T]) (*parse.ListReque
 	return nil, &core.ParseError{
 		Kind: core.ParseErrorKindFilter, Code: filter.ECodeInvalidListParam.String(),
 		Message: fmt.Sprintf("a list is read with GET, HEAD or POST, not %s", r.Method),
-		Details: map[string]any{"parameter": "method"},
+		Details: map[string]any{core.DetailParameter: "method"},
 	}
 }

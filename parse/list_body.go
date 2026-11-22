@@ -13,6 +13,7 @@ import (
 
 	"github.com/ashtonian/pkg/parse/core"
 	"github.com/ashtonian/pkg/parse/filter"
+	"github.com/ashtonian/pkg/parse/internal/httpjson"
 )
 
 // ParseListBody validates a list request sent as one JSON document, a POST
@@ -139,7 +140,7 @@ func (r *Resource[T]) ParseListPost(query url.Values, contentType string, body i
 			return nil, listParamError(name, fmt.Sprintf("a POST list takes %q in its body, not its query string", name))
 		}
 	}
-	if media, _, err := mime.ParseMediaType(contentType); err != nil || media != "application/json" {
+	if media, _, err := mime.ParseMediaType(contentType); err != nil || media != httpjson.MediaType {
 		return nil, listParamError("content-type", "a POST list body is application/json")
 	}
 	return r.ParseListBody(body)

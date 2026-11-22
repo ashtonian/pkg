@@ -6,35 +6,35 @@ import (
 
 // Error codes for patch operations.
 const (
-	ECodeOpNotAllowed core.Code = "E2064"
+	ECodeOpNotAllowed = core.CodeOpNotAllowed
 	// ECodePathTooDeep shares E2074 with filter's ECodeDepthExceeded: one
 	// ParserConfig.MaxDepth bounds filter nesting and patch pointer depth.
-	ECodePathTooDeep core.Code = "E2074"
-	ECodeTooManyOps  core.Code = "E2066"
+	ECodePathTooDeep = core.CodeDepthExceeded
+	ECodeTooManyOps  = core.CodeTooManyOps
 	// ECodeInputTooLarge shares E2063 with filter: one MaxInputSize bounds
 	// filter and patch bodies.
-	ECodeInputTooLarge        core.Code = "E2063"
-	ECodeInvalidPatchOp       core.Code = "E2075"
-	ECodePatchFieldNotFound   core.Code = "E2076"
-	ECodePatchValueInvalid    core.Code = "E2077"
-	ECodePatchSchemaNotFound  core.Code = "E2078"
-	ECodePatchPolicyForbidden core.Code = "E2084"
-	ECodePatchPolicyValue     core.Code = "E2085"
-	ECodeInvalidJSON          core.Code = "E2086"
+	ECodeInputTooLarge        = core.CodeInputTooLarge
+	ECodeInvalidPatchOp       = core.CodeInvalidPatchOp
+	ECodePatchFieldNotFound   = core.CodePatchFieldNotFound
+	ECodePatchValueInvalid    = core.CodePatchValueInvalid
+	ECodePatchSchemaNotFound  = core.CodeSchemaNotFound
+	ECodePatchPolicyForbidden = core.CodePatchPolicyForbidden
+	ECodePatchPolicyValue     = core.CodePatchPolicyValue
+	ECodeInvalidJSON          = core.CodeInvalidJSON
 
 	// relation-patch error codes.
-	ECodeRelationVerbNotAllowed core.Code = "E2117"
-	ECodeRelationValueInvalid   core.Code = "E2118"
-	ECodeRelationPatchTooLarge  core.Code = "E2119"
+	ECodeRelationVerbNotAllowed = core.CodeRelationVerbNotAllowed
+	ECodeRelationValueInvalid   = core.CodeRelationValueInvalid
+	ECodeRelationPatchTooLarge  = core.CodeRelationPatchTooLarge
 
 	//  / P-13i — SQL-compilation refusals, in the parse gap
 	// E2068-E2069.
-	ECodeTestOpSQL        core.Code = "E2068"
-	ECodeSQLColumnMissing core.Code = "E2069"
+	ECodeTestOpSQL        = core.CodeTestOpSQL
+	ECodeSQLColumnMissing = core.CodeSQLColumnMissing
 
 	// an accepted operation BuildPatchSQL cannot express
 	// (move, copy, a nested JSON Pointer path) is rejected, never skipped.
-	ECodeOpNotSQLCompilable core.Code = "E2070"
+	ECodeOpNotSQLCompilable = core.CodeOpNotSQLCompilable
 )
 
 // Codes returns the codes defined by this package.

@@ -49,17 +49,17 @@ func (g Geo) Name() string { return g.name }
 
 // Near matches rows within meters of p.
 func (g Geo) Near(p Point, meters float64) Filter {
-	return condition(g.name, "$near", struct {
+	return condition(g.name, opNear, struct {
 		Point
 		Distance string `json:"distance"`
 	}{p, strconv.FormatFloat(meters, 'f', -1, 64) + "m"})
 }
 
 // Within matches rows inside s.
-func (g Geo) Within(s Shape) Filter { return condition(g.name, "$within", s) }
+func (g Geo) Within(s Shape) Filter { return condition(g.name, opWithin, s) }
 
 // Intersects matches rows whose geometry intersects s.
-func (g Geo) Intersects(s Shape) Filter { return condition(g.name, "$intersects", s) }
+func (g Geo) Intersects(s Shape) Filter { return condition(g.name, opIntersects, s) }
 
 // Null matches rows whose field is null.
 func (g Geo) Null() Filter { return isNull(g.name) }

@@ -10,6 +10,9 @@ import (
 	"strconv"
 )
 
+// MediaType is the media type of the JSON parse reads and writes.
+const MediaType = "application/json"
+
 // Encode returns v as json.Encoder writes it, newline included, so a
 // buffered response carries the bytes a streamed one would.
 func Encode(v any) ([]byte, error) {
@@ -39,7 +42,7 @@ func ErrorBody(code, message string) []byte {
 // is sent. net/http buffers a small response and sends it after the handler
 // returns, so a client that disconnects in that window fails no Write.
 func Send(w http.ResponseWriter, status int, body []byte) error {
-	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Content-Type", MediaType)
 	w.Header().Set("Content-Length", strconv.Itoa(len(body)))
 	w.WriteHeader(status)
 	_, err := w.Write(body)

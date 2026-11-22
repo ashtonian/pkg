@@ -137,14 +137,21 @@ const (
 	ParseErrorKindSchema ParseErrorKind = "schema"
 )
 
+// The Details keys a ParseError carries: DetailField names the request
+// field a refusal is about, DetailParameter the list parameter.
+const (
+	DetailField     = "field"
+	DetailParameter = "parameter"
+)
+
 // ParseError is the single error type for all parse operations.
 type ParseError struct {
 	Code    string         `json:"code"`
 	Message string         `json:"message"`
 	Kind    ParseErrorKind `json:"kind"`
 	Path    string         `json:"path,omitempty"`
-	Index   *int           `json:"index,omitempty"` // pointer so op index 0 survives the wire
-	Details map[string]any `json:"details,omitempty"`
+	Index   *int           `json:"index,omitempty"`   // pointer so op index 0 survives the wire
+	Details map[string]any `json:"details,omitempty"` // keyed by the Detail constants
 	Cause   error          `json:"-"`
 }
 
@@ -598,22 +605,29 @@ func (g *SchemaGenerator) column(field, dbTag string) string {
 	return ToSnakeCase(field)
 }
 
+// JSONTagKey is the struct tag encoding/json names members by, and the
+// default FieldNameTag; DefaultColumnTagKey is the default ColumnTag.
+const (
+	JSONTagKey          = "json"
+	DefaultColumnTagKey = "db"
+)
+
 // FieldNameTag returns the struct tag key to read for external field names.
-// Default: "json".
+// Default: JSONTagKey.
 func (g *SchemaGenerator) FieldNameTag() string {
 	if g.Opts.FieldNameTag != "" {
 		return g.Opts.FieldNameTag
 	}
-	return "json"
+	return JSONTagKey
 }
 
 // ColumnTagKey returns the struct tag key to read for SQL column names.
-// Default: "db".
+// Default: DefaultColumnTagKey.
 func (g *SchemaGenerator) ColumnTagKey() string {
 	if g.Opts.ColumnTag != "" {
 		return g.Opts.ColumnTag
 	}
-	return "db"
+	return DefaultColumnTagKey
 }
 
 // --- Policy Helpers (shared by filter and patch) ---

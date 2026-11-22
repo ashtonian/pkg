@@ -14,7 +14,7 @@ type ParseError = core.ParseError
 
 // ECodeSchemaEncodingFailed is a schema document SchemaHandler or
 // SchemaListHandler could not encode: a server defect, answered 500.
-const ECodeSchemaEncodingFailed Code = "E2120"
+const ECodeSchemaEncodingFailed = core.CodeSchemaEncodingFailed
 
 // Codes returns the distinct filter, patch and schema discovery codes. A
 // shared limit has one code even when both grammars can reject it.

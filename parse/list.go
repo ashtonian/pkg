@@ -137,7 +137,7 @@ func (r *Resource[T]) maskName(name string) error {
 func unknownListField(msg, name string) *core.ParseError {
 	return &core.ParseError{
 		Kind: core.ParseErrorKindFilter, Code: filter.ECodeUnknownField.String(),
-		Message: msg, Details: map[string]any{"field": name},
+		Message: msg, Details: map[string]any{core.DetailField: name},
 	}
 }
 
@@ -260,7 +260,7 @@ func listNames(names []string, check func(name string) error) ([]string, error) 
 func listParamError(param, msg string) *core.ParseError {
 	return &core.ParseError{
 		Kind: core.ParseErrorKindFilter, Code: filter.ECodeInvalidListParam.String(),
-		Message: msg, Details: map[string]any{"parameter": param},
+		Message: msg, Details: map[string]any{core.DetailParameter: param},
 	}
 }
 

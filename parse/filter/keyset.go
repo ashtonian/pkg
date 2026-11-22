@@ -690,7 +690,7 @@ func CursorValueByTag(entity any, tagKey, tagValue string) (any, error) {
 		}
 		rv = rv.Elem()
 	}
-	walk, err := core.StructFieldsOf(rv.Type(), "json", tagKey)
+	walk, err := core.StructFieldsOf(rv.Type(), core.JSONTagKey, tagKey)
 	if err != nil {
 		return nil, fmt.Errorf("cursor: %w", err)
 	}

@@ -13,6 +13,18 @@ import (
 
 // --- Geo Types ---
 
+// The members of a geo filter value, as the Geo types' JSON tags name them.
+// A JSONB point holds its coordinates under a point's members unless its
+// GeoFieldConfig names others.
+const (
+	geoMemberLat         = "lat"
+	geoMemberLon         = "lon"
+	geoMemberDistance    = "distance"
+	geoMemberTopLeft     = "top_left"
+	geoMemberBottomRight = "bottom_right"
+	geoMemberPoints      = "points"
+)
+
 // GeoPoint represents a geographic coordinate.
 type GeoPoint struct {
 	Lat float64 `json:"lat"`
@@ -230,7 +242,7 @@ func parseGeoValue(field *FieldSchema, op FilterOperator, value any) (any, error
 }
 
 func parseGeoDistanceValue(fieldName string, obj map[string]any) (*GeoDistance, error) {
-	lat, ok := toFloat64(obj["lat"])
+	lat, ok := toFloat64(obj[geoMemberLat])
 	if !ok {
 		return nil, &core.ParseError{
 			Kind:    core.ParseErrorKindFilter,
@@ -238,7 +250,7 @@ func parseGeoDistanceValue(fieldName string, obj map[string]any) (*GeoDistance, 
 			Message: fmt.Sprintf("field '%s': $near requires numeric 'lat'", fieldName),
 		}
 	}
-	lon, ok := toFloat64(obj["lon"])
+	lon, ok := toFloat64(obj[geoMemberLon])
 	if !ok {
 		return nil, &core.ParseError{
 			Kind:    core.ParseErrorKindFilter,
@@ -246,7 +258,7 @@ func parseGeoDistanceValue(fieldName string, obj map[string]any) (*GeoDistance, 
 			Message: fmt.Sprintf("field '%s': $near requires numeric 'lon'", fieldName),
 		}
 	}
-	distStr, ok := obj["distance"].(string)
+	distStr, ok := obj[geoMemberDistance].(string)
 	if !ok || distStr == "" {
 		return nil, &core.ParseError{
 			Kind:    core.ParseErrorKindFilter,
@@ -275,10 +287,10 @@ func parseGeoDistanceValue(fieldName string, obj map[string]any) (*GeoDistance, 
 
 func parseGeoWithinValue(fieldName string, obj map[string]any) (any, error) {
 	// Detect shape: bbox has "top_left"/"bottom_right", polygon has "points".
-	if _, hasTL := obj["top_left"]; hasTL {
+	if _, hasTL := obj[geoMemberTopLeft]; hasTL {
 		return parseGeoBBoxValue(fieldName, obj)
 	}
-	if _, hasPoints := obj["points"]; hasPoints {
+	if _, hasPoints := obj[geoMemberPoints]; hasPoints {
 		return parseGeoPolygonValue(fieldName, obj)
 	}
 	return nil, &core.ParseError{
@@ -289,7 +301,7 @@ func parseGeoWithinValue(fieldName string, obj map[string]any) (any, error) {
 }
 
 func parseGeoBBoxValue(fieldName string, obj map[string]any) (*GeoBoundingBox, error) {
-	tl, err := extractGeoPoint(obj["top_left"])
+	tl, err := extractGeoPoint(obj[geoMemberTopLeft])
 	if err != nil {
 		return nil, &core.ParseError{
 			Kind:    core.ParseErrorKindFilter,
@@ -297,7 +309,7 @@ func parseGeoBBoxValue(fieldName string, obj map[string]any) (*GeoBoundingBox, e
 			Message: fmt.Sprintf("field '%s': top_left: %v", fieldName, err),
 		}
 	}
-	br, err := extractGeoPoint(obj["bottom_right"])
+	br, err := extractGeoPoint(obj[geoMemberBottomRight])
 	if err != nil {
 		return nil, &core.ParseError{
 			Kind:    core.ParseErrorKindFilter,
@@ -318,7 +330,7 @@ func parseGeoBBoxValue(fieldName string, obj map[string]any) (*GeoBoundingBox, e
 }
 
 func parseGeoPolygonValue(fieldName string, obj map[string]any) (*GeoPolygon, error) {
-	arr, ok := obj["points"].([]any)
+	arr, ok := obj[geoMemberPoints].([]any)
 	if !ok {
 		return nil, &core.ParseError{
 			Kind:    core.ParseErrorKindFilter,
@@ -356,11 +368,11 @@ func extractGeoPoint(v any) (*GeoPoint, error) {
 	if !ok {
 		return nil, fmt.Errorf("expected object with lat/lon, got %T", v)
 	}
-	lat, ok := toFloat64(obj["lat"])
+	lat, ok := toFloat64(obj[geoMemberLat])
 	if !ok {
 		return nil, fmt.Errorf("missing or invalid 'lat'")
 	}
-	lon, ok := toFloat64(obj["lon"])
+	lon, ok := toFloat64(obj[geoMemberLon])
 	if !ok {
 		return nil, fmt.Errorf("missing or invalid 'lon'")
 	}
@@ -391,8 +403,8 @@ func parseGeoTag(tags *core.Tags) (*GeoFieldConfig, error) {
 	cfg := &GeoFieldConfig{
 		StorageType: GeoStorageType(tags.Geo),
 		SRID:        wgs84,
-		LatKey:      "lat",
-		LonKey:      "lon",
+		LatKey:      geoMemberLat,
+		LonKey:      geoMemberLon,
 	}
 	switch cfg.StorageType {
 	case GeoStorageJSONB, GeoStorageGeography, GeoStorageGeometry:

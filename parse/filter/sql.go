@@ -195,7 +195,7 @@ func membership(op FilterOperator, value any, render func(members []any, in bool
 		}
 	}
 	if len(members) == 0 {
-		return "NULL", nil // x IN (NULL) and x NOT IN (NULL) are Unknown for every x
+		return unknownSQL, nil // x IN (NULL) and x NOT IN (NULL) are Unknown for every x
 	}
 	sql, err := render(members, op == OpIn)
 	if err != nil || len(members) == len(arr) {
@@ -611,10 +611,7 @@ const relationAlias = "rel__"
 // rows.
 func (b *SQLBuilder) buildRelationCondition(s *buildState, node *FilterNode) (string, error) {
 	rel := node.Field.Relation
-	pk := rel.PrimaryKey
-	if pk == "" {
-		pk = "id"
-	}
+	pk := rel.OwnerKey()
 	bind := s.binder(b.dialect)
 	target := &FieldSchema{ExternalName: node.Field.ExternalName, SQLExpr: relationAlias + "." + rel.TargetColumn, DataType: node.Field.DataType}
 
