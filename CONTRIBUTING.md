@@ -11,39 +11,54 @@ The repository's `go.work` ties the published modules together, so a change to o
 | `make test-native-unit` / `make test-native-integration` / `make native-release-check` | Process/state/1Password tagged race tests and fresh candidate-archive consumers |
 | `make test-gitx` | gitx race tests: real scratch repositories, in-memory trees and a rebase through the installed driver |
 | `make test-jsonvalue` / `make jsonvalue-release-check` | JSON replacement race tests / fresh module-archive consumer and README example |
-| `make test` | Every published module's tests, race detector on; both httpx build tags |
+| `make test` | Every published module's tests, race detector on (modernc's SQLite builds uninstrumented); both httpx build tags. `-count=1` only where tests start processes, run the installed git or reach servers |
 | `make test-httpx-unit` / `make test-httpx-integration` | httpx unit or real HTTP integration lane |
 | `make test-parse-unit` / `make test-parse-integration` | Parse race tests and existing fuzz seeds; SQLite always runs, PostgreSQL/PostGIS through explicit DSNs |
 | `make test-parse-sdk` | TypeScript checks, lint, shared corpora and production build |
 | `make parse-release-check` | Fresh module-archive consumer, tagged tests, README program and dependency audit |
 | `make parse-sdk-release-check` | Packed SDK consumer, TypeScript declarations, runtime subpaths and sourcemaps |
 | `make parse-sdk-registry-check` | Registry processing delay, integrity and deadline regressions |
-| `make lint` | `go vet` and staticcheck |
-| `make release-check` | Gowalker and config standalone builds plus the module archive checks below |
-| `make gowalker-release-check` | Gowalker archive downloaded into a fresh consumer, race tests, the README quick start and complete usage examples |
-| `make httpx-release-check` | Five module ZIPs downloaded by fresh consumers, both tagged race lanes, Gin integration and benchmark smoke tests |
+| `make lint` | `go vet` and staticcheck; tagged modules in one pass with both tags |
+| `make release-check` | Every module as a consumer gets it, without the race detector: gitx and config standalone builds plus the module archive checks below. `RELEASE_CHECKS='parse-release-check'` runs a subset |
+| `make gowalker-release-check` | Gowalker archive downloaded into a fresh consumer, its tests, the README quick start and complete usage examples |
+| `make httpx-release-check` | Five module ZIPs downloaded by fresh consumers, both tagged lanes, Gin integration and benchmark smoke tests |
 | `make tool-check` | Module archive tooling tests and static analysis |
 | `make cookbook-check` | The [config cookbook](config/examples/cookbook), a module of runnable recipes |
 | `make ci` | All of the above |
 
 GitHub Actions runs workflows here only for the repository owner. Pull requests opened by a bot, such as Dependabot updates or a release PR opened without the `RELEASE_PLEASE_TOKEN` secret, therefore get no checks: run CI on the branch with `gh workflow run ci.yml -R ashtonian/pkg --ref <branch>`, and the pull request shows the results.
 
-CI classifies the complete event delta before scheduling suites. Changes confined to
-`CONTRIBUTING.md` and Markdown guides in `config/docs`, `gowalker/docs`, `httpx/docs`
-or `parse/docs` keep module archive, executable documentation, cookbook and tooling
-checks, while skipping the repeated runtime matrices, PostgreSQL services, SDK suite,
+CI classifies the complete event delta before scheduling suites, and runs each suite once.
+Changes confined to `CONTRIBUTING.md` and Markdown guides in `config/docs`, `gowalker/docs`,
+`httpx/docs` or `parse/docs` skip the runtime suites, PostgreSQL services, SDK suite,
 benchmarks and lint. Package READMEs, test data, source examples, configuration and
 unknown paths retain full validation. Renames include both paths; an unavailable base
 runs every check. Explicit workflow dispatch always runs the full suite.
 
+Release checks run per module: each reads only its module's tree, its own script and the
+archive tooling, so a change runs the checks of the modules it touches (the cookbook's with
+either config module), and shared build files, workflow, tooling, manifests and unknown
+paths run all of them. The suites run once each:
+
+- Ubuntu runs every module's race tests on the newest Go 1.27 patch release; macOS runs
+  only the modules with platform code (config, process, state, 1Password).
+- Lint vets every package and test on Go 1.27.0, the declared floor, so it is also the
+  floor's build check. httpx and gitx run their tests on Go 1.26, their floor.
+- Parse's SQLite integration runs beside PostgreSQL 17 and 18.
+- The SDK runs every check on its Node.js floor, then only its runtime tests and packed
+  consumer on the newest LTS.
+- Release checks repeat the tests once, without the race detector, against each archive and
+  the dependency versions its go.mod requires.
+
 A single signed merge onto `main` may reuse successful PR or owner-dispatched branch
 coverage from the preceding six hours. The receipt must match the complete source tree,
-workflow, repository variables, run attempt and selected scope. PR receipts also match
-both tested merge parents; a dispatched branch must be the actual merged head with the
-same resulting tree. Failed, cancelled, incomplete or missing evidence runs validation.
-Post-merge benchmark artifacts remain independent because PRs do not produce them.
-Explicit reruns execute validation even if an older receipt matches.
-Only superseded PR runs cancel automatically; pushes and manual acceptance runs finish.
+workflow, repository variables, run attempt and selected scope, release checks included.
+PR receipts also match both tested merge parents; a dispatched branch must be the actual
+merged head with the same resulting tree. Failed, cancelled, incomplete or missing evidence
+runs validation. Post-merge benchmark artifacts remain independent because PRs do not
+produce them. Explicit reruns execute validation even if an older receipt matches.
+A newer run of the same PR or of `main` cancels the older one, since it covers every change
+the older run would have; manual acceptance runs finish.
 
 A module that requires another module of this repository requires a released version of it. When it needs an unreleased change, release the dependency first, then raise the requirement.
 
@@ -135,7 +150,7 @@ To change the patterns, replace the secret
 
 ## Parse SQL matrix
 
-Parse requires Go 1.27 and publishes as `github.com/ashtonian/pkg/parse`, with `parse/v…` tags. CI runs unit tests and existing fuzz seeds under the race detector, SQLite integration, PostgreSQL 17/18 with PostGIS 3.6, and the TypeScript SDK's shared corpora. The SDK release check installs its tarball in a fresh consumer and checks public declarations, runtime subpaths and self-contained JavaScript sourcemaps. The SDK package version follows the Parse release component. CI stores benchmark text and CPU/allocation profiles on main; it does not run dedicated fuzzing sessions.
+Parse requires Go 1.27 and publishes as `github.com/ashtonian/pkg/parse`, with `parse/v…` tags. CI runs unit tests and existing fuzz seeds under the race detector, SQLite integration beside PostgreSQL 17/18 with PostGIS 3.6, and the TypeScript SDK's shared corpora. modernc's SQLite builds without race or checkptr instrumentation: it is C translated to Go, and instrumenting it made the SQLite-backed suites about 30 times slower without checking this repository's code. The SDK release check installs its tarball in a fresh consumer and checks public declarations, runtime subpaths and self-contained JavaScript sourcemaps. The SDK package version follows the Parse release component. CI stores benchmark text and CPU/allocation profiles on main; it does not run dedicated fuzzing sessions.
 
 For an existing test server, set `PARSE_POSTGRES_DSN` and `PARSE_POSTGIS_DSN` and run `make test-parse-integration`. Each case gets a fresh schema. A requested server that is unavailable fails; an unrequested PostgreSQL case skips. `make parse-release-check` verifies a candidate archive independently of the workspace; publication additionally requires clean public-proxy installation of the immutable release.
 

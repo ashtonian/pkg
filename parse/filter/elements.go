@@ -338,7 +338,7 @@ func bindElement(n *FilterNode, elem *FieldSchema) *FilterNode {
 func rebaseElements(n *FilterNode, value string, moved map[*FieldSchema]*FieldSchema) (*FilterNode, error) {
 	out := *n
 	if f := n.Field; f != nil && !isElement(f) {
-		if f.Path == nil || f.Path.Column != elementColumn {
+		if !isElementPath(f) {
 			return nil, fmt.Errorf("field %s is not an element path", f.ExternalName)
 		}
 		m, ok := moved[f]
@@ -367,8 +367,12 @@ func rebaseElements(n *FilterNode, value string, moved map[*FieldSchema]*FieldSc
 
 // DocumentElements is a JSON array document's elements, decoded as
 // PathValue decodes documents; nil for a document that is not an array. A
-// backend evaluating `$some` / `$none` in memory tests the node's child on
-// each element, reading element paths with PathValue(element, field).
+// backend with its own evaluator of `$some` / `$none` tests the node's
+// condition, n.Children[0], on each element e as Evaluate does:
+// Evaluate(n.Children[0], ElementRow{Element: e}), or its own evaluator
+// reading each field of the condition through that row. A node with no
+// condition (`{}`) has no children and holds for any element. An element
+// that is not an object, a string included, has no members.
 func DocumentElements(doc any) ([]any, error) {
 	root, err := decodeDocument(doc)
 	if err != nil {

@@ -21,7 +21,7 @@ cd "$scratch/consumer"
 go mod init example.com/jsonvalue-consumer
 go get "$module@$version"
 go vet "$module/..."
-go test -race -count=1 -timeout=2m "$module/..."
+go test -count=1 -timeout=2m "$module/..."
 go list -m -f '{{if .Replace}}unexpected replacement{{end}}' all | awk 'NF {exit 1}'
 go list -deps -f '{{if not .Standard}}{{.ImportPath}}{{end}}' "$module" |
   awk -v module="$module" 'NF && $0 != module {print "unexpected runtime dependency: " $0 > "/dev/stderr"; bad=1} END {exit bad}'

@@ -5,7 +5,7 @@ import "encoding/json"
 // Document is a JSON document decoded once, for a backend that reads its
 // paths many times: PathValue, ColumnValue, ColumnRow, DocumentElements and
 // KeyValue read a Document without decoding it again, where JSON text is
-// decoded on every read. Its numbers are exact, as json.Number. The zero
+// decoded on every read, and ElementRow reads one as the element it holds. Its numbers are exact, as json.Number. The zero
 // Document is the JSON null document; a column that is SQL NULL is nil, not
 // a Document.
 type Document struct {
