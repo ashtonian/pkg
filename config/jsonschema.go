@@ -177,30 +177,8 @@ func (g *schemaGen) object(n *schemaNode, c cursor, val reflect.Value, env envNa
 	return map[string]any{
 		"type":                 "object",
 		"properties":           props,
-		"additionalProperties": acceptsUnknownKeys(n.typ),
+		"additionalProperties": n.acceptsUnknown,
 	}
-}
-
-// acceptsUnknownKeys reports a struct with a koanf:",remain" field, which
-// collects the keys no other field takes — its own, or one of a struct it
-// squashes, as decoding finds it.
-func acceptsUnknownKeys(t reflect.Type) bool {
-	view, err := compileView(t)
-	if err != nil {
-		return false
-	}
-	for _, f := range view.Root().DeclaredFields() {
-		tag := koanfTag(f)
-		switch {
-		case tag.Has("remain"):
-			return true
-		case tag.Has("squash") && f.IsExported():
-			if st := derefType(f.Type); st.Kind() == reflect.Struct && acceptsUnknownKeys(st) {
-				return true
-			}
-		}
-	}
-	return false
 }
 
 // field describes one key: its value's schema, then what the field's tags

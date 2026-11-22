@@ -151,7 +151,7 @@ func (w *keyWalk) structMap(t reflect.Type, v reflect.Value, path keyPath) any {
 	for _, k := range slices.Sorted(maps.Keys(written)) {
 		f, alias := n.lookup(k)
 		if f == nil {
-			if !acceptsUnknownKeys(t) {
+			if !n.acceptsUnknown {
 				at := path.field(k)
 				if !validFieldKey(k) {
 					at = path.key(k)

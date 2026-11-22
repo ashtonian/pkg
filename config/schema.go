@@ -31,6 +31,10 @@ type schemaNode struct {
 	byKey  map[string]*schemaField
 	view   *gowalker.Schema // nodeBranch: shared field identities and matching
 	elem   *schemaNode      // nodeMap, nodeList
+	// acceptsUnknown reports a nodeBranch with a koanf:",remain" field, which
+	// collects the keys no other field takes: its own, or one of a struct it
+	// squashes, as decoding finds it.
+	acceptsUnknown bool
 	// opaqueUnsafe reports a value decoded whole that could hold a func,
 	// channel or unsafe pointer: a comparison looks inside it.
 	opaqueUnsafe bool
@@ -198,6 +202,9 @@ func (b *schemaBuilder) fields(n *schemaNode) {
 		return
 	}
 	n.view = view
+	n.acceptsUnknown = slices.ContainsFunc(view.Root().Declarations(), func(d gowalker.Declaration) bool {
+		return koanfTag(d.GoField).Has("remain")
+	})
 	for _, field := range view.Root().Fields() {
 		sf := field.GoField()
 		access, err := view.AccessField(field)
@@ -211,13 +218,15 @@ func (b *schemaBuilder) fields(n *schemaNode) {
 	}
 }
 
+// validateTags checks every field the view selects, through the structs it
+// squashes, shadowed ones included.
 func (b *schemaBuilder) validateTags(shape *gowalker.Shape) {
-	for _, field := range shape.DeclaredView() {
-		if err := checkTags(field.DeclaringType(), field.GoField()); err != nil {
-			b.fail(err)
+	for _, d := range shape.Declarations() {
+		if d.State == gowalker.Skipped {
+			continue
 		}
-		if field.Inline() {
-			b.validateTags(shapeBase(field.Shape()))
+		if err := checkTags(d.DeclaringType, d.GoField); err != nil {
+			b.fail(err)
 		}
 	}
 }

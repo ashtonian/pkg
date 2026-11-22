@@ -208,7 +208,7 @@ db:
 
 ## JSON Schema
 
-`JSONSchema[T]()` returns a Draft 2020-12 schema of the config file — keys, types, descriptions, printable defaults and the validation rules JSON Schema can express — for editors and linters. `x-reload` records the resolved reload class and `x-env-ref` marks reference fields. `JSONSchema[T]("APP_WORKER", "APP")` adds `x-config-env` to each key a variable sets — every variable in precedence order, a map's entries with a `<KEY>` placeholder; a `$defs` entry, shared by every path that reaches it, names none. It is advisory: `Load` is the authority, and a `required` key is not required in any one file, since a default or the environment may supply it.
+`JSONSchema[T]()` returns a Draft 2020-12 schema of the config file — keys, types, descriptions, printable defaults and the validation rules JSON Schema can express — for editors and linters. `x-reload` records the resolved reload class and `x-env-ref` marks reference fields. `JSONSchema[T]("APP_WORKER", "APP")` adds `x-config-env` to each key a variable sets — every variable in precedence order, a map's entries with a `<KEY>` placeholder; a `$defs` entry, shared by every path that reaches it, names none. An object allows other keys (`additionalProperties: true`) when a `,remain` field collects them, its own or one in a struct it squashes, exported or not, as decoding does; every other object allows none. It is advisory: `Load` is the authority, and a `required` key is not required in any one file, since a default or the environment may supply it.
 
 Duration values remain strings. `x-config-duration-bounds` annotates their
 runtime bounds with integer nanoseconds, using `minimum`, `maximum`,
