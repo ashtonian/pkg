@@ -392,6 +392,14 @@ func readTags(sf reflect.StructField, k fieldsKey) (Tags, error) {
 		return Tags{}, err
 	}
 	_, opts, _ := strings.Cut(tag.Get(k.name), ",")
+	indexed, err := boolTag(tag, "indexed")
+	if err != nil {
+		return Tags{}, err
+	}
+	immutable, err := boolTag(tag, "immutable")
+	if err != nil {
+		return Tags{}, err
+	}
 	t := Tags{
 		Parse:            caps,
 		Column:           tag.Get(k.column),
@@ -408,8 +416,8 @@ func readTags(sf reflect.StructField, k fieldsKey) (Tags, error) {
 		GeoSRID:          tag.Get("geo_srid"),
 		GeoLat:           tag.Get("geo_lat"),
 		GeoLon:           tag.Get("geo_lon"),
-		Indexed:          tag.Get("indexed") == "true",
-		Immutable:        tag.Get("immutable") == "true",
+		Indexed:          indexed,
+		Immutable:        immutable,
 		Label:            tag.Get("label"),
 		Description:      tag.Get("description"),
 		Group:            tag.Get("group"),
@@ -426,6 +434,19 @@ func readTags(sf reflect.StructField, k fieldsKey) (Tags, error) {
 		return Tags{}, err
 	}
 	return t, nil
+}
+
+// boolTag reads a tag that is "true", "false" or absent, so a misspelt
+// value fails schema generation instead of reading as false.
+func boolTag(tag reflect.StructTag, key string) (bool, error) {
+	switch v, ok := tag.Lookup(key); {
+	case !ok || v == "false":
+		return false, nil
+	case v == "true":
+		return true, nil
+	default:
+		return false, fmt.Errorf("%s: %q is neither true nor false", key, v)
+	}
 }
 
 // HasFieldNameOption reports whether the field-name tag carries option
