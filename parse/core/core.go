@@ -598,22 +598,29 @@ func (g *SchemaGenerator) column(field, dbTag string) string {
 	return ToSnakeCase(field)
 }
 
+// JSONTagKey is the struct tag encoding/json names members by, and the
+// default FieldNameTag; DefaultColumnTagKey is the default ColumnTag.
+const (
+	JSONTagKey          = "json"
+	DefaultColumnTagKey = "db"
+)
+
 // FieldNameTag returns the struct tag key to read for external field names.
-// Default: "json".
+// Default: JSONTagKey.
 func (g *SchemaGenerator) FieldNameTag() string {
 	if g.Opts.FieldNameTag != "" {
 		return g.Opts.FieldNameTag
 	}
-	return "json"
+	return JSONTagKey
 }
 
 // ColumnTagKey returns the struct tag key to read for SQL column names.
-// Default: "db".
+// Default: DefaultColumnTagKey.
 func (g *SchemaGenerator) ColumnTagKey() string {
 	if g.Opts.ColumnTag != "" {
 		return g.Opts.ColumnTag
 	}
-	return "db"
+	return DefaultColumnTagKey
 }
 
 // --- Policy Helpers (shared by filter and patch) ---

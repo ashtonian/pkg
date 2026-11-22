@@ -552,7 +552,7 @@ func assignValue(dst reflect.Value, v any, codec core.Codec) error {
 // different schema tag before a document operation can silently hit another
 // key. Custom codecs must encode the configured field-name tag themselves.
 func (p *typedParser[T]) checkDocumentFieldNames(parsed *patch.ParsedPatch) error {
-	if p.fieldNameTag == "json" {
+	if p.fieldNameTag == core.JSONTagKey {
 		return nil
 	}
 	switch p.codec.(type) {
@@ -560,7 +560,7 @@ func (p *typedParser[T]) checkDocumentFieldNames(parsed *patch.ParsedPatch) erro
 	default:
 		return nil
 	}
-	jsonWalk, err := core.StructFieldsOf(reflect.TypeFor[T](), "json", p.gen.ColumnTagKey())
+	jsonWalk, err := core.StructFieldsOf(reflect.TypeFor[T](), core.JSONTagKey, p.gen.ColumnTagKey())
 	if err != nil {
 		return fmt.Errorf("patch: the JSON codec cannot name T's fields: %w", err)
 	}

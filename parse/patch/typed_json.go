@@ -449,7 +449,7 @@ func claimJSONMapKey(sources map[string]string, name, canonical string) error {
 // the fields encoding/json writes, embedded structs promoted. A name
 // encoding/json resolves by depth is refused (core.StructFields).
 func mergeStructFields(t reflect.Type) (map[string]*core.Field, error) {
-	walk, err := core.StructFieldsOf(t, "json", "db")
+	walk, err := core.StructFieldsOf(t, core.JSONTagKey, core.DefaultColumnTagKey)
 	if err != nil {
 		return nil, fmt.Errorf("object merge into %w; use JSON Patch replace", err)
 	}

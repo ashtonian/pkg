@@ -71,28 +71,28 @@ func describeType(info TypeInfo) string {
 func readBounds(tag reflect.StructTag) (Bounds, error) {
 	var b Bounds
 	var err error
-	if b.MinLen, err = lengthTag(tag, "minlen"); err != nil {
+	if b.MinLen, err = lengthTag(tag, ConstraintMinLen); err != nil {
 		return Bounds{}, err
 	}
-	if b.MaxLen, err = lengthTag(tag, "maxlen"); err != nil {
+	if b.MaxLen, err = lengthTag(tag, ConstraintMaxLen); err != nil {
 		return Bounds{}, err
 	}
 	if b.MinLen != nil && b.MaxLen != nil && *b.MinLen > *b.MaxLen {
 		return Bounds{}, fmt.Errorf("minlen %d exceeds maxlen %d", *b.MinLen, *b.MaxLen)
 	}
-	if b.Min, err = numberTag(tag, "min"); err != nil {
+	if b.Min, err = numberTag(tag, ConstraintMin); err != nil {
 		return Bounds{}, err
 	}
-	if b.Max, err = numberTag(tag, "max"); err != nil {
+	if b.Max, err = numberTag(tag, ConstraintMax); err != nil {
 		return Bounds{}, err
 	}
 	if b.Min != "" && b.Max != "" && compareDecimalText(b.Min, b.Max) > 0 {
 		return Bounds{}, fmt.Errorf("min %s exceeds max %s", b.Min, b.Max)
 	}
-	if b.MinItems, err = lengthTag(tag, "minitems"); err != nil {
+	if b.MinItems, err = lengthTag(tag, ConstraintMinItems); err != nil {
 		return Bounds{}, err
 	}
-	if b.MaxItems, err = lengthTag(tag, "maxitems"); err != nil {
+	if b.MaxItems, err = lengthTag(tag, ConstraintMaxItems); err != nil {
 		return Bounds{}, err
 	}
 	if b.MinItems != nil && b.MaxItems != nil && *b.MinItems > *b.MaxItems {
