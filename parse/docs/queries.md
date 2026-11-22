@@ -124,7 +124,7 @@ An array column (`[]string`, `[]int64`, …) or an array path (`paths:"tags:[]st
 {"doc.tags":{"$some":{}}}                                the member holds a string
 ```
 
-An array path's value is its elements of the declared type, each read as a member of that type is: `9.5` and `"10.50"` are both decimals, `7.0` an int, `"7"` no int. Elements of another kind are no elements, and a member with none is absent, so `$null` holds for it and `$contains` on it is Unknown. An array column keeps SQL's rules: `$contains` is Unknown on a NULL column and False on an empty one, unless it lists nothing.
+An array path's value is its elements of the declared type, each read as a member of that type is: `9.5` and `"10.50"` are both decimals, `7.0` an int, `"7"` no int. Elements of another kind are no elements, and a member with none is absent, so `$null` holds for it and `$contains` on it is Unknown. An array column keeps SQL's rules: `$contains` is Unknown on a NULL column and False on an empty one, unless it lists nothing. A NULL element of an array column, which a PostgreSQL array holds whatever the Go type is, is no element: the SQL renderings skip it, and `filter.Evaluate` reads it as SQL does.
 
 | Backend | Array column | Array path |
 |---|---|---|

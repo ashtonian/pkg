@@ -11,11 +11,25 @@ import (
 	"github.com/ashtonian/pkg/parse/filter"
 )
 
-// ArrayRecord is the scalar-array fixture: a document whose members are
-// arrays of strings, integers, decimals, timestamps and booleans, two array
-// columns, and a JSON array of objects whose elements hold an array of
-// strings. Its table is "array_records".
+// ArrayRecord is the scalar-array fixture, a row as a store holds it: a
+// document whose members are arrays of strings, integers, decimals,
+// timestamps and booleans, two array columns, and a JSON array of objects
+// whose elements hold an array of strings. Its table is "array_records".
+// The resource declares Labels as []string (ArraySchema); a stored array
+// column may still hold NULL elements, as a PostgreSQL text[] can whatever
+// the Go type is, so a row holds pointers.
 type ArrayRecord struct {
+	ID     string          `json:"id"     db:"id"     parse:"filter" filter_ops:"eq,in"`
+	Doc    json.RawMessage `json:"doc"    db:"doc"    parse:"filter" paths:"tags:[]string:filter+facet;counts:[]int;prices:[]decimal;seen:[]timestamp;flags:[]bool:facet"`
+	Labels []*string       `json:"labels" db:"labels" parse:"filter,facet"`
+	Scores []int64         `json:"scores" db:"scores" parse:"filter,facet"`
+	Lines  json.RawMessage `json:"lines"  db:"lines"  parse:"filter" elements:"sku:string;tags:[]string"`
+}
+
+// arrayResource is the resource ArrayRecords are rows of, as it declares
+// them: ArrayRecord with Labels an array of strings. Every other field and
+// every tag is ArrayRecord's.
+type arrayResource struct {
 	ID     string          `json:"id"     db:"id"     parse:"filter" filter_ops:"eq,in"`
 	Doc    json.RawMessage `json:"doc"    db:"doc"    parse:"filter" paths:"tags:[]string:filter+facet;counts:[]int;prices:[]decimal;seen:[]timestamp;flags:[]bool:facet"`
 	Labels []string        `json:"labels" db:"labels" parse:"filter,facet"`
@@ -34,22 +48,25 @@ type ArrayRecord struct {
 // object, i's tags are empty, f's lines are no array and d's are NULL. j
 // holds only lines, all scalars, so no line has members; one is a string
 // holding the JSON text of a line with sku x and tag a, which only a reader
-// decoding the string would see.
+// decoding the string would see. k's labels hold a NULL element, which no
+// backend reads as an element: it holds only x, and nothing else of k is
+// set.
 func ArrayRecords() []ArrayRecord {
 	return []ArrayRecord{
 		{ID: "a", Doc: json.RawMessage(`{"tags":["a","b"],"counts":[1,20],"prices":[9.5,"10.50"],"seen":["2026-01-02T03:04:05Z","2026-01-02T03:04:05.5+00:00"],"flags":[true]}`),
-			Labels: []string{"x", "y"}, Scores: []int64{1, 20}, Lines: json.RawMessage(`[{"sku":"x","tags":["a","b"]},{"sku":"y","tags":["c"]}]`)},
+			Labels: []*string{new("x"), new("y")}, Scores: []int64{1, 20}, Lines: json.RawMessage(`[{"sku":"x","tags":["a","b"]},{"sku":"y","tags":["c"]}]`)},
 		{ID: "b", Doc: json.RawMessage(`{"tags":["b","b","c"],"counts":[7],"prices":["9.50"],"seen":["2026-01-01T00:00:00.000000001Z"],"flags":[false,true]}`),
-			Labels: []string{"y"}, Scores: []int64{7}, Lines: json.RawMessage(`[{"sku":"x","tags":["c"]}]`)},
-		{ID: "c", Doc: json.RawMessage(`{"tags":[],"counts":[],"prices":[],"seen":[],"flags":[]}`), Labels: []string{}, Scores: []int64{}, Lines: json.RawMessage(`[]`)},
+			Labels: []*string{new("y")}, Scores: []int64{7}, Lines: json.RawMessage(`[{"sku":"x","tags":["c"]}]`)},
+		{ID: "c", Doc: json.RawMessage(`{"tags":[],"counts":[],"prices":[],"seen":[],"flags":[]}`), Labels: []*string{}, Scores: []int64{}, Lines: json.RawMessage(`[]`)},
 		{ID: "d", Doc: json.RawMessage(`{"tags":null,"counts":"7"}`)},
-		{ID: "e", Doc: json.RawMessage(`{"tags":"a","counts":{"x":1}}`), Labels: []string{"a"}, Scores: []int64{3}, Lines: json.RawMessage(`[{"sku":"x","tags":"a"}]`)},
-		{ID: "f", Labels: []string{}, Scores: []int64{}, Lines: json.RawMessage(`{"sku":"x","tags":["a"]}`)},
-		{ID: "g", Doc: json.RawMessage(`{"tags":[1,null,"A",{"x":"a"},["a"]],"counts":[7.0,"7",5.5],"prices":[1e3,"1e3",true]}`), Labels: []string{"z", "x"}, Scores: []int64{9},
+		{ID: "e", Doc: json.RawMessage(`{"tags":"a","counts":{"x":1}}`), Labels: []*string{new("a")}, Scores: []int64{3}, Lines: json.RawMessage(`[{"sku":"x","tags":"a"}]`)},
+		{ID: "f", Labels: []*string{}, Scores: []int64{}, Lines: json.RawMessage(`{"sku":"x","tags":["a"]}`)},
+		{ID: "g", Doc: json.RawMessage(`{"tags":[1,null,"A",{"x":"a"},["a"]],"counts":[7.0,"7",5.5],"prices":[1e3,"1e3",true]}`), Labels: []*string{new("z"), new("x")}, Scores: []int64{9},
 			Lines: json.RawMessage(`[{"sku":"y","tags":[1,"a"]}]`)},
-		{ID: "h", Doc: json.RawMessage(`{"tags":["a"]}`), Labels: []string{"a", "a"}, Scores: []int64{5, 9}, Lines: json.RawMessage(`[{"tags":["a"]},"x"]`)},
-		{ID: "i", Doc: json.RawMessage(`{"tags":[null],"flags":["true"]}`), Labels: []string{"z"}, Scores: []int64{100}, Lines: json.RawMessage(`[{"sku":"x","tags":[]}]`)},
+		{ID: "h", Doc: json.RawMessage(`{"tags":["a"]}`), Labels: []*string{new("a"), new("a")}, Scores: []int64{5, 9}, Lines: json.RawMessage(`[{"tags":["a"]},"x"]`)},
+		{ID: "i", Doc: json.RawMessage(`{"tags":[null],"flags":["true"]}`), Labels: []*string{new("z")}, Scores: []int64{100}, Lines: json.RawMessage(`[{"sku":"x","tags":[]}]`)},
 		{ID: "j", Lines: json.RawMessage(`["x","{\"sku\":\"x\",\"tags\":[\"a\"]}",7,true,null]`)},
+		{ID: "k", Labels: []*string{nil, new("x")}},
 	}
 }
 
@@ -58,7 +75,7 @@ func ArrayRecords() []ArrayRecord {
 var ArrayFacets = map[string]map[string]int64{
 	"doc.tags":  {"a": 2, "b": 2, "c": 1, "A": 1},
 	"doc.flags": {"true": 2, "false": 1},
-	"labels":    {"x": 2, "y": 2, "a": 2, "z": 2},
+	"labels":    {"x": 3, "y": 2, "a": 2, "z": 2},
 	"scores":    {"1": 1, "3": 1, "5": 1, "7": 1, "9": 2, "20": 1, "100": 1},
 }
 
@@ -83,31 +100,32 @@ var arrayCases = []arrayCase{
 	{"path some ne", `{"doc.tags":{"$some":{"$ne":"a"}}}`, "abg", ""},
 	{"path some nin", `{"doc.tags":{"$some":{"$nin":["a","b"]}}}`, "bg", ""},
 	{"path elements equal under $or", `{"doc.tags":{"$some":{"$or":[{"$eq":"a"},{"$in":["c","z"]}]}}}`, "abh", ""},
-	{"path none eq", `{"doc.tags":{"$none":{"$eq":"a"}}}`, "bcdefgij", ""},
+	{"path none eq", `{"doc.tags":{"$none":{"$eq":"a"}}}`, "bcdefgijk", ""},
 	{"path some any element", `{"doc.tags":{"$some":{}}}`, "abgh", ""},
-	{"path none any element", `{"doc.tags":{"$none":{}}}`, "cdefij", ""},
-	{"path contains", `{"doc.tags":{"$contains":["a","b"]}}`, "a", "cdefij"},
-	{"path contains a repeated element", `{"doc.tags":{"$contains":["b"]}}`, "ab", "cdefij"},
-	{"path contains nothing", `{"doc.tags":{"$contains":[]}}`, "abgh", "cdefij"},
-	{"path null", `{"doc.tags":{"$null":true}}`, "cdefij", ""},
+	{"path none any element", `{"doc.tags":{"$none":{}}}`, "cdefijk", ""},
+	{"path contains", `{"doc.tags":{"$contains":["a","b"]}}`, "a", "cdefijk"},
+	{"path contains a repeated element", `{"doc.tags":{"$contains":["b"]}}`, "ab", "cdefijk"},
+	{"path contains nothing", `{"doc.tags":{"$contains":[]}}`, "abgh", "cdefijk"},
+	{"path null", `{"doc.tags":{"$null":true}}`, "cdefijk", ""},
 	{"path not null", `{"doc.tags":{"$not_null":true}}`, "abgh", ""},
 	{"path one element in a range", `{"doc.counts":{"$some":{"$gte":5,"$lt":10}}}`, "bg", ""},
 	{"path elements on either side", `{"doc.counts":{"$some":{"$or":[{"$lt":2},{"$gt":15}]}}}`, "a", ""},
 	{"path an element unequal", `{"doc.counts":{"$some":{"$not":{"$eq":7}}}}`, "ag", ""},
 	{"path an element in a range and a set", `{"doc.counts":{"$some":{"$and":[{"$gte":1},{"$in":[1,7]}]}}}`, "abg", ""},
-	{"path contains a number", `{"doc.counts":{"$contains":[7]}}`, "bg", "cdefhij"},
+	{"path contains a number", `{"doc.counts":{"$contains":[7]}}`, "bg", "cdefhijk"},
 	{"path decimal some eq", `{"doc.prices":{"$some":{"$eq":"10.5"}}}`, "a", ""},
 	{"path decimal some gt", `{"doc.prices":{"$some":{"$gt":9.5}}}`, "ag", ""},
 	{"path decimal some in", `{"doc.prices":{"$some":{"$in":["9.5",1000]}}}`, "abg", ""},
-	{"path decimal contains", `{"doc.prices":{"$contains":["9.5","10.5"]}}`, "a", "cdefhij"},
+	{"path decimal contains", `{"doc.prices":{"$contains":["9.5","10.5"]}}`, "a", "cdefhijk"},
 	{"path timestamp some gte", `{"doc.seen":{"$some":{"$gte":"2026-01-02T03:04:05Z"}}}`, "a", ""},
 	{"path bool some eq", `{"doc.flags":{"$some":{"$eq":false}}}`, "b", ""},
-	{"path bool none eq", `{"doc.flags":{"$none":{"$eq":true}}}`, "cdefghij", ""},
-	{"path bool contains", `{"doc.flags":{"$contains":[true]}}`, "ab", "cdefghij"},
+	{"path bool none eq", `{"doc.flags":{"$none":{"$eq":true}}}`, "cdefghijk", ""},
+	{"path bool contains", `{"doc.flags":{"$contains":[true]}}`, "ab", "cdefghijk"},
 
 	{"column some eq", `{"labels":{"$some":{"$eq":"y"}}}`, "ab", ""},
 	{"column some in", `{"labels":{"$some":{"$in":["a","z"]}}}`, "eghi", ""},
-	{"column some like", `{"labels":{"$some":{"$like":"%"}}}`, "abeghi", ""},
+	{"column some like", `{"labels":{"$some":{"$like":"%"}}}`, "abeghik", ""},
+	{"column some element unequal, a NULL element none", `{"labels":{"$some":{"$ne":"x"}}}`, "abeghi", ""},
 	{"column none any element", `{"labels":{"$none":{}}}`, "cdfj", ""},
 	{"column contains", `{"labels":{"$contains":["a"]}}`, "eh", "dj"},
 	{"column one element in a range", `{"scores":{"$some":{"$gte":5,"$lt":10}}}`, "bgh", ""},
@@ -118,11 +136,11 @@ var arrayCases = []arrayCase{
 	{"a line's tag", `{"lines":{"$some":{"tags":{"$some":{"$eq":"a"}}}}}`, "agh", ""},
 	{"one line's sku and tag", `{"lines":{"$some":{"sku":"x","tags":{"$some":{"$eq":"a"}}}}}`, "a", ""},
 	{"a line without tags", `{"lines":{"$some":{"tags":{"$none":{}}}}}`, "ehij", ""},
-	{"no line's tags contain", `{"lines":{"$none":{"tags":{"$contains":["a"]}}}}`, "bcdefij", ""},
+	{"no line's tags contain", `{"lines":{"$none":{"tags":{"$contains":["a"]}}}}`, "bcdefijk", ""},
 }
 
 // arrayIDs are ArrayRecords' ids.
-const arrayIDs = "abcdefghij"
+const arrayIDs = "abcdefghijk"
 
 // containsList is a `$contains` list on ArrayRecords: values whose holders
 // are want, and a value outside them, which leaves absentWant.
@@ -135,13 +153,13 @@ type containsList struct {
 }
 
 var containsLists = []containsList{
-	{field: "doc.tags", held: []any{"a", "b"}, absent: "zz", want: "a", unknown: "cdefij"},
-	{field: "doc.counts", held: []any{int64(7)}, absent: int64(123456), want: "bg", unknown: "cdefhij"},
-	{field: "doc.prices", held: []any{"9.5", "10.5"}, absent: "0.125", want: "a", unknown: "cdefhij"},
-	{field: "doc.seen", held: []any{"2026-01-02T03:04:05Z"}, absent: "2000-01-01T00:00:00Z", want: "a", unknown: "cdefghij"},
-	{field: "doc.flags", held: []any{true}, absent: false, want: "ab", absentWant: "b", unknown: "cdefghij"},
+	{field: "doc.tags", held: []any{"a", "b"}, absent: "zz", want: "a", unknown: "cdefijk"},
+	{field: "doc.counts", held: []any{int64(7)}, absent: int64(123456), want: "bg", unknown: "cdefhijk"},
+	{field: "doc.prices", held: []any{"9.5", "10.5"}, absent: "0.125", want: "a", unknown: "cdefhijk"},
+	{field: "doc.seen", held: []any{"2026-01-02T03:04:05Z"}, absent: "2000-01-01T00:00:00Z", want: "a", unknown: "cdefghijk"},
+	{field: "doc.flags", held: []any{true}, absent: false, want: "ab", absentWant: "b", unknown: "cdefghijk"},
 	{field: "labels", held: []any{"a"}, absent: "zz", want: "eh", unknown: "dj"},
-	{field: "scores", held: []any{int64(9)}, absent: int64(123456), want: "gh", unknown: "dj"},
+	{field: "scores", held: []any{int64(9)}, absent: int64(123456), want: "gh", unknown: "djk"},
 }
 
 // largeContainsCases are `$contains` of lists of each SetSizes size above
@@ -208,9 +226,10 @@ var arrayParseErrors = []Case{
 	{Name: "an element condition on a scalar", Filter: `{"id":{"$some":{"$eq":"a"}}}`, ParseErr: filter.ECodeInvalidOperator.String()},
 }
 
-// ArraySchema returns ArrayRecord's generated filter schema.
+// ArraySchema returns the filter schema of the resource ArrayRecords are
+// rows of: Labels declared []string, its table "array_records".
 func ArraySchema() (*filter.ResourceSchema, error) {
-	return filter.GenerateFilterSchema[ArrayRecord](core.NewSchemaGenerator())
+	return filter.GenerateFilterSchema[arrayResource](core.NewSchemaGenerator(core.WithSQLTableName("array_records")))
 }
 
 // RunArrays evaluates every ArrayCases case on backend, which evaluates

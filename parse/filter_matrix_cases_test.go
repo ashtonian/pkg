@@ -223,6 +223,10 @@ func jsonText(v any) any {
 		if x == nil {
 			return nil
 		}
+	case []*string:
+		if x == nil {
+			return nil
+		}
 	case map[string]float64:
 		if x == nil {
 			return nil

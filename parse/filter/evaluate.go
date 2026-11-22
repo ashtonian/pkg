@@ -124,16 +124,17 @@ func ColumnValue(f *FieldSchema, v any) (any, bool, error) {
 		if !ok {
 			return nil, false, fmt.Errorf("field %s: an array column holds a slice or a JSON array, got %T", f.ExternalName, v)
 		}
-		out := make([]any, len(items))
-		for i, item := range items {
+		// A NULL element is no element, as the SQL element renderings skip
+		// it: a PostgreSQL array holds NULLs whatever the Go type is.
+		out := make([]any, 0, len(items))
+		for _, item := range items {
 			e, present, err := ColumnValue(&FieldSchema{ExternalName: f.ExternalName, DataType: f.Elem, NumberKind: f.NumberKind}, item)
 			if err != nil {
 				return nil, false, err
 			}
-			if !present {
-				return nil, false, fmt.Errorf("field %s: element %d is NULL", f.ExternalName, i)
+			if present {
+				out = append(out, e)
 			}
-			out[i] = e
 		}
 		return out, true, nil
 	case f.DataType == core.FieldTypeGeo || f.DataType == core.FieldTypeAny:

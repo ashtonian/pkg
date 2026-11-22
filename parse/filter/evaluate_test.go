@@ -181,8 +181,11 @@ func TestColumnValue(t *testing.T) {
 		})
 	}
 
-	_, _, err := ColumnValue(arrayOf(core.FieldTypeString), []*string{nil})
-	assert.Error(t, err, "a NULL element has no canonical value")
+	x := "x"
+	got, present, err := ColumnValue(arrayOf(core.FieldTypeString), []*string{nil, &x})
+	require.NoError(t, err)
+	assert.True(t, present)
+	assert.Equal(t, []any{"x"}, got, "a NULL element is no element, as SQL reads one")
 }
 
 // A hand-built schema's scalar array element, built without newElement,
