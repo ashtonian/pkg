@@ -8,7 +8,9 @@ trap 'chmod -R u+w "$scratch" 2>/dev/null; rm -rf "$scratch"' EXIT
   GOWORK=off go run . -out "$scratch/proxy" -manifest "$repo_root/.release-please-manifest.json" \
     "$repo_root/process" "$repo_root/state" "$repo_root/onepassword"
 ) > "$scratch/modules.tsv"
-export GOWORK=off GOTOOLCHAIN=local GOFLAGS='-mod=mod -modcacherw'
+# -trimpath keeps the scratch module cache's path out of build cache keys,
+# so the consumer's dependencies hit the shared build cache.
+export GOWORK=off GOTOOLCHAIN=local GOFLAGS='-mod=mod -modcacherw -trimpath'
 export GOMODCACHE="$scratch/modcache" GOPROXY="file://$scratch/proxy,https://proxy.golang.org"
 export GOPRIVATE='' GONOPROXY='' GONOSUMDB=github.com/ashtonian/pkg/process,github.com/ashtonian/pkg/state,github.com/ashtonian/pkg/onepassword
 while IFS=$'\t' read -r module version source; do

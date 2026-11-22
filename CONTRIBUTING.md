@@ -56,7 +56,9 @@ paths run all of them. The suites run once each:
 - The SDK runs every check on its Node.js floor, then only its runtime tests and packed
   consumer on the newest LTS.
 - Release checks repeat the tests once, without the race detector, against each archive and
-  the dependency versions its go.mod requires.
+  the dependency versions its go.mod requires. Their fresh consumers build with `-trimpath`,
+  which keeps the scratch module cache's random path out of build-cache keys, so the
+  dependencies come from the shared build cache; the job logs a cache summary per go command.
 
 A single signed merge onto `main` may reuse successful PR or owner-dispatched branch
 coverage from the preceding six hours. The receipt must match the complete source tree,

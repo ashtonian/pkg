@@ -312,6 +312,9 @@ jobs:
       - name: Release, cookbook and release-tool checks for the changed modules
         env:
           CHECKS: ${{ needs.scope.outputs.checks }}
+          # A summary per go command: the fresh consumers' dependency compiles
+          # should be remote hits (the scripts build with -trimpath).
+          GOCACHEPROG_LOG_LEVEL: info
         run: |
           read -ra checks <<< "$CHECKS"
           if [ "${#checks[@]}" -eq 0 ]; then
