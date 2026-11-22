@@ -1,0 +1,19 @@
+name: release-please tool
+description: Node.js, pnpm and the dependencies of tools/release-please, the release-please runner
+runs:
+  using: composite
+  steps:
+    # Points pnpm at the runner's in-cluster npm cache when it answers.
+    - uses: ashtonian/go-ci-actions/npm-registry@439da8bdc22311fff2f04371ca9cd9c3233ee7d0 # v1.6.2
+    - uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
+      with:
+        package_json_file: tools/release-please/package.json
+    - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+      with:
+        node-version: 'lts/*'
+        cache: pnpm
+        cache-dependency-path: tools/release-please/pnpm-lock.yaml
+    - name: Install release-please
+      shell: bash
+      working-directory: tools/release-please
+      run: pnpm install --frozen-lockfile

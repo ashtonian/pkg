@@ -126,9 +126,18 @@ const (
 	wkbHeader       = 1 + 4 + 4 + 4 // byte order, type, ring count, point count
 )
 
+// MinRingPoints is the fewest points of a ring AppendPolygonWKB writes: a
+// triangle, before the point that closes it.
+const MinRingPoints = 3
+
 // AppendPolygonWKB appends ring to b as the WKB of a one-ring polygon,
-// closed by repeating its first point, in lon/lat (x/y) order.
+// closed by repeating its first point, in lon/lat (x/y) order. ring must
+// hold at least MinRingPoints points, as filter's polygon validation
+// requires; a shorter ring panics.
 func AppendPolygonWKB(b []byte, ring []Point) []byte {
+	if len(ring) < MinRingPoints {
+		panic(fmt.Sprintf("geo: AppendPolygonWKB of a %d-point ring, want at least %d", len(ring), MinRingPoints))
+	}
 	b = append(b, wkbLittleEndian)
 	b = binary.LittleEndian.AppendUint32(b, wkbPolygon)
 	b = binary.LittleEndian.AppendUint32(b, 1)
@@ -146,7 +155,8 @@ var errPolygonWKB = errors.New("geo: want a little-endian one-ring polygon WKB")
 
 // ReadPolygonWKB appends the ring of the polygon WKB b to ring and returns
 // it. b must be a polygon as AppendPolygonWKB writes it: little-endian, one
-// ring, its points finite.
+// ring of at least MinRingPoints points and the closing point, which repeats
+// the first, its points finite.
 func ReadPolygonWKB(ring []Point, b []byte) ([]Point, error) {
 	if len(b) < wkbHeader || b[0] != wkbLittleEndian ||
 		binary.LittleEndian.Uint32(b[1:]) != wkbPolygon || binary.LittleEndian.Uint32(b[5:]) != 1 {
@@ -156,6 +166,10 @@ func ReadPolygonWKB(ring []Point, b []byte) ([]Point, error) {
 	if uint64(len(b)-wkbHeader) != 16*uint64(n) {
 		return nil, fmt.Errorf("%w: %d points in %d bytes", errPolygonWKB, n, len(b)-wkbHeader)
 	}
+	if n < MinRingPoints+1 {
+		return nil, fmt.Errorf("%w: a ring of %d points, want at least %d", errPolygonWKB, n, MinRingPoints+1)
+	}
+	start := len(ring)
 	for i := range int(n) {
 		off := wkbHeader + 16*i
 		lon := math.Float64frombits(binary.LittleEndian.Uint64(b[off:]))
@@ -164,6 +178,9 @@ func ReadPolygonWKB(ring []Point, b []byte) ([]Point, error) {
 			return nil, fmt.Errorf("%w: point %d is not finite", errPolygonWKB, i)
 		}
 		ring = append(ring, Point{Lat: lat, Lon: lon})
+	}
+	if ring[start] != ring[len(ring)-1] {
+		return nil, fmt.Errorf("%w: the ring is not closed", errPolygonWKB)
 	}
 	return ring, nil
 }

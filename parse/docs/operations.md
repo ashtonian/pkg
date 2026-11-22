@@ -102,7 +102,7 @@ go test -tags=integration -race ./...
 go test -tags=unit -run '^$' -bench . ./...
 ```
 
-SQLite cases run locally. PostgreSQL/PostGIS tests require the corresponding DSN or opt-in container setup (`PARSE_POSTGRES_DSN`, `PARSE_POSTGIS_DSN`, or `PARSE_INTEG_PG=1`); see [database test helpers](../internal/dbtest/). An explicitly requested container that cannot start fails the test. Skipped backend tests are not a backend verification result.
+SQLite cases run locally. PostgreSQL and PostGIS tests run against the servers `PARSE_POSTGRES_DSN` and `PARSE_POSTGIS_DSN` name, and skip when the variable is unset; see [database test helpers](../internal/dbtest/). From a repository checkout, `make parse-postgres-up` starts one PostGIS server that serves both and prints the two exports. A named server that is unavailable fails the test, within 30 seconds of the first fixture call. Skipped backend tests are not a backend verification result: with `PARSE_REQUIRE_PG=1` an unset variable fails each test that asks for its server instead, which is how CI's PostgreSQL jobs run.
 
 | Source | What it exercises |
 |---|---|
