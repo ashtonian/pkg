@@ -29,19 +29,21 @@ flowchart LR
 ```
 
 **Entry points**
-- `Register()`: registers the six functions with the driver, once per process.
-- `Decimal(v)`, `DecimalKey(v)`, `DecimalFloat32(v)`: the functions over one SQLite value, for registering with another driver.
-- `GeoNear(point, latKey, lonKey, lat, lon, meters)`, `GeoInBox(point, latKey, lonKey, south, north, west, east)`, `GeoCoveredBy(point, latKey, lonKey, polygon)`: the geo functions over a stored point's JSON text, its member names and the bound operand, for registering with another driver.
+- `Register()`: registers the six functions with modernc.org/sqlite's `"sqlite"` driver, once per process.
+- `RegisterOn(d *sqlite.Driver)`: registers them on a `sqlite.Driver` the caller constructs, which then carries them on its own connections only. Package-level registrations, `Register`'s included, never reach a constructed driver.
+- `Functions()`: the table both install, as `Function{Name, NArgs, Call}`, for registering with another SQLite driver ([below](#another-sqlite-driver)).
+- `Decimal(v)`, `DecimalKey(v)`, `DecimalFloat32(v)`: the functions over one SQLite value.
+- `GeoNear(point, latKey, lonKey, lat, lon, meters)`, `GeoInBox(point, latKey, lonKey, south, north, west, east)`, `GeoCoveredBy(point, latKey, lonKey, polygon)`: the geo functions over a stored point's JSON text, its member names and the bound operands.
 
 **Exit points**
-- Function results: TEXT, a BLOB, a REAL distance, 1 or 0, or NULL. Nothing is written or logged.
+- Function results: TEXT, a BLOB, 1 or 0, or NULL. Nothing is written or logged.
 
 **Failure modes**
 - A connection opened before `Register`, or a database whose driver never registered the functions: every statement on a decimal field, and every facet of a number, fails with SQLite's `no such function: parse_decimal` (or `parse_decimal_key`, `parse_decimal_float32`), and every geo filter with `no such function: parse_geo_near` (or `parse_geo_in_box`, `parse_geo_covered_by`). parse never falls back to a rounded comparison or key, or to a spherical distance.
-- `Register` failing: `parsesqlite: register parse_decimal: a function named "parse_decimal" is already registered` means another package registered that name with modernc.org/sqlite first. `Register` returns its first result on every call.
+- `Register` failing: `parsesqlite: register parse_decimal: a function named "parse_decimal" is already registered` means another package registered that name with modernc.org/sqlite first. The functions before the taken name in `Functions()` are registered and the rest are not, so fix the conflict rather than retrying: `Register` returns its first result on every call. `RegisterOn` fails the same way on a driver that already has a name, and is not memoized: call it once per driver.
 - A value that holds no decimal (a JSON boolean, a string with an exponent, text that is no number, a BLOB): NULL, so a filter treats it as missing, as `filter.PathValue` does.
 - A point member that holds no coordinate (missing, JSON `null`, a boolean, an object or array, text float8 rejects such as `1_0`, a value beyond float8's range): the point is NULL, so the geo filter is unknown and `$not` does not select the row. PostgreSQL refuses the query on any of these but a missing or null member; check the stored documents when the two disagree. A member holding `NaN` or `Infinity` is a coordinate on both, and its point is near, in and on nothing.
-- `parse_geo_near: geo: decode point: …`: the stored point is not JSON (`json()` in the plan reports malformed JSON first). `want the point's member names as text`, `want the point as JSON text`, `want a number for operand n`, `parse_geo_covered_by: want the polygon as a WKB blob` or `geo: want a little-endian one-ring polygon WKB`: hand-written SQL called a geo function with arguments `filter.SQLiteDialect` never binds. The dialect passes `json(column)`, the member names as text, numbers, and the polygon `geo.AppendPolygonWKB` writes.
+- `parse_geo_near: geo: decode point: …`: the stored point is not JSON (`json()` in the plan reports malformed JSON first). `want the point's member names as text`, `want the point as JSON text`, `want a number for operand n`, `parse_geo_covered_by: want the polygon as a WKB blob` or `geo: want a little-endian one-ring polygon WKB`: hand-written SQL called a geo function with arguments `filter.SQLiteDialect` never binds. The operands are checked before the point, so the error comes on the first row, a NULL point's included. The dialect passes `json(column)`, the member names as text, numbers, and the polygon `geo.AppendPolygonWKB` writes.
 
 **Dependencies**
 - *Imports*: `parse/internal/decimals`, `parse/internal/geo`, `modernc.org/sqlite`
@@ -84,6 +86,21 @@ The key is a sign byte (negative, zero, positive), then for a nonzero value `0.d
 | a JSON string float8 accepts: decimal (`"10"`, `" 10 "`, `"1e1"`, `".5"`), hexadecimal (`"0x10"`, `"0x1.8"`, `"0x1p3"`), `"NaN"`, `"Infinity"`, `"-inf"` | its value; a point holding NaN or an infinity is near, in and on nothing |
 | missing, JSON `null`, a boolean, an object, an array, a string float8 rejects (`"1_0"`, `"1e"`, `"ten"`), a value beyond float8's range (`1e400`, `"1e-400"`) | none: the point is NULL |
 
+### Another SQLite driver
+
+`Functions()` is the registration contract: each entry's `Name` is what `filter.SQLiteDialect` calls, `NArgs` how many arguments it passes, and `Call` the implementation over the `database/sql/driver` values a scalar function receives. Register every entry, as a deterministic function: SQLite uses an index on an expression only when its functions are deterministic.
+
+| Name | Arguments |
+|---|---|
+| `parse_decimal` | 1 |
+| `parse_decimal_key` | 1 |
+| `parse_decimal_float32` | 1 |
+| `parse_geo_near` | 6 |
+| `parse_geo_in_box` | 7 |
+| `parse_geo_covered_by` | 4 |
+
+The functions need nothing from modernc.org/sqlite, but this package registers them with it, so a program on another driver that imports it links modernc.org/sqlite too. They are not split into a driver-free package: the exported functions and names would then live in two places.
+
 ## Configuration
 
 None. The functions are pure and deterministic; `Register` takes no options.
@@ -95,25 +112,27 @@ From the parse module directory:
 ```bash
 go test -tags=unit -race ./parsesqlite/ ./internal/decimals/ ./internal/geo/
 go test -tags=unit -race -run 'TestDecimalMatrix_SQLite|TestNumberKeys_SQLite|TestEvaluateDecimalConformance|TestGeoMatrix_SQLite|TestFilterMatrix_SQLite|TestEvaluateGeoConformance|TestEvaluateConformance' ./ ./filter/
-PARSE_INTEG_PG=1 go test -tags=integration -run 'MatchesPostGIS|TestGeoMatrix_PostGIS|TestFilterMatrix_PostgreSQL' ./ ./internal/geo/
+# PARSE_POSTGRES_DSN and PARSE_POSTGIS_DSN set; make parse-postgres-up starts a server and prints them
+go test -tags=integration -run 'MatchesPostGIS|TestGeoMatrix_PostGIS|TestFilterMatrix_PostgreSQL' ./ ./internal/geo/
 ```
 
-`internal/decimals` checks over generated literals that the key orders as `core.CompareDecimals` does. `TestDecimalMatrix_SQLite` runs `filtertest.DecimalCases`, the decimal sorts, keyset walks and facets on SQLite; the PostgreSQL and `filter.Evaluate` runs of the same cases must agree with it. `TestNumberKeys_SQLite` counts `filtertest.NumberKeyFacets` (number members written several ways, float64, float32 and int columns) on SQLite; `TestNumberKeys_PostgreSQL` and `filter.FacetKeys` must count the same buckets. `internal/geo` checks the distance against GeographicLib's test set to 1e-8 m; with PostGIS (`PARSE_POSTGIS_DSN` or `PARSE_INTEG_PG=1`) it checks thousands of seeded distances against `ST_Distance` and `ST_DWithin`, and points at polygons' vertices and edges against `ST_CoveredBy` and `ST_Intersects`. `TestGeoMatrix_SQLite` runs `filtertest.GeoCases` (members held as numbers and strings, partial points, latitudes beyond a pole) and `TestFilterMatrix_SQLite` the operator cases' geo filters; PostGIS and `filter.Evaluate` run the same cases.
+`internal/decimals` checks over generated literals that the key orders as `core.CompareDecimals` does. `TestDecimalMatrix_SQLite` runs `filtertest.DecimalCases`, the decimal sorts, keyset walks and facets on SQLite; the PostgreSQL and `filter.Evaluate` runs of the same cases must agree with it. `TestNumberKeys_SQLite` counts `filtertest.NumberKeyFacets` (number members written several ways, float64, float32 and int columns) on SQLite; `TestNumberKeys_PostgreSQL` and `filter.FacetKeys` must count the same buckets. `internal/geo` checks the distance against GeographicLib's test set to 1e-8 m; with PostGIS (`PARSE_POSTGIS_DSN`) it checks thousands of seeded distances against `ST_Distance` and `ST_DWithin`, and points at polygons' vertices and edges against `ST_CoveredBy` and `ST_Intersects`. `TestGeoMatrix_SQLite` runs `filtertest.GeoCases` (members held as numbers and strings, partial points, latitudes beyond a pole) and `TestFilterMatrix_SQLite` the operator cases' geo filters; PostGIS and `filter.Evaluate` run the same cases.
 
 ## Operations
 
-- **Cost**: one Go call per row for each decimal expression a statement evaluates, and for each number a facet keys. A key is the value's significant digits plus three bytes. A geo filter is one call per row, which decodes the point's JSON text: a distance then iterates a handful of times (more near the antipode), a polygon test is linear in its points (at most 100).
+- **Cost**: one Go call per row for each decimal expression a statement evaluates, and for each number a facet keys. A key is one byte for zero; otherwise the value's significant digits plus three bytes, and one more for a negative, which ends with a terminator. A geo filter is one call per row, which decodes the point's JSON text: a distance then iterates a handful of times (more near the antipode), a polygon test is linear in its points (at most 100).
 - **Indexes**: no index serves a geo filter on SQLite; it reads every row its other predicates leave. SQLite indexes an expression of deterministic functions. `CREATE INDEX … ON t (parse_decimal_key(amount))` serves decimal ranges, sorts and keyset seeks; `(parse_decimal(amount))` serves equality and sets. An index on them needs the functions on every connection that writes the table, the `sqlite3` shell included, since its maintenance calls them.
+- **Key format**: the bytes `parse_decimal_key` returns are a persisted format, held by every index on it, and are pinned by golden vectors in `internal/decimals`. The format is stable: a change to it is a breaking change, after which every index on `parse_decimal_key` must be rebuilt with `REINDEX` before it is read. SQLite trusts a deterministic function to return what it returned when the index was built, so an index left with the previous release's keys answers range scans, sorts and keyset seeks with wrong rows, without an error.
 - **Health and metrics**: none; a missing registration surfaces as the statement error above.
 
 ## Security
 
-The functions read only their argument, allocate at most the value's digits (bounded by `core.MaxDecimalDigits`), and have no side effects. A decimal string member longer than 1000 characters is NULL before it is parsed. A polygon blob must hold exactly the points its header counts, and its points must be finite, before it is read.
+The functions read only their argument, allocate at most the value's digits (bounded by `core.MaxDecimalDigits`), and have no side effects. A decimal string member longer than 1000 characters is NULL before it is parsed. A polygon blob must hold exactly the points its header counts, at least four of them with the last repeating the first, and its points must be finite, before it is read.
 
 ## Code Map
 
 | File | Responsibility |
 |---|---|
-| [`parsesqlite.go`](parsesqlite.go) | `Register`, `Decimal`, `DecimalKey`, `DecimalFloat32`, `GeoNear`, `GeoInBox`, `GeoCoveredBy` and the function names |
+| [`parsesqlite.go`](parsesqlite.go) | `Function` and the `Functions` table, `Register`, `RegisterOn`, `Decimal`, `DecimalKey`, `DecimalFloat32`, `GeoNear`, `GeoInBox`, `GeoCoveredBy` and the function names |
 | [`../internal/decimals`](../internal/decimals/decimals.go) | `Value` (a SQLite value as a decimal), `Float32Value` (as a float32), `Member` (a document member as a decimal), `Key`, the function names |
 | [`../internal/geo`](../internal/geo/geo.go) | `Distance` (WGS 84 geodesic, ported from GeographicLib), `Geodetic`, `Box`, `CoveredBy`, `Near`, `ReadPoint` / `ReadPointJSON` and `Coordinate` (a stored point, its members read as float8), the polygon WKB, the function names |

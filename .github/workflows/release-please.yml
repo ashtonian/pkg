@@ -26,6 +26,9 @@ env:
   CI_ARTIFACT_ENDPOINT: ${{ secrets.CI_ARTIFACT_ENDPOINT }}
 
 jobs:
+  # Each push's run creates the releases a merged release PR describes:
+  # publish attests a release from its release commit's own run, so this job
+  # is never queued behind another.
   release-please:
     if: github.actor_id == '4212452' && github.event_name == 'push'
     permissions:
@@ -34,16 +37,45 @@ jobs:
     outputs:
       parse_tag: ${{ steps.release.outputs['parse--tag_name'] }}
     runs-on: arc-pkg
+    timeout-minutes: 15
     steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/release-please-tool
       # A release PR opened with GITHUB_TOKEN does not trigger CI; set the
       # RELEASE_PLEASE_TOKEN secret (a fine-grained token with contents and
       # pull-request write) for checks to run on it.
       - id: release
-        uses: googleapis/release-please-action@45996ed1f6d02564a971a2fa1b5860e934307cf7 # v5.0.0
+        env:
+          GITHUB_TOKEN: ${{ secrets.RELEASE_PLEASE_TOKEN || github.token }}
+        run: node tools/release-please/run.mjs --skip-github-pull-request
+
+  # Opens or updates the release PR with first-parent notes (tools/release-please),
+  # one run at a time: each reads main as GitHub has it when it starts, and a
+  # newer push's pending run replaces an older one's, so the last push writes
+  # the release PR last.
+  release-pr:
+    needs: release-please
+    if: github.actor_id == '4212452' && github.event_name == 'push'
+    permissions:
+      contents: write
+      pull-requests: write
+    runs-on: arc-pkg
+    timeout-minutes: 15
+    concurrency:
+      group: release-please-pr
+      cancel-in-progress: false
+    steps:
+      # The whole history: the plugin maps each branch commit to its merge.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          token: ${{ secrets.RELEASE_PLEASE_TOKEN || github.token }}
-          config-file: release-please-config.json
-          manifest-file: .release-please-manifest.json
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: ./.github/actions/release-please-tool
+      - env:
+          GITHUB_TOKEN: ${{ secrets.RELEASE_PLEASE_TOKEN || github.token }}
+        run: node tools/release-please/run.mjs --skip-github-release
 
   publish:
     needs: release-please
