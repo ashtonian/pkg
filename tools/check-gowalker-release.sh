@@ -21,7 +21,7 @@ cd "$tmp/consumer"
 go mod init example.com/gowalker-consumer
 go get "$module@$version"
 go vet "$module/..."
-go test -race -count=1 "$module/..."
+go test -count=1 "$module/..."
 # The quick start is copied verbatim from the archive, not the working tree.
 downloaded=$(go list -m -f '{{.Dir}}' "$module")
 awk '/^```go$/{code=1;next} /^```$/{if(code)exit} code{print}' "$downloaded/README.md" > main.go

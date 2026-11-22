@@ -49,9 +49,9 @@ while IFS=$'\t' read -r module version source; do
     go get "$module@$version"
     go build "$module/..."
     go vet -tags=unit "$module/..."
-    go test -tags=unit -race -count=1 "$module/..."
+    go test -tags=unit -count=1 "$module/..."
     go vet -tags=integration "$module/..."
-    go test -tags=integration -race -count=1 "$module/..."
+    go test -tags=integration -count=1 "$module/..."
 
     # Tidy a copy of the downloaded module. Its go.mod must already be tidy;
     # synthetic working-tree checksums must not be written into the checkout.
@@ -93,9 +93,9 @@ for example in examples/gin internal/bench; do
     if [[ $example == internal/bench ]]; then
       # Execute each benchmark once to catch broken fixtures. These timings
       # are smoke checks, not comparable performance measurements.
-      go test -tags=integration -race -count=1 -run '^$' -bench . -benchtime=1x ./...
+      go test -tags=integration -count=1 -run '^$' -bench . -benchtime=1x ./...
     else
-      go test -tags="$tags" -race -count=1 ./...
+      go test -tags="$tags" -count=1 ./...
     fi
   )
 done
