@@ -13,14 +13,13 @@ import (
 	"github.com/ashtonian/pkg/parse/core"
 )
 
-// checkJSONMembers rejects fields encoding/json would silently discard, including
-// unknown fields inside typed maps, arrays and embedded structs. Custom JSON
-// decoders own their input contract.
-func checkJSONMembers(t reflect.Type, v any) error {
-	data, err := json.Marshal(v)
-	if err != nil {
-		return err
-	}
+// checkJSONMembers rejects members of data, a value the codec encoded, that a
+// decode into t would silently discard, inside typed maps, arrays and
+// embedded structs too. The check decodes with encoding/json because the
+// Codec interface has no mode that refuses an unknown member, and the patch
+// schema names members by encoding/json's rules; the codec still does the
+// decode that keeps the value. Custom JSON decoders own their input contract.
+func checkJSONMembers(t reflect.Type, data []byte) error {
 	dec := json.NewDecoder(bytes.NewReader(data))
 	dec.DisallowUnknownFields()
 	dec.UseNumber()

@@ -559,7 +559,7 @@ func normalizeTyped(t reflect.Type, v any, codec core.Codec) (any, error) {
 		return nil, err
 	}
 	dst := reflect.New(t)
-	if err = checkJSONMembers(t, v); err != nil {
+	if err = checkJSONMembers(t, data); err != nil {
 		return nil, err
 	}
 	if err = codec.Decode(data, dst.Interface()); err != nil {

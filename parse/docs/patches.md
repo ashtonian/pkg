@@ -262,7 +262,7 @@ Object merges into types with custom JSON encoding are rejected, and so is a mer
 
 For declared JSON columns, replacement validates a fresh typed Go JSON decode before writing. Custom-codec subtrees retain their supplied JSON representation; ordinary typed objects still fill required members and honor field omission and `,string`. Integer/text map keys use their canonical JSON names, and colliding key forms are rejected. The stored result is one fresh decode of the actual SQL-bound JSON; validation never stores a custom decoder's transformed value by encoding it again.
 
-A non-SQL-NULL document that decodes to a nil map, slice, pointer or interface is rejected before assignment; use `json.RawMessage` when explicit JSON null must be preserved. Top-level typed nil values follow the same clear semantics as nil input. Request codecs still validate input; they do not replace the declared storage codec.
+A non-SQL-NULL document that decodes to a nil map, slice, pointer or interface is rejected before assignment; use `json.RawMessage` when explicit JSON null must be preserved. Top-level typed nil values follow the same clear semantics as nil input. Request codecs still validate input; they do not replace the declared storage codec. An undeclared typed document decodes with the request codec, and its members are checked on that codec's encoding by encoding/json's rules (the `Codec` interface has no mode that refuses an unknown member), so a member the type does not declare is E2077 rather than dropped.
 
 Keep undeclared document codecs stable across round trips. Do not use top-level `omitempty` / `omitzero` as storage metadata; that enclosing-field omission metadata is not a complete storage schema.
 
