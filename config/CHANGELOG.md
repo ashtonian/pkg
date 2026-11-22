@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.11.1](https://github.com/ashtonian/pkg/compare/config/v0.11.0...config/v0.11.1) (2026-11-22)
+
+
+### Bug Fixes
+
+* **config:** keep netip defaults whole, refuse a second Reloader.Run, drive reloader tests by events ([#247](https://github.com/ashtonian/pkg/issues/247)) ([c5f9316](https://github.com/ashtonian/pkg/commit/c5f9316322f8cae8556e35b65e094815a8df5af6)), refs [#231](https://github.com/ashtonian/pkg/issues/231) [#228](https://github.com/ashtonian/pkg/issues/228) [#230](https://github.com/ashtonian/pkg/issues/230) [#186](https://github.com/ashtonian/pkg/issues/186)
+
 ## [0.11.0](https://github.com/ashtonian/pkg/compare/config/v0.10.0...config/v0.11.0) (2026-11-19)
 
 
