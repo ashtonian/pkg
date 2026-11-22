@@ -175,7 +175,7 @@ Tags expose capabilities explicitly: `parse:"filter,sort,patch,facet,search,incl
 | [`client`](client/README.md) | Go request builders: typed catalog fields, `Filter`, `Sort`, `ListParams`, `Nullable`, JSON Patch `Operation`; standard library only, held to the filter and patch corpora |
 | [`sdk/ts`](sdk/ts/README.md) | TypeScript builders, HTTP client, schema validation |
 | [`filter/filtertest`](filter/filtertest/) | Shared operator conformance fixture |
-| `internal/dialect`, `internal/jsonmerge`, `internal/cursor`, `internal/decimals`, `internal/geo` | Dialect primitives, RFC 7386 merge, the bounded MessagePack cursor envelope, decimals as documents and SQLite hold them with their order-preserving key, and the WGS 84 geodesic distance and planar point-in-polygon test geo filters use outside PostGIS; the compiler has no private sibling imports |
+| `internal/dialect`, `internal/jsonmerge`, `internal/rfc6902`, `internal/cursor`, `internal/decimals`, `internal/geo` | Dialect primitives and their names, RFC 7386 merge, the RFC 6902 operation member names patch reads and parse writes, the bounded MessagePack cursor envelope, decimals as documents and SQLite hold them with their order-preserving key, and the WGS 84 geodesic distance and planar point-in-polygon test geo filters use outside PostGIS; the compiler has no private sibling imports |
 
 Patch parsers collect independent invalid values in order. Each declared enum/bounds failure carries `*core.ConstraintError` with `Constraint` and `Limit`; `errors.As` still finds the first `*core.ParseError`. See [the complete patch error contract](docs/patches.md#validation).
 

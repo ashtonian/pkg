@@ -37,7 +37,7 @@ Start with the [runnable package example](../README.md#quick-start). The focused
 
 ## Dependencies
 
-- *Imports*: `parse/core`, `parse/internal/{dialect,jsonmerge}`
+- *Imports*: `parse/core`, `parse/internal/{dialect,jsonmerge,rfc6902}`
 - *Imported by*: `parse`, the example server, and servers that apply patches themselves
 - *Package boundary*: standalone Parse module
 
