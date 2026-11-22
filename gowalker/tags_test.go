@@ -3,6 +3,8 @@ package gowalker_test
 import (
 	"errors"
 	"reflect"
+	"slices"
+	"strings"
 	"testing"
 
 	"github.com/ashtonian/pkg/gowalker"
@@ -111,5 +113,74 @@ func TestTaggedFieldsRejectInvalidTagKeys(t *testing.T) {
 		if _, err := gowalker.New(gowalker.WithTaggedFields(tag)); !errors.Is(err, gowalker.ErrSchema) {
 			t.Fatalf("%q: %v", tag, err)
 		}
+	}
+}
+
+// TagKeys lists the keys reflect.StructTag reads, and refuses a tag it
+// stops reading early or a key it reads only once.
+func TestTagKeys(t *testing.T) {
+	for _, tc := range []struct {
+		tag    reflect.StructTag
+		keys   []string
+		offset int
+		key    string
+	}{
+		{tag: ``, keys: nil, offset: -1},
+		{tag: `json:"a"`, keys: []string{"json"}, offset: -1},
+		{tag: `json:"a" db:"b"  parse:"filter,sort" `, keys: []string{"json", "db", "parse"}, offset: -1},
+		{tag: `json:"a"db:"b"`, keys: []string{"json", "db"}, offset: -1},
+		{tag: `x:"a\"b"`, keys: []string{"x"}, offset: -1},
+		{tag: `json:"a" parse: "filter"`, offset: 9},
+		{tag: `json:"a" parse`, offset: 9},
+		{tag: `json:"a`, offset: 5},
+		{tag: `json:a`, offset: 0},
+		{tag: "json:\"a\"\tdb:\"b\"", offset: 8},
+		{tag: `json:"\q"`, offset: 5},
+		{tag: `json:"a" db:"b" json:"c"`, offset: 16, key: "json"},
+	} {
+		keys, err := gowalker.TagKeys(tc.tag)
+		if tc.offset < 0 {
+			if err != nil || !slices.Equal(keys, tc.keys) {
+				t.Errorf("%q: keys %q, err %v; want %q", tc.tag, keys, err, tc.keys)
+			}
+			for _, key := range keys {
+				if _, ok := tc.tag.Lookup(key); !ok {
+					t.Errorf("%q: reflect cannot read %q", tc.tag, key)
+				}
+			}
+			continue
+		}
+		tagErr, ok := errors.AsType[*gowalker.TagError](err)
+		if !ok || tagErr.Offset != tc.offset || tagErr.Key != tc.key || tagErr.Tag != tc.tag {
+			t.Errorf("%q: %#v, want offset %d key %q", tc.tag, err, tc.offset, tc.key)
+		}
+	}
+}
+
+// Compilation refuses a malformed or repeated tag on any field the engine
+// reads, a skipped one included, naming the type and the field.
+func TestCompileRefusesUnreadableTags(t *testing.T) {
+	for _, field := range []reflect.StructField{
+		{Name: "A", Type: reflect.TypeFor[string](), Tag: `json:"a" parse: "filter,sort"`},
+		{Name: "B", Type: reflect.TypeFor[string](), Tag: `json:"b" json:"c"`},
+		{Name: "C", Type: reflect.TypeFor[string](), Tag: `json:"-" default:"x`},
+		{Name: "d", Type: reflect.TypeFor[string](), PkgPath: "example.com/p", Tag: `db: "d"`},
+	} {
+		typ := reflect.StructOf([]reflect.StructField{{Name: "OK", Type: reflect.TypeFor[int](), Tag: `json:"ok"`}, field})
+		for _, e := range []*gowalker.Engine{gowalker.Default(), engine(t, gowalker.WithJSONFields("json"))} {
+			_, err := e.CompileType(typ)
+			if _, ok := errors.AsType[*gowalker.TagError](err); !ok || !errors.Is(err, gowalker.ErrSchema) {
+				t.Fatalf("%s: compiled: %v", field.Name, err)
+			}
+			if !strings.Contains(err.Error(), "field "+field.Name+":") || !strings.Contains(err.Error(), typ.String()) {
+				t.Errorf("%s: %v does not name the field and type", field.Name, err)
+			}
+		}
+	}
+	// A leaf's own fields are not read, so their tags are not checked.
+	opaque := reflect.StructOf([]reflect.StructField{{Name: "X", Type: reflect.TypeFor[int](), Tag: `bad tag`}})
+	holder := reflect.StructOf([]reflect.StructField{{Name: "Leaf", Type: opaque, Tag: `json:"leaf"`}})
+	if _, err := engine(t, gowalker.WithJSONFields("json")).CompileType(holder); err != nil {
+		t.Errorf("a leaf's own tags were checked: %v", err)
 	}
 }

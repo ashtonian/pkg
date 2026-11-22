@@ -77,6 +77,9 @@ Debug bool env=DEBUG default="" hasDefault=false
 `Field.Tag("env")` parses the common `name,option,option` form; `Tags()` is the
 raw `reflect.StructTag`, whose `Lookup` tells an explicit empty default from no
 default at all. Applying defaults and reading the environment stay in your library.
+Compilation refuses a struct tag that `reflect.StructTag` cannot read to its
+end, or that repeats a key, so a typo never turns an annotation off silently;
+`TagKeys` lists a tag's keys for checking them against the ones you read.
 
 ## Pick a naming convention
 

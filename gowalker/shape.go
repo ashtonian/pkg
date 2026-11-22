@@ -2,6 +2,7 @@ package gowalker
 
 import (
 	"cmp"
+	"fmt"
 	"reflect"
 	"slices"
 	"strings"
@@ -265,6 +266,9 @@ func (b *builder) prepare(s *Shape) error {
 	b.prepared[s] = true
 	for i := range s.declared {
 		field := &s.declared[i]
+		if _, err := TagKeys(field.field.Tag); err != nil {
+			return failure("compile", ErrSchema, s.typ, emptyPath, -1, fmt.Errorf("field %s: %w", field.field.Name, err))
+		}
 		rule, err := b.engine.settings.rule(field.field)
 		if err != nil {
 			return failure("compile", ErrSchema, s.typ, emptyPath, -1, err)

@@ -76,6 +76,16 @@ matches one comma-separated option exactly, without trimming spaces.
 raw `reflect.StructTag` for tags with other syntax, such as `validate:"min=1"`.
 Gowalker never decodes tag values.
 
+`TagKeys(tag)` lists a tag's keys in order, so a library can compare them with
+the keys it reads and refuse a misspelt one. It returns a `*TagError` for a tag
+that `reflect.StructTag` stops reading early, such as `parse: "filter"` with a
+space after the colon (`Lookup` then reports that key and every later one
+absent), or that repeats a key (`Lookup` returns only the first). Compiling a
+type applies the same check to every field of every struct the engine reads,
+skipped and private fields included, and fails with ErrSchema wrapping the
+`*TagError` and naming the field. The fields of a leaf type are not read, so
+their tags are not checked.
+
 `WithTaggedFields(key, options...)` names fields by that tag. Without options:
 
 | Declaration | Result |
@@ -293,7 +303,7 @@ Errors support `errors.Is` with `ErrSchema`, `ErrPath`, `ErrType`, `ErrMissing`,
 
 | Error | Typical cause |
 |---|---|
-| `ErrSchema` | Conflicting names, invalid inline rules or engine settings |
+| `ErrSchema` | Conflicting names, a malformed or repeated struct tag (`*TagError`), invalid inline rules or engine settings |
 | `ErrPath` | Unknown field, malformed text path or descent into a leaf |
 | `ErrType` | Wrong root type, incompatible assignment or requested result type |
 | `ErrMissing` | A typed read needs an absent value; a write needs a missing map intermediate |

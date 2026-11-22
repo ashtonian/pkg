@@ -4,6 +4,8 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
+	"slices"
+	"strconv"
 	"strings"
 	"unicode"
 	"unicode/utf8"
@@ -31,6 +33,71 @@ func LookupTag(tag reflect.StructTag, key string) (Tag, bool) {
 		return Tag{}, false
 	}
 	return ParseTag(value), true
+}
+
+// TagKeys returns the keys of tag in order. It returns a *TagError when tag
+// is not a sequence of key:"value" pairs as [reflect.StructTag] reads them,
+// or repeats a key: Lookup stops at the first malformed pair and reports
+// every later key absent, and returns only the first of a repeated key, so
+// either mistake would turn an annotation off without an error. Compiling a
+// type checks every tag the engine reads this way.
+func TagKeys(tag reflect.StructTag) ([]string, error) {
+	var keys []string
+	text, offset := string(tag), 0
+	for {
+		// The grammar is reflect.StructTag.Lookup's.
+		i := 0
+		for i < len(text) && text[i] == ' ' {
+			i++
+		}
+		text, offset = text[i:], offset+i
+		if text == "" {
+			return keys, nil
+		}
+		i = 0
+		for i < len(text) && text[i] > ' ' && text[i] != ':' && text[i] != '"' && text[i] != 0x7f {
+			i++
+		}
+		if i == 0 || i+1 >= len(text) || text[i] != ':' || text[i+1] != '"' {
+			return keys, &TagError{Tag: tag, Offset: offset}
+		}
+		key, start := text[:i], offset
+		text, offset = text[i+1:], offset+i+1
+		i = 1
+		for i < len(text) && text[i] != '"' {
+			if text[i] == '\\' {
+				i++
+			}
+			i++
+		}
+		if i >= len(text) {
+			return keys, &TagError{Tag: tag, Offset: offset}
+		}
+		if _, err := strconv.Unquote(text[:i+1]); err != nil {
+			return keys, &TagError{Tag: tag, Offset: offset}
+		}
+		if slices.Contains(keys, key) {
+			return keys, &TagError{Tag: tag, Offset: start, Key: key}
+		}
+		keys = append(keys, key)
+		text, offset = text[i+1:], offset+i+1
+	}
+}
+
+// TagError reports a struct tag [TagKeys] refuses. Offset is the byte where
+// reading stopped, or where the repeated Key starts; Key is empty for a
+// malformed tag.
+type TagError struct {
+	Tag    reflect.StructTag
+	Offset int
+	Key    string
+}
+
+func (e *TagError) Error() string {
+	if e.Key != "" {
+		return fmt.Sprintf("struct tag `%s` repeats the key %q", e.Tag, e.Key)
+	}
+	return fmt.Sprintf("struct tag `%s` is malformed at byte %d: want key:\"value\" pairs separated by spaces", e.Tag, e.Offset)
 }
 
 // Has reports whether option is one of t's comma-separated options. The
