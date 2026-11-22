@@ -76,6 +76,7 @@ func (s *Schema) AccessField(field *Field) (*Accessor, error) {
 	}
 	step := path.Field(field.name)
 	a := &Accessor{schema: s, path: path.Of(step), steps: []accessStep{{step: step, field: field}}, typ: field.shape.typ}
+	a.route = staticRoute(s.root, a.steps, s.engine.settings.limits.MaxDepth)
 	if s.fieldAccess == nil {
 		s.fieldAccess = make(map[*Field]*Accessor)
 	}
@@ -96,6 +97,9 @@ type Accessor struct {
 	path   path.Path
 	steps  []accessStep
 	typ    reflect.Type
+	// route is the steps compiled for a path of struct fields and pointers
+	// alone, or nil.
+	route []hop
 }
 
 // Path returns the immutable resolved path. Supplied keys keep their ordinary
@@ -149,6 +153,7 @@ func (s *Schema) Resolve(p path.Path) (*Accessor, error) {
 	if current != nil {
 		a.typ = current.typ
 	}
+	a.route = staticRoute(s.root, a.steps, s.engine.settings.limits.MaxDepth)
 	return a, nil
 }
 

@@ -18,7 +18,7 @@ tags and fields mean.
 | Define visible fields | Names, aliases, skip/inline rules, field-specific or type-wide leaves, exact/case-fold matching, and collision errors |
 | Resolve locations | Concrete field, map-key, index and dereference steps; a text subset; an empty path for the root |
 | Read | Borrowed values with distinct present, nil and missing states; optional typed results |
-| Write | Go-assignable values, optional lossless numeric conversion, explicit pointer/map allocation, map/interface writeback, and existing index replacement |
+| Write | Go-assignable values, optional lossless numeric conversion, explicit pointer/map allocation, map/interface writeback, existing index replacement, and the settable location for a caller's own decoder |
 | Walk | Type or value traversal with pruning, stop, errors, recursion/cycle events, ordering and finite limits |
 | Reuse metadata | Concurrent schema/accessor reuse, bounded engine caches and cached accessors for visible root fields |
 

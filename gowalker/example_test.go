@@ -2,6 +2,7 @@ package gowalker_test
 
 import (
 	"encoding"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"reflect"
@@ -615,4 +616,33 @@ func ExampleShape_Declarations() {
 	// ID Named json="id" db="id"
 	// Password Unnamed json="" db="password_hash"
 	// session Skipped
+}
+
+func ExampleAccessor_Locate() {
+	type Audit struct {
+		Count int `json:"count"`
+	}
+	type Row struct {
+		*Audit
+		Name string `json:"name"`
+	}
+	schema, err := gowalker.MustNew(gowalker.WithJSONFields("json")).Compile[Row]()
+	if err != nil {
+		panic(err)
+	}
+	count, err := schema.AccessName("count")
+	if err != nil {
+		panic(err)
+	}
+	var row Row
+	// The nil *Audit is allocated and attached; the decoder writes the field.
+	location, err := count.Locate(reflect.ValueOf(&row).Elem(), gowalker.WithPointerAllocation())
+	if err != nil {
+		panic(err)
+	}
+	if err := json.Unmarshal([]byte("42"), location.Addr().Interface()); err != nil {
+		panic(err)
+	}
+	fmt.Println(row.Count)
+	// Output: 42
 }

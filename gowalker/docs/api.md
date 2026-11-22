@@ -20,6 +20,7 @@ lists every exported declaration. Go 1.27+ is required.
 | Read once using Go field names | `gowalker.Get(root, text)` / `GetAs[T](root, text)` | `(Value, error)` with presence, or `(T, error)` |
 | Write once using Go field names | `gowalker.Set(&root, text, input)` | `error`; nil means success |
 | Work with reflection directly | `accessor.GetValue`, `accessor.SetValue`, `schema.WalkValueReflect` | The same operations on an exact `reflect.Value` root |
+| Hand a field's location to a decoder or scanner | `accessor.Locate(rootValue, options...)` | The settable `reflect.Value`, allocated as `SetValue` would |
 
 The package-level functions — `Compile`, `CompileType`, `Get`, `GetAs`, `Set`,
 `WalkType` and `WalkValue` — share one process-wide engine, returned by
@@ -368,6 +369,15 @@ append `path.Deref()` to assign its pointee. A typed nil clears a compatible
 nullable terminal. An untyped nil has no declared type and returns `ErrType`.
 For a nil interface itself, pass `reflect.Zero(interfaceType)` through `SetValue`.
 A valid nil map entry is stored, not deleted.
+
+`accessor.Locate(rootValue, options...)` returns the settable location the path
+reaches, for a caller that writes it itself: `json.Unmarshal` into
+`location.Addr().Interface()`, or a `Scan` destination. It takes the same root
+and allocation options as `SetValue`, attaches what it allocated before
+returning, and on an error leaves the graph unchanged. A location a write
+through the result would not reach returns `ErrAccess`: a map entry, an
+interface's dynamic value, or a struct or array `SetValue` would copy and write
+back, such as a struct held in a map. `WithCheckedNumbers` has no effect.
 
 Defaults permit assignable inputs and replacement/insertion of terminal map
 entries in existing maps. Additional behavior is explicit:

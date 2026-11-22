@@ -13,21 +13,28 @@ type writeSettings struct {
 }
 
 // WriteOption configures one write. Allocation and numeric conversion are opt-in.
-type WriteOption func(*writeSettings)
+// The settings pass by value, so applying options does not allocate.
+type WriteOption func(writeSettings) writeSettings
 
 // WithPointerAllocation permits creating nil intermediate pointers. A terminal
 // pointer is replaced as a pointer; use path.Deref to select its pointee.
-func WithPointerAllocation() WriteOption { return func(s *writeSettings) { s.pointers = true } }
+func WithPointerAllocation() WriteOption {
+	return func(s writeSettings) writeSettings { s.pointers = true; return s }
+}
 
 // WithMapAllocation permits nil map allocation and creation of missing map
 // intermediates. New terminal entries in existing maps need no option. A nil
 // interface's dynamic type cannot be inferred, and slices never grow implicitly.
-func WithMapAllocation() WriteOption { return func(s *writeSettings) { s.maps = true } }
+func WithMapAllocation() WriteOption {
+	return func(s writeSettings) writeSettings { s.maps = true; return s }
+}
 
 // WithCheckedNumbers permits Go numeric conversions only when they preserve the
 // exact finite value and signed zeros. Exact assignment remains allowed for
 // non-finite values. Strings and decoder hooks are outside this option.
-func WithCheckedNumbers() WriteOption { return func(s *writeSettings) { s.checked = true } }
+func WithCheckedNumbers() WriteOption {
+	return func(s writeSettings) writeSettings { s.checked = true; return s }
+}
 
 // Set infers the declared root T from a non-nil *T destination and writes a
 // text path using the default field view. A nil input has no declared type and
@@ -66,75 +73,9 @@ func (a *Accessor) Set(root any, input any, options ...WriteOption) error {
 // identity; assigning a terminal reference can replace it. Unaddressable
 // struct/array owners are copied for writeback.
 func (a *Accessor) SetValue(root, input reflect.Value, options ...WriteOption) error {
-	if !root.IsValid() || root.Type() != a.schema.Type() {
-		return failure("set", ErrType, a.schema.Type(), a.path, -1, nil)
-	}
-	if !root.CanSet() {
-		return failure("set", ErrAccess, root.Type(), a.path, -1, nil)
-	}
-	settings, err := writeOptions(options)
+	slot, settings, err := a.target("set", root, options)
 	if err != nil {
-		return failure("set", err, root.Type(), a.path, -1, nil)
-	}
-	slot := directSlot(root, nil)
-	shape := a.schema.root
-	for i, compiled := range a.steps {
-		var err error
-		if compiled.step.Kind() != path.DerefKind {
-			slot, shape, err = a.followWrite(slot, shape, settings)
-			if err != nil {
-				return failure("set", err, nil, a.path, i, nil)
-			}
-		}
-		if shape.atomic {
-			return failure("set", ErrPath, shape.typ, a.path, i, nil)
-		}
-		if compiled.field == nil && !compiled.key.IsValid() && compiled.step.Kind() != path.DerefKind {
-			_, compiled, err = compileStep(shape, compiled.step)
-			if err != nil {
-				return failure("set", err, shape.typ, a.path, i, nil)
-			}
-		}
-		switch compiled.step.Kind() {
-		case path.FieldKind:
-			for _, index := range compiled.field.index {
-				slot, shape, err = a.followWrite(slot, shape, settings)
-				if err != nil {
-					return failure("set", err, nil, a.path, i, nil)
-				}
-				slot, err = slot.ownedValue()
-				if err != nil {
-					return failure("set", err, shape.typ, a.path, i, nil)
-				}
-				slot = directSlot(slot.value.Field(index), slot.flush)
-				shape = shape.declared[index].shape
-			}
-		case path.KeyKind:
-			slot, err = slot.mapEntry(compiled.key, settings.maps, i == len(a.steps)-1)
-			if err != nil {
-				return failure("set", err, shape.typ, a.path, i, nil)
-			}
-			shape = shape.elem
-		case path.IndexKind:
-			if compiled.step.Index() >= slot.value.Len() {
-				return failure("set", ErrIndex, shape.typ, a.path, i, nil)
-			}
-			if slot.value.Kind() == reflect.Array {
-				slot, err = slot.ownedValue()
-				if err != nil {
-					return failure("set", err, shape.typ, a.path, i, nil)
-				}
-				slot = directSlot(slot.value.Index(compiled.step.Index()), slot.flush)
-			} else {
-				slot = directSlot(slot.value.Index(compiled.step.Index()), nil)
-			}
-			shape = shape.elem
-		case path.DerefKind:
-			slot, shape, err = a.derefWrite(slot, shape, settings)
-			if err != nil {
-				return failure("set", err, nil, a.path, i, nil)
-			}
-		}
+		return err
 	}
 	if !slot.canPut() {
 		return failure("set", ErrAccess, slot.value.Type(), a.path, len(a.steps)-1, nil)
@@ -150,6 +91,111 @@ func (a *Accessor) SetValue(root, input reflect.Value, options ...WriteOption) e
 	return nil
 }
 
+// Locate returns the settable location the accessor reaches in the exact
+// declared, settable root, for a caller that writes it itself: a decoder's
+// destination, or a row scanner's. It follows the path as SetValue does,
+// allocating a nil pointer only with WithPointerAllocation and a nil map only
+// with WithMapAllocation, and attaches what it allocated before returning. On
+// an error the graph is unchanged. WithCheckedNumbers has no effect.
+//
+// A location a write through the result would not reach returns ErrAccess:
+// a map entry, an interface's dynamic value, or a struct or array that
+// SetValue would copy and write back, such as a struct held in a map or an
+// interface with no pointer below it.
+func (a *Accessor) Locate(root reflect.Value, options ...WriteOption) (reflect.Value, error) {
+	slot, _, err := a.target("locate", root, options)
+	if err != nil {
+		return reflect.Value{}, err
+	}
+	if slot.detached || slot.key.IsValid() || !slot.value.CanSet() {
+		return reflect.Value{}, failure("locate", ErrAccess, slot.value.Type(), a.path, len(a.steps)-1, nil)
+	}
+	if slot.flush != nil {
+		slot.flush()
+	}
+	return slot.value, nil
+}
+
+// target follows the steps from root to the terminal slot without changing
+// the graph: allocations wait in the slot's flush.
+func (a *Accessor) target(op string, root reflect.Value, options []WriteOption) (writeSlot, writeSettings, error) {
+	if !root.IsValid() || root.Type() != a.schema.Type() {
+		return writeSlot{}, writeSettings{}, failure(op, ErrType, a.schema.Type(), a.path, -1, nil)
+	}
+	if !root.CanSet() {
+		return writeSlot{}, writeSettings{}, failure(op, ErrAccess, root.Type(), a.path, -1, nil)
+	}
+	settings, err := writeOptions(options)
+	if err != nil {
+		return writeSlot{}, writeSettings{}, failure(op, err, root.Type(), a.path, -1, nil)
+	}
+	if a.route != nil {
+		slot, err := a.targetStatic(op, root, settings)
+		return slot, settings, err
+	}
+	slot := directSlot(root, nil)
+	shape := a.schema.root
+	for i, compiled := range a.steps {
+		var err error
+		if compiled.step.Kind() != path.DerefKind {
+			slot, shape, err = a.followWrite(slot, shape, settings)
+			if err != nil {
+				return writeSlot{}, settings, failure(op, err, nil, a.path, i, nil)
+			}
+		}
+		if shape.atomic {
+			return writeSlot{}, settings, failure(op, ErrPath, shape.typ, a.path, i, nil)
+		}
+		if compiled.field == nil && !compiled.key.IsValid() && compiled.step.Kind() != path.DerefKind {
+			_, compiled, err = compileStep(shape, compiled.step)
+			if err != nil {
+				return writeSlot{}, settings, failure(op, err, shape.typ, a.path, i, nil)
+			}
+		}
+		switch compiled.step.Kind() {
+		case path.FieldKind:
+			for _, index := range compiled.field.index {
+				slot, shape, err = a.followWrite(slot, shape, settings)
+				if err != nil {
+					return writeSlot{}, settings, failure(op, err, nil, a.path, i, nil)
+				}
+				slot, err = slot.ownedValue()
+				if err != nil {
+					return writeSlot{}, settings, failure(op, err, shape.typ, a.path, i, nil)
+				}
+				slot = slot.within(slot.value.Field(index))
+				shape = shape.declared[index].shape
+			}
+		case path.KeyKind:
+			slot, err = slot.mapEntry(compiled.key, settings.maps, i == len(a.steps)-1)
+			if err != nil {
+				return writeSlot{}, settings, failure(op, err, shape.typ, a.path, i, nil)
+			}
+			shape = shape.elem
+		case path.IndexKind:
+			if compiled.step.Index() >= slot.value.Len() {
+				return writeSlot{}, settings, failure(op, ErrIndex, shape.typ, a.path, i, nil)
+			}
+			if slot.value.Kind() == reflect.Array {
+				slot, err = slot.ownedValue()
+				if err != nil {
+					return writeSlot{}, settings, failure(op, err, shape.typ, a.path, i, nil)
+				}
+				slot = slot.within(slot.value.Index(compiled.step.Index()))
+			} else {
+				slot = directSlot(slot.value.Index(compiled.step.Index()), nil)
+			}
+			shape = shape.elem
+		case path.DerefKind:
+			slot, shape, err = a.derefWrite(slot, shape, settings)
+			if err != nil {
+				return writeSlot{}, settings, failure(op, err, nil, a.path, i, nil)
+			}
+		}
+	}
+	return slot, settings, nil
+}
+
 func writeOptions(options []WriteOption) (writeSettings, error) {
 	if len(options) == 0 {
 		return writeSettings{}, nil
@@ -159,7 +205,7 @@ func writeOptions(options []WriteOption) (writeSettings, error) {
 		if option == nil {
 			return s, ErrType
 		}
-		option(&s)
+		s = option(s)
 	}
 	return s, nil
 }
@@ -168,12 +214,14 @@ func writeOptions(options []WriteOption) (writeSettings, error) {
 // owners after the terminal change. Direct locations need no setter closure.
 // Following an existing pointer/map/slice drops ancestor writeback: the referenced
 // storage is already attached. This also avoids overwriting cyclic ancestors
-// with stale copies after a descendant reference has been changed.
+// with stale copies after a descendant reference has been changed. detached
+// marks storage inside such a copy: a write to it after flush is lost.
 type writeSlot struct {
-	value reflect.Value
-	owner reflect.Value
-	key   reflect.Value
-	flush func()
+	value    reflect.Value
+	owner    reflect.Value
+	key      reflect.Value
+	flush    func()
+	detached bool
 }
 
 func (s writeSlot) canPut() bool { return s.owner.IsValid() }
@@ -194,6 +242,13 @@ func directSlot(v reflect.Value, flush func()) writeSlot {
 	return s
 }
 
+// within is the slot of v, a field or array element of s's storage.
+func (s writeSlot) within(v reflect.Value) writeSlot {
+	child := directSlot(v, s.flush)
+	child.detached = s.detached
+	return child
+}
+
 func (s writeSlot) ownedValue() (writeSlot, error) {
 	if s.value.CanAddr() {
 		return s, nil
@@ -203,12 +258,14 @@ func (s writeSlot) ownedValue() (writeSlot, error) {
 	}
 	copy := reflect.New(s.value.Type()).Elem()
 	copy.Set(s.value)
-	return directSlot(copy, func() {
+	owned := directSlot(copy, func() {
 		s.put(copy)
 		if s.flush != nil {
 			s.flush()
 		}
-	}), nil
+	})
+	owned.detached = true
+	return owned, nil
 }
 
 func (s writeSlot) mapEntry(key reflect.Value, allocate, terminal bool) (writeSlot, error) {
@@ -301,7 +358,7 @@ func (a *Accessor) derefWrite(slot writeSlot, shape *Shape, settings writeSettin
 		if err != nil {
 			return writeSlot{}, nil, err
 		}
-		return writeSlot{value: v.Elem(), owner: slot.owner, key: slot.key, flush: slot.flush}, child, nil
+		return writeSlot{value: v.Elem(), owner: slot.owner, key: slot.key, flush: slot.flush, detached: slot.detached}, child, nil
 	default:
 		return writeSlot{}, nil, ErrPath
 	}

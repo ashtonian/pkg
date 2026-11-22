@@ -98,6 +98,15 @@ routes and checks map-key types and fixed-array bounds. Map entries need not
 exist yet. Below an interface, the concrete type is only known when an actual
 value is supplied; those remaining checks happen during execution.
 
+A path of struct fields reached through pointers alone, with no interface, map
+or index, has a type fixed at every step. Resolution compiles it to a static
+route: per field, the pointers to follow and the field index. Reads, writes and
+`Locate` run that route without the general path's per-call work (shape
+tracking, pointer-cycle detection, writeback slots), since a finite chain of
+pointer types cannot revisit a pointer and a settable root keeps every location
+on it addressable. The results, states and errors are the general path's; a
+differential test holds the two to that.
+
 Reads follow intermediate pointers and interfaces, check nils and bounds, and
 return a `Value`. A reached terminal keeps its declared type: a `*Row` field
 returns a pointer, and an `any` field returns an interface location. An explicit
@@ -117,6 +126,10 @@ When a path traverses an existing pointer, map or slice, writes update its share
 storage in place. Assigning a terminal pointer, map or slice can replace that
 reference, as ordinary Go assignment does. This guarantee covers one `Set` call. User callback
 side effects and concurrent modifications are outside that guarantee.
+
+`Locate` runs the same preparation and attaches the prepared allocations
+without writing a terminal. It refuses a location inside a writeback copy, since
+nothing would attach a write made through it after the call returns.
 
 ## Walking
 
@@ -176,7 +189,8 @@ value. Callers synchronize shared values; the engine does not lock or copy them.
 | `tags.go` | Tag parsing and the `WithTaggedFields` and `WithJSONFields` naming conventions |
 | `cache.go` | `TypeCache`, per-type consumer metadata |
 | `schema.go`, `access.go` | Accessors, root binding and reads |
-| `write.go`, `assign.go` | Write preparation, allocation and checked assignment |
+| `write.go`, `assign.go` | Write preparation, allocation, `Locate` and checked assignment |
+| `route.go` | Static routes for paths of struct fields and pointers |
 | `walk*.go` | Type/value traversal, ordering and visitor controls |
 | `errors.go`, `path/path.go` | Structured errors and typed paths |
 
