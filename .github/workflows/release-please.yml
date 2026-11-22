@@ -35,6 +35,11 @@ jobs:
       parse_tag: ${{ steps.release.outputs['parse--tag_name'] }}
     runs-on: arc-pkg
     timeout-minutes: 15
+    # One run at a time, the latest push's last: each reads main as GitHub has
+    # it when it starts, so the last run leaves the release PR current.
+    concurrency:
+      group: release-please
+      cancel-in-progress: false
     steps:
       # The whole history: the first-parent plugin maps each branch commit to
       # the merge that landed it (tools/release-please).

@@ -2,19 +2,20 @@
 // release-please-config.json's plugins.
 import { registerPlugin } from 'release-please';
 import { ManifestPlugin } from 'release-please/build/src/plugin.js';
-import { firstParentCommits } from './first-parent.mjs';
+import { firstParentCommits, typeRanker } from './first-parent.mjs';
 
 export const FIRST_PARENT = 'first-parent';
 
 export class FirstParentPlugin extends ManifestPlugin {
-  constructor(github, targetBranch, repositoryConfig, history) {
-    super(github, targetBranch, repositoryConfig);
+  constructor(github, targetBranch, repositoryConfig, history, logger) {
+    super(github, targetBranch, repositoryConfig, logger);
     this.history = history;
+    this.rank = typeRanker(Object.values(repositoryConfig).map(config => config.changelogSections));
   }
 
   // processCommits runs before release-please computes versions and notes.
   processCommits(commits) {
-    return firstParentCommits(commits, this.history);
+    return firstParentCommits(commits, this.history, { rank: this.rank, warn: message => this.logger.warn(message) });
   }
 }
 
@@ -22,5 +23,5 @@ export class FirstParentPlugin extends ManifestPlugin {
 // history (readHistory's result).
 export function registerFirstParent(history) {
   registerPlugin(FIRST_PARENT, options =>
-    new FirstParentPlugin(options.github, options.targetBranch, options.repositoryConfig, history));
+    new FirstParentPlugin(options.github, options.targetBranch, options.repositoryConfig, history, options.logger));
 }

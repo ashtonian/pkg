@@ -4,18 +4,21 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
-import { firstParentCommits, readHistory } from './first-parent.mjs';
+import { fetchBranchHead, firstParentCommits, readHistory, typeRanker } from './first-parent.mjs';
 
 // commit builds a release-please ConventionalCommit; a "!" in the header gives
 // it the note release-please derives from the subject.
-function commit(sha, header, { footer, references = [] } = {}) {
+function commit(sha, header, { footer, releaseAs, references = [] } = {}) {
   const [, type, scope, bang, subject] = header.match(/^(\w+)(?:\((.+)\))?(!)?: (.+)$/);
   const notes = [];
   if (bang || footer) notes.push({ title: 'BREAKING CHANGE', text: footer ?? subject });
-  return { sha, message: header, type, scope, bareMessage: subject, notes, references, breaking: notes.length > 0, files: [] };
+  const breaking = notes.length > 0;
+  if (releaseAs) notes.push({ title: 'RELEASE AS', text: releaseAs });
+  return { sha, message: header, type, scope, bareMessage: subject, notes, references, breaking, files: [] };
 }
 
 const closes = issue => ({ prefix: '#', action: 'Closes', issue });
+const fixes = issue => ({ prefix: '#', action: 'Fixes', issue });
 
 test('a pull request counts once, as its merge', () => {
   const merge = commit('m1', 'feat(parse): report schema errors (#255)');
@@ -67,13 +70,46 @@ test('a merge without ! still bumps for a breaking branch commit', () => {
 test("branch commits' closed issues move to the merge, once each", () => {
   const merge = commit('m1', 'fix(config): keep netip defaults whole (#247)', { references: [closes('186')] });
   const branch = [
-    commit('b1', 'fix(config): keep netip values whole', { references: [closes('186')] }),
+    commit('b1', 'fix(config): keep netip values whole', { references: [fixes('186')] }),
     commit('b2', 'fix(config): refuse a second Reloader.Run', { references: [closes('230')] }),
   ];
 
   const [kept] = firstParentCommits([merge, ...branch], { mergeOf: new Map([['b1', 'm1'], ['b2', 'm1']]) });
 
   assert.deepEqual(kept.references.map(r => r.issue), ['186', '230']);
+});
+
+test("a merge takes its branch's highest type, so the release it calls for stays", () => {
+  const cases = [
+    { name: 'a feature merged as a fix', merge: 'fix(parse): tidy reader (#260)', branch: 'feat(parse): add Stream', want: 'feat' },
+    { name: 'a fix merged as a chore', merge: 'chore(parse): sync (#261)', branch: 'fix(parse): close rows', want: 'fix' },
+    { name: 'a fix in a feature', merge: 'feat(parse): add Stream (#262)', branch: 'fix(parse): close rows', want: 'feat' },
+    { name: 'a test in a fix', merge: 'fix(parse): close rows (#263)', branch: 'test(parse): cover rows', want: 'fix' },
+  ];
+  for (const tc of cases) {
+    const warnings = [];
+    const [kept] = firstParentCommits([commit('m1', tc.merge), commit('b1', tc.branch)], { mergeOf: new Map([['b1', 'm1']]) }, {
+      warn: message => warnings.push(message),
+    });
+    assert.equal(kept.type, tc.want, tc.name);
+    assert.equal(warnings.length, tc.merge.startsWith(`${tc.want}(`) ? 0 : 1, `${tc.name}: a raised type is warned about`);
+  }
+});
+
+test("typeRanker follows the paths' changelog sections", () => {
+  const stock = typeRanker();
+  assert.deepEqual(['feat', 'fix', 'perf', 'docs', 'chore'].map(stock), [2, 1, 1, 0, 0]);
+  const shown = typeRanker([undefined, [{ type: 'feat' }, { type: 'docs', section: 'Documentation' }]]);
+  assert.equal(shown('docs'), 1, 'a section a path shows calls for a release');
+});
+
+test("a branch commit's Release-As moves to the merge", () => {
+  const merge = commit('m1', 'feat(parse): stable API (#270)');
+  const branch = commit('b1', 'chore(parse): mark 1.0', { releaseAs: '1.0.0' });
+
+  const [kept] = firstParentCommits([merge, branch], { mergeOf: new Map([['b1', 'm1']]) });
+
+  assert.deepEqual(kept.notes, [{ title: 'RELEASE AS', text: '1.0.0' }]);
 });
 
 test('one merge commit split into several conventional commits keeps them all', () => {
@@ -88,36 +124,77 @@ test('one merge commit split into several conventional commits keeps them all', 
   assert.equal(kept[0].breaking, true, 'the fold goes to the first commit of the merge');
 });
 
-test('readHistory maps branch commits, sync merges included, to the merge that landed them', t => {
+function scratchRepo(t) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'first-parent-'));
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
-  const git = (...args) =>
-    execFileSync('git', ['-C', dir, ...args], {
-      encoding: 'utf8',
-      env: { ...process.env, GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_SYSTEM: '/dev/null' },
-    }).trim();
+  const env = { ...process.env, GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_SYSTEM: '/dev/null' };
+  const gitAt = repo => (...args) => execFileSync('git', ['-C', repo, '-c', 'user.name=t', '-c', 'user.email=t@example.com', ...args], { encoding: 'utf8', env }).trim();
+  const work = path.join(dir, 'work');
+  fs.mkdirSync(work);
+  const git = gitAt(work);
+  git('init', '-q', '-b', 'main');
   const commitFile = (name, message) => {
-    fs.writeFileSync(path.join(dir, name), message);
+    fs.writeFileSync(path.join(work, name), message);
     git('add', name);
-    git('-c', 'user.name=t', '-c', 'user.email=t@example.com', 'commit', '-q', '-m', message);
+    git('commit', '-q', '-m', message);
     return git('rev-parse', 'HEAD');
   };
-  git('init', '-q', '-b', 'main');
+  const merge = (branch, message) => {
+    git('merge', '-q', '--no-ff', '-m', message, branch);
+    return git('rev-parse', 'HEAD');
+  };
+  return { dir, work, git, gitAt, commitFile, merge };
+}
+
+test('readHistory maps branch commits, sync merges included, to the merge that landed them', t => {
+  const { work, git, commitFile, merge } = scratchRepo(t);
   const root = commitFile('a', 'chore: root');
   git('switch', '-q', '-c', 'feature');
   const b1 = commitFile('b', 'feat: on the branch');
   git('switch', '-q', 'main');
   const onMain = commitFile('c', 'fix: on main meanwhile');
   git('switch', '-q', 'feature');
-  git('-c', 'user.name=t', '-c', 'user.email=t@example.com', 'merge', '-q', '--no-edit', 'main');
+  git('merge', '-q', '--no-edit', 'main');
   const sync = git('rev-parse', 'HEAD');
   const b2 = commitFile('d', 'feat: after the sync');
   git('switch', '-q', 'main');
-  git('-c', 'user.name=t', '-c', 'user.email=t@example.com', 'merge', '-q', '--no-ff', '-m', 'feat: the feature (#1)', 'feature');
-  const merge = git('rev-parse', 'HEAD');
+  const landed = merge('feature', 'feat: the feature (#1)');
 
-  const { mergeOf } = readHistory(dir, 'HEAD');
+  const { mergeOf } = readHistory(work, 'HEAD');
 
-  assert.deepEqual(Object.fromEntries(mergeOf), { [b1]: merge, [sync]: merge, [b2]: merge });
-  for (const mainline of [root, onMain, merge]) assert.equal(mergeOf.has(mainline), false);
+  assert.deepEqual(Object.fromEntries(mergeOf), { [b1]: landed, [sync]: landed, [b2]: landed });
+  for (const mainline of [root, onMain, landed]) assert.equal(mergeOf.has(mainline), false);
+});
+
+// A branch cut from another unmerged branch: the first merge claims the
+// commits both branches hold, the second only its own.
+test('readHistory gives a commit to the oldest merge that landed it', t => {
+  const { work, git, commitFile, merge } = scratchRepo(t);
+  commitFile('a', 'chore: root');
+  git('switch', '-q', '-c', 'first');
+  const shared = commitFile('b', 'feat: first');
+  git('switch', '-q', '-c', 'second');
+  const own = commitFile('c', 'feat: second');
+  git('switch', '-q', 'main');
+  const m1 = merge('first', 'feat: first (#1)');
+  const m2 = merge('second', 'feat: second (#2)');
+
+  const { mergeOf } = readHistory(work, 'HEAD');
+
+  assert.deepEqual(Object.fromEntries(mergeOf), { [shared]: m1, [own]: m2 });
+});
+
+test('fetchBranchHead returns the branch as the remote has it now', t => {
+  const { dir, work, gitAt, commitFile } = scratchRepo(t);
+  commitFile('a', 'chore: root');
+  const remote = path.join(dir, 'remote.git');
+  gitAt(dir)('clone', '-q', '--bare', work, remote);
+  const clone = path.join(dir, 'clone');
+  gitAt(dir)('clone', '-q', remote, clone);
+  gitAt(work)('remote', 'add', 'origin', remote);
+  const pushed = commitFile('b', 'fix: pushed after the clone');
+  gitAt(work)('push', '-q', 'origin', 'main');
+
+  assert.equal(fetchBranchHead(clone, 'origin', 'main'), pushed);
+  assert.equal(readHistory(clone, pushed).mergeOf.size, 0);
 });

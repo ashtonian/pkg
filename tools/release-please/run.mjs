@@ -3,12 +3,12 @@
 // describes, then opens or updates the release PR, and writes the action's
 // outputs. --dry-run prints the release PRs it would open and writes nothing.
 //
-//   GITHUB_TOKEN=… node tools/release-please/run.mjs [--dry-run]
-import { randomUUID } from 'node:crypto';
+//   GITHUB_TOKEN=… node tools/release-please/run.mjs --repo owner/name [--dry-run]
 import fs from 'node:fs';
 import { parseArgs } from 'node:util';
 import { GitHub, Manifest, VERSION } from 'release-please';
-import { readHistory } from './first-parent.mjs';
+import { fetchBranchHead, readHistory } from './first-parent.mjs';
+import { Output, outputPullRequests, outputReleases } from './outputs.mjs';
 import { FIRST_PARENT, FirstParentPlugin, registerFirstParent } from './plugin.mjs';
 
 const { values: args } = parseArgs({
@@ -16,8 +16,9 @@ const { values: args } = parseArgs({
     repo: { type: 'string', default: process.env.GITHUB_REPOSITORY },
     'config-file': { type: 'string', default: 'release-please-config.json' },
     'manifest-file': { type: 'string', default: '.release-please-manifest.json' },
-    // A checkout of the target branch with its full history.
+    // A clone of the repository with its full history, and its remote for it.
     checkout: { type: 'string', default: '.' },
+    remote: { type: 'string', default: 'origin' },
     'dry-run': { type: 'boolean', default: false },
   },
 });
@@ -27,21 +28,27 @@ async function main() {
   if (!token) throw new Error('GITHUB_TOKEN is not set');
   const [owner, repo] = (args.repo ?? '').split('/');
   if (!owner || !repo) throw new Error(`--repo must be owner/name, got ${JSON.stringify(args.repo)}`);
+  const output = args['dry-run'] ? undefined : stepOutput();
   console.log(`Running release-please version: ${VERSION}`);
 
   const github = await GitHub.create({ owner, repo, token });
-  const history = readHistory(args.checkout, 'HEAD');
-  console.log(`first-parent: ${history.mergeOf.size} branch commits mapped to their merges`);
+  const branch = github.repository.defaultBranch;
+  // release-please reads the branch as GitHub has it now, which can be ahead
+  // of the commit this job checked out. A merge newer than the history read
+  // keeps its branch commits listed until the next run.
+  const head = fetchBranchHead(args.checkout, args.remote, branch);
+  const history = readHistory(args.checkout, head);
+  console.log(`first-parent: history at ${head} (${args.remote}/${branch}), ${history.mergeOf.size} branch commits mapped to their merges`);
   registerFirstParent(history);
   // Each phase reads the repository afresh, as the action does: creating the
   // releases changes what the release PR holds.
   const manifest = async () => {
-    const loaded = await Manifest.fromManifest(github, github.repository.defaultBranch, args['config-file'], args['manifest-file']);
+    const loaded = await Manifest.fromManifest(github, branch, args['config-file'], args['manifest-file']);
     // The config names the plugin so the stock action refuses it. A config
     // that does not (the target branch's, before it does) still gets it, first.
     if (!loaded.plugins.some(plugin => plugin instanceof FirstParentPlugin)) {
-      console.warn(`${args['config-file']} on ${github.repository.defaultBranch} names no ${FIRST_PARENT} plugin; adding it`);
-      loaded.plugins.unshift(new FirstParentPlugin(github, github.repository.defaultBranch, loaded.repositoryConfig, history));
+      console.warn(`${args['config-file']} on ${branch} names no ${FIRST_PARENT} plugin; adding it`);
+      loaded.plugins.unshift(new FirstParentPlugin(github, branch, loaded.repositoryConfig, history));
     }
     return loaded;
   };
@@ -52,54 +59,14 @@ async function main() {
     }
     return;
   }
-  const output = new Output(process.env.GITHUB_OUTPUT);
   outputReleases(output, await (await manifest()).createReleases());
   outputPullRequests(output, await (await manifest()).createPullRequests());
 }
 
-// Output writes step outputs as @actions/core's setOutput does.
-class Output {
-  constructor(file) {
-    if (!file) throw new Error('GITHUB_OUTPUT is not set; run with --dry-run outside GitHub Actions');
-    this.file = file;
-  }
-
-  set(key, value) {
-    const text = typeof value === 'string' ? value : JSON.stringify(value);
-    const delimiter = `ghadelimiter_${randomUUID()}`;
-    fs.appendFileSync(this.file, `${key}<<${delimiter}\n${text}\n${delimiter}\n`);
-  }
-
-  setPath(path, key, value) {
-    this.set(path === '.' ? key : `${path}--${key}`, value);
-  }
-}
-
-// The action's output names, so the workflow reads them unchanged.
-const RELEASE_KEYS = { tagName: 'tag_name', uploadUrl: 'upload_url', notes: 'body', url: 'html_url' };
-
-function outputReleases(output, releases) {
-  const created = releases.filter(Boolean);
-  const paths = [];
-  output.set('releases_created', created.length > 0);
-  for (const release of created) {
-    const path = release.path || '.';
-    paths.push(path);
-    output.setPath(path, 'release_created', true);
-    for (const [key, value] of Object.entries(release)) {
-      output.setPath(path, RELEASE_KEYS[key] ?? key, value);
-    }
-  }
-  output.set('paths_released', JSON.stringify(paths));
-}
-
-function outputPullRequests(output, pullRequests) {
-  const opened = pullRequests.filter(Boolean);
-  output.set('prs_created', opened.length > 0);
-  if (opened.length > 0) {
-    output.set('pr', opened[0]);
-    output.set('prs', JSON.stringify(opened));
-  }
+function stepOutput() {
+  const file = process.env.GITHUB_OUTPUT;
+  if (!file) throw new Error('GITHUB_OUTPUT is not set; run with --dry-run outside GitHub Actions');
+  return new Output(text => fs.appendFileSync(file, text));
 }
 
 main().catch(err => {
