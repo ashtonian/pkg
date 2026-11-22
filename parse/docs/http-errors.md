@@ -4,7 +4,7 @@
 
 ## Request parameters
 
-A list endpoint built on this package reads the `filter.Param*` query parameters; `forge/fibermw/httputil`, `forge/feature` and the TypeScript SDK use the same names, and `QueryParamParser` skips them. Every other parameter naming a filterable field is a flat filter (`status=active&price_gte=10`); `Resource.ParseRequestFilter` ANDs those with the JSON `filter` parameter.
+A list endpoint built on this package reads the `filter.Param*` query parameters, the names the TypeScript SDK and `parse/client` send, and `QueryParamParser` skips them. The routes those clients call, and the parse entry points that serve each, are the SDK's [server contract](../sdk/ts/README.md#server-contract); the [example server](../examples/server/) serves them all. Every other parameter naming a filterable field is a flat filter (`status=active&price_gte=10`); `Resource.ParseRequestFilter` ANDs those with the JSON `filter` parameter.
 
 | Parameter | Constant | Meaning |
 |---|---|---|

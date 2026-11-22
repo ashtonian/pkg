@@ -8,7 +8,9 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"maps"
 	"net/http"
+	"slices"
 	"time"
 
 	"github.com/ashtonian/pkg/parse"
@@ -32,11 +34,25 @@ type Product struct {
 const (
 	defaultPageSize = 25
 	maxPageSize     = 100
+	// maxPatchIDs bounds a batch patch as maxPageSize bounds a list page:
+	// the answer carries every updated row.
+	maxPatchIDs = maxPageSize
 )
 
-// server serves the list contract (filter.Param*): lists over GET and, for
-// a filter too large for a URL, as a POST body to the same path; OPTIONS
-// facets, PATCH merge patches (through BuildUpdate), GET schema discovery.
+// The example's own error codes. Parse's catalog (parse.Codes) holds request
+// errors; whether a row exists, or the server failed, is the application's
+// to say.
+const (
+	codeBadRequest = "E4001"
+	codeNotFound   = "E4004"
+	codeInternal   = "E5001"
+)
+
+// server serves the routes the TypeScript SDK and parse/client call: lists
+// over GET and, for a filter too large for a URL, as a POST body to the same
+// path; OPTIONS facets; PATCH merge patches of one product or of the
+// products a batch's id[] keys name (through BuildUpdate); GET schema
+// discovery.
 type server struct {
 	db             *sql.DB
 	products       *parse.Resource[Product]
@@ -62,6 +78,7 @@ func newServer(db *sql.DB, log *slog.Logger, requestTimeout time.Duration) (http
 	mux.HandleFunc("GET /api/products", s.list)
 	mux.HandleFunc("POST /api/products", s.list)
 	mux.HandleFunc("OPTIONS /api/products", s.facets)
+	mux.HandleFunc("PATCH /api/products", s.patchMany)
 	mux.HandleFunc("PATCH /api/products/{id}", s.patch)
 	return mux, nil
 }
@@ -148,37 +165,117 @@ func (s *server) facetCounts(ctx context.Context, query *filter.FacetQuery) (map
 	return counts, nil
 }
 
+// patchResult answers a patch, as the SDK's PatchResult reads it.
+type patchResult struct {
+	Updated []Product   `json:"updated"`
+	Failed  []itemError `json:"failed,omitempty"`
+}
+
+// itemError is one key of a batch patch that updated no row.
+type itemError struct {
+	ID    string `json:"id"`
+	Code  string `json:"code"`
+	Error string `json:"error"`
+}
+
 func (s *server) patch(w http.ResponseWriter, r *http.Request) {
+	if s.refuseParams(w, r) {
+		return
+	}
+	id := r.PathValue("id")
+	items, err := s.update(w, r, parse.ByID(id))
+	if err != nil {
+		s.fail(w, r, err)
+		return
+	}
+	if len(items) == 0 {
+		writeJSON(w, http.StatusNotFound, parsehttp.Body{Code: codeNotFound, Message: "product " + id + " not found"})
+		return
+	}
+	writeJSON(w, http.StatusOK, patchResult{Updated: items})
+}
+
+// patchMany applies one merge patch to the products its id[] keys name. A
+// key with no product is a failed item, not a failed request.
+func (s *server) patchMany(w http.ResponseWriter, r *http.Request) {
+	if s.refuseParams(w, r, "id[]") {
+		return
+	}
+	ids := r.URL.Query()["id[]"]
+	if len(ids) == 0 || len(ids) > maxPatchIDs {
+		writeJSON(w, http.StatusBadRequest, parsehttp.Body{
+			Code:    codeBadRequest,
+			Message: fmt.Sprintf("a batch patch names 1 to %d id[] keys, got %d", maxPatchIDs, len(ids)),
+		})
+		return
+	}
+	keys := make([]any, len(ids))
+	for i, id := range ids {
+		keys[i] = id
+	}
+	items, err := s.update(w, r, parse.ByIDs(keys...))
+	if err != nil {
+		s.fail(w, r, err)
+		return
+	}
+	res := patchResult{Updated: items}
+	if res.Updated == nil {
+		res.Updated = []Product{}
+	}
+	updated := make(map[string]bool, len(items))
+	for _, p := range items {
+		updated[p.ID] = true
+	}
+	for _, id := range ids {
+		if !updated[id] {
+			updated[id] = true // a key named twice fails once
+			res.Failed = append(res.Failed, itemError{ID: id, Code: codeNotFound, Error: "product " + id + " not found"})
+		}
+	}
+	writeJSON(w, http.StatusOK, res)
+}
+
+// refuseParams answers 400 for a query parameter the route does not read,
+// and reports whether it did. A patch that ignored one, a filter meant to
+// narrow it, would write rows the client did not mean to.
+func (s *server) refuseParams(w http.ResponseWriter, r *http.Request, accepted ...string) bool {
+	q := r.URL.Query()
+	names := slices.Sorted(maps.Keys(q))
+	i := slices.IndexFunc(names, func(name string) bool { return !slices.Contains(accepted, name) })
+	if i < 0 {
+		return false
+	}
+	writeJSON(w, http.StatusBadRequest, parsehttp.Body{
+		Code:    codeBadRequest,
+		Message: fmt.Sprintf("%s %s reads no %q parameter", r.Method, r.URL.Path, names[i]),
+	})
+	return true
+}
+
+// update applies the request's merge patch to target's products and returns
+// the rows it updated.
+func (s *server) update(w http.ResponseWriter, r *http.Request, target parse.Target) ([]Product, error) {
 	ctx, cancel := context.WithTimeout(r.Context(), s.requestTimeout)
 	defer cancel()
 	body, err := readBody(w, r)
 	if err != nil {
-		s.fail(w, r, err)
-		return
+		return nil, err
 	}
 	parsed, err := s.products.ParseMergePatch(body)
 	if err != nil {
-		s.fail(w, r, err)
-		return
+		return nil, err
 	}
-	id := r.PathValue("id")
 	// Product declares no relations, so the owner statement is the whole
 	// update: UPDATE … RETURNING, or a scoped read for an empty patch.
-	plan, err := s.products.BuildUpdate(filter.SQLiteDialect{}, parsed, parse.ByID(id), parse.Scope{})
+	plan, err := s.products.BuildUpdate(filter.SQLiteDialect{}, parsed, target, parse.Scope{})
 	if err != nil {
-		s.fail(w, r, err)
-		return
+		return nil, err
 	}
 	items, err := s.query(ctx, plan.Owner.SQL, plan.Owner.Args...)
 	if err != nil {
-		s.fail(w, r, fmt.Errorf("update product %s: %w", id, err))
-		return
+		return nil, fmt.Errorf("update products: %w", err)
 	}
-	if len(items) == 0 {
-		writeJSON(w, http.StatusNotFound, parsehttp.Body{Code: "E2076", Message: "product " + id + " not found"})
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string]any{"updated": items})
+	return items, nil
 }
 
 func (s *server) query(ctx context.Context, q string, args ...any) (_ []Product, err error) {
@@ -212,7 +309,7 @@ func (s *server) fail(w http.ResponseWriter, r *http.Request, err error) {
 		return
 	}
 	s.log.ErrorContext(r.Context(), "request failed", slog.String("method", r.Method), slog.String("path", r.URL.Path), slog.Any("error", err))
-	writeJSON(w, http.StatusInternalServerError, parsehttp.Body{Code: "E5001", Message: "internal error"})
+	writeJSON(w, http.StatusInternalServerError, parsehttp.Body{Code: codeInternal, Message: "internal error"})
 }
 
 // schemaFailed logs what the schema handler could not answer: a document

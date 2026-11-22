@@ -208,8 +208,8 @@ func TestParseList_RefusesWhatItCannotHonor(t *testing.T) {
 	assert.Nil(t, req.Filter)
 }
 
-// GEN-05: a misspelt flat filter cannot widen a list through any entry
-// point; list parameters and the names an endpoint accepts still pass.
+// A misspelt flat filter cannot widen a list through any entry point; list
+// parameters and the names an endpoint accepts still pass.
 func TestEveryEntryPoint_RefusesAMisspeltFilter(t *testing.T) {
 	r, err := parse.NewResource[widget]("widgets", parse.AcceptParams("view"))
 	require.NoError(t, err)
