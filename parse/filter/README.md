@@ -43,6 +43,7 @@ Start with the [runnable package example](../README.md#quick-start). The focused
 | `like.go` | LIKE patterns: escaping, GLOB translation, `MatchLike` |
 | `jsondoc.go` | `JSONEqual`, `JSONContains`, `JSONHasKey` |
 | `evaluate.go` | `Evaluate`, the reference evaluator; `Row`, `RowFunc`, `ColumnRow`, `ColumnValue` |
+| `evaluate_geo.go` | `Evaluate`'s geo operators on a JSONB point, through `internal/geo` |
 | `path.go` | `JSONPath`, `FieldExpr`, `PathValue`, both dialects' `PathExpr` |
 | `document.go` | `Document`, `DecodeDocument` |
 | `path_declare.go` | Path declaration: `paths` / `storage` tags, struct members, `PathDecl`, `WithPaths` |
@@ -64,11 +65,11 @@ Start with the [runnable package example](../README.md#quick-start). The focused
 | `time_token.go` | Relative-time tokens |
 | `rows.go` | `Rows` |
 | `errors.go` | E-codes |
-| `filtertest/` | Conformance fixture, run on both dialects and `Evaluate`: the operator × type cases (`Run`), the membership cases with their lookup tables and reference lookup (`RunMembership`, `LookupTables`, `Lookups`), the JSON path cases (`RunPaths`, `PathRecords`, `PathSchema`), the exact-decimal cases (`RunDecimals`) and the scalar-array cases (`RunArrays`, `ArrayRecords`, `ArraySchema`, `ArrayFacets`) |
+| `filtertest/` | Conformance fixture, run on both dialects and `Evaluate`: the operator × type cases (`Run`), the membership cases with their lookup tables and reference lookup (`RunMembership`, `LookupTables`, `Lookups`), the JSON path cases (`RunPaths`, `PathRecords`, `PathSchema`), the exact-decimal cases (`RunDecimals`), the scalar-array cases (`RunArrays`, `ArrayRecords`, `ArraySchema`, `ArrayFacets`) and the stored-point geo cases (`RunGeo`, `GeoRecords`, `GeoSchema`) |
 
 ## Dependencies
 
-- *Imports*: `parse/core`, `parse/internal/dialect`, `parse/internal/cursor`, stdlib `uuid`
+- *Imports*: `parse/core`, `parse/internal/dialect`, `parse/internal/cursor`, `parse/internal/decimals`, `parse/internal/geo`, stdlib `uuid`
 - *Imported by*: `parse`, `parse/parsehttp`, `parse/parsepgx`, `parse/filter/filtertest`, the example server, and servers that compile lists themselves
 - *Package boundary*: standalone Parse module
 
