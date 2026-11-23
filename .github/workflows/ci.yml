@@ -130,6 +130,7 @@ jobs:
             release-please-config.json
             tools/check-*
             tools/bench-parse.sh
+            tools/postgres-up.sh
             tools/release-please/**
             tools/modarchive/**
             tools/doccheck/**

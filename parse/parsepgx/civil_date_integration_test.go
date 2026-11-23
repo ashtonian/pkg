@@ -23,7 +23,7 @@ type datedRow struct {
 }
 
 func TestCivilDateNativeRowsAndCursor(t *testing.T) {
-	c := &catalog{dsn: dbtest.PostgresDSN(t)}
+	c := &catalog{config: dbtest.PostgresPoolConfig(t)}
 	ctx := testContext(t)
 	setup := c.open(t, pgx.QueryExecModeCacheStatement)
 	_, err := setup.Exec(ctx, `CREATE TABLE dated_rows (id TEXT PRIMARY KEY, day DATE); INSERT INTO dated_rows VALUES ('a','2026-10-26'),('b','2028-02-29'),('c',NULL)`)
