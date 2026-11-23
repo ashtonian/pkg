@@ -159,7 +159,7 @@ parse-postgres-down:
 ## test-parse-client: parse/client's unit tests, race detector on, against
 ## parse's recorded wire and corpora (parse/testdata).
 test-parse-client:
-	$(call scoped,go test $(RACE) -count=1,$(PARSE_CLIENT_MODULES),unit)
+	$(call scoped,go test $(RACE) $(UNIT_TEST_COUNT),$(PARSE_CLIENT_MODULES),unit)
 
 parse-client-release-check:
 	bash tools/check-parse-client-release.sh
