@@ -71,13 +71,20 @@ type cancelCfg struct {
 	Port int `koanf:"port"`
 }
 
-var defaulterCalls int
-
+// cancelDefaultedCfg records in the config it loads that its Defaulter ran.
 type cancelDefaultedCfg struct {
+	Port      int  `koanf:"port"`
+	Defaulted bool `koanf:"defaulted"`
+}
+
+func (c *cancelDefaultedCfg) SetDefaults() { c.Defaulted = true }
+
+// cancelUncalledDefaulterCfg has a Defaulter a load must not call.
+type cancelUncalledDefaulterCfg struct {
 	Port int `koanf:"port"`
 }
 
-func (c *cancelDefaultedCfg) SetDefaults() { defaulterCalls++ }
+func (c *cancelUncalledDefaulterCfg) SetDefaults() { panic("SetDefaults ran on an ended context") }
 
 type countingValidator struct{ calls *int }
 
@@ -119,13 +126,14 @@ func TestLoad_EndedContextRunsNoFurtherStage(t *testing.T) {
 	ended, cancel := context.WithCancelCause(context.Background())
 	cancel(errShutdown)
 
-	defaulterCalls = 0
 	var n stageCounts
-	_, err := Load[cancelDefaultedCfg](ended, stagedOptions[cancelDefaultedCfg](t, &n, nil)...)
+	var err error
+	require.NotPanics(t, func() {
+		_, err = Load[cancelUncalledDefaulterCfg](ended, stagedOptions[cancelUncalledDefaulterCfg](t, &n, nil)...)
+	}, "the Defaulter is not called")
 	require.ErrorIs(t, err, context.Canceled)
 	require.ErrorIs(t, err, errShutdown)
 	assert.Equal(t, stageCounts{}, n)
-	assert.Zero(t, defaulterCalls)
 
 	_, err = Decode[cancelCfg](ended, map[string]any{"port": 1}, stagedOptions[cancelCfg](t, &n, nil)...)
 	require.ErrorIs(t, err, errShutdown)
@@ -143,7 +151,7 @@ func TestLoad_EndedContextRunsNoFurtherStage(t *testing.T) {
 	got, err := Load[cancelDefaultedCfg](t.Context(), stagedOptions[cancelDefaultedCfg](t, &n, nil)...)
 	require.NoError(t, err)
 	assert.Equal(t, 3, got.Port)
-	assert.Equal(t, 1, defaulterCalls)
+	assert.True(t, got.Defaulted, "the Defaulter ran")
 	assert.Equal(t, 1, n.base)
 	assert.Equal(t, 1, n.environ)
 	assert.Equal(t, 1, n.override)
