@@ -17,6 +17,7 @@ import (
 	"slices"
 	"testing"
 	"time"
+	"uuid"
 
 	"github.com/shopspring/decimal"
 	"github.com/stretchr/testify/assert"
@@ -24,6 +25,7 @@ import (
 
 	"github.com/ashtonian/pkg/parse"
 	"github.com/ashtonian/pkg/parse/client"
+	"github.com/ashtonian/pkg/parse/core"
 	"github.com/ashtonian/pkg/parse/filter"
 	"github.com/ashtonian/pkg/parse/patch"
 )
@@ -49,6 +51,18 @@ var confFields = struct {
 	Live    client.Field[client.Quoted[bool]]
 	Big     client.Ordered[client.Quoted[uint64]]
 	Ratio   client.Ordered[client.Quoted[float64]]
+	Score   client.Ordered[float64]
+	Day     client.Ordered[core.Date]
+	At      client.Ordered[core.LocalTime]
+	Span    client.Field[core.Interval]
+	Addr    client.Field[core.Inet]
+	Subnet  client.Field[core.CIDR]
+	Mac     client.Field[core.MACAddr]
+	Key     client.Field[uuid.UUID]
+	Spot    client.Geo
+	Dims    client.Document[confDims]
+	Blob    client.Field[[]byte]
+	Owner   client.Reference[string]
 }{
 	ID:      client.NewField[string]("id"),
 	Name:    client.NewText("name"),
@@ -69,6 +83,18 @@ var confFields = struct {
 	Big:     client.NewOrdered[client.Quoted[uint64]]("big"),
 	Ratio:   client.NewOrdered[client.Quoted[float64]]("ratio"),
 	Parts:   client.NewRelation[string]("parts"),
+	Score:   client.NewOrdered[float64]("score"),
+	Day:     client.NewOrdered[core.Date]("day"),
+	At:      client.NewOrdered[core.LocalTime]("at"),
+	Span:    client.NewField[core.Interval]("span"),
+	Addr:    client.NewField[core.Inet]("addr"),
+	Subnet:  client.NewField[core.CIDR]("subnet"),
+	Mac:     client.NewField[core.MACAddr]("mac"),
+	Key:     client.NewField[uuid.UUID]("key"),
+	Spot:    client.NewGeo("spot"),
+	Dims:    client.NewDocument[confDims]("dims"),
+	Blob:    client.NewField[[]byte]("blob"),
+	Owner:   client.NewReference[string]("owner"),
 }
 
 var confLineFields = struct {
@@ -80,10 +106,22 @@ var confPartFields = struct {
 	State client.Field[string]
 }{client.NewField[string]("state")}
 
+var confOwnerFields = struct {
+	Name client.Text
+}{client.NewText("name")}
+
+// must is v, failing on err: the corpus's values are valid by construction.
+func must[V any](v V, err error) V {
+	if err != nil {
+		panic(err)
+	}
+	return v
+}
+
 // filterBuilt are the corpus cases the client builds; the server reads each
 // as the corpus records, valid or refused with its code.
 func filterBuilt() map[string]client.Filter {
-	f, line, part := confFields, confLineFields, confPartFields
+	f, line, part, owner := confFields, confLineFields, confPartFields, confOwnerFields
 	tag, label, size := f.Tags.Element(), f.Labels.Element(), f.Sizes.Element()
 	statusActive := f.Status.Eq("active")
 	return map[string]client.Filter{
@@ -155,6 +193,27 @@ func filterBuilt() map[string]client.Filter {
 		"quoted_eq_bool":                f.Live.Eq(client.Quote(true)),
 		"quoted_uint64_max":             f.Big.Eq(client.Quote(uint64(math.MaxUint64))),
 		"quoted_float":                  f.Ratio.Lt(client.Quote(0.5)),
+		"reference_is":                  f.Owner.Is(owner.Name.Eq("acme")),
+		"reference_is_not":              f.Owner.IsNot(owner.Name.Like("ac%")),
+		"reference_key_shorthand":       f.Owner.Eq("o1"),
+		"float_gt":                      f.Score.Gt(0.5),
+		"date_gt":                       f.Day.Gt("2026-01-01"),
+		"err_date_operator":             f.Day.Gte("2026-01-01"),
+		"time_gte":                      f.At.Gte("09:30:00"),
+		"interval_in":                   f.Span.In(must(core.ParseInterval("P1D")), must(core.ParseInterval("PT2H30M"))),
+		"inet_eq":                       f.Addr.Eq(must(core.ParseInet("192.0.2.1"))),
+		"cidr_eq":                       f.Subnet.Eq(must(core.ParseCIDR("192.0.2.0/24"))),
+		"macaddr_ne":                    f.Mac.Ne("08:00:2b:01:02:03"),
+		"uuid_in":                       f.Key.In(uuid.MustParse("6ba7b810-9dad-11d1-80b4-00c04fd430c8")),
+		"geo_near":                      f.Spot.Near(client.Point{Lat: 40.7128, Lon: -74.006}, 1500),
+		"geo_within_box":                f.Spot.Within(client.Box(client.Point{Lat: 40.8, Lon: -74.1}, client.Point{Lat: 40.65, Lon: -73.7})),
+		"geo_intersects_polygon":        f.Spot.Intersects(client.Polygon(client.Point{}, client.Point{Lat: 1, Lon: 1}, client.Point{Lon: 1})),
+		"err_geo_intersects_two_points": f.Spot.Intersects(client.Polygon(client.Point{}, client.Point{Lat: 1, Lon: 1})),
+		"object_has_key":                f.Dims.HasKey("w"),
+		"object_eq_document":            f.Dims.Eq(confDims{W: 2, H: 3}),
+		"err_object_operator":           f.Dims.Contains(confDims{W: 2}),
+		"any_null":                      f.Blob.Null(),
+		"err_any_operator":              f.Blob.Eq([]byte("x")),
 	}
 }
 
@@ -169,75 +228,118 @@ var filterRefused = map[string]error{
 
 // filterInexpressible are the corpus cases the client's types rule out.
 var filterInexpressible = map[string]string{
-	"err_not_null_not_bool":               "null tests take no operand",
-	"err_unknown_field":                   "the catalog names declared fields only",
-	"err_operator_not_allowed":            "a boolean field has no Gt",
-	"err_in_not_array":                    "In is variadic",
-	"err_null_not_bool":                   "null tests take no operand",
-	"err_eq_null":                         "Null is the null test; Eq takes a value",
-	"err_int_type":                        "Count is an Ordered[int]",
-	"err_quoted_bare_number":              "Serial is an Ordered[Quoted[int64]]",
-	"err_quoted_bare_number_in_set":       "Serial is an Ordered[Quoted[int64]]",
-	"err_quoted_not_a_number":             "Serial is an Ordered[Quoted[int64]]",
-	"err_quoted_spaces":                   "a Quoted marshals its value's JSON text",
-	"err_quoted_past_int64":               "Serial is an Ordered[Quoted[int64]]",
-	"quoted_bool_bare_boolean":            "a Quoted[bool] marshals a JSON string",
-	"quoted_integral_spelling":            "a Quoted marshals its value's JSON text",
-	"err_quoted_leading_plus":             "a Quoted marshals its value's JSON text",
-	"err_quoted_leading_zero":             "a Quoted marshals its value's JSON text",
-	"err_quoted_null":                     "Null is the null test; Eq takes a value",
-	"err_quoted_float_word":               "Ratio is an Ordered[Quoted[float64]]",
-	"err_quoted_uint_negative":            "Big is an Ordered[Quoted[uint64]]",
-	"err_int_fraction":                    "Count is an Ordered[int]",
-	"err_bool_type":                       "Active is a Field[bool]",
-	"err_decimal_word":                    "Price is an Ordered[decimal.Decimal]",
-	"err_decimal_bool":                    "Price is an Ordered[decimal.Decimal]",
-	"err_decimal_null":                    "Null is the null test; Eq takes a value",
-	"err_decimal_hexadecimal":             "Price is an Ordered[decimal.Decimal]",
-	"err_decimal_leading_plus":            "a decimal.Decimal marshals canonical text",
-	"err_decimal_leading_point":           "a decimal.Decimal marshals canonical text",
-	"err_decimal_leading_zero":            "a decimal.Decimal marshals canonical text",
-	"err_decimal_exponent_beyond_int32":   "a decimal.Decimal's exponent is an int32",
-	"err_decimal_in_member":               "Price is an Ordered[decimal.Decimal]",
-	"err_unknown_dollar_key":              "operators are methods",
-	"err_misspelt_operator_on_document":   "operators are methods",
-	"err_operator_key_mixed_with_literal": "operators are methods",
-	"err_or_not_array":                    "Or is variadic",
-	"err_or_branch_not_object":            "Or takes filters",
-	"err_not_not_object":                  "Not takes a filter",
-	"err_json_eq_null":                    "Null is the null test",
-	"err_json_has_key_not_string":         "HasKey takes a string",
-	"err_path_type":                       "the path is Text",
-	"err_undeclared_path":                 "the catalog names declared paths only",
-	"err_elements_unknown_member":         "the element catalog names declared members only",
-	"err_elements_member_type":            "Qty is an Ordered[int]",
-	"err_elements_not_object":             "Some takes a filter",
-	"err_elements_is":                     "Elements has no Is",
-	"err_relation_unknown_target_field":   "the target catalog names declared fields only",
-	"err_relation_is_on_collection":       "a to-many Relation has no Is",
-	"err_relation_not_object":             "Some takes a filter",
-	"err_array_element_operator":          "Sizes' element is an Ordered[int]",
-	"err_array_element_type":              "Sizes' element is an Ordered[int]",
-	"err_array_element_not_object":        "Some takes a condition",
-	"err_array_contains_member_type":      "Sizes' Contains takes ints",
+	"err_not_null_not_bool":                  "null tests take no operand",
+	"err_unknown_field":                      "the catalog names declared fields only",
+	"err_operator_not_allowed":               "a boolean field has no Gt",
+	"err_in_not_array":                       "In is variadic",
+	"err_null_not_bool":                      "null tests take no operand",
+	"err_eq_null":                            "Null is the null test; Eq takes a value",
+	"err_int_type":                           "Count is an Ordered[int]",
+	"err_quoted_bare_number":                 "Serial is an Ordered[Quoted[int64]]",
+	"err_quoted_bare_number_in_set":          "Serial is an Ordered[Quoted[int64]]",
+	"err_quoted_not_a_number":                "Serial is an Ordered[Quoted[int64]]",
+	"err_quoted_spaces":                      "a Quoted marshals its value's JSON text",
+	"err_quoted_past_int64":                  "Serial is an Ordered[Quoted[int64]]",
+	"quoted_bool_bare_boolean":               "a Quoted[bool] marshals a JSON string",
+	"quoted_integral_spelling":               "a Quoted marshals its value's JSON text",
+	"err_quoted_leading_plus":                "a Quoted marshals its value's JSON text",
+	"err_quoted_leading_zero":                "a Quoted marshals its value's JSON text",
+	"err_quoted_null":                        "Null is the null test; Eq takes a value",
+	"err_quoted_float_word":                  "Ratio is an Ordered[Quoted[float64]]",
+	"err_quoted_uint_negative":               "Big is an Ordered[Quoted[uint64]]",
+	"err_int_fraction":                       "Count is an Ordered[int]",
+	"err_bool_type":                          "Active is a Field[bool]",
+	"err_decimal_word":                       "Price is an Ordered[decimal.Decimal]",
+	"err_decimal_bool":                       "Price is an Ordered[decimal.Decimal]",
+	"err_decimal_null":                       "Null is the null test; Eq takes a value",
+	"err_decimal_hexadecimal":                "Price is an Ordered[decimal.Decimal]",
+	"err_decimal_leading_plus":               "a decimal.Decimal marshals canonical text",
+	"err_decimal_leading_point":              "a decimal.Decimal marshals canonical text",
+	"err_decimal_leading_zero":               "a decimal.Decimal marshals canonical text",
+	"err_decimal_exponent_beyond_int32":      "a decimal.Decimal's exponent is an int32",
+	"err_decimal_in_member":                  "Price is an Ordered[decimal.Decimal]",
+	"err_unknown_dollar_key":                 "operators are methods",
+	"err_misspelt_operator_on_document":      "operators are methods",
+	"err_operator_key_mixed_with_literal":    "operators are methods",
+	"err_or_not_array":                       "Or is variadic",
+	"err_or_branch_not_object":               "Or takes filters",
+	"err_not_not_object":                     "Not takes a filter",
+	"err_json_eq_null":                       "Null is the null test",
+	"err_json_has_key_not_string":            "HasKey takes a string",
+	"err_path_type":                          "the path is Text",
+	"err_undeclared_path":                    "the catalog names declared paths only",
+	"err_elements_unknown_member":            "the element catalog names declared members only",
+	"err_elements_member_type":               "Qty is an Ordered[int]",
+	"err_elements_not_object":                "Some takes a filter",
+	"err_elements_is":                        "Elements has no Is",
+	"err_relation_unknown_target_field":      "the target catalog names declared fields only",
+	"err_relation_is_on_collection":          "a to-many Relation has no Is",
+	"err_relation_not_object":                "Some takes a filter",
+	"err_array_element_operator":             "Sizes' element is an Ordered[int]",
+	"err_array_element_type":                 "Sizes' element is an Ordered[int]",
+	"err_array_element_not_object":           "Some takes a condition",
+	"err_array_contains_member_type":         "Sizes' Contains takes ints",
+	"err_relation_none_unknown_target_field": "the target catalog names declared fields only",
+	"err_relation_is_not_on_collection":      "a to-many Relation has no IsNot",
+	"err_reference_is_unknown_target_field":  "the target catalog names declared fields only",
+	"err_reference_some":                     "a Reference has no Some",
+	"err_ilike_not_string":                   "ILike takes a string",
+	"err_exists_not_bool":                    "null tests take no operand",
+	"err_and_not_array":                      "And is variadic",
+	"err_float_lte_type":                     "Score is an Ordered[float64]",
+	"err_timestamp_type":                     "Created is a Time",
+	"err_timestamp_spelling":                 "a Moment marshals RFC 3339 or a relative token",
+	"err_interval_operator":                  "Span is a Field[core.Interval]",
+	"err_interval_spelling":                  "a core.Interval marshals its canonical text",
+	"err_inet_spelling":                      "a core.Inet holds a parsed address",
+	"err_cidr_host_bits":                     "a core.CIDR holds a parsed network",
+	"err_macaddr_type":                       "Mac is a Field[core.MACAddr]",
+	"err_uuid_type":                          "Key is a Field[uuid.UUID]",
+	"err_uuid_spelling":                      "a uuid.UUID marshals its canonical text",
+	"err_geo_operator":                       "Geo has no Eq",
+	"err_geo_near_without_distance":          "Near takes a distance",
+	"err_geo_within_not_a_shape":             "Within takes a Shape",
+	"err_date_spelling":                      "a core.Date marshals only a civil date",
+	"err_time_spelling":                      "a core.LocalTime marshals only a time of day",
+	"err_macaddr_spelling":                   "a core.MACAddr marshals only a MAC address",
 }
 
-// readFilterCorpus reads the filter corpus with its numbers exact: a quoted
-// int64 case's AST holds 2^63-1, which a float64 would round.
-func readFilterCorpus(t *testing.T) []conformanceCase {
-	t.Helper()
-	data, err := os.ReadFile(conformanceCorpusPath)
-	require.NoError(t, err, "read the corpus (regenerate with -run TestEmitFilterConformance -update)")
-	dec := json.NewDecoder(bytes.NewReader(data))
-	dec.UseNumber()
-	var corpus []conformanceCase
-	require.NoError(t, dec.Decode(&corpus))
-	return corpus
+// Every classification names a corpus case: a case renamed or removed from
+// the corpus is removed from its classification too.
+func TestClient_EveryClassificationNamesACorpusCase(t *testing.T) {
+	filterCases := map[string]bool{}
+	for _, c := range readFilterCorpus(t).Cases {
+		filterCases[c.Name] = true
+	}
+	for name := range filterBuilt() {
+		assert.True(t, filterCases[name], "filterBuilt names %q, which is no corpus case", name)
+	}
+	for name := range filterRefused {
+		assert.True(t, filterCases[name], "filterRefused names %q, which is no corpus case", name)
+	}
+	for name := range filterInexpressible {
+		assert.True(t, filterCases[name], "filterInexpressible names %q, which is no corpus case", name)
+	}
+
+	data, err := os.ReadFile(patchConformancePath)
+	require.NoError(t, err)
+	var patches patchCorpus
+	require.NoError(t, json.Unmarshal(data, &patches))
+	patchCases := map[string]bool{}
+	for _, c := range patches.Cases {
+		patchCases[c.Name] = true
+	}
+	for name := range patchBuilt {
+		assert.True(t, patchCases[name], "patchBuilt names %q, which is no corpus case", name)
+	}
+	for name := range patchInexpressible {
+		assert.True(t, patchCases[name], "patchInexpressible names %q, which is no corpus case", name)
+	}
 }
 
 func TestClient_EveryFilterCaseIsClassified(t *testing.T) {
 	built := filterBuilt()
-	for _, c := range readFilterCorpus(t) {
+	for _, c := range readFilterCorpus(t).Cases {
 		_, b := built[c.Name]
 		_, r := filterRefused[c.Name]
 		_, x := filterInexpressible[c.Name]
@@ -250,7 +352,7 @@ func TestClient_EveryFilterCaseIsClassified(t *testing.T) {
 func TestClient_FiltersMeanWhatTheCorpusMeans(t *testing.T) {
 	schema := confSchema(t)
 	built := filterBuilt()
-	for _, want := range readFilterCorpus(t) {
+	for _, want := range readFilterCorpus(t).Cases {
 		f, ok := built[want.Name]
 		if !ok {
 			continue
@@ -284,7 +386,7 @@ func TestClient_RefusesWhatTheGrammarCannotSay(t *testing.T) {
 		"err_array_element_empty_or":  tags.Some(client.Or()),
 		"err_array_element_empty_not": tags.Some(client.Not(client.Filter{})),
 	}
-	for _, c := range readFilterCorpus(t) {
+	for _, c := range readFilterCorpus(t).Cases {
 		want, ok := filterRefused[c.Name]
 		if !ok {
 			continue
@@ -327,28 +429,33 @@ type confPatchInput struct {
 	// QuotedTags is a relation whose target key is quoted: its keys are
 	// client.Quoted, as a client.Relation[client.Quoted[int64]] sends them.
 	QuotedTags client.Nullable[[]client.Quoted[int64]] `json:"quoted_tags,omitzero"`
+	Pinned     client.Nullable[string]                 `json:"pinned,omitzero"`
 }
 
 var patchBuilt = map[string]confPatchInput{
-	"string":                    {Name: client.Set("a")},
-	"err_null_on_value_field":   {Name: client.Null[string]()},
-	"null_on_pointer_field":     {Nick: client.Null[string]()},
-	"enum":                      {Status: client.Set("active")},
-	"err_enum":                  {Status: client.Set("busy")},
-	"int":                       {Count: client.Set[int32](5)},
-	"int8_min":                  {Small: client.Set[int8](-128)},
-	"float":                     {Ratio: client.Set(0.5)},
-	"decimal_string":            {Price: client.Set(decimal.RequireFromString("10.25"))},
-	"err_decimal_null":          {Price: client.Null[decimal.Decimal]()},
-	"bool":                      {Active: client.Set(false)},
-	"array":                     {Tags: client.Set([]string{"a", "b"})},
-	"clear_array":               {Tags: client.Null[[]string]()},
-	"document_merge":            {Labels: client.Set(map[string]any{"a": 1, "old": nil})},
-	"timestamp":                 {SeenAt: client.Set(time.Date(2026, 10, 19, 12, 0, 0, 0, time.UTC))},
-	"several":                   {Name: client.Set("a"), Count: client.Set[int32](1), Active: client.Set(true)},
-	"array_enum":                {Modes: client.Set([]string{"auto", "manual"})},
-	"err_array_enum":            {Modes: client.Set([]string{"auto", "off"})},
-	"null_clears_nullable_enum": {Mode: client.Null[string]()},
+	"replace_where_remove_is_not_allowed": {Pinned: client.Set("a")},
+	"err_remove_not_allowed":              {Pinned: client.Null[string]()},
+	"operations_at_the_maximum":           {Labels: client.Set(nestedDocuments(49))},
+	"err_too_many_operations":             {Labels: client.Set(nestedDocuments(50))},
+	"string":                              {Name: client.Set("a")},
+	"err_null_on_value_field":             {Name: client.Null[string]()},
+	"null_on_pointer_field":               {Nick: client.Null[string]()},
+	"enum":                                {Status: client.Set("active")},
+	"err_enum":                            {Status: client.Set("busy")},
+	"int":                                 {Count: client.Set[int32](5)},
+	"int8_min":                            {Small: client.Set[int8](-128)},
+	"float":                               {Ratio: client.Set(0.5)},
+	"decimal_string":                      {Price: client.Set(decimal.RequireFromString("10.25"))},
+	"err_decimal_null":                    {Price: client.Null[decimal.Decimal]()},
+	"bool":                                {Active: client.Set(false)},
+	"array":                               {Tags: client.Set([]string{"a", "b"})},
+	"clear_array":                         {Tags: client.Null[[]string]()},
+	"document_merge":                      {Labels: client.Set(map[string]any{"a": 1, "old": nil})},
+	"timestamp":                           {SeenAt: client.Set(time.Date(2026, 10, 19, 12, 0, 0, 0, time.UTC))},
+	"several":                             {Name: client.Set("a"), Count: client.Set[int32](1), Active: client.Set(true)},
+	"array_enum":                          {Modes: client.Set([]string{"auto", "manual"})},
+	"err_array_enum":                      {Modes: client.Set([]string{"auto", "off"})},
+	"null_clears_nullable_enum":           {Mode: client.Null[string]()},
 	// Bounds are the server's: the client builds a value outside them.
 	"length_bounds":                  {Currency: client.Set("USD")},
 	"length_counts_code_points":      {Currency: client.Set("€😀ß")},
@@ -628,6 +735,9 @@ func TestClient_CatalogsCoverTheCorpusFields(t *testing.T) {
 		confFields.Price.Name(), confFields.Active.Name(), confFields.Created.Name(), confFields.Meta.Name(), confFields.Region.Name(),
 		confFields.Note.Name(), confFields.Lines.Name(), confFields.Tags.Name(), confFields.Labels.Name(), confFields.Sizes.Name(),
 		confFields.Parts.Name(), confFields.Serial.Name(), confFields.Live.Name(), confFields.Big.Name(), confFields.Ratio.Name(),
+		confFields.Score.Name(), confFields.Day.Name(), confFields.At.Name(), confFields.Span.Name(), confFields.Addr.Name(),
+		confFields.Subnet.Name(), confFields.Mac.Name(), confFields.Key.Name(), confFields.Spot.Name(), confFields.Dims.Name(),
+		confFields.Blob.Name(), confFields.Owner.Name(),
 	}
 	for name := range schema.Fields {
 		assert.True(t, slices.Contains(names, name), "the catalog misses %q", name)

@@ -16,6 +16,7 @@ package parse_test
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"testing"
 	"time"
@@ -52,6 +53,9 @@ type confPatch struct {
 	Amount   decimal.Decimal `json:"amount"    db:"amount"    parse:"patch" min:"0.01" max:"999.99"`
 	Codes    []string        `json:"codes"     db:"codes"     parse:"patch" maxlen:"2"`
 	Zones    []string        `json:"zones"     db:"zones"     parse:"patch" minitems:"1" maxitems:"2"`
+	// Pinned is nullable, but its only operation is replace: null, a
+	// remove, is not one it takes.
+	Pinned *string `json:"pinned" db:"pinned" parse:"patch" patch_ops:"replace"`
 	// Serial, Big, Quota, Live and Share travel as JSON strings
 	// (json:",string").
 	Serial int64   `json:"serial,string" db:"serial" parse:"patch"`
@@ -82,6 +86,16 @@ type patchCase struct {
 type patchCorpus struct {
 	Schema *parse.SchemaResponse `json:"schema"`
 	Cases  []patchCase           `json:"cases"`
+}
+
+// nestedDocuments is a document holding n empty documents: a merge patch
+// of n+1 operations on one top-level member.
+func nestedDocuments(n int) map[string]any {
+	doc := make(map[string]any, n)
+	for i := range n {
+		doc[fmt.Sprintf("k%02d", i)] = map[string]any{}
+	}
+	return doc
 }
 
 func patchInputs() []patchCase {
@@ -174,6 +188,10 @@ func patchInputs() []patchCase {
 		{Name: "quoted_relation_keys", Input: map[string]any{"quoted_tags": []any{"5", "9007199254740993"}}},
 		{Name: "err_quoted_relation_bare_number", Input: map[string]any{"quoted_tags": []any{json.Number("5")}}},
 		{Name: "err_quoted_relation_not_a_number", Input: map[string]any{"quoted_tags": []any{"five"}}},
+		{Name: "replace_where_remove_is_not_allowed", Input: map[string]any{"pinned": "a"}},
+		{Name: "err_remove_not_allowed", Input: map[string]any{"pinned": nil}},
+		{Name: "operations_at_the_maximum", Input: map[string]any{"labels": nestedDocuments(49)}},
+		{Name: "err_too_many_operations", Input: map[string]any{"labels": nestedDocuments(50)}},
 	}
 }
 

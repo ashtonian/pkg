@@ -126,7 +126,7 @@ func (s *server) facets(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	s.writeJSON(w, r, http.StatusOK, map[string]any{"facets": counts})
+	s.writeJSON(w, r, http.StatusOK, parsehttp.FacetsAnswer{Facets: counts})
 }
 
 func (s *server) facetCounts(ctx context.Context, query *filter.FacetQuery) (map[string][]filter.FacetBucket, error) {
@@ -146,19 +146,6 @@ func (s *server) facetCounts(ctx context.Context, query *filter.FacetQuery) (map
 	return counts, nil
 }
 
-// patchResult answers a patch, as the SDK's PatchResult reads it.
-type patchResult struct {
-	Updated []Product   `json:"updated"`
-	Failed  []itemError `json:"failed,omitempty"`
-}
-
-// itemError is one key of a batch patch that updated no row.
-type itemError struct {
-	ID    string `json:"id"`
-	Code  string `json:"code"`
-	Error string `json:"error"`
-}
-
 func (s *server) patch(w http.ResponseWriter, r *http.Request) {
 	if _, ok := s.patchQuery(w, r); !ok {
 		return
@@ -173,7 +160,7 @@ func (s *server) patch(w http.ResponseWriter, r *http.Request) {
 		s.writeJSON(w, r, http.StatusNotFound, parsehttp.Body{Code: codeNotFound, Message: "product " + id + " not found"})
 		return
 	}
-	s.writeJSON(w, r, http.StatusOK, patchResult{Updated: items})
+	s.writeJSON(w, r, http.StatusOK, parsehttp.PatchAnswer[Product]{Updated: items})
 }
 
 // patchMany applies one merge patch to the products its id[] keys name. A
@@ -200,10 +187,7 @@ func (s *server) patchMany(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, r, err)
 		return
 	}
-	res := patchResult{Updated: items}
-	if res.Updated == nil {
-		res.Updated = []Product{}
-	}
+	res := parsehttp.PatchAnswer[Product]{Updated: items}
 	updated := make(map[string]bool, len(items))
 	for _, p := range items {
 		updated[p.ID] = true
@@ -211,7 +195,7 @@ func (s *server) patchMany(w http.ResponseWriter, r *http.Request) {
 	for _, id := range ids {
 		if !updated[id] {
 			updated[id] = true // a key named twice fails once
-			res.Failed = append(res.Failed, itemError{ID: id, Code: codeNotFound, Error: "product " + id + " not found"})
+			res.Failed = append(res.Failed, parsehttp.PatchFailure{ID: id, Code: codeNotFound, Error: "product " + id + " not found"})
 		}
 	}
 	s.writeJSON(w, r, http.StatusOK, res)

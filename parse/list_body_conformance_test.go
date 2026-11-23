@@ -12,31 +12,8 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/ashtonian/pkg/parse"
 	"github.com/ashtonian/pkg/parse/core"
 )
-
-// confPartRow is confPart with the foreign key a has-many relation joins on;
-// the key is no filter field, so the target's filter schema is confPart's.
-type confPartRow struct {
-	ID       string `json:"id"    parse:"filter" filter_ops:"eq,in"`
-	EntityID string `json:"-"     db:"entity_id"`
-	State    string `json:"state" parse:"filter" filter_ops:"eq,ne" enum:"ok,worn"`
-}
-
-// confResource serves confEntity, the filter conformance corpus's schema, as
-// a resource, so the corpus can be replayed through the list transports
-// rather than the bare filter parser. The corpus leaves the cost guard out
-// (it is deployment configuration, not grammar), so the resource lifts it.
-func confResource(t *testing.T) *parse.Resource[confEntity] {
-	t.Helper()
-	parts, err := parse.NewResource[confPartRow]("parts")
-	require.NoError(t, err)
-	entities, err := parse.NewResource[confEntity]("entities", parse.ParserOptions(core.WithClock(confClock), core.WithMaxCost(1<<20)))
-	require.NoError(t, err)
-	require.NoError(t, entities.Relate("parts", parse.HasMany(parts, "entity_id")))
-	return entities
-}
 
 func parseErrorCode(err error) string {
 	if pe, ok := errors.AsType[*core.ParseError](err); ok {
@@ -49,10 +26,10 @@ func parseErrorCode(err error) string {
 // POST body's filter member, and that verdict is the corpus's: the same
 // validity, error code and canonical AST.
 func TestFilterConformance_ThroughBothListTransports(t *testing.T) {
-	corpus := readFilterCorpus(t)
+	corpus := readFilterCorpus(t).Cases
 	require.NotEmpty(t, corpus)
 
-	res := confResource(t)
+	res := confResources(t).entities
 	for _, c := range corpus {
 		t.Run(c.Name, func(t *testing.T) {
 			doc, err := json.Marshal(c.Input)

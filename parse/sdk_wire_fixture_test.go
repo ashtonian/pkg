@@ -2,27 +2,39 @@
 
 package parse_test
 
-// Go-emitted wire fixture for the TypeScript SDK. The
-// pages are a real keyset walk on SQLite serialized exactly as filter.Page
-// marshals; the schema is the registry's response. The TS client tests
-// (sdk/ts/src/client.test.ts) serve these bodies from a fake fetch, so the
-// SDK is held to the server's wire shape rather than to its own types.
+// The wire fixture the SDKs are held to: requests built by the Go client
+// (parse/client) and the answers parse's handlers gave them, recorded by
+// serving a resource over SQLite with parsehttp and parsesql. The TypeScript
+// client tests (sdk/ts/src/client.test.ts) replay each exchange: the request
+// they build must equal the recorded one, and they decode the recorded
+// answer, so the TypeScript SDK, the Go client and the handlers agree on
+// every byte.
 //
 // Regenerate after an intentional wire change:
 //
 //	go test -tags=unit -run TestSDKWireFixture -update ./
 
 import (
+	"bytes"
+	"database/sql"
 	"encoding/json"
-	"errors"
+	"fmt"
+	"maps"
+	"net/http"
+	"net/http/httptest"
+	"net/url"
 	"os"
+	"slices"
 	"testing"
 
 	"github.com/stretchr/testify/require"
 
 	"github.com/ashtonian/pkg/parse"
+	"github.com/ashtonian/pkg/parse/client"
 	"github.com/ashtonian/pkg/parse/filter"
 	"github.com/ashtonian/pkg/parse/internal/dbtest"
+	"github.com/ashtonian/pkg/parse/parsehttp"
+	"github.com/ashtonian/pkg/parse/parsesql"
 )
 
 const sdkWireFixturePath = "testdata/sdk_wire.json"
@@ -32,7 +44,7 @@ type wireItem struct {
 	Name   string         `json:"name"   db:"name"   parse:"filter,sort,patch,facet" filter_ops:"eq,ne,like,in" enum:"alpha,bravo,charlie,delta,echo" facet:"terms:5"`
 	Labels map[string]any `json:"labels" db:"labels" parse:"filter,patch"`
 	// Unit's name holds "/" and "~", which a JSON Pointer escapes: the SDK
-	// must look it up as /unit~1si~0v (review C07).
+	// must look it up as /unit~1si~0v.
 	Unit *string  `json:"unit/si~v" db:"unit" parse:"patch"`
 	Tags []string `json:"-" db:"-" parse:"filter,include" relation:"wire_item_tags,item_id,tag_id"`
 }
@@ -44,22 +56,39 @@ type wirePart struct {
 	State  string `json:"state"   db:"state"   parse:"filter" enum:"ok,worn"`
 }
 
-type wireExchange struct {
-	Cursor   string          `json:"cursor"`
-	Response json.RawMessage `json:"response"`
+// wireRequest is a request as the server receives it. Query holds every
+// value of each parameter; Body is JSON.
+type wireRequest struct {
+	Method      string              `json:"method"`
+	Path        string              `json:"path"`
+	Query       map[string][]string `json:"query,omitempty"`
+	ContentType string              `json:"content_type,omitempty"`
+	Body        json.RawMessage     `json:"body,omitempty"`
+}
+
+type wireResponse struct {
+	Status      int             `json:"status"`
+	ContentType string          `json:"content_type"`
+	Body        json.RawMessage `json:"body"`
+}
+
+type wireCall struct {
+	Request  wireRequest  `json:"request"`
+	Response wireResponse `json:"response"`
 }
 
 type sdkWire struct {
 	// Params are the list request parameter names (filter.Param*), keyed by
 	// constant, so the SDK's query encoding follows the server's names.
-	Params   map[string]string     `json:"params"`
-	PageSize int                   `json:"page_size"`
-	Sort     string                `json:"sort"`
-	List     []wireExchange        `json:"list"`
-	Schema   *parse.SchemaResponse `json:"schema"`
-	// Related are the schemas of the relation targets Schema names, by
-	// resource, as the registry serves them.
-	Related map[string]*parse.SchemaResponse `json:"related"`
+	Params   map[string]string `json:"params"`
+	PageSize int               `json:"page_size"`
+	Sort     string            `json:"sort"`
+	// List is a keyset walk of the list route, a page per call, each
+	// request carrying the end cursor of the page before it.
+	List []wireCall `json:"list"`
+	// Exchanges are the other requests the SDK sends, by name, with the
+	// answers the handlers gave.
+	Exchanges map[string]wireCall `json:"exchanges"`
 }
 
 func TestSDKWireFixture(t *testing.T) {
@@ -73,18 +102,184 @@ func TestSDKWireFixture(t *testing.T) {
 	require.JSONEq(t, string(want), string(got), "wire fixture is stale; regenerate with -update")
 }
 
-func buildSDKWire(t *testing.T) []byte {
+// wireTagsPerOwner is one more tag than an include returns for an owner,
+// so the first owner's include is cut and named in _truncated.
+const wireTagsPerOwner = filter.DefaultMaxIncludePerRelation + 1
+
+func wireDB(t *testing.T) *sql.DB {
 	t.Helper()
 	db := dbtest.SQLite(t)
-	_, err := db.Exec(`CREATE TABLE wire_items (id TEXT PRIMARY KEY, name TEXT NOT NULL, labels TEXT, unit TEXT)`)
-	require.NoError(t, err)
+	for _, stmt := range []string{
+		`CREATE TABLE wire_items (id TEXT PRIMARY KEY, name TEXT NOT NULL, labels TEXT NOT NULL, unit TEXT)`,
+		`CREATE TABLE wire_parts (id TEXT PRIMARY KEY, item_id TEXT NOT NULL, state TEXT NOT NULL)`,
+		`CREATE TABLE wire_item_tags (item_id TEXT NOT NULL, tag_id TEXT NOT NULL, PRIMARY KEY (item_id, tag_id))`,
+	} {
+		_, err := db.Exec(stmt)
+		require.NoError(t, err)
+	}
 	for i, name := range []string{"echo", "alpha", "delta", "bravo", "charlie"} {
-		_, listErr := db.Exec(`INSERT INTO wire_items (id, name, labels) VALUES (?1, ?2, '{}')`, string(rune('a'+i)), name)
-		require.NoError(t, listErr)
+		_, err := db.Exec(`INSERT INTO wire_items (id, name, labels) VALUES (?1, ?2, '{}')`, string(rune('a'+i)), name)
+		require.NoError(t, err)
+	}
+	for i := range wireTagsPerOwner {
+		_, err := db.Exec(`INSERT INTO wire_item_tags VALUES ('b', ?1)`, fmt.Sprintf("t%03d", i+1))
+		require.NoError(t, err)
+	}
+	_, err := db.Exec(`INSERT INTO wire_item_tags VALUES ('d', 't001'), ('d', 't002')`)
+	require.NoError(t, err)
+	return db
+}
+
+// wireServer serves wire_items as a parse server does: lists by GET and
+// POST, facets by OPTIONS, merge patches of one row or of the rows id[]
+// names, and the schema routes.
+func wireServer(t *testing.T, db *sql.DB) http.Handler {
+	t.Helper()
+	items := parse.MustResource[wireItem]("wire_items")
+	parts := parse.MustResource[wirePart]("wire_parts")
+	items.MustRelate("parts", parse.HasMany(parts, "item_id", parse.Indexed()))
+	reg := parse.NewSchemaRegistry()
+	require.NoError(t, parse.RegisterResource(reg, items))
+	require.NoError(t, parse.RegisterResource(reg, parts))
+
+	// handle answers a parse error with its body; any other error fails
+	// the recording.
+	handle := func(serve func(w http.ResponseWriter, r *http.Request) error) http.HandlerFunc {
+		return func(w http.ResponseWriter, r *http.Request) {
+			if err := serve(w, r); err != nil && !parsehttp.WriteError(w, r, err) {
+				t.Fatalf("%s %s: %v", r.Method, r.URL, err)
+			}
+		}
+	}
+	update := func(r *http.Request, target parse.Target) ([]wireItem, error) {
+		parsed, err := parsehttp.ParsePatch(r, items)
+		if err != nil {
+			return nil, err
+		}
+		plan, err := items.BuildUpdate(filter.SQLiteDialect{}, parsed, target, parse.Scope{})
+		if err != nil {
+			return nil, err
+		}
+		res, err := parsesql.Update(r.Context(), db, items, plan)
+		return slices.Concat(res.Changed, res.Unchanged), err
 	}
 
-	p, err := parse.NewResource[wireItem]("wire_items")
+	mux := http.NewServeMux()
+	list := handle(func(w http.ResponseWriter, r *http.Request) error {
+		req, err := parsehttp.ParseList(r, items)
+		if err != nil {
+			return err
+		}
+		plan, err := items.BuildList(filter.SQLiteDialect{}, req, parse.Scope{})
+		if err != nil {
+			return err
+		}
+		page, err := parsesql.QueryPage(r.Context(), db, items, plan)
+		if err != nil {
+			return err
+		}
+		return parsehttp.WriteJSON(w, r, http.StatusOK, page)
+	})
+	mux.Handle("GET /wire_items", list)
+	mux.Handle("POST /wire_items", list)
+	mux.Handle("OPTIONS /wire_items", handle(func(w http.ResponseWriter, r *http.Request) error {
+		req, err := parsehttp.ParseFacets(r, items)
+		if err != nil {
+			return err
+		}
+		query, err := items.BuildFacets(filter.SQLiteDialect{}, req, parse.Scope{})
+		if err != nil {
+			return err
+		}
+		rows, err := db.QueryContext(r.Context(), query.SQL, query.Args...)
+		if err != nil {
+			return err
+		}
+		defer rows.Close()
+		facets, err := filter.ScanFacetUnion(rows)
+		if err != nil {
+			return err
+		}
+		return parsehttp.WriteJSON(w, r, http.StatusOK, parsehttp.FacetsAnswer{Facets: filter.FacetMap(facets)})
+	}))
+	mux.Handle("PATCH /wire_items/{id}", handle(func(w http.ResponseWriter, r *http.Request) error {
+		updated, err := update(r, parse.ByID(r.PathValue("id")))
+		if err != nil {
+			return err
+		}
+		return parsehttp.WriteJSON(w, r, http.StatusOK, parsehttp.PatchAnswer[wireItem]{Updated: updated})
+	}))
+	mux.Handle("PATCH /wire_items", handle(func(w http.ResponseWriter, r *http.Request) error {
+		q, err := parsehttp.Query(r)
+		if err != nil {
+			return err
+		}
+		ids := q["id[]"]
+		updated, err := update(r, parse.ByIDs(anys(ids)...))
+		if err != nil {
+			return err
+		}
+		answer := parsehttp.PatchAnswer[wireItem]{Updated: updated}
+		for _, id := range ids {
+			if !slices.ContainsFunc(updated, func(it wireItem) bool { return it.ID == id }) {
+				answer.Failed = append(answer.Failed, parsehttp.PatchFailure{ID: id, Code: "E4004", Error: "wire item " + id + " not found"})
+			}
+		}
+		return parsehttp.WriteJSON(w, r, http.StatusOK, answer)
+	}))
+	mux.Handle("GET /{resource}/schema", parsehttp.SchemaHandler(reg))
+	mux.Handle("GET /schemas", parsehttp.SchemaListHandler(reg))
+	return mux
+}
+
+func anys[T any](vs []T) []any {
+	out := make([]any, len(vs))
+	for i, v := range vs {
+		out[i] = v
+	}
+	return out
+}
+
+// record sends req to h and returns it with h's answer.
+func record(t *testing.T, h http.Handler, req wireRequest) wireCall {
+	t.Helper()
+	target := req.Path
+	if len(req.Query) > 0 {
+		target += "?" + url.Values(req.Query).Encode()
+	}
+	r := httptest.NewRequestWithContext(t.Context(), req.Method, target, bytes.NewReader(req.Body))
+	if req.ContentType != "" {
+		r.Header.Set("Content-Type", req.ContentType)
+	}
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, r)
+	require.True(t, json.Valid(rec.Body.Bytes()), "%s %s answered %d %s", req.Method, target, rec.Code, rec.Body)
+	return wireCall{Request: req, Response: wireResponse{
+		Status: rec.Code, ContentType: rec.Header().Get("Content-Type"), Body: bytes.TrimSpace(rec.Body.Bytes()),
+	}}
+}
+
+// listGET is the GET a Go client sends for p.
+func listGET(t *testing.T, p client.ListParams) wireRequest {
+	t.Helper()
+	q, err := p.Values()
 	require.NoError(t, err)
+	return wireRequest{Method: http.MethodGet, Path: "/wire_items", Query: q}
+}
+
+// pageOf decodes the page of a list call.
+func pageOf(t *testing.T, c wireCall) filter.Page[wireItem] {
+	t.Helper()
+	require.Equal(t, http.StatusOK, c.Response.Status, "%s", c.Response.Body)
+	var page filter.Page[wireItem]
+	require.NoError(t, json.Unmarshal(c.Response.Body, &page))
+	return page
+}
+
+func buildSDKWire(t *testing.T) []byte {
+	t.Helper()
+	h := wireServer(t, wireDB(t))
+	name := client.NewSortableText("name")
 	wire := sdkWire{
 		Params: map[string]string{
 			"ParamFilter": filter.ParamFilter, "ParamSort": filter.ParamSort, "ParamCursor": filter.ParamCursor,
@@ -92,67 +287,62 @@ func buildSDKWire(t *testing.T) []byte {
 			"ParamIncludeDeleted": filter.ParamIncludeDeleted, "ParamSearch": filter.ParamSearch,
 			"ParamFacets": filter.ParamFacets, "ParamFields": filter.ParamFields, "ParamInclude": filter.ParamInclude,
 		},
-		PageSize: 2, Sort: "name",
+		PageSize:  2,
+		Sort:      "name",
+		Exchanges: map[string]wireCall{},
 	}
-	cursor := ""
+
+	walk := client.ListParams{Sort: client.Sort{name.Asc()}, PageSize: wire.PageSize, Include: []string{"tags"}, Facets: []string{"name"}}
 	for n := 0; ; n++ {
 		require.Less(t, n, 10, "walk did not terminate")
-		opts := []filter.ListOption{filter.ListSort(wire.Sort), filter.ListLimit(wire.PageSize), filter.ListRelationScope(filter.RelationScope{Unscoped: true})}
-		if cursor != "" {
-			opts = append(opts, filter.ListCursor(cursor))
-		} else {
-			opts = append(opts, filter.ListFacets("name"))
-		}
-		lq, listErr := p.ListQuery(filter.SQLiteDialect{})
-		require.NoError(t, listErr)
-		res, listErr := lq.Build(opts...)
-		require.NoError(t, listErr)
-		rows, listErr := db.Query("SELECT id, name FROM wire_items "+res.Fragment, res.Args...)
-		require.NoError(t, listErr)
-		var items []wireItem
-		for rows.Next() {
-			var it wireItem
-			require.NoError(t, rows.Scan(&it.ID, &it.Name))
-			it.Labels = map[string]any{}
-			items = append(items, it)
-		}
-		require.NoError(t, rows.Err())
-		require.NoError(t, rows.Close())
-
-		page, listErr := filter.NewPage(items, res.Limit, res.Cursor, func(it wireItem, col string) (any, error) {
-			return filter.CursorValueByTag(it, "db", col)
-		})
-		require.NoError(t, listErr)
-		if n == 0 {
-			// An `include=tags` projection whose first owner was cut at the
-			// cap, as a repository attaches it, and the `facets=name` counts
-			// the facet query returns.
-			page.Relations = map[string]map[string][]string{"tags": {page.Items[0].ID: {"t1", "t2"}}}
-			page.Truncated = map[string][]string{"tags": {page.Items[0].ID}}
-			facetRows, facetErr := db.Query(res.Facets.SQL, res.Facets.Args...)
-			require.NoError(t, facetErr)
-			facets, facetErr := filter.ScanFacetUnion(facetRows)
-			require.NoError(t, errors.Join(facetErr, facetRows.Close()))
-			page.Facets = filter.FacetMap(facets)
-		}
-		body, listErr := json.Marshal(page)
-		require.NoError(t, listErr)
-		wire.List = append(wire.List, wireExchange{Cursor: cursor, Response: body})
+		call := record(t, h, listGET(t, walk))
+		wire.List = append(wire.List, call)
+		page := pageOf(t, call)
 		if !page.PageInfo.HasNextPage {
 			break
 		}
-		cursor = string(page.PageInfo.EndCursor)
+		walk.Cursor = string(page.PageInfo.EndCursor)
 	}
+	require.Len(t, wire.List, 3)
 
-	items := parse.MustResource[wireItem]("wire_items")
-	parts := parse.MustResource[wirePart]("wire_parts")
-	items.MustRelate("parts", parse.HasMany(parts, "item_id", parse.Indexed()))
-	reg := parse.NewSchemaRegistry()
-	require.NoError(t, parse.RegisterResource(reg, items))
-	require.NoError(t, parse.RegisterResource(reg, parts))
-	wire.Schema = reg.SchemaFor("wire_items")
-	require.NotNil(t, wire.Schema)
-	wire.Related = map[string]*parse.SchemaResponse{"wire_parts": reg.SchemaFor("wire_parts")}
+	// The page before the walk's second: its start cursor seeks backwards.
+	back := walk
+	back.Cursor = string(pageOf(t, wire.List[1]).PageInfo.StartCursor)
+	wire.Exchanges["list_backward"] = record(t, h, listGET(t, back))
+
+	filtered := client.ListParams{Filter: name.Ne("echo"), Sort: client.Sort{name.Desc()}, PageSize: 2, IncludeTotal: true}
+	wire.Exchanges["list_total"] = record(t, h, listGET(t, filtered))
+	body, err := filtered.Body()
+	require.NoError(t, err)
+	wire.Exchanges["list_post"] = record(t, h, wireRequest{Method: http.MethodPost, Path: "/wire_items", ContentType: "application/json", Body: body})
+
+	facets := listGET(t, client.ListParams{Filter: name.Ne("echo"), Facets: []string{"name"}})
+	facets.Method = http.MethodOptions
+	wire.Exchanges["facets"] = record(t, h, facets)
+	wire.Exchanges["error"] = record(t, h, listGET(t, client.ListParams{Filter: client.NewField[int]("nope").Eq(1)}))
+	wire.Exchanges["schema"] = record(t, h, wireRequest{Method: http.MethodGet, Path: "/wire_items/schema"})
+	wire.Exchanges["schemas"] = record(t, h, wireRequest{Method: http.MethodGet, Path: "/schemas"})
+	wire.Exchanges["schema_not_found"] = record(t, h, wireRequest{Method: http.MethodGet, Path: "/gadgets/schema"})
+
+	// Patches last: they change the rows the lists read.
+	wire.Exchanges["patch"] = record(t, h, wireRequest{Method: http.MethodPatch, Path: "/wire_items/b", ContentType: "application/json", Body: json.RawMessage(`{"labels":{"env":"prod"}}`)})
+	wire.Exchanges["patch_many"] = record(t, h, wireRequest{
+		Method: http.MethodPatch, Path: "/wire_items", Query: url.Values{"id[]": {"d", "zz"}},
+		ContentType: "application/json", Body: json.RawMessage(`{"labels":{"env":"test"}}`),
+	})
+
+	for name, call := range wire.Exchanges {
+		wantStatus := http.StatusOK
+		switch name {
+		case "error":
+			wantStatus = http.StatusUnprocessableEntity
+		case "schema_not_found":
+			wantStatus = http.StatusNotFound
+		}
+		require.Equal(t, wantStatus, call.Response.Status, "%s: %s", name, call.Response.Body)
+	}
+	require.Equal(t, []string{"error", "facets", "list_backward", "list_post", "list_total", "patch", "patch_many", "schema", "schema_not_found", "schemas"},
+		slices.Sorted(maps.Keys(wire.Exchanges)))
 
 	out, err := json.MarshalIndent(wire, "", "  ")
 	require.NoError(t, err)

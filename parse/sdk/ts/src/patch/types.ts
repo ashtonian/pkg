@@ -58,7 +58,7 @@ export type PatchInput<T> = {
   [K in keyof T]?: T[K] | null;
 };
 
-/** Result of a patch, in the shape parse/examples/server answers a PATCH with. */
+/** Result of a patch, as parse's `parsehttp.PatchAnswer` writes it. */
 export interface PatchResult<T> {
   updated: T[];
   failed?: BatchItemError[];
