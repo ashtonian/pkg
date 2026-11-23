@@ -2,6 +2,7 @@ package core
 
 import (
 	"fmt"
+	"reflect"
 	"slices"
 	"strings"
 )
@@ -53,6 +54,13 @@ type RelationSchema struct {
 	// DefaultPrimaryKey alone (OwnerColumns).
 	OwnerKey []string
 
+	// SourceTypes and TargetTypes are the types of the keys SourceColumns
+	// and TargetColumns hold, paired with them: each a scalar (IsKeyType).
+	// Every statement compares and binds a key column as its type does, so
+	// a decimal stored as "1.50" correlates with 1.5.
+	SourceTypes []TypeInfo
+	TargetTypes []TypeInfo
+
 	// TenantColumn names a tenant-scope column on the junction (typically
 	// "tenant_id"). When non-empty, every junction statement parse emits —
 	// filter, facet, include and relation patch — binds it to the caller's
@@ -103,6 +111,8 @@ func (r *RelationSchema) Clone() *RelationSchema {
 	out.TargetColumns = slices.Clone(r.TargetColumns)
 	out.OwnerKey = slices.Clone(r.OwnerKey)
 	out.TargetKeys = slices.Clone(r.TargetKeys)
+	out.SourceTypes = slices.Clone(r.SourceTypes)
+	out.TargetTypes = slices.Clone(r.TargetTypes)
 	return &out
 }
 
@@ -118,10 +128,34 @@ func (r *RelationSchema) RelatedTable() string {
 // Check refuses a relation whose column lists cannot pair: no source or
 // target column, a source list of another length than the owner key, a
 // target key of another length than the target columns, a list naming a
-// column twice, or a name that is no SQL identifier. Every statement
-// builder checks a relation before writing it, since the names reach SQL
-// verbatim.
+// column twice, or a name that is no SQL identifier; and one whose key
+// columns are not each typed by a scalar (SourceTypes, TargetTypes). Every
+// statement builder checks a relation before writing it, since the names
+// reach SQL verbatim and the types decide how it compares the columns.
 func (r *RelationSchema) Check() error {
+	if err := r.checkColumns(); err != nil {
+		return err
+	}
+	types := []struct {
+		name    string
+		columns []string
+		types   []TypeInfo
+	}{{"source", r.SourceColumns, r.SourceTypes}, {"target", r.TargetColumns, r.TargetTypes}}
+	for _, l := range types {
+		if len(l.types) != len(l.columns) {
+			return fmt.Errorf("relation %s types %d of its %d %s columns (%s)", r.JoinTable, len(l.types), len(l.columns), l.name, strings.Join(l.columns, ", "))
+		}
+		for i, t := range l.types {
+			if !IsKeyType(t.Type) {
+				return fmt.Errorf("relation %s: %s column %s is %s; a relation correlates on scalar keys", r.JoinTable, l.name, l.columns[i], t.Type)
+			}
+		}
+	}
+	return nil
+}
+
+// checkColumns is Check of the column lists alone.
+func (r *RelationSchema) checkColumns() error {
 	if !IsIdentifier(r.JoinTable) {
 		return fmt.Errorf("relation table %q is not a SQL identifier", r.JoinTable)
 	}
@@ -228,10 +262,66 @@ func ParseRelationTag(tag string) (*RelationSchema, error) {
 	if len(rel.TargetColumns) > 1 {
 		return nil, fmt.Errorf("relation tag target column %s names several columns; a tagged relation's field holds one-column target keys", parts[2])
 	}
+	// The struct the tag is on types the columns (SchemaGenerator.RelationTag).
+	if err := rel.checkColumns(); err != nil {
+		return nil, fmt.Errorf("relation tag: %w", err)
+	}
+	return rel, nil
+}
+
+// RelationTag reads field's `relation:"…"` tag (ParseRelationTag) and types
+// its columns from fields, the struct field is on: each source column as
+// the field holding the owner key column it pairs with (FieldType), and the
+// target column as an element of field, a slice of target keys. A column
+// typed by no scalar (IsKeyType) is refused, naming it.
+func (g *SchemaGenerator) RelationTag(fields *StructFields, field *Field) (*RelationSchema, error) {
+	rel, err := ParseRelationTag(field.Tags.Relation)
+	if err != nil {
+		return nil, err
+	}
+	rel.SourceTypes = make([]TypeInfo, len(rel.SourceColumns))
+	for i, column := range rel.OwnerColumns() {
+		owner, ok, err := g.columnField(fields, column)
+		if err != nil {
+			return nil, fmt.Errorf("relation tag primary key %s: %w", column, err)
+		}
+		if !ok {
+			return nil, fmt.Errorf("relation tag primary key %s is no column of %s; the field holding it types the key", column, fields.Type)
+		}
+		if rel.SourceTypes[i], err = g.FieldType(owner); err != nil {
+			return nil, fmt.Errorf("relation tag primary key %s: %w", column, err)
+		}
+	}
+	keys := field.Type
+	for keys.Kind() == reflect.Pointer {
+		keys = keys.Elem()
+	}
+	if keys.Kind() != reflect.Slice || keys.Elem().Kind() == reflect.Uint8 {
+		return nil, fmt.Errorf("relation tag: the field is %s; a relation's field is a slice of target keys", field.Type)
+	}
+	rel.TargetTypes = []TypeInfo{TypeOf(keys.Elem())}
 	if err := rel.Check(); err != nil {
 		return nil, fmt.Errorf("relation tag: %w", err)
 	}
 	return rel, nil
+}
+
+// columnField is the field of fields holding column, a relation's field
+// aside.
+func (g *SchemaGenerator) columnField(fields *StructFields, column string) (*Field, bool, error) {
+	for _, f := range fields.Fields {
+		if f.Tags.Relation != "" {
+			continue
+		}
+		c, ok, err := g.FieldColumn(f)
+		if err != nil {
+			return nil, false, err
+		}
+		if ok && c == column {
+			return f, true, nil
+		}
+	}
+	return nil, false, nil
 }
 
 // IsIdentifier reports whether s is a plain SQL identifier

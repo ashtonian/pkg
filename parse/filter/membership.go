@@ -184,7 +184,7 @@ func memberNode(field *FieldSchema, l *Lookup) (*FilterNode, error) {
 		return nil, err
 	}
 	if !core.IsKeyType(field.DataType) {
-		return nil, invalidLookup(fmt.Sprintf("membership on %s field '%s'; a membership tests a string, UUID or integer field",
+		return nil, invalidLookup(fmt.Sprintf("membership on %s field '%s'; a membership tests a scalar field",
 			field.DataType, field.ExternalName))
 	}
 	return &FilterNode{Field: field, Op: OpMember, Member: l}, nil

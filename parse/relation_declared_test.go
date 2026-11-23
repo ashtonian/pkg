@@ -214,9 +214,10 @@ type keyedTier struct {
 }
 
 type keyedNote struct {
-	ID     string  `json:"id"      db:"id"      parse:"filter,sort"`
-	LineID string  `json:"line_id" db:"line_id" parse:"filter"`
-	Weight float64 `json:"weight"  db:"weight"  parse:"filter"`
+	ID     string         `json:"id"      db:"id"      parse:"filter,sort"`
+	LineID string         `json:"line_id" db:"line_id" parse:"filter"`
+	Weight float64        `json:"weight"  db:"weight"  parse:"filter"`
+	Meta   map[string]any `json:"meta"    db:"meta"`
 }
 
 type taggedWeights struct {
@@ -230,36 +231,52 @@ type taggedByWeight struct {
 	Tags   []string `json:"-"      db:"-"      parse:"filter" relation:"line_tags,line_id,tag_id,weight"`
 }
 
-// A relation correlates on keys: SQL joins its rows column to column and
-// the resolvers match them as identifiers, so a decimal or a float, whose
-// stored form is not its value, cannot be one on either side.
-func TestRelate_RefusesKeysThatAreNoIdentifiers(t *testing.T) {
+type taggedDocs struct {
+	ID   string           `json:"id" db:"id" parse:"filter,sort"`
+	Docs []map[string]any `json:"-"  db:"-"  parse:"filter" relation:"line_docs,line_id,doc"`
+}
+
+// A relation correlates on scalar keys of any type, each column compared
+// as a filter compares its type. A document has no equality to join by,
+// and paired columns of two types no comparison.
+func TestRelate_CorrelatesOnScalarKeys(t *testing.T) {
 	tiers := parse.MustResource[keyedTier]("tiers")
 	notes := parse.MustResource[keyedNote]("notes")
 	for name, tc := range map[string]struct {
 		relName string
 		rel     parse.Relation
+		want    string
 	}{
-		"decimal target key, belongs-to": {"tier", parse.BelongsTo(tiers, "tier_id")},
-		"decimal target key, has-many":   {"tiers", parse.HasMany(tiers, "line_id")},
-		"decimal target key, pair table": {"tiers", parse.ManyToMany(tiers, parse.Through("line_tiers", "line_id", "tier_id"))},
-		"float owner column":             {"notes", parse.HasMany(notes, "line_id", parse.References("weight"))},
-		"float target column":            {"notes", parse.HasMany(notes, "weight")},
+		"decimal target key, belongs-to": {relName: "tier", rel: parse.BelongsTo(tiers, "tier_id")},
+		"decimal target key, has-many":   {relName: "tiers", rel: parse.HasMany(tiers, "line_id")},
+		"decimal target key, pair table": {relName: "tiers", rel: parse.ManyToMany(tiers, parse.Through("line_tiers", "line_id", "tier_id"))},
+		"float columns paired":           {relName: "notes", rel: parse.HasMany(notes, "weight", parse.References("weight"))},
+		"string and float paired": {
+			relName: "notes", rel: parse.HasMany(notes, "weight"),
+			want: "lines.id is string and notes.weight, its pair, is float; paired columns hold one kind of key",
+		},
+		"document column": {
+			relName: "notes", rel: parse.HasMany(notes, "meta"),
+			want: "notes.meta is json; a relation correlates on scalar keys",
+		},
 	} {
 		t.Run(name, func(t *testing.T) {
 			lines := parse.MustResource[keyedLine]("lines")
 			err := lines.Relate(tc.relName, tc.rel)
-			require.Error(t, err)
-			assert.Contains(t, err.Error(), "a relation correlates on a string, UUID or integer key")
+			if tc.want == "" {
+				assert.NoError(t, err)
+				return
+			}
+			assert.ErrorContains(t, err, tc.want)
 		})
 	}
-	lines := parse.MustResource[keyedLine]("lines")
-	require.NoError(t, lines.Relate("notes", parse.HasMany(notes, "line_id")), "string keys correlate")
 
 	_, err := parse.NewResource[taggedWeights]("lines")
-	assert.ErrorContains(t, err, "relation fields must be slices of string, UUID or integer target IDs")
+	require.NoError(t, err, "float target keys")
 	_, err = parse.NewResource[taggedByWeight]("lines")
-	assert.ErrorContains(t, err, "a relation correlates on a string, UUID or integer key")
+	require.NoError(t, err, "a float owner key")
+	_, err = parse.NewResource[taggedDocs]("lines")
+	assert.ErrorContains(t, err, "target column doc is json; a relation correlates on scalar keys")
 }
 
 // A key comparison that reaches the builder without the parser — a policy

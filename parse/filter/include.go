@@ -139,37 +139,43 @@ func BuildIncludeQuery(field *FieldSchema, dialect Dialect, ownerKeys []core.Key
 	if len(ownerKeys) == 0 {
 		return IncludeQuery{Field: field.ExternalName, Schema: rel, Limit: cfg.maxPerOwner}, nil
 	}
-	targetTypes, err := relatedKeyTypes(field)
-	if err != nil {
-		return IncludeQuery{}, fmt.Errorf("BuildIncludeQuery: %w", err)
-	}
 
 	s := &buildState{args: make([]any, 0, len(ownerKeys)+2)}
 	bind := s.binder(dialect)
 	owners, targets := includeColumns("owner_pk", len(rel.SourceColumns)), includeColumns("target_id", len(rel.TargetColumns))
-	selected := make([]string, 0, len(owners)+len(targets))
+	selected := make([]string, 0, len(owners)+2*len(targets))
 	for i, c := range rel.SourceColumns {
-		selected = append(selected, qualified(dialect, junctionAlias, c)+" AS "+owners[i])
+		selected = append(selected, includeKey(dialect, qualified(dialect, junctionAlias, c), rel.SourceTypes[i])+" AS "+owners[i])
 	}
+	// A target whose text does not order as its value orders by a column
+	// of its own (KeyOrder), so the cap keeps the keys ResolveInclude keeps.
+	orders := slices.Clone(targets)
+	passed := slices.Clone(targets)
 	for i, c := range rel.TargetColumns {
-		targetKey := qualified(dialect, junctionAlias, c)
-		if targetTypes[i] == core.FieldTypeString {
+		column, t := qualified(dialect, junctionAlias, c), rel.TargetTypes[i]
+		targetKey := includeKey(dialect, column, t)
+		if t.Type == core.FieldTypeString {
 			// The projection's collation governs DISTINCT, ranking and output
 			// order, including keys stored under a different column collation.
 			targetKey = dialect.CodePointOrder(targetKey)
 		}
 		selected = append(selected, targetKey+" AS "+targets[i])
+		if !storedCanonical(t.Type) {
+			orders[i] = targets[i] + "_o"
+			passed = append(passed, orders[i])
+			selected = append(selected, KeyOrder(dialect, column, t)+" AS "+orders[i])
+		}
 	}
-	ownerList, targetList := strings.Join(owners, ", "), strings.Join(targets, ", ")
+	ownerList := strings.Join(owners, ", ")
 
 	var b strings.Builder
 	b.WriteString("SELECT " + includeText(dialect, owners) + ", " + includeText(dialect, targets) + " FROM (")
-	b.WriteString("SELECT " + ownerList + ", " + targetList + ", ROW_NUMBER() OVER (PARTITION BY " + ownerList + " ORDER BY " + targetList + ") AS include_rank FROM (")
+	b.WriteString("SELECT " + ownerList + ", " + strings.Join(passed, ", ") + ", ROW_NUMBER() OVER (PARTITION BY " + ownerList + " ORDER BY " + strings.Join(orders, ", ") + ") AS include_rank FROM (")
 	b.WriteString("SELECT DISTINCT " + strings.Join(selected, ", ") + " FROM " + dialect.QuoteIdent(rel.JoinTable) + " " + junctionAlias)
 	b.WriteString(relatedJoin(dialect, rel, junctionAlias, targetAlias))
 	scope := cfg.scope
 	if scope.row.column != "" {
-		b.WriteString(" JOIN " + dialect.QuoteIdent(cfg.owner.Name) + " " + includeOwnerAlias + " ON " + correlation(dialect, includeOwnerAlias, rel.OwnerColumns(), junctionAlias, rel.SourceColumns))
+		b.WriteString(" JOIN " + dialect.QuoteIdent(cfg.owner.Name) + " " + includeOwnerAlias + " ON " + correlation(dialect, includeOwnerAlias, rel.OwnerColumns(), junctionAlias, rel.SourceColumns, rel.SourceTypes))
 		scope = scope.over(dialect, cfg.owner)
 		scope.row.expr = qualified(dialect, includeOwnerAlias, scope.row.column)
 	}
@@ -185,7 +191,7 @@ func BuildIncludeQuery(field *FieldSchema, dialect Dialect, ownerKeys []core.Key
 	b.WriteString(relScope)
 	b.WriteString(") pairs__) include__ WHERE include_rank <= ")
 	b.WriteString(strconv.Itoa(cfg.maxPerOwner + 1))
-	b.WriteString(" ORDER BY include__." + strings.Join(slices.Concat(owners, targets), ", include__."))
+	b.WriteString(" ORDER BY include__." + strings.Join(slices.Concat(owners, orders), ", include__."))
 
 	return IncludeQuery{
 		Field:  field.ExternalName,
@@ -207,6 +213,18 @@ func includeColumns(name string, n int) []string {
 	return out
 }
 
+// includeKey is a key column of the junction, read as column and typed t,
+// as an include projects it: a string, UUID or integer column itself, any
+// other type's its canonical text (keyValueText), equal exactly where the
+// values are, so DISTINCT and the per-owner partition take equal values as
+// one.
+func includeKey(dialect Dialect, column string, t core.TypeInfo) string {
+	if storedCanonical(t.Type) {
+		return column
+	}
+	return keyValueText(dialect, column, t)
+}
+
 // includeText is the text an include names a key by, its columns being the
 // include__ projection's columns: one column's own text, several columns'
 // core.KeyText.
@@ -222,74 +240,50 @@ func includeText(dialect Dialect, columns []string) string {
 }
 
 // includeOwners is the predicate holding the junction's rows to the owner
-// keys, bound as one set typed as the owner's correlation fields, so the
+// keys, bound as one set typed as the relation's source columns, so the
 // statement's text does not vary with the page: the source column `$in`
 // the keys for a one-column key, the row value of the source columns in
-// them for a longer one.
+// them for a longer one (Dialect.KeyIn).
 func includeOwners(field *FieldSchema, dialect Dialect, ownerKeys []core.Key, bind func(any) string) (string, error) {
 	rel := field.Relation
-	fields := make([]*FieldSchema, len(rel.SourceColumns))
-	for i, by := range field.RelatedBy {
-		owner := *by
-		owner.Table, owner.Column, owner.Expr, owner.Path = junctionAlias, rel.SourceColumns[i], "", nil
-		fields[i] = &owner
-	}
-	keys := make([]core.Key, len(ownerKeys))
-	for i, k := range ownerKeys {
-		if len(k) != len(fields) {
-			return "", fmt.Errorf("owner key %d has %d values for the %d key columns", i, len(k), len(fields))
-		}
-		keys[i] = make(core.Key, len(k))
-		for j, f := range fields {
-			v, err := core.NormalizeScalar(f.DataType, f.NumberKind, k[j])
-			if err != nil {
-				return "", fmt.Errorf("owner key %s: %w", core.KeyText(k), err)
+	if len(rel.SourceColumns) == 1 {
+		values := make([]any, len(ownerKeys))
+		for i, k := range ownerKeys {
+			if len(k) != 1 {
+				return "", fmt.Errorf("owner key %d has %d values for the one key column", i, len(k))
 			}
-			keys[i][j] = v
-		}
-	}
-	if len(fields) == 1 {
-		values := make([]any, len(keys))
-		for i, k := range keys {
 			values[i] = k[0]
 		}
-		in, err := dialect.Condition(fields[0], OpIn, values, bind)
+		source := keyField(rel.SourceColumns[0], "", rel.SourceTypes[0])
+		source.Table, source.Expr = junctionAlias, ""
+		values, err := normalizeKeyValues(source, values)
+		if err != nil {
+			return "", fmt.Errorf("owner keys: %w", err)
+		}
+		in, err := dialect.Condition(source, OpIn, values, bind)
 		if err != nil {
 			return "", fmt.Errorf("owner keys: %w", err)
 		}
 		return in, nil
 	}
-	exprs := make([]string, len(fields))
-	for i, f := range fields {
-		if err := keySetField(f, OpIn); err != nil {
-			return "", fmt.Errorf("owner keys: %w", err)
-		}
-		exprs[i] = FieldExpr(dialect, f)
-	}
-	in, err := dialect.keySet(&KeySet{Table: rel.JoinTable, Fields: fields, Keys: keys}, "("+strings.Join(exprs, ", ")+")", bind)
+	in, err := dialect.KeyIn(rel.JoinTable, junctionAlias, rel.SourceColumns, rel.SourceTypes, ownerKeys, true, bind)
 	if err != nil {
 		return "", fmt.Errorf("owner keys: %w", err)
 	}
 	return in, nil
 }
 
-// relatedKeyTypes are the types of a relation's target key columns, paired
-// with Relation.TargetColumns: the field's own type for a one-column key,
-// the target's key fields' for a longer one.
-func relatedKeyTypes(field *FieldSchema) ([]core.FieldType, error) {
-	rel := field.Relation
-	if len(rel.TargetColumns) == 1 {
-		return []core.FieldType{field.DataType}, nil
-	}
-	types := make([]core.FieldType, len(rel.TargetColumns))
-	for i := range rel.TargetColumns {
-		k, err := relatedKeyField(field, i)
+// normalizeKeyValues is values, each normalized as key column f's type.
+func normalizeKeyValues(f *FieldSchema, values []any) ([]any, error) {
+	out := make([]any, len(values))
+	for i, v := range values {
+		n, err := core.NormalizeScalar(f.DataType, f.NumberKind, v)
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("key %v: %w", v, err)
 		}
-		types[i] = k.DataType
+		out[i] = n
 	}
-	return types, nil
+	return out, nil
 }
 
 func includeConfig(field *FieldSchema, opts ...IncludeQueryOption) (*includeQueryConfig, error) {
@@ -464,7 +458,7 @@ func relatedJoin(d Dialect, rel *core.RelationSchema, join, target string) strin
 	if rel.TargetTable == "" {
 		return ""
 	}
-	return " JOIN " + d.QuoteIdent(rel.TargetTable) + " " + target + " ON " + correlation(d, target, rel.TargetKeys, join, rel.TargetColumns)
+	return " JOIN " + d.QuoteIdent(rel.TargetTable) + " " + target + " ON " + correlation(d, target, rel.TargetKeys, join, rel.TargetColumns, rel.TargetTypes)
 }
 
 // Scan reads the (owner_pk, target_id) rows of q, grouped by owner key as

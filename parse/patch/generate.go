@@ -171,7 +171,7 @@ func generatePatchSchema(g *core.SchemaGenerator, t reflect.Type, server bool) (
 		// clause.
 		var relSchema *core.RelationSchema
 		if tags.Relation != "" {
-			rel, err := core.ParseRelationTag(tags.Relation)
+			rel, err := g.RelationTag(walk, field)
 			if err != nil {
 				return nil, fmt.Errorf("field %s: %w", field.GoName, err)
 			}

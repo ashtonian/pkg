@@ -86,6 +86,7 @@ func TestIncludeQuery_NativePgxUUIDKeysAreCanonicalText(t *testing.T) {
 
 	field := &filter.FieldSchema{ExternalName: "tags", Includable: true, Relation: &core.RelationSchema{
 		JoinTable: "widget_tags", SourceColumns: []string{"widget_id"}, TargetColumns: []string{"tag_id"},
+		SourceTypes: []core.TypeInfo{{Type: core.FieldTypeUUID}}, TargetTypes: []core.TypeInfo{{Type: core.FieldTypeUUID}},
 	}, RelatedBy: []*filter.FieldSchema{{ExternalName: "id", Table: "widgets", Column: "id", DataType: core.FieldTypeUUID}}}
 	q, err := filter.BuildIncludeQuery(field, filter.PostgresDialect{}, []core.Key{{"00000000-0000-0000-0000-000000000001"}}, filter.WithIncludeRelationScope(filter.RelationScope{Unscoped: true}))
 	require.NoError(t, err)

@@ -8,7 +8,9 @@ import (
 	"github.com/ashtonian/pkg/parse/core"
 )
 
-// buildMember compiles a membership node to an IN subquery.
+// buildMember compiles a membership node to an IN subquery. The field and
+// the projected column compare as a filter compares the field's type
+// (keyOperand): a decimal stored as "1.50" is a member where 1.5 is.
 func (b *SQLBuilder) buildMember(s *buildState, node *FilterNode) (string, error) {
 	if node.Field == nil || FieldExpr(b.dialect, node.Field) == "" || node.Member == nil {
 		return "", invalidLookup("membership node has no field expression or lookup")
@@ -18,17 +20,21 @@ func (b *SQLBuilder) buildMember(s *buildState, node *FilterNode) (string, error
 	if err := l.validate(); err != nil {
 		return "", err
 	}
-	sub, err := b.lookupSQL(s, l)
+	t := core.TypeInfo{Type: node.Field.DataType, NumberKind: node.Field.NumberKind}
+	sub, err := b.lookupSQL(s, l, func(project string) string {
+		return keyOperand(b.dialect, keyField(l.Project, project, t))
+	})
 	if err != nil {
 		return "", err
 	}
-	return FieldExpr(b.dialect, node.Field) + " IN " + sub, nil
+	return keyOperand(b.dialect, node.Field) + " IN " + sub, nil
 }
 
 // lookupSQL renders a lookup as the subquery `(SELECT project FROM table
 // WHERE …)`: its condition, then its filter on the table's own columns.
-// Every column is qualified by the table, which may name its schema.
-func (b *SQLBuilder) lookupSQL(s *buildState, l *Lookup) (string, error) {
+// Every column is qualified by the table, which may name its schema; the
+// projected column is read through project.
+func (b *SQLBuilder) lookupSQL(s *buildState, l *Lookup, project func(column string) string) (string, error) {
 	q := b.dialect.QuoteIdent
 	parts := make([]string, 0, 2)
 	for part := range strings.SplitSeq(l.Table, ".") {
@@ -37,7 +43,7 @@ func (b *SQLBuilder) lookupSQL(s *buildState, l *Lookup) (string, error) {
 	table := strings.Join(parts, ".")
 	var sb strings.Builder
 	sb.WriteString("(SELECT ")
-	sb.WriteString(table + "." + q(l.Project))
+	sb.WriteString(project(table + "." + q(l.Project)))
 	sb.WriteString(" FROM ")
 	sb.WriteString(table)
 	var where []string
@@ -87,10 +93,17 @@ func (b *SQLBuilder) lookupCondSQL(s *buildState, c *LookupCond, table string) (
 	}
 	switch c.Op {
 	case LookupOpEq:
-		if !isLookupDecimal(c.Value) {
+		if !core.IsKeyType(core.TypeOf(reflect.TypeOf(derefValue(c.Value))).Type) {
+			// A value of no scalar type binds as the driver encodes it.
 			return q(c.Column) + " = " + bind(c.Value), nil
 		}
-		sql, _, err := decimalComparison(b.dialect, lookupColumn(c.Column, q(c.Column), core.FieldTypeDecimal), OpEq, c.Value, bind)
+		// As `$eq` compares the value's type: a decimal by value, a
+		// timestamp as its canonical text.
+		column, values, err := lookupSet(&LookupCond{Column: c.Column, Values: []any{c.Value}}, q(c.Column))
+		if err != nil {
+			return "", err
+		}
+		sql, err := b.dialect.Condition(column, OpEq, values[0], bind)
 		if err != nil {
 			return "", invalidLookup(fmt.Sprintf("lookup column %q: %v", c.Column, err))
 		}
@@ -112,7 +125,9 @@ func (b *SQLBuilder) lookupCondSQL(s *buildState, c *LookupCond, table string) (
 	case LookupOpNotNull:
 		return q(c.Column) + " IS NOT NULL", nil
 	case LookupOpMember:
-		sub, err := b.lookupSQL(s, c.Lookup)
+		// A lookup is untyped: its column and the inner projection compare
+		// as stored.
+		sub, err := b.lookupSQL(s, c.Lookup, func(project string) string { return project })
 		if err != nil {
 			return "", err
 		}
@@ -130,7 +145,7 @@ func lookupSet(c *LookupCond, expr string) (*FieldSchema, []any, error) {
 	members := make([]any, len(c.Values))
 	for i, v := range c.Values {
 		info := core.TypeOf(reflect.TypeOf(v))
-		if !setScalar(info.Type) {
+		if !core.IsKeyType(info.Type) {
 			return nil, nil, invalidLookup(fmt.Sprintf("lookup column %q lists a %T, no scalar value", c.Column, v))
 		}
 		if typ == "" {
@@ -160,14 +175,4 @@ func lookupColumn(name, expr string, typ core.FieldType) *FieldSchema {
 func isLookupDecimal(v any) bool {
 	v = derefValue(v)
 	return v != nil && core.TypeOf(reflect.TypeOf(v)).Type == core.FieldTypeDecimal
-}
-
-// setScalar reports whether a set of ft values binds as one parameter: a
-// scalar type, not a document, array, geometry or opaque value.
-func setScalar(ft core.FieldType) bool {
-	switch ft {
-	case core.FieldTypeJSON, core.FieldTypeObject, core.FieldTypeArray, core.FieldTypeAny, core.FieldTypeGeo, "":
-		return false
-	}
-	return true
 }

@@ -23,9 +23,13 @@ type tenantColumn struct {
 	info          core.TypeInfo
 }
 
+// newTenantColumn refuses a tenant column that is no string, UUID or
+// integer: Scope.Tenant is text (value), and those are the types whose one
+// spelling of a value is the column's.
 func newTenantColumn(table, column string, t reflect.Type) (*tenantColumn, error) {
 	info := core.TypeOf(t)
-	if core.IsKeyType(info.Type) {
+	switch info.Type {
+	case core.FieldTypeString, core.FieldTypeUUID, core.FieldTypeInt:
 		return &tenantColumn{table: table, column: column, info: info}, nil
 	}
 	return nil, fmt.Errorf("tenant column %s is %s; a tenant key is a string, a UUID or an integer", column, info.Type)

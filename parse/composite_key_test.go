@@ -48,14 +48,20 @@ func TestPrimaryKey_RefusesBadKeys(t *testing.T) {
 		{"computed", []parse.ResourceOption{parse.PrimaryKey("warehouse_id", "sku"), parse.ReadExpr("sku", parse.SQL("'x'"))}, `computed column "sku"`},
 		{"unread", []parse.ResourceOption{parse.PrimaryKey("warehouse_id", "sku"), parse.ReadColumns("warehouse_id", "qty")}, `the read columns omit the key column "sku"`},
 		{"soft-delete column", []parse.ResourceOption{parse.PrimaryKey("warehouse_id", "sku"), parse.DeletedColumn("sku")}, `deleted column "sku" is a key column`},
-		{"timestamp in a key of two", []parse.ResourceOption{parse.PrimaryKey("warehouse_id", "counted_at")},
-			`key column "counted_at" is timestamp; a key of several columns holds string, UUID and integer columns`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			_, err := parse.NewResource[stockRow]("stock_rows", tc.opts...)
 			assert.ErrorContains(t, err, tc.want)
 		})
 	}
+	type documentKeyed struct {
+		ID   string         `json:"id"   db:"id"`
+		Spec map[string]any `json:"spec" db:"spec"`
+	}
+	_, err := parse.NewResource[documentKeyed]("documents", parse.PrimaryKey("id", "spec"))
+	assert.ErrorContains(t, err, `key column "spec" is json; a key column is a scalar`)
+	_, err = parse.NewResource[stockRow]("stock_rows", parse.PrimaryKey("warehouse_id", "counted_at"))
+	require.NoError(t, err, "a timestamp is a key column")
 	r, err := parse.NewResource[stockRow]("stock_rows", parse.PrimaryKey("tenant_id", "sku"), parse.TenantColumn("tenant_id"))
 	require.NoError(t, err, "the tenant column is a key column")
 	assert.Equal(t, []string{"tenant_id", "sku"}, r.PrimaryKeyColumns())

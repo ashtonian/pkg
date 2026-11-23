@@ -3,7 +3,10 @@
 package core_test
 
 import (
+	"reflect"
+	"slices"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -64,20 +67,48 @@ func TestParseRelationTag_CompositeKeys(t *testing.T) {
 	}
 }
 
-// Check refuses column lists that cannot pair by position.
+// Check refuses column lists that cannot pair by position, and columns
+// typed by no scalar.
 func TestRelationSchema_Check(t *testing.T) {
+	one := []core.TypeInfo{{Type: core.FieldTypeString}}
+	two := []core.TypeInfo{{Type: core.FieldTypeString}, {Type: core.FieldTypeTimestamp}}
 	for _, tt := range []struct {
 		name    string
 		rel     core.RelationSchema
 		wantErr string
 	}{
-		{name: "default owner key", rel: core.RelationSchema{JoinTable: "j", SourceColumns: []string{"s"}, TargetColumns: []string{"t"}}},
+		{name: "default owner key", rel: core.RelationSchema{JoinTable: "j", SourceColumns: []string{"s"}, TargetColumns: []string{"t"}, SourceTypes: one, TargetTypes: one}},
 		{
 			name: "composite through a target",
 			rel: core.RelationSchema{
 				JoinTable: "j", SourceColumns: []string{"a", "b"}, TargetColumns: []string{"x", "y"}, OwnerKey: []string{"k1", "k2"},
-				TargetTable: "t", TargetKeys: []string{"x", "y"},
+				TargetTable: "t", TargetKeys: []string{"x", "y"}, SourceTypes: two, TargetTypes: two,
 			},
+		},
+		{
+			name: "decimal and float keys",
+			rel: core.RelationSchema{
+				JoinTable: "j", SourceColumns: []string{"s"}, TargetColumns: []string{"t"},
+				SourceTypes: []core.TypeInfo{{Type: core.FieldTypeDecimal}}, TargetTypes: []core.TypeInfo{{Type: core.FieldTypeFloat, NumberKind: reflect.Float64}},
+			},
+		},
+		{
+			name:    "untyped",
+			rel:     core.RelationSchema{JoinTable: "j", SourceColumns: []string{"s"}, TargetColumns: []string{"t"}},
+			wantErr: "relation j types 0 of its 1 source columns (s)",
+		},
+		{
+			name:    "a type short",
+			rel:     core.RelationSchema{JoinTable: "j", SourceColumns: []string{"s"}, TargetColumns: []string{"x", "y"}, SourceTypes: one, TargetTypes: one},
+			wantErr: "relation j types 1 of its 2 target columns (x, y)",
+		},
+		{
+			name: "a document key",
+			rel: core.RelationSchema{
+				JoinTable: "j", SourceColumns: []string{"s"}, TargetColumns: []string{"t"},
+				SourceTypes: one, TargetTypes: []core.TypeInfo{{Type: core.FieldTypeJSON}},
+			},
+			wantErr: "relation j: target column t is json; a relation correlates on scalar keys",
 		},
 		{name: "no target column", rel: core.RelationSchema{JoinTable: "j", SourceColumns: []string{"s"}}, wantErr: "names no source or no target column"},
 		{
@@ -100,6 +131,59 @@ func TestRelationSchema_Check(t *testing.T) {
 				return
 			}
 			assert.ErrorContains(t, err, tt.wantErr)
+		})
+	}
+}
+
+// RelationTag types a tag's source columns by the fields holding the owner
+// key and its target column by the field's element, any scalar; a
+// document key, an owner key the struct does not hold and a field that is
+// no slice are refused.
+func TestSchemaGenerator_RelationTag(t *testing.T) {
+	type readings struct {
+		DeviceID string           `json:"device_id" db:"device_id"`
+		At       time.Time        `json:"at" db:"at"`
+		Price    float32          `json:"price" db:"price"`
+		Tags     []string         `json:"-" db:"-" relation:"reading_tags,device_id+at,tag_id,device_id+at"`
+		Prices   []float32        `json:"-" db:"-" relation:"price_lists,price,list_price,price"`
+		Docs     []map[string]any `json:"-" db:"-" relation:"reading_docs,device_id,doc,device_id"`
+		Orphans  []string         `json:"-" db:"-" relation:"orphans,orphan_id,tag_id"`
+		Flat     string           `json:"-" db:"-" relation:"flats,device_id,tag_id,device_id"`
+	}
+	g := core.NewSchemaGenerator()
+	fields, err := g.StructFields(reflect.TypeFor[readings]())
+	require.NoError(t, err)
+	for _, tt := range []struct {
+		field   string
+		source  []core.TypeInfo
+		target  []core.TypeInfo
+		wantErr string
+	}{
+		{
+			field:  "Tags",
+			source: []core.TypeInfo{{Type: core.FieldTypeString}, {Type: core.FieldTypeTimestamp}},
+			target: []core.TypeInfo{{Type: core.FieldTypeString}},
+		},
+		{
+			field:  "Prices",
+			source: []core.TypeInfo{{Type: core.FieldTypeFloat, NumberKind: reflect.Float32}},
+			target: []core.TypeInfo{{Type: core.FieldTypeFloat, NumberKind: reflect.Float32}},
+		},
+		{field: "Docs", wantErr: "target column doc is json; a relation correlates on scalar keys"},
+		{field: "Orphans", wantErr: "relation tag primary key id is no column of core_test.readings"},
+		{field: "Flat", wantErr: "a relation's field is a slice of target keys"},
+	} {
+		t.Run(tt.field, func(t *testing.T) {
+			i := slices.IndexFunc(fields.Fields, func(f *core.Field) bool { return f.GoName == tt.field })
+			require.GreaterOrEqual(t, i, 0)
+			rel, err := g.RelationTag(fields, fields.Fields[i])
+			if tt.wantErr != "" {
+				assert.ErrorContains(t, err, tt.wantErr)
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, tt.source, rel.SourceTypes)
+			assert.Equal(t, tt.target, rel.TargetTypes)
 		})
 	}
 }

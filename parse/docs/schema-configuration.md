@@ -81,7 +81,16 @@ A resource's key is the columns `parse.PrimaryKey` names, in key order: `"id"` a
 | Relations | Each correlation is one column | Each correlation pairs a column with each key column, by position ([keys of several columns](relations.md#keys-of-several-columns)) |
 | Schema document | `"key": ["id"]` | `"key": ["warehouse_id", "sku"]` |
 
-Each column of a key of several is a string, UUID or integer (`core.IsKeyType`): the types every backend compares by value, so a key reaches the same rows on each and has one text, `core.KeyText`, wherever includes and facets name it. A one-column key may be of another type, which lists and updates by ID take; an update batch and a relation refuse it. The tenant column may be a key column, as `("tenant_id", "sku")`; the soft-delete column may not.
+A key column is of any scalar type (`core.IsKeyType`): a string, UUID, integer, float, decimal, boolean, date, time of day, timestamp, interval or network value. A document, array, geometry or opaque column has no equality to identify a row by, and `NewResource` refuses it as a key column, naming it. Wherever a key is compared it compares as a filter compares its type, one rule for every statement and for Go:
+
+| Where | How a key compares |
+|---|---|
+| Updates by key, key sets (`ByKeys`, a relation's `$in`), relation joins, include and facet owner sets, membership lookups | Each column through the operand a filter's equality on its type uses: a decimal by value (`parse_decimal_key` on SQLite, `numeric` on PostgreSQL), so a stored `"1.50"` is the key `1.5` and two 20-digit keys one apart stay apart; a date by its day; a timestamp at its instant. A set binds as one parameter |
+| Include and facet keys | The key's canonical text (`core.KeyTextOf`), which the statement writes per row: `1.5` for a stored `1.50`, a timestamp as its fixed-width UTC text, a key of several columns as the JSON array of its columns' texts |
+| Go identity (an update batch's duplicate and `CheckCurrent` checks, include grouping) | `core.KeyTextOf` of the normalized key: equal exactly when the database holds the keys equal; `-0` is `0`, NaN and the infinities are no key |
+| Update batch lock order | `filter.KeyOrder`, which `filter.CompareKeyValues` mirrors in Go: decimals and numbers by value, timestamps by instant, strings by code point; an interval or network value, which no sort orders, by its canonical text's code points |
+
+PostgreSQL holds a timestamp at microseconds and rounds a finer one, half to even, as it reads it; an update batch's keys are held at that precision (`Dialect.StoredKeyValue`), so a key a few nanoseconds off names the row there, and SQLite, which holds the canonical text as written, names no row by it. The tenant column may be a key column, as `("tenant_id", "sku")`; the soft-delete column may not.
 
 <!-- output of ExamplePrimaryKey -->
 ```text
@@ -165,7 +174,8 @@ Request documents (JSON filters, JSON Patch and merge patch bodies) decode with 
 | `CompareDecimals(a, b)` | Exact decimal order of any two values `DecimalText` accepts |
 | `ParsePointer` / `FormatPointer` / `EscapePointerToken` | RFC 6901 paths (`~0`, `~1` escapes) |
 | `TypeOf(t)` | `TypeInfo{Type, Elem, NumberKind, SQLType}` — Go-only classification; `SQLType` is empty, slices of scalars are arrays, maps/`any`/`json.RawMessage` and other slices are JSON, structs are objects |
-| `IsKeyType(t)` | Whether a `FieldType` may be a key: string, UUID or integer, compared as stored on every backend. Tenant columns, batch update keys, membership fields and relation correlation columns must be one |
+| `IsKeyType(t)` | Whether a `FieldType` is a scalar and so may be a key: anything but a document, array, geometry or opaque value. Key columns, relation correlation columns and target keys, and membership fields must be one. A tenant column is narrower: a string, UUID or integer, the types `Scope.Tenant`'s text names one value of |
+| `KeyTextOf(types, key)` / `KeyValueText(t, v)` | A key's canonical text, each value normalized as its column's type: equal for two keys exactly when the database holds them equal (`"1.50"` and `1.5`, one instant in two zones, `-0` and `0`), and the text includes and facets name the row by. NaN, the infinities and a document are errors |
 | `SchemaGenerator.FieldType(field)` | Go classification combined with declared physical `SQLType`; JSON scalar/slice fields become documents, typed objects retain members, and native arrays remain arrays |
 
 ## Schema discovery

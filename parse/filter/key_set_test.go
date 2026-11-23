@@ -72,6 +72,95 @@ func TestKeyConstraint_SQL(t *testing.T) {
 	}
 }
 
+// A key set compares each column as a filter compares its type: on SQLite a
+// decimal through parse_decimal_key on both sides, and on PostgreSQL the
+// set's text as numeric. String, UUID and integer columns compare as
+// stored.
+func TestKeyIn_TypedColumns(t *testing.T) {
+	bind := func(args *[]any, d filter.Dialect) func(any) string {
+		return func(v any) string { *args = append(*args, v); return d.Placeholder(len(*args)) }
+	}
+	dec := core.TypeInfo{Type: core.FieldTypeDecimal}
+	at := core.TypeInfo{Type: core.FieldTypeTimestamp}
+	str := core.TypeInfo{Type: core.FieldTypeString}
+	for _, tc := range []struct {
+		name    string
+		dialect filter.Dialect
+		columns []string
+		types   []core.TypeInfo
+		keys    []core.Key
+		member  bool
+		sql     string
+		args    []any
+	}{
+		{
+			name: "postgres decimal", dialect: filter.PostgresDialect{}, columns: []string{"price"}, types: []core.TypeInfo{dec},
+			keys: []core.Key{{"1.50"}, {"12345678901234567890"}}, member: true,
+			sql: `"p"."price" = ANY($1::text[]::numeric[])`, args: []any{[]string{"1.5", "12345678901234567890"}},
+		},
+		{
+			name: "sqlite decimal", dialect: filter.SQLiteDialect{}, columns: []string{"price"}, types: []core.TypeInfo{dec},
+			keys: []core.Key{{"1.50"}}, member: false,
+			sql: `parse_decimal_key("p"."price") NOT IN (SELECT parse_decimal_key(value) FROM json_each(?1))`, args: []any{`["1.5"]`},
+		},
+		{
+			name: "postgres device and instant", dialect: filter.PostgresDialect{}, columns: []string{"device_id", "at"}, types: []core.TypeInfo{str, at},
+			keys: []core.Key{{"d1", "2026-01-02T04:04:05+01:00"}}, member: true,
+			sql:  `("p"."device_id", "p"."at") IN (SELECT "k"."device_id", "k"."at" FROM jsonb_populate_recordset(NULL::"readings", $1) AS "k")`,
+			args: []any{`[{"at":"2026-01-02T03:04:05.000000000Z","device_id":"d1"}]`},
+		},
+		{
+			name: "sqlite device and instant", dialect: filter.SQLiteDialect{}, columns: []string{"device_id", "at"}, types: []core.TypeInfo{str, at},
+			keys: []core.Key{{"d1", "2026-01-02T04:04:05+01:00"}}, member: true,
+			sql:  `("p"."device_id", "p"."at") IN (SELECT json_extract(value, '$[0]'), json_extract(value, '$[1]') FROM json_each(?1))`,
+			args: []any{`[["d1","2026-01-02T03:04:05.000000000Z"]]`},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var args []any
+			table := "readings"
+			if tc.columns[0] == "price" {
+				table = "prices"
+			}
+			sql, err := tc.dialect.KeyIn(table, "p", tc.columns, tc.types, tc.keys, tc.member, bind(&args, tc.dialect))
+			require.NoError(t, err)
+			assert.Equal(t, tc.sql, sql)
+			assert.Equal(t, tc.args, args)
+		})
+	}
+	_, err := filter.SQLiteDialect{}.KeyIn("t", "t", []string{"doc"}, []core.TypeInfo{{Type: core.FieldTypeJSON}}, []core.Key{{"{}"}}, true, func(any) string { return "?" })
+	assert.ErrorContains(t, err, "doc")
+}
+
+// PostgreSQL holds a timestamp at microseconds, rounding a finer one as it
+// parses its text (half to even), so a key is held there at that
+// precision; SQLite holds the canonical text as given.
+func TestStoredKeyValue(t *testing.T) {
+	at := core.TypeInfo{Type: core.FieldTypeTimestamp}
+	for _, tc := range []struct {
+		in, postgres string
+	}{
+		{"2026-01-02T03:04:05.123456400Z", "2026-01-02T03:04:05.123456000Z"},
+		{"2026-01-02T03:04:05.123456600Z", "2026-01-02T03:04:05.123457000Z"},
+		{"2026-01-02T03:04:05.000000500Z", "2026-01-02T03:04:05.000000000Z"},
+		{"2026-01-02T03:04:05.000001500Z", "2026-01-02T03:04:05.000002000Z"},
+		{"2026-01-02T03:04:05.999999700Z", "2026-01-02T03:04:06.000000000Z"},
+		{"2026-01-02T03:04:05.000000000Z", "2026-01-02T03:04:05.000000000Z"},
+	} {
+		t.Run(tc.in, func(t *testing.T) {
+			got, err := filter.PostgresDialect{}.StoredKeyValue(at, tc.in)
+			require.NoError(t, err)
+			assert.Equal(t, tc.postgres, got)
+			got, err = filter.SQLiteDialect{}.StoredKeyValue(at, tc.in)
+			require.NoError(t, err)
+			assert.Equal(t, tc.in, got)
+		})
+	}
+	got, err := filter.PostgresDialect{}.StoredKeyValue(core.TypeInfo{Type: core.FieldTypeDecimal}, "1.5")
+	require.NoError(t, err)
+	assert.Equal(t, "1.5", got, "only a timestamp is held at another precision")
+}
+
 func TestKeyConstraint_RefusesMalformedKeys(t *testing.T) {
 	key := []string{"warehouse_id", "sku"}
 	for _, tc := range []struct {
