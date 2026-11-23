@@ -170,12 +170,19 @@ func generatePatchSchema(g *core.SchemaGenerator, t reflect.Type, server bool) (
 		// so BuildPatchSQL routes it into RelationOps instead of the SET
 		// clause.
 		var relSchema *core.RelationSchema
+		// A target key of several columns: its membership's keys are
+		// arrays of a value per column, as a declared relation's.
+		var membership *PathSchema
 		if tags.Relation != "" {
 			rel, err := g.RelationTag(walk, field)
 			if err != nil {
 				return nil, fmt.Errorf("field %s: %w", field.GoName, err)
 			}
-			if err := checkRelationKeyType(field.Type); err != nil {
+			if len(rel.TargetColumns) == 1 {
+				if err := checkRelationKeyType(field.Type); err != nil {
+					return nil, fmt.Errorf("field %s: %w", field.GoName, err)
+				}
+			} else if membership, err = tagMembership(g, field, rel); err != nil {
 				return nil, fmt.Errorf("field %s: %w", field.GoName, err)
 			}
 			relSchema = rel
@@ -186,6 +193,10 @@ func generatePatchSchema(g *core.SchemaGenerator, t reflect.Type, server bool) (
 		path := core.FormatPointer(fieldName)
 		if _, duplicate := paths[path]; duplicate {
 			return nil, fmt.Errorf("field %s: duplicate patch path %q", field.GoName, path)
+		}
+		if membership != nil {
+			paths[path] = membership
+			continue
 		}
 		paths[path] = &PathSchema{
 			AllowedOps: allowedOps,
@@ -323,6 +334,22 @@ func RelationPath(rel *core.RelationSchema, key ...RelationKey) (*PathSchema, er
 		}
 	}
 	return &PathSchema{AllowedOps: relationPatchOps(), DataType: core.FieldTypeArray, Relation: rel, RelationKey: slices.Clone(key)}, nil
+}
+
+// tagMembership is the membership path of a tagged relation whose target
+// key has several columns (RelationPath), each column's keys typed, and
+// travelling, as the field of the element struct holding it
+// (core.SchemaGenerator.RelationTargetFields).
+func tagMembership(g *core.SchemaGenerator, field *core.Field, rel *core.RelationSchema) (*PathSchema, error) {
+	targets, err := g.RelationTargetFields(field, rel)
+	if err != nil {
+		return nil, err
+	}
+	keys := make([]RelationKey, len(targets))
+	for i, target := range targets {
+		keys[i] = RelationKey{Type: target.Type, Wire: target.Wire()}
+	}
+	return RelationPath(rel, keys...)
 }
 
 // checkRelationKeyType refuses a membership type that is not a slice of

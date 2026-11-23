@@ -41,6 +41,19 @@ type crxTag struct {
 	Label string `json:"label" db:"label" parse:"filter"`
 }
 
+// crxPairTag is a tag whose stock is a pair table compared by key: the
+// relation tag names the target key's columns, and crxStockRef, the struct
+// the field holds, types them.
+type crxPairTag struct {
+	ID    string        `json:"id"    db:"id"    parse:"filter,sort"`
+	Stock []crxStockRef `json:"stock" db:"-"     relation:"crx_stock_tags,tag_id,warehouse_id+sku" parse:"filter,include,facet,patch" indexed:"true"`
+}
+
+type crxStockRef struct {
+	WarehouseID int64  `db:"warehouse_id"`
+	SKU         string `db:"sku"`
+}
+
 // crxGraph relates stock, keyed by (warehouse_id, sku), as the owner and as
 // the target of a has-many, a belongs-to and a many-to-many each.
 type crxGraph struct {
@@ -179,6 +192,58 @@ func testCompositeKeyRelations(t *testing.T, open func(*testing.T) *sql.DB, d fi
 		}
 	})
 
+	// The pair rows are the relation: a pair whose target key names no
+	// stock row still pairs, as no target table is read.
+	t.Run("pair table tagged by key", func(t *testing.T) {
+		tags := parse.MustResource[crxPairTag]("crx_tags")
+		pairTagKey := func(p crxPairTag) string { return p.ID }
+		list := crxList(db, d, tags, pairTagKey)
+		assert.Equal(t, []string{"blue", "red"}, list(t, `{"stock":{"$null":false}}`))
+		assert.Equal(t, []string{"green"}, list(t, `{"stock":{"$null":true}}`))
+		for _, doc := range []string{`{"stock":"x"}`, `{"stock":{"$in":[[1,"a"]]}}`, `{"stock":{"$some":{}}}`} {
+			_, err := tags.ParseList(url.Values{filter.ParamFilter: {doc}})
+			assert.Error(t, err, doc)
+		}
+
+		page := crxPage(t, db, d, tags, url.Values{filter.ParamInclude: {"stock"}, filter.ParamFacets: {"stock"}})
+		assert.Equal(t, map[string][]string{"blue": {`["1","a"]`, `["2","b"]`}, "red": {`["1","a"]`, `["2","a"]`}}, page.Relations["stock"])
+		assert.ElementsMatch(t, []filter.FacetBucket{{Key: `["1","a"]`, Count: 2}, {Key: `["2","a"]`, Count: 1}, {Key: `["2","b"]`, Count: 1}}, page.Facets["stock"])
+
+		store, lookups := resolvedStores(t, db, d, "crx_tags", "crx_stock_tags")
+		assertResolvedFilters(t, db, d, store, lookups, tags, `{"stock":{"$null":false}}`, `{"stock":{"$null":true}}`)
+		assertResolvedIncludes(t, db, d, lookups, tags, "stock")
+
+		for _, tt := range []struct {
+			name   string
+			update func(t *testing.T, db *sql.DB)
+			want   []string
+		}{
+			{
+				name: "replace",
+				update: func(t *testing.T, db *sql.DB) {
+					crxUpdate(t, db, d, tags, `{"stock":[[1,"b"],[9,"z"],[1,"b"]]}`, parse.ByID("red"))
+				},
+				want: []string{"1/a/blue", "1/b/red", "2/b/blue", "9/z/red"},
+			},
+			{
+				name: "add and remove",
+				update: func(t *testing.T, db *sql.DB) {
+					crxUpdatePatch(t, db, d, tags, `[{"op":"add","path":"/stock","value":[[1,"b"],[2,"a"]]}]`, parse.ByID("green"))
+					crxUpdatePatch(t, db, d, tags, `[{"op":"remove","path":"/stock","value":[[1,"a"],[2,"b"]]}]`, parse.ByID("blue"))
+				},
+				want: []string{"1/a/red", "1/b/green", "2/a/green", "2/a/red"},
+			},
+		} {
+			t.Run(tt.name, func(t *testing.T) {
+				db := setup(t)
+				tt.update(t, db)
+				assert.Equal(t, tt.want, crxPairs(t, db))
+			})
+		}
+		_, err := tags.ParseMergePatch([]byte(`{"stock":["1/a"]}`))
+		assert.Error(t, err, "a key of several columns is an array of a value per column")
+	})
+
 	t.Run("writes", func(t *testing.T) {
 		for _, tt := range []struct {
 			name   string
@@ -225,14 +290,20 @@ func testCompositeKeyRelations(t *testing.T, open func(*testing.T) *sql.DB, d fi
 			t.Run(tt.name, func(t *testing.T) {
 				db := setup(t)
 				tt.update(t, db)
-				var pairs []string
-				for _, row := range queryRows(t, db, `SELECT warehouse_id, sku, tag_id FROM crx_stock_tags ORDER BY warehouse_id, sku, tag_id`, nil) {
-					pairs = append(pairs, fmt.Sprintf("%v/%v/%v", row[0], row[1], row[2]))
-				}
-				assert.Equal(t, tt.want, pairs)
+				assert.Equal(t, tt.want, crxPairs(t, db))
 			})
 		}
 	})
+}
+
+// crxPairs are the stock-tag pairs, each warehouse/sku/tag, in that order.
+func crxPairs(t *testing.T, db *sql.DB) []string {
+	t.Helper()
+	var pairs []string
+	for _, row := range queryRows(t, db, `SELECT warehouse_id, sku, tag_id FROM crx_stock_tags ORDER BY warehouse_id, sku, tag_id`, nil) {
+		pairs = append(pairs, fmt.Sprintf("%v/%v/%v", row[0], row[1], row[2]))
+	}
+	return pairs
 }
 
 func crxStockKey(s crxStock) string { return fmt.Sprintf("%d/%s", s.WarehouseID, s.SKU) }

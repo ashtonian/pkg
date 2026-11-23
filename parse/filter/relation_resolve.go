@@ -98,15 +98,10 @@ func (r *memberResolver) correlated(ctx context.Context, by []*FieldSchema, l *L
 	return &FilterNode{Op: OpKeyIn, Keys: &KeySet{Table: by[0].Table, Fields: by, Keys: keys}}, nil
 }
 
-// checkResolvable refuses, outside SQL, a relation that does not check, and
-// a pair table compared by a key of several target columns, which SQL
-// refuses too (buildPairTable).
+// checkResolvable refuses, outside SQL, a relation that does not check.
 func checkResolvable(f *FieldSchema) error {
 	if err := f.Relation.Check(); err != nil {
 		return invalidRelation(f, err.Error())
-	}
-	if f.Related == nil && len(f.Relation.TargetColumns) != 1 {
-		return invalidRelation(f, "compares a pair table's key by value, which names one target column")
 	}
 	return nil
 }
@@ -218,8 +213,12 @@ func (r *memberResolver) scoped(table string, project []string, tenant, deleted 
 // keyCondition is the lookup condition a key comparison on a pair table
 // makes on its one target column, typed as the relation types it, and
 // whether owners among the matching pairs satisfy it (`$eq`, `$in`,
-// `$not_null`) or owners outside them (`$ne`, `$nin`, `$null`).
+// `$not_null`) or owners outside them (`$ne`, `$nin`, `$null`). A key of
+// several columns takes only the NULL tests, as in SQL (checkPairKeyOp).
 func keyCondition(f *FieldSchema, n *FilterNode) (*LookupCond, bool, error) {
+	if err := checkPairKeyOp(f, n.Op); err != nil {
+		return nil, false, err
+	}
 	column, types := f.Relation.TargetColumns[0], f.Relation.TargetTypes[:1]
 	switch n.Op {
 	case OpEq:

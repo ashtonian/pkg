@@ -27,8 +27,7 @@ func TestParseRelationTag_ReportsTheFirstBadPart(t *testing.T) {
 }
 
 // A part joins a key of several columns with `+`, in key order; the source
-// columns pair with the owner key by position, and a tagged field holds
-// one-column target keys.
+// columns pair with the owner key by position.
 func TestParseRelationTag_CompositeKeys(t *testing.T) {
 	for _, tt := range []struct {
 		name    string
@@ -51,7 +50,12 @@ func TestParseRelationTag_CompositeKeys(t *testing.T) {
 		},
 		{name: "source without its key", tag: "stock_tags,warehouse_id+sku,tag_id", wantErr: "do not pair with primary key id: 2 and 1 columns"},
 		{name: "key without its source", tag: "stock_tags,stock_id,tag_id,warehouse_id+sku", wantErr: "do not pair with primary key warehouse_id+sku: 1 and 2 columns"},
-		{name: "composite target", tag: "stock_tags,stock_id,tag_id+kind", wantErr: "names several columns"},
+		{
+			name: "composite target key",
+			tag:  "stock_tags,tag_id,warehouse_id+sku",
+			want: &core.RelationSchema{JoinTable: "stock_tags", SourceColumns: []string{"tag_id"}, TargetColumns: []string{"warehouse_id", "sku"}, OwnerKey: []string{"id"}},
+		},
+		{name: "target column twice", tag: "stock_tags,tag_id,sku+sku", wantErr: `target columns name "sku" twice`},
 		{name: "empty column", tag: "stock_tags,warehouse_id+,tag_id,warehouse_id+sku", wantErr: `source column "" is not a SQL identifier`},
 		{name: "column twice", tag: "stock_tags,warehouse_id+warehouse_id,tag_id,warehouse_id+sku", wantErr: `source columns name "warehouse_id" twice`},
 	} {
@@ -136,10 +140,17 @@ func TestRelationSchema_Check(t *testing.T) {
 }
 
 // RelationTag types a tag's source columns by the fields holding the owner
-// key and its target column by the field's element, any scalar; a
-// document key, an owner key the struct does not hold and a field that is
-// no slice are refused.
+// key and its target column by the field's element, any scalar, or a
+// target key of several columns by the element struct's fields; a document
+// key, an owner key the struct does not hold, a target column the element
+// does not hold, an element of several columns that is no struct and a
+// field that is no slice are refused.
 func TestSchemaGenerator_RelationTag(t *testing.T) {
+	type readingKey struct {
+		Device string    `db:"device_id"`
+		At     time.Time `db:"at"`
+		Note   string    `db:"note"`
+	}
 	type readings struct {
 		DeviceID string           `json:"device_id" db:"device_id"`
 		At       time.Time        `json:"at" db:"at"`
@@ -149,6 +160,10 @@ func TestSchemaGenerator_RelationTag(t *testing.T) {
 		Docs     []map[string]any `json:"-" db:"-" relation:"reading_docs,device_id,doc,device_id"`
 		Orphans  []string         `json:"-" db:"-" relation:"orphans,orphan_id,tag_id"`
 		Flat     string           `json:"-" db:"-" relation:"flats,device_id,tag_id,device_id"`
+		Readings []readingKey     `json:"-" db:"-" relation:"tag_readings,price_id,device_id+at,price"`
+		Missing  []readingKey     `json:"-" db:"-" relation:"tag_readings,price_id,device_id+taken,price"`
+		Untyped  []string         `json:"-" db:"-" relation:"tag_readings,price_id,device_id+at,price"`
+		Instants []time.Time      `json:"-" db:"-" relation:"tag_readings,price_id,device_id+at,price"`
 	}
 	g := core.NewSchemaGenerator()
 	fields, err := g.StructFields(reflect.TypeFor[readings]())
@@ -172,6 +187,14 @@ func TestSchemaGenerator_RelationTag(t *testing.T) {
 		{field: "Docs", wantErr: "target column doc is json; a relation correlates on scalar keys"},
 		{field: "Orphans", wantErr: "relation tag primary key id is no column of core_test.readings"},
 		{field: "Flat", wantErr: "a relation's field is a slice of target keys"},
+		{
+			field:  "Readings",
+			source: []core.TypeInfo{{Type: core.FieldTypeFloat, NumberKind: reflect.Float32}},
+			target: []core.TypeInfo{{Type: core.FieldTypeString}, {Type: core.FieldTypeTimestamp}},
+		},
+		{field: "Missing", wantErr: "relation tag target column taken is no column of core_test.readingKey"},
+		{field: "Untyped", wantErr: "target key device_id+at has 2 columns; the field holds string, not a struct holding a field per column"},
+		{field: "Instants", wantErr: "the field holds time.Time, not a struct"},
 	} {
 		t.Run(tt.field, func(t *testing.T) {
 			i := slices.IndexFunc(fields.Fields, func(f *core.Field) bool { return f.GoName == tt.field })

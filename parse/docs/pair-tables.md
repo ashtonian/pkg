@@ -32,7 +32,23 @@ A junction with a tenant column (`relation:"…,id,tenant_id"`) binds the caller
 
 ## Declare a pair table
 
-The tag grammar is `relation:"table,owner_column,target_column[,primary_key[,tenant_column]]"`. The owner primary key defaults to `id`. Every component must be an identifier. An owner key of several columns joins its columns with `+` in both the owner-column and primary-key parts, paired by position: `relation:"stock_tags,warehouse_id+sku,tag_id,warehouse_id+sku"` correlates `stock_tags.warehouse_id = stock.warehouse_id AND stock_tags.sku = stock.sku`. The target column is one: the field holds one value per target key. The field is a virtual slice of target IDs, usually `db:"-"`; its `parse` capabilities independently allow filtering, including, faceting, and patching. The slice's element types the target column, and the struct's fields holding the primary key's columns type the owner columns, so each primary key column must be a field of the struct (`core.SchemaGenerator.RelationTag`). Any scalar is a key, a decimal, a float or a timestamp as well as a string, UUID or integer, and every statement compares it as a filter compares its type: a pair stored as `"1.50"` belongs to the key `1.5`. A document, array or geometry has no equality to pair by and is refused, naming the column.
+The tag grammar is `relation:"table,owner_column,target_column[,primary_key[,tenant_column]]"`. The owner primary key defaults to `id`. Every component must be an identifier. An owner key of several columns joins its columns with `+` in both the owner-column and primary-key parts, paired by position: `relation:"stock_tags,warehouse_id+sku,tag_id,warehouse_id+sku"` correlates `stock_tags.warehouse_id = stock.warehouse_id AND stock_tags.sku = stock.sku`. The field is a virtual slice of target IDs, usually `db:"-"`; its `parse` capabilities independently allow filtering, including, faceting, and patching. The slice's element types the target column, and the struct's fields holding the primary key's columns type the owner columns, so each primary key column must be a field of the struct (`core.SchemaGenerator.RelationTag`). Any scalar is a key, a decimal, a float or a timestamp as well as a string, UUID or integer, and every statement compares it as a filter compares its type: a pair stored as `"1.50"` belongs to the key `1.5`. A document, array or geometry has no equality to pair by and is refused, naming the column.
+
+A target key of several columns joins them with `+` in the target part, and the slice holds a struct with a field per target column, found by its column as the owner's are, which types it:
+
+```go
+type StockRef struct {
+	WarehouseID int64  `db:"warehouse_id"`
+	SKU         string `db:"sku"`
+}
+
+type Tag struct {
+	ID    string     `json:"id" db:"id" parse:"filter,sort"`
+	Stock []StockRef `json:"stock" db:"-" relation:"stock_tags,tag_id,warehouse_id+sku" parse:"filter,include,facet,patch" indexed:"true"`
+}
+```
+
+One value cannot name such a key, so the field takes only `$null` (and `$exists`): whether the owner has pairs, in SQL and [outside it](relations.md#outside-sql). An include and a facet name each target key by its text (`["1","a"]`, [keys of several columns](relations.md#keys-of-several-columns)), and a membership patch takes each key as an array of a value per column, `{"stock":[[1,"a"],[2,"b"]]}`, each value in its field's wire form (a `json:",string"` field's as a JSON string). The schema document lists each column under the path's `key`. A struct that holds no field for a target column, and an element that is no struct, are refused at schema generation, naming the column; so is an operator other than the NULL tests.
 
 For a virtual relation hidden from the base row JSON, add `relation_name:"tag_ids"` beside `json:"-"` to preserve its external capability name. This avoids deriving `TagIDs` as an unintended snake-case spelling. It only affects the hidden-relation fallback, does not change visible JSON names, and does not grant additional filter/include/facet/patch capabilities. Duplicate external names are rejected during schema generation.
 
