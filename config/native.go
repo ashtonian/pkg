@@ -106,15 +106,16 @@ func unusedKey(root *schemaNode, tree any, name string) UnknownKey {
 	return k
 }
 
-// Sensitive containers can hold credentials in their keys as well as values;
-// a sensitive remain field's are the keys beneath its struct.
+// diagnosticPath is p as a diagnostic may show it: cut where a sensitive
+// value's keys begin (schemaNode.withholdsBeneath), since they can be
+// credentials as well as its values.
 func diagnosticPath(root *schemaNode, p keyPath) keyPath {
 	if root == nil {
 		return p
 	}
 	c, n := cursor{}, root
 	for i, s := range p {
-		if c.sensitive() && n.kind != nodeBranch && canHoldKeys(n.typ) || n.withholdsCollected(c, s) {
+		if n.withholdsBeneath(c, s) {
 			return p[:i]
 		}
 		var err error

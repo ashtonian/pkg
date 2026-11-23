@@ -629,11 +629,17 @@ func (c cursor) intoCollected(name string, elem reflect.Type) cursor {
 	return next
 }
 
-// withholdsCollected reports whether n is a branch whose remain field,
-// beneath c, collects s and is sensitive: s, like every key the field
-// holds, may itself be a secret, so diagnostics show no key beneath n.
-func (n *schemaNode) withholdsCollected(c cursor, s segment) bool {
-	return n.kind == nodeBranch && n.collects(s) && c.intoRemain(n.remain).sensitive()
+// withholdsBeneath reports whether diagnostics withhold s, a key beneath
+// node n at cursor c, and every key beneath it, since the keys a sensitive
+// value holds may themselves be secrets: any key beneath a sensitive map,
+// list or interface, or a struct decoded whole (canHoldKeys), and each key
+// a sensitive remain field collects (remainWhole). A sensitive struct's
+// fields stay named: their keys are its declaration's, not its value's.
+func (n *schemaNode) withholdsBeneath(c cursor, s segment) bool {
+	if n.kind == nodeBranch {
+		return n.collects(s) && n.remainWhole(c.sensitive())
+	}
+	return c.sensitive() && canHoldKeys(n.typ)
 }
 
 // FieldFor returns the declared field a key of T names. A struct field's key
@@ -723,11 +729,12 @@ func ownsBeneath(t reflect.Type) bool {
 	return t.Kind() == reflect.Map || reflect.PointerTo(t).Implements(mapstructureUnmarshaler)
 }
 
-// canHoldKeys reports whether a value decoded whole could still have
-// structure beneath it: a struct, a map or a list.
+// canHoldKeys reports whether a value of type t could have structure
+// beneath it: a struct, a map, a list, or an interface, which can hold any
+// of them.
 func canHoldKeys(t reflect.Type) bool {
 	switch t.Kind() {
-	case reflect.Struct, reflect.Map, reflect.Slice, reflect.Array:
+	case reflect.Struct, reflect.Map, reflect.Slice, reflect.Array, reflect.Interface:
 		return true
 	}
 	return false
