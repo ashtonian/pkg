@@ -3,10 +3,12 @@
 package httpx
 
 import (
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 )
@@ -214,5 +216,62 @@ func TestChain_EmptyChain(t *testing.T) {
 	_, ok := transport.(*http.Transport)
 	if !ok {
 		t.Error("expected *http.Transport for empty chain")
+	}
+}
+
+// A layer returning no transport fails the build: an http.Client with a nil
+// Transport would send through http.DefaultTransport, bypassing the base.
+func TestChain_RejectsALayerReturningNoTransport(t *testing.T) {
+	var baseCalls int
+	base := stubRoundTripper(func(r *http.Request) (*http.Response, error) {
+		baseCalls++
+		return &http.Response{StatusCode: 200, Header: http.Header{}, Body: http.NoBody, Request: r}, nil
+	})
+	passThrough := TransportFunc(func(rt http.RoundTripper) (http.RoundTripper, error) { return rt, nil })
+	returnsNil := TransportFunc(func(http.RoundTripper) (http.RoundTripper, error) { return nil, nil })
+	returnsTypedNil := TransportFunc(func(http.RoundTripper) (http.RoundTripper, error) { return (*RetryTransport)(nil), nil })
+
+	for _, tt := range []struct {
+		name  string
+		chain Chain
+		index string
+	}{
+		{"single layer", NewChain(returnsNil), "layer 0"},
+		{"intermediate layer", NewChain(passThrough, returnsNil, passThrough), "layer 1"},
+		{"typed nil", NewChain(passThrough, returnsTypedNil), "layer 1"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			if _, err := tt.chain.Build(base); !errors.Is(err, ErrInvalidConfig) || !strings.Contains(err.Error(), tt.index) {
+				t.Fatalf("Build: %v, want ErrInvalidConfig naming %s", err, tt.index)
+			}
+			client, err := tt.chain.Client(base, time.Second)
+			if !errors.Is(err, ErrInvalidConfig) || client != nil {
+				t.Fatalf("Client: %v, %v", client, err)
+			}
+		})
+	}
+	if baseCalls != 0 {
+		t.Fatalf("the base served %d requests during construction", baseCalls)
+	}
+
+	client, err := NewChain(passThrough, passThrough).Client(base, time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, err := client.Get("https://example.test/")
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if baseCalls != 1 {
+		t.Fatalf("pass-through layers reached the base %d times, want 1", baseCalls)
+	}
+	for _, chain := range []Chain{nil, NewChain()} {
+		if rt, err := chain.Build(base); err != nil || rt == nil {
+			t.Fatalf("empty chain: %v, %v", rt, err)
+		}
+		if rt, err := chain.Build(nil); err != nil || rt == nil {
+			t.Fatalf("empty chain on the default base: %v, %v", rt, err)
+		}
 	}
 }

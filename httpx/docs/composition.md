@@ -60,7 +60,11 @@ handle makes `cache.Close()` explicit at shutdown. The
 [quick start](../examples/quickstart/main.go) includes the complete lifecycle.
 
 You can insert any compatible decorator as a `TransportFunc`, or wrap the
-result yourself. `Build(nil)` constructs a tuned `NewBaseTransport`.
+result yourself. A decorator must return a usable transport: one returning
+`nil`, or an interface holding a nil pointer, fails `Build` and
+`Chain.Client` with `ErrInvalidConfig` naming the layer's index, before any
+request, rather than letting the client fall back to `http.DefaultTransport`.
+`Build(nil)` constructs a tuned `NewBaseTransport`.
 `Chain.Client(base, timeout)` is an optional shorthand for putting the built
 transport on a new `http.Client`; its timeout is explicit, and zero disables
 the client-wide timeout.

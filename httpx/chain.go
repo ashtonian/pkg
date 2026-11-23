@@ -56,7 +56,10 @@ func (c Chain) Prepend(funcs ...TransportFunc) Chain {
 }
 
 // Build applies all transport functions to the base transport.
-// If base is nil, a default [NewBaseTransport] is used.
+// If base is nil, a default [NewBaseTransport] is used. A layer that returns
+// no transport, nil or an interface holding a nil value, fails the build
+// with ErrInvalidConfig naming its index: an http.Client would otherwise
+// send through http.DefaultTransport and bypass the layers below it.
 func (c Chain) Build(base http.RoundTripper) (http.RoundTripper, error) {
 	if base == nil {
 		b, err := NewBaseTransport()
@@ -74,6 +77,9 @@ func (c Chain) Build(base http.RoundTripper) (http.RoundTripper, error) {
 		next, err := fn(base)
 		if err != nil {
 			return nil, fmt.Errorf("httpx: chain layer %d: %w", i, err)
+		}
+		if isNil(next) {
+			return nil, invalidConfig("chain: layer %d returned no transport", i)
 		}
 		base = next
 	}

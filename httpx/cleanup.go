@@ -39,10 +39,10 @@ type CleanupResult struct {
 func DrainAndClose(ctx context.Context, body io.ReadCloser, maxDrainBytes int64) (result CleanupResult) {
 	if maxDrainBytes < 0 {
 		result.DrainErr = invalidConfig("DrainAndClose: maxDrainBytes must be >= 0")
-	} else if nilCleanupValue(ctx) {
+	} else if isNil(ctx) {
 		result.DrainErr = invalidConfig("DrainAndClose: context must not be nil")
 	}
-	if nilCleanupValue(body) {
+	if isNil(body) {
 		result.EOF = true
 		return result
 	}
@@ -85,7 +85,9 @@ func DrainAndClose(ctx context.Context, body io.ReadCloser, maxDrainBytes int64)
 	return result
 }
 
-func nilCleanupValue(value any) bool {
+// isNil reports whether value is nil or an interface holding a nil pointer,
+// map, slice, channel, func or interface.
+func isNil(value any) bool {
 	if value == nil {
 		return true
 	}
