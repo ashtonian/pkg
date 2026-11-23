@@ -1,7 +1,5 @@
 package core
 
-import "net/http"
-
 // Code identifies a parse error independently of an application error catalog.
 // A Code is also an errors.Is target for ParseError.
 type Code string
@@ -58,49 +56,50 @@ const (
 	CodeSchemaEncodingFailed   Code = "E2120"
 )
 
-// codeInfo is each code's HTTP status and default message.
+// codeInfo is each code's HTTP status and default message. Statuses are
+// integer literals: core, filter and patch do not import net/http.
 var codeInfo = map[Code]struct {
 	status  int
 	message string
 }{
-	CodeQueryTooExpensive:      {http.StatusUnprocessableEntity, "query too expensive"},
-	CodeInvalidArray:           {http.StatusUnprocessableEntity, "invalid array value"},
-	CodeInputTooLarge:          {http.StatusUnprocessableEntity, "input too large"},
-	CodeOpNotAllowed:           {http.StatusUnprocessableEntity, "operation not allowed"},
-	CodeCursorTooLarge:         {http.StatusUnprocessableEntity, "sort value too large to page"},
-	CodeTooManyOps:             {http.StatusUnprocessableEntity, "too many operations"},
-	CodeInvalidListParam:       {http.StatusUnprocessableEntity, "invalid list parameter"},
-	CodeTestOpSQL:              {http.StatusUnprocessableEntity, "test op cannot compile to SQL"},
-	CodeSQLColumnMissing:       {http.StatusInternalServerError, "patch path has no SQL column mapping"},
-	CodeOpNotSQLCompilable:     {http.StatusUnprocessableEntity, "patch operation cannot compile to SQL"},
-	CodeUnknownField:           {http.StatusUnprocessableEntity, "unknown field"},
-	CodeInvalidOperator:        {http.StatusUnprocessableEntity, "invalid operator"},
-	CodeValueTypeMismatch:      {http.StatusUnprocessableEntity, "value type mismatch"},
-	CodeDepthExceeded:          {http.StatusUnprocessableEntity, "depth exceeded"},
-	CodeInvalidPatchOp:         {http.StatusUnprocessableEntity, "invalid patch operation"},
-	CodePatchFieldNotFound:     {http.StatusUnprocessableEntity, "patch field not found"},
-	CodePatchValueInvalid:      {http.StatusUnprocessableEntity, "patch value invalid"},
-	CodeSchemaNotFound:         {http.StatusUnprocessableEntity, "schema not found"},
-	CodeSortFieldNotAllowed:    {http.StatusUnprocessableEntity, "sort field not allowed"},
-	CodeSQLGenerationFailed:    {http.StatusUnprocessableEntity, "SQL generation failed"},
-	CodeSortFieldLimit:         {http.StatusUnprocessableEntity, "sort field limit exceeded"},
-	CodeInvalidCursor:          {http.StatusUnprocessableEntity, "invalid cursor"},
-	CodeInvalidRelation:        {http.StatusUnprocessableEntity, "invalid relation"},
-	CodePatchPolicyForbidden:   {http.StatusUnprocessableEntity, "patch policy forbidden"},
-	CodePatchPolicyValue:       {http.StatusUnprocessableEntity, "patch policy value violation"},
-	CodeInvalidJSON:            {http.StatusUnprocessableEntity, "invalid JSON"},
-	CodeInvalidEnumValue:       {http.StatusUnprocessableEntity, "invalid enum value"},
-	CodeArrayTooLarge:          {http.StatusUnprocessableEntity, "array too large"},
-	CodeMaxConditions:          {http.StatusUnprocessableEntity, "max conditions exceeded"},
-	CodeInvalidGeoCoords:       {http.StatusBadRequest, "invalid geo coordinates"},
-	CodeInvalidDistance:        {http.StatusBadRequest, "invalid distance value"},
-	CodeInvalidGeoPolygon:      {http.StatusBadRequest, "invalid geo polygon"},
-	CodeGeoNotSupported:        {http.StatusBadRequest, "geo operator not supported by dialect"},
-	CodeInvalidUUID:            {http.StatusBadRequest, "invalid UUID"},
-	CodeRelationVerbNotAllowed: {http.StatusUnprocessableEntity, "patch verb not allowed on relation field"},
-	CodeRelationValueInvalid:   {http.StatusUnprocessableEntity, "relation patch value must be array"},
-	CodeRelationPatchTooLarge:  {http.StatusUnprocessableEntity, "relation patch values exceed maximum"},
-	CodeSchemaEncodingFailed:   {http.StatusInternalServerError, "schema encoding failed"},
+	CodeQueryTooExpensive:      {422, "query too expensive"},
+	CodeInvalidArray:           {422, "invalid array value"},
+	CodeInputTooLarge:          {422, "input too large"},
+	CodeOpNotAllowed:           {422, "operation not allowed"},
+	CodeCursorTooLarge:         {422, "sort value too large to page"},
+	CodeTooManyOps:             {422, "too many operations"},
+	CodeInvalidListParam:       {422, "invalid list parameter"},
+	CodeTestOpSQL:              {422, "test op cannot compile to SQL"},
+	CodeSQLColumnMissing:       {500, "patch path has no SQL column mapping"},
+	CodeOpNotSQLCompilable:     {422, "patch operation cannot compile to SQL"},
+	CodeUnknownField:           {422, "unknown field"},
+	CodeInvalidOperator:        {422, "invalid operator"},
+	CodeValueTypeMismatch:      {422, "value type mismatch"},
+	CodeDepthExceeded:          {422, "depth exceeded"},
+	CodeInvalidPatchOp:         {422, "invalid patch operation"},
+	CodePatchFieldNotFound:     {422, "patch field not found"},
+	CodePatchValueInvalid:      {422, "patch value invalid"},
+	CodeSchemaNotFound:         {422, "schema not found"},
+	CodeSortFieldNotAllowed:    {422, "sort field not allowed"},
+	CodeSQLGenerationFailed:    {422, "SQL generation failed"},
+	CodeSortFieldLimit:         {422, "sort field limit exceeded"},
+	CodeInvalidCursor:          {422, "invalid cursor"},
+	CodeInvalidRelation:        {422, "invalid relation"},
+	CodePatchPolicyForbidden:   {422, "patch policy forbidden"},
+	CodePatchPolicyValue:       {422, "patch policy value violation"},
+	CodeInvalidJSON:            {422, "invalid JSON"},
+	CodeInvalidEnumValue:       {422, "invalid enum value"},
+	CodeArrayTooLarge:          {422, "array too large"},
+	CodeMaxConditions:          {422, "max conditions exceeded"},
+	CodeInvalidGeoCoords:       {400, "invalid geo coordinates"},
+	CodeInvalidDistance:        {400, "invalid distance value"},
+	CodeInvalidGeoPolygon:      {400, "invalid geo polygon"},
+	CodeGeoNotSupported:        {400, "geo operator not supported by dialect"},
+	CodeInvalidUUID:            {400, "invalid UUID"},
+	CodeRelationVerbNotAllowed: {422, "patch verb not allowed on relation field"},
+	CodeRelationValueInvalid:   {422, "relation patch value must be array"},
+	CodeRelationPatchTooLarge:  {422, "relation patch values exceed maximum"},
+	CodeSchemaEncodingFailed:   {500, "schema encoding failed"},
 }
 
 // ErrorHTTPStatus returns the code's HTTP status; unknown codes are invalid input.
@@ -108,7 +107,7 @@ func (c Code) ErrorHTTPStatus() int {
 	if info, ok := codeInfo[c]; ok {
 		return info.status
 	}
-	return http.StatusUnprocessableEntity
+	return 422
 }
 
 // ErrorMessage returns the code's default message, or empty for an unknown code.

@@ -13,6 +13,7 @@ import (
 	"maps"
 	"net/http"
 	"slices"
+	"strconv"
 
 	"github.com/ashtonian/pkg/parse/core"
 	"github.com/ashtonian/pkg/parse/internal/httpjson"
@@ -122,8 +123,15 @@ func WriteJSON(w http.ResponseWriter, r *http.Request, status int, v any, opts .
 	return nil
 }
 
+// send writes body as an application/json response with status and its
+// Content-Length, and reports a Write that fails once the status is sent.
+// net/http buffers a small response and sends it after the handler returns,
+// so a client that disconnects in that window fails no Write.
 func (o options) send(w http.ResponseWriter, r *http.Request, status int, body []byte) {
-	if err := httpjson.Send(w, status, body); err != nil {
+	w.Header().Set("Content-Type", httpjson.MediaType)
+	w.Header().Set("Content-Length", strconv.Itoa(len(body)))
+	w.WriteHeader(status)
+	if _, err := w.Write(body); err != nil {
 		o.report(r, fmt.Errorf("parsehttp: writing %d response: %w", status, err))
 	}
 }

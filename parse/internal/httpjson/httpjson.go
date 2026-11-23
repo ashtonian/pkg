@@ -1,14 +1,11 @@
-// Package httpjson holds the mechanics of parse's JSON responses: a body is
-// encoded whole before the status is sent, so a value that cannot be encoded
-// can still be answered with a status of its own, then sent with its
-// Content-Length. parsehttp answers through it; parse reads its media type.
+// Package httpjson holds parse's JSON media type and response encoding,
+// without the transport: parse reads a list body's media type through it,
+// and parsehttp encodes every response with it before sending any of it.
 package httpjson
 
 import (
 	"bytes"
 	"encoding/json"
-	"net/http"
-	"strconv"
 )
 
 // MediaType is the media type of the JSON parse reads and writes.
@@ -22,16 +19,4 @@ func Encode(v any) ([]byte, error) {
 		return nil, err
 	}
 	return buf.Bytes(), nil
-}
-
-// Send writes body as an application/json response with status and its
-// Content-Length, and returns the error of a Write that fails once the status
-// is sent. net/http buffers a small response and sends it after the handler
-// returns, so a client that disconnects in that window fails no Write.
-func Send(w http.ResponseWriter, status int, body []byte) error {
-	w.Header().Set("Content-Type", MediaType)
-	w.Header().Set("Content-Length", strconv.Itoa(len(body)))
-	w.WriteHeader(status)
-	_, err := w.Write(body)
-	return err
 }
