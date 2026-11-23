@@ -448,7 +448,8 @@ func (a *Applier[T]) applyDocument(parsed *ParsedPatch, target T) (T, error) {
 			if err != nil {
 				return zero, err
 			}
-			if doc, err = run.apply(doc, []map[string]any{w}, i); err != nil {
+			doc, err = run.apply(doc, []map[string]any{w}, []int{i})
+			if err != nil {
 				return zero, err
 			}
 			i++
@@ -460,22 +461,28 @@ func (a *Applier[T]) applyDocument(parsed *ParsedPatch, target T) (T, error) {
 			if current, ok := pointerValue(doc, op.Path); !ok || current == nil {
 				steps = append([]map[string]any{addOp(op.Path, []any{})}, steps...)
 			}
-			if doc, err = run.apply(doc, steps, i); err != nil {
+			doc, err = run.apply(doc, steps, slices.Repeat([]int{i}, len(steps)))
+			if err != nil {
 				return zero, err
 			}
 			i++
 		default:
 			j := i
-			var wire []map[string]any
+			var (
+				wire    []map[string]any
+				indexes []int
+			)
 			for j < len(ops) && !ops[j].Merge && ops[j].Op != PatchOpTest && ops[j].Op != PatchOpArrayAppend && ops[j].Op != PatchOpCopy && ops[j].Op != PatchOpMove {
 				w, err := wireOp(ops[j])
 				if err != nil {
 					return zero, err
 				}
 				wire = append(wire, w)
+				indexes = append(indexes, j)
 				j++
 			}
-			if doc, err = run.apply(doc, wire, i); err != nil {
+			doc, err = run.apply(doc, wire, indexes)
+			if err != nil {
 				return zero, err
 			}
 			i = j

@@ -16,7 +16,7 @@
 //	indexed:"true"          — cost estimation hint (indexed = cheaper)
 //	parse:"…,sort"          — mark as sortable
 //	sort_default:"desc"     — default sort field + direction
-//	relation:"tbl,src,tgt[,pk[,tenant_col]]" — M2M relation (correlated EXISTS)
+//	relation:"tbl,src,tgt[,pk[,tenant_col]]" — M2M relation (correlated EXISTS); a+b names a key of several columns in src, tgt and pk
 //	db:"column_name"        — SQL column name (falls back to snake_case of json name)
 //	label:"Display Name"    — UI label for schema response
 //	description:"Help text" — UI description

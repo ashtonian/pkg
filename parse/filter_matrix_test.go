@@ -38,21 +38,21 @@ func sqliteMatrix(t *testing.T) matrixDB {
 // strings and UUIDs, INTEGER for integers.
 func TestMembershipMatrix_SQLite(t *testing.T) {
 	runMembershipMatrix(t, sqliteMatrix(t), map[core.FieldType]string{
-		core.FieldTypeString: "TEXT", core.FieldTypeUUID: "TEXT", core.FieldTypeInt: "INTEGER",
+		core.FieldTypeString: "TEXT", core.FieldTypeUUID: "TEXT", core.FieldTypeInt: "INTEGER", core.FieldTypeDecimal: "TEXT",
 	})
 }
 
 // WhereIn lists of integers, UUIDs and text on SQLite, each one set.
 func TestLookupSets_SQLite(t *testing.T) {
 	runLookupSets(t, sqliteMatrix(t), map[core.FieldType]string{
-		core.FieldTypeString: "TEXT", core.FieldTypeUUID: "TEXT", core.FieldTypeInt: "INTEGER",
+		core.FieldTypeString: "TEXT", core.FieldTypeUUID: "TEXT", core.FieldTypeInt: "INTEGER", core.FieldTypeDecimal: "TEXT",
 	})
 }
 
 // Policy trees on SQLite, each listed page by page.
 func TestPolicyMatrix_SQLite(t *testing.T) {
 	runPolicyMatrix(t, sqliteMatrix(t), map[core.FieldType]string{
-		core.FieldTypeString: "TEXT", core.FieldTypeUUID: "TEXT", core.FieldTypeInt: "INTEGER",
+		core.FieldTypeString: "TEXT", core.FieldTypeUUID: "TEXT", core.FieldTypeInt: "INTEGER", core.FieldTypeDecimal: "TEXT",
 	})
 }
 

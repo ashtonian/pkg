@@ -7,6 +7,7 @@ import (
 	"math"
 	"reflect"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/ashtonian/pkg/parse/core"
@@ -16,16 +17,18 @@ import (
 // backend that does not run them as SQL. LookupValues returns the Project
 // values of the rows of l.Table that l.Where selects (MatchLookupRow), as
 // ctx — its tenant and transaction — sees them and with no other scoping,
-// so the answer is the SQL subquery's. NULL values are returned as nil. An
-// error refuses the request.
+// so the answer is the SQL subquery's. NULL values are returned as nil.
+// For a lookup projecting ProjectKey, which a relation correlating keys of
+// several columns asks, each value is a core.Key of the row's values in
+// ProjectKey's order. An error refuses the request.
 type MembershipLookup interface {
 	LookupValues(ctx context.Context, l *Lookup) ([]any, error)
 }
 
 // RelationLookup is a MembershipLookup that also answers lookups with a
 // Filter — relation predicates on a backend that does not run SQL.
-// LookupFilteredValues returns the Project values of the rows of l.Table
-// that both l.Where (MatchLookupRow) and l.Filter select, the filter
+// LookupFilteredValues returns the Project values (or ProjectKey keys) of
+// the rows of l.Table that both l.Where (MatchLookupRow) and l.Filter select, the filter
 // evaluated by the store's own filter evaluator over the table's rows.
 type RelationLookup interface {
 	MembershipLookup
@@ -124,7 +127,8 @@ func (r *memberResolver) member(ctx context.Context, n *FilterNode) (*FilterNode
 	if r.lookup == nil {
 		return unknownNode(), nil
 	}
-	if err := n.Member.validate(); err != nil {
+	err := n.Member.validateProjecting(1)
+	if err != nil {
 		return nil, err
 	}
 	members, hasNull, err := r.values(ctx, n.Field, n.Member)
@@ -163,8 +167,45 @@ func (r *memberResolver) values(ctx context.Context, field *FieldSchema, l *Look
 	return members, hasNull, nil
 }
 
+// keys answers l, which projects a key, and returns its distinct keys
+// without NULL, each value normalized for its field in fields.
+func (r *memberResolver) keys(ctx context.Context, fields []*FieldSchema, l *Lookup) ([]core.Key, error) {
+	raw, _, err := r.lookupValues(ctx, l)
+	if err != nil {
+		return nil, err
+	}
+	types := make([]core.TypeInfo, len(fields))
+	for i, f := range fields {
+		types[i] = core.TypeInfo{Type: f.DataType, NumberKind: f.NumberKind}
+	}
+	keys := make([]core.Key, 0, len(raw))
+	seen := make(map[string]struct{}, len(raw))
+	for _, v := range raw {
+		stored := v.(core.Key)
+		k := make(core.Key, len(fields))
+		for i, f := range fields {
+			k[i], err = r.norm.normalizeMember(f, projectedValue(stored[i]))
+			if err != nil {
+				return nil, fmt.Errorf("filter: membership lookup on %s: %w", l.Table, err)
+			}
+		}
+		text, err := core.KeyTextOf(types, k)
+		if err != nil {
+			return nil, fmt.Errorf("filter: membership lookup on %s: %w", l.Table, err)
+		}
+		_, dup := seen[text]
+		if dup {
+			continue
+		}
+		seen[text] = struct{}{}
+		keys = append(keys, k)
+	}
+	return keys, nil
+}
+
 // inner is l with every member condition answered: a store sees only
-// comparisons, the inner lookups' values as LookupOpIn.
+// comparisons, the inner lookups' values as LookupOpIn and their keys as
+// LookupOpKeyIn.
 func (r *memberResolver) inner(ctx context.Context, l *Lookup) (*Lookup, error) {
 	if l.Where == nil || !hasMemberCond(l.Where) {
 		return l, nil
@@ -184,7 +225,18 @@ func (r *memberResolver) innerCond(ctx context.Context, c *LookupCond) (*LookupC
 		if err != nil {
 			return nil, err
 		}
-		return WhereIn(c.Column, vs...), nil
+		return WhereIn(c.Column, vs...).typed(c.Types), nil
+	}
+	if c.Op == LookupOpKeyMember {
+		vs, _, err := r.lookupValues(ctx, c.Lookup)
+		if err != nil {
+			return nil, err
+		}
+		keys := make([]core.Key, len(vs))
+		for i, v := range vs {
+			keys[i] = v.(core.Key)
+		}
+		return WhereKeyIn(c.Columns, keys...).typed(c.Types), nil
 	}
 	if len(c.And) == 0 && len(c.Or) == 0 {
 		return c, nil
@@ -249,6 +301,20 @@ func (r *memberResolver) ask(ctx context.Context, l *Lookup) ([]any, bool, error
 	out := make([]any, 0, len(values))
 	hasNull := false
 	for _, v := range values {
+		if l.ProjectKey != nil {
+			// A key holding NULL equals no row's, as a row value with a NULL
+			// column is never IN a set.
+			k, err := projectedKey(l, v)
+			if err != nil {
+				return nil, false, fmt.Errorf("filter: membership lookup on %s: %w", l.Table, err)
+			}
+			if k == nil {
+				hasNull = true
+				continue
+			}
+			out = append(out, k)
+			continue
+		}
 		if isNullValue(v) {
 			hasNull = true
 			continue
@@ -258,11 +324,37 @@ func (r *memberResolver) ask(ctx context.Context, l *Lookup) ([]any, bool, error
 	return out, hasNull, nil
 }
 
+// projectedKey is a value a lookup projecting a key answered, which must be
+// a key of a value per ProjectKey column, each followed to its stored value;
+// nil for a key holding NULL. Any other answer is the store's defect.
+func projectedKey(l *Lookup, v any) (core.Key, error) {
+	var k []any
+	switch kv := v.(type) {
+	case core.Key:
+		k = kv
+	case []any:
+		k = kv
+	default:
+		return nil, fmt.Errorf("lookup projecting the key (%s) answered a %T, not a core.Key", strings.Join(l.ProjectKey, ", "), v)
+	}
+	if len(k) != len(l.ProjectKey) {
+		return nil, fmt.Errorf("lookup projecting the key (%s) answered a key of %d values", strings.Join(l.ProjectKey, ", "), len(k))
+	}
+	out := make(core.Key, len(k))
+	for i, value := range k {
+		out[i] = derefValue(value)
+		if out[i] == nil {
+			return nil, nil
+		}
+	}
+	return out, nil
+}
+
 func hasMemberCond(c *LookupCond) bool {
 	if c == nil {
 		return false
 	}
-	if c.Op == LookupOpMember {
+	if c.Op == LookupOpMember || c.Op == LookupOpKeyMember {
 		return true
 	}
 	return slices.ContainsFunc(c.And, hasMemberCond) || slices.ContainsFunc(c.Or, hasMemberCond)
@@ -306,6 +398,12 @@ func MatchLookupRow(cond *LookupCond, column func(name string) (value any, ok bo
 		}
 		return false, nil
 	}
+	switch cond.Op {
+	case LookupOpKeyIn:
+		return matchKey(cond, column)
+	case LookupOpKeyMember:
+		return false, invalidLookup(fmt.Sprintf("lookup key (%s) is a member of an unanswered lookup; ResolveMemberships answers it", strings.Join(cond.Columns, ", ")))
+	}
 	v, ok := column(cond.Column)
 	if !ok {
 		return false, invalidLookup(fmt.Sprintf("lookup row has no column %q", cond.Column))
@@ -319,10 +417,10 @@ func MatchLookupRow(cond *LookupCond, column func(name string) (value any, ok bo
 	case LookupOpMember:
 		return false, invalidLookup(fmt.Sprintf("lookup column %q is a member of an unanswered lookup; ResolveMemberships answers it", cond.Column))
 	case LookupOpEq:
-		return lookupEqual(v, derefValue(cond.Value)), nil
+		return equalAs(cond.Types, 0, v, derefValue(cond.Value)), nil
 	case LookupOpIn:
 		for _, want := range cond.Values {
-			if lookupEqual(v, derefValue(want)) {
+			if equalAs(cond.Types, 0, v, derefValue(want)) {
 				return true, nil
 			}
 		}
@@ -331,25 +429,56 @@ func MatchLookupRow(cond *LookupCond, column func(name string) (value any, ok bo
 	return false, invalidLookup(fmt.Sprintf("lookup column %q has unknown operator %q", cond.Column, cond.Op))
 }
 
-// lookupEqual is SQL equality of two non-NULL stored values.
-func lookupEqual(a, b any) bool {
-	if isNullValue(a) || isNullValue(b) {
+// equalAs is a lookup condition's equality of a stored value and its value
+// in compared column i: lookupEqual, or, for a typed condition
+// (LookupCond.Types), the two values' canonical texts as the column's type
+// (core.KeyValueText), one exactly when the database holds them equal.
+func equalAs(types []core.TypeInfo, i int, stored, want any) bool {
+	if types == nil {
+		return lookupEqual(stored, want)
+	}
+	if isNullValue(stored) || isNullValue(want) {
 		return false
 	}
-	if c, ok := core.CompareNumbers(a, b); ok {
+	x, err := core.KeyValueText(types[i], projectedValue(stored))
+	if err != nil {
+		return false
+	}
+	y, err := core.KeyValueText(types[i], projectedValue(want))
+	return err == nil && x == y
+}
+
+// lookupEqual is SQL equality of a stored value and a lookup's value, as
+// the lookup's statement compares them (lookupCondSQL): typed by the
+// lookup value's Go type (core.TypeOf), each side read as that type's
+// canonical value (core.NormalizeScalar), so a timestamp compares at its
+// instant whether stored as a time or as its text, a UUID in either case,
+// and a date by its day. Numbers compare by value, a decimal beyond
+// float64's precision ("1.50" is 1.5).
+func lookupEqual(stored, want any) bool {
+	if isNullValue(stored) || isNullValue(want) {
+		return false
+	}
+	if isLookupDecimal(stored) || isLookupDecimal(want) {
+		c, ok := core.CompareDecimals(stored, want)
+		return ok && c == 0
+	}
+	c, ok := core.CompareNumbers(stored, want)
+	if ok {
 		return c == 0
 	}
-	if ta, ok := a.(time.Time); ok {
-		tb, ok := b.(time.Time)
-		return ok && ta.Equal(tb)
+	info := core.TypeOf(reflect.TypeOf(want))
+	if !core.IsKeyType(info.Type) {
+		x, xok := lookupText(stored)
+		y, yok := lookupText(want)
+		return xok && yok && x == y
 	}
-	if ba, ok := a.(bool); ok {
-		bb, ok := b.(bool)
-		return ok && ba == bb
+	x, err := core.NormalizeScalar(info.Type, info.NumberKind, stored)
+	if err != nil {
+		return false
 	}
-	x, xok := lookupText(a)
-	y, yok := lookupText(b)
-	return xok && yok && x == y
+	y, err := core.NormalizeScalar(info.Type, info.NumberKind, want)
+	return err == nil && x == y
 }
 
 func lookupText(v any) (string, bool) {
@@ -360,6 +489,39 @@ func lookupText(v any) (string, bool) {
 		return rv.String(), true
 	}
 	return "", false
+}
+
+// matchKey reports whether a row's key columns equal one of a WhereKeyIn's
+// keys, column by column as WhereEq compares (lookupEqual); a NULL column
+// equals none.
+func matchKey(cond *LookupCond, column func(name string) (value any, ok bool)) (bool, error) {
+	row := make([]any, len(cond.Columns))
+	for i, name := range cond.Columns {
+		v, ok := column(name)
+		if !ok {
+			return false, invalidLookup(fmt.Sprintf("lookup row has no column %q", name))
+		}
+		row[i] = derefValue(v)
+		if row[i] == nil {
+			return false, nil
+		}
+	}
+	for _, k := range cond.Keys {
+		if len(k) != len(row) {
+			return false, invalidLookup(fmt.Sprintf("lookup key (%s) has a key of %d values", strings.Join(cond.Columns, ", "), len(k)))
+		}
+		equal := true
+		for i, want := range k {
+			if !equalAs(cond.Types, i, row[i], derefValue(want)) {
+				equal = false
+				break
+			}
+		}
+		if equal {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 // projectedValue is a stored value as normalization takes it: a UUID

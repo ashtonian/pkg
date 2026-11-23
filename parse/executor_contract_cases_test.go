@@ -184,7 +184,7 @@ func runExecutorContract(t *testing.T, open func(*testing.T) *sql.DB, d filter.D
 			}) {
 				p, err := execItems.ParseMergePatch([]byte(rows[id]))
 				require.NoError(t, err)
-				updates = append(updates, parse.RowUpdate{Key: id, Patch: p})
+				updates = append(updates, parse.RowUpdate{Key: parse.Key{id}, Patch: p})
 			}
 			plan, err := execItems.BuildUpdateBatch(d, updates, execScope, parse.UpdateBatchLimits{}, parse.SkipUnchanged(), parse.Increment("version"))
 			require.NoError(t, err)

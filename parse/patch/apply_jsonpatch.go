@@ -23,12 +23,12 @@ type jsonPatchRun struct {
 	copied     int64
 }
 
-// apply applies ops to doc; offset is the first op's index in the parsed
+// apply applies ops to doc; indexes holds each op's index in the parsed
 // patch, for error reporting.
-func (r *jsonPatchRun) apply(doc map[string]any, ops []map[string]any, offset int) (map[string]any, error) {
+func (r *jsonPatchRun) apply(doc map[string]any, ops []map[string]any, indexes []int) (map[string]any, error) {
 	// Copies are applied individually, so charge their source size rather than
 	// document growth (overwriting an existing value may not grow it at all).
-	for _, op := range ops {
+	for k, op := range ops {
 		if from, hasFrom := op[rfc6902.From].(string); hasFrom && op[rfc6902.Op] == string(PatchOpCopy) {
 			if value, ok := pointerValue(doc, from); ok {
 				encoded, err := r.codec.Encode(value)
@@ -37,7 +37,7 @@ func (r *jsonPatchRun) apply(doc map[string]any, ops []map[string]any, offset in
 				}
 				r.copied += int64(len(encoded))
 				if r.copyBudget > 0 && r.copied > r.copyBudget {
-					return nil, copyBudgetError(offset, r.copyBudget)
+					return nil, copyBudgetError(indexes[k], r.copyBudget)
 				}
 			}
 		}
@@ -62,17 +62,34 @@ func (r *jsonPatchRun) apply(doc map[string]any, ops []map[string]any, offset in
 	opts.SupportNegativeIndices = false // RFC 6901: array indices are non-negative
 	patched, err := decoded.ApplyWithOptions(docJSON, opts)
 	if err != nil {
-		return nil, &core.ParseError{
-			Kind: core.ParseErrorKindPatch, Code: ECodePatchValueInvalid.String(),
-			Message: fmt.Sprintf("applying operation %d: %v", offset, err),
-			Index:   new(offset), Cause: err,
-		}
+		return nil, failedOperation(decoded, docJSON, opts, indexes, err)
 	}
 	var out map[string]any
 	if err := r.codec.Decode(patched, &out); err != nil {
 		return nil, fmt.Errorf("patch: decoding patched document: %w", err)
 	}
 	return restore(out), nil
+}
+
+// failedOperation is the error of the run's first operation that fails,
+// which json-patch's error for the whole run does not name: the run is
+// replayed one operation at a time up to it.
+func failedOperation(ops jsonpatch.Patch, doc []byte, opts *jsonpatch.ApplyOptions, indexes []int, runErr error) error {
+	index, cause := indexes[0], runErr
+	for k := range ops {
+		next, err := jsonpatch.Patch{ops[k]}.ApplyWithOptions(doc, opts)
+		if err != nil {
+			index, cause = indexes[k], err
+			break
+		}
+		doc = next
+	}
+	failed := &core.ParseError{
+		Kind: core.ParseErrorKindPatch, Code: ECodePatchValueInvalid.String(),
+		Message: fmt.Sprintf("applying operation %d: %v", index, cause),
+		Index:   new(index), Cause: cause,
+	}
+	return failed
 }
 
 func copyBudgetError(offset int, budget int64) error {

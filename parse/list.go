@@ -536,17 +536,21 @@ func (r *Resource[T]) PagePointers(items []*T, plan *ListPlan) (*filter.Page[*T]
 // statement reading its IDs for the page's owner keys (Key), scoped as the
 // list was. Read each one's rows with query.Scan, then attach the result
 // with page.SetInclude(query.Field, rows). No keys need no statements.
-func (r *Resource[T]) IncludeQueries(plan *ListPlan, ownerKeys []any) ([]filter.IncludeQuery, error) {
+func (r *Resource[T]) IncludeQueries(plan *ListPlan, ownerKeys []Key) ([]filter.IncludeQuery, error) {
 	if err := r.ownsPlan(plan); err != nil {
 		return nil, err
 	}
 	if len(plan.Include) == 0 || len(ownerKeys) == 0 {
 		return nil, nil
 	}
+	owners, err := r.ownerKeys(ownerKeys)
+	if err != nil {
+		return nil, err
+	}
 	opts := []filter.IncludeQueryOption{filter.WithIncludeRelationScope(plan.relations), filter.WithIncludeOwner(plan.fields)}
 	out := make([]filter.IncludeQuery, 0, len(plan.Include))
 	for _, name := range plan.Include {
-		q, err := filter.BuildIncludeQuery(plan.fields.Fields[name], plan.dialect, ownerKeys, opts...)
+		q, err := filter.BuildIncludeQuery(plan.fields.Fields[name], plan.dialect, owners, opts...)
 		if err != nil {
 			return nil, err
 		}

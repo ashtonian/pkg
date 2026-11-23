@@ -92,6 +92,12 @@ export class SchemaValidator {
     }
   }
 
+  /** Returns the key columns, in key order: a value per column names one
+   *  row. Empty for a schema registered without a key. */
+  keyColumns(): string[] {
+    return [...(this.schema.key ?? [])];
+  }
+
   /** Returns all field names that can be used in filter expressions. */
   filterableFields(): string[] {
     return this.schema.filter ? Object.keys(this.schema.filter.fields) : [];

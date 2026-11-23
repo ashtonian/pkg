@@ -99,7 +99,7 @@ func TestBuildUpdate_Postgres(t *testing.T) {
 				assert.Equal(t, "55P03", pgErr.Code, "lock_not_available")
 				require.NoError(t, other.Rollback())
 
-				stmts, err := r.RelationStatements(plan, []any{owners[0].ID})
+				stmts, err := r.RelationStatements(plan, []parse.Key{{owners[0].ID}})
 				require.NoError(t, err)
 				for _, st := range stmts {
 					_, err := tx.Exec(ctx, st.SQL, st.Args...)

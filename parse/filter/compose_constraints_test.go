@@ -27,7 +27,7 @@ func TestComposeConstraints(t *testing.T) {
 	}
 	schema := &filter.ResourceSchema{
 		Name:       "items",
-		PrimaryKey: "id",
+		PrimaryKey: []string{"id"},
 		Fields: map[string]*filter.FieldSchema{
 			"owner": {ExternalName: "owner", Table: "items", Column: "owner", DataType: core.FieldTypeString},
 		},

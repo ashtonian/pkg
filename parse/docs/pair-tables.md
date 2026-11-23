@@ -32,7 +32,23 @@ A junction with a tenant column (`relation:"…,id,tenant_id"`) binds the caller
 
 ## Declare a pair table
 
-The tag grammar is `relation:"table,owner_column,target_column[,primary_key[,tenant_column]]"`. The owner primary key defaults to `id`. Every component must be an identifier. The field is a virtual slice of target IDs, usually `db:"-"`; its `parse` capabilities independently allow filtering, including, faceting, and patching.
+The tag grammar is `relation:"table,owner_column,target_column[,primary_key[,tenant_column]]"`. The owner primary key defaults to `id`. Every component must be an identifier. An owner key of several columns joins its columns with `+` in both the owner-column and primary-key parts, paired by position: `relation:"stock_tags,warehouse_id+sku,tag_id,warehouse_id+sku"` correlates `stock_tags.warehouse_id = stock.warehouse_id AND stock_tags.sku = stock.sku`. The field is a virtual slice of target IDs, usually `db:"-"`; its `parse` capabilities independently allow filtering, including, faceting, and patching. The slice's element types the target column, and the struct's fields holding the primary key's columns type the owner columns, so each primary key column must be a field of the struct (`core.SchemaGenerator.RelationTag`). Any scalar is a key, a decimal, a float or a timestamp as well as a string, UUID or integer, and every statement compares it as a filter compares its type: a pair stored as `"1.50"` belongs to the key `1.5`. A document, array or geometry has no equality to pair by and is refused, naming the column.
+
+A target key of several columns joins them with `+` in the target part, and the slice holds a struct with a field per target column, found by its column as the owner's are, which types it:
+
+```go
+type StockRef struct {
+	WarehouseID int64  `db:"warehouse_id"`
+	SKU         string `db:"sku"`
+}
+
+type Tag struct {
+	ID    string     `json:"id" db:"id" parse:"filter,sort"`
+	Stock []StockRef `json:"stock" db:"-" relation:"stock_tags,tag_id,warehouse_id+sku" parse:"filter,include,facet,patch" indexed:"true"`
+}
+```
+
+One value cannot name such a key, so the field takes only `$null` (and `$exists`): whether the owner has pairs, in SQL and [outside it](relations.md#outside-sql). An include and a facet name each target key by its text (`["1","a"]`, [keys of several columns](relations.md#keys-of-several-columns)), and a membership patch takes each key as an array of a value per column, `{"stock":[[1,"a"],[2,"b"]]}`, each value in its field's wire form (a `json:",string"` field's as a JSON string). The schema document lists each column under the path's `key`. A struct that holds no field for a target column, and an element that is no struct, are refused at schema generation, naming the column; so is an operator other than the NULL tests.
 
 For a virtual relation hidden from the base row JSON, add `relation_name:"tag_ids"` beside `json:"-"` to preserve its external capability name. This avoids deriving `TagIDs` as an unintended snake-case spelling. It only affects the hidden-relation fallback, does not change visible JSON names, and does not grant additional filter/include/facet/patch capabilities. Duplicate external names are rejected during schema generation.
 
@@ -40,15 +56,15 @@ For a virtual relation hidden from the base row JSON, add `relation_name:"tag_id
 
 1. Validate the requested names with `filter.ParseIncludes(schema, parameter)`.
 2. Execute the base page query and collect its owner IDs.
-3. For each requested relation, call `filter.BuildIncludeQuery(field, dialect, ownerIDs, options...)`. The owner IDs bind as one set, typed as the relation's owner correlation field (`FieldSchema.RelatedBy`, which a resource sets), so the statement's text is the same for every page; a field without one is an error. Scope it with `WithIncludeRelationScope`: a `Tenant` for tenant-scoped junctions, or a `RowTenant` with `WithIncludeOwner(ownerSchema)` when the owners span tenants.
-4. Execute its SQL and read the rows with the query's `Scan`, which groups target IDs by owner and lists the owners whose IDs were cut at the cap in `Truncated`.
+3. For each requested relation, call `filter.BuildIncludeQuery(field, dialect, ownerKeys, options...)`, each owner key a `core.Key` of a value per owner key column. The owner keys bind as one set, typed as the relation's owner correlation fields (`FieldSchema.RelatedBy`, one per owner key column, which a resource sets); a key of several columns binds as one row-value set, so the statement's text is the same for every page; a field without one is an error. Scope it with `WithIncludeRelationScope`: a `Tenant` for tenant-scoped junctions, or a `RowTenant` with `WithIncludeOwner(ownerSchema)` when the owners span tenants.
+4. Execute its SQL and read the rows with the query's `Scan`, which groups target IDs by owner and lists the owners whose IDs were cut at the cap in `Truncated`. An owner is named by its key's text, `core.KeyText`: a one-column key's value, a longer key's compact JSON array of its columns' texts (`["1","a"]`), which the statement writes for the row as Go writes it for the key.
 5. Attach the result to `filter.Page[T].Relations`, whose JSON name is `_relations`.
 
 Includes return IDs, not nested child objects. The default cap is 100 distinct targets per owner; change it with `filter.WithMaxIncludePerRelation`. The query reads one more than the cap, so `Scan` knows a cut list from a complete one; put `Truncated` in the page's `Truncated[field]` (`_truncated` on the wire). `Resource.IncludeQueries` and `parsepgx.QueryPage` do this for you. The caller owns execution and transaction consistency.
 
 ## Update membership
 
-`patch.BuildPatchSQL` separates junction operations into `RelationOps`. For each operation, `patch.RenderRelationOp` produces statements for the selected owner IDs, owners and values each bound as one array. Without a target table there are no target rows to select, so PostgreSQL's insert reads the owners and values as rows of the pair table's own type (`jsonb_populate_recordset(NULL::"<pair table>", $n)`), which types each key as its column; each record names its column exactly as the relation declares it, the spelling every quoted statement reads. Run owner authorization/selection and every resulting statement in one transaction. Membership `replace` removes targets not in the new set and adds missing ones; `add` and `remove` modify the selected memberships.
+`patch.BuildPatchSQL` separates junction operations into `RelationOps`. For each operation, `patch.RenderRelationOp` produces statements for the selected owner keys (`[]core.Key`, a value per owner key column), owners and values each bound as one parameter; owner keys of several columns bind as one row-value set (`(a, b) IN (…)`). Without a target table there are no target rows to select, so PostgreSQL's insert reads the owners and values as rows of the pair table's own type (`jsonb_populate_recordset(NULL::"<pair table>", $n)`), which types each key as its column; each record names its column exactly as the relation declares it, the spelling every quoted statement reads. Run owner authorization/selection and every resulting statement in one transaction. Membership `replace` removes targets not in the new set and adds missing ones; `add` and `remove` modify the selected memberships.
 
 Bind the trusted tenant with `patch.RenderRelationOpOptions.TenantValue`. Serialize conflicting replacements of the same owner (for example by locking the owner row in PostgreSQL) so concurrent replacements do not combine memberships. The package renders SQL; it does not open a transaction or acquire locks.
 

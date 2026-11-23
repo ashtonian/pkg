@@ -21,6 +21,13 @@ interface WireItem {
   labels: Record<string, unknown>;
 }
 
+// The fixture's wire_stock rows, keyed (warehouse_id, sku).
+interface WireStock {
+  warehouse_id: string;
+  sku: string;
+  qty: number;
+}
+
 // A request as the server received it: every value of each query
 // parameter, and the body as JSON.
 interface WireRequest {
@@ -696,6 +703,55 @@ describe("patch", () => {
     expect(server.calls[0]?.url.searchParams.getAll("id[]")).toEqual(["a", "b"]);
   });
 
+  it("sends the recorded patch of a row keyed by two columns, a path segment per column", async () => {
+    const recorded = exchange<PatchResult<WireStock>>("patch_composite_key");
+    expect(recorded.request.path).toBe("/wire_stock/w1/a%2Fb");
+    const stock = client(replay(recorded).fetch).resource<WireStock, [string, string]>("wire_stock");
+    await expect(stock.patch(["w1", "a/b"], { qty: 3 })).resolves.toEqual(recorded.response.body);
+  });
+
+  it("writes number, bigint and boolean key values as their text", async () => {
+    const server = fakeServer(() => json(updated));
+    await client(server.fetch).resource<WireStock, [string, number]>("bins").patch(["w 1", 7], { qty: 1 });
+    await client(server.fetch).resource<WireItem>("items").patch(12345678901234567890n, { name: "alpha" });
+    await client(server.fetch).resource<WireItem>("flags").patch(true, { name: "alpha" });
+    await client(server.fetch).resource<WireItem>("items").patchMany([7, 8n], { name: "alpha" });
+    expect(server.calls.map((c) => c.url.pathname)).toEqual(["/bins/w%201/7", "/items/12345678901234567890", "/flags/true", "/items"]);
+    expect(server.calls[3]?.url.searchParams.getAll("id[]")).toEqual(["7", "8"]);
+  });
+
+  it("refuses a key of another arity than the schema's key before sending", async () => {
+    const server = fakeServer(({ url }) => {
+      if (url.pathname.endsWith("/wire_stock/schema")) return json(related["wire_stock"]);
+      if (url.pathname.endsWith("/schema")) return json(schema);
+      return json({ updated: [] });
+    });
+    const stock = client(server.fetch, true).resource<WireStock, [string, string]>("wire_stock");
+    // @ts-expect-error a key of two columns takes two values
+    await expect(stock.patch(["w1"], { qty: 3 })).rejects.toThrow("the key of wire_stock is (warehouse_id, sku), a value per column; got 1");
+    // @ts-expect-error a key of two columns takes no third value
+    await expect(stock.patch(["w1", "a", "x"], { qty: 3 })).rejects.toBeInstanceOf(RangeError);
+    // @ts-expect-error a key of two columns is a tuple, never one value
+    await expect(stock.patch("w1", { qty: 3 })).rejects.toBeInstanceOf(RangeError);
+    const items = client(server.fetch, true).resource<WireItem>("wire_items");
+    // @ts-expect-error a key of one column is one value
+    await expect(items.patch(["a", "b"], { name: "alpha" })).rejects.toThrow("the key of wire_items is (id), a value per column; got 2");
+    await expect(stock.patch(["w1", "a/b"], { qty: 3 })).resolves.toBeDefined();
+    expect(server.calls.filter((c) => c.method === "PATCH").map((c) => c.url.pathname)).toEqual(["/wire_stock/w1/a%2Fb"]);
+  });
+
+  // id[] holds one value per row, so a key of several columns has no form in
+  // it; such rows are patched one by one.
+  it("refuses patchMany on a key of several columns before sending", async () => {
+    const server = fakeServer(({ url }) => (url.pathname.endsWith("/schema") ? json(related["wire_stock"]) : json({ updated: [] })));
+    const typed = client(server.fetch).resource<WireStock, [string, string]>("wire_stock");
+    // @ts-expect-error patchMany takes no tuple key
+    await expect(typed.patchMany([["w1", "a"]], { qty: 3 })).rejects.toBeInstanceOf(RangeError);
+    const untyped = client(server.fetch, true).resource<WireStock>("wire_stock");
+    await expect(untyped.patchMany(["w1"], { qty: 3 })).rejects.toThrow("patchMany cannot address wire_stock: its key is (warehouse_id, sku)");
+    expect(server.calls.filter((c) => c.method === "PATCH")).toHaveLength(0);
+  });
+
   it("validates null against the Go-emitted schema", async () => {
     const server = fakeServer(({ url }) => (url.pathname.endsWith("/schema") ? json(schema) : json(updated)));
     const items = client(server.fetch, true).resource<WireItem>("items", { schema: "wire_items" });
@@ -885,10 +941,17 @@ describe("list members", () => {
 });
 
 describe("requests the server would misroute", () => {
-  it("refuses patch without an id and patchMany without ids before sending", async () => {
+  // An empty segment is no segment, and URL parsing drops "." and "..",
+  // escaped or not: each would PATCH another path than the row's.
+  it("refuses a key no path segment carries, and patchMany without ids, before sending", async () => {
     const server = fakeServer(() => json({ updated: [] }));
     const items = client(server.fetch).resource<WireItem>("items");
-    await expect(items.patch("", { name: "a" })).rejects.toBeInstanceOf(RangeError);
+    for (const key of ["", ".", "..", Number.NaN, Number.POSITIVE_INFINITY]) {
+      await expect(items.patch(key, { name: "a" })).rejects.toBeInstanceOf(RangeError);
+    }
+    await expect(client(server.fetch).resource<WireStock, [string, string]>("stock").patch(["w1", ".."], { qty: 1 })).rejects.toBeInstanceOf(RangeError);
+    await expect(items.patch([] as unknown as string, { name: "a" })).rejects.toBeInstanceOf(RangeError);
+    await expect(items.patch({} as unknown as string, { name: "a" })).rejects.toBeInstanceOf(TypeError);
     await expect(items.patchMany([], { name: "a" })).rejects.toBeInstanceOf(RangeError);
     expect(server.calls).toHaveLength(0);
   });

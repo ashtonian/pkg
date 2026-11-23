@@ -56,7 +56,7 @@ func intTenantResources(t *testing.T) *parse.Resource[intTenantDevice] {
 	tags := parse.MustResource[intTenantTag]("tags", parse.TenantColumn("tenant_id"))
 	devices.MustRelate("commands", parse.HasMany(commands, "device_id", parse.Indexed()))
 	devices.MustRelate("tags", parse.ManyToMany(tags,
-		parse.Junction{Table: "device_tags", Source: "device_id", Target: "tag_id", Tenant: "tenant_id"},
+		parse.Junction{Table: "device_tags", Source: []string{"device_id"}, Target: []string{"tag_id"}, Tenant: "tenant_id"},
 		parse.Indexed(), parse.Includable(), parse.Writable()))
 	return devices
 }

@@ -193,7 +193,7 @@ func Example_relations() {
 func Example_include() {
 	tp := products()
 	q, err := filter.BuildIncludeQuery(tp.FilterSchema().Fields["collections"], filter.PostgresDialect{},
-		[]any{"0190f3c2-0000-7000-8000-000000000011", "0190f3c2-0000-7000-8000-000000000012"})
+		[]core.Key{{"0190f3c2-0000-7000-8000-000000000011"}, {"0190f3c2-0000-7000-8000-000000000012"}})
 	if err != nil {
 		panic(err)
 	}

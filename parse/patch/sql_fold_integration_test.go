@@ -32,6 +32,29 @@ func TestBuildPatchSQL_MergePostgres(t *testing.T) {
 	})
 }
 
+func TestBuildPatchSQL_MembersPostgres(t *testing.T) {
+	runMemberCases(t, mergeDB{
+		db:      dbtest.Postgres(t),
+		dialect: filter.PostgresDialect{},
+		schema:  `CREATE TABLE docs (id BIGINT PRIMARY KEY, doc JSONB)`,
+		insert:  `INSERT INTO docs (id, doc) VALUES (1, $1::jsonb)`,
+		read:    `SELECT doc::text FROM docs WHERE id = 1`,
+	})
+}
+
+// A json (not jsonb) column's members are written through jsonb, and the
+// result stored back.
+func TestBuildPatchSQL_MembersPostgresJSON(t *testing.T) {
+	runMemberCases(t, mergeDB{
+		db:      dbtest.Postgres(t),
+		dialect: filter.PostgresDialect{},
+		schema:  `CREATE TABLE docs (id BIGINT PRIMARY KEY, doc JSON)`,
+		storage: core.SQLJSON,
+		insert:  `INSERT INTO docs (id, doc) VALUES (1, $1::json)`,
+		read:    `SELECT doc::text FROM docs WHERE id = 1`,
+	})
+}
+
 // A json (not jsonb) column merges as jsonb and stores the result back.
 func TestBuildPatchSQL_MergePostgresJSON(t *testing.T) {
 	runMergeCases(t, mergeDB{

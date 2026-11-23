@@ -348,8 +348,8 @@ func TestRelationStatements_RefusesAnotherResourcesPlan(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, filter.PostgresDialect{}, plan.Dialect())
 
-	_, err = gadgets(t).RelationStatements(plan, []any{"g1"})
+	_, err = gadgets(t).RelationStatements(plan, []parse.Key{{"g1"}})
 	assert.ErrorContains(t, err, `update plan built for "other_gadgets"`)
-	_, err = gadgets(t).RelationStatements(nil, []any{"g1"})
+	_, err = gadgets(t).RelationStatements(nil, []parse.Key{{"g1"}})
 	assert.ErrorContains(t, err, "nil update plan")
 }

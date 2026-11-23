@@ -220,7 +220,7 @@ func keysOf[T any](t *testing.T, db *sql.DB, r *parse.Resource[T], d filter.Dial
 	require.NoError(t, err)
 	plan, err := r.BuildList(d, req, scope)
 	require.NoError(t, err)
-	key := slices.Index(r.ColumnNames(), r.PrimaryKeyColumn())
+	key := slices.Index(r.ColumnNames(), r.PrimaryKeyColumns()[0])
 	var out []string
 	for _, row := range queryRows(t, db, plan.Page.SQL, plan.Page.Args) {
 		out = append(out, fmt.Sprint(row[key]))

@@ -19,21 +19,23 @@ The repository's `go.work` ties the published modules together, so a change to o
 | `make parse-release-check` | Fresh module-archive consumer, tagged tests, README program and dependency audit |
 | `make parse-sdk-release-check` | Packed SDK consumer, TypeScript declarations, runtime subpaths and sourcemaps |
 | `make parse-sdk-registry-check` | Registry processing delay, integrity and deadline regressions |
-| `make lint` / `make lint-cookbook` | `go vet` and staticcheck over the published modules, tagged ones in one pass with both tags / over the cookbook |
+| `make lint` / `make lint-cookbook` | `go vet`, staticcheck and golangci-lint ([new issues only](#lint-baseline)) over the published modules, tagged ones in one pass with both tags / `go vet` and staticcheck over the cookbook |
 | `make release-check` | Every module as a consumer gets it, without the race detector: gitx and config standalone builds plus the module archive checks below. `RELEASE_CHECKS='parse-release-check'` runs a subset |
 | `make gowalker-release-check` | Gowalker archive downloaded into a fresh consumer, its tests, the README quick start and complete usage examples |
 | `make httpx-release-check` | Five module ZIPs downloaded by fresh consumers, both tagged lanes, Gin integration and benchmark smoke tests |
 | `make tool-check` | Module archive tooling tests and static analysis |
-| `make docs-check` | Every workspace module's Markdown held to its code: the Go identifiers its code spans name, its relative links and their anchors, its code-map entries; for a module that opts in, every Go file in a code map, every export named and every option in a table row ([tools/doccheck](tools/doccheck/README.md)) |
+| `make docs-check` | Every module's Markdown, in the workspace or kept out of it, held to its code: the Go identifiers its code spans name, its relative links and their anchors, its code-map entries; for a module that opts in, every Go file in a code map, every export named and every option in a table row ([tools/doccheck](tools/doccheck/README.md)) |
 | `make release-please-check` | The release workflow's release-please runner: first-parent release notes and their release-please wiring ([tools/release-please](tools/release-please/README.md)) |
 | `make cookbook-check` | The [config cookbook](config/examples/cookbook), a module of runnable recipes |
 | `make cookbook-integration` | The cookbook's database tests: the settings-store recipe on SQLite, and on PostgreSQL through `COOKBOOK_POSTGRES_DSN` (`make cookbook-postgres-up` starts a server; see the [cookbook's README](config/examples/cookbook/README.md#build-run-and-test)) |
+| `make parse-example-check` | The [Parse server example](parse/examples/server), a module of its own, against the Parse working tree: tidy, vet, staticcheck and its tagged tests under race |
 | `make ci` | All of the above |
 
 | Make variable | Default | Description |
 |---|---|---|
 | `PACKAGES` | `all` | The packages the `test-*` and `lint` targets cover: `all`, or space-separated import paths, as CI passes the packages a change reaches. `make test-parse-unit PACKAGES='github.com/ashtonian/pkg/parse github.com/ashtonian/pkg/parse/filter'` tests those two packages; each target takes its own modules' paths, and one with none runs nothing |
 | `RELEASE_CHECKS` | every module's release check | The checks `make release-check` runs |
+| `LINT_ALL` | empty | Empty: golangci-lint in `make lint` reports only the issues on lines changed since the merge base with `origin/main`. `1`: every issue |
 
 GitHub Actions runs workflows here only for the repository owner. Pull requests opened by a bot, such as Dependabot updates or a release PR opened without the `RELEASE_PLEASE_TOKEN` secret, therefore get no checks: run CI on the branch with `gh workflow run ci.yml -R ashtonian/pkg --ref <branch>`, and the pull request shows the results.
 
@@ -64,8 +66,10 @@ superseded run leaves no change unvalidated. The scope lists the workspace's pac
 `go-ignore` lists what no workspace Go code reads: `CONTRIBUTING.md`, the root `README.md`,
 changelogs, the Markdown guides in `config/docs`, `gowalker/docs` and `httpx/docs` (parse's
 are read by parse's tests, which render their tables from the code), the SDK, the release-please manifest and configuration, the release and SDK
-scripts, and the modules outside the workspace (the cookbook, the Gin example, httpx's
-benchmarks, the archive, documentation and release tooling), whose own checks read them. A module manifest
+scripts, golangci-lint's `.golangci.yml`, and the modules outside the workspace (the cookbook, the Gin example, httpx's
+benchmarks, the Parse server example, the ruleguard rules, the archive, documentation and release tooling), whose own checks read them. A change to
+`.golangci.yml` runs lint over every package and nothing else; a change to `tools/gorules/`, a module the
+documentation check reads, runs that check too. A module manifest
 (`go.mod`, `go.sum`), `go.work`, `go.work.sum` or any other file no package owns reaches
 every package; workflows, the Makefile and the CI scripts run every job. So do explicit
 workflow dispatch, the `full-ci` label on a pull request (it applies from the next push or
@@ -76,8 +80,8 @@ step's log: each job's line names the file or package that selected it, and `rea
 
 Release checks run per module: each reads only its module's tree, its own script and the
 archive tooling, so a change runs the checks of the modules it touches (the cookbook's with
-either config module), and shared build files, workflow, tooling, manifests and unknown
-paths run all of them. The documentation check reads every workspace module, so a change to any of them runs it. The suites run once each:
+either config module, the Parse server example's with Parse), and shared build files, workflow, tooling, manifests and unknown
+paths run all of them. The documentation check reads every module, in the workspace or not, so a change to any of them runs it. The suites run once each:
 
 - Ubuntu runs the reached packages' race tests (parse's unit tests as below) on the newest
   Go 1.27 patch release; macOS runs only the modules with platform code (config, process,
@@ -90,7 +94,7 @@ paths run all of them. The documentation check reads every workspace module, so 
   fails the change-scope job when one does not. The nightly run races every parse test.
 - Lint vets every reached package and test on Go 1.27.0, the declared floor, so it is also
   the floor's build check; the cookbook lints there whenever its check runs or lint covers
-  every package. Staticcheck runs on Go 1.27.4, the first 1.27 release whose export data
+  every package. Staticcheck and golangci-lint run on Go 1.27.4, the first 1.27 release whose export data
   keeps generic methods in declaration order; on earlier ones its facts about methods are
   misattributed (golang/go#82106). httpx and gitx run their tests on Go 1.26, their floor.
 - Parse's SQLite integration runs beside PostgreSQL 17 and 18.
@@ -147,6 +151,41 @@ Gowalker is its own module at
 `github.com/ashtonian/pkg/gowalker`, released with `gowalker/v…` tags. Public modules contain source, tests,
 licenses and user documentation; project plans, reviews and audits stay outside
 the public repository. Its archive check runs the README quick start and usage programs verbatim.
+
+### Lint baseline
+
+golangci-lint runs the lint baseline the owner's Go repositories share. Two files are
+copies from the owner's private lint-baseline repository at commit `45fcf98f43fb`:
+
+| Source | Copy here | Changed in the copy |
+|---|---|---|
+| `lint/golangci.yml` | `.golangci.yml` | The header comment, the ruleguard rules' path, and `issues.new-from-merge-base` |
+| `lint/rules.go` | `tools/gorules/rules.go` | The comment naming where it comes from |
+
+`tools/gorules` is a module of its own, outside `go.work`, whose `go.mod` requires
+`github.com/quasilyte/go-ruleguard/dsl` at the version the baseline's header names. gocritic
+type-checks the rules through `go/build`, which resolves that import only in a workspace
+holding a module that requires it, and `go.work` holds the published modules alone. So
+`make lint` writes `.lint.work` (ignored): `go.work` and `go.work.sum` copied, with
+`tools/gorules` added. golangci-lint runs under it on Go 1.27.4, over the same packages and
+tags as `go vet` and staticcheck; `GOLANGCI_LINT_VERSION` in the Makefile pins the release
+(v2.15.0).
+
+Only issues on lines changed since the merge base with `origin/main` fail
+(`issues.new-from-merge-base`), so the baseline's linters judge new code while the findings
+that predate it are fixed; `make lint LINT_ALL=1` lists them all, and once it reports none
+the setting goes. CI's lint job checks out main's history for the merge base.
+
+To take a newer baseline, copy both files again from that commit, keep the changes the table
+lists, raise the dsl requirement in `tools/gorules/go.mod` if the header names a newer
+version, update the commit here, and run `golangci-lint cache clean`: golangci-lint's cache
+does not track the rules file.
+
+| Failure | Cause | Fix |
+|---|---|---|
+| `ruleguard init error … could not import github.com/quasilyte/go-ruleguard/dsl` | golangci-lint ran outside `.lint.work`, or `tools/gorules/go.mod` lost the requirement | Run it through `make lint`; restore the `require` |
+| `… origin/main …: unknown revision` or a merge-base error | The checkout has no `origin/main` or a shallow history | `git fetch origin main`; in CI, the lint job's checkout keeps `fetch-depth: 0` |
+| ruleguard results don't change after the rules did | golangci-lint's cache | `golangci-lint cache clean` |
 
 ## Versioning
 
@@ -229,9 +268,11 @@ To change the patterns, replace the secret
 
 ## Parse SQL matrix
 
-Parse requires Go 1.27 and publishes as `github.com/ashtonian/pkg/parse`, with `parse/v…` tags. CI runs unit tests and existing fuzz seeds (under the race detector nightly, and on pull requests only the tests tagged `concurrency`), SQLite integration beside PostgreSQL 17/18 with PostGIS 3.6 under the race detector, and the TypeScript SDK's shared corpora. modernc's SQLite builds without race or checkptr instrumentation: it is C translated to Go, and instrumenting it made the SQLite-backed suites about 30 times slower without checking this repository's code. The SDK release check installs its tarball in a fresh consumer and checks public declarations, runtime subpaths and self-contained JavaScript sourcemaps. The SDK package version follows the Parse release component. CI stores benchmark text and CPU/allocation profiles from main pushes that change the Go code they build, and from the nightly run; it does not run dedicated fuzzing sessions.
+Parse requires Go 1.27 and publishes as `github.com/ashtonian/pkg/parse`, with `parse/v…` tags. CI runs unit tests and existing fuzz seeds (under the race detector nightly, and on pull requests only the tests tagged `concurrency`), SQLite integration beside PostgreSQL 17/18 with PostGIS 3.6 under the race detector, and the TypeScript SDK's shared corpora. modernc's SQLite builds without race or checkptr instrumentation: it is C translated to Go, and instrumenting it made the SQLite-backed suites about 30 times slower without checking this repository's code. The SDK release check installs its tarball in a fresh consumer and checks public declarations, runtime subpaths and self-contained JavaScript sourcemaps. The SDK package version follows the Parse release component. CI stores benchmark text and CPU/allocation profiles from main pushes that change the Go code they build, and from the nightly run.
 
-`eval "$(make -s parse-postgres-up)"` starts PostGIS 3.6 on PostgreSQL 18 in Docker, the server CI provisions, and exports `PARSE_POSTGRES_DSN` and `PARSE_POSTGIS_DSN` pointing at it; `PARSE_PG_PORT` (default 55432) and `PARSE_PG_NAME` (default `parse-postgres`) choose its host port and container name, and `make parse-postgres-down` removes it. For an existing server, set the two variables yourself. Then run `make test-parse-integration`. Each case gets a fresh schema. A requested server that is unavailable fails; an unrequested PostgreSQL case skips, unless `PARSE_REQUIRE_PG=1`, which CI's `parse-postgres` job sets so that a missing variable fails the job rather than skipping its PostgreSQL coverage. The release check clears all three variables. `make parse-release-check` verifies a candidate archive independently of the workspace; publication additionally requires clean public-proxy installation of the immutable release.
+Pull requests replay the checked-in fuzz seeds; the nightly workflow's `parse fuzzing` job generates inputs every night, each run starting from the corpus the last one saved, so it explores inputs the last did not. `go test -fuzz` keeps the inputs that widen coverage under `$(go env GOCACHE)/fuzz/github.com/ashtonian/pkg/parse`, which go-ci-actions does not carry between runs, so the job restores that directory from the GitHub cache entry `parse-fuzz-corpus-*` created last, and saves it under a key of its own run. Before the save, `tools/fuzz_corpus.py` keeps the newest `FUZZ_CORPUS_MAX_ENTRIES` inputs of each target (1000) and then removes the oldest inputs until the corpus is at most `FUZZ_CORPUS_MAX_BYTES` (32 MiB), so one entry is at most 32 MiB; each run restores only the newest entry, and GitHub evicts an entry unused for seven days, so the corpus entries hold at most about eight times that. `tools/fuzz-parse.sh parse` finds each package's fuzz targets under the `unit` tag (`go test -list '^Fuzz'`), so a new target is fuzzed without a list to edit, and `tools/test_ci_parse_fuzz.py` fails on a target in a file that tag does not select. The script splits `FUZZ_BUDGET_SECONDS` (900 in CI) evenly between the targets and runs every one even after one fails. A failing input fails the job with an error annotation naming the target, the input and the command that replays it, prints the input, and is kept for 30 days as the artifact `parse-fuzz-crashers-<sha>-<attempt>`, at its path under `parse/`. Fix the defect and copy the input into the package's `testdata/fuzz/<target>/` in the same change: it is a seed every test run replays from then on. Locally, `FUZZ_BUDGET_SECONDS=120 tools/fuzz-parse.sh parse` fuzzes every target for two minutes in all, and `FUZZ_CRASHERS` (default `fuzz-crashers`) names where failing inputs are copied.
+
+`eval "$(make -s parse-postgres-up)"` starts PostGIS 3.6 on PostgreSQL 18 in Docker, the server CI provisions, and exports `PARSE_POSTGRES_DSN` and `PARSE_POSTGIS_DSN` pointing at it; `PARSE_PG_PORT` (default 55432) and `PARSE_PG_NAME` (default `parse-postgres`) choose its host port and container name, and `make parse-postgres-down` removes it. For an existing server, set the two variables yourself. Then run `make test-parse-integration`. Each case gets a fresh schema. `PARSE_TEST_TIMEOUT`, a Go duration (default `30s`), bounds the fixture's statements and each `parsepgx` PostgreSQL test; raise it on a contended host. A requested server that is unavailable fails; an unrequested PostgreSQL case skips, unless `PARSE_REQUIRE_PG=1`, which CI's `parse-postgres` job sets so that a missing variable fails the job rather than skipping its PostgreSQL coverage. The release check clears all three variables. `make parse-release-check` verifies a candidate archive independently of the workspace; publication additionally requires clean public-proxy installation of the immutable release.
 
 ## Parse SDK publication
 

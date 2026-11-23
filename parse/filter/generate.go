@@ -164,20 +164,33 @@ func generateFilterSchema(g *core.SchemaGenerator, t reflect.Type) (*ResourceSch
 		}
 
 		if tags.Relation != "" {
-			rel, err := core.ParseRelationTag(tags.Relation)
+			rel, err := g.RelationTag(walk, field)
 			if err != nil {
 				return nil, fmt.Errorf("field %s: %w", field.GoName, err)
 			}
-			if info.Type != core.FieldTypeArray {
-				return nil, fmt.Errorf("field %s: relation fields must be slices of scalar target IDs, got %s", field.GoName, field.Type)
-			}
-			// Relation operators compare target IDs, so values normalize
-			// and advertise as the element type, not "array".
-			fs.DataType = info.Elem
 			fs.Elem = ""
 			fs.Relation = rel
-			if tags.FilterOps == "" {
-				fs.AllowedOperators = []FilterOperator{OpEq, OpNe, OpIn, OpNin, OpNull, OpNotNull}
+			if len(rel.TargetColumns) == 1 {
+				// Relation operators compare target keys, so values
+				// normalize and advertise as the key's type, not "array".
+				fs.DataType = rel.TargetTypes[0].Type
+				fs.NumberKind = rel.TargetTypes[0].NumberKind
+				if tags.FilterOps == "" {
+					fs.AllowedOperators = []FilterOperator{OpEq, OpNe, OpIn, OpNin, OpNull, OpNotNull}
+				}
+			} else {
+				// A key of several columns is no one value: the field
+				// compares none, as a declared relation's does, and only
+				// asks whether the owner has pairs.
+				fs.DataType, fs.NumberKind = core.FieldTypeArray, reflect.Invalid
+				if tags.FilterOps == "" {
+					fs.AllowedOperators = []FilterOperator{OpNull, OpNotNull}
+				}
+				for _, op := range fs.AllowedOperators {
+					if !isNullTest(op) {
+						return nil, fmt.Errorf("field %s: relation target key %s has %d columns, which $%s cannot name; it takes $null", field.GoName, strings.Join(rel.TargetColumns, "+"), len(rel.TargetColumns), op)
+					}
+				}
 			}
 		}
 

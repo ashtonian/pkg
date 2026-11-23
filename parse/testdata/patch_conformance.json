@@ -2,6 +2,9 @@
   "schema": {
     "version": 1,
     "resource": "conf_patches",
+    "key": [
+      "id"
+    ],
     "filter": {
       "fields": {
         "id": {

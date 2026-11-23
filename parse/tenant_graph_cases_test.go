@@ -107,7 +107,7 @@ func runTenantKeyGraph(t *testing.T, open func(t *testing.T) *sql.DB, d parse.Di
 		commands := parse.MustResource[untenantedCommand]("commands")
 		devices.MustRelate("commands", parse.HasMany(commands, "device_id", parse.Indexed()))
 		devices.MustRelate("tags", parse.ManyToMany(parse.MustResource[untenantedTag]("tags"),
-			parse.Junction{Table: "device_tags", Source: "device_id", Target: "tag_id", Tenant: "tenant_id"}, parse.Indexed()))
+			parse.Junction{Table: "device_tags", Source: []string{"device_id"}, Target: []string{"tag_id"}, Tenant: "tenant_id"}, parse.Indexed()))
 		// Declared last: devices learns its key from a relation of its target.
 		commands.MustRelate("logs", parse.HasMany(tenanted[graphLog[int]]("logs"), "command_id", parse.Indexed()))
 

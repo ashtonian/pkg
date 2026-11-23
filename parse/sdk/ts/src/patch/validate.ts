@@ -16,8 +16,9 @@ import type { PatchOp, PatchPathSchema, PatchSchema } from "./types.js";
  * of the path's type — numbers integral and within the path's Go kind,
  * strings in its enum, values within its bounds, arrays of its element type
  * within its element counts (each element in the enum and bounds), a
- * relation's membership a list of keys of its element type, none null (a
- * null membership is the clear) —
+ * relation's membership a list of keys of its element type, or of arrays of
+ * a value per key column for a target key of several, none null (a null
+ * membership is the clear) —
  * and the operation count within the maximum, counting each
  * top-level member and each nested object below it. The corpus
  * testdata/patch_conformance.json holds the two to one answer per input.
@@ -97,7 +98,9 @@ function validatePatchValue(field: string, value: unknown, path: PatchPathSchema
 // most maxRelationValues of them once repeats are removed (E2119; 0 is
 // unlimited). A path whose wire is "string" takes each key as a JSON string
 // holding it, as its target's quoted key reads in responses; repeats are
-// found on the key it holds.
+// found on the key it holds. A target key of several columns (path.key)
+// takes each key as an array of a value per column, each judged as its
+// column's.
 function validateMembership(field: string, value: unknown, path: PatchPathSchema, maxRelationValues: number): SchemaValidationError[] {
   if (!Array.isArray(value)) {
     return [new SchemaValidationError(field, "E2077", `Relation "${field}" expects an array of keys`)];
@@ -105,21 +108,26 @@ function validateMembership(field: string, value: unknown, path: PatchPathSchema
   if (value.some(el => el === null)) {
     return [new SchemaValidationError(field, "E2118", `Relation "${field}" takes keys, which are never null`)];
   }
-  const elementType = path.elem;
-  if (elementType) {
-    const ok = path.wire === "string"
-      ? (el: unknown) => quotedValue(el, elementType, path.number_kind) !== undefined
-      : (el: unknown) => scalarOK(el, elementType, path.number_kind);
+  const columns = path.key ?? [];
+  let identity: (el: unknown) => unknown = el => el;
+  if (columns.length > 1) {
+    const ok = (el: unknown) => Array.isArray(el) && el.length === columns.length &&
+      columns.every((c, i) => keyValue(el[i], c.data_type, c.wire, c.number_kind) !== undefined);
     if (!value.every(ok)) {
+      const types = columns.map(c => c.data_type).join(", ");
+      return [new SchemaValidationError(field, "E2077", `Relation "${field}" expects keys of ${String(columns.length)} values, one per key column (${types})`)];
+    }
+    identity = el => JSON.stringify(columns.map((c, i) => keyValue((el as unknown[])[i], c.data_type, c.wire, c.number_kind)));
+  } else if (path.elem) {
+    const elementType = path.elem;
+    if (!value.every(el => keyValue(el, elementType, path.wire, path.number_kind) !== undefined)) {
       const form = path.wire === "string" ? ` as JSON strings holding them (json:",string")` : "";
       return [new SchemaValidationError(field, "E2077", `Relation "${field}" expects ${elementType} keys${form}`)];
     }
+    identity = el => keyValue(el, elementType, path.wire, path.number_kind);
   }
   if (maxRelationValues > 0) {
-    const key = path.wire === "string" && elementType
-      ? (el: unknown) => quotedValue(el, elementType, path.number_kind)
-      : (el: unknown) => el;
-    const distinct = new Set(value.map(key)).size;
+    const distinct = new Set(value.map(identity)).size;
     if (distinct > maxRelationValues) {
       return [new SchemaValidationError(field, "E2119",
         `Relation "${field}" names ${String(distinct)} keys; at most ${String(maxRelationValues)} in one patch`)];
@@ -139,6 +147,13 @@ function validateQuotedValue(field: string, value: unknown, path: PatchPathSchem
     return [new SchemaValidationError(field, "E2077", `Field "${field}" expects its ${type} as a JSON string holding it (json:",string"), got ${got}`)];
   }
   return checkValueTags(field, v, type, path);
+}
+
+// keyValue is the key value v holds, as a column of type in wire form, or
+// undefined when it holds none.
+function keyValue(v: unknown, type: FieldType, wire?: string, kind?: string): unknown {
+  if (wire === "string") return quotedValue(v, type, kind);
+  return scalarOK(v, type, kind) ? v : undefined;
 }
 
 // quotedValue is the value a quoted value's JSON string holds, or undefined

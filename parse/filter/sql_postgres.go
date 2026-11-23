@@ -137,7 +137,7 @@ func (d PostgresDialect) Condition(field *FieldSchema, op FilterOperator, value 
 	}
 	if op == OpIn || op == OpNin {
 		return membership(op, value, func(members []any, in bool) (string, error) {
-			return d.memberSet(field, expr, members, in, bind)
+			return d.memberSet(field, members, in, bind)
 		})
 	}
 	if isOrdering(op) && orderedAsText(field) {
@@ -162,7 +162,8 @@ func (d PostgresDialect) Condition(field *FieldSchema, op FilterOperator, value 
 // that type (setRows): a hash serves it in every plan, where under a
 // generic plan `= ANY` probes a parameter's array member by member for each
 // row.
-func (d PostgresDialect) memberSet(field *FieldSchema, expr string, members []any, in bool, bind func(any) string) (string, error) {
+func (d PostgresDialect) memberSet(field *FieldSchema, members []any, in bool, bind func(any) string) (string, error) {
+	expr := FieldExpr(d, field)
 	if field.Path != nil {
 		set, err := d.setRows(field, members, bind)
 		if err != nil {

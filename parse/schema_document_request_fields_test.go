@@ -28,7 +28,7 @@ type docThing struct {
 	Labels    []string   `json:"labels"     db:"labels"   parse:"filter"`
 	Rank      int        `json:"rank"       db:"rank"`
 	Secret    string     `json:"-"          db:"secret"`
-	OwnerID   string     `json:"owner_id"   db:"owner_id"`
+	OwnerID   int64      `json:"owner_id"   db:"owner_id"`
 }
 
 type docOwner struct {

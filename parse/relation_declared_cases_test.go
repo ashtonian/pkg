@@ -6,6 +6,8 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
+	"iter"
 	"net/url"
 	"slices"
 	"strings"
@@ -89,7 +91,7 @@ func relationResources(t *testing.T) relResources {
 
 	devices.MustRelate("commands", parse.HasMany(commands, "device_id", parse.Indexed(), parse.Includable(), parse.Facetable()))
 	devices.MustRelate("type", parse.BelongsTo(types, "type_id", parse.PolicyScoped()))
-	devices.MustRelate("tags", parse.ManyToMany(tags, parse.Junction{Table: "device_tags", Source: "device_id", Target: "tag_id", Tenant: "tenant_id"}, parse.Indexed(), parse.Includable(), parse.Facetable(), parse.Writable()))
+	devices.MustRelate("tags", parse.ManyToMany(tags, parse.Junction{Table: "device_tags", Source: []string{"device_id"}, Target: []string{"tag_id"}, Tenant: "tenant_id"}, parse.Indexed(), parse.Includable(), parse.Facetable(), parse.Writable()))
 	devices.MustRelate("shared_types", parse.ManyToMany(types, parse.Through("device_shared_types", "device_id", "type_id"), parse.PolicyScoped(), parse.Includable(), parse.Facetable(), parse.Writable()))
 	commands.MustRelate("device", parse.BelongsTo(devices, "device_id"))
 	commands.MustRelate("receipts", parse.HasMany(receipts, "command_id", parse.Indexed()))
@@ -270,19 +272,86 @@ func (l sqlMembershipLookup) LookupFilteredValues(ctx context.Context, lk *filte
 	return l.LookupValues(ctx, lk)
 }
 
+// LookupValues runs the subquery a membership renders for lk; a lookup
+// projecting a key renders as the inner lookup of a probe's WhereKeyMember,
+// and answers a core.Key per row.
 func (l sqlMembershipLookup) LookupValues(_ context.Context, lk *filter.Lookup) ([]any, error) {
 	probe := &filter.FieldSchema{ExternalName: "probe", Column: "probe", DataType: core.FieldTypeString}
+	member, prefix, suffix := lk, `"probe" IN (`, ")"
+	if lk.ProjectKey != nil {
+		member = &filter.Lookup{Table: "probe", Project: "probe", Where: filter.WhereKeyMember(lk.ProjectKey, lk)}
+		columns := make([]string, len(lk.ProjectKey))
+		for i, c := range lk.ProjectKey {
+			columns[i] = `"probe".` + l.d.QuoteIdent(c)
+		}
+		prefix = `"probe" IN (SELECT "probe"."probe" FROM "probe" WHERE (` + strings.Join(columns, ", ") + `) IN (`
+		suffix = "))"
+	}
 	res, err := filter.NewSQLBuilder(&filter.ResourceSchema{Name: "probe"}, l.d).
-		Build(&filter.FilterAST{Root: &filter.FilterNode{Field: probe, Op: filter.OpMember, Member: lk}})
+		Build(&filter.FilterAST{Root: &filter.FilterNode{Field: probe, Op: filter.OpMember, Member: member}})
 	if err != nil {
 		return nil, err
 	}
-	sub := strings.TrimSuffix(strings.TrimPrefix(res.Where, `"probe" IN (`), ")")
+	sub, ok := strings.CutPrefix(res.Where, prefix)
+	require.True(l.t, ok, res.Where)
+	sub, ok = strings.CutSuffix(sub, suffix)
+	require.True(l.t, ok, res.Where)
 	var out []any
 	for _, row := range l.query(l.t, sub, res.Args) {
-		out = append(out, row[0])
+		if lk.ProjectKey == nil {
+			out = append(out, row[0])
+		} else {
+			out = append(out, core.Key(row))
+		}
 	}
 	return out, nil
+}
+
+// LookupPairs runs lk projecting the owner's columns and lk's own as one
+// key, and splits each row into its pair.
+func (l sqlMembershipLookup) LookupPairs(ctx context.Context, lk *filter.Lookup, owner []string) (iter.Seq2[filter.IncludePair, error], error) {
+	// Owner and target may share columns (a has-many whose foreign key is
+	// part of the target's key), so the lookup projects each column once.
+	var columns []string
+	for _, c := range slices.Concat(owner, lookupColumns(lk)) {
+		if !slices.Contains(columns, c) {
+			columns = append(columns, c)
+		}
+	}
+	pairs := *lk
+	pairs.Project, pairs.ProjectKey = "", columns
+	if len(columns) == 1 {
+		pairs.Project, pairs.ProjectKey = columns[0], nil
+	}
+	rows, err := l.LookupValues(ctx, &pairs)
+	if err != nil {
+		return nil, err
+	}
+	part := func(row core.Key, names []string) any {
+		if len(names) == 1 {
+			return row[slices.Index(columns, names[0])]
+		}
+		k := make(core.Key, len(names))
+		for i, c := range names {
+			k[i] = row[slices.Index(columns, c)]
+		}
+		return k
+	}
+	return func(yield func(filter.IncludePair, error) bool) {
+		for _, v := range rows {
+			row, ok := v.(core.Key)
+			if len(columns) == 1 {
+				row, ok = core.Key{v}, true
+			}
+			if !ok {
+				yield(filter.IncludePair{}, fmt.Errorf("pair row %T", v))
+				return
+			}
+			if !yield(filter.IncludePair{Owner: part(row, owner), Target: part(row, lookupColumns(lk))}, nil) {
+				return
+			}
+		}
+	}, nil
 }
 
 func queryRows(t *testing.T, db interface {
@@ -324,7 +393,7 @@ func runRelationIncludes(t *testing.T, r relResources, d filter.Dialect, query f
 	require.NoError(t, err)
 	plan, err := r.devices.BuildList(d, req, relationScopeT1())
 	require.NoError(t, err)
-	queries, err := r.devices.IncludeQueries(plan, []any{"d1", "d2", "d3", "d4"})
+	queries, err := r.devices.IncludeQueries(plan, []parse.Key{{"d1"}, {"d2"}, {"d3"}, {"d4"}})
 	require.NoError(t, err)
 	require.Len(t, queries, 3)
 	got := map[string]map[string][]string{}
@@ -349,7 +418,7 @@ func runRelationIncludes(t *testing.T, r relResources, d filter.Dialect, query f
 	assert.Error(t, err, "a belongs-to is not includable")
 	plan, err = r.devices.BuildList(d, req, parse.Scope{Tenant: "t1"})
 	require.NoError(t, err)
-	_, err = r.devices.IncludeQueries(plan, []any{"d1"})
+	_, err = r.devices.IncludeQueries(plan, []parse.Key{{"d1"}})
 	assert.ErrorIs(t, err, filter.ErrRelatedPolicyRequired, "a policy-scoped include needs the target's policy")
 }
 
@@ -424,7 +493,7 @@ func runRelationUnknownPolicy(t *testing.T, r relResources, d filter.Dialect, qu
 	})
 	t.Run("include", func(t *testing.T) {
 		plan := list(t, r.devices, url.Values{filter.ParamInclude: {"shared_types"}}, unknown("device_types"))
-		queries, err := r.devices.IncludeQueries(plan, []any{"d1", "d2", "d3", "d4"})
+		queries, err := r.devices.IncludeQueries(plan, []parse.Key{{"d1"}, {"d2"}, {"d3"}, {"d4"}})
 		require.NoError(t, err)
 		require.Len(t, queries, 1)
 		assert.Empty(t, query(t, queries[0].SQL, queries[0].Args), queries[0].SQL)

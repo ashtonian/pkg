@@ -56,6 +56,14 @@ type wirePart struct {
 	State  string `json:"state"   db:"state"   parse:"filter" enum:"ok,worn"`
 }
 
+// wireStock is keyed by two columns, so its item URL holds a segment per
+// column, each escaped on its own.
+type wireStock struct {
+	WarehouseID string `json:"warehouse_id" db:"warehouse_id"`
+	SKU         string `json:"sku"          db:"sku"`
+	Qty         int    `json:"qty"          db:"qty" parse:"patch"`
+}
+
 // wireRequest is a request as the server receives it. Query holds every
 // value of each parameter; Body is JSON.
 type wireRequest struct {
@@ -113,6 +121,10 @@ func wireDB(t *testing.T) *sql.DB {
 		`CREATE TABLE wire_items (id TEXT PRIMARY KEY, name TEXT NOT NULL, labels TEXT NOT NULL, unit TEXT)`,
 		`CREATE TABLE wire_parts (id TEXT PRIMARY KEY, item_id TEXT NOT NULL, state TEXT NOT NULL)`,
 		`CREATE TABLE wire_item_tags (item_id TEXT NOT NULL, tag_id TEXT NOT NULL, PRIMARY KEY (item_id, tag_id))`,
+		`CREATE TABLE wire_stock (warehouse_id TEXT NOT NULL, sku TEXT NOT NULL, qty INTEGER NOT NULL, PRIMARY KEY (warehouse_id, sku))`,
+		// Each column alone, and the SKU's text up to its slash, names
+		// another row than the pair does.
+		`INSERT INTO wire_stock VALUES ('w1', 'a/b', 0), ('w1', 'a', 0), ('w2', 'a/b', 0)`,
 	} {
 		_, err := db.Exec(stmt)
 		require.NoError(t, err)
@@ -132,15 +144,18 @@ func wireDB(t *testing.T) *sql.DB {
 
 // wireServer serves wire_items as a parse server does: lists by GET and
 // POST, facets by OPTIONS, merge patches of one row or of the rows id[]
-// names, and the schema routes.
+// names, and the schema routes; and merge patches of one wire_stock row by
+// its key of two columns.
 func wireServer(t *testing.T, db *sql.DB) http.Handler {
 	t.Helper()
 	items := parse.MustResource[wireItem]("wire_items")
 	parts := parse.MustResource[wirePart]("wire_parts")
 	items.MustRelate("parts", parse.HasMany(parts, "item_id", parse.Indexed()))
+	stock := parse.MustResource[wireStock]("wire_stock", parse.PrimaryKey("warehouse_id", "sku"))
 	reg := parse.NewSchemaRegistry()
 	require.NoError(t, parse.RegisterResource(reg, items))
 	require.NoError(t, parse.RegisterResource(reg, parts))
+	require.NoError(t, parse.RegisterResource(reg, stock))
 
 	// handle answers a parse error with its body; any other error fails
 	// the recording.
@@ -151,20 +166,10 @@ func wireServer(t *testing.T, db *sql.DB) http.Handler {
 			}
 		}
 	}
-	update := func(r *http.Request, target parse.Target) ([]wireItem, error) {
-		parsed, err := parsehttp.ParsePatch(r, items)
-		if err != nil {
-			return nil, err
-		}
-		plan, err := items.BuildUpdate(filter.SQLiteDialect{}, parsed, target, parse.Scope{})
-		if err != nil {
-			return nil, err
-		}
-		res, err := parsesql.Update(r.Context(), db, items, plan)
-		return slices.Concat(res.Changed, res.Unchanged), err
-	}
 
 	mux := http.NewServeMux()
+	routeItem(t, mux, db, items, handle)
+	routeItem(t, mux, db, stock, handle)
 	list := handle(func(w http.ResponseWriter, r *http.Request) error {
 		req, err := parsehttp.ParseList(r, items)
 		if err != nil {
@@ -202,20 +207,13 @@ func wireServer(t *testing.T, db *sql.DB) http.Handler {
 		}
 		return parsehttp.WriteJSON(w, r, http.StatusOK, parsehttp.FacetsAnswer{Facets: filter.FacetMap(facets)})
 	}))
-	mux.Handle("PATCH /wire_items/{id}", handle(func(w http.ResponseWriter, r *http.Request) error {
-		updated, err := update(r, parse.ByID(r.PathValue("id")))
-		if err != nil {
-			return err
-		}
-		return parsehttp.WriteJSON(w, r, http.StatusOK, parsehttp.PatchAnswer[wireItem]{Updated: updated})
-	}))
 	mux.Handle("PATCH /wire_items", handle(func(w http.ResponseWriter, r *http.Request) error {
 		q, err := parsehttp.Query(r)
 		if err != nil {
 			return err
 		}
 		ids := q["id[]"]
-		updated, err := update(r, parse.ByIDs(anys(ids)...))
+		updated, err := wireUpdate(r, db, items, parse.ByIDs(anys(ids)...))
 		if err != nil {
 			return err
 		}
@@ -230,6 +228,43 @@ func wireServer(t *testing.T, db *sql.DB) http.Handler {
 	mux.Handle("GET /{resource}/schema", parsehttp.SchemaHandler(reg))
 	mux.Handle("GET /schemas", parsehttp.SchemaListHandler(reg))
 	return mux
+}
+
+// routeItem serves the merge patch of one row of res below its table's
+// collection path, at a segment per key column (parsehttp.ItemPattern),
+// read back as the row's key (parsehttp.ItemKey).
+func routeItem[T any](t *testing.T, mux *http.ServeMux, db *sql.DB, res *parse.Resource[T],
+	handle func(func(http.ResponseWriter, *http.Request) error) http.HandlerFunc,
+) {
+	t.Helper()
+	pattern, err := parsehttp.ItemPattern(res)
+	require.NoError(t, err)
+	mux.Handle("PATCH /"+res.Table()+"/"+pattern, handle(func(w http.ResponseWriter, r *http.Request) error {
+		key, err := parsehttp.ItemKey(r, res)
+		if err != nil {
+			return err
+		}
+		updated, err := wireUpdate(r, db, res, parse.ByKey(key))
+		if err != nil {
+			return err
+		}
+		return parsehttp.WriteJSON(w, r, http.StatusOK, parsehttp.PatchAnswer[T]{Updated: updated})
+	}))
+}
+
+// wireUpdate applies r's merge patch to target's rows of res and returns
+// them as the update left them.
+func wireUpdate[T any](r *http.Request, db *sql.DB, res *parse.Resource[T], target parse.Target) ([]T, error) {
+	parsed, err := parsehttp.ParsePatch(r, res)
+	if err != nil {
+		return nil, err
+	}
+	plan, err := res.BuildUpdate(filter.SQLiteDialect{}, parsed, target, parse.Scope{})
+	if err != nil {
+		return nil, err
+	}
+	updated, err := parsesql.Update(r.Context(), db, res, plan)
+	return slices.Concat(updated.Changed, updated.Unchanged), err
 }
 
 func anys[T any](vs []T) []any {
@@ -330,6 +365,13 @@ func buildSDKWire(t *testing.T) []byte {
 		Method: http.MethodPatch, Path: "/wire_items", Query: url.Values{"id[]": {"d", "zz"}},
 		ContentType: "application/json", Body: json.RawMessage(`{"labels":{"env":"test"}}`),
 	})
+	// The row keyed (w1, a/b): a segment per key column, each escaped on
+	// its own, so the SKU's slash stays in its segment.
+	item, err := client.ItemPath("w1", "a/b")
+	require.NoError(t, err)
+	wire.Exchanges["patch_composite_key"] = record(t, h, wireRequest{
+		Method: http.MethodPatch, Path: "/wire_stock/" + item, ContentType: "application/json", Body: json.RawMessage(`{"qty":3}`),
+	})
 
 	for name, call := range wire.Exchanges {
 		wantStatus := http.StatusOK
@@ -341,8 +383,11 @@ func buildSDKWire(t *testing.T) []byte {
 		}
 		require.Equal(t, wantStatus, call.Response.Status, "%s: %s", name, call.Response.Body)
 	}
-	require.Equal(t, []string{"error", "facets", "list_backward", "list_post", "list_total", "patch", "patch_many", "schema", "schema_not_found", "schemas"},
+	require.Equal(t, []string{"error", "facets", "list_backward", "list_post", "list_total", "patch", "patch_composite_key", "patch_many", "schema", "schema_not_found", "schemas"},
 		slices.Sorted(maps.Keys(wire.Exchanges)))
+	var stocked parsehttp.PatchAnswer[wireStock]
+	require.NoError(t, json.Unmarshal(wire.Exchanges["patch_composite_key"].Response.Body, &stocked))
+	require.Equal(t, []wireStock{{WarehouseID: "w1", SKU: "a/b", Qty: 3}}, stocked.Updated, "the pair names one row")
 
 	out, err := json.MarshalIndent(wire, "", "  ")
 	require.NoError(t, err)

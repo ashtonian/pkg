@@ -35,16 +35,23 @@ func hasRelation(n *FilterNode) bool {
 }
 
 // relation resolves a relation predicate to a membership of the owner's
-// correlation field: `$some` is the field among the related rows'
-// correlation values, `$none` its negation or a NULL field (a NULL foreign
-// key relates no row, so NOT EXISTS admits it).
+// correlation fields: `$some` is the fields among the related rows'
+// correlation keys, `$none` their negation or a NULL field (a NULL foreign
+// key relates no row, so NOT EXISTS admits it). A key of several columns
+// is a key set (OpKeyIn) over the owner's fields, as the correlated
+// EXISTS equates every column.
 func (r *memberResolver) relation(ctx context.Context, n *FilterNode) (*FilterNode, error) {
 	f := n.Field
 	if r.lookup == nil {
 		return nil, invalidRelation(f, "needs a membership lookup to be evaluated outside SQL")
 	}
-	if f.RelatedBy == nil {
-		return nil, invalidRelation(f, "has no owner correlation field to evaluate outside SQL")
+	err := checkResolvable(f)
+	if err != nil {
+		return nil, err
+	}
+	by := f.RelatedBy
+	if len(by) != len(f.Relation.SourceColumns) {
+		return nil, invalidRelation(f, "has no owner correlation field for each key column to evaluate outside SQL")
 	}
 	if f.Related != nil && n.Op != OpSome && n.Op != OpNone {
 		sh, err := relatedShorthand(n)
@@ -57,18 +64,72 @@ func (r *memberResolver) relation(ctx context.Context, n *FilterNode) (*FilterNo
 	if err != nil {
 		return nil, err
 	}
-	members, _, err := r.values(ctx, f.RelatedBy, l)
+	in, err := r.correlated(ctx, by, l)
 	if err != nil {
 		return nil, err
 	}
-	in := &FilterNode{Field: f.RelatedBy, Op: OpIn, Value: members}
 	if some {
 		return in, nil
 	}
-	return &FilterNode{Op: OpOr, Children: []*FilterNode{
-		{Op: OpNot, Children: []*FilterNode{in}},
-		{Field: f.RelatedBy, Op: OpNull},
-	}}, nil
+	none := []*FilterNode{{Op: OpNot, Children: []*FilterNode{in}}}
+	for _, field := range by {
+		none = append(none, &FilterNode{Field: field, Op: OpNull})
+	}
+	noMember := &FilterNode{Op: OpOr, Children: none}
+	return noMember, nil
+}
+
+// correlated is the owner's correlation fields among the keys l projects:
+// one field `$in` its values, several a key set of their keys, and no keys
+// an empty `$in`, which admits no row.
+func (r *memberResolver) correlated(ctx context.Context, by []*FieldSchema, l *Lookup) (*FilterNode, error) {
+	if len(by) == 1 {
+		members, _, err := r.values(ctx, by[0], l)
+		if err != nil {
+			return nil, err
+		}
+		in := &FilterNode{Field: by[0], Op: OpIn, Value: members}
+		return in, nil
+	}
+	keys, err := r.keys(ctx, by, l)
+	if err != nil {
+		return nil, err
+	}
+	if len(keys) == 0 {
+		empty := &FilterNode{Field: by[0], Op: OpIn, Value: []any{}}
+		return empty, nil
+	}
+	keyIn := &FilterNode{Op: OpKeyIn, Keys: &KeySet{Table: by[0].Table, Fields: by, Keys: keys}}
+	return keyIn, nil
+}
+
+// checkResolvable refuses, outside SQL, a relation that does not check.
+func checkResolvable(f *FieldSchema) error {
+	err := f.Relation.Check()
+	if err != nil {
+		return invalidRelation(f, err.Error())
+	}
+	return nil
+}
+
+// projecting is l projecting columns: Project for one, ProjectKey for
+// several.
+func projecting(l *Lookup, columns []string) *Lookup {
+	if len(columns) == 1 {
+		l.Project, l.ProjectKey = columns[0], nil
+	} else {
+		l.Project, l.ProjectKey = "", columns
+	}
+	return l
+}
+
+// memberOf is the condition that columns are among what l projects:
+// WhereMember for one column, WhereKeyMember for several.
+func memberOf(columns []string, l *Lookup) *LookupCond {
+	if len(columns) == 1 {
+		return WhereMember(columns[0], l)
+	}
+	return WhereKeyMember(columns, l)
 }
 
 // relationLookup is the lookup of the related rows' correlation values a
@@ -87,7 +148,7 @@ func (r *memberResolver) relationLookup(ctx context.Context, n *FilterNode) (*Lo
 		}
 		// A pair table compared by key: the predicate's comparison is on
 		// the pair's target column.
-		cond, some, err = keyCondition(f, rel.TargetColumn, n)
+		cond, some, err = keyCondition(f, n)
 		if err != nil {
 			return nil, false, err
 		}
@@ -111,32 +172,35 @@ func (r *memberResolver) relationLookup(ctx context.Context, n *FilterNode) (*Lo
 	}
 
 	if rel.TargetTable == "" {
-		where, scopeErr := r.scoped(rel.JoinTable, rel.SourceColumn, rel.TenantColumn, rel.DeletedColumn, cond)
+		where, scopeErr := r.scoped(rel.JoinTable, rel.SourceColumns, rel.TenantColumn, rel.DeletedColumn, cond)
 		if scopeErr != nil {
 			return nil, false, scopeErr
 		}
-		return &Lookup{Table: rel.JoinTable, Project: rel.SourceColumn, Where: where, Filter: filter}, some, nil
+		return projecting(&Lookup{Table: rel.JoinTable, Where: where, Filter: filter}, rel.SourceColumns), some, nil
 	}
-	targetWhere, err := r.scoped(rel.TargetTable, rel.TargetKey, rel.TargetTenant, rel.TargetDeleted, nil)
+	targetWhere, err := r.scoped(rel.TargetTable, rel.TargetKeys, rel.TargetTenant, rel.TargetDeleted, nil)
 	if err != nil {
 		return nil, false, err
 	}
-	target := &Lookup{Table: rel.TargetTable, Project: rel.TargetKey, Where: targetWhere, Filter: filter}
-	targets := WhereMember(rel.TargetColumn, target)
+	target := projecting(&Lookup{Table: rel.TargetTable, Where: targetWhere, Filter: filter}, rel.TargetKeys)
+	targets := memberOf(rel.TargetColumns, target).typed(rel.TargetTypes)
 	if cond != nil {
 		targets = WhereAll(cond, targets)
 	}
-	where, err := r.scoped(rel.JoinTable, rel.SourceColumn, rel.TenantColumn, rel.DeletedColumn, targets)
+	where, err := r.scoped(rel.JoinTable, rel.SourceColumns, rel.TenantColumn, rel.DeletedColumn, targets)
 	if err != nil {
 		return nil, false, err
 	}
-	return &Lookup{Table: rel.JoinTable, Project: rel.SourceColumn, Where: where}, some, nil
+	return projecting(&Lookup{Table: rel.JoinTable, Where: where}, rel.SourceColumns), some, nil
 }
 
-// scoped is a lookup condition over table's live rows of the tenant, the
-// projected column never NULL, and cond.
-func (r *memberResolver) scoped(table, project, tenant, deleted string, cond *LookupCond) (*LookupCond, error) {
-	conds := []*LookupCond{WhereNotNull(project)}
+// scoped is a lookup condition over table's live rows of the tenant, no
+// projected column NULL, and cond.
+func (r *memberResolver) scoped(table string, project []string, tenant, deleted string, cond *LookupCond) (*LookupCond, error) {
+	conds := make([]*LookupCond, 0, len(project)+3)
+	for _, column := range project {
+		conds = append(conds, WhereNotNull(column))
+	}
 	if tenant != "" && !r.cfg.scope.unscoped {
 		if r.cfg.scope.tenant == nil {
 			return nil, fmt.Errorf("relation table %s is tenant-scoped (%s): bind a tenant or opt out explicitly with an unscoped-relations option", table, tenant)
@@ -153,21 +217,27 @@ func (r *memberResolver) scoped(table, project, tenant, deleted string, cond *Lo
 }
 
 // keyCondition is the lookup condition a key comparison on a pair table
-// makes on its target column, and whether owners among the matching pairs
-// satisfy it (`$eq`, `$in`, `$not_null`) or owners outside them (`$ne`,
-// `$nin`, `$null`).
-func keyCondition(f *FieldSchema, column string, n *FilterNode) (*LookupCond, bool, error) {
+// makes on its one target column, typed as the relation types it, and
+// whether owners among the matching pairs satisfy it (`$eq`, `$in`,
+// `$not_null`) or owners outside them (`$ne`, `$nin`, `$null`). A key of
+// several columns takes only the NULL tests, as in SQL (checkPairKeyOp).
+func keyCondition(f *FieldSchema, n *FilterNode) (*LookupCond, bool, error) {
+	err := checkPairKeyOp(f, n.Op)
+	if err != nil {
+		return nil, false, err
+	}
+	column, types := f.Relation.TargetColumns[0], f.Relation.TargetTypes[:1]
 	switch n.Op {
 	case OpEq:
-		return WhereEq(column, n.Value), true, nil
+		return WhereEq(column, n.Value).typed(types), true, nil
 	case OpNe:
-		return WhereEq(column, n.Value), false, nil
+		return WhereEq(column, n.Value).typed(types), false, nil
 	case OpIn, OpNin:
 		vs, ok := core.AnySlice(n.Value)
 		if !ok {
 			return nil, false, fmt.Errorf("$%s requires an array value, got %T", n.Op, n.Value)
 		}
-		return WhereIn(column, vs...), n.Op == OpIn, nil
+		return WhereIn(column, vs...).typed(types), n.Op == OpIn, nil
 	case OpNotNull:
 		return nil, true, nil
 	case OpNull:

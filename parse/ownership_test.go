@@ -134,7 +134,7 @@ func TestBuildUpdate_RefusesAFilterOrPatchItDidNotParse(t *testing.T) {
 
 	_, err = narrow.ApplyValidatedPatch(widePatch, narrowUser{})
 	require.ErrorIs(t, err, parse.ErrForeign)
-	_, err = narrow.BuildUpdateBatch(d, []parse.RowUpdate{{Key: "u1", Patch: ownPatch}, {Key: "u2", Patch: widePatch}}, scope, parse.UpdateBatchLimits{})
+	_, err = narrow.BuildUpdateBatch(d, []parse.RowUpdate{{Key: parse.Key{"u1"}, Patch: ownPatch}, {Key: parse.Key{"u2"}, Patch: widePatch}}, scope, parse.UpdateBatchLimits{})
 	require.ErrorIs(t, err, parse.ErrForeign)
 	assert.ErrorContains(t, err, "update batch row 1 patch")
 

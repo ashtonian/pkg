@@ -13,6 +13,7 @@ import (
 )
 
 type errorTextRow struct {
+	ID     string   `json:"-" db:"id"`
 	Name   string   `json:"name" parse:"patch" enum:"a,b"`
 	Count  int8     `json:"count" parse:"patch"`
 	Tags   []string `json:"tags" parse:"patch" maxitems:"1" enum:"x"`

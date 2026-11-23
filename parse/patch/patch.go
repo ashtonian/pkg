@@ -195,6 +195,18 @@ func (p *Parser) validateOperation(raw RawPatchOp, i int) (*PatchOperation, erro
 		return nil, errors.Join(errs...)
 	}
 
+	if depth > 1 {
+		err := checkDocumentMember(p.schema, op, raw.Path, value)
+		if err != nil {
+			invalid := &core.ParseError{
+				Kind: core.ParseErrorKindPatch, Code: ECodePatchValueInvalid.String(),
+				Message: fmt.Sprintf("invalid member '%s' at index %d: %v", raw.Path, i, err),
+				Path:    raw.Path, Index: new(i), Cause: err,
+			}
+			return nil, invalid
+		}
+	}
+
 	var fromSchema *PathSchema
 	if op == PatchOpMove || op == PatchOpCopy {
 		if raw.From == "" {
@@ -482,6 +494,9 @@ func normalizeOpValue(ps *PathSchema, op PatchOp, v any, depth int, codec core.C
 // each from the path's wire form (a quoted key's JSON string, or a Go value
 // code passes), then to the key's Go type.
 func normalizeRelationKeys(ps *PathSchema, v any, codec core.Codec) (any, error) {
+	if len(ps.RelationKey) > 1 {
+		return normalizeCompositeKeys(ps.RelationKey, v, codec)
+	}
 	if ps.Wire != "" {
 		items, ok := core.AnySlice(v)
 		if !ok {
@@ -505,6 +520,36 @@ func normalizeRelationKeys(ps *PathSchema, v any, codec core.Codec) (any, error)
 		return v, nil
 	}
 	return normalizeTyped(ps.GoType, v, codec)
+}
+
+// normalizeCompositeKeys normalizes a membership's keys of several columns:
+// each an array of a value per column, every value from its column's wire
+// form to its column's Go type, as a core.Key.
+func normalizeCompositeKeys(columns []RelationKey, v any, codec core.Codec) (any, error) {
+	items, ok := core.AnySlice(v)
+	if !ok {
+		return nil, fmt.Errorf("expected an array of keys, got %T", v)
+	}
+	keys := make([]any, len(items))
+	for i, item := range items {
+		values, ok := core.AnySlice(item)
+		if !ok || len(values) != len(columns) {
+			return nil, fmt.Errorf("element %d: a key is an array of %d values, one per key column", i, len(columns))
+		}
+		key := make(core.Key, len(columns))
+		for j, c := range columns {
+			value, err := core.FromWire(c.Wire, core.TypeOf(c.Type).Type, values[j])
+			if err == nil {
+				value, err = normalizeTyped(c.Type, value, codec)
+			}
+			if err != nil {
+				return nil, fmt.Errorf("element %d, key column %d: %w", i, j, err)
+			}
+			key[j] = value
+		}
+		keys[i] = key
+	}
+	return keys, nil
 }
 
 // normalizeTyped normalizes v for the Go type t: scalars, decimals included,

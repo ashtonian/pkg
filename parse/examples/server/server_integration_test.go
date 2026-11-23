@@ -306,6 +306,13 @@ func TestServer_ErrorsCarryECodes(t *testing.T) {
 	assert.Equal(t, http.StatusNotFound, status)
 	assert.Equal(t, codeNotFound, body.Code, "a missing row is the application's code, not a patch path error")
 
+	// The key's segment is escaped on its own: an escaped slash is part of
+	// the key the item route reads, not another segment.
+	status = call(t, srv, http.MethodPatch, "/api/products/p01%2Fx", `{"price":1}`, &body)
+	assert.Equal(t, http.StatusNotFound, status)
+	assert.Equal(t, codeNotFound, body.Code)
+	assert.Equal(t, "product p01%2Fx not found", body.Message)
+
 	status = call(t, srv, http.MethodGet, "/api/unknown/schema", "", &body)
 	assert.Equal(t, http.StatusNotFound, status)
 	assert.Equal(t, parse.ECodeSchemaNotFound.String(), body.Code)
