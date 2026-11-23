@@ -79,7 +79,7 @@ A document column's typed members are filterable as dotted fields — `{"attrs.c
 | Map, `any` or `json.RawMessage` column | `paths:"color:string:filter+sort+facet;size:int:filter+indexed;dims.w:float"` | each `member.path:type[:caps]`; caps `filter` (implied), `sort`, `facet` (terms) and `indexed` |
 | Per request (tenant custom fields) | `resource.WithPaths(filter.PathDecl{Path: "custom.tier", Type: core.FieldTypeString, Sort: true, Facet: &filter.FacetSchema{Type: filter.FacetTerms}})` — or, below a resource, `schema.WithPaths` / `sorts.WithPaths(schema, …)` | a copy-on-write view that parses, lists and updates like the resource, with the relations it declared; the shared resource is unchanged. A view declares no relations and is no relation's target: `Relate` refuses both |
 
-Members are identifiers (`[A-Za-z0-9_-]+`), at most `filter.MaxPathDepth` (8) deep, typed string, int, float, decimal, bool, timestamp or uuid, or an array of one of those (`tags:[]string`, or a struct member of slice type). Operators default to the type's column defaults plus the NULL tests.
+Members are identifiers of 1 to `filter.MaxPathMemberLen` (64) characters of `[A-Za-z0-9_-]`, at most `filter.MaxPathDepth` (8) deep, typed string, int, float, decimal, bool, timestamp or uuid, or an array of one of those (`tags:[]string`, or a struct member of slice type). Operators default to the type's column defaults plus the NULL tests.
 
 A path's value is the member when it has the declared JSON kind:
 

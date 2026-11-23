@@ -13,6 +13,10 @@ import (
 // MaxPathDepth bounds how many members deep a declared path may reach.
 const MaxPathDepth = 8
 
+// MaxPathMemberLen bounds a path member's length in characters: a member
+// is written into the path's SQL and into the schema document.
+const MaxPathMemberLen = 64
+
 // PathDecl declares a typed member of a document field, for paths a struct
 // tag cannot carry — such as a tenant's custom fields, declared per request.
 type PathDecl struct {
