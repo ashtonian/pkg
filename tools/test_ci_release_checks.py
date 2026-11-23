@@ -88,6 +88,11 @@ class ReleaseChecks(unittest.TestCase):
         cases = {
             ("parse/internal/dialect/dialect.go",): ["parse-release-check", "parse-example-check", "docs-check"],
             ("parse/sdk/ts/src/client.ts", "parse/README.md"): ["parse-release-check", "parse-example-check", "docs-check"],
+            # parse/client is a module of its own; parse's tests read the
+            # requests it records in parse's testdata.
+            ("parse/client/page.go",): ["parse-client-release-check", "docs-check"],
+            ("tools/check-parse-client-release.sh",): ["parse-client-release-check"],
+            ("parse/testdata/client_requests.json",): ["parse-release-check", "parse-example-check", "docs-check"],
             ("httpx/codec/proto/codec.go",): ["httpx-release-check", "docs-check"],
             ("tools/check-httpx-release.sh",): ["httpx-release-check"],
             ("state/store.go", "onepassword/client.go"): ["native-release-check", "docs-check"],

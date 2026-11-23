@@ -29,6 +29,7 @@ CHECKS = {
     "gowalker-release-check": ("gowalker/", "tools/check-gowalker-release.sh"),
     "httpx-release-check": ("httpx/", "tools/check-httpx-release.sh"),
     "parse-release-check": ("parse/", "tools/check-parse-release.sh"),
+    "parse-client-release-check": ("parse/client/", "tools/check-parse-client-release.sh"),
     # The cookbook replaces both config modules with their working trees.
     "cookbook-check": ("config/",),
     # The Parse server example replaces Parse with its working tree.
@@ -41,10 +42,12 @@ CHECKS = {
     "docs-check": ("config/", "gitx/", "gowalker/", "httpx/", "jsonvalue/", "onepassword/", "parse/", "process/",
                    "state/", "tools/doccheck/", "tools/gorules/", "tools/modarchive/"),
 }
-# Modules nested in another module's directory are not part of its archive.
+# Modules nested in another module's directory are not part of its archive,
+# nor of a replacement by its directory.
 NESTED = {
     "config-release-check": ("config/kongprovider/", "config/examples/cookbook/"),
-    "parse-release-check": ("parse/examples/server/",),
+    "parse-release-check": ("parse/examples/server/", "parse/client/"),
+    "parse-example-check": ("parse/client/",),
 }
 # Prose outside every module, and the scripts only their own job runs: the
 # parse benchmarks' and the SDK's.

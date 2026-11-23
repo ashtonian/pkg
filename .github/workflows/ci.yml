@@ -146,7 +146,13 @@ jobs:
               "config/kongprovider/examples/**": ["./config/kongprovider"],
               "httpx/examples/quickstart/main.go": ["./httpx"],
               "gitx/README.md": ["./gitx/cmd/mergeinserts"],
-              "parse/testdata/filter_conformance.json": ["./parse/filter"],
+              "parse/testdata/filter_conformance.json": ["./parse/filter", "./parse/client"],
+              "parse/testdata/patch_conformance.json": ["./parse/client"],
+              "parse/testdata/sdk_wire.json": ["./parse/client"],
+              "parse/testdata/error_codes.json": ["./parse/client"],
+              "parse/testdata/schema_document.json": ["./parse/client"],
+              "parse/testdata/client_requests.json": ["./parse/client"],
+              "parse/core/code.go": ["./parse/client"],
               "parse/docs/*.md": ["./parse"]
             }
       # Release checks follow the module trees a change touches; that map is
@@ -228,6 +234,8 @@ jobs:
       - name: Parse unit tests and fuzz seeds with race detection
         if: ${{ inputs.nightly }}
         run: make test-parse-race-all
+      - name: Parse client tests with race detection
+        run: make test-parse-client
   # Only the modules with platform code: config's file watch rests on kqueue
   # there, and the native modules' processes and files on Darwin. Lint vets
   # every module on the declared Go floor. The repository variable

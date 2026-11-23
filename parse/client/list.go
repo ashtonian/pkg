@@ -9,7 +9,8 @@ import (
 )
 
 // The server's list parameters (parse/filter's Param constants), held equal
-// to them by parse's tests.
+// to the names parse records in its testdata/sdk_wire.json by this module's
+// tests.
 const (
 	paramFilter         = "filter"
 	paramSort           = "sort"

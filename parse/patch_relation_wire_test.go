@@ -3,14 +3,12 @@
 package parse_test
 
 import (
-	"encoding/json"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	"github.com/ashtonian/pkg/parse"
-	"github.com/ashtonian/pkg/parse/client"
 	"github.com/ashtonian/pkg/parse/filter"
 	"github.com/ashtonian/pkg/parse/patch"
 )
@@ -85,26 +83,18 @@ func TestRelationKeysTakeTheTargetKeysWire(t *testing.T) {
 	assert.Empty(t, paths["/labels"].Wire)
 }
 
-// client.Relation[client.Quoted[K]] sends the keys the server takes, and
-// the relation statements bind them as the target's integers.
+// parse/client's Relation[Quoted[K]] sends the keys the server takes
+// (testdata/client_requests.json), and the relation statements bind them as
+// the target's integers.
 func TestClientQuotedRelationOperationsParse(t *testing.T) {
 	posts := wirePosts(t)
-	tags := client.NewRelation[client.Quoted[int64]]("tags")
-	body, err := json.Marshal([]client.Operation{
-		tags.Add(client.Quote(int64(5)), client.Quote(int64(9007199254740993))),
-		tags.Remove(client.Quote(int64(6))),
-	})
-	require.NoError(t, err)
-	parsed, err := posts.ParsePatch(body)
-	require.NoError(t, err, "%s", body)
+	sent := readClientRequests(t).QuotedRelation
+	parsed, err := posts.ParsePatch(sent.JSONPatch)
+	require.NoError(t, err, "%s", sent.JSONPatch)
 	assert.Equal(t, []any{int64(5), int64(9007199254740993)}, parsed.Operations[0].Value)
 
-	merge, err := json.Marshal(struct {
-		Tags client.Nullable[[]client.Quoted[int64]] `json:"tags,omitzero"`
-	}{client.Set([]client.Quoted[int64]{client.Quote(int64(5))})})
-	require.NoError(t, err)
-	parsed, err = posts.ParseMergePatch(merge)
-	require.NoError(t, err, "%s", merge)
+	parsed, err = posts.ParseMergePatch(sent.MergePatch)
+	require.NoError(t, err, "%s", sent.MergePatch)
 	plan, err := posts.BuildUpdate(filter.PostgresDialect{}, parsed, parse.ByID(int64(1)), parse.Scope{})
 	require.NoError(t, err)
 	stmts, err := posts.RelationStatements(plan, []parse.Key{{int64(1)}})

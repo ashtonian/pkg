@@ -12,6 +12,7 @@ use (
 	./jsonvalue
 	./gitx
 	./parse
+	./parse/client
 	./config
 	./config/kongprovider
 	./httpx

@@ -76,7 +76,7 @@ The client needs a server that implements the [HTTP contract](http-errors.md). I
 
 ## Go client
 
-[`parse/client`](../client/README.md) builds requests from Go with only the standard library. A catalog of typed fields per resource, usually generated, fixes each field's name and operand type, so a misspelt field or a wrongly typed value does not compile:
+[`parse/client`](../client/README.md) builds requests from Go and decodes their answers. It is a module of its own (`go get github.com/ashtonian/pkg/parse/client@latest`) that requires nothing beyond the standard library, so a Go SDK built on it carries no server code. A catalog of typed fields per resource, usually generated, fixes each field's name and operand type, so a misspelt field or a wrongly typed value does not compile:
 
 ```go
 var Products = struct {
@@ -93,6 +93,8 @@ q, err := client.ListParams{
 ```
 
 Patches are a struct of `client.Nullable` members with the `omitzero` option (a merge patch), or a `[]client.Operation` (a JSON Patch, which also adds and removes relation members). The client sends only what the grammar can express and leaves every other check to the server; its tests hold it to the same filter and patch corpora as the TypeScript SDK.
+
+The answers decode into the client's types, generic over the row type: `client.Page[Product]` for a list, `client.FacetsAnswer` for its facets, `client.PatchAnswer[Product]` for a patch of one row or a batch, `client.Schema` for the schema document. A refused request reads with `client.DecodeError(status, body)`, an `*client.Error` matched with `errors.As` whose code is an `errors.Is` target (`client.CodeUnknownField`). The client's tests decode every answer this package's handlers recorded (`testdata/sdk_wire.json`) and encode it back unchanged. The client README's [For generated SDKs](../client/README.md#for-generated-sdks) says what a generator emits per resource.
 
 ## Custom schemas and SQL expressions
 

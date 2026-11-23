@@ -8,17 +8,7 @@ import (
 	"math"
 	"testing"
 	"time"
-
-	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
 )
-
-func encode(t *testing.T, v any) string {
-	t.Helper()
-	b, err := json.Marshal(v)
-	require.NoError(t, err)
-	return string(b)
-}
 
 func TestFilter_EncodesEachOperator(t *testing.T) {
 	name, count := NewText("name"), NewOrdered[int]("count")
@@ -59,7 +49,7 @@ func TestFilter_EncodesEachOperator(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			assert.JSONEq(t, tt.want, encode(t, tt.f))
+			checkJSON(t, tt.want, encode(t, tt.f))
 		})
 	}
 }
@@ -82,7 +72,7 @@ func TestFilter_AndOrFlattenAndDropTheEmptyFilter(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			assert.JSONEq(t, tt.want, encode(t, tt.f))
+			checkJSON(t, tt.want, encode(t, tt.f))
 		})
 	}
 }
@@ -112,10 +102,10 @@ func TestFilter_CarriesWhatTheGrammarCannotSay(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			assert.ErrorIs(t, tt.f.Err(), tt.want)
-			assert.False(t, tt.f.IsZero())
+			checkErrorIs(t, tt.f.Err(), tt.want)
+			check(t, false, tt.f.IsZero())
 			_, err := json.Marshal(tt.f)
-			assert.ErrorIs(t, err, tt.want)
+			checkErrorIs(t, err, tt.want)
 		})
 	}
 }
@@ -142,7 +132,7 @@ func TestArray_EncodesElementConditions(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			assert.JSONEq(t, tt.want, encode(t, tt.f))
+			checkJSON(t, tt.want, encode(t, tt.f))
 		})
 	}
 }
@@ -165,10 +155,10 @@ func TestArray_ElementConditionsStayInTheirArray(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			if tt.carried {
-				assert.ErrorIs(t, tt.f.Err(), ErrElementCondition)
+				checkErrorIs(t, tt.f.Err(), ErrElementCondition)
 			}
 			_, err := json.Marshal(tt.f)
-			assert.ErrorIs(t, err, ErrElementCondition)
+			checkErrorIs(t, err, ErrElementCondition)
 		})
 	}
 }
@@ -177,7 +167,7 @@ func TestFilter_DoesNotShareTheCallersSlice(t *testing.T) {
 	keys := []string{"a", "b"}
 	f := NewField[string]("k").In(keys...)
 	keys[0] = "changed"
-	assert.JSONEq(t, `{"k":{"$in":["a","b"]}}`, encode(t, f))
+	checkJSON(t, `{"k":{"$in":["a","b"]}}`, encode(t, f))
 }
 
 func TestMoment_EncodesAbsoluteAndServerRelativeTimes(t *testing.T) {
@@ -198,7 +188,7 @@ func TestMoment_EncodesAbsoluteAndServerRelativeTimes(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			assert.Equal(t, tt.want, encode(t, tt.m))
+			check(t, tt.want, encode(t, tt.m))
 		})
 	}
 }
@@ -206,12 +196,12 @@ func TestMoment_EncodesAbsoluteAndServerRelativeTimes(t *testing.T) {
 func TestMoment_RefusesSubSecondRelativeTimes(t *testing.T) {
 	for _, m := range []Moment{Ago(1500 * time.Millisecond), FromNow(time.Nanosecond), Ago(time.Duration(-1 << 63))} {
 		f := NewTime("t").Gt(m)
-		assert.ErrorIs(t, f.Err(), ErrSubSecond, "the filter carries it where it is built")
-		assert.ErrorIs(t, f.Err(), ErrOperand)
+		checkErrorIs(t, f.Err(), ErrSubSecond, "the filter carries it where it is built")
+		checkErrorIs(t, f.Err(), ErrOperand)
 		_, err := json.Marshal(f)
-		assert.ErrorIs(t, err, ErrSubSecond)
+		checkErrorIs(t, err, ErrSubSecond)
 		_, err = json.Marshal(m)
-		assert.ErrorIs(t, err, ErrSubSecond, "a Moment alone refuses to encode too")
+		checkErrorIs(t, err, ErrSubSecond, "a Moment alone refuses to encode too")
 	}
 }
 
@@ -239,21 +229,21 @@ func TestFilter_RefusesOperandsWithoutASpelling(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			assert.ErrorIs(t, tt.f.Err(), ErrOperand)
+			checkErrorIs(t, tt.f.Err(), ErrOperand)
 			_, err := ListParams{Filter: tt.f}.Values()
-			assert.ErrorIs(t, err, ErrOperand)
+			checkErrorIs(t, err, ErrOperand)
 			_, err = ListParams{Filter: tt.f}.Body()
-			assert.ErrorIs(t, err, ErrOperand)
+			checkErrorIs(t, err, ErrOperand)
 		})
 	}
-	assert.JSONEq(t, `{"loc":{"$near":{"lat":0,"lon":0,"distance":"0.001m"}}}`, encode(t, loc.Near(Point{}, 0.001)), "any positive distance has a spelling")
+	checkJSON(t, `{"loc":{"$near":{"lat":0,"lon":0,"distance":"0.001m"}}}`, encode(t, loc.Near(Point{}, 0.001)), "any positive distance has a spelling")
 }
 
 func TestFilter_DoesNotShareTheCallersDocument(t *testing.T) {
 	doc := map[string]any{"env": "prod"}
 	f := NewDocument[map[string]any]("meta").Contains(doc)
 	doc["env"] = "changed"
-	assert.JSONEq(t, `{"meta":{"$contains":{"env":"prod"}}}`, encode(t, f))
+	checkJSON(t, `{"meta":{"$contains":{"env":"prod"}}}`, encode(t, f))
 }
 
 // stateful encodes whatever its counter holds when it is encoded.
@@ -266,9 +256,9 @@ func (s stateful) MarshalJSON() ([]byte, error) { return json.Marshal(*s.n) }
 func encodings(t *testing.T, f Filter) []string {
 	t.Helper()
 	q, err := ListParams{Filter: f}.Values()
-	require.NoError(t, err)
+	must(t, err)
 	body, err := ListParams{Filter: f}.Body()
-	require.NoError(t, err)
+	must(t, err)
 	forms := []string{encode(t, f), q.Encode(), string(body)}
 	return forms
 }
@@ -335,12 +325,12 @@ func TestFilter_EncodingIsFixedWhenBuilt(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			f, mutate := tt.build()
-			require.NoError(t, f.Err())
+			must(t, f.Err())
 			before := encodings(t, f)
-			assert.JSONEq(t, tt.want, before[0])
+			checkJSON(t, tt.want, before[0])
 			mutate()
-			assert.Equal(t, before, encodings(t, f), "encoded after the operand changed")
-			assert.Equal(t, before, encodings(t, f), "encoded again")
+			checkDeep(t, before, encodings(t, f), "encoded after the operand changed")
+			checkDeep(t, before, encodings(t, f), "encoded again")
 		})
 	}
 }
@@ -357,26 +347,26 @@ func TestFilter_SharedLeafStaysFixed(t *testing.T) {
 
 	doc["label"] = "b"
 	delete(doc, "label")
-	assert.Equal(t, wantBoth, encodings(t, both))
-	assert.Equal(t, wantEither, encodings(t, either))
-	assert.JSONEq(t, `{"$or":[{"props":{"$contains":{"label":"a"}}},{"$not":{"name":{"$like":"x%"}}}]}`, encode(t, either))
+	checkDeep(t, wantBoth, encodings(t, both))
+	checkDeep(t, wantEither, encodings(t, either))
+	checkJSON(t, `{"$or":[{"props":{"$contains":{"label":"a"}}},{"$not":{"name":{"$like":"x%"}}}]}`, encode(t, either))
 }
 
 // A marshaler that fails is the filter's error from the moment it is built,
 // before any encoding.
 func TestFilter_MarshalerErrorIsVisibleWhenBuilt(t *testing.T) {
 	f := NewDocument[json.RawMessage]("props").Eq(json.RawMessage(`{"broken"`))
-	require.ErrorIs(t, f.Err(), ErrOperand)
+	checkErrorIs(t, f.Err(), ErrOperand)
 	_, err := ListParams{Filter: And(NewText("name").Eq("a"), f)}.Values()
-	assert.ErrorIs(t, err, ErrOperand)
+	checkErrorIs(t, err, ErrOperand)
 }
 
 func TestSort_SpellsTheSortParameter(t *testing.T) {
 	name, rank := NewSortableText("name"), NewSortableOrdered[int]("rank")
 	created := NewSortableTime("created")
-	assert.Equal(t, "-rank,name,-created,id", Sort{rank.Desc(), name.Asc(), created.Desc(), NewSortKey("id").Asc()}.String())
-	assert.Empty(t, Sort{}.String())
-	assert.Equal(t, `{"name":{"$like":"a%"}}`, encode(t, name.Like("a%")), "a sortable field keeps its filter operators")
+	check(t, "-rank,name,-created,id", Sort{rank.Desc(), name.Asc(), created.Desc(), NewSortKey("id").Asc()}.String())
+	check(t, "", Sort{}.String())
+	check(t, `{"name":{"$like":"a%"}}`, encode(t, name.Like("a%")), "a sortable field keeps its filter operators")
 }
 
 func TestNullable_IsAMergePatchMember(t *testing.T) {
@@ -385,20 +375,20 @@ func TestNullable_IsAMergePatchMember(t *testing.T) {
 		Note  Nullable[string] `json:"note,omitzero"`
 		Count Nullable[int]    `json:"count,omitzero"`
 	}
-	assert.Equal(t, `{"name":"pump","note":null}`, encode(t, patch{Name: Set("pump"), Note: Null[string]()}))
-	assert.Equal(t, `{}`, encode(t, patch{}))
+	check(t, `{"name":"pump","note":null}`, encode(t, patch{Name: Set("pump"), Note: Null[string]()}))
+	check(t, `{}`, encode(t, patch{}))
 
 	var got patch
-	require.NoError(t, json.Unmarshal([]byte(`{"name":"pump","note":null}`), &got))
+	must(t, json.Unmarshal([]byte(`{"name":"pump","note":null}`), &got))
 	v, ok := got.Name.Get()
-	assert.True(t, ok)
-	assert.Equal(t, "pump", v)
-	assert.True(t, got.Note.IsNull())
-	assert.True(t, got.Count.IsZero())
+	check(t, true, ok)
+	check(t, "pump", v)
+	check(t, true, got.Note.IsNull())
+	check(t, true, got.Count.IsZero())
 
 	err := json.Unmarshal([]byte(`{"count":"x"}`), &got)
 	_, isTypeErr := errors.AsType[*json.UnmarshalTypeError](err)
-	assert.True(t, isTypeErr, "a value of the wrong type is an error: %v", err)
+	check(t, true, isTypeErr, "a value of the wrong type is an error, got", err)
 }
 
 // A member that is not tagged omitzero reaches MarshalJSON when absent;
@@ -413,11 +403,11 @@ func TestNullable_AbsentMemberWithoutOmitzeroDoesNotEncode(t *testing.T) {
 		Alias Nullable[string] `json:"alias"`
 	}
 	_, err := json.Marshal(omitEmpty{Name: Set("pump")})
-	assert.ErrorIs(t, err, ErrAbsentMember)
+	checkErrorIs(t, err, ErrAbsentMember)
 	_, err = json.Marshal(untagged{Name: Set("pump")})
-	assert.ErrorIs(t, err, ErrAbsentMember)
+	checkErrorIs(t, err, ErrAbsentMember)
 
-	assert.Equal(t, `{"name":"pump","note":"n"}`, encode(t, omitEmpty{Name: Set("pump"), Note: Set("n")}), "a present member encodes under any tag")
+	check(t, `{"name":"pump","note":"n"}`, encode(t, omitEmpty{Name: Set("pump"), Note: Set("n")}), "a present member encodes under any tag")
 }
 
 func TestNullable_SetOfNilIsWhatItEncodes(t *testing.T) {
@@ -428,12 +418,14 @@ func TestNullable_SetOfNilIsWhatItEncodes(t *testing.T) {
 		Any    Nullable[any]            `json:"any,omitzero"`
 	}
 	p := patch{Tags: Set[[]string](nil), Labels: Set[map[string]int](nil), Nick: Set[*string](nil), Any: Set[any](nil)}
-	assert.Equal(t, `{"tags":[],"labels":{},"nick":null,"any":null}`, encode(t, p))
+	check(t, `{"tags":[],"labels":{},"nick":null,"any":null}`, encode(t, p))
 	tags, ok := p.Tags.Get()
-	assert.True(t, ok)
-	assert.NotNil(t, tags)
-	assert.True(t, p.Nick.IsNull(), "a nil pointer clears the field, so it is Null")
-	assert.True(t, p.Any.IsNull())
+	check(t, true, ok)
+	if tags == nil {
+		t.Error("Set of a nil slice holds the empty slice")
+	}
+	check(t, true, p.Nick.IsNull(), "a nil pointer clears the field, so it is Null")
+	check(t, true, p.Any.IsNull())
 }
 
 func TestOperation_EncodesTheMembersItsOpTakes(t *testing.T) {
@@ -458,24 +450,24 @@ func TestOperation_EncodesTheMembersItsOpTakes(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			assert.JSONEq(t, tt.want, encode(t, tt.op))
+			checkJSON(t, tt.want, encode(t, tt.op))
 		})
 	}
 }
 
 func TestPointer_EscapesMemberNames(t *testing.T) {
-	assert.Equal(t, "/unit~1si~0v", Pointer("unit/si~v"))
-	assert.Equal(t, "/labels/env", Pointer("labels", "env"))
-	assert.Equal(t, "/", Pointer(""))
-	assert.Equal(t, "/~01", Pointer("~1"), "~ escapes before / so ~1 stays literal")
-	assert.Empty(t, Pointer(), "the empty pointer is the whole document")
+	check(t, "/unit~1si~0v", Pointer("unit/si~v"))
+	check(t, "/labels/env", Pointer("labels", "env"))
+	check(t, "/", Pointer(""))
+	check(t, "/~01", Pointer("~1"), "~ escapes before / so ~1 stays literal")
+	check(t, "", Pointer(), "the empty pointer is the whole document")
 }
 
 func TestListParams_LeavesZeroMembersOut(t *testing.T) {
 	q, err := ListParams{Sort: Sort{NewSortKey("a").Desc()}, PageSize: 5}.Values()
-	require.NoError(t, err)
-	assert.Equal(t, "page_size=5&sort=-a", q.Encode())
+	must(t, err)
+	check(t, "page_size=5&sort=-a", q.Encode())
 
 	_, err = ListParams{Filter: Or()}.Values()
-	assert.ErrorIs(t, err, ErrEmptyOr)
+	checkErrorIs(t, err, ErrEmptyOr)
 }
