@@ -356,12 +356,17 @@ func TestUnknownKeys_NamesParseBackToTheirPlace(t *testing.T) {
 		where, key string
 		source     func(entry map[string]any) mapSource
 	}{
+		{"at the root", "", func(e map[string]any) mapSource { return mapSource(e) }},
 		{"under a struct", "server", func(e map[string]any) mapSource { return mapSource{"server": e} }},
 		{"under a map entry", `named["x.y"]`, func(e map[string]any) mapSource { return mapSource{"named": map[string]any{"x.y": e}} }},
 		{"under a list element", "items[0]", func(e map[string]any) mapSource { return mapSource{"items": []any{e}} }},
 	} {
-		parent, err := ParseKey(at.key)
-		require.NoError(t, err)
+		var parent Key
+		if at.key != "" {
+			var err error
+			parent, err = ParseKey(at.key)
+			require.NoError(t, err)
+		}
 		for _, name := range names {
 			t.Run(at.where+"/"+strconv.Quote(name), func(t *testing.T) {
 				_, err := Load[cfg](t.Context(), WithBaseProvider(at.source(map[string]any{name: 1}), nil), WithSkipValidation())
@@ -372,7 +377,7 @@ func TestUnknownKeys_NamesParseBackToTheirPlace(t *testing.T) {
 				key, err := ParseKey(got.Key)
 				require.NoError(t, err)
 				require.Len(t, key, len(parent)+1, got.Key)
-				assert.Equal(t, parent, key[:len(parent)])
+				assert.Equal(t, parent.String(), key[:len(parent)].String())
 				last := key[len(parent)]
 				assert.Equal(t, name, last.Name)
 				assert.Equal(t, validFieldKey(name), last.Kind == SegmentField, "a field when the name can be one")
@@ -387,22 +392,40 @@ func TestUnknownKeys_NamesParseBackToTheirPlace(t *testing.T) {
 
 // A name the source tree holds in two readings, a field's key and the key
 // beneath it or a key of its own, cannot be placed: it is named by the
-// nearest key that holds it, which parses.
+// nearest key that holds it, and at the root by the root, $.
 func TestUnknownKeys_AnAmbiguousNameIsNamedByItsNearestKey(t *testing.T) {
-	type cfg struct {
+	type port struct {
+		N int `koanf:"n"`
+	}
+	type nested struct {
 		Server struct {
-			Port struct {
-				N int `koanf:"n"`
-			} `koanf:"port"`
+			Port port `koanf:"port"`
 		} `koanf:"server"`
 	}
-	src := mapSource{"server": map[string]any{"port": map[string]any{"n": 1, "x": 2}, "port.x": 3}}
-	_, err := Load[cfg](t.Context(), WithBaseProvider(src, nil), WithSkipValidation())
-	var unknown *UnknownKeysError
-	require.ErrorAs(t, err, &unknown)
-	require.NotEmpty(t, unknown.Keys)
-	for _, k := range unknown.Keys {
-		assert.Equal(t, "server", k.Key)
+	type root struct {
+		Port port `koanf:"port"`
+	}
+	ambiguous := map[string]any{"port": map[string]any{"n": 1, "x": 2}, "port.x": 3}
+	for _, tc := range []struct {
+		name string
+		load func() error
+		want string
+	}{
+		{"beneath a struct", func() error {
+			_, err := Load[nested](t.Context(), WithBaseProvider(mapSource{"server": ambiguous}, nil), WithSkipValidation())
+			return err
+		}, "server"},
+		{"at the root", func() error {
+			_, err := Load[root](t.Context(), WithBaseProvider(mapSource(ambiguous), nil), WithSkipValidation())
+			return err
+		}, "$"},
+	} {
+		var unknown *UnknownKeysError
+		require.ErrorAs(t, tc.load(), &unknown, tc.name)
+		require.NotEmpty(t, unknown.Keys, tc.name)
+		for _, k := range unknown.Keys {
+			assert.Equal(t, tc.want, k.Key, tc.name)
+		}
 	}
 }
 

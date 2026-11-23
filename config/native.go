@@ -72,7 +72,8 @@ func treeKey(root *schemaNode, tree any, name string) (p keyPath, at any, used i
 // a proven prefix and the source key no field took, a field when it can be
 // read as one and a map key otherwise. A key read as a field of a struct is
 // given the struct's closest field as its suggestion. A source key the tree
-// does not hold exactly once where the prefix ends is named by the prefix.
+// does not hold exactly once where the prefix ends is named by the prefix,
+// and at the root by the root's name, $.
 func unusedKey(root *schemaNode, tree any, name string) UnknownKey {
 	p, at, used, exact := treeKey(root, tree, name)
 	probe := p
@@ -82,7 +83,7 @@ func unusedKey(root *schemaNode, tree any, name string) UnknownKey {
 	if safe := diagnosticPath(root, probe); len(safe) < len(probe) {
 		return UnknownKey{Key: safe.orRoot()}
 	}
-	if exact {
+	if exact && name != "" { // "" is the root's empty key, not the root
 		return UnknownKey{Key: p.orRoot()}
 	}
 	raw, underStruct := strings.CutPrefix(name[used:], ".")

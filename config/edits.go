@@ -81,12 +81,10 @@ func resolveSchemaPath(schema *schemaNode, p keyPath) (parent *schemaNode, alias
 		}
 		switch {
 		case n.kind == nodeBranch:
-			var f *schemaField
-			alias := false
-			if s.kind == segField {
-				f, alias = n.lookup(s.name)
-			}
-			if f == nil && n.acceptsUnknown {
+			f, alias := n.lookup(s.name)
+			if f != nil && s.kind != segField {
+				f = nil // a field spelled as a map key: walkTo refuses it
+			} else if f == nil && n.acceptsUnknown {
 				n = nil
 				if s.kind == segKey && validFieldKey(s.name) {
 					s.kind = segField

@@ -409,6 +409,65 @@ func TestCanonicalKey(t *testing.T) {
 	}
 }
 
+// A struct field is spelled as a field: a map key's spelling of one is
+// refused at the root as beneath it, a struct's remain field collecting
+// only what no field reads.
+func TestCanonicalKey_RefusesAFieldSpelledAsAMapKey(t *testing.T) {
+	type cfg struct {
+		Port   int `koanf:"port"`
+		Limits struct {
+			Max int `koanf:"max"`
+		} `koanf:"limits"`
+		Open struct {
+			Max  int            `koanf:"max"`
+			Rest map[string]any `koanf:",remain"`
+		} `koanf:"open"`
+	}
+	for _, key := range []string{`["port"]`, `["limits"].max`, `limits["max"]`, `open["max"]`, `["a.b"]`} {
+		_, err := CanonicalKey[cfg](key)
+		var ke *KeyError
+		require.ErrorAs(t, err, &ke, key)
+		assert.True(t, ke.Unknown, key)
+		assert.ErrorIs(t, err, ErrKey, key)
+	}
+	got, err := CanonicalKey[cfg](`open["other"]`)
+	require.NoError(t, err)
+	assert.Equal(t, "open.other", got)
+}
+
+// A refused edit names its key, and every key inside its value that no
+// field reads, in the key grammar, whatever the names hold.
+func TestDecodeEdits_RefusedKeysParse(t *testing.T) {
+	type entry struct {
+		Port int `koanf:"port"`
+	}
+	type cfg struct {
+		Server entry            `koanf:"server"`
+		Named  map[string]entry `koanf:"named"`
+		Items  []entry          `koanf:"items"`
+	}
+	odd := map[string]any{"a.b": 1, "": 2, "port.x": 3, `q"z`: 4, "a b": 5}
+	_, err := DecodeEdits[cfg](t.Context(), nil, map[string]any{
+		"server":       odd,
+		`named["x.y"]`: odd,
+		"items":        []any{odd},
+		`["a.b"]`:      1,
+	})
+	var edits *EditsError
+	require.ErrorAs(t, err, &edits)
+	require.NotEmpty(t, edits.Refused)
+	keys := map[string]bool{}
+	for _, r := range edits.Refused {
+		_, err := ParseKey(r.Key)
+		assert.NoError(t, err, r.Key)
+		keys[r.Key] = true
+	}
+	assert.True(t, keys[`server["a.b"]`], "%v", keys)
+	assert.True(t, keys[`named["x.y"]["port.x"]`], "%v", keys)
+	assert.True(t, keys[`items[0][""]`], "%v", keys)
+	assert.True(t, keys[`["a.b"]`], "%v", keys)
+}
+
 // A key's spelling does not depend on validation: a validate tag the
 // default validator cannot read, on another field, leaves CanonicalKey as it
 // is.
