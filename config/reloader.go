@@ -496,7 +496,7 @@ func (r *Reloader[T]) reloadHeld(ctx context.Context, trigger string) (*ReloadRe
 	r.notifySuccess(ctx, ReloadEvent[T]{Trigger: trigger, Old: prev.Config, New: cfg, Result: result})
 	out := result.clone()
 	if len(failures) > 0 {
-		return &out, &ApplyError{Failures: failures}
+		return &out, &ApplyError{Failures: failures, Applied: appliedBy(result.Applied)}
 	}
 	return &out, nil
 }

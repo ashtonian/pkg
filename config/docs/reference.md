@@ -21,7 +21,7 @@ Every error wraps one category sentinel together with its cause, so `errors.Is` 
 | `ErrSecretProvider` | The secret populator failed. |
 | `ErrPostLoad` | A post-load hook failed. |
 | `ErrReload` | A reload failed; the previous config is still live. Wraps one of the above. |
-| `ErrApply` | An applier did not apply a config; an `*ApplyError` names which. After a reload the config was published; on a reloader's first load (`Initial`) nothing was. |
+| `ErrApply` | An applier did not apply a config; an `*ApplyError` names which in `Failures`, and the appliers that did in `Applied`. After a reload the config was published, and the failed appliers are called again on the next one. On a reloader's first load (`Initial`) nothing was published and the reloader was not built: roll back the appliers in `Applied`. |
 | `ErrReloadInProgress` | A manual reload found another running. Not a failure. |
 | `ErrReloaderStopped` | A reload was requested after `Stop`. |
 | `ErrReloaderRunning` | `Run` was called while another `Run` of the same reloader runs. |

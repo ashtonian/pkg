@@ -85,19 +85,25 @@ type ApplyResult struct {
 	RestartKeys []string
 }
 
-// ApplyError reports the appliers that did not apply a config. After a
-// reload the config is published and live, and each of them is called again
-// on the next one. On a reloader's first load (Initial) nothing is
-// published and the reloader is not built. It wraps [ErrApply] and every
-// failure's cause.
+// ApplyError reports the appliers that did not apply a config, and those
+// that did. After a reload the config is published and live, and each
+// applier that failed is called again on the next one. On a reloader's
+// first load (Initial) nothing is published and the reloader is not built,
+// but the appliers in Applied acted on the config: roll them back, as for
+// an [AbandonedApplyError]. It wraps [ErrApply] and every failure's cause.
 type ApplyError struct {
 	Failures []ApplierFailure
+	// Applied names the appliers that applied the config, in the order they
+	// ran.
+	Applied []string
 	// Initial reports the ApplyInitial appliers of a reloader's first load,
 	// which was never published.
 	Initial bool
 }
 
-// ApplierFailure is one applier's failure to apply a published config.
+// ApplierFailure is one applier's failure to apply a config: one a reload
+// published, or a reloader's first load, which an ApplierFailure keeps from
+// being published.
 type ApplierFailure struct {
 	Applier string
 	Err     error
@@ -105,10 +111,15 @@ type ApplierFailure struct {
 
 func (e *ApplyError) Error() string {
 	var b strings.Builder
-	if e.Initial {
+	switch {
+	case !e.Initial:
+		b.WriteString("configuration published but not fully applied")
+	case len(e.Applied) == 0:
 		b.WriteString("configuration not applied at start, so nothing was published")
-	} else {
-		b.WriteString(ErrApply.Error())
+	default:
+		b.WriteString("configuration not applied at start, so nothing was published, though appliers ")
+		b.WriteString(strings.Join(e.Applied, ", "))
+		b.WriteString(" applied it")
 	}
 	for i, f := range e.Failures {
 		if i == 0 {
@@ -1122,7 +1133,7 @@ func (r *Reloader[T]) applyInitial(ctx context.Context, cfg *T, p *applyPlan) ([
 
 // initialApplyError is why the first load's ApplyInitial appliers fail
 // construction: the appliers that failed, and, when ctx ended with ctxErr,
-// its abandonment, which names the appliers in applied for rollback. It is
+// its abandonment. Each names the appliers in applied for rollback. It is
 // nil when there is neither.
 func initialApplyError(applied []string, failures []ApplierFailure, ctxErr error) error {
 	switch {
@@ -1131,7 +1142,7 @@ func initialApplyError(applied []string, failures []ApplierFailure, ctxErr error
 	case len(failures) == 0:
 		return abandonedInitial(applied, ctxErr)
 	}
-	failed := &ApplyError{Failures: failures, Initial: true}
+	failed := &ApplyError{Failures: failures, Applied: slices.Clone(applied), Initial: true}
 	if ctxErr == nil {
 		return failed
 	}
@@ -1156,6 +1167,18 @@ func (e *AbandonedApplyError) Error() string {
 }
 
 func (e *AbandonedApplyError) Unwrap() error { return e.Err }
+
+// appliedBy names the appliers among outcomes that applied their config,
+// in the order they ran.
+func appliedBy(outcomes []ApplyOutcome) []string {
+	var names []string
+	for _, o := range outcomes {
+		if o.Error == nil {
+			names = append(names, o.Applier)
+		}
+	}
+	return names
+}
 
 // abandonedInitial is the error of a first load abandoned because ctx ended
 // with err, once the appliers in applied had applied it.

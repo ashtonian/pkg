@@ -248,6 +248,42 @@ func TestApplier_InitialFailureFailsConstruction(t *testing.T) {
 	}
 }
 
+// The ApplyInitial appliers that applied a first load another one failed
+// acted on a config that is never published: the ApplyError names them, in
+// the order they ran, for the caller to roll back. A reload's ApplyError
+// names the appliers that applied the published config the same way.
+// ErrApply's own text holds for both.
+func TestApplier_ApplyErrorNamesTheAppliersThatApplied(t *testing.T) {
+	ok := func(ApplyEvent[appCfg]) (ApplyResult, error) { return ApplyResult{}, nil }
+	fails := func(ApplyEvent[appCfg]) (ApplyResult, error) { return ApplyResult{}, errors.New("sink not ready") }
+	initial := func(name, prefix string, answer func(ApplyEvent[appCfg]) (ApplyResult, error)) ReloadOption {
+		rec := &recorder{result: answer}
+		return WithApplier(Applier[appCfg]{Name: name, Prefixes: []string{prefix}, ApplyInitial: true, Apply: rec.apply})
+	}
+	_, err := NewReloaderFunc(t.Context(), newAppSource().load,
+		initial("log", "log", ok), initial("db", "db", fails), initial("features", "features", ok))
+	require.ErrorIs(t, err, ErrApply)
+	var failed *ApplyError
+	require.ErrorAs(t, err, &failed)
+	assert.True(t, failed.Initial)
+	assert.Equal(t, []string{"log", "features"}, failed.Applied)
+	assert.Equal(t, "configuration not applied at start, so nothing was published, though appliers log, features applied it: db: sink not ready", err.Error())
+	assert.NotContains(t, ErrApply.Error(), "published", "ErrApply is also a first load's, which publishes nothing")
+
+	src := newAppSource()
+	logs, db := &recorder{result: ok}, &recorder{result: ok}
+	r := newAppReloader(t, src, logs.applier("log", "log"), db.applier("db", "db"))
+	db.mu.Lock()
+	db.result = fails
+	db.mu.Unlock()
+	src.edit(func(c *appCfg) { c.Log.Level, c.DB.Host = "debug", "b" })
+	_, err = r.Reload(t.Context())
+	require.ErrorAs(t, err, &failed)
+	assert.False(t, failed.Initial)
+	assert.Equal(t, []string{"log"}, failed.Applied)
+	assert.Equal(t, "configuration published but not fully applied: db: sink not ready", err.Error())
+}
+
 // An applier runs after its config is published, once per reload however
 // many of its keys changed.
 func TestApplier_RunsOnceAfterPublication(t *testing.T) {
