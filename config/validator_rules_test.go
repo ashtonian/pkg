@@ -372,56 +372,145 @@ type applyDynamicPlugin struct {
 
 // A rule that cannot apply to its field's type panics in go-playground
 // wherever validation meets it. A load, a key check and a reloader's first
-// load return it as ErrSchema carrying the validator's message, which names
-// the field where the validator does.
+// load return it as ErrSchema naming the field by key and carrying the
+// validator's message.
 func TestDefaultValidator_RuleThatCannotApplyIsSchemaError(t *testing.T) {
 	for _, tc := range []struct {
 		name string
 		load func(context.Context) error
+		at   string
 		msg  string
 	}{
-		{"dive on an int", func(ctx context.Context) error {
-			_, err := Decode[applyDiveOnIntCfg](ctx, map[string]any{"count": 1})
-			return err
-		}, "can't dive on a non slice or map"},
 		{"unparsable param", func(ctx context.Context) error {
 			_, err := Decode[applyBadParamCfg](ctx, map[string]any{"count": 1})
 			return err
-		}, `parsing "abc": invalid syntax`},
+		}, "count", `parsing "abc": invalid syntax`},
 		{"len on a bool", func(ctx context.Context) error {
 			_, err := Decode[applyLenOnBoolCfg](ctx, map[string]any{"on": true})
 			return err
-		}, "Bad field type bool"},
+		}, "on", "Bad field type bool"},
 		{"oneof on a float", func(ctx context.Context) error {
 			_, err := Decode[applyOneOfOnFloatCfg](ctx, map[string]any{"ratio": 1.5})
 			return err
-		}, "Bad field type float64"},
+		}, "ratio", "Bad field type float64"},
 		{"required_if with an odd param count", func(ctx context.Context) error {
 			_, err := Decode[applyRequiredIfCfg](ctx, map[string]any{"mode": "x"})
 			return err
-		}, "Bad param number for required_if count"},
+		}, "count", "Bad param number for required_if count"},
 		{"unreadable tag beneath an interface", func(ctx context.Context) error {
 			_, err := Load[applyDynamicCfg](ctx, WithPostLoad(func(_ context.Context, c *applyDynamicCfg) error {
 				c.Plugin = applyDynamicPlugin{Port: 1}
 				return nil
 			}))
 			return err
-		}, "Undefined validation function 'requird' on field 'Port'"},
+		}, "plugin", "Undefined validation function 'requird' on field 'Port'"},
 		{"reloader's first load", func(ctx context.Context) error {
 			r, err := NewReloader[applyBadParamCfg](ctx, []Option{WithDefaults(map[string]any{"count": 1})})
 			assert.Nil(t, r)
 			return err
-		}, `parsing "abc": invalid syntax`},
+		}, "count", `parsing "abc": invalid syntax`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var err error
 			require.NotPanics(t, func() { err = tc.load(t.Context()) })
 			require.ErrorIs(t, err, ErrSchema)
 			assert.NotErrorIs(t, err, ErrValidation)
-			assert.Contains(t, err.Error(), "does not apply to its field")
+			assert.Contains(t, err.Error(), "does not apply to its field at "+tc.at+": ")
 			assert.Contains(t, err.Error(), tc.msg)
 		})
 	}
+}
+
+type diveSection struct {
+	Count int `koanf:"count" validate:"dive"`
+}
+
+type keysOnSliceSection struct {
+	List []string `koanf:"list" validate:"dive,keys,min=1,endkeys"`
+}
+
+type misappliedDiveCfg struct {
+	Name      string             `koanf:"name"`
+	Count     int                `koanf:"count" validate:"dive"`
+	List      []string           `koanf:"list" validate:"omitempty,dive,keys,min=1,endkeys"`
+	Matrix    [][]int            `koanf:"matrix" validate:"dive,dive,dive"`
+	Pointer   *int               `koanf:"pointer" validate:"dive"`
+	KeyDive   map[string]int     `koanf:"key_dive" validate:"dive,keys,dive,endkeys"`
+	ValueDive map[string]int     `koanf:"value_dive" validate:"dive,keys,min=1,endkeys,dive"`
+	Section   diveSection        `koanf:"section"`
+	Skipped   keysOnSliceSection `koanf:"-"`
+}
+
+type appliedDivesCfg struct {
+	Ints     []int            `koanf:"ints" validate:"dive,min=1"`
+	Lists    map[string][]int `koanf:"lists" validate:"dive,keys,min=1,endkeys,dive,min=0"`
+	Arrays   [][2]int         `koanf:"arrays" validate:"dive,dive"`
+	Pointers []*[]int         `koanf:"pointers" validate:"dive,dive"`
+	Dynamic  []any            `koanf:"dynamic" validate:"dive,dive"`
+	Labels   map[string]int   `koanf:"labels" validate:"dive,keys,min=1"`
+}
+
+// A dive a field's tag takes on a kind it cannot walk — a dive on an int,
+// keys after a dive on a slice — is wrong whatever the field holds, so a
+// field the validator reads on every validation has it refused before any
+// source is read, by field and rule, though the validator would only panic
+// on it once the field held something to walk.
+func TestDefaultValidator_RefusesDivesThatCannotApply(t *testing.T) {
+	read := 0
+	src, err := NewMapProvider(func(context.Context) (map[string]any, error) { read++; return nil, nil }, "")
+	require.NoError(t, err)
+	_, err = Load[misappliedDiveCfg](t.Context(), WithBaseProvider(src, nil))
+	require.ErrorIs(t, err, ErrSchema)
+	assert.Zero(t, read, "refused before any source is read")
+	for _, want := range []string{
+		"field Count of config.misappliedDiveCfg has a validate tag the validator cannot apply: dive on int, which is not a slice, an array or a map",
+		"field List of config.misappliedDiveCfg has a validate tag the validator cannot apply: keys after a dive on []string, which is not a map",
+		"field Matrix of config.misappliedDiveCfg has a validate tag the validator cannot apply: dive on int,",
+		"field Pointer of config.misappliedDiveCfg has a validate tag the validator cannot apply: dive on int,",
+		"field KeyDive of config.misappliedDiveCfg has a validate tag the validator cannot apply: dive on string,",
+		"field ValueDive of config.misappliedDiveCfg has a validate tag the validator cannot apply: dive on int,",
+		"field Count of config.diveSection has a validate tag the validator cannot apply: dive on int,",
+		"field List of config.keysOnSliceSection has a validate tag the validator cannot apply: keys after a dive on []string,",
+	} {
+		assert.Contains(t, err.Error(), want)
+	}
+	assert.NotContains(t, err.Error(), "Name")
+
+	got, err := Decode[appliedDivesCfg](t.Context(), map[string]any{
+		"ints":     []any{1},
+		"lists":    map[string]any{"a": []any{0}},
+		"arrays":   []any{[]any{1, 2}},
+		"pointers": []any{[]any{1}},
+		"dynamic":  []any{[]any{"x"}},
+		"labels":   map[string]any{"b": 1},
+	})
+	require.NoError(t, err, "dives that apply are not refused")
+	assert.Equal(t, []int{1}, got.Ints)
+}
+
+type behindDivePointerCfg struct {
+	Section *diveSection `koanf:"section"`
+}
+
+type behindKeysSliceCfg struct {
+	Items []keysOnSliceSection `koanf:"items" validate:"dive"`
+}
+
+// The same dive in a struct the validator reaches only through a value is
+// left to validation, which names the field it was validating by key; the
+// field's value is never shown.
+func TestDefaultValidator_DiveBehindAnEdgeNamesItsField(t *testing.T) {
+	_, err := Decode[behindDivePointerCfg](t.Context(), nil)
+	require.NoError(t, err)
+	_, err = Decode[behindDivePointerCfg](t.Context(), map[string]any{"section": map[string]any{"count": 4242}})
+	require.ErrorIs(t, err, ErrSchema)
+	assert.Contains(t, err.Error(), "a validate tag of config.behindDivePointerCfg does not apply to its field at section.count: dive error! can't dive on a non slice or map")
+	assert.NotContains(t, err.Error(), "4242")
+
+	_, err = Decode[behindKeysSliceCfg](t.Context(), map[string]any{"items": []any{map[string]any{"list": []any{"secret-ish"}}}})
+	require.ErrorIs(t, err, ErrSchema)
+	assert.Contains(t, err.Error(), "does not apply to its field at items[0].list: runtime error: invalid memory address or nil pointer dereference")
+	assert.NotContains(t, err.Error(), "secret-ish")
 }
 
 type panickyValue struct{ N int }
