@@ -431,11 +431,16 @@ func readTags(sf reflect.StructField, k fieldsKey) (Tags, error) {
 }
 
 // ParseEnumTag reads an enum tag's comma-separated values. A plain value
-// is trimmed (enum:"a, b" is a and b); a value in single quotes is kept as
-// written, commas and edge spaces included, with ” standing for a quote
-// (enum:"'net 30, eom',' padded','it”s'"). The forms mix by value. An
-// empty plain value, an unterminated quote and text after a closing quote
-// are errors; ” declares the empty string.
+// is trimmed; a value in single quotes is kept as written, commas and edge
+// spaces included, a doubled quote inside it standing for one quote. The
+// forms mix by value:
+//
+//	enum:"a, b"                             a | b
+//	enum:"'net 30, eom',' padded','it''s'"  net 30, eom |  padded | it's
+//	enum:"'',a"                             (empty) | a
+//
+// An empty plain value, an unterminated quote and text after a closing
+// quote are errors.
 func ParseEnumTag(tag string) ([]string, error) {
 	var values []string
 	rest := tag
