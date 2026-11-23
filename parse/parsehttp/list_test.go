@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -23,9 +24,12 @@ type gadget struct {
 	Name string `json:"name" db:"name" parse:"filter,sort"`
 }
 
+// gadgets parses at a fixed instant, so two parses of one request are equal:
+// a list request records the instant its relative times resolve at.
 func gadgets(t *testing.T) *parse.Resource[gadget] {
 	t.Helper()
-	r, err := parse.NewResource[gadget]("gadgets", parse.AcceptParams("tenant"))
+	clock := func() time.Time { return time.Date(2026, 10, 14, 12, 0, 0, 0, time.UTC) }
+	r, err := parse.NewResource[gadget]("gadgets", parse.AcceptParams("tenant"), parse.ParserOptions(core.WithClock(clock)))
 	require.NoError(t, err)
 	return r
 }
