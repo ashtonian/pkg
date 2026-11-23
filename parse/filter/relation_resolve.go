@@ -3,8 +3,10 @@ package filter
 import (
 	"context"
 	"fmt"
+	"reflect"
 	"slices"
 
+	"github.com/ashtonian/pkg/gowalker"
 	"github.com/ashtonian/pkg/parse/core"
 )
 
@@ -235,7 +237,7 @@ func keyCondition(f *FieldSchema, n *FilterNode) (*LookupCond, bool, error) {
 	case OpIn, OpNin:
 		vs, ok := core.AnySlice(n.Value)
 		if !ok {
-			return nil, false, fmt.Errorf("$%s requires an array value, got %T", n.Op, n.Value)
+			return nil, false, fmt.Errorf("$%s requires an array value, got %s", n.Op, gowalker.TypeText(reflect.TypeOf(n.Value)))
 		}
 		return WhereIn(column, vs...).typed(types), n.Op == OpIn, nil
 	case OpNotNull:

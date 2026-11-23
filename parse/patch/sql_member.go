@@ -8,6 +8,7 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/ashtonian/pkg/gowalker"
 	"github.com/ashtonian/pkg/parse/core"
 	"github.com/ashtonian/pkg/parse/internal/dialect"
 )
@@ -135,7 +136,7 @@ func checkMemberPath(schema *PatchSchema, op *PatchOperation) error {
 	for _, token := range tokens[1:] {
 		declared := derefType(t)
 		if declared != nil && customJSONType(declared) {
-			return notCompilable(op, fmt.Sprintf("%s is a member of %s, which decodes itself, so SQL cannot hold the stored document to it", op.Path, declared))
+			return notCompilable(op, fmt.Sprintf("%s is a member of %s, which decodes itself, so SQL cannot hold the stored document to it", op.Path, gowalker.TypeText(declared)))
 		}
 		switch shapeOf(t) {
 		case shapeArray:

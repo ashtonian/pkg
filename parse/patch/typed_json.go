@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/ashtonian/pkg/gowalker"
 	"github.com/ashtonian/pkg/parse/core"
 	"github.com/ashtonian/pkg/parse/internal/jsonkeys"
 )
@@ -25,7 +26,7 @@ func checkJSONMembers(t reflect.Type, data []byte) error {
 	dec.DisallowUnknownFields()
 	dec.UseNumber()
 	if err := dec.Decode(reflect.New(t).Interface()); err != nil {
-		return fmt.Errorf("value does not fit %s: %w", t, err)
+		return fmt.Errorf("value does not fit %s: %w", gowalker.TypeText(t), err)
 	}
 	return nil
 }
@@ -52,7 +53,7 @@ func normalizeTypedMerge(t reflect.Type, obj map[string]any, codec core.Codec, p
 		return obj, nil
 	}
 	if customJSONType(t) {
-		return nil, fmt.Errorf("object merge for custom JSON type %s is not supported; use JSON Patch replace", t)
+		return nil, fmt.Errorf("object merge for custom JSON type %s is not supported; use JSON Patch replace", gowalker.TypeText(t))
 	}
 
 	out := make(map[string]any, len(obj))
@@ -101,7 +102,7 @@ func normalizeTypedMerge(t reflect.Type, obj map[string]any, codec core.Codec, p
 		}
 		encoded, ok := canonical.(map[string]any)
 		if !ok {
-			return nil, fmt.Errorf("object merge for %s does not encode an object; use JSON Patch replace", t)
+			return nil, fmt.Errorf("object merge for %s does not encode an object; use JSON Patch replace", gowalker.TypeText(t))
 		}
 		// Sorted, as the map branch is: the first failure reported must not
 		// depend on map order.
@@ -109,18 +110,18 @@ func normalizeTypedMerge(t reflect.Type, obj map[string]any, codec core.Codec, p
 			value := obj[name]
 			field, ok := fields[name]
 			if !ok {
-				return nil, fmt.Errorf("unknown or noncanonical JSON member %q in %s", name, t)
+				return nil, fmt.Errorf("unknown or noncanonical JSON member %q in %s", name, gowalker.TypeText(t))
 			}
 			_, emitted := encoded[name]
 			if value == nil {
 				if emitted {
-					return nil, fmt.Errorf("cannot delete JSON member %q: %s would re-emit it; use JSON Patch replace", name, t)
+					return nil, fmt.Errorf("deleting JSON member %q: %s would re-emit it; use JSON Patch replace", name, gowalker.TypeText(t))
 				}
 				out[name] = nil
 				continue
 			}
 			if !emitted {
-				return nil, fmt.Errorf("JSON member %q is omitted by %s; use null to delete it or JSON Patch replace", name, t)
+				return nil, fmt.Errorf("JSON member %q is omitted by %s; use null to delete it or JSON Patch replace", name, gowalker.TypeText(t))
 			}
 			// Full typed decoding above already checks scalar field values,
 			// including json:",string". Objects need partial-merge validation;
@@ -145,13 +146,13 @@ func normalizeTypedMerge(t reflect.Type, obj map[string]any, codec core.Codec, p
 		if !present {
 			for _, name := range slices.Sorted(maps.Keys(encoded)) {
 				if _, supplied := out[name]; !supplied {
-					return nil, fmt.Errorf("object merge into potentially absent %s must supply member %q; use JSON Patch replace", t, name)
+					return nil, fmt.Errorf("object merge into potentially absent %s must supply member %q; use JSON Patch replace", gowalker.TypeText(t), name)
 				}
 			}
 		}
 		return out, nil
 	default:
-		return nil, fmt.Errorf("cannot merge an object into %s", t)
+		return nil, fmt.Errorf("merging an object into %s: it holds no members", gowalker.TypeText(t))
 	}
 }
 
@@ -187,10 +188,10 @@ func normalizeDeclaredJSON(t reflect.Type, value any) (any, error) {
 	dec.DisallowUnknownFields()
 	dec.UseNumber()
 	if err := dec.Decode(decoded.Interface()); err != nil {
-		return nil, fmt.Errorf("value does not fit %s: %w", t, err)
+		return nil, fmt.Errorf("value does not fit %s: %w", gowalker.TypeText(t), err)
 	}
 	if jsonNil(decoded.Elem()) {
-		return nil, fmt.Errorf("JSON document decodes to nil %s; use json.RawMessage to preserve JSON null", t)
+		return nil, fmt.Errorf("JSON document decodes to nil %s; use json.RawMessage to preserve JSON null", gowalker.TypeText(t))
 	}
 	var document any
 	if err := decodeJSONDocument(raw, &document); err != nil {
@@ -238,21 +239,21 @@ func checkDocumentMember(schema *PatchSchema, op PatchOp, path string, value any
 				return fmt.Errorf("member %q: %w", token, err)
 			}
 			if canonical != token {
-				return fmt.Errorf("member %q is the %s key encoding/json writes as %q", token, t.Key(), canonical)
+				return fmt.Errorf("member %q is the %s key encoding/json writes as %q", token, gowalker.TypeText(t.Key()), canonical)
 			}
 			t = t.Elem()
 		case t.Kind() == reflect.Struct:
 			f := jsonMember(t, token)
 			if f == nil {
-				return fmt.Errorf("%s has no member %q", t, token)
+				return fmt.Errorf("%s has no member %q", gowalker.TypeText(t), token)
 			}
 			t = f.Type()
 		case t.Kind() == reflect.Slice && t.Elem().Kind() == reflect.Uint8:
-			return fmt.Errorf("%s encodes as a string, which has no members", t)
+			return fmt.Errorf("%s encodes as a string, which has no members", gowalker.TypeText(t))
 		case t.Kind() == reflect.Slice || t.Kind() == reflect.Array:
 			t = t.Elem()
 		default:
-			return fmt.Errorf("%s has no members", t)
+			return fmt.Errorf("%s has no members", gowalker.TypeText(t))
 		}
 		if i == len(tokens)-2 && (op == PatchOpAdd || op == PatchOpReplace) {
 			return checkMemberFits(parent, token, value)
@@ -395,7 +396,7 @@ func canonicalJSONReplacement(value reflect.Value, document any) (any, error) {
 			return document, nil
 		}
 		if t.Kind() == reflect.Array && len(input) != t.Len() {
-			return nil, fmt.Errorf("expected exactly %d elements for %s, got %d", t.Len(), t, len(input))
+			return nil, fmt.Errorf("expected exactly %d elements for %s, got %d", t.Len(), gowalker.TypeText(t), len(input))
 		}
 		out := make([]any, len(input))
 		for i, member := range input {
@@ -523,7 +524,7 @@ func rejectCustomObjectMerge(t reflect.Type, value, normalized any) error {
 	// A json.RawMessage member is a document like an interface one; a value
 	// of a custom-encoded Go type merges into neither.
 	if (customJSONType(t) && !untypedDocument(t)) || customJSONType(reflect.TypeOf(value)) {
-		return fmt.Errorf("object merge for custom JSON type %s is not supported; use JSON Patch replace", t)
+		return fmt.Errorf("object merge for custom JSON type %s is not supported; use JSON Patch replace", gowalker.TypeText(t))
 	}
 	return nil
 }

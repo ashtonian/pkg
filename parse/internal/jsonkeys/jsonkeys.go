@@ -18,6 +18,7 @@ import (
 	"strconv"
 	"sync"
 
+	"github.com/ashtonian/pkg/gowalker"
 	"github.com/ashtonian/pkg/parse/core"
 )
 
@@ -26,7 +27,7 @@ import (
 // encoding/json writes for that key.
 func CanonicalMapKey(t reflect.Type, name string) (reflect.Value, string, error) {
 	if t == nil || !t.Comparable() {
-		return reflect.Value{}, "", fmt.Errorf("invalid JSON map key type %v", t)
+		return reflect.Value{}, "", fmt.Errorf("invalid JSON map key type %v", gowalker.TypeText(t))
 	}
 	key := reflect.New(t).Elem()
 	switch jsonKeyRuleOf(t) {
@@ -36,14 +37,14 @@ func CanonicalMapKey(t reflect.Type, name string) (reflect.Value, string, error)
 	case keySigned:
 		n, err := strconv.ParseInt(name, 10, 64)
 		if err != nil || key.OverflowInt(n) {
-			return reflect.Value{}, "", fmt.Errorf("JSON member %q is not a %s map key", name, t)
+			return reflect.Value{}, "", fmt.Errorf("JSON member %q is not a %s map key", name, gowalker.TypeText(t))
 		}
 		key.SetInt(n)
 		return key, strconv.FormatInt(n, 10), nil
 	case keyUnsigned:
 		n, err := strconv.ParseUint(name, 10, 64)
 		if err != nil || key.OverflowUint(n) {
-			return reflect.Value{}, "", fmt.Errorf("JSON member %q is not a %s map key", name, t)
+			return reflect.Value{}, "", fmt.Errorf("JSON member %q is not a %s map key", name, gowalker.TypeText(t))
 		}
 		key.SetUint(n)
 		return key, strconv.FormatUint(n, 10), nil
@@ -115,7 +116,7 @@ func encodedJSONMapKey(t reflect.Type, name string) (reflect.Value, string, erro
 	}
 	keys := keyMap.Elem().MapKeys()
 	if len(keys) != 1 {
-		return reflect.Value{}, "", fmt.Errorf("JSON member %q does not decode to one %s key", name, t)
+		return reflect.Value{}, "", fmt.Errorf("JSON member %q does not decode to one %s key", name, gowalker.TypeText(t))
 	}
 	probe := reflect.MakeMapWithSize(keyMap.Elem().Type(), 1)
 	probe.SetMapIndex(keys[0], reflect.Zero(rawJSONType))
@@ -130,7 +131,7 @@ func encodedJSONMapKey(t reflect.Type, name string) (reflect.Value, string, erro
 	for canonical := range encoded {
 		return keys[0], canonical, nil
 	}
-	return reflect.Value{}, "", fmt.Errorf("JSON key %s encodes no member", t)
+	return reflect.Value{}, "", fmt.Errorf("JSON key %s encodes no member", gowalker.TypeText(t))
 }
 
 // Validate checks that raw, a document decoded into decoded (a non-nil
@@ -145,7 +146,7 @@ func encodedJSONMapKey(t reflect.Type, name string) (reflect.Value, string, erro
 func Validate(raw []byte, decoded any) error {
 	target := reflect.ValueOf(decoded)
 	if !target.IsValid() || target.Kind() != reflect.Pointer || target.IsNil() {
-		return fmt.Errorf("JSON key validation target must be a non-nil pointer, got %T", decoded)
+		return fmt.Errorf("JSON key validation target must be a non-nil pointer, got %s", gowalker.TypeText(reflect.TypeOf(decoded)))
 	}
 	shape, err := jsonShapeOf(target.Type().Elem())
 	if err != nil {
@@ -414,12 +415,12 @@ func (v *keyValidator) structMember(shape *jsonShape, seen []bool, name []byte) 
 		// Decoding gives a member no field names exactly to a field its name
 		// matches by case, if one does.
 		if f, folded := shape.walk.FoldedMatch(name); folded {
-			return fmt.Errorf("JSON member %q is noncanonical for %s; use %q", v.dec.StackPointer(), shape.typ, f.External())
+			return fmt.Errorf("JSON member %q is noncanonical for %s; use %q", v.dec.StackPointer(), gowalker.TypeText(shape.typ), f.External())
 		}
 		return v.skip() // not a member of the type
 	}
 	if seen[i] {
-		return fmt.Errorf("duplicate JSON member %q in %s", v.dec.StackPointer(), shape.typ)
+		return fmt.Errorf("duplicate JSON member %q in %s", v.dec.StackPointer(), gowalker.TypeText(shape.typ))
 	}
 	seen[i] = true
 	return v.value(shape.members[i])
@@ -427,7 +428,7 @@ func (v *keyValidator) structMember(shape *jsonShape, seen []bool, name []byte) 
 
 func (v *keyValidator) mapMember(shape *jsonShape, name []byte) error {
 	if !canonicalKeyName(shape, name) {
-		return fmt.Errorf("JSON map member %q does not preserve its decoded key spelling in %s; use canonical JSON member names", v.dec.StackPointer(), shape.typ)
+		return fmt.Errorf("JSON map member %q does not preserve its decoded key spelling in %s; use canonical JSON member names", v.dec.StackPointer(), gowalker.TypeText(shape.typ))
 	}
 	start := len(v.mapNames)
 	v.mapNames = append(v.mapNames, name...)
@@ -443,7 +444,7 @@ func (v *keyValidator) repeatedMapMember(shape *jsonShape, spans []nameSpan) err
 	slices.SortFunc(spans, func(a, b nameSpan) int { return bytes.Compare(names[a.start:a.end], names[b.start:b.end]) })
 	for i := 1; i < len(spans); i++ {
 		if name := names[spans[i].start:spans[i].end]; bytes.Equal(name, names[spans[i-1].start:spans[i-1].end]) {
-			return fmt.Errorf("duplicate JSON map member %q in %s", string(v.dec.StackPointer())+"/"+core.EscapePointerToken(string(name)), shape.typ)
+			return fmt.Errorf("duplicate JSON map member %q in %s", string(v.dec.StackPointer())+"/"+core.EscapePointerToken(string(name)), gowalker.TypeText(shape.typ))
 		}
 	}
 	return nil

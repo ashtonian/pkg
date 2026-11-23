@@ -5,6 +5,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"net"
+	"reflect"
+
+	"github.com/ashtonian/pkg/gowalker"
 )
 
 // MACAddr is a SQL MACADDR value, a 48-bit hardware address. Its canonical
@@ -95,7 +98,7 @@ func (m *MACAddr) Scan(value any) error {
 	case []byte:
 		return m.UnmarshalText(v)
 	}
-	return fmt.Errorf("cannot scan %T as a MAC address", value)
+	return fmt.Errorf("scanning %s as a MAC address: unsupported source type", gowalker.TypeText(reflect.TypeOf(value)))
 }
 
 // normalizeMACAddr is NormalizeScalar's FieldTypeMACAddr: the canonical
@@ -112,5 +115,5 @@ func normalizeMACAddr(v any) (string, error) {
 		parsed, err := ParseMACAddr(m)
 		return string(parsed), err
 	}
-	return "", fmt.Errorf("expected MAC address string, got %T", v)
+	return "", fmt.Errorf("expected MAC address string, got %s", gowalker.TypeText(reflect.TypeOf(v)))
 }

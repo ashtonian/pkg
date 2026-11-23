@@ -3,6 +3,8 @@ package core
 import (
 	"fmt"
 	"maps"
+
+	"github.com/ashtonian/pkg/gowalker"
 )
 
 // WithColumnTypes supplies physical storage declarations keyed by column name.
@@ -34,7 +36,7 @@ func (g *SchemaGenerator) FieldType(field *Field) (TypeInfo, error) {
 		return TypeInfo{}, fmt.Errorf("column %q declares type %q, which has no read rule", column, storage)
 	}
 	if storage == SQLDate && info.Type != FieldTypeDate {
-		return TypeInfo{}, fmt.Errorf("column %q declares a civil date; use core.Date, not %s", column, field.typ)
+		return TypeInfo{}, fmt.Errorf("column %q declares a civil date; use core.Date, not %s", column, gowalker.TypeText(field.typ))
 	}
 	if err := CheckValueStorage(column, info, storage); err != nil {
 		return TypeInfo{}, err

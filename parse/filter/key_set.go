@@ -2,9 +2,11 @@ package filter
 
 import (
 	"fmt"
+	"reflect"
 	"slices"
 	"strings"
 
+	"github.com/ashtonian/pkg/gowalker"
 	"github.com/ashtonian/pkg/parse/core"
 )
 
@@ -118,7 +120,7 @@ func constraintKeys(c *PolicyConstraint) ([]core.Key, error) {
 		}
 		keys = v
 	default:
-		return nil, fmt.Errorf("%w: key constraint on %s: value %T is no core.Key", ErrPolicyInvalid, strings.Join(c.Fields, ", "), c.Value)
+		return nil, fmt.Errorf("%w: key constraint on %s: value %s is no core.Key", ErrPolicyInvalid, strings.Join(c.Fields, ", "), gowalker.TypeText(reflect.TypeOf(c.Value)))
 	}
 	for i, k := range keys {
 		if len(k) != len(c.Fields) {

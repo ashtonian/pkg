@@ -5,6 +5,8 @@ import (
 	"reflect"
 	"slices"
 	"strings"
+
+	"github.com/ashtonian/pkg/gowalker"
 )
 
 // RelationKind is a relation's cardinality.
@@ -289,7 +291,7 @@ func (g *SchemaGenerator) RelationTag(fields *StructFields, field *Field) (*Rela
 			return nil, fmt.Errorf("relation tag primary key %s: %w", column, err)
 		}
 		if !ok {
-			return nil, fmt.Errorf("relation tag primary key %s is no column of %s; the field holding it types the key", column, fields.typ)
+			return nil, fmt.Errorf("relation tag primary key %s is no column of %s; the field holding it types the key", column, gowalker.TypeText(fields.typ))
 		}
 		rel.SourceTypes[i], err = g.FieldType(owner)
 		if err != nil {
@@ -338,7 +340,7 @@ func (g *SchemaGenerator) RelationTargetFields(field *Field, rel *RelationSchema
 	}
 	key := strings.Join(rel.TargetColumns, "+")
 	if elem.Kind() != reflect.Struct || IsKeyType(TypeOf(elem).Type) {
-		return nil, fmt.Errorf("relation tag target key %s has %d columns; the field holds %s, not a struct holding a field per column", key, len(rel.TargetColumns), elem)
+		return nil, fmt.Errorf("relation tag target key %s has %d columns; the field holds %s, not a struct holding a field per column", key, len(rel.TargetColumns), gowalker.TypeText(elem))
 	}
 	walk, err := g.StructFields(elem)
 	if err != nil {
@@ -351,7 +353,7 @@ func (g *SchemaGenerator) RelationTargetFields(field *Field, rel *RelationSchema
 			return nil, fmt.Errorf("relation tag target column %s: %w", column, err)
 		}
 		if !ok {
-			return nil, fmt.Errorf("relation tag target column %s is no column of %s; the field holding it types the column", column, elem)
+			return nil, fmt.Errorf("relation tag target column %s is no column of %s; the field holding it types the column", column, gowalker.TypeText(elem))
 		}
 		out[i] = target
 	}
@@ -366,7 +368,7 @@ func relationElem(field *Field) (reflect.Type, error) {
 		keys = keys.Elem()
 	}
 	if keys.Kind() != reflect.Slice || keys.Elem().Kind() == reflect.Uint8 {
-		return nil, fmt.Errorf("relation tag: the field is %s; a relation's field is a slice of target keys", field.typ)
+		return nil, fmt.Errorf("relation tag: the field is %s; a relation's field is a slice of target keys", gowalker.TypeText(field.typ))
 	}
 	return keys.Elem(), nil
 }

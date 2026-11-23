@@ -10,6 +10,7 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/ashtonian/pkg/gowalker"
 	"github.com/ashtonian/pkg/parse/core"
 	"github.com/ashtonian/pkg/parse/filter"
 	"github.com/ashtonian/pkg/parse/patch"
@@ -294,7 +295,7 @@ func NewResource[T any](table string, opts ...ResourceOption) (*Resource[T], err
 			continue
 		}
 		if _, ok := columns[c.column]; !ok {
-			return nil, fmt.Errorf("parse: %s: %s column %q is not a column of %s", table, c.option, c.column, reflect.TypeFor[T]())
+			return nil, fmt.Errorf("parse: %s: %s column %q is not a column of %s", table, c.option, c.column, gowalker.TypeText(reflect.TypeFor[T]()))
 		}
 	}
 	if err := checkDeletedColumn(cfg, columns[cfg.deleted]); err != nil {
@@ -371,7 +372,7 @@ func NewResource[T any](table string, opts ...ResourceOption) (*Resource[T], err
 			for _, c := range owner {
 				_, ok := columns[c]
 				if !ok {
-					return nil, fmt.Errorf("parse: %s: relation %q correlates on %q, which is not a column of %s", table, f.ExternalName, c, reflect.TypeFor[T]())
+					return nil, fmt.Errorf("parse: %s: relation %q correlates on %q, which is not a column of %s", table, f.ExternalName, c, gowalker.TypeText(reflect.TypeFor[T]()))
 				}
 				if r.computed(c) {
 					return nil, computedCorrelation(table, f.ExternalName, c)
@@ -493,23 +494,23 @@ func sqlTypes(table string, cfg resourceConfig, columns map[string]reflect.Type)
 		switch {
 		case t.IsJSON():
 			if !jsonRepresentableType(ft) {
-				return nil, fmt.Errorf("parse: %s: column %q declares %s with unsupported JSON type %s", table, name, t, ft)
+				return nil, fmt.Errorf("parse: %s: column %q declares %s with unsupported JSON type %s", table, name, t, gowalker.TypeText(ft))
 			}
 		case t == core.SQLInt32Array:
 			if ft.Kind() != reflect.Slice || ft.Elem().Kind() != reflect.Int32 {
-				return nil, fmt.Errorf("parse: %s: column %q is %s, read into a slice of int32, not %s", table, name, t, ft)
+				return nil, fmt.Errorf("parse: %s: column %q is %s, read into a slice of int32, not %s", table, name, t, gowalker.TypeText(ft))
 			}
 		case t == core.SQLUUIDArray:
 			if ft.Kind() != reflect.Slice || !core.IsUUIDType(ft.Elem()) {
-				return nil, fmt.Errorf("parse: %s: column %q is %s, read into a slice of UUIDs, not %s", table, name, t, ft)
+				return nil, fmt.Errorf("parse: %s: column %q is %s, read into a slice of UUIDs, not %s", table, name, t, gowalker.TypeText(ft))
 			}
 		case t.IsArray():
 			if ft.Kind() != reflect.Slice || ft.Elem().Kind() != reflect.String {
-				return nil, fmt.Errorf("parse: %s: column %q is %s, read into a slice of strings, not %s", table, name, t, ft)
+				return nil, fmt.Errorf("parse: %s: column %q is %s, read into a slice of strings, not %s", table, name, t, gowalker.TypeText(ft))
 			}
 		default:
 			if ft.Kind() != reflect.String {
-				return nil, fmt.Errorf("parse: %s: column %q is %s, read into a string, not %s", table, name, t, ft)
+				return nil, fmt.Errorf("parse: %s: column %q is %s, read into a string, not %s", table, name, t, gowalker.TypeText(ft))
 			}
 		}
 		out[name] = t
@@ -775,7 +776,7 @@ func (r *Resource[T]) columnValue(rv reflect.Value, column string) (any, error) 
 		model = model.Elem()
 	}
 	if rv.Type() != model {
-		return nil, fmt.Errorf("parse: %s: %s is not %s", r.table, rv.Type(), reflect.TypeFor[T]())
+		return nil, fmt.Errorf("parse: %s: %s is not %s", r.table, gowalker.TypeText(rv.Type()), gowalker.TypeText(reflect.TypeFor[T]()))
 	}
 	fv, err := f.Value(rv)
 	if err != nil {
@@ -797,7 +798,7 @@ func checkDeletedColumn(cfg resourceConfig, t reflect.Type) error {
 	case cfg.deleted == cfg.tenant:
 		return fmt.Errorf("deleted column %q is the tenant column", cfg.deleted)
 	case !holdsNull(t):
-		return fmt.Errorf("deleted column %q is %s, which cannot hold NULL: a row is live while the column is NULL, so declare a pointer or an sql.Scanner such as sql.NullTime", cfg.deleted, t)
+		return fmt.Errorf("deleted column %q is %s, which cannot hold NULL: a row is live while the column is NULL, so declare a pointer or an sql.Scanner such as sql.NullTime", cfg.deleted, gowalker.TypeText(t))
 	}
 	return nil
 }

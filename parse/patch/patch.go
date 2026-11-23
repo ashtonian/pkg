@@ -7,6 +7,7 @@ import (
 	"reflect"
 	"strconv"
 
+	"github.com/ashtonian/pkg/gowalker"
 	"github.com/ashtonian/pkg/parse/core"
 	"github.com/ashtonian/pkg/parse/internal/rfc6902"
 )
@@ -323,7 +324,8 @@ func checkTransfer(op PatchOp, from *PathSchema, fromDepth int, to *PathSchema, 
 		}
 	}
 	if fromDepth == 1 && toDepth == 1 && from.GoType != nil && to.GoType != nil && valueType(from.GoType) != valueType(to.GoType) {
-		return &transferError{code: ECodePatchValueInvalid, msg: fmt.Sprintf("the source holds %s, the destination %s", from.GoType, to.GoType)}
+		mismatch := &transferError{code: ECodePatchValueInvalid, msg: fmt.Sprintf("the source holds %s, the destination %s", gowalker.TypeText(from.GoType), gowalker.TypeText(to.GoType))}
+		return mismatch
 	}
 	if fromDepth == 1 && toDepth == 1 && from.Wire != to.Wire {
 		// The document holds each in its own wire form; the value would not
@@ -391,7 +393,7 @@ func checkNullability(ps *PathSchema, op PatchOp, value any, depth int) error {
 	if !clears {
 		return nil
 	}
-	reason := fmt.Sprintf("field is not nullable (%s)", ps.GoType)
+	reason := fmt.Sprintf("field is not nullable (%s)", gowalker.TypeText(ps.GoType))
 	if mustHoldElement(ps.GoType, ps.Bounds) {
 		reason = fmt.Sprintf("field cannot be cleared to an empty array (minitems %d)", *ps.Bounds.MinItems)
 	}
@@ -460,7 +462,7 @@ func normalizeOpValue(ps *PathSchema, op PatchOp, v any, depth int, codec core.C
 	if op == PatchOpArrayAppend {
 		if target == nil || target.Kind() != reflect.Slice {
 			if target != nil && target.Kind() == reflect.Array {
-				return nil, fmt.Errorf("array_append cannot grow a fixed-size array (%s)", target)
+				return nil, fmt.Errorf("array_append cannot grow a fixed-size array (%s)", gowalker.TypeText(target))
 			}
 			return v, nil
 		}
@@ -500,7 +502,7 @@ func normalizeRelationKeys(ps *PathSchema, v any, codec core.Codec) (any, error)
 	if ps.Wire != "" {
 		items, ok := core.AnySlice(v)
 		if !ok {
-			return nil, fmt.Errorf("expected an array, got %T", v)
+			return nil, fmt.Errorf("expected an array, got %s", gowalker.TypeText(reflect.TypeOf(v)))
 		}
 		key := ps.DataType
 		if ps.GoType != nil {
@@ -528,7 +530,7 @@ func normalizeRelationKeys(ps *PathSchema, v any, codec core.Codec) (any, error)
 func normalizeCompositeKeys(columns []RelationKey, v any, codec core.Codec) (any, error) {
 	items, ok := core.AnySlice(v)
 	if !ok {
-		return nil, fmt.Errorf("expected an array of keys, got %T", v)
+		return nil, fmt.Errorf("expected an array of keys, got %s", gowalker.TypeText(reflect.TypeOf(v)))
 	}
 	keys := make([]any, len(items))
 	for i, item := range items {
@@ -563,7 +565,7 @@ func normalizeTyped(t reflect.Type, v any, codec core.Codec) (any, error) {
 		if isNullableType(t) {
 			return nil, nil
 		}
-		return nil, fmt.Errorf("null is not valid for %s", t)
+		return nil, fmt.Errorf("null is not valid for %s", gowalker.TypeText(t))
 	}
 	for t.Kind() == reflect.Pointer {
 		t = t.Elem()
@@ -578,12 +580,12 @@ func normalizeTyped(t reflect.Type, v any, codec core.Codec) (any, error) {
 		}
 		items, ok := core.AnySlice(v)
 		if !ok {
-			return nil, fmt.Errorf("expected an array, got %T", v)
+			return nil, fmt.Errorf("expected an array, got %s", gowalker.TypeText(reflect.TypeOf(v)))
 		}
 		if t.Kind() == reflect.Array && len(items) != t.Len() {
 			// Decoding would drop the extra elements or zero-fill the
 			// missing ones while SQL stored what was sent.
-			return nil, fmt.Errorf("expected exactly %d elements for %s, got %d", t.Len(), t, len(items))
+			return nil, fmt.Errorf("expected exactly %d elements for %s, got %d", t.Len(), gowalker.TypeText(t), len(items))
 		}
 		out := make([]any, len(items))
 		for i, item := range items {
@@ -606,7 +608,7 @@ func normalizeTyped(t reflect.Type, v any, codec core.Codec) (any, error) {
 		return nil, err
 	}
 	if err = codec.Decode(data, dst.Interface()); err != nil {
-		return nil, fmt.Errorf("value does not fit %s: %w", t, err)
+		return nil, fmt.Errorf("value does not fit %s: %w", gowalker.TypeText(t), err)
 	}
 	// The driver encodes a database value; its JSON form ("200" for a
 	// decimal) is not what the column stores.

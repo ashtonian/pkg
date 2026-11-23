@@ -8,6 +8,7 @@ import (
 	"slices"
 	"sync"
 
+	"github.com/ashtonian/pkg/gowalker"
 	"github.com/ashtonian/pkg/parse/core"
 	"github.com/ashtonian/pkg/parse/filter"
 	"github.com/ashtonian/pkg/parse/patch"
@@ -60,19 +61,19 @@ func Register[T any](r *SchemaRegistry) error {
 
 	filterSchema, err := filter.GenerateFilterSchema[T](r.generator)
 	if err != nil {
-		return fmt.Errorf("parse: registering %s: filter schema: %w", t, err)
+		return fmt.Errorf("parse: registering %s: filter schema: %w", gowalker.TypeText(t), err)
 	}
 	patchSchema, err := patch.GeneratePatchSchema[T](r.generator)
 	if err != nil {
-		return fmt.Errorf("parse: registering %s: patch schema: %w", t, err)
+		return fmt.Errorf("parse: registering %s: patch schema: %w", gowalker.TypeText(t), err)
 	}
 	sortSchema, err := filter.GenerateSortSchema[T](r.generator)
 	if err != nil {
-		return fmt.Errorf("parse: registering %s: sort schema: %w", t, err)
+		return fmt.Errorf("parse: registering %s: sort schema: %w", gowalker.TypeText(t), err)
 	}
 	searchSchema, err := filter.GenerateSearchSchema[T](r.generator)
 	if err != nil {
-		return fmt.Errorf("parse: registering %s: search schema: %w", t, err)
+		return fmt.Errorf("parse: registering %s: search schema: %w", gowalker.TypeText(t), err)
 	}
 	return r.add(filterSchema.Name, filterSchema, patchSchema, sortSchema, searchSchema)
 }

@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"reflect"
 	"strconv"
+
+	"github.com/ashtonian/pkg/gowalker"
 )
 
 // Wire is how a field's values travel in JSON when that differs from its
@@ -167,7 +169,7 @@ func ToWire(w Wire, v any) (any, error) {
 	case bool:
 		return strconv.FormatBool(x), nil
 	}
-	return nil, fmt.Errorf("%T has no string wire form", v)
+	return nil, fmt.Errorf("%s has no string wire form", gowalker.TypeText(reflect.TypeOf(v)))
 }
 
 // jsonKind names a decoded JSON value's kind for messages.
@@ -178,5 +180,5 @@ func jsonKind(v any) string {
 	case []any:
 		return "an array"
 	}
-	return fmt.Sprintf("%T", v)
+	return gowalker.TypeText(reflect.TypeOf(v))
 }

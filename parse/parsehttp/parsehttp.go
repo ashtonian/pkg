@@ -14,9 +14,11 @@ import (
 	"fmt"
 	"maps"
 	"net/http"
+	"reflect"
 	"slices"
 	"strconv"
 
+	"github.com/ashtonian/pkg/gowalker"
 	"github.com/ashtonian/pkg/parse/core"
 	"github.com/ashtonian/pkg/parse/internal/httpjson"
 )
@@ -123,7 +125,7 @@ func (o options) writeError(w http.ResponseWriter, r *http.Request, pe *core.Par
 func WriteJSON(w http.ResponseWriter, r *http.Request, status int, v any, opts ...Option) error {
 	body, err := httpjson.Encode(v)
 	if err != nil {
-		return fmt.Errorf("parsehttp: encoding %T: %w", v, err)
+		return fmt.Errorf("parsehttp: encoding %s: %w", gowalker.TypeText(reflect.TypeOf(v)), err)
 	}
 	newOptions(opts).send(w, r, status, body)
 	return nil

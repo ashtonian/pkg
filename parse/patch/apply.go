@@ -375,14 +375,14 @@ func assignValue(dst reflect.Value, v any, codec core.Codec) error {
 	case reflect.String:
 		s, ok := v.(string)
 		if !ok {
-			return fmt.Errorf("cannot assign %T to %s", v, t)
+			return fmt.Errorf("assigning %s to %s: incompatible types", gowalker.TypeText(reflect.TypeOf(v)), gowalker.TypeText(t))
 		}
 		dst.SetString(s)
 		return nil
 	case reflect.Bool:
 		b, ok := v.(bool)
 		if !ok {
-			return fmt.Errorf("cannot assign %T to %s", v, t)
+			return fmt.Errorf("assigning %s to %s: incompatible types", gowalker.TypeText(reflect.TypeOf(v)), gowalker.TypeText(t))
 		}
 		dst.SetBool(b)
 		return nil
@@ -394,11 +394,11 @@ func assignValue(dst reflect.Value, v any, codec core.Codec) error {
 	}
 	data, err := codec.Encode(v)
 	if err != nil {
-		return fmt.Errorf("encoding %T for %s: %w", v, t, err)
+		return fmt.Errorf("encoding %s for %s: %w", gowalker.TypeText(reflect.TypeOf(v)), gowalker.TypeText(t), err)
 	}
 	decoded := reflect.New(t)
 	if err := codec.Decode(data, decoded.Interface()); err != nil {
-		return fmt.Errorf("cannot assign %T to %s: %w", v, t, err)
+		return fmt.Errorf("assigning %s to %s: %w", gowalker.TypeText(reflect.TypeOf(v)), gowalker.TypeText(t), err)
 	}
 	dst.Set(decoded.Elem())
 	return nil
@@ -611,8 +611,10 @@ func (a *Applier[T]) applyDocument(parsed *ParsedPatch, target T) (T, error) {
 		if err != nil {
 			return zero, fmt.Errorf("patch: encoding patched document: %w", err)
 		}
-		if err := a.codec.Decode(out, &result); err != nil {
-			return zero, &core.ParseError{Kind: core.ParseErrorKindPatch, Code: ECodePatchValueInvalid.String(), Message: fmt.Sprintf("patched document does not fit %T: %v", result, err), Cause: err}
+		err = a.codec.Decode(out, &result)
+		if err != nil {
+			unfit := &core.ParseError{Kind: core.ParseErrorKindPatch, Code: ECodePatchValueInvalid.String(), Message: fmt.Sprintf("patched document does not fit %s: %v", gowalker.TypeText(reflect.TypeFor[T]()), err), Cause: err}
+			return zero, unfit
 		}
 	}
 	out := newWorkingCopy(target)

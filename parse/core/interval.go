@@ -6,8 +6,11 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"reflect"
 	"strconv"
 	"strings"
+
+	"github.com/ashtonian/pkg/gowalker"
 )
 
 // Interval is a SQL INTERVAL, held as PostgreSQL holds one: months, days and
@@ -310,7 +313,7 @@ func (iv *Interval) Scan(value any) error {
 	case []byte:
 		text = string(v)
 	default:
-		return fmt.Errorf("cannot scan %T as an interval", value)
+		return fmt.Errorf("scanning %s as an interval: unsupported source type", gowalker.TypeText(reflect.TypeOf(value)))
 	}
 	if strings.HasPrefix(text, "P") {
 		return iv.UnmarshalText([]byte(text))
@@ -421,5 +424,5 @@ func normalizeInterval(v any) (string, error) {
 		}
 		return parsed.String(), nil
 	}
-	return "", fmt.Errorf("expected ISO 8601 duration string, got %T", v)
+	return "", fmt.Errorf("expected ISO 8601 duration string, got %s", gowalker.TypeText(reflect.TypeOf(v)))
 }

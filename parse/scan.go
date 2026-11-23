@@ -8,6 +8,7 @@ import (
 
 	"database/sql"
 
+	"github.com/ashtonian/pkg/gowalker"
 	"github.com/ashtonian/pkg/jsonvalue"
 	"github.com/ashtonian/pkg/parse/core"
 	"github.com/ashtonian/pkg/parse/internal/dialect"
@@ -168,7 +169,7 @@ func (c jsonColumn) Scan(src any) error {
 	case []byte:
 		raw = v
 	default:
-		return fmt.Errorf("JSON scan source must be string or []byte, got %T", src)
+		return fmt.Errorf("JSON scan source must be string or []byte, got %s", gowalker.TypeText(reflect.TypeOf(src)))
 	}
 	// Presence and member spelling are checked on a fresh value, so a
 	// document that fails either never reaches the row.
@@ -191,7 +192,7 @@ type timestampColumn struct{ target reflect.Value }
 func (c timestampColumn) Scan(src any) error {
 	if src == nil {
 		if c.target.Kind() != reflect.Pointer {
-			return fmt.Errorf("NULL into %s", c.target.Type())
+			return fmt.Errorf("NULL into %s", gowalker.TypeText(c.target.Type()))
 		}
 		c.target.SetZero()
 		return nil
@@ -206,7 +207,7 @@ func (c timestampColumn) Scan(src any) error {
 	case []byte:
 		text = string(v)
 	default:
-		return fmt.Errorf("timestamp scan source must be text or time.Time, got %T", src)
+		return fmt.Errorf("timestamp scan source must be text or time.Time, got %s", gowalker.TypeText(reflect.TypeOf(src)))
 	}
 	at, err := time.Parse(time.RFC3339Nano, text)
 	if err != nil {

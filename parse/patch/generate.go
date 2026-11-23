@@ -8,6 +8,7 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/ashtonian/pkg/gowalker"
 	"github.com/ashtonian/pkg/parse/core"
 )
 
@@ -113,10 +114,10 @@ func generatePatchSchema(g *core.SchemaGenerator, t reflect.Type, server bool) (
 					if mustHoldElement(field.Type(), bounds) {
 						return nil, fmt.Errorf("field %s: patch operation remove empties the array, which minitems %d refuses", field.GoName(), *bounds.MinItems)
 					}
-					return nil, fmt.Errorf("field %s: patch operation remove requires a nullable Go type (pointer, slice, map), got %s", field.GoName(), field.Type())
+					return nil, fmt.Errorf("field %s: patch operation remove requires a nullable Go type (pointer, slice, map), got %s", field.GoName(), gowalker.TypeText(field.Type()))
 				}
 				if op == PatchOpArrayAppend && isFixedArray(field.Type()) {
-					return nil, fmt.Errorf("field %s: array_append cannot grow a fixed-size array (%s)", field.GoName(), field.Type())
+					return nil, fmt.Errorf("field %s: array_append cannot grow a fixed-size array (%s)", field.GoName(), gowalker.TypeText(field.Type()))
 				}
 				allowedOps = append(allowedOps, op)
 			}
@@ -365,10 +366,10 @@ func tagMembership(g *core.SchemaGenerator, field *core.Field, rel *core.Relatio
 // keys that cannot be null.
 func checkRelationKeyType(t reflect.Type) error {
 	if t.Kind() != reflect.Slice {
-		return fmt.Errorf("a relation's membership is a slice of keys, not %s", t)
+		return fmt.Errorf("a relation's membership is a slice of keys, not %s", gowalker.TypeText(t))
 	}
 	if isNullableType(t.Elem()) {
-		return fmt.Errorf("a relation's keys are never null; declare them as %s's element without a pointer", t)
+		return fmt.Errorf("a relation's keys are never null; declare them as %s's element without a pointer", gowalker.TypeText(t))
 	}
 	return nil
 }
