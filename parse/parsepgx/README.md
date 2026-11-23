@@ -11,7 +11,7 @@ func (a *deviceAPI) list(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
 		return
 	}
-	req, err := devices.ParseList(r.URL.Query())
+	req, err := parsehttp.ParseList(r, devices)
 	if err != nil {
 		a.fail(w, r, err)
 		return

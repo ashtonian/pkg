@@ -76,3 +76,31 @@ func TestParseList_Refusals(t *testing.T) {
 		})
 	}
 }
+
+// A query string that does not decode is refused whole as E2067, on every
+// transport: url.URL.Query would drop the pair and keep the rest, and a list
+// that named a filter would answer every row.
+func TestParseList_AQueryStringThatDoesNotDecode(t *testing.T) {
+	res := gadgets(t)
+	for _, target := range []string{
+		"/gadgets?name=%zz",
+		"/gadgets?name=a%",
+		"/gadgets?name=a;x=1",
+		"/gadgets?filter=%7B%22name%22%3A%22a%22%7D%",
+		"/gadgets?tenant=%zz",
+	} {
+		for _, method := range []string{http.MethodGet, http.MethodHead, http.MethodPost} {
+			r := httptest.NewRequest(method, target, strings.NewReader(`{"filter":{"name":"a"}}`))
+			r.Header.Set("Content-Type", "application/json")
+			_, err := parsehttp.ParseList(r, res)
+			require.ErrorIs(t, err, filter.ECodeInvalidListParam, "%s %s", method, target)
+			assert.ErrorContains(t, err, "the query string does not decode", "%s %s", method, target)
+		}
+		_, err := parsehttp.Query(httptest.NewRequest(http.MethodPatch, target, nil))
+		assert.ErrorIs(t, err, filter.ECodeInvalidListParam, target)
+	}
+
+	q, err := parsehttp.Query(httptest.NewRequest(http.MethodGet, "/gadgets?name=a&name=b&filter=%7B%7D", nil))
+	require.NoError(t, err)
+	assert.Equal(t, map[string][]string{"name": {"a", "b"}, "filter": {"{}"}}, map[string][]string(q))
+}

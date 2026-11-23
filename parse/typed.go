@@ -65,9 +65,13 @@ func (r *Resource[T]) parseFilter(query string, cfg *core.ParserConfig) (*filter
 // (status=active&price_gte=10, see filter.QueryParamParser), ANDed and bounded
 // by the parser's limits as one filter. A parameter that is neither a list
 // parameter (filter.Param*), a name filter.QueryParamAccept lists, nor a
-// filterable field is E2071; filter.QueryParamLenient ignores it instead. The
+// filterable field is E2071; filter.QueryParamLenient ignores it instead. A
+// list parameter given more than once is E2067, as in ParseList. The
 // parser's own configuration bounds the flat parameters, whatever opts say.
 func (r *Resource[T]) ParseRequestFilter(q url.Values, opts ...filter.QueryParamOption) (*filter.ParsedFilter, error) {
+	if err := listParamsOnce(q); err != nil {
+		return nil, err
+	}
 	fp := filter.NewFilterParser(r.filterSchema, r.cfg)
 	jsonAST, err := fp.Parse(q.Get(filter.ParamFilter))
 	if err != nil {

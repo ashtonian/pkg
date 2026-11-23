@@ -22,7 +22,7 @@ The core translates requests into validated values and plans. It does not select
 
 For lists:
 
-1. `devices.ParseList(r.URL.Query())` validates the JSON and flat filters, sort, cursor, page size, total, facets and includes.
+1. `parsehttp.ParseList(r, devices)` decodes the query string (`parsehttp.Query`) and validates the JSON and flat filters, sort, cursor, page size, total, facets and includes.
 2. `devices.BuildList(filter.PostgresDialect{}, req, parse.Scope{Tenant: tenant})` compiles it under the server's tenant, policy and deleted-row decision.
 3. `parsepgx.QueryPage(ctx, pool, devices, plan)` sends the page, count and facet statements in one `pgx.Batch`, scans rows through the resource's row contract (`devices.RowScanner`: each column into the field the resource compiled it from; fields of columns `parse.ReadColumns` leaves out stay zero, and a `parse.ReadExpr` column scans its expression's value), builds the page, then reads the includes for the page's keys in a second batch through `Page.SetInclude`. The page carries `page_info.total_count`, `facets` and `_relations` as the request asked.
 

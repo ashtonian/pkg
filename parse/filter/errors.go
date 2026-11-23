@@ -40,7 +40,8 @@ const (
 	// ECodeInvalidListParam is a list request parameter that is malformed or
 	// that the resource cannot honor: a page size that is not a positive
 	// integer, a boolean flag that is not a boolean, search on a resource
-	// without search fields.
+	// without search fields, a parameter given twice, or a query string that
+	// does not decode.
 	ECodeInvalidListParam = core.CodeInvalidListParam
 )
 

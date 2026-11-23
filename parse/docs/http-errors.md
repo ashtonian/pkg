@@ -19,6 +19,10 @@ A list endpoint built on this package reads the `filter.Param*` query parameters
 | `fields` | `ParamFields` | Response field mask: the fields each item returns ([field mask](queries.md#field-mask)) |
 | `include` | `ParamInclude` | Relation fields whose related IDs the page carries in `_relations` |
 
+Each list parameter is given once: a repeat is E2067 naming it, from `Resource.ParseList` and `ParseRequestFilter` alike, where `q.Get` would otherwise read the first and drop the rest. `facets`, `fields` and `include` take their names comma-separated in one value. A flat field parameter may repeat: `status=a&status=b` is the set `{"status":{"$in":["a","b"]}}`.
+
+Decode the query string with `parsehttp.Query(r)`, never `r.URL.Query()`. The latter drops a pair that does not decode, an invalid percent-escape or a `;`, and keeps the rest, so `?category=%zz` would list every row and a filter that targets an update would reach rows the client did not name. `Query` refuses the whole query string as E2067, and `parsehttp.ParseList` reads every list through it.
+
 Lists answer with `filter.Page[T]`: `{"items": […], "page_info": {"has_next_page", "has_prev_page", "start_cursor", "end_cursor", "total_count"}, "_relations": {…}}`. Errors answer `{"code", "message", "path", "index", "details"}` (`parsehttp.Body`; `path`, `index` and `details` only when set), or an RFC 9457 problem document ([below](#rfc-9457-problem-details)).
 
 ### The same request as a POST body
@@ -35,7 +39,7 @@ The `POST` is a separate route a server opts into: register `POST` on the collec
 
 ## Handler responsibilities
 
-`ParseRequestFilter(r.URL.Query())` ANDs the JSON `filter` with flat field parameters and applies limits to the combined filter. It does not parse every list option or execute a query. Your handler validates page size/booleans, selects policy from authenticated context, passes sort/search/cursor options, and executes the plan. `Resource.ParseList` checks every `fields` name, but neither `fields` nor `include_deleted` takes effect by itself: the service drops the members the mask leaves out when it writes the rows ([field mask](queries.md#field-mask)), and grants deleted rows through `Scope.IncludeDeleted`. Neither is an authorization control.
+`ParseRequestFilter(q)` ANDs the JSON `filter` with flat field parameters and applies limits to the combined filter. It does not parse every list option or execute a query. Your handler validates page size/booleans, selects policy from authenticated context, passes sort/search/cursor options, and executes the plan. `Resource.ParseList` checks every `fields` name, but neither `fields` nor `include_deleted` takes effect by itself: the service drops the members the mask leaves out when it writes the rows ([field mask](queries.md#field-mask)), and grants deleted rows through `Scope.IncludeDeleted`. Neither is an authorization control.
 
 A flat parameter naming no filterable field is E2071 unless it is a list parameter (`Param*`) or one the handler reads itself: pass those names with `filter.QueryParamAccept(names...)` (to `ParseRequestFilter` or `filter.NewQueryParamParser`) or `parse.AcceptParams` (to `Resource.ParseList`). `filter.QueryParamLenient()` ignores unknown names instead; a misspelt filter then returns every row, so prefer the accepted list. JSON filter fields are schema-checked either way.
 
@@ -107,7 +111,7 @@ All known codes describe permanent failures and are listed below; retry and cata
 | E2064 | 422 | Patch operation not allowed on the path |
 | E2065 | 422 | Sort values at a page boundary too large for a cursor |
 | E2066 | 422 | Too many patch operations |
-| E2067 | 422 | Malformed or unsupported list parameter |
+| E2067 | 422 | Malformed or unsupported list parameter, a list parameter given twice, or a query string that does not decode |
 | E2068 | 422 | `test` cannot compile to SQL |
 | E2070 | 422 | Patch operation cannot compile to SQL (move, copy, nested path, `array_append` on a document) |
 | E2071 | 422 | Unknown filter field |

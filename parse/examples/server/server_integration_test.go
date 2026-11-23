@@ -319,3 +319,34 @@ func TestServer_CombinedFiltersShareOneCostBudget(t *testing.T) {
 	require.Equal(t, http.StatusUnprocessableEntity, status)
 	require.Equal(t, filter.ECodeQueryTooExpensive.String(), body.Code)
 }
+
+// A query string that does not decode, or a list parameter given twice, is
+// refused as E2067 on every route that reads one: dropping the pair would
+// answer a list with every row, or update rows the client did not name.
+func TestServer_QueriesThatLoseAParameterAreRefused(t *testing.T) {
+	srv := testServer(t)
+	for _, tt := range []struct{ method, path, contentType, body string }{
+		{http.MethodGet, "/api/products?category=%zz", "", ""},
+		{http.MethodGet, "/api/products?category=books%", "", ""},
+		{http.MethodGet, "/api/products?category=books;x=1", "", ""},
+		{http.MethodGet, "/api/products?filter=%7B%22category%22%3A%22books%22%7D%", "", ""},
+		{http.MethodPost, "/api/products?filter=%zz", "application/json", `{"filter":{"category":"books"}}`},
+		{http.MethodOptions, "/api/products?facets=category&category=%zz", "", ""},
+		{http.MethodPatch, "/api/products?id[]=p02&id[]=%zz", "", `{"price":7}`},
+		{http.MethodPatch, "/api/products/p03?category=%zz", "", `{"price":7}`},
+		{http.MethodGet, "/api/products?sort=name&sort=-name", "", ""},
+		{http.MethodGet, "/api/products?" + url.Values{filter.ParamFilter: {`{"category":"books"}`, `{"category":"toys"}`}}.Encode(), "", ""},
+		{http.MethodGet, "/api/products?page_size=2&page_size=500", "", ""},
+	} {
+		var body parsehttp.Body
+		status := send(t, srv, tt.method, tt.path, tt.contentType, tt.body, &body)
+		assert.Equal(t, http.StatusUnprocessableEntity, status, "%s %s", tt.method, tt.path)
+		assert.Equal(t, filter.ECodeInvalidListParam.String(), body.Code, "%s %s: %s", tt.method, tt.path, body.Message)
+	}
+
+	var res struct {
+		Updated []Product `json:"updated"`
+	}
+	require.Equal(t, http.StatusOK, call(t, srv, http.MethodPatch, "/api/products/p02", `{}`, &res))
+	assert.NotEqual(t, 7.0, res.Updated[0].Price, "a refused batch writes nothing")
+}

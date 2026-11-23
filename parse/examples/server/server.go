@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"maps"
 	"net/http"
+	"net/url"
 	"slices"
 	"time"
 
@@ -110,7 +111,12 @@ func (s *server) list(w http.ResponseWriter, r *http.Request) {
 func (s *server) facets(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), s.requestTimeout)
 	defer cancel()
-	req, err := s.products.ParseList(r.URL.Query())
+	q, err := parsehttp.Query(r)
+	if err != nil {
+		s.fail(w, r, err)
+		return
+	}
+	req, err := s.products.ParseList(q)
 	if err != nil {
 		s.fail(w, r, err)
 		return
@@ -162,7 +168,7 @@ type itemError struct {
 }
 
 func (s *server) patch(w http.ResponseWriter, r *http.Request) {
-	if s.refuseParams(w, r) {
+	if _, ok := s.patchQuery(w, r); !ok {
 		return
 	}
 	id := r.PathValue("id")
@@ -181,10 +187,11 @@ func (s *server) patch(w http.ResponseWriter, r *http.Request) {
 // patchMany applies one merge patch to the products its id[] keys name. A
 // key with no product is a failed item, not a failed request.
 func (s *server) patchMany(w http.ResponseWriter, r *http.Request) {
-	if s.refuseParams(w, r, "id[]") {
+	q, ok := s.patchQuery(w, r, "id[]")
+	if !ok {
 		return
 	}
-	ids := r.URL.Query()["id[]"]
+	ids := q["id[]"]
 	if len(ids) == 0 || len(ids) > maxPatchIDs {
 		s.writeJSON(w, r, http.StatusBadRequest, parsehttp.Body{
 			Code:    codeBadRequest,
@@ -218,21 +225,28 @@ func (s *server) patchMany(w http.ResponseWriter, r *http.Request) {
 	s.writeJSON(w, r, http.StatusOK, res)
 }
 
-// refuseParams answers 400 for a query parameter the route does not read,
-// and reports whether it did. A patch that ignored one, a filter meant to
-// narrow it, would write rows the client did not mean to.
-func (s *server) refuseParams(w http.ResponseWriter, r *http.Request, accepted ...string) bool {
-	q := r.URL.Query()
+// patchQuery decodes a patch route's query string, which names only the
+// accepted parameters, and reports whether the request may proceed; it has
+// answered the request when it may not. A query string that does not decode
+// is refused whole, and so is a parameter the route does not read: a patch
+// that ignored one, a filter meant to narrow it, would write rows the client
+// did not mean to.
+func (s *server) patchQuery(w http.ResponseWriter, r *http.Request, accepted ...string) (url.Values, bool) {
+	q, err := parsehttp.Query(r)
+	if err != nil {
+		s.fail(w, r, err)
+		return nil, false
+	}
 	names := slices.Sorted(maps.Keys(q))
 	i := slices.IndexFunc(names, func(name string) bool { return !slices.Contains(accepted, name) })
 	if i < 0 {
-		return false
+		return q, true
 	}
 	s.writeJSON(w, r, http.StatusBadRequest, parsehttp.Body{
 		Code:    codeBadRequest,
 		Message: fmt.Sprintf("%s %s reads no %q parameter", r.Method, r.URL.Path, names[i]),
 	})
-	return true
+	return nil, false
 }
 
 // update applies the request's merge patch to target's products and returns

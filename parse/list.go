@@ -3,6 +3,7 @@ package parse
 import (
 	"errors"
 	"fmt"
+	"maps"
 	"net/url"
 	"reflect"
 	"slices"
@@ -192,8 +193,10 @@ func unknownListField(msg, name string) *core.ParseError {
 }
 
 // ParseList reads a list request's query parameters (filter.Param*) into a
-// ListInput and validates it with ParseListInput. A page size that is not a
-// positive integer, or a flag that is not a boolean, is E2067. Every other
+// ListInput and validates it with ParseListInput. A list parameter given
+// more than once, a page size that is not a positive integer, or a flag that
+// is not a boolean, is E2067: facets, include and fields are one
+// comma-separated value, as the body form takes one member each. Every other
 // parameter that AcceptParams does not name is a field filter, so a misspelt
 // filter is E2071 and cannot widen a list.
 func (r *Resource[T]) ParseList(q url.Values) (*ListRequest, error) {
@@ -208,6 +211,9 @@ func (r *Resource[T]) ParseList(q url.Values) (*ListRequest, error) {
 // comma-separated names to lists, and the remaining parameters to field
 // filters.
 func (r *Resource[T]) listInput(q url.Values) (ListInput, error) {
+	if err := listParamsOnce(q); err != nil {
+		return ListInput{}, err
+	}
 	in := ListInput{
 		Filter:  q.Get(filter.ParamFilter),
 		Sort:    q.Get(filter.ParamSort),
@@ -267,6 +273,19 @@ func (r *Resource[T]) parseListFilter(doc string, fields map[string][]string) (*
 
 func (r *Resource[T]) searchable() bool {
 	return r.searchSchema != nil && len(r.searchSchema.Fields) > 0
+}
+
+// listParamsOnce refuses a list parameter (filter.Param*) given more than
+// once. q.Get reads the first, so a second filter, sort or page size would
+// be dropped without a word; flat field filters give a repeat its meaning, a
+// set, and are not checked here.
+func listParamsOnce(q url.Values) error {
+	for _, name := range slices.Sorted(maps.Keys(q)) {
+		if n := len(q[name]); n > 1 && filter.IsListParam(name) {
+			return listParamError(name, fmt.Sprintf("%s is given %d times; a list parameter is given once", name, n))
+		}
+	}
+	return nil
 }
 
 func boolParam(q url.Values, name string) (bool, error) {
