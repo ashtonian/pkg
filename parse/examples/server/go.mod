@@ -4,7 +4,7 @@ go 1.27.0
 
 require (
 	github.com/alecthomas/kong v1.17.0
-	github.com/ashtonian/pkg/config v0.13.1
+	github.com/ashtonian/pkg/config v0.14.0
 	github.com/ashtonian/pkg/config/kongprovider v0.6.0
 	github.com/ashtonian/pkg/parse v0.17.1
 	github.com/stretchr/testify v1.12.1
