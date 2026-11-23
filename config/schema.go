@@ -93,6 +93,18 @@ func buildSchema(view *gowalker.Schema) (*schemaEntry, error) {
 		b.err = checkReloadTags(view)
 	}
 	e := &schemaEntry{node: n, err: b.err}
+	n.eachDeclaring(func(view *gowalker.Schema) {
+		e.misspelt = append(e.misspelt, misspeltTagKeys(view.Root())...)
+	})
+	return e, nil
+}
+
+// eachDeclaring calls visit with the view of every struct n's graph reaches,
+// once per node and in a fixed order: n, its fields' nodes in declaration
+// order, then its element's. A type reached by several paths, or from
+// within itself, is visited once: what a declaration says does not depend on
+// the path that reached it.
+func (n *schemaNode) eachDeclaring(visit func(*gowalker.Schema)) {
 	seen := map[*schemaNode]bool{}
 	var walk func(*schemaNode)
 	walk = func(n *schemaNode) {
@@ -101,7 +113,7 @@ func buildSchema(view *gowalker.Schema) (*schemaEntry, error) {
 		}
 		seen[n] = true
 		if n.view != nil {
-			e.misspelt = append(e.misspelt, misspeltTagKeys(n.view.Root())...)
+			visit(n.view)
 		}
 		for _, f := range n.fields {
 			walk(f.node)
@@ -109,7 +121,6 @@ func buildSchema(view *gowalker.Schema) (*schemaEntry, error) {
 		walk(n.elem)
 	}
 	walk(n)
-	return e, nil
 }
 
 // rootMetadata is structural inspection without load-time tag decoding.
@@ -132,22 +143,7 @@ func schemaOf(t reflect.Type) (*schemaNode, error) {
 	}
 	e.check.Do(func() {
 		b := &schemaBuilder{}
-		seen := map[*schemaNode]bool{}
-		var walk func(*schemaNode)
-		walk = func(n *schemaNode) {
-			if n == nil || seen[n] {
-				return
-			}
-			seen[n] = true
-			if n.view != nil {
-				b.validateTags(n.view.Root())
-			}
-			for _, f := range n.fields {
-				walk(f.node)
-			}
-			walk(n.elem)
-		}
-		walk(e.node)
+		e.node.eachDeclaring(func(view *gowalker.Schema) { b.validateTags(view.Root()) })
 		if b.err == nil && e.node.kind == nodeBranch {
 			b.err = checkEnvTags(e.node)
 		}

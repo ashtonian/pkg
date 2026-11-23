@@ -123,3 +123,49 @@ func TestLoad_SchemaErrorsLeaveTagValuesOut(t *testing.T) {
 		assert.Contains(t, err.Error(), "field Token")
 	}
 }
+
+type sharedDeclarations struct {
+	Name string `koanf:"name" defualt:"x" sensitive:"maybe"`
+}
+
+type recursiveDeclarations struct {
+	Name     string                           `koanf:"name"`
+	Children []recursiveDeclarations          `koanf:"children"`
+	ByName   map[string]recursiveDeclarations `koanf:"by_name"`
+}
+
+type sharedDeclarationsCfg struct {
+	misspeltBase `koanf:",squash"`
+
+	First  sharedDeclarations            `koanf:"first"`
+	Second *sharedDeclarations           `koanf:"second"`
+	Items  []misspeltItem                `koanf:"items"`
+	Named  map[string]sharedDeclarations `koanf:"named"`
+	Tree   recursiveDeclarations         `koanf:"tree"`
+}
+
+// The declaration checks read every struct of a graph once, whatever the
+// paths that reach it: a type held at several paths, behind a pointer or in
+// a collection is one set of declarations, and a recursive type ends.
+func TestDeclarationChecks_VisitEachStructOnce(t *testing.T) {
+	root, err := metadataOf(reflect.TypeFor[sharedDeclarationsCfg]())
+	require.NoError(t, err)
+	var visited []string
+	root.eachDeclaring(func(view *gowalker.Schema) {
+		visited = append(visited, gowalker.TypeText(view.Root().Type()))
+	})
+	assert.Equal(t, []string{
+		"config.sharedDeclarationsCfg", "config.sharedDeclarations", "config.misspeltItem", "config.recursiveDeclarations",
+	}, visited)
+
+	e := schemaMetadata(reflect.TypeFor[sharedDeclarationsCfg]())
+	var written []string
+	for _, m := range e.misspelt {
+		written = append(written, m.field+":"+m.written)
+	}
+	assert.Equal(t, []string{"Region:defualt", "Name:defualt", "Port:vaildate"}, written, "squashed and element declarations are checked, a shared one once")
+
+	_, err = rootSchema(reflect.TypeFor[sharedDeclarationsCfg]())
+	require.ErrorIs(t, err, ErrSchema)
+	assert.Contains(t, err.Error(), `field Name of config.sharedDeclarations has sensitive:"maybe"`)
+}
