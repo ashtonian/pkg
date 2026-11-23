@@ -50,15 +50,16 @@ func WithInvalidEntries(report func(context.Context, []KeyError) error) SourceOp
 }
 
 // withhold judges edits, the entries of one source in key order, over
-// below, the tree of the layers merged beneath it, as WithInvalidEntries
-// describes, and returns those it keeps; each withheld one is in rejected,
-// and the keys inside its value that no field reads in unknown. It does
-// not change below or the edits; err fails the load (see fatal).
-func (c *keyChecker) withhold(ctx context.Context, below map[string]any, edits []edit) (kept []edit, rejected []*KeyError, unknown []UnknownKey, err error) {
+// below, the tree of the layers merged beneath it, and belowUnkeyed, the
+// koanf:"-" fields they hold, as WithInvalidEntries describes, and returns
+// those it keeps; each withheld one is in rejected, and the keys inside its
+// value that no field reads in unknown. It does not change below or the
+// edits; err fails the load (see fatal).
+func (c *keyChecker) withhold(ctx context.Context, below map[string]any, belowUnkeyed unkeyedSections, edits []edit) (kept []edit, rejected []*KeyError, unknown []UnknownKey, err error) {
 	if len(edits) == 0 {
 		return nil, nil, nil, nil
 	}
-	failed := c.passes(ctx, below, edits)
+	failed := c.passes(ctx, below, belowUnkeyed, edits)
 	if failed == nil {
 		return edits, nil, nil, nil
 	}
@@ -67,7 +68,7 @@ func (c *keyChecker) withhold(ctx context.Context, below map[string]any, edits [
 	}
 	alone := make([]error, len(edits)) // nil: the edit passes on its own
 	for i := range edits {
-		alone[i] = c.passes(ctx, below, edits[i:i+1])
+		alone[i] = c.passes(ctx, below, belowUnkeyed, edits[i:i+1])
 		if err := fatal(ctx, alone[i]); err != nil {
 			return nil, nil, nil, err
 		}
@@ -83,7 +84,7 @@ func (c *keyChecker) withhold(ctx context.Context, below map[string]any, edits [
 				with = append(with, edits[j])
 			}
 		}
-		failed := c.passes(ctx, below, with)
+		failed := c.passes(ctx, below, belowUnkeyed, with)
 		if failed == nil {
 			kept = append(kept, e)
 			continue
@@ -114,7 +115,7 @@ func fatal(ctx context.Context, failed error) error {
 // passes is nil when edits, set over below, decode and validate; keys no
 // field reads are the unknown-input handler's, not a failure. Otherwise it
 // is the first edit refused, the candidate's cause or why ctx ended.
-func (c *keyChecker) passes(ctx context.Context, below map[string]any, edits []edit) error {
+func (c *keyChecker) passes(ctx context.Context, below map[string]any, belowUnkeyed unkeyedSections, edits []edit) error {
 	if err := ended(ctx); err != nil {
 		return err
 	}
@@ -122,9 +123,10 @@ func (c *keyChecker) passes(ctx context.Context, below map[string]any, edits []e
 	if len(unset) > 0 {
 		return unset[0].Err
 	}
+	unkeyed := belowUnkeyed.over(tree, editsUnkeyed(edits)) // before mergeTrees settles tree's whole maps
 	candidate := deepcopy.Value(reflect.ValueOf(below)).Interface().(map[string]any)
 	mergeTrees(tree, candidate)
-	_, _, err := c.decode(ctx, candidate)
+	_, _, err := c.decode(ctx, candidate, unkeyed)
 	return err
 }
 
@@ -189,7 +191,7 @@ func (l *loader) prepareProvider(ctx context.Context, name string, data map[stri
 	}
 	if p.withhold {
 		edits, rest, refused := sourceEntries(l.schema, textKeyed(data))
-		kept, rejected, unknown, err := l.checker.withhold(ctx, l.k.Raw(), edits)
+		kept, rejected, unknown, err := l.checker.withhold(ctx, l.k.Raw(), l.unkeyed, edits)
 		if err != nil {
 			return err
 		}
@@ -232,7 +234,7 @@ func (l *loader) prepareValidation(ctx context.Context, o *options) error {
 	if err != nil {
 		return err
 	}
-	_, unknown, err := c.decode(ctx, c.defaultsTree())
+	_, unknown, err := c.decode(ctx, c.defaultsTree(), c.unkeyed)
 	if ctxErr := ended(ctx); ctxErr != nil && (err != nil || unknown != nil) {
 		return ctxErr
 	}

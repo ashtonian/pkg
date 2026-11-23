@@ -98,7 +98,7 @@ func (l *loader) addEntries(ctx context.Context, name string, p providerSource, 
 		}
 	}
 	if p.withhold {
-		kept, rejected, unknown, err := l.checker.withhold(ctx, l.k.Raw(), edits)
+		kept, rejected, unknown, err := l.checker.withhold(ctx, l.k.Raw(), l.unkeyed, edits)
 		if err != nil {
 			return err
 		}

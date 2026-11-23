@@ -37,6 +37,9 @@ type edit struct {
 	safe    string       // path as diagnostics may show it
 	aliased []string     // each field the key names by a former name, as a load reports it
 	unknown []UnknownKey // keys inside value that no field reads, found as it is rewritten
+	// unkeyed is the koanf:"-" fields of the typed sections value sets,
+	// found as it is rewritten (see unkeyed.go).
+	unkeyed []unkeyedFields
 }
 
 // resolveKey parses key and spells it canonically (see resolveSchemaPath).
@@ -355,7 +358,7 @@ func (e *edit) rewrite(schema *schemaNode) error {
 			value = dynamicInput(value, e.path, w.failText)
 		}
 	}
-	e.value, e.unknown = value, w.unknown
+	e.value, e.unknown, e.unkeyed = value, w.unknown, w.unkeyed
 	switch {
 	case len(w.twice) > 0:
 		return refuse("keys spelled two ways set one field: %s", strings.Join(w.twice, ", "))
@@ -365,6 +368,15 @@ func (e *edit) rewrite(schema *schemaNode) error {
 		return refuse("values that do not marshal to text: %s", strings.Join(w.noText, ", "))
 	}
 	return nil
+}
+
+// editsUnkeyed is the koanf:"-" fields of the typed sections edits set.
+func editsUnkeyed(edits []edit) []unkeyedFields {
+	var out []unkeyedFields
+	for _, e := range edits {
+		out = append(out, e.unkeyed...)
+	}
+	return out
 }
 
 // setEdits is the source tree that sets edits, prepared and in order, over

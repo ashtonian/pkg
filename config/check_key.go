@@ -72,7 +72,8 @@ func CheckKey[T any](ctx context.Context, key string, value any, opts ...Option)
 }
 
 // DecodeKey returns the configuration CheckKey validates: one key set over
-// defaults, with no source reads or post-load stages. On any error it returns
+// defaults, with no source reads or post-load stages. A typed section, of
+// WithDefaults or of value, holds its koanf:"-" fields as in a load. On any error it returns
 // nil. The returned configuration and its collections are caller-owned.
 func DecodeKey[T any](ctx context.Context, key string, value any, opts ...Option) (*T, error) {
 	if err := ended(ctx); err != nil {
@@ -82,7 +83,7 @@ func DecodeKey[T any](ctx context.Context, key string, value any, opts ...Option
 	if err != nil {
 		return nil, err
 	}
-	result, refused, err := c.apply(ctx, c.defaultsTree(), map[string]any{key: value})
+	result, refused, err := c.apply(ctx, c.defaultsTree(), c.unkeyed, map[string]any{key: value})
 	switch {
 	case err != nil:
 		return nil, err
@@ -151,13 +152,15 @@ func CanonicalKey[T any](key string, opts ...Option) (string, error) {
 // the load itself (see the settings-store recipe).
 //
 // baseline is only read, and the result shares nothing with it or with
-// edits. The candidate is decoded afresh from baseline's keys, so a field
-// config does not decode (unexported, or koanf:"-") is zero in it; a
-// baseline holding a value that does not marshal to text is an error of its
-// own, neither ErrKey nor ErrValidation. WithDefaults applies only when
-// baseline is nil; otherwise the options apply as they do to CheckKey: no
-// source is read and no secret populator, post-load hook or unknown-input
-// handler runs. On any error the result is nil.
+// edits. The candidate is decoded afresh from baseline's keys, so an
+// unexported field is zero in it; an exported koanf:"-" field, which no key
+// reaches, holds a copy of baseline's, as a typed section's does in a load,
+// unless an edit replaces what holds it. A baseline holding a value that
+// does not marshal to text is an error of its own, neither ErrKey nor
+// ErrValidation. WithDefaults applies only when baseline is nil; otherwise
+// the options apply as they do to CheckKey: no source is read and no secret
+// populator, post-load hook or unknown-input handler runs. On any error the
+// result is nil.
 func DecodeEdits[T any](ctx context.Context, baseline *T, edits map[string]any, opts ...Option) (*T, error) {
 	if err := ended(ctx); err != nil {
 		return nil, err
@@ -166,13 +169,13 @@ func DecodeEdits[T any](ctx context.Context, baseline *T, edits map[string]any, 
 	if err != nil {
 		return nil, err
 	}
-	var base map[string]any
-	if baseline == nil {
-		base = c.defaultsTree()
-	} else if base, err = c.baselineTree(reflect.ValueOf(baseline).Elem()); err != nil {
-		return nil, err
+	base, unkeyed := c.defaultsTree(), c.unkeyed
+	if baseline != nil {
+		if base, unkeyed, err = c.baselineTree(reflect.ValueOf(baseline).Elem()); err != nil {
+			return nil, err
+		}
 	}
-	result, refused, err := c.apply(ctx, base, edits)
+	result, refused, err := c.apply(ctx, base, unkeyed, edits)
 	switch {
 	case err != nil:
 		return nil, err
@@ -230,7 +233,10 @@ type keyChecker struct {
 	root     reflect.Type
 	schema   *schemaNode
 	defaults map[string]any
-	options  *options
+	// unkeyed is the koanf:"-" fields of the defaults' typed sections,
+	// which a candidate holds as a load would.
+	unkeyed unkeyedSections
+	options *options
 }
 
 func newKeyChecker(t reflect.Type, o *options) (*keyChecker, error) {
@@ -245,15 +251,16 @@ func newKeyChecker(t reflect.Type, o *options) (*keyChecker, error) {
 	if err := l.addFlat("WithDefaults", o.defaults, constant(Source{Kind: SourceDefaults})); err != nil {
 		return nil, err
 	}
-	return &keyChecker{root: t, schema: root, defaults: l.k.Raw(), options: o}, nil
+	return &keyChecker{root: t, schema: root, defaults: l.k.Raw(), unkeyed: l.unkeyed, options: o}, nil
 }
 
 // apply sets entries over base, which it changes, and decodes and validates
-// the result. A refused key, or a candidate that does not decode or
-// validate, is the *EditsError; err is why ctx ended, or a validate tag the
-// validator cannot apply (ErrSchema), which is the declaration's fault and
-// no key's.
-func (c *keyChecker) apply(ctx context.Context, base map[string]any, entries map[string]any) (any, *EditsError, error) {
+// the result, holding the koanf:"-" fields of below, base's, and of the
+// typed sections entries set. A refused key, or a candidate that does not
+// decode or validate, is the *EditsError; err is why ctx ended, or a
+// validate tag the validator cannot apply (ErrSchema), which is the
+// declaration's fault and no key's.
+func (c *keyChecker) apply(ctx context.Context, base map[string]any, below unkeyedSections, entries map[string]any) (any, *EditsError, error) {
 	edits, refused := prepareEdits(c.schema, entries)
 	for _, e := range edits {
 		for _, u := range e.unknown {
@@ -264,8 +271,9 @@ func (c *keyChecker) apply(ctx context.Context, base map[string]any, entries map
 	if refused = append(refused, unset...); len(refused) > 0 {
 		return nil, &EditsError{Refused: keyErrorValues(refused)}, nil
 	}
+	unkeyed := below.over(tree, editsUnkeyed(edits)) // before mergeTrees settles tree's whole maps
 	mergeTrees(tree, base)
-	result, unknown, err := c.decode(ctx, base)
+	result, unknown, err := c.decode(ctx, base, unkeyed)
 	if ctxErr := ended(ctx); ctxErr != nil && (err != nil || unknown != nil) {
 		return nil, nil, ctxErr
 	}
@@ -306,20 +314,25 @@ func (c *keyChecker) defaultsTree() map[string]any {
 }
 
 // baselineTree is cfg's tree, as a source carrying it whole would merge:
-// its keys, every map of them merging by key.
-func (c *keyChecker) baselineTree(cfg reflect.Value) (map[string]any, error) {
+// its keys, every map of them merging by key, and the koanf:"-" fields of
+// cfg and of each section in it.
+func (c *keyChecker) baselineTree(cfg reflect.Value) (map[string]any, unkeyedSections, error) {
 	w := keyWalk{schema: c.schema}
 	tree := w.section(c.root, deepcopy.Value(cfg), nil)
 	if len(w.noText) > 0 {
-		return nil, fmt.Errorf("config: the baseline holds values that do not marshal to text: %s", strings.Join(w.noText, ", "))
+		return nil, nil, fmt.Errorf("config: the baseline holds values that do not marshal to text: %s", strings.Join(w.noText, ", "))
 	}
-	return settled(tree).(map[string]any), nil
+	base := settled(tree).(map[string]any)
+	var unkeyed unkeyedSections
+	unkeyed.merge(base, w.unkeyed)
+	return base, unkeyed, nil
 }
 
-// decode decodes tree, a tree as the merge holds it, with the options' hooks
-// and validates the result. The keys of tree no field reads are unknown,
-// apart from err; result is nil when either is.
-func (c *keyChecker) decode(ctx context.Context, tree map[string]any) (result any, unknown *UnknownKeysError, err error) {
+// decode decodes tree, a tree as the merge holds it, with the options' hooks,
+// sets the koanf:"-" fields unkeyed holds, and validates the result. The
+// keys of tree no field reads are unknown, apart from err; result is nil
+// when either is.
+func (c *keyChecker) decode(ctx context.Context, tree map[string]any, unkeyed unkeyedSections) (result any, unknown *UnknownKeysError, err error) {
 	if err := newElementDefaults(c.options, false).fill(c.root, tree); err != nil {
 		return nil, nil, err
 	}
@@ -328,6 +341,7 @@ func (c *keyChecker) decode(ctx context.Context, tree map[string]any) (result an
 	if err != nil {
 		return nil, nil, fmt.Errorf("%w: %w", ErrValidation, err)
 	}
+	unkeyed.apply(c.schema, out.Elem())
 	validation := c.options.validateConfig(ctx, out.Interface())
 	if len(md.Unused) > 0 {
 		unknown = &UnknownKeysError{Type: c.root}

@@ -2,6 +2,7 @@ package config
 
 import (
 	"fmt"
+	"maps"
 	"reflect"
 	"strconv"
 
@@ -48,6 +49,15 @@ func (s *unkeyedSections) merge(tree map[string]any, set []unkeyedFields) {
 		}
 		(*s)[u.path.String()] = u
 	}
+}
+
+// over is s, what the layers beneath hold, with one source merged over it as
+// merge merges one, as a new set: s is unchanged, so one set of defaults
+// serves every candidate a key check decodes.
+func (s unkeyedSections) over(tree map[string]any, set []unkeyedFields) unkeyedSections {
+	out := maps.Clone(s)
+	out.merge(tree, set)
+	return out
 }
 
 // holdsMap reports whether tree, a source's tree, holds a map at p.

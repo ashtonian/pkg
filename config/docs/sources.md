@@ -214,8 +214,10 @@ that does not marshal to text is an error of its own, neither, and a
 no batch's fault. On any
 failure no candidate is returned. The baseline is only read, and the
 candidate shares nothing with it or with the edits. The candidate is decoded
-afresh from the baseline's keys, so a field config does not decode
-(unexported, or `koanf:"-"`) is zero in it. `WithDefaults` applies only when
+afresh from the baseline's keys, so an unexported field is zero in it; an
+exported `koanf:"-"` field, which no key reaches, holds a copy of the
+baseline's, as a typed section's does in a load, unless an edit replaces
+what holds it. `WithDefaults` applies only when
 the baseline is `nil`; otherwise the options apply as they do to `CheckKey`.
 
 What `DecodeEdits` checks is the batch over the baseline, with Load's

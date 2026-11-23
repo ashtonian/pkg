@@ -451,3 +451,61 @@ func TestKeyChecks_ValidatorDeclarationErrorsAreSchemaErrors(t *testing.T) {
 	_, err = DecodeKey[interfaceHolder](t.Context(), "extra.broken", true, brokenInside)
 	assertSchema(t, err)
 }
+
+type limitedSection struct {
+	Port  int `koanf:"port"`
+	Limit int `koanf:"-"`
+}
+
+type limitedConfig struct {
+	Section limitedSection `koanf:"section"`
+}
+
+// Validate reads the unkeyed Limit, which only a typed section sets.
+func (c *limitedConfig) Validate() error {
+	if c.Section.Port > c.Section.Limit {
+		return fmt.Errorf("port %d is over the limit %d", c.Section.Port, c.Section.Limit)
+	}
+	return nil
+}
+
+// A candidate holds the koanf:"-" fields of the typed sections beneath its
+// edits as a load does, so a rule reading one judges it as Load would: the
+// defaults' typed section for CheckKey, DecodeKey, DecodeEdits over the
+// defaults and a WithInvalidEntries filter, the baseline's for DecodeEdits
+// over one, and an edit's own typed section replaces both.
+func TestCheckKey_CandidateKeepsUnkeyedFieldsAsALoadDoes(t *testing.T) {
+	defaults := WithDefaults(map[string]any{"section": limitedSection{Port: 1, Limit: 10}})
+	loaded, err := Load[limitedConfig](t.Context(), defaults)
+	require.NoError(t, err)
+	require.Equal(t, 10, loaded.Section.Limit)
+
+	require.NoError(t, CheckKey[limitedConfig](t.Context(), "section.port", 5, defaults))
+	require.ErrorIs(t, CheckKey[limitedConfig](t.Context(), "section.port", 11, defaults), ErrValidation)
+	got, err := DecodeKey[limitedConfig](t.Context(), "section.port", 5, defaults)
+	require.NoError(t, err)
+	assert.Equal(t, limitedSection{Port: 5, Limit: 10}, got.Section)
+	got, err = DecodeEdits[limitedConfig](t.Context(), nil, map[string]any{"section.port": 5}, defaults)
+	require.NoError(t, err)
+	assert.Equal(t, limitedSection{Port: 5, Limit: 10}, got.Section)
+
+	baseline := &limitedConfig{Section: limitedSection{Port: 1, Limit: 20}}
+	got, err = DecodeEdits(t.Context(), baseline, map[string]any{"section.port": 15}, defaults)
+	require.NoError(t, err)
+	assert.Equal(t, limitedSection{Port: 15, Limit: 20}, got.Section)
+
+	got, err = DecodeKey[limitedConfig](t.Context(), "section", limitedSection{Port: 3, Limit: 4}, defaults)
+	require.NoError(t, err)
+	assert.Equal(t, limitedSection{Port: 3, Limit: 4}, got.Section)
+	require.ErrorIs(t, CheckKey[limitedConfig](t.Context(), "section", limitedSection{Port: 5, Limit: 4}, defaults), ErrValidation)
+
+	var rejected []KeyError
+	filtered, err := Load[limitedConfig](t.Context(), defaults,
+		WithBaseProvider(mapSource{"section": map[string]any{"port": 5}}, nil, WithInvalidEntries(func(_ context.Context, entries []KeyError) error {
+			rejected = entries
+			return nil
+		})))
+	require.NoError(t, err)
+	assert.Empty(t, rejected)
+	assert.Equal(t, limitedSection{Port: 5, Limit: 10}, filtered.Section)
+}
