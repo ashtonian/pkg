@@ -851,3 +851,38 @@ func TestSources_TypedSectionKeepsItsUnkeyedFields(t *testing.T) {
 	assert.Equal(t, []unkeyedSection{{Host: "f"}}, got.List, "a list replaced keeps nothing of its elements")
 	kept(t, section("d"), got.ByPort[80], "d")
 }
+
+// A higher source adds and changes entries of a typed default map but
+// removes none; the documented ways to narrow one hold.
+func TestSources_NarrowingATypedDefaultMap(t *testing.T) {
+	type cfg struct {
+		Origins map[string]bool `koanf:"origins"`
+		List    []string        `koanf:"list"`
+	}
+	defaults := WithDefaults(map[string]any{"origins": map[string]bool{"*": true}, "list": []string{"*"}})
+	load := func(t *testing.T, bodies ...string) *cfg {
+		t.Helper()
+		dir := t.TempDir()
+		var files []string
+		for i, body := range bodies {
+			f := filepath.Join(dir, fmt.Sprintf("%d.yaml", i))
+			writeFile(t, f, body)
+			files = append(files, f)
+		}
+		got, err := Load[cfg](t.Context(), defaults, WithFiles(files...))
+		require.NoError(t, err)
+		return got
+	}
+	t.Run("an entry merges", func(t *testing.T) {
+		assert.Equal(t, map[string]bool{"*": true, "example.com": true}, load(t, "origins: {example.com: true}\n").Origins)
+	})
+	t.Run("null keeps the key at its zero value", func(t *testing.T) {
+		assert.Equal(t, map[string]bool{"*": false, "example.com": true}, load(t, "origins: {'*': null, example.com: true}\n").Origins)
+	})
+	t.Run("a list replaces whole", func(t *testing.T) {
+		assert.Equal(t, []string{"example.com"}, load(t, "list: [example.com]\n").List)
+	})
+	t.Run("null beneath a narrowed map", func(t *testing.T) {
+		assert.Equal(t, map[string]bool{"example.com": true}, load(t, "origins: null\n", "origins: {example.com: true}\n").Origins)
+	})
+}
