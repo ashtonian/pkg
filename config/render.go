@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/ashtonian/pkg/config/internal/deepcopy"
 	"github.com/ashtonian/pkg/gowalker"
 	"go.yaml.in/yaml/v3"
 )
@@ -298,7 +299,7 @@ func textMarshaler(v reflect.Value) (encoding.TextMarshaler, bool) {
 	if reflect.PointerTo(v.Type()).Implements(reflect.TypeFor[encoding.TextMarshaler]()) {
 		// Map values are not addressable; use a copy for pointer-receiver methods.
 		p := reflect.New(v.Type())
-		p.Elem().Set(deepCopy(v))
+		p.Elem().Set(deepcopy.Value(v))
 		return p.Interface().(encoding.TextMarshaler), true
 	}
 	return nil, false

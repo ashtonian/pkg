@@ -7,6 +7,8 @@ import (
 	"reflect"
 	"slices"
 	"strings"
+
+	"github.com/ashtonian/pkg/config/internal/deepcopy"
 )
 
 // NewMapProvider returns a provider over the configuration read returns,
@@ -115,5 +117,5 @@ func deepCopyMap(m map[string]any) map[string]any {
 	if m == nil {
 		return nil
 	}
-	return deepCopy(reflect.ValueOf(m)).Interface().(map[string]any)
+	return deepcopy.Value(reflect.ValueOf(m)).Interface().(map[string]any)
 }

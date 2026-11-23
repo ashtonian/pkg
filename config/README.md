@@ -181,6 +181,7 @@ metrics-library dependency.
 | `render.go`, `print.go`, `usage.go`, `jsonschema.go`, `constraints.go`, `redact.go` | Trees, diagnostic output and documentation metadata |
 | `errors.go`, `provenance.go` | Error categories and value origins |
 | `shadow.go` | Shadowed inputs: what a higher-precedence source outranks, and which edits a reload could not apply |
+| `internal/deepcopy` | The one deep copy config and kongprovider share: defaults, provider data, stage snapshots and published configs |
 
 ## Documentation
 

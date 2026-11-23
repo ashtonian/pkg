@@ -8,6 +8,8 @@ import (
 	"slices"
 
 	"github.com/knadh/koanf/v2"
+
+	"github.com/ashtonian/pkg/config/internal/deepcopy"
 )
 
 // KeyError distinguishes an unknown key (Unknown, ErrKey) from a known key
@@ -104,7 +106,7 @@ func (c *keyChecker) check(ctx context.Context, key string, value any) (any, err
 		return nil, &KeyError{Key: diagnosticPath(c.schema, p).String(), Unknown: true, Err: err}
 	}
 	safe := diagnosticPath(c.schema, p).String()
-	tree := deepCopy(reflect.ValueOf(c.defaults)).Interface().(map[string]any)
+	tree := deepcopy.Value(reflect.ValueOf(c.defaults)).Interface().(map[string]any)
 	value = copyInput(value)
 	if _, err := setInput(tree, p, value); err != nil {
 		return nil, &KeyError{Key: safe, Err: err}
@@ -123,7 +125,7 @@ func copyInput(v any) any {
 	if v == nil {
 		return nil
 	}
-	return deepCopy(reflect.ValueOf(v)).Interface()
+	return deepcopy.Value(reflect.ValueOf(v)).Interface()
 }
 
 func (c *keyChecker) canonical(p keyPath) (keyPath, error) {

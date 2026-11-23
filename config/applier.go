@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/ashtonian/pkg/config/internal/deepcopy"
 	"github.com/ashtonian/pkg/gowalker"
 )
 
@@ -565,7 +566,7 @@ func (r rebaser) merge(c published, within []*ackEntry) (heldValue, error) {
 	}
 	slot := reflect.New(anyType).Elem()
 	if base.v.IsValid() {
-		slot.Set(deepCopy(base.v))
+		slot.Set(deepcopy.Value(base.v))
 	}
 	present := base.present
 	for _, e := range within {

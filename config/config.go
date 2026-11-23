@@ -21,6 +21,7 @@ import (
 	"github.com/knadh/koanf/providers/confmap"
 	"github.com/knadh/koanf/v2"
 
+	"github.com/ashtonian/pkg/config/internal/deepcopy"
 	"github.com/ashtonian/pkg/gowalker"
 )
 
@@ -224,7 +225,7 @@ func (l *loader) addProvider(ctx context.Context, name string, p providerSource,
 // fields: add must see the values whole to turn those that marshal to text
 // into their text.
 func (l *loader) addFlat(name string, flat map[string]any, label labeler) error {
-	copied := deepCopy(reflect.ValueOf(flat)).Interface().(map[string]any)
+	copied := deepcopy.Value(reflect.ValueOf(flat)).Interface().(map[string]any)
 	return l.add(name, kmaps.Unflatten(copied, "."), label)
 }
 

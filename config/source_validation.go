@@ -8,6 +8,8 @@ import (
 	"reflect"
 	"slices"
 	"strings"
+
+	"github.com/ashtonian/pkg/config/internal/deepcopy"
 )
 
 // SourceOption configures one base or override provider.
@@ -129,7 +131,7 @@ func (l *loader) prepareValidation(ctx context.Context, o *options) error {
 	if err != nil {
 		return err
 	}
-	if _, err := c.decode(ctx, deepCopy(reflect.ValueOf(c.defaults)).Interface().(map[string]any)); err != nil {
+	if _, err := c.decode(ctx, deepcopy.Value(reflect.ValueOf(c.defaults)).Interface().(map[string]any)); err != nil {
 		return fmt.Errorf("invalid baseline for provider entry validation: %w: %w", ErrValidation, err)
 	}
 	l.checker = c

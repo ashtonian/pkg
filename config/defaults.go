@@ -10,6 +10,7 @@ import (
 
 	"github.com/knadh/koanf/v2"
 
+	"github.com/ashtonian/pkg/config/internal/deepcopy"
 	"github.com/ashtonian/pkg/gowalker"
 )
 
@@ -93,7 +94,7 @@ func codeDefaults(t reflect.Type, schema *schemaNode, tags map[string]any, o *op
 		return nil, fmt.Errorf("decoding the default tags of %s for SetDefaults: %w: %w", gowalker.TypeText(t), ErrValidation, err)
 	}
 	after := reflect.New(t)
-	after.Elem().Set(deepCopy(before.Elem()))
+	after.Elem().Set(deepcopy.Value(before.Elem()))
 	run := &defaulterRun{path: map[reflect.Type]bool{}}
 	run.run(after.Elem())
 	run.release()

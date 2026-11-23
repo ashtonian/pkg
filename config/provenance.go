@@ -12,6 +12,8 @@ import (
 
 	"github.com/go-viper/mapstructure/v2"
 	"github.com/knadh/koanf/v2"
+
+	"github.com/ashtonian/pkg/config/internal/deepcopy"
 )
 
 // SourceKind names the kind of source that set a value.
@@ -566,7 +568,7 @@ func replacedStructure(in reflect.Value, out any) bool {
 
 // stage runs one stage that may change cfg and records what it changed.
 func (r *originRecorder) stage(cfg reflect.Value, src Source, run func() error) error {
-	before := deepCopy(cfg)
+	before := deepcopy.Value(cfg)
 	if !r.decoded.IsValid() {
 		r.decoded = before
 	}

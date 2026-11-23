@@ -15,6 +15,7 @@ import (
 	"github.com/knadh/koanf/parsers/yaml"
 	"github.com/knadh/koanf/v2"
 
+	"github.com/ashtonian/pkg/config/internal/deepcopy"
 	"github.com/ashtonian/pkg/gowalker"
 )
 
@@ -283,13 +284,14 @@ func WithEnviron(environ func() []string) Option {
 // (e.g. "server.port"); they override the code defaults ([Defaulter]) and tags. Repeated calls merge,
 // a later call winning on a shared key. The values are deep-copied when
 // WithDefaults is called — every map key and value, slice, array and pointer
-// target reachable through exported fields — so changing the caller's data
-// afterwards changes nothing, including what a Reloader built from the
-// option reads later. Unexported struct fields, channels and functions are
-// copied by value. A netip.Prefix, []netip.Addr or other value whose state
+// target reachable through exported fields, those an unexported embedded
+// struct promotes included — so changing the caller's data afterwards
+// changes nothing, including what a Reloader built from the option reads
+// later. Other unexported struct fields, channels and functions are copied
+// by value. A netip.Prefix, []netip.Addr or other value whose state
 // the merge cannot copy is read through its MarshalText, as from any source.
 func WithDefaults(defaults map[string]any) Option {
-	snapshot := deepCopy(reflect.ValueOf(defaults)).Interface().(map[string]any)
+	snapshot := deepcopy.Value(reflect.ValueOf(defaults)).Interface().(map[string]any)
 	return func(o *options) {
 		if o.defaults == nil {
 			o.defaults = make(map[string]any, len(snapshot))
