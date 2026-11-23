@@ -591,3 +591,37 @@ func TestShadow_NamesTheListElementAnEntrySet(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, []Shadow{{Key: "pool[0].port", Source: Source{Kind: SourceBase, Name: "0"}, By: fileInput(file)}}, snap.Shadowed)
 }
+
+// An input an entry sets in a list element is shadowed by a higher source
+// setting the same key of that element, and only by it: a higher entry
+// setting another key of the element shadows nothing.
+func TestShadow_ListElementEntryUnderAHigherEntry(t *testing.T) {
+	type cfg struct {
+		Pool []editServer `koanf:"pool"`
+	}
+	read := func(stored map[string]any) func(context.Context) (map[string]any, error) {
+		return func(context.Context) (map[string]any, error) { return stored, nil }
+	}
+	base := Source{Kind: SourceBase, Name: "0"}
+	for _, tc := range []struct {
+		name string
+		high map[string]any
+		want []Shadow
+	}{
+		{"the same key", map[string]any{"pool[0].port": 8}, []Shadow{{Key: "pool[0].port", Source: base, By: Source{Kind: SourceOverride, Name: "0"}}}},
+		{"another key", map[string]any{"pool[0].host": "y"}, nil},
+	} {
+		for _, tt := range withAndWithoutProvenance {
+			t.Run(tc.name+" "+tt.name, func(t *testing.T) {
+				opts := []Option{
+					WithDefaults(map[string]any{"pool": []editServer{{"a", 1}}}),
+					WithBaseEntries(read(map[string]any{"pool[0].port": 7})),
+					WithOverrideEntries(read(tc.high)),
+				}
+				r, err := NewReloader[cfg](t.Context(), opts, tt.opts...)
+				require.NoError(t, err)
+				assert.Equal(t, tc.want, r.Snapshot().Shadowed)
+			})
+		}
+	}
+}

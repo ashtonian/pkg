@@ -313,16 +313,27 @@ func (in *inputs) appendShadowed(out []Shadow, path string, label labeler, rank 
 
 // holder is the node whose source the merge kept for path, a raw path's
 // encodePath encoding: the node at path, the ancestor a source replaced with
-// a value that is no map, or, where path is gone, the nearest ancestor a
-// source set whole — a typed map or section, which removed every key beneath
-// it that it lacked, however many keys a higher source merged into it since.
-// It is nil when nothing holds path.
+// a value that is no map — a list, unless an edit set the element path lies
+// in — or, where path is gone, the nearest ancestor a source set whole: a
+// list, or a typed map or section, which removed every key beneath it that
+// it lacked, however many keys a higher source merged into it since. It is
+// nil when nothing holds path.
 func (n *originNode) holder(path string) *originNode {
 	node := n
 	var whole *originNode
 	for rest := path; rest != ""; {
 		var key string
 		key, rest = nextSegment(rest)
+		if node.list {
+			// A list replaces whole what lies beneath it; an edit sets one
+			// element of it, which holds what the edit set.
+			elem := node.element(key)
+			if elem == nil {
+				return node
+			}
+			whole, node = node, elem
+			continue
+		}
 		if !node.merges {
 			return node
 		}
@@ -336,6 +347,16 @@ func (n *originNode) holder(path string) *originNode {
 		node = child
 	}
 	return node
+}
+
+// element is the node of list n's element at index key, raw; nil when n
+// records none there.
+func (n *originNode) element(key string) *originNode {
+	i, err := strconv.Atoi(key)
+	if err != nil || i < 0 || i >= len(n.elems) {
+		return nil
+	}
+	return n.elems[i]
 }
 
 // kept is the source of what n holds: its own for a value that is no map

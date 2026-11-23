@@ -129,8 +129,12 @@ type originNode struct {
 	// merges reports a map a later source merges into key by key: any map
 	// of a source's tree. whole reports one its source set whole, a typed
 	// map or section, replacing every key beneath it that it lacks. list
-	// reports a list, whose elements a key edit's listEdit can set.
-	merges, whole, list bool
+	// reports a list, whose elements a key edit's listEdit can set. sparse
+	// reports a node that, without provenance, records only what edits set
+	// beneath it — a list's edited elements at their indexes, nil for the
+	// others, or an element an edit's map merged into — the rest being its
+	// own source's.
+	merges, whole, list, sparse bool
 }
 
 func newOriginRoot() *originNode {
@@ -225,20 +229,36 @@ func (m *originMerge) into(n *originNode, val any) *originNode {
 }
 
 // edit merges e's elements into n, a list node; its other elements, and the
-// list itself, stay their sources'. Only provenance reads elements.
+// list itself, stay their sources'. With provenance n holds every element;
+// without, only those edits set, so shadow detection can tell an input in
+// an element from the one a higher edit of that element set (see sparse).
 func (n *originNode) edit(e listEdit, m *originMerge) {
-	if !m.provenance {
-		return
-	}
 	for _, i := range slices.Sorted(maps.Keys(e)) {
 		m.enter(strconv.Itoa(i))
-		if i < len(n.elems) {
+		switch {
+		case m.provenance && i < len(n.elems):
 			n.elems[i] = m.into(n.elems[i], e[i])
-		} else {
+		case m.provenance:
 			n.elems = append(n.elems, m.node(e[i]))
+		default:
+			n.sparse = true
+			if i >= len(n.elems) {
+				n.elems = append(n.elems, make([]*originNode, i+1-len(n.elems))...)
+			}
+			if n.elems[i] == nil {
+				n.elems[i] = n.unrecorded()
+			}
+			n.elems[i] = m.into(n.elems[i], e[i])
 		}
 		m.leave()
 	}
+}
+
+// unrecorded stands for an element of list n that n's own source set and
+// that, without provenance, n does not record: a map an edit's map merges
+// into, holding nothing yet.
+func (n *originNode) unrecorded() *originNode {
+	return &originNode{src: n.src, rank: n.rank, children: map[string]*originNode{}, merges: true, sparse: true}
 }
 
 // node is the origin of val, set whole by the source at the merge's path.
@@ -375,8 +395,7 @@ func (n *originNode) values() int {
 // when several did.
 func (n *originNode) uniform() (Source, bool) {
 	src, first, ok := n.src, true, true
-	visit := func(child *originNode) {
-		s, same := child.uniform()
+	visit := func(s Source, same bool) {
 		switch {
 		case !same:
 			ok = false
@@ -386,11 +405,16 @@ func (n *originNode) uniform() (Source, bool) {
 			ok = false
 		}
 	}
+	if n.sparse {
+		visit(n.src, true) // what n does not record is its own source's
+	}
 	for _, child := range n.children {
-		visit(child)
+		visit(child.uniform())
 	}
 	for _, child := range n.elems {
-		visit(child)
+		if child != nil {
+			visit(child.uniform())
+		}
 	}
 	return src, ok
 }
