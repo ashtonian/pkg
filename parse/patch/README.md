@@ -7,7 +7,8 @@ JSON Patch and Merge Patch validation, SQL SET compilation, relation membership 
 | Guide | Contents |
 |---|---|
 | [Validation, typed documents, SQL compilation, and options](../docs/patches.md) | Consumer guide |
-| [Relation statements and transaction requirements](../docs/relations.md) | Consumer guide |
+| [Relation membership writes](../docs/relations.md#change-membership) | Consumer guide |
+| [Junction statements and transaction requirements](../docs/pair-tables.md#update-membership) | Consumer guide |
 | [Error catalog](../docs/http-errors.md) | Consumer guide |
 
 Start with the [runnable package example](../README.md#quick-start). The focused [patch example](example_test.go) is compiled and output-checked in the unit suite.

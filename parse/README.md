@@ -84,7 +84,7 @@ SELECT "devices"."id", "devices"."tenant_id", "devices"."name", "devices"."statu
 | Filter, sort and facet typed members of JSON documents | `paths` / `storage` tags, struct member tags, `Resource.WithPaths` (per request: custom fields) | [JSON paths](docs/queries.md#json-paths) |
 | Filter JSON arrays by their elements, every predicate on one element | `elements` tag or a slice-of-struct document; `$some`, `$none` | [Array elements](docs/queries.md#array-elements) |
 | Filter by related rows' attributes (has-many, belongs-to, many-to-many) | `Resource.Relate` with `HasMany`, `BelongsTo`, `ManyToMany`; `$some`, `$none`, `$is`, `$is_not` | [Relations](docs/relations.md#declare-relations) |
-| Match related IDs or return relation memberships | Relation tags, `filter.BuildIncludeQuery` | [Relations](docs/relations.md#pair-tables-compared-by-key) |
+| Match related IDs or return relation memberships | Relation tags, `filter.BuildIncludeQuery` | [Pair tables](docs/pair-tables.md) |
 | Serve an update endpoint: patch rows scoped to tenant, live rows and policy | `parsehttp.ParsePatch` (`ParsePatchRequest`), `ParseMergePatch` / `ParsePatch`, `BuildUpdate`, an executor's `Update` (`UpdateResult`) | [Resource updates](docs/patches.md#resource-updates) |
 | Compile distinct column patches with per-key revision/policy fences in one transaction | `BuildUpdateBatch`, `RowUpdate`, an executor's `UpdateBatch` | [Varied update batches](docs/operations.md#varied-native-update-batches) |
 | Write, stamp and count only the rows a patch changes, and tell unchanged from not found | `SkipUnchanged`, `UpdateResult.Changed` / `Unchanged` | [Skipping unchanged rows](docs/patches.md#skipping-unchanged-rows) |
@@ -147,7 +147,8 @@ Tags expose capabilities explicitly: `parse:"filter,sort,patch,facet,search,incl
 |---|---|
 | [Schema and configuration](docs/schema-configuration.md) | Tags, options, storage types, schema discovery |
 | [Queries](docs/queries.md) | Operators, SQL examples, sort/cursors, search, facets, geography |
-| [Relations](docs/relations.md) | Membership filters, includes, junction writes, tenant scope |
+| [Relations](docs/relations.md) | Relations between resources: filters on related rows, includes, facets, membership writes, tenant scope |
+| [Pair tables](docs/pair-tables.md) | The `relation` struct tag: pair tables compared by key, include queries, junction statements |
 | [Patches and JSON](docs/patches.md) | JSON Patch/Merge Patch, typed documents, policy, SQL limits |
 | [HTTP and errors](docs/http-errors.md) | Request/response contract, schema routes, E-code catalog |
 | [Integrations](docs/integrations.md) | pgx, database/sql, TypeScript, custom schemas |

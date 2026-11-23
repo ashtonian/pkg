@@ -8,6 +8,7 @@ Validated filter ASTs and parameterized PostgreSQL/SQLite query plans, including
 |---|---|
 | [Operators, list queries, examples, and every builder option](../docs/queries.md) | Consumer guide |
 | [Relation filters and includes](../docs/relations.md) | Consumer guide |
+| [Pair tables, include queries](../docs/pair-tables.md) | Consumer guide |
 | [HTTP parameters and errors](../docs/http-errors.md) | Consumer guide |
 
 Start with the [runnable package example](../README.md#quick-start). The focused [filter example](example_test.go) is compiled and output-checked in the unit suite.
