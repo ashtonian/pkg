@@ -228,14 +228,37 @@ matching its flag targets in one traversal.
 
 `RedactedMapChecked(cfg)` returns `(map[string]string, error)`;
 `RedactedTreeChecked(cfg)` returns `(map[string]any, error)`. Both return nil
-and `ErrSchema` if a reached type has invalid keys, including dynamic values
-inside interfaces. They never return partial results. The original
-`RedactedMap` and `RedactedTree` return nil on that error. `PrintRedacted`
-reports it before writing any output.
+and `ErrSchema` if a reached type has invalid keys or a misspelt tag key,
+including dynamic values inside interfaces. They never return partial
+results. The original `RedactedMap` and `RedactedTree` return nil on that
+error. `PrintRedacted` and `PrintEnv` report it before writing any output.
 
-These inspection functions read field metadata without decoding `default`
-or `example` tags. Printing a live value therefore does not invoke a custom
-unmarshaler for its examples. Invalid sensitivity tags still redact
-conservatively. Loading, templates and schema generation validate their tags;
-templates and schema generation also decode the values they show. `Usage`
-also decodes defaults when a `Defaulter` sets some.
+### Declaration checks
+
+Every entry point checks a type's declarations to the depth its result
+depends on, and the same declaration gets the same `ErrSchema` wherever it
+is reached:
+
+| Tier | Checks | Entry points |
+|---|---|---|
+| Structural | The graph builds: keys valid and unique, tags readable, reload tags valid | `Fields`, `FieldsChecked`, `FieldFor`, `KeyOf`, `MatchFields`, `Tree`, `TreeFunc`, `DefaultsFromTags` |
+| Declared | Structural, and no tag key misspells one config reads | `PrintRedacted`, `RedactedMap`, `RedactedMapChecked`, `RedactedTree`, `RedactedTreeChecked` |
+| Schema | Declared, and every config tag's value is one config can use | `Load`, `Decode`, `LoadSnapshot`, `CheckKey`, `DecodeKey`, reloaders, `Usage`, `PrintUsage`, `JSONSchema`, `PrintTemplate`, `PrintEnv`, `PrintExplain`, `Diff` |
+| Load | Schema, and the default validator reads every `validate` rule | `Load`, `Decode`, `LoadSnapshot`, `CheckKey`, `DecodeKey`, `NewReloader` |
+
+The structural tier is what raw inspection needs to diagnose a type whose
+tags are wrong. The declared tier is what printing a live value needs: a
+misspelt `sensitive` key would print a secret, so the value is refused
+rather than printed, whoever populated it, while its defaults and examples
+are not decoded — printing never invokes a custom unmarshaler for them, and
+an invalid sensitivity value (`sensitive:"yes"`) still redacts
+conservatively. Generators that show defaults, examples or rules check the
+schema tier, as a load does, and templates and schema generation also
+decode the values they show; `Usage` decodes defaults when a `Defaulter`
+sets some.
+
+A tag key another library reads that sits one edit from one of config's is
+listed by the struct declaring the field, from a `ForeignTagKeys() []string`
+method ([`ForeignTagDeclarer`](https://pkg.go.dev/github.com/ashtonian/pkg/config#ForeignTagDeclarer)),
+so every tier reads the same allowance; a struct embedding it inherits the
+list with the method.

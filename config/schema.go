@@ -55,7 +55,7 @@ type schemaField struct {
 type schemaEntry struct {
 	node       *schemaNode
 	err        error
-	misspelt   []misspeltTagKey // across the graph; a load decides which it refuses
+	misspelt   error // the graph's misspelt tag keys, refused by every checked entry point
 	check      sync.Once
 	validation error
 	rules      sync.Once // the default validator's reading of the validate tags
@@ -69,11 +69,34 @@ type schemaEntry struct {
 // schema, which is every type: a program's config types are its own fixed set.
 var schemaCache = gowalker.NewTypeCache(configView, buildSchema)
 
+// A type's declarations are checked in tiers, each entry point taking the
+// one its output depends on:
+//
+//   - metadataOf: structural — the graph builds, keys are unique, reload
+//     tags read. Raw inspection (Fields, FieldFor, KeyOf, Tree) takes only
+//     this, so it can still diagnose a type whose tags are wrong.
+//   - declaredOf: structural, and no tag key misspells one config reads.
+//     Checked redaction takes this: a misspelt sensitivity tag would print
+//     a secret, yet a live value prints without its defaults decoding.
+//   - schemaOf: declared, and every config tag's value decodes. Loading
+//     and every output that shows defaults, examples or rules — usage, JSON
+//     Schema, templates, environment listings — take this.
+//   - loadSchema: schemaOf, and the default validator reads every rule.
+
 // metadataOf builds structural metadata without decoding defaults or examples.
 // Diagnostics can therefore inspect live values even when a tag is invalid.
 func metadataOf(t reflect.Type) (*schemaNode, error) {
 	e := schemaMetadata(t)
 	return e.node, e.err
+}
+
+// declaredOf is metadataOf that also refuses misspelt tag keys.
+func declaredOf(t reflect.Type) (*schemaNode, error) {
+	e := schemaMetadata(t)
+	if e.err != nil {
+		return e.node, e.err
+	}
+	return e.node, e.misspelt
 }
 
 func schemaMetadata(t reflect.Type) *schemaEntry {
@@ -95,11 +118,12 @@ func buildSchema(view *gowalker.Schema) (*schemaEntry, error) {
 	if b.err == nil {
 		b.err = checkReloadTags(view)
 	}
-	e := &schemaEntry{node: n, err: b.err}
+	var misspelt []misspeltTagKey
+	foreign := map[reflect.Type][]string{}
 	n.eachBranch(func(n *schemaNode) {
-		e.misspelt = append(e.misspelt, misspeltTagKeys(n.view.Root())...)
+		misspelt = append(misspelt, misspeltTagKeys(n.view.Root(), foreign)...)
 	})
-	return e, nil
+	return &schemaEntry{node: n, err: b.err, misspelt: misspeltError(misspelt)}, nil
 }
 
 // eachBranch calls visit with every struct node n's graph reaches, once
@@ -138,7 +162,8 @@ func rootMetadata(t reflect.Type) (*schemaNode, error) {
 	return n, nil
 }
 
-// schemaOf additionally validates load-time tags once per cached root.
+// schemaOf additionally validates load-time tags once per cached root, and
+// refuses misspelt tag keys.
 func schemaOf(t reflect.Type) (*schemaNode, error) {
 	e := schemaMetadata(t)
 	if e.err != nil {
@@ -152,7 +177,10 @@ func schemaOf(t reflect.Type) (*schemaNode, error) {
 		}
 		e.validation = b.err
 	})
-	return e.node, e.validation
+	if e.validation != nil {
+		return e.node, e.validation
+	}
+	return e.node, e.misspelt
 }
 
 // rootSchema is schemaOf for a type that must be a struct.

@@ -123,7 +123,7 @@ func normalizeSpaces(s string) string {
 // shows on the collection's row; its entries' rows carry none.
 func TestPrintUsage_WithholdsCompositeDefaults(t *testing.T) {
 	type cfg struct {
-		Settings map[string]string `koanf:"settings" default:"{\"password\":\"FAKE_SECRET_VALUE\"}"`
+		Settings map[string]string `koanf:"settings" default:"password=FAKE_SECRET_VALUE"`
 		Tags     []string          `koanf:"tags" default:"web,api"`
 	}
 	var buf bytes.Buffer
@@ -145,7 +145,7 @@ func TestPrintUsage_WithholdsCompositeDefaults(t *testing.T) {
 // out, so sourcing the template cannot set a variable to a placeholder.
 func TestPrintUsage_EnvTemplateCommentsOutWithheldDefaults(t *testing.T) {
 	type cfg struct {
-		Settings map[string]string `koanf:"settings" default:"{\"password\":\"FAKE_SECRET_VALUE\"}"`
+		Settings map[string]string `koanf:"settings" default:"password=FAKE_SECRET_VALUE"`
 		Any      any               `koanf:"any" default:"FAKE_SECRET_VALUE"`
 	}
 	var buf bytes.Buffer

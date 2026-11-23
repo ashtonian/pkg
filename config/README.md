@@ -108,9 +108,10 @@ bundle apply its own per-leaf policy. See [inspection](docs/inspection.md).
 
 The [tag table](docs/schema.md) defines the schema, and the
 [options table](docs/reference.md#options) lists every load, reload and print
-option with its default. A load refuses a tag key that misspells one of
-config's (`defualt`, `envRef`); `WithForeignTagKeys` names another library's
-keys that sit that close. Environment loading requires `WithEnvPrefix`, or
+option with its default. A load, every generator and checked redaction
+refuse a tag key that misspells one of config's (`defualt`, `envRef`); a
+struct lists another library's keys that sit that close from a
+`ForeignTagKeys` method. Environment loading requires `WithEnvPrefix`, or
 `WithEnvPrefixes` for a shared layer beneath a service's own prefix
 (`APP_WORKER_DB_HOST`, then `APP_DB_HOST`).
 `envref:"true"` declares variable names read by the application;

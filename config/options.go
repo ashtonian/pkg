@@ -36,7 +36,6 @@ type Validator interface {
 }
 
 type options struct {
-	foreignTagKeys []string
 	knownVariables map[string]bool
 	variableFilter func(string) bool
 	envPrefixes    []string // an envPrefixList; empty: the environment is not read
@@ -220,19 +219,6 @@ func WithFileParser(suffix string, p koanf.Parser) Option {
 			o.fileParsers = map[string]koanf.Parser{}
 		}
 		o.fileParsers[suffix] = p
-	}
-}
-
-// WithForeignTagKeys names struct tag keys another library reads on the
-// config type. A load refuses a tag key config does not read when it is one
-// inserted, deleted, replaced or swapped character away from one config
-// reads, or equal to one ignoring case, '-' and '_' (defualt, envRef): config
-// would otherwise ignore the field's setting without a word. A key named here
-// is left alone. Calls accumulate.
-func WithForeignTagKeys(keys ...string) Option {
-	owned := append([]string(nil), keys...)
-	return func(o *options) {
-		o.foreignTagKeys = append(o.foreignTagKeys, owned...)
 	}
 }
 

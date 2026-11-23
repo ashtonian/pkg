@@ -98,7 +98,11 @@ func (w *valueTree) fields(n *outNode, val reflect.Value, c cursor) {
 	if w.err != nil {
 		return
 	}
-	schema, err := metadataOf(val.Type())
+	metadata := declaredOf
+	if w.raw {
+		metadata = metadataOf
+	}
+	schema, err := metadata(val.Type())
 	if err != nil {
 		w.err = err
 		return
@@ -343,8 +347,8 @@ func RedactedTree(cfg any) map[string]any {
 }
 
 // RedactedTreeChecked returns [RedactedTree]'s values, or nil and an error
-// when a reached type has invalid keys or no scalar representation, or its
-// text marshaler fails. No partial tree is returned.
+// when a reached type has invalid keys, a misspelt tag key or no scalar
+// representation, or its text marshaler fails. No partial tree is returned.
 // It does not decode default or example tags.
 func RedactedTreeChecked(cfg any) (map[string]any, error) {
 	return (&valueTree{visiting: map[visit]bool{}}).tree(cfg)

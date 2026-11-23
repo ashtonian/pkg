@@ -97,9 +97,11 @@ type usageRow = UsageEntry
 // precedence order, and EnvVars all of them. Defaults that are sensitive or
 // could contain secrets are empty and Withheld is true. Allowed follows
 // JSONSchema's enum and withholding rules. Collection entries use [*]
-// patterns and environment placeholders where supported.
+// patterns and environment placeholders where supported. A type a load
+// refuses for its tags — a malformed default, a misspelt tag key — returns
+// the same ErrSchema.
 func Usage[T any](envPrefixes ...string) ([]UsageEntry, error) {
-	root, err := rootMetadata(reflect.TypeFor[T]())
+	root, err := rootSchema(reflect.TypeFor[T]())
 	if err != nil {
 		return nil, err
 	}

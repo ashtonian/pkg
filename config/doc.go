@@ -60,7 +60,10 @@
 //
 // Invalid sensitive, alias, env, envref, reload, sep, format and example tags, a default on
 // a section, malformed defaults, and validate tags the default validator
-// cannot read fail with [ErrSchema] before sources are read. [KeyOf] names a field from its address. [ParseKey] exposes the same
+// cannot read fail with [ErrSchema] before sources are read. So does a tag
+// key one edit from one config reads (defualt, envRef), in a load, every
+// generator and checked redaction alike, unless the struct declaring the
+// field lists it as another library's ([ForeignTagDeclarer]). [KeyOf] names a field from its address. [ParseKey] exposes the same
 // canonical grammar as typed segments, including quoted keys and wildcards.
 //
 // # Sources
@@ -219,8 +222,8 @@
 // field, text-capable and named like a credential (unless tagged
 // sensitive:"false"), or under such a map key. Numeric counters, booleans and
 // durations keep ordinary diagnostics. The checked map/tree helpers return an error on an invalid
-// structural schema and never return partial results. They inspect live values
-// without decoding default or example tags. [PrintUsage] lists every key an operator can set with its
+// structural schema or a misspelt tag key and never return partial results.
+// They inspect live values without decoding default or example tags. [PrintUsage] lists every key an operator can set with its
 // environment variable, type, default, reload class and description; a default that is, or
 // could hold, a sensitive value is withheld ([Field.PrintableDefault]), as is
 // such an example tag's ([Field.PrintableExample]). [PrintTemplate] writes the

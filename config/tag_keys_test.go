@@ -1,7 +1,9 @@
 package config
 
 import (
+	"bytes"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/ashtonian/pkg/gowalker"
@@ -58,26 +60,70 @@ type misspeltCfg struct {
 	Items []misspeltItem `koanf:"items"`
 }
 
+// foreignBase lists the key another library reads on its field.
+type foreignBase struct {
+	Region string `koanf:"region" defualt:"eu"`
+}
+
+func (foreignBase) ForeignTagKeys() []string { return []string{"defualt"} }
+
+type foreignItem struct {
+	Port int `koanf:"port" vaildate:"min=1"`
+}
+
+func (*foreignItem) ForeignTagKeys() []string { return []string{"vaildate"} }
+
+// foreignOther carries the key its own type does not list: foreignBase's
+// list covers foreignBase's fields, and the fields of a struct embedding it,
+// which inherits its methods.
+type foreignOther struct {
+	Other string `koanf:"other" defualt:"x"`
+}
+
+type foreignCfg struct {
+	foreignBase `koanf:",squash"`
+
+	Host  string        `koanf:"host" defualt:"inherited"`
+	Items []foreignItem `koanf:"items"`
+	More  foreignOther  `koanf:"more"`
+}
+
+type partlyForeignCfg struct {
+	foreignBase `koanf:",squash"`
+	Items       []misspeltItem `koanf:"items"`
+}
+
 // A load refuses every misspelt key of its type's graph, through squashed
 // structs and list elements, naming the field, the key written and the key
-// meant, unless another library's key is named as foreign.
+// meant, unless the struct declaring the field lists it as another
+// library's.
 func TestLoad_RefusesMisspeltTagKeys(t *testing.T) {
 	_, err := Load[misspeltCfg](t.Context(), WithSkipValidation())
 	require.ErrorIs(t, err, ErrSchema)
-	assert.Contains(t, err.Error(), `field Region of config.misspeltBase has tag key "defualt"; did you mean "default"?`)
+	assert.Contains(t, err.Error(), `field Region of config.misspeltBase has tag key "defualt"; did you mean "default"? List a key another library reads in config.misspeltBase's ForeignTagKeys method`)
 	assert.Contains(t, err.Error(), `field Port of config.misspeltItem has tag key "vaildate"; did you mean "validate"?`)
 	assert.NotContains(t, err.Error(), `"json"`)
 
-	err = CheckKey[misspeltCfg](t.Context(), "host", "h", WithForeignTagKeys("defualt"))
+	err = CheckKey[partlyForeignCfg](t.Context(), "region", "h")
 	require.ErrorIs(t, err, ErrSchema)
 	assert.NotContains(t, err.Error(), "defualt")
 	assert.Contains(t, err.Error(), "vaildate")
 
-	got, err := Load[misspeltCfg](t.Context(), WithForeignTagKeys("defualt"), WithForeignTagKeys("vaildate"),
-		WithDefaults(map[string]any{"host": "h"}), WithSkipValidation())
+	_, err = Load[foreignCfg](t.Context(), WithSkipValidation())
+	require.ErrorIs(t, err, ErrSchema)
+	assert.Contains(t, err.Error(), `field Other of config.foreignOther has tag key "defualt"`)
+	assert.NotContains(t, err.Error(), "Region")
+	assert.NotContains(t, err.Error(), "Host")
+	assert.NotContains(t, err.Error(), "vaildate")
+
+	type allForeign struct {
+		foreignBase `koanf:",squash"`
+		Items       []foreignItem `koanf:"items"`
+	}
+	got, err := Load[allForeign](t.Context(), WithDefaults(map[string]any{"items": []any{map[string]any{"port": 0}}}), WithSkipValidation())
 	require.NoError(t, err)
-	assert.Equal(t, "h", got.Host)
 	assert.Empty(t, got.Region, "a foreign key is not config's")
+	assert.Equal(t, 0, got.Items[0].Port)
 }
 
 // A tag reflect cannot read whole, or one that repeats a key, is refused
@@ -158,14 +204,153 @@ func TestDeclarationChecks_VisitEachStructOnce(t *testing.T) {
 		"config.sharedDeclarationsCfg", "config.sharedDeclarations", "config.misspeltItem", "config.recursiveDeclarations",
 	}, visited)
 
-	e := schemaMetadata(reflect.TypeFor[sharedDeclarationsCfg]())
+	_, err = declaredOf(reflect.TypeFor[sharedDeclarationsCfg]())
+	require.ErrorIs(t, err, ErrSchema)
 	var written []string
-	for _, m := range e.misspelt {
-		written = append(written, m.field+":"+m.written)
+	for _, line := range strings.Split(err.Error(), "\n") {
+		field, _, _ := strings.Cut(strings.TrimPrefix(line, ErrSchema.Error()+": field "), " has tag key")
+		key, _, _ := strings.Cut(strings.SplitN(line, `has tag key "`, 2)[1], `"`)
+		written = append(written, strings.Fields(field)[0]+":"+key)
 	}
 	assert.Equal(t, []string{"Region:defualt", "Name:defualt", "Port:vaildate"}, written, "squashed and element declarations are checked, a shared one once")
 
 	_, err = rootSchema(reflect.TypeFor[sharedDeclarationsCfg]())
 	require.ErrorIs(t, err, ErrSchema)
 	assert.Contains(t, err.Error(), `field Name of config.sharedDeclarations has sensitive:"maybe"`)
+}
+
+type ambiguousSensitivity struct {
+	Note string `koanf:"note" sensitve:"true"`
+}
+
+type misspeltDefault struct {
+	Port int `koanf:"port" defualt:"80"`
+}
+
+type foreignDefault struct {
+	Port int `koanf:"port" defualt:"80"`
+}
+
+func (foreignDefault) ForeignTagKeys() []string { return []string{"defualt"} }
+
+type plainSensitivity struct {
+	Note string `koanf:"note" sensitive:"true"`
+	Port int    `koanf:"port" default:"80"`
+}
+
+const harmlessMarker = "HARMLESS-MARKER"
+
+// Checked redaction holds a type's declarations to the policy a load does:
+// a value whose sensitivity declaration is misspelt is never printed, by
+// the checked helpers, their compatibility wrappers or any print format,
+// whoever populated it.
+func TestDeclarationPolicy_AmbiguousSensitivityNeverPrints(t *testing.T) {
+	live := ambiguousSensitivity{Note: harmlessMarker}
+	_, err := Load[ambiguousSensitivity](t.Context(), WithDefaults(map[string]any{"note": harmlessMarker}))
+	require.ErrorIs(t, err, ErrSchema)
+	want := err.Error()
+
+	m, err := RedactedMapChecked(live)
+	require.ErrorIs(t, err, ErrSchema)
+	assert.Equal(t, want, "loading config: "+err.Error())
+	assert.Nil(t, m)
+	assert.Nil(t, RedactedMap(live))
+	assert.Nil(t, RedactedMap(&live))
+	tree, err := RedactedTreeChecked(live)
+	require.ErrorIs(t, err, ErrSchema)
+	assert.Nil(t, tree)
+	assert.Nil(t, RedactedTree(live))
+	for _, format := range []string{FormatTable, FormatJSON, FormatYAML} {
+		var out bytes.Buffer
+		require.ErrorIs(t, PrintRedacted(live, WithWriter(&out), WithFormat(format)), ErrSchema, format)
+		assert.Empty(t, out.String(), format)
+	}
+	var out bytes.Buffer
+	require.ErrorIs(t, PrintEnv(live, "APP", WithWriter(&out)), ErrSchema)
+	assert.Empty(t, out.String())
+
+	type holder struct {
+		Plugin any `koanf:"plugin"`
+	}
+	m, err = RedactedMapChecked(holder{Plugin: live})
+	require.ErrorIs(t, err, ErrSchema, "a struct held in an interface is checked as it is reached")
+	assert.Nil(t, m)
+
+	// Raw inspection still reads the type, to diagnose it.
+	fields, err := FieldsChecked[ambiguousSensitivity]()
+	require.NoError(t, err)
+	assert.Equal(t, "note", fields[0].Path)
+	raw, err := Tree(live)
+	require.NoError(t, err)
+	assert.Equal(t, harmlessMarker, raw["note"])
+}
+
+// Every generator an operator reads agrees with a load on a misspelt tag
+// key, and on a key the declaring type lists as another library's.
+func TestDeclarationPolicy_GeneratorsAgreeWithLoad(t *testing.T) {
+	_, loadErr := Load[misspeltDefault](t.Context(), WithSkipValidation())
+	require.ErrorIs(t, loadErr, ErrSchema)
+	assert.Contains(t, loadErr.Error(), `field Port of config.misspeltDefault has tag key "defualt"; did you mean "default"?`)
+	var out bytes.Buffer
+	for name, generate := range map[string]func() error{
+		"Usage":         func() error { _, err := Usage[misspeltDefault]("APP"); return err },
+		"PrintUsage":    func() error { return PrintUsage[misspeltDefault]("APP", WithWriter(&out)) },
+		"JSONSchema":    func() error { _, err := JSONSchema[misspeltDefault](); return err },
+		"PrintTemplate": func() error { return PrintTemplate[misspeltDefault]("APP", WithWriter(&out)) },
+		"PrintEnv":      func() error { return PrintEnv(misspeltDefault{}, "APP", WithWriter(&out)) },
+		"Diff":          func() error { _, err := Diff(&misspeltDefault{}, &misspeltDefault{Port: 1}); return err },
+		"NewReloader": func() error {
+			_, err := NewReloader[misspeltDefault](t.Context(), []Option{WithSkipValidation()})
+			return err
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			out.Reset()
+			err := generate()
+			require.ErrorIs(t, err, ErrSchema)
+			assert.Contains(t, err.Error(), `field Port of config.misspeltDefault has tag key "defualt"`)
+			assert.Empty(t, out.String())
+		})
+	}
+
+	got, err := Load[foreignDefault](t.Context(), WithSkipValidation())
+	require.NoError(t, err)
+	assert.Zero(t, got.Port, "the foreign key is not config's default")
+	rows, err := Usage[foreignDefault]("APP")
+	require.NoError(t, err)
+	assert.Empty(t, rows[0].Default)
+	doc := jsonSchemaOf[foreignDefault](t)
+	assert.NotContains(t, prop(t, doc, "port"), "default")
+	m, err := RedactedMapChecked(foreignDefault{Port: 8})
+	require.NoError(t, err)
+	assert.Equal(t, "8", m["port"])
+	require.NoError(t, PrintTemplate[foreignDefault]("APP", WithWriter(&out)))
+}
+
+// A valid schema keeps its redaction and its metadata, and a live value
+// still prints without its tags decoding.
+func TestDeclarationPolicy_ValidSchemasUnchanged(t *testing.T) {
+	m, err := RedactedMapChecked(plainSensitivity{Note: harmlessMarker, Port: 1})
+	require.NoError(t, err)
+	assert.Equal(t, map[string]string{"note": "[REDACTED]", "port": "1"}, m)
+	rows, err := Usage[plainSensitivity]("APP")
+	require.NoError(t, err)
+	assert.Equal(t, "80", rows[1].Default)
+	got, err := Load[plainSensitivity](t.Context(), WithSkipValidation())
+	require.NoError(t, err)
+	assert.Equal(t, 80, got.Port)
+
+	type badDefault struct {
+		Labels map[string]string `koanf:"labels" default:"not-entries"`
+	}
+	m, err = RedactedMapChecked(badDefault{Labels: map[string]string{"k": "v"}})
+	require.NoError(t, err, "printing a live value does not decode its defaults")
+	assert.Equal(t, "v", m[`labels["k"]`])
+	_, loadErr := Load[badDefault](t.Context(), WithSkipValidation())
+	require.ErrorIs(t, loadErr, ErrSchema)
+	_, err = Usage[badDefault]("APP")
+	require.ErrorIs(t, err, ErrSchema, "usage shows the default a load refuses")
+	assert.Equal(t, loadErr.Error(), "loading config: "+err.Error())
+	_, err = JSONSchema[badDefault]()
+	require.ErrorIs(t, err, ErrSchema)
 }

@@ -162,8 +162,9 @@ type printEntry struct {
 // (an object of key → value text) or FormatYAML (the config nested as it is
 // written in a file, values typed as they decode, keys in declaration
 // order); [PrintEnv] writes it as environment variables. It returns the first
-// write error, a structural ErrSchema error, or an error for an unknown format.
-// Structural errors produce no output. It never decodes default/example tags.
+// write error, an ErrSchema error for a structural problem or a misspelt tag
+// key, or an error for an unknown format. Schema errors produce no output. It
+// never decodes default/example tags.
 func PrintRedacted(cfg any, opts ...PrintOption) error {
 	po := defaultPrintOptions()
 	for _, opt := range opts {
@@ -210,8 +211,10 @@ func RedactedMap(cfg any) map[string]string {
 }
 
 // RedactedMapChecked returns [RedactedMap]'s values, or nil and ErrSchema
-// when a reached type has invalid or ambiguous keys. No partial map is returned.
-// Like PrintRedacted, it does not decode default or example tags.
+// when a reached type has invalid or ambiguous keys or a misspelt tag key —
+// a misspelt sensitive tag would print the value it means to hide. No partial
+// map is returned. Like PrintRedacted, it does not decode default or example
+// tags.
 func RedactedMapChecked(cfg any) (map[string]string, error) {
 	entries, err := collectEntriesChecked(cfg)
 	if err != nil {
@@ -283,7 +286,7 @@ func (w *entryWalk) walkStruct(val reflect.Value, prefix keyPath, inherited bool
 	if w.err != nil {
 		return
 	}
-	schema, err := metadataOf(val.Type())
+	schema, err := declaredOf(val.Type())
 	if err != nil {
 		w.err = err
 		return

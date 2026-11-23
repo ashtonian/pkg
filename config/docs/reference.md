@@ -40,14 +40,17 @@ schema. Schema errors support `errors.Is(err, config.ErrSchema)`; malformed keys
 |---|---|---|
 | `FieldsChecked[T]()` | `([]Field, error)` in declaration order | Rejects a non-struct root and invalid or ambiguous keys |
 | `MatchFields(&cfg, targets)` | `([]Field, error)` in target order | Matches addresses in one traversal; empty Path means no match; ambiguous addresses are ErrKey |
-| `RedactedMapChecked(cfg)` | `(map[string]string, error)` with text values keyed by path | Returns nil on structural errors, including reached dynamic types |
-| `Usage[T](prefixes...)` | `([]UsageEntry, error)` with safe printable metadata | Reports invalid schema; keeps raw struct tags only in the non-JSON Field member |
+| `RedactedMapChecked(cfg)` | `(map[string]string, error)` with text values keyed by path | Returns nil on structural errors and misspelt tag keys, including reached dynamic types |
+| `Usage[T](prefixes...)` | `([]UsageEntry, error)` with safe printable metadata | Reports the schema errors a load reports; keeps raw struct tags only in the non-JSON Field member |
 | `ParseKey(text)` | `(Key, error)` | Reports malformed keys with ErrKey |
 | `Tree(cfg)`, `TreeFunc(cfg, leaf)` | `(map[string]any, error)` with raw or policy-transformed values | Returns no partial tree on schema/scalar/text-marshaling errors |
-| `RedactedTreeChecked(cfg)` | `(map[string]any, error)` with nested redacted values | Returns nil on structural errors; no partial tree |
+| `RedactedTreeChecked(cfg)` | `(map[string]any, error)` with nested redacted values | Returns nil on structural errors and misspelt tag keys; no partial tree |
 
-These functions inspect metadata without decoding default or example tags,
-except `Usage` decodes defaults when a `Defaulter` sets some.
+Each function checks the declarations its result depends on — see
+[declaration checks](inspection.md#declaration-checks). The redacting and raw
+forms inspect metadata without decoding default or example tags; `Usage`
+validates tags as a load does and decodes defaults when a `Defaulter` sets
+some.
 The original `Fields`, `RedactedMap` and `RedactedTree` retain their single-result
 signatures and return nil on failure. `PrintRedacted` returns structural errors
 before writing output. See [inspection errors](inspection.md#inspection-errors)
@@ -123,7 +126,6 @@ Load options:
 | `WithValidator(v)` | go-playground, keys as field names | Replace the tag validator. |
 | `WithSkipValidation()` | validation on | Skip tag validation and `Validate`. |
 | `WithLogger(l)` | `slog.Default()` | Load diagnostics and reload events. |
-| `WithForeignTagKeys(keys...)` | none | Tag keys another library reads, which a load would otherwise refuse as misspellings of config's own; repeated calls accumulate. |
 
 Provider source options:
 
