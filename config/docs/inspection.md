@@ -33,6 +33,24 @@ Use `FieldFor[T]("server.port")` to describe one key. `KeyOf(&cfg, &cfg.Port)`
 finds the key for an actual field by its address. Both inspect metadata without
 decoding default/example tags.
 
+`FieldFor` resolves every key `CanonicalKey` accepts, spelled as `CanonicalKey`
+spells it: the two read keys by one decision. A key inside a map or list
+returns a field synthesized for every entry (`items[3].port` →
+`items[*].port`). A key beneath an interface returns the interface's field,
+which owns whatever its value holds. A key a `,remain` field collects —
+`plugins.foo` when no field of `plugins` reads `foo` by any spelling —
+returns the remain field, which owns it the same way: `Path` is the pattern
+of every key it collects (`plugins[*]`, and `[*]` at the root), `Tag`,
+`Type`, `Reload` and `Index` are the remain field's, and `Sensitive` is set
+when the remain field or a struct holding it is sensitive, or when the key
+is named like a credential and its value can hold text. A key beneath one
+walks into the remain map's element type: anything beneath an `any`
+belongs to the remain field, and `plugins.foo.port` beneath a
+`map[string]Plugin` is `Plugin`'s `port` (`plugins[*].port`). A sensitive
+remain field's keys may themselves be secrets, so diagnostics name only the
+struct holding them (`vault`), as they name a sensitive map instead of its
+entries.
+
 For several reflected targets, such as CLI flag destinations, use
 `MatchFields(&cfg, targets)`. It walks the config instance once and returns a
 `[]Field` in target order. An empty `Path` means that target is not a config
@@ -157,7 +175,14 @@ finite values load back with their sensitive values intact.
 `TreeFunc(cfg, leaf)` passes each leaf's actual key, declared `Field` and
 detached tree value to a policy function. Its return value replaces that
 leaf. Sensitive maps, lists and interfaces reach the callback once, whole,
-so a policy can withhold their keys too. Empty and nil containers are leaves;
+so a policy can withhold their keys too. A key a `,remain` field collects is
+a key of its section in every tree and printed listing (`plugins.foo`),
+judged as a map entry is, its `Field` the remain field's; a sensitive
+remain field reaches the callback once, whole, at `section[*]`: a map it
+returns sets keys of the section, so a callback that returns what it is
+given gives `Tree`'s keys, and anything else is the section's `[*]` entry. `PrintRedacted`, `RedactedMap` and
+`RedactedTree` show it as one `[REDACTED]` value there; `Tree` withholds
+nothing and shows each key it collects. Empty and nil containers are leaves;
 a nil callback is identity, and is `Tree`. Fields inside a dynamic interface
 retain the interface's declared metadata. A redaction callback can return
 `[REDACTED]` when `f.Sensitive && value != nil`. Because a callback judges
@@ -187,7 +212,7 @@ features["export"]: added (features[*])
 features["export"].rate: + 1
 ```
 
-Lists compare by index and maps by key; a section that appears, disappears or turns nil is a `Structural` change followed by the keys beneath it. `ExampleDiff` is the program behind this output.
+Lists compare by index and maps by key; a section that appears, disappears or turns nil is a `Structural` change followed by the keys beneath it. A key a `,remain` field collects is a key of its section (`plugins.foo`), after the section's fields and by name, its `Field` the remain field's. A sensitive remain field is compared whole, as a sensitive map is: one change at `section[*]` (`vault[*]: [REDACTED] -> [REDACTED]`), there while the field collects a key, so the keys it holds are never listed. It is the one change whose key holds a pattern: `ParseKey` reads it and it is `Within` the section, but `CanonicalKey` refuses it as not concrete. `ExampleDiff` is the program behind this output.
 
 ## Where a value came from
 
@@ -252,7 +277,10 @@ error. `PrintRedacted` and `PrintEnv` report it before writing any output.
 
 Every entry point checks a type's declarations to the depth its result
 depends on, and the same declaration gets the same `ErrSchema` wherever it
-is reached:
+is reached. A `,remain` field's element type is a type of the config like
+any field's: each tier checks it, and the element types of remain fields
+within it, as it checks the struct holding the field, so a load refuses
+what `Diff` would refuse in it.
 
 | Tier | Checks | Entry points |
 |---|---|---|

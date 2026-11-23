@@ -32,12 +32,12 @@ type schemaNode struct {
 	view   *gowalker.Schema // nodeBranch: shared field identities and matching
 	elem   *schemaNode      // nodeMap, nodeList
 	keys   *keyCodec        // nodeMap
-	// acceptsUnknown reports a nodeBranch whose koanf:",remain" field — its
-	// own, or one of a struct it squashes — can collect the keys no other
-	// field takes: the field at index remain. remainErr is why its remain
-	// declaration cannot.
+	// remain is a nodeBranch's koanf:",remain" field — its own, or one of a
+	// struct it squashes — which collects the keys no other field takes;
+	// acceptsUnknown reports one. remainErr is why its remain declaration
+	// cannot collect them.
 	acceptsUnknown bool
-	remain         []int
+	remain         *remainField
 	remainErr      error
 	// unkeyed is the index, from the branch's type through the structs it
 	// squashes, of each exported field tagged koanf:"-": state a typed
@@ -59,13 +59,56 @@ type schemaField struct {
 	access *gowalker.Accessor
 }
 
+// remainField is a branch's koanf:",remain" field: a map keyed by strings,
+// each of whose entries is a key directly beneath the branch. It owns each
+// key it collects, as an interface field owns what its value holds, and
+// the field's tags are that owner's.
+type remainField struct {
+	sf     reflect.StructField
+	index  []int     // from the branch's type, through squashed structs
+	keys   *keyCodec // the map's key type's
+	tagged bool      // the field, or a squashed struct holding it, is tagged sensitive:"true"
+	named  bool      // its Go name looks like a credential's
+	reload string    // its reload tag, or the innermost squashed struct's
+}
+
+// node is the node of r's map type, whose element is what each key r
+// collects holds, read through tier (metadataOf, schemaOf) from the map
+// type's own graph: the field is not part of its branch's graph, and an
+// element type holding the branch's own type would otherwise build that
+// graph again within itself.
+func (r *remainField) node(tier func(reflect.Type) (*schemaNode, error)) (*schemaNode, error) {
+	return tier(r.sf.Type)
+}
+
+// whole reports whether r, at a position sensitive or not, is one value
+// rather than its keys: it is sensitive, so the keys it collects may
+// themselves be secrets.
+func (r *remainField) whole(sensitive bool) bool {
+	return sensitive || r.tagged || r.named
+}
+
+// collects reports whether n's remain field collects key segment s: n is a
+// branch with one, s names a member — a field or a quoted map key — and no
+// field of n reads s's name by any spelling, as decoding gives a key to a
+// field before its remain field.
+func (n *schemaNode) collects(s segment) bool {
+	if n.remain == nil || s.kind != segField && s.kind != segKey {
+		return false
+	}
+	f, _ := n.lookup(s.name)
+	return f == nil
+}
+
 type schemaEntry struct {
 	node       *schemaNode
 	err        error
 	misspelt   error // the graph's misspelt tag keys, refused by every checked entry point
 	check      sync.Once
 	validation error
-	rules      sync.Once // the default validator's reading of the validate tags
+	remains    sync.Once
+	reached    []*schemaEntry // see reachedRemains
+	rules      sync.Once      // the default validator's reading of the validate tags
 	rulesErr   error
 	catalog    sync.Once
 	fields     []Field
@@ -77,7 +120,10 @@ type schemaEntry struct {
 var schemaCache = gowalker.NewTypeCache(configView, buildSchema)
 
 // A type's declarations are checked in tiers, each entry point taking the
-// one its output depends on:
+// one its output depends on. Each tier checks the graph of every remain
+// field's map type the type reaches as it checks the type's own (see
+// reachedRemains), since a remain field's element type is a type of the
+// config like any field's:
 //
 //   - metadataOf: structural — the graph builds, keys are unique, reload
 //     tags read. Raw inspection (Fields, FieldFor, KeyOf, Tree) takes only
@@ -96,16 +142,83 @@ var schemaCache = gowalker.NewTypeCache(configView, buildSchema)
 // Diagnostics can therefore inspect live values even when a tag is invalid.
 func metadataOf(t reflect.Type) (*schemaNode, error) {
 	e := schemaMetadata(t)
-	return e.node, e.err
+	return e.node, e.refusal(tierStructural)
 }
 
 // declaredOf is metadataOf that also refuses misspelt tag keys.
 func declaredOf(t reflect.Type) (*schemaNode, error) {
 	e := schemaMetadata(t)
-	if e.err != nil {
-		return e.node, e.err
+	return e.node, e.refusal(tierDeclared)
+}
+
+// tier is how much of a type's declarations an entry point checks.
+type tier int
+
+const (
+	tierStructural tier = iota // metadataOf
+	tierDeclared               // declaredOf
+	tierDecoded                // schemaOf
+)
+
+// refusal is why entry points at tier t refuse e's type: what they refuse
+// in its own graph, or in the graph of a remain field's map type it
+// reaches.
+func (e *schemaEntry) refusal(t tier) error {
+	if err := e.ownRefusal(t); err != nil || e.node == nil {
+		return err
 	}
-	return e.node, e.misspelt
+	for _, r := range e.reachedRemains() {
+		if err := r.ownRefusal(t); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// ownRefusal is refusal of e's own graph alone.
+func (e *schemaEntry) ownRefusal(t tier) error {
+	switch {
+	case e.err != nil || t == tierStructural:
+		return e.err
+	case t == tierDecoded:
+		if err := e.tagValues(); err != nil {
+			return err
+		}
+	}
+	return e.misspelt
+}
+
+// reachedRemains is the entry of every remain field's map type e's graph
+// reaches, then of every one their graphs reach, each once and e's own
+// type never: a remain field's map type is a graph of its own (see
+// remainField.node), so no walk of e's graph visits it. Built once per
+// entry; each entry's own checks run once, in its own entry, so a type
+// reaching itself through remain fields is checked once and never waits on
+// itself.
+func (e *schemaEntry) reachedRemains() []*schemaEntry {
+	e.remains.Do(func() {
+		seen := map[reflect.Type]bool{e.node.typ: true}
+		var visit func(*schemaNode)
+		visit = func(n *schemaNode) {
+			n.eachBranch(func(b *schemaNode) {
+				if b.remain == nil {
+					return
+				}
+				t := derefType(b.remain.sf.Type)
+				if seen[t] {
+					return
+				}
+				seen[t] = true
+				r := schemaMetadata(t)
+				e.reached = append(e.reached, r)
+				if r.node != nil {
+					visit(r.node)
+				}
+			})
+		}
+		visit(e.node)
+	})
+	return e.reached
 }
 
 func schemaMetadata(t reflect.Type) *schemaEntry {
@@ -175,9 +288,12 @@ func rootMetadata(t reflect.Type) (*schemaNode, error) {
 // refuses misspelt tag keys.
 func schemaOf(t reflect.Type) (*schemaNode, error) {
 	e := schemaMetadata(t)
-	if e.err != nil {
-		return e.node, e.err
-	}
+	return e.node, e.refusal(tierDecoded)
+}
+
+// tagValues is why the values of e's own graph's config tags do not decode,
+// checked once.
+func (e *schemaEntry) tagValues() error {
 	e.check.Do(func() {
 		b := &schemaBuilder{}
 		e.node.eachBranch(b.validateTags)
@@ -186,10 +302,7 @@ func schemaOf(t reflect.Type) (*schemaNode, error) {
 		}
 		e.validation = b.err
 	})
-	if e.validation != nil {
-		return e.node, e.validation
-	}
-	return e.node, e.misspelt
+	return e.validation
 }
 
 // rootSchema is schemaOf for a type that must be a struct.
@@ -255,7 +368,19 @@ func (b *schemaBuilder) fields(n *schemaNode, shape *gowalker.Shape) {
 		return
 	}
 	n.view = view
-	n.remain, n.remainErr = remainder(view.Root())
+	remain, err := remainder(view.Root())
+	if err != nil {
+		n.remainErr = err
+	} else if remain != nil {
+		n.remain = &remainField{
+			sf:     remain.GoField,
+			index:  remain.Index,
+			keys:   keyCodecOf(remain.GoField.Type.Key()),
+			tagged: fieldSensitive(remain.GoField, remain.InlineParents),
+			named:  nameSensitive(remain.GoField),
+			reload: fieldReload(remain.GoField, remain.InlineParents),
+		}
+	}
 	n.acceptsUnknown = n.remain != nil
 	for _, d := range view.Root().Declarations() {
 		if d.GoField.IsExported() && koanfTag(d.GoField).Name == "-" {
@@ -269,19 +394,21 @@ func (b *schemaBuilder) fields(n *schemaNode, shape *gowalker.Shape) {
 			b.fail(fmt.Errorf("%w: %w", ErrSchema, err))
 			return
 		}
-		f := &schemaField{key: field.Name(), reload: fieldReload(field), sf: sf, index: field.Index(), tagged: fieldSensitive(field), named: nameSensitive(sf), node: b.node(field.Shape()), access: access}
+		parents := field.InlineParents()
+		f := &schemaField{key: field.Name(), reload: fieldReload(sf, parents), sf: sf, index: field.Index(), tagged: fieldSensitive(sf, parents), named: nameSensitive(sf), node: b.node(field.Shape()), access: access}
 		n.fields = append(n.fields, f)
 		n.byKey[f.key] = f
 	}
 }
 
-// remainder is the index of the field of shape, or of a struct it squashes,
-// that a koanf:",remain" tag makes collect the keys no other field takes: nil when
-// none is tagged, an ErrSchema when the tags name one decoding cannot fill.
-// The decoder fills one map of strings to values it can set, so the field
-// must be exported — promoted through an unexported embedded struct is
-// fine — a map keyed by strings, the only one so tagged, and not squashed.
-func remainder(shape *gowalker.Shape) ([]int, error) {
+// remainder is the declaration of the field of shape, or of a struct it
+// squashes, that a koanf:",remain" tag makes collect the keys no other field
+// takes: nil when none is tagged, an ErrSchema when the tags name one
+// decoding cannot fill. The decoder fills one map of strings to values it
+// can set, so the field must be exported — promoted through an unexported
+// embedded struct is fine — a map keyed by strings, the only one so tagged,
+// and not squashed.
+func remainder(shape *gowalker.Shape) (*gowalker.Declaration, error) {
 	var found *gowalker.Declaration
 	for _, d := range shape.Declarations() {
 		tag := koanfTag(d.GoField)
@@ -301,42 +428,53 @@ func remainder(shape *gowalker.Shape) ([]int, error) {
 		}
 		found = &d
 	}
-	if found == nil {
-		return nil, nil
-	}
-	return found.Index, nil
+	return found, nil
 }
 
 // validateTags checks every field the view selects, through the structs it
-// squashes, shadowed ones included, and the remain field n's keys reach.
+// squashes, shadowed ones included, and the remain field n's keys reach:
+// its declaration, and its sensitive tag, which the keys it collects take.
 func (b *schemaBuilder) validateTags(n *schemaNode) {
 	if n.remainErr != nil {
 		b.fail(n.remainErr)
 	}
 	for _, d := range n.view.Root().Declarations() {
-		if d.State == gowalker.Skipped {
-			continue
+		var err error
+		switch {
+		case d.State != gowalker.Skipped:
+			err = checkTags(d.DeclaringType, d.GoField)
+		case koanfTag(d.GoField).Has("remain"):
+			err = checkSensitiveTag(d.DeclaringType, d.GoField)
 		}
-		if err := checkTags(d.DeclaringType, d.GoField); err != nil {
+		if err != nil {
 			b.fail(err)
 		}
 	}
 }
 
-// checkTags refuses a tag that cannot mean what it says: a sensitive value
-// other than "true" or "false" — sensitive:"yes" would otherwise leave the
-// field unprotected — a secret field opting out of redaction, a sep tag on
-// anything but a list of values, a format other than json or on a value
-// JSON cannot shape, an env tag no variable can serve, a default on a
-// section, and a default or example its field cannot hold.
+// checkSensitiveTag refuses a sensitive tag on field f of t other than
+// "true" or "false" — sensitive:"yes" would otherwise leave the field
+// unprotected — and a secret field opting out of redaction.
+func checkSensitiveTag(t reflect.Type, f reflect.StructField) error {
+	v, ok := f.Tag.Lookup("sensitive")
+	switch {
+	case !ok:
+	case v != "true" && v != "false":
+		return fmt.Errorf("%w: field %s of %s has sensitive:%q; want \"true\" or \"false\"", ErrSchema, f.Name, gowalker.TypeText(t), v)
+	case v == "false" && taggedSensitive(f.Tag):
+		return fmt.Errorf("%w: field %s of %s names a secret and is tagged sensitive:\"false\"", ErrSchema, f.Name, gowalker.TypeText(t))
+	}
+	return nil
+}
+
+// checkTags refuses a tag that cannot mean what it says: a sensitive tag
+// checkSensitiveTag refuses, a sep tag on anything but a list of values, a
+// format other than json or on a value JSON cannot shape, an env tag no
+// variable can serve, a default on a section, and a default or example its
+// field cannot hold.
 func checkTags(t reflect.Type, f reflect.StructField) error {
-	if v, ok := f.Tag.Lookup("sensitive"); ok {
-		switch {
-		case v != "true" && v != "false":
-			return fmt.Errorf("%w: field %s of %s has sensitive:%q; want \"true\" or \"false\"", ErrSchema, f.Name, gowalker.TypeText(t), v)
-		case v == "false" && taggedSensitive(f.Tag):
-			return fmt.Errorf("%w: field %s of %s names a secret and is tagged sensitive:\"false\"", ErrSchema, f.Name, gowalker.TypeText(t))
-		}
+	if err := checkSensitiveTag(t, f); err != nil {
+		return err
 	}
 	if sep, ok := f.Tag.Lookup("sep"); ok {
 		lt := derefType(f.Type)
@@ -521,16 +659,77 @@ func (c cursor) intoEntry(s segment, elem reflect.Type) cursor {
 	return next
 }
 
+// intoRemain steps into r, the koanf:",remain" field of the branch at c:
+// the map whose entries are the keys no other field of the branch reads.
+// Those keys sit directly beneath the branch, so the path stays the
+// branch's; the pattern, and the Path of r's Field, name any key r
+// collects (section[*]). The field's name covers the map, as it covers any
+// map a field holds.
+func (c cursor) intoRemain(r *remainField) cursor {
+	next := c
+	next.tagged = c.tagged || r.tagged
+	next.covered = c.covered || r.named
+	next.pattern = c.pattern.any()
+	if c.index != nil || len(c.path) == 0 {
+		next.index = append(slices.Clone(c.index), r.index...)
+	}
+	next.owner = Field{
+		Path:      next.pattern.String(),
+		Tag:       r.sf.Tag,
+		Reload:    cmp.Or(r.reload, c.owner.Reload, ReloadRestart),
+		Type:      r.sf.Type,
+		Sensitive: next.tagged || next.covered,
+		Index:     next.index,
+	}
+	if c.dynamic {
+		next.owner = cloneField(c.owner)
+		next.owner.Sensitive = next.tagged || next.covered || c.owner.Sensitive
+		next.index = nil
+	}
+	return next
+}
+
+// intoCollected steps from the remain field at c into the key name it
+// collects, whose value has type elem. The remain field stays its owner;
+// a name like a credential's covers its value, as a map key's does.
+func (c cursor) intoCollected(name string, elem reflect.Type) cursor {
+	next := c
+	next.path = c.path.member(name)
+	next.covered = c.covered || isSensitiveName(name) && textCapable(elem)
+	next.index = nil
+	next.owner.Sensitive = c.owner.Sensitive || next.covered
+	return next
+}
+
+// withholdsBeneath reports whether diagnostics withhold s, a key beneath
+// node n at cursor c, and every key beneath it, since the keys a sensitive
+// value holds may themselves be secrets: any key beneath a sensitive map,
+// list or interface, or a struct decoded whole (canHoldKeys), and each key
+// a sensitive remain field collects (remainWhole). A sensitive struct's
+// fields stay named: their keys are its declaration's, not its value's.
+func (n *schemaNode) withholdsBeneath(c cursor, s segment) bool {
+	if n.kind == nodeBranch {
+		return n.collects(s) && n.remainWhole(c.sensitive())
+	}
+	return c.sensitive() && canHoldKeys(n.typ)
+}
+
 // FieldFor returns the declared field a key of T names. A struct field's key
 // returns its Field, Index included. A key inside a map or list —
 // items[0].port, limits["/upload"] — returns a Field synthesized for every
 // element or entry: Path is the pattern (items[*].port), Tag and Type the
 // element's, Sensitive inherited from what holds it, and Index nil. A key
 // beneath an interface returns the interface's field, which owns whatever
-// the value holds. The map keys and indexes in key need not exist in any
-// config. Inspection does not decode default/example tags. A field T does not
-// have, a selector of the wrong kind, an index
-// past a fixed array's end, or a key that does not parse is an ErrKey error.
+// the value holds. A key a koanf:",remain" field collects — one no other
+// field of its struct reads, by any spelling — returns the remain field,
+// which owns it the same way: Path is the pattern of every key it collects
+// (plugins[*]), Tag, Type, Reload and Index the field's own, and Sensitive
+// set when the field or what holds it is sensitive, or the key is named like
+// a credential. A key beneath one walks into the remain map's element type,
+// as beneath any map entry. The map keys and indexes in key need not exist
+// in any config. Inspection does not decode default/example tags. A field T
+// does not have, a selector of the wrong kind, an index past a fixed array's
+// end, or a key that does not parse is an ErrKey error.
 func FieldFor[T any](key string) (Field, error) {
 	root, err := rootMetadata(reflect.TypeFor[T]())
 	if err != nil {
@@ -549,30 +748,41 @@ func FieldFor[T any](key string) (Field, error) {
 
 // walkTo follows p from n, starting at c, and returns where it ends: the
 // cursor, and the node there — the interface's or the whole-decoded value's
-// when p continues beneath one.
+// when p continues beneath one. A key it cannot follow is a *keyFault
+// naming c's path and p.
 func (n *schemaNode) walkTo(c cursor, p keyPath) (cursor, *schemaNode, error) {
-	for i, s := range p {
+	start := c.path
+	fault := func(format string, args ...faultArg) error {
+		return notRead(slices.Concat(start, p), format, args...)
+	}
+	for _, s := range p {
 		switch n.kind {
 		case nodeBranch:
-			if s.kind != segField {
-				return cursor{}, nil, fmt.Errorf("%w %s: %s is a struct; select one of its fields", ErrKey, p, c.path.orRoot())
+			m, ok := n.memberAt(s)
+			switch {
+			case !ok && s.kind != segField:
+				return cursor{}, nil, fault("%s is a struct; select one of its fields", c.path)
+			case !ok:
+				return cursor{}, nil, fault("%s has no field %s", c.path, fieldName(c.path.field(s.name)))
+			case m.kind == memberRemain:
+				m = n.remainMember(c.sensitive()) // in a pattern, [*] is any key it collects
 			}
-			f := n.byKey[s.name]
-			if f == nil {
-				return cursor{}, nil, fmt.Errorf("%w %s: %s has no field %q", ErrKey, p, c.path.orRoot(), s.name)
+			next, err := m.node(metadataOf)
+			if err != nil {
+				return cursor{}, nil, err
 			}
-			c, n = c.intoField(f), f.node
+			c, n = m.cursor(c), next
 		case nodeMap:
 			if s.kind != segKey && s.kind != segAny {
-				return cursor{}, nil, fmt.Errorf("%w %s: %s is a map; select an entry with a quoted key", ErrKey, p, c.path.orRoot())
+				return cursor{}, nil, fault("%s is a map; select an entry with a quoted key", c.path)
 			}
 			c, n = c.intoEntry(s, n.typ.Elem()), n.elem
 		case nodeList:
 			if s.kind != segIndex && s.kind != segAny {
-				return cursor{}, nil, fmt.Errorf("%w %s: %s is a list; select an element by index", ErrKey, p, c.path.orRoot())
+				return cursor{}, nil, fault("%s is a list; select an element by index", c.path)
 			}
 			if s.kind == segIndex && n.typ.Kind() == reflect.Array && s.index >= n.typ.Len() {
-				return cursor{}, nil, fmt.Errorf("%w %s: %s has %d elements", ErrKey, p, c.path.orRoot(), n.typ.Len())
+				return cursor{}, nil, fault("%s has %s elements", c.path, elementCount(n.typ.Len()))
 			}
 			c, n = c.intoEntry(s, n.typ.Elem()), n.elem
 		case nodeDynamic:
@@ -581,7 +791,7 @@ func (n *schemaNode) walkTo(c cursor, p keyPath) (cursor, *schemaNode, error) {
 			if ownsBeneath(n.typ) {
 				return c, n, nil // decoded whole; its field owns what lies beneath it
 			}
-			return cursor{}, nil, fmt.Errorf("%w %s: %s is a %s, which has no keys beneath it", ErrKey, p, p[:i].orRoot(), gowalker.TypeText(n.typ))
+			return cursor{}, nil, fault("%s is a %s, which has no keys beneath it", c.path, typeText{n.typ})
 		}
 	}
 	return c, n, nil
@@ -596,11 +806,12 @@ func ownsBeneath(t reflect.Type) bool {
 	return t.Kind() == reflect.Map || reflect.PointerTo(t).Implements(mapstructureUnmarshaler)
 }
 
-// canHoldKeys reports whether a value decoded whole could still have
-// structure beneath it: a struct, a map or a list.
+// canHoldKeys reports whether a value of type t could have structure
+// beneath it: a struct, a map, a list, or an interface, which can hold any
+// of them.
 func canHoldKeys(t reflect.Type) bool {
 	switch t.Kind() {
-	case reflect.Struct, reflect.Map, reflect.Slice, reflect.Array:
+	case reflect.Struct, reflect.Map, reflect.Slice, reflect.Array, reflect.Interface:
 		return true
 	}
 	return false

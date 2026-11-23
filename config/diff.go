@@ -34,6 +34,12 @@ type Value struct {
 // Change is one key whose value differs between two configs.
 type Change struct {
 	// Key is the runtime key (db.host, items[0].port, named["primary"].port).
+	// One kind of change holds a pattern: section[*], the keys a sensitive
+	// koanf:",remain" field collects, compared whole. It is the remain
+	// field's own Field.Path; ParseKey reads it, and it is Within section,
+	// but CanonicalKey refuses it as not concrete, since it names no one
+	// key. A remain field that is not sensitive has a change per key it
+	// collects (plugins.foo), with no pattern.
 	Key string `json:"key"`
 	// Structural reports a change to a struct, map, list or interface itself
 	// rather than to a value inside it: it appeared, disappeared, became nil
@@ -72,6 +78,13 @@ type Change struct {
 //     holds, which may themselves be secrets, are never listed.
 //   - A pointer, map or slice that leads back to one it lies within, on
 //     either side, is compared whole there, so a cycle ends.
+//   - A key a koanf:",remain" field collects is a key of its struct
+//     (plugins.foo), after the struct's fields and by name, whose Field is
+//     the remain field. A sensitive remain field is compared whole, as a
+//     sensitive map is: one change at section[*], redacted, there while the
+//     field collects a key, so an empty one and a nil one are alike. Its
+//     Key is the one that holds a pattern, so [CanonicalKey] refuses it as
+//     not concrete; ParseKey reads it.
 //
 // A T that is not a struct, a struct whose keys cannot be told apart, an
 // interface holding such a struct, and a non-nil func, channel or unsafe
@@ -424,31 +437,20 @@ func (w *comparer) container(n *schemaNode, f frame, sa, sb side) {
 	}
 	switch n.kind {
 	case nodeBranch:
-		for i, fld := range n.fields {
-			w.push(segment{kind: segField, name: fld.key}, ordSeg{n: i})
-			w.node(fld.node, f.field(fld), fieldOf(sa, fld), fieldOf(sb, fld))
+		for m, vals := range n.members(sa, sb, n.remainWhole(f.sensitive())) {
+			mn, err := m.node(schemaOf)
+			if err != nil {
+				w.fail(err)
+				return
+			}
+			w.push(m.seg, m.ord)
+			w.node(mn, m.frame(f), vals[0], vals[1])
 			w.pop()
 		}
 	case nodeMap:
-		ma, mb := readMap(n.keys, sa), readMap(n.keys, sb)
-		i, j := 0, 0
-		for i < len(ma.keys) || j < len(mb.keys) {
-			var a, b reflect.Value
-			var name string
-			switch {
-			case j >= len(mb.keys) || i < len(ma.keys) && ma.keys[i].name < mb.keys[j].name:
-				name, a = ma.keys[i].name, ma.at(i)
-				i++
-			case i >= len(ma.keys) || ma.keys[i].name > mb.keys[j].name:
-				name, b = mb.keys[j].name, mb.at(j)
-				j++
-			default:
-				name, a, b = ma.keys[i].name, ma.at(i), mb.at(j)
-				i++
-				j++
-			}
+		for name, vals := range joinEntries(readMap(n.keys, sa), readMap(n.keys, sb)) {
 			w.push(entrySegment(name, f.beneathInterface), ordSeg{s: name})
-			w.node(n.elem, f.entry(name, n.typ.Elem()), a, b)
+			w.node(n.elem, f.entry(name, n.typ.Elem()), vals[0], vals[1])
 			w.pop()
 		}
 	case nodeList:
@@ -580,11 +582,15 @@ func locate(root *schemaNode, v reflect.Value, p keyPath) (side, *schemaNode, fr
 		}
 		switch n.kind {
 		case nodeBranch:
-			fld := n.byKey[seg.name]
-			if fld == nil {
+			m, ok := n.memberAt(seg)
+			if !ok {
 				return side{}, nil, f
 			}
-			s, n, f = resolve(fieldOf(s, fld)), fld.node, f.field(fld)
+			mn, err := m.node(schemaOf)
+			if err != nil {
+				return side{}, nil, f
+			}
+			s, n, f = resolve(m.in(s)), mn, m.frame(f)
 		case nodeMap:
 			s, n, f = resolve(entryOfSide(n.keys, s, seg.name)), n.elem, f.entry(seg.name, n.typ.Elem())
 		case nodeList:

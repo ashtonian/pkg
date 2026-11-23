@@ -375,7 +375,7 @@ func (n *originNode) kept() Source {
 // inputKey is the key an input at raw path — its encodePath encoding —
 // sets: through a list element a key edit set by index, and cut at any other
 // list or a value decoded whole, which the input sets as part of it. It is
-// false for a path no field reads.
+// false for a path no field or remain field reads.
 func inputKey(root *schemaNode, raw string) (keyPath, bool) {
 	var p keyPath
 	n := root
@@ -384,11 +384,15 @@ func inputKey(root *schemaNode, raw string) (keyPath, bool) {
 		name, rest = nextSegment(rest)
 		switch n.kind {
 		case nodeBranch:
-			f := n.byKey[name]
-			if f == nil {
+			m, ok := n.memberAt(memberSegment(name))
+			if !ok {
 				return nil, false
 			}
-			p, n = p.field(f.key), f.node
+			next, err := m.node(schemaOf)
+			if err != nil {
+				return nil, false
+			}
+			p, n = append(p, m.seg), next
 		case nodeMap:
 			p, n = p.key(name), n.elem
 		case nodeList:

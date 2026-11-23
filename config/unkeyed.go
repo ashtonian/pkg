@@ -188,16 +188,20 @@ func (u unkeyedFields) setAt(v reflect.Value, n *schemaNode, p keyPath) {
 		return
 	}
 	switch seg := p[0]; {
-	case seg.kind == segField && n.kind == nodeBranch:
-		f := n.byKey[seg.name]
-		if f == nil {
+	case n.kind == nodeBranch:
+		m, ok := n.memberAt(seg)
+		if !ok {
 			return
 		}
-		fv, err := v.FieldByIndexErr(f.index)
+		slot, via, ok := m.slot(v)
+		if !ok {
+			return
+		}
+		sn, err := m.slotNode(schemaOf)
 		if err != nil {
 			return
 		}
-		u.setAt(fv, f.node, p[1:])
+		u.setAt(slot, sn, append(via, p[1:]...))
 	case seg.kind == segKey && n.kind == nodeMap && v.Kind() == reflect.Map:
 		k, ok := entryKey(v, seg.name)
 		if !ok {

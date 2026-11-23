@@ -992,17 +992,18 @@ func keysLogged(ctx context.Context, logger *slog.Logger, keys []string) []slog.
 // key it reads whose field is sensitive by its field's pattern, every map
 // key and index in it as [*], since a sensitive map's keys may themselves
 // be secrets; a key it does not read as its own errors name it, which
-// withhold what lies beneath a sensitive map or list.
+// withhold what lies beneath a sensitive map, list or interface.
 func shownKey[T any](key string) string {
-	if _, err := config.CanonicalKey[T](key); err != nil {
+	canonical, err := config.CanonicalKey[T](key)
+	if err != nil {
 		if ke, ok := errors.AsType[*config.KeyError](err); ok {
 			return ke.Key
 		}
 		return withheld
 	}
-	f, err := config.FieldFor[T](key)
+	f, err := config.FieldFor[T](canonical)
 	switch {
-	case err != nil: // a key a remain field collects names no field
+	case err != nil:
 		return withheld
 	case f.Sensitive:
 		return f.Path

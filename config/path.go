@@ -140,6 +140,10 @@ func (p keyPath) raw() []string {
 	return out
 }
 
+func (p keyPath) child(s segment) keyPath {
+	return append(slices.Clip(p), s)
+}
+
 func (p keyPath) any() keyPath {
 	return append(slices.Clip(p), segment{kind: segAny})
 }

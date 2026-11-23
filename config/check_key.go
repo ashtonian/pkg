@@ -14,34 +14,6 @@ import (
 	"github.com/ashtonian/pkg/config/internal/deepcopy"
 )
 
-// KeyError distinguishes an unknown key (Unknown, ErrKey) from a known key
-// with an invalid value (ErrValidation). Error contains no input value;
-// Err preserves the decoder or validator's cause for trusted diagnostics.
-type KeyError struct {
-	Key     string `json:"key"`
-	Unknown bool   `json:"unknown,omitempty"`
-	Err     error  `json:"-"`
-	// suggestion is the key an unknown one most likely misspells.
-	suggestion string
-}
-
-func (e *KeyError) Error() string {
-	var problem keyProblem
-	switch {
-	case e.Unknown:
-		return fmt.Sprintf("config: unknown key %s", e.Key)
-	case errors.As(e.Err, &problem):
-		return fmt.Sprintf("config: key %s: %s", e.Key, problem)
-	}
-	return fmt.Sprintf("config: invalid value for key %s", e.Key)
-}
-
-func (e *KeyError) Unwrap() error { return e.Err }
-
-func (e *KeyError) Is(target error) bool {
-	return target == ErrKey && e.Unknown || target == ErrValidation && !e.Unknown
-}
-
 // CheckKey checks one concrete key with all other fields at their declared
 // and WithDefaults defaults. It decodes with Load's hooks and weak typing,
 // then runs its validator and T.Validate. Unknown keys — the key, or a key
@@ -84,7 +56,7 @@ func DecodeKey[T any](ctx context.Context, key string, value any, opts ...Option
 	if err != nil {
 		return nil, err
 	}
-	result, refused, err := c.apply(ctx, c.defaultsTree(), c.unkeyed, map[string]any{key: value})
+	result, edits, refused, err := c.apply(ctx, c.defaultsTree(), c.unkeyed, map[string]any{key: value})
 	switch {
 	case err != nil:
 		return nil, err
@@ -97,16 +69,17 @@ func DecodeKey[T any](ctx context.Context, key string, value any, opts ...Option
 		}
 		return nil, joinKeyErrors(keys)
 	}
-	return nil, &KeyError{Key: refused.Keys[0], Err: refused.Err}
+	return nil, newKeyError(c.schema, edits[0].path, false, refused.Err)
 }
 
 // CanonicalKey returns key spelled the one way this package prints it, for
 // T: each field by its key, not an alias tag's former name or another letter
 // case; a map entry quoted, by the text of the key a load reads it as
 // (ports["0x50"] is ports["80"], timeouts["60s"] is timeouts["1m0s"]); and a
-// key beneath an interface or remain field as a field wherever it can be
-// one. A settings store keys its rows by it, so two spellings of one key
-// are one row. It reads an entry's key as a load with no options does: a
+// key beneath an interface, or one a remain field collects, as a field
+// wherever it can be one, what lies beneath the latter spelled by the
+// field's element type. FieldFor resolves every key it returns. A settings
+// store keys its rows by it, so two spellings of one key are one row. It reads an entry's key as a load with no options does: a
 // WithDecodeHook that reads a key type from other text is not consulted, so
 // a key naming an entry by such text is refused. A key that does not parse, is not concrete or names nothing
 // config reads returns an Unknown *KeyError matching ErrKey. It reads no
@@ -181,7 +154,7 @@ func DecodeEdits[T any](ctx context.Context, baseline *T, edits map[string]any, 
 			return nil, err
 		}
 	}
-	result, refused, err := c.apply(ctx, base, unkeyed, edits)
+	result, _, refused, err := c.apply(ctx, base, unkeyed, edits)
 	switch {
 	case err != nil:
 		return nil, err
@@ -275,31 +248,32 @@ func newKeyChecker(t reflect.Type, o *options) (*keyChecker, error) {
 // apply sets entries over base, which it changes, and decodes and validates
 // the result, holding the koanf:"-" fields of below, base's, and of the
 // typed sections entries set. A refused key, or a candidate that does not
-// decode or validate, is the *EditsError; err is why ctx ended, or a
+// decode or validate, is the *EditsError; edits are the entries that
+// applied, those the candidate was decoded from. err is why ctx ended, or a
 // validate tag the validator cannot apply (ErrSchema), which is the
 // declaration's fault and no key's.
-func (c *keyChecker) apply(ctx context.Context, base map[string]any, below unkeyedSections, entries map[string]any) (any, *EditsError, error) {
+func (c *keyChecker) apply(ctx context.Context, base map[string]any, below unkeyedSections, entries map[string]any) (any, []edit, *EditsError, error) {
 	edits, refused := prepareEdits(c.schema, entries)
 	for _, e := range edits {
 		for _, u := range e.unknown {
 			refused = append(refused, unknownKeyError(u))
 		}
 	}
-	tree, unset := setEdits(func() map[string]any { return base }, edits)
+	tree, unset := setEdits(c.schema, func() map[string]any { return base }, edits)
 	if refused = append(refused, unset...); len(refused) > 0 {
-		return nil, &EditsError{Refused: keyErrorValues(refused)}, nil
+		return nil, nil, &EditsError{Refused: keyErrorValues(refused)}, nil
 	}
 	unkeyed := below.over(tree, editsUnkeyed(edits)) // before mergeTrees settles tree's whole maps
 	mergeTrees(tree, base)
 	result, unknown, err := c.decode(ctx, base, unkeyed)
 	if ctxErr := ended(ctx); ctxErr != nil && (err != nil || unknown != nil) {
-		return nil, nil, ctxErr
+		return nil, nil, nil, ctxErr
 	}
 	if errors.Is(err, ErrSchema) {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 	if err == nil && unknown == nil {
-		return result, nil, nil
+		return result, edits, nil, nil
 	}
 	out := &EditsError{}
 	if unknown != nil {
@@ -315,7 +289,7 @@ func (c *keyChecker) apply(ctx context.Context, base map[string]any, below unkey
 		slices.Sort(out.Keys)
 		out.Keys, out.Err = slices.Compact(out.Keys), err
 	}
-	return nil, out, nil
+	return nil, edits, out, nil
 }
 
 func keyErrorValues(errs []*KeyError) []KeyError {

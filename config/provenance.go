@@ -541,12 +541,22 @@ func annotationLabeler(root *schemaNode, tree map[string]any, annotations map[st
 	}}, nil
 }
 
-// Annotations follow the same field spelling and aliases as provider data.
+// Annotations follow the same field spelling and aliases as provider data,
+// a key a remain field collects written as its element type reads it.
 func annotationPath(root *schemaNode, p keyPath) keyPath {
 	n := root
 	for i := range p {
 		switch n.kind {
 		case nodeBranch:
+			if n.collects(p[i]) {
+				m, _ := n.memberAt(p[i])
+				elem, err := m.node(metadataOf)
+				if err != nil {
+					return p
+				}
+				p[i], n = m.seg, elem
+				continue
+			}
 			if p[i].kind != segField {
 				return p
 			}
@@ -670,17 +680,11 @@ func (r *originRecorder) origins(cfg reflect.Value) (map[string]Origin, error) {
 			return // its values have rows of their own
 		}
 		key := d.path.String()
-		o, found := r.tree.originOf(d.path)
-		if !found {
-			at, _, _ := locate(r.schema, decoded, d.path)
-			if at.present && !at.isNil && at.v.IsValid() && !at.v.IsZero() {
-				o = Origin{Input: Source{Kind: SourceUnknown}} // a decoder made it
-			} else {
-				o = Origin{Input: Source{Kind: SourceZero}, Exact: true}
-			}
-		}
-		if o.Exact && len(r.rebuilt) > 0 && r.rebuiltAt(d.path) {
-			o.Exact = false
+		var o Origin
+		if last := len(d.path) - 1; last >= 0 && d.path[last].kind == segAny {
+			o = r.collectedOrigin(cfg, decoded, d.path[:last])
+		} else {
+			o = r.originAt(decoded, d.path)
 		}
 		for _, st := range r.stages {
 			if st.keys[key] || slices.ContainsFunc(st.under, func(p keyPath) bool { return len(d.path) >= len(p) && slices.Equal(d.path[:len(p)], p) }) {
@@ -695,6 +699,47 @@ func (r *originRecorder) origins(cfg reflect.Value) (map[string]Origin, error) {
 	return out, nil
 }
 
+// originAt is the input behind key p of the final config; decoded is the
+// config as decoding left it, which tells a key no source set apart.
+func (r *originRecorder) originAt(decoded reflect.Value, p keyPath) Origin {
+	o, found := r.tree.originOf(p)
+	if !found {
+		at, _, _ := locate(r.schema, decoded, p)
+		if at.present && !at.isNil && at.v.IsValid() && !at.v.IsZero() {
+			o = Origin{Input: Source{Kind: SourceUnknown}} // a decoder made it
+		} else {
+			o = Origin{Input: Source{Kind: SourceZero}, Exact: true}
+		}
+	}
+	if o.Exact && len(r.rebuilt) > 0 && r.rebuiltAt(p) {
+		o.Exact = false
+	}
+	return o
+}
+
+// collectedOrigin is the input behind the keys a sensitive remain field of
+// the section at key p collects in cfg, the final config, which Diff
+// compares whole (section[*]): the input every key came from, or mixed, and
+// exact when each key's is.
+func (r *originRecorder) collectedOrigin(cfg, decoded reflect.Value, p keyPath) Origin {
+	s, n, _ := locate(r.schema, cfg, p)
+	if n == nil || n.kind != nodeBranch || n.remain == nil {
+		return Origin{Input: Source{Kind: SourceUnknown}}
+	}
+	var out Origin
+	for i, k := range n.collected(s).keys {
+		o := r.originAt(decoded, p.member(k.name))
+		switch {
+		case i == 0:
+			out = Origin{Input: o.Input, Exact: o.Exact}
+		case o.Input != out.Input:
+			out.Input = Source{Kind: SourceMixed}
+		}
+		out.Exact = out.Exact && o.Exact
+	}
+	return out
+}
+
 // rebuiltAt reports whether a custom decode hook rebuilt a map or list on
 // the way to key p: for its declared type, or one it lies within.
 func (r *originRecorder) rebuiltAt(p keyPath) bool {
@@ -705,11 +750,20 @@ func (r *originRecorder) rebuiltAt(p keyPath) bool {
 	for _, s := range p {
 		switch n.kind {
 		case nodeBranch:
-			f := n.byKey[s.name]
-			if f == nil {
+			m, ok := n.memberAt(s)
+			if !ok {
 				return false
 			}
-			n = f.node
+			mn, err := m.slotNode(schemaOf)
+			if err != nil {
+				return false
+			}
+			if m.kind != memberField && r.rebuilt[mn.typ] {
+				return true // the remain field's map
+			}
+			if n, err = m.node(schemaOf); err != nil {
+				return false
+			}
 		case nodeMap, nodeList:
 			n = n.elem
 		default:

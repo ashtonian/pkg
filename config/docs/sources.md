@@ -42,7 +42,7 @@ A key that two sources set takes the higher one's value, so the lower one's inpu
 log_level (file /etc/app/config.yaml, kept by environment APP_LOG_LEVEL)
 ```
 
-Overriding a file from the environment or a flag is a legitimate pattern, so shadowed inputs never fail a load without a handler; a load that looks for them logs them at debug level. Two layerings are designed overrides and are never listed: defaults (`default` tags, `SetDefaults`, `WithDefaults`) beneath any source, and the precedence inside the environment layer — a narrower `WithEnvPrefixes` prefix over a broader one, a prefixed name over an `env` tag's — which is one source. Entries name keys and sources, never values; inside a sensitive map or list the key stops at the container and an environment variable is named by its prefix alone. Input no field reads is reported by [`WithUnknownKeys`](schema.md) instead.
+Overriding a file from the environment or a flag is a legitimate pattern, so shadowed inputs never fail a load without a handler; a load that looks for them logs them at debug level. Two layerings are designed overrides and are never listed: defaults (`default` tags, `SetDefaults`, `WithDefaults`) beneath any source, and the precedence inside the environment layer — a narrower `WithEnvPrefixes` prefix over a broader one, a prefixed name over an `env` tag's — which is one source. Entries name keys and sources, never values; inside a sensitive map, list or interface the key stops at the container and an environment variable is named by its prefix alone. Input no field reads is reported by [`WithUnknownKeys`](schema.md) instead.
 
 **A key meant to change while the process runs must be set only by sources that change.** A reloader reads every source again, but the process environment and typed CLI flags (kongprovider copies them when the reloader is built) stay what they were at startup, and both outrank files. A variable left behind after a setting moved into a file, or a flag on the command line, pins its key for the life of the process: the file's edit is read and ignored. `ReloadResult.Shadowed` and the warning name the key, the file and the variable or flag that kept it. A plain `Load` looks for shadowed inputs only for a `WithShadowedInputs` handler; `NewReloaderFunc` has no view of its loader's sources and reports none.
 
@@ -125,7 +125,10 @@ errors and cancellation return directly, among them a `validate` tag the
 default validator cannot apply to its field (`dive` on an `int`), which is
 `ErrSchema` with no `*KeyError`. No partial config is returned on
 failure. Error messages contain the key, not the value; wrapped causes are
-for trusted diagnostics.
+for trusted diagnostics. A key within a sensitive map, list, interface or
+remain field is named only as far as its enclosing field, in `Key`, the
+message and `Err`'s own text alike, and a reason that would name what lies
+inside is not shown; a key that does not parse is redacted (`RedactText`).
 
 These calls honor `WithDefaults`, `WithDecodeHook`, `WithValidator` and
 `WithSkipValidation`. They read no provider, file or environment and run no
@@ -163,8 +166,10 @@ prints it: each field by its key, never an alias tag's former name or
 another letter case (`MAIN.Port` → `primary.port`); a map entry quoted, by
 the text of the key a load reads it as (`ports["0x50"]` → `ports["80"]`,
 `timeouts["60s"]` → `timeouts["1m0s"]`; see [map entries](schema.md#map-entries));
-and a key beneath an interface or remain field as a field wherever it can be one
-(`extra["x"]` → `extra.x`). It refuses what `CheckKey` refuses as unknown,
+and a key beneath an interface, or one a remain field collects, as a field
+wherever it can be one (`extra["x"]` → `extra.x`); what lies beneath a key a
+remain field collects is spelled by the field's element type, as beneath any
+map entry. It refuses what `CheckKey` refuses as unknown,
 with an `Unknown` `*KeyError`, and reads no value and no `validate` tag: a
 key's spelling does not depend on validation. A store that keys its rows by
 it holds one row per key, whatever spelling a client sent.
