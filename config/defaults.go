@@ -310,7 +310,8 @@ func (d *defaultsDiff) tree(n *schemaNode, at keyPath, a, b reflect.Value) (any,
 		if b.IsNil() {
 			return nil, !absent(a) && !a.IsNil()
 		}
-		if kt := n.typ.Key(); kt.Kind() != reflect.String && !keysAsText(kt) {
+		kt := n.typ.Key()
+		if kt.Kind() != reflect.String && !keysAsText(kt) {
 			return d.input(n, at, b), true // carried with its own keys, as a source carries it
 		}
 		if !absent(a) {
@@ -385,7 +386,8 @@ func (d *defaultsDiff) input(n *schemaNode, at keyPath, v reflect.Value) any {
 		}
 		return out
 	case v.Kind() == reflect.Map && n.elem != nil:
-		if m, ok := textKeyedMap(v, func(k string, e reflect.Value) any { return d.input(n.elem, at.key(k), e) }); ok {
+		m, ok := textKeyedMap(v, func(k string, e reflect.Value) any { return d.input(n.elem, at.key(k), e) })
+		if ok {
 			return m
 		}
 		out := reflect.MakeMapWithSize(reflect.MapOf(v.Type().Key(), reflect.TypeFor[any]()), v.Len())

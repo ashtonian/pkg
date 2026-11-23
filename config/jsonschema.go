@@ -114,7 +114,8 @@ type defKey struct {
 }
 
 func newDefKey(n *schemaNode, c cursor) defKey {
-	return defKey{node: n, reload: c.owner.Reload, tagged: c.tagged, covered: c.covered}
+	k := defKey{node: n, reload: c.owner.Reload, tagged: c.tagged, covered: c.covered}
+	return k
 }
 
 // defName is the $defs name of k: its node's Go type's name with every
@@ -122,8 +123,9 @@ func newDefKey(n *schemaNode, c cursor) defKey {
 // JSON Pointer token and a URI fragment as written, and numbered when
 // another type, or the same one under another policy, already took it.
 func (g *schemaGen) defName(k defKey) string {
-	if name, ok := g.names[k]; ok {
-		return name
+	known, ok := g.names[k]
+	if ok {
+		return known
 	}
 	n := k.node
 	base := strings.Map(func(r rune) rune {
@@ -282,7 +284,8 @@ func (g *schemaGen) node(n *schemaNode, c cursor, val reflect.Value, env envName
 	}
 	k := newDefKey(n, c)
 	name := g.defName(k)
-	if _, ok := g.defs[name]; !ok && !g.defining[k] {
+	_, defined := g.defs[name]
+	if !defined && !g.defining[k] {
 		g.defining[k] = true
 		g.defs[name] = g.body(n, c, reflect.Value{}, envNames{})
 		delete(g.defining, k)

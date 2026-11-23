@@ -551,7 +551,8 @@ func TestSetDefaults_SelfDecodingMapIsOneValue(t *testing.T) {
 	assert.Equal(t, selfDecodingMap{"a": "1"}, got.Labels)
 
 	above, err := NewMapProvider(func(context.Context) (map[string]any, error) {
-		return map[string]any{"labels": map[string]any{"b": "2"}}, nil
+		entries := map[string]any{"labels": map[string]any{"b": "2"}}
+		return entries, nil
 	}, "")
 	require.NoError(t, err)
 	got, err = Load[selfDecodingMapCfg](t.Context(), WithBaseProvider(above, nil))

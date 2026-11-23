@@ -387,9 +387,18 @@ func TestUnknownKeys_NamesParseBackToTheirPlace(t *testing.T) {
 		source     func(entry map[string]any) mapSource
 	}{
 		{"at the root", "", func(e map[string]any) mapSource { return mapSource(e) }},
-		{"under a struct", "server", func(e map[string]any) mapSource { return mapSource{"server": e} }},
-		{"under a map entry", `named["x.y"]`, func(e map[string]any) mapSource { return mapSource{"named": map[string]any{"x.y": e}} }},
-		{"under a list element", "items[0]", func(e map[string]any) mapSource { return mapSource{"items": []any{e}} }},
+		{"under a struct", "server", func(e map[string]any) mapSource {
+			source := mapSource{"server": e}
+			return source
+		}},
+		{"under a map entry", `named["x.y"]`, func(e map[string]any) mapSource {
+			source := mapSource{"named": map[string]any{"x.y": e}}
+			return source
+		}},
+		{"under a list element", "items[0]", func(e map[string]any) mapSource {
+			source := mapSource{"items": []any{e}}
+			return source
+		}},
 	} {
 		var parent Key
 		if at.key != "" {
@@ -434,9 +443,9 @@ func TestKey_DollarNamesTheRootAndNoField(t *testing.T) {
 	}
 	for _, key := range []string{"$", "server.$", "$.port"} {
 		_, err := ParseKey(key)
-		assert.ErrorIs(t, err, ErrKey, key)
+		require.ErrorIs(t, err, ErrKey, key)
 		_, err = CanonicalKey[cfg](key)
-		assert.ErrorIs(t, err, ErrKey, key)
+		require.ErrorIs(t, err, ErrKey, key)
 	}
 	_, err := Load[dollarField](t.Context())
 	require.ErrorIs(t, err, ErrSchema)
@@ -700,7 +709,8 @@ func TestRemain_DestinationDecodingCannotFillIsRefused(t *testing.T) {
 	read := 0
 	src, err := NewMapProvider(func(context.Context) (map[string]any, error) {
 		read++
-		return map[string]any{"name": "x", "other": 1}, nil
+		values := map[string]any{"name": "x", "other": 1}
+		return values, nil
 	}, "")
 	require.NoError(t, err)
 	_, err = Load[privateRemainCfg](t.Context(), WithBaseProvider(src, nil))

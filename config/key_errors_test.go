@@ -41,15 +41,19 @@ func ownTexts(err error) []string {
 		if e == nil {
 			return
 		}
-		if _, ok := e.(validator.ValidationErrors); ok {
+		_, fieldErrors := e.(validator.ValidationErrors) //nolint:errorlint // visits every node of the tree; errors.As stops at the first match
+		if fieldErrors {
 			return
 		}
 		out = append(out, e.Error(), fmt.Sprintf("%+v", e))
-		switch u := e.(type) {
-		case interface{ Unwrap() error }:
-			walk(u.Unwrap())
-		case interface{ Unwrap() []error }:
-			for _, x := range u.Unwrap() {
+		wrapped, ok := e.(interface{ Unwrap() error })
+		if ok {
+			walk(wrapped.Unwrap())
+			return
+		}
+		joined, ok := e.(interface{ Unwrap() []error })
+		if ok {
+			for _, x := range joined.Unwrap() {
 				walk(x)
 			}
 		}
@@ -175,7 +179,7 @@ func TestKeyError_ErrNamesTheWholeKey(t *testing.T) {
 	var ke *KeyError
 	require.ErrorAs(t, err, &ke)
 	assert.Equal(t, "port.x", ke.Key)
-	assert.EqualError(t, ke.Err, "invalid configuration key port.x: port is a int, which has no keys beneath it")
+	require.EqualError(t, ke.Err, "invalid configuration key port.x: port is a int, which has no keys beneath it")
 
 	_, err = DecodeKey[withheldCfg](t.Context(), `plain["a"].prot`, 1)
 	require.ErrorAs(t, err, &ke)
@@ -228,7 +232,7 @@ func TestKeyError_APatternIsNotConcrete(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			err := tt.err()
 			require.ErrorIs(t, err, ErrKey)
-			assert.EqualError(t, err, tt.says)
+			require.EqualError(t, err, tt.says)
 			assert.NotContains(t, err.Error(), "prod")
 			var ke *KeyError
 			require.ErrorAs(t, err, &ke)
@@ -236,7 +240,7 @@ func TestKeyError_APatternIsNotConcrete(t *testing.T) {
 			assert.True(t, ke.Unknown)
 			assert.Contains(t, ke.Err.Error(), "key must be concrete")
 			var unknown *UnknownKeysError
-			assert.False(t, errors.As(err, &unknown), "not an unknown key")
+			assert.NotErrorAs(t, err, &unknown, "not an unknown key")
 		})
 	}
 
@@ -264,7 +268,10 @@ func TestKeyError_APatternIsNotConcrete(t *testing.T) {
 func TestKeyError_TextThatDoesNotParseIsNoKey(t *testing.T) {
 	ctx := t.Context()
 	stored := func(key string) func(context.Context) (map[string]any, error) {
-		return func(context.Context) (map[string]any, error) { return map[string]any{key: 1, "primary.port": 2}, nil }
+		return func(context.Context) (map[string]any, error) {
+			entries := map[string]any{key: 1, "primary.port": 2}
+			return entries, nil
+		}
 	}
 	var claimed []UnknownKey
 	claim := WithUnknownEntries(func(_ context.Context, unknown []UnknownKey) error {
@@ -314,13 +321,13 @@ func TestKeyError_TextThatDoesNotParseIsNoKey(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			err := tt.err()
 			require.ErrorIs(t, err, ErrKey)
-			assert.EqualError(t, err, tt.says)
+			require.EqualError(t, err, tt.says)
 			var ke *KeyError
 			require.ErrorAs(t, err, &ke)
 			assert.Equal(t, tt.key, ke.Key)
 			assert.True(t, ke.Unknown)
 			var unknown *UnknownKeysError
-			assert.False(t, errors.As(err, &unknown), "not an unknown key")
+			assert.NotErrorAs(t, err, &unknown, "not an unknown key")
 		})
 	}
 	assert.Empty(t, claimed, "no unknown key is claimed")
@@ -336,7 +343,7 @@ func TestKeyError_TextThatDoesNotParseIsNoKey(t *testing.T) {
 		assert.Equal(t, 2, got.Primary.Port, "the other entries load")
 		require.Len(t, rejected, 1)
 		assert.Equal(t, RedactText(key), rejected[0].Key)
-		assert.EqualError(t, &rejected[0], fmt.Sprintf("config: key %q does not parse", RedactText(key)))
+		require.EqualError(t, &rejected[0], fmt.Sprintf("config: key %q does not parse", RedactText(key)))
 		assert.NotContains(t, rejected[0].Err.Error(), "prodpass")
 		assert.ErrorIs(t, &rejected[0], ErrKey)
 	})

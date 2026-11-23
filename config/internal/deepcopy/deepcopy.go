@@ -62,7 +62,8 @@ func (c copier) copy(v reflect.Value) reflect.Value {
 		if v.Kind() == reflect.Slice {
 			k.len = v.Len()
 		}
-		if done, ok := c.made[k]; ok {
+		done, ok := c.made[k]
+		if ok {
 			return done
 		}
 		switch v.Kind() {

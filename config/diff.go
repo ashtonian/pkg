@@ -618,7 +618,8 @@ func entryOfSide(c *keyCodec, s side, name string) reflect.Value {
 // entryText is key k's text by codec c; one whose MarshalText fails is
 // named by how it prints, so the change is still reported.
 func entryText(c *keyCodec, k reflect.Value) string {
-	if text, err := c.text(k); err == nil {
+	text, err := c.text(k)
+	if err == nil {
 		return text
 	}
 	return fmt.Sprint(k.Interface())

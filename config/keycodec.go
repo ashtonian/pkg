@@ -57,15 +57,18 @@ type keyDecoder struct {
 	result reflect.Value
 }
 
-var keyCodecs sync.Map // reflect.Type → *keyCodec, nil for a type with none
+// keyCodecs holds each key type's codec: reflect.Type → *keyCodec, nil for
+// a type with none.
+var keyCodecs sync.Map //nolint:gochecknoglobals // process-wide cache of immutable per-type data, bounded by the program's types
 
 // keyCodecOf is t's codec, built once per type, or nil when a key of type t
 // has no text.
 func keyCodecOf(t reflect.Type) *keyCodec {
-	if c, ok := keyCodecs.Load(t); ok {
+	c, ok := keyCodecs.Load(t)
+	if ok {
 		return c.(*keyCodec)
 	}
-	c, _ := keyCodecs.LoadOrStore(t, newKeyCodec(t))
+	c, _ = keyCodecs.LoadOrStore(t, newKeyCodec(t))
 	return c.(*keyCodec)
 }
 
@@ -150,10 +153,12 @@ func (c *keyCodec) read(text string) (key reflect.Value, canonical string, err e
 	if c.plain {
 		return reflect.ValueOf(text).Convert(c.typ), text, nil
 	}
-	if key, err = c.decode(text); err != nil {
+	key, err = c.decode(text)
+	if err != nil {
 		return reflect.Value{}, "", err
 	}
-	if canonical, err = c.text(key); err != nil {
+	canonical, err = c.text(key)
+	if err != nil {
 		return reflect.Value{}, "", err
 	}
 	// Text that is its key's own has just been read back: decoding is
@@ -174,13 +179,15 @@ func (c *keyCodec) decode(text string) (reflect.Value, error) {
 	d, ok := c.decoders.Get().(*keyDecoder)
 	if !ok {
 		var err error
-		if d, err = c.newDecoder(); err != nil {
+		d, err = c.newDecoder()
+		if err != nil {
 			return reflect.Value{}, err
 		}
 	}
 	defer c.decoders.Put(d)
 	d.result.SetZero()
-	if err := d.dec.Decode(text); err != nil {
+	err := d.dec.Decode(text)
+	if err != nil {
 		return reflect.Value{}, err
 	}
 	key := reflect.New(c.typ).Elem()
@@ -198,14 +205,15 @@ func (c *keyCodec) newDecoder() (*keyDecoder, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &keyDecoder{dec: dec, result: result.Elem()}, nil
+	d := &keyDecoder{dec: dec, result: result.Elem()}
+	return d, nil
 }
 
 // builtinDecodeHook is the decode hooks every load runs, without a
 // caller's: how a key's text is read.
-var builtinDecodeHook = sync.OnceValue(func() mapstructure.DecodeHookFunc {
+func builtinDecodeHook() mapstructure.DecodeHookFunc {
 	return (&options{}).decodeHook(nil)
-})
+}
 
 // entryName is the text naming the entry of key k in a map a source, a
 // tree or a config holds: its codec's text. A key with no text, or whose
@@ -215,8 +223,10 @@ func entryName(k reflect.Value) string {
 	if k.Kind() == reflect.Interface && !k.IsNil() {
 		k = k.Elem()
 	}
-	if c := keyCodecOf(k.Type()); c != nil {
-		if text, err := c.text(k); err == nil {
+	c := keyCodecOf(k.Type())
+	if c != nil {
+		text, err := c.text(k)
+		if err == nil {
 			return text
 		}
 	}
@@ -241,8 +251,9 @@ func entryKey(m reflect.Value, text string) (reflect.Value, bool) {
 // entry of a map[string]any or wholeMap by its key as written, one of a
 // typed map by its key's codec.
 func mapEntry(v any, text string) (e any, ok bool) {
-	if m, isMap := mergedMap(v); isMap {
-		e, ok = m[text]
+	tree, isMap := mergedMap(v)
+	if isMap {
+		e, ok = tree[text]
 		return e, ok
 	}
 	m := reflect.ValueOf(v)
@@ -258,8 +269,9 @@ func mapEntry(v any, text string) (e any, ok bool) {
 
 // mapEntryNames is the text naming each of v's entries, v a map of a tree.
 func mapEntryNames(v any) []string {
-	if m, isMap := mergedMap(v); isMap {
-		return slices.Collect(maps.Keys(m))
+	tree, isMap := mergedMap(v)
+	if isMap {
+		return slices.Collect(maps.Keys(tree))
 	}
 	m := reflect.ValueOf(v)
 	if m.Kind() != reflect.Map {

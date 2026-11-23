@@ -81,8 +81,10 @@ func resolveSchemaPath(schema *schemaNode, p keyPath) (parent *schemaNode, alias
 		// The cursor starts at p[:i], so a fault names where it is.
 		_, next, err := n.walkTo(cursor{path: slices.Clip(p[:i])}, p[i:i+1])
 		if err != nil {
-			if f, ok := err.(*keyFault); ok && n.kind == nodeBranch && s.kind == segField {
-				if closest := closestField(n, s.name); closest != "" {
+			var f *keyFault
+			if errors.As(err, &f) && n.kind == nodeBranch && s.kind == segField {
+				closest := closestField(n, s.name)
+				if closest != "" {
 					f.suggestion = p[:i].field(closest)
 				}
 			}
@@ -109,7 +111,8 @@ func spellSegment(n *schemaNode, p keyPath, i int) (former string, err error) {
 	case n.kind == nodeBranch && s.kind == segField:
 		// A field spelled as a map key is left as written: walkTo refuses
 		// it.
-		if f, alias := n.lookup(s.name); f != nil {
+		f, alias := n.lookup(s.name)
+		if f != nil {
 			written := s.name
 			s.name = f.key
 			if alias {
@@ -129,7 +132,8 @@ func spellSegment(n *schemaNode, p keyPath, i int) (former string, err error) {
 // aliasNote is how a load reports a key written under a former field name:
 // the key as written and as it is now, or only the part diagnostics may show.
 func aliasNote(schema *schemaNode, written, now keyPath) string {
-	if safe := diagnosticPath(schema, now); len(safe) < len(now) {
+	safe := diagnosticPath(schema, now)
+	if len(safe) < len(now) {
 		return safe.String() + " (sensitive contents)"
 	}
 	return fmt.Sprintf("%s (now %s)", written, now)
@@ -184,7 +188,8 @@ func prepareEdits(schema *schemaNode, entries map[string]any) (edits []edit, ref
 func rewriteEdits(schema *schemaNode, edits []edit) (kept []edit, refused []*KeyError) {
 	kept = edits[:0]
 	for _, e := range edits {
-		if err := e.rewrite(schema); err != nil {
+		err := e.rewrite(schema)
+		if err != nil {
 			refused = append(refused, newKeyError(schema, e.path, false, err))
 			continue
 		}
@@ -207,14 +212,16 @@ func unsettable(schema *schemaNode, edits []edit) (kept []edit, refused []*KeyEr
 		}
 		if len(open) > 0 {
 			h := kept[open[len(open)-1]]
-			if next := e.path[len(h.path)]; !canSelect(h.value, next) {
+			next := e.path[len(h.path)]
+			if !canSelect(h.value, next) {
 				refused = append(refused, newKeyError(schema, e.path, false, refuse("%s is set to a value with no %s beneath it", h.path, shownText(selects(next)))))
 				continue
 			}
 		}
 		if len(kept) > 0 {
 			prev := kept[len(kept)-1].path
-			if c := commonPrefix(prev, e.path); c < len(prev) && c < len(e.path) && (prev[c].kind == segIndex) != (e.path[c].kind == segIndex) {
+			c := commonPrefix(prev, e.path)
+			if c < len(prev) && c < len(e.path) && (prev[c].kind == segIndex) != (e.path[c].kind == segIndex) {
 				refused = append(refused, newKeyError(schema, e.path, false, refuse("keys beneath %s select both its elements and its keys", e.path[:c])))
 				continue
 			}
@@ -267,16 +274,19 @@ func commonPrefix(a, b keyPath) int {
 func comparePaths(a, b keyPath) int {
 	for i := range min(len(a), len(b)) {
 		x, y := a[i], b[i]
-		if xi, yi := x.kind == segIndex, y.kind == segIndex; xi != yi {
+		xi, yi := x.kind == segIndex, y.kind == segIndex
+		if xi != yi {
 			if xi {
 				return 1
 			}
 			return -1
 		}
-		if c := cmp.Compare(x.index, y.index); c != 0 {
+		c := cmp.Compare(x.index, y.index)
+		if c != 0 {
 			return c
 		}
-		if c := strings.Compare(x.name, y.name); c != 0 {
+		c = strings.Compare(x.name, y.name)
+		if c != 0 {
 			return c
 		}
 	}
@@ -339,15 +349,16 @@ func (e *edit) rewrite(schema *schemaNode) error {
 	at := e.path[:len(e.path)-1]
 	value, _ := stringKeysIn(e.value)
 	if e.parent != nil {
-		switch {
-		case e.parent.kind == nodeBranch:
+		switch e.parent.kind {
+		case nodeBranch:
 			out := w.structMap(e.parent.typ, reflect.ValueOf(map[string]any{last.name: value}), at)
-			if m, ok := out.(map[string]any); ok {
+			m, ok := out.(map[string]any)
+			if ok {
 				value = m[last.name]
 			}
-		case e.parent.kind == nodeMap, e.parent.kind == nodeList:
+		case nodeMap, nodeList:
 			value = w.value(e.parent.typ.Elem(), value, e.path)
-		case e.parent.kind == nodeDynamic:
+		case nodeDynamic:
 			value = dynamicInput(value, e.path, w.failText)
 		}
 	}
@@ -380,7 +391,8 @@ func editsUnkeyed(edits []edit) []unkeyedFields {
 func setEdits(schema *schemaNode, below func() map[string]any, edits []edit) (tree map[string]any, refused []*KeyError) {
 	t := newEditTree(below)
 	for i := range edits {
-		if err := t.set(&edits[i]); err != nil {
+		err := t.set(&edits[i])
+		if err != nil {
 			refused = append(refused, newKeyError(schema, edits[i].path, false, err))
 		}
 	}
@@ -399,12 +411,13 @@ func newEditTree(below func() map[string]any) *editTree {
 		root map[string]any
 		read bool
 	)
-	return &editTree{tree: map[string]any{}, beneath: func() any {
+	t := &editTree{tree: map[string]any{}, beneath: func() any {
 		if !read {
 			root, read = below(), true
 		}
 		return root
 	}}
+	return t
 }
 
 // set sets e in the tree, which a refused edit leaves as it was.
@@ -440,7 +453,8 @@ func (e *edit) set(tree any, beneath func() any, i int) (any, error) {
 	case wholeMap:
 		m = t
 	default:
-		if typed := reflect.ValueOf(tree); typed.Kind() == reflect.Map {
+		typed := reflect.ValueOf(tree)
+		if typed.Kind() == reflect.Map {
 			return e.setEntry(typed, i)
 		}
 		return nil, refuse("keys beneath %s select both its elements and its keys", e.path[:i])
@@ -473,7 +487,8 @@ func (e *edit) setEntry(typed reflect.Value, i int) (any, error) {
 		return nil, refuse("%s is keyed by %s, which the entry's key does not decode into", e.path[:i], typeText{typed.Type().Key()})
 	}
 	var at any
-	if cur := typed.MapIndex(k); cur.IsValid() {
+	cur := typed.MapIndex(k)
+	if cur.IsValid() {
 		at = cur.Interface()
 	}
 	child, err := e.set(at, func() any { return nil }, i+1)
@@ -547,7 +562,8 @@ func (e *edit) setElement(tree any, beneath func() any, i int) (any, error) {
 // edit's map merges into it (see mergeValue): a typed map is replaced
 // whole, and holds nothing an edit reads.
 func entryOf(v any, key string) any {
-	if m, ok := v.(map[string]any); ok {
+	m, ok := v.(map[string]any)
+	if ok {
 		return m[key]
 	}
 	return nil

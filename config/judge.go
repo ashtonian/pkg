@@ -46,7 +46,8 @@ func (l *loader) judgeEntries(ctx context.Context, o *options, layers []*layer) 
 		return nil, err
 	}
 	for i, y := range layers[:j.from] {
-		if _, _, err := beneath.mergeLayer(y, verdicts[i].kept); err != nil {
+		_, _, err = beneath.mergeLayer(y, verdicts[i].kept)
+		if err != nil {
 			return nil, err
 		}
 	}
@@ -100,7 +101,8 @@ func newJudge(ctx context.Context, layers []*layer) *judge {
 // cannot apply (ErrSchema), which is the declaration's fault and no
 // entry's. It is nil when failed is the entries'.
 func fatal(ctx context.Context, failed error) error {
-	if err := abandoned(ctx); err != nil {
+	err := abandoned(ctx)
+	if err != nil {
 		return err
 	}
 	if errors.Is(failed, ErrSchema) {
@@ -146,7 +148,10 @@ type entryRef struct {
 }
 
 // beneathLayers is what set a key that no layer from `from` up set.
-var beneathLayers = entryRef{layer: -1, entry: -1}
+func beneathLayers() entryRef {
+	beneath := entryRef{layer: -1, entry: -1}
+	return beneath
+}
 
 type keyedCandidate struct {
 	key string
@@ -206,7 +211,8 @@ func (j *judge) run() (keep []int, withheld map[int]error, err error) {
 			if err != nil {
 				return nil, nil, err
 			}
-			if errs := j.blame(beside, set)[c]; errs != nil {
+			errs := j.blame(beside, set)[c]
+			if errs != nil {
 				withheld[c] = joinFailures(errs)
 				keep = without(keep, []int{c})
 				progress = true
@@ -232,7 +238,8 @@ func joinFailures(errs []error) error {
 // post-load hooks, which run once, in the load. err is why judging fails
 // the load (see fatal).
 func (j *judge) try(set []int) (verdict, error) {
-	if err := abandoned(j.ctx); err != nil {
+	err := abandoned(j.ctx)
+	if err != nil {
 		return verdict{}, err
 	}
 	s, err := j.loaderOver(j.base, j.unkeyed)
@@ -267,8 +274,9 @@ func (j *judge) try(set []int) (verdict, error) {
 	if err == nil {
 		err = j.checker.options.fieldRules(j.ctx, cfg.Interface())
 	}
-	if fatal := fatal(j.ctx, err); fatal != nil {
-		return verdict{}, fatal
+	fatalErr := fatal(j.ctx, err)
+	if fatalErr != nil {
+		return verdict{}, fatalErr
 	}
 	v.failures = placeFailures(cfg, err)
 	return v, nil
@@ -298,7 +306,8 @@ func placeFailures(cfg reflect.Value, err error) []failure {
 		}
 	case cfg.IsValid() && errors.As(err, &rules):
 		for _, fe := range rules {
-			if at := ruleKeys(cfg, fe); at != nil {
+			at := ruleKeys(cfg, fe)
+			if at != nil {
 				out = append(out, failure{at: at, err: ruleViolation(cfg, validator.ValidationErrors{fe})})
 			}
 		}
@@ -342,7 +351,8 @@ func (j *judge) blame(v verdict, set []int) map[int][]error {
 	}
 	out := map[int][]error{}
 	for ref, err := range v.unset {
-		if c, ok := j.candidate(ref); ok {
+		c, ok := j.candidate(ref)
+		if ok {
 			out[c] = append(out[c], err)
 		}
 	}
@@ -354,8 +364,9 @@ func (j *judge) blame(v verdict, set []int) map[int][]error {
 			}
 		}
 		for _, k := range f.at {
-			if c, ok := j.candidate(j.setter(k, in, v.unset)); ok {
-				blame(c)
+			last, ok := j.candidate(j.setter(k, in, v.unset))
+			if ok {
+				blame(last)
 			}
 			for _, c := range j.beneath(k) {
 				if in[c] && j.setter(j.entry(c).path, in, v.unset) == j.candidates[c] {
@@ -415,10 +426,12 @@ func (j *judge) setter(k keyPath, in []bool, unset map[entryRef]error) entryRef 
 				continue
 			}
 			ref := entryRef{layer: i, entry: e}
-			if _, refused := unset[ref]; refused {
+			_, refused := unset[ref]
+			if refused {
 				continue
 			}
-			if c, judged := j.candidate(ref); judged && !in[c] {
+			c, judged := j.candidate(ref)
+			if judged && !in[c] {
 				continue
 			}
 			s.apply(n, y.entries[e].value, ref)
@@ -456,11 +469,12 @@ type spineNode struct {
 
 // newSpine is the spine of k in base, which beneathLayers set.
 func newSpine(k keyPath, base map[string]any) *spine {
+	beneath := beneathLayers()
 	s := &spine{k: k, nodes: make([]spineNode, len(k)+1)}
 	for d := range s.nodes {
-		s.nodes[d].owner = beneathLayers
+		s.nodes[d].owner = beneath
 	}
-	s.place(0, base, beneathLayers)
+	s.place(0, base, beneath)
 	return s
 }
 
@@ -469,7 +483,7 @@ func (s *spine) apply(d int, u any, owner entryRef) {
 	for a := 1; a < d; a++ {
 		if !s.nodes[a].present { // made to hold what u sets beneath it
 			list := s.k[a].kind == segIndex
-			s.nodes[a] = spineNode{present: true, isMap: !list, isList: list, owner: beneathLayers}
+			s.nodes[a] = spineNode{present: true, isMap: !list, isList: list, owner: beneathLayers()}
 		}
 	}
 	for {
@@ -485,7 +499,8 @@ func (s *spine) apply(d int, u any, owner entryRef) {
 				return
 			}
 			var ok bool
-			if next, ok = u.(map[string]any)[s.k[d].name]; !ok {
+			next, ok = u.(map[string]any)[s.k[d].name]
+			if !ok {
 				return
 			}
 		case stepElements:
@@ -498,7 +513,8 @@ func (s *spine) apply(d int, u any, owner entryRef) {
 				return
 			}
 			var ok bool
-			if next, ok = u.(listEdit)[s.k[d].index]; !ok || s.k[d].kind != segIndex {
+			next, ok = u.(listEdit)[s.k[d].index]
+			if !ok || s.k[d].kind != segIndex {
 				return
 			}
 		}
@@ -536,7 +552,7 @@ func (s *spine) place(d int, u any, owner entryRef) {
 // was there.
 func (s *spine) gone(d int, owner entryRef) {
 	for ; d < len(s.nodes); d++ {
-		by := beneathLayers
+		by := beneathLayers()
 		if s.nodes[d].present {
 			by = owner
 		}
@@ -557,7 +573,8 @@ func isListValue(u any) bool {
 // merge holds whole, which it does not look inside. A listEdit placed where
 // no list was is a list of its elements alone.
 func childAt(u any, seg segment) (child any, ok, walkable bool) {
-	if m, isMap := mergedMap(u); isMap {
+	m, isMap := mergedMap(u)
+	if isMap {
 		child, ok = m[seg.name]
 		return child, ok && seg.kind != segIndex, true
 	}
@@ -592,7 +609,8 @@ func pathKey(p keyPath) string {
 // fields, for a set to merge over; it attributes nothing.
 func (j *judge) loaderOver(tree map[string]any, unkeyed unkeyedSections) (*loader, error) {
 	s := &loader{k: koanf.New("."), root: j.checker.root, schema: j.checker.schema, unkeyed: maps.Clone(unkeyed)}
-	if err := s.k.Load(confmap.Provider(tree, ""), nil, koanf.WithMergeFunc(koanfMerge)); err != nil {
+	err := s.k.Load(confmap.Provider(tree, ""), nil, koanf.WithMergeFunc(koanfMerge))
+	if err != nil {
 		return nil, fmt.Errorf("judging entries: %w: %w", ErrSource, err)
 	}
 	return s, nil

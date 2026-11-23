@@ -176,7 +176,8 @@ type editConfig struct {
 func (c *editConfig) Validate() error {
 	seen := map[int]string{}
 	for _, name := range slices.Sorted(maps.Keys(c.Addresses)) {
-		if other, ok := seen[c.Addresses[name].Port]; ok {
+		other, ok := seen[c.Addresses[name].Port]
+		if ok {
 			return fmt.Errorf("addresses %s and %s share a port", other, name)
 		}
 		seen[c.Addresses[name].Port] = name
@@ -188,21 +189,23 @@ func (c *editConfig) Validate() error {
 // nested maps a file decodes to.
 func editDefaults(typed bool) map[string]any {
 	if typed {
-		return map[string]any{
+		baseline := map[string]any{
 			"addresses": map[string]editServer{"first": {"a", 1}, "second": {"b", 2}},
 			"primary":   editServer{"p", 5},
 			"pool":      []editServer{{"x", 1}},
 			"route":     netip.MustParsePrefix("10.0.0.0/8"),
 			"extra":     map[string]any{"x": 0, "y": 2},
 		}
+		return baseline
 	}
-	return map[string]any{
+	baseline := map[string]any{
 		"addresses": map[string]any{"first": map[string]any{"host": "a", "port": 1}, "second": map[string]any{"host": "b", "port": 2}},
 		"primary":   map[string]any{"host": "p", "port": 5},
 		"pool":      []any{map[string]any{"host": "x", "port": 1}},
 		"route":     "10.0.0.0/8",
 		"extra":     map[string]any{"x": 0, "y": 2},
 	}
+	return baseline
 }
 
 // A key set over defaults leaves everything else as the defaults hold it,
@@ -394,7 +397,7 @@ func TestCanonicalKey(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, `ports["80"].port`, got)
 	_, err = CanonicalKey[integerKeyed](`ports["080"].port`)
-	assert.ErrorIs(t, err, ErrKey, "the decoder reads no integer from 080")
+	require.ErrorIs(t, err, ErrKey, "the decoder reads no integer from 080")
 	for _, key := range []string{"prot", "pool[*].host", "", "primary..port", `ports["x"]`} {
 		_, err := CanonicalKey[editConfig](key)
 		var ke *KeyError
@@ -423,7 +426,7 @@ func TestCanonicalKey_RefusesAFieldSpelledAsAMapKey(t *testing.T) {
 		var ke *KeyError
 		require.ErrorAs(t, err, &ke, key)
 		assert.True(t, ke.Unknown, key)
-		assert.ErrorIs(t, err, ErrKey, key)
+		require.ErrorIs(t, err, ErrKey, key)
 	}
 	got, err := CanonicalKey[cfg](`open["other"]`)
 	require.NoError(t, err)
@@ -454,7 +457,7 @@ func TestDecodeEdits_RefusedKeysParse(t *testing.T) {
 	keys := map[string]bool{}
 	for _, r := range edits.Refused {
 		_, err := ParseKey(r.Key)
-		assert.NoError(t, err, r.Key)
+		require.NoError(t, err, r.Key)
 		keys[r.Key] = true
 	}
 	assert.True(t, keys[`server["a.b"]`], "%v", keys)
@@ -503,7 +506,7 @@ func TestCanonicalKey_IsHowEveryOutputNamesAKeyBeneathAnInterface(t *testing.T) 
 	}
 	require.Equal(t, []string{`extra["a.b"]`, "extra.l[0].y", "extra.s.limits.k", "extra.x", `tags["t"].u`}, want)
 	config := func(n int) *beneathInterfaceConfig {
-		return &beneathInterfaceConfig{
+		cfg := &beneathInterfaceConfig{
 			Extra: map[string]any{
 				"x": n, "a.b": n,
 				"l": []any{map[string]any{"y": n}},
@@ -511,6 +514,7 @@ func TestCanonicalKey_IsHowEveryOutputNamesAKeyBeneathAnInterface(t *testing.T) 
 			},
 			Tags: map[string]any{"t": map[string]any{"u": n}},
 		}
+		return cfg
 	}
 
 	t.Run("printed", func(t *testing.T) {
@@ -569,13 +573,14 @@ func TestKeyChecks_ValidatorDeclarationErrorsAreSchemaErrors(t *testing.T) {
 	assertSchema := func(t *testing.T, err error) {
 		t.Helper()
 		require.ErrorIs(t, err, ErrSchema)
-		assert.NotErrorIs(t, err, ErrValidation)
+		require.NotErrorIs(t, err, ErrValidation)
 		_, isKey := errors.AsType[*KeyError](err)
 		_, isEdits := errors.AsType[*EditsError](err)
 		assert.False(t, isKey || isEdits, "%#v", err)
 	}
 	provider, err := NewMapProvider(func(context.Context) (map[string]any, error) {
-		return map[string]any{"count": 1}, nil
+		entries := map[string]any{"count": 1}
+		return entries, nil
 	}, "")
 	require.NoError(t, err)
 
@@ -591,7 +596,8 @@ func TestKeyChecks_ValidatorDeclarationErrorsAreSchemaErrors(t *testing.T) {
 	assertSchema(t, err)
 
 	brokenInside := WithDecodeHook(func(_, to reflect.Type, data any) (any, error) {
-		if m, ok := data.(map[string]any); ok && to.Kind() == reflect.Interface && m["broken"] != nil {
+		m, ok := data.(map[string]any)
+		if ok && to.Kind() == reflect.Interface && m["broken"] != nil {
 			return undivable{}, nil
 		}
 		return data, nil

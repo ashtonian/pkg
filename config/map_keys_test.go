@@ -305,7 +305,7 @@ func TestMapKeys_TextNamesOnlyKeysThatReadBack(t *testing.T) {
 		}
 		got, err := DecodeEdits[mkReadBackConfig](t.Context(), nil, edits)
 		if len(spellings) == 1 {
-			assert.NoError(t, err, want)
+			require.NoError(t, err, want)
 			continue
 		}
 		var ee *EditsError
@@ -317,9 +317,9 @@ func TestMapKeys_TextNamesOnlyKeysThatReadBack(t *testing.T) {
 
 	for _, key := range []string{`by_float["NaN"]`, `by_float["nan"]`, `by_tens["15"]`} {
 		_, err := CanonicalKey[mkReadBackConfig](key)
-		assert.ErrorIs(t, err, ErrKey, key)
+		require.ErrorIs(t, err, ErrKey, key)
 		_, err = DecodeKey[mkReadBackConfig](t.Context(), key, "v")
-		assert.ErrorIs(t, err, ErrKey, key)
+		require.ErrorIs(t, err, ErrKey, key)
 		_, err = DecodeEdits[mkReadBackConfig](t.Context(), nil, map[string]any{key: "v"})
 		assert.ErrorIs(t, err, ErrKey, key)
 	}
