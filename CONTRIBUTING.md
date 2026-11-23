@@ -15,7 +15,7 @@ The repository's `go.work` ties the published modules together, so a change to o
 | `make test-httpx-unit` / `make test-httpx-integration` | httpx unit or real HTTP integration lane |
 | `make test-parse-unit` / `make test-parse-race` / `make test-parse-race-all` | Parse unit tests and existing fuzz seeds without the race detector / under it, only the tests that run parse code on several goroutines (files tagged `concurrency`) / every unit test under it |
 | `make test-parse-integration` | Parse integration race tests; SQLite always runs, PostgreSQL/PostGIS through explicit DSNs |
-| `make test-parse-sdk` | TypeScript checks, lint, shared corpora and production build |
+| `make test-parse-sdk` | The repository's pnpm contract, then TypeScript checks, lint, shared corpora and production build |
 | `make parse-release-check` | Fresh module-archive consumer, tagged tests, README program and dependency audit |
 | `make parse-sdk-release-check` | Packed SDK consumer, TypeScript declarations, runtime subpaths and sourcemaps |
 | `make parse-sdk-registry-check` | Registry processing delay, integrity and deadline regressions |
@@ -25,7 +25,7 @@ The repository's `go.work` ties the published modules together, so a change to o
 | `make httpx-release-check` | Five module ZIPs downloaded by fresh consumers, both tagged lanes, Gin integration and benchmark smoke tests |
 | `make tool-check` | Module archive tooling tests and static analysis |
 | `make docs-check` | Every module's Markdown, in the workspace or kept out of it, held to its code: the Go identifiers its code spans name, its relative links and their anchors, its code-map entries; for a module that opts in, every Go file in a code map, every export named and every option in a table row ([tools/doccheck](tools/doccheck/README.md)) |
-| `make release-please-check` | The release workflow's release-please runner: first-parent release notes and their release-please wiring ([tools/release-please](tools/release-please/README.md)) |
+| `make release-please-check` | The release workflow's release-please runner: first-parent release notes and their release-please wiring, the [release-notes check](#releases) of a pull request's commits ([tools/release-please](tools/release-please/README.md)), and the repository's pnpm contract |
 | `make cookbook-check` | The [config cookbook](config/examples/cookbook), a module of runnable recipes |
 | `make cookbook-integration` | The cookbook's database tests: the settings-store recipe on SQLite, and on PostgreSQL through `COOKBOOK_POSTGRES_DSN` (`make cookbook-postgres-up` starts a server; see the [cookbook's README](config/examples/cookbook/README.md#build-run-and-test)) |
 | `make parse-example-check` | The [Parse server example](parse/examples/server), a module of its own, against the Parse working tree: tidy, vet, staticcheck and its tagged tests under race |
@@ -139,6 +139,12 @@ measured from the last green run, so a cancelled one would hold the next push's 
 and a push waiting behind another is replaced by the next, which covers both. Dispatched
 runs finish.
 
+One check runs apart from `ci.yml`: the `release notes` workflow ([Releases](#releases))
+reads a pull request's commits and description rather than its tree. It runs on every pull
+request and again on each edit of the description, which reruns nothing else; no push runs
+it, so `ci.yml`'s scope never selects it and acceptance neither records nor requires it
+(`tools/test_ci_release_notes.py` holds both).
+
 The `nightly` workflow runs `ci.yml` on main's current commit once a day, and on
 `gh workflow run nightly.yml -R ashtonian/pkg`: every suite and release check at full scope,
 every parse unit test under the race detector, every test rerun after `go clean -testcache`
@@ -153,8 +159,10 @@ workflow back on from the Actions tab.
 A module that requires another module of this repository requires a released version of it. When it needs an unreleased change, release the dependency first, then raise the requirement.
 
 Workspace development requires Go 1.27. The TypeScript SDK's targets also need Node.js
-22.13 or later (its `engines` floor, which CI runs exactly alongside the newest LTS) and pnpm 12, at the version `parse/sdk/ts/package.json` pins in `packageManager`;
-`make test-parse-sdk` refuses any other pnpm release.
+22.13 or later (its `engines` floor, which CI runs exactly alongside the newest LTS) and pnpm 12; `make release-please-check` needs both too. Every pnpm project here (`parse/sdk/ts`,
+`tools/release-please`) pins the same pnpm release in `packageManager`. Both targets start with
+`tools/check-pnpm.mjs`, which refuses any other pnpm on `PATH` and names the command that installs the pinned one
+(`npm install --global pnpm@X.Y.Z`). Raise the pin in every project together.
 Gowalker is its own module at
 `github.com/ashtonian/pkg/gowalker`, released with `gowalker/v…` tags. Public modules contain source, tests,
 licenses and user documentation; project plans, reviews and audits stay outside
@@ -248,6 +256,15 @@ Releases are cut by [release-please](https://github.com/googleapis/release-pleas
 Land feature branches with main as the first parent of a signed merge commit and a conventional subject describing the change. Its diff must contain the feature, rather than only a later main-to-feature synchronization. This preserves the module change and release classification when older feature commits precede the latest release boundary.
 
 Release notes and versions come from main's first-parent history. The `release-please` workflow runs release-please through [`tools/release-please`](tools/release-please/README.md), whose `first-parent` plugin counts each pull request once, as its merge commit. The conventional commits on its branch hand that merge what they call for: the highest type (a `feat` merged as `fix(…)` still bumps the minor version), `BREAKING CHANGE` notes, `Release-As`, and closed issues. Each module counts only the branch commits that touched it, so a pull request that breaks one module and only adds a test to another releases the first and not the second: mark the breaking branch commit itself (`feat(httpx)!: …` or a `BREAKING CHANGE:` footer). The subject counts instead, as a floor, in every module the merge touched when no branch commit carries its type or `!`, and in one module when a branch commit touching it is older than its last release or not conventional. The merge subject is still the pull request's release-note entry, so make it the conventional summary of the whole change, with `!` when it breaks anything. The job warns when a branch commit raises a merge's type. Branch commits older than the last release, on a pull request merged after it, never reach release-please, so for such a pull request the merge subject alone decides its entry and bump. A merge whose subject release-please cannot parse leaves its branch commits listed instead, so nothing is dropped. The stock `release-please-action` cannot load the plugin and refuses this repository's config. From a full clone, `pnpm -C tools/release-please install --frozen-lockfile`, then `GITHUB_TOKEN=… node tools/release-please/run.mjs --repo ashtonian/pkg --dry-run`, shows the release PR the current main would produce.
+
+release-please drops a commit its parser cannot read, and with it the commit's type, `BREAKING CHANGE` notes and closed issues, and nothing fails. So every commit a pull request brings to main follows two rules:
+
+- release-please must parse it. A body line whose first word runs straight into `(` reads as a footer token with a scope, and a second `(` or a line break before its `)` fails the whole message: `parse_decimal(CAST('10.50' AS BLOB)) was '10.5'` at the start of a line cost #287 its breaking note (#289). Reword such a line, or start it with another word.
+- A commit, or each entry of a message that holds several, carries at most one `BREAKING CHANGE` (or `BREAKING-CHANGE`) footer or paragraph: release-please keeps only the last. State every break in one.
+
+A pull request's `BEGIN_COMMIT_OVERRIDE … END_COMMIT_OVERRIDE` block, which release-please reads in place of each of its commits ([tools/release-please](tools/release-please/README.md)), follows the same rules, and one more: release-please starts a new entry only at a blank line followed by a header without `!` (`feat(…): `, `fix(…): `, or another of the standard types). A further `type(scope)!: ` header is read into the entry before it, which then loses its own breaking note or takes the next one's. Put each further breaking entry in its own `BEGIN_NESTED_COMMIT … END_NESTED_COMMIT` block, one entry per block.
+
+The `release notes` workflow checks this on every pull request, and again when its description changes. It reads, with release-please's own parser, each commit the pull request brings and the override, and fails naming each commit or override entry whose type, notes or references release-please would lose. A merge carries no release note of its own, so merges are not read; nor are a commit and its revert on the same branch, which count for nothing. With an override, a commit's problems only warn: release-please reads the override in its place. Run the check before pushing: `pnpm -C tools/release-please install --frozen-lockfile`, then `node tools/release-please/check-commits.mjs --base origin/main`. On main, the release job warns naming each merge whose entry lacks what release-please could not read of one of its branch commits; before the release PR merges, give that pull request's description an override stating its whole change.
 
 Merge a release PR with a signed merge commit whose diff includes every
 released module. If a changelog needs a follow-up edit, do not fast-forward

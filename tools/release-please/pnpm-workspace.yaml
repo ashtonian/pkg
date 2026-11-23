@@ -1,0 +1,10 @@
+# pnpm settings for the release-please runner. pnpm reads its settings from this file
+# only, never from package.json; the tool is a single package, so it lists no packages.
+
+# package.json's packageManager field pins pnpm, and CI installs that version from it.
+# Left at its default, pmOnFail also records the pinned pnpm as a leading document in
+# pnpm-lock.yaml. GitHub's dependency graph ignores a two-document lockfile, so the
+# tool's dependencies would drop out of the graph, its SBOM and any Dependabot alerts.
+# A different local pnpm therefore runs as itself rather than switching to the pinned
+# one, and tools/check-pnpm.mjs (run by make release-please-check) enforces the pin.
+pmOnFail: ignore

@@ -147,7 +147,7 @@ parse-postgres-down:
 	docker rm -f $(PARSE_PG_NAME)
 
 test-parse-sdk:
-	node tools/check-parse-sdk-pnpm.mjs
+	node tools/check-pnpm.mjs
 	cd parse/sdk/ts && pnpm install --frozen-lockfile && pnpm run check && pnpm run check:compat && pnpm run lint && pnpm test && pnpm run build
 
 parse-sdk-release-check:
@@ -258,8 +258,11 @@ tool-check:
 docs-check:
 	cd tools/doccheck && GOWORK=off go mod tidy -diff && GOWORK=off go vet ./... && GOWORK=off go test $(RACE) -count=1 ./... && GOWORK=off $(STATICCHECK) ./... && GOWORK=off go run . -root ../..
 
-## release-please-check: the release workflow's runner: first-parent notes and their release-please wiring
+## release-please-check: the release workflow's runner (first-parent notes and their release-please wiring),
+## the release-notes check of a pull request's commits, and the repository's pnpm contract (tools/check-pnpm.mjs)
 release-please-check:
+	node tools/check-pnpm.mjs
+	node --test tools/check-pnpm.test.mjs
 	cd tools/release-please && pnpm install --frozen-lockfile && node --test
 
 ## ci: everything CI runs
