@@ -131,7 +131,7 @@ The tests are unit tests over `httptest`; they need no database.
 
 ## Dependencies
 
-- *Imports*: `parse`, `parse/core`, `parse/filter`, `parse/patch`, `parse/internal/httpjson`, standard library
+- *Imports*: `parse`, `parse/core`, `parse/filter`, `parse/patch`, `parse/internal/httpjson`, `gowalker` (type text in errors), standard library
 - *Imported by*: `parse/examples/server`, the `parse/parsepgx` recipe
 - *Package boundary*: standalone Parse module
 

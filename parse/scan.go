@@ -8,6 +8,7 @@ import (
 
 	"database/sql"
 
+	"github.com/ashtonian/pkg/gowalker"
 	"github.com/ashtonian/pkg/jsonvalue"
 	"github.com/ashtonian/pkg/parse/core"
 	"github.com/ashtonian/pkg/parse/internal/dialect"
@@ -25,7 +26,8 @@ import (
 // tag (core.WithColumnTag, default db), else the column convention over the
 // field's JSON name, with embedded structs promoted as encoding/json
 // promotes them and nil embedded pointers allocated. Fields of columns the
-// resource does not read (ReadColumns) stay zero.
+// resource does not read (ReadColumns) stay zero. NewResource refuses a read
+// column no row can hold (checkScannable).
 //
 // A JSON document is decoded into a fresh value, with presence and the
 // member spelling encoding/json writes for the field's type checked, before
@@ -90,13 +92,17 @@ func (r *Resource[T]) RowScanner(d Dialect, opts ...ScanOption) (*RowScanner[T],
 		if !slices.Contains(r.read, name) {
 			return nil, fmt.Errorf("parse: %s: ScanJSON names %q, which the resource does not read", r.table, name)
 		}
+		err := r.undecodable[name]
+		if err != nil {
+			return nil, fmt.Errorf("parse: %s: ScanJSON names %q: %w", r.table, name, err)
+		}
 	}
 	sqlite := dialect.KindOf(d) == dialect.KindSQLite
 	columns := make([]rowColumn, len(r.read))
 	for i, name := range r.read {
 		f := r.columnFields[name]
 		storage, declared := r.sqlTypes[name]
-		columns[i] = rowColumn{name: name, field: f, decode: rowDecodeOf(f.Type, declared && storage.IsJSON() || slices.Contains(cfg.json, name), sqlite)}
+		columns[i] = rowColumn{name: name, field: f, decode: rowDecodeOf(f.Type(), declared && storage.IsJSON() || slices.Contains(cfg.json, name), sqlite)}
 	}
 	return &RowScanner[T]{table: r.table, columns: columns}, nil
 }
@@ -118,6 +124,37 @@ func rowDecodeOf(t reflect.Type, json, sqlite bool) rowDecode {
 		return decodeJSON
 	}
 	return decodeDriver
+}
+
+// checkScannable refuses a read column no row scan can fill, so that no
+// scanner is built to fail on every row. Its field is promoted through an
+// unexported embedded pointer, which a fresh row holds nil and reflection
+// cannot allocate (core.Field.CheckWritable); or the column is decoded as a
+// stored document, declared JSON or of a type that is no sql.Scanner, and
+// encoding/json cannot decode a member of its type
+// (jsonkeys.CheckDecodable). An sql.Scanner's column is decoded as a
+// document only under ScanJSON, which RowScanner refuses on it.
+func (r *Resource[T]) checkScannable() error {
+	for _, name := range r.read {
+		f := r.columnFields[name]
+		err := f.CheckWritable()
+		if err != nil {
+			return fmt.Errorf("parse: %s: column %s: %w", r.table, name, err)
+		}
+		err = jsonkeys.CheckDecodable(f.Type())
+		if err == nil {
+			continue
+		}
+		storage, declared := r.sqlTypes[name]
+		if declared && storage.IsJSON() || !scans(f.Type()) {
+			return fmt.Errorf("parse: %s: column %s: %w", r.table, name, err)
+		}
+		if r.undecodable == nil {
+			r.undecodable = make(map[string]error)
+		}
+		r.undecodable[name] = err
+	}
+	return nil
 }
 
 // Scan reads one row. scan is the driver's row scan (sql.Rows.Scan,
@@ -168,7 +205,7 @@ func (c jsonColumn) Scan(src any) error {
 	case []byte:
 		raw = v
 	default:
-		return fmt.Errorf("JSON scan source must be string or []byte, got %T", src)
+		return fmt.Errorf("JSON scan source must be string or []byte, got %s", gowalker.TypeText(reflect.TypeOf(src)))
 	}
 	// Presence and member spelling are checked on a fresh value, so a
 	// document that fails either never reaches the row.
@@ -191,7 +228,7 @@ type timestampColumn struct{ target reflect.Value }
 func (c timestampColumn) Scan(src any) error {
 	if src == nil {
 		if c.target.Kind() != reflect.Pointer {
-			return fmt.Errorf("NULL into %s", c.target.Type())
+			return fmt.Errorf("NULL into %s", gowalker.TypeText(c.target.Type()))
 		}
 		c.target.SetZero()
 		return nil
@@ -206,7 +243,7 @@ func (c timestampColumn) Scan(src any) error {
 	case []byte:
 		text = string(v)
 	default:
-		return fmt.Errorf("timestamp scan source must be text or time.Time, got %T", src)
+		return fmt.Errorf("timestamp scan source must be text or time.Time, got %s", gowalker.TypeText(reflect.TypeOf(src)))
 	}
 	at, err := time.Parse(time.RFC3339Nano, text)
 	if err != nil {

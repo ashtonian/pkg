@@ -58,7 +58,8 @@ type policyCandidate struct {
 }
 
 func requestCandidate(field *core.Field, fs *FieldSchema) policyCandidate {
-	return policyCandidate{goName: field.GoName, name: fs.ExternalName, column: fs.Column, request: true, field: fs}
+	candidate := policyCandidate{goName: field.GoName(), name: fs.ExternalName, column: fs.Column, request: true, field: fs}
+	return candidate
 }
 
 // policyColumn is the candidate of a column a request cannot filter by. ok
@@ -67,19 +68,19 @@ func requestCandidate(field *core.Field, fs *FieldSchema) policyCandidate {
 // than failing the schema: a field no request filters by must not stop the
 // resource from building.
 func policyColumn(g *core.SchemaGenerator, table string, field *core.Field) (policyCandidate, bool) {
-	if field.Tags.Relation != "" {
+	if field.Tags().Relation != "" {
 		return policyCandidate{}, false
 	}
 	column, ok, err := g.FieldColumn(field)
 	if err == nil && !ok {
 		return policyCandidate{}, false
 	}
-	c := policyCandidate{goName: field.GoName, name: field.External, column: column}
+	c := policyCandidate{goName: field.GoName(), name: field.External(), column: column}
 	if err == nil {
 		c.field, err = policyFieldSchema(g, table, field, column)
 	}
 	if err != nil {
-		c.field, c.err = nil, fmt.Errorf("field %s: %w", field.GoName, err)
+		c.field, c.err = nil, fmt.Errorf("field %s: %w", field.GoName(), err)
 	}
 	return c, true
 }
@@ -92,24 +93,27 @@ func policyFieldSchema(g *core.SchemaGenerator, table string, field *core.Field,
 	if err != nil {
 		return nil, err
 	}
+	tags := field.Tags()
 	fs := &FieldSchema{
-		ExternalName: cmp.Or(field.External, column),
+		ExternalName: cmp.Or(field.External(), column),
 		Column:       column,
 		DataType:     info.Type,
 		NumberKind:   info.NumberKind,
 		Elem:         info.Elem,
-		EnumValues:   slices.Clone(field.Tags.Enum),
+		EnumValues:   field.Enum(),
 	}
-	if field.Tags.Geo != "" {
+	if tags.Geo != "" {
 		fs.DataType = core.FieldTypeGeo
-		if fs.GeoConfig, err = parseGeoTag(&field.Tags); err != nil {
+		fs.GeoConfig, err = parseGeoTag(&tags)
+		if err != nil {
 			return nil, err
 		}
 	}
 	// FieldColumn's base, so MappedExpr names the same column: the external
 	// name, or a hidden field's Go name.
 	fs.Table = table
-	if fs.Expr, err = g.MappedExpr(table, cmp.Or(field.External, field.GoName), fs.DataType, field.Tags.Column); err != nil {
+	fs.Expr, err = g.MappedExpr(table, cmp.Or(field.External(), field.GoName()), fs.DataType, tags.Column)
+	if err != nil {
 		return nil, err
 	}
 	if err := applyStorage(g, fs, field); err != nil {

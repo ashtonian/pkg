@@ -10,6 +10,7 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/ashtonian/pkg/gowalker"
 	"github.com/ashtonian/pkg/parse/core"
 	"github.com/ashtonian/pkg/parse/filter"
 	"github.com/ashtonian/pkg/parse/patch"
@@ -62,6 +63,10 @@ type Resource[T any] struct {
 	sqlTypes     map[string]core.SQLType
 	tableColumns map[string]reflect.Type
 	columnFields map[string]*core.Field
+	// undecodable holds why a read column's type, an sql.Scanner the
+	// resource does not declare JSON, cannot be decoded as a stored
+	// document (jsonkeys.CheckDecodable): RowScanner refuses ScanJSON on it.
+	undecodable map[string]error
 	// access is what a request may learn of each column of T (ReadColumns,
 	// QueryOnlyColumns).
 	access map[string]columnAccess
@@ -287,7 +292,7 @@ func NewResource[T any](table string, opts ...ResourceOption) (*Resource[T], err
 	}
 	columns := make(map[string]reflect.Type, len(order))
 	for name, f := range fieldsByColumn {
-		columns[name] = f.Type
+		columns[name] = f.Type()
 	}
 	err = checkKeyColumns(cfg.pk, columns, reflect.TypeFor[T]())
 	if err != nil {
@@ -298,7 +303,7 @@ func NewResource[T any](table string, opts ...ResourceOption) (*Resource[T], err
 			continue
 		}
 		if _, ok := columns[c.column]; !ok {
-			return nil, fmt.Errorf("parse: %s: %s column %q is not a column of %s", table, c.option, c.column, reflect.TypeFor[T]())
+			return nil, fmt.Errorf("parse: %s: %s column %q is not a column of %s", table, c.option, c.column, gowalker.TypeText(reflect.TypeFor[T]()))
 		}
 	}
 	if err := checkDeletedColumn(cfg, columns[cfg.deleted]); err != nil {
@@ -340,6 +345,12 @@ func NewResource[T any](table string, opts ...ResourceOption) (*Resource[T], err
 	if err := r.checkIdentityPatches(); err != nil {
 		return nil, err
 	}
+	for _, schema := range []*patch.PatchSchema{r.patchSchema, r.serverPatchSchema} {
+		err = r.applier.CheckSchema(schema)
+		if err != nil {
+			return nil, fmt.Errorf("parse: %s: %w", table, err)
+		}
+	}
 	for _, name := range order {
 		if read == nil || read[name] {
 			r.read = append(r.read, name)
@@ -372,6 +383,10 @@ func NewResource[T any](table string, opts ...ResourceOption) (*Resource[T], err
 		}
 		r.sqlTypes[name] = implied
 	}
+	err = r.checkScannable()
+	if err != nil {
+		return nil, err
+	}
 
 	if err := r.checkUnreadColumns(r.filterSchema.Fields, sortKeys(r.sortSchema), searchFields(r.searchSchema)); err != nil {
 		return nil, err
@@ -382,7 +397,7 @@ func NewResource[T any](table string, opts ...ResourceOption) (*Resource[T], err
 			for _, c := range owner {
 				_, ok := columns[c]
 				if !ok {
-					return nil, fmt.Errorf("parse: %s: relation %q correlates on %q, which is not a column of %s", table, f.ExternalName, c, reflect.TypeFor[T]())
+					return nil, fmt.Errorf("parse: %s: relation %q correlates on %q, which is not a column of %s", table, f.ExternalName, c, gowalker.TypeText(reflect.TypeFor[T]()))
 				}
 				if r.computed(c) {
 					return nil, computedCorrelation(table, f.ExternalName, c)
@@ -504,23 +519,23 @@ func sqlTypes(table string, cfg resourceConfig, columns map[string]reflect.Type)
 		switch {
 		case t.IsJSON():
 			if !jsonRepresentableType(ft) {
-				return nil, fmt.Errorf("parse: %s: column %q declares %s with unsupported JSON type %s", table, name, t, ft)
+				return nil, fmt.Errorf("parse: %s: column %q declares %s with unsupported JSON type %s", table, name, t, gowalker.TypeText(ft))
 			}
 		case t == core.SQLInt32Array:
 			if ft.Kind() != reflect.Slice || ft.Elem().Kind() != reflect.Int32 {
-				return nil, fmt.Errorf("parse: %s: column %q is %s, read into a slice of int32, not %s", table, name, t, ft)
+				return nil, fmt.Errorf("parse: %s: column %q is %s, read into a slice of int32, not %s", table, name, t, gowalker.TypeText(ft))
 			}
 		case t == core.SQLUUIDArray:
 			if ft.Kind() != reflect.Slice || !core.IsUUIDType(ft.Elem()) {
-				return nil, fmt.Errorf("parse: %s: column %q is %s, read into a slice of UUIDs, not %s", table, name, t, ft)
+				return nil, fmt.Errorf("parse: %s: column %q is %s, read into a slice of UUIDs, not %s", table, name, t, gowalker.TypeText(ft))
 			}
 		case t.IsArray():
 			if ft.Kind() != reflect.Slice || ft.Elem().Kind() != reflect.String {
-				return nil, fmt.Errorf("parse: %s: column %q is %s, read into a slice of strings, not %s", table, name, t, ft)
+				return nil, fmt.Errorf("parse: %s: column %q is %s, read into a slice of strings, not %s", table, name, t, gowalker.TypeText(ft))
 			}
 		default:
 			if ft.Kind() != reflect.String {
-				return nil, fmt.Errorf("parse: %s: column %q is %s, read into a string, not %s", table, name, t, ft)
+				return nil, fmt.Errorf("parse: %s: column %q is %s, read into a string, not %s", table, name, t, gowalker.TypeText(ft))
 			}
 		}
 		out[name] = t
@@ -591,13 +606,13 @@ func maskableFields(gen *core.SchemaGenerator, walk *core.StructFields, byColumn
 	for column, f := range byColumn {
 		columnOf[f] = column
 	}
-	out := make(map[string]string, len(walk.Fields))
-	for _, f := range walk.Fields {
+	out := make(map[string]string, walk.Len())
+	for f := range walk.Fields() {
 		column, isColumn := columnOf[f]
 		if f.Hidden() || (isColumn && access[column] != columnRead) {
 			continue
 		}
-		out[f.External] = member(f)
+		out[f.External()] = member(f)
 	}
 	return out, nil
 }
@@ -606,18 +621,18 @@ func maskableFields(gen *core.SchemaGenerator, walk *core.StructFields, byColumn
 // under, "" for none: the field's own name when the field-name tag is json.
 func jsonMembers(gen *core.SchemaGenerator, walk *core.StructFields) (func(*core.Field) string, error) {
 	if gen.FieldNameTag() == core.JSONTagKey {
-		external := func(f *core.Field) string { return f.External }
+		external := func(f *core.Field) string { return f.External() }
 		return external, nil
 	}
-	encoded, err := core.JSONFieldsOf(walk.Type)
+	encoded, err := core.JSONFieldsOf(walk.Type())
 	if err != nil {
-		return nil, fmt.Errorf("reading the JSON member names of %s: %w", walk.Type, err)
+		return nil, fmt.Errorf("reading the JSON member names of %s: %w", gowalker.TypeText(walk.Type()), err)
 	}
-	byRoute := make(map[string]string, len(encoded.Fields))
-	for _, f := range encoded.Fields {
-		byRoute[fmt.Sprint(f.Route)] = f.External
+	byRoute := make(map[string]string, encoded.Len())
+	for f := range encoded.Fields() {
+		byRoute[fmt.Sprint(f.Route())] = f.External()
 	}
-	member := func(f *core.Field) string { return byRoute[fmt.Sprint(f.Route)] }
+	member := func(f *core.Field) string { return byRoute[fmt.Sprint(f.Route())] }
 	return member, nil
 }
 
@@ -812,7 +827,7 @@ func (r *Resource[T]) columnValue(rv reflect.Value, column string) (any, error) 
 		model = model.Elem()
 	}
 	if rv.Type() != model {
-		return nil, fmt.Errorf("parse: %s: %s is not %s", r.table, rv.Type(), reflect.TypeFor[T]())
+		return nil, fmt.Errorf("parse: %s: %s is not %s", r.table, gowalker.TypeText(rv.Type()), gowalker.TypeText(reflect.TypeFor[T]()))
 	}
 	fv, err := f.Value(rv)
 	if err != nil {
@@ -834,7 +849,7 @@ func checkDeletedColumn(cfg resourceConfig, t reflect.Type) error {
 	case cfg.deleted == cfg.tenant:
 		return fmt.Errorf("deleted column %q is the tenant column", cfg.deleted)
 	case !holdsNull(t):
-		return fmt.Errorf("deleted column %q is %s, which cannot hold NULL: a row is live while the column is NULL, so declare a pointer or an sql.Scanner such as sql.NullTime", cfg.deleted, t)
+		return fmt.Errorf("deleted column %q is %s, which cannot hold NULL: a row is live while the column is NULL, so declare a pointer or an sql.Scanner such as sql.NullTime", cfg.deleted, gowalker.TypeText(t))
 	}
 	return nil
 }
@@ -914,17 +929,17 @@ func systemFields(table string, cfg resourceConfig, columns map[string]reflect.T
 // fields with one column are an error.
 func resourceColumns(gen *core.SchemaGenerator, walk *core.StructFields) ([]string, map[string]*core.Field, error) {
 	var order []string
-	byColumn := make(map[string]*core.Field, len(walk.Fields))
-	for _, f := range walk.Fields {
+	byColumn := make(map[string]*core.Field, walk.Len())
+	for f := range walk.Fields() {
 		col, ok, err := gen.FieldColumn(f)
 		if err != nil {
-			return nil, nil, fmt.Errorf("field %s: %w", f.GoName, err)
+			return nil, nil, fmt.Errorf("field %s: %w", f.GoName(), err)
 		}
 		if !ok {
 			continue
 		}
 		if prev, dup := byColumn[col]; dup {
-			return nil, nil, fmt.Errorf("fields %s and %s are both column %q", prev.GoName, f.GoName, col)
+			return nil, nil, fmt.Errorf("fields %s and %s are both column %q", prev.GoName(), f.GoName(), col)
 		}
 		byColumn[col] = f
 		order = append(order, col)
@@ -952,7 +967,7 @@ func (r *Resource[T]) WithPaths(decls ...filter.PathDecl) (*Resource[T], error) 
 		if !ok {
 			continue
 		}
-		w, err := r.gen.MemberWire(f.Type, strings.Split(members, "."))
+		w, err := r.gen.MemberWire(f.Type(), strings.Split(members, "."))
 		if err != nil {
 			return nil, fmt.Errorf("parse: %s: path %q: %w", r.table, d.Path, err)
 		}

@@ -4,9 +4,11 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"reflect"
 	"slices"
 	"time"
 
+	"github.com/ashtonian/pkg/gowalker"
 	"github.com/ashtonian/pkg/parse/core"
 )
 
@@ -284,7 +286,7 @@ func policyValue(norm *FilterParser, field *FieldSchema, op FilterOperator, valu
 		if value != nil || op == OpExists {
 			want, ok := value.(bool)
 			if !ok {
-				return "", nil, newFilterError(ECodeValueTypeMismatch, fmt.Sprintf("$%s requires a boolean value, got %T", op, value))
+				return "", nil, newFilterError(ECodeValueTypeMismatch, fmt.Sprintf("$%s requires a boolean value, got %s", op, gowalker.TypeText(reflect.TypeOf(value))))
 			}
 			if !want {
 				isNull = !isNull

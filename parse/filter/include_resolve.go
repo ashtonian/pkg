@@ -4,8 +4,10 @@ import (
 	"context"
 	"fmt"
 	"iter"
+	"reflect"
 	"slices"
 
+	"github.com/ashtonian/pkg/gowalker"
 	"github.com/ashtonian/pkg/parse/core"
 )
 
@@ -187,7 +189,7 @@ func pairKey(v any, n int) (core.Key, error) {
 	case []any:
 		k = kv
 	default:
-		return nil, fmt.Errorf("a key of %d columns is a core.Key, not a %T", n, v)
+		return nil, fmt.Errorf("a key of %d columns is a core.Key, not a %s", n, gowalker.TypeText(reflect.TypeOf(v)))
 	}
 	if len(k) != n {
 		return nil, fmt.Errorf("a key of %d columns has %d values", n, len(k))

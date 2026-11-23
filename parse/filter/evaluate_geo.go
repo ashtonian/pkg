@@ -2,7 +2,9 @@ package filter
 
 import (
 	"fmt"
+	"reflect"
 
+	"github.com/ashtonian/pkg/gowalker"
 	"github.com/ashtonian/pkg/parse/core"
 	"github.com/ashtonian/pkg/parse/internal/geo"
 )
@@ -73,7 +75,7 @@ func geoPredicate(op FilterOperator, value any) (func(geo.Point) bool, error) {
 		ring := geoRing(v)
 		return func(p geo.Point) bool { return geo.CoveredBy(p, ring) }, nil
 	}
-	return nil, fmt.Errorf("geo operator %s does not take %T", op, value)
+	return nil, fmt.Errorf("geo operator %s does not take %s", op, gowalker.TypeText(reflect.TypeOf(value)))
 }
 
 // geoKeys are the members a JSONB point holds its latitude and longitude

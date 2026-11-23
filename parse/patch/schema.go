@@ -144,6 +144,19 @@ func (s *PatchSchema) Paths() iter.Seq2[string, *PathSchema] {
 	}
 }
 
+// reaching returns the first key, in key order, that admits pointer or a
+// path below it.
+func (s *PatchSchema) reaching(pointer string) (string, bool) {
+	tokens := pointerTokens(pointer)
+	for key := range s.Paths() {
+		pattern := pathPattern{text: key, tokens: pointerTokens(key)}
+		if pattern.reaches(tokens) {
+			return key, true
+		}
+	}
+	return "", false
+}
+
 // Clone returns a deep copy of the schema: it parses as s does, and its
 // paths can be added to or changed without changing s. Validators are
 // shared.

@@ -6,7 +6,10 @@ import (
 	"errors"
 	"fmt"
 	"net/netip"
+	"reflect"
 	"strings"
+
+	"github.com/ashtonian/pkg/gowalker"
 )
 
 // Inet is a SQL INET value: an IPv4 or IPv6 host address with an optional
@@ -134,7 +137,7 @@ func (i *Inet) Scan(value any) error {
 	case []byte:
 		return i.UnmarshalText(v)
 	}
-	return fmt.Errorf("cannot scan %T as an inet", value)
+	return fmt.Errorf("scanning %s as an inet: unsupported source type", gowalker.TypeText(reflect.TypeOf(value)))
 }
 
 // CIDR is a SQL CIDR value: a network, an address prefix with no host bits
@@ -236,7 +239,7 @@ func (c *CIDR) Scan(value any) error {
 	case []byte:
 		return c.UnmarshalText(v)
 	}
-	return fmt.Errorf("cannot scan %T as a cidr", value)
+	return fmt.Errorf("scanning %s as a cidr: unsupported source type", gowalker.TypeText(reflect.TypeOf(value)))
 }
 
 // normalizeInet is NormalizeScalar's FieldTypeInet: the canonical text of
@@ -254,7 +257,7 @@ func normalizeInet(v any) (string, error) {
 	case string:
 		inet, err = ParseInet(x)
 	default:
-		return "", fmt.Errorf("expected inet string, got %T", v)
+		return "", fmt.Errorf("expected inet string, got %s", gowalker.TypeText(reflect.TypeOf(v)))
 	}
 	if err != nil {
 		return "", err
@@ -276,7 +279,7 @@ func normalizeCIDR(v any) (string, error) {
 	case string:
 		cidr, err = ParseCIDR(x)
 	default:
-		return "", fmt.Errorf("expected cidr string, got %T", v)
+		return "", fmt.Errorf("expected cidr string, got %s", gowalker.TypeText(reflect.TypeOf(v)))
 	}
 	if err != nil {
 		return "", err

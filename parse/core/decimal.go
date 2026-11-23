@@ -12,6 +12,8 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+
+	"github.com/ashtonian/pkg/gowalker"
 )
 
 // Decimal is an exact decimal number, Coefficient × 10^Exponent: the method
@@ -87,7 +89,7 @@ func DecimalText(v any) (string, error) {
 	if tm, ok := textMarshalerOf(v); ok {
 		b, err := tm.MarshalText()
 		if err != nil {
-			return "", fmt.Errorf("marshal %T: %w", v, err)
+			return "", fmt.Errorf("marshal %s: %w", gowalker.TypeText(reflect.TypeOf(v)), err)
 		}
 		return parseDecimal(string(b))
 	}
@@ -101,7 +103,7 @@ func DecimalText(v any) (string, error) {
 	case reflect.String:
 		return parseDecimal(rv.String())
 	}
-	return "", fmt.Errorf("expected a decimal number or numeric string, got %T", v)
+	return "", fmt.Errorf("expected a decimal number or numeric string, got %s", gowalker.TypeText(reflect.TypeOf(v)))
 }
 
 // CompareDecimals compares two decimals exactly, returning -1, 0 or +1.

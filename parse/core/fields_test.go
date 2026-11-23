@@ -70,9 +70,9 @@ func TestStructFields_NameFieldsAsEncodingJSONDoes(t *testing.T) {
 			fields, err := core.StructFieldsOf(reflect.TypeOf(v), "json", "db")
 			require.NoError(t, err)
 			var names []string
-			for _, f := range fields.Fields {
+			for f := range fields.Fields() {
 				if !f.Hidden() {
-					names = append(names, f.External)
+					names = append(names, f.External())
 				}
 			}
 			assert.ElementsMatch(t, jsonKeys(t, v), names)
@@ -149,13 +149,13 @@ func describe(t *testing.T, v any) []describedField {
 	require.NoError(t, err)
 	rv := reflect.ValueOf(v)
 	var out []describedField
-	for _, f := range fields.Fields {
+	for f := range fields.Fields() {
 		col, ok, err := g.FieldColumn(f)
 		require.NoError(t, err)
 		require.True(t, ok)
-		fv, err := rv.FieldByIndexErr(f.Route)
+		fv, err := rv.FieldByIndexErr(f.Route())
 		require.NoError(t, err)
-		out = append(out, describedField{External: f.External, Column: col, Caps: f.Tags.Parse, Value: fv.Interface()})
+		out = append(out, describedField{External: f.External(), Column: col, Caps: f.Tags().Parse, Value: fv.Interface()})
 	}
 	return out
 }
@@ -188,16 +188,18 @@ func shadowing() (shadows map[string]reflect.Type, tie reflect.Type) {
 	embed := func(t reflect.Type) reflect.StructField {
 		return reflect.StructField{Name: t.Name(), Type: t, Anonymous: true}
 	}
-	return map[string]reflect.Type{
+	shadows = map[string]reflect.Type{
 		"a shallower field shadows a promoted one": reflect.StructOf([]reflect.StructField{
 			embed(base), {Name: "B1", Type: reflect.TypeFor[string](), Tag: `json:"b1"`},
 		}),
 		"a renamed field shadows a promoted one": reflect.StructOf([]reflect.StructField{
 			embed(base), {Name: "Label", Type: reflect.TypeFor[string](), Tag: `json:"b1"`},
 		}),
-	}, reflect.StructOf([]reflect.StructField{
+	}
+	tie = reflect.StructOf([]reflect.StructField{
 		embed(base), {Name: "Other", Type: reflect.PointerTo(other), Anonymous: true},
 	})
+	return shadows, tie
 }
 
 // A field shadowing a promoted one is the field encoding/json writes under
@@ -210,8 +212,8 @@ func TestStructFields_TheShallowerFieldTakesAName(t *testing.T) {
 			require.NoError(t, err)
 			f, ok := s.External("b1")
 			require.True(t, ok)
-			assert.Equal(t, reflect.TypeFor[string](), f.Type, "the outer field, not ShadowBase.B1")
-			assert.Len(t, f.Route, 1)
+			assert.Equal(t, reflect.TypeFor[string](), f.Type(), "the outer field, not ShadowBase.B1")
+			assert.Len(t, f.Route(), 1)
 		})
 	}
 }
@@ -243,8 +245,8 @@ func TestStructFields_ARowSettlesAnEmbeddedTie(t *testing.T) {
 	s, err := core.StructFieldsOf(reflect.TypeFor[settledRow](), "json", "db")
 	require.NoError(t, err)
 	var names []string
-	for _, f := range s.Fields {
-		names = append(names, f.External)
+	for f := range s.Fields() {
+		names = append(names, f.External())
 	}
 	data, err := json.Marshal(settledRow{ID: "outer"})
 	require.NoError(t, err)
@@ -252,7 +254,7 @@ func TestStructFields_ARowSettlesAnEmbeddedTie(t *testing.T) {
 	assert.Equal(t, []string{"ID", "name"}, names)
 	id, ok := s.External("ID")
 	require.True(t, ok)
-	assert.Len(t, id.Route, 1, "the row's own ID")
+	assert.Len(t, id.Route(), 1, "the row's own ID")
 
 	_, err = core.StructFieldsOf(reflect.TypeFor[settledInner](), "json", "db")
 	require.Error(t, err)
@@ -315,7 +317,8 @@ func TestStructFields_AreSharedPerType(t *testing.T) {
 	c, err := core.StructFieldsOf(reflect.TypeFor[walkFlat](), "yaml", "db")
 	require.NoError(t, err)
 	assert.NotSame(t, a, c)
-	assert.True(t, slices.ContainsFunc(c.Fields, func(f *core.Field) bool { return f.External == "ID" }), "yaml names untagged fields by Go name")
+	_, ok := c.External("ID")
+	assert.True(t, ok, "yaml names untagged fields by Go name")
 }
 
 // indexed and immutable are true, false or absent: anything else fails the
@@ -352,8 +355,9 @@ func TestStructFields_ReadBooleanTagsStrictly(t *testing.T) {
 			continue
 		}
 		require.NoError(t, err)
-		assert.Equal(t, tc.indexed, walk.Fields[0].Tags.Indexed)
-		assert.Equal(t, tc.immutable, walk.Fields[0].Tags.Immutable)
+		tags := slices.Collect(walk.Fields())[0].Tags()
+		assert.Equal(t, tc.indexed, tags.Indexed)
+		assert.Equal(t, tc.immutable, tags.Immutable)
 	}
 
 	type misspelt struct {
@@ -524,7 +528,29 @@ func TestStructFields_FoldedMatch(t *testing.T) {
 				continue
 			}
 			require.True(t, ok, name)
-			assert.Equal(t, want, f.External, name)
+			assert.Equal(t, want, f.External(), name)
 		}
 	}
+}
+
+// Field.Tags hands out the walk's own Tags by value, which shares nothing
+// with the walk only while Tags holds no reference.
+func TestTags_HoldsNoReference(t *testing.T) {
+	var refs []string
+	var visit func(typ reflect.Type, path string)
+	visit = func(typ reflect.Type, path string) {
+		switch typ.Kind() {
+		case reflect.Struct:
+			for i := range typ.NumField() {
+				f := typ.Field(i)
+				visit(f.Type, path+"."+f.Name)
+			}
+		case reflect.Bool, reflect.String, reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64,
+			reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64, reflect.Float32, reflect.Float64:
+		default:
+			refs = append(refs, path+" is a "+typ.Kind().String())
+		}
+	}
+	visit(reflect.TypeFor[core.Tags](), "Tags")
+	assert.Empty(t, refs, "give it a Field accessor that copies, as Enum and Bounds have")
 }

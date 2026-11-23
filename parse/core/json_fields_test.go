@@ -116,26 +116,26 @@ func TestJSONFieldsOf_NamesWhatEncodingJSONWrites(t *testing.T) {
 			walk, err := JSONFieldsOf(typ)
 			require.NoError(t, err)
 			var named []string
-			for _, f := range walk.Fields {
-				named = append(named, f.External)
+			for f := range walk.Fields() {
+				named = append(named, f.External())
 			}
 			assert.ElementsMatch(t, slices.Collect(maps.Keys(written)), named)
 
-			for _, f := range walk.Fields {
-				if f.Type.Kind() != reflect.Int {
+			for f := range walk.Fields() {
+				if f.Type().Kind() != reflect.Int {
 					continue
 				}
 				var seven any = 7
 				if f.Quoted() {
 					seven = "7"
 				}
-				member, err := json.Marshal(map[string]any{f.External: seven})
+				member, err := json.Marshal(map[string]any{f.External(): seven})
 				require.NoError(t, err)
 				fresh := reflect.New(typ)
 				require.NoError(t, json.Unmarshal(member, fresh.Interface()))
 				got, err := f.Value(fresh.Elem())
 				require.NoError(t, err)
-				assert.Equal(t, int64(7), got.Int(), "member %q", f.External)
+				assert.Equal(t, int64(7), got.Int(), "member %q", f.External())
 			}
 		})
 	}
@@ -150,8 +150,8 @@ func TestJSONFieldsOf_IsSharedAndReadsNoRowTags(t *testing.T) {
 	second, err := JSONFieldsOf(reflect.TypeFor[doc]())
 	require.NoError(t, err)
 	assert.Same(t, first, second)
-	require.Len(t, first.Fields, 1)
-	assert.Equal(t, Tags{FieldNameOptions: "omitempty"}, first.Fields[0].Tags)
+	require.Equal(t, 1, first.Len())
+	assert.Equal(t, Tags{FieldNameOptions: "omitempty"}, slices.Collect(first.Fields())[0].Tags())
 
 	_, err = JSONFieldsOf(reflect.TypeFor[map[string]int]())
 	assert.EqualError(t, err, "expected struct type, got map")

@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/ashtonian/pkg/gowalker"
 	"github.com/ashtonian/pkg/parse/core"
 	"github.com/ashtonian/pkg/parse/internal/cursor"
 )
@@ -223,13 +224,13 @@ func CursorValue(v any) (any, error) {
 			}
 		}
 	}
-	return nil, fmt.Errorf("cursor: unsupported key type %T", v)
+	return nil, fmt.Errorf("cursor: unsupported key type %s", gowalker.TypeText(reflect.TypeOf(v)))
 }
 
 func cursorDriverValue(v driver.Valuer) (any, error) {
 	dv, err := v.Value()
 	if err != nil {
-		return nil, fmt.Errorf("cursor: resolving %T: %w", v, err)
+		return nil, fmt.Errorf("cursor: resolving %s: %w", gowalker.TypeText(reflect.TypeOf(v)), err)
 	}
 	return CursorValue(dv)
 }
@@ -237,7 +238,7 @@ func cursorDriverValue(v driver.Valuer) (any, error) {
 func cursorDecimalValue(v any) (any, error) {
 	text, err := core.DecimalText(v)
 	if err != nil {
-		return nil, fmt.Errorf("cursor: %T: %w", v, err)
+		return nil, fmt.Errorf("cursor: %s: %w", gowalker.TypeText(reflect.TypeOf(v)), err)
 	}
 	return text, nil
 }
@@ -245,7 +246,7 @@ func cursorDecimalValue(v any) (any, error) {
 func cursorTextValue(v encoding.TextMarshaler) (any, error) {
 	b, err := v.MarshalText()
 	if err != nil {
-		return nil, fmt.Errorf("cursor: marshalling %T: %w", v, err)
+		return nil, fmt.Errorf("cursor: marshalling %s: %w", gowalker.TypeText(reflect.TypeOf(v)), err)
 	}
 	return string(b), nil
 }
@@ -618,7 +619,7 @@ func DecodeCursor(encoded string) (*PageToken, error) {
 			int, int8, int16, int32, int64,
 			uint, uint8, uint16, uint32, uint64:
 		default:
-			return nil, invalid("invalid cursor data", fmt.Errorf("field %q holds %T", f.Name, f.Value))
+			return nil, invalid("invalid cursor data", fmt.Errorf("field %q holds %s", f.Name, gowalker.TypeText(reflect.TypeOf(f.Value))))
 		}
 		v, err := CursorValue(f.Value)
 		if err != nil {

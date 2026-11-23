@@ -1,0 +1,181 @@
+//go:build unit
+
+package parse_test
+
+import (
+	"bytes"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"go/ast"
+	"go/constant"
+	"go/importer"
+	"go/parser"
+	"go/token"
+	"go/types"
+	"io"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
+	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+)
+
+// The module's text never formats a type through fmt or reflect.Type's
+// String: for a struct type with no name, which a row, a document or one of
+// their fields may be, those write every field's tags, values included.
+// gowalker.TypeText writes the same type without them. The rule is checked
+// on the module's type-checked source rather than on error values, so a site
+// no test reaches is held to it too: a reflect.Type operand of a fmt call, a
+// %T verb in a constant fmt format, or a call of reflect.Type's String.
+func TestSource_FormatsTypesThroughTypeText(t *testing.T) {
+	packages := modulePackages(t)
+	exports := make(map[string]string, len(packages))
+	for _, pkg := range packages {
+		if pkg.Export != "" {
+			exports[pkg.ImportPath] = pkg.Export
+		}
+	}
+	fset := token.NewFileSet()
+	imports := importer.ForCompiler(fset, "gc", func(path string) (io.ReadCloser, error) {
+		export, ok := exports[path]
+		if !ok {
+			return nil, fmt.Errorf("no export data for %s", path)
+		}
+		return os.Open(export)
+	})
+	var violations []string
+	for _, pkg := range packages {
+		if pkg.DepOnly || pkg.Module == nil || pkg.Module.Path != modulePath {
+			continue
+		}
+		var files []*ast.File
+		for _, name := range pkg.GoFiles {
+			file, err := parser.ParseFile(fset, filepath.Join(pkg.Dir, name), nil, parser.SkipObjectResolution)
+			require.NoError(t, err)
+			files = append(files, file)
+		}
+		info := &types.Info{Types: map[ast.Expr]types.TypeAndValue{}, Uses: map[*ast.Ident]types.Object{}, Selections: map[*ast.SelectorExpr]*types.Selection{}}
+		conf := types.Config{Importer: imports}
+		_, err := conf.Check(pkg.ImportPath, fset, files, info)
+		require.NoError(t, err, pkg.ImportPath)
+		for _, file := range files {
+			ast.Inspect(file, func(n ast.Node) bool {
+				why := typeFormatting(n, info)
+				if why != "" {
+					violations = append(violations, fmt.Sprintf("%s: %s", fset.Position(n.Pos()), why))
+				}
+				return true
+			})
+		}
+	}
+	assert.Empty(t, violations, "format each type through gowalker.TypeText")
+}
+
+const modulePath = "github.com/ashtonian/pkg/parse"
+
+// listedPackage is the part of `go list -json` the check reads.
+type listedPackage struct {
+	ImportPath string
+	Dir        string
+	GoFiles    []string
+	Export     string
+	DepOnly    bool
+	Module     *struct{ Path string }
+}
+
+// modulePackages lists the module's packages and their dependencies, each
+// with its compiled export data, so the module type-checks against what the
+// build compiled.
+func modulePackages(t *testing.T) []listedPackage {
+	t.Helper()
+	cmd := exec.CommandContext(t.Context(), "go", "list", "-e", "-export", "-deps", "-json=ImportPath,Dir,GoFiles,Export,DepOnly,Module", "./...")
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	out, err := cmd.Output()
+	require.NoError(t, err, stderr.String())
+	var packages []listedPackage
+	dec := json.NewDecoder(bytes.NewReader(out))
+	for {
+		var pkg listedPackage
+		err := dec.Decode(&pkg)
+		if errors.Is(err, io.EOF) {
+			return packages
+		}
+		require.NoError(t, err)
+		packages = append(packages, pkg)
+	}
+}
+
+// typeFormatting says how n formats a type, or "" when it does not.
+func typeFormatting(n ast.Node, info *types.Info) string {
+	switch n := n.(type) {
+	case *ast.CallExpr:
+		fn := calledFunc(n, info)
+		if fn == nil || fn.Pkg() == nil || fn.Pkg().Path() != "fmt" {
+			return ""
+		}
+		sig, _ := fn.Type().(*types.Signature)
+		for i, arg := range n.Args {
+			if isReflectType(info.TypeOf(arg)) {
+				return fmt.Sprintf("fmt.%s formats a reflect.Type", fn.Name())
+			}
+			if sig == nil || i >= sig.Params().Len() || sig.Params().At(i).Name() != "format" {
+				continue
+			}
+			value := info.Types[arg].Value
+			if value != nil && value.Kind() == constant.String && hasTypeVerb(constant.StringVal(value)) {
+				return fmt.Sprintf("fmt.%s formats with %%T", fn.Name())
+			}
+		}
+	case *ast.SelectorExpr:
+		sel := info.Selections[n]
+		if sel != nil && sel.Kind() != types.FieldVal && sel.Obj().Name() == "String" && isReflectType(sel.Recv()) {
+			return "reflect.Type.String"
+		}
+	}
+	return ""
+}
+
+func calledFunc(call *ast.CallExpr, info *types.Info) *types.Func {
+	var id *ast.Ident
+	switch fun := ast.Unparen(call.Fun).(type) {
+	case *ast.Ident:
+		id = fun
+	case *ast.SelectorExpr:
+		id = fun.Sel
+	default:
+		return nil
+	}
+	fn, _ := info.Uses[id].(*types.Func)
+	return fn
+}
+
+func isReflectType(t types.Type) bool {
+	named, ok := types.Unalias(t).(*types.Named)
+	if !ok {
+		return false
+	}
+	obj := named.Obj()
+	return obj.Pkg() != nil && obj.Pkg().Path() == "reflect" && obj.Name() == "Type"
+}
+
+// hasTypeVerb reports a %T verb in a fmt format.
+func hasTypeVerb(format string) bool {
+	for i := 0; i < len(format); i++ {
+		if format[i] != '%' {
+			continue
+		}
+		i++
+		for i < len(format) && strings.IndexByte("+-# 0123456789.*[]", format[i]) >= 0 {
+			i++
+		}
+		if i < len(format) && format[i] == 'T' {
+			return true
+		}
+	}
+	return false
+}

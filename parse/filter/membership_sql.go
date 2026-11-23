@@ -5,6 +5,7 @@ import (
 	"reflect"
 	"strings"
 
+	"github.com/ashtonian/pkg/gowalker"
 	"github.com/ashtonian/pkg/parse/core"
 )
 
@@ -229,7 +230,7 @@ func lookupSet(c *LookupCond, expr string) (*FieldSchema, []any, error) {
 	for i, v := range c.Values {
 		info := core.TypeOf(reflect.TypeOf(v))
 		if !core.IsKeyType(info.Type) {
-			return nil, nil, invalidLookup(fmt.Sprintf("lookup column %q lists a %T, no scalar value", c.Column, v))
+			return nil, nil, invalidLookup(fmt.Sprintf("lookup column %q lists a %s, no scalar value", c.Column, gowalker.TypeText(reflect.TypeOf(v))))
 		}
 		if typ == "" {
 			typ = info.Type

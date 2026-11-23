@@ -46,7 +46,7 @@ flowchart LR
 - `parse_geo_near: geo: decode point: …`: the stored point is not JSON (`json()` in the plan reports malformed JSON first). `want the point's member names as text`, `want the point as JSON text`, `want a number for operand n`, `parse_geo_covered_by: want the polygon as a WKB blob` or `geo: want a little-endian one-ring polygon WKB`: hand-written SQL called a geo function with arguments `filter.SQLiteDialect` never binds. The operands are checked before the point, so the error comes on the first row, a NULL point's included. The dialect passes `json(column)`, the member names as text, numbers, and the polygon `geo.AppendPolygonWKB` writes.
 
 **Dependencies**
-- *Imports*: `parse/internal/decimals`, `parse/internal/geo`, `modernc.org/sqlite`
+- *Imports*: `parse/internal/decimals`, `parse/internal/geo`, `gowalker` (type text in errors), `modernc.org/sqlite`
 - *Imported by*: applications running parse plans on SQLite, `parse/internal/dbtest`, the example server
 - *Package boundary*: `filter` does not import this package, so the compiler stays driver-free; both read the function names from `internal/decimals` and `internal/geo`
 

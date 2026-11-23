@@ -83,5 +83,11 @@ func keyText(v any) (string, error) {
 	case reflect.Bool:
 		return strconv.FormatBool(rv.Bool()), nil
 	}
-	return "", fmt.Errorf("%w: a %T has no key text", ErrKeyValue, v)
+	if !rv.IsValid() {
+		return "", fmt.Errorf("%w: nil has no key text", ErrKeyValue)
+	}
+	// The kind, not the type: an unnamed struct type's text holds its tags,
+	// and this package, importing only the standard library, has no
+	// gowalker.TypeText to leave them out.
+	return "", fmt.Errorf("%w: a %s value has no key text", ErrKeyValue, rv.Kind())
 }

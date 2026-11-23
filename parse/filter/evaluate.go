@@ -8,6 +8,7 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/ashtonian/pkg/gowalker"
 	"github.com/ashtonian/pkg/parse/core"
 )
 
@@ -133,7 +134,7 @@ func ColumnValue(f *FieldSchema, v any) (any, bool, error) {
 			items, ok = jsonArray(v)
 		}
 		if !ok {
-			return nil, false, fmt.Errorf("field %s: an array column holds a slice or a JSON array, got %T", f.ExternalName, v)
+			return nil, false, fmt.Errorf("field %s: an array column holds a slice or a JSON array, got %s", f.ExternalName, gowalker.TypeText(reflect.TypeOf(v)))
 		}
 		// A NULL element is no element, as the SQL element renderings skip
 		// it: a PostgreSQL array holds NULLs whatever the Go type is.
@@ -343,7 +344,7 @@ func arrayElements(f *FieldSchema, v any) ([]any, error) {
 	if f.Elements != nil && isDecodedJSON(v) {
 		return nil, nil
 	}
-	return nil, fmt.Errorf("field %s: elements of %T: a Row holds an array as []any and a document as decoded JSON", f.ExternalName, v)
+	return nil, fmt.Errorf("field %s: elements of %s: a Row holds an array as []any and a document as decoded JSON", f.ExternalName, gowalker.TypeText(reflect.TypeOf(v)))
 }
 
 // isDecodedJSON reports a value of a type decoded JSON holds: an object,
@@ -396,7 +397,7 @@ func (r ElementRow) Value(f *FieldSchema) (any, bool, error) {
 		if isDecodedJSON(elem) {
 			return nil, false, nil
 		}
-		return nil, false, fmt.Errorf("field %s: element %T is not decoded JSON", f.ExternalName, elem)
+		return nil, false, fmt.Errorf("field %s: element %s is not decoded JSON", f.ExternalName, gowalker.TypeText(reflect.TypeOf(elem)))
 	}
 	v, present, err := decodedPathValue(obj, f.Path.Segments, f.DataType, f.Elem)
 	if err != nil {
@@ -450,7 +451,7 @@ func compareLeaf(f *FieldSchema, op FilterOperator, lit, v any, present bool) (T
 		s, ok := v.(string)
 		pattern, pok := lit.(string)
 		if !ok || !pok {
-			return False, fmt.Errorf("field %s: $%s compares strings, got %T and %T", f.ExternalName, op, v, lit)
+			return False, fmt.Errorf("field %s: $%s compares strings, got %s and %s", f.ExternalName, op, gowalker.TypeText(reflect.TypeOf(v)), gowalker.TypeText(reflect.TypeOf(lit)))
 		}
 		if op == OpContains {
 			return truthOf(strings.Contains(s, pattern)), nil
@@ -465,7 +466,7 @@ func compareLeaf(f *FieldSchema, op FilterOperator, lit, v any, present bool) (T
 func membershipTruth(f *FieldSchema, op FilterOperator, lit, v any) (Truth, error) {
 	set, ok := core.AnySlice(lit)
 	if !ok {
-		return False, fmt.Errorf("field %s: $%s requires an array value, got %T", f.ExternalName, op, lit)
+		return False, fmt.Errorf("field %s: $%s requires an array value, got %s", f.ExternalName, op, gowalker.TypeText(reflect.TypeOf(lit)))
 	}
 	in, null := False, false
 	for _, m := range set {
@@ -525,7 +526,7 @@ func compareScalar(f *FieldSchema, t core.FieldType, v, lit any) (int, error) {
 	default:
 		return 0, fmt.Errorf("field %s: type %q has no scalar comparison", f.ExternalName, t)
 	}
-	return 0, fmt.Errorf("field %s: cannot compare %s value %T with %T", f.ExternalName, t, v, lit)
+	return 0, fmt.Errorf("field %s: cannot compare %s value %s with %s", f.ExternalName, t, gowalker.TypeText(reflect.TypeOf(v)), gowalker.TypeText(reflect.TypeOf(lit)))
 }
 
 // ordered applies a comparison operator to c, the sign of value - literal.
@@ -557,7 +558,7 @@ func compareDocument(f *FieldSchema, op FilterOperator, lit, doc any) (Truth, er
 	case OpHasKey:
 		key, ok := lit.(string)
 		if !ok {
-			return False, fmt.Errorf("field %s: $has_key takes a string, got %T", f.ExternalName, lit)
+			return False, fmt.Errorf("field %s: $has_key takes a string, got %s", f.ExternalName, gowalker.TypeText(reflect.TypeOf(lit)))
 		}
 		return truthOf(JSONHasKey(doc, key)), nil
 	}
@@ -573,7 +574,7 @@ func arrayContains(f *FieldSchema, lit, v any) (Truth, error) {
 	}
 	have, ok := v.([]any)
 	if !ok {
-		return False, fmt.Errorf("field %s: an array value is []any, got %T", f.ExternalName, v)
+		return False, fmt.Errorf("field %s: an array value is []any, got %s", f.ExternalName, gowalker.TypeText(reflect.TypeOf(v)))
 	}
 	for _, w := range want {
 		found := false

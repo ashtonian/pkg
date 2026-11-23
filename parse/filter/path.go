@@ -5,10 +5,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"math"
+	"reflect"
 	"regexp"
 	"strconv"
 	"strings"
 
+	"github.com/ashtonian/pkg/gowalker"
 	"github.com/ashtonian/pkg/parse/core"
 	"github.com/ashtonian/pkg/parse/internal/decimals"
 	"github.com/ashtonian/pkg/parse/internal/dialect"
@@ -221,7 +223,7 @@ func pathNumber(v any) (any, error) {
 		}
 		return n, nil
 	}
-	return nil, fmt.Errorf("expected a number, got %T", v)
+	return nil, fmt.Errorf("expected a number, got %s", gowalker.TypeText(reflect.TypeOf(v)))
 }
 
 func decodeDocument(doc any) (any, error) {

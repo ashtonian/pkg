@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/ashtonian/pkg/gowalker"
 	"github.com/ashtonian/pkg/parse/core"
 )
 
@@ -335,7 +336,7 @@ func projectedKey(l *Lookup, v any) (core.Key, error) {
 	case []any:
 		k = kv
 	default:
-		return nil, fmt.Errorf("lookup projecting the key (%s) answered a %T, not a core.Key", strings.Join(l.ProjectKey, ", "), v)
+		return nil, fmt.Errorf("lookup projecting the key (%s) answered a %s, not a core.Key", strings.Join(l.ProjectKey, ", "), gowalker.TypeText(reflect.TypeOf(v)))
 	}
 	if len(k) != len(l.ProjectKey) {
 		return nil, fmt.Errorf("lookup projecting the key (%s) answered a key of %d values", strings.Join(l.ProjectKey, ", "), len(k))

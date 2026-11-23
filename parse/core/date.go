@@ -4,7 +4,10 @@ import (
 	"database/sql/driver"
 	"encoding/json"
 	"fmt"
+	"reflect"
 	"time"
+
+	"github.com/ashtonian/pkg/gowalker"
 )
 
 // Date is a Gregorian calendar date, independent of timezone or time of day.
@@ -85,6 +88,6 @@ func (d *Date) Scan(value any) error {
 	case []byte:
 		return d.UnmarshalText(v)
 	default:
-		return fmt.Errorf("cannot scan %T as a civil date", value)
+		return fmt.Errorf("scanning %s as a civil date: unsupported source type", gowalker.TypeText(reflect.TypeOf(value)))
 	}
 }

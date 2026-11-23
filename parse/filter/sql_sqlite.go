@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/ashtonian/pkg/gowalker"
 	"github.com/ashtonian/pkg/parse/core"
 	"github.com/ashtonian/pkg/parse/internal/decimals"
 	"github.com/ashtonian/pkg/parse/internal/dialect"
@@ -59,7 +60,7 @@ func (d SQLiteDialect) Condition(field *FieldSchema, op FilterOperator, value an
 		}
 		elems, ok := core.AnySlice(value)
 		if !ok {
-			return "", fmt.Errorf("$contains on an array requires an array value, got %T", value)
+			return "", fmt.Errorf("$contains on an array requires an array value, got %s", gowalker.TypeText(reflect.TypeOf(value)))
 		}
 		// The column's JSON text is read as its element type, as `$some`
 		// reads it; a NULL column is Unknown, as PostgreSQL's `@>` is.
@@ -370,7 +371,7 @@ func (d SQLiteDialect) geoCondition(field *FieldSchema, op FilterOperator, value
 		}
 		return call(geo.SQLiteCoveredByFunc, geo.AppendPolygonWKB(nil, geoRing(v))), nil
 	}
-	return "", fmt.Errorf("geo operator %s does not take %T", op, value)
+	return "", fmt.Errorf("geo operator %s does not take %s", op, gowalker.TypeText(reflect.TypeOf(value)))
 }
 
 func geoUnsupported(d dialect.Dialect, op FilterOperator, shape string) error {

@@ -5,8 +5,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"reflect"
 	"strings"
 	"time"
+
+	"github.com/ashtonian/pkg/gowalker"
 )
 
 // LocalTime is a time of day without a date or a timezone: the SQL TIME
@@ -108,7 +111,7 @@ func (t *LocalTime) Scan(value any) error {
 		*t = parsed
 		return nil
 	}
-	return fmt.Errorf("cannot scan %T as a time of day", value)
+	return fmt.Errorf("scanning %s as a time of day: unsupported source type", gowalker.TypeText(reflect.TypeOf(value)))
 }
 
 // localTimeOf is t's wall clock, as written: its location is not applied.
@@ -130,7 +133,7 @@ func normalizeLocalTime(v any) (string, error) {
 		parsed, err := ParseLocalTime(t)
 		return string(parsed), err
 	}
-	return "", fmt.Errorf("expected time of day string, got %T", v)
+	return "", fmt.Errorf("expected time of day string, got %s", gowalker.TypeText(reflect.TypeOf(v)))
 }
 
 // digits reports whether s is non-empty ASCII decimal digits.

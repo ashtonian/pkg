@@ -9,6 +9,8 @@ import (
 	"strings"
 	"time"
 	"uuid"
+
+	"github.com/ashtonian/pkg/gowalker"
 )
 
 // ErrNUL is the error a request string holding U+0000 is refused with.
@@ -61,13 +63,13 @@ func NormalizeScalar(dt FieldType, kind reflect.Kind, v any) (any, error) {
 	case FieldTypeString:
 		s, ok := text(v)
 		if !ok {
-			return nil, fmt.Errorf("expected string, got %T", v)
+			return nil, fmt.Errorf("expected string, got %s", gowalker.TypeText(reflect.TypeOf(v)))
 		}
 		return s, nil
 	case FieldTypeUUID:
 		s, ok := text(v)
 		if !ok {
-			return nil, fmt.Errorf("expected UUID string, got %T", v)
+			return nil, fmt.Errorf("expected UUID string, got %s", gowalker.TypeText(reflect.TypeOf(v)))
 		}
 		id, err := uuid.Parse(s)
 		if err != nil {
@@ -86,7 +88,7 @@ func NormalizeScalar(dt FieldType, kind reflect.Kind, v any) (any, error) {
 	case FieldTypeBool:
 		b, ok := v.(bool)
 		if !ok {
-			return nil, fmt.Errorf("expected boolean, got %T", v)
+			return nil, fmt.Errorf("expected boolean, got %s", gowalker.TypeText(reflect.TypeOf(v)))
 		}
 		return b, nil
 	case FieldTypeDate:
@@ -98,7 +100,7 @@ func NormalizeScalar(dt FieldType, kind reflect.Kind, v any) (any, error) {
 			date, err := ParseDate(text)
 			return string(date), err
 		}
-		return nil, fmt.Errorf("expected civil date string, got %T", v)
+		return nil, fmt.Errorf("expected civil date string, got %s", gowalker.TypeText(reflect.TypeOf(v)))
 	case FieldTypeTimestamp:
 		t, err := toTime(v)
 		if err != nil {
@@ -175,7 +177,7 @@ func toTime(v any) (time.Time, error) {
 		}
 		return parsed, nil
 	}
-	return time.Time{}, fmt.Errorf("expected timestamp string, got %T", v)
+	return time.Time{}, fmt.Errorf("expected timestamp string, got %s", gowalker.TypeText(reflect.TypeOf(v)))
 }
 
 var errInvalidTimestamp = errors.New("invalid timestamp, expected RFC 3339")

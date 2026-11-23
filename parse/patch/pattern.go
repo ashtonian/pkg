@@ -61,6 +61,9 @@ func (p pathPattern) matchesBelow(path []string) bool {
 	return false
 }
 
+// reaches reports whether the pattern matches path or a path below it.
+func (p pathPattern) reaches(path []string) bool { return len(p.states(path)) > 0 }
+
 // remainders are the patterns a path below path must still match, one per
 // way the pattern can have matched path's tokens: suffixes of the pattern.
 func (p pathPattern) remainders(path []string) [][]string {

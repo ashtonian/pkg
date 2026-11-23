@@ -2,10 +2,12 @@ package filter
 
 import (
 	"fmt"
+	"reflect"
 	"slices"
 	"strconv"
 	"strings"
 
+	"github.com/ashtonian/pkg/gowalker"
 	"github.com/ashtonian/pkg/parse/core"
 )
 
@@ -72,7 +74,7 @@ func (b *SQLBuilder) buildArrayPath(s *buildState, node *FilterNode) (string, er
 	case OpContains:
 		values, ok := core.AnySlice(node.Value)
 		if !ok {
-			return "", fmt.Errorf("field %s: $contains on an array requires an array value, got %T", f.ExternalName, node.Value)
+			return "", fmt.Errorf("field %s: $contains on an array requires an array value, got %s", f.ExternalName, gowalker.TypeText(reflect.TypeOf(node.Value)))
 		}
 		present, err := b.buildElements(s, &FilterNode{Field: f, Op: OpSome})
 		if err != nil {
