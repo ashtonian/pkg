@@ -82,7 +82,9 @@ func entrySource(read func(ctx context.Context) (map[string]any, error), opts []
 
 // readEntries reads the entries p reads and prepares them as key edits (see
 // edits.go), which set them over the layers beneath as the source called
-// name merges. An entry naming nothing config reads is an unknown key.
+// name merges. An entry naming nothing config reads is an unknown key; one
+// holding [*] names no one value, and is refused as an entry that cannot
+// be set is.
 func (l *loader) readEntries(ctx context.Context, name string, p providerSource, src Source) (*layer, error) {
 	read, err := p.entries(ctx)
 	if err != nil {
@@ -92,7 +94,7 @@ func (l *loader) readEntries(ctx context.Context, name string, p providerSource,
 	y := &layer{name: name, label: constant(src), byEntry: true, entries: edits, withhold: p.withhold, report: p.rejected,
 		claimsUnknown: p.claimsUnknown, unknownReport: p.unknown}
 	for _, ke := range refused {
-		if ke.Unknown {
+		if ke.Unknown && !ke.pattern {
 			y.unknown = append(y.unknown, UnknownKey{Key: ke.Key, Suggestion: ke.suggestion})
 		} else {
 			y.refused = append(y.refused, ke)

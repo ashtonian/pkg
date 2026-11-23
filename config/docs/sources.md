@@ -215,7 +215,8 @@ that is not `Unknown` says why in its message, naming keys only:
 
 | Edits | Refused key |
 |---|---|
-| A key naming nothing config reads, or a wildcard | the key, `Unknown` |
+| A key naming nothing config reads | the key, `Unknown` |
+| A key holding `[*]`, which names no one value | the key, `Unknown`; its message says it is not concrete (`key extra[*] is not concrete`) |
 | A key inside a value that no field reads: `primary` set to `{"bogus": 1}` | `primary.bogus`, `Unknown` |
 | One value under two spellings: `port` and `PORT`, or a field and its alias | the key, once |
 | An index past the next element of the list beneath — the baseline's, or one the batch sets | the index's key |
@@ -424,6 +425,7 @@ a whole list where the list beneath can change.
 | Entry | Load |
 |---|---|
 | Names nothing config reads, or does not parse; or a key inside its value that no field reads | an unknown key, for the unknown-input handler or the source's `WithUnknownEntries` callback, with the field it most likely misspells |
+| Holds `[*]`, which names no one value | fails with a `*KeyError` matching `ErrKey`: `key extra[*] is not concrete` |
 | One value under two spellings (`port`, `PORT`; a field and its alias) | fails with a `*KeyError` matching `ErrValidation` |
 | An index past the next element of the list beneath | fails with a `*KeyError` matching `ErrValidation` |
 | A key beneath one set to a value that cannot hold it, or keys selecting both elements and fields of one value | fails with a `*KeyError` matching `ErrValidation` |

@@ -1,7 +1,6 @@
 package config
 
 import (
-	"errors"
 	"fmt"
 	"reflect"
 	"strconv"
@@ -11,6 +10,8 @@ import (
 
 // KeyError distinguishes an unknown key (Unknown, ErrKey) from a known key
 // that cannot be set as written or holds an invalid value (ErrValidation).
+// A key holding [*] where one naming a single value is required is Unknown
+// too, and its message says it is not concrete.
 // Key is the key as diagnostics may show it: cut short where the keys of a
 // sensitive map, list or interface, or those a sensitive remain field
 // collects, begin, and redacted (see RedactText) when it does not parse.
@@ -25,15 +26,22 @@ type KeyError struct {
 	Err     error  `json:"-"`
 	// suggestion is the key an unknown one most likely misspells.
 	suggestion string
+	// pattern marks a key refused for holding [*] (see notConcrete).
+	pattern bool
+	// reason is what Error says of Key beyond its category, set where the
+	// KeyError is made: what a pattern is, or why a known key cannot be
+	// set as written.
+	reason string
 }
 
 func (e *KeyError) Error() string {
-	var problem *keyProblem
 	switch {
+	case e.pattern:
+		return fmt.Sprintf("config: key %s %s", e.Key, e.reason)
 	case e.Unknown:
 		return fmt.Sprintf("config: unknown key %s", e.Key)
-	case errors.As(e.Err, &problem):
-		return fmt.Sprintf("config: key %s: %s", e.Key, problem.reason)
+	case e.reason != "":
+		return fmt.Sprintf("config: key %s: %s", e.Key, e.reason)
 	}
 	return fmt.Sprintf("config: invalid value for key %s", e.Key)
 }
@@ -55,7 +63,8 @@ func (e *KeyError) Is(target error) bool {
 // package words that way where it wraps it (see withhold and
 // ruleViolation); Err keeps it whole.
 func newKeyError(schema *schemaNode, key keyPath, unknown bool, cause error) *KeyError {
-	ke := &KeyError{Key: shownKey(schema, key), Unknown: unknown, Err: cause}
+	shown := shownPath(schema, key)
+	ke := &KeyError{Key: shown.orRoot(), Unknown: unknown, Err: cause}
 	f, ok := cause.(*keyFault)
 	if !ok {
 		return ke
@@ -65,6 +74,14 @@ func newKeyError(schema *schemaNode, key keyPath, unknown bool, cause error) *Ke
 		problem.reason = withheldReason
 	}
 	ke.Err = problem
+	switch {
+	case f.pattern && shown.isPattern():
+		ke.pattern, ke.reason = true, "is not concrete"
+	case f.pattern:
+		ke.pattern, ke.reason = true, "holds [*] within its sensitive contents, so it is not concrete"
+	case f.sentinel == ErrValidation:
+		ke.reason = problem.reason
+	}
 	if f.suggestion != nil && !withholds(schema, f.suggestion) {
 		ke.suggestion = f.suggestion.String()
 	}
@@ -94,10 +111,19 @@ func unknownKeyError(u UnknownKey) *KeyError {
 	return &KeyError{Key: u.Key, Unknown: true, Err: &keyProblem{sentinel: ErrKey, key: u.Key, reason: "no field reads it"}, suggestion: u.Suggestion}
 }
 
-// shownKey is key as diagnostics may show it (see diagnosticPath), the root
-// as $.
+// shownKey is key as diagnostics may show it, the root as $.
 func shownKey(schema *schemaNode, key keyPath) string {
-	return diagnosticPath(schema, key).orRoot()
+	return shownPath(schema, key).orRoot()
+}
+
+// shownPath is key as diagnostics may show it (see diagnosticPath), and a
+// [*] where they cut it short: [*] names no key the input holds.
+func shownPath(schema *schemaNode, key keyPath) keyPath {
+	shown := diagnosticPath(schema, key)
+	if len(shown) < len(key) && key[len(shown)].kind == segAny {
+		shown = key[:len(shown)+1]
+	}
+	return shown
 }
 
 // withholds reports whether diagnostics cut key short.
@@ -117,11 +143,20 @@ type keyFault struct {
 	args     []faultArg
 	// suggestion is the key an unknown field most likely misspells.
 	suggestion keyPath
+	pattern    bool // the key holds [*] where it must name one value
 }
 
 // notRead is the fault of key, which config reads nothing at.
 func notRead(key keyPath, format string, args ...faultArg) *keyFault {
 	return &keyFault{sentinel: ErrKey, key: key, format: format, args: args}
+}
+
+// notConcrete is the fault of key, which holds [*] where it must name one
+// value: an unknown key, which its KeyError's message tells apart.
+func notConcrete(key keyPath) *keyFault {
+	f := notRead(key, "key must be concrete")
+	f.pattern = true
+	return f
 }
 
 // refuse is the fault of a key that cannot be set as written.

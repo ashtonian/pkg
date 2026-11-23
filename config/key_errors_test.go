@@ -181,3 +181,76 @@ func TestKeyError_ErrNamesTheWholeKey(t *testing.T) {
 	require.ErrorAs(t, err, &ke)
 	assert.EqualError(t, ke.Err, `invalid configuration key plain["a"].prot: plain["a"] has no field "prot"`)
 }
+
+// A key holding [*] where one naming a single value is required is refused
+// as not concrete, not as unknown: it still matches ErrKey and is Unknown,
+// and its message says what it is. A stored entry holding one is refused
+// as any entry that cannot be set is, not reported as an unknown key.
+func TestKeyError_APatternIsNotConcrete(t *testing.T) {
+	ctx := t.Context()
+	pattern := map[string]any{"plain[*].port": 1}
+	entries := func(context.Context) (map[string]any, error) { return pattern, nil }
+	tests := []struct {
+		name string
+		err  func() error
+		key  string
+		says string
+	}{
+		{"CanonicalKey: a sensitive remain field's keys", func() error {
+			_, err := CanonicalKey[withheldCfg]("vault[*]")
+			return err
+		}, "vault[*]", "config: key vault[*] is not concrete"},
+		{"CanonicalKey: a sensitive map's entries", func() error {
+			_, err := CanonicalKey[withheldCfg]("secrets[*]")
+			return err
+		}, "secrets[*]", "config: key secrets[*] is not concrete"},
+		{"CanonicalKey: [*] within sensitive contents", func() error {
+			_, err := CanonicalKey[withheldCfg](`nested["prod_db"][*]`)
+			return err
+		}, "nested", "config: key nested holds [*] within its sensitive contents, so it is not concrete"},
+		{"CheckKey", func() error {
+			return CheckKey[withheldCfg](ctx, "plain[*].port", 1)
+		}, "plain[*].port", "config: key plain[*].port is not concrete"},
+		{"DecodeEdits", func() error {
+			_, err := DecodeEdits[withheldCfg](ctx, nil, map[string]any{"plain[*].port": 1, "port": 2})
+			return err
+		}, "plain[*].port", "config: edits refused: key plain[*].port is not concrete"},
+		{"Load: a stored entry", func() error {
+			_, err := Load[withheldCfg](ctx, WithBaseEntries(entries))
+			return err
+		}, "plain[*].port", "loading base provider 0: config: key plain[*].port is not concrete"},
+		{"Load: a stored entry, unknown keys allowed", func() error {
+			_, err := Load[withheldCfg](ctx, WithBaseEntries(entries), WithAllowUnknownKeys())
+			return err
+		}, "plain[*].port", "loading base provider 0: config: key plain[*].port is not concrete"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := tt.err()
+			require.ErrorIs(t, err, ErrKey)
+			assert.EqualError(t, err, tt.says)
+			assert.NotContains(t, err.Error(), "prod")
+			var ke *KeyError
+			require.ErrorAs(t, err, &ke)
+			assert.Equal(t, tt.key, ke.Key)
+			assert.True(t, ke.Unknown)
+			assert.Contains(t, ke.Err.Error(), "key must be concrete")
+			var unknown *UnknownKeysError
+			assert.False(t, errors.As(err, &unknown), "not an unknown key")
+		})
+	}
+
+	t.Run("WithInvalidEntries withholds a stored entry", func(t *testing.T) {
+		var rejected []KeyError
+		_, err := Load[withheldCfg](ctx, WithBaseEntries(entries, WithInvalidEntries(func(_ context.Context, ke []KeyError) error {
+			rejected = ke
+			return nil
+		})))
+		require.NoError(t, err)
+		require.Len(t, rejected, 1)
+		assert.EqualError(t, &rejected[0], "config: key plain[*].port is not concrete")
+	})
+
+	err := CheckKey[withheldCfg](ctx, "plain_typo", 1)
+	assert.EqualError(t, err, "config: unknown key plain_typo", "a key naming nothing stays unknown")
+}

@@ -148,6 +148,11 @@ func (p keyPath) any() keyPath {
 	return append(slices.Clip(p), segment{kind: segAny})
 }
 
+// isPattern reports whether p holds [*], so names no one key.
+func (p keyPath) isPattern() bool {
+	return slices.ContainsFunc(p, func(s segment) bool { return s.kind == segAny })
+}
+
 // keyList is keys for a message: in key order, each once, joined by ", ".
 // A walk over map entries meets them in no particular order.
 func keyList(keys []keyPath) string {

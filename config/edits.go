@@ -68,7 +68,7 @@ func resolveSchemaPath(schema *schemaNode, p keyPath) (parent *schemaNode, alias
 	for i := range p {
 		s := &p[i]
 		if s.kind == segAny {
-			return nil, nil, unknown(notRead(p, "key must be concrete"))
+			return nil, nil, unknown(notConcrete(p))
 		}
 		parent = n
 		former, err := spellSegment(n, p, i)

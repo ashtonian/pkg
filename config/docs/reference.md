@@ -43,7 +43,7 @@ schema. Schema errors support `errors.Is(err, config.ErrSchema)`; malformed keys
 | `RedactedMapChecked(cfg)` | `(map[string]string, error)` with text values keyed by path | Returns nil on structural errors and misspelt tag keys, including reached dynamic types |
 | `Usage[T](prefixes...)` | `([]UsageEntry, error)` with safe printable metadata | Reports the schema errors a load reports; keeps raw struct tags only in the non-JSON Field member |
 | `ParseKey(text)` | `(Key, error)` | Reports malformed keys with ErrKey |
-| `CanonicalKey[T](key)` | `(string, error)`: the key as this package prints it, aliases, case and map-key quoting resolved | An Unknown `*KeyError` (ErrKey) for a key that does not parse, is not concrete or names nothing T reads; `ErrSchema` for a declaration a load refuses, its `validate` tags aside |
+| `CanonicalKey[T](key)` | `(string, error)`: the key as this package prints it, aliases, case and map-key quoting resolved | An Unknown `*KeyError` (ErrKey) for a key that does not parse, is not concrete (its message says so: `key extra[*] is not concrete`) or names nothing T reads; `ErrSchema` for a declaration a load refuses, its `validate` tags aside |
 | `Key.Within(p)` | `bool`: the key is `p` or beneath it | — |
 | `Tree(cfg)`, `TreeFunc(cfg, leaf)` | `(map[string]any, error)` with raw or policy-transformed values | Returns no partial tree on schema/scalar/text-marshaling errors |
 | `RedactedTreeChecked(cfg)` | `(map[string]any, error)` with nested redacted values | Returns nil on structural errors and misspelt tag keys; no partial tree |
