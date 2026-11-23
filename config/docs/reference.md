@@ -25,7 +25,7 @@ Every error wraps one category sentinel together with its cause, so `errors.Is` 
 | `ErrReloadInProgress` | A manual reload found another running. Not a failure. |
 | `ErrReloaderStopped` | A reload was requested after `Stop`. |
 | `ErrReloaderRunning` | `Run` was called while another `Run` of the same reloader runs. |
-| `ErrSchema`, `ErrKey` | Invalid schema/default declarations, or a malformed/unknown key. `KeyError` distinguishes unknown keys from invalid values in `CheckKey`, `DecodeKey` and `DecodeEdits`; `EditsError` is a batch of edits whose candidate does not decode or validate, and matches `ErrValidation`. |
+| `ErrSchema`, `ErrKey` | Invalid schema/default declarations, or a malformed/unknown key. `KeyError` distinguishes unknown keys from invalid values in `CheckKey`, `DecodeKey` and `CanonicalKey`; `EditsError` is a batch `DecodeEdits` refuses: its `Refused` keys match `ErrKey`, a candidate that does not decode or validate matches `ErrValidation`. |
 
 `Diagnose(err)` turns any of them into a `Problem{Kind, Message}` — a bounded category for a metric label or a status endpoint.
 
@@ -43,6 +43,8 @@ schema. Schema errors support `errors.Is(err, config.ErrSchema)`; malformed keys
 | `RedactedMapChecked(cfg)` | `(map[string]string, error)` with text values keyed by path | Returns nil on structural errors and misspelt tag keys, including reached dynamic types |
 | `Usage[T](prefixes...)` | `([]UsageEntry, error)` with safe printable metadata | Reports the schema errors a load reports; keeps raw struct tags only in the non-JSON Field member |
 | `ParseKey(text)` | `(Key, error)` | Reports malformed keys with ErrKey |
+| `CanonicalKey[T](key, opts...)` | `(string, error)`: the key as this package prints it, aliases, case and map-key quoting resolved | An Unknown `*KeyError` (ErrKey) for a key that does not parse, is not concrete or names nothing T reads |
+| `Key.Within(p)` | `bool`: the key is `p` or beneath it | — |
 | `Tree(cfg)`, `TreeFunc(cfg, leaf)` | `(map[string]any, error)` with raw or policy-transformed values | Returns no partial tree on schema/scalar/text-marshaling errors |
 | `RedactedTreeChecked(cfg)` | `(map[string]any, error)` with nested redacted values | Returns nil on structural errors and misspelt tag keys; no partial tree |
 
@@ -117,6 +119,7 @@ Load options:
 | `WithDefaults(map)` | none | Defaults by dotted path, above the code defaults (`SetDefaults`) and tags; repeated calls merge. |
 | `WithBaseProvider(p, parser, opts...)` | none | A provider below the files. |
 | `WithOverrideProvider(p, parser, opts...)` | none | A provider above the environment. |
+| `WithBaseEntries(read, opts...)`, `WithOverrideEntries(read, opts...)` | none | Stored entries keyed in the key grammar, read with the load's context on every load, among the base or override providers in the order added. |
 | `WithDecodeHook(h)` | none | A mapstructure decode hook, run before the built-in ones. |
 | `WithUnknownKeys(fn)` | unknown keys fail, unknown variables ignored | Decide what unknown keys and variables do: report, accept, or fail. |
 | `WithAllowUnknownKeys()` | unknown keys fail | Accept keys no field decodes, silently. |
@@ -131,9 +134,10 @@ Provider source options:
 
 | Option | Default | Description |
 |---|---|---|
-| `WithInvalidEntries(report)` | fail on invalid entries | Withhold invalid known entries, retaining lower sources; report sorted keys/errors after each read. Unknown keys remain reportable. |
+| `WithInvalidEntries(report)` | fail on invalid entries | Withhold entries invalid on their own and with the source's other valid entries, judged over the layers beneath; retain lower sources; report sorted keys/errors after each read. Unknown keys remain reportable. |
 
-`Defaulter`, `CheckKey`, `DecodeKey` and `DecodeEdits` are described in
+`Defaulter`, `CheckKey`, `DecodeKey`, `CanonicalKey`, `DecodeEdits` and the
+entry options are described in
 [sources and precedence](sources.md#validating-stored-entries). `RedactText` uses the diagnostic
 [credential-shape policy](inspection.md#printing-and-usage).
 

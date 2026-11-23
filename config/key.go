@@ -66,3 +66,32 @@ func (k Key) LastName() string {
 	}
 	return ""
 }
+
+// Within reports whether k is p or a key beneath it: p's segments begin k.
+// A field and a map key of one name are one segment, as a key beneath an
+// interface or remain field can be written either way, and a wildcard in p
+// stands for any map key or list index. Keys spelled by CanonicalKey
+// compare exactly, so a store finds the rows a write of p replaces.
+func (k Key) Within(p Key) bool {
+	if len(p) > len(k) {
+		return false
+	}
+	for i, s := range p {
+		t := k[i]
+		switch s.Kind {
+		case SegmentAny:
+			if t.Kind == SegmentField {
+				return false
+			}
+		case SegmentIndex:
+			if t.Kind != SegmentIndex || t.Index != s.Index {
+				return false
+			}
+		default:
+			if t.Kind != SegmentField && t.Kind != SegmentKey || t.Name != s.Name {
+				return false
+			}
+		}
+	}
+	return true
+}

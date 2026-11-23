@@ -70,11 +70,15 @@ type fileSource struct {
 	required bool
 }
 
+// providerSource is one base or override source: a koanf provider read
+// through parser, or, when entries is set, stored entries in the key
+// grammar (WithBaseEntries).
 type providerSource struct {
 	withhold bool
 	rejected func(context.Context, []KeyError) error
 	provider koanf.Provider
 	parser   koanf.Parser
+	entries  func(context.Context) (map[string]any, error)
 }
 
 // postLoadHook is a [WithPostLoad] callback with its config type erased, so

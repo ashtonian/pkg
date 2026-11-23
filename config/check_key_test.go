@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/go-viper/mapstructure/v2"
@@ -268,7 +269,8 @@ func TestDecodeKey_ListIndexBoundsAndDetachedDefaults(t *testing.T) {
 		_, err = DecodeKey[editConfig](t.Context(), "pool[-1].host", "z", WithDefaults(defaults))
 		require.ErrorIs(t, err, ErrKey)
 		_, err = DecodeKey[editConfig](t.Context(), "route.bits", 4, WithDefaults(defaults))
-		require.ErrorIs(t, err, ErrValidation, "a value decoded whole takes no keys")
+		require.ErrorAs(t, err, &ke)
+		assert.Equal(t, KeyError{Key: "route.bits", Unknown: true}, KeyError{Key: ke.Key, Unknown: ke.Unknown}, "a value decoded from text has no key to set")
 
 		got, err := DecodeKey[editConfig](t.Context(), "pool[0].port", 7, WithDefaults(defaults))
 		require.NoError(t, err)
@@ -320,4 +322,77 @@ func TestDecodeKey_IntegerKeyedMapMergesByEntry(t *testing.T) {
 	loaded, err := Load[cfg](t.Context(), defaults, WithFile(file))
 	require.NoError(t, err)
 	assert.Equal(t, map[int]string{1: "a", 2: "c"}, loaded.IDs)
+}
+
+type aliasedServer struct {
+	Host string `koanf:"host"`
+	Port int    `koanf:"port" alias:"listen"`
+}
+
+type integerKeyed struct {
+	Ports map[int]aliasedServer    `koanf:"ports"`
+	Named map[string]aliasedServer `koanf:"named"`
+}
+
+// An edit beneath a map keyed by integers spells its keys as a file's are
+// spelled: through aliases and letter case, inside its value and in the key,
+// with the integer in its decimal spelling — as a map keyed by strings does.
+func TestDecodeKey_EditsBeneathAnIntegerKeyedMapResolve(t *testing.T) {
+	defaults := WithDefaults(map[string]any{
+		"ports": map[int]aliasedServer{80: {"a", 1}},
+		"named": map[string]aliasedServer{"x": {"a", 1}},
+	})
+	file := filepath.Join(t.TempDir(), "config.yaml")
+	writeFile(t, file, "ports: {80: {Port: 9}}\n")
+	fromFile, err := Load[integerKeyed](t.Context(), defaults, WithFile(file))
+	require.NoError(t, err)
+	require.Equal(t, aliasedServer{"a", 9}, fromFile.Ports[80])
+	for _, tc := range []struct {
+		key   string
+		value any
+	}{
+		{`ports["80"]`, map[string]any{"Port": 9}},
+		{`ports["80"]`, map[string]any{"listen": 9}},
+		{`ports["80"].Port`, 9},
+		{`ports["080"].listen`, 9},
+	} {
+		got, err := DecodeKey[integerKeyed](t.Context(), tc.key, tc.value, defaults)
+		require.NoError(t, err, tc.key)
+		assert.Equal(t, fromFile.Ports, got.Ports, tc.key)
+		named, err := DecodeKey[integerKeyed](t.Context(), strings.Replace(strings.Replace(tc.key, `ports["080"]`, `named["x"]`, 1), `ports["80"]`, `named["x"]`, 1), tc.value, defaults)
+		require.NoError(t, err, tc.key)
+		assert.Equal(t, aliasedServer{"a", 9}, named.Named["x"], tc.key)
+	}
+	_, err = DecodeKey[integerKeyed](t.Context(), `ports["eighty"].port`, 9, defaults)
+	var ke *KeyError
+	require.ErrorAs(t, err, &ke)
+	assert.True(t, ke.Unknown)
+	require.ErrorIs(t, err, ErrKey)
+}
+
+// CanonicalKey spells a key one way: fields by their keys whatever alias or
+// letter case named them, integer map keys in decimal, keys beneath an
+// interface as fields where they can be. A key naming nothing is refused.
+func TestCanonicalKey(t *testing.T) {
+	for _, tc := range []struct{ key, want string }{
+		{"MAIN.Port", "primary.port"},
+		{`addresses["a.b"].HOST`, `addresses["a.b"].host`},
+		{`extra["x"]`, "extra.x"},
+		{`extra["a.b"]`, `extra["a.b"]`},
+		{"pool[3].host", "pool[3].host"},
+	} {
+		got, err := CanonicalKey[editConfig](tc.key)
+		require.NoError(t, err, tc.key)
+		assert.Equal(t, tc.want, got, tc.key)
+	}
+	got, err := CanonicalKey[integerKeyed](`ports["080"].listen`)
+	require.NoError(t, err)
+	assert.Equal(t, `ports["80"].port`, got)
+	for _, key := range []string{"prot", "pool[*].host", "", "primary..port", `ports["x"]`} {
+		_, err := CanonicalKey[editConfig](key)
+		var ke *KeyError
+		require.ErrorAs(t, err, &ke, key)
+		assert.True(t, ke.Unknown, key)
+		assert.ErrorIs(t, err, ErrKey, key)
+	}
 }

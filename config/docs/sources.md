@@ -60,11 +60,11 @@ A provider loads at either provider layer: pass a nil parser when it returns key
 | Azure Key Vault | `github.com/knadh/koanf/providers/azkeyvault` | a poll |
 | Consul KV, etcd, NATS KV | `…/providers/consul/v2`, `…/etcd/v2`, `…/nats` | its `Watch` |
 | A database, an API, any function | `config.NewMapProvider` | a poll, or `SourceChanged` |
-| Stored entries keyed as `CheckKey` takes them | `config.NewEntryProvider` | a poll, or `SourceChanged` |
+| Stored entries keyed as `CanonicalKey` spells them | `config.WithBaseEntries`, `config.WithOverrideEntries` | a poll, or `SourceChanged` |
 
 Bridging a provider's watch to a reloader is one call — `p.Watch(func(_ any, err error) { if err == nil { reloader.SourceChanged() } })` — and bursts coalesce into one reload.
 
-`NewMapProvider(read, ".")` turns a function into a provider read on every load; with `"."` its keys are dotted paths, with `""` the map is already nested. What `read` returns is copied. `NewEntryProvider(read)` reads entries keyed in this package's own key grammar instead — see [stored entries](#stored-entries).
+`NewMapProvider(read, ".")` turns a function into a provider read on every load; with `"."` its keys are dotted paths, with `""` the map is already nested. What `read` returns is copied. `WithBaseEntries(read)` and `WithOverrideEntries(read)` read entries keyed in this package's own key grammar instead — see [stored entries](#stored-entries).
 
 A provider that returns keys, `WithDefaults` and `SetDefaults` may hold typed Go values. Each source is deep-copied as it merges, and the copy keeps a struct only by its exported fields unless it knows the type, as it knows `time.Time`. A value whose state that copy would lose — a `netip.Addr` or `netip.Prefix`, alone or in a section, list, array or map — is read through its `MarshalText` instead; a field of interface type holding one receives that text. A `MarshalText` error fails the load with `ErrValidation`, naming the key and not the value. From a provider or `WithDefaults`, a typed map or section still replaces what the layers beneath it set, and a nil list stays nil. A higher source then sets one key of it as it sets one key of a nested map: a file's `addresses: {first: {port: 9}}` over a default `map[string]Server` changes that one port, and every other entry and field keeps its value. A `json.Number`, which a JSON decoder with `UseNumber` returns so large integers keep every digit, decodes as the number it holds wherever a number belongs — into a `time.Duration` as a file's number does — and as its text into anything else.
 
@@ -116,10 +116,12 @@ Caller `WithDefaults` still supplies runtime profiles — values the program kno
 and validates it with the same hooks, tag validator and `Validate` method as
 `Load`. `DecodeKey` returns the resulting `*Config` when a caller also needs
 its typed values. A rejected key returns `*KeyError`: `Unknown` and `ErrKey`
-distinguish an unknown key; a known key with an invalid value matches
-`ErrValidation`. Schema/setup errors and cancellation return directly.
-No partial config is returned on failure. Error messages contain the key,
-not the value; wrapped causes are for trusted diagnostics.
+distinguish an unknown key — the key itself, or a key inside its value that
+no field reads, such as `primary.bogus` in `primary` set to `{"bogus": 1}`;
+a known key with an invalid value matches `ErrValidation`. Schema/setup
+errors and cancellation return directly. No partial config is returned on
+failure. Error messages contain the key, not the value; wrapped causes are
+for trusted diagnostics.
 
 These calls honor `WithDefaults`, `WithDecodeHook`, `WithValidator` and
 `WithSkipValidation`. They read no provider, file or environment and run no
@@ -129,64 +131,98 @@ aliases and case folding accepted for fields. List indexes must already
 exist in defaults or append immediately after them; pass the whole list to
 create several elements. Wildcards and sparse expansion are refused.
 
-The value sets its key as a source above the defaults would. A map merges
-into what the defaults hold there key by key: `addresses["first"].port` set
-to `9`, or `addresses["first"]` set to `{"port": 9}`, keeps that entry's
-host and every other entry, whether the defaults hold them as a typed
-`map[string]Server` or as nested maps. A struct, a typed map or any other
-value replaces what is beneath it, so `addresses["first"]` set to
-`Server{Port: 9}` leaves that entry's host empty. An index edits that
-element of the defaults' list, and a value decoded whole, such as a
-`netip.Prefix`, takes no keys beneath it. A key a section's
-`koanf:",remain"` field collects is a key like any other. The caller's
-defaults are never changed, and the result shares nothing with them.
+The value sets its key as a source above the defaults would. A
+`map[string]any` — what a file or `encoding/json` decodes to — merges into
+what the defaults hold there key by key: `addresses["first"].port` set to
+`9`, or `addresses["first"]` set to `{"port": 9}`, keeps that entry's host
+and every other entry, whether the defaults hold them as a typed
+`map[string]Server` or as nested maps. Any other value replaces what is
+beneath it: a struct and a typed map such as `map[string]int` are the whole
+section or map, as `WithDefaults` sets them, so `addresses["first"]` set to
+`Server{Port: 9}` leaves that entry's host empty. `nil` sets the zero value,
+as an explicit null from any source does. An index edits that element of
+the defaults' list. A key beneath a value decoded from text, such as a
+`netip.Prefix`, names nothing config reads. A key a section's
+`koanf:",remain"` field collects is a key like any other, and so is an entry
+of a map keyed by integers: `ports["80"].port`, its fields resolving through
+aliases and case as any section's do. The caller's defaults are never
+changed, and the result shares nothing with them.
+
+### Canonical keys
+
+`CanonicalKey[Config](key)` returns a key spelled the one way this package
+prints it: each field by its key, never an alias tag's former name or
+another letter case (`MAIN.Port` → `primary.port`); a map entry quoted; an
+integer-keyed map's entry in decimal (`ports["080"]` → `ports["80"]`); and a
+key beneath an interface or remain field as a field wherever it can be one
+(`extra["x"]` → `extra.x`). It refuses what `CheckKey` refuses as unknown,
+with an `Unknown` `*KeyError`, and reads no value. A store that keys its rows
+by it holds one row per key, whatever spelling a client sent.
+
+`Key.Within(p)` reports whether a key is `p` or beneath it, so a store can
+find the rows a write of `p` replaces: `primary.port` and `primary` are
+within `primary`, `pool[10]` is not within `pool[1]`, and a wildcard in `p`
+stands for any map key or list index. Compare keys `CanonicalKey` spelled.
 
 ### Validating a batch of edits
 
 `CheckKey` judges each key against defaults, so a loop over a batch judges
 no edit against the others: with defaults `min=0, max=10` and a rule
 `min <= max`, `min=8` and `max=4` each pass alone and fail together, and
-`min=12` fails alone while `min=12, max=20` is valid. A writer that commits
-a batch atomically checks it with `DecodeEdits`, which sets every edit over
-one explicit baseline — the stored configuration, or the defaults when it
-is `nil` — and decodes and validates the result once:
+`min=12` fails alone while `min=12, max=20` is valid. `DecodeEdits` sets
+every edit of a batch over one explicit baseline — a configuration, or the
+defaults when it is `nil` — and decodes and validates the result once:
 
 ```go
-candidate, err := config.DecodeEdits(ctx, &stored, map[string]any{
+candidate, err := config.DecodeEdits(ctx, &baseline, map[string]any{
     "limits.min": 12,
     "limits.max": 20,
 })
-if err != nil {
-    return err // nothing to commit
-}
-return commit(ctx, candidate)
 ```
 
-Edits follow `DecodeKey`'s keys and values. They apply in key order, an
-index by its number and a key before the keys beneath it. One batch can
-append several list elements (`pool[1]`, `pool[2]`, …), and a key beneath
-another sets what it names in the value the other set: `primary` set to
-`{"port": 6}` merges into the baseline's section and `primary.port` set to
-`7` then sets its port, while `primary` set to `Server{Port: 6}` replaces
-the section first. A batch is refused whole when any of its keys is, with
-every refused key reported as a `*KeyError`, joined in key order; a
-`*KeyError` that is not `Unknown` says why in its message, naming keys only:
+Edits follow `DecodeKey`'s keys and values, `nil` setting the zero value.
+They apply in key order, an index by its number and a key before the keys
+beneath it. One batch can append several list elements (`pool[1]`,
+`pool[2]`, …), and a key beneath another sets what it names in the value the
+other set: `primary` set to `{"port": 6}` merges into the baseline's section
+and `primary.port` set to `7` then sets its port, while `primary` set to
+`Server{Port: 6}` replaces the section first. A batch is refused whole when
+any of its keys is. The error is one `*EditsError` whose `Refused` lists
+every refused key, in key order, whichever stage refused it; a `*KeyError`
+that is not `Unknown` says why in its message, naming keys only:
 
-| Edits | Refused as |
+| Edits | Refused key |
 |---|---|
-| A key naming nothing config reads, or a wildcard | `Unknown`, `ErrKey` |
-| One value under two spellings: `port` and `PORT`, or a field and its alias | `ErrValidation`, once for the key |
-| An index past the next element of the list beneath — the baseline's, or one the batch sets | `ErrValidation` |
+| A key naming nothing config reads, or a wildcard | the key, `Unknown` |
+| A key inside a value that no field reads: `primary` set to `{"bogus": 1}` | `primary.bogus`, `Unknown` |
+| One value under two spellings: `port` and `PORT`, or a field and its alias | the key, once |
+| An index past the next element of the list beneath — the baseline's, or one the batch sets | the index's key |
+| A key beneath one set to a value that cannot hold it: `primary` set to `5`, or `nil`, and `primary.port` | the key beneath |
+| Keys selecting both elements and fields of one value: `extra[0]` and `extra.x` | the element's key |
 
-A candidate that does not decode or validate is an `*EditsError`, which
-matches `ErrValidation` and names every edited key and no value; its `Err`
-keeps the decoder's or validator's cause for trusted diagnostics. On any
+When every key applies but the candidate does not decode or validate, the
+`*EditsError` names every edited key in `Keys` and keeps the decoder's or
+validator's cause in `Err` for trusted diagnostics. `errors.Is` reaches
+`ErrKey` when a key was refused and `ErrValidation` when the candidate
+failed; the message names keys and never a value. A baseline holding a value
+that does not marshal to text is an error of its own, neither. On any
 failure no candidate is returned. The baseline is only read, and the
 candidate shares nothing with it or with the edits. The candidate is decoded
 afresh from the baseline's keys, so a field config does not decode
 (unexported, or `koanf:"-"`) is zero in it. `WithDefaults` applies only when
 the baseline is `nil`; otherwise the options apply as they do to `CheckKey`.
-Persisting, authorizing and ordering commits stay the writer's.
+
+What `DecodeEdits` checks is the batch over the baseline, with Load's
+hooks, validator and `Validate` method, and nothing else. It does not say
+what the next load makes of the same entries: that load reads every source
+again, so it sees a lower source that changed since the baseline was
+loaded, misses a row the store has deleted since — which a live config used
+as the baseline still holds — and applies options the call did not get. A
+store whose rows are a load's entries checks a write with that load: build
+the candidate table, load it with the options the service loads with, and
+commit only the table that load accepts, as the
+[settings-store recipe](../examples/cookbook/README.md#settings-a-service-writes)
+does. Persisting, authorizing and ordering commits stay the writer's.
 
 ### Withholding invalid rows
 
@@ -200,67 +236,88 @@ config.WithBaseProvider(store, nil, config.WithInvalidEntries(
 ))
 ```
 
-This checks each known entry against defaults and withholds invalid entries,
-leaving their lower-precedence values intact. Struct sections are checked
-field by field; collections and self-decoding values are atomic. The callback
-receives sorted key/error pairs after every read, including an empty report;
-nil discards reports. Its error fails the load with `ErrSource`.
+This withholds the source's invalid entries, leaving their lower-precedence
+values intact. A provider's entries are its struct sections' fields, checked
+field by field; a collection or self-decoding value is one entry. An entry
+of `WithBaseEntries` or `WithOverrideEntries` is one stored key. Entries are
+judged over the layers merged beneath the source, as `Load` decodes and
+validates them:
 
-Defaults must validate before any provider is read. Unknown keys still reach
-the normal diagnostics, including declared unknown children of a withheld
-collection. Read/parser errors and cancellation fail the load. Finally, the
-combined config must validate: independently valid rows can conflict with one
-another, and the loader does not choose arbitrary rows to discard to resolve
-such a conflict. The option applies equally to `WithOverrideProvider`.
+- When all of the source's entries apply together, all are kept: one decode.
+- Otherwise an entry is withheld when it fails both on its own and with
+  every entry of the source that passes on its own applied. An entry that
+  needs another — `upstreams["a"].timeout` beside the
+  `upstreams["a"].url` its entry requires, `pool[1]` after `pool[0]`,
+  `min` moved with `max` — is kept with it, as is one that needs a lower
+  layer.
+- An entry that passes on its own is kept: a rule it breaks only together
+  with other entries is the final configuration's to fail. Independently
+  valid rows can conflict, and the loader does not choose rows to discard to
+  resolve the conflict.
+
+Judging a source costs one decode when its entries all apply, and at most
+one per entry plus one per entry failing on its own when they do not. The
+callback receives sorted key/error pairs after every read, including an
+empty report; nil discards reports. Its error fails the load with
+`ErrSource`. Defaults must validate before any source is read. Unknown keys
+still reach the normal diagnostics, including declared unknown children of
+a withheld entry. Read/parser errors and cancellation fail the load, with
+the cause the context ended with. The option applies equally to
+`WithOverrideProvider`.
 
 ### Stored entries
 
-A settings store that validates a key with `CheckKey` or a batch with
-`DecodeEdits` can persist each key as written and load it back through
-`NewEntryProvider`, with no translation between grammars: `port`,
-`names["a.b"]` (a map key holding a dot), `addresses["first"].port`,
-`pool[1].host`. A dotted provider cannot carry those keys — `a.b` would
-nest, `["first"]` is not a segment — and `NewMapProvider` keeps its own
-grammar for the stores already written in it.
+A settings store keyed in this package's key grammar loads through
+`WithBaseEntries` or `WithOverrideEntries`, with no translation between
+grammars: `port`, `names["a.b"]` (a map key holding a dot),
+`addresses["first"].port`, `pool[1].host`. A dotted provider cannot carry
+those keys — `a.b` would nest, `["first"]` is not a segment — and
+`NewMapProvider` keeps its own grammar for the stores already written in it.
 
 ```go
-entries, err := config.NewEntryProvider(func(ctx context.Context) (map[string]any, error) {
-    return loadSettings(ctx, db) // key → value, keys as CheckKey took them
-})
 cfg, err := config.Load[AppConfig](ctx,
     config.WithFile("config.yaml"),
-    config.WithOverrideProvider(entries, nil),
+    config.WithOverrideEntries(func(ctx context.Context) (map[string]any, error) {
+        return loadSettings(ctx, db) // key → value, keys as CanonicalKey spells them
+    }),
 )
 ```
 
-Each entry is one key set over the sources merged beneath it, exactly as
-`DecodeKey` sets one over defaults and in the same order `DecodeEdits`
-applies a batch, so what `DecodeEdits(ctx, &live, entries)` returns over the
-live config is what the next load makes of the same table when the entries
-are the top layer. Field names resolve through aliases (the load warns, as
-for any source) and letter case. An index sets that element of the list
-beneath and leaves the other elements to the sources that set them, so a
-change to the lower list takes effect at the next reload and is not reported
-shadowed; provenance names the entry provider only for what its entries set.
-Beneath a source set above them, the entries' keys are replaced like any
-lower source's.
+`read` is called with the load's context on every load and reload; what it
+returns is copied, a nil map is an empty source, and its error fails the
+load with `ErrSource`. The entries load among the base or override
+providers in the order added. Each entry is one key set over the sources
+merged beneath it, as `DecodeKey` sets one over defaults and in the order
+`DecodeEdits` applies a batch. Field names resolve through aliases (the load
+warns, as for any source) and letter case; `nil` sets the zero value.
+Provenance names the entries only for what they set, and beneath a source
+set above them their keys are replaced like any lower source's.
+
+An index is a position in the list beneath the entries as each load merges
+it. It sets that element, or appends one immediately after the last, and
+leaves the other elements to the sources that set them, so a change to the
+lower list takes effect at the next reload and is not reported shadowed.
+When the lower list shrinks so an index lies beyond its next element — a
+file drops `pool[1]` while an entry sets `pool[2].host` — that entry no
+longer applies: the load fails, or `WithInvalidEntries` withholds it. Store
+a whole list where the list beneath can change.
 
 | Entry | Load |
 |---|---|
-| Names nothing config reads, or does not parse | an unknown key, for the unknown-input handler, with the field it most likely misspells |
+| Names nothing config reads, or does not parse; or a key inside its value that no field reads | an unknown key, for the unknown-input handler, with the field it most likely misspells |
 | One value under two spellings (`port`, `PORT`; a field and its alias) | fails with a `*KeyError` matching `ErrValidation` |
 | An index past the next element of the list beneath | fails with a `*KeyError` matching `ErrValidation` |
+| A key beneath one set to a value that cannot hold it, or keys selecting both elements and fields of one value | fails with a `*KeyError` matching `ErrValidation` |
 | A value its field's `format` or `sep` tag cannot read | fails with a `*KeyError` matching `ErrValidation` |
 
-Under `WithInvalidEntries` the failing entries, and every entry `CheckKey`
-refuses against defaults, are withheld and reported instead. Every message
-names keys, cut short beneath a sensitive container, and never a value.
-`read` gets the load's context; its error fails the load with `ErrSource`.
-Only a load can resolve the keys, so the provider's koanf `Read` methods
-return an error and it takes a nil parser. The
+Every refused entry is named, and every message names keys, cut short
+beneath a sensitive container, and never a value. Under
+`WithInvalidEntries` the failing entries, and every entry that does not
+decode or validate as that option judges it, are withheld and reported
+instead. The
 [settings-store recipe](../examples/cookbook/README.md#settings-a-service-writes)
-validates a batch over the live config, stores it in one transaction and
-reloads.
+canonicalizes a write's keys, checks the table it makes with the service's
+own load, stores it in one serialized transaction and reloads.
 
 ## Environment variables
 

@@ -3,6 +3,7 @@ package config
 import (
 	"errors"
 	"net/netip"
+	"path/filepath"
 	"reflect"
 	"strconv"
 	"testing"
@@ -64,50 +65,86 @@ func TestDecodeEdits_JudgesTheBatchTogetherOverItsBaseline(t *testing.T) {
 	require.ErrorIs(t, CheckKey[rangeConfig](t.Context(), "min", 12), ErrValidation)
 }
 
-// Keys that cannot all apply refuse the batch whole, each refused key
-// reported in key order: unknown keys, one value set under two spellings,
-// and an index past the next element.
+// Keys that cannot all apply refuse the batch whole with one *EditsError,
+// every refused key in it in key order, whichever stage refused it: unknown
+// keys, also inside a value; one value set under two spellings; an index
+// past the next element; a key beneath a value that cannot hold it; keys
+// selecting both elements and fields of one value. A refused key matches
+// ErrKey; no candidate was judged, so the error does not match
+// ErrValidation.
 func TestDecodeEdits_RefusesKeysThatCannotAllApply(t *testing.T) {
-	baseline := &editConfig{Pool: []editServer{{"x", 1}}}
+	baseline := &editConfig{Primary: editServer{"p", 5}, Pool: []editServer{{"x", 1}}}
 	for _, tc := range []struct {
 		name    string
 		edits   map[string]any
-		keys    []string
-		unknown bool
+		refused map[string]bool // refused key → Unknown
 	}{
-		{"unknown keys", map[string]any{"prot": 1, "primary.prot": 2, "primary.port": 3}, []string{"primary.prot", "prot"}, true},
-		{"a wildcard", map[string]any{"pool[*].port": 1}, []string{"pool[*].port"}, true},
-		{"spelled by alias", map[string]any{"primary.port": 6, "MAIN.port": 7}, []string{"primary.port"}, false},
-		{"spelled by case", map[string]any{"primary.port": 6, "PRIMARY.Port": 7}, []string{"primary.port"}, false},
-		{"an index past the next element", map[string]any{"pool[2].host": "z"}, []string{"pool[2].host"}, false},
-		{"an index past the end of a list the batch sets", map[string]any{"pool": []any{map[string]any{"host": "a"}}, "pool[2].host": "z"}, []string{"pool[2].host"}, false},
+		{"unknown keys", map[string]any{"prot": 1, "primary.prot": 2, "primary.port": 3}, map[string]bool{"primary.prot": true, "prot": true}},
+		{"a wildcard", map[string]any{"pool[*].port": 1}, map[string]bool{"pool[*].port": true}},
+		{"an unknown key inside a value", map[string]any{"primary": map[string]any{"bogus": 1, "port": 2}}, map[string]bool{"primary.bogus": true}},
+		{"unknown and index refusals together", map[string]any{"prot": 1, "pool[5].host": "z"}, map[string]bool{"pool[5].host": false, "prot": true}},
+		{"spelled by alias", map[string]any{"primary.port": 6, "MAIN.port": 7}, map[string]bool{"primary.port": false}},
+		{"spelled by case", map[string]any{"primary.port": 6, "PRIMARY.Port": 7}, map[string]bool{"primary.port": false}},
+		{"an index past the next element", map[string]any{"pool[2].host": "z"}, map[string]bool{"pool[2].host": false}},
+		{"an index past the end of a list the batch sets", map[string]any{"pool": []any{map[string]any{"host": "a"}}, "pool[2].host": "z"}, map[string]bool{"pool[2].host": false}},
+		{"a key beneath a number", map[string]any{"primary": 5, "primary.port": 7}, map[string]bool{"primary.port": false}},
+		{"a key beneath nil", map[string]any{"primary": nil, "primary.port": 7}, map[string]bool{"primary.port": false}},
+		{"an element of a value holding no elements", map[string]any{"pool": map[string]any{"host": "h"}, "pool[0].port": 1}, map[string]bool{"pool[0].port": false}},
+		{"an element and a key of one interface", map[string]any{"extra.x": 1, "extra[0]": 2}, map[string]bool{"extra[0]": false}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			got, err := DecodeEdits(t.Context(), baseline, tc.edits)
 			assert.Nil(t, got)
-			var keys []string
-			for _, e := range unjoin(err) {
-				var ke *KeyError
-				require.ErrorAs(t, e, &ke)
-				assert.Equal(t, tc.unknown, ke.Unknown, ke.Key)
-				keys = append(keys, ke.Key)
+			var edits *EditsError
+			require.ErrorAs(t, err, &edits)
+			refused := map[string]bool{}
+			var order []string
+			for _, ke := range edits.Refused {
+				refused[ke.Key] = ke.Unknown
+				order = append(order, ke.Key)
+				assert.Equal(t, ke.Unknown, errors.Is(&ke, ErrKey), ke.Key)
 			}
-			assert.Equal(t, tc.keys, keys)
-			if tc.unknown {
-				require.ErrorIs(t, err, ErrKey)
-			} else {
-				require.ErrorIs(t, err, ErrValidation)
+			assert.Equal(t, tc.refused, refused)
+			assert.IsNonDecreasing(t, order)
+			assert.ErrorIs(t, err, ErrKey)
+			assert.NotErrorIs(t, err, ErrValidation)
+			assert.Empty(t, edits.Keys)
+			for key := range tc.refused {
+				assert.Contains(t, err.Error(), key)
 			}
 		})
 	}
-	assert.Equal(t, &editConfig{Pool: []editServer{{"x", 1}}}, baseline)
+	assert.Equal(t, &editConfig{Primary: editServer{"p", 5}, Pool: []editServer{{"x", 1}}}, baseline)
 }
 
-func unjoin(err error) []error {
-	if joined, ok := err.(interface{ Unwrap() []error }); ok {
-		return joined.Unwrap()
+// nil sets the zero value, as an explicit null from any source does.
+func TestDecodeEdits_NilSetsTheZeroValue(t *testing.T) {
+	baseline := &editConfig{Primary: editServer{"p", 5}, Pool: []editServer{{"x", 1}}, Extra: 3}
+	got, err := DecodeEdits(t.Context(), baseline, map[string]any{"primary.port": nil, "pool": nil, "extra": nil})
+	require.NoError(t, err)
+	assert.Equal(t, &editConfig{Primary: editServer{"p", 0}}, got)
+
+	file := filepath.Join(t.TempDir(), "config.yaml")
+	writeFile(t, file, "primary: {host: p, port: 5}\npool: [{host: x, port: 1}]\nextra: 3\n")
+	loaded, err := Load[editConfig](t.Context(), WithFile(file), WithOverrideEntries(readEntries(map[string]any{"primary.port": nil, "pool": nil, "extra": nil})))
+	require.NoError(t, err)
+	assert.Equal(t, got, loaded)
+}
+
+// A baseline holding a value that does not marshal to text is the caller's
+// fault, not a refused edit or an invalid candidate.
+func TestDecodeEdits_BaselineThatDoesNotMarshal(t *testing.T) {
+	type cfg struct {
+		Value failingText `koanf:"value"`
+		Port  int         `koanf:"port"`
 	}
-	return []error{err}
+	_, err := DecodeEdits(t.Context(), &cfg{Value: failingText{n: -1}}, map[string]any{"port": 1})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "value")
+	assert.NotErrorIs(t, err, ErrValidation)
+	assert.NotErrorIs(t, err, ErrKey)
+	var edits *EditsError
+	assert.NotErrorAs(t, err, &edits)
 }
 
 // Edits apply in key order, an index by its number, so one batch appends
@@ -175,8 +212,8 @@ func TestDecodeEdits_KeyBeneathAnotherAppliesAfterIt(t *testing.T) {
 		{"an element, then a key beneath it", map[string]any{"pool[0]": map[string]any{"host": "y"}, "pool[0].port": 4}, func(t *testing.T, got *editConfig) {
 			assert.Equal(t, []editServer{{"y", 4}}, got.Pool)
 		}},
-		{"a value holding no keys, then a key beneath it", map[string]any{"extra": 5, "extra.x": 1}, func(t *testing.T, got *editConfig) {
-			assert.Equal(t, map[string]any{"x": 1}, got.Extra)
+		{"an interface's map, then a key beneath it", map[string]any{"extra": map[string]any{"y": 1}, "extra.x": 2}, func(t *testing.T, got *editConfig) {
+			assert.Equal(t, map[string]any{"x": 2, "y": 1}, got.Extra)
 		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -213,6 +250,9 @@ func TestDecodeEdits_OneEditIsDecodeKey(t *testing.T) {
 	var edits *EditsError
 	require.ErrorAs(t, err, &edits)
 	assert.Equal(t, []string{"floor", "port"}, edits.Keys)
+	assert.Empty(t, edits.Refused)
+	assert.ErrorIs(t, err, ErrValidation)
+	assert.NotErrorIs(t, err, ErrKey)
 	assert.NotContains(t, err.Error(), "invalid-secret-value")
 	_, err = DecodeKey[keyConfig](t.Context(), "port", "invalid-secret-value")
 	assert.NotContains(t, err.Error(), "invalid-secret-value")

@@ -7,57 +7,77 @@ import (
 	"maps"
 	"reflect"
 	"slices"
+	"strconv"
 	"strings"
 
 	"github.com/ashtonian/pkg/config/internal/deepcopy"
 )
 
 // A key edit is one concrete key set to a value — CheckKey's key, each of
-// DecodeEdits' edits, each entry a provider's entry filter checks — applied
-// as a source above a tree: the defaults, or a baseline config. Its value
+// DecodeEdits' edits, each stored entry a load reads, each entry
+// WithInvalidEntries judges — applied as a source above a tree: the
+// defaults, a baseline config, or the layers merged beneath. Its value
 // merges as a source's would (see mergeTrees): a map into what the tree
 // holds there key by key, anything else in its place. An index sets that
 // element of the list beneath, or appends one immediately after its last,
 // and leaves the other elements as they are (listEdit).
+//
+// A batch is prepared (prepareEdits) and then set (setEdits): resolved,
+// rewritten and checked against itself first, then set over the tree
+// beneath, which only an index needs to read.
 
 // edit is one key and its value, resolved against a schema.
 type edit struct {
-	path keyPath // canonical: each field segment spelled as its field's key
+	path keyPath // canonical (see resolveSchemaPath)
 	// parent is the node holding path's last segment: the struct, map or
 	// list it selects from, or what the key reaches beneath. It is nil
 	// beneath a remain field, where nothing is declared.
 	parent  *schemaNode
 	value   any
-	safe    string   // path as diagnostics may show it
-	aliased []string // each field the key names by a former name, as a load reports it
+	safe    string       // path as diagnostics may show it
+	aliased []string     // each field the key names by a former name, as a load reports it
+	unknown []UnknownKey // keys inside value that no field reads, found as it is rewritten
 }
 
-// resolveEdit parses key, spells each field segment as its field's key and
-// copies value, so the edit owns it. A key that does not parse, is not
-// concrete or names nothing config reads is an Unknown *KeyError. A key a
-// section's remain field collects resolves: what is beneath it is the
-// remain field's.
-func resolveEdit(schema *schemaNode, key string, value any) (edit, *KeyError) {
+// resolveKey parses key and spells it canonically (see resolveSchemaPath).
+func resolveKey(schema *schemaNode, key string) (keyPath, *schemaNode, []string, *KeyError) {
 	p, err := parseKeyPath(key)
 	if err != nil {
-		return edit{}, &KeyError{Key: RedactText(key), Unknown: true, Err: err}
+		return nil, nil, nil, &KeyError{Key: RedactText(key), Unknown: true, Err: err}
 	}
+	parent, aliased, ke := resolveSchemaPath(schema, p)
+	return p, parent, aliased, ke
+}
+
+// resolveSchemaPath spells p, in place, the one way this package prints it: each
+// field segment as its field's key, an entry of a map keyed by integers as
+// the integer's decimal text, and a key beneath an interface or remain field
+// as a field wherever it can be one. It returns the node holding p's last
+// segment and each field p names by a former name. A key that is empty, is
+// not concrete or names nothing config reads is an Unknown *KeyError; one a
+// section's remain field collects resolves.
+func resolveSchemaPath(schema *schemaNode, p keyPath) (parent *schemaNode, aliased []string, ke *KeyError) {
 	if len(p) == 0 {
-		return edit{}, &KeyError{Key: "$", Unknown: true, Err: fmt.Errorf("%w: a key names one value, not the whole config", ErrKey)}
+		return nil, nil, &KeyError{Key: "$", Unknown: true, Err: fmt.Errorf("%w: a key names one value, not the whole config", ErrKey)}
 	}
-	var aliased []string
+	unknown := func(err error) *KeyError {
+		return &KeyError{Key: diagnosticPath(schema, p).String(), Unknown: true, Err: err}
+	}
 	n := schema
-	var parent *schemaNode
 	for i := range p {
 		s := &p[i]
 		if s.kind == segAny {
-			return edit{}, &KeyError{Key: diagnosticPath(schema, p).String(), Unknown: true, Err: fmt.Errorf("%w: key must be concrete", ErrKey)}
+			return nil, nil, unknown(fmt.Errorf("%w: key must be concrete", ErrKey))
 		}
 		parent = n
-		if n == nil {
+		if n == nil || n.kind == nodeDynamic {
+			if s.kind == segKey && validFieldKey(s.name) {
+				s.kind = segField
+			}
 			continue
 		}
-		if n.kind == nodeBranch {
+		switch {
+		case n.kind == nodeBranch:
 			var f *schemaField
 			alias := false
 			if s.kind == segField {
@@ -65,6 +85,9 @@ func resolveEdit(schema *schemaNode, key string, value any) (edit, *KeyError) {
 			}
 			if f == nil && n.acceptsUnknown {
 				n = nil
+				if s.kind == segKey && validFieldKey(s.name) {
+					s.kind = segField
+				}
 				continue
 			}
 			if f != nil {
@@ -74,20 +97,49 @@ func resolveEdit(schema *schemaNode, key string, value any) (edit, *KeyError) {
 					aliased = append(aliased, aliasNote(schema, p[:i].field(written), p[:i+1]))
 				}
 			}
+		case keyedByInteger(n):
+			if s.kind != segKey {
+				return nil, nil, unknown(fmt.Errorf("%w %s: %s is a map; select an entry with a quoted key", ErrKey, p, p[:i].orRoot()))
+			}
+			text, ok := integerKey(n.typ.Key(), s.name)
+			if !ok {
+				return nil, nil, unknown(fmt.Errorf("%w %s: %s is keyed by %s", ErrKey, p, p[:i].orRoot(), n.typ.Key()))
+			}
+			s.name, n = text, n.elem
+			continue
 		}
 		_, next, err := n.walkTo(cursor{}, p[i:i+1])
 		if err != nil {
-			ke := &KeyError{Key: diagnosticPath(schema, p).String(), Unknown: true, Err: err}
+			ke := unknown(err)
 			if n.kind == nodeBranch && s.kind == segField && ke.Key == p.String() {
 				if closest := closestField(n, s.name); closest != "" {
 					ke.suggestion = p[:i].field(closest).String()
 				}
 			}
-			return edit{}, ke
+			return nil, nil, ke
 		}
 		n = next
 	}
-	return edit{path: p, parent: parent, value: copyInput(value), safe: diagnosticPath(schema, p).String(), aliased: aliased}, nil
+	return parent, aliased, nil
+}
+
+// keyedByInteger reports a map whose entries are keyed by an integer: the
+// schema decodes it whole, but its entries hold keys of their own, written
+// as the integer's text.
+func keyedByInteger(n *schemaNode) bool {
+	return n.kind == nodeLeaf && n.typ.Kind() == reflect.Map && n.elem != nil &&
+		n.typ.Key().Kind() != reflect.String && keysAsText(n.typ.Key())
+}
+
+// integerKey is text as an integer of type t, in its decimal spelling.
+func integerKey(t reflect.Type, text string) (string, bool) {
+	switch t.Kind() {
+	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
+		u, err := strconv.ParseUint(text, 10, t.Bits())
+		return strconv.FormatUint(u, 10), err == nil
+	}
+	i, err := strconv.ParseInt(text, 10, t.Bits())
+	return strconv.FormatInt(i, 10), err == nil
 }
 
 // aliasNote is how a load reports a key written under a former field name:
@@ -116,20 +168,23 @@ func copyInput(v any) any {
 	return deepcopy.Value(reflect.ValueOf(v)).Interface()
 }
 
-// resolveEdits resolves every entry of entries and orders the edits as
-// they apply: by canonical key, an index by its number, and a key before the
-// keys beneath it, so a list grows one element at a time and a key beneath
-// another sets what it names in the value the other set. failed, sorted by
-// key, holds every key resolveEdit refuses, and every key two entries set
-// under different spellings: neither can be the one meant.
-func resolveEdits(schema *schemaNode, entries map[string]any) (edits []edit, failed []*KeyError) {
+// prepareEdits resolves, rewrites and checks every entry of entries and
+// orders the edits as they apply: by canonical key, an index by its number,
+// and a key before the keys beneath it, so a list grows one element at a
+// time and a key beneath another sets what it names in the value the other
+// set. refused, sorted by key, holds every key that cannot apply: one
+// resolveEdit refuses, one two entries set under different spellings —
+// neither can be the one meant — one whose value does not rewrite, and one
+// the batch leaves nothing to set (see unsettable). Each edit owns its
+// value.
+func prepareEdits(schema *schemaNode, entries map[string]any) (edits []edit, refused []*KeyError) {
 	for _, key := range slices.Sorted(maps.Keys(entries)) {
-		e, err := resolveEdit(schema, key, entries[key])
-		if err != nil {
-			failed = append(failed, err)
+		p, parent, aliased, ke := resolveKey(schema, key)
+		if ke != nil {
+			refused = append(refused, ke)
 			continue
 		}
-		edits = append(edits, e)
+		edits = append(edits, edit{path: p, parent: parent, value: copyInput(entries[key]), safe: diagnosticPath(schema, p).String(), aliased: aliased})
 	}
 	slices.SortStableFunc(edits, func(a, b edit) int { return comparePaths(a.path, b.path) })
 	kept := edits[:0]
@@ -139,18 +194,102 @@ func resolveEdits(schema *schemaNode, entries map[string]any) (edits []edit, fai
 			same++
 		}
 		if same > i+1 {
-			failed = append(failed, &KeyError{Key: edits[i].safe, Err: refuse("the key is set more than once, under different spellings")})
+			refused = append(refused, &KeyError{Key: edits[i].safe, Err: refuse("the key is set more than once, under different spellings")})
 		} else {
 			kept = append(kept, edits[i])
 		}
 		i = same
 	}
-	return kept, sortKeyErrors(failed)
+	edits, failed := rewriteEdits(schema, kept)
+	edits, unset := unsettable(schema, edits)
+	return edits, sortKeyErrors(slices.Concat(refused, failed, unset))
+}
+
+// rewriteEdits rewrites each edit's value (see rewrite), refusing those that
+// do not rewrite.
+func rewriteEdits(schema *schemaNode, edits []edit) (kept []edit, refused []*KeyError) {
+	kept = edits[:0]
+	for _, e := range edits {
+		if err := e.rewrite(schema); err != nil {
+			refused = append(refused, &KeyError{Key: e.safe, Err: err})
+			continue
+		}
+		kept = append(kept, e)
+	}
+	return kept, refused
+}
+
+// unsettable refuses each edit, of edits in key order, that the batch leaves
+// nothing to set: a key beneath one set to a value that holds no keys, or no
+// elements, where the key selects one — a number, a string, null — and a key
+// selecting an element of a value where an earlier key selects a field or
+// entry of it, which no one value can hold both of. The earlier edit stands.
+func unsettable(schema *schemaNode, edits []edit) (kept []edit, refused []*KeyError) {
+	kept = edits[:0]
+	var open []int // kept edits whose key holds the edit being looked at, outermost first
+	for _, e := range edits {
+		for len(open) > 0 && !holds(kept[open[len(open)-1]].path, e.path) {
+			open = open[:len(open)-1]
+		}
+		if len(open) > 0 {
+			h := kept[open[len(open)-1]]
+			if next := e.path[len(h.path)]; !canSelect(h.value, next) {
+				refused = append(refused, &KeyError{Key: e.safe, Err: refuse("%s is set to a value with no %s beneath it", h.safe, selects(next))})
+				continue
+			}
+		}
+		if len(kept) > 0 {
+			prev := kept[len(kept)-1].path
+			if c := commonPrefix(prev, e.path); c < len(prev) && c < len(e.path) && (prev[c].kind == segIndex) != (e.path[c].kind == segIndex) {
+				refused = append(refused, &KeyError{Key: e.safe, Err: refuse("keys beneath %s select both its elements and its keys", diagnosticPath(schema, e.path[:c]).orRoot())})
+				continue
+			}
+		}
+		kept = append(kept, e)
+		open = append(open, len(kept)-1)
+	}
+	return kept, refused
+}
+
+// canSelect reports whether value, as rewritten, holds what s selects: an
+// element of a list, or a key of a map.
+func canSelect(value any, s segment) bool {
+	v := reflect.ValueOf(value)
+	if !v.IsValid() {
+		return false
+	}
+	if s.kind == segIndex {
+		return isList(v)
+	}
+	return v.Kind() == reflect.Map
+}
+
+func selects(s segment) string {
+	if s.kind == segIndex {
+		return "elements"
+	}
+	return "keys"
+}
+
+// holds reports whether key a holds key b: b begins with a and goes beneath
+// it.
+func holds(a, b keyPath) bool {
+	return len(a) < len(b) && commonPrefix(a, b) == len(a)
+}
+
+// commonPrefix is how many leading segments a and b share, as comparePaths
+// compares them.
+func commonPrefix(a, b keyPath) int {
+	n := 0
+	for n < min(len(a), len(b)) && comparePaths(a[n:n+1], b[n:n+1]) == 0 {
+		n++
+	}
+	return n
 }
 
 // comparePaths orders keys segment by segment — a field and a map key
-// alike by name, an index by its number — and a key before the keys
-// beneath it.
+// alike by name, an index by its number, names before indexes — and a key
+// before the keys beneath it.
 func comparePaths(a, b keyPath) int {
 	for i := range min(len(a), len(b)) {
 		x, y := a[i], b[i]
@@ -188,28 +327,35 @@ func joinKeyErrors(errs []*KeyError) error {
 	return errors.Join(joined...)
 }
 
+// unknownKeyError is an unknown key as the *KeyError a key check reports.
+func unknownKeyError(u UnknownKey) *KeyError {
+	return &KeyError{Key: u.Key, Unknown: true, Err: fmt.Errorf("%w %s: no field reads it", ErrKey, u.Key), suggestion: u.Suggestion}
+}
+
 // rewrite gives e's value the shape a source's value has at e's key: keys
 // spelled as their fields are, sep lists split, JSON parsed, typed maps and
 // sections whole (see keyWalk). The value is rewritten where it sits, inside
-// its parent, so its field's tags apply.
-func (e *edit) rewrite(w *keyWalk) error {
+// its parent, so its field's tags apply. The keys inside it that no field
+// reads are recorded in e.unknown.
+func (e *edit) rewrite(schema *schemaNode) error {
+	w := keyWalk{schema: schema}
 	last := e.path[len(e.path)-1]
 	at := e.path[:len(e.path)-1]
 	value, _ := stringKeysIn(e.value)
 	if e.parent != nil {
-		switch e.parent.kind {
-		case nodeBranch:
+		switch {
+		case e.parent.kind == nodeBranch:
 			out := w.structMap(e.parent.typ, reflect.ValueOf(map[string]any{last.name: value}), at)
 			if m, ok := out.(map[string]any); ok {
 				value = m[last.name]
 			}
-		case nodeMap, nodeList:
+		case e.parent.kind == nodeMap, e.parent.kind == nodeList, keyedByInteger(e.parent):
 			value = w.value(e.parent.typ.Elem(), value, e.path)
-		case nodeDynamic:
+		case e.parent.kind == nodeDynamic:
 			value = dynamicInput(value, e.path, w.failText)
 		}
 	}
-	e.value = value
+	e.value, e.unknown = value, w.unknown
 	switch {
 	case len(w.twice) > 0:
 		return refuse("keys spelled two ways set one field: %s", strings.Join(w.twice, ", "))
@@ -221,12 +367,12 @@ func (e *edit) rewrite(w *keyWalk) error {
 	return nil
 }
 
-// editTree is the source tree that sets edits, in order, over below, the
-// tree beneath them: nested maps along their keys, and a listEdit at each
-// index. It reads below only for the length of a list an edit indexes, and
-// calls it at most once. An edit whose value or index it refuses is left out,
-// in failed.
-func editTree(schema *schemaNode, below func() map[string]any, edits []edit) (tree map[string]any, failed []*KeyError) {
+// setEdits is the source tree that sets edits, prepared and in order, over
+// below, the tree beneath them: nested maps along their keys, and a listEdit
+// at each index. It reads below only for the length of a list an edit
+// indexes, calls it at most once and changes neither below nor the edits. An
+// edit whose index it refuses is left out, in refused.
+func setEdits(below func() map[string]any, edits []edit) (tree map[string]any, refused []*KeyError) {
 	var root map[string]any
 	beneath := func() any {
 		if root == nil {
@@ -237,28 +383,24 @@ func editTree(schema *schemaNode, below func() map[string]any, edits []edit) (tr
 	tree = map[string]any{}
 	for i := range edits {
 		e := &edits[i]
-		if err := e.rewrite(&keyWalk{schema: schema}); err != nil {
-			failed = append(failed, &KeyError{Key: e.safe, Err: err})
-			continue
-		}
 		out, err := e.set(tree, beneath, 0)
 		if err != nil {
-			failed = append(failed, &KeyError{Key: e.safe, Err: err})
+			refused = append(refused, &KeyError{Key: e.safe, Err: err})
 			continue
 		}
 		tree = out.(map[string]any)
 	}
-	return tree, failed
+	return tree, refused
 }
 
 // set returns tree, the edit tree at e.path[:i], with e set beneath it.
 // tree is nil, what edits beneath this key built — a map, a listEdit — or
 // the value an edit of a key holding e's set here, which e then edits in
-// place. beneath reads what the tree below holds at e.path[:i]. On failure
-// tree is as it was.
+// place (unsettable has refused one that cannot hold e). beneath reads what
+// the tree below holds at e.path[:i]. On failure tree is as it was.
 func (e *edit) set(tree any, beneath func() any, i int) (any, error) {
 	if i == len(e.path) {
-		return within(tree, e.value), nil
+		return copyInput(e.value), nil
 	}
 	s := e.path[i]
 	if s.kind == segIndex {
@@ -274,7 +416,7 @@ func (e *edit) set(tree any, beneath func() any, i int) (any, error) {
 	case wholeMap:
 		m = t
 	default:
-		m = map[string]any{} // a key beneath a value that holds no keys replaces it
+		return nil, refuse("keys beneath %s select both its elements and its keys", e.path[:i].orRoot())
 	}
 	below := func() any { return entryOf(beneath(), s.name) }
 	if whole {
@@ -292,12 +434,14 @@ func (e *edit) set(tree any, beneath func() any, i int) (any, error) {
 }
 
 // setElement is set at an index: a listEdit over the list below, or, where
-// an earlier edit set a value here, that value as a list with one element
-// set.
+// an earlier edit set a list here, that list with one element set.
 func (e *edit) setElement(tree any, beneath func() any, i int) (any, error) {
 	s := e.path[i]
 	edits, editing := tree.(listEdit)
 	if tree != nil && !editing {
+		if !isList(reflect.ValueOf(tree)) {
+			return nil, refuse("keys beneath %s select both its elements and its keys", e.path[:i].orRoot())
+		}
 		list := elementsOf(tree)
 		if s.index > len(list) {
 			return nil, refuse("the list index is beyond the next element")
@@ -331,28 +475,6 @@ func (e *edit) setElement(tree any, beneath func() any, i int) (any, error) {
 	}
 	edits[s.index] = elem
 	return edits, nil
-}
-
-// within is value set where the edit tree holds tree: a map merged into a
-// map there key by key, keeping its kind, anything else in its place.
-func within(tree, value any) any {
-	in, ok := value.(map[string]any)
-	if !ok {
-		return value
-	}
-	var into map[string]any
-	switch t := tree.(type) {
-	case map[string]any:
-		into = t
-	case wholeMap:
-		into = t
-	default:
-		return value
-	}
-	for k, v := range in {
-		into[k] = within(into[k], v)
-	}
-	return tree
 }
 
 // entryOf is what v holds under key, when v is a map keyed by strings.

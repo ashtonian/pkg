@@ -120,12 +120,15 @@ struct lists another library's keys that sit that close from a
 `WithReloadTagChecks` also checks applier coverage before loading.
 `Defaulter.SetDefaults` sets code defaults for loading, usage, schema,
 templates and key checks. `CheckKey` validates a stored entry without
-reading sources; `DecodeKey` also returns the typed config, and
-`DecodeEdits` validates a batch of edits together over an explicit
-baseline, and `NewEntryProvider` loads stored entries keyed as those calls
-take them. Provider-level
-`WithInvalidEntries` can withhold bad stored rows while preserving lower
-sources and unknown-key diagnostics. See [sources](docs/sources.md).
+reading sources; `DecodeKey` also returns the typed config;
+`CanonicalKey` spells a key the one way the package prints it, and
+`Key.Within` finds the keys a write replaces; `DecodeEdits` validates a
+batch of edits together over an explicit baseline; and `WithBaseEntries`
+and `WithOverrideEntries` load stored entries keyed as those calls take
+them. Source-level `WithInvalidEntries` can withhold bad stored rows,
+judged with the source's other entries over the layers beneath, while
+preserving lower sources and unknown-key diagnostics. See
+[sources](docs/sources.md).
 
 ## Build and test
 
@@ -177,9 +180,9 @@ metrics-library dependency.
 | File | Responsibility |
 |---|---|
 | `config.go`, `options.go` | `Load` pipeline and source options |
-| `defaults.go`, `element_defaults.go`, `decode_input.go`, `check_key.go`, `source_validation.go` | Shared defaults/decoding, key checks and provider entry validation |
-| `merge_input.go`, `keys.go`, `edits.go` | The merge rule every source follows (a map merges by key, a typed map or section replaces, a list edit sets elements), source trees in that shape, and key edits applied as a source |
-| `provider_func.go`, `entries.go` | Function-backed providers: `NewMapProvider`'s dotted or nested maps, `NewEntryProvider`'s entries in the key grammar |
+| `defaults.go`, `element_defaults.go`, `decode_input.go`, `check_key.go`, `source_validation.go` | Shared defaults/decoding, key checks (`CheckKey`, `DecodeKey`, `CanonicalKey`, `DecodeEdits`) and `WithInvalidEntries`' judging of a source's entries |
+| `merge_input.go`, `keys.go`, `edits.go` | The merge rule every source follows (a map merges by key, a typed map or section replaces, a list edit sets elements), source trees in that shape, and key edits: canonical keys, a batch resolved, rewritten and checked against itself, then set as a source |
+| `provider_func.go`, `entries.go` | Function-backed sources: `NewMapProvider`'s dotted or nested maps, and `WithBaseEntries`/`WithOverrideEntries` entries in the key grammar |
 | `schema.go`, `view.go`, `fields.go`, `key.go`, `tag_keys.go` | Canonical metadata, discovery, key grammar and tag-key spelling |
 | `env_refs.go`, `env.go` | Environment references and variable matching |
 | `reloader.go`, `reload_options.go`, `reload_tags.go`, `applier.go`, `snapshot.go` | Publication, reload triggers and policy, applied-state accounting |

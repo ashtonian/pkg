@@ -42,3 +42,31 @@ func TestKey_DiffPaths(t *testing.T) {
 		assert.Equal(t, "values", key.Fields().String())
 	}
 }
+
+func TestKey_Within(t *testing.T) {
+	key := func(s string) Key {
+		k, err := ParseKey(s)
+		require.NoError(t, err)
+		return k
+	}
+	for _, tc := range []struct {
+		k, p   string
+		within bool
+	}{
+		{"primary.port", "primary", true},
+		{"primary", "primary", true},
+		{"primary", "primary.port", false},
+		{"primaryx", "primary", false},
+		{`addresses["a"].port`, `addresses["a"]`, true},
+		{`addresses["a.b"]`, `addresses["a"]`, false},
+		{"pool[1].host", "pool[1]", true},
+		{"pool[10].host", "pool[1]", false},
+		{"pool[1]", "pool", true},
+		{"extra.x", `extra["x"]`, true},
+		{"pool[1].host", "pool[*]", true},
+		{`addresses["a"]`, "addresses[*]", true},
+		{"primary.port", "primary[*]", false},
+	} {
+		assert.Equal(t, tc.within, key(tc.k).Within(key(tc.p)), "%s within %s", tc.k, tc.p)
+	}
+}

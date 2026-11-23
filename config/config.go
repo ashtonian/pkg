@@ -199,8 +199,8 @@ func (l *loader) merge(name string, tree map[string]any, label labeler) error {
 // an OriginProvider's annotations name the source of each value; any other
 // provider is src's own.
 func (l *loader) addProvider(ctx context.Context, name string, p providerSource, src Source) error {
-	if ep, ok := p.provider.(entryProvider); ok {
-		return l.addEntries(ctx, name, ep, p, src)
+	if p.entries != nil {
+		return l.addEntries(ctx, name, p, src)
 	}
 	if op, ok := p.provider.(OriginProvider); ok && p.parser == nil && l.origins != nil {
 		data, annotations, err := op.ReadWithOrigins(ctx)
