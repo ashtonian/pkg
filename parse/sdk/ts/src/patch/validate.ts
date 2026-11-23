@@ -1,5 +1,6 @@
 import { isCivilDate } from "../core/date.js";
 import { compareDecimals, decimalInteger, isDecimal } from "../core/decimal.js";
+import { escapePointerToken } from "../core/json.js";
 import { fromWire } from "../core/wire.js";
 import { SchemaValidationError, SchemaValidationErrors } from "../core/errors.js";
 import type { ConstraintFailure } from "../core/errors.js";
@@ -264,11 +265,6 @@ function scalarOK(v: unknown, type: string, kind?: string): boolean {
     default:
       return true; // documents and other shapes are the server's to check
   }
-}
-
-/** Escape one RFC 6901 reference token: "~" then "/". */
-function escapePointerToken(token: string): string {
-  return token.replaceAll("~", "~0").replaceAll("/", "~1");
 }
 
 /** A one-token pointer back to its key, for messages. */
