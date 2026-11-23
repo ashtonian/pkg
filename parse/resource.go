@@ -104,6 +104,14 @@ type columnType struct {
 // no column, a column listed twice, and a column that is not one of T's,
 // is computed (ReadExpr), is not read (ReadColumns) or is the soft-delete
 // column.
+//
+// A key of several columns is a Key of a value per column (ByKey, ByKeys,
+// Resource.Key), and a relation to or from the resource pairs a column
+// with each of them in key order (HasMany, BelongsTo, Through). Each column
+// of a key of several is a string, UUID or integer (core.IsKeyType), the
+// types every backend compares by value. A one-column key may be of
+// another type, which pages and updates by ID take; an update batch and a
+// relation refuse it.
 func PrimaryKey(columns ...string) ResourceOption {
 	return func(c *resourceConfig) { c.pk = slices.Clone(columns) }
 }

@@ -20,7 +20,7 @@ Construct one `parse.Resource[T]` for each resource at startup. Schema generatio
 | `indexed` | `"true"` | filter | Cost hint: the field is indexed. `"true"` or `"false"`; any other value fails schema generation |
 | `immutable` | `"true"` | filter | The field is never written by a request: a field with the `patch` capability cannot be immutable, which fails schema generation, so no request patch path writes it. A `server` field may be immutable; the server's own write is not a request's. Advertised in the schema response. `"true"` or `"false"`; any other value fails schema generation |
 | `sort_default` | `"desc"` | sort | The default sort field and direction, `asc` or `desc`; on one sortable field at most. Any other value, a second field, or a field without `sort` fails generation |
-| `relation` | `"device_tags,device_id,tag_id[,pk[,tenant_col]]"` | filter, patch, facet, include | A virtual relation field: the table holding the pairs, its owner and target columns (see Relations); every part must be an identifier |
+| `relation` | `"device_tags,device_id,tag_id[,pk[,tenant_col]]"`, `"stock_tags,warehouse_id+sku,tag_id,warehouse_id+sku"` | filter, patch, facet, include | A virtual relation field: the table holding the pairs, its owner and target columns (see Relations); every part must be an identifier. An owner key of several columns joins them with `+` in the owner and `pk` parts, paired by position; the target column is one ([pair tables](pair-tables.md)) |
 | `relation_name` | `"tag_ids"` | hidden relation fields | Explicit external name when a virtual relation is hidden by the field-name tag (for example `json:"-"`); preserves acronym spellings. Ordinary visible field names are unchanged |
 | `facet` | `"terms:20"`, `"range:0-50,50-100,100+"` | facet | Facet aggregation, on a field (or struct member) with the `facet` capability. `terms[:<limit>]` counts values of a type every backend keys alike: string, bool, int, float, decimal, date, timestamp, time, uuid, macaddr, or an array of one; the limit is at least 1 and has no cap, as a tag is not request input (a request's own limit is). `range:<lo>-<hi>,…,<lo>+` buckets a scalar int, float or decimal field: each range holds values from its minimum, inclusive, to its maximum, exclusive; bounds are finite, each minimum below its maximum, and no two ranges overlap. Anything else fails generation, and `BuildFacetQuery` refuses the same on a hand-built schema |
 | `elements` | `"by:string;priority:int"` | filter | Typed members of each element of a JSON array, filtered together with `$some` / `$none` ([array elements](queries.md#array-elements)); a slice-of-struct document derives them from its element type's members tagged `parse:"filter"` |
@@ -66,6 +66,34 @@ A bool, integer or float field tagged with encoding/json's `string` option, `jso
 Code passes Go values: `ParseFilterMap`, `MergePatchMap`, `ServerMergePatchMap` and `ValidateOperations` take the field's Go number (`int64(5)`) as well as its quoted text, while a `json.Number` there is a decoded bare JSON number and is refused. Policy constraints and resolved memberships take Go values too. SQL binds the number and `filter.Evaluate` compares it, so PostgreSQL, SQLite and memory backends select the same rows (`filtertest.RunQuoted`). The schema document marks each such field and patch path `"wire": "string"`, a relation path's for each key; `parse/client` sends them as `client.Quoted[T]` (a relation's as `client.Relation[client.Quoted[K]]`) and the TypeScript SDK validates them as strings, checking a patch value's integer kind and bounds exactly.
 
 encoding/json ignores the option on a type that marshals itself (`json.Marshaler`, `encoding.TextMarshaler`, on the value or, for the addressable values a page encodes, its pointer), and so does parse. On a string field, which encoding/json quotes a second time, the option changes nothing parse reads. Inside a JSON document a quoted member is stored as text that a number or bool path cannot compare, so a path onto one is refused: one derived from struct tags, one declared in the `paths` or `elements` tag, a sort path, and one `Resource.WithPaths` adds. Drop the option, or declare the member a string. `filter.ResourceSchema.WithPaths`, which has no Go types, cannot tell.
+
+## Keys
+
+A resource's key is the columns `parse.PrimaryKey` names, in key order: `"id"` alone unless it names others. The columns must be unique together among the table's rows, as a primary key or a unique constraint over exactly them makes them; columns two rows share page one of them out of every list and let an update by key change both. A key of several columns, such as a stock table's `("warehouse_id", "sku")`, serves wherever a one-column key does:
+
+| Where | One column | Several columns |
+|---|---|---|
+| Lists | The keyset ends on the key column, unless the sort names it | The keyset ends on each key column the sort does not name, in key order and in the sort's direction, so pages are stable under every sort; a cursor minted under another key is refused (E2082) |
+| Requests | The key column is a request field, tagged or not | Every key column is a request field |
+| A row's key | `Resource.Key(item)` is a `parse.Key` of one value | A `parse.Key` of a value per column, in key order |
+| Updates | `ByID(id)`, `ByIDs(ids...)`, or `ByKey` / `ByKeys` with one-value keys | `ByKey(k)`, `ByKeys(ks...)`; a key of another length than the key is `ErrKeyInvalid`, naming both lengths. One key compiles to the AND of its columns' equalities, a set of keys to the row value of the columns `IN` the set, bound as one parameter whatever its size |
+| Update batches | `RowUpdate.Key`: one-value keys | `RowUpdate.Key`: a value per column; rows lock in key order, column by column |
+| Relations | Each correlation is one column | Each correlation pairs a column with each key column, by position ([keys of several columns](relations.md#keys-of-several-columns)) |
+| Schema document | `"key": ["id"]` | `"key": ["warehouse_id", "sku"]` |
+
+Each column of a key of several is a string, UUID or integer (`core.IsKeyType`): the types every backend compares by value, so a key reaches the same rows on each and has one text, `core.KeyText`, wherever includes and facets name it. A one-column key may be of another type, which lists and updates by ID take; an update batch and a relation refuse it. The tenant column may be a key column, as `("tenant_id", "sku")`; the soft-delete column may not.
+
+<!-- output of ExamplePrimaryKey -->
+```text
+SELECT "stock"."warehouse_id", "stock"."sku", "stock"."qty" FROM "stock" WHERE "stock"."qty" > $1 ORDER BY "stock"."qty" DESC, "stock"."warehouse_id" COLLATE pg_c_utf8 DESC, "stock"."sku" COLLATE pg_c_utf8 DESC LIMIT 3
+[0]
+UPDATE "stock" SET "qty" = $1 WHERE ("stock"."warehouse_id" = $2 AND "stock"."sku" = $3) RETURNING "stock"."warehouse_id", "stock"."sku", "stock"."qty"
+[7 w1 a]
+UPDATE "stock" SET "qty" = $1 WHERE ("stock"."warehouse_id", "stock"."sku") IN (SELECT "k"."warehouse_id", "k"."sku" FROM jsonb_populate_recordset(NULL::"stock", $2) AS "k") RETURNING "stock"."warehouse_id", "stock"."sku", "stock"."qty"
+[7 [{"sku":"a","warehouse_id":"w1"},{"sku":"a","warehouse_id":"w2"}]]
+```
+
+The list sorts by `qty` and ends its keyset on both key columns; the first update reaches one row by its whole key, the second a set of keys bound as one parameter. PostgreSQL reads the set as rows of the table's own type (`jsonb_populate_recordset`), which types each value as its column; SQLite reads it with `json_each`, each column by position (`json_extract(value, '$[0]')`).
 
 ## Parser and generator options
 
