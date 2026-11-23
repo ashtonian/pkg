@@ -10,37 +10,68 @@ import (
 // nest a handful of levels; anything deeper is malformed.
 const maxEnvelopeDepth = 32
 
-// checkMsgpackBounds walks one MessagePack value and verifies, before any
-// decoder sees it, that every declared length fits in the bytes that remain:
-// an array of n elements needs at least n bytes, a map of n entries 2n, a
-// string, binary or extension payload its full length. msgpack allocates a
-// container from its declared length before reading the elements, so a few
-// header bytes could otherwise request millions of elements; after this check
-// every allocation is bounded by the input size. Exactly one value must fill
-// data.
+// boundsWalker walks MessagePack values and verifies, before any decoder sees
+// them, that every declared length fits in the bytes that remain: an array of
+// n elements needs at least n bytes, a map of n entries 2n, a string, binary
+// or extension payload its full length. msgpack allocates a container from its
+// declared length before reading the elements, so a few header bytes could
+// otherwise request millions of elements; after this check every allocation
+// is bounded by the input size.
 //
 // It also refuses a map that names a key twice, at any depth. msgpack decodes
 // a repeated member into the value the first occurrence left behind, and when
 // that value is a non-nil interface the decoder panics.
-func checkMsgpackBounds(data []byte) error {
-	w := boundsWalker{data: data}
-	if err := w.value(0); err != nil {
-		return err
-	}
-	if w.pos != len(data) {
-		return fmt.Errorf("%d trailing bytes after the value", len(data)-w.pos)
-	}
-	return nil
-}
-
 type boundsWalker struct {
 	data []byte
 	pos  int
 }
 
-var errTruncated = errors.New("declared length exceeds the remaining input")
+var (
+	errTruncated = errors.New("declared length exceeds the remaining input")
+	errNotMap    = errors.New("not a map")
+)
 
 func (w *boundsWalker) remaining() int { return len(w.data) - w.pos }
+
+// end checks that the values walked fill the input.
+func (w *boundsWalker) end() error {
+	if w.pos != len(w.data) {
+		return fmt.Errorf("%d trailing bytes after the value", len(w.data)-w.pos)
+	}
+	return nil
+}
+
+// mapHeader reads the header of a map at depth and checks that its n
+// entries can fit, leaving the walker on the first key. Any other value is
+// errNotMap.
+func (w *boundsWalker) mapHeader(depth int) (uint64, error) {
+	if w.remaining() == 0 {
+		return 0, errTruncated
+	}
+	c := w.data[w.pos]
+	if !isMap(c) {
+		return 0, errNotMap
+	}
+	w.pos++
+	var n uint64
+	var err error
+	switch c {
+	case 0xde: // map16
+		n, err = w.uint(2)
+	case 0xdf: // map32
+		n, err = w.uint(4)
+	default: // fixmap
+		n = uint64(c & 0x0f)
+	}
+	if err != nil {
+		return 0, err
+	}
+	err = w.fits(n, 2, depth)
+	if err != nil {
+		return 0, err
+	}
+	return n, nil
+}
 
 // skip consumes n bytes, failing if fewer remain.
 func (w *boundsWalker) skip(n uint64) error {
@@ -82,24 +113,24 @@ func (w *boundsWalker) array(n uint64, depth int) error {
 	return nil
 }
 
-// mapEntries checks that n entries, each at least two bytes, can fit, then
-// walks them, refusing a key an earlier entry of the same map named.
+// mapEntries walks the n entries of a map whose header mapHeader read,
+// refusing a key an earlier entry of the same map named.
 func (w *boundsWalker) mapEntries(n uint64, depth int) error {
-	if err := w.fits(n, 2, depth); err != nil {
-		return err
-	}
 	seen := make(map[string]struct{}, n)
 	for range n {
 		start := w.pos
-		if err := w.value(depth + 1); err != nil {
+		err := w.value(depth + 1)
+		if err != nil {
 			return err
 		}
 		key := keyIdentity(w.data[start:w.pos])
-		if _, dup := seen[key]; dup {
+		_, dup := seen[key]
+		if dup {
 			return fmt.Errorf("a map names the key %q twice", key[1:])
 		}
 		seen[key] = struct{}{}
-		if err := w.value(depth + 1); err != nil {
+		err = w.value(depth + 1)
+		if err != nil {
 			return err
 		}
 	}
@@ -116,25 +147,35 @@ func (w *boundsWalker) fits(n uint64, minBytes uint64, depth int) error {
 	return nil
 }
 
-// keyIdentity names the member an encoded map key selects. The decoder reads
-// a struct member's name from any string or binary encoding, and nil as the
-// empty name, so those compare by content: fixstr "v", str8 "v" and bin8 "v"
-// are one member. Any other key compares by its encoded bytes.
-func keyIdentity(enc []byte) string {
+// memberName returns the struct member name an encoded map key selects. The
+// decoder reads a member's name from any string or binary encoding, and nil
+// as the empty name, so fixstr "v", str8 "v" and bin8 "v" all select v. ok is
+// false for a key of any other type.
+func memberName(enc []byte) (name []byte, ok bool) {
 	c := enc[0]
 	switch {
 	case c == 0xc0:
-		return "t"
+		return nil, true
 	case c >= 0xa0 && c <= 0xbf:
-		return "t" + string(enc[1:])
+		return enc[1:], true
 	}
 	switch c {
 	case 0xc4, 0xd9:
-		return "t" + string(enc[2:])
+		return enc[2:], true
 	case 0xc5, 0xda:
-		return "t" + string(enc[3:])
+		return enc[3:], true
 	case 0xc6, 0xdb:
-		return "t" + string(enc[5:])
+		return enc[5:], true
+	}
+	return nil, false
+}
+
+// keyIdentity names what an encoded map key selects: a member name compares
+// by content (memberName), any other key by its encoded bytes.
+func keyIdentity(enc []byte) string {
+	name, ok := memberName(enc)
+	if ok {
+		return "t" + string(name)
 	}
 	return "r" + string(enc)
 }
@@ -149,15 +190,20 @@ func (w *boundsWalker) value(depth int) error {
 		return errTruncated
 	}
 	c := w.data[w.pos]
+	if isMap(c) {
+		n, err := w.mapHeader(depth)
+		if err != nil {
+			return err
+		}
+		return w.mapEntries(n, depth)
+	}
 	w.pos++
 	switch {
 	case c <= 0x7f, c >= 0xe0: // positive / negative fixint
 		return nil
-	case c <= 0x8f: // fixmap
-		return w.mapEntries(uint64(c&0x0f), depth)
-	case c <= 0x9f: // fixarray
+	case c >= 0x90 && c <= 0x9f: // fixarray
 		return w.array(uint64(c&0x0f), depth)
-	case c <= 0xbf: // fixstr
+	case c >= 0xa0 && c <= 0xbf: // fixstr
 		return w.skip(uint64(c & 0x1f))
 	}
 	switch c {
@@ -209,18 +255,6 @@ func (w *boundsWalker) value(depth int) error {
 			return err
 		}
 		return w.array(n, depth)
-	case 0xde: // map16
-		n, err := w.uint(2)
-		if err != nil {
-			return err
-		}
-		return w.mapEntries(n, depth)
-	case 0xdf: // map32
-		n, err := w.uint(4)
-		if err != nil {
-			return err
-		}
-		return w.mapEntries(n, depth)
 	}
 	return fmt.Errorf("invalid MessagePack type byte 0x%02x", c)
 }
