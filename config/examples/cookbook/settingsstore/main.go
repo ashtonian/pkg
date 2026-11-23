@@ -167,6 +167,7 @@ type Settings struct {
 	sources Sources
 	timeout time.Duration
 	maxRows int
+	logger  *slog.Logger
 	// writing admits one of this replica's writes at a time, so writers
 	// waiting for the lock row hold no pooled connection the reloader needs.
 	writing chan struct{}
@@ -175,8 +176,8 @@ type Settings struct {
 // NewSettings returns the table in db, loaded with sources' options. Each
 // read, and each write with its wait for its turn, takes at most timeout,
 // and the table holds at most maxRows rows.
-func NewSettings(db *sql.DB, sources Sources, timeout time.Duration, maxRows int) *Settings {
-	return &Settings{db: db, sources: sources, timeout: timeout, maxRows: maxRows, writing: make(chan struct{}, 1)}
+func NewSettings(db *sql.DB, sources Sources, timeout time.Duration, maxRows int, logger *slog.Logger) *Settings {
+	return &Settings{db: db, sources: sources, timeout: timeout, maxRows: maxRows, logger: logger, writing: make(chan struct{}, 1)}
 }
 
 // Options are the options the service loads AppConfig with, the table read
@@ -187,9 +188,18 @@ func (s *Settings) Options() []config.Option {
 }
 
 func (s *Settings) read(ctx context.Context) (map[string]any, error) {
-	ctx, cancel := context.WithTimeout(ctx, s.timeout)
+	readCtx, cancel := context.WithTimeout(ctx, s.timeout)
 	defer cancel()
-	return readRows(ctx, s.db, s.maxRows)
+	stored, err := readRows(readCtx, s.db, s.maxRows)
+	if err != nil {
+		return nil, err
+	}
+	table, left := readable(stored)
+	if len(left) > 0 {
+		s.logger.WarnContext(ctx, "settings the schema does not read left out of the load",
+			slog.Any("keys", left), slog.String("remedy", "write each key as null, or write the key of the row holding it whole"))
+	}
+	return table, nil
 }
 
 // Write applies edits to the table, all or nothing, and returns the keys it
@@ -250,7 +260,8 @@ func (s *Settings) Write(ctx context.Context, edits map[string]any) ([]string, e
 	if len(table) > s.maxRows {
 		return nil, &RefusedError{Reason: ReasonFull, Keys: keys}
 	}
-	if err := s.check(ctx, stored, table, keys); err != nil {
+	before, _ := readable(stored)
+	if err := s.check(ctx, before, loadable(table, writes), keys); err != nil {
 		return nil, err
 	}
 	for _, key := range deleted {
@@ -293,17 +304,17 @@ func (s *Settings) retryAfter() time.Duration {
 	return s.timeout
 }
 
-// check loads table, the one a write of keys leaves, with the service's
-// options. A table that does not load refuses the write, unless the
-// settings do not load without the write either: then the fault lies in a
-// source beneath it or in a row already stored, and no client can fix it by
-// retrying.
-func (s *Settings) check(ctx context.Context, stored, table map[string]any, keys []string) error {
-	_, err := config.Load[AppConfig](ctx, s.sources.Options(fixed(table))...)
+// check loads after, the table loads will read once a write of keys
+// commits, with the service's options. A table that does not load refuses
+// the write, unless before, the table loads read now, does not load either:
+// then the fault lies in a source beneath the table or in a row already
+// stored, and no client can fix it by retrying.
+func (s *Settings) check(ctx context.Context, before, after map[string]any, keys []string) error {
+	_, err := config.Load[AppConfig](ctx, s.sources.Options(fixed(after))...)
 	if err == nil || !errors.Is(err, config.ErrValidation) && !errors.Is(err, config.ErrKey) {
 		return err
 	}
-	if _, storedErr := config.Load[AppConfig](ctx, s.sources.Options(fixed(stored))...); storedErr != nil {
+	if _, storedErr := config.Load[AppConfig](ctx, s.sources.Options(fixed(before))...); storedErr != nil {
 		return fmt.Errorf("the settings fail to load without this write; check %s and the settings table: %w", s.sources.Beneath, storedErr)
 	}
 	reason := ReasonInvalid
@@ -315,6 +326,106 @@ func (s *Settings) check(ctx context.Context, stored, table map[string]any, keys
 
 func fixed(table map[string]any) Entries {
 	return func(context.Context) (map[string]any, error) { return table, nil }
+}
+
+// readable is a stored table as loads read it. A release that removes a
+// field leaves rows, and parts of rows' values, at keys the schema no
+// longer reads; left out, they stop no load, and left names them.
+func readable(stored map[string]any) (table map[string]any, left []string) {
+	table = make(map[string]any, len(stored))
+	for key, value := range stored {
+		k, ok := schemaKey(key)
+		if !ok {
+			left = append(left, key)
+			continue
+		}
+		table[key] = readableValue(k, value, &left)
+	}
+	slices.Sort(left)
+	return table, left
+}
+
+// readableValue is value, stored at the key at, without its parts at keys
+// the schema does not read, which it adds to left.
+func readableValue(at config.Key, value any, left *[]string) any {
+	switch v := value.(type) {
+	case map[string]any:
+		out := make(map[string]any, len(v))
+		for name, child := range v {
+			k, text, ok := childKey(at, name)
+			if !ok {
+				*left = append(*left, text)
+				continue
+			}
+			out[name] = readableValue(k, child, left)
+		}
+		return out
+	case []any:
+		out := make([]any, len(v))
+		for i, child := range v {
+			out[i] = readableValue(append(slices.Clip(at), config.Segment{Kind: config.SegmentIndex, Index: i}), child, left)
+		}
+		return out
+	}
+	return value
+}
+
+// loadable is table, the one a write of writes leaves, as loads will read
+// it: what was stored as readable leaves it, and what the write sets as
+// written, so a key the schema refuses inside a written value refuses the
+// write.
+func loadable(table, writes map[string]any) map[string]any {
+	stored := maps.Clone(table)
+	for key := range writes {
+		delete(stored, key)
+	}
+	out, _ := readable(stored)
+	for key, value := range writes {
+		if value != nil {
+			out[key] = value
+		}
+	}
+	return out
+}
+
+// schemaKey is key parsed as CanonicalKey spells it, or false when the
+// schema reads nothing at key.
+func schemaKey(key string) (config.Key, bool) {
+	c, err := config.CanonicalKey[AppConfig](key)
+	if err != nil {
+		return nil, false
+	}
+	k, err := config.ParseKey(c)
+	return k, err == nil
+}
+
+// childKey is the key the schema reads the entry name of a value stored at
+// at as: a field, or failing that a map key. text spells it either way, as
+// a field where that parses back to the one entry.
+func childKey(at config.Key, name string) (key config.Key, text string, ok bool) {
+	field, fieldParses := childText(at, config.SegmentField, name)
+	mapKey, _ := childText(at, config.SegmentKey, name)
+	if fieldParses {
+		if k, ok := schemaKey(field); ok {
+			return k, field, true
+		}
+	}
+	if k, ok := schemaKey(mapKey); ok {
+		return k, mapKey, true
+	}
+	if fieldParses {
+		return nil, field, false
+	}
+	return nil, mapKey, false
+}
+
+// childText spells the entry name beneath at as a segment of kind, and
+// reports whether that spelling parses back to it: a field name holding a
+// dot or a bracket would parse as more than one segment.
+func childText(at config.Key, kind config.SegmentKind, name string) (string, bool) {
+	text := append(slices.Clip(at), config.Segment{Kind: kind, Name: name}).String()
+	k, err := config.ParseKey(text)
+	return text, err == nil && len(k) == len(at)+1
 }
 
 // canonical is edits keyed as CanonicalKey spells their keys, and unread,
@@ -622,7 +733,7 @@ func checkSchema(ctx context.Context, db *sql.DB, timeout time.Duration) error {
 
 // serve serves the admin API over the table in db until ctx ends.
 func serve(ctx context.Context, db *sql.DB, boot *BootConfig, logger *slog.Logger) error {
-	settings := NewSettings(db, appSources(boot.ConfigFile, logger), boot.QueryTimeout, boot.MaxRows)
+	settings := NewSettings(db, appSources(boot.ConfigFile, logger), boot.QueryTimeout, boot.MaxRows, logger)
 	reloader, err := config.NewReloader[AppConfig](ctx, settings.Options(), config.WithPollInterval(boot.PollInterval))
 	if err != nil {
 		return err

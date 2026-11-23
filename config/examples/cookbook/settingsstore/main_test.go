@@ -34,7 +34,7 @@ func replica(t *testing.T, path string, maxRows int) (*Settings, *sql.DB) {
 	t.Cleanup(func() { _ = db.Close() })
 	require.NoError(t, migrate(t.Context(), db, time.Second))
 	file := filepath.Join(filepath.Dir(path), "config.yaml") // absent: the table over defaults
-	return NewSettings(db, appSources(file, slog.New(slog.DiscardHandler)), 10*time.Second, maxRows), db
+	return NewSettings(db, appSources(file, slog.New(slog.DiscardHandler)), 10*time.Second, maxRows, slog.New(slog.DiscardHandler)), db
 }
 
 func newReplica(t *testing.T, maxRows int) (*Settings, *sql.DB) {
@@ -301,7 +301,7 @@ func TestSettingsHandler_StoreFailures(t *testing.T) {
 		return entries
 	}
 
-	_, err := db.Exec(`INSERT INTO settings (key, value) VALUES ('limits.bogus', '1')`)
+	_, err := db.Exec(`INSERT INTO settings (key, value) VALUES ('limits.min', '"lots"')`)
 	require.NoError(t, err)
 	rec := put(h, `{"limits.max": 300}`)
 	assert.Equal(t, http.StatusServiceUnavailable, rec.Code)
@@ -401,7 +401,7 @@ func TestSettings_WritesBeginAtReadCommitted(t *testing.T) {
 	db := sql.OpenDB(recordingConnector{dsn: filepath.Join(dir, "settings.db") + "?_pragma=busy_timeout(10000)", levels: &levels})
 	t.Cleanup(func() { _ = db.Close() })
 	require.NoError(t, migrate(t.Context(), db, time.Second))
-	s := NewSettings(db, appSources(filepath.Join(dir, "config.yaml"), slog.New(slog.DiscardHandler)), 10*time.Second, 100)
+	s := NewSettings(db, appSources(filepath.Join(dir, "config.yaml"), slog.New(slog.DiscardHandler)), 10*time.Second, 100, slog.New(slog.DiscardHandler))
 	write(t, s, map[string]any{"limits.max": 300})
 	write(t, s, map[string]any{"limits.max": nil})
 	assert.Equal(t, []sql.IsolationLevel{sql.LevelReadCommitted, sql.LevelReadCommitted}, levels.levels)
@@ -435,7 +435,7 @@ func TestSettingsHandler_ContentionIsA503ToRetry(t *testing.T) {
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = db.Close() })
 	require.NoError(t, migrate(t.Context(), db, time.Second))
-	s := NewSettings(db, appSources(filepath.Join(filepath.Dir(path), "config.yaml"), slog.New(slog.DiscardHandler)), 200*time.Millisecond, 100)
+	s := NewSettings(db, appSources(filepath.Join(filepath.Dir(path), "config.yaml"), slog.New(slog.DiscardHandler)), 200*time.Millisecond, 100, slog.New(slog.DiscardHandler))
 	var logs bytes.Buffer
 	h := settingsHandler(s, func() {}, 1<<20, slog.New(slog.NewJSONHandler(&logs, nil)))
 	contended := func(t *testing.T) {
@@ -535,4 +535,39 @@ func TestSettings_ANullDeletesARowTheSchemaNoLongerReads(t *testing.T) {
 		assert.Contains(t, rec.Body.String(), `"reason":"unknown"`, body)
 	}
 	assert.Equal(t, map[string]string{"limits.max": "200"}, rowsOf(t, db))
+}
+
+// What a removed field leaves in the table, a row or a part of a row's
+// value, is left out of every load: the service restarts, reloads and
+// writes as though it were gone. What a write sets is not left out, so a key
+// the schema refuses inside a written value still refuses the write.
+func TestSettings_LoadsLeaveOutWhatTheSchemaNoLongerReads(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "settings.db")
+	_, db := replica(t, path, 100)
+	var logs bytes.Buffer
+	s := NewSettings(db, appSources(filepath.Join(filepath.Dir(path), "config.yaml"), slog.New(slog.DiscardHandler)), 10*time.Second, 100, slog.New(slog.NewJSONHandler(&logs, nil)))
+	write(t, s, map[string]any{"limits.max": 200})
+	for key, value := range map[string]string{
+		"legacy":    "1",
+		"limits":    `{"min": 2, "old": 5}`,
+		"upstreams": `{"a": {"url": "https://a.example", "retries": 3}}`,
+	} {
+		_, err := db.Exec(`INSERT INTO settings (key, value) VALUES ($1, $2)`, key, value)
+		require.NoError(t, err)
+	}
+	cfg := load(t, s)
+	assert.Equal(t, Limits{Min: 2, Max: 200, Bytes: 1 << 20}, cfg.Limits)
+	assert.Equal(t, map[string]Upstream{"a": {URL: "https://a.example", Timeout: time.Second}}, cfg.Upstreams)
+	var entry struct {
+		Level string
+		Keys  []string
+	}
+	require.NoError(t, json.NewDecoder(&logs).Decode(&entry))
+	assert.Equal(t, "WARN", entry.Level)
+	assert.Equal(t, []string{"legacy", "limits.old", `upstreams["a"].retries`}, entry.Keys)
+
+	write(t, s, map[string]any{"limits.max": 300})
+	assert.Equal(t, 300, load(t, s).Limits.Max)
+	_, err := s.Write(t.Context(), map[string]any{"limits": map[string]any{"min": 3, "typo": 5}})
+	assert.Equal(t, ReasonUnknown, refusal(t, err).Reason)
 }
