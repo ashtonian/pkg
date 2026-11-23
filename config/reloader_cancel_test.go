@@ -257,6 +257,33 @@ func TestNewReloader_EndedContextPublishesNothing(t *testing.T) {
 	r, err = NewReloaderFunc(midway, loader, stopping)
 	require.ErrorIs(t, err, errShutdown)
 	assert.Nil(t, r, "applied as the context ended, still not published")
+	var abandoned *AbandonedApplyError
+	require.ErrorAs(t, err, &abandoned)
+	assert.Equal(t, []string{"first"}, abandoned.Applied, "the applier that applied it is named for rollback")
+	assert.ErrorContains(t, err, "after appliers first applied it")
+
+	type twoKeys struct {
+		Port int    `koanf:"port"`
+		Host string `koanf:"host"`
+	}
+	midway, cancel = context.WithCancelCause(context.Background())
+	later := 0
+	r2, err := NewReloaderFunc(midway, func(context.Context) (*twoKeys, error) { return &twoKeys{Port: 1, Host: "h"}, nil },
+		WithApplier(Applier[twoKeys]{Name: "ports", Prefixes: []string{"port"}, ApplyInitial: true,
+			Apply: func(context.Context, ApplyEvent[twoKeys]) (ApplyResult, error) {
+				cancel(errShutdown)
+				return ApplyResult{}, nil
+			}}),
+		WithApplier(Applier[twoKeys]{Name: "hosts", Prefixes: []string{"host"}, ApplyInitial: true,
+			Apply: func(context.Context, ApplyEvent[twoKeys]) (ApplyResult, error) {
+				later++
+				return ApplyResult{}, nil
+			}}))
+	require.ErrorIs(t, err, errShutdown)
+	assert.Nil(t, r2)
+	assert.Zero(t, later, "no applier starts once the context ends")
+	require.ErrorAs(t, err, &abandoned)
+	assert.Equal(t, []string{"ports"}, abandoned.Applied)
 
 	r, err = NewReloaderFunc(t.Context(), loader, applier)
 	require.NoError(t, err)

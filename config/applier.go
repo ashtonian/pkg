@@ -1074,19 +1074,21 @@ func restartKeys(keys []string, events []owed) (map[string]bool, error) {
 }
 
 // applyInitial runs the ApplyInitial appliers on the first load, published
-// as generation 1. Any failure or restart key fails construction.
-func (r *Reloader[T]) applyInitial(ctx context.Context, cfg *T, p *applyPlan) error {
+// as generation 1, and returns the names of those that applied it. Any
+// failure or restart key fails construction.
+func (r *Reloader[T]) applyInitial(ctx context.Context, cfg *T, p *applyPlan) ([]string, error) {
 	var failures []ApplierFailure
+	var applied []string
 	for i, st := range r.app.appliers {
 		if !st.hook.initial {
 			continue
 		}
 		if err := ended(ctx); err != nil {
-			abandoned := fmt.Errorf("config initial load abandoned: %w", err)
+			abandoned := abandonedInitial(applied, err)
 			if len(failures) > 0 {
-				return errors.Join(abandoned, &ApplyError{Failures: failures})
+				return applied, errors.Join(abandoned, &ApplyError{Failures: failures})
 			}
-			return abandoned
+			return applied, abandoned
 		}
 		res, err := st.call(ctx, ApplyEvent[T]{
 			Trigger:    TriggerInitial,
@@ -1107,9 +1109,38 @@ func (r *Reloader[T]) applyInitial(ctx context.Context, cfg *T, p *applyPlan) er
 		}
 		st.acknowledge(p.events[i], nil)
 		st.status.LastApplied = time.Now().UTC()
+		applied = append(applied, st.hook.name)
 	}
 	if len(failures) > 0 {
-		return &ApplyError{Failures: failures}
+		return applied, &ApplyError{Failures: failures}
 	}
-	return nil
+	return applied, nil
+}
+
+// AbandonedApplyError reports a reloader's first load abandoned after
+// ApplyInitial appliers had applied it: ctx ended before the next applier
+// ran, or before generation 1 was published. Nothing is published and the
+// reloader is not built, but the appliers in Applied acted on the config:
+// roll them back. It wraps ctx.Err() and its cause, not [ErrReload].
+type AbandonedApplyError struct {
+	// Applied names the appliers that applied the config, in the order they
+	// ran.
+	Applied []string
+	// Err is why ctx ended.
+	Err error
+}
+
+func (e *AbandonedApplyError) Error() string {
+	return fmt.Sprintf("config initial load abandoned after appliers %s applied it: %v", strings.Join(e.Applied, ", "), e.Err)
+}
+
+func (e *AbandonedApplyError) Unwrap() error { return e.Err }
+
+// abandonedInitial is the error of a first load abandoned because ctx ended
+// with err, once the appliers in applied had applied it.
+func abandonedInitial(applied []string, err error) error {
+	if len(applied) == 0 {
+		return fmt.Errorf("config initial load abandoned: %w", err)
+	}
+	return &AbandonedApplyError{Applied: slices.Clone(applied), Err: err}
 }
