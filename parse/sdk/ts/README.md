@@ -156,6 +156,8 @@ await stock.patch(["w1", "a/b"], { qty: 3 }); // PATCH /stock/w1/a%2Fb
 
 `patchMany` names each row by one `id[]` value, which has no form for a key of several columns: a tuple throws `RangeError`, as does, with `validateBeforeSend`, any `patchMany` on a resource whose schema `key` has several columns, and the handle's type takes no tuple. Patch such rows one by one with `patch`.
 
+JSON has no `NaN`, `Infinity` or `-Infinity`, and `JSON.stringify` writes each as `null`, which a merge patch reads as removing the member: `{ score: NaN }` would clear a nullable score exactly as `{ score: null }` does, and inside a JSON document the server cannot tell it from an intended deletion. The client encodes every JSON payload it sends (a patch body, a list's or a facet request's filter, a POST list body) through one encoder that refuses such a number with `NonFiniteNumberError` before anything is sent, whether or not `validateBeforeSend` is set and before any schema fetch, as Go's `encoding/json` refuses one. Its `pointer` is the member's JSON Pointer within the payload (`/prefs/readings/2`), its `payload` which payload (`"patch"`, `"filter"` or `"list body"`), its `value` the number. Explicit `null`, finite numbers and every other JSON value are sent as `JSON.stringify` writes them. A caller that used `NaN` to clear a field sends `null` instead.
+
 ## Schema Discovery & Validation
 
 ```typescript
@@ -182,6 +184,7 @@ Two Go-emitted corpora pin client to server: `testdata/filter_conformance.json` 
 |---|---|---|
 | `ApiError` | Non-2xx response | `status` (the response's), `code`, `message`, `body` (`{code, message, path?, index?, details?}`: `path` is the JSON Pointer of the patch member and `index` the JSON Patch operation a patch error is about), `problem` (the RFC 9457 document, or `undefined`), `errors` (its field errors, or `[]`) |
 | `ResponseError` (an `ApiError`) | A 2xx without the JSON body the call reads: a 204, an empty 200, a proxy's HTML 200 | `status`, `url`, `code` `""`, `message` naming the status, URL and reason |
+| `NonFiniteNumberError` (a `RangeError`) | A payload holds `NaN`, `Infinity` or `-Infinity`, which JSON cannot carry; nothing was sent | `payload` (`"patch"`, `"filter"`, `"list body"`), `pointer` (the member's JSON Pointer within it, `""` for the payload itself), `value` |
 | `SchemaResourceError` | The schema endpoint answered another resource's document than the registry name requested | `requested`, `resource` |
 | `SchemaValidationError` | Client-side validation failed | `code` (the E-code the server would return), `field`, `detail`, optional `constraint` / `limit` |
 | `SchemaValidationErrors` | Multiple merge-patch members or values failed | `errors` (ordered individual failures); inherited `code`, `field`, `detail` and constraint metadata identify the first |
@@ -231,19 +234,20 @@ Three Go-emitted fixtures keep the client on the server's contract; each fails i
 ## Operations
 
 - *Deadlines*: every request runs under `timeout` (30 s by default), combined with the call's `AbortSignal`. The client does not retry; a caller that retries decides which failures are safe to repeat (a list is, a patch is not unless the server makes it so).
+- *Encoding*: a JSON payload without `null` is written by `JSON.stringify` alone. One holding `null` (a removal, a NULL filter) may hide a non-finite number, so it is written again with a replacer that checks every number, several times `JSON.stringify`'s cost on that payload: microseconds for a patch, tens of microseconds for a 1000-element document.
 - *Schema cache*: `resource.schema()` fetches a resource's document once per client and caches it by registry name; concurrent calls share one request, and a failed fetch is not cached. `schemas()` fetches every document and replaces the cached ones. A server whose schemas change is read afresh by a new client or a call to `schemas()`.
-- *Troubleshooting*: a `ResponseError` is a 2xx without the JSON the call reads, usually a proxy or a route that is not parse's. A `SchemaResourceError` means `schemaPrefix` or the resource's registry name points at another resource's document. A 414 from a proxy on a long filter means the list needs `maxURLLength` set, so it goes as a POST body.
+- *Troubleshooting*: a `ResponseError` is a 2xx without the JSON the call reads, usually a proxy or a route that is not parse's. A `SchemaResourceError` means `schemaPrefix` or the resource's registry name points at another resource's document. A 414 from a proxy on a long filter means the list needs `maxURLLength` set, so it goes as a POST body. A `NonFiniteNumberError` names the member that holds `NaN` or an infinity (`err.pointer`): find the arithmetic that produced it, and send `null` where a removal is meant.
 
 ## Security
 
-Credentials go in `headers` (`Authorization`), sent with every request to `baseURL` and nowhere else. Filters, sorts and patch values are encoded as JSON and query parameters with `URLSearchParams`, so a value never changes a request's structure. `validateBeforeSend` checks a request against the server's schema before it leaves; the server validates it again whatever the client does, so client-side validation is a convenience, not a control. `ApiError.message` is the server's text: whether to show it to a user is the application's decision.
+Credentials go in `headers` (`Authorization`), sent with every request to `baseURL` and nowhere else. Filters, sorts and patch values are encoded as JSON and query parameters with `URLSearchParams`, so a value never changes a request's structure, and a number JSON cannot carry is refused rather than sent as `null`, so it never changes a request's meaning. `validateBeforeSend` checks a request against the server's schema before it leaves; the server validates it again whatever the client does, so client-side validation is a convenience, not a control. `ApiError.message` is the server's text: whether to show it to a user is the application's decision.
 
 ## Package Structure
 
 | Import | Contents |
 |---|---|
 | `@ashtonian/parse` | `createClient`, `SchemaValidator`, `SCHEMA_VERSION`, builders and combinators, validators, all types |
-| `@ashtonian/parse/core` | `ApiError`, `ResponseError`, `SchemaResourceError`, `SchemaValidationError`, `SchemaValidationErrors`, `SchemaVersionError`, `ConstraintName`, `ConstraintFailure`, `ErrorBody`, `Problem`, `FieldError`, `FieldType`, `KeyValue`, `ResourceKey` |
+| `@ashtonian/parse/core` | `ApiError`, `ResponseError`, `NonFiniteNumberError`, `SchemaResourceError`, `SchemaValidationError`, `SchemaValidationErrors`, `SchemaVersionError`, `ConstraintName`, `ConstraintFailure`, `ErrorBody`, `Payload`, `Problem`, `FieldError`, `FieldType`, `KeyValue`, `ResourceKey` |
 | `@ashtonian/parse/filter` | `filter`, `and`, `or`, `not`, `sort`, `validateFilter`, `validateSort`, list / facet / schema types |
 | `@ashtonian/parse/patch` | `validatePatch`, patch schema and result types |
 
@@ -260,7 +264,8 @@ Credentials go in `headers` (`Authorization`), sent with every request to `baseU
 | `src/patch/pattern.ts` | Patch path lookup: exact key, else the most specific `*` / `**` pattern, as `parse/patch` resolves it |
 | `src/patch/types.ts` | Patch schema, input and result types |
 | `src/schema.ts` | `ResourceSchema` (the schema document), `SCHEMA_VERSION` |
-| `src/core/errors.ts` | `ApiError`, `ResponseError`, `SchemaResourceError`, `SchemaValidationError`, `SchemaValidationErrors`, `SchemaVersionError` |
+| `src/core/errors.ts` | `ApiError`, `ResponseError`, `NonFiniteNumberError`, `SchemaResourceError`, `SchemaValidationError`, `SchemaValidationErrors`, `SchemaVersionError` |
+| `src/core/json.ts` | `encodeJSON`, the one encoder of every JSON payload the client sends, refusing non-finite numbers; RFC 6901 pointer tokens |
 | `src/core/problem.ts` | RFC 9457 `Problem` and `FieldError`: recognition and normalization |
 | `src/core/types.ts` | Shared types: `ErrorBody`, `FieldType`, `KeyValue`, `ResourceKey`, `RequestOptions` |
 

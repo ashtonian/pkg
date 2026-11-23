@@ -9,10 +9,10 @@ import { isDeepStrictEqual } from "node:util";
 import { describe, expect, it } from "vitest";
 import { createClient } from "./client.js";
 // ApiError and the problem types come through the package's public entry points.
-import { ApiError, ResponseError, SchemaResourceError, SchemaValidationError, SchemaVersionError } from "./core/index.js";
+import { ApiError, NonFiniteNumberError, ResponseError, SchemaResourceError, SchemaValidationError, SchemaVersionError } from "./core/index.js";
 import type { FacetResult, ListResult } from "./filter/types.js";
 import type { FieldError, Problem } from "./index.js";
-import type { PatchResult } from "./patch/types.js";
+import type { PatchInput, PatchResult } from "./patch/types.js";
 import { type ResourceSchema, SCHEMA_VERSION } from "./schema.js";
 
 interface WireItem {
@@ -1089,5 +1089,73 @@ describe("methods detached from their handle", () => {
     await expect(list({ sort: "name" }, { signal: AbortSignal.abort() })).rejects.toMatchObject({ name: "AbortError" });
     await expect(listAll(walkOpts, { signal: AbortSignal.abort() }).next()).rejects.toMatchObject({ name: "AbortError" });
     expect(server.calls).toHaveLength(0);
+  });
+});
+
+// JSON has no NaN or Infinity, and JSON.stringify writes them as null, which
+// a merge patch reads as the member's removal and a filter as a NULL test.
+describe("non-finite numbers", () => {
+  interface Scored extends WireItem {
+    score: number | null;
+  }
+  // The recorded wire_items schema with a nullable float, which null clears.
+  const recordedPatch = schema.patch;
+  if (!recordedPatch) throw new Error("the recorded schema has no patch section");
+  const scored: ResourceSchema = {
+    ...schema,
+    patch: { ...recordedPatch, paths: { ...recordedPatch.paths, "/score": { allowed_ops: ["replace", "remove"], data_type: "float", nullable: true, number_kind: "float64" } } },
+  };
+  const empty = { items: [], page_info: { has_next_page: false, has_prev_page: false } };
+  const scoreServer = () => fakeServer(({ method, url }) => {
+    if (url.pathname.endsWith("/schema")) return json(scored);
+    if (method === "PATCH") return json({ updated: [] });
+    if (method === "OPTIONS") return json({ facets: {} });
+    return json(empty);
+  });
+  const scores = (fetchFn: typeof globalThis.fetch, validate: boolean) =>
+    client(fetchFn, validate).resource<Scored>("items", { schema: "wire_items" });
+
+  const refused: { name: string; input: PatchInput<Scored>; pointer: string; value: number }[] = [
+    { name: "a nullable float", input: { score: Number.NaN }, pointer: "/score", value: Number.NaN },
+    { name: "a JSON document member", input: { labels: { weight: Number.POSITIVE_INFINITY } }, pointer: "/labels/weight", value: Number.POSITIVE_INFINITY },
+    { name: "an array element in a JSON document", input: { labels: { readings: [1, Number.NEGATIVE_INFINITY] } }, pointer: "/labels/readings/1", value: Number.NEGATIVE_INFINITY },
+  ];
+
+  describe.each([false, true])("with validateBeforeSend %s", (validate) => {
+    it.each(refused)("refuse $name in patch and patchMany, sending nothing", async ({ input, pointer, value }) => {
+      const server = scoreServer();
+      const items = scores(server.fetch, validate);
+      await expect(items.patch("one", input)).rejects.toMatchObject({ name: "NonFiniteNumberError", payload: "patch", pointer, value });
+      await expect(items.patchMany(["one", "two"], input)).rejects.toMatchObject({ name: "NonFiniteNumberError", payload: "patch", pointer, value });
+      await expect(items.patch("one", input)).rejects.toBeInstanceOf(NonFiniteNumberError);
+      expect(server.calls).toHaveLength(0);
+    });
+
+    it("send explicit null, finite numbers and nested JSON unchanged", async () => {
+      const server = scoreServer();
+      const items = scores(server.fetch, validate);
+      const inputs: PatchInput<Scored>[] = [
+        { score: null },
+        { score: 0.5 },
+        { score: Number.MAX_VALUE, labels: { weight: 2.5, readings: [1, -2], nested: { gone: null } } },
+      ];
+      for (const input of inputs) {
+        await items.patch("one", input);
+        await items.patchMany(["one"], input);
+      }
+      expect(server.calls.filter((c) => c.method === "PATCH").map((c) => c.body)).toEqual(inputs.flatMap((input) => [input, input]));
+    });
+
+    it("refuse one in a filter on every transport, sending nothing", async () => {
+      const server = scoreServer();
+      const items = scores(server.fetch, validate);
+      const filter = { score: { $lt: Number.NaN } };
+      const nan = { name: "NonFiniteNumberError", payload: "filter", pointer: "/score/$lt" };
+      await expect(items.list({ filter }, { method: "GET" })).rejects.toMatchObject(nan);
+      await expect(items.list({ filter }, { method: "POST" })).rejects.toMatchObject(nan);
+      await expect(items.listAll({ filter }).next()).rejects.toMatchObject(nan);
+      await expect(items.facets(["name"], { filter })).rejects.toMatchObject(nan);
+      expect(server.calls).toHaveLength(0);
+    });
   });
 });

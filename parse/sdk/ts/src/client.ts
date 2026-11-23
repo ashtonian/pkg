@@ -6,6 +6,7 @@
  */
 
 import { ApiError, ResponseError, SchemaResourceError, SchemaValidationError, SchemaVersionError } from "./core/errors.js";
+import { encodeJSON, type JSONText } from "./core/json.js";
 import { hasProblemMembers, isProblemMediaType, isRecord, PROBLEM_MEDIA_TYPE, type Problem, readProblem } from "./core/problem.js";
 import type { ErrorBody, KeyValue, ListRequestOptions, RequestOptions, ResourceKey } from "./core/types.js";
 import type { FacetOptions, FacetResult, FilterSchema, ListOptions, ListResult, SortField } from "./filter/types.js";
@@ -44,7 +45,7 @@ function hasFilter(f: object | undefined): f is Record<string, unknown> {
 function buildListQuery<T>(opts: ListOptions<T>): string {
   const params = new URLSearchParams();
   if (hasFilter(opts.filter)) {
-    params.set("filter", JSON.stringify(opts.filter));
+    params.set("filter", encodeJSON(opts.filter, "filter"));
   }
   const sort = opts.sort === undefined ? "" : encodeSort(opts.sort);
   if (sort) {
@@ -425,15 +426,15 @@ export function createClient(cfg: ClientConfig): Client {
     return AbortSignal.any([callerSignal, timeoutSignal]);
   }
 
-  async function request<R>(method: string, url: string, body?: unknown, reqOpts?: RequestOptions): Promise<R> {
-    const hasBody = body != null;
+  async function request<R>(method: string, url: string, body: JSONText | undefined, reqOpts?: RequestOptions): Promise<R> {
+    const hasBody = body !== undefined;
     const init: RequestInit = {
       method,
       headers: requestHeaders(hasBody, reqOpts?.headers),
       signal: combineSignals(reqOpts?.signal),
     };
     if (hasBody) {
-      init.body = JSON.stringify(body);
+      init.body = body;
     }
     const res = await fetchFn(url, init);
     return parseResponse<R>(res, url);
@@ -590,15 +591,18 @@ export function createClient(cfg: ClientConfig): Client {
         return validatorInstance;
       }
 
+      // Each operation encodes its payloads before validating, so a value
+      // JSON cannot carry is refused alike with validation on or off, and
+      // before the schema is fetched.
       async function list(opts: ListOptions<T> = {}, reqOpts?: ListRequestOptions): Promise<ListResult<T>> {
+        const target = `${collectionURL}${buildListQuery(opts)}`;
         if (validate) {
           await validateRequest(await validator(reqOpts), opts, reqOpts);
         }
-        const target = `${collectionURL}${buildListQuery(opts)}`;
         const tooLong = maxURLLength !== undefined && target.length > maxURLLength;
         const method = reqOpts?.method ?? (tooLong ? "POST" : "GET");
         if (method === "POST") {
-          return request<ListResult<T>>("POST", collectionURL, buildListBody(opts), reqOpts);
+          return request<ListResult<T>>("POST", collectionURL, encodeJSON(buildListBody(opts), "list body"), reqOpts);
         }
         return request<ListResult<T>>("GET", target, undefined, reqOpts);
       }
@@ -620,12 +624,13 @@ export function createClient(cfg: ClientConfig): Client {
           throw new RangeError("patch needs a key: PATCH without one targets the collection");
         }
         const segments = values.map(keySegment);
+        const body = encodeJSON(input, "patch");
         if (validate) {
           const v = await validator(reqOpts);
           checkKeyArity(name, v.keyColumns(), values.length);
           v.validatePatch(input);
         }
-        return request<PatchResult<T>>("PATCH", `${collectionURL}/${segments.join("/")}`, input, reqOpts);
+        return request<PatchResult<T>>("PATCH", `${collectionURL}/${segments.join("/")}`, body, reqOpts);
       }
 
       async function patchMany(ids: readonly Extract<K, KeyValue>[], input: PatchInput<T>, reqOpts?: RequestOptions): Promise<PatchResult<T>> {
@@ -636,6 +641,9 @@ export function createClient(cfg: ClientConfig): Client {
         if (ids.some((id) => Array.isArray(id))) {
           throw new RangeError("patchMany names each row by one id[] value, which cannot hold a key of several columns; patch each such row with patch(key)");
         }
+        const params = new URLSearchParams();
+        for (const id of ids) params.append("id[]", keyText(id));
+        const body = encodeJSON(input, "patch");
         if (validate) {
           const v = await validator(reqOpts);
           const columns = v.keyColumns();
@@ -644,27 +652,25 @@ export function createClient(cfg: ClientConfig): Client {
           }
           v.validatePatch(input);
         }
-        const params = new URLSearchParams();
-        for (const id of ids) params.append("id[]", keyText(id));
-        return request<PatchResult<T>>("PATCH", `${collectionURL}${query(params)}`, input, reqOpts);
+        return request<PatchResult<T>>("PATCH", `${collectionURL}${query(params)}`, body, reqOpts);
       }
 
       async function facets(fields: (keyof T & string)[], opts: FacetOptions<T> = {}, reqOpts?: RequestOptions): Promise<FacetResult> {
-        if (validate) {
-          const listOpts: ListOptions<T> = { facets: fields };
-          if (opts.filter) listOpts.filter = opts.filter;
-          if (opts.search !== undefined) listOpts.search = opts.search;
-          await validateRequest(await validator(reqOpts), listOpts, reqOpts);
-        }
         const params = new URLSearchParams({ facets: fields.join(",") });
         if (hasFilter(opts.filter)) {
-          params.set("filter", JSON.stringify(opts.filter));
+          params.set("filter", encodeJSON(opts.filter, "filter"));
         }
         if (opts.search) {
           params.set("search", opts.search);
         }
         if (opts.includeDeleted) {
           params.set("include_deleted", "true");
+        }
+        if (validate) {
+          const listOpts: ListOptions<T> = { facets: fields };
+          if (opts.filter) listOpts.filter = opts.filter;
+          if (opts.search !== undefined) listOpts.search = opts.search;
+          await validateRequest(await validator(reqOpts), listOpts, reqOpts);
         }
         const res = await request<{ facets?: FacetResult }>("OPTIONS", `${collectionURL}${query(params)}`, undefined, reqOpts);
         return res.facets ?? {};
