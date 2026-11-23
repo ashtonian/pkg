@@ -54,16 +54,47 @@ func mergeTrees(src, dest map[string]any) {
 	}
 }
 
-// mergeValue is v merged over dest, which it may change.
-func mergeValue(dest, v any) any {
-	switch in := v.(type) {
+// mergeStep is how a value merges over what lies beneath it.
+type mergeStep int
+
+const (
+	// stepReplace: the value, settled, takes the place of what is there.
+	stepReplace mergeStep = iota
+	// stepKeys: the value, a map[string]any, sets the keys of the map there
+	// one by one, each merged over what that key holds.
+	stepKeys
+	// stepElements: the value, a listEdit, sets elements of the list there
+	// one by one (of an empty list when none is), each merged over what
+	// that element holds.
+	stepElements
+)
+
+// mergeStepOf is how v merges over a value of the merge, overMap reporting
+// whether that value is a map a map merges into. It is the merge rule
+// itself: mergeValue applies it to the merge, within to one source's edits
+// and the judge's spine to what a judgement merges along one key.
+func mergeStepOf(overMap bool, v any) mergeStep {
+	switch v.(type) {
 	case map[string]any:
-		if into, ok := dest.(map[string]any); ok {
-			mergeTrees(in, into)
-			return into
+		if overMap {
+			return stepKeys
 		}
 	case listEdit:
-		return in.applyTo(dest)
+		return stepElements
+	}
+	return stepReplace
+}
+
+// mergeValue is v merged over dest, which it may change. dest is the merge
+// so far, every map of which is a map[string]any once settled.
+func mergeValue(dest, v any) any {
+	into, overMap := dest.(map[string]any)
+	switch mergeStepOf(overMap, v) {
+	case stepKeys:
+		mergeTrees(v.(map[string]any), into)
+		return into
+	case stepElements:
+		return v.(listEdit).applyTo(dest)
 	}
 	return settled(v)
 }
@@ -91,11 +122,10 @@ func (e listEdit) applyTo(dest any) []any {
 // map[string]any, so a later source merges into it by key, and every
 // listEdit the list it makes.
 func settled(v any) any {
+	if m, ok := mergedMap(v); ok {
+		return settledMap(m)
+	}
 	switch x := v.(type) {
-	case wholeMap:
-		return settledMap(x)
-	case map[string]any:
-		return settledMap(x)
 	case listEdit:
 		return x.applyTo(nil)
 	case []any:

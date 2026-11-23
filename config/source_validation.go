@@ -25,10 +25,11 @@ type SourceOption func(*providerSource)
 // merged in rank order over the defaults, the entries of every source this
 // option applies to among them, decoded as Load decodes and checked against
 // the validator's field rules — the default validator's tags, or
-// [WithValidator]'s. An entry is withheld when it fails at a key it sets
-// beside the entries the configuration does not fail at. A failure at no
-// key, and one at a key a source not judged sets above the entries,
-// withholds nothing: the load fails with it.
+// [WithValidator]'s. An entry is withheld when, beside the entries the
+// configuration does not fail at, it fails at a key it sets or at a key
+// holding a value of it the merge keeps. A failure at no key, and one at a
+// key a source not judged sets above the entries with nothing of theirs
+// kept beneath it, withholds nothing: the load fails with it.
 //
 // A failure is at keys: a value that does not decode at its key, a field
 // rule at its field's, and a rule comparing fields (eqfield, ltefield,
@@ -37,9 +38,11 @@ type SourceOption func(*providerSource)
 // set it, and within a source the entry applied last. An entry sets a key
 // when what it merges holds the key, or replaces a key holding it whole —
 // with a value that is not a map, or a typed map or section; an entry
-// whose map merges key by key and holds nothing at the key does not. An
-// entry the merge cannot set, such as an index past the next element, is
-// blamed for that. A Validate method's error, a WithValidator validator's
+// whose map merges key by key and holds nothing at the key does not. A
+// failure at a key is blamed as well on each entry beneath it whose own key
+// it set last: a list's max or a map's len breaks when entries add
+// elements or keys. An entry the merge cannot set, such as an index past
+// the next element, is blamed for that. A Validate method's error, a WithValidator validator's
 // that holds no field errors, and a failure the decoder places beneath a
 // map it decodes whole are at no key. Under [WithSkipValidation] only
 // values that do not decode and entries that cannot be set are blamed.

@@ -263,10 +263,12 @@ Entries are judged in the configuration every source makes: the sources
 merged in rank order over the defaults, the entries of every source using
 the option among them, decoded as `Load` decodes and checked against the
 validator's field rules — the default validator's `validate` tags, or
-`WithValidator`'s. **An entry is withheld when it fails at a key it sets,
-beside the entries the configuration does not fail at.** A failure at no key,
-and a failure at a key that a source not using the option sets above the
-entries, withholds nothing: the load fails with it.
+`WithValidator`'s. **An entry is withheld when, beside the entries the
+configuration does not fail at, it fails at a key it sets or at a key
+holding a value of it that the merge keeps.** A failure at no key, and a
+failure at a key that a source not using the option sets above the entries
+with nothing of theirs kept beneath it, withholds nothing: the load fails
+with it.
 
 - **Where a failure is.** A value that does not decode is at its key, and a
   field rule at its field's. A rule comparing fields (`eqfield`, `ltefield`,
@@ -280,8 +282,10 @@ entries, withholds nothing: the load fails with it.
   or replaces a key holding it whole — a value that is not a map, or a typed
   map or section. An entry whose map merges key by key and holds nothing at
   the key does not: `db: {host: prod-db}` is not blamed for a missing
-  `db.password`. An entry the merge cannot set, such as `pool[2]` past the
-  next element, is blamed for that.
+  `db.password`. A failure at a key is also blamed on each entry beneath it
+  whose own key it set last, so stored rows that grow a list past its `max`,
+  or a map past its `len`, are judged. An entry the merge cannot set, such
+  as `pool[2]` past the next element, is blamed for that.
 - **What is withheld.** Each round judges the entries left and tests every
   entry it blames for the first time beside the entries it does not blame.
   An entry blamed there is withheld. One that is not is kept: independently
@@ -294,7 +298,10 @@ So a value a higher source repairs is no entry's fault, an entry a higher
 source sets over is not reported whatever it holds, a lower source's entry
 valid beside a higher source's is kept with it, and a valid `cert_file` and
 `key_file` pair is kept beside a `min_version` that breaks its `ltefield`
-rule, which alone is withheld.
+rule, which alone is withheld. Under `max=3`, over two default elements,
+entries `pool[2]` and `pool[3]` keep `pool[2]` and withhold `pool[3]`;
+two map entries each fitting a `max=2` map beside its default but not
+together are both kept, and the load fails on the map's rule.
 
 Entries are judged before secrets, post-load hooks and `Validate` methods,
 which run once, in the load. A field rule comparing an entry's key with a

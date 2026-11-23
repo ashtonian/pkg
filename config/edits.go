@@ -468,20 +468,11 @@ func (e *edit) set(tree any, beneath func() any, i int) (any, error) {
 // any other value, a typed one included, replaces it. A map an earlier edit
 // set whole stays whole.
 func within(tree, value any) any {
-	in, ok := value.(map[string]any)
-	if !ok {
+	into, overMap := mergedMap(tree)
+	if mergeStepOf(overMap, value) != stepKeys {
 		return value
 	}
-	var into map[string]any
-	switch t := tree.(type) {
-	case map[string]any:
-		into = t
-	case wholeMap:
-		into = t
-	default:
-		return value
-	}
-	for k, v := range in {
+	for k, v := range value.(map[string]any) {
 		into[k] = within(into[k], v)
 	}
 	return tree

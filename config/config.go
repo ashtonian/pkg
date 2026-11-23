@@ -326,10 +326,6 @@ func load[T any](ctx context.Context, o *options) (loaded[T], error) {
 	if o.findsShadowed() {
 		l.inputs = newInputs(schema, l.origins, o.inputDigests)
 	}
-	files := fileDigests{}
-	var env envSchema
-	var unmatchedEnv []string
-
 	if _, err := l.addSchemaDefaults(o); err != nil {
 		return none, err
 	}
@@ -341,72 +337,11 @@ func load[T any](ctx context.Context, o *options) (loaded[T], error) {
 	if err := abandoned(ctx); err != nil {
 		return none, err
 	}
-	// Every source is read before any merges (see layers.go).
-	var layers []*layer
-	for i, src := range o.base {
-		if err := abandoned(ctx); err != nil {
-			return none, err
-		}
-		y, err := l.readProvider(ctx, fmt.Sprintf("base provider %d", i), src, positionSource(SourceBase, i))
-		if err != nil {
-			return none, err
-		}
-		layers = append(layers, y)
-	}
-	for _, f := range o.files {
-		if err := abandoned(ctx); err != nil {
-			return none, err
-		}
-		raw, err := os.ReadFile(f.path)
-		switch {
-		case err == nil:
-		case !f.required && errors.Is(err, fs.ErrNotExist):
-			continue // absence is the one failure an optional file is allowed
-		default:
-			return none, fmt.Errorf("loading config file %s: %w: %w", f.path, ErrFileRead, err)
-		}
-		data, err := parse(f.path, o.fileParser(f.path), raw)
-		if err != nil {
-			return none, fmt.Errorf("loading config file %s: %w: %w", f.path, ErrFileParse, err)
-		}
-		y, err := l.prepare("config file "+f.path, data, constant(Source{Kind: SourceFile, Name: f.path}))
-		if err != nil {
-			return none, err
-		}
-		layers = append(layers, y)
-		files[f.path] = sha256.Sum256(raw)
-	}
-	if err := abandoned(ctx); err != nil {
+	layers, read, err := l.readLayers(ctx, o)
+	if err != nil {
 		return none, err
 	}
-	if len(o.envPrefixes) > 0 {
-		// Named from T's fields so a key with an underscore in it
-		// (koanf:"max_conns") keeps it; see envSchema.
-		env = newEnvSchema(variableFields(root), o.envPrefixes)
-		values, from, unmatched, err := env.read(o.environ())
-		if err != nil {
-			return none, fmt.Errorf("loading env vars: %w: %w", ErrValidation, err)
-		}
-		unmatchedEnv = unmatched
-		y, err := l.prepareFlat("env "+env.pattern(), values, envLabeler(env.pattern(), from))
-		if err != nil {
-			return none, err
-		}
-		layers = append(layers, y)
-	}
-	for i, src := range o.overrides {
-		if err := abandoned(ctx); err != nil {
-			return none, err
-		}
-		y, err := l.readProvider(ctx, fmt.Sprintf("override provider %d", i), src, positionSource(SourceOverride, i))
-		if err != nil {
-			return none, err
-		}
-		layers = append(layers, y)
-	}
-	if err := abandoned(ctx); err != nil {
-		return none, err
-	}
+	files, env, unmatchedEnv := read.files, read.env, read.unmatchedEnv
 	verdicts, err := l.judgeEntries(ctx, o, layers)
 	if err != nil {
 		return none, err
@@ -588,6 +523,86 @@ func ruleViolation(cfg reflect.Value, err error) error {
 		msg:   fmt.Sprintf("validating config: %s: %s", ErrValidation, summary),
 		cause: err,
 	}
+}
+
+// sourcesRead is what reading a load's sources finds beside its layers: the
+// digest of each config file read, and the environment's schema and the
+// variables under its prefixes that it did not match.
+type sourcesRead struct {
+	files        fileDigests
+	env          envSchema
+	unmatchedEnv []string
+}
+
+// readLayers reads every source above the defaults into a layer, in rank
+// order: the base providers, the config files, the environment and the
+// override providers. Nothing merges until every source is read (see
+// layers.go).
+func (l *loader) readLayers(ctx context.Context, o *options) ([]*layer, sourcesRead, error) {
+	read := sourcesRead{files: fileDigests{}}
+	var layers []*layer
+	for i, src := range o.base {
+		if err := abandoned(ctx); err != nil {
+			return nil, read, err
+		}
+		y, err := l.readProvider(ctx, fmt.Sprintf("base provider %d", i), src, positionSource(SourceBase, i))
+		if err != nil {
+			return nil, read, err
+		}
+		layers = append(layers, y)
+	}
+	for _, f := range o.files {
+		if err := abandoned(ctx); err != nil {
+			return nil, read, err
+		}
+		raw, err := os.ReadFile(f.path)
+		switch {
+		case err == nil:
+		case !f.required && errors.Is(err, fs.ErrNotExist):
+			continue // absence is the one failure an optional file is allowed
+		default:
+			return nil, read, fmt.Errorf("loading config file %s: %w: %w", f.path, ErrFileRead, err)
+		}
+		data, err := parse(f.path, o.fileParser(f.path), raw)
+		if err != nil {
+			return nil, read, fmt.Errorf("loading config file %s: %w: %w", f.path, ErrFileParse, err)
+		}
+		y, err := l.prepare("config file "+f.path, data, constant(Source{Kind: SourceFile, Name: f.path}))
+		if err != nil {
+			return nil, read, err
+		}
+		layers = append(layers, y)
+		read.files[f.path] = sha256.Sum256(raw)
+	}
+	if err := abandoned(ctx); err != nil {
+		return nil, read, err
+	}
+	if len(o.envPrefixes) > 0 {
+		// Named from T's fields so a key with an underscore in it
+		// (koanf:"max_conns") keeps it; see envSchema.
+		read.env = newEnvSchema(variableFields(l.root), o.envPrefixes)
+		values, from, unmatched, err := read.env.read(o.environ())
+		if err != nil {
+			return nil, read, fmt.Errorf("loading env vars: %w: %w", ErrValidation, err)
+		}
+		read.unmatchedEnv = unmatched
+		y, err := l.prepareFlat("env "+read.env.pattern(), values, envLabeler(read.env.pattern(), from))
+		if err != nil {
+			return nil, read, err
+		}
+		layers = append(layers, y)
+	}
+	for i, src := range o.overrides {
+		if err := abandoned(ctx); err != nil {
+			return nil, read, err
+		}
+		y, err := l.readProvider(ctx, fmt.Sprintf("override provider %d", i), src, positionSource(SourceOverride, i))
+		if err != nil {
+			return nil, read, err
+		}
+		layers = append(layers, y)
+	}
+	return layers, read, abandoned(ctx)
 }
 
 // bind gives a ContextProvider the load's context.

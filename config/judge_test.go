@@ -5,9 +5,11 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
+	"reflect"
 	"sync"
 	"testing"
 
+	"github.com/knadh/koanf/v2"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -280,4 +282,207 @@ func TestJudge_EntriesThatConflictAreKeptAndTheLoadFails(t *testing.T) {
 	require.ErrorIs(t, err, ErrValidation)
 	assert.Contains(t, err.Error(), "min(ltefield=max)")
 	assert.Equal(t, []string{}, rejected)
+}
+
+type grownServer struct {
+	Host string `koanf:"host"`
+	Port int    `koanf:"port"`
+}
+
+type grownConfig struct {
+	Pool      []grownServer          `koanf:"pool" validate:"max=3"`
+	Upstreams map[string]grownServer `koanf:"upstreams" validate:"max=2"`
+	Name      string                 `koanf:"name"`
+}
+
+func grownDefaults() Option {
+	return WithDefaults(map[string]any{
+		"pool":      []any{map[string]any{"host": "a"}, map[string]any{"host": "b"}},
+		"upstreams": map[string]any{"base": map[string]any{"host": "u"}},
+	})
+}
+
+// A failure at a collection's key — a list's max, a map's len — blames the
+// entries beneath it that the merge keeps: stored rows that grow it past
+// its rule are judged, each beside the entries not blamed. An entry valid
+// there is kept, so rows each valid that break the rule together are kept
+// and the load fails on it. Entries a higher source replaces whole are no
+// one's to blame.
+func TestJudge_AFailureAtACollectionBlamesTheEntriesItHolds(t *testing.T) {
+	got, rejected, err := judged[grownConfig](t, map[string]any{"pool[2].host": "c", "pool[3].host": "d", "name": "x"}, []Option{grownDefaults()})
+	require.NoError(t, err)
+	assert.Equal(t, []string{"pool[3].host"}, rejected)
+	assert.Equal(t, []grownServer{{Host: "a"}, {Host: "b"}, {Host: "c"}}, got.Pool)
+	assert.Equal(t, "x", got.Name)
+
+	_, rejected, err = judged[grownConfig](t, map[string]any{`upstreams["x"].host`: "x", `upstreams["y"].host`: "y"}, []Option{grownDefaults()})
+	require.ErrorIs(t, err, ErrValidation)
+	assert.Contains(t, err.Error(), "upstreams(max")
+	assert.Empty(t, rejected)
+
+	four := []any{map[string]any{"host": "1"}, map[string]any{"host": "2"}, map[string]any{"host": "3"}, map[string]any{"host": "4"}}
+	_, rejected, err = judged[grownConfig](t, map[string]any{"pool[2].host": "c"}, []Option{grownDefaults()},
+		WithOverrideProvider(mapSource{"pool": four}, nil))
+	require.ErrorIs(t, err, ErrValidation)
+	assert.Contains(t, err.Error(), "pool(max")
+	assert.Empty(t, rejected)
+}
+
+// A listEdit merges into the list beneath it element by element, as
+// mergeValue merges it: the spine gives an element it sets, or appends, to
+// the edit's owner and leaves the rest to what set them, and over no list it
+// makes a list of the edit's elements alone. What the spine holds is what
+// mergeValue's merge holds. Each edit's indexes run on from the list's end,
+// as the edit tree makes them.
+func TestJudge_SpineMergesAListEditByElement(t *testing.T) {
+	layer := entryRef{layer: 0, entry: -1}
+	onTwo := map[string]any{"pool": listEdit{1: map[string]any{"port": 2}, 2: map[string]any{"host": "c"}}}
+	fresh := map[string]any{"pool": listEdit{0: map[string]any{"port": 2}, 1: map[string]any{"host": "c"}}}
+	for _, tt := range []struct {
+		name       string
+		base, edit map[string]any
+		want       map[string]entryRef
+	}{
+		{
+			name: "over a list",
+			base: map[string]any{"pool": []any{map[string]any{"host": "a", "port": 1}, map[string]any{"host": "b"}}},
+			edit: onTwo,
+			want: map[string]entryRef{
+				"pool": layer, "pool[0].host": beneathLayers, "pool[0].port": beneathLayers,
+				"pool[1].host": beneathLayers, "pool[1].port": layer, "pool[2].host": layer, "pool[2].port": beneathLayers,
+			},
+		},
+		{
+			name: "over a value that is no list",
+			base: map[string]any{"pool": map[string]any{"host": "a"}},
+			edit: fresh,
+			want: map[string]entryRef{"pool": layer, "pool[0].host": beneathLayers, "pool[0].port": layer, "pool[1].host": layer, "pool[2].host": beneathLayers},
+		},
+		{
+			name: "over nothing",
+			base: map[string]any{},
+			edit: fresh,
+			want: map[string]entryRef{"pool": layer, "pool[0].host": beneathLayers, "pool[0].port": layer, "pool[1].host": layer},
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			merged := deepCopyMap(tt.base)
+			mergeTrees(deepCopyMap(tt.edit), merged)
+			for key, want := range tt.want {
+				p, err := parseKeyPath(key)
+				require.NoError(t, err)
+				s := newSpine(p, tt.base)
+				s.apply(0, tt.edit, layer)
+				node := s.nodes[len(p)]
+				assert.Equal(t, want, node.owner, key)
+				assert.Equal(t, holdsRaw(merged, p.raw()), node.present, "%s: present as the merge holds it", key)
+			}
+		})
+	}
+}
+
+type provSection struct {
+	Host string `koanf:"host"`
+	Port int    `koanf:"port"`
+}
+
+type provConfig struct {
+	Name    string                 `koanf:"name"`
+	DB      provSection            `koanf:"db"`
+	Servers map[string]provSection `koanf:"servers"`
+	Pool    []provSection          `koanf:"pool"`
+	Tags    map[string]string      `koanf:"tags"`
+}
+
+// The judge's setter names, for every key of a load, the source its
+// provenance names: what merges key by key, a typed section, a typed map,
+// an entries source's index and map-key entries, a provider judged entry by
+// entry, and a higher source replacing them whole.
+func TestJudge_SetterAgreesWithProvenance(t *testing.T) {
+	defaults := WithDefaults(map[string]any{
+		"pool":    []any{map[string]any{"host": "d0", "port": 1}, map[string]any{"host": "d1"}},
+		"servers": map[string]any{"a": map[string]any{"host": "da"}},
+	})
+	entries := map[string]any{
+		"pool[1].host": "B", "pool[2]": map[string]any{"host": "C"},
+		`servers["a"].port`: 7, `servers["b"]`: map[string]any{"host": "b"}, "name": "n",
+	}
+	for name, opts := range map[string][]Option{
+		"maps merging key by key": {
+			WithBaseProvider(mapSource{"name": "a", "db": map[string]any{"host": "h"}, "tags": map[string]any{"x": "1"}}, nil),
+			WithOverrideProvider(mapSource{"db": map[string]any{"port": 5}, "tags": map[string]any{"y": "2"}}, nil),
+		},
+		"a typed section": {
+			WithBaseProvider(mapSource{"db": map[string]any{"host": "h", "port": 1}, "name": "a"}, nil),
+			WithOverrideProvider(mapSource{"db": provSection{Host: "t"}}, nil),
+		},
+		"a typed map": {
+			defaults,
+			WithBaseProvider(mapSource{"servers": map[string]any{"b": map[string]any{"host": "b", "port": 2}}}, nil),
+			WithOverrideProvider(mapSource{"servers": map[string]provSection{"c": {Host: "c"}}}, nil),
+		},
+		"entries with index and map-key entries": {
+			defaults,
+			WithBaseProvider(mapSource{"servers": map[string]any{"a": map[string]any{"host": "a"}}, "db": map[string]any{"host": "h"}}, nil),
+			WithOverrideEntries(readEntries(entries), WithInvalidEntries(nil)),
+		},
+		"a provider judged entry by entry": {
+			defaults,
+			WithBaseProvider(mapSource{"db": map[string]any{"host": "h"}, "servers": map[string]any{"b": map[string]any{"host": "b"}}, "tags": map[string]any{"x": "1"}}, nil, WithInvalidEntries(nil)),
+			WithOverrideProvider(mapSource{"db": map[string]any{"port": 5}, "tags": map[string]any{"y": "2"}}, nil),
+		},
+		"a higher source replacing entries whole": {
+			defaults,
+			WithBaseEntries(readEntries(entries), WithInvalidEntries(nil)),
+			WithOverrideProvider(mapSource{"pool": []any{map[string]any{"host": "r"}}, "servers": map[string]provSection{"z": {Host: "z"}}}, nil),
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			snap, err := LoadSnapshot[provConfig](t.Context(), opts...)
+			require.NoError(t, err)
+
+			o := buildOptions(opts)
+			root := reflect.TypeFor[provConfig]()
+			schema, err := loadSchema(root, o)
+			require.NoError(t, err)
+			l := &loader{k: koanf.New("."), root: root, schema: schema}
+			_, err = l.addSchemaDefaults(o)
+			require.NoError(t, err)
+			if len(o.defaults) > 0 {
+				require.NoError(t, l.addFlat("WithDefaults", o.defaults, constant(Source{Kind: SourceDefaults})))
+			}
+			layers, _, err := l.readLayers(t.Context(), o)
+			require.NoError(t, err)
+			j := newJudge(t.Context(), layers)
+			j.from, j.base = 0, l.k.Raw()
+			all := make([]bool, len(j.candidates))
+			for c := range all {
+				all[c] = true
+			}
+			for _, y := range layers {
+				_, refused, err := l.mergeLayer(y, y.entries)
+				require.NoError(t, err)
+				require.Empty(t, refused)
+			}
+			merged := l.k.Raw()
+
+			require.NotEmpty(t, snap.Provenance)
+			for key, origin := range snap.Provenance {
+				p, err := parseKeyPath(key)
+				require.NoError(t, err, key)
+				by := j.setter(p, all, nil)
+				unset := origin.Input.Kind == SourceZero || origin.Input.Kind == SourceTag
+				switch {
+				case by.layer < 0:
+					assert.True(t, unset || origin.Input.Kind == SourceDefaults, "%s: %v", key, origin.Input)
+				case unset:
+					// No source holds a value there; the setter names the
+					// source that replaced a key holding one.
+					assert.False(t, holdsRaw(merged, p.raw()), "%s: %v", key, origin.Input)
+				default:
+					assert.Equal(t, origin.Input, layers[by.layer].label.at(p.raw()), key)
+				}
+			}
+		})
+	}
 }

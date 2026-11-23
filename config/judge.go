@@ -31,28 +31,14 @@ type entryVerdict struct {
 // the load (see fatal).
 func (l *loader) judgeEntries(ctx context.Context, o *options, layers []*layer) ([]entryVerdict, error) {
 	verdicts := make([]entryVerdict, len(layers))
-	j := &judge{ctx: ctx, layers: layers, from: len(layers), first: make([]int, len(layers)), entryAt: make([]map[string]int, len(layers))}
 	for i, y := range layers {
-		j.first[i] = len(j.candidates)
 		if !y.withhold {
 			verdicts[i].kept = y.entries
-			continue
-		}
-		for e := range y.entries {
-			j.from = min(j.from, i)
-			j.candidates = append(j.candidates, entryRef{layer: i, entry: e})
 		}
 	}
+	j := newJudge(ctx, layers)
 	if len(j.candidates) == 0 {
 		return verdicts, nil
-	}
-	for i := j.from; i < len(layers); i++ {
-		if y := layers[i]; y.byEntry {
-			j.entryAt[i] = make(map[string]int, len(y.entries))
-			for e := range y.entries {
-				j.entryAt[i][pathKey(y.entries[e].path)] = e
-			}
-		}
 	}
 	j.checker = &keyChecker{root: l.root, schema: l.schema, defaults: l.k.Raw(), unkeyed: maps.Clone(l.unkeyed), options: o}
 	beneath, err := j.loaderOver(j.checker.defaults, j.checker.unkeyed)
@@ -82,6 +68,33 @@ func (l *loader) judgeEntries(ctx context.Context, o *options, layers []*layer) 
 	return verdicts, nil
 }
 
+// newJudge is the judge of layers' candidates: every entry of a layer
+// WithInvalidEntries judges. from is the first such layer, or len(layers).
+// base, unkeyed and checker are the caller's to set.
+func newJudge(ctx context.Context, layers []*layer) *judge {
+	j := &judge{ctx: ctx, layers: layers, from: len(layers), first: make([]int, len(layers)), entryAt: make([]map[string]int, len(layers))}
+	for i, y := range layers {
+		j.first[i] = len(j.candidates)
+		if y.byEntry {
+			j.entryAt[i] = make(map[string]int, len(y.entries))
+			for e := range y.entries {
+				j.entryAt[i][pathKey(y.entries[e].path)] = e
+			}
+		}
+		if !y.withhold {
+			continue
+		}
+		j.from = min(j.from, i)
+		for e := range y.entries {
+			c := len(j.candidates)
+			j.candidates = append(j.candidates, entryRef{layer: i, entry: e})
+			j.byKey = append(j.byKey, keyedCandidate{key: pathKey(y.entries[e].path), c: c})
+		}
+	}
+	slices.SortFunc(j.byKey, func(a, b keyedCandidate) int { return strings.Compare(a.key, b.key) })
+	return j
+}
+
 // fatal is why judging fails the load rather than an entry, given failed,
 // a judgement's failure: the context ended, or a validate tag the validator
 // cannot apply (ErrSchema), which is the declaration's fault and no
@@ -109,9 +122,12 @@ type judge struct {
 	// first is, for each layer, the number of its first candidate: entry e
 	// of a judged layer i is candidate first[i]+e.
 	first []int
-	// entryAt indexes the entries of each layer from `from` up that is set
-	// entry by entry, by key (see pathKey).
+	// entryAt indexes the entries of each layer set entry by entry, by key
+	// (see pathKey).
 	entryAt []map[string]int
+	// byKey is every candidate, sorted by key: the candidates beneath a key
+	// are a range of it, since a key's pathKey begins every pathKey beneath.
+	byKey []keyedCandidate
 	// from is the first layer with a candidate; base and unkeyed are the
 	// merge of the defaults and the layers beneath it, which no set
 	// changes.
@@ -121,9 +137,20 @@ type judge struct {
 }
 
 // entryRef is an entry of a layer: the layer's index, and the entry's in
-// its entries.
+// its entries. As what set a key (see setter), entry is -1 for what a layer
+// sets outside entries — all of a layer not set entry by entry — and layer
+// is -1 for what lies beneath the judged layers: the defaults and the
+// layers below from.
 type entryRef struct {
 	layer, entry int
+}
+
+// beneathLayers is what set a key that no layer from `from` up set.
+var beneathLayers = entryRef{layer: -1, entry: -1}
+
+type keyedCandidate struct {
+	key string
+	c   int
 }
 
 func (j *judge) entry(c int) *edit {
@@ -304,7 +331,10 @@ func ruleKeys(cfg reflect.Value, fe validator.FieldError) []keyPath {
 // failures it is blamed for. An entry the merge could not set is blamed for
 // that. A failure at a key is blamed on the candidate that set the key last
 // (see setter); a rule comparing fields on the one that set each field it
-// names, when a candidate did.
+// names, when a candidate did. It is blamed as well on each candidate whose
+// entry lies beneath the key and that set its own key last: a list's max, a
+// map's len, breaks when entries add elements or keys, and those entries
+// are what the merge keeps beneath it.
 func (j *judge) blame(v verdict, set []int) map[int][]error {
 	in := make([]bool, len(j.candidates))
 	for _, c := range set {
@@ -312,16 +342,25 @@ func (j *judge) blame(v verdict, set []int) map[int][]error {
 	}
 	out := map[int][]error{}
 	for ref, err := range v.unset {
-		if j.layers[ref.layer].withhold {
-			c := j.first[ref.layer] + ref.entry
+		if c, ok := j.candidate(ref); ok {
 			out[c] = append(out[c], err)
 		}
 	}
 	for _, f := range v.failures {
 		var by []int
-		for _, k := range f.at {
-			if c, ok := j.setter(k, in, v.unset); ok && !slices.Contains(by, c) {
+		blame := func(c int) {
+			if !slices.Contains(by, c) {
 				by = append(by, c)
+			}
+		}
+		for _, k := range f.at {
+			if c, ok := j.candidate(j.setter(k, in, v.unset)); ok {
+				blame(c)
+			}
+			for _, c := range j.beneath(k) {
+				if in[c] && j.setter(j.entry(c).path, in, v.unset) == j.candidates[c] {
+					blame(c)
+				}
 			}
 		}
 		for _, c := range by {
@@ -331,18 +370,41 @@ func (j *judge) blame(v verdict, set []int) map[int][]error {
 	return out
 }
 
-// setter is the candidate that set k last in the merge of a judgement — in,
-// the candidates it merged, and unset, the entries it could not set — and
-// true; false when what the merge holds at k is no candidate's: a source not
-// judged, a judged source's keys outside its entries, the defaults, or
-// nothing. A source or an entry sets k when what it merges holds k, or
-// replaces a key holding k whole (see spine).
-func (j *judge) setter(k keyPath, in []bool, unset map[entryRef]error) (int, bool) {
+// candidate is the candidate ref is, when it is one.
+func (j *judge) candidate(ref entryRef) (int, bool) {
+	if ref.layer < 0 || ref.entry < 0 || !j.layers[ref.layer].withhold {
+		return 0, false
+	}
+	return j.first[ref.layer] + ref.entry, true
+}
+
+// beneath is the candidates whose keys lie beneath k, k's own included.
+func (j *judge) beneath(k keyPath) []int {
+	prefix := pathKey(k)
+	from, _ := slices.BinarySearchFunc(j.byKey, prefix, func(e keyedCandidate, p string) int { return strings.Compare(e.key, p) })
+	var out []int
+	for _, e := range j.byKey[from:] {
+		if !strings.HasPrefix(e.key, prefix) {
+			break
+		}
+		out = append(out, e.c)
+	}
+	return out
+}
+
+// setter is what set k last in the merge of a judgement — in, the
+// candidates it merged, and unset, the entries it could not set: an entry,
+// a layer's keys outside its entries (entry -1), or beneathLayers for the
+// defaults, the layers below the judged ones and nothing at all. A layer
+// or an entry sets k when what it merges holds k, or replaces a key
+// holding it whole (see spine).
+func (j *judge) setter(k keyPath, in []bool, unset map[entryRef]error) entryRef {
 	s := newSpine(k, j.base)
 	for i := j.from; i < len(j.layers); i++ {
 		y := j.layers[i]
+		whole := entryRef{layer: i, entry: -1}
 		if !y.byEntry {
-			s.apply(0, y.tree, -1)
+			s.apply(0, y.tree, whole)
 			continue
 		}
 		// An entry sets k only from k or a key holding it, and those apply
@@ -352,79 +414,93 @@ func (j *judge) setter(k keyPath, in []bool, unset map[entryRef]error) (int, boo
 			if !ok {
 				continue
 			}
-			if _, refused := unset[entryRef{layer: i, entry: e}]; refused {
+			ref := entryRef{layer: i, entry: e}
+			if _, refused := unset[ref]; refused {
 				continue
 			}
-			owner := -1
-			if y.withhold {
-				if owner = j.first[i] + e; !in[owner] {
-					continue
-				}
+			if c, judged := j.candidate(ref); judged && !in[c] {
+				continue
 			}
-			s.apply(n, y.entries[e].value, owner)
+			s.apply(n, y.entries[e].value, ref)
 		}
 		if y.tree != nil {
-			s.apply(0, y.tree, -1) // the keys outside its entries, which merge over them
+			s.apply(0, y.tree, whole) // the keys outside its entries, which merge over them
 		}
 	}
-	owner := s.nodes[len(k)].owner
-	return owner, owner >= 0
+	return s.nodes[len(k)].owner
 }
 
 // spine is what a merge holds along one key k, by depth: the root at 0, k
 // itself at len(k). Each node records whether a value is there, whether it
-// is a map that a map merged over merges into key by key, and the
-// candidate that set it last, or -1.
+// is a map or a list, and what set it last.
 //
-// Merges are applied one by one, an entry's value at its key, as
-// mergeValue merges a source's tree. Within a source, its entries merge
-// into one another before they merge into the layers beneath (see
-// within); the two agree wherever each key holds a map in every source
-// that sets it or in none, and a key that holds a map in one source and a
-// value in another fails to decode at that key, not beneath it.
+// Each value is merged in turn, an entry's at its key, by the merge's own
+// rule (mergeStepOf), and settles as mergeValue settles it: a map of any
+// kind becomes a map a later map merges into. Within a source, its entries
+// merge into one another before they merge into the layers beneath (see
+// within); the two agree wherever each key holds a map in every source that
+// sets it or in none, and a key that holds a map in one source and a value
+// in another fails to decode at that key, not beneath it. The values a
+// judgement merges hold no listEdit — the base is settled, a source's tree
+// is as it was read, and an entry's value is its own — but one merges as
+// mergeValue merges it, element by element.
 type spine struct {
 	k     keyPath
 	nodes []spineNode
 }
 
 type spineNode struct {
-	present bool
-	isMap   bool
-	owner   int
+	present, isMap, isList bool
+	owner                  entryRef
 }
 
-// newSpine is the spine of k in base, which no candidate set.
+// newSpine is the spine of k in base, which beneathLayers set.
 func newSpine(k keyPath, base map[string]any) *spine {
 	s := &spine{k: k, nodes: make([]spineNode, len(k)+1)}
 	for d := range s.nodes {
-		s.nodes[d].owner = -1
+		s.nodes[d].owner = beneathLayers
 	}
-	s.place(0, base, -1)
+	s.place(0, base, beneathLayers)
 	return s
 }
 
-// apply merges u, which owner sets at depth d of k, over what is there: a
-// map[string]any into a map key by key, setting what it holds; anything
-// else in its place.
-func (s *spine) apply(d int, u any, owner int) {
+// apply merges u, which owner sets at depth d of k, over what is there.
+func (s *spine) apply(d int, u any, owner entryRef) {
 	for a := 1; a < d; a++ {
 		if !s.nodes[a].present { // made to hold what u sets beneath it
-			s.nodes[a] = spineNode{present: true, isMap: s.k[a].kind != segIndex, owner: -1}
+			list := s.k[a].kind == segIndex
+			s.nodes[a] = spineNode{present: true, isMap: !list, isList: list, owner: beneathLayers}
 		}
 	}
 	for {
-		m, merges := u.(map[string]any)
-		if !merges || !s.nodes[d].isMap {
+		node := &s.nodes[d]
+		var next any
+		switch mergeStepOf(node.isMap, u) {
+		case stepReplace:
 			s.place(d, u, owner)
 			return
-		}
-		s.nodes[d].owner = owner
-		if d == len(s.k) || s.k[d].kind == segIndex {
-			return
-		}
-		next, ok := m[s.k[d].name]
-		if !ok {
-			return
+		case stepKeys:
+			node.owner = owner
+			if d == len(s.k) || s.k[d].kind == segIndex {
+				return
+			}
+			var ok bool
+			if next, ok = u.(map[string]any)[s.k[d].name]; !ok {
+				return
+			}
+		case stepElements:
+			// The list there, or an empty one, with u's elements merged in.
+			if !node.isList {
+				s.gone(d+1, owner)
+			}
+			*node = spineNode{present: true, isList: true, owner: owner}
+			if d == len(s.k) {
+				return
+			}
+			var ok bool
+			if next, ok = u.(listEdit)[s.k[d].index]; !ok || s.k[d].kind != segIndex {
+				return
+			}
 		}
 		u, d = next, d+1
 	}
@@ -432,11 +508,12 @@ func (s *spine) apply(d int, u any, owner int) {
 
 // place puts u, which owner sets, at depth d in place of what is there.
 // Beneath it the spine is what u holds: a value u holds whole, such as a
-// typed map or a scalar, is owner's at every depth, and a key u does not
-// hold that was there before is gone by owner's doing.
-func (s *spine) place(d int, u any, owner int) {
+// scalar, is owner's at every depth, and a key u does not hold that was
+// there before is gone by owner's doing.
+func (s *spine) place(d int, u any, owner entryRef) {
 	for ; d < len(s.nodes); d++ {
-		s.nodes[d] = spineNode{present: true, isMap: isMergedMap(u), owner: owner}
+		_, isMap := mergedMap(u)
+		s.nodes[d] = spineNode{present: true, isMap: isMap, isList: isListValue(u), owner: owner}
 		if d == len(s.k) {
 			return
 		}
@@ -448,41 +525,51 @@ func (s *spine) place(d int, u any, owner int) {
 			}
 			return
 		case !ok:
-			for d++; d < len(s.nodes); d++ {
-				gone := -1
-				if s.nodes[d].present {
-					gone = owner
-				}
-				s.nodes[d] = spineNode{owner: gone}
-			}
+			s.gone(d+1, owner)
 			return
 		}
 		u = next
 	}
 }
 
-// isMergedMap reports whether u is a map whose keys a later source's map
-// sets one by one.
-func isMergedMap(u any) bool {
-	_, ok := mergedMap(u)
-	return ok
+// gone empties the spine from depth d down, by owner's doing where a value
+// was there.
+func (s *spine) gone(d int, owner entryRef) {
+	for ; d < len(s.nodes); d++ {
+		by := beneathLayers
+		if s.nodes[d].present {
+			by = owner
+		}
+		s.nodes[d] = spineNode{owner: by}
+	}
+}
+
+// isListValue reports whether u settles as a list.
+func isListValue(u any) bool {
+	switch u.(type) {
+	case []any, listEdit:
+		return true
+	}
+	return false
 }
 
 // childAt is what u holds at seg. walkable is false when u is a value the
-// merge holds whole, which it does not look inside.
+// merge holds whole, which it does not look inside. A listEdit placed where
+// no list was is a list of its elements alone.
 func childAt(u any, seg segment) (child any, ok, walkable bool) {
+	if m, isMap := mergedMap(u); isMap {
+		child, ok = m[seg.name]
+		return child, ok && seg.kind != segIndex, true
+	}
 	switch v := u.(type) {
-	case map[string]any:
-		child, ok = v[seg.name]
-		return child, ok && seg.kind != segIndex, true
-	case wholeMap:
-		child, ok = v[seg.name]
-		return child, ok && seg.kind != segIndex, true
 	case []any:
 		if seg.kind == segIndex && seg.index < len(v) {
 			return v[seg.index], true, true
 		}
 		return nil, false, true
+	case listEdit:
+		child, ok = v[seg.index]
+		return child, ok && seg.kind == segIndex, true
 	}
 	return nil, false, false
 }
