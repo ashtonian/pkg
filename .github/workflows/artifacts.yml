@@ -2,9 +2,9 @@ name: Artifact storage
 on:
   push:
     branches: [main]
-    paths: ['.github/**', 'scripts/ci-acceptance.py', 'tools/ci_acceptance.py', 'tools/testinventory/**']
+    paths: ['.github/**']
   pull_request:
-    paths: ['.github/**', 'scripts/ci-acceptance.py', 'tools/ci_acceptance.py', 'tools/testinventory/**']
+    paths: ['.github/**']
   workflow_dispatch:
 permissions:
   contents: read

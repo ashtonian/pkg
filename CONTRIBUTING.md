@@ -220,8 +220,6 @@ to identify the versions to publish after merge.
 
 New modules use `initial-version` in the release configuration to choose
 an initial version; a `0.0.0` manifest entry is only a pre-release marker.
-The httpx modules are configured to start at `v0.1.0`. Before their first tag,
-the workspace maps the optional modules' parent requirement to `./httpx`.
 Published modules contain no local replacements. Validate candidate archives
 with `make httpx-release-check`, and verify public-proxy installation after
 release. Release a dependency before raising another module's requirement.
