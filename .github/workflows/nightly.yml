@@ -1,9 +1,10 @@
 name: nightly
 
-# What pull requests and main pushes scope down: ci.yml at full scope (every
-# suite and release check), every parse unit test under the race detector, and
-# the parse benchmarks, on main's current commit. ci.yml's scope runs nothing
-# when an earlier scheduled run already passed on that commit. Beside it,
+# What pull requests and main pushes scope down or replay: ci.yml at full scope
+# (every suite and release check), every unit test rerun rather than replayed
+# from the test cache, every parse unit test under the race detector, and the
+# parse benchmarks, on main's current commit. ci.yml's scope runs nothing when
+# an earlier scheduled run already passed on that commit. Beside it,
 # parse's fuzz targets are fuzzed under one time budget, from the corpus the
 # last night's run left.
 on:

@@ -14,6 +14,7 @@ import (
 	"go/token"
 	"go/types"
 	"io"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -92,6 +93,7 @@ type listedPackage struct {
 // build compiled.
 func modulePackages(t *testing.T) []listedPackage {
 	t.Helper()
+	readModuleTree(t)
 	cmd := exec.CommandContext(t.Context(), "go", "list", "-e", "-export", "-deps", "-json=ImportPath,Dir,GoFiles,Export,DepOnly,Module", "./...")
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
@@ -108,6 +110,37 @@ func modulePackages(t *testing.T) []listedPackage {
 		require.NoError(t, err)
 		packages = append(packages, pkg)
 	}
+}
+
+// readModuleTree reads every directory in which go list's ./... can find a
+// package. go test keys a cached result on what the test process opens, not
+// on what the go list subprocess reads: without this, a package that no test
+// links would leave the key unchanged and replay the last pass.
+func readModuleTree(t *testing.T) {
+	t.Helper()
+	err := filepath.WalkDir(".", func(path string, entry fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if !entry.IsDir() || path == "." {
+			return nil
+		}
+		// What ./... skips: hidden and _-prefixed directories, testdata,
+		// node_modules (go.mod ignores it) and other modules.
+		name := entry.Name()
+		if strings.HasPrefix(name, ".") || strings.HasPrefix(name, "_") || name == "testdata" || name == "node_modules" {
+			return fs.SkipDir
+		}
+		_, err = os.Stat(filepath.Join(path, "go.mod"))
+		if err == nil {
+			return fs.SkipDir
+		}
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil
+		}
+		return err
+	})
+	require.NoError(t, err)
 }
 
 // typeFormatting says how n formats a type, or "" when it does not.

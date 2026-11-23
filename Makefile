@@ -44,6 +44,11 @@ MODULE_PATH := github.com/ashtonian/pkg
 # The packages the test and lint targets cover: "all", or the import paths CI's
 # change scope reaches (go-ci-actions scope's go-args).
 PACKAGES ?= all
+# go test's count flag for the unit targets, whose tests read nothing the test
+# cache cannot see. Empty: a package replays its last passing result while its
+# test binary and the environment variables and files its tests read are
+# unchanged. -count=1 reruns every test; the nightly run sets it.
+UNIT_TEST_COUNT ?=
 # $(call module-packages,<module dir>): its covered packages: the import paths
 # under it, less those of the workspace modules nested inside it.
 module-packages = $(filter-out $(foreach n,$(filter $(1)/%,$(MODULES)),$(MODULE_PATH)/$(n) $(MODULE_PATH)/$(n)/%),$(filter $(MODULE_PATH)/$(1) $(MODULE_PATH)/$(1)/%,$(PACKAGES)))
@@ -59,7 +64,7 @@ buildable-paths = $(if $(strip $(1)),$(shell go list -e -tags='$(2)' -f '{{if or
 # $(call scoped,<command and flags>,<module dirs>[,<build tags>]): run it with
 # the tags over their covered packages; a change that reaches none of them runs
 # nothing.
-scoped = $(call scoped-over,$(1)$(if $(3), -tags=$(3)),$(2),$(call packages,$(2),$(3)))
+scoped = $(call scoped-over,$(strip $(1))$(if $(3), -tags=$(3)),$(2),$(call packages,$(2),$(3)))
 scoped-over = $(if $(3),$(1) $(3),@echo "no covered packages in $(strip $(2))")
 # $(call lint-dirs,<packages>): golangci-lint takes directories, not import
 # paths: ./ patterns as they are, and each import path's directory.
@@ -70,12 +75,12 @@ LINT_TAGS := unit,integration
 .PHONY: test test-native-unit test-native-integration native-release-check test-gitx test-jsonvalue jsonvalue-release-check test-gowalker gowalker-release-check test-config test-httpx-unit test-httpx-integration test-parse-unit test-parse-integration parse-postgres-up parse-postgres-down test-parse-sdk parse-sdk-release-check parse-sdk-registry-check parse-release-check lint release-check gitx-release-check config-release-check kongprovider-release-check httpx-release-check cookbook-check parse-example-check cookbook-integration cookbook-postgres-up cookbook-postgres-down tool-check release-please-check ci
 
 ## test: every published module from the working tree (go.work), race detector on.
-## -count=1 only where a test depends on state the test cache cannot see:
-## processes it starts, the installed git, real servers.
+## The unit targets take UNIT_TEST_COUNT; -count=1 where a test depends on state
+## the test cache cannot see: processes it starts, the installed git, servers.
 test: test-native-unit test-native-integration test-gitx test-jsonvalue test-gowalker test-config test-httpx-unit test-httpx-integration test-parse-race-all test-parse-integration test-parse-sdk
 
 test-native-unit:
-	$(call scoped,go test $(RACE) -count=1,$(NATIVE_MODULES),unit)
+	$(call scoped,go test $(RACE) $(UNIT_TEST_COUNT),$(NATIVE_MODULES),unit)
 
 test-native-integration:
 	$(call scoped,go test $(RACE) -count=1 -timeout=2m,$(NATIVE_MODULES),integration)
@@ -87,20 +92,20 @@ test-gitx:
 	$(call scoped,go test $(RACE) -count=1,gitx)
 
 test-jsonvalue:
-	$(call scoped,go test $(RACE),jsonvalue)
+	$(call scoped,go test $(RACE) $(UNIT_TEST_COUNT),jsonvalue)
 
 jsonvalue-release-check:
 	bash tools/check-jsonvalue-release.sh
 
 test-gowalker:
-	$(call scoped,go test $(RACE),gowalker)
+	$(call scoped,go test $(RACE) $(UNIT_TEST_COUNT),gowalker)
 
 test-config:
-	$(call scoped,go test $(RACE),$(CONFIG_MODULES))
+	$(call scoped,go test $(RACE) $(UNIT_TEST_COUNT),$(CONFIG_MODULES))
 
 # HTTPx uses build tags: an untagged go test would skip all its tests.
 test-httpx-unit:
-	$(call scoped,go test $(RACE),$(HTTPX_MODULES),unit)
+	$(call scoped,go test $(RACE) $(UNIT_TEST_COUNT),$(HTTPX_MODULES),unit)
 
 test-httpx-integration:
 	$(call scoped,go test $(RACE) -count=1,$(HTTPX_MODULES),integration)
@@ -109,18 +114,18 @@ test-httpx-integration:
 
 ## test-parse-unit: parse unit tests and fuzz seeds, without the race detector.
 test-parse-unit:
-	$(call scoped,go test,$(PARSE_MODULES),unit)
+	$(call scoped,go test $(UNIT_TEST_COUNT),$(PARSE_MODULES),unit)
 
 ## test-parse-race: under the race detector, the parse tests that run its code
 ## on several goroutines (files tagged concurrency). Parse starts no goroutines
 ## of its own, so only these can race; the rest would cost a race build of
 ## parse's large test package for no coverage.
 test-parse-race:
-	$(call scoped,go test $(RACE),$(PARSE_MODULES),concurrency)
+	$(call scoped,go test $(RACE) $(UNIT_TEST_COUNT),$(PARSE_MODULES),concurrency)
 
 ## test-parse-race-all: every parse unit test and fuzz seed under the race detector.
 test-parse-race-all:
-	$(call scoped,go test $(RACE),$(PARSE_MODULES),unit)
+	$(call scoped,go test $(RACE) $(UNIT_TEST_COUNT),$(PARSE_MODULES),unit)
 
 # SQLite always runs. Supply PARSE_POSTGRES_DSN and PARSE_POSTGIS_DSN for SQL parity.
 test-parse-integration:
