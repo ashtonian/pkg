@@ -215,8 +215,8 @@ func TestSettings_WritersOnEveryReplicaTakeTurns(t *testing.T) {
 }
 
 // The table holds at most its row cap: a write that would grow it past the
-// cap is refused, one that replaces rows is not, and a table grown past it
-// by another writer fails the read rather than load unbounded.
+// cap is refused, one that replaces rows is not, and a table grown past
+// twice the cap by another writer fails the read rather than load unbounded.
 func TestSettings_RowCap(t *testing.T) {
 	s, db := newReplica(t, 3)
 	write(t, s, map[string]any{"limits.min": 2, "limits.max": 50, "limits.bytes": 10})
@@ -228,13 +228,15 @@ func TestSettings_RowCap(t *testing.T) {
 	write(t, s, map[string]any{"limits": map[string]any{"min": 2, "max": 60, "bytes": 10}})
 	assert.Len(t, rowsOf(t, db), 1)
 
-	for _, key := range []string{"limits.min", "limits.max", "routes"} {
+	for _, key := range []string{"limits.min", "limits.max", "limits.bytes", "routes[0].path", "routes[0].upstream", "routes[1].path"} {
 		_, err := db.Exec(`INSERT INTO settings (key, value) VALUES ($1, '1')`, key)
 		require.NoError(t, err)
 	}
 	_, err = config.Load[AppConfig](t.Context(), s.Options()...)
 	require.ErrorIs(t, err, config.ErrSource)
-	assert.Contains(t, err.Error(), "more than 3 rows")
+	assert.Contains(t, err.Error(), "more than 6 rows")
+	_, err = s.Write(t.Context(), map[string]any{"routes": nil})
+	assert.ErrorContains(t, err, "more than 6 rows")
 }
 
 func put(h http.Handler, body string) *httptest.ResponseRecorder {
@@ -611,4 +613,27 @@ func TestSettings_AWriteTakesEffectBeneathAStoredRowAboveIt(t *testing.T) {
 		_, err = db.Exec(`DELETE FROM settings WHERE key = $1`, row.key)
 		require.NoError(t, err)
 	}
+}
+
+// A table over its row cap, the cap lowered beneath it, still loads, and
+// takes every write that leaves it no larger, deletes among them, so the
+// API can bring it back under the cap; a write that grows it is refused.
+func TestSettings_ATableOverItsRowCapRecovers(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "settings.db")
+	wide, _ := replica(t, path, 10)
+	write(t, wide, map[string]any{"limits.min": 2, "limits.max": 50, "limits.bytes": 10, `upstreams["a"].url`: "https://a.example"})
+	_, db := replica(t, path, 2)
+	var logs bytes.Buffer
+	narrow := NewSettings(db, appSources(filepath.Join(filepath.Dir(path), "config.yaml"), slog.New(slog.DiscardHandler)), 10*time.Second, 2, slog.New(slog.NewJSONHandler(&logs, nil)))
+
+	assert.Equal(t, 50, load(t, narrow).Limits.Max, "a reload, and a restart, load the table")
+	var entry struct{ Level, Msg string }
+	require.NoError(t, json.NewDecoder(&logs).Decode(&entry))
+	assert.Equal(t, "WARN", entry.Level)
+	assert.Equal(t, "settings table over its row cap", entry.Msg)
+	write(t, narrow, map[string]any{"limits.max": 60})
+	_, err := narrow.Write(t.Context(), map[string]any{"routes[0].path": "/a", "routes[0].upstream": "a"})
+	assert.Equal(t, ReasonFull, refusal(t, err).Reason)
+	write(t, narrow, map[string]any{"limits": nil})
+	assert.Equal(t, map[string]string{`upstreams["a"].url`: `"https://a.example"`}, rowsOf(t, db))
 }

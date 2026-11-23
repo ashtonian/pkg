@@ -133,14 +133,14 @@ Both commands read the variables below.
 | `SETTINGS_CONN_MAX_LIFETIME` | duration | `30m` | How long a connection lives |
 | `SETTINGS_QUERY_TIMEOUT` | duration | `5s` | The bound on a read of the table, and on a write with its wait for its turn |
 | `SETTINGS_POLL_INTERVAL` | duration | `30s` | How often the reloader reads the table besides after a write |
-| `SETTINGS_MAX_ROWS` | int | `1000` | The table's row cap: a write past it is refused, and a read of a table past it fails |
+| `SETTINGS_MAX_ROWS` | int | `1000` | The table's row cap: a write that would grow the table past it is refused. A read accepts up to twice the cap, so a cap lowered beneath the table leaves it readable, and fails past that, so what a read holds stays bounded |
 | `SETTINGS_MAX_BODY_BYTES` | int | `1048576` | The largest request body; a larger one is a 413 |
 | `SETTINGS_READ_HEADER_TIMEOUT`, `SETTINGS_READ_TIMEOUT` | duration | `5s`, `10s` | The server's bounds on reading a request's headers, and the whole request |
 | `SETTINGS_WRITE_TIMEOUT` | duration | `15s` | The server's bound on a response; longer than the query timeout |
 | `SETTINGS_IDLE_TIMEOUT` | duration | `60s` | How long a keep-alive connection idles |
 | `SETTINGS_SHUTDOWN_TIMEOUT` | duration | `10s` | The drain deadline on `SIGTERM` |
 
-A write that times out waiting for its turn — behind another write of the same replica, for a pooled connection, or for the lock row another replica holds — is contention: a 503 with `reason` `busy` and a `Retry-After` of the query timeout, logged at `Warn`. Frequent ones mean writes take too long or arrive too fast for `SETTINGS_QUERY_TIMEOUT`. Every other 503 is logged at `Error`: `the settings fail to load without this write` means the service's own settings do not load even with the write left out, so no client is at fault. The entry names what to check — `SETTINGS_CONFIG_FILE`, the `APP_*` variables and the settings table — and the wrapped error names the key that fails. Fix the file or the variable and redeploy, or fix or delete the row — a row whose field a release removed is deleted by writing its key as `null` — and the next poll recovers; `taking the settings lock` means the lock row is gone — run `settingsstore migrate`, which restores it; anything else is the database. While the settings do not load, every reload fails and the service keeps its previous config. `settings the schema does not read left out of the load`, at `Warn` on every read, names in `keys` what a removed field left: write each key as `null` to delete its row, or, for a part of a row's value such as `limits.old` inside the `limits` row, write the row's key whole again.
+A write that times out waiting for its turn — behind another write of the same replica, for a pooled connection, or for the lock row another replica holds — is contention: a 503 with `reason` `busy` and a `Retry-After` of the query timeout, logged at `Warn`. Frequent ones mean writes take too long or arrive too fast for `SETTINGS_QUERY_TIMEOUT`. Every other 503 is logged at `Error`: `the settings fail to load without this write` means the service's own settings do not load even with the write left out, so no client is at fault. The entry names what to check — `SETTINGS_CONFIG_FILE`, the `APP_*` variables and the settings table — and the wrapped error names the key that fails. Fix the file or the variable and redeploy, or fix or delete the row — a row whose field a release removed is deleted by writing its key as `null` — and the next poll recovers; `taking the settings lock` means the lock row is gone — run `settingsstore migrate`, which restores it; anything else is the database. While the settings do not load, every reload fails and the service keeps its previous config. `settings table over its row cap`, at `Warn` on every read, means `SETTINGS_MAX_ROWS` was lowered beneath the table's rows. The service still loads the table and takes every write that does not grow it, deletes among them, and refuses one that grows it as `full`: delete rows through the API until the warning stops. A table past twice the cap fails every read with `the table holds more than N rows`, so reloads keep the previous config, writes fail and restarts fail: raise `SETTINGS_MAX_ROWS` to at least half the table's rows, delete rows through the API, then lower it. Lower the cap by at most half at a time. `settings the schema does not read left out of the load`, at `Warn` on every read, names in `keys` what a removed field left: write each key as `null` to delete its row, or, for a part of a row's value such as `limits.old` inside the `limits` row, write the row's key whole again.
 
 <!-- recipe: settingsstore/main.go -->
 
@@ -178,8 +178,8 @@ func appSources(file string, logger *slog.Logger) Sources {
 // case cut out of the values of the rows stored above it. A key the
 // schema does not read may be set only to nil, to delete the rows a release
 // that removed its field left. Unless the table the write leaves loads with
-// the service's options and fits the row cap, the write is refused with a
-// *RefusedError and nothing changes.
+// the service's options, and fits the row cap or is no larger than before,
+// the write is refused with a *RefusedError and nothing changes.
 func (s *Settings) Write(ctx context.Context, edits map[string]any) ([]string, error) {
 	writes, unread, err := canonical(edits)
 	if err != nil || len(writes) == 0 && len(unread) == 0 {
@@ -218,7 +218,7 @@ func (s *Settings) Write(ctx context.Context, edits map[string]any) ([]string, e
 	if n != 1 {
 		return nil, errors.New("taking the settings lock: settings_lock has no row 1; run `settingsstore migrate`")
 	}
-	stored, err := readRows(ctx, tx, s.maxRows)
+	stored, err := readRows(ctx, tx, readSlack*s.maxRows)
 	if err != nil {
 		return nil, err
 	}
@@ -231,7 +231,9 @@ func (s *Settings) Write(ctx context.Context, edits map[string]any) ([]string, e
 	if err != nil {
 		return nil, err
 	}
-	if len(c.table) > s.maxRows {
+	// A table over the cap, the cap lowered beneath it, takes the writes
+	// that do not grow it, so the API can bring it back under.
+	if len(c.table) > s.maxRows && len(c.table) > len(stored) {
 		return nil, &RefusedError{Reason: ReasonFull, Keys: keys}
 	}
 	before, _ := readable(stored)

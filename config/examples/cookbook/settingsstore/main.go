@@ -137,7 +137,7 @@ const (
 	ReasonUnknown  = "unknown"  // a key names nothing the service reads
 	ReasonRepeated = "repeated" // one key is spelled two ways in one write
 	ReasonInvalid  = "invalid"  // the settings the write leaves do not load
-	ReasonFull     = "full"     // the table would hold more rows than its cap
+	ReasonFull     = "full"     // the table would grow past its cap
 	ReasonEnclosed = "enclosed" // a key lies inside a list or a scalar a stored row sets
 )
 
@@ -174,9 +174,15 @@ type Settings struct {
 	writing chan struct{}
 }
 
+// readSlack is how far past its row cap a read accepts the table. A cap
+// lowered beneath the table leaves the table readable, so loads go on and
+// writes can bring it back under, while what a read holds stays bounded.
+const readSlack = 2
+
 // NewSettings returns the table in db, loaded with sources' options. Each
-// read, and each write with its wait for its turn, takes at most timeout,
-// and the table holds at most maxRows rows.
+// read, and each write with its wait for its turn, takes at most timeout.
+// A write may not grow the table past maxRows rows, and a read fails past
+// readSlack times that.
 func NewSettings(db *sql.DB, sources Sources, timeout time.Duration, maxRows int, logger *slog.Logger) *Settings {
 	return &Settings{db: db, sources: sources, timeout: timeout, maxRows: maxRows, logger: logger, writing: make(chan struct{}, 1)}
 }
@@ -191,9 +197,14 @@ func (s *Settings) Options() []config.Option {
 func (s *Settings) read(ctx context.Context) (map[string]any, error) {
 	readCtx, cancel := context.WithTimeout(ctx, s.timeout)
 	defer cancel()
-	stored, err := readRows(readCtx, s.db, s.maxRows)
+	stored, err := readRows(readCtx, s.db, readSlack*s.maxRows)
 	if err != nil {
 		return nil, err
+	}
+	if len(stored) > s.maxRows {
+		s.logger.WarnContext(ctx, "settings table over its row cap",
+			slog.Int("rows", len(stored)), slog.Int("max_rows", s.maxRows), slog.Int("read_limit", readSlack*s.maxRows),
+			slog.String("remedy", "delete rows through the API, or raise SETTINGS_MAX_ROWS"))
 	}
 	table, left := readable(stored)
 	if len(left) > 0 {
@@ -209,8 +220,8 @@ func (s *Settings) read(ctx context.Context) (map[string]any, error) {
 // case cut out of the values of the rows stored above it. A key the
 // schema does not read may be set only to nil, to delete the rows a release
 // that removed its field left. Unless the table the write leaves loads with
-// the service's options and fits the row cap, the write is refused with a
-// *RefusedError and nothing changes.
+// the service's options, and fits the row cap or is no larger than before,
+// the write is refused with a *RefusedError and nothing changes.
 func (s *Settings) Write(ctx context.Context, edits map[string]any) ([]string, error) {
 	writes, unread, err := canonical(edits)
 	if err != nil || len(writes) == 0 && len(unread) == 0 {
@@ -249,7 +260,7 @@ func (s *Settings) Write(ctx context.Context, edits map[string]any) ([]string, e
 	if n != 1 {
 		return nil, errors.New("taking the settings lock: settings_lock has no row 1; run `settingsstore migrate`")
 	}
-	stored, err := readRows(ctx, tx, s.maxRows)
+	stored, err := readRows(ctx, tx, readSlack*s.maxRows)
 	if err != nil {
 		return nil, err
 	}
@@ -262,7 +273,9 @@ func (s *Settings) Write(ctx context.Context, edits map[string]any) ([]string, e
 	if err != nil {
 		return nil, err
 	}
-	if len(c.table) > s.maxRows {
+	// A table over the cap, the cap lowered beneath it, takes the writes
+	// that do not grow it, so the API can bring it back under.
+	if len(c.table) > s.maxRows && len(c.table) > len(stored) {
 		return nil, &RefusedError{Reason: ReasonFull, Keys: keys}
 	}
 	before, _ := readable(stored)
@@ -669,8 +682,9 @@ type querier interface {
 	QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error)
 }
 
-// readRows reads the table, failing when it holds more than limit rows.
-// Values decode with UseNumber, so an integer keeps every digit.
+// readRows reads the table, failing when it holds more than limit rows, so
+// what a read holds stays bounded. Values decode with UseNumber, so an
+// integer keeps every digit.
 func readRows(ctx context.Context, q querier, limit int) (map[string]any, error) {
 	rows, err := q.QueryContext(ctx, "SELECT key, value FROM settings ORDER BY key LIMIT $1", limit+1)
 	if err != nil {
@@ -680,7 +694,7 @@ func readRows(ctx context.Context, q querier, limit int) (map[string]any, error)
 	table := map[string]any{}
 	for rows.Next() {
 		if len(table) == limit {
-			return nil, fmt.Errorf("reading settings: the table holds more than %d rows", limit)
+			return nil, fmt.Errorf("reading settings: the table holds more than %d rows, %d times SETTINGS_MAX_ROWS; raise it to at least half the rows, delete rows through the API, then lower it", limit, readSlack)
 		}
 		var key, text string
 		if err := rows.Scan(&key, &text); err != nil {
