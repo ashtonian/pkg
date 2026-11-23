@@ -312,33 +312,37 @@ func (in *inputs) appendShadowed(out []Shadow, path string, label labeler, rank 
 }
 
 // holder is the node whose source the merge kept for path, a raw path's
-// encodePath encoding: the node at path, or the ancestor a source replaced
-// whole — with a value that is no map, or with a typed map or section that
-// lacks path. It is nil when nothing holds path.
+// encodePath encoding: the node at path, the ancestor a source replaced with
+// a value that is no map, or, where path is gone, the nearest ancestor a
+// source set whole — a typed map or section, which removed every key beneath
+// it that it lacked, however many keys a higher source merged into it since.
+// It is nil when nothing holds path.
 func (n *originNode) holder(path string) *originNode {
 	node := n
+	var whole *originNode
 	for rest := path; rest != ""; {
 		var key string
 		key, rest = nextSegment(rest)
 		if !node.merges {
 			return node
 		}
+		if node.whole {
+			whole = node
+		}
 		child := node.children[key]
 		if child == nil {
-			if node.whole {
-				return node
-			}
-			return nil
+			return whole
 		}
 		node = child
 	}
 	return node
 }
 
-// kept is the source of what n holds: its own, or for a map that a higher
-// source made of a value, the one source of everything in it.
+// kept is the source of what n holds: its own for a value that is no map
+// and for a map its source set whole, or for a map that a higher source made
+// of a value, the one source of everything in it.
 func (n *originNode) kept() Source {
-	if !n.merges {
+	if !n.merges || n.whole {
 		return n.src
 	}
 	if src, ok := n.uniform(); ok {

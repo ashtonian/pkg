@@ -547,3 +547,31 @@ func TestEncoder_ReuseMatchesFresh(t *testing.T) {
 	assert.Empty(t, shared.visiting)
 	assert.Empty(t, shared.keys)
 }
+
+// A typed map removes every key beneath it that it lacks, so the input it
+// removed is shadowed by its source, however many keys a higher source
+// merged into it since: an entry the higher source set again, and one it
+// did not.
+func TestShadow_TypedMapRemovesWhatItLacks(t *testing.T) {
+	type cfg struct {
+		Addresses map[string]editServer `koanf:"addresses"`
+	}
+	low := mapSource{"addresses": map[string]any{"third": map[string]any{"port": 5}, "fourth": map[string]any{"port": 4}}}
+	mid := mapSource{"addresses": map[string]editServer{"first": {"a", 1}}}
+	file := filepath.Join(t.TempDir(), "config.yaml")
+	writeFile(t, file, "addresses: {third: {host: x}}\n")
+	opts := []Option{WithBaseProvider(low, nil), WithBaseProvider(mid, nil), WithFile(file)}
+	lowSrc, midSrc := Source{Kind: SourceBase, Name: "0"}, Source{Kind: SourceBase, Name: "1"}
+	want := []Shadow{
+		{Key: `addresses["fourth"].port`, Source: lowSrc, By: midSrc},
+		{Key: `addresses["third"].port`, Source: lowSrc, By: midSrc},
+	}
+	for _, tt := range withAndWithoutProvenance {
+		t.Run(tt.name, func(t *testing.T) {
+			r, err := NewReloader[cfg](t.Context(), opts, tt.opts...)
+			require.NoError(t, err)
+			assert.Equal(t, map[string]editServer{"first": {"a", 1}, "third": {Host: "x"}}, r.Snapshot().Config.Addresses)
+			assert.Equal(t, want, r.Snapshot().Shadowed)
+		})
+	}
+}
