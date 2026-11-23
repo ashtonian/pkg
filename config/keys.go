@@ -26,9 +26,9 @@ import (
 type keyWalk struct {
 	schema  *schemaNode
 	twice   []string
-	aliased []string // "old.key (now new.key)"
-	notJSON []string // "key (line n)"; never the text
-	noText  []string // the keys of structs whose MarshalText failed; never the text
+	aliased []string  // "old.key (now new.key)"
+	notJSON []string  // "key (line n)"; never the text
+	noText  []keyPath // the keys of structs whose MarshalText failed; never the text
 	unknown []UnknownKey
 	// unkeyed is the koanf:"-" fields of each typed section the source
 	// sets, which its tree cannot hold (see unkeyed.go).
@@ -108,7 +108,7 @@ func (w *keyWalk) whole(t reflect.Type, data any, path keyPath) any {
 }
 
 func (w *keyWalk) failText(at keyPath) {
-	w.noText = append(w.noText, diagnosticPath(w.schema, at).orRoot())
+	w.noText = append(w.noText, diagnosticPath(w.schema, at))
 }
 
 // section is v, a typed value of section t, as the merge carries it: its
@@ -130,11 +130,7 @@ func (w *keyWalk) section(t reflect.Type, v reflect.Value, path keyPath) any {
 		if rest, err := v.FieldByIndexErr(n.remain); err == nil {
 			for it := rest.MapRange(); it.Next(); {
 				k := it.Key().String()
-				at := path.field(k)
-				if !validFieldKey(k) {
-					at = path.key(k)
-				}
-				out[k] = w.elem(anyType, rest.Type().Elem(), it.Value(), at).Interface()
+				out[k] = w.elem(anyType, rest.Type().Elem(), it.Value(), path.member(k)).Interface()
 			}
 		}
 	}
@@ -167,10 +163,7 @@ func (w *keyWalk) structMap(t reflect.Type, v reflect.Value, path keyPath) any {
 		f, alias := n.lookup(k)
 		if f == nil {
 			if !n.acceptsUnknown {
-				at := path.field(k)
-				if !validFieldKey(k) {
-					at = path.key(k)
-				}
+				at := path.member(k)
 				u := UnknownKey{Key: diagnosticPath(w.schema, at).String()}
 				if u.Key == at.String() {
 					if closest := closestField(n, k); closest != "" {

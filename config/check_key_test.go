@@ -492,6 +492,73 @@ func TestCanonicalKey_IgnoresValidateTags(t *testing.T) {
 	assert.Equal(t, "other", got)
 }
 
+type beneathInterfaceSection struct {
+	Limits map[string]int `koanf:"limits" validate:"dive,max=5"`
+}
+
+type beneathInterfaceConfig struct {
+	Extra any            `koanf:"extra"`
+	Tags  map[string]any `koanf:"tags"`
+}
+
+// Every output names a key beneath an interface as CanonicalKey spells it: a
+// field wherever its name can be one, a quoted map key otherwise, whatever
+// shape the interface's value has. A map the schema declares keeps its
+// quoted entries above the interface.
+func TestCanonicalKey_IsHowEveryOutputNamesAKeyBeneathAnInterface(t *testing.T) {
+	var want []string
+	for _, key := range []string{`extra["a.b"]`, `extra["l"][0]["y"]`, `extra["s"]["limits"]["k"]`, `extra["x"]`, `tags["t"]["u"]`} {
+		got, err := CanonicalKey[beneathInterfaceConfig](key)
+		require.NoError(t, err)
+		want = append(want, got)
+	}
+	require.Equal(t, []string{`extra["a.b"]`, "extra.l[0].y", "extra.s.limits.k", "extra.x", `tags["t"].u`}, want)
+	config := func(n int) *beneathInterfaceConfig {
+		return &beneathInterfaceConfig{
+			Extra: map[string]any{
+				"x": n, "a.b": n,
+				"l": []any{map[string]any{"y": n}},
+				"s": beneathInterfaceSection{Limits: map[string]int{"k": n}},
+			},
+			Tags: map[string]any{"t": map[string]any{"u": n}},
+		}
+	}
+
+	t.Run("printed", func(t *testing.T) {
+		printed, err := RedactedMapChecked(config(1))
+		require.NoError(t, err)
+		assert.ElementsMatch(t, want, slices.Collect(maps.Keys(printed)))
+	})
+	t.Run("diffed", func(t *testing.T) {
+		changes, err := Diff(config(1), config(2))
+		require.NoError(t, err)
+		var keys []string
+		for _, c := range changes {
+			keys = append(keys, c.Key)
+		}
+		assert.Equal(t, want, keys)
+	})
+	t.Run("a value that does not marshal to text", func(t *testing.T) {
+		_, err := DecodeEdits[beneathInterfaceConfig](t.Context(), nil, map[string]any{
+			"extra": map[string]any{"x": failingText{n: -1}, "a.b": failingText{n: -1}, "ok": failingText{n: 1}},
+		})
+		var ee *EditsError
+		require.ErrorAs(t, err, &ee)
+		require.Len(t, ee.Refused, 1)
+		assert.Contains(t, ee.Refused[0].Error(), `values that do not marshal to text: extra["a.b"], extra.x`)
+	})
+	t.Run("a validation failure", func(t *testing.T) {
+		key, err := CanonicalKey[beneathInterfaceConfig](`extra["limits"]["k"]`)
+		require.NoError(t, err)
+		require.Equal(t, "extra.limits.k", key)
+		baseline := &beneathInterfaceConfig{Extra: beneathInterfaceSection{Limits: map[string]int{"k": 9}}}
+		_, err = DecodeEdits(t.Context(), baseline, nil)
+		var ee *EditsError
+		require.ErrorAs(t, err, &ee)
+		assert.Contains(t, ee.Err.Error(), key+"(max)")
+	})
+}
+
 // undivable's validate tag parses but cannot apply to its field: the
 // validator meets it only as it validates a value.
 type undivable struct {

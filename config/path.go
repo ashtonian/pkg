@@ -18,6 +18,8 @@ import (
 //	limits["/upload"]
 //	items[*].port          any element or entry, in a schema pattern
 //	["a.b"].port           a source key at the root no field's key can spell
+//	extra.x, extra["a.b"]  a key beneath an interface, a remain field, or
+//	                       a key no field reads: a member (see member)
 //
 // Quoting every map key keeps a key holding ".", "[", "]" or a quote — or
 // one that looks like an index — from reading as structure. A key begins
@@ -91,12 +93,52 @@ func (p keyPath) key(k string) keyPath {
 	return append(slices.Clip(p), segment{kind: segKey, name: k})
 }
 
+// member is p extended by a member: a key no schema types, so neither a
+// field nor a map entry it declares — one beneath an interface, one a
+// remain field collects, a source key no field reads. A member is a field
+// wherever its name can be one and a quoted map key otherwise, so data
+// beneath an interface reads as a file writes it: extra.x, extra["a.b"].
+func (p keyPath) member(name string) keyPath {
+	return append(slices.Clip(p), memberSegment(name))
+}
+
+func memberSegment(name string) segment {
+	if validFieldKey(name) {
+		return segment{kind: segField, name: name}
+	}
+	return segment{kind: segKey, name: name}
+}
+
+// entrySegment names a map entry: a member beneath an interface, otherwise
+// the quoted key a schema's map declares.
+func entrySegment(name string, beneathInterface bool) segment {
+	if beneathInterface {
+		return memberSegment(name)
+	}
+	return segment{kind: segKey, name: name}
+}
+
+func (p keyPath) entry(name string, beneathInterface bool) keyPath {
+	return append(slices.Clip(p), entrySegment(name, beneathInterface))
+}
+
 func (p keyPath) index(i int) keyPath {
 	return append(slices.Clip(p), segment{kind: segIndex, index: i})
 }
 
 func (p keyPath) any() keyPath {
 	return append(slices.Clip(p), segment{kind: segAny})
+}
+
+// keyList is keys for a message: in key order, each once, joined by ", ".
+// A walk over map entries meets them in no particular order.
+func keyList(keys []keyPath) string {
+	sorted := slices.SortedFunc(slices.Values(keys), comparePaths)
+	names := make([]string, 0, len(sorted))
+	for _, p := range sorted {
+		names = append(names, p.orRoot())
+	}
+	return strings.Join(slices.Compact(names), ", ")
 }
 
 // parseKeyPath parses a key in the grammar above. Wildcards ([*]) are

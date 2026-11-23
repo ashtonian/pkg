@@ -50,8 +50,10 @@ type Change struct {
 
 // Diff compares two configs of type T, a struct, and returns every key whose
 // value differs, in walk order: fields as declared, map entries by their
-// keys' sorted text (ports["80"], levels["WARN"]), list elements by index. A nil config has no keys. It compares decoded
-// values, never their text, and neither input is changed.
+// keys' sorted text (ports["80"], levels["WARN"]), list elements by index.
+// Keys are spelled as CanonicalKey spells them, a key beneath an interface
+// as a field wherever it can be one (extra.x). A nil config has no keys. It
+// compares decoded values, never their text, and neither input is changed.
 //
 //   - Lists compare by index: removing the first of three elements changes
 //     the first two and removes the third. Map entries compare by key; an
@@ -195,20 +197,24 @@ func ancestorOf(s side) (ancestor, bool) {
 	return ancestor{}, false
 }
 
-// frame is what makes the keys at a walk position sensitive, the rule
-// cursor.sensitive applies: a field or squashed struct tagged sensitive, or
-// a credential-like field name or map key above a value.
+// frame is what a walk position inherits from above it: what makes its keys
+// sensitive, the rule cursor.sensitive applies — a field or squashed struct
+// tagged sensitive, or a credential-like field name or map key above a
+// value — and whether an interface holds it, which names its map entries as
+// members (keyPath.member).
 type frame struct {
-	tagged  bool
-	covered bool
+	tagged           bool
+	covered          bool
+	beneathInterface bool
 }
 
 func (f frame) sensitive() bool { return f.tagged || f.covered }
 
 func (f frame) field(fld *schemaField) frame {
 	return frame{
-		tagged:  f.tagged || fld.tagged,
-		covered: f.covered || fld.named && fld.node.kind != nodeBranch,
+		tagged:           f.tagged || fld.tagged,
+		covered:          f.covered || fld.named && fld.node.kind != nodeBranch,
+		beneathInterface: f.beneathInterface,
 	}
 }
 
@@ -377,6 +383,7 @@ func (w *comparer) dynamic(f frame, sa, sb side) {
 		}
 	}
 	if nodes[0] != nil && nodes[0] == nodes[1] {
+		f.beneathInterface = true
 		w.resolved(nodes[0], f, sa, sb)
 		return
 	}
@@ -440,7 +447,7 @@ func (w *comparer) container(n *schemaNode, f frame, sa, sb side) {
 				i++
 				j++
 			}
-			w.push(segment{kind: segKey, name: name}, ordSeg{s: name})
+			w.push(entrySegment(name, f.beneathInterface), ordSeg{s: name})
 			w.node(n.elem, f.entry(name, n.typ.Elem()), a, b)
 			w.pop()
 		}
@@ -569,7 +576,7 @@ func locate(root *schemaNode, v reflect.Value, p keyPath) (side, *schemaNode, fr
 			if err != nil {
 				return side{}, nil, f
 			}
-			n = dn
+			n, f.beneathInterface = dn, true
 		}
 		switch n.kind {
 		case nodeBranch:

@@ -43,6 +43,8 @@ func TestDefaultValidator_RefusesUnreadableRules(t *testing.T) {
 	assert.NotErrorAs(t, err, &ke, "a declaration is not one key's fault")
 	_, err = DecodeKey[misspeltRuleCfg](t.Context(), "name", "x")
 	require.ErrorIs(t, err, ErrSchema)
+	_, err = DecodeEdits[misspeltRuleCfg](t.Context(), nil, map[string]any{"name": "x"})
+	require.ErrorIs(t, err, ErrSchema)
 
 	_, err = Load[keysWithoutDiveCfg](t.Context())
 	require.ErrorIs(t, err, ErrSchema)

@@ -335,7 +335,7 @@ func (c *keyChecker) baselineTree(cfg reflect.Value) (map[string]any, unkeyedSec
 	w := keyWalk{schema: c.schema}
 	tree := w.section(c.root, deepcopy.Value(cfg), nil)
 	if len(w.noText) > 0 {
-		return nil, nil, fmt.Errorf("config: the baseline holds values that do not marshal to text: %s", strings.Join(w.noText, ", "))
+		return nil, nil, fmt.Errorf("config: the baseline holds values that do not marshal to text: %s", keyList(w.noText))
 	}
 	base := settled(tree).(map[string]any)
 	var unkeyed unkeyedSections

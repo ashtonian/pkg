@@ -93,10 +93,11 @@ func unusedKey(root *schemaNode, tree any, name string) UnknownKey {
 	if key, matches := matchKey(raw, treeKeys(at)); !underStruct || matches != 1 || key != raw {
 		return UnknownKey{Key: p.orRoot()}
 	}
-	if !validFieldKey(raw) {
-		return UnknownKey{Key: p.key(raw).String()}
+	named := p.member(raw)
+	k := UnknownKey{Key: named.String()}
+	if named[len(named)-1].kind != segField {
+		return k
 	}
-	k := UnknownKey{Key: p.field(raw).String()}
 	if _, n, err := root.walkTo(cursor{}, p); err == nil && n.kind == nodeBranch {
 		if field := closestField(n, raw); field != "" {
 			k.Suggestion = p.field(field).String()
@@ -330,8 +331,11 @@ func validatorKey(v reflect.Value, structNS string) (keyPath, bool) {
 		return nil, false
 	}
 	var p keyPath
+	beneathInterface := false
 	for rest != "" {
-		v = derefValue(v)
+		var throughInterface bool
+		v, throughInterface = derefNoting(v)
+		beneathInterface = beneathInterface || throughInterface
 		switch {
 		case v.Kind() == reflect.Struct:
 			name := rest[:fieldEnd(rest)]
@@ -370,7 +374,7 @@ func validatorKey(v reflect.Value, structNS string) (keyPath, bool) {
 				return p, false
 			}
 			k := byText[key]
-			p, v, rest = p.key(entryName(k)), v.MapIndex(k), rest[size:]
+			p, v, rest = p.entry(entryName(k), beneathInterface), v.MapIndex(k), rest[size:]
 		case v.Kind() == reflect.Slice || v.Kind() == reflect.Array:
 			i, size, ok := parseBracketIndex(rest)
 			if !ok || i >= v.Len() {
@@ -400,11 +404,19 @@ func belowValidatorRoot(t reflect.Type, ns string) (string, bool) {
 // derefValue follows pointers and interfaces to the value they hold, stopping
 // at a nil one.
 func derefValue(v reflect.Value) reflect.Value {
+	v, _ = derefNoting(v)
+	return v
+}
+
+// derefNoting is derefValue, also reporting whether it passed through an
+// interface.
+func derefNoting(v reflect.Value) (out reflect.Value, throughInterface bool) {
 	for range maxPointerDepth {
 		if (v.Kind() != reflect.Pointer && v.Kind() != reflect.Interface) || v.IsNil() {
 			break
 		}
+		throughInterface = throughInterface || v.Kind() == reflect.Interface
 		v = v.Elem()
 	}
-	return v
+	return v, throughInterface
 }

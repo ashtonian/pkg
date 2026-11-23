@@ -100,7 +100,7 @@ func codeDefaults(t reflect.Type, schema *schemaNode, tags map[string]any, o *op
 	d := defaultsDiff{schema: schema}
 	tree, _ := d.tree(schema, nil, before.Elem(), after.Elem())
 	if len(d.noText) > 0 {
-		return nil, fmt.Errorf("SetDefaults of %s: %w: values that do not marshal to text: %s", gowalker.TypeText(t), ErrValidation, strings.Join(d.noText, ", "))
+		return nil, fmt.Errorf("SetDefaults of %s: %w: values that do not marshal to text: %s", gowalker.TypeText(t), ErrValidation, keyList(d.noText))
 	}
 	m, _ := tree.(map[string]any)
 	return m, nil
@@ -275,7 +275,7 @@ func (r *defaulterRun) release() {
 // defaultsDiff turns what SetDefaults changed into the code defaults layer.
 type defaultsDiff struct {
 	schema *schemaNode
-	noText []string // the keys of structs whose MarshalText failed; never the text
+	noText []keyPath // the keys of structs whose MarshalText failed; never the text
 }
 
 // tree is what b, the value of node n at key path at after SetDefaults,
@@ -406,7 +406,7 @@ func (d *defaultsDiff) input(n *schemaNode, at keyPath, v reflect.Value) any {
 }
 
 func (d *defaultsDiff) failText(at keyPath) {
-	d.noText = append(d.noText, diagnosticPath(d.schema, at).orRoot())
+	d.noText = append(d.noText, diagnosticPath(d.schema, at))
 }
 
 type declaredDefaults struct {

@@ -74,8 +74,8 @@ func resolveSchemaPath(schema *schemaNode, p keyPath) (parent *schemaNode, alias
 		}
 		parent = n
 		if n == nil || n.kind == nodeDynamic {
-			if s.kind == segKey && validFieldKey(s.name) {
-				s.kind = segField
+			if s.kind == segKey {
+				*s = memberSegment(s.name)
 			}
 			continue
 		}
@@ -86,8 +86,8 @@ func resolveSchemaPath(schema *schemaNode, p keyPath) (parent *schemaNode, alias
 				f = nil // a field spelled as a map key: walkTo refuses it
 			} else if f == nil && n.acceptsUnknown {
 				n = nil
-				if s.kind == segKey && validFieldKey(s.name) {
-					s.kind = segField
+				if s.kind == segKey {
+					*s = memberSegment(s.name)
 				}
 				continue
 			}
@@ -368,7 +368,7 @@ func (e *edit) rewrite(schema *schemaNode) error {
 	case len(w.notJSON) > 0:
 		return refuse("format:\"json\" values that are not JSON: %s", strings.Join(w.notJSON, ", "))
 	case len(w.noText) > 0:
-		return refuse("values that do not marshal to text: %s", strings.Join(w.noText, ", "))
+		return refuse("values that do not marshal to text: %s", keyList(w.noText))
 	}
 	return nil
 }
