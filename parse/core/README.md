@@ -10,6 +10,8 @@ Configuration, schema generation, value normalization, JSON Pointers, and errors
 | [Error handling and codes](../docs/http-errors.md) | Consumer guide |
 | [Concurrency and trust boundaries](../docs/operations.md) | Consumer guide |
 
+A parser is configured by a `ParserConfig` built from `Option`s, and a schema generator by `GeneratorOption`s; both are tabled with their defaults in [parser and generator options](../docs/schema-configuration.md#parser-and-generator-options).
+
 Start with the [runnable package example](../README.md#quick-start). The focused [core example](example_test.go) is compiled and output-checked in the unit suite.
 
 ## API reference
@@ -59,6 +61,27 @@ Start with the [runnable package example](../README.md#quick-start). The focused
 | `pointer.go` | RFC 6901 pointers |
 | `relation.go` | Relation tag grammar, `IsIdentifier` |
 | `doc.go` | Package documentation |
+
+## Build, run and test
+
+From the module directory (`parse/`):
+
+```bash
+go test -tags=unit ./core/...          # normalization, generation, pointers, codes; the core example
+go test -tags=unit -race ./core/...    # as the nightly run does
+```
+
+## Operations
+
+core does no I/O and starts no goroutines, so it has no health check, metrics or logs of its own. Its failures are values:
+
+- A `*core.ParseError` is the request's fault: `Code` names it, `ErrorHTTPStatus()` gives its status and `Message` is written for the client. Every code is in the [error catalog](../docs/http-errors.md#error-codes).
+- A plain error from schema generation or `(*ParserConfig).Validate` is the server's configuration, raised at startup by `NewResource` or the generator, naming the field or option to fix.
+- Every request is bounded by the [parser limits](../docs/schema-configuration.md#parser-and-generator-options); one over a limit is refused with its code (E2061, E2063, E2074, E2088, E2089), never parsed in part.
+
+## Security
+
+Struct tags, column mappers, naming conventions and `WithColumnTypes` are trusted server configuration: they name the tables and columns SQL is built from, and generation refuses a name that is not an identifier. Request text is untrusted and reaches the parsers only through the limits above. `Code.IsErrorUserFacing` reports whether a code's message may be shown to a client.
 
 ## Dependencies
 

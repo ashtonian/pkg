@@ -120,6 +120,17 @@ A [`SkipUnchanged`](../docs/patches.md#skipping-unchanged-rows) plan sends `plan
 
 The tenant, authorization policy and deleted-row visibility come only from the `parse.Scope` the server built the plan with; `QueryPage`, `Update` and `UpdateBatch` add no predicates and take none from the request. Includes read junction rows in the plan's tenant. SQL text comes from the plan, never from request strings, and every value is a bound argument.
 
+## Build, run and test
+
+From the module directory (`parse/`):
+
+```bash
+go test -tags=unit ./parsepgx/...                                                     # without a database
+PARSE_POSTGRES_DSN=postgres://… go test -tags=integration -count=1 ./parsepgx/...     # every pgx execution mode, against PostgreSQL
+```
+
+`make parse-postgres-up` starts the PostGIS server the integration suite uses ([verification](../docs/operations.md#verification)).
+
 ## API Reference
 
 - `QueryPage[T](ctx, db Querier, r *parse.Resource[T], plan *parse.ListPlan) (*filter.Page[T], error)` — the page with its total, facets (`Page.Facets`) and includes (`Page.Relations`) as the plan asks.

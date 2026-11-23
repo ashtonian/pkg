@@ -184,12 +184,24 @@ Tags expose capabilities explicitly: `parse:"filter,sort,patch,facet,search,incl
 | [`patch`](patch/README.md) | Patch validation, SET clauses, relation statements, patch policy |
 | [`client`](client/README.md) | Go request builders: typed catalog fields, `Filter`, `Sort`, `ListParams`, `Nullable`, JSON Patch `Operation`; standard library only, held to the filter and patch corpora |
 | [`sdk/ts`](sdk/ts/README.md) | TypeScript builders, HTTP client, schema validation |
-| [`filter/filtertest`](filter/filtertest/) | Shared operator conformance fixture |
+| [`filter/filtertest`](filter/filtertest/README.md) | The conformance fixture every filter backend runs: operators, paths, sets, memberships, policies |
 | `internal/dialect`, `internal/jsonkeys`, `internal/jsonmerge`, `internal/rfc6902`, `internal/cursor`, `internal/decimals`, `internal/geo`, `internal/httpjson`, `internal/dbtest` | Dialect primitives and their names, a stored document's member spelling against its Go type, RFC 7396 merge, the RFC 6902 operation member names patch reads and parse writes, the bounded MessagePack cursor envelope, decimals as documents and SQLite hold them with their order-preserving key, the WGS 84 geodesic distance and planar point-in-polygon test geo filters use outside PostGIS, the JSON media type and response encoding, without the transport, that a list body is read and `parsehttp` answers with, and the PostgreSQL and SQLite databases integration tests run against; the compiler has no private sibling imports |
+
+Packages under `internal/` have no README: no code outside the module imports them, and each is documented by its package comment (`go doc ./internal/<name>`) and its row above.
 
 Patch parsers collect independent invalid values in order. Each declared enum/bounds failure carries `*patch.ConstraintError` with `Constraint` and `Limit`; `errors.As` still finds the first `*core.ParseError`. See [the complete patch error contract](docs/patches.md#validation).
 
 `parse.Codes() []parse.Code` exposes the application-independent error catalog, sorted (E2061–E2089 and E2112–E2120, with gaps; E2067 is a malformed list parameter, E2078 an unregistered resource answered 404, E2120 a schema document that could not be encoded). `*parse.ParseError` carries the string code, path/index context, cause and HTTP status. A `Code` is an `errors.Is` target; Consumers map catalog metadata into their own error conventions. [Error handling and complete catalog](docs/http-errors.md#error-codes)
+
+## Operations
+
+parse is a library: it starts no goroutines, holds no connections and writes no logs or metrics. `parsepgx` and `parsesql` run its plans on the caller's pool and context, so timeouts, pool limits and tracing belong to the application ([parsepgx operations](parsepgx/README.md#operations)). Its errors say whose fault a failure is:
+
+- A `*core.ParseError` is the request's: answer its code's status (`ErrorHTTPStatus()`) with its body ([error catalog](docs/http-errors.md#error-codes)); `parsehttp.WriteError` does.
+- A sentinel error is the server's: `ErrTenantRequired` (a tenant-scoped resource's plan built without `Scope.Tenant`), `ErrNoTarget` and `ErrKeyInvalid` (an update with no target, or a key the key column cannot hold), `ErrForeign` (a request another resource parsed), `ErrUpdateBatchTargets` (a batch whose locked rows did not match every key), `ErrRegistered` (a schema name registered twice), and those of [filter](filter/README.md#operations) and [patch](patch/README.md#operations). Match them with `errors.Is`; none is the client's to fix, so a handler answers them as its own failures (500).
+- Every request is bounded by the [parser limits](docs/schema-configuration.md#parser-and-generator-options) and its cost by `MaxCost` ([query costs](docs/operations.md#query-costs-and-limits)).
+
+Build each resource once, at startup, and share it ([concurrency and ownership](docs/operations.md#concurrency-and-ownership)).
 
 ## Verification
 

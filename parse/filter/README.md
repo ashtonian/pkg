@@ -11,6 +11,8 @@ Validated filter ASTs and parameterized PostgreSQL/SQLite query plans, including
 | [Pair tables, include queries](../docs/pair-tables.md) | Consumer guide |
 | [HTTP parameters and errors](../docs/http-errors.md) | Consumer guide |
 
+Parsers read their limits from `core.ParserConfig`. Each builder takes its own functional options (`ListOption`, `SQLBuilderOption`, `BuildFacetQueryOption`, `IncludeQueryOption`, `QueryParamOption`, `ResolveOption`), every one tabled with its default in the query guide's [configuration](../docs/queries.md#configuration).
+
 Start with the [runnable package example](../README.md#quick-start). The focused [filter example](example_test.go) is compiled and output-checked in the unit suite.
 
 ## API reference
@@ -74,6 +76,27 @@ Start with the [runnable package example](../README.md#quick-start). The focused
 | `rows.go` | `Rows` |
 | `errors.go` | E-codes |
 | `filtertest/` | Conformance fixture, run on both dialects and `Evaluate`: the operator × type cases (`Run`), the membership cases with their lookup tables and reference lookup (`RunMembership`, `LookupTables`, `Lookups`), the policy trees with their search (`RunPolicy`, `PolicyCases`, `SearchSchema`), the JSON path cases (`RunPaths`, `PathRecords`, `PathSchema`), the exact-decimal cases (`RunDecimals`), the scalar-array cases (`RunArrays`, `ArrayRecords`, `ArraySchema`, `ArrayFacets`), the stored-point geo cases (`RunGeo`, `GeoRecords`, `GeoSchema`), the numeric facet keys (`NumberKeyRecords`, `NumberKeyFacets`) a timestamp column written in several offsets (`TimestampRecords`, `TimestampSchema`, `TimestampFacets`, `TimestampOrders`, `TimestampFilters`) and the quoted-integer cases (`RunQuoted`, `QuotedRecords`, `QuotedSchema`) |
+
+## Build, run and test
+
+From the module directory (`parse/`):
+
+```bash
+go test -tags=unit ./filter/...                         # parser, SQL builders, Evaluate, the conformance families in memory
+go test -tags=integration ./filter/...                  # the same on SQLite; PostgreSQL and PostGIS with PARSE_POSTGRES_DSN / PARSE_POSTGIS_DSN
+go test -tags=unit -run '^$' -fuzz FuzzParseThenBuild ./filter   # parse arbitrary filters and build each on every dialect
+```
+
+## Operations
+
+filter parses requests and builds SQL with its arguments; it runs no statement, so it holds no connection and has no health check, metrics or logs of its own. Its failures:
+
+- A `*core.ParseError` is the request's fault, with its code ([error catalog](../docs/http-errors.md#error-codes)). A filter's estimated cost is checked against `MaxCost` before SQL is built (E2061); [query costs](../docs/operations.md#query-costs-and-limits) explains the estimate.
+- A sentinel error is the server's, raised by a builder: `ErrRelationTenantRequired` (a tenant-scoped pair table joined with no tenant: bind one, or opt out with `RelationScope.Unscoped`), `ErrRelatedPolicyRequired` (a policy-scoped relation built without its target's policy in `RelationScope.Related`), `ErrPolicyInvalid` (a policy constraint the schema cannot compile), `ErrAmbiguousPolicyField` (a policy constraint whose field names more than one field), `ErrUnsupportedDialect`. Match them with `errors.Is`; none is the client's to fix.
+
+## Security
+
+SQL identifiers come only from the schema and are quoted by the dialect; a request's field names are looked up in the schema, and its values bind as parameters. A `FieldSchema.Expr` and a computed column are trusted application SQL. A server policy (`ListPolicy`, `Scope`) is ANDed with the request's filter, so a request narrows what the server admits and never widens it; tenant-scoped relations refuse to build without a tenant. A cursor is a position, not a permission: authorization and tenant scope apply to every page. See [trust boundaries](../docs/operations.md#trust-boundaries).
 
 ## Dependencies
 

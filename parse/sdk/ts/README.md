@@ -217,6 +217,16 @@ Three Go-emitted fixtures keep the client on the server's contract; each fails i
 | `testdata/patch_conformance.json` — merge patches with the Go parser's verdict and E-code, and the schema document they are checked against | `src/patch/conformance.test.ts` | `go test -tags=unit -run TestEmitPatchConformance -update ./parse/` |
 | `testdata/sdk_wire.json` — requests parse's Go client built and the answers `parsehttp`'s handlers gave them: a keyset walk, a backward page, a total, a POST list, facets, patches, the schema routes and their 404, a 422 parse error | `src/client.test.ts`, which sends each request and must equal the recorded one | `go test -tags=unit -run TestSDKWireFixture -update ./parse/` |
 
+## Operations
+
+- *Deadlines*: every request runs under `timeout` (30 s by default), combined with the call's `AbortSignal`. The client does not retry; a caller that retries decides which failures are safe to repeat (a list is, a patch is not unless the server makes it so).
+- *Schema cache*: `resource.schema()` fetches a resource's document once per client and caches it by registry name; concurrent calls share one request, and a failed fetch is not cached. `schemas()` fetches every document and replaces the cached ones. A server whose schemas change is read afresh by a new client or a call to `schemas()`.
+- *Troubleshooting*: a `ResponseError` is a 2xx without the JSON the call reads, usually a proxy or a route that is not parse's. A `SchemaResourceError` means `schemaPrefix` or the resource's registry name points at another resource's document. A 414 from a proxy on a long filter means the list needs `maxURLLength` set, so it goes as a POST body.
+
+## Security
+
+Credentials go in `headers` (`Authorization`), sent with every request to `baseURL` and nowhere else. Filters, sorts and patch values are encoded as JSON and query parameters with `URLSearchParams`, so a value never changes a request's structure. `validateBeforeSend` checks a request against the server's schema before it leaves; the server validates it again whatever the client does, so client-side validation is a convenience, not a control. `ApiError.message` is the server's text: whether to show it to a user is the application's decision.
+
 ## Package Structure
 
 | Import | Contents |

@@ -11,6 +11,8 @@ JSON Patch and Merge Patch validation, SQL SET compilation, relation membership 
 | [Junction statements and transaction requirements](../docs/pair-tables.md#update-membership) | Consumer guide |
 | [Error catalog](../docs/http-errors.md) | Consumer guide |
 
+Parsers read their limits from `core.ParserConfig`; SQL compilation takes `PatchSQLOption`s ([patch configuration](../docs/patches.md#configuration)) and a policy its `PolicyOption`s ([policy](../docs/patches.md#policy)).
+
 Start with the [runnable package example](../README.md#quick-start). The focused [patch example](example_test.go) is compiled and output-checked in the unit suite.
 
 ## API reference
@@ -42,6 +44,27 @@ Start with the [runnable package example](../README.md#quick-start). The focused
 | `typed_json.go` | A merge patch's document values checked and normalized against the Go type of the member they write |
 | `writes.go` | The paths an operation writes and reads, and the members a written value holds |
 | `errors.go` | E-codes |
+
+## Build, run and test
+
+From the module directory (`parse/`):
+
+```bash
+go test -tags=unit ./patch/...           # validation, typed apply, policy, SQL compilation; the patch example
+PARSE_POSTGRES_DSN=postgres://… go test -tags=integration -count=1 ./patch/...    # compiled patches executed on PostgreSQL
+```
+
+## Operations
+
+patch validates operations and compiles them to SQL; it runs no statement and has no health check, metrics or logs of its own. Its failures:
+
+- A `*core.ParseError` is the request's fault: an invalid operation or value (E2064–E2077), a policy refusal (E2084, E2085), a relation operation it cannot take (E2117–E2119). Joined failures name each member's JSON Pointer ([errors](../docs/http-errors.md#error-codes)).
+- `ErrUnparsed` is the server's: a `ParsedPatch` no parser produced reached a compiler. `ErrSQLColumnMissing` is the schema's: a path with no SQL column.
+- A patch is bounded by `MaxOperations` (`DefaultMaxOperations`), a relation operation by `MaxRelationValues` (`DefaultMaxRelationValues`) and typed copies by `MaxPatchCopyBytes` ([patch configuration](../docs/patches.md#configuration)).
+
+## Security
+
+A path is checked against the schema before anything compiles, and a request's path text is never used as an identifier. Policy (`ForbidPaths`, `ConstrainValues`, `ValidateWith`) judges every path an operation writes, a `move`'s source included; forbid the system columns a client must not write, such as the tenant. Membership writes pair an owner only with targets the request may relate. See [policy](../docs/patches.md#policy) and [trust boundaries](../docs/operations.md#trust-boundaries).
 
 ## Dependencies
 
