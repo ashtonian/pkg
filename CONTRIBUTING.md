@@ -194,7 +194,7 @@ skips them. The Gin example, comparison benchmarks and release tooling keep
 separate development modules outside the default workspace. The archive
 check tests them against candidate releases without local replacements.
 
-Every module is tagged with its directory as the prefix, as Go expects for a module below a repository's root: `gowalker/v0.1.0`, `config/v0.1.0`, `config/kongprovider/v0.1.0`, `httpx/v0.1.0`, `httpx/oauth2/v0.1.0`, `httpx/codec/msgpack/v0.1.0`, `httpx/codec/proto/v0.1.0`, `httpx/compress/brotli/v0.1.0`. Versions follow [semantic versioning](https://semver.org); while a module is at `v0`, a minor version may change its API. Each module's `CHANGELOG.md` lists what changed.
+Every module is tagged with its directory as the prefix, as Go expects for a module below a repository's root: `config/vX.Y.Z`, `config/kongprovider/vX.Y.Z`, `httpx/codec/msgpack/vX.Y.Z`. `release-please-config.json` lists every released module under `packages`, keyed by its directory. Versions follow [semantic versioning](https://semver.org); while a module is at `v0`, a minor version may change its API. Each module's `CHANGELOG.md` lists what changed. Versions follow [semantic versioning](https://semver.org); while a module is at `v0`, a minor version may change its API. Each module's `CHANGELOG.md` lists what changed.
 
 ## Releases
 
