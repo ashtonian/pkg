@@ -130,17 +130,9 @@ func (w *keyWalk) section(t reflect.Type, v reflect.Value, path keyPath) any {
 		w.unkeyed = append(w.unkeyed, recordUnkeyed(path, v, n.unkeyed))
 	}
 	out := make(map[string]any, len(n.fields))
-	if n.remain != nil {
-		if rest, err := v.FieldByIndexErr(n.remain.index); err == nil {
-			for it := rest.MapRange(); it.Next(); {
-				k := it.Key().String()
-				out[k] = w.elem(anyType, rest.Type().Elem(), it.Value(), path.member(k)).Interface()
-			}
-		}
-	}
-	for _, f := range n.fields {
-		if fv, err := f.value(v); err == nil {
-			out[f.key] = w.elem(anyType, f.sf.Type, fv, path.field(f.key)).Interface()
+	for m, vals := range n.members(side{v: v, present: true}, side{}, false) {
+		if vals[0].IsValid() {
+			out[m.seg.name] = w.elem(anyType, m.declared(), vals[0], path.child(m.seg)).Interface()
 		}
 	}
 	return wholeMap(out)

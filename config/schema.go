@@ -65,22 +65,27 @@ type schemaField struct {
 // the field's tags are that owner's.
 type remainField struct {
 	sf     reflect.StructField
-	index  []int  // from the branch's type, through squashed structs
-	tagged bool   // the field, or a squashed struct holding it, is tagged sensitive:"true"
-	named  bool   // its Go name looks like a credential's
-	reload string // its reload tag, or the innermost squashed struct's
-	once   sync.Once
-	elem   *schemaNode // the node of the map's element type; see node
-	err    error
+	index  []int     // from the branch's type, through squashed structs
+	keys   *keyCodec // the map's key type's
+	tagged bool      // the field, or a squashed struct holding it, is tagged sensitive:"true"
+	named  bool      // its Go name looks like a credential's
+	reload string    // its reload tag, or the innermost squashed struct's
 }
 
-// node is the node of r's element type, what each key r collects holds. It
-// is read from the type's own graph on first use: the field is not part of
-// its branch's graph, and an element type holding the branch's own type
-// would otherwise build that graph again within itself.
-func (r *remainField) node() (*schemaNode, error) {
-	r.once.Do(func() { r.elem, r.err = metadataOf(r.sf.Type.Elem()) })
-	return r.elem, r.err
+// node is the node of r's map type, whose element is what each key r
+// collects holds, read through tier (metadataOf, schemaOf) from the map
+// type's own graph: the field is not part of its branch's graph, and an
+// element type holding the branch's own type would otherwise build that
+// graph again within itself.
+func (r *remainField) node(tier func(reflect.Type) (*schemaNode, error)) (*schemaNode, error) {
+	return tier(r.sf.Type)
+}
+
+// whole reports whether r, at a position sensitive or not, is one value
+// rather than its keys: it is sensitive, so the keys it collects may
+// themselves be secrets.
+func (r *remainField) whole(sensitive bool) bool {
+	return sensitive || r.tagged || r.named
 }
 
 // collects reports whether n's remain field collects key segment s: n is a
@@ -298,6 +303,7 @@ func (b *schemaBuilder) fields(n *schemaNode, shape *gowalker.Shape) {
 		n.remain = &remainField{
 			sf:     remain.GoField,
 			index:  remain.Index,
+			keys:   keyCodecOf(remain.GoField.Type.Key()),
 			tagged: fieldSensitive(remain.GoField, remain.InlineParents),
 			named:  nameSensitive(remain.GoField),
 			reload: fieldReload(remain.GoField, remain.InlineParents),
@@ -603,6 +609,11 @@ func (c cursor) intoRemain(r *remainField) cursor {
 		Sensitive: next.tagged || next.covered,
 		Index:     next.index,
 	}
+	if c.dynamic {
+		next.owner = cloneField(c.owner)
+		next.owner.Sensitive = next.tagged || next.covered || c.owner.Sensitive
+		next.index = nil
+	}
 	return next
 }
 
@@ -614,7 +625,7 @@ func (c cursor) intoCollected(name string, elem reflect.Type) cursor {
 	next.path = c.path.member(name)
 	next.covered = c.covered || isSensitiveName(name) && textCapable(elem)
 	next.index = nil
-	next.owner.Sensitive = next.tagged || next.covered
+	next.owner.Sensitive = c.owner.Sensitive || next.covered
 	return next
 }
 
@@ -664,25 +675,20 @@ func (n *schemaNode) walkTo(c cursor, p keyPath) (cursor, *schemaNode, error) {
 	for i, s := range p {
 		switch n.kind {
 		case nodeBranch:
-			var f *schemaField
-			if s.kind == segField {
-				f = n.byKey[s.name]
-			}
+			m, ok := n.memberAt(s)
 			switch {
-			case f != nil:
-				c, n = c.intoField(f), f.node
-			case n.collects(s):
-				r := n.remain
-				elem, err := r.node()
-				if err != nil {
-					return cursor{}, nil, err
-				}
-				c, n = c.intoRemain(r).intoCollected(s.name, r.sf.Type.Elem()), elem
-			case s.kind != segField:
+			case !ok && s.kind != segField:
 				return cursor{}, nil, fmt.Errorf("%w %s: %s is a struct; select one of its fields", ErrKey, p, c.path.orRoot())
-			default:
+			case !ok:
 				return cursor{}, nil, fmt.Errorf("%w %s: %s has no field %q", ErrKey, p, c.path.orRoot(), s.name)
+			case m.kind == memberRemain:
+				m = n.remainMember(c.sensitive()) // in a pattern, [*] is any key it collects
 			}
+			next, err := m.node(metadataOf)
+			if err != nil {
+				return cursor{}, nil, err
+			}
+			c, n = m.cursor(c), next
 		case nodeMap:
 			if s.kind != segKey && s.kind != segAny {
 				return cursor{}, nil, fmt.Errorf("%w %s: %s is a map; select an entry with a quoted key", ErrKey, p, c.path.orRoot())

@@ -1,7 +1,6 @@
 package config
 
 import (
-	"context"
 	"net/netip"
 	"reflect"
 	"testing"
@@ -159,18 +158,6 @@ func TestLoad_ARemainFieldsValuesSurviveTheMerge(t *testing.T) {
 	got, err := Decode[remainCfg](t.Context(), map[string]any{"plugins": map[string]any{"addr": netip.MustParseAddr("10.0.0.1")}})
 	require.NoError(t, err)
 	assert.Equal(t, "10.0.0.1", got.Plugins.Extra["addr"])
-}
-
-// An applier owns keys Diff names, and Diff compares no key a remain
-// field collects.
-func TestApplier_RefusesAPrefixARemainFieldCollects(t *testing.T) {
-	load := func(context.Context) (*remainCfg, error) { return &remainCfg{}, nil }
-	apply := func(context.Context, ApplyEvent[remainCfg]) (ApplyResult, error) { return ApplyResult{}, nil }
-	for _, prefix := range []string{"plugins.foo", `plugins["foo"].bar`, "other"} {
-		_, err := NewReloaderFunc(t.Context(), load, WithApplier(Applier[remainCfg]{Name: "a", Prefixes: []string{prefix}, Apply: apply}))
-		require.ErrorIs(t, err, ErrKey, prefix)
-		assert.Contains(t, err.Error(), "a key a remain field collects", prefix)
-	}
 }
 
 // An origin provider may annotate a key a remain field collects.

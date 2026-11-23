@@ -37,9 +37,10 @@ type Applier[T any] struct {
 	Name string
 	// Prefixes are the keys the applier owns, in the package's key grammar:
 	// a section (db), one value (logging.level), an entry
-	// (features["audit"]) or a pattern (features[*].gate). It owns every key
-	// at or beneath them unless another applier's prefix is more specific:
-	// longer, or as long with more literal map keys and indexes.
+	// (features["audit"]), a key a koanf:",remain" field collects
+	// (plugins.foo) or a pattern (features[*].gate). It owns every key at or
+	// beneath them unless another applier's prefix is more specific: longer,
+	// or as long with more literal map keys and indexes.
 	Prefixes []string
 	// ApplyInitial applies the first load once, before the constructor
 	// returns: every key the applier owns, as a change from nothing. Its
@@ -143,9 +144,10 @@ func (e *ApplyError) Unwrap() []error {
 // WithApplier registers a; appliers run in registration order. An applier
 // with no name or a repeated one, no Apply, or no prefix fails construction,
 // as does a prefix that names no key of the config, reaches beneath an
-// interface or a value compared whole, names a key a koanf:",remain" field
-// collects, which [Diff] does not compare, or is as specific as another
-// applier's and could name the same key. See [Applier].
+// interface or a value compared whole — a key a sensitive koanf:",remain"
+// field collects included, which [Diff] compares whole at section[*] —
+// names a struct's keys by [*], or is as specific as another applier's and
+// could name the same key. See [Applier].
 //
 // With appliers registered, the reloader accounts for every key: a change no
 // applier owns, or one an applier returned as a restart key, is reported in
@@ -250,28 +252,38 @@ func newApplication(root *schemaNode, hooks []applierHook) (*application, error)
 }
 
 // applierPrefix parses and checks one prefix against the config's schema: it
-// must name a key Diff can report, which no key a remain field collects is.
+// must name a key Diff can report, spelled as Diff spells it. A key a remain
+// field collects is a member of its section (plugins.foo); one a sensitive
+// remain field collects is not, since Diff compares that field whole, at
+// section[*].
 func applierPrefix(root *schemaNode, s string) (keyPath, error) {
 	p, err := parseKeyPath(s)
 	if err != nil {
 		return nil, err
 	}
-	n := root
+	at, n := cursor{}, root
 	for i := 1; i <= len(p); i++ {
-		if n.collects(p[i-1]) {
-			return nil, fmt.Errorf("%w %s: %s is a key a remain field collects, which Diff does not compare", ErrKey, p, p[:i])
+		if seg := &p[i-1]; n.kind == nodeBranch {
+			switch {
+			case seg.kind == segAny:
+				return nil, fmt.Errorf("%w %s: %s is a struct; own it, or name a key it holds", ErrKey, p, at.path.orRoot())
+			case n.collects(*seg) && n.remain.whole(at.sensitive()):
+				return nil, fmt.Errorf("%w %s: it reaches beneath %s, which is sensitive and compared whole", ErrKey, p, at.path.any())
+			case n.collects(*seg):
+				*seg = memberSegment(seg.name)
+			}
 		}
 		c, next, err := root.walkTo(cursor{}, p[:i])
 		if err != nil {
 			return nil, err
 		}
-		n = next
 		if len(c.path) < i {
 			return nil, fmt.Errorf("%w %s: it reaches beneath %s, whose keys are not compared one by one", ErrKey, p, c.path.orRoot())
 		}
-		if i < len(p) && n.kind != nodeBranch && c.sensitive() {
+		if i < len(p) && next.kind != nodeBranch && c.sensitive() {
 			return nil, fmt.Errorf("%w %s: it reaches beneath %s, which is sensitive and compared whole", ErrKey, p, c.path)
 		}
+		at, n = c, next
 	}
 	return p, nil
 }
@@ -648,15 +660,15 @@ func writeHeld(slot reflect.Value, rel keyPath, h heldValue) error {
 	seg, rest := rel[0], rel[1:]
 	switch n.kind {
 	case nodeBranch:
-		f := n.byKey[seg.name]
-		if f == nil {
-			return fmt.Errorf("%s has no field %q", gowalker.TypeText(v.Type()), seg.name)
+		m, ok := n.memberAt(seg)
+		if !ok {
+			return fmt.Errorf("%s has no key %s", gowalker.TypeText(v.Type()), keyPath{seg})
 		}
-		fv, err := f.value(v)
-		if err != nil {
+		slot, via, ok := m.slot(v)
+		if !ok {
 			return nil // beneath a nil embedded pointer
 		}
-		return writeHeld(fv, rest, h)
+		return writeHeld(slot, append(via, rest...), h)
 	case nodeMap:
 		key, err := n.keys.parse(seg.name)
 		if err != nil {
@@ -894,7 +906,7 @@ func (a *application) rebase(prev, next reflect.Value, changes []published) (*pe
 	byOwner := make([][]published, len(a.appliers))
 	var unowned []published
 	for _, c := range changes {
-		if i := a.owner(c.path); i >= 0 {
+		if i := a.owner(c.path, c.change.Field); i >= 0 {
 			byOwner[i] = append(byOwner[i], c)
 		} else {
 			unowned = append(unowned, c)
@@ -930,7 +942,7 @@ func (a *application) commit(p *pending) {
 // with no config.
 func (a *application) start(owned []published) {
 	for _, c := range owned {
-		st := a.appliers[a.owner(c.path)]
+		st := a.appliers[a.owner(c.path, c.change.Field)]
 		if st.ack == nil {
 			st.ack = ackDiff{}
 		}
@@ -941,7 +953,7 @@ func (a *application) start(owned []published) {
 // initialOwner reports whether key p belongs to an applier with
 // ApplyInitial.
 func (a *application) initialOwner(p keyPath) bool {
-	i := a.owner(p)
+	i := a.owner(p, ownerOf(a.root, p))
 	return i >= 0 && a.appliers[i].hook.initial
 }
 

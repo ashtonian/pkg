@@ -94,7 +94,7 @@ reloader, err := config.NewReloader[AppConfig](ctx, loadOpts,
 )
 ```
 
-- **Ownership.** A prefix is a section (`db`), a value (`log.level`), a map entry (`features["audit"]`) or a pattern (`features[*].gate`); the most specific prefix owns a key. `Diff` compares no key a `,remain` field collects, so no prefix may name one: such a prefix fails construction with `ErrKey`.
+- **Ownership.** A prefix is a section (`db`), a value (`log.level`), a map entry (`features["audit"]`), a key a `,remain` field collects (`plugins.foo`) or a pattern (`features[*].gate`); the most specific prefix owns a key. A key a remain field collects is routed by the remain field's `reload` tag, as `Diff` names it. A sensitive remain field is compared whole, one change at `section[*]`: the section's prefix, or one above it, owns that change, and a prefix naming a key it collects fails construction with `ErrKey`, as one beneath a sensitive map does. `[*]` on a struct is no prefix.
 - **Measured from what was applied.** An applier is called once per published config with the keys whose published value differs from what it last acknowledged. Returning nil acknowledges them all, except the `RestartKeys` it returns.
 - **Failures are retried.** An error or a panic acknowledges nothing; the keys it was given are offered again, `Retry` set, until a call applies them. Appliers must be idempotent.
 - **Structures need one owner.** A map entry or pointer section that appears or disappears applies live only through an applier that owns it and everything beneath it; otherwise it waits for a restart.
