@@ -57,7 +57,10 @@ must deliver bytes immediately.
 
 Keys include the effective target authority (including `Request.Host`) and
 hash `Authorization`, `Cookie` and every configured identity header. A change
-in one of those values creates a distinct partition. Other headers are not
+in one of those values creates a distinct partition. The target excludes the
+URL fragment, which never reaches the origin: `/doc#summary` and `/doc` share
+one stored response, and a write through either invalidates it. Path escaping
+and the query string remain part of the key. Other headers are not
 included automatically: for API-key authentication, configure
 `WithCacheIdentityHeaders("X-API-Key")`, or the actual custom header name.
 Configure every header the application uses to identify the caller.
@@ -138,6 +141,11 @@ type CacheStore interface {
     Delete(ctx context.Context, key string) error
 }
 ```
+
+httpx v0.4.0 and earlier kept the URL fragment in the key. Entries a
+persistent store holds under such keys are never read or invalidated again;
+they expire at the TTL they were written with, at most `WithMaxRetention`.
+Keys of fragment-free URLs are unchanged.
 
 Use `(nil, false, nil)` for a miss. A successful `Set` means storage accepted
 the value; return an error for rejected writes. Stores must be concurrent-safe,

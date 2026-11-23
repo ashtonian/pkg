@@ -42,8 +42,9 @@ var storableStatuses = map[int]bool{
 // CacheTransport is a private HTTP cache (RFC 9111) for GET requests.
 //
 // Stored responses are keyed by the effective request target — the URL with
-// the request's Host as its authority — and partitioned by caller identity —
-// the Authorization and Cookie headers plus any WithCacheIdentityHeaders.
+// the request's Host as its authority and without its fragment — and
+// partitioned by caller identity — the Authorization and Cookie headers plus
+// any WithCacheIdentityHeaders.
 // Callers must configure every additional identity header (including API-key
 // headers) and use separate stores for identities hidden in a transport.
 // These keys do not establish application authorization or tenant boundaries.
@@ -612,7 +613,8 @@ func effectiveHost(req *http.Request) string {
 }
 
 // key is the primary cache key: method, the effective target URI and the
-// caller's identity.
+// caller's identity. The fragment is not part of the target: it never reaches
+// the origin, so URLs that differ only by fragment name one stored response.
 func (t *CacheTransport) key(req *http.Request) string {
 	var id strings.Builder
 	for _, h := range append([]string{"Authorization", "Cookie"}, t.identityHeaders...) {
@@ -625,6 +627,7 @@ func (t *CacheTransport) key(req *http.Request) string {
 	}
 	target := *req.URL
 	target.Host = effectiveHost(req)
+	target.Fragment, target.RawFragment = "", ""
 	key := req.Method + " " + target.String()
 	if id.Len() > 0 {
 		sum := sha256.Sum256([]byte(id.String()))

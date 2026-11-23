@@ -108,7 +108,7 @@ regardless of option order. See [egress policy](egress.md).
 | `WithMaxEntries(n)` (`NewMemoryCache`) | `int` | `DefaultMemoryCacheMaxEntries` (1024) | Entry cap; least recently used evicted first |
 | `WithMaxBytes(n)` (`NewMemoryCache`) | `int64` | `DefaultMemoryCacheMaxBytes` (64 MiB) | Byte cap over bodies, headers and keys |
 
-Cache keys use the effective URL (including `Request.Host`), plus hashed
+Cache keys use the effective URL without its fragment (including `Request.Host`), plus hashed
 `Authorization`, `Cookie` and configured identity headers. Other credentials
 are not detected automatically. Invalidation applies within the request's
 partition; coalescing and invalidation coordination are local to one
