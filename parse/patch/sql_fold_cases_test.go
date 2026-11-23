@@ -39,7 +39,7 @@ func foldSchema() *patch.PatchSchema {
 			DataType:   core.FieldTypeInt, SQLColumn: "version",
 		},
 		"/meta/*": {
-			AllowedOps: []patch.PatchOp{patch.PatchOpReplace},
+			AllowedOps: []patch.PatchOp{patch.PatchOpReplace, patch.PatchOpAdd, patch.PatchOpArrayAppend},
 			DataType:   core.FieldTypeString, SQLColumn: "meta",
 		},
 	})
@@ -204,10 +204,12 @@ func TestBuildPatchSQL_RejectsUncompilableOps(t *testing.T) {
 		ops  string
 		code string
 	}{
-		"move":        {ops: `[{"op":"move","from":"/name","path":"/name"}]`, code: patch.ECodeOpNotSQLCompilable.String()},
-		"copy":        {ops: `[{"op":"copy","from":"/name","path":"/name"}]`, code: patch.ECodeOpNotSQLCompilable.String()},
-		"nested path": {ops: `[{"op":"replace","path":"/meta/color","value":"red"}]`, code: patch.ECodeOpNotSQLCompilable.String()},
-		"test":        {ops: `[{"op":"test","path":"/name","value":"orig"}]`, code: patch.ECodeTestOpSQL.String()},
+		"move":                                  {ops: `[{"op":"move","from":"/name","path":"/name"}]`, code: patch.ECodeOpNotSQLCompilable.String()},
+		"copy":                                  {ops: `[{"op":"copy","from":"/name","path":"/name"}]`, code: patch.ECodeOpNotSQLCompilable.String()},
+		"nested append":                         {ops: `[{"op":"array_append","path":"/meta/color","value":"red"}]`, code: patch.ECodeOpNotSQLCompilable.String()},
+		"a member that reads as an array index": {ops: `[{"op":"replace","path":"/meta/0","value":"red"}]`, code: patch.ECodeOpNotSQLCompilable.String()},
+		"the end of an array":                   {ops: `[{"op":"add","path":"/meta/-","value":"red"}]`, code: patch.ECodeOpNotSQLCompilable.String()},
+		"test":                                  {ops: `[{"op":"test","path":"/name","value":"orig"}]`, code: patch.ECodeTestOpSQL.String()},
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {

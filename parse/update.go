@@ -111,15 +111,24 @@ type UpdatePlan struct {
 	// column (ReadExpr) over a relation's pairs reads them as they were;
 	// Reread reads the rows again once the pairs have changed.
 	Owner Statement
-	// Current, set when SkipUnchanged guards Owner's UPDATE, selects every
-	// target row the scope admits, as it stands, and locks it
-	// (Dialect.RowLock): Owner's WHERE without the change predicate. Run it
-	// first, then Owner, in one transaction: its lock holds every target
-	// while Owner compares them, so Owner and Current split one set of rows.
-	// The rows it returns whose keys Owner's do not include are the ones the
-	// patch left unchanged (Unchanged); neither returning a row means the
-	// target is not found. Nil when Owner returns every target row.
+	// Current, set when SkipUnchanged or Conflict guards Owner's UPDATE,
+	// selects every target row the scope admits, as it stands, and locks it
+	// (Dialect.RowLock): Owner's WHERE without the change predicate and the
+	// patch's precondition. Run it first, then Conflict, then Owner, in one
+	// transaction: its lock holds every target while the others judge them,
+	// so Owner and Current split one set of rows. The rows it returns whose
+	// keys Owner's do not include are the ones the patch left unchanged
+	// (Unchanged); neither returning a row means the target is not found.
+	// Nil when Owner returns every target row.
 	Current *Statement
+	// Conflict, set when the patch writes members of a JSON document (an
+	// add, replace or remove below a field), selects the index of the first
+	// operation RFC 6902 cannot apply to a target row's stored document:
+	// a member a replace or a remove names that is missing, or an object an
+	// add sets a member of that is not there (patch.Precondition). It
+	// returns at most one row; a row is the update's failure (ConflictError),
+	// and Owner, whose WHERE holds the same precondition, must not run.
+	Conflict *Statement
 	// Writes reports whether the plan changes anything: a column Owner
 	// assigns, or a relation membership. False for an empty patch, whose
 	// Owner is a scoped read.
@@ -127,9 +136,11 @@ type UpdatePlan struct {
 
 	// assigns reports whether Owner is an UPDATE: the patch assigns a
 	// column, so the rows it returns are the ones it wrote.
-	assigns   bool
-	relations []patch.RelationPatchOp
-	dialect   Dialect
+	assigns bool
+	// preconditions are the operations Conflict judges, for ConflictError.
+	preconditions []patch.Precondition
+	relations     []patch.RelationPatchOp
+	dialect       Dialect
 	// fields is the filter schema the plan compiled, its relation changes'
 	// targets compiled for dialect.
 	fields *filter.ResourceSchema
@@ -142,16 +153,32 @@ type UpdatePlan struct {
 // Dialect is the dialect the plan's statements are written for.
 func (p *UpdatePlan) Dialect() Dialect { return p.dialect }
 
+// ConflictError is the failure of an update whose Conflict statement
+// returned op: that operation's E2077, as ApplyValidatedPatch reports an
+// operation that does not apply.
+func (p *UpdatePlan) ConflictError(op int64) error {
+	for _, pre := range p.preconditions {
+		if int64(pre.Op) == op {
+			return pre.Err()
+		}
+	}
+	return fmt.Errorf("parse: %s: the conflict statement returned operation %d, which it does not judge", p.table, op)
+}
+
 // HasRelations reports whether the patch changes relation memberships:
-// run Current when set, Owner, RelationStatements, then Reread when it
-// returns a statement, in one transaction.
+// run Current and Conflict when set, Owner, RelationStatements, then Reread
+// when it returns a statement, in one transaction.
 func (p *UpdatePlan) HasRelations() bool { return len(p.relations) > 0 }
 
 // BuildUpdate compiles a patch into the statement that applies it to target
 // under scope s: the patch's SET clause, then a WHERE of the target, the
 // tenant floor, live rows only and s.Policy, then RETURNING the resource's
 // Columns; SkipUnchanged also ANDs the patch's change predicate into the
-// WHERE. A tenant-scoped resource needs s.Tenant (ErrTenantRequired), which
+// WHERE. A patch that writes members of a JSON document ANDs in the
+// precondition RFC 6902 sets those operations as well, and is planned with
+// Current and Conflict, so a target row it does not apply to fails the
+// update, as ApplyValidatedPatch fails it, rather than being skipped. A
+// tenant-scoped resource needs s.Tenant (ErrTenantRequired), which
 // every tenant column it reaches must hold (ErrTenantInvalid); a patch or a
 // ByFilter filter the resource did not parse is ErrForeign; a zero Target
 // is ErrNoTarget, and a key the key column cannot hold ErrKeyInvalid;
@@ -211,16 +238,27 @@ func (r *Resource[T]) BuildUpdate(d Dialect, p *patch.ParsedPatch, target Target
 	plan := &UpdatePlan{relations: set.RelationOps, dialect: d, fields: r.filterSchema, table: r.table, tenant: tenant, related: s.Related}
 	switch {
 	case set.SetClause != "":
+		// where's root is a group, which renders parenthesized, or one
+		// condition, so each guard ANDs onto all of it.
 		guarded := where
+		if set.Precondition != "" {
+			guarded += " AND " + set.Precondition
+		}
 		if cfg.skipUnchanged {
-			// where's root is a group, which renders parenthesized, or one
-			// condition, so the predicate ANDs onto all of it.
 			guarded += " AND " + set.ChangePredicate
+		}
+		if cfg.skipUnchanged || set.Precondition != "" {
 			current, currentArgs, err := r.updateWhere(d, target, scope, 0)
 			if err != nil {
 				return nil, err
 			}
 			plan.Current = &Statement{SQL: "SELECT " + columns + " FROM " + d.QuoteIdent(r.table) + " WHERE " + current + d.RowLock(), Args: currentArgs}
+		}
+		if set.Precondition != "" {
+			if plan.Conflict, err = r.conflictStatement(d, target, scope, set.Preconditions); err != nil {
+				return nil, err
+			}
+			plan.preconditions = set.Preconditions
 		}
 		plan.Owner = Statement{
 			SQL:  "UPDATE " + d.QuoteIdent(r.table) + " SET " + set.SetClause + " WHERE " + guarded + " RETURNING " + columns,
@@ -236,6 +274,24 @@ func (r *Resource[T]) BuildUpdate(d Dialect, p *patch.ParsedPatch, target Target
 		plan.Owner = Statement{SQL: "SELECT " + columns + " FROM " + d.QuoteIdent(r.table) + " WHERE " + where, Args: args}
 	}
 	return plan, nil
+}
+
+// conflictStatement selects, from one target row the patch's preconditions
+// do not all hold for, the index of the first operation that fails there.
+func (r *Resource[T]) conflictStatement(d Dialect, target Target, scope updateScope, pre []patch.Precondition) (*Statement, error) {
+	where, args, err := r.updateWhere(d, target, scope, 0)
+	if err != nil {
+		return nil, err
+	}
+	bind := func(v any) string {
+		args = append(args, v)
+		return d.Placeholder(len(args))
+	}
+	all, firstUnmet, err := patch.RenderPreconditions(d, pre, bind)
+	if err != nil {
+		return nil, err
+	}
+	return &Statement{SQL: "SELECT " + firstUnmet + " FROM " + d.QuoteIdent(r.table) + " WHERE " + where + " AND NOT " + all + " LIMIT 1", Args: args}, nil
 }
 
 // UpdateResult is what an executor reports for an update it ran: the target

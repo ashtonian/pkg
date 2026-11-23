@@ -146,7 +146,10 @@ func queryIncludes[T any](ctx context.Context, db Querier, r *parse.Resource[T],
 // changes touched; neither split holding a row means the target is not
 // found. A guarded plan (SkipUnchanged: plan.Current set) sends Current
 // before Owner in one batch, which runs in one transaction, so Current's
-// lock holds every target while Owner compares them.
+// lock holds every target while Owner compares them. A patch of document
+// members (plan.Conflict set) runs in a transaction: Current and Conflict,
+// whose row fails the update before Owner is sent
+// (UpdatePlan.ConflictError), then Owner.
 //
 // A plan that changes relation memberships runs in a transaction — a
 // savepoint when db is one — so its rows and memberships change together:
@@ -163,7 +166,7 @@ func Update[T any](ctx context.Context, db DB, r *parse.Resource[T], plan *parse
 		return parse.UpdateResult[T]{}, err
 	}
 	var res parse.UpdateResult[T]
-	if !plan.HasRelations() {
+	if !plan.HasRelations() && plan.Conflict == nil {
 		changed, unchanged, err := queryTargets(ctx, db, r, plan)
 		if err != nil {
 			return parse.UpdateResult[T]{}, fmt.Errorf("parsepgx: %s: %w", r.Table(), err)
@@ -239,6 +242,28 @@ func queryTargets[T any](ctx context.Context, db Querier, resource *parse.Resour
 			current, err = collect(r, resource)
 			return wrap("current", err)
 		})
+	}
+	if plan.Conflict != nil {
+		// Owner goes in a batch of its own, so a conflict sends no write.
+		var unmet *int64
+		b.Queue(plan.Conflict.SQL, plan.Conflict.Args...).Query(func(r pgx.Rows) error {
+			defer r.Close()
+			if r.Next() {
+				var op int64
+				if err := r.Scan(&op); err != nil {
+					return wrap("conflict", err)
+				}
+				unmet = &op
+			}
+			return wrap("conflict", r.Err())
+		})
+		if err := db.SendBatch(ctx, b).Close(); err != nil {
+			return nil, nil, err
+		}
+		if unmet != nil {
+			return nil, nil, plan.ConflictError(*unmet)
+		}
+		b = &pgx.Batch{}
 	}
 	b.Queue(plan.Owner.SQL, plan.Owner.Args...).Query(func(r pgx.Rows) error {
 		var err error

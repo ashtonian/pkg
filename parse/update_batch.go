@@ -207,6 +207,15 @@ func (r *Resource[T]) compileRowUpdate(d Dialect, row RowUpdate, scope updateSco
 	if len(set.RelationOps) != 0 {
 		return compiledRowUpdate{}, fmt.Errorf("parse: %s: update batch relation mutations are unsupported", r.table)
 	}
+	if len(set.Preconditions) != 0 {
+		// A batch locks and checks its rows by key alone; which operation a
+		// row's document fails is BuildUpdate's Conflict to report.
+		return compiledRowUpdate{}, &core.ParseError{
+			Kind: core.ParseErrorKindPatch, Code: patch.ECodeOpNotSQLCompilable.String(),
+			Message: fmt.Sprintf("row %v: a batch update does not compile an operation below a JSON document field that the stored row must decide; update the row with BuildUpdate", row.Key),
+			Path:    set.Preconditions[0].Path,
+		}
+	}
 	if err := r.checkAssignments(set.Assignments, "update batch"); err != nil {
 		return compiledRowUpdate{}, err
 	}

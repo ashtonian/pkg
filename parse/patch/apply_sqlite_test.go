@@ -38,17 +38,10 @@ type applyRow struct {
 // to a Go value or executed on SQLite.
 func TestApplier_AgreesWithSQLite(t *testing.T) {
 	gen := core.NewSchemaGenerator()
-	schema, err := patch.GeneratePatchSchema[applyRow](gen)
-	require.NoError(t, err)
+	schema := memberPatchSchema(t, gen)
 	applier, err := patch.NewApplier[applyRow](gen, nil)
 	require.NoError(t, err)
-	note := "n"
-	seed := applyRow{
-		ID: 1, Name: "orig", Note: &note, Rank: 1, Tags: []string{"a"},
-		Meta:   map[string]any{"k": 1.0, "nested": map[string]any{"x": 1.0, "y": 2.0}},
-		Dims:   applyDims{W: 2, H: 7},
-		Labels: map[string]string{"old": "v"},
-	}
+	seed := applySeed()
 	for _, tc := range []struct {
 		name  string
 		merge bool
@@ -68,6 +61,11 @@ func TestApplier_AgreesWithSQLite(t *testing.T) {
 		{"replace a struct document", false, `[{"op":"replace","path":"/dims","value":{"w":1}}]`},
 		{"replace twice", false, `[{"op":"replace","path":"/name","value":"a"},{"op":"replace","path":"/name","value":"b"}]`},
 		{"replace with null", false, `[{"op":"replace","path":"/note","value":null}]`},
+		{"replace a document member", false, `[{"op":"replace","path":"/meta/k","value":2}]`},
+		{"add and remove nested document members", false, `[{"op":"add","path":"/meta/nested/z","value":3},{"op":"remove","path":"/meta/nested/x"}]`},
+		{"replace a struct document member", false, `[{"op":"replace","path":"/dims/w","value":9}]`},
+		{"add and remove typed map members", false, `[{"op":"add","path":"/labels/new","value":"x"},{"op":"remove","path":"/labels/old"}]`},
+		{"members of a document the patch wrote whole", false, `[{"op":"replace","path":"/meta","value":{"a":1}},{"op":"add","path":"/meta/b","value":2}]`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var parsed *patch.ParsedPatch
@@ -89,6 +87,9 @@ func TestApplier_AgreesWithSQLite(t *testing.T) {
 			res, err := patch.BuildPatchSQL(parsed, filter.SQLiteDialect{})
 			require.NoError(t, err)
 			stmt := fmt.Sprintf("UPDATE rows SET %s WHERE id = ?%d", res.SetClause, res.ParamCount+1)
+			if res.Precondition != "" {
+				stmt += " AND " + res.Precondition
+			}
 			_, err = db.Exec(stmt, append(res.Args, seed.ID)...)
 			require.NoError(t, err, stmt)
 
@@ -126,6 +127,69 @@ func insertRow(t *testing.T, db *sql.DB, r applyRow) {
 	_, err := db.Exec(`INSERT INTO rows (id, name, note, rank, tags, meta, dims, labels) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
 		r.ID, r.Name, r.Note, r.Rank, encode(r.Tags), encode(r.Meta), encode(r.Dims), encode(r.Labels))
 	require.NoError(t, err)
+}
+
+// memberPatchSchema is applyRow's generated patch schema, with add, replace
+// and remove allowed on members of its documents.
+func memberPatchSchema(t *testing.T, gen *core.SchemaGenerator) *patch.PatchSchema {
+	t.Helper()
+	schema, err := patch.GeneratePatchSchema[applyRow](gen)
+	require.NoError(t, err)
+	ops := []patch.PatchOp{patch.PatchOpAdd, patch.PatchOpReplace, patch.PatchOpRemove}
+	for path, column := range map[string]string{"/meta/**": "meta", "/dims/*": "dims", "/labels/*": "labels"} {
+		require.NoError(t, schema.AddPath(path, &patch.PathSchema{AllowedOps: ops, DataType: core.FieldTypeAny, SQLColumn: column}))
+	}
+	return schema
+}
+
+func applySeed() applyRow {
+	note := "n"
+	return applyRow{
+		ID: 1, Name: "orig", Note: &note, Rank: 1, Tags: []string{"a"},
+		Meta:   map[string]any{"k": 1.0, "nested": map[string]any{"x": 1.0, "y": 2.0}},
+		Dims:   applyDims{W: 2, H: 7},
+		Labels: map[string]string{"old": "v"},
+	}
+}
+
+// An operation the document does not take fails the patch with its own
+// index, in a run of operations as alone, and SQLite names the same one.
+func TestApplier_FailingMemberOperationAgreesWithSQLite(t *testing.T) {
+	gen := core.NewSchemaGenerator()
+	schema := memberPatchSchema(t, gen)
+	applier, err := patch.NewApplier[applyRow](gen, nil)
+	require.NoError(t, err)
+	seed := applySeed()
+	parsed, err := patch.NewParser(schema, nil).Parse([]byte(`[{"op":"replace","path":"/name","value":"x"},{"op":"replace","path":"/meta/k","value":2},{"op":"remove","path":"/labels/gone"},{"op":"remove","path":"/meta/zz"}]`))
+	require.NoError(t, err)
+
+	_, err = applier.Apply(parsed, seed)
+	pe, ok := errors.AsType[*core.ParseError](err)
+	require.True(t, ok, "%v is no ParseError", err)
+	assert.Equal(t, patch.ECodePatchValueInvalid.String(), pe.Code)
+	require.NotNil(t, pe.Index)
+	assert.Equal(t, 2, *pe.Index)
+
+	db := dbtest.SQLite(t)
+	_, err = db.Exec(`CREATE TABLE rows (id INTEGER PRIMARY KEY, name TEXT NOT NULL, note TEXT, rank INTEGER NOT NULL, tags TEXT NOT NULL, meta TEXT NOT NULL, dims TEXT NOT NULL, labels TEXT NOT NULL)`)
+	require.NoError(t, err)
+	insertRow(t, db, seed)
+	res, err := patch.BuildPatchSQL(parsed, filter.SQLiteDialect{})
+	require.NoError(t, err)
+	result, err := db.Exec(fmt.Sprintf("UPDATE rows SET %s WHERE id = ?%d AND %s", res.SetClause, res.ParamCount+1, res.Precondition), append(res.Args, seed.ID)...)
+	require.NoError(t, err)
+	written, err := result.RowsAffected()
+	require.NoError(t, err)
+	assert.Zero(t, written)
+	var args []any
+	_, firstUnmet, err := patch.RenderPreconditions(filter.SQLiteDialect{}, res.Preconditions, func(v any) string {
+		args = append(args, v)
+		return fmt.Sprintf("?%d", len(args))
+	})
+	require.NoError(t, err)
+	var unmet int
+	require.NoError(t, db.QueryRow("SELECT "+firstUnmet+" FROM rows WHERE id = 1", args...).Scan(&unmet))
+	assert.Equal(t, *pe.Index, unmet)
 }
 
 // rowDocument is a row's patchable fields as one JSON document.

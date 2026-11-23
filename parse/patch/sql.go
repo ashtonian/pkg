@@ -1,6 +1,7 @@
 package patch
 
 import (
+	"cmp"
 	"encoding/json"
 	"fmt"
 	"maps"
@@ -26,9 +27,23 @@ type PatchSQLResult struct {
 	// Args are the bound values for SetClause placeholders, in $N order.
 	Args []any
 
-	// ParamCount is the number of placeholders consumed by SetClause.
-	// Callers append filter params starting at startParam + ParamCount.
+	// ParamCount is the number of placeholders SetClause and Precondition
+	// consume. Callers append filter params starting at startParam +
+	// ParamCount.
 	ParamCount int
+
+	// Precondition, set when the patch writes a member of a JSON document
+	// (an add, replace or remove below a field), is true for a row whose
+	// stored documents hold what RFC 6902 needs to apply those operations:
+	// each member a replace or a remove names, and each object an add sets
+	// a member of, where the patch's earlier operations do not settle it.
+	// The UPDATE must AND it into its WHERE: SetClause sets a member
+	// whether or not it exists, and its placeholders, which Args binds and
+	// ParamCount counts, appear nowhere else. A target row it is false for
+	// is one the patch does not apply to; Preconditions says which
+	// operation fails there (RenderPreconditions).
+	Precondition  string
+	Preconditions []Precondition
 
 	// ChangePredicate, rendered with WithChangePredicate, is true for a row
 	// the SET clause's patch columns would change: a parenthesized OR of
@@ -174,9 +189,17 @@ func WithChangePredicate() PatchSQLOption {
 // columns change a row (PatchSQLResult.ChangePredicate), for an UPDATE that
 // writes, stamps and counts only the rows it changes.
 //
+// An add, replace or remove below a JSON document field compiles against
+// the stored document (jsonb_set and #- on PostgreSQL, json_set and
+// json_remove on SQLite), sibling members kept, with the RFC 6902
+// preconditions the patch's earlier operations do not settle in
+// Precondition; one they settle as failed is E2077, as the document path
+// reports it.
+//
 // Operations SQL cannot express are rejected, never skipped: test (E2068),
-// move/copy and nested JSON Pointer paths (E2070). Apply those through the
-// typed document path instead.
+// move/copy, an array element and a member whose name reads as an array
+// index where the document's type does not make its parent an object
+// (E2070). Apply those through the typed document path instead.
 func BuildPatchSQL(patch *ParsedPatch, dialect SQLDialect, opts ...PatchSQLOption) (*PatchSQLResult, error) {
 	cfg := &patchSQLConfig{
 		timeFunc: func() time.Time { return time.Now().UTC() },
@@ -200,8 +223,10 @@ func BuildPatchSQL(patch *ParsedPatch, dialect SQLDialect, opts ...PatchSQLOptio
 		columns     []string // first-touched order
 		columnOps   = map[string][]*PatchOperation{}
 		relationOps []RelationPatchOp
+		index       = make(map[*PatchOperation]int, len(patch.Operations))
 	)
-	for _, op := range patch.Operations {
+	for i, op := range patch.Operations {
+		index[op] = i
 		if op.Schema != nil && op.Schema.Relation != nil {
 			rop, err := buildRelationPatchOp(op)
 			if err != nil {
@@ -212,6 +237,11 @@ func BuildPatchSQL(patch *ParsedPatch, dialect SQLDialect, opts ...PatchSQLOptio
 		}
 		if err := checkSQLCompilable(op); err != nil {
 			return nil, err
+		}
+		if len(memberTokens(op)) > 0 {
+			if err := checkMemberPath(patch.schema, op); err != nil {
+				return nil, err
+			}
 		}
 		col, err := columnName(op)
 		if err != nil {
@@ -227,17 +257,17 @@ func BuildPatchSQL(patch *ParsedPatch, dialect SQLDialect, opts ...PatchSQLOptio
 		columnOps[col] = append(columnOps[col], op)
 	}
 
-	b := &setBuilder{dialect: dialect, next: cfg.startParam + 1}
+	b := &setBuilder{dialect: dialect, next: cfg.startParam + 1, index: index}
 	var changes []string
 	for _, col := range columns {
 		ops := columnOps[col]
-		expr, err := b.columnExpr(col, ops)
+		expr, changeSchema, err := b.columnExpr(col, ops)
 		if err != nil {
 			return nil, err
 		}
 		b.assignments = append(b.assignments, ColumnAssignment{Column: col, Expression: expr})
 		if cfg.changePredicate {
-			change, err := changedSQL(dialect, dialect.QuoteIdent(col), expr, ops[len(ops)-1].Schema)
+			change, err := changedSQL(dialect, dialect.QuoteIdent(col), expr, changeSchema)
 			if err != nil {
 				return nil, fmt.Errorf("change predicate for %s: %w", col, err)
 			}
@@ -247,6 +277,13 @@ func BuildPatchSQL(patch *ParsedPatch, dialect SQLDialect, opts ...PatchSQLOptio
 	var changePredicate string
 	if len(changes) > 0 {
 		changePredicate = "(" + strings.Join(changes, " OR ") + ")"
+	}
+	// Columns fold one after another, so the preconditions are put back in
+	// patch order: the first one a row fails is the operation that fails.
+	slices.SortFunc(b.preconditions, func(x, y Precondition) int { return cmp.Compare(x.Op, y.Op) })
+	precondition, _, err := RenderPreconditions(dialect, b.preconditions, b.bind)
+	if err != nil {
+		return nil, err
 	}
 
 	if len(b.assignments) > 0 {
@@ -274,6 +311,8 @@ func BuildPatchSQL(patch *ParsedPatch, dialect SQLDialect, opts ...PatchSQLOptio
 		Args:            b.args,
 		ParamCount:      b.next - cfg.startParam - 1,
 		ChangePredicate: changePredicate,
+		Precondition:    precondition,
+		Preconditions:   b.preconditions,
 		Empty:           len(b.assignments) == 0 && len(relationOps) == 0,
 		RelationOps:     relationOps,
 	}, nil
@@ -372,14 +411,8 @@ func checkSQLCompilable(op *PatchOperation) error {
 			Path:    op.Path,
 		}
 	}
-	if strings.Contains(strings.TrimPrefix(op.Path, "/"), "/") {
-		// A column assignment replaces the whole column; compiling a nested
-		// pointer to `SET col = $1` would overwrite every sibling key.
-		return &core.ParseError{
-			Kind: core.ParseErrorKindPatch, Code: ECodeOpNotSQLCompilable.String(),
-			Message: fmt.Sprintf("nested path %s cannot be compiled to a column assignment — apply via ApplyValidatedPatch", op.Path),
-			Path:    op.Path,
-		}
+	if op.Op == PatchOpArrayAppend && strings.Contains(strings.TrimPrefix(op.Path, "/"), "/") {
+		return notCompilable(op, fmt.Sprintf("array_append on %s, below a field, compiles to SQL only for a native array column", op.Path))
 	}
 	return nil
 }
@@ -402,6 +435,10 @@ type setBuilder struct {
 	next        int
 	assignments []ColumnAssignment
 	args        []any
+	// index is each operation's index in the patch; preconditions are the
+	// member operations' the stored rows decide.
+	index         map[*PatchOperation]int
+	preconditions []Precondition
 }
 
 func (b *setBuilder) bind(v any) string {
@@ -412,22 +449,28 @@ func (b *setBuilder) bind(v any) string {
 }
 
 // columnExpr folds one column's ordered operations into a single SQL
-// expression. A merge patch writes a column with one operation, the only
-// kind that merges, so a merge compiles against the stored column. JSON Patch
-// operations fold: the last whole-value operation (replace/add/remove) sets
-// the base and earlier ones are overwritten and never bound, and appends
-// after it fold onto its value in Go, so one value is bound; appends with no
-// base compile against the stored column.
-func (b *setBuilder) columnExpr(col string, ops []*PatchOperation) (string, error) {
+// expression, and returns the path schema its change predicate compares the
+// column as. A merge patch writes a column with one operation, the only kind
+// that merges, so a merge compiles against the stored column. Operations on
+// members of a document fold in documentExpr. Other JSON Patch operations
+// fold: the last whole-value operation (replace/add/remove) sets the base
+// and earlier ones are overwritten and never bound, and appends after it
+// fold onto its value in Go, so one value is bound; appends with no base
+// compile against the stored column.
+func (b *setBuilder) columnExpr(col string, ops []*PatchOperation) (string, *PathSchema, error) {
+	last := ops[len(ops)-1].Schema
 	if slices.ContainsFunc(ops, func(op *PatchOperation) bool { return op.Merge }) {
 		if len(ops) != 1 {
-			return "", fmt.Errorf("patch: column %s: a merge shares its column with another operation, which no parser produces", col)
+			return "", nil, fmt.Errorf("patch: column %s: a merge shares its column with another operation, which no parser produces", col)
 		}
 		expr, err := mergeSQL(b.dialect, b.dialect.QuoteIdent(col), ops[0].Schema.SQLType, ops[0].Value, b.bind)
 		if err != nil {
-			return "", fmt.Errorf("%s for %s: %w", ops[0].Op, ops[0].Path, err)
+			return "", nil, fmt.Errorf("%s for %s: %w", ops[0].Op, ops[0].Path, err)
 		}
-		return expr, nil
+		return expr, last, nil
+	}
+	if slices.ContainsFunc(ops, func(op *PatchOperation) bool { return len(memberTokens(op)) > 0 }) {
+		return b.documentExpr(col, ops)
 	}
 	start := -1
 	for i, op := range slices.Backward(ops) {
@@ -441,7 +484,7 @@ func (b *setBuilder) columnExpr(col string, ops []*PatchOperation) (string, erro
 		if op.Schema.DataType != "" && op.Schema.DataType != core.FieldTypeArray {
 			// A JSON-document array (jsonb on PostgreSQL) has no native
 			// array_append; the document path applies it.
-			return "", &core.ParseError{
+			return "", nil, &core.ParseError{
 				Kind: core.ParseErrorKindPatch, Code: ECodeOpNotSQLCompilable.String(),
 				Message: fmt.Sprintf("array_append on %s (a %s field) compiles to SQL only for native array columns — apply via ApplyValidatedPatch", op.Path, op.Schema.DataType),
 				Path:    op.Path,
@@ -453,10 +496,10 @@ func (b *setBuilder) columnExpr(col string, ops []*PatchOperation) (string, erro
 		for _, op := range later {
 			var err error
 			if expr, err = arrayAppendSQL(b.dialect, expr, op.Value, b.bind); err != nil {
-				return "", fmt.Errorf("%s for %s: %w", op.Op, op.Path, err)
+				return "", nil, fmt.Errorf("%s for %s: %w", op.Op, op.Path, err)
 			}
 		}
-		return expr, nil
+		return expr, last, nil
 	}
 
 	base := ops[start]
@@ -469,7 +512,7 @@ func (b *setBuilder) columnExpr(col string, ops []*PatchOperation) (string, erro
 		if value != nil {
 			arr, ok := core.AnySlice(value)
 			if !ok {
-				return "", fmt.Errorf("array append for %s: base value is %T, not an array", base.Path, value)
+				return "", nil, fmt.Errorf("array append for %s: base value is %T, not an array", base.Path, value)
 			}
 			elems = slices.Clone(arr)
 		}
@@ -477,14 +520,14 @@ func (b *setBuilder) columnExpr(col string, ops []*PatchOperation) (string, erro
 	}
 	if value == nil {
 		if value = base.Schema.clearedValue(); value == nil {
-			return "NULL", nil
+			return "NULL", last, nil
 		}
 	}
 	val, err := marshalIfComplex(value, base.Schema, b.dialect)
 	if err != nil {
-		return "", fmt.Errorf("marshaling value for %s: %w", base.Path, err)
+		return "", nil, fmt.Errorf("marshaling value for %s: %w", base.Path, err)
 	}
-	return b.bind(val), nil
+	return b.bind(val), last, nil
 }
 
 // mergeSQL returns the expression merging an RFC 7396 patch object into the
