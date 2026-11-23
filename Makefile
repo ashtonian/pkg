@@ -4,7 +4,9 @@ CONFIG_MODULES := config config/kongprovider
 HTTPX_MODULES := httpx httpx/oauth2 httpx/codec/msgpack httpx/codec/proto httpx/compress/brotli
 NATIVE_MODULES := process state onepassword
 PARSE_MODULES := parse
-TAGGED_MODULES := $(HTTPX_MODULES) $(PARSE_MODULES) $(NATIVE_MODULES)
+# The Go request builder and wire types: standard library only, no SQL suites.
+PARSE_CLIENT_MODULES := parse/client
+TAGGED_MODULES := $(HTTPX_MODULES) $(PARSE_MODULES) $(PARSE_CLIENT_MODULES) $(NATIVE_MODULES)
 MODULES := $(CORE_MODULES) $(CONFIG_MODULES) $(TAGGED_MODULES)
 # Programs that use the published modules; tested, never published.
 COOKBOOK := config/examples/cookbook
@@ -39,7 +41,7 @@ GOLANGCI_LINT := GOTOOLCHAIN=go1.27.4 GOWORK=$(CURDIR)/$(LINT_WORK) GO111MODULE=
 # third-party code, so it builds uninstrumented; this repository's code keeps both.
 RACE := -race -gcflags='modernc.org/...=-race=false -d=checkptr=0'
 # Every published module's release check; CI passes only the changed ones.
-RELEASE_CHECKS := gitx-release-check config-release-check kongprovider-release-check native-release-check jsonvalue-release-check gowalker-release-check httpx-release-check parse-release-check
+RELEASE_CHECKS := gitx-release-check config-release-check kongprovider-release-check native-release-check jsonvalue-release-check gowalker-release-check httpx-release-check parse-release-check parse-client-release-check
 MODULE_PATH := github.com/ashtonian/pkg
 # The packages the test and lint targets cover: "all", or the import paths CI's
 # change scope reaches (go-ci-actions scope's go-args).
@@ -72,12 +74,12 @@ lint-dirs = $(strip $(filter ./%,$(1)) $(if $(filter-out ./%,$(1)),$(shell go li
 UNTAGGED_MODULES := $(CORE_MODULES) $(CONFIG_MODULES)
 LINT_TAGS := unit,integration
 
-.PHONY: test test-native-unit test-native-integration native-release-check test-gitx test-jsonvalue jsonvalue-release-check test-gowalker gowalker-release-check test-config test-httpx-unit test-httpx-integration test-parse-unit test-parse-integration parse-postgres-up parse-postgres-down test-parse-sdk parse-sdk-release-check parse-sdk-registry-check parse-release-check lint release-check gitx-release-check config-release-check kongprovider-release-check httpx-release-check cookbook-check parse-example-check cookbook-integration cookbook-postgres-up cookbook-postgres-down tool-check release-please-check ci
+.PHONY: test test-native-unit test-native-integration native-release-check test-gitx test-jsonvalue jsonvalue-release-check test-gowalker gowalker-release-check test-config test-httpx-unit test-httpx-integration test-parse-unit test-parse-integration parse-postgres-up parse-postgres-down test-parse-sdk parse-sdk-release-check parse-sdk-registry-check parse-release-check test-parse-client parse-client-release-check lint release-check gitx-release-check config-release-check kongprovider-release-check httpx-release-check cookbook-check parse-example-check cookbook-integration cookbook-postgres-up cookbook-postgres-down tool-check release-please-check ci
 
 ## test: every published module from the working tree (go.work), race detector on.
 ## The unit targets take UNIT_TEST_COUNT; -count=1 where a test depends on state
 ## the test cache cannot see: processes it starts, the installed git, servers.
-test: test-native-unit test-native-integration test-gitx test-jsonvalue test-gowalker test-config test-httpx-unit test-httpx-integration test-parse-race-all test-parse-integration test-parse-sdk
+test: test-native-unit test-native-integration test-gitx test-jsonvalue test-gowalker test-config test-httpx-unit test-httpx-integration test-parse-race-all test-parse-integration test-parse-client test-parse-sdk
 
 test-native-unit:
 	$(call scoped,go test $(RACE) $(UNIT_TEST_COUNT),$(NATIVE_MODULES),unit)
@@ -153,6 +155,14 @@ parse-postgres-up:
 ## parse-postgres-down: stop and remove the PostgreSQL integration server.
 parse-postgres-down:
 	docker rm -f $(PARSE_PG_NAME)
+
+## test-parse-client: parse/client's unit tests, race detector on, against
+## parse's recorded wire and corpora (parse/testdata).
+test-parse-client:
+	$(call scoped,go test $(RACE) -count=1,$(PARSE_CLIENT_MODULES),unit)
+
+parse-client-release-check:
+	bash tools/check-parse-client-release.sh
 
 test-parse-sdk:
 	node tools/check-pnpm.mjs

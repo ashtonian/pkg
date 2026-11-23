@@ -49,7 +49,8 @@ type node struct {
 
 // The operators the builders write, as the server's filter grammar
 // (parse/filter's operator table) names them; parse's client conformance
-// tests read the builders' requests with the server's parser.
+// tests read the requests this module records (parse's
+// testdata/client_requests.json) with the server's parser.
 const (
 	opAnd = "$and"
 	opOr  = "$or"

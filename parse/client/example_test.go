@@ -4,7 +4,9 @@ package client_test
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
+	"net/http"
 	"time"
 
 	"github.com/ashtonian/pkg/parse/client"
@@ -73,4 +75,50 @@ func ExampleRelation_Add() {
 	}
 	fmt.Println(string(body))
 	// Output: [{"op":"add","path":"/tags","value":["outdoor"]},{"op":"remove","path":"/tags","value":["indoor"]},{"op":"replace","path":"/name","value":"pump-7"}]
+}
+
+func ExamplePage() {
+	type Device struct {
+		ID   string `json:"id"`
+		Name string `json:"name"`
+	}
+	answer := `{"items":[{"id":"d1","name":"pump-1"}],"page_info":{"has_next_page":true,"has_prev_page":false,"end_cursor":"c1"},"_relations":{"tags":{"d1":["outdoor"]}}}`
+	var page client.Page[Device]
+	err := json.Unmarshal([]byte(answer), &page)
+	if err != nil {
+		fmt.Println(err)
+		return
+	}
+	fmt.Println(page.Items[0].Name, page.Relations["tags"]["d1"])
+
+	// The next page: the same parameters with the page's end cursor.
+	params := client.ListParams{Sort: client.Sort{Devices.Name.Asc()}, PageSize: 1}
+	if page.PageInfo.HasNextPage {
+		params.Cursor = page.PageInfo.EndCursor
+	}
+	q, err := params.Values()
+	if err != nil {
+		fmt.Println(err)
+		return
+	}
+	fmt.Println(q.Encode())
+	// Output:
+	// pump-1 [outdoor]
+	// cursor=c1&page_size=1&sort=name
+}
+
+func ExampleDecodeError() {
+	body := []byte(`{"code":"E2071","message":"field 'colour' is not filterable","details":{"field":"colour"}}`)
+	err := fmt.Errorf("listing devices: %w", client.DecodeError(http.StatusUnprocessableEntity, body))
+
+	refused, ok := errors.AsType[*client.Error](err)
+	if ok {
+		fmt.Println(refused.Status, refused.Code, refused.Details["field"])
+	}
+	fmt.Println(errors.Is(err, client.CodeUnknownField))
+	fmt.Println(err)
+	// Output:
+	// 422 E2071 colour
+	// true
+	// listing devices: client: E2071 (HTTP 422): field 'colour' is not filterable
 }

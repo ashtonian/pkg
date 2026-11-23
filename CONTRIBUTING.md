@@ -17,6 +17,7 @@ The repository's `go.work` ties the published modules together, so a change to o
 | `make test-parse-integration` | Parse integration race tests; SQLite always runs, PostgreSQL/PostGIS through explicit DSNs |
 | `make test-parse-sdk` | The repository's pnpm contract, then TypeScript checks, lint, shared corpora and production build |
 | `make parse-release-check` | Fresh module-archive consumer, tagged tests, README program and dependency audit |
+| `make test-parse-client` / `make parse-client-release-check` | parse/client race tests against parse's recorded wire and corpora / fresh module-archive consumer whose module graph holds the client alone, standard-library imports and no `net/http`, and the README program |
 | `make parse-sdk-release-check` | Packed SDK consumer, TypeScript declarations, runtime subpaths and sourcemaps |
 | `make parse-sdk-registry-check` | Registry readiness and retries: a version that appears late, never appears, or fails otherwise, through scripted pnpm and through the real pnpm against a loopback registry; integrity checks and the bounds' configuration |
 | `make lint` / `make lint-cookbook` | gofmt over every tracked Go file, then `go vet`, [`go fix -diff`](#gofmt-and-go-fix), staticcheck and golangci-lint ([new issues only](#lint-baseline)) over the published modules, tagged ones in one pass with both tags / `go vet`, `go fix -diff` and staticcheck over the cookbook |
@@ -82,7 +83,8 @@ step's log: each job's line names the file or package that selected it, and `rea
 
 Release checks run per module: each reads only its module's tree, its own script and the
 archive tooling, so a change runs the checks of the modules it touches (the cookbook's with
-either config module, the Parse server example's with Parse), and shared build files, workflow, tooling, manifests and unknown
+either config module, the Parse server example's with Parse; a nested module such as
+`parse/client` is its own module, not part of its parent's archive or replacement), and shared build files, workflow, tooling, manifests and unknown
 paths run all of them. The documentation check reads every module, in the workspace or not, so a change to any of them runs it. The suites run once each:
 
 - Ubuntu runs the reached packages' race tests (parse's unit tests as below) on the newest

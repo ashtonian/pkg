@@ -26,7 +26,6 @@ func TestTransportFreePackages_ImportNoNetHTTP(t *testing.T) {
 		"github.com/ashtonian/pkg/parse/core",
 		"github.com/ashtonian/pkg/parse/filter",
 		"github.com/ashtonian/pkg/parse/patch",
-		"github.com/ashtonian/pkg/parse/client",
 	} {
 		out, err := exec.Command("go", "list", "-deps", pkg).Output()
 		require.NoError(t, err, pkg)

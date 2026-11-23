@@ -21,6 +21,7 @@ updates:
       - /jsonvalue
       - /onepassword
       - /parse
+      - /parse/client
       - /parse/examples/server
       - /process
       - /state

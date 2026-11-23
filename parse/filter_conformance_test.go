@@ -11,9 +11,10 @@ package parse_test
 // serves for the corpus's resources, and the server's verdict on a set of
 // sort strings and list requests. The TypeScript client
 // (sdk/ts/src/filter/conformance.test.ts) validates every input against
-// those documents and must agree; parse/client classifies every case
-// (client_conformance_test.go); filter's own tests require a valid and an
-// invalid case for every operator and every filterable type.
+// those documents and must agree; parse/client's tests classify every case,
+// and client_conformance_test.go reads the filters the client builds for
+// them; filter's own tests require a valid and an invalid case for every
+// operator and every filterable type.
 //
 // Regenerate the corpus after an intentional grammar change:
 //
