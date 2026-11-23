@@ -23,12 +23,17 @@ defer client.CloseIdleConnections()
 ```
 
 Importing [compress/brotli](../compress/brotli/README.md) registers Brotli.
-Without an explicit `WithEncodings`, the layer advertises registered `br`,
-`gzip`, `deflate` in that order. It sends no quality weights; the server
-chooses an accepted encoding. For another registered encoding, select it
-with `WithEncodings`; `WithCompressor` supplies an implementation for one
-transport and adds it to the advertised list. `NewChain` uses the same options
-through `WithCompressionT`; the client builders use `WithCompression`.
+Without an explicit `WithEncodings`, the layer advertises the encodings given
+with `WithCompressor`, in option order, then the registered `br`, `gzip`,
+`deflate` in that order. It sends no quality weights; the server chooses an
+accepted encoding. `WithEncodings` sets the advertised list exactly, in the
+order given; it selects which encodings are advertised, not how they are
+implemented. `WithCompressor` and the level options give one transport its
+own implementation of an encoding, which is used whether they come before or
+after `WithEncodings`; for one encoding the last of them wins. Every listed
+encoding needs that implementation or a registered compressor. Encoding names
+compare case-insensitively. `NewChain` uses the same options through
+`WithCompressionT`; the client builders use `WithCompression`.
 
 The layer supplies `Accept-Encoding` when it is absent and decodes supported
 response `Content-Encoding` values. An explicit request header is preserved.

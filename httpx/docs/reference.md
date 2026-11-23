@@ -84,14 +84,14 @@ regardless of option order. See [egress policy](egress.md).
 
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
-| `WithEncodings(names...)` | `...string` | registered members of `br`, `gzip`, `deflate`, in that order | Advertised encoding list, without quality weights; an unavailable name is rejected |
-| `WithGzipLevel(level)` | `int` | `gzip.DefaultCompression` | Level for `Compress`, within [-2, 9] |
-| `WithDeflateLevel(level)` | `int` | `flate.DefaultCompression` | Level for `deflate` (zlib), within [-2, 9] |
-| `WithBrotliLevel(level)` | `int` | brotli default | Within [0, 11]; requires the `compress/brotli` module |
-| `WithCompressor(name, c)` | `string`, `Compressor` | none | Adds or overrides an encoding for this transport; nil is rejected |
+| `WithEncodings(names...)` | `...string` | `WithCompressor` encodings in option order, then registered members of `br`, `gzip`, `deflate`, in that order | Advertised encoding list in this order, without quality weights; the last one wins. Selects advertisement only, never an implementation. Each name needs a registered compressor or one this transport was given; an unavailable, empty or repeated name is rejected |
+| `WithGzipLevel(level)` | `int` | `gzip.DefaultCompression` | Level for `Compress`, within [-2, 9]; this transport's gzip implementation |
+| `WithDeflateLevel(level)` | `int` | `flate.DefaultCompression` | Level for `deflate` (zlib), within [-2, 9]; this transport's deflate implementation |
+| `WithBrotliLevel(level)` | `int` | brotli default | Within [0, 11]; requires the `compress/brotli` module; this transport's brotli implementation |
+| `WithCompressor(name, c)` | `string`, `Compressor` | none | This transport's implementation of an encoding, adding or overriding one; nil is rejected. Advertised ahead of the defaults unless `WithEncodings` sets the list |
 | `WithCompressionPool(pool)` | `*BufferPool` | `DefaultBufferPool()` (32 KiB) | Buffers for `CompressionTransport.Compress` |
 
-`deflate` is the zlib format (RFC 9110 §8.4.1.2); a body without a zlib header decodes as raw DEFLATE. Decoding starts on the first body read; HEAD, 1xx, 204, 205 and 304 responses pass through untouched. Range requests receive no automatic `Accept-Encoding`; 206 or `Content-Range` responses preserve encoded bytes and headers. A complete 200 response to a range request is decoded normally. Request bodies are compressed only when the caller explicitly uses `Compress` and sets the corresponding request headers.
+The options compose in any order. A transport's own implementation (`WithCompressor` or a level option; for one encoding the last of these wins) is used wherever `WithEncodings` appears. Encoding names compare case-insensitively, as content codings do (RFC 9110 §8.4.1). `deflate` is the zlib format (RFC 9110 §8.4.1.2); a body without a zlib header decodes as raw DEFLATE. Decoding starts on the first body read; HEAD, 1xx, 204, 205 and 304 responses pass through untouched. Range requests receive no automatic `Accept-Encoding`; 206 or `Content-Range` responses preserve encoded bytes and headers. A complete 200 response to a range request is decoded normally. Request bodies are compressed only when the caller explicitly uses `Compress` and sets the corresponding request headers.
 
 ### Cache
 
