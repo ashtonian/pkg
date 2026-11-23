@@ -331,19 +331,28 @@ func TestClientComposesRetryOptions(t *testing.T) {
 	}{{"client", NewClient}, {"standard", NewStandard}} {
 		t.Run(ctor.name, func(t *testing.T) {
 			for _, tc := range []struct {
-				name string
-				opts []Option
-				want int32
+				name   string
+				status int
+				opts   []Option
+				want   int32
 			}{
-				{"grouped", []Option{WithRetry(WithMaxAttempts(1), WithRetryOn(503), WithBackoff(time.Millisecond, time.Millisecond, 2))}, 1},
-				{"split", []Option{WithRetry(WithMaxAttempts(1)), WithRetry(WithRetryOn(503), WithBackoff(time.Millisecond, time.Millisecond, 2))}, 1},
-				{"override", []Option{WithRetry(WithMaxAttempts(1)), WithRetry(WithMaxAttempts(2), WithRetryOn(503), WithBackoff(time.Millisecond, time.Millisecond, 2))}, 2},
+				{"grouped", http.StatusServiceUnavailable, []Option{WithRetry(WithMaxAttempts(1), WithRetryOn(503), WithBackoff(time.Millisecond, time.Millisecond, 2))}, 1},
+				{"split", http.StatusServiceUnavailable, []Option{WithRetry(WithMaxAttempts(1)), WithRetry(WithRetryOn(503), WithBackoff(time.Millisecond, time.Millisecond, 2))}, 1},
+				{"override", http.StatusServiceUnavailable, []Option{WithRetry(WithMaxAttempts(1)), WithRetry(WithMaxAttempts(2), WithRetryOn(503), WithBackoff(time.Millisecond, time.Millisecond, 2))}, 2},
+				{"custom status survives later budget", http.StatusConflict, []Option{
+					WithRetry(WithRetryOn(http.StatusConflict)),
+					WithRetry(WithMaxAttempts(2), WithBackoff(time.Millisecond, time.Millisecond, 2)),
+				}, 2},
+				{"custom status excludes default status", http.StatusServiceUnavailable, []Option{
+					WithRetry(WithRetryOn(http.StatusConflict)),
+					WithRetry(WithMaxAttempts(2), WithBackoff(time.Millisecond, time.Millisecond, 2)),
+				}, 1},
 			} {
 				t.Run(tc.name, func(t *testing.T) {
 					var attempts atomic.Int32
 					server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 						attempts.Add(1)
-						w.WriteHeader(http.StatusServiceUnavailable)
+						w.WriteHeader(tc.status)
 					}))
 					defer server.Close()
 					client := must(ctor.newClient(tc.opts...))
