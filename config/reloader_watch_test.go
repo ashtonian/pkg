@@ -1,6 +1,7 @@
 package config
 
 import (
+	"context"
 	"errors"
 	"io"
 	"io/fs"
@@ -825,4 +826,66 @@ func TestFileWatch_RecheckCatchesASilentRelink(t *testing.T) {
 	_, changed, err := w.recheck()
 	require.NoError(t, err)
 	assert.True(t, changed)
+}
+
+// The plural file options own their paths: a caller reusing or changing the
+// slice it passed, before or after the reloader is built, changes neither
+// which files load, nor their order, nor which the watch covers. Precedence
+// and an optional file's absence behave as they do for each file alone.
+func TestFileOptions_OwnTheirPaths(t *testing.T) {
+	for name, files := range map[string]func(...string) Option{"WithFiles": WithFiles, "WithRequiredFiles": WithRequiredFiles} {
+		t.Run(name, func(t *testing.T) {
+			dir := t.TempDir()
+			a, b, other := filepath.Join(dir, "a.yaml"), filepath.Join(dir, "b.yaml"), filepath.Join(dir, "other.yaml")
+			writeFile(t, a, "host: from-a\nport: 1\n")
+			writeFile(t, b, "host: from-b\n")
+			writeFile(t, other, "host: from-other\nport: 3\n")
+
+			paths := []string{a, b}
+			opt := files(paths...)
+			paths[0], paths[1] = b, other // reused before construction
+			var env []string
+			r, err := NewReloader[reloaderCfg](t.Context(), []Option{opt, WithSkipValidation(),
+				WithEnvPrefix("APP"), WithEnviron(func() []string { return env })})
+			require.NoError(t, err)
+			assert.Equal(t, reloaderCfg{Host: "from-b", Port: 1}, *r.Config(), "b wins on host, a sets port")
+
+			paths[0], paths[1] = other, a // and between reloads
+			env = []string{"APP_PORT=7"}
+			_, err = r.Reload(t.Context())
+			require.NoError(t, err)
+			assert.Equal(t, reloaderCfg{Host: "from-b", Port: 7}, *r.Config(), "the files stay put; the environment is read afresh")
+
+			watched := []string{a, b}
+			clk, reloads := watchedReloader(t, files(watched...))
+			watched[1] = other
+			writeFile(t, b, "host: edited-b\n")
+			ev := receive(t, clk, reloads, "the reload editing b triggers")
+			assert.Equal(t, reloaderCfg{Host: "edited-b", Port: 1}, *ev.New)
+		})
+	}
+	t.Run("WithWatchedFiles", func(t *testing.T) {
+		dir := t.TempDir()
+		read, other := filepath.Join(dir, "read.yaml"), filepath.Join(dir, "other.yaml")
+		writeFile(t, read, "host: before\n")
+		watched := []string{read}
+		opt := WithWatchedFiles(watched...)
+		watched[0] = other
+		clk := newFakeClock()
+		onReload, reloads := reloadEvents[reloaderCfg]()
+		r, err := NewReloaderFunc(t.Context(), func(ctx context.Context) (*reloaderCfg, error) {
+			return Load[reloaderCfg](ctx, WithRequiredFile(read), WithSkipValidation())
+		}, opt, WithFileWatch(50*time.Millisecond), withClock(clk), onReload)
+		require.NoError(t, err)
+		armReloader(t, r)
+		runReloader(t, r)
+		writeFile(t, read, "host: after\n")
+		awaitHost(t, clk, reloads, "after")
+	})
+
+	_, err := Load[reloaderCfg](t.Context(), WithRequiredFiles(filepath.Join(t.TempDir(), "missing.yaml")))
+	require.ErrorIs(t, err, ErrFileRead)
+	got, err := Load[reloaderCfg](t.Context(), WithFiles(filepath.Join(t.TempDir(), "missing.yaml")))
+	require.NoError(t, err)
+	assert.Equal(t, "localhost", got.Host)
 }

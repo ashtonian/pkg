@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"os"
 	"reflect"
+	"slices"
 	"time"
 
 	"github.com/ashtonian/pkg/gowalker"
@@ -156,10 +157,12 @@ func WithFileWatch(debounce time.Duration) ReloadOption {
 // WithWatchedFiles adds files the file watch covers, and that Run compares
 // with the last load once the watch is armed, beyond a NewReloader's config
 // files: a file a secret populator or base provider reads, or, for
-// [NewReloaderFunc], the files the caller's loader reads.
+// [NewReloaderFunc], the files the caller's loader reads. The paths are
+// copied when WithWatchedFiles is called.
 func WithWatchedFiles(paths ...string) ReloadOption {
+	owned := slices.Clone(paths)
 	return func(o *reloadOptions) {
-		o.watched = append(o.watched, paths...)
+		o.watched = append(o.watched, owned...)
 	}
 }
 
@@ -174,10 +177,12 @@ func WithPollInterval(interval time.Duration) ReloadOption {
 }
 
 // WithSignalReload reloads when the process receives one of signals,
-// typically syscall.SIGHUP.
+// typically syscall.SIGHUP. The signals are copied when WithSignalReload is
+// called.
 func WithSignalReload(signals ...os.Signal) ReloadOption {
+	owned := slices.Clone(signals)
 	return func(o *reloadOptions) {
-		o.signals = append(o.signals, signals...)
+		o.signals = append(o.signals, owned...)
 	}
 }
 

@@ -164,13 +164,11 @@ func WithFile(path string) Option {
 }
 
 // WithFiles adds several optional config files, merged in order. Each
-// follows the [WithFile] rules.
+// follows the [WithFile] rules. The paths are copied when WithFiles is
+// called, so reusing the caller's slice changes neither what a load reads
+// nor what a [Reloader] built from the option reads and watches.
 func WithFiles(paths ...string) Option {
-	return func(o *options) {
-		for _, p := range paths {
-			o.files = append(o.files, fileSource{path: p})
-		}
-	}
+	return withFiles(paths, false)
 }
 
 // WithRequiredFile adds a config file that must exist: a missing or
@@ -182,12 +180,21 @@ func WithRequiredFile(path string) Option {
 	}
 }
 
-// WithRequiredFiles adds several required config files, merged in order.
+// WithRequiredFiles adds several required config files, merged in order,
+// copying the paths as [WithFiles] does.
 func WithRequiredFiles(paths ...string) Option {
+	return withFiles(paths, true)
+}
+
+// withFiles owns its files from the call on: a Reloader replays the option
+// on every reload, and the watch reads its paths once.
+func withFiles(paths []string, required bool) Option {
+	files := make([]fileSource, 0, len(paths))
+	for _, p := range paths {
+		files = append(files, fileSource{path: p, required: required})
+	}
 	return func(o *options) {
-		for _, p := range paths {
-			o.files = append(o.files, fileSource{path: p, required: true})
-		}
+		o.files = append(o.files, files...)
 	}
 }
 

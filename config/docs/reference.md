@@ -94,6 +94,11 @@ cfg, err := config.Load[AppConfig](t.Context(),
 
 ## Options
 
+Load and reload options copy their arguments when they are called — paths,
+names, prefixes, signals and `WithDefaults` values — so a caller reusing a
+slice or map afterwards changes nothing a load or a `Reloader` reads or
+watches. Providers, `WithEnviron` and callbacks are read live on every load.
+
 Load options:
 
 | Option | Default | Description |
