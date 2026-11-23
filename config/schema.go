@@ -33,8 +33,10 @@ type schemaNode struct {
 	elem   *schemaNode      // nodeMap, nodeList
 	// acceptsUnknown reports a nodeBranch whose koanf:",remain" field — its
 	// own, or one of a struct it squashes — can collect the keys no other
-	// field takes; remainErr is why its remain declaration cannot.
+	// field takes: the field at index remain. remainErr is why its remain
+	// declaration cannot.
 	acceptsUnknown bool
+	remain         []int
 	remainErr      error
 	// opaqueUnsafe reports a value decoded whole that could hold a func,
 	// channel or unsafe pointer: a comparison looks inside it.
@@ -245,8 +247,8 @@ func (b *schemaBuilder) fields(n *schemaNode, shape *gowalker.Shape) {
 		return
 	}
 	n.view = view
-	remain, err := remainder(view.Root())
-	n.acceptsUnknown, n.remainErr = remain != nil, err
+	n.remain, n.remainErr = remainder(view.Root())
+	n.acceptsUnknown = n.remain != nil
 	for _, field := range view.Root().Fields() {
 		sf := field.GoField()
 		access, err := view.AccessField(field)
@@ -260,13 +262,13 @@ func (b *schemaBuilder) fields(n *schemaNode, shape *gowalker.Shape) {
 	}
 }
 
-// remainder is the field of shape, or of a struct it squashes, that a
-// koanf:",remain" tag makes collect the keys no other field takes: nil when
+// remainder is the index of the field of shape, or of a struct it squashes,
+// that a koanf:",remain" tag makes collect the keys no other field takes: nil when
 // none is tagged, an ErrSchema when the tags name one decoding cannot fill.
 // The decoder fills one map of strings to values it can set, so the field
 // must be exported — promoted through an unexported embedded struct is
 // fine — a map keyed by strings, the only one so tagged, and not squashed.
-func remainder(shape *gowalker.Shape) (*reflect.StructField, error) {
+func remainder(shape *gowalker.Shape) ([]int, error) {
 	var found *gowalker.Declaration
 	for _, d := range shape.Declarations() {
 		tag := koanfTag(d.GoField)
@@ -289,7 +291,7 @@ func remainder(shape *gowalker.Shape) (*reflect.StructField, error) {
 	if found == nil {
 		return nil, nil
 	}
-	return &found.GoField, nil
+	return found.Index, nil
 }
 
 // validateTags checks every field the view selects, through the structs it

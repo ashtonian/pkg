@@ -171,7 +171,7 @@ func (l *loader) rewrite(name string, data map[string]any) (map[string]any, erro
 // provenance the origins serve shadow detection alone, which defaults never
 // take part in: they merge first, so they hold nothing a source set.
 func (l *loader) merge(name string, tree map[string]any, label labeler) error {
-	if err := l.k.Load(confmap.Provider(tree, ""), nil); err != nil {
+	if err := l.k.Load(confmap.Provider(tree, ""), nil, koanf.WithMergeFunc(mergeTrees)); err != nil {
 		return fmt.Errorf("loading %s: %w: %w", name, ErrSource, err)
 	}
 	rank := len(l.sources)

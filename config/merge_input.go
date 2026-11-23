@@ -14,21 +14,92 @@ import (
 // MarshalText output, and every container the rewrite widens to hold it
 // keeps the merge semantics of the typed value it came from.
 
-// wholeMap is a map koanf merges whole rather than by key, as it does any
-// typed map: it sees through map[string]any only, so an entry this map
-// lacks does not survive from a layer beneath.
+// A source's tree says two things about each map: its entries, and whether
+// it is the source's whole statement of that map. A map[string]any — what a
+// file, the environment or a nested provider sets — merges into the map
+// beneath key by key. A typed map or section — map[string]Server, a Server
+// value, a struct a Defaulter set — arrives as a wholeMap: it replaces what
+// the layers beneath set there, as its typed value would. Once merged, every
+// map is a map[string]any again, so a higher source sets one key of it as it
+// sets one key of any other: mergeTrees is that rule, and the origins, the
+// shadowed inputs and key edits follow it.
+
+// wholeMap is a map that replaces the map beneath it rather than merging
+// into it by key: a typed map or section of a source, keyed as the merge
+// keys it.
 type wholeMap map[string]any
 
 var mapStringAnyType = reflect.TypeFor[map[string]any]()
 
-// keepWhole is out, the rewrite of map v. A typed map is one value to koanf,
-// replacing what a layer beneath holds; widened to map[string]any it would
-// merge by key instead, so it is a wholeMap.
+// keepWhole is out, the rewrite of map v: a wholeMap unless v merges by key.
 func keepWhole(v, out reflect.Value) any {
-	if m, ok := out.Interface().(map[string]any); ok && v.Type() != mapStringAnyType {
-		return wholeMap(m)
+	m, ok := out.Interface().(map[string]any)
+	switch {
+	case !ok:
+		return out.Interface()
+	case v.Type() == mapStringAnyType:
+		return m
 	}
-	return out.Interface()
+	return wholeMap(m)
+}
+
+// mergeTrees merges src, a source's rewritten tree, into dest, the merge so
+// far: a map[string]any into a map key by key, anything else in place of
+// what dest holds. It is koanf's merge function for every load.
+func mergeTrees(src, dest map[string]any) error {
+	for k, v := range src {
+		dest[k] = mergeValue(dest[k], v)
+	}
+	return nil
+}
+
+// mergeValue is v merged over dest.
+func mergeValue(dest, v any) any {
+	if in, ok := v.(map[string]any); ok {
+		if into, ok := dest.(map[string]any); ok {
+			for k, e := range in {
+				into[k] = mergeValue(into[k], e)
+			}
+			return into
+		}
+	}
+	return settled(v)
+}
+
+// settled is v as the merge holds it: every wholeMap within it a
+// map[string]any, so a later source merges into it by key.
+func settled(v any) any {
+	switch x := v.(type) {
+	case wholeMap:
+		return settledMap(x)
+	case map[string]any:
+		return settledMap(x)
+	case []any:
+		for i, e := range x {
+			x[i] = settled(e)
+		}
+		return x
+	}
+	return v
+}
+
+// mergedMap is v when the merge holds it as a map whose keys are inputs of
+// their own: any map of a source's tree, whole or not.
+func mergedMap(v any) (map[string]any, bool) {
+	switch m := v.(type) {
+	case wholeMap:
+		return m, true
+	case map[string]any:
+		return m, true
+	}
+	return nil, false
+}
+
+func settledMap(m map[string]any) map[string]any {
+	for k, e := range m {
+		m[k] = settled(e)
+	}
+	return m
 }
 
 // mergeText is the text v enters the merge as when v, or what pointer v

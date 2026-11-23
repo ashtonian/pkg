@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"reflect"
-	"slices"
 	"strings"
 	"sync"
 
@@ -352,14 +351,11 @@ func absent(v reflect.Value) bool {
 
 // input is v, a value of node n at key path at, as merging carries it
 // intact (see merge_input.go): a struct the merge's copy would lose the state
-// of, such as netip.Addr, is its text wherever v holds it. A list holding one
-// becomes a []any; a map, a map[K]any — a wholeMap when keyed by strings, so
-// it still replaces what the layers beneath hold, as the typed map did; a
-// section, its fields by key. Anything else is v itself.
+// of, such as netip.Addr, is its text wherever v holds it. A list becomes a
+// []any; a map, a map[K]any — a wholeMap when keyed by strings, so it
+// replaces what the layers beneath hold, as the typed map did; a section,
+// its fields by key. Anything else is v itself.
 func (d *defaultsDiff) input(n *schemaNode, at keyPath, v reflect.Value) any {
-	if !carriesText(n) {
-		return v.Interface()
-	}
 	v = derefValue(v)
 	if absent(v) {
 		return nil
@@ -407,36 +403,6 @@ func (d *defaultsDiff) input(n *schemaNode, at keyPath, v reflect.Value) any {
 
 func (d *defaultsDiff) failText(at keyPath) {
 	d.noText = append(d.noText, diagnosticPath(d.schema, at).orRoot())
-}
-
-// carriesText reports whether a value of node n can hold a struct that
-// marshals to text where it decodes whole, or in a field of interface type.
-func carriesText(n *schemaNode) bool {
-	if v, ok := carriesTextCache.Load(n.typ); ok {
-		return v.(bool)
-	}
-	carries := carriesTextOf(n, map[*schemaNode]bool{})
-	carriesTextCache.Store(n.typ, carries)
-	return carries
-}
-
-var carriesTextCache sync.Map // reflect.Type → bool
-
-func carriesTextOf(n *schemaNode, walking map[*schemaNode]bool) bool {
-	if walking[n] {
-		return false
-	}
-	walking[n] = true
-	defer delete(walking, n)
-	switch n.kind {
-	case nodeLeaf:
-		return n.typ.Kind() == reflect.Struct && marshalsText(n.typ) || n.elem != nil && carriesTextOf(n.elem, walking)
-	case nodeBranch:
-		return slices.ContainsFunc(n.fields, func(f *schemaField) bool { return carriesTextOf(f.node, walking) })
-	case nodeMap, nodeList:
-		return carriesTextOf(n.elem, walking)
-	}
-	return true // an interface can hold anything
 }
 
 type declaredDefaults struct {

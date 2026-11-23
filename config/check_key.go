@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
-	"slices"
 
 	"github.com/knadh/koanf/v2"
 
@@ -41,6 +40,11 @@ func (e *KeyError) Is(target error) bool {
 // grammar, accepting field aliases and case folding. A list index must exist
 // in the defaults or append immediately after them; pass a whole list to
 // create several new elements. Wildcards are not concrete keys.
+//
+// value sets key as a source above the defaults would: a map merges into
+// what the defaults hold there key by key, typed or not, and any other value,
+// a struct or a typed map included, replaces it. An index edits that element
+// of the defaults' list.
 //
 // Only WithDefaults, WithDecodeHook, WithValidator and WithSkipValidation
 // affect this check. It reads no provider, file or environment and runs no
@@ -94,67 +98,40 @@ func newKeyChecker(t reflect.Type, o *options) (*keyChecker, error) {
 }
 
 func (c *keyChecker) check(ctx context.Context, key string, value any) (any, error) {
-	if err := ctx.Err(); err != nil {
+	if err := ended(ctx); err != nil {
 		return nil, err
 	}
-	p, err := parseKeyPath(key)
+	e, err := resolveEdit(c.schema, key, value)
 	if err != nil {
-		return nil, &KeyError{Key: RedactText(key), Unknown: true, Err: err}
+		return nil, err
 	}
-	p, err = c.canonical(p)
+	tree, err := c.edited([]edit{e})
 	if err != nil {
-		return nil, &KeyError{Key: diagnosticPath(c.schema, p).String(), Unknown: true, Err: err}
-	}
-	safe := diagnosticPath(c.schema, p).String()
-	tree := deepcopy.Value(reflect.ValueOf(c.defaults)).Interface().(map[string]any)
-	value = copyInput(value)
-	if _, err := setInput(tree, p, value); err != nil {
-		return nil, &KeyError{Key: safe, Err: err}
+		return nil, err
 	}
 	result, err := c.decode(ctx, tree)
 	if err != nil {
-		if ctx.Err() != nil {
-			return nil, ctx.Err()
+		if ctxErr := ended(ctx); ctxErr != nil {
+			return nil, ctxErr
 		}
-		return nil, &KeyError{Key: safe, Err: err}
+		return nil, &KeyError{Key: e.safe, Err: err}
 	}
 	return result, nil
 }
 
-func copyInput(v any) any {
-	if v == nil {
-		return nil
-	}
-	return deepcopy.Value(reflect.ValueOf(v)).Interface()
-}
-
-func (c *keyChecker) canonical(p keyPath) (keyPath, error) {
-	p = slices.Clone(p)
-	n := c.schema
-	for i := range p {
-		if p[i].kind == segAny {
-			return p, fmt.Errorf("%w: key must be concrete", ErrKey)
-		}
-		if n.kind == nodeBranch && p[i].kind == segField {
-			if f, _ := n.lookup(p[i].name); f != nil {
-				p[i].name = f.key
-			}
-		}
-		_, next, err := n.walkTo(cursor{}, p[i:i+1])
-		if err != nil {
-			return p, err
-		}
-		n = next
-	}
-	return p, nil
-}
-
-func (c *keyChecker) decode(ctx context.Context, tree map[string]any) (any, error) {
-	l := &loader{root: c.root, schema: c.schema}
-	tree, err := l.rewrite("key check", tree)
+// edited is a copy of the defaults with edits set over them.
+func (c *keyChecker) edited(edits []edit) (map[string]any, error) {
+	base := deepcopy.Value(reflect.ValueOf(c.defaults)).Interface().(map[string]any)
+	tree, err := editTree(c.schema, func() map[string]any { return base }, edits)
 	if err != nil {
 		return nil, err
 	}
+	return base, mergeTrees(tree, base)
+}
+
+// decode decodes tree, a tree as the merge holds it, with the options' hooks
+// and validates the result.
+func (c *keyChecker) decode(ctx context.Context, tree map[string]any) (any, error) {
 	if err := newElementDefaults(c.options, false).fill(c.root, tree); err != nil {
 		return nil, err
 	}
@@ -175,44 +152,4 @@ func (c *keyChecker) decode(ctx context.Context, tree map[string]any) (any, erro
 		return nil, validation
 	}
 	return out.Interface(), nil
-}
-
-// setInput never creates sparse lists from an untrusted index.
-func setInput(in any, path keyPath, value any) (any, error) {
-	if len(path) == 0 {
-		return value, nil
-	}
-	s := path[0]
-	if s.kind == segIndex {
-		var list []any
-		v := reflect.ValueOf(in)
-		if v.IsValid() && (v.Kind() == reflect.Array || v.Kind() == reflect.Slice) {
-			list = make([]any, v.Len())
-			for i := range list {
-				list[i] = v.Index(i).Interface()
-			}
-		}
-		if s.index > len(list) {
-			return nil, fmt.Errorf("%w: list index is beyond the next element", ErrValidation)
-		}
-		if s.index == len(list) {
-			list = append(list, nil)
-		}
-		next, err := setInput(list[s.index], path[1:], value)
-		if err != nil {
-			return nil, err
-		}
-		list[s.index] = next
-		return list, nil
-	}
-	m, ok := in.(map[string]any)
-	if !ok {
-		m = map[string]any{}
-	}
-	next, err := setInput(m[s.name], path[1:], value)
-	if err != nil {
-		return nil, err
-	}
-	m[s.name] = next
-	return m, nil
 }

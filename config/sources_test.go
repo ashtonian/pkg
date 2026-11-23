@@ -596,3 +596,70 @@ func TestSources_TypedMapReplacesWhateverItHolds(t *testing.T) {
 		})
 	}
 }
+
+type editDefaulted struct {
+	editConfig `koanf:",squash"`
+}
+
+func (c *editDefaulted) SetDefaults() {
+	c.Addresses = map[string]editServer{"first": {"a", 1}, "second": {"b", 2}}
+	c.Primary = editServer{"p", 5}
+}
+
+// A typed map or section a source sets replaces what the layers beneath it
+// set; a higher source then sets one key of it as it sets one key of a
+// nested map, and the entries and fields it does not name keep their values.
+func TestSources_HigherSourceSetsOneKeyOfATypedValue(t *testing.T) {
+	file := filepath.Join(t.TempDir(), "config.yaml")
+	writeFile(t, file, "addresses: {first: {port: 9}}\nprimary: {port: 6}\n")
+	typed := map[string]any{"addresses": map[string]editServer{"first": {"a", 1}, "second": {"b", 2}}, "primary": editServer{"p", 5}}
+	provider, err := NewMapProvider(func(context.Context) (map[string]any, error) { return typed, nil }, "")
+	require.NoError(t, err)
+	want := editConfig{Addresses: map[string]editServer{"first": {"a", 9}, "second": {"b", 2}}, Primary: editServer{"p", 6}}
+	for name, load := range map[string]func() (*editConfig, error){
+		"WithDefaults": func() (*editConfig, error) {
+			return Load[editConfig](t.Context(), WithDefaults(typed), WithFile(file))
+		},
+		"SetDefaults": func() (*editConfig, error) {
+			got, err := Load[editDefaulted](t.Context(), WithFile(file))
+			if err != nil {
+				return nil, err
+			}
+			return &got.editConfig, nil
+		},
+		"base provider": func() (*editConfig, error) {
+			return Load[editConfig](t.Context(), WithBaseProvider(provider, nil), WithFile(file))
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			got, err := load()
+			require.NoError(t, err)
+			assert.Equal(t, want, *got)
+		})
+	}
+	snap, err := LoadSnapshot[editConfig](t.Context(), WithDefaults(typed), WithFile(file))
+	require.NoError(t, err)
+	assert.Equal(t, SourceFile, snap.Provenance[`addresses["first"].port`].Input.Kind)
+	assert.Equal(t, SourceDefaults, snap.Provenance[`addresses["first"].host`].Input.Kind)
+	assert.Equal(t, SourceDefaults, snap.Provenance[`addresses["second"].port`].Input.Kind)
+	assert.Empty(t, snap.Shadowed, "the file replaced no input")
+}
+
+type sectionBase struct {
+	Host string `koanf:"host"`
+}
+
+type privatelySquashed struct {
+	sectionBase `koanf:",squash"`
+	Port        int `koanf:"port"`
+}
+
+// A typed section carries the fields a private squashed struct promotes.
+func TestSources_TypedSectionKeepsPrivatelySquashedFields(t *testing.T) {
+	type cfg struct {
+		Section privatelySquashed `koanf:"section"`
+	}
+	got, err := Load[cfg](t.Context(), WithDefaults(map[string]any{"section": privatelySquashed{sectionBase{"h"}, 1}}))
+	require.NoError(t, err)
+	assert.Equal(t, privatelySquashed{sectionBase{"h"}, 1}, got.Section)
+}

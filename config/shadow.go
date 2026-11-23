@@ -151,9 +151,9 @@ func newInputs(schema *schemaNode, tree *originNode, key []byte) *inputs {
 	return in
 }
 
-// add records the inputs of tree, the source called name merged at rank. A
-// map[string]any merges key by key, so its entries are the inputs; any
-// other value replaces what was there whole, so it is one input.
+// add records the inputs of tree, the source called name merged at rank.
+// Every map of it holds its entries until a higher source replaces one, so
+// its entries are the inputs; any other value is one input.
 func (in *inputs) add(name string, rank int, tree map[string]any, label labeler) {
 	if label.defaults() {
 		return
@@ -171,7 +171,7 @@ func (in *inputs) add(name string, rank int, tree map[string]any, label labeler)
 func (in *inputs) walk(m map[string]any, values map[string][sha256.Size]byte) {
 	for key, val := range m {
 		in.path = append(in.path, key)
-		if child, ok := val.(map[string]any); ok {
+		if child, ok := mergedMap(val); ok {
 			in.walk(child, values)
 		} else {
 			var sum [sha256.Size]byte
@@ -189,7 +189,7 @@ func (in *inputs) walk(m map[string]any, values map[string][sha256.Size]byte) {
 func leaves(tree map[string]any) int {
 	n := 0
 	for _, val := range tree {
-		if child, ok := val.(map[string]any); ok {
+		if child, ok := mergedMap(val); ok {
 			n += leaves(child)
 		} else {
 			n++
@@ -291,7 +291,8 @@ func (in *inputs) appendShadowed(out []Shadow, path string, label labeler, rank 
 
 // holder is the node whose source the merge kept for path, a raw path's
 // encodePath encoding: the node at path, or the ancestor a source replaced
-// whole with a value that is no map. It is nil when nothing holds path.
+// whole — with a value that is no map, or with a typed map or section that
+// lacks path. It is nil when nothing holds path.
 func (n *originNode) holder(path string) *originNode {
 	node := n
 	for rest := path; rest != ""; {
@@ -302,6 +303,9 @@ func (n *originNode) holder(path string) *originNode {
 		}
 		child := node.children[key]
 		if child == nil {
+			if node.whole {
+				return node
+			}
 			return nil
 		}
 		node = child

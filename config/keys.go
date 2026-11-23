@@ -6,6 +6,7 @@ import (
 	"maps"
 	"reflect"
 	"slices"
+	"strconv"
 	"strings"
 
 	"github.com/go-viper/mapstructure/v2"
@@ -108,27 +109,35 @@ func (w *keyWalk) failText(at keyPath) {
 	w.noText = append(w.noText, diagnosticPath(w.schema, at).orRoot())
 }
 
-// section is v, a typed value of section t, as the merge carries it: v
-// itself, unless t can hold a struct whose state the merge's copy would lose;
-// then its fields by key, rewritten as a source's are, in a wholeMap, so it
-// still replaces the section beneath as the typed value did.
+// section is v, a typed value of section t, as the merge carries it: its
+// fields by key, and the keys its remain field holds, in a wholeMap, so it
+// replaces the section beneath as the typed value does, and a higher source
+// sets one key of it as it sets one key of a nested map.
 func (w *keyWalk) section(t reflect.Type, v reflect.Value, path keyPath) any {
 	n, err := schemaOf(t)
-	if err != nil || !carriesText(n) {
+	if err != nil {
 		return v.Interface()
 	}
 	v = derefValue(v)
-	fields := make(map[string]any, len(n.fields))
-	for _, f := range n.fields {
-		if fv, err := f.value(v); err == nil {
-			fields[f.key] = fv.Interface()
+	out := make(map[string]any, len(n.fields))
+	if n.remain != nil {
+		if rest, err := v.FieldByIndexErr(n.remain); err == nil {
+			for it := rest.MapRange(); it.Next(); {
+				k := it.Key().String()
+				at := path.field(k)
+				if !validFieldKey(k) {
+					at = path.key(k)
+				}
+				out[k] = w.elem(anyType, rest.Type().Elem(), it.Value(), at).Interface()
+			}
 		}
 	}
-	out := w.structMap(t, reflect.ValueOf(fields), path)
-	if m, ok := out.(map[string]any); ok {
-		return wholeMap(m)
+	for _, f := range n.fields {
+		if fv, err := f.value(v); err == nil {
+			out[f.key] = w.elem(anyType, f.sf.Type, fv, path.field(f.key)).Interface()
+		}
 	}
-	return out
+	return wholeMap(out)
 }
 
 func isList(v reflect.Value) bool {
@@ -142,7 +151,7 @@ func (w *keyWalk) structMap(t reflect.Type, v reflect.Value, path keyPath) any {
 	if err != nil {
 		return v.Interface()
 	}
-	out := reflect.MakeMapWithSize(stringKeyed(v.Type()), v.Len())
+	out := reflect.MakeMapWithSize(mapStringAnyType, v.Len())
 	written := make(map[string]reflect.Value, v.Len())
 	for _, k := range v.MapKeys() {
 		written[fmt.Sprint(k.Interface())] = v.MapIndex(k)
@@ -206,13 +215,49 @@ func (w *keyWalk) structMap(t reflect.Type, v reflect.Value, path keyPath) any {
 }
 
 // mapValues follows the values of map v into element type elem; its keys are
-// the caller's and stay as written.
+// the caller's and stay as written. A typed map keyed by strings or integers
+// becomes a wholeMap keyed by their text, as a map[string]any from a file
+// is, so a higher source can set one entry, or one key within an entry.
 func (w *keyWalk) mapValues(elem reflect.Type, v reflect.Value, path keyPath) any {
+	if v.IsNil() {
+		return v.Interface()
+	}
+	if t := v.Type(); t != mapStringAnyType && t != wholeMapType && keysAsText(t.Key()) {
+		out := make(map[string]any, v.Len())
+		for it := v.MapRange(); it.Next(); {
+			k := keyText(it.Key())
+			out[k] = w.elem(t.Elem(), elem, it.Value(), path.key(k)).Interface()
+		}
+		return wholeMap(out)
+	}
 	out := reflect.MakeMapWithSize(v.Type(), v.Len())
 	for _, k := range v.MapKeys() {
 		out = setMapValue(out, k, w.elem(v.Type().Elem(), elem, v.MapIndex(k), path.key(fmt.Sprint(k.Interface()))))
 	}
 	return keepWhole(v, out)
+}
+
+var wholeMapType = reflect.TypeFor[wholeMap]()
+
+// keysAsText reports a map key type whose text decodes back to the key.
+func keysAsText(t reflect.Type) bool {
+	switch t.Kind() {
+	case reflect.String,
+		reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64,
+		reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
+		return true
+	}
+	return false
+}
+
+func keyText(k reflect.Value) string {
+	switch k.Kind() {
+	case reflect.String:
+		return k.String()
+	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
+		return strconv.FormatUint(k.Uint(), 10)
+	}
+	return strconv.FormatInt(k.Int(), 10)
 }
 
 // elements follows each element of list v into type elem. A nil slice stays
@@ -266,15 +311,6 @@ func setMapValue(out, key, val reflect.Value) reflect.Value {
 	}
 	out.SetMapIndex(key, val)
 	return out
-}
-
-// stringKeyed is map type m keyed by strings: m itself when its keys are,
-// else map[string]any.
-func stringKeyed(m reflect.Type) reflect.Type {
-	if m.Key().Kind() == reflect.String {
-		return m
-	}
-	return reflect.TypeFor[map[string]any]()
 }
 
 // stringValue is the text v holds, when it holds a string.

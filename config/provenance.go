@@ -111,10 +111,10 @@ func LoadSnapshot[T any](ctx context.Context, opts ...Option) (Snapshot[T], erro
 	return Snapshot[T]{Config: l.cfg, Provenance: l.origins, UnknownKeys: l.unknown, Shadowed: l.shadowed}, nil
 }
 
-// originNode is what set one value of the merged tree. It mirrors koanf's
-// merge: a map merges key by key, an empty one changing nothing, and any
-// other value — a list included — replaces what was there, so everything
-// beneath it is the new source's. With provenance, a map's entries and a
+// originNode is what set one value of the merged tree. It mirrors the merge
+// (mergeTrees): a map merges key by key, an empty one changing nothing, and
+// any other value — a list, a typed map or section included — replaces what
+// was there, so everything beneath it is the new source's. With provenance, a map's entries and a
 // list's elements are nodes of their own, so what the element defaults add
 // after the merge is told from what a source set; without it, the tree
 // serves shadow detection alone and a value merged whole is one node.
@@ -126,9 +126,10 @@ type originNode struct {
 	rank     int
 	children map[string]*originNode // a map's entries; nil for anything else
 	elems    []*originNode          // a list's elements; nil for anything else
-	// merges reports a map koanf merges into, key by key: a
-	// map[string]any. Any other map is replaced whole.
-	merges bool
+	// merges reports a map a later source merges into key by key: any map
+	// of a source's tree. whole reports one its source set whole, a typed
+	// map or section, replacing every key beneath it that it lacks.
+	merges, whole bool
 }
 
 func newOriginRoot() *originNode {
@@ -212,6 +213,10 @@ func (n *originNode) merge(incoming map[string]any, m *originMerge) {
 func (m *originMerge) node(val any) *originNode {
 	n := &originNode{src: m.source(), rank: m.rank}
 	switch v := val.(type) {
+	case wholeMap:
+		n := m.node(map[string]any(v))
+		n.whole = true
+		return n
 	case map[string]any:
 		n.merges = true
 		n.children = make(map[string]*originNode, len(v))

@@ -4,7 +4,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
+	"net/netip"
+	"path/filepath"
 	"reflect"
+	"slices"
 	"testing"
 
 	"github.com/go-viper/mapstructure/v2"
@@ -150,4 +154,170 @@ func TestDecodeKeyReturnsDetachedValidatedConfiguration(t *testing.T) {
 	got, err = DecodeKey[keyConfig](t.Context(), "port", 0)
 	require.ErrorIs(t, err, ErrValidation)
 	assert.Nil(t, got)
+}
+
+type editServer struct {
+	Host string `koanf:"host"`
+	Port int    `koanf:"port"`
+}
+
+type editConfig struct {
+	Addresses map[string]editServer `koanf:"addresses"`
+	Primary   editServer            `koanf:"primary" alias:"main"`
+	Pool      []editServer          `koanf:"pool"`
+	Route     netip.Prefix          `koanf:"route"`
+	Extra     any                   `koanf:"extra"`
+}
+
+// Validate refuses two addresses on one port, so a check judges the
+// entries an edit leaves in place.
+func (c *editConfig) Validate() error {
+	seen := map[int]string{}
+	for _, name := range slices.Sorted(maps.Keys(c.Addresses)) {
+		if other, ok := seen[c.Addresses[name].Port]; ok {
+			return fmt.Errorf("addresses %s and %s share a port", other, name)
+		}
+		seen[c.Addresses[name].Port] = name
+	}
+	return nil
+}
+
+// editDefaults is one baseline in two shapes: typed Go values, or the
+// nested maps a file decodes to.
+func editDefaults(typed bool) map[string]any {
+	if typed {
+		return map[string]any{
+			"addresses": map[string]editServer{"first": {"a", 1}, "second": {"b", 2}},
+			"primary":   editServer{"p", 5},
+			"pool":      []editServer{{"x", 1}},
+			"route":     netip.MustParsePrefix("10.0.0.0/8"),
+			"extra":     map[string]any{"x": 0, "y": 2},
+		}
+	}
+	return map[string]any{
+		"addresses": map[string]any{"first": map[string]any{"host": "a", "port": 1}, "second": map[string]any{"host": "b", "port": 2}},
+		"primary":   map[string]any{"host": "p", "port": 5},
+		"pool":      []any{map[string]any{"host": "x", "port": 1}},
+		"route":     "10.0.0.0/8",
+		"extra":     map[string]any{"x": 0, "y": 2},
+	}
+}
+
+// A key set over defaults leaves everything else as the defaults hold it,
+// whether they are typed values or nested maps: the candidate equals a load
+// of the whole intended configuration. A map value merges into the value
+// beneath key by key and anything else replaces it, as from a source.
+func TestDecodeKey_EditsTypedDefaultsAsTheirMapShape(t *testing.T) {
+	const (
+		addresses = "{first: {host: a, port: 1}, second: {host: b, port: 2}}"
+		primary   = "{host: p, port: 5}"
+		pool      = "[{host: x, port: 1}]"
+		route     = "10.0.0.0/8"
+		extra     = "{x: 0, y: 2}"
+	)
+	doc := func(addresses, primary, pool, route, extra string) string {
+		return "addresses: " + addresses + "\nprimary: " + primary + "\npool: " + pool + "\nroute: " + route + "\nextra: " + extra + "\n"
+	}
+	for _, tc := range []struct {
+		name  string
+		key   string
+		value any
+		want  string
+	}{
+		{"map entry field", `addresses["first"].port`, 9, doc("{first: {host: a, port: 9}, second: {host: b, port: 2}}", primary, pool, route, extra)},
+		{"map entry as a map", `addresses["first"]`, map[string]any{"port": 9}, doc("{first: {host: a, port: 9}, second: {host: b, port: 2}}", primary, pool, route, extra)},
+		{"map entry as a struct", `addresses["first"]`, editServer{Port: 9}, doc("{first: {host: '', port: 9}, second: {host: b, port: 2}}", primary, pool, route, extra)},
+		{"new map entry", `addresses["third"]`, map[string]any{"host": "c", "port": 3}, doc("{first: {host: a, port: 1}, second: {host: b, port: 2}, third: {host: c, port: 3}}", primary, pool, route, extra)},
+		{"null map entry", `addresses["second"]`, nil, doc("{first: {host: a, port: 1}, second: null}", primary, pool, route, extra)},
+		{"section field", "primary.port", 6, doc(addresses, "{host: p, port: 6}", pool, route, extra)},
+		{"section field by alias", "MAIN.Port", 6, doc(addresses, "{host: p, port: 6}", pool, route, extra)},
+		{"section as a map", "primary", map[string]any{"port": 6}, doc(addresses, "{host: p, port: 6}", pool, route, extra)},
+		{"null section field", "primary.host", nil, doc(addresses, "{host: null, port: 5}", pool, route, extra)},
+		{"list element field", "pool[0].port", 7, doc(addresses, primary, "[{host: x, port: 7}]", route, extra)},
+		{"appended element", "pool[1]", map[string]any{"host": "y"}, doc(addresses, primary, "[{host: x, port: 1}, {host: y}]", route, extra)},
+		{"appended element field", "pool[1].host", "y", doc(addresses, primary, "[{host: x, port: 1}, {host: y}]", route, extra)},
+		{"value decoded whole", "route", "192.0.2.0/24", doc(addresses, primary, pool, "192.0.2.0/24", extra)},
+		{"interface map key", "extra.x", 1, doc(addresses, primary, pool, route, "{x: 1, y: 2}")},
+		{"interface value", "extra", []any{1}, doc(addresses, primary, pool, route, "[1]")},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			file := filepath.Join(t.TempDir(), "intended.yaml")
+			writeFile(t, file, tc.want)
+			want, err := Load[editConfig](t.Context(), WithFile(file))
+			require.NoError(t, err)
+			for _, typed := range []bool{true, false} {
+				defaults := editDefaults(typed)
+				got, err := DecodeKey[editConfig](t.Context(), tc.key, tc.value, WithDefaults(defaults))
+				require.NoError(t, err, "typed defaults: %v", typed)
+				assert.Equal(t, want, got, "typed defaults: %v", typed)
+				assert.Equal(t, editDefaults(typed), defaults, "the caller's defaults keep their content")
+			}
+		})
+	}
+}
+
+func TestDecodeKey_ListIndexBoundsAndDetachedDefaults(t *testing.T) {
+	for _, typed := range []bool{true, false} {
+		defaults := editDefaults(typed)
+		_, err := DecodeKey[editConfig](t.Context(), "pool[2].host", "z", WithDefaults(defaults))
+		var ke *KeyError
+		require.ErrorAs(t, err, &ke)
+		assert.False(t, ke.Unknown)
+		assert.Equal(t, "pool[2].host", ke.Key)
+		require.ErrorIs(t, err, ErrValidation, "an index past the next element")
+		_, err = DecodeKey[editConfig](t.Context(), "pool[-1].host", "z", WithDefaults(defaults))
+		require.ErrorIs(t, err, ErrKey)
+		_, err = DecodeKey[editConfig](t.Context(), "route.bits", 4, WithDefaults(defaults))
+		require.ErrorIs(t, err, ErrValidation, "a value decoded whole takes no keys")
+
+		got, err := DecodeKey[editConfig](t.Context(), "pool[0].port", 7, WithDefaults(defaults))
+		require.NoError(t, err)
+		got.Pool[0].Host = "changed"
+		got.Addresses["first"] = editServer{}
+		got.Extra.(map[string]any)["x"] = 99
+		assert.Equal(t, editDefaults(typed), defaults, "the candidate shares nothing with the caller's defaults")
+	}
+	got, err := DecodeKey[editConfig](t.Context(), "pool[0].port", 3)
+	require.NoError(t, err)
+	assert.Equal(t, []editServer{{Port: 3}}, got.Pool, "index 0 appends to a list nothing set")
+}
+
+// CheckKey judges the whole candidate, so a rule relating an edited entry to
+// one it leaves in place sees that entry, typed or not — and so does a
+// provider's entry filter, which uses the same check.
+func TestCheckKey_ValidatorSeesTheSiblingsAnEditKeeps(t *testing.T) {
+	for _, typed := range []bool{true, false} {
+		defaults := WithDefaults(editDefaults(typed))
+		require.ErrorIs(t, CheckKey[editConfig](t.Context(), `addresses["first"].port`, 2, defaults), ErrValidation,
+			"typed defaults: %v: the edit collides with the second address", typed)
+		require.NoError(t, CheckKey[editConfig](t.Context(), `addresses["first"].port`, 3, defaults))
+
+		var rejected []KeyError
+		stored := map[string]any{"addresses": map[string]any{"first": map[string]any{"port": 2}}, "primary": map[string]any{"port": 6}}
+		got, err := Load[editConfig](t.Context(), defaults, WithOverrideProvider(confmap.Provider(stored, ""), nil,
+			WithInvalidEntries(func(_ context.Context, entries []KeyError) error { rejected = entries; return nil })))
+		require.NoError(t, err)
+		require.Len(t, rejected, 1)
+		assert.Equal(t, "addresses", rejected[0].Key)
+		assert.Equal(t, map[string]editServer{"first": {"a", 1}, "second": {"b", 2}}, got.Addresses)
+		assert.Equal(t, editServer{"p", 6}, got.Primary)
+	}
+}
+
+// A map keyed by integers is keyed by their text as it merges, so an edit
+// or a higher source sets one entry of it and the others keep theirs.
+func TestDecodeKey_IntegerKeyedMapMergesByEntry(t *testing.T) {
+	type cfg struct {
+		IDs map[int]string `koanf:"ids"`
+	}
+	defaults := WithDefaults(map[string]any{"ids": map[int]string{1: "a", 2: "b"}})
+	got, err := DecodeKey[cfg](t.Context(), `ids["1"]`, "z", defaults)
+	require.NoError(t, err)
+	assert.Equal(t, map[int]string{1: "z", 2: "b"}, got.IDs)
+
+	file := filepath.Join(t.TempDir(), "config.yaml")
+	writeFile(t, file, "ids: {2: c}\n")
+	loaded, err := Load[cfg](t.Context(), defaults, WithFile(file))
+	require.NoError(t, err)
+	assert.Equal(t, map[int]string{1: "a", 2: "c"}, loaded.IDs)
 }

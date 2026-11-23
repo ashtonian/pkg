@@ -65,7 +65,7 @@ Bridging a provider's watch to a reloader is one call — `p.Watch(func(_ any, e
 
 `NewMapProvider(read, ".")` turns a function into a provider read on every load; with `"."` its keys are dotted paths, with `""` the map is already nested. What `read` returns is copied.
 
-A provider that returns keys, `WithDefaults` and `SetDefaults` may hold typed Go values. Each source is deep-copied as it merges, and the copy keeps a struct only by its exported fields unless it knows the type, as it knows `time.Time`. A value whose state that copy would lose — a `netip.Addr` or `netip.Prefix`, alone or in a section, list, array or map — is read through its `MarshalText` instead; a field of interface type holding one receives that text. A `MarshalText` error fails the load with `ErrValidation`, naming the key and not the value. From a provider or `WithDefaults`, a typed map or section still replaces what the layers beneath it set, and a nil list stays nil.
+A provider that returns keys, `WithDefaults` and `SetDefaults` may hold typed Go values. Each source is deep-copied as it merges, and the copy keeps a struct only by its exported fields unless it knows the type, as it knows `time.Time`. A value whose state that copy would lose — a `netip.Addr` or `netip.Prefix`, alone or in a section, list, array or map — is read through its `MarshalText` instead; a field of interface type holding one receives that text. A `MarshalText` error fails the load with `ErrValidation`, naming the key and not the value. From a provider or `WithDefaults`, a typed map or section still replaces what the layers beneath it set, and a nil list stays nil. A higher source then sets one key of it as it sets one key of a nested map: a file's `addresses: {first: {port: 9}}` over a default `map[string]Server` changes that one port, and every other entry and field keeps its value.
 
 A provider whose `Read` returns a copy made with koanf's `maps.Copy` has lost such a value before the load reads it; `confmap.Provider` makes that copy when it is built. Return the map as built, or use `NewMapProvider`, which copies without the loss.
 
@@ -127,6 +127,17 @@ so cross-field rules judge that context. Keys use `ParseKey` syntax, with
 aliases and case folding accepted for fields. List indexes must already
 exist in defaults or append immediately after them; pass the whole list to
 create several elements. Wildcards and sparse expansion are refused.
+
+The value sets its key as a source above the defaults would. A map merges
+into what the defaults hold there key by key: `addresses["first"].port` set
+to `9`, or `addresses["first"]` set to `{"port": 9}`, keeps that entry's
+host and every other entry, whether the defaults hold them as a typed
+`map[string]Server` or as nested maps. A struct, a typed map or any other
+value replaces what is beneath it, so `addresses["first"]` set to
+`Server{Port: 9}` leaves that entry's host empty. An index edits that
+element of the defaults' list, and a value decoded whole, such as a
+`netip.Prefix`, takes no keys beneath it. The caller's defaults are never
+changed, and the result shares nothing with them.
 
 For a store whose older rows may be invalid, pass a per-source option:
 
