@@ -94,6 +94,20 @@ func (p keyPath) index(i int) keyPath {
 	return append(slices.Clip(p), segment{kind: segIndex, index: i})
 }
 
+// raw is p as a merged tree keys it: a field or map key by its name, an
+// index as its decimal text.
+func (p keyPath) raw() []string {
+	out := make([]string, len(p))
+	for i, s := range p {
+		if s.kind == segIndex {
+			out[i] = strconv.Itoa(s.index)
+		} else {
+			out[i] = s.name
+		}
+	}
+	return out
+}
+
 func (p keyPath) any() keyPath {
 	return append(slices.Clip(p), segment{kind: segAny})
 }

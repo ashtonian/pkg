@@ -27,18 +27,19 @@ import (
 // entry's value: this source's report receives them in place of the
 // load's handler.
 //
-// An unknown key the merge holds is the source's when the source set
-// everything the merge keeps at it: a value, when it is the highest-ranked
-// source to set it; a section no field holds, when it set every key the
-// merge keeps in it. A key another source or a default set any part of is
-// the load's, for [WithUnknownKeys] or the default that fails on it.
+// An unknown key is claimed only when every source that set any part of
+// it — the key, or a key beneath it — has WithUnknownEntries, a source a
+// higher one set over and an entry that never merged included, and no
+// default is there; the highest-ranked of those sources reports it.
+// Otherwise it is the load's, for [WithUnknownKeys] or the strict default
+// that fails on it, so a claim never hides the same key in another source.
 // Snapshot.UnknownKeys lists the keys this report accepts beside the
 // load's.
 //
-// Finding each key's source costs no decode: the load records which
-// source set each key as the sources merge, one node per key each source
-// sets, and walks that record once per unknown key. A load that records
-// provenance or finds shadowed inputs records it already.
+// Finding a key's sources costs no decode: the load looks the key up in
+// what each source merged and in an index of the keys it set that never
+// merged, a few lookups per source for each unknown key, as deep as the
+// key.
 func WithUnknownEntries(report func(ctx context.Context, unknown []UnknownKey) error) SourceOption {
 	return func(s *providerSource) { s.claimsUnknown, s.unknown = true, report }
 }
@@ -51,22 +52,25 @@ func WithUnknownEntries(report func(ctx context.Context, unknown []UnknownKey) e
 // load's, unused names and keys.
 func (l *loader) claimUnknown(merged, defaults map[string]any, unused []string, layers []*layer) (claimed [][]UnknownKey, rest []string, additional []UnknownKey) {
 	claimed = make([][]UnknownKey, len(layers))
-	claimants := map[int]int{} // a claiming layer's index, by its rank
-	for i, y := range layers {
-		if !y.claimsUnknown {
+	if !slices.ContainsFunc(layers, func(y *layer) bool { return y.claimsUnknown }) {
+		for _, y := range layers {
 			additional = append(additional, y.unknown...)
-			continue
 		}
-		claimed[i] = append(claimed[i], y.unknown...)
-		claimants[y.rank] = i
-	}
-	if len(claimants) == 0 {
 		return claimed, unused, additional
 	}
+	s := newUnknownSetters(layers, defaults)
+	for i, y := range layers {
+		for k, u := range y.unknown {
+			if c, ok := s.claimant(s.unmergedRaw[i][k]); ok {
+				claimed[c] = append(claimed[c], u)
+				continue
+			}
+			additional = append(additional, u)
+		}
+	}
 	for _, name := range unused {
-		raw := unusedPath(l.schema, merged, name)
-		if i, ok := claimants[l.soleSetter(raw, defaults)]; ok {
-			claimed[i] = append(claimed[i], unusedKey(l.schema, merged, name))
+		if c, ok := s.claimant(unusedPath(l.schema, merged, name)); ok {
+			claimed[c] = append(claimed[c], unusedKey(l.schema, merged, name))
 			continue
 		}
 		rest = append(rest, name)
@@ -74,75 +78,102 @@ func (l *loader) claimUnknown(merged, defaults map[string]any, unused []string, 
 	return claimed, rest, additional
 }
 
-// soleSetter is the rank of the one source that set everything the merge
-// keeps at raw, a raw path, or -1 when no one source did: several did, or
-// a default the merge keeps there, which defaults holds.
-func (l *loader) soleSetter(raw []string, defaults map[string]any) int {
-	node := l.origins.holder(string(encodePath(nil, raw)))
-	if node == nil {
-		return -1
-	}
-	rank, ok := node.setter()
-	if !ok || !node.covers(rawEntry(defaults, raw)) {
-		return -1
-	}
-	return rank
+// unknownSetters finds the sources that set a key no field reads: what each
+// merged, and the keys each set that never merged.
+type unknownSetters struct {
+	layers   []*layer
+	defaults map[string]any
+	// unmergedRaw is, for each layer, the raw path of each of its unknown
+	// keys, in order. A key the grammar cannot parse, such as $, the root,
+	// is the root's path, which every source sets part of.
+	unmergedRaw [][][]string
+	// unmerged indexes each layer's unknown keys by encoded raw path: true
+	// at the key, false at each key holding it.
+	unmerged []map[string]bool
 }
 
-// covers reports whether nothing of defaults, what the defaults hold where
-// n is, survives the merge beneath n: n replaced it whole, or every key of
-// it is a key of n's that covers it in turn.
-func (n *originNode) covers(defaults any) bool {
-	m, ok := mergedMap(defaults)
-	if !ok || !n.merges || n.whole {
+func newUnknownSetters(layers []*layer, defaults map[string]any) *unknownSetters {
+	s := &unknownSetters{layers: layers, defaults: defaults, unmergedRaw: make([][][]string, len(layers)), unmerged: make([]map[string]bool, len(layers))}
+	for i, y := range layers {
+		s.unmerged[i] = map[string]bool{}
+		for _, u := range y.unknown {
+			var raw []string
+			if p, err := parseKeyPath(u.Key); err == nil {
+				raw = p.raw()
+			}
+			s.unmergedRaw[i] = append(s.unmergedRaw[i], raw)
+			for n := range raw {
+				if at := string(encodePath(nil, raw[:n])); !s.unmerged[i][at] {
+					s.unmerged[i][at] = false
+				}
+			}
+			s.unmerged[i][string(encodePath(nil, raw))] = true
+		}
+	}
+	return s
+}
+
+// claimant is the index of the layer whose WithUnknownEntries report
+// receives raw, a raw path no field reads, and true: the highest-ranked of
+// the layers that set any part of it, when each of them claims its unknown
+// keys and the defaults hold nothing there. layers are in rank order.
+func (s *unknownSetters) claimant(raw []string) (int, bool) {
+	if holdsRaw(s.defaults, raw) {
+		return 0, false
+	}
+	found := -1
+	for i, y := range s.layers {
+		if !holdsRaw(y.merged, raw) && !s.setUnmerged(i, raw) {
+			continue
+		}
+		if !y.claimsUnknown {
+			return 0, false
+		}
+		found = i
+	}
+	return found, found >= 0
+}
+
+// setUnmerged reports whether layer i set a key on raw's path that never
+// merged: raw, a key beneath it, or a key holding it, whose value may hold
+// raw.
+func (s *unknownSetters) setUnmerged(i int, raw []string) bool {
+	m := s.unmerged[i]
+	if _, ok := m[string(encodePath(nil, raw))]; ok {
 		return true
 	}
-	for key, val := range m {
-		child := n.children[key]
-		if child == nil || !child.covers(val) {
+	for n := range raw {
+		if m[string(encodePath(nil, raw[:n]))] {
+			return true
+		}
+	}
+	return false
+}
+
+// holdsRaw reports whether tree, a source's tree or a merge of them, holds a
+// value at raw, a raw path: the key's own, or one holding keys beneath it.
+func holdsRaw(tree any, raw []string) bool {
+	for _, key := range raw {
+		var ok bool
+		switch t := tree.(type) {
+		case map[string]any:
+			tree, ok = t[key]
+		case wholeMap:
+			tree, ok = t[key]
+		case []any:
+			if i, err := strconv.Atoi(key); err == nil && i >= 0 && i < len(t) {
+				tree, ok = t[i], true
+			}
+		case listEdit:
+			if i, err := strconv.Atoi(key); err == nil {
+				tree, ok = t[i]
+			}
+		}
+		if !ok {
 			return false
 		}
 	}
 	return true
-}
-
-// rawEntry is what tree holds at raw, a raw path; nil when it holds
-// nothing there.
-func rawEntry(tree any, raw []string) any {
-	for _, key := range raw {
-		switch t := tree.(type) {
-		case map[string]any:
-			tree = t[key]
-		case []any:
-			i, err := strconv.Atoi(key)
-			if err != nil || i < 0 || i >= len(t) {
-				return nil
-			}
-			tree = t[i]
-		default:
-			return nil
-		}
-	}
-	return tree
-}
-
-// setter is the rank of the one source that set everything n holds as the
-// merge keeps it: n's own for a value that is no map and for a map its
-// source set whole; for a map merged key by key, the one setter of all of
-// its keys. It is false when several sources did.
-func (n *originNode) setter() (int, bool) {
-	if !n.merges || n.whole || len(n.children) == 0 {
-		return n.rank, true
-	}
-	rank, first := 0, true
-	for _, child := range n.children {
-		r, ok := child.setter()
-		if !ok || !first && r != rank {
-			return 0, false
-		}
-		rank, first = r, false
-	}
-	return rank, true
 }
 
 // unusedPath is the raw path, as the merge keys it, of the key the decoder

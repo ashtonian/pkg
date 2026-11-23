@@ -123,17 +123,16 @@ type fileDigests map[string][sha256.Size]byte
 // whole and its struct keys rewritten into the fields' own spelling
 // (keyWalk), so precedence holds whatever letter case a source used. Every
 // source is read and prepared before any merges (see layers.go).
-// With provenance, shadowed-input reporting or a source under
-// WithUnknownEntries, origins records what set each value as the trees
-// merge; with shadowed-input reporting, inputs records what each
-// non-default source set.
+// With provenance or shadowed-input reporting, origins records what set
+// each value as the trees merge; with shadowed-input reporting, inputs
+// records what each non-default source set.
 type loader struct {
 	k          *koanf.Koanf
 	root       reflect.Type
 	schema     *schemaNode
 	sources    []string
 	aliased    []string    // keys sources set under an alias tag's name, by source
-	origins    *originNode // nil unless the load attributes values or a source claims its unknown keys
+	origins    *originNode // nil unless the load attributes values or finds shadowed inputs
 	provenance bool        // origins holds all provenance reads, not only what shadow detection does
 	inputs     *inputs     // nil unless the load finds shadowed inputs
 	// unkeyed is the koanf:"-" fields of the typed sections the merge
@@ -244,7 +243,7 @@ func (l *loader) addFlat(name string, flat map[string]any, label labeler) error 
 	if err != nil {
 		return err
 	}
-	_, err = l.mergeLayer(y, nil)
+	_, _, err = l.mergeLayer(y, nil)
 	return err
 }
 
@@ -321,7 +320,7 @@ func load[T any](ctx context.Context, o *options) (loaded[T], error) {
 	case o.provenance:
 		rec = newOriginRecorder(schema)
 		l.origins, l.provenance = rec.tree, true
-	case o.findsShadowed(), o.claimsUnknown():
+	case o.findsShadowed():
 		l.origins = newOriginRoot()
 	}
 	if o.findsShadowed() {
@@ -412,8 +411,7 @@ func load[T any](ctx context.Context, o *options) (loaded[T], error) {
 	if err != nil {
 		return none, err
 	}
-	// The origins record the defaults only with provenance, so a source's
-	// claim on an unknown key looks for them here.
+	// A source's claim on an unknown key looks for the defaults here.
 	var defaults map[string]any
 	if o.claimsUnknown() {
 		defaults = l.k.Raw()

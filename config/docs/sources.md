@@ -352,17 +352,19 @@ unused as it decodes the merged sources. A key beneath an interface, one a
 `koanf:",remain"` field collects, and the keys a self-decoding value or a
 decode hook reads are not unknown. An entry naming nothing config reads is,
 and under `WithInvalidEntries` on the same source so are the keys inside a
-withheld entry's value. A key the merge holds is the source's only when it
-set everything the merge keeps there: a value, when it is the
-highest-ranked source to set it; a section no field holds, when it set
-every key the merge keeps in it. A key another source or a default set any
-part of stays the load's, so the same key in a file still fails.
+withheld entry's value. A key is claimed only when every source that set
+any part of it (the key, or a key beneath it) uses the option, a source a
+higher one set over and an entry that never merged included, and no
+default is there; the highest-ranked of those sources reports it.
+Otherwise the key stays with `WithUnknownKeys` or the strict default, so
+the same key in a file still fails, beneath the claiming source or above
+it.
 
-Finding each key's source costs no decode. The load records which source
-set each key as the sources merge, one node for each key a source sets, and
-walks that record once per unknown key; a load that records provenance or
-finds shadowed inputs keeps that record already. The option applies to
-`WithBaseProvider`, `WithOverrideProvider` and both entry options.
+Finding a key's sources costs no decode: the load looks the key up in what
+each source merged and in an index of the keys it set that never merged, a
+few lookups per source for each unknown key, as deep as the key. The
+option applies to `WithBaseProvider`, `WithOverrideProvider` and both entry
+options.
 
 ### Stored entries
 

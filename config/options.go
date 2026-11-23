@@ -66,7 +66,7 @@ func (o *options) findsShadowed() bool {
 }
 
 // claimsUnknown reports a load with a source under WithUnknownEntries,
-// which needs the origins of the keys merged to find each one's source.
+// whose claims need the defaults the sources merge over.
 func (o *options) claimsUnknown() bool {
 	claims := func(p providerSource) bool { return p.claimsUnknown }
 	return slices.ContainsFunc(o.base, claims) || slices.ContainsFunc(o.overrides, claims)

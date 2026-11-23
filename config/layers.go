@@ -40,6 +40,10 @@ type layer struct {
 	// never merge: an entry naming nothing config reads, and the keys
 	// inside a withheld entry's value.
 	unknown []UnknownKey
+	// merged is what the source merged into the load, set as the load
+	// merges it: tree, or for a source set entry by entry, the tree of the
+	// entries set with tree merged over it.
+	merged map[string]any
 	// rank is the source's rank in the load's merge, set as it merges.
 	rank int
 }
@@ -57,18 +61,15 @@ func (l *loader) prepare(name string, data map[string]any, label labeler) (*laye
 }
 
 // mergeLayer merges y, with edits, the entries of y that merge, set over
-// what l holds, and returns those it cannot set. A layer not set entry by
-// entry merges its tree whole. y is left as it was: the judge merges a
-// layer once for every set of entries it tries.
-func (l *loader) mergeLayer(y *layer, edits []edit) ([]refusal, error) {
+// what l holds, and returns the tree it merged and the entries it cannot
+// set. A layer not set entry by entry merges its tree whole. y is left as
+// it was: the judge merges a layer once for every set of entries it tries.
+func (l *loader) mergeLayer(y *layer, edits []edit) (merged map[string]any, refused []refusal, err error) {
 	if !y.byEntry {
-		return nil, l.mergeSource(y.name, y.tree, y.unkeyed, y.label)
+		return y.tree, nil, l.mergeSource(y.name, y.tree, y.unkeyed, y.label)
 	}
 	t := newEditTree(l.k.Raw)
-	var (
-		refused []refusal
-		unkeyed []unkeyedFields
-	)
+	var unkeyed []unkeyedFields
 	for i := range edits {
 		if err := t.set(&edits[i]); err != nil {
 			refused = append(refused, refusal{at: i, err: err})
@@ -78,7 +79,9 @@ func (l *loader) mergeLayer(y *layer, edits []edit) ([]refusal, error) {
 	}
 	tree := t.tree
 	mergeTrees(deepCopyMap(y.tree), tree) // mergeTrees settles what it merges in place
-	return refused, l.mergeSource(y.name, tree, unkeyed, y.label)
+	// The load merges a copy of tree (see merge_input.go), so tree stays
+	// what this source merged.
+	return tree, refused, l.mergeSource(y.name, tree, unkeyed, y.label)
 }
 
 // refusal is an entry a merge could not set: its index among the entries
@@ -101,10 +104,11 @@ func (l *loader) mergeLayers(ctx context.Context, layers []*layer, verdicts []en
 				l.aliased = append(l.aliased, a+" in "+y.name)
 			}
 		}
-		refused, err := l.mergeLayer(y, v.kept)
+		merged, refused, err := l.mergeLayer(y, v.kept)
 		if err != nil {
 			return err
 		}
+		y.merged = merged
 		invalid := slices.Concat(y.refused, v.withheld)
 		for _, r := range refused {
 			invalid = append(invalid, &KeyError{Key: v.kept[r.at].safe, Err: r.err})

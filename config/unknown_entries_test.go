@@ -94,19 +94,38 @@ func TestUnknownEntries_ReportErrorFailsTheLoad(t *testing.T) {
 	assert.Equal(t, []UnknownKey{{Key: "prot", Suggestion: "port"}}, reported)
 }
 
-// A key the merge holds is a source's only when that source set everything
-// the merge keeps there: the highest-ranked source that set a key, and the
-// one source of every key in a section no field holds. A key another
-// source or a default set part of is the load's, and fails it.
-func TestUnknownEntries_AKeyIsTheSourcesThatSetItLast(t *testing.T) {
+// A key the merge holds is claimed only when every source that set any
+// part of it claims its unknown keys, a source set over included, and no
+// default is there; the highest of those reports it. Otherwise it is the
+// load's and fails it: a claim never hides the same key in another source,
+// beneath it or above it.
+func TestUnknownEntries_AKeyIsClaimedOnlyWhenEverySetterClaims(t *testing.T) {
+	var lower, higher []UnknownKey
+	_, err := Load[unknownEntriesConfig](t.Context(),
+		WithBaseProvider(mapSource{"prot": 1, "legacy": map[string]any{"a": 1}}, nil, unknownReport(&lower, nil)),
+		WithOverrideEntries(readEntries(map[string]any{"prot": 2, "legacy": map[string]any{"b": 1}}), unknownReport(&higher, nil)))
+	require.NoError(t, err)
+	assert.Nil(t, lower)
+	assert.Equal(t, []UnknownKey{{Key: "legacy"}, {Key: "prot", Suggestion: "port"}}, higher)
+
+	lower, higher = nil, nil
+	_, err = Load[unknownEntriesConfig](t.Context(),
+		WithBaseProvider(mapSource{"legacy": map[string]any{"a": 1}}, nil, unknownReport(&lower, nil)),
+		WithOverrideProvider(mapSource{"legacy": map[string]any{"b": 1}}, nil, unknownReport(&higher, nil)))
+	require.NoError(t, err)
+	assert.Nil(t, lower)
+	assert.Equal(t, []UnknownKey{{Key: "legacy"}}, higher)
+
+	file := filepath.Join(t.TempDir(), "config.yaml")
+	writeFile(t, file, "port: 5\nbogus: 1\n")
 	var reported []UnknownKey
 	claiming := func(data mapSource) Option { return WithOverrideProvider(data, nil, unknownReport(&reported, nil)) }
-
-	_, err := Load[unknownEntriesConfig](t.Context(), WithBaseProvider(mapSource{"prot": 1}, nil), claiming(mapSource{"prot": 2}))
-	require.NoError(t, err)
-	assert.Equal(t, []UnknownKey{{Key: "prot", Suggestion: "port"}}, reported)
-
 	for name, opts := range map[string][]Option{
+		"a lower file sets it": {WithFile(file), claiming(mapSource{"bogus": 2})},
+		"a lower source sets it": {
+			WithBaseProvider(mapSource{"prot": 1}, nil),
+			claiming(mapSource{"prot": 2}),
+		},
 		"a higher source sets it": {
 			WithBaseProvider(mapSource{"prot": 1}, nil, unknownReport(&reported, nil)),
 			WithOverrideProvider(mapSource{"prot": 2}, nil),
@@ -132,6 +151,17 @@ func TestUnknownEntries_AKeyIsTheSourcesThatSetItLast(t *testing.T) {
 			assert.Nil(t, reported)
 		})
 	}
+
+	// A lower source's entry naming the key never merges, but it set the
+	// key: the load's handler receives it, and the claiming source does not.
+	reported = nil
+	var loadWide []UnknownKey
+	_, err = Load[unknownEntriesConfig](t.Context(),
+		WithBaseEntries(readEntries(map[string]any{"bogus": 1})), claiming(mapSource{"bogus": 2}),
+		WithUnknownKeys(func(_ context.Context, u *UnknownKeysError) error { loadWide = u.Keys; return nil }))
+	require.NoError(t, err)
+	assert.Nil(t, reported)
+	assert.Equal(t, []UnknownKey{{Key: "bogus"}}, loadWide)
 }
 
 // With WithInvalidEntries on the same source, the keys inside a withheld

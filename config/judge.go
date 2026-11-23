@@ -60,7 +60,7 @@ func (l *loader) judgeEntries(ctx context.Context, o *options, layers []*layer) 
 		return nil, err
 	}
 	for i, y := range layers[:j.from] {
-		if _, err := beneath.mergeLayer(y, verdicts[i].kept); err != nil {
+		if _, _, err := beneath.mergeLayer(y, verdicts[i].kept); err != nil {
 			return nil, err
 		}
 	}
@@ -224,7 +224,7 @@ func (j *judge) try(set []int) (verdict, error) {
 				edits, refs = append(edits, y.entries[ref.entry]), append(refs, ref)
 			}
 		}
-		refused, err := s.mergeLayer(y, edits)
+		_, refused, err := s.mergeLayer(y, edits)
 		if err != nil {
 			return verdict{}, err
 		}
