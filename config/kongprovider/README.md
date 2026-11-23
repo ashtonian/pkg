@@ -145,7 +145,7 @@ Flags:
 
 ## Reloading
 
-`LoadReloader` builds a `config.Reloader[T]` from the same sources and binds it for `Run`. The command owns its lifecycle — `Arm`, `go r.Run(ctx)`, and `Stop` under a shutdown deadline — and reads `r.Config()` wherever it needs a value that can change. The struct the command embeds holds a copy of the reloader's first snapshot: the startup config, which is what a key that waits for a restart holds for the life of the process, and what this listener's address is read from.
+`LoadReloader` builds a `config.Reloader[T]` from the same sources and binds it for `Run`. The command owns its lifecycle — `Arm`, `go r.Run(ctx)`, and `Stop` under a shutdown deadline — and reads `r.Config()` wherever it needs a value that can change. The struct the command embeds holds a copy of the reloader's first snapshot: the startup config, which is what a key that waits for a restart holds for the life of the process, and what this listener's address is read from. The copy shares no storage with the published config — every map, slice and pointer it reaches, the fields an unexported embedded section promotes included, is its own — so changing it never changes `r.Config()`.
 
 ```go
 package main
@@ -378,7 +378,7 @@ The module logs nothing and exports no metrics; the config package's logger (`co
 | File | Responsibility |
 |---|---|
 | `load.go` | `Load`, `LoadReloader`: the Parse hook, command selection, the write into the CLI's struct |
-| `kongprovider.go` | The typed-flag provider (`New`, `WithOverrides`, `WithOverridesFromStruct`), `HelpFromConfig`, flag → field matching, list-flag elements and value copying |
+| `kongprovider.go` | The typed-flag provider (`New`, `WithOverrides`, `WithOverridesFromStruct`), `HelpFromConfig`, flag → field matching and list-flag elements. Flag values and the startup config are copied with the config module's own deep copy, so both modules follow one copy contract |
 | `usage.go` | `UsageFlags`: the Flag column of `config.PrintUsage` |
 | `examples/cli`, `examples/reload` | The README's two programs |
 
