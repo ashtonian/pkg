@@ -67,7 +67,7 @@ func governedDocuments(t *testing.T) *parse.Resource[govDocument] {
 	notes.MustRelate("reactions", parse.HasMany(reactions, "note_id", parse.Indexed()))
 	documents.MustRelate("notes", parse.HasMany(notes, "document_id", parse.Indexed(), parse.Includable(), parse.Facetable()))
 	documents.MustRelate("labels", parse.ManyToMany(labels,
-		parse.Junction{Table: "document_labels", Source: "document_id", Target: "label_id", Tenant: "tenant_id"},
+		parse.Junction{Table: "document_labels", Source: []string{"document_id"}, Target: []string{"label_id"}, Tenant: "tenant_id"},
 		parse.Indexed(), parse.Includable(), parse.Facetable()))
 	return documents
 }
@@ -217,7 +217,7 @@ func listRelated[T any](t *testing.T, r *parse.Resource[T], d filter.Dialect, db
 	for _, item := range page.Items {
 		key, err := r.Key(item)
 		require.NoError(t, err)
-		res.ids = append(res.ids, fmt.Sprint(key))
+		res.ids = append(res.ids, fmt.Sprint(key[0]))
 	}
 	slices.Sort(res.ids)
 	require.NotNil(t, page.PageInfo.TotalCount)
@@ -348,13 +348,13 @@ func (m governedMemory) list(t *testing.T, r *parse.Resource[govDocument], filte
 			f, err = filter.ResolveMemberships(ctx, f, m, filter.ResolveRelationScope(filter.RelationScope{Tenant: tenant}))
 			require.NoError(t, err)
 		}
-		var keys []any
+		var keys []core.Key
 		for _, row := range byTenant[tenant] {
 			if f == nil || m.selects(t, f.AST(), r.Table(), row) {
 				id, ok := row["id"].(string)
 				require.True(t, ok)
 				res.ids = append(res.ids, id)
-				keys = append(keys, id)
+				keys = append(keys, core.Key{id})
 			}
 		}
 		for _, name := range governedIncludes {
@@ -493,7 +493,7 @@ func mixedDevices[O, R any](prefix string) *parse.Resource[mixDevice[O]] {
 	tags := parse.MustResource[mixTag[R]](prefix+"tags", parse.TenantColumn("tenant_id"))
 	devices.MustRelate("commands", parse.HasMany(commands, "device_id", parse.Indexed(), parse.Includable(), parse.Facetable()))
 	devices.MustRelate("tags", parse.ManyToMany(tags,
-		parse.Junction{Table: prefix + "device_tags", Source: "device_id", Target: "tag_id", Tenant: "tenant_id"},
+		parse.Junction{Table: prefix + "device_tags", Source: []string{"device_id"}, Target: []string{"tag_id"}, Tenant: "tenant_id"},
 		parse.Indexed(), parse.Includable(), parse.Facetable()))
 	return devices
 }

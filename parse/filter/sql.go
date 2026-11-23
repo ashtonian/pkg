@@ -120,6 +120,10 @@ type Dialect interface {
 	// equality compares: a decimal through DecimalOrder. `$in` / `$nin`
 	// and a lookup's WhereIn render through it.
 	memberSet(field *FieldSchema, members []any, in bool, bind func(any) string) (string, error)
+	// keySet tests row, the row value of ks.Fields, for membership in ks.Keys,
+	// the set bound as one parameter: a key constraint over several columns
+	// renders through it.
+	keySet(ks *KeySet, row string, bind func(any) string) (string, error)
 
 	// numberKey renders an int, float or decimal field's value as its
 	// terms facet key: the canonical decimal text (core.DecimalText)
@@ -132,6 +136,10 @@ type Dialect interface {
 	// textKey renders any other value's facet key as TEXT, so the UNION
 	// ALL branches of a facet query share one key column type.
 	textKey(expr string) string
+	// keyText renders the text core.KeyText gives a key of several
+	// columns, the columns' values being exprs: includes and facets name a
+	// row of such a key by it.
+	keyText(exprs []string) string
 
 	// search renders a free-text search of schema's fields for query, its
 	// parameters numbered after startIdx.
@@ -630,6 +638,8 @@ func (b *SQLBuilder) buildNode(s *buildState, node *FilterNode) (string, error) 
 		return unknownSQL, nil
 	case OpMember:
 		return b.buildMember(s, node)
+	case OpKeyIn:
+		return b.buildKeySet(s, node)
 	default:
 		return b.buildCondition(s, node)
 	}
@@ -764,6 +774,9 @@ func (b *SQLBuilder) computed(n *FilterNode) *FilterNode {
 func (b *SQLBuilder) buildPairTable(s *buildState, node *FilterNode) (string, error) {
 	f := node.Field
 	rel := f.Relation
+	if len(rel.TargetColumns) != 1 {
+		return "", invalidRelation(f, "compares a pair table's key by value, which names one target column")
+	}
 	op, cond := OpSome, node.Op
 	switch node.Op {
 	case OpNull:
@@ -787,12 +800,13 @@ func (b *SQLBuilder) buildPairTable(s *buildState, node *FilterNode) (string, er
 			op, cond = OpNone, OpIn
 		}
 	}
+	target := rel.TargetColumns[0]
 	key := &FieldSchema{
-		ExternalName: f.ExternalName, Table: rel.JoinTable, Column: rel.TargetColumn,
+		ExternalName: f.ExternalName, Table: rel.JoinTable, Column: target,
 		DataType: f.DataType, NumberKind: f.NumberKind,
 	}
 	pair := *f
-	pair.Related = &ResourceSchema{Name: rel.JoinTable, PrimaryKey: rel.TargetColumn, SystemFields: map[string]*FieldSchema{rel.TargetColumn: key}}
+	pair.Related = &ResourceSchema{Name: rel.JoinTable, PrimaryKey: []string{target}, SystemFields: map[string]*FieldSchema{target: key}}
 	lowered := &FilterNode{Field: &pair, Op: op}
 	if cond != "" {
 		lowered.Children = []*FilterNode{{Field: key, Op: cond, Value: node.Value}}

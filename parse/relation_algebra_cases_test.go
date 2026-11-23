@@ -144,7 +144,7 @@ func runRelationAlgebra(t *testing.T, rdb relDB) {
 	t.Run("includes stay tenant-scoped and capped per owner", func(t *testing.T) {
 		field := p.FilterSchema().Fields["tags"]
 		read := func(opts ...filter.IncludeQueryOption) map[string][]string {
-			q, err := filter.BuildIncludeQuery(field, rdb.dialect, []any{"w1", "w2", "shared"}, append(opts, filter.WithIncludeRelationScope(filter.RelationScope{Tenant: "A"}))...)
+			q, err := filter.BuildIncludeQuery(field, rdb.dialect, []core.Key{{"w1"}, {"w2"}, {"shared"}}, append(opts, filter.WithIncludeRelationScope(filter.RelationScope{Tenant: "A"}))...)
 			require.NoError(t, err)
 			rows, err := rdb.db.Query(q.SQL, q.Args...)
 			require.NoError(t, err, q.SQL)

@@ -19,7 +19,7 @@ import (
 // either code-point collation (pg_c_utf8, the default, and "C" for
 // PostgreSQL 14–16), and a string range filter seeks in the same order.
 func TestKeysetWalk_LinguisticCollationWalksByCodePoint(t *testing.T) {
-	schema := &filter.ResourceSchema{Name: "probe", PrimaryKey: "id", Fields: map[string]*filter.FieldSchema{
+	schema := &filter.ResourceSchema{Name: "probe", PrimaryKey: []string{"id"}, Fields: map[string]*filter.FieldSchema{
 		"name": {ExternalName: "name", Table: "probe", Column: "name", DataType: core.FieldTypeString, AllowedOperators: []filter.FilterOperator{filter.OpGt}},
 	}}
 	sorts := &filter.SortSchema{Fields: map[string]*filter.SortFieldSchema{

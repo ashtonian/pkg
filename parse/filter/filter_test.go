@@ -20,7 +20,7 @@ import (
 func testSchema() *filter.ResourceSchema {
 	return &filter.ResourceSchema{
 		Name:       "items",
-		PrimaryKey: "id",
+		PrimaryKey: []string{"id"},
 		Fields: map[string]*filter.FieldSchema{
 			"status": {
 				ExternalName: "status", Table: "items", Column: "status", DataType: core.FieldTypeString,
@@ -411,7 +411,7 @@ func TestListQuery_PolicyConstraints(t *testing.T) {
 func TestListQuery_Facets(t *testing.T) {
 	schema := &filter.ResourceSchema{
 		Name:       "products",
-		PrimaryKey: "id",
+		PrimaryKey: []string{"id"},
 		Fields: map[string]*filter.FieldSchema{
 			"category": {
 				ExternalName: "category", Table: "products", Column: "category",

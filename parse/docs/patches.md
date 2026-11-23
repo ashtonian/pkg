@@ -157,7 +157,7 @@ A server that builds a patch need not encode JSON to parse it back. `MergePatchM
 
 ## Resource updates
 
-`Resource.BuildUpdate(dialect, parsed, target, scope, opts...)` compiles a validated patch into the statement that applies it. The WHERE carries the target (`ByID`, `ByIDs` or `ByFilter`), the tenant floor (`Scope.Tenant`, required on a tenant-scoped resource: `ErrTenantRequired`; normalized once to the [tenant key](relations.md#tenant-key), `ErrTenantInvalid` when a tenant column the resource reaches cannot hold it), live rows only, and `Scope.Policy`. Its placeholders continue after the SET clause's.
+`Resource.BuildUpdate(dialect, parsed, target, scope, opts...)` compiles a validated patch into the statement that applies it. The WHERE carries the target (`ByID`, `ByIDs`, `ByKey`, `ByKeys` or `ByFilter`), the tenant floor (`Scope.Tenant`, required on a tenant-scoped resource: `ErrTenantRequired`; normalized once to the [tenant key](relations.md#tenant-key), `ErrTenantInvalid` when a tenant column the resource reaches cannot hold it), live rows only, and `Scope.Policy`. Its placeholders continue after the SET clause's.
 
 ```go
 plan, err := products.BuildUpdate(filter.PostgresDialect{}, parsed, parse.ByID(id),
@@ -184,7 +184,7 @@ The rows `Owner` returns are the rows the scope admits. Zero rows means the targ
 
 | Option / target | Effect |
 |---|---|
-| `ByID(id)`, `ByIDs(ids...)`, `ByFilter(f)` | The rows to change; a zero target is `ErrNoTarget` rather than every row, and a key the key column cannot hold is `ErrKeyInvalid`, refused as the key before any statement binds it |
+| `ByID(id)`, `ByIDs(ids...)`, `ByKey(k)`, `ByKeys(ks...)`, `ByFilter(f)` | The rows to change; a zero target is `ErrNoTarget` rather than every row, and a key the key columns cannot hold is `ErrKeyInvalid`, refused as the key before any statement binds it. `ByID` and `ByIDs` name a one-column key's values; `ByKey` and `ByKeys` name `parse.Key`s, a value per key column, and a key of another length is `ErrKeyInvalid` naming both ([keys](schema-configuration.md#keys)) |
 | `Stamp(column, at)` | Set `column` to `at` on every update that writes a column; `at` must be non-zero |
 | `StampSQL(column, expr)` | Set `column` to the trusted SQL `expr` — the database clock, such as `NOW()` |
 | `Increment(column)` | Set the integer `column` to one more than it holds on every update that writes a column — a version the server moves; `RETURNING` reports the moved value. Repeat for each counter; composes with the stamp |

@@ -186,7 +186,7 @@ func TestRelationValuesAreDecidedAtParse(t *testing.T) {
 		op := sql.RelationOps[0]
 		assert.Equal(t, tc.verb, op.Verb, tc.body)
 		assert.Equal(t, tc.keys, op.Values, tc.body)
-		_, err = patch.RenderRelationOp(op, filter.SQLiteDialect{}, []any{"w1"}, patch.RenderRelationOpOptions{})
+		_, err = patch.RenderRelationOp(op, filter.SQLiteDialect{}, []core.Key{{"w1"}}, patch.RenderRelationOpOptions{})
 		assert.NoError(t, err, tc.body)
 	}
 	tags, _ := schema.Path("/tags")
@@ -202,21 +202,21 @@ func TestRelationRefusesNullableKeys(t *testing.T) {
 	}
 	_, err := patch.GeneratePatchSchema[nullableKeys](core.NewSchemaGenerator())
 	assert.ErrorContains(t, err, "never null")
-	_, err = patch.RelationPath(&core.RelationSchema{JoinTable: "j", SourceColumn: "s", TargetColumn: "t"}, reflect.TypeFor[[]*string](), "")
+	_, err = patch.RelationPath(&core.RelationSchema{JoinTable: "j", SourceColumns: []string{"s"}, TargetColumns: []string{"t"}}, patch.RelationKey{Type: reflect.TypeFor[*string]()})
 	assert.ErrorContains(t, err, "never null")
-	path, err := patch.RelationPath(&core.RelationSchema{JoinTable: "j", SourceColumn: "s", TargetColumn: "t"}, reflect.TypeFor[[]string](), "")
+	path, err := patch.RelationPath(&core.RelationSchema{JoinTable: "j", SourceColumns: []string{"s"}, TargetColumns: []string{"t"}}, patch.RelationKey{Type: reflect.TypeFor[string]()})
 	assert.NoError(t, err)
 	assert.NotNil(t, path)
 }
 
 func TestRenderRelationOp_Replace_Clear(t *testing.T) {
 	rel := &core.RelationSchema{
-		JoinTable: "widget_tags", SourceColumn: "widget_id", TargetColumn: "tag_id",
+		JoinTable: "widget_tags", SourceColumns: []string{"widget_id"}, TargetColumns: []string{"tag_id"},
 	}
 	op := patch.RelationPatchOp{
 		Field: "tags", Schema: rel, Verb: patch.RelationVerbReplace, Values: nil,
 	}
-	stmts, err := patch.RenderRelationOp(op, filter.PostgresDialect{}, []any{"w1"}, patch.RenderRelationOpOptions{})
+	stmts, err := patch.RenderRelationOp(op, filter.PostgresDialect{}, []core.Key{{"w1"}}, patch.RenderRelationOpOptions{})
 	if err != nil {
 		t.Fatalf("render: %v", err)
 	}
@@ -234,8 +234,8 @@ func TestRenderRelationOp_Replace_Clear(t *testing.T) {
 // RenderRelationOp refuses what it cannot render rather than trusting the
 // operation: a tenant-scoped pair table without a tenant fails closed.
 func TestRenderRelationOp_RefusesWhatItCannotRender(t *testing.T) {
-	rel := &core.RelationSchema{JoinTable: "widget_tags", SourceColumn: "widget_id", TargetColumn: "tag_id"}
-	scoped := &core.RelationSchema{JoinTable: "widget_tags", SourceColumn: "widget_id", TargetColumn: "tag_id", TenantColumn: "tenant_id"}
+	rel := &core.RelationSchema{JoinTable: "widget_tags", SourceColumns: []string{"widget_id"}, TargetColumns: []string{"tag_id"}}
+	scoped := &core.RelationSchema{JoinTable: "widget_tags", SourceColumns: []string{"widget_id"}, TargetColumns: []string{"tag_id"}, TenantColumn: "tenant_id"}
 	for name, op := range map[string]patch.RelationPatchOp{
 		"remove with no values":      {Field: "tags", Schema: rel, Verb: patch.RelationVerbRemove},
 		"add with no values":         {Field: "tags", Schema: rel, Verb: patch.RelationVerbAdd, Values: []any{}},
@@ -246,7 +246,7 @@ func TestRenderRelationOp_RefusesWhatItCannotRender(t *testing.T) {
 		"a value that is not a key":  {Field: "tags", Schema: rel, Verb: patch.RelationVerbAdd, Values: []any{map[string]any{}}},
 	} {
 		for _, d := range []patch.SQLDialect{filter.PostgresDialect{}, filter.SQLiteDialect{}} {
-			_, err := patch.RenderRelationOp(op, d, []any{"w1"}, patch.RenderRelationOpOptions{})
+			_, err := patch.RenderRelationOp(op, d, []core.Key{{"w1"}}, patch.RenderRelationOpOptions{})
 			assert.Error(t, err, "%s on %s", name, d.Name())
 		}
 	}
@@ -254,7 +254,7 @@ func TestRenderRelationOp_RefusesWhatItCannotRender(t *testing.T) {
 
 func TestRenderRelationOp_NoOwners(t *testing.T) {
 	rel := &core.RelationSchema{
-		JoinTable: "widget_tags", SourceColumn: "widget_id", TargetColumn: "tag_id",
+		JoinTable: "widget_tags", SourceColumns: []string{"widget_id"}, TargetColumns: []string{"tag_id"},
 	}
 	op := patch.RelationPatchOp{
 		Field: "tags", Schema: rel, Verb: patch.RelationVerbReplace, Values: []any{"t1"},
@@ -271,12 +271,12 @@ func TestRenderRelationOp_NoOwners(t *testing.T) {
 func TestRenderRelationOp_TenantOptOut(t *testing.T) {
 	// Schema has TenantColumn empty; opts pass a tenant value but it must be ignored.
 	rel := &core.RelationSchema{
-		JoinTable: "system_tags", SourceColumn: "tag_id", TargetColumn: "alias_id",
+		JoinTable: "system_tags", SourceColumns: []string{"tag_id"}, TargetColumns: []string{"alias_id"},
 	}
 	op := patch.RelationPatchOp{
 		Field: "aliases", Schema: rel, Verb: patch.RelationVerbAdd, Values: []any{"a1"},
 	}
-	stmts, err := patch.RenderRelationOp(op, filter.PostgresDialect{}, []any{"t1"}, patch.RenderRelationOpOptions{TenantValue: "ignored"})
+	stmts, err := patch.RenderRelationOp(op, filter.PostgresDialect{}, []core.Key{{"t1"}}, patch.RenderRelationOpOptions{TenantValue: "ignored"})
 	if err != nil {
 		t.Fatalf("render: %v", err)
 	}
@@ -338,7 +338,7 @@ func TestRelationValueLimit(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	stmts, err := patch.RenderRelationOp(sqlPatch.RelationOps[0], filter.PostgresDialect{}, []any{"w1"}, patch.RenderRelationOpOptions{})
+	stmts, err := patch.RenderRelationOp(sqlPatch.RelationOps[0], filter.PostgresDialect{}, []core.Key{{"w1"}}, patch.RenderRelationOpOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}

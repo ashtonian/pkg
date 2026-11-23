@@ -67,6 +67,7 @@ export type {
   PatchPathSchema,
   PatchResult,
   PatchSchema,
+  RelationKeyColumn,
 } from "./patch/index.js";
 
 // Combined (client + schema + validator)

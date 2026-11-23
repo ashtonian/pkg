@@ -80,7 +80,7 @@ func TestRootSentinels_OnePrefixShape(t *testing.T) {
 		{"a key of another type", run(func() error { _, err := devices.BuildUpdate(d, rename, parse.ByID(7), tenant); return err }), parse.ErrKeyInvalid},
 		{"one of several keys of another type", run(func() error { _, err := devices.BuildUpdate(d, rename, parse.ByIDs("a", 7), tenant); return err }), parse.ErrKeyInvalid},
 		{"a batch key of another type", run(func() error {
-			_, err := devices.BuildUpdateBatch(d, []parse.RowUpdate{{Key: 7, Patch: rename}}, tenant, parse.UpdateBatchLimits{})
+			_, err := devices.BuildUpdateBatch(d, []parse.RowUpdate{{Key: parse.Key{7}, Patch: rename}}, tenant, parse.UpdateBatchLimits{})
 			return err
 		}), parse.ErrKeyInvalid},
 		{"a widening scope", run(func() error {

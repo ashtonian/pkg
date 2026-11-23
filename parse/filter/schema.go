@@ -34,6 +34,10 @@ const (
 	// OpMember is a membership constraint (PolicyConstraint.Member): the
 	// field is among the values a Lookup projects. Only policies build it.
 	OpMember FilterOperator = "member"
+	// OpKeyIn is a key set (PolicyConstraint.Fields under OpIn): the row's
+	// key columns, together, equal one of the keys a KeySet lists. Only
+	// policies build it.
+	OpKeyIn FilterOperator = "key_in"
 	// OpUnknown is SQL's unknown: no row satisfies it, nor its negation. It
 	// names no field. Only policies build it (UnknownConstraint,
 	// PolicyConstraint.UnknownIfInvalid, a membership resolved without a
@@ -65,9 +69,11 @@ const (
 // ResourceSchema defines filterable fields for a resource.
 type ResourceSchema struct {
 	Name string
-	// PrimaryKey is the unique column appended to every list's keyset.
-	// Resource construction declares it; it is never request input.
-	PrimaryKey   string
+	// PrimaryKey are the key's columns, in key order: together they are
+	// unique among the rows, and every list's keyset ends with each one its
+	// sort does not name. Resource construction declares them; they are
+	// never request input.
+	PrimaryKey   []string
 	Fields       map[string]*FieldSchema
 	SystemFields map[string]*FieldSchema
 	// PolicyFields are the names server policies may use besides Fields and
@@ -93,14 +99,15 @@ type ResourceSchema struct {
 }
 
 // RequestField resolves a field name a request filter uses, in either
-// grammar: a request field (Fields), or the key (PrimaryKey) from
+// grammar: a request field (Fields), or a key column (PrimaryKey) from
 // SystemFields. The tenant and soft-delete columns are system fields only
-// policies reach; a request's handle on deleted rows is include_deleted.
+// policies reach, unless the tenant is a key column; a request's handle on
+// deleted rows is include_deleted.
 func (s *ResourceSchema) RequestField(name string) (*FieldSchema, bool) {
 	if f, ok := s.Fields[name]; ok {
 		return f, true
 	}
-	if name != "" && name == s.PrimaryKey {
+	if name != "" && slices.Contains(s.PrimaryKey, name) {
 		f, ok := s.SystemFields[name]
 		return f, ok
 	}
@@ -117,11 +124,13 @@ func (s *ResourceSchema) RequestFields() iter.Seq2[string, *FieldSchema] {
 				return
 			}
 		}
-		if _, shadowed := s.Fields[s.PrimaryKey]; shadowed || s.PrimaryKey == "" {
-			return
-		}
-		if key, ok := s.SystemFields[s.PrimaryKey]; ok {
-			yield(s.PrimaryKey, key)
+		for _, column := range s.PrimaryKey {
+			if _, shadowed := s.Fields[column]; shadowed || column == "" {
+				continue
+			}
+			if key, ok := s.SystemFields[column]; ok && !yield(column, key) {
+				return
+			}
 		}
 	}
 }
@@ -171,10 +180,12 @@ type FieldSchema struct {
 	// related rows with it (`$some`, `$none`, `$is`, `$is_not`). Nil for a
 	// relation compared by key alone.
 	Related *ResourceSchema
-	// RelatedBy is the owner's field a relation correlates on (its key, or
-	// a belongs-to's foreign key), for backends that evaluate relation
-	// predicates as memberships (ResolveMemberships).
-	RelatedBy *FieldSchema
+	// RelatedBy are the owner's fields a relation correlates on (its key,
+	// or a belongs-to's foreign key), paired by position with
+	// Relation.OwnerColumns: they type the owner keys of includes, and
+	// backends that evaluate relation predicates as memberships
+	// (ResolveMemberships) test them.
+	RelatedBy []*FieldSchema
 	// Path makes the field a typed member of a document column; its value
 	// expression is Dialect.PathExpr (render with FieldExpr), and Table,
 	// Column and Expr are the document's.
@@ -262,6 +273,9 @@ type FilterNode struct {
 
 	// Member is the set an OpMember node tests Field against.
 	Member *Lookup
+
+	// Keys is the set an OpKeyIn node tests its key columns against.
+	Keys *KeySet
 }
 
 // FilterAST is the root of a parsed filter tree.

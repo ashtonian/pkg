@@ -107,7 +107,7 @@ func TestClientQuotedRelationOperationsParse(t *testing.T) {
 	require.NoError(t, err, "%s", merge)
 	plan, err := posts.BuildUpdate(filter.PostgresDialect{}, parsed, parse.ByID(int64(1)), parse.Scope{})
 	require.NoError(t, err)
-	stmts, err := posts.RelationStatements(plan, []any{int64(1)})
+	stmts, err := posts.RelationStatements(plan, []parse.Key{{int64(1)}})
 	require.NoError(t, err)
 	require.NotEmpty(t, stmts)
 	assert.Contains(t, stmts[len(stmts)-1].Args, []int64{5})

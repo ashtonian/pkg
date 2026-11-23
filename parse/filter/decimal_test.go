@@ -33,7 +33,7 @@ func pricedSchemas(t *testing.T) (*filter.ResourceSchema, *filter.SortSchema) {
 	g := core.NewSchemaGenerator()
 	fs, err := filter.GenerateFilterSchema[priced](g)
 	require.NoError(t, err)
-	fs.PrimaryKey = "id"
+	fs.PrimaryKey = []string{"id"}
 	ss, err := filter.GenerateSortSchema[priced](g)
 	require.NoError(t, err)
 	return fs, ss

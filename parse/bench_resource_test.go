@@ -71,7 +71,7 @@ func BenchmarkResourcePage(b *testing.B) {
 func BenchmarkResourceKey(b *testing.B) {
 	r := benchWidgetResource(b)
 	row := benchWidget{ID: "w1", Name: "widget"}
-	if k, err := r.Key(row); err != nil || k != "w1" {
+	if k, err := r.Key(row); err != nil || len(k) != 1 || k[0] != "w1" {
 		b.Fatalf("key: %v, %v", k, err)
 	}
 	for b.Loop() {

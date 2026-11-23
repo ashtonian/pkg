@@ -167,10 +167,8 @@ func (p *PathSchema) clone() *PathSchema {
 	out.Validators = slices.Clone(p.Validators)
 	out.EnumValues = slices.Clone(p.EnumValues)
 	out.Bounds = p.Bounds.Clone()
-	if p.Relation != nil {
-		rel := *p.Relation
-		out.Relation = &rel
-	}
+	out.Relation = p.Relation.Clone()
+	out.RelationKey = slices.Clone(p.RelationKey)
 	return &out
 }
 
@@ -258,6 +256,11 @@ type PathSchema struct {
 	// move/copy/test there (E2064); BuildPatchSQL refuses one a hand-built
 	// schema allows (E2117).
 	Relation *core.RelationSchema
+	// RelationKey are a membership path's target key columns when the key
+	// has several (RelationPath): each key is a JSON array of a value per
+	// column, normalized to a core.Key. A one-column key's type is GoType's
+	// element.
+	RelationKey []RelationKey
 }
 
 // Nullable reports whether the path accepts null: its Go type can hold

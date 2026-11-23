@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
+	"slices"
 	"strings"
 	"time"
 
@@ -15,15 +16,36 @@ import (
 // Target names the rows an update changes: keys or a filter. The zero
 // Target names none, and an update refuses it rather than change every row.
 type Target struct {
-	keys   []any
+	keys   []Key
 	filter *filter.ParsedFilter
 }
 
-// ByID targets the row with key id.
-func ByID(id any) Target { return Target{keys: []any{id}} }
+// ByID targets the row with key id, on a resource whose key is one column
+// (ByKey names a key of several).
+func ByID(id any) Target { return Target{keys: []Key{{id}}} }
 
-// ByIDs targets the rows with these keys.
-func ByIDs(ids ...any) Target { return Target{keys: ids} }
+// ByIDs targets the rows with these keys, on a resource whose key is one
+// column (ByKeys names keys of several).
+func ByIDs(ids ...any) Target {
+	keys := make([]Key, len(ids))
+	for i, id := range ids {
+		keys[i] = Key{id}
+	}
+	return Target{keys: keys}
+}
+
+// ByKey targets the row with key k, a value per key column in key order.
+func ByKey(k Key) Target { return Target{keys: []Key{slices.Clone(k)}} }
+
+// ByKeys targets the rows with these keys, each a value per key column in
+// key order.
+func ByKeys(ks ...Key) Target {
+	keys := make([]Key, len(ks))
+	for i, k := range ks {
+		keys[i] = slices.Clone(k)
+	}
+	return Target{keys: keys}
+}
 
 // ByFilter targets the rows a filter matches.
 func ByFilter(f *filter.ParsedFilter) Target { return Target{filter: f} }
@@ -39,10 +61,11 @@ func (t Target) empty() bool {
 // ErrNoTarget is an update built without keys or a non-empty filter.
 var ErrNoTarget = errors.New("an update needs a key or a filter")
 
-// ErrKeyInvalid is a target key, ByID's, ByIDs' or an update batch row's,
-// the key column cannot hold: a value of another Go type, or text that is
-// not a UUID for a UUID key. The key is the server's, from its route or its
-// store, so a client never sees it as a filter error.
+// ErrKeyInvalid is a target key, a Target's or an update batch row's, the
+// key columns cannot hold: a value of another Go type, text that is not a
+// UUID for a UUID column, or another number of values than the key has
+// columns (ByID on a key of two). The key is the server's, from its route
+// or its store, so a client never sees it as a filter error.
 var ErrKeyInvalid = errors.New("not a value of the key column's type")
 
 // ErrForeign is a request value a resource did not parse handed to it: a
@@ -181,7 +204,7 @@ func (p *UpdatePlan) HasRelations() bool { return len(p.relations) > 0 }
 // tenant-scoped resource needs s.Tenant (ErrTenantRequired), which
 // every tenant column it reaches must hold (ErrTenantInvalid); a patch or a
 // ByFilter filter the resource did not parse is ErrForeign; a zero Target
-// is ErrNoTarget, and a key the key column cannot hold ErrKeyInvalid;
+// is ErrNoTarget, and a key the key columns cannot hold ErrKeyInvalid;
 // Governance or IncludeDeleted is ErrUpdateScope; a dialect
 // a computed column's expression (ReadExpr) refuses is an error.
 func (r *Resource[T]) BuildUpdate(d Dialect, p *patch.ParsedPatch, target Target, s Scope, opts ...UpdateOption) (*UpdatePlan, error) {
@@ -357,14 +380,14 @@ func (r *Resource[T]) Unchanged(changed, current []T) ([]T, error) {
 	return out, nil
 }
 
-// targetKeys are keys, a target's, as the key column holds them: the values
-// every statement binds. A key of the wrong type is ErrKeyInvalid, refused
-// as the key it is before any constraint binds it.
-func (r *Resource[T]) targetKeys(keys []any) ([]any, error) {
+// targetKeys are keys, a target's, as the key columns hold them: the values
+// every statement binds. A key the columns cannot hold is ErrKeyInvalid,
+// refused as the key it is before any constraint binds it.
+func (r *Resource[T]) targetKeys(keys []Key) ([]Key, error) {
 	if len(keys) == 0 {
 		return nil, nil
 	}
-	out := make([]any, len(keys))
+	out := make([]Key, len(keys))
 	for i, key := range keys {
 		v, err := r.normalizeKey(key)
 		if err != nil {
@@ -378,36 +401,32 @@ func (r *Resource[T]) targetKeys(keys []any) ([]any, error) {
 	return out, nil
 }
 
-// normalizeKey is key in the key column's canonical form, as a policy on
-// the key column normalizes its value; ErrKeyInvalid when the column cannot
-// hold it.
-func (r *Resource[T]) normalizeKey(key any) (any, error) {
-	info := core.TypeOf(r.tableColumns[r.pk])
-	v, err := core.NormalizeScalar(info.Type, info.NumberKind, key)
-	if err != nil {
-		return nil, fmt.Errorf("%w: %w", ErrKeyInvalid, err)
-	}
-	return v, nil
+// normalizeKey is key in the key columns' canonical forms (keyColumns.normalize).
+func (r *Resource[T]) normalizeKey(key Key) (Key, error) {
+	return r.keyColumns().normalize(key)
 }
 
-// rowKey is row's key as a map key: the value a pointer key points to, since
-// rows scanned apart hold distinct pointers to equal keys.
+// rowKey is row's key as a map key (keyColumns.identity), so rows scanned
+// apart that hold equal keys, through pointers or not, share one.
 func (r *Resource[T]) rowKey(row T) (any, error) {
 	k, err := r.Key(row)
 	if err != nil {
 		return nil, err
 	}
-	v := reflect.ValueOf(k)
-	for v.Kind() == reflect.Pointer && !v.IsNil() {
-		v = v.Elem()
+	for i, v := range k {
+		rv := reflect.ValueOf(v)
+		for rv.Kind() == reflect.Pointer && !rv.IsNil() {
+			rv = rv.Elem()
+		}
+		if !rv.IsValid() || rv.Kind() == reflect.Pointer {
+			return nil, fmt.Errorf("parse: %s: a row has no key: key column %s holds no value", r.table, r.pk[i])
+		}
 	}
-	if !v.IsValid() || v.Kind() == reflect.Pointer {
-		return nil, fmt.Errorf("parse: %s: a row has no key", r.table)
+	id, err := r.keyColumns().identity(k)
+	if err != nil {
+		return nil, fmt.Errorf("parse: %s: row key: %w", r.table, err)
 	}
-	if !v.Comparable() {
-		return nil, fmt.Errorf("parse: %s: key %s is not comparable", r.table, v.Type())
-	}
-	return v.Interface(), nil
+	return id, nil
 }
 
 // updateScope is what an update statement's WHERE binds: the scope's
@@ -424,9 +443,9 @@ func (r *Resource[T]) updateWhere(d filter.Dialect, target Target, s updateScope
 	pc := filter.BuildBaseConstraints(r.tenant, s.tenant, r.deleted, false)
 	switch {
 	case len(target.keys) == 1:
-		pc.Constraints = append(pc.Constraints, &filter.PolicyConstraint{Field: r.pk, Operator: filter.OpEq, Value: target.keys[0]})
+		pc.Constraints = append(pc.Constraints, &filter.PolicyConstraint{Fields: r.pk, Operator: filter.OpEq, Value: target.keys[0]})
 	case len(target.keys) > 1:
-		pc.Constraints = append(pc.Constraints, &filter.PolicyConstraint{Field: r.pk, Operator: filter.OpIn, Value: target.keys})
+		pc.Constraints = append(pc.Constraints, &filter.PolicyConstraint{Fields: r.pk, Operator: filter.OpIn, Value: target.keys})
 	}
 	if s.policy != nil && !s.policy.IsEmpty() {
 		pc.And = append(pc.And, s.policy)
@@ -456,16 +475,20 @@ func (r *Resource[T]) updateWhere(d filter.Dialect, target Target, s updateScope
 // A replace or an add writes one junction row per owner and value, so a
 // ByFilter update that matches many rows writes as many pairs as its rows
 // times the patch's values: bound the target as the batch it is.
-func (r *Resource[T]) RelationStatements(plan *UpdatePlan, ownerKeys []any) ([]patch.RenderedRelationStatement, error) {
+func (r *Resource[T]) RelationStatements(plan *UpdatePlan, ownerKeys []Key) ([]patch.RenderedRelationStatement, error) {
 	if err := r.ownsUpdatePlan(plan); err != nil {
 		return nil, err
 	}
 	if len(plan.relations) == 0 || len(ownerKeys) == 0 {
 		return nil, nil
 	}
+	owners, err := r.ownerKeys(ownerKeys)
+	if err != nil {
+		return nil, err
+	}
 	var out []patch.RenderedRelationStatement
 	for _, op := range plan.relations {
-		opts := patch.RenderRelationOpOptions{Owner: patch.RelationOwner{Table: r.table, Key: r.pk, Tenant: r.tenant}}
+		opts := patch.RenderRelationOpOptions{Owner: patch.RelationOwner{Table: r.table, Key: slices.Clone(r.pk), Tenant: r.tenant}}
 		opts.TenantValue = plan.tenant
 		if op.Schema.TargetTable != "" {
 			field := plan.fields.Fields[op.Field]
@@ -473,7 +496,7 @@ func (r *Resource[T]) RelationStatements(plan *UpdatePlan, ownerKeys []any) ([]p
 				return filter.VisibleRelated(field, plan.dialect, alias, plan.tenant, plan.related, bind)
 			}
 		}
-		stmts, err := patch.RenderRelationOp(op, plan.dialect, ownerKeys, opts)
+		stmts, err := patch.RenderRelationOp(op, plan.dialect, owners, opts)
 		if err != nil {
 			return nil, fmt.Errorf("parse: %s: relation %q: %w", r.table, op.Field, err)
 		}
@@ -493,7 +516,7 @@ func (r *Resource[T]) RelationStatements(plan *UpdatePlan, ownerKeys []any) ([]p
 // The rows are held to the update's tenant and nothing else: the keys are
 // the rows the update wrote, which RETURNING reports whatever their deleted
 // column or the policy now say.
-func (r *Resource[T]) Reread(plan *UpdatePlan, ownerKeys []any) (*Statement, error) {
+func (r *Resource[T]) Reread(plan *UpdatePlan, ownerKeys []Key) (*Statement, error) {
 	if err := r.ownsUpdatePlan(plan); err != nil {
 		return nil, err
 	}
@@ -505,7 +528,7 @@ func (r *Resource[T]) Reread(plan *UpdatePlan, ownerKeys []any) (*Statement, err
 		return nil, err
 	}
 	pc := filter.BuildBaseConstraints(r.tenant, plan.tenant, "", false)
-	pc.Constraints = append(pc.Constraints, &filter.PolicyConstraint{Field: r.pk, Operator: filter.OpIn, Value: ownerKeys})
+	pc.Constraints = append(pc.Constraints, &filter.PolicyConstraint{Fields: r.pk, Operator: filter.OpIn, Value: ownerKeys})
 	ast, err := filter.ApplyPolicyConstraints(r.filterSchema, nil, pc)
 	if err != nil {
 		return nil, err
@@ -574,13 +597,13 @@ func (r *Resource[T]) updateOptions(opts []UpdateOption) (updateConfig, []patch.
 	return cfg, patchOpts, nil
 }
 
-// checkAssignments refuses a statement of builder that assigns the key or
-// the tenant column. NewResource refuses a patch path over either, so only
+// checkAssignments refuses a statement of builder that assigns a key column
+// or the tenant column. NewResource refuses a patch path over either, so only
 // a server column (Stamp, Increment) can name one here; both builders hold
 // every write to the rule checkIdentityPatches states.
 func (r *Resource[T]) checkAssignments(assignments []patch.ColumnAssignment, builder string) error {
 	for _, assignment := range assignments {
-		if assignment.Column == r.pk || (r.tenant != "" && assignment.Column == r.tenant) {
+		if slices.Contains(r.pk, assignment.Column) || (r.tenant != "" && assignment.Column == r.tenant) {
 			return fmt.Errorf("parse: %s: %s cannot change identity column %s", r.table, builder, assignment.Column)
 		}
 	}

@@ -182,7 +182,7 @@ func TestSetPlans_SQLiteDecimalKeyIndex(t *testing.T) {
 	g := core.NewSchemaGenerator()
 	schema, err := filter.GenerateFilterSchema[planPrice](g)
 	require.NoError(t, err)
-	schema.PrimaryKey = "id"
+	schema.PrimaryKey = []string{"id"}
 	sorts, err := filter.GenerateSortSchema[planPrice](g)
 	require.NoError(t, err)
 	table := schema.Name

@@ -47,14 +47,14 @@ func TestBuildUpdateBatch_MembersTheStoredRowDecides(t *testing.T) {
 	r := gadgetAttrsResource(t)
 	member, err := r.ParsePatch([]byte(`[{"op":"remove","path":"/attrs/old"}]`))
 	require.NoError(t, err)
-	_, err = r.BuildUpdateBatch(filter.SQLiteDialect{}, []parse.RowUpdate{{Key: int64(1), Patch: member}}, parse.Scope{}, parse.UpdateBatchLimits{})
+	_, err = r.BuildUpdateBatch(filter.SQLiteDialect{}, []parse.RowUpdate{{Key: parse.Key{int64(1)}, Patch: member}}, parse.Scope{}, parse.UpdateBatchLimits{})
 	pe, ok := errors.AsType[*core.ParseError](err)
 	require.True(t, ok, "%v is no ParseError", err)
 	assert.Equal(t, patch.ECodeOpNotSQLCompilable.String(), pe.Code)
 
 	settled, err := r.ParsePatch([]byte(`[{"op":"replace","path":"/attrs","value":{}},{"op":"add","path":"/attrs/new","value":1}]`))
 	require.NoError(t, err)
-	_, err = r.BuildUpdateBatch(filter.SQLiteDialect{}, []parse.RowUpdate{{Key: int64(1), Patch: settled}}, parse.Scope{}, parse.UpdateBatchLimits{})
+	_, err = r.BuildUpdateBatch(filter.SQLiteDialect{}, []parse.RowUpdate{{Key: parse.Key{int64(1)}, Patch: settled}}, parse.Scope{}, parse.UpdateBatchLimits{})
 	require.NoError(t, err)
 }
 

@@ -67,7 +67,7 @@ func reservedUsers(t *testing.T) *parse.Resource[reservedUser] {
 	tables := parse.MustResource[reservedTable]("table", parse.TenantColumn("tenant_id"))
 	users.MustRelate("checks", parse.HasMany(checks, "user", parse.Indexed()))
 	users.MustRelate("tables", parse.ManyToMany(tables,
-		parse.Junction{Table: "grant", Source: "user", Target: "table", Tenant: "tenant_id"},
+		parse.Junction{Table: "grant", Source: []string{"user"}, Target: []string{"table"}, Tenant: "tenant_id"},
 		parse.Indexed(), parse.Includable(), parse.Facetable(), parse.Writable()))
 	return users
 }
@@ -199,7 +199,7 @@ func runReservedIdentifiers(t *testing.T, db *sql.DB, d parse.Dialect) {
 		}{{2, `{"order":5}`}, {3, `{"group":"delta"}`}} {
 			p, err := users.ParseMergePatch([]byte(u.raw))
 			require.NoError(t, err)
-			rows = append(rows, parse.RowUpdate{Key: u.id, Patch: p})
+			rows = append(rows, parse.RowUpdate{Key: parse.Key{u.id}, Patch: p})
 		}
 		plan, err := users.BuildUpdateBatch(d, rows, parse.Scope{Tenant: "1"}, parse.UpdateBatchLimits{}, parse.SkipUnchanged())
 		require.NoError(t, err)

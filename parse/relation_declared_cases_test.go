@@ -89,7 +89,7 @@ func relationResources(t *testing.T) relResources {
 
 	devices.MustRelate("commands", parse.HasMany(commands, "device_id", parse.Indexed(), parse.Includable(), parse.Facetable()))
 	devices.MustRelate("type", parse.BelongsTo(types, "type_id", parse.PolicyScoped()))
-	devices.MustRelate("tags", parse.ManyToMany(tags, parse.Junction{Table: "device_tags", Source: "device_id", Target: "tag_id", Tenant: "tenant_id"}, parse.Indexed(), parse.Includable(), parse.Facetable(), parse.Writable()))
+	devices.MustRelate("tags", parse.ManyToMany(tags, parse.Junction{Table: "device_tags", Source: []string{"device_id"}, Target: []string{"tag_id"}, Tenant: "tenant_id"}, parse.Indexed(), parse.Includable(), parse.Facetable(), parse.Writable()))
 	devices.MustRelate("shared_types", parse.ManyToMany(types, parse.Through("device_shared_types", "device_id", "type_id"), parse.PolicyScoped(), parse.Includable(), parse.Facetable(), parse.Writable()))
 	commands.MustRelate("device", parse.BelongsTo(devices, "device_id"))
 	commands.MustRelate("receipts", parse.HasMany(receipts, "command_id", parse.Indexed()))
@@ -324,7 +324,7 @@ func runRelationIncludes(t *testing.T, r relResources, d filter.Dialect, query f
 	require.NoError(t, err)
 	plan, err := r.devices.BuildList(d, req, relationScopeT1())
 	require.NoError(t, err)
-	queries, err := r.devices.IncludeQueries(plan, []any{"d1", "d2", "d3", "d4"})
+	queries, err := r.devices.IncludeQueries(plan, []parse.Key{{"d1"}, {"d2"}, {"d3"}, {"d4"}})
 	require.NoError(t, err)
 	require.Len(t, queries, 3)
 	got := map[string]map[string][]string{}
@@ -349,7 +349,7 @@ func runRelationIncludes(t *testing.T, r relResources, d filter.Dialect, query f
 	assert.Error(t, err, "a belongs-to is not includable")
 	plan, err = r.devices.BuildList(d, req, parse.Scope{Tenant: "t1"})
 	require.NoError(t, err)
-	_, err = r.devices.IncludeQueries(plan, []any{"d1"})
+	_, err = r.devices.IncludeQueries(plan, []parse.Key{{"d1"}})
 	assert.ErrorIs(t, err, filter.ErrRelatedPolicyRequired, "a policy-scoped include needs the target's policy")
 }
 
@@ -424,7 +424,7 @@ func runRelationUnknownPolicy(t *testing.T, r relResources, d filter.Dialect, qu
 	})
 	t.Run("include", func(t *testing.T) {
 		plan := list(t, r.devices, url.Values{filter.ParamInclude: {"shared_types"}}, unknown("device_types"))
-		queries, err := r.devices.IncludeQueries(plan, []any{"d1", "d2", "d3", "d4"})
+		queries, err := r.devices.IncludeQueries(plan, []parse.Key{{"d1"}, {"d2"}, {"d3"}, {"d4"}})
 		require.NoError(t, err)
 		require.Len(t, queries, 1)
 		assert.Empty(t, query(t, queries[0].SQL, queries[0].Args), queries[0].SQL)

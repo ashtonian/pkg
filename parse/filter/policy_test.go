@@ -18,7 +18,7 @@ import (
 func policySchema() *ResourceSchema {
 	return &ResourceSchema{
 		Name:       "items",
-		PrimaryKey: "id",
+		PrimaryKey: []string{"id"},
 		Fields: map[string]*FieldSchema{
 			"name": {ExternalName: "name", Column: "name", DataType: core.FieldTypeString, AllowedOperators: []FilterOperator{OpEq}},
 		},

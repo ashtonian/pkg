@@ -1,6 +1,9 @@
 {
   "version": 1,
   "resource": "doc_entities",
+  "key": [
+    "id"
+  ],
   "filter": {
     "fields": {
       "id": {
