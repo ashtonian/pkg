@@ -15,7 +15,7 @@ The repository's `go.work` ties the published modules together, so a change to o
 | `make test-httpx-unit` / `make test-httpx-integration` | httpx unit or real HTTP integration lane |
 | `make test-parse-unit` / `make test-parse-race` / `make test-parse-race-all` | Parse unit tests and existing fuzz seeds without the race detector / under it, only the tests that run parse code on several goroutines (files tagged `concurrency`) / every unit test under it |
 | `make test-parse-integration` | Parse integration race tests; SQLite always runs, PostgreSQL/PostGIS through explicit DSNs |
-| `make test-parse-sdk` | TypeScript checks, lint, shared corpora and production build |
+| `make test-parse-sdk` | The repository's pnpm contract, then TypeScript checks, lint, shared corpora and production build |
 | `make parse-release-check` | Fresh module-archive consumer, tagged tests, README program and dependency audit |
 | `make parse-sdk-release-check` | Packed SDK consumer, TypeScript declarations, runtime subpaths and sourcemaps |
 | `make parse-sdk-registry-check` | Registry processing delay, integrity and deadline regressions |
@@ -25,7 +25,7 @@ The repository's `go.work` ties the published modules together, so a change to o
 | `make httpx-release-check` | Five module ZIPs downloaded by fresh consumers, both tagged lanes, Gin integration and benchmark smoke tests |
 | `make tool-check` | Module archive tooling tests and static analysis |
 | `make docs-check` | Every module's Markdown, in the workspace or kept out of it, held to its code: the Go identifiers its code spans name, its relative links and their anchors, its code-map entries; for a module that opts in, every Go file in a code map, every export named and every option in a table row ([tools/doccheck](tools/doccheck/README.md)) |
-| `make release-please-check` | The release workflow's release-please runner: first-parent release notes and their release-please wiring, and the [release-notes check](#releases) of a pull request's commits ([tools/release-please](tools/release-please/README.md)) |
+| `make release-please-check` | The release workflow's release-please runner: first-parent release notes and their release-please wiring, the [release-notes check](#releases) of a pull request's commits ([tools/release-please](tools/release-please/README.md)), and the repository's pnpm contract |
 | `make cookbook-check` | The [config cookbook](config/examples/cookbook), a module of runnable recipes |
 | `make cookbook-integration` | The cookbook's database tests: the settings-store recipe on SQLite, and on PostgreSQL through `COOKBOOK_POSTGRES_DSN` (`make cookbook-postgres-up` starts a server; see the [cookbook's README](config/examples/cookbook/README.md#build-run-and-test)) |
 | `make parse-example-check` | The [Parse server example](parse/examples/server), a module of its own, against the Parse working tree: tidy, vet, staticcheck and its tagged tests under race |
@@ -151,8 +151,10 @@ workflow back on from the Actions tab.
 A module that requires another module of this repository requires a released version of it. When it needs an unreleased change, release the dependency first, then raise the requirement.
 
 Workspace development requires Go 1.27. The TypeScript SDK's targets also need Node.js
-22.13 or later (its `engines` floor, which CI runs exactly alongside the newest LTS) and pnpm 12, at the version `parse/sdk/ts/package.json` pins in `packageManager`;
-`make test-parse-sdk` refuses any other pnpm release.
+22.13 or later (its `engines` floor, which CI runs exactly alongside the newest LTS) and pnpm 12; `make release-please-check` needs both too. Every pnpm project here (`parse/sdk/ts`,
+`tools/release-please`) pins the same pnpm release in `packageManager`. Both targets start with
+`tools/check-pnpm.mjs`, which refuses any other pnpm on `PATH` and names the command that installs the pinned one
+(`npm install --global pnpm@X.Y.Z`). Raise the pin in every project together.
 Gowalker is its own module at
 `github.com/ashtonian/pkg/gowalker`, released with `gowalker/v…` tags. Public modules contain source, tests,
 licenses and user documentation; project plans, reviews and audits stay outside

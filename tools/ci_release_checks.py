@@ -34,7 +34,8 @@ CHECKS = {
     # The Parse server example replaces Parse with its working tree.
     "parse-example-check": ("parse/",),
     "tool-check": (ARCHIVE_TOOLING,),
-    "release-please-check": ("tools/release-please/",),
+    # With the pnpm contract every pnpm project keeps, which it runs and tests.
+    "release-please-check": ("tools/release-please/", "tools/check-pnpm"),
     # The documentation check reads every module's Markdown, API and comments,
     # the workspace's and those kept out of it.
     "docs-check": ("config/", "gitx/", "gowalker/", "httpx/", "jsonvalue/", "onepassword/", "parse/", "process/",

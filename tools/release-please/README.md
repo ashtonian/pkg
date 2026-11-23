@@ -70,6 +70,13 @@ Two places use it:
 | `--checkout` | local path | `.` | A clone with the whole history (`fetch-depth: 0`) |
 | `GITHUB_ACTIONS` (env) | `true` or unset | set by Actions | `true` writes each problem as an error or warning annotation |
 
+pnpm reads:
+
+| Input | Type | Default | Description |
+|---|---|---|---|
+| `packageManager` (`package.json`) | `pnpm@X.Y.Z` | `pnpm@12.23.0` | The pnpm release, the one every pnpm project in the repository pins; CI's `pnpm/action-setup` installs it from this field |
+| `pmOnFail` (`pnpm-workspace.yaml`) | `ignore` | `ignore` | Another pnpm runs as itself rather than switching to the pinned one, so pnpm writes no leading `packageManagerDependencies` document into `pnpm-lock.yaml`, which GitHub's dependency graph, its SBOM and Dependabot alerts read only as one document. `../check-pnpm.mjs` enforces the pin instead |
+
 release-please's own settings (release type, components, `exclude-paths`, `last-release-sha`) stay in `release-please-config.json`. The plugin ranks types by `changelog-sections`, which every path must then share: `processCommits` is not told which path it is handling, so a config whose paths set different sections is refused.
 
 ## External dependencies
@@ -77,7 +84,7 @@ release-please's own settings (release type, components, `exclude-paths`, `last-
 - `release-please` 17.11.2, pinned in `package.json` and `pnpm-lock.yaml`. `plugin.mjs` imports `ManifestPlugin` from `release-please/build/src/plugin.js`, `parseConventionalCommits` from `release-please/build/src/commit.js`, `ROOT_PROJECT_PATH` from `release-please/build/src/manifest.js`, and `CommitSplit` and `CommitExclude` from `release-please/build/src/util/`, paths outside its documented exports. `plugin.test.mjs` builds the plugin through release-please's plugin factory, drives it as the manifest does (`preconfigure`, then each path's parse through `processCommits`), and writes the notes with release-please's `DefaultChangelogNotes`, so an upgrade that moves any of them, changes how the parser splits a merge's trailers, or makes the changelog writer read a header differently fails `make release-please-check`.
 - `@conventional-commits/parser`, the parser `parseConventionalCommits` runs, at the version release-please's own install resolves (0.4.1 in `pnpm-lock.yaml`); `commit-messages.mjs` loads it through release-please rather than depending on it. `parseConventionalCommits` logs a parse error at debug level and keeps no syntax tree, so `commit-messages.mjs` parses each entry with that parser and splits a message as release-please's `splitMessages`, which it does not export, does. `commit-messages.test.mjs` parses each case's entries one by one through `parseConventionalCommits` and requires the result to equal its parse of the whole message, so an upgrade that splits or parses messages differently fails `make release-please-check`.
 - `git` on `PATH`, for the history read and the pull request's commits.
-- Node.js 22 or later (release-please's floor); the workflow uses the current LTS. pnpm at the version `packageManager` pins, which pnpm does not let run dependencies' install scripts.
+- Node.js 22 or later (release-please's floor); the workflow uses the current LTS. pnpm at the release `packageManager` pins, which pnpm does not let run dependencies' install scripts. `../check-pnpm.mjs` refuses another pnpm on `PATH`.
 - GitHub's REST and GraphQL APIs. One run costs a few hundred REST calls, most of them release-please fetching each branch commit's files.
 
 ## Interfaces
@@ -92,7 +99,7 @@ release-please's own settings (release type, components, `exclude-paths`, `last-
 ## Build, run and test
 
 ```bash
-make release-please-check          # pnpm install --frozen-lockfile, then node --test
+make release-please-check          # the pnpm contract and its test, pnpm install --frozen-lockfile, then node --test
 GITHUB_TOKEN="$(gh auth token)" node tools/release-please/run.mjs --repo ashtonian/pkg --dry-run
 gh pr view 361 -R ashtonian/pkg --json body -q .body > /tmp/description.md
 node tools/release-please/check-commits.mjs --base origin/main --body-file /tmp/description.md
@@ -134,6 +141,12 @@ The `release notes` workflow's `commits` job (`commits release-please can read`)
 - **`check-commits failed: … is a shallow clone`** or **`unknown revision`**: the checkout lacks the history or the base branch; the job's checkout keeps `fetch-depth: 0`, and locally `git fetch origin main`.
 - **`<merge> (<subject>) is missing what release-please cannot read of its branch commit <sha> (<subject>): …`** in `release-pr`'s log: that merge's entry in the release PR lacks the commit's type, `BREAKING CHANGE` notes or references. Before the release PR merges, add to the merged pull request's description a commit override that states its whole change, then rerun `release-pr` (or push to main); the plugin then reads the override and the warning goes.
 
+`make release-please-check`, like `make test-parse-sdk`, starts with `../check-pnpm.mjs`, the pnpm contract every pnpm project in the repository keeps. It prints `pnpm contract: pnpm X.Y.Z, pmOnFail: ignore and a one-document pnpm-lock.yaml in …` when it holds, and otherwise one `pnpm contract:` line per problem.
+
+- **`pnpm contract: pnpm A is on PATH (<path>), but the repository pins pnpm B; …`**: run the command it names, `npm install --global pnpm@B`, which replaces the pnpm among the active Node.js's global packages. If `<path>` is not under that Node.js (a standalone or Corepack pnpm), update that install instead, or put the new pnpm first on `PATH`.
+- **`… pnpm-lock.yaml has YAML document markers on line(s) …`**: a pnpm without `pmOnFail: ignore` wrote a `packageManagerDependencies` document ahead of the lockfile, and pnpm keeps it once written; delete it from the first `---` line through the second.
+- **`… pin different pnpm releases (…)`**: raise `packageManager` to the same release in every listed `package.json`.
+
 ## Security
 
 The job holds `contents: write` and `pull-requests: write`. `run.mjs` passes the token to release-please only; it never logs it. The checkout keeps no credentials (`persist-credentials: false`), and the history read runs `git` against that checkout only. Dependencies install from the lockfile alone (`--frozen-lockfile`), without install scripts. The `release notes` job holds `contents: read` alone and keeps no checkout credentials; the pull request's description reaches the check through an environment variable and a file, never the script's text.
@@ -150,6 +163,9 @@ The job holds `contents: write` and `pull-requests: write`. `run.mjs` passes the
 | `check-commits.mjs` | The pull-request check the `release notes` workflow runs |
 | `../../.github/workflows/release-notes.yml` | The pull-request check's workflow: every pull request event, including description edits |
 | `../../.github/actions/release-please-tool` | Node.js, pnpm and this tool's dependencies, for the workflow's jobs and CI |
+| `pnpm-workspace.yaml` | `pmOnFail: ignore`, which keeps `pnpm-lock.yaml` one document |
+| `../check-pnpm.mjs` | The repository's pnpm contract: `pmOnFail: ignore` and a one-document lockfile in every pnpm project, one pinned pnpm release, and that release on `PATH` |
+| `../check-pnpm.test.mjs` | The contract on a scratch repository of two pnpm projects: each problem and the command it names |
 | `first-parent.test.mjs` | Counting, the fallbacks, trailers, overrides (the merge's own, a stacked pull request's, and one nothing carries), paths a merge doesn't reach, type, breaking, Release-As and reference folding; per-path typing where the branch is complete, and the subject as a floor where its branch doesn't back it; the warning naming a merge with a branch commit release-please cannot read, and none under the merge's own override; `readHistory` on scratch repositories (a sync merge, a branch cut from another, a wrapped subject, branch commits' files); `fetchBranchHead` against a bare remote |
 | `outputs.test.mjs` | Output names and encoding |
 | `commit-messages.test.mjs` | Messages that parse, the #289 body line, two `BREAKING CHANGE` footers, an override's swallowed `!` header, nested commits that are fine and two entries in one; the split held to `parseConventionalCommits`; an override replacing its commits; a pull request's commits read from a scratch repository without merges or reverted pairs; `check-commits.mjs`'s annotations and exit status |

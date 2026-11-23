@@ -89,6 +89,7 @@ class ReleaseChecks(unittest.TestCase):
             ("tools/doccheck/check.go",): ["docs-check"],
             ("httpx/examples/gin/main.go",): ["httpx-release-check", "docs-check"],
             ("tools/release-please/first-parent.mjs",): ["release-please-check"],
+            ("tools/check-pnpm.mjs", "tools/check-pnpm.test.mjs"): ["release-please-check"],
             ("tools/check-parse-sdk-release.sh",): [],
             ("CONTRIBUTING.md", "README.md"): [],
             (): [],
@@ -336,6 +337,27 @@ class Scope(unittest.TestCase):
         self.assertIn("uses: ./.github/workflows/ci.yml", NIGHTLY)
         self.assertIn("nightly: true", NIGHTLY)
         self.assertIn("workflow: ci.yml", job("scope"))
+
+
+class PnpmContract(unittest.TestCase):
+    """tools/check-pnpm.mjs holds every pnpm project to one pnpm release and a
+    one-document lockfile; it runs before each project's install, and a change
+    to it runs the jobs that install them."""
+
+    def test_every_pnpm_install_checks_the_contract_first(self):
+        tracked = subprocess.check_output(["git", "-C", str(ROOT), "ls-files", "-z", "--", "*pnpm-lock.yaml"]).decode().split("\0")
+        projects = [str(PurePosixPath(p).parent) for p in tracked if PurePosixPath(p).name == "pnpm-lock.yaml"]
+        self.assertTrue(projects)
+        for project in projects:
+            with self.subTest(project=project):
+                install = f"cd {project} && pnpm install --frozen-lockfile"
+                before = MAKEFILE.split(install, 1)[0]
+                target = re.findall(r"^([\w-]+):", before, re.M)[-1]
+                commands = subprocess.check_output(["make", "-s", "-n", target], cwd=ROOT, timeout=30).decode().splitlines()
+                installs = [i for i, command in enumerate(commands) if install in command]
+                self.assertTrue(installs, target)
+                self.assertIn("node tools/check-pnpm.mjs", commands[:installs[0]], target)
+        self.assertIn("tools/check-pnpm.mjs", SCOPE_JOBS["parse-sdk"])
 
 
 class Make(unittest.TestCase):
