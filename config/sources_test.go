@@ -790,18 +790,32 @@ type unkeyedConfig struct {
 	List    []unkeyedSection          `koanf:"list"`
 }
 
+// unkeyedOf is a section whose every field, keyed or not, names host.
+func unkeyedOf(host string) unkeyedSection {
+	return unkeyedSection{
+		unkeyedBase: unkeyedBase{Note: "note " + host}, Host: host, Hook: "hook " + host,
+		Target: &unkeyedTarget{Name: "target " + host}, Call: func() string { return "call " + host },
+	}
+}
+
+// assertUnkeyedKept asserts got holds want's koanf:"-" fields and host.
+func assertUnkeyedKept(t *testing.T, want, got unkeyedSection, host string) {
+	t.Helper()
+	assert.Equal(t, host, got.Host)
+	assert.Equal(t, want.Note, got.Note)
+	assert.Equal(t, want.Hook, got.Hook)
+	assert.Equal(t, want.Target, got.Target)
+	require.NotNil(t, got.Call)
+	assert.Equal(t, want.Call(), got.Call())
+}
+
 // A typed section's exported koanf:"-" fields, which no key reaches, keep
 // what the source that set the section holds, copied: alone, behind a
 // pointer, in a map or a list, and through a squashed struct. A higher
 // source that sets keys inside the section keeps them; one that replaces
 // the section, or what holds it, drops them with the section's keys.
 func TestSources_TypedSectionKeepsItsUnkeyedFields(t *testing.T) {
-	section := func(host string) unkeyedSection {
-		return unkeyedSection{
-			unkeyedBase: unkeyedBase{Note: "note " + host}, Host: host, Hook: "hook " + host,
-			Target: &unkeyedTarget{Name: "target " + host}, Call: func() string { return "call " + host },
-		}
-	}
+	section, kept := unkeyedOf, assertUnkeyedKept
 	defaults := WithDefaults(map[string]any{
 		"section": section("a"),
 		"ptr":     new(section("b")),
@@ -809,15 +823,6 @@ func TestSources_TypedSectionKeepsItsUnkeyedFields(t *testing.T) {
 		"by_port": map[int]unkeyedSection{80: section("d")},
 		"list":    []unkeyedSection{section("e")},
 	})
-	kept := func(t *testing.T, want unkeyedSection, got unkeyedSection, host string) {
-		t.Helper()
-		assert.Equal(t, host, got.Host)
-		assert.Equal(t, want.Note, got.Note)
-		assert.Equal(t, want.Hook, got.Hook)
-		assert.Equal(t, want.Target, got.Target)
-		require.NotNil(t, got.Call)
-		assert.Equal(t, want.Call(), got.Call())
-	}
 
 	got, err := Load[unkeyedConfig](t.Context(), defaults)
 	require.NoError(t, err)
@@ -850,6 +855,47 @@ func TestSources_TypedSectionKeepsItsUnkeyedFields(t *testing.T) {
 	assert.Equal(t, unkeyedSection{}, got.ByName["c"])
 	assert.Equal(t, []unkeyedSection{{Host: "f"}}, got.List, "a list replaced keeps nothing of its elements")
 	kept(t, section("d"), got.ByPort[80], "d")
+}
+
+type checkedSection struct {
+	Host string `koanf:"host" validate:"hostname"`
+	Hook string `koanf:"-"`
+}
+
+type checkedUnkeyedConfig struct {
+	Section checkedSection `koanf:"section"`
+}
+
+// A provider's typed section keeps its koanf:"-" fields as a default's does:
+// a higher file setting one key inside it keeps them, a higher provider's
+// typed section replaces them with its own, and a section an entry filter
+// withholds leaves the one beneath it in force, unkeyed fields included.
+func TestSources_ProviderTypedSectionKeepsItsUnkeyedFields(t *testing.T) {
+	provider := func(host string) mapSource {
+		return mapSource{"section": unkeyedOf(host), "by_name": map[string]unkeyedSection{"c": unkeyedOf(host)}}
+	}
+	file := filepath.Join(t.TempDir(), "config.yaml")
+	writeFile(t, file, "section: {host: f}\nby_name: {c: {host: f}}\n")
+	got, err := Load[unkeyedConfig](t.Context(), WithBaseProvider(provider("p"), nil), WithFile(file))
+	require.NoError(t, err)
+	assertUnkeyedKept(t, unkeyedOf("p"), got.Section, "f")
+	assertUnkeyedKept(t, unkeyedOf("p"), got.ByName["c"], "f")
+
+	got, err = Load[unkeyedConfig](t.Context(), WithDefaults(map[string]any{"section": unkeyedOf("d")}), WithOverrideProvider(provider("o"), nil))
+	require.NoError(t, err)
+	assertUnkeyedKept(t, unkeyedOf("o"), got.Section, "o")
+
+	var rejected []KeyError
+	invalid := mapSource{"section": checkedSection{Host: "not a host!", Hook: "invalid"}}
+	checked, err := Load[checkedUnkeyedConfig](t.Context(),
+		WithDefaults(map[string]any{"section": checkedSection{Host: "d.example", Hook: "default"}}),
+		WithOverrideProvider(invalid, nil, WithInvalidEntries(func(_ context.Context, entries []KeyError) error {
+			rejected = entries
+			return nil
+		})))
+	require.NoError(t, err)
+	require.Len(t, rejected, 1)
+	assert.Equal(t, checkedSection{Host: "d.example", Hook: "default"}, checked.Section)
 }
 
 // A higher source adds and changes entries of a typed default map but

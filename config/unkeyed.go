@@ -31,22 +31,52 @@ type unkeyedFields struct {
 type unkeyedSections map[string]unkeyedFields
 
 // merge updates s for one source: tree, its tree as it merges, and set, the
-// sections it sets whole.
+// sections its walk recorded. A section a filter withheld from the tree
+// since (WithInvalidEntries) is not kept.
 func (s *unkeyedSections) merge(tree map[string]any, set []unkeyedFields) {
 	for k, u := range *s {
 		if replaces(tree, u.path) {
 			delete(*s, k)
 		}
 	}
-	if len(set) == 0 {
-		return
-	}
-	if *s == nil {
-		*s = make(unkeyedSections, len(set))
-	}
 	for _, u := range set {
+		if !holdsMap(tree, u.path) {
+			continue
+		}
+		if *s == nil {
+			*s = unkeyedSections{}
+		}
 		(*s)[u.path.String()] = u
 	}
+}
+
+// holdsMap reports whether tree, a source's tree, holds a map at p.
+func holdsMap(tree map[string]any, p keyPath) bool {
+	var at any = tree
+	for _, seg := range p {
+		var ok bool
+		switch seg.kind {
+		case segField, segKey:
+			var m map[string]any
+			if m, ok = mergedMap(at); ok {
+				at, ok = m[seg.name]
+			}
+		case segIndex:
+			switch list := at.(type) {
+			case []any:
+				if ok = seg.index < len(list); ok {
+					at = list[seg.index]
+				}
+			case listEdit:
+				at, ok = list[seg.index]
+			}
+		}
+		if !ok {
+			return false
+		}
+	}
+	_, ok := mergedMap(at)
+	return ok
 }
 
 // replaces reports whether tree, merged by mergeTrees, replaces the value at

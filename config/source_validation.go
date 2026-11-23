@@ -119,7 +119,7 @@ func (l *loader) prepareProvider(ctx context.Context, name string, data map[stri
 			}
 		}
 	}
-	return l.merge(name, tree, sources)
+	return l.mergeSource(name, tree, w.unkeyed, sources)
 }
 
 func (l *loader) prepareValidation(ctx context.Context, o *options) error {
