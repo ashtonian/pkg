@@ -14,6 +14,11 @@ export default defineConfig(
         tsconfigRootDir: import.meta.dirname,
       },
     },
+    rules: {
+      // `this: void` declares a method that does not read its receiver, so
+      // unbound-method lets callers destructure it.
+      "@typescript-eslint/no-invalid-void-type": ["error", { allowAsThisParameter: true }],
+    },
   },
   { files: ["**/*.js"], extends: [tseslint.configs.disableTypeChecked] },
 );

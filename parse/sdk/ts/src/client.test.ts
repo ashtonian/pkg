@@ -982,3 +982,112 @@ describe("validation before sending", () => {
     await expect(items.list({ search: "  " })).resolves.toBeDefined();
   });
 });
+
+describe("methods detached from their handle", () => {
+  const updated = exchange<PatchResult<WireItem>>("patch").response.body;
+  const p = (name: string): string => wire.params[name] ?? `missing ${name}`;
+
+  // walkServer answers the schema, the recorded keyset walk by cursor,
+  // patches and facets.
+  const walkServer = () => fakeServer(({ method, url }) => {
+    if (url.pathname.endsWith("/schema")) return json(schema);
+    if (url.pathname.endsWith("/schemas")) return json(exchange("schemas").response.body);
+    if (method === "PATCH") return json(updated);
+    if (method === "OPTIONS") return json({ facets: {} });
+    const cursor = url.searchParams.get(p("ParamCursor")) ?? "";
+    const recorded = wire.list.find((c) => (c.request.query?.[p("ParamCursor")]?.[0] ?? "") === cursor);
+    return recorded ? json(recorded.response.body) : json({ code: "E2082", message: "invalid cursor" }, 422);
+  });
+  const sent = (calls: Call[]) => calls.map((c) => ({ method: c.method, url: c.url.href, body: c.body }));
+  const walkOpts = { sort: wire.sort, pageSize: wire.page_size };
+  const notEcho = { filter: { name: { $ne: "echo" } } };
+
+  async function collect<R>(pages: AsyncIterable<R>): Promise<R[]> {
+    const out: R[] = [];
+    for await (const page of pages) out.push(page);
+    return out;
+  }
+
+  // A query library or retry wrapper: it calls the function it is given
+  // with no receiver.
+  const wrapped = <A extends unknown[], R>(f: (...args: A) => R) => (...args: A): R => f(...args);
+
+  it.each([false, true])("send what calls through the handle send (validateBeforeSend %s)", async (validate) => {
+    const control = walkServer();
+    const handle = client(control.fetch, validate).resource<WireItem>("items", { schema: "wire_items" });
+    const want = [
+      await handle.list({ ...notEcho, sort: "name" }),
+      ...(await collect(handle.listAll(walkOpts))),
+      await handle.patch("b", { name: "bravo" }),
+      await handle.patchMany(["b", "d"], { name: "bravo" }),
+      await handle.facets(["name"], notEcho),
+      (await handle.validator()).filterableFields(),
+      await handle.schema(),
+    ];
+
+    const server = walkServer();
+    const { list, listAll, patch, patchMany, facets, validator, schema: schemaOf } =
+      client(server.fetch, validate).resource<WireItem>("items", { schema: "wire_items" });
+    const got = [
+      await wrapped(list)({ ...notEcho, sort: "name" }),
+      ...(await collect(wrapped(listAll)(walkOpts))),
+      await patch("b", { name: "bravo" }),
+      await wrapped(patchMany)(["b", "d"], { name: "bravo" }),
+      await facets(["name"], notEcho),
+      (await validator()).filterableFields(),
+      await schemaOf(),
+    ];
+
+    expect(got).toEqual(want);
+    expect(sent(server.calls)).toEqual(sent(control.calls));
+  });
+
+  it("include the client's own", async () => {
+    const server = walkServer();
+    const { resource, schemas } = client(server.fetch, true);
+    await expect(wrapped(resource<WireItem>)("items", { schema: "wire_items" }).list({ sort: "name" })).resolves.toEqual(page(0));
+    await expect(wrapped(schemas)()).resolves.toEqual(Object.values(related));
+    expect(server.calls.map((c) => c.url.pathname)).toEqual(["/wire_items/schema", "/items", "/schemas"]);
+  });
+
+  it.each([false, true])("refuse what calls through the handle refuse (validateBeforeSend %s)", async (validate) => {
+    const server = walkServer();
+    const { list, patch, patchMany, facets } = client(server.fetch, validate).resource<WireItem>("items", { schema: "wire_items" });
+    await expect(patch("", { name: "bravo" })).rejects.toBeInstanceOf(RangeError);
+    await expect(patchMany([], { name: "bravo" })).rejects.toBeInstanceOf(RangeError);
+    if (validate) {
+      await expect(list({ filter: { name: "zulu" } })).rejects.toMatchObject({ code: "E2087" });
+      await expect(facets(["labels"])).rejects.toMatchObject({ code: "E2071" });
+      await expect(patch("a", { name: null })).rejects.toMatchObject({ code: "E2077" });
+      await expect(patchMany(["a"], { name: null })).rejects.toMatchObject({ code: "E2077" });
+    }
+    expect(server.calls.filter((c) => !c.url.pathname.endsWith("/schema"))).toHaveLength(0);
+  });
+
+  it("iterate lazily: listAll sends nothing until a page is asked for", async () => {
+    const server = walkServer();
+    const { listAll } = client(server.fetch, true).resource<WireItem>("items", { schema: "wire_items" });
+    const pages = listAll(walkOpts);
+    expect(server.calls).toHaveLength(0);
+    const first = await pages.next();
+    if (first.done) throw new Error("listAll yielded no page");
+    expect(first.value).toEqual(page(0));
+    expect(first.value.page_info.has_next_page).toBe(true);
+    expect(server.calls.map((c) => c.url.pathname)).toEqual(["/wire_items/schema", "/items"]);
+  });
+
+  it("share one schema fetch between concurrent validating calls", async () => {
+    const server = walkServer();
+    const { list, patch, patchMany, facets, validator } = client(server.fetch, true).resource<WireItem>("items", { schema: "wire_items" });
+    await Promise.all([list({ sort: "name" }), patch("b", { name: "bravo" }), patchMany(["b"], { name: "bravo" }), facets(["name"]), validator()]);
+    expect(server.calls.filter((c) => c.url.pathname.endsWith("/schema"))).toHaveLength(1);
+  });
+
+  it("end a validating list's wait on its abort, sending nothing", async () => {
+    const server = walkServer();
+    const { list, listAll } = client(server.fetch, true).resource<WireItem>("items", { schema: "wire_items" });
+    await expect(list({ sort: "name" }, { signal: AbortSignal.abort() })).rejects.toMatchObject({ name: "AbortError" });
+    await expect(listAll(walkOpts, { signal: AbortSignal.abort() }).next()).rejects.toMatchObject({ name: "AbortError" });
+    expect(server.calls).toHaveLength(0);
+  });
+});
