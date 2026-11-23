@@ -112,7 +112,7 @@ When the service writes the table itself — an admin API, a settings page — s
 
 A write is checked by the load that will read it. The service's options come from one builder; a write builds the table it would leave and loads it with those options, the table read replaced by that one, so `limits.min` and `limits.max` move together, the file and the environment beneath the table are read as the next reload reads them, and a table the service would refuse is never committed. `DecodeEdits` over the live config is not that check: it misses a lower source that changed and a row deleted since the config loaded. When the settings fail to load without the write as well, the fault is beneath it — in the file, the environment or a row already stored — and the write is a 503, logged at `Error`. A refused write is a 422 whose body names the client's own keys, never a value, and its `reason`: `unknown` (a key names nothing the service reads), `repeated` (one key spelled two ways), `invalid` (the settings the write leaves do not load), `full` (the table would pass its cap) or `enclosed` (a key lies inside a list or a scalar a stored row sets).
 
-Writes take turns across replicas: each updates one lock row as its first statement, which the database holds until the write ends, so each reads the table the one before it left. The transaction runs at `READ COMMITTED` whatever the server's default, the level at which a write that waited reads what the one before it committed; SQLite's driver ignores the level, since its transactions are serializable and the lock row's update takes its write lock. A configured cap bounds the table, and values are read with `UseNumber`, so integers keep every digit. The pool, the request timeouts and caps, and the log level (`warn` by default, with one startup entry) are `BootConfig` fields. [`settingsstore/main.go`](settingsstore/main.go) has the `PUT /admin/settings` handler and the `main` that serves it; its test runs every path on SQLite, two replicas writing at once among them.
+Writes take turns across replicas: each updates one lock row as its first statement, which the database holds until the write ends, so each reads the table the one before it left. The transaction runs at `READ COMMITTED` whatever the server's default, the level at which a write that waited reads what the one before it committed; SQLite's driver ignores the level, since its transactions are serializable and the lock row's update takes its write lock. Configured caps bound the table in rows and in bytes, and values are read with `UseNumber`, so integers keep every digit. The pool, the request timeouts and caps, and the log level (`warn` by default, with one startup entry) are `BootConfig` fields. [`settingsstore/main.go`](settingsstore/main.go) has the `PUT /admin/settings` handler and the `main` that serves it; its test runs every path on SQLite, two replicas writing at once among them.
 
 | Command | Does |
 |---|---|
@@ -134,13 +134,14 @@ Both commands read the variables below.
 | `SETTINGS_QUERY_TIMEOUT` | duration | `5s` | The bound on a read of the table, and on a write with its wait for its turn |
 | `SETTINGS_POLL_INTERVAL` | duration | `30s` | How often the reloader reads the table besides after a write |
 | `SETTINGS_MAX_ROWS` | int | `1000` | The table's row cap: a write that would grow the table past it is refused. A read accepts up to twice the cap, so a cap lowered beneath the table leaves it readable, and fails past that, so what a read holds stays bounded |
+| `SETTINGS_MAX_TABLE_BYTES` | int | `1048576` | The table's byte cap, counting every row's key and its value's JSON text, by the row cap's rule: a write that would grow the table past it is refused, and a read accepts up to twice it. The database withholds a value larger than twice the cap, so one row stored by another writer cannot pass the bound either |
 | `SETTINGS_MAX_BODY_BYTES` | int | `1048576` | The largest request body; a larger one is a 413 |
 | `SETTINGS_READ_HEADER_TIMEOUT`, `SETTINGS_READ_TIMEOUT` | duration | `5s`, `10s` | The server's bounds on reading a request's headers, and the whole request |
 | `SETTINGS_WRITE_TIMEOUT` | duration | `15s` | The server's bound on a response; longer than the query timeout |
 | `SETTINGS_IDLE_TIMEOUT` | duration | `60s` | How long a keep-alive connection idles |
 | `SETTINGS_SHUTDOWN_TIMEOUT` | duration | `10s` | The drain deadline on `SIGTERM` |
 
-A write that times out waiting for its turn — behind another write of the same replica, for a pooled connection, or for the lock row another replica holds — is contention: a 503 with `reason` `busy` and a `Retry-After` of the query timeout, logged at `Warn`. Frequent ones mean writes take too long or arrive too fast for `SETTINGS_QUERY_TIMEOUT`. Every other 503 is logged at `Error`: `the settings fail to load without this write` means the service's own settings do not load even with the write left out, so no client is at fault. The entry names what to check — `SETTINGS_CONFIG_FILE`, the `APP_*` variables and the settings table — and the wrapped error names the key that fails. Fix the file or the variable and redeploy, or fix or delete the row — a row whose field a release removed is deleted by writing its key as `null` — and the next poll recovers; `taking the settings lock` means the lock row is gone — run `settingsstore migrate`, which restores it; anything else is the database. While the settings do not load, every reload fails and the service keeps its previous config. `settings table over its row cap`, at `Warn` on every read, means `SETTINGS_MAX_ROWS` was lowered beneath the table's rows. The service still loads the table and takes every write that does not grow it, deletes among them, and refuses one that grows it as `full`: delete rows through the API until the warning stops. A table past twice the cap fails every read with `the table holds more than N rows`, so reloads keep the previous config, writes fail and restarts fail: raise `SETTINGS_MAX_ROWS` to at least half the table's rows, delete rows through the API, then lower it. Lower the cap by at most half at a time. `settings the schema does not read left out of the load`, at `Warn` on every read, names in `keys` what a removed field left: write each key as `null` to delete its row, or, for a part of a row's value such as `limits.old` inside the `limits` row, write the row's key whole again.
+A write that times out waiting for its turn — behind another write of the same replica, for a pooled connection, or for the lock row another replica holds — is contention: a 503 with `reason` `busy` and a `Retry-After` of the query timeout, logged at `Warn`. Frequent ones mean writes take too long or arrive too fast for `SETTINGS_QUERY_TIMEOUT`. Every other 503 is logged at `Error`: `the settings fail to load without this write` means the service's own settings do not load even with the write left out, so no client is at fault. The entry names what to check — `SETTINGS_CONFIG_FILE`, the `APP_*` variables and the settings table — and the wrapped error names the key that fails. Fix the file or the variable and redeploy, or fix or delete the row — a row whose field a release removed is deleted by writing its key as `null` — and the next poll recovers; `taking the settings lock` means the lock row is gone — run `settingsstore migrate`, which restores it; anything else is the database. While the settings do not load, every reload fails and the service keeps its previous config. `settings table over its cap`, at `Warn` on every read, means `SETTINGS_MAX_ROWS` or `SETTINGS_MAX_TABLE_BYTES` was lowered beneath the table; the entry gives the table's `rows` and `bytes` beside each cap. The service still loads the table and takes every write that does not grow it past a cap, deletes among them, and refuses one that does as `full`: delete rows through the API until the warning stops. A table past twice a cap fails every read with `the table holds more than N rows` or `more than N bytes`, so reloads keep the previous config, writes fail and restarts fail: raise that cap to at least half the table's size, delete rows through the API, then lower it. Lower a cap by at most half at a time. `settings the schema does not read left out of the load`, at `Warn` on every read, names in `keys` what a removed field left: write each key as `null` to delete its row, or, for a part of a row's value such as `limits.old` inside the `limits` row, write the row's key whole again.
 
 <!-- recipe: settingsstore/main.go -->
 
@@ -218,25 +219,35 @@ func (s *Settings) Write(ctx context.Context, edits map[string]any) ([]string, e
 	if n != 1 {
 		return nil, errors.New("taking the settings lock: settings_lock has no row 1; run `settingsstore migrate`")
 	}
-	stored, err := readRows(ctx, tx, readSlack*s.maxRows)
+	stored, err := readRows(ctx, tx, s.limits.read())
 	if err != nil {
 		return nil, err
 	}
-	if missing := unstored(unread, stored); len(missing) > 0 {
+	if missing := unstored(unread, stored.values); len(missing) > 0 {
 		return nil, &RefusedError{Reason: ReasonUnknown, Keys: missing}
 	}
 	keys := append(slices.Collect(maps.Keys(writes)), unread...)
 	slices.Sort(keys)
-	c, err := apply(stored, writes, unread)
+	c, err := apply(stored.values, writes, unread)
 	if err != nil {
 		return nil, err
 	}
-	// A table over the cap, the cap lowered beneath it, takes the writes
-	// that do not grow it, so the API can bring it back under.
-	if len(c.table) > s.maxRows && len(c.table) > len(stored) {
+	texts, err := encode(writes, c.rewritten)
+	if err != nil {
+		return nil, err
+	}
+	after := tableSize{rows: len(c.table)}
+	for key := range c.table {
+		if text, ok := texts[key]; ok {
+			after.bytes += int64(len(key) + len(text))
+		} else {
+			after.bytes += stored.sizes[key]
+		}
+	}
+	if s.limits.refuses(stored.size(), after) {
 		return nil, &RefusedError{Reason: ReasonFull, Keys: keys}
 	}
-	before, _ := readable(stored)
+	before, _ := readable(stored.values)
 	if err := s.check(ctx, before, loadable(c.table, writes), keys); err != nil {
 		return nil, err
 	}
@@ -245,17 +256,11 @@ func (s *Settings) Write(ctx context.Context, edits map[string]any) ([]string, e
 			return nil, fmt.Errorf("deleting %s: %w", key, err)
 		}
 	}
-	for _, key := range slices.Sorted(maps.Keys(c.rewritten)) {
-		if err := store(ctx, tx, key, c.rewritten[key]); err != nil {
-			return nil, err
-		}
-	}
-	for _, key := range keys {
-		if writes[key] == nil {
-			continue
-		}
-		if err := store(ctx, tx, key, writes[key]); err != nil {
-			return nil, err
+	for _, key := range slices.Sorted(maps.Keys(texts)) {
+		if _, err := tx.ExecContext(ctx,
+			"INSERT INTO settings (key, value) VALUES ($1, $2) ON CONFLICT (key) DO UPDATE SET value = excluded.value",
+			key, texts[key]); err != nil {
+			return nil, fmt.Errorf("storing %s: %w", key, err)
 		}
 	}
 	if err := tx.Commit(); err != nil {

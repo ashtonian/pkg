@@ -28,13 +28,18 @@ import (
 // replica of the service does, with a pool and Settings of its own. A
 // connection waits up to busy_timeout for another replica's write.
 func replica(t *testing.T, path string, maxRows int) (*Settings, *sql.DB) {
+	return replicaWith(t, path, TableLimits{Rows: maxRows, Bytes: 1 << 20}, slog.New(slog.DiscardHandler))
+}
+
+// replicaWith is replica with limits and a logger of the test's.
+func replicaWith(t *testing.T, path string, limits TableLimits, logger *slog.Logger) (*Settings, *sql.DB) {
 	t.Helper()
 	db, err := sql.Open("sqlite", path+"?_pragma=busy_timeout(10000)")
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = db.Close() })
 	require.NoError(t, migrate(t.Context(), db, time.Second))
 	file := filepath.Join(filepath.Dir(path), "config.yaml") // absent: the table over defaults
-	return NewSettings(db, appSources(file, slog.New(slog.DiscardHandler)), 10*time.Second, maxRows, slog.New(slog.DiscardHandler)), db
+	return NewSettings(db, appSources(file, slog.New(slog.DiscardHandler)), 10*time.Second, limits, logger), db
 }
 
 func newReplica(t *testing.T, maxRows int) (*Settings, *sql.DB) {
@@ -403,7 +408,7 @@ func TestSettings_WritesBeginAtReadCommitted(t *testing.T) {
 	db := sql.OpenDB(recordingConnector{dsn: filepath.Join(dir, "settings.db") + "?_pragma=busy_timeout(10000)", levels: &levels})
 	t.Cleanup(func() { _ = db.Close() })
 	require.NoError(t, migrate(t.Context(), db, time.Second))
-	s := NewSettings(db, appSources(filepath.Join(dir, "config.yaml"), slog.New(slog.DiscardHandler)), 10*time.Second, 100, slog.New(slog.DiscardHandler))
+	s := NewSettings(db, appSources(filepath.Join(dir, "config.yaml"), slog.New(slog.DiscardHandler)), 10*time.Second, TableLimits{Rows: 100, Bytes: 1 << 20}, slog.New(slog.DiscardHandler))
 	write(t, s, map[string]any{"limits.max": 300})
 	write(t, s, map[string]any{"limits.max": nil})
 	assert.Equal(t, []sql.IsolationLevel{sql.LevelReadCommitted, sql.LevelReadCommitted}, levels.levels)
@@ -437,7 +442,7 @@ func TestSettingsHandler_ContentionIsA503ToRetry(t *testing.T) {
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = db.Close() })
 	require.NoError(t, migrate(t.Context(), db, time.Second))
-	s := NewSettings(db, appSources(filepath.Join(filepath.Dir(path), "config.yaml"), slog.New(slog.DiscardHandler)), 200*time.Millisecond, 100, slog.New(slog.DiscardHandler))
+	s := NewSettings(db, appSources(filepath.Join(filepath.Dir(path), "config.yaml"), slog.New(slog.DiscardHandler)), 200*time.Millisecond, TableLimits{Rows: 100, Bytes: 1 << 20}, slog.New(slog.DiscardHandler))
 	var logs bytes.Buffer
 	h := settingsHandler(s, func() {}, 1<<20, slog.New(slog.NewJSONHandler(&logs, nil)))
 	contended := func(t *testing.T) {
@@ -544,10 +549,8 @@ func TestSettings_ANullDeletesARowTheSchemaNoLongerReads(t *testing.T) {
 // writes as though it were gone. What a write sets is not left out, so a key
 // the schema refuses inside a written value still refuses the write.
 func TestSettings_LoadsLeaveOutWhatTheSchemaNoLongerReads(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "settings.db")
-	_, db := replica(t, path, 100)
 	var logs bytes.Buffer
-	s := NewSettings(db, appSources(filepath.Join(filepath.Dir(path), "config.yaml"), slog.New(slog.DiscardHandler)), 10*time.Second, 100, slog.New(slog.NewJSONHandler(&logs, nil)))
+	s, db := replicaWith(t, filepath.Join(t.TempDir(), "settings.db"), TableLimits{Rows: 100, Bytes: 1 << 20}, slog.New(slog.NewJSONHandler(&logs, nil)))
 	write(t, s, map[string]any{"limits.max": 200})
 	for key, value := range map[string]string{
 		"legacy":    "1",
@@ -622,18 +625,52 @@ func TestSettings_ATableOverItsRowCapRecovers(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "settings.db")
 	wide, _ := replica(t, path, 10)
 	write(t, wide, map[string]any{"limits.min": 2, "limits.max": 50, "limits.bytes": 10, `upstreams["a"].url`: "https://a.example"})
-	_, db := replica(t, path, 2)
 	var logs bytes.Buffer
-	narrow := NewSettings(db, appSources(filepath.Join(filepath.Dir(path), "config.yaml"), slog.New(slog.DiscardHandler)), 10*time.Second, 2, slog.New(slog.NewJSONHandler(&logs, nil)))
+	narrow, db := replicaWith(t, path, TableLimits{Rows: 2, Bytes: 1 << 20}, slog.New(slog.NewJSONHandler(&logs, nil)))
 
 	assert.Equal(t, 50, load(t, narrow).Limits.Max, "a reload, and a restart, load the table")
 	var entry struct{ Level, Msg string }
 	require.NoError(t, json.NewDecoder(&logs).Decode(&entry))
 	assert.Equal(t, "WARN", entry.Level)
-	assert.Equal(t, "settings table over its row cap", entry.Msg)
+	assert.Equal(t, "settings table over its cap", entry.Msg)
 	write(t, narrow, map[string]any{"limits.max": 60})
 	_, err := narrow.Write(t.Context(), map[string]any{"routes[0].path": "/a", "routes[0].upstream": "a"})
 	assert.Equal(t, ReasonFull, refusal(t, err).Reason)
 	write(t, narrow, map[string]any{"limits": nil})
 	assert.Equal(t, map[string]string{`upstreams["a"].url`: `"https://a.example"`}, rowsOf(t, db))
+}
+
+// The table holds at most its byte cap, each row's key and its value's JSON
+// text, by its row cap's rule: a write that would grow it past the cap is
+// refused and one that does not is taken, a table over a lowered cap loads
+// and takes the writes that bring it back under, and a read fails past
+// twice the cap.
+func TestSettings_ByteCap(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "settings.db")
+	s, db := replicaWith(t, path, TableLimits{Rows: 100, Bytes: 200}, slog.New(slog.DiscardHandler))
+	long := strings.Repeat("x", 100)
+	write(t, s, map[string]any{`upstreams["a"].url`: "https://a.example/" + long}) // 18 + 120 bytes
+	_, err := s.Write(t.Context(), map[string]any{`upstreams["b"].url`: "https://b.example/" + long})
+	assert.Equal(t, ReasonFull, refusal(t, err).Reason)
+	write(t, s, map[string]any{`upstreams["a"].url`: "https://a.example/"}) // 18 + 20 bytes
+
+	var logs bytes.Buffer
+	narrow, _ := replicaWith(t, path, TableLimits{Rows: 100, Bytes: 30}, slog.New(slog.NewJSONHandler(&logs, nil)))
+	assert.Equal(t, "https://a.example/", load(t, narrow).Upstreams["a"].URL, "over the cap, under twice it: loads")
+	var entry struct{ Level, Msg string }
+	require.NoError(t, json.NewDecoder(&logs).Decode(&entry))
+	assert.Equal(t, "WARN", entry.Level)
+	assert.Equal(t, "settings table over its cap", entry.Msg)
+	_, err = narrow.Write(t.Context(), map[string]any{"limits.max": 5})
+	assert.Equal(t, ReasonFull, refusal(t, err).Reason)
+	write(t, narrow, map[string]any{`upstreams["a"]`: nil})
+	assert.Empty(t, rowsOf(t, db))
+
+	_, err = db.Exec(`INSERT INTO settings (key, value) VALUES ('routes', $1)`, `"`+long+`"`)
+	require.NoError(t, err)
+	_, err = config.Load[AppConfig](t.Context(), narrow.Options()...)
+	require.ErrorIs(t, err, config.ErrSource)
+	assert.Contains(t, err.Error(), "more than 60 bytes")
+	_, err = narrow.Write(t.Context(), map[string]any{"routes": nil})
+	assert.ErrorContains(t, err, "more than 60 bytes")
 }

@@ -62,6 +62,7 @@ type BootConfig struct {
 	QueryTimeout      time.Duration `koanf:"query_timeout" default:"5s" validate:"min=1ms"`
 	PollInterval      time.Duration `koanf:"poll_interval" default:"30s" validate:"min=1s"`
 	MaxRows           int           `koanf:"max_rows" default:"1000" validate:"min=1"`
+	MaxTableBytes     int64         `koanf:"max_table_bytes" default:"1048576" validate:"min=1"`
 	MaxBodyBytes      int64         `koanf:"max_body_bytes" default:"1048576" validate:"min=1"`
 	ReadHeaderTimeout time.Duration `koanf:"read_header_timeout" default:"5s" validate:"min=1ms"`
 	ReadTimeout       time.Duration `koanf:"read_timeout" default:"10s" validate:"min=1ms"`
@@ -137,7 +138,7 @@ const (
 	ReasonUnknown  = "unknown"  // a key names nothing the service reads
 	ReasonRepeated = "repeated" // one key is spelled two ways in one write
 	ReasonInvalid  = "invalid"  // the settings the write leaves do not load
-	ReasonFull     = "full"     // the table would grow past its cap
+	ReasonFull     = "full"     // the table would grow past a cap
 	ReasonEnclosed = "enclosed" // a key lies inside a list or a scalar a stored row sets
 )
 
@@ -167,24 +168,53 @@ type Settings struct {
 	db      *sql.DB
 	sources Sources
 	timeout time.Duration
-	maxRows int
+	limits  TableLimits
 	logger  *slog.Logger
 	// writing admits one of this replica's writes at a time, so writers
 	// waiting for the lock row hold no pooled connection the reloader needs.
 	writing chan struct{}
 }
 
-// readSlack is how far past its row cap a read accepts the table. A cap
+// readSlack is how far past its caps a read accepts the table. A cap
 // lowered beneath the table leaves the table readable, so loads go on and
 // writes can bring it back under, while what a read holds stays bounded.
 const readSlack = 2
 
+// TableLimits are the table's caps. A write may not grow the table past
+// either; a read fails past readSlack times either.
+type TableLimits struct {
+	Rows  int
+	Bytes int64 // every row's key and its value's JSON text
+}
+
+func (l TableLimits) read() TableLimits {
+	return TableLimits{Rows: readSlack * l.Rows, Bytes: readSlack * l.Bytes}
+}
+
+func (l TableLimits) over(size tableSize) bool {
+	return size.rows > l.Rows || size.bytes > l.Bytes
+}
+
+// refuses reports whether a write that takes the table from before to after
+// passes a cap and grows the table on it. A table over a cap, the cap
+// lowered beneath it, takes the writes that do not grow it, so the API can
+// bring it back under.
+func (l TableLimits) refuses(before, after tableSize) bool {
+	return after.rows > l.Rows && after.rows > before.rows ||
+		after.bytes > l.Bytes && after.bytes > before.bytes
+}
+
+// tableSize is a table's size, as TableLimits bound it.
+type tableSize struct {
+	rows  int
+	bytes int64
+}
+
 // NewSettings returns the table in db, loaded with sources' options. Each
-// read, and each write with its wait for its turn, takes at most timeout.
-// A write may not grow the table past maxRows rows, and a read fails past
-// readSlack times that.
-func NewSettings(db *sql.DB, sources Sources, timeout time.Duration, maxRows int, logger *slog.Logger) *Settings {
-	return &Settings{db: db, sources: sources, timeout: timeout, maxRows: maxRows, logger: logger, writing: make(chan struct{}, 1)}
+// read, and each write with its wait for its turn, takes at most timeout,
+// and limits cap the table.
+func NewSettings(db *sql.DB, sources Sources, timeout time.Duration, limits TableLimits, logger *slog.Logger) *Settings {
+	return &Settings{db: db, sources: sources, timeout: timeout, limits: limits, logger: logger, writing: make(chan struct{}, 1)}
 }
 
 // Options are the options the service loads AppConfig with, the table read
@@ -197,16 +227,17 @@ func (s *Settings) Options() []config.Option {
 func (s *Settings) read(ctx context.Context) (map[string]any, error) {
 	readCtx, cancel := context.WithTimeout(ctx, s.timeout)
 	defer cancel()
-	stored, err := readRows(readCtx, s.db, readSlack*s.maxRows)
+	stored, err := readRows(readCtx, s.db, s.limits.read())
 	if err != nil {
 		return nil, err
 	}
-	if len(stored) > s.maxRows {
-		s.logger.WarnContext(ctx, "settings table over its row cap",
-			slog.Int("rows", len(stored)), slog.Int("max_rows", s.maxRows), slog.Int("read_limit", readSlack*s.maxRows),
-			slog.String("remedy", "delete rows through the API, or raise SETTINGS_MAX_ROWS"))
+	if size := stored.size(); s.limits.over(size) {
+		s.logger.WarnContext(ctx, "settings table over its cap",
+			slog.Int("rows", size.rows), slog.Int("max_rows", s.limits.Rows),
+			slog.Int64("bytes", size.bytes), slog.Int64("max_table_bytes", s.limits.Bytes),
+			slog.String("remedy", "delete rows through the API, or raise SETTINGS_MAX_ROWS or SETTINGS_MAX_TABLE_BYTES"))
 	}
-	table, left := readable(stored)
+	table, left := readable(stored.values)
 	if len(left) > 0 {
 		s.logger.WarnContext(ctx, "settings the schema does not read left out of the load",
 			slog.Any("keys", left), slog.String("remedy", "write each key as null, or write the key of the row holding it whole"))
@@ -260,25 +291,35 @@ func (s *Settings) Write(ctx context.Context, edits map[string]any) ([]string, e
 	if n != 1 {
 		return nil, errors.New("taking the settings lock: settings_lock has no row 1; run `settingsstore migrate`")
 	}
-	stored, err := readRows(ctx, tx, readSlack*s.maxRows)
+	stored, err := readRows(ctx, tx, s.limits.read())
 	if err != nil {
 		return nil, err
 	}
-	if missing := unstored(unread, stored); len(missing) > 0 {
+	if missing := unstored(unread, stored.values); len(missing) > 0 {
 		return nil, &RefusedError{Reason: ReasonUnknown, Keys: missing}
 	}
 	keys := append(slices.Collect(maps.Keys(writes)), unread...)
 	slices.Sort(keys)
-	c, err := apply(stored, writes, unread)
+	c, err := apply(stored.values, writes, unread)
 	if err != nil {
 		return nil, err
 	}
-	// A table over the cap, the cap lowered beneath it, takes the writes
-	// that do not grow it, so the API can bring it back under.
-	if len(c.table) > s.maxRows && len(c.table) > len(stored) {
+	texts, err := encode(writes, c.rewritten)
+	if err != nil {
+		return nil, err
+	}
+	after := tableSize{rows: len(c.table)}
+	for key := range c.table {
+		if text, ok := texts[key]; ok {
+			after.bytes += int64(len(key) + len(text))
+		} else {
+			after.bytes += stored.sizes[key]
+		}
+	}
+	if s.limits.refuses(stored.size(), after) {
 		return nil, &RefusedError{Reason: ReasonFull, Keys: keys}
 	}
-	before, _ := readable(stored)
+	before, _ := readable(stored.values)
 	if err := s.check(ctx, before, loadable(c.table, writes), keys); err != nil {
 		return nil, err
 	}
@@ -287,17 +328,11 @@ func (s *Settings) Write(ctx context.Context, edits map[string]any) ([]string, e
 			return nil, fmt.Errorf("deleting %s: %w", key, err)
 		}
 	}
-	for _, key := range slices.Sorted(maps.Keys(c.rewritten)) {
-		if err := store(ctx, tx, key, c.rewritten[key]); err != nil {
-			return nil, err
-		}
-	}
-	for _, key := range keys {
-		if writes[key] == nil {
-			continue
-		}
-		if err := store(ctx, tx, key, writes[key]); err != nil {
-			return nil, err
+	for _, key := range slices.Sorted(maps.Keys(texts)) {
+		if _, err := tx.ExecContext(ctx,
+			"INSERT INTO settings (key, value) VALUES ($1, $2) ON CONFLICT (key) DO UPDATE SET value = excluded.value",
+			key, texts[key]); err != nil {
+			return nil, fmt.Errorf("storing %s: %w", key, err)
 		}
 	}
 	if err := tx.Commit(); err != nil {
@@ -306,18 +341,23 @@ func (s *Settings) Write(ctx context.Context, edits map[string]any) ([]string, e
 	return keys, nil
 }
 
-// store sets the row key to value.
-func store(ctx context.Context, tx *sql.Tx, key string, value any) error {
-	text, err := json.Marshal(value)
-	if err != nil {
-		return fmt.Errorf("encoding the value of %s: %w", key, err)
+// encode is the JSON text of each row a write stores: each key it sets,
+// and each stored row it rewrites.
+func encode(writes, rewritten map[string]any) (map[string]string, error) {
+	texts := make(map[string]string, len(writes)+len(rewritten))
+	for _, rows := range []map[string]any{writes, rewritten} {
+		for key, value := range rows {
+			if value == nil {
+				continue
+			}
+			text, err := json.Marshal(value)
+			if err != nil {
+				return nil, fmt.Errorf("encoding the value of %s: %w", key, err)
+			}
+			texts[key] = string(text)
+		}
 	}
-	if _, err := tx.ExecContext(ctx,
-		"INSERT INTO settings (key, value) VALUES ($1, $2) ON CONFLICT (key) DO UPDATE SET value = excluded.value",
-		key, string(text)); err != nil {
-		return fmt.Errorf("storing %s: %w", key, err)
-	}
-	return nil
+	return texts, nil
 }
 
 // busy is err, from waiting for a connection or the lock row, as ErrBusy
@@ -682,32 +722,58 @@ type querier interface {
 	QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error)
 }
 
-// readRows reads the table, failing when it holds more than limit rows, so
-// what a read holds stays bounded. Values decode with UseNumber, so an
-// integer keeps every digit.
-func readRows(ctx context.Context, q querier, limit int) (map[string]any, error) {
-	rows, err := q.QueryContext(ctx, "SELECT key, value FROM settings ORDER BY key LIMIT $1", limit+1)
+// storedTable is the table as read: each row's value, and its size, the
+// bytes of its key and its value's JSON text.
+type storedTable struct {
+	values map[string]any
+	sizes  map[string]int64
+}
+
+func (t storedTable) size() tableSize {
+	size := tableSize{rows: len(t.values)}
+	for _, n := range t.sizes {
+		size.bytes += n
+	}
+	return size
+}
+
+// readRows reads the table, failing when it holds more than limit's rows or
+// bytes. The database leaves out a value that alone passes the byte limit,
+// so what a read holds stays bounded whatever another writer stored. Values
+// decode with UseNumber, so an integer keeps every digit.
+func readRows(ctx context.Context, q querier, limit TableLimits) (storedTable, error) {
+	rows, err := q.QueryContext(ctx, `
+SELECT key, size, CASE WHEN size <= $2 THEN value END
+FROM (SELECT key, value, CAST(octet_length(key) AS BIGINT) + octet_length(value) AS size FROM settings) AS sized
+ORDER BY key LIMIT $1`, limit.Rows+1, limit.Bytes)
 	if err != nil {
-		return nil, fmt.Errorf("reading settings: %w", err)
+		return storedTable{}, fmt.Errorf("reading settings: %w", err)
 	}
 	defer rows.Close()
-	table := map[string]any{}
+	table := storedTable{values: map[string]any{}, sizes: map[string]int64{}}
+	var total int64
 	for rows.Next() {
-		if len(table) == limit {
-			return nil, fmt.Errorf("reading settings: the table holds more than %d rows, %d times SETTINGS_MAX_ROWS; raise it to at least half the rows, delete rows through the API, then lower it", limit, readSlack)
+		if len(table.values) == limit.Rows {
+			return storedTable{}, fmt.Errorf("reading settings: the table holds more than %d rows, %d times SETTINGS_MAX_ROWS; raise it to at least half the rows, delete rows through the API, then lower it", limit.Rows, readSlack)
 		}
-		var key, text string
-		if err := rows.Scan(&key, &text); err != nil {
-			return nil, fmt.Errorf("reading settings: %w", err)
+		var key string
+		var size int64
+		var text sql.NullString
+		if err := rows.Scan(&key, &size, &text); err != nil {
+			return storedTable{}, fmt.Errorf("reading settings: %w", err)
 		}
-		value, err := decodeJSON(strings.NewReader(text))
+		if total += size; total > limit.Bytes {
+			return storedTable{}, fmt.Errorf("reading settings: the table holds more than %d bytes, %d times SETTINGS_MAX_TABLE_BYTES; raise it to at least half the table's bytes, delete rows through the API, then lower it", limit.Bytes, readSlack)
+		}
+		value, err := decodeJSON(strings.NewReader(text.String))
 		if err != nil {
-			return nil, fmt.Errorf("reading the value of %s: %w", key, err)
+			return storedTable{}, fmt.Errorf("reading the value of %s: %w", key, err)
 		}
-		table[key] = value
+		table.values[key] = value
+		table.sizes[key] = size
 	}
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("reading settings: %w", err)
+		return storedTable{}, fmt.Errorf("reading settings: %w", err)
 	}
 	return table, nil
 }
@@ -865,7 +931,7 @@ func checkSchema(ctx context.Context, db *sql.DB, timeout time.Duration) error {
 
 // serve serves the admin API over the table in db until ctx ends.
 func serve(ctx context.Context, db *sql.DB, boot *BootConfig, logger *slog.Logger) error {
-	settings := NewSettings(db, appSources(boot.ConfigFile, logger), boot.QueryTimeout, boot.MaxRows, logger)
+	settings := NewSettings(db, appSources(boot.ConfigFile, logger), boot.QueryTimeout, TableLimits{Rows: boot.MaxRows, Bytes: boot.MaxTableBytes}, logger)
 	reloader, err := config.NewReloader[AppConfig](ctx, settings.Options(), config.WithPollInterval(boot.PollInterval))
 	if err != nil {
 		return err
