@@ -6,8 +6,8 @@
 
 import { readFileSync } from "node:fs";
 import { isDeepStrictEqual } from "node:util";
-import { describe, expect, it } from "vitest";
-import { createClient } from "./client.js";
+import { describe, expect, expectTypeOf, it } from "vitest";
+import { type Client, createClient } from "./client.js";
 // ApiError and the problem types come through the package's public entry points.
 import { ApiError, NonFiniteNumberError, ResponseError, SchemaResourceError, SchemaValidationError, SchemaVersionError } from "./core/index.js";
 import type { FacetResult, ListResult } from "./filter/types.js";
@@ -97,6 +97,33 @@ function fakeServer(handler: (call: Call) => Response) {
 
 function json(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json" } });
+}
+
+interface Held {
+  signal: AbortSignal;
+  release: () => void;
+}
+
+// heldServer answers each request with the schema only when released, and
+// rejects one whose signal has aborted, or aborts first, with the signal's
+// reason, as fetch does.
+function heldServer() {
+  const requests: Held[] = [];
+  const fetchFn: typeof globalThis.fetch = (_input, init) => {
+    const signal = init?.signal;
+    if (!signal) throw new Error("request sent without a signal");
+    return new Promise<Response>((resolve, reject) => {
+      requests.push({ signal, release: () => { resolve(json(schema)); } });
+      if (signal.aborted) {
+        reject(signal.reason as Error);
+        return;
+      }
+      signal.addEventListener("abort", () => {
+        reject(signal.reason as Error);
+      }, { once: true });
+    });
+  };
+  return { requests, fetch: fetchFn };
 }
 
 // received is the request call is, in the recording's shape.
@@ -551,28 +578,6 @@ describe("schema", () => {
   });
 
   describe("a shared fetch", () => {
-    interface Held {
-      signal: AbortSignal;
-      release: () => void;
-    }
-
-    // heldServer answers each request only when released, and rejects one
-    // whose signal aborts first with the signal's reason, as fetch does.
-    function heldServer() {
-      const requests: Held[] = [];
-      const fetchFn: typeof globalThis.fetch = (_input, init) => {
-        const signal = init?.signal;
-        if (!signal) throw new Error("request sent without a signal");
-        return new Promise<Response>((resolve, reject) => {
-          signal.addEventListener("abort", () => {
-            reject(signal.reason as Error);
-          }, { once: true });
-          requests.push({ signal, release: () => { resolve(json(schema)); } });
-        });
-      };
-      return { requests, fetch: fetchFn };
-    }
-
     function request(server: { requests: Held[] }, i: number): Held {
       const held = server.requests[i];
       if (!held) throw new Error(`no request ${String(i)}`);
@@ -801,6 +806,211 @@ describe("facets", () => {
     const server = fakeServer(() => json({ facets: {} }));
     await client(server.fetch).resource<WireItem>("items", { schema: "wire_items" }).facets(["name"], { search: "cordless drill" });
     expect(server.calls[0]?.url.searchParams.get(wire.params["ParamSearch"] ?? "")).toBe("cordless drill");
+  });
+});
+
+// outcome is what a call settled with: its value, or its error's class and
+// fields, so two calls' outcomes are equal only when they decoded an answer
+// alike.
+async function outcome(call: Promise<unknown>): Promise<unknown> {
+  try {
+    return { value: await call };
+  } catch (error) {
+    if (!(error instanceof Error)) throw error;
+    return { error: error.constructor, message: error.message, fields: Object.fromEntries(Object.entries(error)) };
+  }
+}
+
+// The routes a generated SDK binds beside parse's: create, get, delete and
+// the rest go through request, on the client or on a handle.
+describe("request", () => {
+  interface NewItem {
+    name: string;
+  }
+
+  const sends: { name: string; send: (c: Client) => Promise<unknown>; want: { method: string; url: string; body?: unknown } }[] = [
+    {
+      name: "a body and a query to a path below baseURL",
+      send: (c) => c.request<WireItem, NewItem>("POST", "/items/", { body: { name: "alpha" }, query: { dry_run: "true" } }),
+      want: { method: "POST", url: "https://api.test/v1/items?dry_run=true", body: { name: "alpha" } },
+    },
+    {
+      name: "the row of a one-column key, its value escaped",
+      send: (c) => c.resource<WireItem>("items").request("GET", { key: "a/b" }),
+      want: { method: "GET", url: "https://api.test/v1/items/a%2Fb" },
+    },
+    {
+      name: "the row of a two-column key, a segment per column",
+      send: (c) => c.resource<WireStock, [string, string]>("stock").request("PUT", { key: ["w 1", "a/b"], body: { warehouse_id: "w 1", sku: "a/b", qty: 3 } }),
+      want: { method: "PUT", url: "https://api.test/v1/stock/w%201/a%2Fb", body: { warehouse_id: "w 1", sku: "a/b", qty: 3 } },
+    },
+    {
+      name: "a path below a row",
+      send: (c) => c.resource<WireItem>("items").request("POST", { key: 12345678901234567890n, path: "/archive/" }),
+      want: { method: "POST", url: "https://api.test/v1/items/12345678901234567890/archive" },
+    },
+    {
+      name: "a path below the collection, with a repeated parameter",
+      send: (c) => c.resource<WireItem>("shop/items").request("GET", { path: "search", query: new URLSearchParams([["tag", "a"], ["tag", "b c"]]) }),
+      want: { method: "GET", url: "https://api.test/v1/shop/items/search?tag=a&tag=b+c" },
+    },
+    {
+      name: "the collection, and a JSON null body as a body",
+      send: (c) => c.resource<WireItem>("items").request("POST", { body: null }),
+      want: { method: "POST", url: "https://api.test/v1/items", body: null },
+    },
+  ];
+
+  it.each(sends)("sends $name, with the client's headers and the call's", async ({ send, want }) => {
+    const server = fakeServer(() => json({ id: "a" }));
+    const c = createClient({ baseURL: "https://api.test/v1/", fetch: server.fetch, headers: { Authorization: "Bearer t" } });
+    await send(c);
+    const call = server.calls[0];
+    expect({ method: call?.method, url: call?.url.href, body: call?.body }).toEqual({ body: undefined, ...want });
+    expect(call?.headers.get("Accept")).toBe("application/json, application/problem+json");
+    expect(call?.headers.get("Authorization")).toBe("Bearer t");
+    expect(call?.headers.get("Content-Type")).toBe("body" in want ? "application/json" : null);
+    expect(server.calls).toHaveLength(1);
+  });
+
+  it("sends a call's headers over the client's", async () => {
+    const server = fakeServer(() => json({}));
+    const c = createClient({ baseURL: "https://api.test", fetch: server.fetch, headers: { Authorization: "Bearer t" } });
+    await c.request("POST", "items", { body: {} }, { headers: { authorization: "Bearer u", "Idempotency-Key": "k1" } });
+    expect(server.calls[0]?.headers.get("Authorization")).toBe("Bearer u");
+    expect(server.calls[0]?.headers.get("Idempotency-Key")).toBe("k1");
+  });
+
+  // parse serves no create, get or delete, so the corpus has no exchange of
+  // one; replaying parse's recorded exchanges through request holds its path,
+  // key segments, body and answers to the requests the Go client built and
+  // the answers the Go handlers gave.
+  it("sends the recorded requests and reads the recorded answers as patch, list and schema read them", async () => {
+    const recordedQuery = (call: WireCall) =>
+      new URLSearchParams(Object.entries(call.request.query ?? {}).flatMap(([name, values]) => values.map((v) => [name, v])));
+    const patched = exchange<PatchResult<WireStock>>("patch_composite_key");
+    const listed = exchange<ListResult<WireItem>>("list_total");
+    const refused = exchange<Record<string, unknown>>("error");
+    const missing = exchange<Record<string, unknown>>("schema_not_found");
+    const c = client(replay(patched, listed, refused, missing).fetch);
+
+    const stock = c.resource<WireStock, [string, string]>("wire_stock");
+    await expect(stock.request<PatchResult<WireStock>, PatchInput<WireStock>>("PATCH", { key: ["w1", "a/b"], body: { qty: 3 } }))
+      .resolves.toEqual(patched.response.body);
+    await expect(c.request<ListResult<WireItem>>("GET", "wire_items", { query: recordedQuery(listed) })).resolves.toEqual(listed.response.body);
+    await expect(c.request("GET", "wire_items", { query: recordedQuery(refused) })).rejects.toMatchObject({
+      status: 422, code: "E2071", body: refused.response.body, problem: undefined,
+    });
+    const err = await c.resource<WireItem>("gadgets").request("GET", { path: "schema" }).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(ApiError);
+    expect(err).toMatchObject({ status: 404, code: "E2078", body: missing.response.body });
+  });
+
+  const updated = exchange<PatchResult<WireItem>>("patch").response.body;
+  const answers: { name: string; response: () => Response }[] = [
+    { name: "a JSON 200", response: () => json(updated) },
+    { name: "a 204", response: () => new Response(null, { status: 204 }) },
+    { name: "an empty 200", response: () => new Response("", { status: 200 }) },
+    { name: "an HTML 200", response: () => new Response("<html>ok</html>", { status: 200, headers: { "Content-Type": "text/html" } }) },
+    { name: "a parse error body", response: () => json(exchange("error").response.body, 422) },
+    {
+      name: "a problem document with field errors",
+      response: () => new Response(JSON.stringify({ type: "https://example.net/validation-error", title: "Invalid", status: 422, code: "E2077", errors: [{ pointer: "#/name", detail: "too long" }] }), {
+        status: 422, headers: { "Content-Type": "application/problem+json" },
+      }),
+    },
+    { name: "an HTML 502", response: () => new Response("<html>bad gateway</html>", { status: 502, statusText: "Bad Gateway" }) },
+  ];
+
+  describe.each([false, true])("with validateBeforeSend %s", (validate) => {
+    const answering = (response: () => Response) => fakeServer(({ url }) => (url.pathname.endsWith("/schema") ? json(schema) : response()));
+
+    it.each(answers)("reads $name as patch reads it, sending nothing else", async ({ response }) => {
+      const patchServer = answering(response);
+      const viaPatch = await outcome(client(patchServer.fetch, validate).resource<WireItem>("items", { schema: "wire_items" }).patch("a", { name: "bravo" }));
+      const requestServer = answering(response);
+      const items = client(requestServer.fetch, validate).resource<WireItem>("items", { schema: "wire_items" });
+      const viaRequest = await outcome(items.request<PatchResult<WireItem>>("PATCH", { key: "a", body: { name: "bravo" } }));
+
+      expect(viaRequest).toEqual(viaPatch);
+      const sent = (calls: Call[]) => calls.filter((c) => c.method === "PATCH").map((c) => ({ url: c.url.href, body: c.body }));
+      expect(sent(requestServer.calls)).toEqual(sent(patchServer.calls));
+      expect(requestServer.calls).toHaveLength(1);
+    });
+
+    it.each(answers)("resolves undefined on a 2xx and rejects a non-2xx as patch does under response none: $name", async ({ response }) => {
+      const patchOutcome = await outcome(client(answering(response).fetch, validate).resource<WireItem>("items", { schema: "wire_items" }).patch("a", { name: "bravo" }));
+      let answered: Response | undefined;
+      const server = fakeServer(() => {
+        answered = response();
+        return answered;
+      });
+      const got = await outcome(client(server.fetch, validate).resource<WireItem>("items").request<undefined>("DELETE", { key: "a", response: "none" }));
+
+      if (answered?.ok) {
+        expect(got).toEqual({ value: undefined });
+        // A body the call does not read is cancelled, which releases the connection.
+        expect(answered.body === null || answered.bodyUsed).toBe(true);
+      } else {
+        expect(got).toEqual(patchOutcome);
+      }
+      expect(server.calls.map((c) => c.method)).toEqual(["DELETE"]);
+    });
+
+    it("refuses a non-finite number in the body before sending anything", async () => {
+      const server = fakeServer(() => json({}));
+      const c = client(server.fetch, validate);
+      const nan = { name: "NonFiniteNumberError", payload: "request body", pointer: "/labels/readings/1", value: Number.NEGATIVE_INFINITY };
+      const body = { name: "alpha", labels: { readings: [1, Number.NEGATIVE_INFINITY] } };
+      await expect(c.request("POST", "items", { body })).rejects.toMatchObject(nan);
+      await expect(c.resource<WireItem>("items", { schema: "wire_items" }).request("PUT", { key: "a", body })).rejects.toMatchObject(nan);
+      await expect(c.request("POST", "items", { body: Number.NaN })).rejects.toMatchObject({ payload: "request body", pointer: "" });
+      await expect(c.request("POST", "items", { body })).rejects.toBeInstanceOf(NonFiniteNumberError);
+      expect(server.calls).toHaveLength(0);
+    });
+  });
+
+  it("ends on its signal's abort with the signal's reason, in flight or before", async () => {
+    const server = heldServer();
+    const { request } = client(server.fetch).resource<WireItem>("items");
+    const controller = new AbortController();
+
+    const pending = request<undefined>("DELETE", { key: "a", response: "none" }, { signal: controller.signal });
+    expect(server.requests).toHaveLength(1);
+    controller.abort(new Error("navigated away"));
+    await expect(pending).rejects.toThrow("navigated away");
+    expect(server.requests[0]?.signal.aborted).toBe(true);
+
+    await expect(request("GET", { key: "a" }, { signal: AbortSignal.abort() })).rejects.toMatchObject({ name: "AbortError" });
+  });
+
+  it("refuses a key no path segment carries before sending", async () => {
+    const server = fakeServer(() => json({}));
+    const items = client(server.fetch).resource<WireItem>("items");
+    for (const key of ["", ".", "..", Number.NaN, Number.POSITIVE_INFINITY]) {
+      await expect(items.request("GET", { key }), String(key)).rejects.toBeInstanceOf(RangeError);
+    }
+    await expect(items.request("GET", { key: [] as unknown as string })).rejects.toBeInstanceOf(RangeError);
+    await expect(items.request("GET", { key: {} as unknown as string })).rejects.toBeInstanceOf(TypeError);
+    await expect(client(server.fetch).resource<WireStock, [string, string]>("stock").request("GET", { key: ["w1", ".."] })).rejects.toBeInstanceOf(RangeError);
+    expect(server.calls).toHaveLength(0);
+  });
+
+  it("takes the key, body and response types the caller states", async () => {
+    const server = fakeServer(() => new Response(null, { status: 204 }));
+    const stock = client(server.fetch).resource<WireStock, [string, string]>("stock");
+    // @ts-expect-error a key of two columns takes two values
+    await stock.request<undefined>("DELETE", { key: ["w1"], response: "none" });
+    // @ts-expect-error the body is the type the caller states
+    await stock.request<undefined, Pick<WireStock, "qty">>("POST", { body: { qty: "3" }, response: "none" });
+    // @ts-expect-error a call that reads no body resolves undefined, which a row is not
+    await stock.request<WireStock>("DELETE", { key: ["w1", "a"], response: "none" });
+    const gone = stock.request<undefined>("DELETE", { key: ["w1", "a"], response: "none" });
+    expectTypeOf(gone).resolves.toBeUndefined();
+    await expect(gone).resolves.toBeUndefined();
+    const created = stock.request<WireStock, WireStock>("POST", { body: { warehouse_id: "w1", sku: "a", qty: 1 } });
+    expectTypeOf(created).resolves.toEqualTypeOf<WireStock>();
+    await expect(created).rejects.toBeInstanceOf(ResponseError);
   });
 });
 
@@ -1041,10 +1251,12 @@ describe("methods detached from their handle", () => {
       await handle.facets(["name"], notEcho),
       (await handle.validator()).filterableFields(),
       await handle.schema(),
+      await handle.request<PatchResult<WireItem>>("PATCH", { key: "b", body: { name: "bravo" } }),
+      await outcome(handle.request<undefined>("DELETE", { key: "b", response: "none" })),
     ];
 
     const server = walkServer();
-    const { list, listAll, patch, patchMany, facets, validator, schema: schemaOf } =
+    const { list, listAll, patch, patchMany, facets, validator, schema: schemaOf, request } =
       client(server.fetch, validate).resource<WireItem>("items", { schema: "wire_items" });
     const got = [
       await wrapped(list)({ ...notEcho, sort: "name" }),
@@ -1054,6 +1266,8 @@ describe("methods detached from their handle", () => {
       await facets(["name"], notEcho),
       (await validator()).filterableFields(),
       await schemaOf(),
+      await wrapped(request)<PatchResult<WireItem>>("PATCH", { key: "b", body: { name: "bravo" } }),
+      await outcome(request<undefined>("DELETE", { key: "b", response: "none" })),
     ];
 
     expect(got).toEqual(want);
@@ -1062,17 +1276,20 @@ describe("methods detached from their handle", () => {
 
   it("include the client's own", async () => {
     const server = walkServer();
-    const { resource, schemas } = client(server.fetch, true);
+    const { resource, schemas, request } = client(server.fetch, true);
     await expect(wrapped(resource<WireItem>)("items", { schema: "wire_items" }).list({ sort: "name" })).resolves.toEqual(page(0));
     await expect(wrapped(schemas)()).resolves.toEqual(Object.values(related));
-    expect(server.calls.map((c) => c.url.pathname)).toEqual(["/wire_items/schema", "/items", "/schemas"]);
+    await expect(wrapped(request)<ListResult<WireItem>>("GET", "items")).resolves.toEqual(page(0));
+    expect(server.calls.map((c) => c.url.pathname)).toEqual(["/wire_items/schema", "/items", "/schemas", "/items"]);
   });
 
   it.each([false, true])("refuse what calls through the handle refuse (validateBeforeSend %s)", async (validate) => {
     const server = walkServer();
-    const { list, patch, patchMany, facets } = client(server.fetch, validate).resource<WireItem>("items", { schema: "wire_items" });
+    const { list, patch, patchMany, facets, request } = client(server.fetch, validate).resource<WireItem>("items", { schema: "wire_items" });
     await expect(patch("", { name: "bravo" })).rejects.toBeInstanceOf(RangeError);
     await expect(patchMany([], { name: "bravo" })).rejects.toBeInstanceOf(RangeError);
+    await expect(request("GET", { key: "" })).rejects.toBeInstanceOf(RangeError);
+    await expect(request("PUT", { key: "b", body: { score: Number.NaN } })).rejects.toBeInstanceOf(NonFiniteNumberError);
     if (validate) {
       await expect(list({ filter: { name: "zulu" } })).rejects.toMatchObject({ code: "E2087" });
       await expect(facets(["labels"])).rejects.toMatchObject({ code: "E2071" });
