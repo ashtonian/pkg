@@ -2,7 +2,9 @@ package config
 
 import (
 	"fmt"
+	"maps"
 	"reflect"
+	"slices"
 
 	kmaps "github.com/knadh/koanf/maps"
 )
@@ -44,36 +46,58 @@ func keepWhole(v, out reflect.Value) any {
 }
 
 // mergeTrees merges src, a source's rewritten tree, into dest, the merge so
-// far: a map[string]any into a map key by key, anything else in place of
-// what dest holds. It is koanf's merge function for every load.
-func mergeTrees(src, dest map[string]any) error {
+// far: a map[string]any into a map key by key, a listEdit into a list
+// element by element, anything else in place of what dest holds.
+func mergeTrees(src, dest map[string]any) {
 	for k, v := range src {
 		dest[k] = mergeValue(dest[k], v)
 	}
-	return nil
 }
 
-// mergeValue is v merged over dest.
+// mergeValue is v merged over dest, which it may change.
 func mergeValue(dest, v any) any {
-	if in, ok := v.(map[string]any); ok {
+	switch in := v.(type) {
+	case map[string]any:
 		if into, ok := dest.(map[string]any); ok {
-			for k, e := range in {
-				into[k] = mergeValue(into[k], e)
-			}
+			mergeTrees(in, into)
 			return into
 		}
+	case listEdit:
+		return in.applyTo(dest)
 	}
 	return settled(v)
 }
 
+// listEdit sets elements of the list beneath it by index, each merged into
+// the element there as mergeValue merges; an index at the list's end
+// appends. Only key edits make one, and editTree checks its indexes against
+// the list it merges over: those past the end follow one another.
+type listEdit map[int]any
+
+// applyTo is the list dest holds with e applied, a fresh list.
+func (e listEdit) applyTo(dest any) []any {
+	list := elementsOf(dest)
+	for _, i := range slices.Sorted(maps.Keys(e)) {
+		if i < len(list) {
+			list[i] = mergeValue(list[i], e[i])
+		} else {
+			list = append(list, mergeValue(nil, e[i]))
+		}
+	}
+	return list
+}
+
 // settled is v as the merge holds it: every wholeMap within it a
-// map[string]any, so a later source merges into it by key.
+// map[string]any, so a later source merges into it by key, and every
+// listEdit the list it makes.
 func settled(v any) any {
 	switch x := v.(type) {
 	case wholeMap:
 		return settledMap(x)
 	case map[string]any:
 		return settledMap(x)
+	case listEdit:
+		return x.applyTo(nil)
 	case []any:
 		for i, e := range x {
 			x[i] = settled(e)

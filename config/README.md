@@ -120,7 +120,9 @@ struct lists another library's keys that sit that close from a
 `WithReloadTagChecks` also checks applier coverage before loading.
 `Defaulter.SetDefaults` sets code defaults for loading, usage, schema,
 templates and key checks. `CheckKey` validates a stored entry without
-reading sources; `DecodeKey` also returns the typed config. Provider-level
+reading sources; `DecodeKey` also returns the typed config, and
+`DecodeEdits` validates a batch of edits together over an explicit
+baseline. Provider-level
 `WithInvalidEntries` can withhold bad stored rows while preserving lower
 sources and unknown-key diagnostics. See [sources](docs/sources.md).
 

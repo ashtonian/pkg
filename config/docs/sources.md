@@ -136,8 +136,58 @@ host and every other entry, whether the defaults hold them as a typed
 value replaces what is beneath it, so `addresses["first"]` set to
 `Server{Port: 9}` leaves that entry's host empty. An index edits that
 element of the defaults' list, and a value decoded whole, such as a
-`netip.Prefix`, takes no keys beneath it. The caller's defaults are never
-changed, and the result shares nothing with them.
+`netip.Prefix`, takes no keys beneath it. A key a section's
+`koanf:",remain"` field collects is a key like any other. The caller's
+defaults are never changed, and the result shares nothing with them.
+
+### Validating a batch of edits
+
+`CheckKey` judges each key against defaults, so a loop over a batch judges
+no edit against the others: with defaults `min=0, max=10` and a rule
+`min <= max`, `min=8` and `max=4` each pass alone and fail together, and
+`min=12` fails alone while `min=12, max=20` is valid. A writer that commits
+a batch atomically checks it with `DecodeEdits`, which sets every edit over
+one explicit baseline — the stored configuration, or the defaults when it
+is `nil` — and decodes and validates the result once:
+
+```go
+candidate, err := config.DecodeEdits(ctx, &stored, map[string]any{
+    "limits.min": 12,
+    "limits.max": 20,
+})
+if err != nil {
+    return err // nothing to commit
+}
+return commit(ctx, candidate)
+```
+
+Edits follow `DecodeKey`'s keys and values. They apply in key order, an
+index by its number and a key before the keys beneath it. One batch can
+append several list elements (`pool[1]`, `pool[2]`, …), and a key beneath
+another sets what it names in the value the other set: `primary` set to
+`{"port": 6}` merges into the baseline's section and `primary.port` set to
+`7` then sets its port, while `primary` set to `Server{Port: 6}` replaces
+the section first. A batch is refused whole when any of its keys is, with
+every refused key reported as a `*KeyError`, joined in key order; a
+`*KeyError` that is not `Unknown` says why in its message, naming keys only:
+
+| Edits | Refused as |
+|---|---|
+| A key naming nothing config reads, or a wildcard | `Unknown`, `ErrKey` |
+| One value under two spellings: `port` and `PORT`, or a field and its alias | `ErrValidation`, once for the key |
+| An index past the next element of the list beneath — the baseline's, or one the batch sets | `ErrValidation` |
+
+A candidate that does not decode or validate is an `*EditsError`, which
+matches `ErrValidation` and names every edited key and no value; its `Err`
+keeps the decoder's or validator's cause for trusted diagnostics. On any
+failure no candidate is returned. The baseline is only read, and the
+candidate shares nothing with it or with the edits. The candidate is decoded
+afresh from the baseline's keys, so a field config does not decode
+(unexported, or `koanf:"-"`) is zero in it. `WithDefaults` applies only when
+the baseline is `nil`; otherwise the options apply as they do to `CheckKey`.
+Persisting, authorizing and ordering commits stay the writer's.
+
+### Withholding invalid rows
 
 For a store whose older rows may be invalid, pass a per-source option:
 

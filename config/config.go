@@ -165,13 +165,19 @@ func (l *loader) rewrite(name string, data map[string]any) (map[string]any, erro
 	return tree, nil
 }
 
+// koanfMerge is mergeTrees as koanf calls a merge function.
+func koanfMerge(src, dest map[string]any) error {
+	mergeTrees(src, dest)
+	return nil
+}
+
 // merge merges tree into the load and, when the load attributes values, the
 // same tree into the origins: what koanf merges and what is attributed are
 // one tree. A source's rank is its position in the merge. Without
 // provenance the origins serve shadow detection alone, which defaults never
 // take part in: they merge first, so they hold nothing a source set.
 func (l *loader) merge(name string, tree map[string]any, label labeler) error {
-	if err := l.k.Load(confmap.Provider(tree, ""), nil, koanf.WithMergeFunc(mergeTrees)); err != nil {
+	if err := l.k.Load(confmap.Provider(tree, ""), nil, koanf.WithMergeFunc(koanfMerge)); err != nil {
 		return fmt.Errorf("loading %s: %w: %w", name, ErrSource, err)
 	}
 	rank := len(l.sources)

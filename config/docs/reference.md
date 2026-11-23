@@ -25,7 +25,7 @@ Every error wraps one category sentinel together with its cause, so `errors.Is` 
 | `ErrReloadInProgress` | A manual reload found another running. Not a failure. |
 | `ErrReloaderStopped` | A reload was requested after `Stop`. |
 | `ErrReloaderRunning` | `Run` was called while another `Run` of the same reloader runs. |
-| `ErrSchema`, `ErrKey` | Invalid schema/default declarations, or a malformed/unknown key. `KeyError` distinguishes unknown keys from invalid values in `CheckKey` and `DecodeKey`. |
+| `ErrSchema`, `ErrKey` | Invalid schema/default declarations, or a malformed/unknown key. `KeyError` distinguishes unknown keys from invalid values in `CheckKey`, `DecodeKey` and `DecodeEdits`; `EditsError` is a batch of edits whose candidate does not decode or validate, and matches `ErrValidation`. |
 
 `Diagnose(err)` turns any of them into a `Problem{Kind, Message}` — a bounded category for a metric label or a status endpoint.
 
@@ -133,8 +133,8 @@ Provider source options:
 |---|---|---|
 | `WithInvalidEntries(report)` | fail on invalid entries | Withhold invalid known entries, retaining lower sources; report sorted keys/errors after each read. Unknown keys remain reportable. |
 
-`Defaulter`, `CheckKey` and `DecodeKey` are described in
-[sources and precedence](sources.md). `RedactText` uses the diagnostic
+`Defaulter`, `CheckKey`, `DecodeKey` and `DecodeEdits` are described in
+[sources and precedence](sources.md#validating-stored-entries). `RedactText` uses the diagnostic
 [credential-shape policy](inspection.md#printing-and-usage).
 
 Reload options:
