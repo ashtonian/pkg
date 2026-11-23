@@ -313,7 +313,7 @@ func structureOf(val any, src Source, rank int) (map[string]*originNode, []*orig
 	case v.Kind() == reflect.Map && !v.IsNil():
 		children := make(map[string]*originNode, v.Len())
 		for it := v.MapRange(); it.Next(); {
-			children[fmt.Sprint(it.Key().Interface())] = setBy(it.Value().Interface(), src, rank)
+			children[entryName(it.Key())] = setBy(it.Value().Interface(), src, rank)
 		}
 		return children, nil
 	case v.Kind() == reflect.Slice && !v.IsNil(), v.Kind() == reflect.Array:
@@ -336,7 +336,7 @@ func (n *originNode) fill(merged any, filled *elementDefaults) int {
 	case n.children != nil && v.IsValid() && v.Kind() == reflect.Map && v.Len() > 0:
 		count := 0
 		for it := v.MapRange(); it.Next(); {
-			key := fmt.Sprint(it.Key().Interface())
+			key := entryName(it.Key())
 			if child := n.children[key]; child != nil {
 				count += child.fill(it.Value().Interface(), filled)
 			} else {

@@ -68,7 +68,7 @@ Bridging a provider's watch to a reloader is one call — `p.Watch(func(_ any, e
 
 A provider that returns keys, `WithDefaults` and `SetDefaults` may hold typed Go values. Each source is deep-copied as it merges, and the copy keeps a struct only by its exported fields unless it knows the type, as it knows `time.Time`. A value whose state that copy would lose — a `netip.Addr` or `netip.Prefix`, alone or in a section, list, array or map — is read through its `MarshalText` instead; a field of interface type holding one receives that text. A `MarshalText` error fails the load with `ErrValidation`, naming the key and not the value. From a provider or `WithDefaults`, a typed map or section still replaces what the layers beneath it set, and a nil list stays nil. A higher source that sets keys beneath it then sets one key of it as it sets one key of a nested map: a file's `addresses: {first: {port: 9}}` over a default `map[string]Server` changes that one port, and every other entry and field keeps its value. So does an environment variable naming a key beneath it (`APP_ADDRESSES_FIRST_PORT`), an override provider's `map[string]any`, a stored entry, a flag that sets one field of a section, and a key edit. A typed value replaces it whole instead, as it replaces any layer beneath it — a higher provider's typed map or section, a flag that sets a whole map ([kongprovider](../kongprovider) hands on Kong's typed map) — and so does a variable that sets the whole map (`APP_LABELS=team=core`). A `json.Number`, which a JSON decoder with `UseNumber` returns so large integers keep every digit, decodes as the number it holds wherever a number belongs — into a `time.Duration` as a file's number does — and as its text into anything else.
 
-A higher source can add entries to such a map and change them, but not remove one: an entry it sets to `null` keeps its key, holding the element's zero value. To let a higher source narrow a default, such as an allow-list `map[string]bool{"*": true}`, give the default as a list, which a higher source replaces whole; have the program treat an entry's zero value (`"*": false`) as absent; or set the map to `null` in one source and to the narrowed map in a source above it. Only a map keyed by `string` or by a predeclared integer type merges this way. A map keyed by a named type — `slog.Level`, `time.Duration`, or a string or integer type of your own — is the exception: its keys' text need not be their kind's (text methods, unit text or a decode hook of yours can read it), so it keeps its own keys, and a higher source replaces it whole. A map `SetDefaults` sets follows the [code defaults](#code-defaults) rules instead: one keyed by a named string type that only adds to its tag's entries merges entry by entry.
+A higher source can add entries to such a map and change them, but not remove one: an entry it sets to `null` keeps its key, holding the element's zero value. To let a higher source narrow a default, such as an allow-list `map[string]bool{"*": true}`, give the default as a list, which a higher source replaces whole; have the program treat an entry's zero value (`"*": false`) as absent; or set the map to `null` in one source and to the narrowed map in a source above it. Only a map keyed by `string` or by a predeclared integer type merges this way. A map keyed by a named type — `slog.Level`, `time.Duration`, or a string or integer type of your own — is the exception: a decode hook of yours can read such a key its own way, which no text written for it would survive, so it keeps its own keys, and a higher source replaces it whole. Its entries are named, and keys beneath them reached, by their keys' text all the same (see [map entries](schema.md#map-entries)). A map `SetDefaults` sets follows the [code defaults](#code-defaults) rules instead: one keyed by a named string type that only adds to its tag's entries merges entry by entry.
 
 A provider whose `Read` returns a copy made with koanf's `maps.Copy` has lost such a value before the load reads it; `confmap.Provider` makes that copy when it is built. Return the map as built, or use `NewMapProvider`, which copies without the loss.
 
@@ -148,17 +148,22 @@ as an explicit null from any source does. An index edits that element of
 the defaults' list. A key beneath a value decoded from text, such as a
 `netip.Prefix`, names nothing config reads. A key a section's
 `koanf:",remain"` field collects is a key like any other, and so is an entry
-of a map keyed by a predeclared integer type: `ports["80"].port`, its fields
-resolving through aliases and case as any section's do. The caller's defaults are never
+of a map keyed by any type with text (see [map entries](schema.md#map-entries)):
+`ports["80"].port`, `levels["WARN"].host`, its fields resolving through
+aliases and case as any section's do. A map keyed by a named type is
+replaced whole by a higher source (see [any koanf provider](#any-koanf-provider)),
+and a key is one: `levels["WARN"].host` set over defaults holding that map
+leaves the map one entry holding one host. The caller's defaults are never
 changed, and the result shares nothing with them.
 
 ### Canonical keys
 
 `CanonicalKey[Config](key)` returns a key spelled the one way this package
 prints it: each field by its key, never an alias tag's former name or
-another letter case (`MAIN.Port` → `primary.port`); a map entry quoted; an
-integer-keyed map's entry in decimal (`ports["080"]` → `ports["80"]`); and a
-key beneath an interface or remain field as a field wherever it can be one
+another letter case (`MAIN.Port` → `primary.port`); a map entry quoted, by
+the text of the key a load reads it as (`ports["0x50"]` → `ports["80"]`,
+`timeouts["60s"]` → `timeouts["1m0s"]`; see [map entries](schema.md#map-entries));
+and a key beneath an interface or remain field as a field wherever it can be one
 (`extra["x"]` → `extra.x`). It refuses what `CheckKey` refuses as unknown,
 with an `Unknown` `*KeyError`, and reads no value and no `validate` tag: a
 key's spelling does not depend on validation. A store that keys its rows by

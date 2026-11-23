@@ -348,7 +348,8 @@ type integerKeyed struct {
 
 // An edit beneath a map keyed by integers spells its keys as a file's are
 // spelled: through aliases and letter case, inside its value and in the key,
-// with the integer in its decimal spelling — as a map keyed by strings does.
+// with the integer read as a load reads a file's key — 0x50 is 80, and 080
+// no integer — as a map keyed by strings does.
 func TestDecodeKey_EditsBeneathAnIntegerKeyedMapResolve(t *testing.T) {
 	defaults := WithDefaults(map[string]any{
 		"ports": map[int]aliasedServer{80: {"a", 1}},
@@ -366,25 +367,28 @@ func TestDecodeKey_EditsBeneathAnIntegerKeyedMapResolve(t *testing.T) {
 		{`ports["80"]`, map[string]any{"Port": 9}},
 		{`ports["80"]`, map[string]any{"listen": 9}},
 		{`ports["80"].Port`, 9},
-		{`ports["080"].listen`, 9},
+		{`ports["0x50"].listen`, 9},
 	} {
 		got, err := DecodeKey[integerKeyed](t.Context(), tc.key, tc.value, defaults)
 		require.NoError(t, err, tc.key)
 		assert.Equal(t, fromFile.Ports, got.Ports, tc.key)
-		named, err := DecodeKey[integerKeyed](t.Context(), strings.Replace(strings.Replace(tc.key, `ports["080"]`, `named["x"]`, 1), `ports["80"]`, `named["x"]`, 1), tc.value, defaults)
+		named, err := DecodeKey[integerKeyed](t.Context(), strings.Replace(strings.Replace(tc.key, `ports["0x50"]`, `named["x"]`, 1), `ports["80"]`, `named["x"]`, 1), tc.value, defaults)
 		require.NoError(t, err, tc.key)
 		assert.Equal(t, aliasedServer{"a", 9}, named.Named["x"], tc.key)
 	}
-	_, err = DecodeKey[integerKeyed](t.Context(), `ports["eighty"].port`, 9, defaults)
-	var ke *KeyError
-	require.ErrorAs(t, err, &ke)
-	assert.True(t, ke.Unknown)
-	require.ErrorIs(t, err, ErrKey)
+	for _, key := range []string{`ports["eighty"].port`, `ports["080"].port`} {
+		_, err = DecodeKey[integerKeyed](t.Context(), key, 9, defaults)
+		var ke *KeyError
+		require.ErrorAs(t, err, &ke, key)
+		assert.True(t, ke.Unknown, key)
+		require.ErrorIs(t, err, ErrKey, key)
+	}
 }
 
 // CanonicalKey spells a key one way: fields by their keys whatever alias or
-// letter case named them, integer map keys in decimal, keys beneath an
-// interface as fields where they can be. A key naming nothing is refused.
+// letter case named them, map keys by the text of the key they decode to,
+// keys beneath an interface as fields where they can be. A key naming
+// nothing is refused.
 func TestCanonicalKey(t *testing.T) {
 	for _, tc := range []struct{ key, want string }{
 		{"MAIN.Port", "primary.port"},
@@ -397,9 +401,11 @@ func TestCanonicalKey(t *testing.T) {
 		require.NoError(t, err, tc.key)
 		assert.Equal(t, tc.want, got, tc.key)
 	}
-	got, err := CanonicalKey[integerKeyed](`ports["080"].listen`)
+	got, err := CanonicalKey[integerKeyed](`ports["0x50"].listen`)
 	require.NoError(t, err)
 	assert.Equal(t, `ports["80"].port`, got)
+	_, err = CanonicalKey[integerKeyed](`ports["080"].port`)
+	assert.ErrorIs(t, err, ErrKey, "the decoder reads no integer from 080")
 	for _, key := range []string{"prot", "pool[*].host", "", "primary..port", `ports["x"]`} {
 		_, err := CanonicalKey[editConfig](key)
 		var ke *KeyError

@@ -1,10 +1,8 @@
 package config
 
 import (
-	"fmt"
 	"maps"
 	"reflect"
-	"strconv"
 
 	"github.com/ashtonian/pkg/config/internal/deepcopy"
 )
@@ -27,6 +25,10 @@ type unkeyedFields struct {
 	path    keyPath
 	section reflect.Type // past pointers
 	fields  []unkeyedField
+	// whole is the length of path's prefix naming the outermost map the
+	// merge holds with its own keys (see keysAsText), which any higher
+	// source setting anything there replaces whole; 0 for none.
+	whole int
 }
 
 // unkeyedField is one koanf:"-" field of a section: its index and a copy of
@@ -60,12 +62,13 @@ type unkeyedSections map[string]unkeyedFields
 // since (WithInvalidEntries) is not kept.
 func (s *unkeyedSections) merge(tree map[string]any, set []unkeyedFields) {
 	for k, u := range *s {
-		if replaces(tree, u.path) {
+		if replaces(tree, u) {
 			delete(*s, k)
 		}
 	}
 	for _, u := range set {
-		if !holdsMap(tree, u.path) {
+		var placed bool
+		if placed, u.whole = holdsMap(tree, u.path); !placed {
 			continue
 		}
 		if *s == nil {
@@ -84,17 +87,18 @@ func (s unkeyedSections) over(tree map[string]any, set []unkeyedFields) unkeyedS
 	return out
 }
 
-// holdsMap reports whether tree, a source's tree, holds a map at p.
-func holdsMap(tree map[string]any, p keyPath) bool {
+// holdsMap reports whether tree, a source's tree, holds a map at p, and
+// whole, the length of p's prefix naming the outermost map on the way that
+// the tree holds with its own keys, or 0.
+func holdsMap(tree map[string]any, p keyPath) (ok bool, whole int) {
 	var at any = tree
-	for _, seg := range p {
-		var ok bool
+	for i, seg := range p {
 		switch seg.kind {
 		case segField, segKey:
-			var m map[string]any
-			if m, ok = mergedMap(at); ok {
-				at, ok = m[seg.name]
+			if _, merged := mergedMap(at); !merged && whole == 0 {
+				whole = i
 			}
+			at, ok = mapEntry(at, seg.name)
 		case segIndex:
 			switch list := at.(type) {
 			case []any:
@@ -106,22 +110,23 @@ func holdsMap(tree map[string]any, p keyPath) bool {
 			}
 		}
 		if !ok {
-			return false
+			return false, 0
 		}
 	}
-	_, ok := mergedMap(at)
-	return ok
+	_, ok = mergedMap(at)
+	return ok, whole
 }
 
-// replaces reports whether tree, merged by mergeTrees, replaces the value at
-// p rather than leaving it or merging into it. The merge so far holds a map
-// at each of p's field and key segments and a list at each index segment —
-// a source that replaced one dropped the record — so tree replaces it when
-// it holds anything on p but a map[string]any there, or a listEdit before an
-// index.
-func replaces(tree map[string]any, p keyPath) bool {
+// replaces reports whether tree, merged by mergeTrees, replaces u's section
+// rather than leaving it or merging into it. The merge so far holds a map
+// at each of the path's field and key segments and a list at each index
+// segment — a source that replaced one dropped the record — so tree
+// replaces it when it holds anything on the path but a map[string]any
+// there, a listEdit before an index, or anything at all where the merge
+// holds a map with its own keys (u.whole).
+func replaces(tree map[string]any, u unkeyedFields) bool {
 	var at any = tree
-	for _, seg := range p {
+	for i, seg := range u.path {
 		var (
 			next any
 			ok   bool
@@ -145,6 +150,9 @@ func replaces(tree map[string]any, p keyPath) bool {
 		if !ok {
 			return false
 		}
+		if i+1 == u.whole {
+			return true
+		}
 		at = next
 	}
 	_, merges := at.(map[string]any)
@@ -157,9 +165,8 @@ func (s unkeyedSections) apply(root *schemaNode, cfg reflect.Value) {
 	if len(s) == 0 {
 		return
 	}
-	keys := mapKeyIndex{}
 	for _, u := range s {
-		u.setAt(cfg, root, u.path, keys)
+		u.setAt(cfg, root, u.path)
 	}
 }
 
@@ -167,7 +174,7 @@ func (s unkeyedSections) apply(root *schemaNode, cfg reflect.Value) {
 // map entry is not addressable, so it is copied, set and stored back. A
 // path the decoded config does not reach is left alone: nothing decoded
 // there for the section to belong to.
-func (u unkeyedFields) setAt(v reflect.Value, n *schemaNode, p keyPath, keys mapKeyIndex) {
+func (u unkeyedFields) setAt(v reflect.Value, n *schemaNode, p keyPath) {
 	for v.Kind() == reflect.Pointer {
 		if v.IsNil() {
 			return
@@ -190,19 +197,19 @@ func (u unkeyedFields) setAt(v reflect.Value, n *schemaNode, p keyPath, keys map
 		if err != nil {
 			return
 		}
-		u.setAt(fv, f.node, p[1:], keys)
-	case seg.kind == segKey && v.Kind() == reflect.Map && n.elem != nil:
-		k, ok := keys.lookup(v, seg.name)
+		u.setAt(fv, f.node, p[1:])
+	case seg.kind == segKey && n.kind == nodeMap && v.Kind() == reflect.Map:
+		k, ok := entryKey(v, seg.name)
 		if !ok {
 			return
 		}
 		e := reflect.New(v.Type().Elem()).Elem()
 		e.Set(v.MapIndex(k))
-		u.setAt(e, n.elem, p[1:], keys)
+		u.setAt(e, n.elem, p[1:])
 		v.SetMapIndex(k, e)
 	case seg.kind == segIndex && (v.Kind() == reflect.Slice || v.Kind() == reflect.Array) && n.elem != nil:
 		if seg.index < v.Len() {
-			u.setAt(v.Index(seg.index), n.elem, p[1:], keys)
+			u.setAt(v.Index(seg.index), n.elem, p[1:])
 		}
 	}
 }
@@ -236,54 +243,4 @@ func fieldForSet(v reflect.Value, index []int, alloc bool) (reflect.Value, bool)
 		v = v.Field(x)
 	}
 	return v, v.CanSet()
-}
-
-// mapKeyIndex finds a decoded map's key by the text a source tree keyed
-// it by. A key type keysAsText accepts converts from its text; any other map
-// is indexed once by each key's fmt.Sprint text, as keyWalk.mapValues keys
-// its paths.
-type mapKeyIndex map[uintptr]map[string]reflect.Value
-
-func (idx mapKeyIndex) lookup(m reflect.Value, text string) (reflect.Value, bool) {
-	kt := m.Type().Key()
-	if keysAsText(kt) {
-		k, err := keyFromText(kt, text)
-		if err != nil || !m.MapIndex(k).IsValid() {
-			return reflect.Value{}, false
-		}
-		return k, true
-	}
-	byText, ok := idx[m.Pointer()]
-	if !ok {
-		byText = make(map[string]reflect.Value, m.Len())
-		for _, k := range m.MapKeys() {
-			byText[fmt.Sprint(k.Interface())] = k
-		}
-		idx[m.Pointer()] = byText
-	}
-	k, ok := byText[text]
-	return k, ok
-}
-
-// keyFromText is the key of type t, a kind keysAsText accepts, that keyText
-// writes as text.
-func keyFromText(t reflect.Type, text string) (reflect.Value, error) {
-	k := reflect.New(t).Elem()
-	switch t.Kind() {
-	case reflect.String:
-		k.SetString(text)
-	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
-		n, err := strconv.ParseInt(text, 10, t.Bits())
-		if err != nil {
-			return reflect.Value{}, err
-		}
-		k.SetInt(n)
-	default:
-		n, err := strconv.ParseUint(text, 10, t.Bits())
-		if err != nil {
-			return reflect.Value{}, err
-		}
-		k.SetUint(n)
-	}
-	return k, nil
 }

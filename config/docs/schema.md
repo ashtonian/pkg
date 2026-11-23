@@ -62,6 +62,14 @@ Every output names a value the same way:
 
 A key begins with a field, or with a quoted map key: the root is a struct, so a key that begins with a map key names a source key no field reads, and none begins with an index or `[*]`. `ParseKey(text)` exposes this grammar as a `Key` of typed `Segment` values, and every key the package writes reads back through it as itself. `Key.String()` returns canonical spelling, `Key.Fields()` removes collection selectors, and `Key.LastName()` returns the last field or map key. Malformed or empty keys return `ErrKey`.
 
+### Map entries
+
+A map entry is named by its key's text, whatever the map's key type: a string as it is, a number in decimal (`ports["80"]`), a bool as `true` or `false`, a `time.Duration` as its `String` (`timeouts["1m0s"]`), and a type with both `MarshalText` and `UnmarshalText` by what `MarshalText` writes (`levels["WARN"]` for a `slog.Level`, `routes["10.0.0.0/8"]` for a `netip.Prefix`). Every output that names an entry, from a diff to a validation failure, names it so, and keys beneath it are a section's keys like any other: `levels["WARN"].host`, through aliases and letter case.
+
+A key's entry text is read as a load reads a file's key into the map: weakly typed, through the built-in decode hooks. An integer is read in any base Go spells, so `ports["0x50"]` and `ports["0120"]` both name `ports["80"]`, `ports["080"]` names nothing (as `080:` fails in a file), and `ports[""]` names `ports["0"]`; a bool reads `1`, `t` or `TRUE` as `true`. `CanonicalKey` writes each entry in its one text, so two spellings of one entry are one key. A `WithDecodeHook` of yours that reads a key type its own way is not consulted: a key's spelling does not depend on a load's options.
+
+A map keyed by any other type — an interface, a struct without text methods, a type with `UnmarshalText` but no `MarshalText` — is decoded whole: no key names its entries, its field owns everything beneath it, and a failure inside it names the map and its type, never the entry.
+
 ## Defaults in code
 
 A `default` tag is the right place for a default that holds wherever the field's type appears. When it does not — a shared section that each program embedding it sets differently, or one type used at several paths with different defaults — set it in a `SetDefaults()` method on the type that owns the choice:

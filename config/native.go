@@ -265,46 +265,41 @@ func parseBracketIndex(s string) (index, size int, ok bool) {
 	return i, end + 1, true
 }
 
-// The merged tree holds a struct or map as map[string]any and a list as
-// []any; decoding also takes a map for a one-element list and a list of maps
-// for one map, so the helpers read those shapes too.
+// The merged tree holds a struct or map as map[string]any, a typed map a
+// source set with its own keys as that map (see keysAsText), and a list as
+// []any; decoding also takes a map for a one-element list and a list of
+// maps for one map, so the helpers read those shapes too. An entry is named
+// by its key as written, or a typed key by its text (see keyCodec).
 
 func treeChild(data any, key string) any {
-	if m, ok := data.(map[string]any); ok {
-		return m[key]
-	}
-	return nil
+	e, _ := mapEntry(data, key)
+	return e
 }
 
 func treeKeys(data any) []string {
+	d, ok := data.([]any)
+	if !ok {
+		return mapEntryNames(data)
+	}
 	var keys []string
-	switch d := data.(type) {
-	case map[string]any:
-		for k := range d {
-			keys = append(keys, k)
-		}
-	case []any:
-		for _, e := range d {
-			keys = append(keys, treeKeys(e)...)
-		}
+	for _, e := range d {
+		keys = append(keys, treeKeys(e)...)
 	}
 	return keys
 }
 
 func treeEntry(data any, key string) any {
-	switch d := data.(type) {
-	case map[string]any:
-		return d[key]
-	case []any:
-		var found any
-		for _, e := range d {
-			if v := treeEntry(e, key); v != nil {
-				found = v // a later map wins, as decoding merges them
-			}
-		}
-		return found
+	d, ok := data.([]any)
+	if !ok {
+		return treeChild(data, key)
 	}
-	return nil
+	var found any
+	for _, e := range d {
+		if v := treeEntry(e, key); v != nil {
+			found = v // a later map wins, as decoding merges them
+		}
+	}
+	return found
 }
 
 func treeElement(data any, i int) any {
@@ -324,8 +319,11 @@ func treeElement(data any, i int) any {
 // validatorKey translates a validator struct namespace — the root type's
 // name (see [belowValidatorRoot]), then Go field names, map keys and indexes
 // in brackets: Config.DB.Pools[0].Max — against the validated config v. A
-// squashed struct's field name contributes no key segment. exact is false
-// when the namespace cannot be placed exactly.
+// squashed struct's field name contributes no key segment. The validator
+// prints a map key with %v, a String method included, so the key is found
+// by that text and named by its own (see keyCodec): levels["1"], not
+// levels["info"]. exact is false when the namespace cannot be placed
+// exactly, two keys printing alike included.
 func validatorKey(v reflect.Value, structNS string) (keyPath, bool) {
 	rest, ok := belowValidatorRoot(v.Type(), structNS)
 	if !ok {
@@ -371,7 +369,8 @@ func validatorKey(v reflect.Value, structNS string) (keyPath, bool) {
 			if !ok {
 				return p, false
 			}
-			p, v, rest = p.key(key), v.MapIndex(byText[key]), rest[size:]
+			k := byText[key]
+			p, v, rest = p.key(entryName(k)), v.MapIndex(k), rest[size:]
 		case v.Kind() == reflect.Slice || v.Kind() == reflect.Array:
 			i, size, ok := parseBracketIndex(rest)
 			if !ok || i >= v.Len() {

@@ -1,7 +1,6 @@
 package config
 
 import (
-	"fmt"
 	"maps"
 	"reflect"
 	"slices"
@@ -203,7 +202,7 @@ func dynamicValue(v reflect.Value, path keyPath, failed func(keyPath)) (out any,
 	case reflect.Map:
 		var m reflect.Value
 		for it := v.MapRange(); it.Next(); {
-			e, ok := dynamicValue(it.Value(), path.key(fmt.Sprint(it.Key().Interface())), failed)
+			e, ok := dynamicValue(it.Value(), path.key(entryName(it.Key())), failed)
 			if ok && !m.IsValid() {
 				m = reflect.MakeMapWithSize(reflect.MapOf(v.Type().Key(), reflect.TypeFor[any]()), v.Len())
 				for prev := v.MapRange(); prev.Next(); {

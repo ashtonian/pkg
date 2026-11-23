@@ -6,7 +6,6 @@ import (
 	"maps"
 	"reflect"
 	"slices"
-	"strconv"
 	"strings"
 
 	"github.com/go-viper/mapstructure/v2"
@@ -222,9 +221,10 @@ func (w *keyWalk) structMap(t reflect.Type, v reflect.Value, path keyPath) any {
 }
 
 // mapValues follows the values of map v into element type elem; its keys are
-// the caller's and stay as written. A typed map whose keys' text decodes
-// back to them becomes a wholeMap keyed by that text (see textKeyedMap), as
-// a map[string]any from a file is keyed, so a higher source can set one
+// the caller's and stay as written, each entry's path naming it by its
+// key's text (see keyCodec). A typed map whose keys' text decodes back to
+// them becomes a wholeMap keyed by that text (see textKeyedMap), as a
+// map[string]any from a file is keyed, so a higher source can set one
 // entry, or one key within an entry.
 func (w *keyWalk) mapValues(elem reflect.Type, v reflect.Value, path keyPath) any {
 	if v.IsNil() {
@@ -239,7 +239,7 @@ func (w *keyWalk) mapValues(elem reflect.Type, v reflect.Value, path keyPath) an
 	}
 	out := reflect.MakeMapWithSize(v.Type(), v.Len())
 	for _, k := range v.MapKeys() {
-		out = setMapValue(out, k, w.elem(v.Type().Elem(), elem, v.MapIndex(k), path.key(fmt.Sprint(k.Interface()))))
+		out = setMapValue(out, k, w.elem(v.Type().Elem(), elem, v.MapIndex(k), path.key(entryName(k))))
 	}
 	return keepWhole(v, out)
 }
@@ -250,25 +250,26 @@ var wholeMapType = reflect.TypeFor[wholeMap]()
 // decodes back to them (keysAsText): a wholeMap keyed by that text, holding
 // entry(key text, value) for each entry. ok is false for any other key
 // type, a named one included; a source carries such a map with its own
-// keys, and it replaces what lies beneath it whole.
+// keys, and it replaces what lies beneath it whole. Its entries are still
+// named, and found, by their keys' text (see keyCodec).
 func textKeyedMap(v reflect.Value, entry func(key string, value reflect.Value) any) (m wholeMap, ok bool) {
 	if !keysAsText(v.Type().Key()) {
 		return nil, false
 	}
 	m = make(wholeMap, v.Len())
 	for it := v.MapRange(); it.Next(); {
-		k := keyText(it.Key())
+		k := entryName(it.Key())
 		m[k] = entry(k, it.Value())
 	}
 	return m, true
 }
 
-// keysAsText reports a map key type whose text, as keyText writes it,
-// decodes back to the key: a predeclared string or integer type. A named
-// key type keeps its own keys, since its text need not be its kind's: text
-// methods read it (slog.Level decodes "WARN", not "4"), time.Duration
-// decodes unit text, and a caller's decode hook may read the type its own
-// way ("red" for a color whose kind's text is "1").
+// keysAsText reports a map key type whose text, as its keyCodec writes it,
+// decodes back to the key whatever a load's decode hooks: a predeclared
+// string or integer type. A source carries a map keyed by any other type
+// with its own keys, and it replaces what lies beneath it whole: a caller's
+// decode hook may read a named type its own way ("red" for a color whose
+// codec writes "1"), which no text the codec writes would survive.
 func keysAsText(t reflect.Type) bool {
 	if t.PkgPath() != "" {
 		return false
@@ -280,16 +281,6 @@ func keysAsText(t reflect.Type) bool {
 		return true
 	}
 	return false
-}
-
-func keyText(k reflect.Value) string {
-	switch k.Kind() {
-	case reflect.String:
-		return k.String()
-	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
-		return strconv.FormatUint(k.Uint(), 10)
-	}
-	return strconv.FormatInt(k.Int(), 10)
 }
 
 // elements follows each element of list v into type elem. A nil slice stays

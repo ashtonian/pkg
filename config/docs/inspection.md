@@ -74,7 +74,7 @@ values, bounds, former key names and resolved reload class. `Allowed` uses the s
 `oneof` parser and withholding rules as JSON Schema. `EnvVars` preserves
 precedence: the name under each prefix, most specific first, then the env
 tag's names; `Env` is the first and `AlsoEnv` the rest. A key no variable
-can set — a list of sections, a map keyed by anything but strings, an entry
+can set — a list of sections, a map keyed by anything but a string type, an entry
 of a map inside a map entry — names none. `Field` contains caller-owned declared
 metadata, including original tags, and is excluded from JSON.
 

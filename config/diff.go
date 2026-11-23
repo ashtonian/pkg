@@ -49,8 +49,8 @@ type Change struct {
 }
 
 // Diff compares two configs of type T, a struct, and returns every key whose
-// value differs, in walk order: fields as declared, map entries by sorted
-// key, list elements by index. A nil config has no keys. It compares decoded
+// value differs, in walk order: fields as declared, map entries by their
+// keys' sorted text (ports["80"], levels["WARN"]), list elements by index. A nil config has no keys. It compares decoded
 // values, never their text, and neither input is changed.
 //
 //   - Lists compare by index: removing the first of three elements changes
@@ -61,8 +61,8 @@ type Change struct {
 //     key, followed by the keys beneath it that changed. An interface whose
 //     value changes type, or turns nil, is compared whole: one change at its
 //     key, Structural when either value is a struct, map or list.
-//   - Values decoded whole — scalars, self-decoding structs, maps keyed by
-//     non-strings — compare with reflect.DeepEqual: no Equal or String
+//   - Values decoded whole — scalars, self-decoding structs, maps whose
+//     keys have no text — compare with reflect.DeepEqual: no Equal or String
 //     method decides, so two time.Time values for one instant in different
 //     locations differ, and NaN never equals itself.
 //   - A value PrintRedacted would redact is redacted on both sides; a
@@ -423,7 +423,7 @@ func (w *comparer) container(n *schemaNode, f frame, sa, sb side) {
 			w.pop()
 		}
 	case nodeMap:
-		ma, mb := readMap(sa), readMap(sb)
+		ma, mb := readMap(n.keys, sa), readMap(n.keys, sb)
 		i, j := 0, 0
 		for i < len(ma.keys) || j < len(mb.keys) {
 			var a, b reflect.Value
@@ -532,7 +532,7 @@ type mapKey struct {
 	i    int // the entry's value in vals
 }
 
-func readMap(s side) mapRead {
+func readMap(c *keyCodec, s side) mapRead {
 	if !s.v.IsValid() || s.isNil || s.v.Len() == 0 {
 		return mapRead{}
 	}
@@ -545,7 +545,7 @@ func readMap(s side) mapRead {
 	for i := 0; it.Next(); i++ {
 		k.SetIterKey(&it)
 		r.vals.Index(i).SetIterValue(&it)
-		r.keys = append(r.keys, mapKey{name: k.String(), i: i})
+		r.keys = append(r.keys, mapKey{name: entryText(c, k), i: i})
 	}
 	slices.SortFunc(r.keys, func(a, b mapKey) int { return strings.Compare(a.name, b.name) })
 	return r
@@ -579,7 +579,7 @@ func locate(root *schemaNode, v reflect.Value, p keyPath) (side, *schemaNode, fr
 			}
 			s, n, f = resolve(fieldOf(s, fld)), fld.node, f.field(fld)
 		case nodeMap:
-			s, n, f = resolve(newEntries(s).of(seg.name)), n.elem, f.entry(seg.name, n.typ.Elem())
+			s, n, f = resolve(entryOfSide(n.keys, s, seg.name)), n.elem, f.entry(seg.name, n.typ.Elem())
 		case nodeList:
 			s, n = resolve(elementOf(s, seg.index)), n.elem
 		default:
@@ -589,25 +589,26 @@ func locate(root *schemaNode, v reflect.Value, p keyPath) (side, *schemaNode, fr
 	return s, n, f
 }
 
-// entries looks up a map side's entries by key text.
-type entries struct {
-	m   reflect.Value // invalid when the side has no map
-	key reflect.Value // scratch, of the map's key type
-}
-
-func newEntries(s side) entries {
+// entryOfSide is the value of map side s's entry name, read by its key's
+// codec c; invalid when there is none.
+func entryOfSide(c *keyCodec, s side, name string) reflect.Value {
 	if !s.v.IsValid() || s.isNil || s.v.Kind() != reflect.Map {
-		return entries{}
-	}
-	return entries{m: s.v, key: reflect.New(s.v.Type().Key()).Elem()}
-}
-
-func (e entries) of(name string) reflect.Value {
-	if !e.m.IsValid() {
 		return reflect.Value{}
 	}
-	e.key.SetString(name)
-	return e.m.MapIndex(e.key)
+	k, err := c.parse(name)
+	if err != nil {
+		return reflect.Value{}
+	}
+	return s.v.MapIndex(k)
+}
+
+// entryText is key k's text by codec c; one whose MarshalText fails is
+// named by how it prints, so the change is still reported.
+func entryText(c *keyCodec, k reflect.Value) string {
+	if text, err := c.text(k); err == nil {
+		return text
+	}
+	return fmt.Sprint(k.Interface())
 }
 
 func listLen(s side) int {

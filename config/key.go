@@ -24,8 +24,10 @@ type Key []Segment
 // ParseKey parses fields, quoted map keys, decimal list indexes and [*]
 // patterns. A key begins with a field, or with a quoted map key naming a
 // source key at the root that no field's key can spell (["a.b"]), as a
-// report of unknown keys names it. Malformed and empty keys return an
-// error wrapping ErrKey.
+// report of unknown keys names it. A map key is its entry's text, whatever
+// the map's key type (ports["80"], levels["WARN"]); ParseKey reads no
+// schema, so [CanonicalKey] says which entry it names. Malformed and empty
+// keys return an error wrapping ErrKey.
 func ParseKey(text string) (Key, error) {
 	p, err := parseKeyPath(text)
 	if err != nil {

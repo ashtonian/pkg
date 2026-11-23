@@ -335,16 +335,14 @@ func (w *entryWalk) walkValue(path keyPath, v reflect.Value, s site) {
 	case (s.sensitive || named) && expandable(elem.Type()):
 		// Its keys and elements may be secrets: one redacted value.
 		w.leaf(path, v, elem, s)
-	case elem.Kind() == reflect.Map && elem.Type().Key().Kind() == reflect.String && !opaque(elem.Type()) && elem.Len() > 0:
+	case elem.Kind() == reflect.Map && expandable(elem.Type()) && elem.Len() > 0:
 		if !w.enter(elem) {
 			w.cycle(path, v, s)
 			return
 		}
 		defer delete(w.visiting, visitOf(elem))
-		keys := elem.MapKeys()
-		slices.SortFunc(keys, func(a, b reflect.Value) int { return cmp.Compare(a.String(), b.String()) })
-		for _, k := range keys {
-			w.walkValue(path.key(k.String()), elem.MapIndex(k), site{named: isSensitiveName(k.String()) && textCapable(elem.Type().Elem()), desc: s.desc, sensitive: s.sensitive || named, keyed: true})
+		for _, e := range sortedEntries(elem) {
+			w.walkValue(path.key(e.name), e.value, site{named: isSensitiveName(e.name) && textCapable(elem.Type().Elem()), desc: s.desc, sensitive: s.sensitive || named, keyed: true})
 		}
 	case (elem.Kind() == reflect.Slice || elem.Kind() == reflect.Array) && !opaque(elem.Type()) && elem.Len() > 0 && holdsContainers(elem.Type().Elem()):
 		if elem.Kind() == reflect.Slice {
@@ -359,7 +357,7 @@ func (w *entryWalk) walkValue(path keyPath, v reflect.Value, s site) {
 			w.walkValue(path.index(i), elem.Index(i), inner)
 		}
 	default:
-		// Scalars, self-decoding structs, maps keyed by non-strings, empty
+		// Scalars, self-decoding structs, maps whose keys have no text, empty
 		// containers and slices of scalars. A sensitive leaf is redacted
 		// whole — including `APIKeys []string`.
 		w.leaf(path, v, elem, s)

@@ -13,7 +13,8 @@ import (
 //
 //	db.host                a struct field: its key segment
 //	items[0].port          a slice or array element: its decimal index
-//	named["primary"].port  a map entry: its key, always quoted as a Go string
+//	named["primary"].port  a map entry: its key's text, always quoted as a Go string
+//	ports["80"]            an entry of a map keyed by any type with text (see keyCodec)
 //	limits["/upload"]
 //	items[*].port          any element or entry, in a schema pattern
 //	["a.b"].port           a source key at the root no field's key can spell

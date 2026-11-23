@@ -641,8 +641,10 @@ func writeHeld(slot reflect.Value, rel keyPath, h heldValue) error {
 		}
 		return writeHeld(fv, rest, h)
 	case nodeMap:
-		key := reflect.New(v.Type().Key()).Elem()
-		key.SetString(seg.name)
+		key, err := n.keys.parse(seg.name)
+		if err != nil {
+			return fmt.Errorf("%s is keyed by %s, which entry %q does not decode into: %w", gowalker.TypeText(v.Type()), gowalker.TypeText(v.Type().Key()), seg.name, err)
+		}
 		if len(rest) == 0 && !h.present {
 			if !v.IsNil() {
 				v.SetMapIndex(key, reflect.Value{})

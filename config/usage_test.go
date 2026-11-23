@@ -240,7 +240,7 @@ func TestUsage_NamesOnlyVariablesThatSetAKey(t *testing.T) {
 		"features[*].limit":     {"APP_FEATURES_<KEY>_LIMIT"},
 		"features[*].labels":    {"APP_FEATURES_<KEY>_LABELS"},
 		"features[*].labels[*]": nil,
-		"by_id":                 nil,
+		"by_id[*]":              nil,
 		"items":                 nil,
 		"items[*].port":         nil,
 	}, env)
