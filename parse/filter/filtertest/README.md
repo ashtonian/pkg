@@ -23,6 +23,7 @@ A family is its rows, its schema, its cases and a `Run*` function that parses ea
 | `$in` / `$nin` sets | `Records`, `PathRecords` | `Schema`, `PathSchema` with `SetConfig` | `SetCases`, `PathSetCases`, over `SetSizes` | `RunSets`, `RunPathSets` |
 | Geo | `GeoRecord`, `GeoRecords` | `GeoSchema` | `GeoCases` | `RunGeo` |
 | Quoted identifiers | `QuotedRecord`, `QuotedRecords` | `QuotedSchema` | `QuotedCases` | `RunQuoted` |
+| `$ilike` case | `FoldRecord`, `FoldRecords` | `FoldSchema` | `FoldCases`, which every backend answers alike; `FoldUnicodeCases`, which lower-case a non-ASCII letter, for PostgreSQL under `pg_c_utf8` and memory | `RunFold`, the Unicode cases with `unicode` set |
 | Number keys | `NumberKeyRecord`, `NumberKeyRecords` | `NumberKeySchema` | `NumberKeyFacets` | the caller's facet and keyset tests |
 | Timestamps | `TimestampRecord`, `TimestampRecords` | `TimestampSchema` | `TimestampFilters`, `TimestampOrders`, `TimestampFacets` | the caller's filter, sort and facet tests |
 | Memberships | `Records` and the lookup tables `LookupTables` (`LookupTable`, `LookupColumn`) | `Schema` | `MembershipCases`, each a `MembershipCase`; `Lookups`, the reference `filter.MembershipLookup` over the tables | `RunMembership` |
@@ -60,6 +61,7 @@ The fixture is test data: it holds no credentials and opens no connection. The p
 | `sets.go` | The `$in` / `$nin` set family, `SetSizes`, `SetConfig` |
 | `geo.go` | The geo family |
 | `quoted.go` | The quoted-identifier family |
+| `fold.go` | The `$ilike` case family |
 | `numbers.go` | Number keys |
 | `timestamps.go` | Timestamps |
 | `membership.go` | Lookup tables, `MembershipCases`, `Lookups`, `RunMembership` |

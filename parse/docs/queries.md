@@ -353,7 +353,7 @@ Every statement that reaches related rows takes one `filter.RelationScope` throu
 | `RowTenant` | string | "" | Hold each tenant-scoped related row to the tenant of the owner row it hangs from, this column of the owner's table, for rows of several tenants ([governed lists](relations.md#governed-lists)); excludes `Tenant` and `Unscoped`. `ResolveMemberships` and `ResolveInclude` refuse it: resolve each tenant's rows with its `Tenant` |
 | `Unscoped` | bool | false | Reach tenant-scoped relations without a tenant predicate — platform tooling only |
 | `Related` | `map[string]*PolicyConstraints` | nil | The server's policy for each policy-scoped relation's target table, by table; a predicate on one without it is `ErrRelatedPolicyRequired` |
-| `Now` | `time.Time` | zero | The instant `Related`'s relative tokens resolve against, the request's (`parse.BuildList` sets it); zero is the list's own instant in `ListQuery.Build`, one wall-clock reading per statement in the other builders |
+| `Now` | `time.Time` | zero | The instant `Related`'s relative tokens resolve against, the request's (`Resource.BuildList` sets it); zero is the list's own instant in `ListQuery.Build`, one wall-clock reading per statement in the other builders |
 
 The zero value scopes no tenant: a relation declaring a tenant column fails closed.
 
