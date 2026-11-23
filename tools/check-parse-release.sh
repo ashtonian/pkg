@@ -17,7 +17,10 @@ IFS=$'\t' read -r module version source < "$scratch/module.tsv"
 # so the consumer's dependencies hit the shared build cache.
 export GOWORK=off GOTOOLCHAIN=local GOFLAGS='-mod=mod -modcacherw -trimpath'
 export GOMODCACHE="$scratch/modcache" GOPROXY="file://$scratch/proxy,https://proxy.golang.org"
-export GOPRIVATE= GONOPROXY= GONOSUMDB="$module"
+# GOENV=off keeps the user's go env file out: an empty variable does not
+# override it, and a GOPRIVATE there adds a cache-only lookup pass that
+# answers a nested module's path with its cached parent.
+export GOENV=off GOPRIVATE= GONOPROXY= GONOSUMDB="$module"
 # Real PostgreSQL/PostGIS parity is a separate, explicitly provisioned matrix;
 # here every PostgreSQL test skips.
 export PARSE_POSTGRES_DSN= PARSE_POSTGIS_DSN= PARSE_REQUIRE_PG=
