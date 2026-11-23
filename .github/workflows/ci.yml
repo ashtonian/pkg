@@ -104,6 +104,7 @@ jobs:
             .github/**
             Makefile
             tools/ci_release_checks.py
+            tools/fuzz_corpus.py
             tools/private_references.py
             tools/test_ci_*.py
           # Every platform and -tags set CI compiles: a file joins a package only under some.
@@ -135,6 +136,7 @@ jobs:
             config/examples/cookbook/**
             httpx/examples/gin/**
             httpx/internal/bench/**
+            parse/examples/server/**
           go-owners: |
             {
               "config/examples/quickstart/main.go": ["./config"],

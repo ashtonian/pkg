@@ -76,7 +76,7 @@ func newComputedColumns(table string, cfg resourceConfig, columns map[string]ref
 			return nil, c.errorf(d.column, "is declared twice")
 		case d.expr == nil:
 			return nil, c.errorf(d.column, "has no expression")
-		case d.column == cfg.pk, d.column == cfg.tenant, d.column == cfg.deleted:
+		case slices.Contains(cfg.pk, d.column), d.column == cfg.tenant, d.column == cfg.deleted:
 			return nil, c.errorf(d.column, "is the key, tenant or deleted column, which a table holds itself")
 		case read != nil && !read[d.column]:
 			return nil, c.errorf(d.column, "is not read (ReadColumns)")

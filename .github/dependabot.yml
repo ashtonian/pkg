@@ -14,6 +14,7 @@ updates:
       - /httpx/compress/brotli
       - /httpx/examples/gin
       - /httpx/internal/bench
+      - /parse/examples/server
       - /tools/modarchive
     schedule:
       interval: weekly

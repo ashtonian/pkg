@@ -171,7 +171,7 @@ type Tag struct {
 func ExampleResource_RelationStatements() {
 	devices := parse.MustResource[Device]("devices", parse.TenantColumn("tenant_id"))
 	tags := parse.MustResource[Tag]("tags", parse.TenantColumn("tenant_id"), parse.DeletedColumn("deleted_at"))
-	devices.MustRelate("tags", parse.ManyToMany(tags, parse.Junction{Table: "device_tags", Source: "device_id", Target: "tag_id", Tenant: "tenant_id"}, parse.Writable()))
+	devices.MustRelate("tags", parse.ManyToMany(tags, parse.Junction{Table: "device_tags", Source: []string{"device_id"}, Target: []string{"tag_id"}, Tenant: "tenant_id"}, parse.Writable()))
 
 	parsed, err := devices.ParsePatch([]byte(`[{"op":"add","path":"/tags","value":["red","blue"]}]`))
 	if err != nil {
@@ -184,7 +184,7 @@ func ExampleResource_RelationStatements() {
 		return
 	}
 	// The keys Owner returned; the executors read them from its rows.
-	stmts, err := devices.RelationStatements(plan, []any{"d1"})
+	stmts, err := devices.RelationStatements(plan, []parse.Key{{"d1"}})
 	if err != nil {
 		fmt.Println(err)
 		return

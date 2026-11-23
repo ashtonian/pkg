@@ -14,9 +14,8 @@ type cfgEntity struct {
 	Config map[string]any `json:"config" parse:"patch"        patch_ops:"replace,remove"`
 }
 
-// TestMergePatchPreservesSiblings: RFC 7396 §2 requires recursive merge
-// for object values. Previously ParseMergePatch produced a whole-value
-// replace, so applying {"config":{"theme":"dark"}} deleted config.lang.
+// TestMergePatchPreservesSiblings: RFC 7396 §2 merges object values
+// recursively, so applying {"config":{"theme":"dark"}} keeps config.lang.
 func TestMergePatchPreservesSiblings(t *testing.T) {
 	tp, err := parse.NewResource[cfgEntity]("cfg_entities")
 	if err != nil {

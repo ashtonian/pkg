@@ -15,7 +15,7 @@ import (
 
 func TestListOffsetDoesNotOffsetStandaloneQueries(t *testing.T) {
 	bound := 50.0
-	schema := &filter.ResourceSchema{Name: "items", PrimaryKey: "id", SystemFields: map[string]*filter.FieldSchema{
+	schema := &filter.ResourceSchema{Name: "items", PrimaryKey: []string{"id"}, SystemFields: map[string]*filter.FieldSchema{
 		"id": {ExternalName: "id", Table: "items", Column: "id", DataType: core.FieldTypeString},
 	}, Fields: map[string]*filter.FieldSchema{
 		"status": {ExternalName: "status", Table: "items", Column: "status", DataType: core.FieldTypeString, AllowedOperators: []filter.FilterOperator{filter.OpEq}, Facetable: true},

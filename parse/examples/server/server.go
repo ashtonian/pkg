@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/url"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/ashtonian/pkg/parse"
@@ -30,6 +31,8 @@ type Product struct {
 }
 
 const (
+	// productsPath is the products collection; one product is below it.
+	productsPath    = "/api/products"
 	defaultPageSize = 25
 	maxPageSize     = 100
 	// maxPatchIDs bounds a batch patch as maxPageSize bounds a list page:
@@ -73,16 +76,22 @@ func newServer(db *sql.DB, log *slog.Logger, requestTimeout time.Duration) (http
 	if err := parse.RegisterResource(reg, products); err != nil {
 		return nil, fmt.Errorf("schema registry: %w", err)
 	}
+	// A path segment per key column, so a resource keyed by several columns
+	// routes as products, keyed by id, do.
+	item, err := parsehttp.ItemPattern(products)
+	if err != nil {
+		return nil, fmt.Errorf("products item route: %w", err)
+	}
 	s := &server{db: db, products: products, log: log, requestTimeout: requestTimeout}
 	s.report = parsehttp.WithErrorHandler(s.responseFailed)
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/{resource}/schema", parsehttp.SchemaHandler(reg, s.report))
 	mux.HandleFunc("GET /api/schemas", parsehttp.SchemaListHandler(reg, s.report))
-	mux.HandleFunc("GET /api/products", s.list)
-	mux.HandleFunc("POST /api/products", s.list)
-	mux.HandleFunc("OPTIONS /api/products", s.facets)
-	mux.HandleFunc("PATCH /api/products", s.patchMany)
-	mux.HandleFunc("PATCH /api/products/{id}", s.patch)
+	mux.HandleFunc("GET "+productsPath, s.list)
+	mux.HandleFunc("POST "+productsPath, s.list)
+	mux.HandleFunc("OPTIONS "+productsPath, s.facets)
+	mux.HandleFunc("PATCH "+productsPath, s.patchMany)
+	mux.HandleFunc("PATCH "+productsPath+"/"+item, s.patch)
 	return s.withDeadline(mux), nil
 }
 
@@ -156,18 +165,33 @@ func (s *server) facetCounts(ctx context.Context, query *filter.FacetQuery) (map
 	return counts, nil
 }
 
+// patch applies a merge patch to the product its item route's key names, a
+// path segment per key column.
 func (s *server) patch(w http.ResponseWriter, r *http.Request) {
 	if _, ok := s.patchQuery(w, r); !ok {
 		return
 	}
-	id := r.PathValue("id")
-	items, err := s.update(r, parse.ByID(id))
+	// The key as the path spells it, each segment still escaped, so a key
+	// of several columns reads back unambiguously.
+	item := strings.TrimPrefix(r.URL.EscapedPath(), productsPath+"/")
+	notFound := parsehttp.Body{Code: codeNotFound, Message: "product " + item + " not found"}
+	key, err := parsehttp.ItemKey(r, s.products)
+	if errors.Is(err, parse.ErrKeyInvalid) {
+		// No product has a key its columns cannot hold.
+		s.writeJSON(w, r, http.StatusNotFound, notFound)
+		return
+	}
+	if err != nil {
+		s.fail(w, r, err)
+		return
+	}
+	items, err := s.update(r, parse.ByKey(key))
 	if err != nil {
 		s.fail(w, r, err)
 		return
 	}
 	if len(items) == 0 {
-		s.writeJSON(w, r, http.StatusNotFound, parsehttp.Body{Code: codeNotFound, Message: "product " + id + " not found"})
+		s.writeJSON(w, r, http.StatusNotFound, notFound)
 		return
 	}
 	s.writeJSON(w, r, http.StatusOK, parsehttp.PatchAnswer[Product]{Updated: items})

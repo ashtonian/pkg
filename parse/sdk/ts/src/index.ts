@@ -27,7 +27,7 @@
 
 // Core (shared types and errors)
 export { ApiError, ResponseError, SchemaResourceError, SchemaValidationError, SchemaValidationErrors, SchemaVersionError } from "./core/index.js";
-export type { ErrorBody, FieldType, ListRequestOptions, RequestOptions } from "./core/index.js";
+export type { ErrorBody, FieldType, KeyValue, ListRequestOptions, RequestOptions, ResourceKey } from "./core/index.js";
 export type { FieldError, Problem } from "./core/index.js";
 
 // Filter
@@ -67,6 +67,7 @@ export type {
   PatchPathSchema,
   PatchResult,
   PatchSchema,
+  RelationKeyColumn,
 } from "./patch/index.js";
 
 // Combined (client + schema + validator)

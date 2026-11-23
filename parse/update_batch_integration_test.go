@@ -57,7 +57,7 @@ func testUpdateBatchDatabase(t *testing.T, db *sql.DB, d parse.Dialect) {
 		if id == 5 {
 			raw = `{"reference":null}`
 		}
-		requests = append(requests, parse.RowUpdate{Key: id, Patch: updateBatchPatch(t, r, raw), Policy: updateBatchVersion(3)})
+		requests = append(requests, parse.RowUpdate{Key: parse.Key{id}, Patch: updateBatchPatch(t, r, raw), Policy: updateBatchVersion(3)})
 	}
 	plan, err := r.BuildUpdateBatch(d, requests, parse.Scope{Tenant: "t1"}, parse.UpdateBatchLimits{MaxParameters: 40}, parse.SkipUnchanged(), parse.Stamp("updated_at", stamp), parse.Increment("version"))
 	require.NoError(t, err)
@@ -102,7 +102,7 @@ func testUpdateBatchDatabase(t *testing.T, db *sql.DB, d parse.Dialect) {
 		{"server-stamp-owns-value", `{"reference":"stamp-conflict","meta":{"value":"stamp-control"}}`, "server-stamp", 4, 3, parse.StampSQL("reference", "'server-stamp'")},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			plan, err := r.BuildUpdateBatch(d, []parse.RowUpdate{{Key: test.key, Patch: updateBatchPatch(t, r, test.raw)}}, parse.Scope{Tenant: "t1"}, parse.UpdateBatchLimits{}, test.opt)
+			plan, err := r.BuildUpdateBatch(d, []parse.RowUpdate{{Key: parse.Key{test.key}, Patch: updateBatchPatch(t, r, test.raw)}}, parse.Scope{Tenant: "t1"}, parse.UpdateBatchLimits{}, test.opt)
 			require.NoError(t, err)
 			res, err := applyUpdateBatch(t, db, r, d, plan)
 			require.NoError(t, err)
@@ -122,8 +122,8 @@ func testUpdateBatchDatabase(t *testing.T, db *sql.DB, d parse.Dialect) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			plan, err := r.BuildUpdateBatch(d, []parse.RowUpdate{
-				{Key: int64(1), Patch: updateBatchPatch(t, r, `{"reference":"must-not-write"}`), Policy: updateBatchVersion(4)},
-				{Key: test.key, Patch: updateBatchPatch(t, r, `{"reference":"also-refused"}`), Policy: updateBatchVersion(test.rev)},
+				{Key: parse.Key{int64(1)}, Patch: updateBatchPatch(t, r, `{"reference":"must-not-write"}`), Policy: updateBatchVersion(4)},
+				{Key: parse.Key{test.key}, Patch: updateBatchPatch(t, r, `{"reference":"also-refused"}`), Policy: updateBatchVersion(test.rev)},
 			}, parse.Scope{Tenant: "t1"}, parse.UpdateBatchLimits{MaxParameters: 4}, parse.SkipUnchanged())
 			require.NoError(t, err)
 			res, err := applyUpdateBatch(t, db, r, d, plan)
@@ -134,8 +134,8 @@ func testUpdateBatchDatabase(t *testing.T, db *sql.DB, d parse.Dialect) {
 	}
 	t.Run("late-constraint-rolls-back-earlier-chunk", func(t *testing.T) {
 		plan, err := r.BuildUpdateBatch(d, []parse.RowUpdate{
-			{Key: int64(1), Patch: updateBatchPatch(t, r, `{"reference":"must-not-write"}`), Policy: updateBatchVersion(4)},
-			{Key: int64(2), Patch: updateBatchPatch(t, r, `{"reference":"refused"}`), Policy: updateBatchVersion(4)},
+			{Key: parse.Key{int64(1)}, Patch: updateBatchPatch(t, r, `{"reference":"must-not-write"}`), Policy: updateBatchVersion(4)},
+			{Key: parse.Key{int64(2)}, Patch: updateBatchPatch(t, r, `{"reference":"refused"}`), Policy: updateBatchVersion(4)},
 		}, parse.Scope{Tenant: "t1"}, parse.UpdateBatchLimits{MaxParameters: 4}, parse.SkipUnchanged())
 		require.NoError(t, err)
 		res, err := applyUpdateBatch(t, db, r, d, plan)

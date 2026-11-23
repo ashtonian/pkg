@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"reflect"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -68,13 +69,16 @@ type Dialect interface {
 	// DecimalValue renders a decimal operand as the dialect's exact decimal
 	// value: equal decimals are equal values, whether a column, a document
 	// member (the value PathExpr reads a decimal member as) or a bound
-	// canonical text holds them.
+	// canonical text holds them. FieldExpr reads a decimal through it.
 	DecimalValue(o DecimalOperand) string
 
-	// DecimalOrder renders a decimal operand as what orders decimals
-	// exactly: the exact value itself where the database's own type orders
-	// it, a key read from the operand that orders as the value does where
-	// there is none.
+	// DecimalOrder renders a decimal operand as what compares and orders
+	// decimals exactly: the exact value itself where the database's own
+	// type orders it; where there is none, a key read from the operand that
+	// orders as the value does and is equal exactly where the values are.
+	// Filters and lookups compare decimals through it, equality and sets
+	// included, as sorts and keyset seeks do, so one index on it serves
+	// them all.
 	DecimalOrder(o DecimalOperand) string
 
 	// TwoValuedCondition renders `field <op> value` a second way, one an
@@ -112,10 +116,34 @@ type Dialect interface {
 	// setRows binds a set's members as one parameter and reads them back
 	// as rows of one column, v, of the type FieldExpr reads field as.
 	setRows(field *FieldSchema, members []any, bind func(any) string) (string, error)
-	// memberSet tests expr, a value of field's type, for membership in
-	// members (in) or absence from them, the set bound as one parameter:
-	// `$in` / `$nin` and a lookup's WhereIn render through it.
-	memberSet(field *FieldSchema, expr string, members []any, in bool, bind func(any) string) (string, error)
+	// memberSet tests field for membership in members (in) or absence
+	// from them, the set bound as one parameter and compared as field's
+	// equality compares: a decimal through DecimalOrder. `$in` / `$nin`
+	// and a lookup's WhereIn render through it.
+	memberSet(field *FieldSchema, members []any, in bool, bind func(any) string) (string, error)
+	// KeyIn renders the key columns of table, each qualified by alias (none
+	// when "") and typed by types, as a row IN keys — NOT IN when member is
+	// false — the keys bound as one parameter whatever their number. Each
+	// column and each key's value compare as a filter compares the
+	// column's type: a decimal by value, a date by its calendar day. A key
+	// constraint over several columns, an include's owners and a relation
+	// patch's pairs render through it.
+	KeyIn(table, alias string, columns []string, types []core.TypeInfo, keys []core.Key, member bool, bind func(any) string) (string, error)
+	// keyIn is KeyIn with each column read as read renders it, table
+	// possibly schema-qualified: a lookup's WhereKeyIn renders through it.
+	keyIn(table string, read func(column string) string, columns []string, types []core.TypeInfo, keys []core.Key, member bool, bind func(any) string) (string, error)
+
+	// KeyOperand renders what a key column, read as expr and typed t,
+	// compares by: the operand a filter's equality on the type compares,
+	// a decimal through DecimalOrder and a date by its calendar day. Two
+	// key columns are equal where their operands are.
+	KeyOperand(expr string, t core.TypeInfo) string
+
+	// StoredKeyValue is a key column of type t's canonical value
+	// (core.NormalizeScalar) as the database holds it, so two values the
+	// database holds equal have one: a timestamp at the database's
+	// precision.
+	StoredKeyValue(t core.TypeInfo, v any) (any, error)
 
 	// numberKey renders an int, float or decimal field's value as its
 	// terms facet key: the canonical decimal text (core.DecimalText)
@@ -128,6 +156,10 @@ type Dialect interface {
 	// textKey renders any other value's facet key as TEXT, so the UNION
 	// ALL branches of a facet query share one key column type.
 	textKey(expr string) string
+	// keyText renders the text core.KeyText gives a key of several
+	// columns, the columns' values being exprs: includes and facets name a
+	// row of such a key by it.
+	keyText(exprs []string) string
 
 	// search renders a free-text search of schema's fields for query, its
 	// parameters numbered after startIdx.
@@ -167,9 +199,9 @@ func DialectFromDSN(dsn string) (Dialect, error) {
 
 // DecimalOperand is what a decimal value is read from: a column, a document
 // member or a bound parameter. A dialect renders it as the exact decimal
-// value (Dialect.DecimalValue) or as what orders it (Dialect.DecimalOrder),
-// each from the operand itself, so the order of a value never re-reads the
-// value's own SQL. Build one with DecimalColumn, DecimalMember or
+// value (Dialect.DecimalValue) or as what compares and orders it
+// (Dialect.DecimalOrder), each from the operand itself, so the key of a
+// value never re-reads the value's own SQL. Build one with DecimalColumn, DecimalMember or
 // DecimalParam; the zero DecimalOperand is none, and a dialect panics on it.
 type DecimalOperand struct {
 	source decimalSource
@@ -215,10 +247,9 @@ func fieldDecimal(d Dialect, f *FieldSchema) DecimalOperand {
 	return DecimalColumn(f.sql(d))
 }
 
-// decimalComparison renders a decimal field's equality or ordering: it
-// compares the field's exact value with its canonical text bound as a
-// parameter, and orders both through Dialect.DecimalOrder. ok is false for
-// any other operator.
+// decimalComparison renders a decimal field's equality or ordering: the
+// field and its canonical text, bound as a parameter, both read through
+// Dialect.DecimalOrder. ok is false for any other operator.
 func decimalComparison(d Dialect, field *FieldSchema, op FilterOperator, value any, bind func(any) string) (sql string, ok bool, err error) {
 	switch op {
 	case OpEq, OpNe, OpGt, OpGte, OpLt, OpLte:
@@ -230,12 +261,8 @@ func decimalComparison(d Dialect, field *FieldSchema, op FilterOperator, value a
 			return "", true, fmt.Errorf("field %s: %w", field.ExternalName, err)
 		}
 	}
-	render := d.DecimalValue
-	if isOrdering(op) {
-		render = d.DecimalOrder
-	}
-	param := func(v any) string { return render(DecimalParam(bind(v))) }
-	return comparison(render(fieldDecimal(d, field)), op, value, param)
+	param := func(v any) string { return d.DecimalOrder(DecimalParam(bind(v))) }
+	return comparison(d.DecimalOrder(fieldDecimal(d, field)), op, value, param)
 }
 
 // comparison renders the operators every dialect spells alike: equality,
@@ -631,6 +658,8 @@ func (b *SQLBuilder) buildNode(s *buildState, node *FilterNode) (string, error) 
 		return unknownSQL, nil
 	case OpMember:
 		return b.buildMember(s, node)
+	case OpKeyIn:
+		return b.buildKeySet(s, node)
 	default:
 		return b.buildCondition(s, node)
 	}
@@ -753,7 +782,8 @@ func (b *SQLBuilder) computed(n *FilterNode) *FilterNode {
 
 // buildPairTable compiles a key comparison on a pair table the relation tag
 // declares as the relation predicate it is, through buildRelated: the pair
-// table is the target, its one typed key the target column.
+// table is the target, its typed key the target columns. A key of several
+// columns takes only the NULL tests (checkPairKeyOp).
 //
 //	$eq / $in / other ops  EXISTS     (… AND <tgt> <op> …)
 //	$ne / $nin             NOT EXISTS (… AND <tgt> = / IN …)
@@ -765,6 +795,10 @@ func (b *SQLBuilder) computed(n *FilterNode) *FilterNode {
 func (b *SQLBuilder) buildPairTable(s *buildState, node *FilterNode) (string, error) {
 	f := node.Field
 	rel := f.Relation
+	err := checkPairKeyOp(f, node.Op)
+	if err != nil {
+		return "", err
+	}
 	op, cond := OpSome, node.Op
 	switch node.Op {
 	case OpNull:
@@ -788,17 +822,31 @@ func (b *SQLBuilder) buildPairTable(s *buildState, node *FilterNode) (string, er
 			op, cond = OpNone, OpIn
 		}
 	}
-	key := &FieldSchema{
-		ExternalName: f.ExternalName, Table: rel.JoinTable, Column: rel.TargetColumn,
-		DataType: f.DataType, NumberKind: f.NumberKind,
-	}
 	pair := *f
-	pair.Related = &ResourceSchema{Name: rel.JoinTable, PrimaryKey: rel.TargetColumn, SystemFields: map[string]*FieldSchema{rel.TargetColumn: key}}
+	pair.Related = &ResourceSchema{Name: rel.JoinTable, PrimaryKey: slices.Clone(rel.TargetColumns)}
 	lowered := &FilterNode{Field: &pair, Op: op}
-	if cond != "" {
-		lowered.Children = []*FilterNode{{Field: key, Op: cond, Value: node.Value}}
+	if len(rel.TargetColumns) == 1 {
+		target := rel.TargetColumns[0]
+		key := &FieldSchema{
+			ExternalName: f.ExternalName, Table: rel.JoinTable, Column: target,
+			DataType: f.DataType, NumberKind: f.NumberKind,
+		}
+		pair.Related.SystemFields = map[string]*FieldSchema{target: key}
+		if cond != "" {
+			lowered.Children = []*FilterNode{{Field: key, Op: cond, Value: node.Value}}
+		}
 	}
 	return b.buildRelated(s, lowered)
+}
+
+// checkPairKeyOp refuses a comparison on a pair table compared by a target
+// key of several columns, which one value cannot name: such a field takes
+// only the NULL tests, whether the owner has pairs.
+func checkPairKeyOp(f *FieldSchema, op FilterOperator) error {
+	if len(f.Relation.TargetColumns) == 1 || op == OpNull || op == OpNotNull {
+		return nil
+	}
+	return invalidRelation(f, fmt.Sprintf("compares a key of several columns, which $%s cannot name; it takes $null", op))
 }
 
 // nullableDateValue is the SQL boundary: typed nil pointers are SQL NULL,

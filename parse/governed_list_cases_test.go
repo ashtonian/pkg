@@ -67,7 +67,7 @@ func governedDocuments(t *testing.T) *parse.Resource[govDocument] {
 	notes.MustRelate("reactions", parse.HasMany(reactions, "note_id", parse.Indexed()))
 	documents.MustRelate("notes", parse.HasMany(notes, "document_id", parse.Indexed(), parse.Includable(), parse.Facetable()))
 	documents.MustRelate("labels", parse.ManyToMany(labels,
-		parse.Junction{Table: "document_labels", Source: "document_id", Target: "label_id", Tenant: "tenant_id"},
+		parse.Junction{Table: "document_labels", Source: []string{"document_id"}, Target: []string{"label_id"}, Tenant: "tenant_id"},
 		parse.Indexed(), parse.Includable(), parse.Facetable()))
 	return documents
 }
@@ -217,7 +217,7 @@ func listRelated[T any](t *testing.T, r *parse.Resource[T], d filter.Dialect, db
 	for _, item := range page.Items {
 		key, err := r.Key(item)
 		require.NoError(t, err)
-		res.ids = append(res.ids, fmt.Sprint(key))
+		res.ids = append(res.ids, fmt.Sprint(key[0]))
 	}
 	slices.Sort(res.ids)
 	require.NotNil(t, page.PageInfo.TotalCount)
@@ -348,13 +348,13 @@ func (m governedMemory) list(t *testing.T, r *parse.Resource[govDocument], filte
 			f, err = filter.ResolveMemberships(ctx, f, m, filter.ResolveRelationScope(filter.RelationScope{Tenant: tenant}))
 			require.NoError(t, err)
 		}
-		var keys []any
+		var keys []core.Key
 		for _, row := range byTenant[tenant] {
 			if f == nil || m.selects(t, f.AST(), r.Table(), row) {
 				id, ok := row["id"].(string)
 				require.True(t, ok)
 				res.ids = append(res.ids, id)
-				keys = append(keys, id)
+				keys = append(keys, core.Key{id})
 			}
 		}
 		for _, name := range governedIncludes {
@@ -430,11 +430,10 @@ func (m governedMemory) LookupValues(_ context.Context, l *filter.Lookup) ([]any
 	}
 	out := make([]any, len(rows))
 	for i, row := range rows {
-		v, ok := row[l.Project]
-		if !ok {
-			return nil, fmt.Errorf("table %s has no column %q", l.Table, l.Project)
+		out[i], err = governedProject(l.Table, row, lookupColumns(l))
+		if err != nil {
+			return nil, err
 		}
-		out[i] = v
 	}
 	return out, nil
 }
@@ -443,18 +442,54 @@ func (m governedMemory) LookupFilteredValues(ctx context.Context, l *filter.Look
 	return m.LookupValues(ctx, l)
 }
 
-func (m governedMemory) LookupPairs(_ context.Context, l *filter.Lookup, ownerColumn string) (iter.Seq2[filter.IncludePair, error], error) {
+func (m governedMemory) LookupPairs(_ context.Context, l *filter.Lookup, owner []string) (iter.Seq2[filter.IncludePair, error], error) {
 	rows, err := m.selected(l)
 	if err != nil {
 		return nil, err
 	}
 	return func(yield func(filter.IncludePair, error) bool) {
 		for _, row := range rows {
-			if !yield(filter.IncludePair{Owner: row[ownerColumn], Target: row[l.Project]}, nil) {
+			o, err := governedProject(l.Table, row, owner)
+			if err != nil {
+				yield(filter.IncludePair{}, err)
+				return
+			}
+			target, err := governedProject(l.Table, row, lookupColumns(l))
+			if err != nil {
+				yield(filter.IncludePair{}, err)
+				return
+			}
+			if !yield(filter.IncludePair{Owner: o, Target: target}, nil) {
 				return
 			}
 		}
 	}, nil
+}
+
+// lookupColumns are the columns l projects.
+func lookupColumns(l *filter.Lookup) []string {
+	if l.ProjectKey != nil {
+		return l.ProjectKey
+	}
+	columns := []string{l.Project}
+	return columns
+}
+
+// governedProject is a row's value of its one column, or a core.Key of a
+// value per column for several, as a lookup answers a projection.
+func governedProject(table string, row map[string]any, columns []string) (any, error) {
+	key := make(core.Key, len(columns))
+	for i, c := range columns {
+		v, ok := row[c]
+		if !ok {
+			return nil, fmt.Errorf("table %s has no column %q", table, c)
+		}
+		key[i] = v
+	}
+	if len(key) == 1 {
+		return key[0], nil
+	}
+	return key, nil
 }
 
 // Tenant columns of two types in one graph, both holding a UUID: a
@@ -493,7 +528,7 @@ func mixedDevices[O, R any](prefix string) *parse.Resource[mixDevice[O]] {
 	tags := parse.MustResource[mixTag[R]](prefix+"tags", parse.TenantColumn("tenant_id"))
 	devices.MustRelate("commands", parse.HasMany(commands, "device_id", parse.Indexed(), parse.Includable(), parse.Facetable()))
 	devices.MustRelate("tags", parse.ManyToMany(tags,
-		parse.Junction{Table: prefix + "device_tags", Source: "device_id", Target: "tag_id", Tenant: "tenant_id"},
+		parse.Junction{Table: prefix + "device_tags", Source: []string{"device_id"}, Target: []string{"tag_id"}, Tenant: "tenant_id"},
 		parse.Indexed(), parse.Includable(), parse.Facetable()))
 	return devices
 }

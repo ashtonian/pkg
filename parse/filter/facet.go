@@ -92,9 +92,13 @@ func FacetBuckets(field *FieldSchema, counts map[string]int64, limit int) []Face
 	return out
 }
 
-// facetValueType is the type of the values a terms facet on f counts: an
+// facetValueType is the type of the values a terms facet on f counts: a
+// relation's target keys of several columns their text (core.KeyText), an
 // array's elements', or f's own.
 func facetValueType(f *FieldSchema) core.FieldType {
+	if f.Relation != nil && len(f.Relation.TargetColumns) > 1 {
+		return core.FieldTypeString
+	}
 	if f.DataType == core.FieldTypeArray {
 		return f.Elem
 	}

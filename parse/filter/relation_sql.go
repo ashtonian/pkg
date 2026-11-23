@@ -28,6 +28,10 @@ func (b *SQLBuilder) buildRelated(s *buildState, node *FilterNode) (string, erro
 	if target == nil {
 		return "", invalidRelation(node.Field, "has no target resource to filter")
 	}
+	err := rel.Check()
+	if err != nil {
+		return "", invalidRelation(node.Field, err.Error())
+	}
 	// The target's predicates read its computed columns as the owner's
 	// dialect does; one the dialect refuses fails the build.
 	exprs, err := target.resolve(b.dialect)
@@ -39,7 +43,6 @@ func (b *SQLBuilder) buildRelated(s *buildState, node *FilterNode) (string, erro
 	bind := s.binder(b.dialect)
 	d := b.dialect
 
-	pk := rel.OwnerKey()
 	join := relationTableAlias(rel.JoinTable, depth, visible)
 	related := join
 	if rel.TargetTable != "" {
@@ -56,9 +59,9 @@ func (b *SQLBuilder) buildRelated(s *buildState, node *FilterNode) (string, erro
 	if rel.TargetTable != "" {
 		sb.WriteString(" JOIN ")
 		writeTable(&sb, d, rel.TargetTable, related)
-		sb.WriteString(" ON " + qualified(d, related, rel.TargetKey) + " = " + qualified(d, join, rel.TargetColumn))
+		sb.WriteString(" ON " + correlation(d, related, rel.TargetKeys, join, rel.TargetColumns, rel.TargetTypes))
 	}
-	sb.WriteString(" WHERE " + qualified(d, join, rel.SourceColumn) + " = " + qualified(d, b.schema.Name, pk))
+	sb.WriteString(" WHERE " + correlation(d, join, rel.SourceColumns, b.schema.Name, rel.OwnerColumns(), rel.SourceTypes))
 
 	// A policy-scoped relation declares no tenant column on its target:
 	// the policy below decides which target rows are visible.
@@ -161,6 +164,18 @@ func rebaseNode(n *FilterNode, table, alias string, computed columnExprs, moved 
 			return nil, err
 		}
 		out.Field = f
+	}
+	if n.Keys != nil {
+		ks := *n.Keys
+		ks.Fields = make([]*FieldSchema, len(n.Keys.Fields))
+		for i, kf := range n.Keys.Fields {
+			f, err := rebaseField(kf, table, alias, computed, moved)
+			if err != nil {
+				return nil, err
+			}
+			ks.Fields[i] = f
+		}
+		out.Keys = &ks
 	}
 	if n.Field != nil && n.Field.Relation != nil {
 		// A nested relation correlates to its owner, the builder's alias;

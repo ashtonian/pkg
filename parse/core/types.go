@@ -26,6 +26,19 @@ const (
 	FieldTypeGeo       FieldType = "geo"
 )
 
+// IsKeyType reports a type a key column may have, and a relation, a key
+// set or a membership may compare by: a scalar, whose equality tells rows
+// apart. A document, an array, a geometry or an opaque value has none to
+// identify a row by.
+func IsKeyType(t FieldType) bool {
+	switch t {
+	case FieldTypeString, FieldTypeUUID, FieldTypeInt, FieldTypeFloat, FieldTypeDecimal, FieldTypeBool,
+		FieldTypeTimestamp, FieldTypeDate, FieldTypeTime, FieldTypeInterval, FieldTypeInet, FieldTypeCIDR, FieldTypeMACAddr:
+		return true
+	}
+	return false
+}
+
 // SQLType declares a resource column's storage role and any dialect read cast.
 // JSON and native arrays remain distinct even when their Go shapes coincide.
 type SQLType string

@@ -145,10 +145,12 @@ func queryPage[T any](ctx context.Context, db Queryer, r *parse.Resource[T], pla
 // split into the rows whose columns it wrote and the rows it left
 // (parse.Resource.UpdatedRows), and how many junction rows its membership
 // changes touched; neither split holding a row means the target is not
-// found. A plan that reads before it writes (SkipUnchanged: plan.Current
-// set) or changes relation memberships runs in one transaction — a
-// savepoint when db is a *sql.Tx — so its rows and memberships change
-// together: Current, the owner statement, the membership changes for the
+// found. A plan that reads before it writes (SkipUnchanged or a patch of
+// document members: plan.Current set) or changes relation memberships runs
+// in one transaction — a savepoint when db is a *sql.Tx — so its rows and
+// memberships change together: Current, then Conflict, whose row fails the
+// update before anything is written (UpdatePlan.ConflictError), the owner
+// statement, the membership changes for the
 // keys of the rows it returned (changed, then unchanged), never the
 // requested keys, then, for a resource with computed columns
 // (parse.ReadExpr), those rows again (Resource.Reread).
@@ -186,6 +188,15 @@ func update[T any](ctx context.Context, db DB, r *parse.Resource[T], plan *parse
 		}
 		current = rows
 	}
+	if plan.Conflict != nil {
+		var op int64
+		switch err := scanOne(ctx, db, *plan.Conflict, &op); {
+		case err == nil:
+			return parse.UpdateResult[T]{}, plan.ConflictError(op)
+		case !errors.Is(err, sql.ErrNoRows):
+			return parse.UpdateResult[T]{}, wrap("conflict", err)
+		}
+	}
 	owner, err := query(ctx, db, r, plan.Owner)
 	if err != nil {
 		return parse.UpdateResult[T]{}, wrap("owner", err)
@@ -219,7 +230,7 @@ func update[T any](ctx context.Context, db DB, r *parse.Resource[T], plan *parse
 	}
 	// The changed and the unchanged rows are read again apart, so each keeps
 	// its side of the split.
-	for i, part := range [2][]any{keys[:len(changed)], keys[len(changed):]} {
+	for i, part := range [2][]parse.Key{keys[:len(changed)], keys[len(changed):]} {
 		stmt, err := r.Reread(plan, part)
 		if err != nil {
 			return parse.UpdateResult[T]{}, err
@@ -385,8 +396,8 @@ func scanOne(ctx context.Context, db Queryer, st parse.Statement, dest ...any) e
 	})
 }
 
-func ownerKeys[T any](r *parse.Resource[T], items []T) ([]any, error) {
-	keys := make([]any, len(items))
+func ownerKeys[T any](r *parse.Resource[T], items []T) ([]parse.Key, error) {
+	keys := make([]parse.Key, len(items))
 	for i, item := range items {
 		k, err := r.Key(item)
 		if err != nil {

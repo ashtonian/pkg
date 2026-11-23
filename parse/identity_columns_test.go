@@ -57,7 +57,7 @@ func TestNewResource_RefusesIdentityDeclarations(t *testing.T) {
 		{"the key as the deleted column", func() error {
 			_, err := parse.NewResource[softDeleted]("odds", parse.DeletedColumn("id"))
 			return err
-		}, `parse: odds: deleted column "id" is the key column`},
+		}, `parse: odds: deleted column "id" is a key column`},
 		{"the tenant column as the deleted column", func() error {
 			_, err := parse.NewResource[softDeleted]("odds", parse.TenantColumn("tenant_id"), parse.DeletedColumn("tenant_id"))
 			return err
@@ -146,7 +146,7 @@ func TestUpdateBuilders_RefuseIdentityWritesAlike(t *testing.T) {
 			}
 			require.NoError(t, err)
 			_, single := r.BuildUpdate(filter.PostgresDialect{}, parsed, parse.ByID(int64(1)), scope, tc.opts...)
-			_, batch := r.BuildUpdateBatch(filter.PostgresDialect{}, []parse.RowUpdate{{Key: int64(1), Patch: parsed}}, scope, parse.UpdateBatchLimits{}, tc.opts...)
+			_, batch := r.BuildUpdateBatch(filter.PostgresDialect{}, []parse.RowUpdate{{Key: parse.Key{int64(1)}, Patch: parsed}}, scope, parse.UpdateBatchLimits{}, tc.opts...)
 			if tc.refuse == "" {
 				assert.NoError(t, single)
 				assert.NoError(t, batch)

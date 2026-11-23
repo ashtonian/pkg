@@ -30,6 +30,7 @@ func TestGenerateFilterSchema_RejectsInapplicableOperators(t *testing.T) {
 	assert.Error(t, err)
 
 	type containsOnRelation struct {
+		ID   string   `json:"-" db:"id"`
 		Tags []string `json:"-" parse:"filter" filter_ops:"contains" relation:"item_tags,item_id,tag_id"`
 	}
 	_, err = GenerateFilterSchema[containsOnRelation](core.NewSchemaGenerator())

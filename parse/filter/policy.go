@@ -81,6 +81,15 @@ type PolicyConstraint struct {
 	// are unused. Every backend evaluates it — SQL as a subquery, memory
 	// through ResolveMemberships — unlike RawSQL, which memory cannot.
 	Member *Lookup
+
+	// Fields makes the constraint a key constraint over these columns, in
+	// key order, in place of Field: under OpEq, Value is one core.Key and
+	// the row's columns equal it; under OpIn, Value is a []core.Key and the
+	// row's columns, together, equal one of them, SQL binding the set as one
+	// parameter. Each key holds a value per column. One column compiles as
+	// Field does; a set over several compares string, UUID and integer
+	// columns only.
+	Fields []string
 }
 
 // PolicyConstraints is a composable collection of constraints.
@@ -209,6 +218,9 @@ func constraintToNode(norm *FilterParser, schema *ResourceSchema, c *PolicyConst
 	}
 	if c.Operator == OpUnknown { // its own negation: NOT unknown is unknown
 		return unknownNode(), nil
+	}
+	if len(c.Fields) > 0 {
+		return keyNode(norm, schema, c)
 	}
 
 	field, ok, err := schema.PolicyField(c.Field)

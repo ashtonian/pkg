@@ -5,6 +5,7 @@ package dbtest
 import (
 	"fmt"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 )
@@ -46,17 +47,7 @@ func TestMissingDSN(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Setenv(PostgresDSNEnv, "")
 			t.Setenv(RequirePostgresEnv, tt.require)
-			r := &recordingTB{TB: t}
-			func() {
-				defer func() {
-					if p := recover(); p != nil {
-						if _, ok := p.(stopped); !ok {
-							panic(p)
-						}
-					}
-				}()
-				Postgres(r)
-			}()
+			r := record(t, func(r *recordingTB) { Postgres(r) })
 			if tt.wantFail {
 				assert.Contains(t, r.fatal, PostgresDSNEnv)
 				assert.Empty(t, r.skip)
@@ -66,4 +57,51 @@ func TestMissingDSN(t *testing.T) {
 			}
 		})
 	}
+}
+
+// A test's deadline is TimeoutEnv's duration, 30 seconds when it is unset;
+// a value that is no positive duration fails the test and names the
+// variable.
+func TestTimeout(t *testing.T) {
+	tests := []struct {
+		value    string
+		want     time.Duration
+		wantFail bool
+	}{
+		{"", 30 * time.Second, false},
+		{"2m", 2 * time.Minute, false},
+		{"90", 0, true},
+		{"0s", 0, true},
+		{"-1s", 0, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.value, func(t *testing.T) {
+			t.Setenv(TimeoutEnv, tt.value)
+			var got time.Duration
+			r := record(t, func(r *recordingTB) { got = Timeout(r) })
+			if tt.wantFail {
+				assert.Contains(t, r.fatal, TimeoutEnv)
+				return
+			}
+			assert.Empty(t, r.fatal)
+			assert.Equal(t, tt.want, got)
+		})
+	}
+}
+
+// record runs f on a recordingTB over t and returns it, f stopped where a
+// real test would have ended.
+func record(t *testing.T, f func(*recordingTB)) (r *recordingTB) {
+	r = &recordingTB{TB: t}
+	defer func() {
+		p := recover()
+		if p != nil {
+			_, ok := p.(stopped)
+			if !ok {
+				panic(p)
+			}
+		}
+	}()
+	f(r)
+	return r
 }

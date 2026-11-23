@@ -184,7 +184,7 @@ func TestReadExpr_RefusedDialect(t *testing.T) {
 			return err
 		}},
 		{"BuildUpdateBatch", func(d parse.Dialect) error {
-			_, err := accounts.BuildUpdateBatch(d, []parse.RowUpdate{{Key: 1, Patch: rename}}, scope, parse.UpdateBatchLimits{})
+			_, err := accounts.BuildUpdateBatch(d, []parse.RowUpdate{{Key: parse.Key{1}, Patch: rename}}, scope, parse.UpdateBatchLimits{})
 			return err
 		}},
 	}
@@ -383,7 +383,7 @@ func TestReadExpr_RelationIncludesCompileTheTargetsPolicy(t *testing.T) {
 	require.NoError(t, err)
 	plan, err := accountTenants.BuildList(filter.SQLiteDialect{}, req, scope)
 	require.NoError(t, err)
-	_, err = accountTenants.IncludeQueries(plan, []any{"t1"})
+	_, err = accountTenants.IncludeQueries(plan, []parse.Key{{"t1"}})
 	assert.ErrorContains(t, err, "field member_count is not a column of accounts and cannot be filtered through a relation")
 
 	// A membership change holds its pairs to the targets the same policy
@@ -394,7 +394,7 @@ func TestReadExpr_RelationIncludesCompileTheTargetsPolicy(t *testing.T) {
 	require.NoError(t, err)
 	update, err := groups.BuildUpdate(filter.SQLiteDialect{}, p, parse.ByID(20), scope)
 	require.NoError(t, err)
-	_, err = groups.RelationStatements(update, []any{int64(20)})
+	_, err = groups.RelationStatements(update, []parse.Key{{int64(20)}})
 	assert.ErrorContains(t, err, "field member_count is not a column of accounts and cannot be filtered through a relation")
 }
 
@@ -427,7 +427,7 @@ func TestReadExpr_UpdatesNeitherStampNorIncrementComputedColumns(t *testing.T) {
 			for _, d := range computedDialects {
 				_, err := computedAccounts.BuildUpdate(d.dialect, rename, parse.ByID(1), scope, tt.opt)
 				assert.ErrorContains(t, err, tt.want, "BuildUpdate %s", d.dialect.Name())
-				_, err = computedAccounts.BuildUpdateBatch(d.dialect, []parse.RowUpdate{{Key: 1, Patch: rename}}, scope, parse.UpdateBatchLimits{}, tt.opt)
+				_, err = computedAccounts.BuildUpdateBatch(d.dialect, []parse.RowUpdate{{Key: parse.Key{1}, Patch: rename}}, scope, parse.UpdateBatchLimits{}, tt.opt)
 				assert.ErrorContains(t, err, tt.want, "BuildUpdateBatch %s", d.dialect.Name())
 			}
 		})
@@ -441,7 +441,7 @@ func TestReadExpr_Reread(t *testing.T) {
 	pg := filter.PostgresDialect{}
 	rename, err := computedAccounts.BuildUpdate(pg, computedPatch(t, computedAccounts, `{"name":"x"}`), parse.ByID(1), scope)
 	require.NoError(t, err)
-	stmt, err := computedAccounts.Reread(rename, []any{1})
+	stmt, err := computedAccounts.Reread(rename, []parse.Key{{1}})
 	require.NoError(t, err)
 	assert.Nil(t, stmt, "no relation statements: Owner's rows are current")
 
@@ -450,7 +450,7 @@ func TestReadExpr_Reread(t *testing.T) {
 	stmt, err = computedAccounts.Reread(groups, nil)
 	require.NoError(t, err)
 	assert.Nil(t, stmt, "no owners")
-	stmt, err = computedAccounts.Reread(groups, []any{1, 3})
+	stmt, err = computedAccounts.Reread(groups, []parse.Key{{1}, {3}})
 	require.NoError(t, err)
 	require.NotNil(t, stmt)
 	columns, err := computedAccounts.Columns(pg)
@@ -459,7 +459,7 @@ func TestReadExpr_Reread(t *testing.T) {
 	assert.Contains(t, stmt.SQL, `"accounts"."tenant_id" = `)
 	assert.Contains(t, stmt.Args, "t1")
 
-	_, err = accessGroups.Reread(groups, []any{1})
+	_, err = accessGroups.Reread(groups, []parse.Key{{1}})
 	assert.ErrorContains(t, err, `update plan built for "accounts"`)
 }
 

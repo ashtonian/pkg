@@ -38,8 +38,9 @@ type Resource[T any] struct {
 	// applier applies either patch schema's patches to a T.
 	applier *patch.Applier[T]
 
-	table       string
-	pk          string
+	table string
+	// pk are the key columns, in key order.
+	pk          []string
 	tenant      string
 	deleted     string
 	pageSize    int
@@ -75,15 +76,16 @@ type Resource[T any] struct {
 type ResourceOption func(*resourceConfig)
 
 type resourceConfig struct {
-	pk, tenant, deleted string
-	pageSize, maxPage   int
-	parserOpts          []core.Option
-	accepted            []string
-	read                []string
-	queryOnly           []string
-	sqlTypes            []columnType
-	readExprs           []columnExpr
-	customize           []func(Schemas) error
+	pk                []string
+	tenant, deleted   string
+	pageSize, maxPage int
+	parserOpts        []core.Option
+	accepted          []string
+	read              []string
+	queryOnly         []string
+	sqlTypes          []columnType
+	readExprs         []columnExpr
+	customize         []func(Schemas) error
 }
 
 type columnType struct {
@@ -91,9 +93,31 @@ type columnType struct {
 	t      core.SQLType
 }
 
-// PrimaryKey names the key column; default core.DefaultPrimaryKey ("id"). It is the final keyset
-// column of every list, so pages are stable over a non-unique sort.
-func PrimaryKey(column string) ResourceOption { return func(c *resourceConfig) { c.pk = column } }
+// PrimaryKey names the key's columns, in key order; the default is
+// core.DefaultPrimaryKey ("id") alone. The columns must be unique together
+// among the table's rows, as a primary key or a unique constraint over
+// exactly them makes them: every list ends its keyset with them, so pages
+// are stable over a non-unique sort, and an update by key (ByID, ByKey)
+// reaches the rows holding the key. Columns two rows share page one of the
+// rows out of every list and let an update by key change both. A key may
+// include the tenant column, as (tenant_id, sku) does. NewResource refuses
+// no column, a column listed twice, and a column that is not one of T's,
+// is computed (ReadExpr), is not read (ReadColumns) or is the soft-delete
+// column.
+//
+// A key of several columns is a Key of a value per column (ByKey, ByKeys,
+// Resource.Key), and a relation to or from the resource pairs a column
+// with each of them in key order (HasMany, BelongsTo, Through). A key
+// column is of any scalar type (core.IsKeyType): a string, UUID, integer,
+// float, decimal, boolean, date, time of day, timestamp, interval or
+// network value. Every statement compares it by value, as a filter
+// compares its type (a decimal stored as "1.50" is the key 1.5), and Go
+// tells keys apart by their canonical text (core.KeyTextOf). A document,
+// array or geometry column has no equality to identify a row by, and
+// NewResource refuses it as a key column.
+func PrimaryKey(columns ...string) ResourceOption {
+	return func(c *resourceConfig) { c.pk = slices.Clone(columns) }
+}
 
 // TenantColumn names the column that holds a row's tenant. Every list is then
 // held to Scope.Tenant, and so are tenant-scoped relation junctions. The
@@ -220,7 +244,7 @@ func (r *Resource[T]) customizeSchemas(fns []func(Schemas) error) error {
 // must be SQL identifiers, and the columns must be T's (a `db` tag, or the
 // snake-case field name).
 func NewResource[T any](table string, opts ...ResourceOption) (*Resource[T], error) {
-	cfg := resourceConfig{pk: core.DefaultPrimaryKey, pageSize: filter.DefaultListLimit, maxPage: filter.MaxListLimit}
+	cfg := resourceConfig{pk: []string{core.DefaultPrimaryKey}, pageSize: filter.DefaultListLimit, maxPage: filter.MaxListLimit}
 	for _, opt := range opts {
 		opt(&cfg)
 	}
@@ -261,11 +285,12 @@ func NewResource[T any](table string, opts ...ResourceOption) (*Resource[T], err
 	for name, f := range fieldsByColumn {
 		columns[name] = f.Type
 	}
-	for _, c := range []struct {
-		option, column string
-		required       bool
-	}{{"key", cfg.pk, true}, {"tenant", cfg.tenant, false}, {"deleted", cfg.deleted, false}} {
-		if c.column == "" && !c.required {
+	err = checkKeyColumns(cfg.pk, columns, reflect.TypeFor[T]())
+	if err != nil {
+		return nil, fmt.Errorf("parse: %s: %w", table, err)
+	}
+	for _, c := range []struct{ option, column string }{{"tenant", cfg.tenant}, {"deleted", cfg.deleted}} {
+		if c.column == "" {
 			continue
 		}
 		if _, ok := columns[c.column]; !ok {
@@ -279,7 +304,7 @@ func NewResource[T any](table string, opts ...ResourceOption) (*Resource[T], err
 		return nil, fmt.Errorf("parse: %s: customizing schemas: %w", table, err)
 	}
 	r.filterSchema.SystemFields = systemFields(table, cfg, columns, fieldsByColumn)
-	r.filterSchema.PrimaryKey = cfg.pk
+	r.filterSchema.PrimaryKey = slices.Clone(cfg.pk)
 	var tenant *tenantColumn
 	if cfg.tenant != "" {
 		if tenant, err = newTenantColumn(table, cfg.tenant, columns[cfg.tenant]); err != nil {
@@ -342,13 +367,21 @@ func NewResource[T any](table string, opts ...ResourceOption) (*Resource[T], err
 	}
 	for _, f := range r.filterSchema.Fields {
 		if f.Relation != nil && f.RelatedBy == nil {
-			if _, ok := columns[f.Relation.PrimaryKey]; !ok {
-				return nil, fmt.Errorf("parse: %s: relation %q correlates on %q, which is not a column of %s", table, f.ExternalName, f.Relation.PrimaryKey, reflect.TypeFor[T]())
+			owner := f.Relation.OwnerColumns()
+			for _, c := range owner {
+				_, ok := columns[c]
+				if !ok {
+					return nil, fmt.Errorf("parse: %s: relation %q correlates on %q, which is not a column of %s", table, f.ExternalName, c, reflect.TypeFor[T]())
+				}
+				if r.computed(c) {
+					return nil, computedCorrelation(table, f.ExternalName, c)
+				}
 			}
-			if r.computed(f.Relation.PrimaryKey) {
-				return nil, computedCorrelation(table, f.ExternalName, f.Relation.PrimaryKey)
+			if (f.Includable || f.Facetable) && !slices.Equal(owner, r.pk) {
+				return nil, fmt.Errorf("parse: %s: relation %q: an include or facet groups related keys by the owner's key (%s), and the relation correlates on %s",
+					table, f.ExternalName, strings.Join(r.pk, ", "), strings.Join(owner, ", "))
 			}
-			f.RelatedBy = r.correlationField(f.Relation.PrimaryKey)
+			f.RelatedBy = r.correlationFields(owner)
 		}
 	}
 	return r, nil
@@ -367,7 +400,7 @@ func (r *Resource[T]) ParseFilterWithCost(query string, maxCost int) (*filter.Pa
 }
 
 // readColumns is the ReadColumns set, checked to be distinct columns of T
-// that include the key; nil reads every column.
+// that include every key column; nil reads every column.
 func readColumns(table string, cfg resourceConfig, columns map[string]reflect.Type) (map[string]bool, error) {
 	if cfg.read == nil {
 		return nil, nil
@@ -382,8 +415,10 @@ func readColumns(table string, cfg resourceConfig, columns map[string]reflect.Ty
 		}
 		read[name] = true
 	}
-	if !read[cfg.pk] {
-		return nil, fmt.Errorf("parse: %s: the read columns omit the key %q", table, cfg.pk)
+	for _, column := range cfg.pk {
+		if !read[column] {
+			return nil, fmt.Errorf("parse: %s: the read columns omit the key column %q", table, column)
+		}
 	}
 	return read, nil
 }
@@ -588,6 +623,10 @@ func (r *Resource[T]) checkUnreadColumns(fields map[string]*filter.FieldSchema, 
 			if err := r.checkRelation(name, f.Relation, nil, f.Includable || f.Facetable); err != nil {
 				return err
 			}
+			err := r.checkRelationKeys(name, f.Relation, nil)
+			if err != nil {
+				return err
+			}
 			continue
 		}
 		capability, need := "filter field", columnQueryOnly
@@ -607,21 +646,28 @@ func (r *Resource[T]) checkUnreadColumns(fields map[string]*filter.FieldSchema, 
 }
 
 // checkRelation refuses a relation over a column a request may not learn: the
-// owner's correlation column and, for a has-many or belongs-to, the target's
-// (target is nil for a pair table declared by tag). Includes and facets carry
-// the correlation's values, so those columns must be read; a filter by the
-// relation discloses them by inference, which a query-only column admits.
+// owner's correlation columns and, for a has-many or belongs-to, the
+// target's (target is nil for a pair table declared by tag). Includes and
+// facets carry the correlation's values, so those columns must be read; a
+// filter by the relation discloses them by inference, which a query-only
+// column admits.
 func (r *Resource[T]) checkRelation(name string, rs *core.RelationSchema, target RelatedResource, returnsValues bool) error {
 	need := columnQueryOnly
 	if returnsValues {
 		need = columnRead
 	}
-	if err := r.admits(rs.PrimaryKey, need); err != nil {
-		return fmt.Errorf("parse: %s: relation %q: %w", r.table, name, err)
+	for _, c := range rs.OwnerColumns() {
+		err := r.admits(c, need)
+		if err != nil {
+			return fmt.Errorf("parse: %s: relation %q: %w", r.table, name, err)
+		}
 	}
 	if target != nil && (rs.Kind == core.HasMany || rs.Kind == core.BelongsTo) {
-		if err := target.admits(rs.SourceColumn, need); err != nil {
-			return fmt.Errorf("parse: %s: relation %q: %w", r.table, name, err)
+		for _, c := range rs.SourceColumns {
+			err := target.admits(c, need)
+			if err != nil {
+				return fmt.Errorf("parse: %s: relation %q: %w", r.table, name, err)
+			}
 		}
 	}
 	return nil
@@ -640,8 +686,8 @@ func MustResource[T any](table string, opts ...ResourceOption) *Resource[T] {
 // Table is the table the resource reads.
 func (r *Resource[T]) Table() string { return r.table }
 
-// PrimaryKeyColumn is the key column.
-func (r *Resource[T]) PrimaryKeyColumn() string { return r.pk }
+// PrimaryKeyColumns are the key columns, in key order.
+func (r *Resource[T]) PrimaryKeyColumns() []string { return slices.Clone(r.pk) }
 
 // TenantColumnName is the tenant column; "" for a resource without tenants.
 func (r *Resource[T]) TenantColumnName() string { return r.tenant }
@@ -695,9 +741,18 @@ func (r *Resource[T]) columns(d filter.Dialect, exprs map[string]string) []strin
 // order: the name every row's value scans under, whichever dialect read it.
 func (r *Resource[T]) ColumnNames() []string { return slices.Clone(r.read) }
 
-// Key reads the primary key from a model value or a pointer to one.
-func (r *Resource[T]) Key(item any) (any, error) {
-	return r.columnValue(reflect.ValueOf(item), r.pk)
+// Key reads the row's key from a model value or a pointer to one.
+func (r *Resource[T]) Key(item any) (Key, error) {
+	rv := reflect.ValueOf(item)
+	key := make(Key, len(r.pk))
+	for i, column := range r.pk {
+		v, err := r.columnValue(rv, column)
+		if err != nil {
+			return nil, err
+		}
+		key[i] = v
+	}
+	return key, nil
 }
 
 // columnValue resolves row pointers before reading the field's struct route.
@@ -729,16 +784,16 @@ func (r *Resource[T]) columnValue(rv reflect.Value, column string) (any, error) 
 	return fv.Interface(), nil
 }
 
-// checkDeletedColumn refuses a deleted column no row can be live under: the
-// key or the tenant column, which a live row always holds, or a field that
-// cannot hold NULL, such as a bool soft-delete flag, under which every row
-// would be live.
+// checkDeletedColumn refuses a deleted column no row can be live under: a
+// key column or the tenant column, which a live row always holds, or a
+// field that cannot hold NULL, such as a bool soft-delete flag, under which
+// every row would be live.
 func checkDeletedColumn(cfg resourceConfig, t reflect.Type) error {
 	switch {
 	case cfg.deleted == "":
 		return nil
-	case cfg.deleted == cfg.pk:
-		return fmt.Errorf("deleted column %q is the key column", cfg.deleted)
+	case slices.Contains(cfg.pk, cfg.deleted):
+		return fmt.Errorf("deleted column %q is a key column", cfg.deleted)
 	case cfg.deleted == cfg.tenant:
 		return fmt.Errorf("deleted column %q is the tenant column", cfg.deleted)
 	case !holdsNull(t):
@@ -779,7 +834,7 @@ func (r *Resource[T]) checkIdentityWrite(column string) error {
 	switch {
 	case column == "":
 		return nil
-	case column == r.pk:
+	case slices.Contains(r.pk, column):
 		return fmt.Errorf("writes the key column %q", column)
 	case column == r.tenant:
 		return fmt.Errorf("writes the tenant column %q", column)
@@ -803,10 +858,11 @@ func systemFields(table string, cfg resourceConfig, columns map[string]reflect.T
 			DataType: info.Type, NumberKind: info.NumberKind, Wire: wire, AllowedOperators: ops,
 		}
 	}
-	fields := map[string]*filter.FieldSchema{
-		cfg.pk: field(cfg.pk, filter.OpEq, filter.OpGt, filter.OpLt, filter.OpGte, filter.OpLte, filter.OpIn),
+	fields := make(map[string]*filter.FieldSchema, len(cfg.pk)+2)
+	for _, column := range cfg.pk {
+		fields[column] = field(column, filter.OpEq, filter.OpGt, filter.OpLt, filter.OpGte, filter.OpLte, filter.OpIn)
 	}
-	if cfg.tenant != "" && cfg.tenant != cfg.pk {
+	if cfg.tenant != "" && !slices.Contains(cfg.pk, cfg.tenant) {
 		fields[cfg.tenant] = field(cfg.tenant, filter.OpEq, filter.OpIn)
 	}
 	if cfg.deleted != "" {

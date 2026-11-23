@@ -108,7 +108,7 @@ func runLookupSets(t *testing.T, mdb matrixDB, columnTypes map[core.FieldType]st
 	for i := range many {
 		many[i] = int64(i + 2) // 2…70001: b's 70000, not a's 1
 	}
-	schema := &filter.ResourceSchema{Name: "set_owners", PrimaryKey: "id", Fields: map[string]*filter.FieldSchema{
+	schema := &filter.ResourceSchema{Name: "set_owners", PrimaryKey: []string{"id"}, Fields: map[string]*filter.FieldSchema{
 		"id": {ExternalName: "id", Column: "id", DataType: core.FieldTypeString, AllowedOperators: []filter.FilterOperator{filter.OpEq}},
 	}}
 	for _, tc := range []struct {
@@ -155,7 +155,7 @@ func runPolicyMatrix(t *testing.T, mdb matrixDB, columnTypes map[core.FieldType]
 	if err != nil {
 		t.Fatalf("schema: %v", err)
 	}
-	schema.PrimaryKey = "id"
+	schema.PrimaryKey = []string{"id"}
 	lq, err := filter.NewListQuery(schema, nil, mdb.dialect)
 	require.NoError(t, err)
 	lq = lq.WithSearchSchema(filtertest.SearchSchema())

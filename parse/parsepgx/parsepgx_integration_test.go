@@ -106,7 +106,9 @@ func newCatalog(t *testing.T) *catalog {
 	return c
 }
 
-func (c *catalog) open(t *testing.T, mode pgx.QueryExecMode) *pgxpool.Pool {
+// open opens a pool on the catalog's schema in mode; configure adjusts
+// its settings first.
+func (c *catalog) open(t *testing.T, mode pgx.QueryExecMode, configure ...func(*pgxpool.Config)) *pgxpool.Pool {
 	t.Helper()
 	cfg, err := pgxpool.ParseConfig(c.dsn)
 	require.NoError(t, err)
@@ -115,6 +117,9 @@ func (c *catalog) open(t *testing.T, mode pgx.QueryExecMode) *pgxpool.Pool {
 	cfg.MaxConnLifetime = time.Minute
 	cfg.MaxConnIdleTime = 30 * time.Second
 	cfg.ConnConfig.ConnectTimeout = 10 * time.Second
+	for _, f := range configure {
+		f(cfg)
+	}
 	pool, err := pgxpool.NewWithConfig(testContext(t), cfg)
 	require.NoError(t, err)
 	t.Cleanup(pool.Close)
@@ -135,9 +140,7 @@ func (c *catalog) names(ids ...uuid.UUID) []string {
 
 func testContext(t *testing.T) context.Context {
 	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	t.Cleanup(cancel)
-	return ctx
+	return dbtest.Context(t)
 }
 
 func listPlan(t *testing.T, query string, s parse.Scope) *parse.ListPlan {

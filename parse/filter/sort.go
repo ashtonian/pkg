@@ -77,10 +77,10 @@ func ParseSort(schema *SortSchema, sortParam string) (*SortResult, error) {
 
 // ToSQL renders the sort's ORDER BY in dialect d, as a keyset orders it:
 // code-point text, NULL greatest on nullable keys, paths through
-// Dialect.PathExpr. A list query appends its tie-breaker itself.
+// Dialect.PathExpr. A list query appends its key columns itself.
 func (s *SortResult) ToSQL(d Dialect) string {
 	if s == nil || len(s.Fields) == 0 {
 		return ""
 	}
-	return OrderByKeys(d, Keyset(s, CursorKey{}), false)
+	return OrderByKeys(d, Keyset(s), false)
 }

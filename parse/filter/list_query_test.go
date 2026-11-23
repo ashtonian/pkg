@@ -23,8 +23,9 @@ func mustListQuery(t testing.TB, fs *filter.ResourceSchema, ss *filter.SortSchem
 func withOwnerKeys(schema *filter.ResourceSchema) {
 	for _, f := range schema.Fields {
 		if f.Relation != nil && f.RelatedBy == nil {
-			key := f.Relation.OwnerKey()
-			f.RelatedBy = &filter.FieldSchema{ExternalName: key, Table: schema.Name, Column: key, DataType: core.FieldTypeString}
+			for _, key := range f.Relation.OwnerColumns() {
+				f.RelatedBy = append(f.RelatedBy, &filter.FieldSchema{ExternalName: key, Table: schema.Name, Column: key, DataType: core.FieldTypeString})
+			}
 		}
 	}
 }

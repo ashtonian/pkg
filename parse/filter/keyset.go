@@ -45,15 +45,17 @@ type CursorKey struct {
 	Path *JSONPath
 }
 
-// Keyset derives the effective keys for a sort: its fields followed by the
-// tie-breaker unless the sort already contains it. The tie-breaker inherits
-// the primary direction so a uniform-direction list keeps native row-value
-// comparison available. SQL repositories get this from ListQuery.Build; the
-// memory repository calls it directly so every backend walks one key list.
-func Keyset(sort *SortResult, tieBreaker CursorKey) []CursorKey {
+// Keyset derives the effective keys for a sort: its fields followed by each
+// tie-breaker the sort does not already name, in the order given — a
+// composite key's columns, in key order. A tie-breaker without a name is
+// none. The tie-breakers inherit the primary direction so a
+// uniform-direction list keeps native row-value comparison available. SQL
+// repositories get this from ListQuery.Build; the memory repository calls it
+// directly so every backend walks one key list.
+func Keyset(sort *SortResult, tieBreakers ...CursorKey) []CursorKey {
 	var keys []CursorKey
 	if sort != nil {
-		keys = make([]CursorKey, 0, len(sort.Fields)+1)
+		keys = make([]CursorKey, 0, len(sort.Fields)+len(tieBreakers))
 		for _, f := range sort.Fields {
 			keys = append(keys, CursorKey{
 				Name:       f.Name,
@@ -68,19 +70,19 @@ func Keyset(sort *SortResult, tieBreaker CursorKey) []CursorKey {
 			})
 		}
 	}
-	if tieBreaker.Name == "" {
-		return keys
-	}
-	for _, k := range keys {
-		if k.Name == tieBreaker.Name {
-			return keys
-		}
-	}
-	tieBreaker.Direction = SortAsc
+	direction := SortAsc
 	if len(keys) > 0 {
-		tieBreaker.Direction = keys[0].Direction
+		direction = keys[0].Direction
 	}
-	return append(keys, tieBreaker)
+	for _, tieBreaker := range tieBreakers {
+		named := slices.ContainsFunc(keys, func(k CursorKey) bool { return k.Name == tieBreaker.Name })
+		if tieBreaker.Name == "" || named {
+			continue
+		}
+		tieBreaker.Direction = direction
+		keys = append(keys, tieBreaker)
+	}
+	return keys
 }
 
 // CursorPlan is what a repository needs to turn a fetched row set into a

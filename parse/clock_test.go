@@ -70,7 +70,7 @@ func TestClock_OneInstantPerListRequest(t *testing.T) {
 		assert.Equal(t, time.Hour, instants[3].Sub(instants[2]), "the related policy's now is the request's")
 		assert.Equal(t, instants[3], instants[4], "a related table's policy is one instant however often it is named")
 
-		includes, err := devices.IncludeQueries(plan, []any{"d1"})
+		includes, err := devices.IncludeQueries(plan, []parse.Key{{"d1"}})
 		require.NoError(t, err)
 		require.Len(t, includes, 1)
 		assert.Equal(t, []time.Time{instants[3]}, timestamps(t, includes[0].Args), "an include admits the related rows its list did")

@@ -5,6 +5,7 @@ package patch_test
 import (
 	"database/sql"
 	"fmt"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -20,7 +21,7 @@ import (
 // given as Go strings, as a resource's string key of a uuid column is.
 type relationDB struct {
 	db      *sql.DB
-	dialect patch.SQLDialect
+	dialect patch.RelationDialect
 	// schema creates widgets (id, tenant_id), tags (id, tenant_id,
 	// deleted_at) and widget_tags (widget_id, tag_id, tenant_id), the pair
 	// table keyed on (widget_id, tag_id).
@@ -47,38 +48,38 @@ var relationStart = [][3]any{
 var relationCases = []struct {
 	name   string
 	verb   patch.RelationVerb
-	owners []any
+	owners []core.Key
 	values []any
 	// tenant scopes the pair table to tenant1; guarded reaches targets
 	// through the tags table, live ones only.
 	tenant, guarded bool
 	want            []string
 }{
-	{"replace sets the owner's pairs", patch.RelationVerbReplace, []any{1}, []any{tagB, tagC}, false, false, []string{"1:b", "1:c", "2:a"}},
-	{"replace with none clears", patch.RelationVerbReplace, []any{1, 2}, nil, false, false, nil},
-	{"add pairs every owner with every value", patch.RelationVerbAdd, []any{1, 2}, []any{tagC}, false, false, []string{"1:a", "1:b", "1:c", "1:d", "1:e0", "2:a", "2:c"}},
-	{"add of a pair already there", patch.RelationVerbAdd, []any{1}, []any{tagA}, false, false, []string{"1:a", "1:b", "1:d", "1:e0", "2:a"}},
-	{"remove", patch.RelationVerbRemove, []any{1}, []any{tagA, tagC}, false, false, []string{"1:b", "1:d", "1:e0", "2:a"}},
-	{"tenant: replace keeps another tenant's pairs", patch.RelationVerbReplace, []any{1}, []any{tagC}, true, false, []string{"1:c", "1:e0", "2:a"}},
-	{"tenant: clear keeps another tenant's pairs", patch.RelationVerbReplace, []any{1}, nil, true, false, []string{"1:e0", "2:a"}},
-	{"tenant: add", patch.RelationVerbAdd, []any{2}, []any{tagB}, true, false, []string{"1:a", "1:b", "1:d", "1:e0", "2:a", "2:b"}},
-	{"tenant: remove", patch.RelationVerbRemove, []any{1}, []any{tagOther, tagA}, true, false, []string{"1:b", "1:d", "1:e0", "2:a"}},
-	{"guarded: replace reaches visible targets", patch.RelationVerbReplace, []any{1}, []any{tagC, tagGone}, true, true, []string{"1:c", "1:d", "1:e0", "2:a"}},
-	{"guarded: add of an invisible target", patch.RelationVerbAdd, []any{2}, []any{tagGone, tagOther, tagB}, true, true, []string{"1:a", "1:b", "1:d", "1:e0", "2:a", "2:b"}},
-	{"guarded: remove of an invisible target", patch.RelationVerbRemove, []any{1}, []any{tagGone, tagA}, true, true, []string{"1:b", "1:d", "1:e0", "2:a"}},
-	{"guarded: clear reaches visible targets", patch.RelationVerbReplace, []any{1}, nil, true, true, []string{"1:d", "1:e0", "2:a"}},
+	{"replace sets the owner's pairs", patch.RelationVerbReplace, []core.Key{{1}}, []any{tagB, tagC}, false, false, []string{"1:b", "1:c", "2:a"}},
+	{"replace with none clears", patch.RelationVerbReplace, []core.Key{{1}, {2}}, nil, false, false, nil},
+	{"add pairs every owner with every value", patch.RelationVerbAdd, []core.Key{{1}, {2}}, []any{tagC}, false, false, []string{"1:a", "1:b", "1:c", "1:d", "1:e0", "2:a", "2:c"}},
+	{"add of a pair already there", patch.RelationVerbAdd, []core.Key{{1}}, []any{tagA}, false, false, []string{"1:a", "1:b", "1:d", "1:e0", "2:a"}},
+	{"remove", patch.RelationVerbRemove, []core.Key{{1}}, []any{tagA, tagC}, false, false, []string{"1:b", "1:d", "1:e0", "2:a"}},
+	{"tenant: replace keeps another tenant's pairs", patch.RelationVerbReplace, []core.Key{{1}}, []any{tagC}, true, false, []string{"1:c", "1:e0", "2:a"}},
+	{"tenant: clear keeps another tenant's pairs", patch.RelationVerbReplace, []core.Key{{1}}, nil, true, false, []string{"1:e0", "2:a"}},
+	{"tenant: add", patch.RelationVerbAdd, []core.Key{{2}}, []any{tagB}, true, false, []string{"1:a", "1:b", "1:d", "1:e0", "2:a", "2:b"}},
+	{"tenant: remove", patch.RelationVerbRemove, []core.Key{{1}}, []any{tagOther, tagA}, true, false, []string{"1:b", "1:d", "1:e0", "2:a"}},
+	{"guarded: replace reaches visible targets", patch.RelationVerbReplace, []core.Key{{1}}, []any{tagC, tagGone}, true, true, []string{"1:c", "1:d", "1:e0", "2:a"}},
+	{"guarded: add of an invisible target", patch.RelationVerbAdd, []core.Key{{2}}, []any{tagGone, tagOther, tagB}, true, true, []string{"1:a", "1:b", "1:d", "1:e0", "2:a", "2:b"}},
+	{"guarded: remove of an invisible target", patch.RelationVerbRemove, []core.Key{{1}}, []any{tagGone, tagA}, true, true, []string{"1:b", "1:d", "1:e0", "2:a"}},
+	{"guarded: clear reaches visible targets", patch.RelationVerbReplace, []core.Key{{1}}, nil, true, true, []string{"1:d", "1:e0", "2:a"}},
 }
 
 func relationOp(tenant, guarded bool, verb patch.RelationVerb, values []any) (patch.RelationPatchOp, patch.RenderRelationOpOptions) {
-	rel := &core.RelationSchema{JoinTable: "widget_tags", SourceColumn: "widget_id", TargetColumn: "tag_id"}
+	rel := &core.RelationSchema{JoinTable: "widget_tags", SourceColumns: []string{"widget_id"}, TargetColumns: []string{"tag_id"}, SourceTypes: []core.TypeInfo{{Type: core.FieldTypeInt, NumberKind: reflect.Int}}, TargetTypes: []core.TypeInfo{{Type: core.FieldTypeUUID}}}
 	var opts patch.RenderRelationOpOptions
 	if tenant {
 		rel.TenantColumn = "tenant_id"
 		opts.TenantValue = tenant1
 	}
 	if guarded {
-		rel.TargetTable, rel.TargetKey, rel.TargetTenant = "tags", "id", "tenant_id"
-		opts.Owner = patch.RelationOwner{Table: "widgets", Key: "id", Tenant: "tenant_id"}
+		rel.TargetTable, rel.TargetKeys, rel.TargetTenant = "tags", []string{"id"}, "tenant_id"
+		opts.Owner = patch.RelationOwner{Table: "widgets", Key: []string{"id"}, Tenant: "tenant_id"}
 		opts.TargetVisible = func(alias string, bind func(any) string) (string, error) {
 			return " AND " + alias + ".tenant_id = " + bind(tenant1) + " AND " + alias + ".deleted_at IS NULL", nil
 		}
@@ -155,7 +156,7 @@ func runRelationCases(t *testing.T, rdb relationDB) {
 		for i := range values {
 			values[i] = fmt.Sprintf("00000000-0000-0000-0001-%012d", i)
 		}
-		owners := []any{1, 2, 3, 4}
+		owners := []core.Key{{1}, {2}, {3}, {4}}
 		for _, guarded := range []bool{false, true} {
 			rdb.reset(t)
 			if guarded {

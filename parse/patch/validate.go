@@ -187,11 +187,18 @@ func (c valueChecker) relationValues(value any) (any, *stepFailure) {
 	seen := make(map[any]struct{}, len(items))
 	unique := make([]any, 0, len(items))
 	for _, v := range items {
-		if v != nil && reflect.TypeOf(v).Comparable() {
-			if _, repeated := seen[v]; repeated {
+		id := v
+		key, ok := v.(core.Key)
+		if ok {
+			// A normalized key of several columns repeats when its text does.
+			id = core.KeyText(key)
+		}
+		if id != nil && reflect.TypeOf(id).Comparable() {
+			_, repeated := seen[id]
+			if repeated {
 				continue
 			}
-			seen[v] = struct{}{}
+			seen[id] = struct{}{}
 		}
 		unique = append(unique, v)
 	}
