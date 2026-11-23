@@ -1,7 +1,11 @@
 package filter
 
 import (
+	"fmt"
+	"reflect"
 	"strings"
+
+	"github.com/ashtonian/pkg/parse/core"
 )
 
 // buildMember compiles a membership node to an IN subquery.
@@ -88,11 +92,16 @@ func (b *SQLBuilder) lookupCondSQL(s *buildState, c *LookupCond, table string) (
 		if len(c.Values) == 0 {
 			return "1=0", nil
 		}
-		phs := make([]string, len(c.Values))
-		for i, v := range c.Values {
-			phs[i] = bind(v)
+		column, members, err := lookupSet(c)
+		if err != nil {
+			return "", err
 		}
-		return q(c.Column) + " IN (" + strings.Join(phs, ", ") + ")", nil
+		sql, err := b.dialect.memberSet(column, q(c.Column), members, true, bind)
+		if err != nil {
+			// The lookup is the server's: its values are no request's fault.
+			return "", invalidLookup(fmt.Sprintf("lookup column %q: %v", c.Column, err))
+		}
+		return sql, nil
 	case LookupOpNotNull:
 		return q(c.Column) + " IS NOT NULL", nil
 	case LookupOpMember:
@@ -103,4 +112,40 @@ func (b *SQLBuilder) lookupCondSQL(s *buildState, c *LookupCond, table string) (
 		return q(c.Column) + " IN " + sub, nil
 	}
 	return q(c.Column) + " IS NULL", nil
+}
+
+// lookupSet is a WhereIn list as the set `$in` binds: its column typed by
+// its values' Go type (core.TypeOf), one scalar type for all of them, and
+// each value in that type's canonical form, so the dialect binds the list
+// as one parameter whatever its length.
+func lookupSet(c *LookupCond) (*FieldSchema, []any, error) {
+	var typ core.FieldType
+	members := make([]any, len(c.Values))
+	for i, v := range c.Values {
+		info := core.TypeOf(reflect.TypeOf(v))
+		if !setScalar(info.Type) {
+			return nil, nil, invalidLookup(fmt.Sprintf("lookup column %q lists a %T, no scalar value", c.Column, v))
+		}
+		if typ == "" {
+			typ = info.Type
+		} else if info.Type != typ {
+			return nil, nil, invalidLookup(fmt.Sprintf("lookup column %q lists %s and %s values; a set holds one type", c.Column, typ, info.Type))
+		}
+		m, err := core.NormalizeScalar(typ, info.NumberKind, v)
+		if err != nil {
+			return nil, nil, invalidLookup(fmt.Sprintf("lookup column %q: %v", c.Column, err))
+		}
+		members[i] = m
+	}
+	return &FieldSchema{ExternalName: c.Column, Column: c.Column, DataType: typ}, members, nil
+}
+
+// setScalar reports whether a set of ft values binds as one parameter: a
+// scalar type, not a document, array, geometry or opaque value.
+func setScalar(ft core.FieldType) bool {
+	switch ft {
+	case core.FieldTypeJSON, core.FieldTypeObject, core.FieldTypeArray, core.FieldTypeAny, core.FieldTypeGeo, "":
+		return false
+	}
+	return true
 }

@@ -60,7 +60,7 @@ Values normalize at parse (the AST carries canonical values): exact `int64` / `u
 
 ### Sets
 
-A `$in` / `$nin` set, and an array's `$contains` list ([array elements](#array-elements)), binds as one array parameter, so a statement's parameter count is independent of the set's size (PostgreSQL caps a statement at 65,535 parameters). `MaxArraySize` alone bounds a set, and a set costs one condition whatever its size: raise `MaxArraySize` and `MaxInputSize` for an endpoint that filters by large sets.
+A `$in` / `$nin` set, an array's `$contains` list ([array elements](#array-elements)) and a lookup's `WhereIn` list ([policy constraints](#policy-constraints)) bind as one array parameter, so a statement's parameter count is independent of the set's size (PostgreSQL caps a statement at 65,535 parameters). `MaxArraySize` alone bounds a set, and a set costs one condition whatever its size: raise `MaxArraySize` and `MaxInputSize` for an endpoint that filters by large sets.
 
 | Backend | Column | [Path](#json-paths) |
 |---|---|---|
@@ -214,7 +214,7 @@ A `filter.PolicyConstraints` is a group: its `Constraints` and `And` groups are 
 | `Field`, `Operator`, `Value` | The comparison the filter grammar writes, the value normalized as a request value is. `OpNull` and `OpNotNull` take no value or a boolean, which means what it means in `$null` and `$not_null` (`OpNull` with `false` is `IS NOT NULL`); `OpExists` takes a boolean; any other value is E2073 |
 | … with `UnknownIfInvalid` | The same, except that a value the field's type or the operator cannot take is SQL's unknown instead of an error |
 | `filter.UnknownConstraint()` | SQL's unknown (`filter.OpUnknown`, `NULL`): no row satisfies it, nor its negation. `BuildBaseConstraints` writes it for a tenant floor without a tenant |
-| `Member` | `Field` among the values a `Lookup` projects ([evaluated outside SQL](#evaluating-outside-sql) through `ResolveMemberships`); every constraint sharing one lookup tests its own field, and `ResolveMemberships` asks the lookup once |
+| `Member` | `Field` among the values a `Lookup` projects ([evaluated outside SQL](#evaluating-outside-sql) through `ResolveMemberships`); every constraint sharing one lookup tests its own field, and `ResolveMemberships` asks the lookup once. A `WhereIn` list binds as one [set](#sets) of its values' Go type (`core.TypeOf`): one scalar type per list, anything else `ErrPolicyInvalid` |
 | `RawSQL`, `RawArgs` | The fragment in parentheses, so `a OR b` stays one operand of the floor, the cursor, a search or a relation's correlation; its `$N` placeholders are renumbered. Only SQL evaluates it: the memory evaluator reads it as Unknown, and a target read under an alias (a relation back to its own table, a policy-scoped relation's include or facet) refuses it |
 
 `Negate` negates one constraint.

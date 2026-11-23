@@ -112,6 +112,10 @@ type Dialect interface {
 	// setRows binds a set's members as one parameter and reads them back
 	// as rows of one column, v, of the type FieldExpr reads field as.
 	setRows(field *FieldSchema, members []any, bind func(any) string) (string, error)
+	// memberSet tests expr, a value of field's type, for membership in
+	// members (in) or absence from them, the set bound as one parameter:
+	// `$in` / `$nin` and a lookup's WhereIn render through it.
+	memberSet(field *FieldSchema, expr string, members []any, in bool, bind func(any) string) (string, error)
 
 	// numberKey renders an int, float or decimal field's value as its
 	// terms facet key: the canonical decimal text (core.DecimalText)

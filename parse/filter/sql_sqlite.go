@@ -100,7 +100,7 @@ func (d SQLiteDialect) Condition(field *FieldSchema, op FilterOperator, value an
 	}
 	if op == OpIn || op == OpNin {
 		return membership(op, value, func(members []any, in bool) (string, error) {
-			return sqliteMembership(field, expr, members, in, bind)
+			return d.memberSet(field, expr, members, in, bind)
 		})
 	}
 	if isOrdering(op) && orderedAsText(field) {
@@ -118,9 +118,9 @@ func (d SQLiteDialect) Condition(field *FieldSchema, op FilterOperator, value an
 	return "", unsupportedOperator(field, op)
 }
 
-// sqliteMembership renders a set bound as one JSON array (setRows).
-func sqliteMembership(field *FieldSchema, expr string, members []any, in bool, bind func(any) string) (string, error) {
-	set, err := SQLiteDialect{}.setRows(field, members, bind)
+// memberSet renders a set bound as one JSON array (setRows).
+func (d SQLiteDialect) memberSet(field *FieldSchema, expr string, members []any, in bool, bind func(any) string) (string, error) {
+	set, err := d.setRows(field, members, bind)
 	if err != nil {
 		return "", err
 	}
