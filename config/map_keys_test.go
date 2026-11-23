@@ -233,6 +233,70 @@ func TestMapKeys_OneEntryOneKey(t *testing.T) {
 	assert.ErrorIs(t, err, ErrKey, "the decoder reads no integer from 080")
 }
 
+// mkTensKey writes itself rounded down to tens, so the text of 15 reads
+// back as 10.
+type mkTensKey int
+
+func (k mkTensKey) MarshalText() ([]byte, error) { return []byte(fmt.Sprint(int(k) / 10 * 10)), nil }
+
+func (k *mkTensKey) UnmarshalText(b []byte) error {
+	_, err := fmt.Sscan(string(b), (*int)(k))
+	return err
+}
+
+type mkReadBackConfig struct {
+	ByFloat map[float64]string       `koanf:"by_float"`
+	ByDur   map[time.Duration]string `koanf:"by_dur"`
+	BySlog  map[slog.Level]string    `koanf:"by_slog"`
+	ByBool  map[bool]string          `koanf:"by_bool"`
+	ByTens  map[mkTensKey]string     `koanf:"by_tens"`
+}
+
+// Text names an entry only when its key is one a map holds and finds again:
+// every spelling of a key is one row under the key's own text, and text
+// reading as NaN, which no lookup finds, or as a key whose text reads back
+// to another key, names nothing.
+func TestMapKeys_TextNamesOnlyKeysThatReadBack(t *testing.T) {
+	for want, spellings := range map[string][]string{
+		`by_float["1.5"]`:  {`by_float["1.50"]`, `by_float["15e-1"]`, `by_float["1.5"]`},
+		`by_float["+Inf"]`: {`by_float["inf"]`, `by_float["+Inf"]`},
+		`by_dur["1m0s"]`:   {`by_dur["60s"]`, `by_dur["1m"]`, `by_dur["1m0s"]`},
+		`by_slog["INFO"]`:  {`by_slog["info"]`, `by_slog["INFO"]`},
+		`by_bool["true"]`:  {`by_bool["1"]`, `by_bool["t"]`, `by_bool["TRUE"]`, `by_bool["true"]`},
+		`by_tens["20"]`:    {`by_tens["20"]`},
+	} {
+		for _, key := range spellings {
+			got, err := CanonicalKey[mkReadBackConfig](key)
+			if assert.NoError(t, err, key) {
+				assert.Equal(t, want, got, key)
+			}
+		}
+		edits := map[string]any{}
+		for _, key := range spellings {
+			edits[key] = "v"
+		}
+		got, err := DecodeEdits[mkReadBackConfig](t.Context(), nil, edits)
+		if len(spellings) == 1 {
+			assert.NoError(t, err, want)
+			continue
+		}
+		var ee *EditsError
+		if assert.ErrorAs(t, err, &ee, want) && assert.Len(t, ee.Refused, 1, want) {
+			assert.Contains(t, ee.Refused[0].Error(), "the key is set more than once, under different spellings")
+		}
+		assert.Nil(t, got)
+	}
+
+	for _, key := range []string{`by_float["NaN"]`, `by_float["nan"]`, `by_tens["15"]`} {
+		_, err := CanonicalKey[mkReadBackConfig](key)
+		assert.ErrorIs(t, err, ErrKey, key)
+		_, err = DecodeKey[mkReadBackConfig](t.Context(), key, "v")
+		assert.ErrorIs(t, err, ErrKey, key)
+		_, err = DecodeEdits[mkReadBackConfig](t.Context(), nil, map[string]any{key: "v"})
+		assert.ErrorIs(t, err, ErrKey, key)
+	}
+}
+
 // An unknown key inside an entry of a map keyed by any type is named at its
 // own place, in a key that parses back to itself.
 func TestMapKeys_UnknownKeysAreNamedInsideEntries(t *testing.T) {
@@ -250,6 +314,60 @@ func TestMapKeys_UnknownKeysAreNamedInsideEntries(t *testing.T) {
 		}
 	}
 	assert.ElementsMatch(t, []string{`by_int["80"].bogus`, `by_level["3"].bogus`, `by_text["lvl-1"].bogus`}, keys)
+}
+
+// mkHookLevel is read from a name only by the caller's decode hook.
+type mkHookLevel int
+
+func readHookLevel(from, to reflect.Type, data any) (any, error) {
+	name, ok := data.(string)
+	if !ok || to != reflect.TypeFor[mkHookLevel]() {
+		return data, nil
+	}
+	switch name {
+	case "low":
+		return mkHookLevel(1), nil
+	case "high":
+		return mkHookLevel(2), nil
+	}
+	return data, nil
+}
+
+// A load whose decode hook reads a map's keys from text the built-in
+// decoding does not names what fails inside an entry by the entry's key as
+// the source wrote it.
+func TestMapKeys_AnEntryOnlyAHookReadsIsNamedAsWritten(t *testing.T) {
+	type cfg struct {
+		Levels map[mkHookLevel]mkServer `koanf:"levels"`
+	}
+	_, err := CanonicalKey[cfg](`levels["low"]`)
+	require.ErrorIs(t, err, ErrKey, "CanonicalKey reads keys without the hook")
+
+	file := filepath.Join(t.TempDir(), "c.yaml")
+	writeFile(t, file, "levels: {low: {host: a, bogus: 1}, 2: {host: b, other: 1}}\n")
+	_, err = Load[cfg](t.Context(), WithFile(file), WithDecodeHook(readHookLevel))
+	var u *UnknownKeysError
+	require.ErrorAs(t, err, &u)
+	var keys []string
+	for _, k := range u.Keys {
+		keys = append(keys, k.Key)
+	}
+	assert.ElementsMatch(t, []string{`levels["low"].bogus`, `levels["2"].other`}, keys)
+
+	writeFile(t, file, "levels: {low: {port: x}}\n")
+	_, err = Load[cfg](t.Context(), WithFile(file), WithDecodeHook(readHookLevel))
+	require.ErrorIs(t, err, ErrValidation)
+	assert.Contains(t, err.Error(), `levels["low"].port`)
+
+	writeFile(t, file, "levels: {medium: {host: a}}\n")
+	_, err = Load[cfg](t.Context(), WithFile(file), WithDecodeHook(readHookLevel))
+	require.ErrorIs(t, err, ErrValidation)
+	assert.Contains(t, err.Error(), `levels["medium"]`)
+
+	writeFile(t, file, "levels: {low: {host: a}}\n")
+	got, err := Load[cfg](t.Context(), WithFile(file), WithDecodeHook(readHookLevel))
+	require.NoError(t, err)
+	assert.Equal(t, "a", got.Levels[1].Host)
 }
 
 // A key beneath an entry of a typed map an earlier key of the batch set
