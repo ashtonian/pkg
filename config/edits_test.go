@@ -410,3 +410,32 @@ func TestDecodeEdits_KeysARemainFieldCollects(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, map[string]any{"extra": 1}, one.Section.Rest)
 }
+
+type embeddedTarget struct{ X []int }
+
+// embeddedHook promotes X through an unexported embedded pointer.
+type embeddedHook struct {
+	*embeddedTarget
+	Name string
+}
+
+type embeddedHookConfig struct {
+	Sec struct {
+		Host string       `koanf:"host"`
+		Hook embeddedHook `koanf:"-"`
+	} `koanf:"sec"`
+	Other int `koanf:"other"`
+}
+
+// A candidate's koanf:"-" field shares nothing settable with the baseline,
+// what an unexported embedded pointer promotes included.
+func TestDecodeEdits_CandidateSharesNothingSettableWithTheBaseline(t *testing.T) {
+	var base embeddedHookConfig
+	base.Sec.Host = "h"
+	base.Sec.Hook = embeddedHook{embeddedTarget: &embeddedTarget{X: []int{1}}}
+	got, err := DecodeEdits(t.Context(), &base, map[string]any{"other": 1})
+	require.NoError(t, err)
+	require.Equal(t, []int{1}, got.Sec.Hook.X)
+	got.Sec.Hook.X = []int{42}
+	assert.Equal(t, []int{1}, base.Sec.Hook.X)
+}
