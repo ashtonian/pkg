@@ -862,14 +862,19 @@ type checkedSection struct {
 	Hook string `koanf:"-"`
 }
 
+type checkedOuter struct {
+	Inner checkedSection `koanf:"inner"`
+	Port  int            `koanf:"port" validate:"max=100"`
+}
+
 type checkedUnkeyedConfig struct {
 	Section checkedSection `koanf:"section"`
+	Outer   checkedOuter   `koanf:"outer"`
 }
 
 // A provider's typed section keeps its koanf:"-" fields as a default's does:
-// a higher file setting one key inside it keeps them, a higher provider's
-// typed section replaces them with its own, and a section an entry filter
-// withholds leaves the one beneath it in force, unkeyed fields included.
+// a higher file setting one key inside it keeps them, and a higher
+// provider's typed section replaces them with its own.
 func TestSources_ProviderTypedSectionKeepsItsUnkeyedFields(t *testing.T) {
 	provider := func(host string) mapSource {
 		return mapSource{"section": unkeyedOf(host), "by_name": map[string]unkeyedSection{"c": unkeyedOf(host)}}
@@ -884,18 +889,48 @@ func TestSources_ProviderTypedSectionKeepsItsUnkeyedFields(t *testing.T) {
 	got, err = Load[unkeyedConfig](t.Context(), WithDefaults(map[string]any{"section": unkeyedOf("d")}), WithOverrideProvider(provider("o"), nil))
 	require.NoError(t, err)
 	assertUnkeyedKept(t, unkeyedOf("o"), got.Section, "o")
+}
 
-	var rejected []KeyError
-	invalid := mapSource{"section": checkedSection{Host: "not a host!", Hook: "invalid"}}
-	checked, err := Load[checkedUnkeyedConfig](t.Context(),
-		WithDefaults(map[string]any{"section": checkedSection{Host: "d.example", Hook: "default"}}),
-		WithOverrideProvider(invalid, nil, WithInvalidEntries(func(_ context.Context, entries []KeyError) error {
-			rejected = entries
-			return nil
-		})))
-	require.NoError(t, err)
-	require.Len(t, rejected, 1)
-	assert.Equal(t, checkedSection{Host: "d.example", Hook: "default"}, checked.Section)
+// Under WithInvalidEntries a provider's tree is rebuilt from the entries the
+// filter keeps, and a typed section is one entry: kept, its koanf:"-"
+// fields apply, also beneath a key of a higher file and beside an entry the
+// filter withholds; withheld, they do not, and the section beneath it stays
+// in force with its own.
+func TestSources_WithheldEntriesKeepUnkeyedFieldsOfTheSectionsKept(t *testing.T) {
+	defaults := WithDefaults(map[string]any{
+		"section": checkedSection{Host: "d.example", Hook: "default"},
+		"outer":   map[string]any{"inner": checkedSection{Host: "d.example", Hook: "default inner"}},
+	})
+	load := func(t *testing.T, data mapSource, opts ...Option) (*checkedUnkeyedConfig, []KeyError) {
+		t.Helper()
+		var rejected []KeyError
+		got, err := Load[checkedUnkeyedConfig](t.Context(), append([]Option{defaults,
+			WithBaseProvider(data, nil, WithInvalidEntries(func(_ context.Context, entries []KeyError) error {
+				rejected = entries
+				return nil
+			}))}, opts...)...)
+		require.NoError(t, err)
+		return got, rejected
+	}
+	t.Run("kept, a higher file sets a key inside it", func(t *testing.T) {
+		file := filepath.Join(t.TempDir(), "config.yaml")
+		writeFile(t, file, "section: {host: f.example}\n")
+		got, rejected := load(t, mapSource{"section": checkedSection{Host: "p.example", Hook: "provider"}}, WithFile(file))
+		assert.Empty(t, rejected)
+		assert.Equal(t, checkedSection{Host: "f.example", Hook: "provider"}, got.Section)
+	})
+	t.Run("kept beside a withheld entry", func(t *testing.T) {
+		got, rejected := load(t, mapSource{"outer": map[string]any{"inner": checkedSection{Host: "p.example", Hook: "provider inner"}, "port": 500}})
+		require.Len(t, rejected, 1)
+		assert.Equal(t, "outer.port", rejected[0].Key)
+		assert.Equal(t, checkedOuter{Inner: checkedSection{Host: "p.example", Hook: "provider inner"}}, got.Outer)
+	})
+	t.Run("withheld", func(t *testing.T) {
+		got, rejected := load(t, mapSource{"section": checkedSection{Host: "not a host!", Hook: "invalid"}})
+		require.Len(t, rejected, 1)
+		assert.Equal(t, "section", rejected[0].Key)
+		assert.Equal(t, checkedSection{Host: "d.example", Hook: "default"}, got.Section)
+	})
 }
 
 // A higher source adds and changes entries of a typed default map but
