@@ -187,6 +187,8 @@ type SchemaResponse struct {
 
 // FilterSchemaResponse is the JSON representation of a filter schema.
 type FilterSchemaResponse struct {
+	// Fields are the names a request filter may name
+	// (filter.ResourceSchema.RequestFields): the filter fields and the key.
 	Fields map[string]*FilterFieldResponse `json:"fields"`
 }
 
@@ -200,7 +202,10 @@ type FilterFieldResponse struct {
 	// and set operands are JSON strings holding the value ("42"), as the
 	// field reads in responses (json:",string"); absent, operands take the
 	// data type's own JSON form.
-	Wire       core.Wire               `json:"wire,omitempty"`
+	Wire core.Wire `json:"wire,omitempty"`
+	// Operators are the operators the parser takes on the field
+	// (filter.FieldSchema.EffectiveOperators): those it declares, then the
+	// NULL tests a declared one implies.
 	Operators  []filter.FilterOperator `json:"operators"`
 	Indexed    bool                    `json:"indexed,omitempty"`
 	Immutable  bool                    `json:"immutable,omitempty"`
@@ -328,8 +333,15 @@ func (r *SchemaRegistry) SchemaFor(resource string) *SchemaResponse {
 	return resp
 }
 
+// filterSchemaToResponse lists the fields a request filter may name
+// (RequestFields): its filter fields and the key, so a client validating
+// against the document accepts what the parser accepts.
 func filterSchemaToResponse(s *filter.ResourceSchema) *FilterSchemaResponse {
-	return &FilterSchemaResponse{Fields: filterFieldsToResponse(s.Fields)}
+	fields := make(map[string]*FilterFieldResponse, len(s.Fields)+1)
+	for name, f := range s.RequestFields() {
+		fields[name] = filterFieldToResponse(f)
+	}
+	return &FilterSchemaResponse{Fields: fields}
 }
 
 func filterFieldsToResponse(in map[string]*filter.FieldSchema) map[string]*FilterFieldResponse {
@@ -343,7 +355,7 @@ func filterFieldsToResponse(in map[string]*filter.FieldSchema) map[string]*Filte
 func filterFieldToResponse(f *filter.FieldSchema) *FilterFieldResponse {
 	resp := &FilterFieldResponse{
 		Name: f.ExternalName, Label: f.Label, Description: f.Description,
-		DataType: f.DataType, Wire: f.Wire, Operators: slices.Clone(f.AllowedOperators), Indexed: f.Indexed,
+		DataType: f.DataType, Wire: f.Wire, Operators: f.EffectiveOperators(), Indexed: f.Indexed,
 		Immutable: f.Immutable, EnumValues: slices.Clone(f.EnumValues), Facetable: f.Facetable,
 		Searchable: f.Searchable, Includable: f.Includable, Group: f.Group, Order: f.Order,
 	}

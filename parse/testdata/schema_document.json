@@ -30,7 +30,8 @@
           "null",
           "not_null",
           "some",
-          "none"
+          "none",
+          "exists"
         ],
         "relation": {
           "kind": "many_to_many",
@@ -48,7 +49,8 @@
           "exists",
           "null",
           "some",
-          "none"
+          "none",
+          "not_null"
         ],
         "elements": {
           "qty": {
@@ -90,7 +92,8 @@
           "contains",
           "has_key",
           "exists",
-          "null"
+          "null",
+          "not_null"
         ]
       },
       "meta.region": {
@@ -141,7 +144,8 @@
           "null",
           "not_null",
           "some",
-          "none"
+          "none",
+          "exists"
         ],
         "facetable": true,
         "includable": true,
@@ -205,7 +209,8 @@
           "in",
           "nin",
           "null",
-          "not_null"
+          "not_null",
+          "exists"
         ],
         "includable": true,
         "relation": {

@@ -190,15 +190,15 @@ export function relatedTargets(
   return [...out];
 }
 
-// The NULL tests are one capability: a field that declares any of them
-// allows all three, as the Go parser does.
+// The NULL tests take a boolean operand.
 function isNullTest(op: FilterOperator): boolean {
   return op === "null" || op === "not_null" || op === "exists";
 }
 
+// A field's operators are those the server takes on it: the schema document
+// lists each NULL test a declared one implies.
 function assertAllowed(name: string, op: FilterOperator, field: FilterFieldSchema): void {
-  const allowed = isNullTest(op) ? field.operators.some(isNullTest) : field.operators.includes(op);
-  if (!allowed) {
+  if (!field.operators.includes(op)) {
     throw new SchemaValidationError(
       name, "E2072",
       `Operator "${op}" is not allowed on field "${name}". Allowed: ${field.operators.join(", ")}`,

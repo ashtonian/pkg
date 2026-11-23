@@ -417,7 +417,7 @@ func ParseIncludeNames(schema *ResourceSchema, names []string) ([]string, error)
 		if name == "" || slices.Contains(fields, name) {
 			continue
 		}
-		f, ok := schema.Fields[name]
+		f, ok := schema.RequestField(name)
 		if !ok {
 			return nil, &core.ParseError{
 				Kind: core.ParseErrorKindFilter, Code: ECodeUnknownField.String(),

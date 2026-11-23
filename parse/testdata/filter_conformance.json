@@ -4,7 +4,20 @@
       "version": 1,
       "resource": "conf_bare",
       "filter": {
-        "fields": {}
+        "fields": {
+          "id": {
+            "name": "id",
+            "data_type": "string",
+            "operators": [
+              "eq",
+              "gt",
+              "lt",
+              "gte",
+              "lte",
+              "in"
+            ]
+          }
+        }
       },
       "patch": {
         "paths": {},
@@ -54,7 +67,9 @@
             "name": "blob",
             "data_type": "any",
             "operators": [
-              "null"
+              "null",
+              "not_null",
+              "exists"
             ]
           },
           "count": {
@@ -128,7 +143,8 @@
               "exists",
               "null",
               "some",
-              "none"
+              "none",
+              "not_null"
             ],
             "elements": {
               "qty": {
@@ -176,7 +192,8 @@
               "contains",
               "has_key",
               "exists",
-              "null"
+              "null",
+              "not_null"
             ]
           },
           "meta.labels": {
@@ -270,7 +287,9 @@
             "name": "note",
             "data_type": "string",
             "operators": [
-              "not_null"
+              "not_null",
+              "null",
+              "exists"
             ]
           },
           "owner": {
@@ -284,7 +303,8 @@
               "null",
               "not_null",
               "is",
-              "is_not"
+              "is_not",
+              "exists"
             ],
             "indexed": true,
             "relation": {
@@ -303,7 +323,8 @@
               "null",
               "not_null",
               "some",
-              "none"
+              "none",
+              "exists"
             ],
             "indexed": true,
             "includable": true,
@@ -409,7 +430,9 @@
               "contains",
               "some",
               "none",
-              "null"
+              "null",
+              "not_null",
+              "exists"
             ],
             "elem": "string",
             "element": {
@@ -3258,6 +3281,48 @@
       "valid": true
     },
     {
+      "name": "filter_on_untagged_key",
+      "resource": "conf_bare",
+      "input": {
+        "filter": [
+          "{\"id\":\"a\"}"
+        ]
+      },
+      "valid": true
+    },
+    {
+      "name": "untagged_key_range",
+      "resource": "conf_bare",
+      "input": {
+        "filter": [
+          "{\"id\":{\"$gte\":\"a\"}}"
+        ]
+      },
+      "valid": true
+    },
+    {
+      "name": "err_untagged_key_operator",
+      "resource": "conf_bare",
+      "input": {
+        "filter": [
+          "{\"id\":{\"$ne\":\"a\"}}"
+        ]
+      },
+      "valid": false,
+      "errorCode": "E2072"
+    },
+    {
+      "name": "err_bare_unknown_field",
+      "resource": "conf_bare",
+      "input": {
+        "filter": [
+          "{\"name\":\"a\"}"
+        ]
+      },
+      "valid": false,
+      "errorCode": "E2071"
+    },
+    {
       "name": "err_bare_sort",
       "resource": "conf_bare",
       "input": {
@@ -3277,7 +3342,7 @@
         ]
       },
       "valid": false,
-      "errorCode": "E2071"
+      "errorCode": "E2083"
     },
     {
       "name": "err_bare_facets",

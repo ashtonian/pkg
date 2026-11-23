@@ -4,6 +4,18 @@
     "resource": "conf_patches",
     "filter": {
       "fields": {
+        "id": {
+          "name": "id",
+          "data_type": "string",
+          "operators": [
+            "eq",
+            "gt",
+            "lt",
+            "gte",
+            "lte",
+            "in"
+          ]
+        },
         "quoted_tags": {
           "name": "quoted_tags",
           "data_type": "int",
@@ -16,7 +28,8 @@
             "null",
             "not_null",
             "some",
-            "none"
+            "none",
+            "exists"
           ],
           "relation": {
             "kind": "many_to_many",

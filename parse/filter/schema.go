@@ -1,6 +1,7 @@
 package filter
 
 import (
+	"iter"
 	"reflect"
 	"slices"
 
@@ -106,6 +107,25 @@ func (s *ResourceSchema) RequestField(name string) (*FieldSchema, bool) {
 	return nil, false
 }
 
+// RequestFields yields every field a request filter may name, under the
+// name it is named by: exactly the names RequestField resolves. A schema
+// document lists these.
+func (s *ResourceSchema) RequestFields() iter.Seq2[string, *FieldSchema] {
+	return func(yield func(string, *FieldSchema) bool) {
+		for name, f := range s.Fields {
+			if !yield(name, f) {
+				return
+			}
+		}
+		if _, shadowed := s.Fields[s.PrimaryKey]; shadowed || s.PrimaryKey == "" {
+			return
+		}
+		if key, ok := s.SystemFields[s.PrimaryKey]; ok {
+			yield(s.PrimaryKey, key)
+		}
+	}
+}
+
 // FieldSchema defines a single filterable field.
 //
 // A field reads Column of Table, which the dialect quotes, unless Expr is
@@ -201,9 +221,27 @@ func (f *FieldSchema) AllowsOperator(op FilterOperator) bool {
 	return slices.Contains(f.AllowedOperators, op)
 }
 
-func isNullTest(op FilterOperator) bool {
-	return op == OpNull || op == OpNotNull || op == OpExists
+// EffectiveOperators are the operators the field takes (AllowsOperator):
+// AllowedOperators as declared, then the NULL tests a declared one implies.
+// A schema document lists these, so a client reads the capability rather
+// than re-deriving it.
+func (f *FieldSchema) EffectiveOperators() []FilterOperator {
+	ops := slices.Clone(f.AllowedOperators)
+	if !slices.ContainsFunc(ops, isNullTest) {
+		return ops
+	}
+	for _, op := range nullTests {
+		if !slices.Contains(ops, op) {
+			ops = append(ops, op)
+		}
+	}
+	return ops
 }
+
+// nullTests are the NULL tests, in the order the vocabulary is documented.
+var nullTests = []FilterOperator{OpNull, OpNotNull, OpExists}
+
+func isNullTest(op FilterOperator) bool { return slices.Contains(nullTests, op) }
 
 // --- Filter AST ---
 
