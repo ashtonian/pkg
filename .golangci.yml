@@ -1,0 +1,75 @@
+# golangci-lint v2 configuration. `make lint` runs it after go vet and
+# staticcheck, at the version the Makefile pins, over every published module.
+# It is a copy of lint/golangci.yml in the owner's private lint-baseline
+# repository at 45fcf98f43fb, the baseline the owner's Go repositories share, with this
+# header and the ruleguard rules' path (tools/gorules/rules.go) changed and
+# `new-from-merge-base` added. Change the baseline there, then copy it again
+# (CONTRIBUTING.md § Lint baseline). Verified with golangci-lint 2.15.0 and Go 1.27.
+# The ruleguard rules file needs `github.com/quasilyte/go-ruleguard/dsl` (v0.3.23)
+# in tools/gorules/go.mod. Keep the file in a normal package directory: the go
+# tool ignores dot-directories, so `go mod tidy` would drop the requirement if
+# the file lived under .golangci/.
+version: "2"
+linters:
+  default: standard
+  enable:
+    - bodyclose
+    - noctx
+    - rowserrcheck
+    - sqlclosecheck
+    - errorlint
+    - contextcheck
+    - usetesting
+    - testifylint
+    - gochecknoinits
+    - gochecknoglobals
+    - depguard
+    - sloglint
+    - revive
+    - gocritic
+  settings:
+    depguard:
+      rules:
+        logging:
+          files: ["$all"]
+          deny:
+            - pkg: github.com/sirupsen/logrus
+              desc: use log/slog
+            - pkg: go.uber.org/zap
+              desc: use log/slog
+            - pkg: github.com/rs/zerolog
+              desc: use log/slog
+            - pkg: log$
+              desc: use log/slog
+    sloglint:
+      attr-only: true
+      no-global: all
+      context: scope
+      static-msg: true
+      msg-style: lowercased
+      key-naming-case: snake
+    revive:
+      rules:
+        - name: early-return
+        - name: indent-error-flow
+        - name: superfluous-else
+        - name: error-strings
+    gocritic:
+      enabled-checks: [ruleguard]
+      settings:
+        ruleguard:
+          rules: "${base-path}/tools/gorules/rules.go"
+          failOn: all
+formatters:
+  enable: [gofmt, goimports]
+issues:
+  # Report every issue: a capped list makes an agent fix, rerun and find more.
+  max-issues-per-linter: 0
+  max-same-issues: 0
+  uniq-by-line: false
+  # Only issues on lines changed since the merge base with origin/main fail,
+  # until the findings that predate the baseline are fixed; then this line goes.
+  # `make lint LINT_ALL=1` lists every issue.
+  new-from-merge-base: origin/main
+run:
+  relative-path-mode: cfg

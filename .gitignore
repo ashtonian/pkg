@@ -24,3 +24,7 @@ node_modules/
 
 # Python bytecode from the tools/ tests
 __pycache__/
+
+# make lint's workspace: go.work plus tools/gorules
+/.lint.work
+/.lint.work.sum

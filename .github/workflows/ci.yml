@@ -98,7 +98,7 @@ jobs:
               "parse-benchmarks": {"go": ["./parse/filter"]},
               "minimum-go": {"go": ["./httpx/...", "./httpx/oauth2/...", "./httpx/codec/msgpack/...", "./httpx/codec/proto/...", "./httpx/compress/brotli/...", "./gitx/..."]},
               "modules": ["**"],
-              "lint": {"go": ["./..."]}
+              "lint": {"paths": [".golangci.yml", "tools/gorules/**"], "go": ["./..."]}
             }
           shared: |
             .github/**
@@ -131,6 +131,8 @@ jobs:
             tools/release-please/**
             tools/modarchive/**
             tools/doccheck/**
+            .golangci.yml
+            tools/gorules/**
             config/examples/cookbook/**
             httpx/examples/gin/**
             httpx/internal/bench/**
@@ -463,6 +465,9 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+          # golangci-lint reports the issues new since the merge base with
+          # origin/main (.golangci.yml), which needs main's history.
+          fetch-depth: 0
       - uses: ashtonian/go-ci-actions@2ee8735fdee91ff0ee16067a263da6c8a7770841 # v1.13.0
         with:
           go-version: '1.27.0'
@@ -470,7 +475,7 @@ jobs:
           test-input-mtimes: off
       # Vet type-checks every package and test, so on the declared floor it is
       # also the floor's build check.
-      - name: go vet on the declared Go floor, staticcheck on Go 1.27.4
+      - name: go vet on the declared Go floor, staticcheck and golangci-lint on Go 1.27.4
         env:
           GOTOOLCHAIN: local
         run: |

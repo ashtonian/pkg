@@ -19,7 +19,7 @@ The repository's `go.work` ties the published modules together, so a change to o
 | `make parse-release-check` | Fresh module-archive consumer, tagged tests, README program and dependency audit |
 | `make parse-sdk-release-check` | Packed SDK consumer, TypeScript declarations, runtime subpaths and sourcemaps |
 | `make parse-sdk-registry-check` | Registry processing delay, integrity and deadline regressions |
-| `make lint` / `make lint-cookbook` | `go vet` and staticcheck over the published modules, tagged ones in one pass with both tags / over the cookbook |
+| `make lint` / `make lint-cookbook` | `go vet`, staticcheck and golangci-lint ([new issues only](#lint-baseline)) over the published modules, tagged ones in one pass with both tags / `go vet` and staticcheck over the cookbook |
 | `make release-check` | Every module as a consumer gets it, without the race detector: gitx and config standalone builds plus the module archive checks below. `RELEASE_CHECKS='parse-release-check'` runs a subset |
 | `make gowalker-release-check` | Gowalker archive downloaded into a fresh consumer, its tests, the README quick start and complete usage examples |
 | `make httpx-release-check` | Five module ZIPs downloaded by fresh consumers, both tagged lanes, Gin integration and benchmark smoke tests |
@@ -34,6 +34,7 @@ The repository's `go.work` ties the published modules together, so a change to o
 |---|---|---|
 | `PACKAGES` | `all` | The packages the `test-*` and `lint` targets cover: `all`, or space-separated import paths, as CI passes the packages a change reaches. `make test-parse-unit PACKAGES='github.com/ashtonian/pkg/parse github.com/ashtonian/pkg/parse/filter'` tests those two packages; each target takes its own modules' paths, and one with none runs nothing |
 | `RELEASE_CHECKS` | every module's release check | The checks `make release-check` runs |
+| `LINT_ALL` | empty | Empty: golangci-lint in `make lint` reports only the issues on lines changed since the merge base with `origin/main`. `1`: every issue |
 
 GitHub Actions runs workflows here only for the repository owner. Pull requests opened by a bot, such as Dependabot updates or a release PR opened without the `RELEASE_PLEASE_TOKEN` secret, therefore get no checks: run CI on the branch with `gh workflow run ci.yml -R ashtonian/pkg --ref <branch>`, and the pull request shows the results.
 
@@ -62,8 +63,9 @@ superseded run leaves no change unvalidated. The scope lists the workspace's pac
 `go-ignore` lists what no workspace Go code reads: `CONTRIBUTING.md`, the root `README.md`,
 changelogs, the Markdown guides in `config/docs`, `gowalker/docs` and `httpx/docs` (parse's
 are read by parse's tests, which render their tables from the code), the SDK, the release-please manifest and configuration, the release and SDK
-scripts, and the modules outside the workspace (the cookbook, the Gin example, httpx's
-benchmarks, the Parse server example, the archive, documentation and release tooling), whose own checks read them. A module manifest
+scripts, golangci-lint's `.golangci.yml`, and the modules outside the workspace (the cookbook, the Gin example, httpx's
+benchmarks, the Parse server example, the ruleguard rules, the archive, documentation and release tooling), whose own checks read them. A change to
+`.golangci.yml` or `tools/gorules/` runs lint over every package and nothing else. A module manifest
 (`go.mod`, `go.sum`), `go.work`, `go.work.sum` or any other file no package owns reaches
 every package; workflows, the Makefile and the CI scripts run every job. So do explicit
 workflow dispatch, the `full-ci` label on a pull request (it applies from the next push or
@@ -88,7 +90,7 @@ paths run all of them. The documentation check reads every module, in the worksp
   fails the change-scope job when one does not. The nightly run races every parse test.
 - Lint vets every reached package and test on Go 1.27.0, the declared floor, so it is also
   the floor's build check; the cookbook lints there whenever its check runs or lint covers
-  every package. Staticcheck runs on Go 1.27.4, the first 1.27 release whose export data
+  every package. Staticcheck and golangci-lint run on Go 1.27.4, the first 1.27 release whose export data
   keeps generic methods in declaration order; on earlier ones its facts about methods are
   misattributed (golang/go#82106). httpx and gitx run their tests on Go 1.26, their floor.
 - Parse's SQLite integration runs beside PostgreSQL 17 and 18.
@@ -142,6 +144,41 @@ Gowalker is its own module at
 `github.com/ashtonian/pkg/gowalker`, released with `gowalker/v…` tags. Public modules contain source, tests,
 licenses and user documentation; project plans, reviews and audits stay outside
 the public repository. Its archive check runs the README quick start and usage programs verbatim.
+
+### Lint baseline
+
+golangci-lint runs the lint baseline the owner's Go repositories share. Two files are
+copies from the owner's private lint-baseline repository at commit `45fcf98f43fb`:
+
+| Source | Copy here | Changed in the copy |
+|---|---|---|
+| `lint/golangci.yml` | `.golangci.yml` | The header comment, the ruleguard rules' path, and `issues.new-from-merge-base` |
+| `lint/rules.go` | `tools/gorules/rules.go` | The comment naming where it comes from |
+
+`tools/gorules` is a module of its own, outside `go.work`, whose `go.mod` requires
+`github.com/quasilyte/go-ruleguard/dsl` at the version the baseline's header names. gocritic
+type-checks the rules through `go/build`, which resolves that import only in a workspace
+holding a module that requires it, and `go.work` holds the published modules alone. So
+`make lint` writes `.lint.work` (ignored): `go.work` and `go.work.sum` copied, with
+`tools/gorules` added. golangci-lint runs under it on Go 1.27.4, over the same packages and
+tags as `go vet` and staticcheck; `GOLANGCI_LINT_VERSION` in the Makefile pins the release
+(v2.15.0).
+
+Only issues on lines changed since the merge base with `origin/main` fail
+(`issues.new-from-merge-base`), so the baseline's linters judge new code while the findings
+that predate it are fixed; `make lint LINT_ALL=1` lists them all, and once it reports none
+the setting goes. CI's lint job checks out main's history for the merge base.
+
+To take a newer baseline, copy both files again from that commit, keep the changes the table
+lists, raise the dsl requirement in `tools/gorules/go.mod` if the header names a newer
+version, update the commit here, and run `golangci-lint cache clean`: golangci-lint's cache
+does not track the rules file.
+
+| Failure | Cause | Fix |
+|---|---|---|
+| `ruleguard init error … could not import github.com/quasilyte/go-ruleguard/dsl` | golangci-lint ran outside `.lint.work`, or `tools/gorules/go.mod` lost the requirement | Run it through `make lint`; restore the `require` |
+| `… origin/main …: unknown revision` or a merge-base error | The checkout has no `origin/main` or a shallow history | `git fetch origin main`; in CI, the lint job's checkout keeps `fetch-depth: 0` |
+| ruleguard results don't change after the rules did | golangci-lint's cache | `golangci-lint cache clean` |
 
 ## Versioning
 

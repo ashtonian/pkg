@@ -48,6 +48,8 @@ NESTED = {
 # Prose outside every module, and the SDK's scripts, which its own job runs.
 UNCHECKED = {"CONTRIBUTING.md", "README.md"}
 SDK_TOOLING = "tools/check-parse-sdk-"
+# golangci-lint's configuration and ruleguard rules, which only the lint job reads.
+LINT_CONFIG = (".golangci.yml", "tools/gorules/")
 # Jobs that validate a change, as ci.yml names them. parse-benchmarks records
 # main's benchmarks and validates nothing, so acceptance does not require it.
 VALIDATION_JOBS = ("test", "test-darwin", "parse-postgres", "parse-sdk", "minimum-go", "modules", "lint")
@@ -66,7 +68,7 @@ def release_checks(paths):
         return list(CHECKS)
     selected = set()
     for path in paths:
-        if path in UNCHECKED or path.startswith(SDK_TOOLING):
+        if path in UNCHECKED or path.startswith(SDK_TOOLING) or path.startswith(LINT_CONFIG):
             continue
         owners = [check for check in CHECKS if reads(check, path)]
         if not owners or path.startswith(ARCHIVE_TOOLING):
