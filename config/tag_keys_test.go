@@ -151,8 +151,8 @@ func TestDeclarationChecks_VisitEachStructOnce(t *testing.T) {
 	root, err := metadataOf(reflect.TypeFor[sharedDeclarationsCfg]())
 	require.NoError(t, err)
 	var visited []string
-	root.eachDeclaring(func(view *gowalker.Schema) {
-		visited = append(visited, gowalker.TypeText(view.Root().Type()))
+	root.eachBranch(func(n *schemaNode) {
+		visited = append(visited, gowalker.TypeText(n.view.Root().Type()))
 	})
 	assert.Equal(t, []string{
 		"config.sharedDeclarationsCfg", "config.sharedDeclarations", "config.misspeltItem", "config.recursiveDeclarations",

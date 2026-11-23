@@ -523,3 +523,87 @@ func TestUnknownKeys_HandlerRunsOnReload(t *testing.T) {
 	assert.Equal(t, 2, r.Config().Port)
 	assert.Equal(t, [][]UnknownKey{{{Key: "prot", Suggestion: "port"}}}, reported)
 }
+
+type privateRemainCfg struct {
+	Name string `koanf:"name"`
+	//lint:ignore U1000 an unexported remain field is what a load refuses
+	extra map[string]any `koanf:",remain"`
+}
+
+type promotedRemain struct {
+	Extra map[string]string `koanf:",remain"`
+}
+
+type promotedRemainCfg struct {
+	promotedRemain `koanf:",squash"`
+	Name           string `koanf:"name"`
+}
+
+// A remain field decoding cannot fill is refused before any source is read,
+// by a load and by the JSON Schema alike, rather than advertised as taking
+// every key and then panicking when one arrives.
+func TestRemain_DestinationDecodingCannotFillIsRefused(t *testing.T) {
+	read := 0
+	src, err := NewMapProvider(func(context.Context) (map[string]any, error) {
+		read++
+		return map[string]any{"name": "x", "other": 1}, nil
+	}, "")
+	require.NoError(t, err)
+	_, err = Load[privateRemainCfg](t.Context(), WithBaseProvider(src, nil))
+	require.ErrorIs(t, err, ErrSchema)
+	assert.Contains(t, err.Error(), `field extra of config.privateRemainCfg is tagged koanf:",remain", but decoding cannot set an unexported field`)
+	assert.Zero(t, read)
+	_, err = Decode[privateRemainCfg](t.Context(), map[string]any{"name": "x", "other": 1})
+	require.ErrorIs(t, err, ErrSchema)
+	_, schemaErr := JSONSchema[privateRemainCfg]()
+	require.ErrorIs(t, schemaErr, ErrSchema)
+	assert.Equal(t, err.Error(), "loading config: "+schemaErr.Error())
+
+	type twice struct {
+		promotedRemain `koanf:",squash"`
+		More           map[string]any `koanf:",remain"`
+	}
+	type notMap struct {
+		Rest string `koanf:",remain"`
+	}
+	type intKeys struct {
+		Rest map[int]any `koanf:",remain"`
+	}
+	type pointer struct {
+		Rest *map[string]any `koanf:",remain"`
+	}
+	type squashed struct {
+		promotedRemain `koanf:",squash,remain"`
+	}
+	for name, load := range map[string]func() error{
+		"two remain fields": func() error { _, err := Decode[twice](t.Context(), nil); return err },
+		"not a map":         func() error { _, err := Decode[notMap](t.Context(), nil); return err },
+		"keyed by ints":     func() error { _, err := Decode[intKeys](t.Context(), nil); return err },
+		"map pointer":       func() error { _, err := Decode[pointer](t.Context(), nil); return err },
+		"squash and remain": func() error { _, err := Decode[squashed](t.Context(), nil); return err },
+	} {
+		t.Run(name, func(t *testing.T) {
+			require.ErrorIs(t, load(), ErrSchema)
+		})
+	}
+}
+
+// An exported remain field, promoted through an unexported embedded struct
+// or not, takes and keeps every key no other field reads; without one,
+// unknown keys still fail.
+func TestRemain_ExportedDestinationKeepsUnknownKeys(t *testing.T) {
+	got, err := Decode[promotedRemainCfg](t.Context(), map[string]any{"name": "x", "other": "1", "more": "2"})
+	require.NoError(t, err)
+	assert.Equal(t, map[string]string{"other": "1", "more": "2"}, got.Extra)
+	assert.Equal(t, "x", got.Name)
+	assert.Equal(t, true, jsonSchemaOf[promotedRemainCfg](t)["additionalProperties"])
+
+	type strict struct {
+		Name string `koanf:"name"`
+	}
+	_, err = Decode[strict](t.Context(), map[string]any{"name": "x", "other": 1})
+	var unknown *UnknownKeysError
+	require.ErrorAs(t, err, &unknown)
+	assert.Equal(t, []UnknownKey{{Key: "other"}}, unknown.Keys)
+	assert.Equal(t, false, jsonSchemaOf[strict](t)["additionalProperties"])
+}

@@ -35,7 +35,9 @@
 // Field.Path; ambiguous addresses return ErrKey.
 //
 // The koanf tag
-// names a segment (",squash" merges into the parent, "-" skips), pointers are
+// names a segment (",squash" merges into the parent, "-" skips, ",remain"
+// collects the keys no other field reads in an exported map keyed by
+// strings), pointers are
 // followed, and a struct that decodes itself is one key. Every output names a
 // value in one grammar — db.host, items[0].port, named["primary"].port, and
 // items[*].port for any element — and [FieldFor] maps a key back to its

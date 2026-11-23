@@ -534,8 +534,8 @@ func defaultRules(t reflect.Type) error {
 // graph: exported and embedded ones, the fields config skips included.
 func unreadableRules(root *schemaNode, v *validator.Validate) error {
 	var err error
-	root.eachDeclaring(func(view *gowalker.Schema) {
-		for _, d := range view.Root().Declarations() {
+	root.eachBranch(func(n *schemaNode) {
+		for _, d := range n.view.Root().Declarations() {
 			if err != nil {
 				return
 			}

@@ -31,10 +31,11 @@ type schemaNode struct {
 	byKey  map[string]*schemaField
 	view   *gowalker.Schema // nodeBranch: shared field identities and matching
 	elem   *schemaNode      // nodeMap, nodeList
-	// acceptsUnknown reports a nodeBranch with a koanf:",remain" field, which
-	// collects the keys no other field takes: its own, or one of a struct it
-	// squashes, as decoding finds it.
+	// acceptsUnknown reports a nodeBranch whose koanf:",remain" field — its
+	// own, or one of a struct it squashes — can collect the keys no other
+	// field takes; remainErr is why its remain declaration cannot.
 	acceptsUnknown bool
+	remainErr      error
 	// opaqueUnsafe reports a value decoded whole that could hold a func,
 	// channel or unsafe pointer: a comparison looks inside it.
 	opaqueUnsafe bool
@@ -95,18 +96,18 @@ func buildSchema(view *gowalker.Schema) (*schemaEntry, error) {
 		b.err = checkReloadTags(view)
 	}
 	e := &schemaEntry{node: n, err: b.err}
-	n.eachDeclaring(func(view *gowalker.Schema) {
-		e.misspelt = append(e.misspelt, misspeltTagKeys(view.Root())...)
+	n.eachBranch(func(n *schemaNode) {
+		e.misspelt = append(e.misspelt, misspeltTagKeys(n.view.Root())...)
 	})
 	return e, nil
 }
 
-// eachDeclaring calls visit with the view of every struct n's graph reaches,
-// once per node and in a fixed order: n, its fields' nodes in declaration
-// order, then its element's. A type reached by several paths, or from
-// within itself, is visited once: what a declaration says does not depend on
-// the path that reached it.
-func (n *schemaNode) eachDeclaring(visit func(*gowalker.Schema)) {
+// eachBranch calls visit with every struct node n's graph reaches, once
+// per node and in a fixed order: n, its fields' nodes in declaration order,
+// then its element's. A type reached by several paths, or from within
+// itself, is visited once: what a declaration says does not depend on the
+// path that reached it.
+func (n *schemaNode) eachBranch(visit func(*schemaNode)) {
 	seen := map[*schemaNode]bool{}
 	var walk func(*schemaNode)
 	walk = func(n *schemaNode) {
@@ -115,7 +116,7 @@ func (n *schemaNode) eachDeclaring(visit func(*gowalker.Schema)) {
 		}
 		seen[n] = true
 		if n.view != nil {
-			visit(n.view)
+			visit(n)
 		}
 		for _, f := range n.fields {
 			walk(f.node)
@@ -145,7 +146,7 @@ func schemaOf(t reflect.Type) (*schemaNode, error) {
 	}
 	e.check.Do(func() {
 		b := &schemaBuilder{}
-		e.node.eachDeclaring(func(view *gowalker.Schema) { b.validateTags(view.Root()) })
+		e.node.eachBranch(b.validateTags)
 		if b.err == nil && e.node.kind == nodeBranch {
 			b.err = checkEnvTags(e.node)
 		}
@@ -216,9 +217,8 @@ func (b *schemaBuilder) fields(n *schemaNode, shape *gowalker.Shape) {
 		return
 	}
 	n.view = view
-	n.acceptsUnknown = slices.ContainsFunc(view.Root().Declarations(), func(d gowalker.Declaration) bool {
-		return koanfTag(d.GoField).Has("remain")
-	})
+	remain, err := remainder(view.Root())
+	n.acceptsUnknown, n.remainErr = remain != nil, err
 	for _, field := range view.Root().Fields() {
 		sf := field.GoField()
 		access, err := view.AccessField(field)
@@ -232,10 +232,45 @@ func (b *schemaBuilder) fields(n *schemaNode, shape *gowalker.Shape) {
 	}
 }
 
-// validateTags checks every field the view selects, through the structs it
-// squashes, shadowed ones included.
-func (b *schemaBuilder) validateTags(shape *gowalker.Shape) {
+// remainder is the field of shape, or of a struct it squashes, that a
+// koanf:",remain" tag makes collect the keys no other field takes: nil when
+// none is tagged, an ErrSchema when the tags name one decoding cannot fill.
+// The decoder fills one map of strings to values it can set, so the field
+// must be exported — promoted through an unexported embedded struct is
+// fine — a map keyed by strings, the only one so tagged, and not squashed.
+func remainder(shape *gowalker.Shape) (*reflect.StructField, error) {
+	var found *gowalker.Declaration
 	for _, d := range shape.Declarations() {
+		tag := koanfTag(d.GoField)
+		if !tag.Has("remain") {
+			continue
+		}
+		f := d.GoField
+		switch t := f.Type; {
+		case found != nil:
+			return nil, fmt.Errorf("%w: fields %s of %s and %s of %s are both tagged koanf:\",remain\"; decoding fills only one", ErrSchema, found.GoField.Name, gowalker.TypeText(found.DeclaringType), f.Name, gowalker.TypeText(d.DeclaringType))
+		case tag.Has("squash"):
+			return nil, fmt.Errorf("%w: field %s of %s is tagged both squash and remain", ErrSchema, f.Name, gowalker.TypeText(d.DeclaringType))
+		case !f.IsExported():
+			return nil, fmt.Errorf("%w: field %s of %s is tagged koanf:\",remain\", but decoding cannot set an unexported field; export it", ErrSchema, f.Name, gowalker.TypeText(d.DeclaringType))
+		case t.Kind() != reflect.Map || t.Key().Kind() != reflect.String:
+			return nil, fmt.Errorf("%w: field %s of %s is tagged koanf:\",remain\", but it is a %s; the keys it collects need a map keyed by strings", ErrSchema, f.Name, gowalker.TypeText(d.DeclaringType), gowalker.TypeText(t))
+		}
+		found = &d
+	}
+	if found == nil {
+		return nil, nil
+	}
+	return &found.GoField, nil
+}
+
+// validateTags checks every field the view selects, through the structs it
+// squashes, shadowed ones included, and the remain field n's keys reach.
+func (b *schemaBuilder) validateTags(n *schemaNode) {
+	if n.remainErr != nil {
+		b.fail(n.remainErr)
+	}
+	for _, d := range n.view.Root().Declarations() {
 		if d.State == gowalker.Skipped {
 			continue
 		}
