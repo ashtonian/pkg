@@ -71,6 +71,11 @@ keeps, per canonical name, the field `encoding/json` would serialize, by depth
 and then by `FieldRule.Explicit`, so a shallower field can shadow one promoted
 from an embedded struct; only a tie fails, or with `DropTies` loses every claim
 as `encoding/json` drops it, and the kept fields' aliases must be unique.
+Once a struct's names settle, compilation indexes them by case fold for
+`Shape.Match`, each fold going to the field `encoding/json` prefers among those
+that share it (the shallowest, then the first in `Fields` order; never a
+`case:strict` field), and records the longest fold, past which a lookup stops
+folding. Under `WithCaseFoldNames` the name index is already keyed by fold.
 `WithJSONFields` is `WithTaggedFields` with `encoding/json`'s tag-name grammar
 and conventions fixed, and implies `ResolveByDepth`. Ordinary recursive fields
 are valid. Recursive inline expansion has no finite flattened field list, so

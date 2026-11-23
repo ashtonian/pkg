@@ -30,12 +30,29 @@ type StructFields struct {
 	// misspelt are the walked fields' misspelt tag keys, which each
 	// generator refuses but for the ones it names as another library's.
 	misspelt []misspeltTagKey
+	// view is the walked struct's compiled view, which matches a name the
+	// way encoding/json decodes it.
+	view *gowalker.Shape
 }
 
 // External returns the field named name under the field-name tag.
 func (s *StructFields) External(name string) (*Field, bool) {
 	f, ok := s.external[name]
 	return f, ok
+}
+
+// FoldedMatch returns the field encoding/json decodes a member named name
+// into when no field has that exact name but one matches it under Unicode
+// simple case folding: the shallowest, then the first in declaration order
+// (gowalker's Shape.Match). A field whose tag sets case:strict never matches
+// this way. It allocates nothing and keeps no reference to name.
+func (s *StructFields) FoldedMatch(name []byte) (*Field, bool) {
+	f, match := s.view.MatchBytes(name)
+	if match != gowalker.FoldedMatch {
+		return nil, false
+	}
+	field, ok := s.external[f.Name()]
+	return field, ok
 }
 
 // ColumnTagged returns the field whose column tag names column exactly.
@@ -327,7 +344,7 @@ func isStructType(t reflect.Type) bool {
 // buildStructFields lists the named fields and the ones the field-name tag
 // hides, in declaration order, an embedded struct's in place of it.
 func buildStructFields(s *gowalker.Schema, k fieldsKey) (*StructFields, error) {
-	out := &StructFields{Type: s.Type(), external: map[string]*Field{}, columnTagged: map[string]*Field{}}
+	out := &StructFields{Type: s.Type(), external: map[string]*Field{}, columnTagged: map[string]*Field{}, view: s.Root()}
 	for _, d := range s.Root().Declarations() {
 		sf := d.GoField
 		if sf.Anonymous && isStructType(sf.Type) && sf.Tag.Get(k.name) == "-" {

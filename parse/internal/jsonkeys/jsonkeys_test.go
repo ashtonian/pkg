@@ -45,6 +45,33 @@ type keyDoc struct {
 	*KeyEmbedded
 }
 
+// keyCasesUpper and keyCasesLower name two fields by one name in two cases,
+// which encoding/json writes and reads as two members.
+type keyCasesUpper struct {
+	Upper int `json:"K"`
+	Lower int `json:"k"`
+}
+
+type keyCasesLower struct {
+	Lower int `json:"k"`
+	Upper int `json:"K"`
+}
+
+type keyPromotedInner struct {
+	Alpha int `json:"alpha"`
+}
+
+// keyPromoted promotes alpha, which folds like its own ALPHA declared after
+// it: decoding matches by case breadth first, so ALPHA takes the fold.
+type keyPromoted struct {
+	keyPromotedInner
+	Upper int `json:"ALPHA"`
+}
+
+type keyStrict struct {
+	Name int `json:"name,case:strict"`
+}
+
 // decodeAndValidate decodes doc as a stored document is read, then
 // validates its member names against the decoded value.
 func decodeAndValidate(t *testing.T, doc string, target reflect.Type) error {
@@ -92,6 +119,15 @@ func TestValidate(t *testing.T) {
 		{name: "interface is opaque", doc: `{"any":{"X":1,"X":2}}`},
 		{name: "top-level map", doc: `{"1":{"Y":1}}`, typ: reflect.TypeFor[map[int]keyInner](), err: `JSON member "/1/Y" is noncanonical for jsonkeys.keyInner; use "y"`},
 		{name: "top-level slice", doc: `[{"y":1},null,{"y":2}]`, typ: reflect.TypeFor[[]*keyInner]()},
+		{name: "one name in two cases", doc: `{"K":1,"k":2}`, typ: reflect.TypeFor[keyCasesUpper]()},
+		{name: "a fold two cases share, upper first", doc: "{\"\u212a\":1}", typ: reflect.TypeFor[keyCasesUpper](), err: "JSON member \"/\u212a\" is noncanonical for jsonkeys.keyCasesUpper; use \"K\""},
+		{name: "a fold two cases share, lower first", doc: "{\"\u212a\":1}", typ: reflect.TypeFor[keyCasesLower](), err: "JSON member \"/\u212a\" is noncanonical for jsonkeys.keyCasesLower; use \"k\""},
+		{name: "unknown beside two cases", doc: `{"K":1,"kk":2}`, typ: reflect.TypeFor[keyCasesUpper]()},
+		{name: "a promoted fold below a shallower one", doc: `{"Alpha":1}`, typ: reflect.TypeFor[keyPromoted](), err: `JSON member "/Alpha" is noncanonical for jsonkeys.keyPromoted; use "ALPHA"`},
+		{name: "promoted member", doc: `{"alpha":1,"ALPHA":2}`, typ: reflect.TypeFor[keyPromoted]()},
+		// Decoding matches a case:strict field only by its exact name, so
+		// another spelling is unknown and dropped.
+		{name: "case:strict field in another case", doc: `{"NAME":1}`, typ: reflect.TypeFor[keyStrict]()},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -224,6 +260,30 @@ func TestValidate_AllocatesNothingPerKey(t *testing.T) {
 	}
 	small, large := allocs(10), allocs(100)
 	assert.Equal(t, small, large, "allocations grow with the document")
+	assert.LessOrEqual(t, small, 1.0)
+}
+
+// Members no field names cost no allocation either, whether their names are
+// short enough to fold or longer than every field's.
+func TestValidate_UnknownMembersAllocateNothing(t *testing.T) {
+	if raceEnabled {
+		t.Skip("the race detector's instrumentation allocates")
+	}
+	allocs := func(members int) float64 {
+		doc := map[string]int{"x": 1}
+		for i := range members {
+			doc[fmt.Sprintf("u%d", i)] = i
+			doc[fmt.Sprintf("unknown-%0200d", i)] = i
+		}
+		raw, err := json.Marshal(doc)
+		require.NoError(t, err)
+		var decoded keyDoc
+		require.NoError(t, json.Unmarshal(raw, &decoded))
+		require.NoError(t, Validate(raw, &decoded))
+		return testing.AllocsPerRun(50, func() { _ = Validate(raw, &decoded) })
+	}
+	small, large := allocs(10), allocs(100)
+	assert.Equal(t, small, large, "allocations grow with the unknown members")
 	assert.LessOrEqual(t, small, 1.0)
 }
 

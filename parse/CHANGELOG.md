@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.17.1](https://github.com/ashtonian/pkg/compare/parse/v0.17.0...parse/v0.17.1) (2026-11-22)
+
+
+### Bug Fixes
+
+* **config, parse:** error text leaves tag values out; config compiles a type once and checks reload tags on gowalker's declared-view walk; on gowalker v0.8.0 ([#349](https://github.com/ashtonian/pkg/issues/349)) ([f6a39ca](https://github.com/ashtonian/pkg/commit/f6a39ca1c551cfeeeeb625851c58161e700fd48d)), refs [#302](https://github.com/ashtonian/pkg/issues/302) [#303](https://github.com/ashtonian/pkg/issues/303) [#304](https://github.com/ashtonian/pkg/issues/304) [#305](https://github.com/ashtonian/pkg/issues/305) [#315](https://github.com/ashtonian/pkg/issues/315)
+
 ## [0.17.0](https://github.com/ashtonian/pkg/compare/parse/v0.16.0...parse/v0.17.0) (2026-11-22)
 
 

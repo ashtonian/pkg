@@ -158,6 +158,7 @@ Options relax those defaults:
 | `json:"a\"b"`, `json:"a\\b"`, `json:"a'b"` | `a`: a backslash, quote or backtick ends the name at its leading identifier |
 | `json:"'a b'"`, `json:"\"x\""` | The Go name: no leading identifier, so the tag names nothing |
 | Untagged exported field, or `json:",omitempty"` | The Go name |
+| `json:"id,case:strict"` | `id`, which `Shape.Match` matches only exactly, as `encoding/json` does |
 | `json:"-"` | Excluded |
 | `json:"-,"` | `-` |
 | Embedded struct or pointer to one without a tag name, exported or not | Its fields, promoted |
@@ -208,6 +209,23 @@ its exported descendants when safe reflection permits access, and
 `WithJSONFields` names an unexported embedded struct a tag names. Inline pointers
 are followed for reads. Writes can allocate exported inline pointers when
 requested; safe reflection cannot allocate an unexported embedded pointer.
+
+`Shape.Match(name)` returns the field `encoding/json` decodes a member named
+`name` into, and how the name matched it. A field with that exact name or alias
+is an `ExactMatch`. Otherwise, of the fields with a name or alias equal to it
+under Unicode simple case folding, as `strings.EqualFold` compares, the
+shallowest, then the first in `Fields` order, is a `FoldedMatch`, as
+`encoding/json` matches breadth first; a field whose json tag sets
+`case:strict` takes none. Otherwise it is `NoMatch`. A decoder uses it to tell
+a member spelled in another case from an unknown one without folding names
+itself: `json:"K"` and `json:"k"` compile, each exact name matches its own
+field, and the Kelvin sign `K` folds to the first declared. Under
+`WithCaseFoldNames` the field is `Lookup`'s, exact when the name spells it.
+`MatchBytes` takes a name held as bytes, such as the member name a JSON decoder
+has just read, without copying it. Neither allocates unless one of the struct's
+names or aliases folds to more than 128 bytes, and folding stops once a name's
+fold is longer than every one of the struct's, so a long member name costs no
+more than the struct's longest.
 
 Canonical names and aliases share one collision domain. `WithCaseFoldNames`
 uses Unicode simple folding, including equivalences such as S and long s.
