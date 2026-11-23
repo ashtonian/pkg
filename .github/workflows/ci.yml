@@ -10,13 +10,14 @@ on:
   # `gh workflow run ci.yml --ref <branch>`; they report on the head
   # commit, so the pull request shows them.
   workflow_dispatch:
-  # nightly.yml: every suite at full scope, every parse unit test under the
-  # race detector, and the benchmarks; nothing when main has not moved since
-  # the last green nightly (scope decides).
+  # nightly.yml: every suite at full scope, every unit test rerun rather than
+  # replayed from the test cache, every parse unit test under the race
+  # detector, and the benchmarks; nothing when main has not moved since the
+  # last green nightly (scope decides).
   workflow_call:
     inputs:
       nightly:
-        description: Run every parse unit test under the race detector.
+        description: Rerun every unit test, every parse unit test under the race detector.
         type: boolean
         default: false
     secrets:
@@ -41,6 +42,13 @@ concurrency:
 
 env:
   CI_ARTIFACT_ENDPOINT: ${{ secrets.CI_ARTIFACT_ENDPOINT }}
+  # The Makefile's unit targets replay a passing result from the build cache
+  # while the test binary and what its tests read are unchanged; setup stamps
+  # tracked files with content-derived mtimes so checkouts share results. The
+  # nightly reruns every one. go clean -testcache would not: it expires results
+  # by the time the cache reports for each, and the runners' remote cache
+  # reports when it copied the result into the job.
+  UNIT_TEST_COUNT: ${{ inputs.nightly && '-count=1' || '' }}
 
 jobs:
   scope:
@@ -195,11 +203,6 @@ jobs:
         with:
           go-version: '1.27.x'
           cache-dependency-path: "**/go.sum"
-      # The nightly reruns every test and records the results pull requests
-      # replay: a pull request's own results stay in its namespace.
-      - name: Expire cached test results
-        if: ${{ inputs.nightly }}
-        run: go clean -testcache
       - name: Native process and document unit tests
         run: make test-native-unit
       - name: Native process and document integration tests
@@ -253,9 +256,6 @@ jobs:
         with:
           go-version: '1.27.x'
           cache-dependency-path: "**/go.sum"
-      - name: Expire cached test results
-        if: ${{ inputs.nightly }}
-        run: go clean -testcache
       - name: Native process and document unit tests
         run: make test-native-unit
       - name: Native process and document integration tests
@@ -434,9 +434,6 @@ jobs:
         with:
           go-version: '1.26.x'
           cache-dependency-path: "**/go.sum"
-      - name: Expire cached test results
-        if: ${{ inputs.nightly }}
-        run: go clean -testcache
       - name: Test HTTPx at its minimum Go version
         env:
           GOTOOLCHAIN: local

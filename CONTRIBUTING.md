@@ -11,7 +11,7 @@ The repository's `go.work` ties the published modules together, so a change to o
 | `make test-native-unit` / `make test-native-integration` / `make native-release-check` | Process/state/1Password tagged race tests and fresh candidate-archive consumers |
 | `make test-gitx` | gitx race tests: real scratch repositories, in-memory trees and a rebase through the installed driver |
 | `make test-jsonvalue` / `make jsonvalue-release-check` | JSON replacement race tests / fresh module-archive consumer and README example |
-| `make test` | Every published module's tests, race detector on (modernc's SQLite builds uninstrumented); both httpx build tags. `-count=1` only where tests start processes, run the installed git or reach servers |
+| `make test` | Every published module's tests, race detector on (modernc's SQLite builds uninstrumented); both httpx build tags. The unit targets replay unchanged packages' passing results ([test cache](#test-cache)); the rest pass `-count=1` |
 | `make test-httpx-unit` / `make test-httpx-integration` | httpx unit or real HTTP integration lane |
 | `make test-parse-unit` / `make test-parse-race` / `make test-parse-race-all` | Parse unit tests and existing fuzz seeds without the race detector / under it, only the tests that run parse code on several goroutines (files tagged `concurrency`) / every unit test under it |
 | `make test-parse-integration` | Parse integration race tests; SQLite always runs, PostgreSQL/PostGIS through explicit DSNs |
@@ -37,6 +37,7 @@ The repository's `go.work` ties the published modules together, so a change to o
 | `PACKAGES` | `all` | The packages the `test-*` and `lint` targets cover: `all`, or space-separated import paths, as CI passes the packages a change reaches. `make test-parse-unit PACKAGES='github.com/ashtonian/pkg/parse github.com/ashtonian/pkg/parse/filter'` tests those two packages; each target takes its own modules' paths, and one with none runs nothing |
 | `RELEASE_CHECKS` | every module's release check | The checks `make release-check` runs |
 | `LINT_ALL` | empty | Empty: golangci-lint in `make lint` reports only the issues on lines changed since the merge base with `origin/main`. `1`: every issue |
+| `UNIT_TEST_COUNT` | empty | `go test`'s count flag for the unit targets: `test-native-unit`, `test-jsonvalue`, `test-gowalker`, `test-config`, `test-httpx-unit`, `test-parse-unit`, `test-parse-race` and `test-parse-race-all`. Empty: a package replays its last passing result, shown `(cached)`, while its test binary and what its tests read are unchanged ([test cache](#test-cache)). `-count=1` reruns every test, as the nightly run does. Every other target passes `-count=1` itself |
 
 GitHub Actions runs workflows here only for the repository owner. Pull requests opened by a bot, such as Dependabot updates or a release PR opened without the `RELEASE_PLEASE_TOKEN` secret, therefore get no checks: run CI on the branch with `gh workflow run ci.yml -R ashtonian/pkg --ref <branch>`, and the pull request shows the results. [Dependency updates](#dependency-updates) gives the procedure for Dependabot's.
 
@@ -104,10 +105,11 @@ paths run all of them. The documentation check reads every module, in the worksp
   without a service container in the modules job, which runs on every change.
 - The SDK runs every check on its Node.js floor, then only its runtime tests and packed
   consumer on the newest LTS.
-- Tests that depend only on their inputs replay passing results across runs and runners:
-  setup gives every tracked file an mtime derived from its content, so `go test`'s cache key
-  matches between checkouts and the shared build cache answers. Tests that start processes,
-  run the installed git or reach servers keep `-count=1`.
+- Unit tests replay passing results across runs and runners: setup gives every tracked file
+  an mtime derived from its content, so `go test`'s cache key matches between checkouts and
+  the shared build cache answers. A change reruns the packages it reaches and their importers;
+  the rest report `(cached)`. Tests that start processes, run the installed git or reach
+  servers or databases pass `-count=1` ([test cache](#test-cache)).
 - Release checks repeat the tests once, without the race detector, against each archive and
   the dependency versions its go.mod requires. Their fresh consumers build with `-trimpath`,
   which keeps the scratch module cache's random path out of build-cache keys, so the
@@ -148,9 +150,10 @@ it, so `ci.yml`'s scope never selects it and acceptance neither records nor requ
 
 The `nightly` workflow runs `ci.yml` on main's current commit once a day, and on
 `gh workflow run nightly.yml -R ashtonian/pkg`: every suite and release check at full scope,
-every parse unit test under the race detector, every test rerun after `go clean -testcache`
-(recording the results pull requests replay; a pull request's results stay in its own
-namespace), and the benchmarks. A scheduled run selects nothing when the last
+every parse unit test under the race detector, every unit test rerun (`UNIT_TEST_COUNT=-count=1`)
+rather than replayed from the [test cache](#test-cache), and the benchmarks. It is the test
+cache's backstop: a result a replay hid fails there, and it records no results of its own for
+pull requests to replay. A scheduled run selects nothing when the last
 green scheduled run was on the same commit; a dispatched one always runs everything. Its failure is a regression that scoping or the targeted race run let through, or a
 new toolchain release breaking a floating Go or Node.js version: reproduce it with the failing
 step's make target (`make test-parse-race-all` for a parse race report) and fix it on a branch.
@@ -168,6 +171,47 @@ Gowalker is its own module at
 `github.com/ashtonian/pkg/gowalker`, released with `gowalker/v…` tags. Public modules contain source, tests,
 licenses and user documentation; project plans, reviews and audits stay outside
 the public repository. Its archive check runs the README quick start and usage programs verbatim.
+
+### Test cache
+
+`go test` replays a package's last passing result, shown `(cached)`, when its test binary
+and its tests' inputs are unchanged. The binary's key covers the package, every package it
+links across the workspace, the build flags and tags (`-race` included) and the toolchain.
+The inputs are what the test process itself read: the environment variables it looked up,
+and the files and directories it opened or stat'ed inside its module, keyed by path, size and
+modification time (a directory by every entry's name and stat). Nothing else is seen: not
+files outside the module, not what a subprocess such as `go list` or `git` reads, not the
+network, a database or the clock.
+
+The unit targets take `UNIT_TEST_COUNT` and replay; every other `go test` passes `-count=1`:
+the integration targets (processes, servers, PostgreSQL), `test-gitx` (the installed git),
+the release checks and module ZIP consumers (archives and the dependency versions their
+go.mod requires), and the cookbook, example and tooling checks. `tools/test_ci_test_cache.py`
+fails the change-scope job when a `go test` in the Makefile passes neither, when a release
+check or a workflow step's `go test` omits `-count=1`, and when the nightly run would not
+rerun the unit targets.
+
+A unit test therefore depends only on what it reads itself, inside its module. A test that
+needs more reads those inputs in-process or moves to an integration target. Parse's type-text
+check is the example: it type-checks every package `go list ./...` finds, so it walks the
+module's directories itself (`readModuleTree`), and a package added where no test imports it
+reruns the check instead of replaying its last pass. `TestTransportFreePackages_ImportNoNetHTTP`
+links every package it lists for `go list -deps`, so a change to what they import changes the
+test binary.
+
+Across checkouts the key matches because setup (go-ci-actions `test-input-mtimes: content`)
+gives every tracked file an mtime derived from its bytes and every directory holding one a
+fixed mtime. Without it, each checkout stamps files with the checkout time, and a test that
+reads a file misses; it never replays a stale result. The self-hosted runners keep results in
+the shared remote build cache, where a pull request reads `main`'s results and writes its own;
+the macOS job keeps them in the GitHub cache. A local working tree replays from the local
+`GOCACHE`.
+
+| Symptom | Cause | Fix |
+|---|---|---|
+| A `(cached)` pass you suspect is stale | The test reads something the key does not cover | Rerun: `make <target> UNIT_TEST_COUNT=-count=1`. If it now fails, move what the test reads inside its module and the test process, or the test to an integration target |
+| A package reruns on every run | Its tests read a file written during the job, or one newer than two seconds (untracked files keep their times), or an environment variable that differs per run. `t.TempDir` reads `GOTMPDIR`, so a wrapper that sets a fresh `GOTMPDIR` per run defeats replay for every test that uses it | Read the fixture from the tracked tree; leave `GOTMPDIR` unset or fixed; `GODEBUG=gocachetest=1 go test …` prints why each result missed |
+| `go clean -testcache` in a job did not rerun a package | `go clean -testcache` expires results older than its stamp by the time the cache reports for each; the remote cache reports when it copied the result into the job | Pass `UNIT_TEST_COUNT=-count=1` |
 
 ### Dependency updates
 

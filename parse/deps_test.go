@@ -9,6 +9,13 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/require"
+
+	// Linked so that a change to what any of them imports changes the test
+	// binary: go test's cache does not see what the go list subprocess reads.
+	_ "github.com/ashtonian/pkg/parse"
+	_ "github.com/ashtonian/pkg/parse/core"
+	_ "github.com/ashtonian/pkg/parse/filter"
+	_ "github.com/ashtonian/pkg/parse/patch"
 )
 
 // The packages a server compiles whatever its transport link no HTTP stack:
