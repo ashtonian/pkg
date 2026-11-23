@@ -83,7 +83,12 @@ func WriteError(w http.ResponseWriter, r *http.Request, err error, opts ...Optio
 	if !ok {
 		return false
 	}
-	o := newOptions(opts)
+	newOptions(opts).writeError(w, r, pe)
+	return true
+}
+
+// writeError answers pe with the status its code declares and Body.
+func (o options) writeError(w http.ResponseWriter, r *http.Request, pe *core.ParseError) {
 	answer := Body{Code: pe.Code, Message: pe.Message, Path: pe.Path, Index: pe.Index, Details: pe.Details}
 	body, encErr := httpjson.Encode(answer)
 	if encErr != nil {
@@ -106,7 +111,6 @@ func WriteError(w http.ResponseWriter, r *http.Request, err error, opts ...Optio
 		o.report(r, fmt.Errorf("parsehttp: answering %s: %w: %w", pe.Code, ErrUnencodableDetails, dropped))
 	}
 	o.send(w, r, pe.ErrorHTTPStatus(), body)
-	return true
 }
 
 // WriteJSON answers v as an application/json response with status: encoded

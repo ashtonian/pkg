@@ -17,6 +17,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/ashtonian/pkg/parse"
 	"github.com/ashtonian/pkg/parse/filter"
 	"github.com/ashtonian/pkg/parse/parsehttp"
 )
@@ -295,7 +296,7 @@ func TestServer_ErrorsCarryECodes(t *testing.T) {
 
 	status = call(t, srv, http.MethodGet, "/api/unknown/schema", "", &body)
 	assert.Equal(t, http.StatusNotFound, status)
-	assert.Equal(t, filter.ECodeSchemaNotFound.String(), body.Code)
+	assert.Equal(t, parse.ECodeSchemaNotFound.String(), body.Code)
 }
 
 func TestServer_CombinedFiltersShareOneCostBudget(t *testing.T) {

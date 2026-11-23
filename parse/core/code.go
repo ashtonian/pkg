@@ -1,5 +1,10 @@
 package core
 
+import (
+	"maps"
+	"slices"
+)
+
 // Code identifies a parse error independently of an application error catalog.
 // A Code is also an errors.Is target for ParseError.
 type Code string
@@ -24,7 +29,6 @@ const (
 	CodeTooManyOps             Code = "E2066"
 	CodeInvalidListParam       Code = "E2067"
 	CodeTestOpSQL              Code = "E2068"
-	CodeSQLColumnMissing       Code = "E2069"
 	CodeOpNotSQLCompilable     Code = "E2070"
 	CodeUnknownField           Code = "E2071"
 	CodeInvalidOperator        Code = "E2072"
@@ -69,7 +73,6 @@ var codeInfo = map[Code]struct {
 	CodeTooManyOps:             {422, "too many operations"},
 	CodeInvalidListParam:       {422, "invalid list parameter"},
 	CodeTestOpSQL:              {422, "test op cannot compile to SQL"},
-	CodeSQLColumnMissing:       {500, "patch path has no SQL column mapping"},
 	CodeOpNotSQLCompilable:     {422, "patch operation cannot compile to SQL"},
 	CodeUnknownField:           {422, "unknown field"},
 	CodeInvalidOperator:        {422, "invalid operator"},
@@ -78,7 +81,7 @@ var codeInfo = map[Code]struct {
 	CodeInvalidPatchOp:         {422, "invalid patch operation"},
 	CodePatchFieldNotFound:     {422, "patch field not found"},
 	CodePatchValueInvalid:      {422, "patch value invalid"},
-	CodeSchemaNotFound:         {422, "schema not found"},
+	CodeSchemaNotFound:         {404, "schema not found"},
 	CodeSortFieldNotAllowed:    {422, "sort field not allowed"},
 	CodeSortFieldLimit:         {422, "sort field limit exceeded"},
 	CodeInvalidCursor:          {422, "invalid cursor"},
@@ -99,6 +102,10 @@ var codeInfo = map[Code]struct {
 	CodeRelationPatchTooLarge:  {422, "relation patch values exceed maximum"},
 	CodeSchemaEncodingFailed:   {500, "schema encoding failed"},
 }
+
+// Codes returns every code in order. The table is the catalog: a code
+// exists when it has a status and a message.
+func Codes() []Code { return slices.Sorted(maps.Keys(codeInfo)) }
 
 // ErrorHTTPStatus returns the code's HTTP status; unknown codes are invalid input.
 func (c Code) ErrorHTTPStatus() int {

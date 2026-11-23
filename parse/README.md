@@ -182,7 +182,7 @@ Tags expose capabilities explicitly: `parse:"filter,sort,patch,facet,search,incl
 
 Patch parsers collect independent invalid values in order. Each declared enum/bounds failure carries `*patch.ConstraintError` with `Constraint` and `Limit`; `errors.As` still finds the first `*core.ParseError`. See [the complete patch error contract](docs/patches.md#validation).
 
-`parse.Codes() []parse.Code` exposes the application-independent error catalog (E2061–E2089 and E2112–E2120, with gaps; E2067 is a malformed list parameter, E2120 a schema document that could not be encoded). `*parse.ParseError` carries the string code, path/index context, cause and HTTP status. A `Code` is an `errors.Is` target; Consumers map catalog metadata into their own error conventions. [Error handling and complete catalog](docs/http-errors.md#error-codes)
+`parse.Codes() []parse.Code` exposes the application-independent error catalog, sorted (E2061–E2089 and E2112–E2120, with gaps; E2067 is a malformed list parameter, E2078 an unregistered resource answered 404, E2120 a schema document that could not be encoded). `*parse.ParseError` carries the string code, path/index context, cause and HTTP status. A `Code` is an `errors.Is` target; Consumers map catalog metadata into their own error conventions. [Error handling and complete catalog](docs/http-errors.md#error-codes)
 
 ## Verification
 

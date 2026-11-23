@@ -40,11 +40,6 @@
     "message": "test op cannot compile to SQL"
   },
   {
-    "code": "E2069",
-    "status": 500,
-    "message": "patch path has no SQL column mapping"
-  },
-  {
     "code": "E2070",
     "status": 422,
     "message": "patch operation cannot compile to SQL"
@@ -86,7 +81,7 @@
   },
   {
     "code": "E2078",
-    "status": 422,
+    "status": 404,
     "message": "schema not found"
   },
   {

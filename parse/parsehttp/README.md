@@ -88,6 +88,7 @@ A `*core.ParseError` describes the request, never the database, so `WriteError` 
 | `list.go` | `ParseList`: GET query strings and POST bodies |
 | `parsehttp_test.go` | `WriteError` (unit): a wrapped parse error answered with its code's status, `Body` and `Content-Length`; a patch error's `path` and `index`; a marshalled `ParseError` writing the same members; unencodable `Details` entries left out, the rest kept, and reported; a failed `Write` reported with its request; any other error, or nil, left to the caller with nothing written. `WriteJSON`: the body and its length, a value that cannot be encoded returned with nothing written, a failed `Write` reported |
 | `schema_test.go` | The schema routes (unit): a document, 404/E2078, the names list, every document; a failed `Write` reported as itself and not as E2120; no hook; a document that cannot be encoded answered 500/E2120 with its cause reported |
+| `codes_test.go` | The catalog (unit): every code in `parse.Codes()` raised by a request and answered with its code and the table's status; `filter.Codes()`, `patch.Codes()` and the discovery codes are the table |
 | `list_test.go` | `ParseList` (unit): GET, HEAD and POST read the same request, with `AcceptParams` names left in a POST's query and `application/json` media type parameters accepted; a POST's list parameters or field filters in the query, another or a missing content type, and another method refused as E2067 |
 
 ## Dependencies

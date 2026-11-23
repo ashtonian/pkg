@@ -18,7 +18,6 @@ const (
 	ECodeInvalidOperator     = core.CodeInvalidOperator
 	ECodeValueTypeMismatch   = core.CodeValueTypeMismatch
 	ECodeDepthExceeded       = core.CodeDepthExceeded
-	ECodeSchemaNotFound      = core.CodeSchemaNotFound
 	ECodeSortFieldNotAllowed = core.CodeSortFieldNotAllowed
 	ECodeSortFieldLimit      = core.CodeSortFieldLimit
 	ECodeInvalidCursor       = core.CodeInvalidCursor
@@ -50,7 +49,7 @@ func Codes() []core.Code {
 	return []core.Code{
 		ECodeQueryTooExpensive, ECodeInvalidArray, ECodeInputTooLarge, ECodeCursorTooLarge,
 		ECodeUnknownField, ECodeInvalidOperator, ECodeValueTypeMismatch,
-		ECodeDepthExceeded, ECodeSchemaNotFound, ECodeSortFieldNotAllowed,
+		ECodeDepthExceeded, ECodeSortFieldNotAllowed,
 		ECodeSortFieldLimit, ECodeInvalidCursor,
 		ECodeInvalidRelation, ECodeInvalidJSON, ECodeInvalidEnumValue,
 		ECodeArrayTooLarge, ECodeMaxConditions,

@@ -15,7 +15,6 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/ashtonian/pkg/parse"
-	"github.com/ashtonian/pkg/parse/filter"
 )
 
 type widget struct {
@@ -66,7 +65,7 @@ func TestSchemaHandler(t *testing.T) {
 	assert.Equal(t, http.StatusNotFound, rec.Code)
 	var body Body
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &body))
-	assert.Equal(t, filter.ECodeSchemaNotFound.String(), body.Code)
+	assert.Equal(t, parse.ECodeSchemaNotFound.String(), body.Code)
 	assert.Equal(t, "nope", body.Details["resource"])
 
 	rec = httptest.NewRecorder()

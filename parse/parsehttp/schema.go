@@ -5,7 +5,6 @@ import (
 	"net/http"
 
 	"github.com/ashtonian/pkg/parse"
-	"github.com/ashtonian/pkg/parse/filter"
 	"github.com/ashtonian/pkg/parse/internal/httpjson"
 )
 
@@ -31,8 +30,8 @@ func SchemaHandler(reg *parse.SchemaRegistry, opts ...Option) http.HandlerFunc {
 		}
 		doc := reg.SchemaFor(resource)
 		if doc == nil {
-			o.serveSchema(w, r, http.StatusNotFound, Body{
-				Code:    filter.ECodeSchemaNotFound.String(),
+			o.writeError(w, r, &parse.ParseError{
+				Code:    parse.ECodeSchemaNotFound.String(),
 				Message: "no schema registered for resource " + resource,
 				Details: map[string]any{"resource": resource},
 			})

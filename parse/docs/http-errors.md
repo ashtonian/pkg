@@ -72,13 +72,13 @@ A `*core.ParseError` marshalled by a server itself writes the same members. It e
 
 `parsehttp.WriteJSON(w, r, status, v, report)` answers a handler's own value the same way: encoded whole before anything is written, then sent with its `Content-Length`, a failed `Write` going to the hook. A value that cannot be encoded is returned with nothing written, for the handler to answer as its own failure; streaming a `json.Encoder` into the `ResponseWriter` instead sends the status before the encoder can fail, so the client receives a 200 with a truncated body.
 
-A `*core.ParseError` means the request is at fault, and nothing else is one. What the server supplied and cannot build is a plain error wrapping a sentinel, which `WriteError` declines so the handler logs it and answers its own 500: a policy that does not compile (`filter.ErrPolicyInvalid`: a field the resource lacks, an operator or value the field's type does not take, a negated empty group, a membership lookup that does not apply), a policy-scoped relation built without the target's policy (`filter.ErrRelatedPolicyRequired`), a tenant-scoped pair table joined without a tenant (`filter.ErrRelationTenantRequired`), a missing tenant (`parse.ErrTenantRequired`), an update scope (`parse.ErrUpdateScope`), a computed column's expression refusing the dialect, a raw SQL fragment or a hand-built AST that does not build. A request value the dialect cannot hold is the request's: an unsigned integer above SQLite's 64-bit integers, or a set no PostgreSQL integer array holds, is E2073, as a typed field whose Go kind cannot hold it is.
+A `*core.ParseError` means the request is at fault, and nothing else is one. What the server supplied and cannot build is a plain error wrapping a sentinel, which `WriteError` declines so the handler logs it and answers its own 500: a policy that does not compile (`filter.ErrPolicyInvalid`: a field the resource lacks, an operator or value the field's type does not take, a negated empty group, a membership lookup that does not apply), a policy-scoped relation built without the target's policy (`filter.ErrRelatedPolicyRequired`), a tenant-scoped pair table joined without a tenant (`filter.ErrRelationTenantRequired`), a missing tenant (`parse.ErrTenantRequired`), an update scope (`parse.ErrUpdateScope`), a patch schema path with no column (`patch.ErrSQLColumnMissing`), a computed column's expression refusing the dialect, a raw SQL fragment or a hand-built AST that does not build. A request value the dialect cannot hold is the request's: an unsigned integer above SQLite's 64-bit integers, or a set no PostgreSQL integer array holds, is E2073, as a typed field whose Go kind cannot hold it is.
 
 Use `errors.As` to extract `*core.ParseError` through wrapping. Its `ErrorHTTPStatus()` provides the status; expose `Code`, `Message`, and appropriate `Details` in the error envelope. `Details` is keyed by `core.DetailField` (`"field"`, the request field a refusal is about) and `core.DetailParameter` (`"parameter"`, the list parameter). Treat unrelated database/internal errors through your normal server error handling rather than labeling every failure a bad request. Do not leak underlying SQL or credentials through error details.
 
 Patch validation can return joined parse errors. `errors.As` returns the first; applications needing all failures traverse the joined errors. Declared enum/bounds failures expose `patch.ConstraintError{Constraint, Limit}` through each E2077's cause; [patch validation](patches.md#validation) defines the vocabulary and ordering. The application still owns its HTTP envelope and any translation of these typed causes into client details.
 
-`errors.Is(err, filter.ECodeUnknownField)` matches a specific code through wrapping. `parse.Codes()` returns the distinct `parse.Code` values; each provides its wire string, default message and HTTP status. Each code is defined once, as a `core.Code` constant (`core.CodeUnknownField`) holding its status and message; `filter`, `patch` and `parse` name the codes they raise as aliases of those constants, so a limit both grammars enforce, such as E2063, is one value. The package imports no application error catalog. Consumers can map these values when registering their own catalog.
+`errors.Is(err, filter.ECodeUnknownField)` matches a specific code through wrapping. `parse.Codes()` returns every `parse.Code`, sorted; each provides its wire string, default message and HTTP status, and the route or parser that raises it answers that status. Each code is defined once, as a row of the `core.Code` table (`core.CodeUnknownField`) holding its status and message, and `parse.Codes()` is that table. `filter.Codes()` and `patch.Codes()` list the codes their grammars raise, and with schema discovery's E2078 and E2120 (`parse.ECodeSchemaNotFound`, `parse.ECodeSchemaEncodingFailed`) they are the table; a limit both grammars enforce, such as E2063, is one value. The package imports no application error catalog. Consumers can map these values when registering their own catalog.
 
 ### RFC 9457 problem details
 
@@ -109,7 +109,6 @@ All known codes describe permanent failures and are listed below; retry and cata
 | E2066 | 422 | Too many patch operations |
 | E2067 | 422 | Malformed or unsupported list parameter |
 | E2068 | 422 | `test` cannot compile to SQL |
-| E2069 | 500 | Patch path has no SQL column |
 | E2070 | 422 | Patch operation cannot compile to SQL (move, copy, nested path, `array_append` on a document) |
 | E2071 | 422 | Unknown filter field |
 | E2072 | 422 | Operator not allowed |
@@ -118,7 +117,7 @@ All known codes describe permanent failures and are listed below; retry and cata
 | E2075 | 422 | Invalid JSON Patch operation or pointer |
 | E2076 | 422 | Patch path not in the schema |
 | E2077 | 422 | Patch value invalid |
-| E2078 | 422 | Schema not found |
+| E2078 | 404 | Schema not found |
 | E2079 | 422 | Sort field not allowed |
 | E2081 | 422 | Too many sort fields |
 | E2082 | 422 | Invalid cursor |

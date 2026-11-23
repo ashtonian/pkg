@@ -627,13 +627,8 @@ func columnName(op *PatchOperation) (string, error) {
 	if op.Schema != nil && op.Schema.SQLColumn != "" {
 		return op.Schema.SQLColumn, nil
 	}
-	// Never emit user-supplied path text as a SQL identifier — a schema without SQLColumn (and no relation) cannot be
-	// compiled safely.
-	return "", &core.ParseError{
-		Kind: core.ParseErrorKindPatch, Code: ECodeSQLColumnMissing.String(),
-		Message: fmt.Sprintf("path %s has no SQLColumn mapping; refusing to use the request path as a SQL identifier", op.Path),
-		Path:    op.Path,
-	}
+	// The request's path text is never a SQL identifier.
+	return "", fmt.Errorf("path %s: %w", op.Path, ErrSQLColumnMissing)
 }
 
 // arrayAppendSQL returns the dialect-specific expression appending element
