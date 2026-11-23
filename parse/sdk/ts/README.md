@@ -65,7 +65,7 @@ console.log(page.items, page.page_info.total_count, page.page_info.end_cursor);
 
 `client.resource<T>(path, { schema? })` is a collection at `{baseURL}/{path}`. Its schema document is `{baseURL}/{schemaPrefix}/{name}/schema`, where `name` is the resource's registry name (Go: its table, the document's `resource`): `schema` when given, else the path's last segment. Relation targets are fetched by registry name too, and the schema cache is keyed by it, so `schemas()` followed by any handle's `schema()` sends nothing. A collection served under another name than its table, `/api/work-orders` over `work_orders`, is `client.resource("work-orders", { schema: "work_orders" })`. A schema document for another resource than the one requested is `SchemaResourceError`. An empty path throws `RangeError`.
 
-The client calls the routes a server built on the Go module serves; the [example server](../../examples/server/) serves every one, with `baseURL` set to its origin and `/api`:
+The client calls the routes a server built on the Go module serves; the [example server](../../examples/server/) serves every one, with `baseURL` set to its origin and `/api`. Every public method has a row:
 
 | Client call | Request | Served in Go by |
 |---|---|---|
@@ -77,6 +77,8 @@ The client calls the routes a server built on the Go module serves; the [example
 | `facets(fields, opts)` | `OPTIONS /{resource}?facets=a,b&filter=` → `facets` | `parsehttp.ParseFacets` (or `Resource.ParseFacets`), `Resource.BuildFacets`; `cursor`, `sort`, `page_size`, `include_total`, `include` or `fields` is E2067 |
 | `schema()` | `GET /{schemaPrefix}/{name}/schema` | `parsehttp.SchemaHandler` |
 | `schemas()` | `GET /{schemaPrefix}/schemas` → `{ schemas: […] }` | `parsehttp.SchemaListHandler` |
+| `validator()` | `schema()`'s request, once per handle | The schema route |
+| `resource(path, opts)` | Nothing: a handle whose calls send the requests above | — |
 
 Members a list leaves zero (an empty `sort`, `include`, `facets` or `fields`, `pageSize: 0`) are not sent, so the server applies its defaults. `fields` is the response field mask, the members each item carries; the schema document lists no maskable names, so `validateBeforeSend` leaves the mask to the server. `patch("")` and `patchMany([])` throw `RangeError` before sending: either would `PATCH` the collection itself. A request carries `Content-Type: application/json` only when it has a body.
 

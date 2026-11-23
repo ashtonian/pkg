@@ -19,6 +19,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"runtime/debug"
 	"syscall"
 	"time"
 
@@ -30,7 +31,11 @@ import (
 	"github.com/ashtonian/pkg/parse/parsesqlite"
 )
 
+// serviceName names the process in its startup entry and its CLI.
+const serviceName = "parse-example"
+
 type serverSettings struct {
+	LogLevel          string        `koanf:"log_level" default:"warn" validate:"oneof=debug info warn error" desc:"Minimum log level: debug, info, warn or error"`
 	RequestTimeout    time.Duration `koanf:"request_timeout" default:"5s" validate:"gt=0" desc:"Deadline per request; its database work runs under it"`
 	Addr              string        `koanf:"addr" default:"127.0.0.1:8080" validate:"required" desc:"HTTP listen address"`
 	ShutdownGrace     time.Duration `koanf:"shutdown_grace" default:"10s" validate:"gt=0" desc:"Time to drain in-flight requests on shutdown"`
@@ -41,11 +46,19 @@ type serverSettings struct {
 }
 
 func main() {
-	log := slog.New(slog.NewJSONHandler(os.Stderr, nil))
+	// The level is a LevelVar so it can change without a restart; it is warn
+	// until the settings say otherwise.
+	level := new(slog.LevelVar)
+	level.Set(slog.LevelWarn)
+	log := slog.New(slog.NewJSONHandler(os.Stderr, &slog.HandlerOptions{Level: level}))
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	settings, err := loadSettings(ctx, os.Args[1:])
 	if err == nil {
+		err = level.UnmarshalText([]byte(settings.LogLevel))
+	}
+	if err == nil {
+		logStart(ctx, log, level.Level(), settings)
 		err = run(ctx, settings, log)
 	}
 	if err != nil {
@@ -58,7 +71,7 @@ func loadSettings(ctx context.Context, args []string) (*serverSettings, error) {
 	var cli struct {
 		Settings serverSettings `embed:""`
 	}
-	parser, err := kong.New(&cli, kong.Name("parse-example"), kongprovider.HelpFromConfig(&cli.Settings, "PARSE_SERVER"))
+	parser, err := kong.New(&cli, kong.Name(serviceName), kongprovider.HelpFromConfig(&cli.Settings, "PARSE_SERVER"))
 	if err != nil {
 		return nil, fmt.Errorf("configure CLI: %w", err)
 	}
@@ -68,6 +81,30 @@ func loadSettings(ctx context.Context, args []string) (*serverSettings, error) {
 	}
 	return config.Load[serverSettings](ctx, config.WithEnvPrefix("PARSE_SERVER"),
 		kongprovider.WithOverridesFromStruct(parsed, &cli.Settings))
+}
+
+// logStart writes the startup entry straight to the handler, past the level
+// gate, so that at any level the log says what started and how it is set up.
+// The settings are redacted as pkg/config judges secrets.
+func logStart(ctx context.Context, log *slog.Logger, level slog.Level, settings *serverSettings) {
+	r := slog.NewRecord(time.Now(), slog.LevelInfo, "starting", 0)
+	r.AddAttrs(
+		slog.String("service", serviceName),
+		slog.String("version", version()),
+		slog.String("log_level", level.String()),
+		slog.Any("config", config.RedactedTree(settings)),
+	)
+	// A startup entry that cannot reach stderr has nowhere else to go.
+	_ = log.Handler().Handle(ctx, r)
+}
+
+// version is the main module's version as the build recorded it: a module
+// version when installed with go install, "(devel)" from a checkout.
+func version() string {
+	if info, ok := debug.ReadBuildInfo(); ok {
+		return info.Main.Version
+	}
+	return "unknown"
 }
 
 func run(ctx context.Context, settings *serverSettings, log *slog.Logger) (err error) {

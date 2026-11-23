@@ -51,7 +51,7 @@ const (
 // over GET and, for a filter too large for a URL, as a POST body to the same
 // path; OPTIONS facets; PATCH merge patches of one product or of the
 // products a batch's id[] keys name (through BuildUpdate); GET schema
-// discovery.
+// discovery of one resource or of all of them.
 type server struct {
 	db             *sql.DB
 	products       *parse.Resource[Product]
@@ -77,6 +77,7 @@ func newServer(db *sql.DB, log *slog.Logger, requestTimeout time.Duration) (http
 	s.report = parsehttp.WithErrorHandler(s.responseFailed)
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/{resource}/schema", parsehttp.SchemaHandler(reg, s.report))
+	mux.HandleFunc("GET /api/schemas", parsehttp.SchemaListHandler(reg, s.report))
 	mux.HandleFunc("GET /api/products", s.list)
 	mux.HandleFunc("POST /api/products", s.list)
 	mux.HandleFunc("OPTIONS /api/products", s.facets)

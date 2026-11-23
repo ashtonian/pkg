@@ -94,7 +94,7 @@ jobs:
               "test": {"go": ["./..."]},
               "test-darwin": {"go": ["./process/...", "./state/...", "./onepassword/...", "./config/...", "./config/kongprovider/..."]},
               "parse-postgres": {"go": ["./parse/..."]},
-              "parse-sdk": ["parse/sdk/**", "parse/testdata/**", "tools/check-parse-sdk-*"],
+              "parse-sdk": ["parse/sdk/**", "parse/testdata/**", "parse/examples/server/README.md", "tools/check-parse-sdk-*"],
               "parse-benchmarks": {"go": ["./parse/filter"]},
               "minimum-go": {"go": ["./httpx/...", "./httpx/oauth2/...", "./httpx/codec/msgpack/...", "./httpx/codec/proto/...", "./httpx/compress/brotli/...", "./gitx/..."]},
               "modules": ["**"],

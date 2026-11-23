@@ -9,9 +9,12 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
+	"slices"
 	"strings"
 	"testing"
 	"testing/iotest"
@@ -475,4 +478,48 @@ func TestServer_DeadlinesAndCancellationsAreNoServerFaults(t *testing.T) {
 			assert.NotContains(t, logs.String(), `"level":"ERROR"`)
 		})
 	}
+}
+
+// The README's route table is the example's half of the SDK contract: every
+// route it lists answers the request the SDK sends, and every request here
+// is a row of it.
+func TestServer_ServesEveryRouteItsREADMEDocuments(t *testing.T) {
+	readme, err := os.ReadFile("README.md")
+	require.NoError(t, err)
+	requests := map[string]struct{ method, path, body string }{
+		"GET /api/products":              {http.MethodGet, "/api/products?page_size=2", ""},
+		"POST /api/products":             {http.MethodPost, "/api/products", `{"page_size":2}`},
+		"OPTIONS /api/products?facets=…": {http.MethodOptions, "/api/products?facets=category", ""},
+		"PATCH /api/products/{id}":       {http.MethodPatch, "/api/products/p01", `{}`},
+		"PATCH /api/products?id[]=…":     {http.MethodPatch, "/api/products?id[]=p01&id[]=p02", `{}`},
+		"GET /api/{resource}/schema":     {http.MethodGet, "/api/products/schema", ""},
+		"GET /api/schemas":               {http.MethodGet, "/api/schemas", ""},
+	}
+	assert.ElementsMatch(t, slices.Collect(maps.Keys(requests)), readmeRoutes(t, string(readme)))
+
+	srv := testServer(t)
+	for route, req := range requests {
+		var body json.RawMessage
+		assert.Equal(t, http.StatusOK, call(t, srv, req.method, req.path, req.body, &body), "%s: %s", route, body)
+	}
+}
+
+// readmeRoutes is the first cell of each row of the README's Routes table.
+func readmeRoutes(t *testing.T, readme string) []string {
+	t.Helper()
+	_, section, ok := strings.Cut(readme, "\n## Routes\n")
+	require.True(t, ok, "the README has a Routes section")
+	section, _, _ = strings.Cut(section, "\n## ")
+	var routes []string
+	for line := range strings.Lines(section) {
+		cell, ok := strings.CutPrefix(line, "| `")
+		if !ok {
+			continue
+		}
+		route, _, ok := strings.Cut(cell, "`")
+		require.True(t, ok, line)
+		routes = append(routes, route)
+	}
+	require.NotEmpty(t, routes)
+	return routes
 }
