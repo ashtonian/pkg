@@ -3,6 +3,7 @@
 package filter_test
 
 import (
+	"errors"
 	"net/url"
 	"strings"
 	"testing"
@@ -648,6 +649,31 @@ func TestSQLBuilder_WithStartParam_Zero(t *testing.T) {
 	}
 	if !strings.Contains(result.Where, "$1") {
 		t.Errorf("expected $1 with zero offset, got %q", result.Where)
+	}
+}
+
+// A negative offset is the caller's mistake, not the request's: Build
+// refuses it with a plain error, an empty filter included, where the
+// dialect would panic on placeholder 0.
+func TestSQLBuilder_NegativeStartParam(t *testing.T) {
+	ast, err := filter.NewFilterParser(testSchema(), nil).Parse(`{"status":"active"}`)
+	require.NoError(t, err)
+	for name, d := range map[string]filter.Dialect{"postgres": filter.PostgresDialect{}, "sqlite": filter.SQLiteDialect{}} {
+		t.Run(name, func(t *testing.T) {
+			for _, a := range []*filter.FilterAST{ast, nil} {
+				_, err := filter.NewSQLBuilder(testSchema(), d, filter.WithStartParam(-1)).Build(a)
+				require.ErrorContains(t, err, "start parameter -1 is negative")
+				_, isParseError := errors.AsType[*core.ParseError](err)
+				assert.False(t, isParseError)
+			}
+
+			lq, err := filter.NewListQuery(testSchema(), nil, d)
+			require.NoError(t, err)
+			_, err = lq.Build(filter.ListFilterAST(ast), filter.ListStartParam(-1))
+			require.ErrorContains(t, err, "start parameter -1 is negative")
+			_, isParseError := errors.AsType[*core.ParseError](err)
+			assert.False(t, isParseError)
+		})
 	}
 }
 

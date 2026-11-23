@@ -296,7 +296,7 @@ A `parse.Resource` declares its primary key once with `parse.PrimaryKey` (defaul
 | `ListPolicy(pc)` | `*PolicyConstraints` | none | Server-side constraints ANDed with the filter; each names a [policy field](#policy-fields) |
 | `ListNow(t)` | `time.Time` | one reading of the config's clock | The instant the `ListFilter` JSON, the policy and the related policies resolve relative tokens against: the request's |
 | `ListRelationScope(s)` | `RelationScope` | none | How the filter, count and facets reach related rows ([relation scope](#relation-scope)) |
-| `ListStartParam(n)` | int | `0` | Offset the main fragment after `n` earlier arguments; standalone count/facet statements keep independent numbering |
+| `ListStartParam(n)` | int | `0` | Offset the main fragment after `n` earlier arguments; standalone count/facet statements keep independent numbering. Negative is an error from `Build` |
 
 ### Relation scope
 
@@ -316,7 +316,7 @@ The zero value scopes no tenant: a relation declaring a tenant column fails clos
 
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
-| `WithStartParam(n)` | int | `0` | First placeholder is `n+1` (e.g. after an UPDATE's SET arguments) |
+| `WithStartParam(n)` | int | `0` | First placeholder is `n+1` (e.g. after an UPDATE's SET arguments); negative is an error from `Build` |
 | `WithRelationScope(s)` | `RelationScope` | none | How the filter reaches related rows ([relation scope](#relation-scope)) |
 
 Facet, include, and flat-query options:
