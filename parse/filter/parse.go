@@ -250,7 +250,7 @@ func (p *FilterParser) parseFieldCondition(fieldName string, value any, depth in
 	if err != nil {
 		return nil, err
 	}
-	return relatedShorthand(&FilterNode{Field: field, Op: OpEq, Value: normalized})
+	return p.relatedShorthand(&FilterNode{Field: field, Op: OpEq, Value: normalized})
 }
 
 func (p *FilterParser) parseOperatorObject(field *FieldSchema, obj map[string]any, depth int) (*FilterNode, error) {
@@ -305,7 +305,7 @@ func (p *FilterParser) parseOperatorObject(field *FieldSchema, obj map[string]an
 			if isNull {
 				resolved = OpNull
 			}
-			node, err := relatedShorthand(&FilterNode{Field: field, Op: resolved})
+			node, err := p.relatedShorthand(&FilterNode{Field: field, Op: resolved})
 			if err != nil {
 				return nil, err
 			}
@@ -321,7 +321,7 @@ func (p *FilterParser) parseOperatorObject(field *FieldSchema, obj map[string]an
 		if err != nil {
 			return nil, err
 		}
-		node, err := relatedShorthand(&FilterNode{Field: field, Op: op, Value: normalized})
+		node, err := p.relatedShorthand(&FilterNode{Field: field, Op: op, Value: normalized})
 		if err != nil {
 			return nil, err
 		}

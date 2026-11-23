@@ -28,12 +28,8 @@ func (p *FilterParser) parseRelated(field *FieldSchema, op FilterOperator, value
 	if field.Relation == nil || field.Related == nil {
 		return nil, invalidRelation(field, "has no target resource to filter")
 	}
-	if p.relDepth >= MaxRelationDepth {
-		return nil, &core.ParseError{
-			Kind: core.ParseErrorKindFilter, Code: ECodeDepthExceeded.String(),
-			Message: fmt.Sprintf("relation predicates nest at most %d deep", MaxRelationDepth),
-			Details: map[string]any{core.DetailField: field.ExternalName},
-		}
+	if err := p.nestRelation(field); err != nil {
+		return nil, err
 	}
 	obj, ok := value.(map[string]any)
 	if !ok {
@@ -53,6 +49,32 @@ func (p *FilterParser) parseRelated(field *FieldSchema, op FilterOperator, value
 		node.Children = []*FilterNode{child}
 	}
 	return node, nil
+}
+
+// nestRelation refuses a relation predicate on field past MaxRelationDepth:
+// one nests a level below the predicates enclosing this parser.
+func (p *FilterParser) nestRelation(field *FieldSchema) error {
+	if p.relDepth < MaxRelationDepth {
+		return nil
+	}
+	return &core.ParseError{
+		Kind: core.ParseErrorKindFilter, Code: ECodeDepthExceeded.String(),
+		Message: fmt.Sprintf("relation predicates nest at most %d deep", MaxRelationDepth),
+		Details: map[string]any{core.DetailField: field.ExternalName},
+	}
+}
+
+// relatedShorthand is the request's key comparison on a relation as the
+// predicate it abbreviates (the package's relatedShorthand), held to
+// MaxRelationDepth as `$some` is: the predicate nests a level, however
+// short its spelling.
+func (p *FilterParser) relatedShorthand(n *FilterNode) (*FilterNode, error) {
+	if n.Field != nil && n.Field.Relation != nil {
+		if err := p.nestRelation(n.Field); err != nil {
+			return nil, err
+		}
+	}
+	return relatedShorthand(n)
 }
 
 // relatedShorthand turns a key comparison on a relation with a target
