@@ -28,12 +28,10 @@ func PrintEnv(cfg any, envPrefix string, opts ...PrintOption) error {
 		return errors.New("config: PrintEnv needs an environment prefix")
 	}
 	t := reflect.TypeOf(cfg)
-	for t != nil && t.Kind() == reflect.Pointer {
-		t = t.Elem()
-	}
 	if t == nil {
 		return errors.New("config: PrintEnv needs a config")
 	}
+	t = derefType(t)
 	root, err := rootSchema(t)
 	if err != nil {
 		return err

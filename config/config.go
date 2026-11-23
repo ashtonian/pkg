@@ -655,23 +655,39 @@ var defaultValidator = sync.OnceValue(func() *validator.Validate {
 const validatorPackage = "github.com/go-playground/validator/v10."
 
 // validateDefault validates cfg with the default validator. The validator
-// panics on a rule it cannot apply — a dive on a field that is not a
-// collection, min=abc, len or oneof on a kind they do not measure,
-// required_if with an odd number of params, an unreadable tag beneath an
-// interface, which [defaultRules] cannot see — wherever validation meets
-// it. Such a panic is the declaration's fault, not the value's, and is
-// returned as an ErrSchema carrying the validator's message, which names
-// the field when the validator does. A panic raised in the caller's own
-// code, such as a method a validateFn rule calls, is left to propagate.
+// panics on a rule it cannot apply — min=abc, len or oneof on a kind they
+// do not measure, required_if with an odd number of params, a dive or an
+// unreadable tag in a struct behind a pointer, a collection or an
+// interface, which [defaultRules] leaves to the value — wherever validation
+// meets it. Such a panic is the declaration's fault, not the value's, and
+// is returned as an ErrSchema naming the field the validator was
+// validating, by key, and carrying the validator's message. A panic raised
+// in the caller's own code, such as a method a validateFn rule calls, is
+// left to propagate.
 func validateDefault(ctx context.Context, cfg any) (err error) {
+	// The validator calls a filter with each field's namespace as it enters
+	// the field, and its own panics seldom name one: the last namespace is
+	// where it was.
+	var at []byte
+	enter := func(ns []byte) bool {
+		at = append(at[:0], ns...)
+		return false
+	}
 	returned := false
 	defer func() {
 		if returned || !raisedByValidator() {
 			return
 		}
-		err = fmt.Errorf("validating config: %w: a validate tag of %s does not apply to its field: %s", ErrSchema, gowalker.TypeText(derefType(reflect.TypeOf(cfg))), panicText(recover()))
+		r := recover()
+		root := reflect.ValueOf(cfg)
+		var where string
+		if len(at) > 0 {
+			schema, _ := rootSchema(root.Type())
+			where = " at " + validationKey(root, schema, string(at), string(at))
+		}
+		err = fmt.Errorf("validating config: %w: a validate tag of %s does not apply to its field%s: %s", ErrSchema, gowalker.TypeText(derefType(root.Type())), where, panicText(r))
 	}()
-	err = defaultValidator().StructCtx(ctx, cfg)
+	err = defaultValidator().StructFilteredCtx(ctx, cfg, enter)
 	returned = true
 	return err
 }
@@ -714,10 +730,10 @@ func panicText(r any) string {
 	return fmt.Sprintf("a %T", r)
 }
 
-// defaultRules refuses a validate tag the default validator would meet in
-// a value of T and cannot read — an undefined rule, keys without dive, an
-// empty rule — which it would otherwise panic on in the middle of a load.
-// Each tag is parsed once per type, and no rule runs.
+// defaultRules refuses a validate tag the default validator would meet on
+// every validation of a value of T and cannot read — an undefined rule,
+// keys without dive, an empty rule — which it would otherwise panic on in
+// the middle of a load. Each tag is parsed once per type, and no rule runs.
 func defaultRules(t reflect.Type) error {
 	e := schemaMetadata(t)
 	if e.err != nil {
@@ -728,25 +744,33 @@ func defaultRules(t reflect.Type) error {
 }
 
 // unreadableRules parses, with v's own parser, the validate tag of every
-// field v meets validating a value of root. It descends as go-playground
-// does, not as config's schema graph does:
+// field v reads on every validation of a value of root, whatever the value
+// holds: the fields of root and of each struct it holds by value, as
+// go-playground descends to them —
 //
-//   - into every exported or embedded field not tagged validate:"-", those
+//   - every exported or embedded field not tagged validate:"-", those
 //     tagged koanf:"-" and the structs that decode themselves from text
 //     included;
-//   - through pointers into a field's struct, time.Time and types
-//     convertible to it aside, once its rules pass: v reads every tag of a
-//     struct it meets, and goes on into the fields' values unless the rules
-//     reaching the struct say structonly; nostructlevel stops before it;
-//   - past a dive only, into a list's elements and a map's values with the
-//     rules after it, and into a map's keys with those between keys and
-//     endkeys.
+//   - into a field's struct, time.Time and types convertible to it aside,
+//     once its rules pass: v reads every tag of a struct it meets, and goes
+//     on into the fields' values unless the rules reaching the struct say
+//     structonly; nostructlevel stops before it;
+//   - through a dive into an array of one or more elements, which holds
+//     them whatever the value: each element is walked as a field of the
+//     element type with the rules after the dive.
 //
-// An interface's dynamic value is not known here; a tag v meets beneath one
-// fails when validation reaches it (see [validateDefault]).
+// On each of those structs' fields whose values v walks, it also refuses a
+// dive v cannot take on the field's type, which v panics on whenever it
+// applies it (see [misappliedDive]).
+//
+// A struct v reaches only when a value puts it there is left to validation
+// (see [validateDefault]): one behind a pointer, a map, a slice or an
+// interface, one beneath an omitempty or omitzero rule, and one whose value
+// v replaces with its own ValidatorValue. An array of no elements is never
+// walked.
 func unreadableRules(root reflect.Type, v *validator.Validate) error {
 	w := ruleWalk{v: v, read: map[reflect.Type][]readRules{}, walked: map[reflect.Type]bool{}}
-	w.value(root, nil)
+	w.fields(root, true)
 	return errors.Join(w.errs...)
 }
 
@@ -762,66 +786,39 @@ type ruleWalk struct {
 
 // readRules is a field whose validate tag v reads, and its rules.
 type readRules struct {
+	name  string
 	typ   reflect.Type
 	rules []string
 }
 
-// value walks what v meets in a value of type t when rules, a field's rules
-// from the one v reaches next, are still to run on it.
+// value walks what a field of type t holds by value — a struct, or the
+// elements a dive reaches in an array — which v meets on every validation
+// unless rules, the field's rules, stop it first.
 func (w *ruleWalk) value(t reflect.Type, rules []string) {
-	for t.Kind() == reflect.Pointer {
-		t = t.Elem()
+	if validatedAsOther(t) {
+		return
 	}
-	nested := t.Kind() == reflect.Struct && !t.ConvertibleTo(timeType)
+	isStruct := t.Kind() == reflect.Struct && !t.ConvertibleTo(timeType)
 	for i, rule := range rules {
 		switch rule {
-		case "nostructlevel", "endkeys":
+		case "nostructlevel", "endkeys", "omitempty", "omitzero":
 			return
 		case "structonly":
-			if nested {
+			if isStruct {
 				w.fields(t, false)
 			}
 			return
 		case "dive":
-			w.elements(t, rules[i+1:])
+			// A slice, a map or a pointer may hold no element; an array
+			// holds its length's worth whatever the value.
+			if t.Kind() == reflect.Array && t.Len() > 0 {
+				w.value(t.Elem(), rules[i+1:])
+			}
 			return
 		}
 	}
-	if nested {
+	if isStruct {
 		w.fields(t, true)
-	}
-}
-
-// elements walks what a dive reaches in a value of type t with rules, those
-// after the dive. A dive on any other kind panics when v runs it.
-func (w *ruleWalk) elements(t reflect.Type, rules []string) {
-	switch t.Kind() {
-	case reflect.Slice, reflect.Array:
-		w.value(t.Elem(), rules)
-	case reflect.Map:
-		if len(rules) == 0 || rules[0] != "keys" {
-			w.value(t.Elem(), rules)
-			return
-		}
-		// The keys' rules run to endkeys, where v stops, or to the tag's end.
-		end := slices.Index(rules, "endkeys")
-		if end < 0 {
-			end = len(rules) - 1
-		}
-		w.value(t.Key(), rules[1:end+1])
-		if rest := rules[end+1:]; len(rest) > 0 {
-			w.value(t.Elem(), rest)
-			return
-		}
-		// With no rules left for the values, v still reads a struct value's
-		// fields, through one pointer.
-		elem := t.Elem()
-		if elem.Kind() == reflect.Pointer {
-			elem = elem.Elem()
-		}
-		if elem.Kind() == reflect.Struct {
-			w.value(elem, nil)
-		}
 	}
 }
 
@@ -838,7 +835,81 @@ func (w *ruleWalk) fields(t reflect.Type, descend bool) {
 	}
 	w.walked[t] = true
 	for _, f := range fields {
+		if problem := misappliedDive(f.typ, f.rules); problem != "" {
+			w.errs = append(w.errs, fmt.Errorf("%w: field %s of %s has a validate tag the validator cannot apply: %s", ErrSchema, f.name, gowalker.TypeText(t), problem))
+			continue
+		}
 		w.value(f.typ, f.rules)
+	}
+}
+
+// misappliedDive is the dive in rules, a field's rules, that v cannot take
+// on t, the field's type, through pointers as v follows them: a dive on a
+// kind that is not a slice, an array or a map, or keys after a dive on a
+// slice or an array. v panics on one whenever it applies it, so the tag is
+// wrong whatever the field holds: a collection's dive is applied to each
+// element it holds. It is "" when the dives apply, where a value decides
+// what v walks — an interface, a type v validates as its ValidatorValue —
+// and past a dive into an array of no elements, which v never applies.
+func misappliedDive(t reflect.Type, rules []string) string {
+	for i, rule := range rules {
+		if validatedAsOther(t) {
+			return ""
+		}
+		t = derefType(t)
+		switch rule {
+		case "nostructlevel", "structonly", "endkeys":
+			return "" // v goes no further
+		case "dive":
+		default:
+			continue
+		}
+		after := rules[i+1:]
+		keys := len(after) > 0 && after[0] == "keys"
+		switch t.Kind() {
+		case reflect.Interface:
+			return ""
+		case reflect.Slice, reflect.Array:
+			if t.Kind() == reflect.Array && t.Len() == 0 {
+				return ""
+			}
+			if keys {
+				return fmt.Sprintf("keys after a dive on %s, which is not a map", gowalker.TypeText(t))
+			}
+			return misappliedDive(t.Elem(), after)
+		case reflect.Map:
+			if !keys {
+				return misappliedDive(t.Elem(), after)
+			}
+			// The keys' rules run to endkeys or to the tag's end; the rest
+			// are the values'.
+			end := slices.Index(after, "endkeys")
+			if end < 0 {
+				end = len(after)
+			}
+			if problem := misappliedDive(t.Key(), after[1:end]); problem != "" || end == len(after) {
+				return problem
+			}
+			return misappliedDive(t.Elem(), after[end+1:])
+		default:
+			return fmt.Sprintf("dive on %s, which is not a slice, an array or a map", gowalker.TypeText(t))
+		}
+	}
+	return ""
+}
+
+// validatedAsOther reports whether v validates a value of t, or a value t
+// points to, as the ValidatorValue it returns rather than as itself.
+func validatedAsOther(t reflect.Type) bool {
+	base := derefType(t)
+	for {
+		if t.Implements(validatorValuer) {
+			return true
+		}
+		if t == base {
+			return false
+		}
+		t = t.Elem()
 	}
 }
 
@@ -864,14 +935,18 @@ func (w *ruleWalk) parse(t reflect.Type) []readRules {
 			}
 			rules = strings.Split(tag, ",")
 		}
-		fields = append(fields, readRules{typ: f.Type, rules: rules})
+		fields = append(fields, readRules{name: f.Name, typ: f.Type, rules: rules})
 	}
 	return fields
 }
 
-// timeType is time.Time, whose fields v never reads, nor those of a type
-// convertible to it.
-var timeType = reflect.TypeFor[time.Time]()
+var (
+	// timeType is time.Time, whose fields v never reads, nor those of a
+	// type convertible to it.
+	timeType = reflect.TypeFor[time.Time]()
+	// validatorValuer is a type whose value v validates in place of its own.
+	validatorValuer = reflect.TypeFor[validator.Valuer]()
+)
 
 // unreadableRule parses tag as v does when it first meets a struct, and
 // returns what v panicked with when it could not. Validating a nil value
@@ -908,13 +983,10 @@ func fieldErrorSummary(cfg reflect.Value, ve validator.ValidationErrors) string 
 	root, _ := rootSchema(cfg.Type())
 	for _, fe := range ve {
 		tag := fe.Tag()
-		key := validationKey(cfg, fe)
+		key := validationKey(cfg, root, fe.StructNamespace(), fe.Namespace())
 		p, exact := validatorKey(cfg, fe.StructNamespace())
 		showParam := false
 		if root != nil {
-			if safe := diagnosticPath(root, p); len(safe) < len(p) {
-				key = safe.orRoot()
-			}
 			if c, n, err := root.walkTo(cursor{}, p); err == nil && exact {
 				showParam = !c.sensitive() && !mayHoldSensitive(n.typ, map[reflect.Type]bool{})
 			}
@@ -957,9 +1029,11 @@ func keyedParam(cfg reflect.Value, root *schemaNode, fe validator.FieldError) (s
 	if !fieldParamRules[rule] && !fieldValueParamRules[rule] && !fieldListParamRules[rule] {
 		return param, true
 	}
-	parent, ok := parentNamespace(fe.StructNamespace())
-	if !ok {
-		return param, true
+	// The fields a param names are the holding struct's; an unnamed root's
+	// own fields have no namespace above them.
+	var parent string
+	if p, ok := parentNamespace(fe.StructNamespace()); ok {
+		parent = p + "."
 	}
 	tokens := []string{param}
 	if !fieldParamRules[rule] {
@@ -969,7 +1043,7 @@ func keyedParam(cfg reflect.Value, root *schemaNode, fe validator.FieldError) (s
 		if fieldValueParamRules[rule] && i%2 == 1 {
 			continue // a value, not a field
 		}
-		p, exact := validatorKey(cfg, parent+"."+token)
+		p, exact := validatorKey(cfg, parent+token)
 		if !exact || len(p) == 0 {
 			continue
 		}
@@ -1002,19 +1076,24 @@ func parentNamespace(ns string) (string, bool) {
 	return "", false
 }
 
-// validationKey names the field a validation error is about by its key.
-func validationKey(cfg reflect.Value, fe validator.FieldError) string {
-	p, exact := validatorKey(cfg, fe.StructNamespace())
+// validationKey names the field of cfg at the validator's struct namespace
+// structNS by its key, cut short above the keys of a sensitive container
+// (see [diagnosticPath]). ns is the validator's own name for the field,
+// named by when structNS reaches no key of cfg.
+func validationKey(cfg reflect.Value, root *schemaNode, structNS, ns string) string {
+	p, exact := validatorKey(cfg, structNS)
+	if safe := diagnosticPath(root, p); len(safe) < len(p) {
+		return safe.orRoot()
+	}
 	switch {
 	case exact:
 		return p.orRoot()
 	case len(p) > 0:
 		return p.String() + " (exact location unavailable)"
 	}
-	// Not a namespace of cfg: the validator's own, minus the root type name.
-	ns := fe.Namespace()
-	if _, rest, cut := strings.Cut(ns, "."); cut {
-		ns = rest
+	// Not a namespace of cfg: the validator's own, past the root's part.
+	if rest, ok := belowValidatorRoot(cfg.Type(), ns); ok {
+		return rest
 	}
 	return ns
 }

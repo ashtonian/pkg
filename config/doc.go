@@ -60,13 +60,17 @@
 //
 // Invalid sensitive, alias, env, envref, reload, sep, format and example tags, a default on
 // a section, malformed defaults, and validate tags the default validator
-// cannot parse (requird, keys without dive) on a field it descends to fail
-// with [ErrSchema] before sources are read. So does a tag
-// key one edit from one config reads (defualt, envRef), in a load, every
-// generator and checked redaction alike, unless the struct declaring the
-// field lists it as another library's ([ForeignTagDeclarer]). A validate
-// rule that parses but cannot apply to its field's type (dive on an int,
-// min=abc) fails with ErrSchema when validation reaches it. [KeyOf] names a field from its address. [ParseKey] exposes the same
+// cannot parse (requird, keys without dive) or whose dive the field's type
+// cannot take (dive on an int, keys after a dive on a slice) on a field it
+// reads on every validation fail with [ErrSchema] before sources are read.
+// So does a tag key one edit from one config reads (defualt, envRef), in a
+// load, every generator and checked redaction alike, unless the struct
+// declaring the field lists it as another library's ([ForeignTagDeclarer]).
+// A validate rule that parses but cannot apply to its field's type
+// (min=abc), and an unparsable tag or misapplied dive in a struct behind a
+// pointer, a slice, a map or an interface, fail with ErrSchema naming the
+// field when validation reaches them. [KeyOf] names a field from its
+// address. [ParseKey] exposes the same
 // canonical grammar as typed segments, including quoted keys and wildcards.
 //
 // # Sources

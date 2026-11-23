@@ -756,6 +756,50 @@ func TestSources_MapKeyedByATypeWithItsOwnTextStaysWhole(t *testing.T) {
 	assert.Equal(t, want.Timeouts, got.Timeouts)
 }
 
+// paintColor is an integer a caller's decode hook reads from its name.
+type paintColor int
+
+const paintRed paintColor = 1
+
+// region is a string type of the caller's, decoded as its kind.
+type region string
+
+type namedKeys struct {
+	Names   map[paintColor]string `koanf:"names"`
+	Regions map[region]int        `koanf:"regions"`
+}
+
+// A map keyed by a named type keeps its own keys too, as a decode hook may
+// read the type's text its own way ("red" for paintRed, where its kind's
+// text is "1"): it loads from a typed default with those keys, and a higher
+// source replaces it whole.
+func TestSources_MapKeyedByANamedTypeStaysWhole(t *testing.T) {
+	byName := WithDecodeHook(func(from, to reflect.Type, data any) (any, error) {
+		if to != reflect.TypeFor[paintColor]() || from.Kind() != reflect.String {
+			return data, nil
+		}
+		if data == "red" {
+			return paintRed, nil
+		}
+		return nil, fmt.Errorf("no color named %q", data)
+	})
+	defaults := WithDefaults(map[string]any{
+		"names":   map[paintColor]string{paintRed: "r"},
+		"regions": map[region]int{"us": 1},
+	})
+	got, err := Load[namedKeys](t.Context(), byName, defaults)
+	require.NoError(t, err)
+	assert.Equal(t, map[paintColor]string{paintRed: "r"}, got.Names)
+	assert.Equal(t, map[region]int{"us": 1}, got.Regions)
+
+	file := filepath.Join(t.TempDir(), "config.yaml")
+	writeFile(t, file, "names: {red: x}\nregions: {eu: 2}\n")
+	got, err = Load[namedKeys](t.Context(), byName, defaults, WithFile(file))
+	require.NoError(t, err)
+	assert.Equal(t, map[paintColor]string{paintRed: "x"}, got.Names, "the file's map replaces the default's")
+	assert.Equal(t, map[region]int{"eu": 2}, got.Regions, "the file's map replaces the default's")
+}
+
 // A map decoded whole names itself and its type when an entry does not
 // decode, never the entry.
 func TestSources_MapDecodedWholeSaysWhyItCannotBeDecoded(t *testing.T) {
@@ -1044,4 +1088,85 @@ func TestSources_EverySourceIsReadBeforeAnyMerges(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, cancelJudgedCfg{Port: 5, Name: "above"}, *got)
 	assert.Equal(t, []string{"read base", "read override", "report base"}, events)
+}
+
+type mergeServer struct {
+	Host string `koanf:"host"`
+	Port int    `koanf:"port"`
+}
+
+type mergeCfg struct {
+	Labels  map[string]int `koanf:"labels"`
+	Section mergeServer    `koanf:"section"`
+}
+
+type droppedTagEntry struct {
+	Labels map[string]int `koanf:"labels" default:"a=1,b=2"`
+}
+
+func (c *droppedTagEntry) SetDefaults() { c.Labels = map[string]int{"c": 3} }
+
+type namedDroppedTagEntry struct {
+	Added   map[region]int `koanf:"added" default:"us=1"`
+	Dropped map[region]int `koanf:"dropped" default:"us=1,eu=2"`
+}
+
+func (c *namedDroppedTagEntry) SetDefaults() {
+	c.Added["ap"] = 3
+	c.Dropped = map[region]int{"ap": 3}
+}
+
+// What a higher source sets key by key merges into a typed map or section
+// beneath it; a typed value, or a variable that sets the whole map, replaces
+// it whole. A Defaulter's string-keyed map that drops an entry its tag sets
+// replaces the tag's map, and a higher source then merges into it.
+func TestSources_WhatMergesIntoATypedMapOrSection(t *testing.T) {
+	defaults := WithDefaults(map[string]any{
+		"labels":  map[string]int{"a": 1},
+		"section": mergeServer{Host: "h", Port: 1},
+	})
+	env := func(vars ...string) []Option {
+		return []Option{WithEnvPrefix("APP"), WithEnviron(func() []string { return vars })}
+	}
+	for _, tc := range []struct {
+		name    string
+		opts    []Option
+		labels  map[string]int
+		section mergeServer
+	}{
+		{"variables naming keys merge", env("APP_LABELS_D=4", "APP_SECTION_PORT=9"),
+			map[string]int{"a": 1, "d": 4}, mergeServer{Host: "h", Port: 9}},
+		{"an override's map merges", []Option{WithOverrideProvider(mapSource{
+			"labels": map[string]any{"d": 4}, "section": map[string]any{"port": 9},
+		}, nil)}, map[string]int{"a": 1, "d": 4}, mergeServer{Host: "h", Port: 9}},
+		{"a variable setting the whole map replaces it", env("APP_LABELS=d=4"),
+			map[string]int{"d": 4}, mergeServer{Host: "h", Port: 1}},
+		{"an override's typed values replace them", []Option{WithOverrideProvider(mapSource{
+			"labels": map[string]int{"d": 4}, "section": mergeServer{Port: 9},
+		}, nil)}, map[string]int{"d": 4}, mergeServer{Port: 9}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := Load[mergeCfg](t.Context(), append([]Option{defaults}, tc.opts...)...)
+			require.NoError(t, err)
+			assert.Equal(t, tc.labels, got.Labels)
+			assert.Equal(t, tc.section, got.Section)
+		})
+	}
+
+	file := filepath.Join(t.TempDir(), "config.yaml")
+	writeFile(t, file, "labels: {d: 4}\n")
+	got, err := Load[droppedTagEntry](t.Context())
+	require.NoError(t, err)
+	assert.Equal(t, map[string]int{"c": 3}, got.Labels, "the Defaulter's map replaces the tag's")
+	got, err = Load[droppedTagEntry](t.Context(), WithFile(file))
+	require.NoError(t, err)
+	assert.Equal(t, map[string]int{"c": 3, "d": 4}, got.Labels, "a file merges into it")
+
+	// Keyed by a named type, the map a Defaulter only adds to still merges
+	// entry by entry; one that drops a tag's entry keeps its own keys.
+	writeFile(t, file, "added: {sa: 4}\ndropped: {sa: 4}\n")
+	named, err := Load[namedDroppedTagEntry](t.Context(), WithFile(file))
+	require.NoError(t, err)
+	assert.Equal(t, map[region]int{"us": 1, "ap": 3, "sa": 4}, named.Added)
+	assert.Equal(t, map[region]int{"sa": 4}, named.Dropped, "a file replaces it whole")
 }

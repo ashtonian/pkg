@@ -239,6 +239,11 @@ func TestApplier_InitialFailureFailsConstruction(t *testing.T) {
 				WithApplier(Applier[appCfg]{Name: "log", Prefixes: []string{"log"}, ApplyInitial: true, Apply: rec.apply}))
 			require.ErrorIs(t, err, ErrApply)
 			assert.Contains(t, err.Error(), "log:")
+			var failed *ApplyError
+			require.ErrorAs(t, err, &failed)
+			assert.True(t, failed.Initial)
+			assert.Contains(t, err.Error(), "nothing was published", "a first load that fails to apply publishes nothing")
+			assert.NotContains(t, err.Error(), "configuration published")
 		})
 	}
 }

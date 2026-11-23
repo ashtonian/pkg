@@ -89,7 +89,7 @@ var schemaCache = gowalker.NewTypeCache(configView, buildSchema)
 //     and every output that shows defaults, examples or rules — usage, JSON
 //     Schema, templates, environment listings — take this.
 //   - loadSchema: schemaOf, and the default validator parses every rule it
-//     descends to.
+//     reads on every validation and can take each of its dives.
 
 // metadataOf builds structural metadata without decoding defaults or examples.
 // Diagnostics can therefore inspect live values even when a tag is invalid.

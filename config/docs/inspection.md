@@ -246,10 +246,10 @@ is reached:
 
 | Tier | Checks | Entry points |
 |---|---|---|
-| Structural | The graph builds: keys valid and unique, tags readable, reload tags valid | `Fields`, `FieldsChecked`, `FieldFor`, `KeyOf`, `MatchFields`, `Tree`, `TreeFunc` without a callback, `DefaultsFromTags` |
+| Structural | The graph builds: keys valid and unique, tags readable, reload tags valid | `Fields`, `FieldsChecked`, `FieldFor`, `KeyOf`, `KeyOfValue`, `MatchFields`, `Tree`, `TreeFunc` without a callback, `DefaultsFromTags` |
 | Declared | Structural, and no tag key misspells one config reads | `PrintRedacted`, `RedactedMap`, `RedactedMapChecked`, `RedactedTree`, `RedactedTreeChecked`, `TreeFunc` with a callback |
 | Schema | Declared, and every config tag's value is one config can use | `Load`, `Decode`, `LoadSnapshot`, `CheckKey`, `DecodeKey`, reloaders, `Usage`, `PrintUsage`, `JSONSchema`, `PrintTemplate`, `PrintEnv`, `PrintExplain`, `Diff` |
-| Load | Schema, and the default validator parses every `validate` tag it descends to | `Load`, `Decode`, `LoadSnapshot`, `CheckKey`, `DecodeKey`, `NewReloader` |
+| Load | Schema, and the default validator parses every `validate` tag it reads on every validation, and can take each of its dives | `Load`, `Decode`, `LoadSnapshot`, `CheckKey`, `DecodeKey`, `NewReloader` |
 
 The structural tier is what raw inspection needs to diagnose a type whose
 tags are wrong. The declared tier is what printing a live value needs: a

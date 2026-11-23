@@ -21,11 +21,11 @@ Every error wraps one category sentinel together with its cause, so `errors.Is` 
 | `ErrSecretProvider` | The secret populator failed. |
 | `ErrPostLoad` | A post-load hook failed. |
 | `ErrReload` | A reload failed; the previous config is still live. Wraps one of the above. |
-| `ErrApply` | A config was published but an applier did not apply it; an `*ApplyError` names which. |
+| `ErrApply` | An applier did not apply a config; an `*ApplyError` names which. After a reload the config was published; on a reloader's first load (`Initial`) nothing was. |
 | `ErrReloadInProgress` | A manual reload found another running. Not a failure. |
 | `ErrReloaderStopped` | A reload was requested after `Stop`. |
 | `ErrReloaderRunning` | `Run` was called while another `Run` of the same reloader runs. |
-| `ErrSchema`, `ErrKey` | Invalid schema/default declarations, or a malformed/unknown key. `KeyError` distinguishes unknown keys from invalid values in `CheckKey`, `DecodeKey` and `CanonicalKey`; `EditsError` is a batch `DecodeEdits` refuses: it wraps each refused `*KeyError`, which keeps its own category (an unknown key `ErrKey`, any other refusal `ErrValidation`, as `DecodeKey` gives it), and `Err`, the cause of a candidate that does not decode or validate (`ErrValidation`). |
+| `ErrSchema`, `ErrKey` | Invalid schema/default declarations, or a malformed/unknown key. A `validate` tag the default validator cannot parse, or whose `dive` its field's type cannot take, is a schema error naming the field: on a field the validator reads on every validation it is refused before any source is read, even while the field is empty or nil; elsewhere, and for a rule that parses but cannot apply to its field's type, when validation reaches it, at the field's key (`at items[0].list`). Fix the tag ([validation](schema.md#validation)). `KeyError` distinguishes unknown keys from invalid values in `CheckKey`, `DecodeKey` and `CanonicalKey`; `EditsError` is a batch `DecodeEdits` refuses: it wraps each refused `*KeyError`, which keeps its own category (an unknown key `ErrKey`, any other refusal `ErrValidation`, as `DecodeKey` gives it), and `Err`, the cause of a candidate that does not decode or validate (`ErrValidation`). |
 
 `Diagnose(err)` turns any of them into a `Problem{Kind, Message}` — a bounded category for a metric label or a status endpoint.
 

@@ -291,13 +291,14 @@ func treeElement(data any, i int) any {
 	return nil
 }
 
-// validatorKey translates a validator struct namespace — the root type, then
-// Go field names, map keys and indexes in brackets: Config.DB.Pools[0].Max —
-// against the validated config v. A squashed struct's field name contributes
-// no key segment. exact is false when the namespace cannot be placed exactly.
+// validatorKey translates a validator struct namespace — the root type's
+// name (see [belowValidatorRoot]), then Go field names, map keys and indexes
+// in brackets: Config.DB.Pools[0].Max — against the validated config v. A
+// squashed struct's field name contributes no key segment. exact is false
+// when the namespace cannot be placed exactly.
 func validatorKey(v reflect.Value, structNS string) (keyPath, bool) {
-	_, rest, cut := strings.Cut(structNS, ".")
-	if !cut {
+	rest, ok := belowValidatorRoot(v.Type(), structNS)
+	if !ok {
 		return nil, false
 	}
 	var p keyPath
@@ -353,6 +354,18 @@ func validatorKey(v reflect.Value, structNS string) (keyPath, bool) {
 		rest = strings.TrimPrefix(rest, ".")
 	}
 	return p, true
+}
+
+// belowValidatorRoot is ns, a validator namespace of a value of type t, past
+// the root's part. go-playground starts a namespace with the name of the
+// struct type it validates and a dot — a generic type's name holds its type
+// arguments, dots included — and with nothing for an unnamed struct type.
+func belowValidatorRoot(t reflect.Type, ns string) (string, bool) {
+	name := derefType(t).Name()
+	if name == "" {
+		return ns, ns != ""
+	}
+	return strings.CutPrefix(ns, name+".")
 }
 
 // derefValue follows pointers and interfaces to the value they hold, stopping
