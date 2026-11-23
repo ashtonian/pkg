@@ -858,10 +858,11 @@ type unkeyedConfig struct {
 
 // unkeyedOf is a section whose every field, keyed or not, names host.
 func unkeyedOf(host string) unkeyedSection {
-	return unkeyedSection{
+	section := unkeyedSection{
 		unkeyedBase: unkeyedBase{Note: "note " + host}, Host: host, Hook: "hook " + host,
 		Target: &unkeyedTarget{Name: "target " + host}, Call: func() string { return "call " + host },
 	}
+	return section
 }
 
 // assertUnkeyedKept asserts got holds want's koanf:"-" fields and host.
@@ -943,7 +944,8 @@ type checkedUnkeyedConfig struct {
 // provider's typed section replaces them with its own.
 func TestSources_ProviderTypedSectionKeepsItsUnkeyedFields(t *testing.T) {
 	provider := func(host string) mapSource {
-		return mapSource{"section": unkeyedOf(host), "by_name": map[string]unkeyedSection{"c": unkeyedOf(host)}}
+		source := mapSource{"section": unkeyedOf(host), "by_name": map[string]unkeyedSection{"c": unkeyedOf(host)}}
+		return source
 	}
 	file := filepath.Join(t.TempDir(), "config.yaml")
 	writeFile(t, file, "section: {host: f}\nby_name: {c: {host: f}}\n")
@@ -1040,7 +1042,8 @@ func TestSources_EntryTypedSectionKeepsItsUnkeyedFields(t *testing.T) {
 	file := filepath.Join(t.TempDir(), "config.yaml")
 	writeFile(t, file, "section: {host: f}\n")
 	stored := WithBaseEntries(func(context.Context) (map[string]any, error) {
-		return map[string]any{"section": unkeyedOf("e"), `by_name["c"]`: unkeyedOf("e")}, nil
+		entries := map[string]any{"section": unkeyedOf("e"), `by_name["c"]`: unkeyedOf("e")}
+		return entries, nil
 	})
 	got, err := Load[unkeyedConfig](t.Context(), stored, WithFile(file))
 	require.NoError(t, err)
@@ -1148,7 +1151,8 @@ func TestSources_WhatMergesIntoATypedMapOrSection(t *testing.T) {
 		"section": mergeServer{Host: "h", Port: 1},
 	})
 	env := func(vars ...string) []Option {
-		return []Option{WithEnvPrefix("APP"), WithEnviron(func() []string { return vars })}
+		opts := []Option{WithEnvPrefix("APP"), WithEnviron(func() []string { return vars })}
+		return opts
 	}
 	for _, tc := range []struct {
 		name    string

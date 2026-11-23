@@ -29,19 +29,24 @@ type ifaceCfg struct {
 // key that is itself a secret often is.
 const ifaceKey = "prod_password"
 
-// Each interface field of ifaceCfg, and whether its keys are withheld. A
-// sensitive interface can hold a map or a list whose keys are secrets, as a
-// sensitive map can.
-var ifaceFields = []struct {
+type ifaceField struct {
 	field    string
 	tree     []string // field's path in a source tree
 	withheld bool
-}{
-	{"secret", []string{"secret"}, true},                        // tagged sensitive
-	{"password", []string{"password"}, true},                    // named like a credential
-	{"vault.plugin", []string{"vault", "plugin"}, true},         // in a sensitive struct
-	{`items["a"].token`, []string{"items", "a", "token"}, true}, // named like a credential, in a map entry
-	{"ext", []string{"ext"}, false},
+}
+
+// ifaceFields is each interface field of ifaceCfg, and whether its keys are
+// withheld. A sensitive interface can hold a map or a list whose keys are
+// secrets, as a sensitive map can.
+func ifaceFields() []ifaceField {
+	fields := []ifaceField{
+		{"secret", []string{"secret"}, true},                        // tagged sensitive
+		{"password", []string{"password"}, true},                    // named like a credential
+		{"vault.plugin", []string{"vault", "plugin"}, true},         // in a sensitive struct
+		{`items["a"].token`, []string{"items", "a", "token"}, true}, // named like a credential, in a map entry
+		{"ext", []string{"ext"}, false},
+	}
+	return fields
 }
 
 // shown is how diagnostics name key, a key beneath field: field alone when
@@ -58,11 +63,12 @@ func nested(path []string, v any) map[string]any {
 	for i := len(path) - 1; i > 0; i-- {
 		v = map[string]any{path[i]: v}
 	}
-	return map[string]any{path[0]: v}
+	tree := map[string]any{path[0]: v}
+	return tree
 }
 
 func TestDecodeEdits_WithholdsKeysBeneathASensitiveInterface(t *testing.T) {
-	for _, tt := range ifaceFields {
+	for _, tt := range ifaceFields() {
 		t.Run(tt.field, func(t *testing.T) {
 			key := tt.field + "." + ifaceKey
 
@@ -91,14 +97,14 @@ func TestDecodeEdits_WithholdsKeysBeneathASensitiveInterface(t *testing.T) {
 }
 
 func TestCheckKey_WithholdsKeysBeneathASensitiveInterface(t *testing.T) {
-	for _, tt := range ifaceFields {
+	for _, tt := range ifaceFields() {
 		t.Run(tt.field, func(t *testing.T) {
 			key := tt.field + "." + ifaceKey
 
 			err := CheckKey[ifaceCfg](t.Context(), key+"[*]", 1)
 			var ke *KeyError
 			require.ErrorAs(t, err, &ke)
-			assert.ErrorIs(t, err, ErrKey)
+			require.ErrorIs(t, err, ErrKey)
 			assert.Equal(t, shown(tt.field, tt.withheld, key+"[*]"), ke.Key)
 
 			_, err = CanonicalKey[ifaceCfg](key + "[*]")
@@ -107,14 +113,14 @@ func TestCheckKey_WithholdsKeysBeneathASensitiveInterface(t *testing.T) {
 
 			err = CheckKey[ifaceCfg](t.Context(), key, "ab")
 			require.ErrorAs(t, err, &ke)
-			assert.ErrorIs(t, err, ErrValidation)
+			require.ErrorIs(t, err, ErrValidation)
 			assert.Equal(t, shown(tt.field, tt.withheld, key), ke.Key)
 		})
 	}
 }
 
 func TestValidation_WithholdsKeysBeneathASensitiveInterface(t *testing.T) {
-	for _, tt := range ifaceFields {
+	for _, tt := range ifaceFields() {
 		t.Run(tt.field, func(t *testing.T) {
 			key := tt.field + "." + ifaceKey
 			_, err := Decode[ifaceCfg](t.Context(), nested(append(tt.tree, ifaceKey), "ab"))
@@ -134,7 +140,7 @@ func TestValidation_WithholdsKeysBeneathASensitiveInterface(t *testing.T) {
 func TestLoad_NamesPatternEntriesBeneathASensitiveInterfaceByItsField(t *testing.T) {
 	entries := map[string]any{}
 	var want []string
-	for _, tt := range ifaceFields {
+	for _, tt := range ifaceFields() {
 		key := tt.field + "." + ifaceKey + "[*]"
 		entries[key] = 1
 		want = append(want, shown(tt.field, tt.withheld, key))
@@ -149,7 +155,7 @@ func TestLoad_NamesPatternEntriesBeneathASensitiveInterfaceByItsField(t *testing
 	var got []string
 	for i := range rejected {
 		got = append(got, rejected[i].Key)
-		assert.ErrorIs(t, &rejected[i], ErrKey)
+		require.ErrorIs(t, &rejected[i], ErrKey)
 		assert.Contains(t, rejected[i].Error(), "not concrete")
 		if !strings.Contains(rejected[i].Key, "[*]") {
 			assert.NotContains(t, rejected[i].Error(), ifaceKey, "withheld")

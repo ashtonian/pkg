@@ -582,7 +582,8 @@ func TestShadow_NamesTheListElementAnEntrySet(t *testing.T) {
 		Pool []editServer `koanf:"pool"`
 	}
 	entries := WithBaseEntries(func(context.Context) (map[string]any, error) {
-		return map[string]any{"pool[0].port": 7}, nil
+		stored := map[string]any{"pool[0].port": 7}
+		return stored, nil
 	})
 	file := filepath.Join(t.TempDir(), "config.yaml")
 	writeFile(t, file, "pool: [{host: x}]\n")

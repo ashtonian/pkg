@@ -103,10 +103,12 @@ func (p keyPath) member(name string) keyPath {
 }
 
 func memberSegment(name string) segment {
+	kind := segKey
 	if validFieldKey(name) {
-		return segment{kind: segField, name: name}
+		kind = segField
 	}
-	return segment{kind: segKey, name: name}
+	member := segment{kind: kind, name: name}
+	return member
 }
 
 // entrySegment names a map entry: a member beneath an interface, otherwise
@@ -115,7 +117,8 @@ func entrySegment(name string, beneathInterface bool) segment {
 	if beneathInterface {
 		return memberSegment(name)
 	}
-	return segment{kind: segKey, name: name}
+	entry := segment{kind: segKey, name: name}
+	return entry
 }
 
 func (p keyPath) entry(name string, beneathInterface bool) keyPath {
@@ -179,7 +182,8 @@ func (e *keySyntaxError) Unwrap() error { return ErrKey }
 // caller that needs a concrete key rejects them.
 func parseKeyPath(s string) (keyPath, error) {
 	malformed := func(format string, args ...any) error {
-		return &keySyntaxError{text: s, reason: fmt.Sprintf(format, args...)}
+		err := &keySyntaxError{text: s, reason: fmt.Sprintf(format, args...)}
+		return err
 	}
 	var p keyPath
 	rest := s
@@ -207,7 +211,8 @@ func parseKeyPath(s string) (keyPath, error) {
 				end = len(rest)
 			}
 			name := rest[:end]
-			if problem := fieldKeyProblem(name); problem != "" {
+			problem := fieldKeyProblem(name)
+			if problem != "" {
 				return nil, malformed("%q is not a field key: %s", name, problem)
 			}
 			p = append(p, segment{kind: segField, name: name})

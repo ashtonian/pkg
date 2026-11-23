@@ -45,11 +45,13 @@ func RestartChanges(changes []Change) []Change {
 // fieldReload is the reload class of a field declared sf, reached through
 // the squashed structs parents: its own tag's, else the innermost of theirs.
 func fieldReload(sf reflect.StructField, parents []reflect.StructField) string {
-	if value, ok := sf.Tag.Lookup("reload"); ok {
+	value, ok := sf.Tag.Lookup("reload")
+	if ok {
 		return value
 	}
 	for i := len(parents) - 1; i >= 0; i-- {
-		if value, ok := parents[i].Tag.Lookup("reload"); ok {
+		value, ok = parents[i].Tag.Lookup("reload")
+		if ok {
 			return value
 		}
 	}
@@ -77,7 +79,8 @@ func checkReloadTags(view *gowalker.Schema) error {
 			return nil
 		}
 		for _, f := range shape.DeclaredView() {
-			if err := tagged(f.GoField()); err != nil {
+			err := tagged(f.GoField())
+			if err != nil {
 				return err
 			}
 		}
@@ -85,7 +88,8 @@ func checkReloadTags(view *gowalker.Schema) error {
 		// collects take.
 		for _, d := range shape.Declarations() {
 			if len(d.InlineParents) == 0 && koanfTag(d.GoField).Has("remain") {
-				if err := tagged(d.GoField); err != nil {
+				err := tagged(d.GoField)
+				if err != nil {
 					return err
 				}
 			}
@@ -145,11 +149,13 @@ func hasReloadTags(root *schemaNode) bool {
 				return true
 			}
 		}
-		if r := n.remain; r != nil {
+		r := n.remain
+		if r != nil {
 			if r.reload != "" {
 				return true
 			}
-			if m, err := r.node(metadataOf); err == nil && walk(m) {
+			m, err := r.node(metadataOf)
+			if err == nil && walk(m) {
 				return true
 			}
 		}
@@ -229,8 +235,10 @@ func (a *application) checkReloadOwnership() error {
 			return fmt.Errorf("%w: live key %s has no applier", ErrSchema, c.path)
 		}
 		for _, prefix := range a.owners {
-			if candidate, ok := instanceOf(prefix.path, c.path, representative); ok {
-				if i := a.owners.of(candidate); i >= 0 {
+			candidate, ok := instanceOf(prefix.path, c.path, representative)
+			if ok {
+				i := a.owners.of(candidate)
+				if i >= 0 {
 					claimed[i] = true
 				}
 			}

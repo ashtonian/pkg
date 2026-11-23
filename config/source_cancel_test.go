@@ -35,7 +35,8 @@ func TestWithInvalidEntries_EndedContextReportsNothing(t *testing.T) {
 			load := func(ctx context.Context, data map[string]any, reading func()) (reports, error) {
 				var n reports
 				above, err := NewMapProvider(func(context.Context) (map[string]any, error) {
-					return map[string]any{"name": "above"}, nil
+					data := map[string]any{"name": "above"}
+					return data, nil
 				}, "")
 				require.NoError(t, err)
 				_, err = Load[cancelJudgedCfg](ctx,
@@ -79,7 +80,8 @@ type cancelingLater struct {
 }
 
 func (v cancelingLater) Struct(cfg any) error {
-	if *v.calls++; *v.calls == 2 {
+	*v.calls++
+	if *v.calls == 2 {
 		v.cancel(errShutdown)
 	}
 	return defaultValidator().Struct(cfg)
@@ -97,31 +99,36 @@ func TestLoad_EndedInsideAStageFailsAsAbandoned(t *testing.T) {
 		opts func(cancel context.CancelCauseFunc) []Option
 	}{
 		{"judging entries", func(cancel context.CancelCauseFunc) []Option {
-			return []Option{
+			opts := []Option{
 				entries(map[string]any{"name": "a"}, WithInvalidEntries(func(context.Context, []KeyError) error { return nil })),
 				WithValidator(cancelingValidator{cancel}),
 			}
+			return opts
 		}},
 		{"testing a blamed entry", func(cancel context.CancelCauseFunc) []Option {
-			return []Option{
+			opts := []Option{
 				entries(map[string]any{"port": 0, "name": "a"}, WithInvalidEntries(func(context.Context, []KeyError) error { return nil })),
 				WithValidator(cancelingLater{cancel: cancel, calls: new(int)}),
 			}
+			return opts
 		}},
 		{"reporting withheld entries", func(cancel context.CancelCauseFunc) []Option {
-			return []Option{
+			opts := []Option{
 				entries(map[string]any{"name": "a"}, WithInvalidEntries(func(context.Context, []KeyError) error { cancel(errShutdown); return nil })),
 				entries(map[string]any{"port": 2}, WithInvalidEntries(func(context.Context, []KeyError) error { return nil })),
 			}
+			return opts
 		}},
 		{"reporting unknown keys", func(cancel context.CancelCauseFunc) []Option {
-			return []Option{
+			opts := []Option{
 				entries(map[string]any{"bogus": 1}, WithUnknownEntries(func(context.Context, []UnknownKey) error { cancel(errShutdown); return nil })),
 				entries(map[string]any{"stale": 1}, WithUnknownEntries(func(context.Context, []UnknownKey) error { return nil })),
 			}
+			return opts
 		}},
 		{"validating", func(cancel context.CancelCauseFunc) []Option {
-			return []Option{WithValidator(cancelingValidator{cancel})}
+			opts := []Option{WithValidator(cancelingValidator{cancel})}
+			return opts
 		}},
 	}
 	for _, tt := range tests {

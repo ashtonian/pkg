@@ -2,7 +2,6 @@ package config
 
 import (
 	"bytes"
-	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -10,12 +9,13 @@ import (
 )
 
 func remainOutputCfg() remainDiffCfg {
-	return remainDiffCfg{
+	cfg := remainDiffCfg{
 		Plugins: remainPlugins{Host: "h", Extra: map[string]any{"foo": 1, "a.b": 2, "api_token": "t0ken", "endpoint": "postgres://u:hunter2pw@db/x"}},
 		Vault:   &remainSecrets{Addr: "a", Paths: map[string]string{"prod_db": "s3cret"}},
 		Typed:   remainTyped{Items: map[string]remainItem{"x": {Port: 2}}},
 		Locked:  remainLabels{Team: "t", Values: map[string]string{"k": "v4lue"}},
 	}
+	return cfg
 }
 
 // Tree withholds nothing: each key a remain field collects is a key of its
@@ -72,7 +72,8 @@ func TestTreeFunc_APolicysMapSetsTheKeysOfARemainFieldsSection(t *testing.T) {
 
 	_, err = TreeFunc(cfg, func(key string, _ Field, v any) any {
 		if key == "vault[*]" {
-			return map[string]any{"addr": "elsewhere"}
+			replaced := map[string]any{"addr": "elsewhere"}
+			return replaced
 		}
 		return v
 	})
@@ -115,7 +116,7 @@ func TestRedactedMap_ShowsTheKeysARemainFieldCollects(t *testing.T) {
 		assert.Contains(t, text, "foo", format)
 		assert.Contains(t, text, "[*]", format)
 		for _, secret := range []string{"prod_db", "s3cret", "v4lue", "t0ken", "hunter2pw"} {
-			assert.False(t, strings.Contains(text, secret), "%s shows %s", format, secret)
+			assert.NotContains(t, text, secret, "%s shows %s", format, secret)
 		}
 	}
 }

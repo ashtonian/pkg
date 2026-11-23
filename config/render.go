@@ -85,7 +85,8 @@ func (w *valueTree) root(cfg any) *outNode {
 	// Judged by type first: a pointer chain that never reaches a struct can
 	// hold its own address, and following its values would never end.
 	if !v.IsValid() || !isBranch(derefType(v.Type())) {
-		return &outNode{kind: outMap}
+		empty := &outNode{kind: outMap}
+		return empty
 	}
 	for v.Kind() == reflect.Pointer {
 		if v.IsNil() {
@@ -125,7 +126,8 @@ func (w *valueTree) fields(n *outNode, val reflect.Value, c cursor) {
 			n.entries = append(n.entries, outEntry{key: m.seg.name, node: node})
 			continue
 		}
-		if collected, ok := node.scalar.(map[string]any); ok && w.leaf != nil {
+		collected, ok := node.scalar.(map[string]any)
+		if ok && w.leaf != nil {
 			w.spliceCollected(n, schema, c.path, collected)
 			continue
 		}

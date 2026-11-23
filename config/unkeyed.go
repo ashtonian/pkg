@@ -68,7 +68,8 @@ func (s *unkeyedSections) merge(tree map[string]any, set []unkeyedFields) {
 	}
 	for _, u := range set {
 		var placed bool
-		if placed, u.whole = holdsMap(tree, u.path); !placed {
+		placed, u.whole = holdsMap(tree, u.path)
+		if !placed {
 			continue
 		}
 		if *s == nil {
@@ -95,14 +96,16 @@ func holdsMap(tree map[string]any, p keyPath) (ok bool, whole int) {
 	for i, seg := range p {
 		switch seg.kind {
 		case segField, segKey:
-			if _, merged := mergedMap(at); !merged && whole == 0 {
+			_, merged := mergedMap(at)
+			if !merged && whole == 0 {
 				whole = i
 			}
 			at, ok = mapEntry(at, seg.name)
 		case segIndex:
 			switch list := at.(type) {
 			case []any:
-				if ok = seg.index < len(list); ok {
+				ok = seg.index < len(list)
+				if ok {
 					at = list[seg.index]
 				}
 			case listEdit:

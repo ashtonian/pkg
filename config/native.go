@@ -90,16 +90,20 @@ func unusedKey(root *schemaNode, tree any, name string) UnknownKey {
 	if p == nil {
 		raw, underStruct = name, true
 	}
-	if key, matches := matchKey(raw, treeKeys(at)); !underStruct || matches != 1 || key != raw {
-		return UnknownKey{Key: p.orRoot()}
+	key, matches := matchKey(raw, treeKeys(at))
+	if !underStruct || matches != 1 || key != raw {
+		atPrefix := UnknownKey{Key: p.orRoot()}
+		return atPrefix
 	}
 	named := p.member(raw)
 	k := UnknownKey{Key: named.String()}
 	if named[len(named)-1].kind != segField {
 		return k
 	}
-	if _, n, err := root.walkTo(cursor{}, p); err == nil && n.kind == nodeBranch {
-		if field := closestField(n, raw); field != "" {
+	_, n, err := root.walkTo(cursor{}, p)
+	if err == nil && n.kind == nodeBranch {
+		field := closestField(n, raw)
+		if field != "" {
 			k.Suggestion = p.field(field).String()
 		}
 	}
@@ -298,7 +302,8 @@ func treeEntry(data any, key string) any {
 	}
 	var found any
 	for _, e := range d {
-		if v := treeEntry(e, key); v != nil {
+		v := treeEntry(e, key)
+		if v != nil {
 			found = v // a later map wins, as decoding merges them
 		}
 	}

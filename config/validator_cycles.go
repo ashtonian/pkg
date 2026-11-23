@@ -5,7 +5,6 @@ import (
 	"reflect"
 	"slices"
 	"strconv"
-	"sync"
 
 	"github.com/go-playground/validator/v10"
 )
@@ -40,7 +39,8 @@ func refuseCycles(cfg any) error {
 	w := cycleWalk{root: root, onPath: map[pathState]pathEntry{}, done: map[pathState]bool{}}
 	// The validator's namespaces start with the root type's name and a dot,
 	// or with nothing for an unnamed type (see [belowValidatorRoot]).
-	if name := root.Elem().Type().Name(); name != "" {
+	name := root.Elem().Type().Name()
+	if name != "" {
 		w.structNS = append(w.structNS, name+"."...)
 		w.ns = append(w.ns, name+"."...)
 	}
@@ -96,7 +96,8 @@ func (w *cycleWalk) value(v reflect.Value, rules []string) error {
 		if !v.IsValid() || (v.Kind() == reflect.Pointer || v.Kind() == reflect.Interface) && v.IsNil() {
 			return nil
 		}
-		if next, ok := validatorValue(v); ok {
+		next, ok := validatorValue(v)
+		if ok {
 			// A ValidatorValue names the value to validate; one that names
 			// another of its own type leads the validator back where it was.
 			if slices.Contains(valued, v.Type()) {
@@ -145,7 +146,8 @@ func (w *cycleWalk) fields(v reflect.Value) error {
 	mark, markNS := len(w.structNS), len(w.ns)
 	for _, f := range read.fields {
 		w.structNS, w.ns = append(w.structNS[:mark], f.name...), append(w.ns[:markNS], f.alt...)
-		if err := w.value(v.Field(f.index), f.rules); err != nil {
+		err := w.value(v.Field(f.index), f.rules)
+		if err != nil {
 			return err
 		}
 	}
@@ -183,7 +185,8 @@ func (w *cycleWalk) each(v reflect.Value, rules []string) error {
 	for i := range v.Len() {
 		w.structNS = append(strconv.AppendInt(append(w.structNS[:mark], '['), int64(i), 10), ']')
 		w.ns = append(strconv.AppendInt(append(w.ns[:markNS], '['), int64(i), 10), ']')
-		if err := w.value(v.Index(i), rules); err != nil {
+		err := w.value(v.Index(i), rules)
+		if err != nil {
 			return err
 		}
 	}
@@ -198,7 +201,8 @@ func (w *cycleWalk) entries(v reflect.Value, rules []string) error {
 	for it := v.MapRange(); it.Next(); {
 		w.structNS = fmt.Appendf(w.structNS[:mark], "[%v]", it.Key())
 		w.ns = fmt.Appendf(w.ns[:markNS], "[%v]", it.Key())
-		if err := w.entry(it.Key(), it.Value(), rules); err != nil {
+		err := w.entry(it.Key(), it.Value(), rules)
+		if err != nil {
 			return err
 		}
 	}
@@ -212,7 +216,8 @@ func (w *cycleWalk) entry(key, value reflect.Value, rules []string) error {
 	if !keyed {
 		return w.value(value, rules)
 	}
-	if err := w.value(key, keyRules); err != nil {
+	err := w.value(key, keyRules)
+	if err != nil {
 		return err
 	}
 	if len(valueRules) > 0 || structEntry(value.Type()) {
@@ -230,7 +235,8 @@ func entryRules(rules []string) (keyRules, valueRules []string, keyed bool) {
 	if len(rules) == 0 || rules[0] != "keys" {
 		return nil, rules, false
 	}
-	if end := slices.Index(rules, "endkeys"); end >= 0 {
+	end := slices.Index(rules, "endkeys")
+	if end >= 0 {
 		return rules[1 : end+1], rules[end+1:], true
 	}
 	return rules[1:], nil, true
@@ -251,7 +257,8 @@ func (w *cycleWalk) through(ref reference, rules []string, walk func() error) er
 	if len(rules) > 0 {
 		state.rules = &rules[0]
 	}
-	if entered, ok := w.onPath[state]; ok {
+	entered, ok := w.onPath[state]
+	if ok {
 		return w.cycle(entered)
 	}
 	if w.done[state] {
@@ -300,18 +307,16 @@ func validatorValue(v reflect.Value) (reflect.Value, bool) {
 // rules ahead of it while that type is still on its path, or reaches a value
 // whose type it cannot know — an interface, a ValidatorValue, among them a
 // dived remain field's entries — which can hold anything. Most configs can
-// hold none, and are never walked. It is decided once per type for the life
-// of the process, as [validatorFields] reads each struct once.
+// hold none, and are never walked. It is decided once per type, and kept on
+// the struct's schema entry.
 func mayHoldCycle(t reflect.Type) bool {
-	if may, ok := cycleTypes.Load(t); ok {
-		return may.(bool)
-	}
-	w := cycleTypeWalk{onPath: map[typeState]bool{}, done: map[typeState]bool{}}
-	may, _ := cycleTypes.LoadOrStore(t, w.value(t, nil))
-	return may.(bool)
+	e := schemaMetadata(t)
+	e.cycles.Do(func() {
+		w := cycleTypeWalk{onPath: map[typeState]bool{}, done: map[typeState]bool{}}
+		e.mayCycle = w.value(t, nil)
+	})
+	return e.mayCycle
 }
-
-var cycleTypes sync.Map // reflect.Type → bool
 
 // cycleTypeWalk is one mayHoldCycle walk: [cycleWalk]'s, on types. onPath
 // holds the states entered on the current path, done those walked to the

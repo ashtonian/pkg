@@ -103,12 +103,10 @@ func TestCanonicalKey_AndFieldForAgreeOnRemainKeys(t *testing.T) {
 		`typed["a b"].port`: "typed.a b.port",
 	} {
 		got, err := CanonicalKey[remainCfg](key)
-		if !assert.NoError(t, err, key) {
-			continue
-		}
+		require.NoError(t, err, key)
 		assert.Equal(t, want, got, key)
 		_, err = FieldFor[remainCfg](got)
-		assert.NoError(t, err, got)
+		require.NoError(t, err, got)
 	}
 	for _, bad := range []string{"typed.x.nope", "vault.prod.x", `plugins["host"]`, "plugins.Host.below"} {
 		_, err := CanonicalKey[remainCfg](bad)
@@ -198,9 +196,9 @@ func TestSchema_ChecksARemainFieldsTags(t *testing.T) {
 		B shared `koanf:"b"`
 	}
 	_, err := Decode[sensitiveTypo](t.Context(), nil)
-	assert.ErrorIs(t, err, ErrSchema)
+	require.ErrorIs(t, err, ErrSchema)
 	_, err = FieldFor[reloadTypo]("x")
-	assert.ErrorIs(t, err, ErrSchema)
+	require.ErrorIs(t, err, ErrSchema)
 	_, err = FieldFor[sharedTwice]("a.x")
 	assert.ErrorIs(t, err, ErrSchema)
 }

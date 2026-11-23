@@ -61,7 +61,8 @@ func (l *loader) claimUnknown(merged, defaults map[string]any, unused []string, 
 	s := newUnknownSetters(layers, defaults)
 	for i, y := range layers {
 		for k, u := range y.unknown {
-			if c, ok := s.claimant(s.unmergedRaw[i][k]); ok {
+			c, ok := s.claimant(s.unmergedRaw[i][k])
+			if ok {
 				claimed[c] = append(claimed[c], u)
 				continue
 			}
@@ -69,7 +70,8 @@ func (l *loader) claimUnknown(merged, defaults map[string]any, unused []string, 
 		}
 	}
 	for _, name := range unused {
-		if c, ok := s.claimant(unusedPath(l.schema, merged, name)); ok {
+		c, ok := s.claimant(unusedPath(l.schema, merged, name))
+		if ok {
 			claimed[c] = append(claimed[c], unusedKey(l.schema, merged, name))
 			continue
 		}
@@ -98,12 +100,14 @@ func newUnknownSetters(layers []*layer, defaults map[string]any) *unknownSetters
 		s.unmerged[i] = map[string]bool{}
 		for _, u := range y.unknown {
 			var raw []string
-			if p, err := parseKeyPath(u.Key); err == nil {
+			p, err := parseKeyPath(u.Key)
+			if err == nil {
 				raw = p.raw()
 			}
 			s.unmergedRaw[i] = append(s.unmergedRaw[i], raw)
 			for n := range raw {
-				if at := string(encodePath(nil, raw[:n])); !s.unmerged[i][at] {
+				at := string(encodePath(nil, raw[:n]))
+				if !s.unmerged[i][at] {
 					s.unmerged[i][at] = false
 				}
 			}
@@ -139,7 +143,8 @@ func (s *unknownSetters) claimant(raw []string) (int, bool) {
 // raw.
 func (s *unknownSetters) setUnmerged(i int, raw []string) bool {
 	m := s.unmerged[i]
-	if _, ok := m[string(encodePath(nil, raw))]; ok {
+	_, ok := m[string(encodePath(nil, raw))]
+	if ok {
 		return true
 	}
 	for n := range raw {
@@ -161,11 +166,13 @@ func holdsRaw(tree any, raw []string) bool {
 		case wholeMap:
 			tree, ok = t[key]
 		case []any:
-			if i, err := strconv.Atoi(key); err == nil && i >= 0 && i < len(t) {
+			i, err := strconv.Atoi(key)
+			if err == nil && i >= 0 && i < len(t) {
 				tree, ok = t[i], true
 			}
 		case listEdit:
-			if i, err := strconv.Atoi(key); err == nil {
+			i, err := strconv.Atoi(key)
+			if err == nil {
 				tree, ok = t[i]
 			}
 		}
@@ -187,7 +194,8 @@ func unusedPath(root *schemaNode, tree any, name string) []string {
 	for _, s := range p {
 		switch s.kind {
 		case segIndex:
-			if _, ok := data.([]any); !ok {
+			_, ok := data.([]any)
+			if !ok {
 				continue // a map decoding reads as the list's one element
 			}
 			raw, data = append(raw, strconv.Itoa(s.index)), treeElement(data, s.index)
@@ -198,7 +206,8 @@ func unusedPath(root *schemaNode, tree any, name string) []string {
 	if exact {
 		return raw
 	}
-	if rest := name[used:]; used == 0 || strings.HasPrefix(rest, ".") {
+	rest := name[used:]
+	if used == 0 || strings.HasPrefix(rest, ".") {
 		raw = append(raw, strings.TrimPrefix(rest, "."))
 	}
 	return raw
@@ -217,10 +226,12 @@ func reportUnknown(ctx context.Context, layers []*layer, claimed [][]UnknownKey)
 		slices.SortFunc(keys, func(a, b UnknownKey) int { return strings.Compare(a.Key, b.Key) })
 		keys = slices.Compact(keys)
 		if y.unknownReport != nil {
-			if err := abandoned(ctx); err != nil {
+			err := abandoned(ctx)
+			if err != nil {
 				return nil, err
 			}
-			if err := y.unknownReport(ctx, slices.Clone(keys)); err != nil {
+			err = y.unknownReport(ctx, slices.Clone(keys))
+			if err != nil {
 				return nil, fmt.Errorf("reporting unknown keys in %s: %w: %w", y.name, ErrValidation, err)
 			}
 		}

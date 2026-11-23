@@ -38,7 +38,8 @@ func configField(sf reflect.StructField) (gowalker.FieldRule, error) {
 		}
 		return gowalker.FieldRule{Inline: isBranch(derefType(sf.Type)), Skip: !isBranch(derefType(sf.Type))}, nil
 	}
-	if problem := fieldKeyProblem(key); problem != "" {
+	problem := fieldKeyProblem(key)
+	if problem != "" {
 		return gowalker.FieldRule{}, fmt.Errorf("%w: field %s has key %q, which no key can spell: %s", ErrSchema, sf.Name, key, problem)
 	}
 	for i, a := range aliases {
