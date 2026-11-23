@@ -75,8 +75,9 @@ type Dialect interface {
 	// decimals exactly: the exact value itself where the database's own
 	// type orders it; where there is none, a key read from the operand that
 	// orders as the value does and is equal exactly where the values are.
-	// Filters compare decimals through it, equality and sets included, as
-	// sorts and keyset seeks do, so one index on it serves them all.
+	// Filters and lookups compare decimals through it, equality and sets
+	// included, as sorts and keyset seeks do, so one index on it serves
+	// them all.
 	DecimalOrder(o DecimalOperand) string
 
 	// TwoValuedCondition renders `field <op> value` a second way, one an
@@ -114,10 +115,11 @@ type Dialect interface {
 	// setRows binds a set's members as one parameter and reads them back
 	// as rows of one column, v, of the type FieldExpr reads field as.
 	setRows(field *FieldSchema, members []any, bind func(any) string) (string, error)
-	// memberSet tests expr, a value of field's type, for membership in
-	// members (in) or absence from them, the set bound as one parameter:
-	// `$in` / `$nin` and a lookup's WhereIn render through it.
-	memberSet(field *FieldSchema, expr string, members []any, in bool, bind func(any) string) (string, error)
+	// memberSet tests field for membership in members (in) or absence
+	// from them, the set bound as one parameter and compared as field's
+	// equality compares: a decimal through DecimalOrder. `$in` / `$nin`
+	// and a lookup's WhereIn render through it.
+	memberSet(field *FieldSchema, members []any, in bool, bind func(any) string) (string, error)
 
 	// numberKey renders an int, float or decimal field's value as its
 	// terms facet key: the canonical decimal text (core.DecimalText)

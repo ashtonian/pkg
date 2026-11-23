@@ -32,7 +32,7 @@ A junction with a tenant column (`relation:"…,id,tenant_id"`) binds the caller
 
 ## Declare a pair table
 
-The tag grammar is `relation:"table,owner_column,target_column[,primary_key[,tenant_column]]"`. The owner primary key defaults to `id`. Every component must be an identifier. The field is a virtual slice of target IDs, usually `db:"-"`; its `parse` capabilities independently allow filtering, including, faceting, and patching.
+The tag grammar is `relation:"table,owner_column,target_column[,primary_key[,tenant_column]]"`. The owner primary key defaults to `id`. Every component must be an identifier. The field is a virtual slice of target IDs, usually `db:"-"`; the IDs and the owner key are strings, UUIDs or integers; its `parse` capabilities independently allow filtering, including, faceting, and patching.
 
 For a virtual relation hidden from the base row JSON, add `relation_name:"tag_ids"` beside `json:"-"` to preserve its external capability name. This avoids deriving `TagIDs` as an unintended snake-case spelling. It only affects the hidden-relation fallback, does not change visible JSON names, and does not grant additional filter/include/facet/patch capabilities. Duplicate external names are rejected during schema generation.
 

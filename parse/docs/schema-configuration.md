@@ -137,6 +137,7 @@ Request documents (JSON filters, JSON Patch and merge patch bodies) decode with 
 | `CompareDecimals(a, b)` | Exact decimal order of any two values `DecimalText` accepts |
 | `ParsePointer` / `FormatPointer` / `EscapePointerToken` | RFC 6901 paths (`~0`, `~1` escapes) |
 | `TypeOf(t)` | `TypeInfo{Type, Elem, NumberKind, SQLType}` — Go-only classification; `SQLType` is empty, slices of scalars are arrays, maps/`any`/`json.RawMessage` and other slices are JSON, structs are objects |
+| `IsKeyType(t)` | Whether a `FieldType` may be a key: string, UUID or integer, compared as stored on every backend. Tenant columns, batch update keys, membership fields and relation correlation columns must be one |
 | `SchemaGenerator.FieldType(field)` | Go classification combined with declared physical `SQLType`; JSON scalar/slice fields become documents, typed objects retain members, and native arrays remain arrays |
 
 ## Schema discovery

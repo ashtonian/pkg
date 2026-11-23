@@ -55,9 +55,7 @@ func (c UpdateBatchChunk) CheckCurrent(keys []any) error {
 	if len(keys) != len(c.Keys) || len(c.Keys) == 0 {
 		return ErrUpdateBatchTargets
 	}
-	switch c.keyType.Type {
-	case core.FieldTypeString, core.FieldTypeUUID, core.FieldTypeInt:
-	default:
+	if !core.IsKeyType(c.keyType.Type) {
 		return ErrUpdateBatchTargets
 	}
 	wanted := make(map[any]bool, len(c.Keys))
@@ -110,9 +108,7 @@ func (r *Resource[T]) BuildUpdateBatch(d Dialect, rows []RowUpdate, scope Scope,
 		return nil, err
 	}
 	keyType := core.TypeOf(r.tableColumns[r.pk])
-	switch keyType.Type {
-	case core.FieldTypeString, core.FieldTypeUUID, core.FieldTypeInt:
-	default:
+	if !core.IsKeyType(keyType.Type) {
 		return nil, fmt.Errorf("parse: %s: update batch key type %s is unsupported", r.table, keyType.Type)
 	}
 	ordered := make([]orderedRowUpdate, len(rows))

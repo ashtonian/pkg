@@ -25,8 +25,7 @@ type tenantColumn struct {
 
 func newTenantColumn(table, column string, t reflect.Type) (*tenantColumn, error) {
 	info := core.TypeOf(t)
-	switch info.Type {
-	case core.FieldTypeString, core.FieldTypeUUID, core.FieldTypeInt:
+	if core.IsKeyType(info.Type) {
 		return &tenantColumn{table: table, column: column, info: info}, nil
 	}
 	return nil, fmt.Errorf("tenant column %s is %s; a tenant key is a string, a UUID or an integer", column, info.Type)

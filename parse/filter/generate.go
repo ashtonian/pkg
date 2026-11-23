@@ -168,8 +168,8 @@ func generateFilterSchema(g *core.SchemaGenerator, t reflect.Type) (*ResourceSch
 			if err != nil {
 				return nil, fmt.Errorf("field %s: %w", field.GoName, err)
 			}
-			if info.Type != core.FieldTypeArray {
-				return nil, fmt.Errorf("field %s: relation fields must be slices of scalar target IDs, got %s", field.GoName, field.Type)
+			if info.Type != core.FieldTypeArray || !core.IsKeyType(info.Elem) {
+				return nil, fmt.Errorf("field %s: relation fields must be slices of string, UUID or integer target IDs, got %s", field.GoName, field.Type)
 			}
 			// Relation operators compare target IDs, so values normalize
 			// and advertise as the element type, not "array".
