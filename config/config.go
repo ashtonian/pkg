@@ -719,16 +719,20 @@ func defaultRules(t reflect.Type) error {
 //   - into a field's struct, time.Time and types convertible to it aside,
 //     once its rules pass: v reads every tag of a struct it meets, and goes
 //     on into the fields' values unless the rules reaching the struct say
-//     structonly; nostructlevel stops before it.
+//     structonly; nostructlevel stops before it;
+//   - through a dive into an array of one or more elements, which holds
+//     them whatever the value: each element is walked as a field of the
+//     element type with the rules after the dive.
 //
 // On each of those structs' fields whose values v walks, it also refuses a
 // dive v cannot take on the field's type, which v panics on whenever it
 // applies it (see [misappliedDive]).
 //
 // A struct v reaches only when a value puts it there is left to validation
-// (see [validateDefault]): one behind a pointer, a map, a slice, an array
-// or an interface, one beneath an omitempty or omitzero rule, and one whose
-// value v replaces with its own ValidatorValue.
+// (see [validateDefault]): one behind a pointer, a map, a slice or an
+// interface, one beneath an omitempty or omitzero rule, and one whose value
+// v replaces with its own ValidatorValue. An array of no elements is never
+// walked.
 func unreadableRules(root reflect.Type, v *validator.Validate) error {
 	w := ruleWalk{v: v, read: map[reflect.Type][]readRules{}, walked: map[reflect.Type]bool{}}
 	w.fields(root, true)
@@ -752,22 +756,35 @@ type readRules struct {
 	rules []string
 }
 
-// value walks the struct a field of type t holds by value, which v meets on
-// every validation unless rules, the field's rules, stop it first.
+// value walks what a field of type t holds by value — a struct, or the
+// elements a dive reaches in an array — which v meets on every validation
+// unless rules, the field's rules, stop it first.
 func (w *ruleWalk) value(t reflect.Type, rules []string) {
-	if t.Kind() != reflect.Struct || t.ConvertibleTo(timeType) || validatedAsOther(t) {
+	if validatedAsOther(t) {
 		return
 	}
-	for _, rule := range rules {
+	isStruct := t.Kind() == reflect.Struct && !t.ConvertibleTo(timeType)
+	for i, rule := range rules {
 		switch rule {
-		case "nostructlevel", "endkeys", "dive", "omitempty", "omitzero":
+		case "nostructlevel", "endkeys", "omitempty", "omitzero":
 			return
 		case "structonly":
-			w.fields(t, false)
+			if isStruct {
+				w.fields(t, false)
+			}
+			return
+		case "dive":
+			// A slice, a map or a pointer may hold no element; an array
+			// holds its length's worth whatever the value.
+			if t.Kind() == reflect.Array && t.Len() > 0 {
+				w.value(t.Elem(), rules[i+1:])
+			}
 			return
 		}
 	}
-	w.fields(t, true)
+	if isStruct {
+		w.fields(t, true)
+	}
 }
 
 // fields reads the validate tags of struct t's fields as v does on meeting
@@ -796,8 +813,9 @@ func (w *ruleWalk) fields(t reflect.Type, descend bool) {
 // kind that is not a slice, an array or a map, or keys after a dive on a
 // slice or an array. v panics on one whenever it applies it, so the tag is
 // wrong whatever the field holds: a collection's dive is applied to each
-// element it holds. It is "" when the dives apply, and where a value decides
-// what v walks — an interface, a type v validates as its ValidatorValue.
+// element it holds. It is "" when the dives apply, where a value decides
+// what v walks — an interface, a type v validates as its ValidatorValue —
+// and past a dive into an array of no elements, which v never applies.
 func misappliedDive(t reflect.Type, rules []string) string {
 	for i, rule := range rules {
 		if validatedAsOther(t) {
@@ -817,6 +835,9 @@ func misappliedDive(t reflect.Type, rules []string) string {
 		case reflect.Interface:
 			return ""
 		case reflect.Slice, reflect.Array:
+			if t.Kind() == reflect.Array && t.Len() == 0 {
+				return ""
+			}
 			if keys {
 				return fmt.Sprintf("keys after a dive on %s, which is not a map", gowalker.TypeText(t))
 			}

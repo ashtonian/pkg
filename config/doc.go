@@ -68,7 +68,7 @@
 // declaring the field lists it as another library's ([ForeignTagDeclarer]).
 // A validate rule that parses but cannot apply to its field's type
 // (min=abc), and an unparsable tag or misapplied dive in a struct behind a
-// pointer, a collection or an interface, fail with ErrSchema naming the
+// pointer, a slice, a map or an interface, fail with ErrSchema naming the
 // field when validation reaches them. [KeyOf] names a field from its
 // address. [ParseKey] exposes the same
 // canonical grammar as typed segments, including quoted keys and wildcards.

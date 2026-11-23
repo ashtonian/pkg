@@ -251,8 +251,8 @@ type behindMapCfg struct {
 	Items map[string]libInner `koanf:"items" validate:"dive,keys,min=1,endkeys"`
 }
 
-type behindArrayCfg struct {
-	Items [1]libInner `koanf:"-" validate:"dive"`
+type behindArrayPointerCfg struct {
+	Items [1]*libInner `koanf:"-" validate:"dive"`
 }
 
 type behindOmitEmptyCfg struct {
@@ -270,7 +270,7 @@ type behindValuerCfg struct {
 	Lib valuerInner `koanf:"-"`
 }
 
-// The validator reads a struct behind a pointer, a collection or an
+// The validator reads a struct behind a pointer, a slice, a map or an
 // interface, or beneath omitempty, only when a value puts one there, and a
 // struct that names its own ValidatorValue never: the pre-check leaves
 // their tags alone, and a config that leaves them out loads. A value that
@@ -305,8 +305,14 @@ func TestDefaultValidator_LeavesNilableEdgesToValidation(t *testing.T) {
 			_, err := Decode[behindMapCfg](ctx, map[string]any{"items": map[string]any{"a": map[string]any{"host": "h"}}})
 			return err
 		}},
-		{"array", nil, func(ctx context.Context) error {
-			_, err := Decode[behindArrayCfg](ctx, nil)
+		{"pointer in an array", func(ctx context.Context) error {
+			_, err := Decode[behindArrayPointerCfg](ctx, nil)
+			return err
+		}, func(ctx context.Context) error {
+			_, err := Load[behindArrayPointerCfg](ctx, WithPostLoad(func(_ context.Context, c *behindArrayPointerCfg) error {
+				c.Items[0] = &libInner{Host: "h"}
+				return nil
+			}))
 			return err
 		}},
 		{"omitempty", func(ctx context.Context) error {
@@ -486,6 +492,64 @@ func TestDefaultValidator_RefusesDivesThatCannotApply(t *testing.T) {
 	})
 	require.NoError(t, err, "dives that apply are not refused")
 	assert.Equal(t, []int{1}, got.Ints)
+}
+
+type arrayOfLibCfg struct {
+	Items [1]libInner `koanf:"-" validate:"dive"`
+}
+
+type arrayOfDiveSectionCfg struct {
+	Sections [2]diveSection `koanf:"sections" validate:"dive"`
+}
+
+type arrayOfKeysOnSliceCfg struct {
+	Sections [1]keysOnSliceSection `koanf:"-" validate:"dive"`
+}
+
+type emptyArraysCfg struct {
+	Lib      [0]libInner    `koanf:"-" validate:"dive"`
+	Sections [0]diveSection `koanf:"-" validate:"dive"`
+	Ints     [0]int         `koanf:"-" validate:"dive,dive"`
+	Keys     [0]string      `koanf:"-" validate:"dive,keys,min=1,endkeys"`
+}
+
+// An array of one or more elements holds them on every validation, so a
+// dive into it reaches each element's struct as a field held by value does:
+// an unreadable tag or a misapplied dive there is refused before any source
+// is read. An array of no elements is never walked, and nothing beneath its
+// dive is refused.
+func TestDefaultValidator_ArraysAreReachedByLength(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		load func(context.Context, Option) error
+		want string
+	}{
+		{"unreadable tag in an element", func(ctx context.Context, src Option) error {
+			_, err := Load[arrayOfLibCfg](ctx, src)
+			return err
+		}, "field Host of config.libInner has a validate tag the validator cannot read: Undefined validation function 'lib_host'"},
+		{"dive on an element's int", func(ctx context.Context, src Option) error {
+			_, err := Load[arrayOfDiveSectionCfg](ctx, src)
+			return err
+		}, "field Count of config.diveSection has a validate tag the validator cannot apply: dive on int,"},
+		{"keys on an element's empty slice", func(ctx context.Context, src Option) error {
+			_, err := Load[arrayOfKeysOnSliceCfg](ctx, src)
+			return err
+		}, "field List of config.keysOnSliceSection has a validate tag the validator cannot apply: keys after a dive on []string,"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			read := 0
+			src, err := NewMapProvider(func(context.Context) (map[string]any, error) { read++; return nil, nil }, "")
+			require.NoError(t, err)
+			err = tc.load(t.Context(), WithBaseProvider(src, nil))
+			require.ErrorIs(t, err, ErrSchema)
+			assert.Contains(t, err.Error(), tc.want)
+			assert.Zero(t, read, "refused before any source is read")
+		})
+	}
+
+	_, err := Decode[emptyArraysCfg](t.Context(), nil)
+	require.NoError(t, err)
 }
 
 type behindDivePointerCfg struct {
