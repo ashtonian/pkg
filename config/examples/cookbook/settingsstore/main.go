@@ -10,6 +10,9 @@
 //
 // A key's write replaces the rows stored beneath it; a key set to null is
 // deleted, with the rows beneath it.
+//
+//	settingsstore migrate   # once per release, with a role that may create tables
+//	settingsstore           # each replica: serves, running no DDL
 package main
 
 import (
@@ -37,9 +40,9 @@ import (
 	"github.com/ashtonian/pkg/config"
 )
 
-// Schema creates the tables: settings holds a row per key, and
-// settings_lock the one row every write updates first, so that writes from
-// every replica take turns.
+// Schema creates the tables, as `settingsstore migrate` applies it:
+// settings holds a row per key, and settings_lock the one row every write
+// updates first, so that writes from every replica take turns.
 const Schema = `
 CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS settings_lock (id INTEGER PRIMARY KEY, writes BIGINT NOT NULL);
@@ -230,7 +233,7 @@ func (s *Settings) Write(ctx context.Context, edits map[string]any) ([]string, e
 		return nil, fmt.Errorf("taking the settings lock: %w", err)
 	}
 	if n != 1 {
-		return nil, errors.New("taking the settings lock: settings_lock has no row 1; apply Schema")
+		return nil, errors.New("taking the settings lock: settings_lock has no row 1; run `settingsstore migrate`")
 	}
 	stored, err := readRows(ctx, tx, s.maxRows)
 	if err != nil {
@@ -482,7 +485,8 @@ func main() {
 	level := new(slog.LevelVar)
 	level.Set(slog.LevelWarn)
 	logger := slog.New(slog.NewJSONHandler(os.Stderr, &slog.HandlerOptions{Level: level}))
-	err := run(ctx, logger, level)
+	open := func(url string) (*sql.DB, error) { return sql.Open("pgx", url) }
+	err := run(ctx, os.Args[1:], os.Environ, open, logger, level)
 	stop()
 	if err != nil {
 		logger.Error("settings store", slog.Any("error", err))
@@ -490,19 +494,31 @@ func main() {
 	}
 }
 
-func run(ctx context.Context, logger *slog.Logger, level *slog.LevelVar) error {
-	boot, err := config.Load[BootConfig](ctx, config.WithEnvPrefix("SETTINGS"), config.WithLogger(logger)) // SETTINGS_DATABASE_URL, ...
+// run runs the command args name: none serves the admin API, and migrate
+// applies Schema and exits. Serving runs no DDL, so replicas need no
+// privilege to create tables and never race one another creating them.
+func run(ctx context.Context, args []string, environ func() []string, open func(url string) (*sql.DB, error), logger *slog.Logger, level *slog.LevelVar) error {
+	var command string
+	switch {
+	case len(args) == 0:
+		command = "serve"
+	case len(args) == 1 && args[0] == "migrate":
+		command = "migrate"
+	default:
+		return fmt.Errorf("usage: settingsstore [migrate], not %q", args)
+	}
+	boot, err := config.Load[BootConfig](ctx, config.WithEnvPrefix("SETTINGS"), config.WithEnviron(environ), config.WithLogger(logger)) // SETTINGS_DATABASE_URL, ...
 	if err != nil {
 		return err
 	}
 	if err := level.UnmarshalText([]byte(boot.LogLevel)); err != nil {
 		return err
 	}
-	if err := logStarting(ctx, logger, level, boot); err != nil {
+	if err := logStarting(ctx, logger, level, command, boot); err != nil {
 		return err
 	}
 
-	db, err := sql.Open("pgx", boot.DatabaseURL)
+	db, err := open(boot.DatabaseURL)
 	if err != nil {
 		return err
 	}
@@ -511,13 +527,49 @@ func run(ctx context.Context, logger *slog.Logger, level *slog.LevelVar) error {
 	db.SetMaxIdleConns(boot.MaxIdleConns)
 	db.SetConnMaxIdleTime(boot.ConnMaxIdleTime)
 	db.SetConnMaxLifetime(boot.ConnMaxLifetime)
-	schemaCtx, cancel := context.WithTimeout(ctx, boot.QueryTimeout)
-	_, err = db.ExecContext(schemaCtx, Schema)
-	cancel()
-	if err != nil {
+	if command == "migrate" {
+		if err := migrate(ctx, db, boot.QueryTimeout); err != nil {
+			return err
+		}
+		logger.InfoContext(ctx, "settings schema applied")
+		return nil
+	}
+	if err := checkSchema(ctx, db, boot.QueryTimeout); err != nil {
+		return err
+	}
+	return serve(ctx, db, boot, logger)
+}
+
+// migrate applies Schema, which creates only what is missing. Run it once
+// per release, before the replicas start: Postgres can refuse concurrent
+// CREATE TABLE IF NOT EXISTS of one table with a unique violation.
+func migrate(ctx context.Context, db *sql.DB, timeout time.Duration) error {
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	if _, err := db.ExecContext(ctx, Schema); err != nil {
 		return fmt.Errorf("applying the settings schema: %w", err)
 	}
+	return nil
+}
 
+// checkSchema fails unless Schema has been applied: both tables, and the
+// lock row every write updates.
+func checkSchema(ctx context.Context, db *sql.DB, timeout time.Duration) error {
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	var writes int64
+	err := db.QueryRowContext(ctx, "SELECT writes FROM settings_lock WHERE id = 1").Scan(&writes)
+	if err == nil {
+		_, err = db.ExecContext(ctx, "SELECT 1 FROM settings WHERE 1 = 0")
+	}
+	if err != nil {
+		return fmt.Errorf("checking the settings schema; run `settingsstore migrate` with a role that may create tables: %w", err)
+	}
+	return nil
+}
+
+// serve serves the admin API over the table in db until ctx ends.
+func serve(ctx context.Context, db *sql.DB, boot *BootConfig, logger *slog.Logger) error {
 	settings := NewSettings(db, appSources(boot.ConfigFile, logger), boot.QueryTimeout, boot.MaxRows)
 	reloader, err := config.NewReloader[AppConfig](ctx, settings.Options(), config.WithPollInterval(boot.PollInterval))
 	if err != nil {
@@ -553,9 +605,9 @@ func run(ctx context.Context, logger *slog.Logger, level *slog.LevelVar) error {
 }
 
 // logStarting writes the one startup entry straight to the handler, so no
-// level drops it: the build, the level and the boot config, its database
-// URL withheld.
-func logStarting(ctx context.Context, logger *slog.Logger, level *slog.LevelVar, boot *BootConfig) error {
+// level drops it: the build, the command, the level and the boot config,
+// its database URL withheld.
+func logStarting(ctx context.Context, logger *slog.Logger, level *slog.LevelVar, command string, boot *BootConfig) error {
 	shown, err := config.RedactedMapChecked(boot)
 	if err != nil {
 		return err
@@ -568,6 +620,7 @@ func logStarting(ctx context.Context, logger *slog.Logger, level *slog.LevelVar,
 	record.AddAttrs(
 		slog.String("service", "settingsstore"),
 		slog.String("version", version),
+		slog.String("command", command),
 		slog.String("log_level", level.Level().String()),
 		slog.Any("config", shown),
 	)

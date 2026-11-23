@@ -114,6 +114,13 @@ A write is checked by the load that will read it. The service's options come fro
 
 Writes take turns across replicas: each updates one lock row as its first statement, which the database holds until the write ends, so each reads the table the one before it left. The transaction runs at `READ COMMITTED` whatever the server's default, the level at which a write that waited reads what the one before it committed; SQLite's driver ignores the level, since its transactions are serializable and the lock row's update takes its write lock. A configured cap bounds the table, and values are read with `UseNumber`, so integers keep every digit. The pool, the request timeouts and caps, and the log level (`warn` by default, with one startup entry) are `BootConfig` fields. [`settingsstore/main.go`](settingsstore/main.go) has the `PUT /admin/settings` handler and the `main` that serves it; its test runs every path on SQLite, two replicas writing at once among them.
 
+| Command | Does |
+|---|---|
+| `settingsstore migrate` | Applies `Schema`, which creates only what is missing, and exits. Run it once per release, before the replicas start, with a role that may create tables. |
+| `settingsstore` | Serves the admin API. It runs no DDL, so its role needs only `SELECT`, `INSERT`, `UPDATE` and `DELETE` on `settings` and `settings_lock`, and replicas never race one another creating tables, which Postgres can refuse with a unique violation. Started against a database without the schema, it exits naming the migrate step. |
+
+Both commands read the variables below.
+
 | Variable | Type | Default | Description |
 |---|---|---|---|
 | `SETTINGS_DATABASE_URL` | string | required | The Postgres connection string; sensitive, withheld from the startup entry |
@@ -133,7 +140,7 @@ Writes take turns across replicas: each updates one lock row as its first statem
 | `SETTINGS_IDLE_TIMEOUT` | duration | `60s` | How long a keep-alive connection idles |
 | `SETTINGS_SHUTDOWN_TIMEOUT` | duration | `10s` | The drain deadline on `SIGTERM` |
 
-A write that times out waiting for its turn — behind another write of the same replica, for a pooled connection, or for the lock row another replica holds — is contention: a 503 with `reason` `busy` and a `Retry-After` of the query timeout, logged at `Warn`. Frequent ones mean writes take too long or arrive too fast for `SETTINGS_QUERY_TIMEOUT`. Every other 503 is logged at `Error`: `the settings fail to load without this write` means the service's own settings do not load even with the write left out, so no client is at fault. The entry names what to check — `SETTINGS_CONFIG_FILE`, the `APP_*` variables and the settings table — and the wrapped error names the key that fails. Fix the file or the variable and redeploy, or fix or delete the row, and the next poll recovers; `taking the settings lock` means `Schema` was not applied; anything else is the database. While the settings do not load, every reload fails and the service keeps its previous config.
+A write that times out waiting for its turn — behind another write of the same replica, for a pooled connection, or for the lock row another replica holds — is contention: a 503 with `reason` `busy` and a `Retry-After` of the query timeout, logged at `Warn`. Frequent ones mean writes take too long or arrive too fast for `SETTINGS_QUERY_TIMEOUT`. Every other 503 is logged at `Error`: `the settings fail to load without this write` means the service's own settings do not load even with the write left out, so no client is at fault. The entry names what to check — `SETTINGS_CONFIG_FILE`, the `APP_*` variables and the settings table — and the wrapped error names the key that fails. Fix the file or the variable and redeploy, or fix or delete the row, and the next poll recovers; `taking the settings lock` means the lock row is gone — run `settingsstore migrate`, which restores it; anything else is the database. While the settings do not load, every reload fails and the service keeps its previous config.
 
 <!-- recipe: settingsstore/main.go -->
 
@@ -206,7 +213,7 @@ func (s *Settings) Write(ctx context.Context, edits map[string]any) ([]string, e
 		return nil, fmt.Errorf("taking the settings lock: %w", err)
 	}
 	if n != 1 {
-		return nil, errors.New("taking the settings lock: settings_lock has no row 1; apply Schema")
+		return nil, errors.New("taking the settings lock: settings_lock has no row 1; run `settingsstore migrate`")
 	}
 	stored, err := readRows(ctx, tx, s.maxRows)
 	if err != nil {

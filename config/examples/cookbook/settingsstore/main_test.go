@@ -32,8 +32,7 @@ func replica(t *testing.T, path string, maxRows int) (*Settings, *sql.DB) {
 	db, err := sql.Open("sqlite", path+"?_pragma=busy_timeout(10000)")
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = db.Close() })
-	_, err = db.Exec(Schema)
-	require.NoError(t, err)
+	require.NoError(t, migrate(t.Context(), db, time.Second))
 	file := filepath.Join(filepath.Dir(path), "config.yaml") // absent: the table over defaults
 	return NewSettings(db, appSources(file, slog.New(slog.DiscardHandler)), 10*time.Second, maxRows), db
 }
@@ -331,7 +330,7 @@ func TestLogStarting(t *testing.T) {
 	var logs bytes.Buffer
 	level := new(slog.LevelVar)
 	require.NoError(t, level.UnmarshalText([]byte(boot.LogLevel)))
-	require.NoError(t, logStarting(t.Context(), slog.New(slog.NewJSONHandler(&logs, &slog.HandlerOptions{Level: level})), level, boot))
+	require.NoError(t, logStarting(t.Context(), slog.New(slog.NewJSONHandler(&logs, &slog.HandlerOptions{Level: level})), level, "serve", boot))
 
 	var entry struct {
 		Level, Msg, LogLevel string
@@ -401,8 +400,7 @@ func TestSettings_WritesBeginAtReadCommitted(t *testing.T) {
 	dir := t.TempDir()
 	db := sql.OpenDB(recordingConnector{dsn: filepath.Join(dir, "settings.db") + "?_pragma=busy_timeout(10000)", levels: &levels})
 	t.Cleanup(func() { _ = db.Close() })
-	_, err := db.Exec(Schema)
-	require.NoError(t, err)
+	require.NoError(t, migrate(t.Context(), db, time.Second))
 	s := NewSettings(db, appSources(filepath.Join(dir, "config.yaml"), slog.New(slog.DiscardHandler)), 10*time.Second, 100)
 	write(t, s, map[string]any{"limits.max": 300})
 	write(t, s, map[string]any{"limits.max": nil})
@@ -436,8 +434,7 @@ func TestSettingsHandler_ContentionIsA503ToRetry(t *testing.T) {
 	db, err := sql.Open("sqlite", path+"?_pragma=busy_timeout(10000)")
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = db.Close() })
-	_, err = db.Exec(Schema)
-	require.NoError(t, err)
+	require.NoError(t, migrate(t.Context(), db, time.Second))
 	s := NewSettings(db, appSources(filepath.Join(filepath.Dir(path), "config.yaml"), slog.New(slog.DiscardHandler)), 200*time.Millisecond, 100)
 	var logs bytes.Buffer
 	h := settingsHandler(s, func() {}, 1<<20, slog.New(slog.NewJSONHandler(&logs, nil)))
@@ -466,4 +463,53 @@ func TestSettingsHandler_ContentionIsA503ToRetry(t *testing.T) {
 		require.NoError(t, err)
 		contended(t)
 	})
+}
+
+// sqliteTables are the tables of the SQLite database at path.
+func sqliteTables(t *testing.T, path string) []string {
+	t.Helper()
+	db, err := sql.Open("sqlite", path)
+	require.NoError(t, err)
+	defer db.Close()
+	rows, err := db.Query(`SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name`)
+	require.NoError(t, err)
+	defer rows.Close()
+	var names []string
+	for rows.Next() {
+		var name string
+		require.NoError(t, rows.Scan(&name))
+		names = append(names, name)
+	}
+	require.NoError(t, rows.Err())
+	return names
+}
+
+// Serving runs no DDL: on a database without the schema it fails at boot,
+// naming the migrate step, and creates nothing. migrate applies the schema,
+// as often as it runs, and serving's check then passes.
+func TestRun_SchemaIsAnExplicitStep(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "settings.db")
+	environ := func() []string {
+		return []string{"SETTINGS_DATABASE_URL=" + path, "SETTINGS_CONFIG_FILE=" + filepath.Join(dir, "config.yaml")}
+	}
+	open := func(url string) (*sql.DB, error) { return sql.Open("sqlite", url) }
+	command := func(args ...string) error {
+		return run(t.Context(), args, environ, open, slog.New(slog.DiscardHandler), new(slog.LevelVar))
+	}
+
+	err := command()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "settingsstore migrate")
+	assert.Empty(t, sqliteTables(t, path))
+
+	require.NoError(t, command("migrate"))
+	require.NoError(t, command("migrate"))
+	assert.Equal(t, []string{"settings", "settings_lock"}, sqliteTables(t, path))
+	db, err := open(path)
+	require.NoError(t, err)
+	defer db.Close()
+	assert.NoError(t, checkSchema(t.Context(), db, time.Second))
+
+	assert.ErrorContains(t, command("serve", "now"), "usage")
 }
