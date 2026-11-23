@@ -1,6 +1,7 @@
 package config
 
 import (
+	"context"
 	"errors"
 	"net/netip"
 	"path/filepath"
@@ -222,6 +223,63 @@ func TestDecodeEdits_KeyBeneathAnotherAppliesAfterIt(t *testing.T) {
 			tc.check(t, got)
 		})
 	}
+}
+
+// A map a key sets beneath a value an earlier key of the batch set merges
+// into that value key by key, as it merges into a baseline's, at every
+// depth; a typed value there replaces it. The same holds for the entries
+// of one source, judged or not.
+func TestDecodeEdits_MapBeneathAnEarlierEditsValueMergesIntoIt(t *testing.T) {
+	edits := map[string]any{
+		"addresses":      map[string]any{"a": map[string]any{"host": "h", "port": 1}, "b": map[string]any{"host": "i", "port": 2}},
+		`addresses["a"]`: map[string]any{"port": 3},
+		`addresses["b"]`: editServer{Port: 4},
+		"pool":           []any{map[string]any{"host": "p", "port": 1}},
+		"pool[0]":        map[string]any{"port": 2},
+		"extra":          map[string]any{"n": map[string]any{"x": 1, "y": map[string]any{"k": 1}}},
+		"extra.n":        map[string]any{"y": map[string]any{"j": 2}},
+		"primary":        map[string]any{"host": "q"},
+		"primary.port":   5,
+	}
+	want := editConfig{
+		Addresses: map[string]editServer{"a": {"h", 3}, "b": {"", 4}},
+		Primary:   editServer{"q", 5},
+		Pool:      []editServer{{"p", 2}},
+		Extra:     map[string]any{"n": map[string]any{"x": 1, "y": map[string]any{"k": 1, "j": 2}}},
+	}
+	check := func(t *testing.T, got *editConfig) {
+		t.Helper()
+		assert.Equal(t, want.Addresses, got.Addresses)
+		assert.Equal(t, want.Primary, got.Primary)
+		assert.Equal(t, want.Pool, got.Pool)
+		assert.Equal(t, want.Extra, got.Extra)
+	}
+	read := func(context.Context) (map[string]any, error) { return deepCopyMap(edits), nil }
+	t.Run("DecodeEdits", func(t *testing.T) {
+		got, err := DecodeEdits[editConfig](t.Context(), nil, deepCopyMap(edits))
+		require.NoError(t, err)
+		check(t, got)
+	})
+	t.Run("DecodeEdits over a baseline", func(t *testing.T) { // the list replaces the baseline's
+		got, err := DecodeEdits(t.Context(), &editConfig{Addresses: map[string]editServer{"a": {"z", 9}}, Pool: []editServer{{"z", 9}, {"z", 9}}}, deepCopyMap(edits))
+		require.NoError(t, err)
+		check(t, got)
+	})
+	t.Run("entries", func(t *testing.T) {
+		got, err := Load[editConfig](t.Context(), WithBaseEntries(read))
+		require.NoError(t, err)
+		check(t, got)
+	})
+	t.Run("judged entries", func(t *testing.T) {
+		var rejected []KeyError
+		got, err := Load[editConfig](t.Context(), WithBaseEntries(read, WithInvalidEntries(func(_ context.Context, r []KeyError) error {
+			rejected = r
+			return nil
+		})))
+		require.NoError(t, err)
+		assert.Empty(t, rejected)
+		check(t, got)
+	})
 }
 
 // A batch of one is DecodeKey: the same candidate, with the decode hooks

@@ -133,7 +133,7 @@ func CanonicalKey[T any](key string, opts ...Option) (string, error) {
 // immediately after its last. Edits apply in key order, an index by its
 // number and a key before the keys beneath it: one batch can append several
 // elements, and a key beneath another sets what it names in the value the
-// other set.
+// other set, a map[string]any merging into that value as into a baseline's.
 //
 // The batch is refused whole, with an *EditsError, when any key is refused,
 // every refused key in it: a key naming nothing config reads, or a key

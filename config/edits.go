@@ -412,7 +412,7 @@ func setEdits(below func() map[string]any, edits []edit) (tree map[string]any, r
 // the tree below holds at e.path[:i]. On failure tree is as it was.
 func (e *edit) set(tree any, beneath func() any, i int) (any, error) {
 	if i == len(e.path) {
-		return copyInput(e.value), nil
+		return within(tree, copyInput(e.value)), nil
 	}
 	s := e.path[i]
 	if s.kind == segIndex {
@@ -443,6 +443,31 @@ func (e *edit) set(tree any, beneath func() any, i int) (any, error) {
 		return wholeMap(m), nil
 	}
 	return m, nil
+}
+
+// within is value set where the edit tree holds tree, what an earlier edit
+// of a key holding this one set: a map[string]any merges into a map there
+// key by key, at every depth, as it merges into what a source beneath holds;
+// any other value, a typed one included, replaces it. A map an earlier edit
+// set whole stays whole.
+func within(tree, value any) any {
+	in, ok := value.(map[string]any)
+	if !ok {
+		return value
+	}
+	var into map[string]any
+	switch t := tree.(type) {
+	case map[string]any:
+		into = t
+	case wholeMap:
+		into = t
+	default:
+		return value
+	}
+	for k, v := range in {
+		into[k] = within(into[k], v)
+	}
+	return tree
 }
 
 // setElement is set at an index: a listEdit over the list below, or, where

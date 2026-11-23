@@ -190,7 +190,10 @@ beneath it. One batch can append several list elements (`pool[1]`,
 `pool[2]`, …), and a key beneath another sets what it names in the value the
 other set: `primary` set to `{"port": 6}` merges into the baseline's section
 and `primary.port` set to `7` then sets its port, while `primary` set to
-`Server{Port: 6}` replaces the section first. A batch is refused whole when
+`Server{Port: 6}` replaces the section first. A map set beneath merges into
+the value the other set as into the baseline's: `addresses` set to
+`{"a": {"host": "h", "port": 1}}` and `addresses["a"]` to `{"port": 2}` leave
+`a` at `{h 2}`. The entries of one source apply the same way. A batch is refused whole when
 any of its keys is. The error is one `*EditsError` whose `Refused` lists
 every refused key, in key order, whichever stage refused it; a `*KeyError`
 that is not `Unknown` says why in its message, naming keys only:
