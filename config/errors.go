@@ -60,8 +60,9 @@ var (
 	// backslash, a quote or a control character), two fields with one key, a
 	// type that is not a struct where one is required, a value Diff cannot
 	// compare (a non-nil func, channel or unsafe pointer), a tag that
-	// cannot mean what it says, or a tag key that misspells one config
-	// reads (see the package documentation).
+	// cannot mean what it says, a validate rule the default validator
+	// cannot parse or apply to its field, or a tag key that misspells one
+	// config reads (see the package documentation).
 	ErrSchema = errors.New("invalid configuration schema")
 	// ErrKey reports a configuration key that does not parse, or that names
 	// no field of the config type.

@@ -10,10 +10,12 @@ import (
 	"os"
 	"reflect"
 	"regexp"
+	"runtime"
 	"slices"
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/go-playground/validator/v10"
 	"github.com/go-viper/mapstructure/v2"
@@ -484,11 +486,16 @@ func (o *options) validateConfig(ctx context.Context, cfg any) error {
 		return err
 	}
 	if !o.skipValid {
-		v := o.validator
-		if v == nil {
-			v = defaultValidator()
+		var err error
+		if o.validator == nil {
+			err = validateDefault(ctx, cfg)
+			if errors.Is(err, ErrSchema) {
+				return err
+			}
+		} else {
+			err = validate(ctx, o.validator, cfg)
 		}
-		if err := validate(ctx, v, cfg); err != nil {
+		if err != nil {
 			// The validator's error is kept whole as the cause, so a
 			// wrapper's own sentinels and types stay reachable; go-playground
 			// field errors found inside it only shape the message.
@@ -584,41 +591,228 @@ var defaultValidator = sync.OnceValue(func() *validator.Validate {
 	return v
 })
 
-// defaultRules refuses a validate tag on T's fields that the default
-// validator cannot read — an undefined rule, keys without dive, an empty
-// rule — which it would otherwise panic on in the middle of a load. Each
-// tag is parsed once per type, and no rule runs.
+// validatorPackage prefixes the name of every function go-playground's
+// validator defines.
+const validatorPackage = "github.com/go-playground/validator/v10."
+
+// validateDefault validates cfg with the default validator. The validator
+// panics on a rule it cannot apply — a dive on a field that is not a
+// collection, min=abc, len or oneof on a kind they do not measure,
+// required_if with an odd number of params, an unreadable tag beneath an
+// interface, which [defaultRules] cannot see — wherever validation meets
+// it. Such a panic is the declaration's fault, not the value's, and is
+// returned as an ErrSchema carrying the validator's message, which names
+// the field when the validator does. A panic raised in the caller's own
+// code, such as a method a validateFn rule calls, is left to propagate.
+func validateDefault(ctx context.Context, cfg any) (err error) {
+	returned := false
+	defer func() {
+		if returned || !raisedByValidator() {
+			return
+		}
+		err = fmt.Errorf("validating config: %w: a validate tag of %s does not apply to its field: %s", ErrSchema, gowalker.TypeText(derefType(reflect.TypeOf(cfg))), panicText(recover()))
+	}()
+	err = defaultValidator().StructCtx(ctx, cfg)
+	returned = true
+	return err
+}
+
+// raisedByValidator reports whether the panic unwinding through its caller,
+// a deferred function, was raised by go-playground's own code: the first
+// frame beneath the deferred call that is neither the runtime's, which
+// raises a fault's panic, nor reflect's, which panics for the validator
+// when it reads a value as a kind it is not.
+func raisedByValidator() bool {
+	pcs := make([]uintptr, 32)
+	frames := runtime.CallersFrames(pcs[:runtime.Callers(3, pcs)])
+	for {
+		f, more := frames.Next()
+		if !strings.HasPrefix(f.Function, "runtime.") && !strings.HasPrefix(f.Function, "reflect.") {
+			return strings.HasPrefix(f.Function, validatorPackage)
+		}
+		if !more {
+			return false
+		}
+	}
+}
+
+// panicText is the message of a panic the validator raised. The validator
+// panics with text it formats from a rule, its params, a type and a field's
+// name, and through reflect or the runtime with an error naming a kind; an
+// error of any other kind could quote the operating system's view of a
+// field's value, a path, and is named by its type alone.
+func panicText(r any) string {
+	var re runtime.Error
+	var ve *reflect.ValueError
+	switch v := r.(type) {
+	case string:
+		return v
+	case error:
+		if errors.As(v, &re) || errors.As(v, &ve) {
+			return v.Error()
+		}
+	}
+	return fmt.Sprintf("a %T", r)
+}
+
+// defaultRules refuses a validate tag the default validator would meet in
+// a value of T and cannot read — an undefined rule, keys without dive, an
+// empty rule — which it would otherwise panic on in the middle of a load.
+// Each tag is parsed once per type, and no rule runs.
 func defaultRules(t reflect.Type) error {
 	e := schemaMetadata(t)
 	if e.err != nil {
 		return e.err
 	}
-	e.rules.Do(func() { e.rulesErr = unreadableRules(e.node, defaultValidator()) })
+	e.rules.Do(func() { e.rulesErr = unreadableRules(e.node.typ, defaultValidator()) })
 	return e.rulesErr
 }
 
-// unreadableRules checks the validate tag of every field v reads in root's
-// graph: exported and embedded ones, the fields config skips included.
-func unreadableRules(root *schemaNode, v *validator.Validate) error {
-	var err error
-	root.eachBranch(func(n *schemaNode) {
-		for _, d := range n.view.Root().Declarations() {
-			if err != nil {
-				return
+// unreadableRules parses, with v's own parser, the validate tag of every
+// field v meets validating a value of root. It descends as go-playground
+// does, not as config's schema graph does:
+//
+//   - into every exported or embedded field not tagged validate:"-", those
+//     tagged koanf:"-" and the structs that decode themselves from text
+//     included;
+//   - through pointers into a field's struct, time.Time and types
+//     convertible to it aside, once its rules pass: v reads every tag of a
+//     struct it meets, and goes on into the fields' values unless the rules
+//     reaching the struct say structonly; nostructlevel stops before it;
+//   - past a dive only, into a list's elements and a map's values with the
+//     rules after it, and into a map's keys with those between keys and
+//     endkeys.
+//
+// An interface's dynamic value is not known here; a tag v meets beneath one
+// fails when validation reaches it (see [validateDefault]).
+func unreadableRules(root reflect.Type, v *validator.Validate) error {
+	w := ruleWalk{v: v, read: map[reflect.Type][]readRules{}, walked: map[reflect.Type]bool{}}
+	w.value(root, nil)
+	return errors.Join(w.errs...)
+}
+
+// ruleWalk is one unreadableRules walk. read holds each struct's fields as
+// v reads them, and walked the structs whose fields' values it has walked:
+// a type's tags do not depend on the path reaching it.
+type ruleWalk struct {
+	v      *validator.Validate
+	read   map[reflect.Type][]readRules
+	walked map[reflect.Type]bool
+	errs   []error
+}
+
+// readRules is a field whose validate tag v reads, and its rules.
+type readRules struct {
+	typ   reflect.Type
+	rules []string
+}
+
+// value walks what v meets in a value of type t when rules, a field's rules
+// from the one v reaches next, are still to run on it.
+func (w *ruleWalk) value(t reflect.Type, rules []string) {
+	for t.Kind() == reflect.Pointer {
+		t = t.Elem()
+	}
+	nested := t.Kind() == reflect.Struct && !t.ConvertibleTo(timeType)
+	for i, rule := range rules {
+		switch rule {
+		case "nostructlevel", "endkeys":
+			return
+		case "structonly":
+			if nested {
+				w.fields(t, false)
 			}
-			tag := d.GoField.Tag.Get("validate")
-			if tag == "" || !d.GoField.IsExported() && !d.GoField.Anonymous {
+			return
+		case "dive":
+			w.elements(t, rules[i+1:])
+			return
+		}
+	}
+	if nested {
+		w.fields(t, true)
+	}
+}
+
+// elements walks what a dive reaches in a value of type t with rules, those
+// after the dive. A dive on any other kind panics when v runs it.
+func (w *ruleWalk) elements(t reflect.Type, rules []string) {
+	switch t.Kind() {
+	case reflect.Slice, reflect.Array:
+		w.value(t.Elem(), rules)
+	case reflect.Map:
+		if len(rules) == 0 || rules[0] != "keys" {
+			w.value(t.Elem(), rules)
+			return
+		}
+		// The keys' rules run to endkeys, where v stops, or to the tag's end.
+		end := slices.Index(rules, "endkeys")
+		if end < 0 {
+			end = len(rules) - 1
+		}
+		w.value(t.Key(), rules[1:end+1])
+		if rest := rules[end+1:]; len(rest) > 0 {
+			w.value(t.Elem(), rest)
+			return
+		}
+		// With no rules left for the values, v still reads a struct value's
+		// fields, through one pointer.
+		elem := t.Elem()
+		if elem.Kind() == reflect.Pointer {
+			elem = elem.Elem()
+		}
+		if elem.Kind() == reflect.Struct {
+			w.value(elem, nil)
+		}
+	}
+}
+
+// fields reads the validate tags of struct t's fields as v does on meeting
+// t, and, when descend, walks the fields' values.
+func (w *ruleWalk) fields(t reflect.Type, descend bool) {
+	fields, ok := w.read[t]
+	if !ok {
+		fields = w.parse(t)
+		w.read[t] = fields
+	}
+	if !descend || w.walked[t] {
+		return
+	}
+	w.walked[t] = true
+	for _, f := range fields {
+		w.value(f.typ, f.rules)
+	}
+}
+
+// parse reads the validate tag of each field of struct t that v reads,
+// recording each tag v cannot read. The fields it returns are those whose
+// tags read.
+func (w *ruleWalk) parse(t reflect.Type) []readRules {
+	var fields []readRules
+	for i := range t.NumField() {
+		f := t.Field(i)
+		tag := f.Tag.Get("validate")
+		if !f.IsExported() && !f.Anonymous || tag == "-" {
+			continue
+		}
+		var rules []string
+		if tag != "" {
+			if problem := unreadableRule(w.v, tag); problem != "" {
+				// The validator's complaint names the rule by the part before
+				// '=', and the field; a tag holds the source's own text, never
+				// a field's value.
+				w.errs = append(w.errs, fmt.Errorf("%w: field %s of %s has a validate tag the validator cannot read: %s", ErrSchema, f.Name, gowalker.TypeText(t), problem))
 				continue
 			}
-			if problem := unreadableRule(v, tag); problem != "" {
-				// The problem names a rule, never its param, which may be a
-				// sensitive field's value.
-				err = fmt.Errorf("%w: field %s of %s has a validate tag the validator cannot read: %s", ErrSchema, d.GoField.Name, gowalker.TypeText(d.DeclaringType), problem)
-			}
+			rules = strings.Split(tag, ",")
 		}
-	})
-	return err
+		fields = append(fields, readRules{typ: f.Type, rules: rules})
+	}
+	return fields
 }
+
+// timeType is time.Time, whose fields v never reads, nor those of a type
+// convertible to it.
+var timeType = reflect.TypeFor[time.Time]()
 
 // unreadableRule parses tag as v does when it first meets a struct, and
 // returns what v panicked with when it could not. Validating a nil value
