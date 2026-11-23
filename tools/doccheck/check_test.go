@@ -191,7 +191,35 @@ func TestCheck_OptionsHaveATableRow(t *testing.T) {
 
 func TestCheck_AnAllowListForNoModuleIsAFinding(t *testing.T) {
 	root := workspace(t, []string{"mod"}, map[string]string{"mod/a.go": "package mod\n"})
-	assert.Equal(t, []string{"allow.json: allow list names gone, which is no workspace module"}, run(t, root, `{"gone": {}}`))
+	assert.Equal(t, []string{"allow.json: allow list names gone, which is no module of the repository"}, run(t, root, `{"gone": {}}`))
+}
+
+// A module go.work leaves out is checked as its own module; a test
+// fixture's, a vendored or a hidden directory's module is no module of the
+// repository.
+func TestCheck_ModulesOutsideTheWorkspaceAreChecked(t *testing.T) {
+	missing := func(name string) string {
+		return "package " + name + "\n\nfunc A() {}\n"
+	}
+	readme := func(pkg string) string { return "# " + pkg + "\n\n`" + pkg + ".Missing`\n" }
+	root := workspace(t, []string{"mod"}, map[string]string{
+		"mod/a.go":                       missing("mod"),
+		"example/go.mod":                 "module example.com/example\n\ngo 1.27.0\n",
+		"example/example.go":             missing("example"),
+		"example/README.md":              readme("example"),
+		"mod/testdata/fixture/go.mod":    "module example.com/fixture\n\ngo 1.27.0\n",
+		"mod/testdata/fixture/f.go":      missing("fixture"),
+		"mod/testdata/fixture/README.md": readme("fixture"),
+		"vendor/dep/go.mod":              "module example.com/dep\n\ngo 1.27.0\n",
+		"vendor/dep/d.go":                missing("dep"),
+		"vendor/dep/README.md":           readme("dep"),
+		".hidden/copy/go.mod":            "module example.com/copy\n\ngo 1.27.0\n",
+		".hidden/copy/c.go":              missing("copy"),
+		".hidden/copy/README.md":         readme("copy"),
+	})
+	assert.Equal(t, []string{"example/README.md:3: example.Missing names nothing example declares"}, run(t, root, ""))
+	assert.Empty(t, run(t, root, `{"example": {"identifiers": {"example.Missing": "the fixture's own"}}}`),
+		"an allow list may name a module outside the workspace")
 }
 
 func TestCheck_ANestedModuleIsNotTheOuterModules(t *testing.T) {

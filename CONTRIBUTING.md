@@ -24,9 +24,10 @@ The repository's `go.work` ties the published modules together, so a change to o
 | `make gowalker-release-check` | Gowalker archive downloaded into a fresh consumer, its tests, the README quick start and complete usage examples |
 | `make httpx-release-check` | Five module ZIPs downloaded by fresh consumers, both tagged lanes, Gin integration and benchmark smoke tests |
 | `make tool-check` | Module archive tooling tests and static analysis |
-| `make docs-check` | Every workspace module's Markdown held to its code: the Go identifiers its code spans name, its relative links and their anchors, its code-map entries; for a module that opts in, every Go file in a code map, every export named and every option in a table row ([tools/doccheck](tools/doccheck/README.md)) |
+| `make docs-check` | Every module's Markdown, in the workspace or kept out of it, held to its code: the Go identifiers its code spans name, its relative links and their anchors, its code-map entries; for a module that opts in, every Go file in a code map, every export named and every option in a table row ([tools/doccheck](tools/doccheck/README.md)) |
 | `make release-please-check` | The release workflow's release-please runner: first-parent release notes and their release-please wiring ([tools/release-please](tools/release-please/README.md)) |
 | `make cookbook-check` | The [config cookbook](config/examples/cookbook), a module of runnable recipes |
+| `make parse-example-check` | The [Parse server example](parse/examples/server), a module of its own, against the Parse working tree: tidy, vet, staticcheck and its tagged tests under race |
 | `make ci` | All of the above |
 
 | Make variable | Default | Description |
@@ -62,7 +63,7 @@ superseded run leaves no change unvalidated. The scope lists the workspace's pac
 changelogs, the Markdown guides in `config/docs`, `gowalker/docs` and `httpx/docs` (parse's
 are read by parse's tests, which render their tables from the code), the SDK, the release-please manifest and configuration, the release and SDK
 scripts, and the modules outside the workspace (the cookbook, the Gin example, httpx's
-benchmarks, the archive, documentation and release tooling), whose own checks read them. A module manifest
+benchmarks, the Parse server example, the archive, documentation and release tooling), whose own checks read them. A module manifest
 (`go.mod`, `go.sum`), `go.work`, `go.work.sum` or any other file no package owns reaches
 every package; workflows, the Makefile and the CI scripts run every job. So do explicit
 workflow dispatch, the `full-ci` label on a pull request (it applies from the next push or
@@ -73,8 +74,8 @@ step's log: each job's line names the file or package that selected it, and `rea
 
 Release checks run per module: each reads only its module's tree, its own script and the
 archive tooling, so a change runs the checks of the modules it touches (the cookbook's with
-either config module), and shared build files, workflow, tooling, manifests and unknown
-paths run all of them. The documentation check reads every workspace module, so a change to any of them runs it. The suites run once each:
+either config module, the Parse server example's with Parse), and shared build files, workflow, tooling, manifests and unknown
+paths run all of them. The documentation check reads every module, in the workspace or not, so a change to any of them runs it. The suites run once each:
 
 - Ubuntu runs the reached packages' race tests (parse's unit tests as below) on the newest
   Go 1.27 patch release; macOS runs only the modules with platform code (config, process,

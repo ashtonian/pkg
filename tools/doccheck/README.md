@@ -1,14 +1,14 @@
 # tools/doccheck
 
-Holds the Markdown of every module in the workspace to the code it documents, and the modules' Go comments to whole sentences. A renamed or removed API, a moved guide section, a file a code map still lists, or a sentence left broken where a reference was cut from a comment fails CI instead of surviving in prose. It is a development module, never published, run by `make docs-check`.
+Holds the Markdown of every module of the repository, those the workspace uses and those kept out of it, to the code it documents, and the modules' Go comments to whole sentences. A renamed or removed API, a moved guide section, a file a code map still lists, or a sentence left broken where a reference was cut from a comment fails CI instead of surviving in prose. It is a development module, never published, run by `make docs-check`.
 
 ## What it checks
 
-For every module `go.work` uses, over its Markdown (every `.md` file in its tree but changelogs, outside `testdata`, `node_modules` and the trees of nested modules) and, for comment sentences, its Go files:
+For every module `go.work` uses, and every other `go.mod` in the repository outside hidden, `_`-prefixed, `testdata`, `vendor` and `node_modules` directories (an example or a tool kept out of the workspace for its own dependency graph, found by the walk so the list cannot drift), over its Markdown (every `.md` file in its tree but changelogs, outside `testdata`, `node_modules` and the trees of nested modules) and, for comment sentences, its Go files:
 
 | Check | Rule |
 |---|---|
-| Identifiers | Each code span's Go identifiers resolve against the module's exported API, read from its non-test Go files under every build constraint: `pkg.Name` where `pkg` names an importable package of the module, `pkg.Type.Member` and `Type.Member` (a method or field, declared or promoted through an embedded type; `Type[T]` as written for a generic type) where `Type` is a type it declares, and a functional option `WithX` named on its own, which may be any workspace module's: a provider's guide names the options of the module it plugs into. `Name*` names a family by its prefix. A qualifier naming no package of the module, or a module package named like a library one of its packages imports (a `msgpack` codec over a msgpack library), is not checked. Fenced code blocks are not read: quick starts are compiled by the modules' own README tests. |
+| Identifiers | Each code span's Go identifiers resolve against the module's exported API, read from its non-test Go files under every build constraint: `pkg.Name` where `pkg` names an importable package of the module, `pkg.Type.Member` and `Type.Member` (a method or field, declared or promoted through an embedded type; `Type[T]` as written for a generic type) where `Type` is a type it declares, and a functional option, `With` and the rest of its name, named on its own, which may be any module's: a provider's guide names the options of the module it plugs into. `Name*` names a family by its prefix. A qualifier naming no package of the module, or a module package named like a library one of its packages imports (a `msgpack` codec over a msgpack library), is not checked. Fenced code blocks are not read: quick starts are compiled by the modules' own README tests. |
 | Links | Each relative link and reference definition outside code names a file or directory in the repository, and its fragment, into Markdown, names a heading (by GitHub's anchor: the heading's text lowercased, punctuation dropped, spaces as hyphens, `-1`, `-2` for repeats) or an `<a id>` / `<a name>` anchor. Absolute URLs are not fetched. |
 | Code maps | In a table under a heading containing "Code map" or "Key files", each first-cell code span with a file extension or a slash is a path, relative to the Markdown file's directory or, for a guide that maps its module, to the module's: it names a file or directory, or is a pattern that matches one. |
 | Comment sentences | No line comment of a Go file, tests included, opens on a `.`, `,`, `;` or `:` standing alone (followed by a space or nothing) or ends in a space and a full stop: what removing a reference from the middle of a sentence leaves. A line indented past the comment's first space is code, as in a doc comment's code block, and a line may open on a file suffix or a path (`.json`, `..data`). Files with a `// Code generated … DO NOT EDIT.` header and `/* */` comments are not read. |
@@ -38,7 +38,7 @@ The allow list, `allow.json`, is keyed by module directory:
 }
 ```
 
-`reverse` opts a module into the three reverse checks. Keys are exact or `path.Match` patterns: references as the code span writes them, files from the repository root, exports as `package.Name`. Every entry needs a reason, and an entry that matches nothing is a finding, so the list only shrinks as the documentation catches up. Unknown members and modules outside the workspace are refused.
+`reverse` opts a module into the three reverse checks. Keys are exact or `path.Match` patterns: references as the code span writes them, files from the repository root, exports as `package.Name`. Every entry needs a reason, and an entry that matches nothing is a finding, so the list only shrinks as the documentation catches up. Unknown members and a name that is no module of the repository are refused.
 
 ## External dependencies
 
@@ -52,7 +52,7 @@ cd tools/doccheck && GOWORK=off go run . -root ../..
 cd tools/doccheck && GOWORK=off go test -race ./...
 ```
 
-It runs outside the workspace (`GOWORK=off`) and reads the root's `go.work` explicitly. CI runs it in the modules job whenever a change touches any workspace module's tree or the tool (`tools/ci_release_checks.py`).
+It runs outside the workspace (`GOWORK=off`) and reads the root's `go.work` explicitly. CI runs it in the modules job whenever a change touches any module's tree or the tool (`tools/ci_release_checks.py`).
 
 ## Operations
 
@@ -67,7 +67,7 @@ It prints one finding per line, `path:line: message` (or `path: message` for a f
 - `a comment line opens on … ` / `ends in a lone full stop`: a piece of the sentence was cut; rewrite the sentence whole, joining the line to the one before it or saying what the cut reference said.
 - `entry … matches nothing; remove it`: the documentation caught up; delete the allow entry.
 
-A run over the whole workspace parses every module's Go files once and every Markdown file once: seconds, growing linearly with the tree.
+A run over the whole repository parses every module's Go files once and every Markdown file once: seconds, growing linearly with the tree.
 
 ## Security
 
