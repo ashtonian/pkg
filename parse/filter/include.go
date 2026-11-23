@@ -13,8 +13,8 @@ import (
 
 // DefaultMaxIncludePerRelation caps the target rows an include query
 // returns per owner, so an entity with thousands of related rows cannot
-// turn one page into an unbounded read. Per-call override via
-// [WithMaxIncludePerRelation]. .
+// turn one page into an unbounded read. [WithMaxIncludePerRelation]
+// overrides it per call.
 const DefaultMaxIncludePerRelation = 100
 
 // MaxIncludes is how many relations one list may include.

@@ -34,8 +34,8 @@ func TestJSONDefaultOpsAndNinSymmetry(t *testing.T) {
 	if meta == nil {
 		t.Fatal("expected meta field in schema")
 	}
-	// Was silently empty (unfilterable) before P-13o; containment is
-	// portable since .
+	// A document field is filterable by default, containment included,
+	// which every backend answers alike.
 	for _, want := range []filter.FilterOperator{filter.OpEq, filter.OpNe, filter.OpContains, filter.OpExists, filter.OpNull} {
 		if !slices.Contains(meta.AllowedOperators, want) {
 			t.Errorf("JSON field missing default op %v; got %v", want, meta.AllowedOperators)

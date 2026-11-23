@@ -66,9 +66,9 @@ func generateFilterSchema(g *core.SchemaGenerator, t reflect.Type) (*ResourceSch
 		}
 		fieldName := field.External
 		if tags.Parse.Filter && fieldName == "" && tags.Relation != "" {
-			// : virtual relation fields conventionally carry
-			// `json:"-"` to hide from response payloads. They still
-			// need an addressable name. Generators can preserve their
+			// A virtual relation field conventionally carries `json:"-"`
+			// to hide it from response payloads, and still needs an
+			// addressable name. Generators can preserve their
 			// declared name with relation_name; otherwise use snake_case
 			// of the struct field name.
 			fieldName = cmp.Or(tags.RelationName, core.SnakeCase(field.GoName))
@@ -264,9 +264,8 @@ func generateSortSchema(g *core.SchemaGenerator, t reflect.Type) (*SortSchema, e
 			return nil, fmt.Errorf("field %s: %w", field.GoName, err)
 		}
 
-		// : one sort grammar — scalar sortability opts in
-		// via parse:"…,sort".
-		// The legacy sort_field:"true" tag is deleted, not dual-read.
+		// One sort grammar: a scalar field is sortable when it opts in
+		// with parse:"…,sort".
 		if !tags.Parse.Excluded {
 			if dt := info.Type; core.IsDocument(dt) {
 				if err := addDocSortPaths(g, fields, tableName, field, dt); err != nil {
@@ -352,8 +351,8 @@ func generateSortSchema(g *core.SchemaGenerator, t reflect.Type) (*SortSchema, e
 // --- Defaults ---
 
 // defaultFilterOps maps FieldType to the operators a bare `parse:"filter"`
-// field gets; each is a subset of typeOperators. Unexported per ;
-// call DefaultFilterOps() for a defensive copy.
+// field gets; each is a subset of typeOperators. It is unexported so no
+// caller can change another's defaults; DefaultFilterOps returns a copy.
 //
 // `$in` and `$nin` come as a pair. JSON documents default to containment,
 // and arrays to containment and element conditions (`$some` / `$none`),

@@ -465,8 +465,8 @@ func afterExpr(expr string, nullable bool, v any, ph string, dir SortDirection) 
 }
 
 // ValidateCursor rejects a token whose field list disagrees with the active
-// keyset — a cursor minted under one sort must not be replayed under another
-// . Values must match each key's type, numeric range and
+// keyset: a cursor minted under one sort must not be replayed under
+// another. Values must match each key's type, numeric range and
 // nullability. On success values are normalized in place; on failure the
 // token is unchanged. Keys without scalar schema metadata (including custom
 // scalar marshalers) are checked only for a canonical scalar and nullability.

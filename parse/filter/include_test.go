@@ -238,8 +238,7 @@ type widgetEdges struct {
 }
 
 // Two typed edges between one owner and one target are one pair: the
-// include names the target once and the facet counts the owner once
-// .
+// include names the target once and the facet counts the owner once.
 func TestRelation_TypedEdgesCountOnce(t *testing.T) {
 	db, err := sql.Open("sqlite", ":memory:")
 	if err != nil {
