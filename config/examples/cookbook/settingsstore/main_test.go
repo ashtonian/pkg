@@ -427,3 +427,43 @@ func TestSettingsHandler_SettingsThatFailWithoutTheWrite(t *testing.T) {
 	assert.Contains(t, entry.Error, file)
 	assert.Contains(t, entry.Error, "APP_")
 }
+
+// A write that times out waiting for its turn, behind this replica's own
+// write or another replica's lock row, is contention: a 503 with
+// Retry-After, logged at Warn. Error is for failures.
+func TestSettingsHandler_ContentionIsA503ToRetry(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "settings.db")
+	db, err := sql.Open("sqlite", path+"?_pragma=busy_timeout(10000)")
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = db.Close() })
+	_, err = db.Exec(Schema)
+	require.NoError(t, err)
+	s := NewSettings(db, appSources(filepath.Join(filepath.Dir(path), "config.yaml"), slog.New(slog.DiscardHandler)), 200*time.Millisecond, 100)
+	var logs bytes.Buffer
+	h := settingsHandler(s, func() {}, 1<<20, slog.New(slog.NewJSONHandler(&logs, nil)))
+	contended := func(t *testing.T) {
+		t.Helper()
+		logs.Reset()
+		rec := put(h, `{"limits.max": 300}`)
+		assert.Equal(t, http.StatusServiceUnavailable, rec.Code)
+		assert.Equal(t, "1", rec.Header().Get("Retry-After"))
+		var entry struct{ Level, Msg string }
+		require.NoError(t, json.Unmarshal(logs.Bytes(), &entry))
+		assert.Equal(t, "WARN", entry.Level, entry.Msg)
+	}
+
+	t.Run("behind this replica's write", func(t *testing.T) {
+		s.writing <- struct{}{}
+		defer func() { <-s.writing }()
+		contended(t)
+	})
+	t.Run("behind another replica's lock row", func(t *testing.T) {
+		other, _ := replica(t, path, 100)
+		tx, err := other.db.BeginTx(t.Context(), nil)
+		require.NoError(t, err)
+		defer func() { _ = tx.Rollback() }()
+		_, err = tx.Exec("UPDATE settings_lock SET writes = writes + 1 WHERE id = 1")
+		require.NoError(t, err)
+		contended(t)
+	})
+}

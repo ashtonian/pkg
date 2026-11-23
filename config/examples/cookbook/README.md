@@ -133,7 +133,7 @@ Writes take turns across replicas: each updates one lock row as its first statem
 | `SETTINGS_IDLE_TIMEOUT` | duration | `60s` | How long a keep-alive connection idles |
 | `SETTINGS_SHUTDOWN_TIMEOUT` | duration | `10s` | The drain deadline on `SIGTERM` |
 
-A 503 is always logged at `Error`: `the settings fail to load without this write` means the service's own settings do not load even with the write left out, so no client is at fault. The entry names what to check — `SETTINGS_CONFIG_FILE`, the `APP_*` variables and the settings table — and the wrapped error names the key that fails. Fix the file or the variable and redeploy, or fix or delete the row, and the next poll recovers; `taking the settings lock` means `Schema` was not applied; anything else is the database. While the settings do not load, every reload fails and the service keeps its previous config.
+A write that times out waiting for its turn — behind another write of the same replica, for a pooled connection, or for the lock row another replica holds — is contention: a 503 with `reason` `busy` and a `Retry-After` of the query timeout, logged at `Warn`. Frequent ones mean writes take too long or arrive too fast for `SETTINGS_QUERY_TIMEOUT`. Every other 503 is logged at `Error`: `the settings fail to load without this write` means the service's own settings do not load even with the write left out, so no client is at fault. The entry names what to check — `SETTINGS_CONFIG_FILE`, the `APP_*` variables and the settings table — and the wrapped error names the key that fails. Fix the file or the variable and redeploy, or fix or delete the row, and the next poll recovers; `taking the settings lock` means `Schema` was not applied; anything else is the database. While the settings do not load, every reload fails and the service keeps its previous config.
 
 <!-- recipe: settingsstore/main.go -->
 
@@ -181,7 +181,7 @@ func (s *Settings) Write(ctx context.Context, edits map[string]any) ([]string, e
 	case s.writing <- struct{}{}:
 		defer func() { <-s.writing }()
 	case <-ctx.Done():
-		return nil, fmt.Errorf("waiting to write settings: %w", context.Cause(ctx))
+		return nil, fmt.Errorf("waiting for this replica's other settings write: %w: %w", ErrBusy, context.Cause(ctx))
 	}
 	// At READ COMMITTED each statement reads what committed before it, so a
 	// write that waited for the lock row reads the table the write before it
@@ -191,7 +191,7 @@ func (s *Settings) Write(ctx context.Context, edits map[string]any) ([]string, e
 	// and updating the lock row takes the database's write lock.
 	tx, err := s.db.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelReadCommitted})
 	if err != nil {
-		return nil, fmt.Errorf("beginning a settings write: %w", err)
+		return nil, fmt.Errorf("beginning a settings write: %w", busy(ctx, err))
 	}
 	defer func() { _ = tx.Rollback() }() // after Commit, a no-op
 	// Updating the lock row is the write's first statement: the database
@@ -199,7 +199,7 @@ func (s *Settings) Write(ctx context.Context, edits map[string]any) ([]string, e
 	// turns, and each reads the table the one before it left.
 	locked, err := tx.ExecContext(ctx, "UPDATE settings_lock SET writes = writes + 1 WHERE id = 1")
 	if err != nil {
-		return nil, fmt.Errorf("taking the settings lock: %w", err)
+		return nil, fmt.Errorf("taking the settings lock: %w", busy(ctx, err))
 	}
 	n, err := locked.RowsAffected()
 	if err != nil {

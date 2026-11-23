@@ -21,11 +21,13 @@ import (
 	"io"
 	"log/slog"
 	"maps"
+	"math"
 	"net/http"
 	"os"
 	"os/signal"
 	"runtime/debug"
 	"slices"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -135,6 +137,12 @@ const (
 	ReasonFull     = "full"     // the table would hold more rows than its cap
 )
 
+// ErrBusy is a write that timed out waiting for its turn: behind another
+// write of this replica's, for a connection, or for the lock row another
+// replica's write holds. It is contention, not a failure; the client
+// retries.
+var ErrBusy = errors.New("another settings write holds the lock")
+
 // RefusedError is a write the service refuses, and the write's keys at
 // fault. It names no value and no key the write did not name, so it is
 // safe to return to the client; Err is the load's cause, for the log.
@@ -197,7 +205,7 @@ func (s *Settings) Write(ctx context.Context, edits map[string]any) ([]string, e
 	case s.writing <- struct{}{}:
 		defer func() { <-s.writing }()
 	case <-ctx.Done():
-		return nil, fmt.Errorf("waiting to write settings: %w", context.Cause(ctx))
+		return nil, fmt.Errorf("waiting for this replica's other settings write: %w: %w", ErrBusy, context.Cause(ctx))
 	}
 	// At READ COMMITTED each statement reads what committed before it, so a
 	// write that waited for the lock row reads the table the write before it
@@ -207,7 +215,7 @@ func (s *Settings) Write(ctx context.Context, edits map[string]any) ([]string, e
 	// and updating the lock row takes the database's write lock.
 	tx, err := s.db.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelReadCommitted})
 	if err != nil {
-		return nil, fmt.Errorf("beginning a settings write: %w", err)
+		return nil, fmt.Errorf("beginning a settings write: %w", busy(ctx, err))
 	}
 	defer func() { _ = tx.Rollback() }() // after Commit, a no-op
 	// Updating the lock row is the write's first statement: the database
@@ -215,7 +223,7 @@ func (s *Settings) Write(ctx context.Context, edits map[string]any) ([]string, e
 	// turns, and each reads the table the one before it left.
 	locked, err := tx.ExecContext(ctx, "UPDATE settings_lock SET writes = writes + 1 WHERE id = 1")
 	if err != nil {
-		return nil, fmt.Errorf("taking the settings lock: %w", err)
+		return nil, fmt.Errorf("taking the settings lock: %w", busy(ctx, err))
 	}
 	n, err := locked.RowsAffected()
 	if err != nil {
@@ -259,6 +267,21 @@ func (s *Settings) Write(ctx context.Context, edits map[string]any) ([]string, e
 		return nil, fmt.Errorf("committing a settings write: %w", err)
 	}
 	return keys, nil
+}
+
+// busy is err, from waiting for a connection or the lock row, as ErrBusy
+// when the write's time ran out while it waited.
+func busy(ctx context.Context, err error) error {
+	if ctx.Err() != nil {
+		return fmt.Errorf("%w: %w", ErrBusy, err)
+	}
+	return err
+}
+
+// retryAfter is how long a client whose write met contention waits before
+// it retries: the most one write takes, its wait for its turn included.
+func (s *Settings) retryAfter() time.Duration {
+	return s.timeout
 }
 
 // check loads table, the one a write of keys leaves, with the service's
@@ -437,6 +460,10 @@ func settingsHandler(s *Settings, changed func(), maxBody int64, logger *slog.Lo
 		case r.Context().Err() != nil:
 			logger.WarnContext(r.Context(), "settings write abandoned", slog.Any("error", err))
 			reply(w, http.StatusServiceUnavailable, map[string]string{"reason": "unavailable"})
+		case errors.Is(err, ErrBusy):
+			logger.WarnContext(r.Context(), "settings write timed out waiting for its turn", slog.Any("error", err))
+			w.Header().Set("Retry-After", strconv.Itoa(int(math.Ceil(s.retryAfter().Seconds()))))
+			reply(w, http.StatusServiceUnavailable, map[string]string{"reason": "busy"})
 		default:
 			logger.ErrorContext(r.Context(), "writing settings", slog.Any("error", err))
 			reply(w, http.StatusServiceUnavailable, map[string]string{"reason": "unavailable"})
