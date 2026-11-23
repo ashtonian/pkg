@@ -136,6 +136,15 @@ func TestMembership_SQLShapes(t *testing.T) {
 		"negated":        {&Lookup{Table: "t", Project: "p", Where: WhereEq("c", "x")}, true, `NOT ("docs"."id" IN (SELECT "t"."p" FROM "t" WHERE "t"."c" = $1))`},
 		"one-child And":  {&Lookup{Table: "t", Project: "p", Where: WhereAll(WhereNull("c"))}, false, `"docs"."id" IN (SELECT "t"."p" FROM "t" WHERE ("t"."c" IS NULL))`},
 		"placeholder ok": {&Lookup{Table: "t", Project: "p", Where: WhereEq("c", "$1; DROP TABLE t")}, false, `"docs"."id" IN (SELECT "t"."p" FROM "t" WHERE "t"."c" = $1)`},
+		"key set": {&Lookup{Table: "s.t", Project: "p", Where: WhereKeyIn([]string{"a", "b"}, core.Key{int64(1), "x"})}, false,
+			`"docs"."id" IN (SELECT "s"."t"."p" FROM "s"."t" WHERE ("s"."t"."a", "s"."t"."b") IN (SELECT "k"."a", "k"."b" FROM jsonb_populate_recordset(NULL::"s"."t", $1) AS "k"))`},
+		"key set of nothing": {&Lookup{Table: "t", Project: "p", Where: WhereKeyIn([]string{"a", "b"})}, false, `"docs"."id" IN (SELECT "t"."p" FROM "t" WHERE 1=0)`},
+		"typed member": {&Lookup{Table: "t", Project: "p", Where: WhereMember("a", &Lookup{Table: "u", Project: "x"}).typed(decimalType)}, false,
+			`"docs"."id" IN (SELECT "t"."p" FROM "t" WHERE "t"."a" IN (SELECT "u"."x" FROM "u"))`},
+		"typed in": {&Lookup{Table: "t", Project: "p", Where: WhereIn("a", "1.50").typed(decimalType)}, false,
+			`"docs"."id" IN (SELECT "t"."p" FROM "t" WHERE "t"."a" = ANY($1::text[]::numeric[]))`},
+		"key member": {&Lookup{Table: "t", Project: "p", Where: WhereKeyMember([]string{"a", "b"}, &Lookup{Table: "u", ProjectKey: []string{"x", "y"}, Where: WhereEq("z", "q")})}, false,
+			`"docs"."id" IN (SELECT "t"."p" FROM "t" WHERE ("t"."a", "t"."b") IN (SELECT "u"."x", "u"."y" FROM "u" WHERE "u"."z" = $1))`},
 	} {
 		t.Run(name, func(t *testing.T) {
 			res, err := NewSQLBuilder(memberSchema(), PostgresDialect{}).Build(memberAST(t, "id", tc.l, tc.negate))
@@ -145,24 +154,54 @@ func TestMembership_SQLShapes(t *testing.T) {
 	}
 }
 
+var (
+	stringType  = []core.TypeInfo{{Type: core.FieldTypeString}}
+	decimalType = []core.TypeInfo{{Type: core.FieldTypeDecimal}}
+)
+
+// On SQLite, which stores a decimal as text, a typed member compares both
+// sides by value.
+func TestMembership_TypedMemberComparesByValueOnSQLite(t *testing.T) {
+	l := &Lookup{Table: "t", Project: "p", Where: WhereMember("a", &Lookup{Table: "u", Project: "x"}).typed(decimalType)}
+	res, err := NewSQLBuilder(memberSchema(), SQLiteDialect{}).Build(memberAST(t, "id", l, false))
+	require.NoError(t, err)
+	assert.Equal(t, `"docs"."id" IN (SELECT "t"."p" FROM "t" WHERE parse_decimal_key("t"."a") IN (SELECT parse_decimal_key("u"."x") FROM "u"))`, res.Where)
+}
+
 func TestMembership_RefusesMalformedLookups(t *testing.T) {
 	for name, tc := range map[string]struct {
 		field string
 		l     *Lookup
 	}{
-		"table injection":      {"id", &Lookup{Table: "t; DROP TABLE docs", Project: "p"}},
-		"three-part table":     {"id", &Lookup{Table: "a.b.c", Project: "p"}},
-		"project injection":    {"id", &Lookup{Table: "t", Project: "p) OR (1=1"}},
-		"column injection":     {"id", &Lookup{Table: "t", Project: "p", Where: WhereEq(`c" = c --`, "x")}},
-		"comparison and group": {"id", &Lookup{Table: "t", Project: "p", Where: &LookupCond{Column: "c", Op: LookupOpNull, And: []*LookupCond{WhereNull("d")}}}},
-		"And and Or":           {"id", &Lookup{Table: "t", Project: "p", Where: &LookupCond{And: []*LookupCond{WhereNull("c")}, Or: []*LookupCond{WhereNull("d")}}}},
-		"empty condition":      {"id", &Lookup{Table: "t", Project: "p", Where: &LookupCond{}}},
-		"nil child":            {"id", &Lookup{Table: "t", Project: "p", Where: WhereAny(nil)}},
-		"equality with NULL":   {"id", &Lookup{Table: "t", Project: "p", Where: WhereEq("c", nil)}},
-		"typed nil equality":   {"id", &Lookup{Table: "t", Project: "p", Where: WhereEq("c", (*string)(nil))}},
-		"NULL in a list":       {"id", &Lookup{Table: "t", Project: "p", Where: WhereIn("c", "x", nil)}},
-		"unknown operator":     {"id", &Lookup{Table: "t", Project: "p", Where: &LookupCond{Column: "c", Op: "gt", Value: 1}}},
-		"document field":       {"doc", &Lookup{Table: "t", Project: "p"}},
+		"table injection":         {"id", &Lookup{Table: "t; DROP TABLE docs", Project: "p"}},
+		"three-part table":        {"id", &Lookup{Table: "a.b.c", Project: "p"}},
+		"project injection":       {"id", &Lookup{Table: "t", Project: "p) OR (1=1"}},
+		"column injection":        {"id", &Lookup{Table: "t", Project: "p", Where: WhereEq(`c" = c --`, "x")}},
+		"comparison and group":    {"id", &Lookup{Table: "t", Project: "p", Where: &LookupCond{Column: "c", Op: LookupOpNull, And: []*LookupCond{WhereNull("d")}}}},
+		"And and Or":              {"id", &Lookup{Table: "t", Project: "p", Where: &LookupCond{And: []*LookupCond{WhereNull("c")}, Or: []*LookupCond{WhereNull("d")}}}},
+		"empty condition":         {"id", &Lookup{Table: "t", Project: "p", Where: &LookupCond{}}},
+		"nil child":               {"id", &Lookup{Table: "t", Project: "p", Where: WhereAny(nil)}},
+		"equality with NULL":      {"id", &Lookup{Table: "t", Project: "p", Where: WhereEq("c", nil)}},
+		"typed nil equality":      {"id", &Lookup{Table: "t", Project: "p", Where: WhereEq("c", (*string)(nil))}},
+		"NULL in a list":          {"id", &Lookup{Table: "t", Project: "p", Where: WhereIn("c", "x", nil)}},
+		"unknown operator":        {"id", &Lookup{Table: "t", Project: "p", Where: &LookupCond{Column: "c", Op: "gt", Value: 1}}},
+		"document field":          {"doc", &Lookup{Table: "t", Project: "p"}},
+		"key projected":           {"id", &Lookup{Table: "t", ProjectKey: []string{"a", "b"}}},
+		"both projections":        {"id", &Lookup{Table: "t", Project: "p", ProjectKey: []string{"a", "b"}}},
+		"key of one column":       {"id", &Lookup{Table: "t", Project: "p", Where: WhereKeyIn([]string{"a"}, core.Key{"x"})}},
+		"key column twice":        {"id", &Lookup{Table: "t", Project: "p", Where: WhereKeyIn([]string{"a", "a"}, core.Key{"x", "y"})}},
+		"key column injection":    {"id", &Lookup{Table: "t", Project: "p", Where: WhereKeyIn([]string{"a", `b" --`}, core.Key{"x", "y"})}},
+		"short key":               {"id", &Lookup{Table: "t", Project: "p", Where: WhereKeyIn([]string{"a", "b"}, core.Key{"x"})}},
+		"NULL in a key":           {"id", &Lookup{Table: "t", Project: "p", Where: WhereKeyIn([]string{"a", "b"}, core.Key{"x", nil})}},
+		"key and a column":        {"id", &Lookup{Table: "t", Project: "p", Where: &LookupCond{Column: "c", Columns: []string{"a", "b"}, Op: LookupOpKeyIn}}},
+		"columns on a column":     {"id", &Lookup{Table: "t", Project: "p", Where: &LookupCond{Column: "c", Columns: []string{"a", "b"}, Op: LookupOpEq, Value: 1}}},
+		"key member of a column":  {"id", &Lookup{Table: "t", Project: "p", Where: WhereKeyMember([]string{"a", "b"}, &Lookup{Table: "u", Project: "x"})}},
+		"key member of no lookup": {"id", &Lookup{Table: "t", Project: "p", Where: WhereKeyMember([]string{"a", "b"}, nil)}},
+		"types on a NULL test":    {"id", &Lookup{Table: "t", Project: "p", Where: WhereNull("c").typed(stringType)}},
+		"types of another width":  {"id", &Lookup{Table: "t", Project: "p", Where: WhereKeyIn([]string{"a", "b"}, core.Key{"x", "y"}).typed(stringType)}},
+		"typed as no scalar":      {"id", &Lookup{Table: "t", Project: "p", Where: WhereEq("c", "x").typed([]core.TypeInfo{{Type: core.FieldTypeObject}})}},
+		"value its type refuses":  {"id", &Lookup{Table: "t", Project: "p", Where: WhereIn("c", "x").typed([]core.TypeInfo{{Type: core.FieldTypeInt}})}},
+		"member of a key":         {"id", &Lookup{Table: "t", Project: "p", Where: WhereMember("a", &Lookup{Table: "u", ProjectKey: []string{"x", "y"}})}},
 	} {
 		t.Run(name, func(t *testing.T) {
 			_, err := ApplyPolicyConstraints(memberSchema(), nil, &PolicyConstraints{
@@ -342,6 +381,15 @@ func TestMatchLookupRow(t *testing.T) {
 		"timestamp a µs later":     {WhereEq("at", at.Add(time.Microsecond)), false},
 		"device and instant":       {WhereAll(WhereEq("device", "d1"), WhereIn("at_text", at.Add(time.Second), elsewhere)), true},
 		"negative zero":            {WhereEq("zero", math.Copysign(0, -1)), true},
+		"key set":                  {WhereKeyIn([]string{"device", "at_text"}, core.Key{"d1", at.Add(time.Second)}, core.Key{"d1", elsewhere}), true},
+		"key set, each column":     {WhereKeyIn([]string{"device", "at_text"}, core.Key{"d2", elsewhere}, core.Key{"d1", at.Add(time.Second)}), false},
+		"key set by value":         {WhereKeyIn([]string{"name", "price"}, core.Key{"a", dec("1.5")}), true},
+		"key set of nothing":       {WhereKeyIn([]string{"name", "price"}), false},
+		"key set, NULL column":     {WhereKeyIn([]string{"name", "ended"}, core.Key{"a", "x"}), false},
+		"typed text by value":      {WhereEq("price", "1.5").typed(decimalType), true},
+		"typed set by value":       {WhereIn("label", "2", "1.50").typed(decimalType), true},
+		"typed key set":            {WhereKeyIn([]string{"label", "name"}, core.Key{"1.50", "a"}).typed(append(decimalType, stringType...)), true},
+		"typed key set, by type":   {WhereKeyIn([]string{"name", "label"}, core.Key{"a", "1.50"}).typed(append(stringType, stringType...)), false},
 	} {
 		t.Run(name, func(t *testing.T) {
 			got, err := MatchLookupRow(tc.cond, get)
@@ -351,4 +399,8 @@ func TestMatchLookupRow(t *testing.T) {
 	}
 	_, err := MatchLookupRow(WhereEq("missing", "x"), get)
 	assert.ErrorIs(t, err, ErrPolicyInvalid, "a misspelt column cannot silently select nothing")
+	_, err = MatchLookupRow(WhereKeyIn([]string{"name", "missing"}, core.Key{"a", "x"}), get)
+	assert.ErrorIs(t, err, ErrPolicyInvalid, "nor a key's")
+	_, err = MatchLookupRow(WhereKeyMember([]string{"name", "device"}, &Lookup{Table: "t", ProjectKey: []string{"a", "b"}}), get)
+	assert.ErrorContains(t, err, "unanswered lookup", "a key member is answered before a store sees it")
 }

@@ -212,3 +212,82 @@ func TestRelate_CompositeMembership(t *testing.T) {
 	assert.True(t, path.Relation)
 	assert.Equal(t, []*parse.RelationKeyResponse{{DataType: core.FieldTypeInt, NumberKind: "int64"}, {DataType: core.FieldTypeString}}, path.Key)
 }
+
+type crPairTag struct {
+	ID    string       `json:"id"    db:"id"    parse:"filter,sort"`
+	Stock []crStockRef `json:"stock" db:"-"     relation:"cr_stock_tags,tag_id,warehouse_id+sku" parse:"filter,include,facet,patch" indexed:"true"`
+}
+
+type crStockRef struct {
+	WarehouseID int64  `db:"warehouse_id" json:",string"`
+	SKU         string `db:"sku"`
+}
+
+// A pair table tagged with a target key of several columns is typed by the
+// struct its field holds: the filter takes only the NULL tests, and the
+// membership each key as an array of a value per column, as a declared
+// relation's; the schema document describes each column, its wire form
+// included.
+func TestRelationTag_CompositeTarget(t *testing.T) {
+	tags, err := parse.NewResource[crPairTag]("cr_tags")
+	require.NoError(t, err)
+
+	for _, doc := range []string{`{"stock":{"$null":true}}`, `{"stock":{"$null":false}}`, `{"stock":{"$exists":true}}`} {
+		_, err := tags.ParseFilter(doc)
+		assert.NoError(t, err, doc)
+	}
+	for _, doc := range []string{`{"stock":"a"}`, `{"stock":{"$in":[[1,"a"]]}}`, `{"stock":{"$some":{}}}`} {
+		_, err := tags.ParseFilter(doc)
+		assert.Error(t, err, doc)
+	}
+
+	parsed, err := tags.ParseMergePatch([]byte(`{"stock":[["1","a"],["1","a"],["2","b"]]}`))
+	require.NoError(t, err)
+	assert.Equal(t, []any{core.Key{int64(1), "a"}, core.Key{int64(2), "b"}}, parsed.Operations[0].Value)
+	for _, body := range []string{`{"stock":[["1"]]}`, `{"stock":["1:a"]}`, `{"stock":[["one","a"]]}`} {
+		_, err := tags.ParseMergePatch([]byte(body))
+		requireCode(t, err, patch.ECodePatchValueInvalid.String())
+	}
+
+	reg := parse.NewSchemaRegistry()
+	require.NoError(t, parse.RegisterResource(reg, tags))
+	schema := reg.SchemaFor("cr_tags")
+	field := schema.Filter.Fields["stock"]
+	assert.Equal(t, core.FieldTypeArray, field.DataType)
+	assert.ElementsMatch(t, []filter.FilterOperator{filter.OpNull, filter.OpNotNull, filter.OpExists}, field.Operators)
+	path := schema.Patch.Paths["/stock"]
+	require.NotNil(t, path)
+	assert.True(t, path.Relation)
+	assert.Equal(t, []*parse.RelationKeyResponse{{DataType: core.FieldTypeInt, NumberKind: "int64", Wire: core.WireString}, {DataType: core.FieldTypeString}}, path.Key)
+}
+
+// A tagged field whose target key has several columns refuses an element
+// that is no struct, a column its struct does not hold and an operator that
+// names one key value.
+func TestRelationTag_CompositeTargetRefusals(t *testing.T) {
+	type flat struct {
+		ID    string   `json:"id"    db:"id"`
+		Stock []string `json:"stock" db:"-" relation:"cr_stock_tags,tag_id,warehouse_id+sku" parse:"filter"`
+	}
+	type missing struct {
+		ID    string       `json:"id"    db:"id"`
+		Stock []crStockRef `json:"stock" db:"-" relation:"cr_stock_tags,tag_id,warehouse_id+bin" parse:"filter"`
+	}
+	type compared struct {
+		ID    string       `json:"id"    db:"id"`
+		Stock []crStockRef `json:"stock" db:"-" relation:"cr_stock_tags,tag_id,warehouse_id+sku" parse:"filter" filter_ops:"eq,null"`
+	}
+	_, err := parse.NewResource[flat]("cr_tags")
+	assert.ErrorContains(t, err, "target key warehouse_id+sku has 2 columns; the field holds string, not a struct holding a field per column")
+	_, err = parse.NewResource[missing]("cr_tags")
+	assert.ErrorContains(t, err, "relation tag target column bin is no column of parse_test.crStockRef")
+	_, err = parse.NewResource[compared]("cr_tags")
+	assert.ErrorContains(t, err, "relation target key warehouse_id+sku has 2 columns, which $eq cannot name")
+
+	type nullTests struct {
+		ID    string       `json:"id"    db:"id"`
+		Stock []crStockRef `json:"stock" db:"-" relation:"cr_stock_tags,tag_id,warehouse_id+sku" parse:"filter" filter_ops:"null,exists" indexed:"true"`
+	}
+	_, err = parse.NewResource[nullTests]("cr_tags")
+	assert.NoError(t, err, "every NULL test asks whether the owner has pairs")
+}

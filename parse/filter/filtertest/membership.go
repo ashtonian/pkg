@@ -153,9 +153,15 @@ func (ts tableLookup) LookupValues(ctx context.Context, l *filter.Lookup) ([]any
 		return nil, fmt.Errorf("filtertest: no lookup table %q", l.Table)
 	}
 	t := ts[i]
-	project := slices.IndexFunc(t.Columns, func(c LookupColumn) bool { return c.Name == l.Project })
-	if project < 0 {
-		return nil, fmt.Errorf("filtertest: table %q has no column %q", l.Table, l.Project)
+	projected := l.ProjectKey
+	if projected == nil {
+		projected = []string{l.Project}
+	}
+	project := make([]int, len(projected))
+	for j, name := range projected {
+		if project[j] = slices.IndexFunc(t.Columns, func(c LookupColumn) bool { return c.Name == name }); project[j] < 0 {
+			return nil, fmt.Errorf("filtertest: table %q has no column %q", l.Table, name)
+		}
 	}
 	var out []any
 	for _, row := range t.Rows {
@@ -169,9 +175,18 @@ func (ts tableLookup) LookupValues(ctx context.Context, l *filter.Lookup) ([]any
 		if err != nil {
 			return nil, err
 		}
-		if ok {
-			out = append(out, row[project])
+		if !ok {
+			continue
 		}
+		if l.ProjectKey == nil {
+			out = append(out, row[project[0]])
+			continue
+		}
+		key := make(core.Key, len(project))
+		for j, c := range project {
+			key[j] = row[c]
+		}
+		out = append(out, key)
 	}
 	return out, nil
 }

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"reflect"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -128,6 +129,9 @@ type Dialect interface {
 	// constraint over several columns, an include's owners and a relation
 	// patch's pairs render through it.
 	KeyIn(table, alias string, columns []string, types []core.TypeInfo, keys []core.Key, member bool, bind func(any) string) (string, error)
+	// keyIn is KeyIn with each column read as read renders it, table
+	// possibly schema-qualified: a lookup's WhereKeyIn renders through it.
+	keyIn(table string, read func(column string) string, columns []string, types []core.TypeInfo, keys []core.Key, member bool, bind func(any) string) (string, error)
 
 	// KeyOperand renders what a key column, read as expr and typed t,
 	// compares by: the operand a filter's equality on the type compares,
@@ -778,7 +782,8 @@ func (b *SQLBuilder) computed(n *FilterNode) *FilterNode {
 
 // buildPairTable compiles a key comparison on a pair table the relation tag
 // declares as the relation predicate it is, through buildRelated: the pair
-// table is the target, its one typed key the target column.
+// table is the target, its typed key the target columns. A key of several
+// columns takes only the NULL tests (checkPairKeyOp).
 //
 //	$eq / $in / other ops  EXISTS     (… AND <tgt> <op> …)
 //	$ne / $nin             NOT EXISTS (… AND <tgt> = / IN …)
@@ -790,8 +795,8 @@ func (b *SQLBuilder) computed(n *FilterNode) *FilterNode {
 func (b *SQLBuilder) buildPairTable(s *buildState, node *FilterNode) (string, error) {
 	f := node.Field
 	rel := f.Relation
-	if len(rel.TargetColumns) != 1 {
-		return "", invalidRelation(f, "compares a pair table's key by value, which names one target column")
+	if err := checkPairKeyOp(f, node.Op); err != nil {
+		return "", err
 	}
 	op, cond := OpSome, node.Op
 	switch node.Op {
@@ -816,18 +821,31 @@ func (b *SQLBuilder) buildPairTable(s *buildState, node *FilterNode) (string, er
 			op, cond = OpNone, OpIn
 		}
 	}
-	target := rel.TargetColumns[0]
-	key := &FieldSchema{
-		ExternalName: f.ExternalName, Table: rel.JoinTable, Column: target,
-		DataType: f.DataType, NumberKind: f.NumberKind,
-	}
 	pair := *f
-	pair.Related = &ResourceSchema{Name: rel.JoinTable, PrimaryKey: []string{target}, SystemFields: map[string]*FieldSchema{target: key}}
+	pair.Related = &ResourceSchema{Name: rel.JoinTable, PrimaryKey: slices.Clone(rel.TargetColumns)}
 	lowered := &FilterNode{Field: &pair, Op: op}
-	if cond != "" {
-		lowered.Children = []*FilterNode{{Field: key, Op: cond, Value: node.Value}}
+	if len(rel.TargetColumns) == 1 {
+		target := rel.TargetColumns[0]
+		key := &FieldSchema{
+			ExternalName: f.ExternalName, Table: rel.JoinTable, Column: target,
+			DataType: f.DataType, NumberKind: f.NumberKind,
+		}
+		pair.Related.SystemFields = map[string]*FieldSchema{target: key}
+		if cond != "" {
+			lowered.Children = []*FilterNode{{Field: key, Op: cond, Value: node.Value}}
+		}
 	}
 	return b.buildRelated(s, lowered)
+}
+
+// checkPairKeyOp refuses a comparison on a pair table compared by a target
+// key of several columns, which one value cannot name: such a field takes
+// only the NULL tests, whether the owner has pairs.
+func checkPairKeyOp(f *FieldSchema, op FilterOperator) error {
+	if len(f.Relation.TargetColumns) == 1 || op == OpNull || op == OpNotNull {
+		return nil
+	}
+	return invalidRelation(f, fmt.Sprintf("compares a key of several columns, which $%s cannot name; it takes $null", op))
 }
 
 // nullableDateValue is the SQL boundary: typed nil pointers are SQL NULL,

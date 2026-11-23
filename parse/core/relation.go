@@ -193,7 +193,8 @@ func (r *RelationSchema) checkColumns() error {
 //	relation:"<junction>,<src>,<tgt>[,<pk>[,<tenant_col>]]"
 //
 // A key of several columns joins them with `+` within its part, in key
-// order: <src> and <pk> pair by position.
+// order: <src> and <pk> pair by position, and <tgt> names each column of
+// the target key.
 //
 // Examples:
 //
@@ -202,8 +203,8 @@ func (r *RelationSchema) checkColumns() error {
 //	relation:"widget_tags,widget_id,tag_id,id,tenant_id"        // 5-arg, tenant-scoped
 //	relation:"system_tags,id,tag_id,id,-"                       // 5-arg, explicit no-tenant
 //	relation:"stock_tags,warehouse_id+sku,tag_id,warehouse_id+sku" // composite owner key
+//	relation:"stock_tags,tag_id,warehouse_id+sku"               // composite target key
 //
-// The tagged field is a slice of target keys, so <tgt> names one column.
 // Every part must be a plain SQL identifier, or identifiers joined by `+`:
 // the values are emitted into SQL verbatim, so a malformed tag fails at
 // schema generation, not in a query.
@@ -259,9 +260,6 @@ func ParseRelationTag(tag string) (*RelationSchema, error) {
 		return nil, fmt.Errorf("relation tag source columns %s do not pair with primary key %s: %d and %d columns",
 			parts[1], strings.Join(rel.OwnerKey, "+"), len(rel.SourceColumns), len(rel.OwnerKey))
 	}
-	if len(rel.TargetColumns) > 1 {
-		return nil, fmt.Errorf("relation tag target column %s names several columns; a tagged relation's field holds one-column target keys", parts[2])
-	}
 	// The struct the tag is on types the columns (SchemaGenerator.RelationTag).
 	if err := rel.checkColumns(); err != nil {
 		return nil, fmt.Errorf("relation tag: %w", err)
@@ -272,8 +270,10 @@ func ParseRelationTag(tag string) (*RelationSchema, error) {
 // RelationTag reads field's `relation:"…"` tag (ParseRelationTag) and types
 // its columns from fields, the struct field is on: each source column as
 // the field holding the owner key column it pairs with (FieldType), and the
-// target column as an element of field, a slice of target keys. A column
-// typed by no scalar (IsKeyType) is refused, naming it.
+// target key from field, a slice of target keys: one column as the slice's
+// element, several each as the field of the element struct holding it
+// (RelationTargetFields). A column typed by no scalar (IsKeyType) is
+// refused, naming it.
 func (g *SchemaGenerator) RelationTag(fields *StructFields, field *Field) (*RelationSchema, error) {
 	rel, err := ParseRelationTag(field.Tags.Relation)
 	if err != nil {
@@ -292,6 +292,69 @@ func (g *SchemaGenerator) RelationTag(fields *StructFields, field *Field) (*Rela
 			return nil, fmt.Errorf("relation tag primary key %s: %w", column, err)
 		}
 	}
+	elem, err := relationElem(field)
+	if err != nil {
+		return nil, err
+	}
+	if len(rel.TargetColumns) == 1 {
+		rel.TargetTypes = []TypeInfo{TypeOf(elem)}
+	} else {
+		targets, err := g.RelationTargetFields(field, rel)
+		if err != nil {
+			return nil, err
+		}
+		rel.TargetTypes = make([]TypeInfo, len(targets))
+		for i, target := range targets {
+			if rel.TargetTypes[i], err = g.FieldType(target); err != nil {
+				return nil, fmt.Errorf("relation tag target column %s: %w", rel.TargetColumns[i], err)
+			}
+		}
+	}
+	if err := rel.Check(); err != nil {
+		return nil, fmt.Errorf("relation tag: %w", err)
+	}
+	return rel, nil
+}
+
+// RelationTargetFields are the fields holding the columns of rel's target
+// key, of several columns, in key order: the fields of the struct field's
+// slice holds, each found by its column (FieldColumn), as the owner's
+// struct holds the owner key. A key of one column is the slice's element
+// itself and has none. A target column no field holds is refused, naming
+// it.
+func (g *SchemaGenerator) RelationTargetFields(field *Field, rel *RelationSchema) ([]*Field, error) {
+	if len(rel.TargetColumns) == 1 {
+		return nil, nil
+	}
+	elem, err := relationElem(field)
+	if err != nil {
+		return nil, err
+	}
+	key := strings.Join(rel.TargetColumns, "+")
+	if elem.Kind() != reflect.Struct || IsKeyType(TypeOf(elem).Type) {
+		return nil, fmt.Errorf("relation tag target key %s has %d columns; the field holds %s, not a struct holding a field per column", key, len(rel.TargetColumns), elem)
+	}
+	walk, err := g.StructFields(elem)
+	if err != nil {
+		return nil, fmt.Errorf("relation tag target key %s: %w", key, err)
+	}
+	out := make([]*Field, len(rel.TargetColumns))
+	for i, column := range rel.TargetColumns {
+		target, ok, err := g.columnField(walk, column)
+		if err != nil {
+			return nil, fmt.Errorf("relation tag target column %s: %w", column, err)
+		}
+		if !ok {
+			return nil, fmt.Errorf("relation tag target column %s is no column of %s; the field holding it types the column", column, elem)
+		}
+		out[i] = target
+	}
+	return out, nil
+}
+
+// relationElem is the element type of a relation field, a slice of target
+// keys.
+func relationElem(field *Field) (reflect.Type, error) {
 	keys := field.Type
 	for keys.Kind() == reflect.Pointer {
 		keys = keys.Elem()
@@ -299,11 +362,7 @@ func (g *SchemaGenerator) RelationTag(fields *StructFields, field *Field) (*Rela
 	if keys.Kind() != reflect.Slice || keys.Elem().Kind() == reflect.Uint8 {
 		return nil, fmt.Errorf("relation tag: the field is %s; a relation's field is a slice of target keys", field.Type)
 	}
-	rel.TargetTypes = []TypeInfo{TypeOf(keys.Elem())}
-	if err := rel.Check(); err != nil {
-		return nil, fmt.Errorf("relation tag: %w", err)
-	}
-	return rel, nil
+	return keys.Elem(), nil
 }
 
 // columnField is the field of fields holding column, a relation's field
