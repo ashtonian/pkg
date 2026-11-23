@@ -1,12 +1,42 @@
 package config
 
 import (
+	"encoding/json"
 	"fmt"
 	"reflect"
 	"strings"
 
 	"github.com/go-viper/mapstructure/v2"
 )
+
+var jsonNumberType = reflect.TypeFor[json.Number]()
+
+// plainInput hands the built-in hooks after it the values they assert. A
+// json.Number — what a source decoding JSON with UseNumber holds — bound for
+// a number is the number config's own JSON parser makes of it (see
+// jsonNumber), so a time.Duration takes it as a file's number; bound for
+// anything else it stays text. Any other value of a named string type bound
+// for a time.Duration is its string. mapstructure's duration hook asserts a
+// string and would panic on either.
+func plainInput(from, to reflect.Type, data any) (any, error) {
+	switch {
+	case from == jsonNumberType && numberKind(to.Kind()):
+		return jsonNumber(data.(json.Number))
+	case from.Kind() == reflect.String && from != reflect.TypeFor[string]() && to == durationType:
+		return reflect.ValueOf(data).String(), nil
+	}
+	return data, nil
+}
+
+func numberKind(k reflect.Kind) bool {
+	switch k {
+	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64,
+		reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64, reflect.Uintptr,
+		reflect.Float32, reflect.Float64:
+		return true
+	}
+	return false
+}
 
 // A default tag or an environment variable holds one string; these read it
 // as a list or a map when its field is one, leaving each element or value to

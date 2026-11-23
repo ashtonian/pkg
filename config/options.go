@@ -491,6 +491,7 @@ func (o *options) decodeHook(observe func(mapstructure.DecodeHookFunc) mapstruct
 		hooks = append(hooks, custom)
 	}
 	hooks = append(hooks,
+		mapstructure.DecodeHookFuncType(plainInput),
 		mapstructure.StringToTimeDurationHookFunc(),
 		mapstructure.DecodeHookFuncType(stringToSlice),
 		mapstructure.DecodeHookFuncType(stringToMap),
