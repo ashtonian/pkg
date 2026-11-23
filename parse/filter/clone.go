@@ -131,12 +131,14 @@ func (c *schemaCloner) field(f *FieldSchema) *FieldSchema {
 	c.fields[f] = out
 	out.AllowedOperators = slices.Clone(f.AllowedOperators)
 	out.EnumValues = slices.Clone(f.EnumValues)
-	if f.Relation != nil {
-		rel := *f.Relation
-		out.Relation = &rel
-	}
+	out.Relation = f.Relation.Clone()
 	out.Related = c.schema(f.Related)
-	out.RelatedBy = c.field(f.RelatedBy)
+	if f.RelatedBy != nil {
+		out.RelatedBy = make([]*FieldSchema, len(f.RelatedBy))
+		for i, by := range f.RelatedBy {
+			out.RelatedBy[i] = c.field(by)
+		}
+	}
 	out.Path = f.Path.clone()
 	out.Elements = c.schema(f.Elements)
 	out.Element = c.field(f.Element)

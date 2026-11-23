@@ -177,7 +177,7 @@ func TestRelate_TenantKeysAgree(t *testing.T) {
 	t.Run("pair tables, includes and membership writes bind the typed key", func(t *testing.T) {
 		devices := parse.MustResource[int32TenantDevice]("devices", parse.TenantColumn("tenant_id"))
 		devices.MustRelate("commands", parse.ManyToMany(commands,
-			parse.Junction{Table: "device_commands", Source: "device_id", Target: "command_id", Tenant: "tenant_id"},
+			parse.Junction{Table: "device_commands", Source: []string{"device_id"}, Target: []string{"command_id"}, Tenant: "tenant_id"},
 			parse.Includable(), parse.Writable()))
 
 		req, err := devices.ParseListInput(parse.ListInput{Include: []string{"commands"}})

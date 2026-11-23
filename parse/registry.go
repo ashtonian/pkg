@@ -294,6 +294,21 @@ type PatchPathResponse struct {
 	// Relation reports a relation's membership path: its value is a list
 	// of target keys.
 	Relation bool `json:"relation,omitempty"`
+	// Key are the target key's columns, in key order, of a membership
+	// path whose target key has several: each key is a JSON array of a
+	// value per column. A one-column key's type is Elem's.
+	Key []*RelationKeyResponse `json:"key,omitempty"`
+}
+
+// RelationKeyResponse is a target key column of a membership path: the
+// type and wire form of its value in each key.
+type RelationKeyResponse struct {
+	DataType core.FieldType `json:"data_type"`
+	// Wire is "string" for an integer column whose value is a JSON string
+	// holding it, as the target's field reads in responses
+	// (json:",string").
+	Wire       core.Wire `json:"wire,omitempty"`
+	NumberKind string    `json:"number_kind,omitempty"`
 }
 
 // SortSchemaResponse is the JSON representation of a sort schema.
@@ -408,6 +423,14 @@ func patchSchemaToResponse(s *patch.PatchSchema) *PatchSchemaResponse {
 			if info.NumberKind != reflect.Invalid {
 				resp.NumberKind = info.NumberKind.String()
 			}
+		}
+		for _, k := range p.RelationKey {
+			info := core.TypeOf(k.Type)
+			column := &RelationKeyResponse{DataType: info.Type, Wire: k.Wire}
+			if info.NumberKind != reflect.Invalid {
+				column.NumberKind = info.NumberKind.String()
+			}
+			resp.Key = append(resp.Key, column)
 		}
 		paths[key] = resp
 	}

@@ -355,13 +355,20 @@ func NewResource[T any](table string, opts ...ResourceOption) (*Resource[T], err
 	}
 	for _, f := range r.filterSchema.Fields {
 		if f.Relation != nil && f.RelatedBy == nil {
-			if _, ok := columns[f.Relation.PrimaryKey]; !ok {
-				return nil, fmt.Errorf("parse: %s: relation %q correlates on %q, which is not a column of %s", table, f.ExternalName, f.Relation.PrimaryKey, reflect.TypeFor[T]())
+			owner := f.Relation.OwnerColumns()
+			for _, c := range owner {
+				if _, ok := columns[c]; !ok {
+					return nil, fmt.Errorf("parse: %s: relation %q correlates on %q, which is not a column of %s", table, f.ExternalName, c, reflect.TypeFor[T]())
+				}
+				if r.computed(c) {
+					return nil, computedCorrelation(table, f.ExternalName, c)
+				}
 			}
-			if r.computed(f.Relation.PrimaryKey) {
-				return nil, computedCorrelation(table, f.ExternalName, f.Relation.PrimaryKey)
+			if (f.Includable || f.Facetable) && !slices.Equal(owner, r.pk) {
+				return nil, fmt.Errorf("parse: %s: relation %q: an include or facet groups related keys by the owner's key (%s), and the relation correlates on %s",
+					table, f.ExternalName, strings.Join(r.pk, ", "), strings.Join(owner, ", "))
 			}
-			f.RelatedBy = r.correlationField(f.Relation.PrimaryKey)
+			f.RelatedBy = r.correlationFields(owner)
 		}
 	}
 	return r, nil
@@ -625,21 +632,26 @@ func (r *Resource[T]) checkUnreadColumns(fields map[string]*filter.FieldSchema, 
 }
 
 // checkRelation refuses a relation over a column a request may not learn: the
-// owner's correlation column and, for a has-many or belongs-to, the target's
-// (target is nil for a pair table declared by tag). Includes and facets carry
-// the correlation's values, so those columns must be read; a filter by the
-// relation discloses them by inference, which a query-only column admits.
+// owner's correlation columns and, for a has-many or belongs-to, the
+// target's (target is nil for a pair table declared by tag). Includes and
+// facets carry the correlation's values, so those columns must be read; a
+// filter by the relation discloses them by inference, which a query-only
+// column admits.
 func (r *Resource[T]) checkRelation(name string, rs *core.RelationSchema, target RelatedResource, returnsValues bool) error {
 	need := columnQueryOnly
 	if returnsValues {
 		need = columnRead
 	}
-	if err := r.admits(rs.PrimaryKey, need); err != nil {
-		return fmt.Errorf("parse: %s: relation %q: %w", r.table, name, err)
+	for _, c := range rs.OwnerColumns() {
+		if err := r.admits(c, need); err != nil {
+			return fmt.Errorf("parse: %s: relation %q: %w", r.table, name, err)
+		}
 	}
 	if target != nil && (rs.Kind == core.HasMany || rs.Kind == core.BelongsTo) {
-		if err := target.admits(rs.SourceColumn, need); err != nil {
-			return fmt.Errorf("parse: %s: relation %q: %w", r.table, name, err)
+		for _, c := range rs.SourceColumns {
+			if err := target.admits(c, need); err != nil {
+				return fmt.Errorf("parse: %s: relation %q: %w", r.table, name, err)
+			}
 		}
 	}
 	return nil

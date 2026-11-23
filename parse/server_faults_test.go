@@ -52,7 +52,7 @@ func TestBuildList_ServerFaultsAreNoParseError(t *testing.T) {
 	devices.MustRelate("labels", parse.HasMany(labels, "device_id", parse.PolicyScoped(), parse.Indexed()))
 	boards := parse.MustResource[faultBoard]("boards")
 	boards.MustRelate("labels", parse.ManyToMany(labels,
-		parse.Junction{Table: "board_labels", Source: "board_id", Target: "label_id", Tenant: "tenant_id"}, parse.Indexed()))
+		parse.Junction{Table: "board_labels", Source: []string{"board_id"}, Target: []string{"label_id"}, Tenant: "tenant_id"}, parse.Indexed()))
 
 	build := func(t *testing.T, r interface {
 		ParseListInput(parse.ListInput) (*parse.ListRequest, error)

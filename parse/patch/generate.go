@@ -2,6 +2,7 @@ package patch
 
 import (
 	"cmp"
+	"errors"
 	"fmt"
 	"reflect"
 	"slices"
@@ -290,16 +291,38 @@ func relationPatchOps() []PatchOp {
 	return []PatchOp{PatchOpReplace, PatchOpAdd, PatchOpRemove}
 }
 
+// RelationKey is a target key column as a membership's keys hold it: the
+// column's Go type, and the form its values travel in, core.WireString for
+// one tagged json:",string", whose values are JSON strings ("5"), as
+// responses write them.
+type RelationKey struct {
+	Type reflect.Type
+	Wire core.Wire
+}
+
 // RelationPath is the patch path of a relation's membership: replace, add
-// and remove of a slice of target keys (goType), routed to RelationOps. A key
-// is never null, so goType's element must not be nullable. wire is the form
-// each key travels in, the target key's: core.WireString for one tagged
-// json:",string", whose keys are JSON strings ("5"), as responses write them.
-func RelationPath(rel *core.RelationSchema, goType reflect.Type, wire core.Wire) (*PathSchema, error) {
-	if err := checkRelationKeyType(goType); err != nil {
-		return nil, err
+// and remove of target keys, routed to RelationOps. key are the target key's
+// columns in key order. A one-column key's keys are values of its type, so
+// the path's value is a slice of them; a longer key's keys are JSON arrays
+// of a value per column, normalized to core.Key values. A key is never
+// null, so no column's type may be nullable.
+func RelationPath(rel *core.RelationSchema, key ...RelationKey) (*PathSchema, error) {
+	if len(key) == 0 {
+		return nil, errors.New("a relation's membership names its target key's columns")
 	}
-	return &PathSchema{AllowedOps: relationPatchOps(), DataType: core.TypeOf(goType).Type, GoType: goType, Wire: wire, Relation: rel}, nil
+	if len(key) == 1 {
+		goType := reflect.SliceOf(key[0].Type)
+		if err := checkRelationKeyType(goType); err != nil {
+			return nil, err
+		}
+		return &PathSchema{AllowedOps: relationPatchOps(), DataType: core.TypeOf(goType).Type, GoType: goType, Wire: key[0].Wire, Relation: rel}, nil
+	}
+	for _, k := range key {
+		if err := checkRelationKeyType(reflect.SliceOf(k.Type)); err != nil {
+			return nil, err
+		}
+	}
+	return &PathSchema{AllowedOps: relationPatchOps(), DataType: core.FieldTypeArray, Relation: rel, RelationKey: slices.Clone(key)}, nil
 }
 
 // checkRelationKeyType refuses a membership type that is not a slice of

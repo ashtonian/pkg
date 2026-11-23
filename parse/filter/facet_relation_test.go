@@ -24,11 +24,11 @@ func facetSchemaWithRelation() *filter.ResourceSchema {
 		Facetable:        true,
 		FacetSchema:      &filter.FacetSchema{Type: filter.FacetTerms, Limit: 5},
 		Relation: &core.RelationSchema{
-			JoinTable:    "item_tags",
-			SourceColumn: "item_id",
-			TargetColumn: "tag_id",
-			PrimaryKey:   "id",
-			TenantColumn: "tenant_id",
+			JoinTable:     "item_tags",
+			SourceColumns: []string{"item_id"},
+			TargetColumns: []string{"tag_id"},
+			OwnerKey:      []string{"id"},
+			TenantColumn:  "tenant_id",
 		},
 	}
 	return rs
@@ -185,11 +185,11 @@ func TestBuildFacetQuery_RelationFacets_OwnKeyEach(t *testing.T) {
 		Fields: map[string]*filter.FieldSchema{
 			"tags": {
 				ExternalName: "tags", DataType: core.FieldTypeString, Facetable: true,
-				Relation: &core.RelationSchema{JoinTable: "doc_tags", SourceColumn: "doc_id", TargetColumn: "tag", PrimaryKey: "id"},
+				Relation: &core.RelationSchema{JoinTable: "doc_tags", SourceColumns: []string{"doc_id"}, TargetColumns: []string{"tag"}, OwnerKey: []string{"id"}},
 			},
 			"labels": {
 				ExternalName: "labels", DataType: core.FieldTypeString, Facetable: true,
-				Relation: &core.RelationSchema{JoinTable: "doc_labels", SourceColumn: "doc_code", TargetColumn: "label", PrimaryKey: "code"},
+				Relation: &core.RelationSchema{JoinTable: "doc_labels", SourceColumns: []string{"doc_code"}, TargetColumns: []string{"label"}, OwnerKey: []string{"code"}},
 			},
 		},
 	}

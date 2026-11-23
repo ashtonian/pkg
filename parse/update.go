@@ -482,16 +482,13 @@ func (r *Resource[T]) RelationStatements(plan *UpdatePlan, ownerKeys []Key) ([]p
 	if len(plan.relations) == 0 || len(ownerKeys) == 0 {
 		return nil, nil
 	}
-	owners := make([]any, len(ownerKeys))
-	for i, k := range ownerKeys {
-		if len(k) != 1 {
-			return nil, fmt.Errorf("parse: %s: owner key %d: %w: %d values for the one key column", r.table, i, ErrKeyInvalid, len(k))
-		}
-		owners[i] = k[0]
+	owners, err := r.ownerKeys(ownerKeys)
+	if err != nil {
+		return nil, err
 	}
 	var out []patch.RenderedRelationStatement
 	for _, op := range plan.relations {
-		opts := patch.RenderRelationOpOptions{Owner: patch.RelationOwner{Table: r.table, Key: r.pk[0], Tenant: r.tenant}}
+		opts := patch.RenderRelationOpOptions{Owner: patch.RelationOwner{Table: r.table, Key: slices.Clone(r.pk), Tenant: r.tenant}}
 		opts.TenantValue = plan.tenant
 		if op.Schema.TargetTable != "" {
 			field := plan.fields.Fields[op.Field]

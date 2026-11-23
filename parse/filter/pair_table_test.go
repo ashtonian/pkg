@@ -25,7 +25,7 @@ func TestPairTable_OperatorsBeyondEquality(t *testing.T) {
 	schema, err := filter.GenerateFilterSchema[rankedItem](core.NewSchemaGenerator())
 	require.NoError(t, err)
 	// The owner's key, which a resource supplies (parse.NewResource).
-	schema.Fields["ranks"].RelatedBy = &filter.FieldSchema{ExternalName: "id", Table: "ranked_items", Column: "id", DataType: core.FieldTypeInt}
+	schema.Fields["ranks"].RelatedBy = []*filter.FieldSchema{{ExternalName: "id", Table: "ranked_items", Column: "id", DataType: core.FieldTypeInt}}
 	parsed, err := filter.NewFilterParser(schema, nil).Parse(`{"ranks":{"$gt":3}}`)
 	require.NoError(t, err)
 	res, err := filter.NewSQLBuilder(schema, filter.PostgresDialect{}).Build(parsed)

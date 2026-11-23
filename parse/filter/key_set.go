@@ -1,13 +1,12 @@
 package filter
 
 import (
-	"encoding/json"
 	"fmt"
 	"slices"
-	"strconv"
 	"strings"
 
 	"github.com/ashtonian/pkg/parse/core"
+	"github.com/ashtonian/pkg/parse/internal/dialect"
 )
 
 // KeySet is the set an OpKeyIn node tests a row against: the row's Fields,
@@ -170,49 +169,51 @@ func (b *SQLBuilder) buildKeySet(s *buildState, node *FilterNode) (string, error
 	return b.dialect.keySet(ks, "("+strings.Join(exprs, ", ")+")", s.binder(b.dialect))
 }
 
-// keySet binds the keys as one JSON parameter and reads them back as rows
-// of the table's row type, so every position has its column's own type: a
-// string field over a uuid column compares as uuid, and the key index
-// serves the semi-join.
+// keySet is the row value IN the set's keys, bound as one parameter
+// (dialect.KeySet).
 func (d PostgresDialect) keySet(ks *KeySet, row string, bind func(any) string) (string, error) {
-	doc := make([]map[string]any, len(ks.Keys))
-	for i, k := range ks.Keys {
-		doc[i] = make(map[string]any, len(ks.Fields))
-		for j, f := range ks.Fields {
-			doc[i][f.Column] = k[j]
-		}
-	}
-	arr, err := json.Marshal(doc)
-	if err != nil {
-		return "", fmt.Errorf("key set on %s: %w", ks.Table, err)
-	}
-	columns := make([]string, len(ks.Fields))
-	for i, f := range ks.Fields {
-		columns[i] = qualified(d, "k", f.Column)
-	}
-	return row + " IN (SELECT " + strings.Join(columns, ", ") + " FROM jsonb_populate_recordset(NULL::" + d.QuoteIdent(ks.Table) +
-		", " + bind(string(arr)) + ") AS " + d.QuoteIdent("k") + ")", nil
+	return dialect.KeySet(d, row, ks.Table, ks.columns(), ks.Keys, true, bind)
 }
 
-// keySet binds the keys as one JSON array of arrays and reads each position
-// back with json_extract, the value a scalar parameter binds.
-func (SQLiteDialect) keySet(ks *KeySet, row string, bind func(any) string) (string, error) {
-	doc := make([][]any, len(ks.Keys))
-	for i, k := range ks.Keys {
+// keySet refuses an unsigned key past SQLite's signed integers, then
+// renders the row value IN the set's keys (dialect.KeySet).
+func (d SQLiteDialect) keySet(ks *KeySet, row string, bind func(any) string) (string, error) {
+	for _, k := range ks.Keys {
 		for j, f := range ks.Fields {
 			if err := sqliteIntegers(f, k[j]); err != nil {
 				return "", err
 			}
 		}
-		doc[i] = k
 	}
-	arr, err := json.Marshal(doc)
-	if err != nil {
-		return "", fmt.Errorf("key set on %s: %w", ks.Table, err)
+	return dialect.KeySet(d, row, ks.Table, ks.columns(), ks.Keys, true, bind)
+}
+
+// columns are the set's fields' column names, which its rows name their
+// values by.
+func (ks *KeySet) columns() []string {
+	out := make([]string, len(ks.Fields))
+	for i, f := range ks.Fields {
+		out[i] = f.Column
 	}
-	positions := make([]string, len(ks.Fields))
-	for i := range ks.Fields {
-		positions[i] = "json_extract(value, '$[" + strconv.Itoa(i) + "]')"
+	return out
+}
+
+// keyText is the compact JSON array of the expressions' texts, the text
+// core.KeyText gives a key of several columns.
+func (d PostgresDialect) keyText(exprs []string) string {
+	texts := make([]string, len(exprs))
+	for i, e := range exprs {
+		texts[i] = d.textKey(e)
 	}
-	return row + " IN (SELECT " + strings.Join(positions, ", ") + " FROM json_each(" + bind(string(arr)) + "))", nil
+	return "array_to_json(ARRAY[" + strings.Join(texts, ", ") + "])::text"
+}
+
+// keyText is the compact JSON array of the expressions' texts, the text
+// core.KeyText gives a key of several columns.
+func (d SQLiteDialect) keyText(exprs []string) string {
+	texts := make([]string, len(exprs))
+	for i, e := range exprs {
+		texts[i] = d.textKey(e)
+	}
+	return "json_array(" + strings.Join(texts, ", ") + ")"
 }

@@ -255,7 +255,7 @@ func TestTenantKey_StringBesideUUIDBindsTheCanonicalUUID(t *testing.T) {
 }
 
 func TestTenantKey_PairTablesBindTheResourceKey(t *testing.T) {
-	pairs := parse.Junction{Table: "device_tags", Source: "device_id", Target: "tag_id", Tenant: "tenant_id"}
+	pairs := parse.Junction{Table: "device_tags", Source: []string{"device_id"}, Target: []string{"tag_id"}, Tenant: "tenant_id"}
 
 	t.Run("an owner without a tenant binds its typed key into every pair table", func(t *testing.T) {
 		tests := []struct {

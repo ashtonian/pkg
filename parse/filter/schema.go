@@ -180,10 +180,12 @@ type FieldSchema struct {
 	// related rows with it (`$some`, `$none`, `$is`, `$is_not`). Nil for a
 	// relation compared by key alone.
 	Related *ResourceSchema
-	// RelatedBy is the owner's field a relation correlates on (its key, or
-	// a belongs-to's foreign key), for backends that evaluate relation
-	// predicates as memberships (ResolveMemberships).
-	RelatedBy *FieldSchema
+	// RelatedBy are the owner's fields a relation correlates on (its key,
+	// or a belongs-to's foreign key), paired by position with
+	// Relation.OwnerColumns: they type the owner keys of includes, and
+	// backends that evaluate relation predicates as memberships
+	// (ResolveMemberships) test them.
+	RelatedBy []*FieldSchema
 	// Path makes the field a typed member of a document column; its value
 	// expression is Dialect.PathExpr (render with FieldExpr), and Table,
 	// Column and Expr are the document's.

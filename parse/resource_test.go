@@ -607,7 +607,7 @@ func TestRelate_CorrelatesThroughTheOwnersMappedField(t *testing.T) {
 	}
 	members := parse.MustResource[mappedMember]("members", mappedColumns)
 	members.MustRelate("team", parse.BelongsTo(parse.MustResource[team]("teams"), "team_id"))
-	assert.Equal(t, "(members.team_id)", members.FilterSchema().Fields["team"].RelatedBy.Expr)
+	assert.Equal(t, "(members.team_id)", members.FilterSchema().Fields["team"].RelatedBy[0].Expr)
 }
 
 // QueryOnlyColumns lets requests filter and search by columns the resource

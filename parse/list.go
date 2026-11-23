@@ -543,12 +543,9 @@ func (r *Resource[T]) IncludeQueries(plan *ListPlan, ownerKeys []Key) ([]filter.
 	if len(plan.Include) == 0 || len(ownerKeys) == 0 {
 		return nil, nil
 	}
-	owners := make([]any, len(ownerKeys))
-	for i, k := range ownerKeys {
-		if len(k) != 1 {
-			return nil, fmt.Errorf("parse: %s: owner key %d: %w: %d values for the one key column", r.table, i, ErrKeyInvalid, len(k))
-		}
-		owners[i] = k[0]
+	owners, err := r.ownerKeys(ownerKeys)
+	if err != nil {
+		return nil, err
 	}
 	opts := []filter.IncludeQueryOption{filter.WithIncludeRelationScope(plan.relations), filter.WithIncludeOwner(plan.fields)}
 	out := make([]filter.IncludeQuery, 0, len(plan.Include))

@@ -22,10 +22,10 @@ func TestBuildIncludeQuery_TextKeysUseCodePointOrder(t *testing.T) {
 	require.NoError(t, err)
 	field := &filter.FieldSchema{
 		ExternalName: "tags", DataType: core.FieldTypeString, Includable: true,
-		Relation:  &core.RelationSchema{JoinTable: "pairs", SourceColumn: "owner", TargetColumn: "target"},
-		RelatedBy: &filter.FieldSchema{ExternalName: "id", Table: "owners", Column: "id", DataType: core.FieldTypeString},
+		Relation:  &core.RelationSchema{JoinTable: "pairs", SourceColumns: []string{"owner"}, TargetColumns: []string{"target"}},
+		RelatedBy: []*filter.FieldSchema{{ExternalName: "id", Table: "owners", Column: "id", DataType: core.FieldTypeString}},
 	}
-	query, err := filter.BuildIncludeQuery(field, filter.SQLiteDialect{}, []any{"owner"}, filter.WithMaxIncludePerRelation(3))
+	query, err := filter.BuildIncludeQuery(field, filter.SQLiteDialect{}, []core.Key{{"owner"}}, filter.WithMaxIncludePerRelation(3))
 	require.NoError(t, err)
 	rows, err := db.QueryContext(t.Context(), query.SQL, query.Args...)
 	require.NoError(t, err)

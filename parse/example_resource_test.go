@@ -110,7 +110,7 @@ func ExampleResource_Relate() {
 	commands := parse.MustResource[Command]("commands", parse.TenantColumn("tenant_id"))
 	tags := parse.MustResource[Tag]("tags", parse.TenantColumn("tenant_id"), parse.DeletedColumn("deleted_at"))
 	devices.MustRelate("commands", parse.HasMany(commands, "device_id", parse.Indexed()))
-	devices.MustRelate("tags", parse.ManyToMany(tags, parse.Junction{Table: "device_tags", Source: "device_id", Target: "tag_id", Tenant: "tenant_id"}, parse.Indexed()))
+	devices.MustRelate("tags", parse.ManyToMany(tags, parse.Junction{Table: "device_tags", Source: []string{"device_id"}, Target: []string{"tag_id"}, Tenant: "tenant_id"}, parse.Indexed()))
 	commands.MustRelate("device", parse.BelongsTo(devices, "device_id"))
 
 	for _, f := range []string{

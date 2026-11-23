@@ -108,7 +108,7 @@ func TestBuildList_GovernedRelationsFollowTheRow(t *testing.T) {
 		labels := parse.MustResource[govLabel]("labels", parse.TenantColumn("tenant_id"))
 		boards := parse.MustResource[untenantedDevice]("boards")
 		boards.MustRelate("labels", parse.ManyToMany(labels,
-			parse.Junction{Table: "board_labels", Source: "device_id", Target: "label_id", Tenant: "tenant_id"}, parse.Indexed()))
+			parse.Junction{Table: "board_labels", Source: []string{"device_id"}, Target: []string{"label_id"}, Tenant: "tenant_id"}, parse.Indexed()))
 		req, err := boards.ParseListInput(parse.ListInput{Filter: `{"labels":"la"}`})
 		require.NoError(t, err)
 		plan, err := boards.BuildList(filter.PostgresDialect{}, req, parse.Scope{Governance: govEq("id", int64(1)), Tenant: "A"})

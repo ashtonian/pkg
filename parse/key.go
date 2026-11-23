@@ -2,7 +2,6 @@ package parse
 
 import (
 	"cmp"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"reflect"
@@ -15,6 +14,19 @@ import (
 // Key is a row's key: a value per key column, in the order PrimaryKey
 // names the columns. A one-column key holds one value.
 type Key = core.Key
+
+// ownerKeys are keys of r's rows as read back (Key), checked to hold a
+// value per key column before statements over the rows' relations bind
+// them.
+func (r *Resource[T]) ownerKeys(keys []Key) ([]core.Key, error) {
+	for i, k := range keys {
+		if len(k) != len(r.pk) {
+			return nil, fmt.Errorf("parse: %s: owner key %d: %w: %d values for the %d key columns (%s)",
+				r.table, i, ErrKeyInvalid, len(k), len(r.pk), strings.Join(r.pk, ", "))
+		}
+	}
+	return keys, nil
+}
 
 // keyColumns are a resource's key columns and their types: what a key is
 // normalized, compared and ordered by.
@@ -55,8 +67,8 @@ func (kc keyColumns) normalize(key Key) (Key, error) {
 
 // identity is key, normalized, as a comparable map key: equal for two keys
 // exactly when the database holds them equal. A one-column key is its
-// value; a longer one its values' JSON text, canonical for the strings and
-// integers such a key holds (core.IsKeyType).
+// value; a longer one its text (core.KeyText), canonical for the strings
+// and integers such a key holds (core.IsKeyType).
 func (kc keyColumns) identity(key Key) (any, error) {
 	normalized, err := kc.normalize(key)
 	if err != nil {
@@ -68,11 +80,7 @@ func (kc keyColumns) identity(key Key) (any, error) {
 		}
 		return normalized[0], nil
 	}
-	text, err := json.Marshal(normalized)
-	if err != nil {
-		return nil, fmt.Errorf("encoding key: %w", err)
-	}
-	return string(text), nil
+	return core.KeyText(normalized), nil
 }
 
 // batchType refuses a key an update batch cannot order and compare: one

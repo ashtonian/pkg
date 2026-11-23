@@ -28,6 +28,9 @@ func (b *SQLBuilder) buildRelated(s *buildState, node *FilterNode) (string, erro
 	if target == nil {
 		return "", invalidRelation(node.Field, "has no target resource to filter")
 	}
+	if err := rel.Check(); err != nil {
+		return "", invalidRelation(node.Field, err.Error())
+	}
 	// The target's predicates read its computed columns as the owner's
 	// dialect does; one the dialect refuses fails the build.
 	exprs, err := target.resolve(b.dialect)
@@ -39,7 +42,6 @@ func (b *SQLBuilder) buildRelated(s *buildState, node *FilterNode) (string, erro
 	bind := s.binder(b.dialect)
 	d := b.dialect
 
-	pk := rel.OwnerKey()
 	join := relationTableAlias(rel.JoinTable, depth, visible)
 	related := join
 	if rel.TargetTable != "" {
@@ -56,9 +58,9 @@ func (b *SQLBuilder) buildRelated(s *buildState, node *FilterNode) (string, erro
 	if rel.TargetTable != "" {
 		sb.WriteString(" JOIN ")
 		writeTable(&sb, d, rel.TargetTable, related)
-		sb.WriteString(" ON " + qualified(d, related, rel.TargetKey) + " = " + qualified(d, join, rel.TargetColumn))
+		sb.WriteString(" ON " + correlation(d, related, rel.TargetKeys, join, rel.TargetColumns))
 	}
-	sb.WriteString(" WHERE " + qualified(d, join, rel.SourceColumn) + " = " + qualified(d, b.schema.Name, pk))
+	sb.WriteString(" WHERE " + correlation(d, join, rel.SourceColumns, b.schema.Name, rel.OwnerColumns()))
 
 	// A policy-scoped relation declares no tenant column on its target:
 	// the policy below decides which target rows are visible.
@@ -106,6 +108,17 @@ func (b *SQLBuilder) buildRelated(s *buildState, node *FilterNode) (string, erro
 	}
 	sb.WriteByte(')')
 	return sb.String(), nil
+}
+
+// correlation equates the columns of left with those of right position by
+// position, `l1 = r1 AND l2 = r2`, each qualified by its alias: a key of
+// several columns correlates as all of its columns.
+func correlation(d Dialect, leftAlias string, left []string, rightAlias string, right []string) string {
+	terms := make([]string, len(left))
+	for i := range left {
+		terms[i] = qualified(d, leftAlias, left[i]) + " = " + qualified(d, rightAlias, right[i])
+	}
+	return strings.Join(terms, " AND ")
 }
 
 // joinTenantType is the declared type of a relation's join-table tenant

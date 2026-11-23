@@ -43,9 +43,13 @@ func (r *memberResolver) relation(ctx context.Context, n *FilterNode) (*FilterNo
 	if r.lookup == nil {
 		return nil, invalidRelation(f, "needs a membership lookup to be evaluated outside SQL")
 	}
-	if f.RelatedBy == nil {
+	if err := singleColumnRelation(f); err != nil {
+		return nil, err
+	}
+	if len(f.RelatedBy) != 1 {
 		return nil, invalidRelation(f, "has no owner correlation field to evaluate outside SQL")
 	}
+	by := f.RelatedBy[0]
 	if f.Related != nil && n.Op != OpSome && n.Op != OpNone {
 		sh, err := relatedShorthand(n)
 		if err != nil {
@@ -57,18 +61,31 @@ func (r *memberResolver) relation(ctx context.Context, n *FilterNode) (*FilterNo
 	if err != nil {
 		return nil, err
 	}
-	members, _, err := r.values(ctx, f.RelatedBy, l)
+	members, _, err := r.values(ctx, by, l)
 	if err != nil {
 		return nil, err
 	}
-	in := &FilterNode{Field: f.RelatedBy, Op: OpIn, Value: members}
+	in := &FilterNode{Field: by, Op: OpIn, Value: members}
 	if some {
 		return in, nil
 	}
 	return &FilterNode{Op: OpOr, Children: []*FilterNode{
 		{Op: OpNot, Children: []*FilterNode{in}},
-		{Field: f.RelatedBy, Op: OpNull},
+		{Field: by, Op: OpNull},
 	}}, nil
+}
+
+// singleColumnRelation refuses, outside SQL, a relation correlating keys of
+// several columns: a lookup projects one column, and an owner's membership
+// tests one field.
+func singleColumnRelation(f *FieldSchema) error {
+	if err := f.Relation.Check(); err != nil {
+		return invalidRelation(f, err.Error())
+	}
+	if len(f.Relation.SourceColumns) > 1 || len(f.Relation.TargetColumns) > 1 {
+		return invalidRelation(f, "correlates keys of several columns, which only SQL evaluates")
+	}
+	return nil
 }
 
 // relationLookup is the lookup of the related rows' correlation values a
@@ -87,7 +104,7 @@ func (r *memberResolver) relationLookup(ctx context.Context, n *FilterNode) (*Lo
 		}
 		// A pair table compared by key: the predicate's comparison is on
 		// the pair's target column.
-		cond, some, err = keyCondition(f, rel.TargetColumn, n)
+		cond, some, err = keyCondition(f, rel.TargetColumns[0], n)
 		if err != nil {
 			return nil, false, err
 		}
@@ -111,26 +128,26 @@ func (r *memberResolver) relationLookup(ctx context.Context, n *FilterNode) (*Lo
 	}
 
 	if rel.TargetTable == "" {
-		where, scopeErr := r.scoped(rel.JoinTable, rel.SourceColumn, rel.TenantColumn, rel.DeletedColumn, cond)
+		where, scopeErr := r.scoped(rel.JoinTable, rel.SourceColumns[0], rel.TenantColumn, rel.DeletedColumn, cond)
 		if scopeErr != nil {
 			return nil, false, scopeErr
 		}
-		return &Lookup{Table: rel.JoinTable, Project: rel.SourceColumn, Where: where, Filter: filter}, some, nil
+		return &Lookup{Table: rel.JoinTable, Project: rel.SourceColumns[0], Where: where, Filter: filter}, some, nil
 	}
-	targetWhere, err := r.scoped(rel.TargetTable, rel.TargetKey, rel.TargetTenant, rel.TargetDeleted, nil)
+	targetWhere, err := r.scoped(rel.TargetTable, rel.TargetKeys[0], rel.TargetTenant, rel.TargetDeleted, nil)
 	if err != nil {
 		return nil, false, err
 	}
-	target := &Lookup{Table: rel.TargetTable, Project: rel.TargetKey, Where: targetWhere, Filter: filter}
-	targets := WhereMember(rel.TargetColumn, target)
+	target := &Lookup{Table: rel.TargetTable, Project: rel.TargetKeys[0], Where: targetWhere, Filter: filter}
+	targets := WhereMember(rel.TargetColumns[0], target)
 	if cond != nil {
 		targets = WhereAll(cond, targets)
 	}
-	where, err := r.scoped(rel.JoinTable, rel.SourceColumn, rel.TenantColumn, rel.DeletedColumn, targets)
+	where, err := r.scoped(rel.JoinTable, rel.SourceColumns[0], rel.TenantColumn, rel.DeletedColumn, targets)
 	if err != nil {
 		return nil, false, err
 	}
-	return &Lookup{Table: rel.JoinTable, Project: rel.SourceColumn, Where: where}, some, nil
+	return &Lookup{Table: rel.JoinTable, Project: rel.SourceColumns[0], Where: where}, some, nil
 }
 
 // scoped is a lookup condition over table's live rows of the tenant, the

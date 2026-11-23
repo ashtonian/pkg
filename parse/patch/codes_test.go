@@ -26,7 +26,7 @@ func catalogSchema() *patch.PatchSchema {
 		"/tags": {
 			AllowedOps: []patch.PatchOp{patch.PatchOpReplace, patch.PatchOpAdd, patch.PatchOpRemove, patch.PatchOpTest},
 			DataType:   core.FieldTypeArray, GoType: reflect.TypeFor[[]string](),
-			Relation: &core.RelationSchema{JoinTable: "item_tags", SourceColumn: "item_id", TargetColumn: "tag_id"},
+			Relation: &core.RelationSchema{JoinTable: "item_tags", SourceColumns: []string{"item_id"}, TargetColumns: []string{"tag_id"}},
 		},
 	})
 	s.MaxRelationValues = 2

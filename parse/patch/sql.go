@@ -112,9 +112,10 @@ type RelationPatchOp struct {
 	// Verb is the membership change verb derived from the wire op.
 	Verb RelationVerb
 
-	// Values is the list of target IDs the verb applies to. Empty is
-	// valid for RelationVerbReplace (clears the relation) but not for
-	// add / remove.
+	// Values is the list of target IDs the verb applies to: a value per
+	// key of a one-column target key, a core.Key per key of a longer one.
+	// Empty is valid for RelationVerbReplace (clears the relation) but not
+	// for add / remove.
 	Values []any
 }
 

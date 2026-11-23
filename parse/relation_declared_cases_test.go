@@ -89,7 +89,7 @@ func relationResources(t *testing.T) relResources {
 
 	devices.MustRelate("commands", parse.HasMany(commands, "device_id", parse.Indexed(), parse.Includable(), parse.Facetable()))
 	devices.MustRelate("type", parse.BelongsTo(types, "type_id", parse.PolicyScoped()))
-	devices.MustRelate("tags", parse.ManyToMany(tags, parse.Junction{Table: "device_tags", Source: "device_id", Target: "tag_id", Tenant: "tenant_id"}, parse.Indexed(), parse.Includable(), parse.Facetable(), parse.Writable()))
+	devices.MustRelate("tags", parse.ManyToMany(tags, parse.Junction{Table: "device_tags", Source: []string{"device_id"}, Target: []string{"tag_id"}, Tenant: "tenant_id"}, parse.Indexed(), parse.Includable(), parse.Facetable(), parse.Writable()))
 	devices.MustRelate("shared_types", parse.ManyToMany(types, parse.Through("device_shared_types", "device_id", "type_id"), parse.PolicyScoped(), parse.Includable(), parse.Facetable(), parse.Writable()))
 	commands.MustRelate("device", parse.BelongsTo(devices, "device_id"))
 	commands.MustRelate("receipts", parse.HasMany(receipts, "command_id", parse.Indexed()))
