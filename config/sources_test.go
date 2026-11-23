@@ -756,6 +756,50 @@ func TestSources_MapKeyedByATypeWithItsOwnTextStaysWhole(t *testing.T) {
 	assert.Equal(t, want.Timeouts, got.Timeouts)
 }
 
+// paintColor is an integer a caller's decode hook reads from its name.
+type paintColor int
+
+const paintRed paintColor = 1
+
+// region is a string type of the caller's, decoded as its kind.
+type region string
+
+type namedKeys struct {
+	Names   map[paintColor]string `koanf:"names"`
+	Regions map[region]int        `koanf:"regions"`
+}
+
+// A map keyed by a named type keeps its own keys too, as a decode hook may
+// read the type's text its own way ("red" for paintRed, where its kind's
+// text is "1"): it loads from a typed default with those keys, and a higher
+// source replaces it whole.
+func TestSources_MapKeyedByANamedTypeStaysWhole(t *testing.T) {
+	byName := WithDecodeHook(func(from, to reflect.Type, data any) (any, error) {
+		if to != reflect.TypeFor[paintColor]() || from.Kind() != reflect.String {
+			return data, nil
+		}
+		if data == "red" {
+			return paintRed, nil
+		}
+		return nil, fmt.Errorf("no color named %q", data)
+	})
+	defaults := WithDefaults(map[string]any{
+		"names":   map[paintColor]string{paintRed: "r"},
+		"regions": map[region]int{"us": 1},
+	})
+	got, err := Load[namedKeys](t.Context(), byName, defaults)
+	require.NoError(t, err)
+	assert.Equal(t, map[paintColor]string{paintRed: "r"}, got.Names)
+	assert.Equal(t, map[region]int{"us": 1}, got.Regions)
+
+	file := filepath.Join(t.TempDir(), "config.yaml")
+	writeFile(t, file, "names: {red: x}\nregions: {eu: 2}\n")
+	got, err = Load[namedKeys](t.Context(), byName, defaults, WithFile(file))
+	require.NoError(t, err)
+	assert.Equal(t, map[paintColor]string{paintRed: "x"}, got.Names, "the file's map replaces the default's")
+	assert.Equal(t, map[region]int{"eu": 2}, got.Regions, "the file's map replaces the default's")
+}
+
 // A map decoded whole names itself and its type when an entry does not
 // decode, never the entry.
 func TestSources_MapDecodedWholeSaysWhyItCannotBeDecoded(t *testing.T) {

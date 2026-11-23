@@ -249,8 +249,8 @@ var wholeMapType = reflect.TypeFor[wholeMap]()
 // textKeyedMap is typed map v in its merge shape when its keys' text
 // decodes back to them (keysAsText): a wholeMap keyed by that text, holding
 // entry(key text, value) for each entry. ok is false for any other key
-// type; a source carries such a map with its own keys, and it replaces what
-// lies beneath it whole.
+// type, a named one included; a source carries such a map with its own
+// keys, and it replaces what lies beneath it whole.
 func textKeyedMap(v reflect.Value, entry func(key string, value reflect.Value) any) (m wholeMap, ok bool) {
 	if !keysAsText(v.Type().Key()) {
 		return nil, false
@@ -264,15 +264,13 @@ func textKeyedMap(v reflect.Value, entry func(key string, value reflect.Value) a
 }
 
 // keysAsText reports a map key type whose text, as keyText writes it,
-// decodes back to the key: a string or integer kind with no text methods of
-// its own. A type with them reads and writes its text through them —
-// slog.Level decodes "WARN", not "4" — and time.Duration decodes unit text,
-// so its kind's text is not the key's.
+// decodes back to the key: a predeclared string or integer type. A named
+// key type keeps its own keys, since its text need not be its kind's: text
+// methods read it (slog.Level decodes "WARN", not "4"), time.Duration
+// decodes unit text, and a caller's decode hook may read the type its own
+// way ("red" for a color whose kind's text is "1").
 func keysAsText(t reflect.Type) bool {
-	if t == durationType {
-		return false
-	}
-	if p := reflect.PointerTo(t); p.Implements(textMarshalerTyp) || p.Implements(textUnmarshaler) {
+	if t.PkgPath() != "" {
 		return false
 	}
 	switch t.Kind() {
