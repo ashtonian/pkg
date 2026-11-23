@@ -15,7 +15,7 @@ A list endpoint built on this package reads the `filter.Param*` query parameters
 | `include_total` | `ParamIncludeTotal` | Populate `page_info.total_count` |
 | `include_deleted` | `ParamIncludeDeleted` | Include soft-deleted rows |
 | `search` | `ParamSearch` | Free-text search |
-| `facets` | `ParamFacets` | Facet fields: on a list, or alone on `OPTIONS` (below) |
+| `facets` | `ParamFacets` | Facet fields. A list, on `GET` or over a `POST` body, answers their counts in the page's `facets` beside its items; `OPTIONS` answers the counts alone (below) |
 | `fields` | `ParamFields` | Response field mask: the fields each item returns ([field mask](queries.md#field-mask)) |
 | `include` | `ParamInclude` | Relation fields whose related IDs the page carries in `_relations` |
 
@@ -25,7 +25,7 @@ Each list parameter is given once: a repeat is E2067 naming it, from `Resource.P
 
 Decode the query string with `parsehttp.Query(r)`, never `r.URL.Query()`. The latter drops a pair that does not decode, an invalid percent-escape or a `;`, and keeps the rest, so `?category=%zz` would list every row and a filter that targets an update would reach rows the client did not name. `Query` refuses the whole query string as E2067, and `parsehttp.ParseList` reads every list through it.
 
-Lists answer with `filter.Page[T]`: `{"items": […], "page_info": {"has_next_page", "has_prev_page", "start_cursor", "end_cursor", "total_count"}, "_relations": {…}}`. Errors answer `{"code", "message", "path", "index", "details"}` (`parsehttp.Body`; `path`, `index` and `details` only when set), or an RFC 9457 problem document ([below](#rfc-9457-problem-details)).
+Lists answer with `filter.Page[T]`: `{"items": […], "page_info": {"has_next_page", "has_prev_page", "start_cursor", "end_cursor", "total_count"}, "_relations": {…}, "_truncated": {…}, "facets": {…}}`. `start_cursor`, `end_cursor` and `total_count` are present when set (`total_count` with `include_total`); `_relations` holds, per `include` field, each owner's related IDs, present when the request asked for includes; `_truncated`, per `include` field, the owners whose IDs were cut at the per-owner cap, present when one was; and `facets`, per facet field, its `{"key", "count"}` buckets, present when the request asked for facets and the server ran the list plan's facet statement (`parsepgx.QueryPage` and `parsesql.QueryPage` do). Errors answer `{"code", "message", "path", "index", "details"}` (`parsehttp.Body`; `path`, `index` and `details` only when set), or an RFC 9457 problem document ([below](#rfc-9457-problem-details)).
 
 ### The same request as a POST body
 
