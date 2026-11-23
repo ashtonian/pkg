@@ -42,6 +42,19 @@ type keyCodec struct {
 	write func(k reflect.Value) (string, error)
 	// plain is a string kind no built-in hook reads: its text is the key.
 	plain bool
+	// decoders holds idle *keyDecoder: building a mapstructure decoder costs
+	// more than the decode it runs. There is one pool per codec and one codec
+	// per key type, and a pool keeps only the decoders reads used at once
+	// until the GC releases them, so nothing here grows with input.
+	decoders sync.Pool
+}
+
+// keyDecoder decodes into its own result, which no other read touches
+// while it is out of the pool. The built-in hooks hold no state between
+// decodes.
+type keyDecoder struct {
+	dec    *mapstructure.Decoder
+	result reflect.Value
 }
 
 var keyCodecs sync.Map // reflect.Type → *keyCodec, nil for a type with none
@@ -143,27 +156,49 @@ func (c *keyCodec) read(text string) (key reflect.Value, canonical string, err e
 	if canonical, err = c.text(key); err != nil {
 		return reflect.Value{}, "", err
 	}
-	again, err := c.decode(canonical)
+	// Text that is its key's own has just been read back: decoding is
+	// deterministic, so only the comparison is left to make.
+	again := key
+	if canonical != text {
+		again, err = c.decode(canonical)
+	}
 	if err != nil || !again.Equal(key) {
 		return reflect.Value{}, "", fmt.Errorf("%q reads as a %s key that its text %q does not read back to", text, gowalker.TypeText(c.typ), canonical)
 	}
 	return key, canonical, nil
 }
 
+// decode is a new key decoded from text. The pooled result is zeroed first,
+// so a decode that sets part of it, or fails, leaves nothing for the next.
 func (c *keyCodec) decode(text string) (reflect.Value, error) {
-	out := reflect.New(c.typ)
+	d, ok := c.decoders.Get().(*keyDecoder)
+	if !ok {
+		var err error
+		if d, err = c.newDecoder(); err != nil {
+			return reflect.Value{}, err
+		}
+	}
+	defer c.decoders.Put(d)
+	d.result.SetZero()
+	if err := d.dec.Decode(text); err != nil {
+		return reflect.Value{}, err
+	}
+	key := reflect.New(c.typ).Elem()
+	key.Set(d.result)
+	return key, nil
+}
+
+func (c *keyCodec) newDecoder() (*keyDecoder, error) {
+	result := reflect.New(c.typ)
 	dec, err := mapstructure.NewDecoder(&mapstructure.DecoderConfig{
 		DecodeHook:       builtinDecodeHook(),
 		WeaklyTypedInput: true,
-		Result:           out.Interface(),
+		Result:           result.Interface(),
 	})
 	if err != nil {
-		return reflect.Value{}, err
+		return nil, err
 	}
-	if err := dec.Decode(text); err != nil {
-		return reflect.Value{}, err
-	}
-	return out.Elem(), nil
+	return &keyDecoder{dec: dec, result: result.Elem()}, nil
 }
 
 // builtinDecodeHook is the decode hooks every load runs, without a

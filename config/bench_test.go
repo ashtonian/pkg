@@ -6,6 +6,7 @@ import (
 	"io"
 	"log/slog"
 	"path/filepath"
+	"strconv"
 	"testing"
 
 	"github.com/knadh/koanf/providers/confmap"
@@ -29,10 +30,21 @@ type benchGateway struct {
 	Routes map[string]benchRoute `koanf:"routes"`
 }
 
-func benchRoutes() map[string]any {
+// benchPortGateway is the route table keyed by port, so each entry's key is
+// read and named through its key type's codec.
+type benchPortGateway struct {
+	Name   string             `koanf:"name" default:"gateway"`
+	Routes map[int]benchRoute `koanf:"routes"`
+}
+
+func benchRouteName(i int) string { return fmt.Sprintf("route-%03d", i) }
+
+func benchRoutePort(i int) string { return strconv.Itoa(8000 + i) }
+
+func benchRoutes(key func(int) string) map[string]any {
 	routes := map[string]any{}
 	for i := range 256 {
-		routes[fmt.Sprintf("route-%03d", i)] = map[string]any{
+		routes[key(i)] = map[string]any{
 			"name": fmt.Sprintf("upstream-%d", i), "host": "service.internal", "port": 8000 + i,
 			"enabled": true, "limit": 100, "timeout": 30,
 			"labels": map[string]any{"region": "us", "team": "core", "tier": "api", "zone": "a"},
@@ -44,7 +56,7 @@ func benchRoutes() map[string]any {
 
 func benchGatewayOptions(hooks ...func(context.Context, *benchGateway) error) []Option {
 	opts := []Option{
-		WithBaseProvider(confmap.Provider(benchRoutes(), ""), nil),
+		WithBaseProvider(confmap.Provider(benchRoutes(benchRouteName), ""), nil),
 		WithLogger(slog.New(slog.NewTextHandler(io.Discard, nil))),
 		WithSkipValidation(),
 		WithPostLoad(func(context.Context, *benchGateway) error { return nil }),
@@ -53,6 +65,14 @@ func benchGatewayOptions(hooks ...func(context.Context, *benchGateway) error) []
 		opts = append(opts, WithPostLoad(h))
 	}
 	return opts
+}
+
+func benchPortGatewayOptions() []Option {
+	return []Option{
+		WithBaseProvider(confmap.Provider(benchRoutes(benchRoutePort), ""), nil),
+		WithLogger(slog.New(slog.NewTextHandler(io.Discard, nil))),
+		WithSkipValidation(),
+	}
 }
 
 // The small fixture is a file, the environment and one post-load hook.
@@ -67,6 +87,7 @@ func benchSmallOptions(b *testing.B) []Option {
 func BenchmarkLoad(b *testing.B) {
 	b.Run("small", func(b *testing.B) { benchLoad[provCfg](b, benchSmallOptions(b)) })
 	b.Run("large", func(b *testing.B) { benchLoad[benchGateway](b, benchGatewayOptions()) })
+	b.Run("large-port-keyed", func(b *testing.B) { benchLoad[benchPortGateway](b, benchPortGatewayOptions()) })
 	// A hook that rewrites every route's name: 256 transformed values.
 	b.Run("large-transformed", func(b *testing.B) {
 		benchLoad[benchGateway](b, benchGatewayOptions(func(_ context.Context, c *benchGateway) error {
@@ -94,6 +115,24 @@ func benchLoad[T any](b *testing.B, opts []Option) {
 			}
 		}
 	})
+}
+
+// BenchmarkCanonicalKey resolves a key beneath an entry of a map keyed by
+// strings, and of one keyed by integers, whose entry text the key's codec
+// reads: as the key's own text, and spelled another way.
+func BenchmarkCanonicalKey(b *testing.B) {
+	b.Run("string", func(b *testing.B) { benchCanonicalKey[benchGateway](b, `routes["route-001"].port`) })
+	b.Run("int", func(b *testing.B) { benchCanonicalKey[benchPortGateway](b, `routes["8001"].port`) })
+	b.Run("int-respelled", func(b *testing.B) { benchCanonicalKey[benchPortGateway](b, `routes["0x1f41"].port`) })
+}
+
+func benchCanonicalKey[T any](b *testing.B, key string) {
+	b.ReportAllocs()
+	for b.Loop() {
+		if _, err := CanonicalKey[T](key); err != nil {
+			b.Fatal(err)
+		}
+	}
 }
 
 // BenchmarkReload measures an unchanged reload — a poll that finds nothing
