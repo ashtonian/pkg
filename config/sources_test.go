@@ -1042,6 +1042,16 @@ type droppedTagEntry struct {
 
 func (c *droppedTagEntry) SetDefaults() { c.Labels = map[string]int{"c": 3} }
 
+type namedDroppedTagEntry struct {
+	Added   map[region]int `koanf:"added" default:"us=1"`
+	Dropped map[region]int `koanf:"dropped" default:"us=1,eu=2"`
+}
+
+func (c *namedDroppedTagEntry) SetDefaults() {
+	c.Added["ap"] = 3
+	c.Dropped = map[region]int{"ap": 3}
+}
+
 // What a higher source sets key by key merges into a typed map or section
 // beneath it; a typed value, or a variable that sets the whole map, replaces
 // it whole. A Defaulter's string-keyed map that drops an entry its tag sets
@@ -1087,4 +1097,12 @@ func TestSources_WhatMergesIntoATypedMapOrSection(t *testing.T) {
 	got, err = Load[droppedTagEntry](t.Context(), WithFile(file))
 	require.NoError(t, err)
 	assert.Equal(t, map[string]int{"c": 3, "d": 4}, got.Labels, "a file merges into it")
+
+	// Keyed by a named type, the map a Defaulter only adds to still merges
+	// entry by entry; one that drops a tag's entry keeps its own keys.
+	writeFile(t, file, "added: {sa: 4}\ndropped: {sa: 4}\n")
+	named, err := Load[namedDroppedTagEntry](t.Context(), WithFile(file))
+	require.NoError(t, err)
+	assert.Equal(t, map[region]int{"us": 1, "ap": 3, "sa": 4}, named.Added)
+	assert.Equal(t, map[region]int{"sa": 4}, named.Dropped, "a file replaces it whole")
 }
