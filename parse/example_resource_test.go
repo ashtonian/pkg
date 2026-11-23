@@ -101,18 +101,22 @@ type Command struct {
 	Attempts int64  `json:"attempts"  db:"attempts"  parse:"filter"`
 }
 
-// Devices have commands: a request filters devices by their commands with
-// the commands' own filter, every predicate inside one $some on one command,
-// held to the tenant.
+// Devices have commands and tags: a request filters devices by their
+// commands with the commands' own filter, every predicate inside one $some
+// on one command, held to the tenant; a many-to-many's target filter joins
+// the target to the pair table inside the subquery.
 func ExampleResource_Relate() {
 	devices := parse.MustResource[Device]("devices", parse.TenantColumn("tenant_id"))
 	commands := parse.MustResource[Command]("commands", parse.TenantColumn("tenant_id"))
+	tags := parse.MustResource[Tag]("tags", parse.TenantColumn("tenant_id"), parse.DeletedColumn("deleted_at"))
 	devices.MustRelate("commands", parse.HasMany(commands, "device_id", parse.Indexed()))
+	devices.MustRelate("tags", parse.ManyToMany(tags, parse.Junction{Table: "device_tags", Source: "device_id", Target: "tag_id", Tenant: "tenant_id"}, parse.Indexed()))
 	commands.MustRelate("device", parse.BelongsTo(devices, "device_id"))
 
 	for _, f := range []string{
 		`{"commands":{"$some":{"status":"pending","attempts":{"$gt":2}}}}`,
 		`{"commands":{"$none":{"status":"failed"}}}`,
+		`{"tags":{"$some":{"label":"red"}}}`,
 	} {
 		req, err := devices.ParseList(url.Values{"filter": {f}})
 		if err != nil {
@@ -124,9 +128,14 @@ func ExampleResource_Relate() {
 			fmt.Println(err)
 			return
 		}
+		fmt.Println(f)
 		fmt.Println(plan.Fragment, plan.Page.Args)
 	}
 	// Output:
+	// {"commands":{"$some":{"status":"pending","attempts":{"$gt":2}}}}
 	// WHERE (EXISTS (SELECT 1 FROM "commands" WHERE "commands"."device_id" = "devices"."id" AND "commands"."tenant_id" = $1 AND ("commands"."attempts" > $2 AND "commands"."status" = $3)) AND "devices"."tenant_id" = $4) ORDER BY "devices"."id" COLLATE pg_c_utf8 ASC LIMIT 51 [t1 2 pending t1]
+	// {"commands":{"$none":{"status":"failed"}}}
 	// WHERE (NOT EXISTS (SELECT 1 FROM "commands" WHERE "commands"."device_id" = "devices"."id" AND "commands"."tenant_id" = $1 AND "commands"."status" = $2) AND "devices"."tenant_id" = $3) ORDER BY "devices"."id" COLLATE pg_c_utf8 ASC LIMIT 51 [t1 failed t1]
+	// {"tags":{"$some":{"label":"red"}}}
+	// WHERE (EXISTS (SELECT 1 FROM "device_tags" "rel1__" JOIN "tags" ON "tags"."id" = "rel1__"."tag_id" WHERE "rel1__"."device_id" = "devices"."id" AND "rel1__"."tenant_id" = $1 AND "tags"."tenant_id" = $2 AND "tags"."deleted_at" IS NULL AND "tags"."label" = $3) AND "devices"."tenant_id" = $4) ORDER BY "devices"."id" COLLATE pg_c_utf8 ASC LIMIT 51 [t1 t1 red t1]
 }

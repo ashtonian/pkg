@@ -86,17 +86,19 @@ A path's set joins its members as a relation, which PostgreSQL hashes in every p
 
 A `map[string]any` or `json.RawMessage` field is a JSON document (`jsonb` on PostgreSQL, JSON text on SQLite); a struct field is too, once given `filter_ops`. The document's own operators compare, contain and test it as a whole; its members filter, sort and facet once declared as [JSON paths](#json-paths):
 
+<!-- output of Example_jsonDocuments -->
 ```text
-{"attrs":{"$contains":{"color":"red","dims":{"w":10}}}}    attrs holds these members, at any depth
-postgres WHERE products.attrs @> $1::jsonb [{"color":"red","dims":{"w":10}}]
-sqlite   (json_each predicates per member: same meaning, no jsonb)
-
-{"tags":{"$contains":["sale"]}}                             a native array holds every listed element
-postgres WHERE products.tags @> $1 [[sale]]
-
-{"attrs.color":"red"}                                       a member no path declares
+{"attrs":{"$contains":{"color":"red","dims":{"w":10}}}}
+postgres WHERE "products"."attrs" @> $1::jsonb … [{"color":"red","dims":{"w":10}}]
+sqlite   WHERE (CASE WHEN "products"."attrs" IS NULL THEN NULL ELSE (CASE WHEN json_type("products"."attrs") = 'object' THEN (EXISTS (SELECT 1 FROM json_each("products"."attrs") je1 WHERE je1.key = ?1 AND (je1.type = 'text' AND je1.atom = ?2)) AND EXISTS … [color red dims w 10]
+{"tags":{"$contains":["sale"]}}
+postgres WHERE "products"."tags" @> $1 … [[sale]]
+…
+{"attrs.color":"red"}
 [E2071] field 'attrs.color' is not filterable
 ```
+
+The first holds when `attrs` holds these members, at any depth; SQLite, which has no `jsonb`, tests each member through `json_each`. The second holds when the native array holds every listed element. The third names a member no path declares, which is E2071.
 
 - `{"attrs":{"color":"red"}}` is **whole-document equality**, not a partial match; use `$contains` for that. A `$gt` inside a `$contains` operand is data, a literal `"$gt"` key.
 - `$has_key` is the key-presence predicate: `{"attrs":{"$has_key":"color"}}` holds when the document has a top-level `color`, whatever its value. A member deeper down is tested through a declared path: `{"attrs.dims.w":{"$null":false}}` holds when it holds a value of the path's type.
@@ -161,11 +163,17 @@ An array column (`[]string`, `[]int64`, …) or an array path (`paths:"tags:[]st
 
 An array path's value is its elements of the declared type, each read as a member of that type is: `9.5` and `"10.50"` are both decimals, `7.0` an int, `"7"` no int. Elements of another kind are no elements, and a member with none is absent, so `$null` holds for it and `$contains` on it is Unknown. An array column keeps SQL's rules: `$contains` is Unknown on a NULL column and False on an empty one, unless it lists nothing. A NULL element of an array column, which a PostgreSQL array holds whatever the Go type is, is no element: the SQL renderings skip it, and `filter.Evaluate` reads it as SQL does.
 
-| Backend | Array column | Array path |
-|---|---|---|
-| PostgreSQL | `EXISTS (SELECT 1 FROM unnest(col) AS elem1__(v) WHERE elem1__.v IS NOT NULL AND …)` | `EXISTS (SELECT 1 FROM jsonb_array_elements(CASE WHEN jsonb_typeof(doc -> 'tags') = 'array' THEN doc -> 'tags' END) AS elem1__(v) WHERE <typed element> IS NOT NULL AND …)`, or containment ([JSON paths](#json-paths)) |
-| SQLite | `EXISTS (SELECT 1 FROM json_each(CASE WHEN json_type(col) = 'array' THEN col END) AS elem1__ WHERE <typed element> …)` over the JSON text column | the same over `json_each(…, '$."tags"')`; a decimal element reads its literal as written, `parse_decimal(elem1__.json -> elem1__.fullkey)` |
-| Memory | `filter.Evaluate` over the Go slice, or a decoded JSON array | each element as `filter.PathValue` reads it |
+<!-- output of Example_arraysOfScalars -->
+```text
+{"scores":{"$some":{"$gte":5,"$lt":10}}}
+postgres WHERE EXISTS (SELECT 1 FROM unnest("orders"."scores") AS elem1__(v) WHERE elem1__.v IS NOT NULL AND (elem1__.v >= $1 AND elem1__.v < $2)) … [5 10]
+sqlite   WHERE EXISTS (SELECT 1 FROM json_each(CASE WHEN json_type("orders"."scores") = 'array' THEN "orders"."scores" END) AS elem1__ WHERE (CASE WHEN elem1__.type IN ('integer', 'real') THEN elem1__.value END) IS NOT NULL AND … [5 10]
+{"doc.tags":{"$some":{"$like":"a%"}}}
+postgres WHERE EXISTS (SELECT 1 FROM jsonb_array_elements(CASE WHEN jsonb_typeof("orders"."doc" -> 'tags') = 'array' THEN "orders"."doc" -> 'tags' END) AS elem1__(v) WHERE (CASE WHEN jsonb_typeof(elem1__.v) = 'string' THEN (elem1__.v #>> '{}') END) IS NOT NULL AND … [a%]
+sqlite   WHERE EXISTS (SELECT 1 FROM json_each(CASE WHEN json_type("orders"."doc", '$."tags"') = 'array' THEN "orders"."doc" END, '$."tags"') AS elem1__ WHERE (CASE WHEN elem1__.type = 'text' THEN elem1__.value END) IS NOT NULL AND … [a*]
+```
+
+PostgreSQL unnests an array column and reads a path's elements with `jsonb_array_elements`; a `jsonb` array path of strings, bools or numbers keeps containment where the condition is two-valued ([JSON paths](#json-paths)). SQLite reads both through `json_each` over the JSON text, each element by its JSON type, a decimal element's literal as written. A memory backend evaluates the Go slice or the decoded JSON array with `filter.Evaluate`, each path element as `filter.PathValue` reads it.
 
 `$contains` binds its list as one [set](#sets) parameter and counts: `((SELECT count(DISTINCT <typed element>) FROM <elements> WHERE <typed element> IN (<set>)) = (SELECT count(DISTINCT v) FROM (<set>) AS elem1__set))`, the two uses of `<set>` reading the one parameter. The distinct elements equal to a listed value number as many as the distinct listed values exactly when each has an equal element, so repeats in either are irrelevant, and the statement's size and parameter count are independent of the list's: one EXISTS per value would pass SQLite's expression depth (1,000) and PostgreSQL's parameter limit. The set is hashed (PostgreSQL) or indexed (SQLite) once per statement; each row reads its own elements. On PostgreSQL an array column keeps `col @> $1`, and a `jsonb` array path of strings, bools or numbers keeps containment where the condition is two-valued ([JSON paths](#json-paths)).
 
@@ -175,11 +183,14 @@ An array path is no sort key, and its facets are terms only; schema generation r
 
 A JSON array of objects filters by its elements: every predicate inside one `$some` holds for one element, and `$none` holds when no element satisfies them. Element paths are declared like paths — the members tagged `parse:"filter"` of a slice-of-struct document's element type, or an `elements:"by:string;priority:int"` tag on any JSON array — and named by their member path inside the element (`dims.w`).
 
+<!-- output of Example_arraysOfObjects -->
 ```text
 {"items":{"$some":{"sku":"a","qty":{"$gt":2}}}}
-postgres EXISTS (SELECT 1 FROM jsonb_array_elements(CASE WHEN jsonb_typeof(orders.items) = 'array' THEN orders.items END) AS elem1__(v) WHERE (… elem1__.v ->> 'qty' … AND … elem1__.v ->> 'sku' …))
-sqlite   EXISTS (SELECT 1 FROM json_each(CASE WHEN json_type(orders.items) = 'array' THEN orders.items END) AS elem1__ WHERE (… json_extract(…elem1__.value…, '$."qty"') …))
+postgres WHERE EXISTS (SELECT 1 FROM jsonb_array_elements(CASE WHEN jsonb_typeof("orders"."items") = 'array' THEN "orders"."items" END) AS elem1__(v) WHERE ((CASE WHEN jsonb_typeof(elem1__.v -> 'qty') = 'number' THEN (elem1__.v ->> 'qty')::numeric END) > $1 AND elem1__.v @> $2::jsonb)) … [2 {"sku":"a"}]
+sqlite   WHERE EXISTS (SELECT 1 FROM json_each(CASE WHEN json_type("orders"."items") = 'array' THEN "orders"."items" END) AS elem1__ WHERE ((CASE WHEN json_type((CASE WHEN elem1__.type = 'object' THEN elem1__.value END), '$."qty"') IN ('integer', 'real') THEN json_extract(…) END) > ?1 AND (CASE WHEN json_type(…, '$."sku"') = 'text' THEN json_extract(…) END) = ?2)) … [2 a]
 ```
+
+PostgreSQL tests the element's `sku` by containment and reads `qty` as a number only where it is one; SQLite reads each member by its JSON type.
 
 An element that is not an object has no members, so a mixed array (`["a", {"sku":"a"}]`) is tested on its objects, and a string element is a JSON string even when its text is an object's JSON. `filter.Evaluate` tests the condition on each element of the document as a `filter.ElementRow`, which reads element paths on the decoded element. A backend with its own evaluator of `$some` / `$none` does the same: it reads a document's elements with `filter.DocumentElements` and tests each with `filter.Evaluate(condition, filter.ElementRow{Element: e})`, or reads the condition's fields through that row. A `$some` / `$none` with no condition (`{}`) has no child and holds for any element. `filter.ElementRow` takes decoded JSON or a `filter.Document`, and refuses an element of any other type, as `filter.Evaluate` refuses an array a `filter.Row` holds as anything but `[]any`, or a document held as anything but decoded JSON. `filter.PathValue` reads a column's document, decoding a string as JSON text, so it refuses an element path.
 
@@ -295,10 +306,18 @@ var accounts = parse.MustResource[Account]("accounts",
 - `Columns(d)` selects the column as `(sql) AS column`, composed with a declared `ColumnType` read cast, so `plan.Page`, an update's `RETURNING` and `parsepgx` scan it into the column's field by name.
 - The column's `filter`, `sort`, `facet` and `search` tags compile against d's expression in `BuildList`, `BuildUpdate` and `BuildUpdateBatch`, and so does a server policy that names the column ([policy fields](#policy-fields)), on the resource's own statements and as a relation's target (`Scope.Related`), a hidden or unfilterable column included; a cursor reads a computed sort key's value from the column's field. Every other part of the statement, such as a sort's collation, follows the dialect the build is given.
 - An update that changes relations runs `Owner` before the relation statements, so a computed column over a relation's pairs reads them as they were; `Reread(plan, keys)` reads the rows again once the statements have run, and `parsepgx.Update` runs it.
-- A dialect an expression refuses, or answers with empty SQL, fails `Columns`, `BuildList` (and with it the page, count, facets and includes), `BuildUpdate` and `BuildUpdateBatch` before any statement exists. The error names the table, the column and the dialect, and wraps the expression's own error: `parse: accounts: computed column "group_ids" for dialect sqlite: unsupported SQL dialect`.
+- A dialect an expression refuses, or answers with empty SQL, fails `Columns`, `BuildList` (and with it the page, count, facets and includes), `BuildUpdate` and `BuildUpdateBatch` before any statement exists. The error names the table, the column and the dialect, and wraps the expression's own error, as the example after this list shows.
 - `NewResource` refuses, whatever the dialect, a computed column that is not a column of T or not read (`ReadColumns`), that is the key, tenant or deleted column, that a patch path writes, or that declares document paths or element members, and a `relation` tag correlating on one; `Relate` refuses a relation correlating on one, `Resource.WithPaths` a request's path into one, and `BuildUpdate` and `BuildUpdateBatch` a `Stamp`, `StampSQL` or `Increment` of one.
 - A relation to the resource filters by its computed columns too: the owner's build compiles the relation's filter, at any depth, the target's policy (`Scope.Related`) and the relation's facets, includes and membership changes against each target's expressions for the owner's dialect, and fails, naming the target's table, column and dialect, for a dialect a target it reaches refuses. Builds that reach no such relation are unaffected. Where the statement reads the target under an alias of its own — a relation back to a table already in the statement, as in a cycle, and a policy-scoped relation's includes, facets and membership changes — an expression naming the table cannot follow, and the build fails instead of reading a column the table lacks.
 - `FilterSchema`, `SortSchema`, `SearchSchema`, the schema document and discovery stay dialect-neutral and name the column. The filter schema carries the expressions (`filter.ResourceSchema.Computed`), and every statement resolves them for the dialect it is built for, `ListQuery`'s included. `CustomizeSchemas` cannot declare one; `ReadExpr` does.
+
+An expression that serves PostgreSQL only, `group_ids` above without its SQLite case, selects as `(sql) AS column` on PostgreSQL and fails every SQLite build:
+
+<!-- output of ExampleReadExpr -->
+```text
+"accounts"."id", "accounts"."tenant_id", (array(SELECT g.group_id FROM account_groups g WHERE g.account_id = accounts.id ORDER BY g.group_id)) AS "group_ids"
+parse: accounts: computed column "group_ids" for dialect sqlite: unsupported SQL dialect
+```
 
 `expr` runs on every build, so it must be cheap and return the same SQL for the same dialect. A build calls the expressions of each schema it compiles: the resource's own, and those of every relation target its filter, policies, facets, includes or membership changes reach, following the request rather than the relation graph, so relations in a cycle cost no more than the filter's depth. The schemas hold no per-dialect state, so concurrent builds share them without a cache or lock, and each build compiles under its own dialect value: two `PostgresDialect`s that differ only in `Collation` read one expression and order it each by its own collation. Declare relations before serving.
 
@@ -395,7 +414,7 @@ PostgreSQL dialect:
 
 ## Request-to-SQL examples
 
-The examples compile against this resource ([source and executable outputs](../examples_sql_test.go); below, long UUIDs and repeated predicates are shortened with …):
+The examples compile against this resource ([source](../examples_sql_test.go)). Each block below is an example's output, which `go test` checks; `…` stands for text left out, long UUIDs and repeated predicates.
 
 ```go
 type Product struct {
@@ -415,40 +434,48 @@ type Product struct {
 
 **Operators.** Membership, ranges, NULL tests, boolean composition, case-folded patterns, and a relative time resolved against the parser clock (fixed at 2026-10-14T12:00Z):
 
+<!-- output of Example_filterOperators -->
 ```text
 {"category":"tools","name":{"$in":["saw","drill"]}}
-postgres WHERE (products.category = $1 AND products.name = ANY($2)) ORDER BY products.created_at DESC [tools [saw drill]]
-
+postgres WHERE ("products"."category" = $1 AND "products"."name" = ANY($2)) ORDER BY "products"."created_at" DESC, "products"."id" DESC [tools [saw drill]]
+sqlite   WHERE ("products"."category" = ?1 AND "products"."name" IN (SELECT value AS v FROM json_each(?2))) … [tools ["saw","drill"]]
+{"price":{"$gte":10,"$lt":100},"stock":{"$null":false}}
+postgres WHERE (("products"."price" >= $1 AND "products"."price" < $2) AND "products"."stock" IS NOT NULL) … [10 100]
+…
 {"$or":[{"category":"books"},{"$not":{"price":{"$gt":50}}}]}
-postgres WHERE (products.category = $1 OR NOT (products.price > $2)) ORDER BY products.created_at DESC [books 50]
-
+postgres WHERE ("products"."category" = $1 OR NOT ("products"."price" > $2)) … [books 50]
+…
 {"name":{"$ilike":"%pro%"},"created_at":{"$gte":"now-7d"}}
-postgres WHERE (products.created_at >= $1 AND products.name ILIKE $2 ESCAPE '\') ORDER BY products.created_at DESC [2026-10-07T12:00:00.000000000Z %pro%]
-sqlite   WHERE (products.created_at >= ?1 AND products.name LIKE ?2 ESCAPE '\') ORDER BY products.created_at DESC [2026-10-07T12:00:00.000000000Z %pro%]
+postgres WHERE ("products"."created_at" >= $1 AND "products"."name" ILIKE $2 ESCAPE '\') … [2026-10-07T12:00:00.000000000Z %pro%]
+sqlite   WHERE ("products"."created_at" >= ?1 AND "products"."name" LIKE ?2 ESCAPE '\') … [2026-10-07T12:00:00.000000000Z %pro%]
 ```
 
 **Flat query parameters** parse to the same filter (`filter.NewQueryParamParser`):
 
+<!-- output of Example_flatQueryParameters -->
 ```text
 ?category=tools&price_gte=10&stock_lt=5
-postgres WHERE (products.category = $1 AND products.price >= $2 AND products.stock < $3) ORDER BY products.created_at DESC [tools 10 5]
+postgres WHERE ("products"."category" = $1 AND "products"."price" >= $2 AND "products"."stock" < $3) ORDER BY "products"."created_at" DESC, "products"."id" DESC [tools 10 5]
+sqlite   WHERE ("products"."category" = ?1 AND "products"."price" >= ?2 AND "products"."stock" < ?3) ORDER BY "products"."created_at" DESC, "products"."id" DESC [tools 10 5]
 ```
 
-**Keyset pages.** The first page fetches `limit + 1` rows so the page knows another exists; the next page seeks past the last row's key instead of an `OFFSET`:
+**Keyset pages.** The first page of `sort=-price&page_size=2` fetches `limit + 1` rows so the page knows another exists; the next page, from its end cursor, seeks past the last row's key instead of an `OFFSET`:
 
+<!-- output of Example_keysetPages -->
 ```text
-first: WHERE 1=1 ORDER BY products.price DESC, products.id DESC LIMIT 3 []
-next:  WHERE (1=1 AND (products.price, products.id) < ($1, $2)) ORDER BY products.price DESC, products.id DESC [80 0190f3c2-…-000000000012]
-sqlite WHERE (1=1 AND ((products.price < ?1) OR (products.price = ?1 AND products.id < ?2))) ORDER BY products.price DESC, products.id DESC [80 0190f3c2-…-000000000012]
+first: WHERE 1=1 ORDER BY "products"."price" DESC, "products"."id" DESC LIMIT 3 []
+items: 2 has_next_page: true
+postgres WHERE (1=1 AND ("products"."price", "products"."id") < ($1, $2)) ORDER BY "products"."price" DESC, "products"."id" DESC [80 0190f3c2-…-000000000012]
+sqlite   WHERE (1=1 AND (("products"."price" < ?1) OR ("products"."price" = ?1 AND "products"."id" < ?2))) ORDER BY "products"."price" DESC, "products"."id" DESC [80 0190f3c2-…-000000000012]
 ```
 
-**Count, facets and search** share the request's filter; the count and facets ignore the cursor:
+**Count, facets and search** share the request's filter; the count and facets ignore the cursor. For the filter `{"price":{"$lt":200}}`, the search `cordless drill`, `include_total` and the facet `category`:
 
+<!-- output of Example_countFacetsSearch -->
 ```text
-filter {"price":{"$lt":200}}, search "cordless drill", include_total, facets category
-where:  (products.price < $1 AND to_tsvector('english', coalesce(products.name, '')) @@ plainto_tsquery('english', $2)) [200 cordless drill]
-count:  SELECT COUNT(*) FROM products WHERE (…same predicate…) [200 cordless drill]
-facets: WITH base AS MATERIALIZED (SELECT products.category AS facet__0 FROM products WHERE (…)) SELECT facet_field, facet_key, facet_count FROM (SELECT 'category' AS facet_field, k AS facet_key, c AS facet_count, 0 AS facet_ord, ROW_NUMBER() OVER (ORDER BY c DESC, k COLLATE pg_c_utf8) AS facet_rank FROM (SELECT facet__0 AS k, COUNT(*) AS c FROM base WHERE facet__0 IS NOT NULL GROUP BY facet__0 ORDER BY c DESC, facet__0 COLLATE pg_c_utf8 LIMIT 10) s0) facets__ ORDER BY facet_ord, facet_rank [200 cordless drill]
+where: ("products"."price" < $1 AND to_tsvector('english', coalesce("products"."name", '')) @@ plainto_tsquery('english', $2)) [200 cordless drill]
+count: SELECT COUNT(*) FROM "products" WHERE (…) [200 cordless drill]
+facets: WITH base AS MATERIALIZED (SELECT "products"."category" AS facet__0 FROM "products" WHERE (…)) SELECT facet_field, facet_key, facet_count FROM (SELECT 'category' AS facet_field, k AS facet_key, c AS facet_count, 0 AS facet_ord, ROW_NUMBER() OVER (ORDER BY c DESC, k COLLATE pg_c_utf8) AS facet_rank FROM (SELECT facet__0 AS k, COUNT(*) AS c FROM base WHERE facet__0 IS NOT NULL GROUP BY facet__0 ORDER BY c DESC, facet__0 COLLATE pg_c_utf8 LIMIT 10) s0) facets__ ORDER BY facet_ord, facet_rank [200 cordless drill]
 ```
 
 Facet rows come back in a fixed order: facets as requested, a terms facet's buckets by count with ties in the field's type order, numbers by value (a decimal exactly) and other keys in code-point order — the same order decides which buckets a terms limit keeps — and a range facet's buckets as declared. A terms facet on a list column (`[]string`, `[]int64`, …) counts each distinct element once per row: `["a","a"]` is one row for `a`. A list page carries the facets as `facets`, keyed by field (`filter.FacetMap`); a backend that counts in Go orders them with `filter.FacetBuckets`, given the field.
@@ -457,15 +484,17 @@ A bucket's key is the value's canonical text, the same on every backend: a strin
 
 SQLite searches with `LIKE '%cordless drill%'` — a phrase, where PostgreSQL's `plainto_tsquery` matches both words anywhere.
 
-**Patches** compile to one `SET` expression per column. A merge-patch object merges into the stored document; `null` deletes a key or clears a nullable column:
+**Patches** compile to one `SET` expression per column. A merge-patch object merges into the stored document; `null` deletes a key or clears a nullable column. A one-to-many takes no patch, so the last is refused:
 
+<!-- output of Example_patches -->
 ```text
 {"name":"Cordless drill","stock":null,"attrs":{"color":"blue","legacy":null}}
-postgres SET attrs = (COALESCE(jsonb_path_query_first(attrs, 'strict $ ? (@.type() == "object")'), '{}'::jsonb) - $1::text[] || $2::jsonb), name = $3, stock = NULL [[legacy] {"color":"blue"} Cordless drill]
-sqlite   SET attrs = json_patch(COALESCE(attrs, '{}'), ?1), name = ?2, stock = NULL [{"color":"blue","legacy":null} Cordless drill]
-
+postgres SET "attrs" = (COALESCE(jsonb_path_query_first("attrs", 'strict $ ? (@.type() == "object")'), '{}'::jsonb) - $1::text[] || $2::jsonb), "name" = $3, "stock" = NULL [[legacy] {"color":"blue"} Cordless drill]
+sqlite   SET "attrs" = json_patch(COALESCE("attrs", '{}'), ?1), "name" = ?2, "stock" = NULL [{"color":"blue","legacy":null} Cordless drill]
 [{"op":"array_append","path":"/tags","value":"clearance"},{"op":"replace","path":"/price","value":19.99}]
-postgres SET tags = array_append(COALESCE(tags, '{}'), $1), price = $2 [clearance 19.99]
+postgres SET "tags" = array_append(COALESCE("tags", '{}'), $1), "price" = $2 [clearance 19.99]
+[{"op":"add","path":"/reviews","value":["0190f3c2-…-000000000002"]}]
+[E2076] path '/reviews' at index 0: path not allowed
 ```
 
 ## Cursor validation

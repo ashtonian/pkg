@@ -180,16 +180,14 @@ An update has one stamp: a later `Stamp` or `StampSQL` replaces an earlier one. 
 
 ### Skipping unchanged rows
 
-A patch that sets what a row already holds still writes it: the stamp and counters move, and a consumer that emits an event per updated row emits one for nothing. `SkipUnchanged()` ANDs the patch's change predicate into the `UPDATE`'s WHERE — null-safe comparisons of each column the patch assigns with the value it assigns, reusing the SET clause's placeholders and binding nothing of their own — so only rows that change are written, stamped, counted and returned:
+A patch that sets what a row already holds still writes it: the stamp and counters move, and a consumer that emits an event per updated row emits one for nothing. `SkipUnchanged()` ANDs the patch's change predicate into the `UPDATE`'s WHERE — null-safe comparisons of each column the patch assigns with the value it assigns, reusing the SET clause's placeholders and binding nothing of their own — so only rows that change are written, stamped, counted and returned. A note's `{"title":"Agenda","rank":2}` with `StampSQL("updated_at", "NOW()")`, `Increment("version")` and `SkipUnchanged()`:
 
+<!-- output of ExampleSkipUnchanged_stamped -->
 ```text
-UPDATE "notes" SET "rank" = $1, "title" = $2, "updated_at" = NOW(), "version" = "version" + 1
-WHERE ("notes"."tenant_id" = $3 AND "notes"."deleted_at" IS NULL AND "notes"."id" = $4)
-  AND ("rank" IS DISTINCT FROM $1 OR "rank"::text COLLATE "C" IS DISTINCT FROM ($1)::text
-    OR "title" IS DISTINCT FROM $2 OR "title"::text COLLATE "C" IS DISTINCT FROM ($2)::text)
-RETURNING "notes"."id", …
-
+UPDATE "notes" SET "rank" = $1, "title" = $2, "updated_at" = NOW(), "version" = "version" + 1 WHERE ("notes"."tenant_id" = $3 AND "notes"."deleted_at" IS NULL AND "notes"."id" = $4) AND ("rank" IS DISTINCT FROM $1 OR "rank"::text COLLATE "C" IS DISTINCT FROM ($1)::text OR "title" IS DISTINCT FROM $2 OR "title"::text COLLATE "C" IS DISTINCT FROM ($2)::text) RETURNING "notes"."id", …
+[2 Agenda t1 n1]
 SELECT "notes"."id", … FROM "notes" WHERE ("notes"."tenant_id" = $1 AND "notes"."deleted_at" IS NULL AND "notes"."id" = $2) FOR UPDATE
+[t1 n1]
 ```
 
 The second statement is `plan.Current`: the same scoped WHERE without the predicate, with the dialect's row lock. The executors run `Current` first, then `Owner`, in one transaction, and split the target rows:

@@ -49,32 +49,10 @@ func products() *parse.Resource[Product] {
 	return tp
 }
 
-// show compiles one list request for both dialects and prints its WHERE,
-// ORDER BY and bound arguments.
-func show(tp *parse.Resource[Product], opts ...filter.ListOption) {
-	for _, d := range []filter.Dialect{filter.PostgresDialect{}, filter.SQLiteDialect{}} {
-		lq, err := tp.ListQuery(d)
-		if err != nil {
-			fmt.Println("error:", err)
-			return
-		}
-		res, err := lq.Build(opts...)
-		if err != nil {
-			fmt.Println("error:", err)
-			return
-		}
-		name := "postgres"
-		if _, ok := d.(filter.SQLiteDialect); ok {
-			name = "sqlite  "
-		}
-		fmt.Printf("%s WHERE %s %s %v\n", name, res.Where, res.OrderBy, res.Args)
-	}
-}
-
-// Example_atAGlance is the README's first example: a filter and a sort,
-// with a unique tie-breaker for the cursors.
+// Example_atAGlance: a filter and a sort, with the key as the unique
+// tie-breaker the cursors need.
 func Example_atAGlance() {
-	show(products(),
+	showList(products(),
 		filter.ListFilter(`{"price":{"$gte":10,"$lt":100},"stock":{"$null":false}}`),
 		filter.ListSort("-price"), filter.ListLimit(20))
 	// Output:
@@ -86,17 +64,21 @@ func Example_atAGlance() {
 // operators, and a relative time resolved against the parser clock.
 func Example_filterOperators() {
 	tp := products()
-	show(tp, filter.ListFilter(`{"category":"tools","name":{"$in":["saw","drill"]}}`))
-	show(tp, filter.ListFilter(`{"price":{"$gte":10,"$lt":100},"stock":{"$null":false}}`))
-	show(tp, filter.ListFilter(`{"$or":[{"category":"books"},{"$not":{"price":{"$gt":50}}}]}`))
-	show(tp, filter.ListFilter(`{"name":{"$ilike":"%pro%"},"created_at":{"$gte":"now-7d"}}`))
+	showFilter(tp, `{"category":"tools","name":{"$in":["saw","drill"]}}`)
+	showFilter(tp, `{"price":{"$gte":10,"$lt":100},"stock":{"$null":false}}`)
+	showFilter(tp, `{"$or":[{"category":"books"},{"$not":{"price":{"$gt":50}}}]}`)
+	showFilter(tp, `{"name":{"$ilike":"%pro%"},"created_at":{"$gte":"now-7d"}}`)
 	// Output:
+	// {"category":"tools","name":{"$in":["saw","drill"]}}
 	// postgres WHERE ("products"."category" = $1 AND "products"."name" = ANY($2)) ORDER BY "products"."created_at" DESC, "products"."id" DESC [tools [saw drill]]
 	// sqlite   WHERE ("products"."category" = ?1 AND "products"."name" IN (SELECT value AS v FROM json_each(?2))) ORDER BY "products"."created_at" DESC, "products"."id" DESC [tools ["saw","drill"]]
+	// {"price":{"$gte":10,"$lt":100},"stock":{"$null":false}}
 	// postgres WHERE (("products"."price" >= $1 AND "products"."price" < $2) AND "products"."stock" IS NOT NULL) ORDER BY "products"."created_at" DESC, "products"."id" DESC [10 100]
 	// sqlite   WHERE (("products"."price" >= ?1 AND "products"."price" < ?2) AND "products"."stock" IS NOT NULL) ORDER BY "products"."created_at" DESC, "products"."id" DESC [10 100]
+	// {"$or":[{"category":"books"},{"$not":{"price":{"$gt":50}}}]}
 	// postgres WHERE ("products"."category" = $1 OR NOT ("products"."price" > $2)) ORDER BY "products"."created_at" DESC, "products"."id" DESC [books 50]
 	// sqlite   WHERE ("products"."category" = ?1 OR NOT ("products"."price" > ?2)) ORDER BY "products"."created_at" DESC, "products"."id" DESC [books 50]
+	// {"name":{"$ilike":"%pro%"},"created_at":{"$gte":"now-7d"}}
 	// postgres WHERE ("products"."created_at" >= $1 AND "products"."name" ILIKE $2 ESCAPE '\') ORDER BY "products"."created_at" DESC, "products"."id" DESC [2026-10-07T12:00:00.000000000Z %pro%]
 	// sqlite   WHERE ("products"."created_at" >= ?1 AND "products"."name" LIKE ?2 ESCAPE '\') ORDER BY "products"."created_at" DESC, "products"."id" DESC [2026-10-07T12:00:00.000000000Z %pro%]
 }
@@ -105,16 +87,18 @@ func Example_filterOperators() {
 // price_gte=10) parse to the same filter a JSON filter does.
 func Example_flatQueryParameters() {
 	tp := products()
-	ast, err := filter.NewQueryParamParser(tp.FilterSchema()).Parse(url.Values{
-		"category":  {"tools"},
-		"price_gte": {"10"},
-		"stock_lt":  {"5"},
-	})
+	q, err := url.ParseQuery("category=tools&price_gte=10&stock_lt=5")
 	if err != nil {
 		panic(err)
 	}
-	show(tp, filter.ListFilterAST(ast))
+	ast, err := filter.NewQueryParamParser(tp.FilterSchema()).Parse(q)
+	if err != nil {
+		panic(err)
+	}
+	fmt.Println("?" + q.Encode())
+	showList(tp, filter.ListFilterAST(ast))
 	// Output:
+	// ?category=tools&price_gte=10&stock_lt=5
 	// postgres WHERE ("products"."category" = $1 AND "products"."price" >= $2 AND "products"."stock" < $3) ORDER BY "products"."created_at" DESC, "products"."id" DESC [tools 10 5]
 	// sqlite   WHERE ("products"."category" = ?1 AND "products"."price" >= ?2 AND "products"."stock" < ?3) ORDER BY "products"."created_at" DESC, "products"."id" DESC [tools 10 5]
 }
@@ -147,7 +131,7 @@ func Example_keysetPages() {
 		panic(err)
 	}
 	fmt.Println("items:", len(page.Items), "has_next_page:", page.PageInfo.HasNextPage)
-	show(tp, filter.ListSort("-price"), filter.ListLimit(2),
+	showList(tp, filter.ListSort("-price"), filter.ListLimit(2),
 		filter.ListCursor(string(page.PageInfo.EndCursor)))
 	// Output:
 	// first: WHERE 1=1 ORDER BY "products"."price" DESC, "products"."id" DESC LIMIT 3 []
@@ -185,17 +169,21 @@ func Example_countFacetsSearch() {
 // the child table, and a belongs-to, which is the plain foreign key.
 func Example_relations() {
 	tp := products()
-	show(tp, filter.ListFilter(`{"collections":"0190f3c2-0000-7000-8000-000000000001"}`))
-	show(tp, filter.ListFilter(`{"collections":{"$nin":["0190f3c2-0000-7000-8000-000000000001"]}}`))
-	show(tp, filter.ListFilter(`{"reviews":{"$null":false}}`))
-	show(tp, filter.ListFilter(`{"supplier_id":"0190f3c2-0000-7000-8000-0000000000aa"}`))
+	showFilter(tp, `{"collections":"0190f3c2-0000-7000-8000-000000000001"}`)
+	showFilter(tp, `{"collections":{"$nin":["0190f3c2-0000-7000-8000-000000000001"]}}`)
+	showFilter(tp, `{"reviews":{"$null":false}}`)
+	showFilter(tp, `{"supplier_id":"0190f3c2-0000-7000-8000-0000000000aa"}`)
 	// Output:
+	// {"collections":"0190f3c2-0000-7000-8000-000000000001"}
 	// postgres WHERE EXISTS (SELECT 1 FROM "product_collections" WHERE "product_collections"."product_id" = "products"."id" AND "product_collections"."collection_id" = $1) ORDER BY "products"."created_at" DESC, "products"."id" DESC [0190f3c2-0000-7000-8000-000000000001]
 	// sqlite   WHERE EXISTS (SELECT 1 FROM "product_collections" WHERE "product_collections"."product_id" = "products"."id" AND "product_collections"."collection_id" = ?1) ORDER BY "products"."created_at" DESC, "products"."id" DESC [0190f3c2-0000-7000-8000-000000000001]
+	// {"collections":{"$nin":["0190f3c2-0000-7000-8000-000000000001"]}}
 	// postgres WHERE NOT EXISTS (SELECT 1 FROM "product_collections" WHERE "product_collections"."product_id" = "products"."id" AND "product_collections"."collection_id" = ANY($1)) ORDER BY "products"."created_at" DESC, "products"."id" DESC [[0190f3c2-0000-7000-8000-000000000001]]
 	// sqlite   WHERE NOT EXISTS (SELECT 1 FROM "product_collections" WHERE "product_collections"."product_id" = "products"."id" AND "product_collections"."collection_id" IN (SELECT value AS v FROM json_each(?1))) ORDER BY "products"."created_at" DESC, "products"."id" DESC [["0190f3c2-0000-7000-8000-000000000001"]]
+	// {"reviews":{"$null":false}}
 	// postgres WHERE EXISTS (SELECT 1 FROM "reviews" WHERE "reviews"."product_id" = "products"."id") ORDER BY "products"."created_at" DESC, "products"."id" DESC []
 	// sqlite   WHERE EXISTS (SELECT 1 FROM "reviews" WHERE "reviews"."product_id" = "products"."id") ORDER BY "products"."created_at" DESC, "products"."id" DESC []
+	// {"supplier_id":"0190f3c2-0000-7000-8000-0000000000aa"}
 	// postgres WHERE "products"."supplier_id" = $1 ORDER BY "products"."created_at" DESC, "products"."id" DESC [0190f3c2-0000-7000-8000-0000000000aa]
 	// sqlite   WHERE "products"."supplier_id" = ?1 ORDER BY "products"."created_at" DESC, "products"."id" DESC [0190f3c2-0000-7000-8000-0000000000aa]
 }
@@ -220,15 +208,20 @@ func Example_include() {
 // document; a plain object is equality, $contains is jsonb @> at any depth.
 func Example_jsonDocuments() {
 	tp := products()
-	show(tp, filter.ListFilter(`{"attrs":{"$contains":{"color":"red","dims":{"w":10}}}}`))
-	show(tp, filter.ListFilter(`{"tags":{"$contains":["sale"]}}`))
-	_, err := tp.ParseFilter(`{"attrs.color":"red"}`)
+	showFilter(tp, `{"attrs":{"$contains":{"color":"red","dims":{"w":10}}}}`)
+	showFilter(tp, `{"tags":{"$contains":["sale"]}}`)
+	undeclared := `{"attrs.color":"red"}`
+	_, err := tp.ParseFilter(undeclared)
+	fmt.Println(undeclared)
 	fmt.Println(err)
 	// Output:
+	// {"attrs":{"$contains":{"color":"red","dims":{"w":10}}}}
 	// postgres WHERE "products"."attrs" @> $1::jsonb ORDER BY "products"."created_at" DESC, "products"."id" DESC [{"color":"red","dims":{"w":10}}]
 	// sqlite   WHERE (CASE WHEN "products"."attrs" IS NULL THEN NULL ELSE (CASE WHEN json_type("products"."attrs") = 'object' THEN (EXISTS (SELECT 1 FROM json_each("products"."attrs") je1 WHERE je1.key = ?1 AND (je1.type = 'text' AND je1.atom = ?2)) AND EXISTS (SELECT 1 FROM json_each("products"."attrs") je2 WHERE je2.key = ?3 AND (CASE WHEN je2.type = 'object' THEN (EXISTS (SELECT 1 FROM json_each(je2.value) je3 WHERE je3.key = ?4 AND (je3.type IN ('integer', 'real') AND je3.atom = ?5))) ELSE 0 END))) ELSE 0 END) END) ORDER BY "products"."created_at" DESC, "products"."id" DESC [color red dims w 10]
+	// {"tags":{"$contains":["sale"]}}
 	// postgres WHERE "products"."tags" @> $1 ORDER BY "products"."created_at" DESC, "products"."id" DESC [[sale]]
 	// sqlite   WHERE (CASE WHEN "products"."tags" IS NULL THEN NULL WHEN json_type("products"."tags") = 'array' THEN ((SELECT count(DISTINCT (CASE WHEN elem1__.type = 'text' THEN elem1__.value END)) FROM json_each(CASE WHEN json_type("products"."tags") = 'array' THEN "products"."tags" END) AS elem1__ WHERE (CASE WHEN elem1__.type = 'text' THEN elem1__.value END) IN (SELECT value AS v FROM json_each(?1))) = (SELECT count(DISTINCT v) FROM (SELECT value AS v FROM json_each(?1)) AS elem1__set)) ELSE 0 END) ORDER BY "products"."created_at" DESC, "products"."id" DESC [["sale"]]
+	// {"attrs.color":"red"}
 	// [E2071] field 'attrs.color' is not filterable
 }
 
@@ -236,18 +229,21 @@ func Example_jsonDocuments() {
 // SET clause with one expression per column.
 func Example_patches() {
 	tp := products()
-	merge, err := tp.ParseMergePatch([]byte(`{"name":"Cordless drill","stock":null,"attrs":{"color":"blue","legacy":null}}`))
+	mergeBody := `{"name":"Cordless drill","stock":null,"attrs":{"color":"blue","legacy":null}}`
+	merge, err := tp.ParseMergePatch([]byte(mergeBody))
 	if err != nil {
 		panic(err)
 	}
+	fmt.Println(mergeBody)
 	for _, d := range []patch.SQLDialect{filter.PostgresDialect{}, filter.SQLiteDialect{}} {
 		set, buildErr := patch.BuildPatchSQL(merge, d)
 		if buildErr != nil {
 			panic(buildErr)
 		}
-		fmt.Println(set.SetClause, set.Args)
+		fmt.Printf("%-8s SET %s %v\n", d.Name(), set.SetClause, set.Args)
 	}
-	ops, err := tp.ParsePatch([]byte(`[{"op":"array_append","path":"/tags","value":"clearance"},{"op":"replace","path":"/price","value":19.99}]`))
+	opsBody := `[{"op":"array_append","path":"/tags","value":"clearance"},{"op":"replace","path":"/price","value":19.99}]`
+	ops, err := tp.ParsePatch([]byte(opsBody))
 	if err != nil {
 		panic(err)
 	}
@@ -255,13 +251,19 @@ func Example_patches() {
 	if err != nil {
 		panic(err)
 	}
-	fmt.Println(set.SetClause, set.Args)
-	_, err = tp.ParsePatch([]byte(`[{"op":"add","path":"/reviews","value":["0190f3c2-0000-7000-8000-000000000002"]}]`))
+	fmt.Println(opsBody)
+	fmt.Printf("%-8s SET %s %v\n", "postgres", set.SetClause, set.Args)
+	refusedBody := `[{"op":"add","path":"/reviews","value":["0190f3c2-0000-7000-8000-000000000002"]}]`
+	_, err = tp.ParsePatch([]byte(refusedBody))
+	fmt.Println(refusedBody)
 	fmt.Println(err)
 	// Output:
-	// "attrs" = (COALESCE(jsonb_path_query_first("attrs", 'strict $ ? (@.type() == "object")'), '{}'::jsonb) - $1::text[] || $2::jsonb), "name" = $3, "stock" = NULL [[legacy] {"color":"blue"} Cordless drill]
-	// "attrs" = json_patch(COALESCE("attrs", '{}'), ?1), "name" = ?2, "stock" = NULL [{"color":"blue","legacy":null} Cordless drill]
-	// "tags" = array_append(COALESCE("tags", '{}'), $1), "price" = $2 [clearance 19.99]
+	// {"name":"Cordless drill","stock":null,"attrs":{"color":"blue","legacy":null}}
+	// postgres SET "attrs" = (COALESCE(jsonb_path_query_first("attrs", 'strict $ ? (@.type() == "object")'), '{}'::jsonb) - $1::text[] || $2::jsonb), "name" = $3, "stock" = NULL [[legacy] {"color":"blue"} Cordless drill]
+	// sqlite   SET "attrs" = json_patch(COALESCE("attrs", '{}'), ?1), "name" = ?2, "stock" = NULL [{"color":"blue","legacy":null} Cordless drill]
+	// [{"op":"array_append","path":"/tags","value":"clearance"},{"op":"replace","path":"/price","value":19.99}]
+	// postgres SET "tags" = array_append(COALESCE("tags", '{}'), $1), "price" = $2 [clearance 19.99]
+	// [{"op":"add","path":"/reviews","value":["0190f3c2-0000-7000-8000-000000000002"]}]
 	// [E2076] path '/reviews' at index 0: path not allowed
 }
 

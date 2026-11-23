@@ -3,6 +3,7 @@
 package parse_test
 
 import (
+	"fmt"
 	"go/ast"
 	"go/doc"
 	"go/parser"
@@ -38,19 +39,62 @@ func TestGuideBlocksMatchTheirExamples(t *testing.T) {
 	for _, guide := range append([]string{"README.md"}, guides...) {
 		raw, err := os.ReadFile(guide)
 		require.NoError(t, err)
-		for _, b := range fencedBlocks(string(raw)) {
-			if b.example == "" {
-				if b.lang != "go" && compilerOutput.MatchString(b.body) {
-					t.Errorf("%s:%d: a block showing compiler output names no example: precede it with <!-- output of ExampleName -->", guide, b.line)
-				}
-				continue
-			}
-			output, ok := outputs[b.example]
-			if !assert.True(t, ok, "%s:%d: %s is no example of this package with an Output comment", guide, b.line, b.example) {
-				continue
-			}
-			assert.Regexp(t, elided(b.body), output, "%s:%d: the block is not %s's output, with … for any run of characters; the example prints:\n%s", guide, b.line, b.example, output)
+		for _, problem := range guideProblems(string(raw), outputs) {
+			t.Errorf("%s:%s", guide, problem)
 		}
+	}
+}
+
+// guideProblems are a guide's blocks that show compiler output without
+// naming an example, name an example outputs lacks, or are not its output.
+func guideProblems(doc string, outputs map[string]string) []string {
+	var problems []string
+	for _, b := range fencedBlocks(doc) {
+		if b.example == "" {
+			if b.lang != "go" && compilerOutput.MatchString(b.body) {
+				problems = append(problems, fmt.Sprintf("%d: a block showing compiler output names no example: precede it with <!-- output of ExampleName -->", b.line))
+			}
+			continue
+		}
+		output, ok := outputs[b.example]
+		if !ok {
+			problems = append(problems, fmt.Sprintf("%d: %s is no example of this package with an Output comment", b.line, b.example))
+			continue
+		}
+		if !elided(b.body).MatchString(output) {
+			problems = append(problems, fmt.Sprintf("%d: the block is not %s's output, with … for any run of characters; the example prints:\n%s", b.line, b.example, output))
+		}
+	}
+	return problems
+}
+
+func TestGuideProblems(t *testing.T) {
+	outputs := map[string]string{"Example_x": "{\"a\":1}\npostgres WHERE (a = $1) ORDER BY id [1]\nsqlite   WHERE (a = ?1) ORDER BY id [1]"}
+	pinned := func(body string) string { return "Text.\n\n<!-- output of Example_x -->\n```text\n" + body + "\n```\n" }
+	tests := []struct {
+		name     string
+		doc      string
+		problems int
+	}{
+		{"the whole output", pinned("{\"a\":1}\npostgres WHERE (a = $1) ORDER BY id [1]\nsqlite   WHERE (a = ?1) ORDER BY id [1]"), 0},
+		{"an elision within a line", pinned("{\"a\":1}\npostgres WHERE (a = $1) … [1]\nsqlite   WHERE (a = ?1) … [1]"), 0},
+		{"an elision across lines", pinned("{\"a\":1}\npostgres WHERE (a = $1) …"), 0},
+		{"trailing spaces", pinned("{\"a\":1}  \npostgres … [1]\t"), 0},
+		{"a block that stops short", pinned("{\"a\":1}\npostgres WHERE (a = $1) ORDER BY id [1]"), 1},
+		{"a block that starts late", pinned("postgres WHERE (a = $1) …"), 1},
+		{"a changed character", pinned("{\"a\":1}\npostgres WHERE (a = $2) …"), 1},
+		{"metacharacters are literal", pinned("{.\"a\":1}\npostgres WHERE (a = $1) …"), 1},
+		{"an example the package lacks", "<!-- output of Example_y -->\n```text\nx\n```\n", 1},
+		{"compiler output with no marker", "```text\npostgres WHERE (a = $1)\n```\n", 1},
+		{"a marker a line away from its block", "<!-- output of Example_x -->\n\n```sql\nSELECT 1\n```\n", 1},
+		{"a refused request with no marker", "```text\n[E2071] field 'x' is not filterable\n```\n", 1},
+		{"Go code is not output", "```go\nq := `SELECT 1 WHERE x`\n```\n", 0},
+		{"requests are not output", "```text\n{\"tags\":{\"$some\":{}}}\n```\n", 0},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Len(t, guideProblems(tt.doc, outputs), tt.problems)
+		})
 	}
 }
 

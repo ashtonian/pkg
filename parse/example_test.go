@@ -13,8 +13,8 @@ import (
 	"github.com/ashtonian/pkg/parse/patch"
 )
 
-// Example is the README Quick Start: one struct drives filter, sort,
-// keyset pagination and patch compilation.
+// Example: one struct drives filter, sort, keyset pagination and patch
+// compilation.
 func Example() {
 	type Device struct {
 		ID     string `json:"id"     db:"id"     parse:"filter,sort"`

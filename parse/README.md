@@ -62,6 +62,7 @@ func main() {
 }
 ```
 
+<!-- output of ExampleResource_BuildList -->
 ```text
 SELECT "devices"."id", "devices"."tenant_id", "devices"."name", "devices"."status" FROM "devices" WHERE (("devices"."name" <> $1 AND "devices"."status" = $2) AND "devices"."tenant_id" = $3) ORDER BY "devices"."name" COLLATE pg_c_utf8 ASC, "devices"."id" COLLATE pg_c_utf8 ASC LIMIT 11
 [spare active t1]

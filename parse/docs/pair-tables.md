@@ -10,19 +10,19 @@ A relation field is virtual (`db:"-"`): it is not a column but a way to filter r
 | One-to-many (a product's reviews) | `relation:"reviews,product_id,id"` — the child table in the junction's place, its key as the target | by child ID, or child existence | yes: the children's IDs | **never** tag `patch`: membership patches would insert or delete child rows |
 | Belongs-to (a product's supplier) | the foreign-key column itself, `SupplierID uuid.UUID db:"supplier_id" parse:"filter"` | by the parent's ID | — | the column, like any other |
 
+<!-- output of Example_relations -->
 ```text
-{"collections":"0190f3c2-…-000000000001"}                  products in a collection
-postgres WHERE EXISTS (SELECT 1 FROM product_collections WHERE product_collections.product_id = products.id AND product_collections.collection_id = $1)
-
-{"collections":{"$nin":["0190f3c2-…-000000000001"]}}       products not in it
-postgres WHERE NOT EXISTS (SELECT 1 FROM product_collections WHERE product_collections.product_id = products.id AND product_collections.collection_id = ANY($1))
-
-{"reviews":{"$null":false}}                                products with at least one review
-postgres WHERE EXISTS (SELECT 1 FROM reviews WHERE reviews.product_id = products.id)
-
-{"supplier_id":"0190f3c2-…-0000000000aa"}                  a supplier's products
-postgres WHERE products.supplier_id = $1
+{"collections":"0190f3c2-…-000000000001"}
+postgres WHERE EXISTS (SELECT 1 FROM "product_collections" WHERE "product_collections"."product_id" = "products"."id" AND "product_collections"."collection_id" = $1) …
+{"collections":{"$nin":["0190f3c2-…-000000000001"]}}
+postgres WHERE NOT EXISTS (SELECT 1 FROM "product_collections" WHERE "product_collections"."product_id" = "products"."id" AND "product_collections"."collection_id" = ANY($1)) …
+{"reviews":{"$null":false}}
+postgres WHERE EXISTS (SELECT 1 FROM "reviews" WHERE "reviews"."product_id" = "products"."id") …
+{"supplier_id":"0190f3c2-…-0000000000aa"}
+postgres WHERE "products"."supplier_id" = $1 …
 ```
+
+The four filters select the products in a collection, the products not in it, the products with at least one review, and a supplier's products.
 
 `$eq x` means some related row is x, `$ne x` that none is, `$null: true` that there is none. `include=collections` returns each owner's related IDs in the page's `_relations`, distinct and capped per owner in SQL (`filter.BuildIncludeQuery`, default 100). A relation facet counts distinct owners per target.
 
