@@ -125,7 +125,10 @@ errors and cancellation return directly, among them a `validate` tag the
 default validator cannot apply to its field (`dive` on an `int`), which is
 `ErrSchema` with no `*KeyError`. No partial config is returned on
 failure. Error messages contain the key, not the value; wrapped causes are
-for trusted diagnostics.
+for trusted diagnostics. A key within a sensitive map, list, interface or
+remain field is named only as far as its enclosing field, in `Key`, the
+message and `Err`'s own text alike, and a reason that would name what lies
+inside is not shown; a key that does not parse is redacted (`RedactText`).
 
 These calls honor `WithDefaults`, `WithDecodeHook`, `WithValidator` and
 `WithSkipValidation`. They read no provider, file or environment and run no

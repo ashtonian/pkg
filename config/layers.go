@@ -111,7 +111,7 @@ func (l *loader) mergeLayers(ctx context.Context, layers []*layer, verdicts []en
 		y.merged = merged
 		invalid := slices.Concat(y.refused, v.withheld)
 		for _, r := range refused {
-			invalid = append(invalid, &KeyError{Key: v.kept[r.at].safe, Err: r.err})
+			invalid = append(invalid, newKeyError(l.schema, v.kept[r.at].path, false, r.err))
 		}
 		if y.withhold {
 			if err := l.reportWithheld(ctx, y.name, y.report, invalid); err != nil {

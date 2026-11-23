@@ -119,7 +119,7 @@ func sourceEntries(schema *schemaNode, data map[string]any) (edits []edit, rest 
 				refused = append(refused, ke)
 				continue
 			}
-			edits = append(edits, edit{path: at, parent: parent, value: copyInput(value), safe: diagnosticPath(schema, at).String()})
+			edits = append(edits, edit{path: at, parent: parent, value: copyInput(value), safe: shownKey(schema, at)})
 		}
 	}
 	walk(schema, data, nil, rest)

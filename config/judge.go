@@ -62,7 +62,7 @@ func (l *loader) judgeEntries(ctx context.Context, o *options, layers []*layer) 
 	}
 	for _, c := range slices.Sorted(maps.Keys(withheld)) {
 		e, v := j.entry(c), &verdicts[j.candidates[c].layer]
-		v.withheld = append(v.withheld, &KeyError{Key: e.safe, Err: withheld[c]})
+		v.withheld = append(v.withheld, newKeyError(l.schema, e.path, false, withheld[c]))
 		v.unknown = append(v.unknown, e.unknown...)
 	}
 	return verdicts, nil

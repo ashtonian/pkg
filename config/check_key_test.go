@@ -267,7 +267,7 @@ func TestDecodeKey_ListIndexBoundsAndDetachedDefaults(t *testing.T) {
 		assert.False(t, ke.Unknown)
 		assert.Equal(t, "pool[2].host", ke.Key)
 		require.ErrorIs(t, err, ErrValidation, "an index past the next element")
-		var problem keyProblem
+		var problem *keyProblem
 		require.ErrorAs(t, ke.Err, &problem, "refused as an index, not as a candidate that fails to decode")
 		_, err = DecodeKey[editConfig](t.Context(), "pool[-1].host", "z", WithDefaults(defaults))
 		require.ErrorIs(t, err, ErrKey)

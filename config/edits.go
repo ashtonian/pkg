@@ -10,7 +10,6 @@ import (
 	"strings"
 
 	"github.com/ashtonian/pkg/config/internal/deepcopy"
-	"github.com/ashtonian/pkg/gowalker"
 )
 
 // A key edit is one concrete key set to a value — CheckKey's key, each of
@@ -46,7 +45,7 @@ type edit struct {
 func resolveKey(schema *schemaNode, key string) (keyPath, *schemaNode, []string, *KeyError) {
 	p, err := parseKeyPath(key)
 	if err != nil {
-		return nil, nil, nil, &KeyError{Key: RedactText(key), Unknown: true, Err: err}
+		return nil, nil, nil, unparsedKeyError(key, err)
 	}
 	parent, aliased, ke := resolveSchemaPath(schema, p)
 	return p, parent, aliased, ke
@@ -62,16 +61,14 @@ func resolveKey(schema *schemaNode, key string) (keyPath, *schemaNode, []string,
 // walkTo resolves it (see schemaNode.collects).
 func resolveSchemaPath(schema *schemaNode, p keyPath) (parent *schemaNode, aliased []string, ke *KeyError) {
 	if len(p) == 0 {
-		return nil, nil, &KeyError{Key: "$", Unknown: true, Err: fmt.Errorf("%w: a key names one value, not the whole config", ErrKey)}
+		return nil, nil, newKeyError(schema, p, true, notRead(p, "a key names one value, not the whole config"))
 	}
-	unknown := func(err error) *KeyError {
-		return &KeyError{Key: diagnosticPath(schema, p).String(), Unknown: true, Err: err}
-	}
+	unknown := func(err error) *KeyError { return newKeyError(schema, p, true, err) }
 	n := schema
 	for i := range p {
 		s := &p[i]
 		if s.kind == segAny {
-			return nil, nil, unknown(fmt.Errorf("%w: key must be concrete", ErrKey))
+			return nil, nil, unknown(notRead(p, "key must be concrete"))
 		}
 		parent = n
 		if n.kind == nodeDynamic {
@@ -96,20 +93,20 @@ func resolveSchemaPath(schema *schemaNode, p keyPath) (parent *schemaNode, alias
 		case n.kind == nodeMap && s.kind == segKey:
 			text, err := n.keys.canonical(s.name)
 			if err != nil {
-				return nil, nil, unknown(fmt.Errorf("%w %s: %s is keyed by %s, which the entry's key does not decode into", ErrKey, p, p[:i].orRoot(), gowalker.TypeText(n.typ.Key())))
+				return nil, nil, unknown(notRead(p, "%s is keyed by %s, which the entry's key does not decode into", p[:i], typeText{n.typ.Key()}))
 			}
 			s.name, n = text, n.elem
 			continue
 		}
-		_, next, err := n.walkTo(cursor{}, p[i:i+1])
+		// The cursor starts at p[:i], so a fault names where it is.
+		_, next, err := n.walkTo(cursor{path: slices.Clip(p[:i])}, p[i:i+1])
 		if err != nil {
-			ke := unknown(err)
-			if n.kind == nodeBranch && s.kind == segField && ke.Key == p.String() {
+			if f, ok := err.(*keyFault); ok && n.kind == nodeBranch && s.kind == segField {
 				if closest := closestField(n, s.name); closest != "" {
-					ke.suggestion = p[:i].field(closest).String()
+					f.suggestion = p[:i].field(closest)
 				}
 			}
-			return nil, nil, ke
+			return nil, nil, unknown(err)
 		}
 		n = next
 	}
@@ -123,16 +120,6 @@ func aliasNote(schema *schemaNode, written, now keyPath) string {
 		return safe.String() + " (sensitive contents)"
 	}
 	return fmt.Sprintf("%s (now %s)", written, now)
-}
-
-// keyProblem is why a key cannot be set as written, in words naming keys
-// and never a value, so a KeyError's message can carry it.
-type keyProblem string
-
-func (p keyProblem) Error() string { return string(p) }
-
-func refuse(format string, args ...any) error {
-	return fmt.Errorf("%w: %w", ErrValidation, keyProblem(strings.TrimSpace(fmt.Sprintf(format, args...))))
 }
 
 func copyInput(v any) any {
@@ -158,7 +145,7 @@ func prepareEdits(schema *schemaNode, entries map[string]any) (edits []edit, ref
 			refused = append(refused, ke)
 			continue
 		}
-		edits = append(edits, edit{path: p, parent: parent, value: copyInput(entries[key]), safe: diagnosticPath(schema, p).String(), aliased: aliased})
+		edits = append(edits, edit{path: p, parent: parent, value: copyInput(entries[key]), safe: shownKey(schema, p), aliased: aliased})
 	}
 	slices.SortStableFunc(edits, func(a, b edit) int { return comparePaths(a.path, b.path) })
 	kept := edits[:0]
@@ -168,7 +155,7 @@ func prepareEdits(schema *schemaNode, entries map[string]any) (edits []edit, ref
 			same++
 		}
 		if same > i+1 {
-			refused = append(refused, &KeyError{Key: edits[i].safe, Err: refuse("the key is set more than once, under different spellings")})
+			refused = append(refused, newKeyError(schema, edits[i].path, false, refuse("the key is set more than once, under different spellings")))
 		} else {
 			kept = append(kept, edits[i])
 		}
@@ -185,7 +172,7 @@ func rewriteEdits(schema *schemaNode, edits []edit) (kept []edit, refused []*Key
 	kept = edits[:0]
 	for _, e := range edits {
 		if err := e.rewrite(schema); err != nil {
-			refused = append(refused, &KeyError{Key: e.safe, Err: err})
+			refused = append(refused, newKeyError(schema, e.path, false, err))
 			continue
 		}
 		kept = append(kept, e)
@@ -208,14 +195,14 @@ func unsettable(schema *schemaNode, edits []edit) (kept []edit, refused []*KeyEr
 		if len(open) > 0 {
 			h := kept[open[len(open)-1]]
 			if next := e.path[len(h.path)]; !canSelect(h.value, next) {
-				refused = append(refused, &KeyError{Key: e.safe, Err: refuse("%s is set to a value with no %s beneath it", h.safe, selects(next))})
+				refused = append(refused, newKeyError(schema, e.path, false, refuse("%s is set to a value with no %s beneath it", h.path, shownText(selects(next)))))
 				continue
 			}
 		}
 		if len(kept) > 0 {
 			prev := kept[len(kept)-1].path
 			if c := commonPrefix(prev, e.path); c < len(prev) && c < len(e.path) && (prev[c].kind == segIndex) != (e.path[c].kind == segIndex) {
-				refused = append(refused, &KeyError{Key: e.safe, Err: refuse("keys beneath %s select both its elements and its keys", diagnosticPath(schema, e.path[:c]).orRoot())})
+				refused = append(refused, newKeyError(schema, e.path, false, refuse("keys beneath %s select both its elements and its keys", e.path[:c])))
 				continue
 			}
 		}
@@ -328,11 +315,6 @@ func joinKeyErrors(errs []*KeyError) error {
 	return errors.Join(joined...)
 }
 
-// unknownKeyError is an unknown key as the *KeyError a key check reports.
-func unknownKeyError(u UnknownKey) *KeyError {
-	return &KeyError{Key: u.Key, Unknown: true, Err: fmt.Errorf("%w %s: no field reads it", ErrKey, u.Key), suggestion: u.Suggestion}
-}
-
 // rewrite gives e's value the shape a source's value has at e's key: keys
 // spelled as their fields are, sep lists split, JSON parsed, typed maps and
 // sections whole (see keyWalk). The value is rewritten where it sits, inside
@@ -359,11 +341,11 @@ func (e *edit) rewrite(schema *schemaNode) error {
 	e.value, e.unknown, e.unkeyed = value, w.unknown, w.unkeyed
 	switch {
 	case len(w.twice) > 0:
-		return refuse("keys spelled two ways set one key: %s", strings.Join(w.twice, ", "))
+		return refuse("keys spelled two ways set one key: %s", shownText(strings.Join(w.twice, ", ")))
 	case len(w.notJSON) > 0:
-		return refuse("format:\"json\" values that are not JSON: %s", strings.Join(w.notJSON, ", "))
+		return refuse("format:\"json\" values that are not JSON: %s", shownText(strings.Join(w.notJSON, ", ")))
 	case len(w.noText) > 0:
-		return refuse("values that do not marshal to text: %s", keyList(w.noText))
+		return refuse("values that do not marshal to text: %s", shownText(keyList(w.noText)))
 	}
 	return nil
 }
@@ -382,11 +364,11 @@ func editsUnkeyed(edits []edit) []unkeyedFields {
 // at each index. It reads below only for the length of a list an edit
 // indexes, calls it at most once and changes neither below nor the edits. An
 // edit whose index it refuses is left out, in refused.
-func setEdits(below func() map[string]any, edits []edit) (tree map[string]any, refused []*KeyError) {
+func setEdits(schema *schemaNode, below func() map[string]any, edits []edit) (tree map[string]any, refused []*KeyError) {
 	t := newEditTree(below)
 	for i := range edits {
 		if err := t.set(&edits[i]); err != nil {
-			refused = append(refused, &KeyError{Key: edits[i].safe, Err: err})
+			refused = append(refused, newKeyError(schema, edits[i].path, false, err))
 		}
 	}
 	return t.tree, refused
@@ -448,7 +430,7 @@ func (e *edit) set(tree any, beneath func() any, i int) (any, error) {
 		if typed := reflect.ValueOf(tree); typed.Kind() == reflect.Map {
 			return e.setEntry(typed, i)
 		}
-		return nil, refuse("keys beneath %s select both its elements and its keys", e.path[:i].orRoot())
+		return nil, refuse("keys beneath %s select both its elements and its keys", e.path[:i])
 	}
 	below := func() any { return entryOf(beneath(), s.name) }
 	if whole {
@@ -471,11 +453,11 @@ func (e *edit) set(tree any, beneath func() any, i int) (any, error) {
 func (e *edit) setEntry(typed reflect.Value, i int) (any, error) {
 	c := keyCodecOf(typed.Type().Key())
 	if c == nil {
-		return nil, refuse("%s is keyed by %s, which has no text to select an entry by", e.path[:i].orRoot(), gowalker.TypeText(typed.Type().Key()))
+		return nil, refuse("%s is keyed by %s, which has no text to select an entry by", e.path[:i], typeText{typed.Type().Key()})
 	}
 	k, err := c.parse(e.path[i].name)
 	if err != nil {
-		return nil, refuse("%s is keyed by %s, which the entry's key does not decode into", e.path[:i].orRoot(), gowalker.TypeText(typed.Type().Key()))
+		return nil, refuse("%s is keyed by %s, which the entry's key does not decode into", e.path[:i], typeText{typed.Type().Key()})
 	}
 	var at any
 	if cur := typed.MapIndex(k); cur.IsValid() {
@@ -511,7 +493,7 @@ func (e *edit) setElement(tree any, beneath func() any, i int) (any, error) {
 	edits, editing := tree.(listEdit)
 	if tree != nil && !editing {
 		if !isList(reflect.ValueOf(tree)) {
-			return nil, refuse("keys beneath %s select both its elements and its keys", e.path[:i].orRoot())
+			return nil, refuse("keys beneath %s select both its elements and its keys", e.path[:i])
 		}
 		list := elementsOf(tree)
 		if s.index > len(list) {

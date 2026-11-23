@@ -70,7 +70,12 @@ func TestDecodeEdits_WithholdsKeysBeneathASensitiveInterface(t *testing.T) {
 			require.ErrorAs(t, err, &ee)
 			require.Len(t, ee.Refused, 1)
 			assert.Equal(t, shown(tt.field, tt.withheld, key+".y"), ee.Refused[0].Key)
-			assert.Contains(t, err.Error(), shown(tt.field, tt.withheld, key)+" is set to a value with no keys beneath it")
+			if tt.withheld {
+				assert.Contains(t, err.Error(), "key "+tt.field+": "+withheldReason)
+				assert.NotContains(t, err.Error(), ifaceKey)
+			} else {
+				assert.Contains(t, err.Error(), key+" is set to a value with no keys beneath it")
+			}
 
 			_, err = DecodeEdits[ifaceCfg](t.Context(), nil, map[string]any{key + "[*]": 1})
 			require.ErrorAs(t, err, &ee)

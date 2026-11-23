@@ -676,17 +676,22 @@ func FieldFor[T any](key string) (Field, error) {
 
 // walkTo follows p from n, starting at c, and returns where it ends: the
 // cursor, and the node there — the interface's or the whole-decoded value's
-// when p continues beneath one.
+// when p continues beneath one. A key it cannot follow is a *keyFault
+// naming c's path and p.
 func (n *schemaNode) walkTo(c cursor, p keyPath) (cursor, *schemaNode, error) {
-	for i, s := range p {
+	start := c.path
+	fault := func(format string, args ...faultArg) error {
+		return notRead(slices.Concat(start, p), format, args...)
+	}
+	for _, s := range p {
 		switch n.kind {
 		case nodeBranch:
 			m, ok := n.memberAt(s)
 			switch {
 			case !ok && s.kind != segField:
-				return cursor{}, nil, fmt.Errorf("%w %s: %s is a struct; select one of its fields", ErrKey, p, c.path.orRoot())
+				return cursor{}, nil, fault("%s is a struct; select one of its fields", c.path)
 			case !ok:
-				return cursor{}, nil, fmt.Errorf("%w %s: %s has no field %q", ErrKey, p, c.path.orRoot(), s.name)
+				return cursor{}, nil, fault("%s has no field %s", c.path, fieldName(c.path.field(s.name)))
 			case m.kind == memberRemain:
 				m = n.remainMember(c.sensitive()) // in a pattern, [*] is any key it collects
 			}
@@ -697,15 +702,15 @@ func (n *schemaNode) walkTo(c cursor, p keyPath) (cursor, *schemaNode, error) {
 			c, n = m.cursor(c), next
 		case nodeMap:
 			if s.kind != segKey && s.kind != segAny {
-				return cursor{}, nil, fmt.Errorf("%w %s: %s is a map; select an entry with a quoted key", ErrKey, p, c.path.orRoot())
+				return cursor{}, nil, fault("%s is a map; select an entry with a quoted key", c.path)
 			}
 			c, n = c.intoEntry(s, n.typ.Elem()), n.elem
 		case nodeList:
 			if s.kind != segIndex && s.kind != segAny {
-				return cursor{}, nil, fmt.Errorf("%w %s: %s is a list; select an element by index", ErrKey, p, c.path.orRoot())
+				return cursor{}, nil, fault("%s is a list; select an element by index", c.path)
 			}
 			if s.kind == segIndex && n.typ.Kind() == reflect.Array && s.index >= n.typ.Len() {
-				return cursor{}, nil, fmt.Errorf("%w %s: %s has %d elements", ErrKey, p, c.path.orRoot(), n.typ.Len())
+				return cursor{}, nil, fault("%s has %s elements", c.path, elementCount(n.typ.Len()))
 			}
 			c, n = c.intoEntry(s, n.typ.Elem()), n.elem
 		case nodeDynamic:
@@ -714,7 +719,7 @@ func (n *schemaNode) walkTo(c cursor, p keyPath) (cursor, *schemaNode, error) {
 			if ownsBeneath(n.typ) {
 				return c, n, nil // decoded whole; its field owns what lies beneath it
 			}
-			return cursor{}, nil, fmt.Errorf("%w %s: %s is a %s, which has no keys beneath it", ErrKey, p, p[:i].orRoot(), gowalker.TypeText(n.typ))
+			return cursor{}, nil, fault("%s is a %s, which has no keys beneath it", c.path, typeText{n.typ})
 		}
 	}
 	return c, n, nil
