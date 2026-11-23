@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.6.1](https://github.com/ashtonian/pkg/compare/config/kongprovider/v0.6.0...config/kongprovider/v0.6.1) (2026-11-23)
+
+
+### Bug Fixes
+
+* **kongprovider:** own promoted fields in startup copies; httpx v0.5.0 consumers; [#239](https://github.com/ashtonian/pkg/issues/239) cleanups ([#367](https://github.com/ashtonian/pkg/issues/367)) ([3e10435](https://github.com/ashtonian/pkg/commit/3e1043576635f630b874b574d7394f0cec5839c2)), refs [#306](https://github.com/ashtonian/pkg/issues/306)
+
 ## [0.6.0](https://github.com/ashtonian/pkg/compare/config/kongprovider/v0.5.0...config/kongprovider/v0.6.0) (2026-11-19)
 
 
