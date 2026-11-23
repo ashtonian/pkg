@@ -285,7 +285,15 @@ Keep undeclared document codecs stable across round trips. Do not use top-level 
 
 For top-level schema fields, replace/remove can address a field whose current JSON encoding omits it through `omitempty`; these resource-field operations match direct typed application. Nested JSON Pointers keep strict existence rules. A nil pointer target is an application error.
 
-`ApplyValidatedPatch` writes a copy of the value it is given, never the value or anything it points to. Before it writes a field promoted from an embedded pointer, the copy gets its own copy of that parent, allocated when the pointer is nil, as encoding/json allocates it; later writes through the same parent land in that copy. The caller's row, and any pointer it kept to an embedded parent, keep their values whether the patch succeeds or fails part-way. Reflection can neither allocate nor copy an unexported embedded pointer, so an operation writing a field promoted through one is E2076; export the embedded type, or embed it by value.
+`ApplyValidatedPatch` writes a copy of the value it is given, never the value or anything it points to. Before it writes a field promoted from an embedded pointer, the copy gets its own copy of that parent, allocated when the pointer is nil, as encoding/json allocates it; later writes through the same parent land in that copy. The caller's row, and any pointer it kept to an embedded parent, keep their values whether the patch succeeds or fails part-way.
+
+A patch never writes a field promoted through an unexported embedded pointer: reflection can neither allocate that pointer while it is nil nor point it at a copy while it is shared, so the copy could only be written by writing the caller's parent. Such a path is refused where it is declared, never offered to a request:
+
+- `parse:"patch"` on such a field, and `parse:"server"` in the server patch schema, fail schema generation (`GeneratePatchSchema`, `GenerateServerPatchSchema`, and so `NewResource` and `Register`), naming the field and the embedded type. A document column reached that way is refused the same way.
+- A path a `CustomizeSchemas` function adds that reaches such a field (an exact key, a member pattern such as `/attrs/*` on a document column reached that way, or a wildcard such as `/*`) fails `NewResource`.
+- A schema completed by hand for a standalone `patch.Applier` is checked with `Applier.CheckSchema`. Unchecked, `Apply` refuses the write with an error that is not a `core.ParseError` — the server's composition fault, not the request's, so `parsehttp.WriteError` leaves it to the caller's 500.
+
+Export the embedded type, or embed it by value: reflection sets the exported fields an unexported struct embedded by value promotes, as encoding/json does.
 
 Document fallback decodes only changed top-level fields. Untouched values retain their hidden/private state and do not invoke custom decoders. Touched composite fields are reconstructed from their codec data, so custom nonserialized state in a modified document is not a storage contract.
 

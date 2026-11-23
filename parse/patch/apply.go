@@ -55,6 +55,9 @@ type Applier[T any] struct {
 	fieldNameTag string
 	// fields maps a top-level patch path's field name to T's field.
 	fields map[string]*core.Field
+	// unwritable are the names in fields that core.Field.CheckWritable
+	// refuses, sorted (CheckSchema).
+	unwritable []string
 	// hidden are the patch paths of the server fields the field-name tag
 	// hides, which only the direct path can set.
 	hidden map[string]bool
@@ -87,6 +90,7 @@ func NewApplier[T any](gen *core.SchemaGenerator, cfg *core.ParserConfig) (*Appl
 		fields:       patchFields(gen, walk),
 		hidden:       hiddenServerPaths(gen, walk),
 	}
+	a.unwritable = unwritableFields(a.fields)
 	if a.fieldNameTag == core.JSONTagKey {
 		return a, nil
 	}
@@ -118,6 +122,41 @@ func patchFields(gen *core.SchemaGenerator, walk *core.StructFields) map[string]
 		}
 	}
 	return m
+}
+
+// unwritableFields returns the names of the fields a patch cannot write
+// (core.Field.CheckWritable), sorted.
+func unwritableFields(fields map[string]*core.Field) []string {
+	var names []string
+	for name, f := range fields {
+		if f.CheckWritable() != nil {
+			names = append(names, name)
+		}
+	}
+	slices.Sort(names)
+	return names
+}
+
+// CheckSchema refuses a schema with a path that would write a field of T
+// the applier cannot write: one promoted through an unexported embedded
+// pointer (core.Field.CheckWritable), reached by an exact key or a pattern.
+// GeneratePatchSchema refuses such a field's tags; this refuses a path added
+// by hand (PatchSchema.AddPath). NewResource checks its schemas once they
+// are customized; a caller composing a schema and an applier itself checks
+// the finished schema, or Apply fails the write.
+func (a *Applier[T]) CheckSchema(schema *PatchSchema) error {
+	if schema == nil {
+		return nil
+	}
+	for _, name := range a.unwritable {
+		key, ok := schema.reaching(core.FormatPointer(name))
+		if !ok {
+			continue
+		}
+		err := a.fields[name].CheckWritable()
+		return fmt.Errorf("patch schema %s: path %s: %w", schema.Resource, key, err)
+	}
+	return nil
 }
 
 // hiddenServerPaths returns the patch paths of T's server fields that the
@@ -189,8 +228,14 @@ func newWorkingCopy[T any](target T) *workingCopy[T] {
 // on f's route is first pointed at a parent the copy owns: a nil one at a new
 // parent, as encoding/json allocates it, and one the copy still shares with
 // the caller at a copy of that parent. A parent is copied once, so every
-// write through it lands in the same copy.
+// write through it lands in the same copy. A field promoted through an
+// unexported embedded pointer, whose parent can be neither, is refused
+// before anything is written.
 func (w *workingCopy[T]) field(f *core.Field) (reflect.Value, error) {
+	err := f.CheckWritable()
+	if err != nil {
+		return reflect.Value{}, err
+	}
 	v, err := f.SettableThrough(w.root, w.own)
 	if err != nil {
 		return reflect.Value{}, err
@@ -202,15 +247,11 @@ func (w *workingCopy[T]) field(f *core.Field) (reflect.Value, error) {
 }
 
 // own points p, an embedded pointer in the copy, at a parent the copy owns.
-// Reflection can neither allocate nor replace an unexported embedded pointer,
-// so a field promoted through one is never written; encoding/json refuses
-// the nil one too.
+// field has refused every route through an unexported embedded pointer, so
+// p is settable.
 func (w *workingCopy[T]) own(p reflect.Value) error {
 	if !p.IsNil() && slices.Contains(w.owned, p.UnsafePointer()) {
 		return nil
-	}
-	if !p.CanSet() {
-		return fmt.Errorf("the unexported embedded %s it is promoted from can be neither allocated nor copied", gowalker.TypeText(p.Type()))
 	}
 	parent := reflect.New(p.Type().Elem())
 	if !p.IsNil() {
@@ -288,7 +329,10 @@ func (a *Applier[T]) applyDirect(parsed *ParsedPatch, target T) (T, error) {
 // writable is the working copy's field for a top-level patch path name,
 // ready to set. The schema validated the path, so a field that is missing or
 // cannot be set is drift between the schema's field tags and T: an error,
-// never a skipped operation.
+// never a skipped operation. A field the copy cannot write is no
+// core.ParseError: construction refuses its path (GeneratePatchSchema,
+// CheckSchema), so only a schema completed by hand and never checked
+// reaches it, the server's fault and not the request's.
 func (a *Applier[T]) writable(w *workingCopy[T], name, path string) (reflect.Value, error) {
 	field, ok := a.fields[name]
 	if !ok {
@@ -300,7 +344,7 @@ func (a *Applier[T]) writable(w *workingCopy[T], name, path string) (reflect.Val
 	}
 	fv, err := w.field(field)
 	if err != nil {
-		return reflect.Value{}, &core.ParseError{Kind: core.ParseErrorKindPatch, Code: ECodePatchFieldNotFound.String(), Message: fmt.Sprintf("patch field %q is not writable: %v", name, err), Path: path, Cause: err}
+		return reflect.Value{}, fmt.Errorf("patch: writing %s: %w", path, err)
 	}
 	return fv, nil
 }

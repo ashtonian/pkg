@@ -15,6 +15,11 @@
 // The tag key for field names (default "json") and column names (default "db")
 // can be changed via [core.WithFieldNameTag] and [core.WithColumnTag].
 //
+// A field promoted through an unexported embedded pointer is never patched:
+// reflection can neither allocate that pointer nor point it at a copy, so
+// generation refuses parse:"patch" on it, and [Applier.CheckSchema] a path
+// added by hand that reaches it.
+//
 // # Parsing
 //
 // [Parser] validates JSON Patch documents against a [PatchSchema]:

@@ -76,6 +76,12 @@ func generatePatchSchema(g *core.SchemaGenerator, t reflect.Type, server bool) (
 			// request's: a server field may stay immutable.
 			return nil, fmt.Errorf("field %s: an immutable field cannot have the patch capability", field.GoName())
 		}
+		// Refused here rather than when a request writes it: the path would
+		// be offered and then fail every write.
+		err = field.CheckWritable()
+		if err != nil {
+			return nil, err
+		}
 		fieldName := field.External()
 		if serverField {
 			fieldName, _ = serverFieldName(g, field)

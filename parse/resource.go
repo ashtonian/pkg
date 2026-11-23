@@ -341,6 +341,12 @@ func NewResource[T any](table string, opts ...ResourceOption) (*Resource[T], err
 	if err := r.checkIdentityPatches(); err != nil {
 		return nil, err
 	}
+	for _, schema := range []*patch.PatchSchema{r.patchSchema, r.serverPatchSchema} {
+		err = r.applier.CheckSchema(schema)
+		if err != nil {
+			return nil, fmt.Errorf("parse: %s: %w", table, err)
+		}
+	}
 	for _, name := range order {
 		if read == nil || read[name] {
 			r.read = append(r.read, name)

@@ -86,6 +86,9 @@ type Field struct {
 	tags     Tags
 	enum     []string
 	bounds   Bounds
+	// unexportedEmbed is the first unexported embedded pointer on route,
+	// nil when there is none (CheckWritable).
+	unexportedEmbed reflect.Type
 }
 
 // GoName returns the Go field name.
@@ -121,6 +124,17 @@ func (f *Field) Bounds() Bounds { return f.bounds.Clone() }
 // Hidden reports a field the field-name tag hides: it has columns, but no
 // name a request can use (relations and server fields name themselves).
 func (f *Field) Hidden() bool { return f.external == "" }
+
+// CheckWritable refuses a field promoted through an unexported embedded
+// pointer. Reflection can neither allocate that pointer nor point it at a
+// copy of its parent, so a writer that must not write the parent it shares
+// with the caller, as a patch must not, cannot set the field.
+func (f *Field) CheckWritable() error {
+	if f.unexportedEmbed == nil {
+		return nil
+	}
+	return fmt.Errorf("field %s: a write reaches it through the unexported embedded %s, which reflection can neither allocate nor copy; export the type or embed it by value", f.goName, gowalker.TypeText(f.unexportedEmbed))
+}
 
 // Value reads the field from v, a value of the walked struct type. A nil
 // embedded pointer on the route is an error: the field is not there.
@@ -425,7 +439,7 @@ func buildStructFields(s *gowalker.Schema, k fieldsKey) (*StructFields, error) {
 			return nil, fmt.Errorf("field %s: %w", sf.Name, err)
 		}
 		out.misspelt = append(out.misspelt, misspeltTagKeys(d, k)...)
-		f := &Field{goName: sf.Name, typ: sf.Type, route: d.Index, tags: tags, enum: enum, bounds: bounds}
+		f := &Field{goName: sf.Name, typ: sf.Type, route: d.Index, tags: tags, enum: enum, bounds: bounds, unexportedEmbed: unexportedEmbed(out.typ, d.Index)}
 		if d.State == gowalker.Named {
 			f.external = d.Field.Name()
 			out.external[f.external] = f
@@ -439,6 +453,24 @@ func buildStructFields(s *gowalker.Schema, k fieldsKey) (*StructFields, error) {
 		out.fields = append(out.fields, f)
 	}
 	return out, nil
+}
+
+// unexportedEmbed returns the first unexported embedded pointer on route, a
+// field's index path through the struct type t, or nil when there is none.
+// An unexported embedded struct held by value is no obstacle: reflection
+// sets the exported fields promoted from it, as encoding/json does.
+func unexportedEmbed(t reflect.Type, route []int) reflect.Type {
+	for _, x := range route[:len(route)-1] {
+		if t.Kind() == reflect.Pointer {
+			t = t.Elem()
+		}
+		sf := t.Field(x)
+		if sf.Type.Kind() == reflect.Pointer && !sf.IsExported() {
+			return sf.Type
+		}
+		t = sf.Type
+	}
+	return nil
 }
 
 func readTags(sf reflect.StructField, k fieldsKey) (Tags, error) {
