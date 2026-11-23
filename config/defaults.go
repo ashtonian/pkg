@@ -100,7 +100,7 @@ func codeDefaults(t reflect.Type, schema *schemaNode, tags map[string]any, o *op
 	d := defaultsDiff{schema: schema}
 	tree, _ := d.tree(schema, nil, before.Elem(), after.Elem())
 	if len(d.noText) > 0 {
-		return nil, fmt.Errorf("SetDefaults of %s: %w: values that do not marshal to text: %s", gowalker.TypeText(t), ErrValidation, strings.Join(d.noText, ", "))
+		return nil, fmt.Errorf("SetDefaults of %s: %w: values that do not marshal to text: %s", gowalker.TypeText(t), ErrValidation, keyList(d.noText))
 	}
 	m, _ := tree.(map[string]any)
 	return m, nil
@@ -275,7 +275,7 @@ func (r *defaulterRun) release() {
 // defaultsDiff turns what SetDefaults changed into the code defaults layer.
 type defaultsDiff struct {
 	schema *schemaNode
-	noText []string // the keys of structs whose MarshalText failed; never the text
+	noText []keyPath // the keys of structs whose MarshalText failed; never the text
 }
 
 // tree is what b, the value of node n at key path at after SetDefaults,
@@ -310,6 +310,9 @@ func (d *defaultsDiff) tree(n *schemaNode, at keyPath, a, b reflect.Value) (any,
 		if b.IsNil() {
 			return nil, !absent(a) && !a.IsNil()
 		}
+		if kt := n.typ.Key(); kt.Kind() != reflect.String && !keysAsText(kt) {
+			return d.input(n, at, b), true // carried with its own keys, as a source carries it
+		}
 		if !absent(a) {
 			for it := a.MapRange(); it.Next(); {
 				if !b.MapIndex(it.Key()).IsValid() {
@@ -323,7 +326,7 @@ func (d *defaultsDiff) tree(n *schemaNode, at keyPath, a, b reflect.Value) (any,
 			if !absent(a) {
 				was = a.MapIndex(it.Key())
 			}
-			k := it.Key().String()
+			k := entryName(it.Key())
 			if child, ok := d.tree(n.elem, at.key(k), was, it.Value()); ok || !was.IsValid() {
 				out[k] = child
 			}
@@ -387,7 +390,7 @@ func (d *defaultsDiff) input(n *schemaNode, at keyPath, v reflect.Value) any {
 		}
 		out := reflect.MakeMapWithSize(reflect.MapOf(v.Type().Key(), reflect.TypeFor[any]()), v.Len())
 		for it := v.MapRange(); it.Next(); {
-			e := d.input(n.elem, at.key(fmt.Sprint(it.Key().Interface())), it.Value())
+			e := d.input(n.elem, at.key(entryName(it.Key())), it.Value())
 			out.SetMapIndex(it.Key(), reflect.ValueOf(&e).Elem())
 		}
 		return out.Interface()
@@ -403,7 +406,7 @@ func (d *defaultsDiff) input(n *schemaNode, at keyPath, v reflect.Value) any {
 }
 
 func (d *defaultsDiff) failText(at keyPath) {
-	d.noText = append(d.noText, diagnosticPath(d.schema, at).orRoot())
+	d.noText = append(d.noText, diagnosticPath(d.schema, at))
 }
 
 type declaredDefaults struct {

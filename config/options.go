@@ -497,7 +497,8 @@ func (o *options) log() *slog.Logger {
 
 // decodeHook composes the caller's decode hooks, first, with the built-in
 // ones: string → time.Duration, comma-separated string → slice (koanf's
-// defaults do not split env values and tag defaults), TextUnmarshaler.
+// defaults do not split env values and tag defaults), TextUnmarshaler, and
+// last a value already of its target type set as it is (setTyped).
 func (o *options) decodeHook(observe func(mapstructure.DecodeHookFunc) mapstructure.DecodeHookFunc) mapstructure.DecodeHookFunc {
 	var hooks []mapstructure.DecodeHookFunc
 	if len(o.decodeHooks) > 0 {
@@ -513,8 +514,37 @@ func (o *options) decodeHook(observe func(mapstructure.DecodeHookFunc) mapstruct
 		mapstructure.DecodeHookFuncType(stringToSlice),
 		mapstructure.DecodeHookFuncType(stringToMap),
 		mapstructure.TextUnmarshallerHookFunc(),
+		mapstructure.DecodeHookFuncValue(setTyped),
 	)
 	return mapstructure.ComposeDecodeHookFunc(hooks...)
+}
+
+// setTyped sets data that is already a value of its target's type, or a
+// pointer to one, as a copy of it, where the target decodes itself
+// (mapstructure.Unmarshaler), and stops the decode there. Its
+// UnmarshalMapstructure reads what a source writes, such as a map, and is
+// handed whatever data is: a typed value from a provider, WithDefaults or
+// a baseline config would reach it too. mapstructure already sets a value
+// of any other type as it is.
+func setTyped(from, to reflect.Value) (any, error) {
+	if !from.IsValid() || !to.CanSet() || !decodesInput(to.Type()) {
+		return from.Interface(), nil
+	}
+	v := from
+	if v.Type() != to.Type() && v.Kind() == reflect.Pointer && v.Type().Elem() == to.Type() && !v.IsNil() {
+		v = v.Elem()
+	}
+	if v.Type() != to.Type() {
+		return from.Interface(), nil
+	}
+	to.Set(deepcopy.Value(v))
+	return nil, nil // nothing left to decode
+}
+
+// decodesInput reports a type whose value, or pointer, reads its decode
+// input itself (mapstructure.Unmarshaler).
+func decodesInput(t reflect.Type) bool {
+	return t.Implements(mapstructureUnmarshaler) || reflect.PointerTo(t).Implements(mapstructureUnmarshaler)
 }
 
 // checkHookTypes reports a post-load hook written for a type other than cfg.

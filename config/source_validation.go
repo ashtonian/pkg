@@ -110,11 +110,9 @@ func sourceEntries(schema *schemaNode, data map[string]any) (edits []edit, rest 
 					continue
 				}
 			}
-			at := path.field(key)
+			at := path.member(key)
 			if f != nil {
 				at = path.field(f.key)
-			} else if !validFieldKey(key) {
-				at = path.key(key)
 			}
 			parent, _, ke := resolveSchemaPath(schema, at)
 			if ke != nil {

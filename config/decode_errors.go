@@ -52,9 +52,9 @@ func withhold(root *schemaNode, tree any, e error) (error, bool) {
 		}
 		c, n, err := root.walkTo(cursor{}, p)
 		if !exact && err == nil && n.kind == nodeLeaf && n.typ.Kind() == reflect.Map && strings.HasPrefix(u.Name()[used:], "[") {
-			// A map keyed by anything but strings decodes whole, so the
-			// decoder's name for the entry that failed, written as the
-			// source keyed it, is no key of this package's.
+			// A map whose keys have no text (see keyCodec) decodes whole,
+			// so the decoder's name for the entry that failed, written as
+			// the source keyed it, is no key of this package's.
 			return fmt.Errorf("'%s' cannot be decoded into %s: an entry's key or value does not decode into the map's key or element type (entries are not shown)", p.orRoot(), gowalker.TypeText(n.typ)), true
 		}
 		if !exact || err != nil {

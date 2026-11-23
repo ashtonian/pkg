@@ -74,7 +74,7 @@ values, bounds, former key names and resolved reload class. `Allowed` uses the s
 `oneof` parser and withholding rules as JSON Schema. `EnvVars` preserves
 precedence: the name under each prefix, most specific first, then the env
 tag's names; `Env` is the first and `AlsoEnv` the rest. A key no variable
-can set — a list of sections, a map keyed by anything but strings, an entry
+can set — a list of sections, a map keyed by anything but a string type, an entry
 of a map inside a map entry — names none. `Field` contains caller-owned declared
 metadata, including original tags, and is excluded from JSON.
 
@@ -137,6 +137,14 @@ and `[*]` patterns use distinct segment kinds. A key begins with a field,
 or with a quoted map key naming a source key at the root that no field's
 key can spell (`["a.b"]`); empty or malformed keys return an error wrapping
 `ErrKey`.
+
+A key beneath an interface is spelled as a file writes it, whatever the
+interface holds: each map key a field wherever it can be one, quoted only
+when it cannot (`extra.x`, `extra.l[0].y`, `extra["a.b"]`). A map the type
+declares keeps its entries quoted above the interface its values are
+(`tags["t"].u` for `Tags map[string]any`). Printing, `Diff`, reload changes,
+validation failures and refused values all name such keys this way, as
+`CanonicalKey` does.
 
 ## Raw and policy-controlled trees
 
@@ -250,8 +258,8 @@ is reached:
 |---|---|---|
 | Structural | The graph builds: keys valid and unique, tags readable, reload tags valid | `Fields`, `FieldsChecked`, `FieldFor`, `KeyOf`, `KeyOfValue`, `MatchFields`, `Tree`, `TreeFunc` without a callback, `DefaultsFromTags` |
 | Declared | Structural, and no tag key misspells one config reads | `PrintRedacted`, `RedactedMap`, `RedactedMapChecked`, `RedactedTree`, `RedactedTreeChecked`, `TreeFunc` with a callback |
-| Schema | Declared, and every config tag's value is one config can use | `Load`, `Decode`, `LoadSnapshot`, `CheckKey`, `DecodeKey`, reloaders, `Usage`, `PrintUsage`, `JSONSchema`, `PrintTemplate`, `PrintEnv`, `PrintExplain`, `Diff` |
-| Load | Schema, and the default validator parses every `validate` tag it reads on every validation, and can take each of its dives | `Load`, `Decode`, `LoadSnapshot`, `CheckKey`, `DecodeKey`, `NewReloader` |
+| Schema | Declared, and every config tag's value is one config can use | `Load`, `Decode`, `LoadSnapshot`, `CheckKey`, `DecodeKey`, `DecodeEdits`, `CanonicalKey`, reloaders, `Usage`, `PrintUsage`, `JSONSchema`, `PrintTemplate`, `PrintEnv`, `PrintExplain`, `Diff` |
+| Load | Schema, and the default validator parses every `validate` tag it reads on every validation, and can take each of its dives | `Load`, `Decode`, `LoadSnapshot`, `CheckKey`, `DecodeKey`, `DecodeEdits`, `NewReloader` |
 
 The structural tier is what raw inspection needs to diagnose a type whose
 tags are wrong. The declared tier is what printing a live value needs: a

@@ -7,10 +7,10 @@ import (
 	"maps"
 	"reflect"
 	"slices"
-	"strconv"
 	"strings"
 
 	"github.com/ashtonian/pkg/config/internal/deepcopy"
+	"github.com/ashtonian/pkg/gowalker"
 )
 
 // A key edit is one concrete key set to a value — CheckKey's key, each of
@@ -53,8 +53,8 @@ func resolveKey(schema *schemaNode, key string) (keyPath, *schemaNode, []string,
 }
 
 // resolveSchemaPath spells p, in place, the one way this package prints it: each
-// field segment as its field's key, an entry of a map keyed by integers as
-// the integer's decimal text, and a key beneath an interface or remain field
+// field segment as its field's key, a map entry by the text of the key it
+// decodes to (see keyCodec), and a key beneath an interface or remain field
 // as a field wherever it can be one. It returns the node holding p's last
 // segment and each field p names by a former name. A key that is empty, is
 // not concrete or names nothing config reads is an Unknown *KeyError; one a
@@ -74,8 +74,8 @@ func resolveSchemaPath(schema *schemaNode, p keyPath) (parent *schemaNode, alias
 		}
 		parent = n
 		if n == nil || n.kind == nodeDynamic {
-			if s.kind == segKey && validFieldKey(s.name) {
-				s.kind = segField
+			if s.kind == segKey {
+				*s = memberSegment(s.name)
 			}
 			continue
 		}
@@ -86,8 +86,8 @@ func resolveSchemaPath(schema *schemaNode, p keyPath) (parent *schemaNode, alias
 				f = nil // a field spelled as a map key: walkTo refuses it
 			} else if f == nil && n.acceptsUnknown {
 				n = nil
-				if s.kind == segKey && validFieldKey(s.name) {
-					s.kind = segField
+				if s.kind == segKey {
+					*s = memberSegment(s.name)
 				}
 				continue
 			}
@@ -98,13 +98,10 @@ func resolveSchemaPath(schema *schemaNode, p keyPath) (parent *schemaNode, alias
 					aliased = append(aliased, aliasNote(schema, p[:i].field(written), p[:i+1]))
 				}
 			}
-		case keyedByInteger(n):
-			if s.kind != segKey {
-				return nil, nil, unknown(fmt.Errorf("%w %s: %s is a map; select an entry with a quoted key", ErrKey, p, p[:i].orRoot()))
-			}
-			text, ok := integerKey(n.typ.Key(), s.name)
-			if !ok {
-				return nil, nil, unknown(fmt.Errorf("%w %s: %s is keyed by %s", ErrKey, p, p[:i].orRoot(), n.typ.Key()))
+		case n.kind == nodeMap && s.kind == segKey:
+			text, err := n.keys.canonical(s.name)
+			if err != nil {
+				return nil, nil, unknown(fmt.Errorf("%w %s: %s is keyed by %s, which the entry's key does not decode into", ErrKey, p, p[:i].orRoot(), gowalker.TypeText(n.typ.Key())))
 			}
 			s.name, n = text, n.elem
 			continue
@@ -122,25 +119,6 @@ func resolveSchemaPath(schema *schemaNode, p keyPath) (parent *schemaNode, alias
 		n = next
 	}
 	return parent, aliased, nil
-}
-
-// keyedByInteger reports a map whose entries are keyed by an integer: the
-// schema decodes it whole, but its entries hold keys of their own, written
-// as the integer's text.
-func keyedByInteger(n *schemaNode) bool {
-	return n.kind == nodeLeaf && n.typ.Kind() == reflect.Map && n.elem != nil &&
-		n.typ.Key().Kind() != reflect.String && keysAsText(n.typ.Key())
-}
-
-// integerKey is text as an integer of type t, in its decimal spelling.
-func integerKey(t reflect.Type, text string) (string, bool) {
-	switch t.Kind() {
-	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
-		u, err := strconv.ParseUint(text, 10, t.Bits())
-		return strconv.FormatUint(u, 10), err == nil
-	}
-	i, err := strconv.ParseInt(text, 10, t.Bits())
-	return strconv.FormatInt(i, 10), err == nil
 }
 
 // aliasNote is how a load reports a key written under a former field name:
@@ -310,8 +288,35 @@ func comparePaths(a, b keyPath) int {
 	return cmp.Compare(len(a), len(b))
 }
 
+// sortKeyErrors orders errs by key, in place, as comparePaths orders keys:
+// pool[2] before pool[10]. A key that does not parse — a malformed key as
+// written, the root's $ — follows every key that does, by its text.
 func sortKeyErrors(errs []*KeyError) []*KeyError {
-	slices.SortStableFunc(errs, func(a, b *KeyError) int { return strings.Compare(a.Key, b.Key) })
+	type sortable struct {
+		err    *KeyError
+		path   keyPath
+		parsed bool
+	}
+	items := make([]sortable, len(errs))
+	for i, e := range errs {
+		p, err := parseKeyPath(e.Key)
+		items[i] = sortable{err: e, path: p, parsed: err == nil}
+	}
+	slices.SortStableFunc(items, func(a, b sortable) int {
+		switch {
+		case a.parsed && b.parsed:
+			return comparePaths(a.path, b.path)
+		case a.parsed != b.parsed:
+			if a.parsed {
+				return -1
+			}
+			return 1
+		}
+		return strings.Compare(a.err.Key, b.err.Key)
+	})
+	for i, it := range items {
+		errs[i] = it.err
+	}
 	return errs
 }
 
@@ -350,7 +355,7 @@ func (e *edit) rewrite(schema *schemaNode) error {
 			if m, ok := out.(map[string]any); ok {
 				value = m[last.name]
 			}
-		case e.parent.kind == nodeMap, e.parent.kind == nodeList, keyedByInteger(e.parent):
+		case e.parent.kind == nodeMap, e.parent.kind == nodeList:
 			value = w.value(e.parent.typ.Elem(), value, e.path)
 		case e.parent.kind == nodeDynamic:
 			value = dynamicInput(value, e.path, w.failText)
@@ -363,7 +368,7 @@ func (e *edit) rewrite(schema *schemaNode) error {
 	case len(w.notJSON) > 0:
 		return refuse("format:\"json\" values that are not JSON: %s", strings.Join(w.notJSON, ", "))
 	case len(w.noText) > 0:
-		return refuse("values that do not marshal to text: %s", strings.Join(w.noText, ", "))
+		return refuse("values that do not marshal to text: %s", keyList(w.noText))
 	}
 	return nil
 }
@@ -445,6 +450,9 @@ func (e *edit) set(tree any, beneath func() any, i int) (any, error) {
 	case wholeMap:
 		m = t
 	default:
+		if typed := reflect.ValueOf(tree); typed.Kind() == reflect.Map {
+			return e.setEntry(typed, i)
+		}
 		return nil, refuse("keys beneath %s select both its elements and its keys", e.path[:i].orRoot())
 	}
 	below := func() any { return entryOf(beneath(), s.name) }
@@ -460,6 +468,29 @@ func (e *edit) set(tree any, beneath func() any, i int) (any, error) {
 		return wholeMap(m), nil
 	}
 	return m, nil
+}
+
+// setEntry is set in typed, a map with its own keys an earlier edit of a key
+// holding e's set (see keysAsText): it replaces what lies below whole, and
+// e sets the entry its key's text reads as.
+func (e *edit) setEntry(typed reflect.Value, i int) (any, error) {
+	c := keyCodecOf(typed.Type().Key())
+	if c == nil {
+		return nil, refuse("%s is keyed by %s, which has no text to select an entry by", e.path[:i].orRoot(), gowalker.TypeText(typed.Type().Key()))
+	}
+	k, err := c.parse(e.path[i].name)
+	if err != nil {
+		return nil, refuse("%s is keyed by %s, which the entry's key does not decode into", e.path[:i].orRoot(), gowalker.TypeText(typed.Type().Key()))
+	}
+	var at any
+	if cur := typed.MapIndex(k); cur.IsValid() {
+		at = cur.Interface()
+	}
+	child, err := e.set(at, func() any { return nil }, i+1)
+	if err != nil {
+		return nil, err
+	}
+	return setMapValue(typed, k, reflect.ValueOf(&child).Elem()).Interface(), nil
 }
 
 // within is value set where the edit tree holds tree, what an earlier edit
@@ -522,17 +553,14 @@ func (e *edit) setElement(tree any, beneath func() any, i int) (any, error) {
 	return edits, nil
 }
 
-// entryOf is what v holds under key, when v is a map keyed by strings.
+// entryOf is what v, a tree beneath an edit, holds under key where the
+// edit's map merges into it (see mergeValue): a typed map is replaced
+// whole, and holds nothing an edit reads.
 func entryOf(v any, key string) any {
-	m := reflect.ValueOf(v)
-	if !m.IsValid() || m.Kind() != reflect.Map || m.Type().Key().Kind() != reflect.String {
-		return nil
+	if m, ok := v.(map[string]any); ok {
+		return m[key]
 	}
-	e := m.MapIndex(reflect.ValueOf(key).Convert(m.Type().Key()))
-	if !e.IsValid() {
-		return nil
-	}
-	return e.Interface()
+	return nil
 }
 
 // inputElem is v's element at index i, when v is a list that long.

@@ -832,7 +832,7 @@ func TestApplier_InterfaceTypeChangesOverDeferredKeys(t *testing.T) {
 	deferA := func(ev ApplyEvent[appCfg]) (ApplyResult, error) {
 		var restart []string
 		for _, c := range ev.Changes {
-			if c.Key == `extra["a"]` || c.Key == "extra" {
+			if c.Key == "extra.a" || c.Key == "extra" {
 				restart = append(restart, c.Key)
 			}
 		}
@@ -846,7 +846,7 @@ func TestApplier_InterfaceTypeChangesOverDeferredKeys(t *testing.T) {
 		src.edit(func(c *appCfg) { c.Extra = map[string]any{"a": 10, "b": 2} })
 		res, err := r.Reload(t.Context())
 		require.NoError(t, err)
-		require.Equal(t, []string{`extra["a"]`}, keysOf(res.Snapshot.PendingRestart))
+		require.Equal(t, []string{"extra.a"}, keysOf(res.Snapshot.PendingRestart))
 
 		src.edit(func(c *appCfg) { c.Extra = "text" })
 		res, err = r.Reload(t.Context())
@@ -873,7 +873,7 @@ func TestApplier_InterfaceTypeChangesOverDeferredKeys(t *testing.T) {
 		require.NoError(t, err)
 		calls := rec.calls()
 		require.Len(t, calls, 3)
-		assert.Equal(t, []string{`extra["b"]`}, keysOf(calls[2].Changes), "measured from what was acknowledged: a=1, b=2")
+		assert.Equal(t, []string{"extra.b"}, keysOf(calls[2].Changes), "measured from what was acknowledged: a=1, b=2")
 		assert.Equal(t, "2", calls[2].Changes[0].Old.Text)
 		assert.Empty(t, res.Snapshot.PendingRestart)
 	})

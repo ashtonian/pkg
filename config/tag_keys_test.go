@@ -298,6 +298,11 @@ func TestDeclarationPolicy_GeneratorsAgreeWithLoad(t *testing.T) {
 		"PrintTemplate": func() error { return PrintTemplate[misspeltDefault]("APP", WithWriter(&out)) },
 		"PrintEnv":      func() error { return PrintEnv(misspeltDefault{}, "APP", WithWriter(&out)) },
 		"Diff":          func() error { _, err := Diff(&misspeltDefault{}, &misspeltDefault{Port: 1}); return err },
+		"CanonicalKey":  func() error { _, err := CanonicalKey[misspeltDefault]("port"); return err },
+		"DecodeEdits": func() error {
+			_, err := DecodeEdits[misspeltDefault](t.Context(), nil, map[string]any{"port": 1})
+			return err
+		},
 		"NewReloader": func() error {
 			_, err := NewReloader[misspeltDefault](t.Context(), []Option{WithSkipValidation()})
 			return err

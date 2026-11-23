@@ -49,9 +49,11 @@ type Change struct {
 }
 
 // Diff compares two configs of type T, a struct, and returns every key whose
-// value differs, in walk order: fields as declared, map entries by sorted
-// key, list elements by index. A nil config has no keys. It compares decoded
-// values, never their text, and neither input is changed.
+// value differs, in walk order: fields as declared, map entries by their
+// keys' sorted text (ports["80"], levels["WARN"]), list elements by index.
+// Keys are spelled as CanonicalKey spells them, a key beneath an interface
+// as a field wherever it can be one (extra.x). A nil config has no keys. It
+// compares decoded values, never their text, and neither input is changed.
 //
 //   - Lists compare by index: removing the first of three elements changes
 //     the first two and removes the third. Map entries compare by key; an
@@ -61,8 +63,8 @@ type Change struct {
 //     key, followed by the keys beneath it that changed. An interface whose
 //     value changes type, or turns nil, is compared whole: one change at its
 //     key, Structural when either value is a struct, map or list.
-//   - Values decoded whole — scalars, self-decoding structs, maps keyed by
-//     non-strings — compare with reflect.DeepEqual: no Equal or String
+//   - Values decoded whole — scalars, self-decoding structs, maps whose
+//     keys have no text — compare with reflect.DeepEqual: no Equal or String
 //     method decides, so two time.Time values for one instant in different
 //     locations differ, and NaN never equals itself.
 //   - A value PrintRedacted would redact is redacted on both sides; a
@@ -195,20 +197,24 @@ func ancestorOf(s side) (ancestor, bool) {
 	return ancestor{}, false
 }
 
-// frame is what makes the keys at a walk position sensitive, the rule
-// cursor.sensitive applies: a field or squashed struct tagged sensitive, or
-// a credential-like field name or map key above a value.
+// frame is what a walk position inherits from above it: what makes its keys
+// sensitive, the rule cursor.sensitive applies — a field or squashed struct
+// tagged sensitive, or a credential-like field name or map key above a
+// value — and whether an interface holds it, which names its map entries as
+// members (keyPath.member).
 type frame struct {
-	tagged  bool
-	covered bool
+	tagged           bool
+	covered          bool
+	beneathInterface bool
 }
 
 func (f frame) sensitive() bool { return f.tagged || f.covered }
 
 func (f frame) field(fld *schemaField) frame {
 	return frame{
-		tagged:  f.tagged || fld.tagged,
-		covered: f.covered || fld.named && fld.node.kind != nodeBranch,
+		tagged:           f.tagged || fld.tagged,
+		covered:          f.covered || fld.named && fld.node.kind != nodeBranch,
+		beneathInterface: f.beneathInterface,
 	}
 }
 
@@ -377,6 +383,7 @@ func (w *comparer) dynamic(f frame, sa, sb side) {
 		}
 	}
 	if nodes[0] != nil && nodes[0] == nodes[1] {
+		f.beneathInterface = true
 		w.resolved(nodes[0], f, sa, sb)
 		return
 	}
@@ -423,7 +430,7 @@ func (w *comparer) container(n *schemaNode, f frame, sa, sb side) {
 			w.pop()
 		}
 	case nodeMap:
-		ma, mb := readMap(sa), readMap(sb)
+		ma, mb := readMap(n.keys, sa), readMap(n.keys, sb)
 		i, j := 0, 0
 		for i < len(ma.keys) || j < len(mb.keys) {
 			var a, b reflect.Value
@@ -440,7 +447,7 @@ func (w *comparer) container(n *schemaNode, f frame, sa, sb side) {
 				i++
 				j++
 			}
-			w.push(segment{kind: segKey, name: name}, ordSeg{s: name})
+			w.push(entrySegment(name, f.beneathInterface), ordSeg{s: name})
 			w.node(n.elem, f.entry(name, n.typ.Elem()), a, b)
 			w.pop()
 		}
@@ -532,7 +539,7 @@ type mapKey struct {
 	i    int // the entry's value in vals
 }
 
-func readMap(s side) mapRead {
+func readMap(c *keyCodec, s side) mapRead {
 	if !s.v.IsValid() || s.isNil || s.v.Len() == 0 {
 		return mapRead{}
 	}
@@ -545,7 +552,7 @@ func readMap(s side) mapRead {
 	for i := 0; it.Next(); i++ {
 		k.SetIterKey(&it)
 		r.vals.Index(i).SetIterValue(&it)
-		r.keys = append(r.keys, mapKey{name: k.String(), i: i})
+		r.keys = append(r.keys, mapKey{name: entryText(c, k), i: i})
 	}
 	slices.SortFunc(r.keys, func(a, b mapKey) int { return strings.Compare(a.name, b.name) })
 	return r
@@ -569,7 +576,7 @@ func locate(root *schemaNode, v reflect.Value, p keyPath) (side, *schemaNode, fr
 			if err != nil {
 				return side{}, nil, f
 			}
-			n = dn
+			n, f.beneathInterface = dn, true
 		}
 		switch n.kind {
 		case nodeBranch:
@@ -579,7 +586,7 @@ func locate(root *schemaNode, v reflect.Value, p keyPath) (side, *schemaNode, fr
 			}
 			s, n, f = resolve(fieldOf(s, fld)), fld.node, f.field(fld)
 		case nodeMap:
-			s, n, f = resolve(newEntries(s).of(seg.name)), n.elem, f.entry(seg.name, n.typ.Elem())
+			s, n, f = resolve(entryOfSide(n.keys, s, seg.name)), n.elem, f.entry(seg.name, n.typ.Elem())
 		case nodeList:
 			s, n = resolve(elementOf(s, seg.index)), n.elem
 		default:
@@ -589,25 +596,26 @@ func locate(root *schemaNode, v reflect.Value, p keyPath) (side, *schemaNode, fr
 	return s, n, f
 }
 
-// entries looks up a map side's entries by key text.
-type entries struct {
-	m   reflect.Value // invalid when the side has no map
-	key reflect.Value // scratch, of the map's key type
-}
-
-func newEntries(s side) entries {
+// entryOfSide is the value of map side s's entry name, read by its key's
+// codec c; invalid when there is none.
+func entryOfSide(c *keyCodec, s side, name string) reflect.Value {
 	if !s.v.IsValid() || s.isNil || s.v.Kind() != reflect.Map {
-		return entries{}
-	}
-	return entries{m: s.v, key: reflect.New(s.v.Type().Key()).Elem()}
-}
-
-func (e entries) of(name string) reflect.Value {
-	if !e.m.IsValid() {
 		return reflect.Value{}
 	}
-	e.key.SetString(name)
-	return e.m.MapIndex(e.key)
+	k, err := c.parse(name)
+	if err != nil {
+		return reflect.Value{}
+	}
+	return s.v.MapIndex(k)
+}
+
+// entryText is key k's text by codec c; one whose MarshalText fails is
+// named by how it prints, so the change is still reported.
+func entryText(c *keyCodec, k reflect.Value) string {
+	if text, err := c.text(k); err == nil {
+		return text
+	}
+	return fmt.Sprint(k.Interface())
 }
 
 func listLen(s side) int {

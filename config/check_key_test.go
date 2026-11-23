@@ -337,7 +337,8 @@ type integerKeyed struct {
 
 // An edit beneath a map keyed by integers spells its keys as a file's are
 // spelled: through aliases and letter case, inside its value and in the key,
-// with the integer in its decimal spelling — as a map keyed by strings does.
+// with the integer read as a load reads a file's key — 0x50 is 80, and 080
+// no integer — as a map keyed by strings does.
 func TestDecodeKey_EditsBeneathAnIntegerKeyedMapResolve(t *testing.T) {
 	defaults := WithDefaults(map[string]any{
 		"ports": map[int]aliasedServer{80: {"a", 1}},
@@ -355,25 +356,28 @@ func TestDecodeKey_EditsBeneathAnIntegerKeyedMapResolve(t *testing.T) {
 		{`ports["80"]`, map[string]any{"Port": 9}},
 		{`ports["80"]`, map[string]any{"listen": 9}},
 		{`ports["80"].Port`, 9},
-		{`ports["080"].listen`, 9},
+		{`ports["0x50"].listen`, 9},
 	} {
 		got, err := DecodeKey[integerKeyed](t.Context(), tc.key, tc.value, defaults)
 		require.NoError(t, err, tc.key)
 		assert.Equal(t, fromFile.Ports, got.Ports, tc.key)
-		named, err := DecodeKey[integerKeyed](t.Context(), strings.Replace(strings.Replace(tc.key, `ports["080"]`, `named["x"]`, 1), `ports["80"]`, `named["x"]`, 1), tc.value, defaults)
+		named, err := DecodeKey[integerKeyed](t.Context(), strings.Replace(strings.Replace(tc.key, `ports["0x50"]`, `named["x"]`, 1), `ports["80"]`, `named["x"]`, 1), tc.value, defaults)
 		require.NoError(t, err, tc.key)
 		assert.Equal(t, aliasedServer{"a", 9}, named.Named["x"], tc.key)
 	}
-	_, err = DecodeKey[integerKeyed](t.Context(), `ports["eighty"].port`, 9, defaults)
-	var ke *KeyError
-	require.ErrorAs(t, err, &ke)
-	assert.True(t, ke.Unknown)
-	require.ErrorIs(t, err, ErrKey)
+	for _, key := range []string{`ports["eighty"].port`, `ports["080"].port`} {
+		_, err = DecodeKey[integerKeyed](t.Context(), key, 9, defaults)
+		var ke *KeyError
+		require.ErrorAs(t, err, &ke, key)
+		assert.True(t, ke.Unknown, key)
+		require.ErrorIs(t, err, ErrKey, key)
+	}
 }
 
 // CanonicalKey spells a key one way: fields by their keys whatever alias or
-// letter case named them, integer map keys in decimal, keys beneath an
-// interface as fields where they can be. A key naming nothing is refused.
+// letter case named them, map keys by the text of the key they decode to,
+// keys beneath an interface as fields where they can be. A key naming
+// nothing is refused.
 func TestCanonicalKey(t *testing.T) {
 	for _, tc := range []struct{ key, want string }{
 		{"MAIN.Port", "primary.port"},
@@ -386,9 +390,11 @@ func TestCanonicalKey(t *testing.T) {
 		require.NoError(t, err, tc.key)
 		assert.Equal(t, tc.want, got, tc.key)
 	}
-	got, err := CanonicalKey[integerKeyed](`ports["080"].listen`)
+	got, err := CanonicalKey[integerKeyed](`ports["0x50"].listen`)
 	require.NoError(t, err)
 	assert.Equal(t, `ports["80"].port`, got)
+	_, err = CanonicalKey[integerKeyed](`ports["080"].port`)
+	assert.ErrorIs(t, err, ErrKey, "the decoder reads no integer from 080")
 	for _, key := range []string{"prot", "pool[*].host", "", "primary..port", `ports["x"]`} {
 		_, err := CanonicalKey[editConfig](key)
 		var ke *KeyError
@@ -473,6 +479,73 @@ func TestCanonicalKey_IgnoresValidateTags(t *testing.T) {
 	got, err = CanonicalKey[misspeltRule]("other")
 	require.NoError(t, err)
 	assert.Equal(t, "other", got)
+}
+
+type beneathInterfaceSection struct {
+	Limits map[string]int `koanf:"limits" validate:"dive,max=5"`
+}
+
+type beneathInterfaceConfig struct {
+	Extra any            `koanf:"extra"`
+	Tags  map[string]any `koanf:"tags"`
+}
+
+// Every output names a key beneath an interface as CanonicalKey spells it: a
+// field wherever its name can be one, a quoted map key otherwise, whatever
+// shape the interface's value has. A map the schema declares keeps its
+// quoted entries above the interface.
+func TestCanonicalKey_IsHowEveryOutputNamesAKeyBeneathAnInterface(t *testing.T) {
+	var want []string
+	for _, key := range []string{`extra["a.b"]`, `extra["l"][0]["y"]`, `extra["s"]["limits"]["k"]`, `extra["x"]`, `tags["t"]["u"]`} {
+		got, err := CanonicalKey[beneathInterfaceConfig](key)
+		require.NoError(t, err)
+		want = append(want, got)
+	}
+	require.Equal(t, []string{`extra["a.b"]`, "extra.l[0].y", "extra.s.limits.k", "extra.x", `tags["t"].u`}, want)
+	config := func(n int) *beneathInterfaceConfig {
+		return &beneathInterfaceConfig{
+			Extra: map[string]any{
+				"x": n, "a.b": n,
+				"l": []any{map[string]any{"y": n}},
+				"s": beneathInterfaceSection{Limits: map[string]int{"k": n}},
+			},
+			Tags: map[string]any{"t": map[string]any{"u": n}},
+		}
+	}
+
+	t.Run("printed", func(t *testing.T) {
+		printed, err := RedactedMapChecked(config(1))
+		require.NoError(t, err)
+		assert.ElementsMatch(t, want, slices.Collect(maps.Keys(printed)))
+	})
+	t.Run("diffed", func(t *testing.T) {
+		changes, err := Diff(config(1), config(2))
+		require.NoError(t, err)
+		var keys []string
+		for _, c := range changes {
+			keys = append(keys, c.Key)
+		}
+		assert.Equal(t, want, keys)
+	})
+	t.Run("a value that does not marshal to text", func(t *testing.T) {
+		_, err := DecodeEdits[beneathInterfaceConfig](t.Context(), nil, map[string]any{
+			"extra": map[string]any{"x": failingText{n: -1}, "a.b": failingText{n: -1}, "ok": failingText{n: 1}},
+		})
+		var ee *EditsError
+		require.ErrorAs(t, err, &ee)
+		require.Len(t, ee.Refused, 1)
+		assert.Contains(t, ee.Refused[0].Error(), `values that do not marshal to text: extra["a.b"], extra.x`)
+	})
+	t.Run("a validation failure", func(t *testing.T) {
+		key, err := CanonicalKey[beneathInterfaceConfig](`extra["limits"]["k"]`)
+		require.NoError(t, err)
+		require.Equal(t, "extra.limits.k", key)
+		baseline := &beneathInterfaceConfig{Extra: beneathInterfaceSection{Limits: map[string]int{"k": 9}}}
+		_, err = DecodeEdits(t.Context(), baseline, nil)
+		var ee *EditsError
+		require.ErrorAs(t, err, &ee)
+		assert.Contains(t, ee.Err.Error(), key+"(max)")
+	})
 }
 
 // undivable's validate tag parses but cannot apply to its field: the

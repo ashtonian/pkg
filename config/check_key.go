@@ -102,9 +102,10 @@ func DecodeKey[T any](ctx context.Context, key string, value any, opts ...Option
 
 // CanonicalKey returns key spelled the one way this package prints it, for
 // T: each field by its key, not an alias tag's former name or another letter
-// case; a map entry quoted, an integer-keyed map's in its decimal spelling;
-// and a key beneath an interface or remain field as a field wherever it can
-// be one. A settings store keys its rows by it, so two spellings of one key
+// case; a map entry quoted, by the text of the key a load reads it as
+// (ports["0x50"] is ports["80"], timeouts["60s"] is timeouts["1m0s"]); and
+// a key beneath an interface or remain field as a field wherever it can be
+// one. A settings store keys its rows by it, so two spellings of one key
 // are one row. A key that does not parse, is not concrete or names nothing
 // config reads returns an Unknown *KeyError matching ErrKey. It reads no
 // value and no validate tag: whether a value is valid for the key is
@@ -189,12 +190,13 @@ func DecodeEdits[T any](ctx context.Context, baseline *T, edits map[string]any, 
 }
 
 // EditsError is a batch of edits DecodeEdits refuses. Refused holds every
-// key it refused, sorted by key: each an Unknown *KeyError (ErrKey) or one
+// key it refused, in key order (pool[2] before pool[10]): each an Unknown *KeyError (ErrKey) or one
 // whose message says why the key cannot be set (ErrValidation), as
 // DecodeKey refuses the key alone. When every key applies but the
 // configuration the batch makes does not decode or validate, Keys are the
-// batch's keys as diagnostics may show them, sorted, and Err is the
-// decoder's or validator's cause (ErrValidation), for trusted diagnostics.
+// batch's keys as diagnostics may show them, sorted — none for an empty
+// batch over a configuration already invalid — and Err is the decoder's or
+// validator's cause (ErrValidation), for trusted diagnostics.
 // The error wraps each refused *KeyError and Err, so errors.Is matches the
 // category of each and errors.As reaches the first refused key. Error names
 // keys and never a value. A validate tag the default validator cannot apply
@@ -223,7 +225,11 @@ func (e *EditsError) Error() string {
 		} else {
 			b.WriteString(": ")
 		}
-		b.WriteString("the configuration of keys " + strings.Join(e.Keys, ", ") + " is invalid")
+		if len(e.Keys) == 0 {
+			b.WriteString("the configuration is invalid with no key edited")
+		} else {
+			b.WriteString("the configuration of keys " + strings.Join(e.Keys, ", ") + " is invalid")
+		}
 	}
 	return b.String()
 }
@@ -330,7 +336,7 @@ func (c *keyChecker) baselineTree(cfg reflect.Value) (map[string]any, unkeyedSec
 	w := keyWalk{schema: c.schema}
 	tree := w.section(c.root, deepcopy.Value(cfg), nil)
 	if len(w.noText) > 0 {
-		return nil, nil, fmt.Errorf("config: the baseline holds values that do not marshal to text: %s", strings.Join(w.noText, ", "))
+		return nil, nil, fmt.Errorf("config: the baseline holds values that do not marshal to text: %s", keyList(w.noText))
 	}
 	base := settled(tree).(map[string]any)
 	var unkeyed unkeyedSections

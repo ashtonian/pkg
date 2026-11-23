@@ -6,7 +6,9 @@ import (
 	"net/netip"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strconv"
+	"strings"
 	"testing"
 
 	"github.com/go-viper/mapstructure/v2"
@@ -108,7 +110,11 @@ func TestDecodeEdits_RefusesKeysThatCannotAllApply(t *testing.T) {
 				unknown, invalid = unknown || ke.Unknown, invalid || !ke.Unknown
 			}
 			assert.Equal(t, tc.refused, refused)
-			assert.IsNonDecreasing(t, order)
+			assert.True(t, slices.IsSortedFunc(order, func(a, b string) int {
+				pa, _ := parseKeyPath(a)
+				pb, _ := parseKeyPath(b)
+				return comparePaths(pa, pb)
+			}), "in key order: %v", order)
 			assert.Equal(t, unknown, errors.Is(err, ErrKey))
 			assert.Equal(t, invalid, errors.Is(err, ErrValidation))
 			assert.Empty(t, edits.Keys)
@@ -118,6 +124,23 @@ func TestDecodeEdits_RefusesKeysThatCannotAllApply(t *testing.T) {
 		})
 	}
 	assert.Equal(t, &editConfig{Primary: editServer{"p", 5}, Pool: []editServer{{"x", 1}}}, baseline)
+}
+
+// Refused keys are in key order, an index by its number, and a key that
+// does not parse follows every key that does.
+func TestDecodeEdits_RefusesInKeyOrder(t *testing.T) {
+	baseline := &editConfig{Pool: []editServer{{"x", 1}}}
+	_, err := DecodeEdits(t.Context(), baseline, map[string]any{
+		"pool[10].host": "b", "pool[2].host": "a", "prot": 1, "primary..port": 1, "pool[3]": nil,
+	})
+	var ee *EditsError
+	require.ErrorAs(t, err, &ee)
+	var order []string
+	for _, ke := range ee.Refused {
+		order = append(order, ke.Key)
+	}
+	assert.Equal(t, []string{"pool[2].host", "pool[3]", "pool[10].host", "prot", "primary..port"}, order)
+	assert.Less(t, strings.Index(err.Error(), "pool[2].host"), strings.Index(err.Error(), "pool[10].host"))
 }
 
 // nil sets the zero value, as an explicit null from any source does.
@@ -409,4 +432,47 @@ func TestDecodeEdits_KeysARemainFieldCollects(t *testing.T) {
 	one, err := DecodeKey[cfg](t.Context(), "section.extra", 1)
 	require.NoError(t, err)
 	assert.Equal(t, map[string]any{"extra": 1}, one.Section.Rest)
+}
+
+type embeddedTarget struct{ X []int }
+
+// embeddedHook promotes X through an unexported embedded pointer.
+type embeddedHook struct {
+	*embeddedTarget
+	Name string
+}
+
+type embeddedHookConfig struct {
+	Sec struct {
+		Host string       `koanf:"host"`
+		Hook embeddedHook `koanf:"-"`
+	} `koanf:"sec"`
+	Other int `koanf:"other"`
+}
+
+// A candidate's koanf:"-" field shares nothing settable with the baseline,
+// what an unexported embedded pointer promotes included.
+func TestDecodeEdits_CandidateSharesNothingSettableWithTheBaseline(t *testing.T) {
+	var base embeddedHookConfig
+	base.Sec.Host = "h"
+	base.Sec.Hook = embeddedHook{embeddedTarget: &embeddedTarget{X: []int{1}}}
+	got, err := DecodeEdits(t.Context(), &base, map[string]any{"other": 1})
+	require.NoError(t, err)
+	require.Equal(t, []int{1}, got.Sec.Hook.X)
+	got.Sec.Hook.X = []int{42}
+	assert.Equal(t, []int{1}, base.Sec.Hook.X)
+}
+
+// An empty batch over a configuration already invalid is refused, saying
+// no key was edited.
+func TestDecodeEdits_AnEmptyBatchOverAnInvalidBaseline(t *testing.T) {
+	type cfg struct {
+		Port int `koanf:"port" validate:"max=10"`
+	}
+	_, err := DecodeEdits(t.Context(), &cfg{Port: 50}, nil)
+	require.ErrorIs(t, err, ErrValidation)
+	var ee *EditsError
+	require.ErrorAs(t, err, &ee)
+	assert.Empty(t, ee.Keys)
+	assert.Equal(t, "config: edits refused: the configuration is invalid with no key edited", err.Error())
 }

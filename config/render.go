@@ -2,7 +2,6 @@ package config
 
 import (
 	"bytes"
-	"cmp"
 	"encoding"
 	"encoding/json"
 	"errors"
@@ -183,10 +182,8 @@ func (w *valueTree) atValue(v reflect.Value, c cursor) *outNode {
 		}
 		if elem.Kind() == reflect.Map {
 			n := &outNode{kind: outMap}
-			keys := elem.MapKeys()
-			slices.SortFunc(keys, func(a, b reflect.Value) int { return cmp.Compare(a.String(), b.String()) })
-			for _, k := range keys {
-				n.entries = append(n.entries, outEntry{key: k.String(), node: w.atValue(elem.MapIndex(k), c.intoEntry(segment{kind: segKey, name: k.String()}, elem.Type().Elem()))})
+			for _, e := range sortedEntries(elem) {
+				n.entries = append(n.entries, outEntry{key: e.name, node: w.atValue(e.value, c.intoEntry(segment{kind: segKey, name: e.name}, elem.Type().Elem()))})
 			}
 			if len(n.entries) == 0 {
 				return w.project(c, n)
@@ -245,15 +242,15 @@ func (w *valueTree) enter(v reflect.Value) bool {
 	return true
 }
 
-// expandable reports a map keyed by strings, or a slice or array, whose
-// entries the tree shows one by one.
+// expandable reports a map whose keys have text (see keyCodec), or a slice
+// or array, whose entries the tree shows one by one.
 func expandable(t reflect.Type) bool {
 	if opaque(t) {
 		return false
 	}
 	switch t.Kind() {
 	case reflect.Map:
-		return t.Key().Kind() == reflect.String
+		return keyCodecOf(t.Key()) != nil
 	case reflect.Slice, reflect.Array:
 		return t.Elem().Kind() != reflect.Uint8
 	}

@@ -36,10 +36,10 @@ func TestKey_CanonicalGrammar(t *testing.T) {
 // key never leads with an index or a wildcard: the root is a struct.
 func TestKey_StringRoundTrips(t *testing.T) {
 	var segments []Segment
-	for _, name := range []string{"port", "a b", "größe", "$", "x-y"} {
+	for _, name := range []string{"port", "a b", "größe", "a$", "x-y"} {
 		segments = append(segments, Segment{Kind: SegmentField, Name: name})
 	}
-	for _, name := range []string{"", "a.b", "a[0]", "a]b", `a"b`, `a\b`, "*", "[*]", "0", "\t", "größe", "port"} {
+	for _, name := range []string{"", "a.b", "a[0]", "a]b", `a"b`, `a\b`, "*", "[*]", "0", "\t", "größe", "port", "$"} {
 		segments = append(segments, Segment{Kind: SegmentKey, Name: name})
 	}
 	segments = append(segments, Segment{Kind: SegmentIndex, Index: 0}, Segment{Kind: SegmentIndex, Index: 12}, Segment{Kind: SegmentAny})

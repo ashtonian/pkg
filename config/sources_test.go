@@ -728,10 +728,10 @@ type ownTextKeys struct {
 	Levels   map[slog.Level]string    `koanf:"levels"`
 }
 
-// A map keyed by a type whose text is not its kind's — one with text
-// methods, such as slog.Level, or time.Duration — loads from a typed default
-// with its own keys, and a higher source replaces it whole: their text
-// would not decode back to the keys.
+// A map keyed by a named type — one with text methods, such as slog.Level,
+// or time.Duration — loads from a typed default with its own keys, and a
+// higher source replaces it whole: a caller's decode hook may read such a
+// key its own way, which no text written for it would survive.
 func TestSources_MapKeyedByATypeWithItsOwnTextStaysWhole(t *testing.T) {
 	typed := map[string]any{
 		"timeouts": map[time.Duration]string{time.Second: "s"},
@@ -800,15 +800,37 @@ func TestSources_MapKeyedByANamedTypeStaysWhole(t *testing.T) {
 	assert.Equal(t, map[region]int{"eu": 2}, got.Regions, "the file's map replaces the default's")
 }
 
-// A map decoded whole names itself and its type when an entry does not
-// decode, never the entry.
-func TestSources_MapDecodedWholeSaysWhyItCannotBeDecoded(t *testing.T) {
+// readOnlyKey reads text but writes none, so a map keyed by it has no key
+// text to name an entry by.
+type readOnlyKey struct{ name string }
+
+func (k *readOnlyKey) UnmarshalText(b []byte) error {
+	if len(b) == 0 {
+		return errors.New("an empty name")
+	}
+	k.name = string(b)
+	return nil
+}
+
+type readOnlyKeys struct {
+	Readers map[readOnlyKey]string `koanf:"readers"`
+}
+
+// An entry whose key does not decode is named by the key as written where
+// the map's keys have text; a map whose keys have none is decoded whole,
+// and names itself and its type, never the entry.
+func TestSources_AnEntryThatDoesNotDecodeIsNamedWhereItCanBe(t *testing.T) {
 	file := filepath.Join(t.TempDir(), "config.yaml")
 	writeFile(t, file, "timeouts: {soon: hunter2}\n")
 	_, err := Load[ownTextKeys](t.Context(), WithFile(file))
 	require.ErrorIs(t, err, ErrValidation)
-	assert.Contains(t, err.Error(), "'timeouts' cannot be decoded into map[time.Duration]string: an entry's key or value does not decode")
-	assert.NotContains(t, err.Error(), "soon")
+	assert.Contains(t, err.Error(), `'timeouts["soon"]' time: invalid duration`)
+	assert.NotContains(t, err.Error(), "hunter2")
+
+	writeFile(t, file, "readers: {\"\": hunter2}\n")
+	_, err = Load[readOnlyKeys](t.Context(), WithFile(file))
+	require.ErrorIs(t, err, ErrValidation)
+	assert.Contains(t, err.Error(), "'readers' cannot be decoded into map[config.readOnlyKey]string: an entry's key or value does not decode")
 	assert.NotContains(t, err.Error(), "hunter2")
 }
 

@@ -12,14 +12,19 @@
 //
 // The copy owns every map, slice, array element, pointer target and
 // interface value it can reach through exported fields — including the
-// exported fields an unexported embedded struct promotes, as decoding fills
-// them. Unexported fields beyond that, channels and functions are opaque
-// state and keep the value the original holds; a type built from such state,
-// as time.Time is, copies as its plain value does. Data the original shares
-// internally, cycles included, is shared the same way inside the copy.
+// exported fields an unexported embedded struct, or the struct an unexported
+// embedded pointer points at, promotes, as decoding fills them: such a
+// pointer's target is copied too. Unexported fields beyond that, channels
+// and functions are opaque state and keep the value the original holds; a
+// type built from such state, as time.Time is, copies as its plain value
+// does. Data the original shares internally, cycles included, is shared the
+// same way inside the copy.
 package deepcopy
 
-import "reflect"
+import (
+	"reflect"
+	"unsafe"
+)
 
 // Value returns a copy of v that shares nothing settable with it.
 func Value(v reflect.Value) reflect.Value {
@@ -103,11 +108,11 @@ func (c copier) copy(v reflect.Value) reflect.Value {
 	return v
 }
 
-// detach gives s, a plain copy of the struct v, a copy of its own of every
-// field it can set: each exported field, and the exported fields an
-// unexported embedded struct promotes, at any depth. reflect lets those be
-// set because they are reachable by promotion; any other unexported field
-// keeps the value v holds.
+// detach gives s, an addressable plain copy of the struct v, a copy of its
+// own of every field it can set: each exported field, and the exported
+// fields an unexported embedded struct or struct pointer promotes, at any
+// depth. reflect lets those be set because they are reachable by
+// promotion; any other unexported field keeps the value v holds.
 func (c copier) detach(s, v reflect.Value) {
 	for i := range v.NumField() {
 		f := v.Type().Field(i)
@@ -116,6 +121,12 @@ func (c copier) detach(s, v reflect.Value) {
 			s.Field(i).Set(c.copy(v.Field(i)))
 		case f.Anonymous && f.Type.Kind() == reflect.Struct:
 			c.detach(s.Field(i), v.Field(i))
+		case f.Anonymous && f.Type.Kind() == reflect.Pointer && f.Type.Elem().Kind() == reflect.Struct:
+			// What it promotes is set through the pointer, so the copy needs
+			// a target of its own. reflect neither reads nor sets an
+			// unexported field for that but through its address.
+			field := reflect.NewAt(f.Type, unsafe.Pointer(s.Field(i).UnsafeAddr())).Elem()
+			field.Set(c.copy(field))
 		}
 	}
 }

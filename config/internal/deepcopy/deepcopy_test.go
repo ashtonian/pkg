@@ -71,10 +71,10 @@ type promoting struct {
 	opaque map[string]int
 }
 
-// What an unexported embedded struct promotes — at any depth — is copied
-// like a direct exported field, while its own unexported state, a type
-// built from such state, and an unexported embedded pointer, which the copy
-// cannot replace, keep the original's value.
+// What an unexported embedded struct or struct pointer promotes — at any
+// depth — is copied like a direct exported field, the pointer's target
+// with it, while unexported state and a type built from such state keep
+// the original's value.
 func TestValue_DetachesWhatUnexportedEmbeddingsPromote(t *testing.T) {
 	when := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
 	orig := promoting{
@@ -111,10 +111,31 @@ func TestValue_DetachesWhatUnexportedEmbeddingsPromote(t *testing.T) {
 
 	orig.secret[0] = 'x'
 	orig.opaque["o"] = 2
-	orig.hidden.Tags[0] = "changed"
 	assert.Equal(t, []byte("x"), got.secret, "unexported state is opaque, shared as it was")
 	assert.Equal(t, 2, got.opaque["o"])
-	assert.Same(t, orig.hidden, got.hidden)
+
+	assert.NotSame(t, orig.hidden, got.hidden)
+	got.hidden.Tags[0] = "set through the copy"
+	orig.hidden.Tags = append(orig.hidden.Tags, "appended")
+	assert.Equal(t, []string{"h", "appended"}, orig.hidden.Tags)
+	assert.Equal(t, []string{"set through the copy"}, got.hidden.Tags)
+}
+
+// The target of an unexported embedded pointer keeps the sharing the
+// original has: two embeddings of one target, and a cycle through it.
+func TestValue_UnexportedEmbeddedPointersKeepTheirSharing(t *testing.T) {
+	type loop struct {
+		*hidden
+		Self *loop
+	}
+	h := &hidden{Tags: []string{"h"}}
+	l := &loop{hidden: h}
+	l.Self = l
+	got := copyOf(map[string]any{"a": l, "b": &loop{hidden: h}})
+	a, b := got["a"].(*loop), got["b"].(*loop)
+	assert.NotSame(t, h, a.hidden)
+	assert.Same(t, a.hidden, b.hidden)
+	assert.Same(t, a, a.Self)
 }
 
 // A value shared between a promoted field and a direct one stays shared

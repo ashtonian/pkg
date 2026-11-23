@@ -157,7 +157,7 @@ func (l *loader) walk(w *keyWalk, name string, data map[string]any) (map[string]
 		return nil, fmt.Errorf("loading %s: %w: format:\"json\" values that are not JSON: %s", name, ErrValidation, strings.Join(w.notJSON, ", "))
 	}
 	if len(w.noText) > 0 {
-		return nil, fmt.Errorf("loading %s: %w: values that do not marshal to text: %s", name, ErrValidation, strings.Join(w.noText, ", "))
+		return nil, fmt.Errorf("loading %s: %w: values that do not marshal to text: %s", name, ErrValidation, keyList(w.noText))
 	}
 	for _, a := range w.aliased {
 		l.aliased = append(l.aliased, a+" in "+name)

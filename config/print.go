@@ -246,7 +246,7 @@ func collectEntriesChecked(cfg any) ([]printEntry, error) {
 		w.visiting[visitOf(val)] = true
 		val = val.Elem()
 	}
-	w.walkStruct(val, nil, false)
+	w.walkStruct(val, nil, site{})
 	if w.err != nil {
 		return nil, w.err
 	}
@@ -280,11 +280,16 @@ type site struct {
 	// keyed marks a map key: a dynamic name whose sensitivity covers
 	// everything beneath it, structs included.
 	keyed bool
+	// beneathInterface marks a value an interface holds, or one beneath
+	// it: its map entries are members (keyPath.member), as CanonicalKey
+	// spells them.
+	beneathInterface bool
 }
 
-// walkStruct emits entries for val's fields. inherited is true beneath a
-// field tagged sensitive:"true", so tagging a container hides everything in it.
-func (w *entryWalk) walkStruct(val reflect.Value, prefix keyPath, inherited bool) {
+// walkStruct emits entries for val's fields, val sitting at under:
+// under.sensitive is true beneath a field tagged sensitive:"true", so
+// tagging a container hides everything in it.
+func (w *entryWalk) walkStruct(val reflect.Value, prefix keyPath, under site) {
 	if w.err != nil {
 		return
 	}
@@ -303,9 +308,10 @@ func (w *entryWalk) walkStruct(val reflect.Value, prefix keyPath, inherited bool
 			return
 		}
 		w.walkValue(prefix.field(f.key), fv, site{
-			named:     f.named,
-			desc:      f.sf.Tag.Get("desc"),
-			sensitive: inherited || f.tagged,
+			named:            f.named,
+			desc:             f.sf.Tag.Get("desc"),
+			sensitive:        under.sensitive || f.tagged,
+			beneathInterface: under.beneathInterface,
 		})
 	}
 }
@@ -317,6 +323,9 @@ func (w *entryWalk) walkValue(path keyPath, v reflect.Value, s site) {
 		if elem.IsNil() {
 			w.leaf(path, v, reflect.Value{}, s)
 			return
+		}
+		if elem.Kind() == reflect.Interface {
+			s.beneathInterface = true
 		}
 		if elem.Kind() == reflect.Pointer { // any pointer: one into an interface can lead back to itself
 			if !w.enter(elem) {
@@ -331,20 +340,24 @@ func (w *entryWalk) walkValue(path keyPath, v reflect.Value, s site) {
 	named := s.named
 	switch {
 	case isBranch(elem.Type()):
-		w.walkStruct(elem, path, s.sensitive || s.keyed && named)
+		w.walkStruct(elem, path, site{sensitive: s.sensitive || s.keyed && named, beneathInterface: s.beneathInterface})
 	case (s.sensitive || named) && expandable(elem.Type()):
 		// Its keys and elements may be secrets: one redacted value.
 		w.leaf(path, v, elem, s)
-	case elem.Kind() == reflect.Map && elem.Type().Key().Kind() == reflect.String && !opaque(elem.Type()) && elem.Len() > 0:
+	case elem.Kind() == reflect.Map && expandable(elem.Type()) && elem.Len() > 0:
 		if !w.enter(elem) {
 			w.cycle(path, v, s)
 			return
 		}
 		defer delete(w.visiting, visitOf(elem))
-		keys := elem.MapKeys()
-		slices.SortFunc(keys, func(a, b reflect.Value) int { return cmp.Compare(a.String(), b.String()) })
-		for _, k := range keys {
-			w.walkValue(path.key(k.String()), elem.MapIndex(k), site{named: isSensitiveName(k.String()) && textCapable(elem.Type().Elem()), desc: s.desc, sensitive: s.sensitive || named, keyed: true})
+		for _, e := range sortedEntries(elem) {
+			w.walkValue(path.entry(e.name, s.beneathInterface), e.value, site{
+				named:            isSensitiveName(e.name) && textCapable(elem.Type().Elem()),
+				desc:             s.desc,
+				sensitive:        s.sensitive || named,
+				keyed:            true,
+				beneathInterface: s.beneathInterface,
+			})
 		}
 	case (elem.Kind() == reflect.Slice || elem.Kind() == reflect.Array) && !opaque(elem.Type()) && elem.Len() > 0 && holdsContainers(elem.Type().Elem()):
 		if elem.Kind() == reflect.Slice {
@@ -354,12 +367,12 @@ func (w *entryWalk) walkValue(path keyPath, v reflect.Value, s site) {
 			}
 			defer delete(w.visiting, visitOf(elem))
 		}
-		inner := site{named: s.named, desc: s.desc, sensitive: s.sensitive || named, keyed: s.keyed}
+		inner := site{named: s.named, desc: s.desc, sensitive: s.sensitive || named, keyed: s.keyed, beneathInterface: s.beneathInterface}
 		for i := range elem.Len() {
 			w.walkValue(path.index(i), elem.Index(i), inner)
 		}
 	default:
-		// Scalars, self-decoding structs, maps keyed by non-strings, empty
+		// Scalars, self-decoding structs, maps whose keys have no text, empty
 		// containers and slices of scalars. A sensitive leaf is redacted
 		// whole — including `APIKeys []string`.
 		w.leaf(path, v, elem, s)

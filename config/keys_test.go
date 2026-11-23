@@ -53,6 +53,36 @@ func TestStrictKeys_InputACustomDecoderConsumes(t *testing.T) {
 	assert.Equal(t, 42, got.Item.Value)
 }
 
+// A value that decodes itself, handed to the load already of its type —
+// by a provider, WithDefaults or a baseline config — is set as it is: its
+// UnmarshalMapstructure reads what a source writes, never the value.
+func TestSources_ATypedSelfDecodingValueIsSetAsItIs(t *testing.T) {
+	type cfg struct {
+		Item customDecoded  `koanf:"item"`
+		Ptr  *customDecoded `koanf:"ptr"`
+		Name string         `koanf:"name"`
+	}
+	typed := map[string]any{"item": customDecoded{Value: 42}, "ptr": &customDecoded{Value: 7}}
+	want := cfg{Item: customDecoded{Value: 42}, Ptr: &customDecoded{Value: 7}}
+	for name, opt := range map[string]Option{
+		"WithBaseProvider": WithBaseProvider(mapSource(typed), nil),
+		"WithDefaults":     WithDefaults(typed),
+	} {
+		t.Run(name, func(t *testing.T) {
+			got, err := Load[cfg](t.Context(), opt)
+			require.NoError(t, err)
+			assert.Equal(t, want, *got)
+			assert.NotSame(t, typed["ptr"], got.Ptr, "the config holds a copy")
+		})
+	}
+
+	loaded, err := Load[cfg](t.Context(), WithBaseProvider(mapSource{"item": map[string]any{"raw": 42}, "ptr": map[string]any{"raw": 7}}, nil))
+	require.NoError(t, err)
+	got, err := DecodeEdits(t.Context(), loaded, map[string]any{"name": "x"})
+	require.NoError(t, err, "the baseline's value is set as it is")
+	assert.Equal(t, cfg{Item: customDecoded{Value: 42}, Ptr: &customDecoded{Value: 7}, Name: "x"}, *got)
+}
+
 func TestStrictKeys_InputAHookConsumes(t *testing.T) {
 	type item struct{ Value int }
 	type cfg struct {
@@ -351,7 +381,7 @@ func TestUnknownKeys_NamesParseBackToTheirPlace(t *testing.T) {
 		Named  map[string]entry `koanf:"named"`
 		Items  []entry          `koanf:"items"`
 	}
-	names := []string{"a.b", "a[0]", "a]b", `a"b`, `a\b`, "a*b", "a\tb", "a b", "größe", "", "prot", "port.x", "port[0]", "port]"}
+	names := []string{"a.b", "a[0]", "a]b", `a"b`, `a\b`, "a*b", "a\tb", "a b", "größe", "", "prot", "port.x", "port[0]", "port]", "$", "$x"}
 	for _, at := range []struct {
 		where, key string
 		source     func(entry map[string]any) mapSource
@@ -388,6 +418,38 @@ func TestUnknownKeys_NamesParseBackToTheirPlace(t *testing.T) {
 			})
 		}
 	}
+}
+
+// $ is the root's name in every message, never a field's key: ParseKey and
+// CanonicalKey refuse it, a struct may not key a field by it, and a source
+// key spelled so is named as a map key, ["$"], apart from the root.
+func TestKey_DollarNamesTheRootAndNoField(t *testing.T) {
+	type dollarField struct {
+		Dollar int `koanf:"$"`
+	}
+	type cfg struct {
+		Server struct {
+			Port int `koanf:"port"`
+		} `koanf:"server"`
+	}
+	for _, key := range []string{"$", "server.$", "$.port"} {
+		_, err := ParseKey(key)
+		assert.ErrorIs(t, err, ErrKey, key)
+		_, err = CanonicalKey[cfg](key)
+		assert.ErrorIs(t, err, ErrKey, key)
+	}
+	_, err := Load[dollarField](t.Context())
+	require.ErrorIs(t, err, ErrSchema)
+	assert.Contains(t, err.Error(), `field Dollar has key "$", which no key can spell: $ names the root`)
+
+	_, err = Load[cfg](t.Context(), WithBaseProvider(mapSource{"$": 1, "server": map[string]any{"$": 2}}, nil), WithSkipValidation())
+	var unknown *UnknownKeysError
+	require.ErrorAs(t, err, &unknown)
+	var keys []string
+	for _, k := range unknown.Keys {
+		keys = append(keys, k.Key)
+	}
+	assert.ElementsMatch(t, []string{`["$"]`, `server["$"]`}, keys)
 }
 
 // A name the source tree holds in two readings, a field's key and the key

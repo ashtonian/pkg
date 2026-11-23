@@ -17,9 +17,9 @@ import (
 type nodeKind uint8
 
 const (
-	nodeLeaf    nodeKind = iota // decoded whole: a scalar, a self-decoding struct, a map keyed by non-strings, []byte
+	nodeLeaf    nodeKind = iota // decoded whole: a scalar, a self-decoding struct, a map whose keys have no text, []byte
 	nodeBranch                  // a struct whose fields are keys
-	nodeMap                     // a map keyed by strings
+	nodeMap                     // a map whose entries are keys, named by their keys' text (see keyCodec)
 	nodeList                    // a slice or array
 	nodeDynamic                 // an interface: its shape is known only per value
 )
@@ -31,6 +31,7 @@ type schemaNode struct {
 	byKey  map[string]*schemaField
 	view   *gowalker.Schema // nodeBranch: shared field identities and matching
 	elem   *schemaNode      // nodeMap, nodeList
+	keys   *keyCodec        // nodeMap
 	// acceptsUnknown reports a nodeBranch whose koanf:",remain" field — its
 	// own, or one of a struct it squashes — can collect the keys no other
 	// field takes: the field at index remain. remainErr is why its remain
@@ -228,8 +229,9 @@ func (b *schemaBuilder) node(shape *gowalker.Shape) *schemaNode {
 		b.fields(n, shape)
 	case opaque(t):
 		n.kind = nodeLeaf
-	case k == reflect.Map && t.Key().Kind() == reflect.String:
+	case k == reflect.Map && keyCodecOf(t.Key()) != nil:
 		n.kind = nodeMap
+		n.keys = keyCodecOf(t.Key())
 		n.elem = b.node(shape.Elem())
 	case k == reflect.Map:
 		n.kind = nodeLeaf
@@ -576,13 +578,22 @@ func (n *schemaNode) walkTo(c cursor, p keyPath) (cursor, *schemaNode, error) {
 		case nodeDynamic:
 			return c, n, nil // the interface's field owns everything its value holds
 		default:
-			if canHoldKeys(n.typ) {
-				return c, n, nil // decoded whole; its field owns what is inside
+			if ownsBeneath(n.typ) {
+				return c, n, nil // decoded whole; its field owns what lies beneath it
 			}
 			return cursor{}, nil, fmt.Errorf("%w %s: %s is a %s, which has no keys beneath it", ErrKey, p, p[:i].orRoot(), gowalker.TypeText(n.typ))
 		}
 	}
 	return c, n, nil
+}
+
+// ownsBeneath reports a value decoded whole whose source can still hold
+// keys beneath it: a type that decodes itself from whatever its source
+// holds (mapstructure.Unmarshaler), or a map whose keys have no text (see
+// keyCodec). A scalar, []byte and a value read from text, such as a
+// netip.Prefix, have no keys beneath them.
+func ownsBeneath(t reflect.Type) bool {
+	return t.Kind() == reflect.Map || reflect.PointerTo(t).Implements(mapstructureUnmarshaler)
 }
 
 // canHoldKeys reports whether a value decoded whole could still have
