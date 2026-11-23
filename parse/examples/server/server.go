@@ -44,6 +44,7 @@ const (
 	codeBadRequest = "E4001"
 	codeNotFound   = "E4004"
 	codeInternal   = "E5001"
+	codeTimeout    = "E5004" // the request timeout expired
 )
 
 // server serves the routes the TypeScript SDK and parse/client call: lists
@@ -81,12 +82,22 @@ func newServer(db *sql.DB, log *slog.Logger, requestTimeout time.Duration) (http
 	mux.HandleFunc("OPTIONS /api/products", s.facets)
 	mux.HandleFunc("PATCH /api/products", s.patchMany)
 	mux.HandleFunc("PATCH /api/products/{id}", s.patch)
-	return mux, nil
+	return s.withDeadline(mux), nil
+}
+
+// withDeadline serves each request under the request timeout. The deadline
+// is on the request's context, so every query runs under it and fail can
+// tell a request that ran out of time, or whose client left, from a server
+// fault, whatever words the driver reports the interruption in.
+func (s *server) withDeadline(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		ctx, cancel := context.WithTimeout(r.Context(), s.requestTimeout)
+		defer cancel()
+		next.ServeHTTP(w, r.WithContext(ctx))
+	})
 }
 
 func (s *server) list(w http.ResponseWriter, r *http.Request) {
-	ctx, cancel := context.WithTimeout(r.Context(), s.requestTimeout)
-	defer cancel()
 	req, err := parsehttp.ParseList(r, s.products)
 	if err != nil {
 		s.fail(w, r, err)
@@ -97,7 +108,7 @@ func (s *server) list(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, r, err)
 		return
 	}
-	page, err := parsesql.QueryPage(ctx, s.db, s.products, plan)
+	page, err := parsesql.QueryPage(r.Context(), s.db, s.products, plan)
 	if err != nil {
 		s.fail(w, r, err)
 		return
@@ -106,8 +117,6 @@ func (s *server) list(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *server) facets(w http.ResponseWriter, r *http.Request) {
-	ctx, cancel := context.WithTimeout(r.Context(), s.requestTimeout)
-	defer cancel()
 	req, err := parsehttp.ParseFacets(r, s.products)
 	if err != nil {
 		s.fail(w, r, err)
@@ -120,7 +129,7 @@ func (s *server) facets(w http.ResponseWriter, r *http.Request) {
 	}
 	counts := map[string][]filter.FacetBucket{}
 	if query != nil {
-		counts, err = s.facetCounts(ctx, query)
+		counts, err = s.facetCounts(r.Context(), query)
 		if err != nil {
 			s.fail(w, r, err)
 			return
@@ -229,8 +238,6 @@ func (s *server) patchQuery(w http.ResponseWriter, r *http.Request, accepted ...
 // the rows the target matched, as the update left them: those it wrote, and
 // those a patch of what they already hold or an empty patch left.
 func (s *server) update(r *http.Request, target parse.Target) ([]Product, error) {
-	ctx, cancel := context.WithTimeout(r.Context(), s.requestTimeout)
-	defer cancel()
 	parsed, err := parsehttp.ParsePatch(r, s.products)
 	if err != nil {
 		return nil, err
@@ -239,7 +246,7 @@ func (s *server) update(r *http.Request, target parse.Target) ([]Product, error)
 	if err != nil {
 		return nil, err
 	}
-	res, err := parsesql.Update(ctx, s.db, s.products, plan)
+	res, err := parsesql.Update(r.Context(), s.db, s.products, plan)
 	if err != nil {
 		return nil, err
 	}
@@ -247,19 +254,35 @@ func (s *server) update(r *http.Request, target parse.Target) ([]Product, error)
 }
 
 // fail answers a parse error with its E-code and the status the code
-// carries, and a body the client did not finish sending as a bad request;
-// anything else is logged and answered as a 500 without internals.
+// carries. Otherwise the request's context says why the work stopped: a
+// request that ran out of time is 504, and one whose client left gets no
+// answer, since no one reads it; neither is a server fault. A body the
+// client did not finish sending is a bad request. Anything else is logged
+// and answered as a 500 without internals.
 func (s *server) fail(w http.ResponseWriter, r *http.Request, err error) {
 	if parsehttp.WriteError(w, r, err, s.report) {
 		return
 	}
-	if _, ok := errors.AsType[*parse.BodyReadError](err); ok {
-		s.log.WarnContext(r.Context(), "reading request body", slog.String("method", r.Method), slog.String("path", r.URL.Path), slog.Any("error", err))
+	ctx := r.Context()
+	attrs := []any{slog.String("method", r.Method), slog.String("path", r.URL.Path), slog.Any("error", err)}
+	switch {
+	case errors.Is(ctx.Err(), context.Canceled):
+		s.log.DebugContext(ctx, "request cancelled", attrs...)
+	case errors.Is(ctx.Err(), context.DeadlineExceeded):
+		s.log.WarnContext(ctx, "request deadline exceeded", attrs...)
+		s.writeJSON(w, r, http.StatusGatewayTimeout, parsehttp.Body{Code: codeTimeout, Message: "the request did not finish within its deadline"})
+	case isBodyReadError(err):
+		s.log.WarnContext(ctx, "reading request body", attrs...)
 		s.writeJSON(w, r, http.StatusBadRequest, parsehttp.Body{Code: codeBadRequest, Message: "the request body could not be read"})
-		return
+	default:
+		s.log.ErrorContext(ctx, "request failed", attrs...)
+		s.writeJSON(w, r, http.StatusInternalServerError, parsehttp.Body{Code: codeInternal, Message: "internal error"})
 	}
-	s.log.ErrorContext(r.Context(), "request failed", slog.String("method", r.Method), slog.String("path", r.URL.Path), slog.Any("error", err))
-	s.writeJSON(w, r, http.StatusInternalServerError, parsehttp.Body{Code: codeInternal, Message: "internal error"})
+}
+
+func isBodyReadError(err error) bool {
+	_, ok := errors.AsType[*parse.BodyReadError](err)
+	return ok
 }
 
 // responseFailed logs what a response could not carry: a schema document

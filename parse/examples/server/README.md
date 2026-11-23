@@ -14,7 +14,7 @@ flowchart LR
 
 **Exit points:** Parameterized SQL goes to SQLite; JSON pages, schema documents, facets and native error envelopes go to the HTTP client.
 
-**Failure modes:** Invalid settings fail startup; invalid requests return Parse E-codes; a patch of a missing product is 404 `E4004`, and a batch's missing keys are its `failed` items; a request body the client did not finish sending is 400 `E4001`, logged at WARN; SQL and response failures are observed by the handler; an expired shutdown grace forces connections closed.
+**Failure modes:** Invalid settings fail startup; invalid requests return Parse E-codes; a patch of a missing product is 404 `E4004`, and a batch's missing keys are its `failed` items; a request body the client did not finish sending is 400 `E4001`, logged at WARN; a request that outlives `--request-timeout` is 504 `E5004`, logged at WARN, and a request whose client left is not answered and is logged at DEBUG; any other SQL failure is 500 `E5001`, logged at ERROR; response failures are observed by the handler; an expired shutdown grace forces connections closed.
 
 **Dependencies:** The example imports Parse, the released `pkg/config` and Kong provider, Kong, and the pure-Go SQLite driver. Applications supply their own resource, storage, authenticated scope and authorization policy.
 
@@ -45,7 +45,7 @@ The second request is the same list as a POST body ([HTTP contract](../../docs/h
 
 The patch routes read no query parameter but a batch's `id[]`, and answer any other with 400 `E4001`: a parameter a patch ignored, a filter meant to narrow it, would let it write rows the client did not mean to.
 
-`E4001`, `E4004` and `E5001` (internal error) are the example's own codes: parse's catalog holds request errors, and whether a row exists or the server failed is the application's to say. Every other code is parse's ([HTTP contract](../../docs/http-errors.md)).
+`E4001`, `E4004`, `E5001` (internal error) and `E5004` (the request timeout expired) are the example's own codes: parse's catalog holds request errors, and whether a row exists or the server failed is the application's to say. Every other code is parse's ([HTTP contract](../../docs/http-errors.md)).
 
 The process logs its listen address as JSON. SIGINT or SIGTERM stops new requests and drains active requests for the configured grace period. Connections close if that deadline expires; the database then closes.
 
@@ -56,7 +56,7 @@ The process logs its listen address as JSON. SIGINT or SIGTERM stops new request
 | Flag | Environment | Default | Purpose |
 |---|---|---|---|
 | `--addr` | `PARSE_SERVER_ADDR` | `127.0.0.1:8080` | HTTP listen address |
-| `--request-timeout` | `PARSE_SERVER_REQUEST_TIMEOUT` | `5s` | Bound database execution per request |
+| `--request-timeout` | `PARSE_SERVER_REQUEST_TIMEOUT` | `5s` | Deadline on each request's context, which its database work runs under; a request that outlives it is 504 `E5004` |
 | `--shutdown-grace` | `PARSE_SERVER_SHUTDOWN_GRACE` | `10s` | Drain active requests before forced connection closure |
 | `--read-header-timeout` | `PARSE_SERVER_READ_HEADER_TIMEOUT` | `5s` | Bound header reads |
 | `--read-timeout` | `PARSE_SERVER_READ_TIMEOUT` | `10s` | Bound request reads |
@@ -85,13 +85,13 @@ sequenceDiagram
 
 **Failure modes:** Query validation returns the native Parse error. A POST with list parameters in its query string, or a body that is not `application/json`, is E2067; a body over the resource's list body limit (80 KiB at the default limits) is E2063, read no further. Database execution and page construction errors reach the HTTP error boundary.
 
-**Dependencies:** Request cancellation flows to database execution; `parsesql` runs the plans (an update with relation changes or `SkipUnchanged` in one transaction, begun IMMEDIATE by the connection's `_txlock=immediate`), and the Resource owns grammar and page construction. A patch answers every target row it matched: those it wrote and those it left as they were.
+**Dependencies:** The request's context, carrying `--request-timeout`, flows to database execution; `parsesql` runs the plans (an update with relation changes or `SkipUnchanged` in one transaction, begun IMMEDIATE by the connection's `_txlock=immediate`), and the Resource owns grammar and page construction. A patch answers every target row it matched: those it wrote and those it left as they were.
 
 ## Security and operation
 
 The default listener is loopback. The seeded demonstration exposes writes without authentication, tenant isolation or authorization; supply those application policies before exposing it to untrusted clients. Data is in memory and disappears when the process exits.
 
-JSON logs report startup, request/response failures and shutdown. HTTP and database deadlines bound active work; this example has no dedicated health or metrics endpoint. Use the integration checks below to verify the seeded API.
+JSON logs report startup, request/response failures and shutdown. `request deadline exceeded` (WARN) means a request's queries outlived `--request-timeout`: when ordinary requests log it, check the filter and sort in the entry's path against the indexed fields, then the timeout. `request cancelled` (DEBUG) is a client that left before its answer. `request failed` (ERROR) is a server fault. HTTP and database deadlines bound active work; this example has no dedicated health or metrics endpoint. Use the integration checks below to verify the seeded API.
 
 ## Verification
 
@@ -100,7 +100,7 @@ go test -tags=unit ./examples/server
 go test -tags=integration -race ./examples/server
 ```
 
-The unit checks cover explicit flags over environment values, omitted-flag precedence and rejection of an unbounded shutdown. Integration checks exercise the HTTP resource against SQLite. See [the module overview](../../README.md), [query guide](../../docs/queries.md) and [error contract](../../docs/http-errors.md).
+The unit checks cover explicit flags over environment values, omitted-flag precedence, rejection of an unbounded shutdown, and the request timeout on every request's context. The integration checks include an expired deadline (504 `E5004`, no ERROR entry) and a cancelled request (nothing written, a DEBUG entry) on every route that reaches the database. Integration checks exercise the HTTP resource against SQLite. See [the module overview](../../README.md), [query guide](../../docs/queries.md) and [error contract](../../docs/http-errors.md).
 
 ## Key Files
 
@@ -109,4 +109,5 @@ The unit checks cover explicit flags over environment values, omitted-flag prece
 | `main.go` | Configuration, HTTP lifecycle and seeded SQLite storage |
 | `server.go` | Resource declaration, routes, list (GET and POST), facet, schema, single and batch patch handlers, the example's error codes |
 | `settings_test.go` | Configuration source precedence and bounded shutdown |
+| `server_test.go` | The request timeout on every request's context |
 | `server_integration_test.go` | Requests against the SQLite HTTP server |

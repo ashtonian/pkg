@@ -4,6 +4,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -420,5 +421,58 @@ func TestServer_FacetsRefusePageParameters(t *testing.T) {
 		var body parsehttp.Body
 		assert.Equal(t, http.StatusUnprocessableEntity, call(t, srv, http.MethodOptions, "/api/products?"+query, "", &body), query)
 		assert.Equal(t, filter.ECodeInvalidListParam.String(), body.Code, "%s: %s", query, body.Message)
+	}
+}
+
+// A request that runs out of time is 504 at WARN; a request whose client
+// left is not answered and is logged at DEBUG. Neither is a server fault, on
+// any route that reaches the database.
+func TestServer_DeadlinesAndCancellationsAreNoServerFaults(t *testing.T) {
+	db, err := openDB(t.Context())
+	require.NoError(t, err)
+	t.Cleanup(func() { assert.NoError(t, db.Close()) })
+	var logs bytes.Buffer
+	h, err := newServer(db, slog.New(slog.NewJSONHandler(&logs, &slog.HandlerOptions{Level: slog.LevelDebug})), 5*time.Second)
+	require.NoError(t, err)
+	expired, cancelExpired := context.WithDeadline(t.Context(), time.Unix(0, 0))
+	t.Cleanup(cancelExpired)
+	cancelled, cancel := context.WithCancel(t.Context())
+	cancel()
+
+	routes := []struct{ method, path, body string }{
+		{http.MethodGet, "/api/products", ""},
+		{http.MethodPost, "/api/products", `{"page_size":2}`},
+		{http.MethodOptions, "/api/products?facets=category", ""},
+		{http.MethodPatch, "/api/products/p03", `{"price":7}`},
+		{http.MethodPatch, "/api/products?id[]=p03", `{"price":7}`},
+	}
+	serve := func(ctx context.Context, method, path, body string) *httptest.ResponseRecorder {
+		logs.Reset()
+		req := httptest.NewRequestWithContext(ctx, method, path, strings.NewReader(body))
+		if body != "" {
+			req.Header.Set("Content-Type", "application/json")
+		}
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		return rec
+	}
+	for _, rt := range routes {
+		t.Run("deadline "+rt.method+" "+rt.path, func(t *testing.T) {
+			rec := serve(expired, rt.method, rt.path, rt.body)
+			assert.Equal(t, http.StatusGatewayTimeout, rec.Code)
+			var body parsehttp.Body
+			require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &body))
+			assert.Equal(t, codeTimeout, body.Code)
+			assert.Contains(t, logs.String(), `"level":"WARN"`)
+			assert.NotContains(t, logs.String(), `"level":"ERROR"`)
+		})
+		t.Run("cancelled "+rt.method+" "+rt.path, func(t *testing.T) {
+			rec := serve(cancelled, rt.method, rt.path, rt.body)
+			assert.Empty(t, rec.Body.String(), "no answer is written")
+			assert.Empty(t, rec.Header().Get("Content-Type"))
+			assert.Contains(t, logs.String(), `"level":"DEBUG"`)
+			assert.NotContains(t, logs.String(), `"level":"WARN"`)
+			assert.NotContains(t, logs.String(), `"level":"ERROR"`)
+		})
 	}
 }

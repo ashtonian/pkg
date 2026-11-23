@@ -27,14 +27,28 @@ func (s *server) list(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// fail reads why work stopped from the request's context, which carries the
+// request's deadline: a request that ran out of time, or whose client left,
+// is no server fault.
 func (s *server) fail(w http.ResponseWriter, r *http.Request, err error) {
 	if parsehttp.WriteError(w, r, err, report) {
 		return
 	}
-	logger.ErrorContext(r.Context(), "request failed", slog.Any("error", err))
-	_ = parsehttp.WriteJSON(w, r, http.StatusInternalServerError, parsehttp.Body{Code: "E5001", Message: "internal error"}, report)
+	ctx := r.Context()
+	switch {
+	case errors.Is(ctx.Err(), context.Canceled):
+		logger.DebugContext(ctx, "request cancelled", slog.Any("error", err)) // no one reads an answer
+	case errors.Is(ctx.Err(), context.DeadlineExceeded):
+		logger.WarnContext(ctx, "request deadline exceeded", slog.Any("error", err))
+		_ = parsehttp.WriteJSON(w, r, http.StatusGatewayTimeout, parsehttp.Body{Code: "E5004", Message: "the request did not finish within its deadline"}, report)
+	default:
+		logger.ErrorContext(ctx, "request failed", slog.Any("error", err))
+		_ = parsehttp.WriteJSON(w, r, http.StatusInternalServerError, parsehttp.Body{Code: "E5001", Message: "internal error"}, report)
+	}
 }
 ```
+
+Put the request's deadline on its context (`r.WithContext`) before the handler runs, so every query runs under it and `fail` reads it; the [example](../examples/server) does this for every route.
 
 ## Configuration
 

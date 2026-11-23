@@ -31,7 +31,7 @@ import (
 )
 
 type serverSettings struct {
-	RequestTimeout    time.Duration `koanf:"request_timeout" default:"5s" validate:"gt=0" desc:"Database execution deadline per request"`
+	RequestTimeout    time.Duration `koanf:"request_timeout" default:"5s" validate:"gt=0" desc:"Deadline per request; its database work runs under it"`
 	Addr              string        `koanf:"addr" default:"127.0.0.1:8080" validate:"required" desc:"HTTP listen address"`
 	ShutdownGrace     time.Duration `koanf:"shutdown_grace" default:"10s" validate:"gt=0" desc:"Time to drain in-flight requests on shutdown"`
 	ReadHeaderTimeout time.Duration `koanf:"read_header_timeout" default:"5s" validate:"gt=0" desc:"HTTP header read deadline"`
