@@ -35,9 +35,8 @@ func (c countingCodec) Decode(data []byte, v any) error {
 }
 
 // TestLimitsThreadThroughResource asserts every core.WithX limit passed
-// to NewResource is enforced by the parse entry points. Before
-// the sub-parsers were constructed with a nil config, silently substituting
-// defaults for all of these.
+// to NewResource is enforced by the parse entry points: each sub-parser is
+// built with the resource's config, never the defaults.
 func TestLimitsThreadThroughResource(t *testing.T) {
 	t.Run("MaxConditions", func(t *testing.T) {
 		tp, err := parse.NewResource[limitsDevice]("limits_devices", parse.ParserOptions(core.WithMaxConditions(1)))

@@ -156,11 +156,11 @@ func WithChangePredicate() PatchSQLOption {
 // BuildPatchSQL converts a ParsedPatch into a SQL SET clause and a list
 // of relation patch ops.
 //
-// Scalar-column operations fold, in order, into ONE assignment per column
-// : replace/add set the column to the value, remove sets it to
-// NULL, array_append appends and an RFC 7396 merge merges into whatever the
-// column holds at that point in the sequence. Emitting one assignment per
-// operation lost every write but the last to a repeated column (SQLite keeps
+// Scalar-column operations fold, in order, into ONE assignment per column:
+// replace/add set the column to the value, remove sets it to NULL,
+// array_append appends and an RFC 7396 merge merges into whatever the
+// column holds at that point in the sequence. One assignment per operation
+// would lose every write but the last to a repeated column (SQLite keeps
 // the last duplicate assignment). Operations before a column's final
 // replace/add/remove are overwritten and bind no placeholder. Columns appear
 // in first-touched order.
@@ -350,10 +350,9 @@ func serverColumns(cfg *patchSQLConfig) (map[string]bool, error) {
 func checkSQLCompilable(op *PatchOperation) error {
 	switch op.Op {
 	case PatchOpTest:
-		// Silently dropping test ops left optimistic-concurrency intent
-		// unenforced — a caller sending [test, replace] believed the replace
-		// was conditional. Conditional UPDATE is not
-		// supported server-side; reject loudly.
+		// A caller sending [test, replace] means the replace to be
+		// conditional, and the compiled UPDATE cannot make it so: dropping
+		// the test would leave that intent unenforced, so it is refused.
 		return &core.ParseError{
 			Kind: core.ParseErrorKindPatch, Code: ECodeTestOpSQL.String(),
 			Message: fmt.Sprintf("test op for %s cannot be compiled to SQL; conditional update is not supported — verify with a read or use ApplyValidatedPatch", op.Path),

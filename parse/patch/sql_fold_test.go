@@ -9,8 +9,8 @@ import (
 	"github.com/ashtonian/pkg/parse/internal/dbtest"
 )
 
-// Ordered operations on one column must compose, not overwrite each other
-// : executed against SQLite, asserting stored values.
+// Ordered operations on one column must compose, not overwrite each other,
+// executed against SQLite and asserting the stored values.
 func TestBuildPatchSQL_FoldsOrderedOpsSQLite(t *testing.T) {
 	runFoldCases(t, foldDB{
 		db:       dbtest.SQLite(t),

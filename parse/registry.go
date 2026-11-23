@@ -51,7 +51,9 @@ func NewSchemaRegistry(opts ...core.GeneratorOption) *SchemaRegistry {
 // parse. Register a Resource with RegisterResource. A name already
 // registered is ErrRegistered, and the registry is unchanged.
 func Register[T any](r *SchemaRegistry) error {
-	t := reflect.TypeFor[T]() // 1.22+ idiom; correct for interface T (TypeOf(nil-iface) panics)
+	// TypeFor, not TypeOf of a zero T: an interface T's zero value is nil,
+	// which has no type.
+	t := reflect.TypeFor[T]()
 	if t.Kind() == reflect.Pointer {
 		t = t.Elem()
 	}

@@ -41,9 +41,9 @@ func (e *ParseError) Unwrap() error {
 }
 
 // Is reports whether target carries the same E-code — any error with an
-// ErrorCode() string method, including Code — so a
-// ParseError matches its code's sentinel across wrap chains. An empty code matches nothing; Cause stays
-// reachable through Unwrap.
+// ErrorCode() string method, including Code — so a ParseError matches its
+// code's sentinel across wrap chains. An empty code matches nothing; Cause
+// stays reachable through Unwrap.
 func (e *ParseError) Is(target error) bool {
 	c, ok := target.(interface{ ErrorCode() string })
 	return ok && e.Code != "" && c.ErrorCode() == e.Code

@@ -241,8 +241,9 @@ func isNullableType(t reflect.Type) bool {
 	return false
 }
 
-// defaultPatchOps maps FieldType to standard patch operators.
-// Unexported per ; call DefaultPatchOps() for a defensive copy.
+// defaultPatchOps maps FieldType to standard patch operators. It is
+// unexported so no caller can change another's defaults; DefaultPatchOps
+// returns a copy.
 //
 // FieldTypeArray includes PatchOpArrayAppend so
 // every array-shaped field gets atomic single-statement append for

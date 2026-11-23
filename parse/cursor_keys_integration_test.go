@@ -14,7 +14,7 @@ import (
 	"github.com/ashtonian/pkg/parse/internal/dbtest"
 )
 
-// N12: a column with a linguistic collation still walks in code-point order
+// A column with a linguistic collation still walks in code-point order —
 // the order the memory backend and filters use — page after page, under
 // either code-point collation (pg_c_utf8, the default, and "C" for
 // PostgreSQL 14–16), and a string range filter seeks in the same order.

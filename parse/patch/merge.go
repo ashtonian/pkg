@@ -75,8 +75,8 @@ func ParseMergePatchMap(raw map[string]any, schema *PatchSchema, config *core.Pa
 
 	result := &ParsedPatch{Operations: make([]*PatchOperation, 0, len(raw)), schema: schema}
 
-	// Sorted walk: map order made the operation list — and so the SQL SET
-	// clause and apply order — vary run to run.
+	// Sorted walk: map order would make the operation list — and so the SQL
+	// SET clause and apply order — vary run to run.
 	var failures []error
 	for _, key := range slices.Sorted(maps.Keys(raw)) {
 		operation, err := validateMergeMember(schema, codec, key, raw[key])

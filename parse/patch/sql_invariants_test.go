@@ -72,8 +72,9 @@ func TestScalarAndNullMergeStillBuildSQL(t *testing.T) {
 	}
 }
 
-// TestTestOpRejectedInSQL (Q2 = a): test ops were silently dropped from
-// SQL — optimistic-concurrency intent unenforced. Reject with a clear error.
+// TestTestOpRejectedInSQL: a test op cannot be compiled to SQL, so it is
+// refused with its own error rather than dropped, which would leave the
+// caller's optimistic-concurrency check unenforced.
 func TestTestOpRejectedInSQL(t *testing.T) {
 	parsed, err := patch.NewParser(p3Schema(), nil).Parse([]byte(`[{"op":"test","path":"/name","value":"expected"},{"op":"replace","path":"/name","value":"new"}]`))
 	if err != nil {

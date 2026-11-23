@@ -4,7 +4,9 @@
 // resolve; the files its code maps name exist. A module that opts in, in the
 // allow list, is also held the other way: every non-test Go file is in a
 // code map, every exported name is named by some Markdown and every option
-// has a table row.
+// has a table row. Every module's Go comments are held to whole sentences:
+// no line opens on a stray full stop, comma, semicolon or colon, or ends in
+// a lone full stop.
 //
 //	cd tools/doccheck && GOWORK=off go run . -root ../..
 //

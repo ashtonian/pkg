@@ -22,8 +22,8 @@ type docConfig struct {
 	Threshold int `json:"threshold"`
 }
 
-// docEntity exercises every RFC 6902 behaviour the 2026-09-19/28 reviews
-// found broken in the hand-written engine.
+// docEntity exercises the RFC 6902 behaviours a JSON Patch engine most
+// easily gets wrong.
 type docEntity struct {
 	ID      string         `json:"id,omitempty" db:"id"`
 	Name    string         `json:"name"    db:"name"    parse:"patch" patch_ops:"replace,test"`

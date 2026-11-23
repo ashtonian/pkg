@@ -222,8 +222,7 @@ func openNumericDB(t *testing.T) *sql.DB {
 	return db
 }
 
-// A patch that fails part-way must not leave a pointer target half-written
-// (2026-09-28 review, PARSE-08).
+// A patch that fails part-way must not leave a pointer target half-written.
 func TestApplyValidatedPatch_PointerTargetUntouchedOnFailure(t *testing.T) {
 	p, err := parse.NewResource[*numericEntity]("numeric_entities")
 	require.NoError(t, err)

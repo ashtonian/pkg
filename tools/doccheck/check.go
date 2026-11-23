@@ -53,12 +53,13 @@ type moduleAllow struct {
 }
 
 type module struct {
-	dir   string // relative to the repository root
-	dirs  []string
-	docs  []*mdDoc
-	api   *moduleAPI
-	allow moduleAllow
-	used  map[string]bool // allow entries that matched, by "kind\x00key"
+	dir     string // relative to the repository root
+	dirs    []string
+	goFiles []string // every Go file, tests included, relative to the root
+	docs    []*mdDoc
+	api     *moduleAPI
+	allow   moduleAllow
+	used    map[string]bool // allow entries that matched, by "kind\x00key"
 }
 
 // check runs every check over every module of the workspace at root.
@@ -110,6 +111,11 @@ func check(ctx context.Context, root, allowPath string) ([]finding, error) {
 		findings = append(findings, m.checkReasons(allowPath)...)
 		findings = append(findings, m.checkIdentifiers(option)...)
 		findings = append(findings, m.checkLinks(root, docs)...)
+		commentFindings, err := m.checkComments(root)
+		if err != nil {
+			return nil, err
+		}
+		findings = append(findings, commentFindings...)
 		maps, mapFindings := m.codeMaps(root)
 		findings = append(findings, mapFindings...)
 		if m.allow.Reverse {
@@ -208,8 +214,9 @@ func loadModule(root, dir string, roots map[string]bool, docs *docCache) (*modul
 			return nil
 		}
 		switch {
-		case strings.HasSuffix(rel, ".go") && !strings.HasSuffix(rel, "_test.go"):
-			if pd := path.Dir(rel); !slices.Contains(m.dirs, pd) {
+		case strings.HasSuffix(rel, ".go"):
+			m.goFiles = append(m.goFiles, rel)
+			if pd := path.Dir(rel); !strings.HasSuffix(rel, "_test.go") && !slices.Contains(m.dirs, pd) {
 				m.dirs = append(m.dirs, pd)
 			}
 		case strings.HasSuffix(rel, ".md") && path.Base(rel) != "CHANGELOG.md":

@@ -25,8 +25,8 @@ type RenderedRelationStatement struct {
 type RenderRelationOpOptions struct {
 	// TenantValue is bound into every junction statement as the value of
 	// RelationSchema.TenantColumn. Required when the schema declares a
-	// TenantColumn — rendering fails without it unless Unscoped is set
-	//. Ignored for unscoped junctions.
+	// TenantColumn: rendering fails without it unless Unscoped is set.
+	// Ignored for unscoped junctions.
 	TenantValue any
 	// Unscoped deliberately renders a tenant-scoped junction without a
 	// tenant predicate. Never set it on a request path.

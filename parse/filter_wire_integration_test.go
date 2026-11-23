@@ -17,7 +17,7 @@ import (
 	"github.com/ashtonian/pkg/parse/internal/dbtest"
 )
 
-// N02: JSON integers at the edge of the portable domain select exactly the
+// JSON integers at the edge of the portable domain select exactly the
 // matching document on SQLite and PostgreSQL — no neighbour rounds onto it.
 func TestJSONIntegerEdges_SameRowsOnEveryBackend(t *testing.T) {
 	schema := &filter.ResourceSchema{Name: "docs", Fields: map[string]*filter.FieldSchema{
@@ -70,7 +70,7 @@ func queryInts(t *testing.T, db *sql.DB, q string, args []any) []int {
 	return out
 }
 
-// C04: through a native pgx connection — the production driver — UUID
+// Through a native pgx connection — the production driver — UUID
 // include keys come back in the canonical text items carry.
 func TestIncludeQuery_NativePgxUUIDKeysAreCanonicalText(t *testing.T) {
 	ctx := context.Background()
