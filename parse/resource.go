@@ -864,19 +864,19 @@ func (r *Resource[T]) WithPaths(decls ...filter.PathDecl) (*Resource[T], error) 
 		}
 		w, err := r.gen.MemberWire(f.Type, strings.Split(members, "."))
 		if err != nil {
-			return nil, fmt.Errorf("%s: path %q: %w", r.table, d.Path, err)
+			return nil, fmt.Errorf("parse: %s: path %q: %w", r.table, d.Path, err)
 		}
 		if w != "" {
-			return nil, fmt.Errorf("%s: path %q: json:\",string\" stores the member as text, which its path cannot compare; drop the option, or declare the member a string", r.table, d.Path)
+			return nil, fmt.Errorf("parse: %s: path %q: json:\",string\" stores the member as text, which its path cannot compare; drop the option, or declare the member a string", r.table, d.Path)
 		}
 	}
 	fs, err := r.filterSchema.WithPaths(decls...)
 	if err != nil {
-		return nil, fmt.Errorf("%s: %w", r.table, err)
+		return nil, fmt.Errorf("parse: %s: %w", r.table, err)
 	}
 	ss, err := r.sortSchema.WithPaths(r.filterSchema, decls...)
 	if err != nil {
-		return nil, fmt.Errorf("%s: %w", r.table, err)
+		return nil, fmt.Errorf("parse: %s: %w", r.table, err)
 	}
 	if err := r.readExprs.checkDocuments(fs, ss); err != nil {
 		return nil, err

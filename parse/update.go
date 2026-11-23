@@ -37,7 +37,13 @@ func (t Target) empty() bool {
 }
 
 // ErrNoTarget is an update built without keys or a non-empty filter.
-var ErrNoTarget = errors.New("parse: an update needs a key or a filter")
+var ErrNoTarget = errors.New("an update needs a key or a filter")
+
+// ErrKeyInvalid is a target key, ByID's, ByIDs' or an update batch row's,
+// the key column cannot hold: a value of another Go type, or text that is
+// not a UUID for a UUID key. The key is the server's, from its route or its
+// store, so a client never sees it as a filter error.
+var ErrKeyInvalid = errors.New("not a value of the key column's type")
 
 // ErrForeign is a request value a resource did not parse handed to it: a
 // ListRequest, filter or patch another resource parsed, a WithPaths view's
@@ -48,7 +54,7 @@ var ErrForeign = errors.New("not parsed by this resource")
 // ErrUpdateScope is an update built with a widening Scope: an update
 // reaches only its own tenant's live rows, so Governance and IncludeDeleted
 // do not apply to it.
-var ErrUpdateScope = errors.New("parse: an update reaches only its tenant's live rows")
+var ErrUpdateScope = errors.New("an update reaches only its tenant's live rows")
 
 // Dialect is the dialect the filter and the patch compiler both speak:
 // filter.PostgresDialect or filter.SQLiteDialect.
@@ -148,7 +154,8 @@ func (p *UpdatePlan) HasRelations() bool { return len(p.relations) > 0 }
 // WHERE. A tenant-scoped resource needs s.Tenant (ErrTenantRequired), which
 // every tenant column it reaches must hold (ErrTenantInvalid); a patch or a
 // ByFilter filter the resource did not parse is ErrForeign; a zero Target
-// is ErrNoTarget; Governance or IncludeDeleted is ErrUpdateScope; a dialect
+// is ErrNoTarget, and a key the key column cannot hold ErrKeyInvalid;
+// Governance or IncludeDeleted is ErrUpdateScope; a dialect
 // a computed column's expression (ReadExpr) refuses is an error.
 func (r *Resource[T]) BuildUpdate(d Dialect, p *patch.ParsedPatch, target Target, s Scope, opts ...UpdateOption) (*UpdatePlan, error) {
 	if err := r.ownsPatch(p, "patch"); err != nil {
@@ -162,14 +169,17 @@ func (r *Resource[T]) BuildUpdate(d Dialect, p *patch.ParsedPatch, target Target
 		return nil, err
 	}
 	if target.empty() {
-		return nil, fmt.Errorf("%s: %w", r.table, ErrNoTarget)
+		return nil, fmt.Errorf("parse: %s: %w", r.table, ErrNoTarget)
+	}
+	if target.keys, err = r.targetKeys(target.keys); err != nil {
+		return nil, err
 	}
 	tenant, err := r.bindTenant(s.Tenant)
 	if err != nil {
 		return nil, err
 	}
 	if s.Governance != nil || s.IncludeDeleted {
-		return nil, fmt.Errorf("%s: %w", r.table, ErrUpdateScope)
+		return nil, fmt.Errorf("parse: %s: %w", r.table, ErrUpdateScope)
 	}
 	cfg, patchOpts, err := r.updateOptions(opts)
 	if err != nil {
@@ -291,6 +301,39 @@ func (r *Resource[T]) Unchanged(changed, current []T) ([]T, error) {
 	return out, nil
 }
 
+// targetKeys are keys, a target's, as the key column holds them: the values
+// every statement binds. A key of the wrong type is ErrKeyInvalid, refused
+// as the key it is before any constraint binds it.
+func (r *Resource[T]) targetKeys(keys []any) ([]any, error) {
+	if len(keys) == 0 {
+		return nil, nil
+	}
+	out := make([]any, len(keys))
+	for i, key := range keys {
+		v, err := r.normalizeKey(key)
+		if err != nil {
+			if len(keys) == 1 {
+				return nil, fmt.Errorf("parse: %s: target key: %w", r.table, err)
+			}
+			return nil, fmt.Errorf("parse: %s: target key %d: %w", r.table, i, err)
+		}
+		out[i] = v
+	}
+	return out, nil
+}
+
+// normalizeKey is key in the key column's canonical form, as a policy on
+// the key column normalizes its value; ErrKeyInvalid when the column cannot
+// hold it.
+func (r *Resource[T]) normalizeKey(key any) (any, error) {
+	info := core.TypeOf(r.tableColumns[r.pk])
+	v, err := core.NormalizeScalar(info.Type, info.NumberKind, key)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %w", ErrKeyInvalid, err)
+	}
+	return v, nil
+}
+
 // rowKey is row's key as a map key: the value a pointer key points to, since
 // rows scanned apart hold distinct pointers to equal keys.
 func (r *Resource[T]) rowKey(row T) (any, error) {
@@ -376,7 +419,7 @@ func (r *Resource[T]) RelationStatements(plan *UpdatePlan, ownerKeys []any) ([]p
 		}
 		stmts, err := patch.RenderRelationOp(op, plan.dialect, ownerKeys, opts)
 		if err != nil {
-			return nil, fmt.Errorf("%s: relation %q: %w", r.table, op.Field, err)
+			return nil, fmt.Errorf("parse: %s: relation %q: %w", r.table, op.Field, err)
 		}
 		out = append(out, stmts...)
 	}
@@ -441,13 +484,13 @@ func (r *Resource[T]) updateOptions(opts []UpdateOption) (updateConfig, []patch.
 	var patchOpts []patch.PatchSQLOption
 	if cfg.stampColumn != "" {
 		if _, ok := r.tableColumns[cfg.stampColumn]; !ok || !core.IsIdentifier(cfg.stampColumn) {
-			return updateConfig{}, nil, fmt.Errorf("%s: stamp column %q is not a column of the resource", r.table, cfg.stampColumn)
+			return updateConfig{}, nil, fmt.Errorf("parse: %s: stamp column %q is not a column of the resource", r.table, cfg.stampColumn)
 		}
 		if r.computed(cfg.stampColumn) {
 			return updateConfig{}, nil, r.readExprs.writeError(cfg.stampColumn, "is stamped")
 		}
 		if cfg.stampSQL == "" && cfg.stampValue.IsZero() {
-			return updateConfig{}, nil, fmt.Errorf("%s: stamp column %q has no time", r.table, cfg.stampColumn)
+			return updateConfig{}, nil, fmt.Errorf("parse: %s: stamp column %q has no time", r.table, cfg.stampColumn)
 		}
 		if cfg.stampSQL != "" {
 			patchOpts = append(patchOpts, patch.WithAutoTimestampSQL(cfg.stampColumn, cfg.stampSQL))
@@ -459,13 +502,13 @@ func (r *Resource[T]) updateOptions(opts []UpdateOption) (updateConfig, []patch.
 	for _, col := range cfg.increments {
 		t, ok := r.tableColumns[col]
 		if !ok || !core.IsIdentifier(col) {
-			return updateConfig{}, nil, fmt.Errorf("%s: increment column %q is not a column of the resource", r.table, col)
+			return updateConfig{}, nil, fmt.Errorf("parse: %s: increment column %q is not a column of the resource", r.table, col)
 		}
 		if r.computed(col) {
 			return updateConfig{}, nil, r.readExprs.writeError(col, "is incremented")
 		}
 		if core.TypeOf(t).Type != core.FieldTypeInt {
-			return updateConfig{}, nil, fmt.Errorf("%s: increment column %q is not an integer column", r.table, col)
+			return updateConfig{}, nil, fmt.Errorf("parse: %s: increment column %q is not an integer column", r.table, col)
 		}
 		patchOpts = append(patchOpts, patch.WithIncrement(col))
 	}
@@ -482,7 +525,7 @@ func (r *Resource[T]) updateOptions(opts []UpdateOption) (updateConfig, []patch.
 func (r *Resource[T]) checkAssignments(assignments []patch.ColumnAssignment, builder string) error {
 	for _, assignment := range assignments {
 		if assignment.Column == r.pk || (r.tenant != "" && assignment.Column == r.tenant) {
-			return fmt.Errorf("%s: %s cannot change identity column %s", r.table, builder, assignment.Column)
+			return fmt.Errorf("parse: %s: %s cannot change identity column %s", r.table, builder, assignment.Column)
 		}
 	}
 	return nil

@@ -357,7 +357,7 @@ func (s Scope) governed() bool { return s.Governance != nil && !s.Governance.IsE
 // ErrTenantRequired is a list of a tenant-scoped resource built with
 // neither Scope.Tenant nor Scope.Governance, or an update without
 // Scope.Tenant. It is the server's mistake, never the request's.
-var ErrTenantRequired = errors.New("parse: a tenant-scoped resource is listed without Scope.Tenant")
+var ErrTenantRequired = errors.New("a tenant-scoped resource needs Scope.Tenant")
 
 // Statement is one parameterized SQL statement.
 type Statement struct {

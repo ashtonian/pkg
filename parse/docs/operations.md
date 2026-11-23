@@ -18,9 +18,16 @@
 
 A cursor is a position, not a permission. Always reapply authorization, soft-delete policy, and tenant scope after decoding it. Schema discovery describes capabilities, not per-user write permission. `parse:"server"` belongs only on fields written through trusted `ParseServerMergePatch` calls.
 
+### Server errors
+
+Errors the root package returns read `parse: <table>: <operation or field>: <cause>`, naming the package and the table once; a sentinel (`ErrTenantRequired`, `ErrTenantInvalid`, `ErrKeyInvalid`, `ErrNoTarget`, `ErrUpdateScope`, `ErrForeign`, `ErrRegistered`, `ErrUpdateBatchTargets`) carries no prefix of its own, so branch on it with `errors.Is`. These are the server's mistakes, never the request's: none is a `core.ParseError`, and none should reach a client as a 4xx.
+
+- `ErrTenantRequired`, `parse: devices: a tenant-scoped resource needs Scope.Tenant`: a list (without `Scope.Governance` either) or an update of a resource with a tenant column was built without the server's tenant. Check the middleware that sets `Scope.Tenant`.
+- `ErrKeyInvalid`, for example `parse: devices: target key: not a value of the key column's type: expected string, got int`, or `update batch row 2 key: …` from `BuildUpdateBatch`: the key `ByID`, `ByIDs` or a batch row named is not of the key column's Go type, or not a UUID for a UUID key. Convert the route parameter to the key's type before building; nothing was sent to the database.
+
 ### Tenant key errors
 
-- `ErrTenantInvalid`, for example `devices: parse: Scope.Tenant is not a value of the tenant column's type: commands.tenant_id: 3000000000 overflows int32`: the server's tenant does not fit the named column, which the resource reaches through a relation (a bare column name is the resource's own). Check where the server reads the tenant. If the tenant is right, the named field is narrower than the tenant keys: widen it in Go and in the database. Nothing was sent to the database.
+- `ErrTenantInvalid`, for example `parse: devices: Scope.Tenant is not a value of the tenant column's type: commands.tenant_id: 3000000000 overflows int32`: the server's tenant does not fit the named column, which the resource reaches through a relation (a bare column name is the resource's own). Check where the server reads the tenant. If the tenant is right, the named field is narrower than the tenant keys: widen it in Go and in the database. Nothing was sent to the database.
 - A `Relate` error naming two tenant columns that "hold different types": one request would bind its tenant to a string or UUID column and an integer one. Give them one type (strings and UUIDs agree, as do integers of any width). The error names the resource that reaches both when it is not the one being related.
 - A pair table's tenant column binds the tenant as the type of the typed tenant columns its resource reaches ([Tenant key](relations.md#tenant-key)). A driver error comparing it means the database column is of another type.
 

@@ -89,12 +89,12 @@ func (h *schemaHandler) respond(w http.ResponseWriter, req *http.Request, status
 	body, err := httpjson.Encode(doc)
 	if err != nil {
 		code := ECodeSchemaEncodingFailed
-		h.report(req, fmt.Errorf("%w: %w", code, err))
+		h.report(req, fmt.Errorf("parse: encoding schema document: %w: %w", code, err))
 		// The cause names Go types; the client gets the catalog message only.
 		status, body = code.ErrorHTTPStatus(), httpjson.EncodeError(code.String(), code.ErrorMessage())
 	}
 	if err := httpjson.Send(w, status, body); err != nil {
-		h.report(req, fmt.Errorf("writing schema response: %w", err))
+		h.report(req, fmt.Errorf("parse: writing schema response: %w", err))
 	}
 }
 

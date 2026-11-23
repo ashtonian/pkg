@@ -121,7 +121,7 @@ A server that builds a patch need not encode JSON to parse it back. `MergePatchM
 plan, err := products.BuildUpdate(filter.PostgresDialect{}, parsed, parse.ByID(id),
 	parse.Scope{Tenant: tenantID, Policy: policy},
 	parse.StampSQL("updated_at", "NOW()"))
-if err != nil { /* ErrNoTarget, ErrUpdateScope, ErrTenantRequired, ErrTenantInvalid or a patch error */ }
+if err != nil { /* ErrNoTarget, ErrKeyInvalid, ErrUpdateScope, ErrTenantRequired, ErrTenantInvalid or a patch error */ }
 
 res, err := parsepgx.Update(ctx, pool, products, plan) // parsesql.Update on SQLite
 if err != nil { /* the database's error; the row and membership changes are rolled back together */ }
@@ -142,7 +142,7 @@ The rows `Owner` returns are the rows the scope admits. Zero rows means the targ
 
 | Option / target | Effect |
 |---|---|
-| `ByID(id)`, `ByIDs(ids...)`, `ByFilter(f)` | The rows to change; a zero target is `ErrNoTarget` rather than every row |
+| `ByID(id)`, `ByIDs(ids...)`, `ByFilter(f)` | The rows to change; a zero target is `ErrNoTarget` rather than every row, and a key the key column cannot hold is `ErrKeyInvalid`, refused as the key before any statement binds it |
 | `Stamp(column, at)` | Set `column` to `at` on every update that writes a column; `at` must be non-zero |
 | `StampSQL(column, expr)` | Set `column` to the trusted SQL `expr` — the database clock, such as `NOW()` |
 | `Increment(column)` | Set the integer `column` to one more than it holds on every update that writes a column — a version the server moves; `RETURNING` reports the moved value. Repeat for each counter; composes with the stamp |
