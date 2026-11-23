@@ -134,7 +134,7 @@ Provider source options:
 
 | Option | Default | Description |
 |---|---|---|
-| `WithInvalidEntries(report)` | fail on invalid entries | Withhold the entries the final configuration fails on, judged against every source together with every other source's entries under the option; keep entries valid with the rest alone; retain lower sources; report sorted keys/errors on every load, once every source is read. Unknown keys remain reportable. |
+| `WithInvalidEntries(report)` | fail on invalid entries | Withhold each entry that fails at a key it sets in the configuration every source makes, beside the entries it does not fail at; decode failures and field rules only, before secrets, hooks and `Validate`. A failure at no key or under a higher source not using the option withholds nothing. At most 2k+1 judgements for k entries blamed. Retain lower sources; report sorted keys/errors on every load, once every source is read. Unknown keys remain reportable. |
 | `WithUnknownEntries(report)` | the load's handler; unknown keys fail | Send the keys this source sets that no field reads to report instead of `WithUnknownKeys`: nil goes on, an error fails with `ErrValidation`, a nil report accepts them. A key is the source's when it set everything the merge keeps there. |
 
 `Defaulter`, `CheckKey`, `DecodeKey`, `CanonicalKey`, `DecodeEdits` and the

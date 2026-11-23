@@ -138,7 +138,7 @@ func TestWithInvalidEntriesFailureBoundaries(t *testing.T) {
 	_, err = Load[keyConfig](t.Context(), WithBaseProvider(p, nil, WithInvalidEntries(func(context.Context, []KeyError) error { return failed })))
 	require.ErrorIs(t, err, ErrSource)
 	require.ErrorIs(t, err, failed)
-	// Both entries pass individually against defaults; their combination fails.
+	// A Validate method's failure withholds no entry; the load fails with it.
 	_, err = Load[keyConfig](t.Context(), WithBaseProvider(confmap.Provider(map[string]any{"port": 2, "floor": 3}, ""), nil, WithInvalidEntries(nil)))
 	require.ErrorIs(t, err, ErrValidation)
 }
@@ -297,24 +297,13 @@ func TestDecodeKey_ListIndexBoundsAndDetachedDefaults(t *testing.T) {
 }
 
 // CheckKey judges the whole candidate, so a rule relating an edited entry to
-// one it leaves in place sees that entry, typed or not — and so does a
-// provider's entry filter, which uses the same check.
+// one it leaves in place sees that entry, typed or not.
 func TestCheckKey_ValidatorSeesTheSiblingsAnEditKeeps(t *testing.T) {
 	for _, typed := range []bool{true, false} {
 		defaults := WithDefaults(editDefaults(typed))
 		require.ErrorIs(t, CheckKey[editConfig](t.Context(), `addresses["first"].port`, 2, defaults), ErrValidation,
 			"typed defaults: %v: the edit collides with the second address", typed)
 		require.NoError(t, CheckKey[editConfig](t.Context(), `addresses["first"].port`, 3, defaults))
-
-		var rejected []KeyError
-		stored := map[string]any{"addresses": map[string]any{"first": map[string]any{"port": 2}}, "primary": map[string]any{"port": 6}}
-		got, err := Load[editConfig](t.Context(), defaults, WithOverrideProvider(confmap.Provider(stored, ""), nil,
-			WithInvalidEntries(func(_ context.Context, entries []KeyError) error { rejected = entries; return nil })))
-		require.NoError(t, err)
-		require.Len(t, rejected, 1)
-		assert.Equal(t, "addresses", rejected[0].Key)
-		assert.Equal(t, map[string]editServer{"first": {"a", 1}, "second": {"b", 2}}, got.Addresses)
-		assert.Equal(t, editServer{"p", 6}, got.Primary)
 	}
 }
 

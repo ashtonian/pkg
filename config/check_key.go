@@ -8,6 +8,7 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/go-viper/mapstructure/v2"
 	"github.com/knadh/koanf/v2"
 
 	"github.com/ashtonian/pkg/config/internal/deepcopy"
@@ -337,22 +338,15 @@ func (c *keyChecker) baselineTree(cfg reflect.Value) (map[string]any, unkeyedSec
 	return base, unkeyed, nil
 }
 
-// decode decodes tree, a tree as the merge holds it, with the options' hooks,
-// sets the koanf:"-" fields unkeyed holds, and validates the result. The
-// keys of tree no field reads are unknown, apart from err. result is the
-// decoded config, a *T, whenever decoding succeeded, so a caller can read
-// what failed validation; it is valid only when neither err nor unknown is
-// set.
+// decode decodes tree, a tree as the merge holds it, as decodeTree does, and
+// validates the result as a load does. The keys of tree no field reads are
+// unknown, apart from err. result is the decoded config, a *T, valid only
+// when neither err nor unknown is set.
 func (c *keyChecker) decode(ctx context.Context, tree map[string]any, unkeyed unkeyedSections) (result any, unknown *UnknownKeysError, err error) {
-	if err := newElementDefaults(c.options, false).fill(c.root, tree); err != nil {
+	out, md, err := c.decodeTree(tree, unkeyed)
+	if err != nil {
 		return nil, nil, err
 	}
-	out := reflect.New(c.root)
-	md, err := c.options.decodeInput(c.schema, tree, out.Interface(), nil)
-	if err != nil {
-		return nil, nil, fmt.Errorf("%w: %w", ErrValidation, err)
-	}
-	unkeyed.apply(c.schema, out.Elem())
 	validation := c.options.validateConfig(ctx, out.Interface())
 	if len(md.Unused) > 0 {
 		unknown = &UnknownKeysError{Type: c.root}
@@ -361,4 +355,21 @@ func (c *keyChecker) decode(ctx context.Context, tree map[string]any, unkeyed un
 		}
 	}
 	return out.Interface(), unknown, validation
+}
+
+// decodeTree decodes tree, a tree as the merge holds it, into a new *T with
+// the options' hooks, filling the element defaults and setting the
+// koanf:"-" fields unkeyed holds, as a load decodes its merge. md records
+// the keys of tree no field read. A failure to decode is ErrValidation.
+func (c *keyChecker) decodeTree(tree map[string]any, unkeyed unkeyedSections) (out reflect.Value, md mapstructure.Metadata, err error) {
+	if err := newElementDefaults(c.options, false).fill(c.root, tree); err != nil {
+		return reflect.Value{}, md, err
+	}
+	out = reflect.New(c.root)
+	md, err = c.options.decodeInput(c.schema, tree, out.Interface(), nil)
+	if err != nil {
+		return reflect.Value{}, md, fmt.Errorf("%w: %w", ErrValidation, err)
+	}
+	unkeyed.apply(c.schema, out.Elem())
+	return out, md, nil
 }

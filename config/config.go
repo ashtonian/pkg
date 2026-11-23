@@ -545,28 +545,11 @@ func (o *options) validateConfig(ctx context.Context, cfg any) error {
 		return err
 	}
 	if !o.skipValid {
-		var err error
-		if o.validator == nil {
-			err = validateDefault(ctx, cfg)
+		if err := o.fieldRules(ctx, cfg); err != nil {
 			if errors.Is(err, ErrSchema) {
 				return err
 			}
-		} else {
-			err = validate(ctx, o.validator, cfg)
-		}
-		if err != nil {
-			// The validator's error is kept whole as the cause, so a
-			// wrapper's own sentinels and types stay reachable; go-playground
-			// field errors found inside it only shape the message.
-			summary := err.Error()
-			var ve validator.ValidationErrors
-			if errors.As(err, &ve) {
-				summary = fieldErrorSummary(reflect.ValueOf(cfg), ve)
-			}
-			return &validationError{
-				msg:   fmt.Sprintf("validating config: %s: %s", ErrValidation, summary),
-				cause: err,
-			}
+			return ruleViolation(reflect.ValueOf(cfg), err)
 		}
 		if v, ok := any(cfg).(Validatable); ok {
 			if err := v.Validate(); err != nil {
@@ -577,8 +560,36 @@ func (o *options) validateConfig(ctx context.Context, cfg any) error {
 			}
 		}
 	}
-
 	return ended(ctx)
+}
+
+// fieldRules runs the load's validator over cfg — the default validator's
+// tags, or WithValidator's — without the Validate method a load runs after
+// it. It is nil under WithSkipValidation.
+func (o *options) fieldRules(ctx context.Context, cfg any) error {
+	switch {
+	case o.skipValid:
+		return nil
+	case o.validator == nil:
+		return validateDefault(ctx, cfg)
+	}
+	return validate(ctx, o.validator, cfg)
+}
+
+// ruleViolation is err, the validator's failure for cfg, as a load reports
+// it: ErrValidation with err kept whole as the cause, so a wrapper's own
+// sentinels and types stay reachable. The go-playground field errors found
+// inside it only shape the message, each named by its key.
+func ruleViolation(cfg reflect.Value, err error) error {
+	summary := err.Error()
+	var ve validator.ValidationErrors
+	if errors.As(err, &ve) {
+		summary = fieldErrorSummary(cfg, ve)
+	}
+	return &validationError{
+		msg:   fmt.Sprintf("validating config: %s: %s", ErrValidation, summary),
+		cause: err,
+	}
 }
 
 // bind gives a ContextProvider the load's context.
@@ -1025,17 +1036,47 @@ var (
 // comparing against a value of a sensitive field would reveal it. A field
 // the param names that cannot be found keeps its Go name.
 func keyedParam(cfg reflect.Value, root *schemaNode, fe validator.FieldError) (string, bool) {
+	tokens, fields := ruleFieldParams(fe)
+	if fields == nil {
+		return fe.Param(), true
+	}
+	for _, f := range fields {
+		p, exact := validatorKey(cfg, f.ns)
+		if !exact || len(p) == 0 {
+			continue
+		}
+		if fieldValueParamRules[fe.Tag()] && root != nil {
+			if c, n, err := root.walkTo(cursor{}, p); err != nil || c.sensitive() || mayHoldSensitive(n.typ, map[reflect.Type]bool{}) {
+				return "", false
+			}
+		}
+		tokens[f.token] = p.String()
+	}
+	return strings.Join(tokens, " "), true
+}
+
+// paramField is a field a cross-field rule's param names: the position of
+// its token among the param's, and its validator namespace.
+type paramField struct {
+	token int
+	ns    string
+}
+
+// ruleFieldParams is fe's param split as the validator splits it, and each
+// field it names when fe's rule compares fields; fields is nil for any other
+// rule. A param names fields of the struct holding fe's field, by Go name,
+// a dotted one reaching into a struct beneath it; an unnamed root's own
+// fields have no namespace above them.
+func ruleFieldParams(fe validator.FieldError) (tokens []string, fields []paramField) {
 	rule, param := fe.Tag(), fe.Param()
 	if !fieldParamRules[rule] && !fieldValueParamRules[rule] && !fieldListParamRules[rule] {
-		return param, true
+		return []string{param}, nil
 	}
-	// The fields a param names are the holding struct's; an unnamed root's
-	// own fields have no namespace above them.
 	var parent string
 	if p, ok := parentNamespace(fe.StructNamespace()); ok {
 		parent = p + "."
 	}
-	tokens := []string{param}
+	tokens = []string{param}
 	if !fieldParamRules[rule] {
 		tokens = ruleParams.FindAllString(param, -1)
 	}
@@ -1043,18 +1084,9 @@ func keyedParam(cfg reflect.Value, root *schemaNode, fe validator.FieldError) (s
 		if fieldValueParamRules[rule] && i%2 == 1 {
 			continue // a value, not a field
 		}
-		p, exact := validatorKey(cfg, parent+token)
-		if !exact || len(p) == 0 {
-			continue
-		}
-		if fieldValueParamRules[rule] && root != nil {
-			if c, n, err := root.walkTo(cursor{}, p); err != nil || c.sensitive() || mayHoldSensitive(n.typ, map[reflect.Type]bool{}) {
-				return "", false
-			}
-		}
-		tokens[i] = p.String()
+		fields = append(fields, paramField{token: i, ns: parent + token})
 	}
-	return strings.Join(tokens, " "), true
+	return tokens, fields
 }
 
 // parentNamespace is the validator namespace of the struct holding the field

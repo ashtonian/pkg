@@ -14,34 +14,43 @@ func (o *options) decodeInput(root *schemaNode, tree map[string]any, out any, ob
 		return md, err
 	}
 	if err := decoder.Decode(tree); err != nil {
-		return md, &decodeFailures{err: decodeErrors(root, tree, err), at: failedKeys(root, tree, err)}
+		return md, &decodeFailures{err: decodeErrors(root, tree, err), each: placeDecodeFailures(root, tree, err)}
 	}
 	return md, nil
 }
 
 // decodeFailures is a decode's failure, err as decodeErrors rewrites it,
-// with the key of each failure it holds, which WithInvalidEntries
-// attributes to the entries setting it. It adds no text, and errors.As
+// with each failure it holds placed at its key, which WithInvalidEntries
+// attributes to the entry setting that key. It adds no text, and errors.As
 // still reaches what err holds.
 type decodeFailures struct {
-	err error
-	at  []keyPath
+	err  error
+	each []placedFailure
 }
 
 func (e *decodeFailures) Error() string { return e.err.Error() }
 func (e *decodeFailures) Unwrap() error { return e.err }
 
-// failedKeys is the key of every *mapstructure.DecodeError in err, a
-// decode of tree: the one treeKey proves from the decoder's name for it,
-// exact or the nearest it can prove.
-func failedKeys(root *schemaNode, tree any, err error) []keyPath {
-	var at []keyPath
+// placedFailure is one *mapstructure.DecodeError of a decode: the key
+// treeKey proves from the decoder's name for it, whether that key is all of
+// the name, and the error as decodeErrors rewrites it.
+type placedFailure struct {
+	at    keyPath
+	exact bool
+	err   error
+}
+
+// placeDecodeFailures places every *mapstructure.DecodeError in err, a
+// decode of tree.
+func placeDecodeFailures(root *schemaNode, tree any, err error) []placedFailure {
+	var out []placedFailure
 	var walk func(error)
 	walk = func(e error) {
 		switch u := e.(type) {
 		case *mapstructure.DecodeError:
-			p, _, _, _ := treeKey(root, tree, u.Name())
-			at = append(at, p)
+			p, _, _, exact := treeKey(root, tree, u.Name())
+			rewritten, _ := withhold(root, tree, u)
+			out = append(out, placedFailure{at: p, exact: exact, err: rewritten})
 		case interface{ Unwrap() []error }:
 			for _, inner := range u.Unwrap() {
 				walk(inner)
@@ -51,5 +60,5 @@ func failedKeys(root *schemaNode, tree any, err error) []keyPath {
 		}
 	}
 	walk(err)
-	return at
+	return out
 }

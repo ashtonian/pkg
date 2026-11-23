@@ -70,6 +70,21 @@ func (v cancelingValidator) Struct(any) error {
 	return nil
 }
 
+// cancelingLater runs the default validator's rules and ends the load's
+// context as it validates for the second time: the judge's test of an entry
+// its first judgement blamed.
+type cancelingLater struct {
+	cancel context.CancelCauseFunc
+	calls  *int
+}
+
+func (v cancelingLater) Struct(cfg any) error {
+	if *v.calls++; *v.calls == 2 {
+		v.cancel(errShutdown)
+	}
+	return defaultValidator().Struct(cfg)
+}
+
 // A load whose context ends inside a stage — the validator as the judge or
 // the load runs it, or a report a later source's report would follow —
 // fails as abandoned, as at every other stage, the cause still reachable.
@@ -85,6 +100,12 @@ func TestLoad_EndedInsideAStageFailsAsAbandoned(t *testing.T) {
 			return []Option{
 				entries(map[string]any{"name": "a"}, WithInvalidEntries(func(context.Context, []KeyError) error { return nil })),
 				WithValidator(cancelingValidator{cancel}),
+			}
+		}},
+		{"testing a blamed entry", func(cancel context.CancelCauseFunc) []Option {
+			return []Option{
+				entries(map[string]any{"port": 0, "name": "a"}, WithInvalidEntries(func(context.Context, []KeyError) error { return nil })),
+				WithValidator(cancelingLater{cancel: cancel, calls: new(int)}),
 			}
 		}},
 		{"reporting withheld entries", func(cancel context.CancelCauseFunc) []Option {

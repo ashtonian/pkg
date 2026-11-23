@@ -19,44 +19,55 @@ type SourceOption func(*providerSource)
 //
 // An entry of a provider is a struct section's field, checked field by
 // field; a collection or self-decoding value is one entry. An entry of
-// [WithBaseEntries] or [WithOverrideEntries] is one stored key. Entries are
-// judged against the final configuration: every source of the load, the
-// defaults included, merged in rank order, decoded and validated as Load
-// does before secrets and post-load hooks. The entries of every source
-// this option applies to are judged together, in rank order and by key
-// within a source, over the rest of what the sources set.
+// [WithBaseEntries] or [WithOverrideEntries] is one stored key.
 //
-// When the final configuration passes with every entry, all are kept.
-// Otherwise an entry that passes with the rest alone is always kept, so
-// entries each valid that break a rule together fail the load rather than
-// one being chosen for discarding. When some set of the others passes
-// beside those, the load goes on with the entries kept, and each one
-// withheld fails when added to them. When none does, every entry merges
-// but those a failure was attributed to, and the load fails as that
-// configuration does. Every entry withheld is in the report.
+// Entries are judged in the configuration every source makes: the sources
+// merged in rank order over the defaults, the entries of every source this
+// option applies to among them, decoded as Load decodes and checked against
+// the validator's field rules — the default validator's tags, or
+// [WithValidator]'s. An entry is withheld when it fails at a key it sets
+// beside the entries the configuration does not fail at. A failure at no
+// key, and one at a key a source not judged sets above the entries,
+// withholds nothing: the load fails with it.
 //
-// A failure is attributed to the entries setting its key, a key holding it
-// or a key beneath it, from the highest-ranked source among them: an entry
-// a higher one sets over is not at fault. A rule naming a field beside its
-// own (ltefield, required_with) is attributed to the struct holding both;
-// a Validate method's error, a WithValidator validator's that names no
-// field and a rule naming another struct's field are attributed to none.
-// The entries a failure names are set aside until the rest pass; then
-// each entry set aside is retried, in order, until a pass keeps none more,
-// so an entry that needs another — a list element after the one before
-// it, a field its section requires — is kept with it whichever comes
-// first.
+// A failure is at keys: a value that does not decode at its key, a field
+// rule at its field's, and a rule comparing fields (eqfield, ltefield,
+// required_with, eqcsfield, ...) at each field it names as well. It is
+// blamed on the entry that set the key last: the highest-ranked source to
+// set it, and within a source the entry applied last. An entry sets a key
+// when what it merges holds the key, or replaces a key holding it whole —
+// with a value that is not a map, or a typed map or section; an entry
+// whose map merges key by key and holds nothing at the key does not. An
+// entry the merge cannot set, such as an index past the next element, is
+// blamed for that. A Validate method's error, a WithValidator validator's
+// that holds no field errors, and a failure the decoder places beneath a
+// map it decodes whole are at no key. Under [WithSkipValidation] only
+// values that do not decode and entries that cannot be set are blamed.
+//
+// Each round judges the entries left and tests every entry it blames for
+// the first time beside the entries it does not blame: an entry blamed
+// there is withheld, and one that is not is kept, so entries each valid
+// that break a rule together are kept and the load fails on that rule.
+// Rounds repeat until one withholds nothing, so an entry left unable to
+// apply by one withheld — pool[2] once pool[1] goes — is found by the next.
+//
+// Entries are judged before secrets, post-load hooks and Validate methods,
+// which run once, in the load: a field rule comparing an entry's key with
+// a field they fill judges against the value before they fill it, and a
+// required field they fill blames no entry.
 //
 // Every source is read before any entry is judged: report runs only once
-// the last source is read, so a slow provider delays it, and a source
-// that fails to read fails the load with nothing reported.
+// the last source is read, so a slow provider delays it, and a source that
+// fails to read fails the load with nothing reported.
 //
-// Judging merges the sources from the lowest this option applies to up
-// and decodes the result: once when every entry passes, and otherwise, for
-// n entries of which k fail with the rest alone, at most
-// 2 + n + k + k(k+1)/2 times. Each merge starts over from a copy of what
-// lies beneath those sources and copies the configuration tree once for
-// each source it merges and once more to decode.
+// A judgement merges the sources from the lowest this option applies to
+// up, decodes the result and runs the field rules. Judging takes one
+// judgement when it blames no entry and, for k entries it ever blames, at
+// most 2k+1, however many entries there are: each blamed entry is tested
+// at most once, and each round but the last withholds at least one, so
+// there are at most k tests and k+1 rounds. Each judgement starts from a
+// copy of what lies beneath those sources and copies the configuration
+// tree once for each source it merges and once more to decode.
 //
 // Unknown entries remain available to the unknown-input handler — the
 // load's, or this source's [WithUnknownEntries] report — including

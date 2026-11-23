@@ -259,35 +259,48 @@ values intact. A provider's entries are its struct sections' fields, checked
 field by field; a collection or self-decoding value is one entry. An entry
 of `WithBaseEntries` or `WithOverrideEntries` is one stored key.
 
-Entries are judged against the final configuration: every source of the
-load, the defaults included, merged in rank order and then decoded and
-validated as `Load` does before secrets and post-load hooks. The entries of
-every source using the option are judged together, ordered by source rank
-and then by key, over the rest of what the sources set. So a value a
-higher source repairs is no entry's fault, an entry a higher source sets
-over is kept whatever it holds, and a lower source's entry valid beside a
-higher source's is kept with it.
+Entries are judged in the configuration every source makes: the sources
+merged in rank order over the defaults, the entries of every source using
+the option among them, decoded as `Load` decodes and checked against the
+validator's field rules — the default validator's `validate` tags, or
+`WithValidator`'s. **An entry is withheld when it fails at a key it sets,
+beside the entries the configuration does not fail at.** A failure at no key,
+and a failure at a key that a source not using the option sets above the
+entries, withholds nothing: the load fails with it.
 
-- When the final configuration passes with every entry, all are kept.
-- An entry that passes with the rest alone is always kept. Independently
+- **Where a failure is.** A value that does not decode is at its key, and a
+  field rule at its field's. A rule comparing fields (`eqfield`, `ltefield`,
+  `required_with`, `eqcsfield`, …) is also at each field its param names,
+  never at the struct holding them. A `Validate` method's error, a
+  `WithValidator` validator's that holds no field errors, and a failure the
+  decoder places beneath a map it decodes whole are at no key.
+- **Who is blamed.** A failure at a key is blamed on the entry that set the
+  key last: the highest-ranked source to set it, and within a source the
+  entry applied last. An entry sets a key when what it merges holds the key,
+  or replaces a key holding it whole — a value that is not a map, or a typed
+  map or section. An entry whose map merges key by key and holds nothing at
+  the key does not: `db: {host: prod-db}` is not blamed for a missing
+  `db.password`. An entry the merge cannot set, such as `pool[2]` past the
+  next element, is blamed for that.
+- **What is withheld.** Each round judges the entries left and tests every
+  entry it blames for the first time beside the entries it does not blame.
+  An entry blamed there is withheld. One that is not is kept: independently
   valid rows can conflict, and the loader does not choose rows to discard
-  to resolve the conflict: the load fails on it.
-- Otherwise each failure is attributed to the entries setting its key, a
-  key holding it or a key beneath it, from the highest-ranked source among
-  them. A rule naming a field beside its own (`ltefield`, `required_with`)
-  is attributed to the struct holding both; a `Validate` method's error, a
-  `WithValidator` validator's that names no field, and a rule naming a
-  field of another struct are attributed to none. The entries a failure
-  names are set aside until the rest pass. Then each entry set aside is
-  retried in order until a pass keeps none more, and kept when it passes
-  with the entries kept. An entry that needs another —
-  `upstreams["a"].timeout` beside the `upstreams["a"].url` its entry
-  requires, `pool[1]` after `pool[0]`, `a` valid only equal to `b` — is kept
-  with it, whichever comes first.
-- When no set of entries passes — a file that fails and that no entry
-  repairs, a required field nothing sets — every entry merges but those a
-  failure was attributed to, and the load fails as that configuration does.
-  Every entry withheld is in the report; none is dropped without one.
+  to resolve the conflict, so the load fails on it. Rounds repeat until one
+  withholds nothing, so an entry left unable to apply by one withheld —
+  `pool[2]` once `pool[1]` goes — is found by the next round.
+
+So a value a higher source repairs is no entry's fault, an entry a higher
+source sets over is not reported whatever it holds, a lower source's entry
+valid beside a higher source's is kept with it, and a valid `cert_file` and
+`key_file` pair is kept beside a `min_version` that breaks its `ltefield`
+rule, which alone is withheld.
+
+Entries are judged before secrets, post-load hooks and `Validate` methods,
+which run once, in the load. A field rule comparing an entry's key with a
+field they fill therefore judges against the value before they fill it, and
+a required field they fill blames no entry. Under `WithSkipValidation` only
+values that do not decode and entries that cannot be set are blamed.
 
 A load reads every source before it judges any entry, so the callback runs
 only once the last source is read: a slow provider delays it, and a source
@@ -295,12 +308,12 @@ that fails to read fails the load with nothing reported. The callback
 receives sorted key/error pairs on every load, including an empty report;
 nil discards reports. Its error fails the load with `ErrSource`.
 
-Judging merges the sources from the lowest that uses the option up and
-decodes the result: once when every entry passes, and otherwise, for n
-entries of which k fail with the rest alone, at most 2 + n + k + k(k+1)/2
-times — every entry, each entry alone, up to k while entries are set aside,
-the passing entries alone, and the retries, k(k+1)/2 only when each pass
-keeps one entry. Each merge starts from a copy of what lies beneath those
+A judgement merges the sources from the lowest that uses the option up,
+decodes the result and runs the field rules. Judging takes one judgement
+when it blames no entry and, for k entries it ever blames, at most 2k+1,
+however many entries there are: each blamed entry is tested at most once,
+and each round but the last withholds at least one, so there are at most k
+tests and k+1 rounds. One bad row among a thousand costs three judgements. Each judgement starts from a copy of what lies beneath those
 sources and copies the configuration tree once for each source it merges
 and once more to decode.
 

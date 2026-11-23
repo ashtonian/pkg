@@ -187,12 +187,12 @@ func (c *judgedConfig) Validate() error {
 	return nil
 }
 
-// WithInvalidEntries judges an entry over the layers beneath the source
-// with the source's other entries applied: an entry that needs another — a
-// field its map entry requires, the element before it, a limit moved with
-// it — is kept, as is one that needs a lower layer, and an entry invalid
-// however it is applied is withheld. Entries each valid on their own that
-// break a rule together are kept, and the load fails.
+// WithInvalidEntries judges an entry in the final configuration, with
+// every source and the source's other entries applied: an entry that needs
+// another — a field its map entry requires, the element before it, a limit
+// moved with it — is kept, as is one that needs a lower layer, and an entry
+// invalid beside the rest is withheld. Entries that break a Validate
+// method's rule together are kept, and the load fails.
 func TestEntries_WithInvalidEntriesJudgesEntriesInContext(t *testing.T) {
 	file := filepath.Join(t.TempDir(), "config.yaml")
 	writeFile(t, file, "upstreams: {b: {url: https://b.example}}\n")
@@ -341,47 +341,15 @@ func TestEntries_WithInvalidEntriesWithholdsOnlyWhatFails(t *testing.T) {
 	}
 }
 
-// chainConfig's rules name no field: a needs b, b needs c, and z is never
-// valid set.
-type chainConfig struct {
-	A int `koanf:"a"`
-	B int `koanf:"b"`
-	C int `koanf:"c"`
-	Z int `koanf:"z"`
-}
-
-func (c *chainConfig) Validate() error {
-	switch {
-	case c.A > 0 && c.B == 0:
-		return errors.New("a needs b")
-	case c.B > 0 && c.C == 0:
-		return errors.New("b needs c")
-	case c.Z > 0:
-		return errors.New("z is set")
-	}
-	return nil
-}
-
-// Entries a failure names no field of are judged one by one, retried in
-// key order until none more can be kept: a needs b, which comes after it,
-// and is kept with it.
-func TestEntries_WithInvalidEntriesKeepsAChainAgainstKeyOrder(t *testing.T) {
-	got, rejected, err := judged[chainConfig](t, map[string]any{"a": 1, "b": 1, "c": 1, "z": 1}, nil)
-	require.NoError(t, err)
-	assert.Equal(t, chainConfig{A: 1, B: 1, C: 1}, *got)
-	assert.Equal(t, []string{"z"}, rejected)
-}
-
 type orderedConfig struct {
 	Min int `koanf:"min" validate:"ltefield=Max"`
 	Max int `koanf:"max" default:"10"`
 	Bad int `koanf:"bad" validate:"max=5"`
 }
 
-// Entries each valid with the other sources that break a rule together are
-// kept, and the load fails on that rule: neither is chosen for discarding.
-// No set of the other entries can pass beside them, so only an entry a
-// failure names is withheld.
+// Entries that break a rule together, each valid beside the entries not
+// blamed, are kept, and the load fails on that rule: neither is chosen for
+// discarding. An entry breaking a rule of its own beside them is withheld.
 func TestEntries_WithInvalidEntriesKeepsEntriesValidAlone(t *testing.T) {
 	_, rejected, err := judged[orderedConfig](t, map[string]any{"min": 9, "max": 5}, nil)
 	require.ErrorIs(t, err, ErrValidation)
@@ -413,23 +381,6 @@ func TestEntries_WithInvalidEntriesJudgesOverAFailingLayer(t *testing.T) {
 	assert.Equal(t, []string{"bad"}, rejected)
 }
 
-// firstFailureConfig's Validate returns its first failure, a's before b's.
-type firstFailureConfig struct {
-	A    int    `koanf:"a"`
-	B    int    `koanf:"b"`
-	Name string `koanf:"name"`
-}
-
-func (c *firstFailureConfig) Validate() error {
-	switch {
-	case c.A < 0:
-		return errors.New("a is negative")
-	case c.B < 0:
-		return errors.New("b is negative")
-	}
-	return nil
-}
-
 // minMaxConfig's Validate names the values it compares.
 type minMaxConfig struct {
 	Min  int    `koanf:"min"`
@@ -445,9 +396,9 @@ func (c *minMaxConfig) Validate() error {
 }
 
 // A failure of a layer beneath, which a source above repairs, hides none of
-// an entry's and blames none of the entries on it: each check stops at its
-// first failure, so judging an entry over the layers beneath alone sees the
-// layer's failure in place of the entry's.
+// an entry's and blames none of the entries: a value that does not decode
+// stops validation, and a field's rule fails in the layer alone, but
+// neither fails in the final configuration the entries are judged in.
 func TestEntries_WithInvalidEntriesSeesPastAFailureBeneath(t *testing.T) {
 	dir := t.TempDir()
 	file := func(name, text string) Option {
@@ -455,26 +406,19 @@ func TestEntries_WithInvalidEntriesSeesPastAFailureBeneath(t *testing.T) {
 		writeFile(t, path, text)
 		return WithFile(path)
 	}
-	t.Run("a Validate method returning its first failure", func(t *testing.T) {
-		got, rejected, err := judged[firstFailureConfig](t, map[string]any{"b": -1, "name": "x"},
-			[]Option{file("first.yaml", "a: -1\n")}, WithOverrideProvider(mapSource{"a": 1}, nil))
-		require.NoError(t, err)
-		assert.Equal(t, firstFailureConfig{A: 1, Name: "x"}, *got)
-		assert.Equal(t, []string{"b"}, rejected)
-	})
-	t.Run("a value that does not decode, which stops validation", func(t *testing.T) {
+	t.Run("a value that does not decode", func(t *testing.T) {
 		got, rejected, err := judged[layeredConfig](t, map[string]any{"bad": 9, "name": "x"},
 			[]Option{file("decode.yaml", "port: eight\n")}, WithOverrideProvider(mapSource{"port": 8}, nil))
 		require.NoError(t, err)
 		assert.Equal(t, layeredConfig{Port: 8, Max: 1, Name: "x"}, *got)
 		assert.Equal(t, []string{"bad"}, rejected)
 	})
-	t.Run("a field's rule, which stops the Validate method", func(t *testing.T) {
-		got, rejected, err := judged[jointConfig](t, map[string]any{"a": 3, "pool[0].host": "x"},
-			[]Option{file("rule.yaml", "bad: 9\n")}, WithOverrideProvider(mapSource{"bad": 1}, nil))
+	t.Run("a field's rule", func(t *testing.T) {
+		got, rejected, err := judged[layeredConfig](t, map[string]any{"bad": 9, "name": "x"},
+			[]Option{file("rule.yaml", "max: 50\n")}, WithOverrideProvider(mapSource{"max": 5}, nil))
 		require.NoError(t, err)
-		assert.Equal(t, jointConfig{Bad: 1, Pool: []editServer{{"x", 0}}, Limits: limitsSection{Max: 10}}, *got)
-		assert.Equal(t, []string{"a"}, rejected)
+		assert.Equal(t, layeredConfig{Port: 1, Max: 5, Name: "x"}, *got)
+		assert.Equal(t, []string{"bad"}, rejected)
 	})
 }
 
