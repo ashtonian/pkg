@@ -221,11 +221,14 @@ jobs:
         run: make test-parse-race-all
   # Only the modules with platform code: config's file watch rests on kqueue
   # there, and the native modules' processes and files on Darwin. Lint vets
-  # every module on the declared Go floor.
+  # every module on the declared Go floor. The repository variable
+  # MACOS_CI=off leaves it out while GitHub-hosted minutes are unavailable;
+  # `make test-native-unit test-native-integration test-config` on a Mac
+  # covers it then.
   test-darwin:
     needs: scope
     name: test (macos-latest)
-    if: github.actor_id == '4212452' && (github.event_name != 'pull_request' || (github.event.pull_request.user.id == 4212452 && github.event.pull_request.head.repo.full_name == github.repository)) && contains(needs.scope.outputs.jobs, '"test-darwin"')
+    if: vars.MACOS_CI != 'off' && github.actor_id == '4212452' && (github.event_name != 'pull_request' || (github.event.pull_request.user.id == 4212452 && github.event.pull_request.head.repo.full_name == github.repository)) && contains(needs.scope.outputs.jobs, '"test-darwin"')
     permissions:
       contents: read
       id-token: write
