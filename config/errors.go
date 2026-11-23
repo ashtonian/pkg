@@ -58,8 +58,9 @@ var (
 	// ErrSchema reports a config type the package cannot address: a struct
 	// key holding a character keys use for structure (".", "[", "]", "*", a
 	// backslash, a quote or a control character), two fields with one key, a
-	// type that is not a struct where one is required, or a value Diff cannot
-	// compare (a non-nil func, channel or unsafe pointer).
+	// type that is not a struct where one is required, a value Diff cannot
+	// compare (a non-nil func, channel or unsafe pointer), or a tag that
+	// cannot mean what it says (see the package documentation).
 	ErrSchema = errors.New("invalid configuration schema")
 	// ErrKey reports a configuration key that does not parse, or that names
 	// no field of the config type.

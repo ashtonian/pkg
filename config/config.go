@@ -20,6 +20,8 @@ import (
 	kmaps "github.com/knadh/koanf/maps"
 	"github.com/knadh/koanf/providers/confmap"
 	"github.com/knadh/koanf/v2"
+
+	"github.com/ashtonian/pkg/gowalker"
 )
 
 // Load builds a configuration of type T: it merges the sources in
@@ -514,6 +516,55 @@ var defaultValidator = sync.OnceValue(func() *validator.Validate {
 	v.RegisterTagNameFunc(FieldName)
 	return v
 })
+
+// defaultRules refuses a validate tag on T's fields that the default
+// validator cannot read — an undefined rule, keys without dive, an empty
+// rule — which it would otherwise panic on in the middle of a load. Each
+// tag is parsed once per type, and no rule runs.
+func defaultRules(t reflect.Type) error {
+	e := schemaMetadata(t)
+	if e.err != nil {
+		return e.err
+	}
+	e.rules.Do(func() { e.rulesErr = unreadableRules(e.node, defaultValidator()) })
+	return e.rulesErr
+}
+
+// unreadableRules checks the validate tag of every field v reads in root's
+// graph: exported and embedded ones, the fields config skips included.
+func unreadableRules(root *schemaNode, v *validator.Validate) error {
+	var err error
+	root.eachDeclaring(func(view *gowalker.Schema) {
+		for _, d := range view.Root().Declarations() {
+			if err != nil {
+				return
+			}
+			tag := d.GoField.Tag.Get("validate")
+			if tag == "" || !d.GoField.IsExported() && !d.GoField.Anonymous {
+				continue
+			}
+			if problem := unreadableRule(v, tag); problem != "" {
+				// The problem names a rule, never its param, which may be a
+				// sensitive field's value.
+				err = fmt.Errorf("%w: field %s of %s has a validate tag the validator cannot read: %s", ErrSchema, d.GoField.Name, gowalker.TypeText(d.DeclaringType), problem)
+			}
+		}
+	})
+	return err
+}
+
+// unreadableRule parses tag as v does when it first meets a struct, and
+// returns what v panicked with when it could not. Validating a nil value
+// reaches no rule, so nothing but the parse runs.
+func unreadableRule(v *validator.Validate, tag string) (problem string) {
+	defer func() {
+		if r := recover(); r != nil {
+			problem = strings.TrimSuffix(fmt.Sprint(r), " on field ''")
+		}
+	}()
+	_ = v.Var(nil, tag)
+	return ""
+}
 
 // ctxValidator is the optional context-aware form of [Validator]
 // (a ModelValidator implements it): its rules and message

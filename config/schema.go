@@ -57,6 +57,8 @@ type schemaEntry struct {
 	misspelt   []misspeltTagKey // across the graph; a load decides which it refuses
 	check      sync.Once
 	validation error
+	rules      sync.Once // the default validator's reading of the validate tags
+	rulesErr   error
 	catalog    sync.Once
 	fields     []Field
 	variables  []Field

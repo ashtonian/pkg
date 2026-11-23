@@ -57,8 +57,8 @@
 //   - secret:"<ref>" — resolved by [SecretsFrom], and redacted
 //
 // Invalid sensitive, alias, env, envref, reload, sep, format and example tags, a default on
-// a section, and malformed defaults fail with [ErrSchema] before sources are
-// read. [KeyOf] names a field from its address. [ParseKey] exposes the same
+// a section, malformed defaults, and validate tags the default validator
+// cannot read fail with [ErrSchema] before sources are read. [KeyOf] names a field from its address. [ParseKey] exposes the same
 // canonical grammar as typed segments, including quoted keys and wildcards.
 //
 // # Sources

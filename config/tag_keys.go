@@ -43,7 +43,9 @@ func misspeltTagKeys(shape *gowalker.Shape) []misspeltTagKey {
 }
 
 // loadSchema is rootSchema for a load or a key check: it also refuses the
-// misspelt tag keys of t's graph, but for those o names as another library's.
+// misspelt tag keys of t's graph, but for those o names as another
+// library's, and, when the default validator judges the load, the validate
+// tags it cannot read.
 func loadSchema(t reflect.Type, o *options) (*schemaNode, error) {
 	root, err := rootSchema(t)
 	if err != nil {
@@ -57,6 +59,11 @@ func loadSchema(t reflect.Type, o *options) (*schemaNode, error) {
 	}
 	if len(errs) > 0 {
 		return nil, errors.Join(errs...)
+	}
+	if o.validator == nil && !o.skipValid {
+		if err := defaultRules(t); err != nil {
+			return nil, err
+		}
 	}
 	return root, nil
 }
