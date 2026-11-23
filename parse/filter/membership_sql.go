@@ -87,16 +87,23 @@ func (b *SQLBuilder) lookupCondSQL(s *buildState, c *LookupCond, table string) (
 	}
 	switch c.Op {
 	case LookupOpEq:
-		return q(c.Column) + " = " + bind(c.Value), nil
+		if !isLookupDecimal(c.Value) {
+			return q(c.Column) + " = " + bind(c.Value), nil
+		}
+		sql, _, err := decimalComparison(b.dialect, lookupColumn(c.Column, q(c.Column), core.FieldTypeDecimal), OpEq, c.Value, bind)
+		if err != nil {
+			return "", invalidLookup(fmt.Sprintf("lookup column %q: %v", c.Column, err))
+		}
+		return sql, nil
 	case LookupOpIn:
 		if len(c.Values) == 0 {
 			return "1=0", nil
 		}
-		column, members, err := lookupSet(c)
+		column, members, err := lookupSet(c, q(c.Column))
 		if err != nil {
 			return "", err
 		}
-		sql, err := b.dialect.memberSet(column, q(c.Column), members, true, bind)
+		sql, err := b.dialect.memberSet(column, members, true, bind)
 		if err != nil {
 			// The lookup is the server's: its values are no request's fault.
 			return "", invalidLookup(fmt.Sprintf("lookup column %q: %v", c.Column, err))
@@ -114,11 +121,11 @@ func (b *SQLBuilder) lookupCondSQL(s *buildState, c *LookupCond, table string) (
 	return q(c.Column) + " IS NULL", nil
 }
 
-// lookupSet is a WhereIn list as the set `$in` binds: its column typed by
-// its values' Go type (core.TypeOf), one scalar type for all of them, and
-// each value in that type's canonical form, so the dialect binds the list
-// as one parameter whatever its length.
-func lookupSet(c *LookupCond) (*FieldSchema, []any, error) {
+// lookupSet is a WhereIn list as the set `$in` binds: its column, read as
+// expr, typed by its values' Go type (core.TypeOf), one scalar type for all
+// of them, and each value in that type's canonical form, so the dialect
+// binds the list as one parameter whatever its length.
+func lookupSet(c *LookupCond, expr string) (*FieldSchema, []any, error) {
 	var typ core.FieldType
 	members := make([]any, len(c.Values))
 	for i, v := range c.Values {
@@ -137,7 +144,22 @@ func lookupSet(c *LookupCond) (*FieldSchema, []any, error) {
 		}
 		members[i] = m
 	}
-	return &FieldSchema{ExternalName: c.Column, Column: c.Column, DataType: typ}, members, nil
+	return lookupColumn(c.Column, expr, typ), members, nil
+}
+
+// lookupColumn is a lookup column, read as expr, as a field of the type its
+// values have: a lookup has no schema, so a comparison takes its type from
+// its value, and renders as a field of that type does.
+func lookupColumn(name, expr string, typ core.FieldType) *FieldSchema {
+	return &FieldSchema{ExternalName: name, Column: name, Expr: expr, DataType: typ}
+}
+
+// isLookupDecimal reports a lookup value whose Go type is a decimal
+// (core.TypeOf): the column it is compared with is read as a decimal and
+// compared by value, so a stored "1.50" equals 1.5.
+func isLookupDecimal(v any) bool {
+	v = derefValue(v)
+	return v != nil && core.TypeOf(reflect.TypeOf(v)).Type == core.FieldTypeDecimal
 }
 
 // setScalar reports whether a set of ft values binds as one parameter: a

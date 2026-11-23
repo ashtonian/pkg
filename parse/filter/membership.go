@@ -100,14 +100,6 @@ var (
 	lookupQualifiedT = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*)?$`)
 )
 
-// memberFieldTypes are the field types a membership tests: identifiers and
-// keys, which every backend compares by value.
-var memberFieldTypes = map[core.FieldType]bool{
-	core.FieldTypeString: true,
-	core.FieldTypeUUID:   true,
-	core.FieldTypeInt:    true,
-}
-
 func (l *Lookup) validate() error {
 	if l == nil {
 		return invalidLookup("a membership constraint needs a lookup")
@@ -191,7 +183,7 @@ func memberNode(field *FieldSchema, l *Lookup) (*FilterNode, error) {
 	if err := l.validate(); err != nil {
 		return nil, err
 	}
-	if !memberFieldTypes[field.DataType] {
+	if !core.IsKeyType(field.DataType) {
 		return nil, invalidLookup(fmt.Sprintf("membership on %s field '%s'; a membership tests a string, UUID or integer field",
 			field.DataType, field.ExternalName))
 	}

@@ -6,6 +6,8 @@ import (
 	"slices"
 	"testing"
 
+	"github.com/shopspring/decimal"
+
 	"github.com/ashtonian/pkg/parse/core"
 	"github.com/ashtonian/pkg/parse/filter"
 )
@@ -20,7 +22,8 @@ type LookupTable struct {
 }
 
 // LookupColumn is one lookup column and the type its values have: string,
-// uuid (uuid.UUID values) or int (int64 values).
+// uuid (uuid.UUID values), int (int64 values) or decimal (decimal text, held
+// as written).
 type LookupColumn struct {
 	Name string
 	Type core.FieldType
@@ -28,8 +31,10 @@ type LookupColumn struct {
 
 // LookupTables are the shapes authorization resolves through: a reflexive
 // closure over record ids, a pair relation with users, groups, tenants and
-// ended pairs, grants of UUID references, a nullable integer column, and
-// labels that are one record's id and another's name.
+// ended pairs, grants of UUID references, a nullable integer column, labels
+// that are one record's id and another's name, and decimal prices written
+// other than as their canonical text, two beyond float64's precision that
+// round to one double.
 func LookupTables() []LookupTable {
 	text := func(name string) LookupColumn { return LookupColumn{Name: name, Type: core.FieldTypeString} }
 	return []LookupTable{
@@ -66,6 +71,13 @@ func LookupTables() []LookupTable {
 			Columns: []LookupColumn{text("label"), text("kind")},
 			Rows:    [][]any{{"beta", "x"}, {"c", "x"}, {"Alpha", "y"}},
 		},
+		{
+			Name:    "record_prices",
+			Columns: []LookupColumn{text("record_id"), {Name: "price", Type: core.FieldTypeDecimal}},
+			Rows: [][]any{
+				{"a", "1.50"}, {"b", "12345678901234567890.50"}, {"c", "12345678901234567890.4"}, {"d", "2"}, {"e", nil},
+			},
+		},
 	}
 }
 
@@ -94,6 +106,10 @@ func MembershipCases() []MembershipCase {
 		filter.WhereNull("ended_at"),
 	)}
 	grants := &filter.Lookup{Table: "ref_grants", Project: "ref_id", Where: filter.WhereEq("grantee", "t1")}
+	priced := func(where *filter.LookupCond) *filter.Lookup {
+		return &filter.Lookup{Table: "record_prices", Project: "record_id", Where: where}
+	}
+	price := decimal.RequireFromString
 	allMarks := &filter.Lookup{Table: "count_marks", Project: "value"}
 	return []MembershipCase{
 		{Name: "closure under one root", Constraints: member("id", closure(filter.WhereEq("root_id", "a")), false), Want: ids("abc")},
@@ -108,6 +124,9 @@ func MembershipCases() []MembershipCase {
 		{Name: "integer exact beyond 2^53", Constraints: member("count", &filter.Lookup{Table: "count_marks", Project: "value", Where: filter.WhereEq("mark", "big")}, false), Want: ids("e")},
 		{Name: "a NULL in the set selects only members", Constraints: member("count", allMarks, false), Want: ids("ae")},
 		{Name: "a NULL in the set under NOT selects nothing", Constraints: member("count", allMarks, true), Want: ids("")},
+		{Name: "decimal equality by value", Constraints: member("id", priced(filter.WhereEq("price", price("1.5"))), false), Want: ids("a")},
+		{Name: "decimal equality beyond float64", Constraints: member("id", priced(filter.WhereEq("price", price("12345678901234567890.5"))), false), Want: ids("b")},
+		{Name: "decimal set by value", Constraints: member("id", priced(filter.WhereIn("price", price("1.5"), price("12345678901234567890.5"), price("3"))), false), Want: ids("ab")},
 		{Name: "OR with a field constraint", Constraints: &filter.PolicyConstraints{Or: []*filter.PolicyConstraints{
 			{Constraints: []*filter.PolicyConstraint{{Field: "name", Operator: filter.OpEq, Value: "beta"}}},
 			member("id", closure(filter.WhereEq("root_id", "c")), false),

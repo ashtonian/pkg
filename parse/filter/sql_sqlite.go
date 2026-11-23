@@ -100,7 +100,7 @@ func (d SQLiteDialect) Condition(field *FieldSchema, op FilterOperator, value an
 	}
 	if op == OpIn || op == OpNin {
 		return membership(op, value, func(members []any, in bool) (string, error) {
-			return d.memberSet(field, expr, members, in, bind)
+			return d.memberSet(field, members, in, bind)
 		})
 	}
 	if isOrdering(op) && orderedAsText(field) {
@@ -118,17 +118,28 @@ func (d SQLiteDialect) Condition(field *FieldSchema, op FilterOperator, value an
 	return "", unsupportedOperator(field, op)
 }
 
-// memberSet renders a set bound as one JSON array (setRows).
-func (d SQLiteDialect) memberSet(field *FieldSchema, expr string, members []any, in bool, bind func(any) string) (string, error) {
-	set, err := d.setRows(field, members, bind)
-	if err != nil {
-		return "", err
-	}
+// memberSet renders a set bound as one JSON array. A decimal's set is
+// compared as its equality is (decimalComparison): the field's key against
+// each member's, both read through DecimalOrder, so the index that serves
+// its ranges, sorts and seeks serves the set too. Any other set is its
+// rows (setRows).
+func (d SQLiteDialect) memberSet(field *FieldSchema, members []any, in bool, bind func(any) string) (string, error) {
 	keyword := " IN "
 	if !in {
 		keyword = " NOT IN "
 	}
-	return expr + keyword + "(" + set + ")", nil
+	if field.DataType == core.FieldTypeDecimal {
+		param, err := sqliteSetParam(field, members, bind)
+		if err != nil {
+			return "", err
+		}
+		return d.DecimalOrder(fieldDecimal(d, field)) + keyword + "(SELECT " + d.DecimalOrder(DecimalParam("value")) + " FROM json_each(" + param + "))", nil
+	}
+	set, err := d.setRows(field, members, bind)
+	if err != nil {
+		return "", err
+	}
+	return FieldExpr(d, field) + keyword + "(" + set + ")", nil
 }
 
 // setRows is a set's members, bound as one JSON array, read back by
@@ -137,6 +148,16 @@ func (d SQLiteDialect) memberSet(field *FieldSchema, expr string, members []any,
 // and decimals as their canonical text, the value FieldExpr reads a decimal
 // as.
 func (SQLiteDialect) setRows(field *FieldSchema, members []any, bind func(any) string) (string, error) {
+	param, err := sqliteSetParam(field, members, bind)
+	if err != nil {
+		return "", err
+	}
+	return "SELECT value AS v FROM json_each(" + param + ")", nil
+}
+
+// sqliteSetParam binds a set's members as one JSON array (sqliteSetMembers)
+// and returns its placeholder.
+func sqliteSetParam(field *FieldSchema, members []any, bind func(any) string) (string, error) {
 	doc, err := sqliteSetMembers(field, members)
 	if err != nil {
 		return "", fmt.Errorf("field %s: %w", field.ExternalName, err)
@@ -145,7 +166,7 @@ func (SQLiteDialect) setRows(field *FieldSchema, members []any, bind func(any) s
 	if err != nil {
 		return "", fmt.Errorf("field %s: marshal set: %w", field.ExternalName, err)
 	}
-	return "SELECT value AS v FROM json_each(" + bind(string(arr)) + ")", nil
+	return bind(string(arr)), nil
 }
 
 // sqliteIntegers refuses an unsigned operand above int64, alone or in a

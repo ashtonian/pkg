@@ -336,6 +336,12 @@ func lookupEqual(a, b any) bool {
 	if isNullValue(a) || isNullValue(b) {
 		return false
 	}
+	if isLookupDecimal(a) || isLookupDecimal(b) {
+		// As SQL compares a decimal lookup value: by value, the other side
+		// read as a decimal ("1.50" is 1.5), beyond float64's precision.
+		c, ok := core.CompareDecimals(a, b)
+		return ok && c == 0
+	}
 	if c, ok := core.CompareNumbers(a, b); ok {
 		return c == 0
 	}

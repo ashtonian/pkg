@@ -26,6 +26,18 @@ const (
 	FieldTypeGeo       FieldType = "geo"
 )
 
+// IsKeyType reports a type a key may have: a string, a UUID or an integer.
+// A key is compared as stored, column to column and against bound values,
+// on every backend alike; a decimal's or a float's stored form is not its
+// value, and a time's is not on SQLite.
+func IsKeyType(t FieldType) bool {
+	switch t {
+	case FieldTypeString, FieldTypeUUID, FieldTypeInt:
+		return true
+	}
+	return false
+}
+
 // SQLType declares a resource column's storage role and any dialect read cast.
 // JSON and native arrays remain distinct even when their Go shapes coincide.
 type SQLType string

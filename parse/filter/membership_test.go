@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/google/uuid"
+	"github.com/shopspring/decimal"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -47,6 +48,33 @@ func TestMembership_CompilesToAnInSubquery(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			res, err := NewSQLBuilder(memberSchema(), tc.d).Build(memberAST(t, "parent_id", l, false))
+			require.NoError(t, err)
+			assert.Equal(t, tc.where, res.Where)
+			assert.Equal(t, tc.args, res.Args)
+		})
+	}
+}
+
+// A decimal lookup value compares its column by value, as a decimal
+// field's `$eq` and `$in` do: through DecimalOrder on both sides, so on
+// SQLite a stored "1.50" equals 1.5 and digits beyond float64's precision
+// count.
+func TestMembership_DecimalValuesCompareByValue(t *testing.T) {
+	dec := decimal.RequireFromString
+	l := &Lookup{Table: "billing.prices", Project: "doc_id", Where: WhereAll(
+		WhereEq("amount", dec("1.50")),
+		WhereIn("amount", dec("2"), dec("12345678901234567890.50")),
+	)}
+	for name, tc := range map[string]struct {
+		d     Dialect
+		where string
+		args  []any
+	}{
+		"postgres": {PostgresDialect{}, `"docs"."id" IN (SELECT "billing"."prices"."doc_id" FROM "billing"."prices" WHERE ("billing"."prices"."amount" = $1::numeric AND "billing"."prices"."amount" = ANY($2::text[]::numeric[])))`, []any{"1.5", []string{"2", "12345678901234567890.5"}}},
+		"sqlite":   {SQLiteDialect{}, `"docs"."id" IN (SELECT "billing"."prices"."doc_id" FROM "billing"."prices" WHERE (parse_decimal_key("billing"."prices"."amount") = parse_decimal_key(?1) AND parse_decimal_key("billing"."prices"."amount") IN (SELECT parse_decimal_key(value) FROM json_each(?2))))`, []any{"1.5", `["2","12345678901234567890.5"]`}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			res, err := NewSQLBuilder(memberSchema(), tc.d).Build(memberAST(t, "id", l, false))
 			require.NoError(t, err)
 			assert.Equal(t, tc.where, res.Where)
 			assert.Equal(t, tc.args, res.Args)
@@ -272,7 +300,11 @@ func TestResolveMemberships_LeavesFiltersWithoutMembershipsAlone(t *testing.T) {
 
 func TestMatchLookupRow(t *testing.T) {
 	id := uuid.MustParse("0198a3c2-7a1e-7c00-8000-00000000000a")
-	row := map[string]any{"name": "a", "big": int64(9007199254740993), "small": int32(7), "ref": id, "ended": (*string)(nil)}
+	dec := decimal.RequireFromString
+	row := map[string]any{
+		"name": "a", "big": int64(9007199254740993), "small": int32(7), "ref": id, "ended": (*string)(nil),
+		"price": "1.50", "wide": dec("12345678901234567890.50"), "ratio": 0.1, "label": "1.5",
+	}
 	get := func(name string) (any, bool) { v, ok := row[name]; return v, ok }
 	for name, tc := range map[string]struct {
 		cond *LookupCond
@@ -291,6 +323,14 @@ func TestMatchLookupRow(t *testing.T) {
 		"NULL column never equals": {WhereIn("ended", "x"), false},
 		"and":                      {WhereAll(WhereEq("name", "a"), WhereNull("ended")), true},
 		"or":                       {WhereAny(WhereEq("name", "b"), WhereEq("small", 7)), true},
+		"decimal text by value":    {WhereEq("price", dec("1.5")), true},
+		"decimal beyond float64":   {WhereEq("wide", dec("12345678901234567890.5")), true},
+		"decimal digits count":     {WhereIn("wide", dec("12345678901234567890.4"), dec("12345678901234567890")), false},
+		"decimal against a float":  {WhereEq("ratio", dec("0.1")), true},
+		"decimal row by value":     {WhereEq("wide", "12345678901234567890.500"), true},
+		"text compares as text":    {WhereEq("price", "1.5"), false},
+		"decimal against non-text": {WhereEq("name", dec("1")), false},
+		"decimal set by value":     {WhereIn("label", dec("2"), dec("1.50")), true},
 	} {
 		t.Run(name, func(t *testing.T) {
 			got, err := MatchLookupRow(tc.cond, get)

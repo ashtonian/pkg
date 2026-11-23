@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/shopspring/decimal"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -199,6 +200,66 @@ func TestRelate_RefusesBadDeclarations(t *testing.T) {
 			assert.Error(t, devices.Relate(tc.relName, tc.rel))
 		})
 	}
+}
+
+type keyedLine struct {
+	ID     string          `json:"id"      db:"id"      parse:"filter,sort"`
+	TierID decimal.Decimal `json:"tier_id" db:"tier_id" parse:"filter"`
+	Weight float64         `json:"weight"  db:"weight"  parse:"filter"`
+}
+
+type keyedTier struct {
+	ID     decimal.Decimal `json:"id"      db:"id"      parse:"filter,sort"`
+	LineID string          `json:"line_id" db:"line_id" parse:"filter"`
+}
+
+type keyedNote struct {
+	ID     string  `json:"id"      db:"id"      parse:"filter,sort"`
+	LineID string  `json:"line_id" db:"line_id" parse:"filter"`
+	Weight float64 `json:"weight"  db:"weight"  parse:"filter"`
+}
+
+type taggedWeights struct {
+	ID      string    `json:"id" db:"id" parse:"filter,sort"`
+	Weights []float64 `json:"-"  db:"-"  parse:"filter" relation:"line_weights,line_id,weight_id"`
+}
+
+type taggedByWeight struct {
+	ID     string   `json:"id"     db:"id"     parse:"filter,sort"`
+	Weight float64  `json:"weight" db:"weight"`
+	Tags   []string `json:"-"      db:"-"      parse:"filter" relation:"line_tags,line_id,tag_id,weight"`
+}
+
+// A relation correlates on keys: SQL joins its rows column to column and
+// the resolvers match them as identifiers, so a decimal or a float, whose
+// stored form is not its value, cannot be one on either side.
+func TestRelate_RefusesKeysThatAreNoIdentifiers(t *testing.T) {
+	tiers := parse.MustResource[keyedTier]("tiers")
+	notes := parse.MustResource[keyedNote]("notes")
+	for name, tc := range map[string]struct {
+		relName string
+		rel     parse.Relation
+	}{
+		"decimal target key, belongs-to": {"tier", parse.BelongsTo(tiers, "tier_id")},
+		"decimal target key, has-many":   {"tiers", parse.HasMany(tiers, "line_id")},
+		"decimal target key, pair table": {"tiers", parse.ManyToMany(tiers, parse.Through("line_tiers", "line_id", "tier_id"))},
+		"float owner column":             {"notes", parse.HasMany(notes, "line_id", parse.References("weight"))},
+		"float target column":            {"notes", parse.HasMany(notes, "weight")},
+	} {
+		t.Run(name, func(t *testing.T) {
+			lines := parse.MustResource[keyedLine]("lines")
+			err := lines.Relate(tc.relName, tc.rel)
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), "a relation correlates on a string, UUID or integer key")
+		})
+	}
+	lines := parse.MustResource[keyedLine]("lines")
+	require.NoError(t, lines.Relate("notes", parse.HasMany(notes, "line_id")), "string keys correlate")
+
+	_, err := parse.NewResource[taggedWeights]("lines")
+	assert.ErrorContains(t, err, "relation fields must be slices of string, UUID or integer target IDs")
+	_, err = parse.NewResource[taggedByWeight]("lines")
+	assert.ErrorContains(t, err, "a relation correlates on a string, UUID or integer key")
 }
 
 // A key comparison that reaches the builder without the parser — a policy
