@@ -5,7 +5,9 @@ package parse_test
 import (
 	"encoding/json"
 	"errors"
+	"maps"
 	"net/url"
+	"slices"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -16,6 +18,7 @@ import (
 	"github.com/ashtonian/pkg/parse/filter"
 	"github.com/ashtonian/pkg/parse/internal/dbtest"
 	"github.com/ashtonian/pkg/parse/parsesql"
+	"github.com/ashtonian/pkg/parse/patch"
 )
 
 type customItem struct {
@@ -37,6 +40,44 @@ func TestResource_WithPathsSortsAMappedDocument(t *testing.T) {
 	require.NotEmpty(t, plan.Keyset.Keys)
 	assert.Equal(t, "custom.tier", plan.Keyset.Keys[0].Name)
 	assert.Equal(t, "custom", plan.Keyset.Keys[0].Column)
+}
+
+// A view is a value for one request: it declares no relation and is no
+// relation's target, and the refusal leaves the resource it came from as it
+// was.
+func TestResource_WithPathsViewRelatesNothing(t *testing.T) {
+	type tag struct {
+		ID string `json:"id" db:"id" parse:"filter"`
+	}
+	tags := parse.MustResource[tag]("tags")
+	items := parse.MustResource[customItem]("custom_items")
+	itemView, err := items.WithPaths(filter.PathDecl{Path: "custom.tier", Type: core.FieldTypeString, Sort: true})
+	require.NoError(t, err)
+	tagView, err := tags.WithPaths()
+	require.NoError(t, err)
+	through := parse.Through("item_tags", "item_id", "tag_id")
+	shape := func() (filters, sorts, patches []string) {
+		return slices.Sorted(maps.Keys(items.FilterSchema().Fields)),
+			slices.Sorted(maps.Keys(items.SortSchema().Fields)),
+			pathNames(items.PatchSchema())
+	}
+	filters, sorts, patches := shape()
+
+	err = itemView.Relate("tags", parse.ManyToMany(tags, through, parse.Writable()))
+	require.ErrorContains(t, err, `parse: custom_items: relation "tags": a WithPaths view declares no relations`)
+	err = items.Relate("tags", parse.ManyToMany(tagView, through, parse.Writable()))
+	require.ErrorContains(t, err, `parse: custom_items: relation "tags": the target is a WithPaths view`)
+
+	gotFilters, gotSorts, gotPatches := shape()
+	assert.Equal(t, filters, gotFilters)
+	assert.Equal(t, sorts, gotSorts)
+	assert.Equal(t, patches, gotPatches)
+	_, err = items.ParseMergePatch([]byte(`{"tags":["t1"]}`))
+	require.Error(t, err)
+
+	require.NoError(t, items.Relate("tags", parse.ManyToMany(tags, through, parse.Writable())))
+	_, err = items.ParseMergePatch([]byte(`{"tags":["t1"]}`))
+	require.NoError(t, err)
 }
 
 // A request declares its tenant's custom fields as paths on a view of the
@@ -79,4 +120,12 @@ func TestResource_WithPathsIsARequestView(t *testing.T) {
 
 	_, err = r.WithPaths(filter.PathDecl{Path: "id.x", Type: core.FieldTypeString})
 	assert.Error(t, err, "a path needs a document field")
+}
+
+func pathNames(s *patch.PatchSchema) []string {
+	var out []string
+	for path := range s.Paths() {
+		out = append(out, path)
+	}
+	return out
 }

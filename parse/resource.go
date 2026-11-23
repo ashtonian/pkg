@@ -65,6 +65,10 @@ type Resource[T any] struct {
 	maskable map[string]bool
 	// readExprs are the computed columns (ReadExpr); nil without any.
 	readExprs *computedColumns
+	// view marks a WithPaths view: a value for one request that shares its
+	// base's patch schemas and tenant graph, so it declares no relation and
+	// is no relation's target.
+	view bool
 }
 
 // ResourceOption configures NewResource.
@@ -839,9 +843,12 @@ func resourceColumns(gen *core.SchemaGenerator, walk *core.StructFields) ([]stri
 }
 
 // WithPaths returns a view of r for one request with decls declared as JSON
-// paths — filterable, and sortable or facetable as each declares — leaving r and its other requests unchanged. A tenant's custom fields
-// are declared this way; the view parses, lists and updates like r. A path
-// into a computed column (ReadExpr) is refused: it reads a stored document.
+// paths — filterable, and sortable or facetable as each declares — leaving
+// r and its other requests unchanged. A tenant's custom fields are declared
+// this way; the view parses, lists and updates like r, with the relations r
+// declared before it. A path into a computed column (ReadExpr) is refused:
+// it reads a stored document. A view declares no relations and is no
+// relation's target (Relate).
 func (r *Resource[T]) WithPaths(decls ...filter.PathDecl) (*Resource[T], error) {
 	// A struct document's quoted member (json:",string") is stored as text
 	// its path reads as NULL; the bare schema has no Go types to tell.
@@ -889,6 +896,6 @@ func (r *Resource[T]) WithPaths(decls ...filter.PathDecl) (*Resource[T], error) 
 		return nil, err
 	}
 	view := *r
-	view.filterSchema, view.sortSchema = fs, ss
+	view.filterSchema, view.sortSchema, view.view = fs, ss, true
 	return &view, nil
 }

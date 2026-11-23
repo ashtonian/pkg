@@ -26,11 +26,14 @@ type RelatedResource interface {
 	columnType(name string) (reflect.Type, bool)
 	columnWire(name string) core.Wire
 	computed(column string) bool
+	isView() bool
 	tenantGraph() *tenantNode
 	admits(column string, need columnAccess) error
 }
 
 func (r *Resource[T]) liveFilterSchema() *filter.ResourceSchema { return r.filterSchema }
+
+func (r *Resource[T]) isView() bool { return r.view }
 
 func (r *Resource[T]) columnType(name string) (reflect.Type, bool) {
 	t, ok := r.tableColumns[name]
@@ -153,8 +156,12 @@ func Describe(label, description string) RelationOption {
 // one request binds one tenant to all of them. Declare every relation
 // before the resources serve requests; Relate changes the tenant key of
 // every resource that reaches r, so it is not safe for concurrent use with
-// any of them.
+// any of them. A WithPaths view, a value for one request, neither declares
+// a relation nor is one's target: relate the resources it is derived from.
 func (r *Resource[T]) Relate(name string, rel Relation) error {
+	if r.view {
+		return fmt.Errorf("parse: %s: relation %q: a WithPaths view declares no relations; relate the resource it is derived from", r.table, name)
+	}
 	if !core.IsIdentifier(name) {
 		return fmt.Errorf("parse: %s: relation name %q is not an identifier", r.table, name)
 	}
@@ -172,6 +179,9 @@ func (r *Resource[T]) Relate(name string, rel Relation) error {
 	}
 	if rel.target == nil {
 		return fmt.Errorf("parse: %s: relation %q has no target", r.table, name)
+	}
+	if rel.target.isView() {
+		return fmt.Errorf("parse: %s: relation %q: the target is a WithPaths view, a value for one request; relate the resource it is derived from", r.table, name)
 	}
 	rs, err := r.relationSchema(name, rel)
 	if err != nil {
