@@ -3,8 +3,8 @@ module github.com/ashtonian/pkg/httpx/compress/brotli
 go 1.26.0
 
 require (
-	github.com/andybalholm/brotli v1.2.7
-	github.com/ashtonian/pkg/httpx v0.2.0
+	github.com/andybalholm/brotli v1.3.0
+	github.com/ashtonian/pkg/httpx v0.5.0
 )
 
 require (
