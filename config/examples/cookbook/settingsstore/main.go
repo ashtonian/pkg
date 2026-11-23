@@ -111,21 +111,22 @@ func (c *AppConfig) Validate() error {
 type Entries = func(ctx context.Context) (map[string]any, error)
 
 // Sources are how the service loads AppConfig: Options builds the options,
-// the table read through entries, and Beneath names the sources beneath the
-// table, for an operator to check when the settings fail to load.
+// the table read through entries under the table's source options, and
+// Beneath names the sources beneath the table, for an operator to check
+// when the settings fail to load.
 type Sources struct {
-	Options func(entries Entries) []config.Option
+	Options func(entries Entries, table ...config.SourceOption) []config.Option
 	Beneath string
 }
 
 // appSources layers the table over the file and APP_* variables.
 func appSources(file string, logger *slog.Logger) Sources {
 	return Sources{
-		Options: func(entries Entries) []config.Option {
+		Options: func(entries Entries, table ...config.SourceOption) []config.Option {
 			return []config.Option{
 				config.WithFile(file),
 				config.WithEnvPrefix("APP"),
-				config.WithOverrideEntries(entries),
+				config.WithOverrideEntries(entries, table...),
 				config.WithLogger(logger),
 			}
 		},
@@ -221,8 +222,22 @@ func NewSettings(db *sql.DB, sources Sources, timeout time.Duration, limits Tabl
 // Options are the options the service loads AppConfig with, the table read
 // on every load. Write checks a write with the same options, the table
 // replaced by the one the write would leave.
+//
+// A release that removes a field leaves rows, and parts of rows' values, at
+// keys no field reads. The table's source claims them, so they stop no
+// load; each load that finds any logs them, with the remedy.
 func (s *Settings) Options() []config.Option {
-	return s.sources.Options(s.read)
+	return s.sources.Options(s.read, config.WithUnknownEntries(s.reportUnknown))
+}
+
+func (s *Settings) reportUnknown(ctx context.Context, unknown []config.UnknownKey) error {
+	keys := make([]string, len(unknown))
+	for i, u := range unknown {
+		keys[i] = u.Key
+	}
+	s.logger.WarnContext(ctx, "settings the schema does not read left out of the load",
+		slog.Any("keys", keys), slog.String("remedy", "write each key as null, or write the key of the row holding it whole"))
+	return nil
 }
 
 func (s *Settings) read(ctx context.Context) (map[string]any, error) {
@@ -238,12 +253,7 @@ func (s *Settings) read(ctx context.Context) (map[string]any, error) {
 			slog.Int64("bytes", size.bytes), slog.Int64("max_table_bytes", s.limits.Bytes),
 			slog.String("remedy", "delete rows through the API, or raise SETTINGS_MAX_ROWS or SETTINGS_MAX_TABLE_BYTES"))
 	}
-	table, left := readable(stored.values)
-	if len(left) > 0 {
-		s.logger.WarnContext(ctx, "settings the schema does not read left out of the load",
-			slog.Any("keys", left), slog.String("remedy", "write each key as null, or write the key of the row holding it whole"))
-	}
-	return table, nil
+	return stored.values, nil
 }
 
 // Write applies edits to the table, all or nothing, and returns the keys it
@@ -320,8 +330,7 @@ func (s *Settings) Write(ctx context.Context, edits map[string]any) ([]string, e
 	if s.limits.refuses(stored.size(), after) {
 		return nil, &RefusedError{Reason: ReasonFull, Keys: keys}
 	}
-	before, _ := readable(stored.values)
-	if err := s.check(ctx, before, loadable(c.table, writes), keys); err != nil {
+	if err := s.check(ctx, stored.values, c.table, writes, keys); err != nil {
 		return nil, err
 	}
 	for _, key := range c.deleted {
@@ -376,88 +385,68 @@ func (s *Settings) retryAfter() time.Duration {
 	return s.timeout
 }
 
-// check loads after, the table loads will read once a write of keys
-// commits, with the service's options. A table that does not load refuses
-// the write, unless before, the table loads read now, does not load either:
-// then the fault lies in a source beneath the table or in a row already
-// stored, and no client can fix it by retrying.
-func (s *Settings) check(ctx context.Context, before, after map[string]any, keys []string) error {
-	_, err := config.Load[AppConfig](ctx, s.sources.Options(fixed(after))...)
+// check loads after, the table a write of writes leaves, with the service's
+// options. A table that does not load refuses the write, as does a key no
+// field reads inside a value the write sets; one a stored row holds is
+// tolerated, as loads tolerate it. The write is not refused when before,
+// the table stored now, does not load either: then the fault lies in a
+// source beneath the table or in a row already stored, and no client can
+// fix it by retrying.
+func (s *Settings) check(ctx context.Context, before, after, writes map[string]any, keys []string) error {
+	_, err := config.Load[AppConfig](ctx, s.sources.Options(fixed(after), config.WithUnknownEntries(unknownInWrites(writes)))...)
 	if err == nil || !errors.Is(err, config.ErrValidation) && !errors.Is(err, config.ErrKey) {
 		return err
 	}
-	if _, storedErr := config.Load[AppConfig](ctx, s.sources.Options(fixed(before))...); storedErr != nil {
+	if _, storedErr := config.Load[AppConfig](ctx, s.sources.Options(fixed(before), config.WithUnknownEntries(nil))...); storedErr != nil {
 		return fmt.Errorf("the settings fail to load without this write; check %s and the settings table: %w", s.sources.Beneath, storedErr)
 	}
 	reason := ReasonInvalid
-	if unknown, ok := errors.AsType[*config.UnknownKeysError](err); ok && len(unknown.Keys) > 0 {
-		reason = ReasonUnknown // a key inside a value the write sets
+	if _, ok := errors.AsType[*writtenUnknownError](err); ok {
+		reason = ReasonUnknown
 	}
 	return &RefusedError{Reason: reason, Keys: keys, Err: err}
 }
 
+// writtenUnknownError is the keys no field reads inside the values a write
+// sets.
+type writtenUnknownError struct {
+	keys []config.UnknownKey
+}
+
+func (e *writtenUnknownError) Error() string {
+	names := make([]string, len(e.keys))
+	for i, k := range e.keys {
+		names[i] = k.Key
+	}
+	return "keys no field reads in the values written: " + strings.Join(names, ", ")
+}
+
+// unknownInWrites is the table's report for a write's check: it fails the
+// load on a key no field reads within a key writes sets, and lets the rest,
+// what rows already stored hold, through.
+func unknownInWrites(writes map[string]any) func(context.Context, []config.UnknownKey) error {
+	var set []config.Key
+	for key, value := range writes {
+		if k, err := config.ParseKey(key); err == nil && value != nil {
+			set = append(set, k)
+		}
+	}
+	return func(_ context.Context, unknown []config.UnknownKey) error {
+		var written []config.UnknownKey
+		for _, u := range unknown {
+			if k, err := config.ParseKey(u.Key); err == nil && slices.ContainsFunc(set, k.Within) {
+				written = append(written, u)
+			}
+		}
+		if len(written) > 0 {
+			return &writtenUnknownError{keys: written}
+		}
+		return nil
+	}
+}
+
 func fixed(table map[string]any) Entries {
 	return func(context.Context) (map[string]any, error) { return table, nil }
-}
-
-// readable is a stored table as loads read it. A release that removes a
-// field leaves rows, and parts of rows' values, at keys the schema no
-// longer reads; left out, they stop no load, and left names them.
-func readable(stored map[string]any) (table map[string]any, left []string) {
-	table = make(map[string]any, len(stored))
-	for key, value := range stored {
-		k, ok := schemaKey(key)
-		if !ok {
-			left = append(left, key)
-			continue
-		}
-		table[key] = readableValue(k, value, &left)
-	}
-	slices.Sort(left)
-	return table, left
-}
-
-// readableValue is value, stored at the key at, without its parts at keys
-// the schema does not read, which it adds to left.
-func readableValue(at config.Key, value any, left *[]string) any {
-	switch v := value.(type) {
-	case map[string]any:
-		out := make(map[string]any, len(v))
-		for name, child := range v {
-			k, text, ok := childKey(at, name)
-			if !ok {
-				*left = append(*left, text)
-				continue
-			}
-			out[name] = readableValue(k, child, left)
-		}
-		return out
-	case []any:
-		out := make([]any, len(v))
-		for i, child := range v {
-			out[i] = readableValue(append(slices.Clip(at), config.Segment{Kind: config.SegmentIndex, Index: i}), child, left)
-		}
-		return out
-	}
-	return value
-}
-
-// loadable is table, the one a write of writes leaves, as loads will read
-// it: what was stored as readable leaves it, and what the write sets as
-// written, so a key the schema refuses inside a written value refuses the
-// write.
-func loadable(table, writes map[string]any) map[string]any {
-	stored := maps.Clone(table)
-	for key := range writes {
-		delete(stored, key)
-	}
-	out, _ := readable(stored)
-	for key, value := range writes {
-		if value != nil {
-			out[key] = value
-		}
-	}
-	return out
 }
 
 // schemaKey is key parsed as CanonicalKey spells it, or false when the
@@ -472,23 +461,18 @@ func schemaKey(key string) (config.Key, bool) {
 }
 
 // childKey is the key the schema reads the entry name of a value stored at
-// at as: a field, or failing that a map key. text spells it either way, as
-// a field where that parses back to the one entry.
-func childKey(at config.Key, name string) (key config.Key, text string, ok bool) {
-	field, fieldParses := childText(at, config.SegmentField, name)
-	mapKey, _ := childText(at, config.SegmentKey, name)
-	if fieldParses {
-		if k, ok := schemaKey(field); ok {
-			return k, field, true
+// at as: a field, or failing that a map key.
+func childKey(at config.Key, name string) (config.Key, bool) {
+	for _, kind := range []config.SegmentKind{config.SegmentField, config.SegmentKey} {
+		text, parses := childText(at, kind, name)
+		if !parses {
+			continue
+		}
+		if k, ok := schemaKey(text); ok {
+			return k, true
 		}
 	}
-	if k, ok := schemaKey(mapKey); ok {
-		return k, mapKey, true
-	}
-	if fieldParses {
-		return nil, field, false
-	}
-	return nil, mapKey, false
+	return nil, false
 }
 
 // childText spells the entry name beneath at as a segment of kind, and
@@ -729,7 +713,7 @@ func cutAt(at config.Key, value any, target config.Key) (any, bool, error) {
 	out := maps.Clone(object)
 	changed := false
 	for name, child := range object {
-		k, _, ok := childKey(at, name)
+		k, ok := childKey(at, name)
 		if !ok || len(k) != len(next) || !k.Within(next) {
 			continue
 		}
