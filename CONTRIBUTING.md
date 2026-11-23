@@ -127,8 +127,8 @@ squash or rebase merge, a direct push, a rerun, a PR run on an older `main`, or 
 evidence, runs the push's scoped jobs. Benchmark artifacts come from pushes only: a push
 records them, reused or not, when it reaches a parse package with benchmarks or changes
 `tools/bench-parse.sh`, which runs them. The script finds those packages under the `unit`
-tag (`tools/bench-parse.sh --list`: today `parse`, `parse/core`, `parse/filter` and
-`parse/internal/jsonkeys`) and runs each one's benchmarks on its own, since `go test` profiles
+tag (`tools/bench-parse.sh --list`: today `parse`, `parse/core`, `parse/filter`,
+`parse/internal/jsonkeys` and `parse/parsehttp`) and runs each one's benchmarks on its own, since `go test` profiles
 a single package: the `parse-benchmarks-<commit>` artifact holds, per package directory,
 `benchmarks.txt` (`-count=3`, for `benchstat`), `cpu.pprof` and `allocs.pprof`. The
 profiles carry their symbols, so `go tool pprof -top cpu.pprof` reads one without the test
