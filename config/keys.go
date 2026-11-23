@@ -131,7 +131,7 @@ func (w *keyWalk) section(t reflect.Type, v reflect.Value, path keyPath) any {
 	}
 	out := make(map[string]any, len(n.fields))
 	if n.remain != nil {
-		if rest, err := v.FieldByIndexErr(n.remain); err == nil {
+		if rest, err := v.FieldByIndexErr(n.remain.index); err == nil {
 			for it := rest.MapRange(); it.Next(); {
 				k := it.Key().String()
 				out[k] = w.elem(anyType, rest.Type().Elem(), it.Value(), path.member(k)).Interface()
@@ -166,7 +166,12 @@ func (w *keyWalk) structMap(t reflect.Type, v reflect.Value, path keyPath) any {
 	for _, k := range slices.Sorted(maps.Keys(written)) {
 		f, alias := n.lookup(k)
 		if f == nil {
-			if !n.acceptsUnknown {
+			value := written[k]
+			if r := n.remain; r != nil {
+				// The remain field collects it: a value of its element
+				// type, rewritten as a field of that type would be.
+				value = w.elem(out.Type().Elem(), r.sf.Type.Elem(), value, path.member(k))
+			} else {
 				at := path.member(k)
 				u := UnknownKey{Key: diagnosticPath(w.schema, at).String()}
 				if u.Key == at.String() {
@@ -176,7 +181,7 @@ func (w *keyWalk) structMap(t reflect.Type, v reflect.Value, path keyPath) any {
 				}
 				w.unknown = append(w.unknown, u)
 			}
-			out.SetMapIndex(reflect.ValueOf(k).Convert(out.Type().Key()), written[k])
+			out.SetMapIndex(reflect.ValueOf(k).Convert(out.Type().Key()), value)
 			continue
 		}
 		key, ft, tag := f.key, f.sf.Type, f.sf.Tag

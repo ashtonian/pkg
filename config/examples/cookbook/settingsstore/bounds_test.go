@@ -267,11 +267,15 @@ type shownSchema struct {
 		Workers int            `koanf:"workers"`
 		Extra   map[string]any `koanf:",remain"`
 	} `koanf:"tuning"`
+	Vault struct {
+		Addr  string            `koanf:"addr"`
+		Paths map[string]string `koanf:",remain" sensitive:"true"`
+	} `koanf:"vault"`
 }
 
 // A logged key withholds what the config package's diagnostics withhold:
 // the entries' names of a sensitive map, under a key it reads or one it
-// does not.
+// does not, a remain field's keys among them.
 func TestShownKey(t *testing.T) {
 	for key, want := range map[string]string{
 		"name":                   "name",
@@ -280,7 +284,12 @@ func TestShownKey(t *testing.T) {
 		`tokens["ghp_live"].old`: "tokens",
 		`upstreams["prod"].url`:  `upstreams["prod"].url`,
 		`gone["a"]`:              `gone["a"]`,
-		"tuning.cache_size":      withheld,
+		"tuning.cache_size":      "tuning.cache_size",
+		`tuning["cache_size"]`:   `tuning["cache_size"]`,
+		"tuning.api_token":       "tuning[*]",
+		"vault.addr":             "vault.addr",
+		"vault.prod_db":          "vault[*]",
+		"vault.prod_db.x":        "vault",
 	} {
 		assert.Equal(t, want, shownKey[shownSchema](key), key)
 	}

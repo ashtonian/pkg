@@ -42,11 +42,12 @@ func RestartChanges(changes []Change) []Change {
 	return cloneChanges(slices.DeleteFunc(slices.Clone(changes), func(c Change) bool { return c.Field.Reload != ReloadRestart }))
 }
 
-func fieldReload(f *gowalker.Field) string {
-	if value, ok := f.GoField().Tag.Lookup("reload"); ok {
+// fieldReload is the reload class of a field declared sf, reached through
+// the squashed structs parents: its own tag's, else the innermost of theirs.
+func fieldReload(sf reflect.StructField, parents []reflect.StructField) string {
+	if value, ok := sf.Tag.Lookup("reload"); ok {
 		return value
 	}
-	parents := f.InlineParents()
 	for i := len(parents) - 1; i >= 0; i-- {
 		if value, ok := parents[i].Tag.Lookup("reload"); ok {
 			return value
@@ -64,11 +65,28 @@ func checkReloadTags(view *gowalker.Schema) error {
 	var failed error
 	check := func(shape *gowalker.Shape, p keyPath) error {
 		own := false
+		tagged := func(f reflect.StructField) error {
+			value, ok := f.Tag.Lookup("reload")
+			if !ok {
+				return nil
+			}
+			own = true
+			if value == "" || len(strings.Fields(value)) != 1 || strings.TrimSpace(value) != value {
+				return fmt.Errorf("%w: %s field %s has invalid reload class %q", ErrSchema, p.orRoot(), f.Name, value)
+			}
+			return nil
+		}
 		for _, f := range shape.DeclaredView() {
-			if value, ok := f.Tags().Lookup("reload"); ok {
-				own = true
-				if value == "" || len(strings.Fields(value)) != 1 || strings.TrimSpace(value) != value {
-					return fmt.Errorf("%w: %s field %s has invalid reload class %q", ErrSchema, p.orRoot(), f.GoField().Name, value)
+			if err := tagged(f.GoField()); err != nil {
+				return err
+			}
+		}
+		// The declared view skips a remain field, whose class the keys it
+		// collects take.
+		for _, d := range shape.Declarations() {
+			if len(d.InlineParents) == 0 && koanfTag(d.GoField).Has("remain") {
+				if err := tagged(d.GoField); err != nil {
+					return err
 				}
 			}
 		}

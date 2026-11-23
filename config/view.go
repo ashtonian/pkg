@@ -78,11 +78,13 @@ func viewError(t reflect.Type, err error) error {
 	return fmt.Errorf("%w: %s: %w", ErrSchema, gowalker.TypeText(t), err)
 }
 
-func fieldSensitive(f *gowalker.Field) bool {
-	if taggedSensitive(f.GoField().Tag) {
+// fieldSensitive reports a field declared sf, reached through the squashed
+// structs parents, that it or one of them tags sensitive.
+func fieldSensitive(sf reflect.StructField, parents []reflect.StructField) bool {
+	if taggedSensitive(sf.Tag) {
 		return true
 	}
-	for _, parent := range f.InlineParents() {
+	for _, parent := range parents {
 		if taggedSensitive(parent.Tag) {
 			return true
 		}

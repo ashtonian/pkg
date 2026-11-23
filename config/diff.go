@@ -72,6 +72,7 @@ type Change struct {
 //     holds, which may themselves be secrets, are never listed.
 //   - A pointer, map or slice that leads back to one it lies within, on
 //     either side, is compared whole there, so a cycle ends.
+//   - The keys a koanf:",remain" field collects are not compared.
 //
 // A T that is not a struct, a struct whose keys cannot be told apart, an
 // interface holding such a struct, and a non-nil func, channel or unsafe

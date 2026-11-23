@@ -163,8 +163,10 @@ prints it: each field by its key, never an alias tag's former name or
 another letter case (`MAIN.Port` → `primary.port`); a map entry quoted, by
 the text of the key a load reads it as (`ports["0x50"]` → `ports["80"]`,
 `timeouts["60s"]` → `timeouts["1m0s"]`; see [map entries](schema.md#map-entries));
-and a key beneath an interface or remain field as a field wherever it can be one
-(`extra["x"]` → `extra.x`). It refuses what `CheckKey` refuses as unknown,
+and a key beneath an interface, or one a remain field collects, as a field
+wherever it can be one (`extra["x"]` → `extra.x`); what lies beneath a key a
+remain field collects is spelled by the field's element type, as beneath any
+map entry. It refuses what `CheckKey` refuses as unknown,
 with an `Unknown` `*KeyError`, and reads no value and no `validate` tag: a
 key's spelling does not depend on validation. A store that keys its rows by
 it holds one row per key, whatever spelling a client sent.

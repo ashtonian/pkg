@@ -541,12 +541,21 @@ func annotationLabeler(root *schemaNode, tree map[string]any, annotations map[st
 	}}, nil
 }
 
-// Annotations follow the same field spelling and aliases as provider data.
+// Annotations follow the same field spelling and aliases as provider data,
+// a key a remain field collects written as its element type reads it.
 func annotationPath(root *schemaNode, p keyPath) keyPath {
 	n := root
 	for i := range p {
 		switch n.kind {
 		case nodeBranch:
+			if n.collects(p[i]) {
+				elem, err := n.remain.node()
+				if err != nil {
+					return p
+				}
+				p[i], n = memberSegment(p[i].name), elem
+				continue
+			}
 			if p[i].kind != segField {
 				return p
 			}

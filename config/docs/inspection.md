@@ -33,6 +33,24 @@ Use `FieldFor[T]("server.port")` to describe one key. `KeyOf(&cfg, &cfg.Port)`
 finds the key for an actual field by its address. Both inspect metadata without
 decoding default/example tags.
 
+`FieldFor` resolves every key `CanonicalKey` accepts, spelled as `CanonicalKey`
+spells it: the two read keys by one decision. A key inside a map or list
+returns a field synthesized for every entry (`items[3].port` →
+`items[*].port`). A key beneath an interface returns the interface's field,
+which owns whatever its value holds. A key a `,remain` field collects —
+`plugins.foo` when no field of `plugins` reads `foo` by any spelling —
+returns the remain field, which owns it the same way: `Path` is the pattern
+of every key it collects (`plugins[*]`, and `[*]` at the root), `Tag`,
+`Type`, `Reload` and `Index` are the remain field's, and `Sensitive` is set
+when the remain field or a struct holding it is sensitive, or when the key
+is named like a credential and its value can hold text. A key beneath one
+walks into the remain map's element type: anything beneath an `any`
+belongs to the remain field, and `plugins.foo.port` beneath a
+`map[string]Plugin` is `Plugin`'s `port` (`plugins[*].port`). A sensitive
+remain field's keys may themselves be secrets, so diagnostics name only the
+struct holding them (`vault`), as they name a sensitive map instead of its
+entries.
+
 For several reflected targets, such as CLI flag destinations, use
 `MatchFields(&cfg, targets)`. It walks the config instance once and returns a
 `[]Field` in target order. An empty `Path` means that target is not a config

@@ -30,8 +30,8 @@ import (
 type edit struct {
 	path keyPath // canonical (see resolveSchemaPath)
 	// parent is the node holding path's last segment: the struct, map or
-	// list it selects from, or what the key reaches beneath. It is nil
-	// beneath a remain field, where nothing is declared.
+	// list it selects from, or what the key reaches beneath — beneath a key
+	// a remain field collects, the node of the field's element type.
 	parent  *schemaNode
 	value   any
 	safe    string       // path as diagnostics may show it
@@ -54,11 +54,12 @@ func resolveKey(schema *schemaNode, key string) (keyPath, *schemaNode, []string,
 
 // resolveSchemaPath spells p, in place, the one way this package prints it: each
 // field segment as its field's key, a map entry by the text of the key it
-// decodes to (see keyCodec), and a key beneath an interface or remain field
-// as a field wherever it can be one. It returns the node holding p's last
-// segment and each field p names by a former name. A key that is empty, is
-// not concrete or names nothing config reads is an Unknown *KeyError; one a
-// section's remain field collects resolves.
+// decodes to (see keyCodec), and a key beneath an interface, or one a
+// remain field collects, as a field wherever it can be one. It returns the
+// node holding p's last segment and each field p names by a former name. A
+// key that is empty, is not concrete or names nothing config reads is an
+// Unknown *KeyError; one a section's remain field collects resolves as
+// walkTo resolves it (see schemaNode.collects).
 func resolveSchemaPath(schema *schemaNode, p keyPath) (parent *schemaNode, aliased []string, ke *KeyError) {
 	if len(p) == 0 {
 		return nil, nil, &KeyError{Key: "$", Unknown: true, Err: fmt.Errorf("%w: a key names one value, not the whole config", ErrKey)}
@@ -73,25 +74,19 @@ func resolveSchemaPath(schema *schemaNode, p keyPath) (parent *schemaNode, alias
 			return nil, nil, unknown(fmt.Errorf("%w: key must be concrete", ErrKey))
 		}
 		parent = n
-		if n == nil || n.kind == nodeDynamic {
+		if n.kind == nodeDynamic {
 			if s.kind == segKey {
 				*s = memberSegment(s.name)
 			}
 			continue
 		}
 		switch {
+		case n.kind == nodeBranch && n.collects(*s):
+			*s = memberSegment(s.name)
 		case n.kind == nodeBranch:
-			f, alias := n.lookup(s.name)
-			if f != nil && s.kind != segField {
-				f = nil // a field spelled as a map key: walkTo refuses it
-			} else if f == nil && n.acceptsUnknown {
-				n = nil
-				if s.kind == segKey {
-					*s = memberSegment(s.name)
-				}
-				continue
-			}
-			if f != nil {
+			// A field spelled as a map key is left as written: walkTo
+			// refuses it.
+			if f, alias := n.lookup(s.name); f != nil && s.kind == segField {
 				written := s.name
 				s.name = f.key
 				if alias {

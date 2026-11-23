@@ -106,14 +106,15 @@ func unusedKey(root *schemaNode, tree any, name string) UnknownKey {
 	return k
 }
 
-// Sensitive containers can hold credentials in their keys as well as values.
+// Sensitive containers can hold credentials in their keys as well as values;
+// a sensitive remain field's are the keys beneath its struct.
 func diagnosticPath(root *schemaNode, p keyPath) keyPath {
 	if root == nil {
 		return p
 	}
 	c, n := cursor{}, root
 	for i, s := range p {
-		if c.sensitive() && n.kind != nodeBranch && canHoldKeys(n.typ) {
+		if c.sensitive() && n.kind != nodeBranch && canHoldKeys(n.typ) || n.withholdsCollected(c, s) {
 			return p[:i]
 		}
 		var err error
@@ -320,11 +321,13 @@ func treeElement(data any, i int) any {
 // validatorKey translates a validator struct namespace — the root type's
 // name (see [belowValidatorRoot]), then Go field names, map keys and indexes
 // in brackets: Config.DB.Pools[0].Max — against the validated config v. A
-// squashed struct's field name contributes no key segment. The validator
-// prints a map key with %v, a String method included, so the key is found
-// by that text and named by its own (see keyCodec): levels["1"], not
-// levels["info"]. exact is false when the namespace cannot be placed
-// exactly, two keys printing alike included.
+// squashed struct's field name contributes no key segment, and neither does
+// a remain field's: each of its entries is a key of the struct holding it,
+// so Config.Plugins.Extra[x] is plugins.x. The validator prints a map key with
+// %v, a String method included, so the key is found by that text and named
+// by its own (see keyCodec): levels["1"], not levels["info"]. exact is false
+// when the namespace cannot be placed exactly, two keys printing alike
+// included, and so is a remain field's entry another field reads.
 func validatorKey(v reflect.Value, structNS string) (keyPath, bool) {
 	rest, ok := belowValidatorRoot(v.Type(), structNS)
 	if !ok {
@@ -332,6 +335,7 @@ func validatorKey(v reflect.Value, structNS string) (keyPath, bool) {
 	}
 	var p keyPath
 	beneathInterface := false
+	var collector *schemaNode // the struct whose remain field holds the next entry
 	for rest != "" {
 		var throughInterface bool
 		v, throughInterface = derefNoting(v)
@@ -345,6 +349,7 @@ func validatorKey(v reflect.Value, structNS string) (keyPath, bool) {
 			}
 			// A promoted field is reached through the structs embedding it;
 			// a squashed one contributes no key.
+			holder := v.Type()
 			for _, i := range f.Index {
 				v = derefValue(v)
 				if v.Kind() != reflect.Struct {
@@ -352,10 +357,16 @@ func validatorKey(v reflect.Value, structNS string) (keyPath, bool) {
 				}
 				hop := v.Type().Field(i)
 				key, skip := fieldKey(hop)
-				if skip {
+				switch {
+				case skip && koanfTag(hop).Has("remain"):
+					n, err := metadataOf(holder)
+					if err != nil || n.remain == nil {
+						return p, false
+					}
+					collector = n
+				case skip:
 					return p, false
-				}
-				if key != "" {
+				case key != "":
 					p = p.field(key)
 				}
 				v = v.Field(i)
@@ -374,7 +385,16 @@ func validatorKey(v reflect.Value, structNS string) (keyPath, bool) {
 				return p, false
 			}
 			k := byText[key]
-			p, v, rest = p.entry(entryName(k), beneathInterface), v.MapIndex(k), rest[size:]
+			name := entryName(k)
+			switch {
+			case collector == nil:
+				p = p.entry(name, beneathInterface)
+			case collector.collects(memberSegment(name)):
+				p, collector = p.member(name), nil
+			default:
+				return p, false
+			}
+			v, rest = v.MapIndex(k), rest[size:]
 		case v.Kind() == reflect.Slice || v.Kind() == reflect.Array:
 			i, size, ok := parseBracketIndex(rest)
 			if !ok || i >= v.Len() {
@@ -386,7 +406,8 @@ func validatorKey(v reflect.Value, structNS string) (keyPath, bool) {
 		}
 		rest = strings.TrimPrefix(rest, ".")
 	}
-	return p, true
+	// A remain field's map is no key of its own: its struct's key is not it.
+	return p, collector == nil
 }
 
 // belowValidatorRoot is ns, a validator namespace of a value of type t, past

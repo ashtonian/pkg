@@ -143,7 +143,8 @@ func (e *ApplyError) Unwrap() []error {
 // WithApplier registers a; appliers run in registration order. An applier
 // with no name or a repeated one, no Apply, or no prefix fails construction,
 // as does a prefix that names no key of the config, reaches beneath an
-// interface or a value compared whole, or is as specific as another
+// interface or a value compared whole, names a key a koanf:",remain" field
+// collects, which [Diff] does not compare, or is as specific as another
 // applier's and could name the same key. See [Applier].
 //
 // With appliers registered, the reloader accounts for every key: a change no
@@ -249,17 +250,22 @@ func newApplication(root *schemaNode, hooks []applierHook) (*application, error)
 }
 
 // applierPrefix parses and checks one prefix against the config's schema: it
-// must name a key Diff can report.
+// must name a key Diff can report, which no key a remain field collects is.
 func applierPrefix(root *schemaNode, s string) (keyPath, error) {
 	p, err := parseKeyPath(s)
 	if err != nil {
 		return nil, err
 	}
+	n := root
 	for i := 1; i <= len(p); i++ {
-		c, n, err := root.walkTo(cursor{}, p[:i])
+		if n.collects(p[i-1]) {
+			return nil, fmt.Errorf("%w %s: %s is a key a remain field collects, which Diff does not compare", ErrKey, p, p[:i])
+		}
+		c, next, err := root.walkTo(cursor{}, p[:i])
 		if err != nil {
 			return nil, err
 		}
+		n = next
 		if len(c.path) < i {
 			return nil, fmt.Errorf("%w %s: it reaches beneath %s, whose keys are not compared one by one", ErrKey, p, c.path.orRoot())
 		}
