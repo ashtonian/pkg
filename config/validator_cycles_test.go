@@ -2,7 +2,9 @@ package config
 
 import (
 	"context"
+	"reflect"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -164,4 +166,84 @@ func TestRefuseCycles_WalksASharedStructOnce(t *testing.T) {
 	err := refuseCycles(&cycSharedCfg{A: top})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "A.next.next.prev holds a cycle back to A")
+}
+
+type cycServer struct {
+	Host string `koanf:"host" validate:"required"`
+	Port int    `koanf:"port" validate:"min=1"`
+}
+
+// cycAcyclicCfg holds what configs hold: no type on the validator's walk
+// reaches itself, and no value there is an interface.
+type cycAcyclicCfg struct {
+	Name     string                `koanf:"name" validate:"required"`
+	Server   cycServer             `koanf:"server"`
+	TLS      *cycServer            `koanf:"tls"`
+	Pools    []cycServer           `koanf:"pools" validate:"dive"`
+	Named    map[string]*cycServer `koanf:"named" validate:"dive,keys,min=1,endkeys"`
+	Started  time.Time             `koanf:"started"`
+	Unwalked *cycNode              `koanf:"-" validate:"-"`
+	Extra    map[string]any        `koanf:",remain"`
+}
+
+type cycAnyCfg struct {
+	Name  string `koanf:"name"`
+	Extra any    `koanf:"-"`
+}
+
+type cycRemainCfg struct {
+	Name  string         `koanf:"name"`
+	Extra map[string]any `koanf:",remain" validate:"dive"`
+}
+
+type cycValuedCfg struct {
+	Valued cycValuer `koanf:"-"`
+}
+
+type cycSelfCfg struct {
+	Self selfPointer `koanf:"-"`
+}
+
+// Whether a config type can hold a cycle on the validator's paths is decided
+// from the type: a type the walk reaches again on its path, or a value it
+// cannot know the type of, can; a cycle the validator never walks into
+// cannot.
+func TestMayHoldCycle(t *testing.T) {
+	for name, tc := range map[string]struct {
+		typ  reflect.Type
+		want bool
+	}{
+		"scalars, structs and dived collections of them": {reflect.TypeFor[*cycAcyclicCfg](), false},
+		"a cycle the validator never walks into":         {reflect.TypeFor[*cycUnwalkedCfg](), false},
+		"structs linked back to one another":             {reflect.TypeFor[*cycSharedCfg](), true},
+		"a pointer of its own type":                      {reflect.TypeFor[*cycSelfCfg](), true},
+		"an interface":                                   {reflect.TypeFor[*cycAnyCfg](), true},
+		"a dived remain field":                           {reflect.TypeFor[*cycRemainCfg](), true},
+		"a validator value":                              {reflect.TypeFor[*cycValuedCfg](), true},
+	} {
+		assert.Equal(t, tc.want, mayHoldCycle(tc.typ), name)
+	}
+}
+
+// A config whose type cannot hold a cycle costs validation no walk:
+// refuseCycles allocates nothing for it, where a walk allocates its path's
+// bookkeeping.
+func TestRefuseCycles_SkipsATypeThatCannotHoldOne(t *testing.T) {
+	acyclic := &cycAcyclicCfg{Name: "a", TLS: &cycServer{}, Pools: []cycServer{{}}, Named: map[string]*cycServer{"a": {}}}
+	assert.Zero(t, testing.AllocsPerRun(10, func() { _ = refuseCycles(acyclic) }))
+	walked := &cycSharedCfg{A: &cycNode{Name: "a"}}
+	assert.NotZero(t, testing.AllocsPerRun(10, func() { _ = refuseCycles(walked) }), "a type that can hold one is walked")
+}
+
+// A config whose only path to a cycle is an interface is walked, and a self
+// pointer a hook puts there refused.
+func TestValidation_RefusesACycleInAnInterface(t *testing.T) {
+	_, err := Load[cycAnyCfg](t.Context(), WithPostLoad(func(_ context.Context, c *cycAnyCfg) error {
+		var a any
+		a = &a
+		c.Extra = a
+		return nil
+	}))
+	require.ErrorIs(t, err, ErrValidation)
+	assert.Contains(t, err.Error(), "Extra holds a cycle back to Extra")
 }

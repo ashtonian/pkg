@@ -5,6 +5,7 @@ import (
 	"reflect"
 	"slices"
 	"strconv"
+	"sync"
 
 	"github.com/go-playground/validator/v10"
 )
@@ -25,11 +26,16 @@ import (
 // same rules ahead of it, while it is still on the path; the validator
 // would walk it the same way forever. A reference met again on another
 // path is walked once, so a value sharing a struct among fields is not
-// refused, and the walk is linear in the value's size.
+// refused, and the walk is linear in the value's size. A config whose type
+// cannot hold a cycle on the validator's paths, decided once per type
+// ([mayHoldCycle]), is not walked at all.
 func refuseCycles(cfg any) error {
 	root := reflect.ValueOf(cfg)
 	if root.Kind() != reflect.Pointer || root.IsNil() || !walksFields(root.Elem().Type()) {
 		return nil // the validator refuses it as not a struct
+	}
+	if !mayHoldCycle(root.Type()) {
+		return nil
 	}
 	w := cycleWalk{root: root, onPath: map[pathState]pathEntry{}, done: map[pathState]bool{}}
 	// The validator's namespaces start with the root type's name and a dot,
@@ -200,27 +206,40 @@ func (w *cycleWalk) entries(v reflect.Value, rules []string) error {
 	return nil
 }
 
-// entry walks one map entry with rules. Under keys, the key takes the
-// rules through endkeys and the value those after; with none after, the
-// validator walks the value only into the struct it is or points to.
+// entry walks one map entry with rules, as [entryRules] splits them.
 func (w *cycleWalk) entry(key, value reflect.Value, rules []string) error {
-	if len(rules) == 0 || rules[0] != "keys" {
+	keyRules, valueRules, keyed := entryRules(rules)
+	if !keyed {
 		return w.value(value, rules)
-	}
-	keyRules, valueRules := rules[1:], []string(nil)
-	if end := slices.Index(rules, "endkeys"); end >= 0 {
-		keyRules, valueRules = rules[1:end+1], rules[end+1:]
 	}
 	if err := w.value(key, keyRules); err != nil {
 		return err
 	}
-	if len(valueRules) > 0 {
+	if len(valueRules) > 0 || structEntry(value.Type()) {
 		return w.value(value, valueRules)
 	}
-	if value.Kind() == reflect.Struct || value.Kind() == reflect.Pointer && value.Elem().Kind() == reflect.Struct {
-		return w.value(value, nil)
-	}
 	return nil
+}
+
+// entryRules splits rules, those after a dive into a map, between its
+// entries' keys and values: under keys, the key takes the rules through
+// endkeys and the value those after. With no rules after, the validator
+// walks a value only into the struct it is or points to ([structEntry]).
+// keyed is false without keys, when the value takes rules.
+func entryRules(rules []string) (keyRules, valueRules []string, keyed bool) {
+	if len(rules) == 0 || rules[0] != "keys" {
+		return nil, rules, false
+	}
+	if end := slices.Index(rules, "endkeys"); end >= 0 {
+		return rules[1 : end+1], rules[end+1:], true
+	}
+	return rules[1:], nil, true
+}
+
+// structEntry reports whether the validator walks a map entry of type t
+// that a keys rule leaves no rules for: a struct, or a pointer to one.
+func structEntry(t reflect.Type) bool {
+	return t.Kind() == reflect.Struct || t.Kind() == reflect.Pointer && t.Elem().Kind() == reflect.Struct
 }
 
 // through walks what lies beneath ref, entered with rules ahead of it, by
@@ -273,4 +292,108 @@ func validatorValue(v reflect.Value) (reflect.Value, bool) {
 		return reflect.Value{}, false
 	}
 	return reflect.ValueOf(v.Interface().(validator.Valuer).ValidatorValue()), true
+}
+
+// mayHoldCycle reports whether a value of t, a pointer to a config struct,
+// can hold a cycle on the paths the default validator walks: whether the
+// walk refuseCycles takes, taken on types, reaches a type with the same
+// rules ahead of it while that type is still on its path, or reaches a value
+// whose type it cannot know — an interface, a ValidatorValue, among them a
+// dived remain field's entries — which can hold anything. Most configs can
+// hold none, and are never walked. It is decided once per type for the life
+// of the process, as [validatorFields] reads each struct once.
+func mayHoldCycle(t reflect.Type) bool {
+	if may, ok := cycleTypes.Load(t); ok {
+		return may.(bool)
+	}
+	w := cycleTypeWalk{onPath: map[typeState]bool{}, done: map[typeState]bool{}}
+	may, _ := cycleTypes.LoadOrStore(t, w.value(t, nil))
+	return may.(bool)
+}
+
+var cycleTypes sync.Map // reflect.Type → bool
+
+// cycleTypeWalk is one mayHoldCycle walk: [cycleWalk]'s, on types. onPath
+// holds the states entered on the current path, done those walked to the
+// end, so the walk is linear in the type's size.
+type cycleTypeWalk struct {
+	onPath map[typeState]bool
+	done   map[typeState]bool
+}
+
+// typeState is a type the walk meets with rules ahead of it, held as
+// [pathState] holds them.
+type typeState struct {
+	typ   reflect.Type
+	rules *string
+	n     int
+}
+
+// value reports whether a value of t, met with rules ahead of it, can lead
+// the validator into a cycle, deciding as [cycleWalk.value] does. A Go type
+// cannot hold itself by value, so a state met again on its path is reached
+// through a pointer, a slice or a map.
+func (w *cycleTypeWalk) value(t reflect.Type, rules []string) bool {
+	state := typeState{typ: t, n: len(rules)}
+	if len(rules) > 0 {
+		state.rules = &rules[0]
+	}
+	if w.onPath[state] {
+		return true
+	}
+	if w.done[state] {
+		return false
+	}
+	w.onPath[state] = true
+	may := w.walk(t, rules)
+	delete(w.onPath, state)
+	w.done[state] = true
+	return may
+}
+
+func (w *cycleTypeWalk) walk(t reflect.Type, rules []string) bool {
+	switch {
+	case t.Implements(validatorValuer), t.Kind() == reflect.Interface:
+		return true
+	case t.Kind() == reflect.Pointer:
+		return w.value(t.Elem(), rules)
+	}
+	for i, rule := range rules {
+		switch stepOf(rule) {
+		case stepStop, stepStructOnly:
+			return false
+		case stepDive:
+			return w.elements(t, rules[i+1:])
+		}
+	}
+	return walksFields(t) && w.fields(t)
+}
+
+// fields reports whether a field of struct t the validator reads can lead
+// it into a cycle.
+func (w *cycleTypeWalk) fields(t reflect.Type) bool {
+	read := validatorFields(t)
+	if len(read.problems) > 0 {
+		return false // the validator panics on meeting the struct, before any field
+	}
+	return slices.ContainsFunc(read.fields, func(f readRules) bool { return w.value(f.typ, f.rules) })
+}
+
+// elements reports whether what a dive reaches in t, with rules after it,
+// can lead the validator into a cycle.
+func (w *cycleTypeWalk) elements(t reflect.Type, rules []string) bool {
+	switch t.Kind() {
+	case reflect.Array:
+		return t.Len() > 0 && w.value(t.Elem(), rules)
+	case reflect.Slice:
+		return w.value(t.Elem(), rules)
+	case reflect.Map:
+		keyRules, valueRules, keyed := entryRules(rules)
+		if !keyed {
+			return w.value(t.Elem(), rules)
+		}
+		return w.value(t.Key(), keyRules) ||
+			(len(valueRules) > 0 || structEntry(t.Elem())) && w.value(t.Elem(), valueRules)
+	}
+	return false // a dive the validator cannot take: it panics there instead
 }
