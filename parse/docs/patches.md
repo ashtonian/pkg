@@ -300,6 +300,12 @@ pc, err := patch.NewPatchPolicyConstraints(
 )
 ```
 
+| Option | Effect |
+|---|---|
+| `ForbidPaths(patterns...)` | Forbid writing the paths the patterns match (E2084). A pattern is a JSON Pointer whose tokens are each a literal, `*` (exactly one token) or `**` (zero or more): `/tenant_id`, `/internal/**` |
+| `ConstrainValues(pattern, constraint)` | Restrict the values written at the paths `pattern` matches to a `ValueConstraint` (E2085) |
+| `ValidateWith(validators...)` | `PatchValidator`s each operation must pass, called with the request's `PolicySubject` |
+
 `NewPatchPolicyConstraints` checks the policy when it is built, so a bad pattern is a startup error and never a request's: it refuses a path pattern whose token holds `*` among other characters, a value constraint given twice for one pattern, a `ValueConstraint.Pattern` that does not compile, and a nil validator. The policy is immutable. `ApplyPatchPolicyConstraints(parsed, pc, subject)` enforces it and records it on the patch (`AuditInfo`), and `parse.WithPatchPolicy(pc, subject)` applies it inside a `Resource`'s `ParsePatch`, `ParseMergePatch`, `MergePatchMap`, `ValidateOperations` and `ApplyPatch`; `subject` is a `*patch.PolicySubject` for the validators. `AllowedValues` and `DeniedValues` compare numbers by value, a decimal path's exactly; `PatchPolicyFromWritableFields` builds a policy forbidding every path a writable-field set leaves out.
 
 Policy judges what each operation writes, not its envelope. A whole value writes every path below its own, a merge object writes the members it names, a `remove` writes null whatever `value` it carries, a `move` writes its source as well as its destination, and a `test` writes nothing.

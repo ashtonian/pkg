@@ -24,7 +24,7 @@ commands.MustRelate("device", parse.BelongsTo(devices, "device_id"))
 |---|---|---|
 | `HasMany(target, fk)` | an owner to the target rows whose `fk` holds its key | `target.fk = owner.<key>`; `References(col)` names another owner column |
 | `BelongsTo(target, fk)` | an owner to the target row its `fk` names | `target.<key> = owner.fk`; `References(col)` names another target column |
-| `ManyToMany(target, junction)` | owners and targets through a pair table | `junction.Source = owner.<key>`, `target.<key> = junction.Target` |
+| `ManyToMany(target, junction)` | owners and targets through a pair table, a `Junction` (`Through(table, source, target)` builds one without a tenant column) | `junction.Source = owner.<key>`, `target.<key> = junction.Target` |
 
 `Relate` checks every column against both resources' types and returns an error; `MustRelate` panics. A relation's name must be a name no server policy already resolves on the owner: a request field, a system field, or any [policy field](queries.md#policy-fields), the owner's columns among them. Otherwise the relation would change what a policy on that name constrains. A relation may lead back to its own table (an asset's parent); the query aliases it so it does not shadow the owner.
 
@@ -33,6 +33,9 @@ commands.MustRelate("device", parse.BelongsTo(devices, "device_id"))
 | `Indexed()` | An index leads with the correlation column (the foreign key, or the pair table's owner column): the relation costs 8 instead of 80 against `MaxCost` (default 50). A belongs-to correlates on the target's key and is always indexed. |
 | `PolicyScoped()` | The related rows are those the server's policy for the target table admits (`Scope.Related[<table>]`), not the request's tenant: rows another tenant shares, such as platform device types. A list using the relation without that policy fails with `filter.ErrRelatedPolicyRequired`. |
 | `References(column)` | The column a foreign key holds when it is not the referenced resource's key |
+| `Includable()` | A list may include the related rows' keys (`include=<name>`): a has-many's children, a many-to-many's targets, as visible to the request ([include related keys](#include-related-keys)). A belongs-to's key is the owner's own foreign-key column |
+| `Facetable()` | A list may count its rows per related key (`facets=<name>`): distinct owners per visible child or target ([facet by related keys](#facet-by-related-keys)). A belongs-to facets through its foreign-key column |
+| `Writable()` | A patch may change a many-to-many's membership with target keys ([change membership](#change-membership)). The pair table must hold nothing but the pairs and their tenant |
 | `Describe(label, description)` | The label and description schema discovery serves for the relation field, as the `label` and `description` tags do for a column |
 
 Related rows are live rows only (the target's `DeletedColumn`) and, unless policy-scoped, rows of the request's tenant (the target's `TenantColumn`). A pair table's `Tenant` column is bound to the request's tenant, as one value with every other tenant column the request reaches ([Tenant key](#tenant-key)). A governed list's rows span tenants, and each row's related rows are its own tenant's ([Governed lists](#governed-lists)).

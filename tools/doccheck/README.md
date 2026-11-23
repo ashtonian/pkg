@@ -13,6 +13,7 @@ For every module `go.work` uses, over its Markdown (every `.md` file in its tree
 | Code maps | In a table under a heading containing "Code map" or "Key files", each first-cell code span with a file extension or a slash is a path, relative to the Markdown file's directory or, for a guide that maps its module, to the module's: it names a file or directory, or is a pattern that matches one. |
 | Files listed (opt-in) | Each non-test Go file that declares something is listed by its package's code map: the nearest README, from its directory up to the module's, that has one. A directory entry lists every file under it. A file holding only the package comment (`doc.go`) needs no row. |
 | Exports named (opt-in) | Each exported top-level name of an importable package (not `main`, not under `internal/`) appears in a code span or code block of the module's Markdown, or belongs to a family a span names by its prefix. |
+| Options tabled (opt-in) | Each option of an importable package (an exported function returning, or a variable of, a type named `…Option`) is named in a table row outside a code map: an option table, or a row linking to the guide that holds one. |
 
 ## Configuration
 
@@ -30,12 +31,13 @@ The allow list, `allow.json`, is keyed by module directory:
     "reverse": true,
     "identifiers": {"pkg.Name": "why the prose may name what the module does not declare"},
     "unlisted_files": {"parse/x/*.go": "why no code map lists these"},
-    "unnamed_exports": {"filter.Legacy*": "why no Markdown names these"}
+    "unnamed_exports": {"filter.Legacy*": "why no Markdown names these"},
+    "untabled_options": {"filter.WithLegacy": "why no table row names it"}
   }
 }
 ```
 
-`reverse` opts a module into the two reverse checks. Keys are exact or `path.Match` patterns: references as the code span writes them, files from the repository root, exports as `package.Name`. Every entry needs a reason, and an entry that matches nothing is a finding, so the list only shrinks as the documentation catches up. Unknown members and modules outside the workspace are refused.
+`reverse` opts a module into the three reverse checks. Keys are exact or `path.Match` patterns: references as the code span writes them, files from the repository root, exports as `package.Name`. Every entry needs a reason, and an entry that matches nothing is a finding, so the list only shrinks as the documentation catches up. Unknown members and modules outside the workspace are refused.
 
 ## External dependencies
 
@@ -60,6 +62,7 @@ It prints one finding per line, `path:line: message` (or `path: message` for a f
 - `code map entry …: no such file`: the file was renamed, split or removed; update the row.
 - `… code map does not list it` / `no README code map covers its directory`: add a row naming the file to the nearest README's code map.
 - `… is exported and no Markdown names it`: name it in the package's README, or in a guide; or allow it with the reason no reader needs it.
+- `… is an option no table row names`: add a row to the option table its builder's guide holds, or a link row to that guide.
 - `entry … matches nothing; remove it`: the documentation caught up; delete the allow entry.
 
 A run over the whole workspace parses every module's Go files once and every Markdown file once: seconds, growing linearly with the tree.

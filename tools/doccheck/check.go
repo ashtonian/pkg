@@ -35,7 +35,8 @@ func (f finding) String() string {
 // so the list only shrinks as the documentation catches up.
 type moduleAllow struct {
 	// Reverse opts the module into the reverse checks: every non-test Go
-	// file in a code map, every exported name in some Markdown.
+	// file in a code map, every exported name in some Markdown, every option
+	// in a table row.
 	Reverse bool `json:"reverse"`
 	// Identifiers are references the Markdown may make that resolve to
 	// nothing in the module, as written in the code span.
@@ -46,6 +47,9 @@ type moduleAllow struct {
 	// UnnamedExports are "package.Name" patterns of exported names no
 	// Markdown names.
 	UnnamedExports map[string]string `json:"unnamed_exports,omitempty"`
+	// UntabledOptions are "package.Name" patterns of options no table row
+	// names.
+	UntabledOptions map[string]string `json:"untabled_options,omitempty"`
 }
 
 type module struct {
@@ -111,6 +115,7 @@ func check(ctx context.Context, root, allowPath string) ([]finding, error) {
 		if m.allow.Reverse {
 			findings = append(findings, m.checkListed(maps)...)
 			findings = append(findings, m.checkNamed()...)
+			findings = append(findings, m.checkTabled()...)
 		}
 		findings = append(findings, m.checkStale(allowPath)...)
 	}
@@ -274,6 +279,7 @@ func (m *module) checkReasons(allowPath string) []finding {
 func (m *module) allowKinds() map[string]map[string]string {
 	return map[string]map[string]string{
 		"identifiers": m.allow.Identifiers, "unlisted_files": m.allow.UnlistedFiles, "unnamed_exports": m.allow.UnnamedExports,
+		"untabled_options": m.allow.UntabledOptions,
 	}
 }
 
@@ -545,6 +551,48 @@ func (m *module) checkNamed() []finding {
 				continue
 			}
 			out = append(out, finding{path: p.dir, msg: fmt.Sprintf("%s.%s is exported and no Markdown names it", p.name, name)})
+		}
+	}
+	return out
+}
+
+// checkTabled requires each option of an importable package to be named in
+// a table row of the module's Markdown, where options are documented: an
+// option table, or a row linking to the guide that holds one, not a code
+// map. A code span
+// naming a family by its prefix (`With*`) names each of its members.
+func (m *module) checkTabled() []finding {
+	named := map[string]bool{}
+	var prefixes []string
+	for _, doc := range m.docs {
+		for _, row := range doc.rows {
+			// A code map lists what a file declares; it documents no option.
+			if slices.ContainsFunc(row.sections, codeMapHeading.MatchString) {
+				continue
+			}
+			for _, cell := range row.cells {
+				for _, span := range cell {
+					for _, w := range word.FindAllString(span, -1) {
+						named[w] = true
+					}
+					for _, g := range wordPrefix.FindAllStringSubmatch(span, -1) {
+						prefixes = append(prefixes, g[1])
+					}
+				}
+			}
+		}
+	}
+	var out []finding
+	for _, p := range m.api.all() {
+		if !p.importable {
+			continue
+		}
+		for _, name := range slices.Sorted(mapsKeys(p.options)) {
+			inFamily := slices.ContainsFunc(prefixes, func(prefix string) bool { return strings.HasPrefix(name, prefix) })
+			if named[name] || inFamily || m.allowed("untabled_options", m.allow.UntabledOptions, p.name+"."+name) {
+				continue
+			}
+			out = append(out, finding{path: p.dir, msg: fmt.Sprintf("%s.%s is an option no table row names", p.name, name)})
 		}
 	}
 	return out

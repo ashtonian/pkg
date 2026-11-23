@@ -334,7 +334,17 @@ A `parse.Resource` declares its primary key once with `parse.PrimaryKey` (defaul
 
 ### Relation scope
 
-Every statement that reaches related rows takes one `filter.RelationScope` through its builder's one option (`WithRelationScope`, `ListRelationScope`, `WithFacetRelationScope`, `WithIncludeRelationScope`, `ResolveRelationScope`), so a page, its count, facets and includes reach the same rows. `Resource.BuildList` builds it from `parse.Scope`: `Tenant` from `Scope.Tenant`, `RowTenant` from the resource's tenant column under `Scope.Governance`, `Related` from `Scope.Related`.
+Every statement that reaches related rows takes one `filter.RelationScope` through its builder's one option (`WithRelationScope`, `ListRelationScope`, `WithFacetRelationScope`, `WithIncludeRelationScope`, `ResolveRelationScope`), so a page, its count, facets and includes reach the same rows:
+
+| Builder | Option |
+|---|---|
+| `NewSQLBuilder` | `WithRelationScope(s)` |
+| `ListQuery.Build` | `ListRelationScope(s)` |
+| `BuildFacetQuery` | `WithFacetRelationScope(s)` |
+| `BuildIncludeQuery` | `WithIncludeRelationScope(s)` |
+| `ResolveMemberships` | `ResolveRelationScope(s)`: a lookup reads one tenant's rows, so a `RowTenant` is refused |
+
+`Resource.BuildList` builds it from `parse.Scope`: `Tenant` from `Scope.Tenant`, `RowTenant` from the resource's tenant column under `Scope.Governance`, `Related` from `Scope.Related`.
 
 | Field | Type | Default | Meaning |
 |---|---|---|---|
@@ -363,6 +373,7 @@ Facet, include, and flat-query options:
 | `WithMaxIncludePerRelation(n)` | int | `100` | Targets per owner; distinct keys capped in SQL or non-SQL resolution. The cap must leave room for the truncation sentinel |
 | `QueryParamAccept(names...)` | `...string` | none | Parameters the endpoint reads itself; left alone like the list parameters |
 | `QueryParamLenient()` | — | off | Ignore a parameter naming no filterable field instead of refusing it (E2071) |
+| `QueryParamFieldsOnly()` | — | off | Read every parameter as a field filter, for values that hold nothing else: the list parameters (`Param*`) are not skipped, so a field named like one is filtered on, and any other name that is no filterable field is E2071 |
 | `QueryParamConfig(cfg)` | `*core.ParserConfig` | `core.DefaultConfig()` | Limits and value configuration for flat filters |
 | `ListQuery.WithFilterConfig(cfg)` | `*core.ParserConfig` | default parser config | Configure JSON filter parsing before using the builder |
 | `ListQuery.WithSearchSchema(schema)` | `*SearchSchema` | nil | Supply searchable fields for `ListSearch`; `Resource.ListQuery` does this automatically |

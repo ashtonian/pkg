@@ -172,6 +172,23 @@ func TestCheck_ReverseChecksAModuleThatOptsIn(t *testing.T) {
 	}}`))
 }
 
+func TestCheck_OptionsHaveATableRow(t *testing.T) {
+	root := workspace(t, []string{"mod"}, map[string]string{
+		"mod/o/o.go": "package o\n\ntype Option func()\n\ntype ListOption func()\n\n" +
+			"func WithTabled() Option { return nil }\n\nfunc WithProse() Option { return nil }\n\n" +
+			"func ListFamilyA() ListOption { return nil }\n\nfunc ListFamilyB() ListOption { return nil }\n\n" +
+			"func WithMapped() Option { return nil }\n\nfunc WithAllowed() Option { return nil }\n\n" +
+			"var Preset ListOption\n\nfunc NotAnOption() *Option { return nil }\n",
+		"mod/o/README.md": "# o\n\n`Option`, `ListOption`, `NotAnOption`, `Preset`, `WithProse` in prose, `WithMapped`, `WithAllowed`.\n\n" +
+			"| Option | Effect |\n|---|---|\n| `WithTabled()` | tabled |\n| `ListFamily*`, `Preset` | a family and a variable |\n\n" +
+			"## Code map\n\n| File | Role |\n|---|---|\n| `o.go` | `WithMapped` |\n",
+	})
+	assert.Equal(t, []string{
+		"mod/o: o.WithMapped is an option no table row names",
+		"mod/o: o.WithProse is an option no table row names",
+	}, run(t, root, `{"mod": {"reverse": true, "untabled_options": {"o.WithAllowed": "documented with its builder"}}}`))
+}
+
 func TestCheck_AnAllowListForNoModuleIsAFinding(t *testing.T) {
 	root := workspace(t, []string{"mod"}, map[string]string{"mod/a.go": "package mod\n"})
 	assert.Equal(t, []string{"allow.json: allow list names gone, which is no workspace module"}, run(t, root, `{"gone": {}}`))

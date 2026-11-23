@@ -23,7 +23,10 @@ type packageAPI struct {
 	// importable is false for a main package and for one under internal/.
 	importable bool
 	decls      map[string]bool
-	types      map[string]*typeAPI
+	// options are the exported functions and variables whose type is an
+	// option: a type named *Option, as functional options are.
+	options map[string]bool
+	types   map[string]*typeAPI
 	// imports are the names the package's files import other packages
 	// under: the last element of the path without a major version suffix,
 	// and any alias.
@@ -97,6 +100,7 @@ func loadAPI(root string, dirs []string) (*moduleAPI, error) {
 					dir:        dir,
 					importable: file.Name.Name != "main" && !isInternal(dir),
 					decls:      map[string]bool{},
+					options:    map[string]bool{},
 					types:      map[string]*typeAPI{},
 					imports:    map[string]string{},
 				}
@@ -150,6 +154,9 @@ func (p *packageAPI) add(file *ast.File) {
 			if d.Recv == nil {
 				if d.Name.IsExported() {
 					p.decls[d.Name.Name] = true
+					if r := d.Type.Results; r != nil && len(r.List) == 1 && len(r.List[0].Names) <= 1 && isOptionType(r.List[0].Type) {
+						p.options[d.Name.Name] = true
+					}
 				}
 				continue
 			}
@@ -168,6 +175,9 @@ func (p *packageAPI) add(file *ast.File) {
 					for _, n := range s.Names {
 						if n.IsExported() {
 							p.decls[n.Name] = true
+							if s.Type != nil && isOptionType(s.Type) {
+								p.options[n.Name] = true
+							}
 						}
 					}
 				}
@@ -215,6 +225,16 @@ func (p *packageAPI) addType(t *typeAPI, s *ast.TypeSpec) {
 			}
 		}
 	}
+}
+
+// isOptionType reports whether a type expression names an option type: one
+// whose name ends in Option, in this package or another.
+func isOptionType(expr ast.Expr) bool {
+	if _, ok := expr.(*ast.StarExpr); ok {
+		return false
+	}
+	ref, ok := refOf(expr)
+	return ok && strings.HasSuffix(ref.name, "Option")
 }
 
 // receiverName is the type a method's receiver names, without pointer or

@@ -3,7 +3,8 @@
 // against the module's exported API; its relative links and their anchors
 // resolve; the files its code maps name exist. A module that opts in, in the
 // allow list, is also held the other way: every non-test Go file is in a
-// code map and every exported name is named by some Markdown.
+// code map, every exported name is named by some Markdown and every option
+// has a table row.
 //
 //	cd tools/doccheck && GOWORK=off go run . -root ../..
 //
