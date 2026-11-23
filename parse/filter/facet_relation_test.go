@@ -178,7 +178,7 @@ func TestCountStarWithoutJoin(t *testing.T) {
 // one keyed by its id, and neither borrows the other's column.
 func TestBuildFacetQuery_RelationFacets_OwnKeyEach(t *testing.T) {
 	schema := &filter.ResourceSchema{
-		Name: "docs", PrimaryKey: "id",
+		Name: "docs", PrimaryKey: []string{"id"},
 		SystemFields: map[string]*filter.FieldSchema{
 			"id": {ExternalName: "id", Table: "docs", Column: "id", DataType: core.FieldTypeString},
 		},

@@ -793,7 +793,7 @@ func (b *SQLBuilder) buildPairTable(s *buildState, node *FilterNode) (string, er
 		DataType: f.DataType, NumberKind: f.NumberKind,
 	}
 	pair := *f
-	pair.Related = &ResourceSchema{Name: rel.JoinTable, PrimaryKey: rel.TargetColumn, SystemFields: map[string]*FieldSchema{rel.TargetColumn: key}}
+	pair.Related = &ResourceSchema{Name: rel.JoinTable, PrimaryKey: []string{rel.TargetColumn}, SystemFields: map[string]*FieldSchema{rel.TargetColumn: key}}
 	lowered := &FilterNode{Field: &pair, Op: op}
 	if cond != "" {
 		lowered.Children = []*FilterNode{{Field: key, Op: cond, Value: node.Value}}

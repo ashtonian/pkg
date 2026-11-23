@@ -279,7 +279,7 @@ func NewResource[T any](table string, opts ...ResourceOption) (*Resource[T], err
 		return nil, fmt.Errorf("parse: %s: customizing schemas: %w", table, err)
 	}
 	r.filterSchema.SystemFields = systemFields(table, cfg, columns, fieldsByColumn)
-	r.filterSchema.PrimaryKey = cfg.pk
+	r.filterSchema.PrimaryKey = []string{cfg.pk}
 	var tenant *tenantColumn
 	if cfg.tenant != "" {
 		if tenant, err = newTenantColumn(table, cfg.tenant, columns[cfg.tenant]); err != nil {

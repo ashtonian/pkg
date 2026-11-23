@@ -25,7 +25,7 @@ func steppingClock() func() time.Time {
 
 func clockSchema() *ResourceSchema {
 	return &ResourceSchema{
-		Name: "events", PrimaryKey: "id",
+		Name: "events", PrimaryKey: []string{"id"},
 		Fields: map[string]*FieldSchema{
 			"at": {ExternalName: "at", Column: "at", DataType: core.FieldTypeTimestamp, AllowedOperators: []FilterOperator{OpGte, OpLte}},
 		},

@@ -35,7 +35,7 @@ func rowTenantSchemas(ownerType, relatedType core.FieldType) (*filter.ResourceSc
 	}
 	widgets := &filter.ResourceSchema{
 		Name:       "widgets",
-		PrimaryKey: "id",
+		PrimaryKey: []string{"id"},
 		Fields: map[string]*filter.FieldSchema{
 			"notes": rel,
 			"tags": {

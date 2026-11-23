@@ -23,33 +23,53 @@ type ListQuery struct {
 	searchSchema *SearchSchema
 	dialect      Dialect
 	filterConfig *core.ParserConfig
-	// key is the schema's PrimaryKey, the final column of every keyset.
-	key CursorKey
+	// keys are the schema's PrimaryKey columns, in key order: every keyset
+	// ends with each one its sort does not name.
+	keys []CursorKey
 }
 
 // NewListQuery creates a ListQuery builder for filterSchema's rows. The
-// schema declares its key (PrimaryKey), unique among the rows, which ends
-// every keyset so pages neither skip nor repeat rows. It must name a typed
-// column through sortSchema, the schema's Fields or its SystemFields; a
-// schema without one, or with a key that is computed, untyped or no field,
-// is an error.
+// schema declares its key (PrimaryKey), whose columns are unique together
+// among the rows, which ends every keyset so pages neither skip nor repeat
+// rows. Each key column must name a typed column through sortSchema, the
+// schema's Fields or its SystemFields; a schema without a key, or with a
+// key column that is repeated, computed, untyped or no field, is an error.
 func NewListQuery(filterSchema *ResourceSchema, sortSchema *SortSchema, dialect Dialect) (*ListQuery, error) {
 	if filterSchema == nil {
 		return nil, errors.New("filter: a list query needs a filter schema")
 	}
-	key, err := listKey(filterSchema, sortSchema)
+	keys, err := listKeys(filterSchema, sortSchema)
 	if err != nil {
 		return nil, fmt.Errorf("filter: list of %s: %w", filterSchema.Name, err)
 	}
-	return &ListQuery{filterSchema: filterSchema, sortSchema: sortSchema, dialect: dialect, key: key}, nil
+	return &ListQuery{filterSchema: filterSchema, sortSchema: sortSchema, dialect: dialect, keys: keys}, nil
 }
 
-// listKey resolves the schema's key to the typed cursor key that ends every
-// keyset: a sort field, else a request or system field of that name.
-func listKey(fs *ResourceSchema, ss *SortSchema) (CursorKey, error) {
-	name := fs.PrimaryKey
+// listKeys resolves the schema's key columns to the typed cursor keys that
+// end every keyset, in key order.
+func listKeys(fs *ResourceSchema, ss *SortSchema) ([]CursorKey, error) {
+	if len(fs.PrimaryKey) == 0 {
+		return nil, errors.New("the schema declares no key (ResourceSchema.PrimaryKey)")
+	}
+	keys := make([]CursorKey, len(fs.PrimaryKey))
+	for i, name := range fs.PrimaryKey {
+		if slices.Contains(fs.PrimaryKey[:i], name) {
+			return nil, fmt.Errorf("key column %q is listed twice", name)
+		}
+		key, err := listKey(fs, ss, name)
+		if err != nil {
+			return nil, err
+		}
+		keys[i] = key
+	}
+	return keys, nil
+}
+
+// listKey resolves one key column to its typed cursor key: a sort field,
+// else a request or system field of that name.
+func listKey(fs *ResourceSchema, ss *SortSchema, name string) (CursorKey, error) {
 	if name == "" {
-		return CursorKey{}, errors.New("the schema declares no key (ResourceSchema.PrimaryKey)")
+		return CursorKey{}, errors.New("the schema declares an empty key column (ResourceSchema.PrimaryKey)")
 	}
 	key := CursorKey{Name: name}
 	var sf *SortFieldSchema
@@ -388,9 +408,9 @@ func (lq *ListQuery) Build(opts ...ListOption) (*ListResult, error) {
 }
 
 // cursorKeys derives the effective keyset: the parsed sort fields followed
-// by the key.
+// by the key columns it does not name.
 func (lq *ListQuery) cursorKeys(sort *SortResult) ([]CursorKey, error) {
-	keys := Keyset(sort, lq.key)
+	keys := Keyset(sort, lq.keys...)
 	for _, k := range keys {
 		if k.Column == "" {
 			return nil, &core.ParseError{

@@ -71,7 +71,7 @@ func TestGenerateSortSchema_ScalarKeysOnly(t *testing.T) {
 
 // String keys order and seek by code point on every dialect.
 func TestListQuery_StringKeysOrderByCodePoint(t *testing.T) {
-	schema := &filter.ResourceSchema{Name: "probe", PrimaryKey: "rank"}
+	schema := &filter.ResourceSchema{Name: "probe", PrimaryKey: []string{"rank"}}
 	sorts := &filter.SortSchema{Fields: map[string]*filter.SortFieldSchema{
 		"name": {Table: "probe", Column: "name", DataType: core.FieldTypeString},
 		"rank": {Table: "probe", Column: "rank", DataType: core.FieldTypeInt},

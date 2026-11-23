@@ -102,7 +102,7 @@ func ExampleNewSQLBuilder() {
 func ExampleNewListQuery() {
 	schema := &filter.ResourceSchema{
 		Name:       "products",
-		PrimaryKey: "id", // ends every keyset
+		PrimaryKey: []string{"id"}, // ends every keyset
 		Fields: map[string]*filter.FieldSchema{
 			"category": {
 				ExternalName: "category", Table: "products", Column: "category",

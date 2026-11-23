@@ -99,6 +99,7 @@ func (c *schemaCloner) schema(s *ResourceSchema) *ResourceSchema {
 	out := new(ResourceSchema)
 	*out = *s
 	c.schemas[s] = out
+	out.PrimaryKey = slices.Clone(s.PrimaryKey)
 	out.Fields = c.fieldMap(s.Fields)
 	out.SystemFields = c.fieldMap(s.SystemFields)
 	out.PolicyFields = c.fieldMap(s.PolicyFields)

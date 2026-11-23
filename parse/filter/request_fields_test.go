@@ -28,7 +28,7 @@ func paritySchema(t *testing.T) *filter.ResourceSchema {
 	t.Helper()
 	s, err := filter.GenerateFilterSchema[parityItem](core.NewSchemaGenerator())
 	require.NoError(t, err)
-	s.PrimaryKey = "id"
+	s.PrimaryKey = []string{"id"}
 	s.SystemFields = map[string]*filter.FieldSchema{
 		"id": {ExternalName: "id", Table: "parity_items", Column: "id", DataType: core.FieldTypeString,
 			AllowedOperators: []filter.FilterOperator{filter.OpEq, filter.OpGt, filter.OpLt, filter.OpGte, filter.OpLte, filter.OpIn}},
@@ -122,6 +122,39 @@ func TestRequestFields_SystemFields(t *testing.T) {
 	assert.Same(t, schema.SystemFields["id"], f)
 	_, ok = schema.RequestField("tenant_id")
 	assert.False(t, ok)
+}
+
+// Every column of a composite key is a request field, the tenant too when
+// it is one; a field of the key's name shadows the system field.
+func TestRequestFields_CompositeKey(t *testing.T) {
+	schema := paritySchema(t)
+	schema.PrimaryKey = []string{"tenant_id", "id", "status"}
+	for _, name := range []string{"tenant_id", "id"} {
+		f, ok := schema.RequestField(name)
+		require.True(t, ok, name)
+		assert.Same(t, schema.SystemFields[name], f, name)
+	}
+	f, ok := schema.RequestField("status")
+	require.True(t, ok)
+	assert.Same(t, schema.Fields["status"], f)
+	_, ok = schema.RequestField("deleted_at")
+	assert.False(t, ok)
+
+	got := map[string]*filter.FieldSchema{}
+	for name, f := range schema.RequestFields() {
+		_, dup := got[name]
+		require.False(t, dup, name)
+		got[name] = f
+	}
+	assert.Len(t, got, len(schema.Fields)+2)
+	assert.Same(t, schema.SystemFields["tenant_id"], got["tenant_id"])
+	assert.Same(t, schema.Fields["status"], got["status"])
+
+	ast, err := filter.NewFilterParser(schema, nil).Parse(`{"tenant_id":"t1","id":{"$gt":"a"}}`)
+	require.NoError(t, err)
+	res, err := filter.NewSQLBuilder(schema, filter.PostgresDialect{}).Build(ast)
+	require.NoError(t, err)
+	assert.Equal(t, `("parity_items"."id" COLLATE pg_c_utf8 > $1 AND "parity_items"."tenant_id" = $2)`, res.Where)
 }
 
 // Two parameters setting one operator are refused, naming both, instead of

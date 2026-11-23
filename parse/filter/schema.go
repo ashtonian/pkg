@@ -65,9 +65,11 @@ const (
 // ResourceSchema defines filterable fields for a resource.
 type ResourceSchema struct {
 	Name string
-	// PrimaryKey is the unique column appended to every list's keyset.
-	// Resource construction declares it; it is never request input.
-	PrimaryKey   string
+	// PrimaryKey are the key's columns, in key order: together they are
+	// unique among the rows, and every list's keyset ends with each one its
+	// sort does not name. Resource construction declares them; they are
+	// never request input.
+	PrimaryKey   []string
 	Fields       map[string]*FieldSchema
 	SystemFields map[string]*FieldSchema
 	// PolicyFields are the names server policies may use besides Fields and
@@ -93,14 +95,15 @@ type ResourceSchema struct {
 }
 
 // RequestField resolves a field name a request filter uses, in either
-// grammar: a request field (Fields), or the key (PrimaryKey) from
+// grammar: a request field (Fields), or a key column (PrimaryKey) from
 // SystemFields. The tenant and soft-delete columns are system fields only
-// policies reach; a request's handle on deleted rows is include_deleted.
+// policies reach, unless the tenant is a key column; a request's handle on
+// deleted rows is include_deleted.
 func (s *ResourceSchema) RequestField(name string) (*FieldSchema, bool) {
 	if f, ok := s.Fields[name]; ok {
 		return f, true
 	}
-	if name != "" && name == s.PrimaryKey {
+	if name != "" && slices.Contains(s.PrimaryKey, name) {
 		f, ok := s.SystemFields[name]
 		return f, ok
 	}
@@ -117,11 +120,13 @@ func (s *ResourceSchema) RequestFields() iter.Seq2[string, *FieldSchema] {
 				return
 			}
 		}
-		if _, shadowed := s.Fields[s.PrimaryKey]; shadowed || s.PrimaryKey == "" {
-			return
-		}
-		if key, ok := s.SystemFields[s.PrimaryKey]; ok {
-			yield(s.PrimaryKey, key)
+		for _, column := range s.PrimaryKey {
+			if _, shadowed := s.Fields[column]; shadowed || column == "" {
+				continue
+			}
+			if key, ok := s.SystemFields[column]; ok && !yield(column, key) {
+				return
+			}
 		}
 	}
 }

@@ -29,7 +29,7 @@ func TestBuildBaseConstraints_FailClosedWithoutATenant(t *testing.T) {
 	schema := func(tenant core.FieldType, kind reflect.Kind) *filter.ResourceSchema {
 		return &filter.ResourceSchema{
 			Name:       "items",
-			PrimaryKey: "id",
+			PrimaryKey: []string{"id"},
 			Fields:     map[string]*filter.FieldSchema{},
 			SystemFields: map[string]*filter.FieldSchema{
 				"id":         {ExternalName: "id", Table: "items", Column: "id", DataType: core.FieldTypeInt, NumberKind: reflect.Int64},

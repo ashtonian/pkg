@@ -61,7 +61,7 @@ func setupTestDB(t *testing.T) *sql.DB {
 func integrationSchema() *filter.ResourceSchema {
 	return &filter.ResourceSchema{
 		Name:       "products",
-		PrimaryKey: "id",
+		PrimaryKey: []string{"id"},
 		SystemFields: map[string]*filter.FieldSchema{
 			"id": {ExternalName: "id", Table: "products", Column: "id", DataType: core.FieldTypeInt, NumberKind: reflect.Int64},
 		},
@@ -432,7 +432,7 @@ func TestIntegration_CursorWalkNoLossNoDup(t *testing.T) {
 	}
 
 	schema := &filter.ResourceSchema{
-		Name: "events", PrimaryKey: "id",
+		Name: "events", PrimaryKey: []string{"id"},
 		SystemFields: map[string]*filter.FieldSchema{
 			"id": {ExternalName: "id", Table: "events", Column: "id", DataType: core.FieldTypeInt, NumberKind: reflect.Int64},
 		},
