@@ -229,17 +229,10 @@ func (a *application) checkReloadOwnership() error {
 			return fmt.Errorf("%w: live key %s has no applier", ErrSchema, c.path)
 		}
 		for _, prefix := range a.owners {
-			if len(prefix.path) > len(c.path) || !overlaps(prefix.path, c.path) {
-				continue
-			}
-			candidate := slices.Clone(representative)
-			for j, seg := range prefix.path {
-				if seg.kind != segAny {
-					candidate[j] = seg
+			if candidate, ok := instanceOf(prefix.path, c.path, representative); ok {
+				if i := a.owners.of(candidate); i >= 0 {
+					claimed[i] = true
 				}
-			}
-			if i := a.owners.of(candidate); i >= 0 {
-				claimed[i] = true
 			}
 		}
 		return nil
@@ -253,6 +246,35 @@ func (a *application) checkReloadOwnership() error {
 		}
 	}
 	return nil
+}
+
+// instanceOf is the key of pattern, a claimed value's key pattern, that
+// prefix names: representative, pattern's key outside every literal
+// selector, with prefix's selectors in place of the [*]s they fill. ok is
+// false when prefix names no key of pattern: it is longer, names another
+// field, or names a key beneath the [*] of section[*], the keys a sensitive
+// remain field collects, which are compared whole and are no keys of their
+// own.
+func instanceOf(prefix, pattern, representative keyPath) (keyPath, bool) {
+	if len(prefix) > len(pattern) {
+		return nil, false
+	}
+	candidate := slices.Clone(representative)
+	for j, s := range prefix {
+		switch {
+		case s.kind == segAny:
+			if pattern[j].kind != segAny && !segmentMatches(s, pattern[j]) {
+				return nil, false
+			}
+		case representative[j].kind == segAny:
+			return nil, false
+		case pattern[j].kind == segAny:
+			candidate[j] = s
+		case s != pattern[j]:
+			return nil, false
+		}
+	}
+	return candidate, true
 }
 
 // representative picks one entry outside every literal selector, so an applier

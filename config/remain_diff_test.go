@@ -197,9 +197,10 @@ func TestApplier_ReloadTagChecksSeeARemainField(t *testing.T) {
 	require.NoError(t, r.Stop(t.Context()))
 }
 
-// A prefix names a key a remain field collects as Diff does; one naming a
-// key a sensitive remain field collects reaches beneath a value compared
-// whole, and [*] on a struct is no prefix.
+// A prefix names a key a remain field collects as Diff does, and the keys a
+// sensitive remain field collects as Diff does, whole, at section[*]: one
+// naming a key it collects, or anything beneath section[*], reaches beneath
+// a value compared whole. [*] on any other struct is no prefix.
 func TestApplier_PrefixesAndTheKeysARemainFieldCollects(t *testing.T) {
 	load := (&remainSource{}).load
 	apply := func(context.Context, ApplyEvent[remainDiffCfg]) (ApplyResult, error) { return ApplyResult{}, nil }
@@ -210,7 +211,7 @@ func TestApplier_PrefixesAndTheKeysARemainFieldCollects(t *testing.T) {
 		}
 		return err
 	}
-	for _, ok := range []string{"plugins.foo", `plugins["my-plugin"]`, "typed.x.port", "vault"} {
+	for _, ok := range []string{"plugins.foo", `plugins["my-plugin"]`, "typed.x.port", "vault", "vault[*]", "locked[*]"} {
 		assert.NoError(t, build(ok), ok)
 	}
 	for _, tt := range []struct{ prefix, msg string }{
@@ -218,8 +219,12 @@ func TestApplier_PrefixesAndTheKeysARemainFieldCollects(t *testing.T) {
 		{`vault["prod_db"]`, "it reaches beneath vault[*], which is sensitive and compared whole"},
 		{"locked.k", "it reaches beneath locked[*], which is sensitive and compared whole"},
 		{"plugins.api_token.x", "it reaches beneath plugins.api_token, which is sensitive and compared whole"},
-		{"plugins[*]", "plugins is a struct; own it, or name a key it holds"},
-		{"vault[*]", "vault is a struct; own it, or name a key it holds"},
+		{"vault[*].x", "it reaches beneath vault[*], which is sensitive and compared whole"},
+		{`vault[*]["x"]`, "it reaches beneath vault[*], which is sensitive and compared whole"},
+		{"plugins[*]", "plugins compares the keys its remain field collects one by one; own plugins, or name one of them"},
+		{"typed[*].port", "typed compares the keys its remain field collects one by one"},
+		{"plugins.foo[*]", "reaches beneath plugins.foo"},
+		{"typed.x[*]", "typed.x is a struct; own it, or name a key it holds"},
 	} {
 		err := build(tt.prefix)
 		require.ErrorIs(t, err, ErrKey, tt.prefix)

@@ -212,7 +212,7 @@ features["export"]: added (features[*])
 features["export"].rate: + 1
 ```
 
-Lists compare by index and maps by key; a section that appears, disappears or turns nil is a `Structural` change followed by the keys beneath it. A key a `,remain` field collects is a key of its section (`plugins.foo`), after the section's fields and by name, its `Field` the remain field's. A sensitive remain field is compared whole, as a sensitive map is: one change at `section[*]` (`vault[*]: [REDACTED] -> [REDACTED]`), there while the field collects a key, so the keys it holds are never listed. `ExampleDiff` is the program behind this output.
+Lists compare by index and maps by key; a section that appears, disappears or turns nil is a `Structural` change followed by the keys beneath it. A key a `,remain` field collects is a key of its section (`plugins.foo`), after the section's fields and by name, its `Field` the remain field's. A sensitive remain field is compared whole, as a sensitive map is: one change at `section[*]` (`vault[*]: [REDACTED] -> [REDACTED]`), there while the field collects a key, so the keys it holds are never listed. It is the one change whose key holds a pattern: `ParseKey` reads it and it is `Within` the section, but `CanonicalKey` refuses it as not concrete. `ExampleDiff` is the program behind this output.
 
 ## Where a value came from
 

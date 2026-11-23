@@ -33,9 +33,13 @@ type Value struct {
 
 // Change is one key whose value differs between two configs.
 type Change struct {
-	// Key is the runtime key (db.host, items[0].port, named["primary"].port),
-	// or section[*] for the keys a sensitive koanf:",remain" field collects,
-	// compared whole.
+	// Key is the runtime key (db.host, items[0].port, named["primary"].port).
+	// One kind of change holds a pattern: section[*], the keys a sensitive
+	// koanf:",remain" field collects, compared whole. It is the remain
+	// field's own Field.Path; ParseKey reads it, and it is Within section,
+	// but CanonicalKey refuses it as not concrete, since it names no one
+	// key. A remain field that is not sensitive has a change per key it
+	// collects (plugins.foo), with no pattern.
 	Key string `json:"key"`
 	// Structural reports a change to a struct, map, list or interface itself
 	// rather than to a value inside it: it appeared, disappeared, became nil
@@ -78,7 +82,9 @@ type Change struct {
 //     (plugins.foo), after the struct's fields and by name, whose Field is
 //     the remain field. A sensitive remain field is compared whole, as a
 //     sensitive map is: one change at section[*], redacted, there while the
-//     field collects a key, so an empty one and a nil one are alike.
+//     field collects a key, so an empty one and a nil one are alike. Its
+//     Key is the one that holds a pattern, so [CanonicalKey] refuses it as
+//     not concrete; ParseKey reads it.
 //
 // A T that is not a struct, a struct whose keys cannot be told apart, an
 // interface holding such a struct, and a non-nil func, channel or unsafe
