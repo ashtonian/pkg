@@ -48,7 +48,7 @@ Overriding a file from the environment or a flag is a legitimate pattern, so sha
 
 ## Any koanf provider
 
-A provider loads at either provider layer: pass a nil parser when it returns keys and a parser when it returns a document. Every reload reads it again through the same pipeline. A provider that implements `ContextProvider` is read with the load's context, so a slow remote read stops when the load is cancelled.
+A provider loads at either provider layer: pass a nil parser when it returns keys and a parser when it returns a document. Every reload reads it again through the same pipeline. A provider that implements `ContextProvider` is read with the load's context, so a slow remote read stops when the load is cancelled. A load whose context has ended starts no further stage — no provider, environment read, decode, report callback, secret populator, post-load hook or validation — and returns an error wrapping `ctx.Err()` and its `context.Cause`; a stage already running observes the context itself.
 
 | Source | Module | Reload on |
 |---|---|---|

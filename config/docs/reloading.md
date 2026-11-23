@@ -44,7 +44,7 @@ cfg := reloader.Config() // one atomic load; call it on every use
 
 | Call | Does |
 |---|---|
-| `NewReloader`, `NewReloaderFunc` | Runs the first load; its error fails construction. |
+| `NewReloader`, `NewReloaderFunc` | Runs the first load; its error fails construction. A `ctx` that has ended, or ends before generation 1 is published, also fails it: the loader does not start, or what it returned is neither applied nor published, and the error wraps `ctx.Err()` and its cause, not `ErrReload`. |
 | `Arm(ctx)` | Sets up the file watch and signals and returns their error, so a service can refuse to report ready. Optional: `Run` arms itself. |
 | `Run(ctx)` | Serves every trigger until `Stop` (returns nil) or `ctx` ends. One `Run` at a time: a call while another runs returns `ErrReloaderRunning` and arms nothing. |
 | `Reload(ctx)` | A manual reload, returning what it published, the keys that changed and the edits a higher-precedence source kept from taking effect; `ErrReloadInProgress` if one is running. |

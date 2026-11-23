@@ -74,15 +74,20 @@ func TestLoad_SourcePrecedence(t *testing.T) {
 	assert.Equal(t, layered{A: "defaults", B: "base", C: "file", D: "env", E: "override"}, *got)
 }
 
-// ctxProvider records the context its read was given.
+// ctxProvider records the context its read was given, running during
+// first.
 type ctxProvider struct {
-	got *context.Context
+	got    *context.Context
+	during func()
 }
 
 func (p ctxProvider) Read() (map[string]any, error) { return nil, errors.New("read without a context") }
 func (p ctxProvider) ReadBytes() ([]byte, error)    { return nil, errors.New("read without a context") }
 func (p ctxProvider) ReadContext(ctx context.Context) (map[string]any, error) {
 	*p.got = ctx
+	if p.during != nil {
+		p.during()
+	}
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
@@ -92,21 +97,20 @@ func (p ctxProvider) ReadBytesContext(context.Context) ([]byte, error) {
 	return nil, errors.New("not used")
 }
 
-// A ContextProvider is read with the load's context, so a cancelled load
-// stops its read.
+// A ContextProvider is read with the load's context, so a load cancelled
+// during the read stops it.
 func TestLoad_ContextProviderGetsTheLoadContext(t *testing.T) {
 	type key struct{}
 	var got context.Context
 	ctx := context.WithValue(t.Context(), key{}, "load")
-	cfg, err := Load[layered](ctx, WithBaseProvider(ctxProvider{&got}, nil), WithSkipValidation())
+	cfg, err := Load[layered](ctx, WithBaseProvider(ctxProvider{got: &got}, nil), WithSkipValidation())
 	require.NoError(t, err)
 	assert.Equal(t, "remote", cfg.A)
 	require.NotNil(t, got)
 	assert.Equal(t, "load", got.Value(key{}))
 
 	cancelled, cancel := context.WithCancel(t.Context())
-	cancel()
-	_, err = Load[layered](cancelled, WithOverrideProvider(ctxProvider{&got}, nil), WithSkipValidation())
+	_, err = Load[layered](cancelled, WithOverrideProvider(ctxProvider{got: &got, during: cancel}, nil), WithSkipValidation())
 	require.ErrorIs(t, err, ErrSource)
 	assert.ErrorIs(t, err, context.Canceled)
 }

@@ -2,6 +2,7 @@ package config
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"maps"
 	"reflect"
@@ -1078,6 +1079,13 @@ func (r *Reloader[T]) applyInitial(ctx context.Context, cfg *T, p *applyPlan) er
 	for i, st := range r.app.appliers {
 		if !st.hook.initial {
 			continue
+		}
+		if err := ended(ctx); err != nil {
+			abandoned := fmt.Errorf("config initial load abandoned: %w", err)
+			if len(failures) > 0 {
+				return errors.Join(abandoned, &ApplyError{Failures: failures})
+			}
+			return abandoned
 		}
 		res, err := st.call(ctx, ApplyEvent[T]{
 			Trigger:    TriggerInitial,

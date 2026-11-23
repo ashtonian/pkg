@@ -41,7 +41,12 @@ import (
 //  7. Struct-tag defaults (default:"value")
 //
 // ctx reaches the secret populator, every post-load hook, a context-aware
-// validator and every [ContextProvider].
+// validator and every [ContextProvider]. Once ctx ends no further stage
+// runs: a load whose context has ended reads no source and calls nothing of
+// the caller's, and one that ends mid-load stops before the next provider,
+// the environment, decoding, a report callback, the secret populator, the
+// next post-load hook or validation, returning an error that wraps ctx.Err()
+// and its [context.Cause]. A stage already running observes ctx itself.
 //
 // Keys match fields regardless of letter case, as decoding does. Each
 // source's keys are rewritten into the fields' own spelling before the
@@ -237,9 +242,35 @@ type loaded[T any] struct {
 	inputs   *inputs
 }
 
-// load is Load's pipeline.
+// ended is why ctx ended, nil while it has not: ctx.Err(), with the cause
+// [context.WithCancelCause] or a deadline's cause gave, so errors.Is reaches
+// either.
+func ended(ctx context.Context) error {
+	err := ctx.Err()
+	if err == nil {
+		return nil
+	}
+	if cause := context.Cause(ctx); !errors.Is(cause, err) {
+		return fmt.Errorf("%w: %w", err, cause)
+	}
+	return err
+}
+
+// load is Load's pipeline. live guards each boundary before a stage the
+// caller supplies — a Defaulter, a provider, the environ function, decode
+// hooks, a report callback, the secret populator, a post-load hook — so a
+// load whose context has ended starts none of them.
 func load[T any](ctx context.Context, o *options) (loaded[T], error) {
 	none := loaded[T]{}
+	live := func() error {
+		if err := ended(ctx); err != nil {
+			return fmt.Errorf("loading config abandoned: %w", err)
+		}
+		return nil
+	}
+	if err := live(); err != nil {
+		return none, err
+	}
 	root := reflect.TypeFor[T]()
 	if err := o.checkHookTypes(reflect.TypeFor[*T]()); err != nil {
 		return none, err
@@ -274,10 +305,16 @@ func load[T any](ctx context.Context, o *options) (loaded[T], error) {
 			return none, err
 		}
 	}
+	if err := live(); err != nil {
+		return none, err
+	}
 	if err := l.prepareValidation(ctx, o); err != nil {
 		return none, err
 	}
 	for i, src := range o.base {
+		if err := live(); err != nil {
+			return none, err
+		}
 		if err := l.addProvider(ctx, fmt.Sprintf("base provider %d", i), src, positionSource(SourceBase, i)); err != nil {
 			return none, err
 		}
@@ -300,6 +337,9 @@ func load[T any](ctx context.Context, o *options) (loaded[T], error) {
 		}
 		files[f.path] = sha256.Sum256(raw)
 	}
+	if err := live(); err != nil {
+		return none, err
+	}
 	if len(o.envPrefixes) > 0 {
 		// Named from T's fields so a key with an underscore in it
 		// (koanf:"max_conns") keeps it; see envSchema.
@@ -314,6 +354,9 @@ func load[T any](ctx context.Context, o *options) (loaded[T], error) {
 		}
 	}
 	for i, src := range o.overrides {
+		if err := live(); err != nil {
+			return none, err
+		}
 		if err := l.addProvider(ctx, fmt.Sprintf("override provider %d", i), src, positionSource(SourceOverride, i)); err != nil {
 			return none, err
 		}
@@ -324,9 +367,15 @@ func load[T any](ctx context.Context, o *options) (loaded[T], error) {
 	}
 	var shadowed []Shadow
 	if l.inputs != nil {
+		if err := live(); err != nil {
+			return none, err
+		}
 		if shadowed, err = o.judgeShadowed(ctx, root, l.inputs); err != nil {
 			return none, err
 		}
+	}
+	if err := live(); err != nil {
+		return none, err
 	}
 
 	merged := l.k.Raw()
@@ -361,6 +410,9 @@ func load[T any](ctx context.Context, o *options) (loaded[T], error) {
 			o.log().DebugContext(ctx, "environment variables under the prefix name no config key", "names", unmatchedEnv)
 		}
 	}
+	if err := live(); err != nil {
+		return none, err
+	}
 	unknown, err := o.unknownInput(ctx, root, schema, merged, md.Unused, env, unmatchedEnv, l.withheldUnknown)
 	if err != nil {
 		return none, fmt.Errorf("unmarshaling config: %w: %w", ErrValidation, err)
@@ -370,6 +422,9 @@ func load[T any](ctx context.Context, o *options) (loaded[T], error) {
 	// what it changed when provenance is on.
 	cv := reflect.ValueOf(cfg).Elem()
 	stage := func(src Source, run func() error) error {
+		if err := live(); err != nil {
+			return err
+		}
 		if rec == nil {
 			return run()
 		}
@@ -413,7 +468,7 @@ func load[T any](ctx context.Context, o *options) (loaded[T], error) {
 }
 
 func (o *options) validateConfig(ctx context.Context, cfg any) error {
-	if err := ctx.Err(); err != nil {
+	if err := ended(ctx); err != nil {
 		return err
 	}
 	if !o.skipValid {
@@ -445,7 +500,7 @@ func (o *options) validateConfig(ctx context.Context, cfg any) error {
 		}
 	}
 
-	return ctx.Err()
+	return ended(ctx)
 }
 
 // bind gives a ContextProvider the load's context.

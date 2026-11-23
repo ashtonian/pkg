@@ -223,9 +223,19 @@ func newReloader[T any](ro *reloadOptions, inherited *slog.Logger, configFiles [
 }
 
 // loadInitial runs the first load, applies it with the ApplyInitial
-// appliers, and publishes it as generation 1.
+// appliers, and publishes it as generation 1. Once ctx ends nothing further
+// runs and nothing is published: not the loader, not the next applier.
 func (r *Reloader[T]) loadInitial(ctx context.Context) error {
+	if err := ended(ctx); err != nil {
+		return fmt.Errorf("config initial load abandoned: %w", err)
+	}
 	l, err := r.runLoad(ctx)
+	if ctxErr := ended(ctx); ctxErr != nil {
+		if err != nil && !errors.Is(err, ctx.Err()) {
+			ctxErr = errors.Join(ctxErr, err)
+		}
+		return fmt.Errorf("config initial load abandoned: %w", ctxErr)
+	}
 	if err != nil {
 		return err
 	}
@@ -250,6 +260,9 @@ func (r *Reloader[T]) loadInitial(ctx context.Context) error {
 			return err
 		}
 		snap.Appliers, snap.PendingRestart = r.app.account(p)
+	}
+	if err := ended(ctx); err != nil {
+		return fmt.Errorf("config initial load abandoned: %w", err)
 	}
 	r.loaded = files
 	if l.inputs != nil {
@@ -392,14 +405,14 @@ func (r *Reloader[T]) release() { <-r.slot }
 // when the context ends after the sources were read, say inside a post-load
 // hook that went on to return nil.
 func (r *Reloader[T]) reloadHeld(ctx context.Context, trigger string) (*ReloadResult[T], error) {
-	if err := ctx.Err(); err != nil {
+	if err := ended(ctx); err != nil {
 		return nil, fmt.Errorf("config reload abandoned: %w", err)
 	}
 	l, err := r.runLoad(ctx)
 	cfg, files := l.cfg, l.files
-	if ctxErr := ctx.Err(); ctxErr != nil {
+	if ctxErr := ended(ctx); ctxErr != nil {
 		// Say nothing about the sources, which may be fine.
-		if err != nil && !errors.Is(err, ctxErr) {
+		if err != nil && !errors.Is(err, ctx.Err()) {
 			ctxErr = errors.Join(ctxErr, err)
 		}
 		return nil, fmt.Errorf("config reload abandoned: %w", ctxErr)
@@ -428,7 +441,7 @@ func (r *Reloader[T]) reloadHeld(ctx context.Context, trigger string) (*ReloadRe
 		r.notifyReloadError(ctx, trigger, reloadErr)
 		return nil, reloadErr
 	}
-	if ctxErr := ctx.Err(); ctxErr != nil {
+	if ctxErr := ended(ctx); ctxErr != nil {
 		// Ended while the configs were compared: still nothing published.
 		return nil, fmt.Errorf("config reload abandoned: %w", ctxErr)
 	}
