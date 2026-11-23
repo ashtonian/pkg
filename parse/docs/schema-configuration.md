@@ -135,7 +135,7 @@ Request documents (JSON filters, JSON Patch and merge patch bodies) decode with 
 
 ## Schema discovery
 
-`parse.NewSchemaRegistry` generates schemas for a set of resources. Register each type with `parse.Register[T](registry)` or `parse.MustRegister[T](registry)`. `SchemaFor(name)` returns an independent snapshot of discovery metadata; `ResourceNames` lists registrations. The registry does not execute queries or install your resource handlers. See [HTTP and errors](http-errors.md) for routing and [TypeScript integration](integrations.md#typescript-client) for consuming the schema.
+`parse.NewSchemaRegistry` holds the schemas discovery serves, one entry per name. Register each `Resource` with `parse.RegisterResource(registry, resource)` or `parse.MustRegisterResource`: its filter schema (relations included), patch, sort and search schemas, under its table. `parse.Register[T](registry)` or `parse.MustRegister[T]` generate schemas for a type no `Resource` serves, with the registry's generator options; they never mirror a resource, which has its own relations, read set, computed columns and options. A name is registered once: a second registration under it, such as a second resource over the same table, is `parse.ErrRegistered` and leaves the first in place, and a `WithPaths` view is not registered. `SchemaFor(name)` returns an independent snapshot of discovery metadata; `FilterSchema`, `PatchSchema`, `SortSchema` and `SearchSchema` return copies of one name's schemas; `ResourceNames` lists registrations. The registry does not execute queries or install your resource handlers. See [HTTP and errors](http-errors.md) for routing and [TypeScript integration](integrations.md#typescript-client) for consuming the schema.
 
 ## Request-specific options
 

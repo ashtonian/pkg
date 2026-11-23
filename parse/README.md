@@ -90,7 +90,7 @@ SELECT "devices"."id", "devices"."tenant_id", "devices"."name", "devices"."statu
 | Write, stamp and count only the rows a patch changes, and tell unchanged from not found | `SkipUnchanged`, `UpdateResult.Changed` / `Unchanged` | [Skipping unchanged rows](docs/patches.md#skipping-unchanged-rows) |
 | Merge fields or replace a JSON document | `ParseMergePatch`, `ParsePatch`, `patch.BuildPatchSQL` | [Patches](docs/patches.md) |
 | Apply a patch to an existing Go value | `ApplyValidatedPatch`, `ApplyPatch` | [Typed documents](docs/patches.md#typed-document-behavior) |
-| Advertise capabilities to a UI/client | `NewSchemaRegistry`, `RegisterResource` (or `Register[T]`), `SchemaHandler` | [HTTP and errors](docs/http-errors.md) |
+| Advertise capabilities to a UI/client | `NewSchemaRegistry`, `RegisterResource` (`Register[T]` for a type no resource serves), `SchemaHandler` | [HTTP and errors](docs/http-errors.md) |
 | Build a patch in code instead of a JSON body | `MergePatchMap`, `ServerMergePatchMap`, `ValidateOperations`, `ValidateServerOperations` | [Patches](docs/patches.md) |
 | Call the API from TypeScript | `createClient` in `sdk/ts` | [Client integration](docs/integrations.md#typescript-client) |
 | Build requests from Go: typed filters, sorts, list parameters, merge and JSON patches | `parse/client` | [Go client](docs/integrations.md#go-client) |
@@ -172,7 +172,7 @@ Tags expose capabilities explicitly: `parse:"filter,sort,patch,facet,search,incl
 | [`parsepgx`](parsepgx/README.md) | `QueryPage`, `Update`, `UpdateBatch`, `Query`: plans and statements run on PostgreSQL through pgx batches |
 | [`parsesql`](parsesql/README.md) | `QueryPage`, `Update`, `UpdateBatch`, `Query`: plans and statements run on SQLite through `database/sql` |
 | [`parsesqlite`](parsesqlite/README.md) | `Register`: the SQLite functions plans compare decimals and decide geo predicates through, registered with `modernc.org/sqlite` |
-| [`registry.go`](registry.go) | `NewSchemaRegistry`, `RegisterResource`, `Register[T]`, `MustRegister[T]`; the versioned schema document (`SchemaResponse`, `SchemaVersion`) with relations, element paths and patch value metadata |
+| [`registry.go`](registry.go) | `NewSchemaRegistry`, `RegisterResource`, `MustRegisterResource`, `Register[T]`, `MustRegister[T]`, `ErrRegistered` (one registration per name), the schema accessors; the versioned schema document (`SchemaResponse`, `SchemaVersion`) with relations, element paths and patch value metadata |
 | [`registry_handler.go`](registry_handler.go) | `SchemaHandler`, `SchemaListHandler`, `WithErrorHandler`: discovery routes that encode before writing and report encoding and write failures |
 | [`core`](core/README.md) | Configuration, schema generation, the field walk every schema shares (embedded structs promoted as encoding/json promotes them), values, pointers, `ParseError` |
 | [`filter`](filter/README.md) | Filter AST, dialects, list plans, pages, facets, search, SQL and non-SQL include resolution; `filter.Page.SetInclude` owns the page projection |

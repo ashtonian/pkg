@@ -21,11 +21,13 @@
 //
 // # SchemaRegistry
 //
-// SchemaRegistry stores all schemas and serves them via HTTP for frontend
-// auto-generation of filter sidebars, search UIs, and edit forms:
+// SchemaRegistry serves each registered resource's schemas via HTTP for
+// frontend auto-generation of filter sidebars, search UIs, and edit forms.
+// A name is registered once; Register[T] generates schemas for a type no
+// Resource serves:
 //
 //	reg := parse.NewSchemaRegistry()
-//	parse.MustRegister[Product](reg)
+//	parse.MustRegisterResource(reg, products)
 //	report := parse.WithErrorHandler(func(r *http.Request, err error) {
 //		logger.ErrorContext(r.Context(), "serving schema", slog.Any("error", err))
 //	})

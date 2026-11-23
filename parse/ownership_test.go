@@ -174,7 +174,7 @@ func TestListRequest_WithFilterKeepsTheRequestSealed(t *testing.T) {
 func TestSchemaAccessors_HandOutCopies(t *testing.T) {
 	_, narrow := ownershipResources(t)
 	reg := parse.NewSchemaRegistry()
-	parse.RegisterResource(reg, narrow)
+	require.NoError(t, parse.RegisterResource(reg, narrow))
 	secret := func() *filter.FieldSchema {
 		return &filter.FieldSchema{ExternalName: "secret", Table: "users", Column: "secret", DataType: core.FieldTypeString, AllowedOperators: []filter.FilterOperator{filter.OpEq}}
 	}

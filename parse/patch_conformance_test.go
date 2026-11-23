@@ -183,7 +183,7 @@ func buildPatchCorpus(t *testing.T) []byte {
 	res.MustRelate("quoted_tags", parse.ManyToMany(parse.MustResource[confTag]("conf_tags"),
 		parse.Through("conf_patch_tags", "patch_id", "tag_id"), parse.Writable()))
 	reg := parse.NewSchemaRegistry()
-	parse.RegisterResource(reg, res)
+	require.NoError(t, parse.RegisterResource(reg, res))
 	out := patchCorpus{Schema: reg.SchemaFor("conf_patches")}
 	for _, c := range patchInputs() {
 		body, err := json.Marshal(c.Input)

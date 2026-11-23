@@ -1,7 +1,9 @@
 package parse
 
 import (
+	"errors"
 	"fmt"
+	"maps"
 	"reflect"
 	"slices"
 	"sync"
@@ -11,28 +13,43 @@ import (
 	"github.com/ashtonian/pkg/parse/patch"
 )
 
-// SchemaRegistry holds all generated schemas with caching.
+// ErrRegistered is a registration under a name the registry already holds.
+var ErrRegistered = errors.New("already registered")
+
+// SchemaRegistry is the schema document's source: the schemas of each
+// registered name, served by SchemaFor and the accessors. A name is
+// registered once. It is safe for concurrent use.
 type SchemaRegistry struct {
-	mu            sync.RWMutex
-	filterSchemas map[string]*filter.ResourceSchema
-	patchSchemas  map[string]*patch.PatchSchema
-	sortSchemas   map[string]*filter.SortSchema
-	searchSchemas map[string]*filter.SearchSchema
-	generator     *core.SchemaGenerator
+	mu        sync.RWMutex
+	entries   map[string]registryEntry
+	generator *core.SchemaGenerator
 }
 
-// NewSchemaRegistry creates a new SchemaRegistry.
+// registryEntry is one name's schemas; sort is nil without sort fields and
+// search nil without search fields.
+type registryEntry struct {
+	filter *filter.ResourceSchema
+	patch  *patch.PatchSchema
+	sort   *filter.SortSchema
+	search *filter.SearchSchema
+}
+
+// NewSchemaRegistry creates a registry; opts configure the generator
+// Register[T] builds schemas with.
 func NewSchemaRegistry(opts ...core.GeneratorOption) *SchemaRegistry {
 	return &SchemaRegistry{
-		filterSchemas: make(map[string]*filter.ResourceSchema),
-		patchSchemas:  make(map[string]*patch.PatchSchema),
-		sortSchemas:   make(map[string]*filter.SortSchema),
-		searchSchemas: make(map[string]*filter.SearchSchema),
-		generator:     core.NewSchemaGenerator(opts...),
+		entries:   make(map[string]registryEntry),
+		generator: core.NewSchemaGenerator(opts...),
 	}
 }
 
-// Register generates and registers all schemas for type T.
+// Register generates T's filter, patch, sort and search schemas with the
+// registry's generator and registers them under T's table name, for a type
+// no Resource serves: schema-only discovery. It never mirrors a Resource:
+// the schemas have no relations, read set, computed columns or the
+// resource's options, so they can describe a grammar the resource does not
+// parse. Register a Resource with RegisterResource. A name already
+// registered is ErrRegistered, and the registry is unchanged.
 func Register[T any](r *SchemaRegistry) error {
 	t := reflect.TypeFor[T]() // 1.22+ idiom; correct for interface T (TypeOf(nil-iface) panics)
 	if t.Kind() == reflect.Pointer {
@@ -41,117 +58,106 @@ func Register[T any](r *SchemaRegistry) error {
 
 	filterSchema, err := filter.GenerateFilterSchema[T](r.generator)
 	if err != nil {
-		return fmt.Errorf("registering %s filter: %w", t.Name(), err)
+		return fmt.Errorf("parse: registering %s: filter schema: %w", t, err)
 	}
 	patchSchema, err := patch.GeneratePatchSchema[T](r.generator)
 	if err != nil {
-		return fmt.Errorf("registering %s patch: %w", t.Name(), err)
+		return fmt.Errorf("parse: registering %s: patch schema: %w", t, err)
 	}
 	sortSchema, err := filter.GenerateSortSchema[T](r.generator)
 	if err != nil {
-		return fmt.Errorf("registering %s sort: %w", t.Name(), err)
+		return fmt.Errorf("parse: registering %s: sort schema: %w", t, err)
 	}
 	searchSchema, err := filter.GenerateSearchSchema[T](r.generator)
 	if err != nil {
-		return fmt.Errorf("registering %s search: %w", t.Name(), err)
+		return fmt.Errorf("parse: registering %s: search schema: %w", t, err)
 	}
+	return r.add(filterSchema.Name, filterSchema, patchSchema, sortSchema, searchSchema)
+}
 
+// RegisterResource registers res's schemas under its table: its filter
+// schema (declared relations included), patch, sort and search schemas, as
+// live as the resource — relations declared after registering are served
+// too. A table already registered, by another resource over it or by
+// Register, is ErrRegistered, and the registry is unchanged: register the
+// one resource whose grammar discovery describes. A WithPaths view, a value
+// for one request, is not registered.
+func RegisterResource[T any](r *SchemaRegistry, res *Resource[T]) error {
+	if res == nil {
+		return errors.New("parse: registering a nil resource")
+	}
+	if res.view {
+		return fmt.Errorf("parse: %s: a WithPaths view is a value for one request and is not registered", res.table)
+	}
+	return r.add(res.table, res.filterSchema, res.patchSchema, res.sortSchema, res.searchSchema)
+}
+
+func (r *SchemaRegistry) add(name string, fs *filter.ResourceSchema, ps *patch.PatchSchema, ss *filter.SortSchema, search *filter.SearchSchema) error {
+	if ss != nil && len(ss.Fields) == 0 {
+		ss = nil
+	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
-
-	r.filterSchemas[filterSchema.Name] = filterSchema
-	r.patchSchemas[patchSchema.Resource] = patchSchema
-	if len(sortSchema.Fields) > 0 {
-		r.sortSchemas[filterSchema.Name] = sortSchema
-	} else {
-		delete(r.sortSchemas, filterSchema.Name)
+	if _, taken := r.entries[name]; taken {
+		return fmt.Errorf("parse: %s: %w", name, ErrRegistered)
 	}
-	if searchSchema != nil {
-		r.searchSchemas[filterSchema.Name] = searchSchema
-	} else {
-		delete(r.searchSchemas, filterSchema.Name)
-	}
-
+	r.entries[name] = registryEntry{filter: fs, patch: ps, sort: ss, search: search}
 	return nil
 }
 
-// RegisterResource registers a resource's schemas under its table: its
-// filter schema (declared relations included), patch, sort and search
-// schemas, as live as the resource — relations declared after registering
-// are served too.
-func RegisterResource[T any](r *SchemaRegistry, res *Resource[T]) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	name := res.Table()
-	r.filterSchemas[name] = res.filterSchema
-	r.patchSchemas[name] = res.patchSchema
-	if ss := res.sortSchema; ss != nil && len(ss.Fields) > 0 {
-		r.sortSchemas[name] = ss
-	} else {
-		delete(r.sortSchemas, name)
-	}
-	if ss := res.searchSchema; ss != nil {
-		r.searchSchemas[name] = ss
-	} else {
-		delete(r.searchSchemas, name)
+// MustRegister is like Register but panics with its error.
+func MustRegister[T any](r *SchemaRegistry) {
+	if err := Register[T](r); err != nil {
+		panic(err)
 	}
 }
 
-// MustRegister is like Register but panics on error.
-func MustRegister[T any](r *SchemaRegistry) {
-	if err := Register[T](r); err != nil {
-		panic(fmt.Sprintf("MustRegister: %v", err))
+// MustRegisterResource is like RegisterResource but panics with its error.
+func MustRegisterResource[T any](r *SchemaRegistry, res *Resource[T]) {
+	if err := RegisterResource(r, res); err != nil {
+		panic(err)
 	}
+}
+
+func (r *SchemaRegistry) entry(resource string) (registryEntry, bool) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	e, ok := r.entries[resource]
+	return e, ok
 }
 
 // FilterSchema returns a copy of the filter schema for the named resource:
 // changing it changes nothing a registered resource parses.
 func (r *SchemaRegistry) FilterSchema(resource string) (*filter.ResourceSchema, bool) {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-	s, ok := r.filterSchemas[resource]
-	return s.Clone(), ok
+	e, ok := r.entry(resource)
+	return e.filter.Clone(), ok && e.filter != nil
 }
 
 // PatchSchema returns a copy of the patch schema for the named resource.
 func (r *SchemaRegistry) PatchSchema(resource string) (*patch.PatchSchema, bool) {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-	s, ok := r.patchSchemas[resource]
-	return s.Clone(), ok
+	e, ok := r.entry(resource)
+	return e.patch.Clone(), ok && e.patch != nil
 }
 
-// SortSchema returns a copy of the sort schema for the named resource.
+// SortSchema returns a copy of the sort schema for the named resource;
+// false for one without sort fields.
 func (r *SchemaRegistry) SortSchema(resource string) (*filter.SortSchema, bool) {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-	s, ok := r.sortSchemas[resource]
-	return s.Clone(), ok
+	e, ok := r.entry(resource)
+	return e.sort.Clone(), ok && e.sort != nil
 }
 
-// ResourceNames returns all registered resource names.
+// SearchSchema returns a copy of the search schema for the named resource;
+// false for one without search fields.
+func (r *SchemaRegistry) SearchSchema(resource string) (*filter.SearchSchema, bool) {
+	e, ok := r.entry(resource)
+	return e.search.Clone(), ok && e.search != nil
+}
+
+// ResourceNames returns all registered resource names, sorted.
 func (r *SchemaRegistry) ResourceNames() []string {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
-	seen := make(map[string]struct{})
-	for k := range r.filterSchemas {
-		seen[k] = struct{}{}
-	}
-	for k := range r.patchSchemas {
-		seen[k] = struct{}{}
-	}
-	for k := range r.sortSchemas {
-		seen[k] = struct{}{}
-	}
-	for k := range r.searchSchemas {
-		seen[k] = struct{}{}
-	}
-	names := make([]string, 0, len(seen))
-	for k := range seen {
-		names = append(names, k)
-	}
-	slices.Sort(names) // deterministic API listing
-	return names
+	return slices.Sorted(maps.Keys(r.entries))
 }
 
 // --- Schema Response Types ---
@@ -302,31 +308,22 @@ type SearchSchemaResponse struct {
 // SchemaFor builds an independent metadata snapshot for the given resource.
 // Changing the response does not change the registered schemas.
 func (r *SchemaRegistry) SchemaFor(resource string) *SchemaResponse {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-
-	resp := &SchemaResponse{Version: SchemaVersion, Resource: resource}
-	found := false
-
-	if fs, ok := r.filterSchemas[resource]; ok {
-		found = true
-		resp.Filter = filterSchemaToResponse(fs)
-	}
-	if ps, ok := r.patchSchemas[resource]; ok {
-		found = true
-		resp.Patch = patchSchemaToResponse(ps)
-	}
-	if ss, ok := r.sortSchemas[resource]; ok {
-		found = true
-		resp.Sort = sortSchemaToResponse(ss)
-	}
-	if ss, ok := r.searchSchemas[resource]; ok {
-		found = true
-		resp.Search = searchSchemaToResponse(ss)
-	}
-
-	if !found {
+	e, ok := r.entry(resource)
+	if !ok {
 		return nil
+	}
+	resp := &SchemaResponse{Version: SchemaVersion, Resource: resource}
+	if e.filter != nil {
+		resp.Filter = filterSchemaToResponse(e.filter)
+	}
+	if e.patch != nil {
+		resp.Patch = patchSchemaToResponse(e.patch)
+	}
+	if e.sort != nil {
+		resp.Sort = sortSchemaToResponse(e.sort)
+	}
+	if e.search != nil {
+		resp.Search = searchSchemaToResponse(e.search)
 	}
 	return resp
 }

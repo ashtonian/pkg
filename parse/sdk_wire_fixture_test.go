@@ -148,8 +148,8 @@ func buildSDKWire(t *testing.T) []byte {
 	parts := parse.MustResource[wirePart]("wire_parts")
 	items.MustRelate("parts", parse.HasMany(parts, "item_id", parse.Indexed()))
 	reg := parse.NewSchemaRegistry()
-	parse.RegisterResource(reg, items)
-	parse.RegisterResource(reg, parts)
+	require.NoError(t, parse.RegisterResource(reg, items))
+	require.NoError(t, parse.RegisterResource(reg, parts))
 	wire.Schema = reg.SchemaFor("wire_items")
 	require.NotNil(t, wire.Schema)
 	wire.Related = map[string]*parse.SchemaResponse{"wire_parts": reg.SchemaFor("wire_parts")}

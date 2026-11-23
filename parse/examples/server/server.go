@@ -72,7 +72,7 @@ func newServer(db *sql.DB, log *slog.Logger, requestTimeout time.Duration) (http
 		return nil, fmt.Errorf("products resource: %w", err)
 	}
 	reg := parse.NewSchemaRegistry()
-	if err := parse.Register[Product](reg); err != nil {
+	if err := parse.RegisterResource(reg, products); err != nil {
 		return nil, fmt.Errorf("schema registry: %w", err)
 	}
 	s := &server{db: db, products: products, log: log, requestTimeout: requestTimeout}

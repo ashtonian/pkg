@@ -161,7 +161,7 @@ func ExampleNewResource_facetedListPage() {
 
 	// Schema discovery.
 	reg := parse.NewSchemaRegistry()
-	parse.MustRegister[Product](reg)
+	parse.MustRegisterResource(reg, tp)
 	schema := reg.SchemaFor("products")
 	fmt.Println("=== Schema ===")
 	fmt.Println("resource:", schema.Resource)

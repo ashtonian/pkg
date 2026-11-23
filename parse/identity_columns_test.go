@@ -104,7 +104,7 @@ func TestNewResource_AcceptsWhatARowCanBeServedBy(t *testing.T) {
 	r, err := parse.NewResource[nullable]("rows", parse.TenantColumn("tenant_id"), parse.DeletedColumn("deleted_at"))
 	require.NoError(t, err)
 	reg := parse.NewSchemaRegistry()
-	parse.RegisterResource(reg, r)
+	require.NoError(t, parse.RegisterResource(reg, r))
 	doc := reg.SchemaFor("rows")
 	require.NotNil(t, doc.Patch)
 	assert.NotContains(t, doc.Patch.Paths, "/slug", "an immutable field is never a request patch path")

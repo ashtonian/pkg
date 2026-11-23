@@ -218,7 +218,7 @@ func TestRelate_DescribeReachesDiscovery(t *testing.T) {
 	devices := parse.MustResource[relDevice]("devices", parse.TenantColumn("tenant_id"))
 	devices.MustRelate("commands", parse.HasMany(commands, "device_id", parse.Describe("Commands", "Commands sent to the device")))
 	reg := parse.NewSchemaRegistry()
-	parse.RegisterResource(reg, devices)
+	require.NoError(t, parse.RegisterResource(reg, devices))
 
 	f := reg.SchemaFor("devices").Filter.Fields["commands"]
 	require.NotNil(t, f)
