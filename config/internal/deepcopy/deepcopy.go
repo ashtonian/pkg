@@ -24,7 +24,15 @@ import "reflect"
 // Value returns a copy of v that shares nothing settable with it.
 func Value(v reflect.Value) reflect.Value {
 	c := copier{made: map[key]reflect.Value{}}
-	return c.copy(v)
+	out := c.copy(v)
+	if v.CanAddr() {
+		// copy returns a scalar, a nil, a function or a channel as v itself,
+		// which reads and sets the memory v addresses.
+		detached := reflect.New(v.Type()).Elem()
+		detached.Set(out)
+		return detached
+	}
+	return out
 }
 
 type copier struct {
