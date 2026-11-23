@@ -145,5 +145,17 @@ custom predicate; a replayable body alone does not make a write safe.
 `NewAdaptiveHedgingTransport` derives the delay from a bounded latency
 sample window. It is available as an individual transport; choose it only
 when its observed latency distribution is appropriate for your workload.
+The window holds the latencies of the requests the delay controls: those
+the predicate selects and that have a replayable body, timed from the first
+attempt until a response arrives, whatever its status. Requests sent
+unhedged, and calls ending in an error, a local rejection or cancellation,
+are not counted, so cheap writes or fast failures cannot pull the delay
+down and hedge reads they never competed with. A hedged request's latency
+is its winning response's, which is at least the delay at which the hedge
+launched, so hedging does not bias the percentile it is steered by. The
+delay starts at 100 ms. From the tenth sample it is the exact nearest-rank
+percentile of the last 1000 samples, recomputed with each sample up to the
+64th and then every 64, so it trails the window by fewer than 64 samples.
+Recording is lock-free and a request reads the delay with one atomic load.
 
 All [options and defaults](reference.md#retry) are documented in the reference.

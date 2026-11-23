@@ -162,7 +162,7 @@ One `gobreaker` two-step breaker per origin (scheme, host, port): an outcome adm
 | `delay` (argument) | `time.Duration` | — (required, > 0) | Wait before each further attempt |
 | `WithMaxHedgedRequests(n)` | `int` | 2 | Total attempts this hedge call may launch, including the first, >= 2 |
 | `WithHedgeIf(fn)` | `func(*http.Request) bool` | GET only | Which requests are hedged; a custom predicate owns replay safety |
-| `percentile` (adaptive argument) | `float64` | — (required, in (0, 1]) | Percentile of the last 1000 completed calls, including errors; starts at 100 ms and adapts after 10 samples |
+| `percentile` (adaptive argument) | `float64` | — (required, in (0, 1]) | Nearest-rank percentile of the latencies of the last 1000 hedged requests that got a response; starts at 100 ms, adapts after 10 samples, then is recomputed every 64 |
 
 The first response wins and keeps its context until its body is done; the other attempts are cancelled and their bodies drained and closed. A hedge runs beside the first attempt, so it needs its own copy of the body: a request body without `GetBody` is sent once, unhedged.
 
