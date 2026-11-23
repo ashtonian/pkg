@@ -14,7 +14,7 @@ Every error wraps one category sentinel together with its cause, so `errors.Is` 
 
 | Sentinel | Meaning |
 |---|---|
-| `ErrValidation` | Validation failed, a value has the wrong type, an unknown key (an `*UnknownKeysError` lists them), an ambiguous environment variable, a field spelled two ways, or a value holding a cycle the default validator would walk forever (`<key> holds a cycle back to <key>`: check the code that set the second field — a post-load hook, `SetDefaults` or a typed default — and break the cycle or keep it out of the validator's walk with `validate:"-"`; see [validation](schema.md#validation)). |
+| `ErrValidation` | Validation failed, a value has the wrong type, an unknown key (an `*UnknownKeysError` lists them), an ambiguous environment variable, a field or map entry spelled two ways, or a value holding a cycle the default validator would walk forever (`<key> holds a cycle back to <key>`: check the code that set the second field — a post-load hook, `SetDefaults` or a typed default — and break the cycle or keep it out of the validator's walk with `validate:"-"`; see [validation](schema.md#validation)). |
 | `ErrFileRead` | A required (or previously loaded) file is missing or unreadable. |
 | `ErrFileParse` | The parser rejected a file; a `*ParseError` names the file and line. |
 | `ErrSource` | Defaults or a provider failed to load. |

@@ -364,7 +364,7 @@ func (e *edit) rewrite(schema *schemaNode) error {
 	e.value, e.unknown, e.unkeyed = value, w.unknown, w.unkeyed
 	switch {
 	case len(w.twice) > 0:
-		return refuse("keys spelled two ways set one field: %s", strings.Join(w.twice, ", "))
+		return refuse("keys spelled two ways set one key: %s", strings.Join(w.twice, ", "))
 	case len(w.notJSON) > 0:
 		return refuse("format:\"json\" values that are not JSON: %s", strings.Join(w.notJSON, ", "))
 	case len(w.noText) > 0:
