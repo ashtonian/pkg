@@ -6,6 +6,9 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
 	"github.com/ashtonian/pkg/parse/core"
 	"github.com/ashtonian/pkg/parse/filter"
 )
@@ -168,4 +171,54 @@ func TestCountStarWithoutJoin(t *testing.T) {
 	if !strings.Contains(result.CountSQL, "SELECT COUNT(*)") {
 		t.Errorf("expected plain COUNT(*) for a non-relation filter, got %q", result.CountSQL)
 	}
+}
+
+// Relation facets whose relations join different owner keys each join on
+// their own: a junction keyed by the owner's code counts by code, beside
+// one keyed by its id, and neither borrows the other's column.
+func TestBuildFacetQuery_RelationFacets_OwnKeyEach(t *testing.T) {
+	schema := &filter.ResourceSchema{
+		Name: "docs", PrimaryKey: "id",
+		SystemFields: map[string]*filter.FieldSchema{
+			"id": {ExternalName: "id", Table: "docs", Column: "id", DataType: core.FieldTypeString},
+		},
+		Fields: map[string]*filter.FieldSchema{
+			"tags": {
+				ExternalName: "tags", DataType: core.FieldTypeString, Facetable: true,
+				Relation: &core.RelationSchema{JoinTable: "doc_tags", SourceColumn: "doc_id", TargetColumn: "tag", PrimaryKey: "id"},
+			},
+			"labels": {
+				ExternalName: "labels", DataType: core.FieldTypeString, Facetable: true,
+				Relation: &core.RelationSchema{JoinTable: "doc_labels", SourceColumn: "doc_code", TargetColumn: "label", PrimaryKey: "code"},
+			},
+		},
+	}
+	db := setupFacetDB(t)
+	for _, stmt := range []string{
+		`CREATE TABLE docs (id TEXT PRIMARY KEY, code TEXT NOT NULL UNIQUE)`,
+		`CREATE TABLE doc_tags (doc_id TEXT NOT NULL, tag TEXT NOT NULL)`,
+		`CREATE TABLE doc_labels (doc_code TEXT NOT NULL, label TEXT NOT NULL)`,
+		// d1's code is d2's id: joined on the wrong column, labels would
+		// count d2's label under d1.
+		`INSERT INTO docs VALUES ('d1', 'd2'), ('d2', 'c2')`,
+		`INSERT INTO doc_tags VALUES ('d1', 'red'), ('d2', 'red')`,
+		`INSERT INTO doc_labels VALUES ('d2', 'one'), ('c2', 'two'), ('c2', 'three'), ('d1', 'none')`,
+	} {
+		_, err := db.Exec(stmt)
+		require.NoError(t, err, stmt)
+	}
+	q, err := filter.BuildFacetQuery(schema, filter.SQLiteDialect{}, "1=1", nil,
+		[]filter.FacetRequest{{Field: "tags"}, {Field: "labels"}},
+		filter.WithFacetRelationScope(filter.RelationScope{}))
+	require.NoError(t, err)
+	assert.Contains(t, q.SQL, `"docs"."id" AS __owner_pk, "docs"."code" AS __owner_pk_1`)
+
+	rows, err := db.Query(q.SQL, q.Args...)
+	require.NoError(t, err, q.SQL)
+	defer func() { require.NoError(t, rows.Close()) }()
+	results, err := filter.ScanFacetUnion(rows)
+	require.NoError(t, err)
+	got := indexFacets(results)
+	checkBuckets(t, got["tags"], map[string]int64{"red": 2})
+	checkBuckets(t, got["labels"], map[string]int64{"one": 1, "two": 1, "three": 1})
 }

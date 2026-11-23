@@ -323,7 +323,7 @@ Facet, include, and flat-query options:
 
 | Option | Type | Default | Description |
 |---|---|---|---|
-| `WithFacetRelationScope(s)` | `RelationScope` | none | How relation facets reach related rows; a `RowTenant` is projected beside the owner's key |
+| `WithFacetRelationScope(s)` | `RelationScope` | none | How relation facets reach related rows; a `RowTenant` is projected beside the owner's keys. Each relation facet joins its junction on its own relation's owner key (`RelationSchema.OwnerKey`), each distinct key projected once |
 | `WithFacetFrom(from)` | string | the schema's table | The facets' base rows: an aliased table or a join whose columns the filter and the fields name. A relation facet still reads the owner's key as `Name.<pk>` |
 | `WithIncludeRelationScope(s)` | `RelationScope` | none | How the include reads related rows; a `RowTenant` joins the owner's table, which `WithIncludeOwner` names. `ResolveInclude` refuses a `RowTenant` |
 | `WithIncludeOwner(owner)` | `*ResourceSchema` | none | The owner's schema, whose table a `RowTenant` reads |
