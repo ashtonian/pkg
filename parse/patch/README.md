@@ -38,10 +38,11 @@ Start with the [runnable package example](../README.md#quick-start). The focused
 | `validate.go` | The value check both wire formats run (`checkValue`): operation, nullability, normalization, validators, element counts; `Validator`, `ConstraintError` |
 | `validators.go` | Path validators from value tags: `enum`, `minlen` / `maxlen`, `min` / `max`, per element on an array path (`minitems` / `maxitems` count an array set whole: `checkItems` in `patch.go`) |
 | `sql.go` | `BuildPatchSQL` — per-column fold, merge and append compilation; the change predicate (`WithChangePredicate`) |
+| `sql_member.go` | Document-member add/replace/remove compiled against the stored document (`jsonb_set`/`#-`, `json_set`/`json_remove`); their RFC 6902 preconditions, settled from the patch's own operations or left to the row (`Precondition`, `RenderPreconditions`) |
 | `relation_sql.go` | Relation statements: one delete and one insert builder, owners and values each one array parameter, junction tenancy and target visibility |
 | `policy.go` | Patch policy and value constraints, judged by what operations write (`writes.go`) |
 | `pattern.go` | Path patterns: token check, matching (`*` one token, `**` zero or more), specificity order |
-| `typed_json.go` | A merge patch's document values checked and normalized against the Go type of the member they write, map keys decoded and named as encoding/json does |
+| `typed_json.go` | A merge patch's document values checked and normalized against the Go type of the member they write, map keys decoded and named as encoding/json does; a JSON Patch member's name and value held to that type (`checkDocumentMember`) |
 | `writes.go` | The paths an operation writes and reads, and the members a written value holds |
 | `errors.go` | E-codes |
 
@@ -58,7 +59,7 @@ PARSE_POSTGRES_DSN=postgres://… go test -tags=integration -count=1 ./patch/...
 
 patch validates operations and compiles them to SQL; it runs no statement and has no health check, metrics or logs of its own. Its failures:
 
-- A `*core.ParseError` is the request's fault: an invalid operation or value (E2064–E2077), a policy refusal (E2084, E2085), a relation value it cannot take (E2118, E2119), and from SQL compilation a test or transfer it cannot render (E2068, E2070, E2117). Joined failures name each member's JSON Pointer ([errors](../docs/http-errors.md#error-codes)).
+- A `*core.ParseError` is the request's fault: an invalid operation or value (E2064–E2077), a policy refusal (E2084, E2085), a relation value it cannot take (E2118, E2119), and from SQL compilation a test or transfer it cannot render (E2068, E2070, E2117) or a document-member operation the patch's own operations make fail (E2077). Joined failures name each member's JSON Pointer ([errors](../docs/http-errors.md#error-codes)).
 - `ErrUnparsed` is the server's: a `ParsedPatch` no parser produced reached a compiler. `ErrSQLColumnMissing` is the schema's: a path with no SQL column.
 - A patch is bounded by `MaxOperations` (`DefaultMaxOperations`), a relation operation by `MaxRelationValues` (`DefaultMaxRelationValues`) and typed copies by `MaxPatchCopyBytes` ([patch configuration](../docs/patches.md#configuration)).
 

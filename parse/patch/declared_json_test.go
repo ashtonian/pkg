@@ -4,6 +4,7 @@ package patch_test
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"reflect"
 	"strings"
@@ -384,4 +385,21 @@ func TestDeclaredJSONMergeCanonicalMapKeys(t *testing.T) {
 	require.ErrorContains(t, err, `JSON map keys "01" and "1" both encode as "1"`)
 	_, err = patch.ParseMergePatchMap(map[string]any{"value": map[string]any{"one": nil}}, intKeys, nil)
 	require.ErrorContains(t, err, `JSON member "one" is not a int map key`)
+}
+
+// A member of a document whose type decodes itself parses, since only its
+// decoder judges the result, and so applies only through the typed path:
+// SQL would store a document nothing held to the type.
+func TestBuildPatchSQL_MemberOfASelfDecodingType(t *testing.T) {
+	ops := []patch.PatchOp{patch.PatchOpAdd, patch.PatchOpReplace, patch.PatchOpRemove}
+	schema := newSchema("docs", 10, map[string]*patch.PathSchema{
+		"/value":   {AllowedOps: ops, DataType: core.FieldTypeJSON, SQLType: core.SQLJSONB, SQLColumn: "value", GoType: reflect.TypeFor[declaredItems]()},
+		"/value/*": {AllowedOps: ops, DataType: core.FieldTypeAny, SQLColumn: "value"},
+	})
+	parsed, err := patch.NewParser(schema, nil).Parse([]byte(`[{"op":"add","path":"/value/items","value":["a"]}]`))
+	require.NoError(t, err)
+	_, err = patch.BuildPatchSQL(parsed, filter.PostgresDialect{})
+	pe, ok := errors.AsType[*core.ParseError](err)
+	require.True(t, ok, "%v is no ParseError", err)
+	assert.Equal(t, patch.ECodeOpNotSQLCompilable.String(), pe.Code)
 }
