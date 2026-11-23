@@ -7,7 +7,6 @@ package parsepgx_test
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"io"
 	"log/slog"
@@ -143,7 +142,7 @@ func (a *deviceAPI) update(w http.ResponseWriter, r *http.Request) {
 // fail answers a request's parse error with its code and status; anything
 // else is the server's.
 func (a *deviceAPI) fail(w http.ResponseWriter, r *http.Request, err error) {
-	if parsehttp.WriteError(w, err) {
+	if parsehttp.WriteError(w, r, err, a.report()) {
 		return
 	}
 	a.log.ErrorContext(r.Context(), "devices request failed",
@@ -151,9 +150,23 @@ func (a *deviceAPI) fail(w http.ResponseWriter, r *http.Request, err error) {
 	http.Error(w, "internal error", http.StatusInternalServerError)
 }
 
+// reply encodes v whole before writing it, so a value that cannot be
+// encoded is still answered with a status of its own.
 func (a *deviceAPI) reply(w http.ResponseWriter, r *http.Request, v any) {
-	w.Header().Set("Content-Type", "application/json")
-	if err := json.NewEncoder(w).Encode(v); err != nil {
-		a.log.WarnContext(r.Context(), "devices response write failed", slog.String("path", r.URL.Path), slog.Any("error", err))
+	if err := parsehttp.WriteJSON(w, r, http.StatusOK, v, a.report()); err != nil {
+		a.log.ErrorContext(r.Context(), "encoding devices response", slog.String("path", r.URL.Path), slog.Any("error", err))
+		http.Error(w, "internal error", http.StatusInternalServerError)
 	}
+}
+
+// report logs what a response could not carry: details that would not
+// encode are a defect; a response that could not be written was dropped.
+func (a *deviceAPI) report() parsehttp.Option {
+	return parsehttp.WithErrorHandler(func(r *http.Request, err error) {
+		level := slog.LevelWarn
+		if errors.Is(err, parsehttp.ErrUnencodableDetails) {
+			level = slog.LevelError
+		}
+		a.log.Log(r.Context(), level, "writing devices response", slog.String("path", r.URL.Path), slog.Any("error", err))
+	})
 }

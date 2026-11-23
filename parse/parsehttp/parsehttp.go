@@ -1,5 +1,9 @@
-// Package parsehttp writes parse's request errors as HTTP responses
-// , for servers that do not have an error envelope of their own.
+// Package parsehttp is parse's net/http adapter. It reads list requests from
+// either transport (ParseList), serves the schema discovery routes
+// (SchemaHandler, SchemaListHandler), and answers parse's request errors
+// (WriteError) and a handler's own JSON (WriteJSON), each encoded before
+// anything is written and sent with its Content-Length. One WithErrorHandler
+// hook receives what any of them could not put in a response.
 package parsehttp
 
 import (
@@ -14,70 +18,114 @@ import (
 	"github.com/ashtonian/pkg/parse/internal/httpjson"
 )
 
-// Body is the JSON a parse error is answered with: {code, message, details},
-// the body parse's own handlers answer with too.
-type Body = httpjson.ErrorBody
+// Body is the JSON a parse error is answered with, as the TypeScript SDK's
+// ErrorBody reads it. A *core.ParseError marshals to the same members.
+type Body struct {
+	Code    string `json:"code"`
+	Message string `json:"message"`
+	// Path is the JSON Pointer of the patch member a patch error is about.
+	Path string `json:"path,omitempty"`
+	// Index is the position of the JSON Patch operation a patch error is
+	// about; a pointer, so operation 0 is written.
+	Index   *int           `json:"index,omitempty"`
+	Details map[string]any `json:"details,omitempty"`
+}
 
 // ErrUnencodableDetails reports Details entries of a parse error that cannot be
 // encoded as JSON. WriteError answers with the entries that can.
 var ErrUnencodableDetails = errors.New("parse error details cannot be encoded")
 
-// Option configures WriteError.
+// Option configures WriteError, WriteJSON and the schema handlers.
 type Option func(*options)
 
 type options struct {
-	onError func(error)
+	onError func(*http.Request, error)
 }
 
-// WithErrorHandler reports what WriteError could not put in its response.
-// Details entries that cannot be encoded are left out of the body and
-// reported as an error matching ErrUnencodableDetails (errors.Is) that names
-// each one and wraps its encoding error. A Write the ResponseWriter fails
-// once the status is sent is reported as that error; net/http buffers a
-// small response and sends it after the handler returns, so a client that
-// disconnects in that window is not reported. Without it, both are dropped.
+func newOptions(opts []Option) options {
+	var o options
+	for _, opt := range opts {
+		opt(&o)
+	}
+	return o
+}
+
+// WithErrorHandler reports what a response could not carry, with the request
+// it answered:
+//   - Details entries of a parse error that cannot be encoded, left out of
+//     WriteError's body, as an error matching ErrUnencodableDetails
+//     (errors.Is) that names each one and wraps its encoding error;
+//   - a schema document that cannot be encoded, answered 500/E2120, as an
+//     error matching parse.ECodeSchemaEncodingFailed that wraps the encoding
+//     error;
+//   - a Write the ResponseWriter fails once the status is sent, as that
+//     error. net/http buffers a small response and sends it after the handler
+//     returns, so a client that disconnects in that window is not reported.
 //
-// fn takes only the error: WriteError runs inside the caller's handler,
-// which has the request. It runs on that request's goroutine, so fn must be
-// safe for concurrent use.
-func WithErrorHandler(fn func(error)) Option {
+// fn runs on the request's goroutine, so it must be safe for concurrent use.
+// Without it, all of these are dropped; the responses are the same.
+func WithErrorHandler(fn func(*http.Request, error)) Option {
 	return func(o *options) { o.onError = fn }
+}
+
+func (o options) report(r *http.Request, err error) {
+	if o.onError != nil {
+		o.onError(r, err)
+	}
 }
 
 // WriteError answers err when it is a parse error — anywhere in its chain —
 // with the status its code declares and Body, and reports whether it did. Any
 // other error is the caller's to answer.
-func WriteError(w http.ResponseWriter, err error, opts ...Option) bool {
-	var pe *core.ParseError
-	if !errors.As(err, &pe) {
+func WriteError(w http.ResponseWriter, r *http.Request, err error, opts ...Option) bool {
+	pe, ok := errors.AsType[*core.ParseError](err)
+	if !ok {
 		return false
 	}
-	var o options
-	for _, opt := range opts {
-		opt(&o)
-	}
-	body, encErr := httpjson.Encode(Body{Code: pe.Code, Message: pe.Message, Details: pe.Details})
+	o := newOptions(opts)
+	answer := Body{Code: pe.Code, Message: pe.Message, Path: pe.Path, Index: pe.Index, Details: pe.Details}
+	body, encErr := httpjson.Encode(answer)
 	if encErr != nil {
-		// Code and Message are strings, so only Details can fail.
+		// Code, Message, Path and Index always encode, so only Details can fail.
 		details, dropped := encodableDetails(pe.Details)
+		answer.Details = details
 		var keptErr error
-		body, keptErr = httpjson.Encode(Body{Code: pe.Code, Message: pe.Message, Details: details})
+		body, keptErr = httpjson.Encode(answer)
 		switch {
 		case keptErr != nil:
 			// Each entry encoded alone but not together: a MarshalJSON that
 			// fails only sometimes. Answer without any.
 			dropped = errors.Join(dropped, fmt.Errorf("every other entry: %w", keptErr))
-			body = httpjson.EncodeError(pe.Code, pe.Message)
+			answer.Details = nil
+			body = mustEncode(answer)
 		case dropped == nil:
 			// Every entry encoded on the second try; the first failure is the cause.
 			dropped = encErr
 		}
-		o.report(fmt.Errorf("answering %s: %w: %w", pe.Code, ErrUnencodableDetails, dropped))
+		o.report(r, fmt.Errorf("parsehttp: answering %s: %w: %w", pe.Code, ErrUnencodableDetails, dropped))
 	}
-	if werr := httpjson.Send(w, pe.ErrorHTTPStatus(), body); werr != nil {
-		o.report(fmt.Errorf("writing %s response: %w", pe.Code, werr))
-	}
+	o.send(w, r, pe.ErrorHTTPStatus(), body)
 	return true
+}
+
+// WriteJSON answers v as an application/json response with status: encoded
+// before anything is written, then sent with its Content-Length. A v that
+// cannot be encoded is returned with nothing written, for the caller to
+// answer as its own failure; a Write that fails once the status is sent goes
+// to the WithErrorHandler hook.
+func WriteJSON(w http.ResponseWriter, r *http.Request, status int, v any, opts ...Option) error {
+	body, err := httpjson.Encode(v)
+	if err != nil {
+		return fmt.Errorf("parsehttp: encoding %T: %w", v, err)
+	}
+	newOptions(opts).send(w, r, status, body)
+	return nil
+}
+
+func (o options) send(w http.ResponseWriter, r *http.Request, status int, body []byte) {
+	if err := httpjson.Send(w, status, body); err != nil {
+		o.report(r, fmt.Errorf("parsehttp: writing %d response: %w", status, err))
+	}
 }
 
 // encodableDetails returns the entries of details that encode, and an error
@@ -95,8 +143,12 @@ func encodableDetails(details map[string]any) (map[string]any, error) {
 	return kept, errors.Join(dropped...)
 }
 
-func (o options) report(err error) {
-	if o.onError != nil {
-		o.onError(err)
+// mustEncode encodes a Body without Details, which holds only strings and an
+// int and always encodes.
+func mustEncode(b Body) []byte {
+	body, err := httpjson.Encode(b)
+	if err != nil {
+		panic("parsehttp: encoding an error body: " + err.Error())
 	}
+	return body
 }

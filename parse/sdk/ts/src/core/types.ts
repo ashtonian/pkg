@@ -22,16 +22,17 @@ export type FieldType =
   | "geo";
 
 /**
- * Error body a parse-backed server returns: an E-code, a message, and optional
+ * Error body a parse-backed server returns (Go `parsehttp.Body`): an E-code, a
+ * message, the JSON Pointer of the patch member (`path`) and the position of
+ * the JSON Patch operation (`index`) a patch error is about, and optional
  * structured details.
  */
 export interface ErrorBody {
   code: string;
   message: string;
-  details?: Record<string, unknown>;
-  trace_id?: string;
-  timestamp?: string;
   path?: string;
+  index?: number;
+  details?: Record<string, unknown>;
 }
 
 /** Per-request options. */

@@ -19,7 +19,7 @@ A list endpoint built on this package reads the `filter.Param*` query parameters
 | `fields` | `ParamFields` | Response field mask: the fields each item returns ([field mask](queries.md#field-mask)) |
 | `include` | `ParamInclude` | Relation fields whose related IDs the page carries in `_relations` |
 
-Lists answer with `filter.Page[T]`: `{"items": […], "page_info": {"has_next_page", "has_prev_page", "start_cursor", "end_cursor", "total_count"}, "_relations": {…}}`. Errors answer `{"code", "message", "details"}`, or an RFC 9457 problem document ([below](#rfc-9457-problem-details)).
+Lists answer with `filter.Page[T]`: `{"items": […], "page_info": {"has_next_page", "has_prev_page", "start_cursor", "end_cursor", "total_count"}, "_relations": {…}}`. Errors answer `{"code", "message", "path", "index", "details"}` (`parsehttp.Body`; `path`, `index` and `details` only when set), or an RFC 9457 problem document ([below](#rfc-9457-problem-details)).
 
 ### The same request as a POST body
 
@@ -41,27 +41,36 @@ A flat parameter naming no filterable field is E2071 unless it is a list paramet
 
 ## Schema routes
 
-After registering resource types, mount the registry using standard `net/http` routes:
+`parsehttp` is parse's one `net/http` adapter: the schema routes, `WriteError`, `WriteJSON` and `ParseList` take the same options, and one `parsehttp.WithErrorHandler` hook receives, with the request, whatever any of them could not put in a response. After registering resource types, mount the registry:
 
 ```go
-report := parse.WithErrorHandler(func(r *http.Request, err error) {
+report := parsehttp.WithErrorHandler(func(r *http.Request, err error) {
 	level := slog.LevelWarn // the response could not be written
-	if errors.Is(err, parse.ECodeSchemaEncodingFailed) {
-		level = slog.LevelError // a document that cannot be encoded: a server defect
+	if errors.Is(err, parse.ECodeSchemaEncodingFailed) || errors.Is(err, parsehttp.ErrUnencodableDetails) {
+		level = slog.LevelError // a document or details that cannot be encoded: a server defect
 	}
-	logger.Log(r.Context(), level, "serving schema", slog.String("path", r.URL.Path), slog.Any("error", err))
+	logger.Log(r.Context(), level, "writing response", slog.String("path", r.URL.Path), slog.Any("error", err))
 })
-mux.HandleFunc("GET /api/{resource}/schema", registry.SchemaHandler(report))
-mux.HandleFunc("GET /api/schemas", registry.SchemaListHandler(report))
+mux.HandleFunc("GET /api/{resource}/schema", parsehttp.SchemaHandler(registry, report))
+mux.HandleFunc("GET /api/schemas", parsehttp.SchemaListHandler(registry, report))
 ```
 
-The schema document advertises each resource's filterable fields and their operators, its patch paths, sort fields and search; [`testdata/schema_document.json`](../testdata/schema_document.json) is one with every member set. It is a versioned format: `version` is `parse.SchemaVersion`, which stays the same when a member is added and increments when one is removed, renamed or redefined. A client refuses a version it does not read, as the TypeScript SDK does with `SchemaVersionError`. `SchemaHandler` returns 404/E2078 for an unknown resource. Registration and discovery are separate from your list/patch routes; the [example server](../examples/server/server.go) shows both.
+The schema document advertises each resource's filterable fields and their operators, its patch paths, sort fields and search; [`testdata/schema_document.json`](../testdata/schema_document.json) is one with every member set. It is a versioned format: `version` is `parse.SchemaVersion`, which stays the same when a member is added and increments when one is removed, renamed or redefined. A client refuses a version it does not read, as the TypeScript SDK does with `SchemaVersionError`. `parsehttp.SchemaHandler` returns 404/E2078 for an unknown resource. Registration and discovery are separate from your list/patch routes; the [example server](../examples/server/server.go) shows both.
 
-Both handlers encode the whole response before writing any of it, and send it with its `Content-Length`. A document that cannot be encoded is answered 500/E2120 with the catalog message only; the encoding error, which names Go types, goes to the `parse.WithErrorHandler` hook alone, matching `parse.ECodeSchemaEncodingFailed` through `errors.Is`. A `Write` the `ResponseWriter` fails once the status is sent (a body past net/http's buffers going to a client that left, an `http.TimeoutHandler` past its deadline, a middleware writer's own error) reaches the hook as that error; the status is already sent, so nothing changes for the client. Reporting write failures is best effort: net/http buffers a response of up to about 6 KiB and sends it after the handler returns, so a client that disconnects in that window is not reported. The hook runs on the request's goroutine and must be safe for concurrent use. Without one, the handlers answer the same way and report nothing. Every member of the schema document encodes, so E2120 means a defect in parse: alert on it, not on write errors.
+Both handlers encode the whole response before writing any of it, and send it with its `Content-Length`. A document that cannot be encoded is answered 500/E2120 with the catalog message only; the encoding error, which names Go types, goes to the `parsehttp.WithErrorHandler` hook alone, matching `parse.ECodeSchemaEncodingFailed` through `errors.Is`. A `Write` the `ResponseWriter` fails once the status is sent (a body past net/http's buffers going to a client that left, an `http.TimeoutHandler` past its deadline, a middleware writer's own error) reaches the hook as that error; the status is already sent, so nothing changes for the client. Reporting write failures is best effort: net/http buffers a response of up to about 6 KiB and sends it after the handler returns, so a client that disconnects in that window is not reported. The hook runs on the request's goroutine and must be safe for concurrent use. Without one, the handlers answer the same way and report nothing. Every member of the schema document encodes, so E2120 means a defect in parse: alert on it, not on write errors.
 
 ## Error handling
 
-`parsehttp.WriteError(w, err)` answers a parse error anywhere in `err`'s chain with its code's status and `{code, message, details}`, and reports whether it did; any other error is the caller's. It encodes the body before writing anything and sends it with its `Content-Length`; middleware that rewrites the body, such as compression, must drop that header, as it must for `http.ServeContent`. A `Details` entry JSON cannot hold, such as a `NaN` from `strconv.ParseFloat`, is left out: the client still gets the status, code, message and the entries that encode, and `parsehttp.WithErrorHandler(fn)` receives an error matching `parsehttp.ErrUnencodableDetails` that names each dropped entry and wraps its encoding error. The hook also receives a `Write` that fails once the status is sent, on the same best-effort terms as the [schema routes](#schema-routes). Without it, both are dropped.
+`parsehttp.WriteError(w, r, err, report)` answers a parse error anywhere in `err`'s chain with its code's status and `parsehttp.Body`, and reports whether it did; any other error is the caller's. A patch error names the member it is about in `path`, its JSON Pointer, and, from a JSON Patch, the operation in `index`, counting from 0, so a client binds it to a form field or an operation without reading the message:
+
+```
+PATCH /api/products/p01  {"category":"nope"}
+422 {"code":"E2077","message":"invalid value for path '/category': value \"nope\" is not one of: electronics, clothing, books, home","path":"/category"}
+```
+
+A `*core.ParseError` marshalled by a server itself writes the same members. It encodes the body before writing anything and sends it with its `Content-Length`; middleware that rewrites the body, such as compression, must drop that header, as it must for `http.ServeContent`. A `Details` entry JSON cannot hold, such as a `NaN` from `strconv.ParseFloat`, is left out: the client still gets the status, code, message and the entries that encode, and `parsehttp.WithErrorHandler(fn)` receives an error matching `parsehttp.ErrUnencodableDetails` that names each dropped entry and wraps its encoding error. The hook also receives a `Write` that fails once the status is sent, on the same best-effort terms as the [schema routes](#schema-routes). Without it, both are dropped.
+
+`parsehttp.WriteJSON(w, r, status, v, report)` answers a handler's own value the same way: encoded whole before anything is written, then sent with its `Content-Length`, a failed `Write` going to the hook. A value that cannot be encoded is returned with nothing written, for the handler to answer as its own failure; streaming a `json.Encoder` into the `ResponseWriter` instead sends the status before the encoder can fail, so the client receives a 200 with a truncated body.
 
 Use `errors.As` to extract `*core.ParseError` through wrapping. Its `ErrorHTTPStatus()` provides the status; expose `Code`, `Message`, and appropriate `Details` in the error envelope. `Details` is keyed by `core.DetailField` (`"field"`, the request field a refusal is about) and `core.DetailParameter` (`"parameter"`, the list parameter). Treat unrelated database/internal errors through your normal server error handling rather than labeling every failure a bad request. Do not leak underlying SQL or credentials through error details.
 
@@ -82,11 +91,11 @@ The TypeScript SDK also reads RFC 9457 problem documents (`application/problem+j
 
 `type` names the server's own problem type; `about:blank`, with `title` set to the status phrase, is valid when it has none. The SDK takes `ApiError.code` from the `code` extension, else from `type`, and `ApiError.errors` from the `errors` entries ([client errors](../sdk/ts/README.md#errors)).
 
-`parsehttp` writes only parse's `{code, message, details}` body, for servers that have no envelope. A server that answers RFC 9457 has a problem writer for all its errors, not only parse's: authentication, not-found and internal failures share its `type` URIs, `instance` and extension members. Parse errors go through that writer with the mapping above, so a parse-specific problem writer would answer in a second, inconsistent dialect.
+`parsehttp` writes only parse's own body, for servers that have no envelope. A server that answers RFC 9457 has a problem writer for all its errors, not only parse's: authentication, not-found and internal failures share its `type` URIs, `instance` and extension members. Parse errors go through that writer with the mapping above, so a parse-specific problem writer would answer in a second, inconsistent dialect.
 
 ## Error codes
 
-All known codes describe permanent failures and are listed below; retry and catalog classification belong to the consumer. A `*core.ParseError` answers its code's status itself (`ErrorHTTPStatus()`), so a handler writes `{code, message, details}` with the status below and needs no table of its own.
+All known codes describe permanent failures and are listed below; retry and catalog classification belong to the consumer. A `*core.ParseError` answers its code's status itself (`ErrorHTTPStatus()`), so a handler writes `parsehttp.Body` with the status below and needs no table of its own.
 
 | Code | HTTP | Meaning |
 |------|------|---------|

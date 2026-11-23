@@ -1,6 +1,7 @@
-// Package httpjson writes JSON responses whole: encoded before the status is
-// sent, so a value that cannot be encoded can still be answered with a status
-// of its own, and sent with its Content-Length.
+// Package httpjson holds the mechanics of parse's JSON responses: a body is
+// encoded whole before the status is sent, so a value that cannot be encoded
+// can still be answered with a status of its own, then sent with its
+// Content-Length. parsehttp answers through it; parse reads its media type.
 package httpjson
 
 import (
@@ -21,25 +22,6 @@ func Encode(v any) ([]byte, error) {
 		return nil, err
 	}
 	return buf.Bytes(), nil
-}
-
-// ErrorBody is the HTTP error body parse answers with, as the TS SDK's
-// ApiError reads it; parsehttp exports it as Body.
-type ErrorBody struct {
-	Code    string         `json:"code"`
-	Message string         `json:"message"`
-	Details map[string]any `json:"details,omitempty"`
-}
-
-// EncodeError returns ErrorBody{code, message} encoded: the answer for a
-// response whose own body cannot be encoded.
-func EncodeError(code, message string) []byte {
-	body, err := Encode(ErrorBody{Code: code, Message: message})
-	if err != nil {
-		// Two strings always encode; reaching here is a defect in encoding/json.
-		panic("httpjson: encoding an error body: " + err.Error())
-	}
-	return body
 }
 
 // Send writes body as an application/json response with status and its

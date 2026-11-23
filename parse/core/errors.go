@@ -23,7 +23,7 @@ const (
 type ParseError struct {
 	Code    string         `json:"code"`
 	Message string         `json:"message"`
-	Kind    ParseErrorKind `json:"kind"`
+	Kind    ParseErrorKind `json:"-"` // the code names it; not on the wire
 	Path    string         `json:"path,omitempty"`
 	Index   *int           `json:"index,omitempty"`   // pointer so op index 0 survives the wire
 	Details map[string]any `json:"details,omitempty"` // keyed by the Detail constants

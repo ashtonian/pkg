@@ -75,8 +75,8 @@ The client calls the routes a server built on the Go module serves; the [example
 | `patch(id, input)` | `PATCH /{resource}/{id}` with a JSON Merge Patch body | `Resource.ParseMergePatch`, `Resource.BuildUpdate(…, parse.ByID(id), …)` |
 | `patchMany(ids, input)` | `PATCH /{resource}?id[]=…&id[]=…` with a JSON Merge Patch body | `Resource.BuildUpdate(…, parse.ByIDs(ids…), …)`; a key that updated no row is an item of `failed` |
 | `facets(fields, opts)` | `OPTIONS /{resource}?facets=a,b&filter=` → `facets` | `Resource.ParseList`, `Resource.BuildList`, the plan's `Facets` statement |
-| `schema()` | `GET /{schemaPrefix}/{name}/schema` | `SchemaRegistry.SchemaHandler` |
-| `schemas()` | `GET /{schemaPrefix}/schemas` → `{ schemas: […] }` | `SchemaRegistry.SchemaListHandler` |
+| `schema()` | `GET /{schemaPrefix}/{name}/schema` | `parsehttp.SchemaHandler` |
+| `schemas()` | `GET /{schemaPrefix}/schemas` → `{ schemas: […] }` | `parsehttp.SchemaListHandler` |
 
 Members a list leaves zero (an empty `sort`, `include`, `facets` or `fields`, `pageSize: 0`) are not sent, so the server applies its defaults. `fields` is the response field mask, the members each item carries; the schema document lists no maskable names, so `validateBeforeSend` leaves the mask to the server. `patch("")` and `patchMany([])` throw `RangeError` before sending: either would `PATCH` the collection itself. A request carries `Content-Type: application/json` only when it has a body.
 
@@ -163,7 +163,7 @@ Two Go-emitted corpora pin client to server: `testdata/filter_conformance.json` 
 
 | Error | When | Fields |
 |---|---|---|
-| `ApiError` | Non-2xx response | `status` (the response's), `code`, `message`, `body` (`{code, message, details?, trace_id?, timestamp?, path?}`), `problem` (the RFC 9457 document, or `undefined`), `errors` (its field errors, or `[]`) |
+| `ApiError` | Non-2xx response | `status` (the response's), `code`, `message`, `body` (`{code, message, path?, index?, details?}`: `path` is the JSON Pointer of the patch member and `index` the JSON Patch operation a patch error is about), `problem` (the RFC 9457 document, or `undefined`), `errors` (its field errors, or `[]`) |
 | `ResponseError` (an `ApiError`) | A 2xx without the JSON body the call reads: a 204, an empty 200, a proxy's HTML 200 | `status`, `url`, `code` `""`, `message` naming the status, URL and reason |
 | `SchemaResourceError` | The schema endpoint answered another resource's document than the registry name requested | `requested`, `resource` |
 | `SchemaValidationError` | Client-side validation failed | `code` (the E-code the server would return), `field`, `detail`, optional `constraint` / `limit` |

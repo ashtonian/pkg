@@ -12,8 +12,8 @@ type Code = core.Code
 // ParseError carries a code and the location and context of a refused request.
 type ParseError = core.ParseError
 
-// ECodeSchemaEncodingFailed is a schema document SchemaHandler or
-// SchemaListHandler could not encode: a server defect, answered 500.
+// ECodeSchemaEncodingFailed is a schema document parsehttp.SchemaHandler or
+// parsehttp.SchemaListHandler could not encode: a server defect, answered 500.
 const ECodeSchemaEncodingFailed = core.CodeSchemaEncodingFailed
 
 // Codes returns the distinct filter, patch and schema discovery codes. A

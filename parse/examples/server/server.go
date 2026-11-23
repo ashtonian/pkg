@@ -1,10 +1,8 @@
 package main
 
 import (
-	"bytes"
 	"context"
 	"database/sql"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -12,7 +10,6 @@ import (
 	"maps"
 	"net/http"
 	"slices"
-	"strconv"
 	"time"
 
 	"github.com/ashtonian/pkg/parse"
@@ -61,6 +58,8 @@ type server struct {
 	products       *parse.Resource[Product]
 	log            *slog.Logger
 	requestTimeout time.Duration
+	// report is the parsehttp hook every response is written with.
+	report parsehttp.Option
 }
 
 func newServer(db *sql.DB, log *slog.Logger, requestTimeout time.Duration) (http.Handler, error) {
@@ -76,8 +75,9 @@ func newServer(db *sql.DB, log *slog.Logger, requestTimeout time.Duration) (http
 		return nil, fmt.Errorf("schema registry: %w", err)
 	}
 	s := &server{db: db, products: products, log: log, requestTimeout: requestTimeout}
+	s.report = parsehttp.WithErrorHandler(s.responseFailed)
 	mux := http.NewServeMux()
-	mux.HandleFunc("GET /api/{resource}/schema", reg.SchemaHandler(parse.WithErrorHandler(s.responseFailed)))
+	mux.HandleFunc("GET /api/{resource}/schema", parsehttp.SchemaHandler(reg, s.report))
 	mux.HandleFunc("GET /api/products", s.list)
 	mux.HandleFunc("POST /api/products", s.list)
 	mux.HandleFunc("OPTIONS /api/products", s.facets)
@@ -263,7 +263,7 @@ func (s *server) update(w http.ResponseWriter, r *http.Request, target parse.Tar
 // fail answers a parse error with its E-code and the status the code
 // carries; anything else is logged and answered as a 500 without internals.
 func (s *server) fail(w http.ResponseWriter, r *http.Request, err error) {
-	if parsehttp.WriteError(w, err, parsehttp.WithErrorHandler(func(err error) { s.responseFailed(r, err) })) {
+	if parsehttp.WriteError(w, r, err, s.report) {
 		return
 	}
 	s.log.ErrorContext(r.Context(), "request failed", slog.String("method", r.Method), slog.String("path", r.URL.Path), slog.Any("error", err))
@@ -291,22 +291,14 @@ func readBody(w http.ResponseWriter, r *http.Request) ([]byte, error) {
 	return body, nil
 }
 
-// writeJSON encodes v before writing anything, so a value that cannot be
-// encoded is answered 500 rather than as status with an empty body. parse's
-// own handlers do the same through internal/httpjson; this example keeps to
-// parse's public API, as the servers that copy it must.
+// writeJSON answers v, or 500 when v cannot be encoded: parsehttp.WriteJSON
+// writes nothing until the whole body is encoded.
 func (s *server) writeJSON(w http.ResponseWriter, r *http.Request, status int, v any) {
-	var buf bytes.Buffer
-	if err := json.NewEncoder(&buf).Encode(v); err != nil {
-		s.log.ErrorContext(r.Context(), "encoding response", slog.String("method", r.Method), slog.String("path", r.URL.Path), slog.Any("error", err))
-		// A Body of two strings always encodes, so this recursion ends.
-		s.writeJSON(w, r, http.StatusInternalServerError, parsehttp.Body{Code: codeInternal, Message: "internal error"})
+	err := parsehttp.WriteJSON(w, r, status, v, s.report)
+	if err == nil {
 		return
 	}
-	w.Header().Set("Content-Type", "application/json")
-	w.Header().Set("Content-Length", strconv.Itoa(buf.Len()))
-	w.WriteHeader(status)
-	if _, err := w.Write(buf.Bytes()); err != nil {
-		s.responseFailed(r, err)
-	}
+	s.log.ErrorContext(r.Context(), "encoding response", slog.String("method", r.Method), slog.String("path", r.URL.Path), slog.Any("error", err))
+	// A Body without details always encodes.
+	_ = parsehttp.WriteJSON(w, r, http.StatusInternalServerError, parsehttp.Body{Code: codeInternal, Message: "internal error"}, s.report)
 }

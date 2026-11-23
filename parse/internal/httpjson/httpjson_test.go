@@ -27,11 +27,6 @@ func TestEncode_WritesWhatAStreamingEncoderWould(t *testing.T) {
 	assert.Equal(t, streamed.Bytes(), body)
 }
 
-// The fallback body is the error body without details.
-func TestEncodeError_IsCodeAndMessage(t *testing.T) {
-	assert.Equal(t, "{\"code\":\"E2120\",\"message\":\"schema encoding failed\"}\n", string(EncodeError("E2120", "schema encoding failed")))
-}
-
 func TestSend_WritesTheBodyWithItsLength(t *testing.T) {
 	w := httptest.NewRecorder()
 	require.NoError(t, Send(w, http.StatusNotFound, []byte("{}\n")))
