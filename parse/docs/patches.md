@@ -241,27 +241,11 @@ A value the column rounds as it stores it — a timestamp finer than the column'
 
 ## JSON documents
 
-A `map[string]any` or `json.RawMessage` field is a JSON document (`jsonb` on PostgreSQL, JSON text on SQLite); a struct field is too, once given `filter_ops`. parse compares and contains documents as a whole:
+A `map[string]any` or `json.RawMessage` field is a JSON document (`jsonb` on PostgreSQL, JSON text on SQLite); a struct field is too, once given `filter_ops`. Filtering one, whole or by its declared members, is in [queries](queries.md#json-documents) and [JSON paths](queries.md#json-paths). Patching one:
 
-```text
-{"attrs":{"$contains":{"color":"red","dims":{"w":10}}}}    attrs holds these members, at any depth
-postgres WHERE products.attrs @> $1::jsonb [{"color":"red","dims":{"w":10}}]
-sqlite   (json_each predicates per member: same meaning, no jsonb)
-
-{"tags":{"$contains":["sale"]}}                             a native array holds every listed element
-postgres WHERE products.tags @> $1 [[sale]]
-
-{"attrs.color":"red"}
-[E2071] field 'attrs.color' is not filterable
-```
-
-- `{"attrs":{"color":"red"}}` is **whole-document equality**, not a partial match; use `$contains` for that. A `$gt` inside a `$contains` operand is data, a literal `"$gt"` key.
-- `$null` / `$exists` test the column, not a key: a stored JSON `null` and `{}` are both "exists". `{"$contains":{"color":null}}` finds an explicit JSON null; the public grammar has no general key-presence predicate.
-- No path into a document can be filtered, compared, sorted or faceted, and a JSON field cannot be sorted or searched at all. A `filter.FieldSchema` with your own `Expr` (`"attrs" ->> 'color'`) is the escape hatch, with its typing and dialect left to you.
 - Updates: a merge patch merges recursively in SQL on both dialects and in `ApplyValidatedPatch` — siblings survive, nested `null` deletes. A JSON Patch to `/attrs/color` is refused (E2076); with a `/attrs/*` path pattern it parses, but SQL refuses nested paths (E2070) and it applies only in Go.
 - Typed documents have additional canonicalization and merge limits; see [typed document behavior](#typed-document-behavior).
 - Empty JSON Pointer tokens address empty object keys, including intermediate keys, when the path schema allows them.
-- Index: `@>` is served by a GIN index (`jsonb_path_ops` is smaller when containment is the only query).
 
 ## Typed document behavior
 

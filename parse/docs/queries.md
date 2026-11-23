@@ -82,6 +82,28 @@ A `$in` / `$nin` set, and an array's `$contains` list ([array elements](#array-e
 
 A path's set joins its members as a relation, which PostgreSQL hashes in every plan. A column's `= ANY` is served by an index on the column; without one, under a generic plan (pgx caches prepared statements, and PostgreSQL may plan one generically after five executions) it probes the array member by member for each row it scans, so index a column that large sets filter. SQLite holds integers within int64: a `uint64` member above it is an error, as binding one is.
 
+## JSON documents
+
+A `map[string]any` or `json.RawMessage` field is a JSON document (`jsonb` on PostgreSQL, JSON text on SQLite); a struct field is too, once given `filter_ops`. The document's own operators compare, contain and test it as a whole; its members filter, sort and facet once declared as [JSON paths](#json-paths):
+
+```text
+{"attrs":{"$contains":{"color":"red","dims":{"w":10}}}}    attrs holds these members, at any depth
+postgres WHERE products.attrs @> $1::jsonb [{"color":"red","dims":{"w":10}}]
+sqlite   (json_each predicates per member: same meaning, no jsonb)
+
+{"tags":{"$contains":["sale"]}}                             a native array holds every listed element
+postgres WHERE products.tags @> $1 [[sale]]
+
+{"attrs.color":"red"}                                       a member no path declares
+[E2071] field 'attrs.color' is not filterable
+```
+
+- `{"attrs":{"color":"red"}}` is **whole-document equality**, not a partial match; use `$contains` for that. A `$gt` inside a `$contains` operand is data, a literal `"$gt"` key.
+- `$has_key` is the key-presence predicate: `{"attrs":{"$has_key":"color"}}` holds when the document has a top-level `color`, whatever its value. A member deeper down is tested through a declared path: `{"attrs.dims.w":{"$null":false}}` holds when it holds a value of the path's type.
+- `$null` / `$exists` on the document test the column, not a key: a stored JSON `null` and `{}` are both "exists". `{"$contains":{"color":null}}` finds an explicit JSON null.
+- A declared member filters, sorts and facets like a column of its type ([JSON paths](#json-paths)); the whole document is no sort key. A [computed column](#computed-columns), or a `filter.FieldSchema` with your own `Expr`, is for an expression a path cannot express, such as a value computed from several members: parse treats its SQL as trusted application code and leaves its typing and dialect to you.
+- Index: `@>` is served by a GIN index (`jsonb_path_ops` is smaller when containment is the only query).
+
 ## JSON paths
 
 A document column's typed members are filterable as dotted fields — `{"attrs.color": "red"}`, `{"settings.window.from": {"$gt": "now-1h"}}` — once they are declared. Requests never add paths.
@@ -437,4 +459,4 @@ postgres SET tags = array_append(COALESCE(tags, '{}'), $1), price = $2 [clearanc
 
 Schema-backed cursor keys validate type, numeric range, and nullability before SQL construction (E2082). Manually constructed schemas need `CursorKey.NumberKind` / `SortFieldSchema.NumberKind` for numeric bounds. A `ListQuery`'s key is always typed; a keyset composed by hand (`Keyset`, `ValidateCursor`) with a key that declares no type validates canonical non-null scalars only. A decimal key carries its canonical text and orders by value on every backend ([decimals](schema-configuration.md#decimals)). Other pointer-receiver `driver.Valuer` / text-marshaler scalar keys can supply canonical values, but the package cannot infer a custom database scalar's ordering from its Go encoding: declare such a column with the scalar it holds (`storage:"scalar:decimal"`), or choose keys with a known consistent SQL/Go representation. Cursors carry sort metadata, not authorization: reapply server policy on every page.
 
-[HTTP parameters](http-errors.md) · [JSON documents](patches.md#json-documents) · [Relations](relations.md)
+[HTTP parameters](http-errors.md) · [Patching JSON documents](patches.md#json-documents) · [Relations](relations.md)
