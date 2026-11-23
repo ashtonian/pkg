@@ -11,6 +11,7 @@ import { GitHub, Manifest, VERSION } from 'release-please';
 import { fetchBranchHead, readHistory } from './first-parent.mjs';
 import { Output, outputPullRequests, outputReleases } from './outputs.mjs';
 import { FIRST_PARENT, FirstParentPlugin, registerFirstParent } from './plugin.mjs';
+import { installReleaseBody } from './release-body.mjs';
 
 function parseOptions() {
   return parseArgs({
@@ -54,6 +55,7 @@ async function main() {
     console.log(`first-parent: history at ${head} (${args.remote}/${branch}), ${history.mergeOf.size} branch commits mapped to their merges`);
   }
   registerFirstParent(history);
+  installReleaseBody();
   // Each phase reads the repository afresh, as the action does: creating the
   // releases changes what the release PR holds.
   let warned = false;

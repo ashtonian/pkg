@@ -6,6 +6,7 @@ import { ManifestPlugin } from 'release-please/build/src/plugin.js';
 import { CommitExclude } from 'release-please/build/src/util/commit-exclude.js';
 import { CommitSplit } from 'release-please/build/src/util/commit-split.js';
 import { firstParentCommits, typeRanker } from './first-parent.mjs';
+import { escapeNotes } from './release-body.mjs';
 
 export const FIRST_PARENT = 'first-parent';
 
@@ -41,13 +42,14 @@ export class FirstParentPlugin extends ManifestPlugin {
     if (paths === undefined && commits.length > 0) {
       this.warnOnce(`${FIRST_PARENT}: no release path has these commits; each merge counts at least as its subject`);
     }
-    return firstParentCommits(commits, this.history, {
+    const kept = firstParentCommits(commits, this.history, {
       headerOf: this.headerOf,
       rank: this.rank,
       complete: this.completeMerges(commits, paths ?? []),
       branches: this.branches,
       warn: message => this.warnOnce(message),
     });
+    return escapeNotes(kept);
   }
 
   // completeMerges returns the merges each of whose branch commits touching

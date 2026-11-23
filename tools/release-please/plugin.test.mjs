@@ -24,6 +24,18 @@ test('a config naming first-parent builds the plugin over the history', () => {
   assert.ok(built instanceof FirstParentPlugin);
 });
 
+test('the commits it keeps carry breaking notes escaped for Markdown', () => {
+  const history = { mergeOf: new Map([['b1', 'm1']]), messageOf: new Map([['m1', 'feat(parse)!: keys (#361)']]) };
+  const commits = parsed([
+    ['m1', 'feat(parse)!: keys (#361)'],
+    ['b1', 'feat(parse)!: list keys\n\nBREAKING CHANGE: include=<key> is E2083.'],
+  ]);
+
+  const kept = plugin(history).processCommits(commits);
+
+  assert.deepEqual(kept.flatMap(c => c.notes.map(n => n.text)), ['include=&lt;key&gt; is E2083.']);
+});
+
 test("release-please's own parse of a merge with trailers folds the branch into its header", () => {
   const subject = 'fix(parse): tidy reader (#260)';
   const message = `${subject}\n\nCo-authored-by: Pat <pat@example.com>`;
