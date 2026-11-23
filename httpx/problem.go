@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"io"
 	"math"
-	"mime"
 	"net/http"
 	"net/url"
 	"slices"
@@ -175,7 +174,7 @@ func decodeProblem(resp *http.Response, cfg decodeConfig) (*Problem, error) {
 	if resp == nil {
 		return nil, invalidConfig("DecodeProblem: response is nil")
 	}
-	mediaType, _, err := mime.ParseMediaType(resp.Header.Get("Content-Type"))
+	mediaType, err := mediaTypeKey(resp.Header.Get("Content-Type"))
 	if err != nil || (mediaType != ContentTypeProblemJSON && !slices.Contains(cfg.problemMediaTypes, mediaType)) {
 		return nil, ErrNotProblem
 	}

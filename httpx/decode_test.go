@@ -117,8 +117,8 @@ func TestDecodePointerTargets(t *testing.T) {
 	if _, err := decodeInto[*named](&rec, []byte(`{}`)); err != nil {
 		t.Fatal(err)
 	}
-	if rec.target != reflect.TypeFor[*named]() {
-		t.Fatalf("codec received %s, want *httpx.named", rec.target)
+	if rec.target != reflect.TypeFor[**named]() {
+		t.Fatalf("a pointer T decodes through *T, codec received %s", rec.target)
 	}
 	if _, err := decodeInto[named](&rec, []byte(`{}`)); err != nil {
 		t.Fatal(err)
@@ -126,6 +126,125 @@ func TestDecodePointerTargets(t *testing.T) {
 	if rec.target != reflect.TypeFor[*named]() {
 		t.Fatalf("a value T decodes through *T, codec received %s", rec.target)
 	}
+}
+
+// The typed helpers and DecodeResponse hand the codec the same destination,
+// so JSON null leaves a pointer nil on both paths.
+func TestDecodePreservesNullForPointers(t *testing.T) {
+	ctx := context.Background()
+	for _, tt := range []struct {
+		name, body string
+		wantNil    bool
+	}{
+		{"null", "null", true},
+		{"zero-valued object", "{}", false},
+		{"object", `{"name":"Ada"}`, false},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			client := fixedResponse(200, ContentTypeJSON, tt.body, nil)
+			p, resp, err := Get[*named](ctx, client, itemEndpoint)
+			if err != nil || (p == nil) != tt.wantNil {
+				t.Fatalf("Get[*named] = %v, %v", p, err)
+			}
+			var explicit *named
+			if err := DecodeResponse(resp, JSON, &explicit); err != nil || (explicit == nil) != tt.wantNil {
+				t.Fatalf("DecodeResponse = %v, %v", explicit, err)
+			}
+			if !tt.wantNil && (*p != *explicit) {
+				t.Fatalf("Get decoded %+v, DecodeResponse %+v", *p, *explicit)
+			}
+			defined, _, err := Get[itemPtr](ctx, client, itemEndpoint)
+			if err != nil || (defined == nil) != tt.wantNil {
+				t.Fatalf("Get[itemPtr] = %v, %v", defined, err)
+			}
+		})
+	}
+
+	type xmlItem struct {
+		Name string `xml:"name"`
+	}
+	p, _, err := Get[*xmlItem](ctx, fixedResponse(200, ContentTypeXML, `<xmlItem><name>Ada</name></xmlItem>`, nil), itemEndpoint)
+	if err != nil || p == nil || p.Name != "Ada" {
+		t.Fatalf("Get[*xmlItem] = %v, %v", p, err)
+	}
+}
+
+// brokenBody yields prefix and then fails with err; closed counts Close.
+type brokenBody struct {
+	prefix *strings.Reader
+	err    error
+	closed int
+}
+
+func (b *brokenBody) Read(p []byte) (int, error) {
+	if b.prefix.Len() > 0 {
+		return b.prefix.Read(p)
+	}
+	return 0, b.err
+}
+
+func (b *brokenBody) Close() error { b.closed++; return nil }
+
+// A body read can fail after the status and headers arrived. Every decoding
+// helper returns that response with the read error, the body closed and
+// resp.Body replaying what was received before failing the same way.
+func TestDecodeKeepsTheResponseWhenTheBodyFails(t *testing.T) {
+	const prefix = `{"name":`
+	respond := func(status int, contentType string) (*http.Client, *brokenBody) {
+		body := &brokenBody{prefix: strings.NewReader(prefix), err: io.ErrUnexpectedEOF}
+		return &http.Client{Transport: stubRoundTripper(func(r *http.Request) (*http.Response, error) {
+			h := http.Header{"Content-Type": {contentType}, "X-Request-Id": {"example-42"}}
+			return &http.Response{StatusCode: status, Header: h, Body: body, Request: r}, nil
+		})}, body
+	}
+	check := func(t *testing.T, resp *http.Response, err error, body *brokenBody, status int) {
+		t.Helper()
+		if !errors.Is(err, io.ErrUnexpectedEOF) {
+			t.Fatalf("err = %v, want io.ErrUnexpectedEOF", err)
+		}
+		if resp == nil || resp.StatusCode != status || resp.Header.Get("X-Request-Id") != "example-42" {
+			t.Fatalf("response %+v", resp)
+		}
+		if body.closed != 1 {
+			t.Fatalf("failed body closed %d times, want 1", body.closed)
+		}
+		got, readErr := io.ReadAll(resp.Body)
+		if string(got) != prefix || !errors.Is(readErr, io.ErrUnexpectedEOF) {
+			t.Fatalf("resp.Body reads %q, %v; want the prefix and the same error", got, readErr)
+		}
+		if err := resp.Body.Close(); err != nil || body.closed != 1 {
+			t.Fatalf("Close = %v, underlying closed %d times", err, body.closed)
+		}
+	}
+
+	t.Run("typed success", func(t *testing.T) {
+		client, body := respond(200, ContentTypeJSON)
+		_, resp, err := Get[named](context.Background(), client, itemEndpoint)
+		check(t, resp, err, body, 200)
+	})
+	t.Run("typed problem", func(t *testing.T) {
+		client, body := respond(422, ContentTypeProblemJSON)
+		_, resp, err := Get[named](context.Background(), client, itemEndpoint, WithProblemErrors())
+		check(t, resp, err, body, 422)
+	})
+	t.Run("DecodeResponse", func(t *testing.T) {
+		client, body := respond(200, ContentTypeJSON)
+		resp, err := client.Get(itemEndpoint)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var v named
+		check(t, resp, DecodeResponse(resp, JSON, &v), body, 200)
+	})
+	t.Run("DecodeProblem", func(t *testing.T) {
+		client, body := respond(422, ContentTypeProblemJSON)
+		resp, err := client.Get(itemEndpoint)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, err = DecodeProblem(resp)
+		check(t, resp, err, body, 422)
+	})
 }
 
 // recordingCodec records the type it was asked to decode into.

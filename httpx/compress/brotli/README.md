@@ -76,21 +76,79 @@ func Example() {
 
 ## Configuration
 
-| Function | Type | Default | Description |
-|----------|------|---------|-------------|
-| `New()` | `*Compressor` | level `DefaultLevel` (4) | Compressor at the default level |
-| `NewWithLevel(level)` | `int` | — | Compressor at `level`, 0 (fastest) to 11 (smallest) |
+| Selection | Type | Default | Description |
+|---|---|---|---|
+| Import | — | Registers `br` | `httpx.RegisterCompressor(httpx.EncodingBrotli, …)` with a level-4 compressor |
+| `httpx.WithBrotliLevel(level)` | `int` compression option | `DefaultLevel` (4) | This transport's brotli level, 0 (fastest) to 11 (smallest); out of range, or brotli not imported, is `httpx.ErrInvalidConfig` |
+| `New()` | `*Compressor` | `DefaultLevel` (4) | A compressor at the default level, for `httpx.WithCompressor` or direct use |
+| `NewWithLevel(level)` | `int` | — | A compressor at `level`; the upstream encoder clamps a level outside 0–11 to that range |
 
-## API
+The level affects only `Compress`. Decoding a response does not depend on
+it.
 
-- `Compressor` implements `httpx.Compressor`: `Compress(data, buf)`, `Decompress(r)`, `WithLevel(level)`.
+## API / Interfaces
+
+- `Compressor` implements `httpx.Compressor`: `Compress(data, buf)`, `Decompress(r)`, and `WithLevel(level)`, which `httpx.WithBrotliLevel` calls.
+- `DefaultLevel` is 4.
 - Importing the package calls `httpx.RegisterCompressor(httpx.EncodingBrotli, …)`.
 
-## Caveats
+## Build / Run / Test
 
-- The module requires the parent `httpx` module at a published version; inside this repository the Go workspace supplies it.
+The quick start above is `example_test.go` verbatim; `readme_test.go` fails
+the unit lane when the two differ. From this module:
+
+```sh
+go test -tags=unit -race .
+go test -tags=integration -race .
+```
+
+Untagged `go test` runs nothing. The repository's `make httpx-release-check`
+tests this module's archive against the `httpx` version its `go.mod`
+requires, outside the workspace.
+
+## Operations
+
+The package holds no connections, goroutines, health endpoints or metrics.
+Each `Compressor` pools its encoders, so repeated `Compress` calls reuse
+encoder state; the pool empties under garbage collection.
+
+- `br` missing from `Accept-Encoding`: the binary does not import this
+  package, or the transport's `WithEncodings` list leaves `br` out.
+- A read error beginning `brotli:` from a response body: the body is not a
+  valid brotli stream. `CompressionTransport` decodes lazily, so this
+  surfaces on the first body read, not from `RoundTrip`. The layer decodes
+  every coding it supports, even when the caller set `Accept-Encoding`, so
+  to capture the encoded bytes repeat the request through a transport
+  without it.
+- `httpx.ErrInvalidConfig` from `NewCompressionTransport`:
+  `WithBrotliLevel` was given a level outside 0–11, or this package is not
+  imported.
+
+## Security
+
+Brotli compresses redundant data by large ratios, so a small response can
+decode to a very large body. Typed helpers apply `WithMaxResponseBytes`
+(10 MiB by default) after decompression; a raw `client.Do` read needs its
+own bound, such as `httpx.ReadAtMost`. The decoder's ring buffer is sized
+by the stream's declared window, at most 16 MiB under RFC 7932; streams
+using the non-standard large-window extension are rejected.
+
+## External Dependencies
+
+- `github.com/ashtonian/pkg/httpx` — compressor interface, registration and the compression transport, required at a published version; the repository workspace supplies local source during development.
+- `github.com/andybalholm/brotli` — pure-Go brotli encoder and decoder. Versions are pinned in `go.mod`.
+
+## Code Map
+
+| File | Responsibility |
+|---|---|
+| `brotli.go` | `Compressor`, its encoder pool, and registration on import |
+| `example_test.go` | The README quick start, compiled and run |
+| `readme_test.go` | Fails when the README quick start and `example_test.go` differ |
+| `brotli_test.go`, `brotli_integration_test.go` | Unit tests and loopback-server tests through the compression transport |
 
 ## References
 
 - Parent: [`httpx`](../../README.md)
 - Upstream: [andybalholm/brotli](https://github.com/andybalholm/brotli)
+- [RFC 7932](https://www.rfc-editor.org/rfc/rfc7932): Brotli compressed data format

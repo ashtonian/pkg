@@ -108,9 +108,27 @@ have the same meaning as in JSON. `msgpack` tags do not override that model.
 Byte slices become base64 strings; UUIDs, timestamps and other custom JSON/text
 values use their JSON form. Decoding invokes the target's JSON unmarshaler.
 
-Signed and unsigned 64-bit integers retain their full precision. JSON integer
-literals outside those ranges are rejected; other JSON numbers use finite
-float64. Nonfinite numbers, non-string map keys, invalid UTF-8, unsupported
+A number means the same over both codecs: what a receiver decodes from the
+MessagePack body is what it decodes from the JSON body, or encoding fails.
+JSON integer literals become MessagePack integers with full signed or
+unsigned 64-bit precision. Beyond those ranges, an integer literal spelled
+exactly as `encoding/json` writes a float64 (it writes those from 2^64 up
+to 1e21 in integer syntax) becomes that float64, so every finite Go float64
+encodes; any other integer literal that large is rejected, since a
+`json.Number` receiver would see it rounded. A literal
+with a fraction or exponent (`1e3`, `1000.0`) becomes a float64, and decoding
+writes a MessagePack float back with a fraction or exponent, so an integer
+target refuses it over both codecs, as `encoding/json` refuses `1e3` for an
+`int64`. Such a literal whose value is an integer in the 64-bit range that
+float64 cannot hold exactly, such as `9007199254740993.0`, is rejected
+rather than rounded: write it as an integer. Other non-integers, and
+integers beyond the 64-bit range written with a fraction or exponent,
+round to the nearest float64, as `encoding/json` rounds them for a `float64`
+or `any` target; a `json.Number` target receives that float64's text, which
+can be spelled differently from the literal sent. The one
+difference is negative zero: MessagePack has one, the float
+`encoding/json` writes as `-0`, so `-0.0` decodes into an integer as 0
+where JSON refuses it. Nonfinite numbers, non-string map keys, invalid UTF-8, unsupported
 extensions, malformed/trailing data and nesting beyond JSON's 10,000-level
 bound are rejected. Native binary and timestamp values decode to their JSON
 string forms; native extension callbacks are not invoked by the default codec.

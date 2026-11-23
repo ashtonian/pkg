@@ -55,6 +55,8 @@ type clientConfig struct {
 	hedgingOpts     []HedgingOption
 	authBindings    []AuthBinding
 	tokenBindings   []TokenBinding
+	lifecycle       *Lifecycle
+	lifecycleSet    bool // true when WithLifecycle() was applied, even with nil
 
 	// Feature flags
 	useCompression    bool
