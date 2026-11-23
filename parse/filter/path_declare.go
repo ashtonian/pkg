@@ -228,10 +228,13 @@ func structPaths(g *core.SchemaGenerator, t reflect.Type, prefix []string, want 
 			if isArray {
 				d.Type, d.Elem, kind = core.FieldTypeArray, elem, elemKind
 			}
+			if want == core.CapabilityFilter && m.Tags.Facet != "" && !caps.Facet {
+				return nil, nil, fmt.Errorf("member %s: facet:%q on a member without the facet capability", d.Path, m.Tags.Facet)
+			}
 			if want == core.CapabilityFilter && caps.Facet {
 				fs, err := ParseFacetTag(m.Tags.Facet)
 				if err != nil {
-					return nil, nil, fmt.Errorf("member %s: %w", d.Path, err)
+					return nil, nil, fmt.Errorf("member %s: facet:%q: %w", d.Path, m.Tags.Facet, err)
 				}
 				if fs == nil {
 					fs = &FacetSchema{Type: FacetTerms}
@@ -503,8 +506,8 @@ func setPathFacet(f *FieldSchema, facet *FacetSchema) error {
 	if facet == nil {
 		return nil
 	}
-	if f.DataType == core.FieldTypeArray && facet.Type != FacetTerms {
-		return fmt.Errorf("an array member's facet is terms, not %s", facet.Type)
+	if err := checkFacet(f, facet); err != nil {
+		return err
 	}
 	cfg := *facet
 	cfg.Field = f.ExternalName

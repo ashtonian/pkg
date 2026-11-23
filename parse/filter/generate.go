@@ -151,20 +151,16 @@ func generateFilterSchema(g *core.SchemaGenerator, t reflect.Type) (*ResourceSch
 			fs.Order = n
 		}
 
-		if fs.Facetable {
-			if t := facetValueType(fs); unkeyedFacetTypes[t] {
-				return nil, fmt.Errorf("field %s: %s values have no facet key every backend reads alike", field.GoName, t)
+		if tags.Facet != "" {
+			if !fs.Facetable {
+				return nil, fmt.Errorf("field %s: facet:%q on a field without the facet capability", field.GoName, tags.Facet)
 			}
-			if tags.Facet != "" {
-				facetSchema, err := ParseFacetTag(tags.Facet)
-				if err != nil {
-					return nil, fmt.Errorf("field %s: %w", field.GoName, err)
-				}
-				if facetSchema != nil {
-					facetSchema.Field = fieldName
-					fs.FacetSchema = facetSchema
-				}
+			facetSchema, err := ParseFacetTag(tags.Facet)
+			if err != nil {
+				return nil, fmt.Errorf("field %s: facet:%q: %w", field.GoName, tags.Facet, err)
 			}
+			facetSchema.Field = fieldName
+			fs.FacetSchema = facetSchema
 		}
 
 		if tags.Relation != "" {
@@ -194,6 +190,12 @@ func generateFilterSchema(g *core.SchemaGenerator, t reflect.Type) (*ResourceSch
 		}
 		if err := checkOperators(fs); err != nil {
 			return nil, fmt.Errorf("field %s: %w", field.GoName, err)
+		}
+		// After storage, which can make a document field a scalar.
+		if fs.Facetable {
+			if err := checkFacet(fs, fs.facetConfig()); err != nil {
+				return nil, fmt.Errorf("field %s: %w", field.GoName, err)
+			}
 		}
 		if isScalarArray(fs) {
 			fs.Element = newElement(fs)
@@ -404,14 +406,6 @@ func DefaultFilterOps() map[core.FieldType][]FilterOperator {
 		out[k] = ops
 	}
 	return out
-}
-
-// unkeyedFacetTypes are the value types whose PostgreSQL text differs from
-// their canonical text: interval follows the session's IntervalStyle, inet
-// writes a host's /32, and both network types write an IPv4-compatible IPv6
-// address in dotted form. A terms facet's key is that text.
-var unkeyedFacetTypes = map[core.FieldType]bool{
-	core.FieldTypeInterval: true, core.FieldTypeInet: true, core.FieldTypeCIDR: true,
 }
 
 // sortable reports whether a keyset can order and resume on a field: a scalar

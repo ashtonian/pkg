@@ -148,15 +148,12 @@ func buildFacetQuery(schema *ResourceSchema, dialect Dialect, filterWhere string
 			}
 		}
 		f = columnExprs(exprs).field(f)
-		fcfg := f.FacetSchema
-		if fcfg == nil {
-			fcfg = &FacetSchema{Type: FacetTerms}
+		fcfg := f.facetConfig()
+		if err := checkFacet(f, fcfg); err != nil {
+			return FacetQuery{}, fmt.Errorf("BuildFacetQuery: facet %q: %w", req.Field, err)
 		}
 		ownerAlias := ""
 		if f.Relation != nil {
-			if fcfg.Type != FacetTerms {
-				return FacetQuery{}, fmt.Errorf("BuildFacetQuery: field %q is a relation; only terms-type facets are supported", req.Field)
-			}
 			i := slices.Index(ownerKeys, f.Relation.OwnerKey())
 			if i < 0 {
 				i = len(ownerKeys)
@@ -166,9 +163,6 @@ func buildFacetQuery(schema *ResourceSchema, dialect Dialect, filterWhere string
 		}
 		list := f.DataType == core.FieldTypeArray && f.Relation == nil
 		if list {
-			if fcfg.Type != FacetTerms {
-				return FacetQuery{}, fmt.Errorf("BuildFacetQuery: field %q is a list; only terms-type facets are supported", req.Field)
-			}
 			hasList = true
 		}
 		// The external name is request data and need not be an SQL

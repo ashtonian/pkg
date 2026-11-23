@@ -2,6 +2,7 @@ package filter
 
 import (
 	"cmp"
+	"errors"
 	"fmt"
 	"math"
 	"slices"
@@ -27,7 +28,9 @@ type FacetSchema struct {
 	Ranges []FacetRange
 }
 
-// FacetRange defines a bucket boundary for range facets.
+// FacetRange defines a bucket boundary for range facets: a value is in it
+// when it is at least Min and below Max, a nil bound being open. A facet's
+// ranges do not overlap, so a value is in at most one.
 type FacetRange struct {
 	Key string
 	Min *float64
@@ -143,7 +146,10 @@ func FacetMap(results []FacetResult) map[string][]FacetBucket {
 	return m
 }
 
-// ParseFacetTag parses the `facet` struct tag.
+// ParseFacetTag parses the `facet` struct tag: "terms", "terms:<limit>"
+// or "range:<lo>-<hi>,...,<lo>+". A terms limit is at least 1 and has no
+// cap, as a struct tag is not request input; ranges are finite, each
+// minimum below its maximum, and none overlaps another.
 func ParseFacetTag(tag string) (*FacetSchema, error) {
 	if tag == "" {
 		return nil, nil
@@ -151,17 +157,20 @@ func ParseFacetTag(tag string) (*FacetSchema, error) {
 
 	typePart, configPart, _ := strings.Cut(tag, ":")
 
+	var fs *FacetSchema
 	switch FacetType(typePart) {
 	case FacetTerms:
-		limit := 0
+		fs = &FacetSchema{Type: FacetTerms}
 		if configPart != "" {
 			n, err := strconv.Atoi(configPart)
 			if err != nil {
 				return nil, fmt.Errorf("invalid terms facet limit %q: %w", configPart, err)
 			}
-			limit = n
+			if n < 1 {
+				return nil, fmt.Errorf("terms facet limit %d is below 1", n)
+			}
+			fs.Limit = n
 		}
-		return &FacetSchema{Type: FacetTerms, Limit: limit}, nil
 
 	case FacetTypeRange:
 		if configPart == "" {
@@ -171,20 +180,24 @@ func ParseFacetTag(tag string) (*FacetSchema, error) {
 		if err != nil {
 			return nil, err
 		}
-		return &FacetSchema{Type: FacetTypeRange, Ranges: ranges}, nil
+		fs = &FacetSchema{Type: FacetTypeRange, Ranges: ranges}
 
 	default:
 		return nil, fmt.Errorf("unknown facet type %q", typePart)
 	}
+	if err := fs.validate(); err != nil {
+		return nil, err
+	}
+	return fs, nil
 }
 
 func parseRanges(s string) ([]FacetRange, error) {
 	parts := strings.Split(s, ",")
 	ranges := make([]FacetRange, 0, len(parts))
-	for _, part := range parts {
+	for i, part := range parts {
 		part = strings.TrimSpace(part)
 		if part == "" {
-			continue
+			return nil, fmt.Errorf("range %d is empty", i+1)
 		}
 		r, err := parseOneRange(part)
 		if err != nil {
@@ -193,6 +206,109 @@ func parseRanges(s string) ([]FacetRange, error) {
 		ranges = append(ranges, r)
 	}
 	return ranges, nil
+}
+
+// validate refuses a configuration no facet query counts correctly: an
+// unknown type, a negative terms limit (0 takes the default), or ranges
+// that are missing, unbounded, non-finite, inverted, keyed twice or
+// overlapping.
+func (s *FacetSchema) validate() error {
+	switch s.Type {
+	case FacetTerms:
+		if s.Limit < 0 {
+			return fmt.Errorf("terms facet limit %d is negative", s.Limit)
+		}
+		return nil
+	case FacetTypeRange:
+		return validateRanges(s.Ranges)
+	}
+	return fmt.Errorf("unknown facet type %q", s.Type)
+}
+
+func validateRanges(ranges []FacetRange) error {
+	if len(ranges) == 0 {
+		return errors.New("a range facet needs at least one range")
+	}
+	keys := make(map[string]bool, len(ranges))
+	for _, r := range ranges {
+		if r.Key == "" {
+			return errors.New("a range has no key")
+		}
+		if keys[r.Key] {
+			return fmt.Errorf("range %q is declared twice", r.Key)
+		}
+		keys[r.Key] = true
+		if r.Min == nil && r.Max == nil {
+			return fmt.Errorf("range %q has neither bound", r.Key)
+		}
+		for _, b := range []*float64{r.Min, r.Max} {
+			if b != nil && (math.IsNaN(*b) || math.IsInf(*b, 0)) {
+				return fmt.Errorf("range %q has a non-finite bound", r.Key)
+			}
+		}
+		if r.Min != nil && r.Max != nil && *r.Min >= *r.Max {
+			return fmt.Errorf("range %q: its minimum is not below its maximum", r.Key)
+		}
+	}
+	byMin := slices.Clone(ranges)
+	slices.SortFunc(byMin, func(a, b FacetRange) int { return cmp.Compare(lowerBound(a), lowerBound(b)) })
+	for i := 1; i < len(byMin); i++ {
+		prev, next := byMin[i-1], byMin[i]
+		if prev.Max == nil || lowerBound(next) < *prev.Max {
+			return fmt.Errorf("ranges %q and %q overlap", prev.Key, next.Key)
+		}
+	}
+	return nil
+}
+
+func lowerBound(r FacetRange) float64 {
+	if r.Min == nil {
+		return math.Inf(-1)
+	}
+	return *r.Min
+}
+
+// facetKeyTypes are the value types FacetKeys keys, whose text every
+// backend reads alike. Interval, inet and cidr are not among them:
+// PostgreSQL's interval text follows the session's IntervalStyle, inet
+// writes a host's /32, and both network types write an IPv4-compatible
+// IPv6 address in dotted form. A document's text differs by backend too.
+var facetKeyTypes = map[core.FieldType]bool{
+	core.FieldTypeString: true, core.FieldTypeBool: true,
+	core.FieldTypeInt: true, core.FieldTypeFloat: true, core.FieldTypeDecimal: true,
+	core.FieldTypeDate: true, core.FieldTypeTimestamp: true, core.FieldTypeTime: true,
+	core.FieldTypeUUID: true, core.FieldTypeMACAddr: true,
+}
+
+// facetConfig is f's facet configuration, terms where none is declared.
+func (f *FieldSchema) facetConfig() *FacetSchema {
+	if f.FacetSchema != nil {
+		return f.FacetSchema
+	}
+	return &FacetSchema{Type: FacetTerms}
+}
+
+// checkFacet refuses cfg on f where no backend counts it alike: a terms
+// facet's values need a key every backend reads the same (facetKeyTypes),
+// and a range facet's bounds are numbers, so it buckets a scalar number
+// field. Generation, path declaration and BuildFacetQuery all apply it.
+func checkFacet(f *FieldSchema, cfg *FacetSchema) error {
+	switch cfg.Type {
+	case FacetTerms:
+		if t := facetValueType(f); !facetKeyTypes[t] {
+			return fmt.Errorf("%s values have no facet key every backend reads alike", t)
+		}
+	case FacetTypeRange:
+		switch {
+		case f.Relation != nil:
+			return errors.New("a relation's facet is terms, not range")
+		case f.DataType == core.FieldTypeArray:
+			return errors.New("an array's facet is terms, not range")
+		case !isNumber(f.DataType):
+			return fmt.Errorf("a range facet buckets numbers, not %s values", f.DataType)
+		}
+	}
+	return cfg.validate()
 }
 
 func parseOneRange(s string) (FacetRange, error) {
