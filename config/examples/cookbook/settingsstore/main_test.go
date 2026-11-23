@@ -571,3 +571,44 @@ func TestSettings_LoadsLeaveOutWhatTheSchemaNoLongerReads(t *testing.T) {
 	_, err := s.Write(t.Context(), map[string]any{"limits": map[string]any{"min": 3, "typo": 5}})
 	assert.Equal(t, ReasonUnknown, refusal(t, err).Reason)
 }
+
+// A write of a key that a stored row above it sets takes effect: the key is
+// cut out of that row's value, under any spelling the value holds it by, in
+// the same transaction and checked by the same load. A row left setting
+// nothing is deleted. A key beneath a stored list or scalar cannot be cut
+// out, and refuses the write.
+func TestSettings_AWriteTakesEffectBeneathAStoredRowAboveIt(t *testing.T) {
+	s, db := newReplica(t, 100)
+	write(t, s, map[string]any{"limits": map[string]any{"min": 2, "ceiling": 300}})
+	write(t, s, map[string]any{"limits.max": nil})
+	assert.Equal(t, Limits{Min: 2, Max: 100, Bytes: 1 << 20}, load(t, s).Limits, "deleted: the default again")
+	assert.Equal(t, map[string]string{"limits": `{"min":2}`}, rowsOf(t, db))
+
+	write(t, s, map[string]any{"limits": map[string]any{"max": 300}})
+	write(t, s, map[string]any{"limits.max": 250})
+	assert.Equal(t, 250, load(t, s).Limits.Max, "set")
+	assert.Equal(t, map[string]string{"limits.max": "250"}, rowsOf(t, db), "the row above, left setting nothing, deleted")
+
+	write(t, s, map[string]any{"upstreams": map[string]any{"a": map[string]any{"url": "https://a.example", "timeout": "3s"}}})
+	write(t, s, map[string]any{`upstreams["a"].timeout`: "2s"})
+	assert.Equal(t, map[string]Upstream{"a": {URL: "https://a.example", Timeout: 2 * time.Second}}, load(t, s).Upstreams)
+	_, err := s.Write(t.Context(), map[string]any{`upstreams["a"]`: map[string]any{"timeout": "4s"}})
+	assert.Equal(t, ReasonInvalid, refusal(t, err).Reason, "the entry replaced whole, its url with it")
+	assert.Equal(t, `{"a":{"url":"https://a.example"}}`, rowsOf(t, db)["upstreams"])
+
+	for name, row := range map[string]struct{ key, value, write string }{
+		"a list":   {"routes", `[{"path": "/a", "upstream": "a"}]`, "routes[0].path"},
+		"a scalar": {`upstreams["b"]`, `"https://b.example"`, `upstreams["b"].timeout`},
+	} {
+		_, err := db.Exec(`INSERT INTO settings (key, value) VALUES ($1, $2)`, row.key, row.value)
+		require.NoError(t, err)
+		before := rowsOf(t, db)
+		_, err = s.Write(t.Context(), map[string]any{row.write: "/b"})
+		refused := refusal(t, err)
+		assert.Equal(t, ReasonEnclosed, refused.Reason, name)
+		assert.Equal(t, []string{row.write}, refused.Keys, name)
+		assert.Equal(t, before, rowsOf(t, db), name)
+		_, err = db.Exec(`DELETE FROM settings WHERE key = $1`, row.key)
+		require.NoError(t, err)
+	}
+}

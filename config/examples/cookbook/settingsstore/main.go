@@ -138,6 +138,7 @@ const (
 	ReasonRepeated = "repeated" // one key is spelled two ways in one write
 	ReasonInvalid  = "invalid"  // the settings the write leaves do not load
 	ReasonFull     = "full"     // the table would hold more rows than its cap
+	ReasonEnclosed = "enclosed" // a key lies inside a list or a scalar a stored row sets
 )
 
 // ErrBusy is a write that timed out waiting for its turn: behind another
@@ -204,7 +205,8 @@ func (s *Settings) read(ctx context.Context) (map[string]any, error) {
 
 // Write applies edits to the table, all or nothing, and returns the keys it
 // wrote: each key, spelled canonically, set to its value and replacing the
-// rows stored beneath it, or, set to nil, deleted with them. A key the
+// rows stored beneath it, or, set to nil, deleted with them, and in either
+// case cut out of the values of the rows stored above it. A key the
 // schema does not read may be set only to nil, to delete the rows a release
 // that removed its field left. Unless the table the write leaves loads with
 // the service's options and fits the row cap, the write is refused with a
@@ -256,37 +258,53 @@ func (s *Settings) Write(ctx context.Context, edits map[string]any) ([]string, e
 	}
 	keys := append(slices.Collect(maps.Keys(writes)), unread...)
 	slices.Sort(keys)
-	table, deleted := apply(stored, writes, unread)
-	if len(table) > s.maxRows {
+	c, err := apply(stored, writes, unread)
+	if err != nil {
+		return nil, err
+	}
+	if len(c.table) > s.maxRows {
 		return nil, &RefusedError{Reason: ReasonFull, Keys: keys}
 	}
 	before, _ := readable(stored)
-	if err := s.check(ctx, before, loadable(table, writes), keys); err != nil {
+	if err := s.check(ctx, before, loadable(c.table, writes), keys); err != nil {
 		return nil, err
 	}
-	for _, key := range deleted {
+	for _, key := range c.deleted {
 		if _, err := tx.ExecContext(ctx, "DELETE FROM settings WHERE key = $1", key); err != nil {
 			return nil, fmt.Errorf("deleting %s: %w", key, err)
+		}
+	}
+	for _, key := range slices.Sorted(maps.Keys(c.rewritten)) {
+		if err := store(ctx, tx, key, c.rewritten[key]); err != nil {
+			return nil, err
 		}
 	}
 	for _, key := range keys {
 		if writes[key] == nil {
 			continue
 		}
-		text, err := json.Marshal(writes[key])
-		if err != nil {
-			return nil, fmt.Errorf("encoding the value of %s: %w", key, err)
-		}
-		if _, err := tx.ExecContext(ctx,
-			"INSERT INTO settings (key, value) VALUES ($1, $2) ON CONFLICT (key) DO UPDATE SET value = excluded.value",
-			key, string(text)); err != nil {
-			return nil, fmt.Errorf("storing %s: %w", key, err)
+		if err := store(ctx, tx, key, writes[key]); err != nil {
+			return nil, err
 		}
 	}
 	if err := tx.Commit(); err != nil {
 		return nil, fmt.Errorf("committing a settings write: %w", err)
 	}
 	return keys, nil
+}
+
+// store sets the row key to value.
+func store(ctx context.Context, tx *sql.Tx, key string, value any) error {
+	text, err := json.Marshal(value)
+	if err != nil {
+		return fmt.Errorf("encoding the value of %s: %w", key, err)
+	}
+	if _, err := tx.ExecContext(ctx,
+		"INSERT INTO settings (key, value) VALUES ($1, $2) ON CONFLICT (key) DO UPDATE SET value = excluded.value",
+		key, string(text)); err != nil {
+		return fmt.Errorf("storing %s: %w", key, err)
+	}
+	return nil
 }
 
 // busy is err, from waiting for a connection or the lock row, as ErrBusy
@@ -502,36 +520,136 @@ func unstored(unread []string, stored map[string]any) []string {
 	return missing
 }
 
-// apply is the table stored makes with writes and unread applied, and the
-// stored keys the write deletes: each one within a key written, unless the
-// write sets that key again, and each the schema does not read at or
-// beneath a key of unread.
-func apply(stored, writes map[string]any, unread []string) (table map[string]any, deleted []string) {
-	written := make([]config.Key, 0, len(writes))
-	for key := range writes {
-		k, err := config.ParseKey(key)
-		if err == nil {
+// change is what a write does to the stored rows.
+type change struct {
+	table     map[string]any // the rows the write leaves
+	deleted   []string       // the stored keys it deletes
+	rewritten map[string]any // stored rows above a key written, that key cut out of their values
+}
+
+// apply is the change writes and unread make to stored. A stored row within
+// a key written is deleted, unless the write sets that key again, as is one
+// the schema does not read at or beneath a key of unread. A stored row
+// above a key written has that key cut out of its value, so the write takes
+// effect beneath it, and is deleted when left setting nothing. A key beneath
+// a list or a scalar a stored row sets cannot be cut out, and refuses the
+// write.
+func apply(stored, writes map[string]any, unread []string) (change, error) {
+	keys := slices.Sorted(maps.Keys(writes))
+	written := make([]config.Key, 0, len(keys))
+	for _, key := range keys {
+		if k, err := config.ParseKey(key); err == nil {
 			written = append(written, k)
 		}
 	}
-	table = map[string]any{}
+	c := change{table: map[string]any{}, rewritten: map[string]any{}}
+	var enclosed []string
+	var errs []error
 	for key, value := range stored {
 		switch {
 		case slices.ContainsFunc(unread, func(u string) bool { return unreadAt(key, u) }):
-			deleted = append(deleted, key)
-		case !covered(key, written):
-			table[key] = value
-		case writes[key] == nil: // not set again under this spelling, where the upsert would replace it
-			deleted = append(deleted, key)
+			c.deleted = append(c.deleted, key)
+		case covered(key, written):
+			if writes[key] == nil { // not set again under this spelling, where the upsert replaces it
+				c.deleted = append(c.deleted, key)
+			}
+		default:
+			value, changed, refused := cutBeneath(key, value, written)
+			if refused != nil {
+				enclosed = append(enclosed, refused.Keys...)
+				errs = append(errs, refused.Err)
+				continue
+			}
+			if object, ok := value.(map[string]any); changed && ok && len(object) == 0 {
+				c.deleted = append(c.deleted, key)
+				continue
+			}
+			c.table[key] = value
+			if changed {
+				c.rewritten[key] = value
+			}
 		}
+	}
+	if len(enclosed) > 0 {
+		slices.Sort(enclosed)
+		return change{}, &RefusedError{Reason: ReasonEnclosed, Keys: slices.Compact(enclosed), Err: errors.Join(errs...)}
 	}
 	for key, value := range writes {
 		if value != nil {
-			table[key] = value
+			c.table[key] = value
 		}
 	}
-	slices.Sort(deleted)
-	return table, deleted
+	slices.Sort(c.deleted)
+	return c, nil
+}
+
+// cutBeneath is value, stored at key, with each key of written beneath key
+// cut out of it, and whether that changed it. A key it cannot cut out
+// refuses the write.
+func cutBeneath(key string, value any, written []config.Key) (any, bool, *RefusedError) {
+	at, ok := schemaKey(key)
+	if !ok {
+		return value, false, nil // loads leave the row out
+	}
+	changed := false
+	var refused *RefusedError
+	for _, w := range written {
+		if len(w) <= len(at) || !w.Within(at) {
+			continue
+		}
+		cut, c, err := cutAt(at, value, w)
+		if err != nil {
+			if refused == nil {
+				refused = &RefusedError{Reason: ReasonEnclosed}
+			}
+			refused.Keys = append(refused.Keys, w.String())
+			refused.Err = errors.Join(refused.Err, fmt.Errorf("the row %s: %w", key, err))
+			continue
+		}
+		value, changed = cut, changed || c
+	}
+	return value, changed, refused
+}
+
+// cutAt is value, stored at the key at, without what it holds at target, a
+// key beneath at, under any spelling the schema reads as target, and whether
+// it held anything there. A list or a scalar on the way to target cannot be
+// cut into.
+func cutAt(at config.Key, value any, target config.Key) (any, bool, error) {
+	if value == nil {
+		return nil, false, nil
+	}
+	object, ok := value.(map[string]any)
+	if !ok {
+		kind := "a scalar"
+		if _, isList := value.([]any); isList {
+			kind = "a list"
+		}
+		return nil, false, fmt.Errorf("%s holds %s, which %s cannot be cut out of", at, kind, target)
+	}
+	next := target[:len(at)+1]
+	out := maps.Clone(object)
+	changed := false
+	for name, child := range object {
+		k, _, ok := childKey(at, name)
+		if !ok || len(k) != len(next) || !k.Within(next) {
+			continue
+		}
+		if len(next) == len(target) {
+			delete(out, name)
+			changed = true
+			continue
+		}
+		cut, c, err := cutAt(k, child, target)
+		if err != nil {
+			return nil, false, err
+		}
+		if c {
+			out[name] = cut
+			changed = true
+		}
+	}
+	return out, changed, nil
 }
 
 // covered reports whether a stored key is within one of written. A row
