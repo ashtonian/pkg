@@ -85,11 +85,16 @@ type ApplyResult struct {
 	RestartKeys []string
 }
 
-// ApplyError reports the appliers that did not apply a published config. The
-// config is live; each of them is called again on the next one. It wraps
-// [ErrApply] and every failure's cause.
+// ApplyError reports the appliers that did not apply a config. After a
+// reload the config is published and live, and each of them is called again
+// on the next one. On a reloader's first load (Initial) nothing is
+// published and the reloader is not built. It wraps [ErrApply] and every
+// failure's cause.
 type ApplyError struct {
 	Failures []ApplierFailure
+	// Initial reports the ApplyInitial appliers of a reloader's first load,
+	// which was never published.
+	Initial bool
 }
 
 // ApplierFailure is one applier's failure to apply a published config.
@@ -100,7 +105,11 @@ type ApplierFailure struct {
 
 func (e *ApplyError) Error() string {
 	var b strings.Builder
-	b.WriteString(ErrApply.Error())
+	if e.Initial {
+		b.WriteString("configuration not applied at start, so nothing was published")
+	} else {
+		b.WriteString(ErrApply.Error())
+	}
 	for i, f := range e.Failures {
 		if i == 0 {
 			b.WriteString(": ")
@@ -1073,9 +1082,10 @@ func restartKeys(keys []string, events []owed) (map[string]bool, error) {
 	return out, nil
 }
 
-// applyInitial runs the ApplyInitial appliers on the first load, published
-// as generation 1, and returns the names of those that applied it. Any
-// failure or restart key fails construction.
+// applyInitial runs the ApplyInitial appliers on the first load, to be
+// published as generation 1, and returns the names of those that applied
+// it. Any failure or restart key fails construction, and so does ctx
+// ending before the last applier returns.
 func (r *Reloader[T]) applyInitial(ctx context.Context, cfg *T, p *applyPlan) ([]string, error) {
 	var failures []ApplierFailure
 	var applied []string
@@ -1084,11 +1094,7 @@ func (r *Reloader[T]) applyInitial(ctx context.Context, cfg *T, p *applyPlan) ([
 			continue
 		}
 		if err := ended(ctx); err != nil {
-			abandoned := abandonedInitial(applied, err)
-			if len(failures) > 0 {
-				return applied, errors.Join(abandoned, &ApplyError{Failures: failures})
-			}
-			return applied, abandoned
+			return applied, initialApplyError(applied, failures, err)
 		}
 		res, err := st.call(ctx, ApplyEvent[T]{
 			Trigger:    TriggerInitial,
@@ -1111,10 +1117,25 @@ func (r *Reloader[T]) applyInitial(ctx context.Context, cfg *T, p *applyPlan) ([
 		st.status.LastApplied = time.Now().UTC()
 		applied = append(applied, st.hook.name)
 	}
-	if len(failures) > 0 {
-		return applied, &ApplyError{Failures: failures}
+	return applied, initialApplyError(applied, failures, ended(ctx))
+}
+
+// initialApplyError is why the first load's ApplyInitial appliers fail
+// construction: the appliers that failed, and, when ctx ended with ctxErr,
+// its abandonment, which names the appliers in applied for rollback. It is
+// nil when there is neither.
+func initialApplyError(applied []string, failures []ApplierFailure, ctxErr error) error {
+	switch {
+	case len(failures) == 0 && ctxErr == nil:
+		return nil
+	case len(failures) == 0:
+		return abandonedInitial(applied, ctxErr)
 	}
-	return applied, nil
+	failed := &ApplyError{Failures: failures, Initial: true}
+	if ctxErr == nil {
+		return failed
+	}
+	return errors.Join(abandonedInitial(applied, ctxErr), failed)
 }
 
 // AbandonedApplyError reports a reloader's first load abandoned after

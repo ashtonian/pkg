@@ -301,3 +301,59 @@ func TestNewReloader_EndedContextPublishesNothing(t *testing.T) {
 	assert.Equal(t, 1, applied)
 	assert.Zero(t, r.Stats().Attempts, "the first load is not a reload")
 }
+
+// An ApplyInitial applier that fails as the context ends leaves the first
+// load abandoned, not merely unapplied: the error wraps why the context
+// ended and names the appliers that did apply it for rollback, beside the
+// failures. Nothing was published, and neither part says otherwise.
+func TestNewReloader_ApplierFailingAsTheContextEndsIsAbandoned(t *testing.T) {
+	type keys struct {
+		Port int    `koanf:"port"`
+		Host string `koanf:"host"`
+	}
+	loader := func(context.Context) (*keys, error) { return &keys{Port: 1, Host: "h"}, nil }
+	applier := func(name, prefix string, apply func() error) ReloadOption {
+		return WithApplier(Applier[keys]{Name: name, Prefixes: []string{prefix}, ApplyInitial: true,
+			Apply: func(context.Context, ApplyEvent[keys]) (ApplyResult, error) { return ApplyResult{}, apply() }})
+	}
+	for _, tc := range []struct {
+		name    string
+		applied string
+		failed  string
+		build   func(cancel context.CancelCauseFunc) []ReloadOption
+	}{
+		{"the last fails as it ends the context", "ports", "hosts", func(cancel context.CancelCauseFunc) []ReloadOption {
+			return []ReloadOption{
+				applier("ports", "port", func() error { return nil }),
+				applier("hosts", "host", func() error { cancel(errShutdown); return errors.New("host sink closed") }),
+			}
+		}},
+		{"an earlier one failed, the last ends the context", "hosts", "ports", func(cancel context.CancelCauseFunc) []ReloadOption {
+			return []ReloadOption{
+				applier("ports", "port", func() error { return errors.New("port sink closed") }),
+				applier("hosts", "host", func() error { cancel(errShutdown); return nil }),
+			}
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx, cancel := context.WithCancelCause(context.Background())
+			defer cancel(nil)
+			r, err := NewReloaderFunc(ctx, loader, tc.build(cancel)...)
+			assert.Nil(t, r)
+			require.ErrorIs(t, err, context.Canceled)
+			require.ErrorIs(t, err, errShutdown)
+			assert.NotErrorIs(t, err, ErrReload)
+			var abandoned *AbandonedApplyError
+			require.ErrorAs(t, err, &abandoned)
+			assert.Equal(t, []string{tc.applied}, abandoned.Applied)
+			require.ErrorIs(t, err, ErrApply)
+			var failed *ApplyError
+			require.ErrorAs(t, err, &failed)
+			require.Len(t, failed.Failures, 1)
+			assert.Equal(t, tc.failed, failed.Failures[0].Applier)
+			assert.True(t, failed.Initial)
+			assert.Contains(t, err.Error(), "sink closed")
+			assert.NotContains(t, err.Error(), "configuration published")
+		})
+	}
+}
