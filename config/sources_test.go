@@ -1025,3 +1025,66 @@ func TestSources_EntryTypedSectionKeepsItsUnkeyedFields(t *testing.T) {
 	assertUnkeyedKept(t, unkeyedOf("e"), got.Section, "f")
 	assertUnkeyedKept(t, unkeyedOf("e"), got.ByName["c"], "e")
 }
+
+type mergeServer struct {
+	Host string `koanf:"host"`
+	Port int    `koanf:"port"`
+}
+
+type mergeCfg struct {
+	Labels  map[string]int `koanf:"labels"`
+	Section mergeServer    `koanf:"section"`
+}
+
+type droppedTagEntry struct {
+	Labels map[string]int `koanf:"labels" default:"a=1,b=2"`
+}
+
+func (c *droppedTagEntry) SetDefaults() { c.Labels = map[string]int{"c": 3} }
+
+// What a higher source sets key by key merges into a typed map or section
+// beneath it; a typed value, or a variable that sets the whole map, replaces
+// it whole. A Defaulter's string-keyed map that drops an entry its tag sets
+// replaces the tag's map, and a higher source then merges into it.
+func TestSources_WhatMergesIntoATypedMapOrSection(t *testing.T) {
+	defaults := WithDefaults(map[string]any{
+		"labels":  map[string]int{"a": 1},
+		"section": mergeServer{Host: "h", Port: 1},
+	})
+	env := func(vars ...string) []Option {
+		return []Option{WithEnvPrefix("APP"), WithEnviron(func() []string { return vars })}
+	}
+	for _, tc := range []struct {
+		name    string
+		opts    []Option
+		labels  map[string]int
+		section mergeServer
+	}{
+		{"variables naming keys merge", env("APP_LABELS_D=4", "APP_SECTION_PORT=9"),
+			map[string]int{"a": 1, "d": 4}, mergeServer{Host: "h", Port: 9}},
+		{"an override's map merges", []Option{WithOverrideProvider(mapSource{
+			"labels": map[string]any{"d": 4}, "section": map[string]any{"port": 9},
+		}, nil)}, map[string]int{"a": 1, "d": 4}, mergeServer{Host: "h", Port: 9}},
+		{"a variable setting the whole map replaces it", env("APP_LABELS=d=4"),
+			map[string]int{"d": 4}, mergeServer{Host: "h", Port: 1}},
+		{"an override's typed values replace them", []Option{WithOverrideProvider(mapSource{
+			"labels": map[string]int{"d": 4}, "section": mergeServer{Port: 9},
+		}, nil)}, map[string]int{"d": 4}, mergeServer{Port: 9}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := Load[mergeCfg](t.Context(), append([]Option{defaults}, tc.opts...)...)
+			require.NoError(t, err)
+			assert.Equal(t, tc.labels, got.Labels)
+			assert.Equal(t, tc.section, got.Section)
+		})
+	}
+
+	file := filepath.Join(t.TempDir(), "config.yaml")
+	writeFile(t, file, "labels: {d: 4}\n")
+	got, err := Load[droppedTagEntry](t.Context())
+	require.NoError(t, err)
+	assert.Equal(t, map[string]int{"c": 3}, got.Labels, "the Defaulter's map replaces the tag's")
+	got, err = Load[droppedTagEntry](t.Context(), WithFile(file))
+	require.NoError(t, err)
+	assert.Equal(t, map[string]int{"c": 3, "d": 4}, got.Labels, "a file merges into it")
+}

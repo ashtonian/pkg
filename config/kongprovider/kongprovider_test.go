@@ -247,6 +247,38 @@ func TestWithOverridesFromStruct_ProvenanceNamesTheFlag(t *testing.T) {
 	assert.Equal(t, flag("--host"), snap2.Provenance["server.host"])
 }
 
+type mergeDB struct {
+	Host string `koanf:"host"`
+	Port int    `koanf:"port"`
+}
+
+type mergeFlagsCfg struct {
+	Labels map[string]string `koanf:"labels"`
+	DB     mergeDB           `koanf:"db" embed:"" prefix:"db-"`
+}
+
+// A flag that sets a whole map hands Kong's typed map, which replaces a
+// typed default map whole; a flag that sets one field of a typed default
+// section merges into it, keeping the section's other fields.
+func TestWithOverridesFromStruct_TypedDefaultsUnderFlags(t *testing.T) {
+	var cli struct {
+		mergeFlagsCfg `embed:""`
+	}
+	parser, err := kong.New(&cli)
+	require.NoError(t, err)
+	kctx, err := parser.Parse([]string{"--labels", "team=core", "--db-port", "9"})
+	require.NoError(t, err)
+	cfg, err := config.Load[mergeFlagsCfg](context.Background(),
+		config.WithDefaults(map[string]any{
+			"labels": map[string]string{"tier": "1"},
+			"db":     mergeDB{Host: "h", Port: 1},
+		}),
+		WithOverridesFromStruct(kctx, &cli.mergeFlagsCfg))
+	require.NoError(t, err)
+	assert.Equal(t, map[string]string{"team": "core"}, cfg.Labels, "the flag's map replaces the default's")
+	assert.Equal(t, mergeDB{Host: "h", Port: 9}, cfg.DB, "the flag's field merges into the default's section")
+}
+
 // A negated flag beats a true value from a lower source.
 func TestWithOverridesFromStruct_NegatedFlagBeatsFile(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.yaml")
