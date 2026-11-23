@@ -74,7 +74,7 @@ func usageBoundText(target string, bound json.Number) string {
 }
 
 func omissionSchema(t reflect.Type) (map[string]any, bool) {
-	w := &valueTree{raw: true, visiting: map[visit]bool{}}
+	w := &valueTree{raw: true, structural: true, visiting: map[visit]bool{}}
 	n := w.value(reflect.Zero(t), site{})
 	if w.err != nil {
 		return nil, false

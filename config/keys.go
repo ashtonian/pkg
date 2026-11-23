@@ -31,6 +31,9 @@ type keyWalk struct {
 	notJSON []string // "key (line n)"; never the text
 	noText  []string // the keys of structs whose MarshalText failed; never the text
 	unknown []UnknownKey
+	// unkeyed is the koanf:"-" fields of each typed section the source
+	// sets, which its tree cannot hold (see unkeyed.go).
+	unkeyed []unkeyedFields
 }
 
 // tree rewrites the top level of a source.
@@ -112,13 +115,17 @@ func (w *keyWalk) failText(at keyPath) {
 // section is v, a typed value of section t, as the merge carries it: its
 // fields by key, and the keys its remain field holds, in a wholeMap, so it
 // replaces the section beneath as the typed value does, and a higher source
-// sets one key of it as it sets one key of a nested map.
+// sets one key of it as it sets one key of a nested map. Its koanf:"-"
+// fields are recorded in w.unkeyed.
 func (w *keyWalk) section(t reflect.Type, v reflect.Value, path keyPath) any {
 	n, err := schemaOf(t)
 	if err != nil {
 		return v.Interface()
 	}
 	v = derefValue(v)
+	if len(n.unkeyed) > 0 {
+		w.unkeyed = append(w.unkeyed, unkeyedFields{path: path, section: v, fields: n.unkeyed})
+	}
 	out := make(map[string]any, len(n.fields))
 	if n.remain != nil {
 		if rest, err := v.FieldByIndexErr(n.remain); err == nil {
@@ -215,20 +222,20 @@ func (w *keyWalk) structMap(t reflect.Type, v reflect.Value, path keyPath) any {
 }
 
 // mapValues follows the values of map v into element type elem; its keys are
-// the caller's and stay as written. A typed map keyed by strings or integers
-// becomes a wholeMap keyed by their text, as a map[string]any from a file
-// is, so a higher source can set one entry, or one key within an entry.
+// the caller's and stay as written. A typed map whose keys' text decodes
+// back to them becomes a wholeMap keyed by that text (see textKeyedMap), as
+// a map[string]any from a file is keyed, so a higher source can set one
+// entry, or one key within an entry.
 func (w *keyWalk) mapValues(elem reflect.Type, v reflect.Value, path keyPath) any {
 	if v.IsNil() {
 		return v.Interface()
 	}
-	if t := v.Type(); t != mapStringAnyType && t != wholeMapType && keysAsText(t.Key()) {
-		out := make(map[string]any, v.Len())
-		for it := v.MapRange(); it.Next(); {
-			k := keyText(it.Key())
-			out[k] = w.elem(t.Elem(), elem, it.Value(), path.key(k)).Interface()
+	if t := v.Type(); t != mapStringAnyType && t != wholeMapType {
+		if m, ok := textKeyedMap(v, func(k string, e reflect.Value) any {
+			return w.elem(t.Elem(), elem, e, path.key(k)).Interface()
+		}); ok {
+			return m
 		}
-		return wholeMap(out)
 	}
 	out := reflect.MakeMapWithSize(v.Type(), v.Len())
 	for _, k := range v.MapKeys() {
@@ -239,8 +246,35 @@ func (w *keyWalk) mapValues(elem reflect.Type, v reflect.Value, path keyPath) an
 
 var wholeMapType = reflect.TypeFor[wholeMap]()
 
-// keysAsText reports a map key type whose text decodes back to the key.
+// textKeyedMap is typed map v in its merge shape when its keys' text
+// decodes back to them (keysAsText): a wholeMap keyed by that text, holding
+// entry(key text, value) for each entry. ok is false for any other key
+// type; a source carries such a map with its own keys, and it replaces what
+// lies beneath it whole.
+func textKeyedMap(v reflect.Value, entry func(key string, value reflect.Value) any) (m wholeMap, ok bool) {
+	if !keysAsText(v.Type().Key()) {
+		return nil, false
+	}
+	m = make(wholeMap, v.Len())
+	for it := v.MapRange(); it.Next(); {
+		k := keyText(it.Key())
+		m[k] = entry(k, it.Value())
+	}
+	return m, true
+}
+
+// keysAsText reports a map key type whose text, as keyText writes it,
+// decodes back to the key: a string or integer kind with no text methods of
+// its own. A type with them reads and writes its text through them —
+// slog.Level decodes "WARN", not "4" — and time.Duration decodes unit text,
+// so its kind's text is not the key's.
 func keysAsText(t reflect.Type) bool {
+	if t == durationType {
+		return false
+	}
+	if p := reflect.PointerTo(t); p.Implements(textMarshalerTyp) || p.Implements(textUnmarshaler) {
+		return false
+	}
 	switch t.Kind() {
 	case reflect.String,
 		reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64,

@@ -70,11 +70,15 @@ func redactedNode() *outNode { return &outNode{kind: outScalar, scalar: redacted
 
 // valueTree shares key and scalar projection across raw and redacted output.
 // Sensitive containers stay whole so policies can also withhold their keys.
+// raw output withholds nothing. structural output reads a type's
+// structural tier only; any other judges sensitivity, and refuses a type
+// whose tag keys may misspell sensitive.
 type valueTree struct {
-	raw      bool
-	leaf     func(string, Field, any) any
-	err      error
-	visiting map[visit]bool
+	raw        bool
+	structural bool
+	leaf       func(string, Field, any) any
+	err        error
+	visiting   map[visit]bool
 }
 
 func (w *valueTree) root(cfg any) *outNode {
@@ -99,7 +103,7 @@ func (w *valueTree) fields(n *outNode, val reflect.Value, c cursor) {
 		return
 	}
 	metadata := declaredOf
-	if w.raw {
+	if w.structural {
 		metadata = metadataOf
 	}
 	schema, err := metadata(val.Type())
@@ -359,15 +363,23 @@ func RedactedTreeChecked(cfg any) (map[string]any, error) {
 // represented as [CYCLE], as in RedactedTree, and cannot round-trip. Opaque
 // types without a scalar/text representation return ErrSchema; MarshalText
 // errors are returned with the key. Custom decoders must accept that text.
+// Like [Fields], it checks only that a type's structure is sound, so it can
+// export a type whose tags are wrong.
 func Tree(cfg any) (map[string]any, error) { return TreeFunc(cfg, nil) }
 
 // TreeFunc projects cfg into a tree, replacing each leaf with leaf's result.
 // The key uses the package's grammar; Field carries the declared metadata.
 // Sensitive maps, lists and interfaces are passed once, whole, including
-// their keys. Empty or nil containers are leaves. A nil callback is identity.
-// The callback receives detached tree values and may change them freely.
+// their keys. Empty or nil containers are leaves. A nil callback is identity,
+// and is [Tree]. The callback receives detached tree values and may change
+// them freely.
+//
+// A callback judges each leaf by its Field, so with one TreeFunc checks
+// declarations as [RedactedTreeChecked] does: a reached type with a tag key
+// that misspells one config reads (sensitve:"true") returns ErrSchema, since
+// its Field would not say what the tag meant.
 func TreeFunc(cfg any, leaf func(key string, f Field, v any) any) (map[string]any, error) {
-	w := &valueTree{visiting: map[visit]bool{}, raw: true, leaf: leaf}
+	w := &valueTree{visiting: map[visit]bool{}, raw: true, structural: leaf == nil, leaf: leaf}
 	return w.tree(cfg)
 }
 

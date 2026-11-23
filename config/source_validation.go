@@ -200,7 +200,7 @@ func (l *loader) prepareProvider(ctx context.Context, name string, data map[stri
 			return err
 		}
 	}
-	return l.merge(name, tree, sources)
+	return l.mergeSource(name, tree, w.unkeyed, sources)
 }
 
 // reportWithheld hands a WithInvalidEntries report the entries the source

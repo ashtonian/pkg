@@ -312,33 +312,37 @@ func (in *inputs) appendShadowed(out []Shadow, path string, label labeler, rank 
 }
 
 // holder is the node whose source the merge kept for path, a raw path's
-// encodePath encoding: the node at path, or the ancestor a source replaced
-// whole — with a value that is no map, or with a typed map or section that
-// lacks path. It is nil when nothing holds path.
+// encodePath encoding: the node at path, the ancestor a source replaced with
+// a value that is no map, or, where path is gone, the nearest ancestor a
+// source set whole — a typed map or section, which removed every key beneath
+// it that it lacked, however many keys a higher source merged into it since.
+// It is nil when nothing holds path.
 func (n *originNode) holder(path string) *originNode {
 	node := n
+	var whole *originNode
 	for rest := path; rest != ""; {
 		var key string
 		key, rest = nextSegment(rest)
 		if !node.merges {
 			return node
 		}
+		if node.whole {
+			whole = node
+		}
 		child := node.children[key]
 		if child == nil {
-			if node.whole {
-				return node
-			}
-			return nil
+			return whole
 		}
 		node = child
 	}
 	return node
 }
 
-// kept is the source of what n holds: its own, or for a map that a higher
-// source made of a value, the one source of everything in it.
+// kept is the source of what n holds: its own for a value that is no map
+// and for a map its source set whole, or for a map that a higher source made
+// of a value, the one source of everything in it.
 func (n *originNode) kept() Source {
-	if !n.merges {
+	if !n.merges || n.whole {
 		return n.src
 	}
 	if src, ok := n.uniform(); ok {
@@ -348,8 +352,9 @@ func (n *originNode) kept() Source {
 }
 
 // inputKey is the key an input at raw path — its encodePath encoding —
-// sets: cut at a list or a value decoded whole, which the input sets as
-// part of it. It is false for a path no field reads.
+// sets: through a list element a key edit set by index, and cut at any other
+// list or a value decoded whole, which the input sets as part of it. It is
+// false for a path no field reads.
 func inputKey(root *schemaNode, raw string) (keyPath, bool) {
 	var p keyPath
 	n := root
@@ -365,6 +370,12 @@ func inputKey(root *schemaNode, raw string) (keyPath, bool) {
 			p, n = p.field(f.key), f.node
 		case nodeMap:
 			p, n = p.key(name), n.elem
+		case nodeList:
+			i, err := strconv.Atoi(name)
+			if err != nil || i < 0 {
+				return p, true // a map weak decoding reads as the list's one element
+			}
+			p, n = p.index(i), n.elem
 		default:
 			return p, true
 		}

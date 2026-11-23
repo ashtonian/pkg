@@ -74,8 +74,7 @@ type foreignItem struct {
 func (*foreignItem) ForeignTagKeys() []string { return []string{"vaildate"} }
 
 // foreignOther carries the key its own type does not list: foreignBase's
-// list covers foreignBase's fields, and the fields of a struct embedding it,
-// which inherits its methods.
+// list covers foreignBase's fields only.
 type foreignOther struct {
 	Other string `koanf:"other" defualt:"x"`
 }
@@ -112,8 +111,8 @@ func TestLoad_RefusesMisspeltTagKeys(t *testing.T) {
 	_, err = Load[foreignCfg](t.Context(), WithSkipValidation())
 	require.ErrorIs(t, err, ErrSchema)
 	assert.Contains(t, err.Error(), `field Other of config.foreignOther has tag key "defualt"`)
+	assert.Contains(t, err.Error(), `field Host of config.foreignCfg has tag key "defualt"`, "an embedding struct is promoted the method, not the allowance")
 	assert.NotContains(t, err.Error(), "Region")
-	assert.NotContains(t, err.Error(), "Host")
 	assert.NotContains(t, err.Error(), "vaildate")
 
 	type allForeign struct {
@@ -353,4 +352,108 @@ func TestDeclarationPolicy_ValidSchemasUnchanged(t *testing.T) {
 	assert.Equal(t, loadErr.Error(), "loading config: "+err.Error())
 	_, err = JSONSchema[badDefault]()
 	require.ErrorIs(t, err, ErrSchema)
+}
+
+// foreignColumn lists a key another library reads on its own field.
+type foreignColumn struct {
+	Name string `koanf:"name" defaults:"id"`
+}
+
+func (foreignColumn) ForeignTagKeys() []string { return []string{"defaults"} }
+
+type foreignPointerColumn struct {
+	Name string `koanf:"name" defaults:"id"`
+}
+
+func (*foreignPointerColumn) ForeignTagKeys() []string { return []string{"defaults"} }
+
+// promotedSquashed, promotedSection and promotedPointer embed a declarer and
+// misspell default on a field of their own.
+type promotedSquashed struct {
+	foreignColumn `koanf:",squash"`
+	Port          int `koanf:"port" defaults:"80"`
+}
+
+type promotedSection struct {
+	foreignColumn `koanf:"col"`
+	Port          int `koanf:"port" defaults:"80"`
+}
+
+type promotedPointer struct {
+	foreignPointerColumn `koanf:",squash"`
+	Port                 int `koanf:"port" defaults:"80"`
+}
+
+// shadowingDeclarer embeds a declarer and declares a list of its own.
+type shadowingDeclarer struct {
+	foreignColumn `koanf:",squash"`
+	Port          int `koanf:"port" defaults:"80"`
+}
+
+func (shadowingDeclarer) ForeignTagKeys() []string { return []string{"defaults"} }
+
+type genericDeclarer[T any] struct {
+	Value T `koanf:"value" defaults:"v"`
+}
+
+func (genericDeclarer[T]) ForeignTagKeys() []string { return []string{"defaults"} }
+
+// A ForeignTagKeys list covers the fields of the struct declaring the
+// method, wherever they are reached. A struct embedding a declarer is
+// promoted the method but not the allowance, so a misspelt key on its own
+// field is refused rather than load the field as its zero value; a struct
+// declaring its own method, a generic one included, covers its fields.
+func TestForeignTagKeys_CoverTheDeclaringStructOnly(t *testing.T) {
+	for name, load := range map[string]func() error{
+		"squashed":       func() error { _, err := Load[promotedSquashed](t.Context(), WithSkipValidation()); return err },
+		"section":        func() error { _, err := Load[promotedSection](t.Context(), WithSkipValidation()); return err },
+		"pointer method": func() error { _, err := Load[promotedPointer](t.Context(), WithSkipValidation()); return err },
+	} {
+		t.Run(name, func(t *testing.T) {
+			err := load()
+			require.ErrorIs(t, err, ErrSchema)
+			assert.Contains(t, err.Error(), `field Port of config.`)
+			assert.Contains(t, err.Error(), `has tag key "defaults"; did you mean "default"?`)
+			assert.NotContains(t, err.Error(), "field Name", "the declarer's own field stays covered")
+		})
+	}
+	got, err := Load[shadowingDeclarer](t.Context(), WithSkipValidation())
+	require.NoError(t, err)
+	assert.Zero(t, got.Port, "another library's key is not config's")
+	_, err = Load[genericDeclarer[string]](t.Context(), WithSkipValidation())
+	require.NoError(t, err)
+}
+
+// A TreeFunc callback judges each leaf by its Field, so a misspelt
+// sensitivity tag would hand the documented redaction recipe a value it
+// takes for ordinary. With a callback, TreeFunc refuses the type as checked
+// redaction does, wherever the type is reached; Tree, which withholds
+// nothing, still exports it.
+func TestTreeFunc_CallbackRefusesMisspeltTagKeys(t *testing.T) {
+	live := ambiguousSensitivity{Note: harmlessMarker}
+	redact := func(_ string, f Field, v any) any {
+		if f.Sensitive && v != nil {
+			return redactedValue
+		}
+		return v
+	}
+	type sensitiveHolder struct {
+		Notes map[string]ambiguousSensitivity `koanf:"notes" sensitive:"true"`
+	}
+	type dynamicHolder struct {
+		Plugin any `koanf:"plugin"`
+	}
+	for name, cfg := range map[string]any{
+		"root":              live,
+		"sensitive map":     sensitiveHolder{Notes: map[string]ambiguousSensitivity{"a": live}},
+		"interface's value": dynamicHolder{Plugin: live},
+	} {
+		tree, err := TreeFunc(cfg, redact)
+		require.ErrorIs(t, err, ErrSchema, name)
+		assert.Nil(t, tree, name)
+	}
+
+	raw, err := TreeFunc(live, nil)
+	require.NoError(t, err)
+	assert.Equal(t, harmlessMarker, raw["note"])
 }

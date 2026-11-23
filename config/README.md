@@ -181,7 +181,7 @@ metrics-library dependency.
 |---|---|
 | `config.go`, `options.go` | `Load` pipeline and source options |
 | `defaults.go`, `element_defaults.go`, `decode_input.go`, `check_key.go`, `source_validation.go` | Shared defaults/decoding, key checks (`CheckKey`, `DecodeKey`, `CanonicalKey`, `DecodeEdits`) and `WithInvalidEntries`' judging of a source's entries |
-| `merge_input.go`, `keys.go`, `edits.go` | The merge rule every source follows (a map merges by key, a typed map or section replaces, a list edit sets elements), source trees in that shape, and key edits: canonical keys, a batch resolved, rewritten and checked against itself, then set as a source |
+| `merge_input.go`, `keys.go`, `edits.go`, `unkeyed.go` | The merge rule every source follows (a map merges by key, typed or not; a list edit sets elements), source trees in that shape, key edits (canonical keys, a batch resolved, rewritten and checked against itself, then set as a source), and the `koanf:"-"` fields of typed sections carried beside the merge |
 | `provider_func.go`, `entries.go` | Function-backed sources: `NewMapProvider`'s dotted or nested maps, and `WithBaseEntries`/`WithOverrideEntries` entries in the key grammar |
 | `schema.go`, `view.go`, `fields.go`, `key.go`, `tag_keys.go` | Canonical metadata, discovery, key grammar and tag-key spelling |
 | `env_refs.go`, `env.go` | Environment references and variable matching |
@@ -190,7 +190,7 @@ metrics-library dependency.
 | `render.go`, `print.go`, `usage.go`, `jsonschema.go`, `constraints.go`, `redact.go` | Trees, diagnostic output and documentation metadata |
 | `errors.go`, `provenance.go` | Error categories and value origins |
 | `shadow.go` | Shadowed inputs: what a higher-precedence source outranks, and which edits a reload could not apply |
-| `internal/deepcopy` | The one deep copy config and kongprovider share: defaults, provider data, stage snapshots and published configs |
+| `internal/deepcopy` | The deep copy config takes of defaults, provider data, stage snapshots and published configs. kongprovider adopts it once it requires the first config release that ships it; from then on its exported API is a cross-module contract that must stay source-compatible |
 
 ## Documentation
 

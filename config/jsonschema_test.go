@@ -2,8 +2,10 @@ package config
 
 import (
 	"encoding/json"
+	"maps"
 	"net/url"
 	"runtime/debug"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -343,11 +345,23 @@ func TestJSONSchema_RecursiveDefinitionsKeepInheritedPolicy(t *testing.T) {
 			}
 		})
 	}
-	first, err := JSONSchema[schemaLiveFirst]()
-	require.NoError(t, err)
-	again, err := JSONSchema[schemaLiveFirst]()
-	require.NoError(t, err)
-	assert.Equal(t, string(first), string(again))
+	// Entries are named in declaration order, whatever order a map holds
+	// them in: the first policy met takes the type's name.
+	for name, tc := range map[string]struct {
+		doc  map[string]any
+		refs map[string]string
+	}{
+		"live first": {jsonSchemaOf[schemaLiveFirst](t), map[string]string{
+			"live": "config.schemaRecNode", "restart": "config.schemaRecNode_2", "hidden": "config.schemaRecNode_3", "again": "config.schemaRecNode",
+		}},
+		"restart first": {jsonSchemaOf[schemaRestartFirst](t), map[string]string{
+			"restart": "config.schemaRecNode", "hidden": "config.schemaRecNode_2", "live": "config.schemaRecNode_3", "again": "config.schemaRecNode_3",
+		}},
+	} {
+		for key, def := range tc.refs {
+			assert.Equal(t, "#/$defs/"+def, prop(t, tc.doc, key)["$ref"], name+": "+key)
+		}
+	}
 }
 
 func mustFieldFor[T any](t *testing.T, key string) Field {
@@ -413,11 +427,5 @@ func TestJSONSchema_RecursiveCollectionsAreReferenced(t *testing.T) {
 	assert.Equal(t, map[string]any{"type": "object", "additionalProperties": map[string]any{"type": "integer"}}, nonNull(t, prop(t, doc, "plain_map")))
 	assert.Equal(t, map[string]any{"type": "array"}, nonNull(t, prop(t, doc, "secret")))
 	assert.Equal(t, true, prop(t, doc, "secret")["writeOnly"])
-	assert.Len(t, doc["$defs"], 4)
-
-	first, err := JSONSchema[schemaRecCollections]()
-	require.NoError(t, err)
-	again, err := JSONSchema[schemaRecCollections]()
-	require.NoError(t, err)
-	assert.Equal(t, string(first), string(again))
+	assert.ElementsMatch(t, []string{"config.schemaRecList", "config.schemaRecMap", "config.schemaRing", "config.schemaKids"}, slices.Collect(maps.Keys(doc["$defs"].(map[string]any))))
 }

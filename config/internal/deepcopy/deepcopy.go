@@ -1,7 +1,14 @@
 // Package deepcopy copies config values so that nothing the copy holds can
 // be changed through the original. config copies defaults, provider data and
-// configs between pipeline stages with it, and kongprovider copies flag
-// targets and the published config with it: one contract for both modules.
+// configs between pipeline stages with it.
+//
+// The config/kongprovider module is to copy flag targets and the published
+// config with it once it requires the first config release that ships this
+// package; until then it keeps a copy of its own. kongprovider is a separate
+// module, so once it imports this package, every kongprovider release must
+// build against every later config release: Value's signature and the
+// contract below are a cross-module API that changes only
+// source-compatibly.
 //
 // The copy owns every map, slice, array element, pointer target and
 // interface value it can reach through exported fields — including the

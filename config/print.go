@@ -203,8 +203,9 @@ func PrintRedacted(cfg any, opts ...PrintOption) error {
 // sensitive value (as [PrintRedacted] defines it) replaced by "[REDACTED]".
 // It is for diagnostics — a status endpoint, a reload response, a log line —
 // not serialization: every value is its fmt %v text, and maps and slices are
-// expanded entry by entry. It returns nil on a structural schema error; use
-// [RedactedMapChecked] to receive that error.
+// expanded entry by entry. It returns nil on every error
+// [RedactedMapChecked] returns — a reached type with invalid or ambiguous
+// keys, or a misspelt tag key; use RedactedMapChecked to receive the error.
 func RedactedMap(cfg any) map[string]string {
 	result, _ := RedactedMapChecked(cfg)
 	return result

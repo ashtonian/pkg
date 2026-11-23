@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"maps"
 	"net/netip"
 	"os"
@@ -662,4 +663,272 @@ func TestSources_TypedSectionKeepsPrivatelySquashedFields(t *testing.T) {
 	got, err := Load[cfg](t.Context(), WithDefaults(map[string]any{"section": privatelySquashed{sectionBase{"h"}, 1}}))
 	require.NoError(t, err)
 	assert.Equal(t, privatelySquashed{sectionBase{"h"}, 1}, got.Section)
+}
+
+type portServers struct {
+	Ports map[int]editServer `koanf:"ports"`
+}
+
+type portServersDefaulted struct {
+	Ports map[int]editServer `koanf:"ports"`
+}
+
+func (c *portServersDefaulted) SetDefaults() {
+	c.Ports = map[int]editServer{80: {"a", 1}, 443: {"b", 2}}
+}
+
+// An integer-keyed map merges by key whichever default layer set it: a
+// higher source or a key edit sets one entry's key, and the other entries
+// and fields keep their values.
+func TestSources_IntegerKeyedMapMergesFromEveryDefaultLayer(t *testing.T) {
+	file := filepath.Join(t.TempDir(), "config.yaml")
+	writeFile(t, file, "ports: {80: {port: 9}}\n")
+	typed := map[string]any{"ports": map[int]editServer{80: {"a", 1}, 443: {"b", 2}}}
+	want := map[int]editServer{80: {"a", 9}, 443: {"b", 2}}
+	for name, load := range map[string]func() (map[int]editServer, error){
+		"WithDefaults and a file": func() (map[int]editServer, error) {
+			got, err := Load[portServers](t.Context(), WithDefaults(typed), WithFile(file))
+			if err != nil {
+				return nil, err
+			}
+			return got.Ports, nil
+		},
+		"SetDefaults and a file": func() (map[int]editServer, error) {
+			got, err := Load[portServersDefaulted](t.Context(), WithFile(file))
+			if err != nil {
+				return nil, err
+			}
+			return got.Ports, nil
+		},
+		"WithDefaults and a key edit": func() (map[int]editServer, error) {
+			got, err := DecodeKey[portServers](t.Context(), `ports["80"].port`, 9, WithDefaults(typed))
+			if err != nil {
+				return nil, err
+			}
+			return got.Ports, nil
+		},
+		"SetDefaults and a key edit": func() (map[int]editServer, error) {
+			got, err := DecodeKey[portServersDefaulted](t.Context(), `ports["80"].port`, 9)
+			if err != nil {
+				return nil, err
+			}
+			return got.Ports, nil
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			got, err := load()
+			require.NoError(t, err)
+			assert.Equal(t, want, got)
+		})
+	}
+}
+
+type ownTextKeys struct {
+	Timeouts map[time.Duration]string `koanf:"timeouts"`
+	Levels   map[slog.Level]string    `koanf:"levels"`
+}
+
+// A map keyed by a type whose text is not its kind's — one with text
+// methods, such as slog.Level, or time.Duration — loads from a typed default
+// with its own keys, and a higher source replaces it whole: their text
+// would not decode back to the keys.
+func TestSources_MapKeyedByATypeWithItsOwnTextStaysWhole(t *testing.T) {
+	typed := map[string]any{
+		"timeouts": map[time.Duration]string{time.Second: "s"},
+		"levels":   map[slog.Level]string{slog.LevelWarn: "w"},
+	}
+	want := ownTextKeys{Timeouts: map[time.Duration]string{time.Second: "s"}, Levels: map[slog.Level]string{slog.LevelWarn: "w"}}
+	for name, opt := range map[string]Option{
+		"WithDefaults":     WithDefaults(typed),
+		"WithBaseProvider": WithBaseProvider(mapSource(typed), nil),
+	} {
+		t.Run(name, func(t *testing.T) {
+			got, err := Load[ownTextKeys](t.Context(), opt)
+			require.NoError(t, err)
+			assert.Equal(t, want, *got)
+		})
+	}
+	file := filepath.Join(t.TempDir(), "config.yaml")
+	writeFile(t, file, "levels: {ERROR: e}\n")
+	got, err := Load[ownTextKeys](t.Context(), WithDefaults(typed), WithFile(file))
+	require.NoError(t, err)
+	assert.Equal(t, map[slog.Level]string{slog.LevelError: "e"}, got.Levels, "the file's map replaces the default's")
+	assert.Equal(t, want.Timeouts, got.Timeouts)
+}
+
+// A map decoded whole names itself and its type when an entry does not
+// decode, never the entry.
+func TestSources_MapDecodedWholeSaysWhyItCannotBeDecoded(t *testing.T) {
+	file := filepath.Join(t.TempDir(), "config.yaml")
+	writeFile(t, file, "timeouts: {soon: hunter2}\n")
+	_, err := Load[ownTextKeys](t.Context(), WithFile(file))
+	require.ErrorIs(t, err, ErrValidation)
+	assert.Contains(t, err.Error(), "'timeouts' cannot be decoded into map[time.Duration]string: an entry's key or value does not decode")
+	assert.NotContains(t, err.Error(), "soon")
+	assert.NotContains(t, err.Error(), "hunter2")
+}
+
+type unkeyedTarget struct{ Name string }
+
+type unkeyedBase struct {
+	Note string `koanf:"-"`
+}
+
+type unkeyedSection struct {
+	unkeyedBase `koanf:",squash"`
+	Host        string         `koanf:"host"`
+	Hook        string         `koanf:"-"`
+	Target      *unkeyedTarget `koanf:"-"`
+	Call        func() string  `koanf:"-"`
+}
+
+type unkeyedConfig struct {
+	Section unkeyedSection            `koanf:"section"`
+	Ptr     *unkeyedSection           `koanf:"ptr"`
+	ByName  map[string]unkeyedSection `koanf:"by_name"`
+	ByPort  map[int]unkeyedSection    `koanf:"by_port"`
+	List    []unkeyedSection          `koanf:"list"`
+}
+
+// unkeyedOf is a section whose every field, keyed or not, names host.
+func unkeyedOf(host string) unkeyedSection {
+	return unkeyedSection{
+		unkeyedBase: unkeyedBase{Note: "note " + host}, Host: host, Hook: "hook " + host,
+		Target: &unkeyedTarget{Name: "target " + host}, Call: func() string { return "call " + host },
+	}
+}
+
+// assertUnkeyedKept asserts got holds want's koanf:"-" fields and host.
+func assertUnkeyedKept(t *testing.T, want, got unkeyedSection, host string) {
+	t.Helper()
+	assert.Equal(t, host, got.Host)
+	assert.Equal(t, want.Note, got.Note)
+	assert.Equal(t, want.Hook, got.Hook)
+	assert.Equal(t, want.Target, got.Target)
+	require.NotNil(t, got.Call)
+	assert.Equal(t, want.Call(), got.Call())
+}
+
+// A typed section's exported koanf:"-" fields, which no key reaches, keep
+// what the source that set the section holds, copied: alone, behind a
+// pointer, in a map or a list, and through a squashed struct. A higher
+// source that sets keys inside the section keeps them; one that replaces
+// the section, or what holds it, drops them with the section's keys.
+func TestSources_TypedSectionKeepsItsUnkeyedFields(t *testing.T) {
+	section, kept := unkeyedOf, assertUnkeyedKept
+	defaults := WithDefaults(map[string]any{
+		"section": section("a"),
+		"ptr":     new(section("b")),
+		"by_name": map[string]unkeyedSection{"c": section("c")},
+		"by_port": map[int]unkeyedSection{80: section("d")},
+		"list":    []unkeyedSection{section("e")},
+	})
+
+	got, err := Load[unkeyedConfig](t.Context(), defaults)
+	require.NoError(t, err)
+	kept(t, section("a"), got.Section, "a")
+	require.NotNil(t, got.Ptr)
+	kept(t, section("b"), *got.Ptr, "b")
+	kept(t, section("c"), got.ByName["c"], "c")
+	kept(t, section("d"), got.ByPort[80], "d")
+	require.Len(t, got.List, 1)
+	kept(t, section("e"), got.List[0], "e")
+
+	got.Section.Target.Name = "changed"
+	again, err := Load[unkeyedConfig](t.Context(), defaults)
+	require.NoError(t, err)
+	assert.Equal(t, "target a", again.Section.Target.Name, "each load gets its own copy")
+
+	file := filepath.Join(t.TempDir(), "config.yaml")
+	writeFile(t, file, "section: {host: f}\nptr: {host: f}\nby_name: {c: {host: f}}\nby_port: {80: {host: f}}\n")
+	got, err = Load[unkeyedConfig](t.Context(), defaults, WithFile(file))
+	require.NoError(t, err)
+	kept(t, section("a"), got.Section, "f")
+	kept(t, section("b"), *got.Ptr, "f")
+	kept(t, section("c"), got.ByName["c"], "f")
+	kept(t, section("d"), got.ByPort[80], "f")
+
+	writeFile(t, file, "section: null\nby_name: {c: null}\nlist: [{host: f}]\n")
+	got, err = Load[unkeyedConfig](t.Context(), defaults, WithFile(file))
+	require.NoError(t, err)
+	assert.Equal(t, unkeyedSection{}, got.Section, "a section replaced keeps nothing of it")
+	assert.Equal(t, unkeyedSection{}, got.ByName["c"])
+	assert.Equal(t, []unkeyedSection{{Host: "f"}}, got.List, "a list replaced keeps nothing of its elements")
+	kept(t, section("d"), got.ByPort[80], "d")
+}
+
+type checkedSection struct {
+	Host string `koanf:"host" validate:"hostname"`
+	Hook string `koanf:"-"`
+}
+
+type checkedUnkeyedConfig struct {
+	Section checkedSection `koanf:"section"`
+}
+
+// A provider's typed section keeps its koanf:"-" fields as a default's does:
+// a higher file setting one key inside it keeps them, a higher provider's
+// typed section replaces them with its own, and a section an entry filter
+// withholds leaves the one beneath it in force, unkeyed fields included.
+func TestSources_ProviderTypedSectionKeepsItsUnkeyedFields(t *testing.T) {
+	provider := func(host string) mapSource {
+		return mapSource{"section": unkeyedOf(host), "by_name": map[string]unkeyedSection{"c": unkeyedOf(host)}}
+	}
+	file := filepath.Join(t.TempDir(), "config.yaml")
+	writeFile(t, file, "section: {host: f}\nby_name: {c: {host: f}}\n")
+	got, err := Load[unkeyedConfig](t.Context(), WithBaseProvider(provider("p"), nil), WithFile(file))
+	require.NoError(t, err)
+	assertUnkeyedKept(t, unkeyedOf("p"), got.Section, "f")
+	assertUnkeyedKept(t, unkeyedOf("p"), got.ByName["c"], "f")
+
+	got, err = Load[unkeyedConfig](t.Context(), WithDefaults(map[string]any{"section": unkeyedOf("d")}), WithOverrideProvider(provider("o"), nil))
+	require.NoError(t, err)
+	assertUnkeyedKept(t, unkeyedOf("o"), got.Section, "o")
+
+	var rejected []KeyError
+	invalid := mapSource{"section": checkedSection{Host: "not a host!", Hook: "invalid"}}
+	checked, err := Load[checkedUnkeyedConfig](t.Context(),
+		WithDefaults(map[string]any{"section": checkedSection{Host: "d.example", Hook: "default"}}),
+		WithOverrideProvider(invalid, nil, WithInvalidEntries(func(_ context.Context, entries []KeyError) error {
+			rejected = entries
+			return nil
+		})))
+	require.NoError(t, err)
+	require.Len(t, rejected, 1)
+	assert.Equal(t, checkedSection{Host: "d.example", Hook: "default"}, checked.Section)
+}
+
+// A higher source adds and changes entries of a typed default map but
+// removes none; the documented ways to narrow one hold.
+func TestSources_NarrowingATypedDefaultMap(t *testing.T) {
+	type cfg struct {
+		Origins map[string]bool `koanf:"origins"`
+		List    []string        `koanf:"list"`
+	}
+	defaults := WithDefaults(map[string]any{"origins": map[string]bool{"*": true}, "list": []string{"*"}})
+	load := func(t *testing.T, bodies ...string) *cfg {
+		t.Helper()
+		dir := t.TempDir()
+		var files []string
+		for i, body := range bodies {
+			f := filepath.Join(dir, fmt.Sprintf("%d.yaml", i))
+			writeFile(t, f, body)
+			files = append(files, f)
+		}
+		got, err := Load[cfg](t.Context(), defaults, WithFiles(files...))
+		require.NoError(t, err)
+		return got
+	}
+	t.Run("an entry merges", func(t *testing.T) {
+		assert.Equal(t, map[string]bool{"*": true, "example.com": true}, load(t, "origins: {example.com: true}\n").Origins)
+	})
+	t.Run("null keeps the key at its zero value", func(t *testing.T) {
+		assert.Equal(t, map[string]bool{"*": false, "example.com": true}, load(t, "origins: {'*': null, example.com: true}\n").Origins)
+	})
+	t.Run("a list replaces whole", func(t *testing.T) {
+		assert.Equal(t, []string{"example.com"}, load(t, "list: [example.com]\n").List)
+	})
+	t.Run("null beneath a narrowed map", func(t *testing.T) {
+		assert.Equal(t, map[string]bool{"example.com": true}, load(t, "origins: null\n", "origins: {example.com: true}\n").Origins)
+	})
 }

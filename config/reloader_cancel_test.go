@@ -71,13 +71,20 @@ type cancelCfg struct {
 	Port int `koanf:"port"`
 }
 
-var defaulterCalls int
-
+// cancelDefaultedCfg records in the config it loads that its Defaulter ran.
 type cancelDefaultedCfg struct {
+	Port      int  `koanf:"port"`
+	Defaulted bool `koanf:"defaulted"`
+}
+
+func (c *cancelDefaultedCfg) SetDefaults() { c.Defaulted = true }
+
+// cancelUncalledDefaulterCfg has a Defaulter a load must not call.
+type cancelUncalledDefaulterCfg struct {
 	Port int `koanf:"port"`
 }
 
-func (c *cancelDefaultedCfg) SetDefaults() { defaulterCalls++ }
+func (c *cancelUncalledDefaulterCfg) SetDefaults() { panic("SetDefaults ran on an ended context") }
 
 type countingValidator struct{ calls *int }
 
@@ -119,13 +126,14 @@ func TestLoad_EndedContextRunsNoFurtherStage(t *testing.T) {
 	ended, cancel := context.WithCancelCause(context.Background())
 	cancel(errShutdown)
 
-	defaulterCalls = 0
 	var n stageCounts
-	_, err := Load[cancelDefaultedCfg](ended, stagedOptions[cancelDefaultedCfg](t, &n, nil)...)
+	var err error
+	require.NotPanics(t, func() {
+		_, err = Load[cancelUncalledDefaulterCfg](ended, stagedOptions[cancelUncalledDefaulterCfg](t, &n, nil)...)
+	}, "the Defaulter is not called")
 	require.ErrorIs(t, err, context.Canceled)
 	require.ErrorIs(t, err, errShutdown)
 	assert.Equal(t, stageCounts{}, n)
-	assert.Zero(t, defaulterCalls)
 
 	_, err = Decode[cancelCfg](ended, map[string]any{"port": 1}, stagedOptions[cancelCfg](t, &n, nil)...)
 	require.ErrorIs(t, err, errShutdown)
@@ -143,7 +151,7 @@ func TestLoad_EndedContextRunsNoFurtherStage(t *testing.T) {
 	got, err := Load[cancelDefaultedCfg](t.Context(), stagedOptions[cancelDefaultedCfg](t, &n, nil)...)
 	require.NoError(t, err)
 	assert.Equal(t, 3, got.Port)
-	assert.Equal(t, 1, defaulterCalls)
+	assert.True(t, got.Defaulted, "the Defaulter ran")
 	assert.Equal(t, 1, n.base)
 	assert.Equal(t, 1, n.environ)
 	assert.Equal(t, 1, n.override)
@@ -151,6 +159,64 @@ func TestLoad_EndedContextRunsNoFurtherStage(t *testing.T) {
 	assert.Equal(t, 1, n.secrets)
 	assert.Equal(t, 1, n.postLoad)
 	assert.Equal(t, 1, n.validator)
+}
+
+// cancellingParser parses every file to port 1, counting the files, and
+// ends the load's context on the first.
+type cancellingParser struct {
+	calls  *int
+	cancel func()
+}
+
+func (p cancellingParser) Unmarshal([]byte) (map[string]any, error) {
+	*p.calls++
+	p.cancel()
+	return map[string]any{"port": 1}, nil
+}
+
+func (p cancellingParser) Marshal(map[string]any) ([]byte, error) { return nil, nil }
+
+// A load whose context ends while one config file parses parses no other:
+// a parser is the caller's code.
+func TestLoad_EndedContextParsesNoFurtherFile(t *testing.T) {
+	dir := t.TempDir()
+	var files []string
+	for _, name := range []string{"a.cfg", "b.cfg"} {
+		f := filepath.Join(dir, name)
+		require.NoError(t, os.WriteFile(f, []byte("port"), 0o600))
+		files = append(files, f)
+	}
+	ctx, cancel := context.WithCancelCause(context.Background())
+	calls := 0
+	parser := cancellingParser{calls: &calls, cancel: func() { cancel(errShutdown) }}
+	_, err := Load[cancelCfg](ctx, WithFileParser(".cfg", parser), WithFiles(files...), WithSkipValidation())
+	require.ErrorIs(t, err, errShutdown)
+	assert.Equal(t, 1, calls)
+}
+
+// A load whose context ends while a decode hook runs calls no variable
+// filter, which is the caller's code too.
+func TestLoad_EndedContextCallsNoVariableFilter(t *testing.T) {
+	filtered := 0
+	opts := func(hook func()) []Option {
+		return []Option{
+			WithEnvPrefix("APP"),
+			WithEnviron(func() []string { return []string{"APP_PORT=2", "APP_UNCLAIMED=1"} }),
+			WithDecodeHook(func(_, _ reflect.Type, data any) (any, error) { hook(); return data, nil }),
+			WithVariableFilter(func(string) bool { filtered++; return true }),
+			WithSkipValidation(),
+		}
+	}
+	got, err := Load[cancelCfg](t.Context(), opts(func() {})...)
+	require.NoError(t, err)
+	assert.Equal(t, 2, got.Port)
+	require.Equal(t, 1, filtered, "a live load asks the filter about the unmatched variable")
+
+	filtered = 0
+	ctx, cancel := context.WithCancelCause(context.Background())
+	_, err = Load[cancelCfg](ctx, opts(func() { cancel(errShutdown) })...)
+	require.ErrorIs(t, err, errShutdown)
+	assert.Zero(t, filtered)
 }
 
 // A reloader whose construction context has ended, or ends while the first
@@ -199,6 +265,33 @@ func TestNewReloader_EndedContextPublishesNothing(t *testing.T) {
 	r, err = NewReloaderFunc(midway, loader, stopping)
 	require.ErrorIs(t, err, errShutdown)
 	assert.Nil(t, r, "applied as the context ended, still not published")
+	var abandoned *AbandonedApplyError
+	require.ErrorAs(t, err, &abandoned)
+	assert.Equal(t, []string{"first"}, abandoned.Applied, "the applier that applied it is named for rollback")
+	assert.ErrorContains(t, err, "after appliers first applied it")
+
+	type twoKeys struct {
+		Port int    `koanf:"port"`
+		Host string `koanf:"host"`
+	}
+	midway, cancel = context.WithCancelCause(context.Background())
+	later := 0
+	r2, err := NewReloaderFunc(midway, func(context.Context) (*twoKeys, error) { return &twoKeys{Port: 1, Host: "h"}, nil },
+		WithApplier(Applier[twoKeys]{Name: "ports", Prefixes: []string{"port"}, ApplyInitial: true,
+			Apply: func(context.Context, ApplyEvent[twoKeys]) (ApplyResult, error) {
+				cancel(errShutdown)
+				return ApplyResult{}, nil
+			}}),
+		WithApplier(Applier[twoKeys]{Name: "hosts", Prefixes: []string{"host"}, ApplyInitial: true,
+			Apply: func(context.Context, ApplyEvent[twoKeys]) (ApplyResult, error) {
+				later++
+				return ApplyResult{}, nil
+			}}))
+	require.ErrorIs(t, err, errShutdown)
+	assert.Nil(t, r2)
+	assert.Zero(t, later, "no applier starts once the context ends")
+	require.ErrorAs(t, err, &abandoned)
+	assert.Equal(t, []string{"ports"}, abandoned.Applied)
 
 	r, err = NewReloaderFunc(t.Context(), loader, applier)
 	require.NoError(t, err)
