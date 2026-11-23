@@ -110,6 +110,23 @@ class ReleaseChecks(unittest.TestCase):
         self.assertEqual(ci.release_checks(None), every)
 
 
+    def test_lint_configuration_runs_only_the_lint_job(self):
+        # golangci-lint's configuration and ruleguard rules reach no package and
+        # no release check, and run lint over every package.
+        paths = [".golangci.yml", "tools/gorules/rules.go", "tools/gorules/go.mod"]
+        self.assertEqual(ci.release_checks(paths), [])
+        self.assertEqual(ci.plan(["modules", "lint"], paths), (["lint"], []))
+        self.assertEqual(SCOPE_JOBS["lint"]["paths"], [".golangci.yml", "tools/gorules/**"])
+        for path in paths:
+            with self.subTest(path=path):
+                self.assertTrue(ignored(path))
+        rules = re.search(r'rules: "\$\{base-path\}/(\S+)"', (ROOT / ".golangci.yml").read_text())[1]
+        self.assertEqual(rules, "tools/gorules/rules.go")
+        self.assertIn("go work edit -use=./tools/gorules", MAKEFILE)
+        # new-from-merge-base needs main's history in the lint job's checkout.
+        self.assertIn("fetch-depth: 0", job("lint"))
+
+
 class Plan(unittest.TestCase):
     def test_the_modules_job_runs_only_with_a_release_check(self):
         self.assertEqual(ci.plan(["test", "modules"], ["CONTRIBUTING.md"]), (["test"], []))
