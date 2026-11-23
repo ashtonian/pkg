@@ -75,6 +75,30 @@ export class SchemaVersionError extends Error {
   }
 }
 
+/** A JSON payload the client sends: a patch body, a list's or a facet request's filter, a POST list body. */
+export type Payload = "patch" | "filter" | "list body";
+
+/**
+ * A number in a request payload that JSON cannot carry: NaN, Infinity or
+ * -Infinity, which JSON.stringify writes as null (in a merge patch, the
+ * member's removal). Thrown before anything is sent, whether or not the
+ * client validates against the schema.
+ */
+export class NonFiniteNumberError extends RangeError {
+  readonly payload: Payload;
+  /** The member's RFC 6901 JSON Pointer within the payload (`/prefs/scores/2`); `""` is the payload itself. */
+  readonly pointer: string;
+  readonly value: number;
+
+  constructor(payload: Payload, pointer: string, value: number) {
+    super(`the ${payload} member ${pointer === "" ? "(the whole payload)" : pointer} is ${String(value)}, which JSON cannot carry: JSON.stringify would send null`);
+    this.name = "NonFiniteNumberError";
+    this.payload = payload;
+    this.pointer = pointer;
+    this.value = value;
+  }
+}
+
 /** Closed vocabulary of declared schema constraints. */
 export type ConstraintName = "enum" | "minlen" | "maxlen" | "min" | "max" | "minitems" | "maxitems";
 

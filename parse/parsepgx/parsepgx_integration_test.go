@@ -41,7 +41,8 @@ var products = parse.MustResource[product]("products",
 // tie on price), tenant B holds g. Labels pair in their row's tenant, except
 // one B pair that names A's product a.
 type catalog struct {
-	dsn      string
+	// config is the schema's; each pool opens on a copy.
+	config   *pgxpool.Config
 	tenantA  uuid.UUID
 	tenantB  uuid.UUID
 	ids      map[string]uuid.UUID
@@ -53,7 +54,7 @@ type catalog struct {
 func newCatalog(t *testing.T) *catalog {
 	t.Helper()
 	ctx := testContext(t)
-	c := &catalog{dsn: dbtest.PostgresDSN(t), tenantA: uuid.New(), tenantB: uuid.New(), ids: map[string]uuid.UUID{}}
+	c := &catalog{config: dbtest.PostgresPoolConfig(t), tenantA: uuid.New(), tenantB: uuid.New(), ids: map[string]uuid.UUID{}}
 	c.pool = c.open(t, pgx.QueryExecModeCacheStatement)
 	c.scopeA = parse.Scope{Tenant: c.tenantA.String()}
 
@@ -110,8 +111,7 @@ func newCatalog(t *testing.T) *catalog {
 // its settings first.
 func (c *catalog) open(t *testing.T, mode pgx.QueryExecMode, configure ...func(*pgxpool.Config)) *pgxpool.Pool {
 	t.Helper()
-	cfg, err := pgxpool.ParseConfig(c.dsn)
-	require.NoError(t, err)
+	cfg := c.config.Copy()
 	cfg.ConnConfig.DefaultQueryExecMode = mode
 	cfg.MaxConns = 4
 	cfg.MaxConnLifetime = time.Minute
@@ -589,7 +589,7 @@ type credential struct {
 // A resource that does not read a sensitive column scans its pages and
 // update results with that field zero; the column never leaves the database.
 func TestReadColumns_LeaveSensitiveColumnsInTheDatabase(t *testing.T) {
-	c := &catalog{dsn: dbtest.PostgresDSN(t)}
+	c := &catalog{config: dbtest.PostgresPoolConfig(t)}
 	ctx := testContext(t)
 	pool := c.open(t, pgx.QueryExecModeCacheStatement)
 	_, err := pool.Exec(ctx, `CREATE TABLE credentials (id uuid PRIMARY KEY, tenant_id uuid NOT NULL, name text NOT NULL, secret_hash text NOT NULL)`)

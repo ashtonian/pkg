@@ -7,20 +7,23 @@ import (
 	"crypto/rand"
 	"database/sql"
 	"fmt"
-	"net/url"
 	"os"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
-	_ "github.com/jackc/pgx/v5/stdlib" // registers the "pgx" driver
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/jackc/pgx/v5/stdlib"
 )
 
-// PostgresDSNEnv and PostGISDSNEnv name the servers the helpers use. A test
-// that asks for a server whose variable is unset skips, unless
-// RequirePostgresEnv is 1. `make parse-postgres-up` starts one PostGIS server
-// that serves both and prints the exports.
+// PostgresDSNEnv and PostGISDSNEnv name the servers the helpers use, each a
+// DSN pgx reads: a URL (postgres://user:password@host:port/db?sslmode=disable)
+// or keyword/value pairs (host=… port=… user=… dbname=…). A test that asks
+// for a server whose variable is unset skips, unless RequirePostgresEnv is 1.
+// `make parse-postgres-up` starts one PostGIS server that serves both and
+// prints the exports.
 const (
 	PostgresDSNEnv = "PARSE_POSTGRES_DSN"
 	PostGISDSNEnv  = "PARSE_POSTGIS_DSN"
@@ -40,9 +43,6 @@ const TimeoutEnv = "PARSE_TEST_TIMEOUT"
 
 const defaultTimeout = 30 * time.Second
 
-// driverName is the database/sql driver the helpers open servers with.
-const driverName = "pgx"
-
 // postgisLockKey serializes CREATE EXTENSION across test processes that share
 // a server: concurrent first creations collide on the catalog's unique index.
 const postgisLockKey = 0x7061727365676973
@@ -50,9 +50,10 @@ const postgisLockKey = 0x7061727365676973
 // server is a PostgreSQL server named by an environment variable.
 type server struct {
 	dsnEnv string
-	// ready reaches the server once per process and runs its setup; every
-	// later call answers with the first call's result.
-	ready func() error
+	// ready parses the server's DSN, reaches the server and runs its setup
+	// once per process; every later call answers with the first call's
+	// result. The config is shared: callers copy it.
+	ready func() (*pgxpool.Config, error)
 }
 
 var (
@@ -60,44 +61,49 @@ var (
 	postgisServer  = newServer(PostGISDSNEnv, enablePostGIS)
 )
 
-func newServer(dsnEnv string, setup func(context.Context, *sql.DB) error) *server {
+func newServer(dsnEnv string, setup func(context.Context, *pgx.Conn) error) *server {
 	s := &server{dsnEnv: dsnEnv}
-	s.ready = sync.OnceValue(func() error {
+	s.ready = sync.OnceValues(func() (*pgxpool.Config, error) {
 		limit, err := timeout()
 		if err != nil {
-			return err
+			return nil, err
+		}
+		// pgxpool's parse is pgx's, less the pool's own pool_* settings, so
+		// one parse serves connections, database/sql handles and pools.
+		config, err := pgxpool.ParseConfig(os.Getenv(dsnEnv))
+		if err != nil {
+			return nil, err
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), limit)
 		defer cancel()
-		db, err := sql.Open(driverName, os.Getenv(dsnEnv))
+		conn, err := pgx.ConnectConfig(ctx, config.ConnConfig)
 		if err != nil {
-			return err
+			return nil, fmt.Errorf("reaching the server: %w", err)
 		}
-		defer db.Close()
-		if err := db.PingContext(ctx); err != nil {
-			return fmt.Errorf("reaching the server: %w", err)
-		}
+		defer func() { _ = conn.Close(ctx) }()
 		if setup != nil {
-			return setup(ctx, db)
+			err = setup(ctx, conn)
+			if err != nil {
+				return nil, err
+			}
 		}
-		return nil
+		return config, nil
 	})
 	return s
 }
 
-func enablePostGIS(ctx context.Context, db *sql.DB) error {
-	tx, err := db.BeginTx(ctx, nil)
-	if err != nil {
-		return err
-	}
-	defer func() { _ = tx.Rollback() }()
-	if _, err := tx.ExecContext(ctx, "SELECT pg_advisory_xact_lock($1)", int64(postgisLockKey)); err != nil {
-		return fmt.Errorf("locking extension setup: %w", err)
-	}
-	if _, err := tx.ExecContext(ctx, "CREATE EXTENSION IF NOT EXISTS postgis SCHEMA public"); err != nil {
-		return fmt.Errorf("enabling postgis: %w", err)
-	}
-	return tx.Commit()
+func enablePostGIS(ctx context.Context, conn *pgx.Conn) error {
+	return pgx.BeginFunc(ctx, conn, func(tx pgx.Tx) error {
+		_, err := tx.Exec(ctx, "SELECT pg_advisory_xact_lock($1)", int64(postgisLockKey))
+		if err != nil {
+			return fmt.Errorf("locking extension setup: %w", err)
+		}
+		_, err = tx.Exec(ctx, "CREATE EXTENSION IF NOT EXISTS postgis SCHEMA public")
+		if err != nil {
+			return fmt.Errorf("enabling postgis: %w", err)
+		}
+		return nil
+	})
 }
 
 // timeout is TimeoutEnv's duration, or its default when it is unset.
@@ -150,39 +156,35 @@ func PostGIS(t testing.TB) *sql.DB {
 	return postgisServer.open(t)
 }
 
-// PostgresDSN is the DSN of a fresh schema on the Postgres server, for a test
-// that opens its own pool (pgxpool) rather than a database/sql handle.
-func PostgresDSN(t testing.TB) string {
+// PostgresConfig is the connection config of a fresh schema on the Postgres
+// server, for a test that connects itself: pgx.ConnectConfig, or
+// stdlib.OpenDB after setting runtime parameters of its own.
+func PostgresConfig(t testing.TB) *pgx.ConnConfig {
 	t.Helper()
-	return postgresServer.schemaDSN(t)
+	return postgresServer.poolConfig(t).ConnConfig
+}
+
+// PostgresPoolConfig is PostgresConfig for a test that opens pgxpool pools.
+// Each pool on the schema takes a Copy of it.
+func PostgresPoolConfig(t testing.TB) *pgxpool.Config {
+	t.Helper()
+	return postgresServer.poolConfig(t)
 }
 
 func (s *server) open(t testing.TB) *sql.DB {
 	t.Helper()
-	db, err := sql.Open(driverName, s.schemaDSN(t))
-	if err != nil {
-		t.Fatalf("dbtest: open postgres schema: %v", err)
-	}
+	db := stdlib.OpenDB(*s.poolConfig(t).ConnConfig)
 	t.Cleanup(func() { _ = db.Close() })
 	return db
 }
 
-// schemaDSN creates a schema for the test, dropped at cleanup, and returns
-// the server's DSN with that schema first on the search path.
-func (s *server) schemaDSN(t testing.TB) string {
+// poolConfig creates a schema for the test, dropped at cleanup, and returns
+// the server's config with that schema first on the search path.
+func (s *server) poolConfig(t testing.TB) *pgxpool.Config {
 	t.Helper()
-	dsn := os.Getenv(s.dsnEnv)
-	if dsn == "" {
-		if os.Getenv(RequirePostgresEnv) == "1" {
-			t.Fatalf("dbtest: %s is unset and %s=1 requires PostgreSQL", s.dsnEnv, RequirePostgresEnv)
-		}
-		t.Skipf("dbtest: set %s to run PostgreSQL tests", s.dsnEnv)
-	}
-	u, err := url.Parse(dsn)
+	s.requireSet(t)
+	base, err := s.ready()
 	if err != nil {
-		t.Fatalf("dbtest: parse %s: %v", s.dsnEnv, err)
-	}
-	if err := s.ready(); err != nil {
 		t.Fatalf("dbtest: %s server: %v", s.dsnEnv, err)
 	}
 
@@ -192,31 +194,47 @@ func (s *server) schemaDSN(t testing.TB) string {
 	limit := Timeout(t)
 	ctx, cancel := context.WithTimeout(t.Context(), limit)
 	defer cancel()
-	if err := exec(ctx, dsn, "CREATE SCHEMA "+schema); err != nil {
+	err = exec(ctx, base.ConnConfig, "CREATE SCHEMA "+schema)
+	if err != nil {
 		t.Fatalf("dbtest: create schema: %v", err)
 	}
 	t.Cleanup(func() {
 		// The test's context is already cancelled when cleanups run.
 		ctx, cancel := context.WithTimeout(context.Background(), limit)
 		defer cancel()
-		if err := exec(ctx, dsn, "DROP SCHEMA "+schema+" CASCADE"); err != nil {
+		err := exec(ctx, base.ConnConfig, "DROP SCHEMA "+schema+" CASCADE")
+		if err != nil {
 			t.Logf("dbtest: drop schema %s: %v", schema, err)
 		}
 	})
 
-	q := u.Query()
-	// public stays on the path for extension functions (PostGIS).
-	q.Set("search_path", schema+",public")
-	u.RawQuery = q.Encode()
-	return u.String()
+	config := base.Copy()
+	// A startup parameter, so every connection opened from the config has
+	// it, whichever form the DSN takes. public stays on the path for
+	// extension functions (PostGIS).
+	config.ConnConfig.RuntimeParams["search_path"] = schema + ",public"
+	return config
 }
 
-func exec(ctx context.Context, dsn, stmt string) error {
-	db, err := sql.Open(driverName, dsn)
+// requireSet skips the test when the server's variable is unset, or fails it
+// when RequirePostgresEnv is 1.
+func (s *server) requireSet(t testing.TB) {
+	t.Helper()
+	if os.Getenv(s.dsnEnv) != "" {
+		return
+	}
+	if os.Getenv(RequirePostgresEnv) == "1" {
+		t.Fatalf("dbtest: %s is unset and %s=1 requires PostgreSQL", s.dsnEnv, RequirePostgresEnv)
+	}
+	t.Skipf("dbtest: set %s to run PostgreSQL tests", s.dsnEnv)
+}
+
+func exec(ctx context.Context, config *pgx.ConnConfig, stmt string) error {
+	conn, err := pgx.ConnectConfig(ctx, config)
 	if err != nil {
 		return err
 	}
-	defer db.Close()
-	_, err = db.ExecContext(ctx, stmt)
+	defer func() { _ = conn.Close(ctx) }()
+	_, err = conn.Exec(ctx, stmt)
 	return err
 }

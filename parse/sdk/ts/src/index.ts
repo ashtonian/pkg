@@ -26,8 +26,8 @@
  */
 
 // Core (shared types and errors)
-export { ApiError, ResponseError, SchemaResourceError, SchemaValidationError, SchemaValidationErrors, SchemaVersionError } from "./core/index.js";
-export type { ErrorBody, FieldType, KeyValue, ListRequestOptions, RequestOptions, ResourceKey } from "./core/index.js";
+export { ApiError, NonFiniteNumberError, ResponseError, SchemaResourceError, SchemaValidationError, SchemaValidationErrors, SchemaVersionError } from "./core/index.js";
+export type { ErrorBody, FieldType, KeyValue, ListRequestOptions, Payload, RequestOptions, ResourceKey } from "./core/index.js";
 export type { FieldError, Problem } from "./core/index.js";
 
 // Filter
@@ -62,6 +62,8 @@ export type {
 export { validatePatch } from "./patch/index.js";
 export type {
   BatchItemError,
+  MergeDocument,
+  MergeValue,
   PatchInput,
   PatchOp,
   PatchPathSchema,

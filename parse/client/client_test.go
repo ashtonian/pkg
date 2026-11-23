@@ -256,6 +256,121 @@ func TestFilter_DoesNotShareTheCallersDocument(t *testing.T) {
 	assert.JSONEq(t, `{"meta":{"$contains":{"env":"prod"}}}`, encode(t, f))
 }
 
+// stateful encodes whatever its counter holds when it is encoded.
+type stateful struct{ n *int }
+
+func (s stateful) MarshalJSON() ([]byte, error) { return json.Marshal(*s.n) }
+
+// encodings is every wire form of f: its document, a list's query string
+// and a list body.
+func encodings(t *testing.T, f Filter) []string {
+	t.Helper()
+	q, err := ListParams{Filter: f}.Values()
+	require.NoError(t, err)
+	body, err := ListParams{Filter: f}.Body()
+	require.NoError(t, err)
+	forms := []string{encode(t, f), q.Encode(), string(body)}
+	return forms
+}
+
+// A built filter's wire value is fixed: changing any operand the caller
+// still holds — a document, a slice, a pointer's target, raw JSON, a list
+// element, the state a marshaler reads — changes no later encoding, in a
+// filter alone or combined. Numbers keep the text they were encoded with.
+func TestFilter_EncodingIsFixedWhenBuilt(t *testing.T) {
+	tests := []struct {
+		name  string
+		build func() (Filter, func())
+		want  string
+	}{
+		{"a document combined with And", func() (Filter, func()) {
+			doc := map[string]any{"label": "a"}
+			f := And(NewText("name").Eq("pump"), NewDocument[map[string]any]("props").Contains(doc))
+			return f, func() { doc["label"] = "b" }
+		}, `{"$and":[{"name":{"$eq":"pump"}},{"props":{"$contains":{"label":"a"}}}]}`},
+		{"a nested document member", func() (Filter, func()) {
+			inner := map[string]any{"rpm": 10}
+			f := NewDocument[map[string]any]("props").Eq(map[string]any{"motor": inner})
+			return f, func() { inner["rpm"] = 20 }
+		}, `{"props":{"$eq":{"motor":{"rpm":10}}}}`},
+		{"a slice document", func() (Filter, func()) {
+			tags := []string{"a", "b"}
+			f := NewDocument[[]string]("tags").Eq(tags)
+			return f, func() { tags[0] = "z" }
+		}, `{"tags":{"$eq":["a","b"]}}`},
+		{"a pointer's target", func() (Filter, func()) {
+			note := "draft"
+			f := NewField[*string]("note").Eq(&note)
+			return f, func() { note = "final" }
+		}, `{"note":{"$eq":"draft"}}`},
+		{"raw JSON", func() (Filter, func()) {
+			raw := json.RawMessage(`{"k":1}`)
+			f := NewDocument[json.RawMessage]("props").Contains(raw)
+			return f, func() { raw[5] = '2' }
+		}, `{"props":{"$contains":{"k":1}}}`},
+		{"list elements", func() (Filter, func()) {
+			pair := []string{"a", "b"}
+			f := NewField[[]string]("pair").In(pair, []string{"c"})
+			return f, func() { pair[1] = "z" }
+		}, `{"pair":{"$in":[["a","b"],["c"]]}}`},
+		{"array contents", func() (Filter, func()) {
+			sizes := []int{1, 2}
+			f := NewOrderedArray[int]("sizes").Contains(sizes...)
+			return f, func() { sizes[0] = 9 }
+		}, `{"sizes":{"$contains":[1,2]}}`},
+		{"a nested filter's document", func() (Filter, func()) {
+			doc := map[string]any{"sku": "a"}
+			f := NewElements[[]map[string]any]("lines").Some(NewDocument[map[string]any]("meta").Contains(doc))
+			return f, func() { doc["sku"] = "b" }
+		}, `{"lines":{"$some":{"meta":{"$contains":{"sku":"a"}}}}}`},
+		{"a marshaler's state", func() (Filter, func()) {
+			n := 1
+			f := NewField[stateful]("n").Eq(stateful{&n})
+			return f, func() { n = 2 }
+		}, `{"n":{"$eq":1}}`},
+		{"a number's text", func() (Filter, func()) {
+			return NewOrdered[json.Number]("big").Gt("12345678901234567890.000"), func() {}
+		}, `{"big":{"$gt":12345678901234567890.000}}`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			f, mutate := tt.build()
+			require.NoError(t, f.Err())
+			before := encodings(t, f)
+			assert.JSONEq(t, tt.want, before[0])
+			mutate()
+			assert.Equal(t, before, encodings(t, f), "encoded after the operand changed")
+			assert.Equal(t, before, encodings(t, f), "encoded again")
+		})
+	}
+}
+
+// A leaf shared by two expressions is one fixed value: changing its operand
+// or encoding one expression leaves both as they were built.
+func TestFilter_SharedLeafStaysFixed(t *testing.T) {
+	doc := map[string]any{"label": "a"}
+	leaf := NewDocument[map[string]any]("props").Contains(doc)
+	name := NewText("name")
+	both := And(name.Eq("pump"), leaf)
+	either := Or(leaf, Not(name.Like("x%")))
+	wantBoth, wantEither := encodings(t, both), encodings(t, either)
+
+	doc["label"] = "b"
+	delete(doc, "label")
+	assert.Equal(t, wantBoth, encodings(t, both))
+	assert.Equal(t, wantEither, encodings(t, either))
+	assert.JSONEq(t, `{"$or":[{"props":{"$contains":{"label":"a"}}},{"$not":{"name":{"$like":"x%"}}}]}`, encode(t, either))
+}
+
+// A marshaler that fails is the filter's error from the moment it is built,
+// before any encoding.
+func TestFilter_MarshalerErrorIsVisibleWhenBuilt(t *testing.T) {
+	f := NewDocument[json.RawMessage]("props").Eq(json.RawMessage(`{"broken"`))
+	require.ErrorIs(t, f.Err(), ErrOperand)
+	_, err := ListParams{Filter: And(NewText("name").Eq("a"), f)}.Values()
+	assert.ErrorIs(t, err, ErrOperand)
+}
+
 func TestSort_SpellsTheSortParameter(t *testing.T) {
 	name, rank := NewSortableText("name"), NewSortableOrdered[int]("rank")
 	created := NewSortableTime("created")

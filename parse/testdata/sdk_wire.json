@@ -588,6 +588,81 @@
         }
       }
     },
+    "list_empty": {
+      "request": {
+        "method": "GET",
+        "path": "/wire_items",
+        "query": {
+          "facets": [
+            "name"
+          ],
+          "filter": [
+            "{\"id\":{\"$eq\":\"zz\"}}"
+          ],
+          "include": [
+            "tags"
+          ],
+          "include_total": [
+            "true"
+          ]
+        }
+      },
+      "response": {
+        "status": 200,
+        "content_type": "application/json",
+        "body": {
+          "items": [],
+          "page_info": {
+            "has_next_page": false,
+            "has_prev_page": false,
+            "total_count": 0
+          }
+        }
+      }
+    },
+    "list_masked": {
+      "request": {
+        "method": "GET",
+        "path": "/wire_items",
+        "query": {
+          "fields": [
+            "name"
+          ],
+          "filter": [
+            "{\"name\":{\"$ne\":\"echo\"}}"
+          ],
+          "include_total": [
+            "true"
+          ],
+          "page_size": [
+            "2"
+          ],
+          "sort": [
+            "-name"
+          ]
+        }
+      },
+      "response": {
+        "status": 200,
+        "content_type": "application/json",
+        "body": {
+          "items": [
+            {
+              "name": "delta"
+            },
+            {
+              "name": "charlie"
+            }
+          ],
+          "page_info": {
+            "has_next_page": true,
+            "has_prev_page": false,
+            "end_cursor": "gqFnzgAAAAOhcIGhZpKDoW6kbmFtZaF2p2NoYXJsaWWhZKRkZXNjg6FuomlkoXahZaFkpGRlc2M",
+            "total_count": 4
+          }
+        }
+      }
+    },
     "list_post": {
       "request": {
         "method": "POST",

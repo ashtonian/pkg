@@ -52,6 +52,9 @@ type Resource[T any] struct {
 	// accepted are the query parameters the endpoint reads itself
 	// (AcceptParams).
 	accepted []string
+	// searchParam is the query parameter the search schema advertises when
+	// it is not filter.ParamSearch; ParseList reads the search from either.
+	searchParam string
 	// read are the columns the resource reads, in field order, and
 	// sqlTypes the declared database types among them (ColumnType);
 	// tableColumns is every column of T, and columnFields the field holding
@@ -63,8 +66,9 @@ type Resource[T any] struct {
 	// access is what a request may learn of each column of T (ReadColumns,
 	// QueryOnlyColumns).
 	access map[string]columnAccess
-	// maskable are the names a list's field mask may name (maskableFields).
-	maskable map[string]bool
+	// maskable maps the names a list's field mask may name to the JSON
+	// members their fields encode as (maskableFields).
+	maskable map[string]string
 	// readExprs are the computed columns (ReadExpr); nil without any.
 	readExprs *computedColumns
 	// view marks a WithPaths view: a value for one request that shares its
@@ -306,6 +310,10 @@ func NewResource[T any](table string, opts ...ResourceOption) (*Resource[T], err
 	}
 	r.filterSchema.SystemFields = systemFields(table, cfg, columns, fieldsByColumn)
 	r.filterSchema.PrimaryKey = slices.Clone(cfg.pk)
+	err = r.setSearchParam()
+	if err != nil {
+		return nil, fmt.Errorf("parse: %s: %w", table, err)
+	}
 	var tenant *tenantColumn
 	if cfg.tenant != "" {
 		if tenant, err = newTenantColumn(table, cfg.tenant, columns[cfg.tenant]); err != nil {
@@ -343,7 +351,10 @@ func NewResource[T any](table string, opts ...ResourceOption) (*Resource[T], err
 		return nil, err
 	}
 	r.access = columnAccesses(columns, read, queryOnly)
-	r.maskable = maskableFields(walk, fieldsByColumn, r.access)
+	r.maskable, err = maskableFields(r.gen, walk, fieldsByColumn, r.access)
+	if err != nil {
+		return nil, fmt.Errorf("parse: %s: %w", table, err)
+	}
 	if r.sqlTypes, err = sqlTypes(table, cfg, columns); err != nil {
 		return nil, err
 	}
@@ -564,25 +575,51 @@ func columnAccesses(columns map[string]reflect.Type, read, queryOnly map[string]
 	return out
 }
 
-// maskableFields are the names a list's field mask may name: T's fields
-// under the field-name tag whose values a response can carry. That is a
-// field whose column the resource reads, or a field with no column, which
-// only the service fills (a relation's keys, a derived value). A field whose
-// column the resource does not read is zero in every response.
-func maskableFields(walk *core.StructFields, byColumn map[string]*core.Field, access map[string]columnAccess) map[string]bool {
+// maskableFields maps the names a list's field mask may name to the JSON
+// member each field encodes as. The names are T's fields under the
+// field-name tag whose values a response can carry: a field whose column the
+// resource reads, or a field with no column, which only the service fills (a
+// relation's keys, a derived value). A field whose column the resource does
+// not read is zero in every response. Under a field-name tag other than
+// json, the member is the name encoding/json gives the same struct field,
+// and "" for a field it writes no member for.
+func maskableFields(gen *core.SchemaGenerator, walk *core.StructFields, byColumn map[string]*core.Field, access map[string]columnAccess) (map[string]string, error) {
+	member, err := jsonMembers(gen, walk)
+	if err != nil {
+		return nil, err
+	}
 	columnOf := make(map[*core.Field]string, len(byColumn))
 	for column, f := range byColumn {
 		columnOf[f] = column
 	}
-	out := make(map[string]bool, walk.Len())
+	out := make(map[string]string, walk.Len())
 	for f := range walk.Fields() {
 		column, isColumn := columnOf[f]
 		if f.Hidden() || (isColumn && access[column] != columnRead) {
 			continue
 		}
-		out[f.External()] = true
+		out[f.External()] = member(f)
 	}
-	return out
+	return out, nil
+}
+
+// jsonMembers returns the JSON member encoding/json writes a field of walk
+// under, "" for none: the field's own name when the field-name tag is json.
+func jsonMembers(gen *core.SchemaGenerator, walk *core.StructFields) (func(*core.Field) string, error) {
+	if gen.FieldNameTag() == core.JSONTagKey {
+		external := func(f *core.Field) string { return f.External() }
+		return external, nil
+	}
+	encoded, err := core.JSONFieldsOf(walk.Type())
+	if err != nil {
+		return nil, fmt.Errorf("reading the JSON member names of %s: %w", gowalker.TypeText(walk.Type()), err)
+	}
+	byRoute := make(map[string]string, encoded.Len())
+	for f := range encoded.Fields() {
+		byRoute[fmt.Sprint(f.Route())] = f.External()
+	}
+	member := func(f *core.Field) string { return byRoute[fmt.Sprint(f.Route())] }
+	return member, nil
 }
 
 // admits refuses a capability over column that needs at least need. A
@@ -925,6 +962,10 @@ func (r *Resource[T]) WithPaths(decls ...filter.PathDecl) (*Resource[T], error) 
 		}
 	}
 	fs, err := r.filterSchema.WithPaths(decls...)
+	if err != nil {
+		return nil, fmt.Errorf("parse: %s: %w", r.table, err)
+	}
+	err = r.checkSearchParam(fs)
 	if err != nil {
 		return nil, fmt.Errorf("parse: %s: %w", r.table, err)
 	}

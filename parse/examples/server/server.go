@@ -123,7 +123,12 @@ func (s *server) list(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, r, err)
 		return
 	}
-	s.writeJSON(w, r, http.StatusOK, page)
+	// The plan reads whole rows; the answer carries the members the
+	// request's field mask names.
+	err = parsehttp.WriteList(w, r, req, page, s.report)
+	if err != nil {
+		s.encodingFailed(w, r, err)
+	}
 }
 
 func (s *server) facets(w http.ResponseWriter, r *http.Request) {
@@ -321,13 +326,17 @@ func (s *server) responseFailed(r *http.Request, err error) {
 	s.log.Log(r.Context(), level, "writing response", slog.String("method", r.Method), slog.String("path", r.URL.Path), slog.Any("error", err))
 }
 
-// writeJSON answers v, or 500 when v cannot be encoded: parsehttp.WriteJSON
-// writes nothing until the whole body is encoded.
+// writeJSON answers v, or 500 when v cannot be encoded.
 func (s *server) writeJSON(w http.ResponseWriter, r *http.Request, status int, v any) {
 	err := parsehttp.WriteJSON(w, r, status, v, s.report)
-	if err == nil {
-		return
+	if err != nil {
+		s.encodingFailed(w, r, err)
 	}
+}
+
+// encodingFailed answers 500 for a response that could not be encoded:
+// parsehttp writes nothing until the whole body is encoded.
+func (s *server) encodingFailed(w http.ResponseWriter, r *http.Request, err error) {
 	s.log.ErrorContext(r.Context(), "encoding response", slog.String("method", r.Method), slog.String("path", r.URL.Path), slog.Any("error", err))
 	// A Body without details always encodes.
 	_ = parsehttp.WriteJSON(w, r, http.StatusInternalServerError, parsehttp.Body{Code: codeInternal, Message: "internal error"}, s.report)

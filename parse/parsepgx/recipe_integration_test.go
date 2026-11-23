@@ -31,7 +31,7 @@ import (
 // reaches no other tenant's.
 func TestRecipe(t *testing.T) {
 	ctx := testContext(t)
-	c := &catalog{dsn: dbtest.PostgresDSN(t)}
+	c := &catalog{config: dbtest.PostgresPoolConfig(t)}
 	pool := c.open(t, pgx.QueryExecModeCacheStatement)
 	_, err := pool.Exec(ctx, `CREATE TABLE devices (id uuid PRIMARY KEY, tenant_id uuid NOT NULL, name text NOT NULL, status text NOT NULL)`)
 	require.NoError(t, err)

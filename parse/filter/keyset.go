@@ -543,8 +543,17 @@ type PageToken struct {
 }
 
 // cursorGeneration versions the parse cursor wire format. Generation 3:
-// canonical scalar values and the NULL / reverse seek model; older tokens
-// fail the generation check and clients restart from the first page.
+// canonical scalar values and the NULL / reverse seek model.
+//
+// A release reads its own generation only. DecodeCursor answers a token of
+// any other generation with E2082 "unsupported cursor version", whatever the
+// token holds, and the client starts again from the first page. A token of
+// this generation is held to PageToken's and CursorField's members exactly: a
+// member neither declares is E2082 "invalid cursor data", and a member it
+// lacks decodes as the zero value. Adding, removing or retyping a member of
+// either is therefore a format change and takes a new generation. Without
+// one, during a rolling deploy a replica on the older release refuses the
+// newer release's cursors as malformed, or misreads them.
 const cursorGeneration uint32 = 3
 
 // maxCursorLen bounds a cursor both ways: DecodeCursor rejects a longer
@@ -626,6 +635,9 @@ func DecodeCursor(encoded string) (*PageToken, error) {
 // Page is the list-response envelope, with cursor metadata and optional
 // relation and facet projections. Its JSON members are flat.
 type Page[T any] struct {
+	// Items are the page's rows in presentation order. NewPage never leaves
+	// it nil, so a page with no rows encodes "items":[], as a client reading
+	// an array expects.
 	Items    []T      `json:"items"`
 	PageInfo PageInfo `json:"page_info"`
 
@@ -647,12 +659,15 @@ type Page[T any] struct {
 // has_prev_page, and mints start and end cursors. value resolves a key's
 // value from a row by row column (e.g. CursorValueByTag with the "db" tag).
 // A cursor that cannot be minted is an error — a page that reports more
-// rows but carries no cursor strands the client. An empty page reports
-// neither direction: it has no row to mint a cursor from, so a client
-// whose cursor outlived its rows starts again from the first page.
+// rows but carries no cursor strands the client. An empty page, from nil
+// rows or none, has empty non-nil Items and reports neither direction: it
+// has no row to mint a cursor from, so a client whose cursor outlived its
+// rows starts again from the first page.
 func NewPage[T any](items []T, limit int, plan CursorPlan, value func(item T, column string) (any, error)) (*Page[T], error) {
 	if len(items) == 0 {
-		return &Page[T]{Items: items}, nil
+		// A query that matches nothing leaves its rows nil.
+		empty := &Page[T]{Items: []T{}}
+		return empty, nil
 	}
 	hasMore := len(items) > limit
 	if hasMore {

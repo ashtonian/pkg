@@ -29,7 +29,7 @@ Run it from this directory with `GOWORK=off go test ./...`, or from the reposito
 | `COOKBOOK_POSTGRES_DSN` | unset | A PostgreSQL URL. Each test gets a schema of its own, first on the search path and dropped when the test ends, so tests share any server, the one `make parse-postgres-up` starts among them. Unset, the PostgreSQL legs skip |
 | `COOKBOOK_REQUIRE_PG` | unset | `1` fails a PostgreSQL leg whose variable is unset instead of skipping it; CI's `cookbook-postgres` job sets it, so the job cannot pass without the server |
 | `COOKBOOK_PG_IMAGE`, `COOKBOOK_PG_NAME`, `COOKBOOK_PG_PORT` | `postgres:19`, `cookbook-postgres`, `55433` | Make variables: the image, container name and host port `cookbook-postgres-up` uses |
-| `COOKBOOK_PG_READY_SECONDS` | `60` | Make variable: how many seconds `cookbook-postgres-up` waits for the server to accept connections before it fails, naming the container |
+| `COOKBOOK_PG_READY_SECONDS` | `60` | Make variable: how many seconds from the container's start `cookbook-postgres-up` waits for the server to accept connections. A server that stops before then, or is not ready by then, fails the target, which prints the container's log and removes the container, so a rerun starts cleanly ([tools/postgres-up.sh](../../../tools/postgres-up.sh), as for `parse-postgres-up`) |
 
 A server that is set and unreachable fails the PostgreSQL legs rather than skipping them. The fixture is [`internal/pgtest`](internal/pgtest/pgtest.go), the twin of parse's `internal/dbtest`, which this module cannot import; a change to one's semantics belongs in both.
 

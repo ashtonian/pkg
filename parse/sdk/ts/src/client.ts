@@ -6,6 +6,7 @@
  */
 
 import { ApiError, ResponseError, SchemaResourceError, SchemaValidationError, SchemaVersionError } from "./core/errors.js";
+import { encodeJSON, type JSONText } from "./core/json.js";
 import { hasProblemMembers, isProblemMediaType, isRecord, PROBLEM_MEDIA_TYPE, type Problem, readProblem } from "./core/problem.js";
 import type { ErrorBody, KeyValue, ListRequestOptions, RequestOptions, ResourceKey } from "./core/types.js";
 import type { FacetOptions, FacetResult, FilterSchema, ListOptions, ListResult, SortField } from "./filter/types.js";
@@ -44,7 +45,7 @@ function hasFilter(f: object | undefined): f is Record<string, unknown> {
 function buildListQuery<T>(opts: ListOptions<T>): string {
   const params = new URLSearchParams();
   if (hasFilter(opts.filter)) {
-    params.set("filter", JSON.stringify(opts.filter));
+    params.set("filter", encodeJSON(opts.filter, "filter"));
   }
   const sort = opts.sort === undefined ? "" : encodeSort(opts.sort);
   if (sort) {
@@ -280,6 +281,10 @@ export interface ClientConfig {
  * per key column, in key order, for a key of several (`[string, string]`
  * for the schema `key` `["warehouse_id", "sku"]`), so a key of another
  * arity does not compile.
+ *
+ * Its methods do not depend on their receiver (`this: void`): a method
+ * destructured from the handle, or passed as a callback, makes the requests
+ * a call through the handle makes, with validation on or off.
  */
 export interface Resource<T, K extends ResourceKey = KeyValue> {
   /**
@@ -288,14 +293,15 @@ export interface Resource<T, K extends ResourceKey = KeyValue> {
    * A GET, unless `reqOpts.method` or {@link ClientConfig.maxURLLength}
    * selects the POST body transport.
    */
-  list(opts?: ListOptions<T>, reqOpts?: ListRequestOptions): Promise<ListResult<T>>;
+  list(this: void, opts?: ListOptions<T>, reqOpts?: ListRequestOptions): Promise<ListResult<T>>;
 
   /**
    * Auto-paginate through all pages. Yields one {@link ListResult} per page.
    * Follows cursors automatically until no more pages. Each page takes the
-   * transport {@link Resource.list} would.
+   * transport {@link Resource.list} would. Nothing is sent until the first
+   * page is asked for.
    */
-  listAll(opts?: Omit<ListOptions<T>, "cursor">, reqOpts?: ListRequestOptions): AsyncIterableIterator<ListResult<T>>;
+  listAll(this: void, opts?: Omit<ListOptions<T>, "cursor">, reqOpts?: ListRequestOptions): AsyncIterableIterator<ListResult<T>>;
 
   /**
    * Partially update the row `key` names with a JSON Merge Patch (RFC
@@ -307,7 +313,7 @@ export interface Resource<T, K extends ResourceKey = KeyValue> {
    * `RangeError` before sending; so does, under `validateBeforeSend`, a key
    * whose number of values is not the schema's number of `key` columns.
    */
-  patch(key: K, input: PatchInput<T>, reqOpts?: RequestOptions): Promise<PatchResult<T>>;
+  patch(this: void, key: K, input: PatchInput<T>, reqOpts?: RequestOptions): Promise<PatchResult<T>>;
 
   /**
    * Apply one JSON Merge Patch to several rows (`PATCH ?id[]=…`), each named
@@ -318,7 +324,7 @@ export interface Resource<T, K extends ResourceKey = KeyValue> {
    * The ids always travel in the URL: {@link ClientConfig.maxURLLength} does
    * not apply, and the server contract has no body form for them.
    */
-  patchMany(ids: readonly Extract<K, KeyValue>[], input: PatchInput<T>, reqOpts?: RequestOptions): Promise<PatchResult<T>>;
+  patchMany(this: void, ids: readonly Extract<K, KeyValue>[], input: PatchInput<T>, reqOpts?: RequestOptions): Promise<PatchResult<T>>;
 
   /**
    * Facet counts for facetable fields, optionally under a filter
@@ -327,7 +333,7 @@ export interface Resource<T, K extends ResourceKey = KeyValue> {
    * filter too large for a URL, ask {@link Resource.list} for `facets`
    * over POST; a page carries the counts of the whole matched population.
    */
-  facets(fields: (keyof T & string)[], opts?: FacetOptions<T>, reqOpts?: RequestOptions): Promise<FacetResult>;
+  facets(this: void, fields: (keyof T & string)[], opts?: FacetOptions<T>, reqOpts?: RequestOptions): Promise<FacetResult>;
 
   /**
    * Fetch the server-side schema for this resource. Cached after first call.
@@ -335,10 +341,10 @@ export interface Resource<T, K extends ResourceKey = KeyValue> {
    * under the client's timeout; a call's `signal` ends only that call's wait,
    * and the request is cancelled once every waiting call has aborted.
    */
-  schema(reqOpts?: RequestOptions): Promise<ResourceSchema>;
+  schema(this: void, reqOpts?: RequestOptions): Promise<ResourceSchema>;
 
   /** Get a {@link SchemaValidator} for client-side validation and introspection. */
-  validator(reqOpts?: RequestOptions): Promise<SchemaValidator>;
+  validator(this: void, reqOpts?: RequestOptions): Promise<SchemaValidator>;
 }
 
 // ---------------------------------------------------------------------------
@@ -355,16 +361,17 @@ export interface ResourceOptions {
   schema?: string;
 }
 
-/** Top-level API client. Use {@link createClient} to create one. */
+/** Top-level API client. Use {@link createClient} to create one. Its
+ *  methods, like a {@link Resource}'s, do not depend on their receiver. */
 export interface Client {
   /** Create a typed resource handle for a collection path below `baseURL`;
    *  `K` is its rows' key type ({@link Resource}). An empty path throws a
    *  `RangeError`. */
-  resource<T, K extends ResourceKey = KeyValue>(path: string, opts?: ResourceOptions): Resource<T, K>;
+  resource<T, K extends ResourceKey = KeyValue>(this: void, path: string, opts?: ResourceOptions): Resource<T, K>;
 
   /** Fetch schemas for all registered resources. Populates the schema
    *  cache, keyed by each document's registry name. */
-  schemas(reqOpts?: RequestOptions): Promise<ResourceSchema[]>;
+  schemas(this: void, reqOpts?: RequestOptions): Promise<ResourceSchema[]>;
 }
 
 /**
@@ -419,15 +426,15 @@ export function createClient(cfg: ClientConfig): Client {
     return AbortSignal.any([callerSignal, timeoutSignal]);
   }
 
-  async function request<R>(method: string, url: string, body?: unknown, reqOpts?: RequestOptions): Promise<R> {
-    const hasBody = body != null;
+  async function request<R>(method: string, url: string, body: JSONText | undefined, reqOpts?: RequestOptions): Promise<R> {
+    const hasBody = body !== undefined;
     const init: RequestInit = {
       method,
       headers: requestHeaders(hasBody, reqOpts?.headers),
       signal: combineSignals(reqOpts?.signal),
     };
     if (hasBody) {
-      init.body = JSON.stringify(body);
+      init.body = body;
     }
     const res = await fetchFn(url, init);
     return parseResponse<R>(res, url);
@@ -570,98 +577,106 @@ export function createClient(cfg: ClientConfig): Client {
       const collectionURL = joinURL(cfg.baseURL, collection);
       let validatorInstance: SchemaValidator | undefined;
 
-      return {
-        async schema(reqOpts?: RequestOptions): Promise<ResourceSchema> {
-          return fetchSchema(name, reqOpts);
-        },
+      // The operations close over the handle rather than reading `this`, so
+      // a destructured method, or one passed as a callback, makes the calls
+      // the handle does.
+      async function schema(reqOpts?: RequestOptions): Promise<ResourceSchema> {
+        return fetchSchema(name, reqOpts);
+      }
 
-        async validator(reqOpts?: RequestOptions): Promise<SchemaValidator> {
-          if (validatorInstance) return validatorInstance;
-          const schema = await fetchSchema(name, reqOpts);
-          validatorInstance = new SchemaValidator(schema);
-          return validatorInstance;
-        },
+      async function validator(reqOpts?: RequestOptions): Promise<SchemaValidator> {
+        if (validatorInstance) return validatorInstance;
+        const doc = await fetchSchema(name, reqOpts);
+        validatorInstance = new SchemaValidator(doc);
+        return validatorInstance;
+      }
 
-        async list(opts: ListOptions<T> = {}, reqOpts?: ListRequestOptions): Promise<ListResult<T>> {
-          if (validate) {
-            await validateRequest(await this.validator(reqOpts), opts, reqOpts);
-          }
-          const target = `${collectionURL}${buildListQuery(opts)}`;
-          const tooLong = maxURLLength !== undefined && target.length > maxURLLength;
-          const method = reqOpts?.method ?? (tooLong ? "POST" : "GET");
-          if (method === "POST") {
-            return request<ListResult<T>>("POST", collectionURL, buildListBody(opts), reqOpts);
-          }
-          return request<ListResult<T>>("GET", target, undefined, reqOpts);
-        },
+      // Each operation encodes its payloads before validating, so a value
+      // JSON cannot carry is refused alike with validation on or off, and
+      // before the schema is fetched.
+      async function list(opts: ListOptions<T> = {}, reqOpts?: ListRequestOptions): Promise<ListResult<T>> {
+        const target = `${collectionURL}${buildListQuery(opts)}`;
+        if (validate) {
+          await validateRequest(await validator(reqOpts), opts, reqOpts);
+        }
+        const tooLong = maxURLLength !== undefined && target.length > maxURLLength;
+        const method = reqOpts?.method ?? (tooLong ? "POST" : "GET");
+        if (method === "POST") {
+          return request<ListResult<T>>("POST", collectionURL, encodeJSON(buildListBody(opts), "list body"), reqOpts);
+        }
+        return request<ListResult<T>>("GET", target, undefined, reqOpts);
+      }
 
-        async *listAll(opts: Omit<ListOptions<T>, "cursor"> = {}, reqOpts?: ListRequestOptions): AsyncIterableIterator<ListResult<T>> {
-          let cursor: string | undefined;
-          for (;;) {
-            const page = await this.list(cursor === undefined ? opts : { ...opts, cursor }, reqOpts);
-            yield page;
-            const next = page.page_info.end_cursor;
-            if (!page.page_info.has_next_page || !next) return;
-            cursor = next;
-          }
-        },
+      async function* listAll(opts: Omit<ListOptions<T>, "cursor"> = {}, reqOpts?: ListRequestOptions): AsyncIterableIterator<ListResult<T>> {
+        let cursor: string | undefined;
+        for (;;) {
+          const page = await list(cursor === undefined ? opts : { ...opts, cursor }, reqOpts);
+          yield page;
+          const next = page.page_info.end_cursor;
+          if (!page.page_info.has_next_page || !next) return;
+          cursor = next;
+        }
+      }
 
-        async patch(key: K, input: PatchInput<T>, reqOpts?: RequestOptions): Promise<PatchResult<T>> {
-          const values = keyValues(key);
-          if (values.length === 0) {
-            throw new RangeError("patch needs a key: PATCH without one targets the collection");
-          }
-          const segments = values.map(keySegment);
-          if (validate) {
-            const v = await this.validator(reqOpts);
-            checkKeyArity(name, v.keyColumns(), values.length);
-            v.validatePatch(input);
-          }
-          return request<PatchResult<T>>("PATCH", `${collectionURL}/${segments.join("/")}`, input, reqOpts);
-        },
+      async function patch(key: K, input: PatchInput<T>, reqOpts?: RequestOptions): Promise<PatchResult<T>> {
+        const values = keyValues(key);
+        if (values.length === 0) {
+          throw new RangeError("patch needs a key: PATCH without one targets the collection");
+        }
+        const segments = values.map(keySegment);
+        const body = encodeJSON(input, "patch");
+        if (validate) {
+          const v = await validator(reqOpts);
+          checkKeyArity(name, v.keyColumns(), values.length);
+          v.validatePatch(input);
+        }
+        return request<PatchResult<T>>("PATCH", `${collectionURL}/${segments.join("/")}`, body, reqOpts);
+      }
 
-        async patchMany(ids: readonly Extract<K, KeyValue>[], input: PatchInput<T>, reqOpts?: RequestOptions): Promise<PatchResult<T>> {
-          if (ids.length === 0) {
-            throw new RangeError("patchMany needs at least one id: PATCH without one targets no row");
+      async function patchMany(ids: readonly Extract<K, KeyValue>[], input: PatchInput<T>, reqOpts?: RequestOptions): Promise<PatchResult<T>> {
+        if (ids.length === 0) {
+          throw new RangeError("patchMany needs at least one id: PATCH without one targets no row");
+        }
+        // The type admits no tuple here; an untyped caller's still has no id[] form.
+        if (ids.some((id) => Array.isArray(id))) {
+          throw new RangeError("patchMany names each row by one id[] value, which cannot hold a key of several columns; patch each such row with patch(key)");
+        }
+        const params = new URLSearchParams();
+        for (const id of ids) params.append("id[]", keyText(id));
+        const body = encodeJSON(input, "patch");
+        if (validate) {
+          const v = await validator(reqOpts);
+          const columns = v.keyColumns();
+          if (columns.length > 1) {
+            throw new RangeError(`patchMany cannot address ${name}: its key is (${columns.join(", ")}) and id[] holds one value per row; patch each row with patch(key)`);
           }
-          // The type admits no tuple here; an untyped caller's still has no id[] form.
-          if (ids.some((id) => Array.isArray(id))) {
-            throw new RangeError("patchMany names each row by one id[] value, which cannot hold a key of several columns; patch each such row with patch(key)");
-          }
-          if (validate) {
-            const v = await this.validator(reqOpts);
-            const columns = v.keyColumns();
-            if (columns.length > 1) {
-              throw new RangeError(`patchMany cannot address ${name}: its key is (${columns.join(", ")}) and id[] holds one value per row; patch each row with patch(key)`);
-            }
-            v.validatePatch(input);
-          }
-          const params = new URLSearchParams();
-          for (const id of ids) params.append("id[]", keyText(id));
-          return request<PatchResult<T>>("PATCH", `${collectionURL}${query(params)}`, input, reqOpts);
-        },
+          v.validatePatch(input);
+        }
+        return request<PatchResult<T>>("PATCH", `${collectionURL}${query(params)}`, body, reqOpts);
+      }
 
-        async facets(fields: (keyof T & string)[], opts: FacetOptions<T> = {}, reqOpts?: RequestOptions): Promise<FacetResult> {
-          if (validate) {
-            const listOpts: ListOptions<T> = { facets: fields };
-            if (opts.filter) listOpts.filter = opts.filter;
-            if (opts.search !== undefined) listOpts.search = opts.search;
-            await validateRequest(await this.validator(reqOpts), listOpts, reqOpts);
-          }
-          const params = new URLSearchParams({ facets: fields.join(",") });
-          if (hasFilter(opts.filter)) {
-            params.set("filter", JSON.stringify(opts.filter));
-          }
-          if (opts.search) {
-            params.set("search", opts.search);
-          }
-          if (opts.includeDeleted) {
-            params.set("include_deleted", "true");
-          }
-          const res = await request<{ facets?: FacetResult }>("OPTIONS", `${collectionURL}${query(params)}`, undefined, reqOpts);
-          return res.facets ?? {};
-        },
-      };
+      async function facets(fields: (keyof T & string)[], opts: FacetOptions<T> = {}, reqOpts?: RequestOptions): Promise<FacetResult> {
+        const params = new URLSearchParams({ facets: fields.join(",") });
+        if (hasFilter(opts.filter)) {
+          params.set("filter", encodeJSON(opts.filter, "filter"));
+        }
+        if (opts.search) {
+          params.set("search", opts.search);
+        }
+        if (opts.includeDeleted) {
+          params.set("include_deleted", "true");
+        }
+        if (validate) {
+          const listOpts: ListOptions<T> = { facets: fields };
+          if (opts.filter) listOpts.filter = opts.filter;
+          if (opts.search !== undefined) listOpts.search = opts.search;
+          await validateRequest(await validator(reqOpts), listOpts, reqOpts);
+        }
+        const res = await request<{ facets?: FacetResult }>("OPTIONS", `${collectionURL}${query(params)}`, undefined, reqOpts);
+        return res.facets ?? {};
+      }
+
+      return { list, listAll, patch, patchMany, facets, schema, validator };
     },
 
     async schemas(reqOpts?: RequestOptions): Promise<ResourceSchema[]> {

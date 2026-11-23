@@ -54,8 +54,9 @@ type GeneratorOptions struct {
 	SortMaxFields int
 
 	// SearchParam is the query-string parameter name a generated SearchSchema
-	// advertises for its free-text search box. Empty means "search", the
-	// parameter list handlers read (filter.ParamSearch).
+	// advertises for its free-text search box, and a resource's ParseList
+	// reads the search from beside "search". Empty means "search"
+	// (filter.ParamSearch). A list body's member stays "search".
 	SearchParam string
 
 	// SearchLanguage is the PostgreSQL text search configuration a
@@ -147,7 +148,10 @@ func WithSortMaxFields(n int) GeneratorOption {
 
 // WithSearchParam sets the query-string parameter name a generated
 // SearchSchema advertises for its free-text search box. Default "search"
-// (filter.ParamSearch).
+// (filter.ParamSearch). A resource built with it reads the search from p
+// and from "search", and refuses at construction a p that is another list
+// parameter, a parameter it accepts (AcceptParams) or a flat filter on one
+// of its fields.
 func WithSearchParam(p string) GeneratorOption {
 	return func(o *GeneratorOptions) { o.SearchParam = p }
 }

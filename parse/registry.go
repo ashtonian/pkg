@@ -329,7 +329,13 @@ type SortFieldResponse struct {
 type SearchSchemaResponse struct {
 	Enabled bool     `json:"enabled"`
 	Fields  []string `json:"fields"`
-	Param   string   `json:"param"`
+	// Param is the query parameter a GET list takes the search in
+	// (core.WithSearchParam). Resource.ParseList reads it, and reads
+	// filter.ParamSearch as well, the name every bundled client sends.
+	Param string `json:"param"`
+	// Member is the member a list body takes the search in
+	// (Resource.ParseListBody): filter.ParamSearch, whatever Param is.
+	Member string `json:"member"`
 }
 
 // SchemaFor builds an independent metadata snapshot for the given resource.
@@ -457,5 +463,6 @@ func searchSchemaToResponse(s *filter.SearchSchema) *SearchSchemaResponse {
 	if param == "" {
 		param = filter.ParamSearch // hand-built schema without a Param; the generated default
 	}
-	return &SearchSchemaResponse{Enabled: true, Fields: fields, Param: param}
+	resp := &SearchSchemaResponse{Enabled: true, Fields: fields, Param: param, Member: filter.ParamSearch}
+	return resp
 }
