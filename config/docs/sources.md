@@ -166,7 +166,10 @@ by it holds one row per key, whatever spelling a client sent.
 `Key.Within(p)` reports whether a key is `p` or beneath it, so a store can
 find the rows a write of `p` replaces: `primary.port` and `primary` are
 within `primary`, `pool[10]` is not within `pool[1]`, and a wildcard in `p`
-stands for any map key or list index. Compare keys `CanonicalKey` spelled.
+stands for any map key, list index or field, the last because `CanonicalKey`
+spells a key beneath an interface or remain field as one: `extra.x` is
+within `extra[*]`. `Within` reads no schema, so a wildcard after a struct
+matches its fields too. Compare keys `CanonicalKey` spelled.
 
 ### Validating a batch of edits
 
