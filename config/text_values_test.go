@@ -27,11 +27,12 @@ func TestLoad_JSONNumbersAndNamedStrings(t *testing.T) {
 		Raw     json.Number   `koanf:"raw"`
 	}
 	provider, err := NewMapProvider(func(context.Context) (map[string]any, error) {
-		return map[string]any{
+		data := map[string]any{
 			"wait": json.Number("5"), "timeout": durationText("2s"), "large": json.Number("9007199254740993"),
 			"ratio": json.Number("1.5"), "ports": []any{json.Number("80"), json.Number("443")},
 			"label": json.Number("1.50"), "raw": json.Number("1e3"),
-		}, nil
+		}
+		return data, nil
 	}, "")
 	require.NoError(t, err)
 	got, err := Load[numbers](t.Context(), WithOverrideProvider(provider, nil))
@@ -42,7 +43,8 @@ func TestLoad_JSONNumbersAndNamedStrings(t *testing.T) {
 	}, *got)
 
 	provider, err = NewMapProvider(func(context.Context) (map[string]any, error) {
-		return map[string]any{"wait": json.Number("1" + "00000000000000000000")}, nil
+		data := map[string]any{"wait": json.Number("1" + "00000000000000000000")}
+		return data, nil
 	}, "")
 	require.NoError(t, err)
 	_, err = Load[numbers](t.Context(), WithOverrideProvider(provider, nil))

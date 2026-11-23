@@ -9,8 +9,6 @@ import (
 	"github.com/go-viper/mapstructure/v2"
 )
 
-var jsonNumberType = reflect.TypeFor[json.Number]()
-
 // plainInput hands the built-in hooks after it the values they assert. A
 // json.Number — what a source decoding JSON with UseNumber holds — bound for
 // a number is the number config's own JSON parser makes of it (see
@@ -20,7 +18,7 @@ var jsonNumberType = reflect.TypeFor[json.Number]()
 // string and would panic on either.
 func plainInput(from, to reflect.Type, data any) (any, error) {
 	switch {
-	case from == jsonNumberType && numberKind(to.Kind()):
+	case from == reflect.TypeFor[json.Number]() && numberKind(to.Kind()):
 		return jsonNumber(data.(json.Number))
 	case from.Kind() == reflect.String && from != reflect.TypeFor[string]() && to == durationType:
 		return reflect.ValueOf(data).String(), nil

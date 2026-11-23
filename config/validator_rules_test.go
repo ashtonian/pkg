@@ -73,7 +73,7 @@ func TestDefaultValidator_ReloaderRefusesUnreadableRules(t *testing.T) {
 func TestDefaultValidator_RuleChecksAreDeclarationsOnly(t *testing.T) {
 	_, err := Decode[misspeltRuleItem](t.Context(), map[string]any{"port": 0})
 	require.ErrorIs(t, err, ErrValidation)
-	assert.NotErrorIs(t, err, ErrSchema)
+	require.NotErrorIs(t, err, ErrSchema)
 	assert.Contains(t, err.Error(), "port(min=1)")
 
 	type evenCfg struct {
@@ -422,7 +422,7 @@ func TestDefaultValidator_RuleThatCannotApplyIsSchemaError(t *testing.T) {
 			var err error
 			require.NotPanics(t, func() { err = tc.load(t.Context()) })
 			require.ErrorIs(t, err, ErrSchema)
-			assert.NotErrorIs(t, err, ErrValidation)
+			require.NotErrorIs(t, err, ErrValidation)
 			assert.Contains(t, err.Error(), "does not apply to its field at "+tc.at+": ")
 			assert.Contains(t, err.Error(), tc.msg)
 		})
@@ -621,7 +621,7 @@ func TestDefaultValidator_KeyCheckRuleThatCannotApplyIsSchemaError(t *testing.T)
 			require.NotPanics(t, func() { err = tt.check() })
 			require.ErrorIs(t, err, ErrSchema)
 			assert.Contains(t, err.Error(), tt.want)
-			assert.NotErrorIs(t, err, ErrValidation)
+			require.NotErrorIs(t, err, ErrValidation)
 			var ke *KeyError
 			assert.NotErrorAs(t, err, &ke)
 			var ee *EditsError

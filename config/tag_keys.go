@@ -31,8 +31,6 @@ type ForeignTagDeclarer interface {
 	ForeignTagKeys() []string
 }
 
-var foreignTagDeclarerType = reflect.TypeFor[ForeignTagDeclarer]()
-
 // misspeltTagKey is a key on a field's tag that config does not read, so
 // close to one it does that it most likely means that one.
 type misspeltTagKey struct {
@@ -71,7 +69,7 @@ func misspeltTagKeys(shape *gowalker.Shape, foreign map[reflect.Type][]string) [
 func foreignTagKeys(t reflect.Type, cache map[reflect.Type][]string) []string {
 	keys, ok := cache[t]
 	if !ok {
-		if declaresMethod(t, "ForeignTagKeys") && reflect.PointerTo(t).Implements(foreignTagDeclarerType) {
+		if declaresMethod(t, "ForeignTagKeys") && reflect.PointerTo(t).Implements(reflect.TypeFor[ForeignTagDeclarer]()) {
 			keys = reflect.New(t).Interface().(ForeignTagDeclarer).ForeignTagKeys()
 		}
 		cache[t] = keys
@@ -121,7 +119,8 @@ func loadSchema(t reflect.Type, o *options) (*schemaNode, error) {
 		return nil, err
 	}
 	if o.validator == nil && !o.skipValid {
-		if err := defaultRules(t); err != nil {
+		err = defaultRules(t)
+		if err != nil {
 			return nil, err
 		}
 	}

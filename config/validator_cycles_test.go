@@ -87,7 +87,7 @@ func TestValidation_RefusesAValueHoldingACycle(t *testing.T) {
 				return nil
 			}))
 			require.ErrorIs(t, err, ErrValidation)
-			assert.NotErrorIs(t, err, ErrSchema)
+			require.NotErrorIs(t, err, ErrSchema)
 			assert.Contains(t, err.Error(), tc.want)
 			assert.NotContains(t, err.Error(), "0x", "no address is shown")
 		})

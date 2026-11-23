@@ -66,7 +66,8 @@ func TestDiff_ComparesTheKeysARemainFieldCollects(t *testing.T) {
 // change at section[*], redacted, so no key it holds is listed.
 func TestDiff_ComparesASensitiveRemainFieldWhole(t *testing.T) {
 	vault := func(paths map[string]string) *remainDiffCfg {
-		return &remainDiffCfg{Vault: &remainSecrets{Addr: "a", Paths: paths}}
+		cfg := &remainDiffCfg{Vault: &remainSecrets{Addr: "a", Paths: paths}}
+		return cfg
 	}
 	changes, err := Diff(vault(map[string]string{"prod_db": "s1"}), vault(map[string]string{"prod_db": "s2", "kv": "s3"}))
 	require.NoError(t, err)
@@ -212,7 +213,7 @@ func TestApplier_PrefixesAndTheKeysARemainFieldCollects(t *testing.T) {
 		return err
 	}
 	for _, ok := range []string{"plugins.foo", `plugins["my-plugin"]`, "typed.x.port", "vault", "vault[*]", "locked[*]"} {
-		assert.NoError(t, build(ok), ok)
+		require.NoError(t, build(ok), ok)
 	}
 	for _, tt := range []struct{ prefix, msg string }{
 		{"vault.prod_db", "it reaches beneath vault[*], which is sensitive and compared whole"},
@@ -240,7 +241,8 @@ func TestApplier_PrefixesAndTheKeysARemainFieldCollects(t *testing.T) {
 func TestApplier_ASensitiveRemainFieldIsOneChange(t *testing.T) {
 	src := &remainSource{cfg: remainDiffCfg{Vault: &remainSecrets{Addr: "a", Paths: map[string]string{"prod_db": "s1"}}}}
 	rec := &remainRecorder{result: func(ev ApplyEvent[remainDiffCfg]) (ApplyResult, error) {
-		return ApplyResult{RestartKeys: changeKeys(ev.Changes)}, nil
+		result := ApplyResult{RestartKeys: changeKeys(ev.Changes)}
+		return result, nil
 	}}
 	r := newRemainReloader(t, src, rec.applier("vault", "vault"))
 
@@ -273,7 +275,8 @@ func TestApplier_InterfaceTypeChangesOverDeferredRemainKeys(t *testing.T) {
 	setup := func(t *testing.T) (*remainSource, *remainRecorder, *Reloader[remainDiffCfg]) {
 		src := &remainSource{cfg: remainDiffCfg{Ext: remainSecrets{Addr: "a", Paths: map[string]string{"db": "s1"}}}}
 		rec := &remainRecorder{result: func(ev ApplyEvent[remainDiffCfg]) (ApplyResult, error) {
-			return ApplyResult{RestartKeys: changeKeys(ev.Changes)}, nil
+			result := ApplyResult{RestartKeys: changeKeys(ev.Changes)}
+			return result, nil
 		}}
 		r := newRemainReloader(t, src, rec.applier("ext", "ext"))
 		src.edit(func(c *remainDiffCfg) { c.Ext = remainSecrets{Addr: "a", Paths: map[string]string{"db": "s2"}} })

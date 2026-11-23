@@ -101,7 +101,8 @@ func sourceEntries(schema *schemaNode, data map[string]any) (edits []edit, rest 
 				rest[key] = value
 				continue
 			case f != nil && f.node.kind == nodeBranch:
-				if child, ok := value.(map[string]any); ok && len(child) > 0 {
+				child, ok := value.(map[string]any)
+				if ok && len(child) > 0 {
 					inner := map[string]any{}
 					walk(f.node, child, path.field(f.key), inner)
 					if len(inner) > 0 {
@@ -162,14 +163,16 @@ func (l *loader) reportWithheld(ctx context.Context, name string, report func(co
 	if report == nil {
 		return nil
 	}
-	if err := abandoned(ctx); err != nil {
+	err := abandoned(ctx)
+	if err != nil {
 		return err
 	}
 	out := make([]KeyError, len(withheld))
 	for i, ke := range sortKeyErrors(withheld) {
 		out[i] = *ke
 	}
-	if err := report(ctx, out); err != nil {
+	err = report(ctx, out)
+	if err != nil {
 		return fmt.Errorf("reporting invalid entries in %s: %w: %w", name, ErrSource, err)
 	}
 	return nil

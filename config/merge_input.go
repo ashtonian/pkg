@@ -121,7 +121,8 @@ func (e listEdit) applyTo(dest any) []any {
 // map[string]any, so a later source merges into it by key, and every
 // listEdit the list it makes.
 func settled(v any) any {
-	if m, ok := mergedMap(v); ok {
+	m, ok := mergedMap(v)
+	if ok {
 		return settledMap(m)
 	}
 	switch x := v.(type) {

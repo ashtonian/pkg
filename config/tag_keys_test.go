@@ -65,13 +65,19 @@ type foreignBase struct {
 	Region string `koanf:"region" defualt:"eu"`
 }
 
-func (foreignBase) ForeignTagKeys() []string { return []string{"defualt"} }
+func (foreignBase) ForeignTagKeys() []string {
+	keys := []string{"defualt"}
+	return keys
+}
 
 type foreignItem struct {
 	Port int `koanf:"port" vaildate:"min=1"`
 }
 
-func (*foreignItem) ForeignTagKeys() []string { return []string{"vaildate"} }
+func (*foreignItem) ForeignTagKeys() []string {
+	keys := []string{"vaildate"}
+	return keys
+}
 
 // foreignOther carries the key its own type does not list: foreignBase's
 // list covers foreignBase's fields only.
@@ -230,7 +236,10 @@ type foreignDefault struct {
 	Port int `koanf:"port" defualt:"80"`
 }
 
-func (foreignDefault) ForeignTagKeys() []string { return []string{"defualt"} }
+func (foreignDefault) ForeignTagKeys() []string {
+	keys := []string{"defualt"}
+	return keys
+}
 
 type plainSensitivity struct {
 	Note string `koanf:"note" sensitive:"true"`
@@ -364,13 +373,19 @@ type foreignColumn struct {
 	Name string `koanf:"name" defaults:"id"`
 }
 
-func (foreignColumn) ForeignTagKeys() []string { return []string{"defaults"} }
+func (foreignColumn) ForeignTagKeys() []string {
+	keys := []string{"defaults"}
+	return keys
+}
 
 type foreignPointerColumn struct {
 	Name string `koanf:"name" defaults:"id"`
 }
 
-func (*foreignPointerColumn) ForeignTagKeys() []string { return []string{"defaults"} }
+func (*foreignPointerColumn) ForeignTagKeys() []string {
+	keys := []string{"defaults"}
+	return keys
+}
 
 // promotedSquashed, promotedSection and promotedPointer embed a declarer and
 // misspell default on a field of their own.
@@ -395,13 +410,19 @@ type shadowingDeclarer struct {
 	Port          int `koanf:"port" defaults:"80"`
 }
 
-func (shadowingDeclarer) ForeignTagKeys() []string { return []string{"defaults"} }
+func (shadowingDeclarer) ForeignTagKeys() []string {
+	keys := []string{"defaults"}
+	return keys
+}
 
 type genericDeclarer[T any] struct {
 	Value T `koanf:"value" defaults:"v"`
 }
 
-func (genericDeclarer[T]) ForeignTagKeys() []string { return []string{"defaults"} }
+func (genericDeclarer[T]) ForeignTagKeys() []string {
+	keys := []string{"defaults"}
+	return keys
+}
 
 // A ForeignTagKeys list covers the fields of the struct declaring the
 // method, wherever they are reached. A struct embedding a declarer is

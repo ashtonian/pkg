@@ -115,7 +115,8 @@ func TestApplier_ReloadTagChecksClaimASensitiveRemainFieldWhole(t *testing.T) {
 func TestApplier_DeferredRemainChangeOutlivesItsSectionTurningNil(t *testing.T) {
 	src := &remainSource{cfg: remainDiffCfg{Vault: &remainSecrets{Addr: "a", Paths: map[string]string{"prod_db": "s1"}}}}
 	rec := &remainRecorder{result: func(ev ApplyEvent[remainDiffCfg]) (ApplyResult, error) {
-		return ApplyResult{RestartKeys: changeKeys(ev.Changes)}, nil
+		result := ApplyResult{RestartKeys: changeKeys(ev.Changes)}
+		return result, nil
 	}}
 	r := newRemainReloader(t, src, rec.applier("vault", "vault"))
 	pending := func() []string {

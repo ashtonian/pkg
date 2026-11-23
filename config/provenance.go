@@ -258,7 +258,8 @@ func (n *originNode) edit(e listEdit, m *originMerge) {
 // that, without provenance, n does not record: a map an edit's map merges
 // into, holding nothing yet.
 func (n *originNode) unrecorded() *originNode {
-	return &originNode{src: n.src, rank: n.rank, children: map[string]*originNode{}, merges: true, sparse: true}
+	empty := &originNode{src: n.src, rank: n.rank, children: map[string]*originNode{}, merges: true, sparse: true}
+	return empty
 }
 
 // node is the origin of val, set whole by the source at the merge's path.
@@ -681,7 +682,8 @@ func (r *originRecorder) origins(cfg reflect.Value) (map[string]Origin, error) {
 		}
 		key := d.path.String()
 		var o Origin
-		if last := len(d.path) - 1; last >= 0 && d.path[last].kind == segAny {
+		last := len(d.path) - 1
+		if last >= 0 && d.path[last].kind == segAny {
 			o = r.collectedOrigin(cfg, decoded, d.path[:last])
 		} else {
 			o = r.originAt(decoded, d.path)
@@ -724,7 +726,8 @@ func (r *originRecorder) originAt(decoded reflect.Value, p keyPath) Origin {
 func (r *originRecorder) collectedOrigin(cfg, decoded reflect.Value, p keyPath) Origin {
 	s, n, _ := locate(r.schema, cfg, p)
 	if n == nil || n.kind != nodeBranch || n.remain == nil {
-		return Origin{Input: Source{Kind: SourceUnknown}}
+		unknown := Origin{Input: Source{Kind: SourceUnknown}}
+		return unknown
 	}
 	var out Origin
 	for i, k := range n.collected(s).keys {
@@ -761,7 +764,8 @@ func (r *originRecorder) rebuiltAt(p keyPath) bool {
 			if m.kind != memberField && r.rebuilt[mn.typ] {
 				return true // the remain field's map
 			}
-			if n, err = m.node(schemaOf); err != nil {
+			n, err = m.node(schemaOf)
+			if err != nil {
 				return false
 			}
 		case nodeMap, nodeList:

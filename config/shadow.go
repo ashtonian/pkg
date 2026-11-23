@@ -179,11 +179,13 @@ func (in *inputs) walk(m map[string]any, values map[string][sha256.Size]byte) {
 func (in *inputs) at(key string, val any, values map[string][sha256.Size]byte) {
 	in.path = append(in.path, key)
 	defer func() { in.path = in.path[:len(in.path)-1] }()
-	if child, ok := mergedMap(val); ok {
+	child, isMap := mergedMap(val)
+	if isMap {
 		in.walk(child, values)
 		return
 	}
-	if e, ok := val.(listEdit); ok {
+	e, isEdit := val.(listEdit)
+	if isEdit {
 		for i, elem := range e {
 			in.at(strconv.Itoa(i), elem, values)
 		}
@@ -207,10 +209,12 @@ func leaves(tree map[string]any) int {
 }
 
 func inputsIn(val any) int {
-	if child, ok := mergedMap(val); ok {
+	child, isMap := mergedMap(val)
+	if isMap {
 		return leaves(child)
 	}
-	if e, ok := val.(listEdit); ok {
+	e, isEdit := val.(listEdit)
+	if isEdit {
 		n := 0
 		for _, elem := range e {
 			n += inputsIn(elem)

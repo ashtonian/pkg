@@ -105,16 +105,21 @@ func stagedOptions[T any](t *testing.T, n *stageCounts, midway func()) []Option 
 		require.NoError(t, err)
 		return p
 	}
-	return []Option{
+	opts := []Option{
 		WithBaseProvider(provider(&n.base, map[string]any{"port": 1}, midway), nil),
 		WithEnvPrefix("APP"),
-		WithEnviron(func() []string { n.environ++; return []string{"APP_PORT=2"} }),
+		WithEnviron(func() []string {
+			n.environ++
+			environ := []string{"APP_PORT=2"}
+			return environ
+		}),
 		WithOverrideProvider(provider(&n.override, map[string]any{"port": 3}, nil), nil),
 		WithDecodeHook(func(from, to reflect.Type, data any) (any, error) { n.decodeHook++; return data, nil }),
 		WithSecretPopulator(func(context.Context, any) error { n.secrets++; return nil }),
 		WithPostLoad(func(context.Context, *T) error { n.postLoad++; return nil }),
 		WithValidator(countingValidator{&n.validator}),
 	}
+	return opts
 }
 
 var errShutdown = errors.New("shutting down")
@@ -171,7 +176,8 @@ type cancellingParser struct {
 func (p cancellingParser) Unmarshal([]byte) (map[string]any, error) {
 	*p.calls++
 	p.cancel()
-	return map[string]any{"port": 1}, nil
+	data := map[string]any{"port": 1}
+	return data, nil
 }
 
 func (p cancellingParser) Marshal(map[string]any) ([]byte, error) { return nil, nil }
@@ -199,13 +205,17 @@ func TestLoad_EndedContextParsesNoFurtherFile(t *testing.T) {
 func TestLoad_EndedContextCallsNoVariableFilter(t *testing.T) {
 	filtered := 0
 	opts := func(hook func()) []Option {
-		return []Option{
+		options := []Option{
 			WithEnvPrefix("APP"),
-			WithEnviron(func() []string { return []string{"APP_PORT=2", "APP_UNCLAIMED=1"} }),
+			WithEnviron(func() []string {
+				environ := []string{"APP_PORT=2", "APP_UNCLAIMED=1"}
+				return environ
+			}),
 			WithDecodeHook(func(_, _ reflect.Type, data any) (any, error) { hook(); return data, nil }),
 			WithVariableFilter(func(string) bool { filtered++; return true }),
 			WithSkipValidation(),
 		}
+		return options
 	}
 	got, err := Load[cancelCfg](t.Context(), opts(func() {})...)
 	require.NoError(t, err)
@@ -233,7 +243,11 @@ func TestNewReloader_EndedContextPublishesNothing(t *testing.T) {
 	cancel(errShutdown)
 
 	loads := 0
-	loader := func(context.Context) (*cancelCfg, error) { loads++; return &cancelCfg{Port: 1}, nil }
+	loader := func(context.Context) (*cancelCfg, error) {
+		loads++
+		cfg := &cancelCfg{Port: 1}
+		return cfg, nil
+	}
 	r, err := NewReloaderFunc(ended, loader, applier)
 	require.ErrorIs(t, err, context.Canceled)
 	require.ErrorIs(t, err, errShutdown)
@@ -249,10 +263,11 @@ func TestNewReloader_EndedContextPublishesNothing(t *testing.T) {
 	midway, cancel := context.WithCancelCause(context.Background())
 	r, err = NewReloaderFunc(midway, func(context.Context) (*cancelCfg, error) {
 		cancel(errShutdown)
-		return &cancelCfg{Port: 1}, nil
+		cfg := &cancelCfg{Port: 1}
+		return cfg, nil
 	}, applier)
 	require.ErrorIs(t, err, errShutdown)
-	assert.NotErrorIs(t, err, ErrReload)
+	require.NotErrorIs(t, err, ErrReload)
 	assert.Nil(t, r)
 	assert.Zero(t, applied, "a candidate loaded as the context ended is not applied")
 
@@ -268,7 +283,7 @@ func TestNewReloader_EndedContextPublishesNothing(t *testing.T) {
 	var abandoned *AbandonedApplyError
 	require.ErrorAs(t, err, &abandoned)
 	assert.Equal(t, []string{"first"}, abandoned.Applied, "the applier that applied it is named for rollback")
-	assert.ErrorContains(t, err, "after appliers first applied it")
+	require.ErrorContains(t, err, "after appliers first applied it")
 
 	type twoKeys struct {
 		Port int    `koanf:"port"`
@@ -276,7 +291,10 @@ func TestNewReloader_EndedContextPublishesNothing(t *testing.T) {
 	}
 	midway, cancel = context.WithCancelCause(context.Background())
 	later := 0
-	r2, err := NewReloaderFunc(midway, func(context.Context) (*twoKeys, error) { return &twoKeys{Port: 1, Host: "h"}, nil },
+	r2, err := NewReloaderFunc(midway, func(context.Context) (*twoKeys, error) {
+		cfg := &twoKeys{Port: 1, Host: "h"}
+		return cfg, nil
+	},
 		WithApplier(Applier[twoKeys]{Name: "ports", Prefixes: []string{"port"}, ApplyInitial: true,
 			Apply: func(context.Context, ApplyEvent[twoKeys]) (ApplyResult, error) {
 				cancel(errShutdown)
@@ -311,7 +329,10 @@ func TestNewReloader_ApplierFailingAsTheContextEndsIsAbandoned(t *testing.T) {
 		Port int    `koanf:"port"`
 		Host string `koanf:"host"`
 	}
-	loader := func(context.Context) (*keys, error) { return &keys{Port: 1, Host: "h"}, nil }
+	loader := func(context.Context) (*keys, error) {
+		cfg := &keys{Port: 1, Host: "h"}
+		return cfg, nil
+	}
 	applier := func(name, prefix string, apply func() error) ReloadOption {
 		return WithApplier(Applier[keys]{Name: name, Prefixes: []string{prefix}, ApplyInitial: true,
 			Apply: func(context.Context, ApplyEvent[keys]) (ApplyResult, error) { return ApplyResult{}, apply() }})
@@ -323,16 +344,18 @@ func TestNewReloader_ApplierFailingAsTheContextEndsIsAbandoned(t *testing.T) {
 		build   func(cancel context.CancelCauseFunc) []ReloadOption
 	}{
 		{"the last fails as it ends the context", "ports", "hosts", func(cancel context.CancelCauseFunc) []ReloadOption {
-			return []ReloadOption{
+			opts := []ReloadOption{
 				applier("ports", "port", func() error { return nil }),
 				applier("hosts", "host", func() error { cancel(errShutdown); return errors.New("host sink closed") }),
 			}
+			return opts
 		}},
 		{"an earlier one failed, the last ends the context", "hosts", "ports", func(cancel context.CancelCauseFunc) []ReloadOption {
-			return []ReloadOption{
+			opts := []ReloadOption{
 				applier("ports", "port", func() error { return errors.New("port sink closed") }),
 				applier("hosts", "host", func() error { cancel(errShutdown); return nil }),
 			}
+			return opts
 		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -342,7 +365,7 @@ func TestNewReloader_ApplierFailingAsTheContextEndsIsAbandoned(t *testing.T) {
 			assert.Nil(t, r)
 			require.ErrorIs(t, err, context.Canceled)
 			require.ErrorIs(t, err, errShutdown)
-			assert.NotErrorIs(t, err, ErrReload)
+			require.NotErrorIs(t, err, ErrReload)
 			var abandoned *AbandonedApplyError
 			require.ErrorAs(t, err, &abandoned)
 			assert.Equal(t, []string{tc.applied}, abandoned.Applied)

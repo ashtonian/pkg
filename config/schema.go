@@ -113,6 +113,8 @@ type schemaEntry struct {
 	catalog    sync.Once
 	fields     []Field
 	variables  []Field
+	cycles     sync.Once // see mayHoldCycle
+	mayCycle   bool
 }
 
 // schemaCache keeps each type's graph for as long as configView keeps its
@@ -164,11 +166,13 @@ const (
 // in its own graph, or in the graph of a remain field's map type it
 // reaches.
 func (e *schemaEntry) refusal(t tier) error {
-	if err := e.ownRefusal(t); err != nil || e.node == nil {
+	err := e.ownRefusal(t)
+	if err != nil || e.node == nil {
 		return err
 	}
 	for _, r := range e.reachedRemains() {
-		if err := r.ownRefusal(t); err != nil {
+		err = r.ownRefusal(t)
+		if err != nil {
 			return err
 		}
 	}
@@ -181,7 +185,8 @@ func (e *schemaEntry) ownRefusal(t tier) error {
 	case e.err != nil || t == tierStructural:
 		return e.err
 	case t == tierDecoded:
-		if err := e.tagValues(); err != nil {
+		err := e.tagValues()
+		if err != nil {
 			return err
 		}
 	}
@@ -245,7 +250,8 @@ func buildSchema(view *gowalker.Schema) (*schemaEntry, error) {
 	n.eachBranch(func(n *schemaNode) {
 		misspelt = append(misspelt, misspeltTagKeys(n.view.Root(), foreign)...)
 	})
-	return &schemaEntry{node: n, err: b.err, misspelt: misspeltError(misspelt)}, nil
+	entry := &schemaEntry{node: n, err: b.err, misspelt: misspeltError(misspelt)}
+	return entry, nil
 }
 
 // eachBranch calls visit with every struct node n's graph reaches, once
@@ -473,7 +479,8 @@ func checkSensitiveTag(t reflect.Type, f reflect.StructField) error {
 // variable can serve, a default on a section, and a default or example its
 // field cannot hold.
 func checkTags(t reflect.Type, f reflect.StructField) error {
-	if err := checkSensitiveTag(t, f); err != nil {
+	err := checkSensitiveTag(t, f)
+	if err != nil {
 		return err
 	}
 	if sep, ok := f.Tag.Lookup("sep"); ok {
@@ -514,7 +521,8 @@ func checkTags(t reflect.Type, f reflect.StructField) error {
 			return fmt.Errorf("%w: field %s of %s has an example tag, but %s is a section; give its fields examples", ErrSchema, f.Name, gowalker.TypeText(t), f.Name)
 		}
 		// The value is not quoted: an example on a sensitive field may be one.
-		if _, err := decodeTag(f.Type, f.Tag, ex); err != nil {
+		_, err = decodeTag(f.Type, f.Tag, ex)
+		if err != nil {
 			return fmt.Errorf("%w: field %s of %s has an example that does not decode into %s", ErrSchema, f.Name, gowalker.TypeText(t), gowalker.TypeText(f.Type))
 		}
 	}
@@ -525,11 +533,13 @@ func checkTags(t reflect.Type, f reflect.StructField) error {
 		return fmt.Errorf("%w: field %s of %s has a default tag, but %s is a section; give its fields defaults", ErrSchema, f.Name, gowalker.TypeText(t), f.Name)
 	case jsonFormat(f.Tag):
 		// The value is not quoted: a default on a sensitive field may be one.
-		if _, err := decodeTag(f.Type, f.Tag, def); err != nil {
+		_, err = decodeTag(f.Type, f.Tag, def)
+		if err != nil {
 			return fmt.Errorf("%w: field %s of %s has a default that does not decode into %s", ErrSchema, f.Name, gowalker.TypeText(t), gowalker.TypeText(f.Type))
 		}
 	case textMap(derefType(f.Type)):
-		if _, err := parseMapEntries(def); err != nil {
+		_, err = parseMapEntries(def)
+		if err != nil {
 			return fmt.Errorf("%w: field %s of %s has a default that is not key=value entries: %w", ErrSchema, f.Name, gowalker.TypeText(t), err)
 		}
 	}
