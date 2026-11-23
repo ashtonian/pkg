@@ -40,10 +40,7 @@ func TestReadExpr_SQLite(t *testing.T) {
 }
 
 func TestReadExpr_Postgres(t *testing.T) {
-	db, err := sql.Open("pgx", dbtest.PostgresDSN(t))
-	require.NoError(t, err)
-	t.Cleanup(func() { _ = db.Close() })
-	runReadExpr(t, db, filter.PostgresDialect{})
+	runReadExpr(t, dbtest.Postgres(t), filter.PostgresDialect{})
 }
 
 // runReadExpr serves the one package-level resource on d: SQLite and

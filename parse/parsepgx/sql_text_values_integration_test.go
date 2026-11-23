@@ -32,7 +32,7 @@ type networkRow struct {
 // (extended) and text (simple) results, whatever the session's
 // IntervalStyle, into the canonical text; a time cursor pages in time order.
 func TestSQLTextValuesNativeRows(t *testing.T) {
-	c := &catalog{dsn: dbtest.PostgresDSN(t)}
+	c := &catalog{config: dbtest.PostgresPoolConfig(t)}
 	ctx := testContext(t)
 	setup := c.open(t, pgx.QueryExecModeCacheStatement)
 	_, err := setup.Exec(ctx, `CREATE TABLE network_rows (id TEXT PRIMARY KEY, at TIME, retention INTERVAL, actor_ip INET, network CIDR,

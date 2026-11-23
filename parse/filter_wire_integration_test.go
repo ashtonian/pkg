@@ -74,7 +74,7 @@ func queryInts(t *testing.T, db *sql.DB, q string, args []any) []int {
 // include keys come back in the canonical text items carry.
 func TestIncludeQuery_NativePgxUUIDKeysAreCanonicalText(t *testing.T) {
 	ctx := context.Background()
-	conn, err := pgx.Connect(ctx, dbtest.PostgresDSN(t))
+	conn, err := pgx.ConnectConfig(ctx, dbtest.PostgresConfig(t))
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = conn.Close(ctx) })
 	_, err = conn.Exec(ctx, `CREATE TABLE widget_tags (widget_id UUID, tag_id UUID)`)

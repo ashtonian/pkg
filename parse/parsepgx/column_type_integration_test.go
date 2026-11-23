@@ -41,7 +41,7 @@ var endpointTypes = []parse.ResourceOption{
 // binary encoding of them pgx scans into no string: lists and updates read
 // them as text, an address in its display form and an interval as ISO 8601.
 func TestColumnType_ReadsNetworkAndIntervalColumns(t *testing.T) {
-	c := &catalog{dsn: dbtest.PostgresDSN(t)}
+	c := &catalog{config: dbtest.PostgresPoolConfig(t)}
 	ctx := testContext(t)
 	setup := c.open(t, pgx.QueryExecModeCacheStatement)
 	full, empty := uuid.Must(uuid.NewV7()), uuid.Must(uuid.NewV7())
