@@ -2,8 +2,11 @@ package config
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"maps"
 	"net/netip"
 	"path/filepath"
 	"reflect"
@@ -509,4 +512,49 @@ func TestSetDefaults_InterfaceFieldTakesText(t *testing.T) {
 	got, err := Load[dynamicDefaults](t.Context())
 	require.NoError(t, err)
 	assert.Equal(t, "10.0.0.9", got.Any)
+}
+
+// selfDecodingMap decodes itself, so config carries it whole: it has no
+// entries of its own to merge, and a typed value set in code reaches its
+// decoder as that value.
+type selfDecodingMap map[string]string
+
+func (m *selfDecodingMap) UnmarshalMapstructure(v any) error {
+	switch in := v.(type) {
+	case selfDecodingMap:
+		*m = maps.Clone(in)
+	case map[string]any:
+		*m = selfDecodingMap{}
+		for k, e := range in {
+			(*m)[k] = fmt.Sprint(e)
+		}
+	default:
+		return fmt.Errorf("decoding %T", v)
+	}
+	return nil
+}
+
+type selfDecodingMapCfg struct {
+	Labels selfDecodingMap `koanf:"labels"`
+	Name   string          `koanf:"name"`
+}
+
+func (c *selfDecodingMapCfg) SetDefaults() { c.Labels = selfDecodingMap{"a": "1"} }
+
+// A Defaulter may set a map that decodes itself: it is one value, set
+// whole, and a higher source that sets the map replaces it whole.
+func TestSetDefaults_SelfDecodingMapIsOneValue(t *testing.T) {
+	var got *selfDecodingMapCfg
+	var err error
+	require.NotPanics(t, func() { got, err = Load[selfDecodingMapCfg](t.Context()) })
+	require.NoError(t, err)
+	assert.Equal(t, selfDecodingMap{"a": "1"}, got.Labels)
+
+	above, err := NewMapProvider(func(context.Context) (map[string]any, error) {
+		return map[string]any{"labels": map[string]any{"b": "2"}}, nil
+	}, "")
+	require.NoError(t, err)
+	got, err = Load[selfDecodingMapCfg](t.Context(), WithBaseProvider(above, nil))
+	require.NoError(t, err)
+	assert.Equal(t, selfDecodingMap{"b": "2"}, got.Labels)
 }

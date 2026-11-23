@@ -352,9 +352,10 @@ func absent(v reflect.Value) bool {
 // input is v, a value of node n at key path at, as merging carries it
 // intact (see merge_input.go): a struct the merge's copy would lose the state
 // of, such as netip.Addr, is its text wherever v holds it. A list becomes a
-// []any; a map, the wholeMap textKeyedMap makes of it, as a source's typed
-// map is carried, or a map[K]any when its keys' text would not decode back;
-// a section, its fields by key. Anything else is v itself.
+// []any; a map with elements of its own, the wholeMap textKeyedMap makes of
+// it, as a source's typed map is carried, or a map[K]any when its keys' text
+// would not decode back; a section, its fields by key. Anything else,
+// a map that decodes itself included, is v itself.
 func (d *defaultsDiff) input(n *schemaNode, at keyPath, v reflect.Value) any {
 	v = derefValue(v)
 	if absent(v) {
@@ -380,7 +381,7 @@ func (d *defaultsDiff) input(n *schemaNode, at keyPath, v reflect.Value) any {
 			out[i] = d.input(n.elem, at.index(i), v.Index(i))
 		}
 		return out
-	case v.Kind() == reflect.Map:
+	case v.Kind() == reflect.Map && n.elem != nil:
 		if m, ok := textKeyedMap(v, func(k string, e reflect.Value) any { return d.input(n.elem, at.key(k), e) }); ok {
 			return m
 		}
