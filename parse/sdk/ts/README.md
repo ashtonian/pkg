@@ -147,10 +147,17 @@ const viaPost = await products.list({ filter: { id: { $in: ids } } }, { method: 
 await products.patch("prod-123", { name: "Updated", labels: { tier: "gold", legacy: null } });
 await products.patchMany(["id1", "id2"], { category: "archive" });
 
+// prefs: { city: string; units: string; label?: string }: the city changes, units keeps its stored value.
+await accounts.patch("one", { prefs: { city: "Bath" } }); // body {"prefs":{"city":"Bath"}}
+
 // A key of several columns: the schema's key is ["warehouse_id", "sku"].
 const stock = client.resource<Stock, [string, string]>("stock");
 await stock.patch(["w1", "a/b"], { qty: 3 }); // PATCH /stock/w1/a%2Fb
 ```
+
+The input type, `PatchInput<T>` (shared by `patch` and `patchMany`), takes any subset of the row's fields, and types a JSON object field as a merge document, `MergeDocument<T>`: any subset of its members at every depth, so a caller names only the members to change and never supplies a sibling's value just to satisfy the compiler (a value that, sent, would overwrite whatever another writer stored there). Each member keeps its leaf type (`MergeValue<T>`); an array replaces the stored array whole, so its elements need their full type, and a value with `toJSON` (a `Date`) replaces as itself. A complete object is still a valid merge document, as long as it holds no `null` for a member the type always carries (below). The body is the input as given; the server merges it into the stored document, leaving the members it does not name.
+
+`null` follows the server's rules for removal. On a field of the row it clears the field, which the server takes where the schema marks the path `nullable` (checked by `validateBeforeSend`). Within a document it removes a member, and compiles only on a member the type says may be absent: one declared optional (`label?: string`, a Go member with `omitempty`) or an index-signature entry (`Record<string, V>`, a Go map's key). A member the type always carries (`units: string`, even when typed `string | null`) is one the server's Go type writes back on every encode, so the server refuses its removal (E2077) and the type takes no `null` for it. A merge into an optional member or a map entry the stored document lacks must carry every member that type requires, which only the server can judge (E2077) ([typed document behavior](../../docs/patches.md#typed-document-behavior)).
 
 `patch` takes the row's key: one value for a key of one column, a tuple of a value per column, in key order, for a key of several (the schema document's `key`). The handle's second type parameter is the key's type (`ResourceKey`), one value (`KeyValue`) by default, so a key of another arity does not compile. A key value is a string, a finite number, a bigint or a boolean, sent as its text: the server reads each segment as its column's text (Go `Resource.ParseKey`), an integer column's as decimal digits, so pass a 64-bit integer past 2^53 as a bigint or a string. With `validateBeforeSend`, a key of another number of values than the schema's `key` columns throws `RangeError` before sending, since the server's item route has a segment per column and would not route it.
 
@@ -249,7 +256,7 @@ Credentials go in `headers` (`Authorization`), sent with every request to `baseU
 | `@ashtonian/parse` | `createClient`, `SchemaValidator`, `SCHEMA_VERSION`, builders and combinators, validators, all types |
 | `@ashtonian/parse/core` | `ApiError`, `ResponseError`, `NonFiniteNumberError`, `SchemaResourceError`, `SchemaValidationError`, `SchemaValidationErrors`, `SchemaVersionError`, `ConstraintName`, `ConstraintFailure`, `ErrorBody`, `Payload`, `Problem`, `FieldError`, `FieldType`, `KeyValue`, `ResourceKey` |
 | `@ashtonian/parse/filter` | `filter`, `and`, `or`, `not`, `sort`, `validateFilter`, `validateSort`, list / facet / schema types |
-| `@ashtonian/parse/patch` | `validatePatch`, patch schema and result types |
+| `@ashtonian/parse/patch` | `validatePatch`, patch schema and result types, `PatchInput`, `MergeDocument`, `MergeValue` |
 
 ## Key Files
 
@@ -262,7 +269,7 @@ Credentials go in `headers` (`Authorization`), sent with every request to `baseU
 | `src/filter/types.ts` | Filter, list, page and facet wire types |
 | `src/patch/validate.ts` | `validatePatch` — merge-patch semantics (null = remove) |
 | `src/patch/pattern.ts` | Patch path lookup: exact key, else the most specific `*` / `**` pattern, as `parse/patch` resolves it |
-| `src/patch/types.ts` | Patch schema, input and result types |
+| `src/patch/types.ts` | Patch schema, result and input types: `PatchInput`, and the merge documents of JSON object fields (`MergeDocument`, `MergeValue`) |
 | `src/schema.ts` | `ResourceSchema` (the schema document), `SCHEMA_VERSION` |
 | `src/core/errors.ts` | `ApiError`, `ResponseError`, `NonFiniteNumberError`, `SchemaResourceError`, `SchemaValidationError`, `SchemaValidationErrors`, `SchemaVersionError` |
 | `src/core/json.ts` | `encodeJSON`, the one encoder of every JSON payload the client sends, refusing non-finite numbers; RFC 6901 pointer tokens |

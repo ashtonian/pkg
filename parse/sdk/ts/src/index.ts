@@ -62,6 +62,8 @@ export type {
 export { validatePatch } from "./patch/index.js";
 export type {
   BatchItemError,
+  MergeDocument,
+  MergeValue,
   PatchInput,
   PatchOp,
   PatchPathSchema,

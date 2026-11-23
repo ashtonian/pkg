@@ -65,12 +65,50 @@ export interface RelationKeyColumn {
 }
 
 /**
- * JSON Merge Patch (RFC 7396) input: a field set to a value replaces it
- * (objects merge recursively), a field set to null removes it.
+ * JSON Merge Patch (RFC 7396) input for a row of type T: any subset of its
+ * fields, each a {@link MergeValue} of the field's type, so a JSON document
+ * field takes the members to change and its others keep their stored
+ * values. A field set to null removes it; the server takes that on a field
+ * its schema marks `nullable`, which `validateBeforeSend` checks.
  */
 export type PatchInput<T> = {
-  [K in keyof T]?: T[K] | null;
+  [K in keyof T]?: MergeValue<T[K]> | null;
 };
+
+/**
+ * A merge patch of a JSON object of type T: any subset of its members, each
+ * a {@link MergeValue} of the member's type. null removes a member T may
+ * lack: one it declares optional (`label?: string`) or names by an index
+ * signature (a map's entry). A member T always carries takes no null, since
+ * the server's type would write it back and so refuses its removal (E2077).
+ * A merge into an optional member or a map entry the stored document lacks
+ * must carry every member its type requires, which only the server can
+ * judge.
+ */
+export type MergeDocument<T> = {
+  [K in keyof T]?: MayLack<T, K> extends true
+    ? MergeValue<T[K]> | null
+    : MergeValue<Exclude<T[K], null>>;
+};
+
+// A member T may lack: a key of an index signature, or one T declares optional.
+type MayLack<T, K extends keyof T> =
+  string extends K ? true
+    : number extends K ? true
+      : Pick<T, K> extends Required<Pick<T, K>> ? false : true;
+
+/**
+ * A merge patch's value for a member of type T. A JSON object merges into
+ * the stored one, as a {@link MergeDocument}. An array replaces the stored
+ * array whole, so it keeps its full element type. Any other value replaces
+ * the stored one as itself, as does an object JSON.stringify writes through
+ * its `toJSON`, such as a Date.
+ */
+export type MergeValue<T> =
+  T extends readonly unknown[] ? T
+    : T extends { toJSON(): unknown } ? T
+      : T extends object ? MergeDocument<T>
+        : T;
 
 /** Result of a patch, as parse's `parsehttp.PatchAnswer` writes it. */
 export interface PatchResult<T> {
