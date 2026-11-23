@@ -10,7 +10,9 @@ import (
 //
 // The stack order is fixed (see [NewClient]'s build order below), independent
 // of the order options are passed. Every enabled layer validates its
-// configuration; the first invalid layer's error is returned, wrapping
+// configuration. Repeated options for the same layer apply their nested options
+// in call order. Positional arguments such as the cache store or limiter size
+// use the last value supplied. The first invalid layer's error is returned, wrapping
 // [ErrInvalidConfig].
 //
 // Example:
@@ -184,7 +186,7 @@ func WithTransport(t http.RoundTripper) Option {
 // WithBaseTransport configures the base http.Transport.
 func WithBaseTransport(opts ...BaseOption) Option {
 	return func(cfg *clientConfig) {
-		cfg.baseOpts = opts
+		cfg.baseOpts = append(cfg.baseOpts, opts...)
 	}
 }
 
@@ -193,7 +195,7 @@ func WithBaseTransport(opts ...BaseOption) Option {
 func WithCompression(opts ...CompressionOption) Option {
 	return func(cfg *clientConfig) {
 		cfg.useCompression = true
-		cfg.compressionOpts = opts
+		cfg.compressionOpts = append(cfg.compressionOpts, opts...)
 	}
 }
 
@@ -204,7 +206,7 @@ func WithCache(store CacheStore, opts ...CacheOption) Option {
 	return func(cfg *clientConfig) {
 		cfg.useCache = true
 		cfg.cacheStore = store
-		cfg.cacheOpts = opts
+		cfg.cacheOpts = append(cfg.cacheOpts, opts...)
 	}
 }
 
@@ -212,7 +214,7 @@ func WithCache(store CacheStore, opts ...CacheOption) Option {
 func WithRetry(opts ...RetryOption) Option {
 	return func(cfg *clientConfig) {
 		cfg.useRetry = true
-		cfg.retryOpts = opts
+		cfg.retryOpts = append(cfg.retryOpts, opts...)
 	}
 }
 
@@ -229,7 +231,7 @@ func WithLogging(hook LoggingHook, opts ...LoggingOption) Option {
 	return func(cfg *clientConfig) {
 		cfg.useLogging = true
 		cfg.loggingHook = hook
-		cfg.loggingOpts = opts
+		cfg.loggingOpts = append(cfg.loggingOpts, opts...)
 	}
 }
 
@@ -238,7 +240,7 @@ func WithLimiter(maxConcurrent int, opts ...LimiterOption) Option {
 	return func(cfg *clientConfig) {
 		cfg.useLimiter = true
 		cfg.limiterMax = maxConcurrent
-		cfg.limiterOpts = opts
+		cfg.limiterOpts = append(cfg.limiterOpts, opts...)
 	}
 }
 
@@ -248,7 +250,7 @@ func WithRateLimit(rps float64, burst int, opts ...RateLimitOption) Option {
 		cfg.useRateLimit = true
 		cfg.rateLimitRPS = rps
 		cfg.rateLimitBurst = burst
-		cfg.rateLimitOpts = opts
+		cfg.rateLimitOpts = append(cfg.rateLimitOpts, opts...)
 	}
 }
 
@@ -256,7 +258,7 @@ func WithRateLimit(rps float64, burst int, opts ...RateLimitOption) Option {
 func WithCircuitBreaker(opts ...CircuitOption) Option {
 	return func(cfg *clientConfig) {
 		cfg.useCircuitBreaker = true
-		cfg.circuitOpts = opts
+		cfg.circuitOpts = append(cfg.circuitOpts, opts...)
 	}
 }
 
@@ -265,7 +267,7 @@ func WithHedging(delay time.Duration, opts ...HedgingOption) Option {
 	return func(cfg *clientConfig) {
 		cfg.useHedging = true
 		cfg.hedgingDelay = delay
-		cfg.hedgingOpts = opts
+		cfg.hedgingOpts = append(cfg.hedgingOpts, opts...)
 	}
 }
 

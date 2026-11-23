@@ -39,7 +39,7 @@ Constructors validate durations, counts, levels, thresholds and required provide
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
 | `WithTimeout(d)` | `time.Duration` | `DefaultTimeout` (30 s) | `http.Client.Timeout`; 0 disables it for long-poll / SSE |
-| `WithBaseTransport(opts...)` | `...BaseOption` | `NewBaseTransport()` defaults | Tunes the base `*http.Transport`; the last call wins |
+| `WithBaseTransport(opts...)` | `...BaseOption` | `NewBaseTransport()` defaults | Tunes the base `*http.Transport`; repeated calls apply options in order |
 | `WithTransport(rt)` | `http.RoundTripper` | none | Replaces the base transport; other base settings do not apply and combining with a base egress policy is rejected |
 | `WithJar(jar)` | `http.CookieJar` | nil | Cookie jar of the client |
 | `WithLifecycle(l)` | `*Lifecycle` | none | Registers the caches and base transport the builder constructs with `l`; `l.Close()` releases them. Nil or closed is rejected |
@@ -54,6 +54,17 @@ Constructors validate durations, counts, levels, thresholds and required provide
 | `WithTokenAuth(originURL, source)` | `string`, `TokenSource` | none | Binds automatic bearer authentication before cache; repeat for distinct origins |
 | `WithMetrics(hook)` | `MetricsHook` | off | Adds `MetricsTransport` and feeds the retry and cache layers |
 | `WithLogging(hook, opts...)` | `LoggingHook`, `...LoggingOption` | off | Adds `LoggingTransport` |
+
+Repeated layer options in `NewClient` and `NewStandard` apply their nested
+options in call order. For example, `WithRetry(WithMaxAttempts(1))` followed
+by `WithRetry(WithRetryOn(503))` keeps the one-attempt limit. To change that
+limit, pass `WithMaxAttempts` again. The last positional argument wins for
+the cache store, logging or metrics hook, limiter size, rate and burst, or
+hedging delay. Origin-specific authentication bindings still accumulate.
+
+**Migration:** Code that relied on a second call replacing a whole group
+should remove the first call or explicitly reset its settings. An empty
+`WithRetry()`, for example, preserves earlier retry options.
 
 ### Base transport
 

@@ -20,8 +20,3 @@ use (
 	./httpx/codec/proto
 	./httpx/compress/brotli
 )
-
-// Resolve the optional modules' parent requirement before the first public
-// httpx/v0.1.0 tag exists. Keep this version-specific and workspace-only:
-// published go.mod files and archive-consumer checks use the real requirement.
-replace github.com/ashtonian/pkg/httpx v0.1.0 => ./httpx

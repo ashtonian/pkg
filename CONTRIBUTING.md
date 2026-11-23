@@ -247,7 +247,7 @@ skips them. The Gin example, comparison benchmarks and release tooling keep
 separate development modules outside the default workspace. The archive
 check tests them against candidate releases without local replacements.
 
-Every module is tagged with its directory as the prefix, as Go expects for a module below a repository's root: `gowalker/v0.1.0`, `config/v0.1.0`, `config/kongprovider/v0.1.0`, `httpx/v0.1.0`, `httpx/oauth2/v0.1.0`, `httpx/codec/msgpack/v0.1.0`, `httpx/codec/proto/v0.1.0`, `httpx/compress/brotli/v0.1.0`. Versions follow [semantic versioning](https://semver.org); while a module is at `v0`, a minor version may change its API. Each module's `CHANGELOG.md` lists what changed.
+Every module is tagged with its directory as the prefix, as Go expects for a module below a repository's root: `config/vX.Y.Z`, `config/kongprovider/vX.Y.Z`, `httpx/codec/msgpack/vX.Y.Z`. `release-please-config.json` lists every released module under `packages`, keyed by its directory. Versions follow [semantic versioning](https://semver.org); while a module is at `v0`, a minor version may change its API. Each module's `CHANGELOG.md` lists what changed.
 
 ## Releases
 
@@ -282,8 +282,11 @@ to identify the versions to publish after merge.
 
 New modules use `initial-version` in the release configuration to choose
 an initial version; a `0.0.0` manifest entry is only a pre-release marker.
-The httpx modules are configured to start at `v0.1.0`. Before their first tag,
-the workspace maps the optional modules' parent requirement to `./httpx`.
+A README that pins its module's version for `go run` or `go install` wraps
+each pinned block in `<!-- x-release-please-start-version -->` and
+`<!-- x-release-please-end -->` and lists the README as a `generic` extra file
+of its package, so each release moves the pin; `make release-please-check`
+fails on a pin outside the markers.
 Published modules contain no local replacements. Validate candidate archives
 with `make httpx-release-check`, and verify public-proxy installation after
 release. Release a dependency before raising another module's requirement.

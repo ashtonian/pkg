@@ -416,6 +416,56 @@ func TestLoadReloader(t *testing.T) {
 	require.NoError(t, r.Arm(t.Context()), "arming is the command's")
 }
 
+type promotedState struct {
+	Hosts   []string       `koanf:"hosts"`
+	Weights map[string]int `koanf:"weights"`
+}
+
+type promotingConfig struct {
+	promotedState `koanf:",squash" kong:"-"`
+	Port          int `koanf:"port" default:"8080"`
+}
+
+type promotingCmd struct {
+	promotingConfig `embed:""`
+
+	reloader *config.Reloader[promotingConfig]
+}
+
+func (c *promotingCmd) Run(r *config.Reloader[promotingConfig]) error {
+	c.reloader = r
+	return nil
+}
+
+// The startup copy owns what an unexported embedded section promotes, as it
+// owns a direct field: changing it cannot reach the published generation.
+func TestLoadReloader_StartupCopyOwnsPromotedFields(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	require.NoError(t, os.WriteFile(path, []byte("hosts: [a, b]\nweights: {a: 1}\n"), 0o600))
+	var cli struct {
+		Serve promotingCmd `cmd:""`
+	}
+	parser, err := kong.New(&cli, LoadReloader(t.Context(), &cli.Serve.promotingConfig, nil, func(*kong.Context) ([]config.Option, error) {
+		opts := []config.Option{config.WithRequiredFile(path)}
+		return opts, nil
+	}))
+	require.NoError(t, err)
+	kctx, err := parser.Parse([]string{"serve", "--port", "9000"})
+	require.NoError(t, err)
+	require.NoError(t, kctx.Run())
+	r := cli.Serve.reloader
+	require.NotNil(t, r)
+	t.Cleanup(func() { require.NoError(t, r.Stop(context.WithoutCancel(t.Context()))) })
+
+	require.Equal(t, []string{"a", "b"}, cli.Serve.Hosts)
+	cli.Serve.Hosts[0] = "changed"
+	cli.Serve.Weights["a"] = 99
+	assert.Equal(t, uint64(1), r.Snapshot().Generation)
+	assert.Equal(t, []string{"a", "b"}, r.Config().Hosts)
+	assert.Equal(t, map[string]int{"a": 1}, r.Config().Weights)
+	assert.Equal(t, 9000, r.Config().Port)
+}
+
 // No *T is bound for a reloading command: a Run method that asks for one
 // fails instead of reading a startup copy as if it were live.
 func TestLoadReloader_BindsNoStaticConfig(t *testing.T) {
