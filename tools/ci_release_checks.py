@@ -38,7 +38,7 @@ CHECKS = {
     # The documentation check reads every module's Markdown, API and comments,
     # the workspace's and those kept out of it.
     "docs-check": ("config/", "gitx/", "gowalker/", "httpx/", "jsonvalue/", "onepassword/", "parse/", "process/",
-                   "state/", "tools/doccheck/", "tools/modarchive/"),
+                   "state/", "tools/doccheck/", "tools/gorules/", "tools/modarchive/"),
 }
 # Modules nested in another module's directory are not part of its archive.
 NESTED = {
@@ -48,7 +48,8 @@ NESTED = {
 # Prose outside every module, and the SDK's scripts, which its own job runs.
 UNCHECKED = {"CONTRIBUTING.md", "README.md"}
 SDK_TOOLING = "tools/check-parse-sdk-"
-# golangci-lint's configuration and ruleguard rules, which only the lint job reads.
+# golangci-lint's configuration and ruleguard rules: the lint job lints every
+# package when either changes. The rules are a module, so doccheck reads them too.
 LINT_CONFIG = (".golangci.yml", "tools/gorules/")
 # Jobs that validate a change, as ci.yml names them. parse-benchmarks records
 # main's benchmarks and validates nothing, so acceptance does not require it.
@@ -68,9 +69,11 @@ def release_checks(paths):
         return list(CHECKS)
     selected = set()
     for path in paths:
-        if path in UNCHECKED or path.startswith(SDK_TOOLING) or path.startswith(LINT_CONFIG):
+        if path in UNCHECKED or path.startswith(SDK_TOOLING):
             continue
         owners = [check for check in CHECKS if reads(check, path)]
+        if not owners and path.startswith(LINT_CONFIG):
+            continue
         if not owners or path.startswith(ARCHIVE_TOOLING):
             # Shared build files, workflow, tooling, manifests and unknown paths.
             return list(CHECKS)

@@ -120,12 +120,16 @@ class ReleaseChecks(unittest.TestCase):
         self.assertEqual(ci.release_checks(None), every)
 
 
-    def test_lint_configuration_runs_only_the_lint_job(self):
-        # golangci-lint's configuration and ruleguard rules reach no package and
-        # no release check, and run lint over every package.
-        paths = [".golangci.yml", "tools/gorules/rules.go", "tools/gorules/go.mod"]
-        self.assertEqual(ci.release_checks(paths), [])
-        self.assertEqual(ci.plan(["modules", "lint"], paths), (["lint"], []))
+    def test_lint_configuration_runs_the_lint_job(self):
+        # golangci-lint's configuration and ruleguard rules reach no package
+        # and run lint over every package. The configuration reaches no release
+        # check; the rules are a module, which the documentation check reads.
+        config, rules = [".golangci.yml"], ["tools/gorules/rules.go", "tools/gorules/go.mod"]
+        self.assertEqual(ci.release_checks(config), [])
+        self.assertEqual(ci.plan(["modules", "lint"], config), (["lint"], []))
+        self.assertEqual(ci.release_checks(rules), ["docs-check"])
+        self.assertEqual(ci.plan(["modules", "lint"], rules), (["modules", "lint"], ["docs-check"]))
+        paths = config + rules
         self.assertEqual(SCOPE_JOBS["lint"]["paths"], [".golangci.yml", "tools/gorules/**"])
         for path in paths:
             with self.subTest(path=path):

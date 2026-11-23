@@ -65,7 +65,8 @@ changelogs, the Markdown guides in `config/docs`, `gowalker/docs` and `httpx/doc
 are read by parse's tests, which render their tables from the code), the SDK, the release-please manifest and configuration, the release and SDK
 scripts, golangci-lint's `.golangci.yml`, and the modules outside the workspace (the cookbook, the Gin example, httpx's
 benchmarks, the Parse server example, the ruleguard rules, the archive, documentation and release tooling), whose own checks read them. A change to
-`.golangci.yml` or `tools/gorules/` runs lint over every package and nothing else. A module manifest
+`.golangci.yml` runs lint over every package and nothing else; a change to `tools/gorules/`, a module the
+documentation check reads, runs that check too. A module manifest
 (`go.mod`, `go.sum`), `go.work`, `go.work.sum` or any other file no package owns reaches
 every package; workflows, the Makefile and the CI scripts run every job. So do explicit
 workflow dispatch, the `full-ci` label on a pull request (it applies from the next push or
