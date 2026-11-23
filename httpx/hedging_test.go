@@ -245,9 +245,8 @@ func TestAdaptiveHedgingTrainsOnHedgedResponses(t *testing.T) {
 	}
 }
 
-// The published delay is the exact nearest-rank percentile of the window
-// at each recomputation, which happens every adaptiveRecomputeEvery
-// samples; between them it holds.
+// The published delay is the window's percentile at each recomputation,
+// which happens every adaptiveRecomputeEvery samples; between them it holds.
 func TestLatencyWindowPublishesThePercentile(t *testing.T) {
 	const size = 100
 	w := newLatencyWindow(0.9, size, time.Hour)

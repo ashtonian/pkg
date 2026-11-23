@@ -239,14 +239,15 @@ func (t *AdaptiveHedgingTransport) RoundTrip(req *http.Request) (*http.Response,
 // percentile, so a request reads its delay with one atomic load and
 // recording never waits on it. A recording claims its slot with an atomic
 // counter. Every adaptiveRecomputeEvery samples (every sample until then)
-// the recording that reaches the boundary computes the percentile into an
-// owned scratch buffer; one already computing makes another skip, and the
-// next boundary includes what it skipped.
+// the recording that reaches the boundary asks for a recomputation. Only one
+// runs at a time, into an owned scratch buffer; a request made while one runs
+// is taken up by the running computer when it finishes, so none is lost.
 type latencyWindow struct {
 	percentile float64
 	samples    []atomic.Int64 // nanoseconds; negative until first written
 	recorded   atomic.Uint64
 	published  atomic.Int64 // nanoseconds
+	pending    atomic.Bool  // a recomputation was requested and not yet begun
 
 	mu      sync.Mutex // held while computing; guards scratch
 	scratch []time.Duration
@@ -275,10 +276,24 @@ func (w *latencyWindow) record(d time.Duration) {
 	if n < adaptiveMinSamples || (n > adaptiveRecomputeEvery && n%adaptiveRecomputeEvery != 0) {
 		return
 	}
-	if !w.mu.TryLock() {
-		return
+	w.pending.Store(true)
+	// Whoever holds mu checks pending again after unlocking, so a request
+	// that finds mu held is never stranded.
+	for w.pending.Load() {
+		if !w.mu.TryLock() {
+			return
+		}
+		for w.pending.Swap(false) {
+			w.recompute()
+		}
+		w.mu.Unlock()
 	}
-	defer w.mu.Unlock()
+}
+
+// recompute publishes the window's percentile: the sample at 0-based index
+// ⌊percentile·n⌋ of the n sorted samples, the largest when that is n. The
+// caller holds mu.
+func (w *latencyWindow) recompute() {
 	w.scratch = w.scratch[:0]
 	for i := range w.samples {
 		// A slot claimed but not yet written still reads negative or its

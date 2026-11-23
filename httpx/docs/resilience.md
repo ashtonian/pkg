@@ -153,9 +153,12 @@ are not counted, so cheap writes or fast failures cannot pull the delay
 down and hedge reads they never competed with. A hedged request's latency
 is its winning response's, which is at least the delay at which the hedge
 launched, so hedging does not bias the percentile it is steered by. The
-delay starts at 100 ms. From the tenth sample it is the exact nearest-rank
-percentile of the last 1000 samples, recomputed with each sample up to the
-64th and then every 64, so it trails the window by fewer than 64 samples.
-Recording is lock-free and a request reads the delay with one atomic load.
+delay starts at 100 ms. From the tenth sample it is the sample at 0-based
+index ⌊percentile·n⌋ of the last n ≤ 1000 samples sorted (the largest at
+percentile 1), recomputed with each sample up to the 64th and then every 64.
+Recomputations never overlap and none is dropped: one requested while
+another runs follows it, so the delay trails the window by at most 64
+samples plus those recorded during a computation. Recording takes no lock
+and a request reads the delay with one atomic load.
 
 All [options and defaults](reference.md#retry) are documented in the reference.
