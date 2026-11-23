@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"path/filepath"
 	"reflect"
 	"sync"
@@ -239,9 +240,7 @@ func TestJudge_JudgementsAreBoundedByTheEntriesBlamed(t *testing.T) {
 		for i := range 1000 {
 			entries[fmt.Sprintf(`labels["k%04d"]`, i)] = "v"
 		}
-		for k, v := range tc.bad {
-			entries[k] = v
-		}
+		maps.Copy(entries, tc.bad)
 		calls := 0
 		_, rejected, err := judged[labelsConfig](t, entries, nil, WithValidator(countingRules{&calls}))
 		require.NoError(t, err)

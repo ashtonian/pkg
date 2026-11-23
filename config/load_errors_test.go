@@ -44,8 +44,8 @@ func TestGetConfig_UnreadableOptionalFileFails(t *testing.T) {
 	if !errors.Is(err, ErrFileRead) {
 		t.Fatalf("err = %v, want ErrFileRead", err)
 	}
-	var pathErr *fs.PathError
-	if !errors.As(err, &pathErr) {
+	_, ok := errors.AsType[*fs.PathError](err)
+	if !ok {
 		t.Errorf("err = %v, want an *fs.PathError in the chain", err)
 	}
 }

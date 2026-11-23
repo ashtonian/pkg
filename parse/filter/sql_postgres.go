@@ -299,8 +299,8 @@ func containable(t core.FieldType) bool {
 // nested from the outermost member down.
 func containmentFragment(segs []string, value any) (string, error) {
 	doc := value
-	for i := len(segs) - 1; i >= 0; i-- {
-		doc = map[string]any{segs[i]: doc}
+	for _, seg := range slices.Backward(segs) {
+		doc = map[string]any{seg: doc}
 	}
 	b, err := json.Marshal(doc)
 	if err != nil {

@@ -3,6 +3,7 @@ package httpx
 import (
 	"errors"
 	"net/http"
+	"slices"
 	"sync"
 	"time"
 )
@@ -54,8 +55,8 @@ func (l *Lifecycle) Close() error {
 		l.mu.Unlock()
 
 		var errs []error
-		for i := len(builds) - 1; i >= 0; i-- {
-			errs = append(errs, builds[i].stop())
+		for _, build := range slices.Backward(builds) {
+			errs = append(errs, build.stop())
 		}
 		l.err = errors.Join(errs...)
 	})
@@ -115,8 +116,8 @@ func (o *buildOwner) finish(l *Lifecycle) error {
 // owned base: no layer stops while one above it may still use it.
 func (o *buildOwner) stop() error {
 	var errs []error
-	for i := len(o.caches) - 1; i >= 0; i-- {
-		errs = append(errs, o.caches[i].Close())
+	for _, cache := range slices.Backward(o.caches) {
+		errs = append(errs, cache.Close())
 	}
 	if o.base != nil {
 		o.base.CloseIdleConnections()

@@ -49,8 +49,8 @@ func fieldReload(sf reflect.StructField, parents []reflect.StructField) string {
 	if ok {
 		return value
 	}
-	for i := len(parents) - 1; i >= 0; i-- {
-		value, ok = parents[i].Tag.Lookup("reload")
+	for _, parent := range slices.Backward(parents) {
+		value, ok = parent.Tag.Lookup("reload")
 		if ok {
 			return value
 		}

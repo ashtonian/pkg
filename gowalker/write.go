@@ -2,6 +2,7 @@ package gowalker
 
 import (
 	"reflect"
+	"slices"
 
 	"github.com/ashtonian/pkg/gowalker/path"
 )
@@ -308,10 +309,8 @@ func (a *Accessor) followWrite(slot writeSlot, shape *Shape, settings writeSetti
 		}
 		if slot.value.Kind() == reflect.Pointer && !slot.value.IsNil() {
 			id := pointerID{slot.value.Type(), slot.value.Pointer()}
-			for _, previous := range seen {
-				if previous == id {
-					return writeSlot{}, nil, ErrPath
-				}
+			if slices.Contains(seen, id) {
+				return writeSlot{}, nil, ErrPath
 			}
 			seen = append(seen, id)
 		}

@@ -1,6 +1,9 @@
 package gowalker
 
-import "reflect"
+import (
+	"reflect"
+	"slices"
+)
 
 // EdgeKind describes a schema relationship. A collection's ElementEdge names a
 // possible element type, not a concrete map key/index or an accessor wildcard.
@@ -43,16 +46,17 @@ type TypeVisit struct {
 // Use it for annotations that apply to a whole section, such as a
 // sensitive:"true" or reload:"hot" tag that descendants inherit.
 func (v TypeVisit) Inherited(key string) (string, bool) {
-	for i := len(v.Route) - 1; i >= 0; i-- {
-		field := v.Route[i].Field
+	for _, step := range slices.Backward(v.Route) {
+		field := step.Field
 		if field == nil {
 			continue
 		}
 		if value, ok := field.goField.Tag.Lookup(key); ok {
 			return value, true
 		}
-		for j := len(field.parents) - 1; j >= 0; j-- {
-			if value, ok := field.parents[j].Tag.Lookup(key); ok {
+		for _, parent := range slices.Backward(field.parents) {
+			value, ok := parent.Tag.Lookup(key)
+			if ok {
 				return value, true
 			}
 		}

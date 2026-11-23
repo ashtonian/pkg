@@ -147,7 +147,7 @@ func (l numberLiteral) exactInteger() (exactInt, literalInteger) {
 		}
 	}
 	var u uint64
-	for k := int64(0); k < point; k++ {
+	for k := range point {
 		var d uint64
 		if k < digits {
 			d = uint64(digit(k) - '0')

@@ -496,14 +496,12 @@ func TestReloader_ConcurrentReloads(t *testing.T) {
 
 	var wg sync.WaitGroup
 	for range 10 {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+		wg.Go(func() {
 			for range 10 {
 				_, _ = r.Reload(context.Background())
 				_ = r.Config()
 			}
-		}()
+		})
 	}
 	wg.Wait()
 

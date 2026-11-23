@@ -536,8 +536,8 @@ func (o *options) fieldRules(ctx context.Context, cfg any) error {
 // inside it only shape the message, each named by its key.
 func ruleViolation(cfg reflect.Value, err error) error {
 	summary := err.Error()
-	var ve validator.ValidationErrors
-	if errors.As(err, &ve) {
+	ve, ok := errors.AsType[validator.ValidationErrors](err)
+	if ok {
 		summary = fieldErrorSummary(cfg, ve)
 	}
 	violation := &validationError{

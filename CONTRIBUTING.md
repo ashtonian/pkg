@@ -19,7 +19,8 @@ The repository's `go.work` ties the published modules together, so a change to o
 | `make parse-release-check` | Fresh module-archive consumer, tagged tests, README program and dependency audit |
 | `make parse-sdk-release-check` | Packed SDK consumer, TypeScript declarations, runtime subpaths and sourcemaps |
 | `make parse-sdk-registry-check` | Registry processing delay, integrity and deadline regressions |
-| `make lint` / `make lint-cookbook` | `go vet`, staticcheck and golangci-lint ([new issues only](#lint-baseline)) over the published modules, tagged ones in one pass with both tags / `go vet` and staticcheck over the cookbook |
+| `make lint` / `make lint-cookbook` | gofmt over every tracked Go file, then `go vet`, [`go fix -diff`](#gofmt-and-go-fix), staticcheck and golangci-lint ([new issues only](#lint-baseline)) over the published modules, tagged ones in one pass with both tags / `go vet`, `go fix -diff` and staticcheck over the cookbook |
+| `make fix` | Applies what `make lint`'s gofmt and `go fix -diff` report |
 | `make release-check` | Every module as a consumer gets it, without the race detector: gitx and config standalone builds plus the module archive checks below. `RELEASE_CHECKS='parse-release-check'` runs a subset |
 | `make gowalker-release-check` | Gowalker archive downloaded into a fresh consumer, its tests, the README quick start and complete usage examples |
 | `make httpx-release-check` | Five module ZIPs downloaded by fresh consumers, both tagged lanes, Gin integration and benchmark smoke tests |
@@ -239,6 +240,32 @@ does not track the rules file.
 | `ruleguard init error … could not import github.com/quasilyte/go-ruleguard/dsl` | golangci-lint ran outside `.lint.work`, or `tools/gorules/go.mod` lost the requirement | Run it through `make lint`; restore the `require` |
 | `… origin/main …: unknown revision` or a merge-base error | The checkout has no `origin/main` or a shallow history | `git fetch origin main`; in CI, the lint job's checkout keeps `fetch-depth: 0` |
 | ruleguard results don't change after the rules did | golangci-lint's cache | `golangci-lint cache clean` |
+
+### gofmt and go fix
+
+`make lint` fails on any tracked Go file `gofmt -l` lists, and on any rewrite `go fix -diff`
+proposes for the packages and tags it vets. Unlike the baseline's linters, both judge all
+code, not only changed lines. `make lint-cookbook`, `make parse-example-check`,
+`make tool-check` and `make docs-check` run `go fix -diff` over their modules too. Both tools
+come from Go 1.27.4, the release staticcheck and golangci-lint run on, so a newer
+toolchain's fixers reach the code only when the Makefile's `GOFIX` moves to it.
+
+`GOFIX` turns off three fixers:
+
+| Fixer | Why it is off |
+|---|---|
+| `embedlit` | It flattens composite literals of embedded structs; the tests of promoted fields spell the embedding out on purpose |
+| `omitzero` | It deletes `omitempty` from struct-typed fields, where only `encoding/json` ignores it. config's JSON Schema and parse's patch decoding read it, and their tests declare it on struct fields to pin that |
+| `stditerators` | It turns `Value.Field(i)` walks into `Value.Fields()`, which also builds each field's `StructField`: about ten times the cost of the walk it replaces |
+
+Read a fixer's rewrite before keeping it: `make fix` applies them as `go fix` writes them.
+
+| Failure | Cause | Fix |
+|---|---|---|
+| `gofmt: run make fix` and a list of files | Those files are not gofmt-formatted | `make fix`, or `gofmt -w` the files |
+| `make lint` stops on gofmt's `<file>:<line>:<col>: expected …` | gofmt cannot parse a tracked Go file, including one no build tag compiles | Fix the syntax; a deliberately malformed fixture belongs in a file without the `.go` extension |
+| `make lint` prints a diff and fails after `go vet` | A `go fix` fixer has a rewrite for that code | `make fix`, review the result, commit it |
+| A fixer's rewrite is wrong for the code | The fixer does not know a constraint the code has | Restructure the code so it states the constraint (in place of a loop `slices.Contains` would replace, `slices.ContainsFunc` compares a `[]byte` without copying it), or turn the fixer off in `GOFIX` and add it to the table above |
 
 ## Versioning
 

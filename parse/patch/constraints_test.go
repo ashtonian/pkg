@@ -26,8 +26,8 @@ func constraintParseErrors(err error) []*core.ParseError {
 		}
 		return out
 	}
-	var parsed *core.ParseError
-	if errors.As(err, &parsed) {
+	parsed, ok := errors.AsType[*core.ParseError](err)
+	if ok {
 		return []*core.ParseError{parsed}
 	}
 	return nil

@@ -192,7 +192,6 @@ func TestNewMapProvider(t *testing.T) {
 		{"db..host": "x"},
 		{"db": "x", "db-x": "y", "db.host": "z"},
 	} {
-		bad := bad
 		p, err := NewMapProvider(func(context.Context) (map[string]any, error) { return bad, nil }, ".")
 		require.NoError(t, err)
 		_, err = Load[cfg](t.Context(), WithBaseProvider(p, nil), WithAllowUnknownKeys())

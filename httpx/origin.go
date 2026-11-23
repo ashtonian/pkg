@@ -24,8 +24,8 @@ type Origin struct {
 func ParseOrigin(rawURL string) (Origin, error) {
 	u, err := url.Parse(rawURL)
 	if err != nil {
-		var urlErr *url.Error
-		if errors.As(err, &urlErr) {
+		urlErr, ok := errors.AsType[*url.Error](err)
+		if ok {
 			err = urlErr.Err // url.Error's text quotes the whole input
 		}
 		return Origin{}, fmt.Errorf("origin: not a valid URL: %w", err)
