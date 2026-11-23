@@ -1,5 +1,5 @@
 // Client ⇔ server wire contract. testdata/sdk_wire.json records requests
-// the Go client built and the answers parse's handlers gave them
+// as the Go client builds them and the answers parse's handlers gave them
 // (parse/sdk_wire_fixture_test.go). replay serves those answers only to a
 // request equal to the recorded one, so these tests hold the SDK to the
 // server's requests and shapes rather than to its own types.
@@ -883,7 +883,7 @@ describe("request", () => {
 
   // parse serves no create, get or delete, so the corpus has no exchange of
   // one; replaying parse's recorded exchanges through request holds its path,
-  // key segments, body and answers to the requests the Go client built and
+  // key segments, body and answers to the requests the Go client builds and
   // the answers the Go handlers gave.
   it("sends the recorded requests and reads the recorded answers as patch, list and schema read them", async () => {
     const recordedQuery = (call: WireCall) =>

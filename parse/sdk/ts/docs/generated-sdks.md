@@ -1,6 +1,6 @@
 # Generated SDKs
 
-[SDK README](../README.md) · [Go client](../../../client/README.md) · [Integrations](../../../docs/integrations.md)
+[SDK README](../README.md) · [Go client for generated SDKs](../../../client/README.md#for-generated-sdks) · [Integrations](../../../docs/integrations.md)
 
 A generator that emits a TypeScript SDK for a server built on parse, from an OpenAPI document, the Go types or a schema of its own, keeps what is specific to that API: its types and a thin binding of each operation. It takes everything else from `@ashtonian/parse`: the transport, the operations parse defines, a request method for the routes parse does not, the errors, cursor iteration and validation. The generated code then holds no second HTTP client, no second encoding of parse's query grammar and no second error model, so nothing in it drifts from the server's contract, which this package is tested against.
 
@@ -98,4 +98,4 @@ A retry wrapper is a `fetch` too. It decides which requests are safe to repeat: 
 
 ## A generated Go SDK
 
-A generated Go SDK builds on [`parse/client`](../../../client/README.md), this package's Go counterpart. What such an SDK keeps and what it takes from there is in that README's section for generated SDKs.
+A generated Go SDK builds on [`parse/client`](../../../client/README.md), this package's Go counterpart. What such an SDK keeps and what it takes from there is in that README's [For generated SDKs](../../../client/README.md#for-generated-sdks).

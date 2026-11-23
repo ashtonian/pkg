@@ -95,6 +95,7 @@ SELECT "devices"."id", "devices"."tenant_id", "devices"."name", "devices"."statu
 | Build a patch in code instead of a JSON body | `MergePatchMap`, `ServerMergePatchMap`, `ValidateOperations`, `ValidateServerOperations` | [Patches](docs/patches.md) |
 | Call the API from TypeScript | `createClient` in `sdk/ts` | [Client integration](docs/integrations.md#typescript-client) |
 | Call the API from Go: typed filters, sorts, list parameters, merge and JSON patches; pages, patch answers, coded errors and schema documents decoded | `parse/client`, a standard-library module of its own | [Go client](docs/integrations.md#go-client) |
+| Generate an SDK for a parse-based API: types and a thin binding per operation over the shared runtime | `createClient` and `request` in `sdk/ts`; `parse/client` | [Generated TypeScript SDKs](sdk/ts/docs/generated-sdks.md), [generated Go SDKs](client/README.md#for-generated-sdks) |
 
 Use this package when a resource API needs validated user-controlled query/update expressions. Keep hand-written SQL for workflows that require a different query model; the lower-level AST, schemas, and SQL fragments can be composed independently.
 
