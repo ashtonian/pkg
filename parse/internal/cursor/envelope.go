@@ -3,13 +3,17 @@ package cursor
 import (
 	"bytes"
 	"encoding/base64"
+	"errors"
 	"fmt"
+	"math"
 
 	"github.com/vmihailenco/msgpack/v5"
 )
 
 // envelope is the wire form of a cursor: a MessagePack map holding the
-// format generation and the caller's payload, and nothing else.
+// format generation and the caller's payload, and nothing else. Encode writes
+// it through these tags and readEnvelope reads the same two members. The
+// envelope is the same in every generation: a format change is the payload's.
 type envelope[T any] struct {
 	// Generation is the caller's cursor format version. Checked on Decode via
 	// [ExpectGeneration]; a mismatch yields [ErrCursorGeneration].
@@ -60,16 +64,21 @@ func ExpectGeneration(g uint32) DecodeOption {
 
 // Decode parses an opaque string back into its payload and verifies the
 // configured generation. A malformed token is [ErrInvalidCursor]; a token of
-// another generation is [ErrCursorGeneration]. Decode never panics.
+// another generation is [ErrCursorGeneration], whatever its payload holds.
+// Decode never panics.
 //
-// The MessagePack structure is checked before decoding: a declared container
-// or payload length longer than the input that remains, or a map that names
-// a key twice, is ErrInvalidCursor, so decoding allocates at most in
-// proportion to the cursor's size. Bound the cursor's length before calling.
+// The whole token's MessagePack structure is checked first: a declared
+// container or payload length longer than the input that remains, or a map
+// that names a key twice, is ErrInvalidCursor, so decoding allocates at most
+// in proportion to the cursor's size. Bound the cursor's length before
+// calling.
 //
-// The envelope must be a map, and no struct in the token may carry a member
-// its Go type does not declare: the generation is the format's version, and
-// an encoder of this generation writes nothing else.
+// The envelope must be a map holding the payload, at most a generation (an
+// integer below 2^32), and nothing else. The generation is compared before
+// the payload is decoded. Then no struct in the payload may carry a member its
+// Go type does not declare: the generation is the format's version, and an
+// encoder of this generation writes nothing else, so a caller that adds,
+// removes or retypes a payload member must mint a new generation.
 //
 // An empty cursor is caller-semantic (first page vs error), so Decode does not
 // special-case it — check for the empty cursor before calling.
@@ -83,43 +92,132 @@ func Decode[T any](cur string, opts ...DecodeOption) (T, error) {
 	if err != nil {
 		return zero, fmt.Errorf("%w: base64 decode: %v", ErrInvalidCursor, err)
 	}
-	env, err := decodeGuarded[T](data)
+	env, err := readEnvelope(data)
 	if err != nil {
-		return zero, err
+		return zero, fmt.Errorf("%w: %w", ErrInvalidCursor, err)
 	}
-	if cfg.checkGeneration && env.Generation != cfg.generation {
+	if cfg.checkGeneration && env.generation != cfg.generation {
 		return zero, ErrCursorGeneration
 	}
-	return env.Payload, nil
+	return decodeGuarded[T](env.payload)
 }
 
-// decodeGuarded is [decodeEnvelope] behind a recover. The structural checks
+// rawEnvelope is an envelope whose payload is still encoded.
+type rawEnvelope struct {
+	generation uint32
+	payload    []byte
+}
+
+var errGeneration = errors.New("the generation is not an integer from 0 to 2^32-1")
+
+// readEnvelope walks the whole token, as boundsWalker checks every value, and
+// splits its envelope into the generation and the payload's encoding, without
+// decoding the payload. A member name is read as msgpack reads a struct's
+// (memberName).
+func readEnvelope(data []byte) (rawEnvelope, error) {
+	var env rawEnvelope
+	w := boundsWalker{data: data}
+	n, err := w.mapHeader(0)
+	if errors.Is(err, errNotMap) {
+		return env, errors.New("the envelope is not a map")
+	}
+	if err != nil {
+		return env, err
+	}
+	var hasGeneration, hasPayload bool
+	for range n {
+		keyStart := w.pos
+		err = w.value(1)
+		if err != nil {
+			return env, err
+		}
+		key := data[keyStart:w.pos]
+		valueStart := w.pos
+		err = w.value(1)
+		if err != nil {
+			return env, err
+		}
+		value := data[valueStart:w.pos]
+
+		name, ok := memberName(key)
+		switch {
+		case !ok:
+			return env, fmt.Errorf("the envelope has a key of MessagePack type 0x%02x", key[0])
+		case string(name) == "g" && !hasGeneration:
+			env.generation, err = readGeneration(value)
+			if err != nil {
+				return env, err
+			}
+			hasGeneration = true
+		case string(name) == "p" && !hasPayload:
+			env.payload = value
+			hasPayload = true
+		case string(name) == "g", string(name) == "p":
+			return env, fmt.Errorf("the envelope names %q twice", name)
+		default:
+			return env, fmt.Errorf("the envelope has no member %q", name)
+		}
+	}
+	err = w.end()
+	if err != nil {
+		return env, err
+	}
+	if !hasPayload {
+		return env, errors.New("the envelope holds no payload")
+	}
+	return env, nil
+}
+
+// readGeneration reads one encoded integer from 0 to 2^32-1, in any of
+// MessagePack's integer encodings. msgpack would wrap a wider or negative
+// value into a uint32; a generation that is not one is malformed.
+func readGeneration(enc []byte) (uint32, error) {
+	c, body := enc[0], enc[1:]
+	switch {
+	case c <= 0x7f: // positive fixint
+		return uint32(c), nil
+	case c >= 0xcc && c <= 0xcf: // uint8 to uint64
+	case c >= 0xd0 && c <= 0xd3 && body[0]&0x80 == 0: // non-negative int8 to int64
+	default:
+		return 0, errGeneration
+	}
+	// The walk left exactly the integer's big-endian bytes in body.
+	var v uint64
+	for _, b := range body {
+		v = v<<8 | uint64(b)
+	}
+	if v > math.MaxUint32 {
+		return 0, errGeneration
+	}
+	return uint32(v), nil
+}
+
+// decodeGuarded is [decodePayload] behind a recover. The structural checks
 // close every panic known in the decoder; a reflective third-party decoder
 // fed request bytes still must not take the caller down with it.
-func decodeGuarded[T any](data []byte) (env envelope[T], err error) {
+func decodeGuarded[T any](data []byte) (payload T, err error) {
 	defer func() {
-		if r := recover(); r != nil {
-			env, err = envelope[T]{}, fmt.Errorf("%w: msgpack decode: %v", ErrInvalidCursor, r)
+		r := recover()
+		if r != nil {
+			var zero T
+			payload, err = zero, fmt.Errorf("%w: msgpack decode: %v", ErrInvalidCursor, r)
 		}
 	}()
-	return decodeEnvelope[T](data)
+	return decodePayload[T](data)
 }
 
-func decodeEnvelope[T any](data []byte) (envelope[T], error) {
-	var env envelope[T]
-	if err := checkMsgpackBounds(data); err != nil {
-		return env, fmt.Errorf("%w: %v", ErrInvalidCursor, err)
-	}
-	if !isMap(data[0]) {
-		return env, fmt.Errorf("%w: the envelope is not a map", ErrInvalidCursor)
-	}
+// decodePayload decodes an envelope's payload, refusing a member that no
+// struct of T declares.
+func decodePayload[T any](data []byte) (T, error) {
+	var payload T
 	dec := msgpack.GetDecoder()
 	dec.Reset(bytes.NewReader(data))
 	dec.DisallowUnknownFields(true)
-	err := dec.Decode(&env)
+	err := dec.Decode(&payload)
 	msgpack.PutDecoder(dec)
 	if err != nil {
-		return env, fmt.Errorf("%w: msgpack decode: %v", ErrInvalidCursor, err)
+		var zero T
+		return zero, fmt.Errorf("%w: msgpack decode: %w", ErrInvalidCursor, err)
 	}
-	return env, nil
+	return payload, nil
 }

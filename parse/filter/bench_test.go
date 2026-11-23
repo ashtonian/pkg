@@ -245,3 +245,19 @@ func BenchmarkCursorRoundTrip(b *testing.B) {
 		}
 	}
 }
+
+func BenchmarkDecodeCursor(b *testing.B) {
+	encoded, err := filter.EncodeCursor(&filter.PageToken{Fields: []filter.CursorField{
+		{Name: "created_at", Value: "2026-01-01T00:00:00Z", Direction: filter.SortDesc},
+		{Name: "id", Value: int64(9007199254740995), Direction: filter.SortDesc},
+	}})
+	if err != nil {
+		b.Fatal(err)
+	}
+	for b.Loop() {
+		_, err = filter.DecodeCursor(encoded)
+		if err != nil {
+			b.Fatal(err)
+		}
+	}
+}

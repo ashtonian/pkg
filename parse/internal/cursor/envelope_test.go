@@ -71,9 +71,8 @@ func TestEnvelopeMalformed(t *testing.T) {
 	}
 }
 
-// Tokens minted before the envelope lost its expiry and tenant members. The
-// encoder never wrote either, so the bytes are unchanged and these tokens are
-// still what Encode produces.
+// A token's wire bytes are pinned: Encode writes exactly these, and Decode
+// reads them back.
 func TestEncodedBytesArePinned(t *testing.T) {
 	tests := []struct {
 		name  string
@@ -163,8 +162,7 @@ func TestDecodeRefusesRepeatedMembers(t *testing.T) {
 }
 
 // A member no struct of the token declares, at any level, is refused, and so
-// is an envelope that is not a map. The expiry and tenant members an earlier
-// envelope defined are undefined members now.
+// is an envelope that is not a map or holds no payload.
 func TestDecodeRefusesUndefinedMembers(t *testing.T) {
 	onePayload := cat([]byte{0x81}, fixstr("f"), []byte{0x91, 0x83}, fixstr("n"), fixstr("id"), fixstr("v"), fixstr("a"), fixstr("d"), fixstr("asc"))
 
@@ -172,13 +170,16 @@ func TestDecodeRefusesUndefinedMembers(t *testing.T) {
 		name string
 		wire []byte
 	}{
-		{"undefined envelope member", cat([]byte{0x83}, fixstr("g"), []byte{0x03}, fixstr("p"), onePayload, fixstr("z"), []byte{0x01})},
-		{"former expiry member", cat([]byte{0x83}, fixstr("g"), []byte{0x03}, fixstr("e"), []byte{0x01}, fixstr("p"), onePayload)},
-		{"former tenant member", cat([]byte{0x83}, fixstr("g"), []byte{0x03}, fixstr("h"), []byte{0x09}, fixstr("p"), onePayload)},
+		{"undefined envelope member z", cat([]byte{0x83}, fixstr("g"), []byte{0x03}, fixstr("p"), onePayload, fixstr("z"), []byte{0x01})},
+		{"undefined envelope member e", cat([]byte{0x83}, fixstr("g"), []byte{0x03}, fixstr("e"), []byte{0x01}, fixstr("p"), onePayload)},
+		{"undefined envelope member h", cat([]byte{0x83}, fixstr("g"), []byte{0x03}, fixstr("h"), []byte{0x09}, fixstr("p"), onePayload)},
+		{"integer envelope key", cat([]byte{0x83}, fixstr("g"), []byte{0x03}, fixstr("p"), onePayload, []byte{0x01, 0x01})},
 		{"undefined payload member", cat([]byte{0x82}, fixstr("g"), []byte{0x03}, fixstr("p"), cat([]byte{0x82}, onePayload[1:], fixstr("x"), []byte{0xc3}))},
 		{"undefined field member", cat([]byte{0x82}, fixstr("g"), []byte{0x03}, fixstr("p"), cat([]byte{0x81}, fixstr("f"), []byte{0x91, 0x84}, fixstr("n"), fixstr("id"), fixstr("v"), fixstr("a"), fixstr("d"), fixstr("asc"), fixstr("w"), []byte{0x01}))},
 		{"envelope as an array", cat([]byte{0x92, 0x03}, onePayload)},
 		{"envelope as nil", []byte{0xc0}},
+		{"envelope without a payload", cat([]byte{0x81}, fixstr("g"), []byte{0x03})},
+		{"empty envelope", []byte{0x80}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -190,6 +191,58 @@ func TestDecodeRefusesUndefinedMembers(t *testing.T) {
 	// The same payload in a well-formed envelope decodes.
 	_, err := cursor.Decode[pageToken](b64(cat([]byte{0x82}, fixstr("g"), []byte{0x03}, fixstr("p"), onePayload)), cursor.ExpectGeneration(3))
 	assert.NoError(t, err)
+}
+
+// The generation is compared before the payload is decoded: a token of
+// another generation is ErrCursorGeneration whatever its payload holds, and
+// only a token of the expected generation is held to the payload's members.
+// The token's structure and the envelope's own members are checked first,
+// whatever the generation.
+func TestDecodeComparesGenerationBeforePayload(t *testing.T) {
+	field := cat([]byte{0x83}, fixstr("n"), fixstr("id"), fixstr("v"), fixstr("a"), fixstr("d"), fixstr("asc"))
+	fieldWithMember := cat([]byte{0x84}, fixstr("n"), fixstr("id"), fixstr("v"), fixstr("a"), fixstr("d"), fixstr("asc"), fixstr("w"), []byte{0x01})
+	payload := cat([]byte{0x81}, fixstr("f"), []byte{0x91}, field)
+	payloadWithMember := cat([]byte{0x82}, fixstr("f"), []byte{0x91}, field, fixstr("x"), []byte{0xc3})
+	payloadWithFieldMember := cat([]byte{0x81}, fixstr("f"), []byte{0x91}, fieldWithMember)
+	env := func(generation []byte, p []byte) []byte {
+		return cat([]byte{0x82}, fixstr("g"), generation, fixstr("p"), p)
+	}
+
+	tests := []struct {
+		name string
+		wire []byte
+		want error
+	}{
+		{"a newer generation with an undefined payload member", env([]byte{0x04}, payloadWithMember), cursor.ErrCursorGeneration},
+		{"an older generation with an undefined field member", env([]byte{0x02}, payloadWithFieldMember), cursor.ErrCursorGeneration},
+		{"another generation with the expected members", env([]byte{0x04}, payload), cursor.ErrCursorGeneration},
+		{"another generation with a string payload", env([]byte{0x04}, fixstr("x")), cursor.ErrCursorGeneration},
+		{"another generation with an array payload", env([]byte{0x04}, []byte{0x93, 0x01, 0x02, 0x03}), cursor.ErrCursorGeneration},
+		{"another generation as a uint64", env([]byte{0xcf, 0, 0, 0, 0, 0, 0, 0, 0x04}, payloadWithMember), cursor.ErrCursorGeneration},
+		{"no generation", cat([]byte{0x81}, fixstr("p"), payloadWithMember), cursor.ErrCursorGeneration},
+		{"the expected generation with an undefined payload member", env([]byte{0x03}, payloadWithMember), cursor.ErrInvalidCursor},
+		{"the expected generation with an undefined field member", env([]byte{0x03}, payloadWithFieldMember), cursor.ErrInvalidCursor},
+		{"the expected generation with a string payload", env([]byte{0x03}, fixstr("x")), cursor.ErrInvalidCursor},
+		{"another generation with an undefined envelope member", cat([]byte{0x83}, fixstr("g"), []byte{0x04}, fixstr("p"), payload, fixstr("e"), []byte{0x01}), cursor.ErrInvalidCursor},
+		{"another generation with a repeated payload member", env([]byte{0x04}, cat([]byte{0x82}, fixstr("f"), []byte{0x90}, fixstr("f"), []byte{0x90})), cursor.ErrInvalidCursor},
+		{"another generation with a hostile payload length", env([]byte{0x04}, []byte{0xdd, 0xff, 0xff, 0xff, 0xff}), cursor.ErrInvalidCursor},
+		{"a repeated generation", cat([]byte{0x83}, fixstr("g"), []byte{0x04}, fixstr("g"), []byte{0x03}, fixstr("p"), payload), cursor.ErrInvalidCursor},
+		{"a generation beyond 32 bits", env([]byte{0xcf, 0, 0, 0, 1, 0, 0, 0, 0x03}, payload), cursor.ErrInvalidCursor},
+		{"a negative generation", env([]byte{0xff}, payload), cursor.ErrInvalidCursor},
+		{"a string generation", env(fixstr("3"), payload), cursor.ErrInvalidCursor},
+		{"a nil generation", env([]byte{0xc0}, payload), cursor.ErrInvalidCursor},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := cursor.Decode[pageToken](b64(tt.wire), cursor.ExpectGeneration(3))
+			require.Error(t, err)
+			assert.ErrorIs(t, err, tt.want)
+		})
+	}
+
+	got, err := cursor.Decode[pageToken](b64(env([]byte{0xcd, 0x00, 0x03}, payload)), cursor.ExpectGeneration(3))
+	require.NoError(t, err, "the expected generation as a uint16")
+	assert.Equal(t, pageToken{Fields: []pageField{{Name: "id", Value: "a", Direction: "asc"}}}, got)
 }
 
 func fixstr(s string) []byte { return append([]byte{0xa0 | byte(len(s))}, s...) }
