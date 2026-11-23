@@ -776,10 +776,10 @@ type unkeyedBase struct {
 
 type unkeyedSection struct {
 	unkeyedBase `koanf:",squash"`
-	Host        string        `koanf:"host"`
-	Hook        string        `koanf:"-"`
-	Target      *unkeyedTarget   `koanf:"-"`
-	Call        func() string `koanf:"-"`
+	Host        string         `koanf:"host"`
+	Hook        string         `koanf:"-"`
+	Target      *unkeyedTarget `koanf:"-"`
+	Call        func() string  `koanf:"-"`
 }
 
 type unkeyedConfig struct {
