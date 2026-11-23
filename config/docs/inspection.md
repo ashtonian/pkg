@@ -175,7 +175,13 @@ finite values load back with their sensitive values intact.
 `TreeFunc(cfg, leaf)` passes each leaf's actual key, declared `Field` and
 detached tree value to a policy function. Its return value replaces that
 leaf. Sensitive maps, lists and interfaces reach the callback once, whole,
-so a policy can withhold their keys too. Empty and nil containers are leaves;
+so a policy can withhold their keys too. A key a `,remain` field collects is
+a key of its section in every tree and printed listing (`plugins.foo`),
+judged as a map entry is, its `Field` the remain field's; a sensitive
+remain field reaches the callback once, whole, at `section[*]`, and its
+result is the section's `[*]` entry. `PrintRedacted`, `RedactedMap` and
+`RedactedTree` show it as one `[REDACTED]` value there; `Tree` withholds
+nothing and shows each key it collects. Empty and nil containers are leaves;
 a nil callback is identity, and is `Tree`. Fields inside a dynamic interface
 retain the interface's declared metadata. A redaction callback can return
 `[REDACTED]` when `f.Sensitive && value != nil`. Because a callback judges

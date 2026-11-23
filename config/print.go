@@ -3,7 +3,6 @@ package config
 import (
 	"cmp"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -154,9 +153,12 @@ type printEntry struct {
 // in interfaces and nested to any depth, are expanded element by element, so
 // no container is printed whole while something inside it is unchecked; a
 // sensitive map, list or interface is one redacted value, since the keys it
-// holds may themselves be secrets; a value printed whole — a struct decoded
-// from text or by its own decoder, or a slice of them — is redacted when its
-// type could hold a sensitive value. No option prints a sensitive value.
+// holds may themselves be secrets. A key a koanf:",remain" field collects is
+// a key of its struct (plugins.foo), judged as a map entry is, and a
+// sensitive remain field is one redacted value at section[*]. A value
+// printed whole — a struct decoded from text or by its own decoder, or a
+// slice of them — is redacted when its type could hold a sensitive value.
+// No option prints a sensitive value.
 //
 // [WithFormat] selects FormatTable (the default: one row per key), FormatJSON
 // (an object of key → value text) or FormatYAML (the config nested as it is
@@ -298,21 +300,10 @@ func (w *entryWalk) walkStruct(val reflect.Value, prefix keyPath, under site) {
 		w.err = err
 		return
 	}
-	for _, f := range schema.fields {
-		fv, err := f.value(val)
-		if errors.Is(err, gowalker.ErrMissing) {
-			continue
+	for m, vals := range schema.members(side{v: val, present: true}, side{}, schema.remainWhole(under.sensitive)) {
+		if vals[0].IsValid() {
+			w.walkValue(prefix.child(m.seg), vals[0], m.site(under))
 		}
-		if err != nil {
-			w.err = fmt.Errorf("%w: %w", ErrSchema, err)
-			return
-		}
-		w.walkValue(prefix.field(f.key), fv, site{
-			named:            f.named,
-			desc:             f.sf.Tag.Get("desc"),
-			sensitive:        under.sensitive || f.tagged,
-			beneathInterface: under.beneathInterface,
-		})
 	}
 }
 

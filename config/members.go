@@ -259,6 +259,31 @@ func (m member) frame(f frame) frame {
 	return f.entry(m.seg.name, r.sf.Type.Elem())
 }
 
+// site is s, where m's branch sits, stepped into m: what a printed entry
+// inherits, as frame is for a comparison. A key the remain field collects
+// sits as a map entry does, named like a credential or not by its key.
+func (m member) site(s site) site {
+	if m.kind == memberField {
+		return site{
+			named:            m.field.named,
+			desc:             m.field.sf.Tag.Get("desc"),
+			sensitive:        s.sensitive || m.field.tagged,
+			beneathInterface: s.beneathInterface,
+		}
+	}
+	r := m.branch.remain
+	next := site{
+		desc:             r.sf.Tag.Get("desc"),
+		sensitive:        s.sensitive || r.tagged || r.named,
+		beneathInterface: s.beneathInterface,
+	}
+	if m.seg.kind != segAny {
+		next.named = isSensitiveName(m.seg.name) && textCapable(r.sf.Type.Elem())
+		next.keyed = true
+	}
+	return next
+}
+
 // cursor is c, the cursor at m's branch, stepped into m. A remain member
 // named [*] — the field whole, or the pattern of any key it collects — is
 // owned by the remain field and spelled section[*].
