@@ -4,6 +4,7 @@ import (
 	"iter"
 	"reflect"
 	"slices"
+	"strings"
 
 	"github.com/ashtonian/pkg/parse/core"
 	"github.com/ashtonian/pkg/parse/internal/dialect"
@@ -426,6 +427,15 @@ func columnSQL(d dialect.Dialect, table, column, expr string) string {
 // each quoted.
 func qualified(d dialect.Dialect, qualifier, column string) string {
 	return d.QuoteIdent(qualifier) + "." + d.QuoteIdent(column)
+}
+
+// quoteTable is a table name that may name its schema, each part quoted.
+func quoteTable(d dialect.Dialect, table string) string {
+	parts := strings.Split(table, ".")
+	for i, part := range parts {
+		parts[i] = d.QuoteIdent(part)
+	}
+	return strings.Join(parts, ".")
 }
 
 // sql is the SQL that reads the field's column (columnSQL): the document's,

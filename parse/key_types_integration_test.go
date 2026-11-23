@@ -204,6 +204,25 @@ func testKeyTypes(t *testing.T, open func(*testing.T) *sql.DB, d filter.Dialect)
 		}
 	})
 
+	t.Run("resolved outside SQL", func(t *testing.T) {
+		store, lookups := resolvedStores(t, db, d, "kt_prices", "kt_notes", "kt_tags", "kt_price_tags",
+			"kt_ticks", "kt_tick_tags", "kt_readings", "kt_alerts", "kt_reading_tags")
+		assertResolvedFilters(t, db, d, store, lookups, g.prices,
+			`{"tags":"blue"}`, `{"notes":{"$some":{"id":"n3"}}}`, `{"notes":{"$none":{}}}`)
+		assertResolvedFilters(t, db, d, store, lookups, g.notes, `{"price":{"$is":{"name":"big"}}}`)
+		assertResolvedFilters(t, db, d, store, lookups, g.tags,
+			`{"prices":{"$some":{"name":"one"}}}`, `{"prices":{"$in":["1.500","12345678901234567891"]}}`, `{"prices":"12345678901234567891"}`,
+			`{"ticks":{"$in":["`+t1Elsewhere+`"]}}`, `{"readings":{"$some":{"device_id":"d2"}}}`, `{"readings":{"$none":{"at":"`+ktText(ktT1)+`"}}}`)
+		assertResolvedFilters(t, db, d, store, lookups, g.ticks, `{"tags":"blue"}`)
+		assertResolvedFilters(t, db, d, store, lookups, g.readings,
+			`{"alerts":{"$some":{"id":"a2"}}}`, `{"tags":"red"}`, `{"tags":{"$ne":"red"}}`)
+		assertResolvedFilters(t, db, d, store, lookups, g.alerts, `{"reading":{"$null":true}}`, `{"reading":{"$is":{"value":2}}}`)
+		assertResolvedIncludes(t, db, d, lookups, g.prices, "notes", "tags")
+		assertResolvedIncludes(t, db, d, lookups, g.tags, "prices", "ticks", "readings")
+		assertResolvedIncludes(t, db, d, lookups, g.ticks, "tags")
+		assertResolvedIncludes(t, db, d, lookups, g.readings, "alerts", "tags")
+	})
+
 	t.Run("includes and facets", func(t *testing.T) {
 		prices := crxPage(t, db, d, g.prices, url.Values{filter.ParamInclude: {"notes,tags"}, filter.ParamFacets: {"tags"}})
 		assert.Equal(t, map[string][]string{"1.5": {"n1", "n3"}, "12345678901234567890": {"n2"}, "12345678901234567891": {"n4"}}, prices.Relations["notes"])

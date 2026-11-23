@@ -136,6 +136,22 @@ func testCompositeKeyRelations(t *testing.T, open func(*testing.T) *sql.DB, d fi
 		}
 	})
 
+	t.Run("resolved outside SQL", func(t *testing.T) {
+		store, lookups := resolvedStores(t, db, d, "crx_bins", "crx_stock", "crx_moves", "crx_tags", "crx_stock_tags")
+		assertResolvedFilters(t, db, d, store, lookups, g.stock,
+			`{"moves":{"$some":{"code":"in"}}}`, `{"moves":{"$none":{}}}`, `{"tags":{"$some":{"label":"Blue"}}}`,
+			`{"tags":{"$none":{"id":"red"}}}`, `{"tags":"red"}`, `{"tags":{"$nin":["red"]}}`, `{"tags":{"$null":true}}`,
+			`{"bin":{"$is":{"name":"north"}}}`)
+		assertResolvedFilters(t, db, d, store, lookups, g.moves,
+			`{"stock":{"$is":{"name":"bolt"}}}`, `{"stock":{"$is_not":{"name":"bolt"}}}`, `{"stock":{"$null":true}}`, `{"stock":{"$null":false}}`)
+		assertResolvedFilters(t, db, d, store, lookups, g.bins, `{"stock":{"$some":{"name":"nut"}}}`, `{"stock":{"$none":{}}}`, `{"stock":{"$some":{"moves":{"$none":{}}}}}`)
+		assertResolvedFilters(t, db, d, store, lookups, g.tags,
+			`{"stock":{"$some":{"warehouse_id":2}}}`, `{"stock":{"$some":{"name":"nut"}}}`, `{"stock":{"$none":{"sku":"a"}}}`)
+		assertResolvedIncludes(t, db, d, lookups, g.stock, "moves", "tags")
+		assertResolvedIncludes(t, db, d, lookups, g.bins, "stock")
+		assertResolvedIncludes(t, db, d, lookups, g.tags, "stock")
+	})
+
 	t.Run("includes and facets", func(t *testing.T) {
 		stock := crxPage(t, db, d, g.stock, url.Values{filter.ParamInclude: {"moves,tags"}, filter.ParamFacets: {"tags,moves"}})
 		assert.Equal(t, map[string][]string{`["1","a"]`: {"10", "11"}, `["2","b"]`: {"12"}}, stock.Relations["moves"])

@@ -6,6 +6,8 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
+	"iter"
 	"net/url"
 	"slices"
 	"strings"
@@ -270,19 +272,86 @@ func (l sqlMembershipLookup) LookupFilteredValues(ctx context.Context, lk *filte
 	return l.LookupValues(ctx, lk)
 }
 
+// LookupValues runs the subquery a membership renders for lk; a lookup
+// projecting a key renders as the inner lookup of a probe's WhereKeyMember,
+// and answers a core.Key per row.
 func (l sqlMembershipLookup) LookupValues(_ context.Context, lk *filter.Lookup) ([]any, error) {
 	probe := &filter.FieldSchema{ExternalName: "probe", Column: "probe", DataType: core.FieldTypeString}
+	member, prefix, suffix := lk, `"probe" IN (`, ")"
+	if lk.ProjectKey != nil {
+		member = &filter.Lookup{Table: "probe", Project: "probe", Where: filter.WhereKeyMember(lk.ProjectKey, lk)}
+		columns := make([]string, len(lk.ProjectKey))
+		for i, c := range lk.ProjectKey {
+			columns[i] = `"probe".` + l.d.QuoteIdent(c)
+		}
+		prefix = `"probe" IN (SELECT "probe"."probe" FROM "probe" WHERE (` + strings.Join(columns, ", ") + `) IN (`
+		suffix = "))"
+	}
 	res, err := filter.NewSQLBuilder(&filter.ResourceSchema{Name: "probe"}, l.d).
-		Build(&filter.FilterAST{Root: &filter.FilterNode{Field: probe, Op: filter.OpMember, Member: lk}})
+		Build(&filter.FilterAST{Root: &filter.FilterNode{Field: probe, Op: filter.OpMember, Member: member}})
 	if err != nil {
 		return nil, err
 	}
-	sub := strings.TrimSuffix(strings.TrimPrefix(res.Where, `"probe" IN (`), ")")
+	sub, ok := strings.CutPrefix(res.Where, prefix)
+	require.True(l.t, ok, res.Where)
+	sub, ok = strings.CutSuffix(sub, suffix)
+	require.True(l.t, ok, res.Where)
 	var out []any
 	for _, row := range l.query(l.t, sub, res.Args) {
-		out = append(out, row[0])
+		if lk.ProjectKey == nil {
+			out = append(out, row[0])
+		} else {
+			out = append(out, core.Key(row))
+		}
 	}
 	return out, nil
+}
+
+// LookupPairs runs lk projecting the owner's columns and lk's own as one
+// key, and splits each row into its pair.
+func (l sqlMembershipLookup) LookupPairs(ctx context.Context, lk *filter.Lookup, owner []string) (iter.Seq2[filter.IncludePair, error], error) {
+	// Owner and target may share columns (a has-many whose foreign key is
+	// part of the target's key), so the lookup projects each column once.
+	var columns []string
+	for _, c := range slices.Concat(owner, lookupColumns(lk)) {
+		if !slices.Contains(columns, c) {
+			columns = append(columns, c)
+		}
+	}
+	pairs := *lk
+	pairs.Project, pairs.ProjectKey = "", columns
+	if len(columns) == 1 {
+		pairs.Project, pairs.ProjectKey = columns[0], nil
+	}
+	rows, err := l.LookupValues(ctx, &pairs)
+	if err != nil {
+		return nil, err
+	}
+	part := func(row core.Key, names []string) any {
+		if len(names) == 1 {
+			return row[slices.Index(columns, names[0])]
+		}
+		k := make(core.Key, len(names))
+		for i, c := range names {
+			k[i] = row[slices.Index(columns, c)]
+		}
+		return k
+	}
+	return func(yield func(filter.IncludePair, error) bool) {
+		for _, v := range rows {
+			row, ok := v.(core.Key)
+			if len(columns) == 1 {
+				row, ok = core.Key{v}, true
+			}
+			if !ok {
+				yield(filter.IncludePair{}, fmt.Errorf("pair row %T", v))
+				return
+			}
+			if !yield(filter.IncludePair{Owner: part(row, owner), Target: part(row, lookupColumns(lk))}, nil) {
+				return
+			}
+		}
+	}, nil
 }
 
 func queryRows(t *testing.T, db interface {

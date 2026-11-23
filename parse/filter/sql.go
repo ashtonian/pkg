@@ -128,6 +128,9 @@ type Dialect interface {
 	// constraint over several columns, an include's owners and a relation
 	// patch's pairs render through it.
 	KeyIn(table, alias string, columns []string, types []core.TypeInfo, keys []core.Key, member bool, bind func(any) string) (string, error)
+	// keyIn is KeyIn with each column read as read renders it, table
+	// possibly schema-qualified: a lookup's WhereKeyIn renders through it.
+	keyIn(table string, read func(column string) string, columns []string, types []core.TypeInfo, keys []core.Key, member bool, bind func(any) string) (string, error)
 
 	// KeyOperand renders what a key column, read as expr and typed t,
 	// compares by: the operand a filter's equality on the type compares,

@@ -94,7 +94,7 @@ func correlation(d Dialect, leftAlias string, left []string, rightAlias string, 
 	return strings.Join(terms, " AND ")
 }
 
-// keySetOn is a key set's columns, read as fields of alias, and its keys
+// keySetOn is a key set's columns, each read as read renders it, and its keys
 // with each value normalized as its column's type.
 type keySetOn struct {
 	table  string
@@ -102,7 +102,12 @@ type keySetOn struct {
 	keys   []core.Key
 }
 
-func newKeySet(d Dialect, table, alias string, columns []string, types []core.TypeInfo, keys []core.Key) (keySetOn, error) {
+// aliasColumns reads a column as qualified by alias, or bare without one.
+func aliasColumns(d Dialect, alias string) func(column string) string {
+	return func(column string) string { return columnSQL(d, alias, column, "") }
+}
+
+func newKeySet(table string, read func(column string) string, columns []string, types []core.TypeInfo, keys []core.Key) (keySetOn, error) {
 	if len(columns) == 0 || len(types) != len(columns) {
 		return keySetOn{}, fmt.Errorf("key set on %s types %d of its %d columns", table, len(types), len(columns))
 	}
@@ -111,7 +116,7 @@ func newKeySet(d Dialect, table, alias string, columns []string, types []core.Ty
 		if !core.IsKeyType(types[i].Type) {
 			return keySetOn{}, fmt.Errorf("key set on %s: column %s is %s; a key set compares scalar columns", table, c, types[i].Type)
 		}
-		fields[i] = keyField(c, columnSQL(d, alias, c, ""), types[i])
+		fields[i] = keyField(c, read(c), types[i])
 	}
 	normalized := make([]core.Key, len(keys))
 	for i, k := range keys {
@@ -161,7 +166,13 @@ func (s keySetOn) position(i int) []any {
 // rows of table's own row type (jsonb_populate_recordset), so each
 // position takes its column's type and the key index serves the semi-join.
 func (d PostgresDialect) KeyIn(table, alias string, columns []string, types []core.TypeInfo, keys []core.Key, member bool, bind func(any) string) (string, error) {
-	s, err := newKeySet(d, table, alias, columns, types, keys)
+	return d.keyIn(table, aliasColumns(d, alias), columns, types, keys, member, bind)
+}
+
+// keyIn is KeyIn with each column read as read renders it. table, which
+// may name its schema, types the keys of several columns.
+func (d PostgresDialect) keyIn(table string, read func(column string) string, columns []string, types []core.TypeInfo, keys []core.Key, member bool, bind func(any) string) (string, error) {
+	s, err := newKeySet(table, read, columns, types, keys)
 	if err != nil {
 		return "", err
 	}
@@ -190,7 +201,7 @@ func (d PostgresDialect) KeyIn(table, alias string, columns []string, types []co
 	for i, f := range s.fields {
 		selected[i] = keyOperand(d, keyField(f.ExternalName, qualified(d, "k", f.ExternalName), core.TypeInfo{Type: f.DataType, NumberKind: f.NumberKind}))
 	}
-	return s.row(d) + keyInKeyword(member) + "(SELECT " + strings.Join(selected, ", ") + " FROM jsonb_populate_recordset(NULL::" + d.QuoteIdent(table) +
+	return s.row(d) + keyInKeyword(member) + "(SELECT " + strings.Join(selected, ", ") + " FROM jsonb_populate_recordset(NULL::" + quoteTable(d, table) +
 		", " + bind(string(arr)) + ") AS " + d.QuoteIdent("k") + ")", nil
 }
 
@@ -220,23 +231,28 @@ func pgSetParam(f *FieldSchema, members []any, bind func(any) string) (string, e
 // sides, a date by its calendar day. An unsigned key past SQLite's signed
 // integers is refused.
 func (d SQLiteDialect) KeyIn(table, alias string, columns []string, types []core.TypeInfo, keys []core.Key, member bool, bind func(any) string) (string, error) {
-	s, err := newKeySet(d, table, alias, columns, types, keys)
+	return d.keyIn(table, aliasColumns(d, alias), columns, types, keys, member, bind)
+}
+
+// keyIn is KeyIn with each column read as read renders it.
+func (d SQLiteDialect) keyIn(table string, read func(column string) string, columns []string, types []core.TypeInfo, keys []core.Key, member bool, bind func(any) string) (string, error) {
+	s, err := newKeySet(table, read, columns, types, keys)
 	if err != nil {
 		return "", err
 	}
 	positions := make([][]any, len(s.fields))
 	for i, f := range s.fields {
-		members, err := sqliteSetMembers(f, s.position(i))
+		values, err := sqliteSetMembers(f, s.position(i))
 		if err != nil {
 			return "", fmt.Errorf("key set on %s: %w", table, err)
 		}
-		positions[i], _ = core.AnySlice(members)
+		positions[i], _ = core.AnySlice(values)
 	}
 	var doc any
-	read := make([]string, len(s.fields))
+	operands := make([]string, len(s.fields))
 	if len(s.fields) == 1 {
 		doc = positions[0]
-		read[0] = sqliteSetOperand(d, s.fields[0], "value")
+		operands[0] = sqliteSetOperand(d, s.fields[0], "value")
 	} else {
 		rows := make([][]any, len(s.keys))
 		for k := range s.keys {
@@ -247,14 +263,14 @@ func (d SQLiteDialect) KeyIn(table, alias string, columns []string, types []core
 		}
 		doc = rows
 		for i, f := range s.fields {
-			read[i] = sqliteSetOperand(d, f, "json_extract(value, '$["+strconv.Itoa(i)+"]')")
+			operands[i] = sqliteSetOperand(d, f, "json_extract(value, '$["+strconv.Itoa(i)+"]')")
 		}
 	}
 	arr, err := json.Marshal(doc)
 	if err != nil {
 		return "", fmt.Errorf("key set on %s: %w", table, err)
 	}
-	return s.row(d) + keyInKeyword(member) + "(SELECT " + strings.Join(read, ", ") + " FROM json_each(" + bind(string(arr)) + "))", nil
+	return s.row(d) + keyInKeyword(member) + "(SELECT " + strings.Join(operands, ", ") + " FROM json_each(" + bind(string(arr)) + "))", nil
 }
 
 // sqliteSetOperand is a set member, read as expr from its JSON array, as

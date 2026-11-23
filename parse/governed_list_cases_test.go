@@ -430,11 +430,9 @@ func (m governedMemory) LookupValues(_ context.Context, l *filter.Lookup) ([]any
 	}
 	out := make([]any, len(rows))
 	for i, row := range rows {
-		v, ok := row[l.Project]
-		if !ok {
-			return nil, fmt.Errorf("table %s has no column %q", l.Table, l.Project)
+		if out[i], err = governedProject(l.Table, row, lookupColumns(l)); err != nil {
+			return nil, err
 		}
-		out[i] = v
 	}
 	return out, nil
 }
@@ -443,18 +441,53 @@ func (m governedMemory) LookupFilteredValues(ctx context.Context, l *filter.Look
 	return m.LookupValues(ctx, l)
 }
 
-func (m governedMemory) LookupPairs(_ context.Context, l *filter.Lookup, ownerColumn string) (iter.Seq2[filter.IncludePair, error], error) {
+func (m governedMemory) LookupPairs(_ context.Context, l *filter.Lookup, owner []string) (iter.Seq2[filter.IncludePair, error], error) {
 	rows, err := m.selected(l)
 	if err != nil {
 		return nil, err
 	}
 	return func(yield func(filter.IncludePair, error) bool) {
 		for _, row := range rows {
-			if !yield(filter.IncludePair{Owner: row[ownerColumn], Target: row[l.Project]}, nil) {
+			o, err := governedProject(l.Table, row, owner)
+			if err != nil {
+				yield(filter.IncludePair{}, err)
+				return
+			}
+			target, err := governedProject(l.Table, row, lookupColumns(l))
+			if err != nil {
+				yield(filter.IncludePair{}, err)
+				return
+			}
+			if !yield(filter.IncludePair{Owner: o, Target: target}, nil) {
 				return
 			}
 		}
 	}, nil
+}
+
+// lookupColumns are the columns l projects.
+func lookupColumns(l *filter.Lookup) []string {
+	if l.ProjectKey != nil {
+		return l.ProjectKey
+	}
+	return []string{l.Project}
+}
+
+// governedProject is a row's value of its one column, or a core.Key of a
+// value per column for several, as a lookup answers a projection.
+func governedProject(table string, row map[string]any, columns []string) (any, error) {
+	key := make(core.Key, len(columns))
+	for i, c := range columns {
+		v, ok := row[c]
+		if !ok {
+			return nil, fmt.Errorf("table %s has no column %q", table, c)
+		}
+		key[i] = v
+	}
+	if len(key) == 1 {
+		return key[0], nil
+	}
+	return key, nil
 }
 
 // Tenant columns of two types in one graph, both holding a UUID: a
