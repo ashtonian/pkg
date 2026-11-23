@@ -265,5 +265,8 @@ sets some.
 A tag key another library reads that sits one edit from one of config's is
 listed by the struct declaring the field, from a `ForeignTagKeys() []string`
 method ([`ForeignTagDeclarer`](https://pkg.go.dev/github.com/ashtonian/pkg/config#ForeignTagDeclarer)),
-so every tier reads the same allowance; a struct embedding it inherits the
-list with the method.
+so every tier reads the same allowance. The list covers the fields of the
+struct that declares the method: a struct embedding it is promoted the
+method but not the allowance, so its own fields' keys are still checked
+unless it declares a `ForeignTagKeys` of its own. The method must be pure:
+it may run more than once for one type.
