@@ -31,7 +31,7 @@ Start with the [runnable package example](../README.md#quick-start). The focused
 |------|----------------|
 | `patch.go` | `Parser` — RFC 6902 validation and value normalization |
 | `merge.go` | `ParseMergePatch` — RFC 7396 |
-| `apply.go` | `Applier` — a parsed patch applied to a Go value: direct field sets, or T's JSON document; `ErrUnparsed` |
+| `apply.go` | `Applier` — a parsed patch applied to a Go value: direct field sets, or T's JSON document, written to a working copy that copies each embedded parent before writing through it; `ErrUnparsed` |
 | `apply_jsonpatch.go` | RFC 6902 runs through json-patch with one copy budget, and its empty-key escape |
 | `schema.go` | `PatchOp` and the operation set, `PatchSchema` and its versioned path set, `PathSchema`, `PatchOperation`, `ParsedPatch` |
 | `generate.go` | Schema generation from struct tags; default operations |
@@ -69,7 +69,7 @@ A path is checked against the schema before anything compiles, and a request's p
 
 ## Dependencies
 
-- *Imports*: `parse/core`, `parse/internal/{dialect,jsonmerge,rfc6902}`, `jsonvalue` (declared JSON columns decode as rows scan them), `github.com/evanphx/json-patch/v5` (RFC 6902 application)
+- *Imports*: `parse/core`, `parse/internal/{dialect,jsonmerge,rfc6902}`, `gowalker` (type text in errors), `jsonvalue` (declared JSON columns decode as rows scan them), `github.com/evanphx/json-patch/v5` (RFC 6902 application)
 - *Imported by*: `parse`, the example server, and servers that apply patches themselves
 - *Package boundary*: standalone Parse module
 

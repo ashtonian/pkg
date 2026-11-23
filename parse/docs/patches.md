@@ -285,6 +285,8 @@ Keep undeclared document codecs stable across round trips. Do not use top-level 
 
 For top-level schema fields, replace/remove can address a field whose current JSON encoding omits it through `omitempty`; these resource-field operations match direct typed application. Nested JSON Pointers keep strict existence rules. A nil pointer target is an application error.
 
+`ApplyValidatedPatch` writes a copy of the value it is given, never the value or anything it points to. Before it writes a field promoted from an embedded pointer, the copy gets its own copy of that parent, allocated when the pointer is nil, as encoding/json allocates it; later writes through the same parent land in that copy. The caller's row, and any pointer it kept to an embedded parent, keep their values whether the patch succeeds or fails part-way. Reflection can neither allocate nor copy an unexported embedded pointer, so an operation writing a field promoted through one is E2076; export the embedded type, or embed it by value.
+
 Document fallback decodes only changed top-level fields. Untouched values retain their hidden/private state and do not invoke custom decoders. Touched composite fields are reconstructed from their codec data, so custom nonserialized state in a modified document is not a storage contract.
 
 JSON Patch `test` checks the supplied document shape; missing struct members are not filled in to make a test succeed. A parsed operation is not a guarantee of application success: tests, missing runtime paths, copy budgets, and destination validation can still reject it. Persist read/modify/write results under a transaction, row lock, or version predicate appropriate to your storage.
