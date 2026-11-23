@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.1](https://github.com/ashtonian/pkg/compare/httpx/codec/proto/v0.2.0...httpx/codec/proto/v0.2.1) (2026-11-23)
+
+
+### Bug Fixes
+
+* **httpx:** per-call codec negotiation, hedging trained on hedged requests, cache Lifecycle, MessagePack number fidelity ([#355](https://github.com/ashtonian/pkg/issues/355)) ([4e3cf4a](https://github.com/ashtonian/pkg/commit/4e3cf4aa8d5eb6a3082ccb3164ffbde1d7838b6a)), refs [#240](https://github.com/ashtonian/pkg/issues/240)
+
 ## [0.2.0](https://github.com/ashtonian/pkg/compare/httpx/codec/proto/v0.1.0...httpx/codec/proto/v0.2.0) (2026-11-06)
 
 ### Dependencies
