@@ -76,7 +76,7 @@ func TestBuildList_GovernedRelationsFollowTheRow(t *testing.T) {
 		}
 		assert.Equal(t, 1, bound, "A is bound once, by the governance tree: relations bind no tenant")
 
-		queries, err := r.IncludeQueries(plan, []any{"a1", "b1"})
+		queries, err := r.IncludeQueries(plan, []parse.Key{{"a1"}, {"b1"}})
 		require.NoError(t, err)
 		require.Len(t, queries, 2)
 		for _, q := range queries {

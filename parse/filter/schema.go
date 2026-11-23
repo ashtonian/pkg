@@ -34,6 +34,10 @@ const (
 	// OpMember is a membership constraint (PolicyConstraint.Member): the
 	// field is among the values a Lookup projects. Only policies build it.
 	OpMember FilterOperator = "member"
+	// OpKeyIn is a key set (PolicyConstraint.Fields under OpIn): the row's
+	// key columns, together, equal one of the keys a KeySet lists. Only
+	// policies build it.
+	OpKeyIn FilterOperator = "key_in"
 	// OpUnknown is SQL's unknown: no row satisfies it, nor its negation. It
 	// names no field. Only policies build it (UnknownConstraint,
 	// PolicyConstraint.UnknownIfInvalid, a membership resolved without a
@@ -267,6 +271,9 @@ type FilterNode struct {
 
 	// Member is the set an OpMember node tests Field against.
 	Member *Lookup
+
+	// Keys is the set an OpKeyIn node tests its key columns against.
+	Keys *KeySet
 }
 
 // FilterAST is the root of a parsed filter tree.

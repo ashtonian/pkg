@@ -179,12 +179,16 @@ const SchemaVersion = 1
 // SchemaResponse is the schema document of one resource.
 type SchemaResponse struct {
 	// Version is SchemaVersion.
-	Version  int                   `json:"version"`
-	Resource string                `json:"resource"`
-	Filter   *FilterSchemaResponse `json:"filter,omitempty"`
-	Patch    *PatchSchemaResponse  `json:"patch,omitempty"`
-	Sort     *SortSchemaResponse   `json:"sort,omitempty"`
-	Search   *SearchSchemaResponse `json:"search,omitempty"`
+	Version  int    `json:"version"`
+	Resource string `json:"resource"`
+	// Key are the key columns, in key order: together they name one row, and
+	// every list ends its keyset with them. Absent for a schema registered
+	// without a key.
+	Key    []string              `json:"key,omitempty"`
+	Filter *FilterSchemaResponse `json:"filter,omitempty"`
+	Patch  *PatchSchemaResponse  `json:"patch,omitempty"`
+	Sort   *SortSchemaResponse   `json:"sort,omitempty"`
+	Search *SearchSchemaResponse `json:"search,omitempty"`
 }
 
 // FilterSchemaResponse is the JSON representation of a filter schema.
@@ -322,6 +326,7 @@ func (r *SchemaRegistry) SchemaFor(resource string) *SchemaResponse {
 	resp := &SchemaResponse{Version: SchemaVersion, Resource: resource}
 	if e.filter != nil {
 		resp.Filter = filterSchemaToResponse(e.filter)
+		resp.Key = slices.Clone(e.filter.PrimaryKey)
 	}
 	if e.patch != nil {
 		resp.Patch = patchSchemaToResponse(e.patch)

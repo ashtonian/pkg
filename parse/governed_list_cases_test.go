@@ -217,7 +217,7 @@ func listRelated[T any](t *testing.T, r *parse.Resource[T], d filter.Dialect, db
 	for _, item := range page.Items {
 		key, err := r.Key(item)
 		require.NoError(t, err)
-		res.ids = append(res.ids, fmt.Sprint(key))
+		res.ids = append(res.ids, fmt.Sprint(key[0]))
 	}
 	slices.Sort(res.ids)
 	require.NotNil(t, page.PageInfo.TotalCount)

@@ -200,6 +200,8 @@ func isNilReference(v any) bool {
 //   - $and, $or and $not are three-valued; a comparison with a NULL value is
 //     Unknown.
 //   - $in: [] is False and $nin: [] True, NULL or not.
+//   - A key set (PolicyConstraint.Fields under $in) holds where every
+//     column equals its position in one of the keys.
 //   - Numbers and decimals compare by exact value; strings, UUIDs,
 //     timestamps and dates by code point; booleans as false < true.
 //   - Documents compare as jsonb does (core.JSONEqual, JSONContains, JSONHasKey);
@@ -238,6 +240,11 @@ func evaluate(n *FilterNode, row Row) (Truth, error) {
 		return truthOf(t == False), nil
 	case OpUnknown, OpRawSQL, OpMember:
 		return Unknown, nil
+	case OpKeyIn:
+		if n.Keys == nil {
+			return False, errors.New("filter: key set node has no keys")
+		}
+		return evaluate(n.Keys.expand(), row)
 	}
 	f := n.Field
 	if f == nil {

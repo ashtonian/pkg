@@ -116,6 +116,10 @@ type Dialect interface {
 	// members (in) or absence from them, the set bound as one parameter:
 	// `$in` / `$nin` and a lookup's WhereIn render through it.
 	memberSet(field *FieldSchema, expr string, members []any, in bool, bind func(any) string) (string, error)
+	// keySet tests row, the row value of ks.Fields, for membership in ks.Keys,
+	// the set bound as one parameter: a key constraint over several columns
+	// renders through it.
+	keySet(ks *KeySet, row string, bind func(any) string) (string, error)
 
 	// numberKey renders an int, float or decimal field's value as its
 	// terms facet key: the canonical decimal text (core.DecimalText)
@@ -631,6 +635,8 @@ func (b *SQLBuilder) buildNode(s *buildState, node *FilterNode) (string, error) 
 		return unknownSQL, nil
 	case OpMember:
 		return b.buildMember(s, node)
+	case OpKeyIn:
+		return b.buildKeySet(s, node)
 	default:
 		return b.buildCondition(s, node)
 	}

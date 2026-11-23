@@ -184,7 +184,7 @@ func TestRelate_TenantKeysAgree(t *testing.T) {
 		require.NoError(t, err)
 		plan, err := devices.BuildList(filter.PostgresDialect{}, req, parse.Scope{Tenant: "44"})
 		require.NoError(t, err)
-		includes, err := devices.IncludeQueries(plan, []any{1})
+		includes, err := devices.IncludeQueries(plan, []parse.Key{{1}})
 		require.NoError(t, err)
 		require.Len(t, includes, 1)
 		assert.Contains(t, includes[0].Args, int64(44))
@@ -194,7 +194,7 @@ func TestRelate_TenantKeysAgree(t *testing.T) {
 		require.NoError(t, err)
 		update, err := devices.BuildUpdate(filter.PostgresDialect{}, p, parse.ByID(1), parse.Scope{Tenant: "44"})
 		require.NoError(t, err)
-		stmts, err := devices.RelationStatements(update, []any{int64(1)})
+		stmts, err := devices.RelationStatements(update, []parse.Key{{int64(1)}})
 		require.NoError(t, err)
 		require.NotEmpty(t, stmts)
 		for _, st := range stmts {

@@ -162,6 +162,18 @@ func rebaseNode(n *FilterNode, table, alias string, computed columnExprs, moved 
 		}
 		out.Field = f
 	}
+	if n.Keys != nil {
+		ks := *n.Keys
+		ks.Fields = make([]*FieldSchema, len(n.Keys.Fields))
+		for i, kf := range n.Keys.Fields {
+			f, err := rebaseField(kf, table, alias, computed, moved)
+			if err != nil {
+				return nil, err
+			}
+			ks.Fields[i] = f
+		}
+		out.Keys = &ks
+	}
 	if n.Field != nil && n.Field.Relation != nil {
 		// A nested relation correlates to its owner, the builder's alias;
 		// its own predicates are its target's.

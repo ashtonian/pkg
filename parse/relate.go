@@ -15,7 +15,7 @@ import (
 // tenancy, soft deletion and filter schema.
 type RelatedResource interface {
 	Table() string
-	PrimaryKeyColumn() string
+	PrimaryKeyColumns() []string
 	TenantColumnName() string
 	DeletedColumnName() string
 	FilterSchema() *filter.ResourceSchema
@@ -196,7 +196,7 @@ func (r *Resource[T]) Relate(name string, rel Relation) error {
 	if rel.includable && rel.kind == core.BelongsTo {
 		return fmt.Errorf("parse: %s: relation %q: a belongs-to's key is the owner's foreign key; it is not included", r.table, name)
 	}
-	if rel.facetable && (rel.kind == core.BelongsTo || rs.PrimaryKey != r.pk) {
+	if rel.facetable && (rel.kind == core.BelongsTo || rs.PrimaryKey != r.pk[0]) {
 		return fmt.Errorf("parse: %s: relation %q: a facet counts owners per key of a relation on the owner's key; facet a belongs-to by its foreign-key column", r.table, name)
 	}
 	if rel.writable {
@@ -214,8 +214,8 @@ func (r *Resource[T]) Relate(name string, rel Relation) error {
 	}
 	// The relation's keys are the target's key, in its type and wire form:
 	// the filter shorthands and the membership patch both take them so.
-	keyType, _ := rel.target.columnType(rel.target.PrimaryKeyColumn())
-	keyWire := rel.target.columnWire(rel.target.PrimaryKeyColumn())
+	keyType, _ := rel.target.columnType(rel.target.PrimaryKeyColumns()[0])
+	keyWire := rel.target.columnWire(rel.target.PrimaryKeyColumns()[0])
 	var membership *patch.PathSchema
 	if rel.writable {
 		if membership, err = patch.RelationPath(rs, reflect.SliceOf(keyType), keyWire); err != nil {
@@ -297,6 +297,9 @@ func (r *Resource[T]) relationSchema(name string, rel Relation) (*core.RelationS
 	}
 	ownerHas := func(col string) bool { _, ok := r.tableColumns[col]; return ok && core.IsIdentifier(col) }
 	targetHas := func(col string) bool { _, ok := t.columnType(col); return ok && core.IsIdentifier(col) }
+	if len(r.pk) > 1 || len(t.PrimaryKeyColumns()) > 1 {
+		return nil, fail("a relation correlates one-column keys")
+	}
 	targetTenant := t.TenantColumnName()
 	if rel.policy {
 		targetTenant = "" // the target's policy decides its rows
@@ -304,7 +307,7 @@ func (r *Resource[T]) relationSchema(name string, rel Relation) (*core.RelationS
 
 	switch rel.kind {
 	case core.HasMany:
-		local := cmp.Or(rel.references, r.pk)
+		local := cmp.Or(rel.references, r.pk[0])
 		if !ownerHas(local) {
 			return nil, fail("references %q, which is not a column of %s", local, r.table)
 		}
@@ -312,11 +315,11 @@ func (r *Resource[T]) relationSchema(name string, rel Relation) (*core.RelationS
 			return nil, fail("foreign key %q is not a column of %s", rel.foreignKey, t.Table())
 		}
 		return &core.RelationSchema{
-			Kind: core.HasMany, JoinTable: t.Table(), SourceColumn: rel.foreignKey, TargetColumn: t.PrimaryKeyColumn(),
+			Kind: core.HasMany, JoinTable: t.Table(), SourceColumn: rel.foreignKey, TargetColumn: t.PrimaryKeyColumns()[0],
 			PrimaryKey: local, TenantColumn: targetTenant, DeletedColumn: t.DeletedColumnName(), Policy: rel.policy,
 		}, nil
 	case core.BelongsTo:
-		remote := cmp.Or(rel.references, t.PrimaryKeyColumn())
+		remote := cmp.Or(rel.references, t.PrimaryKeyColumns()[0])
 		if !ownerHas(rel.foreignKey) {
 			return nil, fail("foreign key %q is not a column of %s", rel.foreignKey, r.table)
 		}
@@ -324,7 +327,7 @@ func (r *Resource[T]) relationSchema(name string, rel Relation) (*core.RelationS
 			return nil, fail("references %q, which is not a column of %s", remote, t.Table())
 		}
 		return &core.RelationSchema{
-			Kind: core.BelongsTo, JoinTable: t.Table(), SourceColumn: remote, TargetColumn: t.PrimaryKeyColumn(),
+			Kind: core.BelongsTo, JoinTable: t.Table(), SourceColumn: remote, TargetColumn: t.PrimaryKeyColumns()[0],
 			PrimaryKey: rel.foreignKey, TenantColumn: targetTenant, DeletedColumn: t.DeletedColumnName(), Policy: rel.policy,
 		}, nil
 	default:
@@ -342,8 +345,8 @@ func (r *Resource[T]) relationSchema(name string, rel Relation) (*core.RelationS
 		}
 		return &core.RelationSchema{
 			Kind: core.ManyToMany, JoinTable: j.Table, SourceColumn: j.Source, TargetColumn: j.Target,
-			PrimaryKey: r.pk, TenantColumn: j.Tenant,
-			TargetTable: t.Table(), TargetKey: t.PrimaryKeyColumn(), TargetTenant: targetTenant, TargetDeleted: t.DeletedColumnName(),
+			PrimaryKey: r.pk[0], TenantColumn: j.Tenant,
+			TargetTable: t.Table(), TargetKey: t.PrimaryKeyColumns()[0], TargetTenant: targetTenant, TargetDeleted: t.DeletedColumnName(),
 			Policy: rel.policy,
 		}, nil
 	}

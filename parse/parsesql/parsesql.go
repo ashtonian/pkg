@@ -219,7 +219,7 @@ func update[T any](ctx context.Context, db DB, r *parse.Resource[T], plan *parse
 	}
 	// The changed and the unchanged rows are read again apart, so each keeps
 	// its side of the split.
-	for i, part := range [2][]any{keys[:len(changed)], keys[len(changed):]} {
+	for i, part := range [2][]parse.Key{keys[:len(changed)], keys[len(changed):]} {
 		stmt, err := r.Reread(plan, part)
 		if err != nil {
 			return parse.UpdateResult[T]{}, err
@@ -385,8 +385,8 @@ func scanOne(ctx context.Context, db Queryer, st parse.Statement, dest ...any) e
 	})
 }
 
-func ownerKeys[T any](r *parse.Resource[T], items []T) ([]any, error) {
-	keys := make([]any, len(items))
+func ownerKeys[T any](r *parse.Resource[T], items []T) ([]parse.Key, error) {
+	keys := make([]parse.Key, len(items))
 	for i, item := range items {
 		k, err := r.Key(item)
 		if err != nil {

@@ -199,7 +199,7 @@ func runReservedIdentifiers(t *testing.T, db *sql.DB, d parse.Dialect) {
 		}{{2, `{"order":5}`}, {3, `{"group":"delta"}`}} {
 			p, err := users.ParseMergePatch([]byte(u.raw))
 			require.NoError(t, err)
-			rows = append(rows, parse.RowUpdate{Key: u.id, Patch: p})
+			rows = append(rows, parse.RowUpdate{Key: parse.Key{u.id}, Patch: p})
 		}
 		plan, err := users.BuildUpdateBatch(d, rows, parse.Scope{Tenant: "1"}, parse.UpdateBatchLimits{}, parse.SkipUnchanged())
 		require.NoError(t, err)

@@ -153,13 +153,13 @@ func runRawPolicy(t *testing.T, d parse.Dialect, open func(t *testing.T) *sql.DB
 		} {
 			t.Run(tc.key, func(t *testing.T) {
 				db := seeded(t)
-				plan, err := r.BuildUpdateBatch(d, []parse.RowUpdate{{Key: tc.key, Patch: p}}, rawPolicyScope(), parse.UpdateBatchLimits{})
+				plan, err := r.BuildUpdateBatch(d, []parse.RowUpdate{{Key: parse.Key{tc.key}, Patch: p}}, rawPolicyScope(), parse.UpdateBatchLimits{})
 				require.NoError(t, err)
 				require.Len(t, plan.Chunks, 1)
 				chunk := plan.Chunks[0]
-				var current []any
+				var current []parse.Key
 				for _, row := range queryRows(t, db, chunk.Current.SQL, chunk.Current.Args) {
-					current = append(current, rawPolicyText(row[0]))
+					current = append(current, parse.Key{rawPolicyText(row[0])})
 				}
 				if tc.want == nil {
 					require.ErrorIs(t, chunk.CheckCurrent(current), parse.ErrUpdateBatchTargets)

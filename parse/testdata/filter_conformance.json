@@ -3,6 +3,9 @@
     "conf_bare": {
       "version": 1,
       "resource": "conf_bare",
+      "key": [
+        "id"
+      ],
       "filter": {
         "fields": {
           "id": {
@@ -28,6 +31,9 @@
     "conf_entities": {
       "version": 1,
       "resource": "conf_entities",
+      "key": [
+        "id"
+      ],
       "filter": {
         "fields": {
           "active": {
@@ -473,6 +479,9 @@
     "owners": {
       "version": 1,
       "resource": "owners",
+      "key": [
+        "id"
+      ],
       "filter": {
         "fields": {
           "id": {
@@ -502,6 +511,9 @@
     "parts": {
       "version": 1,
       "resource": "parts",
+      "key": [
+        "id"
+      ],
       "filter": {
         "fields": {
           "id": {

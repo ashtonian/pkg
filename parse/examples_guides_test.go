@@ -184,7 +184,7 @@ func ExampleResource_RelationStatements() {
 		return
 	}
 	// The keys Owner returned; the executors read them from its rows.
-	stmts, err := devices.RelationStatements(plan, []any{"d1"})
+	stmts, err := devices.RelationStatements(plan, []parse.Key{{"d1"}})
 	if err != nil {
 		fmt.Println(err)
 		return

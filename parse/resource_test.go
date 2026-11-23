@@ -141,7 +141,7 @@ func TestNewResource_RefusesMisspeltTagKeys(t *testing.T) {
 func TestResource_DeclaresItsIdentity(t *testing.T) {
 	r := widgets(t)
 	assert.Equal(t, "widgets", r.Table())
-	assert.Equal(t, "id", r.PrimaryKeyColumn())
+	assert.Equal(t, []string{"id"}, r.PrimaryKeyColumns())
 	assert.Equal(t, "tenant_id", r.TenantColumnName())
 	assert.Equal(t, "deleted_at", r.DeletedColumnName())
 	columns, err := r.Columns(filter.PostgresDialect{})
@@ -150,7 +150,7 @@ func TestResource_DeclaresItsIdentity(t *testing.T) {
 	for _, item := range []any{widget{ID: "w9"}, &widget{ID: "w9"}} {
 		key, err := r.Key(item)
 		require.NoError(t, err)
-		assert.Equal(t, "w9", key)
+		assert.Equal(t, parse.Key{"w9"}, key)
 	}
 	sys := r.FilterSchema().SystemFields
 	assert.Equal(t, core.FieldTypeTimestamp, sys["deleted_at"].DataType, "system fields are typed from T")
@@ -356,7 +356,7 @@ func TestBuildList_FacetsCountThePopulation(t *testing.T) {
 func TestIncludeQueries_ReadThePagesRelationsInItsTenant(t *testing.T) {
 	r, db := widgets(t), widgetDB(t)
 	page, plan := list(t, r, db, "include=tags&page_size=3", parse.Scope{Tenant: "t1"})
-	keys := make([]any, len(page.Items))
+	keys := make([]parse.Key, len(page.Items))
 	for i, w := range page.Items {
 		var err error
 		keys[i], err = r.Key(w)
@@ -412,7 +412,7 @@ func TestResource_RefusesAnotherResourcesPlan(t *testing.T) {
 	assert.ErrorContains(t, err, `list plan built for "other_widgets"`)
 	_, err = r.PagePointers(nil, plan)
 	assert.Error(t, err)
-	_, err = r.IncludeQueries(plan, []any{"w1"})
+	_, err = r.IncludeQueries(plan, []parse.Key{{"w1"}})
 	assert.Error(t, err)
 	_, err = r.Page(nil, nil)
 	assert.ErrorContains(t, err, "nil list plan")
@@ -457,7 +457,7 @@ func TestReadColumns_RefusesWhatPagesCannotRead(t *testing.T) {
 	}{
 		{"not a column", []string{"id", "nope"}, `read column "nope" is not a column`},
 		{"listed twice", []string{"id", "email", "id"}, `read column "id" is listed twice`},
-		{"without the key", []string{"email"}, `omit the key "id"`},
+		{"without the key", []string{"email"}, `omit the key column "id"`},
 		{"without a sort key", []string{"id", "tenant_id"}, `sort key "email": accounts does not read column "email"`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
