@@ -25,7 +25,7 @@ Every error wraps one category sentinel together with its cause, so `errors.Is` 
 | `ErrReloadInProgress` | A manual reload found another running. Not a failure. |
 | `ErrReloaderStopped` | A reload was requested after `Stop`. |
 | `ErrReloaderRunning` | `Run` was called while another `Run` of the same reloader runs. |
-| `ErrSchema`, `ErrKey` | Invalid schema/default declarations, or a malformed/unknown key. `KeyError` distinguishes unknown keys from invalid values in `CheckKey`, `DecodeKey` and `CanonicalKey`; `EditsError` is a batch `DecodeEdits` refuses: its `Refused` keys match `ErrKey`, a candidate that does not decode or validate matches `ErrValidation`. |
+| `ErrSchema`, `ErrKey` | Invalid schema/default declarations, or a malformed/unknown key. A `validate` tag the default validator cannot parse, or whose `dive` its field's type cannot take, is a schema error naming the field: on a field the validator reads on every validation it is refused before any source is read, even while the field is empty or nil; elsewhere, and for a rule that parses but cannot apply to its field's type, when validation reaches it, at the field's key (`at items[0].list`). Fix the tag ([validation](schema.md#validation)). `KeyError` distinguishes unknown keys from invalid values in `CheckKey`, `DecodeKey` and `CanonicalKey`; `EditsError` is a batch `DecodeEdits` refuses: its `Refused` keys match `ErrKey`, a candidate that does not decode or validate matches `ErrValidation`. |
 
 `Diagnose(err)` turns any of them into a `Problem{Kind, Message}` — a bounded category for a metric label or a status endpoint.
 
