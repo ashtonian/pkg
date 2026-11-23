@@ -1,5 +1,90 @@
 # Changelog
 
+## [0.18.0](https://github.com/ashtonian/pkg/compare/parse/v0.17.1...parse/v0.18.0) (2026-11-23)
+
+
+### ⚠ BREAKING CHANGES
+
+* **parse:** PrimaryKey takes one or more columns, and NewResource refuses a key column of no scalar type (a document, array, geometry or opaque column). Resource.Key returns parse.Key (core.Key, a value per key column); PrimaryKeyColumn is PrimaryKeyColumns; RowUpdate.Key, UpdateBatchChunk.Keys, CheckCurrent, IncludeQueries, RelationStatements and Reread take parse.Key values. filter.ResourceSchema.PrimaryKey is a []string, and filter.Keyset takes its tie-breakers variadically: Keyset(sort, keys...).
+* **parse:** HasMany and BelongsTo are generic over KeyColumns, References is variadic, Junction.Source and Junction.Target are []string, and Through is generic. core.RelationSchema replaces SourceColumn, TargetColumn, PrimaryKey, TargetKey and OwnerKey() with SourceColumns, TargetColumns, OwnerKey, TargetKeys and OwnerColumns(), and its Check refuses a schema without SourceTypes and TargetTypes, one scalar type per column. filter.FieldSchema.RelatedBy is a list. BuildIncludeQuery, ResolveInclude and patch.RenderRelationOp take owner keys as []core.Key, and patch.RenderRelationOp takes a patch.RelationDialect. patch.RelationOwner.Key is a column list, and patch.RelationPath takes the target key's columns as RelationKey values. A relation:"…" tag needs each owner key column as a field of its struct, and the tagged field must be a slice of target keys.
+* **parse:** core.IsKeyType reports every scalar type. Relation joins, key sets, include and facet grouping, membership lookups and update batches compare a key as a filter's $eq compares its type: a decimal by value on both backends, so a stored 1.50 matches 1.5.
+* **parse/filter:** IncludeLookup.LookupPairs takes the owner's key columns, and a pair's Owner and Target are a core.Key when the key has several columns. A membership's lookup projects one column. A store answering MembershipLookup, RelationLookup or IncludeLookup answers ProjectKey lookups with a core.Key per row and evaluates LookupOpKeyIn and typed conditions, as filter.MatchLookupRow does.
+* **parse/filter:** SQLite decimal $eq, $ne, $in and $nin compare parse_decimal_key, so an expression index on parse_decimal(c) no longer serves them. Index parse_decimal_key(c), followed by the keyset's tie-breaker; it serves ranges, sorts and seeks too.
+* **parse/filter:** a terms facet on a json, object, geo, interval, inet or cidr field, a range facet on anything but a scalar number field, a facet tag without the facet capability, and a malformed facet configuration (no ranges, an empty or inverted or non-finite or overlapping range, a terms limit below 1) now fail schema generation, WithPaths or BuildFacetQuery.
+* **parse:** an enum on a field or struct member whose values are not strings, an empty plain enum value, and a plain value beginning with a single quote now fail schema generation or read as the quoted form.
+* **parse/filter:** a struct with a non-integer order, a sort_default other than asc or desc, more than one sort_default, or a sort_default on an unsortable field no longer generates a schema.
+* **parse/filter:** an empty page after a seek reports has_next_page and has_prev_page false where one of them was true.
+* **parse/filter:** a WhereIn list binds as one array parameter (PostgreSQL) or JSON array (SQLite), so statement text and arguments change, and a list mixing value types is refused.
+* **parse/filter:** a key comparison on a relation two predicates deep is E2074 where it was accepted.
+* **parse/filter:** a filter value, search term or cursor key holding U+0000 is E2073 (E2082 for a cursor) where it was accepted.
+* **parse/filter:** filter.MatchLike and the memory evaluator no longer match a character with another its Unicode case folding equates but its lower-case does not (ſ and s, ς and σ, µ and μ), and match İ with i.
+* **parse/filter:** PostgreSQL path SQL is doc -> 'a' ->> 'b' where it was doc #>> '{a,b}'. An expression index built on the old expression no longer matches the emitted one; rebuild it on filter.FieldExpr.
+* **parse:** schema documents list the resource's key and the implied NULL tests; include=<key> is E2083.
+* **parse:** SchemaValidator answers a filter, patch or sort on a schema document without that section with E2071, E2076 or E2079 instead of E2078. testdata/filter_conformance.json is an object, and testdata/sdk_wire.json records exchanges.
+* **parse:** the example's facets route answers a page parameter with E2067.
+* **parse:** a list body's read error is a *parse.BodyReadError. The example's patch routes refuse a body without a JSON patch media type.
+* **parse:** a repeated list parameter (filter, sort, cursor, page_size, include_total, include_deleted, search, facets, fields, include) is E2067 instead of reading the first value.
+* **parse:** E2078 answers 404. filter.ECodeSchemaNotFound is parse.ECodeSchemaNotFound and leaves filter.Codes(). E2069, core.CodeSQLColumnMissing and patch.ECodeSQLColumnMissing are removed; match patch.ErrSQLColumnMissing. parse.Codes() is sorted.
+* **parse:** E2080 and filter.ECodeSQLGenerationFailed / core.CodeSQLGenerationFailed are removed. Invalid policy constraints and membership lookups are no longer *core.ParseError; match filter.ErrPolicyInvalid. filtertest.PolicyCase.Err is an error, not a core.Code.
+* **parse:** a zero MaxDepth, MaxCost, MaxConditions or MaxArraySize selects the default instead of refusing everything (filters) or removing the depth bound (patches). NewResource refuses a negative limit. WithGeneratorOptions adds to earlier generator options instead of replacing them.
+* **parse:** error text changes throughout the root package, and the sentinels' own text loses its "parse: " prefix; errors.Is holds for every sentinel. A target key of the wrong type is ErrKeyInvalid instead of a core.ParseError.
+* **parse:** RegisterResource returns an error. Registering a name a second time, by type or by resource, is ErrRegistered instead of replacing the first registration. MustRegister panics with an error value.
+* **parse:** Resource.Relate returns an error when the resource or the relation's target is a WithPaths view.
+* **parse:** filter.ResourceSchema gains Computed; a schema that declares it reads those columns through their expressions in every builder. Resource.ListQuery compiles computed columns as their expressions instead of the stored columns they name.
+* **parse:** ListRequest's fields and filter.ParsedFilter's AST, EstimatedCost and ConditionCount are methods, and core.SchemaGenerator.Opts is gone. Schema accessors return copies: customize with CustomizeSchemas. ApplyValidatedPatch, BuildUpdate and BuildUpdateBatch report a hand-built patch as parse.ErrForeign instead of patch.ErrUnparsed.
+* **parse:** parsepgx.Update returns parse.UpdateResult[T] instead of []T; read Changed and Unchanged in place of the concatenated rows.
+
+### Features
+
+* **parse/examples/server:** serve schemas(), and log a startup entry at a runtime level ([8b12676](https://github.com/ashtonian/pkg/commit/8b12676a0a1c54c1d3f9c31ab8d6f7994b941098)), refs [#280](https://github.com/ashtonian/pkg/issues/280)
+* **parse/filter:** lookups resolved outside SQL take keys of several columns ([93f6612](https://github.com/ashtonian/pkg/commit/93f6612344bd50a28f38e42f48ba83ed96f0f8b1))
+* **parse/filter:** SQLite compares decimals by key, so one index serves every decimal predicate ([93f6612](https://github.com/ashtonian/pkg/commit/93f6612344bd50a28f38e42f48ba83ed96f0f8b1))
+* **parse/patch:** JSON Patch add, replace and remove on a declared document member compile to SQL ([93f6612](https://github.com/ashtonian/pkg/commit/93f6612344bd50a28f38e42f48ba83ed96f0f8b1))
+* **parse/patch:** merge patches into integer- and text-keyed maps ([93f6612](https://github.com/ashtonian/pkg/commit/93f6612344bd50a28f38e42f48ba83ed96f0f8b1))
+* **parse:** a client addresses a row by one path segment per key column, each escaped on its own ([93f6612](https://github.com/ashtonian/pkg/commit/93f6612344bd50a28f38e42f48ba83ed96f0f8b1))
+* **parse:** a facets request is parsed as one ([c8081c6](https://github.com/ashtonian/pkg/commit/c8081c62ac1047e366d63c4cd5797a176c77b06d))
+* **parse:** a resource's key is one or more columns of any scalar type ([93f6612](https://github.com/ashtonian/pkg/commit/93f6612344bd50a28f38e42f48ba83ed96f0f8b1))
+* **parse:** enum declares quoted values and holds only on strings, struct-member paths included ([d728270](https://github.com/ashtonian/pkg/commit/d728270359f0def57ef58d0a60688fd8920a3327))
+* **parse:** executors for every plan on both backends; Update reports what changed ([1d023cf](https://github.com/ashtonian/pkg/commit/1d023cf1c5483eddd149563c9ab6adfd4df2a731))
+* **parse:** keys compare as a filter compares their type ([93f6612](https://github.com/ashtonian/pkg/commit/93f6612344bd50a28f38e42f48ba83ed96f0f8b1))
+* **parse:** patch bodies are read by the package, bounded and by media type ([19a7f4e](https://github.com/ashtonian/pkg/commit/19a7f4e7530692172747b84f5f9f4648ae0e3636))
+* **parse:** relations correlate keys of several columns of any scalar type ([93f6612](https://github.com/ashtonian/pkg/commit/93f6612344bd50a28f38e42f48ba83ed96f0f8b1))
+* **parse:** the wire contract is recorded from the handlers, and the corpora are complete ([0d87165](https://github.com/ashtonian/pkg/commit/0d871659708c6be07f3c4fa770c901601d36443e))
+
+
+### Bug Fixes
+
+* **parse/core:** stored-document members matched by gowalker's Shape.Match; on gowalker v0.9.0 ([#353](https://github.com/ashtonian/pkg/issues/353)) ([8b9b032](https://github.com/ashtonian/pkg/commit/8b9b032c8e23b3c71a377cd480368c45eb1536c1)), refs [#326](https://github.com/ashtonian/pkg/issues/326)
+* **parse/examples/server:** a request that runs out of time is 504, one whose client left is not answered ([606a84f](https://github.com/ashtonian/pkg/commit/606a84f34dfc72c324f193cee03435fd1e42162b)), refs [#280](https://github.com/ashtonian/pkg/issues/280)
+* **parse/filter:** $ilike's reference lower-cases, as PostgreSQL does ([6f346d1](https://github.com/ashtonian/pkg/commit/6f346d1d6a6ecb6e6e74c32ee44b58b930d55aaf))
+* **parse/filter:** a facet is refused where no backend counts it alike ([2d71387](https://github.com/ashtonian/pkg/commit/2d71387f33fd6957d9d58060f1b6651cb854b847))
+* **parse/filter:** a lookup's WhereIn list binds as one set parameter ([4988135](https://github.com/ashtonian/pkg/commit/4988135d4b4163fd7fa7c3df20462c985602168c))
+* **parse/filter:** a negative start parameter is a build error, not a panic ([add84de](https://github.com/ashtonian/pkg/commit/add84de16b29e700dde0b36c3f2b914427464760)), refs [#281](https://github.com/ashtonian/pkg/issues/281)
+* **parse/filter:** a path member's length cap is one constant the pattern, error and guide state ([2c373ab](https://github.com/ashtonian/pkg/commit/2c373ab35f4c9bf8ad1cd0a673e54606365954fb)), refs [#281](https://github.com/ashtonian/pkg/issues/281)
+* **parse/filter:** a relation key comparison counts toward MaxRelationDepth ([b2eee29](https://github.com/ashtonian/pkg/commit/b2eee2934d1f304f65c4e73163c86e4e0e09d222))
+* **parse/filter:** a request string holding U+0000 is refused at parse ([fa1fdef](https://github.com/ashtonian/pkg/commit/fa1fdef5868175cda033d34f9b569c8db9ec7211))
+* **parse/filter:** an empty page reports no direction ([1efd9eb](https://github.com/ashtonian/pkg/commit/1efd9ebb5ca1832db6f4f12a26bda643b383d485))
+* **parse/filter:** each relation facet joins on its own relation's owner key ([a8db96d](https://github.com/ashtonian/pkg/commit/a8db96daedbd1f7b9620a17f6681f213cc8d910d)), refs [#281](https://github.com/ashtonian/pkg/issues/281)
+* **parse/filter:** every relative-time token of a request resolves at one instant ([9e3fdfc](https://github.com/ashtonian/pkg/commit/9e3fdfc46f2401a8e7cb936a6d2725251cc6c856)), refs [#281](https://github.com/ashtonian/pkg/issues/281)
+* **parse/filter:** PostgreSQL reads every path segment as an object key ([115e06d](https://github.com/ashtonian/pkg/commit/115e06dcf40f2a27181457db79a7cb03aa1bb650))
+* **parse/filter:** schema generation refuses an order or sort_default it would ignore ([ae275d6](https://github.com/ashtonian/pkg/commit/ae275d632d8d98cab9d36ad7f12cd3961c5e8dc3))
+* **parse:** a ParseError is only ever the request's fault ([cebf6cf](https://github.com/ashtonian/pkg/commit/cebf6cf40324d76c9df1c1fdf22d8f1dafcedd7d))
+* **parse:** a query string that does not decode, or a list parameter given twice, is refused ([c7ec7e8](https://github.com/ashtonian/pkg/commit/c7ec7e8e28db586da789c5bbd94690e2a4d1d08f))
+* **parse:** a WithPaths view declares no relations and is no relation's target ([ec220fd](https://github.com/ashtonian/pkg/commit/ec220fd2b857df8a0ce5ea5ac95c06095bf1cd28))
+* **parse:** lookups resolved outside SQL compare decimals by value, as SQL does ([93f6612](https://github.com/ashtonian/pkg/commit/93f6612344bd50a28f38e42f48ba83ed96f0f8b1))
+* **parse:** one error prefix shape; a target key of the wrong type is a key error ([3eef892](https://github.com/ashtonian/pkg/commit/3eef8922319a96b33dfeb480be811a40efde6e1b))
+* **parse:** parser limits have one rule, read alike by filters and patches ([8b313fe](https://github.com/ashtonian/pkg/commit/8b313fe479c0948cc5bf952573200fd2ab1b0a5e))
+* **parse:** register each name once; Register[T] is for schema-only types ([ab55f2a](https://github.com/ashtonian/pkg/commit/ab55f2a0d5d451fac0f8911dd9a4347d41cf187e))
+* **parse:** seal request values to the resource that parsed them; schemas are fixed at construction ([ad220ab](https://github.com/ashtonian/pkg/commit/ad220ab7d9986d8b69346c76f012c1bc289cb801))
+* **parse:** the code table is the catalog, and every code answers its own status ([b56d2ec](https://github.com/ashtonian/pkg/commit/b56d2ec45885602fa5c5214def4e138f23f94bb3))
+* **parse:** the parse module requires no CLI or config module; the example server is a module of its own ([93f6612](https://github.com/ashtonian/pkg/commit/93f6612344bd50a28f38e42f48ba83ed96f0f8b1))
+* **parse:** the schema document lists exactly what the filter parser accepts ([bff37e2](https://github.com/ashtonian/pkg/commit/bff37e25fde537cc38482438311eac22afe137cc))
+
+
+### Code Refactoring
+
+* **parse:** resolve computed columns when SQL is built ([7333813](https://github.com/ashtonian/pkg/commit/7333813b5849d693baf3df8e4adcac01c31d8eeb))
+
 ## [0.17.1](https://github.com/ashtonian/pkg/compare/parse/v0.17.0...parse/v0.17.1) (2026-11-22)
 
 
