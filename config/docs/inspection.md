@@ -277,7 +277,10 @@ error. `PrintRedacted` and `PrintEnv` report it before writing any output.
 
 Every entry point checks a type's declarations to the depth its result
 depends on, and the same declaration gets the same `ErrSchema` wherever it
-is reached:
+is reached. A `,remain` field's element type is a type of the config like
+any field's: each tier checks it, and the element types of remain fields
+within it, as it checks the struct holding the field, so a load refuses
+what `Diff` would refuse in it.
 
 | Tier | Checks | Entry points |
 |---|---|---|

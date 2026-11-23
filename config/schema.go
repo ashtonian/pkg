@@ -106,7 +106,9 @@ type schemaEntry struct {
 	misspelt   error // the graph's misspelt tag keys, refused by every checked entry point
 	check      sync.Once
 	validation error
-	rules      sync.Once // the default validator's reading of the validate tags
+	remains    sync.Once
+	reached    []*schemaEntry // see reachedRemains
+	rules      sync.Once      // the default validator's reading of the validate tags
 	rulesErr   error
 	catalog    sync.Once
 	fields     []Field
@@ -118,7 +120,10 @@ type schemaEntry struct {
 var schemaCache = gowalker.NewTypeCache(configView, buildSchema)
 
 // A type's declarations are checked in tiers, each entry point taking the
-// one its output depends on:
+// one its output depends on. Each tier checks the graph of every remain
+// field's map type the type reaches as it checks the type's own (see
+// reachedRemains), since a remain field's element type is a type of the
+// config like any field's:
 //
 //   - metadataOf: structural — the graph builds, keys are unique, reload
 //     tags read. Raw inspection (Fields, FieldFor, KeyOf, Tree) takes only
@@ -137,16 +142,83 @@ var schemaCache = gowalker.NewTypeCache(configView, buildSchema)
 // Diagnostics can therefore inspect live values even when a tag is invalid.
 func metadataOf(t reflect.Type) (*schemaNode, error) {
 	e := schemaMetadata(t)
-	return e.node, e.err
+	return e.node, e.refusal(tierStructural)
 }
 
 // declaredOf is metadataOf that also refuses misspelt tag keys.
 func declaredOf(t reflect.Type) (*schemaNode, error) {
 	e := schemaMetadata(t)
-	if e.err != nil {
-		return e.node, e.err
+	return e.node, e.refusal(tierDeclared)
+}
+
+// tier is how much of a type's declarations an entry point checks.
+type tier int
+
+const (
+	tierStructural tier = iota // metadataOf
+	tierDeclared               // declaredOf
+	tierDecoded                // schemaOf
+)
+
+// refusal is why entry points at tier t refuse e's type: what they refuse
+// in its own graph, or in the graph of a remain field's map type it
+// reaches.
+func (e *schemaEntry) refusal(t tier) error {
+	if err := e.ownRefusal(t); err != nil || e.node == nil {
+		return err
 	}
-	return e.node, e.misspelt
+	for _, r := range e.reachedRemains() {
+		if err := r.ownRefusal(t); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// ownRefusal is refusal of e's own graph alone.
+func (e *schemaEntry) ownRefusal(t tier) error {
+	switch {
+	case e.err != nil || t == tierStructural:
+		return e.err
+	case t == tierDecoded:
+		if err := e.tagValues(); err != nil {
+			return err
+		}
+	}
+	return e.misspelt
+}
+
+// reachedRemains is the entry of every remain field's map type e's graph
+// reaches, then of every one their graphs reach, each once and e's own
+// type never: a remain field's map type is a graph of its own (see
+// remainField.node), so no walk of e's graph visits it. Built once per
+// entry; each entry's own checks run once, in its own entry, so a type
+// reaching itself through remain fields is checked once and never waits on
+// itself.
+func (e *schemaEntry) reachedRemains() []*schemaEntry {
+	e.remains.Do(func() {
+		seen := map[reflect.Type]bool{e.node.typ: true}
+		var visit func(*schemaNode)
+		visit = func(n *schemaNode) {
+			n.eachBranch(func(b *schemaNode) {
+				if b.remain == nil {
+					return
+				}
+				t := derefType(b.remain.sf.Type)
+				if seen[t] {
+					return
+				}
+				seen[t] = true
+				r := schemaMetadata(t)
+				e.reached = append(e.reached, r)
+				if r.node != nil {
+					visit(r.node)
+				}
+			})
+		}
+		visit(e.node)
+	})
+	return e.reached
 }
 
 func schemaMetadata(t reflect.Type) *schemaEntry {
@@ -216,9 +288,12 @@ func rootMetadata(t reflect.Type) (*schemaNode, error) {
 // refuses misspelt tag keys.
 func schemaOf(t reflect.Type) (*schemaNode, error) {
 	e := schemaMetadata(t)
-	if e.err != nil {
-		return e.node, e.err
-	}
+	return e.node, e.refusal(tierDecoded)
+}
+
+// tagValues is why the values of e's own graph's config tags do not decode,
+// checked once.
+func (e *schemaEntry) tagValues() error {
 	e.check.Do(func() {
 		b := &schemaBuilder{}
 		e.node.eachBranch(b.validateTags)
@@ -227,10 +302,7 @@ func schemaOf(t reflect.Type) (*schemaNode, error) {
 		}
 		e.validation = b.err
 	})
-	if e.validation != nil {
-		return e.node, e.validation
-	}
-	return e.node, e.misspelt
+	return e.validation
 }
 
 // rootSchema is schemaOf for a type that must be a struct.
