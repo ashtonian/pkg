@@ -103,6 +103,7 @@ func (c *schemaCloner) schema(s *ResourceSchema) *ResourceSchema {
 	out.SystemFields = c.fieldMap(s.SystemFields)
 	out.PolicyFields = c.fieldMap(s.PolicyFields)
 	out.policyRefused = maps.Clone(s.policyRefused)
+	out.Computed = slices.Clone(s.Computed)
 	return out
 }
 

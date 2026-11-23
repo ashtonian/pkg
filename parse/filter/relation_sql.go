@@ -28,6 +28,12 @@ func (b *SQLBuilder) buildRelated(s *buildState, node *FilterNode) (string, erro
 	if target == nil {
 		return "", invalidRelation(node.Field, "has no target resource to filter")
 	}
+	// The target's predicates read its computed columns as the owner's
+	// dialect does; one the dialect refuses fails the build.
+	exprs, err := target.resolve(b.dialect)
+	if err != nil {
+		return "", err
+	}
 	depth := b.depth + 1
 	visible := append([]string{b.schema.Name}, b.visible...)
 	bind := s.binder(b.dialect)
@@ -91,13 +97,13 @@ func (b *SQLBuilder) buildRelated(s *buildState, node *FilterNode) (string, erro
 	if nested != nil {
 		if related != target.Name {
 			var err error
-			if nested, err = rebaseNode(nested, target.Name, related, map[*FieldSchema]*FieldSchema{}); err != nil {
+			if nested, err = rebaseNode(nested, target.Name, related, exprs, map[*FieldSchema]*FieldSchema{}); err != nil {
 				return "", fmt.Errorf("relation %s: %w", node.Field.ExternalName, err)
 			}
 		}
 		nb := &SQLBuilder{
 			schema: &ResourceSchema{Name: related}, dialect: b.dialect, scope: b.scope, related: b.related,
-			depth: depth, visible: append(visible, join, related),
+			depth: depth, visible: append(visible, join, related), exprs: exprs,
 		}
 		cond, err := s.selecting(func() (string, error) { return nb.buildNode(s, nested) })
 		if err != nil {
@@ -141,8 +147,9 @@ func writeTable(sb *strings.Builder, d Dialect, table, alias string) {
 // rebaseNode is n with every field moved from table to alias: expressions
 // that are table's columns, or JSON paths into them, name alias instead.
 // SQL's unknown names no table and stays as it is. A field computed some
-// other way, or raw policy SQL, cannot be moved and is an error.
-func rebaseNode(n *FilterNode, table, alias string, moved map[*FieldSchema]*FieldSchema) (*FilterNode, error) {
+// other way (a column mapper's expression, or one of computed), or raw
+// policy SQL, cannot be moved and is an error.
+func rebaseNode(n *FilterNode, table, alias string, computed columnExprs, moved map[*FieldSchema]*FieldSchema) (*FilterNode, error) {
 	if n == nil {
 		return nil, nil
 	}
@@ -156,7 +163,7 @@ func rebaseNode(n *FilterNode, table, alias string, moved map[*FieldSchema]*Fiel
 	// An element field or element path stays a placeholder: its own
 	// `$some` / `$none` binds it to the element alias.
 	if n.Field != nil && n.Field.Relation == nil && !isElement(n.Field) && !isElementPath(n.Field) {
-		f, err := rebaseField(n.Field, table, alias, moved)
+		f, err := rebaseField(n.Field, table, alias, computed, moved)
 		if err != nil {
 			return nil, err
 		}
@@ -171,7 +178,7 @@ func rebaseNode(n *FilterNode, table, alias string, moved map[*FieldSchema]*Fiel
 	if len(n.Children) > 0 {
 		out.Children = make([]*FilterNode, len(n.Children))
 		for i, c := range n.Children {
-			rc, err := rebaseNode(c, table, alias, moved)
+			rc, err := rebaseNode(c, table, alias, computed, moved)
 			if err != nil {
 				return nil, err
 			}
@@ -181,7 +188,7 @@ func rebaseNode(n *FilterNode, table, alias string, moved map[*FieldSchema]*Fiel
 	return &out, nil
 }
 
-func rebaseField(f *FieldSchema, table, alias string, moved map[*FieldSchema]*FieldSchema) (*FieldSchema, error) {
+func rebaseField(f *FieldSchema, table, alias string, computed columnExprs, moved map[*FieldSchema]*FieldSchema) (*FieldSchema, error) {
 	if m, ok := moved[f]; ok {
 		return m, nil
 	}
@@ -194,7 +201,7 @@ func rebaseField(f *FieldSchema, table, alias string, moved map[*FieldSchema]*Fi
 		p := *f.Path
 		p.Table = alias
 		c.Path = &p
-	case f.Expr == "" && f.Table == table:
+	case f.Expr == "" && f.Table == table && !computed.computes(f):
 	default:
 		return nil, fmt.Errorf("field %s is not a column of %s and cannot be filtered through a relation", f.ExternalName, table)
 	}

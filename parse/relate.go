@@ -26,7 +26,6 @@ type RelatedResource interface {
 	columnType(name string) (reflect.Type, bool)
 	columnWire(name string) core.Wire
 	computed(column string) bool
-	dialectView(d filter.Dialect) (*dialectView, error)
 	tenantGraph() *tenantNode
 	admits(column string, need columnAccess) error
 }
@@ -243,9 +242,6 @@ func (r *Resource[T]) Relate(name string, rel Relation) error {
 		RelatedBy:        r.correlationField(rs.PrimaryKey),
 	}
 	fs.Fields[name] = field
-	r.relations[name] = t
-	// The cached dialect views copied the fields before this one.
-	r.readExprs.reset()
 	if membership != nil {
 		// The name is an identifier the schemas do not hold (checked above),
 		// so adding its path cannot fail.

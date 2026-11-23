@@ -63,11 +63,8 @@ type Resource[T any] struct {
 	access map[string]columnAccess
 	// maskable are the names a list's field mask may name (maskableFields).
 	maskable map[string]bool
-	// readExprs are the computed columns (ReadExpr) and their per-dialect
-	// views; nil without any.
+	// readExprs are the computed columns (ReadExpr); nil without any.
 	readExprs *computedColumns
-	// relations are the declared relations' targets (Relate), by field.
-	relations map[string]RelatedResource
 }
 
 // ResourceOption configures NewResource.
@@ -206,6 +203,9 @@ func (r *Resource[T]) customizeSchemas(fns []func(Schemas) error) error {
 			return err
 		}
 	}
+	if len(s.Filter.Computed) > 0 {
+		return errors.New("computed columns are declared with ReadExpr, not on the filter schema")
+	}
 	r.filterSchema, r.sortSchema, r.searchSchema = s.Filter.Clone(), s.Sort.Clone(), s.Search.Clone()
 	r.patchSchema, r.serverPatchSchema = s.Patch.Clone(), s.ServerPatch.Clone()
 	return nil
@@ -241,7 +241,6 @@ func NewResource[T any](table string, opts ...ResourceOption) (*Resource[T], err
 		pageSize:    cfg.pageSize,
 		maxPageSize: cfg.maxPage,
 		accepted:    slices.Clone(cfg.accepted),
-		relations:   map[string]RelatedResource{},
 	}
 	if err := r.generateSchemas(parserOpts); err != nil {
 		return nil, fmt.Errorf("parse: %s: %w", table, err)
@@ -297,6 +296,7 @@ func NewResource[T any](table string, opts ...ResourceOption) (*Resource[T], err
 	if r.readExprs, err = newComputedColumns(table, cfg, columns, read); err != nil {
 		return nil, err
 	}
+	r.filterSchema.Computed = r.readExprs.schemaColumns()
 	if err := r.readExprs.checkDocuments(r.filterSchema, r.sortSchema); err != nil {
 		return nil, err
 	}
@@ -663,20 +663,20 @@ func (r *Resource[T]) ColumnSQLType(column string) (core.SQLType, bool) {
 // type, each under the column's own name, so rows scan by name. A dialect a
 // computed column's expression refuses is an error.
 func (r *Resource[T]) Columns(d filter.Dialect) ([]string, error) {
-	v, err := r.dialectView(d)
+	exprs, err := r.computedSQL(d)
 	if err != nil {
 		return nil, err
 	}
-	return r.columns(d, v), nil
+	return r.columns(d, exprs), nil
 }
 
-// columns is Columns for v, r's schemas already compiled for d.
-func (r *Resource[T]) columns(d filter.Dialect, v *dialectView) []string {
+// columns is Columns with the computed columns' SQL for d already resolved.
+func (r *Resource[T]) columns(d filter.Dialect, exprs map[string]string) []string {
 	out := make([]string, len(r.read))
 	for i, name := range r.read {
 		stored := d.QuoteIdent(r.table) + "." + d.QuoteIdent(name)
 		col := stored
-		if expr, ok := v.exprs[name]; ok {
+		if expr, ok := exprs[name]; ok {
 			col = expr
 		}
 		if t, ok := r.sqlTypes[name]; ok {
@@ -890,6 +890,5 @@ func (r *Resource[T]) WithPaths(decls ...filter.PathDecl) (*Resource[T], error) 
 	}
 	view := *r
 	view.filterSchema, view.sortSchema = fs, ss
-	view.readExprs = r.readExprs.withoutViews()
 	return &view, nil
 }

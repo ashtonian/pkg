@@ -476,6 +476,9 @@ type SQLBuilder struct {
 	// names its enclosing queries already use (buildRelated).
 	depth   int
 	visible []string
+	// exprs are the computed columns of the schema the builder compiles,
+	// resolved for its dialect.
+	exprs columnExprs
 }
 
 type buildState struct {
@@ -533,19 +536,34 @@ func NewSQLBuilder(schema *ResourceSchema, dialect Dialect, opts ...SQLBuilderOp
 
 // Build walks the AST and generates a parameterized SQL WHERE clause.
 func (b *SQLBuilder) Build(ast *FilterAST) (*SQLResult, error) {
+	exprs, err := b.schema.ComputedSQL(b.dialect)
+	if err != nil {
+		return nil, err
+	}
+	return b.build(ast, exprs)
+}
+
+// build is Build with the schema's computed columns resolved for the
+// builder's dialect.
+func (b *SQLBuilder) build(ast *FilterAST, exprs columnExprs) (*SQLResult, error) {
 	if err := b.scope.check(); err != nil {
 		return nil, err
 	}
 	if ast == nil || ast.Root == nil {
 		return &SQLResult{Where: "1=1"}, nil
 	}
+	root := *b
+	root.exprs = exprs
 
 	s := &buildState{paramIndex: b.startParam, args: make([]any, 0, 8)}
 
-	where, err := b.buildNode(s, ast.Root)
+	where, err := root.buildNode(s, ast.Root)
 	if err != nil {
 		if pe, ok := errors.AsType[*core.ParseError](err); ok {
 			return nil, pe
+		}
+		if ce, ok := errors.AsType[*computedError](err); ok {
+			return nil, ce.err
 		}
 		return nil, &core.ParseError{
 			Kind:    core.ParseErrorKindFilter,
@@ -655,6 +673,7 @@ func (b *SQLBuilder) buildCondition(s *buildState, node *FilterNode) (string, er
 	if node.Field == nil {
 		return "", errors.New("condition node has no field schema")
 	}
+	node = b.computed(node)
 	if (node.Field.Elements != nil || isScalarArray(node.Field)) && node.Field.Relation == nil && (node.Op == OpSome || node.Op == OpNone) {
 		return b.buildElements(s, node)
 	}
@@ -684,6 +703,18 @@ func (b *SQLBuilder) buildCondition(s *buildState, node *FilterNode) (string, er
 		return b.buildArrayPath(s, node)
 	}
 	return b.dialect.Condition(node.Field, node.Op, node.Value, bind)
+}
+
+// computed is n reading its field through the computed column's expression
+// when the field is one.
+func (b *SQLBuilder) computed(n *FilterNode) *FilterNode {
+	f := b.exprs.field(n.Field)
+	if f == n.Field {
+		return n
+	}
+	out := *n
+	out.Field = f
+	return &out
 }
 
 // buildPairTable compiles a key comparison on a pair table the relation tag

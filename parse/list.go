@@ -413,7 +413,7 @@ func (r *Resource[T]) BuildList(d filter.Dialect, req *ListRequest, s Scope) (*L
 	if req.schema != r.filterSchema {
 		return nil, fmt.Errorf("parse: %s: list request: %w", r.table, ErrForeign)
 	}
-	v, err := r.dialectView(d)
+	exprs, err := r.computedSQL(d)
 	if err != nil {
 		return nil, err
 	}
@@ -431,9 +431,7 @@ func (r *Resource[T]) BuildList(d filter.Dialect, req *ListRequest, s Scope) (*L
 		DeleteColumn: r.deleted, IncludeDeleted: s.IncludeDeleted && r.deleted != "",
 	}, s.Governance, s.Policy)
 
-	// Relations the facets, includes and policies reach compile their
-	// targets for d; the filter's own reach theirs as filterAST walks it.
-	if v, err = v.withTargets(d, slices.Concat(req.facets, req.include, policyFields(policy))...); err != nil {
+	if err := r.checkTargets(d, req.include...); err != nil {
 		return nil, err
 	}
 
@@ -451,19 +449,15 @@ func (r *Resource[T]) BuildList(d filter.Dialect, req *ListRequest, s Scope) (*L
 		filter.ListRelationScope(relations),
 	}
 	if req.filter != nil {
-		ast, err := v.filterAST(d, req.filter.AST())
-		if err != nil {
-			return nil, err
-		}
-		opts = append(opts, filter.ListFilterAST(ast))
+		opts = append(opts, filter.ListFilterAST(req.filter.AST()))
 	}
 	if req.sort != nil {
-		opts = append(opts, filter.ListSortResult(v.sortResult(req.sort)))
+		opts = append(opts, filter.ListSortResult(req.sort))
 	}
 	if len(req.facets) > 0 {
 		opts = append(opts, filter.ListFacets(req.facets...))
 	}
-	lq, err := v.listQuery(d, r.cfg)
+	lq, err := newListQuery(r.filterSchema, r.sortSchema, r.searchSchema, d, r.cfg)
 	if err != nil {
 		return nil, err
 	}
@@ -472,14 +466,14 @@ func (r *Resource[T]) BuildList(d filter.Dialect, req *ListRequest, s Scope) (*L
 		return nil, err
 	}
 	plan := &ListPlan{
-		Page:      Statement{SQL: "SELECT " + strings.Join(r.columns(d, v), ", ") + " FROM " + d.QuoteIdent(r.table) + " " + res.Fragment, Args: res.Args},
+		Page:      Statement{SQL: "SELECT " + strings.Join(r.columns(d, exprs), ", ") + " FROM " + d.QuoteIdent(r.table) + " " + res.Fragment, Args: res.Args},
 		Fragment:  res.Fragment,
 		Facets:    res.Facets,
 		Include:   slices.Clone(req.include),
 		Keyset:    res.Cursor,
 		Limit:     res.Limit,
 		dialect:   d,
-		fields:    v.filter,
+		fields:    r.filterSchema,
 		table:     r.table,
 		relations: relations,
 	}

@@ -9,6 +9,7 @@ func (b *SQLBuilder) buildMember(s *buildState, node *FilterNode) (string, error
 	if node.Field == nil || FieldExpr(b.dialect, node.Field) == "" || node.Member == nil {
 		return "", invalidLookup("membership node has no field expression or lookup")
 	}
+	node = b.computed(node)
 	l := node.Member
 	if err := l.validate(); err != nil {
 		return "", err

@@ -3,6 +3,7 @@
 package parse_test
 
 import (
+	"errors"
 	"net/url"
 	"strings"
 	"testing"
@@ -88,6 +89,20 @@ func TestReadExpr_SchemasCompileAgainstEachDialectsExpression(t *testing.T) {
 	assert.Empty(t, computedAccounts.SortSchema().Fields["email"].Expr, "the shared schema stays dialect-neutral")
 }
 
+// The resource's ListQuery compiles its computed columns as BuildList does.
+func TestReadExpr_ListQueryCompilesTheDialectsExpression(t *testing.T) {
+	for _, tt := range computedDialects {
+		t.Run(tt.dialect.Name(), func(t *testing.T) {
+			lq, err := computedAccounts.ListQuery(tt.dialect)
+			require.NoError(t, err)
+			res, err := lq.Build(filter.ListFilter(`{"member_count":{"$gte":1}}`), filter.ListSort("-member_count"))
+			require.NoError(t, err)
+			assert.Contains(t, res.Where, "("+memberCountExpr+") >= ")
+			assert.Contains(t, res.OrderBy, "("+memberCountExpr+") DESC")
+		})
+	}
+}
+
 // A column mapper writes each field's SQL, so a computed column's fields are
 // found by their column, not by table.column text: its filters, sorts,
 // facets and search still compile against the expression, never the
@@ -120,9 +135,8 @@ func TestReadExpr_UnderAColumnMapper(t *testing.T) {
 	}
 }
 
-// Views are keyed by the expressions, not the dialect: two PostgreSQL
-// dialects with one expression share a view, and each build still compiles
-// under its own dialect's settings.
+// Each build compiles under its own dialect's settings: two PostgreSQL
+// dialects that resolve one expression order it by their own collation.
 func TestReadExpr_DialectSettingsApplyPerBuild(t *testing.T) {
 	req, err := computedAccounts.ParseList(url.Values{filter.ParamSort: {"email"}})
 	require.NoError(t, err)
@@ -215,6 +229,8 @@ func TestReadExpr_RefusedDialect(t *testing.T) {
 			}
 			assert.ErrorIs(t, err, filter.ErrUnsupportedDialect)
 			assert.ErrorContains(t, err, `parse: accounts: computed column "group_ids" for dialect sqlite`)
+			_, isParseError := errors.AsType[*core.ParseError](err)
+			assert.False(t, isParseError, "a dialect refusal is no filter error")
 			_, err = tenants.BuildList(filter.PostgresDialect{}, req, tt.scope)
 			assert.NoError(t, err)
 		})
@@ -246,6 +262,10 @@ func TestReadExpr_Refusals(t *testing.T) {
 		{"the tenant", parse.ReadExpr("tenant_id", parse.SQL("'t1'")), `computed column "tenant_id": is the key, tenant or deleted column`},
 		{"not read", parse.ReadColumns("id", "tenant_id", "name", "email", "group_ids"), `computed column "member_count": is not read`},
 		{"patched", parse.ReadExpr("name", parse.SQL("upper(accounts.name)")), `computed column "name": is patched at /name`},
+		{"customized", parse.CustomizeSchemas(func(s parse.Schemas) error {
+			s.Filter.Computed = []filter.ComputedColumn{{Column: "name", Expr: func(filter.Dialect) (string, error) { return "1", nil }}}
+			return nil
+		}), "computed columns are declared with ReadExpr"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -364,6 +384,17 @@ func TestReadExpr_RelationIncludesCompileTheTargetsPolicy(t *testing.T) {
 	plan, err := accountTenants.BuildList(filter.SQLiteDialect{}, req, scope)
 	require.NoError(t, err)
 	_, err = accountTenants.IncludeQueries(plan, []any{"t1"})
+	assert.ErrorContains(t, err, "field member_count is not a column of accounts and cannot be filtered through a relation")
+
+	// A membership change holds its pairs to the targets the same policy
+	// admits.
+	groups := parse.MustResource[accessGroup]("access_groups", parse.TenantColumn("tenant_id"))
+	groups.MustRelate("accounts", parse.ManyToMany(computedAccounts, parse.Through("account_groups", "group_id", "account_id"), parse.Writable(), parse.PolicyScoped()))
+	p, err := groups.ParseMergePatch([]byte(`{"accounts":[1]}`))
+	require.NoError(t, err)
+	update, err := groups.BuildUpdate(filter.SQLiteDialect{}, p, parse.ByID(20), scope)
+	require.NoError(t, err)
+	_, err = groups.RelationStatements(update, []any{int64(20)})
 	assert.ErrorContains(t, err, "field member_count is not a column of accounts and cannot be filtered through a relation")
 }
 

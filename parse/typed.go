@@ -210,11 +210,10 @@ func (r *Resource[T]) ParseSort(sortParam string) (*filter.SortResult, error) {
 // ListQuery returns a ListQuery builder pre-loaded with this type's filter,
 // sort, and search schemas and the parser's config, so ListFilter input is
 // held to the same limits, codec and clock as ParseFilter. When the type declares `parse:"...,search"` fields, a
-// ListSearch query composes a dialect-aware search predicate. The schemas
-// are dialect-neutral: a computed column (ReadExpr) compiles as the column
-// it names, so a resource with computed columns lists through BuildList.
-// The error is filter.NewListQuery's, for a key the list cannot end its
-// keyset on.
+// ListSearch query composes a dialect-aware search predicate. A computed
+// column (ReadExpr) compiles as dialect's expression, and a dialect one
+// refuses fails Build. The error is filter.NewListQuery's, for a key the
+// list cannot end its keyset on.
 func (r *Resource[T]) ListQuery(dialect filter.Dialect) (*filter.ListQuery, error) {
 	return newListQuery(r.filterSchema, r.sortSchema, r.searchSchema, dialect, r.cfg)
 }

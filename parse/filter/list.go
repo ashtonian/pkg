@@ -73,7 +73,7 @@ func listKey(fs *ResourceSchema, ss *SortSchema) (CursorKey, error) {
 	if key.DataType == "" {
 		return CursorKey{}, fmt.Errorf("key %q declares no type", name)
 	}
-	if key.Column == "" {
+	if key.Column == "" || fs.computes(key.Column) {
 		return CursorKey{}, fmt.Errorf("key %q is computed; a keyset reads its key from a column", name)
 	}
 	return key, nil
@@ -240,8 +240,15 @@ func (lq *ListQuery) Build(opts ...ListOption) (*ListResult, error) {
 		}
 		ast = merged
 	}
+	// The sort keys and search fields read computed columns as the filter
+	// does; the builder resolves its own.
+	exprs, err := lq.filterSchema.ComputedSQL(lq.dialect)
+	if err != nil {
+		return nil, err
+	}
+	search := columnExprs(exprs).search(lq.searchSchema)
 	builder := &SQLBuilder{schema: lq.filterSchema, dialect: lq.dialect, startParam: cfg.startParam, scope: cfg.scope.over(lq.dialect, lq.filterSchema), related: cfg.related}
-	filterSQL, err := builder.Build(ast)
+	filterSQL, err := builder.build(ast, exprs)
 	if err != nil {
 		return nil, err
 	}
@@ -256,6 +263,9 @@ func (lq *ListQuery) Build(opts ...ListOption) (*ListResult, error) {
 	keys, err := lq.cursorKeys(sortResult)
 	if err != nil {
 		return nil, err
+	}
+	for i, k := range keys {
+		keys[i] = columnExprs(exprs).key(k)
 	}
 	plan := CursorPlan{Keys: keys, HasCursor: cfg.cursor != ""}
 
@@ -283,8 +293,8 @@ func (lq *ListQuery) Build(opts ...ListOption) (*ListResult, error) {
 
 	// Search — WHERE-only, ANDed after filter + cursor. Never reorders the
 	// result, so keyset pagination stays stable on the configured sort.
-	if lq.searchSchema != nil && cfg.searchQuery != "" {
-		sc, searchErr := buildSearchCondition(lq.searchSchema, lq.dialect, cfg.searchQuery, paramIdx)
+	if search != nil && cfg.searchQuery != "" {
+		sc, searchErr := buildSearchCondition(search, lq.dialect, cfg.searchQuery, paramIdx)
 		if searchErr != nil {
 			return nil, searchErr
 		}
@@ -334,12 +344,12 @@ func (lq *ListQuery) Build(opts ...ListOption) (*ListResult, error) {
 	if cfg.startParam != 0 && (cfg.withCount || len(cfg.facetFields) > 0) {
 		populationBuilder := *builder
 		populationBuilder.startParam = 0
-		population, err = populationBuilder.Build(ast)
+		population, err = populationBuilder.build(ast, exprs)
 		if err != nil {
 			return nil, err
 		}
 	}
-	popWhere, popArgs, err := AndSearch(lq.searchSchema, lq.dialect, population.Where, population.Args, 0, cfg.searchQuery)
+	popWhere, popArgs, err := AndSearch(search, lq.dialect, population.Where, population.Args, 0, cfg.searchQuery)
 	if err != nil {
 		return nil, err
 	}

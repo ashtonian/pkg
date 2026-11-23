@@ -229,6 +229,10 @@ func includeConfig(field *FieldSchema, opts ...IncludeQueryOption) (*includeQuer
 // has-many, the target for a many-to-many. Policy values bind through s.
 func relatedScope(field *FieldSchema, dialect Dialect, scope relationScope, related map[string]*PolicyConstraints, s *buildState, bindTenant func(any) string, join, target string) (string, error) {
 	rel := field.Relation
+	exprs, err := targetExprs(field, dialect)
+	if err != nil {
+		return "", err
+	}
 	var b strings.Builder
 	clause, err := scope.clause(dialect, rel.JoinTable, rel.TenantColumn, join, joinTenantType(field), bindTenant)
 	if err != nil {
@@ -247,12 +251,23 @@ func relatedScope(field *FieldSchema, dialect Dialect, scope relationScope, rela
 		}
 		b.WriteString(tc)
 	}
-	pc, err := policyScope(field, dialect, scope, related, s, visible, join)
+	pc, err := policyScope(field, exprs, dialect, scope, related, s, visible, join)
 	if err != nil {
 		return "", err
 	}
 	b.WriteString(pc)
 	return b.String(), nil
+}
+
+// targetExprs are a declared relation's target's computed columns resolved
+// for dialect: a statement that reads the target compiles its schema, and a
+// dialect one of its expressions refuses fails it.
+func targetExprs(field *FieldSchema, dialect Dialect) (columnExprs, error) {
+	if field.Related == nil {
+		return nil, nil
+	}
+	exprs, err := field.Related.ComputedSQL(dialect)
+	return exprs, err
 }
 
 // targetScope is a many-to-many target's tenant and live-row predicate on
@@ -273,7 +288,7 @@ func targetScope(field *FieldSchema, dialect Dialect, scope relationScope, bindT
 
 // policyScope is a policy-scoped relation's target policy on alias, ""
 // for any other relation.
-func policyScope(field *FieldSchema, dialect Dialect, scope relationScope, related map[string]*PolicyConstraints, s *buildState, alias string, others ...string) (string, error) {
+func policyScope(field *FieldSchema, exprs columnExprs, dialect Dialect, scope relationScope, related map[string]*PolicyConstraints, s *buildState, alias string, others ...string) (string, error) {
 	rel := field.Relation
 	if !rel.Policy {
 		return "", nil
@@ -289,14 +304,14 @@ func policyScope(field *FieldSchema, dialect Dialect, scope relationScope, relat
 	if err != nil || ast == nil || ast.Root == nil {
 		return "", err
 	}
-	root, err := rebaseNode(ast.Root, field.Related.Name, alias, map[*FieldSchema]*FieldSchema{})
+	root, err := rebaseNode(ast.Root, field.Related.Name, alias, exprs, map[*FieldSchema]*FieldSchema{})
 	if err != nil {
 		return "", err
 	}
-	pb := &SQLBuilder{schema: &ResourceSchema{Name: alias}, dialect: dialect, scope: scope, related: related, depth: 1, visible: append(others, alias)}
+	pb := &SQLBuilder{schema: &ResourceSchema{Name: alias}, dialect: dialect, scope: scope, related: related, depth: 1, visible: append(others, alias), exprs: exprs}
 	cond, err := pb.buildNode(s, root)
 	if err != nil {
-		return "", err
+		return "", computedCause(err)
 	}
 	return " AND " + cond, nil
 }
@@ -311,12 +326,16 @@ func VisibleRelated(field *FieldSchema, dialect Dialect, alias string, tenant an
 	if field == nil || field.Relation == nil || field.Relation.TargetTable == "" {
 		return "", fmt.Errorf("VisibleRelated: field is not a many-to-many with a target")
 	}
+	exprs, err := targetExprs(field, dialect)
+	if err != nil {
+		return "", err
+	}
 	scope := relationScope{tenant: tenant}
 	tc, err := targetScope(field, dialect, scope, bind, alias)
 	if err != nil {
 		return "", err
 	}
-	pc, err := policyScope(field, dialect, scope, related, &buildState{bind: bind}, alias)
+	pc, err := policyScope(field, exprs, dialect, scope, related, &buildState{bind: bind}, alias)
 	if err != nil {
 		return "", err
 	}

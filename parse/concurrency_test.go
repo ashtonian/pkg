@@ -82,10 +82,9 @@ func TestParseFilterWithCostIsolatesResourceBudget(t *testing.T) {
 	})
 }
 
-// Concurrent first builds for two dialects, of a target and of an owner
-// whose relation filter compiles it, each build and read their own
-// dialect's views.
-func TestReadExpr_ConcurrentFirstUse(t *testing.T) {
+// Concurrent builds for two dialects, of a target and of an owner whose
+// relation filter compiles it, each read their own dialect's expressions.
+func TestReadExpr_ConcurrentBuilds(t *testing.T) {
 	accounts := newComputedAccounts(accessGroups, groupIDsExpr)
 	tenants := newAccountTenants(accounts)
 	req, err := accounts.ParseList(url.Values{

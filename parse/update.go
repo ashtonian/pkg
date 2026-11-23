@@ -157,7 +157,7 @@ func (r *Resource[T]) BuildUpdate(d Dialect, p *patch.ParsedPatch, target Target
 	if target.filter != nil && !target.filter.ParsedFor(r.filterSchema) {
 		return nil, fmt.Errorf("parse: %s: target filter: %w", r.table, ErrForeign)
 	}
-	v, err := r.dialectView(d)
+	exprs, err := r.computedSQL(d)
 	if err != nil {
 		return nil, err
 	}
@@ -184,21 +184,21 @@ func (r *Resource[T]) BuildUpdate(d Dialect, p *patch.ParsedPatch, target Target
 	}
 
 	scope := updateScope{tenant: tenant, policy: s.Policy, related: s.Related}
-	where, args, err := r.updateWhere(d, v, target, scope, set.ParamCount)
+	where, args, err := r.updateWhere(d, target, scope, set.ParamCount)
 	if err != nil {
 		return nil, err
 	}
-	columns := strings.Join(r.columns(d, v), ", ")
+	columns := strings.Join(r.columns(d, exprs), ", ")
 	// The membership changes hold pairs to targets the request may see,
 	// compiled with the targets' schemas for d.
 	changed := make([]string, len(set.RelationOps))
 	for i, op := range set.RelationOps {
 		changed[i] = op.Field
 	}
-	if v, err = v.withTargets(d, changed...); err != nil {
+	if err := r.checkTargets(d, changed...); err != nil {
 		return nil, err
 	}
-	plan := &UpdatePlan{relations: set.RelationOps, dialect: d, fields: v.filter, table: r.table, tenant: tenant, related: s.Related}
+	plan := &UpdatePlan{relations: set.RelationOps, dialect: d, fields: r.filterSchema, table: r.table, tenant: tenant, related: s.Related}
 	switch {
 	case set.SetClause != "":
 		guarded := where
@@ -206,7 +206,7 @@ func (r *Resource[T]) BuildUpdate(d Dialect, p *patch.ParsedPatch, target Target
 			// where's root is a group, which renders parenthesized, or one
 			// condition, so the predicate ANDs onto all of it.
 			guarded += " AND " + set.ChangePredicate
-			current, currentArgs, err := r.updateWhere(d, v, target, scope, 0)
+			current, currentArgs, err := r.updateWhere(d, target, scope, 0)
 			if err != nil {
 				return nil, err
 			}
@@ -320,8 +320,8 @@ type updateScope struct {
 }
 
 // updateWhere is the WHERE every update statement carries, its placeholders
-// after the SET clause's offset ones, compiled against v.
-func (r *Resource[T]) updateWhere(d filter.Dialect, v *dialectView, target Target, s updateScope, offset int) (string, []any, error) {
+// after the SET clause's offset ones, compiled for d.
+func (r *Resource[T]) updateWhere(d filter.Dialect, target Target, s updateScope, offset int) (string, []any, error) {
 	pc := filter.BuildBaseConstraints(r.tenant, s.tenant, r.deleted, false)
 	switch {
 	case len(target.keys) == 1:
@@ -332,21 +332,15 @@ func (r *Resource[T]) updateWhere(d filter.Dialect, v *dialectView, target Targe
 	if s.policy != nil && !s.policy.IsEmpty() {
 		pc.And = append(pc.And, s.policy)
 	}
-	v, err := v.withTargets(d, policyFields(pc)...)
-	if err != nil {
-		return "", nil, err
-	}
 	var userAST *filter.FilterAST
 	if len(target.keys) == 0 {
-		if userAST, err = v.filterAST(d, target.filter.AST()); err != nil {
-			return "", nil, err
-		}
+		userAST = target.filter.AST()
 	}
-	ast, err := filter.ApplyPolicyConstraints(v.filter, userAST, pc)
+	ast, err := filter.ApplyPolicyConstraints(r.filterSchema, userAST, pc)
 	if err != nil {
 		return "", nil, err
 	}
-	res, err := filter.NewSQLBuilder(v.filter, d, filter.WithStartParam(offset),
+	res, err := filter.NewSQLBuilder(r.filterSchema, d, filter.WithStartParam(offset),
 		filter.WithRelationScope(filter.RelationScope{Tenant: s.tenant, Related: s.related})).Build(ast)
 	if err != nil {
 		return "", nil, err
@@ -407,22 +401,22 @@ func (r *Resource[T]) Reread(plan *UpdatePlan, ownerKeys []any) (*Statement, err
 	if len(plan.relations) == 0 || r.readExprs == nil || len(ownerKeys) == 0 {
 		return nil, nil
 	}
-	v, err := r.dialectView(plan.dialect)
+	exprs, err := r.computedSQL(plan.dialect)
 	if err != nil {
 		return nil, err
 	}
 	pc := filter.BuildBaseConstraints(r.tenant, plan.tenant, "", false)
 	pc.Constraints = append(pc.Constraints, &filter.PolicyConstraint{Field: r.pk, Operator: filter.OpIn, Value: ownerKeys})
-	ast, err := filter.ApplyPolicyConstraints(v.filter, nil, pc)
+	ast, err := filter.ApplyPolicyConstraints(r.filterSchema, nil, pc)
 	if err != nil {
 		return nil, err
 	}
-	where, err := filter.NewSQLBuilder(v.filter, plan.dialect).Build(ast)
+	where, err := filter.NewSQLBuilder(r.filterSchema, plan.dialect).Build(ast)
 	if err != nil {
 		return nil, err
 	}
 	return &Statement{
-		SQL:  "SELECT " + strings.Join(r.columns(plan.dialect, v), ", ") + " FROM " + plan.dialect.QuoteIdent(r.table) + " WHERE " + where.Where,
+		SQL:  "SELECT " + strings.Join(r.columns(plan.dialect, exprs), ", ") + " FROM " + plan.dialect.QuoteIdent(r.table) + " WHERE " + where.Where,
 		Args: where.Args,
 	}, nil
 }
