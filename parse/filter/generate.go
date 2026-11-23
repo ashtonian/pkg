@@ -139,9 +139,11 @@ func generateFilterSchema(g *core.SchemaGenerator, t reflect.Type) (*ResourceSch
 		}
 
 		if tags.Order != "" {
-			if n, err := strconv.Atoi(tags.Order); err == nil {
-				fs.Order = n
+			n, err := strconv.Atoi(tags.Order)
+			if err != nil {
+				return nil, fmt.Errorf("field %s: order:%q is not an integer", field.GoName, tags.Order)
 			}
+			fs.Order = n
 		}
 
 		if fs.Facetable {
@@ -266,6 +268,9 @@ func generateSortSchema(g *core.SchemaGenerator, t reflect.Type) (*SortSchema, e
 			}
 		}
 		if !tags.Parse.Sort {
+			if tags.SortDefault != "" {
+				return nil, fmt.Errorf("field %s: sort_default:%q on a field without the sort capability", field.GoName, tags.SortDefault)
+			}
 			continue
 		}
 		if tags.Relation != "" {
@@ -316,11 +321,14 @@ func generateSortSchema(g *core.SchemaGenerator, t reflect.Type) (*SortSchema, e
 		}
 
 		if defaultTag := tags.SortDefault; defaultTag != "" {
-			defaultField = fieldName
-			if defaultTag == string(SortDesc) {
-				defaultDir = SortDesc
-			} else {
-				defaultDir = SortAsc
+			if defaultField != "" {
+				return nil, fmt.Errorf("field %s: sort_default:%q: %s already declares the default sort", field.GoName, defaultTag, defaultField)
+			}
+			switch SortDirection(defaultTag) {
+			case SortAsc, SortDesc:
+				defaultField, defaultDir = fieldName, SortDirection(defaultTag)
+			default:
+				return nil, fmt.Errorf("field %s: sort_default:%q is neither %q nor %q", field.GoName, defaultTag, SortAsc, SortDesc)
 			}
 		}
 	}
