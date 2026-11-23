@@ -120,3 +120,47 @@ func TestParentNamespace(t *testing.T) {
 		})
 	}
 }
+
+type rootSection struct {
+	Port int `koanf:"port" validate:"min=1"`
+}
+
+// unnamedRoot has no type name, so the validator's namespaces for it start
+// at the field: DB.Port, not unnamedRoot.DB.Port.
+type unnamedRoot = struct {
+	Port    int          `koanf:"port"`
+	Min     int          `koanf:"min"`
+	Max     int          `koanf:"max" validate:"gtefield=Min"`
+	DB      rootSection  `koanf:"db"`
+	Section *diveSection `koanf:"section"`
+}
+
+// genericRoot's type name holds its type argument's: genericRoot[time.Duration].
+type genericRoot[T any] struct {
+	Value T           `koanf:"value"`
+	Port  int         `koanf:"port"`
+	DB    rootSection `koanf:"db"`
+}
+
+// A failure is named by its own key under a root type of any name: one with
+// none, and a generic one whose name holds a qualified type argument. A
+// root field sharing the failed field's name is not the one named.
+func TestValidation_NamesFieldsUnderAnyRootTypeName(t *testing.T) {
+	_, err := Load[unnamedRoot](t.Context(), WithDefaults(map[string]any{
+		"port": 5, "min": 3, "max": 1, "db": map[string]any{"port": 0},
+	}))
+	require.ErrorIs(t, err, ErrValidation)
+	assert.Contains(t, err.Error(), "configuration validation failed: max(gtefield=min), db.port(min=1)")
+
+	_, err = Load[genericRoot[time.Duration]](t.Context(), WithDefaults(map[string]any{
+		"port": 5, "db": map[string]any{"port": 0},
+	}))
+	require.ErrorIs(t, err, ErrValidation)
+	assert.Contains(t, err.Error(), "configuration validation failed: db.port(min=1)")
+
+	_, err = Load[unnamedRoot](t.Context(), WithDefaults(map[string]any{
+		"max": 1, "db": map[string]any{"port": 1}, "section": map[string]any{"count": 1},
+	}))
+	require.ErrorIs(t, err, ErrSchema)
+	assert.Contains(t, err.Error(), "does not apply to its field at section.count: dive error!")
+}

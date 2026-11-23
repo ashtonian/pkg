@@ -994,9 +994,11 @@ func keyedParam(cfg reflect.Value, root *schemaNode, fe validator.FieldError) (s
 	if !fieldParamRules[rule] && !fieldValueParamRules[rule] && !fieldListParamRules[rule] {
 		return param, true
 	}
-	parent, ok := parentNamespace(fe.StructNamespace())
-	if !ok {
-		return param, true
+	// The fields a param names are the holding struct's; an unnamed root's
+	// own fields have no namespace above them.
+	var parent string
+	if p, ok := parentNamespace(fe.StructNamespace()); ok {
+		parent = p + "."
 	}
 	tokens := []string{param}
 	if !fieldParamRules[rule] {
@@ -1006,7 +1008,7 @@ func keyedParam(cfg reflect.Value, root *schemaNode, fe validator.FieldError) (s
 		if fieldValueParamRules[rule] && i%2 == 1 {
 			continue // a value, not a field
 		}
-		p, exact := validatorKey(cfg, parent+"."+token)
+		p, exact := validatorKey(cfg, parent+token)
 		if !exact || len(p) == 0 {
 			continue
 		}
@@ -1054,9 +1056,9 @@ func validationKey(cfg reflect.Value, root *schemaNode, structNS, ns string) str
 	case len(p) > 0:
 		return p.String() + " (exact location unavailable)"
 	}
-	// Not a namespace of cfg: the validator's own, minus the root type name.
-	if _, rest, cut := strings.Cut(ns, "."); cut {
-		ns = rest
+	// Not a namespace of cfg: the validator's own, past the root's part.
+	if rest, ok := belowValidatorRoot(cfg.Type(), ns); ok {
+		return rest
 	}
 	return ns
 }
