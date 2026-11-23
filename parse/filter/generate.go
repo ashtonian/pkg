@@ -59,6 +59,11 @@ func generateFilterSchema(g *core.SchemaGenerator, t reflect.Type) (*ResourceSch
 
 	for _, field := range walk.Fields {
 		tags := &field.Tags
+		if len(tags.Enum) > 0 {
+			if err := enumField(g, field); err != nil {
+				return nil, fmt.Errorf("field %s: %w", field.GoName, err)
+			}
+		}
 		fieldName := field.External
 		if tags.Parse.Filter && fieldName == "" && tags.Relation != "" {
 			// : virtual relation fields conventionally carry
@@ -458,4 +463,35 @@ func addDocSortPaths(g *core.SchemaGenerator, fields map[string]*SortFieldSchema
 		fields[n] = k
 	}
 	return nil
+}
+
+// enumField refuses an enum on a field whose values are not strings: the
+// allowlist is text, compared with a string value or each element of an
+// array of strings, and on any other type it would be read and never
+// checked.
+func enumField(g *core.SchemaGenerator, field *core.Field) error {
+	if field.Tags.Geo != "" {
+		return errEnumType(core.FieldTypeGeo, "")
+	}
+	info, err := g.FieldType(field)
+	if err != nil {
+		return err
+	}
+	if !enumApplies(info.Type, info.Elem) {
+		return errEnumType(info.Type, info.Elem)
+	}
+	return nil
+}
+
+// enumApplies reports whether an enum constrains values of t (elements of
+// elem for an array): string fields and arrays of strings.
+func enumApplies(t, elem core.FieldType) bool {
+	return t == core.FieldTypeString || t == core.FieldTypeArray && elem == core.FieldTypeString
+}
+
+func errEnumType(t, elem core.FieldType) error {
+	if t == core.FieldTypeArray {
+		t = core.FieldType("array of " + string(elem))
+	}
+	return fmt.Errorf("enum on a %s field; enum takes string fields and arrays of strings", t)
 }

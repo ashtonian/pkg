@@ -162,9 +162,11 @@ type FieldSchema struct {
 	Elem             core.FieldType
 	AllowedOperators []FilterOperator
 	Indexed          bool
-	EnumValues       []string
-	Validate         func(value any) error
-	Relation         *core.RelationSchema
+	// EnumValues are the values a string field, or each element of an
+	// array of strings, may take; generation refuses them on other types.
+	EnumValues []string
+	Validate   func(value any) error
+	Relation   *core.RelationSchema
 	// Related is the relation target's filter schema: requests filter the
 	// related rows with it (`$some`, `$none`, `$is`, `$is_not`). Nil for a
 	// relation compared by key alone.

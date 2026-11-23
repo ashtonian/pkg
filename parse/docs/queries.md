@@ -75,7 +75,7 @@ A document column's typed members are filterable as dotted fields — `{"attrs.c
 
 | Declaration | Where | Paths |
 |---|---|---|
-| Struct (object) column | members tagged `parse:"filter"` / `parse:"sort"` / `parse:"facet"` (nested structs too, each step tagged) | `<column>.<member>`, by the members' JSON names; `filter_ops`, `facet`, `indexed` and `label` on a member apply to its path |
+| Struct (object) column | members tagged `parse:"filter"` / `parse:"sort"` / `parse:"facet"` (nested structs too, each step tagged) | `<column>.<member>`, by the members' JSON names; `filter_ops`, `facet`, `indexed`, `label` and `enum` on a member apply to its path |
 | Map, `any` or `json.RawMessage` column | `paths:"color:string:filter+sort+facet;size:int:filter+indexed;dims.w:float"` | each `member.path:type[:caps]`; caps `filter` (implied), `sort`, `facet` (terms) and `indexed` |
 | Per request (tenant custom fields) | `resource.WithPaths(filter.PathDecl{Path: "custom.tier", Type: core.FieldTypeString, Sort: true, Facet: &filter.FacetSchema{Type: filter.FacetTerms}})` — or, below a resource, `schema.WithPaths` / `sorts.WithPaths(schema, …)` | a copy-on-write view that parses, lists and updates like the resource, with the relations it declared; the shared resource is unchanged. A view declares no relations and is no relation's target: `Relate` refuses both |
 

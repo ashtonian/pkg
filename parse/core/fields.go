@@ -7,6 +7,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"unicode"
 
 	"github.com/ashtonian/pkg/gowalker"
 )
@@ -419,14 +420,64 @@ func readTags(sf reflect.StructField, k fieldsKey) (Tags, error) {
 		SortDefault:      tag.Get("sort_default"),
 	}
 	if enum := tag.Get(ConstraintEnum); enum != "" {
-		for v := range strings.SplitSeq(enum, ",") {
-			t.Enum = append(t.Enum, strings.TrimSpace(v)) // enum:"a, b" admits "b"
+		if t.Enum, err = ParseEnumTag(enum); err != nil {
+			return Tags{}, fmt.Errorf("%s:%q: %w", ConstraintEnum, enum, err)
 		}
 	}
 	if t.Bounds, err = readBounds(tag); err != nil {
 		return Tags{}, err
 	}
 	return t, nil
+}
+
+// ParseEnumTag reads an enum tag's comma-separated values. A plain value
+// is trimmed (enum:"a, b" is a and b); a value in single quotes is kept as
+// written, commas and edge spaces included, with ” standing for a quote
+// (enum:"'net 30, eom',' padded','it”s'"). The forms mix by value. An
+// empty plain value, an unterminated quote and text after a closing quote
+// are errors; ” declares the empty string.
+func ParseEnumTag(tag string) ([]string, error) {
+	var values []string
+	rest := tag
+	for {
+		rest = strings.TrimLeftFunc(rest, unicode.IsSpace)
+		var v string
+		if strings.HasPrefix(rest, "'") {
+			var b strings.Builder
+			i := 1
+			for {
+				j := strings.IndexByte(rest[i:], '\'')
+				if j < 0 {
+					return nil, fmt.Errorf("value %d: unterminated quote", len(values)+1)
+				}
+				b.WriteString(rest[i : i+j])
+				i += j + 1
+				if !strings.HasPrefix(rest[i:], "'") {
+					break
+				}
+				b.WriteByte('\'')
+				i++
+			}
+			v, rest = b.String(), strings.TrimLeftFunc(rest[i:], unicode.IsSpace)
+			if rest != "" && rest[0] != ',' {
+				return nil, fmt.Errorf("value %d: text after its closing quote", len(values)+1)
+			}
+		} else {
+			end := strings.IndexByte(rest, ',')
+			if end < 0 {
+				end = len(rest)
+			}
+			v, rest = strings.TrimSpace(rest[:end]), rest[end:]
+			if v == "" {
+				return nil, fmt.Errorf("value %d is empty; '' declares the empty string", len(values)+1)
+			}
+		}
+		values = append(values, v)
+		if rest == "" {
+			return values, nil
+		}
+		rest = rest[1:] // the comma
+	}
 }
 
 // boolTag reads a tag that is "true", "false" or absent, so a misspelt
