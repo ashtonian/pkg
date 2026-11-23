@@ -8,7 +8,9 @@ import (
 	"reflect"
 	"slices"
 	"strconv"
+	"unsafe"
 
+	"github.com/ashtonian/pkg/gowalker"
 	"github.com/ashtonian/pkg/jsonvalue"
 	"github.com/ashtonian/pkg/parse/core"
 	"github.com/ashtonian/pkg/parse/internal/jsonmerge"
@@ -53,9 +55,19 @@ type Applier[T any] struct {
 	fieldNameTag string
 	// fields maps a top-level patch path's field name to T's field.
 	fields map[string]*core.Field
+	// unwritable are the names in fields that core.Field.CheckWritable
+	// refuses, sorted (CheckSchema).
+	unwritable []string
 	// hidden are the patch paths of the server fields the field-name tag
 	// hides, which only the direct path can set.
 	hidden map[string]bool
+	// codecNames maps each name in fields to the name the default JSON
+	// codec writes the same field under, when the field-name tag is not
+	// json; nil when the codec names fields as the schemas do.
+	// codecNamesErr is why that codec cannot name T's fields. The document
+	// path reports either rather than silently writing another key.
+	codecNames    map[string]string
+	codecNamesErr error
 }
 
 // NewApplier builds the applier for T, naming fields with gen, the generator
@@ -70,27 +82,36 @@ func NewApplier[T any](gen *core.SchemaGenerator, cfg *core.ParserConfig) (*Appl
 	if err != nil {
 		return nil, fmt.Errorf("patch: walking fields: %w", err)
 	}
-	return &Applier[T]{
+	a := &Applier[T]{
 		codec:        cfg.GetCodec(),
 		copyBudget:   cfg.MaxPatchCopyBytes,
 		gen:          gen,
 		fieldNameTag: gen.FieldNameTag(),
 		fields:       patchFields(gen, walk),
 		hidden:       hiddenServerPaths(gen, walk),
-	}, nil
+	}
+	a.unwritable = unwritableFields(a.fields)
+	if a.fieldNameTag == core.JSONTagKey {
+		return a, nil
+	}
+	switch a.codec.(type) {
+	case core.StdlibJSON, *core.StdlibJSON:
+		a.codecNames, a.codecNamesErr = jsonCodecNames[T](gen, a.fields)
+	}
+	return a, nil
 }
 
 // patchFields maps each top-level patch field name to T's field, by the
 // same walk the schemas came from. A hidden server field is addressed by its
 // column, unless a visible field has that name.
 func patchFields(gen *core.SchemaGenerator, walk *core.StructFields) map[string]*core.Field {
-	m := make(map[string]*core.Field, len(walk.Fields))
-	for _, f := range walk.Fields {
+	m := make(map[string]*core.Field, walk.Len())
+	for f := range walk.Fields() {
 		if !f.Hidden() {
-			m[f.External] = f
+			m[f.External()] = f
 		}
 	}
-	for _, f := range walk.Fields {
+	for f := range walk.Fields() {
 		if !f.Hidden() {
 			continue
 		}
@@ -103,11 +124,46 @@ func patchFields(gen *core.SchemaGenerator, walk *core.StructFields) map[string]
 	return m
 }
 
+// unwritableFields returns the names of the fields a patch cannot write
+// (core.Field.CheckWritable), sorted.
+func unwritableFields(fields map[string]*core.Field) []string {
+	var names []string
+	for name, f := range fields {
+		if f.CheckWritable() != nil {
+			names = append(names, name)
+		}
+	}
+	slices.Sort(names)
+	return names
+}
+
+// CheckSchema refuses a schema with a path that would write a field of T
+// the applier cannot write: one promoted through an unexported embedded
+// pointer (core.Field.CheckWritable), reached by an exact key or a pattern.
+// GeneratePatchSchema refuses such a field's tags; this refuses a path added
+// by hand (PatchSchema.AddPath). NewResource checks its schemas once they
+// are customized; a caller composing a schema and an applier itself checks
+// the finished schema, or Apply fails the write.
+func (a *Applier[T]) CheckSchema(schema *PatchSchema) error {
+	if schema == nil {
+		return nil
+	}
+	for _, name := range a.unwritable {
+		key, ok := schema.reaching(core.FormatPointer(name))
+		if !ok {
+			continue
+		}
+		err := a.fields[name].CheckWritable()
+		return fmt.Errorf("patch schema %s: path %s: %w", schema.Resource, key, err)
+	}
+	return nil
+}
+
 // hiddenServerPaths returns the patch paths of T's server fields that the
 // field-name tag hides.
 func hiddenServerPaths(gen *core.SchemaGenerator, walk *core.StructFields) map[string]bool {
 	hidden := map[string]bool{}
-	for _, f := range walk.Fields {
+	for f := range walk.Fields() {
 		if !f.Hidden() {
 			continue
 		}
@@ -119,16 +175,17 @@ func hiddenServerPaths(gen *core.SchemaGenerator, walk *core.StructFields) map[s
 }
 
 // Apply applies a parsed patch to target and returns the patched value. It
-// never mutates target: when T is a pointer the patch applies to a copy of
-// the pointee, so an operation that fails part-way leaves the caller's value
-// untouched. A patch no parser produced is ErrUnparsed.
+// never writes target or anything target points to: the patch writes a
+// workingCopy, so a patch that succeeds and one that fails part-way alike
+// leave the caller's value, and any pointer it kept to an embedded parent,
+// as they were. A patch no parser produced is ErrUnparsed.
 func (a *Applier[T]) Apply(parsed *ParsedPatch, target T) (T, error) {
 	var zero T
 	if err := checkParsed(parsed); err != nil {
 		return zero, err
 	}
-	target = copyPointee(target)
-	if rv := reflect.ValueOf(target); rv.Kind() == reflect.Pointer && rv.IsNil() {
+	rv := reflect.ValueOf(target)
+	if rv.Kind() == reflect.Pointer && rv.IsNil() {
 		return zero, errors.New("patch: cannot apply a patch to a nil pointer")
 	}
 	if canApplyDirect(parsed) {
@@ -144,18 +201,65 @@ func (a *Applier[T]) Apply(parsed *ParsedPatch, target T) (T, error) {
 	return a.applyDocument(parsed, target)
 }
 
-// copyPointee returns a shallow copy of a non-nil pointer's target (a new
-// pointer), or v unchanged for non-pointer T. Field replacement on the copy
-// never writes through to the caller's struct.
-func copyPointee[T any](v T) T {
-	rv := reflect.ValueOf(&v).Elem()
-	if rv.Kind() != reflect.Pointer || rv.IsNil() {
-		return v
+// workingCopy is the copy of a target that one Apply writes. It starts
+// shallow: an embedded pointer a field is promoted through still points into
+// the caller's value until field gives the copy its own parent.
+type workingCopy[T any] struct {
+	value T
+	// root is value's struct, addressable.
+	root reflect.Value
+	// owned are the embedded parents field allocated.
+	owned []unsafe.Pointer
+}
+
+func newWorkingCopy[T any](target T) *workingCopy[T] {
+	w := &workingCopy[T]{value: target}
+	w.root = reflect.ValueOf(&w.value).Elem()
+	if w.root.Kind() == reflect.Pointer {
+		pointee := reflect.New(w.root.Type().Elem())
+		pointee.Elem().Set(w.root.Elem())
+		w.root.Set(pointee)
+		w.root = pointee.Elem()
 	}
-	cp := reflect.New(rv.Type().Elem())
-	cp.Elem().Set(rv.Elem())
-	rv.Set(cp)
-	return v
+	return w
+}
+
+// field returns f's field in the copy, ready to write. Each embedded pointer
+// on f's route is first pointed at a parent the copy owns: a nil one at a new
+// parent, as encoding/json allocates it, and one the copy still shares with
+// the caller at a copy of that parent. A parent is copied once, so every
+// write through it lands in the same copy. A field promoted through an
+// unexported embedded pointer, whose parent can be neither, is refused
+// before anything is written.
+func (w *workingCopy[T]) field(f *core.Field) (reflect.Value, error) {
+	err := f.CheckWritable()
+	if err != nil {
+		return reflect.Value{}, err
+	}
+	v, err := f.SettableThrough(w.root, w.own)
+	if err != nil {
+		return reflect.Value{}, err
+	}
+	if !v.CanSet() {
+		return reflect.Value{}, fmt.Errorf("field %s cannot be set", f.GoName())
+	}
+	return v, nil
+}
+
+// own points p, an embedded pointer in the copy, at a parent the copy owns.
+// field has refused every route through an unexported embedded pointer, so
+// p is settable.
+func (w *workingCopy[T]) own(p reflect.Value) error {
+	if !p.IsNil() && slices.Contains(w.owned, p.UnsafePointer()) {
+		return nil
+	}
+	parent := reflect.New(p.Type().Elem())
+	if !p.IsNil() {
+		parent.Elem().Set(p.Elem())
+	}
+	p.Set(parent)
+	w.owned = append(w.owned, parent.UnsafePointer())
+	return nil
 }
 
 // canApplyDirect reports a patch whose operations are all top-level replace,
@@ -182,17 +286,14 @@ func canApplyDirect(parsed *ParsedPatch) bool {
 // serialization.
 func (a *Applier[T]) applyDirect(parsed *ParsedPatch, target T) (T, error) {
 	var zero T
-	rv := reflect.ValueOf(&target).Elem()
-	if rv.Kind() == reflect.Pointer {
-		rv = rv.Elem()
-	}
+	out := newWorkingCopy(target)
 	for _, op := range parsed.Operations {
 		tokens, err := core.ParsePointer(op.Path)
 		if err != nil || len(tokens) != 1 {
 			return zero, fmt.Errorf("patch: direct apply: path %q is not a top-level field", op.Path)
 		}
 		fieldName := tokens[0]
-		fv, err := a.settable(rv, fieldName, op.Path)
+		fv, err := a.writable(out, fieldName, op.Path)
 		if err != nil {
 			return zero, err
 		}
@@ -222,28 +323,28 @@ func (a *Applier[T]) applyDirect(parsed *ParsedPatch, target T) (T, error) {
 			}
 		}
 	}
-	return target, nil
+	return out.value, nil
 }
 
-// settable is T's field for a top-level patch path name, ready to set. The
-// schema validated the path, so a field that is missing or cannot be set is
-// drift between the schema's field tags and T: an error, never a skipped
-// operation.
-func (a *Applier[T]) settable(rv reflect.Value, name, path string) (reflect.Value, error) {
+// writable is the working copy's field for a top-level patch path name,
+// ready to set. The schema validated the path, so a field that is missing or
+// cannot be set is drift between the schema's field tags and T: an error,
+// never a skipped operation. A field the copy cannot write is no
+// core.ParseError: construction refuses its path (GeneratePatchSchema,
+// CheckSchema), so only a schema completed by hand and never checked
+// reaches it, the server's fault and not the request's.
+func (a *Applier[T]) writable(w *workingCopy[T], name, path string) (reflect.Value, error) {
 	field, ok := a.fields[name]
 	if !ok {
 		return reflect.Value{}, &core.ParseError{
 			Kind: core.ParseErrorKindPatch, Code: ECodePatchFieldNotFound.String(),
-			Message: fmt.Sprintf("schema-validated path %q has no matching %q-tagged struct field on %s", path, a.fieldNameTag, rv.Type()),
+			Message: fmt.Sprintf("schema-validated path %q has no matching %q-tagged struct field on %s", path, a.fieldNameTag, gowalker.TypeText(w.root.Type())),
 			Path:    path,
 		}
 	}
-	fv, err := field.Settable(rv)
-	if err == nil && !fv.CanSet() {
-		err = fmt.Errorf("field %s cannot be set", field.GoName)
-	}
+	fv, err := w.field(field)
 	if err != nil {
-		return reflect.Value{}, &core.ParseError{Kind: core.ParseErrorKindPatch, Code: ECodePatchFieldNotFound.String(), Message: fmt.Sprintf("patch field %q is not writable: %v", name, err), Path: path, Cause: err}
+		return reflect.Value{}, fmt.Errorf("patch: writing %s: %w", path, err)
 	}
 	return fv, nil
 }
@@ -318,14 +419,14 @@ func assignValue(dst reflect.Value, v any, codec core.Codec) error {
 	case reflect.String:
 		s, ok := v.(string)
 		if !ok {
-			return fmt.Errorf("cannot assign %T to %s", v, t)
+			return fmt.Errorf("assigning %s to %s: incompatible types", gowalker.TypeText(reflect.TypeOf(v)), gowalker.TypeText(t))
 		}
 		dst.SetString(s)
 		return nil
 	case reflect.Bool:
 		b, ok := v.(bool)
 		if !ok {
-			return fmt.Errorf("cannot assign %T to %s", v, t)
+			return fmt.Errorf("assigning %s to %s: incompatible types", gowalker.TypeText(reflect.TypeOf(v)), gowalker.TypeText(t))
 		}
 		dst.SetBool(b)
 		return nil
@@ -337,11 +438,11 @@ func assignValue(dst reflect.Value, v any, codec core.Codec) error {
 	}
 	data, err := codec.Encode(v)
 	if err != nil {
-		return fmt.Errorf("encoding %T for %s: %w", v, t, err)
+		return fmt.Errorf("encoding %s for %s: %w", gowalker.TypeText(reflect.TypeOf(v)), gowalker.TypeText(t), err)
 	}
 	decoded := reflect.New(t)
 	if err := codec.Decode(data, decoded.Interface()); err != nil {
-		return fmt.Errorf("cannot assign %T to %s: %w", v, t, err)
+		return fmt.Errorf("assigning %s to %s: %w", gowalker.TypeText(reflect.TypeOf(v)), gowalker.TypeText(t), err)
 	}
 	dst.Set(decoded.Elem())
 	return nil
@@ -351,17 +452,11 @@ func assignValue(dst reflect.Value, v any, codec core.Codec) error {
 // different schema tag before a document operation can silently hit another
 // key. Custom codecs must encode the configured field-name tag themselves.
 func (a *Applier[T]) checkDocumentFieldNames(parsed *ParsedPatch) error {
-	if a.fieldNameTag == core.JSONTagKey {
-		return nil
+	if a.codecNamesErr != nil {
+		return a.codecNamesErr
 	}
-	switch a.codec.(type) {
-	case core.StdlibJSON, *core.StdlibJSON:
-	default:
+	if a.codecNames == nil {
 		return nil
-	}
-	jsonWalk, err := core.StructFieldsOf(reflect.TypeFor[T](), core.JSONTagKey, a.gen.ColumnTagKey())
-	if err != nil {
-		return fmt.Errorf("patch: the JSON codec cannot name T's fields: %w", err)
 	}
 	for _, op := range parsed.Operations {
 		for _, path := range []string{op.Path, op.From} {
@@ -372,21 +467,42 @@ func (a *Applier[T]) checkDocumentFieldNames(parsed *ParsedPatch) error {
 			if err != nil || len(tokens) == 0 {
 				return fmt.Errorf("patch: invalid field path %q", path)
 			}
-			field, ok := a.fields[tokens[0]]
-			if !ok {
+			name, ok := a.codecNames[tokens[0]]
+			if !ok || name == tokens[0] {
 				continue
 			}
-			i := slices.IndexFunc(jsonWalk.Fields, func(f *core.Field) bool { return slices.Equal(f.Route, field.Route) })
-			if i < 0 || jsonWalk.Fields[i].External != tokens[0] {
-				name := "(none)"
-				if i >= 0 {
-					name = jsonWalk.Fields[i].External
-				}
-				return fmt.Errorf("patch: field %s uses %q name %q but the JSON codec uses %q; configure a matching codec for document operations", field.GoName, a.fieldNameTag, tokens[0], name)
-			}
+			return fmt.Errorf("patch: field %s uses %q name %q but the JSON codec uses %q; configure a matching codec for document operations", a.fields[tokens[0]].GoName(), a.fieldNameTag, tokens[0], name)
 		}
 	}
 	return nil
+}
+
+// jsonCodecNames maps each name in fields to the name encoding/json, the
+// default codec, writes the same Go field under: "" when its json tag hides
+// the field, "(none)" when it does not write the field at all.
+func jsonCodecNames[T any](gen *core.SchemaGenerator, fields map[string]*core.Field) (map[string]string, error) {
+	jsonWalk, err := core.StructFieldsOf(reflect.TypeFor[T](), core.JSONTagKey, gen.ColumnTagKey())
+	if err != nil {
+		return nil, fmt.Errorf("patch: the JSON codec cannot name T's fields: %w", err)
+	}
+	type routed struct {
+		route []int
+		name  string
+	}
+	jsonFields := make([]routed, 0, jsonWalk.Len())
+	for f := range jsonWalk.Fields() {
+		jsonFields = append(jsonFields, routed{f.Route(), f.External()})
+	}
+	names := make(map[string]string, len(fields))
+	for name, field := range fields {
+		route := field.Route()
+		i := slices.IndexFunc(jsonFields, func(j routed) bool { return slices.Equal(j.route, route) })
+		names[name] = "(none)"
+		if i >= 0 {
+			names[name] = jsonFields[i].name
+		}
+	}
+	return names, nil
 }
 
 // applyDocument applies a patch through the target's document form: encode
@@ -539,18 +655,16 @@ func (a *Applier[T]) applyDocument(parsed *ParsedPatch, target T) (T, error) {
 		if err != nil {
 			return zero, fmt.Errorf("patch: encoding patched document: %w", err)
 		}
-		if err := a.codec.Decode(out, &result); err != nil {
-			return zero, &core.ParseError{Kind: core.ParseErrorKindPatch, Code: ECodePatchValueInvalid.String(), Message: fmt.Sprintf("patched document does not fit %T: %v", result, err), Cause: err}
+		err = a.codec.Decode(out, &result)
+		if err != nil {
+			unfit := &core.ParseError{Kind: core.ParseErrorKindPatch, Code: ECodePatchValueInvalid.String(), Message: fmt.Sprintf("patched document does not fit %s: %v", gowalker.TypeText(reflect.TypeFor[T]()), err), Cause: err}
+			return zero, unfit
 		}
 	}
-	preserved := copyPointee(target)
-	dst := reflect.ValueOf(&preserved).Elem()
-	if dst.Kind() == reflect.Pointer {
-		dst = dst.Elem()
-	}
+	out := newWorkingCopy(target)
 	for _, name := range names {
 		change := changed[name]
-		d, err := a.settable(dst, name, core.FormatPointer(name))
+		d, err := a.writable(out, name, core.FormatPointer(name))
 		if err != nil {
 			return zero, err
 		}
@@ -568,13 +682,14 @@ func (a *Applier[T]) applyDocument(parsed *ParsedPatch, target T) (T, error) {
 			}
 			src = src.Elem()
 		}
-		if value, err := change.field.Value(src); err == nil {
-			d.Set(value)
-		} else {
+		value, err := change.field.Value(src)
+		if err != nil {
 			d.SetZero()
+			continue
 		}
+		d.Set(value)
 	}
-	return preserved, nil
+	return out.value, nil
 }
 
 // validateTransferValue validates a copy's or move's source value, resolved

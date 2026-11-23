@@ -8,7 +8,9 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/ashtonian/pkg/gowalker"
 	"github.com/ashtonian/pkg/parse/core"
+	"github.com/ashtonian/pkg/parse/internal/jsonkeys"
 )
 
 // GeneratePatchSchema generates a PatchSchema from struct tags on type T.
@@ -37,11 +39,11 @@ func GenerateServerPatchSchema[T any](g *core.SchemaGenerator) (*PatchSchema, er
 // external name, or its column when the field-name tag hides it. ok is false
 // for a field that is not a server field.
 func serverFieldName(g *core.SchemaGenerator, field *core.Field) (name string, ok bool) {
-	if !field.Tags.Parse.Server {
+	if !field.Tags().Parse.Server {
 		return "", false
 	}
-	if field.External != "" {
-		return field.External, true
+	if field.External() != "" {
+		return field.External(), true
 	}
 	col, ok, err := g.FieldColumn(field)
 	return col, ok && err == nil
@@ -62,19 +64,31 @@ func generatePatchSchema(g *core.SchemaGenerator, t reflect.Type, server bool) (
 	}
 	paths := make(map[string]*PathSchema)
 
-	for _, field := range walk.Fields {
-		tags := &field.Tags
+	for field := range walk.Fields() {
+		tags := field.Tags()
 		serverField := server && tags.Parse.Server
 		if !tags.Parse.Patch && !serverField {
 			continue
 		}
+		bounds := field.Bounds()
 		if tags.Parse.Patch && tags.Immutable {
 			// Nothing creates rows through a patch, so every patch of the
 			// field would change it. The server's own write is not a
 			// request's: a server field may stay immutable.
-			return nil, fmt.Errorf("field %s: an immutable field cannot have the patch capability", field.GoName)
+			return nil, fmt.Errorf("field %s: an immutable field cannot have the patch capability", field.GoName())
 		}
-		fieldName := field.External
+		// Refused here rather than when a request writes it: the path would
+		// be offered and then fail every write. A value decodes into the
+		// field's type, so a member encoding/json cannot decode fails it too.
+		err = field.CheckWritable()
+		if err != nil {
+			return nil, err
+		}
+		err = jsonkeys.CheckDecodable(field.Type())
+		if err != nil {
+			return nil, fmt.Errorf("field %s: %w", field.GoName(), err)
+		}
+		fieldName := field.External()
 		if serverField {
 			fieldName, _ = serverFieldName(g, field)
 		}
@@ -87,16 +101,16 @@ func generatePatchSchema(g *core.SchemaGenerator, t reflect.Type, server bool) (
 			if tags.Relation == "" {
 				continue
 			}
-			fieldName = cmp.Or(tags.RelationName, core.SnakeCase(field.GoName))
+			fieldName = cmp.Or(tags.RelationName, core.SnakeCase(field.GoName()))
 		}
 
 		info, err := g.FieldType(field)
 		if err != nil {
-			return nil, fmt.Errorf("field %s: %w", field.GoName, err)
+			return nil, fmt.Errorf("field %s: %w", field.GoName(), err)
 		}
 		fieldType := info.Type
 
-		nullable := acceptsNull(field.Type, tags.Bounds)
+		nullable := acceptsNull(field.Type(), bounds)
 		var allowedOps []PatchOp
 		if opsTag := tags.PatchOps; opsTag != "" {
 			for p := range strings.SplitSeq(opsTag, ",") {
@@ -106,25 +120,25 @@ func generatePatchSchema(g *core.SchemaGenerator, t reflect.Type, server bool) (
 				}
 				op := PatchOp(p)
 				if !IsValidOp(op) {
-					return nil, fmt.Errorf("field %s: unknown patch operation %q", field.GoName, p)
+					return nil, fmt.Errorf("field %s: unknown patch operation %q", field.GoName(), p)
 				}
 				if op == PatchOpRemove && !nullable && tags.Relation == "" {
-					if mustHoldElement(field.Type, tags.Bounds) {
-						return nil, fmt.Errorf("field %s: patch operation remove empties the array, which minitems %d refuses", field.GoName, *tags.Bounds.MinItems)
+					if mustHoldElement(field.Type(), bounds) {
+						return nil, fmt.Errorf("field %s: patch operation remove empties the array, which minitems %d refuses", field.GoName(), *bounds.MinItems)
 					}
-					return nil, fmt.Errorf("field %s: patch operation remove requires a nullable Go type (pointer, slice, map), got %s", field.GoName, field.Type)
+					return nil, fmt.Errorf("field %s: patch operation remove requires a nullable Go type (pointer, slice, map), got %s", field.GoName(), gowalker.TypeText(field.Type()))
 				}
-				if op == PatchOpArrayAppend && isFixedArray(field.Type) {
-					return nil, fmt.Errorf("field %s: array_append cannot grow a fixed-size array (%s)", field.GoName, field.Type)
+				if op == PatchOpArrayAppend && isFixedArray(field.Type()) {
+					return nil, fmt.Errorf("field %s: array_append cannot grow a fixed-size array (%s)", field.GoName(), gowalker.TypeText(field.Type()))
 				}
 				allowedOps = append(allowedOps, op)
 			}
 		} else {
 			defaults, configured, err := defaultOpsFor(g, fieldType)
 			if err != nil {
-				return nil, fmt.Errorf("field %s: %w", field.GoName, err)
+				return nil, fmt.Errorf("field %s: %w", field.GoName(), err)
 			}
-			if isFixedArray(field.Type) {
+			if isFixedArray(field.Type()) {
 				// A fixed-size array cannot grow.
 				defaults = slices.DeleteFunc(defaults, func(op PatchOp) bool { return op == PatchOpArrayAppend })
 			}
@@ -143,24 +157,24 @@ func generatePatchSchema(g *core.SchemaGenerator, t reflect.Type, server bool) (
 
 		sqlColumn, err := g.ColumnName(fieldName, tags.Column)
 		if err != nil {
-			return nil, fmt.Errorf("field %s: %w", field.GoName, err)
+			return nil, fmt.Errorf("field %s: %w", field.GoName(), err)
 		}
 
 		var validators []Validator
-		var enumValues []string
-		if len(tags.Enum) > 0 {
-			enumValues = slices.Clone(tags.Enum)
+		enumValues := field.Enum()
+		if len(enumValues) > 0 {
 			validators = append(validators, enumValidator(enumValues))
 		}
-		if !tags.Bounds.IsZero() {
+		if !bounds.IsZero() {
 			if tags.Relation != "" {
-				return nil, fmt.Errorf("field %s: minlen, maxlen, min, max, minitems and maxitems do not apply to a relation", field.GoName)
+				return nil, fmt.Errorf("field %s: minlen, maxlen, min, max, minitems and maxitems do not apply to a relation", field.GoName())
 			}
-			if err := tags.Bounds.Check(info); err != nil {
-				return nil, fmt.Errorf("field %s: %w", field.GoName, err)
+			err = bounds.Check(info)
+			if err != nil {
+				return nil, fmt.Errorf("field %s: %w", field.GoName(), err)
 			}
-			if tags.Bounds.BoundsValues() {
-				validators = append(validators, boundsValidator(tags.Bounds, info))
+			if bounds.BoundsValues() {
+				validators = append(validators, boundsValidator(bounds, info))
 			}
 		}
 
@@ -176,17 +190,17 @@ func generatePatchSchema(g *core.SchemaGenerator, t reflect.Type, server bool) (
 		if tags.Relation != "" {
 			rel, err := g.RelationTag(walk, field)
 			if err != nil {
-				return nil, fmt.Errorf("field %s: %w", field.GoName, err)
+				return nil, fmt.Errorf("field %s: %w", field.GoName(), err)
 			}
 			if len(rel.TargetColumns) == 1 {
-				err = checkRelationKeyType(field.Type)
+				err = checkRelationKeyType(field.Type())
 				if err != nil {
-					return nil, fmt.Errorf("field %s: %w", field.GoName, err)
+					return nil, fmt.Errorf("field %s: %w", field.GoName(), err)
 				}
 			} else {
 				membership, err = tagMembership(g, field, rel)
 				if err != nil {
-					return nil, fmt.Errorf("field %s: %w", field.GoName, err)
+					return nil, fmt.Errorf("field %s: %w", field.GoName(), err)
 				}
 			}
 			relSchema = rel
@@ -196,7 +210,7 @@ func generatePatchSchema(g *core.SchemaGenerator, t reflect.Type, server bool) (
 
 		path := core.FormatPointer(fieldName)
 		if _, duplicate := paths[path]; duplicate {
-			return nil, fmt.Errorf("field %s: duplicate patch path %q", field.GoName, path)
+			return nil, fmt.Errorf("field %s: duplicate patch path %q", field.GoName(), path)
 		}
 		if membership != nil {
 			paths[path] = membership
@@ -206,12 +220,12 @@ func generatePatchSchema(g *core.SchemaGenerator, t reflect.Type, server bool) (
 			AllowedOps: allowedOps,
 			DataType:   fieldType,
 			SQLType:    info.SQLType,
-			GoType:     field.Type,
+			GoType:     field.Type(),
 			Wire:       field.Wire(),
 			SQLColumn:  sqlColumn,
 			Validators: validators,
 			EnumValues: enumValues,
-			Bounds:     tags.Bounds,
+			Bounds:     bounds,
 			Relation:   relSchema,
 		}
 	}
@@ -355,7 +369,7 @@ func tagMembership(g *core.SchemaGenerator, field *core.Field, rel *core.Relatio
 	}
 	keys := make([]RelationKey, len(targets))
 	for i, target := range targets {
-		keys[i] = RelationKey{Type: target.Type, Wire: target.Wire()}
+		keys[i] = RelationKey{Type: target.Type(), Wire: target.Wire()}
 	}
 	return RelationPath(rel, keys...)
 }
@@ -364,10 +378,10 @@ func tagMembership(g *core.SchemaGenerator, field *core.Field, rel *core.Relatio
 // keys that cannot be null.
 func checkRelationKeyType(t reflect.Type) error {
 	if t.Kind() != reflect.Slice {
-		return fmt.Errorf("a relation's membership is a slice of keys, not %s", t)
+		return fmt.Errorf("a relation's membership is a slice of keys, not %s", gowalker.TypeText(t))
 	}
 	if isNullableType(t.Elem()) {
-		return fmt.Errorf("a relation's keys are never null; declare them as %s's element without a pointer", t)
+		return fmt.Errorf("a relation's keys are never null; declare them as %s's element without a pointer", gowalker.TypeText(t))
 	}
 	return nil
 }

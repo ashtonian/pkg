@@ -96,7 +96,7 @@ jobs:
               "parse-postgres": {"go": ["./parse/..."]},
               "cookbook-postgres": {"paths": ["config/examples/cookbook/go.mod", "config/examples/cookbook/go.sum", "config/examples/cookbook/internal/pgtest/**", "config/examples/cookbook/settingsstore/**"], "go": ["./config"]},
               "parse-sdk": ["parse/sdk/**", "parse/testdata/**", "parse/examples/server/README.md", "tools/check-parse-sdk-*", "tools/check-pnpm.mjs"],
-              "parse-benchmarks": {"paths": ["tools/bench-parse.sh"], "go": ["./parse", "./parse/core", "./parse/filter", "./parse/internal/jsonkeys"]},
+              "parse-benchmarks": {"paths": ["tools/bench-parse.sh"], "go": ["./parse", "./parse/core", "./parse/filter", "./parse/internal/jsonkeys", "./parse/parsehttp"]},
               "minimum-go": {"go": ["./httpx/...", "./httpx/oauth2/...", "./httpx/codec/msgpack/...", "./httpx/codec/proto/...", "./httpx/compress/brotli/...", "./gitx/..."]},
               "modules": ["**"],
               "lint": {"paths": [".golangci.yml", "tools/gorules/**"], "go": ["./..."]}
@@ -130,6 +130,7 @@ jobs:
             release-please-config.json
             tools/check-*
             tools/bench-parse.sh
+            tools/postgres-up.sh
             tools/release-please/**
             tools/modarchive/**
             tools/doccheck/**

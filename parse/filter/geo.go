@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/ashtonian/pkg/gowalker"
 	"github.com/ashtonian/pkg/parse/core"
 )
 
@@ -203,7 +204,7 @@ func validateGeoValue(value any) error {
 		code = ECodeInvalidGeoPolygon
 		err = ValidateGeoPolygon(v)
 	default:
-		err = fmt.Errorf("unexpected geo value %T", value)
+		err = fmt.Errorf("unexpected geo value %s", gowalker.TypeText(reflect.TypeOf(value)))
 	}
 	if err != nil {
 		return &core.ParseError{Kind: core.ParseErrorKindFilter, Code: code.String(), Message: err.Error(), Cause: err}
@@ -366,7 +367,7 @@ func parseGeoPolygonValue(fieldName string, obj map[string]any) (*GeoPolygon, er
 func extractGeoPoint(v any) (*GeoPoint, error) {
 	obj, ok := v.(map[string]any)
 	if !ok {
-		return nil, fmt.Errorf("expected object with lat/lon, got %T", v)
+		return nil, fmt.Errorf("expected object with lat/lon, got %s", gowalker.TypeText(reflect.TypeOf(v)))
 	}
 	lat, ok := toFloat64(obj[geoMemberLat])
 	if !ok {

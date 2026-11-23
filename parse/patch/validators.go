@@ -9,6 +9,7 @@ import (
 	"strings"
 	"unicode/utf8"
 
+	"github.com/ashtonian/pkg/gowalker"
 	"github.com/ashtonian/pkg/parse/core"
 )
 
@@ -47,7 +48,7 @@ func enumValidator(values []string) Validator {
 	return eachValue(func(value any) error {
 		s, ok := value.(string)
 		if !ok {
-			return fmt.Errorf("expected string for enum validation, got %T", value)
+			return fmt.Errorf("expected string for enum validation, got %s", gowalker.TypeText(reflect.TypeOf(value)))
 		}
 		if _, found := allowed[s]; !found {
 			return constraintFailure(core.ConstraintEnum, strings.Join(names, ","), "value %q is not one of: %s", s, strings.Join(names, ", "))
@@ -69,7 +70,7 @@ func boundsValidator(b core.Bounds, info core.TypeInfo) Validator {
 		return eachValue(func(value any) error {
 			s, ok := value.(string)
 			if !ok {
-				return fmt.Errorf("expected string for length validation, got %T", value)
+				return fmt.Errorf("expected string for length validation, got %s", gowalker.TypeText(reflect.TypeOf(value)))
 			}
 			n := utf8.RuneCountInString(s)
 			if b.MinLen != nil && n < *b.MinLen {
@@ -92,7 +93,7 @@ func boundsValidator(b core.Bounds, info core.TypeInfo) Validator {
 		return eachValue(func(value any) error {
 			f, ok := value.(float64)
 			if !ok {
-				return fmt.Errorf("expected float64 for range validation, got %T", value)
+				return fmt.Errorf("expected float64 for range validation, got %s", gowalker.TypeText(reflect.TypeOf(value)))
 			}
 			if f < lo {
 				return constraintFailure(core.ConstraintMin, b.Min, "%s is less than the minimum %s", strconv.FormatFloat(f, 'g', -1, bits), b.Min)
@@ -108,7 +109,7 @@ func boundsValidator(b core.Bounds, info core.TypeInfo) Validator {
 		if b.Min != "" {
 			c, ok := core.CompareDecimals(value, b.Min)
 			if !ok {
-				return fmt.Errorf("expected a number for range validation, got %T", value)
+				return fmt.Errorf("expected a number for range validation, got %s", gowalker.TypeText(reflect.TypeOf(value)))
 			}
 			if c < 0 {
 				return constraintFailure(core.ConstraintMin, b.Min, "%v is less than the minimum %s", value, b.Min)
@@ -117,7 +118,7 @@ func boundsValidator(b core.Bounds, info core.TypeInfo) Validator {
 		if b.Max != "" {
 			c, ok := core.CompareDecimals(value, b.Max)
 			if !ok {
-				return fmt.Errorf("expected a number for range validation, got %T", value)
+				return fmt.Errorf("expected a number for range validation, got %s", gowalker.TypeText(reflect.TypeOf(value)))
 			}
 			if c > 0 {
 				return constraintFailure(core.ConstraintMax, b.Max, "%v is greater than the maximum %s", value, b.Max)

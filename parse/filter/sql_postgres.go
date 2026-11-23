@@ -12,6 +12,7 @@ import (
 	"time"
 	"uuid"
 
+	"github.com/ashtonian/pkg/gowalker"
 	"github.com/ashtonian/pkg/parse/core"
 	"github.com/ashtonian/pkg/parse/internal/dialect"
 )
@@ -334,7 +335,7 @@ func pgFieldArray(field *FieldSchema, elem core.FieldType, value any) (any, erro
 func pgArray(elem core.FieldType, value any) (any, error) {
 	items, ok := core.AnySlice(value)
 	if !ok {
-		return nil, fmt.Errorf("an array column requires an array value, got %T", value)
+		return nil, fmt.Errorf("an array column requires an array value, got %s", gowalker.TypeText(reflect.TypeOf(value)))
 	}
 	switch elem {
 	case core.FieldTypeString:
@@ -489,7 +490,7 @@ func (d PostgresDialect) geoCondition(field *FieldSchema, op FilterOperator, val
 	case *GeoPolygon:
 		return pgShapePredicate(d, field, op, "ST_GeomFromText("+bind(polygonWKT(v))+", 4326)")
 	}
-	return "", fmt.Errorf("geo operator %s: unexpected value %T", op, value)
+	return "", fmt.Errorf("geo operator %s: unexpected value %s", op, gowalker.TypeText(reflect.TypeOf(value)))
 }
 
 func pgShapePredicate(d dialect.Dialect, field *FieldSchema, op FilterOperator, shape string) (string, error) {

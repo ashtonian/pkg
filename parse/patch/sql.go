@@ -5,10 +5,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"maps"
+	"reflect"
 	"slices"
 	"strings"
 	"time"
 
+	"github.com/ashtonian/pkg/gowalker"
 	"github.com/ashtonian/pkg/parse/core"
 	"github.com/ashtonian/pkg/parse/internal/dialect"
 )
@@ -515,7 +517,7 @@ func (b *setBuilder) columnExpr(col string, ops []*PatchOperation) (string, *Pat
 		if value != nil {
 			arr, ok := core.AnySlice(value)
 			if !ok {
-				return "", nil, fmt.Errorf("array append for %s: base value is %T, not an array", base.Path, value)
+				return "", nil, fmt.Errorf("array append for %s: base value is %s, not an array", base.Path, gowalker.TypeText(reflect.TypeOf(value)))
 			}
 			elems = slices.Clone(arr)
 		}
@@ -544,7 +546,7 @@ func (b *setBuilder) columnExpr(col string, ops []*PatchOperation) (string, *Pat
 func mergeSQL(d dialect.Dialect, expr string, storage core.SQLType, patch any, bind func(any) string) (string, error) {
 	obj, ok := patch.(map[string]any)
 	if !ok {
-		return "", fmt.Errorf("merge value is %T, not an object", patch)
+		return "", fmt.Errorf("merge value is %s, not an object", gowalker.TypeText(reflect.TypeOf(patch)))
 	}
 	switch k := dialect.KindOf(d); k {
 	case dialect.KindSQLite:

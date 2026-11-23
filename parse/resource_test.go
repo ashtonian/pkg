@@ -398,6 +398,43 @@ func TestPagePointers(t *testing.T) {
 	assert.NotEmpty(t, page.PageInfo.EndCursor)
 }
 
+// A list that matches nothing reads no rows, nil as a scan loop leaves
+// them; its page encodes "items":[] whichever form the rows take.
+func TestPage_OfNoRowsEncodesItemsAsAnArray(t *testing.T) {
+	r, db := widgets(t), widgetDB(t)
+	req, err := r.ParseList(url.Values{"name": {"no such widget"}})
+	require.NoError(t, err)
+	plan, err := r.BuildList(filter.SQLiteDialect{}, req, parse.Scope{Tenant: "t1"})
+	require.NoError(t, err)
+	scanned := resourceRows(t, db, r, filter.SQLiteDialect{}, plan.Page)
+	require.Empty(t, scanned)
+
+	rows := func(items []widget) func() (any, error) {
+		return func() (any, error) { return r.Page(items, plan) }
+	}
+	pointers := func(items []*widget) func() (any, error) {
+		return func() (any, error) { return r.PagePointers(items, plan) }
+	}
+	for _, tt := range []struct {
+		name string
+		page func() (any, error)
+	}{
+		{"the scanned rows", rows(scanned)},
+		{"nil rows", rows(nil)},
+		{"no rows", rows([]widget{})},
+		{"nil pointers", pointers(nil)},
+		{"no pointers", pointers([]*widget{})},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			page, err := tt.page()
+			require.NoError(t, err)
+			got, err := json.Marshal(page)
+			require.NoError(t, err)
+			assert.JSONEq(t, `{"items":[],"page_info":{"has_next_page":false,"has_prev_page":false}}`, string(got))
+		})
+	}
+}
+
 // A plan carries the table it was built for: another resource's keyset and
 // includes name columns this one does not have.
 func TestResource_RefusesAnotherResourcesPlan(t *testing.T) {

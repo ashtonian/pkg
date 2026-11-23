@@ -26,6 +26,7 @@
 * **parse:** a repeated list parameter (filter, sort, cursor, page_size, include_total, include_deleted, search, facets, fields, include) is E2067 instead of reading the first value.
 * **parse:** E2078 answers 404. filter.ECodeSchemaNotFound is parse.ECodeSchemaNotFound and leaves filter.Codes(). E2069, core.CodeSQLColumnMissing and patch.ECodeSQLColumnMissing are removed; match patch.ErrSQLColumnMissing. parse.Codes() is sorted.
 * **parse:** E2080 and filter.ECodeSQLGenerationFailed / core.CodeSQLGenerationFailed are removed. Invalid policy constraints and membership lookups are no longer *core.ParseError; match filter.ErrPolicyInvalid. filtertest.PolicyCase.Err is an error, not a core.Code.
+* **parse:** SchemaRegistry.SchemaHandler, SchemaListHandler, parse.WithErrorHandler and parse.SchemaHandlerOption are removed; use parsehttp.SchemaHandler(reg, ...), parsehttp.SchemaListHandler(reg, ...) and parsehttp.WithErrorHandler. parsehttp.WriteError takes the request, WriteError(w, r, err, opts...), and its hook is func(*http.Request, error). parsehttp.Body is a struct, no longer an alias. A marshalled core.ParseError has no kind member.
 * **parse:** a zero MaxDepth, MaxCost, MaxConditions or MaxArraySize selects the default instead of refusing everything (filters) or removing the depth bound (patches). NewResource refuses a negative limit. WithGeneratorOptions adds to earlier generator options instead of replacing them.
 * **parse:** error text changes throughout the root package, and the sentinels' own text loses its "parse: " prefix; errors.Is holds for every sentinel. A target key of the wrong type is ErrKeyInvalid instead of a core.ParseError.
 * **parse:** RegisterResource returns an error. Registering a name a second time, by type or by resource, is ErrRegistered instead of replacing the first registration. MustRegister panics with an error value.
@@ -83,6 +84,7 @@
 
 ### Code Refactoring
 
+* **parse:** parsehttp is the one net/http adapter ([3b6aa4a](https://github.com/ashtonian/pkg/commit/3b6aa4a0f5033e94aa1195bd04d35bd435d9752e))
 * **parse:** resolve computed columns when SQL is built ([7333813](https://github.com/ashtonian/pkg/commit/7333813b5849d693baf3df8e4adcac01c31d8eeb))
 
 ## [0.17.1](https://github.com/ashtonian/pkg/compare/parse/v0.17.0...parse/v0.17.1) (2026-11-22)
@@ -132,6 +134,7 @@
 
 ### ⚠ BREAKING CHANGES
 
+* **parse:** parse_decimal, parse_decimal_key and parse_decimal_float32 read a BLOB as NULL, so a filter treats a decimal stored as a BLOB (bound from a Go []byte) as missing. Store decimals as TEXT. On SQLite, an index on any of the three over a column holding BLOBs answers with other rows than a scan until it is rebuilt: [convert the BLOBs and REINDEX](https://github.com/ashtonian/pkg/blob/main/parse/parsesqlite/README.md#upgrading-across-a-change-in-results).
 * **parse:** parse requires pgx v5.13.0, whose pgx.BatchResults has a Tx() method; a test double of parsepgx.Querier must return a BatchResults that implements it.
 * **parse:** a field tagged json:",string" takes its filter operands, merge-patch members and JSON Patch values as JSON strings holding the value. Clients that sent bare numbers or booleans for such a field are refused (E2073 for filters, E2077 for patches). A json:",string" member of a struct document can no longer be declared a filter, element or sort path; drop the option or declare the member a string.
 * **parse:** a PostgreSQL timestamp facet bucket is keyed by the canonical text (2026-01-02T01:04:05.500000000Z) instead of the session's timestamptz text. SQLiteDialect.MarshalValue returns a timestamp's canonical text instead of the time.Time, and SQLite rows the application writes itself must store that text (core.FormatTimestamp).

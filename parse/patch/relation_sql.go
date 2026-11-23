@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/ashtonian/pkg/gowalker"
 	"github.com/ashtonian/pkg/parse/core"
 	"github.com/ashtonian/pkg/parse/internal/dialect"
 )
@@ -166,7 +167,7 @@ func relationValueKeys(values []any, columns []string, types []core.TypeInfo) ([
 			keys[i] = k
 		default:
 			if len(columns) != 1 {
-				return nil, fmt.Errorf("value %d is %T; a target key of %d columns is a core.Key", i, v, len(columns))
+				return nil, fmt.Errorf("value %d is %s; a target key of %d columns is a core.Key", i, gowalker.TypeText(reflect.TypeOf(v)), len(columns))
 			}
 			keys[i] = core.Key{v}
 		}
@@ -244,7 +245,7 @@ func tenantScalar(k any) (any, error) {
 	case reflect.Float32, reflect.Float64:
 		return rv.Float(), nil
 	}
-	return nil, fmt.Errorf("%T is not a key: keys are strings, numbers or booleans", k)
+	return nil, fmt.Errorf("%s is not a key: keys are strings, numbers or booleans", gowalker.TypeText(reflect.TypeOf(k)))
 }
 
 // RelationDialect is the dialect a relation patch's statements are written

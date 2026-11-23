@@ -5,6 +5,8 @@ import (
 	"reflect"
 	"strconv"
 	"strings"
+
+	"github.com/ashtonian/pkg/gowalker"
 )
 
 // Key is a row's key: one value per key column, in the order the resource
@@ -81,7 +83,7 @@ func KeyValueText(t TypeInfo, v any) (string, error) {
 		}
 		return DecimalText(x)
 	}
-	return "", fmt.Errorf("%s value %T has no canonical text", t.Type, n)
+	return "", fmt.Errorf("%s value %s has no canonical text", t.Type, gowalker.TypeText(reflect.TypeOf(n)))
 }
 
 func joinKeyTexts(texts []string) string {

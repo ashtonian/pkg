@@ -18,6 +18,17 @@ type boundsItem struct {
 	Value any    `msgpack:"v"`
 }
 
+// checkMsgpackBounds walks data as one whole value, as readEnvelope walks
+// each of the envelope's members.
+func checkMsgpackBounds(data []byte) error {
+	w := boundsWalker{data: data}
+	err := w.value(0)
+	if err != nil {
+		return err
+	}
+	return w.end()
+}
+
 func TestCheckMsgpackBounds_AcceptsEncodedEnvelopes(t *testing.T) {
 	payloads := []any{
 		[]boundsItem{{Name: "a", Value: int64(-5)}, {Name: "b", Value: "x"}, {Name: "c", Value: nil}},

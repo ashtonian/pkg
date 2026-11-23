@@ -166,7 +166,10 @@ export interface SortFieldSchema {
 export interface SearchSchema {
   enabled: boolean;
   fields: string[];
+  /** The GET query parameter the server advertises for the search; it reads `search` too. */
   param: string;
+  /** The list body member a POST list takes the search in: always `search`. */
+  member: string;
 }
 
 /** A single aggregation bucket (mirrors Go filter.FacetBucket). */

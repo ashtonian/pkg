@@ -9,10 +9,10 @@ import { isDeepStrictEqual } from "node:util";
 import { describe, expect, it } from "vitest";
 import { createClient } from "./client.js";
 // ApiError and the problem types come through the package's public entry points.
-import { ApiError, ResponseError, SchemaResourceError, SchemaValidationError, SchemaVersionError } from "./core/index.js";
+import { ApiError, NonFiniteNumberError, ResponseError, SchemaResourceError, SchemaValidationError, SchemaVersionError } from "./core/index.js";
 import type { FacetResult, ListResult } from "./filter/types.js";
 import type { FieldError, Problem } from "./index.js";
-import type { PatchResult } from "./patch/types.js";
+import type { PatchInput, PatchResult } from "./patch/types.js";
 import { type ResourceSchema, SCHEMA_VERSION } from "./schema.js";
 
 interface WireItem {
@@ -172,6 +172,24 @@ describe("list", () => {
     const res = await items.list(filtered);
     expect(res).toEqual(exchange("list_total").response.body);
     expect(res.page_info.total_count).toBe(4);
+  });
+
+  it("reads a list that matches nothing as an empty items array", async () => {
+    const recorded = exchange<ListResult<WireItem>>("list_empty");
+    const items = client(replay(recorded).fetch).resource<WireItem>("wire_items");
+    const res = await items.list({ filter: { id: { $eq: "zz" } }, includeTotal: true, include: ["tags"], facets: ["name"] });
+    expect(res).toEqual(recorded.response.body);
+    expect(res.items.map((i) => i.name)).toEqual([]);
+    expect(res.page_info).toEqual({ has_next_page: false, has_prev_page: false, total_count: 0 });
+  });
+
+  it("reads a list under a field mask as the members it names", async () => {
+    const recorded = exchange<ListResult<WireItem>>("list_masked");
+    const items = client(replay(recorded).fetch).resource<WireItem>("wire_items");
+    const res = await items.list({ ...filtered, fields: ["name"] });
+    expect(res).toEqual(recorded.response.body);
+    expect(res.items.map((i) => Object.keys(i))).toEqual(res.items.map(() => ["name"]));
+    expect(res.page_info).toEqual(exchange<ListResult<WireItem>>("list_total").response.body.page_info);
   });
 
   it("sends the recorded list body over POST, and reads the page GET reads", async () => {
@@ -980,5 +998,182 @@ describe("validation before sending", () => {
     await expect(items.list({ search: "drill" })).rejects.toMatchObject({ code: "E2067", field: "search" });
     await expect(items.facets(["name"], { search: "drill" })).rejects.toMatchObject({ code: "E2067" });
     await expect(items.list({ search: "  " })).resolves.toBeDefined();
+  });
+});
+
+describe("methods detached from their handle", () => {
+  const updated = exchange<PatchResult<WireItem>>("patch").response.body;
+  const p = (name: string): string => wire.params[name] ?? `missing ${name}`;
+
+  // walkServer answers the schema, the recorded keyset walk by cursor,
+  // patches and facets.
+  const walkServer = () => fakeServer(({ method, url }) => {
+    if (url.pathname.endsWith("/schema")) return json(schema);
+    if (url.pathname.endsWith("/schemas")) return json(exchange("schemas").response.body);
+    if (method === "PATCH") return json(updated);
+    if (method === "OPTIONS") return json({ facets: {} });
+    const cursor = url.searchParams.get(p("ParamCursor")) ?? "";
+    const recorded = wire.list.find((c) => (c.request.query?.[p("ParamCursor")]?.[0] ?? "") === cursor);
+    return recorded ? json(recorded.response.body) : json({ code: "E2082", message: "invalid cursor" }, 422);
+  });
+  const sent = (calls: Call[]) => calls.map((c) => ({ method: c.method, url: c.url.href, body: c.body }));
+  const walkOpts = { sort: wire.sort, pageSize: wire.page_size };
+  const notEcho = { filter: { name: { $ne: "echo" } } };
+
+  async function collect<R>(pages: AsyncIterable<R>): Promise<R[]> {
+    const out: R[] = [];
+    for await (const page of pages) out.push(page);
+    return out;
+  }
+
+  // A query library or retry wrapper: it calls the function it is given
+  // with no receiver.
+  const wrapped = <A extends unknown[], R>(f: (...args: A) => R) => (...args: A): R => f(...args);
+
+  it.each([false, true])("send what calls through the handle send (validateBeforeSend %s)", async (validate) => {
+    const control = walkServer();
+    const handle = client(control.fetch, validate).resource<WireItem>("items", { schema: "wire_items" });
+    const want = [
+      await handle.list({ ...notEcho, sort: "name" }),
+      ...(await collect(handle.listAll(walkOpts))),
+      await handle.patch("b", { name: "bravo" }),
+      await handle.patchMany(["b", "d"], { name: "bravo" }),
+      await handle.facets(["name"], notEcho),
+      (await handle.validator()).filterableFields(),
+      await handle.schema(),
+    ];
+
+    const server = walkServer();
+    const { list, listAll, patch, patchMany, facets, validator, schema: schemaOf } =
+      client(server.fetch, validate).resource<WireItem>("items", { schema: "wire_items" });
+    const got = [
+      await wrapped(list)({ ...notEcho, sort: "name" }),
+      ...(await collect(wrapped(listAll)(walkOpts))),
+      await patch("b", { name: "bravo" }),
+      await wrapped(patchMany)(["b", "d"], { name: "bravo" }),
+      await facets(["name"], notEcho),
+      (await validator()).filterableFields(),
+      await schemaOf(),
+    ];
+
+    expect(got).toEqual(want);
+    expect(sent(server.calls)).toEqual(sent(control.calls));
+  });
+
+  it("include the client's own", async () => {
+    const server = walkServer();
+    const { resource, schemas } = client(server.fetch, true);
+    await expect(wrapped(resource<WireItem>)("items", { schema: "wire_items" }).list({ sort: "name" })).resolves.toEqual(page(0));
+    await expect(wrapped(schemas)()).resolves.toEqual(Object.values(related));
+    expect(server.calls.map((c) => c.url.pathname)).toEqual(["/wire_items/schema", "/items", "/schemas"]);
+  });
+
+  it.each([false, true])("refuse what calls through the handle refuse (validateBeforeSend %s)", async (validate) => {
+    const server = walkServer();
+    const { list, patch, patchMany, facets } = client(server.fetch, validate).resource<WireItem>("items", { schema: "wire_items" });
+    await expect(patch("", { name: "bravo" })).rejects.toBeInstanceOf(RangeError);
+    await expect(patchMany([], { name: "bravo" })).rejects.toBeInstanceOf(RangeError);
+    if (validate) {
+      await expect(list({ filter: { name: "zulu" } })).rejects.toMatchObject({ code: "E2087" });
+      await expect(facets(["labels"])).rejects.toMatchObject({ code: "E2071" });
+      await expect(patch("a", { name: null })).rejects.toMatchObject({ code: "E2077" });
+      await expect(patchMany(["a"], { name: null })).rejects.toMatchObject({ code: "E2077" });
+    }
+    expect(server.calls.filter((c) => !c.url.pathname.endsWith("/schema"))).toHaveLength(0);
+  });
+
+  it("iterate lazily: listAll sends nothing until a page is asked for", async () => {
+    const server = walkServer();
+    const { listAll } = client(server.fetch, true).resource<WireItem>("items", { schema: "wire_items" });
+    const pages = listAll(walkOpts);
+    expect(server.calls).toHaveLength(0);
+    const first = await pages.next();
+    if (first.done) throw new Error("listAll yielded no page");
+    expect(first.value).toEqual(page(0));
+    expect(first.value.page_info.has_next_page).toBe(true);
+    expect(server.calls.map((c) => c.url.pathname)).toEqual(["/wire_items/schema", "/items"]);
+  });
+
+  it("share one schema fetch between concurrent validating calls", async () => {
+    const server = walkServer();
+    const { list, patch, patchMany, facets, validator } = client(server.fetch, true).resource<WireItem>("items", { schema: "wire_items" });
+    await Promise.all([list({ sort: "name" }), patch("b", { name: "bravo" }), patchMany(["b"], { name: "bravo" }), facets(["name"]), validator()]);
+    expect(server.calls.filter((c) => c.url.pathname.endsWith("/schema"))).toHaveLength(1);
+  });
+
+  it("end a validating list's wait on its abort, sending nothing", async () => {
+    const server = walkServer();
+    const { list, listAll } = client(server.fetch, true).resource<WireItem>("items", { schema: "wire_items" });
+    await expect(list({ sort: "name" }, { signal: AbortSignal.abort() })).rejects.toMatchObject({ name: "AbortError" });
+    await expect(listAll(walkOpts, { signal: AbortSignal.abort() }).next()).rejects.toMatchObject({ name: "AbortError" });
+    expect(server.calls).toHaveLength(0);
+  });
+});
+
+// JSON has no NaN or Infinity, and JSON.stringify writes them as null, which
+// a merge patch reads as the member's removal and a filter as a NULL test.
+describe("non-finite numbers", () => {
+  interface Scored extends WireItem {
+    score: number | null;
+  }
+  // The recorded wire_items schema with a nullable float, which null clears.
+  const recordedPatch = schema.patch;
+  if (!recordedPatch) throw new Error("the recorded schema has no patch section");
+  const scored: ResourceSchema = {
+    ...schema,
+    patch: { ...recordedPatch, paths: { ...recordedPatch.paths, "/score": { allowed_ops: ["replace", "remove"], data_type: "float", nullable: true, number_kind: "float64" } } },
+  };
+  const empty = { items: [], page_info: { has_next_page: false, has_prev_page: false } };
+  const scoreServer = () => fakeServer(({ method, url }) => {
+    if (url.pathname.endsWith("/schema")) return json(scored);
+    if (method === "PATCH") return json({ updated: [] });
+    if (method === "OPTIONS") return json({ facets: {} });
+    return json(empty);
+  });
+  const scores = (fetchFn: typeof globalThis.fetch, validate: boolean) =>
+    client(fetchFn, validate).resource<Scored>("items", { schema: "wire_items" });
+
+  const refused: { name: string; input: PatchInput<Scored>; pointer: string; value: number }[] = [
+    { name: "a nullable float", input: { score: Number.NaN }, pointer: "/score", value: Number.NaN },
+    { name: "a JSON document member", input: { labels: { weight: Number.POSITIVE_INFINITY } }, pointer: "/labels/weight", value: Number.POSITIVE_INFINITY },
+    { name: "an array element in a JSON document", input: { labels: { readings: [1, Number.NEGATIVE_INFINITY] } }, pointer: "/labels/readings/1", value: Number.NEGATIVE_INFINITY },
+  ];
+
+  describe.each([false, true])("with validateBeforeSend %s", (validate) => {
+    it.each(refused)("refuse $name in patch and patchMany, sending nothing", async ({ input, pointer, value }) => {
+      const server = scoreServer();
+      const items = scores(server.fetch, validate);
+      await expect(items.patch("one", input)).rejects.toMatchObject({ name: "NonFiniteNumberError", payload: "patch", pointer, value });
+      await expect(items.patchMany(["one", "two"], input)).rejects.toMatchObject({ name: "NonFiniteNumberError", payload: "patch", pointer, value });
+      await expect(items.patch("one", input)).rejects.toBeInstanceOf(NonFiniteNumberError);
+      expect(server.calls).toHaveLength(0);
+    });
+
+    it("send explicit null, finite numbers and nested JSON unchanged", async () => {
+      const server = scoreServer();
+      const items = scores(server.fetch, validate);
+      const inputs: PatchInput<Scored>[] = [
+        { score: null },
+        { score: 0.5 },
+        { score: Number.MAX_VALUE, labels: { weight: 2.5, readings: [1, -2], nested: { gone: null } } },
+      ];
+      for (const input of inputs) {
+        await items.patch("one", input);
+        await items.patchMany(["one"], input);
+      }
+      expect(server.calls.filter((c) => c.method === "PATCH").map((c) => c.body)).toEqual(inputs.flatMap((input) => [input, input]));
+    });
+
+    it("refuse one in a filter on every transport, sending nothing", async () => {
+      const server = scoreServer();
+      const items = scores(server.fetch, validate);
+      const filter = { score: { $lt: Number.NaN } };
+      const nan = { name: "NonFiniteNumberError", payload: "filter", pointer: "/score/$lt" };
+      await expect(items.list({ filter }, { method: "GET" })).rejects.toMatchObject(nan);
+      await expect(items.list({ filter }, { method: "POST" })).rejects.toMatchObject(nan);
+      await expect(items.listAll({ filter }).next()).rejects.toMatchObject(nan);
+      await expect(items.facets(["name"], { filter })).rejects.toMatchObject(nan);
+      expect(server.calls).toHaveLength(0);
+    });
   });
 });

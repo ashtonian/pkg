@@ -207,12 +207,13 @@ func structPaths(g *core.SchemaGenerator, t reflect.Type, prefix []string, want 
 	}
 	var decls []PathDecl
 	var kinds []reflect.Kind
-	for _, m := range walk.Fields {
-		caps := m.Tags.Parse
+	for m := range walk.Fields() {
+		tags := m.Tags()
+		caps := tags.Parse
 		if !caps.Has(want) {
 			continue
 		}
-		name := m.External
+		name := m.External()
 		if name == "" {
 			continue
 		}
@@ -223,30 +224,30 @@ func structPaths(g *core.SchemaGenerator, t reflect.Type, prefix []string, want 
 		if m.Wire() != "" {
 			return nil, nil, quotedMemberError(strings.Join(segs, "."))
 		}
-		info := core.TypeOf(m.Type)
-		elem, elemKind, isArray := scalarElements(m.Type)
+		info := core.TypeOf(m.Type())
+		elem, elemKind, isArray := scalarElements(m.Type())
 		switch {
 		case pathTypes[info.Type] || isArray:
-			d := PathDecl{Path: strings.Join(segs, "."), Type: info.Type, Indexed: m.Tags.Indexed, Label: m.Tags.Label, Sort: want == core.CapabilitySort, Enum: slices.Clone(m.Tags.Enum)}
+			d := PathDecl{Path: strings.Join(segs, "."), Type: info.Type, Indexed: tags.Indexed, Label: tags.Label, Sort: want == core.CapabilitySort, Enum: m.Enum()}
 			kind := info.NumberKind
 			if isArray {
 				d.Type, d.Elem, kind = core.FieldTypeArray, elem, elemKind
 			}
-			if want == core.CapabilityFilter && m.Tags.Facet != "" && !caps.Facet {
-				return nil, nil, fmt.Errorf("member %s: facet:%q on a member without the facet capability", d.Path, m.Tags.Facet)
+			if want == core.CapabilityFilter && tags.Facet != "" && !caps.Facet {
+				return nil, nil, fmt.Errorf("member %s: facet:%q on a member without the facet capability", d.Path, tags.Facet)
 			}
 			if want == core.CapabilityFilter && caps.Facet {
-				fs, err := ParseFacetTag(m.Tags.Facet)
+				fs, err := ParseFacetTag(tags.Facet)
 				if err != nil {
-					return nil, nil, fmt.Errorf("member %s: facet:%q: %w", d.Path, m.Tags.Facet, err)
+					return nil, nil, fmt.Errorf("member %s: facet:%q: %w", d.Path, tags.Facet, err)
 				}
 				if fs == nil {
 					fs = &FacetSchema{Type: FacetTerms}
 				}
 				d.Facet = fs
 			}
-			if opsTag := m.Tags.FilterOps; opsTag != "" {
-				ops, err := parseOpsTag(opsTag)
+			if tags.FilterOps != "" {
+				ops, err := parseOpsTag(tags.FilterOps)
 				if err != nil {
 					return nil, nil, fmt.Errorf("member %s: %w", d.Path, err)
 				}
@@ -255,7 +256,7 @@ func structPaths(g *core.SchemaGenerator, t reflect.Type, prefix []string, want 
 			decls = append(decls, d)
 			kinds = append(kinds, kind)
 		case info.Type == core.FieldTypeObject:
-			nested, nestedKinds, err := structPaths(g, m.Type, segs, want)
+			nested, nestedKinds, err := structPaths(g, m.Type(), segs, want)
 			if err != nil {
 				return nil, nil, err
 			}
@@ -314,19 +315,21 @@ func documentPathFields(g *core.SchemaGenerator, field *core.Field, doc *FieldSc
 	var decls []PathDecl
 	var kinds []reflect.Kind
 	if doc.DataType == core.FieldTypeObject {
-		d, k, err := structPaths(g, field.Type, nil, core.CapabilityFilter)
+		d, k, err := structPaths(g, field.Type(), nil, core.CapabilityFilter)
 		if err != nil {
 			return nil, err
 		}
 		decls, kinds = d, k
 	}
-	if tag := field.Tags.Paths; tag != "" {
-		d, err := parsePathsTag(tag)
+	paths := field.Tags().Paths
+	if paths != "" {
+		d, err := parsePathsTag(paths)
 		if err != nil {
 			return nil, err
 		}
 		for _, decl := range d {
-			if err := checkDeclaredMember(g, field.Type, decl.Path); err != nil {
+			err = checkDeclaredMember(g, field.Type(), decl.Path)
+			if err != nil {
 				return nil, err
 			}
 			decls = append(decls, decl)
@@ -349,7 +352,7 @@ func fieldStorage(g *core.SchemaGenerator, field *core.Field) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	tag := field.Tags.Storage
+	tag := field.Tags().Storage
 	if info.SQLType.IsJSON() {
 		storage := string(info.SQLType)
 		if tag != "" && tag != storage {
@@ -393,11 +396,12 @@ func applyStorage(g *core.SchemaGenerator, fs *FieldSchema, field *core.Field) e
 		fs.Storage = storage
 		return nil
 	}
-	if field.Tags.Paths != "" {
+	tags := field.Tags()
+	if tags.Paths != "" {
 		return fmt.Errorf("a scalar (%s) has no paths", tag)
 	}
 	fs.DataType, fs.NumberKind = scalar, kindOf(scalar)
-	if field.Tags.FilterOps == "" {
+	if tags.FilterOps == "" {
 		fs.AllowedOperators = slices.Clone(defaultFilterOps[scalar])
 	}
 	return nil
@@ -413,19 +417,21 @@ func docSortPaths(g *core.SchemaGenerator, field *core.Field, docType core.Field
 	var decls []PathDecl
 	var kinds []reflect.Kind
 	if docType == core.FieldTypeObject {
-		d, k, err := structPaths(g, field.Type, nil, core.CapabilitySort)
+		d, k, err := structPaths(g, field.Type(), nil, core.CapabilitySort)
 		if err != nil {
 			return nil, err
 		}
 		decls, kinds = d, k
 	}
-	if tag := field.Tags.Paths; tag != "" {
-		d, err := parsePathsTag(tag)
+	paths := field.Tags().Paths
+	if paths != "" {
+		d, err := parsePathsTag(paths)
 		if err != nil {
 			return nil, err
 		}
 		for _, decl := range d {
-			if err := checkDeclaredMember(g, field.Type, decl.Path); err != nil {
+			err = checkDeclaredMember(g, field.Type(), decl.Path)
+			if err != nil {
 				return nil, err
 			}
 			if decl.Sort {
@@ -444,7 +450,7 @@ func docSortPaths(g *core.SchemaGenerator, field *core.Field, docType core.Field
 	if scalar != "" {
 		return nil, fmt.Errorf("a scalar (%s) has no paths", tag)
 	}
-	name := field.External
+	name := field.External()
 	out := make(map[string]*SortFieldSchema, len(decls))
 	for i, d := range decls {
 		key, err := newPathSortField(table, column, expr, storage, strings.Split(d.Path, "."), d.Type, kinds[i], d.Indexed)

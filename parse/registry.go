@@ -8,6 +8,7 @@ import (
 	"slices"
 	"sync"
 
+	"github.com/ashtonian/pkg/gowalker"
 	"github.com/ashtonian/pkg/parse/core"
 	"github.com/ashtonian/pkg/parse/filter"
 	"github.com/ashtonian/pkg/parse/patch"
@@ -60,19 +61,19 @@ func Register[T any](r *SchemaRegistry) error {
 
 	filterSchema, err := filter.GenerateFilterSchema[T](r.generator)
 	if err != nil {
-		return fmt.Errorf("parse: registering %s: filter schema: %w", t, err)
+		return fmt.Errorf("parse: registering %s: filter schema: %w", gowalker.TypeText(t), err)
 	}
 	patchSchema, err := patch.GeneratePatchSchema[T](r.generator)
 	if err != nil {
-		return fmt.Errorf("parse: registering %s: patch schema: %w", t, err)
+		return fmt.Errorf("parse: registering %s: patch schema: %w", gowalker.TypeText(t), err)
 	}
 	sortSchema, err := filter.GenerateSortSchema[T](r.generator)
 	if err != nil {
-		return fmt.Errorf("parse: registering %s: sort schema: %w", t, err)
+		return fmt.Errorf("parse: registering %s: sort schema: %w", gowalker.TypeText(t), err)
 	}
 	searchSchema, err := filter.GenerateSearchSchema[T](r.generator)
 	if err != nil {
-		return fmt.Errorf("parse: registering %s: search schema: %w", t, err)
+		return fmt.Errorf("parse: registering %s: search schema: %w", gowalker.TypeText(t), err)
 	}
 	return r.add(filterSchema.Name, filterSchema, patchSchema, sortSchema, searchSchema)
 }
@@ -328,7 +329,13 @@ type SortFieldResponse struct {
 type SearchSchemaResponse struct {
 	Enabled bool     `json:"enabled"`
 	Fields  []string `json:"fields"`
-	Param   string   `json:"param"`
+	// Param is the query parameter a GET list takes the search in
+	// (core.WithSearchParam). Resource.ParseList reads it, and reads
+	// filter.ParamSearch as well, the name every bundled client sends.
+	Param string `json:"param"`
+	// Member is the member a list body takes the search in
+	// (Resource.ParseListBody): filter.ParamSearch, whatever Param is.
+	Member string `json:"member"`
 }
 
 // SchemaFor builds an independent metadata snapshot for the given resource.
@@ -456,5 +463,6 @@ func searchSchemaToResponse(s *filter.SearchSchema) *SearchSchemaResponse {
 	if param == "" {
 		param = filter.ParamSearch // hand-built schema without a Param; the generated default
 	}
-	return &SearchSchemaResponse{Enabled: true, Fields: fields, Param: param}
+	resp := &SearchSchemaResponse{Enabled: true, Fields: fields, Param: param, Member: filter.ParamSearch}
+	return resp
 }

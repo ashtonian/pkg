@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"reflect"
 	"strconv"
+
+	"github.com/ashtonian/pkg/gowalker"
 )
 
 // Wire is how a field's values travel in JSON when that differs from its
@@ -34,7 +36,7 @@ func (f *Field) Quoted() bool {
 	if !f.HasFieldNameOption(stringOption) {
 		return false
 	}
-	t := f.Type
+	t := f.typ
 	if t.Name() == "" && t.Kind() == reflect.Pointer {
 		t = t.Elem()
 	}
@@ -61,7 +63,7 @@ func (f *Field) Wire() Wire {
 	if !f.Quoted() {
 		return ""
 	}
-	t := f.Type
+	t := f.typ
 	if t.Name() == "" && t.Kind() == reflect.Pointer {
 		t = t.Elem()
 	}
@@ -88,20 +90,14 @@ func (g *SchemaGenerator) MemberWire(t reflect.Type, path []string) (Wire, error
 		if err != nil {
 			return "", err
 		}
-		var member *Field
-		for _, f := range walk.Fields {
-			if f.External == seg {
-				member = f
-				break
-			}
-		}
-		if member == nil {
+		member, ok := walk.External(seg)
+		if !ok {
 			return "", nil
 		}
 		if i == len(path)-1 {
 			return member.Wire(), nil
 		}
-		t = member.Type
+		t = member.typ
 	}
 	return "", nil
 }
@@ -173,7 +169,7 @@ func ToWire(w Wire, v any) (any, error) {
 	case bool:
 		return strconv.FormatBool(x), nil
 	}
-	return nil, fmt.Errorf("%T has no string wire form", v)
+	return nil, fmt.Errorf("%s has no string wire form", gowalker.TypeText(reflect.TypeOf(v)))
 }
 
 // jsonKind names a decoded JSON value's kind for messages.
@@ -184,5 +180,5 @@ func jsonKind(v any) string {
 	case []any:
 		return "an array"
 	}
-	return fmt.Sprintf("%T", v)
+	return gowalker.TypeText(reflect.TypeOf(v))
 }

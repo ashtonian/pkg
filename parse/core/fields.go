@@ -3,6 +3,7 @@ package core
 import (
 	"errors"
 	"fmt"
+	"iter"
 	"reflect"
 	"slices"
 	"strings"
@@ -19,13 +20,15 @@ import (
 // generator's field-name tag — embedded structs promoted as encoding/json
 // promotes them — plus the fields that tag hides, which columns, server-only
 // paths and relations still read.
+//
+// A walk is read-only, and so is each *Field it holds: one walk serves every
+// generator, resource and stored document of its type, so its methods return
+// either a shared read-only handle or a value the caller owns, and nothing a
+// caller does with either changes what another reads. Lookups and iteration
+// allocate nothing.
 type StructFields struct {
-	// Type is the walked struct type.
-	Type reflect.Type
-	// Fields holds the fields in declaration order, an embedded struct's
-	// promoted fields in place of it.
-	Fields []*Field
-
+	typ          reflect.Type
+	fields       []*Field
 	external     map[string]*Field
 	columnTagged map[string]*Field
 	// misspelt are the walked fields' misspelt tag keys, which each
@@ -35,6 +38,17 @@ type StructFields struct {
 	// way encoding/json decodes it.
 	view *gowalker.Shape
 }
+
+// Type returns the walked struct type.
+func (s *StructFields) Type() reflect.Type { return s.typ }
+
+// Len returns the number of fields.
+func (s *StructFields) Len() int { return len(s.fields) }
+
+// Fields yields the fields in declaration order, an embedded struct's
+// promoted fields in place of it. slices.Collect gives the caller a slice of
+// its own, to reorder or keep.
+func (s *StructFields) Fields() iter.Seq[*Field] { return slices.Values(s.fields) }
 
 // External returns the field named name under the field-name tag.
 func (s *StructFields) External(name string) (*Field, bool) {
@@ -62,36 +76,76 @@ func (s *StructFields) ColumnTagged(column string) (*Field, bool) {
 	return f, ok
 }
 
-// Field is one field of a StructFields walk.
+// Field is one field of a StructFields walk: a read-only handle every reader
+// of the walk shares. Its accessors return values the caller owns.
 type Field struct {
-	// GoName is the Go field name.
-	GoName string
-	// Type is the field's declared type.
-	Type reflect.Type
-	// Route is the index path from the walked type to the field, through
-	// the embedded structs it is promoted from.
-	Route []int
-	// External is the field's name under the field-name tag, by
-	// encoding/json's rule (the tag's name, else the Go name). It is empty
-	// when the tag hides the field (`json:"-"`).
-	External string
-	// Tags are the field's annotations, parsed once.
-	Tags Tags
+	goName   string
+	typ      reflect.Type
+	route    []int
+	external string
+	tags     Tags
+	enum     []string
+	bounds   Bounds
+	// unexportedEmbed is the first unexported embedded pointer on route,
+	// nil when there is none (CheckWritable).
+	unexportedEmbed reflect.Type
 }
+
+// GoName returns the Go field name.
+func (f *Field) GoName() string { return f.goName }
+
+// Type returns the field's declared type.
+func (f *Field) Type() reflect.Type { return f.typ }
+
+// Route returns the index path from the walked type to the field, through
+// the embedded structs it is promoted from, as reflect.Value.FieldByIndex
+// takes it. Each call allocates the caller a copy; Value and Settable follow
+// the route without one.
+func (f *Field) Route() []int { return slices.Clone(f.route) }
+
+// External returns the field's name under the field-name tag, by
+// encoding/json's rule (the tag's name, else the Go name). It is empty
+// when the tag hides the field (`json:"-"`).
+func (f *Field) External() string { return f.external }
+
+// Tags returns the field's annotations, parsed once. Tags holds no
+// reference, so the value returned shares nothing with the walk, and
+// returning it allocates nothing.
+func (f *Field) Tags() Tags { return f.tags }
+
+// Enum returns the values the field's enum tag allows, nil when it has
+// none. Each call allocates the caller a copy.
+func (f *Field) Enum() []string { return slices.Clone(f.enum) }
+
+// Bounds returns the field's minlen, maxlen, min, max, minitems and maxitems
+// tags. Each call allocates the caller a copy of each length it declares.
+func (f *Field) Bounds() Bounds { return f.bounds.Clone() }
 
 // Hidden reports a field the field-name tag hides: it has columns, but no
 // name a request can use (relations and server fields name themselves).
-func (f *Field) Hidden() bool { return f.External == "" }
+func (f *Field) Hidden() bool { return f.external == "" }
+
+// CheckWritable refuses a field promoted through an unexported embedded
+// pointer. Reflection can neither allocate that pointer nor point it at a
+// copy of its parent, so neither a reader filling a fresh value, where the
+// pointer is nil, nor a writer that must not write the parent it shares with
+// the caller, as a patch must not, can set the field.
+func (f *Field) CheckWritable() error {
+	if f.unexportedEmbed == nil {
+		return nil
+	}
+	return fmt.Errorf("field %s: a write reaches it through the unexported embedded %s, which reflection can neither allocate nor copy; export the type or embed it by value", f.goName, gowalker.TypeText(f.unexportedEmbed))
+}
 
 // Value reads the field from v, a value of the walked struct type. A nil
 // embedded pointer on the route is an error: the field is not there.
 func (f *Field) Value(v reflect.Value) (reflect.Value, error) {
-	if len(f.Route) == 1 {
-		return v.Field(f.Route[0]), nil
+	if len(f.route) == 1 {
+		return v.Field(f.route[0]), nil
 	}
-	fv, err := v.FieldByIndexErr(f.Route)
+	fv, err := v.FieldByIndexErr(f.route)
 	if err != nil {
-		return reflect.Value{}, fmt.Errorf("field %s: %w", f.GoName, err)
+		return reflect.Value{}, fmt.Errorf("field %s: %w", f.goName, err)
 	}
 	return fv, nil
 }
@@ -100,13 +154,20 @@ func (f *Field) Value(v reflect.Value) (reflect.Value, error) {
 // struct type, for writing: nil embedded pointers on the route are
 // allocated, as encoding/json allocates them when decoding.
 func (f *Field) Settable(v reflect.Value) (reflect.Value, error) {
-	for i, x := range f.Route {
+	return f.SettableThrough(v, allocateEmbedded)
+}
+
+// SettableThrough is Settable with the caller deciding what each embedded
+// pointer on the route points at: parent receives the pointer before the
+// route follows it and must leave it non-nil. The pointer is settable
+// unless it is unexported. A writer that must not write through a parent
+// it shares points the pointer at a copy.
+func (f *Field) SettableThrough(v reflect.Value, parent func(embedded reflect.Value) error) (reflect.Value, error) {
+	for i, x := range f.route {
 		if i > 0 && v.Kind() == reflect.Pointer {
-			if v.IsNil() {
-				if !v.CanSet() {
-					return reflect.Value{}, fmt.Errorf("field %s: cannot allocate the unexported embedded %s it is promoted from", f.GoName, v.Type().Elem())
-				}
-				v.Set(reflect.New(v.Type().Elem()))
+			err := parent(v)
+			if err != nil {
+				return reflect.Value{}, fmt.Errorf("field %s: %w", f.goName, err)
 			}
 			v = v.Elem()
 		}
@@ -115,8 +176,21 @@ func (f *Field) Settable(v reflect.Value) (reflect.Value, error) {
 	return v, nil
 }
 
-// Tags are the struct tags parse reads on a field. Option-bearing tags hold
-// their raw text for the view that interprets them.
+func allocateEmbedded(p reflect.Value) error {
+	if !p.IsNil() {
+		return nil
+	}
+	if !p.CanSet() {
+		return fmt.Errorf("allocating the unexported embedded %s it is promoted from: reflection cannot set it", gowalker.TypeText(p.Type().Elem()))
+	}
+	p.Set(reflect.New(p.Type().Elem()))
+	return nil
+}
+
+// Tags are the struct tags parse reads on a field, but for the enum and
+// bounds tags (Field.Enum, Field.Bounds). Option-bearing tags hold their raw
+// text for the view that interprets them. Tags holds no reference: a copy
+// shares nothing with the walk it came from.
 type Tags struct {
 	// Parse is the field's parse capabilities.
 	Parse Capabilities
@@ -128,8 +202,6 @@ type Tags struct {
 
 	Relation, RelationName string
 	FilterOps, PatchOps    string
-	Enum                   []string
-	Bounds                 Bounds
 	Facet                  string
 	Paths, Elements        string
 	Storage                string
@@ -345,7 +417,7 @@ func isStructType(t reflect.Type) bool {
 // buildStructFields lists the named fields and the ones the field-name tag
 // hides, in declaration order, an embedded struct's in place of it.
 func buildStructFields(s *gowalker.Schema, k fieldsKey) (*StructFields, error) {
-	out := &StructFields{Type: s.Type(), external: map[string]*Field{}, columnTagged: map[string]*Field{}, view: s.Root()}
+	out := &StructFields{typ: s.Type(), external: map[string]*Field{}, columnTagged: map[string]*Field{}, view: s.Root()}
 	for _, d := range s.Root().Declarations() {
 		sf := d.GoField
 		if sf.Anonymous && isStructType(sf.Type) && sf.Tag.Get(k.name) == "-" {
@@ -363,21 +435,43 @@ func buildStructFields(s *gowalker.Schema, k fieldsKey) (*StructFields, error) {
 		if err != nil {
 			return nil, fmt.Errorf("field %s: %w", sf.Name, err)
 		}
+		enum, bounds, err := readConstraints(sf)
+		if err != nil {
+			return nil, fmt.Errorf("field %s: %w", sf.Name, err)
+		}
 		out.misspelt = append(out.misspelt, misspeltTagKeys(d, k)...)
-		f := &Field{GoName: sf.Name, Type: sf.Type, Route: d.Index, Tags: tags}
+		f := &Field{goName: sf.Name, typ: sf.Type, route: d.Index, tags: tags, enum: enum, bounds: bounds, unexportedEmbed: unexportedEmbed(out.typ, d.Index)}
 		if d.State == gowalker.Named {
-			f.External = d.Field.Name()
-			out.external[f.External] = f
+			f.external = d.Field.Name()
+			out.external[f.external] = f
 		}
 		if col, _, _ := strings.Cut(tags.Column, ","); col != "" && col != "-" {
 			if prev, dup := out.columnTagged[col]; dup {
-				return nil, fmt.Errorf("fields %s and %s both have column %q", prev.GoName, f.GoName, col)
+				return nil, fmt.Errorf("fields %s and %s both have column %q", prev.goName, f.goName, col)
 			}
 			out.columnTagged[col] = f
 		}
-		out.Fields = append(out.Fields, f)
+		out.fields = append(out.fields, f)
 	}
 	return out, nil
+}
+
+// unexportedEmbed returns the first unexported embedded pointer on route, a
+// field's index path through the struct type t, or nil when there is none.
+// An unexported embedded struct held by value is no obstacle: reflection
+// sets the exported fields promoted from it, as encoding/json does.
+func unexportedEmbed(t reflect.Type, route []int) reflect.Type {
+	for _, x := range route[:len(route)-1] {
+		if t.Kind() == reflect.Pointer {
+			t = t.Elem()
+		}
+		sf := t.Field(x)
+		if sf.Type.Kind() == reflect.Pointer && !sf.IsExported() {
+			return sf.Type
+		}
+		t = sf.Type
+	}
+	return nil
 }
 
 func readTags(sf reflect.StructField, k fieldsKey) (Tags, error) {
@@ -419,15 +513,23 @@ func readTags(sf reflect.StructField, k fieldsKey) (Tags, error) {
 		Order:            tag.Get("order"),
 		SortDefault:      tag.Get("sort_default"),
 	}
-	if enum := tag.Get(ConstraintEnum); enum != "" {
-		if t.Enum, err = ParseEnumTag(enum); err != nil {
-			return Tags{}, fmt.Errorf("%s:%q: %w", ConstraintEnum, enum, err)
+	return t, nil
+}
+
+// readConstraints reads the enum and bounds tags of sf.
+func readConstraints(sf reflect.StructField) (enum []string, bounds Bounds, err error) {
+	text := sf.Tag.Get(ConstraintEnum)
+	if text != "" {
+		enum, err = ParseEnumTag(text)
+		if err != nil {
+			return nil, Bounds{}, fmt.Errorf("%s:%q: %w", ConstraintEnum, text, err)
 		}
 	}
-	if t.Bounds, err = readBounds(tag); err != nil {
-		return Tags{}, err
+	bounds, err = readBounds(sf.Tag)
+	if err != nil {
+		return nil, Bounds{}, err
 	}
-	return t, nil
+	return enum, bounds, nil
 }
 
 // ParseEnumTag reads an enum tag's comma-separated values. A plain value
@@ -501,7 +603,7 @@ func boolTag(tag reflect.StructTag, key string) (bool, error) {
 // HasFieldNameOption reports whether the field-name tag carries option
 // (omitempty, omitzero, ...).
 func (f *Field) HasFieldNameOption(option string) bool {
-	return slices.Contains(strings.Split(f.Tags.FieldNameOptions, ","), option)
+	return slices.Contains(strings.Split(f.tags.FieldNameOptions, ","), option)
 }
 
 // FieldColumn is the field's column: the column tag's name, else the
@@ -509,14 +611,15 @@ func (f *Field) HasFieldNameOption(option string) bool {
 // field-name tag hides it). ok is false for a field that is not a column
 // (column tag "-").
 func (g *SchemaGenerator) FieldColumn(f *Field) (column string, ok bool, err error) {
-	if name, _, _ := strings.Cut(f.Tags.Column, ","); name == "-" {
+	name, _, _ := strings.Cut(f.tags.Column, ",")
+	if name == "-" {
 		return "", false, nil
 	}
-	base := f.External
+	base := f.external
 	if base == "" {
-		base = f.GoName
+		base = f.goName
 	}
-	col, err := g.ColumnName(base, f.Tags.Column)
+	col, err := g.ColumnName(base, f.tags.Column)
 	if err != nil {
 		return "", false, err
 	}

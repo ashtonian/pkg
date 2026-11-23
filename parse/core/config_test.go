@@ -5,6 +5,7 @@ package core_test
 import (
 	"math"
 	"reflect"
+	"slices"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -97,7 +98,7 @@ func TestWithGeneratorOptions_Appends(t *testing.T) {
 	}
 	walk, err := gen.StructFields(reflect.TypeFor[row]())
 	require.NoError(t, err)
-	column, ok, err := gen.FieldColumn(walk.Fields[0])
+	column, ok, err := gen.FieldColumn(slices.Collect(walk.Fields())[0])
 	require.NoError(t, err)
 	require.True(t, ok)
 	assert.Equal(t, "full_name", column, "the first option still applies")

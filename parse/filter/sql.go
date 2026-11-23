@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/ashtonian/pkg/gowalker"
 	"github.com/ashtonian/pkg/parse/core"
 	"github.com/ashtonian/pkg/parse/internal/dialect"
 )
@@ -297,7 +298,7 @@ func comparison(expr string, op FilterOperator, value any, bind func(any) string
 func membership(op FilterOperator, value any, render func(members []any, in bool) (string, error)) (string, error) {
 	arr, ok := core.AnySlice(value)
 	if !ok {
-		return "", fmt.Errorf("$%s requires an array value, got %T", op, value)
+		return "", fmt.Errorf("$%s requires an array value, got %s", op, gowalker.TypeText(reflect.TypeOf(value)))
 	}
 	if len(arr) == 0 {
 		if op == OpIn {
@@ -334,7 +335,7 @@ func isOrdering(op FilterOperator) bool {
 func textValue(op FilterOperator, value any) (string, error) {
 	s, ok := value.(string)
 	if !ok {
-		return "", fmt.Errorf("$%s requires a string value, got %T", op, value)
+		return "", fmt.Errorf("$%s requires a string value, got %s", op, gowalker.TypeText(reflect.TypeOf(value)))
 	}
 	return s, nil
 }
@@ -810,7 +811,7 @@ func (b *SQLBuilder) buildPairTable(s *buildState, node *FilterNode) (string, er
 	case OpIn, OpNin:
 		arr, ok := core.AnySlice(node.Value)
 		if !ok {
-			return "", fmt.Errorf("$%s requires an array value, got %T", node.Op, node.Value)
+			return "", fmt.Errorf("$%s requires an array value, got %s", node.Op, gowalker.TypeText(reflect.TypeOf(node.Value)))
 		}
 		if len(arr) == 0 {
 			if node.Op == OpIn {

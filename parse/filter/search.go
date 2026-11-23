@@ -81,17 +81,17 @@ func generateSearchSchema(g *core.SchemaGenerator, t reflect.Type) (*SearchSchem
 	}
 	var fields []SearchField
 
-	for _, field := range walk.Fields {
-		if !field.Tags.Parse.Search {
+	for field := range walk.Fields() {
+		if !field.Tags().Parse.Search {
 			continue
 		}
-		fieldName := field.External
+		fieldName := field.External()
 		if fieldName == "" {
 			continue
 		}
 		info, err := g.FieldType(field)
 		if err != nil {
-			return nil, fmt.Errorf("field %s: %w", field.GoName, err)
+			return nil, fmt.Errorf("field %s: %w", field.GoName(), err)
 		}
 		fieldType := info.Type
 		if fieldType != core.FieldTypeString && !g.MapsColumns() {
@@ -99,16 +99,16 @@ func generateSearchSchema(g *core.SchemaGenerator, t reflect.Type) (*SearchSchem
 			// (to_tsvector on PostgreSQL, LIKE on SQLite); a document, an
 			// array or a number has none, and the query would fail at run
 			// time. A ColumnMapper owns its expression and may make one.
-			return nil, fmt.Errorf("field %s: only string fields are searchable, not %s", field.GoName, fieldType)
+			return nil, fmt.Errorf("field %s: only string fields are searchable, not %s", field.GoName(), fieldType)
 		}
-		expr, err := g.MappedExpr(tableName, fieldName, fieldType, field.Tags.Column)
+		expr, err := g.MappedExpr(tableName, fieldName, fieldType, field.Tags().Column)
 		if err != nil {
-			return nil, fmt.Errorf("field %s: %w", field.GoName, err)
+			return nil, fmt.Errorf("field %s: %w", field.GoName(), err)
 		}
 
 		column, err := rowColumn(g, field, fieldName, expr)
 		if err != nil {
-			return nil, fmt.Errorf("field %s: %w", field.GoName, err)
+			return nil, fmt.Errorf("field %s: %w", field.GoName(), err)
 		}
 		fields = append(fields, SearchField{Name: fieldName, Table: tableName, Column: column, Expr: expr})
 	}

@@ -39,11 +39,11 @@ func TestDeclaredJSONReplacementOmissionMatchesJSON(t *testing.T) {
 	require.NoError(t, json.Unmarshal(raw, &emitted))
 	fields, err := core.StructFieldsOf(reflect.TypeFor[row](), "json", "db")
 	require.NoError(t, err)
-	for _, field := range fields.Fields {
+	for field := range fields.Fields() {
 		fv, err := field.Value(reflect.ValueOf(value))
 		require.NoError(t, err)
-		_, present := emitted[field.External]
-		assert.Equal(t, !present, jsonFieldOmitted(field, fv), field.External)
+		_, present := emitted[field.External()]
+		assert.Equal(t, !present, jsonFieldOmitted(field, fv), field.External())
 	}
 }
 
@@ -96,10 +96,10 @@ func TestDeclaredJSONOmitEmptyMatchesJSON(t *testing.T) {
 	require.NoError(t, json.Unmarshal(raw, &emitted))
 	fields, err := core.StructFieldsOf(reflect.TypeFor[row](), "json", "db")
 	require.NoError(t, err)
-	for _, field := range fields.Fields {
+	for field := range fields.Fields() {
 		fv, err := field.Value(reflect.ValueOf(value))
 		require.NoError(t, err)
-		_, present := emitted[field.External]
-		assert.Equal(t, !present, jsonFieldOmitted(field, fv), "%s (encoding/json wrote %s)", field.External, raw)
+		_, present := emitted[field.External()]
+		assert.Equal(t, !present, jsonFieldOmitted(field, fv), "%s (encoding/json wrote %s)", field.External(), raw)
 	}
 }

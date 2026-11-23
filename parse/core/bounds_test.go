@@ -4,6 +4,7 @@ package core_test
 
 import (
 	"reflect"
+	"slices"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -19,7 +20,7 @@ func boundsOf(t *testing.T, goType reflect.Type, tag string) (core.Bounds, error
 	if err != nil {
 		return core.Bounds{}, err
 	}
-	return walk.Fields[0].Tags.Bounds, nil
+	return slices.Collect(walk.Fields())[0].Bounds(), nil
 }
 
 func TestBounds_ReadFromTags(t *testing.T) {

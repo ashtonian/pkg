@@ -64,5 +64,5 @@ func TestTypeCaches_ConcurrentFirstUse(t *testing.T) {
 	assert.NotSame(t, walks[0], walks[1])
 	id, ok := walks[1].External("id")
 	require.True(t, ok)
-	assert.Equal(t, "record_id", id.Tags.Column)
+	assert.Equal(t, "record_id", id.Tags().Column)
 }

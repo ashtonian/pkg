@@ -197,9 +197,10 @@ func TestSchemaGenerator_RelationTag(t *testing.T) {
 		{field: "Instants", wantErr: "the field holds time.Time, not a struct"},
 	} {
 		t.Run(tt.field, func(t *testing.T) {
-			i := slices.IndexFunc(fields.Fields, func(f *core.Field) bool { return f.GoName == tt.field })
+			all := slices.Collect(fields.Fields())
+			i := slices.IndexFunc(all, func(f *core.Field) bool { return f.GoName() == tt.field })
 			require.GreaterOrEqual(t, i, 0)
-			rel, err := g.RelationTag(fields, fields.Fields[i])
+			rel, err := g.RelationTag(fields, all[i])
 			if tt.wantErr != "" {
 				assert.ErrorContains(t, err, tt.wantErr)
 				return

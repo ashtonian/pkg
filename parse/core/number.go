@@ -9,6 +9,8 @@ import (
 	"math/big"
 	"reflect"
 	"strconv"
+
+	"github.com/ashtonian/pkg/gowalker"
 )
 
 // maxExactFloatInt is 2^53: every integer of magnitude ≤ this is exactly
@@ -351,7 +353,7 @@ func toExactInt(v any) (exactInt, error) {
 	}
 	x, ok := nativeInt(v)
 	if !ok {
-		return exactInt{}, fmt.Errorf("expected a number, got %T", v)
+		return exactInt{}, fmt.Errorf("expected a number, got %s", gowalker.TypeText(reflect.TypeOf(v)))
 	}
 	return x, nil
 }

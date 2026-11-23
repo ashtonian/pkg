@@ -126,8 +126,8 @@ func referenceStructKeys(raw []byte, value reflect.Value, path string) error {
 		if !ok {
 			// Decoding matches by case breadth first: the shallowest
 			// candidate, then the first declared.
-			for _, candidate := range fields.Fields {
-				if !candidate.Hidden() && strings.EqualFold(candidate.External, member.name) && (!ok || len(candidate.Route) < len(field.Route)) {
+			for candidate := range fields.Fields() {
+				if !candidate.Hidden() && strings.EqualFold(candidate.External(), member.name) && (!ok || len(candidate.Route()) < len(field.Route())) {
 					field, ok = candidate, true
 				}
 			}
@@ -136,8 +136,8 @@ func referenceStructKeys(raw []byte, value reflect.Value, path string) error {
 			continue
 		}
 		memberPath := referenceMemberPath(path, member.name)
-		if member.name != field.External {
-			return fmt.Errorf("JSON member %q is noncanonical for %s; use %q", memberPath, value.Type(), field.External)
+		if member.name != field.External() {
+			return fmt.Errorf("JSON member %q is noncanonical for %s; use %q", memberPath, value.Type(), field.External())
 		}
 		if seen[member.name] {
 			return fmt.Errorf("duplicate JSON member %q in %s", memberPath, value.Type())

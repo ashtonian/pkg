@@ -44,11 +44,13 @@ package parsesqlite
 import (
 	"database/sql/driver"
 	"fmt"
+	"reflect"
 	"slices"
 	"sync"
 
 	"modernc.org/sqlite"
 
+	"github.com/ashtonian/pkg/gowalker"
 	"github.com/ashtonian/pkg/parse/internal/decimals"
 	"github.com/ashtonian/pkg/parse/internal/geo"
 )
@@ -206,7 +208,7 @@ func GeoInBox(point, latKey, lonKey, south, north, west, east driver.Value) (dri
 func GeoCoveredBy(point, latKey, lonKey, polygon driver.Value) (driver.Value, error) {
 	wkb, isBlob := polygon.([]byte)
 	if !isBlob {
-		return nil, fmt.Errorf("%s: want the polygon as a WKB blob, got %T", GeoCoveredByFunc, polygon)
+		return nil, fmt.Errorf("%s: want the polygon as a WKB blob, got %s", GeoCoveredByFunc, gowalker.TypeText(reflect.TypeOf(polygon)))
 	}
 	// A filter's polygon holds at most 100 points; one more closes it.
 	var buf [101]geo.Point
@@ -227,7 +229,7 @@ func storedPoint(fn string, point, latKey, lonKey driver.Value) (geo.Point, bool
 	lat, latOK := latKey.(string)
 	lon, lonOK := lonKey.(string)
 	if !latOK || !lonOK {
-		return geo.Point{}, false, fmt.Errorf("%s: want the point's member names as text, got %T and %T", fn, latKey, lonKey)
+		return geo.Point{}, false, fmt.Errorf("%s: want the point's member names as text, got %s and %s", fn, gowalker.TypeText(reflect.TypeOf(latKey)), gowalker.TypeText(reflect.TypeOf(lonKey)))
 	}
 	var text []byte
 	switch v := point.(type) {
@@ -238,7 +240,7 @@ func storedPoint(fn string, point, latKey, lonKey driver.Value) (geo.Point, bool
 	case []byte:
 		text = v
 	default:
-		return geo.Point{}, false, fmt.Errorf("%s: want the point as JSON text, got %T", fn, point)
+		return geo.Point{}, false, fmt.Errorf("%s: want the point as JSON text, got %s", fn, gowalker.TypeText(reflect.TypeOf(point)))
 	}
 	p, ok, err := geo.ReadPointJSON(text, lat, lon)
 	if err != nil {
@@ -257,7 +259,7 @@ func numbers(fn string, vs ...driver.Value) ([]float64, error) {
 		case int64:
 			out[i] = float64(n)
 		default:
-			return nil, fmt.Errorf("%s: want a number for operand %d, got %T", fn, i+1, v)
+			return nil, fmt.Errorf("%s: want a number for operand %d, got %s", fn, i+1, gowalker.TypeText(reflect.TypeOf(v)))
 		}
 	}
 	return out, nil

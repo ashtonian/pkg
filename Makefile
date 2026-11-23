@@ -137,17 +137,11 @@ PARSE_PG_DSN = postgres://parse:parse@127.0.0.1:$(PARSE_PG_PORT)/parse?sslmode=d
 
 ## parse-postgres-up: start the PostgreSQL integration server and print the
 ## exports that point the parse tests at it: eval "$(make -s parse-postgres-up)".
+## A server that stops while starting, or is not ready in time, is removed
+## after its log is printed (tools/postgres-up.sh).
 parse-postgres-up:
-	@docker run -d --rm --name $(PARSE_PG_NAME) --platform linux/amd64 \
-		-e POSTGRES_USER=parse -e POSTGRES_PASSWORD=parse -e POSTGRES_DB=parse \
-		-p 127.0.0.1:$(PARSE_PG_PORT):5432 $(PARSE_PG_IMAGE) >/dev/null
-	@i=0; until docker exec $(PARSE_PG_NAME) pg_isready -q -h 127.0.0.1 -U parse -d parse; do \
-		i=$$((i + 1)); \
-		if [ $$i -ge $(PARSE_PG_READY_SECONDS) ]; then \
-			echo "$(PARSE_PG_NAME): not ready after $(PARSE_PG_READY_SECONDS)s" >&2; exit 1; \
-		fi; \
-		sleep 1; \
-	done
+	@bash tools/postgres-up.sh --name '$(PARSE_PG_NAME)' --image '$(PARSE_PG_IMAGE)' --platform linux/amd64 \
+		--port '$(PARSE_PG_PORT)' --user parse --ready-seconds '$(PARSE_PG_READY_SECONDS)'
 	@echo "export PARSE_POSTGRES_DSN='$(PARSE_PG_DSN)'"
 	@echo "export PARSE_POSTGIS_DSN='$(PARSE_PG_DSN)'"
 
@@ -246,16 +240,8 @@ COOKBOOK_PG_DSN = postgres://cookbook:cookbook@127.0.0.1:$(COOKBOOK_PG_PORT)/coo
 ## cookbook-postgres-up: start the cookbook's PostgreSQL server and print the
 ## export that points its tests at it: eval "$(make -s cookbook-postgres-up)".
 cookbook-postgres-up:
-	@docker run -d --rm --name $(COOKBOOK_PG_NAME) \
-		-e POSTGRES_USER=cookbook -e POSTGRES_PASSWORD=cookbook -e POSTGRES_DB=cookbook \
-		-p 127.0.0.1:$(COOKBOOK_PG_PORT):5432 $(COOKBOOK_PG_IMAGE) >/dev/null
-	@i=0; until docker exec $(COOKBOOK_PG_NAME) pg_isready -q -h 127.0.0.1 -U cookbook -d cookbook; do \
-		i=$$((i + 1)); \
-		if [ $$i -ge $(COOKBOOK_PG_READY_SECONDS) ]; then \
-			echo "$(COOKBOOK_PG_NAME): not ready after $(COOKBOOK_PG_READY_SECONDS)s" >&2; exit 1; \
-		fi; \
-		sleep 1; \
-	done
+	@bash tools/postgres-up.sh --name '$(COOKBOOK_PG_NAME)' --image '$(COOKBOOK_PG_IMAGE)' \
+		--port '$(COOKBOOK_PG_PORT)' --user cookbook --ready-seconds '$(COOKBOOK_PG_READY_SECONDS)'
 	@echo "export COOKBOOK_POSTGRES_DSN='$(COOKBOOK_PG_DSN)'"
 
 ## cookbook-postgres-down: stop and remove the cookbook's PostgreSQL server.

@@ -22,7 +22,7 @@ import (
 // field that is no column, since only the mapper's own SQL reads it.
 func rowColumn(g *core.SchemaGenerator, field *core.Field, name, expr string) (string, error) {
 	if expr == "" {
-		return g.ColumnName(name, field.Tags.Column)
+		return g.ColumnName(name, field.Tags().Column)
 	}
 	if column, ok, err := g.FieldColumn(field); err == nil && ok {
 		return column, nil
@@ -57,21 +57,22 @@ func generateFilterSchema(g *core.SchemaGenerator, t reflect.Type) (*ResourceSch
 	// walk order.
 	var candidates []policyCandidate
 
-	for _, field := range walk.Fields {
-		tags := &field.Tags
-		if len(tags.Enum) > 0 {
+	for field := range walk.Fields() {
+		tags := field.Tags()
+		enum := field.Enum()
+		if len(enum) > 0 {
 			if err := enumField(g, field); err != nil {
-				return nil, fmt.Errorf("field %s: %w", field.GoName, err)
+				return nil, fmt.Errorf("field %s: %w", field.GoName(), err)
 			}
 		}
-		fieldName := field.External
+		fieldName := field.External()
 		if tags.Parse.Filter && fieldName == "" && tags.Relation != "" {
 			// A virtual relation field conventionally carries `json:"-"`
 			// to hide it from response payloads, and still needs an
 			// addressable name. Generators can preserve their
 			// declared name with relation_name; otherwise use snake_case
 			// of the struct field name.
-			fieldName = cmp.Or(tags.RelationName, core.SnakeCase(field.GoName))
+			fieldName = cmp.Or(tags.RelationName, core.SnakeCase(field.GoName()))
 		}
 		if !tags.Parse.Filter || fieldName == "" {
 			if c, ok := policyColumn(g, tableName, field); ok {
@@ -80,12 +81,12 @@ func generateFilterSchema(g *core.SchemaGenerator, t reflect.Type) (*ResourceSch
 			continue
 		}
 		if _, exists := fields[fieldName]; exists {
-			return nil, fmt.Errorf("field %s: duplicate filter field name %q", field.GoName, fieldName)
+			return nil, fmt.Errorf("field %s: duplicate filter field name %q", field.GoName(), fieldName)
 		}
 
 		info, err := g.FieldType(field)
 		if err != nil {
-			return nil, fmt.Errorf("field %s: %w", field.GoName, err)
+			return nil, fmt.Errorf("field %s: %w", field.GoName(), err)
 		}
 		fieldType := info.Type
 
@@ -93,26 +94,26 @@ func generateFilterSchema(g *core.SchemaGenerator, t reflect.Type) (*ResourceSch
 		var geoConfig *GeoFieldConfig
 		if tags.Geo != "" {
 			fieldType = core.FieldTypeGeo
-			geoConfig, err = parseGeoTag(tags)
+			geoConfig, err = parseGeoTag(&tags)
 			if err != nil {
-				return nil, fmt.Errorf("field %s: %w", field.GoName, err)
+				return nil, fmt.Errorf("field %s: %w", field.GoName(), err)
 			}
 		}
 
 		expr, err := g.MappedExpr(tableName, fieldName, fieldType, tags.Column)
 		if err != nil {
-			return nil, fmt.Errorf("field %s: %w", field.GoName, err)
+			return nil, fmt.Errorf("field %s: %w", field.GoName(), err)
 		}
 
 		var allowedOps []FilterOperator
 		if opsTag := tags.FilterOps; opsTag != "" {
 			if allowedOps, err = parseOperatorList(strings.Split(opsTag, ",")); err != nil {
-				return nil, fmt.Errorf("field %s: %w", field.GoName, err)
+				return nil, fmt.Errorf("field %s: %w", field.GoName(), err)
 			}
 		} else {
 			defaults, err := defaultFilterOpsFor(g, fieldType)
 			if err != nil {
-				return nil, fmt.Errorf("field %s: %w", field.GoName, err)
+				return nil, fmt.Errorf("field %s: %w", field.GoName(), err)
 			}
 			allowedOps = defaults
 		}
@@ -128,7 +129,7 @@ func generateFilterSchema(g *core.SchemaGenerator, t reflect.Type) (*ResourceSch
 			AllowedOperators: allowedOps,
 			Indexed:          tags.Indexed,
 			Immutable:        tags.Immutable,
-			EnumValues:       slices.Clone(tags.Enum),
+			EnumValues:       enum,
 			Label:            tags.Label,
 			Description:      tags.Description,
 			Group:            tags.Group,
@@ -139,25 +140,25 @@ func generateFilterSchema(g *core.SchemaGenerator, t reflect.Type) (*ResourceSch
 
 		if tags.Relation == "" {
 			if fs.Column, err = rowColumn(g, field, fieldName, expr); err != nil {
-				return nil, fmt.Errorf("field %s: %w", field.GoName, err)
+				return nil, fmt.Errorf("field %s: %w", field.GoName(), err)
 			}
 		}
 
 		if tags.Order != "" {
 			n, err := strconv.Atoi(tags.Order)
 			if err != nil {
-				return nil, fmt.Errorf("field %s: order:%q is not an integer", field.GoName, tags.Order)
+				return nil, fmt.Errorf("field %s: order:%q is not an integer", field.GoName(), tags.Order)
 			}
 			fs.Order = n
 		}
 
 		if tags.Facet != "" {
 			if !fs.Facetable {
-				return nil, fmt.Errorf("field %s: facet:%q on a field without the facet capability", field.GoName, tags.Facet)
+				return nil, fmt.Errorf("field %s: facet:%q on a field without the facet capability", field.GoName(), tags.Facet)
 			}
 			facetSchema, err := ParseFacetTag(tags.Facet)
 			if err != nil {
-				return nil, fmt.Errorf("field %s: facet:%q: %w", field.GoName, tags.Facet, err)
+				return nil, fmt.Errorf("field %s: facet:%q: %w", field.GoName(), tags.Facet, err)
 			}
 			facetSchema.Field = fieldName
 			fs.FacetSchema = facetSchema
@@ -166,7 +167,7 @@ func generateFilterSchema(g *core.SchemaGenerator, t reflect.Type) (*ResourceSch
 		if tags.Relation != "" {
 			rel, err := g.RelationTag(walk, field)
 			if err != nil {
-				return nil, fmt.Errorf("field %s: %w", field.GoName, err)
+				return nil, fmt.Errorf("field %s: %w", field.GoName(), err)
 			}
 			fs.Elem = ""
 			fs.Relation = rel
@@ -188,7 +189,7 @@ func generateFilterSchema(g *core.SchemaGenerator, t reflect.Type) (*ResourceSch
 				}
 				for _, op := range fs.AllowedOperators {
 					if !isNullTest(op) {
-						return nil, fmt.Errorf("field %s: relation target key %s has %d columns, which $%s cannot name; it takes $null", field.GoName, strings.Join(rel.TargetColumns, "+"), len(rel.TargetColumns), op)
+						return nil, fmt.Errorf("field %s: relation target key %s has %d columns, which $%s cannot name; it takes $null", field.GoName(), strings.Join(rel.TargetColumns, "+"), len(rel.TargetColumns), op)
 					}
 				}
 			}
@@ -199,15 +200,15 @@ func generateFilterSchema(g *core.SchemaGenerator, t reflect.Type) (*ResourceSch
 		}
 
 		if err := applyStorage(g, fs, field); err != nil {
-			return nil, fmt.Errorf("field %s: %w", field.GoName, err)
+			return nil, fmt.Errorf("field %s: %w", field.GoName(), err)
 		}
 		if err := checkOperators(fs); err != nil {
-			return nil, fmt.Errorf("field %s: %w", field.GoName, err)
+			return nil, fmt.Errorf("field %s: %w", field.GoName(), err)
 		}
 		// After storage, which can make a document field a scalar.
 		if fs.Facetable {
 			if err := checkFacet(fs, fs.facetConfig()); err != nil {
-				return nil, fmt.Errorf("field %s: %w", field.GoName, err)
+				return nil, fmt.Errorf("field %s: %w", field.GoName(), err)
 			}
 		}
 		if isScalarArray(fs) {
@@ -218,25 +219,25 @@ func generateFilterSchema(g *core.SchemaGenerator, t reflect.Type) (*ResourceSch
 		if core.IsDocument(fs.DataType) {
 			paths, err := documentPathFields(g, field, fs)
 			if err != nil {
-				return nil, fmt.Errorf("field %s: %w", field.GoName, err)
+				return nil, fmt.Errorf("field %s: %w", field.GoName(), err)
 			}
 			for _, p := range paths {
 				if _, exists := fields[p.ExternalName]; exists {
-					return nil, fmt.Errorf("field %s: path %q collides with another field", field.GoName, p.ExternalName)
+					return nil, fmt.Errorf("field %s: path %q collides with another field", field.GoName(), p.ExternalName)
 				}
 				fields[p.ExternalName] = p
-				candidates = append(candidates, policyCandidate{goName: field.GoName, name: p.ExternalName, request: true, field: p})
+				candidates = append(candidates, policyCandidate{goName: field.GoName(), name: p.ExternalName, request: true, field: p})
 			}
 			elems, err := documentElements(g, field, fs)
 			if err != nil {
-				return nil, fmt.Errorf("field %s: %w", field.GoName, err)
+				return nil, fmt.Errorf("field %s: %w", field.GoName(), err)
 			}
 			if elems != nil {
 				fs.Elements = elems
 				fs.AllowedOperators = append(fs.AllowedOperators, OpSome, OpNone)
 			}
 		} else if tags.Paths != "" || tags.Elements != "" {
-			return nil, fmt.Errorf("field %s: paths are declared on json or object fields, not %s", field.GoName, fs.DataType)
+			return nil, fmt.Errorf("field %s: paths are declared on json or object fields, not %s", field.GoName(), fs.DataType)
 		}
 	}
 
@@ -270,11 +271,11 @@ func generateSortSchema(g *core.SchemaGenerator, t reflect.Type) (*SortSchema, e
 	var defaultField string
 	var defaultDir SortDirection
 
-	for _, field := range walk.Fields {
-		tags := &field.Tags
+	for field := range walk.Fields() {
+		tags := field.Tags()
 		info, err := g.FieldType(field)
 		if err != nil {
-			return nil, fmt.Errorf("field %s: %w", field.GoName, err)
+			return nil, fmt.Errorf("field %s: %w", field.GoName(), err)
 		}
 
 		// One sort grammar: a scalar field is sortable when it opts in
@@ -282,40 +283,40 @@ func generateSortSchema(g *core.SchemaGenerator, t reflect.Type) (*SortSchema, e
 		if !tags.Parse.Excluded {
 			if dt := info.Type; core.IsDocument(dt) {
 				if err := addDocSortPaths(g, fields, tableName, field, dt); err != nil {
-					return nil, fmt.Errorf("field %s: %w", field.GoName, err)
+					return nil, fmt.Errorf("field %s: %w", field.GoName(), err)
 				}
 			}
 		}
 		if !tags.Parse.Sort {
 			if tags.SortDefault != "" {
-				return nil, fmt.Errorf("field %s: sort_default:%q on a field without the sort capability", field.GoName, tags.SortDefault)
+				return nil, fmt.Errorf("field %s: sort_default:%q on a field without the sort capability", field.GoName(), tags.SortDefault)
 			}
 			continue
 		}
 		if tags.Relation != "" {
 			// A relation has no row column to sort or resume a cursor on.
-			return nil, fmt.Errorf("field %s: relation fields are not sortable", field.GoName)
+			return nil, fmt.Errorf("field %s: relation fields are not sortable", field.GoName())
 		}
-		fieldName := field.External
+		fieldName := field.External()
 		if fieldName == "" {
 			continue
 		}
-		ft := field.Type
+		ft := field.Type()
 		nullable := ft.Kind() == reflect.Pointer || ft.Kind() == reflect.Slice || ft.Kind() == reflect.Map || ft.Kind() == reflect.Interface
 		fieldType := info.Type
 		if !sortable(ft, fieldType) {
 			// A cursor carries a scalar per key; a document, array or geo
 			// value has no portable order, and an interval or network
 			// value's text order is not its order.
-			return nil, fmt.Errorf("field %s: %s fields are not sortable", field.GoName, fieldType)
+			return nil, fmt.Errorf("field %s: %s fields are not sortable", field.GoName(), fieldType)
 		}
 		expr, err := g.MappedExpr(tableName, fieldName, fieldType, tags.Column)
 		if err != nil {
-			return nil, fmt.Errorf("field %s: %w", field.GoName, err)
+			return nil, fmt.Errorf("field %s: %w", field.GoName(), err)
 		}
 		column, err := g.ColumnName(fieldName, tags.Column)
 		if err != nil {
-			return nil, fmt.Errorf("field %s: %w", field.GoName, err)
+			return nil, fmt.Errorf("field %s: %w", field.GoName(), err)
 		}
 		kind := core.NumericKind(ft)
 		if core.IsDocument(fieldType) {
@@ -323,7 +324,7 @@ func generateSortSchema(g *core.SchemaGenerator, t reflect.Type) (*SortSchema, e
 			// as it filters (applyStorage).
 			scalar, err := scalarStorage(g, field)
 			if err != nil {
-				return nil, fmt.Errorf("field %s: %w", field.GoName, err)
+				return nil, fmt.Errorf("field %s: %w", field.GoName(), err)
 			}
 			if scalar != "" {
 				fieldType, kind = scalar, kindOf(scalar)
@@ -341,13 +342,13 @@ func generateSortSchema(g *core.SchemaGenerator, t reflect.Type) (*SortSchema, e
 
 		if defaultTag := tags.SortDefault; defaultTag != "" {
 			if defaultField != "" {
-				return nil, fmt.Errorf("field %s: sort_default:%q: %s already declares the default sort", field.GoName, defaultTag, defaultField)
+				return nil, fmt.Errorf("field %s: sort_default:%q: %s already declares the default sort", field.GoName(), defaultTag, defaultField)
 			}
 			switch SortDirection(defaultTag) {
 			case SortAsc, SortDesc:
 				defaultField, defaultDir = fieldName, SortDirection(defaultTag)
 			default:
-				return nil, fmt.Errorf("field %s: sort_default:%q is neither %q nor %q", field.GoName, defaultTag, SortAsc, SortDesc)
+				return nil, fmt.Errorf("field %s: sort_default:%q is neither %q nor %q", field.GoName(), defaultTag, SortAsc, SortDesc)
 			}
 		}
 	}
@@ -446,15 +447,15 @@ var (
 
 // addDocSortPaths adds the path sort keys a document field declares.
 func addDocSortPaths(g *core.SchemaGenerator, fields map[string]*SortFieldSchema, tableName string, field *core.Field, dt core.FieldType) error {
-	name := field.External
+	name := field.External()
 	if name == "" {
 		return nil
 	}
-	expr, err := g.MappedExpr(tableName, name, dt, field.Tags.Column)
+	expr, err := g.MappedExpr(tableName, name, dt, field.Tags().Column)
 	if err != nil {
 		return err
 	}
-	column, err := g.ColumnName(name, field.Tags.Column)
+	column, err := g.ColumnName(name, field.Tags().Column)
 	if err != nil {
 		return err
 	}
@@ -476,7 +477,7 @@ func addDocSortPaths(g *core.SchemaGenerator, fields map[string]*SortFieldSchema
 // array of strings, and on any other type it would be read and never
 // checked.
 func enumField(g *core.SchemaGenerator, field *core.Field) error {
-	if field.Tags.Geo != "" {
+	if field.Tags().Geo != "" {
 		return errEnumType(core.FieldTypeGeo, "")
 	}
 	info, err := g.FieldType(field)

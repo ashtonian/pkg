@@ -21,7 +21,7 @@ const elementColumn = "elem__"
 func documentElements(g *core.SchemaGenerator, field *core.Field, doc *FieldSchema) (*ResourceSchema, error) {
 	var decls []PathDecl
 	var kinds []reflect.Kind
-	t := field.Type
+	t := field.Type()
 	for t.Kind() == reflect.Pointer {
 		t = t.Elem()
 	}
@@ -39,8 +39,9 @@ func documentElements(g *core.SchemaGenerator, field *core.Field, doc *FieldSche
 			decls, kinds = d, k
 		}
 	}
-	if tag := field.Tags.Elements; tag != "" {
-		d, err := parsePathsTag(tag)
+	elements := field.Tags().Elements
+	if elements != "" {
+		d, err := parsePathsTag(elements)
 		if err != nil {
 			return nil, fmt.Errorf("elements: %w", err)
 		}

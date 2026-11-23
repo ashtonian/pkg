@@ -251,6 +251,7 @@ func TestParseListInput_FieldMask(t *testing.T) {
 	req, err := accounts.ParseListInput(parse.ListInput{Fields: mask})
 	require.NoError(t, err)
 	assert.Equal(t, mask, req.Fields(), "valid names round-trip in order")
+	assert.Equal(t, mask, req.FieldMembers(), "under the json tag a field is its member")
 
 	for _, name := range []string{"nmae", "hash", "notes", "secret", "Secret"} {
 		t.Run(name, func(t *testing.T) {
@@ -269,6 +270,45 @@ func TestParseListInput_FieldMask(t *testing.T) {
 			assert.Equal(t, err, bodyErr)
 		})
 	}
+}
+
+// Under another field-name tag a mask still names fields by it, and its
+// members are the names encoding/json writes the same fields under: a
+// renamed field, one json names by its Go name, a promoted field, and none
+// for a field json leaves out.
+func TestParseListInput_FieldMembersFollowTheJSONEncoding(t *testing.T) {
+	type audit struct {
+		CreatedBy string `bson:"created_by" json:"createdBy" db:"created_by"`
+	}
+	type record struct {
+		audit
+		ID    string `bson:"_id"   json:"id"  db:"id"    parse:"filter,sort"`
+		Title string `bson:"title"            db:"title"`
+		Score int    `bson:"score" json:"-"  db:"score"`
+	}
+	records, err := parse.NewResource[record]("records", parse.ParserOptions(core.WithGeneratorOptions(core.WithFieldNameTag("bson"))))
+	require.NoError(t, err)
+
+	tests := []struct {
+		name    string
+		fields  []string
+		members []string
+	}{
+		{"renamed and Go-named", []string{"title", "_id"}, []string{"Title", "id"}},
+		{"promoted", []string{"created_by"}, []string{"createdBy"}},
+		{"a field json leaves out", []string{"score", "_id"}, []string{"id"}},
+		{"only fields json leaves out", []string{"score"}, nil},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req, err := records.ParseListInput(parse.ListInput{Fields: tt.fields})
+			require.NoError(t, err)
+			assert.Equal(t, tt.fields, req.Fields())
+			assert.Equal(t, tt.members, req.FieldMembers())
+		})
+	}
+	_, err = records.ParseListInput(parse.ListInput{Fields: []string{"id"}})
+	require.Error(t, err, "a mask names fields under the field-name tag, not their members")
 }
 
 func TestParseListInput_LeavesItsInputAlone(t *testing.T) {

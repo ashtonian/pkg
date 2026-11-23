@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/ashtonian/pkg/gowalker"
 	"github.com/ashtonian/pkg/parse/core"
 )
 
@@ -40,7 +41,7 @@ func FacetKeys(v any, f *FieldSchema) ([]string, error) {
 	}
 	items, ok := core.AnySlice(v)
 	if !ok {
-		return nil, fmt.Errorf("facet %s: %T is not a list", f.ExternalName, v)
+		return nil, fmt.Errorf("facet %s: %s is not a list", f.ExternalName, gowalker.TypeText(reflect.TypeOf(v)))
 	}
 	var keys distinctKeys
 	for _, item := range items {
@@ -109,7 +110,7 @@ func memberFacetKey(v any, t core.FieldType) (string, bool, error) {
 	}
 	s, ok := m.(string)
 	if !ok {
-		return "", false, fmt.Errorf("unexpected %s member %T", t, m)
+		return "", false, fmt.Errorf("unexpected %s member %s", t, gowalker.TypeText(reflect.TypeOf(m)))
 	}
 	return s, true, nil
 }
@@ -159,7 +160,7 @@ func valueFacetKey(v any, t core.FieldType, kind reflect.Kind) (string, bool, er
 			return s, true, nil
 		}
 	}
-	return "", false, fmt.Errorf("%T is not a %s value", v, t)
+	return "", false, fmt.Errorf("%s is not a %s value", gowalker.TypeText(reflect.TypeOf(v)), t)
 }
 
 // numberFacetKey is a number's canonical decimal text; a float32 field's

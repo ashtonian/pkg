@@ -71,7 +71,7 @@ A `Quoted[T]` travels as encoding/json writes a `json:",string"` field: its JSON
 
 ## Errors
 
-The client refuses only what the grammar cannot express; the server judges everything else (an operator a field does not allow, a value out of bounds, a distance past the Earth's circumference). A filter is refused where it is built: it carries its error (`Filter.Err`) from then on, and encoding it, `ListParams.Values` or `ListParams.Body` returns it. Operands are encoded when their condition is built, so a filter never shares the caller's values.
+The client refuses only what the grammar cannot express; the server judges everything else (an operator a field does not allow, a value out of bounds, a distance past the Earth's circumference). A filter is refused where it is built: it carries its error (`Filter.Err`) from then on, and encoding it, `ListParams.Values` or `ListParams.Body` returns it. Operands are encoded when their condition is built, by encoding/json with their own `MarshalJSON` and tag options, so a built filter's wire value is fixed: changing a document, a slice, a pointer's target, raw JSON or the state a marshaler reads changes neither `ListParams.Values` nor `Body` afterwards, in a filter alone or shared by several, and a number keeps the text it was encoded with.
 
 | Sentinel | When |
 |----------|------|
@@ -99,7 +99,7 @@ The client refuses only what the grammar cannot express; the server judges every
 
 ## Testing
 
-`client_test.go` pins each encoding. parse's `client_conformance_test.go` classifies every case of `testdata/filter_conformance.json` and `testdata/patch_conformance.json`:
+`client_test.go` pins each encoding, and that a built filter's encodings do not change when the operands the caller holds do. parse's `client_conformance_test.go` classifies every case of `testdata/filter_conformance.json` and `testdata/patch_conformance.json`:
 
 - the client builds it, and the server reads the same verdict, AST and SQL;
 - the client builds it, and the server refuses it with the corpus's code;

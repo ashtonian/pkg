@@ -4,6 +4,7 @@ package parse_test
 
 import (
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"net/url"
 	"slices"
@@ -213,6 +214,22 @@ func runExecutorContract(t *testing.T, open func(*testing.T) *sql.DB, d filter.D
 		require.NotNil(t, page.PageInfo.TotalCount)
 		assert.Equal(t, int64(2), *page.PageInfo.TotalCount)
 		assert.Equal(t, map[string]map[string][]string{"tags": {"e1": {"red"}}}, page.Relations, "an owner without pairs is omitted")
+	})
+
+	t.Run("a page of no rows carries an empty items array and its total", func(t *testing.T) {
+		db := setup(t)
+		req, err := execItems.ParseList(url.Values{"name": {"none"}, filter.ParamIncludeTotal: {"true"}, filter.ParamInclude: {"tags"}})
+		require.NoError(t, err)
+		list, err := execItems.BuildList(d, req, execScope)
+		require.NoError(t, err)
+		page := listPage(t, db, execItems, d, list)
+		require.NotNil(t, page.Items)
+		assert.Empty(t, page.Items)
+		require.NotNil(t, page.PageInfo.TotalCount)
+		assert.Zero(t, *page.PageInfo.TotalCount)
+		got, err := json.Marshal(page)
+		require.NoError(t, err)
+		assert.JSONEq(t, `{"items":[],"page_info":{"has_next_page":false,"has_prev_page":false,"total_count":0}}`, string(got))
 	})
 
 	t.Run("a plan for another dialect is refused before any statement", func(t *testing.T) {

@@ -75,7 +75,7 @@ func jsonResource(opts ...parse.ResourceOption) *parse.Resource[jsonRecord] {
 }
 
 func TestJSONStorage_QueryAndUpdateEveryExecMode(t *testing.T) {
-	c := &catalog{dsn: dbtest.PostgresDSN(t)}
+	c := &catalog{config: dbtest.PostgresPoolConfig(t)}
 	setup := c.open(t, pgx.QueryExecModeCacheStatement)
 	ctx := testContext(t)
 	_, err := setup.Exec(ctx, `CREATE TABLE documents (
@@ -151,7 +151,7 @@ type jsonValueRow[T any] struct {
 }
 
 func TestJSONStorage_RejectsLossyRowsEveryExecMode(t *testing.T) {
-	c := &catalog{dsn: dbtest.PostgresDSN(t)}
+	c := &catalog{config: dbtest.PostgresPoolConfig(t)}
 	setup := c.open(t, pgx.QueryExecModeCacheStatement)
 	_, err := setup.Exec(testContext(t), `CREATE TABLE stored_values (id text PRIMARY KEY, value json, name text);
 		CREATE TABLE value_labels (value_id text, label_id text, PRIMARY KEY(value_id,label_id))`)

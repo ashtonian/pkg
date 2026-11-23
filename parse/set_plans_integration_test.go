@@ -36,7 +36,7 @@ type planDoc struct {
 // join, and a large column set is served by the column's index.
 func TestSetPlans_PostgreSQL(t *testing.T) {
 	ctx := t.Context()
-	conn, err := pgx.Connect(ctx, dbtest.PostgresDSN(t))
+	conn, err := pgx.ConnectConfig(ctx, dbtest.PostgresConfig(t))
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = conn.Close(context.Background()) })
 

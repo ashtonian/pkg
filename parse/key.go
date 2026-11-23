@@ -7,6 +7,7 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/ashtonian/pkg/gowalker"
 	"github.com/ashtonian/pkg/parse/core"
 	"github.com/ashtonian/pkg/parse/filter"
 )
@@ -144,7 +145,7 @@ func checkKeyColumns(key []string, columns map[string]reflect.Type, model reflec
 		}
 		t, ok := columns[column]
 		if !ok {
-			return fmt.Errorf("key column %q is not a column of %s", column, model)
+			return fmt.Errorf("key column %q is not a column of %s", column, gowalker.TypeText(model))
 		}
 		info := core.TypeOf(t)
 		if !core.IsKeyType(info.Type) {
