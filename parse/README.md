@@ -157,6 +157,7 @@ Tags expose capabilities explicitly: `parse:"filter,sort,patch,facet,search,incl
 | [HTTP and errors](docs/http-errors.md) | Request/response contract, schema routes, E-code catalog |
 | [Integrations](docs/integrations.md) | pgx, database/sql, TypeScript, custom schemas |
 | [Operations](docs/operations.md) | Security, concurrency, indexing, query costs, verification |
+| [Mapping from PostgREST, django-filter and ent](docs/grammar-mapping.md) | Each operator, list parameter, sort, paging, relation and patch form against its counterparts, the semantic differences and the gaps on both sides |
 
 ## API and code map
 
