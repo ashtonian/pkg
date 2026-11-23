@@ -8,7 +8,6 @@ package parsepgx_test
 import (
 	"context"
 	"errors"
-	"io"
 	"log/slog"
 	"net/http"
 	"os"
@@ -111,12 +110,7 @@ func (a *deviceAPI) update(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 1<<20))
-	if err != nil {
-		http.Error(w, "request body too large", http.StatusRequestEntityTooLarge)
-		return
-	}
-	p, err := devices.ParseMergePatch(body)
+	p, err := parsehttp.ParsePatch(r, devices)
 	if err != nil {
 		a.fail(w, r, err)
 		return
@@ -143,6 +137,12 @@ func (a *deviceAPI) update(w http.ResponseWriter, r *http.Request) {
 // else is the server's.
 func (a *deviceAPI) fail(w http.ResponseWriter, r *http.Request, err error) {
 	if parsehttp.WriteError(w, r, err, a.report()) {
+		return
+	}
+	if _, ok := errors.AsType[*parse.BodyReadError](err); ok {
+		// The client went away or sent less than it declared.
+		a.log.WarnContext(r.Context(), "reading devices request body", slog.String("path", r.URL.Path), slog.Any("error", err))
+		http.Error(w, "the request body could not be read", http.StatusBadRequest)
 		return
 	}
 	a.log.ErrorContext(r.Context(), "devices request failed",

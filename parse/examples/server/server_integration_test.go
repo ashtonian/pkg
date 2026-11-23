@@ -3,6 +3,7 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -12,6 +13,7 @@ import (
 	"net/url"
 	"strings"
 	"testing"
+	"testing/iotest"
 	"time"
 
 	"github.com/stretchr/testify/assert"
@@ -34,9 +36,15 @@ func testServer(t *testing.T) *httptest.Server {
 	return srv
 }
 
+// call sends body as application/json, as the SDK does: Content-Type goes
+// only with a body.
 func call(t *testing.T, srv *httptest.Server, method, path string, body string, out any) int {
 	t.Helper()
-	return send(t, srv, method, path, "", body, out)
+	contentType := ""
+	if body != "" {
+		contentType = "application/json"
+	}
+	return send(t, srv, method, path, contentType, body, out)
 }
 
 // send is call with a Content-Type; empty sends none.
@@ -349,4 +357,57 @@ func TestServer_QueriesThatLoseAParameterAreRefused(t *testing.T) {
 	}
 	require.Equal(t, http.StatusOK, call(t, srv, http.MethodPatch, "/api/products/p02", `{}`, &res))
 	assert.NotEqual(t, 7.0, res.Updated[0].Price, "a refused batch writes nothing")
+}
+
+// Patch bodies are read as list bodies are: bounded by the parser's input
+// size, in the grammar their media type names, and a body the client did
+// not finish sending is a bad request logged at WARN, on both routes.
+func TestServer_RequestBodies(t *testing.T) {
+	srv := testServer(t)
+	for _, tt := range []struct {
+		method, path, contentType, body string
+		status                          int
+		code                            string
+	}{
+		{http.MethodPatch, "/api/products/p03", "application/json", `{"name":"` + strings.Repeat("x", 70000) + `"}`, http.StatusUnprocessableEntity, "E2063"},
+		{http.MethodPatch, "/api/products/p03", "text/plain", `{"price":7}`, http.StatusUnprocessableEntity, "E2086"},
+		{http.MethodPatch, "/api/products/p03", "", `{"price":7}`, http.StatusUnprocessableEntity, "E2086"},
+		{http.MethodPatch, "/api/products?id[]=p03", "text/plain", `{"price":7}`, http.StatusUnprocessableEntity, "E2086"},
+		{http.MethodPost, "/api/products", "application/json", `{"search":"` + strings.Repeat("x", 90000) + `"}`, http.StatusUnprocessableEntity, "E2063"},
+	} {
+		var body parsehttp.Body
+		assert.Equal(t, tt.status, send(t, srv, tt.method, tt.path, tt.contentType, tt.body, &body), "%s %s %s", tt.method, tt.path, tt.contentType)
+		assert.Equal(t, tt.code, body.Code, "%s %s %s: %s", tt.method, tt.path, tt.contentType, body.Message)
+	}
+	var res struct {
+		Updated []Product `json:"updated"`
+	}
+	require.Equal(t, http.StatusOK, call(t, srv, http.MethodPatch, "/api/products/p03", `{}`, &res))
+	assert.NotEqual(t, 7.0, res.Updated[0].Price, "a refused patch writes nothing")
+	require.Equal(t, http.StatusOK, send(t, srv, http.MethodPatch, "/api/products/p03", parse.MediaTypeMergePatch, `{"price":7}`, &res))
+	assert.InDelta(t, 7.0, res.Updated[0].Price, 0, "the merge patch media type is a merge patch")
+
+	db, err := openDB(t.Context())
+	require.NoError(t, err)
+	t.Cleanup(func() { assert.NoError(t, db.Close()) })
+	var logs bytes.Buffer
+	h, err := newServer(db, slog.New(slog.NewJSONHandler(&logs, nil)), 5*time.Second)
+	require.NoError(t, err)
+	for _, tt := range []struct{ method, path string }{
+		{http.MethodPatch, "/api/products/p03"},
+		{http.MethodPost, "/api/products"},
+	} {
+		logs.Reset()
+		req := httptest.NewRequestWithContext(t.Context(), tt.method, tt.path,
+			io.MultiReader(strings.NewReader(`{"price":`), iotest.ErrReader(io.ErrUnexpectedEOF)))
+		req.Header.Set("Content-Type", "application/json")
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		assert.Equal(t, http.StatusBadRequest, rec.Code, tt.method)
+		var body parsehttp.Body
+		require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &body))
+		assert.Equal(t, codeBadRequest, body.Code, tt.method)
+		assert.Contains(t, logs.String(), `"level":"WARN"`, tt.method)
+		assert.NotContains(t, logs.String(), `"level":"ERROR"`, tt.method)
+	}
 }

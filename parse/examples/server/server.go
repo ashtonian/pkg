@@ -5,7 +5,6 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
-	"io"
 	"log/slog"
 	"maps"
 	"net/http"
@@ -14,11 +13,9 @@ import (
 	"time"
 
 	"github.com/ashtonian/pkg/parse"
-	"github.com/ashtonian/pkg/parse/core"
 	"github.com/ashtonian/pkg/parse/filter"
 	"github.com/ashtonian/pkg/parse/parsehttp"
 	"github.com/ashtonian/pkg/parse/parsesql"
-	"github.com/ashtonian/pkg/parse/patch"
 )
 
 // Product is the resource: its tags declare what clients may filter, sort,
@@ -172,7 +169,7 @@ func (s *server) patch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	id := r.PathValue("id")
-	items, err := s.update(w, r, parse.ByID(id))
+	items, err := s.update(r, parse.ByID(id))
 	if err != nil {
 		s.fail(w, r, err)
 		return
@@ -203,7 +200,7 @@ func (s *server) patchMany(w http.ResponseWriter, r *http.Request) {
 	for i, id := range ids {
 		keys[i] = id
 	}
-	items, err := s.update(w, r, parse.ByIDs(keys...))
+	items, err := s.update(r, parse.ByIDs(keys...))
 	if err != nil {
 		s.fail(w, r, err)
 		return
@@ -252,14 +249,10 @@ func (s *server) patchQuery(w http.ResponseWriter, r *http.Request, accepted ...
 // update applies the request's merge patch to target's products and returns
 // the rows the target matched, as the update left them: those it wrote, and
 // those a patch of what they already hold or an empty patch left.
-func (s *server) update(w http.ResponseWriter, r *http.Request, target parse.Target) ([]Product, error) {
+func (s *server) update(r *http.Request, target parse.Target) ([]Product, error) {
 	ctx, cancel := context.WithTimeout(r.Context(), s.requestTimeout)
 	defer cancel()
-	body, err := readBody(w, r)
-	if err != nil {
-		return nil, err
-	}
-	parsed, err := s.products.ParseMergePatch(body)
+	parsed, err := parsehttp.ParsePatch(r, s.products)
 	if err != nil {
 		return nil, err
 	}
@@ -275,9 +268,15 @@ func (s *server) update(w http.ResponseWriter, r *http.Request, target parse.Tar
 }
 
 // fail answers a parse error with its E-code and the status the code
-// carries; anything else is logged and answered as a 500 without internals.
+// carries, and a body the client did not finish sending as a bad request;
+// anything else is logged and answered as a 500 without internals.
 func (s *server) fail(w http.ResponseWriter, r *http.Request, err error) {
 	if parsehttp.WriteError(w, r, err, s.report) {
+		return
+	}
+	if _, ok := errors.AsType[*parse.BodyReadError](err); ok {
+		s.log.WarnContext(r.Context(), "reading request body", slog.String("method", r.Method), slog.String("path", r.URL.Path), slog.Any("error", err))
+		s.writeJSON(w, r, http.StatusBadRequest, parsehttp.Body{Code: codeBadRequest, Message: "the request body could not be read"})
 		return
 	}
 	s.log.ErrorContext(r.Context(), "request failed", slog.String("method", r.Method), slog.String("path", r.URL.Path), slog.Any("error", err))
@@ -293,16 +292,6 @@ func (s *server) responseFailed(r *http.Request, err error) {
 		level = slog.LevelError
 	}
 	s.log.Log(r.Context(), level, "writing response", slog.String("method", r.Method), slog.String("path", r.URL.Path), slog.Any("error", err))
-}
-
-const maxBody = 64 << 10
-
-func readBody(w http.ResponseWriter, r *http.Request) ([]byte, error) {
-	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxBody))
-	if err != nil {
-		return nil, &core.ParseError{Kind: core.ParseErrorKindPatch, Code: patch.ECodeInvalidJSON.String(), Message: "reading body: " + err.Error()}
-	}
-	return body, nil
 }
 
 // writeJSON answers v, or 500 when v cannot be encoded: parsehttp.WriteJSON

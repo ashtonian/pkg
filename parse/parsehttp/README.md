@@ -49,6 +49,8 @@ The limits a request is read under are the resource's (`core.WithMaxInputSize`, 
 ## API Reference
 
 - `ParseList[T](r *http.Request, res *parse.Resource[T]) (*parse.ListRequest, error)` — a list from the query string of a `GET` or `HEAD`, or the `application/json` body of a `POST` ([the same request as a POST body](../docs/http-errors.md#the-same-request-as-a-post-body)). The query string is decoded by `Query`. A POST's query string may carry only the endpoint's own parameters (`AcceptParams`); anything else, another content type or another method is E2067. The body is read no further than the resource's list body limit (`core.WithMaxListBodySize`, by default `MaxInputSize` plus 16 KiB); a longer one is E2063. It is `Resource.ParseList` or `Resource.ParseListPost` over an `*http.Request`.
+- `ParsePatch[T](r *http.Request, res *parse.Resource[T], opts ...parse.PatchOption) (*patch.ParsedPatch, error)` — a patch from the body of `r` in the grammar its `Content-Type` names: `application/merge-patch+json` or `application/json` a JSON Merge Patch, `application/json-patch+json` a JSON Patch; another media type, or none, is E2086. The body is read no further than the resource's `MaxInputSize`, and a longer one is E2063. It is `Resource.ParsePatchRequest` over an `*http.Request` ([reading a patch request](../docs/patches.md#reading-a-patch-request)).
+- A list or patch body that could not be read to its end is a `*parse.BodyReadError` from `ParseList` and `ParsePatch`: not a `ParseError`, so `WriteError` declines it, and not a server fault. Answer it as a bad request and log it at `WARN`.
 - `Query(r *http.Request) (url.Values, error)` — the query string, decoded whole or refused whole as E2067 when any pair does not decode (an invalid percent-escape, a `;`). `r.URL.Query()` drops such a pair and keeps the rest, so a filter the request named would vanish; pass `Query`'s values to `ParseList`, `ParseRequestFilter` and any handler that reads its own parameters.
 - `SchemaHandler(reg *parse.SchemaRegistry, opts ...Option) http.HandlerFunc` — the schema document of the resource the `{resource}` path value names; 404/E2078 with `details.resource` for a resource `reg` has not registered; `{"resources": [...]}`, the registered names, on a route without `{resource}`.
 - `SchemaListHandler(reg *parse.SchemaRegistry, opts ...Option) http.HandlerFunc` — `{"schemas": [...]}`, every registered resource's document.
@@ -87,14 +89,16 @@ A `*core.ParseError` describes the request, never the database, so `WriteError` 
 | `parsehttp.go` | `Body`, `Option`, `WithErrorHandler`, `WriteError`, `WriteJSON`, `ErrUnencodableDetails` |
 | `schema.go` | `SchemaHandler`, `SchemaListHandler`: discovery routes, 500/E2120 for a document that cannot be encoded |
 | `list.go` | `ParseList`: GET query strings and POST bodies; `Query`: the query string decoded whole or refused |
+| `patch.go` | `ParsePatch`: a patch body by its media type, bounded by `MaxInputSize` |
 | `parsehttp_test.go` | `WriteError` (unit): a wrapped parse error answered with its code's status, `Body` and `Content-Length`; a patch error's `path` and `index`; a marshalled `ParseError` writing the same members; unencodable `Details` entries left out, the rest kept, and reported; a failed `Write` reported with its request; any other error, or nil, left to the caller with nothing written. `WriteJSON`: the body and its length, a value that cannot be encoded returned with nothing written, a failed `Write` reported |
 | `schema_test.go` | The schema routes (unit): a document, 404/E2078, the names list, every document; a failed `Write` reported as itself and not as E2120; no hook; a document that cannot be encoded answered 500/E2120 with its cause reported |
 | `codes_test.go` | The catalog (unit): every code in `parse.Codes()` raised by a request and answered with its code and the table's status; `filter.Codes()`, `patch.Codes()` and the discovery codes are the table |
+| `patch_test.go` | `ParsePatch` (unit): the body read in the grammar the request's `Content-Type` names, and refused without one |
 | `list_test.go` | `ParseList` (unit): GET, HEAD and POST read the same request, with `AcceptParams` names left in a POST's query and `application/json` media type parameters accepted; a POST's list parameters or field filters in the query, another or a missing content type, and another method refused as E2067; a query string that does not decode refused whole as E2067 on every method, and by `Query` |
 
 ## Dependencies
 
-- *Imports*: `parse`, `parse/core`, `parse/filter`, `parse/internal/httpjson`, standard library
+- *Imports*: `parse`, `parse/core`, `parse/filter`, `parse/patch`, `parse/internal/httpjson`, standard library
 - *Imported by*: `parse/examples/server`, the `parse/parsepgx` recipe
 - *Package boundary*: standalone Parse module
 

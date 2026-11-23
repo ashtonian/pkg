@@ -25,6 +25,12 @@ A field tagged `parse:"server"` is a column only the server sets — a credentia
 | Test a value, copy/move a value, or edit an explicitly allowed nested pointer | `ParsePatch` then `ApplyValidatedPatch` | Go application; persist with appropriate concurrency control |
 | Set server-owned fields | `ParseServerMergePatch` | Trusted server code only |
 
+### Reading a patch request
+
+`parsehttp.ParsePatch(r, products)` reads a `PATCH` request's body in the grammar its `Content-Type` names: `application/merge-patch+json` (`parse.MediaTypeMergePatch`) or `application/json`, which the SDK sends, is a merge patch; `application/json-patch+json` (`parse.MediaTypeJSONPatch`) is a JSON Patch. Any other media type, or none, is E2086 with `details.parameter` `content-type`. The body is read no further than `MaxInputSize`, the size the patch parsers hold a body to; a longer one is E2063, and a `MaxInputSize` of zero or less reads it whole. A framework that hands its handlers a request's parts calls `Resource.ParsePatchRequest(contentType, body, opts...)`, which applies the same rules.
+
+A body that cannot be read to its end, because the client went away or sent less than its `Content-Length`, is a `*parse.BodyReadError` wrapping the reader's error, for a patch and a list body alike. It is not a `ParseError`, so `parsehttp.WriteError` declines it, and not a server fault: answer it as a bad request at `WARN`, as the example and the pgx recipe do, without an `ERROR` entry.
+
 ## Validation
 
 JSON Patch bodies must be arrays of operations; resource Merge Patch bodies must be objects. A root `null` is rejected rather than treated as an empty update. An operation carries only the value it writes: a `remove` of a field, a `move` and a `copy` have no `PatchOperation.Value`, whatever `value` member the client sent. A `remove`, a merge-patch null and a `move`'s source are null writes, so the path's validators run with null.

@@ -85,7 +85,7 @@ SELECT "devices"."id", "devices"."tenant_id", "devices"."name", "devices"."statu
 | Filter JSON arrays by their elements, every predicate on one element | `elements` tag or a slice-of-struct document; `$some`, `$none` | [Array elements](docs/queries.md#array-elements) |
 | Filter by related rows' attributes (has-many, belongs-to, many-to-many) | `Resource.Relate` with `HasMany`, `BelongsTo`, `ManyToMany`; `$some`, `$none`, `$is`, `$is_not` | [Relations](docs/relations.md#declare-relations) |
 | Match related IDs or return relation memberships | Relation tags, `filter.BuildIncludeQuery` | [Relations](docs/relations.md#pair-tables-compared-by-key) |
-| Serve an update endpoint: patch rows scoped to tenant, live rows and policy | `ParseMergePatch` / `ParsePatch`, `BuildUpdate`, an executor's `Update` (`UpdateResult`) | [Resource updates](docs/patches.md#resource-updates) |
+| Serve an update endpoint: patch rows scoped to tenant, live rows and policy | `parsehttp.ParsePatch` (`ParsePatchRequest`), `ParseMergePatch` / `ParsePatch`, `BuildUpdate`, an executor's `Update` (`UpdateResult`) | [Resource updates](docs/patches.md#resource-updates) |
 | Compile distinct column patches with per-key revision/policy fences in one transaction | `BuildUpdateBatch`, `RowUpdate`, an executor's `UpdateBatch` | [Varied update batches](docs/operations.md#varied-native-update-batches) |
 | Write, stamp and count only the rows a patch changes, and tell unchanged from not found | `SkipUnchanged`, `UpdateResult.Changed` / `Unchanged` | [Skipping unchanged rows](docs/patches.md#skipping-unchanged-rows) |
 | Merge fields or replace a JSON document | `ParseMergePatch`, `ParsePatch`, `patch.BuildPatchSQL` | [Patches](docs/patches.md) |
@@ -159,6 +159,7 @@ Tags expose capabilities explicitly: `parse:"filter,sort,patch,facet,search,incl
 |---|---|
 | [`resource.go`](resource.go) | `NewResource[T]`, `MustResource`, resource options (`CustomizeSchemas`, `Schemas`), identity, system fields, projection (`Columns`, `ColumnNames`), `ParseFilterWithCost`, `Key`, `WithPaths` (a request's view with declared JSON paths) |
 | [`list.go`](list.go) | `ListInput`, `ParseListInput`, `ListRequest` (sealed: read through methods, `WithFilter`), `ParseList`, `Scope`, `ListPlan` (`Dialect`), `BuildList`, `Page`, `PagePointers`, `IncludeQueries` |
+| [`body.go`](body.go) | `ParsePatchRequest`: a patch request's body in the grammar its media type names (`MediaTypeMergePatch`, `MediaTypeJSONPatch`, `application/json`), bounded by `MaxInputSize`; `BodyReadError`: a list or patch body that could not be read |
 | [`list_body.go`](list_body.go) | `ParseListBody`: a list request as one JSON document, a POST body beside the query string; `ParseListPost`: a POST's list from its query string, content type and body; `Accepts` |
 | [`relate.go`](relate.go) | `Relate`, `MustRelate`, `HasMany`, `BelongsTo`, `ManyToMany`, `Junction` / `Through`, `Indexed`, `Includable`, `Facetable`, `Writable`, `PolicyScoped`, `References`, `RelatedResource` |
 | [`scan.go`](scan.go) | `RowScanner`, `ScanJSON`: the row contract every executor scans through — each column into the field the resource compiled it from, stored documents decoded with presence and key checks, SQLite's JSON and timestamp text decoded |

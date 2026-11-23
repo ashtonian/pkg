@@ -160,6 +160,9 @@ func TestParseListBody_ReadErrorsAreNotRequestErrors(t *testing.T) {
 			assert.ErrorContains(t, err, "widgets: reading list body")
 			_, isParse := errors.AsType[*core.ParseError](err)
 			assert.False(t, isParse, "the request is not at fault")
+			readErr, ok := errors.AsType[*parse.BodyReadError](err)
+			require.True(t, ok)
+			assert.Equal(t, parse.BodyReadError{Table: "widgets", Request: "list", Err: cause}, *readErr)
 		})
 	}
 }

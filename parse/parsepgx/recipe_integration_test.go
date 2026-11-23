@@ -3,20 +3,24 @@
 package parsepgx_test
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"strings"
 	"testing"
+	"testing/iotest"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/ashtonian/pkg/parse"
 	"github.com/ashtonian/pkg/parse/filter"
 	"github.com/ashtonian/pkg/parse/internal/dbtest"
 	"github.com/ashtonian/pkg/parse/parsehttp"
@@ -111,4 +115,38 @@ func TestRecipe(t *testing.T) {
 	status, _ = patch(a, ids["pump"], `{"status":"exploded"}`)
 	assert.NotEqual(t, http.StatusOK, status, "a value outside the enum")
 	assert.Less(t, status, http.StatusInternalServerError)
+
+	// The body is read in the grammar its media type names, no further
+	// than the parser's input size.
+	for _, tt := range []struct {
+		contentType, body, code string
+	}{
+		{"text/plain", `{"status":"offline"}`, "E2086"},
+		{parse.MediaTypeMergePatch, `{"name":"` + strings.Repeat("x", 70000) + `"}`, "E2063"},
+	} {
+		req, err := http.NewRequestWithContext(ctx, http.MethodPatch, a.URL+"/devices/"+ids["pump"].String(), strings.NewReader(tt.body))
+		require.NoError(t, err)
+		req.Header.Set("Content-Type", tt.contentType)
+		res, err := a.Client().Do(req)
+		require.NoError(t, err)
+		var e parsehttp.Body
+		require.NoError(t, json.NewDecoder(res.Body).Decode(&e))
+		require.NoError(t, res.Body.Close())
+		assert.Equal(t, http.StatusUnprocessableEntity, res.StatusCode, tt.contentType)
+		assert.Equal(t, tt.code, e.Code, tt.contentType)
+	}
+
+	// A body the client did not finish sending is a bad request, logged at
+	// WARN and never as the server's failure.
+	var logs bytes.Buffer
+	cut := http.NewServeMux()
+	(&deviceAPI{db: pool, tenant: authenticatedTenant, log: slog.New(slog.NewJSONHandler(&logs, nil))}).routes(cut)
+	req := httptest.NewRequestWithContext(context.WithValue(ctx, tenantKey{}, tenantA), http.MethodPatch, "/devices/"+ids["pump"].String(),
+		io.MultiReader(strings.NewReader(`{"status":`), iotest.ErrReader(io.ErrUnexpectedEOF)))
+	req.Header.Set("Content-Type", parse.MediaTypeMergePatch)
+	rec := httptest.NewRecorder()
+	cut.ServeHTTP(rec, req)
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
+	assert.Contains(t, logs.String(), `"level":"WARN"`)
+	assert.NotContains(t, logs.String(), `"level":"ERROR"`)
 }

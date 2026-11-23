@@ -72,8 +72,8 @@ The client calls the routes a server built on the Go module serves; the [example
 | `list(opts)` | `GET /{resource}?filter=&sort=&cursor=&page_size=&include_total=&include_deleted=&search=&include=&facets=&fields=` | `parsehttp.ParseList` (or `Resource.ParseList` over `parsehttp.Query`), `Resource.BuildList`, `Resource.Page` |
 | `list(opts, { method: "POST" })`, or a list URL past `maxURLLength` | `POST /{resource}` with `{"filter": {…}, "sort", "cursor", "page_size", "include_total", "include_deleted", "search", "include": […], "facets": […], "fields": […]}` as `application/json` ([HTTP contract](../../docs/http-errors.md#the-same-request-as-a-post-body)) | The same handler: `parsehttp.ParseList` reads either transport |
 | `listAll(opts)` | `list` repeated with `cursor = page_info.end_cursor` while `page_info.has_next_page`, each page on the transport `list` would take | The list route |
-| `patch(id, input)` | `PATCH /{resource}/{id}` with a JSON Merge Patch body | `Resource.ParseMergePatch`, `Resource.BuildUpdate(…, parse.ByID(id), …)` |
-| `patchMany(ids, input)` | `PATCH /{resource}?id[]=…&id[]=…` with a JSON Merge Patch body | `Resource.BuildUpdate(…, parse.ByIDs(ids…), …)`; a key that updated no row is an item of `failed` |
+| `patch(id, input)` | `PATCH /{resource}/{id}` with a JSON Merge Patch body (`application/json`) | `parsehttp.ParsePatch` (or `Resource.ParsePatchRequest`), `Resource.BuildUpdate(…, parse.ByID(id), …)` |
+| `patchMany(ids, input)` | `PATCH /{resource}?id[]=…&id[]=…` with a JSON Merge Patch body (`application/json`) | `parsehttp.Query`, `parsehttp.ParsePatch`, `Resource.BuildUpdate(…, parse.ByIDs(ids…), …)`; a key that updated no row is an item of `failed` |
 | `facets(fields, opts)` | `OPTIONS /{resource}?facets=a,b&filter=` → `facets` | `Resource.ParseList`, `Resource.BuildList`, the plan's `Facets` statement |
 | `schema()` | `GET /{schemaPrefix}/{name}/schema` | `parsehttp.SchemaHandler` |
 | `schemas()` | `GET /{schemaPrefix}/schemas` → `{ schemas: […] }` | `parsehttp.SchemaListHandler` |
