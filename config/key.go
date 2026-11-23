@@ -1,5 +1,7 @@
 package config
 
+import "slices"
+
 // SegmentKind identifies one step in a configuration key.
 type SegmentKind uint8
 
@@ -64,9 +66,9 @@ func (k Key) Fields() Key {
 // LastName returns the last field or map key, skipping indexes and wildcards.
 // An empty key has no name and returns an empty string.
 func (k Key) LastName() string {
-	for i := len(k) - 1; i >= 0; i-- {
-		if k[i].Kind == SegmentField || k[i].Kind == SegmentKey {
-			return k[i].Name
+	for _, seg := range slices.Backward(k) {
+		if seg.Kind == SegmentField || seg.Kind == SegmentKey {
+			return seg.Name
 		}
 	}
 	return ""

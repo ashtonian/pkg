@@ -527,9 +527,7 @@ func TestConcurrentCacheReads(t *testing.T) {
 	var wg sync.WaitGroup
 	errCh := make(chan error, 50)
 	for range 50 {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+		wg.Go(func() {
 			resp, err := client.Get(server.URL)
 			if err != nil {
 				errCh <- err
@@ -540,7 +538,7 @@ func TestConcurrentCacheReads(t *testing.T) {
 			if len(body) == 0 {
 				errCh <- fmt.Errorf("empty body from cache")
 			}
-		}()
+		})
 	}
 	wg.Wait()
 	close(errCh)

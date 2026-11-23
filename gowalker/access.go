@@ -2,6 +2,7 @@ package gowalker
 
 import (
 	"reflect"
+	"slices"
 	"strconv"
 
 	"github.com/ashtonian/pkg/gowalker/path"
@@ -289,10 +290,8 @@ func (a *Accessor) follow(v reflect.Value, shape *Shape) (reflect.Value, *Shape,
 		}
 		if v.Kind() == reflect.Pointer {
 			id := pointerID{v.Type(), v.Pointer()}
-			for _, previous := range seen {
-				if previous == id {
-					return reflect.Value{}, nil, false, ErrPath
-				}
+			if slices.Contains(seen, id) {
+				return reflect.Value{}, nil, false, ErrPath
 			}
 			seen = append(seen, id)
 		}

@@ -163,8 +163,8 @@ func workspaceModules(ctx context.Context, root string) ([]string, error) {
 	cmd.Env = append(os.Environ(), "GOWORK="+work)
 	out, err := cmd.Output()
 	if err != nil {
-		var exit *exec.ExitError
-		if errors.As(err, &exit) {
+		exit, ok := errors.AsType[*exec.ExitError](err)
+		if ok {
 			return nil, fmt.Errorf("reading %s: %w: %s", work, err, strings.TrimSpace(string(exit.Stderr)))
 		}
 		return nil, fmt.Errorf("reading %s: %w", work, err)

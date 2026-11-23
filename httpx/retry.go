@@ -270,8 +270,8 @@ func (t *RetryTransport) isRetryableError(err error) bool {
 		return true
 	}
 
-	var netErr net.Error
-	if errors.As(err, &netErr) {
+	netErr, ok := errors.AsType[net.Error](err)
+	if ok {
 		return netErr.Timeout()
 	}
 	return false

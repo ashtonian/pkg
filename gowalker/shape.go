@@ -399,10 +399,10 @@ func matchFolding[N string | []byte](s *Shape, name N) (*Field, NameMatch) {
 	if string(name) == f.name {
 		return f, ExactMatch
 	}
-	for _, alias := range f.aliases {
-		if string(name) == alias {
-			return f, ExactMatch
-		}
+	// Compared in place: converting a []byte name to pass it to slices.Contains
+	// copies it, and allocates past 32 bytes.
+	if slices.ContainsFunc(f.aliases, func(alias string) bool { return string(name) == alias }) {
+		return f, ExactMatch
 	}
 	if f.caseStrict {
 		return nil, NoMatch

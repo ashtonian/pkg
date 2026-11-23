@@ -22,7 +22,7 @@ import (
 func mapPopulator(secrets map[string]string) SecretPopulator {
 	return func(_ context.Context, target any) error {
 		v := reflect.ValueOf(target)
-		if v.Kind() != reflect.Ptr || v.IsNil() {
+		if v.Kind() != reflect.Pointer || v.IsNil() {
 			return fmt.Errorf("mapPopulator: target must be non-nil pointer to struct")
 		}
 		v = v.Elem()

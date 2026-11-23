@@ -316,7 +316,7 @@ func TestPrintUsage_ReloadColumnWhenItInforms(t *testing.T) {
 func TestPrintUsage_TableHasNoTrailingSpace(t *testing.T) {
 	var buf bytes.Buffer
 	require.NoError(t, PrintUsage[usageCfg]("APP", WithWriter(&buf)))
-	for _, line := range strings.Split(buf.String(), "\n") {
+	for line := range strings.SplitSeq(buf.String(), "\n") {
 		assert.Equal(t, strings.TrimRight(line, " "), line)
 	}
 }

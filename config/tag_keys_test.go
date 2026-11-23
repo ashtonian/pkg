@@ -212,7 +212,7 @@ func TestDeclarationChecks_VisitEachStructOnce(t *testing.T) {
 	_, err = declaredOf(reflect.TypeFor[sharedDeclarationsCfg]())
 	require.ErrorIs(t, err, ErrSchema)
 	var written []string
-	for _, line := range strings.Split(err.Error(), "\n") {
+	for line := range strings.SplitSeq(err.Error(), "\n") {
 		field, _, _ := strings.Cut(strings.TrimPrefix(line, ErrSchema.Error()+": field "), " has tag key")
 		key, _, _ := strings.Cut(strings.SplitN(line, `has tag key "`, 2)[1], `"`)
 		written = append(written, strings.Fields(field)[0]+":"+key)

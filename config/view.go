@@ -66,8 +66,8 @@ func compileView(t reflect.Type) (*gowalker.Schema, error) {
 // viewError reports configView's failure to compile t as ErrSchema.
 func viewError(t reflect.Type, err error) error {
 	// A name conflict names its type and both fields; matching is case-folded.
-	var collision *gowalker.NameConflict
-	if errors.As(err, &collision) {
+	collision, ok := errors.AsType[*gowalker.NameConflict](err)
+	if ok {
 		return fmt.Errorf("%w: %w (ignoring case)", ErrSchema, collision)
 	}
 	// A resolver error is config's own tag diagnostic; report it with its type

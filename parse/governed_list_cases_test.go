@@ -222,9 +222,7 @@ func listRelated[T any](t *testing.T, r *parse.Resource[T], d filter.Dialect, db
 	slices.Sort(res.ids)
 	require.NotNil(t, page.PageInfo.TotalCount)
 	res.count = *page.PageInfo.TotalCount
-	for field, ids := range page.Relations {
-		res.includes[field] = ids
-	}
+	maps.Copy(res.includes, page.Relations)
 	for field, buckets := range page.Facets {
 		res.facets[field] = map[string]int64{}
 		for _, b := range buckets {

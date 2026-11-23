@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"reflect"
+	"slices"
 	"strings"
 	"sync"
 
@@ -265,8 +266,8 @@ func (r *defaulterRun) fields(v reflect.Value) {
 // nothing, the innermost first, so one emptied that way can empty the
 // section around it.
 func (r *defaulterRun) release() {
-	for i := len(r.allocated) - 1; i >= 0; i-- {
-		if p := r.allocated[i]; p.Elem().IsZero() {
+	for _, p := range slices.Backward(r.allocated) {
+		if p.Elem().IsZero() {
 			p.Set(reflect.Zero(p.Type()))
 		}
 	}

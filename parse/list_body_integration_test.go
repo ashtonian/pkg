@@ -96,7 +96,7 @@ func runListBodyTransport(t *testing.T, db *sql.DB, d filter.Dialect) {
 	// other transport minted.
 	var walked []int
 	cursor, transports := "", []func(string) *http.Request{get, post}
-	for i := 0; i < 10; i++ {
+	for i := range 10 {
 		p := page(transports[i%2](cursor))
 		walked = append(walked, ids(p)...)
 		if !p.PageInfo.HasNextPage {
