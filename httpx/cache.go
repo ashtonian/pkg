@@ -56,7 +56,9 @@ var storableStatuses = map[int]bool{
 // caller-conditional and body-bearing requests bypass the cache; unsafe
 // methods with a response below 400 invalidate the target URI within that
 // request's partition, and a fetch or revalidation still in
-// flight when they do never stores what it read.
+// flight when they do never stores what it read. A request carrying
+// only-if-cached never reaches the origin: it receives a usable stored
+// response or a 504, and every request the cache would bypass receives the 504.
 type CacheTransport struct {
 	base                 http.RoundTripper
 	store                CacheStore
@@ -233,7 +235,15 @@ func (t *CacheTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 		return nil, err
 	}
 	reqCC := parseCacheControl(req.Header)
-	if !cacheableRequest(req, reqCC) {
+	bypass := storageBypass(req)
+	if reqCC.onlyIfCached && bypass != "" {
+		// The caller forbids origin I/O, and storage never answers this request.
+		closeRequestBody(req)
+		return gatewayTimeout(req, bypass), nil
+	}
+	// A no-store request may still be answered from storage (RFC 9111
+	// §5.2.1.5), which is all only-if-cached allows.
+	if bypass != "" || (reqCC.noStore && !reqCC.onlyIfCached) {
 		resp, err := t.base.RoundTrip(req)
 		if err == nil && !isSafeMethod(req.Method) && resp.StatusCode < 400 {
 			t.invalidate(req, resp)
@@ -255,7 +265,7 @@ func (t *CacheTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	}
 	if !ok {
 		if reqCC.onlyIfCached {
-			resp := gatewayTimeout(req)
+			resp := gatewayTimeout(req, "miss")
 			if storeErr != nil {
 				resp.Header.Set("Cache-Status", cacheStatusName+"; fwd=miss; detail=store-error")
 			}
@@ -272,7 +282,7 @@ func (t *CacheTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 		return t.serve(req, entry, f, "hit"), nil
 	}
 	if reqCC.onlyIfCached {
-		return gatewayTimeout(req), nil
+		return gatewayTimeout(req, "miss"), nil
 	}
 	if t.staleAllowed(f, respCC, reqCC, respCC.staleWhileRevalidate, t.staleWhileRevalidate) {
 		t.hook.OnCacheHit(req, false)
@@ -636,20 +646,21 @@ func (t *CacheTransport) key(req *http.Request) string {
 	return key
 }
 
-// cacheableRequest reports whether the cache may answer req at all.
-func cacheableRequest(req *http.Request, cc cacheDirectives) bool {
-	if req.Method != http.MethodGet || cc.noStore {
-		return false
+// storageBypass names why storage never answers req, as a Cache-Status fwd
+// reason (RFC 9211), or returns "" for a request it may answer.
+func storageBypass(req *http.Request) string {
+	if req.Method != http.MethodGet {
+		return "method"
 	}
 	if req.Body != nil && req.Body != http.NoBody {
-		return false // a GET body has no defined meaning; send it to the origin as is
+		return "bypass" // a GET body has no defined meaning; send it to the origin as is
 	}
 	for _, h := range []string{"Range", "If-Match", "If-None-Match", "If-Modified-Since", "If-Unmodified-Since", "If-Range"} {
 		if len(headerValuesFold(req.Header, h)) != 0 {
-			return false // range and caller-conditional requests go to the origin untouched
+			return "bypass" // range and caller-conditional requests go to the origin untouched
 		}
 	}
-	return true
+	return ""
 }
 
 func storableResponse(resp *http.Response) bool {
@@ -771,10 +782,10 @@ func varyMatches(entry *CachedResponse, req *http.Request) bool {
 	return true
 }
 
-// gatewayTimeout is the only-if-cached answer when nothing usable is stored
-// (RFC 9111 §5.2.1.7).
-func gatewayTimeout(req *http.Request) *http.Response {
-	h := http.Header{"Cache-Status": {cacheStatusName + "; fwd=miss; detail=only-if-cached"}}
+// gatewayTimeout is the only-if-cached answer when nothing stored is usable
+// (RFC 9111 §5.2.1.7); fwd says why the request would have been forwarded.
+func gatewayTimeout(req *http.Request, fwd string) *http.Response {
+	h := http.Header{"Cache-Status": {cacheStatusName + "; fwd=" + fwd + "; detail=only-if-cached"}}
 	return &http.Response{
 		Status: "504 Gateway Timeout", StatusCode: http.StatusGatewayTimeout,
 		Proto: "HTTP/1.1", ProtoMajor: 1, ProtoMinor: 1,

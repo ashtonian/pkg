@@ -118,7 +118,9 @@ The cache supports explicit freshness, validators, `Vary`, corrected `Age`,
 request cache directives and permitted stale reuse. Storage is limited to
 eligible GETs and the documented status codes, with one `Vary` variant per
 primary key. Caller-conditional, range, HEAD and body-bearing GET requests
-bypass caching. See [supported HTTP policy](caching.md#supported-http-policy)
+bypass caching. A request carrying `only-if-cached` never reaches the origin:
+it receives a usable stored response or a synthetic 504, as does any request
+the cache would bypass. See [supported HTTP policy](caching.md#supported-http-policy)
 for storage, revalidation, stale fallback and invalidation boundaries.
 `CacheStore` receives context and returns errors on every operation. Failed
 storage maintenance preserves received responses; uncertain mutations disable

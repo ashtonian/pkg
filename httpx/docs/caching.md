@@ -92,14 +92,26 @@ pass through without being stored. Each primary key retains one matching
 | `no-cache` | Revalidate before reuse |
 | `must-revalidate` | Do not use stale fallback after expiry |
 | `max-age`, `min-fresh`, `max-stale` | Respect the request's freshness constraints |
-| `only-if-cached` on a cache-eligible GET | Return a synthetic 504 if no acceptable cached response exists |
+| `only-if-cached` | Never contact the origin: serve an acceptable stored response, otherwise a synthetic 504 |
 | ETag / Last-Modified | Conditional revalidation; merge 304 metadata and recheck storage policy |
 | `Vary: *`, including a wildcard within a list | Refuse storage |
 | `Date` / `Age` | Correct freshness for response delay and time already spent cached |
 | No explicit freshness | Store only with a validator, and revalidate every use |
-| HEAD, Range, conditional GET, or GET with a body | Bypass cache |
+| HEAD, Range, conditional GET, or GET with a body | Bypass cache; a synthetic 504 under `only-if-cached` |
 | Unsafe method with a response below 400 | Invalidate target plus same-origin `Location` / `Content-Location` targets within the request's cache partition |
 | Read failure | Preserve the original read error; never cache a truncated body as successful |
+
+`only-if-cached` (RFC 9111 §5.2.1.7) takes precedence over every reason to
+forward. Combined with `no-store`, the request may still reuse a stored
+response, because `no-store` forbids storing, not reuse; nothing new is
+stored, since nothing is fetched. The cache neither builds partial content nor
+evaluates a caller's preconditions, so a Range or conditional GET with
+`only-if-cached` receives the 504 even when a full response is stored, as do
+HEAD, unsafe methods and a GET with a body. The cache closes the body of every
+request it answers without forwarding. The 504's `Cache-Status` carries
+`detail=only-if-cached` and the reason it was not answered from storage:
+`fwd=miss` (nothing stored is acceptable), `fwd=bypass` (a request form
+storage never answers) or `fwd=method`.
 
 Stale permissions can come from RFC 5861 response directives or configured
 `WithStaleIfError` / `WithStaleWhileRevalidate`. They remain subject to
