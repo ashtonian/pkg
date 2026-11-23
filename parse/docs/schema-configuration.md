@@ -139,7 +139,7 @@ The limits follow one rule, which filters and patches read alike through `(*Pars
 | `WithFieldNameTag(tag)` | string | `"json"` | Tag holding external field names |
 | `WithColumnTag(tag)` | string | `"db"` | Tag holding column names |
 | `WithSortMaxFields(n)` | int | `3` | Sort fields a request may name |
-| `WithSearchParam(p)` | string | `"search"` | Search parameter a search schema advertises (`filter.ParamSearch`) |
+| `WithSearchParam(p)` | string | `"search"` | Query parameter a search schema advertises (`search.param` in the schema document), which a resource's `ParseList` reads beside `search`; the list body member stays `search`. `NewResource` refuses a `p` that is another list parameter, an `AcceptParams` name or a flat filter on a field ([search parameter](http-errors.md#search-parameter)) |
 | `WithForeignTagKeys(keys...)` | `...string` | none | Tag keys another library reads, left alone though one is a character from a key parse reads; calls accumulate |
 | `WithSearchLanguage(lang)` | string | `"english"` | PostgreSQL text search configuration a search schema searches with; a name that is no (schema-qualified) identifier fails schema generation |
 | `GeneratorOptions.DefaultFilterOps` | `map[FieldType][]string` | filter package defaults | Default operators per type; each must apply to the type (`filter.OperatorsFor`) |

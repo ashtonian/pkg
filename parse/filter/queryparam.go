@@ -190,6 +190,29 @@ func (o flatOperands) operatorMap() map[string]any {
 	return raw
 }
 
+// FlatParamFields are the field names a flat parameter key may filter, in
+// the order QueryParamParser tries them: the key itself, then the key less
+// each operator suffix it ends with (price_gte: price). The parameter
+// filters the first that names a request field (ResourceSchema.RequestField),
+// so a parameter the endpoint reads itself must name none of them.
+func FlatParamFields(key string) []string {
+	names := []string{key}
+	for _, s := range querySuffixes {
+		field, ok := suffixField(key, s.suffix)
+		if ok {
+			names = append(names, field)
+		}
+	}
+	return names
+}
+
+// suffixField is the field name key holds before operator suffix suffix,
+// when it ends with it after a name.
+func suffixField(key, suffix string) (string, bool) {
+	field, ok := strings.CutSuffix(key, suffix)
+	return field, ok && field != ""
+}
+
 func (p *QueryParamParser) splitFieldOp(key string) (string, FilterOperator) {
 	// A real field named e.g. "email_like" must not be split into
 	// (email, $like) — exact schema match takes precedence.
@@ -200,11 +223,8 @@ func (p *QueryParamParser) splitFieldOp(key string) (string, FilterOperator) {
 	// when a exists, (a_not, null) when only a_not does.
 	first, firstOp := "", OpEq
 	for _, s := range querySuffixes {
-		if !strings.HasSuffix(key, s.suffix) {
-			continue
-		}
-		fieldName := key[:len(key)-len(s.suffix)]
-		if fieldName == "" {
+		fieldName, ok := suffixField(key, s.suffix)
+		if !ok {
 			continue
 		}
 		if _, ok := p.schema.RequestField(fieldName); ok {

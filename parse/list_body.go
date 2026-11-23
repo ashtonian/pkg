@@ -21,7 +21,9 @@ import (
 // object; sort, cursor and search are strings in their grammars; page_size
 // is a positive integer; include_total and include_deleted are booleans;
 // facets, include and fields are arrays of names. It is validated as
-// ParseListInput validates, with the same limits and error codes.
+// ParseListInput validates, with the same limits and error codes. The
+// search is the member search whatever query parameter the search schema
+// advertises (core.WithSearchParam); the schema document states both.
 //
 // The filter member is bounded by MaxInputSize, as the filter parameter is.
 // The whole body is bounded by the parser's list body limit
@@ -116,9 +118,13 @@ func (r *Resource[T]) listMember(in *ListInput, name string, raw json.RawMessage
 // the body is application/json; anything else is E2067.
 func (r *Resource[T]) ParseListPost(query url.Values, contentType string, body io.Reader) (*ListRequest, error) {
 	for _, name := range slices.Sorted(maps.Keys(query)) {
-		if !r.Accepts(name) {
-			return nil, listParamError(name, fmt.Sprintf("a POST list takes %q in its body, not its query string", name))
+		switch {
+		case r.Accepts(name):
+			continue
+		case name == r.searchParam:
+			return nil, listParamError(name, fmt.Sprintf("a POST list takes its search in the body member %q, not the query parameter %q", filter.ParamSearch, name))
 		}
+		return nil, listParamError(name, fmt.Sprintf("a POST list takes %q in its body, not its query string", name))
 	}
 	if media, _, err := mime.ParseMediaType(contentType); err != nil || media != httpjson.MediaType {
 		return nil, listParamError("content-type", "a POST list body is application/json")

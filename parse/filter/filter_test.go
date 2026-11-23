@@ -257,6 +257,25 @@ func TestQueryParamParser_InSuffix(t *testing.T) {
 	assert.Equal(t, `"items"."status" = ANY($1)`, result.Where)
 }
 
+// FlatParamFields names every field a flat parameter may filter, so a name
+// that is in none of them reaches no field.
+func TestFlatParamFields(t *testing.T) {
+	tests := []struct {
+		key  string
+		want []string
+	}{
+		{"status", []string{"status"}},
+		{"count_gte", []string{"count_gte", "count"}},
+		{"a_not_null", []string{"a_not_null", "a", "a_not"}},
+		{"_gt", []string{"_gt"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.key, func(t *testing.T) {
+			assert.ElementsMatch(t, tt.want, filter.FlatParamFields(tt.key))
+		})
+	}
+}
+
 func TestQueryParamParser_IgnoresReserved(t *testing.T) {
 	qp := filter.NewQueryParamParser(testSchema())
 	ast, err := qp.Parse(url.Values{"sort": {"-name"}, "page_size": {"10"}, "cursor": {"abc"}, "include_total": {"true"}, "filter": {"{}"}})

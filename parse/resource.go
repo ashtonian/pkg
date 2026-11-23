@@ -51,6 +51,9 @@ type Resource[T any] struct {
 	// accepted are the query parameters the endpoint reads itself
 	// (AcceptParams).
 	accepted []string
+	// searchParam is the query parameter the search schema advertises when
+	// it is not filter.ParamSearch; ParseList reads the search from either.
+	searchParam string
 	// read are the columns the resource reads, in field order, and
 	// sqlTypes the declared database types among them (ColumnType);
 	// tableColumns is every column of T, and columnFields the field holding
@@ -305,6 +308,10 @@ func NewResource[T any](table string, opts ...ResourceOption) (*Resource[T], err
 	}
 	r.filterSchema.SystemFields = systemFields(table, cfg, columns, fieldsByColumn)
 	r.filterSchema.PrimaryKey = slices.Clone(cfg.pk)
+	err = r.setSearchParam()
+	if err != nil {
+		return nil, fmt.Errorf("parse: %s: %w", table, err)
+	}
 	var tenant *tenantColumn
 	if cfg.tenant != "" {
 		if tenant, err = newTenantColumn(table, cfg.tenant, columns[cfg.tenant]); err != nil {
@@ -924,6 +931,10 @@ func (r *Resource[T]) WithPaths(decls ...filter.PathDecl) (*Resource[T], error) 
 		}
 	}
 	fs, err := r.filterSchema.WithPaths(decls...)
+	if err != nil {
+		return nil, fmt.Errorf("parse: %s: %w", r.table, err)
+	}
+	err = r.checkSearchParam(fs)
 	if err != nil {
 		return nil, fmt.Errorf("parse: %s: %w", r.table, err)
 	}
