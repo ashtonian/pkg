@@ -127,7 +127,8 @@ func (r *memberResolver) member(ctx context.Context, n *FilterNode) (*FilterNode
 	if r.lookup == nil {
 		return unknownNode(), nil
 	}
-	if err := n.Member.validateProjecting(1); err != nil {
+	err := n.Member.validateProjecting(1)
+	if err != nil {
 		return nil, err
 	}
 	members, hasNull, err := r.values(ctx, n.Field, n.Member)
@@ -183,7 +184,8 @@ func (r *memberResolver) keys(ctx context.Context, fields []*FieldSchema, l *Loo
 		stored := v.(core.Key)
 		k := make(core.Key, len(fields))
 		for i, f := range fields {
-			if k[i], err = r.norm.normalizeMember(f, projectedValue(stored[i])); err != nil {
+			k[i], err = r.norm.normalizeMember(f, projectedValue(stored[i]))
+			if err != nil {
 				return nil, fmt.Errorf("filter: membership lookup on %s: %w", l.Table, err)
 			}
 		}
@@ -191,7 +193,8 @@ func (r *memberResolver) keys(ctx context.Context, fields []*FieldSchema, l *Loo
 		if err != nil {
 			return nil, fmt.Errorf("filter: membership lookup on %s: %w", l.Table, err)
 		}
-		if _, dup := seen[text]; dup {
+		_, dup := seen[text]
+		if dup {
 			continue
 		}
 		seen[text] = struct{}{}
@@ -339,7 +342,8 @@ func projectedKey(l *Lookup, v any) (core.Key, error) {
 	}
 	out := make(core.Key, len(k))
 	for i, value := range k {
-		if out[i] = derefValue(value); out[i] == nil {
+		out[i] = derefValue(value)
+		if out[i] == nil {
 			return nil, nil
 		}
 	}
@@ -459,7 +463,8 @@ func lookupEqual(stored, want any) bool {
 		c, ok := core.CompareDecimals(stored, want)
 		return ok && c == 0
 	}
-	if c, ok := core.CompareNumbers(stored, want); ok {
+	c, ok := core.CompareNumbers(stored, want)
+	if ok {
 		return c == 0
 	}
 	info := core.TypeOf(reflect.TypeOf(want))
@@ -496,7 +501,8 @@ func matchKey(cond *LookupCond, column func(name string) (value any, ok bool)) (
 		if !ok {
 			return false, invalidLookup(fmt.Sprintf("lookup row has no column %q", name))
 		}
-		if row[i] = derefValue(v); row[i] == nil {
+		row[i] = derefValue(v)
+		if row[i] == nil {
 			return false, nil
 		}
 	}

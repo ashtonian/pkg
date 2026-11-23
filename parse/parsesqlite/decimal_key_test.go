@@ -52,33 +52,35 @@ func TestDecimalKey_EqualExactlyWhereTextIsEqual(t *testing.T) {
 				require.NoError(t, err, v)
 			}
 
-			rows, err := conn.QueryContext(t.Context(), `SELECT quote(a.x), quote(b.x),
+			pairRows, err := conn.QueryContext(t.Context(), `SELECT quote(a.x), quote(b.x),
 				parse_decimal(a.x) = parse_decimal(b.x), parse_decimal_key(a.x) = parse_decimal_key(b.x)
 				FROM forms a, forms b`)
 			require.NoError(t, err)
+			defer func() { require.NoError(t, pairRows.Close()) }()
 			pairs := 0
-			for rows.Next() {
+			for pairRows.Next() {
 				var a, b string
 				var byText, byKey *int64
-				require.NoError(t, rows.Scan(&a, &b, &byText, &byKey))
+				require.NoError(t, pairRows.Scan(&a, &b, &byText, &byKey))
 				assert.Equal(t, byText, byKey, "%s and %s", a, b)
 				pairs++
 			}
-			require.NoError(t, rows.Err())
+			require.NoError(t, pairRows.Err())
 			assert.Equal(t, len(stored)*len(stored), pairs)
 
 			// A filter binds a value's canonical text (core.DecimalText).
-			rows, err = conn.QueryContext(t.Context(), `SELECT quote(a.x), quote(p.t),
+			paramRows, err := conn.QueryContext(t.Context(), `SELECT quote(a.x), quote(p.t),
 				parse_decimal(a.x) = p.t, parse_decimal_key(a.x) = parse_decimal_key(p.t)
 				FROM forms a, (SELECT DISTINCT parse_decimal(x) AS t FROM forms WHERE parse_decimal(x) IS NOT NULL) p`)
 			require.NoError(t, err)
-			for rows.Next() {
+			defer func() { require.NoError(t, paramRows.Close()) }()
+			for paramRows.Next() {
 				var a, p string
 				var byText, byKey *int64
-				require.NoError(t, rows.Scan(&a, &p, &byText, &byKey))
+				require.NoError(t, paramRows.Scan(&a, &p, &byText, &byKey))
 				assert.Equal(t, byText, byKey, "%s and the parameter %s", a, p)
 			}
-			require.NoError(t, rows.Err())
+			require.NoError(t, paramRows.Err())
 		})
 	}
 }

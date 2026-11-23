@@ -24,7 +24,8 @@ func storedCanonical(t core.FieldType) bool {
 
 // keyField is a key column, read as expr, typed t.
 func keyField(name, expr string, t core.TypeInfo) *FieldSchema {
-	return &FieldSchema{ExternalName: name, Column: name, Expr: expr, DataType: t.Type, NumberKind: t.NumberKind}
+	field := &FieldSchema{ExternalName: name, Column: name, Expr: expr, DataType: t.Type, NumberKind: t.NumberKind}
+	return field
 }
 
 // keyOperand is what a key column, read as field f, compares by: the
@@ -132,7 +133,8 @@ func newKeySet(table string, read func(column string) string, columns []string, 
 			normalized[i][j] = v
 		}
 	}
-	return keySetOn{table: table, fields: fields, keys: normalized}, nil
+	set := keySetOn{table: table, fields: fields, keys: normalized}
+	return set, nil
 }
 
 // row is the set's columns as compared (keyOperand): one column's operand,

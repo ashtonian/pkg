@@ -285,7 +285,8 @@ func NewResource[T any](table string, opts ...ResourceOption) (*Resource[T], err
 	for name, f := range fieldsByColumn {
 		columns[name] = f.Type
 	}
-	if err := checkKeyColumns(cfg.pk, columns, reflect.TypeFor[T]()); err != nil {
+	err = checkKeyColumns(cfg.pk, columns, reflect.TypeFor[T]())
+	if err != nil {
 		return nil, fmt.Errorf("parse: %s: %w", table, err)
 	}
 	for _, c := range []struct{ option, column string }{{"tenant", cfg.tenant}, {"deleted", cfg.deleted}} {
@@ -368,7 +369,8 @@ func NewResource[T any](table string, opts ...ResourceOption) (*Resource[T], err
 		if f.Relation != nil && f.RelatedBy == nil {
 			owner := f.Relation.OwnerColumns()
 			for _, c := range owner {
-				if _, ok := columns[c]; !ok {
+				_, ok := columns[c]
+				if !ok {
 					return nil, fmt.Errorf("parse: %s: relation %q correlates on %q, which is not a column of %s", table, f.ExternalName, c, reflect.TypeFor[T]())
 				}
 				if r.computed(c) {
@@ -621,7 +623,8 @@ func (r *Resource[T]) checkUnreadColumns(fields map[string]*filter.FieldSchema, 
 			if err := r.checkRelation(name, f.Relation, nil, f.Includable || f.Facetable); err != nil {
 				return err
 			}
-			if err := r.checkRelationKeys(name, f.Relation, nil); err != nil {
+			err := r.checkRelationKeys(name, f.Relation, nil)
+			if err != nil {
 				return err
 			}
 			continue
@@ -654,13 +657,15 @@ func (r *Resource[T]) checkRelation(name string, rs *core.RelationSchema, target
 		need = columnRead
 	}
 	for _, c := range rs.OwnerColumns() {
-		if err := r.admits(c, need); err != nil {
+		err := r.admits(c, need)
+		if err != nil {
 			return fmt.Errorf("parse: %s: relation %q: %w", r.table, name, err)
 		}
 	}
 	if target != nil && (rs.Kind == core.HasMany || rs.Kind == core.BelongsTo) {
 		for _, c := range rs.SourceColumns {
-			if err := target.admits(c, need); err != nil {
+			err := target.admits(c, need)
+			if err != nil {
 				return fmt.Errorf("parse: %s: relation %q: %w", r.table, name, err)
 			}
 		}

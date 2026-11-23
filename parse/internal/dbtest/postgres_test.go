@@ -94,8 +94,10 @@ func TestTimeout(t *testing.T) {
 func record(t *testing.T, f func(*recordingTB)) (r *recordingTB) {
 	r = &recordingTB{TB: t}
 	defer func() {
-		if p := recover(); p != nil {
-			if _, ok := p.(stopped); !ok {
+		p := recover()
+		if p != nil {
+			_, ok := p.(stopped)
+			if !ok {
 				panic(p)
 			}
 		}

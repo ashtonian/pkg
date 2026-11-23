@@ -448,7 +448,8 @@ func (a *Applier[T]) applyDocument(parsed *ParsedPatch, target T) (T, error) {
 			if err != nil {
 				return zero, err
 			}
-			if doc, err = run.apply(doc, []map[string]any{w}, []int{i}); err != nil {
+			doc, err = run.apply(doc, []map[string]any{w}, []int{i})
+			if err != nil {
 				return zero, err
 			}
 			i++
@@ -460,7 +461,8 @@ func (a *Applier[T]) applyDocument(parsed *ParsedPatch, target T) (T, error) {
 			if current, ok := pointerValue(doc, op.Path); !ok || current == nil {
 				steps = append([]map[string]any{addOp(op.Path, []any{})}, steps...)
 			}
-			if doc, err = run.apply(doc, steps, slices.Repeat([]int{i}, len(steps))); err != nil {
+			doc, err = run.apply(doc, steps, slices.Repeat([]int{i}, len(steps)))
+			if err != nil {
 				return zero, err
 			}
 			i++
@@ -479,7 +481,8 @@ func (a *Applier[T]) applyDocument(parsed *ParsedPatch, target T) (T, error) {
 				indexes = append(indexes, j)
 				j++
 			}
-			if doc, err = run.apply(doc, wire, indexes); err != nil {
+			doc, err = run.apply(doc, wire, indexes)
+			if err != nil {
 				return zero, err
 			}
 			i = j

@@ -22,7 +22,10 @@ type Target struct {
 
 // ByID targets the row with key id, on a resource whose key is one column
 // (ByKey names a key of several).
-func ByID(id any) Target { return Target{keys: []Key{{id}}} }
+func ByID(id any) Target {
+	target := Target{keys: []Key{{id}}}
+	return target
+}
 
 // ByIDs targets the rows with these keys, on a resource whose key is one
 // column (ByKeys names keys of several).
@@ -31,11 +34,15 @@ func ByIDs(ids ...any) Target {
 	for i, id := range ids {
 		keys[i] = Key{id}
 	}
-	return Target{keys: keys}
+	target := Target{keys: keys}
+	return target
 }
 
 // ByKey targets the row with key k, a value per key column in key order.
-func ByKey(k Key) Target { return Target{keys: []Key{slices.Clone(k)}} }
+func ByKey(k Key) Target {
+	target := Target{keys: []Key{slices.Clone(k)}}
+	return target
+}
 
 // ByKeys targets the rows with these keys, each a value per key column in
 // key order.
@@ -44,7 +51,8 @@ func ByKeys(ks ...Key) Target {
 	for i, k := range ks {
 		keys[i] = slices.Clone(k)
 	}
-	return Target{keys: keys}
+	target := Target{keys: keys}
+	return target
 }
 
 // ByFilter targets the rows a filter matches.
@@ -278,7 +286,8 @@ func (r *Resource[T]) BuildUpdate(d Dialect, p *patch.ParsedPatch, target Target
 			plan.Current = &Statement{SQL: "SELECT " + columns + " FROM " + d.QuoteIdent(r.table) + " WHERE " + current + d.RowLock(), Args: currentArgs}
 		}
 		if set.Precondition != "" {
-			if plan.Conflict, err = r.conflictStatement(d, target, scope, set.Preconditions); err != nil {
+			plan.Conflict, err = r.conflictStatement(d, target, scope, set.Preconditions)
+			if err != nil {
 				return nil, err
 			}
 			plan.preconditions = set.Preconditions
@@ -314,7 +323,8 @@ func (r *Resource[T]) conflictStatement(d Dialect, target Target, scope updateSc
 	if err != nil {
 		return nil, err
 	}
-	return &Statement{SQL: "SELECT " + firstUnmet + " FROM " + d.QuoteIdent(r.table) + " WHERE " + where + " AND NOT " + all + " LIMIT 1", Args: args}, nil
+	stmt := &Statement{SQL: "SELECT " + firstUnmet + " FROM " + d.QuoteIdent(r.table) + " WHERE " + where + " AND NOT " + all + " LIMIT 1", Args: args}
+	return stmt, nil
 }
 
 // UpdateResult is what an executor reports for an update it ran: the target

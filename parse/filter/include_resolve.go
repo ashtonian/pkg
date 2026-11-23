@@ -45,7 +45,8 @@ func ResolveInclude(ctx context.Context, field *FieldSchema, ownerKeys []core.Ke
 	if cfg.scope.row.column != "" {
 		return IncludeRows{}, fmt.Errorf("resolving include %s: a lookup reads one tenant's rows; resolve each tenant's owners with RelationScope.Tenant instead of RowTenant", field.ExternalName)
 	}
-	if err := checkResolvable(field); err != nil {
+	err = checkResolvable(field)
+	if err != nil {
 		return IncludeRows{}, err
 	}
 	rel := field.Relation
@@ -93,7 +94,8 @@ func ResolveInclude(ctx context.Context, field *FieldSchema, ownerKeys []core.Ke
 	// Column by column, as the statement ranks a key of several.
 	compare := func(a, b core.Key) int {
 		for i, order := range orders {
-			if c := CompareKeyValues(order, a[i], b[i]); c != 0 {
+			c := CompareKeyValues(order, a[i], b[i])
+			if c != 0 {
 				return c
 			}
 		}
@@ -121,7 +123,8 @@ func ResolveInclude(ctx context.Context, field *FieldSchema, ownerKeys []core.Ke
 			return IncludeRows{}, fmt.Errorf("resolving include %s target: %w", field.ExternalName, err)
 		}
 		for i, t := range rel.TargetTypes {
-			if target[i], err = core.NormalizeScalar(t.Type, t.NumberKind, target[i]); err != nil {
+			target[i], err = core.NormalizeScalar(t.Type, t.NumberKind, target[i])
+			if err != nil {
 				return IncludeRows{}, fmt.Errorf("resolving include %s target: %w", field.ExternalName, err)
 			}
 		}
@@ -145,7 +148,8 @@ func ResolveInclude(ctx context.Context, field *FieldSchema, ownerKeys []core.Ke
 		}
 		ids := make([]string, len(keys))
 		for i, k := range keys {
-			if ids[i], err = core.KeyTextOf(rel.TargetTypes, k); err != nil {
+			ids[i], err = core.KeyTextOf(rel.TargetTypes, k)
+			if err != nil {
 				return IncludeRows{}, fmt.Errorf("resolving include %s target: %w", field.ExternalName, err)
 			}
 		}
@@ -173,7 +177,8 @@ func ownersIn(columns []string, keys []core.Key) *LookupCond {
 // each as normalization reads it (projectedValue).
 func pairKey(v any, n int) (core.Key, error) {
 	if n == 1 {
-		return core.Key{projectedValue(v)}, nil
+		key := core.Key{projectedValue(v)}
+		return key, nil
 	}
 	var k []any
 	switch kv := v.(type) {

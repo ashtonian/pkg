@@ -299,7 +299,8 @@ func includeConfig(field *FieldSchema, opts ...IncludeQueryOption) (*includeQuer
 	if field.Relation.Policy && field.Related == nil {
 		return nil, fmt.Errorf("policy-scoped relation has no target schema")
 	}
-	if err := field.Relation.Check(); err != nil {
+	err := field.Relation.Check()
+	if err != nil {
 		return nil, fmt.Errorf("field %q: %w", field.ExternalName, err)
 	}
 	if len(field.RelatedBy) != len(field.Relation.SourceColumns) {

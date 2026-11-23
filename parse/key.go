@@ -47,7 +47,8 @@ func (r *Resource[T]) keyColumns() keyColumns {
 // which reads a network value's canonical text.
 func (r *Resource[T]) columnTypeInfo(column string) core.TypeInfo {
 	info := core.TypeOf(r.tableColumns[column])
-	if t, ok := r.sqlTypes[column]; ok {
+	t, ok := r.sqlTypes[column]
+	if ok {
 		info.SQLType = t
 	}
 	return info
@@ -112,7 +113,8 @@ func (kc keyColumns) identity(key Key) (any, error) {
 // false before true.
 func (kc keyColumns) compare(a, b Key) int {
 	for i, info := range kc.types {
-		if c := filter.CompareKeyValues(filter.CursorKey{DataType: info.Type, NumberKind: info.NumberKind}, a[i], b[i]); c != 0 {
+		c := filter.CompareKeyValues(filter.CursorKey{DataType: info.Type, NumberKind: info.NumberKind}, a[i], b[i])
+		if c != 0 {
 			return c
 		}
 	}
@@ -144,7 +146,8 @@ func checkKeyColumns(key []string, columns map[string]reflect.Type, model reflec
 		if !ok {
 			return fmt.Errorf("key column %q is not a column of %s", column, model)
 		}
-		if info := core.TypeOf(t); !core.IsKeyType(info.Type) {
+		info := core.TypeOf(t)
+		if !core.IsKeyType(info.Type) {
 			return fmt.Errorf("key column %q is %s; a key column is a scalar", column, info.Type)
 		}
 	}

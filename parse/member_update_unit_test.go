@@ -79,7 +79,8 @@ func TestParsePatch_TypedDocumentMembers(t *testing.T) {
 	r, err := parse.NewResource[typedGadget]("typed_gadgets", parse.CustomizeSchemas(func(s parse.Schemas) error {
 		ops := []patch.PatchOp{patch.PatchOpAdd, patch.PatchOpReplace, patch.PatchOpRemove}
 		for path, column := range map[string]string{"/spec/**": "spec", "/sizes/*": "sizes"} {
-			if err := s.Patch.AddPath(path, &patch.PathSchema{AllowedOps: ops, DataType: core.FieldTypeAny, SQLColumn: column}); err != nil {
+			err := s.Patch.AddPath(path, &patch.PathSchema{AllowedOps: ops, DataType: core.FieldTypeAny, SQLColumn: column})
+			if err != nil {
 				return err
 			}
 		}

@@ -99,7 +99,8 @@ func TestBuildIncludeQuery_NoTenantBound_FailsClosed(t *testing.T) {
 		t.Fatalf("generate: %v", err)
 	}
 	withOwnerKeys(schema)
-	if _, buildErr := filter.BuildIncludeQuery(schema.Fields["tags"], filter.PostgresDialect{}, []core.Key{{"w1"}}); buildErr == nil {
+	_, buildErr := filter.BuildIncludeQuery(schema.Fields["tags"], filter.PostgresDialect{}, []core.Key{{"w1"}})
+	if buildErr == nil {
 		t.Fatal("expected a tenant-scoped error")
 	}
 	q, err := filter.BuildIncludeQuery(schema.Fields["tags"], filter.PostgresDialect{}, []core.Key{{"w1"}}, filter.WithIncludeRelationScope(filter.RelationScope{Unscoped: true}))

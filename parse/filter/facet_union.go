@@ -156,7 +156,8 @@ func buildFacetQuery(schema *ResourceSchema, dialect Dialect, filterWhere string
 		}
 		var owner []string
 		if f.Relation != nil {
-			if err := f.Relation.Check(); err != nil {
+			err := f.Relation.Check()
+			if err != nil {
 				return FacetQuery{}, fmt.Errorf("BuildFacetQuery: facet %q: %w", req.Field, err)
 			}
 			key := f.Relation.OwnerColumns()

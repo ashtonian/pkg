@@ -22,37 +22,44 @@ type keyedMaps struct {
 }
 
 func keyedMapsRow() keyedMaps {
-	return keyedMaps{
+	row := keyedMaps{
 		ID:     1,
 		ByInt:  map[int]int{1: 10, 5: 50},
 		ByUint: map[uint8]string{7: "seven"},
 		ByAddr: map[netip.Addr]int{netip.MustParseAddr("::1"): 1, netip.MustParseAddr("192.0.2.1"): 2},
 	}
+	return row
 }
 
 // keyedMapMerges are merge patches that name keys as encoding/json reads
 // them, in spellings it writes and spellings it only reads ("01", the long
 // form of ::1).
-var keyedMapMerges = []struct{ name, body string }{
-	{"integer keys added and replaced", `{"by_int":{"2":20,"-3":-30,"5":55}}`},
-	{"a non-canonical integer names its key", `{"by_int":{"01":11}}`},
-	{"null deletes an integer key", `{"by_int":{"1":null,"9":90}}`},
-	{"unsigned keys up to the type's range", `{"by_uint":{"7":"SEVEN","255":"max","0":"zero"}}`},
-	{"text-method keys", `{"by_addr":{"192.0.2.9":9,"192.0.2.1":null}}`},
-	{"a text-method key in another spelling names its key", `{"by_addr":{"0:0:0:0:0:0:0:1":100}}`},
-	{"every map at once", `{"by_int":{"5":null},"by_uint":{"8":"eight"},"by_addr":{"::1":null}}`},
+func keyedMapMerges() []struct{ name, body string } {
+	cases := []struct{ name, body string }{
+		{"integer keys added and replaced", `{"by_int":{"2":20,"-3":-30,"5":55}}`},
+		{"a non-canonical integer names its key", `{"by_int":{"01":11}}`},
+		{"null deletes an integer key", `{"by_int":{"1":null,"9":90}}`},
+		{"unsigned keys up to the type's range", `{"by_uint":{"7":"SEVEN","255":"max","0":"zero"}}`},
+		{"text-method keys", `{"by_addr":{"192.0.2.9":9,"192.0.2.1":null}}`},
+		{"a text-method key in another spelling names its key", `{"by_addr":{"0:0:0:0:0:0:0:1":100}}`},
+		{"every map at once", `{"by_int":{"5":null},"by_uint":{"8":"eight"},"by_addr":{"::1":null}}`},
+	}
+	return cases
 }
 
 // keyedMapRefusals name a member no key of the map's type decodes from, or
 // two members that decode to one key.
-var keyedMapRefusals = []struct{ name, body string }{
-	{"not an integer", `{"by_int":{"x":1}}`},
-	{"an integer in exponent form", `{"by_int":{"1e2":1}}`},
-	{"past the unsigned range", `{"by_uint":{"256":"x"}}`},
-	{"a negative unsigned key", `{"by_uint":{"-1":"x"}}`},
-	{"not an address", `{"by_addr":{"host.example":1}}`},
-	{"two spellings of one integer key", `{"by_int":{"01":1,"1":2}}`},
-	{"two spellings of one address", `{"by_addr":{"::1":1,"0:0:0:0:0:0:0:1":2}}`},
+func keyedMapRefusals() []struct{ name, body string } {
+	cases := []struct{ name, body string }{
+		{"not an integer", `{"by_int":{"x":1}}`},
+		{"an integer in exponent form", `{"by_int":{"1e2":1}}`},
+		{"past the unsigned range", `{"by_uint":{"256":"x"}}`},
+		{"a negative unsigned key", `{"by_uint":{"-1":"x"}}`},
+		{"not an address", `{"by_addr":{"host.example":1}}`},
+		{"two spellings of one integer key", `{"by_int":{"01":1,"1":2}}`},
+		{"two spellings of one address", `{"by_addr":{"::1":1,"0:0:0:0:0:0:0:1":2}}`},
+	}
+	return cases
 }
 
 // mergedByEncodingJSON is what a merge patch body makes of row by

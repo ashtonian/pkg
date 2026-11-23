@@ -196,12 +196,14 @@ func (p *Parser) validateOperation(raw RawPatchOp, i int) (*PatchOperation, erro
 	}
 
 	if depth > 1 {
-		if err := checkDocumentMember(p.schema, op, raw.Path, value); err != nil {
-			return nil, &core.ParseError{
+		err := checkDocumentMember(p.schema, op, raw.Path, value)
+		if err != nil {
+			invalid := &core.ParseError{
 				Kind: core.ParseErrorKindPatch, Code: ECodePatchValueInvalid.String(),
 				Message: fmt.Sprintf("invalid member '%s' at index %d: %v", raw.Path, i, err),
 				Path:    raw.Path, Index: new(i), Cause: err,
 			}
+			return nil, invalid
 		}
 	}
 

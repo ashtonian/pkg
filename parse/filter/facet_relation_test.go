@@ -14,7 +14,10 @@ import (
 )
 
 // textKey types a relation column holding a string key.
-var textKey = []core.TypeInfo{{Type: core.FieldTypeString}}
+func textKey() []core.TypeInfo {
+	types := []core.TypeInfo{{Type: core.FieldTypeString}}
+	return types
+}
 
 // facetSchemaWithRelation extends facetSchema with a M2M relation field.
 // The relation is tenant-scoped so we can verify the predicate emission.
@@ -32,8 +35,8 @@ func facetSchemaWithRelation() *filter.ResourceSchema {
 			TargetColumns: []string{"tag_id"},
 			OwnerKey:      []string{"id"},
 			TenantColumn:  "tenant_id",
-			SourceTypes:   textKey,
-			TargetTypes:   textKey,
+			SourceTypes:   textKey(),
+			TargetTypes:   textKey(),
 		},
 	}
 	return rs
@@ -190,11 +193,11 @@ func TestBuildFacetQuery_RelationFacets_OwnKeyEach(t *testing.T) {
 		Fields: map[string]*filter.FieldSchema{
 			"tags": {
 				ExternalName: "tags", DataType: core.FieldTypeString, Facetable: true,
-				Relation: &core.RelationSchema{JoinTable: "doc_tags", SourceColumns: []string{"doc_id"}, TargetColumns: []string{"tag"}, OwnerKey: []string{"id"}, SourceTypes: textKey, TargetTypes: textKey},
+				Relation: &core.RelationSchema{JoinTable: "doc_tags", SourceColumns: []string{"doc_id"}, TargetColumns: []string{"tag"}, OwnerKey: []string{"id"}, SourceTypes: textKey(), TargetTypes: textKey()},
 			},
 			"labels": {
 				ExternalName: "labels", DataType: core.FieldTypeString, Facetable: true,
-				Relation: &core.RelationSchema{JoinTable: "doc_labels", SourceColumns: []string{"doc_code"}, TargetColumns: []string{"label"}, OwnerKey: []string{"code"}, SourceTypes: textKey, TargetTypes: textKey},
+				Relation: &core.RelationSchema{JoinTable: "doc_labels", SourceColumns: []string{"doc_code"}, TargetColumns: []string{"label"}, OwnerKey: []string{"code"}, SourceTypes: textKey(), TargetTypes: textKey()},
 			},
 		},
 	}
@@ -243,7 +246,7 @@ func TestBuildFacetQuery_RelationFacet_TargetKeyOfSeveralColumns(t *testing.T) {
 				FacetSchema: &filter.FacetSchema{Type: filter.FacetTerms, Limit: 10},
 				Relation: &core.RelationSchema{
 					JoinTable: "stock_tags", SourceColumns: []string{"tag_id"}, TargetColumns: []string{"warehouse_id", "sku"},
-					OwnerKey: []string{"id"}, SourceTypes: textKey, TargetTypes: []core.TypeInfo{{Type: core.FieldTypeString}, {Type: core.FieldTypeString}},
+					OwnerKey: []string{"id"}, SourceTypes: textKey(), TargetTypes: []core.TypeInfo{{Type: core.FieldTypeString}, {Type: core.FieldTypeString}},
 				},
 			},
 		},
@@ -277,16 +280,17 @@ func TestBuildFacetQuery_RelationFacet_TargetKeyOfSeveralColumns(t *testing.T) {
 		// (1,b) and (2,a).
 		`INSERT INTO stock_tags VALUES ('red', 1, 'a'), ('blue', 1, 'a'), ('red', 1, 'b'), ('blue', 2, 'a')`,
 	} {
-		_, err := db.Exec(stmt)
+		_, err := db.ExecContext(t.Context(), stmt)
 		require.NoError(t, err, stmt)
 	}
 	q, err := build(filter.SQLiteDialect{})
 	require.NoError(t, err)
-	rows, err := db.Query(q.SQL, q.Args...)
+	rows, err := db.QueryContext(t.Context(), q.SQL, q.Args...)
 	require.NoError(t, err, q.SQL)
 	defer func() { require.NoError(t, rows.Close()) }()
 	results, err := filter.ScanFacetUnion(rows)
 	require.NoError(t, err)
+	require.NoError(t, rows.Err())
 	assert.Equal(t, []filter.FacetBucket{{Key: `["1","a"]`, Count: 2}, {Key: `["1","b"]`, Count: 1}, {Key: `["2","a"]`, Count: 1}},
 		indexFacets(results)["stock"])
 }

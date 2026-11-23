@@ -126,10 +126,12 @@ func (s *ResourceSchema) RequestFields() iter.Seq2[string, *FieldSchema] {
 			}
 		}
 		for _, column := range s.PrimaryKey {
-			if _, shadowed := s.Fields[column]; shadowed || column == "" {
+			_, shadowed := s.Fields[column]
+			if shadowed || column == "" {
 				continue
 			}
-			if key, ok := s.SystemFields[column]; ok && !yield(column, key) {
+			key, ok := s.SystemFields[column]
+			if ok && !yield(column, key) {
 				return
 			}
 		}

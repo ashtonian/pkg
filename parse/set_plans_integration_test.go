@@ -193,7 +193,7 @@ func TestSetPlans_SQLiteDecimalKeyIndex(t *testing.T) {
 		"CREATE INDEX " + index + " ON " + table + " (parse_decimal_key(amount), id)",
 		"ANALYZE",
 	} {
-		_, err := db.Exec(stmt)
+		_, err := db.ExecContext(t.Context(), stmt)
 		require.NoError(t, err, stmt)
 	}
 	lq, err := filter.NewListQuery(schema, sorts, filter.SQLiteDialect{})
@@ -203,9 +203,9 @@ func TestSetPlans_SQLiteDecimalKeyIndex(t *testing.T) {
 		t.Helper()
 		res, err := lq.Build(opts...)
 		require.NoError(t, err)
-		rows, err := db.Query("EXPLAIN QUERY PLAN SELECT id FROM "+table+" "+res.Fragment, res.Args...)
+		rows, err := db.QueryContext(t.Context(), "EXPLAIN QUERY PLAN SELECT id FROM "+table+" "+res.Fragment, res.Args...)
 		require.NoError(t, err)
-		defer rows.Close()
+		defer func() { require.NoError(t, rows.Close()) }()
 		var lines []string
 		for rows.Next() {
 			var id, parent, unused int

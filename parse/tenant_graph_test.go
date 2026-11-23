@@ -305,7 +305,8 @@ func TestBuildUpdateBatch_RefusesAnInvalidTenantBeforeItsRows(t *testing.T) {
 	duplicate := func() []parse.RowUpdate {
 		p, err := devices.ParseMergePatch([]byte(`{"name":"renamed"}`))
 		require.NoError(t, err)
-		return []parse.RowUpdate{{Key: parse.Key{1}, Patch: p}, {Key: parse.Key{1}, Patch: p}}
+		rows := []parse.RowUpdate{{Key: parse.Key{1}, Patch: p}, {Key: parse.Key{1}, Patch: p}}
+		return rows
 	}
 	tests := []struct {
 		name string

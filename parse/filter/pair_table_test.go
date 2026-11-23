@@ -76,7 +76,7 @@ func TestPairTable_KeyOfSeveralColumns(t *testing.T) {
 
 	compared := &filter.FilterAST{Root: &filter.FilterNode{Field: field, Op: filter.OpEq, Value: "1/a"}}
 	_, err = filter.NewSQLBuilder(schema, filter.PostgresDialect{}).Build(compared)
-	assert.ErrorContains(t, err, "relation 'stock' compares a key of several columns, which $eq cannot name; it takes $null")
+	require.ErrorContains(t, err, "relation 'stock' compares a key of several columns, which $eq cannot name; it takes $null")
 	_, err = filter.ResolveMemberships(context.Background(), filter.NewParsedFilter(compared), noLookup{})
 	assert.ErrorContains(t, err, "relation 'stock' compares a key of several columns, which $eq cannot name; it takes $null")
 }

@@ -6,6 +6,7 @@ import (
 	"database/sql"
 	"fmt"
 	"net/url"
+	"slices"
 	"testing"
 	"time"
 
@@ -75,7 +76,7 @@ func ktResources(t *testing.T) ktGraph {
 		alerts:   parse.MustResource[ktAlert]("kt_alerts"),
 	}
 	all := []parse.RelationOption{parse.Indexed(), parse.Includable(), parse.Facetable()}
-	writable := append(all, parse.Writable())
+	writable := slices.Concat(all, []parse.RelationOption{parse.Writable()})
 	reading := []string{"device_id", "at"}
 	require.NoError(t, g.prices.Relate("notes", parse.HasMany(g.notes, "price_id", all...)))
 	require.NoError(t, g.prices.Relate("tags", parse.ManyToMany(g.tags, parse.Through("kt_price_tags", "price_id", "tag_id"), writable...)))
@@ -90,11 +91,12 @@ func ktResources(t *testing.T) ktGraph {
 	return g
 }
 
-var (
-	ktT0 = time.Date(2026, time.January, 2, 3, 4, 5, 123456000, time.UTC)
-	ktT1 = ktT0.Add(time.Microsecond)
-	ktT2 = ktT0.Add(time.Second)
-)
+// ktInstants are the instants the fixture keys rows by: t1 a microsecond,
+// PostgreSQL's precision, after t0, and t2 a second after it.
+func ktInstants() (t0, t1, t2 time.Time) {
+	t0 = time.Date(2026, time.January, 2, 3, 4, 5, 123456000, time.UTC)
+	return t0, t0.Add(time.Microsecond), t0.Add(time.Second)
+}
 
 // ktText is a timestamp as a key's text names it (core.KeyTextOf).
 func ktText(at time.Time) string { return core.FormatTimestamp(at) }
@@ -111,6 +113,7 @@ func ktReadingText(device string, at time.Time) string {
 // backend stores them (Dialect.MarshalValue); t1 is t0 and a microsecond.
 func ktFixture(t *testing.T, db *sql.DB, d filter.Dialect) {
 	t.Helper()
+	ktT0, ktT1, ktT2 := ktInstants()
 	price, scaled, at := "TEXT", "TEXT", "TEXT"
 	if isPostgres(d) {
 		price, scaled, at = "NUMERIC(30,2)", "NUMERIC", "TIMESTAMPTZ"
@@ -167,6 +170,7 @@ func TestKeyTypes_Postgres(t *testing.T) {
 }
 
 func testKeyTypes(t *testing.T, open func(*testing.T) *sql.DB, d filter.Dialect) {
+	ktT0, ktT1, ktT2 := ktInstants()
 	g := ktResources(t)
 	setup := func(t *testing.T) *sql.DB {
 		t.Helper()
@@ -273,9 +277,10 @@ func testKeyTypes(t *testing.T, open func(*testing.T) *sql.DB, d filter.Dialect)
 
 	t.Run("memberships", func(t *testing.T) {
 		member := func(field, table, project string) parse.Scope {
-			return parse.Scope{Policy: &filter.PolicyConstraints{Constraints: []*filter.PolicyConstraint{
+			scope := parse.Scope{Policy: &filter.PolicyConstraints{Constraints: []*filter.PolicyConstraint{
 				{Field: field, Member: &filter.Lookup{Table: table, Project: project}},
 			}}}
+			return scope
 		}
 		assert.Equal(t, []string{"1.5", "12345678901234567890"}, ktKeys(t, db, d, g.prices, member("id", "kt_allowed_prices", "price_id"), ktPriceKey))
 		assert.Equal(t, []string{"d1/" + ktText(ktT1)}, ktKeys(t, db, d, g.readings, member("at", "kt_allowed_at", "at"), ktReadingKey))
@@ -326,7 +331,8 @@ func testKeyTypes(t *testing.T, open func(*testing.T) *sql.DB, d filter.Dialect)
 	t.Run("batch lock order", func(t *testing.T) {
 		db := setup(t)
 		rename := func(r parse.Key) parse.RowUpdate {
-			return parse.RowUpdate{Key: r, Patch: ktPatch(t, g.prices, `{"name":"n"}`)}
+			update := parse.RowUpdate{Key: r, Patch: ktPatch(t, g.prices, `{"name":"n"}`)}
+			return update
 		}
 		prices, err := g.prices.BuildUpdateBatch(d, []parse.RowUpdate{
 			rename(parse.Key{"12345678901234567891"}), rename(parse.Key{"2"}), rename(parse.Key{"12345678901234567890"}), rename(parse.Key{"1.50"}),
@@ -339,7 +345,8 @@ func testKeyTypes(t *testing.T, open func(*testing.T) *sql.DB, d filter.Dialect)
 		assert.Equal(t, want, ktCurrentKeys(t, db, chunk.Current, 1))
 
 		revalue := func(r parse.Key) parse.RowUpdate {
-			return parse.RowUpdate{Key: r, Patch: ktPatch(t, g.readings, `{"value":0}`)}
+			update := parse.RowUpdate{Key: r, Patch: ktPatch(t, g.readings, `{"value":0}`)}
+			return update
 		}
 		readings, err := g.readings.BuildUpdateBatch(d, []parse.RowUpdate{
 			revalue(parse.Key{"d2", ktT0}), revalue(parse.Key{"d1", t1Elsewhere}), revalue(parse.Key{"d1", ktT0}),
@@ -522,10 +529,12 @@ func ktPairValue(t *testing.T, v any) string {
 		v = string(x)
 	}
 	s := fmt.Sprint(v)
-	if d, err := decimal.NewFromString(s); err == nil {
+	d, err := decimal.NewFromString(s)
+	if err == nil {
 		return d.String()
 	}
-	if at, err := time.Parse(time.RFC3339Nano, s); err == nil {
+	at, err := time.Parse(time.RFC3339Nano, s)
+	if err == nil {
 		return ktText(at)
 	}
 	return s

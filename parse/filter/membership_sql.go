@@ -17,7 +17,8 @@ func (b *SQLBuilder) buildMember(s *buildState, node *FilterNode) (string, error
 	}
 	node = b.computed(node)
 	l := node.Member
-	if err := l.validateProjecting(1); err != nil {
+	err := l.validateProjecting(1)
+	if err != nil {
 		return "", err
 	}
 	t := core.TypeInfo{Type: node.Field.DataType, NumberKind: node.Field.NumberKind}
@@ -248,7 +249,8 @@ func lookupSet(c *LookupCond, expr string) (*FieldSchema, []any, error) {
 // values have: a lookup has no schema, so a comparison takes its type from
 // its value, and renders as a field of that type does.
 func lookupColumn(name, expr string, typ core.FieldType) *FieldSchema {
-	return &FieldSchema{ExternalName: name, Column: name, Expr: expr, DataType: typ}
+	field := &FieldSchema{ExternalName: name, Column: name, Expr: expr, DataType: typ}
+	return field
 }
 
 // isLookupDecimal reports a lookup value whose Go type is a decimal

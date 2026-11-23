@@ -250,14 +250,16 @@ func queryTargets[T any](ctx context.Context, db Querier, resource *parse.Resour
 			defer r.Close()
 			if r.Next() {
 				var op int64
-				if err := r.Scan(&op); err != nil {
+				err := r.Scan(&op)
+				if err != nil {
 					return wrap("conflict", err)
 				}
 				unmet = &op
 			}
 			return wrap("conflict", r.Err())
 		})
-		if err := db.SendBatch(ctx, b).Close(); err != nil {
+		err := db.SendBatch(ctx, b).Close()
+		if err != nil {
 			return nil, nil, err
 		}
 		if unmet != nil {

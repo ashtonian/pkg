@@ -59,7 +59,7 @@ func TestPrimaryKey_RefusesBadKeys(t *testing.T) {
 		Spec map[string]any `json:"spec" db:"spec"`
 	}
 	_, err := parse.NewResource[documentKeyed]("documents", parse.PrimaryKey("id", "spec"))
-	assert.ErrorContains(t, err, `key column "spec" is json; a key column is a scalar`)
+	require.ErrorContains(t, err, `key column "spec" is json; a key column is a scalar`)
 	_, err = parse.NewResource[stockRow]("stock_rows", parse.PrimaryKey("warehouse_id", "counted_at"))
 	require.NoError(t, err, "a timestamp is a key column")
 	r, err := parse.NewResource[stockRow]("stock_rows", parse.PrimaryKey("tenant_id", "sku"), parse.TenantColumn("tenant_id"))
@@ -125,13 +125,13 @@ func TestCompositeKey_UpdateTargets(t *testing.T) {
 func stockDB(t *testing.T) *sql.DB {
 	t.Helper()
 	db := dbtest.SQLite(t)
-	_, err := db.Exec(`CREATE TABLE stock_rows (warehouse_id TEXT NOT NULL, sku TEXT NOT NULL, tenant_id TEXT NOT NULL,
+	_, err := db.ExecContext(t.Context(), `CREATE TABLE stock_rows (warehouse_id TEXT NOT NULL, sku TEXT NOT NULL, tenant_id TEXT NOT NULL,
 		qty INTEGER NOT NULL, counted_at TEXT, deleted_at TEXT, PRIMARY KEY (warehouse_id, sku))`)
 	require.NoError(t, err)
 	// Every warehouse holds every SKU, so either column alone matches two
 	// rows and only the pair names one.
 	for _, row := range [][2]string{{"w1", "a"}, {"w1", "b"}, {"w2", "a"}, {"w2", "b"}} {
-		_, err := db.Exec(`INSERT INTO stock_rows (warehouse_id, sku, tenant_id, qty, counted_at) VALUES (?, ?, 't1', 0, '2026-01-02T03:04:05Z')`, row[0], row[1])
+		_, err := db.ExecContext(t.Context(), `INSERT INTO stock_rows (warehouse_id, sku, tenant_id, qty, counted_at) VALUES (?, ?, 't1', 0, '2026-01-02T03:04:05Z')`, row[0], row[1])
 		require.NoError(t, err)
 	}
 	return db
@@ -139,7 +139,7 @@ func stockDB(t *testing.T) *sql.DB {
 
 func stockQuantities(t *testing.T, db *sql.DB) map[string]int64 {
 	t.Helper()
-	rows, err := db.Query(`SELECT warehouse_id, sku, qty FROM stock_rows`)
+	rows, err := db.QueryContext(t.Context(), `SELECT warehouse_id, sku, qty FROM stock_rows`)
 	require.NoError(t, err)
 	defer func() { require.NoError(t, rows.Close()) }()
 	out := map[string]int64{}
@@ -192,8 +192,8 @@ func TestCompositeKey_UpdatesReachTheirRows(t *testing.T) {
 	assert.Len(t, res.Changed, 2)
 	assert.Equal(t, map[string]int64{"w1/a": 0, "w1/b": 7, "w2/a": 1, "w2/b": 0}, stockQuantities(t, db))
 
-	assert.NoError(t, batch.Chunks[0].CheckCurrent([]parse.Key{{"w2", "a"}, {"w1", "b"}}))
-	assert.ErrorIs(t, batch.Chunks[0].CheckCurrent([]parse.Key{{"w2", "b"}, {"w1", "a"}}), parse.ErrUpdateBatchTargets, "the columns of two keys crossed are neither")
+	require.NoError(t, batch.Chunks[0].CheckCurrent([]parse.Key{{"w2", "a"}, {"w1", "b"}}))
+	require.ErrorIs(t, batch.Chunks[0].CheckCurrent([]parse.Key{{"w2", "b"}, {"w1", "a"}}), parse.ErrUpdateBatchTargets, "the columns of two keys crossed are neither")
 	_, err = r.BuildUpdateBatch(d, []parse.RowUpdate{{Key: parse.Key{"w1", "b"}, Patch: one}, {Key: parse.Key{"w1", "b"}, Patch: seven}}, scope, parse.UpdateBatchLimits{})
 	assert.ErrorContains(t, err, "update batch row 1 key: duplicate key")
 }

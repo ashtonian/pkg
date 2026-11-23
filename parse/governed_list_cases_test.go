@@ -430,7 +430,8 @@ func (m governedMemory) LookupValues(_ context.Context, l *filter.Lookup) ([]any
 	}
 	out := make([]any, len(rows))
 	for i, row := range rows {
-		if out[i], err = governedProject(l.Table, row, lookupColumns(l)); err != nil {
+		out[i], err = governedProject(l.Table, row, lookupColumns(l))
+		if err != nil {
 			return nil, err
 		}
 	}
@@ -470,7 +471,8 @@ func lookupColumns(l *filter.Lookup) []string {
 	if l.ProjectKey != nil {
 		return l.ProjectKey
 	}
-	return []string{l.Project}
+	columns := []string{l.Project}
+	return columns
 }
 
 // governedProject is a row's value of its one column, or a core.Key of a

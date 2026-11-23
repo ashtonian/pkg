@@ -124,7 +124,7 @@ func TestItemKey(t *testing.T) {
 			require.NotNil(t, got, "routed")
 			if tt.wantErr != nil {
 				require.ErrorIs(t, got.err, tt.wantErr)
-				assert.ErrorContains(t, got.err, tt.errColumn)
+				require.ErrorContains(t, got.err, tt.errColumn)
 				assert.Nil(t, got.key)
 				return
 			}

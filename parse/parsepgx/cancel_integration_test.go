@@ -42,7 +42,8 @@ func (c *catalog) observed(t *testing.T, maxConns int32) observed {
 		cfg.MaxConns = maxConns
 		cfg.ConnConfig.RuntimeParams["application_name"] = app
 	})
-	return observed{pool: pool, app: app}
+	o := observed{pool: pool, app: app}
+	return o
 }
 
 // await returns the pids of o's backends that match where, a condition on

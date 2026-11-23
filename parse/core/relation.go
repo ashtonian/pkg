@@ -96,7 +96,8 @@ const DefaultPrimaryKey = "id"
 // OwnerColumns are OwnerKey, or DefaultPrimaryKey alone when it is empty.
 func (r *RelationSchema) OwnerColumns() []string {
 	if len(r.OwnerKey) == 0 {
-		return []string{DefaultPrimaryKey}
+		defaultKey := []string{DefaultPrimaryKey}
+		return defaultKey
 	}
 	return r.OwnerKey
 }
@@ -133,7 +134,8 @@ func (r *RelationSchema) RelatedTable() string {
 // statement builder checks a relation before writing it, since the names
 // reach SQL verbatim and the types decide how it compares the columns.
 func (r *RelationSchema) Check() error {
-	if err := r.checkColumns(); err != nil {
+	err := r.checkColumns()
+	if err != nil {
 		return err
 	}
 	types := []struct {
@@ -261,7 +263,8 @@ func ParseRelationTag(tag string) (*RelationSchema, error) {
 			parts[1], strings.Join(rel.OwnerKey, "+"), len(rel.SourceColumns), len(rel.OwnerKey))
 	}
 	// The struct the tag is on types the columns (SchemaGenerator.RelationTag).
-	if err := rel.checkColumns(); err != nil {
+	err := rel.checkColumns()
+	if err != nil {
 		return nil, fmt.Errorf("relation tag: %w", err)
 	}
 	return rel, nil
@@ -288,7 +291,8 @@ func (g *SchemaGenerator) RelationTag(fields *StructFields, field *Field) (*Rela
 		if !ok {
 			return nil, fmt.Errorf("relation tag primary key %s is no column of %s; the field holding it types the key", column, fields.Type)
 		}
-		if rel.SourceTypes[i], err = g.FieldType(owner); err != nil {
+		rel.SourceTypes[i], err = g.FieldType(owner)
+		if err != nil {
 			return nil, fmt.Errorf("relation tag primary key %s: %w", column, err)
 		}
 	}
@@ -305,12 +309,14 @@ func (g *SchemaGenerator) RelationTag(fields *StructFields, field *Field) (*Rela
 		}
 		rel.TargetTypes = make([]TypeInfo, len(targets))
 		for i, target := range targets {
-			if rel.TargetTypes[i], err = g.FieldType(target); err != nil {
+			rel.TargetTypes[i], err = g.FieldType(target)
+			if err != nil {
 				return nil, fmt.Errorf("relation tag target column %s: %w", rel.TargetColumns[i], err)
 			}
 		}
 	}
-	if err := rel.Check(); err != nil {
+	err = rel.Check()
+	if err != nil {
 		return nil, fmt.Errorf("relation tag: %w", err)
 	}
 	return rel, nil

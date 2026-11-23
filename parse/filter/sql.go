@@ -795,7 +795,8 @@ func (b *SQLBuilder) computed(n *FilterNode) *FilterNode {
 func (b *SQLBuilder) buildPairTable(s *buildState, node *FilterNode) (string, error) {
 	f := node.Field
 	rel := f.Relation
-	if err := checkPairKeyOp(f, node.Op); err != nil {
+	err := checkPairKeyOp(f, node.Op)
+	if err != nil {
 		return "", err
 	}
 	op, cond := OpSome, node.Op

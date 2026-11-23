@@ -58,7 +58,8 @@ func keyNode(norm *FilterParser, schema *ResourceSchema, c *PolicyConstraint) (*
 		if !ok {
 			return nil, fmt.Errorf("%w: field %q is not a field of %s", ErrPolicyInvalid, name, schema.Name)
 		}
-		if err := keySetField(field, c.Operator); err != nil {
+		err = keySetField(field, c.Operator)
+		if err != nil {
 			return nil, policyFault(name, err)
 		}
 		if i > 0 && field.Table != fields[0].Table {
@@ -95,7 +96,8 @@ func keyNode(norm *FilterParser, schema *ResourceSchema, c *PolicyConstraint) (*
 		node = &FilterNode{Op: OpKeyIn, Keys: &KeySet{Table: fields[0].Table, Fields: fields, Keys: normalized}}
 	}
 	if c.Negate {
-		return &FilterNode{Op: OpNot, Children: []*FilterNode{node}}, nil
+		negated := &FilterNode{Op: OpNot, Children: []*FilterNode{node}}
+		return negated, nil
 	}
 	return node, nil
 }
@@ -151,7 +153,8 @@ func (ks *KeySet) expand() *FilterNode {
 		}
 		branches[i] = &FilterNode{Op: OpAnd, Children: terms}
 	}
-	return &FilterNode{Op: OpOr, Children: branches}
+	disjunction := &FilterNode{Op: OpOr, Children: branches}
+	return disjunction
 }
 
 // buildKeySet compiles an OpKeyIn node: the row value of its columns IN the

@@ -79,7 +79,8 @@ type KeyColumns interface{ ~string | ~[]string }
 func columnNames[K KeyColumns](columns K) []string {
 	v := reflect.ValueOf(columns)
 	if v.Kind() == reflect.String {
-		return []string{v.String()}
+		names := []string{v.String()}
+		return names
 	}
 	out := make([]string, v.Len())
 	for i := range out {
@@ -101,7 +102,8 @@ type Junction struct {
 // columns: a column each for one-column keys, a list in key order for a
 // key of several.
 func Through[S, T KeyColumns](table string, source S, target T) Junction {
-	return Junction{Table: table, Source: columnNames(source), Target: columnNames(target)}
+	junction := Junction{Table: table, Source: columnNames(source), Target: columnNames(target)}
+	return junction
 }
 
 // HasMany relates each owner to the target rows whose foreignKey holds the
@@ -214,7 +216,8 @@ func (r *Resource[T]) Relate(name string, rel Relation) error {
 	if err != nil {
 		return err
 	}
-	if err := r.checkRelationKeys(name, rs, rel.target); err != nil {
+	err = r.checkRelationKeys(name, rs, rel.target)
+	if err != nil {
 		return err
 	}
 	// The source columns hold the owner's columns, the target columns the
@@ -227,7 +230,8 @@ func (r *Resource[T]) Relate(name string, rel Relation) error {
 	for i, c := range rel.target.PrimaryKeyColumns() {
 		rs.TargetTypes[i] = rel.target.columnTypeInfo(c)
 	}
-	if err := rs.Check(); err != nil {
+	err = rs.Check()
+	if err != nil {
 		return fmt.Errorf("parse: %s: relation %q: %w", r.table, name, err)
 	}
 	for _, c := range rs.OwnerColumns() {
@@ -276,7 +280,8 @@ func (r *Resource[T]) Relate(name string, rel Relation) error {
 	}
 	var membership *patch.PathSchema
 	if rel.writable {
-		if membership, err = patch.RelationPath(rs, keys...); err != nil {
+		membership, err = patch.RelationPath(rs, keys...)
+		if err != nil {
 			return fmt.Errorf("parse: %s: relation %q: %w", r.table, name, err)
 		}
 	}
@@ -397,7 +402,8 @@ func (r *Resource[T]) checkRelationKeys(name string, rs *core.RelationSchema, ta
 		if !c.ok {
 			return fmt.Errorf("parse: %s: relation %q: %q is not a column of %s", r.table, name, c.name, c.table)
 		}
-		if info := core.TypeOf(c.typ); !core.IsKeyType(info.Type) {
+		info := core.TypeOf(c.typ)
+		if !core.IsKeyType(info.Type) {
 			return fmt.Errorf("parse: %s: relation %q: %s.%s is %s; a relation correlates on scalar keys", r.table, name, c.table, c.name, info.Type)
 		}
 	}
@@ -455,7 +461,8 @@ func (r *Resource[T]) relationSchema(name string, rel Relation) (*core.RelationS
 		if len(local) == 0 {
 			local, held = slices.Clone(r.pk), r.table+"'s key"
 		}
-		if err := pairColumns("foreign key", rel.foreignKey, held, local); err != nil {
+		err := pairColumns("foreign key", rel.foreignKey, held, local)
+		if err != nil {
 			return nil, fail("%v", err)
 		}
 		for _, c := range local {
@@ -477,7 +484,8 @@ func (r *Resource[T]) relationSchema(name string, rel Relation) (*core.RelationS
 		if len(remote) == 0 {
 			remote, held = slices.Clone(targetKey), t.Table()+"'s key"
 		}
-		if err := pairColumns("foreign key", rel.foreignKey, held, remote); err != nil {
+		err := pairColumns("foreign key", rel.foreignKey, held, remote)
+		if err != nil {
 			return nil, fail("%v", err)
 		}
 		for _, c := range rel.foreignKey {
@@ -507,10 +515,12 @@ func (r *Resource[T]) relationSchema(name string, rel Relation) (*core.RelationS
 		if j.Tenant != "" && !core.IsIdentifier(j.Tenant) {
 			return nil, fail("pair tenant column %q is not an identifier", j.Tenant)
 		}
-		if err := pairColumns("pair table "+j.Table+"'s source", j.Source, r.table+"'s key", r.pk); err != nil {
+		err := pairColumns("pair table "+j.Table+"'s source", j.Source, r.table+"'s key", r.pk)
+		if err != nil {
 			return nil, fail("%v", err)
 		}
-		if err := pairColumns("pair table "+j.Table+"'s target", j.Target, t.Table()+"'s key", targetKey); err != nil {
+		err = pairColumns("pair table "+j.Table+"'s target", j.Target, t.Table()+"'s key", targetKey)
+		if err != nil {
 			return nil, fail("%v", err)
 		}
 		return &core.RelationSchema{

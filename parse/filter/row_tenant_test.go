@@ -30,7 +30,7 @@ func rowTenantSchemas(ownerType, relatedType core.FieldType) (*filter.ResourceSc
 	key := &filter.FieldSchema{ExternalName: "id", Table: "widgets", Column: "id", DataType: core.FieldTypeString}
 	rel := &filter.FieldSchema{
 		ExternalName: "notes", DataType: core.FieldTypeString, Includable: true,
-		Relation: &core.RelationSchema{Kind: core.HasMany, JoinTable: "notes", SourceColumns: []string{"widget_id"}, TargetColumns: []string{"id"}, OwnerKey: []string{"id"}, TenantColumn: "tenant_id", SourceTypes: textKey, TargetTypes: textKey},
+		Relation: &core.RelationSchema{Kind: core.HasMany, JoinTable: "notes", SourceColumns: []string{"widget_id"}, TargetColumns: []string{"id"}, OwnerKey: []string{"id"}, TenantColumn: "tenant_id", SourceTypes: textKey(), TargetTypes: textKey()},
 		Related:  notes, RelatedBy: []*filter.FieldSchema{key},
 	}
 	widgets := &filter.ResourceSchema{
@@ -40,7 +40,7 @@ func rowTenantSchemas(ownerType, relatedType core.FieldType) (*filter.ResourceSc
 			"notes": rel,
 			"tags": {
 				ExternalName: "tags", DataType: core.FieldTypeString,
-				Relation: &core.RelationSchema{JoinTable: "widget_tags", SourceColumns: []string{"widget_id"}, TargetColumns: []string{"tag_id"}, OwnerKey: []string{"id"}, TenantColumn: "tenant_id", SourceTypes: textKey, TargetTypes: textKey},
+				Relation: &core.RelationSchema{JoinTable: "widget_tags", SourceColumns: []string{"widget_id"}, TargetColumns: []string{"tag_id"}, OwnerKey: []string{"id"}, TenantColumn: "tenant_id", SourceTypes: textKey(), TargetTypes: textKey()},
 			},
 		},
 		SystemFields: map[string]*filter.FieldSchema{

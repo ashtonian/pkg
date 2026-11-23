@@ -84,11 +84,12 @@ func failedOperation(ops jsonpatch.Patch, doc []byte, opts *jsonpatch.ApplyOptio
 		}
 		doc = next
 	}
-	return &core.ParseError{
+	failed := &core.ParseError{
 		Kind: core.ParseErrorKindPatch, Code: ECodePatchValueInvalid.String(),
 		Message: fmt.Sprintf("applying operation %d: %v", index, cause),
 		Index:   new(index), Cause: cause,
 	}
+	return failed
 }
 
 func copyBudgetError(offset int, budget int64) error {

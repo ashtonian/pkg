@@ -42,7 +42,8 @@ func RenderPreconditions(d SQLDialect, pre []Precondition, bind func(any) string
 	var unmet strings.Builder
 	unmet.WriteString("CASE")
 	for i, p := range pre {
-		if conds[i], err = p.condition(d, bind); err != nil {
+		conds[i], err = p.condition(d, bind)
+		if err != nil {
 			return "", "", err
 		}
 		fmt.Fprintf(&unmet, " WHEN NOT %s THEN %d", conds[i], p.Op)
@@ -124,14 +125,16 @@ func checkMemberPath(schema *PatchSchema, op *PatchOperation) error {
 		return err
 	}
 	var t reflect.Type
-	if field, ok := schema.pathSet().resolve(core.FormatPointer(tokens[0])); ok {
+	field, ok := schema.pathSet().resolve(core.FormatPointer(tokens[0]))
+	if ok {
 		if !documentType(field.DataType) {
 			return notCompilable(op, fmt.Sprintf("%s is a member of a %s field, not of a JSON document", op.Path, field.DataType))
 		}
 		t = field.GoType
 	}
 	for _, token := range tokens[1:] {
-		if declared := derefType(t); declared != nil && customJSONType(declared) {
+		declared := derefType(t)
+		if declared != nil && customJSONType(declared) {
 			return notCompilable(op, fmt.Sprintf("%s is a member of %s, which decodes itself, so SQL cannot hold the stored document to it", op.Path, declared))
 		}
 		switch shapeOf(t) {
@@ -159,11 +162,12 @@ func documentType(t core.FieldType) bool {
 }
 
 func notCompilable(op *PatchOperation, why string) error {
-	return &core.ParseError{
+	err := &core.ParseError{
 		Kind: core.ParseErrorKindPatch, Code: ECodeOpNotSQLCompilable.String(),
 		Message: why + " — apply via ApplyValidatedPatch",
 		Path:    op.Path,
 	}
+	return err
 }
 
 type memberShape uint8
@@ -207,7 +211,8 @@ func memberType(t reflect.Type, name string) reflect.Type {
 	if t.Kind() == reflect.Map {
 		return t.Elem()
 	}
-	if f := jsonMember(t, name); f != nil {
+	f := jsonMember(t, name)
+	if f != nil {
 		return f.Type
 	}
 	return nil
@@ -271,11 +276,13 @@ func (b *setBuilder) documentExpr(col string, ops []*PatchOperation) (string, *P
 	}
 	for i, op := range ops {
 		f.overwritten = i < whole
-		if err := f.apply(op); err != nil {
+		err := f.apply(op)
+		if err != nil {
 			return "", nil, err
 		}
 	}
 	if !f.known {
+		storedDocument := &PathSchema{DataType: core.FieldTypeJSON, SQLType: core.SQLJSON}
 		return f.expr, storedDocument, nil
 	}
 	var value any
@@ -283,7 +290,8 @@ func (b *setBuilder) documentExpr(col string, ops []*PatchOperation) (string, *P
 	case f.folded:
 		value = f.doc
 	case f.base.Op == PatchOpRemove:
-		if value = f.base.Schema.clearedValue(); value == nil {
+		value = f.base.Schema.clearedValue()
+		if value == nil {
 			return "NULL", f.base.Schema, nil
 		}
 	default:
@@ -295,9 +303,6 @@ func (b *setBuilder) documentExpr(col string, ops []*PatchOperation) (string, *P
 	}
 	return f.b.bind(val), f.base.Schema, nil
 }
-
-// storedDocument is the schema a stored document's fold compares as.
-var storedDocument = &PathSchema{DataType: core.FieldTypeJSON, SQLType: core.SQLJSON}
 
 func (f *documentFold) apply(op *PatchOperation) error {
 	member := memberTokens(op)
@@ -323,7 +328,8 @@ func (f *documentFold) apply(op *PatchOperation) error {
 	var value any
 	if op.Op != PatchOpRemove {
 		var err error
-		if value, err = documentOf(op.Value); err != nil {
+		value, err = documentOf(op.Value)
+		if err != nil {
 			return fmt.Errorf("%s for %s: %w", op.Op, op.Path, err)
 		}
 	}
@@ -335,11 +341,13 @@ func (f *documentFold) apply(op *PatchOperation) error {
 		f.doc, f.folded = doc, true
 		return nil
 	}
-	if err := f.require(op, member); err != nil {
+	err := f.require(op, member)
+	if err != nil {
 		return err
 	}
 	if !f.overwritten {
-		if err := f.compile(op.Op, member, value); err != nil {
+		err := f.compile(op.Op, member, value)
+		if err != nil {
 			return fmt.Errorf("%s for %s: %w", op.Op, op.Path, err)
 		}
 	}
@@ -360,7 +368,8 @@ func (f *documentFold) require(op *PatchOperation, member []string) error {
 		case memberAbsent:
 			return need.Err()
 		case memberPresent:
-			if _, object := v.(map[string]any); need.Exists || object {
+			_, object := v.(map[string]any)
+			if need.Exists || object {
 				return nil
 			}
 			return need.Err()
@@ -390,7 +399,8 @@ func (f *documentFold) lookup(member []string) (memberState, any) {
 		if fact.absent {
 			return memberAbsent, nil
 		}
-		if v, found := documentMember(fact.value, member[i:]); found {
+		v, found := documentMember(fact.value, member[i:])
+		if found {
 			return memberPresent, v
 		}
 		return memberAbsent, nil
@@ -404,7 +414,8 @@ func (f *documentFold) lookup(member []string) (memberState, any) {
 func (f *documentFold) record(op PatchOp, member []string, value any) {
 	for i := len(member) - 1; i > 0; i-- {
 		key := core.FormatPointer(member[:i]...)
-		if fact, ok := f.facts[key]; ok {
+		fact, ok := f.facts[key]
+		if ok {
 			fact.value, _ = applyMember(fact.value, op, member[i:], value)
 			f.facts[key] = fact
 			return
@@ -428,7 +439,8 @@ func (f *documentFold) compile(op PatchOp, member []string, value any) error {
 	var doc []byte
 	if op != PatchOpRemove {
 		var err error
-		if doc, err = json.Marshal(value); err != nil {
+		doc, err = json.Marshal(value)
+		if err != nil {
 			return err
 		}
 	}
@@ -464,10 +476,11 @@ func (p Precondition) Err() error {
 	if !p.Exists {
 		msg = fmt.Sprintf("operation %d: %s has no object to be added to", p.Op, p.Path)
 	}
-	return &core.ParseError{
+	err := &core.ParseError{
 		Kind: core.ParseErrorKindPatch, Code: ECodePatchValueInvalid.String(),
 		Message: msg, Path: p.Path, Index: new(p.Op),
 	}
+	return err
 }
 
 // applyMember applies op to member of doc, a document as encoding/json
@@ -484,7 +497,8 @@ func applyMember(doc any, op PatchOp, member []string, value any) (any, bool) {
 		return doc, false
 	}
 	key := member[len(member)-1]
-	if _, exists := obj[key]; !exists && op != PatchOpAdd {
+	_, exists := obj[key]
+	if !exists && op != PatchOpAdd {
 		return doc, false
 	}
 	if op == PatchOpRemove {
@@ -502,7 +516,8 @@ func documentMember(v any, tokens []string) (any, bool) {
 		if !ok {
 			return nil, false
 		}
-		if v, ok = obj[token]; !ok {
+		v, ok = obj[token]
+		if !ok {
 			return nil, false
 		}
 	}
@@ -517,7 +532,8 @@ func documentOf(v any) (any, error) {
 		return nil, err
 	}
 	var doc any
-	if err := decodeJSONDocument(raw, &doc); err != nil {
+	err = decodeJSONDocument(raw, &doc)
+	if err != nil {
 		return nil, err
 	}
 	return doc, nil

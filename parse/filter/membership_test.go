@@ -139,9 +139,9 @@ func TestMembership_SQLShapes(t *testing.T) {
 		"key set": {&Lookup{Table: "s.t", Project: "p", Where: WhereKeyIn([]string{"a", "b"}, core.Key{int64(1), "x"})}, false,
 			`"docs"."id" IN (SELECT "s"."t"."p" FROM "s"."t" WHERE ("s"."t"."a", "s"."t"."b") IN (SELECT "k"."a", "k"."b" FROM jsonb_populate_recordset(NULL::"s"."t", $1) AS "k"))`},
 		"key set of nothing": {&Lookup{Table: "t", Project: "p", Where: WhereKeyIn([]string{"a", "b"})}, false, `"docs"."id" IN (SELECT "t"."p" FROM "t" WHERE 1=0)`},
-		"typed member": {&Lookup{Table: "t", Project: "p", Where: WhereMember("a", &Lookup{Table: "u", Project: "x"}).typed(decimalType)}, false,
+		"typed member": {&Lookup{Table: "t", Project: "p", Where: WhereMember("a", &Lookup{Table: "u", Project: "x"}).typed(decimalType())}, false,
 			`"docs"."id" IN (SELECT "t"."p" FROM "t" WHERE "t"."a" IN (SELECT "u"."x" FROM "u"))`},
-		"typed in": {&Lookup{Table: "t", Project: "p", Where: WhereIn("a", "1.50").typed(decimalType)}, false,
+		"typed in": {&Lookup{Table: "t", Project: "p", Where: WhereIn("a", "1.50").typed(decimalType())}, false,
 			`"docs"."id" IN (SELECT "t"."p" FROM "t" WHERE "t"."a" = ANY($1::text[]::numeric[]))`},
 		"key member": {&Lookup{Table: "t", Project: "p", Where: WhereKeyMember([]string{"a", "b"}, &Lookup{Table: "u", ProjectKey: []string{"x", "y"}, Where: WhereEq("z", "q")})}, false,
 			`"docs"."id" IN (SELECT "t"."p" FROM "t" WHERE ("t"."a", "t"."b") IN (SELECT "u"."x", "u"."y" FROM "u" WHERE "u"."z" = $1))`},
@@ -154,15 +154,20 @@ func TestMembership_SQLShapes(t *testing.T) {
 	}
 }
 
-var (
-	stringType  = []core.TypeInfo{{Type: core.FieldTypeString}}
-	decimalType = []core.TypeInfo{{Type: core.FieldTypeDecimal}}
-)
+func stringType() []core.TypeInfo {
+	types := []core.TypeInfo{{Type: core.FieldTypeString}}
+	return types
+}
+
+func decimalType() []core.TypeInfo {
+	types := []core.TypeInfo{{Type: core.FieldTypeDecimal}}
+	return types
+}
 
 // On SQLite, which stores a decimal as text, a typed member compares both
 // sides by value.
 func TestMembership_TypedMemberComparesByValueOnSQLite(t *testing.T) {
-	l := &Lookup{Table: "t", Project: "p", Where: WhereMember("a", &Lookup{Table: "u", Project: "x"}).typed(decimalType)}
+	l := &Lookup{Table: "t", Project: "p", Where: WhereMember("a", &Lookup{Table: "u", Project: "x"}).typed(decimalType())}
 	res, err := NewSQLBuilder(memberSchema(), SQLiteDialect{}).Build(memberAST(t, "id", l, false))
 	require.NoError(t, err)
 	assert.Equal(t, `"docs"."id" IN (SELECT "t"."p" FROM "t" WHERE parse_decimal_key("t"."a") IN (SELECT parse_decimal_key("u"."x") FROM "u"))`, res.Where)
@@ -197,8 +202,8 @@ func TestMembership_RefusesMalformedLookups(t *testing.T) {
 		"columns on a column":     {"id", &Lookup{Table: "t", Project: "p", Where: &LookupCond{Column: "c", Columns: []string{"a", "b"}, Op: LookupOpEq, Value: 1}}},
 		"key member of a column":  {"id", &Lookup{Table: "t", Project: "p", Where: WhereKeyMember([]string{"a", "b"}, &Lookup{Table: "u", Project: "x"})}},
 		"key member of no lookup": {"id", &Lookup{Table: "t", Project: "p", Where: WhereKeyMember([]string{"a", "b"}, nil)}},
-		"types on a NULL test":    {"id", &Lookup{Table: "t", Project: "p", Where: WhereNull("c").typed(stringType)}},
-		"types of another width":  {"id", &Lookup{Table: "t", Project: "p", Where: WhereKeyIn([]string{"a", "b"}, core.Key{"x", "y"}).typed(stringType)}},
+		"types on a NULL test":    {"id", &Lookup{Table: "t", Project: "p", Where: WhereNull("c").typed(stringType())}},
+		"types of another width":  {"id", &Lookup{Table: "t", Project: "p", Where: WhereKeyIn([]string{"a", "b"}, core.Key{"x", "y"}).typed(stringType())}},
 		"typed as no scalar":      {"id", &Lookup{Table: "t", Project: "p", Where: WhereEq("c", "x").typed([]core.TypeInfo{{Type: core.FieldTypeObject}})}},
 		"value its type refuses":  {"id", &Lookup{Table: "t", Project: "p", Where: WhereIn("c", "x").typed([]core.TypeInfo{{Type: core.FieldTypeInt}})}},
 		"member of a key":         {"id", &Lookup{Table: "t", Project: "p", Where: WhereMember("a", &Lookup{Table: "u", ProjectKey: []string{"x", "y"}})}},
@@ -386,10 +391,10 @@ func TestMatchLookupRow(t *testing.T) {
 		"key set by value":         {WhereKeyIn([]string{"name", "price"}, core.Key{"a", dec("1.5")}), true},
 		"key set of nothing":       {WhereKeyIn([]string{"name", "price"}), false},
 		"key set, NULL column":     {WhereKeyIn([]string{"name", "ended"}, core.Key{"a", "x"}), false},
-		"typed text by value":      {WhereEq("price", "1.5").typed(decimalType), true},
-		"typed set by value":       {WhereIn("label", "2", "1.50").typed(decimalType), true},
-		"typed key set":            {WhereKeyIn([]string{"label", "name"}, core.Key{"1.50", "a"}).typed(append(decimalType, stringType...)), true},
-		"typed key set, by type":   {WhereKeyIn([]string{"name", "label"}, core.Key{"a", "1.50"}).typed(append(stringType, stringType...)), false},
+		"typed text by value":      {WhereEq("price", "1.5").typed(decimalType()), true},
+		"typed set by value":       {WhereIn("label", "2", "1.50").typed(decimalType()), true},
+		"typed key set":            {WhereKeyIn([]string{"label", "name"}, core.Key{"1.50", "a"}).typed(append(decimalType(), stringType()...)), true},
+		"typed key set, by type":   {WhereKeyIn([]string{"name", "label"}, core.Key{"a", "1.50"}).typed(append(stringType(), stringType()...)), false},
 	} {
 		t.Run(name, func(t *testing.T) {
 			got, err := MatchLookupRow(tc.cond, get)
@@ -400,7 +405,7 @@ func TestMatchLookupRow(t *testing.T) {
 	_, err := MatchLookupRow(WhereEq("missing", "x"), get)
 	assert.ErrorIs(t, err, ErrPolicyInvalid, "a misspelt column cannot silently select nothing")
 	_, err = MatchLookupRow(WhereKeyIn([]string{"name", "missing"}, core.Key{"a", "x"}), get)
-	assert.ErrorIs(t, err, ErrPolicyInvalid, "nor a key's")
+	require.ErrorIs(t, err, ErrPolicyInvalid, "nor a key's")
 	_, err = MatchLookupRow(WhereKeyMember([]string{"name", "device"}, &Lookup{Table: "t", ProjectKey: []string{"a", "b"}}), get)
 	assert.ErrorContains(t, err, "unanswered lookup", "a key member is answered before a store sees it")
 }

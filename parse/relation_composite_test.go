@@ -168,15 +168,15 @@ func TestRelate_CompositeTargetField(t *testing.T) {
 		`{"stock":{"$null":true}}`,
 	} {
 		_, err := moves.ParseFilter(doc)
-		assert.NoError(t, err, doc)
+		require.NoError(t, err, doc)
 	}
 	for _, doc := range []string{`{"stock":{"$some":{"warehouse_id":1}}}`, `{"stock":{"$none":{}}}`, `{"stock":{"$null":false}}`} {
 		_, err := tags.ParseFilter(doc)
-		assert.NoError(t, err, doc)
+		require.NoError(t, err, doc)
 	}
 	for _, doc := range []string{`{"stock":"a"}`, `{"stock":{"$in":[[1,"a"]]}}`} {
 		_, err := tags.ParseFilter(doc)
-		assert.Error(t, err, doc)
+		require.Error(t, err, doc)
 	}
 
 	reg := parse.NewSchemaRegistry()
@@ -234,11 +234,11 @@ func TestRelationTag_CompositeTarget(t *testing.T) {
 
 	for _, doc := range []string{`{"stock":{"$null":true}}`, `{"stock":{"$null":false}}`, `{"stock":{"$exists":true}}`} {
 		_, err := tags.ParseFilter(doc)
-		assert.NoError(t, err, doc)
+		require.NoError(t, err, doc)
 	}
 	for _, doc := range []string{`{"stock":"a"}`, `{"stock":{"$in":[[1,"a"]]}}`, `{"stock":{"$some":{}}}`} {
 		_, err := tags.ParseFilter(doc)
-		assert.Error(t, err, doc)
+		require.Error(t, err, doc)
 	}
 
 	parsed, err := tags.ParseMergePatch([]byte(`{"stock":[["1","a"],["1","a"],["2","b"]]}`))
@@ -278,11 +278,11 @@ func TestRelationTag_CompositeTargetRefusals(t *testing.T) {
 		Stock []crStockRef `json:"stock" db:"-" relation:"cr_stock_tags,tag_id,warehouse_id+sku" parse:"filter" filter_ops:"eq,null"`
 	}
 	_, err := parse.NewResource[flat]("cr_tags")
-	assert.ErrorContains(t, err, "target key warehouse_id+sku has 2 columns; the field holds string, not a struct holding a field per column")
+	require.ErrorContains(t, err, "target key warehouse_id+sku has 2 columns; the field holds string, not a struct holding a field per column")
 	_, err = parse.NewResource[missing]("cr_tags")
-	assert.ErrorContains(t, err, "relation tag target column bin is no column of parse_test.crStockRef")
+	require.ErrorContains(t, err, "relation tag target column bin is no column of parse_test.crStockRef")
 	_, err = parse.NewResource[compared]("cr_tags")
-	assert.ErrorContains(t, err, "relation target key warehouse_id+sku has 2 columns, which $eq cannot name")
+	require.ErrorContains(t, err, "relation target key warehouse_id+sku has 2 columns, which $eq cannot name")
 
 	type nullTests struct {
 		ID    string       `json:"id"    db:"id"`

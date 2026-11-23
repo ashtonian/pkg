@@ -45,7 +45,8 @@ func (r *memberResolver) relation(ctx context.Context, n *FilterNode) (*FilterNo
 	if r.lookup == nil {
 		return nil, invalidRelation(f, "needs a membership lookup to be evaluated outside SQL")
 	}
-	if err := checkResolvable(f); err != nil {
+	err := checkResolvable(f)
+	if err != nil {
 		return nil, err
 	}
 	by := f.RelatedBy
@@ -74,7 +75,8 @@ func (r *memberResolver) relation(ctx context.Context, n *FilterNode) (*FilterNo
 	for _, field := range by {
 		none = append(none, &FilterNode{Field: field, Op: OpNull})
 	}
-	return &FilterNode{Op: OpOr, Children: none}, nil
+	noMember := &FilterNode{Op: OpOr, Children: none}
+	return noMember, nil
 }
 
 // correlated is the owner's correlation fields among the keys l projects:
@@ -86,21 +88,25 @@ func (r *memberResolver) correlated(ctx context.Context, by []*FieldSchema, l *L
 		if err != nil {
 			return nil, err
 		}
-		return &FilterNode{Field: by[0], Op: OpIn, Value: members}, nil
+		in := &FilterNode{Field: by[0], Op: OpIn, Value: members}
+		return in, nil
 	}
 	keys, err := r.keys(ctx, by, l)
 	if err != nil {
 		return nil, err
 	}
 	if len(keys) == 0 {
-		return &FilterNode{Field: by[0], Op: OpIn, Value: []any{}}, nil
+		empty := &FilterNode{Field: by[0], Op: OpIn, Value: []any{}}
+		return empty, nil
 	}
-	return &FilterNode{Op: OpKeyIn, Keys: &KeySet{Table: by[0].Table, Fields: by, Keys: keys}}, nil
+	keyIn := &FilterNode{Op: OpKeyIn, Keys: &KeySet{Table: by[0].Table, Fields: by, Keys: keys}}
+	return keyIn, nil
 }
 
 // checkResolvable refuses, outside SQL, a relation that does not check.
 func checkResolvable(f *FieldSchema) error {
-	if err := f.Relation.Check(); err != nil {
+	err := f.Relation.Check()
+	if err != nil {
 		return invalidRelation(f, err.Error())
 	}
 	return nil
@@ -216,7 +222,8 @@ func (r *memberResolver) scoped(table string, project []string, tenant, deleted 
 // `$not_null`) or owners outside them (`$ne`, `$nin`, `$null`). A key of
 // several columns takes only the NULL tests, as in SQL (checkPairKeyOp).
 func keyCondition(f *FieldSchema, n *FilterNode) (*LookupCond, bool, error) {
-	if err := checkPairKeyOp(f, n.Op); err != nil {
+	err := checkPairKeyOp(f, n.Op)
+	if err != nil {
 		return nil, false, err
 	}
 	column, types := f.Relation.TargetColumns[0], f.Relation.TargetTypes[:1]

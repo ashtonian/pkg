@@ -17,7 +17,7 @@ import (
 // methods applies as encoding/json decodes the members over the map.
 func TestMergePatch_MapKeysDecodeAsEncodingJSON(t *testing.T) {
 	r := parse.MustResource[keyedMaps]("keyed_maps")
-	for _, tc := range keyedMapMerges {
+	for _, tc := range keyedMapMerges() {
 		t.Run(tc.name, func(t *testing.T) {
 			parsed, err := r.ParseMergePatch([]byte(tc.body))
 			require.NoError(t, err)
@@ -30,7 +30,7 @@ func TestMergePatch_MapKeysDecodeAsEncodingJSON(t *testing.T) {
 
 func TestMergePatch_MapKeysRefused(t *testing.T) {
 	r := parse.MustResource[keyedMaps]("keyed_maps")
-	for _, tc := range keyedMapRefusals {
+	for _, tc := range keyedMapRefusals() {
 		t.Run(tc.name, func(t *testing.T) {
 			_, err := r.ParseMergePatch([]byte(tc.body))
 			pe, ok := errors.AsType[*core.ParseError](err)

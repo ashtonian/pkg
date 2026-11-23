@@ -42,7 +42,8 @@ func NewListQuery(filterSchema *ResourceSchema, sortSchema *SortSchema, dialect 
 	if err != nil {
 		return nil, fmt.Errorf("filter: list of %s: %w", filterSchema.Name, err)
 	}
-	return &ListQuery{filterSchema: filterSchema, sortSchema: sortSchema, dialect: dialect, keys: keys}, nil
+	query := &ListQuery{filterSchema: filterSchema, sortSchema: sortSchema, dialect: dialect, keys: keys}
+	return query, nil
 }
 
 // listKeys resolves the schema's key columns to the typed cursor keys that

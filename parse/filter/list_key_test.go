@@ -125,11 +125,11 @@ type stockItem struct {
 // cursor minted under another key is E2082.
 func TestListQuery_CompositeKeyBreaksTies(t *testing.T) {
 	db := dbtest.SQLite(t)
-	_, err := db.Exec(`CREATE TABLE stock_items (warehouse_id TEXT NOT NULL, sku TEXT NOT NULL, qty INTEGER NOT NULL, PRIMARY KEY (warehouse_id, sku))`)
+	_, err := db.ExecContext(t.Context(), `CREATE TABLE stock_items (warehouse_id TEXT NOT NULL, sku TEXT NOT NULL, qty INTEGER NOT NULL, PRIMARY KEY (warehouse_id, sku))`)
 	require.NoError(t, err)
 	rows := []stockItem{{"w1", "a", 5}, {"w1", "b", 5}, {"w2", "a", 5}, {"w2", "b", 1}, {"w3", "a", 1}}
 	for _, r := range rows {
-		_, err := db.Exec(`INSERT INTO stock_items VALUES (?, ?, ?)`, r.WarehouseID, r.SKU, r.Qty)
+		_, err := db.ExecContext(t.Context(), `INSERT INTO stock_items VALUES (?, ?, ?)`, r.WarehouseID, r.SKU, r.Qty)
 		require.NoError(t, err)
 	}
 	g := core.NewSchemaGenerator()
@@ -153,15 +153,16 @@ func TestListQuery_CompositeKeyBreaksTies(t *testing.T) {
 	assert.Equal(t, []string{"sku asc", "warehouse_id asc"}, keyset("sku"), "a key column the sort names ends it once")
 
 	fetch := func(res *filter.ListResult) []stockItem {
-		rs, err := db.Query("SELECT warehouse_id, sku, qty FROM stock_items "+res.Fragment, res.Args...)
+		rs, err := db.QueryContext(t.Context(), "SELECT warehouse_id, sku, qty FROM stock_items "+res.Fragment, res.Args...)
 		require.NoError(t, err)
+		defer func() { require.NoError(t, rs.Close()) }()
 		var items []stockItem
 		for rs.Next() {
 			var it stockItem
 			require.NoError(t, rs.Scan(&it.WarehouseID, &it.SKU, &it.Qty))
 			items = append(items, it)
 		}
-		require.NoError(t, rs.Close())
+		require.NoError(t, rs.Err())
 		return items
 	}
 	build := func(opts ...filter.ListOption) *filter.ListResult {

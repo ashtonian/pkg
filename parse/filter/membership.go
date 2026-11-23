@@ -129,14 +129,16 @@ func WhereMember(column string, l *Lookup) *LookupCond {
 // value per column in columns' order; no keys select no row. A key of one
 // column is WhereIn's.
 func WhereKeyIn(columns []string, keys ...core.Key) *LookupCond {
-	return &LookupCond{Columns: columns, Op: LookupOpKeyIn, Keys: keys}
+	cond := &LookupCond{Columns: columns, Op: LookupOpKeyIn, Keys: keys}
+	return cond
 }
 
 // WhereKeyMember selects rows whose columns, together, are among the keys l
 // projects (Lookup.ProjectKey, of as many columns). A key of one column is
 // WhereMember's.
 func WhereKeyMember(columns []string, l *Lookup) *LookupCond {
-	return &LookupCond{Columns: columns, Op: LookupOpKeyMember, Lookup: l}
+	cond := &LookupCond{Columns: columns, Op: LookupOpKeyMember, Lookup: l}
+	return cond
 }
 
 // WhereAll selects rows every condition selects.
@@ -165,7 +167,8 @@ func (l *Lookup) validate() error {
 		if l.Project != "" {
 			return invalidLookup(fmt.Sprintf("lookup on %s projects both Project and ProjectKey", l.Table))
 		}
-		if err := checkLookupKey(l.ProjectKey); err != nil {
+		err := checkLookupKey(l.ProjectKey)
+		if err != nil {
 			return err
 		}
 	}
@@ -183,7 +186,8 @@ func (l *Lookup) validate() error {
 // validateProjecting is validate, with l projecting n columns: one for a
 // membership, a key's for a key member.
 func (l *Lookup) validateProjecting(n int) error {
-	if err := l.validate(); err != nil {
+	err := l.validate()
+	if err != nil {
 		return err
 	}
 	projected := l.projected()
@@ -201,7 +205,8 @@ func (l *Lookup) projected() []string {
 	if l.ProjectKey != nil {
 		return l.ProjectKey
 	}
-	return []string{l.Project}
+	columns := []string{l.Project}
+	return columns
 }
 
 // checkLookupKey refuses the columns of a key of several that are fewer
@@ -261,7 +266,8 @@ func (c *LookupCond) validateTypes() error {
 			if i >= len(c.Types) || isNullValue(v) {
 				continue
 			}
-			if _, err := core.NormalizeScalar(c.Types[i].Type, c.Types[i].NumberKind, projectedValue(v)); err != nil {
+			_, err := core.NormalizeScalar(c.Types[i].Type, c.Types[i].NumberKind, projectedValue(v))
+			if err != nil {
 				return invalidLookup(fmt.Sprintf("lookup column %q: %v", compared[i], err))
 			}
 		}
@@ -275,7 +281,8 @@ func (c *LookupCond) validateKey() error {
 	if c.Column != "" {
 		return invalidLookup(fmt.Sprintf("lookup key condition names column %q; a key's columns are its Columns", c.Column))
 	}
-	if err := checkLookupKey(c.Columns); err != nil {
+	err := checkLookupKey(c.Columns)
+	if err != nil {
 		return err
 	}
 	key := strings.Join(c.Columns, ", ")
@@ -323,7 +330,8 @@ func (c *LookupCond) validate() error {
 	if len(c.And) > 0 || len(c.Or) > 0 {
 		return nil
 	}
-	if err := c.validateTypes(); err != nil {
+	err := c.validateTypes()
+	if err != nil {
 		return err
 	}
 	if c.Op == LookupOpKeyIn || c.Op == LookupOpKeyMember {
@@ -364,7 +372,8 @@ func invalidLookup(msg string) error {
 
 // memberNode is the AST node of a membership constraint on field.
 func memberNode(field *FieldSchema, l *Lookup) (*FilterNode, error) {
-	if err := l.validateProjecting(1); err != nil {
+	err := l.validateProjecting(1)
+	if err != nil {
 		return nil, err
 	}
 	if !core.IsKeyType(field.DataType) {

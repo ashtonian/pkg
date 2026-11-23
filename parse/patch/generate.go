@@ -179,11 +179,15 @@ func generatePatchSchema(g *core.SchemaGenerator, t reflect.Type, server bool) (
 				return nil, fmt.Errorf("field %s: %w", field.GoName, err)
 			}
 			if len(rel.TargetColumns) == 1 {
-				if err := checkRelationKeyType(field.Type); err != nil {
+				err = checkRelationKeyType(field.Type)
+				if err != nil {
 					return nil, fmt.Errorf("field %s: %w", field.GoName, err)
 				}
-			} else if membership, err = tagMembership(g, field, rel); err != nil {
-				return nil, fmt.Errorf("field %s: %w", field.GoName, err)
+			} else {
+				membership, err = tagMembership(g, field, rel)
+				if err != nil {
+					return nil, fmt.Errorf("field %s: %w", field.GoName, err)
+				}
 			}
 			relSchema = rel
 			allowedOps = relationPatchOps()
@@ -323,17 +327,21 @@ func RelationPath(rel *core.RelationSchema, key ...RelationKey) (*PathSchema, er
 	}
 	if len(key) == 1 {
 		goType := reflect.SliceOf(key[0].Type)
-		if err := checkRelationKeyType(goType); err != nil {
+		err := checkRelationKeyType(goType)
+		if err != nil {
 			return nil, err
 		}
-		return &PathSchema{AllowedOps: relationPatchOps(), DataType: core.TypeOf(goType).Type, GoType: goType, Wire: key[0].Wire, Relation: rel}, nil
+		schema := &PathSchema{AllowedOps: relationPatchOps(), DataType: core.TypeOf(goType).Type, GoType: goType, Wire: key[0].Wire, Relation: rel}
+		return schema, nil
 	}
 	for _, k := range key {
-		if err := checkRelationKeyType(reflect.SliceOf(k.Type)); err != nil {
+		err := checkRelationKeyType(reflect.SliceOf(k.Type))
+		if err != nil {
 			return nil, err
 		}
 	}
-	return &PathSchema{AllowedOps: relationPatchOps(), DataType: core.FieldTypeArray, Relation: rel, RelationKey: slices.Clone(key)}, nil
+	schema := &PathSchema{AllowedOps: relationPatchOps(), DataType: core.FieldTypeArray, Relation: rel, RelationKey: slices.Clone(key)}
+	return schema, nil
 }
 
 // tagMembership is the membership path of a tagged relation whose target

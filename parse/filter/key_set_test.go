@@ -16,15 +16,17 @@ import (
 // stockSchema keys stock_items by (warehouse_id, sku) and filters qty.
 func stockSchema() *filter.ResourceSchema {
 	field := func(name string, t core.FieldType) *filter.FieldSchema {
-		return &filter.FieldSchema{ExternalName: name, Table: "stock_items", Column: name, DataType: t,
+		field := &filter.FieldSchema{ExternalName: name, Table: "stock_items", Column: name, DataType: t,
 			AllowedOperators: []filter.FilterOperator{filter.OpEq, filter.OpIn}}
+		return field
 	}
-	return &filter.ResourceSchema{
+	schema := &filter.ResourceSchema{
 		Name:         "stock_items",
 		PrimaryKey:   []string{"warehouse_id", "sku"},
 		Fields:       map[string]*filter.FieldSchema{"qty": field("qty", core.FieldTypeInt)},
 		SystemFields: map[string]*filter.FieldSchema{"warehouse_id": field("warehouse_id", core.FieldTypeString), "sku": field("sku", core.FieldTypeString)},
 	}
+	return schema
 }
 
 func keyWhere(t *testing.T, d filter.Dialect, c *filter.PolicyConstraint) (*filter.SQLResult, error) {
@@ -190,25 +192,26 @@ func TestKeyConstraint_RefusesMalformedKeys(t *testing.T) {
 // rows matching each column alone, on SQLite and in memory alike.
 func TestKeyConstraint_SelectsWholeKeys(t *testing.T) {
 	db := dbtest.SQLite(t)
-	_, err := db.Exec(`CREATE TABLE stock_items (warehouse_id TEXT NOT NULL, sku TEXT NOT NULL, qty INTEGER NOT NULL, PRIMARY KEY (warehouse_id, sku))`)
+	_, err := db.ExecContext(t.Context(), `CREATE TABLE stock_items (warehouse_id TEXT NOT NULL, sku TEXT NOT NULL, qty INTEGER NOT NULL, PRIMARY KEY (warehouse_id, sku))`)
 	require.NoError(t, err)
 	rows := []stockItem{{"w1", "a", 1}, {"w1", "b", 2}, {"w2", "a", 3}, {"w2", "b", 4}}
 	for _, r := range rows {
-		_, err := db.Exec(`INSERT INTO stock_items VALUES (?, ?, ?)`, r.WarehouseID, r.SKU, r.Qty)
+		_, err := db.ExecContext(t.Context(), `INSERT INTO stock_items VALUES (?, ?, ?)`, r.WarehouseID, r.SKU, r.Qty)
 		require.NoError(t, err)
 	}
 	c := &filter.PolicyConstraint{Fields: []string{"warehouse_id", "sku"}, Operator: filter.OpIn, Value: []core.Key{{"w1", "b"}, {"w2", "a"}, {"w9", "a"}}}
 	res, err := keyWhere(t, filter.SQLiteDialect{}, c)
 	require.NoError(t, err)
 	var got []int64
-	rs, err := db.Query("SELECT qty FROM stock_items WHERE "+res.Where+" ORDER BY qty", res.Args...)
+	rs, err := db.QueryContext(t.Context(), "SELECT qty FROM stock_items WHERE "+res.Where+" ORDER BY qty", res.Args...)
 	require.NoError(t, err)
+	defer func() { require.NoError(t, rs.Close()) }()
 	for rs.Next() {
 		var qty int64
 		require.NoError(t, rs.Scan(&qty))
 		got = append(got, qty)
 	}
-	require.NoError(t, rs.Close())
+	require.NoError(t, rs.Err())
 	assert.Equal(t, []int64{2, 3}, got)
 
 	ast, err := filter.ApplyPolicyConstraints(stockSchema(), nil, &filter.PolicyConstraints{Constraints: []*filter.PolicyConstraint{c}})

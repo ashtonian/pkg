@@ -28,7 +28,8 @@ func (b *SQLBuilder) buildRelated(s *buildState, node *FilterNode) (string, erro
 	if target == nil {
 		return "", invalidRelation(node.Field, "has no target resource to filter")
 	}
-	if err := rel.Check(); err != nil {
+	err := rel.Check()
+	if err != nil {
 		return "", invalidRelation(node.Field, err.Error())
 	}
 	// The target's predicates read its computed columns as the owner's

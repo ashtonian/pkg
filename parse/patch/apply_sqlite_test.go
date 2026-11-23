@@ -144,12 +144,13 @@ func memberPatchSchema(t *testing.T, gen *core.SchemaGenerator) *patch.PatchSche
 
 func applySeed() applyRow {
 	note := "n"
-	return applyRow{
+	row := applyRow{
 		ID: 1, Name: "orig", Note: &note, Rank: 1, Tags: []string{"a"},
 		Meta:   map[string]any{"k": 1.0, "nested": map[string]any{"x": 1.0, "y": 2.0}},
 		Dims:   applyDims{W: 2, H: 7},
 		Labels: map[string]string{"old": "v"},
 	}
+	return row
 }
 
 // An operation the document does not take fails the patch with its own
@@ -171,12 +172,12 @@ func TestApplier_FailingMemberOperationAgreesWithSQLite(t *testing.T) {
 	assert.Equal(t, 2, *pe.Index)
 
 	db := dbtest.SQLite(t)
-	_, err = db.Exec(`CREATE TABLE rows (id INTEGER PRIMARY KEY, name TEXT NOT NULL, note TEXT, rank INTEGER NOT NULL, tags TEXT NOT NULL, meta TEXT NOT NULL, dims TEXT NOT NULL, labels TEXT NOT NULL)`)
+	_, err = db.ExecContext(t.Context(), `CREATE TABLE rows (id INTEGER PRIMARY KEY, name TEXT NOT NULL, note TEXT, rank INTEGER NOT NULL, tags TEXT NOT NULL, meta TEXT NOT NULL, dims TEXT NOT NULL, labels TEXT NOT NULL)`)
 	require.NoError(t, err)
 	insertRow(t, db, seed)
 	res, err := patch.BuildPatchSQL(parsed, filter.SQLiteDialect{})
 	require.NoError(t, err)
-	result, err := db.Exec(fmt.Sprintf("UPDATE rows SET %s WHERE id = ?%d AND %s", res.SetClause, res.ParamCount+1, res.Precondition), append(res.Args, seed.ID)...)
+	result, err := db.ExecContext(t.Context(), fmt.Sprintf("UPDATE rows SET %s WHERE id = ?%d AND %s", res.SetClause, res.ParamCount+1, res.Precondition), append(res.Args, seed.ID)...)
 	require.NoError(t, err)
 	written, err := result.RowsAffected()
 	require.NoError(t, err)
@@ -188,7 +189,7 @@ func TestApplier_FailingMemberOperationAgreesWithSQLite(t *testing.T) {
 	})
 	require.NoError(t, err)
 	var unmet int
-	require.NoError(t, db.QueryRow("SELECT "+firstUnmet+" FROM rows WHERE id = 1", args...).Scan(&unmet))
+	require.NoError(t, db.QueryRowContext(t.Context(), "SELECT "+firstUnmet+" FROM rows WHERE id = 1", args...).Scan(&unmet))
 	assert.Equal(t, *pe.Index, unmet)
 }
 

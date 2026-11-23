@@ -53,7 +53,7 @@ func TestKeyTextOf(t *testing.T) {
 			for _, key := range tt.keys {
 				got, err := core.KeyTextOf(tt.types, key)
 				if tt.wantErr != "" {
-					assert.ErrorContains(t, err, tt.wantErr)
+					require.ErrorContains(t, err, tt.wantErr)
 					continue
 				}
 				require.NoError(t, err, "%v", key)

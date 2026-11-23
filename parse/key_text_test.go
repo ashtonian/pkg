@@ -80,7 +80,7 @@ func TestResource_ParseKey(t *testing.T) {
 			got, err := r.ParseKey(tt.texts...)
 			if tt.wantErr != "" {
 				require.ErrorIs(t, err, parse.ErrKeyInvalid)
-				assert.ErrorContains(t, err, "parse: key_text_rows: ")
+				require.ErrorContains(t, err, "parse: key_text_rows: ")
 				assert.ErrorContains(t, err, tt.wantErr)
 				return
 			}

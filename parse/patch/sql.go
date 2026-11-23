@@ -240,7 +240,8 @@ func BuildPatchSQL(patch *ParsedPatch, dialect SQLDialect, opts ...PatchSQLOptio
 			return nil, err
 		}
 		if len(memberTokens(op)) > 0 {
-			if err := checkMemberPath(patch.schema, op); err != nil {
+			err := checkMemberPath(patch.schema, op)
+			if err != nil {
 				return nil, err
 			}
 		}
@@ -485,11 +486,12 @@ func (b *setBuilder) columnExpr(col string, ops []*PatchOperation) (string, *Pat
 		if op.Schema.DataType != "" && op.Schema.DataType != core.FieldTypeArray {
 			// A JSON-document array (jsonb on PostgreSQL) has no native
 			// array_append; the document path applies it.
-			return "", nil, &core.ParseError{
+			notNative := &core.ParseError{
 				Kind: core.ParseErrorKindPatch, Code: ECodeOpNotSQLCompilable.String(),
 				Message: fmt.Sprintf("array_append on %s (a %s field) compiles to SQL only for native array columns — apply via ApplyValidatedPatch", op.Path, op.Schema.DataType),
 				Path:    op.Path,
 			}
+			return "", nil, notNative
 		}
 	}
 	if start < 0 {

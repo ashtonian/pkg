@@ -97,7 +97,8 @@ func RenderRelationOp(op RelationPatchOp, d RelationDialect, ownerKeys []core.Ke
 		return nil, nil
 	}
 	rel := op.Schema
-	if err := rel.Check(); err != nil {
+	err := rel.Check()
+	if err != nil {
 		return nil, fmt.Errorf("patch: relation %s: %w", op.Field, err)
 	}
 	switch op.Verb {
@@ -203,7 +204,8 @@ func relationKeys(keys []core.Key, columns []string, types []core.TypeInfo) ([]c
 // driverScalar is k as the database binds it: a driver.Valuer's value,
 // else k; null is no value.
 func driverScalar(k any) (any, error) {
-	if valuer, ok := k.(driver.Valuer); ok {
+	valuer, ok := k.(driver.Valuer)
+	if ok {
 		v, err := valuer.Value()
 		if err != nil {
 			return nil, err
@@ -383,7 +385,8 @@ func (r relationRenderer) insert() (RenderedRelationStatement, error) {
 		if err != nil {
 			return RenderedRelationStatement{}, err
 		}
-		if held := r.held(pair); held != "" {
+		held := r.held(pair)
+		if held != "" {
 			sb.WriteString(and + "NOT " + held)
 		}
 		sb.WriteString(" ON CONFLICT DO NOTHING")
@@ -430,7 +433,8 @@ func (r relationRenderer) insert() (RenderedRelationStatement, error) {
 		return RenderedRelationStatement{}, err
 	}
 	sb.WriteString(visible)
-	if held := r.held(pair); held != "" {
+	held := r.held(pair)
+	if held != "" {
 		sb.WriteString(" AND NOT " + held)
 	}
 	sb.WriteString(" ON CONFLICT DO NOTHING")
@@ -531,7 +535,8 @@ func (r relationRenderer) sqliteRows(s *statement, sb *strings.Builder) (newPair
 	}
 	read := func(alias string, width int) []string {
 		if width == 1 {
-			return []string{alias + ".value"}
+			columns := []string{alias + ".value"}
+			return columns
 		}
 		positions := make([]string, width)
 		for i := range positions {

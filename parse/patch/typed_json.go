@@ -279,7 +279,8 @@ func checkMemberFits(parent reflect.Type, name string, value any) error {
 		}
 		wrapped = slices.Concat([]byte("{"), key, []byte(":"), raw, []byte("}"))
 	}
-	if err := checkJSONMembers(parent, wrapped); err != nil {
+	err = checkJSONMembers(parent, wrapped)
+	if err != nil {
 		return fmt.Errorf("member %q: %w", name, err)
 	}
 	return nil

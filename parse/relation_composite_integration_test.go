@@ -186,7 +186,8 @@ func testCompositeKeyRelations(t *testing.T, open func(*testing.T) *sql.DB, d fi
 		for _, item := range stock.Items {
 			key, err := g.stock.Key(&item)
 			require.NoError(t, err)
-			if ids, ok := stock.Relations["tags"][core.KeyText(key)]; ok {
+			ids, ok := stock.Relations["tags"][core.KeyText(key)]
+			if ok {
 				assert.NotEmpty(t, ids)
 			}
 		}
@@ -202,7 +203,7 @@ func testCompositeKeyRelations(t *testing.T, open func(*testing.T) *sql.DB, d fi
 		assert.Equal(t, []string{"green"}, list(t, `{"stock":{"$null":true}}`))
 		for _, doc := range []string{`{"stock":"x"}`, `{"stock":{"$in":[[1,"a"]]}}`, `{"stock":{"$some":{}}}`} {
 			_, err := tags.ParseList(url.Values{filter.ParamFilter: {doc}})
-			assert.Error(t, err, doc)
+			require.Error(t, err, doc)
 		}
 
 		page := crxPage(t, db, d, tags, url.Values{filter.ParamInclude: {"stock"}, filter.ParamFacets: {"stock"}})

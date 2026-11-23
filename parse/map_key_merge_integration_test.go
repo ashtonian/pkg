@@ -28,7 +28,7 @@ func TestMergePatch_MapKeys_Postgres(t *testing.T) {
 // application's result too.
 func runMapKeyMerges(t *testing.T, open func(*testing.T) *sql.DB, d parse.Dialect, docType string) {
 	r := parse.MustResource[keyedMaps]("keyed_maps")
-	for _, tc := range keyedMapMerges {
+	for _, tc := range keyedMapMerges() {
 		t.Run(tc.name, func(t *testing.T) {
 			db := open(t)
 			_, err := db.ExecContext(t.Context(), `CREATE TABLE keyed_maps (id BIGINT PRIMARY KEY, by_int `+docType+` NOT NULL, by_uint `+docType+` NOT NULL, by_addr `+docType+` NOT NULL)`)
