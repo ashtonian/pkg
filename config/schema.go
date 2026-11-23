@@ -78,8 +78,9 @@ var schemaCache = gowalker.NewTypeCache(configView, buildSchema)
 //     tags read. Raw inspection (Fields, FieldFor, KeyOf, Tree) takes only
 //     this, so it can still diagnose a type whose tags are wrong.
 //   - declaredOf: structural, and no tag key misspells one config reads.
-//     Checked redaction takes this: a misspelt sensitivity tag would print
-//     a secret, yet a live value prints without its defaults decoding.
+//     Checked redaction and TreeFunc with a callback take this: a misspelt
+//     sensitivity tag would print a secret, yet a live value prints without
+//     its defaults decoding.
 //   - schemaOf: declared, and every config tag's value decodes. Loading
 //     and every output that shows defaults, examples or rules — usage, JSON
 //     Schema, templates, environment listings — take this.

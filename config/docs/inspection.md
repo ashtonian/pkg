@@ -148,9 +148,14 @@ finite values load back with their sensitive values intact.
 detached tree value to a policy function. Its return value replaces that
 leaf. Sensitive maps, lists and interfaces reach the callback once, whole,
 so a policy can withhold their keys too. Empty and nil containers are leaves;
-a nil callback is identity. Fields inside a dynamic interface retain the
-interface's declared metadata. A redaction callback can return `[REDACTED]`
-when `f.Sensitive && value != nil`.
+a nil callback is identity, and is `Tree`. Fields inside a dynamic interface
+retain the interface's declared metadata. A redaction callback can return
+`[REDACTED]` when `f.Sensitive && value != nil`. Because a callback judges
+each leaf by its `Field`, `TreeFunc` with one checks declarations as
+checked redaction does: a reached type with a misspelt tag key
+(`sensitve:"true"`) returns `ErrSchema` and no tree, rather than hand the
+callback a `Field` that says the value is not sensitive. `Tree` exports
+values whatever the tags say, so it checks only the structure.
 
 Cycles use the diagnostic `[CYCLE]` marker and cannot round-trip. Opaque
 values without a scalar/text representation return `ErrSchema`;
@@ -241,8 +246,8 @@ is reached:
 
 | Tier | Checks | Entry points |
 |---|---|---|
-| Structural | The graph builds: keys valid and unique, tags readable, reload tags valid | `Fields`, `FieldsChecked`, `FieldFor`, `KeyOf`, `MatchFields`, `Tree`, `TreeFunc`, `DefaultsFromTags` |
-| Declared | Structural, and no tag key misspells one config reads | `PrintRedacted`, `RedactedMap`, `RedactedMapChecked`, `RedactedTree`, `RedactedTreeChecked` |
+| Structural | The graph builds: keys valid and unique, tags readable, reload tags valid | `Fields`, `FieldsChecked`, `FieldFor`, `KeyOf`, `MatchFields`, `Tree`, `TreeFunc` without a callback, `DefaultsFromTags` |
+| Declared | Structural, and no tag key misspells one config reads | `PrintRedacted`, `RedactedMap`, `RedactedMapChecked`, `RedactedTree`, `RedactedTreeChecked`, `TreeFunc` with a callback |
 | Schema | Declared, and every config tag's value is one config can use | `Load`, `Decode`, `LoadSnapshot`, `CheckKey`, `DecodeKey`, reloaders, `Usage`, `PrintUsage`, `JSONSchema`, `PrintTemplate`, `PrintEnv`, `PrintExplain`, `Diff` |
 | Load | Schema, and the default validator parses every `validate` tag it descends to | `Load`, `Decode`, `LoadSnapshot`, `CheckKey`, `DecodeKey`, `NewReloader` |
 

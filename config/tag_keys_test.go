@@ -354,3 +354,37 @@ func TestDeclarationPolicy_ValidSchemasUnchanged(t *testing.T) {
 	_, err = JSONSchema[badDefault]()
 	require.ErrorIs(t, err, ErrSchema)
 }
+
+// A TreeFunc callback judges each leaf by its Field, so a misspelt
+// sensitivity tag would hand the documented redaction recipe a value it
+// takes for ordinary. With a callback, TreeFunc refuses the type as checked
+// redaction does, wherever the type is reached; Tree, which withholds
+// nothing, still exports it.
+func TestTreeFunc_CallbackRefusesMisspeltTagKeys(t *testing.T) {
+	live := ambiguousSensitivity{Note: harmlessMarker}
+	redact := func(_ string, f Field, v any) any {
+		if f.Sensitive && v != nil {
+			return redactedValue
+		}
+		return v
+	}
+	type sensitiveHolder struct {
+		Notes map[string]ambiguousSensitivity `koanf:"notes" sensitive:"true"`
+	}
+	type dynamicHolder struct {
+		Plugin any `koanf:"plugin"`
+	}
+	for name, cfg := range map[string]any{
+		"root":              live,
+		"sensitive map":     sensitiveHolder{Notes: map[string]ambiguousSensitivity{"a": live}},
+		"interface's value": dynamicHolder{Plugin: live},
+	} {
+		tree, err := TreeFunc(cfg, redact)
+		require.ErrorIs(t, err, ErrSchema, name)
+		assert.Nil(t, tree, name)
+	}
+
+	raw, err := TreeFunc(live, nil)
+	require.NoError(t, err)
+	assert.Equal(t, harmlessMarker, raw["note"])
+}
