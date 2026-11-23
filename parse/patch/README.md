@@ -41,7 +41,7 @@ Start with the [runnable package example](../README.md#quick-start). The focused
 | `relation_sql.go` | Relation statements: one delete and one insert builder, owners and values each one array parameter, junction tenancy and target visibility |
 | `policy.go` | Patch policy and value constraints, judged by what operations write (`writes.go`) |
 | `pattern.go` | Path patterns: token check, matching (`*` one token, `**` zero or more), specificity order |
-| `typed_json.go` | A merge patch's document values checked and normalized against the Go type of the member they write |
+| `typed_json.go` | A merge patch's document values checked and normalized against the Go type of the member they write, map keys decoded and named as encoding/json does |
 | `writes.go` | The paths an operation writes and reads, and the members a written value holds |
 | `errors.go` | E-codes |
 

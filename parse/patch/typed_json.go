@@ -58,14 +58,17 @@ func normalizeTypedMerge(t reflect.Type, obj map[string]any, codec core.Codec, p
 	out := make(map[string]any, len(obj))
 	switch t.Kind() {
 	case reflect.Map:
-		if t.Key().Kind() != reflect.String {
-			return nil, fmt.Errorf("object merge requires string map keys for %s; use JSON Patch replace", t)
-		}
+		// A member names its key as encoding/json decodes one (an integer
+		// kind in base 10, a type with text methods through them) and is
+		// written under the name encoding/json writes for that key, so the
+		// stored document holds one spelling per key and "01" merges into
+		// "1". A string key without text methods is its own name.
+		canonicalize := declared || t.Key().Kind() != reflect.String
 		sources := make(map[string]string, len(obj))
 		for _, name := range slices.Sorted(maps.Keys(obj)) {
 			value := obj[name]
 			canonical := name
-			if declared {
+			if canonicalize {
 				_, key, err := jsonkeys.CanonicalMapKey(t.Key(), name)
 				if err != nil {
 					return nil, err
