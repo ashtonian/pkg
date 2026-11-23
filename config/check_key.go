@@ -187,14 +187,16 @@ func DecodeEdits[T any](ctx context.Context, baseline *T, edits map[string]any, 
 
 // EditsError is a batch of edits DecodeEdits refuses. Refused holds every
 // key it refused, sorted by key: each an Unknown *KeyError (ErrKey) or one
-// whose message says why the key cannot be set. When every key applies but
-// the configuration the batch makes does not decode or validate, Keys are
-// the batch's keys as diagnostics may show them, sorted, and Err is the
-// decoder's or validator's cause, for trusted diagnostics. errors.Is
-// reaches ErrKey when a key was refused and ErrValidation when the
-// configuration failed. Error names keys and never a value. A validate tag
-// the default validator cannot apply is no batch's fault: DecodeEdits
-// returns that ErrSchema as it is, not in an EditsError.
+// whose message says why the key cannot be set (ErrValidation), as
+// DecodeKey refuses the key alone. When every key applies but the
+// configuration the batch makes does not decode or validate, Keys are the
+// batch's keys as diagnostics may show them, sorted, and Err is the
+// decoder's or validator's cause (ErrValidation), for trusted diagnostics.
+// The error wraps each refused *KeyError and Err, so errors.Is matches the
+// category of each and errors.As reaches the first refused key. Error names
+// keys and never a value. A validate tag the default validator cannot apply
+// is no batch's fault: DecodeEdits returns that ErrSchema as it is, not in
+// an EditsError.
 type EditsError struct {
 	Refused []KeyError `json:"refused,omitempty"`
 	Keys    []string   `json:"keys,omitempty"`
@@ -223,10 +225,15 @@ func (e *EditsError) Error() string {
 	return b.String()
 }
 
-func (e *EditsError) Unwrap() error { return e.Err }
-
-func (e *EditsError) Is(target error) bool {
-	return target == ErrKey && len(e.Refused) > 0 || target == ErrValidation && e.Err != nil
+func (e *EditsError) Unwrap() []error {
+	errs := make([]error, 0, len(e.Refused)+1)
+	for i := range e.Refused {
+		errs = append(errs, &e.Refused[i])
+	}
+	if e.Err != nil {
+		errs = append(errs, e.Err)
+	}
+	return errs
 }
 
 type keyChecker struct {

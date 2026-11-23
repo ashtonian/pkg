@@ -209,9 +209,12 @@ that is not `Unknown` says why in its message, naming keys only:
 
 When every key applies but the candidate does not decode or validate, the
 `*EditsError` names every edited key in `Keys` and keeps the decoder's or
-validator's cause in `Err` for trusted diagnostics. `errors.Is` reaches
-`ErrKey` when a key was refused and `ErrValidation` when the candidate
-failed; the message names keys and never a value. A baseline holding a value
+validator's cause in `Err` for trusted diagnostics. The error wraps every
+refused `*KeyError` and `Err`, so each keeps the category `DecodeKey` gives
+it: `errors.Is` reaches `ErrKey` when an unknown key was refused and
+`ErrValidation` when another refusal was made or the candidate failed, and
+`errors.As` reaches the first refused `*KeyError`. The message names keys
+and never a value. A baseline holding a value
 that does not marshal to text is an error of its own, neither, and a
 `validate` tag the default validator cannot apply is `ErrSchema` as it is,
 no batch's fault. On any

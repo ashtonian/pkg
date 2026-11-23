@@ -70,9 +70,9 @@ func TestDecodeEdits_JudgesTheBatchTogetherOverItsBaseline(t *testing.T) {
 // every refused key in it in key order, whichever stage refused it: unknown
 // keys, also inside a value; one value set under two spellings; an index
 // past the next element; a key beneath a value that cannot hold it; keys
-// selecting both elements and fields of one value. A refused key matches
-// ErrKey; no candidate was judged, so the error does not match
-// ErrValidation.
+// selecting both elements and fields of one value. The error matches each
+// refused key's category: ErrKey for an unknown key, ErrValidation for any
+// other refusal.
 func TestDecodeEdits_RefusesKeysThatCannotAllApply(t *testing.T) {
 	baseline := &editConfig{Primary: editServer{"p", 5}, Pool: []editServer{{"x", 1}}}
 	for _, tc := range []struct {
@@ -100,15 +100,17 @@ func TestDecodeEdits_RefusesKeysThatCannotAllApply(t *testing.T) {
 			require.ErrorAs(t, err, &edits)
 			refused := map[string]bool{}
 			var order []string
+			unknown, invalid := false, false
 			for _, ke := range edits.Refused {
 				refused[ke.Key] = ke.Unknown
 				order = append(order, ke.Key)
 				assert.Equal(t, ke.Unknown, errors.Is(&ke, ErrKey), ke.Key)
+				unknown, invalid = unknown || ke.Unknown, invalid || !ke.Unknown
 			}
 			assert.Equal(t, tc.refused, refused)
 			assert.IsNonDecreasing(t, order)
-			assert.ErrorIs(t, err, ErrKey)
-			assert.NotErrorIs(t, err, ErrValidation)
+			assert.Equal(t, unknown, errors.Is(err, ErrKey))
+			assert.Equal(t, invalid, errors.Is(err, ErrValidation))
 			assert.Empty(t, edits.Keys)
 			for key := range tc.refused {
 				assert.Contains(t, err.Error(), key)
@@ -223,6 +225,47 @@ func TestDecodeEdits_KeyBeneathAnotherAppliesAfterIt(t *testing.T) {
 			tc.check(t, got)
 		})
 	}
+}
+
+// Each refused key keeps its own category in a batch, as DecodeKey gives
+// it alone: an unknown key matches ErrKey, any other refusal ErrValidation,
+// and errors.As reaches every *KeyError, so a batch of one is judged as
+// DecodeKey judges its key.
+func TestDecodeEdits_EachRefusedKeyKeepsItsCategory(t *testing.T) {
+	baseline := &editConfig{Pool: []editServer{{"x", 1}}}
+	for _, tc := range []struct {
+		name          string
+		edits         map[string]any
+		key, validate bool // whether the batch's error matches ErrKey, ErrValidation
+	}{
+		{"an index past the next element", map[string]any{"pool[5].host": "z"}, false, true},
+		{"one value under two spellings", map[string]any{"pool[0].port": 1, "POOL[0].port": 2}, false, true},
+		{"an unknown key", map[string]any{"prot": 1}, true, false},
+		{"both", map[string]any{"prot": 1, "pool[5].host": "z"}, true, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := DecodeEdits(t.Context(), baseline, tc.edits)
+			var edits *EditsError
+			require.ErrorAs(t, err, &edits)
+			assert.Equal(t, tc.key, errors.Is(err, ErrKey), "ErrKey")
+			assert.Equal(t, tc.validate, errors.Is(err, ErrValidation), "ErrValidation")
+			var ke *KeyError
+			require.ErrorAs(t, err, &ke)
+			assert.Equal(t, edits.Refused[0], *ke, "errors.As reaches the first refused key")
+			if len(tc.edits) == 1 {
+				for key, value := range tc.edits {
+					_, alone := DecodeKey[editConfig](t.Context(), key, value, WithDefaults(map[string]any{"pool": []editServer{{"x", 1}}}))
+					assert.Equal(t, errors.Is(alone, ErrKey), errors.Is(err, ErrKey), "as DecodeKey: ErrKey")
+					assert.Equal(t, errors.Is(alone, ErrValidation), errors.Is(err, ErrValidation), "as DecodeKey: ErrValidation")
+				}
+			}
+		})
+	}
+	_, err := DecodeEdits(t.Context(), baseline, map[string]any{"pool[0].port": "not a number"})
+	require.ErrorIs(t, err, ErrValidation)
+	assert.NotErrorIs(t, err, ErrKey)
+	var ke *KeyError
+	assert.NotErrorAs(t, err, &ke, "a candidate that fails names no refused key")
 }
 
 // A map a key sets beneath a value an earlier key of the batch set merges

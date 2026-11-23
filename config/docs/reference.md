@@ -25,7 +25,7 @@ Every error wraps one category sentinel together with its cause, so `errors.Is` 
 | `ErrReloadInProgress` | A manual reload found another running. Not a failure. |
 | `ErrReloaderStopped` | A reload was requested after `Stop`. |
 | `ErrReloaderRunning` | `Run` was called while another `Run` of the same reloader runs. |
-| `ErrSchema`, `ErrKey` | Invalid schema/default declarations, or a malformed/unknown key. `KeyError` distinguishes unknown keys from invalid values in `CheckKey`, `DecodeKey` and `CanonicalKey`; `EditsError` is a batch `DecodeEdits` refuses: its `Refused` keys match `ErrKey`, a candidate that does not decode or validate matches `ErrValidation`. |
+| `ErrSchema`, `ErrKey` | Invalid schema/default declarations, or a malformed/unknown key. `KeyError` distinguishes unknown keys from invalid values in `CheckKey`, `DecodeKey` and `CanonicalKey`; `EditsError` is a batch `DecodeEdits` refuses: it wraps each refused `*KeyError`, which keeps its own category (an unknown key `ErrKey`, any other refusal `ErrValidation`, as `DecodeKey` gives it), and `Err`, the cause of a candidate that does not decode or validate (`ErrValidation`). |
 
 `Diagnose(err)` turns any of them into a `Problem{Kind, Message}` — a bounded category for a metric label or a status endpoint.
 
