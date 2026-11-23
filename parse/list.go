@@ -32,6 +32,8 @@ type ListRequest struct {
 	facets         []string
 	include        []string
 	fields         []string
+	// members are the JSON members fields encode as (FieldMembers).
+	members []string
 	// now is the instant the request was parsed at: its filter's
 	// relative-time tokens resolved against it, and BuildList resolves its
 	// policy's, the related tables' policies' and its includes' against it.
@@ -97,6 +99,13 @@ func (req *ListRequest) Include() []string { return slices.Clone(req.include) }
 // items it writes; the page's SELECT reads every read column whatever the
 // mask names.
 func (req *ListRequest) Fields() []string { return slices.Clone(req.fields) }
+
+// FieldMembers is the field mask as the JSON members its fields encode as,
+// the names a JSON response narrows each item to (parsehttp.WriteList). They
+// are the Fields when the field-name tag is json. Under another tag each is
+// the name encoding/json gives the same struct field, and a field it writes
+// no member for has none, so a mask can name fields and have no members.
+func (req *ListRequest) FieldMembers() []string { return slices.Clone(req.members) }
 
 // ListInput is a list request in transport-neutral form: the parameters
 // ParseList reads from a query string, already typed and split.
@@ -171,6 +180,12 @@ func (r *Resource[T]) ParseListInput(in ListInput) (*ListRequest, error) {
 	if req.fields, err = listNames(in.Fields, r.maskName); err != nil {
 		return nil, err
 	}
+	for _, name := range req.fields {
+		member := r.maskable[name]
+		if member != "" {
+			req.members = append(req.members, member)
+		}
+	}
 	return req, nil
 }
 
@@ -184,7 +199,8 @@ func (r *Resource[T]) facetName(name string) error {
 // maskName refuses a field mask name that is no field of the response,
 // without saying whether T has a field by that name its response withholds.
 func (r *Resource[T]) maskName(name string) error {
-	if r.maskable[name] {
+	_, ok := r.maskable[name]
+	if ok {
 		return nil
 	}
 	return unknownListField(fmt.Sprintf("response field '%s' does not exist", name), name)
@@ -201,9 +217,11 @@ func unknownListField(msg, name string) *core.ParseError {
 // ListInput and validates it with ParseListInput. A list parameter given
 // more than once, a page size that is not a positive integer, or a flag that
 // is not a boolean, is E2067: facets, include and fields are one
-// comma-separated value, as the body form takes one member each. Every other
-// parameter that AcceptParams does not name is a field filter, so a misspelt
-// filter is E2071 and cannot widen a list.
+// comma-separated value, as the body form takes one member each. The search
+// is read from filter.ParamSearch or from the parameter the search schema
+// advertises (core.WithSearchParam), and a request naming both is E2067.
+// Every other parameter that AcceptParams does not name is a field filter,
+// so a misspelt filter is E2071 and cannot widen a list.
 func (r *Resource[T]) ParseList(q url.Values) (*ListRequest, error) {
 	in, err := r.listInput(q)
 	if err != nil {
@@ -216,14 +234,19 @@ func (r *Resource[T]) ParseList(q url.Values) (*ListRequest, error) {
 // comma-separated names to lists, and the remaining parameters to field
 // filters.
 func (r *Resource[T]) listInput(q url.Values) (ListInput, error) {
-	if err := listParamsOnce(q); err != nil {
+	err := r.listParamsOnce(q)
+	if err != nil {
+		return ListInput{}, err
+	}
+	search, err := r.searchValue(q)
+	if err != nil {
 		return ListInput{}, err
 	}
 	in := ListInput{
 		Filter:  q.Get(filter.ParamFilter),
 		Sort:    q.Get(filter.ParamSort),
 		Cursor:  q.Get(filter.ParamCursor),
-		Search:  q.Get(filter.ParamSearch),
+		Search:  search,
 		Facets:  splitNames(q.Get(filter.ParamFacets)),
 		Include: splitNames(q.Get(filter.ParamInclude)),
 		Fields:  splitNames(q.Get(filter.ParamFields)),
@@ -235,7 +258,6 @@ func (r *Resource[T]) listInput(q url.Values) (ListInput, error) {
 		}
 		in.PageSize = n
 	}
-	var err error
 	if in.IncludeTotal, err = boolParam(q, filter.ParamIncludeTotal); err != nil {
 		return ListInput{}, err
 	}
@@ -243,7 +265,7 @@ func (r *Resource[T]) listInput(q url.Values) (ListInput, error) {
 		return ListInput{}, err
 	}
 	for key, values := range q {
-		if len(values) == 0 || filter.IsListParam(key) || slices.Contains(r.accepted, key) {
+		if len(values) == 0 || r.isListParam(key) || slices.Contains(r.accepted, key) {
 			continue
 		}
 		if in.FieldFilters == nil {
@@ -280,14 +302,81 @@ func (r *Resource[T]) searchable() bool {
 	return r.searchSchema != nil && len(r.searchSchema.Fields) > 0
 }
 
-// listParamsOnce refuses a list parameter (filter.Param*) given more than
+// isListParam reports whether a query parameter is one of r's list
+// parameters: filter.Param*, or the search parameter its search schema
+// advertises.
+func (r *Resource[T]) isListParam(name string) bool {
+	return filter.IsListParam(name) || (r.searchParam != "" && name == r.searchParam)
+}
+
+// listParamsOnce refuses a list parameter (isListParam) given more than
 // once. q.Get reads the first, so a second filter, sort or page size would
 // be dropped without a word; flat field filters give a repeat its meaning, a
 // set, and are not checked here.
-func listParamsOnce(q url.Values) error {
+func (r *Resource[T]) listParamsOnce(q url.Values) error {
 	for _, name := range slices.Sorted(maps.Keys(q)) {
-		if n := len(q[name]); n > 1 && filter.IsListParam(name) {
+		n := len(q[name])
+		if n > 1 && r.isListParam(name) {
 			return listParamError(name, fmt.Sprintf("%s is given %d times; a list parameter is given once", name, n))
+		}
+	}
+	return nil
+}
+
+// searchValue reads the free-text search from q: from filter.ParamSearch,
+// the parameter every client sends, or from the parameter the search schema
+// advertises in its place (core.WithSearchParam). A request that names both
+// gives the search twice, which is E2067, as a repeated list parameter is.
+func (r *Resource[T]) searchValue(q url.Values) (string, error) {
+	if r.searchParam == "" {
+		return q.Get(filter.ParamSearch), nil
+	}
+	_, canonical := q[filter.ParamSearch]
+	_, advertised := q[r.searchParam]
+	switch {
+	case canonical && advertised:
+		return "", listParamError(r.searchParam, fmt.Sprintf("%s and %s are the one search parameter; give it once", r.searchParam, filter.ParamSearch))
+	case advertised:
+		return q.Get(r.searchParam), nil
+	}
+	return q.Get(filter.ParamSearch), nil
+}
+
+// setSearchParam takes the query parameter the search schema advertises
+// (core.WithSearchParam; empty is filter.ParamSearch), which ParseList reads
+// as well as filter.ParamSearch, and refuses one a list request already
+// gives another meaning.
+func (r *Resource[T]) setSearchParam() error {
+	if r.searchSchema == nil {
+		return nil
+	}
+	if r.searchSchema.Param == "" {
+		r.searchSchema.Param = filter.ParamSearch
+	}
+	if r.searchSchema.Param != filter.ParamSearch {
+		r.searchParam = r.searchSchema.Param
+	}
+	return r.checkSearchParam(r.filterSchema)
+}
+
+// checkSearchParam refuses a search parameter ParseList would otherwise
+// read as something else: another list parameter, a parameter the endpoint
+// reads itself (AcceptParams), or a flat filter on a request field of fs
+// (filter.FlatParamFields).
+func (r *Resource[T]) checkSearchParam(fs *filter.ResourceSchema) error {
+	p := r.searchParam
+	switch {
+	case p == "":
+		return nil
+	case filter.IsListParam(p):
+		return fmt.Errorf("search parameter %q is the list parameter %s", p, p)
+	case slices.Contains(r.accepted, p):
+		return fmt.Errorf("search parameter %q is a parameter the endpoint reads itself (AcceptParams %q)", p, p)
+	}
+	for _, name := range filter.FlatParamFields(p) {
+		_, isField := fs.RequestField(name)
+		if isField {
+			return fmt.Errorf("search parameter %q is a flat filter on field %q", p, name)
 		}
 	}
 	return nil

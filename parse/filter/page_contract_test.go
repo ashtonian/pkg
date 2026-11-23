@@ -114,3 +114,39 @@ func TestNewPage_EveryFlagHasItsCursor(t *testing.T) {
 		}
 	}
 }
+
+// A query that matches nothing hands NewPage nil rows; the page still
+// encodes "items":[], as a client reading an array expects, beside the
+// metadata an executor sets on it.
+func TestNewPage_EmptyPageEncodesItemsAsAnArray(t *testing.T) {
+	t.Parallel()
+	type row struct {
+		ID string `json:"id"`
+	}
+	keys := []CursorKey{{Name: "id", Column: "id", Direction: SortAsc}}
+	get := func(r row, _ string) (any, error) { return r.ID, nil }
+	for _, tt := range []struct {
+		name string
+		rows []row
+		plan CursorPlan
+	}{
+		{"nil rows, first page", nil, CursorPlan{Keys: keys}},
+		{"no rows, first page", []row{}, CursorPlan{Keys: keys}},
+		{"nil rows after a forward seek", nil, CursorPlan{Keys: keys, HasCursor: true}},
+		{"no rows after a reverse seek", make([]row, 0, 4), CursorPlan{Keys: keys, HasCursor: true, Reverse: true}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			page, err := NewPage(tt.rows, 2, tt.plan, get)
+			require.NoError(t, err)
+			require.NotNil(t, page.Items)
+			assert.Empty(t, page.Items)
+
+			total := int64(0)
+			page.PageInfo.TotalCount = &total
+			page.Facets = map[string][]FacetBucket{"name": {}}
+			got, err := json.Marshal(page)
+			require.NoError(t, err)
+			assert.JSONEq(t, `{"items":[],"page_info":{"has_next_page":false,"has_prev_page":false,"total_count":0},"facets":{"name":[]}}`, string(got))
+		})
+	}
+}

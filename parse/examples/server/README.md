@@ -36,7 +36,7 @@ The second request is the same list as a POST body ([HTTP contract](../../docs/h
 
 | Route | SDK call | Served by |
 |---|---|---|
-| `GET /api/products` | `list` | `parsehttp.ParseList`, `BuildList`, `parsesql.QueryPage`: the page, with the count and facets when asked |
+| `GET /api/products` | `list` | `parsehttp.ParseList`, `BuildList`, `parsesql.QueryPage`, `parsehttp.WriteList`: the page, with the count and facets when asked, each product narrowed to the members `fields` names ([field mask](../../docs/queries.md#field-mask)) |
 | `POST /api/products` | `list` over the body transport | The same handler |
 | `OPTIONS /api/products?facets=…` | `facets` | `parsehttp.ParseFacets`, `BuildFacets`: `{"facets": {…}}`; a page parameter (`cursor`, `sort`, `page_size`, …) is 422 `E2067` |
 | `PATCH /api/products/{id}` | `patch` | The pattern is the collection's path, a slash and `parsehttp.ItemPattern(products)`, a wildcard per key column; `parsehttp.ItemKey` reads the key, `parsehttp.ParsePatch` the patch, then `BuildUpdate(…, parse.ByKey(key), …)`, `parsesql.Update`: a `parsehttp.PatchAnswer`, `{"updated": [product]}`, or 404 `E4004` for a key that names no product, one its columns cannot hold included |
@@ -108,7 +108,7 @@ GOWORK=off go test -tags=integration -race ./...
 
 `make parse-example-check` from the repository root runs both, after `go mod tidy -diff`, `go vet` and staticcheck; CI runs it whenever Parse or the example changes.
 
-The unit checks cover explicit flags over environment values, omitted-flag precedence, rejection of an unbounded shutdown and of an unknown log level, the startup entry at any level, and the request timeout on every request's context. The integration checks request every route of the Routes table. The integration checks include an expired deadline (504 `E5004`, no ERROR entry) and a cancelled request (nothing written, a DEBUG entry) on every route that reaches the database. Integration checks exercise the HTTP resource against SQLite. See [the module overview](../../README.md), [query guide](../../docs/queries.md) and [error contract](../../docs/http-errors.md).
+The unit checks cover explicit flags over environment values, omitted-flag precedence, rejection of an unbounded shutdown and of an unknown log level, the startup entry at any level, and the request timeout on every request's context. The integration checks request every route of the Routes table. A list under a field mask, over GET and POST, answers only the masked members of each product, with the unmasked list's cursors, total and facets, a cursor that continues the walk, `[]` for no match and 422 `E2071` for a name that is no field. The integration checks include an expired deadline (504 `E5004`, no ERROR entry) and a cancelled request (nothing written, a DEBUG entry) on every route that reaches the database. Integration checks exercise the HTTP resource against SQLite. See [the module overview](../../README.md), [query guide](../../docs/queries.md) and [error contract](../../docs/http-errors.md).
 
 ## Key Files
 
@@ -116,7 +116,7 @@ The unit checks cover explicit flags over environment values, omitted-flag prece
 |---|---|
 | `go.mod` | The example's own module: Kong and the released config modules, Parse replaced by this working tree |
 | `main.go` | Configuration, HTTP lifecycle and seeded SQLite storage |
-| `server.go` | Resource declaration, routes (the item route from the key, `parsehttp.ItemPattern`), list (GET and POST), facet, schema, single (key read by `parsehttp.ItemKey`) and batch patch handlers, the example's error codes |
+| `server.go` | Resource declaration, routes (the item route from the key, `parsehttp.ItemPattern`), list (GET and POST, written under its field mask by `parsehttp.WriteList`), facet, schema, single (key read by `parsehttp.ItemKey`) and batch patch handlers, the example's error codes |
 | `settings_test.go` | Configuration source precedence, bounded shutdown, the log level and the startup entry |
 | `server_test.go` | The request timeout on every request's context |
 | `server_integration_test.go` | Requests against the SQLite HTTP server, one per row of the Routes table |

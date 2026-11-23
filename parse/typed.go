@@ -66,10 +66,13 @@ func (r *Resource[T]) parseFilter(query string, cfg *core.ParserConfig) (*filter
 // by the parser's limits as one filter. A parameter that is neither a list
 // parameter (filter.Param*), a name filter.QueryParamAccept lists, nor a
 // filterable field is E2071; filter.QueryParamLenient ignores it instead. A
-// list parameter given more than once is E2067, as in ParseList. The
-// parser's own configuration bounds the flat parameters, whatever opts say.
+// list parameter given more than once is E2067, as in ParseList. The search
+// parameter the search schema advertises (core.WithSearchParam) is a list
+// parameter too. The parser's own configuration bounds the flat parameters,
+// whatever opts say.
 func (r *Resource[T]) ParseRequestFilter(q url.Values, opts ...filter.QueryParamOption) (*filter.ParsedFilter, error) {
-	if err := listParamsOnce(q); err != nil {
+	err := r.listParamsOnce(q)
+	if err != nil {
 		return nil, err
 	}
 	now := r.cfg.Now()
@@ -78,7 +81,11 @@ func (r *Resource[T]) ParseRequestFilter(q url.Values, opts ...filter.QueryParam
 	if err != nil {
 		return nil, err
 	}
-	flatAST, err := filter.NewQueryParamParser(r.filterSchema, append(slices.Clone(opts), filter.QueryParamConfig(r.cfg))...).At(now).Parse(q)
+	flatOpts := append(slices.Clone(opts), filter.QueryParamConfig(r.cfg))
+	if r.searchParam != "" {
+		flatOpts = append(flatOpts, filter.QueryParamAccept(r.searchParam))
+	}
+	flatAST, err := filter.NewQueryParamParser(r.filterSchema, flatOpts...).At(now).Parse(q)
 	if err != nil {
 		return nil, err
 	}
