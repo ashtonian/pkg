@@ -42,13 +42,16 @@ func RestartChanges(changes []Change) []Change {
 	return cloneChanges(slices.DeleteFunc(slices.Clone(changes), func(c Change) bool { return c.Field.Reload != ReloadRestart }))
 }
 
-func fieldReload(f *gowalker.Field) string {
-	if value, ok := f.GoField().Tag.Lookup("reload"); ok {
+// fieldReload is the reload class of a field declared sf, reached through
+// the squashed structs parents: its own tag's, else the innermost of theirs.
+func fieldReload(sf reflect.StructField, parents []reflect.StructField) string {
+	value, ok := sf.Tag.Lookup("reload")
+	if ok {
 		return value
 	}
-	parents := f.InlineParents()
 	for i := len(parents) - 1; i >= 0; i-- {
-		if value, ok := parents[i].Tag.Lookup("reload"); ok {
+		value, ok = parents[i].Tag.Lookup("reload")
+		if ok {
 			return value
 		}
 	}
@@ -64,11 +67,30 @@ func checkReloadTags(view *gowalker.Schema) error {
 	var failed error
 	check := func(shape *gowalker.Shape, p keyPath) error {
 		own := false
+		tagged := func(f reflect.StructField) error {
+			value, ok := f.Tag.Lookup("reload")
+			if !ok {
+				return nil
+			}
+			own = true
+			if value == "" || len(strings.Fields(value)) != 1 || strings.TrimSpace(value) != value {
+				return fmt.Errorf("%w: %s field %s has invalid reload class %q", ErrSchema, p.orRoot(), f.Name, value)
+			}
+			return nil
+		}
 		for _, f := range shape.DeclaredView() {
-			if value, ok := f.Tags().Lookup("reload"); ok {
-				own = true
-				if value == "" || len(strings.Fields(value)) != 1 || strings.TrimSpace(value) != value {
-					return fmt.Errorf("%w: %s field %s has invalid reload class %q", ErrSchema, p.orRoot(), f.GoField().Name, value)
+			err := tagged(f.GoField())
+			if err != nil {
+				return err
+			}
+		}
+		// The declared view skips a remain field, whose class the keys it
+		// collects take.
+		for _, d := range shape.Declarations() {
+			if len(d.InlineParents) == 0 && koanfTag(d.GoField).Has("remain") {
+				err := tagged(d.GoField)
+				if err != nil {
+					return err
 				}
 			}
 		}
@@ -127,13 +149,26 @@ func hasReloadTags(root *schemaNode) bool {
 				return true
 			}
 		}
+		r := n.remain
+		if r != nil {
+			if r.reload != "" {
+				return true
+			}
+			m, err := r.node(metadataOf)
+			if err == nil && walk(m) {
+				return true
+			}
+		}
 		return walk(n.elem)
 	}
 	return walk(root)
 }
 
-func (a *application) owner(p keyPath) int {
-	if a.reloadTags && ownerOf(a.root, p).Reload == ReloadRestart {
+// owner is the applier that owns key p, whose declared field — its
+// Change's Field — is f, or -1 for none: a key whose field waits for a
+// restart has no applier under the reload tags.
+func (a *application) owner(p keyPath, f Field) int {
+	if a.reloadTags && f.Reload == ReloadRestart {
 		return -1
 	}
 	return a.owners.of(p)
@@ -143,19 +178,32 @@ func (a *application) checkReloadOwnership() error {
 	claimed := make([]bool, len(a.appliers))
 	walking := map[*schemaNode]bool{}
 	var walk func(*schemaNode, cursor) error
+	// claim checks that an applier owns c, a value's key pattern.
+	var claim func(cursor) error
 	walk = func(n *schemaNode, c cursor) error {
 		if !walking[n] {
 			walking[n] = true
 			defer delete(walking, n)
 			switch n.kind {
 			case nodeBranch:
-				if len(n.fields) > 0 {
+				if len(n.fields) > 0 || n.remain != nil {
 					for _, f := range n.fields {
 						if err := walk(f.node, c.intoField(f)); err != nil {
 							return err
 						}
 					}
-					return nil
+					if n.remain == nil {
+						return nil
+					}
+					m := n.remainMember(c.sensitive())
+					if m.kind == memberRemain {
+						return claim(m.cursor(c)) // compared whole, at section[*]
+					}
+					elem, err := m.node(metadataOf)
+					if err != nil {
+						return err
+					}
+					return walk(elem, m.cursor(c))
 				}
 			case nodeMap, nodeList:
 				if n.typ.Kind() != reflect.Array {
@@ -171,6 +219,9 @@ func (a *application) checkReloadOwnership() error {
 				}
 			}
 		}
+		return claim(c)
+	}
+	claim = func(c cursor) error {
 		if cmp.Or(c.owner.Reload, ReloadRestart) == ReloadRestart {
 			return nil
 		}
@@ -184,17 +235,12 @@ func (a *application) checkReloadOwnership() error {
 			return fmt.Errorf("%w: live key %s has no applier", ErrSchema, c.path)
 		}
 		for _, prefix := range a.owners {
-			if len(prefix.path) > len(c.path) || !overlaps(prefix.path, c.path) {
-				continue
-			}
-			candidate := slices.Clone(representative)
-			for j, seg := range prefix.path {
-				if seg.kind != segAny {
-					candidate[j] = seg
+			candidate, ok := instanceOf(prefix.path, c.path, representative)
+			if ok {
+				i := a.owners.of(candidate)
+				if i >= 0 {
+					claimed[i] = true
 				}
-			}
-			if i := a.owners.of(candidate); i >= 0 {
-				claimed[i] = true
 			}
 		}
 		return nil
@@ -210,34 +256,71 @@ func (a *application) checkReloadOwnership() error {
 	return nil
 }
 
+// instanceOf is the key of pattern, a claimed value's key pattern, that
+// prefix names: representative, pattern's key outside every literal
+// selector, with prefix's selectors in place of the [*]s they fill. ok is
+// false when prefix names no key of pattern: it is longer, names another
+// field, or names a key beneath the [*] of section[*], the keys a sensitive
+// remain field collects, which are compared whole and are no keys of their
+// own.
+func instanceOf(prefix, pattern, representative keyPath) (keyPath, bool) {
+	if len(prefix) > len(pattern) {
+		return nil, false
+	}
+	candidate := slices.Clone(representative)
+	for j, s := range prefix {
+		switch {
+		case s.kind == segAny:
+			if pattern[j].kind != segAny && !segmentMatches(s, pattern[j]) {
+				return nil, false
+			}
+		case representative[j].kind == segAny:
+			return nil, false
+		case pattern[j].kind == segAny:
+			candidate[j] = s
+		case s != pattern[j]:
+			return nil, false
+		}
+	}
+	return candidate, true
+}
+
 // representative picks one entry outside every literal selector, so an applier
-// for a single map key cannot claim coverage of an unbounded collection.
+// for a single map key, or for one key a remain field collects, cannot claim
+// coverage of an unbounded collection. A remain field compared whole keeps
+// its [*]: Diff names it so.
 func (a *application) representative(pattern keyPath) (keyPath, error) {
 	p := slices.Clone(pattern)
 	for i, seg := range p {
 		if seg.kind != segAny {
 			continue
 		}
-		_, n, err := a.root.walkTo(cursor{}, p[:i])
+		c, n, err := a.root.walkTo(cursor{}, p[:i])
 		if err != nil {
 			return nil, fmt.Errorf("%w: checking reload ownership: %w", ErrSchema, err)
 		}
-		if n.kind == nodeMap {
+		if n.kind == nodeMap || n.kind == nodeBranch {
+			if n.kind == nodeBranch && n.remainMember(c.sensitive()).kind == memberRemain {
+				continue
+			}
 			name := ""
 			for {
 				collision := false
 				for _, prefix := range a.owners {
-					if len(prefix.path) > i && prefix.path[i].kind == segKey && prefix.path[i].name == name {
+					if len(prefix.path) > i && prefix.path[i].kind != segAny && prefix.path[i].kind != segIndex && prefix.path[i].name == name {
 						collision = true
 						break
 					}
 				}
-				if !collision {
+				if !collision && (n.kind == nodeMap || n.collects(memberSegment(name))) {
 					break
 				}
 				name += "_"
 			}
 			p[i] = segment{kind: segKey, name: name}
+			if n.kind == nodeBranch {
+				p[i] = memberSegment(name)
+			}
 		} else {
 			index := 0
 			for {

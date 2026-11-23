@@ -144,3 +144,52 @@ func TestUnexportedSquash_PointerRefused(t *testing.T) {
 	require.ErrorIs(t, err, ErrSchema)
 	assert.Contains(t, err.Error(), "squashes a pointer to an unexported struct")
 }
+
+// promotedLists is unexported; its lists and map reach the config only by
+// promotion through a squashed embedding.
+type promotedLists struct {
+	Hosts  []string          `koanf:"hosts" default:"a,b"`
+	Labels map[string]string `koanf:"labels" default:"team=core"`
+}
+
+type promotedListsCfg struct {
+	promotedLists `koanf:",squash"`
+	Port          int `koanf:"port"`
+}
+
+// A post-load hook editing a list or map in place, promoted through an
+// unexported squashed struct, is the hook's change: provenance names it,
+// as it does for a direct field, rather than the defaults it replaced.
+func TestProvenance_InPlaceEditThroughUnexportedSquash(t *testing.T) {
+	snap, err := LoadSnapshot[promotedListsCfg](t.Context(),
+		WithPostLoad(func(_ context.Context, c *promotedListsCfg) error {
+			c.Hosts[0] = "hook"
+			c.Labels["team"] = "hook"
+			return nil
+		}), WithSkipValidation())
+	require.NoError(t, err)
+	assert.Equal(t, []string{"hook", "b"}, snap.Config.Hosts)
+	hook := []Source{{Kind: SourcePostLoad, Name: "0"}}
+	assert.Equal(t, hook, snap.Provenance["hosts[0]"].Transforms)
+	assert.Equal(t, Source{Kind: SourceTag}, snap.Provenance["hosts[0]"].Input)
+	assert.Empty(t, snap.Provenance["hosts[1]"].Transforms)
+	assert.Equal(t, hook, snap.Provenance[`labels["team"]`].Transforms)
+}
+
+type promotedListsDefaulted struct {
+	promotedLists `koanf:",squash"`
+}
+
+func (c *promotedListsDefaulted) SetDefaults() {
+	c.Hosts[0] = "code"
+	c.Labels["team"] = "code"
+}
+
+// SetDefaults editing a promoted list or map in place sets the defaults it
+// wrote: the value it is compared with afterwards is a copy of its own.
+func TestDefaulter_InPlaceEditThroughUnexportedSquash(t *testing.T) {
+	got, err := Load[promotedListsDefaulted](t.Context(), WithSkipValidation())
+	require.NoError(t, err)
+	assert.Equal(t, []string{"code", "b"}, got.Hosts)
+	assert.Equal(t, map[string]string{"team": "code"}, got.Labels)
+}

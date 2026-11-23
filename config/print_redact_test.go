@@ -147,11 +147,11 @@ func TestRedaction_DynamicMapKeys(t *testing.T) {
 
 	m := RedactedMap(cfg)
 	want := map[string]string{
-		`settings["password"]`:          redactedValue,
-		`settings["region"]`:            "us",
-		`settings["nested"]["api_key"]`: redactedValue,
-		`settings["nested"]["zone"]`:    "a",
-		`settings["list"][0]["token"]`:  redactedValue,
+		`settings["password"]`:       redactedValue,
+		`settings["region"]`:         "us",
+		`settings["nested"].api_key`: redactedValue,
+		`settings["nested"].zone`:    "a",
+		`settings["list"][0].token`:  redactedValue,
 	}
 	for key, value := range want {
 		if m[key] != value {

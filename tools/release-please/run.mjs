@@ -45,7 +45,7 @@ async function main() {
   const buildsPullRequests = args['dry-run'] || !args['skip-github-pull-request'];
   // Creating releases reads the merged release PR, not commits, so only
   // building one needs the history.
-  let history = { mergeOf: new Map(), messageOf: new Map() };
+  let history = { mergeOf: new Map(), messageOf: new Map(), branchCommits: new Map() };
   if (buildsPullRequests) {
     // release-please reads the branch as GitHub has it now, which can be
     // ahead of the commit this job checked out.

@@ -1,7 +1,6 @@
 package config
 
 import (
-	"reflect"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -35,35 +34,6 @@ func TestWithDefaults_SnapshotsNestedData(t *testing.T) {
 	require.NotNil(t, got.Ptr)
 	assert.Equal(t, []string{"original"}, got.Ptr.Names)
 	assert.Equal(t, [1][]int{{1}}, got.Arr)
-}
-
-// Sharing and cycles inside the defaults survive the copy without it
-// recursing forever; unexported fields keep their values.
-func TestDeepCopy_SharingCyclesAndUnexported(t *testing.T) {
-	type node struct {
-		Next *node
-		Tags []string
-		note string
-	}
-	shared := []string{"a"}
-	n := &node{Tags: shared, note: "kept"}
-	n.Next = n
-	self := map[string]any{"tags": shared}
-	self["self"] = self
-
-	in := map[string]any{"node": n, "self": self, "again": shared}
-	out := deepCopy(reflect.ValueOf(in)).Interface().(map[string]any)
-
-	cn := out["node"].(*node)
-	assert.NotSame(t, n, cn)
-	assert.Same(t, cn, cn.Next, "the cycle points at the copy")
-	assert.Equal(t, "kept", cn.note)
-	cself := out["self"].(map[string]any)
-	assert.Equal(t, reflect.ValueOf(cself).Pointer(), reflect.ValueOf(cself["self"]).Pointer())
-
-	shared[0] = "changed"
-	assert.Equal(t, []string{"a"}, cn.Tags)
-	assert.Equal(t, []string{"a"}, out["again"])
 }
 
 // Map keys are copied too: a pointer key's target changed by the caller

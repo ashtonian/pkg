@@ -151,9 +151,9 @@ func newInputs(schema *schemaNode, tree *originNode, key []byte) *inputs {
 	return in
 }
 
-// add records the inputs of tree, the source called name merged at rank. A
-// map[string]any merges key by key, so its entries are the inputs; any
-// other value replaces what was there whole, so it is one input.
+// add records the inputs of tree, the source called name merged at rank.
+// Every map of it holds its entries until a higher source replaces one, so
+// its entries are the inputs; any other value is one input.
 func (in *inputs) add(name string, rank int, tree map[string]any, label labeler) {
 	if label.defaults() {
 		return
@@ -170,32 +170,58 @@ func (in *inputs) add(name string, rank int, tree map[string]any, label labeler)
 
 func (in *inputs) walk(m map[string]any, values map[string][sha256.Size]byte) {
 	for key, val := range m {
-		in.path = append(in.path, key)
-		if child, ok := val.(map[string]any); ok {
-			in.walk(child, values)
-		} else {
-			var sum [sha256.Size]byte
-			if in.enc != nil {
-				sum = in.enc.digest(val)
-			}
-			in.key = encodePath(in.key[:0], in.path)
-			values[string(in.key)] = sum
-		}
-		in.path = in.path[:len(in.path)-1]
+		in.at(key, val, values)
 	}
+}
+
+// at records val, set at key beneath in.path: each entry of a map, and each
+// element a listEdit sets, is an input of its own; anything else is one.
+func (in *inputs) at(key string, val any, values map[string][sha256.Size]byte) {
+	in.path = append(in.path, key)
+	defer func() { in.path = in.path[:len(in.path)-1] }()
+	child, isMap := mergedMap(val)
+	if isMap {
+		in.walk(child, values)
+		return
+	}
+	e, isEdit := val.(listEdit)
+	if isEdit {
+		for i, elem := range e {
+			in.at(strconv.Itoa(i), elem, values)
+		}
+		return
+	}
+	var sum [sha256.Size]byte
+	if in.enc != nil {
+		sum = in.enc.digest(val)
+	}
+	in.key = encodePath(in.key[:0], in.path)
+	values[string(in.key)] = sum
 }
 
 // leaves counts the inputs tree holds.
 func leaves(tree map[string]any) int {
 	n := 0
 	for _, val := range tree {
-		if child, ok := val.(map[string]any); ok {
-			n += leaves(child)
-		} else {
-			n++
-		}
+		n += inputsIn(val)
 	}
 	return n
+}
+
+func inputsIn(val any) int {
+	child, isMap := mergedMap(val)
+	if isMap {
+		return leaves(child)
+	}
+	e, isEdit := val.(listEdit)
+	if isEdit {
+		n := 0
+		for _, elem := range e {
+			n += inputsIn(elem)
+		}
+		return n
+	}
+	return 1
 }
 
 // encodePath appends path to b, each segment as its length, ":" and its
@@ -290,29 +316,58 @@ func (in *inputs) appendShadowed(out []Shadow, path string, label labeler, rank 
 }
 
 // holder is the node whose source the merge kept for path, a raw path's
-// encodePath encoding: the node at path, or the ancestor a source replaced
-// whole with a value that is no map. It is nil when nothing holds path.
+// encodePath encoding: the node at path, the ancestor a source replaced with
+// a value that is no map — a list, unless an edit set the element path lies
+// in — or, where path is gone, the nearest ancestor a source set whole: a
+// list, or a typed map or section, which removed every key beneath it that
+// it lacked, however many keys a higher source merged into it since. It is
+// nil when nothing holds path.
 func (n *originNode) holder(path string) *originNode {
 	node := n
+	var whole *originNode
 	for rest := path; rest != ""; {
 		var key string
 		key, rest = nextSegment(rest)
+		if node.list {
+			// A list replaces whole what lies beneath it; an edit sets one
+			// element of it, which holds what the edit set.
+			elem := node.element(key)
+			if elem == nil {
+				return node
+			}
+			whole, node = node, elem
+			continue
+		}
 		if !node.merges {
 			return node
 		}
+		if node.whole {
+			whole = node
+		}
 		child := node.children[key]
 		if child == nil {
-			return nil
+			return whole
 		}
 		node = child
 	}
 	return node
 }
 
-// kept is the source of what n holds: its own, or for a map that a higher
-// source made of a value, the one source of everything in it.
+// element is the node of list n's element at index key, raw; nil when n
+// records none there.
+func (n *originNode) element(key string) *originNode {
+	i, err := strconv.Atoi(key)
+	if err != nil || i < 0 || i >= len(n.elems) {
+		return nil
+	}
+	return n.elems[i]
+}
+
+// kept is the source of what n holds: its own for a value that is no map
+// and for a map its source set whole, or for a map that a higher source made
+// of a value, the one source of everything in it.
 func (n *originNode) kept() Source {
-	if !n.merges {
+	if !n.merges || n.whole {
 		return n.src
 	}
 	if src, ok := n.uniform(); ok {
@@ -322,8 +377,9 @@ func (n *originNode) kept() Source {
 }
 
 // inputKey is the key an input at raw path — its encodePath encoding —
-// sets: cut at a list or a value decoded whole, which the input sets as
-// part of it. It is false for a path no field reads.
+// sets: through a list element a key edit set by index, and cut at any other
+// list or a value decoded whole, which the input sets as part of it. It is
+// false for a path no field or remain field reads.
 func inputKey(root *schemaNode, raw string) (keyPath, bool) {
 	var p keyPath
 	n := root
@@ -332,13 +388,23 @@ func inputKey(root *schemaNode, raw string) (keyPath, bool) {
 		name, rest = nextSegment(rest)
 		switch n.kind {
 		case nodeBranch:
-			f := n.byKey[name]
-			if f == nil {
+			m, ok := n.memberAt(memberSegment(name))
+			if !ok {
 				return nil, false
 			}
-			p, n = p.field(f.key), f.node
+			next, err := m.node(schemaOf)
+			if err != nil {
+				return nil, false
+			}
+			p, n = append(p, m.seg), next
 		case nodeMap:
 			p, n = p.key(name), n.elem
+		case nodeList:
+			i, err := strconv.Atoi(name)
+			if err != nil || i < 0 {
+				return p, true // a map weak decoding reads as the list's one element
+			}
+			p, n = p.index(i), n.elem
 		default:
 			return p, true
 		}

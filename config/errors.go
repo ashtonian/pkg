@@ -41,11 +41,14 @@ var (
 	// ErrReload wraps every reload that ran the pipeline and failed; the
 	// previous config stays live. The failure's own category is wrapped too.
 	ErrReload = errors.New("configuration reload failed")
-	// ErrApply reports a published config some [Applier] did not apply: the
-	// config is live, and the appliers that failed are called again on the
-	// next one. It does NOT wrap ErrReload, which means nothing was
-	// published. An [ApplyError] carries it.
-	ErrApply = errors.New("configuration published but not fully applied")
+	// ErrApply reports a config some [Applier] did not apply. After a
+	// reload the config is published and live, and the appliers that failed
+	// are called again on the next one; it does NOT wrap ErrReload, which
+	// means the reload published nothing. On a reloader's first load nothing
+	// is published and the reloader is not built ([ApplyError].Initial), and
+	// the appliers that applied it are to be rolled back. An [ApplyError]
+	// carries it, naming the appliers that failed and those that applied.
+	ErrApply = errors.New("configuration not fully applied")
 	// ErrReloadInProgress reports a manual Reload that found another reload
 	// in flight. No pipeline ran and nothing failed, so it does NOT wrap
 	// ErrReload: a burst of operator requests must not read as failures.
@@ -58,8 +61,11 @@ var (
 	// ErrSchema reports a config type the package cannot address: a struct
 	// key holding a character keys use for structure (".", "[", "]", "*", a
 	// backslash, a quote or a control character), two fields with one key, a
-	// type that is not a struct where one is required, or a value Diff cannot
-	// compare (a non-nil func, channel or unsafe pointer).
+	// type that is not a struct where one is required, a value Diff cannot
+	// compare (a non-nil func, channel or unsafe pointer), a tag that
+	// cannot mean what it says, a validate rule the default validator
+	// cannot parse or apply to its field, or a tag key that misspells one
+	// config reads (see the package documentation).
 	ErrSchema = errors.New("invalid configuration schema")
 	// ErrKey reports a configuration key that does not parse, or that names
 	// no field of the config type.
@@ -114,7 +120,10 @@ type UnknownKeysError struct {
 type UnknownKey struct {
 	// Key names it, or the enclosing sensitive container when its contents
 	// must be withheld: in the package's key grammar for a key (server.prot,
-	// items[0].prot), by its name for a variable (APP_SERVER_PROT).
+	// items[0].prot, server["a.b"] or ["a.b"] for a source key no field's
+	// key could spell), by its name for a variable (APP_SERVER_PROT). A
+	// source key the tree holds in two readings is named by the nearest key
+	// holding it, and at the root by $, the root's name, which is no key.
 	Key string `json:"key"`
 	// Suggestion is what Key most likely misspells, or "" when nothing is
 	// close: the field of the same struct fewest edits away (server.port), or

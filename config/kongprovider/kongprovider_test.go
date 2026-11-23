@@ -247,6 +247,27 @@ func TestWithOverridesFromStruct_ProvenanceNamesTheFlag(t *testing.T) {
 	assert.Equal(t, flag("--host"), snap2.Provenance["server.host"])
 }
 
+type mergeFlagsCfg struct {
+	Labels map[string]string `koanf:"labels"`
+}
+
+// A flag that sets a whole map hands on Kong's typed map, which replaces a
+// typed default map whole rather than merging into it by key.
+func TestWithOverridesFromStruct_WholeMapFlagReplacesTypedDefault(t *testing.T) {
+	var cli struct {
+		mergeFlagsCfg `embed:""`
+	}
+	parser, err := kong.New(&cli)
+	require.NoError(t, err)
+	kctx, err := parser.Parse([]string{"--labels", "team=core"})
+	require.NoError(t, err)
+	cfg, err := config.Load[mergeFlagsCfg](context.Background(),
+		config.WithDefaults(map[string]any{"labels": map[string]string{"tier": "1"}}),
+		WithOverridesFromStruct(kctx, &cli.mergeFlagsCfg))
+	require.NoError(t, err)
+	assert.Equal(t, map[string]string{"team": "core"}, cfg.Labels)
+}
+
 // A negated flag beats a true value from a lower source.
 func TestWithOverridesFromStruct_NegatedFlagBeatsFile(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.yaml")

@@ -239,8 +239,49 @@ func TestApplier_InitialFailureFailsConstruction(t *testing.T) {
 				WithApplier(Applier[appCfg]{Name: "log", Prefixes: []string{"log"}, ApplyInitial: true, Apply: rec.apply}))
 			require.ErrorIs(t, err, ErrApply)
 			assert.Contains(t, err.Error(), "log:")
+			var failed *ApplyError
+			require.ErrorAs(t, err, &failed)
+			assert.True(t, failed.Initial)
+			assert.Contains(t, err.Error(), "nothing was published", "a first load that fails to apply publishes nothing")
+			assert.NotContains(t, err.Error(), "configuration published")
 		})
 	}
+}
+
+// The ApplyInitial appliers that applied a first load another one failed
+// acted on a config that is never published: the ApplyError names them, in
+// the order they ran, for the caller to roll back. A reload's ApplyError
+// names the appliers that applied the published config the same way.
+// ErrApply's own text holds for both.
+func TestApplier_ApplyErrorNamesTheAppliersThatApplied(t *testing.T) {
+	ok := func(ApplyEvent[appCfg]) (ApplyResult, error) { return ApplyResult{}, nil }
+	fails := func(ApplyEvent[appCfg]) (ApplyResult, error) { return ApplyResult{}, errors.New("sink not ready") }
+	initial := func(name, prefix string, answer func(ApplyEvent[appCfg]) (ApplyResult, error)) ReloadOption {
+		rec := &recorder{result: answer}
+		return WithApplier(Applier[appCfg]{Name: name, Prefixes: []string{prefix}, ApplyInitial: true, Apply: rec.apply})
+	}
+	_, err := NewReloaderFunc(t.Context(), newAppSource().load,
+		initial("log", "log", ok), initial("db", "db", fails), initial("features", "features", ok))
+	require.ErrorIs(t, err, ErrApply)
+	var failed *ApplyError
+	require.ErrorAs(t, err, &failed)
+	assert.True(t, failed.Initial)
+	assert.Equal(t, []string{"log", "features"}, failed.Applied)
+	assert.Equal(t, "configuration not applied at start, so nothing was published, though appliers log, features applied it: db: sink not ready", err.Error())
+	assert.NotContains(t, ErrApply.Error(), "published", "ErrApply is also a first load's, which publishes nothing")
+
+	src := newAppSource()
+	logs, db := &recorder{result: ok}, &recorder{result: ok}
+	r := newAppReloader(t, src, logs.applier("log", "log"), db.applier("db", "db"))
+	db.mu.Lock()
+	db.result = fails
+	db.mu.Unlock()
+	src.edit(func(c *appCfg) { c.Log.Level, c.DB.Host = "debug", "b" })
+	_, err = r.Reload(t.Context())
+	require.ErrorAs(t, err, &failed)
+	assert.False(t, failed.Initial)
+	assert.Equal(t, []string{"log"}, failed.Applied)
+	assert.Equal(t, "configuration published but not fully applied: db: sink not ready", err.Error())
 }
 
 // An applier runs after its config is published, once per reload however
@@ -791,7 +832,7 @@ func TestApplier_InterfaceTypeChangesOverDeferredKeys(t *testing.T) {
 	deferA := func(ev ApplyEvent[appCfg]) (ApplyResult, error) {
 		var restart []string
 		for _, c := range ev.Changes {
-			if c.Key == `extra["a"]` || c.Key == "extra" {
+			if c.Key == "extra.a" || c.Key == "extra" {
 				restart = append(restart, c.Key)
 			}
 		}
@@ -805,7 +846,7 @@ func TestApplier_InterfaceTypeChangesOverDeferredKeys(t *testing.T) {
 		src.edit(func(c *appCfg) { c.Extra = map[string]any{"a": 10, "b": 2} })
 		res, err := r.Reload(t.Context())
 		require.NoError(t, err)
-		require.Equal(t, []string{`extra["a"]`}, keysOf(res.Snapshot.PendingRestart))
+		require.Equal(t, []string{"extra.a"}, keysOf(res.Snapshot.PendingRestart))
 
 		src.edit(func(c *appCfg) { c.Extra = "text" })
 		res, err = r.Reload(t.Context())
@@ -832,7 +873,7 @@ func TestApplier_InterfaceTypeChangesOverDeferredKeys(t *testing.T) {
 		require.NoError(t, err)
 		calls := rec.calls()
 		require.Len(t, calls, 3)
-		assert.Equal(t, []string{`extra["b"]`}, keysOf(calls[2].Changes), "measured from what was acknowledged: a=1, b=2")
+		assert.Equal(t, []string{"extra.b"}, keysOf(calls[2].Changes), "measured from what was acknowledged: a=1, b=2")
 		assert.Equal(t, "2", calls[2].Changes[0].Old.Text)
 		assert.Empty(t, res.Snapshot.PendingRestart)
 	})

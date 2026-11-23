@@ -13,6 +13,7 @@ Complete programs, each with a test, in the [cookbook](../examples/cookbook):
 
 - [Kubernetes ConfigMap and Secret volumes](../examples/cookbook/README.md#kubernetes-configmap-and-secret-volumes) — the file watch on a ConfigMap, Secret keys through `k8smount` and its watch.
 - [Settings in a database](../examples/cookbook/README.md#settings-in-a-database) — a table read on every reload through `NewMapProvider`.
+- [Settings a service writes](../examples/cookbook/README.md#settings-a-service-writes) — an admin API that stores `CanonicalKey` rows, checks each write with the service's own load and reloads them through `WithOverrideEntries`.
 - [AWS Secrets Manager](../examples/cookbook/README.md#aws-secrets-manager) — `secret` tags resolved per environment.
 - [HashiCorp Vault](../examples/cookbook/README.md#hashicorp-vault) — a KV v2 secret as config keys.
 - [A whole service](../examples/cookbook/README.md#a-whole-service) — Kong flags, validation, hot reload, appliers, admin endpoints and graceful shutdown.

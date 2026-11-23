@@ -13,14 +13,15 @@ import (
 // own notation: struct keys joined by ".", map keys and indexes in brackets,
 // the map key unescaped — named[a.b].port. A key holding "." or "]" makes
 // such a name ambiguous on its own, so these functions read it against the
-// keys actually present at each step: a bracket is a map key only when
-// exactly one present key matches it there. A name they cannot place exactly
-// is reported by its longest proven prefix.
+// keys actually present at each step: a struct key or a bracket is a key
+// there only when exactly one present key matches it. A name they cannot
+// place exactly is reported by its longest proven prefix.
 
 // treeKey translates a mapstructure name against the merged source tree that
-// was decoded. It returns the key it proved, how many bytes of name that
-// key accounts for, and whether it accounts for all of them.
-func treeKey(root *schemaNode, tree any, name string) (p keyPath, used int, exact bool) {
+// was decoded. It returns the key it proved, what the tree holds there, how
+// many bytes of name that key accounts for, and whether it accounts for all
+// of them.
+func treeKey(root *schemaNode, tree any, name string) (p keyPath, at any, used int, exact bool) {
 	n, data := root, tree
 	for used < len(name) {
 		rest := name[used:]
@@ -28,44 +29,53 @@ func treeKey(root *schemaNode, tree any, name string) (p keyPath, used int, exac
 		case nodeBranch:
 			if p != nil {
 				if rest[0] != '.' {
-					return p, used, false
+					return p, data, used, false
 				}
 				rest = rest[1:]
 			}
-			key := rest[:fieldEnd(rest)]
+			key, matches := matchKey(rest, treeKeys(data))
+			switch matches {
+			case 0:
+				key = rest[:fieldEnd(rest)] // the tree holds nothing to read it against
+			case 1:
+			default:
+				return p, data, used, false
+			}
 			f := n.byKey[key]
 			if f == nil {
-				return p, used, false
+				return p, data, used, false
 			}
 			used += len(name[used:]) - len(rest) + len(key)
 			p, n, data = p.field(key), f.node, treeChild(data, key)
 		case nodeMap:
 			key, size, ok := matchBracket(rest, treeKeys(data))
 			if !ok {
-				return p, used, false
+				return p, data, used, false
 			}
 			used += size
 			p, n, data = p.key(key), n.elem, treeEntry(data, key)
 		case nodeList:
 			i, size, ok := parseBracketIndex(rest)
 			if !ok {
-				return p, used, false
+				return p, data, used, false
 			}
 			used += size
 			p, n, data = p.index(i), n.elem, treeElement(data, i)
 		default:
-			return p, used, false // beneath a value decoded whole: its keys are its own
+			return p, data, used, false // beneath a value decoded whole: its keys are its own
 		}
 	}
-	return p, used, true
+	return p, data, used, true
 }
 
-// unusedKey names a key mapstructure reports as unused: a proven prefix and
-// the source key no field took, written as a field when it can be read as
-// one and quoted otherwise. A key read as a field of a struct is given the
-// struct's closest field as its suggestion.
+// unusedKey names a key mapstructure reports as unused in the key grammar:
+// a proven prefix and the source key no field took, a field when it can be
+// read as one and a map key otherwise. A key read as a field of a struct is
+// given the struct's closest field as its suggestion. A source key the tree
+// does not hold exactly once where the prefix ends is named by the prefix,
+// and at the root by the root's name, $.
 func unusedKey(root *schemaNode, tree any, name string) UnknownKey {
-	p, used, exact := treeKey(root, tree, name)
+	p, at, used, exact := treeKey(root, tree, name)
 	probe := p
 	if !exact {
 		probe = p.field("")
@@ -73,36 +83,43 @@ func unusedKey(root *schemaNode, tree any, name string) UnknownKey {
 	if safe := diagnosticPath(root, probe); len(safe) < len(probe) {
 		return UnknownKey{Key: safe.orRoot()}
 	}
-	if exact {
+	if exact && name != "" { // "" is the root's empty key, not the root
 		return UnknownKey{Key: p.orRoot()}
 	}
-	raw := strings.TrimPrefix(name[used:], ".")
-	if p != nil && used < len(name) && name[used] != '.' {
-		return UnknownKey{Key: p.String() + name[used:]} // not a key under a struct; show what was written
+	raw, underStruct := strings.CutPrefix(name[used:], ".")
+	if p == nil {
+		raw, underStruct = name, true
 	}
-	if validFieldKey(raw) {
-		k := UnknownKey{Key: p.field(raw).String()}
-		if _, n, err := root.walkTo(cursor{}, p); err == nil && n.kind == nodeBranch {
-			if field := closestField(n, raw); field != "" {
-				k.Suggestion = p.field(field).String()
-			}
-		}
+	key, matches := matchKey(raw, treeKeys(at))
+	if !underStruct || matches != 1 || key != raw {
+		atPrefix := UnknownKey{Key: p.orRoot()}
+		return atPrefix
+	}
+	named := p.member(raw)
+	k := UnknownKey{Key: named.String()}
+	if named[len(named)-1].kind != segField {
 		return k
 	}
-	if p == nil {
-		return UnknownKey{Key: strconv.Quote(raw)}
+	_, n, err := root.walkTo(cursor{}, p)
+	if err == nil && n.kind == nodeBranch {
+		field := closestField(n, raw)
+		if field != "" {
+			k.Suggestion = p.field(field).String()
+		}
 	}
-	return UnknownKey{Key: p.String() + "." + strconv.Quote(raw)}
+	return k
 }
 
-// Sensitive containers can hold credentials in their keys as well as values.
+// diagnosticPath is p as a diagnostic may show it: cut where a sensitive
+// value's keys begin (schemaNode.withholdsBeneath), since they can be
+// credentials as well as its values.
 func diagnosticPath(root *schemaNode, p keyPath) keyPath {
 	if root == nil {
 		return p
 	}
 	c, n := cursor{}, root
 	for i, s := range p {
-		if c.sensitive() && n.kind != nodeBranch && canHoldKeys(n.typ) {
+		if n.withholdsBeneath(c, s) {
 			return p[:i]
 		}
 		var err error
@@ -197,6 +214,26 @@ func fieldEnd(s string) int {
 	return len(s)
 }
 
+// matchKey reads the struct key s starts with against keys, the keys the
+// tree holds there: the key s holds whole or followed by "." or "[". It
+// returns that key and how many distinct keys match; one is a match, more
+// leave s ambiguous.
+func matchKey(s string, keys []string) (key string, matches int) {
+	seen := make(map[string]bool, len(keys))
+	for _, k := range keys {
+		if seen[k] || !strings.HasPrefix(s, k) {
+			continue
+		}
+		seen[k] = true
+		if len(s) > len(k) && s[len(k)] != '.' && s[len(k)] != '[' {
+			continue
+		}
+		key = k
+		matches++
+	}
+	return key, matches
+}
+
 // matchBracket reads the map key that the bracketed selector s starts with
 // writes unescaped: the one key in keys that s holds followed by "]" and the
 // end, "." or "[". It returns the key and the bytes the selector took.
@@ -235,46 +272,42 @@ func parseBracketIndex(s string) (index, size int, ok bool) {
 	return i, end + 1, true
 }
 
-// The merged tree holds a struct or map as map[string]any and a list as
-// []any; decoding also takes a map for a one-element list and a list of maps
-// for one map, so the helpers read those shapes too.
+// The merged tree holds a struct or map as map[string]any, a typed map a
+// source set with its own keys as that map (see keysAsText), and a list as
+// []any; decoding also takes a map for a one-element list and a list of
+// maps for one map, so the helpers read those shapes too. An entry is named
+// by its key as written, or a typed key by its text (see keyCodec).
 
 func treeChild(data any, key string) any {
-	if m, ok := data.(map[string]any); ok {
-		return m[key]
-	}
-	return nil
+	e, _ := mapEntry(data, key)
+	return e
 }
 
 func treeKeys(data any) []string {
+	d, ok := data.([]any)
+	if !ok {
+		return mapEntryNames(data)
+	}
 	var keys []string
-	switch d := data.(type) {
-	case map[string]any:
-		for k := range d {
-			keys = append(keys, k)
-		}
-	case []any:
-		for _, e := range d {
-			keys = append(keys, treeKeys(e)...)
-		}
+	for _, e := range d {
+		keys = append(keys, treeKeys(e)...)
 	}
 	return keys
 }
 
 func treeEntry(data any, key string) any {
-	switch d := data.(type) {
-	case map[string]any:
-		return d[key]
-	case []any:
-		var found any
-		for _, e := range d {
-			if v := treeEntry(e, key); v != nil {
-				found = v // a later map wins, as decoding merges them
-			}
-		}
-		return found
+	d, ok := data.([]any)
+	if !ok {
+		return treeChild(data, key)
 	}
-	return nil
+	var found any
+	for _, e := range d {
+		v := treeEntry(e, key)
+		if v != nil {
+			found = v // a later map wins, as decoding merges them
+		}
+	}
+	return found
 }
 
 func treeElement(data any, i int) any {
@@ -291,18 +324,28 @@ func treeElement(data any, i int) any {
 	return nil
 }
 
-// validatorKey translates a validator struct namespace — the root type, then
-// Go field names, map keys and indexes in brackets: Config.DB.Pools[0].Max —
-// against the validated config v. A squashed struct's field name contributes
-// no key segment. exact is false when the namespace cannot be placed exactly.
+// validatorKey translates a validator struct namespace — the root type's
+// name (see [belowValidatorRoot]), then Go field names, map keys and indexes
+// in brackets: Config.DB.Pools[0].Max — against the validated config v. A
+// squashed struct's field name contributes no key segment, and neither does
+// a remain field's: each of its entries is a key of the struct holding it,
+// so Config.Plugins.Extra[x] is plugins.x. The validator prints a map key with
+// %v, a String method included, so the key is found by that text and named
+// by its own (see keyCodec): levels["1"], not levels["info"]. exact is false
+// when the namespace cannot be placed exactly, two keys printing alike
+// included, and so is a remain field's entry another field reads.
 func validatorKey(v reflect.Value, structNS string) (keyPath, bool) {
-	_, rest, cut := strings.Cut(structNS, ".")
-	if !cut {
+	rest, ok := belowValidatorRoot(v.Type(), structNS)
+	if !ok {
 		return nil, false
 	}
 	var p keyPath
+	beneathInterface := false
+	var collector *schemaNode // the struct whose remain field holds the next entry
 	for rest != "" {
-		v = derefValue(v)
+		var throughInterface bool
+		v, throughInterface = derefNoting(v)
+		beneathInterface = beneathInterface || throughInterface
 		switch {
 		case v.Kind() == reflect.Struct:
 			name := rest[:fieldEnd(rest)]
@@ -312,6 +355,7 @@ func validatorKey(v reflect.Value, structNS string) (keyPath, bool) {
 			}
 			// A promoted field is reached through the structs embedding it;
 			// a squashed one contributes no key.
+			holder := v.Type()
 			for _, i := range f.Index {
 				v = derefValue(v)
 				if v.Kind() != reflect.Struct {
@@ -319,10 +363,16 @@ func validatorKey(v reflect.Value, structNS string) (keyPath, bool) {
 				}
 				hop := v.Type().Field(i)
 				key, skip := fieldKey(hop)
-				if skip {
+				switch {
+				case skip && koanfTag(hop).Has("remain"):
+					n, err := metadataOf(holder)
+					if err != nil || n.remain == nil {
+						return p, false
+					}
+					collector = n
+				case skip:
 					return p, false
-				}
-				if key != "" {
+				case key != "":
 					p = p.field(key)
 				}
 				v = v.Field(i)
@@ -340,7 +390,17 @@ func validatorKey(v reflect.Value, structNS string) (keyPath, bool) {
 			if !ok {
 				return p, false
 			}
-			p, v, rest = p.key(key), v.MapIndex(byText[key]), rest[size:]
+			k := byText[key]
+			name := entryName(k)
+			switch {
+			case collector == nil:
+				p = p.entry(name, beneathInterface)
+			case collector.collects(memberSegment(name)):
+				p, collector = p.member(name), nil
+			default:
+				return p, false
+			}
+			v, rest = v.MapIndex(k), rest[size:]
 		case v.Kind() == reflect.Slice || v.Kind() == reflect.Array:
 			i, size, ok := parseBracketIndex(rest)
 			if !ok || i >= v.Len() {
@@ -352,17 +412,38 @@ func validatorKey(v reflect.Value, structNS string) (keyPath, bool) {
 		}
 		rest = strings.TrimPrefix(rest, ".")
 	}
-	return p, true
+	// A remain field's map is no key of its own: its struct's key is not it.
+	return p, collector == nil
+}
+
+// belowValidatorRoot is ns, a validator namespace of a value of type t, past
+// the root's part. go-playground starts a namespace with the name of the
+// struct type it validates and a dot — a generic type's name holds its type
+// arguments, dots included — and with nothing for an unnamed struct type.
+func belowValidatorRoot(t reflect.Type, ns string) (string, bool) {
+	name := derefType(t).Name()
+	if name == "" {
+		return ns, ns != ""
+	}
+	return strings.CutPrefix(ns, name+".")
 }
 
 // derefValue follows pointers and interfaces to the value they hold, stopping
 // at a nil one.
 func derefValue(v reflect.Value) reflect.Value {
+	v, _ = derefNoting(v)
+	return v
+}
+
+// derefNoting is derefValue, also reporting whether it passed through an
+// interface.
+func derefNoting(v reflect.Value) (out reflect.Value, throughInterface bool) {
 	for range maxPointerDepth {
 		if (v.Kind() != reflect.Pointer && v.Kind() != reflect.Interface) || v.IsNil() {
 			break
 		}
+		throughInterface = throughInterface || v.Kind() == reflect.Interface
 		v = v.Elem()
 	}
-	return v
+	return v, throughInterface
 }

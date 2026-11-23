@@ -331,7 +331,7 @@ func TestDiff_CyclesThroughInterfaces(t *testing.T) {
 	other["next"] = other
 	changes, err = Diff(&cfg{Data: m}, &cfg{Data: other})
 	require.NoError(t, err)
-	assert.Equal(t, []string{`data["next"]`, `data["x"]`}, changeKeys(changes))
+	assert.Equal(t, []string{"data.next", "data.x"}, changeKeys(changes))
 	assert.Equal(t, cycleValue, changes[0].Old.Text)
 	assert.Equal(t, cycleValue, changes[0].New.Text)
 
@@ -339,7 +339,7 @@ func TestDiff_CyclesThroughInterfaces(t *testing.T) {
 	chain := map[string]any{"next": map[string]any{"next": map[string]any{}}}
 	changes, err = Diff(&cfg{Data: m}, &cfg{Data: chain})
 	require.NoError(t, err)
-	assert.Equal(t, []string{`data["next"]`}, changeKeys(changes))
+	assert.Equal(t, []string{"data.next"}, changeKeys(changes))
 }
 
 func TestDiff_NilInterfacesAndCycleShapes(t *testing.T) {
@@ -353,7 +353,7 @@ func TestDiff_NilInterfacesAndCycleShapes(t *testing.T) {
 
 	changes, err = Diff(&cfg{Data: map[string]string(nil)}, &cfg{Data: map[string]string{"a": "1"}})
 	require.NoError(t, err)
-	assert.Equal(t, []string{"data", `data["a"]`}, changeKeys(changes), "one type both sides compares key by key")
+	assert.Equal(t, []string{"data", "data.a"}, changeKeys(changes), "one type both sides compares key by key")
 	assert.True(t, changes[0].Structural)
 
 	a := &diffNode{Name: "a"}

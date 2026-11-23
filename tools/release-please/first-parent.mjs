@@ -24,9 +24,10 @@ export function fetchBranchHead(repoDir, remote, branch) {
 }
 
 // readHistory returns mergeOf, each commit a merge on ref's first-parent chain
-// brought in mapped to that merge; messageOf, those merges' messages; and
-// revertedWithin, the commits a revert on the same merge's branch undid, the
-// reverts included.
+// brought in mapped to that merge; messageOf, those merges' messages;
+// branchCommits, the message and changed files of each such commit that is
+// not itself a merge; and revertedWithin, the commits a revert on the same
+// merge's branch undid, the reverts included.
 export function readHistory(repoDir, ref) {
   const git = gitIn(repoDir);
   // A shallow clone maps nothing and would list every branch commit again.
@@ -66,13 +67,24 @@ export function readHistory(repoDir, ref) {
   for (const sha of chain) {
     if (parents.get(sha).length > 1) messageOf.set(sha, messages.get(sha));
   }
+  // --no-renames lists a rename's old path too, so a file moved out of a
+  // release path counts as touching it, whatever the reader's diff config.
+  const filesOf = new Map();
+  for (const record of git('log', '-z', '--no-merges', '--no-renames', '--name-only', '--format=%x01%H', ref).split('\x01')) {
+    const [sha, ...files] = record.replace(/^\n/, '').split('\0');
+    if (sha) filesOf.set(sha.trim(), files.map(file => file.replace(/^\n/, '')).filter(Boolean));
+  }
+  const branchCommits = new Map();
+  for (const sha of mergeOf.keys()) {
+    if (parents.get(sha).length === 1) branchCommits.set(sha, { message: messages.get(sha), files: filesOf.get(sha) ?? [] });
+  }
   const revertedWithin = new Set();
   for (const [sha, merge] of mergeOf) {
     for (const [, reverted] of messages.get(sha).matchAll(/^This reverts commit ([0-9a-f]{40})/gm)) {
       if (mergeOf.get(reverted) === merge) revertedWithin.add(sha).add(reverted);
     }
   }
-  return { mergeOf, messageOf, revertedWithin };
+  return { mergeOf, messageOf, branchCommits, revertedWithin };
 }
 
 // typeRanker ranks a feature over the other types the changelog shows, and
@@ -87,9 +99,20 @@ export function typeRanker(sections = DEFAULT_SECTIONS) {
 }
 
 // firstParentCommits drops the commits a merge with a header brought in, and
-// folds into that header what they call for. headerOf maps a merge to the
-// header release-please's parse of its message gives its first line.
-export function firstParentCommits(commits, history, { headerOf, rank = typeRanker(), warn = () => {} }) {
+// folds into that header what they call for. commits are one release path's.
+// headerOf maps a merge to the header release-please's parse of its message
+// gives its first line.
+//
+// A merge's subject names its whole pull request, whose release paths may
+// have changed in different ways. So in a path where complete holds the
+// merge (every branch commit touching the path reached it as a conventional
+// commit), the merge counts as the highest type among its branch commits
+// there, and breaks only if one of them does. That holds for the type when
+// some branch commit of the merge, in any path, ranks as high as the
+// subject's type, and for breaking when one breaks; branches maps each merge
+// to its branch commits' types and whether one breaks. Otherwise the
+// subject's type and "!" are a floor the branch commits can only raise.
+export function firstParentCommits(commits, history, { headerOf, rank = typeRanker(), complete = new Set(), branches = new Map(), warn = () => {} }) {
   const listed = new Set(commits.map(commit => commit.sha));
   const headers = new Map();
   // A merge whose own pull request sets an override is listed as that
@@ -100,7 +123,8 @@ export function firstParentCommits(commits, history, { headerOf, rank = typeRank
     if (ownOverride(commit, commit.sha)) overridden.add(commit.sha);
   }
   const unmatched = new Set();
-  const raised = new Map();
+  // Each header's branch commits in this path, reverted ones aside.
+  const brought = new Map();
   const kept = [];
   for (const commit of commits) {
     const merge = history.mergeOf.get(commit.sha);
@@ -135,19 +159,38 @@ export function firstParentCommits(commits, history, { headerOf, rank = typeRank
     if (history.revertedWithin?.has(commit.sha)) continue;
     // A commit carrying another pull request's override folds too: that pull
     // request landed through this merge, stacked on its branch.
-    if (rank(commit.type) > rank(header.type)) {
-      header.type = commit.type;
-      raised.set(header, commit);
-    }
-    foldBreaking(header, commit);
-    foldReleaseAs(header, commit);
-    foldReferences(header, commit);
+    if (!brought.has(header)) brought.set(header, []);
+    brought.get(header).push(commit);
   }
-  for (const [header, from] of raised) {
-    warn(`${header.sha.slice(0, 7)} (${header.message}) counts as ${header.type}, from ${from.sha.slice(0, 7)} (${from.message}); its subject's type is lower than its change's`);
+  for (const [header, branch] of brought) {
+    const subject = header.message;
+    const subjectRank = rank(header.type);
+    const top = branch.reduce((best, commit) => (rank(commit.type) > rank(best.type) ? commit : best));
+    const whole = complete.has(header.sha) ? branches.get(header.sha) : undefined;
+    const typeHere = whole !== undefined && Math.max(0, ...whole.types.map(rank)) >= subjectRank;
+    // An equal rank keeps the subject's type, and with it its changelog section.
+    if (rank(top.type) > subjectRank || (typeHere && rank(top.type) < subjectRank)) header.type = top.type;
+    if (rank(header.type) > subjectRank) {
+      warn(`${header.sha.slice(0, 7)} (${subject}) counts as ${header.type}, from ${top.sha.slice(0, 7)} (${top.message}); its subject's type is lower than its change's`);
+    }
+    if (whole !== undefined && (whole.breaking || !header.breaking)) {
+      header.breaking = false;
+      header.notes = header.notes.filter(note => !isBreaking(note));
+    }
+    for (const commit of branch) {
+      foldBreaking(header, commit);
+      foldReleaseAs(header, commit);
+      foldReferences(header, commit);
+    }
+    // The changelog writer reads a "!" in an entry's header as a breaking
+    // change when the entry has no breaking note.
+    if (!header.breaking) header.message = header.message.replace(BANG, '$1:');
   }
   return kept;
 }
+
+// The changelog writer's breakingHeaderPattern, up to the "!".
+const BANG = /^(\w*(?:\(.*\))?)!:(?= )/;
 
 // ownOverride reports a commit release-please gave the override of the pull
 // request merged as merge, read as release-please reads an override.

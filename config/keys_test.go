@@ -7,6 +7,7 @@ import (
 	"maps"
 	"reflect"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -50,6 +51,36 @@ func TestStrictKeys_InputACustomDecoderConsumes(t *testing.T) {
 	got, err := Load[cfg](t.Context(), WithBaseProvider(mapSource{"item": map[string]any{"raw": 42}}, nil), WithSkipValidation())
 	require.NoError(t, err)
 	assert.Equal(t, 42, got.Item.Value)
+}
+
+// A value that decodes itself, handed to the load already of its type —
+// by a provider, WithDefaults or a baseline config — is set as it is: its
+// UnmarshalMapstructure reads what a source writes, never the value.
+func TestSources_ATypedSelfDecodingValueIsSetAsItIs(t *testing.T) {
+	type cfg struct {
+		Item customDecoded  `koanf:"item"`
+		Ptr  *customDecoded `koanf:"ptr"`
+		Name string         `koanf:"name"`
+	}
+	typed := map[string]any{"item": customDecoded{Value: 42}, "ptr": &customDecoded{Value: 7}}
+	want := cfg{Item: customDecoded{Value: 42}, Ptr: &customDecoded{Value: 7}}
+	for name, opt := range map[string]Option{
+		"WithBaseProvider": WithBaseProvider(mapSource(typed), nil),
+		"WithDefaults":     WithDefaults(typed),
+	} {
+		t.Run(name, func(t *testing.T) {
+			got, err := Load[cfg](t.Context(), opt)
+			require.NoError(t, err)
+			assert.Equal(t, want, *got)
+			assert.NotSame(t, typed["ptr"], got.Ptr, "the config holds a copy")
+		})
+	}
+
+	loaded, err := Load[cfg](t.Context(), WithBaseProvider(mapSource{"item": map[string]any{"raw": 42}, "ptr": map[string]any{"raw": 7}}, nil))
+	require.NoError(t, err)
+	got, err := DecodeEdits(t.Context(), loaded, map[string]any{"name": "x"})
+	require.NoError(t, err, "the baseline's value is set as it is")
+	assert.Equal(t, cfg{Item: customDecoded{Value: 42}, Ptr: &customDecoded{Value: 7}, Name: "x"}, *got)
 }
 
 func TestStrictKeys_InputAHookConsumes(t *testing.T) {
@@ -319,7 +350,7 @@ func TestLoad_RejectsAnUnaddressableSchema(t *testing.T) {
 }
 
 // Unknown keys are named in the key grammar: a source key under a struct
-// that cannot read as a field is quoted.
+// that cannot read as a field is named as a map key.
 func TestStrictKeys_NamesUnknownKeys(t *testing.T) {
 	type entry struct {
 		Port int `koanf:"port"`
@@ -334,7 +365,139 @@ func TestStrictKeys_NamesUnknownKeys(t *testing.T) {
 	}
 	_, err := Load[cfg](t.Context(), WithBaseProvider(src, nil), WithSkipValidation())
 	require.ErrorIs(t, err, ErrValidation)
-	assert.Contains(t, err.Error(), `decodes: named["x.y"].prot (did you mean named["x.y"].port?), server."a.b", server.prot (did you mean server.port?)`)
+	assert.Contains(t, err.Error(), `decodes: named["x.y"].prot (did you mean named["x.y"].port?), server.prot (did you mean server.port?), server["a.b"]`)
+}
+
+// Every unknown key is named in the key grammar, whatever its name holds:
+// it parses back to its place, a field when the name can be one and a map
+// key otherwise, and so does its suggestion. A name that holds a separator
+// after a field's key is the source's own key, not one beneath the field.
+func TestUnknownKeys_NamesParseBackToTheirPlace(t *testing.T) {
+	type entry struct {
+		Port int `koanf:"port"`
+	}
+	type cfg struct {
+		Server entry            `koanf:"server"`
+		Named  map[string]entry `koanf:"named"`
+		Items  []entry          `koanf:"items"`
+	}
+	names := []string{"a.b", "a[0]", "a]b", `a"b`, `a\b`, "a*b", "a\tb", "a b", "größe", "", "prot", "port.x", "port[0]", "port]", "$", "$x"}
+	for _, at := range []struct {
+		where, key string
+		source     func(entry map[string]any) mapSource
+	}{
+		{"at the root", "", func(e map[string]any) mapSource { return mapSource(e) }},
+		{"under a struct", "server", func(e map[string]any) mapSource {
+			source := mapSource{"server": e}
+			return source
+		}},
+		{"under a map entry", `named["x.y"]`, func(e map[string]any) mapSource {
+			source := mapSource{"named": map[string]any{"x.y": e}}
+			return source
+		}},
+		{"under a list element", "items[0]", func(e map[string]any) mapSource {
+			source := mapSource{"items": []any{e}}
+			return source
+		}},
+	} {
+		var parent Key
+		if at.key != "" {
+			var err error
+			parent, err = ParseKey(at.key)
+			require.NoError(t, err)
+		}
+		for _, name := range names {
+			t.Run(at.where+"/"+strconv.Quote(name), func(t *testing.T) {
+				_, err := Load[cfg](t.Context(), WithBaseProvider(at.source(map[string]any{name: 1}), nil), WithSkipValidation())
+				var unknown *UnknownKeysError
+				require.ErrorAs(t, err, &unknown)
+				require.Len(t, unknown.Keys, 1)
+				got := unknown.Keys[0]
+				key, err := ParseKey(got.Key)
+				require.NoError(t, err)
+				require.Len(t, key, len(parent)+1, got.Key)
+				assert.Equal(t, parent.String(), key[:len(parent)].String())
+				last := key[len(parent)]
+				assert.Equal(t, name, last.Name)
+				assert.Equal(t, validFieldKey(name), last.Kind == SegmentField, "a field when the name can be one")
+				if got.Suggestion != "" {
+					_, err := ParseKey(got.Suggestion)
+					assert.NoError(t, err, got.Suggestion)
+				}
+			})
+		}
+	}
+}
+
+// $ is the root's name in every message, never a field's key: ParseKey and
+// CanonicalKey refuse it, a struct may not key a field by it, and a source
+// key spelled so is named as a map key, ["$"], apart from the root.
+func TestKey_DollarNamesTheRootAndNoField(t *testing.T) {
+	type dollarField struct {
+		Dollar int `koanf:"$"`
+	}
+	type cfg struct {
+		Server struct {
+			Port int `koanf:"port"`
+		} `koanf:"server"`
+	}
+	for _, key := range []string{"$", "server.$", "$.port"} {
+		_, err := ParseKey(key)
+		require.ErrorIs(t, err, ErrKey, key)
+		_, err = CanonicalKey[cfg](key)
+		require.ErrorIs(t, err, ErrKey, key)
+	}
+	_, err := Load[dollarField](t.Context())
+	require.ErrorIs(t, err, ErrSchema)
+	assert.Contains(t, err.Error(), `field Dollar has key "$", which no key can spell: $ names the root`)
+
+	_, err = Load[cfg](t.Context(), WithBaseProvider(mapSource{"$": 1, "server": map[string]any{"$": 2}}, nil), WithSkipValidation())
+	var unknown *UnknownKeysError
+	require.ErrorAs(t, err, &unknown)
+	var keys []string
+	for _, k := range unknown.Keys {
+		keys = append(keys, k.Key)
+	}
+	assert.ElementsMatch(t, []string{`["$"]`, `server["$"]`}, keys)
+}
+
+// A name the source tree holds in two readings, a field's key and the key
+// beneath it or a key of its own, cannot be placed: it is named by the
+// nearest key that holds it, and at the root by the root, $.
+func TestUnknownKeys_AnAmbiguousNameIsNamedByItsNearestKey(t *testing.T) {
+	type port struct {
+		N int `koanf:"n"`
+	}
+	type nested struct {
+		Server struct {
+			Port port `koanf:"port"`
+		} `koanf:"server"`
+	}
+	type root struct {
+		Port port `koanf:"port"`
+	}
+	ambiguous := map[string]any{"port": map[string]any{"n": 1, "x": 2}, "port.x": 3}
+	for _, tc := range []struct {
+		name string
+		load func() error
+		want string
+	}{
+		{"beneath a struct", func() error {
+			_, err := Load[nested](t.Context(), WithBaseProvider(mapSource{"server": ambiguous}, nil), WithSkipValidation())
+			return err
+		}, "server"},
+		{"at the root", func() error {
+			_, err := Load[root](t.Context(), WithBaseProvider(mapSource(ambiguous), nil), WithSkipValidation())
+			return err
+		}, "$"},
+	} {
+		var unknown *UnknownKeysError
+		require.ErrorAs(t, tc.load(), &unknown, tc.name)
+		require.NotEmpty(t, unknown.Keys, tc.name)
+		for _, k := range unknown.Keys {
+			assert.Equal(t, tc.want, k.Key, tc.name)
+		}
+	}
 }
 
 // An unknown key comes with the field of its struct it most likely
@@ -522,4 +685,89 @@ func TestUnknownKeys_HandlerRunsOnReload(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, 2, r.Config().Port)
 	assert.Equal(t, [][]UnknownKey{{{Key: "prot", Suggestion: "port"}}}, reported)
+}
+
+type privateRemainCfg struct {
+	Name string `koanf:"name"`
+	//lint:ignore U1000 an unexported remain field is what a load refuses
+	extra map[string]any `koanf:",remain"`
+}
+
+type promotedRemain struct {
+	Extra map[string]string `koanf:",remain"`
+}
+
+type promotedRemainCfg struct {
+	promotedRemain `koanf:",squash"`
+	Name           string `koanf:"name"`
+}
+
+// A remain field decoding cannot fill is refused before any source is read,
+// by a load and by the JSON Schema alike, rather than advertised as taking
+// every key and then panicking when one arrives.
+func TestRemain_DestinationDecodingCannotFillIsRefused(t *testing.T) {
+	read := 0
+	src, err := NewMapProvider(func(context.Context) (map[string]any, error) {
+		read++
+		values := map[string]any{"name": "x", "other": 1}
+		return values, nil
+	}, "")
+	require.NoError(t, err)
+	_, err = Load[privateRemainCfg](t.Context(), WithBaseProvider(src, nil))
+	require.ErrorIs(t, err, ErrSchema)
+	assert.Contains(t, err.Error(), `field extra of config.privateRemainCfg is tagged koanf:",remain", but decoding cannot set an unexported field`)
+	assert.Zero(t, read)
+	_, err = Decode[privateRemainCfg](t.Context(), map[string]any{"name": "x", "other": 1})
+	require.ErrorIs(t, err, ErrSchema)
+	_, schemaErr := JSONSchema[privateRemainCfg]()
+	require.ErrorIs(t, schemaErr, ErrSchema)
+	assert.Equal(t, err.Error(), "loading config: "+schemaErr.Error())
+
+	type twice struct {
+		promotedRemain `koanf:",squash"`
+		More           map[string]any `koanf:",remain"`
+	}
+	type notMap struct {
+		Rest string `koanf:",remain"`
+	}
+	type intKeys struct {
+		Rest map[int]any `koanf:",remain"`
+	}
+	type pointer struct {
+		Rest *map[string]any `koanf:",remain"`
+	}
+	type squashed struct {
+		promotedRemain `koanf:",squash,remain"`
+	}
+	for name, load := range map[string]func() error{
+		"two remain fields": func() error { _, err := Decode[twice](t.Context(), nil); return err },
+		"not a map":         func() error { _, err := Decode[notMap](t.Context(), nil); return err },
+		"keyed by ints":     func() error { _, err := Decode[intKeys](t.Context(), nil); return err },
+		"map pointer":       func() error { _, err := Decode[pointer](t.Context(), nil); return err },
+		"squash and remain": func() error { _, err := Decode[squashed](t.Context(), nil); return err },
+	} {
+		t.Run(name, func(t *testing.T) {
+			require.ErrorIs(t, load(), ErrSchema)
+		})
+	}
+}
+
+// An exported remain field, promoted through an unexported embedded struct
+// or not, takes and keeps every key no other field reads; without one,
+// unknown keys still fail.
+func TestRemain_ExportedDestinationKeepsUnknownKeys(t *testing.T) {
+	got, err := Decode[promotedRemainCfg](t.Context(), map[string]any{"name": "x", "other": "1", "more": "2"})
+	require.NoError(t, err)
+	assert.Equal(t, map[string]string{"other": "1", "more": "2"}, got.Extra)
+	assert.Equal(t, "x", got.Name)
+	assert.Equal(t, true, jsonSchemaOf[promotedRemainCfg](t)["additionalProperties"])
+
+	type strict struct {
+		Name string `koanf:"name"`
+	}
+	_, err = Decode[strict](t.Context(), map[string]any{"name": "x", "other": 1})
+	var unknown *UnknownKeysError
+	require.ErrorAs(t, err, &unknown)
+	assert.Equal(t, []UnknownKey{{Key: "other"}}, unknown.Keys)
+	assert.Equal(t, false, jsonSchemaOf[strict](t)["additionalProperties"])
 }

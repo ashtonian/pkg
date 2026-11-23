@@ -27,6 +27,7 @@ The repository's `go.work` ties the published modules together, so a change to o
 | `make docs-check` | Every module's Markdown, in the workspace or kept out of it, held to its code: the Go identifiers its code spans name, its relative links and their anchors, its code-map entries; for a module that opts in, every Go file in a code map, every export named and every option in a table row ([tools/doccheck](tools/doccheck/README.md)) |
 | `make release-please-check` | The release workflow's release-please runner: first-parent release notes and their release-please wiring ([tools/release-please](tools/release-please/README.md)) |
 | `make cookbook-check` | The [config cookbook](config/examples/cookbook), a module of runnable recipes |
+| `make cookbook-integration` | The cookbook's database tests: the settings-store recipe on SQLite, and on PostgreSQL through `COOKBOOK_POSTGRES_DSN` (`make cookbook-postgres-up` starts a server; see the [cookbook's README](config/examples/cookbook/README.md#build-run-and-test)) |
 | `make parse-example-check` | The [Parse server example](parse/examples/server), a module of its own, against the Parse working tree: tidy, vet, staticcheck and its tagged tests under race |
 | `make ci` | All of the above |
 
@@ -51,8 +52,10 @@ superseded run leaves no change unvalidated. The scope lists the workspace's pac
   package that reads it; `tools/test_ci_release_checks.py` fails when a test reads a tracked
   file outside its directory that `go-owners` does not name.
 - The jobs whose packages or paths the change reaches: the Ubuntu suites and lint for any
-  package, macOS for the platform modules, the PostgreSQL legs for parse, Go 1.26 for httpx
-  and gitx, the SDK job for the SDK, the corpora in `parse/testdata` or its check scripts.
+  package, macOS for the platform modules, the PostgreSQL legs for parse, and for the
+  cookbook's settings-store recipe when the recipe, its database fixture or the cookbook's
+  dependencies change or a change reaches the config package, Go 1.26 for httpx and gitx,
+  the SDK job for the SDK, the corpora in `parse/testdata` or its check scripts.
   Their test and lint targets cover only the reached packages (`PACKAGES`), and of those
   only the ones with a file under the target's build tags, as a `path/...` pattern does: go
   refuses a package named explicitly whose files the tags all exclude, such as
@@ -95,6 +98,9 @@ paths run all of them. The documentation check reads every module, in the worksp
   keeps generic methods in declaration order; on earlier ones its facts about methods are
   misattributed (golang/go#82106). httpx and gitx run their tests on Go 1.26, their floor.
 - Parse's SQLite integration runs beside PostgreSQL 17 and 18.
+- The settings-store recipe's database tests run on SQLite and PostgreSQL 19, in their own
+  job (`cookbook-postgres`), so the recipe's PostgreSQL behaviour runs on a real server
+  without a service container in the modules job, which runs on every change.
 - The SDK runs every check on its Node.js floor, then only its runtime tests and packed
   consumer on the newest LTS.
 - Tests that depend only on their inputs replay passing results across runs and runners:
@@ -196,7 +202,7 @@ Releases are cut by [release-please](https://github.com/googleapis/release-pleas
 
 Land feature branches with main as the first parent of a signed merge commit and a conventional subject describing the change. Its diff must contain the feature, rather than only a later main-to-feature synchronization. This preserves the module change and release classification when older feature commits precede the latest release boundary.
 
-Release notes and versions come from main's first-parent history. The `release-please` workflow runs release-please through [`tools/release-please`](tools/release-please/README.md), whose `first-parent` plugin counts each pull request once, as its merge commit. The conventional commits on its branch hand that merge what they call for: the highest type (a `feat` merged as `fix(…)` still bumps the minor version), `BREAKING CHANGE` notes, `Release-As`, and closed issues. The merge subject is still the pull request's release-note entry, so make it the conventional summary of the whole change, with `!` when it breaks anything. The job warns when a branch commit raises a merge's type. Branch commits older than the last release, on a pull request merged after it, never reach release-please, so for such a pull request the merge subject alone decides its entry and bump. A merge whose subject release-please cannot parse leaves its branch commits listed instead, so nothing is dropped. The stock `release-please-action` cannot load the plugin and refuses this repository's config. From a full clone, `pnpm -C tools/release-please install --frozen-lockfile`, then `GITHUB_TOKEN=… node tools/release-please/run.mjs --repo ashtonian/pkg --dry-run`, shows the release PR the current main would produce.
+Release notes and versions come from main's first-parent history. The `release-please` workflow runs release-please through [`tools/release-please`](tools/release-please/README.md), whose `first-parent` plugin counts each pull request once, as its merge commit. The conventional commits on its branch hand that merge what they call for: the highest type (a `feat` merged as `fix(…)` still bumps the minor version), `BREAKING CHANGE` notes, `Release-As`, and closed issues. Each module counts only the branch commits that touched it, so a pull request that breaks one module and only adds a test to another releases the first and not the second: mark the breaking branch commit itself (`feat(httpx)!: …` or a `BREAKING CHANGE:` footer). The subject counts instead, as a floor, in every module the merge touched when no branch commit carries its type or `!`, and in one module when a branch commit touching it is older than its last release or not conventional. The merge subject is still the pull request's release-note entry, so make it the conventional summary of the whole change, with `!` when it breaks anything. The job warns when a branch commit raises a merge's type. Branch commits older than the last release, on a pull request merged after it, never reach release-please, so for such a pull request the merge subject alone decides its entry and bump. A merge whose subject release-please cannot parse leaves its branch commits listed instead, so nothing is dropped. The stock `release-please-action` cannot load the plugin and refuses this repository's config. From a full clone, `pnpm -C tools/release-please install --frozen-lockfile`, then `GITHUB_TOKEN=… node tools/release-please/run.mjs --repo ashtonian/pkg --dry-run`, shows the release PR the current main would produce.
 
 Merge a release PR with a signed merge commit whose diff includes every
 released module. If a changelog needs a follow-up edit, do not fast-forward

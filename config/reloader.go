@@ -110,6 +110,10 @@ const (
 // automatic triggers. The [WithLogger] logger in loadOpts also receives
 // reload events unless [WithReloadLogger] sets another. The file watch covers
 // the config files loadOpts name, and any [WithWatchedFiles] adds.
+//
+// A ctx that ends before generation 1 is published fails construction with
+// an error wrapping ctx.Err() and its cause; an [AbandonedApplyError] names
+// the ApplyInitial appliers that had already applied it.
 func NewReloader[T any](ctx context.Context, loadOpts []Option, opts ...ReloadOption) (*Reloader[T], error) {
 	loadOpts = slices.Clone(loadOpts)
 	o := buildOptions(loadOpts)
@@ -137,7 +141,8 @@ func NewReloader[T any](ctx context.Context, loadOpts []Option, opts ...ReloadOp
 // builds a complete, validated config, and its error keeps the previous one
 // live. Use it to give an existing loading path the reload lifecycle. The
 // file watch covers the files given to [WithWatchedFiles]; each reload
-// compares them with what they held just before the previous load.
+// compares them with what they held just before the previous load. A ctx
+// that ends first fails construction as it does [NewReloader]'s.
 func NewReloaderFunc[T any](ctx context.Context, load func(ctx context.Context) (*T, error), opts ...ReloadOption) (*Reloader[T], error) {
 	ro := buildReloadOptions(opts)
 	if ro.provenance {
@@ -223,9 +228,23 @@ func newReloader[T any](ro *reloadOptions, inherited *slog.Logger, configFiles [
 }
 
 // loadInitial runs the first load, applies it with the ApplyInitial
-// appliers, and publishes it as generation 1.
+// appliers, and publishes it as generation 1. Once ctx ends nothing further
+// runs and nothing is published: not the loader, not the next applier. An
+// applier that already ran keeps what it applied, and the error names it
+// (see [AbandonedApplyError]).
 func (r *Reloader[T]) loadInitial(ctx context.Context) error {
+	err := ended(ctx)
+	if err != nil {
+		return fmt.Errorf("config initial load abandoned: %w", err)
+	}
 	l, err := r.runLoad(ctx)
+	ctxErr := ended(ctx)
+	if ctxErr != nil {
+		if err != nil && !errors.Is(err, ctx.Err()) {
+			ctxErr = errors.Join(ctxErr, err)
+		}
+		return fmt.Errorf("config initial load abandoned: %w", ctxErr)
+	}
 	if err != nil {
 		return err
 	}
@@ -243,13 +262,19 @@ func (r *Reloader[T]) loadInitial(ctx context.Context) error {
 		return err
 	}
 	snap := &Snapshot[T]{Config: cfg, Generation: 1, Provenance: l.origins, UnknownKeys: l.unknown, Shadowed: l.shadowed}
+	var applied []string
 	if r.app != nil {
 		r.app.start(owed)
 		p := r.app.plan(rootValue(cfg), true)
-		if err := r.applyInitial(ctx, cfg, p); err != nil {
+		applied, err = r.applyInitial(ctx, cfg, p)
+		if err != nil {
 			return err
 		}
 		snap.Appliers, snap.PendingRestart = r.app.account(p)
+	}
+	err = ended(ctx)
+	if err != nil {
+		return abandonedInitial(applied, err)
 	}
 	r.loaded = files
 	if l.inputs != nil {
@@ -392,14 +417,16 @@ func (r *Reloader[T]) release() { <-r.slot }
 // when the context ends after the sources were read, say inside a post-load
 // hook that went on to return nil.
 func (r *Reloader[T]) reloadHeld(ctx context.Context, trigger string) (*ReloadResult[T], error) {
-	if err := ctx.Err(); err != nil {
+	err := ended(ctx)
+	if err != nil {
 		return nil, fmt.Errorf("config reload abandoned: %w", err)
 	}
 	l, err := r.runLoad(ctx)
 	cfg, files := l.cfg, l.files
-	if ctxErr := ctx.Err(); ctxErr != nil {
+	ctxErr := ended(ctx)
+	if ctxErr != nil {
 		// Say nothing about the sources, which may be fine.
-		if err != nil && !errors.Is(err, ctxErr) {
+		if err != nil && !errors.Is(err, ctx.Err()) {
 			ctxErr = errors.Join(ctxErr, err)
 		}
 		return nil, fmt.Errorf("config reload abandoned: %w", ctxErr)
@@ -428,7 +455,8 @@ func (r *Reloader[T]) reloadHeld(ctx context.Context, trigger string) (*ReloadRe
 		r.notifyReloadError(ctx, trigger, reloadErr)
 		return nil, reloadErr
 	}
-	if ctxErr := ctx.Err(); ctxErr != nil {
+	ctxErr = ended(ctx)
+	if ctxErr != nil {
 		// Ended while the configs were compared: still nothing published.
 		return nil, fmt.Errorf("config reload abandoned: %w", ctxErr)
 	}
@@ -475,7 +503,8 @@ func (r *Reloader[T]) reloadHeld(ctx context.Context, trigger string) (*ReloadRe
 	r.notifySuccess(ctx, ReloadEvent[T]{Trigger: trigger, Old: prev.Config, New: cfg, Result: result})
 	out := result.clone()
 	if len(failures) > 0 {
-		return &out, &ApplyError{Failures: failures}
+		applyErr := &ApplyError{Failures: failures, Applied: appliedBy(result.Applied)}
+		return &out, applyErr
 	}
 	return &out, nil
 }

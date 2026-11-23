@@ -108,9 +108,10 @@ bundle apply its own per-leaf policy. See [inspection](docs/inspection.md).
 
 The [tag table](docs/schema.md) defines the schema, and the
 [options table](docs/reference.md#options) lists every load, reload and print
-option with its default. A load refuses a tag key that misspells one of
-config's (`defualt`, `envRef`); `WithForeignTagKeys` names another library's
-keys that sit that close. Environment loading requires `WithEnvPrefix`, or
+option with its default. A load, every generator and checked redaction
+refuse a tag key that misspells one of config's (`defualt`, `envRef`); a
+struct lists another library's keys that sit that close from a
+`ForeignTagKeys` method. Environment loading requires `WithEnvPrefix`, or
 `WithEnvPrefixes` for a shared layer beneath a service's own prefix
 (`APP_WORKER_DB_HOST`, then `APP_DB_HOST`).
 `envref:"true"` declares variable names read by the application;
@@ -119,9 +120,17 @@ keys that sit that close. Environment loading requires `WithEnvPrefix`, or
 `WithReloadTagChecks` also checks applier coverage before loading.
 `Defaulter.SetDefaults` sets code defaults for loading, usage, schema,
 templates and key checks. `CheckKey` validates a stored entry without
-reading sources; `DecodeKey` also returns the typed config. Provider-level
-`WithInvalidEntries` can withhold bad stored rows while preserving lower
-sources and unknown-key diagnostics. See [sources](docs/sources.md).
+reading sources; `DecodeKey` also returns the typed config;
+`CanonicalKey` spells a key the one way the package prints it, and
+`Key.Within` finds the keys a write replaces; `DecodeEdits` validates a
+batch of edits together over an explicit baseline; and `WithBaseEntries`
+and `WithOverrideEntries` load stored entries keyed as those calls take
+them. Source-level `WithInvalidEntries` can withhold bad stored rows,
+judged against the final configuration every source makes, while
+preserving lower sources and unknown-key diagnostics, and
+`WithUnknownEntries` lets one source keep rows for removed fields, which
+go to its own report while every other source stays strict. See
+[sources](docs/sources.md).
 
 ## Build and test
 
@@ -172,15 +181,19 @@ metrics-library dependency.
 
 | File | Responsibility |
 |---|---|
-| `config.go`, `options.go` | `Load` pipeline and source options |
-| `defaults.go`, `element_defaults.go`, `decode_input.go`, `check_key.go`, `source_validation.go` | Shared defaults/decoding, key checks and provider entry validation |
-| `schema.go`, `view.go`, `fields.go`, `key.go`, `tag_keys.go` | Canonical metadata, discovery, key grammar and tag-key spelling |
+| `config.go`, `options.go`, `layers.go` | `Load` pipeline and source options; every source read and prepared as a layer, then the layers merged in rank order |
+| `validator_cycles.go` | The default validator's cycle check: whether a config type can hold a cycle on go-playground's paths, decided once per type, and for one that can, the value walked along those paths, a cycle refused with `ErrValidation` before the validator would walk it forever |
+| `defaults.go`, `element_defaults.go`, `decode_input.go`, `check_key.go`, `key_errors.go`, `source_validation.go`, `judge.go`, `unknown_entries.go` | Shared defaults/decoding, key checks (`CheckKey`, `DecodeKey`, `CanonicalKey`, `DecodeEdits`), the one place a `*KeyError` is made, its reasons worded as diagnostics may show keys, `WithInvalidEntries`' judging of entries against the final configuration, and `WithUnknownEntries`' claim on the unknown keys one source set |
+| `merge_input.go`, `keys.go`, `edits.go`, `unkeyed.go` | The merge rule every source follows (a map merges by key, typed or not; a list edit sets elements), source trees in that shape, key edits (canonical keys, a batch resolved, rewritten and checked against itself, then set as a source), and the `koanf:"-"` fields of typed sections carried beside the merge |
+| `provider_func.go`, `entries.go` | Function-backed sources: `NewMapProvider`'s dotted or nested maps, and `WithBaseEntries`/`WithOverrideEntries` entries in the key grammar |
+| `schema.go`, `members.go`, `view.go`, `fields.go`, `key.go`, `tag_keys.go`, `keycodec.go` | Canonical metadata, discovery, key grammar and tag-key spelling, and each map key type's text: how an entry is named, read back as a load reads a file's key, and spelled one way; a struct's members — its fields, then the keys its `,remain` field collects — which every walk steps through |
 | `env_refs.go`, `env.go` | Environment references and variable matching |
 | `reloader.go`, `reload_options.go`, `reload_tags.go`, `applier.go`, `snapshot.go` | Publication, reload triggers and policy, applied-state accounting |
 | `watch.go`, `clock.go` | The file watch and the clock its debounce, recheck and poll timers run on |
 | `render.go`, `print.go`, `usage.go`, `jsonschema.go`, `constraints.go`, `redact.go` | Trees, diagnostic output and documentation metadata |
 | `errors.go`, `provenance.go` | Error categories and value origins |
 | `shadow.go` | Shadowed inputs: what a higher-precedence source outranks, and which edits a reload could not apply |
+| `internal/deepcopy` | The deep copy config takes of defaults, provider data, stage snapshots and published configs. kongprovider adopts it once it requires the first config release that ships it; from then on its exported API is a cross-module contract that must stay source-compatible |
 
 ## Documentation
 

@@ -38,8 +38,9 @@ func configField(sf reflect.StructField) (gowalker.FieldRule, error) {
 		}
 		return gowalker.FieldRule{Inline: isBranch(derefType(sf.Type)), Skip: !isBranch(derefType(sf.Type))}, nil
 	}
-	if !validFieldKey(key) {
-		return gowalker.FieldRule{}, fmt.Errorf("%w: field %s has key %q, which holds a character keys use for structure", ErrSchema, sf.Name, key)
+	problem := fieldKeyProblem(key)
+	if problem != "" {
+		return gowalker.FieldRule{}, fmt.Errorf("%w: field %s has key %q, which no key can spell: %s", ErrSchema, sf.Name, key, problem)
 	}
 	for i, a := range aliases {
 		if !validFieldKey(a) || strings.EqualFold(a, key) {
@@ -78,11 +79,13 @@ func viewError(t reflect.Type, err error) error {
 	return fmt.Errorf("%w: %s: %w", ErrSchema, gowalker.TypeText(t), err)
 }
 
-func fieldSensitive(f *gowalker.Field) bool {
-	if taggedSensitive(f.GoField().Tag) {
+// fieldSensitive reports a field declared sf, reached through the squashed
+// structs parents, that it or one of them tags sensitive.
+func fieldSensitive(sf reflect.StructField, parents []reflect.StructField) bool {
+	if taggedSensitive(sf.Tag) {
 		return true
 	}
-	for _, parent := range f.InlineParents() {
+	for _, parent := range parents {
 		if taggedSensitive(parent.Tag) {
 			return true
 		}

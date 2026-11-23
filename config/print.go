@@ -3,7 +3,6 @@ package config
 import (
 	"cmp"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -154,16 +153,20 @@ type printEntry struct {
 // in interfaces and nested to any depth, are expanded element by element, so
 // no container is printed whole while something inside it is unchecked; a
 // sensitive map, list or interface is one redacted value, since the keys it
-// holds may themselves be secrets; a value printed whole — a struct decoded
-// from text or by its own decoder, or a slice of them — is redacted when its
-// type could hold a sensitive value. No option prints a sensitive value.
+// holds may themselves be secrets. A key a koanf:",remain" field collects is
+// a key of its struct (plugins.foo), judged as a map entry is, and a
+// sensitive remain field is one redacted value at section[*]. A value
+// printed whole — a struct decoded from text or by its own decoder, or a
+// slice of them — is redacted when its type could hold a sensitive value.
+// No option prints a sensitive value.
 //
 // [WithFormat] selects FormatTable (the default: one row per key), FormatJSON
 // (an object of key → value text) or FormatYAML (the config nested as it is
 // written in a file, values typed as they decode, keys in declaration
 // order); [PrintEnv] writes it as environment variables. It returns the first
-// write error, a structural ErrSchema error, or an error for an unknown format.
-// Structural errors produce no output. It never decodes default/example tags.
+// write error, an ErrSchema error for a structural problem or a misspelt tag
+// key, or an error for an unknown format. Schema errors produce no output. It
+// never decodes default/example tags.
 func PrintRedacted(cfg any, opts ...PrintOption) error {
 	po := defaultPrintOptions()
 	for _, opt := range opts {
@@ -202,16 +205,19 @@ func PrintRedacted(cfg any, opts ...PrintOption) error {
 // sensitive value (as [PrintRedacted] defines it) replaced by "[REDACTED]".
 // It is for diagnostics — a status endpoint, a reload response, a log line —
 // not serialization: every value is its fmt %v text, and maps and slices are
-// expanded entry by entry. It returns nil on a structural schema error; use
-// [RedactedMapChecked] to receive that error.
+// expanded entry by entry. It returns nil on every error
+// [RedactedMapChecked] returns — a reached type with invalid or ambiguous
+// keys, or a misspelt tag key; use RedactedMapChecked to receive the error.
 func RedactedMap(cfg any) map[string]string {
 	result, _ := RedactedMapChecked(cfg)
 	return result
 }
 
 // RedactedMapChecked returns [RedactedMap]'s values, or nil and ErrSchema
-// when a reached type has invalid or ambiguous keys. No partial map is returned.
-// Like PrintRedacted, it does not decode default or example tags.
+// when a reached type has invalid or ambiguous keys or a misspelt tag key —
+// a misspelt sensitive tag would print the value it means to hide. No partial
+// map is returned. Like PrintRedacted, it does not decode default or example
+// tags.
 func RedactedMapChecked(cfg any) (map[string]string, error) {
 	entries, err := collectEntriesChecked(cfg)
 	if err != nil {
@@ -231,6 +237,10 @@ func RedactedMapChecked(cfg any) (map[string]string, error) {
 func collectEntriesChecked(cfg any) ([]printEntry, error) {
 	w := &entryWalk{visiting: map[visit]bool{}}
 	val := reflect.ValueOf(cfg)
+	// Judged by type first, as in valueTree.root.
+	if !val.IsValid() || !isBranch(derefType(val.Type())) {
+		return nil, nil
+	}
 	for val.Kind() == reflect.Pointer {
 		if val.IsNil() {
 			return nil, nil
@@ -238,10 +248,7 @@ func collectEntriesChecked(cfg any) ([]printEntry, error) {
 		w.visiting[visitOf(val)] = true
 		val = val.Elem()
 	}
-	if !val.IsValid() || !isBranch(val.Type()) {
-		return nil, nil
-	}
-	w.walkStruct(val, nil, false)
+	w.walkStruct(val, nil, site{})
 	if w.err != nil {
 		return nil, w.err
 	}
@@ -275,33 +282,28 @@ type site struct {
 	// keyed marks a map key: a dynamic name whose sensitivity covers
 	// everything beneath it, structs included.
 	keyed bool
+	// beneathInterface marks a value an interface holds, or one beneath
+	// it: its map entries are members (keyPath.member), as CanonicalKey
+	// spells them.
+	beneathInterface bool
 }
 
-// walkStruct emits entries for val's fields. inherited is true beneath a
-// field tagged sensitive:"true", so tagging a container hides everything in it.
-func (w *entryWalk) walkStruct(val reflect.Value, prefix keyPath, inherited bool) {
+// walkStruct emits entries for val's fields, val sitting at under:
+// under.sensitive is true beneath a field tagged sensitive:"true", so
+// tagging a container hides everything in it.
+func (w *entryWalk) walkStruct(val reflect.Value, prefix keyPath, under site) {
 	if w.err != nil {
 		return
 	}
-	schema, err := metadataOf(val.Type())
+	schema, err := declaredOf(val.Type())
 	if err != nil {
 		w.err = err
 		return
 	}
-	for _, f := range schema.fields {
-		fv, err := f.value(val)
-		if errors.Is(err, gowalker.ErrMissing) {
-			continue
+	for m, vals := range schema.members(side{v: val, present: true}, side{}, schema.remainWhole(under.sensitive)) {
+		if vals[0].IsValid() {
+			w.walkValue(prefix.child(m.seg), vals[0], m.site(under))
 		}
-		if err != nil {
-			w.err = fmt.Errorf("%w: %w", ErrSchema, err)
-			return
-		}
-		w.walkValue(prefix.field(f.key), fv, site{
-			named:     f.named,
-			desc:      f.sf.Tag.Get("desc"),
-			sensitive: inherited || f.tagged,
-		})
 	}
 }
 
@@ -312,6 +314,9 @@ func (w *entryWalk) walkValue(path keyPath, v reflect.Value, s site) {
 		if elem.IsNil() {
 			w.leaf(path, v, reflect.Value{}, s)
 			return
+		}
+		if elem.Kind() == reflect.Interface {
+			s.beneathInterface = true
 		}
 		if elem.Kind() == reflect.Pointer { // any pointer: one into an interface can lead back to itself
 			if !w.enter(elem) {
@@ -326,20 +331,24 @@ func (w *entryWalk) walkValue(path keyPath, v reflect.Value, s site) {
 	named := s.named
 	switch {
 	case isBranch(elem.Type()):
-		w.walkStruct(elem, path, s.sensitive || s.keyed && named)
+		w.walkStruct(elem, path, site{sensitive: s.sensitive || s.keyed && named, beneathInterface: s.beneathInterface})
 	case (s.sensitive || named) && expandable(elem.Type()):
 		// Its keys and elements may be secrets: one redacted value.
 		w.leaf(path, v, elem, s)
-	case elem.Kind() == reflect.Map && elem.Type().Key().Kind() == reflect.String && !opaque(elem.Type()) && elem.Len() > 0:
+	case elem.Kind() == reflect.Map && expandable(elem.Type()) && elem.Len() > 0:
 		if !w.enter(elem) {
 			w.cycle(path, v, s)
 			return
 		}
 		defer delete(w.visiting, visitOf(elem))
-		keys := elem.MapKeys()
-		slices.SortFunc(keys, func(a, b reflect.Value) int { return cmp.Compare(a.String(), b.String()) })
-		for _, k := range keys {
-			w.walkValue(path.key(k.String()), elem.MapIndex(k), site{named: isSensitiveName(k.String()) && textCapable(elem.Type().Elem()), desc: s.desc, sensitive: s.sensitive || named, keyed: true})
+		for _, e := range sortedEntries(elem) {
+			w.walkValue(path.entry(e.name, s.beneathInterface), e.value, site{
+				named:            isSensitiveName(e.name) && textCapable(elem.Type().Elem()),
+				desc:             s.desc,
+				sensitive:        s.sensitive || named,
+				keyed:            true,
+				beneathInterface: s.beneathInterface,
+			})
 		}
 	case (elem.Kind() == reflect.Slice || elem.Kind() == reflect.Array) && !opaque(elem.Type()) && elem.Len() > 0 && holdsContainers(elem.Type().Elem()):
 		if elem.Kind() == reflect.Slice {
@@ -349,12 +358,12 @@ func (w *entryWalk) walkValue(path keyPath, v reflect.Value, s site) {
 			}
 			defer delete(w.visiting, visitOf(elem))
 		}
-		inner := site{named: s.named, desc: s.desc, sensitive: s.sensitive || named, keyed: s.keyed}
+		inner := site{named: s.named, desc: s.desc, sensitive: s.sensitive || named, keyed: s.keyed, beneathInterface: s.beneathInterface}
 		for i := range elem.Len() {
 			w.walkValue(path.index(i), elem.Index(i), inner)
 		}
 	default:
-		// Scalars, self-decoding structs, maps keyed by non-strings, empty
+		// Scalars, self-decoding structs, maps whose keys have no text, empty
 		// containers and slices of scalars. A sensitive leaf is redacted
 		// whole — including `APIKeys []string`.
 		w.leaf(path, v, elem, s)

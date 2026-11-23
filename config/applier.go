@@ -2,6 +2,7 @@ package config
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"maps"
 	"reflect"
@@ -9,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/ashtonian/pkg/config/internal/deepcopy"
 	"github.com/ashtonian/pkg/gowalker"
 )
 
@@ -35,7 +37,13 @@ type Applier[T any] struct {
 	Name string
 	// Prefixes are the keys the applier owns, in the package's key grammar:
 	// a section (db), one value (logging.level), an entry
-	// (features["audit"]) or a pattern (features[*].gate). It owns every key
+	// (features["audit"]), a key a koanf:",remain" field collects
+	// (plugins.foo), the keys a sensitive remain field collects, which Diff
+	// compares whole (vault[*]), or a pattern (features[*].gate). Each is
+	// spelled as CanonicalKey spells a key, so it names what Diff names:
+	// main.port is primary.port when main is primary's former name, and
+	// by_port["010"] is by_port["8"]; a map entry whose key does not read
+	// back as it decodes fails construction with ErrKey. It owns every key
 	// at or beneath them unless another applier's prefix is more specific:
 	// longer, or as long with more literal map keys and indexes.
 	Prefixes []string
@@ -83,14 +91,25 @@ type ApplyResult struct {
 	RestartKeys []string
 }
 
-// ApplyError reports the appliers that did not apply a published config. The
-// config is live; each of them is called again on the next one. It wraps
-// [ErrApply] and every failure's cause.
+// ApplyError reports the appliers that did not apply a config, and those
+// that did. After a reload the config is published and live, and each
+// applier that failed is called again on the next one. On a reloader's
+// first load (Initial) nothing is published and the reloader is not built,
+// but the appliers in Applied acted on the config: roll them back, as for
+// an [AbandonedApplyError]. It wraps [ErrApply] and every failure's cause.
 type ApplyError struct {
 	Failures []ApplierFailure
+	// Applied names the appliers that applied the config, in the order they
+	// ran.
+	Applied []string
+	// Initial reports the ApplyInitial appliers of a reloader's first load,
+	// which was never published.
+	Initial bool
 }
 
-// ApplierFailure is one applier's failure to apply a published config.
+// ApplierFailure is one applier's failure to apply a config: one a reload
+// published, or a reloader's first load, which an ApplierFailure keeps from
+// being published.
 type ApplierFailure struct {
 	Applier string
 	Err     error
@@ -98,7 +117,16 @@ type ApplierFailure struct {
 
 func (e *ApplyError) Error() string {
 	var b strings.Builder
-	b.WriteString(ErrApply.Error())
+	switch {
+	case !e.Initial:
+		b.WriteString("configuration published but not fully applied")
+	case len(e.Applied) == 0:
+		b.WriteString("configuration not applied at start, so nothing was published")
+	default:
+		b.WriteString("configuration not applied at start, so nothing was published, though appliers ")
+		b.WriteString(strings.Join(e.Applied, ", "))
+		b.WriteString(" applied it")
+	}
 	for i, f := range e.Failures {
 		if i == 0 {
 			b.WriteString(": ")
@@ -121,8 +149,11 @@ func (e *ApplyError) Unwrap() []error {
 // WithApplier registers a; appliers run in registration order. An applier
 // with no name or a repeated one, no Apply, or no prefix fails construction,
 // as does a prefix that names no key of the config, reaches beneath an
-// interface or a value compared whole, or is as specific as another
-// applier's and could name the same key. See [Applier].
+// interface or a value compared whole — a key a sensitive koanf:",remain"
+// field collects included, which [Diff] compares whole at section[*] —
+// names a struct's keys by [*], or is as specific as another applier's and
+// could name the same key. section[*] itself, for a sensitive remain field,
+// is a prefix. See [Applier].
 //
 // With appliers registered, the reloader accounts for every key: a change no
 // applier owns, or one an applier returned as a restart key, is reported in
@@ -226,24 +257,48 @@ func newApplication(root *schemaNode, hooks []applierHook) (*application, error)
 	return a, nil
 }
 
-// applierPrefix parses and checks one prefix against the config's schema: it
-// must name a key Diff can report.
+// applierPrefix parses and checks one prefix against the config's schema,
+// and spells it as Diff spells the keys it names (see spellSegment): it must
+// name a key Diff can report. A key a remain field collects is a member of
+// its section (plugins.foo); one a sensitive remain field collects is not,
+// since Diff compares that field whole, at section[*], which a prefix may
+// name.
 func applierPrefix(root *schemaNode, s string) (keyPath, error) {
 	p, err := parseKeyPath(s)
 	if err != nil {
 		return nil, err
 	}
+	at, n := cursor{}, root
 	for i := 1; i <= len(p); i++ {
-		c, n, err := root.walkTo(cursor{}, p[:i])
+		seg := &p[i-1]
+		if n.kind == nodeBranch {
+			whole := n.remainWhole(at.sensitive())
+			switch {
+			case seg.kind == segAny && whole:
+				// The remain field's keys, compared whole: Diff's section[*].
+			case seg.kind == segAny && n.remain != nil:
+				return nil, fmt.Errorf("%w %s: %s compares the keys its remain field collects one by one; own %s, or name one of them", ErrKey, p, at.path.orRoot(), at.path.orRoot())
+			case seg.kind == segAny:
+				return nil, fmt.Errorf("%w %s: %s is a struct; own it, or name a key it holds", ErrKey, p, at.path.orRoot())
+			case n.collects(*seg) && whole:
+				return nil, fmt.Errorf("%w %s: it reaches beneath %s, which is sensitive and compared whole", ErrKey, p, at.path.any())
+			}
+		}
+		_, err = spellSegment(n, p, i-1)
+		if err != nil {
+			return nil, err
+		}
+		c, next, err := root.walkTo(cursor{}, p[:i])
 		if err != nil {
 			return nil, err
 		}
 		if len(c.path) < i {
 			return nil, fmt.Errorf("%w %s: it reaches beneath %s, whose keys are not compared one by one", ErrKey, p, c.path.orRoot())
 		}
-		if i < len(p) && n.kind != nodeBranch && c.sensitive() {
+		if i < len(p) && next.kind != nodeBranch && c.sensitive() {
 			return nil, fmt.Errorf("%w %s: it reaches beneath %s, which is sensitive and compared whole", ErrKey, p, c.path)
 		}
+		at, n = c, next
 	}
 	return p, nil
 }
@@ -281,14 +336,32 @@ func (o ownedPrefix) matches(p keyPath) bool {
 		return false
 	}
 	for i, s := range o.path {
-		k := p[i]
-		if s.kind == segAny {
-			if k.kind != segKey && k.kind != segIndex {
+		if !segmentMatches(s, p[i]) {
+			return false
+		}
+	}
+	return true
+}
+
+// segmentMatches reports whether s, a prefix's segment, matches k, a key's:
+// [*] matches a map key, a list index, and the [*] of section[*], the keys
+// a sensitive remain field collects, compared whole.
+func segmentMatches(s, k segment) bool {
+	if s.kind == segAny {
+		return k.kind == segKey || k.kind == segIndex || k.kind == segAny
+	}
+	return s == k
+}
+
+// meet reports whether a and b, two prefixes of one length, match one key.
+func meet(a, b keyPath) bool {
+	for i := range a {
+		switch {
+		case a[i].kind == segAny:
+			if !segmentMatches(a[i], b[i]) {
 				return false
 			}
-			continue
-		}
-		if s != k {
+		case !segmentMatches(b[i], a[i]):
 			return false
 		}
 	}
@@ -300,7 +373,7 @@ func (o ownedPrefix) matches(p keyPath) bool {
 func (o ownership) check(hooks []applierHook) error {
 	for i, a := range o {
 		for _, b := range o[i+1:] {
-			if a.applier == b.applier || a.outranks(b) || b.outranks(a) || !overlaps(a.path, b.path) {
+			if a.applier == b.applier || a.outranks(b) || b.outranks(a) || !meet(a.path, b.path) {
 				continue
 			}
 			return fmt.Errorf("config: WithApplier %q (%s) and %q (%s) are equally specific and both own keys like %s",
@@ -308,16 +381,6 @@ func (o ownership) check(hooks []applierHook) error {
 		}
 	}
 	return nil
-}
-
-// overlaps reports whether two prefixes of one length could name one key.
-func overlaps(a, b keyPath) bool {
-	for i := range a {
-		if a[i].kind != segAny && b[i].kind != segAny && a[i] != b[i] {
-			return false
-		}
-	}
-	return true
 }
 
 // of returns the applier that owns key p, or -1 when none does.
@@ -564,7 +627,7 @@ func (r rebaser) merge(c published, within []*ackEntry) (heldValue, error) {
 	}
 	slot := reflect.New(anyType).Elem()
 	if base.v.IsValid() {
-		slot.Set(deepCopy(base.v))
+		slot.Set(deepcopy.Value(base.v))
 	}
 	present := base.present
 	for _, e := range within {
@@ -620,18 +683,20 @@ func writeHeld(slot reflect.Value, rel keyPath, h heldValue) error {
 	seg, rest := rel[0], rel[1:]
 	switch n.kind {
 	case nodeBranch:
-		f := n.byKey[seg.name]
-		if f == nil {
-			return fmt.Errorf("%s has no field %q", gowalker.TypeText(v.Type()), seg.name)
+		m, ok := n.memberAt(seg)
+		if !ok {
+			return fmt.Errorf("%s has no key %s", gowalker.TypeText(v.Type()), keyPath{seg})
 		}
-		fv, err := f.value(v)
-		if err != nil {
+		slot, via, ok := m.slot(v)
+		if !ok {
 			return nil // beneath a nil embedded pointer
 		}
-		return writeHeld(fv, rest, h)
+		return writeHeld(slot, append(via, rest...), h)
 	case nodeMap:
-		key := reflect.New(v.Type().Key()).Elem()
-		key.SetString(seg.name)
+		key, err := n.keys.parse(seg.name)
+		if err != nil {
+			return fmt.Errorf("%s is keyed by %s, which entry %q does not decode into: %w", gowalker.TypeText(v.Type()), gowalker.TypeText(v.Type().Key()), seg.name, err)
+		}
 		if len(rest) == 0 && !h.present {
 			if !v.IsNil() {
 				v.SetMapIndex(key, reflect.Value{})
@@ -864,8 +929,9 @@ func (a *application) rebase(prev, next reflect.Value, changes []published) (*pe
 	byOwner := make([][]published, len(a.appliers))
 	var unowned []published
 	for _, c := range changes {
-		if i := a.owner(c.path); i >= 0 {
-			byOwner[i] = append(byOwner[i], c)
+		owner := a.owner(c.path, c.change.Field)
+		if owner >= 0 {
+			byOwner[owner] = append(byOwner[owner], c)
 		} else {
 			unowned = append(unowned, c)
 		}
@@ -900,7 +966,7 @@ func (a *application) commit(p *pending) {
 // with no config.
 func (a *application) start(owned []published) {
 	for _, c := range owned {
-		st := a.appliers[a.owner(c.path)]
+		st := a.appliers[a.owner(c.path, c.change.Field)]
 		if st.ack == nil {
 			st.ack = ackDiff{}
 		}
@@ -911,7 +977,7 @@ func (a *application) start(owned []published) {
 // initialOwner reports whether key p belongs to an applier with
 // ApplyInitial.
 func (a *application) initialOwner(p keyPath) bool {
-	i := a.owner(p)
+	i := a.owner(p, ownerOf(a.root, p))
 	return i >= 0 && a.appliers[i].hook.initial
 }
 
@@ -1071,13 +1137,20 @@ func restartKeys(keys []string, events []owed) (map[string]bool, error) {
 	return out, nil
 }
 
-// applyInitial runs the ApplyInitial appliers on the first load, published
-// as generation 1. Any failure or restart key fails construction.
-func (r *Reloader[T]) applyInitial(ctx context.Context, cfg *T, p *applyPlan) error {
+// applyInitial runs the ApplyInitial appliers on the first load, to be
+// published as generation 1, and returns the names of those that applied
+// it. Any failure or restart key fails construction, and so does ctx
+// ending before the last applier returns.
+func (r *Reloader[T]) applyInitial(ctx context.Context, cfg *T, p *applyPlan) ([]string, error) {
 	var failures []ApplierFailure
+	var applied []string
 	for i, st := range r.app.appliers {
 		if !st.hook.initial {
 			continue
+		}
+		err := ended(ctx)
+		if err != nil {
+			return applied, initialApplyError(applied, failures, err)
 		}
 		res, err := st.call(ctx, ApplyEvent[T]{
 			Trigger:    TriggerInitial,
@@ -1098,9 +1171,66 @@ func (r *Reloader[T]) applyInitial(ctx context.Context, cfg *T, p *applyPlan) er
 		}
 		st.acknowledge(p.events[i], nil)
 		st.status.LastApplied = time.Now().UTC()
+		applied = append(applied, st.hook.name)
 	}
-	if len(failures) > 0 {
-		return &ApplyError{Failures: failures}
+	return applied, initialApplyError(applied, failures, ended(ctx))
+}
+
+// initialApplyError is why the first load's ApplyInitial appliers fail
+// construction: the appliers that failed, and, when ctx ended with ctxErr,
+// its abandonment. Each names the appliers in applied for rollback. It is
+// nil when there is neither.
+func initialApplyError(applied []string, failures []ApplierFailure, ctxErr error) error {
+	switch {
+	case len(failures) == 0 && ctxErr == nil:
+		return nil
+	case len(failures) == 0:
+		return abandonedInitial(applied, ctxErr)
 	}
-	return nil
+	failed := &ApplyError{Failures: failures, Applied: slices.Clone(applied), Initial: true}
+	if ctxErr == nil {
+		return failed
+	}
+	return errors.Join(abandonedInitial(applied, ctxErr), failed)
+}
+
+// AbandonedApplyError reports a reloader's first load abandoned after
+// ApplyInitial appliers had applied it: ctx ended before the next applier
+// ran, or before generation 1 was published. Nothing is published and the
+// reloader is not built, but the appliers in Applied acted on the config:
+// roll them back. It wraps ctx.Err() and its cause, not [ErrReload].
+type AbandonedApplyError struct {
+	// Applied names the appliers that applied the config, in the order they
+	// ran.
+	Applied []string
+	// Err is why ctx ended.
+	Err error
+}
+
+func (e *AbandonedApplyError) Error() string {
+	return fmt.Sprintf("config initial load abandoned after appliers %s applied it: %v", strings.Join(e.Applied, ", "), e.Err)
+}
+
+func (e *AbandonedApplyError) Unwrap() error { return e.Err }
+
+// appliedBy names the appliers among outcomes that applied their config,
+// in the order they ran.
+func appliedBy(outcomes []ApplyOutcome) []string {
+	var names []string
+	for _, o := range outcomes {
+		if o.Error == nil {
+			names = append(names, o.Applier)
+		}
+	}
+	return names
+}
+
+// abandonedInitial is the error of a first load abandoned because ctx ended
+// with err, once the appliers in applied had applied it.
+func abandonedInitial(applied []string, err error) error {
+	if len(applied) == 0 {
+		return fmt.Errorf("config initial load abandoned: %w", err)
+	}
+	abandoned := &AbandonedApplyError{Applied: slices.Clone(applied), Err: err}
+	return abandoned
 }

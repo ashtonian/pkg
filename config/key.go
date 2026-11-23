@@ -22,7 +22,12 @@ type Segment struct {
 type Key []Segment
 
 // ParseKey parses fields, quoted map keys, decimal list indexes and [*]
-// patterns. Malformed and empty keys return an error wrapping ErrKey.
+// patterns. A key begins with a field, or with a quoted map key naming a
+// source key at the root that no field's key can spell (["a.b"]), as a
+// report of unknown keys names it. A map key is its entry's text, whatever
+// the map's key type (ports["80"], levels["WARN"]); ParseKey reads no
+// schema, so [CanonicalKey] says which entry it names. Malformed and empty
+// keys return an error wrapping ErrKey.
 func ParseKey(text string) (Key, error) {
 	p, err := parseKeyPath(text)
 	if err != nil {
@@ -65,4 +70,33 @@ func (k Key) LastName() string {
 		}
 	}
 	return ""
+}
+
+// Within reports whether k is p or a key beneath it: p's segments begin k.
+// A field and a map key of one name are one segment, as a key beneath an
+// interface or remain field can be written either way — CanonicalKey writes
+// it as a field — and a wildcard in p stands for any one of them or a list
+// index. Within reads no schema, so a wildcard after a struct matches its
+// fields too. Keys spelled by CanonicalKey compare exactly, so a store finds
+// the rows a write of p replaces.
+func (k Key) Within(p Key) bool {
+	if len(p) > len(k) {
+		return false
+	}
+	for i, s := range p {
+		t := k[i]
+		switch s.Kind {
+		case SegmentAny:
+			// Any segment: a field may be an interface's map key.
+		case SegmentIndex:
+			if t.Kind != SegmentIndex || t.Index != s.Index {
+				return false
+			}
+		default:
+			if t.Kind != SegmentField && t.Kind != SegmentKey || t.Name != s.Name {
+				return false
+			}
+		}
+	}
+	return true
 }

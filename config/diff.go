@@ -34,6 +34,12 @@ type Value struct {
 // Change is one key whose value differs between two configs.
 type Change struct {
 	// Key is the runtime key (db.host, items[0].port, named["primary"].port).
+	// One kind of change holds a pattern: section[*], the keys a sensitive
+	// koanf:",remain" field collects, compared whole. It is the remain
+	// field's own Field.Path; ParseKey reads it, and it is Within section,
+	// but CanonicalKey refuses it as not concrete, since it names no one
+	// key. A remain field that is not sensitive has a change per key it
+	// collects (plugins.foo), with no pattern.
 	Key string `json:"key"`
 	// Structural reports a change to a struct, map, list or interface itself
 	// rather than to a value inside it: it appeared, disappeared, became nil
@@ -49,9 +55,11 @@ type Change struct {
 }
 
 // Diff compares two configs of type T, a struct, and returns every key whose
-// value differs, in walk order: fields as declared, map entries by sorted
-// key, list elements by index. A nil config has no keys. It compares decoded
-// values, never their text, and neither input is changed.
+// value differs, in walk order: fields as declared, map entries by their
+// keys' sorted text (ports["80"], levels["WARN"]), list elements by index.
+// Keys are spelled as CanonicalKey spells them, a key beneath an interface
+// as a field wherever it can be one (extra.x). A nil config has no keys. It
+// compares decoded values, never their text, and neither input is changed.
 //
 //   - Lists compare by index: removing the first of three elements changes
 //     the first two and removes the third. Map entries compare by key; an
@@ -61,8 +69,8 @@ type Change struct {
 //     key, followed by the keys beneath it that changed. An interface whose
 //     value changes type, or turns nil, is compared whole: one change at its
 //     key, Structural when either value is a struct, map or list.
-//   - Values decoded whole — scalars, self-decoding structs, maps keyed by
-//     non-strings — compare with reflect.DeepEqual: no Equal or String
+//   - Values decoded whole — scalars, self-decoding structs, maps whose
+//     keys have no text — compare with reflect.DeepEqual: no Equal or String
 //     method decides, so two time.Time values for one instant in different
 //     locations differ, and NaN never equals itself.
 //   - A value PrintRedacted would redact is redacted on both sides; a
@@ -70,6 +78,13 @@ type Change struct {
 //     holds, which may themselves be secrets, are never listed.
 //   - A pointer, map or slice that leads back to one it lies within, on
 //     either side, is compared whole there, so a cycle ends.
+//   - A key a koanf:",remain" field collects is a key of its struct
+//     (plugins.foo), after the struct's fields and by name, whose Field is
+//     the remain field. A sensitive remain field is compared whole, as a
+//     sensitive map is: one change at section[*], redacted, there while the
+//     field collects a key, so an empty one and a nil one are alike. Its
+//     Key is the one that holds a pattern, so [CanonicalKey] refuses it as
+//     not concrete; ParseKey reads it.
 //
 // A T that is not a struct, a struct whose keys cannot be told apart, an
 // interface holding such a struct, and a non-nil func, channel or unsafe
@@ -195,20 +210,24 @@ func ancestorOf(s side) (ancestor, bool) {
 	return ancestor{}, false
 }
 
-// frame is what makes the keys at a walk position sensitive, the rule
-// cursor.sensitive applies: a field or squashed struct tagged sensitive, or
-// a credential-like field name or map key above a value.
+// frame is what a walk position inherits from above it: what makes its keys
+// sensitive, the rule cursor.sensitive applies — a field or squashed struct
+// tagged sensitive, or a credential-like field name or map key above a
+// value — and whether an interface holds it, which names its map entries as
+// members (keyPath.member).
 type frame struct {
-	tagged  bool
-	covered bool
+	tagged           bool
+	covered          bool
+	beneathInterface bool
 }
 
 func (f frame) sensitive() bool { return f.tagged || f.covered }
 
 func (f frame) field(fld *schemaField) frame {
 	return frame{
-		tagged:  f.tagged || fld.tagged,
-		covered: f.covered || fld.named && fld.node.kind != nodeBranch,
+		tagged:           f.tagged || fld.tagged,
+		covered:          f.covered || fld.named && fld.node.kind != nodeBranch,
+		beneathInterface: f.beneathInterface,
 	}
 }
 
@@ -377,6 +396,7 @@ func (w *comparer) dynamic(f frame, sa, sb side) {
 		}
 	}
 	if nodes[0] != nil && nodes[0] == nodes[1] {
+		f.beneathInterface = true
 		w.resolved(nodes[0], f, sa, sb)
 		return
 	}
@@ -417,31 +437,20 @@ func (w *comparer) container(n *schemaNode, f frame, sa, sb side) {
 	}
 	switch n.kind {
 	case nodeBranch:
-		for i, fld := range n.fields {
-			w.push(segment{kind: segField, name: fld.key}, ordSeg{n: i})
-			w.node(fld.node, f.field(fld), fieldOf(sa, fld), fieldOf(sb, fld))
+		for m, vals := range n.members(sa, sb, n.remainWhole(f.sensitive())) {
+			mn, err := m.node(schemaOf)
+			if err != nil {
+				w.fail(err)
+				return
+			}
+			w.push(m.seg, m.ord)
+			w.node(mn, m.frame(f), vals[0], vals[1])
 			w.pop()
 		}
 	case nodeMap:
-		ma, mb := readMap(sa), readMap(sb)
-		i, j := 0, 0
-		for i < len(ma.keys) || j < len(mb.keys) {
-			var a, b reflect.Value
-			var name string
-			switch {
-			case j >= len(mb.keys) || i < len(ma.keys) && ma.keys[i].name < mb.keys[j].name:
-				name, a = ma.keys[i].name, ma.at(i)
-				i++
-			case i >= len(ma.keys) || ma.keys[i].name > mb.keys[j].name:
-				name, b = mb.keys[j].name, mb.at(j)
-				j++
-			default:
-				name, a, b = ma.keys[i].name, ma.at(i), mb.at(j)
-				i++
-				j++
-			}
-			w.push(segment{kind: segKey, name: name}, ordSeg{s: name})
-			w.node(n.elem, f.entry(name, n.typ.Elem()), a, b)
+		for name, vals := range joinEntries(readMap(n.keys, sa), readMap(n.keys, sb)) {
+			w.push(entrySegment(name, f.beneathInterface), ordSeg{s: name})
+			w.node(n.elem, f.entry(name, n.typ.Elem()), vals[0], vals[1])
 			w.pop()
 		}
 	case nodeList:
@@ -532,7 +541,7 @@ type mapKey struct {
 	i    int // the entry's value in vals
 }
 
-func readMap(s side) mapRead {
+func readMap(c *keyCodec, s side) mapRead {
 	if !s.v.IsValid() || s.isNil || s.v.Len() == 0 {
 		return mapRead{}
 	}
@@ -545,7 +554,7 @@ func readMap(s side) mapRead {
 	for i := 0; it.Next(); i++ {
 		k.SetIterKey(&it)
 		r.vals.Index(i).SetIterValue(&it)
-		r.keys = append(r.keys, mapKey{name: k.String(), i: i})
+		r.keys = append(r.keys, mapKey{name: entryText(c, k), i: i})
 	}
 	slices.SortFunc(r.keys, func(a, b mapKey) int { return strings.Compare(a.name, b.name) })
 	return r
@@ -569,17 +578,21 @@ func locate(root *schemaNode, v reflect.Value, p keyPath) (side, *schemaNode, fr
 			if err != nil {
 				return side{}, nil, f
 			}
-			n = dn
+			n, f.beneathInterface = dn, true
 		}
 		switch n.kind {
 		case nodeBranch:
-			fld := n.byKey[seg.name]
-			if fld == nil {
+			m, ok := n.memberAt(seg)
+			if !ok {
 				return side{}, nil, f
 			}
-			s, n, f = resolve(fieldOf(s, fld)), fld.node, f.field(fld)
+			mn, err := m.node(schemaOf)
+			if err != nil {
+				return side{}, nil, f
+			}
+			s, n, f = resolve(m.in(s)), mn, m.frame(f)
 		case nodeMap:
-			s, n, f = resolve(newEntries(s).of(seg.name)), n.elem, f.entry(seg.name, n.typ.Elem())
+			s, n, f = resolve(entryOfSide(n.keys, s, seg.name)), n.elem, f.entry(seg.name, n.typ.Elem())
 		case nodeList:
 			s, n = resolve(elementOf(s, seg.index)), n.elem
 		default:
@@ -589,25 +602,27 @@ func locate(root *schemaNode, v reflect.Value, p keyPath) (side, *schemaNode, fr
 	return s, n, f
 }
 
-// entries looks up a map side's entries by key text.
-type entries struct {
-	m   reflect.Value // invalid when the side has no map
-	key reflect.Value // scratch, of the map's key type
-}
-
-func newEntries(s side) entries {
+// entryOfSide is the value of map side s's entry name, read by its key's
+// codec c; invalid when there is none.
+func entryOfSide(c *keyCodec, s side, name string) reflect.Value {
 	if !s.v.IsValid() || s.isNil || s.v.Kind() != reflect.Map {
-		return entries{}
-	}
-	return entries{m: s.v, key: reflect.New(s.v.Type().Key()).Elem()}
-}
-
-func (e entries) of(name string) reflect.Value {
-	if !e.m.IsValid() {
 		return reflect.Value{}
 	}
-	e.key.SetString(name)
-	return e.m.MapIndex(e.key)
+	k, err := c.parse(name)
+	if err != nil {
+		return reflect.Value{}
+	}
+	return s.v.MapIndex(k)
+}
+
+// entryText is key k's text by codec c; one whose MarshalText fails is
+// named by how it prints, so the change is still reported.
+func entryText(c *keyCodec, k reflect.Value) string {
+	text, err := c.text(k)
+	if err == nil {
+		return text
+	}
+	return fmt.Sprint(k.Interface())
 }
 
 func listLen(s side) int {

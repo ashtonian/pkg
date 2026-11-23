@@ -2,136 +2,178 @@ package config
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"maps"
-	"reflect"
 	"slices"
-	"strings"
 )
 
 // SourceOption configures one base or override provider.
 type SourceOption func(*providerSource)
 
-// WithInvalidEntries withholds known entries that fail CheckKey, preserving
-// lower-precedence values. report receives the sorted rejected keys after each
-// read, including an empty slice when none were rejected; nil discards the
-// report. Its error fails the load with ErrSource. Report errors omit values;
-// their wrapped causes are intended only for trusted diagnostics.
+// WithInvalidEntries withholds the source's invalid entries and reports
+// them, preserving lower-precedence values. report receives the sorted
+// rejected keys on every load, including an empty slice when none were
+// rejected; nil discards the report. Its error fails the load with
+// ErrSource. Report errors omit values; their wrapped causes are intended
+// only for trusted diagnostics.
 //
-// Struct sections are checked field by field; collections and self-decoding
-// values are atomic entries. Defaults must validate before any provider is
-// read, so a broken baseline cannot be mistaken for bad stored entries.
-// Unknown entries remain available to the normal unknown-input handler,
-// including declared unknown children of a withheld collection. Read/parser
-// errors and cancellation still fail the load. The final merged configuration
-// must validate: cross-field failures are never resolved by choosing entries
-// to discard.
+// An entry of a provider is a struct section's field, checked field by
+// field; a collection or self-decoding value is one entry. An entry of
+// [WithBaseEntries] or [WithOverrideEntries] is one stored key.
+//
+// Entries are judged in the configuration every source makes: the sources
+// merged in rank order over the defaults, the entries of every source this
+// option applies to among them, decoded as Load decodes and checked against
+// the validator's field rules — the default validator's tags, or
+// [WithValidator]'s. An entry is withheld when, beside the entries the
+// configuration does not fail at, it fails at a key it sets or at a key
+// holding a value of it the merge keeps. A failure at no key, and one at a
+// key a source not judged sets above the entries with nothing of theirs
+// kept beneath it, withholds nothing: the load fails with it.
+//
+// A failure is at keys: a value that does not decode at its key, a field
+// rule at its field's, and a rule comparing fields (eqfield, ltefield,
+// required_with, eqcsfield, ...) at each field it names as well. It is
+// blamed on the entry that set the key last: the highest-ranked source to
+// set it, and within a source the entry applied last. An entry sets a key
+// when what it merges holds the key, or replaces a key holding it whole —
+// with a value that is not a map, or a typed map or section; an entry
+// whose map merges key by key and holds nothing at the key does not. A
+// failure at a key is blamed as well on each entry beneath it whose own key
+// it set last: a list's max or a map's len breaks when entries add
+// elements or keys. An entry the merge cannot set, such as an index past
+// the next element, is blamed for that. A Validate method's error, a WithValidator validator's
+// that holds no field errors, and a failure the decoder places beneath a
+// map it decodes whole are at no key. Under [WithSkipValidation] only
+// values that do not decode and entries that cannot be set are blamed.
+//
+// Each round judges the entries left and tests every entry it blames for
+// the first time beside the entries it does not blame: an entry blamed
+// there is withheld, and one that is not is kept, so entries each valid
+// that break a rule together are kept and the load fails on that rule.
+// Rounds repeat until one withholds nothing, so an entry left unable to
+// apply by one withheld — pool[2] once pool[1] goes — is found by the next.
+//
+// Entries are judged before secrets, post-load hooks and Validate methods,
+// which run once, in the load: a field rule comparing an entry's key with
+// a field they fill judges against the value before they fill it, and a
+// required field they fill blames no entry.
+//
+// Every source is read before any entry is judged: report runs only once
+// the last source is read, so a slow provider delays it, and a source that
+// fails to read fails the load with nothing reported.
+//
+// A judgement merges the sources from the lowest this option applies to
+// up, decodes the result and runs the field rules. Judging takes one
+// judgement when it blames no entry and, for k entries it ever blames, at
+// most 2k+1, however many entries there are: each blamed entry is tested
+// at most once, and each round but the last withholds at least one, so
+// there are at most k tests and k+1 rounds. Each judgement starts from a
+// copy of what lies beneath those sources and copies the configuration
+// tree once for each source it merges and once more to decode.
+//
+// Unknown entries remain available to the unknown-input handler — the
+// load's, or this source's [WithUnknownEntries] report — including
+// declared unknown children of a withheld entry. Read and parser
+// errors and cancellation still fail the load, with the cause the context
+// ended with, and a load whose context has ended reports nothing. A
+// validate tag the default validator cannot apply fails the load with
+// ErrSchema, whichever entry brings the validator to it: it is the
+// declaration's fault, not the entry's.
 func WithInvalidEntries(report func(context.Context, []KeyError) error) SourceOption {
 	return func(s *providerSource) { s.withhold, s.rejected = true, report }
 }
 
-func (c *keyChecker) filter(ctx context.Context, tree map[string]any) (map[string]any, []KeyError, error) {
-	var rejected []KeyError
-	var walk func(*schemaNode, map[string]any, keyPath) (map[string]any, error)
-	walk = func(n *schemaNode, input map[string]any, path keyPath) (map[string]any, error) {
-		kept := make(map[string]any, len(input))
+// sourceEntries is data, a provider's tree, as the entries WithInvalidEntries
+// judges: a struct section field by field and anything else whole, each
+// resolved and rewritten. The keys of a section no field and no remain
+// field reads are in rest, kept as written, and an entry whose value does
+// not rewrite is refused.
+func sourceEntries(schema *schemaNode, data map[string]any) (edits []edit, rest map[string]any, refused []*KeyError) {
+	rest = map[string]any{}
+	var walk func(n *schemaNode, input map[string]any, path keyPath, rest map[string]any)
+	walk = func(n *schemaNode, input map[string]any, path keyPath, rest map[string]any) {
 		for _, key := range slices.Sorted(maps.Keys(input)) {
-			if err := ctx.Err(); err != nil {
-				return nil, err
-			}
 			value := input[key]
-			f := n.byKey[key]
-			if f == nil {
-				kept[key] = value
+			f, _ := n.lookup(key)
+			switch {
+			case f == nil && !n.acceptsUnknown:
+				rest[key] = value
 				continue
-			}
-			at := path.field(key)
-			if child, ok := value.(map[string]any); ok && f.node.kind == nodeBranch && len(child) > 0 {
-				filtered, err := walk(f.node, child, at)
-				if err != nil {
-					return nil, err
+			case f != nil && f.node.kind == nodeBranch:
+				child, ok := value.(map[string]any)
+				if ok && len(child) > 0 {
+					inner := map[string]any{}
+					walk(f.node, child, path.field(f.key), inner)
+					if len(inner) > 0 {
+						rest[f.key] = inner
+					}
+					continue
 				}
-				if len(filtered) > 0 {
-					kept[key] = filtered
-				}
+			}
+			at := path.member(key)
+			if f != nil {
+				at = path.field(f.key)
+			}
+			parent, _, ke := resolveSchemaPath(schema, at)
+			if ke != nil {
+				refused = append(refused, ke)
 				continue
 			}
-			_, err := c.check(ctx, at.String(), value)
-			if err == nil {
-				kept[key] = value
-				continue
-			}
-			if ctx.Err() != nil {
-				return nil, ctx.Err()
-			}
-			var invalid *KeyError
-			if !errors.As(err, &invalid) {
-				return nil, err
-			}
-			var unknown *UnknownKeysError
-			if errors.As(invalid.Err, &unknown) && !errors.Is(invalid.Err, ErrValidation) {
-				kept[key] = value
-				continue
-			}
-			rejected = append(rejected, *invalid)
+			edits = append(edits, edit{path: at, parent: parent, value: copyInput(value), safe: shownKey(schema, at)})
 		}
-		return kept, nil
 	}
-	kept, err := walk(c.schema, tree, nil)
-	slices.SortFunc(rejected, func(a, b KeyError) int { return strings.Compare(a.Key, b.Key) })
-	return kept, rejected, err
+	walk(schema, data, nil, rest)
+	edits, failed := rewriteEdits(schema, edits)
+	return edits, rest, append(refused, failed...)
 }
 
-func (l *loader) prepareProvider(ctx context.Context, name string, data map[string]any, p providerSource, label func(map[string]any) (labeler, error)) error {
+// prepareProvider is data, the tree of the provider p called name, as a
+// layer whose values label attributes. Under WithInvalidEntries the
+// provider is set entry by entry (see sourceEntries).
+func (l *loader) prepareProvider(name string, data map[string]any, p providerSource, label func(map[string]any) (labeler, error)) (*layer, error) {
 	w := keyWalk{schema: l.schema}
 	tree := w.tree(l.root, textKeyed(data))
 	if len(w.twice) > 0 || len(w.noText) > 0 || !p.withhold && len(w.notJSON) > 0 {
 		_, err := l.rewrite(name, data)
-		return err
+		return nil, err
 	}
 	for _, a := range w.aliased {
 		l.aliased = append(l.aliased, a+" in "+name)
 	}
 	sources, err := label(tree)
 	if err != nil {
-		return fmt.Errorf("loading %s: %w: %w", name, ErrSource, err)
+		return nil, fmt.Errorf("loading %s: %w: %w", name, ErrSource, err)
 	}
-	if p.withhold {
-		var rejected []KeyError
-		tree, rejected, err = l.checker.filter(ctx, tree)
-		if err != nil {
-			return err
-		}
-		for _, u := range w.unknown {
-			for _, r := range rejected {
-				if u.Key == r.Key || strings.HasPrefix(u.Key, r.Key+".") || strings.HasPrefix(u.Key, r.Key+"[") {
-					l.withheldUnknown = append(l.withheldUnknown, u)
-					break
-				}
-			}
-		}
-		if p.rejected != nil {
-			if err := p.rejected(ctx, rejected); err != nil {
-				return fmt.Errorf("reporting invalid entries in %s: %w: %w", name, ErrSource, err)
-			}
-		}
+	y := &layer{name: name, label: sources, claimsUnknown: p.claimsUnknown, unknownReport: p.unknown}
+	if !p.withhold {
+		y.tree, y.unkeyed = tree, w.unkeyed
+		return y, nil
 	}
-	return l.merge(name, tree, sources)
+	edits, rest, refused := sourceEntries(l.schema, textKeyed(data))
+	y.tree, y.byEntry, y.entries, y.refused = rest, true, edits, refused
+	y.withhold, y.report = true, p.rejected
+	return y, nil
 }
 
-func (l *loader) prepareValidation(ctx context.Context, o *options) error {
-	if !slices.ContainsFunc(o.base, func(p providerSource) bool { return p.withhold }) &&
-		!slices.ContainsFunc(o.overrides, func(p providerSource) bool { return p.withhold }) {
+// reportWithheld hands a WithInvalidEntries report the entries the source
+// called name withheld, sorted by key. A load whose context has ended
+// reports nothing: the report is the caller's code.
+func (l *loader) reportWithheld(ctx context.Context, name string, report func(context.Context, []KeyError) error, withheld []*KeyError) error {
+	if report == nil {
 		return nil
 	}
-	c, err := newKeyChecker(l.root, o)
+	err := abandoned(ctx)
 	if err != nil {
 		return err
 	}
-	if _, err := c.decode(ctx, deepCopy(reflect.ValueOf(c.defaults)).Interface().(map[string]any)); err != nil {
-		return fmt.Errorf("invalid baseline for provider entry validation: %w: %w", ErrValidation, err)
+	out := make([]KeyError, len(withheld))
+	for i, ke := range sortKeyErrors(withheld) {
+		out[i] = *ke
 	}
-	l.checker = c
+	err = report(ctx, out)
+	if err != nil {
+		return fmt.Errorf("reporting invalid entries in %s: %w: %w", name, ErrSource, err)
+	}
 	return nil
 }
