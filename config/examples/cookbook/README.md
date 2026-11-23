@@ -6,6 +6,7 @@ Complete programs that use [`config`](../../README.md) the way a service does, e
 |---|---|
 | [Kubernetes ConfigMap and Secret volumes](#kubernetes-configmap-and-secret-volumes) | The file watch on a ConfigMap volume; Secret keys through koanf's `k8smount` provider and its watch |
 | [Settings in a database](#settings-in-a-database) | A settings table read on every reload through `NewMapProvider`, tested on SQLite |
+| [Settings a service writes](#settings-a-service-writes) | An admin API that validates a batch with `DecodeEdits`, stores its keys as written and reloads them through `NewEntryProvider`, tested on SQLite |
 | [AWS Secrets Manager](#aws-secrets-manager) | `secret` tags resolved through `SecretsFrom`, per environment |
 | [HashiCorp Vault](#hashicorp-vault) | A KV v2 secret as config keys, through koanf's Vault provider |
 | [A whole service](#a-whole-service) | Kong flags, validation, hot reload, appliers, admin endpoints and graceful shutdown |
@@ -102,6 +103,69 @@ func newReloader(ctx context.Context, db *sql.DB, boot *BootConfig) (*config.Rel
 		},
 		config.WithPollInterval(boot.PollInterval),
 	)
+}
+```
+
+## Settings a service writes
+
+When the service writes the table itself — an admin API, a settings page — store each key as `CheckKey` and `DecodeEdits` take it and read the table back through `NewEntryProvider`, so the writer and the loader share one key grammar: `limits.max`, `upstreams["api.internal"].timeout` (a map key holding a dot), `routes[1].path`. Nothing on either side parses keys. A write is a batch, validated together over the live config with every row already stored, so `limits.min` and `limits.max` move together, a key spelled two ways across writes is refused, and a batch the service would refuse is never stored. A refused batch's error names keys and never a value, so it is safe to return to the caller. [`settingsstore/main.go`](settingsstore/main.go) has the `PUT /admin/settings` handler and the `main` that serves it.
+
+<!-- recipe: settingsstore/main.go -->
+
+```go
+// Provider reads the table on every load. Its keys are config's own, so a
+// row needs nothing decoded but its JSON value.
+func (s *Settings) Provider() (config.ContextProvider, error) {
+	return config.NewEntryProvider(func(ctx context.Context) (map[string]any, error) {
+		ctx, cancel := context.WithTimeout(ctx, s.timeout)
+		defer cancel()
+		return readRows(ctx, s.db)
+	})
+}
+```
+
+<!-- recipe: settingsstore/main.go -->
+
+```go
+// Write stores edits, verbatim, once the table they make validates over
+// the live config, and tells the reloader the table changed. The rows
+// already stored are checked with the edits, so a key spelled two ways
+// across writes is refused too. A refused batch changes nothing; its error
+// names keys, never a value.
+func (s *Settings) Write(ctx context.Context, reloader *config.Reloader[AppConfig], edits map[string]any) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	ctx, cancel := context.WithTimeout(ctx, s.timeout)
+	defer cancel()
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }() // after Commit, a no-op
+	table, err := readRows(ctx, tx)
+	if err != nil {
+		return err
+	}
+	maps.Copy(table, edits)
+	if _, err := config.DecodeEdits(ctx, reloader.Config(), table); err != nil {
+		return err
+	}
+	for key, value := range edits {
+		text, err := json.Marshal(value)
+		if err != nil {
+			return fmt.Errorf("encoding the value of %s: %w", key, err)
+		}
+		if _, err := tx.ExecContext(ctx,
+			"INSERT INTO settings (key, value) VALUES ($1, $2) ON CONFLICT (key) DO UPDATE SET value = excluded.value",
+			key, string(text)); err != nil {
+			return fmt.Errorf("storing %s: %w", key, err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	reloader.SourceChanged()
+	return nil
 }
 ```
 

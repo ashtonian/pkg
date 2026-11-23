@@ -122,8 +122,10 @@ type fileDigests map[string][sha256.Size]byte
 // With provenance or shadowed-input reporting, origins records what set each
 // value as the trees merge, and inputs what each non-default source set.
 type loader struct {
-	checker         *keyChecker
-	withheldUnknown []UnknownKey
+	checker *keyChecker
+	// unmergedUnknown is the unknown keys of input that never merged: an
+	// entry naming nothing config reads, or one beneath a withheld entry.
+	unmergedUnknown []UnknownKey
 	k               *koanf.Koanf
 	root            reflect.Type
 	schema          *schemaNode
@@ -197,6 +199,9 @@ func (l *loader) merge(name string, tree map[string]any, label labeler) error {
 // an OriginProvider's annotations name the source of each value; any other
 // provider is src's own.
 func (l *loader) addProvider(ctx context.Context, name string, p providerSource, src Source) error {
+	if ep, ok := p.provider.(entryProvider); ok {
+		return l.addEntries(ctx, name, ep, p, src)
+	}
 	if op, ok := p.provider.(OriginProvider); ok && p.parser == nil && l.origins != nil {
 		data, annotations, err := op.ReadWithOrigins(ctx)
 		if err != nil {
@@ -420,7 +425,7 @@ func load[T any](ctx context.Context, o *options) (loaded[T], error) {
 	if err := live(); err != nil {
 		return none, err
 	}
-	unknown, err := o.unknownInput(ctx, root, schema, merged, md.Unused, env, unmatchedEnv, l.withheldUnknown)
+	unknown, err := o.unknownInput(ctx, root, schema, merged, md.Unused, env, unmatchedEnv, l.unmergedUnknown)
 	if err != nil {
 		return none, fmt.Errorf("unmarshaling config: %w: %w", ErrValidation, err)
 	}

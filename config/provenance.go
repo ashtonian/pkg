@@ -128,8 +128,9 @@ type originNode struct {
 	elems    []*originNode          // a list's elements; nil for anything else
 	// merges reports a map a later source merges into key by key: any map
 	// of a source's tree. whole reports one its source set whole, a typed
-	// map or section, replacing every key beneath it that it lacks.
-	merges, whole bool
+	// map or section, replacing every key beneath it that it lacks. list
+	// reports a list, whose elements a key edit's listEdit can set.
+	merges, whole, list bool
 }
 
 func newOriginRoot() *originNode {
@@ -199,11 +200,42 @@ func (m *originMerge) leave() {
 func (n *originNode) merge(incoming map[string]any, m *originMerge) {
 	for key, val := range incoming {
 		m.enter(key)
-		child := n.children[key]
-		if in, isMap := val.(map[string]any); isMap && child != nil && child.merges {
-			child.merge(in, m)
+		n.children[key] = m.into(n.children[key], val)
+		m.leave()
+	}
+}
+
+// into is the origin of val merged over n, what was there: n, with a map
+// merged into it key by key or a listEdit's elements into its list, or else
+// val's own node.
+func (m *originMerge) into(n *originNode, val any) *originNode {
+	switch v := val.(type) {
+	case map[string]any:
+		if n != nil && n.merges {
+			n.merge(v, m)
+			return n
+		}
+	case listEdit:
+		if n != nil && n.list {
+			n.edit(v, m)
+			return n
+		}
+	}
+	return m.node(val)
+}
+
+// edit merges e's elements into n, a list node; its other elements, and the
+// list itself, stay their sources'. Only provenance reads elements.
+func (n *originNode) edit(e listEdit, m *originMerge) {
+	if !m.provenance {
+		return
+	}
+	for _, i := range slices.Sorted(maps.Keys(e)) {
+		m.enter(strconv.Itoa(i))
+		if i < len(n.elems) {
+			n.elems[i] = m.into(n.elems[i], e[i])
 		} else {
-			n.children[key] = m.node(val)
+			n.elems = append(n.elems, m.node(e[i]))
 		}
 		m.leave()
 	}
@@ -225,7 +257,11 @@ func (m *originMerge) node(val any) *originNode {
 			n.children[key] = m.node(child)
 			m.leave()
 		}
+	case listEdit:
+		n.list = true
+		n.edit(v, m) // nothing was a list there: the edit's indexes count from 0
 	case []any:
+		n.list = true
 		if m.provenance {
 			n.elems = make([]*originNode, len(v))
 			for i, e := range v {
@@ -233,6 +269,7 @@ func (m *originMerge) node(val any) *originNode {
 			}
 		}
 	default:
+		n.list = isList(reflect.ValueOf(val))
 		if m.provenance {
 			n.children, n.elems = structureOf(val, n.src, n.rank)
 		}

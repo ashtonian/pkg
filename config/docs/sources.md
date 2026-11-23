@@ -60,10 +60,11 @@ A provider loads at either provider layer: pass a nil parser when it returns key
 | Azure Key Vault | `github.com/knadh/koanf/providers/azkeyvault` | a poll |
 | Consul KV, etcd, NATS KV | `…/providers/consul/v2`, `…/etcd/v2`, `…/nats` | its `Watch` |
 | A database, an API, any function | `config.NewMapProvider` | a poll, or `SourceChanged` |
+| Stored entries keyed as `CheckKey` takes them | `config.NewEntryProvider` | a poll, or `SourceChanged` |
 
 Bridging a provider's watch to a reloader is one call — `p.Watch(func(_ any, err error) { if err == nil { reloader.SourceChanged() } })` — and bursts coalesce into one reload.
 
-`NewMapProvider(read, ".")` turns a function into a provider read on every load; with `"."` its keys are dotted paths, with `""` the map is already nested. What `read` returns is copied.
+`NewMapProvider(read, ".")` turns a function into a provider read on every load; with `"."` its keys are dotted paths, with `""` the map is already nested. What `read` returns is copied. `NewEntryProvider(read)` reads entries keyed in this package's own key grammar instead — see [stored entries](#stored-entries).
 
 A provider that returns keys, `WithDefaults` and `SetDefaults` may hold typed Go values. Each source is deep-copied as it merges, and the copy keeps a struct only by its exported fields unless it knows the type, as it knows `time.Time`. A value whose state that copy would lose — a `netip.Addr` or `netip.Prefix`, alone or in a section, list, array or map — is read through its `MarshalText` instead; a field of interface type holding one receives that text. A `MarshalText` error fails the load with `ErrValidation`, naming the key and not the value. From a provider or `WithDefaults`, a typed map or section still replaces what the layers beneath it set, and a nil list stays nil. A higher source then sets one key of it as it sets one key of a nested map: a file's `addresses: {first: {port: 9}}` over a default `map[string]Server` changes that one port, and every other entry and field keeps its value.
 
@@ -211,6 +212,55 @@ collection. Read/parser errors and cancellation fail the load. Finally, the
 combined config must validate: independently valid rows can conflict with one
 another, and the loader does not choose arbitrary rows to discard to resolve
 such a conflict. The option applies equally to `WithOverrideProvider`.
+
+### Stored entries
+
+A settings store that validates a key with `CheckKey` or a batch with
+`DecodeEdits` can persist each key as written and load it back through
+`NewEntryProvider`, with no translation between grammars: `port`,
+`names["a.b"]` (a map key holding a dot), `addresses["first"].port`,
+`pool[1].host`. A dotted provider cannot carry those keys — `a.b` would
+nest, `["first"]` is not a segment — and `NewMapProvider` keeps its own
+grammar for the stores already written in it.
+
+```go
+entries, err := config.NewEntryProvider(func(ctx context.Context) (map[string]any, error) {
+    return loadSettings(ctx, db) // key → value, keys as CheckKey took them
+})
+cfg, err := config.Load[AppConfig](ctx,
+    config.WithFile("config.yaml"),
+    config.WithOverrideProvider(entries, nil),
+)
+```
+
+Each entry is one key set over the sources merged beneath it, exactly as
+`DecodeKey` sets one over defaults and in the same order `DecodeEdits`
+applies a batch, so what `DecodeEdits(ctx, &live, entries)` returns over the
+live config is what the next load makes of the same table when the entries
+are the top layer. Field names resolve through aliases (the load warns, as
+for any source) and letter case. An index sets that element of the list
+beneath and leaves the other elements to the sources that set them, so a
+change to the lower list takes effect at the next reload and is not reported
+shadowed; provenance names the entry provider only for what its entries set.
+Beneath a source set above them, the entries' keys are replaced like any
+lower source's.
+
+| Entry | Load |
+|---|---|
+| Names nothing config reads, or does not parse | an unknown key, for the unknown-input handler, with the field it most likely misspells |
+| One value under two spellings (`port`, `PORT`; a field and its alias) | fails with a `*KeyError` matching `ErrValidation` |
+| An index past the next element of the list beneath | fails with a `*KeyError` matching `ErrValidation` |
+| A value its field's `format` or `sep` tag cannot read | fails with a `*KeyError` matching `ErrValidation` |
+
+Under `WithInvalidEntries` the failing entries, and every entry `CheckKey`
+refuses against defaults, are withheld and reported instead. Every message
+names keys, cut short beneath a sensitive container, and never a value.
+`read` gets the load's context; its error fails the load with `ErrSource`.
+Only a load can resolve the keys, so the provider's koanf `Read` methods
+return an error and it takes a nil parser. The
+[settings-store recipe](../examples/cookbook/README.md#settings-a-service-writes)
+validates a batch over the live config, stores it in one transaction and
+reloads.
 
 ## Environment variables
 

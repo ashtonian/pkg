@@ -26,9 +26,10 @@ type edit struct {
 	// parent is the node holding path's last segment: the struct, map or
 	// list it selects from, or what the key reaches beneath. It is nil
 	// beneath a remain field, where nothing is declared.
-	parent *schemaNode
-	value  any
-	safe   string // path as diagnostics may show it
+	parent  *schemaNode
+	value   any
+	safe    string   // path as diagnostics may show it
+	aliased []string // each field the key names by a former name, as a load reports it
 }
 
 // resolveEdit parses key, spells each field segment as its field's key and
@@ -44,6 +45,7 @@ func resolveEdit(schema *schemaNode, key string, value any) (edit, *KeyError) {
 	if len(p) == 0 {
 		return edit{}, &KeyError{Key: "$", Unknown: true, Err: fmt.Errorf("%w: a key names one value, not the whole config", ErrKey)}
 	}
+	var aliased []string
 	n := schema
 	var parent *schemaNode
 	for i := range p {
@@ -57,24 +59,44 @@ func resolveEdit(schema *schemaNode, key string, value any) (edit, *KeyError) {
 		}
 		if n.kind == nodeBranch {
 			var f *schemaField
+			alias := false
 			if s.kind == segField {
-				f, _ = n.lookup(s.name)
+				f, alias = n.lookup(s.name)
 			}
 			if f == nil && n.acceptsUnknown {
 				n = nil
 				continue
 			}
 			if f != nil {
+				written := s.name
 				s.name = f.key
+				if alias {
+					aliased = append(aliased, aliasNote(schema, p[:i].field(written), p[:i+1]))
+				}
 			}
 		}
 		_, next, err := n.walkTo(cursor{}, p[i:i+1])
 		if err != nil {
-			return edit{}, &KeyError{Key: diagnosticPath(schema, p).String(), Unknown: true, Err: err}
+			ke := &KeyError{Key: diagnosticPath(schema, p).String(), Unknown: true, Err: err}
+			if n.kind == nodeBranch && s.kind == segField && ke.Key == p.String() {
+				if closest := closestField(n, s.name); closest != "" {
+					ke.suggestion = p[:i].field(closest).String()
+				}
+			}
+			return edit{}, ke
 		}
 		n = next
 	}
-	return edit{path: p, parent: parent, value: copyInput(value), safe: diagnosticPath(schema, p).String()}, nil
+	return edit{path: p, parent: parent, value: copyInput(value), safe: diagnosticPath(schema, p).String(), aliased: aliased}, nil
+}
+
+// aliasNote is how a load reports a key written under a former field name:
+// the key as written and as it is now, or only the part diagnostics may show.
+func aliasNote(schema *schemaNode, written, now keyPath) string {
+	if safe := diagnosticPath(schema, now); len(safe) < len(now) {
+		return safe.String() + " (sensitive contents)"
+	}
+	return fmt.Sprintf("%s (now %s)", written, now)
 }
 
 // keyProblem is why a key cannot be set as written, in words naming keys

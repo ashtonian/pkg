@@ -108,7 +108,7 @@ func (l *loader) prepareProvider(ctx context.Context, name string, data map[stri
 		for _, u := range w.unknown {
 			for _, r := range rejected {
 				if u.Key == r.Key || strings.HasPrefix(u.Key, r.Key+".") || strings.HasPrefix(u.Key, r.Key+"[") {
-					l.withheldUnknown = append(l.withheldUnknown, u)
+					l.unmergedUnknown = append(l.unmergedUnknown, u)
 					break
 				}
 			}

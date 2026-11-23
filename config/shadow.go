@@ -170,32 +170,54 @@ func (in *inputs) add(name string, rank int, tree map[string]any, label labeler)
 
 func (in *inputs) walk(m map[string]any, values map[string][sha256.Size]byte) {
 	for key, val := range m {
-		in.path = append(in.path, key)
-		if child, ok := mergedMap(val); ok {
-			in.walk(child, values)
-		} else {
-			var sum [sha256.Size]byte
-			if in.enc != nil {
-				sum = in.enc.digest(val)
-			}
-			in.key = encodePath(in.key[:0], in.path)
-			values[string(in.key)] = sum
-		}
-		in.path = in.path[:len(in.path)-1]
+		in.at(key, val, values)
 	}
+}
+
+// at records val, set at key beneath in.path: each entry of a map, and each
+// element a listEdit sets, is an input of its own; anything else is one.
+func (in *inputs) at(key string, val any, values map[string][sha256.Size]byte) {
+	in.path = append(in.path, key)
+	defer func() { in.path = in.path[:len(in.path)-1] }()
+	if child, ok := mergedMap(val); ok {
+		in.walk(child, values)
+		return
+	}
+	if e, ok := val.(listEdit); ok {
+		for i, elem := range e {
+			in.at(strconv.Itoa(i), elem, values)
+		}
+		return
+	}
+	var sum [sha256.Size]byte
+	if in.enc != nil {
+		sum = in.enc.digest(val)
+	}
+	in.key = encodePath(in.key[:0], in.path)
+	values[string(in.key)] = sum
 }
 
 // leaves counts the inputs tree holds.
 func leaves(tree map[string]any) int {
 	n := 0
 	for _, val := range tree {
-		if child, ok := mergedMap(val); ok {
-			n += leaves(child)
-		} else {
-			n++
-		}
+		n += inputsIn(val)
 	}
 	return n
+}
+
+func inputsIn(val any) int {
+	if child, ok := mergedMap(val); ok {
+		return leaves(child)
+	}
+	if e, ok := val.(listEdit); ok {
+		n := 0
+		for _, elem := range e {
+			n += inputsIn(elem)
+		}
+		return n
+	}
+	return 1
 }
 
 // encodePath appends path to b, each segment as its length, ":" and its

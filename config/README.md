@@ -122,7 +122,8 @@ struct lists another library's keys that sit that close from a
 templates and key checks. `CheckKey` validates a stored entry without
 reading sources; `DecodeKey` also returns the typed config, and
 `DecodeEdits` validates a batch of edits together over an explicit
-baseline. Provider-level
+baseline, and `NewEntryProvider` loads stored entries keyed as those calls
+take them. Provider-level
 `WithInvalidEntries` can withhold bad stored rows while preserving lower
 sources and unknown-key diagnostics. See [sources](docs/sources.md).
 
@@ -177,7 +178,8 @@ metrics-library dependency.
 |---|---|
 | `config.go`, `options.go` | `Load` pipeline and source options |
 | `defaults.go`, `element_defaults.go`, `decode_input.go`, `check_key.go`, `source_validation.go` | Shared defaults/decoding, key checks and provider entry validation |
-| `merge_input.go`, `keys.go`, `edits.go` | The merge rule every source follows (a map merges by key, a typed map or section replaces), source trees in that shape, and key edits applied as a source |
+| `merge_input.go`, `keys.go`, `edits.go` | The merge rule every source follows (a map merges by key, a typed map or section replaces, a list edit sets elements), source trees in that shape, and key edits applied as a source |
+| `provider_func.go`, `entries.go` | Function-backed providers: `NewMapProvider`'s dotted or nested maps, `NewEntryProvider`'s entries in the key grammar |
 | `schema.go`, `view.go`, `fields.go`, `key.go`, `tag_keys.go` | Canonical metadata, discovery, key grammar and tag-key spelling |
 | `env_refs.go`, `env.go` | Environment references and variable matching |
 | `reloader.go`, `reload_options.go`, `reload_tags.go`, `applier.go`, `snapshot.go` | Publication, reload triggers and policy, applied-state accounting |

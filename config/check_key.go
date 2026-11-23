@@ -20,6 +20,8 @@ type KeyError struct {
 	Key     string `json:"key"`
 	Unknown bool   `json:"unknown,omitempty"`
 	Err     error  `json:"-"`
+	// suggestion is the key an unknown one most likely misspells.
+	suggestion string
 }
 
 func (e *KeyError) Error() string {
@@ -191,6 +193,11 @@ func (c *keyChecker) check(ctx context.Context, key string, value any) (any, err
 	if ke != nil {
 		return nil, ke
 	}
+	return c.checkEdit(ctx, e)
+}
+
+// checkEdit decodes and validates e set over the defaults.
+func (c *keyChecker) checkEdit(ctx context.Context, e edit) (any, error) {
 	tree, failed := c.edited(c.defaultsTree(), []edit{e})
 	if len(failed) > 0 {
 		return nil, failed[0]
