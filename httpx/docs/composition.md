@@ -120,14 +120,38 @@ create a new client; use the pattern above to preserve an existing client's
 settings.
 
 Every built-in decorator forwards `CloseIdleConnections` and exposes
-`Unwrap`. A cache also needs `CacheTransport.Close()` to stop background
-refreshes; closing idle connections alone does not stop them. Token transports
-borrow sources: their owner calls `RefreshingTokenSource.Close()` once after
-stopping callers, including when several clients share the source. Custom
-decorators should forward idle close too, respect context
-cancellation, close request bodies on rejection, and preserve response body
-interfaces when supporting protocol upgrades. A transport that ignores
-cancellation can prevent background cleanup from finishing.
+`Unwrap`. A cache also needs closing to stop background refreshes; closing
+idle connections alone does not stop them. A builder owns what it constructs
+and registers it with a `Lifecycle` you supply: `WithLifecycle(&life)` for
+`NewClient`, `NewStandard` and `MustNewStandard`, or
+`Chain.BuildWithLifecycle(&life, base)` / `Chain.ClientWithLifecycle(&life, base, timeout)`.
+`life.Close()` releases it at shutdown:
+
+| Resource | Owner | Released by |
+|---|---|---|
+| Cache from `WithCache`, or returned to a chain by a `WithCacheT` layer | The build | `Lifecycle.Close`: cancels its refreshes and waits for them |
+| Base the builder constructs (no `WithTransport`; `Build(nil)`) | The build | `Lifecycle.Close`: closes its idle connections, after the caches |
+| Base passed to `WithTransport`, `Build` or `Client` | Caller | Caller; `client.CloseIdleConnections()` still reaches it |
+| `CacheStore` passed to `WithCache` or `WithCacheT` | Caller | Caller |
+| `TokenSource` or `AuthProvider` | Caller (borrowed) | Its owner, for example `RefreshingTokenSource.Close()` |
+| A transport from a `New*Transport` constructor, or one a custom `TransportFunc` constructs | Caller | Its own `Close`, if it has one |
+
+Ownership follows construction, not reachability: a `Lifecycle` never closes a
+layer it can only reach through `Unwrap`. One `Lifecycle` can own several
+clients. `Close` is idempotent and safe for concurrent use; it stops builds
+newest first and each build's caches outermost first, every call returns once
+they have stopped, and a later build given the closed `Lifecycle` fails with
+`ErrInvalidConfig`. Close it after the
+clients' callers stop: the clients still answer requests, but their caches no
+longer refresh in the background.
+
+Token transports borrow sources: their owner calls
+`RefreshingTokenSource.Close()` once after stopping callers, including when
+several clients share the source. Custom decorators should forward idle close
+too, respect context cancellation, close request bodies on rejection, and
+preserve response body interfaces when supporting protocol upgrades. A
+transport that ignores cancellation can prevent background cleanup from
+finishing.
 
 `TransportStack(client)` inspects layers outermost first. `NewClient`
 threads a configured metrics hook into retry/cache; a custom chain needs

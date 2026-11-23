@@ -42,6 +42,7 @@ Constructors validate durations, counts, levels, thresholds and required provide
 | `WithBaseTransport(opts...)` | `...BaseOption` | `NewBaseTransport()` defaults | Tunes the base `*http.Transport`; the last call wins |
 | `WithTransport(rt)` | `http.RoundTripper` | none | Replaces the base transport; other base settings do not apply and combining with a base egress policy is rejected |
 | `WithJar(jar)` | `http.CookieJar` | nil | Cookie jar of the client |
+| `WithLifecycle(l)` | `*Lifecycle` | none | Registers the caches and base transport the builder constructs with `l`; `l.Close()` releases them. Nil or closed is rejected |
 | `WithCompression(opts...)` | `...CompressionOption` | off (`NewStandard`: on) | Adds response compression negotiation and decoding |
 | `WithCache(store, opts...)` | `CacheStore`, `...CacheOption` | off | Adds `CacheTransport`; a nil store uses `NewMemoryCache()` |
 | `WithCircuitBreaker(opts...)` | `...CircuitOption` | off | Adds `CircuitTransport` |
@@ -98,17 +99,17 @@ The options compose in any order. A transport's own implementation (`WithCompres
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
 | `WithCacheIdentityHeaders(names...)` | `...string` | none (`Authorization` and `Cookie` always partition) | Extra headers included in the cache key, such as `X-API-Key`; the application must configure all identity headers |
-| `WithStaleIfError(d)` | `time.Duration` | 0 (off) | Serve stale after an inner transport error (including local refusal) or 5xx; caller cancellation/deadlines remain errors |
-| `WithStaleWhileRevalidate(d)` | `time.Duration` | 0 (off) | Serve stale for up to `d` while revalidating in the background |
+| `WithStaleIfError(d)` | `time.Duration` | 0 (off) | Serve stale after an inner transport error (including local refusal) or 5xx, within the request's `max-age` / `min-fresh`; caller cancellation/deadlines remain errors |
+| `WithStaleWhileRevalidate(d)` | `time.Duration` | 0 (off) | Serve stale for up to `d` while revalidating in the background, within the request's `max-age` / `min-fresh` |
 | `WithMaxCacheBodyBytes(n)` | `int64` | `DefaultMaxCacheBodyBytes` (1 MiB) | Largest stored body; larger responses stream through unstored |
 | `WithMaxRetention(d)` | `time.Duration` | `DefaultMaxRetention` (24 h) | Longest an entry is kept, including entries kept only to revalidate |
-| `WithRevalidation(timeout, n)` | `time.Duration`, `int` | `DefaultRevalidateTimeout` (30 s), `DefaultMaxConcurrentRevalidates` (8) | Timeout and concurrency of background revalidations; `Close` stops them |
+| `WithRevalidation(timeout, n)` | `time.Duration`, `int` | `DefaultRevalidateTimeout` (30 s), `DefaultMaxConcurrentRevalidates` (8) | Timeout and concurrency of background revalidations; `CacheTransport.Close`, or the builder's `Lifecycle.Close`, stops them |
 | `WithCacheHook(h)` | `MetricsHook` | the `WithMetrics` hook, else none | Receives `OnCacheHit` / `OnCacheMiss` |
 | `WithOnCacheError(fn)` | `func(context.Context, *CacheError)` | nil | Synchronous bounded storage-failure event; must be quick, concurrent-safe and non-reentrant |
 | `WithMaxEntries(n)` (`NewMemoryCache`) | `int` | `DefaultMemoryCacheMaxEntries` (1024) | Entry cap; least recently used evicted first |
 | `WithMaxBytes(n)` (`NewMemoryCache`) | `int64` | `DefaultMemoryCacheMaxBytes` (64 MiB) | Byte cap over bodies, headers and keys |
 
-Cache keys use the effective URL (including `Request.Host`), plus hashed
+Cache keys use the effective URL without its fragment (including `Request.Host`), plus hashed
 `Authorization`, `Cookie` and configured identity headers. Other credentials
 are not detected automatically. Invalidation applies within the request's
 partition; coalescing and invalidation coordination are local to one
@@ -118,7 +119,9 @@ The cache supports explicit freshness, validators, `Vary`, corrected `Age`,
 request cache directives and permitted stale reuse. Storage is limited to
 eligible GETs and the documented status codes, with one `Vary` variant per
 primary key. Caller-conditional, range, HEAD and body-bearing GET requests
-bypass caching. See [supported HTTP policy](caching.md#supported-http-policy)
+bypass caching. A request carrying `only-if-cached` never reaches the origin:
+it receives a usable stored response or a synthetic 504, as does any request
+the cache would bypass. See [supported HTTP policy](caching.md#supported-http-policy)
 for storage, revalidation, stale fallback and invalidation boundaries.
 `CacheStore` receives context and returns errors on every operation. Failed
 storage maintenance preserves received responses; uncertain mutations disable
@@ -300,6 +303,7 @@ that is separate from retrying the current call.
 - `NewClient(opts...) (*http.Client, error)` — the fixed decorator stack
 - `NewStandard(opts...) (*http.Client, error)` / `MustNewStandard(opts...)` — defaults plus overrides
 - `NewChain(fns...) Chain`, `Chain.Build(base)`, `Chain.Client(base, timeout)` — explicit order, first innermost; presets `DefaultChain()`, `ResilientChain()`, `APIClientChain()`
+- `Chain.BuildWithLifecycle(l, base)`, `Chain.ClientWithLifecycle(l, base, timeout)`, `WithLifecycle(l)` — register what a build constructs with a `Lifecycle`; `(*Lifecycle).Close() error` releases it (see [lifecycle](composition.md#optional-builders-and-lifecycle))
 - `NewBaseTransport(opts...) (*http.Transport, error)`
 - `NewCompressionTransport`, `NewCacheTransport`, `NewCircuitTransport`, `NewRetryTransport`, `NewHedgingTransport`, `NewAdaptiveHedgingTransport`, `NewLimiterTransport`, `NewRateLimitTransport`, `NewAuthTransport`, `NewTokenTransport`, `NewMetricsTransport`, `NewLoggingTransport` — one decorator each, `(base, ...) (*T, error)`
 - `NewTokenSource(token, expiry, refresh, opts...) (*RefreshingTokenSource, error)` — shared context-aware refresh

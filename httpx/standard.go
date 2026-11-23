@@ -25,7 +25,8 @@ import (
 // No HTTP cache is wired by default. Callers that want one opt in with
 // WithCache, which partitions stored responses by Authorization, Cookie and
 // any WithCacheIdentityHeaders. Configure all additional identity headers;
-// identities hidden in a transport, such as mTLS, need separate stores.
+// identities hidden in a transport, such as mTLS, need separate stores. Pass
+// WithLifecycle to stop the cache's background revalidations at shutdown.
 //
 // Callers that need cancellation pass a [context.Context] with a
 // deadline; the 30s ceiling is the upper bound, not the floor.

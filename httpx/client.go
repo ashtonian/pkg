@@ -38,14 +38,22 @@ type clientLayer struct {
 	wrap    func(http.RoundTripper) (http.RoundTripper, error)
 }
 
-func (cfg *clientConfig) build() (*http.Client, error) {
+func (cfg *clientConfig) build() (_ *http.Client, err error) {
 	if cfg.timeoutSet && cfg.timeout < 0 {
 		return nil, invalidConfig("WithTimeout must be >= 0, got %s", cfg.timeout)
 	}
+	if cfg.lifecycleSet && cfg.lifecycle == nil {
+		return nil, invalidConfig("WithLifecycle requires a non-nil lifecycle")
+	}
 
+	owner := &buildOwner{}
+	defer owner.stopOnError(&err)
 	transport, err := cfg.baseTransport()
 	if err != nil {
 		return nil, err
+	}
+	if !cfg.transportSet {
+		owner.ownBase(transport)
 	}
 
 	// Layers are listed innermost to outermost:
@@ -92,7 +100,7 @@ func (cfg *clientConfig) build() (*http.Client, error) {
 			return asRoundTripper(NewHedgingTransport(rt, cfg.hedgingDelay, cfg.hedgingOpts...))
 		}},
 		{"cache", cfg.useCache, func(rt http.RoundTripper) (http.RoundTripper, error) {
-			return asRoundTripper(NewCacheTransport(rt, cfg.cacheStore, cacheOpts...))
+			return newLayerCache(rt, cfg.cacheStore, cacheOpts...)
 		}},
 		{"token auth", len(cfg.tokenBindings) > 0, func(rt http.RoundTripper) (http.RoundTripper, error) {
 			return asRoundTripper(NewTokenTransport(rt, cfg.tokenBindings...))
@@ -111,9 +119,15 @@ func (cfg *clientConfig) build() (*http.Client, error) {
 		if !l.enabled {
 			continue
 		}
-		if transport, err = l.wrap(transport); err != nil {
+		next, err := l.wrap(transport)
+		if err != nil {
 			return nil, fmt.Errorf("httpx: %s: %w", l.name, err)
 		}
+		owner.adopt(next, transport)
+		transport = next
+	}
+	if err := owner.finish(cfg.lifecycle); err != nil {
+		return nil, err
 	}
 
 	timeout := cfg.timeout
@@ -184,7 +198,8 @@ func WithCompression(opts ...CompressionOption) Option {
 }
 
 // WithCache enables the RFC 9111 private cache (see CacheTransport). A nil
-// store uses a default NewMemoryCache.
+// store uses a default NewMemoryCache. The client owns the cache: pass
+// WithLifecycle to stop its background revalidations at shutdown.
 func WithCache(store CacheStore, opts ...CacheOption) Option {
 	return func(cfg *clientConfig) {
 		cfg.useCache = true
