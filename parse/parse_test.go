@@ -42,8 +42,8 @@ func TestResource_ParseFilter(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.ConditionCount != 1 {
-		t.Errorf("expected 1 condition, got %d", result.ConditionCount)
+	if result.ConditionCount() != 1 {
+		t.Errorf("expected 1 condition, got %d", result.ConditionCount())
 	}
 }
 
@@ -61,8 +61,8 @@ func TestResource_ParseFilterMap(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.ConditionCount != 1 {
-		t.Errorf("expected 1 condition, got %d", result.ConditionCount)
+	if result.ConditionCount() != 1 {
+		t.Errorf("expected 1 condition, got %d", result.ConditionCount())
 	}
 }
 
@@ -72,8 +72,8 @@ func TestResource_ParseFilterMap_Empty(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.ConditionCount != 0 {
-		t.Errorf("expected empty parsed filter, got %d conditions", result.ConditionCount)
+	if result.ConditionCount() != 0 {
+		t.Errorf("expected empty parsed filter, got %d conditions", result.ConditionCount())
 	}
 }
 
@@ -98,9 +98,9 @@ func TestResource_ParseFilterMap_EquivalentToParseFilter(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if fromString.ConditionCount != fromMap.ConditionCount {
+	if fromString.ConditionCount() != fromMap.ConditionCount() {
 		t.Errorf("condition count mismatch: string=%d map=%d",
-			fromString.ConditionCount, fromMap.ConditionCount)
+			fromString.ConditionCount(), fromMap.ConditionCount())
 	}
 }
 

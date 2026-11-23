@@ -229,7 +229,7 @@ func (g *SchemaGenerator) StructFields(t reflect.Type) (*StructFields, error) {
 	}
 	var errs []error
 	for _, m := range s.misspelt {
-		if !slices.Contains(g.Opts.ForeignTagKeys, m.written) {
+		if !slices.Contains(g.opts.ForeignTagKeys, m.written) {
 			errs = append(errs, m.err())
 		}
 	}

@@ -209,7 +209,7 @@ func generatePatchSchema(g *core.SchemaGenerator, t reflect.Type, server bool) (
 // package-level slice let configuring one resource rewrite another's allowed
 // operations, and race with its requests.
 func defaultOpsFor(g *core.SchemaGenerator, ft core.FieldType) (ops []PatchOp, configured bool, err error) {
-	if names, ok := g.Opts.DefaultPatchOps[ft]; ok {
+	if names, ok := g.DefaultPatchOps(ft); ok {
 		ops := make([]PatchOp, 0, len(names))
 		for _, name := range names {
 			op := PatchOp(strings.TrimSpace(name))

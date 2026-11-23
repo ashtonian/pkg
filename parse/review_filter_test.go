@@ -109,7 +109,7 @@ func TestFilter_NotNullIsAWireOperator(t *testing.T) {
 	} {
 		f, parseErr := p.ParseFilter(filterJSON)
 		require.NoError(t, parseErr, filterJSON)
-		assert.Equal(t, want, f.AST.Root.Op, filterJSON)
+		assert.Equal(t, want, f.AST().Root.Op, filterJSON)
 	}
 
 	_, err = p.ParseFilter(`{"other":{"$not_null":true}}`)

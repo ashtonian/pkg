@@ -53,7 +53,7 @@ func (r *Resource[T]) parseFilter(query string, cfg *core.ParserConfig) (*filter
 	if err != nil {
 		return nil, err
 	}
-	return filter.NewParsedFilter(ast), nil
+	return filter.NewParsedFilterFor(r.filterSchema, ast), nil
 }
 
 // ParseRequestFilter parses a list request's filter: the JSON filter
@@ -77,7 +77,7 @@ func (r *Resource[T]) ParseRequestFilter(q url.Values, opts ...filter.QueryParam
 	if err != nil {
 		return nil, err
 	}
-	return filter.NewParsedFilter(ast), nil
+	return filter.NewParsedFilterFor(r.filterSchema, ast), nil
 }
 
 // ParseFilterMap parses a pre-decoded filter map into a ParsedFilter, skipping
@@ -96,7 +96,7 @@ func (r *Resource[T]) ParseFilterMap(m map[string]any) (*filter.ParsedFilter, er
 	if err != nil {
 		return nil, err
 	}
-	return filter.NewParsedFilter(ast), nil
+	return filter.NewParsedFilterFor(r.filterSchema, ast), nil
 }
 
 // ParsePatch validates and parses a JSON Patch document.
@@ -163,21 +163,23 @@ func applyPatchOptions(parsed *patch.ParsedPatch, opts []PatchOption) (*patch.Pa
 	return parsed, nil
 }
 
-// FilterSchema returns the filter schema for this type.
+// FilterSchema returns a copy of the filter schema: changing it changes
+// nothing the resource parses. Customize the schemas when the resource is
+// built (CustomizeSchemas).
 func (r *Resource[T]) FilterSchema() *filter.ResourceSchema {
-	return r.filterSchema
+	return r.filterSchema.Clone()
 }
 
-// PatchSchema returns the patch schema for this type.
+// PatchSchema returns a copy of the patch schema; see FilterSchema.
 func (r *Resource[T]) PatchSchema() *patch.PatchSchema {
-	return r.patchSchema
+	return r.patchSchema.Clone()
 }
 
-// ServerPatchSchema returns the schema of the server's own writes: the
-// patch schema's paths and the `parse:"server"` fields. Build a patch
+// ServerPatchSchema returns a copy of the schema of the server's own writes:
+// the patch schema's paths and the `parse:"server"` fields. Build a patch
 // against it only for a write the server makes, never from a request.
 func (r *Resource[T]) ServerPatchSchema() *patch.PatchSchema {
-	return r.serverPatchSchema
+	return r.serverPatchSchema.Clone()
 }
 
 // ParseServerMergePatch parses a JSON Merge Patch the server itself writes:
@@ -189,14 +191,15 @@ func (r *Resource[T]) ParseServerMergePatch(body []byte) (*patch.ParsedPatch, er
 	return patch.ParseMergePatch(body, r.serverPatchSchema, r.cfg)
 }
 
-// SortSchema returns the sort schema for this type.
+// SortSchema returns a copy of the sort schema; see FilterSchema.
 func (r *Resource[T]) SortSchema() *filter.SortSchema {
-	return r.sortSchema
+	return r.sortSchema.Clone()
 }
 
-// SearchSchema returns the search schema for this type.
+// SearchSchema returns a copy of the search schema, nil when T has no
+// search fields; see FilterSchema.
 func (r *Resource[T]) SearchSchema() *filter.SearchSchema {
-	return r.searchSchema
+	return r.searchSchema.Clone()
 }
 
 // ParseSort parses a sort parameter string.
@@ -225,10 +228,24 @@ func newListQuery(fs *filter.ResourceSchema, ss *filter.SortSchema, search *filt
 }
 
 // ApplyValidatedPatch applies an already-parsed patch to target and returns
-// the patched value, never mutating target (patch.Applier). A patch no
-// parser produced is patch.ErrUnparsed.
+// the patched value, never mutating target (patch.Applier). A patch this
+// resource did not parse, by hand or against another schema, is ErrForeign.
 func (r *Resource[T]) ApplyValidatedPatch(parsed *patch.ParsedPatch, target T) (T, error) {
+	if err := r.ownsPatch(parsed, "patch"); err != nil {
+		var zero T
+		return zero, err
+	}
 	return r.applier.Apply(parsed, target)
+}
+
+// ownsPatch refuses a patch neither of the resource's patch schemas
+// validated. A WithPaths view shares its base's patch schemas, so each
+// accepts the other's patches.
+func (r *Resource[T]) ownsPatch(p *patch.ParsedPatch, role string) error {
+	if p.ParsedFor(r.patchSchema) || p.ParsedFor(r.serverPatchSchema) {
+		return nil
+	}
+	return fmt.Errorf("parse: %s: %s: %w", r.table, role, ErrForeign)
 }
 
 // ApplyPatch validates a JSON Patch document and applies it to a struct.

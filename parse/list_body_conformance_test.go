@@ -73,8 +73,8 @@ func TestFilterConformance_ThroughBothListTransports(t *testing.T) {
 			}
 			require.NoError(t, queryErr)
 			var got *astNode
-			if fromQuery.Filter != nil && fromQuery.Filter.AST != nil {
-				got = toASTNode(fromQuery.Filter.AST.Root)
+			if fromQuery.Filter() != nil && fromQuery.Filter().AST() != nil {
+				got = toASTNode(fromQuery.Filter().AST().Root)
 			}
 			assert.Equal(t, normalize(t, c.CanonicalAST), normalize(t, got))
 		})

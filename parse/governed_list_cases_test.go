@@ -343,14 +343,14 @@ func (m governedMemory) list(t *testing.T, r *parse.Resource[govDocument], filte
 	}
 	res := governedResult{includes: map[string]map[string][]string{}}
 	for _, tenant := range slices.Sorted(maps.Keys(byTenant)) {
-		f := req.Filter
+		f := req.Filter()
 		if f != nil {
 			f, err = filter.ResolveMemberships(ctx, f, m, filter.ResolveRelationScope(filter.RelationScope{Tenant: tenant}))
 			require.NoError(t, err)
 		}
 		var keys []any
 		for _, row := range byTenant[tenant] {
-			if f == nil || m.selects(t, f.AST, r.Table(), row) {
+			if f == nil || m.selects(t, f.AST(), r.Table(), row) {
 				id, ok := row["id"].(string)
 				require.True(t, ok)
 				res.ids = append(res.ids, id)
@@ -409,8 +409,8 @@ func (m governedMemory) selected(l *filter.Lookup) ([]map[string]any, error) {
 		if err != nil {
 			return nil, err
 		}
-		if ok && l.Filter != nil && l.Filter.AST != nil && l.Filter.AST.Root != nil {
-			truth, err := filter.Evaluate(l.Filter.AST.Root, governedRow(l.Table, row))
+		if ok && l.Filter != nil && l.Filter.AST() != nil && l.Filter.AST().Root != nil {
+			truth, err := filter.Evaluate(l.Filter.AST().Root, governedRow(l.Table, row))
 			if err != nil {
 				return nil, err
 			}

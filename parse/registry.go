@@ -83,14 +83,14 @@ func RegisterResource[T any](r *SchemaRegistry, res *Resource[T]) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	name := res.Table()
-	r.filterSchemas[name] = res.FilterSchema()
-	r.patchSchemas[name] = res.PatchSchema()
-	if ss := res.SortSchema(); ss != nil && len(ss.Fields) > 0 {
+	r.filterSchemas[name] = res.filterSchema
+	r.patchSchemas[name] = res.patchSchema
+	if ss := res.sortSchema; ss != nil && len(ss.Fields) > 0 {
 		r.sortSchemas[name] = ss
 	} else {
 		delete(r.sortSchemas, name)
 	}
-	if ss := res.SearchSchema(); ss != nil {
+	if ss := res.searchSchema; ss != nil {
 		r.searchSchemas[name] = ss
 	} else {
 		delete(r.searchSchemas, name)
@@ -104,28 +104,29 @@ func MustRegister[T any](r *SchemaRegistry) {
 	}
 }
 
-// FilterSchema returns the filter schema for the named resource.
+// FilterSchema returns a copy of the filter schema for the named resource:
+// changing it changes nothing a registered resource parses.
 func (r *SchemaRegistry) FilterSchema(resource string) (*filter.ResourceSchema, bool) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	s, ok := r.filterSchemas[resource]
-	return s, ok
+	return s.Clone(), ok
 }
 
-// PatchSchema returns the patch schema for the named resource.
+// PatchSchema returns a copy of the patch schema for the named resource.
 func (r *SchemaRegistry) PatchSchema(resource string) (*patch.PatchSchema, bool) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	s, ok := r.patchSchemas[resource]
-	return s, ok
+	return s.Clone(), ok
 }
 
-// SortSchema returns the sort schema for the named resource.
+// SortSchema returns a copy of the sort schema for the named resource.
 func (r *SchemaRegistry) SortSchema(resource string) (*filter.SortSchema, bool) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	s, ok := r.sortSchemas[resource]
-	return s, ok
+	return s.Clone(), ok
 }
 
 // ResourceNames returns all registered resource names.
@@ -378,11 +379,12 @@ func filterFieldToResponse(f *filter.FieldSchema) *FilterFieldResponse {
 func patchSchemaToResponse(s *patch.PatchSchema) *PatchSchemaResponse {
 	paths := map[string]*PatchPathResponse{}
 	for key, p := range s.Paths() {
+		bounds := p.Bounds.Clone()
 		resp := &PatchPathResponse{
 			AllowedOps: slices.Clone(p.AllowedOps), DataType: p.DataType, Wire: p.Wire,
 			Nullable: p.Nullable(), EnumValues: slices.Clone(p.EnumValues), Relation: p.Relation != nil,
-			MinLength: cloneInt(p.Bounds.MinLen), MaxLength: cloneInt(p.Bounds.MaxLen), Minimum: p.Bounds.Min, Maximum: p.Bounds.Max,
-			MinItems: cloneInt(p.Bounds.MinItems), MaxItems: cloneInt(p.Bounds.MaxItems),
+			MinLength: bounds.MinLen, MaxLength: bounds.MaxLen, Minimum: bounds.Min, Maximum: bounds.Max,
+			MinItems: bounds.MinItems, MaxItems: bounds.MaxItems,
 		}
 		if p.GoType != nil {
 			info := core.TypeOf(p.GoType)
@@ -394,13 +396,6 @@ func patchSchemaToResponse(s *patch.PatchSchema) *PatchSchemaResponse {
 		paths[key] = resp
 	}
 	return &PatchSchemaResponse{Paths: paths, MaxOperations: s.MaxOperations, MaxRelationValues: s.MaxRelationValues}
-}
-
-func cloneInt(p *int) *int {
-	if p == nil {
-		return nil
-	}
-	return new(*p)
 }
 
 func sortSchemaToResponse(s *filter.SortSchema) *SortSchemaResponse {

@@ -29,11 +29,21 @@ func ByIDs(ids ...any) Target { return Target{keys: ids} }
 func ByFilter(f *filter.ParsedFilter) Target { return Target{filter: f} }
 
 func (t Target) empty() bool {
-	return len(t.keys) == 0 && (t.filter == nil || t.filter.AST == nil || t.filter.AST.Root == nil)
+	if len(t.keys) > 0 {
+		return false
+	}
+	ast := t.filter.AST()
+	return ast == nil || ast.Root == nil
 }
 
 // ErrNoTarget is an update built without keys or a non-empty filter.
 var ErrNoTarget = errors.New("parse: an update needs a key or a filter")
+
+// ErrForeign is a request value a resource did not parse handed to it: a
+// ListRequest, filter or patch another resource parsed, a WithPaths view's
+// or its base's included, or one assembled by hand. A resource compiles and
+// applies only what its own schemas validated; parse the value with it.
+var ErrForeign = errors.New("not parsed by this resource")
 
 // ErrUpdateScope is an update built with a widening Scope: an update
 // reaches only its own tenant's live rows, so Governance and IncludeDeleted
@@ -136,10 +146,17 @@ func (p *UpdatePlan) HasRelations() bool { return len(p.relations) > 0 }
 // tenant floor, live rows only and s.Policy, then RETURNING the resource's
 // Columns; SkipUnchanged also ANDs the patch's change predicate into the
 // WHERE. A tenant-scoped resource needs s.Tenant (ErrTenantRequired), which
-// every tenant column it reaches must hold (ErrTenantInvalid); a zero Target
+// every tenant column it reaches must hold (ErrTenantInvalid); a patch or a
+// ByFilter filter the resource did not parse is ErrForeign; a zero Target
 // is ErrNoTarget; Governance or IncludeDeleted is ErrUpdateScope; a dialect
 // a computed column's expression (ReadExpr) refuses is an error.
 func (r *Resource[T]) BuildUpdate(d Dialect, p *patch.ParsedPatch, target Target, s Scope, opts ...UpdateOption) (*UpdatePlan, error) {
+	if err := r.ownsPatch(p, "patch"); err != nil {
+		return nil, err
+	}
+	if target.filter != nil && !target.filter.ParsedFor(r.filterSchema) {
+		return nil, fmt.Errorf("parse: %s: target filter: %w", r.table, ErrForeign)
+	}
 	v, err := r.dialectView(d)
 	if err != nil {
 		return nil, err
@@ -321,7 +338,7 @@ func (r *Resource[T]) updateWhere(d filter.Dialect, v *dialectView, target Targe
 	}
 	var userAST *filter.FilterAST
 	if len(target.keys) == 0 {
-		if userAST, err = v.filterAST(d, target.filter.AST); err != nil {
+		if userAST, err = v.filterAST(d, target.filter.AST()); err != nil {
 			return "", nil, err
 		}
 	}

@@ -279,7 +279,7 @@ func TestParseRequestFilter(t *testing.T) {
 	require.NoError(t, err)
 	lq, err := tp.ListQuery(filter.PostgresDialect{})
 	require.NoError(t, err)
-	res, err := lq.Build(filter.ListFilterAST(parsed.AST))
+	res, err := lq.Build(filter.ListFilterAST(parsed.AST()))
 	require.NoError(t, err)
 	assert.Equal(t, `("products"."category" = $1 AND "products"."price" >= $2)`, res.Where)
 	assert.Equal(t, []any{"tools", float64(10)}, res.Args)

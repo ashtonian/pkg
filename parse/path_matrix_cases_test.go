@@ -68,7 +68,7 @@ func runPathMatrix(t *testing.T, p pathDB, storage filter.JSONStorage) {
 		schema = withStorage(t, schema, storage)
 	}
 	query := func(t *testing.T, f *filter.ParsedFilter) ([]string, error) {
-		res, err := filter.NewSQLBuilder(schema, p.dialect).Build(f.AST)
+		res, err := filter.NewSQLBuilder(schema, p.dialect).Build(f.AST())
 		if err != nil {
 			return nil, err
 		}

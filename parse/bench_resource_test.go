@@ -92,7 +92,7 @@ func BenchmarkParseList(b *testing.B) {
 		"page_size":     {"25"},
 		"include_total": {"true"},
 	}
-	if req, err := r.ParseList(q); err != nil || req.Filter == nil {
+	if req, err := r.ParseList(q); err != nil || req.Filter() == nil {
 		b.Fatalf("parse: %+v, %v", req, err)
 	}
 	for b.Loop() {

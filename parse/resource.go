@@ -3,6 +3,7 @@ package parse
 import (
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"maps"
 	"reflect"
@@ -81,6 +82,7 @@ type resourceConfig struct {
 	queryOnly           []string
 	sqlTypes            []columnType
 	readExprs           []columnExpr
+	customize           []func(Schemas) error
 }
 
 type columnType struct {
@@ -165,6 +167,50 @@ func AcceptParams(names ...string) ResourceOption {
 	return func(c *resourceConfig) { c.accepted = append(c.accepted, names...) }
 }
 
+// Schemas are the schemas NewResource generates from T's struct tags, as
+// CustomizeSchemas hands them over.
+type Schemas struct {
+	Filter *filter.ResourceSchema
+	Sort   *filter.SortSchema
+	// Search is nil when T has no search fields.
+	Search      *filter.SearchSchema
+	Patch       *patch.PatchSchema
+	ServerPatch *patch.PatchSchema
+}
+
+// CustomizeSchemas changes the generated schemas while the resource is
+// built: a patch path pattern (patch.PatchSchema.AddPath), a validator, a
+// narrower operator set. NewResource runs the functions in order, before its
+// checks, so a customized schema is held to the read set (ReadColumns), the
+// column declarations and the computed columns as a generated one is; an
+// error fails NewResource. The key and system fields are set after the
+// functions run. The resource keeps copies: a schema a function holds on to
+// changes nothing once NewResource returns, and the accessors hand out
+// copies too.
+func CustomizeSchemas(fn func(Schemas) error) ResourceOption {
+	return func(c *resourceConfig) { c.customize = append(c.customize, fn) }
+}
+
+// customizeSchemas runs fns over the generated schemas and keeps copies of
+// the result.
+func (r *Resource[T]) customizeSchemas(fns []func(Schemas) error) error {
+	if len(fns) == 0 {
+		return nil
+	}
+	s := Schemas{Filter: r.filterSchema, Sort: r.sortSchema, Search: r.searchSchema, Patch: r.patchSchema, ServerPatch: r.serverPatchSchema}
+	for _, fn := range fns {
+		if fn == nil {
+			return errors.New("nil schema customization")
+		}
+		if err := fn(s); err != nil {
+			return err
+		}
+	}
+	r.filterSchema, r.sortSchema, r.searchSchema = s.Filter.Clone(), s.Sort.Clone(), s.Search.Clone()
+	r.patchSchema, r.serverPatchSchema = s.Patch.Clone(), s.ServerPatch.Clone()
+	return nil
+}
+
 // NewResource builds the resource for T stored in table. Identifiers are
 // declared here, never taken from a request: table and every column option
 // must be SQL identifiers, and the columns must be T's (a `db` tag, or the
@@ -228,6 +274,9 @@ func NewResource[T any](table string, opts ...ResourceOption) (*Resource[T], err
 	}
 	if err := checkDeletedColumn(cfg, columns[cfg.deleted]); err != nil {
 		return nil, fmt.Errorf("parse: %s: %w", table, err)
+	}
+	if err := r.customizeSchemas(cfg.customize); err != nil {
+		return nil, fmt.Errorf("parse: %s: customizing schemas: %w", table, err)
 	}
 	r.filterSchema.SystemFields = systemFields(table, cfg, columns, fieldsByColumn)
 	r.filterSchema.PrimaryKey = cfg.pk

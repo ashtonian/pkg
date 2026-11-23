@@ -25,6 +25,20 @@ type Bounds struct {
 	MinItems, MaxItems *int
 }
 
+// Clone returns a copy of b that shares no pointer with it.
+func (b Bounds) Clone() Bounds {
+	b.MinLen, b.MaxLen = cloneInt(b.MinLen), cloneInt(b.MaxLen)
+	b.MinItems, b.MaxItems = cloneInt(b.MinItems), cloneInt(b.MaxItems)
+	return b
+}
+
+func cloneInt(p *int) *int {
+	if p == nil {
+		return nil
+	}
+	return new(*p)
+}
+
 // IsZero reports bounds that bound nothing.
 func (b Bounds) IsZero() bool {
 	return b.MinLen == nil && b.MaxLen == nil && b.Min == "" && b.Max == "" && !b.CountsItems()

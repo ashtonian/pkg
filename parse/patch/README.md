@@ -14,8 +14,8 @@ Start with the [runnable package example](../README.md#quick-start). The focused
 
 ## API reference
 
-- Schemas: `GeneratePatchSchema[T]`, `GenerateServerPatchSchema[T]` (adds the `parse:"server"` fields, for the server's own writes), `NewPatchSchema`, `PatchSchema` (`AddPath`, `Path`, `Paths`, `MaxOperations`), `DefaultMaxOperations`, `PathSchema` (`AllowsOp`, `Nullable`; `EnumValues` and `Bounds` advertise its value tags), `Validator`, `DefaultPatchOps`, `IsValidOp`, `Ops`
-- Parsing: `NewParser(schema, cfg)` (`Parse`, `ParseOps`), `ParseMergePatch(body, schema, cfg)`, `ParseMergePatchMap`, `ParsedPatch` (`AuditInfo`), `PatchOperation`, `RawPatchOp`, `PatchOp`; `ErrUnparsed` for a `ParsedPatch` no parser produced
+- Schemas: `GeneratePatchSchema[T]`, `GenerateServerPatchSchema[T]` (adds the `parse:"server"` fields, for the server's own writes), `NewPatchSchema`, `PatchSchema` (`AddPath`, `Path`, `Paths`, `MaxOperations`, `Clone`), `DefaultMaxOperations`, `PathSchema` (`AllowsOp`, `Nullable`; `EnumValues` and `Bounds` advertise its value tags), `Validator`, `DefaultPatchOps`, `IsValidOp`, `Ops`
+- Parsing: `NewParser(schema, cfg)` (`Parse`, `ParseOps`), `ParseMergePatch(body, schema, cfg)`, `ParseMergePatchMap`, `ParsedPatch` (`AuditInfo`, `ParsedFor`: whether a parser validated it against a schema), `PatchOperation`, `RawPatchOp`, `PatchOp`; `ErrUnparsed` for a `ParsedPatch` no parser produced
 - Applying to Go values: `NewApplier[T](gen, cfg)` (`Apply`), the in-memory counterpart of `BuildPatchSQL`
 - SQL: `BuildPatchSQL`, `SQLDialect`, `PatchSQLResult` (`Assignments`, `ChangePredicate`), `ColumnAssignment` (`Column`, `Expression`), `PatchSQLOption` (`WithStartParam`, `WithAutoTimestamp`, `WithAutoTimestampSQL`, `WithIncrement`, `WithTimeFunc`, `WithChangePredicate`)
 - Relations: `RelationPatchOp`, `RelationVerb`, `RenderRelationOp`, `RenderRelationOpOptions` (`Owner` / `RelationOwner` and `TargetVisible`: guarded statements for a relation with a target table), `RenderedRelationStatement`, `RelationPath`

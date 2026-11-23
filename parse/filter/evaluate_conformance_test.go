@@ -119,7 +119,7 @@ func TestDocumentElementsConformance(t *testing.T) {
 		var ids []string
 		for _, r := range records {
 			row := structRow(r)
-			truth, err := ownElements{stored: row}.eval(f.AST.Root, row)
+			truth, err := ownElements{stored: row}.eval(f.AST().Root, row)
 			if err != nil {
 				return nil, err
 			}
@@ -285,7 +285,7 @@ func evaluateOver[R any](records []R, row func(R) (string, filter.Row)) filterte
 		var ids []string
 		for _, r := range records {
 			id, rw := row(r)
-			truth, err := filter.Evaluate(f.AST.Root, rw)
+			truth, err := filter.Evaluate(f.AST().Root, rw)
 			if err != nil {
 				return nil, err
 			}

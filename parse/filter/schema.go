@@ -232,11 +232,49 @@ type SQLResult struct {
 	ParamCount int // Number of parameters consumed (highest param index minus start offset).
 }
 
-// ParsedFilter wraps a FilterAST with metadata.
+// ParsedFilter is a validated filter: its AST, with the AST's estimated cost
+// and condition count. Its fields are read through methods, so a filter a
+// resource parsed cannot be given other conditions afterwards.
 type ParsedFilter struct {
-	AST            *FilterAST
-	EstimatedCost  int
-	ConditionCount int
+	ast        *FilterAST
+	cost       int
+	conditions int
+	// schema is the schema the filter was parsed against (ParsedFor); nil
+	// for one NewParsedFilter wraps.
+	schema *ResourceSchema
+}
+
+// AST returns the filter's syntax tree; nil filters nothing. The tree is
+// the filter's own: read it, never change it.
+func (f *ParsedFilter) AST() *FilterAST {
+	if f == nil || f.ast == nil {
+		return nil
+	}
+	// A copy, so assigning Root changes nothing the filter holds.
+	ast := *f.ast
+	return &ast
+}
+
+// EstimatedCost is the filter's cost under the default cost factors.
+func (f *ParsedFilter) EstimatedCost() int {
+	if f == nil {
+		return 0
+	}
+	return f.cost
+}
+
+// ConditionCount is the number of leaf conditions in the filter.
+func (f *ParsedFilter) ConditionCount() int {
+	if f == nil {
+		return 0
+	}
+	return f.conditions
+}
+
+// ParsedFor reports whether the filter was parsed against schema
+// (NewParsedFilterFor): a resource compiles only the filters it parsed.
+func (f *ParsedFilter) ParsedFor(schema *ResourceSchema) bool {
+	return f != nil && schema != nil && f.schema == schema
 }
 
 // --- Sort Schema ---

@@ -147,21 +147,21 @@ func TestFilter_SelectsExactIntegerRow(t *testing.T) {
 			if err != nil {
 				return nil, err
 			}
-			return f.AST, nil
+			return f.AST(), nil
 		},
 		"json in": func() (*filter.FilterAST, error) {
 			f, err := p.ParseFilter(`{"big": {"$in": [9007199254740993]}}`)
 			if err != nil {
 				return nil, err
 			}
-			return f.AST, nil
+			return f.AST(), nil
 		},
 		"typed map": func() (*filter.FilterAST, error) {
 			f, err := p.ParseFilterMap(map[string]any{"big": map[string]any{"$in": []int64{9007199254740993}}})
 			if err != nil {
 				return nil, err
 			}
-			return f.AST, nil
+			return f.AST(), nil
 		},
 		"query params": func() (*filter.FilterAST, error) {
 			return filter.NewQueryParamParser(p.FilterSchema()).Parse(map[string][]string{"big": {"9007199254740993"}})

@@ -212,16 +212,20 @@ func runRelationMemberships(t *testing.T, r relResources, d filter.Dialect, quer
 				scope = parse.Scope{Tenant: "t1"}
 				req, err := r.assets.ParseList(q)
 				require.NoError(t, err)
-				req.Filter, err = filter.ResolveMemberships(context.Background(), req.Filter, lookup,
+				resolved, err := filter.ResolveMemberships(context.Background(), req.Filter(), lookup,
 					filter.ResolveRelationScope(filter.RelationScope{Tenant: scope.Tenant, Related: scope.Related}))
+				require.NoError(t, err)
+				req, err = req.WithFilter(resolved)
 				require.NoError(t, err)
 				plan, err = r.assets.BuildList(d, req, scope)
 				require.NoError(t, err)
 			} else {
 				req, err := r.devices.ParseList(q)
 				require.NoError(t, err)
-				req.Filter, err = filter.ResolveMemberships(context.Background(), req.Filter, lookup,
+				resolved, err := filter.ResolveMemberships(context.Background(), req.Filter(), lookup,
 					filter.ResolveRelationScope(filter.RelationScope{Tenant: scope.Tenant, Related: scope.Related}))
+				require.NoError(t, err)
+				req, err = req.WithFilter(resolved)
 				require.NoError(t, err)
 				plan, err = r.devices.BuildList(d, req, scope)
 				require.NoError(t, err)
@@ -252,7 +256,7 @@ func relationFilter(t *testing.T, r relResources, f string) *filter.ParsedFilter
 	t.Helper()
 	req, err := r.devices.ParseList(url.Values{filter.ParamFilter: {f}})
 	require.NoError(t, err)
-	return req.Filter
+	return req.Filter()
 }
 
 // sqlMembershipLookup answers a lookup with the subquery SQL renders for it.

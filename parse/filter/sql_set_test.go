@@ -85,7 +85,7 @@ func TestContainsBindsOneSet(t *testing.T) {
 
 func TestSetCostIsIndependentOfSize(t *testing.T) {
 	cost := func(n int) int {
-		return NewParsedFilter(&FilterAST{Root: &FilterNode{Field: statusField, Op: OpIn, Value: members(n)}}).EstimatedCost
+		return NewParsedFilter(&FilterAST{Root: &FilterNode{Field: statusField, Op: OpIn, Value: members(n)}}).EstimatedCost()
 	}
 	assert.Equal(t, cost(1), cost(100_000))
 }

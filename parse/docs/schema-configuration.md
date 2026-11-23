@@ -102,7 +102,7 @@ encoding/json ignores the option on a type that marshals itself (`json.Marshaler
 | `GeneratorOptions.DefaultFilterOps` | `map[FieldType][]string` | filter package defaults | Default operators per type; each must apply to the type (`filter.OperatorsFor`) |
 | `GeneratorOptions.DefaultPatchOps` | `map[FieldType][]string` | patch package defaults | Default patch operations per type |
 
-A patch schema carries the two limits a patch is held to beside the parser's. Set them on the schema a resource generated (`Resource.PatchSchema()`, `ServerPatchSchema()`) or one built with `patch.NewPatchSchema`, before it serves requests:
+A patch schema carries the two limits a patch is held to beside the parser's. Set them on a resource's schemas in `parse.CustomizeSchemas` (`s.Patch`, `s.ServerPatch`), or on a schema built with `patch.NewPatchSchema` before it serves requests:
 
 | Field | Type | Default | Description |
 |--------|------|---------|-------------|

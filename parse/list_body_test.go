@@ -125,7 +125,7 @@ func TestParseListBody_BodyLimit(t *testing.T) {
 func TestParseListBody_AnInputSizeAtMaxInt(t *testing.T) {
 	got, err := limitedWidgets(t, core.WithMaxInputSize(math.MaxInt)).ParseListBody(strings.NewReader(`{"sort":"-rank"}`))
 	require.NoError(t, err)
-	require.NotNil(t, got.Sort)
+	require.NotNil(t, got.Sort())
 }
 
 func TestNewResource_RefusesANegativeListBodySize(t *testing.T) {

@@ -152,7 +152,7 @@ func TestHandBuiltPatchIsRefused(t *testing.T) {
 	require.NoError(t, err)
 	byHand := &patch.ParsedPatch{Operations: []*patch.PatchOperation{{Op: patch.PatchOpReplace, Path: "/name", Value: "x"}}}
 	_, err = p.ApplyValidatedPatch(byHand, sensor{})
-	assert.ErrorIs(t, err, patch.ErrUnparsed)
+	assert.ErrorIs(t, err, parse.ErrForeign)
 	_, err = p.BuildUpdate(filter.SQLiteDialect{}, byHand, parse.ByID("1"), parse.Scope{})
-	assert.ErrorIs(t, err, patch.ErrUnparsed)
+	assert.ErrorIs(t, err, parse.ErrForeign)
 }

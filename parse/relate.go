@@ -19,6 +19,10 @@ type RelatedResource interface {
 	TenantColumnName() string
 	DeletedColumnName() string
 	FilterSchema() *filter.ResourceSchema
+	// liveFilterSchema is the target's own filter schema, not a copy: a
+	// relation filters its target with the schema the target parses with,
+	// relations the target declares later included.
+	liveFilterSchema() *filter.ResourceSchema
 	columnType(name string) (reflect.Type, bool)
 	columnWire(name string) core.Wire
 	computed(column string) bool
@@ -26,6 +30,8 @@ type RelatedResource interface {
 	tenantGraph() *tenantNode
 	admits(column string, need columnAccess) error
 }
+
+func (r *Resource[T]) liveFilterSchema() *filter.ResourceSchema { return r.filterSchema }
 
 func (r *Resource[T]) columnType(name string) (reflect.Type, bool) {
 	t, ok := r.tableColumns[name]
@@ -233,7 +239,7 @@ func (r *Resource[T]) Relate(name string, rel Relation) error {
 		Label:            rel.label,
 		Description:      rel.description,
 		Relation:         rs,
-		Related:          t.FilterSchema(),
+		Related:          t.liveFilterSchema(),
 		RelatedBy:        r.correlationField(rs.PrimaryKey),
 	}
 	fs.Fields[name] = field

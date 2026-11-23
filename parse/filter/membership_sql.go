@@ -43,9 +43,9 @@ func (b *SQLBuilder) lookupSQL(s *buildState, l *Lookup) (string, error) {
 		}
 		where = append(where, cond)
 	}
-	if l.Filter != nil && l.Filter.AST != nil && l.Filter.AST.Root != nil {
+	if l.Filter != nil && l.Filter.ast != nil && l.Filter.ast.Root != nil {
 		fb := &SQLBuilder{schema: &ResourceSchema{Name: l.Table}, dialect: b.dialect, scope: b.scope, related: b.related}
-		cond, err := s.selecting(func() (string, error) { return fb.buildNode(s, l.Filter.AST.Root) })
+		cond, err := s.selecting(func() (string, error) { return fb.buildNode(s, l.Filter.ast.Root) })
 		if err != nil {
 			return "", err
 		}

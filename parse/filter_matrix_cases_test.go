@@ -187,7 +187,7 @@ func loadRecords(t *testing.T, mdb matrixDB) {
 
 func queryRecordIDs(t *testing.T, mdb matrixDB, schema *filter.ResourceSchema, f *filter.ParsedFilter) ([]string, error) {
 	t.Helper()
-	res, err := filter.NewSQLBuilder(schema, mdb.dialect).Build(f.AST)
+	res, err := filter.NewSQLBuilder(schema, mdb.dialect).Build(f.AST())
 	if err != nil {
 		return nil, err
 	}

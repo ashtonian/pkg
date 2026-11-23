@@ -60,7 +60,7 @@ func TestWireStringFilters(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			parsed, err := r.ParseFilter(tt.filter)
 			require.NoError(t, err)
-			assert.Equal(t, tt.want, parsed.AST.Root.Value)
+			assert.Equal(t, tt.want, parsed.AST().Root.Value)
 		})
 	}
 
@@ -95,20 +95,20 @@ func TestWireStringQueryParams(t *testing.T) {
 	r := quotedItems(t)
 	parsed, err := r.ParseRequestFilter(url.Values{"id": {"9223372036854775807"}})
 	require.NoError(t, err)
-	assert.Equal(t, int64(math.MaxInt64), parsed.AST.Root.Value)
+	assert.Equal(t, int64(math.MaxInt64), parsed.AST().Root.Value)
 
 	parsed, err = r.ParseRequestFilter(url.Values{"id_in": {"1,9007199254740993"}})
 	require.NoError(t, err)
-	assert.Equal(t, []any{int64(1), int64(9007199254740993)}, parsed.AST.Root.Value)
+	assert.Equal(t, []any{int64(1), int64(9007199254740993)}, parsed.AST().Root.Value)
 
 	parsed, err = r.ParseRequestFilter(url.Values{"on": {"false"}})
 	require.NoError(t, err)
-	assert.Equal(t, false, parsed.AST.Root.Value)
+	assert.Equal(t, false, parsed.AST().Root.Value)
 
 	// A bool reads its parameter as any bool parameter does.
 	parsed, err = r.ParseRequestFilter(url.Values{"on": {"1"}})
 	require.NoError(t, err)
-	assert.Equal(t, true, parsed.AST.Root.Value)
+	assert.Equal(t, true, parsed.AST().Root.Value)
 	_, err = r.ParseRequestFilter(url.Values{"on": {"yes"}})
 	assert.True(t, errors.Is(err, filter.ECodeValueTypeMismatch), "%v", err)
 }
@@ -205,7 +205,7 @@ func TestWireStringGoValues(t *testing.T) {
 	r := quotedItems(t)
 	parsed, err := r.ParseFilterMap(map[string]any{"id": int64(9007199254740993), "on": true})
 	require.NoError(t, err)
-	assert.NotNil(t, parsed.AST.Root)
+	assert.NotNil(t, parsed.AST().Root)
 
 	merge, err := r.MergePatchMap(map[string]any{"id": int64(9007199254740993), "big": uint64(math.MaxUint64)})
 	require.NoError(t, err)

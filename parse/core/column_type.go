@@ -16,7 +16,7 @@ func WithColumnTypes(types map[string]SQLType) GeneratorOption {
 // objects retain their member schema and native arrays retain array semantics.
 func (g *SchemaGenerator) FieldType(field *Field) (TypeInfo, error) {
 	info := TypeOf(field.Type)
-	if len(g.Opts.ColumnTypes) == 0 || field.Tags.Relation != "" {
+	if len(g.opts.ColumnTypes) == 0 || field.Tags.Relation != "" {
 		return info, nil
 	}
 	column, ok, err := g.FieldColumn(field)
@@ -26,7 +26,7 @@ func (g *SchemaGenerator) FieldType(field *Field) (TypeInfo, error) {
 	if !ok {
 		return info, nil
 	}
-	storage, declared := g.Opts.ColumnTypes[column]
+	storage, declared := g.opts.ColumnTypes[column]
 	if !declared {
 		return info, nil
 	}

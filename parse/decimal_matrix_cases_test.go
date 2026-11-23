@@ -58,7 +58,7 @@ func runDecimalMatrix(t *testing.T, d decimalDB) {
 	schema := loadDecimalRecords(t, d)
 	t.Run("cases", func(t *testing.T) {
 		filtertest.RunDecimals(t, schema, func(t *testing.T, f *filter.ParsedFilter) ([]string, error) {
-			res, err := filter.NewSQLBuilder(schema, d.dialect).Build(f.AST)
+			res, err := filter.NewSQLBuilder(schema, d.dialect).Build(f.AST())
 			if err != nil {
 				return nil, err
 			}

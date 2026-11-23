@@ -325,7 +325,7 @@ func generateSortSchema(g *core.SchemaGenerator, t reflect.Type) (*SortSchema, e
 		}
 	}
 
-	maxFields := g.Opts.SortMaxFields
+	maxFields := g.SortMaxFields()
 	if maxFields <= 0 {
 		maxFields = 3 // default
 	}
@@ -370,7 +370,7 @@ var defaultFilterOps = map[core.FieldType][]FilterOperator{
 // otherwise the package defaults. Every schema owns its slice, so
 // configuring one resource's operators cannot change another's.
 func defaultFilterOpsFor(g *core.SchemaGenerator, ft core.FieldType) ([]FilterOperator, error) {
-	if names, ok := g.Opts.DefaultFilterOps[ft]; ok {
+	if names, ok := g.DefaultFilterOps(ft); ok {
 		ops, err := parseOperatorList(names)
 		if err != nil {
 			return nil, fmt.Errorf("DefaultFilterOps[%s]: %w", ft, err)

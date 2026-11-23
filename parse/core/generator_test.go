@@ -3,6 +3,7 @@
 package core_test
 
 import (
+	"slices"
 	"testing"
 
 	"github.com/ashtonian/pkg/parse/core"
@@ -125,5 +126,27 @@ func TestSchemaGenerator_ColumnTagKey(t *testing.T) {
 	gen2 := core.NewSchemaGenerator(core.WithColumnTag("sql"))
 	if gen2.ColumnTagKey() != "sql" {
 		t.Errorf("expected sql, got %q", gen2.ColumnTagKey())
+	}
+}
+
+// The generator keeps its own copy of the options: a write to a map or
+// slice the options handed in changes no schema it generates afterwards,
+// nor does a write to what its accessors return.
+func TestSchemaGenerator_CopiesItsOptions(t *testing.T) {
+	ops := map[core.FieldType][]string{core.FieldTypeString: {"eq"}}
+	gen := core.NewSchemaGenerator(func(o *core.GeneratorOptions) { o.DefaultFilterOps = ops })
+	ops[core.FieldTypeString][0] = "gt"
+	ops[core.FieldTypeInt] = []string{"lt"}
+
+	got, ok := gen.DefaultFilterOps(core.FieldTypeString)
+	if !ok || !slices.Equal(got, []string{"eq"}) {
+		t.Fatalf("DefaultFilterOps(string) = %v, %v; want [eq], true", got, ok)
+	}
+	got[0] = "ne"
+	if again, _ := gen.DefaultFilterOps(core.FieldTypeString); !slices.Equal(again, []string{"eq"}) {
+		t.Errorf("DefaultFilterOps(string) after a write to its result = %v; want [eq]", again)
+	}
+	if _, ok := gen.DefaultFilterOps(core.FieldTypeInt); ok {
+		t.Error("a type the options named after construction is served")
 	}
 }

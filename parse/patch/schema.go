@@ -144,6 +144,36 @@ func (s *PatchSchema) Paths() iter.Seq2[string, *PathSchema] {
 	}
 }
 
+// Clone returns a deep copy of the schema: it parses as s does, and its
+// paths can be added to or changed without changing s. Validators are
+// shared.
+func (s *PatchSchema) Clone() *PatchSchema {
+	if s == nil {
+		return nil
+	}
+	out := &PatchSchema{Resource: s.Resource, MaxOperations: s.MaxOperations, MaxRelationValues: s.MaxRelationValues}
+	set := s.pathSet()
+	next := &pathSet{byKey: make(map[string]*PathSchema, len(set.byKey)), patterns: slices.Clone(set.patterns)}
+	for key, ps := range set.byKey {
+		next.byKey[key] = ps.clone()
+	}
+	out.paths.Store(next)
+	return out
+}
+
+func (p *PathSchema) clone() *PathSchema {
+	out := *p
+	out.AllowedOps = slices.Clone(p.AllowedOps)
+	out.Validators = slices.Clone(p.Validators)
+	out.EnumValues = slices.Clone(p.EnumValues)
+	out.Bounds = p.Bounds.Clone()
+	if p.Relation != nil {
+		rel := *p.Relation
+		out.Relation = &rel
+	}
+	return &out
+}
+
 // pathSet is the schema's current paths; none for a zero PatchSchema.
 func (s *PatchSchema) pathSet() *pathSet {
 	if set := s.paths.Load(); set != nil {
@@ -313,6 +343,12 @@ type ParsedPatch struct {
 	schema *PatchSchema
 	// policy is the policy ApplyPatchPolicyConstraints held the patch to.
 	policy *PatchPolicyConstraints
+}
+
+// ParsedFor reports whether a parser validated the patch against schema: a
+// resource applies and compiles only the patches it parsed.
+func (p *ParsedPatch) ParsedFor(schema *PatchSchema) bool {
+	return p != nil && schema != nil && p.schema == schema
 }
 
 // AuditInfo returns a map of audit-relevant information.

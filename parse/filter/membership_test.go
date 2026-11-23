@@ -145,7 +145,7 @@ func TestResolveMemberships_RewritesToTheEquivalentIn(t *testing.T) {
 			before := *ast.Root
 			out, err := ResolveMemberships(context.Background(), NewParsedFilter(ast), lookup)
 			require.NoError(t, err)
-			got := out.AST.Root
+			got := out.AST().Root
 			stripFields(got)
 			assert.Equal(t, tc.want, got)
 			assert.Equal(t, before, *ast.Root, "the input filter is not modified")
@@ -164,8 +164,8 @@ func TestResolveMemberships_WithoutALookupIsUnknown(t *testing.T) {
 	ast := memberAST(t, "id", &Lookup{Table: "t", Project: "p"}, true)
 	out, err := ResolveMemberships(context.Background(), NewParsedFilter(ast), nil)
 	require.NoError(t, err)
-	require.Equal(t, OpNot, out.AST.Root.Op)
-	assert.Equal(t, unknownNode(), out.AST.Root.Children[0], "NOT unknown is unknown: the deny still admits nothing it might refuse")
+	require.Equal(t, OpNot, out.AST().Root.Op)
+	assert.Equal(t, unknownNode(), out.AST().Root.Children[0], "NOT unknown is unknown: the deny still admits nothing it might refuse")
 }
 
 func TestResolveMemberships_ResolvesEachLookupOnce(t *testing.T) {
@@ -194,7 +194,7 @@ func TestResolveMemberships_SharedLookupTestsEachField(t *testing.T) {
 	out, err := ResolveMemberships(context.Background(), NewParsedFilter(ast), lookup)
 	require.NoError(t, err)
 	assert.Equal(t, 1, lookup.calls)
-	or := out.AST.Root
+	or := out.AST().Root
 	require.Equal(t, OpOr, or.Op)
 	require.Len(t, or.Children, 2)
 	assert.Equal(t, "id", or.Children[0].Field.ExternalName)

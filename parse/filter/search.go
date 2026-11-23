@@ -94,7 +94,7 @@ func generateSearchSchema(g *core.SchemaGenerator, t reflect.Type) (*SearchSchem
 			return nil, fmt.Errorf("field %s: %w", field.GoName, err)
 		}
 		fieldType := info.Type
-		if fieldType != core.FieldTypeString && g.Opts.ColumnMapper == nil {
+		if fieldType != core.FieldTypeString && !g.MapsColumns() {
 			// Search compiles to full text over the column's text
 			// (to_tsvector on PostgreSQL, LIKE on SQLite); a document, an
 			// array or a number has none, and the query would fail at run
@@ -117,11 +117,11 @@ func generateSearchSchema(g *core.SchemaGenerator, t reflect.Type) (*SearchSchem
 		return nil, nil
 	}
 
-	param := g.Opts.SearchParam
+	param := g.SearchParam()
 	if param == "" {
 		param = ParamSearch
 	}
-	lang := cmp.Or(g.Opts.SearchLanguage, defaultSearchLanguage)
+	lang := cmp.Or(g.SearchLanguage(), defaultSearchLanguage)
 	if !isTextSearchConfig(lang) {
 		return nil, fmt.Errorf("search language %q is not a text search configuration name", lang)
 	}

@@ -123,7 +123,7 @@ func (l *Lookup) validate() error {
 			return err
 		}
 	}
-	if l.Filter != nil && l.Filter.AST != nil && hasRelation(l.Filter.AST.Root) {
+	if l.Filter != nil && l.Filter.ast != nil && hasRelation(l.Filter.ast.Root) {
 		return invalidLookup(fmt.Sprintf("lookup on %s filters by a relation; resolve it first", l.Table))
 	}
 	return nil

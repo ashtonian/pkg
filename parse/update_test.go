@@ -99,6 +99,8 @@ func TestBuildUpdate_Refuses(t *testing.T) {
 	r := gadgets(t)
 	p, err := r.ParseMergePatch([]byte(`{"name":"x"}`))
 	require.NoError(t, err)
+	empty, err := r.ParseFilterMap(map[string]any{})
+	require.NoError(t, err)
 	t1 := parse.Scope{Tenant: "t1"}
 	for name, tc := range map[string]struct {
 		target parse.Target
@@ -109,7 +111,7 @@ func TestBuildUpdate_Refuses(t *testing.T) {
 		"no target":                {parse.Target{}, t1, nil, parse.ErrNoTarget},
 		"no keys":                  {parse.ByIDs(), t1, nil, parse.ErrNoTarget},
 		"no filter":                {parse.ByFilter(nil), t1, nil, parse.ErrNoTarget},
-		"empty filter":             {parse.ByFilter(&filter.ParsedFilter{AST: &filter.FilterAST{}}), t1, nil, parse.ErrNoTarget},
+		"empty filter":             {parse.ByFilter(empty), t1, nil, parse.ErrNoTarget},
 		"no tenant":                {parse.ByID("g1"), parse.Scope{}, nil, parse.ErrTenantRequired},
 		"governance":               {parse.ByID("g1"), parse.Scope{Tenant: "t1", Governance: &filter.PolicyConstraints{}}, nil, parse.ErrUpdateScope},
 		"deleted rows":             {parse.ByID("g1"), parse.Scope{Tenant: "t1", IncludeDeleted: true}, nil, parse.ErrUpdateScope},

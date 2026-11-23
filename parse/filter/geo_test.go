@@ -365,7 +365,7 @@ func TestGeoCostEstimation(t *testing.T) {
 
 	pf := filter.NewParsedFilter(ast)
 	// Unindexed geo field should have high cost (50x base).
-	assert.True(t, pf.EstimatedCost >= 50, "expected geo cost >= 50, got %d", pf.EstimatedCost)
+	assert.True(t, pf.EstimatedCost() >= 50, "expected geo cost >= 50, got %d", pf.EstimatedCost())
 }
 
 func TestGeoCostEstimation_Indexed(t *testing.T) {
@@ -377,8 +377,8 @@ func TestGeoCostEstimation_Indexed(t *testing.T) {
 
 	pf := filter.NewParsedFilter(ast)
 	// Indexed geo field should have moderate cost (5x base).
-	assert.True(t, pf.EstimatedCost >= 5 && pf.EstimatedCost < 50,
-		"expected indexed geo cost in [5, 50), got %d", pf.EstimatedCost)
+	assert.True(t, pf.EstimatedCost() >= 5 && pf.EstimatedCost() < 50,
+		"expected indexed geo cost in [5, 50), got %d", pf.EstimatedCost())
 }
 
 // --- SQL output format verification ---

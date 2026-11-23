@@ -29,7 +29,7 @@ func TestFloat32FilterAndPatchSQLiteParity(t *testing.T) {
 	// A request literal must select a value stored from the declared Go type.
 	parsed, err := p.ParseFilter(`{"ratio":0.1}`)
 	require.NoError(t, err)
-	where, err := filter.NewSQLBuilder(p.FilterSchema(), filter.SQLiteDialect{}).Build(parsed.AST)
+	where, err := filter.NewSQLBuilder(p.FilterSchema(), filter.SQLiteDialect{}).Build(parsed.AST())
 	require.NoError(t, err)
 	var count int
 	require.NoError(t, db.QueryRowContext(t.Context(), "SELECT COUNT(*) FROM ratios WHERE "+where.Where, where.Args...).Scan(&count))

@@ -3,7 +3,9 @@
 package parse_test
 
 import (
+	"errors"
 	"maps"
+	"slices"
 	"testing"
 
 	"github.com/google/uuid"
@@ -36,19 +38,24 @@ type docEntity struct {
 	Secret  string         `json:"secret"  db:"secret"`
 }
 
+var docMetaOps = []patch.PatchOp{patch.PatchOpAdd, patch.PatchOpRemove, patch.PatchOpTest, patch.PatchOpMove}
+
 func docParser(t *testing.T, opts ...core.Option) *parse.Resource[docEntity] {
 	t.Helper()
-	p, err := parse.NewResource[docEntity]("doc_entities", parse.ParserOptions(opts...))
+	return docResource(t, docMetaOps, opts...)
+}
+
+// docResource declares /meta/* with metaOps.
+func docResource(t *testing.T, metaOps []patch.PatchOp, opts ...core.Option) *parse.Resource[docEntity] {
+	t.Helper()
+	p, err := parse.NewResource[docEntity]("doc_entities", parse.ParserOptions(opts...), parse.CustomizeSchemas(func(s parse.Schemas) error {
+		// Nested members are reachable only through explicit wildcard paths.
+		return errors.Join(
+			s.Patch.AddPath("/meta/*", &patch.PathSchema{AllowedOps: slices.Clone(metaOps), DataType: core.FieldTypeAny}),
+			s.Patch.AddPath("/tags/*", &patch.PathSchema{AllowedOps: []patch.PatchOp{patch.PatchOpAdd}, DataType: core.FieldTypeString}),
+		)
+	}))
 	require.NoError(t, err)
-	// Nested members are reachable only through explicit wildcard paths.
-	require.NoError(t, p.PatchSchema().AddPath("/meta/*", &patch.PathSchema{
-		AllowedOps: []patch.PatchOp{patch.PatchOpAdd, patch.PatchOpRemove, patch.PatchOpTest, patch.PatchOpMove},
-		DataType:   core.FieldTypeAny,
-	}))
-	require.NoError(t, p.PatchSchema().AddPath("/tags/*", &patch.PathSchema{
-		AllowedOps: []patch.PatchOp{patch.PatchOpAdd},
-		DataType:   core.FieldTypeString,
-	}))
 	return p
 }
 
@@ -118,15 +125,13 @@ func TestPatchSemantics_Apply(t *testing.T) {
 	})
 
 	t.Run("copy amplification is bounded across the patch", func(t *testing.T) {
-		small := docParser(t, core.WithMaxPatchCopyBytes(64))
+		small := docResource(t, append(slices.Clone(docMetaOps), patch.PatchOpCopy), core.WithMaxPatchCopyBytes(64))
 		long := int64(1)
 		_, err := apply(t, small, `[{"op":"copy","from":"/counter","path":"/copied"}]`, docEntity{Counter: &long})
 		require.NoError(t, err)
 		wide := docEntity{Meta: map[string]any{"blob": string(make([]byte, 200))}}
 		_, err = apply(t, small, `[{"op":"move","from":"/meta/blob","path":"/meta/other"}]`, wide)
 		require.NoError(t, err, "move does not copy")
-		meta := pathOf(small.PatchSchema(), "/meta/*")
-		meta.AllowedOps = append(meta.AllowedOps, patch.PatchOpCopy)
 		_, err = apply(t, small, `[{"op":"copy","from":"/meta/blob","path":"/meta/c1"}]`, wide)
 		require.Error(t, err)
 	})
@@ -184,23 +189,32 @@ func TestPatchSemantics_ParseRejects(t *testing.T) {
 }
 
 // Each schema owns its operator slices: configuring one resource must not
-// change another's accepted operations.
+// change another's accepted operations, and changing what an accessor hands
+// out changes nothing.
 func TestSchemaIsolation_DefaultOperatorSlices(t *testing.T) {
 	type entity struct {
 		ID    string            `json:"id,omitempty" db:"id"`
 		Name  string            `json:"name" parse:"filter,patch"`
 		Attrs map[string]string `json:"attrs" parse:"patch"`
 	}
-	a, err := parse.NewResource[entity]("entities")
+	a, err := parse.NewResource[entity]("entities", parse.CustomizeSchemas(func(s parse.Schemas) error {
+		pathOf(s.Patch, "/attrs").AllowedOps[0] = patch.PatchOpTest
+		s.Filter.Fields["name"].AllowedOperators[0] = filter.OpGt
+		return nil
+	}))
 	require.NoError(t, err)
 	b, err := parse.NewResource[entity]("entities")
 	require.NoError(t, err)
 
-	pathOf(a.PatchSchema(), "/attrs").AllowedOps[0] = patch.PatchOpTest
-	a.FilterSchema().Fields["name"].AllowedOperators[0] = filter.OpGt
-
+	assert.Equal(t, patch.PatchOpTest, pathOf(a.PatchSchema(), "/attrs").AllowedOps[0])
+	assert.Equal(t, filter.OpGt, a.FilterSchema().Fields["name"].AllowedOperators[0])
 	assert.Equal(t, patch.PatchOpReplace, pathOf(b.PatchSchema(), "/attrs").AllowedOps[0])
 	assert.Equal(t, filter.OpEq, b.FilterSchema().Fields["name"].AllowedOperators[0])
+
+	pathOf(b.PatchSchema(), "/attrs").AllowedOps[0] = patch.PatchOpTest
+	b.FilterSchema().Fields["name"].AllowedOperators[0] = filter.OpGt
+	assert.Equal(t, patch.PatchOpReplace, pathOf(b.PatchSchema(), "/attrs").AllowedOps[0], "the accessor hands out a copy")
+	assert.Equal(t, filter.OpEq, b.FilterSchema().Fields["name"].AllowedOperators[0], "the accessor hands out a copy")
 
 	c, err := parse.NewResource[entity]("entities")
 	require.NoError(t, err)

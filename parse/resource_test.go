@@ -158,23 +158,23 @@ func TestParseList_ReadsEveryListParameter(t *testing.T) {
 	require.NoError(t, err)
 	req, err := r.ParseList(q)
 	require.NoError(t, err)
-	assert.NotNil(t, req.Filter, "flat and JSON filters are one filter")
-	assert.Equal(t, 2, req.Filter.ConditionCount)
-	assert.Equal(t, "rank", req.Sort.Fields[0].Name)
-	assert.Equal(t, filter.SortDesc, req.Sort.Fields[0].Direction)
-	assert.Equal(t, "abc", req.Cursor)
-	assert.Equal(t, 3, req.PageSize, "clamped to the maximum")
-	assert.True(t, req.IncludeTotal)
-	assert.True(t, req.IncludeDeleted)
-	assert.Equal(t, "b", req.Search)
-	assert.Equal(t, []string{"name"}, req.Facets)
-	assert.Equal(t, []string{"tags"}, req.Include)
-	assert.Equal(t, []string{"id", "name"}, req.Fields)
+	assert.NotNil(t, req.Filter(), "flat and JSON filters are one filter")
+	assert.Equal(t, 2, req.Filter().ConditionCount())
+	assert.Equal(t, "rank", req.Sort().Fields[0].Name)
+	assert.Equal(t, filter.SortDesc, req.Sort().Fields[0].Direction)
+	assert.Equal(t, "abc", req.Cursor())
+	assert.Equal(t, 3, req.PageSize(), "clamped to the maximum")
+	assert.True(t, req.IncludeTotal())
+	assert.True(t, req.IncludeDeleted())
+	assert.Equal(t, "b", req.Search())
+	assert.Equal(t, []string{"name"}, req.Facets())
+	assert.Equal(t, []string{"tags"}, req.Include())
+	assert.Equal(t, []string{"id", "name"}, req.Fields())
 
 	empty, err := r.ParseList(url.Values{})
 	require.NoError(t, err)
-	assert.Equal(t, 2, empty.PageSize, "the default page size")
-	assert.Nil(t, empty.Filter)
+	assert.Equal(t, 2, empty.PageSize(), "the default page size")
+	assert.Nil(t, empty.Filter())
 }
 
 func TestParseList_RefusesWhatItCannotHonor(t *testing.T) {
@@ -222,7 +222,7 @@ func TestParseList_RefusesWhatItCannotHonor(t *testing.T) {
 	require.NoError(t, err)
 	req, err := accepting.ParseList(url.Values{"_": {"123"}, "view": {"grid"}})
 	require.NoError(t, err, "accepted parameters are the endpoint's")
-	assert.Nil(t, req.Filter)
+	assert.Nil(t, req.Filter())
 }
 
 // A misspelt flat filter cannot widen a list through any entry point; list

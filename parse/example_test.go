@@ -79,7 +79,7 @@ func ExampleNewResource_filter() {
 		return
 	}
 
-	fmt.Println("filter conditions:", result.ConditionCount)
+	fmt.Println("filter conditions:", result.ConditionCount())
 	fmt.Println("filter schema:", tp.FilterSchema().Name)
 	// Output:
 	// filter conditions: 1

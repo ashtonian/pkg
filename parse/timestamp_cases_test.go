@@ -70,7 +70,7 @@ func runTimestamps(t *testing.T, d timestampDB) {
 		t.Run("filter "+doc, func(t *testing.T) {
 			f, err := res.ParseFilter(doc)
 			require.NoError(t, err)
-			where, err := filter.NewSQLBuilder(schema, d.dialect).Build(f.AST)
+			where, err := filter.NewSQLBuilder(schema, d.dialect).Build(f.AST())
 			require.NoError(t, err)
 			rows, err := d.db.Query("SELECT id FROM "+schema.Name+" WHERE "+where.Where+" ORDER BY id", where.Args...)
 			require.NoError(t, err)

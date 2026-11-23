@@ -156,7 +156,7 @@ func TestClockThreadsThroughResource(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := core.FormatTimestamp(frozen.Add(-7 * 24 * time.Hour))
-	root := parsed.AST.Root
+	root := parsed.AST().Root
 	if root == nil || root.Value != want {
 		t.Fatalf("resolved value = %v; want %s", root.Value, want)
 	}

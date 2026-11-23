@@ -112,7 +112,7 @@ String ordering uses PostgreSQL's `pg_c_utf8` collation (PostgreSQL 17+; `filter
 
 ## Configuration
 
-Construct parsers once, customize schemas before serving, and treat them as read-only afterward.
+Construct a resource once and share it. Its schemas are fixed when `NewResource` returns: customize them with `parse.CustomizeSchemas`; the schema accessors hand out copies.
 
 | Option | Type | Default | Description |
 |---|---|---|---|
@@ -125,6 +125,7 @@ Construct parsers once, customize schemas before serving, and treat them as read
 | `parse.QueryOnlyColumns(columns...)` | `ResourceOption` | none | Columns `ReadColumns` leaves out that requests may still filter and search by, directly or through a relation correlating on them, such as a large text column searched but never listed. Which rows match discloses their values, so name only columns the caller may learn. Never a sort key, a facet, or the correlation of a relation that includes or facets |
 | `parse.ReadExpr(column, expr)` | `ResourceOption` | none | Reads a column through a trusted SQL expression per dialect (`parse.ColumnExpr`; `parse.SQL(sql)` for one every dialect reads alike), such as a correlated count, a pair table's keys as an array, or `coalesce` over a nullable column. Lists, updates' `RETURNING` and `parsepgx` select it as `(sql) AS column`, and its filter, sort, facet and search tags, and server policies naming it, compile against the dialect's expression; a dialect the expression refuses fails every statement built for it. It can't be the key, tenant or deleted column, be patched, stamped or incremented, hold document paths or correlate a relation; a relation to the resource filters by it through the target's expression for the owner's dialect; [computed columns](docs/queries.md#computed-columns) |
 | `parse.ColumnType(column, t)` | `ResourceOption` | none | Physical storage profile, including `core.SQLJSON` / `SQLJSONB`, native arrays and PostgreSQL inet/cidr/interval text projection; [storage declarations](docs/schema-configuration.md#fields-and-embedding) |
+| `parse.CustomizeSchemas(fn)` | `ResourceOption` | none | Changes the generated schemas (`parse.Schemas`: filter, sort, search, patch, server patch) while the resource is built, before its read-set and column checks; calls run in order, an error fails `NewResource`, and the resource keeps copies |
 | `parse.ParserOptions(opts...)` | `ResourceOption` | bounded parser defaults | Limits, codec, clock and schema generation; [complete table](docs/schema-configuration.md#parser-and-generator-options) |
 | `parse.WithPatchPolicy(pc, subject)` | `parse.PatchOption` | none | Request-specific path/value restrictions |
 | `parsehttp.WithErrorHandler(fn)` | `parsehttp.Option` | none (failures are not reported) | Receives what `parsehttp.WriteError` cannot put in the response: `Details` entries that cannot be encoded, left out of the body and matching `parsehttp.ErrUnencodableDetails`, or a `Write` that fails after the status is sent ([error handling](docs/http-errors.md#error-handling)) |
@@ -157,16 +158,16 @@ Tags expose capabilities explicitly: `parse:"filter,sort,patch,facet,search,incl
 
 | Package / file | Responsibility |
 |---|---|
-| [`resource.go`](resource.go) | `NewResource[T]`, `MustResource`, resource options, identity, system fields, projection (`Columns`, `ColumnNames`), `ParseFilterWithCost`, `Key`, `WithPaths` (a request's view with declared JSON paths) |
-| [`list.go`](list.go) | `ListInput`, `ParseListInput`, `ListRequest`, `ParseList`, `Scope`, `ListPlan` (`Dialect`), `BuildList`, `Page`, `PagePointers`, `IncludeQueries` |
+| [`resource.go`](resource.go) | `NewResource[T]`, `MustResource`, resource options (`CustomizeSchemas`, `Schemas`), identity, system fields, projection (`Columns`, `ColumnNames`), `ParseFilterWithCost`, `Key`, `WithPaths` (a request's view with declared JSON paths) |
+| [`list.go`](list.go) | `ListInput`, `ParseListInput`, `ListRequest` (sealed: read through methods, `WithFilter`), `ParseList`, `Scope`, `ListPlan` (`Dialect`), `BuildList`, `Page`, `PagePointers`, `IncludeQueries` |
 | [`list_body.go`](list_body.go) | `ParseListBody`: a list request as one JSON document, a POST body beside the query string; `ParseListPost`: a POST's list from its query string, content type and body; `Accepts` |
 | [`relate.go`](relate.go) | `Relate`, `MustRelate`, `HasMany`, `BelongsTo`, `ManyToMany`, `Junction` / `Through`, `Indexed`, `Includable`, `Facetable`, `Writable`, `PolicyScoped`, `References`, `RelatedResource` |
 | [`scan.go`](scan.go) | `RowScanner`, `ScanJSON`: the row contract every executor scans through — each column into the field the resource compiled it from, stored documents decoded with presence and key checks, SQLite's JSON and timestamp text decoded |
 | [`read_expr.go`](read_expr.go) | `ReadExpr`, `ColumnExpr`, `SQL`: computed columns, read and compiled through each dialect's expression, with per-dialect schema views cached on the resource |
 | [`tenant.go`](tenant.go) | `ErrTenantInvalid`; the tenant key: the one value every statement binds `Scope.Tenant` as, checked against every tenant column a resource reaches through its relations at any depth, and the relation graph `Relate` keeps it in |
-| [`update.go`](update.go) | `Target` (`ByID`, `ByIDs`, `ByFilter`), `BuildUpdate`, `UpdatePlan` (`Dialect`, `Current`), `UpdateResult`, `UpdatedRows`, `RelationStatements`, `Reread`, `Stamp`, `StampSQL`, `Increment`, `SkipUnchanged`, `Unchanged`, `Dialect` |
+| [`update.go`](update.go) | `Target` (`ByID`, `ByIDs`, `ByFilter`), `ErrForeign` (a request value another resource parsed, or one built by hand), `BuildUpdate`, `UpdatePlan` (`Dialect`, `Current`), `UpdateResult`, `UpdatedRows`, `RelationStatements`, `Reread`, `Stamp`, `StampSQL`, `Increment`, `SkipUnchanged`, `Unchanged`, `Dialect` |
 | [`update_batch.go`](update_batch.go) | `RowUpdate`, `UpdateBatchLimits`, `BuildUpdateBatch`, `UpdateBatchPlan` (`Dialect`), `UpdateBatchChunk.CheckCurrent`, `ErrUpdateBatchTargets`: bounded varied column updates with exact preimage checks |
-| [`typed.go`](typed.go) | `Resource` parse entry points (`MergePatchMap`, `ValidateOperations` and server variants), schema access, typed patch application through `patch.Applier` |
+| [`typed.go`](typed.go) | `Resource` parse entry points (`MergePatchMap`, `ValidateOperations` and server variants), schema access (deep copies), typed patch application through `patch.Applier` |
 | [`parsehttp`](parsehttp/README.md) | `WriteError`: a parse error as an HTTP response; `ParseList`: a list from a GET query string or a POST body |
 | [`parsepgx`](parsepgx/README.md) | `QueryPage`, `Update`, `UpdateBatch`, `Query`: plans and statements run on PostgreSQL through pgx batches |
 | [`parsesql`](parsesql/README.md) | `QueryPage`, `Update`, `UpdateBatch`, `Query`: plans and statements run on SQLite through `database/sql` |

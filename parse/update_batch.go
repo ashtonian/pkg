@@ -80,9 +80,10 @@ func (c UpdateBatchChunk) CheckCurrent(keys []any) error {
 }
 
 // BuildUpdateBatch compiles distinct column patches through the same typed
-// expressions, tenant/live floors and options as BuildUpdate. Relation changes,
-// identity-column writes and a dialect a computed column's expression refuses
-// fail before a plan is returned.
+// expressions, tenant/live floors and options as BuildUpdate. A row's patch
+// the resource did not parse is ErrForeign; relation changes, identity-column
+// writes and a dialect a computed column's expression refuses fail before a
+// plan is returned.
 func (r *Resource[T]) BuildUpdateBatch(d Dialect, rows []RowUpdate, scope Scope, limits UpdateBatchLimits, opts ...UpdateOption) (*UpdateBatchPlan, error) {
 	v, err := r.dialectView(d)
 	if err != nil {
@@ -116,6 +117,9 @@ func (r *Resource[T]) BuildUpdateBatch(d Dialect, rows []RowUpdate, scope Scope,
 	ordered := make([]orderedRowUpdate, len(rows))
 	seen := make(map[any]bool, len(rows))
 	for i, row := range rows {
+		if err := r.ownsPatch(row.Patch, fmt.Sprintf("update batch row %d patch", i)); err != nil {
+			return nil, err
+		}
 		key, err := core.NormalizeScalar(keyType.Type, keyType.NumberKind, row.Key)
 		if err != nil {
 			return nil, fmt.Errorf("%s: update batch key: %w", r.table, err)
