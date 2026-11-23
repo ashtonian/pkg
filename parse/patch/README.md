@@ -34,7 +34,7 @@ Start with the [runnable package example](../README.md#quick-start). The focused
 | `apply.go` | `Applier` — a parsed patch applied to a Go value: direct field sets, or T's JSON document, written to a working copy that copies each embedded parent before writing through it; `CheckSchema` refuses a path through an unexported embedded pointer, whose parent the copy can neither allocate nor copy; `ErrUnparsed` |
 | `apply_jsonpatch.go` | RFC 6902 runs through json-patch with one copy budget, and its empty-key escape |
 | `schema.go` | `PatchOp` and the operation set, `PatchSchema` and its versioned path set, `PathSchema`, `PatchOperation`, `ParsedPatch` |
-| `generate.go` | Schema generation from struct tags, refusing a patch or server field promoted through an unexported embedded pointer; default operations |
+| `generate.go` | Schema generation from struct tags, refusing a patch or server field promoted through an unexported embedded pointer, or whose type holds a document member promoted so; default operations |
 | `validate.go` | The value check both wire formats run (`checkValue`): operation, nullability, normalization, validators, element counts; `Validator`, `ConstraintError` |
 | `validators.go` | Path validators from value tags: `enum`, `minlen` / `maxlen`, `min` / `max`, per element on an array path (`minitems` / `maxitems` count an array set whole: `checkItems` in `patch.go`) |
 | `sql.go` | `BuildPatchSQL` — per-column fold, merge and append compilation; the change predicate (`WithChangePredicate`) |

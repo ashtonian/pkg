@@ -42,7 +42,7 @@ var jsonFields = gowalker.NewTypeCache(
 				continue
 			}
 			_, options, _ := strings.Cut(d.GoField.Tag.Get(JSONTagKey), ",")
-			f := &Field{goName: d.GoField.Name, typ: d.GoField.Type, route: d.Index, external: d.Field.Name(), tags: Tags{FieldNameOptions: options}}
+			f := &Field{goName: d.GoField.Name, typ: d.GoField.Type, route: d.Index, external: d.Field.Name(), tags: Tags{FieldNameOptions: options}, unexportedEmbed: unexportedEmbed(out.typ, d.Index)}
 			out.fields = append(out.fields, f)
 			out.external[f.external] = f
 		}

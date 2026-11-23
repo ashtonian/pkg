@@ -10,6 +10,7 @@ import (
 
 	"github.com/ashtonian/pkg/gowalker"
 	"github.com/ashtonian/pkg/parse/core"
+	"github.com/ashtonian/pkg/parse/internal/jsonkeys"
 )
 
 // GeneratePatchSchema generates a PatchSchema from struct tags on type T.
@@ -77,10 +78,15 @@ func generatePatchSchema(g *core.SchemaGenerator, t reflect.Type, server bool) (
 			return nil, fmt.Errorf("field %s: an immutable field cannot have the patch capability", field.GoName())
 		}
 		// Refused here rather than when a request writes it: the path would
-		// be offered and then fail every write.
+		// be offered and then fail every write. A value decodes into the
+		// field's type, so a member encoding/json cannot decode fails it too.
 		err = field.CheckWritable()
 		if err != nil {
 			return nil, err
+		}
+		err = jsonkeys.CheckDecodable(field.Type())
+		if err != nil {
+			return nil, fmt.Errorf("field %s: %w", field.GoName(), err)
 		}
 		fieldName := field.External()
 		if serverField {

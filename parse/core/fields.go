@@ -127,8 +127,9 @@ func (f *Field) Hidden() bool { return f.external == "" }
 
 // CheckWritable refuses a field promoted through an unexported embedded
 // pointer. Reflection can neither allocate that pointer nor point it at a
-// copy of its parent, so a writer that must not write the parent it shares
-// with the caller, as a patch must not, cannot set the field.
+// copy of its parent, so neither a reader filling a fresh value, where the
+// pointer is nil, nor a writer that must not write the parent it shares with
+// the caller, as a patch must not, can set the field.
 func (f *Field) CheckWritable() error {
 	if f.unexportedEmbed == nil {
 		return nil

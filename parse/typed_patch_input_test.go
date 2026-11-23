@@ -30,7 +30,8 @@ type PatchMiddle struct {
 }
 
 // patchPrivate is embedded by an unexported pointer: a patch can write none
-// of its fields, so none is tagged.
+// of its fields and a row scan fill none, so none is tagged patch and a
+// resource over promotedPatchRow reads none (promotedReadColumns).
 type patchPrivate struct {
 	Extra string            `json:"extra" db:"extra"`
 	Attrs map[string]string `json:"attrs" db:"attrs"`
@@ -41,6 +42,12 @@ type promotedPatchRow struct {
 	Version int    `json:"version" db:"version" parse:"patch" patch_ops:"test"`
 	*PatchMiddle
 	*patchPrivate
+}
+
+// promotedReadColumns reads every column of promotedPatchRow but
+// patchPrivate's.
+func promotedReadColumns() parse.ResourceOption {
+	return parse.ReadColumns("id", "version", "name", "label", "note", "rank")
 }
 
 // The rows a patch starts from: parents allocated, the middle or the parent
@@ -97,7 +104,7 @@ func TestApplyPatch_LeavesTheRowAndItsEmbeddedParents(t *testing.T) {
 			assert.Equal(t, tc.row().patchPrivate, got.patchPrivate)
 		}
 		t.Run(tc.name+", value row", func(t *testing.T) {
-			r, err := parse.NewResource[promotedPatchRow]("promoted_rows", parse.ColumnType("attrs", core.SQLJSONB))
+			r, err := parse.NewResource[promotedPatchRow]("promoted_rows", parse.ColumnType("attrs", core.SQLJSONB), promotedReadColumns())
 			require.NoError(t, err)
 			in := tc.row()
 			kept := retainParents(in)
@@ -106,7 +113,7 @@ func TestApplyPatch_LeavesTheRowAndItsEmbeddedParents(t *testing.T) {
 			kept.assertUnchanged(t, tc.row(), in)
 		})
 		t.Run(tc.name+", pointer row", func(t *testing.T) {
-			r, err := parse.NewResource[*promotedPatchRow]("promoted_rows", parse.ColumnType("attrs", core.SQLJSONB))
+			r, err := parse.NewResource[*promotedPatchRow]("promoted_rows", parse.ColumnType("attrs", core.SQLJSONB), promotedReadColumns())
 			require.NoError(t, err)
 			in := new(promotedPatchRow)
 			*in = tc.row()
@@ -301,7 +308,7 @@ func TestNewResource_RefusesACustomizedPathBehindAnUnexportedEmbeddedPointer(t *
 		},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			_, err := parse.NewResource[promotedPatchRow]("promoted_rows", parse.ColumnType("attrs", core.SQLJSONB), parse.CustomizeSchemas(tt.customize))
+			_, err := parse.NewResource[promotedPatchRow]("promoted_rows", parse.ColumnType("attrs", core.SQLJSONB), parse.CustomizeSchemas(tt.customize), promotedReadColumns())
 			if tt.wantPath == "" {
 				require.NoError(t, err)
 				return

@@ -223,6 +223,9 @@ func jsonShapeOf(t reflect.Type) (*jsonShape, error) {
 	for typ, s := range building {
 		jsonShapes.LoadOrStore(typ, s)
 	}
+	// An opaque root is in no building entry; kept too, the next call for
+	// t takes no lock.
+	jsonShapes.LoadOrStore(t, shape)
 	return shape, nil
 }
 
@@ -287,6 +290,60 @@ func buildJSONShape(t reflect.Type, building map[reflect.Type]*jsonShape) (*json
 		return shape, nil
 	}
 	return opaqueShape, nil
+}
+
+// CheckDecodable refuses a document type encoding/json cannot decode every
+// member it writes into: one holding, at any depth, a struct whose member is
+// promoted through an unexported embedded pointer (core.Field.CheckWritable).
+// encoding/json writes that member while the pointer is set, and decoding
+// into a fresh value, where the pointer is nil, fails on it. Self-decoding
+// subtrees are opaque, as Validate reads them.
+func CheckDecodable(t reflect.Type) error {
+	for t.Kind() == reflect.Pointer {
+		t = t.Elem()
+	}
+	switch t.Kind() {
+	case reflect.Struct, reflect.Map, reflect.Slice, reflect.Array:
+	default:
+		// A scalar or an interface holds no member; jsonShapeOf would take
+		// its lock to find the same.
+		return nil
+	}
+	shape, err := jsonShapeOf(t)
+	if err != nil {
+		return err
+	}
+	if shape.kind == shapeOpaque {
+		return nil
+	}
+	return shape.checkDecodable(map[*jsonShape]bool{})
+}
+
+func (s *jsonShape) checkDecodable(seen map[*jsonShape]bool) error {
+	if seen[s] {
+		return nil
+	}
+	seen[s] = true
+	switch s.kind {
+	case shapeMap, shapeList:
+		return s.elem.checkDecodable(seen)
+	case shapeStruct:
+		i := -1
+		for f := range s.walk.Fields() {
+			i++
+			if f.Hidden() {
+				continue // encoding/json decodes no member into it
+			}
+			err := f.CheckWritable()
+			if err == nil {
+				err = s.members[i].checkDecodable(seen)
+			}
+			if err != nil {
+				return fmt.Errorf("%s: %w", gowalker.TypeText(s.typ), err)
+			}
+		}
+	}
+	return nil
 }
 
 var (

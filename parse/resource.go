@@ -63,6 +63,10 @@ type Resource[T any] struct {
 	sqlTypes     map[string]core.SQLType
 	tableColumns map[string]reflect.Type
 	columnFields map[string]*core.Field
+	// undecodable holds why a read column's type, an sql.Scanner the
+	// resource does not declare JSON, cannot be decoded as a stored
+	// document (jsonkeys.CheckDecodable): RowScanner refuses ScanJSON on it.
+	undecodable map[string]error
 	// access is what a request may learn of each column of T (ReadColumns,
 	// QueryOnlyColumns).
 	access map[string]columnAccess
@@ -378,6 +382,10 @@ func NewResource[T any](table string, opts ...ResourceOption) (*Resource[T], err
 			r.sqlTypes = make(map[string]core.SQLType)
 		}
 		r.sqlTypes[name] = implied
+	}
+	err = r.checkScannable()
+	if err != nil {
+		return nil, err
 	}
 
 	if err := r.checkUnreadColumns(r.filterSchema.Fields, sortKeys(r.sortSchema), searchFields(r.searchSchema)); err != nil {
