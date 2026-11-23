@@ -42,6 +42,7 @@ Constructors validate durations, counts, levels, thresholds and required provide
 | `WithBaseTransport(opts...)` | `...BaseOption` | `NewBaseTransport()` defaults | Tunes the base `*http.Transport`; the last call wins |
 | `WithTransport(rt)` | `http.RoundTripper` | none | Replaces the base transport; other base settings do not apply and combining with a base egress policy is rejected |
 | `WithJar(jar)` | `http.CookieJar` | nil | Cookie jar of the client |
+| `WithLifecycle(l)` | `*Lifecycle` | none | Registers the caches and base transport the builder constructs with `l`; `l.Close()` releases them. Nil or closed is rejected |
 | `WithCompression(opts...)` | `...CompressionOption` | off (`NewStandard`: on) | Adds response compression negotiation and decoding |
 | `WithCache(store, opts...)` | `CacheStore`, `...CacheOption` | off | Adds `CacheTransport`; a nil store uses `NewMemoryCache()` |
 | `WithCircuitBreaker(opts...)` | `...CircuitOption` | off | Adds `CircuitTransport` |
@@ -102,7 +103,7 @@ regardless of option order. See [egress policy](egress.md).
 | `WithStaleWhileRevalidate(d)` | `time.Duration` | 0 (off) | Serve stale for up to `d` while revalidating in the background, within the request's `max-age` / `min-fresh` |
 | `WithMaxCacheBodyBytes(n)` | `int64` | `DefaultMaxCacheBodyBytes` (1 MiB) | Largest stored body; larger responses stream through unstored |
 | `WithMaxRetention(d)` | `time.Duration` | `DefaultMaxRetention` (24 h) | Longest an entry is kept, including entries kept only to revalidate |
-| `WithRevalidation(timeout, n)` | `time.Duration`, `int` | `DefaultRevalidateTimeout` (30 s), `DefaultMaxConcurrentRevalidates` (8) | Timeout and concurrency of background revalidations; `Close` stops them |
+| `WithRevalidation(timeout, n)` | `time.Duration`, `int` | `DefaultRevalidateTimeout` (30 s), `DefaultMaxConcurrentRevalidates` (8) | Timeout and concurrency of background revalidations; `CacheTransport.Close`, or the builder's `Lifecycle.Close`, stops them |
 | `WithCacheHook(h)` | `MetricsHook` | the `WithMetrics` hook, else none | Receives `OnCacheHit` / `OnCacheMiss` |
 | `WithOnCacheError(fn)` | `func(context.Context, *CacheError)` | nil | Synchronous bounded storage-failure event; must be quick, concurrent-safe and non-reentrant |
 | `WithMaxEntries(n)` (`NewMemoryCache`) | `int` | `DefaultMemoryCacheMaxEntries` (1024) | Entry cap; least recently used evicted first |
@@ -301,6 +302,7 @@ that is separate from retrying the current call.
 - `NewClient(opts...) (*http.Client, error)` — the fixed decorator stack
 - `NewStandard(opts...) (*http.Client, error)` / `MustNewStandard(opts...)` — defaults plus overrides
 - `NewChain(fns...) Chain`, `Chain.Build(base)`, `Chain.Client(base, timeout)` — explicit order, first innermost; presets `DefaultChain()`, `ResilientChain()`, `APIClientChain()`
+- `Chain.BuildWithLifecycle(l, base)`, `Chain.ClientWithLifecycle(l, base, timeout)`, `WithLifecycle(l)` — register what a build constructs with a `Lifecycle`; `(*Lifecycle).Close() error` releases it (see [lifecycle](composition.md#optional-builders-and-lifecycle))
 - `NewBaseTransport(opts...) (*http.Transport, error)`
 - `NewCompressionTransport`, `NewCacheTransport`, `NewCircuitTransport`, `NewRetryTransport`, `NewHedgingTransport`, `NewAdaptiveHedgingTransport`, `NewLimiterTransport`, `NewRateLimitTransport`, `NewAuthTransport`, `NewTokenTransport`, `NewMetricsTransport`, `NewLoggingTransport` — one decorator each, `(base, ...) (*T, error)`
 - `NewTokenSource(token, expiry, refresh, opts...) (*RefreshingTokenSource, error)` — shared context-aware refresh

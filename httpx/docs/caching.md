@@ -151,21 +151,31 @@ reading a response body.
 ## Background work and stores
 
 Background revalidations coalesce per key and are bounded by concurrency
-and timeout (defaults: 8, 30 seconds). `CacheTransport.Close()` cancels them
-and waits. Call it during shutdown, then close idle transport connections.
-The direct constructor returns that handle. If you instead use `WithCache`
-or `WithCacheT`, find the cache using `TransportStack`:
+and timeout (defaults: 8, 30 seconds). Closing idle connections does not stop
+them. `CacheTransport.Close()` cancels them and waits; the direct constructor
+returns that handle. A cache that `WithCache` or a `WithCacheT` layer
+constructs belongs to the build: give the builder a `Lifecycle` and close it
+at shutdown, once the client's callers have stopped:
 
 ```go
-for _, transport := range httpx.TransportStack(client) {
-    if cache, ok := transport.(*httpx.CacheTransport); ok {
-        if err := cache.Close(); err != nil {
-            return err
-        }
-    }
+var background httpx.Lifecycle
+client, err := httpx.NewStandard(
+    httpx.WithCache(nil, httpx.WithStaleWhileRevalidate(time.Minute)),
+    httpx.WithLifecycle(&background),
+)
+if err != nil {
+    return err
 }
-client.CloseIdleConnections()
+defer func() { err = errors.Join(err, background.Close()) }()
 ```
+
+For a chain, including `ResilientChain` and `APIClientChain`, use
+`Chain.BuildWithLifecycle(&background, base)` or
+`Chain.ClientWithLifecycle(&background, base, timeout)`. `Close` cancels each
+owned cache's refreshes and waits for them, then closes the idle connections
+of a base transport the builder constructed. It never closes a store, a base
+passed to `WithTransport` or `Build`, or a cache the caller constructed, even
+when `Unwrap` reaches it. See [builders and lifecycle](composition.md#optional-builders-and-lifecycle).
 
 A custom `CacheStore` implements one context-aware, error-bearing contract:
 

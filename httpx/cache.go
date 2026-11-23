@@ -86,6 +86,10 @@ type CacheTransport struct {
 	// costs an unrelated key one cancellable store operation. Origin requests
 	// and response-body reads never hold a stripe.
 	stripes [invalidationStripes]cacheStripe
+
+	// adoptable marks a cache a builder layer constructed and no build owns
+	// yet; the caller of NewCacheTransport owns its cache outright.
+	adoptable atomic.Bool
 }
 
 const invalidationStripes = 256
