@@ -734,9 +734,7 @@ type readRules struct {
 // value walks what v meets in a value of type t when rules, a field's rules
 // from the one v reaches next, are still to run on it.
 func (w *ruleWalk) value(t reflect.Type, rules []string) {
-	for t.Kind() == reflect.Pointer {
-		t = t.Elem()
-	}
+	t = derefType(t)
 	nested := t.Kind() == reflect.Struct && !t.ConvertibleTo(timeType)
 	for i, rule := range rules {
 		switch rule {

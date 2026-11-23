@@ -235,15 +235,16 @@ func RedactedMapChecked(cfg any) (map[string]string, error) {
 func collectEntriesChecked(cfg any) ([]printEntry, error) {
 	w := &entryWalk{visiting: map[visit]bool{}}
 	val := reflect.ValueOf(cfg)
+	// Judged by type first, as in valueTree.root.
+	if !val.IsValid() || !isBranch(derefType(val.Type())) {
+		return nil, nil
+	}
 	for val.Kind() == reflect.Pointer {
 		if val.IsNil() {
 			return nil, nil
 		}
 		w.visiting[visitOf(val)] = true
 		val = val.Elem()
-	}
-	if !val.IsValid() || !isBranch(val.Type()) {
-		return nil, nil
 	}
 	w.walkStruct(val, nil, false)
 	if w.err != nil {

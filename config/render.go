@@ -83,14 +83,16 @@ type valueTree struct {
 
 func (w *valueTree) root(cfg any) *outNode {
 	v := reflect.ValueOf(cfg)
+	// Judged by type first: a pointer chain that never reaches a struct can
+	// hold its own address, and following its values would never end.
+	if !v.IsValid() || !isBranch(derefType(v.Type())) {
+		return &outNode{kind: outMap}
+	}
 	for v.Kind() == reflect.Pointer {
 		if v.IsNil() {
 			return &outNode{kind: outMap}
 		}
 		v = v.Elem()
-	}
-	if !v.IsValid() || !isBranch(v.Type()) {
-		return &outNode{kind: outMap}
 	}
 	n := &outNode{kind: outMap}
 	w.fields(n, v, cursor{})
