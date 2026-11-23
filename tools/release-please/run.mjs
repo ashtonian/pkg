@@ -51,7 +51,7 @@ async function main() {
     // release-please reads the branch as GitHub has it now, which can be
     // ahead of the commit this job checked out.
     const head = fetchBranchHead(args.checkout, args.remote, branch);
-    history = readHistory(args.checkout, head);
+    history = readHistory(args.checkout, head, { configFile: args['config-file'] });
     console.log(`first-parent: history at ${head} (${args.remote}/${branch}), ${history.mergeOf.size} branch commits mapped to their merges`);
   }
   registerFirstParent(history);

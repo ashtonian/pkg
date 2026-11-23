@@ -43,7 +43,7 @@ export class FirstParentPlugin extends ManifestPlugin {
     if (paths === undefined && commits.length > 0) {
       this.warnOnce(`${FIRST_PARENT}: no release path has these commits; each merge counts at least as its subject`);
     }
-    const all = [...commits, ...this.unlisted(commits, paths ?? [])];
+    const all = this.sinceStart([...commits, ...this.unlisted(commits, paths ?? [])], paths ?? []);
     const kept = firstParentCommits(all, this.history, {
       headerOf: this.headerOf,
       rank: this.rank,
@@ -73,6 +73,22 @@ export class FirstParentPlugin extends ManifestPlugin {
       }
     }
     return read;
+  }
+
+  // sinceStart drops the commits from before paths became release paths. A
+  // module split out of another lists the changes since the split; those
+  // before it shipped in the path that held its files then. Paths sharing a
+  // parse keep what the earliest of them would; a path whose start is not in
+  // the history read keeps everything.
+  sinceStart(commits, paths) {
+    const { mergeOf, positionOf = new Map(), startOf = new Map() } = this.history;
+    const starts = paths.map(path => positionOf.get(startOf.get(path)));
+    if (starts.length === 0 || starts.includes(undefined)) return commits;
+    const start = Math.min(...starts);
+    return commits.filter(commit => {
+      const position = positionOf.get(mergeOf.get(commit.sha) ?? commit.sha);
+      return position === undefined || position >= start;
+    });
   }
 
   // completeMerges returns the merges each of whose branch commits touching
