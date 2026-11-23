@@ -174,6 +174,15 @@ describe("list", () => {
     expect(res.page_info.total_count).toBe(4);
   });
 
+  it("reads a list that matches nothing as an empty items array", async () => {
+    const recorded = exchange<ListResult<WireItem>>("list_empty");
+    const items = client(replay(recorded).fetch).resource<WireItem>("wire_items");
+    const res = await items.list({ filter: { id: { $eq: "zz" } }, includeTotal: true, include: ["tags"], facets: ["name"] });
+    expect(res).toEqual(recorded.response.body);
+    expect(res.items.map((i) => i.name)).toEqual([]);
+    expect(res.page_info).toEqual({ has_next_page: false, has_prev_page: false, total_count: 0 });
+  });
+
   it("sends the recorded list body over POST, and reads the page GET reads", async () => {
     const items = client(replay(exchange("list_post")).fetch).resource<WireItem>("wire_items");
     const res = await items.list(filtered, { method: "POST" });

@@ -351,6 +351,11 @@ func buildSDKWire(t *testing.T) []byte {
 	require.NoError(t, err)
 	wire.Exchanges["list_post"] = record(t, h, wireRequest{Method: http.MethodPost, Path: "/wire_items", ContentType: "application/json", Body: body})
 
+	// A list that matches nothing: items [], with its total and facets.
+	none := client.ListParams{Filter: client.NewField[string]("id").Eq("zz"), IncludeTotal: true, Include: []string{"tags"}, Facets: []string{"name"}}
+	wire.Exchanges["list_empty"] = record(t, h, listGET(t, none))
+	require.Contains(t, string(wire.Exchanges["list_empty"].Response.Body), `"items":[]`)
+
 	facets := listGET(t, client.ListParams{Filter: name.Ne("echo"), Facets: []string{"name"}})
 	facets.Method = http.MethodOptions
 	wire.Exchanges["facets"] = record(t, h, facets)
@@ -383,7 +388,7 @@ func buildSDKWire(t *testing.T) []byte {
 		}
 		require.Equal(t, wantStatus, call.Response.Status, "%s: %s", name, call.Response.Body)
 	}
-	require.Equal(t, []string{"error", "facets", "list_backward", "list_post", "list_total", "patch", "patch_composite_key", "patch_many", "schema", "schema_not_found", "schemas"},
+	require.Equal(t, []string{"error", "facets", "list_backward", "list_empty", "list_post", "list_total", "patch", "patch_composite_key", "patch_many", "schema", "schema_not_found", "schemas"},
 		slices.Sorted(maps.Keys(wire.Exchanges)))
 	var stocked parsehttp.PatchAnswer[wireStock]
 	require.NoError(t, json.Unmarshal(wire.Exchanges["patch_composite_key"].Response.Body, &stocked))
