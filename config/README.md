@@ -126,7 +126,7 @@ reading sources; `DecodeKey` also returns the typed config;
 batch of edits together over an explicit baseline; and `WithBaseEntries`
 and `WithOverrideEntries` load stored entries keyed as those calls take
 them. Source-level `WithInvalidEntries` can withhold bad stored rows,
-judged with the source's other entries over the layers beneath, while
+judged against the final configuration every source makes, while
 preserving lower sources and unknown-key diagnostics. See
 [sources](docs/sources.md).
 
@@ -180,7 +180,7 @@ metrics-library dependency.
 | File | Responsibility |
 |---|---|
 | `config.go`, `options.go`, `layers.go` | `Load` pipeline and source options; every source read and prepared as a layer, then the layers merged in rank order |
-| `defaults.go`, `element_defaults.go`, `decode_input.go`, `check_key.go`, `source_validation.go` | Shared defaults/decoding, key checks (`CheckKey`, `DecodeKey`, `CanonicalKey`, `DecodeEdits`) and `WithInvalidEntries`' judging of a source's entries |
+| `defaults.go`, `element_defaults.go`, `decode_input.go`, `check_key.go`, `source_validation.go`, `judge.go` | Shared defaults/decoding, key checks (`CheckKey`, `DecodeKey`, `CanonicalKey`, `DecodeEdits`) and `WithInvalidEntries`' judging of entries against the final configuration |
 | `merge_input.go`, `keys.go`, `edits.go`, `unkeyed.go` | The merge rule every source follows (a map merges by key, typed or not; a list edit sets elements), source trees in that shape, key edits (canonical keys, a batch resolved, rewritten and checked against itself, then set as a source), and the `koanf:"-"` fields of typed sections carried beside the merge |
 | `provider_func.go`, `entries.go` | Function-backed sources: `NewMapProvider`'s dotted or nested maps, and `WithBaseEntries`/`WithOverrideEntries` entries in the key grammar |
 | `schema.go`, `view.go`, `fields.go`, `key.go`, `tag_keys.go` | Canonical metadata, discovery, key grammar and tag-key spelling |

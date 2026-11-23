@@ -385,24 +385,43 @@ func editsUnkeyed(edits []edit) []unkeyedFields {
 // indexes, calls it at most once and changes neither below nor the edits. An
 // edit whose index it refuses is left out, in refused.
 func setEdits(below func() map[string]any, edits []edit) (tree map[string]any, refused []*KeyError) {
-	var root map[string]any
-	beneath := func() any {
-		if root == nil {
-			root = below()
+	t := newEditTree(below)
+	for i := range edits {
+		if err := t.set(&edits[i]); err != nil {
+			refused = append(refused, &KeyError{Key: edits[i].safe, Err: err})
+		}
+	}
+	return t.tree, refused
+}
+
+// editTree is the source tree setEdits builds, one edit at a time, so a
+// caller learns which edit each refusal is.
+type editTree struct {
+	tree    map[string]any
+	beneath func() any
+}
+
+func newEditTree(below func() map[string]any) *editTree {
+	var (
+		root map[string]any
+		read bool
+	)
+	return &editTree{tree: map[string]any{}, beneath: func() any {
+		if !read {
+			root, read = below(), true
 		}
 		return root
+	}}
+}
+
+// set sets e in the tree, which a refused edit leaves as it was.
+func (t *editTree) set(e *edit) error {
+	out, err := e.set(t.tree, t.beneath, 0)
+	if err != nil {
+		return err
 	}
-	tree = map[string]any{}
-	for i := range edits {
-		e := &edits[i]
-		out, err := e.set(tree, beneath, 0)
-		if err != nil {
-			refused = append(refused, &KeyError{Key: e.safe, Err: err})
-			continue
-		}
-		tree = out.(map[string]any)
-	}
-	return tree, refused
+	t.tree = out.(map[string]any)
+	return nil
 }
 
 // set returns tree, the edit tree at e.path[:i], with e set beneath it.

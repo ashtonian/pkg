@@ -257,36 +257,59 @@ config.WithBaseProvider(store, nil, config.WithInvalidEntries(
 This withholds the source's invalid entries, leaving their lower-precedence
 values intact. A provider's entries are its struct sections' fields, checked
 field by field; a collection or self-decoding value is one entry. An entry
-of `WithBaseEntries` or `WithOverrideEntries` is one stored key. Entries are
-judged over the layers merged beneath the source, as `Load` decodes and
-validates them:
+of `WithBaseEntries` or `WithOverrideEntries` is one stored key.
 
-- When all of the source's entries apply together, all are kept: one decode.
-- Otherwise an entry is withheld when it fails both on its own and with
-  every entry of the source that passes on its own applied. An entry that
-  needs another — `upstreams["a"].timeout` beside the
-  `upstreams["a"].url` its entry requires, `pool[1]` after `pool[0]`,
-  `min` moved with `max` — is kept with it, as is one that needs a lower
-  layer.
-- An entry that passes on its own is kept: a rule it breaks only together
-  with other entries is the final configuration's to fail. Independently
-  valid rows can conflict, and the loader does not choose rows to discard to
-  resolve the conflict.
+Entries are judged against the final configuration: every source of the
+load, the defaults included, merged in rank order and then decoded and
+validated as `Load` does before secrets and post-load hooks. The entries of
+every source using the option are judged together, ordered by source rank
+and then by key, over the rest of what the sources set. So a value a
+higher source repairs is no entry's fault, an entry a higher source sets
+over is kept whatever it holds, and a lower source's entry valid beside a
+higher source's is kept with it.
 
-Judging a source costs one decode when its entries all apply, and at most
-one per entry plus one per entry failing on its own when they do not. The
-callback receives sorted key/error pairs on every load, including an empty
-report; nil discards reports. A load reads every source before it merges
-any, so the callback runs only once the last source is read: a slow
-provider delays it, and a source that fails to read fails the load with
-nothing reported. Its error fails the load with
-`ErrSource`. Defaults must validate before any source is read. Unknown keys
-still reach the normal diagnostics, including declared unknown children of
-a withheld entry. A `validate` tag the default validator cannot apply
-fails the load with `ErrSchema`, whichever entry brings the validator to
-it. Read/parser errors and cancellation fail the load, with
-the cause the context ended with, and a load whose context has ended
-reports nothing. The option applies equally to `WithOverrideProvider`.
+- When the final configuration passes with every entry, all are kept.
+- An entry that passes with the rest alone is always kept. Independently
+  valid rows can conflict, and the loader does not choose rows to discard
+  to resolve the conflict: the load fails on it.
+- Otherwise each failure is attributed to the entries setting its key, a
+  key holding it or a key beneath it, from the highest-ranked source among
+  them. A rule naming a field beside its own (`ltefield`, `required_with`)
+  is attributed to the struct holding both; a `Validate` method's error, a
+  `WithValidator` validator's that names no field, and a rule naming a
+  field of another struct are attributed to none. The entries a failure
+  names are set aside until the rest pass. Then each entry set aside is
+  retried in order until a pass keeps none more, and kept when it passes
+  with the entries kept. An entry that needs another —
+  `upstreams["a"].timeout` beside the `upstreams["a"].url` its entry
+  requires, `pool[1]` after `pool[0]`, `a` valid only equal to `b` — is kept
+  with it, whichever comes first.
+- When no set of entries passes — a file that fails and that no entry
+  repairs, a required field nothing sets — every entry merges but those a
+  failure was attributed to, and the load fails as that configuration does.
+  Every entry withheld is in the report; none is dropped without one.
+
+A load reads every source before it judges any entry, so the callback runs
+only once the last source is read: a slow provider delays it, and a source
+that fails to read fails the load with nothing reported. The callback
+receives sorted key/error pairs on every load, including an empty report;
+nil discards reports. Its error fails the load with `ErrSource`.
+
+Judging merges the sources from the lowest that uses the option up and
+decodes the result: once when every entry passes, and otherwise, for n
+entries of which k fail with the rest alone, at most 2 + n + k + k(k+1)/2
+times — every entry, each entry alone, up to k while entries are set aside,
+the passing entries alone, and the retries, k(k+1)/2 only when each pass
+keeps one entry. Each merge starts from a copy of what lies beneath those
+sources and copies the configuration tree once for each source it merges
+and once more to decode.
+
+Unknown keys still reach the normal diagnostics, including declared unknown
+children of a withheld entry. A `validate` tag the default validator cannot
+apply fails the load with `ErrSchema`, whichever entry brings the validator
+to it. Read/parser errors and cancellation fail the load, with the cause
+the context ended with, and a load whose context has ended reports
+nothing. The option applies equally to `WithOverrideProvider`.
 
 ### Stored entries
 
@@ -335,8 +358,8 @@ a whole list where the list beneath can change.
 
 Every refused entry is named, and every message names keys, cut short
 beneath a sensitive container, and never a value. Under
-`WithInvalidEntries` the failing entries, and every entry that does not
-decode or validate as that option judges it, are withheld and reported
+`WithInvalidEntries` the refused entries, and the entries the final
+configuration fails on as that option judges it, are withheld and reported
 instead. The
 [settings-store recipe](../examples/cookbook/README.md#settings-a-service-writes)
 canonicalizes a write's keys, checks the table it makes with the service's

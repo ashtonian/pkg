@@ -4,9 +4,12 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
+	"maps"
 	"net/netip"
 	"path/filepath"
+	"slices"
 	"testing"
 	"time"
 
@@ -275,4 +278,288 @@ func TestEntries_Boundaries(t *testing.T) {
 	_, err = Load[keyConfig](t.Context(), WithBaseEntries(readEntries(entries)), WithDefaults(map[string]any{"nested": map[string]any{"count": 3}}))
 	require.NoError(t, err)
 	assert.Equal(t, map[string]any{"nested": map[string]any{"count": 4}}, entries, "what read returns is the caller's")
+}
+
+// jointConfig's a and b are valid only equal, which only its Validate
+// method, naming no field, says.
+type jointConfig struct {
+	A      int           `koanf:"a"`
+	B      int           `koanf:"b"`
+	Bad    int           `koanf:"bad" validate:"max=5"`
+	Pool   []editServer  `koanf:"pool"`
+	Limits limitsSection `koanf:"limits"`
+}
+
+type limitsSection struct {
+	Min int `koanf:"min" validate:"ltefield=Max"`
+	Max int `koanf:"max" default:"10"`
+}
+
+func (c *jointConfig) Validate() error {
+	if c.A != c.B {
+		return errors.New("a and b differ")
+	}
+	return nil
+}
+
+// judged loads entries under WithInvalidEntries over below and beneath
+// above, returning the config, the keys withheld and the load's error.
+func judged[T any](t *testing.T, entries map[string]any, below []Option, above ...Option) (*T, []string, error) {
+	t.Helper()
+	var rejected []string
+	report := WithInvalidEntries(func(_ context.Context, entries []KeyError) error {
+		rejected = nil
+		for _, ke := range entries {
+			rejected = append(rejected, ke.Key)
+		}
+		return nil
+	})
+	opts := slices.Concat(below, []Option{WithOverrideEntries(readEntries(entries), report)}, above)
+	got, err := Load[T](t.Context(), opts...)
+	return got, rejected, err
+}
+
+// An entry that fails is withheld without the entries it is not to blame
+// for: a chain of list elements each needing the one before it is kept
+// whole, and so are two entries valid only together, beside an entry
+// breaking a rule of its own, one that does not decode, or one breaking a
+// rule relating it to a field beside it.
+func TestEntries_WithInvalidEntriesWithholdsOnlyWhatFails(t *testing.T) {
+	got, rejected, err := judged[jointConfig](t, map[string]any{"pool[0].host": "x", "pool[1].host": "y", "pool[2].host": "z", "bad": 9}, nil)
+	require.NoError(t, err)
+	assert.Equal(t, []editServer{{"x", 0}, {"y", 0}, {"z", 0}}, got.Pool)
+	assert.Equal(t, []string{"bad"}, rejected)
+
+	for _, bad := range []map[string]any{{"bad": 9}, {"bad": "nine"}, {"limits.min": 20}} {
+		entries := map[string]any{"a": 3, "b": 3}
+		maps.Copy(entries, bad)
+		got, rejected, err = judged[jointConfig](t, entries, nil)
+		require.NoError(t, err, bad)
+		assert.Equal(t, [2]int{3, 3}, [2]int{got.A, got.B}, bad)
+		assert.Equal(t, jointConfig{A: 3, B: 3, Limits: limitsSection{Max: 10}}, *got, bad)
+		assert.Equal(t, slices.Collect(maps.Keys(bad)), rejected, bad)
+	}
+}
+
+// chainConfig's rules name no field: a needs b, b needs c, and z is never
+// valid set.
+type chainConfig struct {
+	A int `koanf:"a"`
+	B int `koanf:"b"`
+	C int `koanf:"c"`
+	Z int `koanf:"z"`
+}
+
+func (c *chainConfig) Validate() error {
+	switch {
+	case c.A > 0 && c.B == 0:
+		return errors.New("a needs b")
+	case c.B > 0 && c.C == 0:
+		return errors.New("b needs c")
+	case c.Z > 0:
+		return errors.New("z is set")
+	}
+	return nil
+}
+
+// Entries a failure names no field of are judged one by one, retried in
+// key order until none more can be kept: a needs b, which comes after it,
+// and is kept with it.
+func TestEntries_WithInvalidEntriesKeepsAChainAgainstKeyOrder(t *testing.T) {
+	got, rejected, err := judged[chainConfig](t, map[string]any{"a": 1, "b": 1, "c": 1, "z": 1}, nil)
+	require.NoError(t, err)
+	assert.Equal(t, chainConfig{A: 1, B: 1, C: 1}, *got)
+	assert.Equal(t, []string{"z"}, rejected)
+}
+
+type orderedConfig struct {
+	Min int `koanf:"min" validate:"ltefield=Max"`
+	Max int `koanf:"max" default:"10"`
+	Bad int `koanf:"bad" validate:"max=5"`
+}
+
+// Entries each valid with the other sources that break a rule together are
+// kept, and the load fails on that rule: neither is chosen for discarding.
+// No set of the other entries can pass beside them, so only an entry a
+// failure names is withheld.
+func TestEntries_WithInvalidEntriesKeepsEntriesValidAlone(t *testing.T) {
+	_, rejected, err := judged[orderedConfig](t, map[string]any{"min": 9, "max": 5}, nil)
+	require.ErrorIs(t, err, ErrValidation)
+	assert.Contains(t, err.Error(), "min")
+	assert.Empty(t, rejected)
+
+	_, rejected, err = judged[orderedConfig](t, map[string]any{"min": 9, "max": 5, "bad": 9}, nil)
+	require.ErrorIs(t, err, ErrValidation)
+	assert.Equal(t, []string{"bad"}, rejected)
+}
+
+type layeredConfig struct {
+	Port int    `koanf:"port" default:"1" validate:"min=1"`
+	Max  int    `koanf:"max" default:"1" validate:"max=10"`
+	Name string `koanf:"name"`
+	Bad  int    `koanf:"bad" validate:"max=5"`
+}
+
+// Entries are judged against every source, not the layers beneath alone:
+// over a file that fails on its own, an entry that repairs it and one
+// unrelated to it are kept, beside a source above that repairs the rest.
+func TestEntries_WithInvalidEntriesJudgesOverAFailingLayer(t *testing.T) {
+	file := filepath.Join(t.TempDir(), "config.yaml")
+	writeFile(t, file, "port: 0\nmax: 50\n")
+	got, rejected, err := judged[layeredConfig](t, map[string]any{"port": 8, "name": "x", "bad": 9},
+		[]Option{WithFile(file)}, WithOverrideProvider(mapSource{"max": 5}, nil))
+	require.NoError(t, err)
+	assert.Equal(t, layeredConfig{Port: 8, Max: 5, Name: "x"}, *got)
+	assert.Equal(t, []string{"bad"}, rejected)
+}
+
+// firstFailureConfig's Validate returns its first failure, a's before b's.
+type firstFailureConfig struct {
+	A    int    `koanf:"a"`
+	B    int    `koanf:"b"`
+	Name string `koanf:"name"`
+}
+
+func (c *firstFailureConfig) Validate() error {
+	switch {
+	case c.A < 0:
+		return errors.New("a is negative")
+	case c.B < 0:
+		return errors.New("b is negative")
+	}
+	return nil
+}
+
+// minMaxConfig's Validate names the values it compares.
+type minMaxConfig struct {
+	Min  int    `koanf:"min"`
+	Max  int    `koanf:"max" default:"10"`
+	Name string `koanf:"name"`
+}
+
+func (c *minMaxConfig) Validate() error {
+	if c.Min > c.Max {
+		return fmt.Errorf("min %d exceeds max %d", c.Min, c.Max)
+	}
+	return nil
+}
+
+// A failure of a layer beneath, which a source above repairs, hides none of
+// an entry's and blames none of the entries on it: each check stops at its
+// first failure, so judging an entry over the layers beneath alone sees the
+// layer's failure in place of the entry's.
+func TestEntries_WithInvalidEntriesSeesPastAFailureBeneath(t *testing.T) {
+	dir := t.TempDir()
+	file := func(name, text string) Option {
+		path := filepath.Join(dir, name)
+		writeFile(t, path, text)
+		return WithFile(path)
+	}
+	t.Run("a Validate method returning its first failure", func(t *testing.T) {
+		got, rejected, err := judged[firstFailureConfig](t, map[string]any{"b": -1, "name": "x"},
+			[]Option{file("first.yaml", "a: -1\n")}, WithOverrideProvider(mapSource{"a": 1}, nil))
+		require.NoError(t, err)
+		assert.Equal(t, firstFailureConfig{A: 1, Name: "x"}, *got)
+		assert.Equal(t, []string{"b"}, rejected)
+	})
+	t.Run("a value that does not decode, which stops validation", func(t *testing.T) {
+		got, rejected, err := judged[layeredConfig](t, map[string]any{"bad": 9, "name": "x"},
+			[]Option{file("decode.yaml", "port: eight\n")}, WithOverrideProvider(mapSource{"port": 8}, nil))
+		require.NoError(t, err)
+		assert.Equal(t, layeredConfig{Port: 8, Max: 1, Name: "x"}, *got)
+		assert.Equal(t, []string{"bad"}, rejected)
+	})
+	t.Run("a field's rule, which stops the Validate method", func(t *testing.T) {
+		got, rejected, err := judged[jointConfig](t, map[string]any{"a": 3, "pool[0].host": "x"},
+			[]Option{file("rule.yaml", "bad: 9\n")}, WithOverrideProvider(mapSource{"bad": 1}, nil))
+		require.NoError(t, err)
+		assert.Equal(t, jointConfig{Bad: 1, Pool: []editServer{{"x", 0}}, Limits: limitsSection{Max: 10}}, *got)
+		assert.Equal(t, []string{"a"}, rejected)
+	})
+}
+
+// When nothing repairs a failing layer, the load fails on the final
+// configuration, with the values every source gives, and no entry is
+// withheld for a failure that names none: an entry that changes a value
+// in a Validate method's message is not told apart by it.
+func TestEntries_WithInvalidEntriesFailsOnTheFinalConfiguration(t *testing.T) {
+	file := filepath.Join(t.TempDir(), "config.yaml")
+	writeFile(t, file, "min: 15\n")
+	_, rejected, err := judged[minMaxConfig](t, map[string]any{"max": 12, "name": "x"}, []Option{WithFile(file)})
+	require.ErrorIs(t, err, ErrValidation)
+	assert.Contains(t, err.Error(), "min 15 exceeds max 12")
+	assert.Empty(t, rejected)
+}
+
+// requiredConfig's url has no default, so the defaults alone fail.
+type requiredConfig struct {
+	URL  string `koanf:"url" validate:"required"`
+	Name string `koanf:"name"`
+	Bad  int    `koanf:"bad" validate:"max=5"`
+}
+
+// The defaults are a layer like any other: an entry setting a required
+// field they leave unset is kept. When nothing sets it the load fails on
+// it, withholding only the entries a failure names.
+func TestEntries_WithInvalidEntriesJudgesOverDefaultsThatFail(t *testing.T) {
+	got, rejected, err := judged[requiredConfig](t, map[string]any{"url": "https://a.example", "name": "x", "bad": 9}, nil)
+	require.NoError(t, err)
+	assert.Equal(t, requiredConfig{URL: "https://a.example", Name: "x"}, *got)
+	assert.Equal(t, []string{"bad"}, rejected)
+
+	_, rejected, err = judged[requiredConfig](t, map[string]any{"name": "x", "bad": 9}, nil)
+	require.ErrorIs(t, err, ErrValidation)
+	assert.Contains(t, err.Error(), "url(required)")
+	assert.Equal(t, []string{"bad"}, rejected)
+}
+
+type spanSection struct {
+	Min  int `koanf:"min" default:"1"`
+	Max  int `koanf:"max" default:"10" validate:"gtefield=Min"`
+	Step int `koanf:"step" default:"1" validate:"ltefield=Max"`
+}
+
+type spanConfig struct {
+	Range spanSection `koanf:"range"`
+	Name  string      `koanf:"name"`
+}
+
+// The entries of every WithInvalidEntries source are judged together: a
+// lower source's entry valid beside a higher one's is kept, and the
+// higher source's entry breaking a rule of the struct both set is the one
+// withheld.
+func TestEntries_WithInvalidEntriesJudgesSourcesTogether(t *testing.T) {
+	reported := map[string][]string{}
+	report := func(name string) SourceOption {
+		return WithInvalidEntries(func(_ context.Context, entries []KeyError) error {
+			reported[name] = []string{}
+			for _, ke := range entries {
+				reported[name] = append(reported[name], ke.Key)
+			}
+			return nil
+		})
+	}
+	got, err := Load[spanConfig](t.Context(),
+		WithBaseProvider(mapSource{"range": map[string]any{"min": 20}, "name": "x"}, nil, report("lower")),
+		WithOverrideEntries(readEntries(map[string]any{"range.max": 50, "range.step": 80}), report("higher")))
+	require.NoError(t, err)
+	assert.Equal(t, spanConfig{Range: spanSection{Min: 20, Max: 50, Step: 1}, Name: "x"}, *got)
+	assert.Equal(t, map[string][]string{"lower": {}, "higher": {"range.step"}}, reported)
+}
+
+// An entry a higher source sets over is kept, whatever it holds: the
+// configuration loaded never holds its value.
+func TestEntries_WithInvalidEntriesKeepsAnEntryShadowedAbove(t *testing.T) {
+	file := filepath.Join(t.TempDir(), "config.yaml")
+	writeFile(t, file, "bad: 1\n")
+	var rejected []KeyError
+	got, err := Load[layeredConfig](t.Context(),
+		WithBaseProvider(mapSource{"bad": 9, "name": "x"}, nil, WithInvalidEntries(func(_ context.Context, entries []KeyError) error {
+			rejected = entries
+			return nil
+		})),
+		WithFile(file))
+	require.NoError(t, err)
+	assert.Equal(t, layeredConfig{Port: 1, Max: 1, Name: "x", Bad: 1}, *got)
+	assert.Empty(t, rejected)
 }

@@ -127,9 +127,10 @@ func TestWithInvalidEntriesFailureBoundaries(t *testing.T) {
 	called := false
 	p, err := NewMapProvider(func(context.Context) (map[string]any, error) { called = true; return map[string]any{"port": 9}, nil }, "")
 	require.NoError(t, err)
-	_, err = Load[keyConfig](t.Context(), WithDefaults(map[string]any{"port": 0}), WithBaseProvider(p, nil, WithInvalidEntries(nil)))
-	require.ErrorIs(t, err, ErrValidation)
-	assert.False(t, called, "invalid defaults fail before a source can be blamed")
+	got, err := Load[keyConfig](t.Context(), WithDefaults(map[string]any{"port": 0}), WithBaseProvider(p, nil, WithInvalidEntries(nil)))
+	require.NoError(t, err, "an entry repairing defaults that fail is kept")
+	assert.True(t, called)
+	assert.Equal(t, 9, got.Port)
 	failed := errors.New("read failed")
 	_, err = Load[keyConfig](t.Context(), WithBaseProvider(failingProvider{err: failed}, nil, WithInvalidEntries(nil)))
 	require.ErrorIs(t, err, ErrSource)

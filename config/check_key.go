@@ -339,8 +339,10 @@ func (c *keyChecker) baselineTree(cfg reflect.Value) (map[string]any, unkeyedSec
 
 // decode decodes tree, a tree as the merge holds it, with the options' hooks,
 // sets the koanf:"-" fields unkeyed holds, and validates the result. The
-// keys of tree no field reads are unknown, apart from err; result is nil
-// when either is.
+// keys of tree no field reads are unknown, apart from err. result is the
+// decoded config, a *T, whenever decoding succeeded, so a caller can read
+// what failed validation; it is valid only when neither err nor unknown is
+// set.
 func (c *keyChecker) decode(ctx context.Context, tree map[string]any, unkeyed unkeyedSections) (result any, unknown *UnknownKeysError, err error) {
 	if err := newElementDefaults(c.options, false).fill(c.root, tree); err != nil {
 		return nil, nil, err
@@ -357,10 +359,6 @@ func (c *keyChecker) decode(ctx context.Context, tree map[string]any, unkeyed un
 		for _, name := range md.Unused {
 			unknown.Keys = append(unknown.Keys, unusedKey(c.schema, tree, name))
 		}
-		return nil, unknown, validation
 	}
-	if validation != nil {
-		return nil, nil, validation
-	}
-	return out.Interface(), nil, nil
+	return out.Interface(), unknown, validation
 }

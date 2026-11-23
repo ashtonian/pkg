@@ -134,7 +134,7 @@ Provider source options:
 
 | Option | Default | Description |
 |---|---|---|
-| `WithInvalidEntries(report)` | fail on invalid entries | Withhold entries invalid on their own and with the source's other valid entries, judged over the layers beneath; retain lower sources; report sorted keys/errors on every load, once every source is read. Unknown keys remain reportable. |
+| `WithInvalidEntries(report)` | fail on invalid entries | Withhold the entries the final configuration fails on, judged against every source together with every other source's entries under the option; keep entries valid with the rest alone; retain lower sources; report sorted keys/errors on every load, once every source is read. Unknown keys remain reportable. |
 
 `Defaulter`, `CheckKey`, `DecodeKey`, `CanonicalKey`, `DecodeEdits` and the
 entry options are described in

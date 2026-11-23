@@ -126,7 +126,6 @@ type fileDigests map[string][sha256.Size]byte
 // With provenance or shadowed-input reporting, origins records what set each
 // value as the trees merge, and inputs what each non-default source set.
 type loader struct {
-	checker *keyChecker
 	// unmergedUnknown is the unknown keys of input that never merged: an
 	// entry naming nothing config reads, or one beneath a withheld entry.
 	unmergedUnknown []UnknownKey
@@ -340,9 +339,6 @@ func load[T any](ctx context.Context, o *options) (loaded[T], error) {
 	if err := live(); err != nil {
 		return none, err
 	}
-	if err := l.prepareValidation(ctx, o); err != nil {
-		return none, err
-	}
 	// Every source is read before any merges (see layers.go).
 	var layers []*layer
 	for i, src := range o.base {
@@ -409,7 +405,11 @@ func load[T any](ctx context.Context, o *options) (loaded[T], error) {
 	if err := live(); err != nil {
 		return none, err
 	}
-	if err := l.mergeLayers(ctx, layers); err != nil {
+	verdicts, err := l.judgeEntries(ctx, o, layers)
+	if err != nil {
+		return none, err
+	}
+	if err := l.mergeLayers(ctx, layers, verdicts); err != nil {
 		return none, err
 	}
 	o.log().DebugContext(ctx, "config sources loaded", "sources", l.sources)

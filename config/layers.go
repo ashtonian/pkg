@@ -7,8 +7,10 @@ import (
 )
 
 // A load reads and prepares every source before it merges any: each
-// becomes a layer, and the layers merge in rank order through mergeLayer,
-// the one path that builds a load's merge.
+// becomes a layer, the entries of the sources under WithInvalidEntries are
+// judged against every layer (see judge.go), and then the layers merge in
+// rank order through mergeLayer, the one path that builds a load's merge
+// and each merge the judge tries.
 
 // layer is one source, read and prepared to merge.
 type layer struct {
@@ -45,42 +47,57 @@ func (l *loader) prepare(name string, data map[string]any, label labeler) (*laye
 }
 
 // mergeLayer merges y, with edits, the entries of y that merge, set over
-// what l holds, and returns the entries it cannot set. A layer not set
-// entry by entry merges its tree whole. y is left as it was.
-func (l *loader) mergeLayer(y *layer, edits []edit) ([]*KeyError, error) {
+// what l holds, and returns those it cannot set. A layer not set entry by
+// entry merges its tree whole. y is left as it was: the judge merges a
+// layer once for every set of entries it tries.
+func (l *loader) mergeLayer(y *layer, edits []edit) ([]refusal, error) {
 	if !y.byEntry {
 		return nil, l.mergeSource(y.name, y.tree, y.unkeyed, y.label)
 	}
-	tree, refused := setEdits(l.k.Raw, edits)
+	t := newEditTree(l.k.Raw)
+	var (
+		refused []refusal
+		unkeyed []unkeyedFields
+	)
+	for i := range edits {
+		if err := t.set(&edits[i]); err != nil {
+			refused = append(refused, refusal{at: i, err: err})
+			continue
+		}
+		unkeyed = append(unkeyed, edits[i].unkeyed...)
+	}
+	tree := t.tree
 	mergeTrees(deepCopyMap(y.tree), tree) // mergeTrees settles what it merges in place
-	return refused, l.mergeSource(y.name, tree, editsUnkeyed(edits), y.label)
+	return refused, l.mergeSource(y.name, tree, unkeyed, y.label)
 }
 
-// mergeLayers merges layers into the load in rank order. A source
-// WithInvalidEntries judges merges the entries it keeps, judged over the
-// layers merged beneath it, and reports the others; any other source's
-// entry that cannot be set fails the load.
-func (l *loader) mergeLayers(ctx context.Context, layers []*layer) error {
-	for _, y := range layers {
-		edits, invalid := y.entries, slices.Clone(y.refused)
-		if y.withhold {
-			kept, rejected, unknown, err := l.checker.withhold(ctx, l.k.Raw(), l.unkeyed, edits)
-			if err != nil {
-				return err
-			}
-			edits, invalid = kept, append(invalid, rejected...)
-			l.unmergedUnknown = append(l.unmergedUnknown, unknown...)
-		}
-		for _, e := range edits {
+// refusal is an entry a merge could not set: its index among the entries
+// set, and why.
+type refusal struct {
+	at  int
+	err error
+}
+
+// mergeLayers merges layers into the load in rank order, each with the
+// entries its verdict keeps. A source WithInvalidEntries judges reports
+// the others; any other source's entry that cannot be set fails the load.
+func (l *loader) mergeLayers(ctx context.Context, layers []*layer, verdicts []entryVerdict) error {
+	for i, y := range layers {
+		v := verdicts[i]
+		l.unmergedUnknown = append(l.unmergedUnknown, v.unknown...)
+		for _, e := range v.kept {
 			for _, a := range e.aliased {
 				l.aliased = append(l.aliased, a+" in "+y.name)
 			}
 		}
-		refused, err := l.mergeLayer(y, edits)
+		refused, err := l.mergeLayer(y, v.kept)
 		if err != nil {
 			return err
 		}
-		invalid = append(invalid, refused...)
+		invalid := slices.Concat(y.refused, v.withheld)
+		for _, r := range refused {
+			invalid = append(invalid, &KeyError{Key: v.kept[r.at].safe, Err: r.err})
+		}
 		if y.withhold {
 			if err := l.reportWithheld(ctx, y.name, y.report, invalid); err != nil {
 				return err
