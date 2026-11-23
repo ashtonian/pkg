@@ -150,7 +150,7 @@ func (l *loader) reportWithheld(ctx context.Context, name string, report func(co
 	if report == nil {
 		return nil
 	}
-	if err := ended(ctx); err != nil {
+	if err := abandoned(ctx); err != nil {
 		return err
 	}
 	out := make([]KeyError, len(withheld))

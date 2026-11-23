@@ -285,20 +285,24 @@ func ended(ctx context.Context) error {
 	return err
 }
 
-// load is Load's pipeline. live guards each boundary before a stage the
-// caller supplies — a Defaulter, a provider, a file's parser, the environ
-// function, decode hooks, the variable filter, a report callback, the
-// secret populator, a post-load hook — so a load whose context has ended
-// starts none of them.
+// abandoned is why a load whose context has ended stops: ended's error,
+// named for the load. It is nil while ctx has not ended.
+func abandoned(ctx context.Context) error {
+	if err := ended(ctx); err != nil {
+		return fmt.Errorf("loading config abandoned: %w", err)
+	}
+	return nil
+}
+
+// load is Load's pipeline. abandoned guards each boundary before a stage
+// the caller supplies — a Defaulter, a provider, a file's parser, the
+// environ function, decode hooks, the variable filter, a report callback,
+// the secret populator, a post-load hook, the validator — so a load whose
+// context has ended starts none of them, and one that ends inside such a
+// stage fails as abandoned.
 func load[T any](ctx context.Context, o *options) (loaded[T], error) {
 	none := loaded[T]{}
-	live := func() error {
-		if err := ended(ctx); err != nil {
-			return fmt.Errorf("loading config abandoned: %w", err)
-		}
-		return nil
-	}
-	if err := live(); err != nil {
+	if err := abandoned(ctx); err != nil {
 		return none, err
 	}
 	root := reflect.TypeFor[T]()
@@ -335,13 +339,13 @@ func load[T any](ctx context.Context, o *options) (loaded[T], error) {
 			return none, err
 		}
 	}
-	if err := live(); err != nil {
+	if err := abandoned(ctx); err != nil {
 		return none, err
 	}
 	// Every source is read before any merges (see layers.go).
 	var layers []*layer
 	for i, src := range o.base {
-		if err := live(); err != nil {
+		if err := abandoned(ctx); err != nil {
 			return none, err
 		}
 		y, err := l.readProvider(ctx, fmt.Sprintf("base provider %d", i), src, positionSource(SourceBase, i))
@@ -351,7 +355,7 @@ func load[T any](ctx context.Context, o *options) (loaded[T], error) {
 		layers = append(layers, y)
 	}
 	for _, f := range o.files {
-		if err := live(); err != nil {
+		if err := abandoned(ctx); err != nil {
 			return none, err
 		}
 		raw, err := os.ReadFile(f.path)
@@ -373,7 +377,7 @@ func load[T any](ctx context.Context, o *options) (loaded[T], error) {
 		layers = append(layers, y)
 		files[f.path] = sha256.Sum256(raw)
 	}
-	if err := live(); err != nil {
+	if err := abandoned(ctx); err != nil {
 		return none, err
 	}
 	if len(o.envPrefixes) > 0 {
@@ -392,7 +396,7 @@ func load[T any](ctx context.Context, o *options) (loaded[T], error) {
 		layers = append(layers, y)
 	}
 	for i, src := range o.overrides {
-		if err := live(); err != nil {
+		if err := abandoned(ctx); err != nil {
 			return none, err
 		}
 		y, err := l.readProvider(ctx, fmt.Sprintf("override provider %d", i), src, positionSource(SourceOverride, i))
@@ -401,7 +405,7 @@ func load[T any](ctx context.Context, o *options) (loaded[T], error) {
 		}
 		layers = append(layers, y)
 	}
-	if err := live(); err != nil {
+	if err := abandoned(ctx); err != nil {
 		return none, err
 	}
 	verdicts, err := l.judgeEntries(ctx, o, layers)
@@ -423,14 +427,14 @@ func load[T any](ctx context.Context, o *options) (loaded[T], error) {
 	}
 	var shadowed []Shadow
 	if l.inputs != nil {
-		if err := live(); err != nil {
+		if err := abandoned(ctx); err != nil {
 			return none, err
 		}
 		if shadowed, err = o.judgeShadowed(ctx, root, l.inputs); err != nil {
 			return none, err
 		}
 	}
-	if err := live(); err != nil {
+	if err := abandoned(ctx); err != nil {
 		return none, err
 	}
 
@@ -455,7 +459,7 @@ func load[T any](ctx context.Context, o *options) (loaded[T], error) {
 		return none, fmt.Errorf("unmarshaling config: %w: %w", ErrValidation, err)
 	}
 	l.unkeyed.apply(schema, reflect.ValueOf(cfg).Elem())
-	if err := live(); err != nil {
+	if err := abandoned(ctx); err != nil {
 		return none, err
 	}
 	if len(unmatchedEnv) > 0 {
@@ -470,7 +474,7 @@ func load[T any](ctx context.Context, o *options) (loaded[T], error) {
 			o.log().DebugContext(ctx, "environment variables under the prefix name no config key", "names", unmatchedEnv)
 		}
 	}
-	if err := live(); err != nil {
+	if err := abandoned(ctx); err != nil {
 		return none, err
 	}
 	claimed, unused, additional := l.claimUnknown(merged, defaults, md.Unused, layers)
@@ -488,7 +492,7 @@ func load[T any](ctx context.Context, o *options) (loaded[T], error) {
 	// what it changed when provenance is on.
 	cv := reflect.ValueOf(cfg).Elem()
 	stage := func(src Source, run func() error) error {
-		if err := live(); err != nil {
+		if err := abandoned(ctx); err != nil {
 			return err
 		}
 		if rec == nil {
@@ -521,6 +525,9 @@ func load[T any](ctx context.Context, o *options) (loaded[T], error) {
 	}
 
 	if err := o.validateConfig(ctx, cfg); err != nil {
+		if stopped := abandoned(ctx); stopped != nil {
+			return none, stopped
+		}
 		return none, err
 	}
 

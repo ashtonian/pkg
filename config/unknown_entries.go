@@ -186,7 +186,7 @@ func reportUnknown(ctx context.Context, layers []*layer, claimed [][]UnknownKey)
 		slices.SortFunc(keys, func(a, b UnknownKey) int { return strings.Compare(a.Key, b.Key) })
 		keys = slices.Compact(keys)
 		if y.unknownReport != nil {
-			if err := ended(ctx); err != nil {
+			if err := abandoned(ctx); err != nil {
 				return nil, err
 			}
 			if err := y.unknownReport(ctx, slices.Clone(keys)); err != nil {

@@ -86,7 +86,7 @@ func entryError(e *edit, err error) error {
 // cannot apply (ErrSchema), which is the declaration's fault and no
 // entry's. It is nil when failed is the entry's own.
 func fatal(ctx context.Context, failed error) error {
-	if err := ended(ctx); err != nil {
+	if err := abandoned(ctx); err != nil {
 		return err
 	}
 	if errors.Is(failed, ErrSchema) {
@@ -271,7 +271,7 @@ func (j *judge) named(v verdict, judged, among []int) []int {
 // sources, and decodes and validates the result. err is why judging fails
 // the load (see fatal).
 func (j *judge) try(set []int) (verdict, error) {
-	if err := ended(j.ctx); err != nil {
+	if err := abandoned(j.ctx); err != nil {
 		return verdict{}, err
 	}
 	s, err := j.loaderOver(j.base, j.unkeyed)

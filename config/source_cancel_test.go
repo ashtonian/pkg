@@ -2,6 +2,7 @@ package config
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -57,6 +58,59 @@ func TestWithInvalidEntries_EndedContextReportsNothing(t *testing.T) {
 				require.ErrorIs(t, err, errShutdown, "%v", data)
 				assert.Equal(t, reports{}, n, "%v", data)
 			}
+		})
+	}
+}
+
+// cancelingValidator ends the load's context as it validates, and passes.
+type cancelingValidator struct{ cancel context.CancelCauseFunc }
+
+func (v cancelingValidator) Struct(any) error {
+	v.cancel(errShutdown)
+	return nil
+}
+
+// A load whose context ends inside a stage — the validator as the judge or
+// the load runs it, or a report a later source's report would follow —
+// fails as abandoned, as at every other stage, the cause still reachable.
+func TestLoad_EndedInsideAStageFailsAsAbandoned(t *testing.T) {
+	entries := func(data map[string]any, opts ...SourceOption) Option {
+		return WithBaseEntries(readEntries(data), opts...)
+	}
+	tests := []struct {
+		name string
+		opts func(cancel context.CancelCauseFunc) []Option
+	}{
+		{"judging entries", func(cancel context.CancelCauseFunc) []Option {
+			return []Option{
+				entries(map[string]any{"name": "a"}, WithInvalidEntries(func(context.Context, []KeyError) error { return nil })),
+				WithValidator(cancelingValidator{cancel}),
+			}
+		}},
+		{"reporting withheld entries", func(cancel context.CancelCauseFunc) []Option {
+			return []Option{
+				entries(map[string]any{"name": "a"}, WithInvalidEntries(func(context.Context, []KeyError) error { cancel(errShutdown); return nil })),
+				entries(map[string]any{"port": 2}, WithInvalidEntries(func(context.Context, []KeyError) error { return nil })),
+			}
+		}},
+		{"reporting unknown keys", func(cancel context.CancelCauseFunc) []Option {
+			return []Option{
+				entries(map[string]any{"bogus": 1}, WithUnknownEntries(func(context.Context, []UnknownKey) error { cancel(errShutdown); return nil })),
+				entries(map[string]any{"stale": 1}, WithUnknownEntries(func(context.Context, []UnknownKey) error { return nil })),
+			}
+		}},
+		{"validating", func(cancel context.CancelCauseFunc) []Option {
+			return []Option{WithValidator(cancelingValidator{cancel})}
+		}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx, cancel := context.WithCancelCause(t.Context())
+			defer cancel(nil)
+			_, err := Load[cancelJudgedCfg](ctx, tt.opts(cancel)...)
+			require.ErrorIs(t, err, errShutdown)
+			require.ErrorIs(t, err, context.Canceled)
+			assert.Equal(t, 1, strings.Count(err.Error(), "loading config abandoned"), err.Error())
 		})
 	}
 }
