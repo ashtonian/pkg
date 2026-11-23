@@ -13,14 +13,15 @@ import (
 // own notation: struct keys joined by ".", map keys and indexes in brackets,
 // the map key unescaped — named[a.b].port. A key holding "." or "]" makes
 // such a name ambiguous on its own, so these functions read it against the
-// keys actually present at each step: a bracket is a map key only when
-// exactly one present key matches it there. A name they cannot place exactly
-// is reported by its longest proven prefix.
+// keys actually present at each step: a struct key or a bracket is a key
+// there only when exactly one present key matches it. A name they cannot
+// place exactly is reported by its longest proven prefix.
 
 // treeKey translates a mapstructure name against the merged source tree that
-// was decoded. It returns the key it proved, how many bytes of name that
-// key accounts for, and whether it accounts for all of them.
-func treeKey(root *schemaNode, tree any, name string) (p keyPath, used int, exact bool) {
+// was decoded. It returns the key it proved, what the tree holds there, how
+// many bytes of name that key accounts for, and whether it accounts for all
+// of them.
+func treeKey(root *schemaNode, tree any, name string) (p keyPath, at any, used int, exact bool) {
 	n, data := root, tree
 	for used < len(name) {
 		rest := name[used:]
@@ -28,44 +29,52 @@ func treeKey(root *schemaNode, tree any, name string) (p keyPath, used int, exac
 		case nodeBranch:
 			if p != nil {
 				if rest[0] != '.' {
-					return p, used, false
+					return p, data, used, false
 				}
 				rest = rest[1:]
 			}
-			key := rest[:fieldEnd(rest)]
+			key, matches := matchKey(rest, treeKeys(data))
+			switch matches {
+			case 0:
+				key = rest[:fieldEnd(rest)] // the tree holds nothing to read it against
+			case 1:
+			default:
+				return p, data, used, false
+			}
 			f := n.byKey[key]
 			if f == nil {
-				return p, used, false
+				return p, data, used, false
 			}
 			used += len(name[used:]) - len(rest) + len(key)
 			p, n, data = p.field(key), f.node, treeChild(data, key)
 		case nodeMap:
 			key, size, ok := matchBracket(rest, treeKeys(data))
 			if !ok {
-				return p, used, false
+				return p, data, used, false
 			}
 			used += size
 			p, n, data = p.key(key), n.elem, treeEntry(data, key)
 		case nodeList:
 			i, size, ok := parseBracketIndex(rest)
 			if !ok {
-				return p, used, false
+				return p, data, used, false
 			}
 			used += size
 			p, n, data = p.index(i), n.elem, treeElement(data, i)
 		default:
-			return p, used, false // beneath a value decoded whole: its keys are its own
+			return p, data, used, false // beneath a value decoded whole: its keys are its own
 		}
 	}
-	return p, used, true
+	return p, data, used, true
 }
 
-// unusedKey names a key mapstructure reports as unused: a proven prefix and
-// the source key no field took, written as a field when it can be read as
-// one and quoted otherwise. A key read as a field of a struct is given the
-// struct's closest field as its suggestion.
+// unusedKey names a key mapstructure reports as unused in the key grammar:
+// a proven prefix and the source key no field took, a field when it can be
+// read as one and a map key otherwise. A key read as a field of a struct is
+// given the struct's closest field as its suggestion. A source key the tree
+// does not hold exactly once where the prefix ends is named by the prefix.
 func unusedKey(root *schemaNode, tree any, name string) UnknownKey {
-	p, used, exact := treeKey(root, tree, name)
+	p, at, used, exact := treeKey(root, tree, name)
 	probe := p
 	if !exact {
 		probe = p.field("")
@@ -76,23 +85,23 @@ func unusedKey(root *schemaNode, tree any, name string) UnknownKey {
 	if exact {
 		return UnknownKey{Key: p.orRoot()}
 	}
-	raw := strings.TrimPrefix(name[used:], ".")
-	if p != nil && used < len(name) && name[used] != '.' {
-		return UnknownKey{Key: p.String() + name[used:]} // not a key under a struct; show what was written
-	}
-	if validFieldKey(raw) {
-		k := UnknownKey{Key: p.field(raw).String()}
-		if _, n, err := root.walkTo(cursor{}, p); err == nil && n.kind == nodeBranch {
-			if field := closestField(n, raw); field != "" {
-				k.Suggestion = p.field(field).String()
-			}
-		}
-		return k
-	}
+	raw, underStruct := strings.CutPrefix(name[used:], ".")
 	if p == nil {
-		return UnknownKey{Key: strconv.Quote(raw)}
+		raw, underStruct = name, true
 	}
-	return UnknownKey{Key: p.String() + "." + strconv.Quote(raw)}
+	if key, matches := matchKey(raw, treeKeys(at)); !underStruct || matches != 1 || key != raw {
+		return UnknownKey{Key: p.orRoot()}
+	}
+	if !validFieldKey(raw) {
+		return UnknownKey{Key: p.key(raw).String()}
+	}
+	k := UnknownKey{Key: p.field(raw).String()}
+	if _, n, err := root.walkTo(cursor{}, p); err == nil && n.kind == nodeBranch {
+		if field := closestField(n, raw); field != "" {
+			k.Suggestion = p.field(field).String()
+		}
+	}
+	return k
 }
 
 // Sensitive containers can hold credentials in their keys as well as values.
@@ -195,6 +204,26 @@ func fieldEnd(s string) int {
 		return i
 	}
 	return len(s)
+}
+
+// matchKey reads the struct key s starts with against keys, the keys the
+// tree holds there: the key s holds whole or followed by "." or "[". It
+// returns that key and how many distinct keys match; one is a match, more
+// leave s ambiguous.
+func matchKey(s string, keys []string) (key string, matches int) {
+	seen := make(map[string]bool, len(keys))
+	for _, k := range keys {
+		if seen[k] || !strings.HasPrefix(s, k) {
+			continue
+		}
+		seen[k] = true
+		if len(s) > len(k) && s[len(k)] != '.' && s[len(k)] != '[' {
+			continue
+		}
+		key = k
+		matches++
+	}
+	return key, matches
 }
 
 // matchBracket reads the map key that the bracketed selector s starts with

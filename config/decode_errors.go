@@ -46,7 +46,7 @@ func (e *decodeFailure) Unwrap() error { return e.err }
 func withhold(root *schemaNode, tree any, e error) (error, bool) {
 	switch u := e.(type) {
 	case *mapstructure.DecodeError:
-		p, used, exact := treeKey(root, tree, u.Name())
+		p, _, used, exact := treeKey(root, tree, u.Name())
 		if safe := diagnosticPath(root, p); len(safe) < len(p) {
 			return fmt.Errorf("'%s' cannot be decoded (sensitive contents are not shown)", safe.orRoot()), true
 		}

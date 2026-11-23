@@ -7,6 +7,7 @@ import (
 	"maps"
 	"reflect"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -319,7 +320,7 @@ func TestLoad_RejectsAnUnaddressableSchema(t *testing.T) {
 }
 
 // Unknown keys are named in the key grammar: a source key under a struct
-// that cannot read as a field is quoted.
+// that cannot read as a field is named as a map key.
 func TestStrictKeys_NamesUnknownKeys(t *testing.T) {
 	type entry struct {
 		Port int `koanf:"port"`
@@ -334,7 +335,75 @@ func TestStrictKeys_NamesUnknownKeys(t *testing.T) {
 	}
 	_, err := Load[cfg](t.Context(), WithBaseProvider(src, nil), WithSkipValidation())
 	require.ErrorIs(t, err, ErrValidation)
-	assert.Contains(t, err.Error(), `decodes: named["x.y"].prot (did you mean named["x.y"].port?), server."a.b", server.prot (did you mean server.port?)`)
+	assert.Contains(t, err.Error(), `decodes: named["x.y"].prot (did you mean named["x.y"].port?), server.prot (did you mean server.port?), server["a.b"]`)
+}
+
+// Every unknown key is named in the key grammar, whatever its name holds:
+// it parses back to its place, a field when the name can be one and a map
+// key otherwise, and so does its suggestion. A name that holds a separator
+// after a field's key is the source's own key, not one beneath the field.
+func TestUnknownKeys_NamesParseBackToTheirPlace(t *testing.T) {
+	type entry struct {
+		Port int `koanf:"port"`
+	}
+	type cfg struct {
+		Server entry            `koanf:"server"`
+		Named  map[string]entry `koanf:"named"`
+		Items  []entry          `koanf:"items"`
+	}
+	names := []string{"a.b", "a[0]", "a]b", `a"b`, `a\b`, "a*b", "a\tb", "a b", "größe", "", "prot", "port.x", "port[0]", "port]"}
+	for _, at := range []struct {
+		where, key string
+		source     func(entry map[string]any) mapSource
+	}{
+		{"under a struct", "server", func(e map[string]any) mapSource { return mapSource{"server": e} }},
+		{"under a map entry", `named["x.y"]`, func(e map[string]any) mapSource { return mapSource{"named": map[string]any{"x.y": e}} }},
+		{"under a list element", "items[0]", func(e map[string]any) mapSource { return mapSource{"items": []any{e}} }},
+	} {
+		parent, err := ParseKey(at.key)
+		require.NoError(t, err)
+		for _, name := range names {
+			t.Run(at.where+"/"+strconv.Quote(name), func(t *testing.T) {
+				_, err := Load[cfg](t.Context(), WithBaseProvider(at.source(map[string]any{name: 1}), nil), WithSkipValidation())
+				var unknown *UnknownKeysError
+				require.ErrorAs(t, err, &unknown)
+				require.Len(t, unknown.Keys, 1)
+				got := unknown.Keys[0]
+				key, err := ParseKey(got.Key)
+				require.NoError(t, err)
+				require.Len(t, key, len(parent)+1, got.Key)
+				assert.Equal(t, parent, key[:len(parent)])
+				last := key[len(parent)]
+				assert.Equal(t, name, last.Name)
+				assert.Equal(t, validFieldKey(name), last.Kind == SegmentField, "a field when the name can be one")
+				if got.Suggestion != "" {
+					_, err := ParseKey(got.Suggestion)
+					assert.NoError(t, err, got.Suggestion)
+				}
+			})
+		}
+	}
+}
+
+// A name the source tree holds in two readings, a field's key and the key
+// beneath it or a key of its own, cannot be placed: it is named by the
+// nearest key that holds it, which parses.
+func TestUnknownKeys_AnAmbiguousNameIsNamedByItsNearestKey(t *testing.T) {
+	type cfg struct {
+		Server struct {
+			Port struct {
+				N int `koanf:"n"`
+			} `koanf:"port"`
+		} `koanf:"server"`
+	}
+	src := mapSource{"server": map[string]any{"port": map[string]any{"n": 1, "x": 2}, "port.x": 3}}
+	_, err := Load[cfg](t.Context(), WithBaseProvider(src, nil), WithSkipValidation())
+	var unknown *UnknownKeysError
+	require.ErrorAs(t, err, &unknown)
+	require.NotEmpty(t, unknown.Keys)
+	for _, k := range unknown.Keys {
+		assert.Equal(t, "server", k.Key)
+	}
 }
 
 // An unknown key comes with the field of its struct it most likely

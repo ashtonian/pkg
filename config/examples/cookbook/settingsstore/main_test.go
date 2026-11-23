@@ -650,6 +650,24 @@ func TestSettings_LoadsLeaveOutWhatTheSchemaNoLongerReads(t *testing.T) {
 	})
 }
 
+// A key no field reads inside a value a write sets refuses the write as
+// unknown whatever its name holds, a separator or a quote among them; one
+// inside a stored row is tolerated like any other.
+func TestSettings_UnknownKeysOfAnyNameInsideAValue(t *testing.T) {
+	onEveryBackend(t, func(t *testing.T, b backend) {
+		s, db := newReplica(t, b, 100)
+		for _, name := range []string{"a.b", "max.x", "a[0]", `q"z`, ""} {
+			_, err := s.Write(t.Context(), map[string]any{"limits": map[string]any{"min": 3, name: 5}})
+			assert.Equal(t, ReasonUnknown, refusal(t, err).Reason, name)
+		}
+		_, err := db.Exec(`INSERT INTO settings (key, value) VALUES ($1, $2)`, "limits", `{"min": 2, "max.x": 5, "a.b": 1}`)
+		require.NoError(t, err)
+		assert.Equal(t, 2, load(t, s).Limits.Min)
+		write(t, s, map[string]any{"limits.max": 300})
+		assert.Equal(t, Limits{Min: 2, Max: 300, Bytes: 1 << 20}, load(t, s).Limits)
+	})
+}
+
 // A write of a key that a stored row above it sets takes effect: the key is
 // cut out of that row's value, under any spelling the value holds it by, in
 // the same transaction and checked by the same load. A row left setting
