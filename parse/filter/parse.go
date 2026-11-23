@@ -25,9 +25,7 @@ type FilterParser struct {
 
 // NewFilterParser creates a new FilterParser for the given schema and config.
 func NewFilterParser(schema *ResourceSchema, config *core.ParserConfig) *FilterParser {
-	if config == nil {
-		config = core.DefaultConfig()
-	}
+	config = config.Effective()
 	now := config.Clock
 	if now == nil {
 		now = func() time.Time { return time.Now().UTC() }

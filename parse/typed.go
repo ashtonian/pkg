@@ -18,6 +18,10 @@ func (r *Resource[T]) generateSchemas(opts []core.Option) error {
 	for _, opt := range opts {
 		opt(cfg)
 	}
+	if err := cfg.Validate(); err != nil {
+		return fmt.Errorf("parser options: %w", err)
+	}
+	cfg = cfg.Effective()
 	gen := core.NewSchemaGenerator(cfg.GeneratorOpts...)
 	var err error
 	if r.filterSchema, err = filter.GenerateFilterSchema[T](gen); err != nil {

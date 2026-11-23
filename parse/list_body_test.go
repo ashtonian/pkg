@@ -130,7 +130,7 @@ func TestParseListBody_AnInputSizeAtMaxInt(t *testing.T) {
 
 func TestNewResource_RefusesANegativeListBodySize(t *testing.T) {
 	_, err := parse.NewResource[widget]("widgets", parse.ParserOptions(core.WithMaxListBodySize(-1)))
-	assert.ErrorContains(t, err, "list body limit -1 must not be negative")
+	assert.ErrorContains(t, err, "parse: widgets: parser options: WithMaxListBodySize(-1): a limit is never negative")
 }
 
 func TestParseListBody_NullMembersAreAbsent(t *testing.T) {

@@ -249,9 +249,6 @@ func NewResource[T any](table string, opts ...ResourceOption) (*Resource[T], err
 	if err := r.generateSchemas(parserOpts); err != nil {
 		return nil, fmt.Errorf("parse: %s: %w", table, err)
 	}
-	if r.cfg.MaxListBodySize < 0 {
-		return nil, fmt.Errorf("parse: %s: list body limit %d must not be negative", table, r.cfg.MaxListBodySize)
-	}
 	walk, err := r.gen.StructFields(reflect.TypeFor[T]())
 	if err != nil {
 		return nil, fmt.Errorf("parse: %s: %w", table, err)
