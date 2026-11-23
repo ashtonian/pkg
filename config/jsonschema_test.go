@@ -3,6 +3,7 @@ package config
 import (
 	"encoding/json"
 	"net/url"
+	"runtime/debug"
 	"strings"
 	"testing"
 	"time"
@@ -236,4 +237,187 @@ func TestJSONSchema_RulesAsTheValidatorReadsThem(t *testing.T) {
 
 	doc = jsonSchemaOf[schemaSquashedRemain](t)
 	assert.Equal(t, true, doc["additionalProperties"])
+}
+
+// schemaRecNode is a recursive section whose annotations come from where it
+// is held: a reload class and sensitivity it inherits.
+type schemaRecNode struct {
+	Value    int             `koanf:"value"`
+	Label    string          `koanf:"label" example:"SYNTHETIC-EXAMPLE" validate:"omitempty,oneof=SYNTHETIC-ENUM other"`
+	Children []schemaRecNode `koanf:"children"`
+}
+
+type schemaLiveFirst struct {
+	Live    schemaRecNode `koanf:"live" reload:"live"`
+	Restart schemaRecNode `koanf:"restart" reload:"restart"`
+	Hidden  schemaRecNode `koanf:"hidden" sensitive:"true"`
+	Again   schemaRecNode `koanf:"again" reload:"live"`
+}
+
+type schemaRestartFirst struct {
+	Restart schemaRecNode `koanf:"restart" reload:"restart"`
+	Hidden  schemaRecNode `koanf:"hidden" sensitive:"true"`
+	Live    schemaRecNode `koanf:"live" reload:"live"`
+	Again   schemaRecNode `koanf:"again" reload:"live"`
+}
+
+// resolved is s, or the $defs entry s refers to.
+func resolved(t *testing.T, doc, s map[string]any) map[string]any {
+	t.Helper()
+	ref, ok := s["$ref"].(string)
+	if !ok {
+		return s
+	}
+	name, found := strings.CutPrefix(ref, "#/$defs/")
+	require.True(t, found, "a local reference: %s", ref)
+	def, ok := doc["$defs"].(map[string]any)[name].(map[string]any)
+	require.True(t, ok, "%s resolves", ref)
+	return def
+}
+
+// assertRefsResolve checks that every $ref in v names a $defs entry.
+func assertRefsResolve(t *testing.T, doc map[string]any, v any) {
+	t.Helper()
+	switch v := v.(type) {
+	case map[string]any:
+		if _, ok := v["$ref"]; ok {
+			resolved(t, doc, v)
+		}
+		for _, e := range v {
+			assertRefsResolve(t, doc, e)
+		}
+	case []any:
+		for _, e := range v {
+			assertRefsResolve(t, doc, e)
+		}
+	}
+}
+
+// A recursive section held by keys of different reload classes or
+// sensitivity has a $defs entry per policy, so following any key's
+// references reaches the annotations FieldFor gives it, in either
+// declaration order; keys with one policy share an entry.
+func TestJSONSchema_RecursiveDefinitionsKeepInheritedPolicy(t *testing.T) {
+	for name, schema := range map[string]func(*testing.T) map[string]any{
+		"live first":    jsonSchemaOf[schemaLiveFirst],
+		"restart first": jsonSchemaOf[schemaRestartFirst],
+	} {
+		t.Run(name, func(t *testing.T) {
+			doc := schema(t)
+			assertRefsResolve(t, doc, doc)
+			assert.Len(t, doc["$defs"], 3, "live, restart and sensitive: again shares live's")
+			assert.Equal(t, prop(t, doc, "live")["$ref"], prop(t, doc, "again")["$ref"])
+			hidden := resolved(t, doc, prop(t, doc, "hidden"))
+			assert.Equal(t, map[string]any{"type": "array"}, nonNull(t, prop(t, hidden, "children")), "a sensitive list describes nothing inside")
+			for _, owner := range []string{"live", "restart", "hidden"} {
+				node := resolved(t, doc, prop(t, doc, owner))
+				child, grandchild := node, node
+				if owner != "hidden" {
+					child = resolved(t, doc, nonNull(t, prop(t, node, "children"))["items"].(map[string]any))
+					grandchild = resolved(t, doc, nonNull(t, prop(t, child, "children"))["items"].(map[string]any))
+				}
+				for key, s := range map[string]map[string]any{
+					owner + ".value":                         prop(t, node, "value"),
+					owner + ".children[0].label":             prop(t, child, "label"),
+					owner + ".children[0].children[1].value": prop(t, grandchild, "value"),
+				} {
+					var f Field
+					switch name {
+					case "live first":
+						f = mustFieldFor[schemaLiveFirst](t, key)
+					default:
+						f = mustFieldFor[schemaRestartFirst](t, key)
+					}
+					assert.Equal(t, f.Reload, s["x-reload"], key)
+					assert.Equal(t, f.Sensitive, s["writeOnly"] == true, key)
+				}
+				label := prop(t, child, "label")
+				text, err := json.Marshal(node)
+				require.NoError(t, err)
+				if owner == "hidden" {
+					assert.NotContains(t, string(text), "SYNTHETIC-", "a sensitive owner's entry shows no example or enum")
+				} else {
+					assert.Equal(t, []any{"SYNTHETIC-EXAMPLE"}, label["examples"])
+					assert.Contains(t, string(text), "SYNTHETIC-ENUM")
+				}
+			}
+		})
+	}
+	first, err := JSONSchema[schemaLiveFirst]()
+	require.NoError(t, err)
+	again, err := JSONSchema[schemaLiveFirst]()
+	require.NoError(t, err)
+	assert.Equal(t, string(first), string(again))
+}
+
+func mustFieldFor[T any](t *testing.T, key string) Field {
+	t.Helper()
+	f, err := FieldFor[T](key)
+	require.NoError(t, err)
+	return f
+}
+
+type (
+	schemaRecList []schemaRecList
+	schemaRecMap  map[string]schemaRecMap
+	schemaRing    [2]*schemaRing
+	schemaKids    []schemaKid
+	schemaKid     struct {
+		Name string     `koanf:"name"`
+		Kids schemaKids `koanf:"kids"`
+	}
+)
+
+type schemaRecCollections struct {
+	List     schemaRecList  `koanf:"list" validate:"max=3"`
+	Map      schemaRecMap   `koanf:"map" validate:"min=1"`
+	Ring     schemaRing     `koanf:"ring"`
+	Kids     schemaKids     `koanf:"kids"`
+	Plain    []int          `koanf:"plain" validate:"max=2"`
+	PlainMap map[string]int `koanf:"plain_map"`
+	Secret   schemaRecList  `koanf:"secret" sensitive:"true"`
+}
+
+// A named list or map holding itself, directly or through a struct, is a
+// $defs entry like a recursive struct: the schema is finite and every
+// reference resolves. A key's own rules still bound it, a fixed array keeps
+// its length and a sensitive one describes nothing inside.
+func TestJSONSchema_RecursiveCollectionsAreReferenced(t *testing.T) {
+	// A renderer that recursed without end would overflow this stack at
+	// once rather than run until the test times out.
+	defer debug.SetMaxStack(debug.SetMaxStack(32 << 20))
+	doc := jsonSchemaOf[schemaRecCollections](t)
+	assertRefsResolve(t, doc, doc)
+
+	list := nonNull(t, prop(t, doc, "list"))
+	assert.Equal(t, map[string]any{"$ref": "#/$defs/config.schemaRecList", "type": "array", "maxItems": 3.0}, list)
+	assert.Equal(t, map[string]any{"type": "array", "items": map[string]any{"anyOf": []any{
+		map[string]any{"$ref": "#/$defs/config.schemaRecList", "type": "array"}, map[string]any{"type": "null"}}}}, resolved(t, doc, list))
+
+	m := nonNull(t, prop(t, doc, "map"))
+	assert.Equal(t, map[string]any{"$ref": "#/$defs/config.schemaRecMap", "type": "object", "minProperties": 1.0}, m)
+	assert.Equal(t, map[string]any{"type": "object", "additionalProperties": map[string]any{"anyOf": []any{
+		map[string]any{"$ref": "#/$defs/config.schemaRecMap", "type": "object"}, map[string]any{"type": "null"}}}}, resolved(t, doc, m))
+
+	ring := resolved(t, doc, prop(t, doc, "ring"))
+	assert.Equal(t, 2.0, ring["minItems"])
+	assert.Equal(t, 2.0, ring["maxItems"])
+	assert.Equal(t, "#/$defs/config.schemaRing", nonNull(t, ring["items"].(map[string]any))["$ref"])
+
+	kids := resolved(t, doc, nonNull(t, prop(t, doc, "kids")))
+	kid := kids["items"].(map[string]any)
+	assert.Equal(t, "object", kid["type"], "the struct inside the cycle is written in place")
+	assert.Equal(t, "#/$defs/config.schemaKids", nonNull(t, prop(t, kid, "kids"))["$ref"])
+
+	assert.Equal(t, map[string]any{"type": "array", "items": map[string]any{"type": "integer"}, "maxItems": 2.0}, nonNull(t, prop(t, doc, "plain")))
+	assert.Equal(t, map[string]any{"type": "object", "additionalProperties": map[string]any{"type": "integer"}}, nonNull(t, prop(t, doc, "plain_map")))
+	assert.Equal(t, map[string]any{"type": "array"}, nonNull(t, prop(t, doc, "secret")))
+	assert.Equal(t, true, prop(t, doc, "secret")["writeOnly"])
+	assert.Len(t, doc["$defs"], 4)
+
+	first, err := JSONSchema[schemaRecCollections]()
+	require.NoError(t, err)
+	again, err := JSONSchema[schemaRecCollections]()
+	require.NoError(t, err)
+	assert.Equal(t, string(first), string(again))
 }
