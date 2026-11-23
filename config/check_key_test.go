@@ -266,18 +266,29 @@ func TestDecodeKey_ListIndexBoundsAndDetachedDefaults(t *testing.T) {
 		assert.False(t, ke.Unknown)
 		assert.Equal(t, "pool[2].host", ke.Key)
 		require.ErrorIs(t, err, ErrValidation, "an index past the next element")
+		var problem keyProblem
+		require.ErrorAs(t, ke.Err, &problem, "refused as an index, not as a candidate that fails to decode")
 		_, err = DecodeKey[editConfig](t.Context(), "pool[-1].host", "z", WithDefaults(defaults))
 		require.ErrorIs(t, err, ErrKey)
 		_, err = DecodeKey[editConfig](t.Context(), "route.bits", 4, WithDefaults(defaults))
 		require.ErrorAs(t, err, &ke)
 		assert.Equal(t, KeyError{Key: "route.bits", Unknown: true}, KeyError{Key: ke.Key, Unknown: ke.Unknown}, "a value decoded from text has no key to set")
 
-		got, err := DecodeKey[editConfig](t.Context(), "pool[0].port", 7, WithDefaults(defaults))
+		opt := WithDefaults(defaults)
+		got, err := DecodeKey[editConfig](t.Context(), "pool[0].port", 7, opt)
 		require.NoError(t, err)
+		assert.Equal(t, []editServer{{"x", 7}}, got.Pool, "typed defaults: %v: the index edits that element of the defaults' list", typed)
+		want := *got
+		want.Pool = slices.Clone(got.Pool)
+		want.Addresses = maps.Clone(got.Addresses)
+		want.Extra = maps.Clone(got.Extra.(map[string]any))
 		got.Pool[0].Host = "changed"
 		got.Addresses["first"] = editServer{}
 		got.Extra.(map[string]any)["x"] = 99
 		assert.Equal(t, editDefaults(typed), defaults, "the candidate shares nothing with the caller's defaults")
+		again, err := DecodeKey[editConfig](t.Context(), "pool[0].port", 7, opt)
+		require.NoError(t, err)
+		assert.Equal(t, want, *again, "typed defaults: %v: the candidate shares nothing with the option's defaults", typed)
 	}
 	got, err := DecodeKey[editConfig](t.Context(), "pool[0].port", 3)
 	require.NoError(t, err)
