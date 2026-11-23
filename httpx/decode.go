@@ -6,7 +6,7 @@ import (
 	"io"
 	"mime"
 	"net/http"
-	"reflect"
+	"slices"
 	"strings"
 )
 
@@ -22,6 +22,15 @@ type decodeConfig struct {
 	maxBytes          int64
 	problemErrors     bool
 	problemMediaTypes []string
+	selectsCodecs     bool
+	responseCodecs    []Codec
+	// selected is responseCodecs validated and keyed by media type.
+	selected []selectedCodec
+}
+
+type selectedCodec struct {
+	key   string
+	codec Codec
 }
 
 // WithMaxResponseBytes caps the response body a helper reads before
@@ -47,7 +56,82 @@ func newDecodeConfig(opts []DecodeOption) (decodeConfig, error) {
 		}
 		c.problemMediaTypes[i] = mediaType
 	}
+	if c.selectsCodecs {
+		if len(c.responseCodecs) == 0 {
+			return c, invalidConfig("decode: WithResponseCodecs needs at least one codec")
+		}
+		c.selected = make([]selectedCodec, 0, len(c.responseCodecs))
+		for _, codec := range c.responseCodecs {
+			if codec == nil {
+				return c, invalidConfig("decode: WithResponseCodecs with a nil codec")
+			}
+			key, err := codecKey(codec)
+			if err != nil {
+				return c, invalidConfig("decode: WithResponseCodecs: %v", err)
+			}
+			if _, taken := c.codecFor(key); taken {
+				return c, invalidConfig("decode: WithResponseCodecs names %s twice", key)
+			}
+			c.selected = append(c.selected, selectedCodec{key: key, codec: codec})
+		}
+	}
 	return c, nil
+}
+
+// WithResponseCodecs selects the codecs a typed request helper may decode a
+// successful response with, in the order its automatic Accept lists them.
+// A response in another media type returns ErrNoCodec, even when a codec is
+// registered for it. Without this option the helpers use every registered
+// codec. Repeated options add to the selection. A nil codec, a media type
+// named twice in any spelling, or an empty selection is ErrInvalidConfig.
+// An explicit Accept header on the request is sent unchanged; the selection
+// still decides which responses decode. DecodeResponse and DecodeProblem,
+// which are given their decoding policy, ignore it.
+func WithResponseCodecs(selection ...Codec) DecodeOption {
+	selection = slices.Clone(selection)
+	return func(c *decodeConfig) {
+		c.selectsCodecs = true
+		c.responseCodecs = append(c.responseCodecs, selection...)
+	}
+}
+
+// codecFor returns the codec this call decodes a response of media type key
+// with: the selected one, or without a selection the registered one.
+func (c *decodeConfig) codecFor(key string) (Codec, bool) {
+	if !c.selectsCodecs {
+		return codecs.load(key)
+	}
+	for _, s := range c.selected {
+		if s.key == key {
+			return s.codec, true
+		}
+	}
+	return nil, false
+}
+
+// accept returns the Accept value a typed helper sends on a request that
+// names none: the media types it can decode, then, with problem errors on,
+// the problem media types it accepts, each listed once.
+func (c *decodeConfig) accept() string {
+	if !c.selectsCodecs && !c.problemErrors {
+		return codecs.acceptValue()
+	}
+	var types []string
+	if c.selectsCodecs {
+		for _, s := range c.selected {
+			types = append(types, s.key)
+		}
+	} else {
+		types = codecs.keyList()
+	}
+	if c.problemErrors {
+		for _, problem := range append([]string{ContentTypeProblemJSON}, c.problemMediaTypes...) {
+			if !slices.Contains(types, problem) {
+				types = append(types, problem)
+			}
+		}
+	}
+	return strings.Join(types, ", ")
 }
 
 // ReadAtMost reads r to its end when it holds at most limit bytes. A larger
@@ -71,11 +155,15 @@ func ReadAtMost(r io.Reader, limit int64) ([]byte, error) {
 // readBody reads resp.Body up to limit bytes and replaces it with a reader
 // over what was read, so the caller can still inspect it. When the body is
 // larger, it returns ErrResponseTooLarge and leaves resp.Body reading the
-// whole body from the start; the caller must close it.
+// whole body from the start; the caller must close it. When a read fails it
+// closes the body, releasing its connection, and leaves resp.Body replaying
+// the bytes received and then failing with the same error, so a prefix
+// cannot pass for the whole body.
 func readBody(resp *http.Response, limit int64) ([]byte, error) {
 	data, complete, err := readUpTo(resp.Body, limit)
 	if err != nil {
 		_ = resp.Body.Close() // the read already failed; that error is the one to report
+		resp.Body = io.NopCloser(io.MultiReader(bytes.NewReader(data), errReader{err}))
 		return nil, err
 	}
 	if !complete {
@@ -87,23 +175,15 @@ func readBody(resp *http.Response, limit int64) ([]byte, error) {
 	return data, nil
 }
 
-// decodeInto decodes data into a new T. When T is a pointer type the
-// pointee is allocated and the codec handed a plain pointer to it, so
-// Do[*pb.Message] decodes into a *pb.Message rather than a **pb.Message, and
-// a defined pointer type (type ItemPtr *Item) decodes into an *Item that is
-// then converted to it.
+// decodeInto decodes data into a new T through a pointer to it, as
+// DecodeResponse(resp, codec, &v) does, so the codec decides what a pointer T
+// holds: JSON null leaves it nil, and the protobuf codec allocates the
+// message.
 func decodeInto[T any](codec Codec, data []byte) (T, error) {
 	var result T
-	rt := reflect.TypeFor[T]()
-	if rt.Kind() != reflect.Pointer {
-		if err := codec.Decode(data, &result); err != nil {
-			return result, err
-		}
-		return result, nil
+	if err := codec.Decode(data, &result); err != nil {
+		var zero T
+		return zero, err
 	}
-	target := reflect.New(rt.Elem())
-	if err := codec.Decode(data, target.Interface()); err != nil {
-		return result, err
-	}
-	return target.Convert(rt).Interface().(T), nil
+	return result, nil
 }

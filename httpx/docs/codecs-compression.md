@@ -60,9 +60,12 @@ or use `encoding/json` with any of the transports above; a codec registry is
 only needed when you choose httpx's encoding/decoding helpers.
 
 JSON (`application/json`) and XML (`application/xml`) are built in. Typed
-helpers set `Accept` from the registered codecs when it is absent and choose
-the response decoder by `Content-Type`, ignoring its parameters. Set an
-explicit `Accept` when the API must return one format.
+helpers send `Accept` from the registered codecs when the request has none,
+and choose the response decoder by the `Content-Type` media type: type and
+subtype case-insensitively, parameters ignored. Select the codecs an endpoint
+uses with `WithResponseCodecs`, or set an explicit `Accept`, when the API must
+return a format the destination type can decode; see
+[choose the response codecs](requests.md#choose-the-response-codecs).
 
 | Format | Module | When to use |
 |---|---|---|
@@ -72,9 +75,12 @@ explicit `Accept` when the API must return one format.
 | Protobuf | [codec/proto](../codec/proto/README.md) | Generated protobuf messages and an agreed schema; decode with `Do[*pb.Message]` |
 
 Blank-import an optional module to register it. Use a named import when
-calling its codec with `EncodeRequest`. Registration replaces the same
-content type globally and is concurrency-safe; register at startup so
-content negotiation stays predictable. `RegisterCodec(nil)` panics.
+calling its codec with `EncodeRequest`. A codec is registered under the media
+type its `ContentType` names, lowercase and without parameters, and that is
+the form `Accept` lists. Registration replaces the same media type in any
+spelling globally and is concurrency-safe; register at startup so content
+negotiation stays predictable. `RegisterCodec` panics on a nil codec and on a
+content type that is not a concrete, well-formed `type/subtype`.
 
 MessagePack's default `Codec` follows `encoding/json`: `json` tags, hidden
 fields, embedded-field selection, omission rules and custom JSON marshalers

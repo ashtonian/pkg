@@ -245,8 +245,9 @@ With the `Chain` API, pass `WithRetryHook` / `WithCacheHook` explicitly: only `N
 | `WithMaxResponseBytes(n)` | `int64` | `DefaultMaxResponseBytes` (10 MiB) | Largest body `Get` / `Post` / `Put` / `Patch` / `Do` / `DecodeResponse` / `DecodeProblem` read; must be >= 1 |
 | `WithProblemErrors()` | — | off | Typed request helpers return `*Problem` for accepted non-2xx problem responses; HEAD and other media types retain default behavior |
 | `WithProblemMediaTypes(types...)` | `...string` | `application/problem+json` always accepted | Additional exact JSON media types for problem decoding; no wildcards or parameters; does not itself enable typed problem errors |
+| `WithResponseCodecs(codecs...)` | `...Codec` | every registered codec | The codecs a typed request helper advertises in its automatic `Accept`, in this order, and may decode a success with; other media types return `ErrNoCodec`. Repeated options add; empty, nil or duplicate media types are `ErrInvalidConfig`. `DecodeResponse` and `DecodeProblem` ignore it |
 
-By default, typed request helpers decode only 2xx representations; non-2xx responses, HEAD, 204 and 205 return zero `T`, the live response and a nil error. `DecodeResponse` instead decodes the supplied body with the supplied codec regardless of status or content type; the caller chooses when to call it. A larger body returns `ErrResponseTooLarge` and the response still reads the whole body (close it). After decoding, `resp.Body` holds the bytes read. When `T` is a pointer (`Do[*pb.Msg]`), the codec decodes into a newly allocated pointee. `Post` / `Put` / `Patch` encode a non-`io.Reader` body as JSON.
+By default, typed request helpers decode only 2xx representations; non-2xx responses, HEAD, 204 and 205 return zero `T`, the live response and a nil error. `DecodeResponse` instead decodes the supplied body with the supplied codec regardless of status or content type; the caller chooses when to call it. A larger body returns `ErrResponseTooLarge` and the response still reads the whole body (close it). After decoding, `resp.Body` holds the bytes read; after a body read error the helper returns the response with that error, and `resp.Body` replays the bytes received before failing the same way. `T` decodes through a `*T`, as `DecodeResponse(resp, codec, &v)` does: JSON `null` leaves a pointer `T` nil, and the protobuf codec allocates the message for `Do[*pb.Msg]`. Response media types match case-insensitively, ignoring parameters. The automatic `Accept` is set on a copy of the request, never on the caller's. `Post` / `Put` / `Patch` encode a non-`io.Reader` body as JSON.
 
 `DecodeProblem` accepts selected problem media types regardless of status and
 uses the same bounded body read. `Problem` contains the five RFC 9457 members
@@ -279,7 +280,7 @@ httpx defines sentinels, not E-codes; match them with `errors.Is`.
 | `ErrRateLimited` | `RateLimitTransport` | Respect the rate budget; consider `WithWait` |
 | `ErrLimiterTimeout` | `LimiterTransport` | Release open bodies, reduce concurrency or revise the acquisition budget |
 | `ErrResponseTooLarge` | `Get`, `Post`, `Put`, `Patch`, `Do`, `DecodeResponse`, `DecodeProblem`, `ReadAtMost` | Use a deliberate larger bound or stream the body |
-| `ErrNoCodec` | typed request helpers | Register the response content type's codec or decode explicitly |
+| `ErrNoCodec` | typed request helpers | Register or select the response media type's codec, or decode explicitly; a malformed `Content-Type` also returns it |
 | `ErrDestinationRefused` | `EgressPolicy` and guarded dialing | Review destination and trusted network configuration; never retried or counted as a circuit failure |
 | `ErrAuthRefresh` | token acquisition and refresh | Classify the wrapped cause; repair credentials or persistence; error text excludes callback details |
 | `ErrTokenSourceClosed` | a closed token source | Stop using the source or construct an owned replacement |
@@ -314,7 +315,7 @@ that is separate from retrying the current call.
 - `DrainAndClose(ctx, body, maxDrainBytes) CleanupResult` — bounded remaining-body cleanup and separate drain/close observations
 - `ParseOrigin(url) (Origin, error)`, `OriginOf(*url.URL) Origin`
 - `TransportStack(client) []http.RoundTripper` — the layers, outer to inner
-- `RegisterCodec`, `GetCodec`, `HasCodec`, `RegisteredCodecs`; `RegisterCompressor`, `GetCompressor`, `HasCompressor`, `RegisteredEncodings`
+- `RegisterCodec`, `GetCodec`, `HasCodec`, `RegisteredCodecs` — keyed by media type, case-insensitive, parameters ignored; `RegisterCompressor`, `GetCompressor`, `HasCompressor`, `RegisteredEncodings`
 - `NewBufferPool(size) (*BufferPool, error)`, `DefaultBufferPool() *BufferPool`
 
 ### Interfaces
