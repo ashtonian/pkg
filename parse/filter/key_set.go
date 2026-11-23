@@ -131,12 +131,12 @@ func constraintKeys(c *PolicyConstraint) ([]core.Key, error) {
 
 // keySetField refuses a key column a bound key set cannot test: one that is
 // no plain column, or, for a set, one whose values are not compared by
-// value on every backend (memberFieldTypes).
+// value on every backend (core.IsKeyType).
 func keySetField(f *FieldSchema, op FilterOperator) error {
 	if f.Relation != nil || f.Path != nil || f.Expr != "" || f.Column == "" {
 		return fmt.Errorf("field %s is not a column of %s", f.ExternalName, f.Table)
 	}
-	if op == OpIn && !memberFieldTypes[f.DataType] {
+	if op == OpIn && !core.IsKeyType(f.DataType) {
 		return fmt.Errorf("a key set compares string, UUID and integer columns, and %s is %s", f.ExternalName, f.DataType)
 	}
 	return nil

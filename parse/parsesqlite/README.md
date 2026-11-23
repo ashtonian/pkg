@@ -19,7 +19,7 @@ Register before the database opens its first connection: modernc.org/sqlite inst
 
 ```mermaid
 flowchart LR
-    plan["filter.SQLiteDialect<br/>parse_decimal(amount) = ?1<br/>parse_decimal_key(doc -> '$.price') > parse_decimal_key(?2)"] --> sqlite["SQLite (modernc.org/sqlite)"]
+    plan["filter.SQLiteDialect<br/>parse_decimal_key(amount) = parse_decimal_key(?1)<br/>parse_decimal_key(doc -> '$.price') > parse_decimal_key(?2)"] --> sqlite["SQLite (modernc.org/sqlite)"]
     sqlite -->|"per row: column value or JSON literal"| fns["parse_decimal / parse_decimal_key / parse_decimal_float32<br/>(this package)"]
     fns --> dec["internal/decimals<br/>Value · Float32Value · Key"]
     dec --> core["core.DecimalText"]
@@ -56,8 +56,8 @@ The constants `DecimalFunc`, `DecimalKeyFunc`, `DecimalFloat32Func`, `GeoNearFun
 
 | SQL | Returns | Used for |
 |---|---|---|
-| `parse_decimal(x)` | `x`'s canonical decimal text (`core.DecimalText`): plain notation, no exponent, no leading or trailing zeros, `0` for either zero; NULL when `x` holds no decimal | equality, `$in` / `$nin` against the set's canonical texts, facet terms |
-| `parse_decimal_key(x)` | a BLOB whose bytes order as `x`'s value, equal for equal values; NULL when `x` holds no decimal | ranges, `ORDER BY`, keyset seeks, range facets |
+| `parse_decimal(x)` | `x`'s canonical decimal text (`core.DecimalText`): plain notation, no exponent, no leading or trailing zeros, `0` for either zero; NULL when `x` holds no decimal | facet terms, a decimal field's value as a statement reads it (`filter.FieldExpr`) |
+| `parse_decimal_key(x)` | a BLOB whose bytes order as `x`'s value, equal exactly where the values are; NULL exactly where `parse_decimal(x)` is | equality, `$ne`, `$in` / `$nin` against each member's key, ranges, `ORDER BY`, keyset seeks, range facets |
 | `parse_decimal_float32(x)` | the canonical decimal text of `x` rounded to float32 (an INTEGER, a REAL or TEXT holding a JSON number literal); NULL for anything else or a value beyond float32's range | facet terms of a `float32` field, whose REAL column holds the double of the float32 (`0.10000000149011612` for `0.1`) |
 
 `x` is read as:
@@ -118,12 +118,12 @@ go test -tags=unit -race -run 'TestDecimalMatrix_SQLite|TestNumberKeys_SQLite|Te
 go test -tags=integration -run 'MatchesPostGIS|TestGeoMatrix_PostGIS|TestFilterMatrix_PostgreSQL' ./ ./internal/geo/
 ```
 
-`internal/decimals` checks over generated literals that the key orders as `core.CompareDecimals` does. `TestDecimalMatrix_SQLite` runs `filtertest.DecimalCases`, the decimal sorts, keyset walks and facets on SQLite; the PostgreSQL and `filter.Evaluate` runs of the same cases must agree with it. `TestNumberKeys_SQLite` counts `filtertest.NumberKeyFacets` (number members written several ways, float64, float32 and int columns) on SQLite; `TestNumberKeys_PostgreSQL` and `filter.FacetKeys` must count the same buckets. `internal/geo` checks the distance against GeographicLib's test set to 1e-8 m; with PostGIS (`PARSE_POSTGIS_DSN`) it checks thousands of seeded distances against `ST_Distance` and `ST_DWithin`, and points at polygons' vertices and edges against `ST_CoveredBy` and `ST_Intersects`. `TestGeoMatrix_SQLite` runs `filtertest.GeoCases` (members held as numbers and strings, partial points, latitudes beyond a pole) and `TestFilterMatrix_SQLite` the operator cases' geo filters; PostGIS and `filter.Evaluate` run the same cases.
+`internal/decimals` checks over generated literals that the key orders as `core.CompareDecimals` does. `TestDecimalKey_EqualExactlyWhereTextIsEqual` compares every pair of stored forms in SQL (INTEGER, REAL, TEXT in plain and exponent notation, a member's JSON string, either zero, BLOB, NULL and text that is no number), and each with the canonical text a filter binds: two keys are equal exactly where `parse_decimal`'s texts are, and NULL together; `FuzzDecimalKey_EqualExactlyWhereTextIsEqual` checks the same over generated values. `TestDecimalMatrix_SQLite` runs `filtertest.DecimalCases`, the decimal sorts, keyset walks and facets on SQLite; the PostgreSQL and `filter.Evaluate` runs of the same cases must agree with it. `TestNumberKeys_SQLite` counts `filtertest.NumberKeyFacets` (number members written several ways, float64, float32 and int columns) on SQLite; `TestNumberKeys_PostgreSQL` and `filter.FacetKeys` must count the same buckets. `internal/geo` checks the distance against GeographicLib's test set to 1e-8 m; with PostGIS (`PARSE_POSTGIS_DSN`) it checks thousands of seeded distances against `ST_Distance` and `ST_DWithin`, and points at polygons' vertices and edges against `ST_CoveredBy` and `ST_Intersects`. `TestGeoMatrix_SQLite` runs `filtertest.GeoCases` (members held as numbers and strings, partial points, latitudes beyond a pole) and `TestFilterMatrix_SQLite` the operator cases' geo filters; PostGIS and `filter.Evaluate` run the same cases.
 
 ## Operations
 
 - **Cost**: one Go call per row for each decimal expression a statement evaluates, and for each number a facet keys. A key is one byte for zero; otherwise the value's significant digits plus three bytes, and one more for a negative, which ends with a terminator. A geo filter is one call per row, which decodes the point's JSON text: a distance then iterates a handful of times (more near the antipode), a polygon test is linear in its points (at most 100).
-- **Indexes**: no index serves a geo filter on SQLite; it reads every row its other predicates leave. SQLite indexes an expression of deterministic functions. `CREATE INDEX … ON t (parse_decimal_key(amount))` serves decimal ranges, sorts and keyset seeks; `(parse_decimal(amount))` serves equality and sets. An index on them needs the functions on every connection that writes the table, the `sqlite3` shell included, since its maintenance calls them.
+- **Indexes**: no index serves a geo filter on SQLite; it reads every row its other predicates leave. SQLite indexes an expression of deterministic functions. `CREATE INDEX … ON t (parse_decimal_key(amount), id)`, the key and then the keyset's tiebreaker, serves decimal equality, sets, ranges, sorts and keyset seeks. An index on them needs the functions on every connection that writes the table, the `sqlite3` shell included, since its maintenance calls them.
 - **Key format**: the bytes `parse_decimal_key` returns are a persisted format, held by every index on it, and are pinned by golden vectors in `internal/decimals`. The format is stable: a change to it is a breaking change, after which every index on `parse_decimal_key` must be rebuilt with `REINDEX` before it is read. SQLite trusts a deterministic function to return what it returned when the index was built, so an index left with the previous release's keys answers range scans, sorts and keyset seeks with wrong rows, without an error.
 - **Health and metrics**: none; a missing registration surfaces as the statement error above.
 

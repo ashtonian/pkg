@@ -187,6 +187,9 @@ func (r *Resource[T]) Relate(name string, rel Relation) error {
 	if err != nil {
 		return err
 	}
+	if err := r.checkRelationKeys(name, rs, rel.target); err != nil {
+		return err
+	}
 	if r.computed(rs.PrimaryKey) {
 		return computedCorrelation(r.table, name, rs.PrimaryKey)
 	}
@@ -278,6 +281,42 @@ func (r *Resource[T]) correlationField(column string) *filter.FieldSchema {
 	}
 	info := core.TypeOf(r.tableColumns[column])
 	return &filter.FieldSchema{ExternalName: column, Table: r.table, Column: column, DataType: info.Type, NumberKind: info.NumberKind}
+}
+
+// checkRelationKeys refuses a relation whose rows correlate on a column
+// that is no key (core.IsKeyType): the owner's correlation column, the
+// target's key and, for a has-many or belongs-to, the target's correlation
+// column. SQL joins them column to column and the resolvers match them as
+// identifiers, so a decimal "1.50" would not meet its 1.5. target is nil
+// for a pair table declared by tag, whose target keys the field's element
+// type declares (filter.GenerateSchema refuses one that is no key).
+func (r *Resource[T]) checkRelationKeys(name string, rs *core.RelationSchema, target RelatedResource) error {
+	type column struct {
+		table, name string
+		typ         reflect.Type
+		ok          bool
+	}
+	typ, ok := r.tableColumns[rs.PrimaryKey]
+	columns := []column{{r.table, rs.PrimaryKey, typ, ok}}
+	if target != nil {
+		targetColumns := target.PrimaryKeyColumns()
+		if rs.Kind != core.ManyToMany {
+			targetColumns = append(targetColumns, rs.SourceColumn)
+		}
+		for _, c := range targetColumns {
+			typ, ok := target.columnType(c)
+			columns = append(columns, column{target.Table(), c, typ, ok})
+		}
+	}
+	for _, c := range columns {
+		if !c.ok {
+			return fmt.Errorf("parse: %s: relation %q: %q is not a column of %s", r.table, name, c.name, c.table)
+		}
+		if info := core.TypeOf(c.typ); !core.IsKeyType(info.Type) {
+			return fmt.Errorf("parse: %s: relation %q: %s.%s is %s; a relation correlates on a string, UUID or integer key", r.table, name, c.table, c.name, info.Type)
+		}
+	}
+	return nil
 }
 
 // MustRelate is Relate for startup declarations; it panics on a

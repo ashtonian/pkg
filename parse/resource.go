@@ -603,6 +603,9 @@ func (r *Resource[T]) checkUnreadColumns(fields map[string]*filter.FieldSchema, 
 			if err := r.checkRelation(name, f.Relation, nil, f.Includable || f.Facetable); err != nil {
 				return err
 			}
+			if err := r.checkRelationKeys(name, f.Relation, nil); err != nil {
+				return err
+			}
 			continue
 		}
 		capability, need := "filter field", columnQueryOnly

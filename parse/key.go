@@ -31,15 +31,6 @@ func (r *Resource[T]) keyColumns() keyColumns {
 	return kc
 }
 
-// valueTypes are the column types a key of several columns, and every
-// column of a key an update batch names, may have: the types every backend
-// compares by value and filter's key sets bind (PolicyConstraint.Fields).
-var valueTypes = map[core.FieldType]bool{
-	core.FieldTypeString: true,
-	core.FieldTypeUUID:   true,
-	core.FieldTypeInt:    true,
-}
-
 // normalize is key with each value in its column's canonical form, as a
 // policy on the column normalizes it; ErrKeyInvalid when key holds another
 // number of values than there are columns, or a column cannot hold its
@@ -65,7 +56,7 @@ func (kc keyColumns) normalize(key Key) (Key, error) {
 // identity is key, normalized, as a comparable map key: equal for two keys
 // exactly when the database holds them equal. A one-column key is its
 // value; a longer one its values' JSON text, canonical for the strings and
-// integers such a key holds (valueTypes).
+// integers such a key holds (core.IsKeyType).
 func (kc keyColumns) identity(key Key) (any, error) {
 	normalized, err := kc.normalize(key)
 	if err != nil {
@@ -85,10 +76,10 @@ func (kc keyColumns) identity(key Key) (any, error) {
 }
 
 // batchType refuses a key an update batch cannot order and compare: one
-// with a column of a type outside valueTypes.
+// with a column that is no key type (core.IsKeyType).
 func (kc keyColumns) batchType() error {
 	for i, info := range kc.types {
-		if !valueTypes[info.Type] {
+		if !core.IsKeyType(info.Type) {
 			return fmt.Errorf("update batch key column %s is %s; a batch keys string, UUID and integer columns", kc.names[i], info.Type)
 		}
 	}
@@ -121,7 +112,7 @@ func (kc keyColumns) compare(a, b Key) int {
 
 // checkKeyColumns refuses a key of no column, a key column listed twice,
 // one that is no column of model, and, in a key of several columns, one
-// whose type is outside valueTypes.
+// that is no key type (core.IsKeyType).
 func checkKeyColumns(key []string, columns map[string]reflect.Type, model reflect.Type) error {
 	if len(key) == 0 {
 		return errors.New("the key names no column; PrimaryKey takes one or more")
@@ -134,7 +125,7 @@ func checkKeyColumns(key []string, columns map[string]reflect.Type, model reflec
 		if !ok {
 			return fmt.Errorf("key column %q is not a column of %s", column, model)
 		}
-		if info := core.TypeOf(t); len(key) > 1 && !valueTypes[info.Type] {
+		if info := core.TypeOf(t); len(key) > 1 && !core.IsKeyType(info.Type) {
 			return fmt.Errorf("key column %q is %s; a key of several columns holds string, UUID and integer columns", column, info.Type)
 		}
 	}
