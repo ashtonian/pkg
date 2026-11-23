@@ -183,6 +183,15 @@ describe("list", () => {
     expect(res.page_info).toEqual({ has_next_page: false, has_prev_page: false, total_count: 0 });
   });
 
+  it("reads a list under a field mask as the members it names", async () => {
+    const recorded = exchange<ListResult<WireItem>>("list_masked");
+    const items = client(replay(recorded).fetch).resource<WireItem>("wire_items");
+    const res = await items.list({ ...filtered, fields: ["name"] });
+    expect(res).toEqual(recorded.response.body);
+    expect(res.items.map((i) => Object.keys(i))).toEqual(res.items.map(() => ["name"]));
+    expect(res.page_info).toEqual(exchange<ListResult<WireItem>>("list_total").response.body.page_info);
+  });
+
   it("sends the recorded list body over POST, and reads the page GET reads", async () => {
     const items = client(replay(exchange("list_post")).fetch).resource<WireItem>("wire_items");
     const res = await items.list(filtered, { method: "POST" });

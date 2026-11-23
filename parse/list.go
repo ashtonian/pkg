@@ -32,6 +32,8 @@ type ListRequest struct {
 	facets         []string
 	include        []string
 	fields         []string
+	// members are the JSON members fields encode as (FieldMembers).
+	members []string
 	// now is the instant the request was parsed at: its filter's
 	// relative-time tokens resolved against it, and BuildList resolves its
 	// policy's, the related tables' policies' and its includes' against it.
@@ -97,6 +99,13 @@ func (req *ListRequest) Include() []string { return slices.Clone(req.include) }
 // items it writes; the page's SELECT reads every read column whatever the
 // mask names.
 func (req *ListRequest) Fields() []string { return slices.Clone(req.fields) }
+
+// FieldMembers is the field mask as the JSON members its fields encode as,
+// the names a JSON response narrows each item to (parsehttp.WriteList). They
+// are the Fields when the field-name tag is json. Under another tag each is
+// the name encoding/json gives the same struct field, and a field it writes
+// no member for has none, so a mask can name fields and have no members.
+func (req *ListRequest) FieldMembers() []string { return slices.Clone(req.members) }
 
 // ListInput is a list request in transport-neutral form: the parameters
 // ParseList reads from a query string, already typed and split.
@@ -171,6 +180,12 @@ func (r *Resource[T]) ParseListInput(in ListInput) (*ListRequest, error) {
 	if req.fields, err = listNames(in.Fields, r.maskName); err != nil {
 		return nil, err
 	}
+	for _, name := range req.fields {
+		member := r.maskable[name]
+		if member != "" {
+			req.members = append(req.members, member)
+		}
+	}
 	return req, nil
 }
 
@@ -184,7 +199,8 @@ func (r *Resource[T]) facetName(name string) error {
 // maskName refuses a field mask name that is no field of the response,
 // without saying whether T has a field by that name its response withholds.
 func (r *Resource[T]) maskName(name string) error {
-	if r.maskable[name] {
+	_, ok := r.maskable[name]
+	if ok {
 		return nil
 	}
 	return unknownListField(fmt.Sprintf("response field '%s' does not exist", name), name)

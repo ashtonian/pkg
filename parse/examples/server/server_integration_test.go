@@ -177,6 +177,92 @@ func TestServer_POSTListRefusals(t *testing.T) {
 	}
 }
 
+// maskedPage is a list answer with each item's members as the server wrote
+// them.
+type maskedPage struct {
+	Items    []map[string]json.RawMessage `json:"items"`
+	PageInfo json.RawMessage              `json:"page_info"`
+	Facets   json.RawMessage              `json:"facets"`
+}
+
+// A list answers the members its field mask names, over GET and as a POST
+// body alike. Its cursors, total and facets are the unmasked list's, and
+// its cursor continues the walk.
+func TestServer_ListAnswersItsFieldMask(t *testing.T) {
+	srv := testServer(t)
+	byGET := func(t *testing.T, doc string, fields []string, cursor string, out any) int {
+		t.Helper()
+		q := url.Values{filter.ParamFilter: {doc}, filter.ParamSort: {"-price"}, filter.ParamPageSize: {"2"}, filter.ParamIncludeTotal: {"true"}, filter.ParamFacets: {"category"}}
+		if len(fields) > 0 {
+			q.Set(filter.ParamFields, strings.Join(fields, ","))
+		}
+		if cursor != "" {
+			q.Set(filter.ParamCursor, cursor)
+		}
+		return call(t, srv, http.MethodGet, "/api/products?"+q.Encode(), "", out)
+	}
+	byPOST := func(t *testing.T, doc string, fields []string, cursor string, out any) int {
+		t.Helper()
+		members := map[string]any{filter.ParamFilter: json.RawMessage(doc), filter.ParamSort: "-price", filter.ParamPageSize: 2, filter.ParamIncludeTotal: true, filter.ParamFacets: []string{"category"}}
+		if len(fields) > 0 {
+			members[filter.ParamFields] = fields
+		}
+		if cursor != "" {
+			members[filter.ParamCursor] = cursor
+		}
+		body, err := json.Marshal(members)
+		require.NoError(t, err)
+		return call(t, srv, http.MethodPost, "/api/products", string(body), out)
+	}
+	const cheap = `{"price":{"$lte":50}}`
+	mask := []string{"price", "name"}
+	for _, tt := range []struct {
+		name string
+		list func(t *testing.T, doc string, fields []string, cursor string, out any) int
+	}{
+		{"GET", byGET},
+		{"POST", byPOST},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			var whole, masked maskedPage
+			require.Equal(t, http.StatusOK, tt.list(t, cheap, nil, "", &whole))
+			require.Equal(t, http.StatusOK, tt.list(t, cheap, mask, "", &masked))
+			require.Len(t, whole.Items, 2)
+			require.Len(t, masked.Items, 2)
+			for i, item := range masked.Items {
+				assert.Equal(t, []string{"category", "created_at", "id", "labels", "name", "price"}, slices.Sorted(maps.Keys(whole.Items[i])), "an unmasked item has every member")
+				assert.Equal(t, []string{"name", "price"}, slices.Sorted(maps.Keys(item)))
+				assert.Equal(t, whole.Items[i]["name"], item["name"])
+				assert.Equal(t, whole.Items[i]["price"], item["price"])
+			}
+			assert.JSONEq(t, string(whole.PageInfo), string(masked.PageInfo), "cursors and total do not depend on the mask")
+			assert.JSONEq(t, string(whole.Facets), string(masked.Facets))
+
+			var cursor struct {
+				EndCursor string `json:"end_cursor"`
+			}
+			require.NoError(t, json.Unmarshal(masked.PageInfo, &cursor))
+			var wholeNext, maskedNext maskedPage
+			require.Equal(t, http.StatusOK, tt.list(t, cheap, nil, cursor.EndCursor, &wholeNext))
+			require.Equal(t, http.StatusOK, tt.list(t, cheap, mask, cursor.EndCursor, &maskedNext))
+			require.Len(t, maskedNext.Items, len(wholeNext.Items))
+			for i, item := range maskedNext.Items {
+				assert.Equal(t, wholeNext.Items[i]["name"], item["name"], "a masked page's cursor continues the walk")
+			}
+
+			var none maskedPage
+			require.Equal(t, http.StatusOK, tt.list(t, `{"price":{"$lte":0}}`, mask, "", &none))
+			assert.NotNil(t, none.Items, "items is [], not null")
+			assert.Empty(t, none.Items)
+
+			var refused parsehttp.Body
+			assert.Equal(t, http.StatusUnprocessableEntity, tt.list(t, cheap, []string{"name", "nmae"}, "", &refused))
+			assert.Equal(t, filter.ECodeUnknownField.String(), refused.Code)
+			assert.Equal(t, map[string]any{"field": "nmae"}, refused.Details)
+		})
+	}
+}
+
 func TestServer_JSONFilterAndFlatParamsCombine(t *testing.T) {
 	srv := testServer(t)
 	q := url.Values{
