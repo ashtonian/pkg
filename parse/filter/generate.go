@@ -13,6 +13,23 @@ import (
 	"github.com/ashtonian/pkg/parse/core"
 )
 
+// rowColumn is the row column a field named name reads, the column the
+// read-set checks hold to T's own. Without a column mapper (expr "") it is
+// the column the field's SQL names, MappedExpr having held it to an
+// identifier; a column tag of "-" leaves the field reading its
+// conventional column, which a resource then refuses as none of T's. With
+// a mapper it is FieldColumn's: "" for a column that is no identifier or a
+// field that is no column, since only the mapper's own SQL reads it.
+func rowColumn(g *core.SchemaGenerator, field *core.Field, name, expr string) (string, error) {
+	if expr == "" {
+		return g.ColumnName(name, field.Tags.Column)
+	}
+	if column, ok, err := g.FieldColumn(field); err == nil && ok {
+		return column, nil
+	}
+	return "", nil
+}
+
 // GenerateFilterSchema generates a ResourceSchema from struct tags on type T.
 func GenerateFilterSchema[T any](g *core.SchemaGenerator) (*ResourceSchema, error) {
 	t := reflect.TypeFor[T]()
@@ -42,11 +59,16 @@ func generateFilterSchema(g *core.SchemaGenerator, t reflect.Type) (*ResourceSch
 
 	for _, field := range walk.Fields {
 		tags := &field.Tags
+		if len(tags.Enum) > 0 {
+			if err := enumField(g, field); err != nil {
+				return nil, fmt.Errorf("field %s: %w", field.GoName, err)
+			}
+		}
 		fieldName := field.External
 		if tags.Parse.Filter && fieldName == "" && tags.Relation != "" {
-			// : virtual relation fields conventionally carry
-			// `json:"-"` to hide from response payloads. They still
-			// need an addressable name. Generators can preserve their
+			// A virtual relation field conventionally carries `json:"-"`
+			// to hide it from response payloads, and still needs an
+			// addressable name. Generators can preserve their
 			// declared name with relation_name; otherwise use snake_case
 			// of the struct field name.
 			fieldName = cmp.Or(tags.RelationName, core.SnakeCase(field.GoName))
@@ -77,7 +99,7 @@ func generateFilterSchema(g *core.SchemaGenerator, t reflect.Type) (*ResourceSch
 			}
 		}
 
-		sqlExpr, err := g.ColumnExpr(tableName, fieldName, fieldType, tags.Column)
+		expr, err := g.MappedExpr(tableName, fieldName, fieldType, tags.Column)
 		if err != nil {
 			return nil, fmt.Errorf("field %s: %w", field.GoName, err)
 		}
@@ -97,7 +119,8 @@ func generateFilterSchema(g *core.SchemaGenerator, t reflect.Type) (*ResourceSch
 
 		fs := &FieldSchema{
 			ExternalName:     fieldName,
-			SQLExpr:          sqlExpr,
+			Table:            tableName,
+			Expr:             expr,
 			DataType:         fieldType,
 			NumberKind:       info.NumberKind,
 			Wire:             field.Wire(),
@@ -115,53 +138,59 @@ func generateFilterSchema(g *core.SchemaGenerator, t reflect.Type) (*ResourceSch
 		}
 
 		if tags.Relation == "" {
-			// Not an error: FieldColumn refuses a column that is no
-			// identifier, which only a column mapper's own SQL may read
-			// (ColumnExpr). Such a field names no row column here, and
-			// parse.NewResource refuses the column outright.
-			if column, ok, err := g.FieldColumn(field); err == nil && ok {
-				fs.Column = column
+			if fs.Column, err = rowColumn(g, field, fieldName, expr); err != nil {
+				return nil, fmt.Errorf("field %s: %w", field.GoName, err)
 			}
 		}
 
 		if tags.Order != "" {
-			if n, err := strconv.Atoi(tags.Order); err == nil {
-				fs.Order = n
+			n, err := strconv.Atoi(tags.Order)
+			if err != nil {
+				return nil, fmt.Errorf("field %s: order:%q is not an integer", field.GoName, tags.Order)
 			}
+			fs.Order = n
 		}
 
-		if fs.Facetable {
-			if t := facetValueType(fs); unkeyedFacetTypes[t] {
-				return nil, fmt.Errorf("field %s: %s values have no facet key every backend reads alike", field.GoName, t)
+		if tags.Facet != "" {
+			if !fs.Facetable {
+				return nil, fmt.Errorf("field %s: facet:%q on a field without the facet capability", field.GoName, tags.Facet)
 			}
-			if tags.Facet != "" {
-				facetSchema, err := ParseFacetTag(tags.Facet)
-				if err != nil {
-					return nil, fmt.Errorf("field %s: %w", field.GoName, err)
-				}
-				if facetSchema != nil {
-					facetSchema.Field = fieldName
-					facetSchema.SQLExpr = sqlExpr
-					fs.FacetSchema = facetSchema
-				}
+			facetSchema, err := ParseFacetTag(tags.Facet)
+			if err != nil {
+				return nil, fmt.Errorf("field %s: facet:%q: %w", field.GoName, tags.Facet, err)
 			}
+			facetSchema.Field = fieldName
+			fs.FacetSchema = facetSchema
 		}
 
 		if tags.Relation != "" {
-			rel, err := core.ParseRelationTag(tags.Relation)
+			rel, err := g.RelationTag(walk, field)
 			if err != nil {
 				return nil, fmt.Errorf("field %s: %w", field.GoName, err)
 			}
-			if info.Type != core.FieldTypeArray {
-				return nil, fmt.Errorf("field %s: relation fields must be slices of scalar target IDs, got %s", field.GoName, field.Type)
-			}
-			// Relation operators compare target IDs, so values normalize
-			// and advertise as the element type, not "array".
-			fs.DataType = info.Elem
 			fs.Elem = ""
 			fs.Relation = rel
-			if tags.FilterOps == "" {
-				fs.AllowedOperators = []FilterOperator{OpEq, OpNe, OpIn, OpNin, OpNull, OpNotNull}
+			if len(rel.TargetColumns) == 1 {
+				// Relation operators compare target keys, so values
+				// normalize and advertise as the key's type, not "array".
+				fs.DataType = rel.TargetTypes[0].Type
+				fs.NumberKind = rel.TargetTypes[0].NumberKind
+				if tags.FilterOps == "" {
+					fs.AllowedOperators = []FilterOperator{OpEq, OpNe, OpIn, OpNin, OpNull, OpNotNull}
+				}
+			} else {
+				// A key of several columns is no one value: the field
+				// compares none, as a declared relation's does, and only
+				// asks whether the owner has pairs.
+				fs.DataType, fs.NumberKind = core.FieldTypeArray, reflect.Invalid
+				if tags.FilterOps == "" {
+					fs.AllowedOperators = []FilterOperator{OpNull, OpNotNull}
+				}
+				for _, op := range fs.AllowedOperators {
+					if !isNullTest(op) {
+						return nil, fmt.Errorf("field %s: relation target key %s has %d columns, which $%s cannot name; it takes $null", field.GoName, strings.Join(rel.TargetColumns, "+"), len(rel.TargetColumns), op)
+					}
+				}
 			}
 		}
 
@@ -174,6 +203,12 @@ func generateFilterSchema(g *core.SchemaGenerator, t reflect.Type) (*ResourceSch
 		}
 		if err := checkOperators(fs); err != nil {
 			return nil, fmt.Errorf("field %s: %w", field.GoName, err)
+		}
+		// After storage, which can make a document field a scalar.
+		if fs.Facetable {
+			if err := checkFacet(fs, fs.facetConfig()); err != nil {
+				return nil, fmt.Errorf("field %s: %w", field.GoName, err)
+			}
 		}
 		if isScalarArray(fs) {
 			fs.Element = newElement(fs)
@@ -242,9 +277,8 @@ func generateSortSchema(g *core.SchemaGenerator, t reflect.Type) (*SortSchema, e
 			return nil, fmt.Errorf("field %s: %w", field.GoName, err)
 		}
 
-		// : one sort grammar — scalar sortability opts in
-		// via parse:"…,sort".
-		// The legacy sort_field:"true" tag is deleted, not dual-read.
+		// One sort grammar: a scalar field is sortable when it opts in
+		// with parse:"…,sort".
 		if !tags.Parse.Excluded {
 			if dt := info.Type; core.IsDocument(dt) {
 				if err := addDocSortPaths(g, fields, tableName, field, dt); err != nil {
@@ -253,6 +287,9 @@ func generateSortSchema(g *core.SchemaGenerator, t reflect.Type) (*SortSchema, e
 			}
 		}
 		if !tags.Parse.Sort {
+			if tags.SortDefault != "" {
+				return nil, fmt.Errorf("field %s: sort_default:%q on a field without the sort capability", field.GoName, tags.SortDefault)
+			}
 			continue
 		}
 		if tags.Relation != "" {
@@ -272,7 +309,7 @@ func generateSortSchema(g *core.SchemaGenerator, t reflect.Type) (*SortSchema, e
 			// value's text order is not its order.
 			return nil, fmt.Errorf("field %s: %s fields are not sortable", field.GoName, fieldType)
 		}
-		sqlExpr, err := g.ColumnExpr(tableName, fieldName, fieldType, tags.Column)
+		expr, err := g.MappedExpr(tableName, fieldName, fieldType, tags.Column)
 		if err != nil {
 			return nil, fmt.Errorf("field %s: %w", field.GoName, err)
 		}
@@ -293,8 +330,9 @@ func generateSortSchema(g *core.SchemaGenerator, t reflect.Type) (*SortSchema, e
 			}
 		}
 		fields[fieldName] = &SortFieldSchema{
-			SQLExpr:    sqlExpr,
+			Table:      tableName,
 			Column:     column,
+			Expr:       expr,
 			DataType:   fieldType,
 			NumberKind: kind,
 			Nullable:   nullable,
@@ -302,16 +340,19 @@ func generateSortSchema(g *core.SchemaGenerator, t reflect.Type) (*SortSchema, e
 		}
 
 		if defaultTag := tags.SortDefault; defaultTag != "" {
-			defaultField = fieldName
-			if defaultTag == string(SortDesc) {
-				defaultDir = SortDesc
-			} else {
-				defaultDir = SortAsc
+			if defaultField != "" {
+				return nil, fmt.Errorf("field %s: sort_default:%q: %s already declares the default sort", field.GoName, defaultTag, defaultField)
+			}
+			switch SortDirection(defaultTag) {
+			case SortAsc, SortDesc:
+				defaultField, defaultDir = fieldName, SortDirection(defaultTag)
+			default:
+				return nil, fmt.Errorf("field %s: sort_default:%q is neither %q nor %q", field.GoName, defaultTag, SortAsc, SortDesc)
 			}
 		}
 	}
 
-	maxFields := g.Opts.SortMaxFields
+	maxFields := g.SortMaxFields()
 	if maxFields <= 0 {
 		maxFields = 3 // default
 	}
@@ -323,8 +364,8 @@ func generateSortSchema(g *core.SchemaGenerator, t reflect.Type) (*SortSchema, e
 // --- Defaults ---
 
 // defaultFilterOps maps FieldType to the operators a bare `parse:"filter"`
-// field gets; each is a subset of typeOperators. Unexported per ;
-// call DefaultFilterOps() for a defensive copy.
+// field gets; each is a subset of typeOperators. It is unexported so no
+// caller can change another's defaults; DefaultFilterOps returns a copy.
 //
 // `$in` and `$nin` come as a pair. JSON documents default to containment,
 // and arrays to containment and element conditions (`$some` / `$none`),
@@ -356,7 +397,7 @@ var defaultFilterOps = map[core.FieldType][]FilterOperator{
 // otherwise the package defaults. Every schema owns its slice, so
 // configuring one resource's operators cannot change another's.
 func defaultFilterOpsFor(g *core.SchemaGenerator, ft core.FieldType) ([]FilterOperator, error) {
-	if names, ok := g.Opts.DefaultFilterOps[ft]; ok {
+	if names, ok := g.DefaultFilterOps(ft); ok {
 		ops, err := parseOperatorList(names)
 		if err != nil {
 			return nil, fmt.Errorf("DefaultFilterOps[%s]: %w", ft, err)
@@ -377,14 +418,6 @@ func DefaultFilterOps() map[core.FieldType][]FilterOperator {
 		out[k] = ops
 	}
 	return out
-}
-
-// unkeyedFacetTypes are the value types whose PostgreSQL text differs from
-// their canonical text: interval follows the session's IntervalStyle, inet
-// writes a host's /32, and both network types write an IPv4-compatible IPv6
-// address in dotted form. A terms facet's key is that text.
-var unkeyedFacetTypes = map[core.FieldType]bool{
-	core.FieldTypeInterval: true, core.FieldTypeInet: true, core.FieldTypeCIDR: true,
 }
 
 // sortable reports whether a keyset can order and resume on a field: a scalar
@@ -417,7 +450,7 @@ func addDocSortPaths(g *core.SchemaGenerator, fields map[string]*SortFieldSchema
 	if name == "" {
 		return nil
 	}
-	sqlExpr, err := g.ColumnExpr(tableName, name, dt, field.Tags.Column)
+	expr, err := g.MappedExpr(tableName, name, dt, field.Tags.Column)
 	if err != nil {
 		return err
 	}
@@ -425,7 +458,7 @@ func addDocSortPaths(g *core.SchemaGenerator, fields map[string]*SortFieldSchema
 	if err != nil {
 		return err
 	}
-	keys, err := docSortPaths(g, field, dt, sqlExpr, column)
+	keys, err := docSortPaths(g, field, dt, tableName, column, expr)
 	if err != nil {
 		return err
 	}
@@ -436,4 +469,35 @@ func addDocSortPaths(g *core.SchemaGenerator, fields map[string]*SortFieldSchema
 		fields[n] = k
 	}
 	return nil
+}
+
+// enumField refuses an enum on a field whose values are not strings: the
+// allowlist is text, compared with a string value or each element of an
+// array of strings, and on any other type it would be read and never
+// checked.
+func enumField(g *core.SchemaGenerator, field *core.Field) error {
+	if field.Tags.Geo != "" {
+		return errEnumType(core.FieldTypeGeo, "")
+	}
+	info, err := g.FieldType(field)
+	if err != nil {
+		return err
+	}
+	if !enumApplies(info.Type, info.Elem) {
+		return errEnumType(info.Type, info.Elem)
+	}
+	return nil
+}
+
+// enumApplies reports whether an enum constrains values of t (elements of
+// elem for an array): string fields and arrays of strings.
+func enumApplies(t, elem core.FieldType) bool {
+	return t == core.FieldTypeString || t == core.FieldTypeArray && elem == core.FieldTypeString
+}
+
+func errEnumType(t, elem core.FieldType) error {
+	if t == core.FieldTypeArray {
+		t = core.FieldType("array of " + string(elem))
+	}
+	return fmt.Errorf("enum on a %s field; enum takes string fields and arrays of strings", t)
 }

@@ -17,7 +17,7 @@ import (
 	"github.com/ashtonian/pkg/parse/core"
 )
 
-var countField = &FieldSchema{ExternalName: "count", SQLExpr: "count", DataType: core.FieldTypeInt}
+var countField = &FieldSchema{ExternalName: "count", Column: "count", DataType: core.FieldTypeInt}
 
 // valueRow holds count's value; nil is NULL.
 func valueRow(v any) Row {
@@ -94,12 +94,12 @@ func TestEvaluateNullAndSets(t *testing.T) {
 
 func TestEvaluateRefusals(t *testing.T) {
 	relation := &FieldSchema{ExternalName: "tags", DataType: core.FieldTypeString, Relation: &core.RelationSchema{}}
-	doc := &FieldSchema{ExternalName: "doc", SQLExpr: "doc", DataType: core.FieldTypeJSON}
-	name := &FieldSchema{ExternalName: "name", SQLExpr: "name", DataType: core.FieldTypeString}
-	labels := &FieldSchema{ExternalName: "labels", SQLExpr: "labels", DataType: core.FieldTypeArray, Elem: core.FieldTypeString}
-	items := &FieldSchema{ExternalName: "items", SQLExpr: "items", DataType: core.FieldTypeJSON, Elements: &ResourceSchema{}}
-	point := &FieldSchema{ExternalName: "loc", SQLExpr: "loc", DataType: core.FieldTypeGeo}
-	geography := &FieldSchema{ExternalName: "loc", SQLExpr: "loc", DataType: core.FieldTypeGeo, GeoConfig: &GeoFieldConfig{StorageType: GeoStorageGeography}}
+	doc := &FieldSchema{ExternalName: "doc", Column: "doc", DataType: core.FieldTypeJSON}
+	name := &FieldSchema{ExternalName: "name", Column: "name", DataType: core.FieldTypeString}
+	labels := &FieldSchema{ExternalName: "labels", Column: "labels", DataType: core.FieldTypeArray, Elem: core.FieldTypeString}
+	items := &FieldSchema{ExternalName: "items", Column: "items", DataType: core.FieldTypeJSON, Elements: &ResourceSchema{}}
+	point := &FieldSchema{ExternalName: "loc", Column: "loc", DataType: core.FieldTypeGeo}
+	geography := &FieldSchema{ExternalName: "loc", Column: "loc", DataType: core.FieldTypeGeo, GeoConfig: &GeoFieldConfig{StorageType: GeoStorageGeography}}
 	tests := []struct {
 		name string
 		node *FilterNode
@@ -192,7 +192,7 @@ func TestColumnValue(t *testing.T) {
 // takes element conditions in memory and in SQL.
 func TestEvaluateHandBuiltElement(t *testing.T) {
 	labels := &FieldSchema{
-		ExternalName: "labels", SQLExpr: "t.labels", DataType: core.FieldTypeArray, Elem: core.FieldTypeString,
+		ExternalName: "labels", Table: "t", Column: "labels", DataType: core.FieldTypeArray, Elem: core.FieldTypeString,
 		AllowedOperators: []FilterOperator{OpSome, OpNone},
 		Element:          &FieldSchema{ExternalName: "labels", DataType: core.FieldTypeString, AllowedOperators: []FilterOperator{OpEq}},
 	}

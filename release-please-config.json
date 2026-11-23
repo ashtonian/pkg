@@ -12,6 +12,9 @@
     "parse": {
       "component": "parse",
       "initial-version": "0.1.0",
+      "exclude-paths": [
+        "parse/examples/server"
+      ],
       "extra-files": [
         {
           "type": "json",
@@ -68,7 +71,13 @@
     },
     "gitx": {
       "component": "gitx",
-      "initial-version": "0.1.0"
+      "initial-version": "0.1.0",
+      "extra-files": [
+        {
+          "type": "generic",
+          "path": "README.md"
+        }
+      ]
     },
     "process": {
       "component": "process",

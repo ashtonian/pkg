@@ -104,11 +104,15 @@ headers, a method, an idempotency key or a different request codec.
 `Delete` returns an undecoded `*http.Response`. These helpers accept an
 ordinary `*http.Client`, including one configured with your own transports.
 
-They decode a 2xx representation using its `Content-Type`; JSON and XML are
-built in. By default, non-2xx responses return zero `T`, the response, and nil error.
-HEAD, 204 and 205 return zero `T` without decoding. A missing content type
-also leaves the body undecoded; an unregistered type returns `ErrNoCodec`.
-Check both the Go error and the HTTP status.
+They decode a 2xx representation with the codec for its media type; JSON
+and XML are built in. Media types match as HTTP defines them: type and
+subtype case-insensitively, parameters ignored, so `Application/JSON;
+charset=utf-8` decodes as JSON. By default, non-2xx responses return zero `T`,
+the response, and nil error. HEAD, 204 and 205 return zero `T` without
+decoding. A missing content type also leaves the body undecoded. An
+unregistered type, or a `Content-Type` that `mime.ParseMediaType` rejects
+(malformed or conflicting parameters included), returns `ErrNoCodec` with the
+body unread. Check both the Go error and the HTTP status.
 
 | Result | What the caller owns |
 |---|---|
@@ -116,7 +120,8 @@ Check both the Go error and the HTTP status.
 | Non-2xx or a bodyless success | The live response body; inspect or close it |
 | Codec/decode error with a non-nil response | The response body remains available; close it |
 | `ErrResponseTooLarge` | The body reads from the beginning, including the unread remainder; close or deliberately stream it |
-| Underlying body read error | The helper closes the failed body and reports the read error |
+| Body read error after the headers arrived | The response, with its status and headers, and the read error unchanged for `errors.Is`. The helper has closed the failed body, releasing its connection; `resp.Body` replays the bytes received and then fails with the same error, and closing it is a no-op |
+| Error before any response | A nil response |
 
 Check `resp != nil` and arrange its close before returning a decoding error.
 `WithMaxResponseBytes(n)` bounds the decoded/decompressed bytes a typed
@@ -130,9 +135,42 @@ length, and installs `GetBody` from the same bytes so retries and 307/308
 redirects replay the new payload. Encoding is in-memory; use a reader for
 large uploads.
 
-For protobuf responses use a pointer type, for example `Do[*pb.Message]`.
-The helper allocates the pointee before handing it to the codec. See the
-[protobuf example](../codec/proto/README.md).
+A typed helper decodes `T` through a `*T`, exactly as
+`DecodeResponse(resp, codec, &v)` decodes into `var v T`, so both paths give
+the same value. For a pointer `T` the codec decides what it holds: JSON
+`null` leaves it nil, so an optional response is distinguishable from a
+zero-valued object, which yields a non-nil pointer. The protobuf codec
+allocates the message, so protobuf responses use a pointer type, for example
+`Do[*pb.Message]`; see the [protobuf example](../codec/proto/README.md). A
+custom codec receives a pointer to the destination, as `json.Unmarshal` does.
+
+### Choose the response codecs
+
+When the request has no `Accept` header, a typed helper sends a copy of it
+that lists the media types it can decode; the request you passed is never
+modified, so reusing it with other options negotiates afresh. An explicit
+`Accept` is sent unchanged.
+
+By default the helpers can decode every registered codec, and importing an
+optional codec module advertises its media type on every typed request in
+the process. An origin that prefers that format then answers in it, even to
+an endpoint whose destination type cannot decode it: a plain Go DTO cannot
+decode protobuf. Select the codecs one call or endpoint uses instead:
+
+```go
+jsonOnly := httpx.WithResponseCodecs(httpx.JSON)
+item, resp, err := httpx.Get[Item](ctx, client, url, jsonOnly)
+```
+
+The selection replaces the registry for that call: `Accept` lists its media
+types in the order given, and a successful response in any other media type
+returns `ErrNoCodec`, even when a codec is registered for it. An explicit
+`Accept` header is still sent unchanged, and the selection still decides what
+decodes. Repeated `WithResponseCodecs` options add to the selection; an empty
+selection, a nil codec or one media type named twice (in any spelling) is
+`ErrInvalidConfig`, returned before anything is sent. An option value holds no
+per-call state, so keep one per endpoint and share it across goroutines. The
+global registry is unchanged, so other endpoints keep import-based discovery.
 
 ## Error inspection
 
@@ -178,9 +216,11 @@ behavior; HEAD responses are also left alone. Inspect their status and body.
 
 Both paths use the same bounded read and body-retention rules as
 `DecodeResponse`. A malformed or oversized document returns a decode error,
-not a partially decoded problem; the response remains available. Automatic
-`Accept` includes `application/problem+json` when typed problem errors are
-enabled; an explicit `Accept` is preserved. Server text is untrusted.
+not a partially decoded problem; the response remains available. With typed
+problem errors enabled, the automatic `Accept` lists the decodable media
+types, then `application/problem+json` and any `WithProblemMediaTypes`, each
+once; an explicit `Accept` is preserved. Problem media types match
+case-insensitively, like response codecs. Server text is untrusted.
 `Problem.Error()` omits detail, instance and extensions, but its title or type
 can still contain private data; choose safe fields for application logs.
 

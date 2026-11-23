@@ -64,8 +64,8 @@ func schemaDocument(t *testing.T) *parse.SchemaResponse {
 	require.NoError(t, err)
 	require.NoError(t, entities.Relate("labels", parse.ManyToMany(labels, parse.Through("doc_entity_labels", "entity_id", "label_id"), parse.Writable())))
 	reg := parse.NewSchemaRegistry()
-	parse.RegisterResource(reg, entities)
-	parse.RegisterResource(reg, parts)
+	require.NoError(t, parse.RegisterResource(reg, entities))
+	require.NoError(t, parse.RegisterResource(reg, parts))
 	doc := reg.SchemaFor("doc_entities")
 	require.NotNil(t, doc)
 	return doc
@@ -78,7 +78,7 @@ func TestSchemaDocument_MatchesItsGoldenSnapshot(t *testing.T) {
 	got, err := json.MarshalIndent(schemaDocument(t), "", "  ")
 	require.NoError(t, err)
 	got = append(got, '\n')
-	if *updateConformance {
+	if *updateRendered {
 		require.NoError(t, os.WriteFile(schemaDocumentPath, got, 0o644))
 		return
 	}

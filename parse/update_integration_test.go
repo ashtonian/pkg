@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -15,6 +16,7 @@ import (
 	"github.com/ashtonian/pkg/parse"
 	"github.com/ashtonian/pkg/parse/filter"
 	"github.com/ashtonian/pkg/parse/internal/dbtest"
+	"github.com/ashtonian/pkg/parse/parsepgx"
 )
 
 type pgGadget struct {
@@ -42,23 +44,6 @@ func pgGadgetDB(t *testing.T) *sql.DB {
 	return db
 }
 
-func queryPGGadgets(t *testing.T, q interface {
-	QueryContext(context.Context, string, ...any) (*sql.Rows, error)
-}, st parse.Statement) []pgGadget {
-	t.Helper()
-	rows, err := q.QueryContext(context.Background(), st.SQL, st.Args...)
-	require.NoError(t, err, st.SQL)
-	defer rows.Close()
-	var out []pgGadget
-	for rows.Next() {
-		var g pgGadget
-		require.NoError(t, rows.Scan(&g.ID, &g.TenantID, &g.Name, &g.Version, &g.UpdatedAt, &g.DeletedAt))
-		out = append(out, g)
-	}
-	require.NoError(t, rows.Err())
-	return out
-}
-
 func TestBuildUpdate_Postgres(t *testing.T) {
 	r, err := parse.NewResource[pgGadget]("pg_gadgets", parse.TenantColumn("tenant_id"), parse.DeletedColumn("deleted_at"))
 	require.NoError(t, err)
@@ -71,7 +56,7 @@ func TestBuildUpdate_Postgres(t *testing.T) {
 		require.NoError(t, err)
 		plan, err := r.BuildUpdate(filter.PostgresDialect{}, p, parse.ByIDs("g1", "h1"), t1, parse.StampSQL("updated_at", "NOW()"))
 		require.NoError(t, err)
-		got := queryPGGadgets(t, db, plan.Owner)
+		got := resourceRows(t, db, r, filter.PostgresDialect{}, plan.Owner)
 		require.Len(t, got, 1, "h1 is t2's")
 		assert.Equal(t, "renamed", got[0].Name)
 		require.NotNil(t, got[0].UpdatedAt)
@@ -83,9 +68,9 @@ func TestBuildUpdate_Postgres(t *testing.T) {
 		require.NoError(t, err)
 		plan, err := r.BuildUpdate(filter.PostgresDialect{}, p, parse.ByID("g1"), t1, parse.StampSQL("updated_at", "NOW()"), parse.Increment("version"))
 		require.NoError(t, err)
-		before := queryPGGadgets(t, db, parse.Statement{SQL: `SELECT id, tenant_id, name, version, updated_at, deleted_at FROM pg_gadgets WHERE id = 'g1'`})
+		before := resourceRows(t, db, r, filter.PostgresDialect{}, parse.Statement{SQL: `SELECT id, tenant_id, name, version, updated_at, deleted_at FROM pg_gadgets WHERE id = 'g1'`})
 		require.Len(t, before, 1)
-		got := queryPGGadgets(t, db, plan.Owner)
+		got := resourceRows(t, db, r, filter.PostgresDialect{}, plan.Owner)
 		require.Len(t, got, 1)
 		assert.Equal(t, before[0].Version+1, got[0].Version)
 	})
@@ -96,28 +81,33 @@ func TestBuildUpdate_Postgres(t *testing.T) {
 		plan, err := r.BuildUpdate(filter.PostgresDialect{}, p, parse.ByID("g1"), t1)
 		require.NoError(t, err)
 
-		tx, err := db.BeginTx(ctx, nil)
-		require.NoError(t, err)
-		owners := queryPGGadgets(t, tx, plan.Owner)
-		require.Len(t, owners, 1)
+		// The executor's transaction, opened by hand so a second writer can
+		// run between its owner statement and its relation statements.
+		require.NoError(t, withPgx(t, db, func(conn *pgx.Conn) error {
+			return pgx.BeginFunc(ctx, conn, func(tx pgx.Tx) error {
+				owners, err := parsepgx.Query(ctx, tx, r, plan.Owner)
+				require.NoError(t, err)
+				require.Len(t, owners, 1)
 
-		other, err := db.BeginTx(ctx, nil)
-		require.NoError(t, err)
-		_, err = other.ExecContext(ctx, `SET LOCAL lock_timeout = '200ms'`)
-		require.NoError(t, err)
-		_, err = other.QueryContext(ctx, plan.Owner.SQL, plan.Owner.Args...)
-		var pgErr *pgconn.PgError
-		require.ErrorAs(t, err, &pgErr, "a second writer waits for the owner rows")
-		assert.Equal(t, "55P03", pgErr.Code, "lock_not_available")
-		require.NoError(t, other.Rollback())
+				other, err := db.BeginTx(ctx, nil)
+				require.NoError(t, err)
+				_, err = other.ExecContext(ctx, `SET LOCAL lock_timeout = '200ms'`)
+				require.NoError(t, err)
+				_, err = other.QueryContext(ctx, plan.Owner.SQL, plan.Owner.Args...)
+				var pgErr *pgconn.PgError
+				require.ErrorAs(t, err, &pgErr, "a second writer waits for the owner rows")
+				assert.Equal(t, "55P03", pgErr.Code, "lock_not_available")
+				require.NoError(t, other.Rollback())
 
-		stmts, err := r.RelationStatements(plan, []any{owners[0].ID})
-		require.NoError(t, err)
-		for _, st := range stmts {
-			_, err := tx.ExecContext(ctx, st.SQL, st.Args...)
-			require.NoError(t, err, st.SQL)
-		}
-		require.NoError(t, tx.Commit())
+				stmts, err := r.RelationStatements(plan, []parse.Key{{owners[0].ID}})
+				require.NoError(t, err)
+				for _, st := range stmts {
+					_, err := tx.Exec(ctx, st.SQL, st.Args...)
+					require.NoError(t, err, st.SQL)
+				}
+				return nil
+			})
+		}))
 
 		rows, err := db.QueryContext(ctx, `SELECT gadget_id || ':' || tag_id || '@' || tenant_id FROM pg_gadget_tags ORDER BY 1`)
 		require.NoError(t, err)

@@ -1,19 +1,31 @@
 version: 2
+# Each directory is named here; tools/test_ci_dependabot.py derives every list
+# from the tracked tree and fails when one misses a directory or names one
+# that holds no manifest.
 updates:
+  # Every Go module, published or not.
   - package-ecosystem: gomod
     directories:
+      - /config
+      - /config/examples/cookbook
+      - /config/kongprovider
       - /gitx
       - /gowalker
-      - /config
-      - /config/kongprovider
-      - /config/examples/cookbook
       - /httpx
-      - /httpx/oauth2
       - /httpx/codec/msgpack
       - /httpx/codec/proto
       - /httpx/compress/brotli
       - /httpx/examples/gin
       - /httpx/internal/bench
+      - /httpx/oauth2
+      - /jsonvalue
+      - /onepassword
+      - /parse
+      - /parse/examples/server
+      - /process
+      - /state
+      - /tools/doccheck
+      - /tools/gorules
       - /tools/modarchive
     schedule:
       interval: weekly
@@ -22,12 +34,39 @@ updates:
     groups:
       go:
         patterns: ["*"]
+    # The ruleguard rules take this version from the shared lint baseline
+    # (CONTRIBUTING.md § Lint baseline), never on their own.
+    ignore:
+      - dependency-name: github.com/quasilyte/go-ruleguard/dsl
     commit-message:
       prefix: chore
       include: scope
 
+  # The pnpm projects: the parse TypeScript SDK and the release-please runner.
+  - package-ecosystem: npm
+    directories:
+      - /parse/sdk/ts
+      - /tools/release-please
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7
+    groups:
+      npm:
+        patterns: ["*"]
+    # The SDK is published, so the default strategy would widen its
+    # development tools' ranges instead of raising them.
+    versioning-strategy: increase
+    commit-message:
+      prefix: chore
+      include: scope
+
+  # The workflows, and each composite action's own action.yml. One group, so
+  # an action both pin is raised in one pull request.
   - package-ecosystem: github-actions
-    directory: /
+    directories:
+      - /
+      - /.github/actions/release-please-tool
     schedule:
       interval: weekly
     cooldown:
@@ -35,5 +74,8 @@ updates:
       # First-party actions are the owner's own signed tags. The cooldown guards
       # against third-party releases and would only delay them.
       exclude: ["ashtonian/*"]
+    groups:
+      actions:
+        patterns: ["*"]
     commit-message:
       prefix: ci

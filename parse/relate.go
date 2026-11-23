@@ -1,9 +1,10 @@
 package parse
 
 import (
-	"cmp"
 	"fmt"
 	"reflect"
+	"slices"
+	"strings"
 
 	"github.com/ashtonian/pkg/parse/core"
 	"github.com/ashtonian/pkg/parse/filter"
@@ -15,17 +16,26 @@ import (
 // tenancy, soft deletion and filter schema.
 type RelatedResource interface {
 	Table() string
-	PrimaryKeyColumn() string
+	PrimaryKeyColumns() []string
 	TenantColumnName() string
 	DeletedColumnName() string
 	FilterSchema() *filter.ResourceSchema
+	// liveFilterSchema is the target's own filter schema, not a copy: a
+	// relation filters its target with the schema the target parses with,
+	// relations the target declares later included.
+	liveFilterSchema() *filter.ResourceSchema
 	columnType(name string) (reflect.Type, bool)
+	columnTypeInfo(name string) core.TypeInfo
 	columnWire(name string) core.Wire
 	computed(column string) bool
-	dialectView(d filter.Dialect) (*dialectView, error)
+	isView() bool
 	tenantGraph() *tenantNode
 	admits(column string, need columnAccess) error
 }
+
+func (r *Resource[T]) liveFilterSchema() *filter.ResourceSchema { return r.filterSchema }
+
+func (r *Resource[T]) isView() bool { return r.view }
 
 func (r *Resource[T]) columnType(name string) (reflect.Type, bool) {
 	t, ok := r.tableColumns[name]
@@ -45,8 +55,8 @@ func (r *Resource[T]) columnWire(name string) core.Wire {
 type Relation struct {
 	kind       core.RelationKind
 	target     RelatedResource
-	foreignKey string
-	references string
+	foreignKey []string
+	references []string
 	through    Junction
 	policy     bool
 	indexed    bool
@@ -61,38 +71,63 @@ type Relation struct {
 // RelationOption configures a Relation.
 type RelationOption func(*Relation)
 
+// KeyColumns names the columns a relation correlates a key on: one
+// column's name, or a key of several columns' names in key order.
+type KeyColumns interface{ ~string | ~[]string }
+
+// columnNames is columns as a list of names.
+func columnNames[K KeyColumns](columns K) []string {
+	v := reflect.ValueOf(columns)
+	if v.Kind() == reflect.String {
+		names := []string{v.String()}
+		return names
+	}
+	out := make([]string, v.Len())
+	for i := range out {
+		out[i] = v.Index(i).String()
+	}
+	return out
+}
+
 // Junction is a many-to-many's pair table: Source holds the owner's key,
-// Target the target's, Tenant (optional) the tenant of each pair.
+// Target the target's, each a column per key column in key order, and
+// Tenant (optional) the tenant of each pair.
 type Junction struct {
-	Table, Source, Target, Tenant string
+	Table          string
+	Source, Target []string
+	Tenant         string
 }
 
 // Through names a many-to-many's pair table and its owner and target key
-// columns.
-func Through(table, source, target string) Junction {
-	return Junction{Table: table, Source: source, Target: target}
+// columns: a column each for one-column keys, a list in key order for a
+// key of several.
+func Through[S, T KeyColumns](table string, source S, target T) Junction {
+	junction := Junction{Table: table, Source: columnNames(source), Target: columnNames(target)}
+	return junction
 }
 
 // HasMany relates each owner to the target rows whose foreignKey holds the
-// owner's key (devices have commands: commands.device_id).
-func HasMany(target RelatedResource, foreignKey string, opts ...RelationOption) Relation {
-	return newRelation(core.HasMany, target, foreignKey, opts)
+// owner's key (devices have commands: commands.device_id); a key of
+// several columns takes a foreign key of as many, paired in key order.
+func HasMany[K KeyColumns](target RelatedResource, foreignKey K, opts ...RelationOption) Relation {
+	return newRelation(core.HasMany, target, columnNames(foreignKey), opts)
 }
 
-// BelongsTo relates each owner to the target row its foreignKey column
-// names (a command belongs to a device: commands.device_id).
-func BelongsTo(target RelatedResource, foreignKey string, opts ...RelationOption) Relation {
-	return newRelation(core.BelongsTo, target, foreignKey, opts)
+// BelongsTo relates each owner to the target row its foreignKey columns
+// name (a command belongs to a device: commands.device_id); a target key
+// of several columns takes a foreign key of as many, paired in key order.
+func BelongsTo[K KeyColumns](target RelatedResource, foreignKey K, opts ...RelationOption) Relation {
+	return newRelation(core.BelongsTo, target, columnNames(foreignKey), opts)
 }
 
 // ManyToMany relates owners and targets through a pair table.
 func ManyToMany(target RelatedResource, through Junction, opts ...RelationOption) Relation {
-	r := newRelation(core.ManyToMany, target, "", opts)
+	r := newRelation(core.ManyToMany, target, nil, opts)
 	r.through = through
 	return r
 }
 
-func newRelation(kind core.RelationKind, target RelatedResource, fk string, opts []RelationOption) Relation {
+func newRelation(kind core.RelationKind, target RelatedResource, fk []string, opts []RelationOption) Relation {
 	r := Relation{kind: kind, target: target, foreignKey: fk}
 	for _, opt := range opts {
 		opt(&r)
@@ -100,18 +135,20 @@ func newRelation(kind core.RelationKind, target RelatedResource, fk string, opts
 	return r
 }
 
-// References names the column a foreign key holds when it is not the
+// References names the columns a foreign key holds when they are not the
 // referenced resource's key: the owner's for a has-many, the target's for a
-// belongs-to.
-func References(column string) RelationOption { return func(r *Relation) { r.references = column } }
+// belongs-to, paired with the foreign key's columns in order.
+func References(columns ...string) RelationOption {
+	return func(r *Relation) { r.references = slices.Clone(columns) }
+}
 
 // PolicyScoped holds the related rows to the server's policy for the target
 // table (Scope.Related) instead of the request's tenant: a relation to rows
 // another tenant shares, such as platform-wide device types.
 func PolicyScoped() RelationOption { return func(r *Relation) { r.policy = true } }
 
-// Indexed declares that an index leads with the correlation column — the
-// has-many's foreign key, or the pair table's owner column — so the
+// Indexed declares that an index leads with the correlation columns — the
+// has-many's foreign key, or the pair table's owner columns — so the
 // relation costs as an indexed field. A belongs-to correlates on the
 // target's key and is always indexed.
 func Indexed() RelationOption { return func(r *Relation) { r.indexed = true } }
@@ -148,8 +185,12 @@ func Describe(label, description string) RelationOption {
 // one request binds one tenant to all of them. Declare every relation
 // before the resources serve requests; Relate changes the tenant key of
 // every resource that reaches r, so it is not safe for concurrent use with
-// any of them.
+// any of them. A WithPaths view, a value for one request, neither declares
+// a relation nor is one's target: relate the resources it is derived from.
 func (r *Resource[T]) Relate(name string, rel Relation) error {
+	if r.view {
+		return fmt.Errorf("parse: %s: relation %q: a WithPaths view declares no relations; relate the resource it is derived from", r.table, name)
+	}
 	if !core.IsIdentifier(name) {
 		return fmt.Errorf("parse: %s: relation name %q is not an identifier", r.table, name)
 	}
@@ -168,20 +209,51 @@ func (r *Resource[T]) Relate(name string, rel Relation) error {
 	if rel.target == nil {
 		return fmt.Errorf("parse: %s: relation %q has no target", r.table, name)
 	}
+	if rel.target.isView() {
+		return fmt.Errorf("parse: %s: relation %q: the target is a WithPaths view, a value for one request; relate the resource it is derived from", r.table, name)
+	}
 	rs, err := r.relationSchema(name, rel)
 	if err != nil {
 		return err
 	}
-	if r.computed(rs.PrimaryKey) {
-		return computedCorrelation(r.table, name, rs.PrimaryKey)
+	err = r.checkRelationKeys(name, rs, rel.target)
+	if err != nil {
+		return err
 	}
-	if rel.kind != core.ManyToMany && rel.target.computed(rs.SourceColumn) {
-		return fmt.Errorf("parse: %s: relation %q correlates on %s's computed column %q", r.table, name, rel.target.Table(), rs.SourceColumn)
+	// The source columns hold the owner's columns, the target columns the
+	// target's key, each in its column's type.
+	rs.SourceTypes = make([]core.TypeInfo, len(rs.SourceColumns))
+	for i, c := range rs.OwnerColumns() {
+		rs.SourceTypes[i] = r.columnTypeInfo(c)
+	}
+	rs.TargetTypes = make([]core.TypeInfo, len(rs.TargetColumns))
+	for i, c := range rel.target.PrimaryKeyColumns() {
+		rs.TargetTypes[i] = rel.target.columnTypeInfo(c)
+	}
+	err = rs.Check()
+	if err != nil {
+		return fmt.Errorf("parse: %s: relation %q: %w", r.table, name, err)
+	}
+	for _, c := range rs.OwnerColumns() {
+		if r.computed(c) {
+			return computedCorrelation(r.table, name, c)
+		}
+	}
+	if rel.kind != core.ManyToMany {
+		for _, c := range rs.SourceColumns {
+			if rel.target.computed(c) {
+				return fmt.Errorf("parse: %s: relation %q correlates on %s's computed column %q", r.table, name, rel.target.Table(), c)
+			}
+		}
 	}
 	if rel.includable && rel.kind == core.BelongsTo {
 		return fmt.Errorf("parse: %s: relation %q: a belongs-to's key is the owner's foreign key; it is not included", r.table, name)
 	}
-	if rel.facetable && (rel.kind == core.BelongsTo || rs.PrimaryKey != r.pk) {
+	if rel.includable && !slices.Equal(rs.OwnerColumns(), r.pk) {
+		return fmt.Errorf("parse: %s: relation %q: an include groups related keys by the owner's key (%s), and the relation correlates on %s",
+			r.table, name, strings.Join(r.pk, ", "), strings.Join(rs.OwnerColumns(), ", "))
+	}
+	if rel.facetable && (rel.kind == core.BelongsTo || !slices.Equal(rs.OwnerColumns(), r.pk)) {
 		return fmt.Errorf("parse: %s: relation %q: a facet counts owners per key of a relation on the owner's key; facet a belongs-to by its foreign-key column", r.table, name)
 	}
 	if rel.writable {
@@ -197,13 +269,19 @@ func (r *Resource[T]) Relate(name string, rel Relation) error {
 			}
 		}
 	}
-	// The relation's keys are the target's key, in its type and wire form:
-	// the filter shorthands and the membership patch both take them so.
-	keyType, _ := rel.target.columnType(rel.target.PrimaryKeyColumn())
-	keyWire := rel.target.columnWire(rel.target.PrimaryKeyColumn())
+	// The relation's keys are the target's key, in its columns' types and
+	// wire forms: the filter shorthands and the membership patch both take
+	// them so.
+	targetKey := rel.target.PrimaryKeyColumns()
+	keys := make([]patch.RelationKey, len(targetKey))
+	for i, c := range targetKey {
+		typ, _ := rel.target.columnType(c)
+		keys[i] = patch.RelationKey{Type: typ, Wire: rel.target.columnWire(c)}
+	}
 	var membership *patch.PathSchema
 	if rel.writable {
-		if membership, err = patch.RelationPath(rs, reflect.SliceOf(keyType), keyWire); err != nil {
+		membership, err = patch.RelationPath(rs, keys...)
+		if err != nil {
 			return fmt.Errorf("parse: %s: relation %q: %w", r.table, name, err)
 		}
 	}
@@ -216,30 +294,27 @@ func (r *Resource[T]) Relate(name string, rel Relation) error {
 	if err := r.tenantNode.relate(t.tenantGraph(), rel.policy); err != nil {
 		return fmt.Errorf("parse: %s: relation %q: %w", r.table, name, err)
 	}
-	key := core.TypeOf(keyType)
-	ops := []filter.FilterOperator{filter.OpEq, filter.OpNe, filter.OpIn, filter.OpNin, filter.OpNull, filter.OpNotNull, filter.OpSome, filter.OpNone}
-	if rel.kind == core.BelongsTo {
-		ops = []filter.FilterOperator{filter.OpEq, filter.OpNe, filter.OpIn, filter.OpNin, filter.OpNull, filter.OpNotNull, filter.OpIs, filter.OpIsNot}
-	}
 	field := &filter.FieldSchema{
 		ExternalName:     name,
-		DataType:         key.Type,
-		NumberKind:       key.NumberKind,
-		Wire:             keyWire,
-		AllowedOperators: ops,
+		AllowedOperators: relationOperators(rel.kind, len(keys)),
 		Indexed:          rel.indexed || rel.kind == core.BelongsTo,
 		Includable:       rel.includable,
 		Facetable:        rel.facetable,
 		Label:            rel.label,
 		Description:      rel.description,
 		Relation:         rs,
-		Related:          t.FilterSchema(),
-		RelatedBy:        r.correlationField(rs.PrimaryKey),
+		Related:          t.liveFilterSchema(),
+		RelatedBy:        r.correlationFields(rs.OwnerColumns()),
+	}
+	if len(keys) == 1 {
+		key := core.TypeOf(keys[0].Type)
+		field.DataType, field.NumberKind, field.Wire = key.Type, key.NumberKind, keys[0].Wire
+	} else {
+		// A key of several columns is no one value: the field compares
+		// none, and includes and facets name each key by its text.
+		field.DataType = core.FieldTypeArray
 	}
 	fs.Fields[name] = field
-	r.relations[name] = t
-	// The cached dialect views copied the fields before this one.
-	r.readExprs.reset()
 	if membership != nil {
 		// The name is an identifier the schemas do not hold (checked above),
 		// so adding its path cannot fail.
@@ -252,6 +327,31 @@ func (r *Resource[T]) Relate(name string, rel Relation) error {
 	return nil
 }
 
+// relationOperators are the operators of a relation field of kind whose
+// target key has width columns: the key comparisons, which a key of several
+// columns has none of, the NULL tests, and the relation predicates.
+func relationOperators(kind core.RelationKind, width int) []filter.FilterOperator {
+	var ops []filter.FilterOperator
+	if width == 1 {
+		ops = append(ops, filter.OpEq, filter.OpNe, filter.OpIn, filter.OpNin)
+	}
+	ops = append(ops, filter.OpNull, filter.OpNotNull)
+	if kind == core.BelongsTo {
+		return append(ops, filter.OpIs, filter.OpIsNot)
+	}
+	return append(ops, filter.OpSome, filter.OpNone)
+}
+
+// correlationFields are the owner's fields for columns, in order
+// (correlationField).
+func (r *Resource[T]) correlationFields(columns []string) []*filter.FieldSchema {
+	out := make([]*filter.FieldSchema, len(columns))
+	for i, c := range columns {
+		out[i] = r.correlationField(c)
+	}
+	return out
+}
+
 // correlationField is the owner's field for column: its system field, a
 // filter field over the column, or one typed from T.
 func (r *Resource[T]) correlationField(column string) *filter.FieldSchema {
@@ -259,14 +359,77 @@ func (r *Resource[T]) correlationField(column string) *filter.FieldSchema {
 	if f, ok := fs.SystemFields[column]; ok {
 		return f
 	}
-	expr := r.table + "." + column
 	for _, f := range fs.Fields {
 		if f.Relation == nil && f.Path == nil && f.RowColumn() == column {
 			return f
 		}
 	}
 	info := core.TypeOf(r.tableColumns[column])
-	return &filter.FieldSchema{ExternalName: column, SQLExpr: expr, Column: column, DataType: info.Type, NumberKind: info.NumberKind}
+	return &filter.FieldSchema{ExternalName: column, Table: r.table, Column: column, DataType: info.Type, NumberKind: info.NumberKind}
+}
+
+// checkRelationKeys refuses a relation whose rows correlate on a column
+// of no scalar type (core.IsKeyType), which has no equality to join by:
+// each owner correlation column, each target key column and, for a
+// has-many or belongs-to, each target correlation column. A has-many's or
+// belongs-to's paired columns must also be of one type, a string and a
+// UUID, which a string may hold, alike, or SQL could not compare them as
+// the type compares. target is nil for a pair table declared by tag, whose
+// target keys the field's element type declares (filter.GenerateSchema
+// refuses one that is no scalar).
+func (r *Resource[T]) checkRelationKeys(name string, rs *core.RelationSchema, target RelatedResource) error {
+	type column struct {
+		table, name string
+		typ         reflect.Type
+		ok          bool
+	}
+	var columns []column
+	for _, c := range rs.OwnerColumns() {
+		typ, ok := r.tableColumns[c]
+		columns = append(columns, column{r.table, c, typ, ok})
+	}
+	if target != nil {
+		targetColumns := target.PrimaryKeyColumns()
+		if rs.Kind != core.ManyToMany {
+			targetColumns = append(targetColumns, rs.SourceColumns...)
+		}
+		for _, c := range targetColumns {
+			typ, ok := target.columnType(c)
+			columns = append(columns, column{target.Table(), c, typ, ok})
+		}
+	}
+	for _, c := range columns {
+		if !c.ok {
+			return fmt.Errorf("parse: %s: relation %q: %q is not a column of %s", r.table, name, c.name, c.table)
+		}
+		info := core.TypeOf(c.typ)
+		if !core.IsKeyType(info.Type) {
+			return fmt.Errorf("parse: %s: relation %q: %s.%s is %s; a relation correlates on scalar keys", r.table, name, c.table, c.name, info.Type)
+		}
+	}
+	if target == nil || rs.Kind == core.ManyToMany {
+		return nil
+	}
+	for i, owner := range rs.OwnerColumns() {
+		source := rs.SourceColumns[i]
+		ownerType, _ := r.tableColumns[owner]
+		sourceType, _ := target.columnType(source)
+		o, s := core.TypeOf(ownerType).Type, core.TypeOf(sourceType).Type
+		if keyKind(o) != keyKind(s) {
+			return fmt.Errorf("parse: %s: relation %q: %s.%s is %s and %s.%s, its pair, is %s; paired columns hold one kind of key",
+				r.table, name, r.table, owner, o, target.Table(), source, s)
+		}
+	}
+	return nil
+}
+
+// keyKind is the type a paired key column of type t compares as: a UUID as
+// the text a string key may hold, any other type as itself.
+func keyKind(t core.FieldType) core.FieldType {
+	if t == core.FieldTypeUUID {
+		return core.FieldTypeString
+	}
+	return t
 }
 
 // MustRelate is Relate for startup declarations; it panics on a
@@ -286,6 +449,7 @@ func (r *Resource[T]) relationSchema(name string, rel Relation) (*core.RelationS
 	}
 	ownerHas := func(col string) bool { _, ok := r.tableColumns[col]; return ok && core.IsIdentifier(col) }
 	targetHas := func(col string) bool { _, ok := t.columnType(col); return ok && core.IsIdentifier(col) }
+	targetKey := t.PrimaryKeyColumns()
 	targetTenant := t.TenantColumnName()
 	if rel.policy {
 		targetTenant = "" // the target's policy decides its rows
@@ -293,47 +457,95 @@ func (r *Resource[T]) relationSchema(name string, rel Relation) (*core.RelationS
 
 	switch rel.kind {
 	case core.HasMany:
-		local := cmp.Or(rel.references, r.pk)
-		if !ownerHas(local) {
-			return nil, fail("references %q, which is not a column of %s", local, r.table)
+		local, held := rel.references, "references"
+		if len(local) == 0 {
+			local, held = slices.Clone(r.pk), r.table+"'s key"
 		}
-		if !targetHas(rel.foreignKey) {
-			return nil, fail("foreign key %q is not a column of %s", rel.foreignKey, t.Table())
+		err := pairColumns("foreign key", rel.foreignKey, held, local)
+		if err != nil {
+			return nil, fail("%v", err)
+		}
+		for _, c := range local {
+			if !ownerHas(c) {
+				return nil, fail("references %q, which is not a column of %s", c, r.table)
+			}
+		}
+		for _, c := range rel.foreignKey {
+			if !targetHas(c) {
+				return nil, fail("foreign key %q is not a column of %s", c, t.Table())
+			}
 		}
 		return &core.RelationSchema{
-			Kind: core.HasMany, JoinTable: t.Table(), SourceColumn: rel.foreignKey, TargetColumn: t.PrimaryKeyColumn(),
-			PrimaryKey: local, TenantColumn: targetTenant, DeletedColumn: t.DeletedColumnName(), Policy: rel.policy,
+			Kind: core.HasMany, JoinTable: t.Table(), SourceColumns: slices.Clone(rel.foreignKey), TargetColumns: targetKey,
+			OwnerKey: local, TenantColumn: targetTenant, DeletedColumn: t.DeletedColumnName(), Policy: rel.policy,
 		}, nil
 	case core.BelongsTo:
-		remote := cmp.Or(rel.references, t.PrimaryKeyColumn())
-		if !ownerHas(rel.foreignKey) {
-			return nil, fail("foreign key %q is not a column of %s", rel.foreignKey, r.table)
+		remote, held := rel.references, "references"
+		if len(remote) == 0 {
+			remote, held = slices.Clone(targetKey), t.Table()+"'s key"
 		}
-		if !targetHas(remote) {
-			return nil, fail("references %q, which is not a column of %s", remote, t.Table())
+		err := pairColumns("foreign key", rel.foreignKey, held, remote)
+		if err != nil {
+			return nil, fail("%v", err)
+		}
+		for _, c := range rel.foreignKey {
+			if !ownerHas(c) {
+				return nil, fail("foreign key %q is not a column of %s", c, r.table)
+			}
+		}
+		for _, c := range remote {
+			if !targetHas(c) {
+				return nil, fail("references %q, which is not a column of %s", c, t.Table())
+			}
 		}
 		return &core.RelationSchema{
-			Kind: core.BelongsTo, JoinTable: t.Table(), SourceColumn: remote, TargetColumn: t.PrimaryKeyColumn(),
-			PrimaryKey: rel.foreignKey, TenantColumn: targetTenant, DeletedColumn: t.DeletedColumnName(), Policy: rel.policy,
+			Kind: core.BelongsTo, JoinTable: t.Table(), SourceColumns: remote, TargetColumns: targetKey,
+			OwnerKey: slices.Clone(rel.foreignKey), TenantColumn: targetTenant, DeletedColumn: t.DeletedColumnName(), Policy: rel.policy,
 		}, nil
 	default:
 		j := rel.through
-		if rel.references != "" {
+		if len(rel.references) > 0 {
 			return nil, fail("a many-to-many references both keys; References does not apply")
 		}
-		for _, c := range []string{j.Table, j.Source, j.Target} {
+		for _, c := range slices.Concat([]string{j.Table}, j.Source, j.Target) {
 			if !core.IsIdentifier(c) {
-				return nil, fail("pair table %q, %q, %q must be identifiers", j.Table, j.Source, j.Target)
+				return nil, fail("pair table %q, (%s), (%s) must be identifiers", j.Table, strings.Join(j.Source, ", "), strings.Join(j.Target, ", "))
 			}
 		}
 		if j.Tenant != "" && !core.IsIdentifier(j.Tenant) {
 			return nil, fail("pair tenant column %q is not an identifier", j.Tenant)
 		}
+		err := pairColumns("pair table "+j.Table+"'s source", j.Source, r.table+"'s key", r.pk)
+		if err != nil {
+			return nil, fail("%v", err)
+		}
+		err = pairColumns("pair table "+j.Table+"'s target", j.Target, t.Table()+"'s key", targetKey)
+		if err != nil {
+			return nil, fail("%v", err)
+		}
 		return &core.RelationSchema{
-			Kind: core.ManyToMany, JoinTable: j.Table, SourceColumn: j.Source, TargetColumn: j.Target,
-			PrimaryKey: r.pk, TenantColumn: j.Tenant,
-			TargetTable: t.Table(), TargetKey: t.PrimaryKeyColumn(), TargetTenant: targetTenant, TargetDeleted: t.DeletedColumnName(),
+			Kind: core.ManyToMany, JoinTable: j.Table, SourceColumns: slices.Clone(j.Source), TargetColumns: slices.Clone(j.Target),
+			OwnerKey: slices.Clone(r.pk), TenantColumn: j.Tenant,
+			TargetTable: t.Table(), TargetKeys: targetKey, TargetTenant: targetTenant, TargetDeleted: t.DeletedColumnName(),
 			Policy: rel.policy,
 		}, nil
 	}
+}
+
+// pairColumns refuses columns that cannot pair by position with the key
+// columns they hold: none, a name given twice, or another count.
+func pairColumns(what string, columns []string, key string, keyColumns []string) error {
+	if len(columns) == 0 {
+		return fmt.Errorf("%s names no column", what)
+	}
+	for i, c := range columns {
+		if slices.Contains(columns[:i], c) {
+			return fmt.Errorf("%s names %q twice", what, c)
+		}
+	}
+	if len(columns) != len(keyColumns) {
+		return fmt.Errorf("%s (%s) pairs by position with %s (%s), so it names as many columns",
+			what, strings.Join(columns, ", "), key, strings.Join(keyColumns, ", "))
+	}
+	return nil
 }

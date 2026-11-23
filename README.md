@@ -15,6 +15,10 @@ its own dependencies, version, changelog and releases.
 | [config](config/README.md) | `github.com/ashtonian/pkg/config` | Typed, layered configuration with validation, hot reload and redaction. |
 | [httpx](httpx/README.md) | `github.com/ashtonian/pkg/httpx` | HTTP standards and resilience: retries, circuit breaking, caching, compression and request budgets for `net/http`. |
 | [Kong provider](config/kongprovider/README.md) | `github.com/ashtonian/pkg/config/kongprovider` | CLI flags as config overrides, with help derived from the config struct. |
+| [httpx OAuth2](httpx/oauth2/README.md) | `github.com/ashtonian/pkg/httpx/oauth2` | `golang.org/x/oauth2` grants as httpx bearer authentication, refreshing after a 401 and keeping rotated credentials. |
+| [httpx MessagePack](httpx/codec/msgpack/README.md) | `github.com/ashtonian/pkg/httpx/codec/msgpack` | MessagePack codecs for httpx: the API's JSON data model, or native MessagePack. |
+| [httpx Protocol Buffers](httpx/codec/proto/README.md) | `github.com/ashtonian/pkg/httpx/codec/proto` | A Protocol Buffers codec for httpx, registered for `application/protobuf`. |
+| [httpx brotli](httpx/compress/brotli/README.md) | `github.com/ashtonian/pkg/httpx/compress/brotli` | Brotli for httpx's compression layer. |
 
 ## Install
 

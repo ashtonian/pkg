@@ -34,8 +34,8 @@ type pageToken struct {
 
 // The envelope retains exact integers and checks the generation.
 func TestEnvelopeRoundTrip(t *testing.T) {
-	// int64 above 2^53 survives (msgpack payload, not JSON float64) — the
-	// round-trip bug the JSON cursor had.
+	// An int64 above 2^53 survives: the payload is msgpack, which keeps it
+	// an integer where JSON would read a float64.
 	want := samplePayload{Field: "created_at", Value: 9_007_199_254_740_993}
 
 	cur, err := cursor.Encode(want, cursor.WithGeneration(3))

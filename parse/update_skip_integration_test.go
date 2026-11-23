@@ -3,7 +3,6 @@
 package parse_test
 
 import (
-	"context"
 	"database/sql"
 	"slices"
 	"testing"
@@ -51,23 +50,6 @@ func pgNoteDB(t *testing.T) *sql.DB {
 	return db
 }
 
-func queryPGNotes(t *testing.T, q interface {
-	QueryContext(context.Context, string, ...any) (*sql.Rows, error)
-}, st parse.Statement) []pgNote {
-	t.Helper()
-	rows, err := q.QueryContext(context.Background(), st.SQL, st.Args...)
-	require.NoError(t, err, st.SQL)
-	defer rows.Close()
-	var out []pgNote
-	for rows.Next() {
-		var n pgNote
-		require.NoError(t, rows.Scan(&n.ID, &n.TenantID, &n.Title, &n.Rank, &n.Version, &n.UpdatedAt, &n.DeletedAt))
-		out = append(out, n)
-	}
-	require.NoError(t, rows.Err())
-	return out
-}
-
 func pgNoteIDs(ns []pgNote) []string {
 	var out []string
 	for _, n := range ns {
@@ -81,9 +63,8 @@ func TestSkipUnchanged_Postgres(t *testing.T) {
 	r, err := parse.NewResource[pgNote]("pg_notes", parse.TenantColumn("tenant_id"), parse.DeletedColumn("deleted_at"),
 		parse.ReadColumns(pgNoteColumns...))
 	require.NoError(t, err)
-	ctx := context.Background()
 
-	// apply runs Current then Owner in one transaction and splits the rows.
+	// apply runs a guarded plan through the executor.
 	apply := func(t *testing.T, db *sql.DB, body string, target parse.Target) (changed, unchanged []pgNote) {
 		t.Helper()
 		p, err := r.ParseMergePatch([]byte(body))
@@ -92,18 +73,13 @@ func TestSkipUnchanged_Postgres(t *testing.T) {
 			parse.StampSQL("updated_at", "now()"), parse.Increment("version"), parse.SkipUnchanged())
 		require.NoError(t, err)
 		require.NotNil(t, plan.Current)
-		tx, err := db.BeginTx(ctx, nil)
+		res, err := applyUpdate(t, db, r, filter.PostgresDialect{}, plan, false)
 		require.NoError(t, err)
-		current := queryPGNotes(t, tx, *plan.Current)
-		changed = queryPGNotes(t, tx, plan.Owner)
-		require.NoError(t, tx.Commit())
-		unchanged, err = r.Unchanged(changed, current)
-		require.NoError(t, err)
-		return changed, unchanged
+		return res.Changed, res.Unchanged
 	}
 	stored := func(t *testing.T, db *sql.DB, id string) pgNote {
 		t.Helper()
-		got := queryPGNotes(t, db, parse.Statement{SQL: `SELECT id, tenant_id, title, rank, version, updated_at, deleted_at FROM pg_notes WHERE id = $1`, Args: []any{id}})
+		got := resourceRows(t, db, r, filter.PostgresDialect{}, parse.Statement{SQL: `SELECT id, tenant_id, title, rank, version, updated_at, deleted_at FROM pg_notes WHERE id = $1`, Args: []any{id}})
 		require.Len(t, got, 1)
 		return got[0]
 	}

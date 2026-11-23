@@ -35,7 +35,9 @@
 // Field.Path; ambiguous addresses return ErrKey.
 //
 // The koanf tag
-// names a segment (",squash" merges into the parent, "-" skips), pointers are
+// names a segment (",squash" merges into the parent, "-" skips, ",remain"
+// collects the keys no other field reads in an exported map keyed by
+// strings), pointers are
 // followed, and a struct that decodes itself is one key. Every output names a
 // value in one grammar — db.host, items[0].port, named["primary"].port, and
 // items[*].port for any element — and [FieldFor] maps a key back to its
@@ -57,8 +59,22 @@
 //   - secret:"<ref>" — resolved by [SecretsFrom], and redacted
 //
 // Invalid sensitive, alias, env, envref, reload, sep, format and example tags, a default on
-// a section, and malformed defaults fail with [ErrSchema] before sources are
-// read. [KeyOf] names a field from its address. [ParseKey] exposes the same
+// a section, malformed defaults, and validate tags the default validator
+// cannot parse (requird, keys without dive) or whose dive the field's type
+// cannot take (dive on an int, keys after a dive on a slice) on a field it
+// reads on every validation fail with [ErrSchema] before sources are read.
+// So does a tag key one edit from one config reads (defualt, envRef), in a
+// load, every generator and checked redaction alike, unless the struct
+// declaring the field lists it as another library's ([ForeignTagDeclarer]).
+// A validate rule that parses but cannot apply to its field's type
+// (min=abc), and an unparsable tag or misapplied dive in a struct behind a
+// pointer, a slice, a map or an interface, fail with ErrSchema naming the
+// field when validation reaches them. A value holding a cycle on a path the
+// default validator walks — a pointer holding its own address, structs
+// linked back to one another — fails with [ErrValidation] naming the field
+// where it closes and the field it leads back to; go-playground would
+// otherwise walk it forever. [KeyOf] names a field from its
+// address. [ParseKey] exposes the same
 // canonical grammar as typed segments, including quoted keys and wildcards.
 //
 // # Sources
@@ -217,8 +233,8 @@
 // field, text-capable and named like a credential (unless tagged
 // sensitive:"false"), or under such a map key. Numeric counters, booleans and
 // durations keep ordinary diagnostics. The checked map/tree helpers return an error on an invalid
-// structural schema and never return partial results. They inspect live values
-// without decoding default or example tags. [PrintUsage] lists every key an operator can set with its
+// structural schema or a misspelt tag key and never return partial results.
+// They inspect live values without decoding default or example tags. [PrintUsage] lists every key an operator can set with its
 // environment variable, type, default, reload class and description; a default that is, or
 // could hold, a sensitive value is withheld ([Field.PrintableDefault]), as is
 // such an example tag's ([Field.PrintableExample]). [PrintTemplate] writes the

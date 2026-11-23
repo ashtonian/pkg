@@ -50,13 +50,18 @@ const JSONSchemaDraft = "https://json-schema.org/draft/2020-12/schema"
 //     validators do not enforce that annotation. A type that decodes itself is
 //     described by its Go type in x-config-type, unconstrained, or as a
 //     string when it decodes from text.
-//   - A struct a type holds within itself is a $defs entry, referenced by
-//     a name made of its Go type's: letters, digits, '.', '_' and '-'.
+//   - A struct, map or list a type holds within itself is a $defs entry,
+//     referenced by a name made of its Go type's: letters, digits, '.', '_'
+//     and '-'. Every path holding it with the same inherited reload class
+//     and sensitivity shares the entry; another such policy has an entry of
+//     its own, numbered as another type of the same name would be. A
+//     reference to a map or list carries its type, so a key's own rules
+//     still bound it.
 //   - With envPrefixes, as [WithEnvPrefixes] takes them, a key a variable
 //     sets lists in x-config-env every variable that sets it, in precedence
 //     order: under each prefix, then the names its env tag lists. A map's
 //     entries are named with a <KEY> placeholder. A $defs entry, shared by
-//     every path that reaches it, names none.
+//     the paths that reach it, names none.
 //
 // The output is deterministic: properties sort by key. T that is not a
 // struct, or whose keys cannot be told apart, is an ErrSchema error.
@@ -66,7 +71,7 @@ func JSONSchema[T any](envPrefixes ...string) (json.RawMessage, error) {
 	if err != nil {
 		return nil, err
 	}
-	g := &schemaGen{defs: map[string]any{}, recursive: recursiveNodes(root), names: map[*schemaNode]string{}, taken: map[string]bool{}}
+	g := &schemaGen{defs: map[string]any{}, recursive: recursiveNodes(root), defining: map[defKey]bool{}, names: map[defKey]string{}, taken: map[string]bool{}}
 	defaults, err := readDefaults(t)
 	if err != nil {
 		return nil, err
@@ -93,19 +98,36 @@ type schemaGen struct {
 	err       error
 	defs      map[string]any
 	recursive map[*schemaNode]bool
-	defining  map[*schemaNode]bool
-	names     map[*schemaNode]string // each $defs entry's name
+	defining  map[defKey]bool
+	names     map[defKey]string // each $defs entry's name
 	taken     map[string]bool
 }
 
-// defName is the $defs name of n: its Go type's name with every character
-// but letters, digits, '.', '_' and '-' made '_', so it is one JSON Pointer
-// token and a URI fragment as written, and numbered when another type
-// already took it.
-func (g *schemaGen) defName(n *schemaNode) string {
-	if name, ok := g.names[n]; ok {
-		return name
+// defKey identifies a $defs entry: a node, and what a path holding it
+// passes down to everything inside — the reload class its keys inherit and
+// whether they are sensitive — which changes the entry's annotations.
+type defKey struct {
+	node    *schemaNode
+	reload  string
+	tagged  bool
+	covered bool
+}
+
+func newDefKey(n *schemaNode, c cursor) defKey {
+	k := defKey{node: n, reload: c.owner.Reload, tagged: c.tagged, covered: c.covered}
+	return k
+}
+
+// defName is the $defs name of k: its node's Go type's name with every
+// character but letters, digits, '.', '_' and '-' made '_', so it is one
+// JSON Pointer token and a URI fragment as written, and numbered when
+// another type, or the same one under another policy, already took it.
+func (g *schemaGen) defName(k defKey) string {
+	known, ok := g.names[k]
+	if ok {
+		return known
 	}
+	n := k.node
 	base := strings.Map(func(r rune) rune {
 		switch {
 		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9', r == '.', r == '_', r == '-':
@@ -117,12 +139,12 @@ func (g *schemaGen) defName(n *schemaNode) string {
 	for i := 2; g.taken[name]; i++ {
 		name = base + "_" + strconv.Itoa(i)
 	}
-	g.names[n], g.taken[name] = name, true
+	g.names[k], g.taken[name] = name, true
 	return name
 }
 
-// recursiveNodes finds the struct nodes a type reaches again from within
-// themselves: each is written once, under $defs.
+// recursiveNodes finds the struct, map and list nodes a type reaches again
+// from within themselves: each is written under $defs.
 func recursiveNodes(root *schemaNode) map[*schemaNode]bool {
 	out := map[*schemaNode]bool{}
 	onPath := map[*schemaNode]bool{}
@@ -252,22 +274,36 @@ var (
 )
 
 // node describes a value of n's type at c; val holds the defaults of a
-// struct, and env names the variables that address it.
+// struct, and env names the variables that address it. A node the type
+// holds within itself is a reference to its $defs entry for c's policy,
+// written the first time a path reaches it; a sensitive map or list has
+// nothing inside to describe, and so nothing to refer to.
 func (g *schemaGen) node(n *schemaNode, c cursor, val reflect.Value, env envNames) map[string]any {
+	if !g.recursive[n] || n.kind != nodeBranch && c.sensitive() {
+		return g.body(n, c, val, env)
+	}
+	k := newDefKey(n, c)
+	name := g.defName(k)
+	_, defined := g.defs[name]
+	if !defined && !g.defining[k] {
+		g.defining[k] = true
+		g.defs[name] = g.body(n, c, reflect.Value{}, envNames{})
+		delete(g.defining, k)
+	}
+	ref := map[string]any{"$ref": "#/$defs/" + name}
+	switch n.kind {
+	case nodeMap:
+		ref["type"] = "object"
+	case nodeList:
+		ref["type"] = "array"
+	}
+	return ref
+}
+
+// body describes a value of n's type at c in place.
+func (g *schemaGen) body(n *schemaNode, c cursor, val reflect.Value, env envNames) map[string]any {
 	switch n.kind {
 	case nodeBranch:
-		if g.recursive[n] {
-			name := g.defName(n)
-			if _, ok := g.defs[name]; !ok && !g.defining[n] {
-				if g.defining == nil {
-					g.defining = map[*schemaNode]bool{}
-				}
-				g.defining[n] = true
-				g.defs[name] = g.object(n, c, reflect.Value{}, envNames{})
-				delete(g.defining, n)
-			}
-			return map[string]any{"$ref": "#/$defs/" + name}
-		}
 		return g.object(n, c, val, env)
 	case nodeMap:
 		s := map[string]any{"type": "object"}

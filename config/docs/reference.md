@@ -14,18 +14,18 @@ Every error wraps one category sentinel together with its cause, so `errors.Is` 
 
 | Sentinel | Meaning |
 |---|---|
-| `ErrValidation` | Validation failed, a value has the wrong type, an unknown key (an `*UnknownKeysError` lists them), an ambiguous environment variable, or a field spelled two ways. |
+| `ErrValidation` | Validation failed, a value has the wrong type, an unknown key (an `*UnknownKeysError` lists them), an ambiguous environment variable, a field or map entry spelled two ways, or a value holding a cycle the default validator would walk forever (`<key> holds a cycle back to <key>`: check the code that set the second field — a post-load hook, `SetDefaults` or a typed default — and break the cycle or keep it out of the validator's walk with `validate:"-"`; see [validation](schema.md#validation)). |
 | `ErrFileRead` | A required (or previously loaded) file is missing or unreadable. |
 | `ErrFileParse` | The parser rejected a file; a `*ParseError` names the file and line. |
 | `ErrSource` | Defaults or a provider failed to load. |
 | `ErrSecretProvider` | The secret populator failed. |
 | `ErrPostLoad` | A post-load hook failed. |
 | `ErrReload` | A reload failed; the previous config is still live. Wraps one of the above. |
-| `ErrApply` | A config was published but an applier did not apply it; an `*ApplyError` names which. |
+| `ErrApply` | An applier did not apply a config; an `*ApplyError` names which in `Failures`, and the appliers that did in `Applied`. After a reload the config was published, and the failed appliers are called again on the next one. On a reloader's first load (`Initial`) nothing was published and the reloader was not built: roll back the appliers in `Applied`. |
 | `ErrReloadInProgress` | A manual reload found another running. Not a failure. |
 | `ErrReloaderStopped` | A reload was requested after `Stop`. |
 | `ErrReloaderRunning` | `Run` was called while another `Run` of the same reloader runs. |
-| `ErrSchema`, `ErrKey` | Invalid schema/default declarations, or a malformed/unknown key. `KeyError` distinguishes unknown keys from invalid values in `CheckKey` and `DecodeKey`. |
+| `ErrSchema`, `ErrKey` | Invalid schema/default declarations, or a malformed/unknown key. A `validate` tag the default validator cannot parse, or whose `dive` its field's type cannot take, is a schema error naming the field: on a field the validator reads on every validation it is refused before any source is read, even while the field is empty or nil; elsewhere, and for a rule that parses but cannot apply to its field's type, when validation reaches it, at the field's key (`at items[0].list`). Fix the tag ([validation](schema.md#validation)). `KeyError` distinguishes unknown keys from invalid values in `CheckKey`, `DecodeKey` and `CanonicalKey`; `EditsError` is a batch `DecodeEdits` refuses: it wraps each refused `*KeyError`, which keeps its own category (an unknown key `ErrKey`, any other refusal `ErrValidation`, as `DecodeKey` gives it), and `Err`, the cause of a candidate that does not decode or validate (`ErrValidation`). |
 
 `Diagnose(err)` turns any of them into a `Problem{Kind, Message}` — a bounded category for a metric label or a status endpoint.
 
@@ -40,14 +40,19 @@ schema. Schema errors support `errors.Is(err, config.ErrSchema)`; malformed keys
 |---|---|---|
 | `FieldsChecked[T]()` | `([]Field, error)` in declaration order | Rejects a non-struct root and invalid or ambiguous keys |
 | `MatchFields(&cfg, targets)` | `([]Field, error)` in target order | Matches addresses in one traversal; empty Path means no match; ambiguous addresses are ErrKey |
-| `RedactedMapChecked(cfg)` | `(map[string]string, error)` with text values keyed by path | Returns nil on structural errors, including reached dynamic types |
-| `Usage[T](prefixes...)` | `([]UsageEntry, error)` with safe printable metadata | Reports invalid schema; keeps raw struct tags only in the non-JSON Field member |
+| `RedactedMapChecked(cfg)` | `(map[string]string, error)` with text values keyed by path | Returns nil on structural errors and misspelt tag keys, including reached dynamic types |
+| `Usage[T](prefixes...)` | `([]UsageEntry, error)` with safe printable metadata | Reports the schema errors a load reports; keeps raw struct tags only in the non-JSON Field member |
 | `ParseKey(text)` | `(Key, error)` | Reports malformed keys with ErrKey |
+| `CanonicalKey[T](key)` | `(string, error)`: the key as this package prints it, aliases, case and map-key quoting resolved | An Unknown `*KeyError` (ErrKey) for a key that does not parse or is not concrete, its message saying which (`key "pool[x]" does not parse: …`, `key extra[*] is not concrete`), or that names nothing T reads; `ErrSchema` for a declaration a load refuses, its `validate` tags aside |
+| `Key.Within(p)` | `bool`: the key is `p` or beneath it | — |
 | `Tree(cfg)`, `TreeFunc(cfg, leaf)` | `(map[string]any, error)` with raw or policy-transformed values | Returns no partial tree on schema/scalar/text-marshaling errors |
-| `RedactedTreeChecked(cfg)` | `(map[string]any, error)` with nested redacted values | Returns nil on structural errors; no partial tree |
+| `RedactedTreeChecked(cfg)` | `(map[string]any, error)` with nested redacted values | Returns nil on structural errors and misspelt tag keys; no partial tree |
 
-These functions inspect metadata without decoding default or example tags,
-except `Usage` decodes defaults when a `Defaulter` sets some.
+Each function checks the declarations its result depends on — see
+[declaration checks](inspection.md#declaration-checks). The redacting and raw
+forms inspect metadata without decoding default or example tags; `Usage`
+validates tags as a load does and decodes defaults when a `Defaulter` sets
+some.
 The original `Fields`, `RedactedMap` and `RedactedTree` retain their single-result
 signatures and return nil on failure. `PrintRedacted` returns structural errors
 before writing output. See [inspection errors](inspection.md#inspection-errors)
@@ -94,6 +99,11 @@ cfg, err := config.Load[AppConfig](t.Context(),
 
 ## Options
 
+Load and reload options copy their arguments when they are called — paths,
+names, prefixes, signals and `WithDefaults` values — so a caller reusing a
+slice or map afterwards changes nothing a load or a `Reloader` reads or
+watches. Providers, `WithEnviron` and callbacks are read live on every load.
+
 Load options:
 
 | Option | Default | Description |
@@ -109,6 +119,7 @@ Load options:
 | `WithDefaults(map)` | none | Defaults by dotted path, above the code defaults (`SetDefaults`) and tags; repeated calls merge. |
 | `WithBaseProvider(p, parser, opts...)` | none | A provider below the files. |
 | `WithOverrideProvider(p, parser, opts...)` | none | A provider above the environment. |
+| `WithBaseEntries(read, opts...)`, `WithOverrideEntries(read, opts...)` | none | Stored entries keyed in the key grammar, read with the load's context on every load, among the base or override providers in the order added. An entry whose key does not parse or holds `[*]` cannot be set, and is never an unknown key ([stored entries](sources.md#stored-entries)). |
 | `WithDecodeHook(h)` | none | A mapstructure decode hook, run before the built-in ones. |
 | `WithUnknownKeys(fn)` | unknown keys fail, unknown variables ignored | Decide what unknown keys and variables do: report, accept, or fail. |
 | `WithAllowUnknownKeys()` | unknown keys fail | Accept keys no field decodes, silently. |
@@ -118,16 +129,17 @@ Load options:
 | `WithValidator(v)` | go-playground, keys as field names | Replace the tag validator. |
 | `WithSkipValidation()` | validation on | Skip tag validation and `Validate`. |
 | `WithLogger(l)` | `slog.Default()` | Load diagnostics and reload events. |
-| `WithForeignTagKeys(keys...)` | none | Tag keys another library reads, which a load would otherwise refuse as misspellings of config's own; repeated calls accumulate. |
 
 Provider source options:
 
 | Option | Default | Description |
 |---|---|---|
-| `WithInvalidEntries(report)` | fail on invalid entries | Withhold invalid known entries, retaining lower sources; report sorted keys/errors after each read. Unknown keys remain reportable. |
+| `WithInvalidEntries(report)` | fail on invalid entries | Withhold each entry that fails, in the configuration every source makes and beside the entries it does not fail at, at a key it sets or at a key holding a value of it the merge keeps (a list grown past its `max`); decode failures and field rules only, before secrets, hooks and `Validate`. A failure at no key or under a higher source not using the option withholds nothing. At most 2k+1 judgements for k entries blamed. Retain lower sources; report sorted keys/errors on every load, once every source is read. Unknown keys remain reportable. |
+| `WithUnknownEntries(report)` | the load's handler; unknown keys fail | Send the keys this source sets that no field reads to report instead of `WithUnknownKeys`: nil goes on, an error fails with `ErrValidation`, a nil report accepts them. A key is claimed only when every source that set any part of it uses the option (overridden ones included) and no default is there; the highest of them reports it. Otherwise it stays the load's. |
 
-`Defaulter`, `CheckKey` and `DecodeKey` are described in
-[sources and precedence](sources.md). `RedactText` uses the diagnostic
+`Defaulter`, `CheckKey`, `DecodeKey`, `CanonicalKey`, `DecodeEdits` and the
+entry options are described in
+[sources and precedence](sources.md#validating-stored-entries). `RedactText` uses the diagnostic
 [credential-shape policy](inspection.md#printing-and-usage).
 
 Reload options:

@@ -15,6 +15,7 @@ import (
 	"github.com/knadh/koanf/parsers/yaml"
 	"github.com/knadh/koanf/v2"
 
+	"github.com/ashtonian/pkg/config/internal/deepcopy"
 	"github.com/ashtonian/pkg/gowalker"
 )
 
@@ -35,7 +36,6 @@ type Validator interface {
 }
 
 type options struct {
-	foreignTagKeys []string
 	knownVariables map[string]bool
 	variableFilter func(string) bool
 	envPrefixes    []string // an envPrefixList; empty: the environment is not read
@@ -65,16 +65,31 @@ func (o *options) findsShadowed() bool {
 	return o.provenance || o.inputDigests != nil || o.shadowedInputs != nil
 }
 
+// claimsUnknown reports a load with a source under WithUnknownEntries,
+// whose claims need the defaults the sources merge over.
+func (o *options) claimsUnknown() bool {
+	claims := func(p providerSource) bool { return p.claimsUnknown }
+	return slices.ContainsFunc(o.base, claims) || slices.ContainsFunc(o.overrides, claims)
+}
+
 type fileSource struct {
 	path     string
 	required bool
 }
 
+// providerSource is one base or override source: a koanf provider read
+// through parser, or, when entries is set, stored entries in the key
+// grammar (WithBaseEntries).
 type providerSource struct {
 	withhold bool
 	rejected func(context.Context, []KeyError) error
-	provider koanf.Provider
-	parser   koanf.Parser
+	// claimsUnknown is set by WithUnknownEntries, whose report receives the
+	// keys the source sets that no field reads.
+	claimsUnknown bool
+	unknown       func(context.Context, []UnknownKey) error
+	provider      koanf.Provider
+	parser        koanf.Parser
+	entries       func(context.Context) (map[string]any, error)
 }
 
 // postLoadHook is a [WithPostLoad] callback with its config type erased, so
@@ -164,13 +179,11 @@ func WithFile(path string) Option {
 }
 
 // WithFiles adds several optional config files, merged in order. Each
-// follows the [WithFile] rules.
+// follows the [WithFile] rules. The paths are copied when WithFiles is
+// called, so reusing the caller's slice changes neither what a load reads
+// nor what a [Reloader] built from the option reads and watches.
 func WithFiles(paths ...string) Option {
-	return func(o *options) {
-		for _, p := range paths {
-			o.files = append(o.files, fileSource{path: p})
-		}
-	}
+	return withFiles(paths, false)
 }
 
 // WithRequiredFile adds a config file that must exist: a missing or
@@ -182,12 +195,21 @@ func WithRequiredFile(path string) Option {
 	}
 }
 
-// WithRequiredFiles adds several required config files, merged in order.
+// WithRequiredFiles adds several required config files, merged in order,
+// copying the paths as [WithFiles] does.
 func WithRequiredFiles(paths ...string) Option {
+	return withFiles(paths, true)
+}
+
+// withFiles owns its files from the call on: a Reloader replays the option
+// on every reload, and the watch reads its paths once.
+func withFiles(paths []string, required bool) Option {
+	files := make([]fileSource, 0, len(paths))
+	for _, p := range paths {
+		files = append(files, fileSource{path: p, required: required})
+	}
 	return func(o *options) {
-		for _, p := range paths {
-			o.files = append(o.files, fileSource{path: p, required: true})
-		}
+		o.files = append(o.files, files...)
 	}
 }
 
@@ -212,19 +234,6 @@ func WithFileParser(suffix string, p koanf.Parser) Option {
 			o.fileParsers = map[string]koanf.Parser{}
 		}
 		o.fileParsers[suffix] = p
-	}
-}
-
-// WithForeignTagKeys names struct tag keys another library reads on the
-// config type. A load refuses a tag key config does not read when it is one
-// inserted, deleted, replaced or swapped character away from one config
-// reads, or equal to one ignoring case, '-' and '_' (defualt, envRef): config
-// would otherwise ignore the field's setting without a word. A key named here
-// is left alone. Calls accumulate.
-func WithForeignTagKeys(keys ...string) Option {
-	owned := append([]string(nil), keys...)
-	return func(o *options) {
-		o.foreignTagKeys = append(o.foreignTagKeys, owned...)
 	}
 }
 
@@ -276,13 +285,14 @@ func WithEnviron(environ func() []string) Option {
 // (e.g. "server.port"); they override the code defaults ([Defaulter]) and tags. Repeated calls merge,
 // a later call winning on a shared key. The values are deep-copied when
 // WithDefaults is called — every map key and value, slice, array and pointer
-// target reachable through exported fields — so changing the caller's data
-// afterwards changes nothing, including what a Reloader built from the
-// option reads later. Unexported struct fields, channels and functions are
-// copied by value. A netip.Prefix, []netip.Addr or other value whose state
+// target reachable through exported fields, those an unexported embedded
+// struct promotes included — so changing the caller's data afterwards
+// changes nothing, including what a Reloader built from the option reads
+// later. Other unexported struct fields, channels and functions are copied
+// by value. A netip.Prefix, []netip.Addr or other value whose state
 // the merge cannot copy is read through its MarshalText, as from any source.
 func WithDefaults(defaults map[string]any) Option {
-	snapshot := deepCopy(reflect.ValueOf(defaults)).Interface().(map[string]any)
+	snapshot := deepcopy.Value(reflect.ValueOf(defaults)).Interface().(map[string]any)
 	return func(o *options) {
 		if o.defaults == nil {
 			o.defaults = make(map[string]any, len(snapshot))
@@ -364,7 +374,9 @@ func WithDecodeHook(hook mapstructure.DecodeHookFunc) Option {
 // interface, and keys a koanf:",remain" field collects are accepted. A
 // section no field holds is one key (legacy, not legacy.old). The merged tree
 // does not record which source set a key, so keys are named, not their
-// sources; values are never reported.
+// sources; values are never reported. Keys a source under
+// [WithUnknownEntries] claims go to that source's report, and handle sees
+// only the rest.
 func WithUnknownKeys(handle func(ctx context.Context, unknown *UnknownKeysError) error) Option {
 	return func(o *options) {
 		o.unknownKeys = handle
@@ -485,7 +497,8 @@ func (o *options) log() *slog.Logger {
 
 // decodeHook composes the caller's decode hooks, first, with the built-in
 // ones: string → time.Duration, comma-separated string → slice (koanf's
-// defaults do not split env values and tag defaults), TextUnmarshaler.
+// defaults do not split env values and tag defaults), TextUnmarshaler, and
+// last a value already of its target type set as it is (setTyped).
 func (o *options) decodeHook(observe func(mapstructure.DecodeHookFunc) mapstructure.DecodeHookFunc) mapstructure.DecodeHookFunc {
 	var hooks []mapstructure.DecodeHookFunc
 	if len(o.decodeHooks) > 0 {
@@ -496,12 +509,42 @@ func (o *options) decodeHook(observe func(mapstructure.DecodeHookFunc) mapstruct
 		hooks = append(hooks, custom)
 	}
 	hooks = append(hooks,
+		mapstructure.DecodeHookFuncType(plainInput),
 		mapstructure.StringToTimeDurationHookFunc(),
 		mapstructure.DecodeHookFuncType(stringToSlice),
 		mapstructure.DecodeHookFuncType(stringToMap),
 		mapstructure.TextUnmarshallerHookFunc(),
+		mapstructure.DecodeHookFuncValue(setTyped),
 	)
 	return mapstructure.ComposeDecodeHookFunc(hooks...)
+}
+
+// setTyped sets data that is already a value of its target's type, or a
+// pointer to one, as a copy of it, where the target decodes itself
+// (mapstructure.Unmarshaler), and stops the decode there. Its
+// UnmarshalMapstructure reads what a source writes, such as a map, and is
+// handed whatever data is: a typed value from a provider, WithDefaults or
+// a baseline config would reach it too. mapstructure already sets a value
+// of any other type as it is.
+func setTyped(from, to reflect.Value) (any, error) {
+	if !from.IsValid() || !to.CanSet() || !decodesInput(to.Type()) {
+		return from.Interface(), nil
+	}
+	v := from
+	if v.Type() != to.Type() && v.Kind() == reflect.Pointer && v.Type().Elem() == to.Type() && !v.IsNil() {
+		v = v.Elem()
+	}
+	if v.Type() != to.Type() {
+		return from.Interface(), nil
+	}
+	to.Set(deepcopy.Value(v))
+	return nil, nil // nothing left to decode
+}
+
+// decodesInput reports a type whose value, or pointer, reads its decode
+// input itself (mapstructure.Unmarshaler).
+func decodesInput(t reflect.Type) bool {
+	return t.Implements(mapstructureUnmarshaler) || reflect.PointerTo(t).Implements(mapstructureUnmarshaler)
 }
 
 // checkHookTypes reports a post-load hook written for a type other than cfg.

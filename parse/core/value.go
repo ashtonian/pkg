@@ -6,9 +6,25 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
+	"strings"
 	"time"
 	"uuid"
 )
+
+// ErrNUL is the error a request string holding U+0000 is refused with.
+var ErrNUL = errors.New("text holds U+0000, which no backend compares as written")
+
+// CheckNUL refuses s when it holds U+0000. PostgreSQL refuses the character
+// in text and jsonb parameters, and SQLite ends a LIKE or GLOB pattern at
+// it, so a request value holding it would fail at execution on one backend
+// and match differently on another. Request values are checked where they
+// are read; values the server stored are not.
+func CheckNUL(s string) error {
+	if strings.IndexByte(s, 0) >= 0 {
+		return ErrNUL
+	}
+	return nil
+}
 
 // NormalizeScalar validates a decoded request value against a field's data
 // type and returns the canonical Go value filter ASTs and patch operations

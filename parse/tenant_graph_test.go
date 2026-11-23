@@ -255,7 +255,7 @@ func TestTenantKey_StringBesideUUIDBindsTheCanonicalUUID(t *testing.T) {
 }
 
 func TestTenantKey_PairTablesBindTheResourceKey(t *testing.T) {
-	pairs := parse.Junction{Table: "device_tags", Source: "device_id", Target: "tag_id", Tenant: "tenant_id"}
+	pairs := parse.Junction{Table: "device_tags", Source: []string{"device_id"}, Target: []string{"tag_id"}, Tenant: "tenant_id"}
 
 	t.Run("an owner without a tenant binds its typed key into every pair table", func(t *testing.T) {
 		tests := []struct {
@@ -305,7 +305,8 @@ func TestBuildUpdateBatch_RefusesAnInvalidTenantBeforeItsRows(t *testing.T) {
 	duplicate := func() []parse.RowUpdate {
 		p, err := devices.ParseMergePatch([]byte(`{"name":"renamed"}`))
 		require.NoError(t, err)
-		return []parse.RowUpdate{{Key: 1, Patch: p}, {Key: 1, Patch: p}}
+		rows := []parse.RowUpdate{{Key: parse.Key{1}, Patch: p}, {Key: parse.Key{1}, Patch: p}}
+		return rows
 	}
 	tests := []struct {
 		name string
@@ -338,7 +339,7 @@ func TestTenantKey_ErrorsNameEachPartOnce(t *testing.T) {
 				_, err := listArgs(t, tenanted[graphDevice[int32]]("devices"), "", "abc")
 				return err
 			},
-			want: `devices: parse: Scope.Tenant is not a value of the tenant column's type: tenant_id: "abc" is not a decimal integer`,
+			want: `parse: devices: Scope.Tenant is not a value of the tenant column's type: tenant_id: "abc" is not a decimal integer`,
 		},
 		{
 			name: "a related column",
@@ -348,7 +349,7 @@ func TestTenantKey_ErrorsNameEachPartOnce(t *testing.T) {
 				_, err := listArgs(t, devices, "", "3000000000")
 				return err
 			},
-			want: `devices: parse: Scope.Tenant is not a value of the tenant column's type: commands.tenant_id: 3000000000 overflows int32`,
+			want: `parse: devices: Scope.Tenant is not a value of the tenant column's type: commands.tenant_id: 3000000000 overflows int32`,
 		},
 		{
 			name: "beyond 64 bits",
@@ -356,7 +357,7 @@ func TestTenantKey_ErrorsNameEachPartOnce(t *testing.T) {
 				_, err := listArgs(t, tenanted[graphDevice[uint64]]("devices"), "", "18446744073709551616")
 				return err
 			},
-			want: `devices: parse: Scope.Tenant is not a value of the tenant column's type: tenant_id: 18446744073709551616 overflows uint64`,
+			want: `parse: devices: Scope.Tenant is not a value of the tenant column's type: tenant_id: 18446744073709551616 overflows uint64`,
 		},
 		{
 			name: "a type that is no tenant key",

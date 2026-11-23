@@ -31,11 +31,14 @@ func ExampleNewClient() {
 }
 
 func ExampleNewClient_full() {
+	var background httpx.Lifecycle
+	defer background.Close() // Stops the cache and closes the base's idle connections.
 	client, err := httpx.NewClient(
 		httpx.WithCompression(),
 		httpx.WithCache(nil,
 			httpx.WithStaleIfError(5*time.Minute),
 		),
+		httpx.WithLifecycle(&background),
 		httpx.WithRetry(
 			httpx.WithMaxAttempts(3),
 			httpx.WithBackoff(100*time.Millisecond, 5*time.Second, 2.0),
@@ -55,9 +58,8 @@ func ExampleNewClient_full() {
 		return
 	}
 
-	defer client.CloseIdleConnections()
-	fmt.Println("full client created")
-	// Output: full client created
+	fmt.Println("full client created, timeout", client.Timeout)
+	// Output: full client created, timeout 30s
 }
 
 func ExampleNewChain() {
@@ -90,27 +92,29 @@ func ExampleDefaultChain() {
 }
 
 func ExampleResilientChain() {
-	client, err := httpx.ResilientChain().Client(nil, 30*time.Second)
+	var background httpx.Lifecycle
+	defer background.Close() // Stops the cache and closes the base's idle connections.
+	client, err := httpx.ResilientChain().ClientWithLifecycle(&background, nil, 30*time.Second)
 	if err != nil {
 		fmt.Println(err)
 		return
 	}
 
-	defer client.CloseIdleConnections()
-	fmt.Println("resilient chain client created")
-	// Output: resilient chain client created
+	fmt.Println("resilient chain client created, timeout", client.Timeout)
+	// Output: resilient chain client created, timeout 30s
 }
 
 func ExampleAPIClientChain() {
-	client, err := httpx.APIClientChain().Client(nil, 30*time.Second)
+	var background httpx.Lifecycle
+	defer background.Close() // Stops the cache and closes the base's idle connections.
+	client, err := httpx.APIClientChain().ClientWithLifecycle(&background, nil, 30*time.Second)
 	if err != nil {
 		fmt.Println(err)
 		return
 	}
 
-	defer client.CloseIdleConnections()
-	fmt.Println("API client chain created")
-	// Output: API client chain created
+	fmt.Println("API client chain created, timeout", client.Timeout)
+	// Output: API client chain created, timeout 30s
 }
 
 func ExampleGet() {

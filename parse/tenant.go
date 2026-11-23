@@ -5,8 +5,6 @@ import (
 	"fmt"
 	"reflect"
 	"slices"
-	"strconv"
-	"strings"
 
 	"github.com/ashtonian/pkg/parse/core"
 )
@@ -15,7 +13,7 @@ import (
 // cannot hold: text that is not a UUID for a UUID column, or not a decimal
 // integer in range for an integer column. Like ErrTenantRequired, it is the
 // server's mistake, never the request's.
-var ErrTenantInvalid = errors.New("parse: Scope.Tenant is not a value of the tenant column's type")
+var ErrTenantInvalid = errors.New("Scope.Tenant is not a value of the tenant column's type")
 
 // tenantColumn is a resource's TenantColumn and its Go type.
 type tenantColumn struct {
@@ -23,6 +21,9 @@ type tenantColumn struct {
 	info          core.TypeInfo
 }
 
+// newTenantColumn refuses a tenant column that is no string, UUID or
+// integer: Scope.Tenant is text (value), and those are the types whose one
+// spelling of a value is the column's.
 func newTenantColumn(table, column string, t reflect.Type) (*tenantColumn, error) {
 	info := core.TypeOf(t)
 	switch info.Type {
@@ -47,24 +48,7 @@ func (c *tenantColumn) value(text string) (any, error) {
 	if c.info.Type != core.FieldTypeInt {
 		return core.NormalizeScalar(c.info.Type, c.info.NumberKind, text)
 	}
-	// Decimal digits with an optional minus sign: the text an integer key
-	// is written as, and no other spelling of it.
-	var (
-		n   any
-		err error
-	)
-	if strings.HasPrefix(text, "-") {
-		n, err = strconv.ParseInt(text, 10, 64)
-	} else {
-		n, err = strconv.ParseUint(text, 10, 64)
-	}
-	switch {
-	case errors.Is(err, strconv.ErrRange):
-		return nil, fmt.Errorf("%s overflows %s", text, c.info.NumberKind)
-	case err != nil:
-		return nil, fmt.Errorf("%q is not a decimal integer", text)
-	}
-	return core.NormalizeScalar(c.info.Type, c.info.NumberKind, n)
+	return integerText(c.info.NumberKind, text)
 }
 
 // textual reports a column holding the tenant as text: a string, or a UUID
@@ -126,7 +110,7 @@ func (k tenantKey) value(table, text string) (any, error) {
 	for i, c := range k.columns {
 		v, err := c.value(text)
 		if err != nil {
-			return nil, fmt.Errorf("%w: %s: %w", ErrTenantInvalid, c.name(table), err)
+			return nil, fmt.Errorf("%s: %w", c.name(table), err)
 		}
 		if i == k.binds {
 			bound = v
@@ -245,13 +229,13 @@ func (n *tenantNode) reached() []*tenantColumn {
 func (r *Resource[T]) bindTenant(text string) (any, error) {
 	if text == "" {
 		if r.tenant != "" {
-			return nil, fmt.Errorf("%s: %w", r.table, ErrTenantRequired)
+			return nil, fmt.Errorf("parse: %s: %w", r.table, ErrTenantRequired)
 		}
 		return nil, nil
 	}
 	v, err := r.tenantNode.key.value(r.table, text)
 	if err != nil {
-		return nil, fmt.Errorf("%s: %w", r.table, err)
+		return nil, fmt.Errorf("parse: %s: %w: %w", r.table, ErrTenantInvalid, err)
 	}
 	return v, nil
 }

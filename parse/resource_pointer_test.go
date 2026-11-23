@@ -24,14 +24,14 @@ func TestResource_PointerRowsKeepTheirKeys(t *testing.T) {
 	t.Run("pointer model", func(t *testing.T) {
 		checkResourceRowPages(t, []*pointerResourceRow{&first, &second})
 	})
-	for _, resource := range []interface{ Key(any) (any, error) }{
+	for _, resource := range []interface{ Key(any) (parse.Key, error) }{
 		parse.MustResource[pointerResourceRow]("rows"),
 		parse.MustResource[*pointerResourceRow]("rows"),
 	} {
 		for _, item := range []any{first, &first, new(&first)} {
 			key, err := resource.Key(item)
 			require.NoError(t, err)
-			assert.Equal(t, "r1", key)
+			assert.Equal(t, parse.Key{"r1"}, key)
 		}
 		type otherRow pointerResourceRow
 		for _, item := range []any{nil, (*pointerResourceRow)(nil), new((*pointerResourceRow)(nil)), otherRow(first), 1} {

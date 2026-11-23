@@ -39,7 +39,7 @@ func foldSchema() *patch.PatchSchema {
 			DataType:   core.FieldTypeInt, SQLColumn: "version",
 		},
 		"/meta/*": {
-			AllowedOps: []patch.PatchOp{patch.PatchOpReplace},
+			AllowedOps: []patch.PatchOp{patch.PatchOpReplace, patch.PatchOpAdd, patch.PatchOpArrayAppend},
 			DataType:   core.FieldTypeString, SQLColumn: "meta",
 		},
 	})
@@ -112,7 +112,7 @@ func runFoldCases(t *testing.T, fdb foldDB) {
 		res, err := patch.BuildPatchSQL(parsed, fdb.dialect,
 			patch.WithAutoTimestamp("updated_at"), patch.WithTimeFunc(func() time.Time { return fixed }))
 		require.NoError(t, err)
-		assert.Equal(t, 1, strings.Count(res.SetClause, "updated_at ="), res.SetClause)
+		assert.Equal(t, 1, strings.Count(res.SetClause, `"updated_at" =`), res.SetClause)
 		// PostgreSQL rejects a repeated column assignment outright.
 		stmt := fmt.Sprintf("UPDATE items SET %s WHERE id = %s", res.SetClause, fdb.dialect.Placeholder(res.ParamCount+1))
 		_, err = fdb.db.Exec(stmt, append(res.Args, 1)...)
@@ -125,8 +125,8 @@ func runFoldCases(t *testing.T, fdb foldDB) {
 		require.NoError(t, err)
 		res, err := patch.BuildPatchSQL(parsed, fdb.dialect, patch.WithAutoTimestampSQL("updated_at", "CURRENT_TIMESTAMP"))
 		require.NoError(t, err)
-		assert.Contains(t, res.SetClause, "updated_at = CURRENT_TIMESTAMP")
-		assert.Equal(t, 1, strings.Count(res.SetClause, "updated_at ="), res.SetClause)
+		assert.Contains(t, res.SetClause, `"updated_at" = CURRENT_TIMESTAMP`)
+		assert.Equal(t, 1, strings.Count(res.SetClause, `"updated_at" =`), res.SetClause)
 		assert.Len(t, res.Args, 1, "only the name is bound")
 		stmt := fmt.Sprintf("UPDATE items SET %s WHERE id = %s", res.SetClause, fdb.dialect.Placeholder(res.ParamCount+1))
 		_, err = fdb.db.Exec(stmt, append(res.Args, 1)...)
@@ -139,7 +139,7 @@ func runFoldCases(t *testing.T, fdb foldDB) {
 		require.NoError(t, err)
 		res, err := patch.BuildPatchSQL(parsed, fdb.dialect, patch.WithAutoTimestampSQL("updated_at", "CURRENT_TIMESTAMP"), patch.WithIncrement("version"))
 		require.NoError(t, err)
-		assert.Equal(t, 1, strings.Count(res.SetClause, "version ="), res.SetClause)
+		assert.Equal(t, 1, strings.Count(res.SetClause, `"version" =`), res.SetClause)
 		assert.Len(t, res.Args, 1, "only the name is bound")
 		stmt := fmt.Sprintf("UPDATE items SET %s WHERE id = %s RETURNING version", res.SetClause, fdb.dialect.Placeholder(res.ParamCount+1))
 		for want := 2; want <= 3; want++ {
@@ -204,10 +204,12 @@ func TestBuildPatchSQL_RejectsUncompilableOps(t *testing.T) {
 		ops  string
 		code string
 	}{
-		"move":        {ops: `[{"op":"move","from":"/name","path":"/name"}]`, code: patch.ECodeOpNotSQLCompilable.String()},
-		"copy":        {ops: `[{"op":"copy","from":"/name","path":"/name"}]`, code: patch.ECodeOpNotSQLCompilable.String()},
-		"nested path": {ops: `[{"op":"replace","path":"/meta/color","value":"red"}]`, code: patch.ECodeOpNotSQLCompilable.String()},
-		"test":        {ops: `[{"op":"test","path":"/name","value":"orig"}]`, code: patch.ECodeTestOpSQL.String()},
+		"move":                                  {ops: `[{"op":"move","from":"/name","path":"/name"}]`, code: patch.ECodeOpNotSQLCompilable.String()},
+		"copy":                                  {ops: `[{"op":"copy","from":"/name","path":"/name"}]`, code: patch.ECodeOpNotSQLCompilable.String()},
+		"nested append":                         {ops: `[{"op":"array_append","path":"/meta/color","value":"red"}]`, code: patch.ECodeOpNotSQLCompilable.String()},
+		"a member that reads as an array index": {ops: `[{"op":"replace","path":"/meta/0","value":"red"}]`, code: patch.ECodeOpNotSQLCompilable.String()},
+		"the end of an array":                   {ops: `[{"op":"add","path":"/meta/-","value":"red"}]`, code: patch.ECodeOpNotSQLCompilable.String()},
+		"test":                                  {ops: `[{"op":"test","path":"/name","value":"orig"}]`, code: patch.ECodeTestOpSQL.String()},
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {

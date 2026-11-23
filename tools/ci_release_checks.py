@@ -31,17 +31,31 @@ CHECKS = {
     "parse-release-check": ("parse/", "tools/check-parse-release.sh"),
     # The cookbook replaces both config modules with their working trees.
     "cookbook-check": ("config/",),
+    # The Parse server example replaces Parse with its working tree.
+    "parse-example-check": ("parse/",),
     "tool-check": (ARCHIVE_TOOLING,),
-    "release-please-check": ("tools/release-please/",),
+    # With the pnpm contract every pnpm project keeps, which it runs and tests.
+    "release-please-check": ("tools/release-please/", "tools/check-pnpm"),
+    # The documentation check reads every module's Markdown, API and comments,
+    # the workspace's and those kept out of it.
+    "docs-check": ("config/", "gitx/", "gowalker/", "httpx/", "jsonvalue/", "onepassword/", "parse/", "process/",
+                   "state/", "tools/doccheck/", "tools/gorules/", "tools/modarchive/"),
 }
 # Modules nested in another module's directory are not part of its archive.
-NESTED = {"config-release-check": ("config/kongprovider/", "config/examples/cookbook/")}
-# Prose outside every module, and the SDK's scripts, which its own job runs.
-UNCHECKED = {"CONTRIBUTING.md", "README.md"}
+NESTED = {
+    "config-release-check": ("config/kongprovider/", "config/examples/cookbook/"),
+    "parse-release-check": ("parse/examples/server/",),
+}
+# Prose outside every module, and the scripts only their own job runs: the
+# parse benchmarks' and the SDK's.
+UNCHECKED = {"CONTRIBUTING.md", "README.md", "tools/bench-parse.sh"}
 SDK_TOOLING = "tools/check-parse-sdk-"
+# golangci-lint's configuration and ruleguard rules: the lint job lints every
+# package when either changes. The rules are a module, so doccheck reads them too.
+LINT_CONFIG = (".golangci.yml", "tools/gorules/")
 # Jobs that validate a change, as ci.yml names them. parse-benchmarks records
 # main's benchmarks and validates nothing, so acceptance does not require it.
-VALIDATION_JOBS = ("test", "test-darwin", "parse-postgres", "parse-sdk", "minimum-go", "modules", "lint")
+VALIDATION_JOBS = ("test", "test-darwin", "parse-postgres", "cookbook-postgres", "parse-sdk", "minimum-go", "modules", "lint")
 JOBS = VALIDATION_JOBS + ("parse-benchmarks",)
 
 
@@ -60,6 +74,8 @@ def release_checks(paths):
         if path in UNCHECKED or path.startswith(SDK_TOOLING):
             continue
         owners = [check for check in CHECKS if reads(check, path)]
+        if not owners and path.startswith(LINT_CONFIG):
+            continue
         if not owners or path.startswith(ARCHIVE_TOOLING):
             # Shared build files, workflow, tooling, manifests and unknown paths.
             return list(CHECKS)

@@ -20,32 +20,32 @@ func rowTenantSchemas(ownerType, relatedType core.FieldType) (*filter.ResourceSc
 	notes := &filter.ResourceSchema{
 		Name: "notes",
 		Fields: map[string]*filter.FieldSchema{
-			"body": {ExternalName: "body", SQLExpr: "notes.body", Column: "body", DataType: core.FieldTypeString, AllowedOperators: []filter.FilterOperator{filter.OpEq}},
+			"body": {ExternalName: "body", Table: "notes", Column: "body", DataType: core.FieldTypeString, AllowedOperators: []filter.FilterOperator{filter.OpEq}},
 		},
 		SystemFields: map[string]*filter.FieldSchema{
-			"id":        {ExternalName: "id", SQLExpr: "notes.id", Column: "id", DataType: core.FieldTypeString},
-			"tenant_id": {ExternalName: "tenant_id", SQLExpr: "notes.tenant_id", Column: "tenant_id", DataType: relatedType},
+			"id":        {ExternalName: "id", Table: "notes", Column: "id", DataType: core.FieldTypeString},
+			"tenant_id": {ExternalName: "tenant_id", Table: "notes", Column: "tenant_id", DataType: relatedType},
 		},
 	}
-	key := &filter.FieldSchema{ExternalName: "id", SQLExpr: "widgets.id", Column: "id", DataType: core.FieldTypeString}
+	key := &filter.FieldSchema{ExternalName: "id", Table: "widgets", Column: "id", DataType: core.FieldTypeString}
 	rel := &filter.FieldSchema{
 		ExternalName: "notes", DataType: core.FieldTypeString, Includable: true,
-		Relation: &core.RelationSchema{Kind: core.HasMany, JoinTable: "notes", SourceColumn: "widget_id", TargetColumn: "id", PrimaryKey: "id", TenantColumn: "tenant_id"},
-		Related:  notes, RelatedBy: key,
+		Relation: &core.RelationSchema{Kind: core.HasMany, JoinTable: "notes", SourceColumns: []string{"widget_id"}, TargetColumns: []string{"id"}, OwnerKey: []string{"id"}, TenantColumn: "tenant_id", SourceTypes: textKey(), TargetTypes: textKey()},
+		Related:  notes, RelatedBy: []*filter.FieldSchema{key},
 	}
 	widgets := &filter.ResourceSchema{
 		Name:       "widgets",
-		PrimaryKey: "id",
+		PrimaryKey: []string{"id"},
 		Fields: map[string]*filter.FieldSchema{
 			"notes": rel,
 			"tags": {
 				ExternalName: "tags", DataType: core.FieldTypeString,
-				Relation: &core.RelationSchema{JoinTable: "widget_tags", SourceColumn: "widget_id", TargetColumn: "tag_id", PrimaryKey: "id", TenantColumn: "tenant_id"},
+				Relation: &core.RelationSchema{JoinTable: "widget_tags", SourceColumns: []string{"widget_id"}, TargetColumns: []string{"tag_id"}, OwnerKey: []string{"id"}, TenantColumn: "tenant_id", SourceTypes: textKey(), TargetTypes: textKey()},
 			},
 		},
 		SystemFields: map[string]*filter.FieldSchema{
 			"id":        key,
-			"tenant_id": {ExternalName: "tenant_id", SQLExpr: "widgets.tenant_id", Column: "tenant_id", DataType: ownerType},
+			"tenant_id": {ExternalName: "tenant_id", Table: "widgets", Column: "tenant_id", DataType: ownerType},
 		},
 	}
 	return widgets, rel
@@ -66,13 +66,13 @@ func TestRowTenant_ComparesEachRelationWithTheRow(t *testing.T) {
 		wantNotes, wantPairs string
 	}{
 		{"one type", core.FieldTypeString, core.FieldTypeString,
-			"notes.tenant_id = widgets.tenant_id", "widget_tags.tenant_id = widgets.tenant_id"},
+			`"notes"."tenant_id" = "widgets"."tenant_id"`, `"widget_tags"."tenant_id" = "widgets"."tenant_id"`},
 		{"a uuid owner and a string related column compare by the uuid's text", core.FieldTypeUUID, core.FieldTypeString,
-			"notes.tenant_id = CAST(widgets.tenant_id AS TEXT)", "widget_tags.tenant_id = widgets.tenant_id"},
+			`"notes"."tenant_id" = CAST("widgets"."tenant_id" AS TEXT)`, `"widget_tags"."tenant_id" = "widgets"."tenant_id"`},
 		{"a string owner and a uuid related column compare by the uuid's text", core.FieldTypeString, core.FieldTypeUUID,
-			"CAST(notes.tenant_id AS TEXT) = widgets.tenant_id", "widget_tags.tenant_id = widgets.tenant_id"},
+			`CAST("notes"."tenant_id" AS TEXT) = "widgets"."tenant_id"`, `"widget_tags"."tenant_id" = "widgets"."tenant_id"`},
 		{"integers of any width compare as they are", core.FieldTypeInt, core.FieldTypeInt,
-			"notes.tenant_id = widgets.tenant_id", "widget_tags.tenant_id = widgets.tenant_id"},
+			`"notes"."tenant_id" = "widgets"."tenant_id"`, `"widget_tags"."tenant_id" = "widgets"."tenant_id"`},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -104,21 +104,21 @@ func TestRowTenant_RefusesAmbiguousScopes(t *testing.T) {
 	_, err = filter.BuildFacetQuery(widgets, filter.PostgresDialect{}, "1=1", nil, []filter.FacetRequest{{Field: "notes"}},
 		filter.WithFacetRelationScope(filter.RelationScope{RowTenant: "tenant_id", Tenant: "A"}))
 	assert.Error(t, err, "facets hold relations one way")
-	_, err = filter.BuildIncludeQuery(rel, filter.PostgresDialect{}, []any{"w1"}, filter.WithIncludeRelationScope(filter.RelationScope{RowTenant: "tenant_id"}))
+	_, err = filter.BuildIncludeQuery(rel, filter.PostgresDialect{}, []core.Key{{"w1"}}, filter.WithIncludeRelationScope(filter.RelationScope{RowTenant: "tenant_id"}))
 	assert.ErrorContains(t, err, "owner's schema", "an include joins the owner's table")
-	_, err = filter.BuildIncludeQuery(rel, filter.PostgresDialect{}, []any{"w1"}, filter.WithIncludeOwner(widgets), filter.WithIncludeRelationScope(filter.RelationScope{RowTenant: "tenant_id", Tenant: "A"}))
+	_, err = filter.BuildIncludeQuery(rel, filter.PostgresDialect{}, []core.Key{{"w1"}}, filter.WithIncludeOwner(widgets), filter.WithIncludeRelationScope(filter.RelationScope{RowTenant: "tenant_id", Tenant: "A"}))
 	assert.Error(t, err, "an include holds relations one way")
 }
 
 func TestRowTenant_Include(t *testing.T) {
 	widgets, rel := rowTenantSchemas(core.FieldTypeUUID, core.FieldTypeString)
-	q, err := filter.BuildIncludeQuery(rel, filter.PostgresDialect{}, []any{"w1", "w2"}, filter.WithIncludeOwner(widgets), filter.WithIncludeRelationScope(filter.RelationScope{RowTenant: "tenant_id"}))
+	q, err := filter.BuildIncludeQuery(rel, filter.PostgresDialect{}, []core.Key{{"w1"}, {"w2"}}, filter.WithIncludeOwner(widgets), filter.WithIncludeRelationScope(filter.RelationScope{RowTenant: "tenant_id"}))
 	require.NoError(t, err)
-	assert.Contains(t, q.SQL, "JOIN widgets owner__ ON owner__.id = j.widget_id")
-	assert.Contains(t, q.SQL, "j.tenant_id = CAST(owner__.tenant_id AS TEXT)")
+	assert.Contains(t, q.SQL, `JOIN "widgets" owner__ ON "owner__"."id" = "j"."widget_id"`)
+	assert.Contains(t, q.SQL, `"j"."tenant_id" = CAST("owner__"."tenant_id" AS TEXT)`)
 	assert.Equal(t, []any{[]string{"w1", "w2"}}, q.Args, "no tenant is bound")
 
-	_, err = filter.ResolveInclude(context.Background(), rel, []any{"w1"}, nil, filter.WithIncludeOwner(widgets), filter.WithIncludeRelationScope(filter.RelationScope{RowTenant: "tenant_id"}))
+	_, err = filter.ResolveInclude(context.Background(), rel, []core.Key{{"w1"}}, nil, filter.WithIncludeOwner(widgets), filter.WithIncludeRelationScope(filter.RelationScope{RowTenant: "tenant_id"}))
 	assert.ErrorContains(t, err, "RelationScope.Tenant", "a lookup resolves one tenant's owners at a time")
 	_, err = filter.ResolveMemberships(context.Background(), filter.NewParsedFilter(someNote(widgets)), nil, filter.ResolveRelationScope(filter.RelationScope{RowTenant: "tenant_id"}))
 	assert.ErrorContains(t, err, "RelationScope.Tenant", "a lookup resolves one tenant's rows at a time")

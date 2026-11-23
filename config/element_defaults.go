@@ -3,6 +3,8 @@ package config
 import (
 	"reflect"
 	"strings"
+
+	"github.com/ashtonian/pkg/config/internal/deepcopy"
 )
 
 // elementDefaults applies the defaults of a map's or slice's element struct
@@ -138,7 +140,7 @@ func (e *elementDefaults) fillAbsent(m, defaults map[string]any) {
 		existing, ok := m[key]
 		if !ok {
 			if def != nil {
-				def = deepCopy(reflect.ValueOf(def)).Interface() // each entry its own
+				def = deepcopy.Value(reflect.ValueOf(def)).Interface() // each entry its own
 			}
 			m[key] = def
 			e.record(m, key, SourceCodeDefaults)

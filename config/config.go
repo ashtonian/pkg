@@ -10,16 +10,21 @@ import (
 	"os"
 	"reflect"
 	"regexp"
+	"runtime"
 	"slices"
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/go-playground/validator/v10"
 	"github.com/go-viper/mapstructure/v2"
 	kmaps "github.com/knadh/koanf/maps"
 	"github.com/knadh/koanf/providers/confmap"
 	"github.com/knadh/koanf/v2"
+
+	"github.com/ashtonian/pkg/config/internal/deepcopy"
+	"github.com/ashtonian/pkg/gowalker"
 )
 
 // Load builds a configuration of type T: it merges the sources in
@@ -39,7 +44,13 @@ import (
 //  7. Struct-tag defaults (default:"value")
 //
 // ctx reaches the secret populator, every post-load hook, a context-aware
-// validator and every [ContextProvider].
+// validator and every [ContextProvider]. Once ctx ends no further stage
+// runs: a load whose context has ended reads no source and calls nothing of
+// the caller's, and one that ends mid-load stops before the next provider
+// or file, the environment, decoding, the variable filter, a report
+// callback, the secret populator, the next post-load hook or validation,
+// returning an error that wraps ctx.Err()
+// and its [context.Cause]. A stage already running observes ctx itself.
 //
 // Keys match fields regardless of letter case, as decoding does. Each
 // source's keys are rewritten into the fields' own spelling before the
@@ -109,52 +120,55 @@ func (b boundProvider) ReadBytes() ([]byte, error)    { return b.ReadBytesContex
 type fileDigests map[string][sha256.Size]byte
 
 // loader merges one load's sources into k. Each source's tree is read
-// whole, its struct keys rewritten into the fields' own spelling (keyWalk),
-// and then merged, so precedence holds whatever letter case a source used.
-// With provenance or shadowed-input reporting, origins records what set each
-// value as the trees merge, and inputs what each non-default source set.
+// whole and its struct keys rewritten into the fields' own spelling
+// (keyWalk), so precedence holds whatever letter case a source used. Every
+// source is read and prepared before any merges (see layers.go).
+// With provenance or shadowed-input reporting, origins records what set
+// each value as the trees merge; with shadowed-input reporting, inputs
+// records what each non-default source set.
 type loader struct {
-	checker         *keyChecker
-	withheldUnknown []UnknownKey
-	k               *koanf.Koanf
-	root            reflect.Type
-	schema          *schemaNode
-	sources         []string
-	aliased         []string    // keys sources set under an alias tag's name, by source
-	origins         *originNode // nil unless the load attributes values
-	provenance      bool        // origins holds all provenance reads, not only what shadow detection does
-	inputs          *inputs     // nil unless the load finds shadowed inputs
-}
-
-// add merges data, the tree of the source called name, whose values label
-// attributes. A source that sets one field under two spellings fails.
-func (l *loader) add(name string, data map[string]any, label labeler) error {
-	tree, err := l.rewrite(name, data)
-	if err != nil {
-		return err
-	}
-	return l.merge(name, tree, label)
+	k          *koanf.Koanf
+	root       reflect.Type
+	schema     *schemaNode
+	sources    []string
+	aliased    []string    // keys sources set under an alias tag's name, by source
+	origins    *originNode // nil unless the load attributes values or finds shadowed inputs
+	provenance bool        // origins holds all provenance reads, not only what shadow detection does
+	inputs     *inputs     // nil unless the load finds shadowed inputs
+	// unkeyed is the koanf:"-" fields of the typed sections the merge
+	// keeps, set on the decoded config (see unkeyed.go).
+	unkeyed unkeyedSections
 }
 
 // rewrite is data as it merges: maps keyed by anything but strings keyed
 // by their text, as koanf keys them, and every key naming a field spelled
 // as the field is.
 func (l *loader) rewrite(name string, data map[string]any) (map[string]any, error) {
-	w := keyWalk{schema: l.schema}
+	return l.walk(&keyWalk{schema: l.schema}, name, data)
+}
+
+// walk is rewrite through w, which then holds what the walk recorded.
+func (l *loader) walk(w *keyWalk, name string, data map[string]any) (map[string]any, error) {
 	tree := w.tree(l.root, textKeyed(data))
 	if len(w.twice) > 0 {
-		return nil, fmt.Errorf("loading %s: %w: keys spelled two ways set one field: %s", name, ErrValidation, strings.Join(w.twice, ", "))
+		return nil, fmt.Errorf("loading %s: %w: keys spelled two ways set one key: %s", name, ErrValidation, strings.Join(w.twice, ", "))
 	}
 	if len(w.notJSON) > 0 {
 		return nil, fmt.Errorf("loading %s: %w: format:\"json\" values that are not JSON: %s", name, ErrValidation, strings.Join(w.notJSON, ", "))
 	}
 	if len(w.noText) > 0 {
-		return nil, fmt.Errorf("loading %s: %w: values that do not marshal to text: %s", name, ErrValidation, strings.Join(w.noText, ", "))
+		return nil, fmt.Errorf("loading %s: %w: values that do not marshal to text: %s", name, ErrValidation, keyList(w.noText))
 	}
 	for _, a := range w.aliased {
 		l.aliased = append(l.aliased, a+" in "+name)
 	}
 	return tree, nil
+}
+
+// koanfMerge is mergeTrees as koanf calls a merge function.
+func koanfMerge(src, dest map[string]any) error {
+	mergeTrees(src, dest)
+	return nil
 }
 
 // merge merges tree into the load and, when the load attributes values, the
@@ -163,9 +177,17 @@ func (l *loader) rewrite(name string, data map[string]any) (map[string]any, erro
 // provenance the origins serve shadow detection alone, which defaults never
 // take part in: they merge first, so they hold nothing a source set.
 func (l *loader) merge(name string, tree map[string]any, label labeler) error {
-	if err := l.k.Load(confmap.Provider(tree, ""), nil); err != nil {
+	return l.mergeSource(name, tree, nil, label)
+}
+
+// mergeSource is merge for a source whose walk recorded unkeyed, the
+// koanf:"-" fields of the typed sections it sets.
+func (l *loader) mergeSource(name string, tree map[string]any, unkeyed []unkeyedFields, label labeler) error {
+	err := l.k.Load(confmap.Provider(tree, ""), nil, koanf.WithMergeFunc(koanfMerge))
+	if err != nil {
 		return fmt.Errorf("loading %s: %w: %w", name, ErrSource, err)
 	}
+	l.unkeyed.merge(tree, unkeyed)
 	rank := len(l.sources)
 	if l.origins != nil && (l.provenance || !label.defaults()) {
 		l.origins.merge(tree, &originMerge{label: label, rank: rank, provenance: l.provenance})
@@ -177,18 +199,23 @@ func (l *loader) merge(name string, tree map[string]any, label labeler) error {
 	return nil
 }
 
-// addProvider reads a provider — a map, or bytes through parser — and adds
-// it. A read failure is ErrSource with the provider's error; bytes the parser
-// rejects are ErrSource with a *ParseError. When the load attributes values,
-// an OriginProvider's annotations name the source of each value; any other
-// provider is src's own.
-func (l *loader) addProvider(ctx context.Context, name string, p providerSource, src Source) error {
-	if op, ok := p.provider.(OriginProvider); ok && p.parser == nil && l.origins != nil {
+// readProvider reads a provider — a map, or bytes through parser — or an
+// entry source, and prepares it. A read failure is ErrSource with the
+// provider's error; bytes the parser rejects are ErrSource with a
+// *ParseError. When the load attributes values, an OriginProvider's
+// annotations name the source of each value; any other provider is src's
+// own.
+func (l *loader) readProvider(ctx context.Context, name string, p providerSource, src Source) (*layer, error) {
+	if p.entries != nil {
+		return l.readEntries(ctx, name, p, src)
+	}
+	op, ok := p.provider.(OriginProvider)
+	if ok && p.parser == nil && (l.provenance || l.inputs != nil) {
 		data, annotations, err := op.ReadWithOrigins(ctx)
 		if err != nil {
-			return fmt.Errorf("loading %s: %w: %w", name, ErrSource, err)
+			return nil, fmt.Errorf("loading %s: %w: %w", name, ErrSource, err)
 		}
-		return l.prepareProvider(ctx, name, data, p, func(tree map[string]any) (labeler, error) {
+		return l.prepareProvider(name, data, p, func(tree map[string]any) (labeler, error) {
 			return annotationLabeler(l.schema, tree, annotations, src)
 		})
 	}
@@ -197,28 +224,38 @@ func (l *loader) addProvider(ctx context.Context, name string, p providerSource,
 	if p.parser == nil {
 		m, err := pr.Read()
 		if err != nil {
-			return fmt.Errorf("loading %s: %w: %w", name, ErrSource, err)
+			return nil, fmt.Errorf("loading %s: %w: %w", name, ErrSource, err)
 		}
 		data = m
 	} else {
 		b, err := pr.ReadBytes()
 		if err != nil {
-			return fmt.Errorf("loading %s: %w: %w", name, ErrSource, err)
+			return nil, fmt.Errorf("loading %s: %w: %w", name, ErrSource, err)
 		}
 		if data, err = parse(name, p.parser, b); err != nil {
-			return fmt.Errorf("loading %s: %w: %w", name, ErrSource, err)
+			return nil, fmt.Errorf("loading %s: %w: %w", name, ErrSource, err)
 		}
 	}
-	return l.prepareProvider(ctx, name, data, p, func(map[string]any) (labeler, error) { return constant(src), nil })
+	return l.prepareProvider(name, data, p, func(map[string]any) (labeler, error) { return constant(src), nil })
 }
 
-// addFlat adds a map keyed by dot-path. It is unflattened from a deep copy
-// rather than through a koanf provider, whose copy keeps only exported
-// fields: add must see the values whole to turn those that marshal to text
-// into their text.
+// addFlat adds a map keyed by dot-path, as prepareFlat prepares it.
 func (l *loader) addFlat(name string, flat map[string]any, label labeler) error {
-	copied := deepCopy(reflect.ValueOf(flat)).Interface().(map[string]any)
-	return l.add(name, kmaps.Unflatten(copied, "."), label)
+	y, err := l.prepareFlat(name, flat, label)
+	if err != nil {
+		return err
+	}
+	_, _, err = l.mergeLayer(y, nil)
+	return err
+}
+
+// prepareFlat is prepare for a map keyed by dot-path. It is unflattened
+// from a deep copy rather than through a koanf provider, whose copy keeps
+// only exported fields: prepare must see the values whole to turn those
+// that marshal to text into their text.
+func (l *loader) prepareFlat(name string, flat map[string]any, label labeler) (*layer, error) {
+	copied := deepcopy.Value(reflect.ValueOf(flat)).Interface().(map[string]any)
+	return l.prepare(name, kmaps.Unflatten(copied, "."), label)
 }
 
 // loaded is one load's outcome: the config, the config files it read and
@@ -235,11 +272,46 @@ type loaded[T any] struct {
 	inputs   *inputs
 }
 
-// load is Load's pipeline.
+// ended is why ctx ended, nil while it has not: ctx.Err(), with the cause
+// [context.WithCancelCause] or a deadline's cause gave, so errors.Is reaches
+// either.
+func ended(ctx context.Context) error {
+	err := ctx.Err()
+	if err == nil {
+		return nil
+	}
+	cause := context.Cause(ctx)
+	if !errors.Is(cause, err) {
+		return fmt.Errorf("%w: %w", err, cause)
+	}
+	return err
+}
+
+// abandoned is why a load whose context has ended stops: ended's error,
+// named for the load. It is nil while ctx has not ended.
+func abandoned(ctx context.Context) error {
+	err := ended(ctx)
+	if err != nil {
+		return fmt.Errorf("loading config abandoned: %w", err)
+	}
+	return nil
+}
+
+// load is Load's pipeline. abandoned guards each boundary before a stage
+// the caller supplies — a Defaulter, a provider, a file's parser, the
+// environ function, decode hooks, the variable filter, a report callback,
+// the secret populator, a post-load hook, the validator — so a load whose
+// context has ended starts none of them, and one that ends inside such a
+// stage fails as abandoned.
 func load[T any](ctx context.Context, o *options) (loaded[T], error) {
 	none := loaded[T]{}
+	err := abandoned(ctx)
+	if err != nil {
+		return none, err
+	}
 	root := reflect.TypeFor[T]()
-	if err := o.checkHookTypes(reflect.TypeFor[*T]()); err != nil {
+	err = o.checkHookTypes(reflect.TypeFor[*T]())
+	if err != nil {
 		return none, err
 	}
 	schema, err := loadSchema(root, o)
@@ -260,10 +332,6 @@ func load[T any](ctx context.Context, o *options) (loaded[T], error) {
 	if o.findsShadowed() {
 		l.inputs = newInputs(schema, l.origins, o.inputDigests)
 	}
-	files := fileDigests{}
-	var env envSchema
-	var unmatchedEnv []string
-
 	if _, err := l.addSchemaDefaults(o); err != nil {
 		return none, err
 	}
@@ -272,49 +340,27 @@ func load[T any](ctx context.Context, o *options) (loaded[T], error) {
 			return none, err
 		}
 	}
-	if err := l.prepareValidation(ctx, o); err != nil {
+	err = abandoned(ctx)
+	if err != nil {
 		return none, err
 	}
-	for i, src := range o.base {
-		if err := l.addProvider(ctx, fmt.Sprintf("base provider %d", i), src, positionSource(SourceBase, i)); err != nil {
-			return none, err
-		}
+	layers, read, err := l.readLayers(ctx, o)
+	if err != nil {
+		return none, err
 	}
-	for _, f := range o.files {
-		raw, err := os.ReadFile(f.path)
-		switch {
-		case err == nil:
-		case !f.required && errors.Is(err, fs.ErrNotExist):
-			continue // absence is the one failure an optional file is allowed
-		default:
-			return none, fmt.Errorf("loading config file %s: %w: %w", f.path, ErrFileRead, err)
-		}
-		data, err := parse(f.path, o.fileParser(f.path), raw)
-		if err != nil {
-			return none, fmt.Errorf("loading config file %s: %w: %w", f.path, ErrFileParse, err)
-		}
-		if err := l.add("config file "+f.path, data, constant(Source{Kind: SourceFile, Name: f.path})); err != nil {
-			return none, err
-		}
-		files[f.path] = sha256.Sum256(raw)
+	files, env, unmatchedEnv := read.files, read.env, read.unmatchedEnv
+	verdicts, err := l.judgeEntries(ctx, o, layers)
+	if err != nil {
+		return none, err
 	}
-	if len(o.envPrefixes) > 0 {
-		// Named from T's fields so a key with an underscore in it
-		// (koanf:"max_conns") keeps it; see envSchema.
-		env = newEnvSchema(variableFields(root), o.envPrefixes)
-		values, from, unmatched, err := env.read(o.environ())
-		if err != nil {
-			return none, fmt.Errorf("loading env vars: %w: %w", ErrValidation, err)
-		}
-		unmatchedEnv = unmatched
-		if err := l.addFlat("env "+env.pattern(), values, envLabeler(env.pattern(), from)); err != nil {
-			return none, err
-		}
+	// A source's claim on an unknown key looks for the defaults here.
+	var defaults map[string]any
+	if o.claimsUnknown() {
+		defaults = l.k.Raw()
 	}
-	for i, src := range o.overrides {
-		if err := l.addProvider(ctx, fmt.Sprintf("override provider %d", i), src, positionSource(SourceOverride, i)); err != nil {
-			return none, err
-		}
+	err = l.mergeLayers(ctx, layers, verdicts)
+	if err != nil {
+		return none, err
 	}
 	o.log().DebugContext(ctx, "config sources loaded", "sources", l.sources)
 	if len(l.aliased) > 0 {
@@ -322,9 +368,17 @@ func load[T any](ctx context.Context, o *options) (loaded[T], error) {
 	}
 	var shadowed []Shadow
 	if l.inputs != nil {
+		err = abandoned(ctx)
+		if err != nil {
+			return none, err
+		}
 		if shadowed, err = o.judgeShadowed(ctx, root, l.inputs); err != nil {
 			return none, err
 		}
+	}
+	err = abandoned(ctx)
+	if err != nil {
+		return none, err
 	}
 
 	merged := l.k.Raw()
@@ -347,6 +401,11 @@ func load[T any](ctx context.Context, o *options) (loaded[T], error) {
 	if err != nil {
 		return none, fmt.Errorf("unmarshaling config: %w: %w", ErrValidation, err)
 	}
+	l.unkeyed.apply(schema, reflect.ValueOf(cfg).Elem())
+	err = abandoned(ctx)
+	if err != nil {
+		return none, err
+	}
 	if len(unmatchedEnv) > 0 {
 		references, err := referencedVariables(schema, reflect.ValueOf(cfg))
 		if err != nil {
@@ -359,15 +418,29 @@ func load[T any](ctx context.Context, o *options) (loaded[T], error) {
 			o.log().DebugContext(ctx, "environment variables under the prefix name no config key", "names", unmatchedEnv)
 		}
 	}
-	unknown, err := o.unknownInput(ctx, root, schema, merged, md.Unused, env, unmatchedEnv, l.withheldUnknown)
+	err = abandoned(ctx)
+	if err != nil {
+		return none, err
+	}
+	claimed, unused, additional := l.claimUnknown(merged, defaults, md.Unused, layers)
+	unknown, err := o.unknownInput(ctx, root, schema, merged, unused, env, unmatchedEnv, additional)
 	if err != nil {
 		return none, fmt.Errorf("unmarshaling config: %w: %w", ErrValidation, err)
 	}
+	accepted, err := reportUnknown(ctx, layers, claimed)
+	if err != nil {
+		return none, err
+	}
+	unknown = unknown.withKeys(root, accepted)
 
 	// stage runs one stage that may change the decoded config, recording
 	// what it changed when provenance is on.
 	cv := reflect.ValueOf(cfg).Elem()
 	stage := func(src Source, run func() error) error {
+		stopped := abandoned(ctx)
+		if stopped != nil {
+			return stopped
+		}
 		if rec == nil {
 			return run()
 		}
@@ -398,6 +471,10 @@ func load[T any](ctx context.Context, o *options) (loaded[T], error) {
 	}
 
 	if err := o.validateConfig(ctx, cfg); err != nil {
+		stopped := abandoned(ctx)
+		if stopped != nil {
+			return none, stopped
+		}
 		return none, err
 	}
 
@@ -411,30 +488,21 @@ func load[T any](ctx context.Context, o *options) (loaded[T], error) {
 }
 
 func (o *options) validateConfig(ctx context.Context, cfg any) error {
-	if err := ctx.Err(); err != nil {
+	err := ended(ctx)
+	if err != nil {
 		return err
 	}
 	if !o.skipValid {
-		v := o.validator
-		if v == nil {
-			v = defaultValidator()
-		}
-		if err := validate(ctx, v, cfg); err != nil {
-			// The validator's error is kept whole as the cause, so a
-			// wrapper's own sentinels and types stay reachable; go-playground
-			// field errors found inside it only shape the message.
-			summary := err.Error()
-			var ve validator.ValidationErrors
-			if errors.As(err, &ve) {
-				summary = fieldErrorSummary(reflect.ValueOf(cfg), ve)
+		err = o.fieldRules(ctx, cfg)
+		if err != nil {
+			if errors.Is(err, ErrSchema) {
+				return err
 			}
-			return &validationError{
-				msg:   fmt.Sprintf("validating config: %s: %s", ErrValidation, summary),
-				cause: err,
-			}
+			return ruleViolation(reflect.ValueOf(cfg), err)
 		}
 		if v, ok := any(cfg).(Validatable); ok {
-			if err := v.Validate(); err != nil {
+			err = v.Validate()
+			if err != nil {
 				return &validationError{
 					msg:   fmt.Sprintf("validating config: %s: %s", ErrValidation, err),
 					cause: err,
@@ -442,8 +510,125 @@ func (o *options) validateConfig(ctx context.Context, cfg any) error {
 			}
 		}
 	}
+	return ended(ctx)
+}
 
-	return ctx.Err()
+// fieldRules runs the load's validator over cfg — the default validator's
+// tags, or WithValidator's — without the Validate method a load runs after
+// it. It is nil under WithSkipValidation.
+func (o *options) fieldRules(ctx context.Context, cfg any) error {
+	switch {
+	case o.skipValid:
+		return nil
+	case o.validator == nil:
+		err := refuseCycles(cfg)
+		if err != nil {
+			return err
+		}
+		return validateDefault(ctx, cfg)
+	}
+	return validate(ctx, o.validator, cfg)
+}
+
+// ruleViolation is err, the validator's failure for cfg, as a load reports
+// it: ErrValidation with err kept whole as the cause, so a wrapper's own
+// sentinels and types stay reachable. The go-playground field errors found
+// inside it only shape the message, each named by its key.
+func ruleViolation(cfg reflect.Value, err error) error {
+	summary := err.Error()
+	var ve validator.ValidationErrors
+	if errors.As(err, &ve) {
+		summary = fieldErrorSummary(cfg, ve)
+	}
+	violation := &validationError{
+		msg:   fmt.Sprintf("validating config: %s: %s", ErrValidation, summary),
+		cause: err,
+	}
+	return violation
+}
+
+// sourcesRead is what reading a load's sources finds beside its layers: the
+// digest of each config file read, and the environment's schema and the
+// variables under its prefixes that it did not match.
+type sourcesRead struct {
+	files        fileDigests
+	env          envSchema
+	unmatchedEnv []string
+}
+
+// readLayers reads every source above the defaults into a layer, in rank
+// order: the base providers, the config files, the environment and the
+// override providers. Nothing merges until every source is read (see
+// layers.go).
+func (l *loader) readLayers(ctx context.Context, o *options) ([]*layer, sourcesRead, error) {
+	read := sourcesRead{files: fileDigests{}}
+	var layers []*layer
+	for i, src := range o.base {
+		err := abandoned(ctx)
+		if err != nil {
+			return nil, read, err
+		}
+		y, err := l.readProvider(ctx, fmt.Sprintf("base provider %d", i), src, positionSource(SourceBase, i))
+		if err != nil {
+			return nil, read, err
+		}
+		layers = append(layers, y)
+	}
+	for _, f := range o.files {
+		err := abandoned(ctx)
+		if err != nil {
+			return nil, read, err
+		}
+		raw, err := os.ReadFile(f.path)
+		switch {
+		case err == nil:
+		case !f.required && errors.Is(err, fs.ErrNotExist):
+			continue // absence is the one failure an optional file is allowed
+		default:
+			return nil, read, fmt.Errorf("loading config file %s: %w: %w", f.path, ErrFileRead, err)
+		}
+		data, err := parse(f.path, o.fileParser(f.path), raw)
+		if err != nil {
+			return nil, read, fmt.Errorf("loading config file %s: %w: %w", f.path, ErrFileParse, err)
+		}
+		y, err := l.prepare("config file "+f.path, data, constant(Source{Kind: SourceFile, Name: f.path}))
+		if err != nil {
+			return nil, read, err
+		}
+		layers = append(layers, y)
+		read.files[f.path] = sha256.Sum256(raw)
+	}
+	stopped := abandoned(ctx)
+	if stopped != nil {
+		return nil, read, stopped
+	}
+	if len(o.envPrefixes) > 0 {
+		// Named from T's fields so a key with an underscore in it
+		// (koanf:"max_conns") keeps it; see envSchema.
+		read.env = newEnvSchema(variableFields(l.root), o.envPrefixes)
+		values, from, unmatched, err := read.env.read(o.environ())
+		if err != nil {
+			return nil, read, fmt.Errorf("loading env vars: %w: %w", ErrValidation, err)
+		}
+		read.unmatchedEnv = unmatched
+		y, err := l.prepareFlat("env "+read.env.pattern(), values, envLabeler(read.env.pattern(), from))
+		if err != nil {
+			return nil, read, err
+		}
+		layers = append(layers, y)
+	}
+	for i, src := range o.overrides {
+		err := abandoned(ctx)
+		if err != nil {
+			return nil, read, err
+		}
+		y, err := l.readProvider(ctx, fmt.Sprintf("override provider %d", i), src, positionSource(SourceOverride, i))
+		if err != nil {
+			return nil, read, err
+		}
+		layers = append(layers, y)
+	}
+	return layers, read, abandoned(ctx)
 }
 
 // bind gives a ContextProvider the load's context.
@@ -515,6 +700,380 @@ var defaultValidator = sync.OnceValue(func() *validator.Validate {
 	return v
 })
 
+// validatorPackage prefixes the name of every function go-playground's
+// validator defines.
+const validatorPackage = "github.com/go-playground/validator/v10."
+
+// validateDefault validates cfg with the default validator. The validator
+// panics on a rule it cannot apply — min=abc, len or oneof on a kind they
+// do not measure, required_if with an odd number of params, a dive or an
+// unreadable tag in a struct behind a pointer, a collection or an
+// interface, which [defaultRules] leaves to the value — wherever validation
+// meets it. Such a panic is the declaration's fault, not the value's, and
+// is returned as an ErrSchema naming the field the validator was
+// validating, by key, and carrying the validator's message. A panic raised
+// in the caller's own code, such as a method a validateFn rule calls, is
+// left to propagate.
+func validateDefault(ctx context.Context, cfg any) (err error) {
+	// The validator calls a filter with each field's namespace as it enters
+	// the field, and its own panics seldom name one: the last namespace is
+	// where it was.
+	var at []byte
+	enter := func(ns []byte) bool {
+		at = append(at[:0], ns...)
+		return false
+	}
+	returned := false
+	defer func() {
+		if returned || !raisedByValidator() {
+			return
+		}
+		r := recover()
+		root := reflect.ValueOf(cfg)
+		var where string
+		if len(at) > 0 {
+			schema, _ := rootSchema(root.Type())
+			where = " at " + validationKey(root, schema, string(at), string(at))
+		}
+		err = fmt.Errorf("validating config: %w: a validate tag of %s does not apply to its field%s: %s", ErrSchema, gowalker.TypeText(derefType(root.Type())), where, panicText(r))
+	}()
+	err = defaultValidator().StructFilteredCtx(ctx, cfg, enter)
+	returned = true
+	return err
+}
+
+// raisedByValidator reports whether the panic unwinding through its caller,
+// a deferred function, was raised by go-playground's own code: the first
+// frame beneath the deferred call that is neither the runtime's, which
+// raises a fault's panic, nor reflect's, which panics for the validator
+// when it reads a value as a kind it is not.
+func raisedByValidator() bool {
+	pcs := make([]uintptr, 32)
+	frames := runtime.CallersFrames(pcs[:runtime.Callers(3, pcs)])
+	for {
+		f, more := frames.Next()
+		if !strings.HasPrefix(f.Function, "runtime.") && !strings.HasPrefix(f.Function, "reflect.") {
+			return strings.HasPrefix(f.Function, validatorPackage)
+		}
+		if !more {
+			return false
+		}
+	}
+}
+
+// panicText is the message of a panic the validator raised. The validator
+// panics with text it formats from a rule, its params, a type and a field's
+// name, and through reflect or the runtime with an error naming a kind; an
+// error of any other kind could quote the operating system's view of a
+// field's value, a path, and is named by its type alone.
+func panicText(r any) string {
+	var re runtime.Error
+	var ve *reflect.ValueError
+	switch v := r.(type) {
+	case string:
+		return v
+	case error:
+		if errors.As(v, &re) || errors.As(v, &ve) {
+			return v.Error()
+		}
+	}
+	return fmt.Sprintf("a %T", r)
+}
+
+// defaultRules refuses a validate tag the default validator would meet on
+// every validation of a value of T and cannot read — an undefined rule,
+// keys without dive, an empty rule — which it would otherwise panic on in
+// the middle of a load. Each tag is parsed once per type, and no rule runs.
+func defaultRules(t reflect.Type) error {
+	e := schemaMetadata(t)
+	if e.err != nil {
+		return e.err
+	}
+	e.rules.Do(func() { e.rulesErr = unreadableRules(e.node.typ) })
+	return e.rulesErr
+}
+
+// unreadableRules parses, with the default validator's own parser (v), the
+// validate tag of every field v reads on every validation of a value of
+// root, whatever the value holds: the fields of root and of each struct it
+// holds by value, as go-playground descends to them —
+//
+//   - every exported or embedded field not tagged validate:"-", those
+//     tagged koanf:"-" and the structs that decode themselves from text
+//     included;
+//   - into a field's struct, time.Time and types convertible to it aside,
+//     once its rules pass: v reads every tag of a struct it meets, and goes
+//     on into the fields' values unless the rules reaching the struct say
+//     structonly; nostructlevel stops before it;
+//   - through a dive into an array of one or more elements, which holds
+//     them whatever the value: each element is walked as a field of the
+//     element type with the rules after the dive.
+//
+// On each of those structs' fields whose values v walks, it also refuses a
+// dive v cannot take on the field's type, which v panics on whenever it
+// applies it (see [misappliedDive]).
+//
+// A struct v reaches only when a value puts it there is left to validation
+// (see [validateDefault]): one behind a pointer, a map, a slice or an
+// interface, one beneath an omitempty or omitzero rule, and one whose value
+// v replaces with its own ValidatorValue. An array of no elements is never
+// walked.
+func unreadableRules(root reflect.Type) error {
+	w := ruleWalk{read: map[reflect.Type]bool{}, walked: map[reflect.Type]bool{}}
+	w.fields(root, true)
+	return errors.Join(w.errs...)
+}
+
+// ruleWalk is one unreadableRules walk. read holds the structs whose tags
+// it has read, and walked those whose fields' values it has walked: a
+// type's tags do not depend on the path reaching it.
+type ruleWalk struct {
+	read   map[reflect.Type]bool
+	walked map[reflect.Type]bool
+	errs   []error
+}
+
+// value walks what a field of type t holds by value — a struct, or the
+// elements a dive reaches in an array — which v meets on every validation
+// unless rules, the field's rules, stop it first.
+func (w *ruleWalk) value(t reflect.Type, rules []string) {
+	if validatedAsOther(t) {
+		return
+	}
+	for i, rule := range rules {
+		switch stepOf(rule) {
+		case stepStop, stepWhenSet:
+			// Whether v reads on past omitempty or omitzero is the value's.
+			return
+		case stepStructOnly:
+			if walksFields(t) {
+				w.fields(t, false)
+			}
+			return
+		case stepDive:
+			// A slice, a map or a pointer may hold no element; an array
+			// holds its length's worth whatever the value.
+			if t.Kind() == reflect.Array && t.Len() > 0 {
+				w.value(t.Elem(), rules[i+1:])
+			}
+			return
+		}
+	}
+	if walksFields(t) {
+		w.fields(t, true)
+	}
+}
+
+// fields reads the validate tags of struct t's fields as v does on meeting
+// t, and, when descend, walks the fields' values.
+func (w *ruleWalk) fields(t reflect.Type, descend bool) {
+	read := validatorFields(t)
+	if !w.read[t] {
+		w.read[t] = true
+		w.errs = append(w.errs, read.problems...)
+	}
+	if !descend || w.walked[t] {
+		return
+	}
+	w.walked[t] = true
+	for _, f := range read.fields {
+		problem := misappliedDive(f.typ, f.rules)
+		if problem != "" {
+			w.errs = append(w.errs, fmt.Errorf("%w: field %s of %s has a validate tag the validator cannot apply: %s", ErrSchema, f.name, gowalker.TypeText(t), problem))
+			continue
+		}
+		w.value(f.typ, f.rules)
+	}
+}
+
+// ruleStep is what go-playground does with a field's value at one of the
+// field's rules, as its traverseField reads them in order.
+type ruleStep int
+
+const (
+	// stepRun runs the rule and reads the next.
+	stepRun ruleStep = iota
+	// stepStop walks nothing beneath the value: nostructlevel, endkeys.
+	stepStop
+	// stepWhenSet reads on only when the value is set: omitempty, omitzero.
+	// A value they stop at holds no pointer, map or slice element.
+	stepWhenSet
+	// stepStructOnly reads a struct's tags and walks none of its fields'
+	// values.
+	stepStructOnly
+	// stepDive walks each element of a slice, an array or a map with the
+	// rules after the dive, and ends the field's own rules.
+	stepDive
+)
+
+func stepOf(rule string) ruleStep {
+	switch rule {
+	case "nostructlevel", "endkeys":
+		return stepStop
+	case "omitempty", "omitzero":
+		return stepWhenSet
+	case "structonly":
+		return stepStructOnly
+	case "dive":
+		return stepDive
+	}
+	return stepRun
+}
+
+// walksFields reports whether v, meeting a value of type t once a field's
+// rules are read, goes on into its fields: a struct, time.Time and the
+// types convertible to it aside.
+func walksFields(t reflect.Type) bool {
+	return t.Kind() == reflect.Struct && !t.ConvertibleTo(reflect.TypeFor[time.Time]())
+}
+
+// structRules is a struct type as the default validator reads it on first
+// meeting a value of it: the fields it walks, in order, and the tags it
+// cannot read, on any of which it panics before walking a field.
+type structRules struct {
+	fields   []readRules
+	problems []error
+}
+
+// readRules is a field whose validate tag v reads, and its rules: name is
+// its Go name and alt the validator's (see [FieldName]), as its namespaces
+// spell them.
+type readRules struct {
+	index int
+	name  string
+	alt   string
+	typ   reflect.Type
+	rules []string
+}
+
+// validatorFields is struct type t as the default validator reads it, read
+// once per type for the life of the process, as the validator's own cache
+// keeps it.
+func validatorFields(t reflect.Type) *structRules {
+	read, ok := readStructs.Load(t)
+	if ok {
+		return read.(*structRules)
+	}
+	read, _ = readStructs.LoadOrStore(t, readStruct(t))
+	return read.(*structRules)
+}
+
+// readStructs holds each struct type's rules: reflect.Type → *structRules.
+var readStructs sync.Map //nolint:gochecknoglobals // process-wide cache of immutable per-type data, bounded by the program's types
+
+// misappliedDive is the dive in rules, a field's rules, that v cannot take
+// on t, the field's type, through pointers as v follows them: a dive on a
+// kind that is not a slice, an array or a map, or keys after a dive on a
+// slice or an array. v panics on one whenever it applies it, so the tag is
+// wrong whatever the field holds: a collection's dive is applied to each
+// element it holds. It is "" when the dives apply, where a value decides
+// what v walks — an interface, a type v validates as its ValidatorValue —
+// and past a dive into an array of no elements, which v never applies.
+func misappliedDive(t reflect.Type, rules []string) string {
+	for i, rule := range rules {
+		if validatedAsOther(t) {
+			return ""
+		}
+		t = derefType(t)
+		switch stepOf(rule) {
+		case stepStop, stepStructOnly:
+			return "" // v goes no further
+		case stepDive:
+		default:
+			continue
+		}
+		after := rules[i+1:]
+		keys := len(after) > 0 && after[0] == "keys"
+		switch t.Kind() {
+		case reflect.Interface:
+			return ""
+		case reflect.Slice, reflect.Array:
+			if t.Kind() == reflect.Array && t.Len() == 0 {
+				return ""
+			}
+			if keys {
+				return fmt.Sprintf("keys after a dive on %s, which is not a map", gowalker.TypeText(t))
+			}
+			return misappliedDive(t.Elem(), after)
+		case reflect.Map:
+			if !keys {
+				return misappliedDive(t.Elem(), after)
+			}
+			// The keys' rules run to endkeys or to the tag's end; the rest
+			// are the values'.
+			end := slices.Index(after, "endkeys")
+			if end < 0 {
+				end = len(after)
+			}
+			problem := misappliedDive(t.Key(), after[1:end])
+			if problem != "" || end == len(after) {
+				return problem
+			}
+			return misappliedDive(t.Elem(), after[end+1:])
+		default:
+			return fmt.Sprintf("dive on %s, which is not a slice, an array or a map", gowalker.TypeText(t))
+		}
+	}
+	return ""
+}
+
+// validatedAsOther reports whether v validates a value of t, or a value t
+// points to, as the ValidatorValue it returns rather than as itself.
+func validatedAsOther(t reflect.Type) bool {
+	base := derefType(t)
+	for {
+		if t.Implements(reflect.TypeFor[validator.Valuer]()) {
+			return true
+		}
+		if t == base {
+			return false
+		}
+		t = t.Elem()
+	}
+}
+
+// readStruct reads the validate tag of each field of struct t that the
+// default validator reads, recording each tag it cannot read. The fields
+// it returns are those whose tags read.
+func readStruct(t reflect.Type) *structRules {
+	read := &structRules{}
+	for i := range t.NumField() {
+		f := t.Field(i)
+		tag := f.Tag.Get("validate")
+		if !f.IsExported() && !f.Anonymous || tag == "-" {
+			continue
+		}
+		var rules []string
+		if tag != "" {
+			problem := unreadableRule(defaultValidator(), tag)
+			if problem != "" {
+				// The validator's complaint names the rule by the part before
+				// '=', and the field; a tag holds the source's own text, never
+				// a field's value.
+				read.problems = append(read.problems, fmt.Errorf("%w: field %s of %s has a validate tag the validator cannot read: %s", ErrSchema, f.Name, gowalker.TypeText(t), problem))
+				continue
+			}
+			rules = strings.Split(tag, ",")
+		}
+		read.fields = append(read.fields, readRules{index: i, name: f.Name, alt: FieldName(f), typ: f.Type, rules: rules})
+	}
+	return read
+}
+
+// unreadableRule parses tag as v does when it first meets a struct, and
+// returns what v panicked with when it could not. Validating a nil value
+// reaches no rule, so nothing but the parse runs.
+func unreadableRule(v *validator.Validate, tag string) (problem string) {
+	defer func() {
+		r := recover()
+		if r != nil {
+			problem = strings.TrimSuffix(fmt.Sprint(r), " on field ''")
+		}
+	}()
+	_ = v.Var(nil, tag)
+	return ""
+}
+
 // ctxValidator is the optional context-aware form of [Validator]
 // (a ModelValidator implements it): its rules and message
 // translation see the load's ctx.
@@ -537,13 +1096,10 @@ func fieldErrorSummary(cfg reflect.Value, ve validator.ValidationErrors) string 
 	root, _ := rootSchema(cfg.Type())
 	for _, fe := range ve {
 		tag := fe.Tag()
-		key := validationKey(cfg, fe)
+		key := validationKey(cfg, root, fe.StructNamespace(), fe.Namespace())
 		p, exact := validatorKey(cfg, fe.StructNamespace())
 		showParam := false
 		if root != nil {
-			if safe := diagnosticPath(root, p); len(safe) < len(p) {
-				key = safe.orRoot()
-			}
 			if c, n, err := root.walkTo(cursor{}, p); err == nil && exact {
 				showParam = !c.sensitive() && !mayHoldSensitive(n.typ, map[reflect.Type]bool{})
 			}
@@ -582,15 +1138,50 @@ var (
 // comparing against a value of a sensitive field would reveal it. A field
 // the param names that cannot be found keeps its Go name.
 func keyedParam(cfg reflect.Value, root *schemaNode, fe validator.FieldError) (string, bool) {
+	tokens, fields := ruleFieldParams(fe)
+	if fields == nil {
+		return fe.Param(), true
+	}
+	for _, f := range fields {
+		p, exact := validatorKey(cfg, f.ns)
+		if !exact || len(p) == 0 {
+			continue
+		}
+		if fieldValueParamRules[fe.Tag()] && root != nil {
+			c, n, err := root.walkTo(cursor{}, p)
+			if err != nil || c.sensitive() || mayHoldSensitive(n.typ, map[reflect.Type]bool{}) {
+				return "", false
+			}
+		}
+		tokens[f.token] = p.String()
+	}
+	return strings.Join(tokens, " "), true
+}
+
+// paramField is a field a cross-field rule's param names: the position of
+// its token among the param's, and its validator namespace.
+type paramField struct {
+	token int
+	ns    string
+}
+
+// ruleFieldParams is fe's param split as the validator splits it, and each
+// field it names when fe's rule compares fields; fields is nil for any other
+// rule. A param names fields of the struct holding fe's field, by Go name,
+// a dotted one reaching into a struct beneath it; an unnamed root's own
+// fields have no namespace above them.
+func ruleFieldParams(fe validator.FieldError) (tokens []string, fields []paramField) {
 	rule, param := fe.Tag(), fe.Param()
 	if !fieldParamRules[rule] && !fieldValueParamRules[rule] && !fieldListParamRules[rule] {
-		return param, true
+		tokens = []string{param}
+		return tokens, nil
 	}
-	parent, ok := parentNamespace(fe.StructNamespace())
-	if !ok {
-		return param, true
+	var parent string
+	holder, ok := parentNamespace(fe.StructNamespace())
+	if ok {
+		parent = holder + "."
 	}
-	tokens := []string{param}
+	tokens = []string{param}
 	if !fieldParamRules[rule] {
 		tokens = ruleParams.FindAllString(param, -1)
 	}
@@ -598,18 +1189,9 @@ func keyedParam(cfg reflect.Value, root *schemaNode, fe validator.FieldError) (s
 		if fieldValueParamRules[rule] && i%2 == 1 {
 			continue // a value, not a field
 		}
-		p, exact := validatorKey(cfg, parent+"."+token)
-		if !exact || len(p) == 0 {
-			continue
-		}
-		if fieldValueParamRules[rule] && root != nil {
-			if c, n, err := root.walkTo(cursor{}, p); err != nil || c.sensitive() || mayHoldSensitive(n.typ, map[reflect.Type]bool{}) {
-				return "", false
-			}
-		}
-		tokens[i] = p.String()
+		fields = append(fields, paramField{token: i, ns: parent + token})
 	}
-	return strings.Join(tokens, " "), true
+	return tokens, fields
 }
 
 // parentNamespace is the validator namespace of the struct holding the field
@@ -631,19 +1213,26 @@ func parentNamespace(ns string) (string, bool) {
 	return "", false
 }
 
-// validationKey names the field a validation error is about by its key.
-func validationKey(cfg reflect.Value, fe validator.FieldError) string {
-	p, exact := validatorKey(cfg, fe.StructNamespace())
+// validationKey names the field of cfg at the validator's struct namespace
+// structNS by its key, cut short above the keys of a sensitive container
+// (see [diagnosticPath]). ns is the validator's own name for the field,
+// named by when structNS reaches no key of cfg.
+func validationKey(cfg reflect.Value, root *schemaNode, structNS, ns string) string {
+	p, exact := validatorKey(cfg, structNS)
+	safe := diagnosticPath(root, p)
+	if len(safe) < len(p) {
+		return safe.orRoot()
+	}
 	switch {
 	case exact:
 		return p.orRoot()
 	case len(p) > 0:
 		return p.String() + " (exact location unavailable)"
 	}
-	// Not a namespace of cfg: the validator's own, minus the root type name.
-	ns := fe.Namespace()
-	if _, rest, cut := strings.Cut(ns, "."); cut {
-		ns = rest
+	// Not a namespace of cfg: the validator's own, past the root's part.
+	rest, ok := belowValidatorRoot(cfg.Type(), ns)
+	if ok {
+		return rest
 	}
 	return ns
 }

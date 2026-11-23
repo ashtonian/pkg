@@ -31,9 +31,9 @@ import (
 //
 // Fixture entity opts into the full activation matrix on the Tags field.
 type widget struct {
-	ID       string   `db:"id" json:"id" sort_field:"true" sort_default:"asc"`
+	ID       string   `db:"id" json:"id" parse:"sort" sort_default:"asc"`
 	TenantID string   `db:"tenant_id" json:"tenant_id" parse:"filter"`
-	Name     string   `db:"name" json:"name" parse:"filter,patch" sort_field:"true"`
+	Name     string   `db:"name" json:"name" parse:"filter,patch,sort"`
 	Color    string   `db:"color" json:"color" parse:"filter,patch,facet" facet:"terms:10"`
 	Tags     []string `db:"-" json:"-" parse:"filter,patch,facet,include" filter_ops:"eq,in,nin" facet:"terms:10" relation:"widget_tags,widget_id,tag_id,id,tenant_id"`
 }
@@ -231,7 +231,7 @@ func TestRelationE2E_Patch_Replace_Add_Remove_Atomic(t *testing.T) {
 		t.Fatalf("begin tx: %v", err)
 	}
 	for _, rop := range result.RelationOps {
-		stmts, err := patch.RenderRelationOp(rop, dialect, []any{"w1"}, patch.RenderRelationOpOptions{TenantValue: "t1"})
+		stmts, err := patch.RenderRelationOp(rop, dialect, []core.Key{{"w1"}}, patch.RenderRelationOpOptions{TenantValue: "t1"})
 		if err != nil {
 			t.Fatalf("render: %v", err)
 		}
@@ -269,7 +269,7 @@ func TestRelationE2E_Patch_Replace_Add_Remove_Atomic(t *testing.T) {
 		{Op: "add", Path: "/tags", Value: []any{"tag-foo"}},
 	})
 	result, _ = patch.BuildPatchSQL(parsed, dialect)
-	stmts, _ := patch.RenderRelationOp(result.RelationOps[0], dialect, []any{"w1"}, patch.RenderRelationOpOptions{TenantValue: "t1"})
+	stmts, _ := patch.RenderRelationOp(result.RelationOps[0], dialect, []core.Key{{"w1"}}, patch.RenderRelationOpOptions{TenantValue: "t1"})
 	for _, s := range stmts {
 		if _, err := db.ExecContext(context.Background(), s.SQL, s.Args...); err != nil {
 			t.Fatalf("add: %v", err)
@@ -281,7 +281,7 @@ func TestRelationE2E_Patch_Replace_Add_Remove_Atomic(t *testing.T) {
 		{Op: "remove", Path: "/tags", Value: []any{"tag-bar"}},
 	})
 	result, _ = patch.BuildPatchSQL(parsed, dialect)
-	stmts, _ = patch.RenderRelationOp(result.RelationOps[0], dialect, []any{"w1"}, patch.RenderRelationOpOptions{TenantValue: "t1"})
+	stmts, _ = patch.RenderRelationOp(result.RelationOps[0], dialect, []core.Key{{"w1"}}, patch.RenderRelationOpOptions{TenantValue: "t1"})
 	for _, s := range stmts {
 		if _, err := db.ExecContext(context.Background(), s.SQL, s.Args...); err != nil {
 			t.Fatalf("remove: %v", err)
@@ -345,7 +345,7 @@ func TestRelationE2E_Include_TenantScoped(t *testing.T) {
 
 	q, err := filter.BuildIncludeQuery(
 		rs.Fields["tags"], filter.SQLiteDialect{},
-		[]any{"w1", "w2", "w3"},
+		[]core.Key{{"w1"}, {"w2"}, {"w3"}},
 		filter.WithIncludeRelationScope(filter.RelationScope{Tenant: "t1"}),
 	)
 	if err != nil {
@@ -376,7 +376,7 @@ func TestRelationE2E_Include_CapPerOwner(t *testing.T) {
 	db := setupRelationDB(t)
 	rs, _, _ := widgetSchema(t)
 
-	q, err := filter.BuildIncludeQuery(rs.Fields["tags"], filter.SQLiteDialect{}, []any{"w1", "w2"},
+	q, err := filter.BuildIncludeQuery(rs.Fields["tags"], filter.SQLiteDialect{}, []core.Key{{"w1"}, {"w2"}},
 		filter.WithIncludeRelationScope(filter.RelationScope{Tenant: "t1"}), filter.WithMaxIncludePerRelation(1))
 	if err != nil {
 		t.Fatalf("build include: %v", err)

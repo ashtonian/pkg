@@ -1,6 +1,10 @@
 // Package dialect is the SQL dialect kind parse compiles for: the
 // placeholder and identifier rules of PostgreSQL and SQLite. The filter
 // and patch dialects embed it and add their SQL.
+//
+// The set is closed. Dialect has an unexported method, so only this
+// package's Postgres and SQLite, and the types embedding them, implement it,
+// and a switch on a dialect's Kind names every case.
 package dialect
 
 import (
@@ -14,10 +18,11 @@ import (
 // parse compiles SQL for.
 var ErrUnknownDSN = errors.New("parse: unsupported DSN")
 
-// Dialect is the dialect-specific part of a statement: its name, its
+// Dialect is the dialect-specific part of a statement: its kind, its
 // placeholders and identifier quoting.
 type Dialect interface {
-	// Name is "postgres" or "sqlite".
+	// Name is the dialect's name for messages: "postgres" or "sqlite".
+	// SQL is chosen by KindOf, never by name.
 	Name() string
 	// Placeholder is the nth parameter's placeholder (1-based): "$1" on
 	// PostgreSQL, "?1" on SQLite.
@@ -25,6 +30,38 @@ type Dialect interface {
 	// QuoteIdent quotes an identifier with double quotes, doubling any
 	// quote inside it.
 	QuoteIdent(name string) string
+	// MaxParams is the most parameters one statement binds.
+	MaxParams() int
+
+	kind() Kind
+}
+
+// Kind is a database parse compiles SQL for.
+type Kind uint8
+
+const (
+	KindPostgres Kind = iota + 1
+	KindSQLite
+)
+
+// KindOf is d's kind.
+func KindOf(d Dialect) Kind { return d.kind() }
+
+// String is the kind's dialect name.
+func (k Kind) String() string {
+	switch k {
+	case KindPostgres:
+		return "postgres"
+	case KindSQLite:
+		return "sqlite"
+	}
+	return "Kind(" + strconv.Itoa(int(k)) + ")"
+}
+
+// Unsupported is the error of a switch on a kind that has no case for k:
+// a statement builder's bug, since every Dialect has one of the two kinds.
+func Unsupported(k Kind, what string) error {
+	return fmt.Errorf("parse: %s has no form for dialect %s", what, k)
 }
 
 const supportedDSNs = "want a postgres:// or postgresql:// URL, a sqlite:// or sqlite3:// URL, a file: URI, :memory:, or an absolute, ./ or ../ path to a .db, .sqlite or .sqlite3 file"
@@ -140,18 +177,16 @@ func hasSQLiteExtension(name string) bool {
 	return false
 }
 
-// The names the dialects' Name methods return, which dialect-specific SQL
-// is chosen by.
-const (
-	NamePostgres = "postgres"
-	NameSQLite   = "sqlite"
-)
-
 // Postgres is PostgreSQL: $n placeholders.
 type Postgres struct{}
 
-// Name returns NamePostgres.
-func (Postgres) Name() string { return NamePostgres }
+// Name returns "postgres".
+func (Postgres) Name() string { return KindPostgres.String() }
+
+func (Postgres) kind() Kind { return KindPostgres }
+
+// MaxParams is 65535: a Bind message counts its parameters in 16 bits.
+func (Postgres) MaxParams() int { return 65535 }
 
 // Placeholder returns "$n". A non-positive n is a statement builder's bug
 // and panics: it would render invalid SQL.
@@ -163,8 +198,14 @@ func (Postgres) QuoteIdent(name string) string { return quoteIdent(name) }
 // SQLite is SQLite: ?n placeholders.
 type SQLite struct{}
 
-// Name returns NameSQLite.
-func (SQLite) Name() string { return NameSQLite }
+// Name returns "sqlite".
+func (SQLite) Name() string { return KindSQLite.String() }
+
+func (SQLite) kind() Kind { return KindSQLite }
+
+// MaxParams is 999, SQLITE_MAX_VARIABLE_NUMBER before SQLite 3.32: a build
+// may keep that limit, and a statement cannot ask which it has.
+func (SQLite) MaxParams() int { return 999 }
 
 // Placeholder returns "?n"; a non-positive n panics, as for Postgres.
 func (SQLite) Placeholder(n int) string { return placeholder('?', n) }

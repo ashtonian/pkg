@@ -27,10 +27,15 @@ import (
 // carried in tokens, the SQL expression emitted into ORDER BY and seek
 // predicates, the row column a token value is read from, and how the key
 // orders.
+//
+// A key reads Column of Table, quoted by the dialect, unless Expr is set, as
+// a FieldSchema does; Column is also the result column a cursor reads the
+// key's value from, so a computed key (Expr) names its result column there.
 type CursorKey struct {
 	Name     string
-	SQLExpr  string
+	Table    string
 	Column   string
+	Expr     string
 	DataType core.FieldType
 	// NumberKind retains the schema numeric range (Invalid uses int64/float64).
 	NumberKind reflect.Kind
@@ -40,20 +45,23 @@ type CursorKey struct {
 	Path *JSONPath
 }
 
-// Keyset derives the effective keys for a sort: its fields followed by the
-// tie-breaker unless the sort already contains it. The tie-breaker inherits
-// the primary direction so a uniform-direction list keeps native row-value
-// comparison available. SQL repositories get this from ListQuery.Build; the
-// memory repository calls it directly so every backend walks one key list.
-func Keyset(sort *SortResult, tieBreaker CursorKey) []CursorKey {
+// Keyset derives the effective keys for a sort: its fields followed by each
+// tie-breaker the sort does not already name, in the order given — a
+// composite key's columns, in key order. A tie-breaker without a name is
+// none. The tie-breakers inherit the primary direction so a
+// uniform-direction list keeps native row-value comparison available. SQL
+// repositories get this from ListQuery.Build; the memory repository calls it
+// directly so every backend walks one key list.
+func Keyset(sort *SortResult, tieBreakers ...CursorKey) []CursorKey {
 	var keys []CursorKey
 	if sort != nil {
-		keys = make([]CursorKey, 0, len(sort.Fields)+1)
+		keys = make([]CursorKey, 0, len(sort.Fields)+len(tieBreakers))
 		for _, f := range sort.Fields {
 			keys = append(keys, CursorKey{
 				Name:       f.Name,
-				SQLExpr:    f.Schema.SQLExpr,
+				Table:      f.Schema.Table,
 				Column:     f.Schema.RowColumn(),
+				Expr:       f.Schema.Expr,
 				DataType:   f.Schema.DataType,
 				NumberKind: f.Schema.NumberKind,
 				Direction:  f.Direction,
@@ -62,19 +70,19 @@ func Keyset(sort *SortResult, tieBreaker CursorKey) []CursorKey {
 			})
 		}
 	}
-	if tieBreaker.Name == "" {
-		return keys
-	}
-	for _, k := range keys {
-		if k.Name == tieBreaker.Name {
-			return keys
-		}
-	}
-	tieBreaker.Direction = SortAsc
+	direction := SortAsc
 	if len(keys) > 0 {
-		tieBreaker.Direction = keys[0].Direction
+		direction = keys[0].Direction
 	}
-	return append(keys, tieBreaker)
+	for _, tieBreaker := range tieBreakers {
+		named := slices.ContainsFunc(keys, func(k CursorKey) bool { return k.Name == tieBreaker.Name })
+		if tieBreaker.Name == "" || named {
+			continue
+		}
+		tieBreaker.Direction = direction
+		keys = append(keys, tieBreaker)
+	}
+	return keys
 }
 
 // CursorPlan is what a repository needs to turn a fetched row set into a
@@ -306,11 +314,22 @@ func keyValue(d Dialect, k CursorKey) string {
 	}
 	switch k.DataType {
 	case core.FieldTypeDate:
-		return d.ReadColumn(k.SQLExpr, core.SQLDate)
+		return d.ReadColumn(k.sql(d), core.SQLDate)
 	case core.FieldTypeDecimal:
-		return d.DecimalColumn(k.SQLExpr)
+		return d.DecimalValue(keyDecimal(d, k))
 	}
-	return k.SQLExpr
+	return k.sql(d)
+}
+
+// sql is the SQL that reads the key's column (columnSQL).
+func (k CursorKey) sql(d Dialect) string { return columnSQL(d, k.Table, k.Column, k.Expr) }
+
+// keyDecimal is the operand a decimal key's value is read from.
+func keyDecimal(d Dialect, k CursorKey) DecimalOperand {
+	if k.Path != nil {
+		return DecimalMember(k.Path)
+	}
+	return DecimalColumn(k.sql(d))
 }
 
 // keyExpr is a key's ordering expression: text keys — strings, and a path's
@@ -321,7 +340,7 @@ func keyExpr(d Dialect, k CursorKey) string {
 	case k.DataType == core.FieldTypeString || (k.Path != nil && (k.DataType == core.FieldTypeTimestamp || k.DataType == core.FieldTypeUUID)):
 		return d.CodePointOrder(keyValue(d, k))
 	case k.DataType == core.FieldTypeDecimal:
-		return d.DecimalOrder(keyValue(d, k))
+		return d.DecimalOrder(keyDecimal(d, k))
 	}
 	return keyValue(d, k)
 }
@@ -331,7 +350,7 @@ func keyExpr(d Dialect, k CursorKey) string {
 // nullable keys, text by code point, decimals through
 // Dialect.DecimalOrder. It is "" for no keys. ListQuery orders its pages
 // with it; a statement ListQuery does not build, such as one that also
-// orders by a computed key (a CursorKey whose SQLExpr is the expression),
+// orders by a computed key (a CursorKey whose Expr is the expression),
 // pages the same way with OrderByKeys and SeekPredicate.
 func OrderByKeys(d Dialect, keys []CursorKey, reverse bool) string {
 	if len(keys) == 0 {
@@ -387,7 +406,7 @@ func seekPredicate(d Dialect, keys []CursorKey, token *PageToken, bind func(any)
 		if v != nil {
 			phs[i] = bind(v)
 			if k.DataType == core.FieldTypeDecimal {
-				phs[i] = d.DecimalOrder(d.DecimalParam(phs[i]))
+				phs[i] = d.DecimalOrder(DecimalParam(phs[i]))
 			}
 		}
 		if k.Nullable || v == nil || effectiveDirection(k, token.Reverse) != effectiveDirection(keys[0], token.Reverse) {
@@ -448,8 +467,8 @@ func afterExpr(expr string, nullable bool, v any, ph string, dir SortDirection) 
 }
 
 // ValidateCursor rejects a token whose field list disagrees with the active
-// keyset — a cursor minted under one sort must not be replayed under another
-// . Values must match each key's type, numeric range and
+// keyset: a cursor minted under one sort must not be replayed under
+// another. Values must match each key's type, numeric range and
 // nullability. On success values are normalized in place; on failure the
 // token is unchanged. Keys without scalar schema metadata (including custom
 // scalar marshalers) are checked only for a canonical scalar and nullability.
@@ -483,6 +502,9 @@ func ValidateCursor(token *PageToken, keys []CursorKey) error {
 			} else {
 				v, err = core.NormalizeScalar(k.DataType, k.NumberKind, v)
 			}
+		}
+		if s, ok := v.(string); ok && err == nil {
+			err = core.CheckNUL(s)
 		}
 		if err != nil {
 			return &core.ParseError{
@@ -624,8 +646,13 @@ type Page[T any] struct {
 // has_prev_page, and mints start and end cursors. value resolves a key's
 // value from a row by row column (e.g. CursorValueByTag with the "db" tag).
 // A cursor that cannot be minted is an error — a page that reports more
-// rows but carries no cursor strands the client.
+// rows but carries no cursor strands the client. An empty page reports
+// neither direction: it has no row to mint a cursor from, so a client
+// whose cursor outlived its rows starts again from the first page.
 func NewPage[T any](items []T, limit int, plan CursorPlan, value func(item T, column string) (any, error)) (*Page[T], error) {
+	if len(items) == 0 {
+		return &Page[T]{Items: items}, nil
+	}
 	hasMore := len(items) > limit
 	if hasMore {
 		items = items[:limit]
@@ -643,9 +670,6 @@ func NewPage[T any](items []T, limit int, plan CursorPlan, value func(item T, co
 	} else {
 		page.PageInfo.HasNextPage = hasMore
 		page.PageInfo.HasPrevPage = plan.HasCursor
-	}
-	if len(items) == 0 {
-		return page, nil
 	}
 	if page.PageInfo.HasNextPage {
 		last := items[len(items)-1]

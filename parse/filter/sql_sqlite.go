@@ -29,6 +29,11 @@ func (d SQLiteDialect) Condition(field *FieldSchema, op FilterOperator, value an
 		sql, _, err := comparison(expr, op, nil, bind)
 		return sql, err
 	}
+	if field.DataType != core.FieldTypeGeo && !core.IsDocument(field.DataType) {
+		if err := sqliteIntegers(field, value); err != nil {
+			return "", err
+		}
+	}
 	switch {
 	case field.DataType == core.FieldTypeGeo:
 		return d.geoCondition(field, op, value, bind)
@@ -95,14 +100,14 @@ func (d SQLiteDialect) Condition(field *FieldSchema, op FilterOperator, value an
 	}
 	if op == OpIn || op == OpNin {
 		return membership(op, value, func(members []any, in bool) (string, error) {
-			return sqliteMembership(field, expr, members, in, bind)
+			return d.memberSet(field, members, in, bind)
 		})
 	}
 	if isOrdering(op) && orderedAsText(field) {
 		expr = d.CodePointOrder(expr)
 	}
 	if field.DataType == core.FieldTypeDecimal {
-		if sql, ok, err := decimalComparison(d, field, expr, op, value, bind); ok {
+		if sql, ok, err := decimalComparison(d, field, op, value, bind); ok {
 			return sql, err
 		}
 		return "", unsupportedOperator(field, op)
@@ -113,17 +118,28 @@ func (d SQLiteDialect) Condition(field *FieldSchema, op FilterOperator, value an
 	return "", unsupportedOperator(field, op)
 }
 
-// sqliteMembership renders a set bound as one JSON array (setRows).
-func sqliteMembership(field *FieldSchema, expr string, members []any, in bool, bind func(any) string) (string, error) {
-	set, err := SQLiteDialect{}.setRows(field, members, bind)
-	if err != nil {
-		return "", err
-	}
+// memberSet renders a set bound as one JSON array. A decimal's set is
+// compared as its equality is (decimalComparison): the field's key against
+// each member's, both read through DecimalOrder, so the index that serves
+// its ranges, sorts and seeks serves the set too. Any other set is its
+// rows (setRows).
+func (d SQLiteDialect) memberSet(field *FieldSchema, members []any, in bool, bind func(any) string) (string, error) {
 	keyword := " IN "
 	if !in {
 		keyword = " NOT IN "
 	}
-	return expr + keyword + "(" + set + ")", nil
+	if field.DataType == core.FieldTypeDecimal {
+		param, err := sqliteSetParam(field, members, bind)
+		if err != nil {
+			return "", err
+		}
+		return d.DecimalOrder(fieldDecimal(d, field)) + keyword + "(SELECT " + d.DecimalOrder(DecimalParam("value")) + " FROM json_each(" + param + "))", nil
+	}
+	set, err := d.setRows(field, members, bind)
+	if err != nil {
+		return "", err
+	}
+	return FieldExpr(d, field) + keyword + "(" + set + ")", nil
 }
 
 // setRows is a set's members, bound as one JSON array, read back by
@@ -132,6 +148,16 @@ func sqliteMembership(field *FieldSchema, expr string, members []any, in bool, b
 // and decimals as their canonical text, the value FieldExpr reads a decimal
 // as.
 func (SQLiteDialect) setRows(field *FieldSchema, members []any, bind func(any) string) (string, error) {
+	param, err := sqliteSetParam(field, members, bind)
+	if err != nil {
+		return "", err
+	}
+	return "SELECT value AS v FROM json_each(" + param + ")", nil
+}
+
+// sqliteSetParam binds a set's members as one JSON array (sqliteSetMembers)
+// and returns its placeholder.
+func sqliteSetParam(field *FieldSchema, members []any, bind func(any) string) (string, error) {
 	doc, err := sqliteSetMembers(field, members)
 	if err != nil {
 		return "", fmt.Errorf("field %s: %w", field.ExternalName, err)
@@ -140,13 +166,33 @@ func (SQLiteDialect) setRows(field *FieldSchema, members []any, bind func(any) s
 	if err != nil {
 		return "", fmt.Errorf("field %s: marshal set: %w", field.ExternalName, err)
 	}
-	return "SELECT value AS v FROM json_each(" + bind(string(arr)) + ")", nil
+	return bind(string(arr)), nil
+}
+
+// sqliteIntegers refuses an unsigned operand above int64, alone or in a
+// list: SQLite's integers end there and its driver cannot bind one, so no
+// row holds the value as an integer. It is E2073, the request's error, as a
+// typed field whose Go kind cannot hold a value is.
+func sqliteIntegers(field *FieldSchema, value any) error {
+	values := []any{value}
+	if items, ok := core.AnySlice(value); ok {
+		values = items
+	}
+	for _, v := range values {
+		if n, ok := v.(uint64); ok && n > math.MaxInt64 {
+			return valueMismatch(field, fmt.Errorf("%d exceeds SQLite's 64-bit signed integers", n))
+		}
+	}
+	return nil
 }
 
 // sqliteSetMembers are a set's members as its JSON array holds them.
 func sqliteSetMembers(field *FieldSchema, members []any) (any, error) {
 	if field.DataType == core.FieldTypeDecimal {
 		return typedSlice(members, core.DecimalText)
+	}
+	if err := sqliteIntegers(field, members); err != nil {
+		return nil, err
 	}
 	doc := make([]any, len(members))
 	for i, m := range members {
@@ -156,11 +202,6 @@ func sqliteSetMembers(field *FieldSchema, members []any) (any, error) {
 			// 1e21 as an integer literal, which SQLite reads as an INTEGER
 			// unequal to the float itself above 2^53.
 			doc[i] = json.Number(strconv.FormatFloat(v, 'g', -1, 64))
-		case uint64:
-			if v > math.MaxInt64 {
-				return nil, fmt.Errorf("set member %d exceeds SQLite's 64-bit signed integers", v)
-			}
-			doc[i] = v
 		default:
 			doc[i] = v
 		}
@@ -301,7 +342,7 @@ func (d SQLiteDialect) geoCondition(field *FieldSchema, op FilterOperator, value
 	}
 	latKey, lonKey := geoKeys(field)
 	call := func(fn string, operands ...any) string {
-		args := []string{"json(" + field.SQLExpr + ")", bind(latKey), bind(lonKey)}
+		args := []string{"json(" + field.sql(d) + ")", bind(latKey), bind(lonKey)}
 		for _, o := range operands {
 			args = append(args, bind(o))
 		}
@@ -433,51 +474,37 @@ func (SQLiteDialect) ReadColumn(column string, t core.SQLType) string {
 	return column
 }
 
-// DecimalColumn reads the column through parse_decimal (parsesqlite): its
-// canonical decimal text, exact for an INTEGER or for TEXT holding the
-// number, where CAST(… AS NUMERIC) keeps 15 significant digits.
-func (SQLiteDialect) DecimalColumn(column string) string {
-	return decimals.SQLiteValueFunc + "(" + column + ")"
+// DecimalValue reads a column or a member through parse_decimal
+// (parsesqlite): its canonical decimal text, exact for an INTEGER or for
+// TEXT holding the number, where CAST(… AS NUMERIC) keeps 15 significant
+// digits. A parameter is the canonical text already.
+func (d SQLiteDialect) DecimalValue(o DecimalOperand) string {
+	switch o.source {
+	case decimalFromColumn:
+		return decimals.SQLiteValueFunc + "(" + o.sql + ")"
+	case decimalFromMember:
+		return d.PathExpr(o.path, core.FieldTypeDecimal)
+	case decimalFromParam:
+		return o.sql
+	}
+	panic(o.invalid())
 }
 
-// DecimalParam returns the placeholder: the bound canonical text is the
-// exact value DecimalColumn and PathExpr read a decimal as.
-func (SQLiteDialect) DecimalParam(placeholder string) string { return placeholder }
-
-// DecimalOrder reads the value through parse_decimal_key (parsesqlite), a
+// DecimalOrder reads the operand through parse_decimal_key (parsesqlite), a
 // BLOB that orders bytewise as the decimal does. parse_decimal_key reads
-// what parse_decimal reads, so a value DecimalColumn or PathExpr read is
-// keyed from its operand: one function call per row, not two.
-func (SQLiteDialect) DecimalOrder(value string) string {
-	if operand, ok := callOperand(value, decimals.SQLiteValueFunc); ok {
-		value = operand
+// what parse_decimal reads, so a column and a member are keyed from their
+// own text, one function call per row, not two.
+func (d SQLiteDialect) DecimalOrder(o DecimalOperand) string {
+	var operand string
+	switch o.source {
+	case decimalFromColumn, decimalFromParam:
+		operand = o.sql
+	case decimalFromMember:
+		_, _, operand = sqlitePathMember(d, o.path)
+	default:
+		panic(o.invalid())
 	}
-	return decimals.SQLiteKeyFunc + "(" + value + ")"
-}
-
-// callOperand is the argument of expr when expr is exactly one call of fn,
-// its parentheses spanning the rest of expr; parentheses inside quoted SQL
-// literals do not count.
-func callOperand(expr, fn string) (string, bool) {
-	rest, ok := strings.CutPrefix(expr, fn+"(")
-	if !ok {
-		return "", false
-	}
-	depth, quoted := 1, false
-	for i := range len(rest) {
-		switch c := rest[i]; {
-		case c == '\'':
-			quoted = !quoted
-		case quoted:
-		case c == '(':
-			depth++
-		case c == ')':
-			if depth--; depth == 0 {
-				return rest[:i], i == len(rest)-1
-			}
-		}
-	}
-	return "", false
+	return decimals.SQLiteKeyFunc + "(" + operand + ")"
 }
 
 // NativeRowCompare reports false: row-value comparison is unevenly
@@ -499,4 +526,86 @@ func sqliteHasKey(expr, key string, bind func(any) string) string {
 		" WHEN " + t + " = 'array' THEN EXISTS (SELECT 1 FROM json_each(" + expr + ") hk WHERE hk.type = 'text' AND hk.value = " + bind(key) + ")" +
 		" WHEN " + t + " = 'text' THEN json_extract(" + expr + ", '$') = " + bind(key) +
 		" ELSE 0 END)"
+}
+
+// elementRows reads a JSON array, an array path's member or an array
+// column's JSON text, with json_each when it is an array: json_each would
+// read an object's members, or a scalar as one row.
+func (d SQLiteDialect) elementRows(f *FieldSchema, alias string) string {
+	if p := f.Path; p != nil {
+		path := sqlitePathLiteral(p.Segments)
+		doc := p.document(d)
+		return "json_each(CASE WHEN json_type(" + doc + ", " + path + ") = 'array' THEN " + doc + " END, " + path + ") AS " + alias
+	}
+	return "json_each(CASE WHEN json_type(" + f.sql(d) + ") = 'array' THEN " + f.sql(d) + " END) AS " + alias
+}
+
+// objectElement is an object element's JSON text; json_extract would refuse
+// a scalar's text.
+func (SQLiteDialect) objectElement(alias string) string {
+	return "(CASE WHEN " + alias + ".type = 'object' THEN " + alias + ".value END)"
+}
+
+// scalarElement reads every element as an element path (PathExpr): an
+// array column is JSON text too.
+func (SQLiteDialect) scalarElement(f *FieldSchema, alias string) *FieldSchema {
+	e := bound(elementOf(f))
+	e.Table, e.Column, e.Expr = "", "", ""
+	e.Path = &JSONPath{alias: alias, Storage: StorageJSONB, element: true}
+	return &e
+}
+
+// numberKey reads a number member's JSON literal as written through
+// parse_decimal, which json_extract would round to a double, and a REAL
+// column through parse_decimal (a double) or parse_decimal_float32 (a
+// float32 field's). A decimal's FieldExpr is already its canonical text.
+func (d SQLiteDialect) numberKey(f *FieldSchema) string {
+	switch {
+	case f.DataType == core.FieldTypeDecimal:
+		return FieldExpr(d, f)
+	case f.Path != nil:
+		kind, _, literal := sqlitePathMember(d, f.Path)
+		return "(CASE WHEN " + kind + " IN ('integer', 'real') THEN " + decimals.SQLiteValueFunc + "(" + literal + ") END)"
+	case f.DataType == core.FieldTypeInt:
+		return "CAST(" + f.sql(d) + " AS TEXT)"
+	case f.NumberKind == reflect.Float32:
+		return decimals.SQLiteFloat32Func + "(" + f.sql(d) + ")"
+	}
+	return decimals.SQLiteValueFunc + "(" + f.sql(d) + ")"
+}
+
+// PathExpr renders p's typed value for SQLite, whose documents are JSON
+// text: json_type selects the member's kind; json_extract reads it. A
+// decimal member is read as the JSON literal `->` returns, which keeps the
+// number as written where json_extract would round it to a double, through
+// parse_decimal (parsesqlite). An element path reads its json_each row: its
+// type and value are json_type's and json_extract's of the element, and
+// its literal is the source document's (the hidden json column) at its
+// fullkey.
+func (d SQLiteDialect) PathExpr(p *JSONPath, t core.FieldType) string {
+	kind, val, literal := sqlitePathMember(d, p)
+	return sqliteTypedMember(t, kind, val, literal)
+}
+
+// TwoValuedCondition has no second rendering on SQLite.
+func (SQLiteDialect) TwoValuedCondition(*FieldSchema, FilterOperator, any, func(any) string) (string, bool, error) {
+	return "", false, nil
+}
+
+// containsElement reads the element table: SQLite has no containment an
+// index serves.
+func (SQLiteDialect) containsElement(*FieldSchema, *FilterNode, func(any) string) (string, bool, error) {
+	return "", false, nil
+}
+
+// timestampKey is the column's text: SQLite holds a timestamp as the
+// canonical text (MarshalValue).
+func (d SQLiteDialect) timestampKey(expr string) string { return d.textKey(expr) }
+
+func (SQLiteDialect) textKey(expr string) string { return "CAST(" + expr + " AS TEXT)" }
+
+// search matches each field with LIKE: SQLite has no text search the
+// module can assume.
+func (d SQLiteDialect) search(schema *SearchSchema, query string, startIdx int) (*searchCondition, error) {
+	return buildLikeSearch(schema, d, query, startIdx), nil
 }

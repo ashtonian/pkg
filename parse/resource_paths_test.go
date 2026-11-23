@@ -5,7 +5,9 @@ package parse_test
 import (
 	"encoding/json"
 	"errors"
+	"maps"
 	"net/url"
+	"slices"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -15,6 +17,8 @@ import (
 	"github.com/ashtonian/pkg/parse/core"
 	"github.com/ashtonian/pkg/parse/filter"
 	"github.com/ashtonian/pkg/parse/internal/dbtest"
+	"github.com/ashtonian/pkg/parse/parsesql"
+	"github.com/ashtonian/pkg/parse/patch"
 )
 
 type customItem struct {
@@ -36,6 +40,44 @@ func TestResource_WithPathsSortsAMappedDocument(t *testing.T) {
 	require.NotEmpty(t, plan.Keyset.Keys)
 	assert.Equal(t, "custom.tier", plan.Keyset.Keys[0].Name)
 	assert.Equal(t, "custom", plan.Keyset.Keys[0].Column)
+}
+
+// A view is a value for one request: it declares no relation and is no
+// relation's target, and the refusal leaves the resource it came from as it
+// was.
+func TestResource_WithPathsViewRelatesNothing(t *testing.T) {
+	type tag struct {
+		ID string `json:"id" db:"id" parse:"filter"`
+	}
+	tags := parse.MustResource[tag]("tags")
+	items := parse.MustResource[customItem]("custom_items")
+	itemView, err := items.WithPaths(filter.PathDecl{Path: "custom.tier", Type: core.FieldTypeString, Sort: true})
+	require.NoError(t, err)
+	tagView, err := tags.WithPaths()
+	require.NoError(t, err)
+	through := parse.Through("item_tags", "item_id", "tag_id")
+	shape := func() (filters, sorts, patches []string) {
+		return slices.Sorted(maps.Keys(items.FilterSchema().Fields)),
+			slices.Sorted(maps.Keys(items.SortSchema().Fields)),
+			pathNames(items.PatchSchema())
+	}
+	filters, sorts, patches := shape()
+
+	err = itemView.Relate("tags", parse.ManyToMany(tags, through, parse.Writable()))
+	require.ErrorContains(t, err, `parse: custom_items: relation "tags": a WithPaths view declares no relations`)
+	err = items.Relate("tags", parse.ManyToMany(tagView, through, parse.Writable()))
+	require.ErrorContains(t, err, `parse: custom_items: relation "tags": the target is a WithPaths view`)
+
+	gotFilters, gotSorts, gotPatches := shape()
+	assert.Equal(t, filters, gotFilters)
+	assert.Equal(t, sorts, gotSorts)
+	assert.Equal(t, patches, gotPatches)
+	_, err = items.ParseMergePatch([]byte(`{"tags":["t1"]}`))
+	require.Error(t, err)
+
+	require.NoError(t, items.Relate("tags", parse.ManyToMany(tags, through, parse.Writable())))
+	_, err = items.ParseMergePatch([]byte(`{"tags":["t1"]}`))
+	require.NoError(t, err)
 }
 
 // A request declares its tenant's custom fields as paths on a view of the
@@ -64,21 +106,7 @@ func TestResource_WithPathsIsARequestView(t *testing.T) {
 		_, insertErr := db.Exec(`INSERT INTO custom_items VALUES (?1, ?2)`, id, doc)
 		require.NoError(t, insertErr)
 	}
-	rows, err := db.Query(plan.Page.SQL, plan.Page.Args...)
-	require.NoError(t, err, plan.Page.SQL)
-	var items []customItem
-	for rows.Next() {
-		var it customItem
-		var doc *string
-		require.NoError(t, rows.Scan(&it.ID, &doc))
-		if doc != nil {
-			it.Custom = json.RawMessage(*doc)
-		}
-		items = append(items, it)
-	}
-	require.NoError(t, rows.Err())
-	require.NoError(t, rows.Close())
-	page, err := view.Page(items, plan)
+	page, err := parsesql.QueryPage(t.Context(), db, view, plan)
 	require.NoError(t, err)
 	var ids []string
 	for _, it := range page.Items {
@@ -87,14 +115,17 @@ func TestResource_WithPathsIsARequestView(t *testing.T) {
 	assert.Equal(t, []string{"b", "a"}, ids, "silver then gold; bronze filtered out, absent tiers never match $ne")
 
 	require.NotNil(t, plan.Facets)
-	frows, err := db.Query(plan.Facets.SQL, plan.Facets.Args...)
-	require.NoError(t, err, plan.Facets.SQL)
-	facets, err := filter.ScanFacetUnion(frows)
-	require.NoError(t, err)
-	require.NoError(t, frows.Close())
-	require.Len(t, facets, 1)
-	assert.ElementsMatch(t, []filter.FacetBucket{{Key: "gold", Count: 1}, {Key: "silver", Count: 1}}, facets[0].Buckets)
+	require.Len(t, page.Facets, 1)
+	assert.ElementsMatch(t, []filter.FacetBucket{{Key: "gold", Count: 1}, {Key: "silver", Count: 1}}, page.Facets["custom.tier"])
 
 	_, err = r.WithPaths(filter.PathDecl{Path: "id.x", Type: core.FieldTypeString})
 	assert.Error(t, err, "a path needs a document field")
+}
+
+func pathNames(s *patch.PatchSchema) []string {
+	var out []string
+	for path := range s.Paths() {
+		out = append(out, path)
+	}
+	return out
 }

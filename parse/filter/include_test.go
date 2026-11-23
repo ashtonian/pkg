@@ -69,17 +69,17 @@ func TestBuildIncludeQuery_Postgres_TenantScoped(t *testing.T) {
 	withOwnerKeys(schema)
 	tags := schema.Fields["tags"]
 
-	q, err := filter.BuildIncludeQuery(tags, filter.PostgresDialect{}, []any{"w1", "w2"}, filter.WithIncludeRelationScope(filter.RelationScope{Tenant: "tenant-A"}))
+	q, err := filter.BuildIncludeQuery(tags, filter.PostgresDialect{}, []core.Key{{"w1"}, {"w2"}}, filter.WithIncludeRelationScope(filter.RelationScope{Tenant: "tenant-A"}))
 	if err != nil {
 		t.Fatalf("build: %v", err)
 	}
-	if !strings.Contains(q.SQL, "FROM widget_tags j") {
+	if !strings.Contains(q.SQL, `FROM "widget_tags" j`) {
 		t.Errorf("missing junction FROM clause: %s", q.SQL)
 	}
-	if !strings.Contains(q.SQL, "j.widget_id = ANY($1)") {
+	if !strings.Contains(q.SQL, `"j"."widget_id" = ANY($1)`) {
 		t.Errorf("missing the owner key set: %s", q.SQL)
 	}
-	if !strings.Contains(q.SQL, "j.tenant_id = $2") {
+	if !strings.Contains(q.SQL, `"j"."tenant_id" = $2`) {
 		t.Errorf("expected tenant predicate after the key set, got: %s", q.SQL)
 	}
 	if !strings.Contains(q.SQL, "WHERE include_rank <= 101 ORDER BY include__.owner_pk, include__.target_id") {
@@ -99,10 +99,11 @@ func TestBuildIncludeQuery_NoTenantBound_FailsClosed(t *testing.T) {
 		t.Fatalf("generate: %v", err)
 	}
 	withOwnerKeys(schema)
-	if _, buildErr := filter.BuildIncludeQuery(schema.Fields["tags"], filter.PostgresDialect{}, []any{"w1"}); buildErr == nil {
+	_, buildErr := filter.BuildIncludeQuery(schema.Fields["tags"], filter.PostgresDialect{}, []core.Key{{"w1"}})
+	if buildErr == nil {
 		t.Fatal("expected a tenant-scoped error")
 	}
-	q, err := filter.BuildIncludeQuery(schema.Fields["tags"], filter.PostgresDialect{}, []any{"w1"}, filter.WithIncludeRelationScope(filter.RelationScope{Unscoped: true}))
+	q, err := filter.BuildIncludeQuery(schema.Fields["tags"], filter.PostgresDialect{}, []core.Key{{"w1"}}, filter.WithIncludeRelationScope(filter.RelationScope{Unscoped: true}))
 	if err != nil {
 		t.Fatalf("unscoped: %v", err)
 	}
@@ -118,7 +119,7 @@ func TestBuildIncludeQuery_RejectsNonIncludable(t *testing.T) {
 		t.Fatalf("generate: %v", err)
 	}
 	withOwnerKeys(schema)
-	_, err = filter.BuildIncludeQuery(schema.Fields["tags"], filter.PostgresDialect{}, []any{"w1"})
+	_, err = filter.BuildIncludeQuery(schema.Fields["tags"], filter.PostgresDialect{}, []core.Key{{"w1"}})
 	if err == nil {
 		t.Error("expected error on field without parse:\"include\"")
 	}
@@ -126,11 +127,11 @@ func TestBuildIncludeQuery_RejectsNonIncludable(t *testing.T) {
 
 func TestBuildIncludeQuery_RejectsNonRelation(t *testing.T) {
 	scalarField := &filter.FieldSchema{
-		ExternalName: "name", SQLExpr: "items.name",
+		ExternalName: "name", Table: "items", Column: "name",
 		DataType: core.FieldTypeString, Includable: true,
 		// No Relation.
 	}
-	_, err := filter.BuildIncludeQuery(scalarField, filter.PostgresDialect{}, []any{"x"})
+	_, err := filter.BuildIncludeQuery(scalarField, filter.PostgresDialect{}, []core.Key{{"x"}})
 	if err == nil {
 		t.Error("expected error on non-relation field")
 	}
@@ -202,13 +203,13 @@ func TestBuildIncludeQuery_CapsInSQL(t *testing.T) {
 		t.Fatalf("generate: %v", err)
 	}
 	withOwnerKeys(schema)
-	q, err := filter.BuildIncludeQuery(schema.Fields["tags"], filter.SQLiteDialect{}, []any{"w1"},
+	q, err := filter.BuildIncludeQuery(schema.Fields["tags"], filter.SQLiteDialect{}, []core.Key{{"w1"}},
 		filter.WithIncludeRelationScope(filter.RelationScope{Unscoped: true}), filter.WithMaxIncludePerRelation(2))
 	if err != nil {
 		t.Fatalf("build: %v", err)
 	}
 	if !strings.Contains(q.SQL, "ROW_NUMBER() OVER (PARTITION BY owner_pk ORDER BY target_id)") || !strings.Contains(q.SQL, "include_rank <= 3") ||
-		!strings.Contains(q.SQL, "SELECT DISTINCT j.widget_id AS owner_pk, j.tag_id COLLATE BINARY AS target_id") {
+		!strings.Contains(q.SQL, `SELECT DISTINCT "j"."widget_id" AS owner_pk, "j"."tag_id" COLLATE BINARY AS target_id`) {
 		t.Errorf("expected a per-owner window cap of 2 over distinct pairs: %s", q.SQL)
 	}
 }
@@ -238,8 +239,7 @@ type widgetEdges struct {
 }
 
 // Two typed edges between one owner and one target are one pair: the
-// include names the target once and the facet counts the owner once
-// .
+// include names the target once and the facet counts the owner once.
 func TestRelation_TypedEdgesCountOnce(t *testing.T) {
 	db, err := sql.Open("sqlite", ":memory:")
 	if err != nil {
@@ -258,7 +258,7 @@ func TestRelation_TypedEdgesCountOnce(t *testing.T) {
 	}
 	withOwnerKeys(schema)
 
-	q, err := filter.BuildIncludeQuery(schema.Fields["targets"], filter.SQLiteDialect{}, []any{"w1"})
+	q, err := filter.BuildIncludeQuery(schema.Fields["targets"], filter.SQLiteDialect{}, []core.Key{{"w1"}})
 	if err != nil {
 		t.Fatal(err)
 	}

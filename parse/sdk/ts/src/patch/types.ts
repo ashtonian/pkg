@@ -48,6 +48,20 @@ export interface PatchPathSchema {
   number_kind?: string;
   /** A relation's membership path: its value is a list of target keys. */
   relation?: boolean;
+  /**
+   * The target key's columns, in key order, of a membership path whose
+   * target key has several: each key is an array of a value per column.
+   * A one-column key's type is `elem`'s.
+   */
+  key?: RelationKeyColumn[];
+}
+
+/** A target key column of a membership path (mirrors Go parse.RelationKeyResponse). */
+export interface RelationKeyColumn {
+  data_type: FieldType;
+  /** "string" for an integer column whose value is a JSON string holding it (json:",string"). */
+  wire?: Wire;
+  number_kind?: string;
 }
 
 /**
@@ -58,7 +72,7 @@ export type PatchInput<T> = {
   [K in keyof T]?: T[K] | null;
 };
 
-/** Result of a patch, in the shape parse/examples/server answers a PATCH with. */
+/** Result of a patch, as parse's `parsehttp.PatchAnswer` writes it. */
 export interface PatchResult<T> {
   updated: T[];
   failed?: BatchItemError[];

@@ -30,9 +30,15 @@ type widget struct {
 	Tags      []string   `json:"tags"       db:"-"          parse:"filter,include" relation:"widget_tags,widget_id,tag_id,id,tenant_id" indexed:"true"`
 }
 
+// atOneInstant pins a resource's clock: a list request holds the instant
+// it was parsed at, so two parses of one request are equal only at one.
+func atOneInstant() parse.ResourceOption {
+	return parse.ParserOptions(core.WithClock(func() time.Time { return time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC) }))
+}
+
 func widgets(t *testing.T) *parse.Resource[widget] {
 	t.Helper()
-	r, err := parse.NewResource[widget]("widgets", parse.TenantColumn("tenant_id"), parse.DeletedColumn("deleted_at"), parse.PageSize(2, 3))
+	r, err := parse.NewResource[widget]("widgets", parse.TenantColumn("tenant_id"), parse.DeletedColumn("deleted_at"), parse.PageSize(2, 3), atOneInstant())
 	require.NoError(t, err)
 	return r
 }
@@ -55,27 +61,6 @@ func widgetDB(t *testing.T) *sql.DB {
 	return db
 }
 
-func scanWidgets(t *testing.T, db *sql.DB, st parse.Statement) []widget {
-	t.Helper()
-	rows, err := db.Query(st.SQL, st.Args...)
-	require.NoError(t, err, st.SQL)
-	defer func() { require.NoError(t, rows.Close()) }()
-	var out []widget
-	for rows.Next() {
-		var w widget
-		var deleted sql.NullString
-		require.NoError(t, rows.Scan(&w.ID, &w.TenantID, &w.Name, &w.Rank, &deleted))
-		if deleted.Valid {
-			at, err := time.Parse(time.RFC3339, deleted.String)
-			require.NoError(t, err)
-			w.DeletedAt = &at
-		}
-		out = append(out, w)
-	}
-	require.NoError(t, rows.Err())
-	return out
-}
-
 func ids(ws []widget) []string {
 	out := make([]string, len(ws))
 	for i, w := range ws {
@@ -92,7 +77,7 @@ func list(t *testing.T, r *parse.Resource[widget], db *sql.DB, query string, s p
 	require.NoError(t, err)
 	plan, err := r.BuildList(filter.SQLiteDialect{}, req, s)
 	require.NoError(t, err)
-	page, err := r.Page(scanWidgets(t, db, plan.Page), plan)
+	page, err := r.Page(resourceRows(t, db, r, filter.SQLiteDialect{}, plan.Page), plan)
 	require.NoError(t, err)
 	return page, plan
 }
@@ -156,20 +141,20 @@ func TestNewResource_RefusesMisspeltTagKeys(t *testing.T) {
 func TestResource_DeclaresItsIdentity(t *testing.T) {
 	r := widgets(t)
 	assert.Equal(t, "widgets", r.Table())
-	assert.Equal(t, "id", r.PrimaryKeyColumn())
+	assert.Equal(t, []string{"id"}, r.PrimaryKeyColumns())
 	assert.Equal(t, "tenant_id", r.TenantColumnName())
 	assert.Equal(t, "deleted_at", r.DeletedColumnName())
 	columns, err := r.Columns(filter.PostgresDialect{})
 	require.NoError(t, err)
-	assert.Equal(t, []string{"widgets.id", "widgets.tenant_id", "widgets.name", "widgets.rank", "widgets.deleted_at"}, columns)
+	assert.Equal(t, []string{`"widgets"."id"`, `"widgets"."tenant_id"`, `"widgets"."name"`, `"widgets"."rank"`, `"widgets"."deleted_at"`}, columns)
 	for _, item := range []any{widget{ID: "w9"}, &widget{ID: "w9"}} {
 		key, err := r.Key(item)
 		require.NoError(t, err)
-		assert.Equal(t, "w9", key)
+		assert.Equal(t, parse.Key{"w9"}, key)
 	}
 	sys := r.FilterSchema().SystemFields
 	assert.Equal(t, core.FieldTypeTimestamp, sys["deleted_at"].DataType, "system fields are typed from T")
-	assert.Equal(t, "widgets.tenant_id", sys["tenant_id"].SQLExpr)
+	assert.Equal(t, `"widgets"."tenant_id"`, filter.FieldExpr(filter.PostgresDialect{}, sys["tenant_id"]))
 }
 
 func TestParseList_ReadsEveryListParameter(t *testing.T) {
@@ -179,23 +164,23 @@ func TestParseList_ReadsEveryListParameter(t *testing.T) {
 	require.NoError(t, err)
 	req, err := r.ParseList(q)
 	require.NoError(t, err)
-	assert.NotNil(t, req.Filter, "flat and JSON filters are one filter")
-	assert.Equal(t, 2, req.Filter.ConditionCount)
-	assert.Equal(t, "rank", req.Sort.Fields[0].Name)
-	assert.Equal(t, filter.SortDesc, req.Sort.Fields[0].Direction)
-	assert.Equal(t, "abc", req.Cursor)
-	assert.Equal(t, 3, req.PageSize, "clamped to the maximum")
-	assert.True(t, req.IncludeTotal)
-	assert.True(t, req.IncludeDeleted)
-	assert.Equal(t, "b", req.Search)
-	assert.Equal(t, []string{"name"}, req.Facets)
-	assert.Equal(t, []string{"tags"}, req.Include)
-	assert.Equal(t, []string{"id", "name"}, req.Fields)
+	assert.NotNil(t, req.Filter(), "flat and JSON filters are one filter")
+	assert.Equal(t, 2, req.Filter().ConditionCount())
+	assert.Equal(t, "rank", req.Sort().Fields[0].Name)
+	assert.Equal(t, filter.SortDesc, req.Sort().Fields[0].Direction)
+	assert.Equal(t, "abc", req.Cursor())
+	assert.Equal(t, 3, req.PageSize(), "clamped to the maximum")
+	assert.True(t, req.IncludeTotal())
+	assert.True(t, req.IncludeDeleted())
+	assert.Equal(t, "b", req.Search())
+	assert.Equal(t, []string{"name"}, req.Facets())
+	assert.Equal(t, []string{"tags"}, req.Include())
+	assert.Equal(t, []string{"id", "name"}, req.Fields())
 
 	empty, err := r.ParseList(url.Values{})
 	require.NoError(t, err)
-	assert.Equal(t, 2, empty.PageSize, "the default page size")
-	assert.Nil(t, empty.Filter)
+	assert.Equal(t, 2, empty.PageSize(), "the default page size")
+	assert.Nil(t, empty.Filter())
 }
 
 func TestParseList_RefusesWhatItCannotHonor(t *testing.T) {
@@ -243,7 +228,7 @@ func TestParseList_RefusesWhatItCannotHonor(t *testing.T) {
 	require.NoError(t, err)
 	req, err := accepting.ParseList(url.Values{"_": {"123"}, "view": {"grid"}})
 	require.NoError(t, err, "accepted parameters are the endpoint's")
-	assert.Nil(t, req.Filter)
+	assert.Nil(t, req.Filter())
 }
 
 // A misspelt flat filter cannot widen a list through any entry point; list
@@ -341,7 +326,7 @@ func TestBuildList_UsesTheDeclaredKeyOnRequestViews(t *testing.T) {
 		require.NoError(t, buildErr)
 		require.Len(t, plan.Keyset.Keys, 1)
 		assert.Equal(t, "code", plan.Keyset.Keys[0].Name)
-		assert.Contains(t, plan.Page.SQL, "ORDER BY entries.code COLLATE BINARY ASC")
+		assert.Contains(t, plan.Page.SQL, `ORDER BY "entries"."code" COLLATE BINARY ASC`)
 	}
 	req, err := view.ParseList(url.Values{filter.ParamSort: {"data.rank"}})
 	require.NoError(t, err)
@@ -371,7 +356,7 @@ func TestBuildList_FacetsCountThePopulation(t *testing.T) {
 func TestIncludeQueries_ReadThePagesRelationsInItsTenant(t *testing.T) {
 	r, db := widgets(t), widgetDB(t)
 	page, plan := list(t, r, db, "include=tags&page_size=3", parse.Scope{Tenant: "t1"})
-	keys := make([]any, len(page.Items))
+	keys := make([]parse.Key, len(page.Items))
 	for i, w := range page.Items {
 		var err error
 		keys[i], err = r.Key(w)
@@ -403,7 +388,7 @@ func TestPagePointers(t *testing.T) {
 	plan, err := r.BuildList(filter.SQLiteDialect{}, req, parse.Scope{Tenant: "t1"})
 	require.NoError(t, err)
 	var ptrs []*widget
-	for _, w := range scanWidgets(t, db, plan.Page) {
+	for _, w := range resourceRows(t, db, r, filter.SQLiteDialect{}, plan.Page) {
 		ptrs = append(ptrs, &w)
 	}
 	page, err := r.PagePointers(ptrs, plan)
@@ -427,7 +412,7 @@ func TestResource_RefusesAnotherResourcesPlan(t *testing.T) {
 	assert.ErrorContains(t, err, `list plan built for "other_widgets"`)
 	_, err = r.PagePointers(nil, plan)
 	assert.Error(t, err)
-	_, err = r.IncludeQueries(plan, []any{"w1"})
+	_, err = r.IncludeQueries(plan, []parse.Key{{"w1"}})
 	assert.Error(t, err)
 	_, err = r.Page(nil, nil)
 	assert.ErrorContains(t, err, "nil list plan")
@@ -450,17 +435,17 @@ func TestReadColumns_LimitWhatTheResourceReads(t *testing.T) {
 	require.NoError(t, err)
 	columns, err := r.Columns(filter.PostgresDialect{})
 	require.NoError(t, err)
-	assert.Equal(t, []string{"accounts.id", "accounts.tenant_id", "accounts.email", "accounts.updated_at"}, columns, "in T's field order")
+	assert.Equal(t, []string{`"accounts"."id"`, `"accounts"."tenant_id"`, `"accounts"."email"`, `"accounts"."updated_at"`}, columns, "in T's field order")
 
 	plan, err := r.BuildList(filter.PostgresDialect{}, nil, parse.Scope{Tenant: "t1"})
 	require.NoError(t, err)
-	assert.True(t, strings.HasPrefix(plan.Page.SQL, "SELECT accounts.id, accounts.tenant_id, accounts.email, accounts.updated_at FROM accounts "), plan.Page.SQL)
+	assert.True(t, strings.HasPrefix(plan.Page.SQL, `SELECT "accounts"."id", "accounts"."tenant_id", "accounts"."email", "accounts"."updated_at" FROM "accounts" `), plan.Page.SQL)
 
 	p, err := r.ParseMergePatch([]byte(`{"email":"a@example.com"}`))
 	require.NoError(t, err)
 	upd, err := r.BuildUpdate(filter.PostgresDialect{}, p, parse.ByID("a1"), parse.Scope{Tenant: "t1"}, parse.StampSQL("updated_at", "NOW()"))
 	require.NoError(t, err)
-	assert.True(t, strings.HasSuffix(upd.Owner.SQL, " RETURNING accounts.id, accounts.tenant_id, accounts.email, accounts.updated_at"), upd.Owner.SQL)
+	assert.True(t, strings.HasSuffix(upd.Owner.SQL, ` RETURNING "accounts"."id", "accounts"."tenant_id", "accounts"."email", "accounts"."updated_at"`), upd.Owner.SQL)
 	assert.NotContains(t, upd.Owner.SQL+plan.Page.SQL, "secret_hash")
 }
 
@@ -472,7 +457,7 @@ func TestReadColumns_RefusesWhatPagesCannotRead(t *testing.T) {
 	}{
 		{"not a column", []string{"id", "nope"}, `read column "nope" is not a column`},
 		{"listed twice", []string{"id", "email", "id"}, `read column "id" is listed twice`},
-		{"without the key", []string{"email"}, `omit the key "id"`},
+		{"without the key", []string{"email"}, `omit the key column "id"`},
 		{"without a sort key", []string{"id", "tenant_id"}, `sort key "email": accounts does not read column "email"`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -622,7 +607,7 @@ func TestRelate_CorrelatesThroughTheOwnersMappedField(t *testing.T) {
 	}
 	members := parse.MustResource[mappedMember]("members", mappedColumns)
 	members.MustRelate("team", parse.BelongsTo(parse.MustResource[team]("teams"), "team_id"))
-	assert.Equal(t, "(members.team_id)", members.FilterSchema().Fields["team"].RelatedBy.SQLExpr)
+	assert.Equal(t, "(members.team_id)", members.FilterSchema().Fields["team"].RelatedBy[0].Expr)
 }
 
 // QueryOnlyColumns lets requests filter and search by columns the resource
@@ -634,9 +619,9 @@ func TestQueryOnlyColumns_FilterAndSearchUnreadColumns(t *testing.T) {
 	require.NoError(t, err)
 	plan, err := r.BuildList(filter.SQLiteDialect{}, req, parse.Scope{})
 	require.NoError(t, err)
-	assert.True(t, strings.HasPrefix(plan.Page.SQL, "SELECT tickets.id, tickets.title FROM tickets "), plan.Page.SQL)
-	assert.Contains(t, plan.Fragment, "tickets.status")
-	assert.Contains(t, plan.Fragment, "tickets.body")
+	assert.True(t, strings.HasPrefix(plan.Page.SQL, `SELECT "tickets"."id", "tickets"."title" FROM "tickets" `), plan.Page.SQL)
+	assert.Contains(t, plan.Fragment, `"tickets"."status"`)
+	assert.Contains(t, plan.Fragment, `"tickets"."body"`)
 }
 
 func TestQueryOnlyColumns_NameUnreadColumnsForPredicatesOnly(t *testing.T) {

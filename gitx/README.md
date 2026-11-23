@@ -22,25 +22,31 @@ Everything is the standard library plus the `git` binary on `PATH`.
 
 Check a repository for leftover markers, from its root:
 
+<!-- x-release-please-start-version -->
 ```sh
-go run github.com/ashtonian/pkg/gitx/cmd/conflictmarkers@v0.1.0 -root .
+go run github.com/ashtonian/pkg/gitx/cmd/conflictmarkers@v0.1.2 -root .
 ```
+<!-- x-release-please-end -->
 
 A repository whose machines write records into one directory, where people still edit
 the markdown beside them, skips the records and keeps the markdown:
 
+<!-- x-release-please-start-version -->
 ```sh
-go run github.com/ashtonian/pkg/gitx/cmd/conflictmarkers@v0.1.0 -root . -skip records/ -keep .md
+go run github.com/ashtonian/pkg/gitx/cmd/conflictmarkers@v0.1.2 -root . -skip records/ -keep .md
 ```
+<!-- x-release-please-end -->
 
 Install the merge driver into the clone and route markdown through it:
 
+<!-- x-release-please-start-version -->
 ```sh
-GOBIN="$PWD/.tools" go install github.com/ashtonian/pkg/gitx/cmd/mergeinserts@v0.1.0
+GOBIN="$PWD/.tools" go install github.com/ashtonian/pkg/gitx/cmd/mergeinserts@v0.1.2
 git config --local merge.keep-inserts.name "markdown: keep both sides' insertions at one point"
 git config --local merge.keep-inserts.driver 'if [ -x .tools/mergeinserts ]; then exec .tools/mergeinserts %O %A %B %L %P %S %X %Y; else exec git merge-file --marker-size=%L -L %X -L %S -L %Y %A %O %B; fi'
 printf '%s\n' '*.md merge=keep-inserts' >> .gitattributes
 ```
+<!-- x-release-please-end -->
 
 The driver command runs the built tool when the clone has it and git's own merge
 otherwise, so a fresh clone or a linked worktree conflicts as git does rather than

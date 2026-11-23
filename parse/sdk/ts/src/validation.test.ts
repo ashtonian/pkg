@@ -192,3 +192,23 @@ describe("relation key limit", () => {
     expect(() => { validatePatch({ members: ["a", "b", "c"] }, { ...schema, max_relation_values: 0 }); }).not.toThrow();
   });
 });
+
+describe("relation keys of several columns", () => {
+  const stock = {
+    data_type: "array" as const, relation: true, nullable: true, allowed_ops: ["replace" as const],
+    key: [{ data_type: "int" as const, number_kind: "int64" }, { data_type: "string" as const }],
+  };
+  const schema = { max_operations: 10, max_relation_values: 2, paths: { "/stock": stock } };
+  it("takes each key as an array of a value per column, as the server does", () => {
+    expect(() => { validatePatch({ stock: [[1, "a"], [2, "b"]] }, schema); }).not.toThrow();
+    expectCode(() => { validatePatch({ stock: [[1]] }, schema); }, "E2077");
+    expectCode(() => { validatePatch({ stock: [[1, "a", "x"]] }, schema); }, "E2077");
+    expectCode(() => { validatePatch({ stock: ["1:a"] }, schema); }, "E2077");
+    expectCode(() => { validatePatch({ stock: [["one", "a"]] }, schema); }, "E2077");
+    expectCode(() => { validatePatch({ stock: [null] }, schema); }, "E2118");
+  });
+  it("counts a repeated key once against max_relation_values (E2119)", () => {
+    expect(() => { validatePatch({ stock: [[1, "a"], [1, "a"], [2, "b"]] }, schema); }).not.toThrow();
+    expectCode(() => { validatePatch({ stock: [[1, "a"], [1, "b"], [2, "b"]] }, schema); }, "E2119");
+  });
+});

@@ -58,16 +58,18 @@ func TestPatchTransferDestinationValidation(t *testing.T) {
 }
 
 func TestPatchTransferUsesCurrentValueAndCustomValidator(t *testing.T) {
-	p, err := parse.NewResource[transferRow]("transfer_rows")
-	require.NoError(t, err)
 	sentinel := errors.New("destination validator")
-	status := pathOf(p.PatchSchema(), "/status")
-	status.Validators = append(status.Validators, func(value any) error {
-		if value == "offline" {
-			return sentinel
-		}
+	p, err := parse.NewResource[transferRow]("transfer_rows", parse.CustomizeSchemas(func(s parse.Schemas) error {
+		status := pathOf(s.Patch, "/status")
+		status.Validators = append(status.Validators, func(value any) error {
+			if value == "offline" {
+				return sentinel
+			}
+			return nil
+		})
 		return nil
-	})
+	}))
+	require.NoError(t, err)
 	for _, tc := range []struct {
 		value string
 		fail  bool
@@ -95,9 +97,10 @@ type emptyKeyRow struct {
 
 func emptyKeyParser(t *testing.T, opts ...core.Option) *parse.Resource[emptyKeyRow] {
 	t.Helper()
-	p, err := parse.NewResource[emptyKeyRow]("empty_key_rows", parse.ParserOptions(opts...))
+	p, err := parse.NewResource[emptyKeyRow]("empty_key_rows", parse.ParserOptions(opts...), parse.CustomizeSchemas(func(s parse.Schemas) error {
+		return s.Patch.AddPath("/meta/**", &patch.PathSchema{AllowedOps: []patch.PatchOp{patch.PatchOpAdd, patch.PatchOpReplace, patch.PatchOpRemove, patch.PatchOpCopy, patch.PatchOpMove, patch.PatchOpTest}})
+	}))
 	require.NoError(t, err)
-	require.NoError(t, p.PatchSchema().AddPath("/meta/**", &patch.PathSchema{AllowedOps: []patch.PatchOp{patch.PatchOpAdd, patch.PatchOpReplace, patch.PatchOpRemove, patch.PatchOpCopy, patch.PatchOpMove, patch.PatchOpTest}}))
 	return p
 }
 

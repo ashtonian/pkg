@@ -5,9 +5,12 @@ package filter
 import (
 	"context"
 	"errors"
+	"math"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
+	"github.com/shopspring/decimal"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -16,10 +19,11 @@ import (
 
 func memberSchema() *ResourceSchema {
 	return &ResourceSchema{Name: "docs", Fields: map[string]*FieldSchema{
-		"id":        {ExternalName: "id", SQLExpr: "docs.id", DataType: core.FieldTypeString},
-		"parent_id": {ExternalName: "parent_id", SQLExpr: "docs.parent_id", DataType: core.FieldTypeUUID},
-		"count":     {ExternalName: "count", SQLExpr: "docs.count", DataType: core.FieldTypeInt},
-		"at":        {ExternalName: "at", SQLExpr: "docs.at", DataType: core.FieldTypeTimestamp},
+		"id":        {ExternalName: "id", Table: "docs", Column: "id", DataType: core.FieldTypeString},
+		"parent_id": {ExternalName: "parent_id", Table: "docs", Column: "parent_id", DataType: core.FieldTypeUUID},
+		"count":     {ExternalName: "count", Table: "docs", Column: "count", DataType: core.FieldTypeInt},
+		"at":        {ExternalName: "at", Table: "docs", Column: "at", DataType: core.FieldTypeTimestamp},
+		"doc":       {ExternalName: "doc", Table: "docs", Column: "doc", DataType: core.FieldTypeJSON},
 	}}
 }
 
@@ -40,15 +44,83 @@ func TestMembership_CompilesToAnInSubquery(t *testing.T) {
 	for name, tc := range map[string]struct {
 		d     Dialect
 		where string
+		args  []any
 	}{
-		"postgres": {PostgresDialect{}, `docs.parent_id IN (SELECT "descendant_id" FROM "authz"."node_closure" WHERE ("root_id" IN ($1, $2) AND ("user_id" = $3 OR "ended_at" IS NULL)))`},
-		"sqlite":   {SQLiteDialect{}, `docs.parent_id IN (SELECT "descendant_id" FROM "authz"."node_closure" WHERE ("root_id" IN (?1, ?2) AND ("user_id" = ?3 OR "ended_at" IS NULL)))`},
+		"postgres": {PostgresDialect{}, `"docs"."parent_id" IN (SELECT "authz"."node_closure"."descendant_id" FROM "authz"."node_closure" WHERE ("authz"."node_closure"."root_id" = ANY($1) AND ("authz"."node_closure"."user_id" = $2 OR "authz"."node_closure"."ended_at" IS NULL)))`, []any{[]string{"r1", "r2"}, "u1"}},
+		"sqlite":   {SQLiteDialect{}, `"docs"."parent_id" IN (SELECT "authz"."node_closure"."descendant_id" FROM "authz"."node_closure" WHERE ("authz"."node_closure"."root_id" IN (SELECT value AS v FROM json_each(?1)) AND ("authz"."node_closure"."user_id" = ?2 OR "authz"."node_closure"."ended_at" IS NULL)))`, []any{`["r1","r2"]`, "u1"}},
 	} {
 		t.Run(name, func(t *testing.T) {
 			res, err := NewSQLBuilder(memberSchema(), tc.d).Build(memberAST(t, "parent_id", l, false))
 			require.NoError(t, err)
 			assert.Equal(t, tc.where, res.Where)
-			assert.Equal(t, []any{"r1", "r2", "u1"}, res.Args)
+			assert.Equal(t, tc.args, res.Args)
+		})
+	}
+}
+
+// A decimal lookup value compares its column by value, as a decimal
+// field's `$eq` and `$in` do: through DecimalOrder on both sides, so on
+// SQLite a stored "1.50" equals 1.5 and digits beyond float64's precision
+// count.
+func TestMembership_DecimalValuesCompareByValue(t *testing.T) {
+	dec := decimal.RequireFromString
+	l := &Lookup{Table: "billing.prices", Project: "doc_id", Where: WhereAll(
+		WhereEq("amount", dec("1.50")),
+		WhereIn("amount", dec("2"), dec("12345678901234567890.50")),
+	)}
+	for name, tc := range map[string]struct {
+		d     Dialect
+		where string
+		args  []any
+	}{
+		"postgres": {PostgresDialect{}, `"docs"."id" IN (SELECT "billing"."prices"."doc_id" FROM "billing"."prices" WHERE ("billing"."prices"."amount" = $1::numeric AND "billing"."prices"."amount" = ANY($2::text[]::numeric[])))`, []any{"1.5", []string{"2", "12345678901234567890.5"}}},
+		"sqlite":   {SQLiteDialect{}, `"docs"."id" IN (SELECT "billing"."prices"."doc_id" FROM "billing"."prices" WHERE (parse_decimal_key("billing"."prices"."amount") = parse_decimal_key(?1) AND parse_decimal_key("billing"."prices"."amount") IN (SELECT parse_decimal_key(value) FROM json_each(?2))))`, []any{"1.5", `["2","12345678901234567890.5"]`}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			res, err := NewSQLBuilder(memberSchema(), tc.d).Build(memberAST(t, "id", l, false))
+			require.NoError(t, err)
+			assert.Equal(t, tc.where, res.Where)
+			assert.Equal(t, tc.args, res.Args)
+		})
+	}
+}
+
+// A WhereIn list binds as one parameter, as `$in` does, so the statement's
+// text and parameter count are those of a one-value list however long it
+// is: 70,000 values are past PostgreSQL's 65,535 bind parameters.
+func TestMembership_InListBindsOneSet(t *testing.T) {
+	ids := make([]any, 70_000)
+	for i := range ids {
+		ids[i] = int64(i)
+	}
+	for name, d := range map[string]Dialect{"postgres": PostgresDialect{}, "sqlite": SQLiteDialect{}} {
+		t.Run(name, func(t *testing.T) {
+			one, err := NewSQLBuilder(memberSchema(), d).Build(memberAST(t, "parent_id", &Lookup{Table: "t", Project: "p", Where: WhereIn("c", int64(0))}, false))
+			require.NoError(t, err)
+			res, err := NewSQLBuilder(memberSchema(), d).Build(memberAST(t, "parent_id", &Lookup{Table: "t", Project: "p", Where: WhereIn("c", ids...)}, false))
+			require.NoError(t, err)
+			assert.Equal(t, one.Where, res.Where)
+			assert.Equal(t, 1, res.ParamCount)
+		})
+	}
+	res, err := NewSQLBuilder(memberSchema(), PostgresDialect{}).Build(memberAST(t, "parent_id", &Lookup{Table: "t", Project: "p", Where: WhereIn("c", 1, int32(2), uint8(3))}, false))
+	require.NoError(t, err)
+	assert.Equal(t, []any{[]int64{1, 2, 3}}, res.Args, "integers of any Go kind are one integer set")
+}
+
+// A WhereIn list is one set of one scalar type; the lookup is the server's,
+// so a list it cannot bind is a plain error, never a request's.
+func TestMembership_InListOfOneScalarType(t *testing.T) {
+	for name, vs := range map[string][]any{
+		"mixed types":  {"a", int64(1)},
+		"a document":   {map[string]any{"a": 1}},
+		"a byte slice": {[]byte("a")},
+	} {
+		t.Run(name, func(t *testing.T) {
+			_, err := NewSQLBuilder(memberSchema(), PostgresDialect{}).Build(memberAST(t, "parent_id", &Lookup{Table: "t", Project: "p", Where: WhereIn("c", vs...)}, false))
+			require.ErrorIs(t, err, ErrPolicyInvalid)
+			_, isParseError := errors.AsType[*core.ParseError](err)
+			assert.False(t, isParseError)
 		})
 	}
 }
@@ -59,11 +131,20 @@ func TestMembership_SQLShapes(t *testing.T) {
 		negate bool
 		where  string
 	}{
-		"every row":      {&Lookup{Table: "t", Project: "p"}, false, `docs.id IN (SELECT "p" FROM "t")`},
-		"empty list":     {&Lookup{Table: "t", Project: "p", Where: WhereIn("c")}, false, `docs.id IN (SELECT "p" FROM "t" WHERE 1=0)`},
-		"negated":        {&Lookup{Table: "t", Project: "p", Where: WhereEq("c", "x")}, true, `NOT (docs.id IN (SELECT "p" FROM "t" WHERE "c" = $1))`},
-		"one-child And":  {&Lookup{Table: "t", Project: "p", Where: WhereAll(WhereNull("c"))}, false, `docs.id IN (SELECT "p" FROM "t" WHERE ("c" IS NULL))`},
-		"placeholder ok": {&Lookup{Table: "t", Project: "p", Where: WhereEq("c", "$1; DROP TABLE t")}, false, `docs.id IN (SELECT "p" FROM "t" WHERE "c" = $1)`},
+		"every row":      {&Lookup{Table: "t", Project: "p"}, false, `"docs"."id" IN (SELECT "t"."p" FROM "t")`},
+		"empty list":     {&Lookup{Table: "t", Project: "p", Where: WhereIn("c")}, false, `"docs"."id" IN (SELECT "t"."p" FROM "t" WHERE 1=0)`},
+		"negated":        {&Lookup{Table: "t", Project: "p", Where: WhereEq("c", "x")}, true, `NOT ("docs"."id" IN (SELECT "t"."p" FROM "t" WHERE "t"."c" = $1))`},
+		"one-child And":  {&Lookup{Table: "t", Project: "p", Where: WhereAll(WhereNull("c"))}, false, `"docs"."id" IN (SELECT "t"."p" FROM "t" WHERE ("t"."c" IS NULL))`},
+		"placeholder ok": {&Lookup{Table: "t", Project: "p", Where: WhereEq("c", "$1; DROP TABLE t")}, false, `"docs"."id" IN (SELECT "t"."p" FROM "t" WHERE "t"."c" = $1)`},
+		"key set": {&Lookup{Table: "s.t", Project: "p", Where: WhereKeyIn([]string{"a", "b"}, core.Key{int64(1), "x"})}, false,
+			`"docs"."id" IN (SELECT "s"."t"."p" FROM "s"."t" WHERE ("s"."t"."a", "s"."t"."b") IN (SELECT "k"."a", "k"."b" FROM jsonb_populate_recordset(NULL::"s"."t", $1) AS "k"))`},
+		"key set of nothing": {&Lookup{Table: "t", Project: "p", Where: WhereKeyIn([]string{"a", "b"})}, false, `"docs"."id" IN (SELECT "t"."p" FROM "t" WHERE 1=0)`},
+		"typed member": {&Lookup{Table: "t", Project: "p", Where: WhereMember("a", &Lookup{Table: "u", Project: "x"}).typed(decimalType())}, false,
+			`"docs"."id" IN (SELECT "t"."p" FROM "t" WHERE "t"."a" IN (SELECT "u"."x" FROM "u"))`},
+		"typed in": {&Lookup{Table: "t", Project: "p", Where: WhereIn("a", "1.50").typed(decimalType())}, false,
+			`"docs"."id" IN (SELECT "t"."p" FROM "t" WHERE "t"."a" = ANY($1::text[]::numeric[]))`},
+		"key member": {&Lookup{Table: "t", Project: "p", Where: WhereKeyMember([]string{"a", "b"}, &Lookup{Table: "u", ProjectKey: []string{"x", "y"}, Where: WhereEq("z", "q")})}, false,
+			`"docs"."id" IN (SELECT "t"."p" FROM "t" WHERE ("t"."a", "t"."b") IN (SELECT "u"."x", "u"."y" FROM "u" WHERE "u"."z" = $1))`},
 	} {
 		t.Run(name, func(t *testing.T) {
 			res, err := NewSQLBuilder(memberSchema(), PostgresDialect{}).Build(memberAST(t, "id", tc.l, tc.negate))
@@ -73,40 +154,74 @@ func TestMembership_SQLShapes(t *testing.T) {
 	}
 }
 
+func stringType() []core.TypeInfo {
+	types := []core.TypeInfo{{Type: core.FieldTypeString}}
+	return types
+}
+
+func decimalType() []core.TypeInfo {
+	types := []core.TypeInfo{{Type: core.FieldTypeDecimal}}
+	return types
+}
+
+// On SQLite, which stores a decimal as text, a typed member compares both
+// sides by value.
+func TestMembership_TypedMemberComparesByValueOnSQLite(t *testing.T) {
+	l := &Lookup{Table: "t", Project: "p", Where: WhereMember("a", &Lookup{Table: "u", Project: "x"}).typed(decimalType())}
+	res, err := NewSQLBuilder(memberSchema(), SQLiteDialect{}).Build(memberAST(t, "id", l, false))
+	require.NoError(t, err)
+	assert.Equal(t, `"docs"."id" IN (SELECT "t"."p" FROM "t" WHERE parse_decimal_key("t"."a") IN (SELECT parse_decimal_key("u"."x") FROM "u"))`, res.Where)
+}
+
 func TestMembership_RefusesMalformedLookups(t *testing.T) {
 	for name, tc := range map[string]struct {
 		field string
 		l     *Lookup
 	}{
-		"table injection":      {"id", &Lookup{Table: "t; DROP TABLE docs", Project: "p"}},
-		"three-part table":     {"id", &Lookup{Table: "a.b.c", Project: "p"}},
-		"project injection":    {"id", &Lookup{Table: "t", Project: "p) OR (1=1"}},
-		"column injection":     {"id", &Lookup{Table: "t", Project: "p", Where: WhereEq(`c" = c --`, "x")}},
-		"comparison and group": {"id", &Lookup{Table: "t", Project: "p", Where: &LookupCond{Column: "c", Op: LookupOpNull, And: []*LookupCond{WhereNull("d")}}}},
-		"And and Or":           {"id", &Lookup{Table: "t", Project: "p", Where: &LookupCond{And: []*LookupCond{WhereNull("c")}, Or: []*LookupCond{WhereNull("d")}}}},
-		"empty condition":      {"id", &Lookup{Table: "t", Project: "p", Where: &LookupCond{}}},
-		"nil child":            {"id", &Lookup{Table: "t", Project: "p", Where: WhereAny(nil)}},
-		"equality with NULL":   {"id", &Lookup{Table: "t", Project: "p", Where: WhereEq("c", nil)}},
-		"typed nil equality":   {"id", &Lookup{Table: "t", Project: "p", Where: WhereEq("c", (*string)(nil))}},
-		"NULL in a list":       {"id", &Lookup{Table: "t", Project: "p", Where: WhereIn("c", "x", nil)}},
-		"unknown operator":     {"id", &Lookup{Table: "t", Project: "p", Where: &LookupCond{Column: "c", Op: "gt", Value: 1}}},
-		"timestamp field":      {"at", &Lookup{Table: "t", Project: "p"}},
+		"table injection":         {"id", &Lookup{Table: "t; DROP TABLE docs", Project: "p"}},
+		"three-part table":        {"id", &Lookup{Table: "a.b.c", Project: "p"}},
+		"project injection":       {"id", &Lookup{Table: "t", Project: "p) OR (1=1"}},
+		"column injection":        {"id", &Lookup{Table: "t", Project: "p", Where: WhereEq(`c" = c --`, "x")}},
+		"comparison and group":    {"id", &Lookup{Table: "t", Project: "p", Where: &LookupCond{Column: "c", Op: LookupOpNull, And: []*LookupCond{WhereNull("d")}}}},
+		"And and Or":              {"id", &Lookup{Table: "t", Project: "p", Where: &LookupCond{And: []*LookupCond{WhereNull("c")}, Or: []*LookupCond{WhereNull("d")}}}},
+		"empty condition":         {"id", &Lookup{Table: "t", Project: "p", Where: &LookupCond{}}},
+		"nil child":               {"id", &Lookup{Table: "t", Project: "p", Where: WhereAny(nil)}},
+		"equality with NULL":      {"id", &Lookup{Table: "t", Project: "p", Where: WhereEq("c", nil)}},
+		"typed nil equality":      {"id", &Lookup{Table: "t", Project: "p", Where: WhereEq("c", (*string)(nil))}},
+		"NULL in a list":          {"id", &Lookup{Table: "t", Project: "p", Where: WhereIn("c", "x", nil)}},
+		"unknown operator":        {"id", &Lookup{Table: "t", Project: "p", Where: &LookupCond{Column: "c", Op: "gt", Value: 1}}},
+		"document field":          {"doc", &Lookup{Table: "t", Project: "p"}},
+		"key projected":           {"id", &Lookup{Table: "t", ProjectKey: []string{"a", "b"}}},
+		"both projections":        {"id", &Lookup{Table: "t", Project: "p", ProjectKey: []string{"a", "b"}}},
+		"key of one column":       {"id", &Lookup{Table: "t", Project: "p", Where: WhereKeyIn([]string{"a"}, core.Key{"x"})}},
+		"key column twice":        {"id", &Lookup{Table: "t", Project: "p", Where: WhereKeyIn([]string{"a", "a"}, core.Key{"x", "y"})}},
+		"key column injection":    {"id", &Lookup{Table: "t", Project: "p", Where: WhereKeyIn([]string{"a", `b" --`}, core.Key{"x", "y"})}},
+		"short key":               {"id", &Lookup{Table: "t", Project: "p", Where: WhereKeyIn([]string{"a", "b"}, core.Key{"x"})}},
+		"NULL in a key":           {"id", &Lookup{Table: "t", Project: "p", Where: WhereKeyIn([]string{"a", "b"}, core.Key{"x", nil})}},
+		"key and a column":        {"id", &Lookup{Table: "t", Project: "p", Where: &LookupCond{Column: "c", Columns: []string{"a", "b"}, Op: LookupOpKeyIn}}},
+		"columns on a column":     {"id", &Lookup{Table: "t", Project: "p", Where: &LookupCond{Column: "c", Columns: []string{"a", "b"}, Op: LookupOpEq, Value: 1}}},
+		"key member of a column":  {"id", &Lookup{Table: "t", Project: "p", Where: WhereKeyMember([]string{"a", "b"}, &Lookup{Table: "u", Project: "x"})}},
+		"key member of no lookup": {"id", &Lookup{Table: "t", Project: "p", Where: WhereKeyMember([]string{"a", "b"}, nil)}},
+		"types on a NULL test":    {"id", &Lookup{Table: "t", Project: "p", Where: WhereNull("c").typed(stringType())}},
+		"types of another width":  {"id", &Lookup{Table: "t", Project: "p", Where: WhereKeyIn([]string{"a", "b"}, core.Key{"x", "y"}).typed(stringType())}},
+		"typed as no scalar":      {"id", &Lookup{Table: "t", Project: "p", Where: WhereEq("c", "x").typed([]core.TypeInfo{{Type: core.FieldTypeObject}})}},
+		"value its type refuses":  {"id", &Lookup{Table: "t", Project: "p", Where: WhereIn("c", "x").typed([]core.TypeInfo{{Type: core.FieldTypeInt}})}},
+		"member of a key":         {"id", &Lookup{Table: "t", Project: "p", Where: WhereMember("a", &Lookup{Table: "u", ProjectKey: []string{"x", "y"}})}},
 	} {
 		t.Run(name, func(t *testing.T) {
 			_, err := ApplyPolicyConstraints(memberSchema(), nil, &PolicyConstraints{
 				Constraints: []*PolicyConstraint{{Field: tc.field, Member: tc.l}},
 			})
-			var pe *core.ParseError
-			require.ErrorAs(t, err, &pe)
-			assert.Equal(t, ECodeInvalidRelation.String(), pe.Code)
+			require.ErrorIs(t, err, ErrPolicyInvalid)
+			assert.ErrorContains(t, err, `field "`+tc.field+`": `, "the constraint is named")
+			_, isParseError := errors.AsType[*core.ParseError](err)
+			assert.False(t, isParseError, "a lookup is the server's, never the request's")
 		})
 	}
 	_, err := ApplyPolicyConstraints(memberSchema(), nil, &PolicyConstraints{
 		Constraints: []*PolicyConstraint{{Field: "nope", Member: &Lookup{Table: "t", Project: "p"}}},
 	})
-	var pe *core.ParseError
-	require.ErrorAs(t, err, &pe)
-	assert.Equal(t, ECodeUnknownField.String(), pe.Code)
+	assert.ErrorIs(t, err, ErrPolicyInvalid)
 }
 
 type recordingLookup struct {
@@ -145,7 +260,7 @@ func TestResolveMemberships_RewritesToTheEquivalentIn(t *testing.T) {
 			before := *ast.Root
 			out, err := ResolveMemberships(context.Background(), NewParsedFilter(ast), lookup)
 			require.NoError(t, err)
-			got := out.AST.Root
+			got := out.AST().Root
 			stripFields(got)
 			assert.Equal(t, tc.want, got)
 			assert.Equal(t, before, *ast.Root, "the input filter is not modified")
@@ -164,8 +279,8 @@ func TestResolveMemberships_WithoutALookupIsUnknown(t *testing.T) {
 	ast := memberAST(t, "id", &Lookup{Table: "t", Project: "p"}, true)
 	out, err := ResolveMemberships(context.Background(), NewParsedFilter(ast), nil)
 	require.NoError(t, err)
-	require.Equal(t, OpNot, out.AST.Root.Op)
-	assert.Equal(t, unknownNode(), out.AST.Root.Children[0], "NOT unknown is unknown: the deny still admits nothing it might refuse")
+	require.Equal(t, OpNot, out.AST().Root.Op)
+	assert.Equal(t, unknownNode(), out.AST().Root.Children[0], "NOT unknown is unknown: the deny still admits nothing it might refuse")
 }
 
 func TestResolveMemberships_ResolvesEachLookupOnce(t *testing.T) {
@@ -194,7 +309,7 @@ func TestResolveMemberships_SharedLookupTestsEachField(t *testing.T) {
 	out, err := ResolveMemberships(context.Background(), NewParsedFilter(ast), lookup)
 	require.NoError(t, err)
 	assert.Equal(t, 1, lookup.calls)
-	or := out.AST.Root
+	or := out.AST().Root
 	require.Equal(t, OpOr, or.Op)
 	require.Len(t, or.Children, 2)
 	assert.Equal(t, "id", or.Children[0].Field.ExternalName)
@@ -232,7 +347,14 @@ func TestResolveMemberships_LeavesFiltersWithoutMembershipsAlone(t *testing.T) {
 
 func TestMatchLookupRow(t *testing.T) {
 	id := uuid.MustParse("0198a3c2-7a1e-7c00-8000-00000000000a")
-	row := map[string]any{"name": "a", "big": int64(9007199254740993), "small": int32(7), "ref": id, "ended": (*string)(nil)}
+	dec := decimal.RequireFromString
+	at := time.Date(2026, time.January, 2, 3, 4, 5, 123456000, time.UTC)
+	elsewhere := at.In(time.FixedZone("", 3600))
+	row := map[string]any{
+		"name": "a", "big": int64(9007199254740993), "small": int32(7), "ref": id, "ended": (*string)(nil),
+		"price": "1.50", "wide": dec("12345678901234567890.50"), "ratio": 0.1, "label": "1.5",
+		"at": at, "at_text": "2026-01-02T03:04:05.123456000Z", "device": "d1", "zero": 0.0,
+	}
 	get := func(name string) (any, bool) { v, ok := row[name]; return v, ok }
 	for name, tc := range map[string]struct {
 		cond *LookupCond
@@ -251,6 +373,28 @@ func TestMatchLookupRow(t *testing.T) {
 		"NULL column never equals": {WhereIn("ended", "x"), false},
 		"and":                      {WhereAll(WhereEq("name", "a"), WhereNull("ended")), true},
 		"or":                       {WhereAny(WhereEq("name", "b"), WhereEq("small", 7)), true},
+		"decimal text by value":    {WhereEq("price", dec("1.5")), true},
+		"decimal beyond float64":   {WhereEq("wide", dec("12345678901234567890.5")), true},
+		"decimal digits count":     {WhereIn("wide", dec("12345678901234567890.4"), dec("12345678901234567890")), false},
+		"decimal against a float":  {WhereEq("ratio", dec("0.1")), true},
+		"decimal row by value":     {WhereEq("wide", "12345678901234567890.500"), true},
+		"text compares as text":    {WhereEq("price", "1.5"), false},
+		"decimal against non-text": {WhereEq("name", dec("1")), false},
+		"decimal set by value":     {WhereIn("label", dec("2"), dec("1.50")), true},
+		"timestamp at its instant": {WhereEq("at", elsewhere), true},
+		"timestamp text":           {WhereEq("at_text", elsewhere), true},
+		"timestamp a µs later":     {WhereEq("at", at.Add(time.Microsecond)), false},
+		"device and instant":       {WhereAll(WhereEq("device", "d1"), WhereIn("at_text", at.Add(time.Second), elsewhere)), true},
+		"negative zero":            {WhereEq("zero", math.Copysign(0, -1)), true},
+		"key set":                  {WhereKeyIn([]string{"device", "at_text"}, core.Key{"d1", at.Add(time.Second)}, core.Key{"d1", elsewhere}), true},
+		"key set, each column":     {WhereKeyIn([]string{"device", "at_text"}, core.Key{"d2", elsewhere}, core.Key{"d1", at.Add(time.Second)}), false},
+		"key set by value":         {WhereKeyIn([]string{"name", "price"}, core.Key{"a", dec("1.5")}), true},
+		"key set of nothing":       {WhereKeyIn([]string{"name", "price"}), false},
+		"key set, NULL column":     {WhereKeyIn([]string{"name", "ended"}, core.Key{"a", "x"}), false},
+		"typed text by value":      {WhereEq("price", "1.5").typed(decimalType()), true},
+		"typed set by value":       {WhereIn("label", "2", "1.50").typed(decimalType()), true},
+		"typed key set":            {WhereKeyIn([]string{"label", "name"}, core.Key{"1.50", "a"}).typed(append(decimalType(), stringType()...)), true},
+		"typed key set, by type":   {WhereKeyIn([]string{"name", "label"}, core.Key{"a", "1.50"}).typed(append(stringType(), stringType()...)), false},
 	} {
 		t.Run(name, func(t *testing.T) {
 			got, err := MatchLookupRow(tc.cond, get)
@@ -259,6 +403,9 @@ func TestMatchLookupRow(t *testing.T) {
 		})
 	}
 	_, err := MatchLookupRow(WhereEq("missing", "x"), get)
-	var pe *core.ParseError
-	assert.ErrorAs(t, err, &pe, "a misspelt column cannot silently select nothing")
+	assert.ErrorIs(t, err, ErrPolicyInvalid, "a misspelt column cannot silently select nothing")
+	_, err = MatchLookupRow(WhereKeyIn([]string{"name", "missing"}, core.Key{"a", "x"}), get)
+	require.ErrorIs(t, err, ErrPolicyInvalid, "nor a key's")
+	_, err = MatchLookupRow(WhereKeyMember([]string{"name", "device"}, &Lookup{Table: "t", ProjectKey: []string{"a", "b"}}), get)
+	assert.ErrorContains(t, err, "unanswered lookup", "a key member is answered before a store sees it")
 }

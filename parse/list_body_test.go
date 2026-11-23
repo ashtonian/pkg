@@ -125,12 +125,12 @@ func TestParseListBody_BodyLimit(t *testing.T) {
 func TestParseListBody_AnInputSizeAtMaxInt(t *testing.T) {
 	got, err := limitedWidgets(t, core.WithMaxInputSize(math.MaxInt)).ParseListBody(strings.NewReader(`{"sort":"-rank"}`))
 	require.NoError(t, err)
-	require.NotNil(t, got.Sort)
+	require.NotNil(t, got.Sort())
 }
 
 func TestNewResource_RefusesANegativeListBodySize(t *testing.T) {
 	_, err := parse.NewResource[widget]("widgets", parse.ParserOptions(core.WithMaxListBodySize(-1)))
-	assert.ErrorContains(t, err, "list body limit -1 must not be negative")
+	assert.ErrorContains(t, err, "parse: widgets: parser options: WithMaxListBodySize(-1): a limit is never negative")
 }
 
 func TestParseListBody_NullMembersAreAbsent(t *testing.T) {
@@ -160,6 +160,9 @@ func TestParseListBody_ReadErrorsAreNotRequestErrors(t *testing.T) {
 			assert.ErrorContains(t, err, "widgets: reading list body")
 			_, isParse := errors.AsType[*core.ParseError](err)
 			assert.False(t, isParse, "the request is not at fault")
+			readErr, ok := errors.AsType[*parse.BodyReadError](err)
+			require.True(t, ok)
+			assert.Equal(t, parse.BodyReadError{Table: "widgets", Request: "list", Err: cause}, *readErr)
 		})
 	}
 }
@@ -167,7 +170,7 @@ func TestParseListBody_ReadErrorsAreNotRequestErrors(t *testing.T) {
 // ParseListPost is a POST's list from its parts, for a framework that hands
 // a handler those rather than an *http.Request.
 func TestParseListPost(t *testing.T) {
-	res, err := parse.NewResource[gadgetRow]("gadgets", parse.AcceptParams("tenant"))
+	res, err := parse.NewResource[gadgetRow]("gadgets", parse.AcceptParams("tenant"), atOneInstant())
 	require.NoError(t, err)
 	want, err := res.ParseListInput(parse.ListInput{Sort: "-id"})
 	require.NoError(t, err)
@@ -211,7 +214,7 @@ type gadgetRow struct {
 func limitedWidgets(t *testing.T, opts ...core.Option) *parse.Resource[widget] {
 	t.Helper()
 	r, err := parse.NewResource[widget]("widgets", parse.TenantColumn("tenant_id"), parse.DeletedColumn("deleted_at"),
-		parse.PageSize(2, 3), parse.ParserOptions(opts...))
+		parse.PageSize(2, 3), atOneInstant(), parse.ParserOptions(opts...))
 	require.NoError(t, err)
 	return r
 }

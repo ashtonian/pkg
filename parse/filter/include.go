@@ -6,14 +6,15 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/ashtonian/pkg/parse/core"
 )
 
 // DefaultMaxIncludePerRelation caps the target rows an include query
 // returns per owner, so an entity with thousands of related rows cannot
-// turn one page into an unbounded read. Per-call override via
-// [WithMaxIncludePerRelation]. .
+// turn one page into an unbounded read. [WithMaxIncludePerRelation]
+// overrides it per call.
 const DefaultMaxIncludePerRelation = 100
 
 // MaxIncludes is how many relations one list may include.
@@ -37,7 +38,9 @@ type IncludeQuery struct {
 }
 
 // IncludeRows is an include's result: the related IDs grouped by owner key,
-// and the owners whose IDs were cut at the limit.
+// and the owners whose IDs were cut at the limit. Every key is its text
+// (core.KeyText): a one-column key's value, a longer key the JSON array of
+// its values' texts.
 type IncludeRows struct {
 	IDs       map[string][]string
 	Truncated []string
@@ -69,7 +72,7 @@ type IncludeQueryOption func(*includeQueryConfig)
 
 type includeQueryConfig struct {
 	scope   relationScope
-	related map[string]*PolicyConstraints
+	related relatedPolicies
 	// owner is the owner's schema, whose table the read joins when the
 	// relation follows the owner row's tenant (WithIncludeOwner).
 	owner       *ResourceSchema
@@ -82,7 +85,7 @@ type includeQueryConfig struct {
 // ResolveInclude refuses a RowTenant: resolve each tenant's owners with
 // its Tenant.
 func WithIncludeRelationScope(s RelationScope) IncludeQueryOption {
-	return func(c *includeQueryConfig) { c.scope, c.related = s.tenancy(), s.Related }
+	return func(c *includeQueryConfig) { c.scope, c.related = s.tenancy(), s.policies() }
 }
 
 // WithIncludeOwner names the owner's schema, whose table a RowTenant reads
@@ -99,7 +102,7 @@ func WithMaxIncludePerRelation(n int) IncludeQueryOption {
 }
 
 // BuildIncludeQuery emits the batched read of one relation field's related
-// IDs across the supplied owner PK set, the lowest target IDs first, at
+// IDs across the supplied owner keys, the lowest target IDs first, at
 // most the per-owner cap plus one (IncludeQuery.Scan cuts and reports it).
 // Text keys use code-point order; numeric and UUID keys use native order.
 // Both IDs come back as text in the database's canonical spelling, the
@@ -114,6 +117,11 @@ func WithMaxIncludePerRelation(n int) IncludeQueryOption {
 //	        WHERE j.<source> IN ($1, $2, ...) [AND <scope>]) pairs__) include__
 //	WHERE include_rank <= <cap+1> ORDER BY include__.owner_pk, include__.target_id
 //
+// A key of several columns projects a column per key column (owner_pk,
+// owner_pk_1, …; target_id, target_id_1, …), ranks and orders by all of
+// them, binds the owner keys as one row-value set and comes back as its
+// text (core.KeyText), so Scan reads every include alike.
+//
 // Pairs are distinct before they are ranked: a junction holding two rows
 // for one pair (two typed edges between the same rows) names the target
 // once and spends one place of the cap. The cap applies in the database:
@@ -122,50 +130,58 @@ func WithMaxIncludePerRelation(n int) IncludeQueryOption {
 // has-many's live children in the tenant, a many-to-many's pairs whose
 // target is live and in the tenant — or, for a policy-scoped relation,
 // admitted by its target policy (ErrRelatedPolicyRequired without it).
-func BuildIncludeQuery(field *FieldSchema, dialect Dialect, ownerPKs []any, opts ...IncludeQueryOption) (IncludeQuery, error) {
+func BuildIncludeQuery(field *FieldSchema, dialect Dialect, ownerKeys []core.Key, opts ...IncludeQueryOption) (IncludeQuery, error) {
 	cfg, err := includeConfig(field, opts...)
 	if err != nil {
 		return IncludeQuery{}, fmt.Errorf("BuildIncludeQuery: %w", err)
 	}
 	rel := field.Relation
-	if len(ownerPKs) == 0 {
+	if len(ownerKeys) == 0 {
 		return IncludeQuery{Field: field.ExternalName, Schema: rel, Limit: cfg.maxPerOwner}, nil
 	}
 
-	s := &buildState{args: make([]any, 0, len(ownerPKs)+2)}
+	s := &buildState{args: make([]any, 0, len(ownerKeys)+2)}
 	bind := s.binder(dialect)
-	targetKey := junctionAlias + "." + rel.TargetColumn
-	if field.DataType == core.FieldTypeString {
-		// The projection's collation governs DISTINCT, ranking and output
-		// order, including keys stored under a different column collation.
-		targetKey = dialect.CodePointOrder(targetKey)
+	owners, targets := includeColumns("owner_pk", len(rel.SourceColumns)), includeColumns("target_id", len(rel.TargetColumns))
+	selected := make([]string, 0, len(owners)+2*len(targets))
+	for i, c := range rel.SourceColumns {
+		selected = append(selected, includeKey(dialect, qualified(dialect, junctionAlias, c), rel.SourceTypes[i])+" AS "+owners[i])
 	}
-
-	var b strings.Builder
-	b.WriteString("SELECT CAST(include__.owner_pk AS TEXT), CAST(include__.target_id AS TEXT) FROM (")
-	b.WriteString("SELECT owner_pk, target_id, ROW_NUMBER() OVER (PARTITION BY owner_pk ORDER BY target_id) AS include_rank FROM (")
-	b.WriteString("SELECT DISTINCT " + junctionAlias + "." + rel.SourceColumn + " AS owner_pk, " + targetKey + " AS target_id FROM " + rel.JoinTable + " " + junctionAlias)
-	b.WriteString(relatedJoin(rel, junctionAlias, targetAlias))
-	scope := cfg.scope
-	if scope.row.column != "" {
-		pk := rel.OwnerKey()
-		b.WriteString(" JOIN " + cfg.owner.Name + " " + includeOwnerAlias + " ON " + includeOwnerAlias + "." + pk + " = " + junctionAlias + "." + rel.SourceColumn)
-		scope = scope.over(cfg.owner)
-		scope.row.expr = includeOwnerAlias + "." + scope.row.column
-	}
-	// The owner keys bind as one set, typed as the owner's correlation
-	// field, so the statement's text does not vary with the page.
-	owners := *field.RelatedBy
-	owners.SQLExpr, owners.Path = junctionAlias+"."+rel.SourceColumn, nil
-	keys := make([]any, len(ownerPKs))
-	for i, pk := range ownerPKs {
-		if keys[i], err = core.NormalizeScalar(owners.DataType, owners.NumberKind, pk); err != nil {
-			return IncludeQuery{}, fmt.Errorf("BuildIncludeQuery: field %q: owner key %v: %w", field.ExternalName, pk, err)
+	// A target whose text does not order as its value orders by a column
+	// of its own (KeyOrder), so the cap keeps the keys ResolveInclude keeps.
+	orders := slices.Clone(targets)
+	passed := slices.Clone(targets)
+	for i, c := range rel.TargetColumns {
+		column, t := qualified(dialect, junctionAlias, c), rel.TargetTypes[i]
+		targetKey := includeKey(dialect, column, t)
+		if t.Type == core.FieldTypeString {
+			// The projection's collation governs DISTINCT, ranking and output
+			// order, including keys stored under a different column collation.
+			targetKey = dialect.CodePointOrder(targetKey)
+		}
+		selected = append(selected, targetKey+" AS "+targets[i])
+		if !storedCanonical(t.Type) {
+			orders[i] = targets[i] + "_o"
+			passed = append(passed, orders[i])
+			selected = append(selected, KeyOrder(dialect, column, t)+" AS "+orders[i])
 		}
 	}
-	in, err := dialect.Condition(&owners, OpIn, keys, bind)
+	ownerList := strings.Join(owners, ", ")
+
+	var b strings.Builder
+	b.WriteString("SELECT " + includeText(dialect, owners) + ", " + includeText(dialect, targets) + " FROM (")
+	b.WriteString("SELECT " + ownerList + ", " + strings.Join(passed, ", ") + ", ROW_NUMBER() OVER (PARTITION BY " + ownerList + " ORDER BY " + strings.Join(orders, ", ") + ") AS include_rank FROM (")
+	b.WriteString("SELECT DISTINCT " + strings.Join(selected, ", ") + " FROM " + dialect.QuoteIdent(rel.JoinTable) + " " + junctionAlias)
+	b.WriteString(relatedJoin(dialect, rel, junctionAlias, targetAlias))
+	scope := cfg.scope
+	if scope.row.column != "" {
+		b.WriteString(" JOIN " + dialect.QuoteIdent(cfg.owner.Name) + " " + includeOwnerAlias + " ON " + correlation(dialect, includeOwnerAlias, rel.OwnerColumns(), junctionAlias, rel.SourceColumns, rel.SourceTypes))
+		scope = scope.over(dialect, cfg.owner)
+		scope.row.expr = qualified(dialect, includeOwnerAlias, scope.row.column)
+	}
+	in, err := includeOwners(field, dialect, ownerKeys, bind)
 	if err != nil {
-		return IncludeQuery{}, fmt.Errorf("BuildIncludeQuery: field %q: owner keys: %w", field.ExternalName, err)
+		return IncludeQuery{}, fmt.Errorf("BuildIncludeQuery: field %q: %w", field.ExternalName, err)
 	}
 	b.WriteString(" WHERE " + in)
 	relScope, err := relatedScope(field, dialect, scope, cfg.related, s, bind, junctionAlias, targetAlias)
@@ -175,7 +191,7 @@ func BuildIncludeQuery(field *FieldSchema, dialect Dialect, ownerPKs []any, opts
 	b.WriteString(relScope)
 	b.WriteString(") pairs__) include__ WHERE include_rank <= ")
 	b.WriteString(strconv.Itoa(cfg.maxPerOwner + 1))
-	b.WriteString(" ORDER BY include__.owner_pk, include__.target_id")
+	b.WriteString(" ORDER BY include__." + strings.Join(slices.Concat(owners, orders), ", include__."))
 
 	return IncludeQuery{
 		Field:  field.ExternalName,
@@ -184,6 +200,90 @@ func BuildIncludeQuery(field *FieldSchema, dialect Dialect, ownerPKs []any, opts
 		Args:   s.args,
 		Limit:  cfg.maxPerOwner,
 	}, nil
+}
+
+// includeColumns are the aliases an include projects a key of n columns
+// under: name, then name_1, name_2, ….
+func includeColumns(name string, n int) []string {
+	out := make([]string, n)
+	out[0] = name
+	for i := 1; i < n; i++ {
+		out[i] = name + "_" + strconv.Itoa(i)
+	}
+	return out
+}
+
+// includeKey is a key column of the junction, read as column and typed t,
+// as an include projects it: a string, UUID or integer column itself, any
+// other type's its canonical text (keyValueText), equal exactly where the
+// values are, so DISTINCT and the per-owner partition take equal values as
+// one.
+func includeKey(dialect Dialect, column string, t core.TypeInfo) string {
+	if storedCanonical(t.Type) {
+		return column
+	}
+	return keyValueText(dialect, column, t)
+}
+
+// includeText is the text an include names a key by, its columns being the
+// include__ projection's columns: one column's own text, several columns'
+// core.KeyText.
+func includeText(dialect Dialect, columns []string) string {
+	if len(columns) == 1 {
+		return "CAST(include__." + columns[0] + " AS TEXT)"
+	}
+	exprs := make([]string, len(columns))
+	for i, c := range columns {
+		exprs[i] = "include__." + c
+	}
+	return dialect.keyText(exprs)
+}
+
+// includeOwners is the predicate holding the junction's rows to the owner
+// keys, bound as one set typed as the relation's source columns, so the
+// statement's text does not vary with the page: the source column `$in`
+// the keys for a one-column key, the row value of the source columns in
+// them for a longer one (Dialect.KeyIn).
+func includeOwners(field *FieldSchema, dialect Dialect, ownerKeys []core.Key, bind func(any) string) (string, error) {
+	rel := field.Relation
+	if len(rel.SourceColumns) == 1 {
+		values := make([]any, len(ownerKeys))
+		for i, k := range ownerKeys {
+			if len(k) != 1 {
+				return "", fmt.Errorf("owner key %d has %d values for the one key column", i, len(k))
+			}
+			values[i] = k[0]
+		}
+		source := keyField(rel.SourceColumns[0], "", rel.SourceTypes[0])
+		source.Table, source.Expr = junctionAlias, ""
+		values, err := normalizeKeyValues(source, values)
+		if err != nil {
+			return "", fmt.Errorf("owner keys: %w", err)
+		}
+		in, err := dialect.Condition(source, OpIn, values, bind)
+		if err != nil {
+			return "", fmt.Errorf("owner keys: %w", err)
+		}
+		return in, nil
+	}
+	in, err := dialect.KeyIn(rel.JoinTable, junctionAlias, rel.SourceColumns, rel.SourceTypes, ownerKeys, true, bind)
+	if err != nil {
+		return "", fmt.Errorf("owner keys: %w", err)
+	}
+	return in, nil
+}
+
+// normalizeKeyValues is values, each normalized as key column f's type.
+func normalizeKeyValues(f *FieldSchema, values []any) ([]any, error) {
+	out := make([]any, len(values))
+	for i, v := range values {
+		n, err := core.NormalizeScalar(f.DataType, f.NumberKind, v)
+		if err != nil {
+			return nil, fmt.Errorf("key %v: %w", v, err)
+		}
+		out[i] = n
+	}
+	return out, nil
 }
 
 func includeConfig(field *FieldSchema, opts ...IncludeQueryOption) (*includeQueryConfig, error) {
@@ -199,13 +299,18 @@ func includeConfig(field *FieldSchema, opts ...IncludeQueryOption) (*includeQuer
 	if field.Relation.Policy && field.Related == nil {
 		return nil, fmt.Errorf("policy-scoped relation has no target schema")
 	}
-	if field.RelatedBy == nil {
-		return nil, fmt.Errorf("field %q has no owner correlation field (FieldSchema.RelatedBy) to type the owner keys", field.ExternalName)
+	err := field.Relation.Check()
+	if err != nil {
+		return nil, fmt.Errorf("field %q: %w", field.ExternalName, err)
+	}
+	if len(field.RelatedBy) != len(field.Relation.SourceColumns) {
+		return nil, fmt.Errorf("field %q has %d owner correlation fields (FieldSchema.RelatedBy) to type the keys of %d columns", field.ExternalName, len(field.RelatedBy), len(field.Relation.SourceColumns))
 	}
 	cfg := &includeQueryConfig{}
 	for _, opt := range opts {
 		opt(cfg)
 	}
+	cfg.related = cfg.related.at(time.Now().UTC())
 	if err := cfg.scope.check(); err != nil {
 		return nil, err
 	}
@@ -227,16 +332,20 @@ func includeConfig(field *FieldSchema, opts ...IncludeQueryOption) (*includeQuer
 // table's tenant (bindTenant), and for a declared relation its live,
 // tenant- or policy-scoped related rows — the join table itself for a
 // has-many, the target for a many-to-many. Policy values bind through s.
-func relatedScope(field *FieldSchema, dialect Dialect, scope relationScope, related map[string]*PolicyConstraints, s *buildState, bindTenant func(any) string, join, target string) (string, error) {
+func relatedScope(field *FieldSchema, dialect Dialect, scope relationScope, related relatedPolicies, s *buildState, bindTenant func(any) string, join, target string) (string, error) {
 	rel := field.Relation
+	exprs, err := targetExprs(field, dialect)
+	if err != nil {
+		return "", err
+	}
 	var b strings.Builder
-	clause, err := scope.clause(rel.JoinTable, rel.TenantColumn, join, joinTenantType(field), bindTenant)
+	clause, err := scope.clause(dialect, rel.JoinTable, rel.TenantColumn, join, joinTenantType(field), bindTenant)
 	if err != nil {
 		return "", err
 	}
 	b.WriteString(clause)
 	if rel.DeletedColumn != "" {
-		b.WriteString(" AND " + join + "." + rel.DeletedColumn + " IS NULL")
+		b.WriteString(" AND " + qualified(dialect, join, rel.DeletedColumn) + " IS NULL")
 	}
 	visible := join
 	if rel.TargetTable != "" {
@@ -247,7 +356,7 @@ func relatedScope(field *FieldSchema, dialect Dialect, scope relationScope, rela
 		}
 		b.WriteString(tc)
 	}
-	pc, err := policyScope(field, dialect, scope, related, s, visible, join)
+	pc, err := policyScope(field, exprs, dialect, scope, related, s, visible, join)
 	if err != nil {
 		return "", err
 	}
@@ -255,25 +364,36 @@ func relatedScope(field *FieldSchema, dialect Dialect, scope relationScope, rela
 	return b.String(), nil
 }
 
+// targetExprs are a declared relation's target's computed columns resolved
+// for dialect: a statement that reads the target compiles its schema, and a
+// dialect one of its expressions refuses fails it.
+func targetExprs(field *FieldSchema, dialect Dialect) (columnExprs, error) {
+	if field.Related == nil {
+		return nil, nil
+	}
+	exprs, err := field.Related.ComputedSQL(dialect)
+	return exprs, err
+}
+
 // targetScope is a many-to-many target's tenant and live-row predicate on
 // alias.
 func targetScope(field *FieldSchema, dialect Dialect, scope relationScope, bindTenant func(any) string, alias string) (string, error) {
 	rel := field.Relation
 	var b strings.Builder
-	tc, err := scope.clause(rel.TargetTable, rel.TargetTenant, alias, tenantColumnType(field.Related, rel.TargetTenant), bindTenant)
+	tc, err := scope.clause(dialect, rel.TargetTable, rel.TargetTenant, alias, tenantColumnType(field.Related, rel.TargetTenant), bindTenant)
 	if err != nil {
 		return "", err
 	}
 	b.WriteString(tc)
 	if rel.TargetDeleted != "" {
-		b.WriteString(" AND " + alias + "." + rel.TargetDeleted + " IS NULL")
+		b.WriteString(" AND " + qualified(dialect, alias, rel.TargetDeleted) + " IS NULL")
 	}
 	return b.String(), nil
 }
 
 // policyScope is a policy-scoped relation's target policy on alias, ""
 // for any other relation.
-func policyScope(field *FieldSchema, dialect Dialect, scope relationScope, related map[string]*PolicyConstraints, s *buildState, alias string, others ...string) (string, error) {
+func policyScope(field *FieldSchema, exprs columnExprs, dialect Dialect, scope relationScope, related relatedPolicies, s *buildState, alias string, others ...string) (string, error) {
 	rel := field.Relation
 	if !rel.Policy {
 		return "", nil
@@ -281,22 +401,18 @@ func policyScope(field *FieldSchema, dialect Dialect, scope relationScope, relat
 	if field.Related == nil {
 		return "", fmt.Errorf("policy-scoped relation has no target schema")
 	}
-	pc, ok := related[rel.RelatedTable()]
-	if !ok {
-		return "", fmt.Errorf("relation on %s: %w", rel.RelatedTable(), ErrRelatedPolicyRequired)
-	}
-	ast, err := ApplyPolicyConstraints(field.Related, nil, pc)
-	if err != nil || ast == nil || ast.Root == nil {
+	root, err := related.on(field, nil)
+	if err != nil || root == nil {
 		return "", err
 	}
-	root, err := rebaseNode(ast.Root, field.Related.Name, alias, map[*FieldSchema]*FieldSchema{})
+	root, err = rebaseNode(root, field.Related.Name, alias, exprs, map[*FieldSchema]*FieldSchema{})
 	if err != nil {
 		return "", err
 	}
-	pb := &SQLBuilder{schema: &ResourceSchema{Name: alias}, dialect: dialect, scope: scope, related: related, depth: 1, visible: append(others, alias)}
+	pb := &SQLBuilder{schema: &ResourceSchema{Name: alias}, dialect: dialect, scope: scope, related: related, depth: 1, visible: append(others, alias), exprs: exprs}
 	cond, err := pb.buildNode(s, root)
 	if err != nil {
-		return "", err
+		return "", computedCause(err)
 	}
 	return " AND " + cond, nil
 }
@@ -311,12 +427,17 @@ func VisibleRelated(field *FieldSchema, dialect Dialect, alias string, tenant an
 	if field == nil || field.Relation == nil || field.Relation.TargetTable == "" {
 		return "", fmt.Errorf("VisibleRelated: field is not a many-to-many with a target")
 	}
+	exprs, err := targetExprs(field, dialect)
+	if err != nil {
+		return "", err
+	}
 	scope := relationScope{tenant: tenant}
 	tc, err := targetScope(field, dialect, scope, bind, alias)
 	if err != nil {
 		return "", err
 	}
-	pc, err := policyScope(field, dialect, scope, related, &buildState{bind: bind}, alias)
+	policies := relatedPolicies{byTable: related, now: time.Now().UTC()}
+	pc, err := policyScope(field, exprs, dialect, scope, policies, &buildState{bind: bind}, alias)
 	if err != nil {
 		return "", err
 	}
@@ -334,11 +455,11 @@ const (
 
 // relatedJoin is the JOIN of a many-to-many's target onto its pair table
 // (alias join), as target; empty for every other relation.
-func relatedJoin(rel *core.RelationSchema, join, target string) string {
+func relatedJoin(d Dialect, rel *core.RelationSchema, join, target string) string {
 	if rel.TargetTable == "" {
 		return ""
 	}
-	return " JOIN " + rel.TargetTable + " " + target + " ON " + target + "." + rel.TargetKey + " = " + join + "." + rel.TargetColumn
+	return " JOIN " + d.QuoteIdent(rel.TargetTable) + " " + target + " ON " + correlation(d, target, rel.TargetKeys, join, rel.TargetColumns, rel.TargetTypes)
 }
 
 // Scan reads the (owner_pk, target_id) rows of q, grouped by owner key as
@@ -351,33 +472,20 @@ func (q IncludeQuery) Scan(rows Rows) (IncludeRows, error) {
 		if err := rows.Scan(&ownerPK, &targetID); err != nil {
 			return IncludeRows{}, fmt.Errorf("scanning include row: %w", err)
 		}
-		owner := stringifyKey(ownerPK)
+		owner := core.KeyText(core.Key{ownerPK})
 		if q.Limit > 0 && len(out.IDs[owner]) == q.Limit {
 			if !slices.Contains(out.Truncated, owner) {
 				out.Truncated = append(out.Truncated, owner)
 			}
 			continue
 		}
-		out.IDs[owner] = append(out.IDs[owner], stringifyKey(targetID))
+		out.IDs[owner] = append(out.IDs[owner], core.KeyText(core.Key{targetID}))
 	}
 	if err := rows.Err(); err != nil {
 		return IncludeRows{}, err
 	}
 	slices.Sort(out.Truncated)
 	return out, nil
-}
-
-func stringifyKey(v any) string {
-	switch x := v.(type) {
-	case string:
-		return x
-	case []byte:
-		return string(x)
-	case fmt.Stringer:
-		return x.String()
-	default:
-		return fmt.Sprintf("%v", v)
-	}
 }
 
 // ParseIncludes validates a list request's `include` parameter
@@ -398,7 +506,7 @@ func ParseIncludeNames(schema *ResourceSchema, names []string) ([]string, error)
 		if name == "" || slices.Contains(fields, name) {
 			continue
 		}
-		f, ok := schema.Fields[name]
+		f, ok := schema.RequestField(name)
 		if !ok {
 			return nil, &core.ParseError{
 				Kind: core.ParseErrorKindFilter, Code: ECodeUnknownField.String(),

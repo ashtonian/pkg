@@ -3,20 +3,27 @@
 package main
 
 import (
+	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"log/slog"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
+	"slices"
 	"strings"
 	"testing"
+	"testing/iotest"
 	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/ashtonian/pkg/parse"
 	"github.com/ashtonian/pkg/parse/filter"
 	"github.com/ashtonian/pkg/parse/parsehttp"
 )
@@ -33,9 +40,15 @@ func testServer(t *testing.T) *httptest.Server {
 	return srv
 }
 
+// call sends body as application/json, as the SDK does: Content-Type goes
+// only with a body.
 func call(t *testing.T, srv *httptest.Server, method, path string, body string, out any) int {
 	t.Helper()
-	return send(t, srv, method, path, "", body, out)
+	contentType := ""
+	if body != "" {
+		contentType = "application/json"
+	}
+	return send(t, srv, method, path, contentType, body, out)
 }
 
 // send is call with a Content-Type; empty sends none.
@@ -293,9 +306,16 @@ func TestServer_ErrorsCarryECodes(t *testing.T) {
 	assert.Equal(t, http.StatusNotFound, status)
 	assert.Equal(t, codeNotFound, body.Code, "a missing row is the application's code, not a patch path error")
 
+	// The key's segment is escaped on its own: an escaped slash is part of
+	// the key the item route reads, not another segment.
+	status = call(t, srv, http.MethodPatch, "/api/products/p01%2Fx", `{"price":1}`, &body)
+	assert.Equal(t, http.StatusNotFound, status)
+	assert.Equal(t, codeNotFound, body.Code)
+	assert.Equal(t, "product p01%2Fx not found", body.Message)
+
 	status = call(t, srv, http.MethodGet, "/api/unknown/schema", "", &body)
 	assert.Equal(t, http.StatusNotFound, status)
-	assert.Equal(t, filter.ECodeSchemaNotFound.String(), body.Code)
+	assert.Equal(t, parse.ECodeSchemaNotFound.String(), body.Code)
 }
 
 func TestServer_CombinedFiltersShareOneCostBudget(t *testing.T) {
@@ -317,4 +337,196 @@ func TestServer_CombinedFiltersShareOneCostBudget(t *testing.T) {
 	status := call(t, srv, http.MethodGet, "/api/products?"+parts.Encode(), "", &body)
 	require.Equal(t, http.StatusUnprocessableEntity, status)
 	require.Equal(t, filter.ECodeQueryTooExpensive.String(), body.Code)
+}
+
+// A query string that does not decode, or a list parameter given twice, is
+// refused as E2067 on every route that reads one: dropping the pair would
+// answer a list with every row, or update rows the client did not name.
+func TestServer_QueriesThatLoseAParameterAreRefused(t *testing.T) {
+	srv := testServer(t)
+	for _, tt := range []struct{ method, path, contentType, body string }{
+		{http.MethodGet, "/api/products?category=%zz", "", ""},
+		{http.MethodGet, "/api/products?category=books%", "", ""},
+		{http.MethodGet, "/api/products?category=books;x=1", "", ""},
+		{http.MethodGet, "/api/products?filter=%7B%22category%22%3A%22books%22%7D%", "", ""},
+		{http.MethodPost, "/api/products?filter=%zz", "application/json", `{"filter":{"category":"books"}}`},
+		{http.MethodOptions, "/api/products?facets=category&category=%zz", "", ""},
+		{http.MethodPatch, "/api/products?id[]=p02&id[]=%zz", "", `{"price":7}`},
+		{http.MethodPatch, "/api/products/p03?category=%zz", "", `{"price":7}`},
+		{http.MethodGet, "/api/products?sort=name&sort=-name", "", ""},
+		{http.MethodGet, "/api/products?" + url.Values{filter.ParamFilter: {`{"category":"books"}`, `{"category":"toys"}`}}.Encode(), "", ""},
+		{http.MethodGet, "/api/products?page_size=2&page_size=500", "", ""},
+	} {
+		var body parsehttp.Body
+		status := send(t, srv, tt.method, tt.path, tt.contentType, tt.body, &body)
+		assert.Equal(t, http.StatusUnprocessableEntity, status, "%s %s", tt.method, tt.path)
+		assert.Equal(t, filter.ECodeInvalidListParam.String(), body.Code, "%s %s: %s", tt.method, tt.path, body.Message)
+	}
+
+	var res struct {
+		Updated []Product `json:"updated"`
+	}
+	require.Equal(t, http.StatusOK, call(t, srv, http.MethodPatch, "/api/products/p02", `{}`, &res))
+	assert.NotEqual(t, 7.0, res.Updated[0].Price, "a refused batch writes nothing")
+}
+
+// Patch bodies are read as list bodies are: bounded by the parser's input
+// size, in the grammar their media type names, and a body the client did
+// not finish sending is a bad request logged at WARN, on both routes.
+func TestServer_RequestBodies(t *testing.T) {
+	srv := testServer(t)
+	for _, tt := range []struct {
+		method, path, contentType, body string
+		status                          int
+		code                            string
+	}{
+		{http.MethodPatch, "/api/products/p03", "application/json", `{"name":"` + strings.Repeat("x", 70000) + `"}`, http.StatusUnprocessableEntity, "E2063"},
+		{http.MethodPatch, "/api/products/p03", "text/plain", `{"price":7}`, http.StatusUnprocessableEntity, "E2086"},
+		{http.MethodPatch, "/api/products/p03", "", `{"price":7}`, http.StatusUnprocessableEntity, "E2086"},
+		{http.MethodPatch, "/api/products?id[]=p03", "text/plain", `{"price":7}`, http.StatusUnprocessableEntity, "E2086"},
+		{http.MethodPost, "/api/products", "application/json", `{"search":"` + strings.Repeat("x", 90000) + `"}`, http.StatusUnprocessableEntity, "E2063"},
+	} {
+		var body parsehttp.Body
+		assert.Equal(t, tt.status, send(t, srv, tt.method, tt.path, tt.contentType, tt.body, &body), "%s %s %s", tt.method, tt.path, tt.contentType)
+		assert.Equal(t, tt.code, body.Code, "%s %s %s: %s", tt.method, tt.path, tt.contentType, body.Message)
+	}
+	var res struct {
+		Updated []Product `json:"updated"`
+	}
+	require.Equal(t, http.StatusOK, call(t, srv, http.MethodPatch, "/api/products/p03", `{}`, &res))
+	assert.NotEqual(t, 7.0, res.Updated[0].Price, "a refused patch writes nothing")
+	require.Equal(t, http.StatusOK, send(t, srv, http.MethodPatch, "/api/products/p03", parse.MediaTypeMergePatch, `{"price":7}`, &res))
+	assert.InDelta(t, 7.0, res.Updated[0].Price, 0, "the merge patch media type is a merge patch")
+
+	db, err := openDB(t.Context())
+	require.NoError(t, err)
+	t.Cleanup(func() { assert.NoError(t, db.Close()) })
+	var logs bytes.Buffer
+	h, err := newServer(db, slog.New(slog.NewJSONHandler(&logs, nil)), 5*time.Second)
+	require.NoError(t, err)
+	for _, tt := range []struct{ method, path string }{
+		{http.MethodPatch, "/api/products/p03"},
+		{http.MethodPost, "/api/products"},
+	} {
+		logs.Reset()
+		req := httptest.NewRequestWithContext(t.Context(), tt.method, tt.path,
+			io.MultiReader(strings.NewReader(`{"price":`), iotest.ErrReader(io.ErrUnexpectedEOF)))
+		req.Header.Set("Content-Type", "application/json")
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		assert.Equal(t, http.StatusBadRequest, rec.Code, tt.method)
+		var body parsehttp.Body
+		require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &body))
+		assert.Equal(t, codeBadRequest, body.Code, tt.method)
+		assert.Contains(t, logs.String(), `"level":"WARN"`, tt.method)
+		assert.NotContains(t, logs.String(), `"level":"ERROR"`, tt.method)
+	}
+}
+
+// A facets request refuses the list parameters that shape a page instead of
+// validating and ignoring them.
+func TestServer_FacetsRefusePageParameters(t *testing.T) {
+	srv := testServer(t)
+	for _, query := range []string{"facets=category&cursor=x", "facets=category&sort=name", "facets=category&page_size=2"} {
+		var body parsehttp.Body
+		assert.Equal(t, http.StatusUnprocessableEntity, call(t, srv, http.MethodOptions, "/api/products?"+query, "", &body), query)
+		assert.Equal(t, filter.ECodeInvalidListParam.String(), body.Code, "%s: %s", query, body.Message)
+	}
+}
+
+// A request that runs out of time is 504 at WARN; a request whose client
+// left is not answered and is logged at DEBUG. Neither is a server fault, on
+// any route that reaches the database.
+func TestServer_DeadlinesAndCancellationsAreNoServerFaults(t *testing.T) {
+	db, err := openDB(t.Context())
+	require.NoError(t, err)
+	t.Cleanup(func() { assert.NoError(t, db.Close()) })
+	var logs bytes.Buffer
+	h, err := newServer(db, slog.New(slog.NewJSONHandler(&logs, &slog.HandlerOptions{Level: slog.LevelDebug})), 5*time.Second)
+	require.NoError(t, err)
+	expired, cancelExpired := context.WithDeadline(t.Context(), time.Unix(0, 0))
+	t.Cleanup(cancelExpired)
+	cancelled, cancel := context.WithCancel(t.Context())
+	cancel()
+
+	routes := []struct{ method, path, body string }{
+		{http.MethodGet, "/api/products", ""},
+		{http.MethodPost, "/api/products", `{"page_size":2}`},
+		{http.MethodOptions, "/api/products?facets=category", ""},
+		{http.MethodPatch, "/api/products/p03", `{"price":7}`},
+		{http.MethodPatch, "/api/products?id[]=p03", `{"price":7}`},
+	}
+	serve := func(ctx context.Context, method, path, body string) *httptest.ResponseRecorder {
+		logs.Reset()
+		req := httptest.NewRequestWithContext(ctx, method, path, strings.NewReader(body))
+		if body != "" {
+			req.Header.Set("Content-Type", "application/json")
+		}
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		return rec
+	}
+	for _, rt := range routes {
+		t.Run("deadline "+rt.method+" "+rt.path, func(t *testing.T) {
+			rec := serve(expired, rt.method, rt.path, rt.body)
+			assert.Equal(t, http.StatusGatewayTimeout, rec.Code)
+			var body parsehttp.Body
+			require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &body))
+			assert.Equal(t, codeTimeout, body.Code)
+			assert.Contains(t, logs.String(), `"level":"WARN"`)
+			assert.NotContains(t, logs.String(), `"level":"ERROR"`)
+		})
+		t.Run("cancelled "+rt.method+" "+rt.path, func(t *testing.T) {
+			rec := serve(cancelled, rt.method, rt.path, rt.body)
+			assert.Empty(t, rec.Body.String(), "no answer is written")
+			assert.Empty(t, rec.Header().Get("Content-Type"))
+			assert.Contains(t, logs.String(), `"level":"DEBUG"`)
+			assert.NotContains(t, logs.String(), `"level":"WARN"`)
+			assert.NotContains(t, logs.String(), `"level":"ERROR"`)
+		})
+	}
+}
+
+// The README's route table is the example's half of the SDK contract: every
+// route it lists answers the request the SDK sends, and every request here
+// is a row of it.
+func TestServer_ServesEveryRouteItsREADMEDocuments(t *testing.T) {
+	readme, err := os.ReadFile("README.md")
+	require.NoError(t, err)
+	requests := map[string]struct{ method, path, body string }{
+		"GET /api/products":              {http.MethodGet, "/api/products?page_size=2", ""},
+		"POST /api/products":             {http.MethodPost, "/api/products", `{"page_size":2}`},
+		"OPTIONS /api/products?facets=…": {http.MethodOptions, "/api/products?facets=category", ""},
+		"PATCH /api/products/{id}":       {http.MethodPatch, "/api/products/p01", `{}`},
+		"PATCH /api/products?id[]=…":     {http.MethodPatch, "/api/products?id[]=p01&id[]=p02", `{}`},
+		"GET /api/{resource}/schema":     {http.MethodGet, "/api/products/schema", ""},
+		"GET /api/schemas":               {http.MethodGet, "/api/schemas", ""},
+	}
+	assert.ElementsMatch(t, slices.Collect(maps.Keys(requests)), readmeRoutes(t, string(readme)))
+
+	srv := testServer(t)
+	for route, req := range requests {
+		var body json.RawMessage
+		assert.Equal(t, http.StatusOK, call(t, srv, req.method, req.path, req.body, &body), "%s: %s", route, body)
+	}
+}
+
+// readmeRoutes is the first cell of each row of the README's Routes table.
+func readmeRoutes(t *testing.T, readme string) []string {
+	t.Helper()
+	_, section, ok := strings.Cut(readme, "\n## Routes\n")
+	require.True(t, ok, "the README has a Routes section")
+	section, _, _ = strings.Cut(section, "\n## ")
+	var routes []string
+	for line := range strings.Lines(section) {
+		cell, ok := strings.CutPrefix(line, "| `")
+		if !ok {
+			continue
+		}
+		route, _, ok := strings.Cut(cell, "`")
+		require.True(t, ok, line)
+		routes = append(routes, route)
+	}
+	require.NotEmpty(t, routes)
+	return routes
 }

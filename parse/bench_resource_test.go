@@ -71,7 +71,8 @@ func BenchmarkResourcePage(b *testing.B) {
 func BenchmarkResourceKey(b *testing.B) {
 	r := benchWidgetResource(b)
 	row := benchWidget{ID: "w1", Name: "widget"}
-	if k, err := r.Key(row); err != nil || k != "w1" {
+	k, err := r.Key(row)
+	if err != nil || len(k) != 1 || k[0] != "w1" {
 		b.Fatalf("key: %v, %v", k, err)
 	}
 	for b.Loop() {
@@ -92,7 +93,7 @@ func BenchmarkParseList(b *testing.B) {
 		"page_size":     {"25"},
 		"include_total": {"true"},
 	}
-	if req, err := r.ParseList(q); err != nil || req.Filter == nil {
+	if req, err := r.ParseList(q); err != nil || req.Filter() == nil {
 		b.Fatalf("parse: %+v, %v", req, err)
 	}
 	for b.Loop() {

@@ -2,6 +2,7 @@ package filter
 
 import (
 	"errors"
+	"fmt"
 
 	"github.com/ashtonian/pkg/parse/core"
 )
@@ -17,9 +18,7 @@ const (
 	ECodeInvalidOperator     = core.CodeInvalidOperator
 	ECodeValueTypeMismatch   = core.CodeValueTypeMismatch
 	ECodeDepthExceeded       = core.CodeDepthExceeded
-	ECodeSchemaNotFound      = core.CodeSchemaNotFound
 	ECodeSortFieldNotAllowed = core.CodeSortFieldNotAllowed
-	ECodeSQLGenerationFailed = core.CodeSQLGenerationFailed
 	ECodeSortFieldLimit      = core.CodeSortFieldLimit
 	ECodeInvalidCursor       = core.CodeInvalidCursor
 	ECodeInvalidRelation     = core.CodeInvalidRelation
@@ -41,7 +40,8 @@ const (
 	// ECodeInvalidListParam is a list request parameter that is malformed or
 	// that the resource cannot honor: a page size that is not a positive
 	// integer, a boolean flag that is not a boolean, search on a resource
-	// without search fields.
+	// without search fields, a parameter given twice, or a query string that
+	// does not decode.
 	ECodeInvalidListParam = core.CodeInvalidListParam
 )
 
@@ -50,8 +50,8 @@ func Codes() []core.Code {
 	return []core.Code{
 		ECodeQueryTooExpensive, ECodeInvalidArray, ECodeInputTooLarge, ECodeCursorTooLarge,
 		ECodeUnknownField, ECodeInvalidOperator, ECodeValueTypeMismatch,
-		ECodeDepthExceeded, ECodeSchemaNotFound, ECodeSortFieldNotAllowed,
-		ECodeSQLGenerationFailed, ECodeSortFieldLimit, ECodeInvalidCursor,
+		ECodeDepthExceeded, ECodeSortFieldNotAllowed,
+		ECodeSortFieldLimit, ECodeInvalidCursor,
 		ECodeInvalidRelation, ECodeInvalidJSON, ECodeInvalidEnumValue,
 		ECodeArrayTooLarge, ECodeMaxConditions,
 		ECodeInvalidGeoCoords, ECodeInvalidDistance, ECodeInvalidGeoPolygon, ECodeGeoNotSupported,
@@ -63,6 +63,18 @@ func Codes() []core.Code {
 // expression, returns for a dialect it has no rendering for. A DSN naming
 // an unsupported database is ErrUnknownDSN.
 var ErrUnsupportedDialect = errors.New("unsupported SQL dialect")
+
+// valueMismatch is E2073 for a request value field cannot hold, naming the
+// field.
+func valueMismatch(field *FieldSchema, cause error) *core.ParseError {
+	return &core.ParseError{
+		Kind:    core.ParseErrorKindFilter,
+		Code:    ECodeValueTypeMismatch.String(),
+		Message: fmt.Sprintf("field '%s': %v", field.ExternalName, cause),
+		Details: map[string]any{core.DetailField: field.ExternalName},
+		Cause:   cause,
+	}
+}
 
 func newFilterError(code core.Code, message string) *core.ParseError {
 	return &core.ParseError{

@@ -33,6 +33,24 @@ Use `FieldFor[T]("server.port")` to describe one key. `KeyOf(&cfg, &cfg.Port)`
 finds the key for an actual field by its address. Both inspect metadata without
 decoding default/example tags.
 
+`FieldFor` resolves every key `CanonicalKey` accepts, spelled as `CanonicalKey`
+spells it: the two read keys by one decision. A key inside a map or list
+returns a field synthesized for every entry (`items[3].port` →
+`items[*].port`). A key beneath an interface returns the interface's field,
+which owns whatever its value holds. A key a `,remain` field collects —
+`plugins.foo` when no field of `plugins` reads `foo` by any spelling —
+returns the remain field, which owns it the same way: `Path` is the pattern
+of every key it collects (`plugins[*]`, and `[*]` at the root), `Tag`,
+`Type`, `Reload` and `Index` are the remain field's, and `Sensitive` is set
+when the remain field or a struct holding it is sensitive, or when the key
+is named like a credential and its value can hold text. A key beneath one
+walks into the remain map's element type: anything beneath an `any`
+belongs to the remain field, and `plugins.foo.port` beneath a
+`map[string]Plugin` is `Plugin`'s `port` (`plugins[*].port`). A sensitive
+remain field's keys may themselves be secrets, so diagnostics name only the
+struct holding them (`vault`), as they name a sensitive map instead of its
+entries.
+
 For several reflected targets, such as CLI flag destinations, use
 `MatchFields(&cfg, targets)`. It walks the config instance once and returns a
 `[]Field` in target order. An empty `Path` means that target is not a config
@@ -74,7 +92,7 @@ values, bounds, former key names and resolved reload class. `Allowed` uses the s
 `oneof` parser and withholding rules as JSON Schema. `EnvVars` preserves
 precedence: the name under each prefix, most specific first, then the env
 tag's names; `Env` is the first and `AlsoEnv` the rest. A key no variable
-can set — a list of sections, a map keyed by anything but strings, an entry
+can set — a list of sections, a map keyed by anything but a string type, an entry
 of a map inside a map entry — names none. `Field` contains caller-owned declared
 metadata, including original tags, and is excluded from JSON.
 
@@ -133,8 +151,18 @@ each entry to extend them.
 `ParseKey` applied to `named["a.b"].port` returns field, quoted-key and field
 segments. `Key.String()` preserves that canonical spelling; `Key.Fields()`
 returns `named.port`, and `Key.LastName()` returns `port`. Index selectors
-and `[*]` patterns use distinct segment kinds. Empty or malformed keys
-return an error wrapping `ErrKey`.
+and `[*]` patterns use distinct segment kinds. A key begins with a field,
+or with a quoted map key naming a source key at the root that no field's
+key can spell (`["a.b"]`); empty or malformed keys return an error wrapping
+`ErrKey`.
+
+A key beneath an interface is spelled as a file writes it, whatever the
+interface holds: each map key a field wherever it can be one, quoted only
+when it cannot (`extra.x`, `extra.l[0].y`, `extra["a.b"]`). A map the type
+declares keeps its entries quoted above the interface its values are
+(`tags["t"].u` for `Tags map[string]any`). Printing, `Diff`, reload changes,
+validation failures and refused values all name such keys this way, as
+`CanonicalKey` does.
 
 ## Raw and policy-controlled trees
 
@@ -147,10 +175,22 @@ finite values load back with their sensitive values intact.
 `TreeFunc(cfg, leaf)` passes each leaf's actual key, declared `Field` and
 detached tree value to a policy function. Its return value replaces that
 leaf. Sensitive maps, lists and interfaces reach the callback once, whole,
-so a policy can withhold their keys too. Empty and nil containers are leaves;
-a nil callback is identity. Fields inside a dynamic interface retain the
-interface's declared metadata. A redaction callback can return `[REDACTED]`
-when `f.Sensitive && value != nil`.
+so a policy can withhold their keys too. A key a `,remain` field collects is
+a key of its section in every tree and printed listing (`plugins.foo`),
+judged as a map entry is, its `Field` the remain field's; a sensitive
+remain field reaches the callback once, whole, at `section[*]`: a map it
+returns sets keys of the section, so a callback that returns what it is
+given gives `Tree`'s keys, and anything else is the section's `[*]` entry. `PrintRedacted`, `RedactedMap` and
+`RedactedTree` show it as one `[REDACTED]` value there; `Tree` withholds
+nothing and shows each key it collects. Empty and nil containers are leaves;
+a nil callback is identity, and is `Tree`. Fields inside a dynamic interface
+retain the interface's declared metadata. A redaction callback can return
+`[REDACTED]` when `f.Sensitive && value != nil`. Because a callback judges
+each leaf by its `Field`, `TreeFunc` with one checks declarations as
+checked redaction does: a reached type with a misspelt tag key
+(`sensitve:"true"`) returns `ErrSchema` and no tree, rather than hand the
+callback a `Field` that says the value is not sensitive. `Tree` exports
+values whatever the tags say, so it checks only the structure.
 
 Cycles use the diagnostic `[CYCLE]` marker and cannot round-trip. Opaque
 values without a scalar/text representation return `ErrSchema`;
@@ -172,7 +212,7 @@ features["export"]: added (features[*])
 features["export"].rate: + 1
 ```
 
-Lists compare by index and maps by key; a section that appears, disappears or turns nil is a `Structural` change followed by the keys beneath it. `ExampleDiff` is the program behind this output.
+Lists compare by index and maps by key; a section that appears, disappears or turns nil is a `Structural` change followed by the keys beneath it. A key a `,remain` field collects is a key of its section (`plugins.foo`), after the section's fields and by name, its `Field` the remain field's. A sensitive remain field is compared whole, as a sensitive map is: one change at `section[*]` (`vault[*]: [REDACTED] -> [REDACTED]`), there while the field collects a key, so the keys it holds are never listed. It is the one change whose key holds a pattern: `ParseKey` reads it and it is `Within` the section, but `CanonicalKey` refuses it as not concrete. `ExampleDiff` is the program behind this output.
 
 ## Where a value came from
 
@@ -208,7 +248,7 @@ db:
 
 ## JSON Schema
 
-`JSONSchema[T]()` returns a Draft 2020-12 schema of the config file — keys, types, descriptions, printable defaults and the validation rules JSON Schema can express — for editors and linters. `x-reload` records the resolved reload class and `x-env-ref` marks reference fields. `JSONSchema[T]("APP_WORKER", "APP")` adds `x-config-env` to each key a variable sets — every variable in precedence order, a map's entries with a `<KEY>` placeholder; a `$defs` entry, shared by every path that reaches it, names none. An object allows other keys (`additionalProperties: true`) when a `,remain` field collects them, its own or one in a struct it squashes, exported or not, as decoding does; every other object allows none. It is advisory: `Load` is the authority, and a `required` key is not required in any one file, since a default or the environment may supply it.
+`JSONSchema[T]()` returns a Draft 2020-12 schema of the config file — keys, types, descriptions, printable defaults and the validation rules JSON Schema can express — for editors and linters. `x-reload` records the resolved reload class and `x-env-ref` marks reference fields. `JSONSchema[T]("APP_WORKER", "APP")` adds `x-config-env` to each key a variable sets — every variable in precedence order, a map's entries with a `<KEY>` placeholder; a `$defs` entry, shared by the paths that reach it, names none. A struct, map or list a type holds within itself — `Children []Node` in `Node`, `type Tree []Tree` — is written once under `$defs` for each reload class and sensitivity the keys holding it pass down, so following any key's `$ref` reaches the `x-reload` and `writeOnly` `FieldFor` gives it; keys with the same policy share one entry, and further entries for one type are numbered (`app.Node_2` for a `Node` in package `app`). A reference to a map or list also carries its `type`, so the key's own size rules sit beside it. An object allows other keys (`additionalProperties: true`) when a `,remain` field collects them, its own or one in a struct it squashes, as decoding does; every other object allows none. A `,remain` field decoding cannot fill fails with the `ErrSchema` a load returns. It is advisory: `Load` is the authority, and a `required` key is not required in any one file, since a default or the environment may supply it.
 
 Duration values remain strings. `x-config-duration-bounds` annotates their
 runtime bounds with integer nanoseconds, using `minimum`, `maximum`,
@@ -228,14 +268,43 @@ matching its flag targets in one traversal.
 
 `RedactedMapChecked(cfg)` returns `(map[string]string, error)`;
 `RedactedTreeChecked(cfg)` returns `(map[string]any, error)`. Both return nil
-and `ErrSchema` if a reached type has invalid keys, including dynamic values
-inside interfaces. They never return partial results. The original
-`RedactedMap` and `RedactedTree` return nil on that error. `PrintRedacted`
-reports it before writing any output.
+and `ErrSchema` if a reached type has invalid keys or a misspelt tag key,
+including dynamic values inside interfaces. They never return partial
+results. The original `RedactedMap` and `RedactedTree` return nil on that
+error. `PrintRedacted` and `PrintEnv` report it before writing any output.
 
-These inspection functions read field metadata without decoding `default`
-or `example` tags. Printing a live value therefore does not invoke a custom
-unmarshaler for its examples. Invalid sensitivity tags still redact
-conservatively. Loading, templates and schema generation validate their tags;
-templates and schema generation also decode the values they show. `Usage`
-also decodes defaults when a `Defaulter` sets some.
+### Declaration checks
+
+Every entry point checks a type's declarations to the depth its result
+depends on, and the same declaration gets the same `ErrSchema` wherever it
+is reached. A `,remain` field's element type is a type of the config like
+any field's: each tier checks it, and the element types of remain fields
+within it, as it checks the struct holding the field, so a load refuses
+what `Diff` would refuse in it.
+
+| Tier | Checks | Entry points |
+|---|---|---|
+| Structural | The graph builds: keys valid and unique, tags readable, reload tags valid | `Fields`, `FieldsChecked`, `FieldFor`, `KeyOf`, `KeyOfValue`, `MatchFields`, `Tree`, `TreeFunc` without a callback, `DefaultsFromTags` |
+| Declared | Structural, and no tag key misspells one config reads | `PrintRedacted`, `RedactedMap`, `RedactedMapChecked`, `RedactedTree`, `RedactedTreeChecked`, `TreeFunc` with a callback |
+| Schema | Declared, and every config tag's value is one config can use | `Load`, `Decode`, `LoadSnapshot`, `CheckKey`, `DecodeKey`, `DecodeEdits`, `CanonicalKey`, reloaders, `Usage`, `PrintUsage`, `JSONSchema`, `PrintTemplate`, `PrintEnv`, `PrintExplain`, `Diff` |
+| Load | Schema, and the default validator parses every `validate` tag it reads on every validation, and can take each of its dives | `Load`, `Decode`, `LoadSnapshot`, `CheckKey`, `DecodeKey`, `DecodeEdits`, `NewReloader` |
+
+The structural tier is what raw inspection needs to diagnose a type whose
+tags are wrong. The declared tier is what printing a live value needs: a
+misspelt `sensitive` key would print a secret, so the value is refused
+rather than printed, whoever populated it, while its defaults and examples
+are not decoded — printing never invokes a custom unmarshaler for them, and
+an invalid sensitivity value (`sensitive:"yes"`) still redacts
+conservatively. Generators that show defaults, examples or rules check the
+schema tier, as a load does, and templates and schema generation also
+decode the values they show; `Usage` decodes defaults when a `Defaulter`
+sets some.
+
+A tag key another library reads that sits one edit from one of config's is
+listed by the struct declaring the field, from a `ForeignTagKeys() []string`
+method ([`ForeignTagDeclarer`](https://pkg.go.dev/github.com/ashtonian/pkg/config#ForeignTagDeclarer)),
+so every tier reads the same allowance. The list covers the fields of the
+struct that declares the method: a struct embedding it is promoted the
+method but not the allowance, so its own fields' keys are still checked
+unless it declares a `ForeignTagKeys` of its own. The method must be pure:
+it may run more than once for one type.

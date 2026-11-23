@@ -94,10 +94,10 @@ func TestSQLTextValueIntervalEquality(t *testing.T) {
 	require.NoError(t, err)
 	plan, err := resource.BuildList(filter.PostgresDialect{}, query, parse.Scope{})
 	require.NoError(t, err)
-	assert.Contains(t, plan.Page.SQL, "isfinite(network_events.retention)")
+	assert.Contains(t, plan.Page.SQL, `isfinite("network_events"."retention")`)
 	columns, err := resource.Columns(filter.PostgresDialect{})
 	require.NoError(t, err)
-	assert.Contains(t, strings.Join(columns, ","), "isfinite(network_events.retention)",
+	assert.Contains(t, strings.Join(columns, ","), `isfinite("network_events"."retention")`,
 		"an Interval column reads as ISO 8601 text under any IntervalStyle")
 	declared, ok := resource.ColumnSQLType("retention")
 	require.True(t, ok)

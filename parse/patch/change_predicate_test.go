@@ -37,26 +37,26 @@ func TestBuildPatchSQL_ChangePredicateSQL(t *testing.T) {
 		set, cmp string
 	}{
 		{"text and an integer, postgres", filter.PostgresDialect{}, `{"name":"n","rank":2}`,
-			`name = $1, rank = $2, updated_at = NOW(), version = version + 1`,
-			`(name IS DISTINCT FROM $1 OR name::text COLLATE "C" IS DISTINCT FROM ($1)::text OR rank IS DISTINCT FROM $2 OR rank::text COLLATE "C" IS DISTINCT FROM ($2)::text)`},
+			`"name" = $1, "rank" = $2, "updated_at" = NOW(), "version" = "version" + 1`,
+			`("name" IS DISTINCT FROM $1 OR "name"::text COLLATE "C" IS DISTINCT FROM ($1)::text OR "rank" IS DISTINCT FROM $2 OR "rank"::text COLLATE "C" IS DISTINCT FROM ($2)::text)`},
 		{"text and an integer, sqlite", filter.SQLiteDialect{}, `{"name":"n","rank":2}`,
-			`name = ?1, rank = ?2, updated_at = NOW(), version = version + 1`,
-			`(name COLLATE BINARY IS NOT ?1 OR rank COLLATE BINARY IS NOT ?2)`},
+			`"name" = ?1, "rank" = ?2, "updated_at" = NOW(), "version" = "version" + 1`,
+			`("name" COLLATE BINARY IS NOT ?1 OR "rank" COLLATE BINARY IS NOT ?2)`},
 		{"a clear to NULL", filter.PostgresDialect{}, `{"name":null}`,
-			`name = NULL, updated_at = NOW(), version = version + 1`,
-			`(name IS NOT NULL)`},
+			`"name" = NULL, "updated_at" = NOW(), "version" = "version" + 1`,
+			`("name" IS NOT NULL)`},
 		{"a decimal, postgres", filter.PostgresDialect{}, `{"price":"1.50"}`,
-			`price = $1, updated_at = NOW(), version = version + 1`,
-			`(price IS DISTINCT FROM $1)`},
+			`"price" = $1, "updated_at" = NOW(), "version" = "version" + 1`,
+			`("price" IS DISTINCT FROM $1)`},
 		{"a declared json column, postgres", filter.PostgresDialect{}, `[{"op":"replace","path":"/raw","value":{"a":1}}]`,
-			`raw = $1, updated_at = NOW(), version = version + 1`,
-			`(raw::jsonb::text COLLATE "C" IS DISTINCT FROM ($1)::json::jsonb::text)`},
+			`"raw" = $1, "updated_at" = NOW(), "version" = "version" + 1`,
+			`("raw"::jsonb::text COLLATE "C" IS DISTINCT FROM ($1)::json::jsonb::text)`},
 		{"an append, postgres", filter.PostgresDialect{}, `[{"op":"array_append","path":"/tags","value":"x"}]`,
-			`tags = array_append(COALESCE(tags, '{}'), $1), updated_at = NOW(), version = version + 1`,
-			`(tags IS DISTINCT FROM array_append(COALESCE(tags, '{}'), $1) OR tags::text COLLATE "C" IS DISTINCT FROM (array_append(COALESCE(tags, '{}'), $1))::text)`},
+			`"tags" = array_append(COALESCE("tags", '{}'), $1), "updated_at" = NOW(), "version" = "version" + 1`,
+			`("tags" IS DISTINCT FROM array_append(COALESCE("tags", '{}'), $1) OR "tags"::text COLLATE "C" IS DISTINCT FROM (array_append(COALESCE("tags", '{}'), $1))::text)`},
 		{"a merge, sqlite", filter.SQLiteDialect{}, `{"doc":{"a":1}}`,
-			`doc = json_patch(COALESCE(doc, '{}'), ?1), updated_at = NOW(), version = version + 1`,
-			`(doc COLLATE BINARY IS NOT json_patch(COALESCE(doc, '{}'), ?1))`},
+			`"doc" = json_patch(COALESCE("doc", '{}'), ?1), "updated_at" = NOW(), "version" = "version" + 1`,
+			`("doc" COLLATE BINARY IS NOT json_patch(COALESCE("doc", '{}'), ?1))`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			res, err := patch.BuildPatchSQL(patchOf(t, tc.patch), tc.dialect, stamps...)
@@ -107,18 +107,4 @@ func TestBuildPatchSQL_ChangePredicateIsOptIn(t *testing.T) {
 	require.NoError(t, err)
 	assert.True(t, res.Empty)
 	assert.Empty(t, res.ChangePredicate, "a patch of server columns alone assigns nothing to compare")
-}
-
-type otherDialect struct{ filter.SQLiteDialect }
-
-func (otherDialect) Name() string { return "other" }
-
-func TestBuildPatchSQL_ChangePredicateRefusesAnUnknownDialect(t *testing.T) {
-	p := patchOf(t, `{"name":"n"}`)
-	_, err := patch.BuildPatchSQL(p, otherDialect{})
-	require.NoError(t, err, "the SET clause alone compiles for any dialect")
-	res, err := patch.BuildPatchSQL(p, otherDialect{}, patch.WithChangePredicate())
-	require.Error(t, err)
-	assert.Nil(t, res)
-	assert.ErrorContains(t, err, `dialect "other"`)
 }

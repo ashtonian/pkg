@@ -12,6 +12,8 @@ import (
 
 	"github.com/go-viper/mapstructure/v2"
 	"github.com/knadh/koanf/v2"
+
+	"github.com/ashtonian/pkg/config/internal/deepcopy"
 )
 
 // SourceKind names the kind of source that set a value.
@@ -109,10 +111,10 @@ func LoadSnapshot[T any](ctx context.Context, opts ...Option) (Snapshot[T], erro
 	return Snapshot[T]{Config: l.cfg, Provenance: l.origins, UnknownKeys: l.unknown, Shadowed: l.shadowed}, nil
 }
 
-// originNode is what set one value of the merged tree. It mirrors koanf's
-// merge: a map merges key by key, an empty one changing nothing, and any
-// other value — a list included — replaces what was there, so everything
-// beneath it is the new source's. With provenance, a map's entries and a
+// originNode is what set one value of the merged tree. It mirrors the merge
+// (mergeTrees): a map merges key by key, an empty one changing nothing, and
+// any other value — a list, a typed map or section included — replaces what
+// was there, so everything beneath it is the new source's. With provenance, a map's entries and a
 // list's elements are nodes of their own, so what the element defaults add
 // after the merge is told from what a source set; without it, the tree
 // serves shadow detection alone and a value merged whole is one node.
@@ -124,9 +126,15 @@ type originNode struct {
 	rank     int
 	children map[string]*originNode // a map's entries; nil for anything else
 	elems    []*originNode          // a list's elements; nil for anything else
-	// merges reports a map koanf merges into, key by key: a
-	// map[string]any. Any other map is replaced whole.
-	merges bool
+	// merges reports a map a later source merges into key by key: any map
+	// of a source's tree. whole reports one its source set whole, a typed
+	// map or section, replacing every key beneath it that it lacks. list
+	// reports a list, whose elements a key edit's listEdit can set. sparse
+	// reports a node that, without provenance, records only what edits set
+	// beneath it — a list's edited elements at their indexes, nil for the
+	// others, or an element an edit's map merged into — the rest being its
+	// own source's.
+	merges, whole, list, sparse bool
 }
 
 func newOriginRoot() *originNode {
@@ -196,20 +204,72 @@ func (m *originMerge) leave() {
 func (n *originNode) merge(incoming map[string]any, m *originMerge) {
 	for key, val := range incoming {
 		m.enter(key)
-		child := n.children[key]
-		if in, isMap := val.(map[string]any); isMap && child != nil && child.merges {
-			child.merge(in, m)
-		} else {
-			n.children[key] = m.node(val)
+		n.children[key] = m.into(n.children[key], val)
+		m.leave()
+	}
+}
+
+// into is the origin of val merged over n, what was there: n, with a map
+// merged into it key by key or a listEdit's elements into its list, or else
+// val's own node.
+func (m *originMerge) into(n *originNode, val any) *originNode {
+	switch v := val.(type) {
+	case map[string]any:
+		if n != nil && n.merges {
+			n.merge(v, m)
+			return n
+		}
+	case listEdit:
+		if n != nil && n.list {
+			n.edit(v, m)
+			return n
+		}
+	}
+	return m.node(val)
+}
+
+// edit merges e's elements into n, a list node; its other elements, and the
+// list itself, stay their sources'. With provenance n holds every element;
+// without, only those edits set, so shadow detection can tell an input in
+// an element from the one a higher edit of that element set (see sparse).
+func (n *originNode) edit(e listEdit, m *originMerge) {
+	for _, i := range slices.Sorted(maps.Keys(e)) {
+		m.enter(strconv.Itoa(i))
+		switch {
+		case m.provenance && i < len(n.elems):
+			n.elems[i] = m.into(n.elems[i], e[i])
+		case m.provenance:
+			n.elems = append(n.elems, m.node(e[i]))
+		default:
+			n.sparse = true
+			if i >= len(n.elems) {
+				n.elems = append(n.elems, make([]*originNode, i+1-len(n.elems))...)
+			}
+			if n.elems[i] == nil {
+				n.elems[i] = n.unrecorded()
+			}
+			n.elems[i] = m.into(n.elems[i], e[i])
 		}
 		m.leave()
 	}
+}
+
+// unrecorded stands for an element of list n that n's own source set and
+// that, without provenance, n does not record: a map an edit's map merges
+// into, holding nothing yet.
+func (n *originNode) unrecorded() *originNode {
+	empty := &originNode{src: n.src, rank: n.rank, children: map[string]*originNode{}, merges: true, sparse: true}
+	return empty
 }
 
 // node is the origin of val, set whole by the source at the merge's path.
 func (m *originMerge) node(val any) *originNode {
 	n := &originNode{src: m.source(), rank: m.rank}
 	switch v := val.(type) {
+	case wholeMap:
+		n := m.node(map[string]any(v))
+		n.whole = true
+		return n
 	case map[string]any:
 		n.merges = true
 		n.children = make(map[string]*originNode, len(v))
@@ -218,7 +278,11 @@ func (m *originMerge) node(val any) *originNode {
 			n.children[key] = m.node(child)
 			m.leave()
 		}
+	case listEdit:
+		n.list = true
+		n.edit(v, m) // nothing was a list there: the edit's indexes count from 0
 	case []any:
+		n.list = true
 		if m.provenance {
 			n.elems = make([]*originNode, len(v))
 			for i, e := range v {
@@ -226,6 +290,7 @@ func (m *originMerge) node(val any) *originNode {
 			}
 		}
 	default:
+		n.list = isList(reflect.ValueOf(val))
 		if m.provenance {
 			n.children, n.elems = structureOf(val, n.src, n.rank)
 		}
@@ -249,7 +314,7 @@ func structureOf(val any, src Source, rank int) (map[string]*originNode, []*orig
 	case v.Kind() == reflect.Map && !v.IsNil():
 		children := make(map[string]*originNode, v.Len())
 		for it := v.MapRange(); it.Next(); {
-			children[fmt.Sprint(it.Key().Interface())] = setBy(it.Value().Interface(), src, rank)
+			children[entryName(it.Key())] = setBy(it.Value().Interface(), src, rank)
 		}
 		return children, nil
 	case v.Kind() == reflect.Slice && !v.IsNil(), v.Kind() == reflect.Array:
@@ -272,7 +337,7 @@ func (n *originNode) fill(merged any, filled *elementDefaults) int {
 	case n.children != nil && v.IsValid() && v.Kind() == reflect.Map && v.Len() > 0:
 		count := 0
 		for it := v.MapRange(); it.Next(); {
-			key := fmt.Sprint(it.Key().Interface())
+			key := entryName(it.Key())
 			if child := n.children[key]; child != nil {
 				count += child.fill(it.Value().Interface(), filled)
 			} else {
@@ -331,8 +396,7 @@ func (n *originNode) values() int {
 // when several did.
 func (n *originNode) uniform() (Source, bool) {
 	src, first, ok := n.src, true, true
-	visit := func(child *originNode) {
-		s, same := child.uniform()
+	visit := func(s Source, same bool) {
 		switch {
 		case !same:
 			ok = false
@@ -342,11 +406,16 @@ func (n *originNode) uniform() (Source, bool) {
 			ok = false
 		}
 	}
+	if n.sparse {
+		visit(n.src, true) // what n does not record is its own source's
+	}
 	for _, child := range n.children {
-		visit(child)
+		visit(child.uniform())
 	}
 	for _, child := range n.elems {
-		visit(child)
+		if child != nil {
+			visit(child.uniform())
+		}
 	}
 	return src, ok
 }
@@ -473,12 +542,22 @@ func annotationLabeler(root *schemaNode, tree map[string]any, annotations map[st
 	}}, nil
 }
 
-// Annotations follow the same field spelling and aliases as provider data.
+// Annotations follow the same field spelling and aliases as provider data,
+// a key a remain field collects written as its element type reads it.
 func annotationPath(root *schemaNode, p keyPath) keyPath {
 	n := root
 	for i := range p {
 		switch n.kind {
 		case nodeBranch:
+			if n.collects(p[i]) {
+				m, _ := n.memberAt(p[i])
+				elem, err := m.node(metadataOf)
+				if err != nil {
+					return p
+				}
+				p[i], n = m.seg, elem
+				continue
+			}
 			if p[i].kind != segField {
 				return p
 			}
@@ -566,7 +645,7 @@ func replacedStructure(in reflect.Value, out any) bool {
 
 // stage runs one stage that may change cfg and records what it changed.
 func (r *originRecorder) stage(cfg reflect.Value, src Source, run func() error) error {
-	before := deepCopy(cfg)
+	before := deepcopy.Value(cfg)
 	if !r.decoded.IsValid() {
 		r.decoded = before
 	}
@@ -602,17 +681,12 @@ func (r *originRecorder) origins(cfg reflect.Value) (map[string]Origin, error) {
 			return // its values have rows of their own
 		}
 		key := d.path.String()
-		o, found := r.tree.originOf(d.path)
-		if !found {
-			at, _, _ := locate(r.schema, decoded, d.path)
-			if at.present && !at.isNil && at.v.IsValid() && !at.v.IsZero() {
-				o = Origin{Input: Source{Kind: SourceUnknown}} // a decoder made it
-			} else {
-				o = Origin{Input: Source{Kind: SourceZero}, Exact: true}
-			}
-		}
-		if o.Exact && len(r.rebuilt) > 0 && r.rebuiltAt(d.path) {
-			o.Exact = false
+		var o Origin
+		last := len(d.path) - 1
+		if last >= 0 && d.path[last].kind == segAny {
+			o = r.collectedOrigin(cfg, decoded, d.path[:last])
+		} else {
+			o = r.originAt(decoded, d.path)
 		}
 		for _, st := range r.stages {
 			if st.keys[key] || slices.ContainsFunc(st.under, func(p keyPath) bool { return len(d.path) >= len(p) && slices.Equal(d.path[:len(p)], p) }) {
@@ -627,6 +701,48 @@ func (r *originRecorder) origins(cfg reflect.Value) (map[string]Origin, error) {
 	return out, nil
 }
 
+// originAt is the input behind key p of the final config; decoded is the
+// config as decoding left it, which tells a key no source set apart.
+func (r *originRecorder) originAt(decoded reflect.Value, p keyPath) Origin {
+	o, found := r.tree.originOf(p)
+	if !found {
+		at, _, _ := locate(r.schema, decoded, p)
+		if at.present && !at.isNil && at.v.IsValid() && !at.v.IsZero() {
+			o = Origin{Input: Source{Kind: SourceUnknown}} // a decoder made it
+		} else {
+			o = Origin{Input: Source{Kind: SourceZero}, Exact: true}
+		}
+	}
+	if o.Exact && len(r.rebuilt) > 0 && r.rebuiltAt(p) {
+		o.Exact = false
+	}
+	return o
+}
+
+// collectedOrigin is the input behind the keys a sensitive remain field of
+// the section at key p collects in cfg, the final config, which Diff
+// compares whole (section[*]): the input every key came from, or mixed, and
+// exact when each key's is.
+func (r *originRecorder) collectedOrigin(cfg, decoded reflect.Value, p keyPath) Origin {
+	s, n, _ := locate(r.schema, cfg, p)
+	if n == nil || n.kind != nodeBranch || n.remain == nil {
+		unknown := Origin{Input: Source{Kind: SourceUnknown}}
+		return unknown
+	}
+	var out Origin
+	for i, k := range n.collected(s).keys {
+		o := r.originAt(decoded, p.member(k.name))
+		switch {
+		case i == 0:
+			out = Origin{Input: o.Input, Exact: o.Exact}
+		case o.Input != out.Input:
+			out.Input = Source{Kind: SourceMixed}
+		}
+		out.Exact = out.Exact && o.Exact
+	}
+	return out
+}
+
 // rebuiltAt reports whether a custom decode hook rebuilt a map or list on
 // the way to key p: for its declared type, or one it lies within.
 func (r *originRecorder) rebuiltAt(p keyPath) bool {
@@ -637,11 +753,21 @@ func (r *originRecorder) rebuiltAt(p keyPath) bool {
 	for _, s := range p {
 		switch n.kind {
 		case nodeBranch:
-			f := n.byKey[s.name]
-			if f == nil {
+			m, ok := n.memberAt(s)
+			if !ok {
 				return false
 			}
-			n = f.node
+			mn, err := m.slotNode(schemaOf)
+			if err != nil {
+				return false
+			}
+			if m.kind != memberField && r.rebuilt[mn.typ] {
+				return true // the remain field's map
+			}
+			n, err = m.node(schemaOf)
+			if err != nil {
+				return false
+			}
 		case nodeMap, nodeList:
 			n = n.elem
 		default:

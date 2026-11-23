@@ -17,7 +17,10 @@ IFS=$'\t' read -r module version source < "$tmp/module.tsv"
 # so the consumer's dependencies hit the shared build cache.
 export GOWORK=off GOTOOLCHAIN=local GOFLAGS='-mod=mod -modcacherw -trimpath'
 export GOMODCACHE="$tmp/modcache" GOPROXY="file://$tmp/proxy"
-export GOPRIVATE= GONOPROXY= GONOSUMDB="$module"
+# GOENV=off keeps the user's go env file out: an empty variable does not
+# override it, and a GOPRIVATE there adds a cache-only lookup pass that
+# answers a nested module's path with its cached parent.
+export GOENV=off GOPRIVATE= GONOPROXY= GONOSUMDB="$module"
 mkdir "$tmp/consumer"
 cd "$tmp/consumer"
 go mod init example.com/gowalker-consumer

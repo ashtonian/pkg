@@ -30,10 +30,9 @@ func arrayAppendSchema() *patch.PatchSchema {
 }
 
 // TestParser_AcceptsArrayAppend exercises the wire-level path: a
-// JSON-encoded `{"op":"array_append",...}` body must parse cleanly
-// when the PathSchema lists the op as allowed. This is the FU-9
-// regression — before the fix, `isValidPatchOp` rejected the string
-// at the parser front door regardless of the schema.
+// JSON-encoded `{"op":"array_append",...}` body parses when the PathSchema
+// lists the op as allowed; the parser's own operation check admits the
+// extension, so the schema decides.
 func TestParser_AcceptsArrayAppend(t *testing.T) {
 	t.Parallel()
 	p := patch.NewParser(arrayAppendSchema(), nil)

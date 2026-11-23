@@ -231,7 +231,7 @@ const (
 func newElement(array *FieldSchema) *FieldSchema {
 	return &FieldSchema{
 		ExternalName:     array.ExternalName,
-		SQLExpr:          elementColumn,
+		Expr:             elementColumn,
 		DataType:         array.Elem,
 		NumberKind:       array.NumberKind,
 		AllowedOperators: elementOperators(array.Elem),

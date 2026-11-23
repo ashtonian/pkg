@@ -8,6 +8,7 @@
 package parse_test
 
 import (
+	"fmt"
 	"net/url"
 	"sync"
 	"testing"
@@ -22,6 +23,7 @@ import (
 )
 
 type registrySnapshotEntity struct {
+	ID   string `json:"id"   db:"id"`
 	Name string `json:"name" db:"name" parse:"filter,sort,patch,search" filter_ops:"eq" patch_ops:"replace" enum:"a,b"`
 }
 
@@ -31,14 +33,20 @@ type filterBudgetDocument struct {
 	Labels  map[string]any `json:"labels" db:"labels" parse:"filter"`
 }
 
+// Registrations under new names run beside snapshots of a registered one,
+// and what a snapshot's reader changes stays in the snapshot.
 func TestSchemaRegistryConcurrentSnapshots(t *testing.T) {
 	r := parse.NewSchemaRegistry(core.WithSQLTableName("items"))
 	parse.MustRegister[registrySnapshotEntity](r)
 	var workers sync.WaitGroup
-	for range 8 {
+	for w := range 8 {
 		workers.Go(func() {
-			for range 50 {
-				if err := parse.Register[registrySnapshotEntity](r); err != nil {
+			for i := range 50 {
+				res, err := parse.NewResource[registrySnapshotEntity](fmt.Sprintf("items_%d_%d", w, i))
+				if err == nil {
+					err = parse.RegisterResource(r, res)
+				}
+				if err != nil {
 					t.Error(err)
 					return
 				}
@@ -82,10 +90,9 @@ func TestParseFilterWithCostIsolatesResourceBudget(t *testing.T) {
 	})
 }
 
-// Concurrent first builds for two dialects, of a target and of an owner
-// whose relation filter compiles it, each build and read their own
-// dialect's views.
-func TestReadExpr_ConcurrentFirstUse(t *testing.T) {
+// Concurrent builds for two dialects, of a target and of an owner whose
+// relation filter compiles it, each read their own dialect's expressions.
+func TestReadExpr_ConcurrentBuilds(t *testing.T) {
 	accounts := newComputedAccounts(accessGroups, groupIDsExpr)
 	tenants := newAccountTenants(accounts)
 	req, err := accounts.ParseList(url.Values{
@@ -118,7 +125,7 @@ func TestReadExpr_ConcurrentFirstUse(t *testing.T) {
 		tt := computedDialects[i%2]
 		assert.Contains(t, plan.Page.SQL, "("+tt.email+") <> ")
 		if i%4 < 2 {
-			assert.Contains(t, plan.Page.SQL, "("+tt.groupIDs+") AS group_ids")
+			assert.Contains(t, plan.Page.SQL, "("+tt.groupIDs+`) AS "group_ids"`)
 		} else {
 			assert.Contains(t, plan.Page.SQL, "("+groupSizeExpr+") = ")
 		}

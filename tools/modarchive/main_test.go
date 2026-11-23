@@ -3,6 +3,8 @@ package main
 import (
 	"archive/zip"
 	"bytes"
+	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -126,5 +128,21 @@ func TestArchiveAllowsHTTPStandardsAndRespectsNestedModules(t *testing.T) {
 	}
 	if _, err := archive(t.Context(), t.TempDir(), "v0.1.0", filepath.Join(root, "nested")); err == nil || !strings.Contains(err.Error(), "internal") {
 		t.Fatalf("nested module's own archive did not reject its internal report: %v", err)
+	}
+}
+
+func TestArchiveRemovesAnArchiveItCouldNotFinish(t *testing.T) {
+	root := t.TempDir()
+	writeFixture(t, root, "go.mod", "module example.com/pkg/httpx\n\ngo 1.26.0\n")
+	writeFixture(t, root, "LICENSE", "license\n")
+	writeFixture(t, root, "client.go", "package httpx\n")
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel() // stops the archive at its first git command
+	out := t.TempDir()
+	if _, err := archive(ctx, out, "v0.1.0", root); !errors.Is(err, context.Canceled) {
+		t.Fatalf("err = %v, want context.Canceled", err)
+	}
+	if _, err := os.Stat(filepath.Join(out, "example.com/pkg/httpx/@v/v0.1.0.zip")); !os.IsNotExist(err) {
+		t.Fatalf("an unfinished archive remains publishable: %v", err)
 	}
 }

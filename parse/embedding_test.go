@@ -85,13 +85,13 @@ func viewOf[T any](t *testing.T, row func(id, name string, rank int64, hash stri
 	require.NoError(t, err)
 	v := resourceView{Columns: columns, Filter: map[string]string{}, Sort: map[string]string{}, Patch: map[string]string{}, Server: map[string]string{}}
 	for name, f := range r.FilterSchema().Fields {
-		v.Filter[name] = f.SQLExpr + " " + string(f.DataType)
+		v.Filter[name] = filter.FieldExpr(filter.PostgresDialect{}, f) + " " + string(f.DataType)
 	}
 	for name, f := range r.SortSchema().Fields {
-		v.Sort[name] = f.SQLExpr + " " + f.Column
+		v.Sort[name] = f.Table + " " + f.Column + " " + f.Expr
 	}
 	for _, f := range r.SearchSchema().Fields {
-		v.Search = append(v.Search, f.Name+" "+f.SQLExpr)
+		v.Search = append(v.Search, f.Name+" "+f.Table+" "+f.Column+" "+f.Expr)
 	}
 	for path, p := range r.PatchSchema().Paths() {
 		v.Patch[path] = p.SQLColumn

@@ -57,13 +57,23 @@ def ignored(path):
     return any(glob(pattern).match(path) for pattern in scope_input("go-ignore").split("\n"))
 
 
+def tracked_dirs(name):
+    """The directories holding a tracked file of this name, outside those
+    doccheck's walk skips (tools/doccheck/check.go skipDir): test fixtures,
+    vendored code, node_modules, and hidden or _-prefixed directories."""
+    tracked = subprocess.check_output(["git", "ls-files", "-z", "--", f"*{name}"], cwd=ROOT).decode().split("\0")
+    dirs = [PurePosixPath(p).parent for p in tracked if PurePosixPath(p).name == name]
+    skipped = ("testdata", "vendor", "node_modules")
+    return [d for d in dirs if not any(part in skipped or part[0] in "._" for part in d.parts)]
+
+
 SCOPE_JOBS = json.loads(scope_input("jobs"))
 OWNERS = json.loads(scope_input("go-owners"))
 
 
 class ReleaseChecks(unittest.TestCase):
     def test_archive_examples_remain_required_for_prose(self):
-        self.assertEqual(ci.release_checks(["parse/docs/queries.md"]), ["parse-release-check"])
+        self.assertEqual(ci.release_checks(["parse/docs/queries.md"]), ["parse-release-check", "parse-example-check", "docs-check"])
         modules = job("modules")
         self.assertIn("contains(needs.scope.outputs.jobs, '\"modules\"')", modules)
         self.assertIn("needs.scope.outputs.checks", modules)
@@ -76,16 +86,20 @@ class ReleaseChecks(unittest.TestCase):
 
     def test_release_checks_follow_the_changed_modules(self):
         cases = {
-            ("parse/internal/dialect/dialect.go",): ["parse-release-check"],
-            ("parse/sdk/ts/src/client.ts", "parse/README.md"): ["parse-release-check"],
-            ("httpx/codec/proto/codec.go",): ["httpx-release-check"],
+            ("parse/internal/dialect/dialect.go",): ["parse-release-check", "parse-example-check", "docs-check"],
+            ("parse/sdk/ts/src/client.ts", "parse/README.md"): ["parse-release-check", "parse-example-check", "docs-check"],
+            ("httpx/codec/proto/codec.go",): ["httpx-release-check", "docs-check"],
             ("tools/check-httpx-release.sh",): ["httpx-release-check"],
-            ("state/store.go", "onepassword/client.go"): ["native-release-check"],
-            ("config/watch.go",): ["config-release-check", "cookbook-check"],
-            ("config/kongprovider/load.go",): ["kongprovider-release-check", "cookbook-check"],
-            ("config/examples/cookbook/main.go",): ["cookbook-check"],
-            ("gitx/merge.go", "jsonvalue/value.go"): ["gitx-release-check", "jsonvalue-release-check"],
+            ("state/store.go", "onepassword/client.go"): ["native-release-check", "docs-check"],
+            ("config/watch.go",): ["config-release-check", "cookbook-check", "docs-check"],
+            ("config/kongprovider/load.go",): ["kongprovider-release-check", "cookbook-check", "docs-check"],
+            ("config/examples/cookbook/main.go",): ["cookbook-check", "docs-check"],
+            ("parse/examples/server/server.go", "parse/examples/server/go.mod"): ["parse-example-check", "docs-check"],
+            ("gitx/merge.go", "jsonvalue/value.go"): ["gitx-release-check", "jsonvalue-release-check", "docs-check"],
+            ("tools/doccheck/check.go",): ["docs-check"],
+            ("httpx/examples/gin/main.go",): ["httpx-release-check", "docs-check"],
             ("tools/release-please/first-parent.mjs",): ["release-please-check"],
+            ("tools/check-pnpm.mjs", "tools/check-pnpm.test.mjs"): ["release-please-check"],
             ("tools/check-parse-sdk-release.sh",): [],
             ("CONTRIBUTING.md", "README.md"): [],
             (): [],
@@ -93,6 +107,17 @@ class ReleaseChecks(unittest.TestCase):
         for paths, want in cases.items():
             with self.subTest(paths=paths):
                 self.assertEqual(ci.release_checks(list(paths)), want)
+
+    def test_the_documentation_check_reads_every_module(self):
+        # doccheck reads every go.mod's module outside the directories it
+        # skips, in the workspace or not; a change to any of them runs it.
+        modules = tracked_dirs("go.mod")
+        for module in modules:
+            with self.subTest(module=module):
+                self.assertTrue(ci.reads("docs-check", f"{module}/README.md"))
+        for tree in ci.CHECKS["docs-check"]:
+            with self.subTest(tree=tree):
+                self.assertTrue(any(f"{m}/".startswith(tree) for m in modules), f"{tree} holds no module")
 
     def test_shared_unknown_or_unavailable_inputs_run_every_release_check(self):
         every = list(ci.CHECKS)
@@ -103,14 +128,35 @@ class ReleaseChecks(unittest.TestCase):
         self.assertEqual(ci.release_checks(None), every)
 
 
+    def test_lint_configuration_runs_the_lint_job(self):
+        # golangci-lint's configuration and ruleguard rules reach no package
+        # and run lint over every package. The configuration reaches no release
+        # check; the rules are a module, which the documentation check reads.
+        config, rules = [".golangci.yml"], ["tools/gorules/rules.go", "tools/gorules/go.mod"]
+        self.assertEqual(ci.release_checks(config), [])
+        self.assertEqual(ci.plan(["modules", "lint"], config), (["lint"], []))
+        self.assertEqual(ci.release_checks(rules), ["docs-check"])
+        self.assertEqual(ci.plan(["modules", "lint"], rules), (["modules", "lint"], ["docs-check"]))
+        paths = config + rules
+        self.assertEqual(SCOPE_JOBS["lint"]["paths"], [".golangci.yml", "tools/gorules/**"])
+        for path in paths:
+            with self.subTest(path=path):
+                self.assertTrue(ignored(path))
+        rules = re.search(r'rules: "\$\{base-path\}/(\S+)"', (ROOT / ".golangci.yml").read_text())[1]
+        self.assertEqual(rules, "tools/gorules/rules.go")
+        self.assertIn("go work edit -use=./tools/gorules", MAKEFILE)
+        # new-from-merge-base needs main's history in the lint job's checkout.
+        self.assertIn("fetch-depth: 0", job("lint"))
+
+
 class Plan(unittest.TestCase):
     def test_the_modules_job_runs_only_with_a_release_check(self):
         self.assertEqual(ci.plan(["test", "modules"], ["CONTRIBUTING.md"]), (["test"], []))
-        self.assertEqual(ci.plan(["test", "modules"], ["parse/list.go"]), (["test", "modules"], ["parse-release-check"]))
+        self.assertEqual(ci.plan(["test", "modules"], ["parse/list.go"]), (["test", "modules"], ["parse-release-check", "parse-example-check", "docs-check"]))
 
     def test_the_cookbook_lints_whenever_its_check_runs(self):
         self.assertEqual(ci.plan(["modules"], ["config/examples/cookbook/main.go"]),
-                         (["modules", "lint"], ["cookbook-check"]))
+                         (["modules", "lint"], ["cookbook-check", "docs-check"]))
 
     def test_a_full_run_makes_every_check(self):
         jobs, checks = ci.plan(list(ci.JOBS), None)
@@ -137,13 +183,13 @@ class Plan(unittest.TestCase):
             values = dict(line.split("=", 1) for line in output.read_text().splitlines())
             self.assertEqual(json.loads(values["jobs"]), ["test", "modules", "parse-benchmarks"])
             self.assertEqual(json.loads(values["required"]), ["test", "modules"])
-            self.assertEqual(values["checks"], "httpx-release-check parse-release-check")
+            self.assertEqual(values["checks"], "httpx-release-check parse-release-check parse-example-check docs-check")
             self.assertEqual(values["lint-cookbook"], "false")
-            self.assertEqual(json.loads(values["selections"])["modules"], ["httpx-release-check", "parse-release-check"])
+            self.assertEqual(json.loads(values["selections"])["modules"], ["httpx-release-check", "parse-release-check", "parse-example-check", "docs-check"])
             # The pull request's run, measured from the merge's first parent,
             # made only parse's release check: it does not cover this push's.
             self.assertEqual(json.loads(values["parent-selections"]),
-                             {"test": [parse], "modules": ["parse-release-check"], "parse-benchmarks": [parse]})
+                             {"test": [parse], "modules": ["parse-release-check", "parse-example-check", "docs-check"], "parse-benchmarks": [parse]})
             for full, listing in (("true", str(files)), ("false", "")):
                 with self.subTest(full=full, listing=listing):
                     self.assertIsNone(ci.changed_paths({"SCOPE_FULL": full, "SCOPE_FILES": listing}))
@@ -165,7 +211,7 @@ class Selections(unittest.TestCase):
 
     def test_the_modules_job_checks_its_release_checks(self):
         jobs, checks, chosen = ci.measure(["test", "modules"], ["gitx/merge.go"], {"test": ["x"], "modules": "all"})
-        self.assertEqual(chosen, {"test": ["x"], "modules": ["gitx-release-check"]})
+        self.assertEqual(chosen, {"test": ["x"], "modules": ["gitx-release-check", "docs-check"]})
 
     def test_lint_holds_the_cookbook_when_it_lints_it(self):
         _, _, chosen = ci.measure(["modules"], ["config/examples/cookbook/main.go"], {"modules": "all"})
@@ -212,10 +258,23 @@ class Scope(unittest.TestCase):
         self.assertEqual(SCOPE_JOBS["test-darwin"]["go"], patterns(make_list("NATIVE_MODULES") + make_list("CONFIG_MODULES")))
         self.assertEqual(SCOPE_JOBS["minimum-go"]["go"], patterns(make_list("HTTPX_MODULES") + ["gitx"]))
         self.assertEqual(SCOPE_JOBS["parse-postgres"]["go"], patterns(make_list("PARSE_MODULES")))
-        self.assertEqual(SCOPE_JOBS["parse-benchmarks"]["go"], ["./parse/filter"])
-        self.assertIn("./parse/filter | tee", job("parse-benchmarks"))
         darwin = re.findall(r"run: make (\S+)", job("test-darwin"))
         self.assertEqual(darwin, ["test-native-unit", "test-native-integration", "test-config"])
+
+    def test_cookbook_postgres_runs_the_recipe_on_the_makefile_server(self):
+        cookbook = SCOPE_JOBS["cookbook-postgres"]
+        # The settings-store recipe imports config alone of the workspace.
+        self.assertEqual(cookbook["go"], ["./config"])
+        for path in ("config/examples/cookbook/go.mod", "config/examples/cookbook/go.sum",
+                     "config/examples/cookbook/internal/pgtest/pgtest.go",
+                     "config/examples/cookbook/settingsstore/main_test.go"):
+            with self.subTest(path=path):
+                self.assertTrue(any(glob(p).match(path) for p in cookbook["paths"]))
+        self.assertFalse(any(glob(p).match("config/examples/cookbook/vault/main.go") for p in cookbook["paths"]))
+        image = MAKEFILE.split("\nCOOKBOOK_PG_IMAGE ?= ", 1)[1].split("\n", 1)[0]
+        self.assertIn(f"image: {image}\n", job("cookbook-postgres"))
+        self.assertIn("COOKBOOK_REQUIRE_PG: '1'", job("cookbook-postgres"))
+        self.assertEqual(re.findall(r"run: make (\S+)", job("cookbook-postgres")), ["cookbook-integration"])
 
     def test_go_jobs_cover_what_the_change_reaches(self):
         for name in ("test", "test-darwin", "parse-postgres", "lint"):
@@ -283,6 +342,27 @@ class Scope(unittest.TestCase):
         self.assertIn("uses: ./.github/workflows/ci.yml", NIGHTLY)
         self.assertIn("nightly: true", NIGHTLY)
         self.assertIn("workflow: ci.yml", job("scope"))
+
+
+class PnpmContract(unittest.TestCase):
+    """tools/check-pnpm.mjs holds every pnpm project to one pnpm release and a
+    one-document lockfile; it runs before each project's install, and a change
+    to it runs the jobs that install them."""
+
+    def test_every_pnpm_install_checks_the_contract_first(self):
+        tracked = subprocess.check_output(["git", "-C", str(ROOT), "ls-files", "-z", "--", "*pnpm-lock.yaml"]).decode().split("\0")
+        projects = [str(PurePosixPath(p).parent) for p in tracked if PurePosixPath(p).name == "pnpm-lock.yaml"]
+        self.assertTrue(projects)
+        for project in projects:
+            with self.subTest(project=project):
+                install = f"cd {project} && pnpm install --frozen-lockfile"
+                before = MAKEFILE.split(install, 1)[0]
+                target = re.findall(r"^([\w-]+):", before, re.M)[-1]
+                commands = subprocess.check_output(["make", "-s", "-n", target], cwd=ROOT, timeout=30).decode().splitlines()
+                installs = [i for i, command in enumerate(commands) if install in command]
+                self.assertTrue(installs, target)
+                self.assertIn("node tools/check-pnpm.mjs", commands[:installs[0]], target)
+        self.assertIn("tools/check-pnpm.mjs", SCOPE_JOBS["parse-sdk"])
 
 
 class Make(unittest.TestCase):

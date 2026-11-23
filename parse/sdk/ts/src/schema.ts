@@ -12,6 +12,11 @@ export interface ResourceSchema {
   /** The document's format version; the client refuses any but {@link SCHEMA_VERSION}. */
   version: number;
   resource: string;
+  /**
+   * The key columns, in key order: together they name one row, and every
+   * list ends its keyset with them. Absent for a schema registered without a key.
+   */
+  key?: string[];
   filter?: FilterSchema;
   patch?: PatchSchema;
   sort?: SortSchema;

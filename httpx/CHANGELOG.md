@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.5.0](https://github.com/ashtonian/pkg/compare/httpx/v0.4.0...httpx/v0.5.0) (2026-11-23)
+
+
+### ⚠ BREAKING CHANGES
+
+* **httpx:** A pointer T is no longer allocated before decoding. Get[*Item] on a JSON null returns nil, and a custom codec now receives a **Item. httpx/codec/proto accepts **pb.Message from this release on, so upgrade it together with httpx. A malformed Content-Type is ErrNoCodec on the success path rather than being decoded by the media type before its first semicolon.
+
+### Features
+
+* **httpx:** per-call codec negotiation, hedging trained on hedged requests, cache Lifecycle, MessagePack number fidelity ([#355](https://github.com/ashtonian/pkg/issues/355)) ([4e3cf4a](https://github.com/ashtonian/pkg/commit/4e3cf4aa8d5eb6a3082ccb3164ffbde1d7838b6a)), refs [#342](https://github.com/ashtonian/pkg/issues/342) [#232](https://github.com/ashtonian/pkg/issues/232) [#343](https://github.com/ashtonian/pkg/issues/343) [#341](https://github.com/ashtonian/pkg/issues/341) [#344](https://github.com/ashtonian/pkg/issues/344) [#334](https://github.com/ashtonian/pkg/issues/334) [#333](https://github.com/ashtonian/pkg/issues/333) [#332](https://github.com/ashtonian/pkg/issues/332) [#336](https://github.com/ashtonian/pkg/issues/336) [#337](https://github.com/ashtonian/pkg/issues/337) [#338](https://github.com/ashtonian/pkg/issues/338) [#339](https://github.com/ashtonian/pkg/issues/339) [#340](https://github.com/ashtonian/pkg/issues/340)
+
 ## [0.4.0](https://github.com/ashtonian/pkg/compare/httpx/v0.3.0...httpx/v0.4.0) (2026-11-06)
 
 ### Features

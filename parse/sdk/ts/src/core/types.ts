@@ -22,17 +22,29 @@ export type FieldType =
   | "geo";
 
 /**
- * Error body a parse-backed server returns: an E-code, a message, and optional
+ * Error body a parse-backed server returns (Go `parsehttp.Body`): an E-code, a
+ * message, the JSON Pointer of the patch member (`path`) and the position of
+ * the JSON Patch operation (`index`) a patch error is about, and optional
  * structured details.
  */
 export interface ErrorBody {
   code: string;
   message: string;
-  details?: Record<string, unknown>;
-  trace_id?: string;
-  timestamp?: string;
   path?: string;
+  index?: number;
+  details?: Record<string, unknown>;
 }
+
+/** One key column's value: a string as itself, a finite number, a bigint
+ *  or a boolean as its text. */
+export type KeyValue = string | number | bigint | boolean;
+
+/**
+ * A row's key: one value for a key of one column, or a tuple of a value per
+ * key column, in key order, for a key of several (the schema document's
+ * `key`). An item URL carries a path segment per value.
+ */
+export type ResourceKey = KeyValue | readonly [KeyValue, ...KeyValue[]];
 
 /** Per-request options. */
 export interface RequestOptions {

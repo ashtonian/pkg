@@ -94,16 +94,18 @@ jobs:
               "test": {"go": ["./..."]},
               "test-darwin": {"go": ["./process/...", "./state/...", "./onepassword/...", "./config/...", "./config/kongprovider/..."]},
               "parse-postgres": {"go": ["./parse/..."]},
-              "parse-sdk": ["parse/sdk/**", "parse/testdata/**", "tools/check-parse-sdk-*"],
-              "parse-benchmarks": {"go": ["./parse/filter"]},
+              "cookbook-postgres": {"paths": ["config/examples/cookbook/go.mod", "config/examples/cookbook/go.sum", "config/examples/cookbook/internal/pgtest/**", "config/examples/cookbook/settingsstore/**"], "go": ["./config"]},
+              "parse-sdk": ["parse/sdk/**", "parse/testdata/**", "parse/examples/server/README.md", "tools/check-parse-sdk-*", "tools/check-pnpm.mjs"],
+              "parse-benchmarks": {"paths": ["tools/bench-parse.sh"], "go": ["./parse", "./parse/core", "./parse/filter", "./parse/internal/jsonkeys"]},
               "minimum-go": {"go": ["./httpx/...", "./httpx/oauth2/...", "./httpx/codec/msgpack/...", "./httpx/codec/proto/...", "./httpx/compress/brotli/...", "./gitx/..."]},
               "modules": ["**"],
-              "lint": {"go": ["./..."]}
+              "lint": {"paths": [".golangci.yml", "tools/gorules/**"], "go": ["./..."]}
             }
           shared: |
             .github/**
             Makefile
             tools/ci_release_checks.py
+            tools/fuzz_corpus.py
             tools/private_references.py
             tools/test_ci_*.py
           # Every platform and -tags set CI compiles: a file joins a package only under some.
@@ -123,22 +125,28 @@ jobs:
             config/docs/**/*.md
             gowalker/docs/**/*.md
             httpx/docs/**/*.md
-            parse/docs/**/*.md
             parse/sdk/**
             .release-please-manifest.json
             release-please-config.json
             tools/check-*
+            tools/bench-parse.sh
             tools/release-please/**
             tools/modarchive/**
+            tools/doccheck/**
+            .golangci.yml
+            tools/gorules/**
             config/examples/cookbook/**
             httpx/examples/gin/**
             httpx/internal/bench/**
+            parse/examples/server/**
           go-owners: |
             {
               "config/examples/quickstart/main.go": ["./config"],
               "config/kongprovider/examples/**": ["./config/kongprovider"],
               "httpx/examples/quickstart/main.go": ["./httpx"],
-              "gitx/README.md": ["./gitx/cmd/mergeinserts"]
+              "gitx/README.md": ["./gitx/cmd/mergeinserts"],
+              "parse/testdata/filter_conformance.json": ["./parse/filter"],
+              "parse/docs/*.md": ["./parse"]
             }
       # Release checks follow the module trees a change touches; that map is
       # pkg's. On a merge push it also measures the merge from its first
@@ -221,11 +229,14 @@ jobs:
         run: make test-parse-race-all
   # Only the modules with platform code: config's file watch rests on kqueue
   # there, and the native modules' processes and files on Darwin. Lint vets
-  # every module on the declared Go floor.
+  # every module on the declared Go floor. The repository variable
+  # MACOS_CI=off leaves it out while GitHub-hosted minutes are unavailable;
+  # `make test-native-unit test-native-integration test-config` on a Mac
+  # covers it then.
   test-darwin:
     needs: scope
     name: test (macos-latest)
-    if: github.actor_id == '4212452' && (github.event_name != 'pull_request' || (github.event.pull_request.user.id == 4212452 && github.event.pull_request.head.repo.full_name == github.repository)) && contains(needs.scope.outputs.jobs, '"test-darwin"')
+    if: vars.MACOS_CI != 'off' && github.actor_id == '4212452' && (github.event_name != 'pull_request' || (github.event.pull_request.user.id == 4212452 && github.event.pull_request.head.repo.full_name == github.repository)) && contains(needs.scope.outputs.jobs, '"test-darwin"')
     permissions:
       contents: read
       id-token: write
@@ -292,6 +303,45 @@ jobs:
           # A missing DSN fails the fixture's tests here instead of skipping them.
           PARSE_REQUIRE_PG: '1'
         run: make test-parse-integration
+  # The settings-store recipe documents PostgreSQL's behaviour (the lock row
+  # under READ COMMITTED, ON CONFLICT, the octet_length size query); this runs
+  # its database tests on SQLite and PostgreSQL. It runs when the recipe, its
+  # fixture or the cookbook's dependencies change, or a change reaches config.
+  cookbook-postgres:
+    needs: scope
+    name: cookbook integration (SQLite, PostgreSQL 19)
+    if: github.actor_id == '4212452' && (github.event_name != 'pull_request' || (github.event.pull_request.user.id == 4212452 && github.event.pull_request.head.repo.full_name == github.repository)) && contains(needs.scope.outputs.jobs, '"cookbook-postgres"')
+    permissions:
+      contents: read
+      id-token: write
+    runs-on: arc-pkg
+    timeout-minutes: 20
+    services:
+      postgres:
+        image: postgres:19
+        env:
+          POSTGRES_USER: cookbook
+          POSTGRES_PASSWORD: cookbook
+          POSTGRES_DB: cookbook
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -h 127.0.0.1 -U cookbook -d cookbook"
+          --health-interval 5s --health-timeout 5s --health-retries 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ashtonian/go-ci-actions@2ee8735fdee91ff0ee16067a263da6c8a7770841 # v1.13.0
+        with:
+          go-version: stable
+          cache-dependency-path: "**/go.sum"
+      - name: Cookbook SQLite and PostgreSQL integration with race detection
+        env:
+          COOKBOOK_POSTGRES_DSN: postgres://cookbook:cookbook@localhost:5432/cookbook?sslmode=disable
+          # A missing DSN fails the PostgreSQL legs here instead of skipping them.
+          COOKBOOK_REQUIRE_PG: '1'
+        run: make cookbook-integration
   parse-sdk:
     needs: scope
     name: parse TypeScript SDK and corpora (node 22.13.0 and lts/*)
@@ -344,7 +394,7 @@ jobs:
   parse-benchmarks:
     needs: scope
     name: parse benchmark artifacts
-    # On main, only when the change reaches the benchmarked package; the
+    # On main, only when the change reaches a benchmarked package; the
     # nightly run always records them.
     if: github.actor_id == '4212452' && github.event_name != 'pull_request' && contains(needs.scope.outputs.selected, '"parse-benchmarks"')
     permissions:
@@ -360,17 +410,12 @@ jobs:
         with:
           go-version: stable
           cache-dependency-path: "**/go.sum"
-      - name: Record parser and cursor benchmarks
-        run: >-
-          go test -tags=unit -run '^$' -bench . -benchmem -count=3
-          -cpuprofile=parse-cpu.prof -memprofile=parse-allocs.prof ./parse/filter | tee parse-benchmarks.txt
+      - name: Record every parse package's benchmarks and profiles
+        run: tools/bench-parse.sh parse-benchmarks
       - uses: ashtonian/go-ci-actions/upload-artifact@2ee8735fdee91ff0ee16067a263da6c8a7770841 # v1.13.0
         with:
           name: parse-benchmarks-${{ github.sha }}
-          path: |
-            parse-benchmarks.txt
-            parse-cpu.prof
-            parse-allocs.prof
+          path: parse-benchmarks
   minimum-go:
     needs: scope
     name: httpx and gitx (go 1.26)
@@ -456,6 +501,9 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+          # golangci-lint reports the issues new since the merge base with
+          # origin/main (.golangci.yml), which needs main's history.
+          fetch-depth: 0
       - uses: ashtonian/go-ci-actions@2ee8735fdee91ff0ee16067a263da6c8a7770841 # v1.13.0
         with:
           go-version: '1.27.0'
@@ -463,7 +511,7 @@ jobs:
           test-input-mtimes: off
       # Vet type-checks every package and test, so on the declared floor it is
       # also the floor's build check.
-      - name: go vet on the declared Go floor, staticcheck on Go 1.27.4
+      - name: go vet on the declared Go floor, staticcheck and golangci-lint on Go 1.27.4
         env:
           GOTOOLCHAIN: local
         run: |
@@ -478,7 +526,7 @@ jobs:
 
   accepted:
     name: Preserve complete validation coverage
-    needs: [scope, test, test-darwin, parse-postgres, parse-sdk, minimum-go, modules, lint]
+    needs: [scope, test, test-darwin, parse-postgres, cookbook-postgres, parse-sdk, minimum-go, modules, lint]
     # The receipt names the commit this run checked; the merge push reads which
     # jobs passed from GitHub. A dispatched run on a bot's pull request branch
     # checks every job in full and records too.

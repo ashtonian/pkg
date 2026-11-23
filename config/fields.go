@@ -137,18 +137,30 @@ func isBranch(t reflect.Type) bool {
 	return t.Kind() == reflect.Struct && !opaque(t)
 }
 
-// derefType follows pointer types to the type they point at. The bound stops
-// a pointer type that points at itself (type P *P).
+// derefType follows pointer types to the type they point at. A chain that
+// loops back on itself (type P *P) points at nothing else, and ends at a
+// pointer type of the loop.
 func derefType(t reflect.Type) reflect.Type {
-	for range maxPointerDepth {
-		if t.Kind() != reflect.Pointer {
-			break
-		}
+	// Floyd's cycle check: ahead takes two links for each of t's, so it
+	// meets t again only inside a loop, and no visited set is kept.
+	ahead := t
+	for t.Kind() == reflect.Pointer {
 		t = t.Elem()
+		for range 2 {
+			if ahead.Kind() == reflect.Pointer {
+				ahead = ahead.Elem()
+			}
+		}
+		if t == ahead && t.Kind() == reflect.Pointer {
+			return t
+		}
 	}
 	return t
 }
 
+// maxPointerDepth bounds a walk through pointers that keeps no record of
+// where it has been: a chain of values can loop back on itself through an
+// interface (var x any; x = &x).
 const maxPointerDepth = 32
 
 // variableFields is fieldsOf(t) with the format:"json" sections one variable

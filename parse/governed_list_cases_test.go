@@ -4,6 +4,7 @@ package parse_test
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"iter"
 	"maps"
@@ -66,7 +67,7 @@ func governedDocuments(t *testing.T) *parse.Resource[govDocument] {
 	notes.MustRelate("reactions", parse.HasMany(reactions, "note_id", parse.Indexed()))
 	documents.MustRelate("notes", parse.HasMany(notes, "document_id", parse.Indexed(), parse.Includable(), parse.Facetable()))
 	documents.MustRelate("labels", parse.ManyToMany(labels,
-		parse.Junction{Table: "document_labels", Source: "document_id", Target: "label_id", Tenant: "tenant_id"},
+		parse.Junction{Table: "document_labels", Source: []string{"document_id"}, Target: []string{"label_id"}, Tenant: "tenant_id"},
 		parse.Indexed(), parse.Includable(), parse.Facetable()))
 	return documents
 }
@@ -186,18 +187,16 @@ type governedResult struct {
 	facets   map[string]map[string]int64
 }
 
-type governedQuery func(t *testing.T, sql string, args []any) [][]any
-
 var governedIncludes = []string{"notes", "labels"}
 
-func listGoverned(t *testing.T, r *parse.Resource[govDocument], d filter.Dialect, query governedQuery, filterJSON string, scope parse.Scope) governedResult {
+func listGoverned(t *testing.T, r *parse.Resource[govDocument], d filter.Dialect, db *sql.DB, filterJSON string, scope parse.Scope) governedResult {
 	t.Helper()
-	return listRelated(t, r, d, query, filterJSON, scope, governedIncludes)
+	return listRelated(t, r, d, db, filterJSON, scope, governedIncludes)
 }
 
-// listRelated runs filterJSON under scope on a database, including and
-// faceting relations.
-func listRelated[T any](t *testing.T, r *parse.Resource[T], d filter.Dialect, query governedQuery, filterJSON string, scope parse.Scope, relations []string) governedResult {
+// listRelated runs filterJSON under scope on db through the dialect's
+// executor, including and faceting relations.
+func listRelated[T any](t *testing.T, r *parse.Resource[T], d filter.Dialect, db *sql.DB, filterJSON string, scope parse.Scope, relations []string) governedResult {
 	t.Helper()
 	q := url.Values{
 		filter.ParamPageSize: {"50"}, filter.ParamIncludeTotal: {"true"},
@@ -210,68 +209,46 @@ func listRelated[T any](t *testing.T, r *parse.Resource[T], d filter.Dialect, qu
 	require.NoError(t, err)
 	plan, err := r.BuildList(d, req, scope)
 	require.NoError(t, err)
+	require.NotNil(t, plan.Count)
+	require.NotNil(t, plan.Facets)
+	page := listPage(t, db, r, d, plan)
 
-	var res governedResult
-	var keys []any
-	for _, row := range query(t, plan.Page.SQL, plan.Page.Args) {
-		id, ok := row[0].(string)
-		require.True(t, ok)
-		res.ids = append(res.ids, id)
-		keys = append(keys, id)
+	res := governedResult{includes: map[string]map[string][]string{}, facets: map[string]map[string]int64{}}
+	for _, item := range page.Items {
+		key, err := r.Key(item)
+		require.NoError(t, err)
+		res.ids = append(res.ids, fmt.Sprint(key[0]))
 	}
 	slices.Sort(res.ids)
-	require.NotNil(t, plan.Count)
-	count := query(t, plan.Count.SQL, plan.Count.Args)
-	require.Len(t, count, 1)
-	res.count = asInt64(t, count[0][0])
-
-	queries, err := r.IncludeQueries(plan, keys)
-	require.NoError(t, err)
-	res.includes = map[string]map[string][]string{}
-	for _, iq := range queries {
-		ids := map[string][]string{}
-		for _, row := range query(t, iq.SQL, iq.Args) {
-			owner, ownerOK := row[0].(string)
-			target, targetOK := row[1].(string)
-			require.True(t, ownerOK)
-			require.True(t, targetOK)
-			ids[owner] = append(ids[owner], target)
-		}
-		if len(ids) > 0 {
-			res.includes[iq.Field] = ids
-		}
+	require.NotNil(t, page.PageInfo.TotalCount)
+	res.count = *page.PageInfo.TotalCount
+	for field, ids := range page.Relations {
+		res.includes[field] = ids
 	}
-
-	require.NotNil(t, plan.Facets)
-	res.facets = map[string]map[string]int64{}
-	for _, row := range query(t, plan.Facets.SQL, plan.Facets.Args) {
-		field, fieldOK := row[0].(string)
-		key, keyOK := row[1].(string)
-		require.True(t, fieldOK)
-		require.True(t, keyOK)
-		if res.facets[field] == nil {
-			res.facets[field] = map[string]int64{}
+	for field, buckets := range page.Facets {
+		res.facets[field] = map[string]int64{}
+		for _, b := range buckets {
+			res.facets[field][b.Key] = b.Count
 		}
-		res.facets[field][key] = asInt64(t, row[2])
 	}
 	return res
 }
 
 // runGovernedLists holds a governed list to its rows and each row's
 // relations to the row's tenant, on a database.
-func runGovernedLists(t *testing.T, d filter.Dialect, query governedQuery) {
+func runGovernedLists(t *testing.T, d filter.Dialect, db *sql.DB) {
 	t.Helper()
 	r := governedDocuments(t)
 	for _, tc := range governedCases {
 		t.Run(tc.name, func(t *testing.T) {
-			got := listGoverned(t, r, d, query, tc.filter, parse.Scope{Governance: governanceA()})
+			got := listGoverned(t, r, d, db, tc.filter, parse.Scope{Governance: governanceA()})
 			assert.Equal(t, tc.want, got.ids)
 			assert.Equal(t, int64(len(got.ids)), got.count, "the count is the page's")
 			assert.Equal(t, facetsOfIncludes(got.ids, got.includes, governedIncludes), got.facets, "the facets count the page's related rows")
 
 			// A's rows are what the tenant floor lists: governance only
 			// adds the grant.
-			floor := listGoverned(t, r, d, query, tc.filter, parse.Scope{Tenant: "A"})
+			floor := listGoverned(t, r, d, db, tc.filter, parse.Scope{Tenant: "A"})
 			var own []string
 			for _, id := range got.ids {
 				if id != "b1" {
@@ -281,13 +258,13 @@ func runGovernedLists(t *testing.T, d filter.Dialect, query governedQuery) {
 			assert.Equal(t, own, floor.ids)
 
 			// Governance that grants nothing beyond the tenant is the floor.
-			ungranted := listGoverned(t, r, d, query, tc.filter, parse.Scope{Governance: govEq("tenant_id", "A")})
+			ungranted := listGoverned(t, r, d, db, tc.filter, parse.Scope{Governance: govEq("tenant_id", "A")})
 			assert.Equal(t, floor, ungranted)
 		})
 	}
 
 	t.Run("includes and facets of a granted row are its own tenant's", func(t *testing.T) {
-		got := listGoverned(t, r, d, query, ``, parse.Scope{Governance: governanceA()})
+		got := listGoverned(t, r, d, db, ``, parse.Scope{Governance: governanceA()})
 		assert.Equal(t, map[string]map[string][]string{
 			"notes":  {"a1": {"n1"}, "b1": {"n2"}},       // not A's n3 or the deleted n5
 			"labels": {"a1": {"la"}, "b1": {"lb", "lc"}}, // not A's pair to la, or B's on a2
@@ -366,18 +343,18 @@ func (m governedMemory) list(t *testing.T, r *parse.Resource[govDocument], filte
 	}
 	res := governedResult{includes: map[string]map[string][]string{}}
 	for _, tenant := range slices.Sorted(maps.Keys(byTenant)) {
-		f := req.Filter
+		f := req.Filter()
 		if f != nil {
 			f, err = filter.ResolveMemberships(ctx, f, m, filter.ResolveRelationScope(filter.RelationScope{Tenant: tenant}))
 			require.NoError(t, err)
 		}
-		var keys []any
+		var keys []core.Key
 		for _, row := range byTenant[tenant] {
-			if f == nil || m.selects(t, f.AST, r.Table(), row) {
+			if f == nil || m.selects(t, f.AST(), r.Table(), row) {
 				id, ok := row["id"].(string)
 				require.True(t, ok)
 				res.ids = append(res.ids, id)
-				keys = append(keys, id)
+				keys = append(keys, core.Key{id})
 			}
 		}
 		for _, name := range governedIncludes {
@@ -432,8 +409,8 @@ func (m governedMemory) selected(l *filter.Lookup) ([]map[string]any, error) {
 		if err != nil {
 			return nil, err
 		}
-		if ok && l.Filter != nil && l.Filter.AST != nil && l.Filter.AST.Root != nil {
-			truth, err := filter.Evaluate(l.Filter.AST.Root, governedRow(l.Table, row))
+		if ok && l.Filter != nil && l.Filter.AST() != nil && l.Filter.AST().Root != nil {
+			truth, err := filter.Evaluate(l.Filter.AST().Root, governedRow(l.Table, row))
 			if err != nil {
 				return nil, err
 			}
@@ -453,11 +430,10 @@ func (m governedMemory) LookupValues(_ context.Context, l *filter.Lookup) ([]any
 	}
 	out := make([]any, len(rows))
 	for i, row := range rows {
-		v, ok := row[l.Project]
-		if !ok {
-			return nil, fmt.Errorf("table %s has no column %q", l.Table, l.Project)
+		out[i], err = governedProject(l.Table, row, lookupColumns(l))
+		if err != nil {
+			return nil, err
 		}
-		out[i] = v
 	}
 	return out, nil
 }
@@ -466,18 +442,54 @@ func (m governedMemory) LookupFilteredValues(ctx context.Context, l *filter.Look
 	return m.LookupValues(ctx, l)
 }
 
-func (m governedMemory) LookupPairs(_ context.Context, l *filter.Lookup, ownerColumn string) (iter.Seq2[filter.IncludePair, error], error) {
+func (m governedMemory) LookupPairs(_ context.Context, l *filter.Lookup, owner []string) (iter.Seq2[filter.IncludePair, error], error) {
 	rows, err := m.selected(l)
 	if err != nil {
 		return nil, err
 	}
 	return func(yield func(filter.IncludePair, error) bool) {
 		for _, row := range rows {
-			if !yield(filter.IncludePair{Owner: row[ownerColumn], Target: row[l.Project]}, nil) {
+			o, err := governedProject(l.Table, row, owner)
+			if err != nil {
+				yield(filter.IncludePair{}, err)
+				return
+			}
+			target, err := governedProject(l.Table, row, lookupColumns(l))
+			if err != nil {
+				yield(filter.IncludePair{}, err)
+				return
+			}
+			if !yield(filter.IncludePair{Owner: o, Target: target}, nil) {
 				return
 			}
 		}
 	}, nil
+}
+
+// lookupColumns are the columns l projects.
+func lookupColumns(l *filter.Lookup) []string {
+	if l.ProjectKey != nil {
+		return l.ProjectKey
+	}
+	columns := []string{l.Project}
+	return columns
+}
+
+// governedProject is a row's value of its one column, or a core.Key of a
+// value per column for several, as a lookup answers a projection.
+func governedProject(table string, row map[string]any, columns []string) (any, error) {
+	key := make(core.Key, len(columns))
+	for i, c := range columns {
+		v, ok := row[c]
+		if !ok {
+			return nil, fmt.Errorf("table %s has no column %q", table, c)
+		}
+		key[i] = v
+	}
+	if len(key) == 1 {
+		return key[0], nil
+	}
+	return key, nil
 }
 
 // Tenant columns of two types in one graph, both holding a UUID: a
@@ -516,7 +528,7 @@ func mixedDevices[O, R any](prefix string) *parse.Resource[mixDevice[O]] {
 	tags := parse.MustResource[mixTag[R]](prefix+"tags", parse.TenantColumn("tenant_id"))
 	devices.MustRelate("commands", parse.HasMany(commands, "device_id", parse.Indexed(), parse.Includable(), parse.Facetable()))
 	devices.MustRelate("tags", parse.ManyToMany(tags,
-		parse.Junction{Table: prefix + "device_tags", Source: "device_id", Target: "tag_id", Tenant: "tenant_id"},
+		parse.Junction{Table: prefix + "device_tags", Source: []string{"device_id"}, Target: []string{"tag_id"}, Tenant: "tenant_id"},
 		parse.Indexed(), parse.Includable(), parse.Facetable()))
 	return devices
 }
@@ -542,7 +554,7 @@ func mixedFixtureSQL(prefix, ownerType, relatedType string) []string {
 // runGovernedMixedTypes lists a governed graph whose tenant columns mix a
 // UUID and a string type, both ways round; uuidType is the dialect's UUID
 // column type.
-func runGovernedMixedTypes(t *testing.T, d filter.Dialect, uuidType string, exec func(t *testing.T, stmt string), query governedQuery) {
+func runGovernedMixedTypes(t *testing.T, d filter.Dialect, uuidType string, db *sql.DB) {
 	t.Helper()
 	governance := &filter.PolicyConstraints{Or: []*filter.PolicyConstraints{govEq("tenant_id", mixU1), govEq("id", "d2")}}
 	check := func(t *testing.T, list func(filterJSON string) governedResult) {
@@ -569,20 +581,22 @@ func runGovernedMixedTypes(t *testing.T, d filter.Dialect, uuidType string, exec
 
 	t.Run("uuid owner, string related tables", func(t *testing.T) {
 		for _, stmt := range mixedFixtureSQL("u_", uuidType, "TEXT") {
-			exec(t, stmt)
+			_, err := db.Exec(stmt)
+			require.NoError(t, err, stmt)
 		}
 		r := mixedDevices[uuid.UUID, string]("u_")
 		check(t, func(f string) governedResult {
-			return listRelated(t, r, d, query, f, parse.Scope{Governance: governance}, mixRelations)
+			return listRelated(t, r, d, db, f, parse.Scope{Governance: governance}, mixRelations)
 		})
 	})
 	t.Run("string owner, uuid related tables", func(t *testing.T) {
 		for _, stmt := range mixedFixtureSQL("s_", "TEXT", uuidType) {
-			exec(t, stmt)
+			_, err := db.Exec(stmt)
+			require.NoError(t, err, stmt)
 		}
 		r := mixedDevices[string, uuid.UUID]("s_")
 		check(t, func(f string) governedResult {
-			return listRelated(t, r, d, query, f, parse.Scope{Governance: governance}, mixRelations)
+			return listRelated(t, r, d, db, f, parse.Scope{Governance: governance}, mixRelations)
 		})
 	})
 }

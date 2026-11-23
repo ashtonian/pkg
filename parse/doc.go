@@ -21,16 +21,18 @@
 //
 // # SchemaRegistry
 //
-// SchemaRegistry stores all schemas and serves them via HTTP for frontend
-// auto-generation of filter sidebars, search UIs, and edit forms:
+// SchemaRegistry holds each registered resource's schema document, which
+// parsehttp serves for frontend auto-generation of filter sidebars, search
+// UIs, and edit forms. A name is registered once; Register[T] generates
+// schemas for a type no Resource serves:
 //
 //	reg := parse.NewSchemaRegistry()
-//	parse.MustRegister[Product](reg)
-//	report := parse.WithErrorHandler(func(r *http.Request, err error) {
+//	parse.MustRegisterResource(reg, products)
+//	report := parsehttp.WithErrorHandler(func(r *http.Request, err error) {
 //		logger.ErrorContext(r.Context(), "serving schema", slog.Any("error", err))
 //	})
-//	mux.HandleFunc("GET /api/{resource}/schema", reg.SchemaHandler(report))
-//	mux.HandleFunc("GET /api/schemas", reg.SchemaListHandler(report))
+//	mux.HandleFunc("GET /api/{resource}/schema", parsehttp.SchemaHandler(reg, report))
+//	mux.HandleFunc("GET /api/schemas", parsehttp.SchemaListHandler(reg, report))
 //
 // A schema document that cannot be encoded is answered 500/E2120 and handed
 // to the WithErrorHandler hook; without one, the 500 is its only trace.

@@ -29,11 +29,11 @@ func listResources(t *testing.T) map[string]listEntryPoints {
 		ID   string `db:"id"   parse:"filter,sort"`
 		Name string `db:"name" parse:"filter"`
 	}
-	bare, err := parse.NewResource[widget]("widgets")
+	bare, err := parse.NewResource[widget]("widgets", atOneInstant())
 	require.NoError(t, err)
-	plain, err := parse.NewResource[unsearchable]("plains")
+	plain, err := parse.NewResource[unsearchable]("plains", atOneInstant())
 	require.NoError(t, err)
-	accepting, err := parse.NewResource[widget]("widgets", parse.AcceptParams("_", "view"))
+	accepting, err := parse.NewResource[widget]("widgets", parse.AcceptParams("_", "view"), atOneInstant())
 	require.NoError(t, err)
 	return map[string]listEntryPoints{"widgets": widgets(t), "bare": bare, "unsearchable": plain, "accepting": accepting}
 }
@@ -170,16 +170,16 @@ func TestListCorpus_BothEntryPointsAgree(t *testing.T) {
 func TestListCorpus_ReadsEveryParameter(t *testing.T) {
 	req, err := widgets(t).ParseListInput(listCorpus[1].input)
 	require.NoError(t, err)
-	assert.Equal(t, 2, req.Filter.ConditionCount, "the JSON and field filters are one filter")
-	assert.Equal(t, "rank", req.Sort.Fields[0].Name)
-	assert.Equal(t, "abc", req.Cursor)
-	assert.Equal(t, 3, req.PageSize, "clamped to the maximum")
-	assert.True(t, req.IncludeTotal)
-	assert.True(t, req.IncludeDeleted)
-	assert.Equal(t, "b", req.Search)
-	assert.Equal(t, []string{"name"}, req.Facets)
-	assert.Equal(t, []string{"tags"}, req.Include)
-	assert.Equal(t, []string{"id", "name"}, req.Fields)
+	assert.Equal(t, 2, req.Filter().ConditionCount(), "the JSON and field filters are one filter")
+	assert.Equal(t, "rank", req.Sort().Fields[0].Name)
+	assert.Equal(t, "abc", req.Cursor())
+	assert.Equal(t, 3, req.PageSize(), "clamped to the maximum")
+	assert.True(t, req.IncludeTotal())
+	assert.True(t, req.IncludeDeleted())
+	assert.Equal(t, "b", req.Search())
+	assert.Equal(t, []string{"name"}, req.Facets())
+	assert.Equal(t, []string{"tags"}, req.Include())
+	assert.Equal(t, []string{"id", "name"}, req.Fields())
 }
 
 // A query string spells some requests a ListInput cannot, and the reverse;
@@ -222,9 +222,9 @@ func TestParseListInput_FieldFiltersAreNeverListParameters(t *testing.T) {
 	require.NoError(t, err)
 	req, err := views.ParseListInput(parse.ListInput{FieldFilters: map[string][]string{"sort": {"name"}}})
 	require.NoError(t, err)
-	require.NotNil(t, req.Filter)
-	assert.Equal(t, 1, req.Filter.ConditionCount, "a field named sort is filtered on")
-	assert.Nil(t, req.Sort)
+	require.NotNil(t, req.Filter())
+	assert.Equal(t, 1, req.Filter().ConditionCount(), "a field named sort is filtered on")
+	assert.Nil(t, req.Sort())
 }
 
 // A field mask names the fields a response carries: a read column's, a
@@ -250,7 +250,7 @@ func TestParseListInput_FieldMask(t *testing.T) {
 	mask := []string{"roles", "id", "avatar", "label", "email"}
 	req, err := accounts.ParseListInput(parse.ListInput{Fields: mask})
 	require.NoError(t, err)
-	assert.Equal(t, mask, req.Fields, "valid names round-trip in order")
+	assert.Equal(t, mask, req.Fields(), "valid names round-trip in order")
 
 	for _, name := range []string{"nmae", "hash", "notes", "secret", "Secret"} {
 		t.Run(name, func(t *testing.T) {

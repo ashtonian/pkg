@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.9.0](https://github.com/ashtonian/pkg/compare/gowalker/v0.8.0...gowalker/v0.9.0) (2026-11-22)
+
+
+### Features
+
+* **gowalker:** Shape.Match and MatchBytes, a member name matched as encoding/json decodes it ([#352](https://github.com/ashtonian/pkg/issues/352)) ([f17f627](https://github.com/ashtonian/pkg/commit/f17f627a80115c485834e279d1a31e0ed22dd54b)), refs [#326](https://github.com/ashtonian/pkg/issues/326)
+
 ## [0.8.0](https://github.com/ashtonian/pkg/compare/gowalker/v0.7.0...gowalker/v0.8.0) (2026-11-22)
 
 
@@ -49,7 +56,7 @@
 
 ### Features
 
-* **gowalker:** ResolveByDepth, DashCommaName and ValidName tag options name the members encoding/json writes ([cf0d2b1](https://github.com/ashtonian/pkg/commit/cf0d2b19bac017a81b6e7a450b734f4a868def84))
+* **gowalker:** encoding/json naming options: ResolveByDepth, DashCommaName, ValidName ([cf0d2b1](https://github.com/ashtonian/pkg/commit/cf0d2b19bac017a81b6e7a450b734f4a868def84)), refs [#54](https://github.com/ashtonian/pkg/issues/54) [#55](https://github.com/ashtonian/pkg/issues/55)
 
 ## [0.3.0](https://github.com/ashtonian/pkg/compare/gowalker/v0.2.0...gowalker/v0.3.0) (2026-10-19)
 

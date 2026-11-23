@@ -23,7 +23,7 @@ const (
 type ParseError struct {
 	Code    string         `json:"code"`
 	Message string         `json:"message"`
-	Kind    ParseErrorKind `json:"kind"`
+	Kind    ParseErrorKind `json:"-"` // the code names it; not on the wire
 	Path    string         `json:"path,omitempty"`
 	Index   *int           `json:"index,omitempty"`   // pointer so op index 0 survives the wire
 	Details map[string]any `json:"details,omitempty"` // keyed by the Detail constants
@@ -41,9 +41,9 @@ func (e *ParseError) Unwrap() error {
 }
 
 // Is reports whether target carries the same E-code — any error with an
-// ErrorCode() string method, including Code — so a
-// ParseError matches its code's sentinel across wrap chains. An empty code matches nothing; Cause stays
-// reachable through Unwrap.
+// ErrorCode() string method, including Code — so a ParseError matches its
+// code's sentinel across wrap chains. An empty code matches nothing; Cause
+// stays reachable through Unwrap.
 func (e *ParseError) Is(target error) bool {
 	c, ok := target.(interface{ ErrorCode() string })
 	return ok && e.Code != "" && c.ErrorCode() == e.Code
@@ -58,6 +58,8 @@ func (e *ParseError) ErrorMessage() string { return e.Message }
 // ErrorHTTPStatus returns the code's status, or 422 for unknown codes.
 func (e *ParseError) ErrorHTTPStatus() int { return Code(e.Code).ErrorHTTPStatus() }
 
-// IsErrorUserFacing reports the message safe to show the caller:
-// it describes the request, never the database.
-func (e *ParseError) IsErrorUserFacing() bool { return true }
+// IsErrorUserFacing reports whether the message is safe to show the caller,
+// as its code's catalog row says: parse raises a ParseError only for what
+// the request did, so its message describes the request, never the
+// database. A code outside the catalog vouches for nothing.
+func (e *ParseError) IsErrorUserFacing() bool { return Code(e.Code).IsErrorUserFacing() }

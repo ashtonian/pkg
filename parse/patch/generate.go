@@ -2,6 +2,7 @@ package patch
 
 import (
 	"cmp"
+	"errors"
 	"fmt"
 	"reflect"
 	"slices"
@@ -66,6 +67,12 @@ func generatePatchSchema(g *core.SchemaGenerator, t reflect.Type, server bool) (
 		serverField := server && tags.Parse.Server
 		if !tags.Parse.Patch && !serverField {
 			continue
+		}
+		if tags.Parse.Patch && tags.Immutable {
+			// Nothing creates rows through a patch, so every patch of the
+			// field would change it. The server's own write is not a
+			// request's: a server field may stay immutable.
+			return nil, fmt.Errorf("field %s: an immutable field cannot have the patch capability", field.GoName)
 		}
 		fieldName := field.External
 		if serverField {
@@ -163,13 +170,24 @@ func generatePatchSchema(g *core.SchemaGenerator, t reflect.Type, server bool) (
 		// so BuildPatchSQL routes it into RelationOps instead of the SET
 		// clause.
 		var relSchema *core.RelationSchema
+		// A target key of several columns: its membership's keys are
+		// arrays of a value per column, as a declared relation's.
+		var membership *PathSchema
 		if tags.Relation != "" {
-			rel, err := core.ParseRelationTag(tags.Relation)
+			rel, err := g.RelationTag(walk, field)
 			if err != nil {
 				return nil, fmt.Errorf("field %s: %w", field.GoName, err)
 			}
-			if err := checkRelationKeyType(field.Type); err != nil {
-				return nil, fmt.Errorf("field %s: %w", field.GoName, err)
+			if len(rel.TargetColumns) == 1 {
+				err = checkRelationKeyType(field.Type)
+				if err != nil {
+					return nil, fmt.Errorf("field %s: %w", field.GoName, err)
+				}
+			} else {
+				membership, err = tagMembership(g, field, rel)
+				if err != nil {
+					return nil, fmt.Errorf("field %s: %w", field.GoName, err)
+				}
 			}
 			relSchema = rel
 			allowedOps = relationPatchOps()
@@ -179,6 +197,10 @@ func generatePatchSchema(g *core.SchemaGenerator, t reflect.Type, server bool) (
 		path := core.FormatPointer(fieldName)
 		if _, duplicate := paths[path]; duplicate {
 			return nil, fmt.Errorf("field %s: duplicate patch path %q", field.GoName, path)
+		}
+		if membership != nil {
+			paths[path] = membership
+			continue
 		}
 		paths[path] = &PathSchema{
 			AllowedOps: allowedOps,
@@ -203,7 +225,7 @@ func generatePatchSchema(g *core.SchemaGenerator, t reflect.Type, server bool) (
 // package-level slice let configuring one resource rewrite another's allowed
 // operations, and race with its requests.
 func defaultOpsFor(g *core.SchemaGenerator, ft core.FieldType) (ops []PatchOp, configured bool, err error) {
-	if names, ok := g.Opts.DefaultPatchOps[ft]; ok {
+	if names, ok := g.DefaultPatchOps(ft); ok {
 		ops := make([]PatchOp, 0, len(names))
 		for _, name := range names {
 			op := PatchOp(strings.TrimSpace(name))
@@ -235,8 +257,9 @@ func isNullableType(t reflect.Type) bool {
 	return false
 }
 
-// defaultPatchOps maps FieldType to standard patch operators.
-// Unexported per ; call DefaultPatchOps() for a defensive copy.
+// defaultPatchOps maps FieldType to standard patch operators. It is
+// unexported so no caller can change another's defaults; DefaultPatchOps
+// returns a copy.
 //
 // FieldTypeArray includes PatchOpArrayAppend so
 // every array-shaped field gets atomic single-statement append for
@@ -275,23 +298,66 @@ func DefaultPatchOps() map[core.FieldType][]PatchOp {
 }
 
 // relationPatchOps returns the allowed-ops subset for a relation-patch
-// path: replace / add / remove. JSON Patch's move / copy / test verbs
-// have no clean translation to "set / extend / shrink junction
-// membership" so they're rejected at validation (E2117). .
+// path: replace / add / remove. JSON Patch's move / copy / test have no
+// translation to setting, extending or shrinking a membership, so the parser
+// refuses them on a generated relation path (E2064); BuildPatchSQL refuses
+// one a hand-built schema allows (E2117).
 func relationPatchOps() []PatchOp {
 	return []PatchOp{PatchOpReplace, PatchOpAdd, PatchOpRemove}
 }
 
+// RelationKey is a target key column as a membership's keys hold it: the
+// column's Go type, and the form its values travel in, core.WireString for
+// one tagged json:",string", whose values are JSON strings ("5"), as
+// responses write them.
+type RelationKey struct {
+	Type reflect.Type
+	Wire core.Wire
+}
+
 // RelationPath is the patch path of a relation's membership: replace, add
-// and remove of a slice of target keys (goType), routed to RelationOps. A key
-// is never null, so goType's element must not be nullable. wire is the form
-// each key travels in, the target key's: core.WireString for one tagged
-// json:",string", whose keys are JSON strings ("5"), as responses write them.
-func RelationPath(rel *core.RelationSchema, goType reflect.Type, wire core.Wire) (*PathSchema, error) {
-	if err := checkRelationKeyType(goType); err != nil {
+// and remove of target keys, routed to RelationOps. key are the target key's
+// columns in key order. A one-column key's keys are values of its type, so
+// the path's value is a slice of them; a longer key's keys are JSON arrays
+// of a value per column, normalized to core.Key values. A key is never
+// null, so no column's type may be nullable.
+func RelationPath(rel *core.RelationSchema, key ...RelationKey) (*PathSchema, error) {
+	if len(key) == 0 {
+		return nil, errors.New("a relation's membership names its target key's columns")
+	}
+	if len(key) == 1 {
+		goType := reflect.SliceOf(key[0].Type)
+		err := checkRelationKeyType(goType)
+		if err != nil {
+			return nil, err
+		}
+		schema := &PathSchema{AllowedOps: relationPatchOps(), DataType: core.TypeOf(goType).Type, GoType: goType, Wire: key[0].Wire, Relation: rel}
+		return schema, nil
+	}
+	for _, k := range key {
+		err := checkRelationKeyType(reflect.SliceOf(k.Type))
+		if err != nil {
+			return nil, err
+		}
+	}
+	schema := &PathSchema{AllowedOps: relationPatchOps(), DataType: core.FieldTypeArray, Relation: rel, RelationKey: slices.Clone(key)}
+	return schema, nil
+}
+
+// tagMembership is the membership path of a tagged relation whose target
+// key has several columns (RelationPath), each column's keys typed, and
+// travelling, as the field of the element struct holding it
+// (core.SchemaGenerator.RelationTargetFields).
+func tagMembership(g *core.SchemaGenerator, field *core.Field, rel *core.RelationSchema) (*PathSchema, error) {
+	targets, err := g.RelationTargetFields(field, rel)
+	if err != nil {
 		return nil, err
 	}
-	return &PathSchema{AllowedOps: relationPatchOps(), DataType: core.TypeOf(goType).Type, GoType: goType, Wire: wire, Relation: rel}, nil
+	keys := make([]RelationKey, len(targets))
+	for i, target := range targets {
+		keys[i] = RelationKey{Type: target.Type, Wire: target.Wire()}
+	}
+	return RelationPath(rel, keys...)
 }
 
 // checkRelationKeyType refuses a membership type that is not a slice of

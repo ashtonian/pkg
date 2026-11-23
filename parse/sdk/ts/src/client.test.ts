@@ -1,15 +1,18 @@
-// Client ⇔ server wire contract. Responses come from
-// testdata/sdk_wire.json, emitted by the Go parse package (a real keyset
-// walk serialized as filter.Page, and a registry schema response), so these
-// tests hold the SDK to the server's shapes rather than to its own types.
+// Client ⇔ server wire contract. testdata/sdk_wire.json records requests
+// the Go client built and the answers parse's handlers gave them
+// (parse/sdk_wire_fixture_test.go). replay serves those answers only to a
+// request equal to the recorded one, so these tests hold the SDK to the
+// server's requests and shapes rather than to its own types.
 
 import { readFileSync } from "node:fs";
+import { isDeepStrictEqual } from "node:util";
 import { describe, expect, it } from "vitest";
 import { createClient } from "./client.js";
 // ApiError and the problem types come through the package's public entry points.
 import { ApiError, ResponseError, SchemaResourceError, SchemaValidationError, SchemaVersionError } from "./core/index.js";
-import type { ListResult } from "./filter/types.js";
+import type { FacetResult, ListResult } from "./filter/types.js";
 import type { FieldError, Problem } from "./index.js";
+import type { PatchResult } from "./patch/types.js";
 import { type ResourceSchema, SCHEMA_VERSION } from "./schema.js";
 
 interface WireItem {
@@ -18,18 +21,56 @@ interface WireItem {
   labels: Record<string, unknown>;
 }
 
+// The fixture's wire_stock rows, keyed (warehouse_id, sku).
+interface WireStock {
+  warehouse_id: string;
+  sku: string;
+  qty: number;
+}
+
+// A request as the server received it: every value of each query
+// parameter, and the body as JSON.
+interface WireRequest {
+  method: string;
+  path: string;
+  query?: Record<string, string[]>;
+  content_type?: string;
+  body?: unknown;
+}
+
+interface WireCall<R = unknown> {
+  request: WireRequest;
+  response: { status: number; content_type: string; body: R };
+}
+
 interface Wire {
   params: Record<string, string>;
   page_size: number;
   sort: string;
-  list: { cursor: string; response: ListResult<WireItem> }[];
-  schema: ResourceSchema;
-  related: Record<string, ResourceSchema>;
+  list: WireCall<ListResult<WireItem>>[];
+  exchanges: Record<string, WireCall>;
 }
 
 const wire = JSON.parse(
   readFileSync(new URL("../../../testdata/sdk_wire.json", import.meta.url), "utf8"),
 ) as Wire;
+
+function exchange<R>(name: string): WireCall<R> {
+  const call = wire.exchanges[name];
+  if (!call) throw new Error(`sdk_wire.json records no exchange ${name}`);
+  return call as WireCall<R>;
+}
+
+function page(i: number): ListResult<WireItem> {
+  const call = wire.list[i];
+  if (!call) throw new Error(`sdk_wire.json records no list page ${String(i)}`);
+  return call.response.body;
+}
+
+const schema = exchange<ResourceSchema>("schema").response.body;
+const related = Object.fromEntries(
+  exchange<{ schemas: ResourceSchema[] }>("schemas").response.body.schemas.map((s) => [s.resource, s]),
+) as Record<string, ResourceSchema>;
 
 interface Call {
   method: string;
@@ -58,43 +99,95 @@ function json(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json" } });
 }
 
+// received is the request call is, in the recording's shape.
+function received(call: Call): WireRequest {
+  const query: Record<string, string[]> = {};
+  for (const [name, value] of call.url.searchParams) (query[name] ??= []).push(value);
+  const req: WireRequest = { method: call.method, path: call.url.pathname };
+  if (Object.keys(query).length > 0) req.query = query;
+  const contentType = call.headers.get("Content-Type");
+  if (contentType !== null) req.content_type = contentType;
+  if (call.body !== undefined) req.body = call.body;
+  return req;
+}
+
+// replay answers a request equal to one of calls' with its recorded answer,
+// and fails any other.
+function replay(...calls: WireCall[]) {
+  return fakeServer((call) => {
+    const req = received(call);
+    const recorded = calls.find((c) => isDeepStrictEqual(c.request, req));
+    if (!recorded) {
+      throw new Error(`unrecorded request ${JSON.stringify(req)}; recorded ${JSON.stringify(calls.map((c) => c.request))}`);
+    }
+    const { status, content_type, body } = recorded.response;
+    return new Response(JSON.stringify(body), { status, headers: { "Content-Type": content_type } });
+  });
+}
+
 function client(fetchFn: typeof globalThis.fetch, validateBeforeSend = false) {
   return createClient({ baseURL: "https://api.test", fetch: fetchFn, validateBeforeSend });
 }
 
+// The options the recorded keyset walk was requested with.
+const walk = { sort: wire.sort, pageSize: wire.page_size, include: ["tags"], facets: ["name" as const] };
+
 describe("listAll", () => {
-  it("follows page_info.end_cursor through the Go-emitted pages", async () => {
-    const server = fakeServer(({ url }) => {
-      const cursor = url.searchParams.get("cursor") ?? "";
-      const exchange = wire.list.find((e) => e.cursor === cursor);
-      return exchange ? json(exchange.response) : json({ code: "E2082", message: "invalid cursor" }, 422);
-    });
-    const items = client(server.fetch).resource<WireItem>("items", { schema: "wire_items" });
+  it("sends the recorded requests through the Go-served pages", async () => {
+    const server = replay(...wire.list);
+    const items = client(server.fetch).resource<WireItem>("wire_items");
 
     const names: string[] = [];
-    for await (const page of items.listAll({ sort: wire.sort, pageSize: wire.page_size })) {
-      names.push(...page.items.map((i) => i.name));
+    for await (const p of items.listAll(walk)) {
+      names.push(...p.items.map((i) => i.name));
     }
 
     expect(names).toEqual(["alpha", "bravo", "charlie", "delta", "echo"]);
-    expect(server.calls.map((c) => c.url.searchParams.get("cursor") ?? "")).toEqual(wire.list.map((e) => e.cursor));
-    for (const c of server.calls) {
-      expect(c.url.searchParams.get("page_size")).toBe("2");
-      expect(c.url.searchParams.get("sort")).toBe("name");
-    }
+    expect(server.calls).toHaveLength(wire.list.length);
   });
 
-  it("surfaces include projections and facet counts", async () => {
-    const first = wire.list[0]?.response;
-    const items = client(fakeServer(() => json(first)).fetch).resource<WireItem>("items", { schema: "wire_items" });
-    const page = await items.list();
-    expect(page._relations?.["tags"]?.["b"]).toEqual(["t1", "t2"]);
-    expect(page._truncated?.["tags"]).toEqual(["b"]);
-    expect(page.facets?.["name"]?.map((b) => b.key)).toEqual(["alpha", "bravo", "charlie", "delta", "echo"]);
+  it("surfaces include projections, their truncation and facet counts", async () => {
+    const items = client(replay(...wire.list).fetch).resource<WireItem>("wire_items");
+    const first = await items.list(walk);
+    expect(first).toEqual(page(0));
+    expect(first._relations?.["tags"]?.["b"]).toHaveLength(100);
+    expect(first._relations?.["tags"]?.["d"]).toEqual(["t001", "t002"]);
+    expect(first._truncated?.["tags"]).toEqual(["b"]);
+    expect(first.facets?.["name"]?.map((b) => b.key)).toEqual(["alpha", "bravo", "charlie", "delta", "echo"]);
+  });
+
+  it("fetches the page before one by its start_cursor", async () => {
+    const items = client(replay(exchange("list_backward")).fetch).resource<WireItem>("wire_items");
+    const before = await items.list({ ...walk, cursor: page(1).page_info.start_cursor ?? "" });
+    expect(before.items).toEqual(page(0).items);
+    expect(before.page_info).toMatchObject({ has_next_page: true, has_prev_page: false });
   });
 });
 
 describe("list", () => {
+  const filtered = { filter: { name: { $ne: "echo" } }, sort: [{ field: "name" as const, order: "desc" as const }], pageSize: 2, includeTotal: true };
+
+  it("reads total_count over GET", async () => {
+    const items = client(replay(exchange("list_total")).fetch).resource<WireItem>("wire_items");
+    const res = await items.list(filtered);
+    expect(res).toEqual(exchange("list_total").response.body);
+    expect(res.page_info.total_count).toBe(4);
+  });
+
+  it("sends the recorded list body over POST, and reads the page GET reads", async () => {
+    const items = client(replay(exchange("list_post")).fetch).resource<WireItem>("wire_items");
+    const res = await items.list(filtered, { method: "POST" });
+    expect(res).toEqual(exchange("list_total").response.body);
+  });
+
+  it("reads a parse error body as the handler wrote it", async () => {
+    const recorded = exchange<Record<string, unknown>>("error").response;
+    const items = client(replay(exchange("error")).fetch).resource<Record<string, unknown>>("wire_items");
+    const err = await items.list({ filter: { nope: { $eq: 1 } } }).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(ApiError);
+    expect(err).toMatchObject({ status: 422, code: "E2071", message: recorded.body["message"], body: recorded.body });
+  });
+
   it("sends the server's query parameters", async () => {
     const server = fakeServer(() => json({ items: [], page_info: { has_next_page: false, has_prev_page: false } }));
     await client(server.fetch).resource<WireItem>("items", { schema: "wire_items" }).list({
@@ -125,7 +218,7 @@ describe("list", () => {
   });
 
   it("validates against the Go-emitted schema before sending", async () => {
-    const server = fakeServer(({ url }) => (url.pathname.endsWith("/schema") ? json(wire.schema) : json(wire.list[0]?.response)));
+    const server = fakeServer(({ url }) => (url.pathname.endsWith("/schema") ? json(schema) : json(page(0))));
     const items = client(server.fetch, true).resource<WireItem>("items", { schema: "wire_items" });
 
     await expect(items.list({ filter: { name: "zulu" } })).rejects.toMatchObject({ code: "E2087" });
@@ -223,8 +316,8 @@ describe("list transport", () => {
   it("follows cursors through POST pages", async () => {
     const server = fakeServer(({ body }) => {
       const cursor = (body as Record<string, unknown> | undefined)?.[p("ParamCursor")] ?? "";
-      const exchange = wire.list.find((e) => e.cursor === cursor);
-      return exchange ? json(exchange.response) : json({ code: "E2082", message: "invalid cursor" }, 422);
+      const recorded = wire.list.find((c) => (c.request.query?.[p("ParamCursor")]?.[0] ?? "") === cursor);
+      return recorded ? json(recorded.response.body) : json({ code: "E2082", message: "invalid cursor" }, 422);
     });
     const items = client(server.fetch).resource<WireItem>("items", { schema: "wire_items" });
     const names: string[] = [];
@@ -253,8 +346,8 @@ describe("list transport", () => {
   it("sends every filter conformance input unchanged on both transports", async () => {
     const corpus = JSON.parse(
       readFileSync(new URL("../../../testdata/filter_conformance.json", import.meta.url), "utf8"),
-    ) as { name: string; input: Record<string, unknown>; tsApplicable?: boolean }[];
-    const cases = corpus.filter((c) => c.tsApplicable !== false);
+    ) as { cases: { name: string; input: Record<string, unknown>; tsApplicable?: boolean }[] };
+    const cases = corpus.cases.filter((c) => c.tsApplicable !== false);
     expect(cases.length).toBeGreaterThan(0);
 
     const server = fakeServer(() => json(empty));
@@ -279,9 +372,9 @@ describe("list transport", () => {
 describe("relation filters", () => {
   it("validates a nested filter against the target's Go-emitted schema", async () => {
     const server = fakeServer(({ url }) => {
-      if (url.pathname.endsWith("/wire_parts/schema")) return json(wire.related["wire_parts"]);
-      if (url.pathname.endsWith("/schema")) return json(wire.schema);
-      return json(wire.list[0]?.response);
+      if (url.pathname.endsWith("/wire_parts/schema")) return json(related["wire_parts"]);
+      if (url.pathname.endsWith("/schema")) return json(schema);
+      return json(page(0));
     });
     const items = client(server.fetch, true).resource<WireItem>("items", { schema: "wire_items" });
 
@@ -312,7 +405,7 @@ describe("errors", () => {
       { detail: "must be 'green', 'red' or 'blue'", pointer: "#/profile/color", code: "E2087" },
     ],
   };
-  const parseBody = { code: "E2071", message: "field 'x' is not filterable", details: { field: "x" } };
+  const parseBody = exchange<{ code: string; message: string }>("error").response.body;
   const validationProblem: Problem = {
     type: validation.type,
     title: validation.title,
@@ -412,7 +505,7 @@ describe("errors", () => {
   });
 
   it("asks for problem documents as well as JSON", async () => {
-    const server = fakeServer(() => json(wire.list[0]?.response));
+    const server = fakeServer(() => json(page(0)));
     await client(server.fetch).resource<WireItem>("items", { schema: "wire_items" }).list();
     expect(server.calls[0]?.headers.get("Accept")).toBe("application/json, application/problem+json");
   });
@@ -426,13 +519,13 @@ describe("schema", () => {
         fail = false;
         return json({ code: "E5001", message: "unavailable" }, 503);
       }
-      return json(wire.schema);
+      return json(schema);
     });
     const items = client(server.fetch).resource<WireItem>("items", { schema: "wire_items" });
 
     await expect(items.schema()).rejects.toMatchObject({ status: 503 });
     const [a, b] = await Promise.all([items.schema(), items.schema()]);
-    expect(a).toEqual(wire.schema);
+    expect(a).toEqual(schema);
     expect(b).toBe(a);
     expect(server.calls).toHaveLength(2);
     await items.schema();
@@ -456,7 +549,7 @@ describe("schema", () => {
           signal.addEventListener("abort", () => {
             reject(signal.reason as Error);
           }, { once: true });
-          requests.push({ signal, release: () => { resolve(json(wire.schema)); } });
+          requests.push({ signal, release: () => { resolve(json(schema)); } });
         });
       };
       return { requests, fetch: fetchFn };
@@ -481,7 +574,7 @@ describe("schema", () => {
       expect(server.requests).toHaveLength(1);
       expect(request(server, 0).signal.aborted).toBe(false);
       request(server, 0).release();
-      await expect(b).resolves.toEqual(wire.schema);
+      await expect(b).resolves.toEqual(schema);
     });
 
     it("rejects only a second caller that aborts", async () => {
@@ -495,7 +588,7 @@ describe("schema", () => {
 
       await expect(b).rejects.toMatchObject({ name: "AbortError" });
       request(server, 0).release();
-      await expect(a).resolves.toEqual(wire.schema);
+      await expect(a).resolves.toEqual(schema);
       expect(server.requests).toHaveLength(1);
     });
 
@@ -517,7 +610,7 @@ describe("schema", () => {
       const c = items.schema();
       expect(server.requests).toHaveLength(2);
       request(server, 1).release();
-      await expect(c).resolves.toEqual(wire.schema);
+      await expect(c).resolves.toEqual(schema);
       await items.schema();
       expect(server.requests).toHaveLength(2);
     });
@@ -546,11 +639,21 @@ describe("schema", () => {
   });
 
   it("reads the version the Go package serves", () => {
-    expect(wire.schema.version).toBe(SCHEMA_VERSION);
+    expect(schema.version).toBe(SCHEMA_VERSION);
+  });
+
+  it("sends the recorded schema requests and reads their answers", async () => {
+    const server = replay(exchange("schema"), exchange("schemas"), exchange("schema_not_found"));
+    const c = client(server.fetch);
+    await expect(c.resource<WireItem>("wire_items").schema()).resolves.toEqual(schema);
+    await expect(c.schemas()).resolves.toEqual(Object.values(related));
+    const missing = await c.resource<WireItem>("gadgets").schema().catch((e: unknown) => e);
+    expect(missing).toBeInstanceOf(ApiError);
+    expect(missing).toMatchObject({ status: 404, code: "E2078", body: exchange("schema_not_found").response.body });
   });
 
   it("refuses a document in a version it does not read, without caching it", async () => {
-    const future = { ...wire.schema, version: SCHEMA_VERSION + 1 };
+    const future = { ...schema, version: SCHEMA_VERSION + 1 };
     const server = fakeServer(() => json(future));
     const items = client(server.fetch, true).resource<WireItem>("items", { schema: "wire_items" });
 
@@ -562,13 +665,27 @@ describe("schema", () => {
   });
 
   it("refuses a listing that holds a document in another version", async () => {
-    const server = fakeServer(() => json({ schemas: [wire.schema, { ...wire.schema, resource: "other", version: 0 }] }));
+    const server = fakeServer(() => json({ schemas: [schema, { ...schema, resource: "other", version: 0 }] }));
     await expect(client(server.fetch).schemas()).rejects.toBeInstanceOf(SchemaVersionError);
   });
 });
 
 describe("patch", () => {
-  const updated = { updated: [{ id: "b", name: "bravo", labels: {} }] };
+  const updated = exchange<PatchResult<WireItem>>("patch").response.body;
+
+  it("sends the recorded merge patch and reads the rows it updated", async () => {
+    const items = client(replay(exchange("patch")).fetch).resource<WireItem>("wire_items");
+    await expect(items.patch("b", { labels: { env: "prod" } })).resolves.toEqual(updated);
+  });
+
+  it("sends the recorded batch patch and reads the keys it could not update", async () => {
+    const recorded = exchange<PatchResult<WireItem>>("patch_many").response.body;
+    const items = client(replay(exchange("patch_many")).fetch).resource<WireItem>("wire_items");
+    const res = await items.patchMany(["d", "zz"], { labels: { env: "test" } });
+    expect(res).toEqual(recorded);
+    expect(res.updated.map((i) => i.id)).toEqual(["d"]);
+    expect(res.failed?.map((f) => f.id)).toEqual(["zz"]);
+  });
 
   it("sends a merge patch to the entity", async () => {
     const server = fakeServer(() => json(updated));
@@ -586,8 +703,57 @@ describe("patch", () => {
     expect(server.calls[0]?.url.searchParams.getAll("id[]")).toEqual(["a", "b"]);
   });
 
+  it("sends the recorded patch of a row keyed by two columns, a path segment per column", async () => {
+    const recorded = exchange<PatchResult<WireStock>>("patch_composite_key");
+    expect(recorded.request.path).toBe("/wire_stock/w1/a%2Fb");
+    const stock = client(replay(recorded).fetch).resource<WireStock, [string, string]>("wire_stock");
+    await expect(stock.patch(["w1", "a/b"], { qty: 3 })).resolves.toEqual(recorded.response.body);
+  });
+
+  it("writes number, bigint and boolean key values as their text", async () => {
+    const server = fakeServer(() => json(updated));
+    await client(server.fetch).resource<WireStock, [string, number]>("bins").patch(["w 1", 7], { qty: 1 });
+    await client(server.fetch).resource<WireItem>("items").patch(12345678901234567890n, { name: "alpha" });
+    await client(server.fetch).resource<WireItem>("flags").patch(true, { name: "alpha" });
+    await client(server.fetch).resource<WireItem>("items").patchMany([7, 8n], { name: "alpha" });
+    expect(server.calls.map((c) => c.url.pathname)).toEqual(["/bins/w%201/7", "/items/12345678901234567890", "/flags/true", "/items"]);
+    expect(server.calls[3]?.url.searchParams.getAll("id[]")).toEqual(["7", "8"]);
+  });
+
+  it("refuses a key of another arity than the schema's key before sending", async () => {
+    const server = fakeServer(({ url }) => {
+      if (url.pathname.endsWith("/wire_stock/schema")) return json(related["wire_stock"]);
+      if (url.pathname.endsWith("/schema")) return json(schema);
+      return json({ updated: [] });
+    });
+    const stock = client(server.fetch, true).resource<WireStock, [string, string]>("wire_stock");
+    // @ts-expect-error a key of two columns takes two values
+    await expect(stock.patch(["w1"], { qty: 3 })).rejects.toThrow("the key of wire_stock is (warehouse_id, sku), a value per column; got 1");
+    // @ts-expect-error a key of two columns takes no third value
+    await expect(stock.patch(["w1", "a", "x"], { qty: 3 })).rejects.toBeInstanceOf(RangeError);
+    // @ts-expect-error a key of two columns is a tuple, never one value
+    await expect(stock.patch("w1", { qty: 3 })).rejects.toBeInstanceOf(RangeError);
+    const items = client(server.fetch, true).resource<WireItem>("wire_items");
+    // @ts-expect-error a key of one column is one value
+    await expect(items.patch(["a", "b"], { name: "alpha" })).rejects.toThrow("the key of wire_items is (id), a value per column; got 2");
+    await expect(stock.patch(["w1", "a/b"], { qty: 3 })).resolves.toBeDefined();
+    expect(server.calls.filter((c) => c.method === "PATCH").map((c) => c.url.pathname)).toEqual(["/wire_stock/w1/a%2Fb"]);
+  });
+
+  // id[] holds one value per row, so a key of several columns has no form in
+  // it; such rows are patched one by one.
+  it("refuses patchMany on a key of several columns before sending", async () => {
+    const server = fakeServer(({ url }) => (url.pathname.endsWith("/schema") ? json(related["wire_stock"]) : json({ updated: [] })));
+    const typed = client(server.fetch).resource<WireStock, [string, string]>("wire_stock");
+    // @ts-expect-error patchMany takes no tuple key
+    await expect(typed.patchMany([["w1", "a"]], { qty: 3 })).rejects.toBeInstanceOf(RangeError);
+    const untyped = client(server.fetch, true).resource<WireStock>("wire_stock");
+    await expect(untyped.patchMany(["w1"], { qty: 3 })).rejects.toThrow("patchMany cannot address wire_stock: its key is (warehouse_id, sku)");
+    expect(server.calls.filter((c) => c.method === "PATCH")).toHaveLength(0);
+  });
+
   it("validates null against the Go-emitted schema", async () => {
-    const server = fakeServer(({ url }) => (url.pathname.endsWith("/schema") ? json(wire.schema) : json(updated)));
+    const server = fakeServer(({ url }) => (url.pathname.endsWith("/schema") ? json(schema) : json(updated)));
     const items = client(server.fetch, true).resource<WireItem>("items", { schema: "wire_items" });
     // name is a non-nullable string: null is not one of its values, as the server answers.
     await expect(items.patch("a", { name: null })).rejects.toMatchObject({ code: "E2077" });
@@ -596,7 +762,7 @@ describe("patch", () => {
   });
 
   it("looks up field names as escaped JSON Pointer tokens", async () => {
-    const server = fakeServer(({ url }) => (url.pathname.endsWith("/schema") ? json(wire.schema) : json(updated)));
+    const server = fakeServer(({ url }) => (url.pathname.endsWith("/schema") ? json(schema) : json(updated)));
     const items = client(server.fetch, true).resource<Record<string, unknown>>("items", { schema: "wire_items" });
     // The Go schema holds "/unit~1si~0v" for the field named "unit/si~v".
     await expect(items.patch("a", { "unit/si~v": "kg" })).resolves.toBeDefined();
@@ -605,17 +771,16 @@ describe("patch", () => {
 });
 
 describe("facets", () => {
-  it("reads facet counts from OPTIONS ?facets=", async () => {
-    const server = fakeServer(() => json({ fields: [], facets: { name: [{ key: "alpha", count: 2 }] } }));
-    const res = await client(server.fetch).resource<WireItem>("items", { schema: "wire_items" }).facets(["name"], { filter: { name: { $ne: "echo" } } });
-    expect(server.calls[0]?.method).toBe("OPTIONS");
-    expect(server.calls[0]?.url.searchParams.get(wire.params["ParamFacets"] ?? "")).toBe("name");
-    expect(server.calls[0]?.url.searchParams.get("filter")).toBe(JSON.stringify({ name: { $ne: "echo" } }));
-    expect(res).toEqual({ name: [{ key: "alpha", count: 2 }] });
+  it("sends the recorded OPTIONS ?facets= and reads its counts", async () => {
+    const recorded = exchange<{ facets: FacetResult }>("facets").response.body;
+    const items = client(replay(exchange("facets")).fetch).resource<WireItem>("wire_items");
+    const res = await items.facets(["name"], { filter: { name: { $ne: "echo" } } });
+    expect(res).toEqual(recorded.facets);
+    expect(res["name"]?.map((b) => b.key)).toEqual(["alpha", "bravo", "charlie", "delta"]);
   });
 
   it("sends the search the counts describe", async () => {
-    const server = fakeServer(() => json({ fields: [], facets: {} }));
+    const server = fakeServer(() => json({ facets: {} }));
     await client(server.fetch).resource<WireItem>("items", { schema: "wire_items" }).facets(["name"], { search: "cordless drill" });
     expect(server.calls[0]?.url.searchParams.get(wire.params["ParamSearch"] ?? "")).toBe("cordless drill");
   });
@@ -645,8 +810,8 @@ function exampleServer(schemas: Record<string, ResourceSchema>) {
 }
 
 describe("routes", () => {
-  const products: ResourceSchema = { ...wire.schema, resource: "products" };
-  const workOrders: ResourceSchema = { ...wire.schema, resource: "work_orders" };
+  const products: ResourceSchema = { ...schema, resource: "products" };
+  const workOrders: ResourceSchema = { ...schema, resource: "work_orders" };
   const atAPI = (fetchFn: typeof globalThis.fetch) =>
     createClient({ baseURL: "https://api.test/api", fetch: fetchFn, validateBeforeSend: true });
 
@@ -675,7 +840,7 @@ describe("routes", () => {
   });
 
   it("refuses a schema document for another resource than requested", async () => {
-    const server = fakeServer(() => json(wire.schema));
+    const server = fakeServer(() => json(schema));
     await expect(client(server.fetch).resource<WireItem>("items").schema()).rejects.toMatchObject({
       name: "SchemaResourceError", requested: "items", resource: "wire_items",
     });
@@ -683,7 +848,7 @@ describe("routes", () => {
   });
 
   it("joins segments with one slash and puts schemas under schemaPrefix", async () => {
-    const server = fakeServer(({ url }) => (url.pathname.endsWith("/schema") ? json(wire.schema) : json(wire.list[0]?.response)));
+    const server = fakeServer(({ url }) => (url.pathname.endsWith("/schema") ? json(schema) : json(page(0))));
     const c = createClient({ baseURL: "https://api.test/v1/", fetch: server.fetch, schemaPrefix: "/meta/", validateBeforeSend: true });
     await c.resource<WireItem>("/items/", { schema: "wire_items" }).list();
     await c.resource<WireItem>("shop/items", { schema: "wire_items" }).list();
@@ -691,7 +856,7 @@ describe("routes", () => {
   });
 
   it("defaults a nested path's registry name to its last segment", async () => {
-    const server = fakeServer(() => json(wire.schema));
+    const server = fakeServer(() => json(schema));
     await client(server.fetch).resource<WireItem>("shop/wire_items").schema();
     expect(server.calls[0]?.url.pathname).toBe("/wire_items/schema");
   });
@@ -776,10 +941,17 @@ describe("list members", () => {
 });
 
 describe("requests the server would misroute", () => {
-  it("refuses patch without an id and patchMany without ids before sending", async () => {
+  // An empty segment is no segment, and URL parsing drops "." and "..",
+  // escaped or not: each would PATCH another path than the row's.
+  it("refuses a key no path segment carries, and patchMany without ids, before sending", async () => {
     const server = fakeServer(() => json({ updated: [] }));
     const items = client(server.fetch).resource<WireItem>("items");
-    await expect(items.patch("", { name: "a" })).rejects.toBeInstanceOf(RangeError);
+    for (const key of ["", ".", "..", Number.NaN, Number.POSITIVE_INFINITY]) {
+      await expect(items.patch(key, { name: "a" })).rejects.toBeInstanceOf(RangeError);
+    }
+    await expect(client(server.fetch).resource<WireStock, [string, string]>("stock").patch(["w1", ".."], { qty: 1 })).rejects.toBeInstanceOf(RangeError);
+    await expect(items.patch([] as unknown as string, { name: "a" })).rejects.toBeInstanceOf(RangeError);
+    await expect(items.patch({} as unknown as string, { name: "a" })).rejects.toBeInstanceOf(TypeError);
     await expect(items.patchMany([], { name: "a" })).rejects.toBeInstanceOf(RangeError);
     expect(server.calls).toHaveLength(0);
   });
@@ -787,8 +959,8 @@ describe("requests the server would misroute", () => {
 
 describe("validation before sending", () => {
   const facetServer = () => fakeServer(({ url }) => {
-    if (url.pathname.endsWith("/wire_parts/schema")) return json(wire.related["wire_parts"]);
-    if (url.pathname.endsWith("/schema")) return json(wire.schema);
+    if (url.pathname.endsWith("/wire_parts/schema")) return json(related["wire_parts"]);
+    if (url.pathname.endsWith("/schema")) return json(schema);
     return json({ facets: {} });
   });
 

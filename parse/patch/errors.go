@@ -1,6 +1,8 @@
 package patch
 
 import (
+	"errors"
+
 	"github.com/ashtonian/pkg/parse/core"
 )
 
@@ -26,10 +28,8 @@ const (
 	ECodeRelationValueInvalid   = core.CodeRelationValueInvalid
 	ECodeRelationPatchTooLarge  = core.CodeRelationPatchTooLarge
 
-	//  / P-13i — SQL-compilation refusals, in the parse gap
-	// E2068-E2069.
-	ECodeTestOpSQL        = core.CodeTestOpSQL
-	ECodeSQLColumnMissing = core.CodeSQLColumnMissing
+	// SQL-compilation refusals of an operation the parser accepted.
+	ECodeTestOpSQL = core.CodeTestOpSQL
 
 	// an accepted operation BuildPatchSQL cannot express
 	// (move, copy, a nested JSON Pointer path) is rejected, never skipped.
@@ -44,6 +44,12 @@ func Codes() []core.Code {
 		ECodePatchPolicyForbidden, ECodePatchPolicyValue,
 		ECodeInvalidJSON,
 		ECodeRelationVerbNotAllowed, ECodeRelationValueInvalid, ECodeRelationPatchTooLarge,
-		ECodeTestOpSQL, ECodeSQLColumnMissing, ECodeOpNotSQLCompilable,
+		ECodeTestOpSQL, ECodeOpNotSQLCompilable,
 	}
 }
+
+// ErrSQLColumnMissing is a patch schema path, neither a relation nor a
+// column, that an operation names: BuildPatchSQL cannot compile it and never
+// uses the request's path as a SQL identifier. The schema is the server's,
+// so it is no ParseError; give the path its SQLColumn.
+var ErrSQLColumnMissing = errors.New("patch: the schema path has no SQL column")

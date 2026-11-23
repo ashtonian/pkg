@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"maps"
 	"net/netip"
 	"os"
@@ -74,15 +75,20 @@ func TestLoad_SourcePrecedence(t *testing.T) {
 	assert.Equal(t, layered{A: "defaults", B: "base", C: "file", D: "env", E: "override"}, *got)
 }
 
-// ctxProvider records the context its read was given.
+// ctxProvider records the context its read was given, running during
+// first.
 type ctxProvider struct {
-	got *context.Context
+	got    *context.Context
+	during func()
 }
 
 func (p ctxProvider) Read() (map[string]any, error) { return nil, errors.New("read without a context") }
 func (p ctxProvider) ReadBytes() ([]byte, error)    { return nil, errors.New("read without a context") }
 func (p ctxProvider) ReadContext(ctx context.Context) (map[string]any, error) {
 	*p.got = ctx
+	if p.during != nil {
+		p.during()
+	}
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
@@ -92,21 +98,20 @@ func (p ctxProvider) ReadBytesContext(context.Context) ([]byte, error) {
 	return nil, errors.New("not used")
 }
 
-// A ContextProvider is read with the load's context, so a cancelled load
-// stops its read.
+// A ContextProvider is read with the load's context, so a load cancelled
+// during the read stops it.
 func TestLoad_ContextProviderGetsTheLoadContext(t *testing.T) {
 	type key struct{}
 	var got context.Context
 	ctx := context.WithValue(t.Context(), key{}, "load")
-	cfg, err := Load[layered](ctx, WithBaseProvider(ctxProvider{&got}, nil), WithSkipValidation())
+	cfg, err := Load[layered](ctx, WithBaseProvider(ctxProvider{got: &got}, nil), WithSkipValidation())
 	require.NoError(t, err)
 	assert.Equal(t, "remote", cfg.A)
 	require.NotNil(t, got)
 	assert.Equal(t, "load", got.Value(key{}))
 
 	cancelled, cancel := context.WithCancel(t.Context())
-	cancel()
-	_, err = Load[layered](cancelled, WithOverrideProvider(ctxProvider{&got}, nil), WithSkipValidation())
+	_, err = Load[layered](cancelled, WithOverrideProvider(ctxProvider{got: &got, during: cancel}, nil), WithSkipValidation())
 	require.ErrorIs(t, err, ErrSource)
 	assert.ErrorIs(t, err, context.Canceled)
 }
@@ -591,4 +596,603 @@ func TestSources_TypedMapReplacesWhateverItHolds(t *testing.T) {
 			assert.Equal(t, []string{"b"}, slices.Sorted(maps.Keys(got.Servers)), "the typed map replaces SetDefaults' entries")
 		})
 	}
+}
+
+type editDefaulted struct {
+	editConfig `koanf:",squash"`
+}
+
+func (c *editDefaulted) SetDefaults() {
+	c.Addresses = map[string]editServer{"first": {"a", 1}, "second": {"b", 2}}
+	c.Primary = editServer{"p", 5}
+}
+
+// A typed map or section a source sets replaces what the layers beneath it
+// set; a higher source then sets one key of it as it sets one key of a
+// nested map, and the entries and fields it does not name keep their values.
+func TestSources_HigherSourceSetsOneKeyOfATypedValue(t *testing.T) {
+	file := filepath.Join(t.TempDir(), "config.yaml")
+	writeFile(t, file, "addresses: {first: {port: 9}}\nprimary: {port: 6}\n")
+	typed := map[string]any{"addresses": map[string]editServer{"first": {"a", 1}, "second": {"b", 2}}, "primary": editServer{"p", 5}}
+	provider, err := NewMapProvider(func(context.Context) (map[string]any, error) { return typed, nil }, "")
+	require.NoError(t, err)
+	want := editConfig{Addresses: map[string]editServer{"first": {"a", 9}, "second": {"b", 2}}, Primary: editServer{"p", 6}}
+	for name, load := range map[string]func() (*editConfig, error){
+		"WithDefaults": func() (*editConfig, error) {
+			return Load[editConfig](t.Context(), WithDefaults(typed), WithFile(file))
+		},
+		"SetDefaults": func() (*editConfig, error) {
+			got, err := Load[editDefaulted](t.Context(), WithFile(file))
+			if err != nil {
+				return nil, err
+			}
+			return &got.editConfig, nil
+		},
+		"base provider": func() (*editConfig, error) {
+			return Load[editConfig](t.Context(), WithBaseProvider(provider, nil), WithFile(file))
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			got, err := load()
+			require.NoError(t, err)
+			assert.Equal(t, want, *got)
+		})
+	}
+	snap, err := LoadSnapshot[editConfig](t.Context(), WithDefaults(typed), WithFile(file))
+	require.NoError(t, err)
+	assert.Equal(t, SourceFile, snap.Provenance[`addresses["first"].port`].Input.Kind)
+	assert.Equal(t, SourceDefaults, snap.Provenance[`addresses["first"].host`].Input.Kind)
+	assert.Equal(t, SourceDefaults, snap.Provenance[`addresses["second"].port`].Input.Kind)
+	assert.Empty(t, snap.Shadowed, "the file replaced no input")
+}
+
+type sectionBase struct {
+	Host string `koanf:"host"`
+}
+
+type privatelySquashed struct {
+	sectionBase `koanf:",squash"`
+	Port        int `koanf:"port"`
+}
+
+// A typed section carries the fields a private squashed struct promotes.
+func TestSources_TypedSectionKeepsPrivatelySquashedFields(t *testing.T) {
+	type cfg struct {
+		Section privatelySquashed `koanf:"section"`
+	}
+	got, err := Load[cfg](t.Context(), WithDefaults(map[string]any{"section": privatelySquashed{sectionBase{"h"}, 1}}))
+	require.NoError(t, err)
+	assert.Equal(t, privatelySquashed{sectionBase{"h"}, 1}, got.Section)
+}
+
+type portServers struct {
+	Ports map[int]editServer `koanf:"ports"`
+}
+
+type portServersDefaulted struct {
+	Ports map[int]editServer `koanf:"ports"`
+}
+
+func (c *portServersDefaulted) SetDefaults() {
+	c.Ports = map[int]editServer{80: {"a", 1}, 443: {"b", 2}}
+}
+
+// An integer-keyed map merges by key whichever default layer set it: a
+// higher source or a key edit sets one entry's key, and the other entries
+// and fields keep their values.
+func TestSources_IntegerKeyedMapMergesFromEveryDefaultLayer(t *testing.T) {
+	file := filepath.Join(t.TempDir(), "config.yaml")
+	writeFile(t, file, "ports: {80: {port: 9}}\n")
+	typed := map[string]any{"ports": map[int]editServer{80: {"a", 1}, 443: {"b", 2}}}
+	want := map[int]editServer{80: {"a", 9}, 443: {"b", 2}}
+	for name, load := range map[string]func() (map[int]editServer, error){
+		"WithDefaults and a file": func() (map[int]editServer, error) {
+			got, err := Load[portServers](t.Context(), WithDefaults(typed), WithFile(file))
+			if err != nil {
+				return nil, err
+			}
+			return got.Ports, nil
+		},
+		"SetDefaults and a file": func() (map[int]editServer, error) {
+			got, err := Load[portServersDefaulted](t.Context(), WithFile(file))
+			if err != nil {
+				return nil, err
+			}
+			return got.Ports, nil
+		},
+		"WithDefaults and a key edit": func() (map[int]editServer, error) {
+			got, err := DecodeKey[portServers](t.Context(), `ports["80"].port`, 9, WithDefaults(typed))
+			if err != nil {
+				return nil, err
+			}
+			return got.Ports, nil
+		},
+		"SetDefaults and a key edit": func() (map[int]editServer, error) {
+			got, err := DecodeKey[portServersDefaulted](t.Context(), `ports["80"].port`, 9)
+			if err != nil {
+				return nil, err
+			}
+			return got.Ports, nil
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			got, err := load()
+			require.NoError(t, err)
+			assert.Equal(t, want, got)
+		})
+	}
+}
+
+type ownTextKeys struct {
+	Timeouts map[time.Duration]string `koanf:"timeouts"`
+	Levels   map[slog.Level]string    `koanf:"levels"`
+}
+
+// A map keyed by a named type — one with text methods, such as slog.Level,
+// or time.Duration — loads from a typed default with its own keys, and a
+// higher source replaces it whole: a caller's decode hook may read such a
+// key its own way, which no text written for it would survive.
+func TestSources_MapKeyedByATypeWithItsOwnTextStaysWhole(t *testing.T) {
+	typed := map[string]any{
+		"timeouts": map[time.Duration]string{time.Second: "s"},
+		"levels":   map[slog.Level]string{slog.LevelWarn: "w"},
+	}
+	want := ownTextKeys{Timeouts: map[time.Duration]string{time.Second: "s"}, Levels: map[slog.Level]string{slog.LevelWarn: "w"}}
+	for name, opt := range map[string]Option{
+		"WithDefaults":     WithDefaults(typed),
+		"WithBaseProvider": WithBaseProvider(mapSource(typed), nil),
+	} {
+		t.Run(name, func(t *testing.T) {
+			got, err := Load[ownTextKeys](t.Context(), opt)
+			require.NoError(t, err)
+			assert.Equal(t, want, *got)
+		})
+	}
+	file := filepath.Join(t.TempDir(), "config.yaml")
+	writeFile(t, file, "levels: {ERROR: e}\n")
+	got, err := Load[ownTextKeys](t.Context(), WithDefaults(typed), WithFile(file))
+	require.NoError(t, err)
+	assert.Equal(t, map[slog.Level]string{slog.LevelError: "e"}, got.Levels, "the file's map replaces the default's")
+	assert.Equal(t, want.Timeouts, got.Timeouts)
+}
+
+// paintColor is an integer a caller's decode hook reads from its name.
+type paintColor int
+
+const paintRed paintColor = 1
+
+// region is a string type of the caller's, decoded as its kind.
+type region string
+
+type namedKeys struct {
+	Names   map[paintColor]string `koanf:"names"`
+	Regions map[region]int        `koanf:"regions"`
+}
+
+// A map keyed by a named type keeps its own keys too, as a decode hook may
+// read the type's text its own way ("red" for paintRed, where its kind's
+// text is "1"): it loads from a typed default with those keys, and a higher
+// source replaces it whole.
+func TestSources_MapKeyedByANamedTypeStaysWhole(t *testing.T) {
+	byName := WithDecodeHook(func(from, to reflect.Type, data any) (any, error) {
+		if to != reflect.TypeFor[paintColor]() || from.Kind() != reflect.String {
+			return data, nil
+		}
+		if data == "red" {
+			return paintRed, nil
+		}
+		return nil, fmt.Errorf("no color named %q", data)
+	})
+	defaults := WithDefaults(map[string]any{
+		"names":   map[paintColor]string{paintRed: "r"},
+		"regions": map[region]int{"us": 1},
+	})
+	got, err := Load[namedKeys](t.Context(), byName, defaults)
+	require.NoError(t, err)
+	assert.Equal(t, map[paintColor]string{paintRed: "r"}, got.Names)
+	assert.Equal(t, map[region]int{"us": 1}, got.Regions)
+
+	file := filepath.Join(t.TempDir(), "config.yaml")
+	writeFile(t, file, "names: {red: x}\nregions: {eu: 2}\n")
+	got, err = Load[namedKeys](t.Context(), byName, defaults, WithFile(file))
+	require.NoError(t, err)
+	assert.Equal(t, map[paintColor]string{paintRed: "x"}, got.Names, "the file's map replaces the default's")
+	assert.Equal(t, map[region]int{"eu": 2}, got.Regions, "the file's map replaces the default's")
+}
+
+// readOnlyKey reads text but writes none, so a map keyed by it has no key
+// text to name an entry by.
+type readOnlyKey struct{ name string }
+
+func (k *readOnlyKey) UnmarshalText(b []byte) error {
+	if len(b) == 0 {
+		return errors.New("an empty name")
+	}
+	k.name = string(b)
+	return nil
+}
+
+type readOnlyKeys struct {
+	Readers map[readOnlyKey]string `koanf:"readers"`
+}
+
+// An entry whose key does not decode is named by the key as written where
+// the map's keys have text; a map whose keys have none is decoded whole,
+// and names itself and its type, never the entry.
+func TestSources_AnEntryThatDoesNotDecodeIsNamedWhereItCanBe(t *testing.T) {
+	file := filepath.Join(t.TempDir(), "config.yaml")
+	writeFile(t, file, "timeouts: {soon: hunter2}\n")
+	_, err := Load[ownTextKeys](t.Context(), WithFile(file))
+	require.ErrorIs(t, err, ErrValidation)
+	assert.Contains(t, err.Error(), `'timeouts["soon"]' time: invalid duration`)
+	assert.NotContains(t, err.Error(), "hunter2")
+
+	writeFile(t, file, "readers: {\"\": hunter2}\n")
+	_, err = Load[readOnlyKeys](t.Context(), WithFile(file))
+	require.ErrorIs(t, err, ErrValidation)
+	assert.Contains(t, err.Error(), "'readers' cannot be decoded into map[config.readOnlyKey]string: an entry's key or value does not decode")
+	assert.NotContains(t, err.Error(), "hunter2")
+}
+
+type unkeyedTarget struct{ Name string }
+
+type unkeyedBase struct {
+	Note string `koanf:"-"`
+}
+
+type unkeyedSection struct {
+	unkeyedBase `koanf:",squash"`
+	Host        string         `koanf:"host"`
+	Hook        string         `koanf:"-"`
+	Target      *unkeyedTarget `koanf:"-"`
+	Call        func() string  `koanf:"-"`
+}
+
+type unkeyedConfig struct {
+	Section unkeyedSection            `koanf:"section"`
+	Ptr     *unkeyedSection           `koanf:"ptr"`
+	ByName  map[string]unkeyedSection `koanf:"by_name"`
+	ByPort  map[int]unkeyedSection    `koanf:"by_port"`
+	List    []unkeyedSection          `koanf:"list"`
+}
+
+// unkeyedOf is a section whose every field, keyed or not, names host.
+func unkeyedOf(host string) unkeyedSection {
+	section := unkeyedSection{
+		unkeyedBase: unkeyedBase{Note: "note " + host}, Host: host, Hook: "hook " + host,
+		Target: &unkeyedTarget{Name: "target " + host}, Call: func() string { return "call " + host },
+	}
+	return section
+}
+
+// assertUnkeyedKept asserts got holds want's koanf:"-" fields and host.
+func assertUnkeyedKept(t *testing.T, want, got unkeyedSection, host string) {
+	t.Helper()
+	assert.Equal(t, host, got.Host)
+	assert.Equal(t, want.Note, got.Note)
+	assert.Equal(t, want.Hook, got.Hook)
+	assert.Equal(t, want.Target, got.Target)
+	require.NotNil(t, got.Call)
+	assert.Equal(t, want.Call(), got.Call())
+}
+
+// A typed section's exported koanf:"-" fields, which no key reaches, keep
+// what the source that set the section holds, copied: alone, behind a
+// pointer, in a map or a list, and through a squashed struct. A higher
+// source that sets keys inside the section keeps them; one that replaces
+// the section, or what holds it, drops them with the section's keys.
+func TestSources_TypedSectionKeepsItsUnkeyedFields(t *testing.T) {
+	section, kept := unkeyedOf, assertUnkeyedKept
+	defaults := WithDefaults(map[string]any{
+		"section": section("a"),
+		"ptr":     new(section("b")),
+		"by_name": map[string]unkeyedSection{"c": section("c")},
+		"by_port": map[int]unkeyedSection{80: section("d")},
+		"list":    []unkeyedSection{section("e")},
+	})
+
+	got, err := Load[unkeyedConfig](t.Context(), defaults)
+	require.NoError(t, err)
+	kept(t, section("a"), got.Section, "a")
+	require.NotNil(t, got.Ptr)
+	kept(t, section("b"), *got.Ptr, "b")
+	kept(t, section("c"), got.ByName["c"], "c")
+	kept(t, section("d"), got.ByPort[80], "d")
+	require.Len(t, got.List, 1)
+	kept(t, section("e"), got.List[0], "e")
+
+	got.Section.Target.Name = "changed"
+	again, err := Load[unkeyedConfig](t.Context(), defaults)
+	require.NoError(t, err)
+	assert.Equal(t, "target a", again.Section.Target.Name, "each load gets its own copy")
+
+	file := filepath.Join(t.TempDir(), "config.yaml")
+	writeFile(t, file, "section: {host: f}\nptr: {host: f}\nby_name: {c: {host: f}}\nby_port: {80: {host: f}}\n")
+	got, err = Load[unkeyedConfig](t.Context(), defaults, WithFile(file))
+	require.NoError(t, err)
+	kept(t, section("a"), got.Section, "f")
+	kept(t, section("b"), *got.Ptr, "f")
+	kept(t, section("c"), got.ByName["c"], "f")
+	kept(t, section("d"), got.ByPort[80], "f")
+
+	writeFile(t, file, "section: null\nby_name: {c: null}\nlist: [{host: f}]\n")
+	got, err = Load[unkeyedConfig](t.Context(), defaults, WithFile(file))
+	require.NoError(t, err)
+	assert.Equal(t, unkeyedSection{}, got.Section, "a section replaced keeps nothing of it")
+	assert.Equal(t, unkeyedSection{}, got.ByName["c"])
+	assert.Equal(t, []unkeyedSection{{Host: "f"}}, got.List, "a list replaced keeps nothing of its elements")
+	kept(t, section("d"), got.ByPort[80], "d")
+}
+
+type checkedSection struct {
+	Host string `koanf:"host" validate:"hostname"`
+	Hook string `koanf:"-"`
+}
+
+type checkedOuter struct {
+	Inner checkedSection `koanf:"inner"`
+	Port  int            `koanf:"port" validate:"max=100"`
+}
+
+type checkedUnkeyedConfig struct {
+	Section checkedSection `koanf:"section"`
+	Outer   checkedOuter   `koanf:"outer"`
+}
+
+// A provider's typed section keeps its koanf:"-" fields as a default's does:
+// a higher file setting one key inside it keeps them, and a higher
+// provider's typed section replaces them with its own.
+func TestSources_ProviderTypedSectionKeepsItsUnkeyedFields(t *testing.T) {
+	provider := func(host string) mapSource {
+		source := mapSource{"section": unkeyedOf(host), "by_name": map[string]unkeyedSection{"c": unkeyedOf(host)}}
+		return source
+	}
+	file := filepath.Join(t.TempDir(), "config.yaml")
+	writeFile(t, file, "section: {host: f}\nby_name: {c: {host: f}}\n")
+	got, err := Load[unkeyedConfig](t.Context(), WithBaseProvider(provider("p"), nil), WithFile(file))
+	require.NoError(t, err)
+	assertUnkeyedKept(t, unkeyedOf("p"), got.Section, "f")
+	assertUnkeyedKept(t, unkeyedOf("p"), got.ByName["c"], "f")
+
+	got, err = Load[unkeyedConfig](t.Context(), WithDefaults(map[string]any{"section": unkeyedOf("d")}), WithOverrideProvider(provider("o"), nil))
+	require.NoError(t, err)
+	assertUnkeyedKept(t, unkeyedOf("o"), got.Section, "o")
+}
+
+// Under WithInvalidEntries a provider's tree is rebuilt from the entries the
+// filter keeps, and a typed section is one entry: kept, its koanf:"-"
+// fields apply, also beneath a key of a higher file and beside an entry the
+// filter withholds; withheld, they do not, and the section beneath it stays
+// in force with its own.
+func TestSources_WithheldEntriesKeepUnkeyedFieldsOfTheSectionsKept(t *testing.T) {
+	defaults := WithDefaults(map[string]any{
+		"section": checkedSection{Host: "d.example", Hook: "default"},
+		"outer":   map[string]any{"inner": checkedSection{Host: "d.example", Hook: "default inner"}},
+	})
+	load := func(t *testing.T, data mapSource, opts ...Option) (*checkedUnkeyedConfig, []KeyError) {
+		t.Helper()
+		var rejected []KeyError
+		got, err := Load[checkedUnkeyedConfig](t.Context(), append([]Option{defaults,
+			WithBaseProvider(data, nil, WithInvalidEntries(func(_ context.Context, entries []KeyError) error {
+				rejected = entries
+				return nil
+			}))}, opts...)...)
+		require.NoError(t, err)
+		return got, rejected
+	}
+	t.Run("kept, a higher file sets a key inside it", func(t *testing.T) {
+		file := filepath.Join(t.TempDir(), "config.yaml")
+		writeFile(t, file, "section: {host: f.example}\n")
+		got, rejected := load(t, mapSource{"section": checkedSection{Host: "p.example", Hook: "provider"}}, WithFile(file))
+		assert.Empty(t, rejected)
+		assert.Equal(t, checkedSection{Host: "f.example", Hook: "provider"}, got.Section)
+	})
+	t.Run("kept beside a withheld entry", func(t *testing.T) {
+		got, rejected := load(t, mapSource{"outer": map[string]any{"inner": checkedSection{Host: "p.example", Hook: "provider inner"}, "port": 500}})
+		require.Len(t, rejected, 1)
+		assert.Equal(t, "outer.port", rejected[0].Key)
+		assert.Equal(t, checkedOuter{Inner: checkedSection{Host: "p.example", Hook: "provider inner"}}, got.Outer)
+	})
+	t.Run("withheld", func(t *testing.T) {
+		got, rejected := load(t, mapSource{"section": checkedSection{Host: "not a host!", Hook: "invalid"}})
+		require.Len(t, rejected, 1)
+		assert.Equal(t, "section", rejected[0].Key)
+		assert.Equal(t, checkedSection{Host: "d.example", Hook: "default"}, got.Section)
+	})
+}
+
+// A higher source adds and changes entries of a typed default map but
+// removes none; the documented ways to narrow one hold.
+func TestSources_NarrowingATypedDefaultMap(t *testing.T) {
+	type cfg struct {
+		Origins map[string]bool `koanf:"origins"`
+		List    []string        `koanf:"list"`
+	}
+	defaults := WithDefaults(map[string]any{"origins": map[string]bool{"*": true}, "list": []string{"*"}})
+	load := func(t *testing.T, bodies ...string) *cfg {
+		t.Helper()
+		dir := t.TempDir()
+		var files []string
+		for i, body := range bodies {
+			f := filepath.Join(dir, fmt.Sprintf("%d.yaml", i))
+			writeFile(t, f, body)
+			files = append(files, f)
+		}
+		got, err := Load[cfg](t.Context(), defaults, WithFiles(files...))
+		require.NoError(t, err)
+		return got
+	}
+	t.Run("an entry merges", func(t *testing.T) {
+		assert.Equal(t, map[string]bool{"*": true, "example.com": true}, load(t, "origins: {example.com: true}\n").Origins)
+	})
+	t.Run("null keeps the key at its zero value", func(t *testing.T) {
+		assert.Equal(t, map[string]bool{"*": false, "example.com": true}, load(t, "origins: {'*': null, example.com: true}\n").Origins)
+	})
+	t.Run("a list replaces whole", func(t *testing.T) {
+		assert.Equal(t, []string{"example.com"}, load(t, "list: [example.com]\n").List)
+	})
+	t.Run("null beneath a narrowed map", func(t *testing.T) {
+		assert.Equal(t, map[string]bool{"example.com": true}, load(t, "origins: null\n", "origins: {example.com: true}\n").Origins)
+	})
+}
+
+// A stored entry whose value is a typed section keeps the section's
+// koanf:"-" fields as a provider's does, under a higher file's key too.
+func TestSources_EntryTypedSectionKeepsItsUnkeyedFields(t *testing.T) {
+	file := filepath.Join(t.TempDir(), "config.yaml")
+	writeFile(t, file, "section: {host: f}\n")
+	stored := WithBaseEntries(func(context.Context) (map[string]any, error) {
+		entries := map[string]any{"section": unkeyedOf("e"), `by_name["c"]`: unkeyedOf("e")}
+		return entries, nil
+	})
+	got, err := Load[unkeyedConfig](t.Context(), stored, WithFile(file))
+	require.NoError(t, err)
+	assertUnkeyedKept(t, unkeyedOf("e"), got.Section, "f")
+	assertUnkeyedKept(t, unkeyedOf("e"), got.ByName["c"], "e")
+}
+
+// startsOnRead is an empty provider that runs start as it is read.
+type startsOnRead func()
+
+func (s startsOnRead) Read() (map[string]any, error) { s(); return map[string]any{}, nil }
+func (startsOnRead) ReadBytes() ([]byte, error)      { return nil, errors.New("startsOnRead: use Read") }
+
+// A typed section's koanf:"-" fields are copied as its source is read: a
+// provider whose data changes once its read returns changes nothing in the
+// config, and the load does not race with the change.
+func TestSources_UnkeyedFieldsAreCopiedAsTheSourceIsRead(t *testing.T) {
+	shared := &unkeyedSection{Host: "h", Hook: "hook h", Target: &unkeyedTarget{Name: "target h"}}
+	stop, started, done := make(chan struct{}), make(chan struct{}), make(chan struct{})
+	mutate := startsOnRead(func() {
+		go func() {
+			defer close(done)
+			for i := 0; ; i++ {
+				shared.Hook = fmt.Sprint("hook ", i)
+				shared.Target.Name = fmt.Sprint("target ", i)
+				if i == 0 {
+					close(started)
+				}
+				select {
+				case <-stop:
+					return
+				default:
+				}
+			}
+		}()
+		<-started
+	})
+	got, err := Load[unkeyedConfig](t.Context(), WithBaseProvider(mapSource{"ptr": shared}, nil), WithBaseProvider(mutate, nil))
+	close(stop)
+	<-done
+	require.NoError(t, err)
+	require.NotNil(t, got.Ptr)
+	assert.Equal(t, "hook h", got.Ptr.Hook)
+	require.NotNil(t, got.Ptr.Target)
+	assert.Equal(t, "target h", got.Ptr.Target.Name)
+	assert.NotSame(t, shared.Target, got.Ptr.Target)
+}
+
+// A load reads every source before it merges any, so a WithInvalidEntries
+// report runs once the last source is read.
+func TestSources_EverySourceIsReadBeforeAnyMerges(t *testing.T) {
+	var events []string
+	reading := func(name string, data map[string]any) func(context.Context) (map[string]any, error) {
+		return func(context.Context) (map[string]any, error) {
+			events = append(events, "read "+name)
+			return data, nil
+		}
+	}
+	above, err := NewMapProvider(reading("override", map[string]any{"name": "above"}), "")
+	require.NoError(t, err)
+	got, err := Load[cancelJudgedCfg](t.Context(),
+		WithBaseEntries(reading("base", map[string]any{"port": 0, "name": "below"}), WithInvalidEntries(func(context.Context, []KeyError) error {
+			events = append(events, "report base")
+			return nil
+		})),
+		WithOverrideProvider(above, nil))
+	require.NoError(t, err)
+	assert.Equal(t, cancelJudgedCfg{Port: 5, Name: "above"}, *got)
+	assert.Equal(t, []string{"read base", "read override", "report base"}, events)
+}
+
+type mergeServer struct {
+	Host string `koanf:"host"`
+	Port int    `koanf:"port"`
+}
+
+type mergeCfg struct {
+	Labels  map[string]int `koanf:"labels"`
+	Section mergeServer    `koanf:"section"`
+}
+
+type droppedTagEntry struct {
+	Labels map[string]int `koanf:"labels" default:"a=1,b=2"`
+}
+
+func (c *droppedTagEntry) SetDefaults() { c.Labels = map[string]int{"c": 3} }
+
+type namedDroppedTagEntry struct {
+	Added   map[region]int `koanf:"added" default:"us=1"`
+	Dropped map[region]int `koanf:"dropped" default:"us=1,eu=2"`
+}
+
+func (c *namedDroppedTagEntry) SetDefaults() {
+	c.Added["ap"] = 3
+	c.Dropped = map[region]int{"ap": 3}
+}
+
+// What a higher source sets key by key merges into a typed map or section
+// beneath it; a typed value, or a variable that sets the whole map, replaces
+// it whole. A Defaulter's string-keyed map that drops an entry its tag sets
+// replaces the tag's map, and a higher source then merges into it.
+func TestSources_WhatMergesIntoATypedMapOrSection(t *testing.T) {
+	defaults := WithDefaults(map[string]any{
+		"labels":  map[string]int{"a": 1},
+		"section": mergeServer{Host: "h", Port: 1},
+	})
+	env := func(vars ...string) []Option {
+		opts := []Option{WithEnvPrefix("APP"), WithEnviron(func() []string { return vars })}
+		return opts
+	}
+	for _, tc := range []struct {
+		name    string
+		opts    []Option
+		labels  map[string]int
+		section mergeServer
+	}{
+		{"variables naming keys merge", env("APP_LABELS_D=4", "APP_SECTION_PORT=9"),
+			map[string]int{"a": 1, "d": 4}, mergeServer{Host: "h", Port: 9}},
+		{"an override's map merges", []Option{WithOverrideProvider(mapSource{
+			"labels": map[string]any{"d": 4}, "section": map[string]any{"port": 9},
+		}, nil)}, map[string]int{"a": 1, "d": 4}, mergeServer{Host: "h", Port: 9}},
+		{"a variable setting the whole map replaces it", env("APP_LABELS=d=4"),
+			map[string]int{"d": 4}, mergeServer{Host: "h", Port: 1}},
+		{"an override's typed values replace them", []Option{WithOverrideProvider(mapSource{
+			"labels": map[string]int{"d": 4}, "section": mergeServer{Port: 9},
+		}, nil)}, map[string]int{"d": 4}, mergeServer{Port: 9}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := Load[mergeCfg](t.Context(), append([]Option{defaults}, tc.opts...)...)
+			require.NoError(t, err)
+			assert.Equal(t, tc.labels, got.Labels)
+			assert.Equal(t, tc.section, got.Section)
+		})
+	}
+
+	file := filepath.Join(t.TempDir(), "config.yaml")
+	writeFile(t, file, "labels: {d: 4}\n")
+	got, err := Load[droppedTagEntry](t.Context())
+	require.NoError(t, err)
+	assert.Equal(t, map[string]int{"c": 3}, got.Labels, "the Defaulter's map replaces the tag's")
+	got, err = Load[droppedTagEntry](t.Context(), WithFile(file))
+	require.NoError(t, err)
+	assert.Equal(t, map[string]int{"c": 3, "d": 4}, got.Labels, "a file merges into it")
+
+	// Keyed by a named type, the map a Defaulter only adds to still merges
+	// entry by entry; one that drops a tag's entry keeps its own keys.
+	writeFile(t, file, "added: {sa: 4}\ndropped: {sa: 4}\n")
+	named, err := Load[namedDroppedTagEntry](t.Context(), WithFile(file))
+	require.NoError(t, err)
+	assert.Equal(t, map[region]int{"us": 1, "ap": 3, "sa": 4}, named.Added)
+	assert.Equal(t, map[region]int{"sa": 4}, named.Dropped, "a file replaces it whole")
 }

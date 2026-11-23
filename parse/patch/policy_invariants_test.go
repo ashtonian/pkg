@@ -32,9 +32,9 @@ func parseOps(t *testing.T, schema *patch.PatchSchema, body string) *patch.Parse
 	return parsed
 }
 
-// TestCopyFromForbiddenPath: a copy whose from is a policy-forbidden path
-// must be rejected — previously only move checked From, so copy exfiltrated
-// protected values into readable fields.
+// TestCopyFromForbiddenPath: a copy whose from is a policy-forbidden path is
+// refused, as a move's is: otherwise it would copy a protected value into a
+// readable field.
 func TestCopyFromForbiddenPath(t *testing.T) {
 	pc := mustPolicy(t, patch.ForbidPaths("/secret_ref"))
 	parsed := parseOps(t, p2Schema(), `[{"op":"copy","from":"/secret_ref","path":"/notes"}]`)
@@ -188,8 +188,8 @@ func TestForbiddenSubtreeCoversItsRoot(t *testing.T) {
 	assert.NoError(t, patch.ApplyPatchPolicyConstraints(parseWrites(t, false, `[{"op":"replace","path":"/other","value":{}}]`), pc, nil))
 }
 
-// TestValidatorsRunOnExplicitNull: a replace carrying an explicit null
-// previously skipped field validators entirely.
+// TestValidatorsRunOnExplicitNull: a replace carrying an explicit null runs
+// the field's validators like any other value.
 func TestValidatorsRunOnExplicitNull(t *testing.T) {
 	rejectNil := func(v any) error {
 		if v == nil {

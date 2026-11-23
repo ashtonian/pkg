@@ -144,6 +144,34 @@ func (s *PatchSchema) Paths() iter.Seq2[string, *PathSchema] {
 	}
 }
 
+// Clone returns a deep copy of the schema: it parses as s does, and its
+// paths can be added to or changed without changing s. Validators are
+// shared.
+func (s *PatchSchema) Clone() *PatchSchema {
+	if s == nil {
+		return nil
+	}
+	out := &PatchSchema{Resource: s.Resource, MaxOperations: s.MaxOperations, MaxRelationValues: s.MaxRelationValues}
+	set := s.pathSet()
+	next := &pathSet{byKey: make(map[string]*PathSchema, len(set.byKey)), patterns: slices.Clone(set.patterns)}
+	for key, ps := range set.byKey {
+		next.byKey[key] = ps.clone()
+	}
+	out.paths.Store(next)
+	return out
+}
+
+func (p *PathSchema) clone() *PathSchema {
+	out := *p
+	out.AllowedOps = slices.Clone(p.AllowedOps)
+	out.Validators = slices.Clone(p.Validators)
+	out.EnumValues = slices.Clone(p.EnumValues)
+	out.Bounds = p.Bounds.Clone()
+	out.Relation = p.Relation.Clone()
+	out.RelationKey = slices.Clone(p.RelationKey)
+	return &out
+}
+
 // pathSet is the schema's current paths; none for a zero PatchSchema.
 func (s *PatchSchema) pathSet() *pathSet {
 	if set := s.paths.Load(); set != nil {
@@ -223,10 +251,16 @@ type PathSchema struct {
 	// than a scalar column. When set, BuildPatchSQL emits
 	// junction INSERT/DELETE statements into PatchSQLResult.RelationOps
 	// instead of touching SQLColumn (which is "" for relation paths).
-	// AllowedOps for a relation path is the relation-verb subset
-	// (replace / add / remove); RFC 6902's move/copy/test are rejected
-	// at validation with E2117.
+	// AllowedOps for a generated relation path is the relation-verb subset
+	// (replace / add / remove), so the parser refuses RFC 6902's
+	// move/copy/test there (E2064); BuildPatchSQL refuses one a hand-built
+	// schema allows (E2117).
 	Relation *core.RelationSchema
+	// RelationKey are a membership path's target key columns when the key
+	// has several (RelationPath): each key is a JSON array of a value per
+	// column, normalized to a core.Key. A one-column key's type is GoType's
+	// element.
+	RelationKey []RelationKey
 }
 
 // Nullable reports whether the path accepts null: its Go type can hold
@@ -313,6 +347,12 @@ type ParsedPatch struct {
 	schema *PatchSchema
 	// policy is the policy ApplyPatchPolicyConstraints held the patch to.
 	policy *PatchPolicyConstraints
+}
+
+// ParsedFor reports whether a parser validated the patch against schema: a
+// resource applies and compiles only the patches it parsed.
+func (p *ParsedPatch) ParsedFor(schema *PatchSchema) bool {
+	return p != nil && schema != nil && p.schema == schema
 }
 
 // AuditInfo returns a map of audit-relevant information.

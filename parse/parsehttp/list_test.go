@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -23,9 +24,12 @@ type gadget struct {
 	Name string `json:"name" db:"name" parse:"filter,sort"`
 }
 
+// gadgets parses at a fixed instant, so two parses of one request are equal:
+// a list request records the instant its relative times resolve at.
 func gadgets(t *testing.T) *parse.Resource[gadget] {
 	t.Helper()
-	r, err := parse.NewResource[gadget]("gadgets", parse.AcceptParams("tenant"))
+	clock := func() time.Time { return time.Date(2026, 10, 14, 12, 0, 0, 0, time.UTC) }
+	r, err := parse.NewResource[gadget]("gadgets", parse.AcceptParams("tenant"), parse.ParserOptions(core.WithClock(clock)))
 	require.NoError(t, err)
 	return r
 }
@@ -75,4 +79,32 @@ func TestParseList_Refusals(t *testing.T) {
 			assert.Equal(t, tt.param, pe.Details["parameter"])
 		})
 	}
+}
+
+// A query string that does not decode is refused whole as E2067, on every
+// transport: url.URL.Query would drop the pair and keep the rest, and a list
+// that named a filter would answer every row.
+func TestParseList_AQueryStringThatDoesNotDecode(t *testing.T) {
+	res := gadgets(t)
+	for _, target := range []string{
+		"/gadgets?name=%zz",
+		"/gadgets?name=a%",
+		"/gadgets?name=a;x=1",
+		"/gadgets?filter=%7B%22name%22%3A%22a%22%7D%",
+		"/gadgets?tenant=%zz",
+	} {
+		for _, method := range []string{http.MethodGet, http.MethodHead, http.MethodPost} {
+			r := httptest.NewRequest(method, target, strings.NewReader(`{"filter":{"name":"a"}}`))
+			r.Header.Set("Content-Type", "application/json")
+			_, err := parsehttp.ParseList(r, res)
+			require.ErrorIs(t, err, filter.ECodeInvalidListParam, "%s %s", method, target)
+			assert.ErrorContains(t, err, "the query string does not decode", "%s %s", method, target)
+		}
+		_, err := parsehttp.Query(httptest.NewRequest(http.MethodPatch, target, nil))
+		assert.ErrorIs(t, err, filter.ECodeInvalidListParam, target)
+	}
+
+	q, err := parsehttp.Query(httptest.NewRequest(http.MethodGet, "/gadgets?name=a&name=b&filter=%7B%7D", nil))
+	require.NoError(t, err)
+	assert.Equal(t, map[string][]string{"name": {"a", "b"}, "filter": {"{}"}}, map[string][]string(q))
 }

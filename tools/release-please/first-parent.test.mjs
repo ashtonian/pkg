@@ -196,6 +196,82 @@ test("a merge takes its branch's highest type, so the release it calls for stays
   }
 });
 
+// summary describes a merge's whole branch, every path, as the plugin reads it.
+const summary = (types, breaking = false) => ({ shas: [], types, breaking });
+
+// One pull request batches a breaking core change, a fix to one sub-module
+// and a test of another: each path counts the change made there.
+test('in a path where its branch is complete, a merge counts as the change made there', () => {
+  const subject = 'feat(httpx)!: batch (#355)';
+  const branches = new Map([['m1', summary(['feat', 'fix', 'test'], true)]]);
+  const cases = [
+    { name: 'the breaking core change', branch: commit('b1', 'feat(httpx)!: negotiate codecs'), type: 'feat', breaking: true },
+    { name: "a sub-module's fix", branch: commit('b2', 'fix(httpx/codec/proto): decode pointers'), type: 'fix', breaking: false },
+    { name: "a sub-module's test", branch: commit('b3', 'test(httpx/oauth2): check the README'), type: 'test', breaking: false },
+  ];
+  for (const tc of cases) {
+    const [kept] = keep([commit('m1', subject), tc.branch], { m1: [subject, 'b1', 'b2', 'b3'] }, {
+      options: { complete: new Set(['m1']), branches },
+    });
+    assert.equal(kept.type, tc.type, tc.name);
+    assert.equal(kept.breaking, tc.breaking, tc.name);
+    assert.equal(kept.notes.some(n => n.title === 'BREAKING CHANGE'), tc.breaking, `${tc.name}: breaking notes`);
+    // conventional-changelog adds a breaking note for a "!" in the header.
+    assert.equal(kept.message, tc.breaking ? subject : 'feat(httpx): batch (#355)', `${tc.name}: header`);
+  }
+});
+
+test('an equal rank keeps the subject type, and its changelog section', () => {
+  const subject = 'fix(parse): faster rows (#264)';
+  const [kept] = keep([commit('m1', subject), commit('b1', 'perf(parse): reuse buffers')], { m1: [subject, 'b1'] }, {
+    options: { complete: new Set(['m1']), branches: new Map([['m1', summary(['perf'])]]) },
+  });
+  assert.equal(kept.type, 'fix');
+});
+
+// The subject claims more than any branch commit does, so the branch commits
+// are not the whole record: the subject stays a floor wherever it is listed.
+test('a subject its branch does not back stays a floor in a complete path', () => {
+  const subject = 'feat(parse)!: stream rows (#9)';
+  const tested = commit('b1', 'test(parse): cover streaming');
+  const run = branches => keep([commit('m1', subject), tested], { m1: [subject, 'b1'] }, { options: { complete: new Set(['m1']), branches } })[0];
+
+  const unmarked = run(new Map([['m1', summary(['feat', 'test'])]]));
+  assert.equal(unmarked.type, 'test', 'a feature commit elsewhere backs the type');
+  assert.equal(unmarked.breaking, true, 'no breaking commit backs the "!"');
+  assert.equal(unmarked.message, subject);
+
+  const noFeature = run(new Map([['m1', summary(['fix', 'test'], true)]]));
+  assert.equal(noFeature.type, 'feat', 'no feature commit backs the type');
+  assert.equal(noFeature.breaking, false);
+});
+
+// release-please drops a branch commit it cannot parse, so its merge's entry
+// lacks that commit's type, notes and references; a merge whose own pull
+// request sets an override is read as the override instead.
+test('a merge missing what release-please cannot read of a branch commit is named', () => {
+  const subject = 'feat(parse)!: refuse repeated cursor members (#287)';
+  const problem = "release-please cannot parse it (unexpected token '(' at 4:19, valid tokens [)])";
+  const unreadable = [{ sha: 'b2', subject: 'fix(parse)!: read a BLOB as no decimal', problems: [problem] }];
+  const branches = new Map([['m1', { ...summary(['feat', 'fix'], true), unreadable }]]);
+  const own = { mergeCommitOid: 'm1', body: 'BEGIN_COMMIT_OVERRIDE\nfeat(parse)!: both\n\nBREAKING CHANGE: both breaks.\nEND_COMMIT_OVERRIDE' };
+  const cases = [
+    { name: 'the merge listed here', commits: [commit('m1', subject), commit('b1', 'feat(parse)!: refuse repeated members')], warned: 1 },
+    { name: 'only its branch commits listed here', commits: [commit('b1', 'feat(parse)!: refuse repeated members')], warned: 1 },
+    { name: "its own pull request's override", commits: [commit('m1', 'feat(parse)!: both', { pullRequest: own })], warned: 0 },
+    { name: 'another merge', commits: [commit('m2', 'fix(parse): close rows (#300)')], warned: 0 },
+  ];
+  for (const tc of cases) {
+    const warnings = [];
+    keep(tc.commits, { m1: [subject, 'b1', 'b2'], m2: ['fix(parse): close rows (#300)'] }, { options: { branches, warn: m => warnings.push(m) } });
+    const named = warnings.filter(m => m.includes('cannot read'));
+    assert.equal(named.length, tc.warned, tc.name);
+    if (tc.warned > 0) {
+      assert.equal(named[0], `m1 (${subject}) is missing what release-please cannot read of its branch commit b2 (fix(parse)!: read a BLOB as no decimal): ${problem}`, tc.name);
+    }
+  }
+});
+
 test('typeRanker follows changelog-sections', () => {
   const stock = typeRanker();
   assert.deepEqual(['feat', 'fix', 'perf', 'docs', 'chore', 'Co-authored-by'].map(stock), [2, 1, 1, 0, 0, 0]);
@@ -263,11 +339,39 @@ test('readHistory maps branch commits, sync merges included, to the merge that l
   git('switch', '-q', 'main');
   const landing = merge('feature', 'feat: the feature (#1)');
 
-  const { mergeOf, messageOf } = readHistory(work, 'HEAD');
+  const { mergeOf, messageOf, branchCommits } = readHistory(work, 'HEAD');
 
   assert.deepEqual(Object.fromEntries(mergeOf), { [b1]: landing, [sync]: landing, [b2]: landing });
   for (const mainline of [root, onMain, landing]) assert.equal(mergeOf.has(mainline), false);
   assert.deepEqual(Object.fromEntries(messageOf), { [landing]: 'feat: the feature (#1)' }, 'only first-parent merges have messages');
+  assert.deepEqual(Object.fromEntries(branchCommits), {
+    [b1]: { message: 'feat: on the branch', files: ['b'] },
+    [b2]: { message: 'feat: after the sync', files: ['d'] },
+  }, 'a sync merge makes no change of its own');
+});
+
+test("readHistory lists a branch commit's files, a rename's both paths", t => {
+  const { work, git, commitFile, merge } = scratchRepo(t);
+  commitFile('a', 'chore: root');
+  git('switch', '-q', '-c', 'feature');
+  fs.mkdirSync(path.join(work, 'one'));
+  fs.mkdirSync(path.join(work, 'two two'));
+  fs.writeFileSync(path.join(work, 'one', 'x.go'), 'package one\n'.repeat(20));
+  git('add', 'one/x.go');
+  const added = commitFile('one/y.go', 'feat(one): add');
+  git('mv', 'one/x.go', 'two two/x.go');
+  git('commit', '-q', '-m', 'refactor: move x');
+  const moved = git('rev-parse', 'HEAD');
+  git('commit', '-q', '--allow-empty', '-m', 'chore: empty');
+  const empty = git('rev-parse', 'HEAD');
+  git('switch', '-q', 'main');
+  merge('feature', 'feat: one (#2)');
+
+  const { branchCommits } = readHistory(work, 'HEAD');
+
+  assert.deepEqual(branchCommits.get(added).files.sort(), ['one/x.go', 'one/y.go']);
+  assert.deepEqual(branchCommits.get(moved).files.sort(), ['one/x.go', 'two two/x.go']);
+  assert.deepEqual(branchCommits.get(empty).files, []);
 });
 
 // A branch cut from another unmerged branch: the first merge claims the

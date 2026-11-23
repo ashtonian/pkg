@@ -337,3 +337,30 @@ func TestGet_SetsAcceptHeader(t *testing.T) {
 		t.Error("expected Accept header to be set")
 	}
 }
+
+// The origin declares more body than it sends. The status and headers
+// arrived, so the read error comes back with the response.
+func TestGet_ShortBodyKeepsTheResponse(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("X-Request-ID", "example-42")
+		w.Header().Set("Content-Length", "64")
+		fmt.Fprint(w, `{"id":1,`)
+	}))
+	defer srv.Close()
+
+	_, resp, err := httpx.Get[reqTestUser](ctx, srv.Client(), srv.URL)
+	if !errors.Is(err, io.ErrUnexpectedEOF) {
+		t.Fatalf("err = %v, want io.ErrUnexpectedEOF", err)
+	}
+	if resp == nil || resp.StatusCode != http.StatusOK || resp.Header.Get("X-Request-ID") != "example-42" {
+		t.Fatalf("response %+v", resp)
+	}
+	received, readErr := io.ReadAll(resp.Body)
+	if string(received) != `{"id":1,` || !errors.Is(readErr, io.ErrUnexpectedEOF) {
+		t.Fatalf("resp.Body reads %q, %v", received, readErr)
+	}
+	if err := resp.Body.Close(); err != nil {
+		t.Fatal(err)
+	}
+}

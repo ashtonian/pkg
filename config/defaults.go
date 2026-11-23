@@ -4,12 +4,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"reflect"
-	"slices"
 	"strings"
 	"sync"
 
 	"github.com/knadh/koanf/v2"
 
+	"github.com/ashtonian/pkg/config/internal/deepcopy"
 	"github.com/ashtonian/pkg/gowalker"
 )
 
@@ -93,14 +93,14 @@ func codeDefaults(t reflect.Type, schema *schemaNode, tags map[string]any, o *op
 		return nil, fmt.Errorf("decoding the default tags of %s for SetDefaults: %w: %w", gowalker.TypeText(t), ErrValidation, err)
 	}
 	after := reflect.New(t)
-	after.Elem().Set(deepCopy(before.Elem()))
+	after.Elem().Set(deepcopy.Value(before.Elem()))
 	run := &defaulterRun{path: map[reflect.Type]bool{}}
 	run.run(after.Elem())
 	run.release()
 	d := defaultsDiff{schema: schema}
 	tree, _ := d.tree(schema, nil, before.Elem(), after.Elem())
 	if len(d.noText) > 0 {
-		return nil, fmt.Errorf("SetDefaults of %s: %w: values that do not marshal to text: %s", gowalker.TypeText(t), ErrValidation, strings.Join(d.noText, ", "))
+		return nil, fmt.Errorf("SetDefaults of %s: %w: values that do not marshal to text: %s", gowalker.TypeText(t), ErrValidation, keyList(d.noText))
 	}
 	m, _ := tree.(map[string]any)
 	return m, nil
@@ -275,7 +275,7 @@ func (r *defaulterRun) release() {
 // defaultsDiff turns what SetDefaults changed into the code defaults layer.
 type defaultsDiff struct {
 	schema *schemaNode
-	noText []string // the keys of structs whose MarshalText failed; never the text
+	noText []keyPath // the keys of structs whose MarshalText failed; never the text
 }
 
 // tree is what b, the value of node n at key path at after SetDefaults,
@@ -310,6 +310,10 @@ func (d *defaultsDiff) tree(n *schemaNode, at keyPath, a, b reflect.Value) (any,
 		if b.IsNil() {
 			return nil, !absent(a) && !a.IsNil()
 		}
+		kt := n.typ.Key()
+		if kt.Kind() != reflect.String && !keysAsText(kt) {
+			return d.input(n, at, b), true // carried with its own keys, as a source carries it
+		}
 		if !absent(a) {
 			for it := a.MapRange(); it.Next(); {
 				if !b.MapIndex(it.Key()).IsValid() {
@@ -323,7 +327,7 @@ func (d *defaultsDiff) tree(n *schemaNode, at keyPath, a, b reflect.Value) (any,
 			if !absent(a) {
 				was = a.MapIndex(it.Key())
 			}
-			k := it.Key().String()
+			k := entryName(it.Key())
 			if child, ok := d.tree(n.elem, at.key(k), was, it.Value()); ok || !was.IsValid() {
 				out[k] = child
 			}
@@ -351,14 +355,12 @@ func absent(v reflect.Value) bool {
 
 // input is v, a value of node n at key path at, as merging carries it
 // intact (see merge_input.go): a struct the merge's copy would lose the state
-// of, such as netip.Addr, is its text wherever v holds it. A list holding one
-// becomes a []any; a map, a map[K]any — a wholeMap when keyed by strings, so
-// it still replaces what the layers beneath hold, as the typed map did; a
-// section, its fields by key. Anything else is v itself.
+// of, such as netip.Addr, is its text wherever v holds it. A list becomes a
+// []any; a map with elements of its own, the wholeMap textKeyedMap makes of
+// it, as a source's typed map is carried, or a map[K]any when its keys' text
+// would not decode back; a section, its fields by key. Anything else,
+// a map that decodes itself included, is v itself.
 func (d *defaultsDiff) input(n *schemaNode, at keyPath, v reflect.Value) any {
-	if !carriesText(n) {
-		return v.Interface()
-	}
 	v = derefValue(v)
 	if absent(v) {
 		return nil
@@ -383,14 +385,15 @@ func (d *defaultsDiff) input(n *schemaNode, at keyPath, v reflect.Value) any {
 			out[i] = d.input(n.elem, at.index(i), v.Index(i))
 		}
 		return out
-	case v.Kind() == reflect.Map:
+	case v.Kind() == reflect.Map && n.elem != nil:
+		m, ok := textKeyedMap(v, func(k string, e reflect.Value) any { return d.input(n.elem, at.key(k), e) })
+		if ok {
+			return m
+		}
 		out := reflect.MakeMapWithSize(reflect.MapOf(v.Type().Key(), reflect.TypeFor[any]()), v.Len())
 		for it := v.MapRange(); it.Next(); {
-			e := d.input(n.elem, at.key(fmt.Sprint(it.Key().Interface())), it.Value())
+			e := d.input(n.elem, at.key(entryName(it.Key())), it.Value())
 			out.SetMapIndex(it.Key(), reflect.ValueOf(&e).Elem())
-		}
-		if m, ok := out.Interface().(map[string]any); ok {
-			return wholeMap(m)
 		}
 		return out.Interface()
 	}
@@ -405,37 +408,7 @@ func (d *defaultsDiff) input(n *schemaNode, at keyPath, v reflect.Value) any {
 }
 
 func (d *defaultsDiff) failText(at keyPath) {
-	d.noText = append(d.noText, diagnosticPath(d.schema, at).orRoot())
-}
-
-// carriesText reports whether a value of node n can hold a struct that
-// marshals to text where it decodes whole, or in a field of interface type.
-func carriesText(n *schemaNode) bool {
-	if v, ok := carriesTextCache.Load(n.typ); ok {
-		return v.(bool)
-	}
-	carries := carriesTextOf(n, map[*schemaNode]bool{})
-	carriesTextCache.Store(n.typ, carries)
-	return carries
-}
-
-var carriesTextCache sync.Map // reflect.Type → bool
-
-func carriesTextOf(n *schemaNode, walking map[*schemaNode]bool) bool {
-	if walking[n] {
-		return false
-	}
-	walking[n] = true
-	defer delete(walking, n)
-	switch n.kind {
-	case nodeLeaf:
-		return n.typ.Kind() == reflect.Struct && marshalsText(n.typ) || n.elem != nil && carriesTextOf(n.elem, walking)
-	case nodeBranch:
-		return slices.ContainsFunc(n.fields, func(f *schemaField) bool { return carriesTextOf(f.node, walking) })
-	case nodeMap, nodeList:
-		return carriesTextOf(n.elem, walking)
-	}
-	return true // an interface can hold anything
+	d.noText = append(d.noText, diagnosticPath(d.schema, at))
 }
 
 type declaredDefaults struct {

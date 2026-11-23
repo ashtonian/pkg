@@ -34,8 +34,8 @@ func TestJSONDefaultOpsAndNinSymmetry(t *testing.T) {
 	if meta == nil {
 		t.Fatal("expected meta field in schema")
 	}
-	// Was silently empty (unfilterable) before P-13o; containment is
-	// portable since .
+	// A document field is filterable by default, containment included,
+	// which every backend answers alike.
 	for _, want := range []filter.FilterOperator{filter.OpEq, filter.OpNe, filter.OpContains, filter.OpExists, filter.OpNull} {
 		if !slices.Contains(meta.AllowedOperators, want) {
 			t.Errorf("JSON field missing default op %v; got %v", want, meta.AllowedOperators)
@@ -62,7 +62,7 @@ func TestGeo_ProgrammaticInvalidBoxRejected(t *testing.T) {
 		Name: "sites",
 		Fields: map[string]*filter.FieldSchema{
 			"location": {
-				ExternalName: "location", SQLExpr: "sites.location", DataType: core.FieldTypeGeo,
+				ExternalName: "location", Table: "sites", Column: "location", DataType: core.FieldTypeGeo,
 				AllowedOperators: []filter.FilterOperator{filter.OpWithin},
 				GeoConfig: &filter.GeoFieldConfig{
 					StorageType: filter.GeoStorageJSONB, SRID: 4326, LatKey: "lat", LonKey: "lon",
@@ -132,7 +132,7 @@ func TestRepeatedQueryParamsBecomeIn(t *testing.T) {
 	if !reflect.DeepEqual(res.Args, []any{[]string{"active", "inactive"}}) {
 		t.Fatalf("args = %#v; want both values bound as one set", res.Args)
 	}
-	if res.Where != "items.status = ANY($1)" {
+	if res.Where != `"items"."status" = ANY($1)` {
 		t.Errorf("WHERE %q; want = ANY over the set", res.Where)
 	}
 }
@@ -144,7 +144,7 @@ func TestFieldNamedLikeSuffixNotSplit(t *testing.T) {
 		Name: "items",
 		Fields: map[string]*filter.FieldSchema{
 			"email_like": {
-				ExternalName: "email_like", SQLExpr: "items.email_like", DataType: core.FieldTypeString,
+				ExternalName: "email_like", Table: "items", Column: "email_like", DataType: core.FieldTypeString,
 				AllowedOperators: []filter.FilterOperator{filter.OpEq},
 			},
 		},
@@ -166,7 +166,7 @@ func TestFieldNamedLikeSuffixNotSplit(t *testing.T) {
 // the user query — "50%" matched as a wildcard.
 func TestSearchFallbackEscapesLike(t *testing.T) {
 	schema := &filter.SearchSchema{
-		Fields: []filter.SearchField{{Name: "name", SQLExpr: "items.name"}},
+		Fields: []filter.SearchField{{Name: "name", Table: "items", Column: "name"}},
 	}
 	where, args, err := filter.AndSearch(schema, filter.SQLiteDialect{}, "TRUE", nil, 0, "50%_x")
 	if err != nil {
@@ -269,7 +269,7 @@ func TestErrorIndexZeroSurvivesWire(t *testing.T) {
 // search configuration name is accepted.
 func TestSearchLanguageMustBeIdentifier(t *testing.T) {
 	schema := &filter.SearchSchema{
-		Fields:   []filter.SearchField{{Name: "name", SQLExpr: "items.name"}},
+		Fields:   []filter.SearchField{{Name: "name", Table: "items", Column: "name"}},
 		Language: "english'); DROP TABLE items; --",
 	}
 	if _, _, err := filter.AndSearch(schema, filter.PostgresDialect{}, "TRUE", nil, 0, "q"); err == nil {

@@ -1,25 +1,22 @@
 package main
 
 import (
-	"bytes"
 	"context"
 	"database/sql"
-	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"log/slog"
 	"maps"
 	"net/http"
+	"net/url"
 	"slices"
-	"strconv"
+	"strings"
 	"time"
 
 	"github.com/ashtonian/pkg/parse"
-	"github.com/ashtonian/pkg/parse/core"
 	"github.com/ashtonian/pkg/parse/filter"
 	"github.com/ashtonian/pkg/parse/parsehttp"
-	"github.com/ashtonian/pkg/parse/patch"
+	"github.com/ashtonian/pkg/parse/parsesql"
 )
 
 // Product is the resource: its tags declare what clients may filter, sort,
@@ -34,6 +31,8 @@ type Product struct {
 }
 
 const (
+	// productsPath is the products collection; one product is below it.
+	productsPath    = "/api/products"
 	defaultPageSize = 25
 	maxPageSize     = 100
 	// maxPatchIDs bounds a batch patch as maxPageSize bounds a list page:
@@ -48,18 +47,21 @@ const (
 	codeBadRequest = "E4001"
 	codeNotFound   = "E4004"
 	codeInternal   = "E5001"
+	codeTimeout    = "E5004" // the request timeout expired
 )
 
 // server serves the routes the TypeScript SDK and parse/client call: lists
 // over GET and, for a filter too large for a URL, as a POST body to the same
 // path; OPTIONS facets; PATCH merge patches of one product or of the
 // products a batch's id[] keys name (through BuildUpdate); GET schema
-// discovery.
+// discovery of one resource or of all of them.
 type server struct {
 	db             *sql.DB
 	products       *parse.Resource[Product]
 	log            *slog.Logger
 	requestTimeout time.Duration
+	// report is the parsehttp hook every response is written with.
+	report parsehttp.Option
 }
 
 func newServer(db *sql.DB, log *slog.Logger, requestTimeout time.Duration) (http.Handler, error) {
@@ -71,23 +73,41 @@ func newServer(db *sql.DB, log *slog.Logger, requestTimeout time.Duration) (http
 		return nil, fmt.Errorf("products resource: %w", err)
 	}
 	reg := parse.NewSchemaRegistry()
-	if err := parse.Register[Product](reg); err != nil {
+	if err := parse.RegisterResource(reg, products); err != nil {
 		return nil, fmt.Errorf("schema registry: %w", err)
 	}
+	// A path segment per key column, so a resource keyed by several columns
+	// routes as products, keyed by id, do.
+	item, err := parsehttp.ItemPattern(products)
+	if err != nil {
+		return nil, fmt.Errorf("products item route: %w", err)
+	}
 	s := &server{db: db, products: products, log: log, requestTimeout: requestTimeout}
+	s.report = parsehttp.WithErrorHandler(s.responseFailed)
 	mux := http.NewServeMux()
-	mux.HandleFunc("GET /api/{resource}/schema", reg.SchemaHandler(parse.WithErrorHandler(s.responseFailed)))
-	mux.HandleFunc("GET /api/products", s.list)
-	mux.HandleFunc("POST /api/products", s.list)
-	mux.HandleFunc("OPTIONS /api/products", s.facets)
-	mux.HandleFunc("PATCH /api/products", s.patchMany)
-	mux.HandleFunc("PATCH /api/products/{id}", s.patch)
-	return mux, nil
+	mux.HandleFunc("GET /api/{resource}/schema", parsehttp.SchemaHandler(reg, s.report))
+	mux.HandleFunc("GET /api/schemas", parsehttp.SchemaListHandler(reg, s.report))
+	mux.HandleFunc("GET "+productsPath, s.list)
+	mux.HandleFunc("POST "+productsPath, s.list)
+	mux.HandleFunc("OPTIONS "+productsPath, s.facets)
+	mux.HandleFunc("PATCH "+productsPath, s.patchMany)
+	mux.HandleFunc("PATCH "+productsPath+"/"+item, s.patch)
+	return s.withDeadline(mux), nil
+}
+
+// withDeadline serves each request under the request timeout. The deadline
+// is on the request's context, so every query runs under it and fail can
+// tell a request that ran out of time, or whose client left, from a server
+// fault, whatever words the driver reports the interruption in.
+func (s *server) withDeadline(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		ctx, cancel := context.WithTimeout(r.Context(), s.requestTimeout)
+		defer cancel()
+		next.ServeHTTP(w, r.WithContext(ctx))
+	})
 }
 
 func (s *server) list(w http.ResponseWriter, r *http.Request) {
-	ctx, cancel := context.WithTimeout(r.Context(), s.requestTimeout)
-	defer cancel()
 	req, err := parsehttp.ParseList(r, s.products)
 	if err != nil {
 		s.fail(w, r, err)
@@ -98,56 +118,34 @@ func (s *server) list(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, r, err)
 		return
 	}
-	items, err := s.query(ctx, plan.Page.SQL, plan.Page.Args...)
+	page, err := parsesql.QueryPage(r.Context(), s.db, s.products, plan)
 	if err != nil {
 		s.fail(w, r, err)
 		return
-	}
-	page, err := s.products.Page(items, plan)
-	if err != nil {
-		s.fail(w, r, err)
-		return
-	}
-	if plan.Count != nil {
-		var total int64
-		if err = s.db.QueryRowContext(ctx, plan.Count.SQL, plan.Count.Args...).Scan(&total); err != nil {
-			s.fail(w, r, fmt.Errorf("count products: %w", err))
-			return
-		}
-		page.PageInfo.TotalCount = &total
-	}
-	if plan.Facets != nil {
-		page.Facets, err = s.facetCounts(ctx, plan.Facets)
-		if err != nil {
-			s.fail(w, r, err)
-			return
-		}
 	}
 	s.writeJSON(w, r, http.StatusOK, page)
 }
 
 func (s *server) facets(w http.ResponseWriter, r *http.Request) {
-	ctx, cancel := context.WithTimeout(r.Context(), s.requestTimeout)
-	defer cancel()
-	req, err := s.products.ParseList(r.URL.Query())
+	req, err := parsehttp.ParseFacets(r, s.products)
 	if err != nil {
 		s.fail(w, r, err)
 		return
 	}
-	plan, err := s.products.BuildList(filter.SQLiteDialect{}, req, parse.Scope{})
+	query, err := s.products.BuildFacets(filter.SQLiteDialect{}, req, parse.Scope{})
 	if err != nil {
 		s.fail(w, r, err)
 		return
 	}
 	counts := map[string][]filter.FacetBucket{}
-	if plan.Facets != nil {
-		counts, err = s.facetCounts(ctx, plan.Facets)
+	if query != nil {
+		counts, err = s.facetCounts(r.Context(), query)
 		if err != nil {
 			s.fail(w, r, err)
 			return
 		}
 	}
-	s.writeJSON(w, r, http.StatusOK, map[string]any{"facets": counts})
+	s.writeJSON(w, r, http.StatusOK, parsehttp.FacetsAnswer{Facets: counts})
 }
 
 func (s *server) facetCounts(ctx context.Context, query *filter.FacetQuery) (map[string][]filter.FacetBucket, error) {
@@ -167,43 +165,46 @@ func (s *server) facetCounts(ctx context.Context, query *filter.FacetQuery) (map
 	return counts, nil
 }
 
-// patchResult answers a patch, as the SDK's PatchResult reads it.
-type patchResult struct {
-	Updated []Product   `json:"updated"`
-	Failed  []itemError `json:"failed,omitempty"`
-}
-
-// itemError is one key of a batch patch that updated no row.
-type itemError struct {
-	ID    string `json:"id"`
-	Code  string `json:"code"`
-	Error string `json:"error"`
-}
-
+// patch applies a merge patch to the product its item route's key names, a
+// path segment per key column.
 func (s *server) patch(w http.ResponseWriter, r *http.Request) {
-	if s.refuseParams(w, r) {
+	if _, ok := s.patchQuery(w, r); !ok {
 		return
 	}
-	id := r.PathValue("id")
-	items, err := s.update(w, r, parse.ByID(id))
+	// The key as the path spells it, each segment still escaped, so a key
+	// of several columns reads back unambiguously.
+	item := strings.TrimPrefix(r.URL.EscapedPath(), productsPath+"/")
+	notFound := parsehttp.Body{Code: codeNotFound, Message: "product " + item + " not found"}
+	key, err := parsehttp.ItemKey(r, s.products)
+	if errors.Is(err, parse.ErrKeyInvalid) {
+		// No product has a key its columns cannot hold.
+		s.writeJSON(w, r, http.StatusNotFound, notFound)
+		return
+	}
+	if err != nil {
+		s.fail(w, r, err)
+		return
+	}
+	items, err := s.update(r, parse.ByKey(key))
 	if err != nil {
 		s.fail(w, r, err)
 		return
 	}
 	if len(items) == 0 {
-		s.writeJSON(w, r, http.StatusNotFound, parsehttp.Body{Code: codeNotFound, Message: "product " + id + " not found"})
+		s.writeJSON(w, r, http.StatusNotFound, notFound)
 		return
 	}
-	s.writeJSON(w, r, http.StatusOK, patchResult{Updated: items})
+	s.writeJSON(w, r, http.StatusOK, parsehttp.PatchAnswer[Product]{Updated: items})
 }
 
 // patchMany applies one merge patch to the products its id[] keys name. A
 // key with no product is a failed item, not a failed request.
 func (s *server) patchMany(w http.ResponseWriter, r *http.Request) {
-	if s.refuseParams(w, r, "id[]") {
+	q, ok := s.patchQuery(w, r, "id[]")
+	if !ok {
 		return
 	}
-	ids := r.URL.Query()["id[]"]
+	ids := q["id[]"]
 	if len(ids) == 0 || len(ids) > maxPatchIDs {
 		s.writeJSON(w, r, http.StatusBadRequest, parsehttp.Body{
 			Code:    codeBadRequest,
@@ -215,15 +216,12 @@ func (s *server) patchMany(w http.ResponseWriter, r *http.Request) {
 	for i, id := range ids {
 		keys[i] = id
 	}
-	items, err := s.update(w, r, parse.ByIDs(keys...))
+	items, err := s.update(r, parse.ByIDs(keys...))
 	if err != nil {
 		s.fail(w, r, err)
 		return
 	}
-	res := patchResult{Updated: items}
-	if res.Updated == nil {
-		res.Updated = []Product{}
-	}
+	res := parsehttp.PatchAnswer[Product]{Updated: items}
 	updated := make(map[string]bool, len(items))
 	for _, p := range items {
 		updated[p.ID] = true
@@ -231,87 +229,85 @@ func (s *server) patchMany(w http.ResponseWriter, r *http.Request) {
 	for _, id := range ids {
 		if !updated[id] {
 			updated[id] = true // a key named twice fails once
-			res.Failed = append(res.Failed, itemError{ID: id, Code: codeNotFound, Error: "product " + id + " not found"})
+			res.Failed = append(res.Failed, parsehttp.PatchFailure{ID: id, Code: codeNotFound, Error: "product " + id + " not found"})
 		}
 	}
 	s.writeJSON(w, r, http.StatusOK, res)
 }
 
-// refuseParams answers 400 for a query parameter the route does not read,
-// and reports whether it did. A patch that ignored one, a filter meant to
-// narrow it, would write rows the client did not mean to.
-func (s *server) refuseParams(w http.ResponseWriter, r *http.Request, accepted ...string) bool {
-	q := r.URL.Query()
+// patchQuery decodes a patch route's query string, which names only the
+// accepted parameters, and reports whether the request may proceed; it has
+// answered the request when it may not. A query string that does not decode
+// is refused whole, and so is a parameter the route does not read: a patch
+// that ignored one, a filter meant to narrow it, would write rows the client
+// did not mean to.
+func (s *server) patchQuery(w http.ResponseWriter, r *http.Request, accepted ...string) (url.Values, bool) {
+	q, err := parsehttp.Query(r)
+	if err != nil {
+		s.fail(w, r, err)
+		return nil, false
+	}
 	names := slices.Sorted(maps.Keys(q))
 	i := slices.IndexFunc(names, func(name string) bool { return !slices.Contains(accepted, name) })
 	if i < 0 {
-		return false
+		return q, true
 	}
 	s.writeJSON(w, r, http.StatusBadRequest, parsehttp.Body{
 		Code:    codeBadRequest,
 		Message: fmt.Sprintf("%s %s reads no %q parameter", r.Method, r.URL.Path, names[i]),
 	})
-	return true
+	return nil, false
 }
 
 // update applies the request's merge patch to target's products and returns
-// the rows it updated.
-func (s *server) update(w http.ResponseWriter, r *http.Request, target parse.Target) ([]Product, error) {
-	ctx, cancel := context.WithTimeout(r.Context(), s.requestTimeout)
-	defer cancel()
-	body, err := readBody(w, r)
+// the rows the target matched, as the update left them: those it wrote, and
+// those a patch of what they already hold or an empty patch left.
+func (s *server) update(r *http.Request, target parse.Target) ([]Product, error) {
+	parsed, err := parsehttp.ParsePatch(r, s.products)
 	if err != nil {
 		return nil, err
 	}
-	parsed, err := s.products.ParseMergePatch(body)
-	if err != nil {
-		return nil, err
-	}
-	// Product declares no relations, so the owner statement is the whole
-	// update: UPDATE … RETURNING, or a scoped read for an empty patch.
 	plan, err := s.products.BuildUpdate(filter.SQLiteDialect{}, parsed, target, parse.Scope{})
 	if err != nil {
 		return nil, err
 	}
-	items, err := s.query(ctx, plan.Owner.SQL, plan.Owner.Args...)
+	res, err := parsesql.Update(r.Context(), s.db, s.products, plan)
 	if err != nil {
-		return nil, fmt.Errorf("update products: %w", err)
+		return nil, err
 	}
-	return items, nil
-}
-
-func (s *server) query(ctx context.Context, q string, args ...any) (_ []Product, err error) {
-	rows, err := s.db.QueryContext(ctx, q, args...)
-	if err != nil {
-		return nil, fmt.Errorf("query products: %w", err)
-	}
-	defer func() { err = errors.Join(err, rows.Close()) }()
-	var out []Product
-	for rows.Next() {
-		var p Product
-		var labels, created string
-		if err = rows.Scan(&p.ID, &p.Name, &p.Category, &p.Price, &labels, &created); err != nil {
-			return nil, fmt.Errorf("scan product: %w", err)
-		}
-		if err = json.Unmarshal([]byte(labels), &p.Labels); err != nil {
-			return nil, fmt.Errorf("product %s labels: %w", p.ID, err)
-		}
-		if p.CreatedAt, err = time.Parse(time.RFC3339Nano, created); err != nil {
-			return nil, fmt.Errorf("product %s created_at: %w", p.ID, err)
-		}
-		out = append(out, p)
-	}
-	return out, rows.Err()
+	return slices.Concat(res.Changed, res.Unchanged), nil
 }
 
 // fail answers a parse error with its E-code and the status the code
-// carries; anything else is logged and answered as a 500 without internals.
+// carries. Otherwise the request's context says why the work stopped: a
+// request that ran out of time is 504, and one whose client left gets no
+// answer, since no one reads it; neither is a server fault. A body the
+// client did not finish sending is a bad request. Anything else is logged
+// and answered as a 500 without internals.
 func (s *server) fail(w http.ResponseWriter, r *http.Request, err error) {
-	if parsehttp.WriteError(w, err, parsehttp.WithErrorHandler(func(err error) { s.responseFailed(r, err) })) {
+	if parsehttp.WriteError(w, r, err, s.report) {
 		return
 	}
-	s.log.ErrorContext(r.Context(), "request failed", slog.String("method", r.Method), slog.String("path", r.URL.Path), slog.Any("error", err))
-	s.writeJSON(w, r, http.StatusInternalServerError, parsehttp.Body{Code: codeInternal, Message: "internal error"})
+	ctx := r.Context()
+	attrs := []any{slog.String("method", r.Method), slog.String("path", r.URL.Path), slog.Any("error", err)}
+	switch {
+	case errors.Is(ctx.Err(), context.Canceled):
+		s.log.DebugContext(ctx, "request cancelled", attrs...)
+	case errors.Is(ctx.Err(), context.DeadlineExceeded):
+		s.log.WarnContext(ctx, "request deadline exceeded", attrs...)
+		s.writeJSON(w, r, http.StatusGatewayTimeout, parsehttp.Body{Code: codeTimeout, Message: "the request did not finish within its deadline"})
+	case isBodyReadError(err):
+		s.log.WarnContext(ctx, "reading request body", attrs...)
+		s.writeJSON(w, r, http.StatusBadRequest, parsehttp.Body{Code: codeBadRequest, Message: "the request body could not be read"})
+	default:
+		s.log.ErrorContext(ctx, "request failed", attrs...)
+		s.writeJSON(w, r, http.StatusInternalServerError, parsehttp.Body{Code: codeInternal, Message: "internal error"})
+	}
+}
+
+func isBodyReadError(err error) bool {
+	_, ok := errors.AsType[*parse.BodyReadError](err)
+	return ok
 }
 
 // responseFailed logs what a response could not carry: a schema document
@@ -325,32 +321,14 @@ func (s *server) responseFailed(r *http.Request, err error) {
 	s.log.Log(r.Context(), level, "writing response", slog.String("method", r.Method), slog.String("path", r.URL.Path), slog.Any("error", err))
 }
 
-const maxBody = 64 << 10
-
-func readBody(w http.ResponseWriter, r *http.Request) ([]byte, error) {
-	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxBody))
-	if err != nil {
-		return nil, &core.ParseError{Kind: core.ParseErrorKindPatch, Code: patch.ECodeInvalidJSON.String(), Message: "reading body: " + err.Error()}
-	}
-	return body, nil
-}
-
-// writeJSON encodes v before writing anything, so a value that cannot be
-// encoded is answered 500 rather than as status with an empty body. parse's
-// own handlers do the same through internal/httpjson; this example keeps to
-// parse's public API, as the servers that copy it must.
+// writeJSON answers v, or 500 when v cannot be encoded: parsehttp.WriteJSON
+// writes nothing until the whole body is encoded.
 func (s *server) writeJSON(w http.ResponseWriter, r *http.Request, status int, v any) {
-	var buf bytes.Buffer
-	if err := json.NewEncoder(&buf).Encode(v); err != nil {
-		s.log.ErrorContext(r.Context(), "encoding response", slog.String("method", r.Method), slog.String("path", r.URL.Path), slog.Any("error", err))
-		// A Body of two strings always encodes, so this recursion ends.
-		s.writeJSON(w, r, http.StatusInternalServerError, parsehttp.Body{Code: codeInternal, Message: "internal error"})
+	err := parsehttp.WriteJSON(w, r, status, v, s.report)
+	if err == nil {
 		return
 	}
-	w.Header().Set("Content-Type", "application/json")
-	w.Header().Set("Content-Length", strconv.Itoa(buf.Len()))
-	w.WriteHeader(status)
-	if _, err := w.Write(buf.Bytes()); err != nil {
-		s.responseFailed(r, err)
-	}
+	s.log.ErrorContext(r.Context(), "encoding response", slog.String("method", r.Method), slog.String("path", r.URL.Path), slog.Any("error", err))
+	// A Body without details always encodes.
+	_ = parsehttp.WriteJSON(w, r, http.StatusInternalServerError, parsehttp.Body{Code: codeInternal, Message: "internal error"}, s.report)
 }

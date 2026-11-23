@@ -28,12 +28,8 @@ func (p *FilterParser) parseRelated(field *FieldSchema, op FilterOperator, value
 	if field.Relation == nil || field.Related == nil {
 		return nil, invalidRelation(field, "has no target resource to filter")
 	}
-	if p.relDepth >= MaxRelationDepth {
-		return nil, &core.ParseError{
-			Kind: core.ParseErrorKindFilter, Code: ECodeDepthExceeded.String(),
-			Message: fmt.Sprintf("relation predicates nest at most %d deep", MaxRelationDepth),
-			Details: map[string]any{core.DetailField: field.ExternalName},
-		}
+	if err := p.nestRelation(field); err != nil {
+		return nil, err
 	}
 	obj, ok := value.(map[string]any)
 	if !ok {
@@ -55,25 +51,58 @@ func (p *FilterParser) parseRelated(field *FieldSchema, op FilterOperator, value
 	return node, nil
 }
 
+// nestRelation refuses a relation predicate on field past MaxRelationDepth:
+// one nests a level below the predicates enclosing this parser.
+func (p *FilterParser) nestRelation(field *FieldSchema) error {
+	if p.relDepth < MaxRelationDepth {
+		return nil
+	}
+	return &core.ParseError{
+		Kind: core.ParseErrorKindFilter, Code: ECodeDepthExceeded.String(),
+		Message: fmt.Sprintf("relation predicates nest at most %d deep", MaxRelationDepth),
+		Details: map[string]any{core.DetailField: field.ExternalName},
+	}
+}
+
+// relatedShorthand is the request's key comparison on a relation as the
+// predicate it abbreviates (the package's relatedShorthand), held to
+// MaxRelationDepth as `$some` is: the predicate nests a level, however
+// short its spelling.
+func (p *FilterParser) relatedShorthand(n *FilterNode) (*FilterNode, error) {
+	if n.Field != nil && n.Field.Relation != nil {
+		if err := p.nestRelation(n.Field); err != nil {
+			return nil, err
+		}
+	}
+	return relatedShorthand(n)
+}
+
 // relatedShorthand turns a key comparison on a relation with a target
 // resource into the relation predicate it abbreviates: `x` / `$in` are
 // `$some` with the target key equal to / among the values, `$ne` / `$nin`
 // the matching `$none`, `$null: true` no visible related row and
 // `$null: false` some. A relation compared by key alone is returned as is.
+// A target key of several columns takes only the NULL tests: a comparison
+// names one value.
 func relatedShorthand(n *FilterNode) (*FilterNode, error) {
 	f := n.Field
 	if f == nil || f.Relation == nil || f.Related == nil {
 		return n, nil
-	}
-	key, err := relatedKey(f)
-	if err != nil {
-		return nil, err
 	}
 	switch n.Op {
 	case OpNull:
 		return &FilterNode{Field: f, Op: OpNone}, nil
 	case OpNotNull:
 		return &FilterNode{Field: f, Op: OpSome}, nil
+	}
+	if len(f.Relation.TargetColumns) != 1 {
+		return nil, invalidRelation(f, fmt.Sprintf("compares a key of several columns, which $%s cannot name; filter its target with $some", n.Op))
+	}
+	key, err := relatedKeyField(f, 0)
+	if err != nil {
+		return nil, err
+	}
+	switch n.Op {
 	case OpEq, OpIn:
 		return &FilterNode{Field: f, Op: OpSome, Children: []*FilterNode{{Field: key, Op: n.Op, Value: n.Value}}}, nil
 	case OpNe:
@@ -84,12 +113,16 @@ func relatedShorthand(n *FilterNode) (*FilterNode, error) {
 	return nil, invalidRelation(f, fmt.Sprintf("does not compare its key with $%s", n.Op))
 }
 
-// relatedKey is the target key's field in the target's schema.
-func relatedKey(f *FieldSchema) (*FieldSchema, error) {
+// relatedKeyField is the field, in the target's schema, of the target key
+// column TargetColumns[i] holds.
+func relatedKeyField(f *FieldSchema, i int) (*FieldSchema, error) {
 	rel := f.Relation
-	name := rel.TargetColumn
+	if f.Related == nil {
+		return nil, invalidRelation(f, "has no target resource to type its key")
+	}
+	name := rel.TargetColumns[i]
 	if rel.TargetTable != "" {
-		name = rel.TargetKey
+		name = rel.TargetKeys[i]
 	}
 	if k, ok := f.Related.SystemFields[name]; ok {
 		return k, nil

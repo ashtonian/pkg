@@ -1,7 +1,7 @@
 // Package client builds requests in parse's grammar from Go: filters, sort
-// orders, list parameters, merge-patch members and JSON Patch operations. It
-// imports only the standard library, so an SDK built on it depends on no
-// server code.
+// orders, list parameters, a row's item path (ItemPath), merge-patch members
+// and JSON Patch operations. It imports only the standard library, so an SDK
+// built on it depends on no server code.
 //
 // A catalog of typed fields per resource, usually generated, names the
 // fields and fixes their operand types, so a misspelt field or an operand of

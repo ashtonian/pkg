@@ -88,9 +88,7 @@ func TestDeclaredRelations_Writes_Postgres(t *testing.T) {
 		_, err := db.Exec(stmt)
 		require.NoError(t, err, stmt)
 	}
-	runRelationWrites(t, relationResources(t), filter.PostgresDialect{}, func(t *testing.T, q string, args []any) [][]any {
-		return queryRows(t, db, q, args)
-	})
+	runRelationWrites(t, relationResources(t), filter.PostgresDialect{}, db)
 }
 
 func TestElementPredicates_Postgres(t *testing.T) {

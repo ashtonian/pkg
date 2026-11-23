@@ -33,6 +33,9 @@ func TestSQLTextValuesSQL(t *testing.T) {
 			ddl: `CREATE TABLE network_events (id TEXT PRIMARY KEY, at TEXT, retention TEXT, actor_ip TEXT, network TEXT, device TEXT,
 				allowed_ips TEXT, spans TEXT)`,
 			array: func(items ...string) any {
+				if items == nil {
+					return nil
+				}
 				b, _ := json.Marshal(items) // a []string always marshals
 				return string(b)
 			},
@@ -82,15 +85,7 @@ func TestSQLTextValuesSQL(t *testing.T) {
 				require.NoError(t, err)
 				plan, err := resource.BuildList(backend.dialect, query, parse.Scope{})
 				require.NoError(t, err)
-				rows, err := db.Query(plan.Page.SQL, plan.Page.Args...)
-				require.NoError(t, err)
-				defer rows.Close()
-				var found []networkEvent
-				for rows.Next() {
-					found = append(found, scanNetworkEvent(t, rows))
-				}
-				require.NoError(t, rows.Err())
-				return found
+				return resourceRows(t, db, resource, backend.dialect, plan.Page)
 			}
 			ids := func(filterJSON string) []string {
 				t.Helper()
@@ -140,69 +135,22 @@ func TestSQLTextValuesSQL(t *testing.T) {
 			wire, err = json.Marshal(ordered[2])
 			require.NoError(t, err)
 			assert.JSONEq(t, `{"id":"c","at":"23:59:59.999999","retention":"P1DT-1H","actor_ip":"192.168.0.5/24","network":"192.168.0.0/24",
-				"device":null,"allowed_ips":[],"spans":[]}`, string(wire))
+				"device":null,"allowed_ips":null,"spans":null}`, string(wire))
 
 			patch, err := resource.ParseMergePatch([]byte(`{"at":"07:15:00.250000","retention":"PT90M","actor_ip":"::ffff:10.0.0.9",
 				"network":"10.1.0.0/16","device":"0800.2b01.0205","allowed_ips":["2001:0db8:0:0:0:0:0:2"],"spans":["P1W","PT3600S"]}`))
 			require.NoError(t, err)
 			update, err := resource.BuildUpdate(backend.dialect, patch, parse.ByID("b"), parse.Scope{})
 			require.NoError(t, err)
-			rows, err := db.Query(update.Owner.SQL, update.Owner.Args...)
-			require.NoError(t, err)
-			require.True(t, rows.Next())
-			updated := scanNetworkEvent(t, rows)
-			require.NoError(t, rows.Close())
-			wire, err = json.Marshal(updated)
+			updated := resourceRows(t, db, resource, backend.dialect, update.Owner)
+			require.Len(t, updated, 1)
+			wire, err = json.Marshal(updated[0])
 			require.NoError(t, err)
 			assert.JSONEq(t, `{"id":"b","at":"07:15:00.25","retention":"PT1H30M","actor_ip":"::ffff:10.0.0.9","network":"10.1.0.0/16",
 				"device":"08:00:2b:01:02:05","allowed_ips":["2001:db8::2"],"spans":["P7D","PT1H"]}`, string(wire))
 			assert.Equal(t, []string{"b"}, ids(`{"retention":"PT90M"}`), "the patch stored the canonical text")
 		})
 	}
-}
-
-// scanNetworkEvent scans a row read through the resource's Columns; the
-// array column is read as text and decoded.
-func scanNetworkEvent(t *testing.T, rows *sql.Rows) networkEvent {
-	t.Helper()
-	var row networkEvent
-	var allowed, spans sql.NullString
-	require.NoError(t, rows.Scan(&row.ID, &row.At, &row.Retention, &row.ActorIP, &row.Network, &row.Device, &allowed, &spans))
-	row.AllowedIPs = []core.Inet{}
-	for _, text := range arrayElements(t, allowed.String) {
-		var ip core.Inet
-		require.NoError(t, ip.Scan(text))
-		row.AllowedIPs = append(row.AllowedIPs, ip)
-	}
-	row.Spans = []core.Interval{}
-	for _, text := range arrayElements(t, spans.String) {
-		var span core.Interval
-		require.NoError(t, span.Scan(text))
-		row.Spans = append(row.Spans, span)
-	}
-	return row
-}
-
-// arrayElements reads a JSON array (SQLite) or a PostgreSQL array literal of
-// unquoted elements, as abbrev() writes addresses.
-func arrayElements(t *testing.T, text string) []string {
-	t.Helper()
-	if text == "" || text == "{}" {
-		return nil
-	}
-	var items []string
-	if json.Unmarshal([]byte(text), &items) == nil {
-		return items
-	}
-	require.True(t, len(text) > 1 && text[0] == '{' && text[len(text)-1] == '}', text)
-	start := 1
-	for i := 1; i < len(text); i++ {
-		if text[i] == ',' || i == len(text)-1 {
-			items = append(items, text[start:i])
-			start = i + 1
-		}
-	}
-	return items
 }
 
 // placeholders is n bind parameters in the dialect's syntax.

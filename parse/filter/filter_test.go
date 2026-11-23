@@ -3,6 +3,7 @@
 package filter_test
 
 import (
+	"errors"
 	"net/url"
 	"strings"
 	"testing"
@@ -19,32 +20,32 @@ import (
 func testSchema() *filter.ResourceSchema {
 	return &filter.ResourceSchema{
 		Name:       "items",
-		PrimaryKey: "id",
+		PrimaryKey: []string{"id"},
 		Fields: map[string]*filter.FieldSchema{
 			"status": {
-				ExternalName: "status", SQLExpr: "items.status", DataType: core.FieldTypeString,
+				ExternalName: "status", Table: "items", Column: "status", DataType: core.FieldTypeString,
 				AllowedOperators: []filter.FilterOperator{filter.OpEq, filter.OpNe, filter.OpIn},
 				EnumValues:       []string{"active", "inactive", "suspended"},
 			},
 			"name": {
-				ExternalName: "name", SQLExpr: "items.name", DataType: core.FieldTypeString,
+				ExternalName: "name", Table: "items", Column: "name", DataType: core.FieldTypeString,
 				AllowedOperators: []filter.FilterOperator{filter.OpEq, filter.OpLike, filter.OpILike},
 			},
 			"count": {
-				ExternalName: "count", SQLExpr: "items.count", DataType: core.FieldTypeInt,
+				ExternalName: "count", Table: "items", Column: "count", DataType: core.FieldTypeInt,
 				AllowedOperators: []filter.FilterOperator{filter.OpEq, filter.OpGt, filter.OpLt, filter.OpGte, filter.OpLte},
 			},
 			"created_at": {
-				ExternalName: "created_at", SQLExpr: "items.created_at", DataType: core.FieldTypeTimestamp,
+				ExternalName: "created_at", Table: "items", Column: "created_at", DataType: core.FieldTypeTimestamp,
 				AllowedOperators: []filter.FilterOperator{filter.OpGt, filter.OpLt, filter.OpGte, filter.OpLte},
 				Indexed:          true,
 			},
 		},
 		SystemFields: map[string]*filter.FieldSchema{
-			"id": {ExternalName: "id", SQLExpr: "items.id", Column: "id", DataType: core.FieldTypeString,
+			"id": {ExternalName: "id", Table: "items", Column: "id", DataType: core.FieldTypeString,
 				AllowedOperators: []filter.FilterOperator{filter.OpEq, filter.OpIn}},
 			"tenant_id": {
-				ExternalName: "tenant_id", SQLExpr: "items.tenant_id", DataType: core.FieldTypeString,
+				ExternalName: "tenant_id", Table: "items", Column: "tenant_id", DataType: core.FieldTypeString,
 				AllowedOperators: []filter.FilterOperator{filter.OpEq},
 			},
 		},
@@ -54,8 +55,8 @@ func testSchema() *filter.ResourceSchema {
 func testSortSchema() *filter.SortSchema {
 	return &filter.SortSchema{
 		Fields: map[string]*filter.SortFieldSchema{
-			"name":       {SQLExpr: "items.name"},
-			"created_at": {SQLExpr: "items.created_at", Indexed: true},
+			"name":       {Table: "items", Column: "name"},
+			"created_at": {Table: "items", Column: "created_at", Indexed: true},
 		},
 		DefaultField: "created_at",
 		DefaultDir:   filter.SortDesc,
@@ -76,8 +77,8 @@ func TestFilterParser_SimpleEq(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.Where != "items.status = $1" {
-		t.Errorf("expected items.status = $1, got %q", result.Where)
+	if result.Where != `"items"."status" = $1` {
+		t.Errorf(`expected "items"."status" = $1, got %q`, result.Where)
 	}
 	if len(result.Args) != 1 || result.Args[0] != "active" {
 		t.Errorf("expected [active], got %v", result.Args)
@@ -114,7 +115,7 @@ func TestFilterParser_InOperator(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	assert.Equal(t, "items.status = ANY($1)", result.Where)
+	assert.Equal(t, `"items"."status" = ANY($1)`, result.Where)
 	assert.Equal(t, []any{[]string{"active", "inactive"}}, result.Args, "the set binds as one parameter")
 }
 
@@ -193,7 +194,7 @@ func TestParseSort_Explicit(t *testing.T) {
 		t.Errorf("expected desc for created_at")
 	}
 	sql := sr.ToSQL(filter.PostgresDialect{})
-	if sql != "ORDER BY items.name ASC, items.created_at DESC" {
+	if sql != `ORDER BY "items"."name" ASC, "items"."created_at" DESC` {
 		t.Errorf("unexpected SQL: %q", sql)
 	}
 }
@@ -221,7 +222,7 @@ func TestQueryParamParser_SimpleEq(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(result.Where, "items.status = $1") {
+	if !strings.Contains(result.Where, `"items"."status" = $1`) {
 		t.Errorf("expected eq condition, got %q", result.Where)
 	}
 }
@@ -253,7 +254,7 @@ func TestQueryParamParser_InSuffix(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	assert.Equal(t, "items.status = ANY($1)", result.Where)
+	assert.Equal(t, `"items"."status" = ANY($1)`, result.Where)
 }
 
 func TestQueryParamParser_IgnoresReserved(t *testing.T) {
@@ -279,7 +280,7 @@ func TestListQuery_Basic(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(result.Where, "items.status = $1") {
+	if !strings.Contains(result.Where, `"items"."status" = $1`) {
 		t.Errorf("expected filter, got %q", result.Where)
 	}
 	if !strings.Contains(result.OrderBy, "DESC") {
@@ -316,7 +317,7 @@ func TestListQuery_WithCount(t *testing.T) {
 func testSearchSchema() *filter.SearchSchema {
 	return &filter.SearchSchema{
 		Fields: []filter.SearchField{
-			{Name: "name", SQLExpr: "items.name"},
+			{Name: "name", Table: "items", Column: "name"},
 		},
 		Language: "english",
 	}
@@ -383,7 +384,7 @@ func TestListQuery_WithCursor(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(result.Where, "(items.created_at, items.id COLLATE pg_c_utf8) < ($2, $3)") {
+	if !strings.Contains(result.Where, `("items"."created_at", "items"."id" COLLATE pg_c_utf8) < ($2, $3)`) {
 		t.Errorf("expected cursor condition, got %q", result.Where)
 	}
 }
@@ -402,7 +403,7 @@ func TestListQuery_PolicyConstraints(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(result.Where, "items.tenant_id = $2") {
+	if !strings.Contains(result.Where, `"items"."tenant_id" = $2`) {
 		t.Errorf("expected policy constraint, got %q", result.Where)
 	}
 }
@@ -410,17 +411,17 @@ func TestListQuery_PolicyConstraints(t *testing.T) {
 func TestListQuery_Facets(t *testing.T) {
 	schema := &filter.ResourceSchema{
 		Name:       "products",
-		PrimaryKey: "id",
+		PrimaryKey: []string{"id"},
 		Fields: map[string]*filter.FieldSchema{
 			"category": {
-				ExternalName: "category", SQLExpr: "products.category",
+				ExternalName: "category", Table: "products", Column: "category",
 				DataType:         core.FieldTypeString,
 				AllowedOperators: []filter.FilterOperator{filter.OpEq},
 				Facetable:        true,
 			},
 		},
 		SystemFields: map[string]*filter.FieldSchema{
-			"id": {ExternalName: "id", SQLExpr: "products.id", Column: "id", DataType: core.FieldTypeString},
+			"id": {ExternalName: "id", Table: "products", Column: "id", DataType: core.FieldTypeString},
 		},
 	}
 	lq := mustListQuery(t, schema, nil, filter.PostgresDialect{})
@@ -461,7 +462,7 @@ func TestCursorRoundTrip(t *testing.T) {
 
 func TestNewPage_HasMore(t *testing.T) {
 	items := []string{"a", "b", "c"} // 3 items, limit=2 → has more
-	plan := filter.CursorPlan{Keys: []filter.CursorKey{{Name: "id", SQLExpr: "id", Column: "id", Direction: filter.SortAsc}}}
+	plan := filter.CursorPlan{Keys: []filter.CursorKey{{Name: "id", Column: "id", Direction: filter.SortAsc}}}
 	page, err := filter.NewPage(items, 2, plan, func(s string, _ string) (any, error) { return s, nil })
 	if err != nil {
 		t.Fatal(err)
@@ -648,6 +649,31 @@ func TestSQLBuilder_WithStartParam_Zero(t *testing.T) {
 	}
 	if !strings.Contains(result.Where, "$1") {
 		t.Errorf("expected $1 with zero offset, got %q", result.Where)
+	}
+}
+
+// A negative offset is the caller's mistake, not the request's: Build
+// refuses it with a plain error, an empty filter included, where the
+// dialect would panic on placeholder 0.
+func TestSQLBuilder_NegativeStartParam(t *testing.T) {
+	ast, err := filter.NewFilterParser(testSchema(), nil).Parse(`{"status":"active"}`)
+	require.NoError(t, err)
+	for name, d := range map[string]filter.Dialect{"postgres": filter.PostgresDialect{}, "sqlite": filter.SQLiteDialect{}} {
+		t.Run(name, func(t *testing.T) {
+			for _, a := range []*filter.FilterAST{ast, nil} {
+				_, err := filter.NewSQLBuilder(testSchema(), d, filter.WithStartParam(-1)).Build(a)
+				require.ErrorContains(t, err, "start parameter -1 is negative")
+				_, isParseError := errors.AsType[*core.ParseError](err)
+				assert.False(t, isParseError)
+			}
+
+			lq, err := filter.NewListQuery(testSchema(), nil, d)
+			require.NoError(t, err)
+			_, err = lq.Build(filter.ListFilterAST(ast), filter.ListStartParam(-1))
+			require.ErrorContains(t, err, "start parameter -1 is negative")
+			_, isParseError := errors.AsType[*core.ParseError](err)
+			assert.False(t, isParseError)
+		})
 	}
 }
 

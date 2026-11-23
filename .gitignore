@@ -12,3 +12,19 @@ coverage.*
 # TypeScript dependencies and generated SDK output
 node_modules/
 /parse/sdk/ts/dist/
+
+# Binaries go build leaves in a main package's directory
+/config/examples/quickstart/quickstart
+/config/kongprovider/examples/cli/cli
+/config/kongprovider/examples/reload/reload
+/gitx/cmd/conflictmarkers/conflictmarkers
+/gitx/cmd/mergeinserts/mergeinserts
+/httpx/examples/quickstart/quickstart
+/parse/examples/server/server
+
+# Python bytecode from the tools/ tests
+__pycache__/
+
+# make lint's workspace: go.work plus tools/gorules
+/.lint.work
+/.lint.work.sum

@@ -157,7 +157,7 @@ func TestElementCasesEvaluate(t *testing.T) {
 					}
 					return r[i], true
 				})
-				truth, err := filter.Evaluate(req.Filter.AST.Root, row)
+				truth, err := filter.Evaluate(req.Filter().AST().Root, row)
 				require.NoError(t, err)
 				if truth == filter.True {
 					got = append(got, r[0].(string))

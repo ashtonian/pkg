@@ -3,6 +3,7 @@ package filter
 import (
 	"database/sql/driver"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math"
 	"reflect"
@@ -39,26 +40,31 @@ const DefaultContainmentMaxValues = 256
 
 // PostgresCollation is a PostgreSQL collation that orders strings by code
 // point — the order SQLite's BINARY, the memory backend and cursor values
-// use — so the values are closed: CollationPgCUTF8 and CollationC.
-type PostgresCollation struct{ name string }
+// use — so the values are closed: CollationPgCUTF8 and CollationC. Another
+// integer converted to one names no collation, and SQL rendered with it
+// panics.
+type PostgresCollation uint8
 
-var (
+const (
 	// CollationPgCUTF8 is pg_c_utf8 (PostgreSQL 17+), the zero value:
 	// code-point order with Unicode case mapping, so ILIKE on a column
 	// declared with it still folds non-ASCII letters.
-	CollationPgCUTF8 = PostgresCollation{}
+	CollationPgCUTF8 PostgresCollation = iota
 	// CollationC is "C", for PostgreSQL 14–16: the same order (UTF-8 bytes
 	// sort as their code points), but a column declared with it folds only
 	// ASCII letters under ILIKE.
-	CollationC = PostgresCollation{name: `"C"`}
+	CollationC
 )
 
 // String is the collation's SQL name.
 func (c PostgresCollation) String() string {
-	if c.name == "" {
+	switch c {
+	case CollationPgCUTF8:
 		return "pg_c_utf8"
+	case CollationC:
+		return `"C"`
 	}
-	return c.name
+	panic("parse: PostgresCollation(" + strconv.Itoa(int(c)) + ") is no collation")
 }
 
 // Condition renders one predicate; see Dialect.Condition.
@@ -79,13 +85,13 @@ func (d PostgresDialect) Condition(field *FieldSchema, op FilterOperator, value 
 			}
 			// The ? operator, not jsonb_exists(): only the operator can use a
 			// GIN index on the column.
-			return pgDocument(field) + " ? " + bind(key), nil
+			return pgDocument(d, field) + " ? " + bind(key), nil
 		}
 		doc, err := json.Marshal(value)
 		if err != nil {
 			return "", fmt.Errorf("marshal %s document: %w", field.ExternalName, err)
 		}
-		col := pgDocument(field)
+		col := pgDocument(d, field)
 		switch op {
 		case OpEq:
 			return col + " = " + bind(string(doc)) + "::jsonb", nil
@@ -99,9 +105,9 @@ func (d PostgresDialect) Condition(field *FieldSchema, op FilterOperator, value 
 		if op != OpContains {
 			return "", unsupportedOperator(field, op)
 		}
-		arr, err := pgArray(field.Elem, value)
+		arr, err := pgFieldArray(field, field.Elem, value)
 		if err != nil {
-			return "", fmt.Errorf("field %s: %w", field.ExternalName, err)
+			return "", err
 		}
 		// The parameter takes the column's array type; the typed Go slice
 		// encodes into it.
@@ -131,14 +137,14 @@ func (d PostgresDialect) Condition(field *FieldSchema, op FilterOperator, value 
 	}
 	if op == OpIn || op == OpNin {
 		return membership(op, value, func(members []any, in bool) (string, error) {
-			return d.membership(field, expr, members, in, bind)
+			return d.memberSet(field, members, in, bind)
 		})
 	}
 	if isOrdering(op) && orderedAsText(field) {
 		expr = d.CodePointOrder(expr)
 	}
 	if field.DataType == core.FieldTypeDecimal {
-		if sql, ok, err := decimalComparison(d, field, expr, op, value, bind); ok {
+		if sql, ok, err := decimalComparison(d, field, op, value, bind); ok {
 			return sql, err
 		}
 		return "", unsupportedOperator(field, op)
@@ -156,7 +162,8 @@ func (d PostgresDialect) Condition(field *FieldSchema, op FilterOperator, value 
 // that type (setRows): a hash serves it in every plan, where under a
 // generic plan `= ANY` probes a parameter's array member by member for each
 // row.
-func (d PostgresDialect) membership(field *FieldSchema, expr string, members []any, in bool, bind func(any) string) (string, error) {
+func (d PostgresDialect) memberSet(field *FieldSchema, members []any, in bool, bind func(any) string) (string, error) {
+	expr := FieldExpr(d, field)
 	if field.Path != nil {
 		set, err := d.setRows(field, members, bind)
 		if err != nil {
@@ -175,9 +182,9 @@ func (d PostgresDialect) membership(field *FieldSchema, expr string, members []a
 		}
 		param = bind(arr) + "::text[]::numeric[]"
 	} else {
-		arr, err := pgArray(field.DataType, members)
+		arr, err := pgFieldArray(field, field.DataType, members)
 		if err != nil {
-			return "", fmt.Errorf("field %s: %w", field.ExternalName, err)
+			return "", err
 		}
 		param = bind(arr)
 	}
@@ -225,12 +232,12 @@ func (d PostgresDialect) setRows(field *FieldSchema, members []any, bind func(an
 // `doc @> fragment`, the fragment's array holding the listed elements: it is
 // False where the member has no element of its type, where `$contains` is
 // Unknown. Decimals keep the typed comparison (a decimal member may be held
-// as a string), as does a path through a segment `#>` would read as an
-// array index, and an array's element: containment of a scalar holds for an
-// element that is an array holding it.
+// as a string), as does an array's element: containment of a scalar holds
+// for an element that is an array holding it. A fragment's members are
+// object keys, as the typed comparison's are (pgMember).
 func (d PostgresDialect) TwoValuedCondition(field *FieldSchema, op FilterOperator, value any, bind func(any) string) (string, bool, error) {
 	p := field.Path
-	if p == nil || p.element || p.Storage != StorageJSONB || slices.ContainsFunc(p.Segments, isArrayIndex) {
+	if p == nil || p.element || p.Storage != StorageJSONB {
 		return "", false, nil
 	}
 	if field.DataType == core.FieldTypeArray {
@@ -242,7 +249,7 @@ func (d PostgresDialect) TwoValuedCondition(field *FieldSchema, op FilterOperato
 		if err != nil {
 			return "", false, fmt.Errorf("field %s: %w", field.ExternalName, err)
 		}
-		return p.Column + " @> " + bind(fragment) + "::jsonb", true, nil
+		return p.document(d) + " @> " + bind(fragment) + "::jsonb", true, nil
 	}
 	if !containable(field.DataType) {
 		return "", false, nil
@@ -256,7 +263,7 @@ func (d PostgresDialect) TwoValuedCondition(field *FieldSchema, op FilterOperato
 		if err != nil {
 			return "", false, fmt.Errorf("field %s: %w", field.ExternalName, err)
 		}
-		return p.Column + " @> " + bind(fragment) + "::jsonb", true, nil
+		return p.document(d) + " @> " + bind(fragment) + "::jsonb", true, nil
 	case OpIn:
 		members, ok := core.AnySlice(value)
 		if !ok || len(members) == 0 || len(members) > d.containmentMaxValues() || slices.Contains(members, nil) {
@@ -266,7 +273,7 @@ func (d PostgresDialect) TwoValuedCondition(field *FieldSchema, op FilterOperato
 		if err != nil {
 			return "", false, fmt.Errorf("field %s: %w", field.ExternalName, err)
 		}
-		return p.Column + " @> ANY(" + bind(fragments) + "::jsonb[])", true, nil
+		return p.document(d) + " @> ANY(" + bind(fragments) + "::jsonb[])", true, nil
 	}
 	return "", false, nil
 }
@@ -288,12 +295,6 @@ func containable(t core.FieldType) bool {
 	return false
 }
 
-// isArrayIndex reports a path segment `#>` reads as an array subscript.
-func isArrayIndex(seg string) bool {
-	_, err := strconv.Atoi(seg)
-	return err == nil
-}
-
 // containmentFragment is the JSON document holding value at segs, objects
 // nested from the outermost member down.
 func containmentFragment(segs []string, value any) (string, error) {
@@ -306,6 +307,24 @@ func containmentFragment(segs []string, value any) (string, error) {
 		return "", fmt.Errorf("marshal containment fragment: %w", err)
 	}
 	return string(b), nil
+}
+
+// errNoCommonInteger is a set of integers no PostgreSQL integer array holds:
+// a negative value beside one above int64.
+var errNoCommonInteger = errors.New("no PostgreSQL integer type holds every value")
+
+// pgFieldArray is pgArray for a request operand of field: a set no
+// PostgreSQL integer array holds is the request's E2073, as a typed field's
+// Go kind refuses one of its values.
+func pgFieldArray(field *FieldSchema, elem core.FieldType, value any) (any, error) {
+	arr, err := pgArray(elem, value)
+	if errors.Is(err, errNoCommonInteger) {
+		return nil, valueMismatch(field, err)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("field %s: %w", field.ExternalName, err)
+	}
+	return arr, nil
 }
 
 // pgArray converts normalized array elements into the typed slice pgx
@@ -363,13 +382,19 @@ func pgArray(elem core.FieldType, value any) (any, error) {
 			return s, nil
 		})
 	case core.FieldTypeInt:
-		if slices.ContainsFunc(items, func(v any) bool { n, ok := v.(uint64); return ok && n > math.MaxInt64 }) {
+		if i := slices.IndexFunc(items, func(v any) bool { n, ok := v.(uint64); return ok && n > math.MaxInt64 }); i >= 0 {
 			// An unsigned field's values above int64, for a numeric column.
 			return typedSlice(items, func(v any) (uint64, error) {
-				if n, ok := v.(uint64); ok {
+				switch n := v.(type) {
+				case uint64:
 					return n, nil
+				case int64:
+					if n >= 0 {
+						return uint64(n), nil
+					}
+					return 0, fmt.Errorf("%w: %d and %v", errNoCommonInteger, n, items[i])
 				}
-				return 0, fmt.Errorf("array element %v is not unsigned beside one above int64", v)
+				return 0, fmt.Errorf("array element %v is not an integer", v)
 			})
 		}
 		return typedSlice(items, func(v any) (int64, error) {
@@ -456,19 +481,19 @@ func (d PostgresDialect) geoCondition(field *FieldSchema, op FilterOperator, val
 			return "", err
 		}
 		center := "ST_SetSRID(ST_MakePoint(" + bind(v.Lon) + ", " + bind(v.Lat) + "), 4326)::geography"
-		return "ST_DWithin(" + pgGeography(field) + ", " + center + ", " + bind(meters) + ")", nil
+		return "ST_DWithin(" + pgGeography(d, field) + ", " + center + ", " + bind(meters) + ")", nil
 	case *GeoBoundingBox:
 		envelope := "ST_MakeEnvelope(" + bind(v.TopLeft.Lon) + ", " + bind(v.BottomRight.Lat) + ", " +
 			bind(v.BottomRight.Lon) + ", " + bind(v.TopLeft.Lat) + ", 4326)"
-		return pgShapePredicate(field, op, envelope)
+		return pgShapePredicate(d, field, op, envelope)
 	case *GeoPolygon:
-		return pgShapePredicate(field, op, "ST_GeomFromText("+bind(polygonWKT(v))+", 4326)")
+		return pgShapePredicate(d, field, op, "ST_GeomFromText("+bind(polygonWKT(v))+", 4326)")
 	}
 	return "", fmt.Errorf("geo operator %s: unexpected value %T", op, value)
 }
 
-func pgShapePredicate(field *FieldSchema, op FilterOperator, shape string) (string, error) {
-	geom, srid := pgGeometry(field)
+func pgShapePredicate(d dialect.Dialect, field *FieldSchema, op FilterOperator, shape string) (string, error) {
+	geom, srid := pgGeometry(d, field)
 	if srid != wgs84 {
 		shape = "ST_Transform(" + shape + ", " + strconv.Itoa(srid) + ")"
 	}
@@ -482,37 +507,37 @@ func pgShapePredicate(field *FieldSchema, op FilterOperator, shape string) (stri
 }
 
 // pgGeometry returns the field as geometry and the SRID it is in.
-func pgGeometry(field *FieldSchema) (string, int) {
+func pgGeometry(d dialect.Dialect, field *FieldSchema) (string, int) {
 	cfg := field.GeoConfig
 	switch {
 	case cfg == nil || cfg.StorageType == GeoStorageJSONB:
-		return pgJSONBPoint(field), wgs84
+		return pgJSONBPoint(d, field), wgs84
 	case cfg.StorageType == GeoStorageGeography:
-		return field.SQLExpr + "::geometry", wgs84
+		return field.sql(d) + "::geometry", wgs84
 	}
-	return field.SQLExpr, cfg.SRID
+	return field.sql(d), cfg.SRID
 }
 
 // pgGeography returns the field as WGS 84 geography.
-func pgGeography(field *FieldSchema) string {
+func pgGeography(d dialect.Dialect, field *FieldSchema) string {
 	cfg := field.GeoConfig
 	switch {
 	case cfg == nil || cfg.StorageType == GeoStorageJSONB:
-		return pgJSONBPoint(field) + "::geography"
+		return pgJSONBPoint(d, field) + "::geography"
 	case cfg.StorageType == GeoStorageGeography:
-		return field.SQLExpr
+		return field.sql(d)
 	case cfg.SRID != wgs84:
-		return "ST_Transform(" + field.SQLExpr + ", 4326)::geography"
+		return "ST_Transform(" + field.sql(d) + ", 4326)::geography"
 	}
-	return field.SQLExpr + "::geography"
+	return field.sql(d) + "::geography"
 }
 
 // pgJSONBPoint builds the point geometry of a JSONB {lat, lon} column. The
 // keys were validated as identifiers at schema generation.
-func pgJSONBPoint(field *FieldSchema) string {
+func pgJSONBPoint(d dialect.Dialect, field *FieldSchema) string {
 	latKey, lonKey := geoKeys(field)
 	return fmt.Sprintf("ST_SetSRID(ST_MakePoint((%s->>'%s')::float8, (%s->>'%s')::float8), 4326)",
-		field.SQLExpr, lonKey, field.SQLExpr, latKey)
+		field.sql(d), lonKey, field.sql(d), latKey)
 }
 
 // MarshalValue serializes a value for PostgreSQL parameter binding.
@@ -618,15 +643,23 @@ func isoInterval(column string) string {
 		" extract(hour FROM " + column + ") AS iso_h, extract(minute FROM " + column + ") AS iso_mi, extract(second FROM " + column + ") AS iso_s) AS iso_fields)"
 }
 
-// DecimalColumn returns column: a decimal column is numeric, exact as it is.
-func (PostgresDialect) DecimalColumn(column string) string { return column }
+// DecimalValue reads a decimal column as it is (numeric is exact), a member
+// as PathExpr's numeric, and a parameter cast to numeric: pgx sends a string
+// in text format, which numeric parses exactly.
+func (d PostgresDialect) DecimalValue(o DecimalOperand) string {
+	switch o.source {
+	case decimalFromColumn:
+		return o.sql
+	case decimalFromMember:
+		return d.PathExpr(o.path, core.FieldTypeDecimal)
+	case decimalFromParam:
+		return o.sql + "::numeric"
+	}
+	panic(o.invalid())
+}
 
-// DecimalParam casts the parameter to numeric: pgx sends a string in text
-// format, which numeric parses exactly.
-func (PostgresDialect) DecimalParam(placeholder string) string { return placeholder + "::numeric" }
-
-// DecimalOrder returns value: numeric orders exactly.
-func (PostgresDialect) DecimalOrder(value string) string { return value }
+// DecimalOrder is DecimalValue: numeric orders exactly.
+func (d PostgresDialect) DecimalOrder(o DecimalOperand) string { return d.DecimalValue(o) }
 
 // NativeRowCompare reports true: PostgreSQL evaluates row comparison
 // lexicographically with full composite-index support.
@@ -640,9 +673,127 @@ func (d PostgresDialect) CodePointOrder(expr string) string {
 }
 
 // pgDocument is a document column read as jsonb, whatever its storage.
-func pgDocument(field *FieldSchema) string {
+func pgDocument(d dialect.Dialect, field *FieldSchema) string {
 	if field.Storage == "" || field.Storage == StorageJSONB {
-		return field.SQLExpr
+		return field.sql(d)
 	}
-	return "(" + field.SQLExpr + ")::jsonb"
+	return "(" + field.sql(d) + ")::jsonb"
+}
+
+// elementRows reads a JSON array as jsonb_array_elements, an array path's
+// member when it is one, and an array column with unnest.
+func (d PostgresDialect) elementRows(f *FieldSchema, alias string) string {
+	var array string
+	switch {
+	case f.Path != nil:
+		array = pgMember(pgPathDocument(d, f.Path), f.Path.Segments)
+	case f.DataType == core.FieldTypeArray:
+		return "unnest(" + f.sql(d) + ") AS " + alias + "(v)"
+	default:
+		array = pgDocument(d, f)
+	}
+	return "jsonb_array_elements(CASE WHEN jsonb_typeof(" + array + ") = 'array' THEN " + array + " END) AS " + alias + "(v)"
+}
+
+func (PostgresDialect) objectElement(alias string) string { return alias + ".v" }
+
+// scalarElement reads a native array column's element as it is, and a JSON
+// array's as an element path (PathExpr).
+func (PostgresDialect) scalarElement(f *FieldSchema, alias string) *FieldSchema {
+	e := bound(elementOf(f))
+	if f.Path == nil {
+		e.Table, e.Column, e.Expr = "", "", alias+".v"
+		return &e
+	}
+	e.Table, e.Column, e.Expr = "", "", ""
+	e.Path = &JSONPath{alias: alias, Storage: StorageJSONB, element: true}
+	return &e
+}
+
+// containsElement renders `$some` of a string, boolean or number element of
+// a jsonb array path equal to a value (`$eq`) as `doc @> fragment`, and to
+// one of at most ContainmentMaxValues values (`$in`) as `doc @> ANY(...)`,
+// each fragment the path's objects down to a one-element array. Containment
+// holds exactly when the member is an array with an equal element; the
+// document's NULL test keeps a NULL document False rather than Unknown, so
+// `$some` stays two-valued under any negation. Decimals keep the element
+// table (a decimal element may be held as a string).
+func (d PostgresDialect) containsElement(f *FieldSchema, cond *FilterNode, bind func(any) string) (string, bool, error) {
+	p := f.Path
+	if p == nil || p.Storage != StorageJSONB || !containable(f.Elem) ||
+		cond == nil || cond.Field == nil || !isElement(cond.Field) {
+		return "", false, nil
+	}
+	fragment := func(v any) (string, error) { return containmentFragment(p.Segments, []any{v}) }
+	switch cond.Op {
+	case OpEq:
+		if cond.Value == nil {
+			return "", false, nil // `= NULL` holds for no element; [null] would contain it
+		}
+		frag, err := fragment(cond.Value)
+		if err != nil {
+			return "", false, fmt.Errorf("field %s: %w", f.ExternalName, err)
+		}
+		return "(" + p.document(d) + " IS NOT NULL AND " + p.document(d) + " @> " + bind(frag) + "::jsonb)", true, nil
+	case OpIn:
+		members, ok := core.AnySlice(cond.Value)
+		if !ok || len(members) == 0 || len(members) > d.containmentMaxValues() || slices.Contains(members, nil) {
+			return "", false, nil
+		}
+		frags, err := typedSlice(members, fragment)
+		if err != nil {
+			return "", false, fmt.Errorf("field %s: %w", f.ExternalName, err)
+		}
+		return "(" + p.document(d) + " IS NOT NULL AND " + p.document(d) + " @> ANY(" + bind(frags) + "::jsonb[]))", true, nil
+	}
+	return "", false, nil
+}
+
+// timestampKey renders a TIMESTAMPTZ as its UTC wall time, which no session
+// DateStyle or TimeZone changes, at microseconds, PostgreSQL's precision,
+// padded to the canonical nine digits. An infinite timestamp has no key.
+func (PostgresDialect) timestampKey(expr string) string {
+	return "to_char((" + expr + ") AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS.US\"000Z\"')"
+}
+
+// numberKey reads a path member and a decimal as the numeric FieldExpr
+// renders, exactly; trim_scale drops the scale a literal was written with
+// (7.0, 1.50). A float column's key is its shortest text at the field's
+// precision, which float8 and float4 output give while extra_float_digits
+// is positive (PostgreSQL's default), read as numeric for plain notation.
+// A non-finite float has none.
+func (d PostgresDialect) numberKey(f *FieldSchema) string {
+	expr := FieldExpr(d, f)
+	switch {
+	case f.Path != nil || f.DataType == core.FieldTypeDecimal:
+		return "trim_scale(" + expr + ")::text"
+	case f.DataType == core.FieldTypeInt:
+		return "(" + expr + ")::text"
+	}
+	text := "(" + expr + ")::float8::text"
+	if f.NumberKind == reflect.Float32 {
+		text = "(" + expr + ")::float4::text"
+	}
+	return "(CASE WHEN " + text + " IN ('NaN', 'Infinity', '-Infinity') THEN NULL ELSE " + text + "::numeric::text END)"
+}
+
+// PathExpr renders p's typed value for PostgreSQL. The document is read as
+// jsonb and the member one object key at a time (pgMember); jsonb_typeof
+// selects the member's JSON kind before any cast, so a wrong-typed member is
+// NULL rather than a cast error. An element path
+// reads its row's element, jsonb_array_elements' v.
+func (d PostgresDialect) PathExpr(p *JSONPath, t core.FieldType) string {
+	if p.element {
+		v := p.document(d) + ".v"
+		return pgTypedMember(t, "jsonb_typeof("+v+")", "("+v+" #>> '{}')")
+	}
+	doc := pgPathDocument(d, p)
+	return pgTypedMember(t, "jsonb_typeof("+pgMember(doc, p.Segments)+")", "("+pgMemberText(doc, p.Segments)+")")
+}
+
+func (PostgresDialect) textKey(expr string) string { return expr + "::text" }
+
+// search matches the fields' text search vector against the query's.
+func (d PostgresDialect) search(schema *SearchSchema, query string, startIdx int) (*searchCondition, error) {
+	return buildPostgresSearch(schema, d, query, startIdx)
 }

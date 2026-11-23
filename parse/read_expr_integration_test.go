@@ -3,23 +3,18 @@
 package parse_test
 
 import (
-	"context"
 	"database/sql"
-	"encoding/json"
 	"fmt"
 	"net/url"
 	"slices"
 	"testing"
-	"time"
 
-	"github.com/jackc/pgx/v5"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	"github.com/ashtonian/pkg/parse"
 	"github.com/ashtonian/pkg/parse/filter"
 	"github.com/ashtonian/pkg/parse/internal/dbtest"
-	"github.com/ashtonian/pkg/parse/parsepgx"
 )
 
 // computedAccountFixture: accounts 1–5 of t1 hold 2, 1, 2, 0 and 1
@@ -41,121 +36,22 @@ var computedAccountFixture = []string{
 }
 
 func TestReadExpr_SQLite(t *testing.T) {
-	db := dbtest.SQLite(t)
-	runReadExpr(t, db, filter.SQLiteDialect{}, computedDB{
-		page: func(t *testing.T, plan *parse.ListPlan) *filter.Page[computedAccount] {
-			page, err := computedAccounts.Page(sqliteAccounts(t, queryRows(t, db, plan.Page.SQL, plan.Page.Args)), plan)
-			require.NoError(t, err)
-			return page
-		},
-		// The database/sql recipe: Current, Owner, the relation statements
-		// and the reread, in one transaction.
-		update: func(t *testing.T, plan *parse.UpdatePlan) []computedAccount {
-			tx, err := db.Begin()
-			require.NoError(t, err)
-			defer func() { _ = tx.Rollback() }()
-			var current []computedAccount
-			if plan.Current != nil {
-				current = sqliteAccounts(t, queryRows(t, tx, plan.Current.SQL, plan.Current.Args))
-			}
-			changed := sqliteAccounts(t, queryRows(t, tx, plan.Owner.SQL, plan.Owner.Args))
-			var unchanged []computedAccount
-			if plan.Current != nil {
-				unchanged, err = computedAccounts.Unchanged(changed, current)
-				require.NoError(t, err)
-			}
-			keys := computedKeys(t, slices.Concat(changed, unchanged))
-			stmts, err := computedAccounts.RelationStatements(plan, keys)
-			require.NoError(t, err)
-			for _, stmt := range stmts {
-				_, err := tx.Exec(stmt.SQL, stmt.Args...)
-				require.NoError(t, err, stmt.SQL)
-			}
-			// Read the changed and the unchanged rows again apart, to keep
-			// the changed ones first.
-			for i, part := range [][]any{keys[:len(changed)], keys[len(changed):]} {
-				reread, err := computedAccounts.Reread(plan, part)
-				require.NoError(t, err)
-				if reread == nil {
-					continue
-				}
-				fresh := sqliteAccounts(t, queryRows(t, tx, reread.SQL, reread.Args))
-				if i == 0 {
-					changed = fresh
-				} else {
-					unchanged = fresh
-				}
-			}
-			require.NoError(t, tx.Commit())
-			return slices.Concat(changed, unchanged)
-		},
-	})
-}
-
-// sqliteAccounts scans SQLite rows of computedAccounts.Columns, the group
-// keys held as JSON text.
-func sqliteAccounts(t *testing.T, rows [][]any) []computedAccount {
-	t.Helper()
-	var out []computedAccount
-	for _, row := range rows {
-		groups, ok := row[5].(string)
-		require.True(t, ok, "SQLite holds the array as JSON text, got %T", row[5])
-		account := computedAccount{
-			ID: int(computedInt(t, row[0])), TenantID: fmt.Sprint(row[1]), Name: fmt.Sprint(row[2]), Email: fmt.Sprint(row[3]),
-			MemberCount: int(computedInt(t, row[4])), Contact: fmt.Sprint(row[6]),
-		}
-		require.NoError(t, json.Unmarshal([]byte(groups), &account.GroupIDs))
-		out = append(out, account)
-	}
-	return out
-}
-
-func computedKeys(t *testing.T, rows []computedAccount) []any {
-	t.Helper()
-	keys := make([]any, len(rows))
-	for i, row := range rows {
-		key, err := computedAccounts.Key(row)
-		require.NoError(t, err)
-		keys[i] = key
-	}
-	return keys
+	runReadExpr(t, dbtest.SQLite(t), filter.SQLiteDialect{})
 }
 
 func TestReadExpr_Postgres(t *testing.T) {
-	dsn := dbtest.PostgresDSN(t)
-	db, err := sql.Open("pgx", dsn)
+	db, err := sql.Open("pgx", dbtest.PostgresDSN(t))
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = db.Close() })
-	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
-	t.Cleanup(cancel)
-	conn, err := pgx.Connect(ctx, dsn)
-	require.NoError(t, err)
-	t.Cleanup(func() { _ = conn.Close(context.Background()) })
-
-	runReadExpr(t, db, filter.PostgresDialect{}, computedDB{
-		page: func(t *testing.T, plan *parse.ListPlan) *filter.Page[computedAccount] {
-			page, err := parsepgx.QueryPage(ctx, conn, computedAccounts, plan)
-			require.NoError(t, err)
-			return page
-		},
-		update: func(t *testing.T, plan *parse.UpdatePlan) []computedAccount {
-			rows, err := parsepgx.Update(ctx, conn, computedAccounts, plan)
-			require.NoError(t, err)
-			return rows
-		},
-	})
-}
-
-// computedDB runs computedAccounts' plans on one database.
-type computedDB struct {
-	page   func(*testing.T, *parse.ListPlan) *filter.Page[computedAccount]
-	update func(*testing.T, *parse.UpdatePlan) []computedAccount
+	runReadExpr(t, db, filter.PostgresDialect{})
 }
 
 // runReadExpr serves the one package-level resource on d: SQLite and
 // PostgreSQL read it through their own expressions.
-func runReadExpr(t *testing.T, db *sql.DB, d parse.Dialect, run computedDB) {
-	page := run.page
+func runReadExpr(t *testing.T, db *sql.DB, d parse.Dialect) {
+	page := func(t *testing.T, plan *parse.ListPlan) *filter.Page[computedAccount] {
+		return listPage(t, db, computedAccounts, d, plan)
+	}
 	for _, stmt := range computedAccountFixture {
 		_, err := db.Exec(stmt)
 		require.NoError(t, err, stmt)
@@ -290,22 +186,28 @@ func runReadExpr(t *testing.T, db *sql.DB, d parse.Dialect, run computedDB) {
 	})
 
 	t.Run("an update reads computed columns after its relation changes", func(t *testing.T) {
-		update := func(t *testing.T, body string, target parse.Target, opts ...parse.UpdateOption) []computedAccount {
+		update := func(t *testing.T, body string, target parse.Target, opts ...parse.UpdateOption) parse.UpdateResult[computedAccount] {
 			t.Helper()
 			p, err := computedAccounts.ParseMergePatch([]byte(body))
 			require.NoError(t, err)
 			plan, err := computedAccounts.BuildUpdate(d, p, target, parse.Scope{Tenant: "t1"}, opts...)
 			require.NoError(t, err)
-			return run.update(t, plan)
+			res, err := applyUpdate(t, db, computedAccounts, d, plan, false)
+			require.NoError(t, err)
+			return res
 		}
-		rows := update(t, `{"groups":[30]}`, parse.ByID(1))
-		require.Len(t, rows, 1)
-		assert.Equal(t, []int64{30}, rows[0].GroupIDs, "the pairs the patch left, not the ones Owner read")
+		res := update(t, `{"groups":[30]}`, parse.ByID(1))
+		assert.Empty(t, res.Changed, "a relation-only patch writes no column")
+		require.Len(t, res.Unchanged, 1)
+		assert.Equal(t, []int64{30}, res.Unchanged[0].GroupIDs, "the pairs the patch left, not the ones Owner read")
+		assert.Equal(t, int64(3), res.RelationRows, "10 and 20 removed, 30 added")
 
-		rows = update(t, `{"name":"a","groups":[20]}`, parse.ByIDs(1, 4), parse.SkipUnchanged())
-		require.Len(t, rows, 2)
-		assert.Equal(t, []int{4, 1}, []int{rows[0].ID, rows[1].ID}, "the changed row, then the unchanged one")
-		for _, row := range rows {
+		res = update(t, `{"name":"a","groups":[20]}`, parse.ByIDs(1, 4), parse.SkipUnchanged())
+		require.Len(t, res.Changed, 1)
+		require.Len(t, res.Unchanged, 1)
+		assert.Equal(t, 4, res.Changed[0].ID, "d is renamed")
+		assert.Equal(t, 1, res.Unchanged[0].ID, "a is already a")
+		for _, row := range slices.Concat(res.Changed, res.Unchanged) {
 			assert.Equal(t, []int64{20}, row.GroupIDs, "account %d", row.ID)
 		}
 	})
@@ -318,7 +220,7 @@ func keysOf[T any](t *testing.T, db *sql.DB, r *parse.Resource[T], d filter.Dial
 	require.NoError(t, err)
 	plan, err := r.BuildList(d, req, scope)
 	require.NoError(t, err)
-	key := slices.Index(r.ColumnNames(), r.PrimaryKeyColumn())
+	key := slices.Index(r.ColumnNames(), r.PrimaryKeyColumns()[0])
 	var out []string
 	for _, row := range queryRows(t, db, plan.Page.SQL, plan.Page.Args) {
 		out = append(out, fmt.Sprint(row[key]))

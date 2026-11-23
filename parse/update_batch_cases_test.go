@@ -17,8 +17,8 @@ type updateBatchDocument struct {
 }
 
 type updateBatchRow struct {
-	ID        int64               `json:"id" db:"id" parse:"filter,server"`
-	TenantID  string              `json:"tenant_id" db:"tenant_id" parse:"server"`
+	ID        int64               `json:"id" db:"id" parse:"filter"`
+	TenantID  string              `json:"tenant_id" db:"tenant_id"`
 	Reference *string             `json:"reference" db:"reference" parse:"filter,patch"`
 	Version   int64               `json:"version" db:"version" parse:"filter,server"`
 	Meta      updateBatchDocument `json:"meta" db:"meta" parse:"patch"`

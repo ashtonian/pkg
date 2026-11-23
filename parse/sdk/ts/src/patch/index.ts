@@ -6,4 +6,5 @@ export type {
   PatchPathSchema,
   PatchResult,
   PatchSchema,
+  RelationKeyColumn,
 } from "./types.js";

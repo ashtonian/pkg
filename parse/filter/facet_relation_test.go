@@ -6,9 +6,18 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
 	"github.com/ashtonian/pkg/parse/core"
 	"github.com/ashtonian/pkg/parse/filter"
 )
+
+// textKey types a relation column holding a string key.
+func textKey() []core.TypeInfo {
+	types := []core.TypeInfo{{Type: core.FieldTypeString}}
+	return types
+}
 
 // facetSchemaWithRelation extends facetSchema with a M2M relation field.
 // The relation is tenant-scoped so we can verify the predicate emission.
@@ -16,17 +25,18 @@ func facetSchemaWithRelation() *filter.ResourceSchema {
 	rs := facetSchema()
 	rs.Fields["tags"] = &filter.FieldSchema{
 		ExternalName:     "tags",
-		SQLExpr:          "",
 		DataType:         core.FieldTypeString,
 		AllowedOperators: []filter.FilterOperator{filter.OpEq, filter.OpIn},
 		Facetable:        true,
 		FacetSchema:      &filter.FacetSchema{Type: filter.FacetTerms, Limit: 5},
 		Relation: &core.RelationSchema{
-			JoinTable:    "item_tags",
-			SourceColumn: "item_id",
-			TargetColumn: "tag_id",
-			PrimaryKey:   "id",
-			TenantColumn: "tenant_id",
+			JoinTable:     "item_tags",
+			SourceColumns: []string{"item_id"},
+			TargetColumns: []string{"tag_id"},
+			OwnerKey:      []string{"id"},
+			TenantColumn:  "tenant_id",
+			SourceTypes:   textKey(),
+			TargetTypes:   textKey(),
 		},
 	}
 	return rs
@@ -36,7 +46,7 @@ func TestBuildFacetQuery_RelationFacet_PostgresJoin(t *testing.T) {
 	q, err := filter.BuildFacetQuery(
 		facetSchemaWithRelation(),
 		filter.PostgresDialect{},
-		"items.tenant_id = $1",
+		`"items"."tenant_id" = $1`,
 		[]any{"t1"},
 		[]filter.FacetRequest{
 			{Field: "tags"},
@@ -48,11 +58,11 @@ func TestBuildFacetQuery_RelationFacet_PostgresJoin(t *testing.T) {
 	}
 	wants := []string{
 		"WITH base AS",
-		"items.id AS __owner_pk",
-		"INNER JOIN item_tags j ON j.item_id = base.__owner_pk",
-		"AND j.tenant_id = ",
-		"GROUP BY j.tag_id",
-		"ORDER BY c DESC, j.tag_id::text COLLATE pg_c_utf8 LIMIT 5",
+		`"items"."id" AS __owner_pk`,
+		`INNER JOIN "item_tags" j ON "j"."item_id" = base.__owner_pk`,
+		`AND "j"."tenant_id" = `,
+		`GROUP BY "j"."tag_id"`,
+		`ORDER BY c DESC, "j"."tag_id"::text COLLATE pg_c_utf8 LIMIT 5`,
 	}
 	for _, sub := range wants {
 		if !strings.Contains(q.SQL, sub) {
@@ -106,10 +116,10 @@ func TestBuildFacetQuery_RelationFacet_MixedWithScalar(t *testing.T) {
 		t.Fatalf("BuildFacetQuery: %v", err)
 	}
 	// Base CTE projects both the scalar facet column AND the owner PK.
-	if !strings.Contains(q.SQL, "items.status AS facet__0") {
+	if !strings.Contains(q.SQL, `"items"."status" AS facet__0`) {
 		t.Errorf("scalar projection missing: %s", q.SQL)
 	}
-	if !strings.Contains(q.SQL, "items.id AS __owner_pk") {
+	if !strings.Contains(q.SQL, `"items"."id" AS __owner_pk`) {
 		t.Errorf("owner PK projection missing: %s", q.SQL)
 	}
 	// Each facet has its own UNION ALL leg.
@@ -150,7 +160,7 @@ func TestBuildFacetQuery_RelationFacet_SQLite(t *testing.T) {
 		t.Fatalf("BuildFacetQuery: %v", err)
 	}
 	// SQLite uses CAST for type coercion rather than ::text.
-	if !strings.Contains(q.SQL, "CAST(j.tag_id AS TEXT)") {
+	if !strings.Contains(q.SQL, `CAST("j"."tag_id" AS TEXT)`) {
 		t.Errorf("expected CAST(...AS TEXT) on SQLite, got: %s", q.SQL)
 	}
 }
@@ -169,4 +179,118 @@ func TestCountStarWithoutJoin(t *testing.T) {
 	if !strings.Contains(result.CountSQL, "SELECT COUNT(*)") {
 		t.Errorf("expected plain COUNT(*) for a non-relation filter, got %q", result.CountSQL)
 	}
+}
+
+// Relation facets whose relations join different owner keys each join on
+// their own: a junction keyed by the owner's code counts by code, beside
+// one keyed by its id, and neither borrows the other's column.
+func TestBuildFacetQuery_RelationFacets_OwnKeyEach(t *testing.T) {
+	schema := &filter.ResourceSchema{
+		Name: "docs", PrimaryKey: []string{"id"},
+		SystemFields: map[string]*filter.FieldSchema{
+			"id": {ExternalName: "id", Table: "docs", Column: "id", DataType: core.FieldTypeString},
+		},
+		Fields: map[string]*filter.FieldSchema{
+			"tags": {
+				ExternalName: "tags", DataType: core.FieldTypeString, Facetable: true,
+				Relation: &core.RelationSchema{JoinTable: "doc_tags", SourceColumns: []string{"doc_id"}, TargetColumns: []string{"tag"}, OwnerKey: []string{"id"}, SourceTypes: textKey(), TargetTypes: textKey()},
+			},
+			"labels": {
+				ExternalName: "labels", DataType: core.FieldTypeString, Facetable: true,
+				Relation: &core.RelationSchema{JoinTable: "doc_labels", SourceColumns: []string{"doc_code"}, TargetColumns: []string{"label"}, OwnerKey: []string{"code"}, SourceTypes: textKey(), TargetTypes: textKey()},
+			},
+		},
+	}
+	db := setupFacetDB(t)
+	for _, stmt := range []string{
+		`CREATE TABLE docs (id TEXT PRIMARY KEY, code TEXT NOT NULL UNIQUE)`,
+		`CREATE TABLE doc_tags (doc_id TEXT NOT NULL, tag TEXT NOT NULL)`,
+		`CREATE TABLE doc_labels (doc_code TEXT NOT NULL, label TEXT NOT NULL)`,
+		// d1's code is d2's id: joined on the wrong column, labels would
+		// count d2's label under d1.
+		`INSERT INTO docs VALUES ('d1', 'd2'), ('d2', 'c2')`,
+		`INSERT INTO doc_tags VALUES ('d1', 'red'), ('d2', 'red')`,
+		`INSERT INTO doc_labels VALUES ('d2', 'one'), ('c2', 'two'), ('c2', 'three'), ('d1', 'none')`,
+	} {
+		_, err := db.Exec(stmt)
+		require.NoError(t, err, stmt)
+	}
+	q, err := filter.BuildFacetQuery(schema, filter.SQLiteDialect{}, "1=1", nil,
+		[]filter.FacetRequest{{Field: "tags"}, {Field: "labels"}},
+		filter.WithFacetRelationScope(filter.RelationScope{}))
+	require.NoError(t, err)
+	assert.Contains(t, q.SQL, `"docs"."id" AS __owner_pk, "docs"."code" AS __owner_pk_1`)
+
+	rows, err := db.Query(q.SQL, q.Args...)
+	require.NoError(t, err, q.SQL)
+	defer func() { require.NoError(t, rows.Close()) }()
+	results, err := filter.ScanFacetUnion(rows)
+	require.NoError(t, err)
+	got := indexFacets(results)
+	checkBuckets(t, got["tags"], map[string]int64{"red": 2})
+	checkBuckets(t, got["labels"], map[string]int64{"one": 1, "two": 1, "three": 1})
+}
+
+// A relation to a key of several columns facets each target by its key's
+// text (core.KeyText), which the statement writes per row on PostgreSQL as
+// on SQLite.
+func TestBuildFacetQuery_RelationFacet_TargetKeyOfSeveralColumns(t *testing.T) {
+	schema := &filter.ResourceSchema{
+		Name: "tags", PrimaryKey: []string{"id"},
+		SystemFields: map[string]*filter.FieldSchema{
+			"id": {ExternalName: "id", Table: "tags", Column: "id", DataType: core.FieldTypeString},
+		},
+		Fields: map[string]*filter.FieldSchema{
+			"stock": {
+				ExternalName: "stock", DataType: core.FieldTypeArray, Facetable: true,
+				FacetSchema: &filter.FacetSchema{Type: filter.FacetTerms, Limit: 10},
+				Relation: &core.RelationSchema{
+					JoinTable: "stock_tags", SourceColumns: []string{"tag_id"}, TargetColumns: []string{"warehouse_id", "sku"},
+					OwnerKey: []string{"id"}, SourceTypes: textKey(), TargetTypes: []core.TypeInfo{{Type: core.FieldTypeString}, {Type: core.FieldTypeString}},
+				},
+			},
+		},
+	}
+	build := func(d filter.Dialect) (filter.FacetQuery, error) {
+		return filter.BuildFacetQuery(schema, d, "1=1", nil, []filter.FacetRequest{{Field: "stock"}},
+			filter.WithFacetRelationScope(filter.RelationScope{}))
+	}
+	for _, tt := range []struct {
+		name    string
+		dialect filter.Dialect
+		want    string
+	}{
+		{"postgres", filter.PostgresDialect{}, `array_to_json(ARRAY[`},
+		{"sqlite", filter.SQLiteDialect{}, `json_array(`},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			q, err := build(tt.dialect)
+			require.NoError(t, err)
+			assert.Contains(t, q.SQL, tt.want)
+			assert.Contains(t, q.SQL, `GROUP BY "j"."warehouse_id", "j"."sku"`)
+		})
+	}
+
+	db := setupFacetDB(t)
+	for _, stmt := range []string{
+		`CREATE TABLE tags (id TEXT PRIMARY KEY)`,
+		`CREATE TABLE stock_tags (tag_id TEXT NOT NULL, warehouse_id INTEGER NOT NULL, sku TEXT NOT NULL)`,
+		`INSERT INTO tags VALUES ('red'), ('blue')`,
+		// Each column alone ties: only the whole key tells (1,a) from
+		// (1,b) and (2,a).
+		`INSERT INTO stock_tags VALUES ('red', 1, 'a'), ('blue', 1, 'a'), ('red', 1, 'b'), ('blue', 2, 'a')`,
+	} {
+		_, err := db.ExecContext(t.Context(), stmt)
+		require.NoError(t, err, stmt)
+	}
+	q, err := build(filter.SQLiteDialect{})
+	require.NoError(t, err)
+	rows, err := db.QueryContext(t.Context(), q.SQL, q.Args...)
+	require.NoError(t, err, q.SQL)
+	defer func() { require.NoError(t, rows.Close()) }()
+	results, err := filter.ScanFacetUnion(rows)
+	require.NoError(t, err)
+	require.NoError(t, rows.Err())
+	assert.Equal(t, []filter.FacetBucket{{Key: `["1","a"]`, Count: 2}, {Key: `["1","b"]`, Count: 1}, {Key: `["2","a"]`, Count: 1}},
+		indexFacets(results)["stock"])
 }

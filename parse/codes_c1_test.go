@@ -24,7 +24,7 @@ func TestParseCodesCatalog(t *testing.T) {
 		assert.False(t, seen[code], "duplicate code %s", code)
 		seen[code] = true
 		assert.NotEmpty(t, code.ErrorMessage(), code)
-		assert.Contains(t, []int{400, 422, 500}, code.ErrorHTTPStatus(), code)
+		assert.Contains(t, []int{400, 404, 422, 500}, code.ErrorHTTPStatus(), code)
 		assert.True(t, code.IsErrorUserFacing(), code)
 	}
 	assert.Contains(t, seen, parse.Code("E2061"))

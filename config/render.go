@@ -2,18 +2,18 @@ package config
 
 import (
 	"bytes"
-	"cmp"
 	"encoding"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"reflect"
 	"slices"
 	"strconv"
 	"strings"
 	"time"
 
+	"github.com/ashtonian/pkg/config/internal/deepcopy"
 	"github.com/ashtonian/pkg/gowalker"
 	"go.yaml.in/yaml/v3"
 )
@@ -69,50 +69,84 @@ func redactedNode() *outNode { return &outNode{kind: outScalar, scalar: redacted
 
 // valueTree shares key and scalar projection across raw and redacted output.
 // Sensitive containers stay whole so policies can also withhold their keys.
+// raw output withholds nothing. structural output reads a type's
+// structural tier only; any other judges sensitivity, and refuses a type
+// whose tag keys may misspell sensitive.
 type valueTree struct {
-	raw      bool
-	leaf     func(string, Field, any) any
-	err      error
-	visiting map[visit]bool
+	raw        bool
+	structural bool
+	leaf       func(string, Field, any) any
+	err        error
+	visiting   map[visit]bool
 }
 
 func (w *valueTree) root(cfg any) *outNode {
 	v := reflect.ValueOf(cfg)
+	// Judged by type first: a pointer chain that never reaches a struct can
+	// hold its own address, and following its values would never end.
+	if !v.IsValid() || !isBranch(derefType(v.Type())) {
+		empty := &outNode{kind: outMap}
+		return empty
+	}
 	for v.Kind() == reflect.Pointer {
 		if v.IsNil() {
 			return &outNode{kind: outMap}
 		}
 		v = v.Elem()
 	}
-	if !v.IsValid() || !isBranch(v.Type()) {
-		return &outNode{kind: outMap}
-	}
 	n := &outNode{kind: outMap}
 	w.fields(n, v, cursor{})
 	return n
 }
 
-// fields adds struct val's keys to mapping n, squashed structs' in place.
+// fields adds struct val's keys to mapping n, squashed structs' in place:
+// its members (see members.go), each keyed by its name. A sensitive remain
+// field is one entry, keyed [*], unless the tree withholds nothing or a
+// policy returns a map for it (see spliceCollected).
 func (w *valueTree) fields(n *outNode, val reflect.Value, c cursor) {
 	if w.err != nil {
 		return
 	}
-	schema, err := metadataOf(val.Type())
+	metadata := declaredOf
+	if w.structural {
+		metadata = metadataOf
+	}
+	schema, err := metadata(val.Type())
 	if err != nil {
 		w.err = err
 		return
 	}
-	for _, f := range schema.fields {
-		fv, err := f.value(val)
-		if errors.Is(err, gowalker.ErrMissing) {
+	whole := (!w.raw || w.leaf != nil) && schema.remainWhole(c.sensitive())
+	for m, vals := range schema.members(side{v: val, present: true}, side{}, whole) {
+		if !vals[0].IsValid() {
+			continue // beneath a nil embedded pointer
+		}
+		node := w.atValue(vals[0], m.cursor(c))
+		if m.kind != memberRemain {
+			n.entries = append(n.entries, outEntry{key: m.seg.name, node: node})
 			continue
 		}
-		if err != nil {
-			w.err = fmt.Errorf("%w: %w", ErrSchema, err)
+		collected, ok := node.scalar.(map[string]any)
+		if ok && w.leaf != nil {
+			w.spliceCollected(n, schema, c.path, collected)
+			continue
+		}
+		n.entries = append(n.entries, outEntry{key: keyPath{m.seg}.String(), node: node})
+	}
+}
+
+// spliceCollected adds collected, what a policy returned for the sensitive
+// remain field of the struct at path, to that struct's mapping n as keys
+// of their own, as the remain field holds them: a policy that returns what
+// it is given gives [Tree]'s keys, as it does for a sensitive map. A key a
+// field of the struct reads is no key the remain field could hold.
+func (w *valueTree) spliceCollected(n *outNode, schema *schemaNode, path keyPath, collected map[string]any) {
+	for _, name := range slices.Sorted(maps.Keys(collected)) {
+		if !schema.collects(memberSegment(name)) {
+			w.err = fmt.Errorf("config: the policy's result for %s sets %s, which a field reads, not its remain field", path.any(), path.member(name))
 			return
 		}
-		next := c.intoField(f)
-		n.entries = append(n.entries, outEntry{key: f.key, node: w.atValue(fv, next)})
+		n.entries = append(n.entries, outEntry{key: name, node: scalarNode(collected[name])})
 	}
 }
 
@@ -172,10 +206,8 @@ func (w *valueTree) atValue(v reflect.Value, c cursor) *outNode {
 		}
 		if elem.Kind() == reflect.Map {
 			n := &outNode{kind: outMap}
-			keys := elem.MapKeys()
-			slices.SortFunc(keys, func(a, b reflect.Value) int { return cmp.Compare(a.String(), b.String()) })
-			for _, k := range keys {
-				n.entries = append(n.entries, outEntry{key: k.String(), node: w.atValue(elem.MapIndex(k), c.intoEntry(segment{kind: segKey, name: k.String()}, elem.Type().Elem()))})
+			for _, e := range sortedEntries(elem) {
+				n.entries = append(n.entries, outEntry{key: e.name, node: w.atValue(e.value, c.intoEntry(segment{kind: segKey, name: e.name}, elem.Type().Elem()))})
 			}
 			if len(n.entries) == 0 {
 				return w.project(c, n)
@@ -234,15 +266,15 @@ func (w *valueTree) enter(v reflect.Value) bool {
 	return true
 }
 
-// expandable reports a map keyed by strings, or a slice or array, whose
-// entries the tree shows one by one.
+// expandable reports a map whose keys have text (see keyCodec), or a slice
+// or array, whose entries the tree shows one by one.
 func expandable(t reflect.Type) bool {
 	if opaque(t) {
 		return false
 	}
 	switch t.Kind() {
 	case reflect.Map:
-		return t.Key().Kind() == reflect.String
+		return keyCodecOf(t.Key()) != nil
 	case reflect.Slice, reflect.Array:
 		return t.Elem().Kind() != reflect.Uint8
 	}
@@ -298,7 +330,7 @@ func textMarshaler(v reflect.Value) (encoding.TextMarshaler, bool) {
 	if reflect.PointerTo(v.Type()).Implements(reflect.TypeFor[encoding.TextMarshaler]()) {
 		// Map values are not addressable; use a copy for pointer-receiver methods.
 		p := reflect.New(v.Type())
-		p.Elem().Set(deepCopy(v))
+		p.Elem().Set(deepcopy.Value(v))
 		return p.Interface().(encoding.TextMarshaler), true
 	}
 	return nil, false
@@ -331,19 +363,21 @@ func (n *outNode) plain() any {
 // the config's keys are, lists, and scalars of the types the config decodes
 // from (a duration as "30s", a time as its text) — with every sensitive value
 // replaced by "[REDACTED]", as [PrintRedacted] judges it; a sensitive map,
-// list or interface is replaced whole, its keys included. Marshal it with any
-// koanf parser to show a loaded config as YAML, JSON, TOML or dotenv. Loading
-// supported finite values back gives the same config, apart from redaction;
-// [Tree] describes the scalar and cycle limits. It returns nil on error;
-// use [RedactedTreeChecked] to receive the error.
+// list or interface is replaced whole, its keys included, and so are the
+// keys a sensitive koanf:",remain" field collects, as the "[*]" entry of
+// their section. Marshal it with any koanf parser to show a loaded config as
+// YAML, JSON, TOML or dotenv. Loading supported finite values back gives the
+// same config, apart from redaction; [Tree] describes the scalar and cycle
+// limits. It returns nil on error; use [RedactedTreeChecked] to receive the
+// error.
 func RedactedTree(cfg any) map[string]any {
 	result, _ := RedactedTreeChecked(cfg)
 	return result
 }
 
 // RedactedTreeChecked returns [RedactedTree]'s values, or nil and an error
-// when a reached type has invalid keys or no scalar representation, or its
-// text marshaler fails. No partial tree is returned.
+// when a reached type has invalid keys, a misspelt tag key or no scalar
+// representation, or its text marshaler fails. No partial tree is returned.
 // It does not decode default or example tags.
 func RedactedTreeChecked(cfg any) (map[string]any, error) {
 	return (&valueTree{visiting: map[visit]bool{}}).tree(cfg)
@@ -354,15 +388,28 @@ func RedactedTreeChecked(cfg any) (map[string]any, error) {
 // represented as [CYCLE], as in RedactedTree, and cannot round-trip. Opaque
 // types without a scalar/text representation return ErrSchema; MarshalText
 // errors are returned with the key. Custom decoders must accept that text.
+// Like [Fields], it checks only that a type's structure is sound, so it can
+// export a type whose tags are wrong. Each key a koanf:",remain" field
+// collects is a key of its section, sensitive or not.
 func Tree(cfg any) (map[string]any, error) { return TreeFunc(cfg, nil) }
 
 // TreeFunc projects cfg into a tree, replacing each leaf with leaf's result.
 // The key uses the package's grammar; Field carries the declared metadata.
 // Sensitive maps, lists and interfaces are passed once, whole, including
-// their keys. Empty or nil containers are leaves. A nil callback is identity.
-// The callback receives detached tree values and may change them freely.
+// their keys, and so is a sensitive koanf:",remain" field, keyed
+// section[*]: a map it returns sets keys of the section, as the field
+// holds them, and anything else is the section's "[*]" entry. A key a
+// remain field that is not sensitive collects is a leaf of its section,
+// its Field the remain field. Empty or nil containers are leaves. A nil callback is identity,
+// and is [Tree]. The callback receives detached tree values and may change
+// them freely.
+//
+// A callback judges each leaf by its Field, so with one TreeFunc checks
+// declarations as [RedactedTreeChecked] does: a reached type with a tag key
+// that misspells one config reads (sensitve:"true") returns ErrSchema, since
+// its Field would not say what the tag meant.
 func TreeFunc(cfg any, leaf func(key string, f Field, v any) any) (map[string]any, error) {
-	w := &valueTree{visiting: map[visit]bool{}, raw: true, leaf: leaf}
+	w := &valueTree{visiting: map[visit]bool{}, raw: true, structural: leaf == nil, leaf: leaf}
 	return w.tree(cfg)
 }
 

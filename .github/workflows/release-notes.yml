@@ -1,0 +1,41 @@
+name: release notes
+
+# release-please reads every commit a pull request brings to main, or the
+# commit override in its description in their place. The check reads them
+# the same way. It runs apart from ci.yml: it checks commits, not the tree,
+# so a push to main has nothing to check and acceptance never records it,
+# and a description edit reruns only this.
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, edited]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-notes-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  commits:
+    name: commits release-please can read
+    if: github.actor_id == '4212452' && (github.event_name != 'pull_request' || (github.event.pull_request.user.id == 4212452 && github.event.pull_request.head.repo.full_name == github.repository))
+    runs-on: arc-pkg
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          # The base branch and every commit the pull request brings.
+          fetch-depth: 0
+      - uses: ./.github/actions/release-please-tool
+      # The base branch as checked out, so commits a sync merge brought from
+      # it count as main's, not the pull request's.
+      - name: Check the pull request's commits and commit override
+        env:
+          BASE_REF: ${{ github.base_ref }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          DESCRIPTION: ${{ github.event.pull_request.body }}
+        run: |
+          printf '%s' "$DESCRIPTION" > "$RUNNER_TEMP/description.md"
+          node tools/release-please/check-commits.mjs --base "origin/$BASE_REF" --head "$HEAD_SHA" --body-file "$RUNNER_TEMP/description.md"

@@ -109,3 +109,16 @@ func BenchmarkWalk(b *testing.B) {
 		}
 	})
 }
+
+func BenchmarkShapeMatch(b *testing.B) {
+	root := schemaFor[matchPromoted](b, engine(b, gowalker.WithJSONFields("json"), gowalker.DropTies())).Root()
+	for _, name := range []string{"ALPHA", "Alpha", "epsilon"} {
+		b.Run(name, func(b *testing.B) {
+			bytes := []byte(name)
+			b.ReportAllocs()
+			for b.Loop() {
+				root.MatchBytes(bytes)
+			}
+		})
+	}
+}

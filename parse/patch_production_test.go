@@ -54,15 +54,17 @@ func TestPatchRejectsNullDocument(t *testing.T) {
 }
 
 func TestMergeNullRunsDestinationValidators(t *testing.T) {
-	p, err := parse.NewResource[productionPatchRow]("production_patch_rows")
-	require.NoError(t, err)
 	rejected := errors.New("cannot clear")
-	pathOf(p.PatchSchema(), "/optional").Validators = []patch.Validator{func(value any) error {
-		if value == nil {
-			return rejected
-		}
+	p, err := parse.NewResource[productionPatchRow]("production_patch_rows", parse.CustomizeSchemas(func(s parse.Schemas) error {
+		pathOf(s.Patch, "/optional").Validators = []patch.Validator{func(value any) error {
+			if value == nil {
+				return rejected
+			}
+			return nil
+		}}
 		return nil
-	}}
+	}))
+	require.NoError(t, err)
 	_, err = p.ParsePatch([]byte(`[{"op":"replace","path":"/optional","value":null}]`))
 	require.ErrorIs(t, err, rejected)
 	_, err = p.ParseMergePatch([]byte(`{"optional":null}`))
