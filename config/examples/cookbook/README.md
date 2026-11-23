@@ -179,7 +179,7 @@ func appSources(file string, logger *slog.Logger) Sources {
 // case cut out of the values of the rows stored above it. A key the
 // schema does not read may be set only to nil, to delete the rows a release
 // that removed its field left. Unless the table the write leaves loads with
-// the service's options, and fits the row cap or is no larger than before,
+// the service's options, and fits the caps or is no larger than before,
 // the write is refused with a *RefusedError and nothing changes.
 func (s *Settings) Write(ctx context.Context, edits map[string]any) ([]string, error) {
 	writes, unread, err := canonical(edits)
