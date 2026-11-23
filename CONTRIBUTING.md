@@ -37,7 +37,7 @@ The repository's `go.work` ties the published modules together, so a change to o
 | `RELEASE_CHECKS` | every module's release check | The checks `make release-check` runs |
 | `LINT_ALL` | empty | Empty: golangci-lint in `make lint` reports only the issues on lines changed since the merge base with `origin/main`. `1`: every issue |
 
-GitHub Actions runs workflows here only for the repository owner. Pull requests opened by a bot, such as Dependabot updates or a release PR opened without the `RELEASE_PLEASE_TOKEN` secret, therefore get no checks: run CI on the branch with `gh workflow run ci.yml -R ashtonian/pkg --ref <branch>`, and the pull request shows the results.
+GitHub Actions runs workflows here only for the repository owner. Pull requests opened by a bot, such as Dependabot updates or a release PR opened without the `RELEASE_PLEASE_TOKEN` secret, therefore get no checks: run CI on the branch with `gh workflow run ci.yml -R ashtonian/pkg --ref <branch>`, and the pull request shows the results. [Dependency updates](#dependency-updates) gives the procedure for Dependabot's.
 
 CI runs what a change reaches. Its change-scope job runs go-ci-actions `scope`, configured
 in `ci.yml`. A pull request is measured from the base its merge commit merges into, and a
@@ -151,6 +151,43 @@ Gowalker is its own module at
 `github.com/ashtonian/pkg/gowalker`, released with `gowalker/v…` tags. Public modules contain source, tests,
 licenses and user documentation; project plans, reviews and audits stay outside
 the public repository. Its archive check runs the README quick start and usage programs verbatim.
+
+### Dependency updates
+
+Dependabot (`.github/dependabot.yml`) opens one grouped pull request a week per ecosystem,
+for releases at least seven days old:
+
+| Ecosystem | Directories | Commit prefix |
+|---|---|---|
+| Go modules | Every module in the repository, published or not: the modules `make docs-check` reads | `chore(deps)` |
+| npm | The pnpm projects: the parse TypeScript SDK and the release-please runner. A `package.json` range is raised, never widened | `chore(deps)`, or `chore(deps-dev)` for development dependencies |
+| GitHub Actions | The workflows, and each composite action under `.github/actions`. The owner's own actions skip the cooldown | `ci` |
+
+`github.com/quasilyte/go-ruleguard/dsl` is left out: its version is the lint baseline's
+([Lint baseline](#lint-baseline)). The configuration names every directory, and
+`tools/test_ci_dependabot.py`, which the change-scope job runs, derives each list from the
+tracked tree: it fails when a module, pnpm project or composite action is missing, or when a
+listed directory holds none. A change that adds one adds its directory there.
+
+A Dependabot pull request gets no checks of its own, and nothing runs its branch
+automatically. That is deliberate: CI runs on self-hosted runners with the repository's
+secrets, and a dependency update is code from outside the repository. For each one:
+
+1. Review the diff: the requirement and lockfile or `go.sum` changes, and the linked
+   release notes. A new dependency, or a module path that changed, needs more care than a
+   version bump.
+2. If the branch is behind `main`, comment `@dependabot rebase` on the pull request and wait
+   for Dependabot's push.
+3. Run CI on the branch: `gh workflow run ci.yml -R ashtonian/pkg --ref <head branch>` (the
+   branch is `dependabot/…`). A dispatched run runs every job at full scope and reports on
+   the head commit, so the pull request shows the checks.
+4. Merge with a signed merge commit. The merge push reuses the dispatched run's passing jobs
+   under the acceptance rules above, which for a dispatched run require the merge to have the
+   head's tree: the branch already contained `main` (step 2). Otherwise the push runs its own
+   scoped jobs. The merge subject decides the release as [Releases](#releases) describes:
+   Dependabot's `chore(deps): …` releases nothing.
+
+A new push to the branch, from a rebase or Dependabot's next update, needs a new run.
 
 ### Lint baseline
 
