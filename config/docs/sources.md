@@ -262,8 +262,8 @@ empty report; nil discards reports. Its error fails the load with
 `ErrSource`. Defaults must validate before any source is read. Unknown keys
 still reach the normal diagnostics, including declared unknown children of
 a withheld entry. Read/parser errors and cancellation fail the load, with
-the cause the context ended with. The option applies equally to
-`WithOverrideProvider`.
+the cause the context ended with, and a load whose context has ended
+reports nothing. The option applies equally to `WithOverrideProvider`.
 
 ### Stored entries
 

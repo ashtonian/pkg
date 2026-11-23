@@ -40,7 +40,8 @@ type SourceOption func(*providerSource)
 // cannot be mistaken for bad stored entries. Unknown entries remain
 // available to the normal unknown-input handler, including declared unknown
 // children of a withheld entry. Read and parser errors and cancellation
-// still fail the load, with the cause the context ended with.
+// still fail the load, with the cause the context ended with, and a load
+// whose context has ended reports nothing.
 func WithInvalidEntries(report func(context.Context, []KeyError) error) SourceOption {
 	return func(s *providerSource) { s.withhold, s.rejected = true, report }
 }
@@ -184,10 +185,14 @@ func (l *loader) prepareProvider(ctx context.Context, name string, data map[stri
 }
 
 // reportWithheld hands a WithInvalidEntries report the entries the source
-// called name withheld, sorted by key.
+// called name withheld, sorted by key. A load whose context has ended
+// reports nothing: the report is the caller's code.
 func (l *loader) reportWithheld(ctx context.Context, name string, p providerSource, withheld []*KeyError) error {
 	if p.rejected == nil {
 		return nil
+	}
+	if err := ended(ctx); err != nil {
+		return err
 	}
 	report := make([]KeyError, len(withheld))
 	for i, ke := range sortKeyErrors(withheld) {
