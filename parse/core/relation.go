@@ -278,7 +278,7 @@ func ParseRelationTag(tag string) (*RelationSchema, error) {
 // (RelationTargetFields). A column typed by no scalar (IsKeyType) is
 // refused, naming it.
 func (g *SchemaGenerator) RelationTag(fields *StructFields, field *Field) (*RelationSchema, error) {
-	rel, err := ParseRelationTag(field.Tags.Relation)
+	rel, err := ParseRelationTag(field.tags.Relation)
 	if err != nil {
 		return nil, err
 	}
@@ -289,7 +289,7 @@ func (g *SchemaGenerator) RelationTag(fields *StructFields, field *Field) (*Rela
 			return nil, fmt.Errorf("relation tag primary key %s: %w", column, err)
 		}
 		if !ok {
-			return nil, fmt.Errorf("relation tag primary key %s is no column of %s; the field holding it types the key", column, fields.Type)
+			return nil, fmt.Errorf("relation tag primary key %s is no column of %s; the field holding it types the key", column, fields.typ)
 		}
 		rel.SourceTypes[i], err = g.FieldType(owner)
 		if err != nil {
@@ -361,12 +361,12 @@ func (g *SchemaGenerator) RelationTargetFields(field *Field, rel *RelationSchema
 // relationElem is the element type of a relation field, a slice of target
 // keys.
 func relationElem(field *Field) (reflect.Type, error) {
-	keys := field.Type
+	keys := field.typ
 	for keys.Kind() == reflect.Pointer {
 		keys = keys.Elem()
 	}
 	if keys.Kind() != reflect.Slice || keys.Elem().Kind() == reflect.Uint8 {
-		return nil, fmt.Errorf("relation tag: the field is %s; a relation's field is a slice of target keys", field.Type)
+		return nil, fmt.Errorf("relation tag: the field is %s; a relation's field is a slice of target keys", field.typ)
 	}
 	return keys.Elem(), nil
 }
@@ -374,8 +374,8 @@ func relationElem(field *Field) (reflect.Type, error) {
 // columnField is the field of fields holding column, a relation's field
 // aside.
 func (g *SchemaGenerator) columnField(fields *StructFields, column string) (*Field, bool, error) {
-	for _, f := range fields.Fields {
-		if f.Tags.Relation != "" {
+	for _, f := range fields.fields {
+		if f.tags.Relation != "" {
 			continue
 		}
 		c, ok, err := g.FieldColumn(f)

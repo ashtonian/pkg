@@ -15,8 +15,8 @@ func WithColumnTypes(types map[string]SQLType) GeneratorOption {
 // JSON scalar and scalar-slice fields use document operators, while typed
 // objects retain their member schema and native arrays retain array semantics.
 func (g *SchemaGenerator) FieldType(field *Field) (TypeInfo, error) {
-	info := TypeOf(field.Type)
-	if len(g.opts.ColumnTypes) == 0 || field.Tags.Relation != "" {
+	info := TypeOf(field.typ)
+	if len(g.opts.ColumnTypes) == 0 || field.tags.Relation != "" {
 		return info, nil
 	}
 	column, ok, err := g.FieldColumn(field)
@@ -34,7 +34,7 @@ func (g *SchemaGenerator) FieldType(field *Field) (TypeInfo, error) {
 		return TypeInfo{}, fmt.Errorf("column %q declares type %q, which has no read rule", column, storage)
 	}
 	if storage == SQLDate && info.Type != FieldTypeDate {
-		return TypeInfo{}, fmt.Errorf("column %q declares a civil date; use core.Date, not %s", column, field.Type)
+		return TypeInfo{}, fmt.Errorf("column %q declares a civil date; use core.Date, not %s", column, field.typ)
 	}
 	if err := CheckValueStorage(column, info, storage); err != nil {
 		return TypeInfo{}, err

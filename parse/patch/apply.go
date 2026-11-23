@@ -58,6 +58,13 @@ type Applier[T any] struct {
 	// hidden are the patch paths of the server fields the field-name tag
 	// hides, which only the direct path can set.
 	hidden map[string]bool
+	// codecNames maps each name in fields to the name the default JSON
+	// codec writes the same field under, when the field-name tag is not
+	// json; nil when the codec names fields as the schemas do.
+	// codecNamesErr is why that codec cannot name T's fields. The document
+	// path reports either rather than silently writing another key.
+	codecNames    map[string]string
+	codecNamesErr error
 }
 
 // NewApplier builds the applier for T, naming fields with gen, the generator
@@ -72,27 +79,35 @@ func NewApplier[T any](gen *core.SchemaGenerator, cfg *core.ParserConfig) (*Appl
 	if err != nil {
 		return nil, fmt.Errorf("patch: walking fields: %w", err)
 	}
-	return &Applier[T]{
+	a := &Applier[T]{
 		codec:        cfg.GetCodec(),
 		copyBudget:   cfg.MaxPatchCopyBytes,
 		gen:          gen,
 		fieldNameTag: gen.FieldNameTag(),
 		fields:       patchFields(gen, walk),
 		hidden:       hiddenServerPaths(gen, walk),
-	}, nil
+	}
+	if a.fieldNameTag == core.JSONTagKey {
+		return a, nil
+	}
+	switch a.codec.(type) {
+	case core.StdlibJSON, *core.StdlibJSON:
+		a.codecNames, a.codecNamesErr = jsonCodecNames[T](gen, a.fields)
+	}
+	return a, nil
 }
 
 // patchFields maps each top-level patch field name to T's field, by the
 // same walk the schemas came from. A hidden server field is addressed by its
 // column, unless a visible field has that name.
 func patchFields(gen *core.SchemaGenerator, walk *core.StructFields) map[string]*core.Field {
-	m := make(map[string]*core.Field, len(walk.Fields))
-	for _, f := range walk.Fields {
+	m := make(map[string]*core.Field, walk.Len())
+	for f := range walk.Fields() {
 		if !f.Hidden() {
-			m[f.External] = f
+			m[f.External()] = f
 		}
 	}
-	for _, f := range walk.Fields {
+	for f := range walk.Fields() {
 		if !f.Hidden() {
 			continue
 		}
@@ -109,7 +124,7 @@ func patchFields(gen *core.SchemaGenerator, walk *core.StructFields) map[string]
 // field-name tag hides.
 func hiddenServerPaths(gen *core.SchemaGenerator, walk *core.StructFields) map[string]bool {
 	hidden := map[string]bool{}
-	for _, f := range walk.Fields {
+	for f := range walk.Fields() {
 		if !f.Hidden() {
 			continue
 		}
@@ -176,19 +191,12 @@ func newWorkingCopy[T any](target T) *workingCopy[T] {
 // the caller at a copy of that parent. A parent is copied once, so every
 // write through it lands in the same copy.
 func (w *workingCopy[T]) field(f *core.Field) (reflect.Value, error) {
-	v := w.root
-	for i, x := range f.Route {
-		if i > 0 && v.Kind() == reflect.Pointer {
-			err := w.own(v)
-			if err != nil {
-				return reflect.Value{}, fmt.Errorf("field %s: %w", f.GoName, err)
-			}
-			v = v.Elem()
-		}
-		v = v.Field(x)
+	v, err := f.SettableThrough(w.root, w.own)
+	if err != nil {
+		return reflect.Value{}, err
 	}
 	if !v.CanSet() {
-		return reflect.Value{}, fmt.Errorf("field %s cannot be set", f.GoName)
+		return reflect.Value{}, fmt.Errorf("field %s cannot be set", f.GoName())
 	}
 	return v, nil
 }
@@ -400,17 +408,11 @@ func assignValue(dst reflect.Value, v any, codec core.Codec) error {
 // different schema tag before a document operation can silently hit another
 // key. Custom codecs must encode the configured field-name tag themselves.
 func (a *Applier[T]) checkDocumentFieldNames(parsed *ParsedPatch) error {
-	if a.fieldNameTag == core.JSONTagKey {
-		return nil
+	if a.codecNamesErr != nil {
+		return a.codecNamesErr
 	}
-	switch a.codec.(type) {
-	case core.StdlibJSON, *core.StdlibJSON:
-	default:
+	if a.codecNames == nil {
 		return nil
-	}
-	jsonWalk, err := core.StructFieldsOf(reflect.TypeFor[T](), core.JSONTagKey, a.gen.ColumnTagKey())
-	if err != nil {
-		return fmt.Errorf("patch: the JSON codec cannot name T's fields: %w", err)
 	}
 	for _, op := range parsed.Operations {
 		for _, path := range []string{op.Path, op.From} {
@@ -421,21 +423,42 @@ func (a *Applier[T]) checkDocumentFieldNames(parsed *ParsedPatch) error {
 			if err != nil || len(tokens) == 0 {
 				return fmt.Errorf("patch: invalid field path %q", path)
 			}
-			field, ok := a.fields[tokens[0]]
-			if !ok {
+			name, ok := a.codecNames[tokens[0]]
+			if !ok || name == tokens[0] {
 				continue
 			}
-			i := slices.IndexFunc(jsonWalk.Fields, func(f *core.Field) bool { return slices.Equal(f.Route, field.Route) })
-			if i < 0 || jsonWalk.Fields[i].External != tokens[0] {
-				name := "(none)"
-				if i >= 0 {
-					name = jsonWalk.Fields[i].External
-				}
-				return fmt.Errorf("patch: field %s uses %q name %q but the JSON codec uses %q; configure a matching codec for document operations", field.GoName, a.fieldNameTag, tokens[0], name)
-			}
+			return fmt.Errorf("patch: field %s uses %q name %q but the JSON codec uses %q; configure a matching codec for document operations", a.fields[tokens[0]].GoName(), a.fieldNameTag, tokens[0], name)
 		}
 	}
 	return nil
+}
+
+// jsonCodecNames maps each name in fields to the name encoding/json, the
+// default codec, writes the same Go field under: "" when its json tag hides
+// the field, "(none)" when it does not write the field at all.
+func jsonCodecNames[T any](gen *core.SchemaGenerator, fields map[string]*core.Field) (map[string]string, error) {
+	jsonWalk, err := core.StructFieldsOf(reflect.TypeFor[T](), core.JSONTagKey, gen.ColumnTagKey())
+	if err != nil {
+		return nil, fmt.Errorf("patch: the JSON codec cannot name T's fields: %w", err)
+	}
+	type routed struct {
+		route []int
+		name  string
+	}
+	jsonFields := make([]routed, 0, jsonWalk.Len())
+	for f := range jsonWalk.Fields() {
+		jsonFields = append(jsonFields, routed{f.Route(), f.External()})
+	}
+	names := make(map[string]string, len(fields))
+	for name, field := range fields {
+		route := field.Route()
+		i := slices.IndexFunc(jsonFields, func(j routed) bool { return slices.Equal(j.route, route) })
+		names[name] = "(none)"
+		if i >= 0 {
+			names[name] = jsonFields[i].name
+		}
+	}
+	return names, nil
 }
 
 // applyDocument applies a patch through the target's document form: encode

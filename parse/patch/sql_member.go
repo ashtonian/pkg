@@ -213,7 +213,7 @@ func memberType(t reflect.Type, name string) reflect.Type {
 	}
 	f := jsonMember(t, name)
 	if f != nil {
-		return f.Type
+		return f.Type()
 	}
 	return nil
 }

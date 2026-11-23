@@ -36,15 +36,15 @@ func JSONFieldsOf(t reflect.Type) (*StructFields, error) {
 var jsonFields = gowalker.NewTypeCache(
 	gowalker.MustNew(gowalker.WithJSONFields(JSONTagKey), gowalker.DropTies(), gowalker.WithUnboundedCache()),
 	func(s *gowalker.Schema) (*StructFields, error) {
-		out := &StructFields{Type: s.Type(), external: map[string]*Field{}, view: s.Root()}
+		out := &StructFields{typ: s.Type(), external: map[string]*Field{}, view: s.Root()}
 		for _, d := range s.Root().Declarations() {
 			if d.State != gowalker.Named {
 				continue
 			}
 			_, options, _ := strings.Cut(d.GoField.Tag.Get(JSONTagKey), ",")
-			f := &Field{GoName: d.GoField.Name, Type: d.GoField.Type, Route: d.Index, External: d.Field.Name(), Tags: Tags{FieldNameOptions: options}}
-			out.Fields = append(out.Fields, f)
-			out.external[f.External] = f
+			f := &Field{goName: d.GoField.Name, typ: d.GoField.Type, route: d.Index, external: d.Field.Name(), tags: Tags{FieldNameOptions: options}}
+			out.fields = append(out.fields, f)
+			out.external[f.external] = f
 		}
 		return out, nil
 	},

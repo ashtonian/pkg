@@ -283,7 +283,7 @@ func NewResource[T any](table string, opts ...ResourceOption) (*Resource[T], err
 	}
 	columns := make(map[string]reflect.Type, len(order))
 	for name, f := range fieldsByColumn {
-		columns[name] = f.Type
+		columns[name] = f.Type()
 	}
 	err = checkKeyColumns(cfg.pk, columns, reflect.TypeFor[T]())
 	if err != nil {
@@ -573,13 +573,13 @@ func maskableFields(walk *core.StructFields, byColumn map[string]*core.Field, ac
 	for column, f := range byColumn {
 		columnOf[f] = column
 	}
-	out := make(map[string]bool, len(walk.Fields))
-	for _, f := range walk.Fields {
+	out := make(map[string]bool, walk.Len())
+	for f := range walk.Fields() {
 		column, isColumn := columnOf[f]
 		if f.Hidden() || (isColumn && access[column] != columnRead) {
 			continue
 		}
-		out[f.External] = true
+		out[f.External()] = true
 	}
 	return out
 }
@@ -877,17 +877,17 @@ func systemFields(table string, cfg resourceConfig, columns map[string]reflect.T
 // fields with one column are an error.
 func resourceColumns(gen *core.SchemaGenerator, walk *core.StructFields) ([]string, map[string]*core.Field, error) {
 	var order []string
-	byColumn := make(map[string]*core.Field, len(walk.Fields))
-	for _, f := range walk.Fields {
+	byColumn := make(map[string]*core.Field, walk.Len())
+	for f := range walk.Fields() {
 		col, ok, err := gen.FieldColumn(f)
 		if err != nil {
-			return nil, nil, fmt.Errorf("field %s: %w", f.GoName, err)
+			return nil, nil, fmt.Errorf("field %s: %w", f.GoName(), err)
 		}
 		if !ok {
 			continue
 		}
 		if prev, dup := byColumn[col]; dup {
-			return nil, nil, fmt.Errorf("fields %s and %s are both column %q", prev.GoName, f.GoName, col)
+			return nil, nil, fmt.Errorf("fields %s and %s are both column %q", prev.GoName(), f.GoName(), col)
 		}
 		byColumn[col] = f
 		order = append(order, col)
@@ -915,7 +915,7 @@ func (r *Resource[T]) WithPaths(decls ...filter.PathDecl) (*Resource[T], error) 
 		if !ok {
 			continue
 		}
-		w, err := r.gen.MemberWire(f.Type, strings.Split(members, "."))
+		w, err := r.gen.MemberWire(f.Type(), strings.Split(members, "."))
 		if err != nil {
 			return nil, fmt.Errorf("parse: %s: path %q: %w", r.table, d.Path, err)
 		}

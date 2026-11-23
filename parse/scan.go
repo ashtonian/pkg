@@ -96,7 +96,7 @@ func (r *Resource[T]) RowScanner(d Dialect, opts ...ScanOption) (*RowScanner[T],
 	for i, name := range r.read {
 		f := r.columnFields[name]
 		storage, declared := r.sqlTypes[name]
-		columns[i] = rowColumn{name: name, field: f, decode: rowDecodeOf(f.Type, declared && storage.IsJSON() || slices.Contains(cfg.json, name), sqlite)}
+		columns[i] = rowColumn{name: name, field: f, decode: rowDecodeOf(f.Type(), declared && storage.IsJSON() || slices.Contains(cfg.json, name), sqlite)}
 	}
 	return &RowScanner[T]{table: r.table, columns: columns}, nil
 }

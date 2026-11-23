@@ -34,7 +34,7 @@ func (f *Field) Quoted() bool {
 	if !f.HasFieldNameOption(stringOption) {
 		return false
 	}
-	t := f.Type
+	t := f.typ
 	if t.Name() == "" && t.Kind() == reflect.Pointer {
 		t = t.Elem()
 	}
@@ -61,7 +61,7 @@ func (f *Field) Wire() Wire {
 	if !f.Quoted() {
 		return ""
 	}
-	t := f.Type
+	t := f.typ
 	if t.Name() == "" && t.Kind() == reflect.Pointer {
 		t = t.Elem()
 	}
@@ -88,20 +88,14 @@ func (g *SchemaGenerator) MemberWire(t reflect.Type, path []string) (Wire, error
 		if err != nil {
 			return "", err
 		}
-		var member *Field
-		for _, f := range walk.Fields {
-			if f.External == seg {
-				member = f
-				break
-			}
-		}
-		if member == nil {
+		member, ok := walk.External(seg)
+		if !ok {
 			return "", nil
 		}
 		if i == len(path)-1 {
 			return member.Wire(), nil
 		}
-		t = member.Type
+		t = member.typ
 	}
 	return "", nil
 }

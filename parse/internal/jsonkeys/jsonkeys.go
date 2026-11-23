@@ -175,10 +175,9 @@ var decodedJSONOptions = jsonv2.JoinOptions(jsontext.AllowDuplicateNames(true), 
 type jsonShape struct {
 	kind shapeKind
 	typ  reflect.Type
-	// walk, fields and byName name a struct's members; members holds each
-	// member's shape, in fields order.
+	// walk and byName name a struct's members; members holds each
+	// member's shape, in the walk's order.
 	walk    *core.StructFields
-	fields  []*core.Field
 	byName  map[string]int
 	members []*jsonShape
 	// key is a map's key rule; elem a map's value or a list's element.
@@ -252,18 +251,16 @@ func buildJSONShape(t reflect.Type, building map[reflect.Type]*jsonShape) (*json
 		if err != nil {
 			return nil, err
 		}
-		shape.walk, shape.fields = walk, walk.Fields
-		shape.byName = make(map[string]int, len(walk.Fields))
-		for i, f := range walk.Fields {
-			shape.byName[f.External] = i
-		}
-		shape.members = make([]*jsonShape, len(walk.Fields))
-		for i, f := range walk.Fields {
-			member, err := buildJSONShape(f.Type, building)
+		shape.walk = walk
+		shape.byName = make(map[string]int, walk.Len())
+		shape.members = make([]*jsonShape, 0, walk.Len())
+		for f := range walk.Fields() {
+			shape.byName[f.External()] = len(shape.members)
+			member, err := buildJSONShape(f.Type(), building)
 			if err != nil {
 				return nil, err
 			}
-			shape.members[i] = member
+			shape.members = append(shape.members, member)
 		}
 		return shape, nil
 	case reflect.Map:
@@ -365,7 +362,7 @@ func (v *keyValidator) object(shape *jsonShape) error {
 	}
 	seenStart, spansStart, namesStart := len(v.seen), len(v.mapSpans), len(v.mapNames)
 	if shape.kind == shapeStruct {
-		v.seen = slices.Grow(v.seen, len(shape.fields))[:seenStart+len(shape.fields)]
+		v.seen = slices.Grow(v.seen, len(shape.members))[:seenStart+len(shape.members)]
 		clear(v.seen[seenStart:])
 	}
 	for v.dec.PeekKind() != '}' {
@@ -374,7 +371,7 @@ func (v *keyValidator) object(shape *jsonShape) error {
 			return err
 		}
 		if shape.kind == shapeStruct {
-			err = v.structMember(shape, v.seen[seenStart:seenStart+len(shape.fields)], name)
+			err = v.structMember(shape, v.seen[seenStart:seenStart+len(shape.members)], name)
 		} else {
 			err = v.mapMember(shape, name)
 		}
@@ -417,7 +414,7 @@ func (v *keyValidator) structMember(shape *jsonShape, seen []bool, name []byte) 
 		// Decoding gives a member no field names exactly to a field its name
 		// matches by case, if one does.
 		if f, folded := shape.walk.FoldedMatch(name); folded {
-			return fmt.Errorf("JSON member %q is noncanonical for %s; use %q", v.dec.StackPointer(), shape.typ, f.External)
+			return fmt.Errorf("JSON member %q is noncanonical for %s; use %q", v.dec.StackPointer(), shape.typ, f.External())
 		}
 		return v.skip() // not a member of the type
 	}

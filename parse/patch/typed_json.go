@@ -127,15 +127,15 @@ func normalizeTypedMerge(t reflect.Type, obj map[string]any, codec core.Codec, p
 			// arrays replace whole but still need exact fixed-array lengths.
 			n := encoded[name]
 			if nested, object := value.(map[string]any); object {
-				if fieldOmits(field) && mergeMayOmitMap(field.Type, nested) {
+				if fieldOmits(field) && mergeMayOmitMap(field.Type(), nested) {
 					return nil, fmt.Errorf("JSON member %q may become empty and omitted; use JSON Patch replace", name)
 				}
-				n, err = normalizeMergeMember(field.Type, value, codec, present && !fieldOmits(field), declared)
+				n, err = normalizeMergeMember(field.Type(), value, codec, present && !fieldOmits(field), declared)
 			} else if _, array := core.AnySlice(value); array && !declared {
-				_, err = normalizeTyped(field.Type, value, codec)
+				_, err = normalizeTyped(field.Type(), value, codec)
 			}
 			if err == nil && declared {
-				err = rejectCustomObjectMerge(field.Type, value, n)
+				err = rejectCustomObjectMerge(field.Type(), value, n)
 			}
 			if err != nil {
 				return nil, fmt.Errorf("member %q: %w", name, err)
@@ -246,7 +246,7 @@ func checkDocumentMember(schema *PatchSchema, op PatchOp, path string, value any
 			if f == nil {
 				return fmt.Errorf("%s has no member %q", t, token)
 			}
-			t = f.Type
+			t = f.Type()
 		case t.Kind() == reflect.Slice && t.Elem().Kind() == reflect.Uint8:
 			return fmt.Errorf("%s encodes as a string, which has no members", t)
 		case t.Kind() == reflect.Slice || t.Kind() == reflect.Array:
@@ -291,15 +291,11 @@ func checkMemberFits(parent reflect.Type, name string, value any) error {
 // decode would also take a field's name in another case.
 func jsonMember(t reflect.Type, name string) *core.Field {
 	walk, err := core.JSONFieldsOf(t)
-	if err != nil || name == "" {
+	if err != nil {
 		return nil
 	}
-	for _, f := range walk.Fields {
-		if f.External == name {
-			return f
-		}
-	}
-	return nil
+	f, _ := walk.External(name)
+	return f
 }
 
 func decodeJSONDocument(raw []byte, dst any) error {
@@ -481,7 +477,7 @@ func missingJSONMember(field *core.Field, value reflect.Value) (any, bool, error
 	// The stdlib owns ,string and custom-method/addressability rules. Encoding
 	// this missing zero field cannot replay a supplied custom value's codec.
 	wrapper := reflect.New(reflect.StructOf([]reflect.StructField{{
-		Name: "Value", Type: field.Type, Tag: reflect.StructTag("json:" + strconv.Quote("value,"+field.Tags.FieldNameOptions)),
+		Name: "Value", Type: field.Type(), Tag: reflect.StructTag("json:" + strconv.Quote("value,"+field.Tags().FieldNameOptions)),
 	}})).Elem()
 	wrapper.Field(0).Set(value)
 	raw, err := json.Marshal(wrapper.Interface())
@@ -547,10 +543,10 @@ func mergeStructFields(t reflect.Type) (map[string]*core.Field, error) {
 	if err != nil {
 		return nil, fmt.Errorf("object merge into %w; use JSON Patch replace", err)
 	}
-	fields := make(map[string]*core.Field, len(walk.Fields))
-	for _, f := range walk.Fields {
+	fields := make(map[string]*core.Field, walk.Len())
+	for f := range walk.Fields() {
 		if !f.Hidden() {
-			fields[f.External] = f
+			fields[f.External()] = f
 		}
 	}
 	return fields, nil

@@ -54,9 +54,9 @@ func TestFieldWire(t *testing.T) {
 		"named": "", "self": "", "name": "", "plain": "", "omit": "", "tags": "", "indirect": "",
 	}
 	quoted := map[string]bool{"id": true, "big": true, "ratio": true, "small": true, "on": true, "opt": true, "name": true}
-	for _, f := range walk.Fields {
-		assert.Equal(t, want[f.External], f.Wire(), f.External)
-		assert.Equal(t, quoted[f.External], f.Quoted(), f.External)
+	for f := range walk.Fields() {
+		assert.Equal(t, want[f.External()], f.Wire(), f.External())
+		assert.Equal(t, quoted[f.External()], f.Quoted(), f.External())
 	}
 
 	// Each WireString field reads in responses as a JSON string.
