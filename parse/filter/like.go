@@ -3,13 +3,16 @@ package filter
 import (
 	"errors"
 	"strings"
+	"unicode"
 )
 
-// Pattern semantics shared by `$like` / `$ilike` on every backend
-//: `%` matches any run of characters, `_` exactly one, and
-// `\` makes the next character literal. `$like` is case-sensitive; `$ilike`
-// folds case (SQLite folds ASCII letters only). `$contains` on a string is a
-// literal, case-sensitive substring.
+// Pattern semantics shared by `$like` / `$ilike` on every backend: `%`
+// matches any run of characters, `_` exactly one, and `\` makes the next
+// character literal. `$like` is case-sensitive. `$ilike` compares each
+// character lower-cased (unicode.ToLower), as PostgreSQL's ILIKE does under
+// pg_c_utf8: ſ is no s and ς no σ, while İ is i. SQLite, and a PostgreSQL
+// column under the C collation, lower-case ASCII letters only. `$contains`
+// on a string is a literal, case-sensitive substring.
 
 // likeEscaper makes a literal safe inside a LIKE pattern.
 var likeEscaper = strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`)
@@ -87,9 +90,11 @@ func likeToGlob(pattern string) (string, error) {
 	return b.String(), nil
 }
 
-// MatchLike reports whether s matches the LIKE pattern, folding case when
-// fold is set. It is the reference semantics of `$like` / `$ilike`; a
-// malformed pattern matches nothing (the parser rejects it first).
+// MatchLike reports whether s matches the LIKE pattern, comparing each
+// character lower-cased when fold is set: PostgreSQL's ILIKE under
+// pg_c_utf8, not Unicode case folding. It is the reference semantics of
+// `$like` / `$ilike`; a malformed pattern matches nothing (the parser
+// rejects it first).
 func MatchLike(s, pattern string, fold bool) bool {
 	toks, err := likeTokens(pattern)
 	if err != nil {
@@ -121,5 +126,5 @@ func MatchLike(s, pattern string, fold bool) bool {
 }
 
 func runesEqual(a, b rune, fold bool) bool {
-	return a == b || fold && strings.EqualFold(string(a), string(b))
+	return a == b || fold && unicode.ToLower(a) == unicode.ToLower(b)
 }
