@@ -53,7 +53,7 @@ func TestAlias_PrecedenceAndConflicts(t *testing.T) {
 	writeFile(t, both, "db:\n  maxconns: 10\n  max_conns: 20\n")
 	_, err = Load[aliasCfg](t.Context(), WithFile(both), WithSkipValidation())
 	require.ErrorIs(t, err, ErrValidation)
-	assert.Contains(t, err.Error(), "keys spelled two ways set one field: db.max_conns")
+	assert.Contains(t, err.Error(), "keys spelled two ways set one key: db.max_conns")
 }
 
 // An alias the key grammar cannot hold, or one that collides with a key or

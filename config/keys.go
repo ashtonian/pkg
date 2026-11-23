@@ -12,17 +12,21 @@ import (
 )
 
 // keyWalk rewrites one source's tree so every key naming a struct field is
-// spelled as the field is. Sources merge key by key, and mapstructure
-// prefers a key spelled exactly like the field over one that matches only in
-// letter case; without the rewrite, a higher-precedence "Port" would lose to
-// a default "port". Types are kept unless splitting a sep field requires a
-// wider container. Decode hooks are not run, and a custom decoder's value —
-// an UnmarshalMapstructure or TextUnmarshaler type, or an interface — is left
-// as written, as is every map key. A key an alias tag names is rewritten to
-// its field's key, a string set for a field with a sep tag is split into the
-// list its separator makes, and one set for a format:"json" field is parsed
-// and walked as the value it holds. It records a source that spells one
-// field two ways, every alias it rewrote, and every string that is not JSON.
+// spelled as the field is, and every map entry's key as its text (see
+// keyCodec). Sources merge key by key, and mapstructure prefers a key
+// spelled exactly like the field over one that matches only in letter case;
+// without the rewrite, a higher-precedence "Port" would lose to a default
+// "port", and an entry written "010" and another written "8" would both
+// decode into key 8 in no fixed order. Types are kept unless splitting a
+// sep field requires a wider container. Decode hooks are not run, and a
+// custom decoder's value — an UnmarshalMapstructure or TextUnmarshaler
+// type, or an interface — is left as written, as is a map key the built-in
+// decoding cannot read. A key an alias tag names is rewritten to its field's
+// key, a string set for a field with a sep tag is split into the list its
+// separator makes, and one set for a format:"json" field is parsed and
+// walked as the value it holds. It records a source that spells one field
+// or entry two ways, every alias it rewrote, and every string that is not
+// JSON.
 type keyWalk struct {
 	schema  *schemaNode
 	twice   []string
@@ -74,7 +78,7 @@ func (w *keyWalk) value(t reflect.Type, data any, path keyPath) any {
 	case isBranch(t) && derefValue(v).Kind() == reflect.Struct && derefValue(v).Type() == t:
 		return w.section(t, v, path)
 	case t.Kind() == reflect.Map && v.Kind() == reflect.Map:
-		return w.mapValues(t.Elem(), v, path)
+		return w.mapValues(t, v, path)
 	case t.Kind() == reflect.Map && isList(v):
 		return w.elements(t, v, path) // mapstructure merges a list of maps into one map
 	case (t.Kind() == reflect.Slice || t.Kind() == reflect.Array) && isList(v):
@@ -177,12 +181,7 @@ func (w *keyWalk) structMap(t reflect.Type, v reflect.Value, path keyPath) any {
 		}
 		key, ft, tag := f.key, f.sf.Type, f.sf.Tag
 		if prev, dup := claimed[key]; dup {
-			at := path.field(key)
-			if safe := diagnosticPath(w.schema, at); len(safe) < len(at) {
-				w.twice = append(w.twice, safe.String()+" (sensitive contents)")
-			} else {
-				w.twice = append(w.twice, fmt.Sprintf("%s (as %q and %q)", at, prev, k))
-			}
+			w.spelledTwice(path.field(key), prev, k)
 			continue
 		}
 		claimed[key] = k
@@ -213,28 +212,63 @@ func (w *keyWalk) structMap(t reflect.Type, v reflect.Value, path keyPath) any {
 	return keepWhole(v, out)
 }
 
-// mapValues follows the values of map v into element type elem; its keys are
-// the caller's and stay as written, each entry's path naming it by its
-// key's text (see keyCodec). A typed map whose keys' text decodes back to
-// them becomes a wholeMap keyed by that text (see textKeyedMap), as a
-// map[string]any from a file is keyed, so a higher source can set one
-// entry, or one key within an entry.
-func (w *keyWalk) mapValues(elem reflect.Type, v reflect.Value, path keyPath) any {
+// mapValues follows the values of map v, set for a map of type declared,
+// into its element type, each entry's path naming it by its key's text (see
+// keyCodec). A typed map whose keys' text decodes back to them becomes a
+// wholeMap keyed by that text (see textKeyedMap), as a map[string]any from
+// a file is keyed, so a higher source can set one entry, or one key within
+// an entry. A source's map[string]any is keyed by the same text: each key
+// the built-in decoding reads is rewritten to its key's text, so every
+// source names an entry one way and precedence holds across spellings;
+// one the decoding cannot read stays as written, for a decode hook to read
+// or the decoder to refuse.
+func (w *keyWalk) mapValues(declared reflect.Type, v reflect.Value, path keyPath) any {
 	if v.IsNil() {
 		return v.Interface()
 	}
-	if t := v.Type(); t != mapStringAnyType && t != wholeMapType {
+	elem := declared.Elem()
+	t := v.Type()
+	source := t == mapStringAnyType || t == wholeMapType
+	if !source {
 		if m, ok := textKeyedMap(v, func(k string, e reflect.Value) any {
 			return w.elem(t.Elem(), elem, e, path.key(k)).Interface()
 		}); ok {
 			return m
 		}
 	}
-	out := reflect.MakeMapWithSize(v.Type(), v.Len())
-	for _, k := range v.MapKeys() {
-		out = setMapValue(out, k, w.elem(v.Type().Elem(), elem, v.MapIndex(k), path.key(entryName(k))))
+	codec := keyCodecOf(declared.Key())
+	if !source || codec == nil || codec.plain {
+		// Typed keys, or source text that is already the key's.
+		out := reflect.MakeMapWithSize(t, v.Len())
+		for _, k := range v.MapKeys() {
+			out = setMapValue(out, k, w.elem(t.Elem(), elem, v.MapIndex(k), path.key(entryName(k))))
+		}
+		return keepWhole(v, out)
+	}
+	written := make(map[string]string, v.Len()) // an entry's text → the key it was written as
+	out := reflect.MakeMapWithSize(t, v.Len())
+	for _, k := range slices.SortedFunc(slices.Values(v.MapKeys()), func(a, b reflect.Value) int { return strings.Compare(a.String(), b.String()) }) {
+		name := k.String()
+		if text, err := codec.canonical(name); err == nil {
+			name = text
+		}
+		if prev, dup := written[name]; dup {
+			w.spelledTwice(path.key(name), prev, k.String())
+			continue
+		}
+		written[name] = k.String()
+		out = setMapValue(out, reflect.ValueOf(name).Convert(t.Key()), w.elem(t.Elem(), elem, v.MapIndex(k), path.key(name)))
 	}
 	return keepWhole(v, out)
+}
+
+// spelledTwice records that a source set the key at under two spellings.
+func (w *keyWalk) spelledTwice(at keyPath, first, second string) {
+	if safe := diagnosticPath(w.schema, at); len(safe) < len(at) {
+		w.twice = append(w.twice, safe.String()+" (sensitive contents)")
+		return
+	}
+	w.twice = append(w.twice, fmt.Sprintf("%s (as %q and %q)", at, first, second))
 }
 
 var wholeMapType = reflect.TypeFor[wholeMap]()

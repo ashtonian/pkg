@@ -233,6 +233,34 @@ func TestMapKeys_OneEntryOneKey(t *testing.T) {
 	assert.ErrorIs(t, err, ErrKey, "the decoder reads no integer from 080")
 }
 
+// Every source names an entry by its key's text before the sources merge,
+// so precedence holds whichever spelling each source wrote, the origin and
+// shadowing of a key are recorded under that text, and a source spelling one
+// entry two ways fails as a key spelled two ways.
+func TestMapKeys_SourcesNameAnEntryOneWay(t *testing.T) {
+	file := filepath.Join(t.TempDir(), "c.yaml")
+	writeFile(t, file, "by_int: {\"010\": {host: f, port: 1}}\n")
+	override := Source{Kind: SourceOverride, Name: "0"}
+	for range 20 {
+		snap, err := LoadSnapshot[mkConfig](t.Context(), WithFile(file), WithOverrideEntries(readEntries(map[string]any{`by_int["8"].host`: "o"})))
+		require.NoError(t, err)
+		assert.Equal(t, mkServer{Host: "o", Port: 1}, snap.Config.ByInt[8])
+		assert.Equal(t, override, snap.Provenance[`by_int["8"].host`].Input)
+		assert.Equal(t, fileInput(file), snap.Provenance[`by_int["8"].port`].Input)
+		assert.Equal(t, []Shadow{{Key: `by_int["8"].host`, Source: fileInput(file), By: override}}, snap.Shadowed)
+	}
+
+	writeFile(t, file, "by_int: {\"010\": {host: a}, \"8\": {host: b}}\n")
+	_, err := Load[mkConfig](t.Context(), WithFile(file))
+	require.ErrorIs(t, err, ErrValidation)
+	assert.Contains(t, err.Error(), `keys spelled two ways set one key: by_int["8"] (as "010" and "8")`)
+	_, err = DecodeEdits[mkConfig](t.Context(), nil, map[string]any{"by_int": map[string]any{"010": map[string]any{}, "8": map[string]any{}}})
+	var ee *EditsError
+	if assert.ErrorAs(t, err, &ee) && assert.Len(t, ee.Refused, 1) {
+		assert.Contains(t, ee.Refused[0].Error(), `keys spelled two ways set one key: by_int["8"] (as "010" and "8")`)
+	}
+}
+
 // mkTensKey writes itself rounded down to tens, so the text of 15 reads
 // back as 10.
 type mkTensKey int
@@ -298,10 +326,11 @@ func TestMapKeys_TextNamesOnlyKeysThatReadBack(t *testing.T) {
 }
 
 // An unknown key inside an entry of a map keyed by any type is named at its
-// own place, in a key that parses back to itself.
+// own place, in a key that parses back to itself: the entry by its key's
+// text, however the source spelled it.
 func TestMapKeys_UnknownKeysAreNamedInsideEntries(t *testing.T) {
 	file := filepath.Join(t.TempDir(), "c.yaml")
-	writeFile(t, file, "by_int: {80: {bogus: 1}}\nby_level: {3: {bogus: 1}}\nby_text: {lvl-1: {bogus: 1}}\n")
+	writeFile(t, file, "by_int: {\"0x50\": {bogus: 1}}\nby_level: {\"03\": {bogus: 1}}\nby_text: {lvl-01: {bogus: 1}}\n")
 	_, err := Load[mkConfig](t.Context(), WithFile(file))
 	var u *UnknownKeysError
 	require.ErrorAs(t, err, &u)
@@ -314,6 +343,11 @@ func TestMapKeys_UnknownKeysAreNamedInsideEntries(t *testing.T) {
 		}
 	}
 	assert.ElementsMatch(t, []string{`by_int["80"].bogus`, `by_level["3"].bogus`, `by_text["lvl-1"].bogus`}, keys)
+
+	writeFile(t, file, "by_level: {\"03\": {port: x}}\n")
+	_, err = Load[mkConfig](t.Context(), WithFile(file))
+	require.ErrorIs(t, err, ErrValidation)
+	assert.Contains(t, err.Error(), `by_level["3"].port`)
 }
 
 // mkHookLevel is read from a name only by the caller's decode hook.

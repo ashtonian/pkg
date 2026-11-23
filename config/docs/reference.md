@@ -14,7 +14,7 @@ Every error wraps one category sentinel together with its cause, so `errors.Is` 
 
 | Sentinel | Meaning |
 |---|---|
-| `ErrValidation` | Validation failed, a value has the wrong type, an unknown key (an `*UnknownKeysError` lists them), an ambiguous environment variable, or a field spelled two ways. |
+| `ErrValidation` | Validation failed, a value has the wrong type, an unknown key (an `*UnknownKeysError` lists them), an ambiguous environment variable, or a field or map entry spelled two ways. |
 | `ErrFileRead` | A required (or previously loaded) file is missing or unreadable. |
 | `ErrFileParse` | The parser rejected a file; a `*ParseError` names the file and line. |
 | `ErrSource` | Defaults or a provider failed to load. |

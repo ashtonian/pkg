@@ -152,7 +152,7 @@ func (l *loader) rewrite(name string, data map[string]any) (map[string]any, erro
 func (l *loader) walk(w *keyWalk, name string, data map[string]any) (map[string]any, error) {
 	tree := w.tree(l.root, textKeyed(data))
 	if len(w.twice) > 0 {
-		return nil, fmt.Errorf("loading %s: %w: keys spelled two ways set one field: %s", name, ErrValidation, strings.Join(w.twice, ", "))
+		return nil, fmt.Errorf("loading %s: %w: keys spelled two ways set one key: %s", name, ErrValidation, strings.Join(w.twice, ", "))
 	}
 	if len(w.notJSON) > 0 {
 		return nil, fmt.Errorf("loading %s: %w: format:\"json\" values that are not JSON: %s", name, ErrValidation, strings.Join(w.notJSON, ", "))
