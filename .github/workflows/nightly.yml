@@ -3,7 +3,8 @@ name: nightly
 # What pull requests and main pushes scope down: ci.yml at full scope (every
 # suite and release check), every parse unit test under the race detector, and
 # the parse benchmarks, on main's current commit. ci.yml's scope runs nothing
-# when an earlier scheduled run already passed on that commit.
+# when an earlier scheduled run already passed on that commit. Beside it,
+# parse's fuzz targets are fuzzed under one time budget.
 on:
   schedule:
     - cron: '41 8 * * *'
@@ -23,3 +24,39 @@ jobs:
     secrets:
       CI_ARTIFACT_ENDPOINT: ${{ secrets.CI_ARTIFACT_ENDPOINT }}
       PRIVATE_REFERENCE_PATTERNS: ${{ secrets.PRIVATE_REFERENCE_PATTERNS }}
+  # Pull requests replay only the checked-in seeds. This generates inputs:
+  # every night, on an unchanged commit too, since each run explores inputs
+  # the last did not, from the corpus the Go build cache carries between runs.
+  fuzz:
+    if: github.actor_id == '4212452'
+    name: parse fuzzing
+    permissions:
+      contents: read
+      id-token: write
+    runs-on: arc-pkg
+    timeout-minutes: 30
+    env:
+      CI_ARTIFACT_ENDPOINT: ${{ secrets.CI_ARTIFACT_ENDPOINT }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ashtonian/go-ci-actions@2ee8735fdee91ff0ee16067a263da6c8a7770841 # v1.13.0
+        with:
+          go-version: '1.27.x'
+          cache-dependency-path: "**/go.sum"
+      - name: Fuzz every parse fuzz target
+        env:
+          FUZZ_BUDGET_SECONDS: '900'
+          FUZZ_CRASHERS: fuzz-crashers
+        run: tools/fuzz-parse.sh parse
+      # A failing input, kept at its path under parse/: copy it into the
+      # package's testdata/fuzz beside the fix, where it is a seed from then on.
+      - name: Keep failing inputs
+        if: failure()
+        uses: ashtonian/go-ci-actions/upload-artifact@2ee8735fdee91ff0ee16067a263da6c8a7770841 # v1.13.0
+        with:
+          name: parse-fuzz-crashers-${{ github.sha }}-${{ github.run_attempt }}
+          path: fuzz-crashers
+          if-no-files-found: ignore
+          retention-days: 30
