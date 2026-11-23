@@ -77,7 +77,7 @@ The tests are unit tests over `httptest`; they need no database.
 
 ## Security
 
-A `*core.ParseError` describes the request, never the database, so `WriteError` returns its message to the client. Everything else is left to the caller, which logs it and answers without internals. `WriteJSON` writes exactly the value it is given. Nothing here authenticates or authorizes; `parse.Scope` carries what the server decides.
+A `*core.ParseError` describes the request, never the database, so `WriteError` returns its message to the client. Only a request fault is one: a policy, scope, tenant or computed expression the server supplied and cannot build is a plain error, so `WriteError` never tells a client its valid request was invalid or shows it the server's policy ([HTTP errors](../docs/http-errors.md#error-handling)). Everything else is left to the caller, which logs it and answers without internals. `WriteJSON` writes exactly the value it is given. Nothing here authenticates or authorizes; `parse.Scope` carries what the server decides.
 
 ## Code Map
 

@@ -96,7 +96,12 @@ type conformanceCase struct {
 	CanonicalAST *astNode       `json:"canonicalAst,omitempty"`
 	SQLPostgres  string         `json:"sqlPostgres,omitempty"`
 	SQLSqlite    string         `json:"sqlSqlite,omitempty"`
-	ErrorCode    string         `json:"errorCode,omitempty"`
+	// SQLPostgresCode and SQLSqliteCode are the code a dialect refuses a
+	// valid filter with: a value the grammar accepts and the dialect cannot
+	// hold, such as an unsigned integer above SQLite's.
+	SQLPostgresCode string `json:"sqlPostgresCode,omitempty"`
+	SQLSqliteCode   string `json:"sqlSqliteCode,omitempty"`
+	ErrorCode       string `json:"errorCode,omitempty"`
 	// TSApplicable is false for constructs the TS client legitimately never
 	// builds (e.g. server-side geo). The TS conformance test skips these.
 	TSApplicable *bool `json:"tsApplicable,omitempty"`
@@ -363,26 +368,29 @@ func runCase(t *testing.T, schema *filter.ResourceSchema, in caseInput) conforma
 	if ast != nil {
 		c.CanonicalAST = toASTNode(ast.Root)
 	}
-	if sql, ok := buildWhere(schema, ast, filter.PostgresDialect{}); ok {
-		c.SQLPostgres = sql
-	}
-	if sql, ok := buildWhere(schema, ast, filter.SQLiteDialect{}); ok {
-		c.SQLSqlite = sql
-	}
+	c.SQLPostgres, c.SQLPostgresCode = buildWhere(t, in.name, schema, ast, filter.PostgresDialect{})
+	c.SQLSqlite, c.SQLSqliteCode = buildWhere(t, in.name, schema, ast, filter.SQLiteDialect{})
 	return c
 }
 
-// buildWhere generates the WHERE fragment for a dialect; ok is false for an
-// empty AST (no WHERE) or a build error (recorded as an empty fragment).
-func buildWhere(schema *filter.ResourceSchema, ast *filter.FilterAST, dialect filter.Dialect) (string, bool) {
+// buildWhere generates the WHERE fragment for a dialect, "" for an empty
+// AST, or the code of the ParseError the dialect refuses the request's
+// values with. Any other build error is a defect in the case or the builder:
+// a valid request never fails as the server's fault.
+func buildWhere(t *testing.T, name string, schema *filter.ResourceSchema, ast *filter.FilterAST, dialect filter.Dialect) (sql, code string) {
+	t.Helper()
 	if ast == nil || ast.Root == nil {
-		return "", false
+		return "", ""
 	}
 	res, err := filter.NewSQLBuilder(schema, dialect).Build(ast)
-	if err != nil || res == nil {
-		return "", false
+	if err != nil {
+		pe, ok := errors.AsType[*core.ParseError](err)
+		if !ok {
+			t.Fatalf("case %q: %s build: %v", name, dialect.Name(), err)
+		}
+		return "", pe.Code
 	}
-	return res.Where, true
+	return res.Where, ""
 }
 
 // normalize JSON-encodes a value so int/float and field-order differences
@@ -466,6 +474,9 @@ func TestFilterConformance(t *testing.T) {
 			}
 			if got.SQLSqlite != want.SQLSqlite {
 				t.Fatalf("sqlSqlite: got %q want %q", got.SQLSqlite, want.SQLSqlite)
+			}
+			if got.SQLPostgresCode != want.SQLPostgresCode || got.SQLSqliteCode != want.SQLSqliteCode {
+				t.Fatalf("dialect refusals: got %q/%q want %q/%q", got.SQLPostgresCode, got.SQLSqliteCode, want.SQLPostgresCode, want.SQLSqliteCode)
 			}
 		})
 	}

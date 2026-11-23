@@ -10,6 +10,49 @@ import (
 	"github.com/ashtonian/pkg/parse/core"
 )
 
+// ErrPolicyInvalid is a policy the schema cannot compile: no schema, a field
+// the schema does not have, an operator the field's type does not take, a
+// value that does not fit the field, a membership lookup that does not
+// apply, or a negated empty group. Policy is the server's, never the
+// request's, so it is a plain error and never a *core.ParseError.
+var ErrPolicyInvalid = errors.New("filter: invalid policy constraint")
+
+// policyFault is err, raised compiling the policy constraint on field, as
+// the server fault it is: wrapping ErrPolicyInvalid, and keeping a
+// ParseError's message and cause but not the ParseError, whose code would
+// answer the request as at fault.
+func policyFault(field string, err error) error {
+	pe, ok := errors.AsType[*core.ParseError](err)
+	switch {
+	case !ok && errors.Is(err, ErrPolicyInvalid):
+		return fmt.Errorf("field %q: %w", field, err)
+	case !ok:
+		return fmt.Errorf("%w: field %q: %w", ErrPolicyInvalid, field, err)
+	}
+	fault := &policyError{msg: fmt.Sprintf("%v: field %q: %s", ErrPolicyInvalid, field, pe.Message)}
+	if _, nested := errors.AsType[*core.ParseError](pe.Cause); !nested {
+		fault.cause = pe.Cause
+	}
+	return fault
+}
+
+// policyError is a policy fault whose message already states its cause, a
+// ParseError's text, so the cause stays in the chain without being written
+// twice.
+type policyError struct {
+	msg   string
+	cause error
+}
+
+func (e *policyError) Error() string { return e.msg }
+
+func (e *policyError) Unwrap() []error {
+	if e.cause == nil {
+		return []error{ErrPolicyInvalid}
+	}
+	return []error{ErrPolicyInvalid, e.cause}
+}
+
 // PolicyConstraint represents a single policy-derived filter condition.
 type PolicyConstraint struct {
 	Field    string
@@ -64,7 +107,8 @@ func (pc *PolicyConstraints) IsEmpty() bool {
 // Constraint values are normalized as request values are,
 // since dialects and the memory backend read canonical values only; request
 // limits do not apply, as policy lists (allowed IDs) are trusted and may be
-// long. Relative-time tokens resolve against the wall clock.
+// long. Relative-time tokens resolve against the wall clock. A policy that
+// does not compile is an error wrapping ErrPolicyInvalid.
 func ApplyPolicyConstraints(schema *ResourceSchema, userAST *FilterAST, pc *PolicyConstraints) (*FilterAST, error) {
 	return applyPolicyConstraints(schema, userAST, pc, nil)
 }
@@ -76,11 +120,7 @@ func applyPolicyConstraints(schema *ResourceSchema, userAST *FilterAST, pc *Poli
 		return userAST, nil
 	}
 	if schema == nil {
-		return nil, &core.ParseError{
-			Kind:    core.ParseErrorKindFilter,
-			Code:    ECodeSchemaNotFound.String(),
-			Message: "cannot apply policy constraints: schema is nil",
-		}
+		return nil, fmt.Errorf("%w: no schema to apply it to", ErrPolicyInvalid)
 	}
 	norm := NewFilterParser(schema, &core.ParserConfig{MaxDepth: math.MaxInt, MaxArraySize: math.MaxInt, Clock: clock})
 	policyNode, err := constraintsToNode(norm, schema, pc)
@@ -144,10 +184,7 @@ func constraintsToNode(norm *FilterParser, schema *ResourceSchema, pc *PolicyCon
 		if pc.Not {
 			// An empty group admits every row; its negation admits none, which
 			// a caller states with a constraint rather than an empty group.
-			return nil, &core.ParseError{
-				Kind: core.ParseErrorKindFilter, Code: ECodeInvalidOperator.String(),
-				Message: "policy constraint negates an empty group",
-			}
+			return nil, fmt.Errorf("%w: a negated group holds no constraint", ErrPolicyInvalid)
 		}
 		return nil, nil
 	case 1:
@@ -176,19 +213,15 @@ func constraintToNode(norm *FilterParser, schema *ResourceSchema, c *PolicyConst
 
 	field, ok, err := schema.PolicyField(c.Field)
 	if err != nil {
-		return nil, err
+		return nil, policyFault(c.Field, err)
 	}
 	if !ok {
-		return nil, &core.ParseError{
-			Kind:    core.ParseErrorKindFilter,
-			Code:    ECodeUnknownField.String(),
-			Message: "policy constraint references unknown field '" + c.Field + "'",
-		}
+		return nil, fmt.Errorf("%w: field %q is not a field of %s", ErrPolicyInvalid, c.Field, schema.Name)
 	}
 	if c.Member != nil {
 		node, err := memberNode(field, c.Member)
 		if err != nil {
-			return nil, err
+			return nil, policyFault(c.Field, err)
 		}
 		if c.Negate {
 			return &FilterNode{Op: OpNot, Children: []*FilterNode{node}}, nil
@@ -200,11 +233,7 @@ func constraintToNode(norm *FilterParser, schema *ResourceSchema, c *PolicyConst
 		return unknownNode(), nil
 	}
 	if err != nil {
-		if pe, ok := errors.AsType[*core.ParseError](err); ok {
-			pe.Message = "policy constraint on '" + c.Field + "': " + pe.Message
-			return nil, pe
-		}
-		return nil, err
+		return nil, policyFault(c.Field, err)
 	}
 	node := &FilterNode{Field: field, Op: op, Value: value}
 	if c.Negate {

@@ -29,6 +29,11 @@ func (d SQLiteDialect) Condition(field *FieldSchema, op FilterOperator, value an
 		sql, _, err := comparison(expr, op, nil, bind)
 		return sql, err
 	}
+	if field.DataType != core.FieldTypeGeo && !core.IsDocument(field.DataType) {
+		if err := sqliteIntegers(field, value); err != nil {
+			return "", err
+		}
+	}
 	switch {
 	case field.DataType == core.FieldTypeGeo:
 		return d.geoCondition(field, op, value, bind)
@@ -143,10 +148,30 @@ func (SQLiteDialect) setRows(field *FieldSchema, members []any, bind func(any) s
 	return "SELECT value AS v FROM json_each(" + bind(string(arr)) + ")", nil
 }
 
+// sqliteIntegers refuses an unsigned operand above int64, alone or in a
+// list: SQLite's integers end there and its driver cannot bind one, so no
+// row holds the value as an integer. It is E2073, the request's error, as a
+// typed field whose Go kind cannot hold a value is.
+func sqliteIntegers(field *FieldSchema, value any) error {
+	values := []any{value}
+	if items, ok := core.AnySlice(value); ok {
+		values = items
+	}
+	for _, v := range values {
+		if n, ok := v.(uint64); ok && n > math.MaxInt64 {
+			return valueMismatch(field, fmt.Errorf("%d exceeds SQLite's 64-bit signed integers", n))
+		}
+	}
+	return nil
+}
+
 // sqliteSetMembers are a set's members as its JSON array holds them.
 func sqliteSetMembers(field *FieldSchema, members []any) (any, error) {
 	if field.DataType == core.FieldTypeDecimal {
 		return typedSlice(members, core.DecimalText)
+	}
+	if err := sqliteIntegers(field, members); err != nil {
+		return nil, err
 	}
 	doc := make([]any, len(members))
 	for i, m := range members {
@@ -156,11 +181,6 @@ func sqliteSetMembers(field *FieldSchema, members []any) (any, error) {
 			// 1e21 as an integer literal, which SQLite reads as an INTEGER
 			// unequal to the float itself above 2^53.
 			doc[i] = json.Number(strconv.FormatFloat(v, 'g', -1, 64))
-		case uint64:
-			if v > math.MaxInt64 {
-				return nil, fmt.Errorf("set member %d exceeds SQLite's 64-bit signed integers", v)
-			}
-			doc[i] = v
 		default:
 			doc[i] = v
 		}

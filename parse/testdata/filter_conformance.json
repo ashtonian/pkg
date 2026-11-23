@@ -302,7 +302,7 @@
       "value": 18446744073709551615
     },
     "sqlPostgres": "\"conf_entities\".\"big\" = $1",
-    "sqlSqlite": "\"conf_entities\".\"big\" = ?1"
+    "sqlSqliteCode": "E2073"
   },
   {
     "name": "quoted_float",

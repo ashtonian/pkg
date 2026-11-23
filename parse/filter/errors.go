@@ -2,6 +2,7 @@ package filter
 
 import (
 	"errors"
+	"fmt"
 
 	"github.com/ashtonian/pkg/parse/core"
 )
@@ -19,7 +20,6 @@ const (
 	ECodeDepthExceeded       = core.CodeDepthExceeded
 	ECodeSchemaNotFound      = core.CodeSchemaNotFound
 	ECodeSortFieldNotAllowed = core.CodeSortFieldNotAllowed
-	ECodeSQLGenerationFailed = core.CodeSQLGenerationFailed
 	ECodeSortFieldLimit      = core.CodeSortFieldLimit
 	ECodeInvalidCursor       = core.CodeInvalidCursor
 	ECodeInvalidRelation     = core.CodeInvalidRelation
@@ -51,7 +51,7 @@ func Codes() []core.Code {
 		ECodeQueryTooExpensive, ECodeInvalidArray, ECodeInputTooLarge, ECodeCursorTooLarge,
 		ECodeUnknownField, ECodeInvalidOperator, ECodeValueTypeMismatch,
 		ECodeDepthExceeded, ECodeSchemaNotFound, ECodeSortFieldNotAllowed,
-		ECodeSQLGenerationFailed, ECodeSortFieldLimit, ECodeInvalidCursor,
+		ECodeSortFieldLimit, ECodeInvalidCursor,
 		ECodeInvalidRelation, ECodeInvalidJSON, ECodeInvalidEnumValue,
 		ECodeArrayTooLarge, ECodeMaxConditions,
 		ECodeInvalidGeoCoords, ECodeInvalidDistance, ECodeInvalidGeoPolygon, ECodeGeoNotSupported,
@@ -63,6 +63,18 @@ func Codes() []core.Code {
 // expression, returns for a dialect it has no rendering for. A DSN naming
 // an unsupported database is ErrUnknownDSN.
 var ErrUnsupportedDialect = errors.New("unsupported SQL dialect")
+
+// valueMismatch is E2073 for a request value field cannot hold, naming the
+// field.
+func valueMismatch(field *FieldSchema, cause error) *core.ParseError {
+	return &core.ParseError{
+		Kind:    core.ParseErrorKindFilter,
+		Code:    ECodeValueTypeMismatch.String(),
+		Message: fmt.Sprintf("field '%s': %v", field.ExternalName, cause),
+		Details: map[string]any{core.DetailField: field.ExternalName},
+		Cause:   cause,
+	}
+}
 
 func newFilterError(code core.Code, message string) *core.ParseError {
 	return &core.ParseError{

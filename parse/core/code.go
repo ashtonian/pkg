@@ -35,7 +35,6 @@ const (
 	CodePatchValueInvalid      Code = "E2077"
 	CodeSchemaNotFound         Code = "E2078"
 	CodeSortFieldNotAllowed    Code = "E2079"
-	CodeSQLGenerationFailed    Code = "E2080"
 	CodeSortFieldLimit         Code = "E2081"
 	CodeInvalidCursor          Code = "E2082"
 	CodeInvalidRelation        Code = "E2083"
@@ -81,7 +80,6 @@ var codeInfo = map[Code]struct {
 	CodePatchValueInvalid:      {422, "patch value invalid"},
 	CodeSchemaNotFound:         {422, "schema not found"},
 	CodeSortFieldNotAllowed:    {422, "sort field not allowed"},
-	CodeSQLGenerationFailed:    {422, "SQL generation failed"},
 	CodeSortFieldLimit:         {422, "sort field limit exceeded"},
 	CodeInvalidCursor:          {422, "invalid cursor"},
 	CodeInvalidRelation:        {422, "invalid relation"},

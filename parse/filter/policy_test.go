@@ -80,23 +80,27 @@ func TestPolicyConstraints_ListsAreUnbounded(t *testing.T) {
 	assert.Equal(t, []any{ids}, res.Args, "one parameter holds the whole set")
 }
 
+// A policy the schema cannot compile is the server's fault: ErrPolicyInvalid,
+// never a ParseError, whose code would answer the request as at fault. The
+// message names the field and what is wrong with it.
 func TestPolicyConstraints_Rejects(t *testing.T) {
 	tests := []struct {
 		name string
 		c    *PolicyConstraint
-		code string
+		want string
 	}{
-		{"malformed uuid", &PolicyConstraint{Field: "id", Operator: OpEq, Value: "not-a-uuid"}, ECodeInvalidUUID.String()},
-		{"operator outside the type", &PolicyConstraint{Field: "id", Operator: OpLike, Value: "a%"}, ECodeInvalidOperator.String()},
-		{"exists without a boolean", &PolicyConstraint{Field: "deleted_at", Operator: OpExists, Value: "yes"}, ECodeValueTypeMismatch.String()},
-		{"unknown field", &PolicyConstraint{Field: "owner", Operator: OpEq, Value: "x"}, ECodeUnknownField.String()},
+		{"malformed uuid", &PolicyConstraint{Field: "id", Operator: OpEq, Value: "not-a-uuid"}, `field "id": `},
+		{"operator outside the type", &PolicyConstraint{Field: "id", Operator: OpLike, Value: "a%"}, "operator 'like' does not apply"},
+		{"exists without a boolean", &PolicyConstraint{Field: "deleted_at", Operator: OpExists, Value: "yes"}, "$exists requires a boolean value"},
+		{"unknown field", &PolicyConstraint{Field: "owner", Operator: OpEq, Value: "x"}, `field "owner" is not a field of`},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			_, err := ApplyPolicyConstraints(policySchema(), nil, &PolicyConstraints{Constraints: []*PolicyConstraint{tt.c}})
-			var pe *core.ParseError
-			require.True(t, errors.As(err, &pe), "got %v", err)
-			assert.Equal(t, tt.code, pe.Code)
+			require.ErrorIs(t, err, ErrPolicyInvalid)
+			assert.ErrorContains(t, err, tt.want)
+			_, isParseError := errors.AsType[*core.ParseError](err)
+			assert.False(t, isParseError, "%v", err)
 		})
 	}
 }
@@ -156,9 +160,29 @@ func TestPolicyConstraints_NegatedEmptyGroupIsRefused(t *testing.T) {
 		t.Run(label, func(t *testing.T) {
 			assert.False(t, pc.IsEmpty())
 			_, err := ApplyPolicyConstraints(policySchema(), nil, pc)
-			var pe *core.ParseError
-			require.ErrorAs(t, err, &pe)
-			assert.Equal(t, ECodeInvalidOperator.String(), pe.Code)
+			require.ErrorIs(t, err, ErrPolicyInvalid)
+			_, isParseError := errors.AsType[*core.ParseError](err)
+			assert.False(t, isParseError)
 		})
 	}
+}
+
+// A policy fault carries a ParseError's message and cause, never the
+// ParseError itself, even when the cause holds one.
+func TestPolicyFault_HoldsNoParseError(t *testing.T) {
+	cause := errors.New("bad value")
+	for name, err := range map[string]error{
+		"plain cause":      &core.ParseError{Code: ECodeValueTypeMismatch.String(), Message: "m", Cause: cause},
+		"ParseError cause": &core.ParseError{Code: ECodeValueTypeMismatch.String(), Message: "m", Cause: newFilterError(ECodeInvalidUUID, "inner")},
+		"wrapped":          fmt.Errorf("context: %w", &core.ParseError{Code: ECodeInvalidOperator.String(), Message: "m"}),
+	} {
+		t.Run(name, func(t *testing.T) {
+			fault := policyFault("owner", err)
+			assert.ErrorIs(t, fault, ErrPolicyInvalid)
+			assert.Equal(t, `filter: invalid policy constraint: field "owner": m`, fault.Error())
+			_, isParseError := errors.AsType[*core.ParseError](fault)
+			assert.False(t, isParseError)
+		})
+	}
+	assert.ErrorIs(t, policyFault("owner", &core.ParseError{Code: "E2073", Message: "m", Cause: cause}), cause, "a plain cause stays in the chain")
 }

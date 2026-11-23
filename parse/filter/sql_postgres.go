@@ -3,6 +3,7 @@ package filter
 import (
 	"database/sql/driver"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math"
 	"reflect"
@@ -104,9 +105,9 @@ func (d PostgresDialect) Condition(field *FieldSchema, op FilterOperator, value 
 		if op != OpContains {
 			return "", unsupportedOperator(field, op)
 		}
-		arr, err := pgArray(field.Elem, value)
+		arr, err := pgFieldArray(field, field.Elem, value)
 		if err != nil {
-			return "", fmt.Errorf("field %s: %w", field.ExternalName, err)
+			return "", err
 		}
 		// The parameter takes the column's array type; the typed Go slice
 		// encodes into it.
@@ -180,9 +181,9 @@ func (d PostgresDialect) membership(field *FieldSchema, expr string, members []a
 		}
 		param = bind(arr) + "::text[]::numeric[]"
 	} else {
-		arr, err := pgArray(field.DataType, members)
+		arr, err := pgFieldArray(field, field.DataType, members)
 		if err != nil {
-			return "", fmt.Errorf("field %s: %w", field.ExternalName, err)
+			return "", err
 		}
 		param = bind(arr)
 	}
@@ -313,6 +314,24 @@ func containmentFragment(segs []string, value any) (string, error) {
 	return string(b), nil
 }
 
+// errNoCommonInteger is a set of integers no PostgreSQL integer array holds:
+// a negative value beside one above int64.
+var errNoCommonInteger = errors.New("no PostgreSQL integer type holds every value")
+
+// pgFieldArray is pgArray for a request operand of field: a set no
+// PostgreSQL integer array holds is the request's E2073, as a typed field's
+// Go kind refuses one of its values.
+func pgFieldArray(field *FieldSchema, elem core.FieldType, value any) (any, error) {
+	arr, err := pgArray(elem, value)
+	if errors.Is(err, errNoCommonInteger) {
+		return nil, valueMismatch(field, err)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("field %s: %w", field.ExternalName, err)
+	}
+	return arr, nil
+}
+
 // pgArray converts normalized array elements into the typed slice pgx
 // encodes as the column's array type. UUIDs bind as their canonical text:
 // pgx encodes a []string into uuid[] in every query mode, while a slice of a
@@ -368,13 +387,19 @@ func pgArray(elem core.FieldType, value any) (any, error) {
 			return s, nil
 		})
 	case core.FieldTypeInt:
-		if slices.ContainsFunc(items, func(v any) bool { n, ok := v.(uint64); return ok && n > math.MaxInt64 }) {
+		if i := slices.IndexFunc(items, func(v any) bool { n, ok := v.(uint64); return ok && n > math.MaxInt64 }); i >= 0 {
 			// An unsigned field's values above int64, for a numeric column.
 			return typedSlice(items, func(v any) (uint64, error) {
-				if n, ok := v.(uint64); ok {
+				switch n := v.(type) {
+				case uint64:
 					return n, nil
+				case int64:
+					if n >= 0 {
+						return uint64(n), nil
+					}
+					return 0, fmt.Errorf("%w: %d and %v", errNoCommonInteger, n, items[i])
 				}
-				return 0, fmt.Errorf("array element %v is not unsigned beside one above int64", v)
+				return 0, fmt.Errorf("array element %v is not an integer", v)
 			})
 		}
 		return typedSlice(items, func(v any) (int64, error) {

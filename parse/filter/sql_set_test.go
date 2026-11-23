@@ -3,6 +3,7 @@
 package filter
 
 import (
+	"errors"
 	"fmt"
 	"math"
 	"testing"
@@ -186,9 +187,25 @@ func TestSetMembersOutsideTheDialect(t *testing.T) {
 	res := buildWhere(t, PostgresDialect{}, &FilterNode{Field: count, Op: OpIn, Value: []any{uint64(1), big}})
 	assert.Equal(t, []any{[]uint64{1, big}}, res.Args, "unsigned members above int64 bind for a numeric column")
 
+	// Each is a value the request named and the dialect cannot hold: E2073,
+	// naming the field.
 	_, err := NewSQLBuilder(&ResourceSchema{Name: "items"}, PostgresDialect{}).Build(&FilterAST{Root: &FilterNode{Field: count, Op: OpIn, Value: []any{int64(-1), big}}})
-	assert.Error(t, err, "no PostgreSQL integer array holds both")
+	assertValueMismatch(t, err, "count", "no PostgreSQL integer array holds both")
 
 	_, err = NewSQLBuilder(&ResourceSchema{Name: "items"}, SQLiteDialect{}).Build(&FilterAST{Root: &FilterNode{Field: count, Op: OpIn, Value: []any{big}}})
-	assert.Error(t, err, "SQLite integers end at int64")
+	assertValueMismatch(t, err, "count", "SQLite integers end at int64")
+
+	// A document's integer array takes $contains as a set of its own.
+	counts := &FieldSchema{ExternalName: "doc.counts", DataType: core.FieldTypeArray, Elem: core.FieldTypeInt,
+		Path: &JSONPath{Table: "items", Column: "doc", Segments: []string{"counts"}, Storage: StorageJSON}}
+	_, err = NewSQLBuilder(&ResourceSchema{Name: "items"}, SQLiteDialect{}).Build(&FilterAST{Root: &FilterNode{Field: counts, Op: OpContains, Value: []any{big}}})
+	assertValueMismatch(t, err, "doc.counts", "a document array's set ends at int64 too")
+}
+
+func assertValueMismatch(t *testing.T, err error, field, msg string) {
+	t.Helper()
+	require.ErrorIs(t, err, ECodeValueTypeMismatch, msg)
+	pe, ok := errors.AsType[*core.ParseError](err)
+	require.True(t, ok, msg)
+	assert.Equal(t, field, pe.Details[core.DetailField], msg)
 }

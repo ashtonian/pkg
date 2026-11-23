@@ -269,6 +269,8 @@ func TestClient_FiltersMeanWhatTheCorpusMeans(t *testing.T) {
 			assert.Equal(t, normalize(t, want.CanonicalAST), normalize(t, got.CanonicalAST))
 			assert.Equal(t, want.SQLPostgres, got.SQLPostgres)
 			assert.Equal(t, want.SQLSqlite, got.SQLSqlite)
+			assert.Equal(t, want.SQLPostgresCode, got.SQLPostgresCode)
+			assert.Equal(t, want.SQLSqliteCode, got.SQLSqliteCode)
 		})
 	}
 }

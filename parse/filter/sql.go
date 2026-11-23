@@ -420,6 +420,11 @@ func (sc relationScope) check() error {
 	return nil
 }
 
+// ErrRelationTenantRequired is a tenant-scoped pair table joined under a
+// scope that names no tenant and does not opt out: the server built the
+// list without the tenant it must hold relations to.
+var ErrRelationTenantRequired = errors.New("filter: a tenant-scoped pair table is joined without a tenant; bind one or opt out with an unscoped relation scope")
+
 // clause returns " AND <alias>.<column>" compared with the tenant for
 // table's tenant column of type typ ("" when undeclared): the bound tenant
 // (through bind), or the owner row's tenant column. It is "" for a table
@@ -431,7 +436,7 @@ func (sc relationScope) clause(d Dialect, table, column, alias string, typ core.
 	case sc.row.column != "":
 		return sc.row.match(qualified(d, alias, column), typ), nil
 	case sc.tenant == nil:
-		return "", fmt.Errorf("relation junction %s is tenant-scoped (%s): bind a tenant or opt out explicitly with an unscoped-relations option", table, column)
+		return "", fmt.Errorf("relation junction %s (tenant column %s): %w", table, column, ErrRelationTenantRequired)
 	}
 	return " AND " + qualified(d, alias, column) + " = " + bind(sc.tenant), nil
 }
@@ -534,7 +539,11 @@ func NewSQLBuilder(schema *ResourceSchema, dialect Dialect, opts ...SQLBuilderOp
 	}
 }
 
-// Build walks the AST and generates a parameterized SQL WHERE clause.
+// Build walks the AST and generates a parameterized SQL WHERE clause. A
+// *core.ParseError means the request is at fault; anything the server
+// supplied that cannot be built — scope, policy, a relation's declaration,
+// a programmatic AST, the dialect — is a plain error wrapping its cause,
+// such as ErrRelatedPolicyRequired or ErrPolicyInvalid.
 func (b *SQLBuilder) Build(ast *FilterAST) (*SQLResult, error) {
 	exprs, err := b.schema.ComputedSQL(b.dialect)
 	if err != nil {
@@ -565,12 +574,7 @@ func (b *SQLBuilder) build(ast *FilterAST, exprs columnExprs) (*SQLResult, error
 		if ce, ok := errors.AsType[*computedError](err); ok {
 			return nil, ce.err
 		}
-		return nil, &core.ParseError{
-			Kind:    core.ParseErrorKindFilter,
-			Code:    ECodeSQLGenerationFailed.String(),
-			Message: "SQL generation failed: " + err.Error(),
-			Cause:   err,
-		}
+		return nil, fmt.Errorf("filter: building SQL: %w", err)
 	}
 
 	return &SQLResult{

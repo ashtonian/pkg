@@ -62,20 +62,20 @@ func TestPolicy_ServerFieldsKeepTheirTypes(t *testing.T) {
 	docs := serverFieldDocuments(t)
 
 	_, err := docs.BuildList(filter.PostgresDialect{}, nil, policyOn(&filter.PolicyConstraint{Field: "owner_id", Operator: filter.OpLike, Value: "7%"}))
-	assert.ErrorIs(t, err, filter.ECodeInvalidOperator, "an operator the type has not")
+	assert.ErrorIs(t, err, filter.ErrPolicyInvalid, "an operator the type has not")
 
 	_, err = docs.BuildList(filter.PostgresDialect{}, nil, policyOn(&filter.PolicyConstraint{Field: "owner_id", Operator: filter.OpEq, Value: "seven"}))
-	assert.ErrorIs(t, err, filter.ECodeValueTypeMismatch, "a value the type refuses")
+	assert.ErrorIs(t, err, filter.ErrPolicyInvalid, "a value the type refuses")
 
 	_, err = docs.BuildList(filter.PostgresDialect{}, nil, policyOn(&filter.PolicyConstraint{Field: "region", Operator: filter.OpEq, Value: "apac"}))
-	assert.Error(t, err, "a value outside the field's enum")
+	assert.ErrorIs(t, err, filter.ErrPolicyInvalid, "a value outside the field's enum")
 
 	plan, err := docs.BuildList(filter.PostgresDialect{}, nil, policyOn(&filter.PolicyConstraint{Field: "owner_id", Operator: filter.OpEq, Value: "seven", UnknownIfInvalid: true}))
 	require.NoError(t, err)
 	assert.Contains(t, plan.Page.SQL, "WHERE NULL", "an invalid value under UnknownIfInvalid admits no row")
 
 	_, err = docs.BuildList(filter.PostgresDialect{}, nil, policyOn(&filter.PolicyConstraint{Field: "owner", Operator: filter.OpEq, Value: 7}))
-	assert.ErrorIs(t, err, filter.ECodeUnknownField, "a name no column has still fails closed")
+	assert.ErrorIs(t, err, filter.ErrPolicyInvalid, "a name no column has still fails closed")
 }
 
 // serverFieldRows are serverFieldFixture's rows as a memory backend holds

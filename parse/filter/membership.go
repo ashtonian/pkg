@@ -180,8 +180,10 @@ func (c *LookupCond) validate() error {
 	return nil
 }
 
+// invalidLookup is a membership lookup that cannot be built or answered.
+// Only a policy declares one, so it is the server's fault.
 func invalidLookup(msg string) error {
-	return &core.ParseError{Kind: core.ParseErrorKindFilter, Code: ECodeInvalidRelation.String(), Message: msg}
+	return fmt.Errorf("%w: %s", ErrPolicyInvalid, msg)
 }
 
 // memberNode is the AST node of a membership constraint on field.

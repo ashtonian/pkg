@@ -96,17 +96,16 @@ func TestMembership_RefusesMalformedLookups(t *testing.T) {
 			_, err := ApplyPolicyConstraints(memberSchema(), nil, &PolicyConstraints{
 				Constraints: []*PolicyConstraint{{Field: tc.field, Member: tc.l}},
 			})
-			var pe *core.ParseError
-			require.ErrorAs(t, err, &pe)
-			assert.Equal(t, ECodeInvalidRelation.String(), pe.Code)
+			require.ErrorIs(t, err, ErrPolicyInvalid)
+			assert.ErrorContains(t, err, `field "`+tc.field+`": `, "the constraint is named")
+			_, isParseError := errors.AsType[*core.ParseError](err)
+			assert.False(t, isParseError, "a lookup is the server's, never the request's")
 		})
 	}
 	_, err := ApplyPolicyConstraints(memberSchema(), nil, &PolicyConstraints{
 		Constraints: []*PolicyConstraint{{Field: "nope", Member: &Lookup{Table: "t", Project: "p"}}},
 	})
-	var pe *core.ParseError
-	require.ErrorAs(t, err, &pe)
-	assert.Equal(t, ECodeUnknownField.String(), pe.Code)
+	assert.ErrorIs(t, err, ErrPolicyInvalid)
 }
 
 type recordingLookup struct {
@@ -259,6 +258,5 @@ func TestMatchLookupRow(t *testing.T) {
 		})
 	}
 	_, err := MatchLookupRow(WhereEq("missing", "x"), get)
-	var pe *core.ParseError
-	assert.ErrorAs(t, err, &pe, "a misspelt column cannot silently select nothing")
+	assert.ErrorIs(t, err, ErrPolicyInvalid, "a misspelt column cannot silently select nothing")
 }
