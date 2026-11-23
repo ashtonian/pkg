@@ -38,6 +38,10 @@ type schemaNode struct {
 	acceptsUnknown bool
 	remain         []int
 	remainErr      error
+	// unkeyed is the index, from the branch's type through the structs it
+	// squashes, of each exported field tagged koanf:"-": state a typed
+	// section carries that no key reaches (see unkeyed.go).
+	unkeyed [][]int
 	// opaqueUnsafe reports a value decoded whole that could hold a func,
 	// channel or unsafe pointer: a comparison looks inside it.
 	opaqueUnsafe bool
@@ -251,6 +255,11 @@ func (b *schemaBuilder) fields(n *schemaNode, shape *gowalker.Shape) {
 	n.view = view
 	n.remain, n.remainErr = remainder(view.Root())
 	n.acceptsUnknown = n.remain != nil
+	for _, d := range view.Root().Declarations() {
+		if d.GoField.IsExported() && koanfTag(d.GoField).Name == "-" {
+			n.unkeyed = append(n.unkeyed, d.Index)
+		}
+	}
 	for _, field := range view.Root().Fields() {
 		sf := field.GoField()
 		access, err := view.AccessField(field)

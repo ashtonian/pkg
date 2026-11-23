@@ -178,7 +178,7 @@ metrics-library dependency.
 |---|---|
 | `config.go`, `options.go` | `Load` pipeline and source options |
 | `defaults.go`, `element_defaults.go`, `decode_input.go`, `check_key.go`, `source_validation.go` | Shared defaults/decoding, key checks and provider entry validation |
-| `merge_input.go`, `keys.go`, `edits.go` | The merge rule every source follows (a map merges by key, a typed map or section replaces, a list edit sets elements), source trees in that shape, and key edits applied as a source |
+| `merge_input.go`, `keys.go`, `edits.go`, `unkeyed.go` | The merge rule every source follows (a map merges by key, a typed map or section replaces, a list edit sets elements), source trees in that shape, key edits applied as a source, and the `koanf:"-"` fields of typed sections carried beside the merge |
 | `provider_func.go`, `entries.go` | Function-backed providers: `NewMapProvider`'s dotted or nested maps, `NewEntryProvider`'s entries in the key grammar |
 | `schema.go`, `view.go`, `fields.go`, `key.go`, `tag_keys.go` | Canonical metadata, discovery, key grammar and tag-key spelling |
 | `env_refs.go`, `env.go` | Environment references and variable matching |

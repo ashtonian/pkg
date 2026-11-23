@@ -767,3 +767,87 @@ func TestSources_MapDecodedWholeSaysWhyItCannotBeDecoded(t *testing.T) {
 	assert.NotContains(t, err.Error(), "soon")
 	assert.NotContains(t, err.Error(), "hunter2")
 }
+
+type unkeyedTarget struct{ Name string }
+
+type unkeyedBase struct {
+	Note string `koanf:"-"`
+}
+
+type unkeyedSection struct {
+	unkeyedBase `koanf:",squash"`
+	Host        string        `koanf:"host"`
+	Hook        string        `koanf:"-"`
+	Target      *unkeyedTarget   `koanf:"-"`
+	Call        func() string `koanf:"-"`
+}
+
+type unkeyedConfig struct {
+	Section unkeyedSection            `koanf:"section"`
+	Ptr     *unkeyedSection           `koanf:"ptr"`
+	ByName  map[string]unkeyedSection `koanf:"by_name"`
+	ByPort  map[int]unkeyedSection    `koanf:"by_port"`
+	List    []unkeyedSection          `koanf:"list"`
+}
+
+// A typed section's exported koanf:"-" fields, which no key reaches, keep
+// what the source that set the section holds, copied: alone, behind a
+// pointer, in a map or a list, and through a squashed struct. A higher
+// source that sets keys inside the section keeps them; one that replaces
+// the section, or what holds it, drops them with the section's keys.
+func TestSources_TypedSectionKeepsItsUnkeyedFields(t *testing.T) {
+	section := func(host string) unkeyedSection {
+		return unkeyedSection{
+			unkeyedBase: unkeyedBase{Note: "note " + host}, Host: host, Hook: "hook " + host,
+			Target: &unkeyedTarget{Name: "target " + host}, Call: func() string { return "call " + host },
+		}
+	}
+	defaults := WithDefaults(map[string]any{
+		"section": section("a"),
+		"ptr":     new(section("b")),
+		"by_name": map[string]unkeyedSection{"c": section("c")},
+		"by_port": map[int]unkeyedSection{80: section("d")},
+		"list":    []unkeyedSection{section("e")},
+	})
+	kept := func(t *testing.T, want unkeyedSection, got unkeyedSection, host string) {
+		t.Helper()
+		assert.Equal(t, host, got.Host)
+		assert.Equal(t, want.Note, got.Note)
+		assert.Equal(t, want.Hook, got.Hook)
+		assert.Equal(t, want.Target, got.Target)
+		require.NotNil(t, got.Call)
+		assert.Equal(t, want.Call(), got.Call())
+	}
+
+	got, err := Load[unkeyedConfig](t.Context(), defaults)
+	require.NoError(t, err)
+	kept(t, section("a"), got.Section, "a")
+	require.NotNil(t, got.Ptr)
+	kept(t, section("b"), *got.Ptr, "b")
+	kept(t, section("c"), got.ByName["c"], "c")
+	kept(t, section("d"), got.ByPort[80], "d")
+	require.Len(t, got.List, 1)
+	kept(t, section("e"), got.List[0], "e")
+
+	got.Section.Target.Name = "changed"
+	again, err := Load[unkeyedConfig](t.Context(), defaults)
+	require.NoError(t, err)
+	assert.Equal(t, "target a", again.Section.Target.Name, "each load gets its own copy")
+
+	file := filepath.Join(t.TempDir(), "config.yaml")
+	writeFile(t, file, "section: {host: f}\nptr: {host: f}\nby_name: {c: {host: f}}\nby_port: {80: {host: f}}\n")
+	got, err = Load[unkeyedConfig](t.Context(), defaults, WithFile(file))
+	require.NoError(t, err)
+	kept(t, section("a"), got.Section, "f")
+	kept(t, section("b"), *got.Ptr, "f")
+	kept(t, section("c"), got.ByName["c"], "f")
+	kept(t, section("d"), got.ByPort[80], "f")
+
+	writeFile(t, file, "section: null\nby_name: {c: null}\nlist: [{host: f}]\n")
+	got, err = Load[unkeyedConfig](t.Context(), defaults, WithFile(file))
+	require.NoError(t, err)
+	assert.Equal(t, unkeyedSection{}, got.Section, "a section replaced keeps nothing of it")
+	assert.Equal(t, unkeyedSection{}, got.ByName["c"])
+	assert.Equal(t, []unkeyedSection{{Host: "f"}}, got.List, "a list replaced keeps nothing of its elements")
+	kept(t, section("d"), got.ByPort[80], "d")
+}

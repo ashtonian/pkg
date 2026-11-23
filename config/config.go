@@ -137,23 +137,31 @@ type loader struct {
 	origins         *originNode // nil unless the load attributes values
 	provenance      bool        // origins holds all provenance reads, not only what shadow detection does
 	inputs          *inputs     // nil unless the load finds shadowed inputs
+	// unkeyed is the koanf:"-" fields of the typed sections the merge
+	// keeps, set on the decoded config (see unkeyed.go).
+	unkeyed unkeyedSections
 }
 
 // add merges data, the tree of the source called name, whose values label
 // attributes. A source that sets one field under two spellings fails.
 func (l *loader) add(name string, data map[string]any, label labeler) error {
-	tree, err := l.rewrite(name, data)
+	w := keyWalk{schema: l.schema}
+	tree, err := l.walk(&w, name, data)
 	if err != nil {
 		return err
 	}
-	return l.merge(name, tree, label)
+	return l.mergeSource(name, tree, w.unkeyed, label)
 }
 
 // rewrite is data as it merges: maps keyed by anything but strings keyed
 // by their text, as koanf keys them, and every key naming a field spelled
 // as the field is.
 func (l *loader) rewrite(name string, data map[string]any) (map[string]any, error) {
-	w := keyWalk{schema: l.schema}
+	return l.walk(&keyWalk{schema: l.schema}, name, data)
+}
+
+// walk is rewrite through w, which then holds what the walk recorded.
+func (l *loader) walk(w *keyWalk, name string, data map[string]any) (map[string]any, error) {
 	tree := w.tree(l.root, textKeyed(data))
 	if len(w.twice) > 0 {
 		return nil, fmt.Errorf("loading %s: %w: keys spelled two ways set one field: %s", name, ErrValidation, strings.Join(w.twice, ", "))
@@ -182,9 +190,16 @@ func koanfMerge(src, dest map[string]any) error {
 // provenance the origins serve shadow detection alone, which defaults never
 // take part in: they merge first, so they hold nothing a source set.
 func (l *loader) merge(name string, tree map[string]any, label labeler) error {
+	return l.mergeSource(name, tree, nil, label)
+}
+
+// mergeSource is merge for a source whose walk recorded unkeyed, the
+// koanf:"-" fields of the typed sections it sets.
+func (l *loader) mergeSource(name string, tree map[string]any, unkeyed []unkeyedFields, label labeler) error {
 	if err := l.k.Load(confmap.Provider(tree, ""), nil, koanf.WithMergeFunc(koanfMerge)); err != nil {
 		return fmt.Errorf("loading %s: %w: %w", name, ErrSource, err)
 	}
+	l.unkeyed.merge(tree, unkeyed)
 	rank := len(l.sources)
 	if l.origins != nil && (l.provenance || !label.defaults()) {
 		l.origins.merge(tree, &originMerge{label: label, rank: rank, provenance: l.provenance})
@@ -417,6 +432,7 @@ func load[T any](ctx context.Context, o *options) (loaded[T], error) {
 	if err != nil {
 		return none, fmt.Errorf("unmarshaling config: %w: %w", ErrValidation, err)
 	}
+	l.unkeyed.apply(schema, reflect.ValueOf(cfg).Elem())
 	if err := live(); err != nil {
 		return none, err
 	}

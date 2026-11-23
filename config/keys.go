@@ -31,6 +31,9 @@ type keyWalk struct {
 	notJSON []string // "key (line n)"; never the text
 	noText  []string // the keys of structs whose MarshalText failed; never the text
 	unknown []UnknownKey
+	// unkeyed is the koanf:"-" fields of each typed section the source
+	// sets, which its tree cannot hold (see unkeyed.go).
+	unkeyed []unkeyedFields
 }
 
 // tree rewrites the top level of a source.
@@ -112,13 +115,17 @@ func (w *keyWalk) failText(at keyPath) {
 // section is v, a typed value of section t, as the merge carries it: its
 // fields by key, and the keys its remain field holds, in a wholeMap, so it
 // replaces the section beneath as the typed value does, and a higher source
-// sets one key of it as it sets one key of a nested map.
+// sets one key of it as it sets one key of a nested map. Its koanf:"-"
+// fields are recorded in w.unkeyed.
 func (w *keyWalk) section(t reflect.Type, v reflect.Value, path keyPath) any {
 	n, err := schemaOf(t)
 	if err != nil {
 		return v.Interface()
 	}
 	v = derefValue(v)
+	if len(n.unkeyed) > 0 {
+		w.unkeyed = append(w.unkeyed, unkeyedFields{path: path, section: v, fields: n.unkeyed})
+	}
 	out := make(map[string]any, len(n.fields))
 	if n.remain != nil {
 		if rest, err := v.FieldByIndexErr(n.remain); err == nil {
